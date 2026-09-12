@@ -76,6 +76,10 @@ func (a *tabNameAliaser) SetTabName(
 	return a.TabManager.SetTabName(a.resolve(uri), name, attr)
 }
 
+func (a *tabNameAliaser) OnTabExit(uri workspaceapi.URI) bool {
+	return a.TabManager.OnTabExit(a.resolve(uri))
+}
+
 // resolve follows alias chains (pty URI -> placeholder URI -> session
 // URI). The iteration bound is cycle insurance.
 func (a *tabNameAliaser) resolve(uri workspaceapi.URI) workspaceapi.URI {

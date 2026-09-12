@@ -828,6 +828,20 @@ func (mr *MockWindowManagerMockRecorder) IterateWindows(fn any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IterateWindows", reflect.TypeOf((*MockWindowManager)(nil).IterateWindows), fn)
 }
 
+// OnTabExit mocks base method.
+func (m *MockWindowManager) OnTabExit(uri workspaceapi.URI) bool {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "OnTabExit", uri)
+	ret0, _ := ret[0].(bool)
+	return ret0
+}
+
+// OnTabExit indicates an expected call of OnTabExit.
+func (mr *MockWindowManagerMockRecorder) OnTabExit(uri any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "OnTabExit", reflect.TypeOf((*MockWindowManager)(nil).OnTabExit), uri)
+}
+
 // SetFocus mocks base method.
 func (m *MockWindowManager) SetFocus(win browser.Window) (browser.Window, error) {
 	m.ctrl.T.Helper()
@@ -923,6 +937,20 @@ func NewMockTabManager(ctrl *gomock.Controller) *MockTabManager {
 // EXPECT returns an object that allows the caller to indicate expected use.
 func (m *MockTabManager) EXPECT() *MockTabManagerMockRecorder {
 	return m.recorder
+}
+
+// OnTabExit mocks base method.
+func (m *MockTabManager) OnTabExit(uri workspaceapi.URI) bool {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "OnTabExit", uri)
+	ret0, _ := ret[0].(bool)
+	return ret0
+}
+
+// OnTabExit indicates an expected call of OnTabExit.
+func (mr *MockTabManagerMockRecorder) OnTabExit(uri any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "OnTabExit", reflect.TypeOf((*MockTabManager)(nil).OnTabExit), uri)
 }
 
 // SetTabName mocks base method.
@@ -1355,6 +1383,20 @@ func (mr *MockBrowserMockRecorder) NotifyOnce(level, msg any, args ...any) *gomo
 	mr.mock.ctrl.T.Helper()
 	varargs := append([]any{level, msg}, args...)
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "NotifyOnce", reflect.TypeOf((*MockBrowser)(nil).NotifyOnce), varargs...)
+}
+
+// OnTabExit mocks base method.
+func (m *MockBrowser) OnTabExit(uri workspaceapi.URI) bool {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "OnTabExit", uri)
+	ret0, _ := ret[0].(bool)
+	return ret0
+}
+
+// OnTabExit indicates an expected call of OnTabExit.
+func (mr *MockBrowserMockRecorder) OnTabExit(uri any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "OnTabExit", reflect.TypeOf((*MockBrowser)(nil).OnTabExit), uri)
 }
 
 // Open mocks base method.

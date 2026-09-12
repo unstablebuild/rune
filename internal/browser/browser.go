@@ -153,6 +153,11 @@ type TabManager interface {
 	// SetTabName sets the title and attributes of the title of the given tab.
 	// If the given browserapi.Handler is not a tab, then this method returns an error.
 	SetTabName(workspaceapi.URI, string, term.Attributes) error
+
+	// OnTabExit drops the tab or window content identified by uri,
+	// used by terminals whose child process exited. It must be called
+	// on the host event loop.
+	OnTabExit(uri workspaceapi.URI) bool
 }
 
 // Notifications is the interface that wraps methods to display

@@ -1513,6 +1513,8 @@ stty -echo
 IFS= read -r secret
 stty echo
 printf '\nRESULT:%s\n' "$secret"
+# stay alive so the drop does not remove the terminal mid-assertion
+sleep 30
 `), 0o755))
 
 	configPath := filepath.Join(dataDir, "rune.yaml")

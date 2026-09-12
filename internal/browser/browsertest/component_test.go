@@ -1130,3 +1130,41 @@ func TestComponentTabAutoCloseOnExit(t *testing.T) {
 
 	assert.Empty(t, c.Tabs())
 }
+
+// TestComponentOnTabExit verifies that when a terminal is dropped by
+// URI as a free tab or as direct window content, without relying on
+// event routing.
+func TestComponentOnTabExit(t *testing.T) {
+	deadURI, err := workspaceapi.ParseURI("terminal:///dead")
+	require.NoError(t, err)
+	liveURI, err := workspaceapi.ParseURI("terminal:///live")
+	require.NoError(t, err)
+
+	t.Run("free tab", func(t *testing.T) {
+		c := browser.NewComponent(browserConfig())
+		c.Resize(40, 20)
+
+		live := c.NewTab(liveURI, 'x', "live", NewTestHandler(), nil)
+		require.NoError(t, c.Focus().SetContent(live))
+		c.NewTab(deadURI, 'x', "dead", NewTestHandler(), nil)
+
+		require.True(t, c.OnTabExit(deadURI))
+		assert.Equal(t, liveURI.String(), c.Tabs()[0].URI().String())
+	})
+
+	t.Run("direct window content", func(t *testing.T) {
+		c := browser.NewComponent(browserConfig())
+		c.Resize(80, 20)
+
+		first := c.Focus()
+		_, ok := c.Split(browserapi.OrientationRight, first, NewTestHandler())
+		require.True(t, ok)
+
+		dead := NewTestHandler()
+		dead.URIVal = deadURI
+		require.NoError(t, first.SetContent(dead))
+
+		require.True(t, c.OnTabExit(deadURI))
+		assert.Equal(t, 2, c.Tiles(), "window must survive with swapped content")
+	})
+}

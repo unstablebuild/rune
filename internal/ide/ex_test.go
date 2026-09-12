@@ -2680,6 +2680,8 @@ func TestExEmacsLifecycleBindingsReachCommandLayerFromTerminal(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, fileScheme.Close()) })
 	vteCfg := vte.DefaultConfig()
+	// keep OnTabExit on the test goroutine, not the vte run goroutine
+	installDefaultTestScheduler(&vteCfg)
 	vteCfg.Modal = false
 	vteCfg.CommandAndArgs = []string{"sh", "-c", "sleep 30"}
 	vteHandler, err := vte.NewHandler(h.ex.Browser(), h.ex.Browser(),

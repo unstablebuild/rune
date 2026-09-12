@@ -95,6 +95,10 @@ func (replayTabManager) SetTabName(
 	return nil
 }
 
+func (replayTabManager) OnTabExit(workspaceapi.URI) bool {
+	return false
+}
+
 // replayFile satisfies workspaceapi.File for the replay pty.
 // Writes are dropped (the parser only writes responses to queries we do not
 // care about during replay); reads return EOF.

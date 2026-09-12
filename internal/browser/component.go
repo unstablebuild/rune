@@ -1014,6 +1014,31 @@ func (c *Component) Handle(ev term.Event) (exit, handled bool) {
 	return c.union.Handle(ev)
 }
 
+// uriHandler is the identity OnTabExit matches window content by.
+type uriHandler interface {
+	URI() workspaceapi.URI
+}
+
+// Drops the terminal with the given uri.
+func (c *Component) OnTabExit(uri workspaceapi.URI) bool {
+	for _, t := range c.buffers {
+		if t.uri.String() == uri.String() {
+			return c.RemoveTab(t)
+		}
+	}
+	for _, bw := range c.windows {
+		h, err := bw.Content()
+		if err != nil {
+			continue
+		}
+		if u, ok := h.(uriHandler); ok && u.URI().String() == uri.String() {
+			c.RemoveWindowContent(bw)
+			return true
+		}
+	}
+	return false
+}
+
 // Cursor calls the underlying FrameUnion's Cursor.
 func (c *Component) Cursor() (pos term.Coordinates, style term.CursorStyle, show bool) {
 	return c.union.Cursor()

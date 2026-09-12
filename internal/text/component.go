@@ -1576,6 +1576,11 @@ func (c *Component) SetTabName(uri workspaceapi.URI, title string, attr term.Att
 	return nil
 }
 
+// OnTabExit satisfies browser.TabManager.
+func (c *Component) OnTabExit(uri workspaceapi.URI) bool {
+	return c.comp.OnTabExit(uri)
+}
+
 // Prompt creates a new prompt to be drawn as an overlay on the next call to Draw
 // and it also takes over event control until user either exits prompt or selects
 // an option.

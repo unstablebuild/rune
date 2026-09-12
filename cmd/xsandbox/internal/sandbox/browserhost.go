@@ -144,6 +144,10 @@ func (h *browserHost) SetTabName(
 	return nil
 }
 
+func (h *browserHost) OnTabExit(uri workspaceapi.URI) bool {
+	return h.comp.OnTabExit(uri)
+}
+
 func (h *browserHost) Open(uri workspaceapi.URI) (browserapi.Handler, error) {
 	if t, ok := h.comp.Tab(uri); ok {
 		return t, nil

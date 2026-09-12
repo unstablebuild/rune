@@ -653,6 +653,10 @@ func (n nopBrowser) SetTabName(workspaceapi.URI, string, term.Attributes) error 
 	return nil
 }
 
+func (nopBrowser) OnTabExit(workspaceapi.URI) bool {
+	return false
+}
+
 func newTestFacility(
 	initCap int, newFn func(*Facility) (VTE, error),
 ) *Facility {

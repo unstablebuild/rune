@@ -100,6 +100,8 @@ func (e2eBrowser) Bar(browserapi.BarConfig, tui.Handler) error { return nil }
 
 func (e2eBrowser) SetTabName(workspaceapi.URI, string, term.Attributes) error { return nil }
 
+func (e2eBrowser) OnTabExit(workspaceapi.URI) bool { return false }
+
 func (e2eBrowser) Tab(
 	workspaceapi.URI, rune, string, browserapi.Handler,
 ) (browserapi.Handler, error) {

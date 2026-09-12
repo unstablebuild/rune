@@ -887,6 +887,10 @@ func (tm *mockTabManager) SetTabName(uri workspaceapi.URI, name string, attr ter
 	return nil
 }
 
+func (tm *mockTabManager) OnTabExit(workspaceapi.URI) bool {
+	return false
+}
+
 func (tm *mockTabManager) bell() {
 	tm.belled = true
 }

@@ -3738,6 +3738,10 @@ func (f *workspaceTabManager) SetTabName(
 	return nil
 }
 
+func (f *workspaceTabManager) OnTabExit(uri workspaceapi.URI) bool {
+	return f.tm != nil && f.tm.OnTabExit(uri)
+}
+
 func lspCommandsConfig(
 	uri workspaceapi.URI, cfg ideConfig, notifications browserapi.Notifications,
 	interrupter term.Interrupter, parser syntaxapi.Parser,
