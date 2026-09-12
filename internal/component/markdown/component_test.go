@@ -140,6 +140,42 @@ func TestComponentScrolling(t *testing.T) {
 	}
 }
 
+func TestComponentSeekTo(t *testing.T) {
+	md, err := New("# H1\n\n# H2\n\n# H3\n\n# H4\n\n# H5")
+	require.NoError(t, err)
+	md.Resize(20, 3)
+	require.Positive(t, md.MaxSeekOffset())
+
+	tests := []struct {
+		name   string
+		offset int
+		want   func() int
+	}{
+		{
+			name:   "negative offset",
+			offset: -1,
+			want:   func() int { return 0 },
+		},
+		{
+			name:   "valid offset",
+			offset: 2,
+			want:   func() int { return 2 },
+		},
+		{
+			name:   "offset beyond content",
+			offset: md.MaxSeekOffset() + 1,
+			want:   md.MaxSeekOffset,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			md.SeekTo(test.offset)
+			assert.Equal(t, test.want(), md.SeekOffset())
+		})
+	}
+}
+
 func TestComponentMaxSeekOffset(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -929,6 +965,7 @@ func TestSearchFindsMatches(t *testing.T) {
 
 	md.Search("hello")
 
+	assert.Equal(t, "hello", md.SearchQuery())
 	assert.Len(t, md.searchResults, 2)
 	assert.Equal(t, 0, md.searchResults[0].From.X)
 	assert.Equal(t, 5, md.searchResults[0].To.X)

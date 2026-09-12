@@ -210,6 +210,17 @@ func (c *Component) SeekOffset() int {
 	return c.offset
 }
 
+// SeekTo scrolls to offset, clamped to the available content.
+func (c *Component) SeekTo(offset int) {
+	if offset < 0 {
+		offset = 0
+	}
+	if maxOffset := c.MaxSeekOffset(); offset > maxOffset {
+		offset = maxOffset
+	}
+	c.offset = offset
+}
+
 // MaxSeekOffset returns the maximum scroll offset.
 func (c *Component) MaxSeekOffset() int {
 	if c.totalHeight <= c.height {
@@ -443,6 +454,11 @@ func (c *Component) WordBoundsAt(
 func (c *Component) Search(query string) {
 	c.searchQuery = query
 	c.runSearch()
+}
+
+// SearchQuery returns the active search query.
+func (c *Component) SearchQuery() string {
+	return c.searchQuery
 }
 
 // SeekToNextSearchResult advances the internal LocationList cursor and

@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -32,7 +33,6 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
-	"time"
 	"unstable.build/rune/internal/ide/plugin"
 	"unstable.build/rune/internal/ide/vctrl"
 	"unstable.build/rune/internal/term/vte"
@@ -558,6 +558,64 @@ func TestEventDispatching(t *testing.T) {
 	})
 }
 
+func TestMarkdownViewReload(t *testing.T) {
+	tests := []struct {
+		name   string
+		reload func(*testing.T, *ex, sync.Locker, workspaceapi.URI)
+	}{
+		{
+			name: "reloadfile command",
+			reload: func(t *testing.T, x *ex, _ sync.Locker, _ workspaceapi.URI) {
+				t.Helper()
+				require.NoError(t, x.reloadfile(context.Background()))
+			},
+		},
+		{
+			name: "filesystem watcher",
+			reload: func(t *testing.T, x *ex, mu sync.Locker, uri workspaceapi.URI) {
+				t.Helper()
+				dispatchFilesystemEvent(
+					x,
+					mu,
+					vctrl.NopMatcher(false),
+					testEventInfo{e: schemeapi.Write, u: uri},
+				)
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var mu sync.Mutex
+			schedule, drain := newTestScheduler(t, &mu)
+			x := newExForEventTestingWithScheduler(t, schedule)
+			drain()
+			uri, err := x.workspace.URI("README.md")
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(uri.Path(), []byte("# Before\n"), 0o666))
+			require.NoError(t, x.viewFiles(context.Background(), uri.String()))
+
+			require.NoError(t, os.WriteFile(uri.Path(), []byte("# After\n"), 0o666))
+			changedAt := time.Now().Add(time.Second)
+			require.NoError(t, os.Chtimes(uri.Path(), changedAt, changedAt))
+			test.reload(t, x, &mu, uri)
+			x.waitInflight()
+			drain()
+
+			mu.Lock()
+			x.Resize(40, 8)
+			writer := term.NewStringWriter(40, 8)
+			x.Draw(writer)
+			flushErr := writer.Flush()
+			mu.Unlock()
+
+			require.NoError(t, flushErr)
+			assert.Contains(t, writer.String(), "After")
+			assert.NotContains(t, writer.String(), "Before")
+		})
+	}
+}
+
 // TestHandleFSChange_NoPromptForSecondWriteDuringReload guards
 // against a spurious "Discard your changes" prompt that fired when
 // an external tool (e.g. `git rebase`) wrote to a clean, open file
@@ -683,6 +741,19 @@ func assertNoPrompt(t *testing.T, x *ex, mu sync.Locker) {
 // dispatchFilesystemEvent) so the async reload worker's buffer
 // mutations cannot race in-flight event handling.
 func newExForEventTesting(t *testing.T, mu sync.Locker) *ex {
+	lockedSchedule := func(fn func()) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		fn()
+		return true
+	}
+	return newExForEventTestingWithScheduler(t, lockedSchedule)
+}
+
+func newExForEventTestingWithScheduler(
+	t *testing.T,
+	schedule func(func()) bool,
+) *ex {
 	ctx := context.Background()
 	opts := []text.Option{
 		text.WithCommandKey(testCommandKey),
@@ -699,16 +770,12 @@ func newExForEventTesting(t *testing.T, mu sync.Locker) *ex {
 	fileScheme, err := workspace.NewFileScheme(ctx, config.NopConfig(), uri)
 	require.NoError(t, err)
 
-	lockedSchedule := func(fn func()) bool {
-		mu.Lock()
-		defer mu.Unlock()
-		fn()
-		return true
-	}
-	workspace := workspace.NewSchemeWorkspace(uri, fileScheme, lockedSchedule)
+	workspace := workspace.NewSchemeWorkspace(uri, fileScheme, schedule)
+	emulatorConfig := vte.DefaultConfig()
+	emulatorConfig.ScheduleNextTick = schedule
 
 	e := newExForTestingTerminal(t, workspace, texttest.NopEditor(),
-		vte.DefaultConfig(), nopPublishEvent, plugin.DefaultBarConfig(), opts...)
+		emulatorConfig, nopPublishEvent, plugin.DefaultBarConfig(), opts...)
 
 	t.Cleanup(func() {
 		require.NoError(t, e.Close())

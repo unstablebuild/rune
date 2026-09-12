@@ -496,12 +496,12 @@ func (c *Component) openFileTab(
 	}
 
 	if userRequestedView && !c.ed.IsExternal() {
-		viewHandler, viewOK, viewErr := c.loadView(file)
+		viewHandler, viewCloser, viewOK, viewErr := c.loadView(file)
 		if viewErr != nil {
 			return nil, viewErr
 		}
 		if viewOK {
-			return c.newViewTab(file, viewHandler), nil
+			return c.newViewTab(file, viewHandler, viewCloser), nil
 		}
 	}
 	if c.config.StreamingOpen {
@@ -524,9 +524,11 @@ func (c *Component) openFileTabSync(
 }
 
 func (c *Component) newViewTab(
-	file workspaceapi.URI, h browserapi.Handler,
+	file workspaceapi.URI,
+	h browserapi.Handler,
+	closer workspace.FlusherCloser,
 ) *browser.Tab {
-	return c.newTab(file, c.iconFor(file), fileTabName(file), h, nil)
+	return c.newTab(file, c.iconFor(file), fileTabName(file), h, closer)
 }
 
 // fileTabName returns the tab label for a file URI. It always uses the
@@ -1601,33 +1603,53 @@ func (c *Component) newTab(
 }
 
 func (c *Component) loadView(file workspaceapi.URI) (
-	handler browserapi.Handler, ok bool, err error,
+	browserapi.Handler,
+	workspace.FlusherCloser,
+	bool,
+	error,
 ) {
 	lang, _ := languages.LanguageForFile(filepath.Base(file.Path()))
-	switch lang {
-	case "markdown":
-		ok = true
-		handler, err = c.loadMarkdown(file)
-	default:
+	if lang != "markdown" {
+		return nil, nil, false, nil
 	}
-	return
+
+	markdownComponent, modTime, err := c.loadMarkdown(file)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	markdownHandler := c.newMarkdownHandler(markdownComponent)
+	closer := newMarkdownFlusherCloser(
+		c, file, markdownHandler, markdownComponent, modTime,
+	)
+	return markdownHandler, closer, true, nil
 }
 
-func (c *Component) loadMarkdown(uri workspaceapi.URI) (browserapi.Handler, error) {
+func (c *Component) loadMarkdown(
+	uri workspaceapi.URI,
+) (*markdown.Component, time.Time, error) {
 	f, err := c.workspace.OpenFile(uri.Path(), os.O_RDONLY, 0)
 	if err != nil {
-		return nil, err
+		return nil, time.Time{}, err
+	}
+	defer func() { _ = f.Close() }()
+
+	info, err := f.Stat()
+	if err != nil {
+		return nil, time.Time{}, fmt.Errorf("stat file: %w", err)
 	}
 	data, err := io.ReadAll(f)
 	if err != nil {
-		return nil, fmt.Errorf("read file: %w", err)
+		return nil, time.Time{}, fmt.Errorf("read file: %w", err)
 	}
-	_ = f.Close()
-	markdown, err := markdown.NewWithConfig(string(data), c.config.Markdown)
+	component, err := markdown.NewWithConfig(string(data), c.config.Markdown)
 	if err != nil {
-		return nil, fmt.Errorf("new markdown component: %w", err)
+		return nil, time.Time{}, fmt.Errorf("new markdown component: %w", err)
 	}
-	handler := hmarkdown.New(markdown, hmarkdown.WithOnLinkClick(func(link *url.URL) bool {
+	return component, info.ModTime(), nil
+}
+
+func (c *Component) newMarkdownHandler(component *markdown.Component) *hmarkdown.Handler {
+	return hmarkdown.New(component, hmarkdown.WithOnLinkClick(func(link *url.URL) bool {
 		if link.Scheme != "http" && link.Scheme != "https" {
 			return false
 		}
@@ -1643,7 +1665,6 @@ func (c *Component) loadMarkdown(uri workspaceapi.URI) (browserapi.Handler, erro
 		}
 		return true
 	}))
-	return handler, nil
 }
 
 var loadingSpinnerFrames = []rune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")

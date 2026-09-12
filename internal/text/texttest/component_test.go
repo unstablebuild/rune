@@ -47,6 +47,7 @@ import (
 	"unstable.build/rune/internal/extension/extutil"
 	"unstable.build/rune/internal/handler/command"
 	"unstable.build/rune/internal/handler/handlertest"
+	hmarkdown "unstable.build/rune/internal/handler/markdown"
 	"unstable.build/rune/internal/ide/idecmd"
 	"unstable.build/rune/internal/text"
 	"unstable.build/rune/internal/text/standard"
@@ -134,6 +135,39 @@ type testLoader struct {
 	// reloadContent, when set, is propagated to the testFlusherCloser that
 	// Load creates, so Reload installs it instead of re-installing content.
 	reloadContent string
+}
+
+type markdownReloadFile struct {
+	workspaceapi.File
+	beforeRead time.Time
+	afterRead  time.Time
+	read       bool
+}
+
+func (f *markdownReloadFile) Read(data []byte) (int, error) {
+	f.read = true
+	return f.File.Read(data)
+}
+
+func (f *markdownReloadFile) Stat() (os.FileInfo, error) {
+	info, err := f.File.Stat()
+	if err != nil {
+		return nil, err
+	}
+	modTime := f.beforeRead
+	if f.read {
+		modTime = f.afterRead
+	}
+	return markdownReloadFileInfo{FileInfo: info, modTime: modTime}, nil
+}
+
+type markdownReloadFileInfo struct {
+	os.FileInfo
+	modTime time.Time
+}
+
+func (f markdownReloadFileInfo) ModTime() time.Time {
+	return f.modTime
 }
 
 type testOpenRouter struct {
@@ -2361,6 +2395,38 @@ func TestFlush(t *testing.T) {
 	resource1, err := workspaceapi.ParseURI("file:///a")
 	require.NoError(t, err)
 
+	t.Run("rejects saving markdown view", func(t *testing.T) {
+		c, loader := newTestComponent(t, NopEditor())
+		uri, err := workspaceapi.ParseURI("memory:///tmp/markdown.md")
+		require.NoError(t, err)
+		loader.openFile = workspace.NewMemoryFile(
+			"markdown.md", 1, 0, []byte("# Markdown\n"), new(sync.Mutex),
+		)
+		h, err := c.OpenFileTab(uri, true)
+		require.NoError(t, err)
+		win, err := c.Focus()
+		require.NoError(t, err)
+		require.NoError(t, win.SetContent(h))
+
+		operations := []struct {
+			name string
+			run  func() (<-chan error, error)
+		}{
+			{name: "flush", run: func() (<-chan error, error) {
+				return c.Flush(context.Background(), win)
+			}},
+			{name: "force flush", run: func() (<-chan error, error) {
+				return c.ForceFlush(context.Background(), win)
+			}},
+		}
+
+		for _, operation := range operations {
+			t.Run(operation.name, func(t *testing.T) {
+				assert.ErrorIs(t, awaitErr(operation.run()), textapi.ErrInvalidSave)
+			})
+		}
+	})
+
 	t.Run("calls underlying closer Flush", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		mock := NewMockHandler(ctrl)
@@ -2430,6 +2496,125 @@ func TestFlush(t *testing.T) {
 func TestReload(t *testing.T) {
 	resource1, err := workspaceapi.ParseURI("file:///a")
 	require.NoError(t, err)
+
+	t.Run("reloads markdown view", func(t *testing.T) {
+		c, loader := newTestComponent(t, NopEditor())
+
+		uri, err := workspaceapi.ParseURI("memory:///tmp/markdown.md")
+		require.NoError(t, err)
+		loader.openFile = workspace.NewMemoryFile(
+			"markdown.md", 1, 0, []byte("# Before\n"), new(sync.Mutex),
+		)
+
+		h, err := c.OpenFileTab(uri, true)
+		require.NoError(t, err)
+		win, err := c.Focus()
+		require.NoError(t, err)
+		require.NoError(t, win.SetContent(h))
+		c.Resize(40, 8)
+
+		loader.openFile = workspace.NewMemoryFile(
+			"markdown.md", 2, 0, []byte("# After\n"), new(sync.Mutex),
+		)
+		require.NoError(t, awaitErr(c.Reload(context.Background(), win)))
+
+		writer := term.NewStringWriter(40, 8)
+		c.Draw(writer)
+		require.NoError(t, writer.Flush())
+		assert.Contains(t, writer.String(), "After")
+		assert.NotContains(t, writer.String(), "Before")
+	})
+
+	t.Run("records markdown modification time before reading", func(t *testing.T) {
+		c, loader := newTestComponent(t, NopEditor())
+		uri, err := workspaceapi.ParseURI("memory:///tmp/markdown.md")
+		require.NoError(t, err)
+
+		beforeRead := time.Unix(1, 0)
+		loader.openFile = &markdownReloadFile{
+			File: workspace.NewMemoryFile(
+				"markdown.md", 1, 0, []byte("# Markdown\n"), new(sync.Mutex),
+			),
+			beforeRead: beforeRead,
+			afterRead:  time.Unix(2, 0),
+		}
+
+		h, err := c.OpenFileTab(uri, true)
+		require.NoError(t, err)
+		lastFlush, err := c.LastFlush(h)
+		require.NoError(t, err)
+		assert.Equal(t, beforeRead, lastFlush)
+	})
+
+	t.Run("preserves markdown view state", func(t *testing.T) {
+		initialContent := "# Before\n\nneedle\n\n" + strings.Repeat("paragraph\n\n", 12)
+		tests := []struct {
+			name           string
+			content        string
+			wantSameOffset bool
+			wantNextSearch bool
+			wantPrevSearch bool
+		}{
+			{
+				name:           "file got bigger",
+				content:        initialContent + "needle\n\n" + strings.Repeat("more\n\n", 12),
+				wantSameOffset: true,
+				wantNextSearch: true,
+				wantPrevSearch: true,
+			},
+			{
+				name:           "file got smaller",
+				content:        "# Short\n",
+				wantPrevSearch: false,
+			},
+			{
+				name:           "search query no longer matches",
+				content:        "# After\n\n" + strings.Repeat("paragraph\n\n", 12),
+				wantSameOffset: true,
+				wantPrevSearch: false,
+			},
+		}
+
+		for _, test := range tests {
+			t.Run(test.name, func(t *testing.T) {
+				c, loader := newTestComponent(t, NopEditor())
+				uri, err := workspaceapi.ParseURI("memory:///tmp/markdown.md")
+				require.NoError(t, err)
+				loader.openFile = workspace.NewMemoryFile(
+					"markdown.md", 1, 0, []byte(initialContent), new(sync.Mutex),
+				)
+
+				h, err := c.OpenFileTab(uri, true)
+				require.NoError(t, err)
+				tab, ok := h.(*browser.Tab)
+				require.True(t, ok)
+				markdownHandler, ok := tab.Handler().(*hmarkdown.Handler)
+				require.True(t, ok)
+				win, err := c.Focus()
+				require.NoError(t, err)
+				require.NoError(t, win.SetContent(h))
+				c.Resize(20, 5)
+				markdownHandler.Search("needle")
+				markdownHandler.ScrollDown(8)
+				initialOffset := markdownHandler.SeekOffset()
+				require.Positive(t, initialOffset)
+
+				loader.openFile = workspace.NewMemoryFile(
+					"markdown.md", 2, 0, []byte(test.content), new(sync.Mutex),
+				)
+				require.NoError(t, awaitErr(c.Reload(context.Background(), win)))
+
+				if test.wantSameOffset {
+					assert.Equal(t, initialOffset, markdownHandler.SeekOffset())
+				} else {
+					assert.Equal(t, markdownHandler.MaxSeekOffset(), markdownHandler.SeekOffset())
+					assert.Less(t, markdownHandler.SeekOffset(), initialOffset)
+				}
+				assert.Equal(t, test.wantNextSearch, markdownHandler.SeekToNextSearchResult())
+				assert.Equal(t, test.wantPrevSearch, markdownHandler.SeekToPrevSearchResult())
+			})
+		}
+	})
 
 	t.Run("calls underlying closer Flush", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
