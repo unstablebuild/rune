@@ -164,6 +164,24 @@ func TestExpandNodeAtDirectory(t *testing.T) {
 	assert.Equal(t, " src/", buf.String())
 }
 
+// TestToggleDirectoryWithoutVisibleChildren is a regression for
+// issue #53: a directory that renders no child rows (empty on disk)
+// used to re-parse as collapsed, so Enter could never close it.
+func TestToggleDirectoryWithoutVisibleChildren(t *testing.T) {
+	c, buf, _ := newComp(t, map[string][]mockEntry{
+		"/project":       {{name: "empty", isDir: true}},
+		"/project/empty": {},
+	}, Config{})
+
+	_, isFile := c.ExpandNodeAt(term.Coordinates{Y: 0})
+	assert.False(t, isFile)
+	assert.Equal(t, " empty/", buf.String())
+
+	_, isFile = c.ExpandNodeAt(term.Coordinates{Y: 0})
+	assert.False(t, isFile)
+	assert.Equal(t, " empty/", buf.String())
+}
+
 // TestExpandLevel expands directories at the same depth.
 func TestExpandLevel(t *testing.T) {
 	c, buf, _ := newComp(t, map[string][]mockEntry{
@@ -2477,6 +2495,50 @@ func TestIgnoreFiltersOutMatchingEntries(t *testing.T) {
 	}
 }
 
+// TestExpandDirectoryWithOnlyIgnoredChildrenShowsThem covers the
+// reproduction in issue #53: a visible folder whose contents are all
+// gitignored (e.g. test1/*) must still list those files on expand.
+func TestExpandDirectoryWithOnlyIgnoredChildrenShowsThem(t *testing.T) {
+	c, buf, _ := newComp(t, map[string][]mockEntry{
+		"/project": {
+			{name: "main.go", isDir: false},
+			{name: "test1", isDir: true},
+		},
+		"/project/test1": {
+			{name: "a.go", isDir: false},
+			{name: "b.go", isDir: false},
+		},
+	}, Config{Ignore: suffixIgnore{"/a.go", "/b.go"}})
+
+	assert.Equal(t, " test1/\n main.go", buf.String())
+
+	_, isFile := c.ExpandNodeAt(term.Coordinates{Y: 0})
+	assert.False(t, isFile)
+	assert.Equal(t, " test1/\n│    a.go\n│    b.go\n main.go", buf.String())
+}
+
+// TestSymlinkedDirectoryIsBrowsable is a regression for issue #53:
+// ReadDir is lstat-based, so a symlink-to-dir used to render as a
+// file. Stat must decide directory-ness; ignore still sees the
+// unresolved (non-dir) entry so a dir-only pattern does not hide it.
+func TestSymlinkedDirectoryIsBrowsable(t *testing.T) {
+	c, buf, _ := newComp(t, map[string][]mockEntry{
+		"/project": {
+			{name: "linked", isDir: false, mode: os.ModeSymlink},
+			{name: "real", isDir: true},
+		},
+		"/project/linked": {{name: "inside.go"}},
+		"/project/real":   {{name: "inside.go"}},
+	}, Config{Ignore: dirOnlyIgnore("linked")})
+
+	assert.Equal(t, " linked/\n real/", buf.String())
+
+	uri, isFile := c.ExpandNodeAt(term.Coordinates{Y: 0})
+	assert.False(t, isFile)
+	assert.Equal(t, workspaceapi.URI{}, uri)
+	assert.Equal(t, " linked/\n│    inside.go\n real/", buf.String())
+}
+
 // TestIgnoreNilDefaultsToNoFiltering documents the zero-value
 // behavior of Config.Ignore: a nil matcher is equivalent to
 // vctrl.NopMatcher(false), preserving the pre-RUNE-143 default of
@@ -2516,16 +2578,38 @@ func (s suffixIgnore) MatchRelPath(p string, _ bool) bool {
 	return false
 }
 
+// dirOnlyIgnore matches a path's final component only when the
+// caller reports the entry as a directory, matching gitignore
+// patterns such as "linked/".
+type dirOnlyIgnore string
+
+func (d dirOnlyIgnore) Match(uri workspaceapi.URI, isDir bool) bool {
+	return d.MatchRelPath(uri.Path(), isDir)
+}
+
+func (d dirOnlyIgnore) MatchRelPath(p string, isDir bool) bool {
+	return isDir && strings.HasSuffix(p, string(d))
+}
+
 // --- mock filesystem ---
 
 type mockEntry struct {
 	name  string
 	isDir bool
+	mode  fs.FileMode
 }
 
-func (e mockEntry) Name() string               { return e.name }
-func (e mockEntry) IsDir() bool                { return e.isDir }
-func (e mockEntry) Type() fs.FileMode          { return 0 }
+func (e mockEntry) Name() string { return e.name }
+func (e mockEntry) IsDir() bool  { return e.isDir }
+func (e mockEntry) Type() fs.FileMode {
+	if e.mode != 0 {
+		return e.mode
+	}
+	if e.isDir {
+		return fs.ModeDir
+	}
+	return 0
+}
 func (e mockEntry) Info() (fs.FileInfo, error) { return mockInfo{e}, nil }
 
 type mockInfo struct{ e mockEntry }
