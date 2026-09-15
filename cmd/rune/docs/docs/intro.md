@@ -41,7 +41,9 @@ Rune runs on macOS and Linux. Find your platform below for the specifics.
   the system OpenGL and X11 libraries installed and an OpenGL-capable driver.
   On a minimal or headless install you may need to add your distribution's
   OpenGL (Mesa) and X11 client library packages. Most desktop installs
-  already include them.
+  already include them. This applies to the windowed editor only: `rune
+  --tui` and `rune --headless` load no graphical library and run on a
+  machine that has none.
 
 ## Install
 

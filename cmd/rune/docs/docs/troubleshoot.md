@@ -83,6 +83,25 @@ Keys such as CapsLock, NumLock, ScrollLock, and Menu do nothing on their own in
 Rune; `gui.key_mapping` is the only way to give them an effect. See
 [Key remapping](./learn/key-mapping.md) for the full reference.
 
+## Rune will not start on a machine without a display
+
+Rune links its GPU renderer at build time, but it loads the X11 and OpenGL
+client libraries only when it actually opens a window. A machine with no
+graphical libraries installed at all can still run:
+
+```bash
+rune --tui        # the editor in the terminal
+rune --headless   # a network node with no editor, see Network
+```
+
+If either of those fails with `error while loading shared libraries`, the
+binary is an older release that still linked `libX11` eagerly; upgrade it.
+
+`rune --gui` is the one mode that does need a display: it reports
+`X11: Failed to load libX11` or `The DISPLAY environment variable is
+missing` when there is none. Install your distribution's Mesa and X11
+client library packages, or use `--tui` instead.
+
 ## The command prompt will not open in an external editor
 
 When `editor.mode` is `exo`, Rune embeds a guest editor (such as `vim` or

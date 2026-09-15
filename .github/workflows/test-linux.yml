@@ -36,6 +36,56 @@ jobs:
       - name: Smoke test the built binary
         run: ./bin/rune --version
 
+      # Graphical libraries may be linked against at build time, but the
+      # dynamic loader resolves DT_NEEDED before main(), so any of them
+      # listed here makes rune unstartable on a machine without a display
+      # stack — whatever mode flags the user passed.
+      - name: Assert no graphical library is needed at load time
+        run: |
+          objdump -p ./bin/rune | awk '$1 == "NEEDED" { print $2 }' > needed.txt
+          cat needed.txt
+          if grep -E '^lib(X|GL|EGL|GLES|wayland|xkbcommon)' needed.txt; then
+            echo "::error::rune needs a graphical library at load time" >&2
+            exit 1
+          fi
+
+      # ubuntu:24.04 matches the runner's glibc and ships no X, GL or
+      # Wayland client libraries at all.
+      - name: Start rune without any graphical library installed
+        run: |
+          docker run --rm -v "$PWD/bin:/rune:ro" ubuntu:24.04 bash -eu -c '
+            fail() { echo "::error::$1" >&2; exit 1; }
+            want() {
+              case "$3" in
+                *"$2"*) return 0;;
+              esac
+              echo "$3"
+              fail "$1 did not reach $2 without graphical libraries"
+            }
+
+            out=$(/rune/rune --version 2>&1) || fail "rune --version failed: $out"
+            want "rune --version" "Rune" "$out"
+
+            # The alternate-screen switch is the first thing the TUI
+            # writes, so seeing it means the editor came up on a machine
+            # with no display stack at all.
+            out=$(TERM=xterm-256color timeout -s TERM 20 \
+              script -qec "/rune/rune --tui -d /tmp/runedata" /dev/null \
+              </dev/null 2>&1 || true)
+            want "rune --tui" "[?1049h" "$out"
+
+            out=$(timeout -s TERM 20 /rune/rune --headless -d /tmp/runedata 2>&1 || true)
+            want "rune --headless" "complete login" "$out"
+          '
+
+      # The ebiten fork resolves Xlib through dlsym at glfwInit, from a
+      # hand-maintained symbol list. Its tests link that list against
+      # libX11 and run the loader without a display, so a stale entry fails
+      # here rather than on a user's first `rune --gui`. The fork has no CI
+      # of its own, and `go test` builds them straight from the module cache.
+      - name: Test the ebiten fork's X11 symbol table
+        run: go test -count=1 github.com/hajimehoshi/ebiten/v2/internal/glfw/...
+
       # One instrumented run feeds both the race check and codecov; a
       # separate uninstrumented coverage job re-ran the whole suite.
       - name: Test
