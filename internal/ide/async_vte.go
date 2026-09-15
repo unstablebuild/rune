@@ -399,6 +399,13 @@ func (av *asyncVTE) ClearPrimaryBuffer() bool {
 	return false
 }
 
+func (av *asyncVTE) Exited() bool {
+	if e, ok := av.real.(interface{ Exited() bool }); ok {
+		return e.Exited()
+	}
+	return false
+}
+
 func (av *asyncVTE) Close() error {
 	if av.closed {
 		return nil

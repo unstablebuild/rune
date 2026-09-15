@@ -1011,7 +1011,42 @@ func (c *Component) SetFocus(win Window) Window {
 
 // Handle proxies events to either the underlying Tabs or WindowManager.
 func (c *Component) Handle(ev term.Event) (exit, handled bool) {
-	return c.union.Handle(ev)
+	if ev.Type == term.EventNone {
+		focusID := c.wm.Focus().ID()
+		for _, t := range slices.Clone(c.buffers) {
+			if t.free && t.Exited() {
+				t.Handle(ev)
+			}
+		}
+		var closing []uint64
+		c.wm.Iterate(func(w thandler.Window) {
+			if w.ID() == focusID {
+				return
+			}
+			content := w.Content()
+			if e, ok := content.(exitedReporter); !ok || !e.Exited() {
+				return
+			}
+			if exit, _ := content.Handle(ev); exit {
+				closing = append(closing, w.ID())
+			}
+		})
+		for _, id := range closing {
+			if bw, ok := c.findWindow(id); ok {
+				_ = bw.Close()
+			}
+		}
+	}
+	exit, handled = c.union.Handle(ev)
+	if exit {
+		c.RemoveWindowContent(c.focus())
+		exit = false
+	}
+	return
+}
+
+type exitedReporter interface {
+	Exited() bool
 }
 
 // Cursor calls the underlying FrameUnion's Cursor.
@@ -1704,6 +1739,11 @@ type browserContent struct {
 // allow for advanced use of content
 func (c *browserContent) Content() browserapi.Handler {
 	return c.Handler
+}
+
+func (c *browserContent) Exited() bool {
+	e, ok := c.Handler.(exitedReporter)
+	return ok && e.Exited()
 }
 
 func (c *browserContent) Handle(ev term.Event) (exit, handled bool) {

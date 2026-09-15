@@ -1221,6 +1221,13 @@ func (h *workspaceManagerHandler) onBarTabClick(barIdx int) bool {
 func (h *workspaceManagerHandler) Handle(ev term.Event) (exit, handled bool) {
 	h.macro.BeginEvent(ev)
 	defer h.macro.EndEvent()
+	if ev.Type == term.EventNone {
+		for i, w := range h.workspaces {
+			if w != nil && i != h.focus {
+				w.comp.Browser().Handle(ev)
+			}
+		}
+	}
 	if ev.Type == term.EventMouse && h.drawBar() && ev.MouseY >= h.height-h.barSize() {
 		_, handled = h.union.Handle(ev)
 		return

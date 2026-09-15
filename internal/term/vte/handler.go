@@ -172,6 +172,10 @@ func (e *Handler) Component() *Component {
 	return e.comp
 }
 
+func (e *Handler) Exited() bool {
+	return e.exit.Load()
+}
+
 // Snapshot returns a durable snapshot of the terminal's rendered
 // buffers. It captures output/history, not the live pty process.
 func (e *Handler) Snapshot() (Snapshot, error) {

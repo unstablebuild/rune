@@ -65,6 +65,11 @@ func (b *Tab) Handle(ev term.Event) (exit, handled bool) {
 	return false, handled
 }
 
+func (b *Tab) Exited() bool {
+	e, ok := b.handler.(exitedReporter)
+	return ok && e.Exited()
+}
+
 // Cursor satisfies tui.Handler.
 func (b *Tab) Cursor() (pos term.Coordinates, style term.CursorStyle, show bool) {
 	return b.handler.Cursor()
