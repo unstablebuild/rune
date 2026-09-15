@@ -146,6 +146,41 @@ own and the workspace carries on. Two failures are final rather than
 retried, because retrying cannot fix them: a machine that is not on the
 network at all, and one that belongs to a different account.
 
+## Running a machine without the editor
+
+A build box or a server has code you want to open from your laptop, but
+nobody sits in front of it. `rune --headless` puts such a machine on the
+network with no editor at all: no window, no terminal UI, just the node
+and the workspace server its peers connect to.
+
+```bash
+rune --headless
+```
+
+It needs no display and no graphical libraries, so it runs on a minimal
+server install or inside a container. Everything the editor would show
+you goes to standard output, and the Rune log (`log_path`) is teed there
+too, so `journalctl` or `docker logs` shows what the machine is doing.
+
+The first run has no account signed in, so Rune prints the URL to
+authorize the machine:
+
+```
+Open this URL in your browser to complete login:
+
+https://auth.rune.build/authorize?...
+```
+
+Open it on whatever machine you are sitting at. The sign-in is cached in
+the data directory, so later runs go straight to joining and print the
+node's name, state, and addresses. From then on the machine shows up in
+`network peers` on your other machines and
+`workspaceopen rune://<machine>/path` works against it.
+
+A headless node serves the network and nothing else, so it needs
+`network.auto_join` left on: with it off there is no console to run
+`network up` in, and Rune says so and exits.
+
 ## Configuration
 
 The network reads its settings from the `network` section of your
