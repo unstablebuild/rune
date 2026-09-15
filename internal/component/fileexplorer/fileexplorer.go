@@ -785,17 +785,25 @@ func (c *Component) parseViewTree() *node {
 		}
 	}
 
-	// A directory in the view is "expanded" iff at least one child
-	// row was parsed under it.
+	// A directory in the view is expanded if it has child rows, or
+	// if it has none and the matching base node is also childless
+	// (empty on disk / all children ignored). Copying base.expanded
+	// in that case lets Enter collapse those rows. Directories whose
+	// base still has children stay collapsed so deleting every child
+	// row remains a delete.
 	var markExpanded func(n *node)
 	markExpanded = func(n *node) {
-		for _, c := range n.children {
-			if c.isDir {
-				if len(c.children) > 0 {
-					c.expanded = true
-				}
-				markExpanded(c)
+		for _, child := range n.children {
+			if !child.isDir {
+				continue
 			}
+			if len(child.children) > 0 {
+				child.expanded = true
+			} else if base := c.findNodeByID(c.baseTree, child.id); base != nil &&
+				len(base.children) == 0 {
+				child.expanded = base.expanded
+			}
+			markExpanded(child)
 		}
 	}
 	markExpanded(root)
