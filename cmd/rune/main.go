@@ -28,6 +28,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -93,9 +94,11 @@ var (
 	flagVersion   = flag.BoolP("version", "v", false, "Print version information and exit")
 	flagWorkspace = flag.StringP("workspace", "w", cwdURI().String(),
 		"Set the initial workspace to open in the format [scheme:][//[userinfo@]host][/]path")
-	flagFPS = flag.BoolP("fps", "f", false, "Render FPS on GUI mode")
-	flagGUI = flag.BoolP("gui", "G", false, "Run Rune in manual GUI mode")
-	flagTUI = flag.Bool("hardcore", false, "Run Rune in manual TUI mode")
+	flagFPS      = flag.BoolP("fps", "f", false, "Render FPS on GUI mode")
+	flagGUI      = flag.BoolP("gui", "G", false, "Run Rune in manual GUI mode")
+	flagTUI      = flag.Bool("tui", false, "Run Rune in TUI mode")
+	flagHeadless = flag.Bool("headless", false,
+		"Run Rune as a headless network node, with no editor UI")
 
 	// marked hidden
 	flagWorkspaceServer = flag.StringP("workspace-server", "x", "",
@@ -308,9 +311,6 @@ func main() {
 	if err := flag.CommandLine.MarkHidden("rune-website-address"); err != nil {
 		panic(err)
 	}
-	if err := flag.CommandLine.MarkHidden("hardcore"); err != nil {
-		panic(err)
-	}
 
 	flag.ErrHelp = errors.New("")
 	flag.Usage = func() {
@@ -323,7 +323,7 @@ func main() {
 	exec, _ := os.Executable()
 	// If no manual tui/gui flag was set, assume we were launched as a desktop
 	// app and inject the same defaults the platform launcher would normally pass.
-	if !*flagGUI && !*flagTUI && *flagWorkspaceServer == "" {
+	if !*flagGUI && !*flagTUI && !*flagHeadless && *flagWorkspaceServer == "" {
 		if err := os.MkdirAll(*flagDataPath, 0777); err != nil {
 			fmt.Fprintf(os.Stderr, "mkdir datadir %q: %s",
 				*flagDataPath, err)
@@ -470,6 +470,60 @@ func linuxAppDir(execPath string) (string, bool) {
 	return appDir, true
 }
 
+// headlessFlags are the flags a headless node reads. Any other flag
+// passed with --headless is rejected rather than ignored, so a script
+// finds out instead of getting a node that quietly differs from what it
+// asked for.
+var headlessFlags = map[string]bool{
+	"headless":                true,
+	"version":                 true,
+	"config":                  true,
+	"datadir":                 true,
+	"rune-http-address":       true,
+	"rune-grpc-address":       true,
+	"rune-grpc-insecure":      true,
+	"rune-release-collection": true,
+	"rune-website-address":    true,
+}
+
+// checkModeArgs rejects the argument combinations the mode dispatch in
+// run would otherwise resolve silently.
+func checkModeArgs(
+	fs *flag.FlagSet, gui, tui, headless bool, files []string,
+) error {
+	var modes []string
+	for _, m := range []struct {
+		name string
+		set  bool
+	}{{"gui", gui}, {"tui", tui}, {"headless", headless}} {
+		if m.set {
+			modes = append(modes, "--"+m.name)
+		}
+	}
+	if len(modes) > 1 {
+		return fmt.Errorf(
+			"only one of --gui, --tui or --headless can be passed at once, got %s",
+			strings.Join(modes, " "))
+	}
+	if !headless {
+		return nil
+	}
+
+	var rejected []string
+	fs.Visit(func(f *flag.Flag) {
+		if !headlessFlags[f.Name] {
+			rejected = append(rejected, "--"+f.Name)
+		}
+	})
+	if len(files) > 0 {
+		rejected = append(rejected, "file arguments")
+	}
+	if len(rejected) == 0 {
+		return nil
+	}
+	return fmt.Errorf("--headless does not take %s", strings.Join(rejected, ", "))
+}
+
 func run() int {
 	var filenames []string
 
@@ -479,16 +533,21 @@ func run() int {
 	}
 
 	filenames = append(filenames, flag.Args()...)
+	if err := checkModeArgs(flag.CommandLine,
+		*flagGUI, *flagTUI, *flagHeadless, filenames); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
 
 	if err := setupRuneBinPATH(*flagDataPath); err != nil {
 		log.Errorf("installed executables will not be available: "+
 			"set the PATH env variable: %v", err)
 	}
 
-	// TUI inherits the parent-shell PATH the user already exported, so it
-	// skips the login SHELL PATH resolve.
+	// TUI and headless inherit the parent-shell PATH the user already
+	// exported, so they skip the login SHELL PATH resolve.
 	var pathDone <-chan error
-	if !*flagTUI {
+	if !*flagTUI && !*flagHeadless {
 		pathDone = startLoginShellPATHResolve(*flagDataPath)
 	} else {
 		ch := make(chan error)
@@ -509,8 +568,13 @@ func run() int {
 		return code
 	}
 
-	var mu sync.Mutex
 	ctx := context.Background()
+
+	if *flagHeadless {
+		return runHeadless(ctx)
+	}
+
+	var mu sync.Mutex
 	runner, err := extensionv2.NewRunner(ctx, &mu, *flagDataPath)
 	if err != nil {
 		err = fmt.Errorf("new extension runner: %v", err)
@@ -538,7 +602,8 @@ func run() int {
 	} else if *flagTUI {
 		return runTUI(filenames, runner, trust, &mu)
 	} else {
-		fmt.Fprintf(os.Stderr, "--gui must be set if running on %s\n",
+		fmt.Fprintf(os.Stderr,
+			"one of --gui, --tui or --headless must be set if running on %s\n",
 			runtime.GOOS)
 		return 1
 	}

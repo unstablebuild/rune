@@ -20,8 +20,86 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
+
+	flag "github.com/spf13/pflag"
 )
+
+func TestCheckModeArgs(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    []string
+		files   []string
+		wantErr string
+	}{
+		{name: "gui alone", args: []string{"--gui"}},
+		{name: "headless alone", args: []string{"--headless"}},
+		{name: "headless with its own flags", args: []string{"--headless", "-c", "/c.yaml", "-d", "/d"}},
+		{name: "tui with workspace and files", args: []string{"--tui", "-w", "/src"}, files: []string{"a.go"}},
+		{
+			name:    "two modes",
+			args:    []string{"--tui", "-G"},
+			wantErr: "only one of --gui, --tui or --headless can be passed at once, got --gui --tui",
+		},
+		{
+			name:    "headless with editor flags",
+			args:    []string{"--headless", "-w", "/src", "-f"},
+			wantErr: "--headless does not take --fps, --workspace",
+		},
+		{
+			name:    "headless with files",
+			args:    []string{"--headless"},
+			files:   []string{"a.go"},
+			wantErr: "--headless does not take file arguments",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fs, gui, tui, headless := parseModeFlags(t, tt.args)
+			err := checkModeArgs(fs, gui, tui, headless, tt.files)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("checkModeArgs() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("checkModeArgs() = %v, want error containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// parseModeFlags parses args on a fresh flag set so the test does not
+// mutate the process-wide one.
+func parseModeFlags(
+	t *testing.T, args []string,
+) (fs *flag.FlagSet, gui, tui, headless bool) {
+	t.Helper()
+	fs = flag.NewFlagSet("rune", flag.ContinueOnError)
+	guiFlag := fs.BoolP("gui", "G", false, "")
+	tuiFlag := fs.Bool("tui", false, "")
+	headlessFlag := fs.Bool("headless", false, "")
+	fs.StringP("config", "c", "", "")
+	fs.StringP("datadir", "d", "", "")
+	fs.StringP("workspace", "w", "", "")
+	fs.BoolP("fps", "f", false, "")
+	if err := fs.Parse(args); err != nil {
+		t.Fatalf("parse %v: %v", args, err)
+	}
+	return fs, *guiFlag, *tuiFlag, *headlessFlag
+}
+
+// A misspelt entry in headlessFlags would reject a flag the node needs.
+func TestHeadlessFlagsAreRuneFlags(t *testing.T) {
+	for name := range headlessFlags {
+		if flag.CommandLine.Lookup(name) == nil {
+			t.Errorf("headlessFlags names %q, which is not a rune flag", name)
+		}
+	}
+}
 
 func TestAppLaunchArgs(t *testing.T) {
 	tests := []struct {

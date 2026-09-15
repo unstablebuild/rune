@@ -36,6 +36,62 @@ jobs:
       - name: Smoke test the built binary
         run: ./bin/rune --version
 
+      # The dynamic loader resolves DT_NEEDED before main(), so anything
+      # listed there beyond glibc makes rune unstartable on a machine
+      # without it — whatever mode flags the user passed. An allowlist
+      # rather than a list of graphical libraries, so a new one (libOpenGL,
+      # libxcb, libdrm, ...) cannot slip in unnoticed.
+      - name: Assert only glibc is needed at load time
+        run: |
+          objdump -p ./bin/rune | awk '$1 == "NEEDED" { print $2 }' > needed.txt
+          cat needed.txt
+          if grep -vE '^(libc|libm|libpthread|libdl|librt|libresolv)\.so|^ld-linux' needed.txt; then
+            echo "::error::rune needs a library outside glibc at load time" >&2
+            exit 1
+          fi
+
+      # ubuntu:24.04 matches the runner's glibc and ships no X, GL or
+      # Wayland client libraries at all. Each run gets its own data
+      # directory so one cannot pass or fail on what another left behind.
+      - name: Start rune without any graphical library installed
+        run: |
+          docker run --rm -v "$PWD/bin:/rune:ro" ubuntu:24.04 bash -eu -c '
+            fail() { echo "::error::$1" >&2; exit 1; }
+            want() {
+              case "$3" in
+                *"$2"*) return 0;;
+              esac
+              echo "$3"
+              fail "$1 did not reach $2 without graphical libraries"
+            }
+
+            out=$(/rune/rune --version 2>&1) || fail "rune --version failed: $out"
+            want "rune --version" "Rune" "$out"
+
+            # The alternate-screen switch is the first thing the TUI
+            # writes, so seeing it means the editor came up on a machine
+            # with no display stack at all.
+            out=$(TERM=xterm-256color timeout -s TERM 20 \
+              script -qec "/rune/rune --tui -d /tmp/runedata-tui" /dev/null \
+              </dev/null 2>&1 || true)
+            want "rune --tui" "[?1049h" "$out"
+
+            # The sign-in code itself needs a TLS round-trip to Auth0,
+            # which this image cannot make (no ca-certificates), so
+            # settle for the node reaching the login step: past config,
+            # logging and the API client with no display stack loaded.
+            out=$(timeout -s TERM 20 /rune/rune --headless -d /tmp/runedata-headless 2>&1 || true)
+            want "rune --headless" "acquiring new oauth2 token source" "$out"
+          '
+
+      # The ebiten fork resolves Xlib through dlsym at glfwInit, from a
+      # hand-maintained symbol list. Its tests link that list against
+      # libX11 and run the loader without a display, so a stale entry fails
+      # here rather than on a user's first `rune --gui`. The fork has no CI
+      # of its own, and `go test` builds them straight from the module cache.
+      - name: Test the ebiten fork's X11 symbol table
+        run: go test -count=1 github.com/hajimehoshi/ebiten/v2/internal/glfw/...
+
       # One instrumented run feeds both the race check and codecov; a
       # separate uninstrumented coverage job re-ran the whole suite.
       - name: Test

@@ -72,7 +72,7 @@ require (
 	github.com/tidwall/gjson v1.18.0
 	github.com/tidwall/sjson v1.2.5
 	github.com/tree-sitter/go-tree-sitter v0.25.0
-	github.com/unstablebuild/blue v1.84.1
+	github.com/unstablebuild/blue v1.85.0
 	github.com/unstablebuild/notify v0.10.4
 	github.com/unstablebuild/pty v1.3.1
 	github.com/yuin/goldmark v1.7.1

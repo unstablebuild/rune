@@ -35,7 +35,8 @@ the code.
 - **Rune running on both machines, signed into the same account.** A
   machine serves its workspaces from the Rune instance running on it. If
   Rune is not open there, the machine is not reachable, and only your own
-  machines are ever allowed to connect.
+  machines are ever allowed to connect. A machine nobody sits at can run
+  Rune as a service instead; see [Headless](./headless.md).
 
 ## Joining the network
 
@@ -145,6 +146,54 @@ machine sleeps or changes networks mid-session: Rune reconnects on its
 own and the workspace carries on. Two failures are final rather than
 retried, because retrying cannot fix them: a machine that is not on the
 network at all, and one that belongs to a different account.
+
+## Running a machine without the editor
+
+A build box or a server has code you want to open from your laptop, but
+nobody sits in front of it. `rune --headless` puts such a machine on the
+network with no editor at all: no window, no terminal UI, just the node
+and the workspace server its peers connect to.
+
+```bash
+rune --headless
+```
+
+:::tip[Keep it running]
+A machine serves its workspaces only while `rune --headless` runs. To
+start it at boot and keep it up, install it as a service: the
+[Headless](./headless.md) guide has recipes for systemd, launchd, OpenRC,
+runit, and Docker.
+:::
+
+It needs no display and no graphical libraries, so it runs on a minimal
+server install or inside a container. Everything the editor would show
+you goes to standard output, and the Rune log (`log_path`) is teed there
+too, so `journalctl` or `docker logs` shows what the machine is doing.
+
+The first run has no account signed in, so Rune prints a code to
+authorize the machine:
+
+```
+To sign this machine in, open
+
+    https://auth.rune.build/activate
+
+in any browser and enter the code ABCD-EFGH (expires 14:32).
+```
+
+Open that page on any machine, laptop or phone, enter the code, and
+Rune signs in as soon as you approve it. Nothing needs to reach the
+machine running Rune: it only polls out, so no port forward or SSH
+tunnel is involved.
+
+The sign-in is cached in the data directory, so later runs go straight
+to joining and print the node's name, state, and addresses. From then on
+the machine shows up in `network peers` on your other machines and
+`workspaceopen rune://<machine>/path` works against it.
+
+A headless node serves the network and nothing else, so it needs
+`network.auto_join` left on: with it off there is no console to run
+`network up` in, and Rune says so and exits.
 
 ## Configuration
 

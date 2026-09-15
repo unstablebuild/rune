@@ -125,3 +125,39 @@ func TestDefaultNativeConfigTokenURL(t *testing.T) {
 		})
 	}
 }
+
+// TestDefaultNativeConfigDeviceAuthURL guards the wire contract that
+// lets rune --headless sign in by code: the served config carries the
+// device authorization endpoint, and a config from an older server
+// without it still validates so old and new binaries interoperate.
+func TestDefaultNativeConfigDeviceAuthURL(t *testing.T) {
+	api, err := url.Parse("https://api.rune.build")
+	require.NoError(t, err)
+
+	t.Run("round-trips through json", func(t *testing.T) {
+		cfg := DefaultNativeConfig(api)
+		assert.Equal(t, DeviceAuthURL, cfg.Endpoint.DeviceAuthURL)
+
+		data, err := json.Marshal(cfg)
+		require.NoError(t, err)
+		var decoded Config
+		require.NoError(t, json.Unmarshal(data, &decoded))
+		assert.Equal(t, DeviceAuthURL, decoded.Endpoint.DeviceAuthURL)
+	})
+
+	t.Run("fetch accepts a config without it", func(t *testing.T) {
+		cfg := DefaultNativeConfig(api)
+		cfg.Endpoint.DeviceAuthURL = ""
+		srv := httptest.NewServer(http.HandlerFunc(
+			func(w http.ResponseWriter, _ *http.Request) {
+				require.NoError(t, json.NewEncoder(w).Encode(cfg))
+			}))
+		defer srv.Close()
+
+		srvURL, err := url.Parse(srv.URL)
+		require.NoError(t, err)
+		fetched, err := FetchConfig(srvURL)
+		require.NoError(t, err)
+		assert.Empty(t, fetched.Endpoint.DeviceAuthURL)
+	})
+}

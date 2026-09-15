@@ -467,11 +467,42 @@ func (h *oauthRedirectCompletionHook) Fire(entry *log.Entry) error {
 	return nil
 }
 
+// fakeTokenJSON is a successful token response whose access token
+// carries account claims, as ox-api's minted tokens do, so
+// AccountStatus can read it back.
+func fakeTokenJSON(t *testing.T) string {
+	t.Helper()
+	return `{"access_token":"` +
+		makeAccountJWT(t, auth.RPCUser{Email: "fake@rune.test"}) + `",` +
+		`"token_type":"Bearer","expires_in":3600,` +
+		`"refresh_token":"fake-refresh-token"}`
+}
+
+// tokenReply scripts one response of the fake token endpoint.
+type tokenReply struct {
+	status int
+	body   string
+}
+
+type fakeOAuthOptions struct {
+	// withoutDeviceAuth leaves DeviceAuthURL out of the served config,
+	// as an ox-api built before the device grant existed would.
+	withoutDeviceAuth bool
+	// tokenReplies are served in order by the token endpoint; once they
+	// run out every request succeeds with fakeTokenJSON.
+	tokenReplies []tokenReply
+}
+
 // completingOAuthServer serves an oauth2 config pointing back at itself
 // and a token endpoint that completes the PKCE code exchange.
 func completingOAuthServer(t *testing.T) *httptest.Server {
+	return newFakeOAuthServer(t, fakeOAuthOptions{})
+}
+
+func newFakeOAuthServer(t *testing.T, opts fakeOAuthOptions) *httptest.Server {
 	t.Helper()
 	var base atomic.Value
+	var tokenCalls atomic.Int32
 	mux := http.NewServeMux()
 	mux.HandleFunc(auth.ServeConfigPath, func(w http.ResponseWriter, _ *http.Request) {
 		u, _ := base.Load().(string)
@@ -490,18 +521,179 @@ func completingOAuthServer(t *testing.T) *httptest.Server {
 				},
 			},
 		}
+		if !opts.withoutDeviceAuth {
+			cfg.Endpoint.DeviceAuthURL = u + "/oauth/device/code"
+		}
 		w.Header().Set("Content-Type", "application/json")
 		require.NoError(t, json.NewEncoder(w).Encode(cfg))
 	})
+	mux.HandleFunc("/oauth/device/code", func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, r.ParseForm())
+		assert.Equal(t, "test-client-id", r.Form.Get("client_id"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"device_code":"fake-device-code",` +
+			`"user_code":"ABCD-EFGH",` +
+			`"verification_uri":"https://auth.rune.test/activate",` +
+			`"verification_uri_complete":` +
+			`"https://auth.rune.test/activate?user_code=ABCD-EFGH",` +
+			`"expires_in":900,"interval":1}`))
+	})
 	mux.HandleFunc(auth.ServeTokenPath, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"access_token":"fake-access-token",` +
-			`"token_type":"Bearer","expires_in":3600,` +
-			`"refresh_token":"fake-refresh-token"}`))
+		n := int(tokenCalls.Add(1)) - 1
+		if n < len(opts.tokenReplies) {
+			w.WriteHeader(opts.tokenReplies[n].status)
+			_, _ = w.Write([]byte(opts.tokenReplies[n].body))
+			return
+		}
+		_, _ = w.Write([]byte(fakeTokenJSON(t)))
 	})
 	srv := httptest.NewServer(mux)
 	base.Store(srv.URL)
 	return srv
+}
+
+func TestClient_LoginWithDeviceCode(t *testing.T) {
+	pending := tokenReply{
+		status: http.StatusBadRequest,
+		body:   `{"error":"authorization_pending","error_description":"not yet"}`,
+	}
+	denied := tokenReply{
+		status: http.StatusForbidden,
+		body:   `{"error":"access_denied","error_description":"user said no"}`,
+	}
+
+	for _, tc := range []struct {
+		name         string
+		opts         fakeOAuthOptions
+		wantPrompt   bool
+		wantErr      error
+		wantErrStr   string
+		wantSignedIn bool
+	}{
+		{
+			name:         "publishes the prompt then caches the token",
+			wantPrompt:   true,
+			wantSignedIn: true,
+		},
+		{
+			// x/oauth2 keeps polling only when the relayed error body
+			// names authorization_pending; anything else aborts.
+			name:         "keeps polling while authorization is pending",
+			opts:         fakeOAuthOptions{tokenReplies: []tokenReply{pending}},
+			wantPrompt:   true,
+			wantSignedIn: true,
+		},
+		{
+			name:       "access denied resolves Done with the error",
+			opts:       fakeOAuthOptions{tokenReplies: []tokenReply{denied}},
+			wantPrompt: true,
+			wantErrStr: "access_denied",
+		},
+		{
+			name:    "server without a device endpoint is unsupported",
+			opts:    fakeOAuthOptions{withoutDeviceAuth: true},
+			wantErr: ErrDeviceLoginUnsupported,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := newFakeOAuthServer(t, tc.opts)
+			defer srv.Close()
+
+			config := DefaultConfig()
+			config.HTTPEndpointAddress = srv.URL
+			var browserCalls atomic.Int32
+			config.OpenBrowser = func(*url.URL) error {
+				browserCalls.Add(1)
+				return nil
+			}
+			client := New(storagestub.NewInMemoryService(), config, t.TempDir())
+			defer client.Close()
+
+			session := client.LoginWithDeviceCode(t.Context())
+
+			select {
+			case prompt, ok := <-session.Prompt:
+				require.Equal(t, tc.wantPrompt, ok,
+					"prompt emitted=%v, want %v", ok, tc.wantPrompt)
+				if ok {
+					assert.Equal(t, "ABCD-EFGH", prompt.UserCode)
+					assert.Equal(t, "https://auth.rune.test/activate",
+						prompt.VerificationURI)
+					assert.Equal(t,
+						"https://auth.rune.test/activate?user_code=ABCD-EFGH",
+						prompt.VerificationURIComplete)
+					assert.WithinDuration(t, time.Now().Add(15*time.Minute),
+						prompt.Expiry, time.Minute)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("expected the prompt channel to emit or close")
+			}
+
+			select {
+			case err := <-session.Done:
+				switch {
+				case tc.wantErr != nil:
+					assert.True(t, errors.Is(err, tc.wantErr), "got %v", err)
+				case tc.wantErrStr != "":
+					require.Error(t, err)
+					assert.Contains(t, err.Error(), tc.wantErrStr)
+				default:
+					require.NoError(t, err)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("expected Done to resolve")
+			}
+
+			_, signedIn, err := client.AccountStatus(t.Context())
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantSignedIn, signedIn)
+			assert.Equal(t, int32(0), browserCalls.Load(),
+				"sign-in by code must never open a browser")
+		})
+	}
+}
+
+func TestClient_LoginWithDeviceCode_CancelWhilePolling(t *testing.T) {
+	pending := tokenReply{
+		status: http.StatusBadRequest,
+		body:   `{"error":"authorization_pending"}`,
+	}
+	// Enough pending replies that the poll outlives the test's cancel.
+	srv := newFakeOAuthServer(t, fakeOAuthOptions{
+		tokenReplies: []tokenReply{pending, pending, pending, pending, pending,
+			pending, pending, pending, pending, pending, pending, pending},
+	})
+	defer srv.Close()
+
+	config := DefaultConfig()
+	config.HTTPEndpointAddress = srv.URL
+	client := New(storagestub.NewInMemoryService(), config, t.TempDir())
+	defer client.Close()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	session := client.LoginWithDeviceCode(ctx)
+
+	select {
+	case _, ok := <-session.Prompt:
+		require.True(t, ok, "expected a prompt before cancelling")
+	case <-time.After(5 * time.Second):
+		t.Fatal("expected the prompt to be published")
+	}
+
+	cancel()
+	select {
+	case err := <-session.Done:
+		assert.True(t, errors.Is(err, context.Canceled), "got %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("expected Done to resolve after cancellation")
+	}
+	_, ok := <-session.Prompt
+	assert.False(t, ok, "Prompt must be closed once the session resolves")
+
+	_, signedIn, err := client.AccountStatus(t.Context())
+	require.NoError(t, err)
+	assert.False(t, signedIn)
 }
 
 func TestParseAccountClaims(t *testing.T) {

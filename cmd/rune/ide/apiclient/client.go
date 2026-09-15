@@ -241,6 +241,53 @@ func (a *Client) Login(ctx context.Context) LoginSession {
 	return LoginSession{URL: urlCh, Done: done}
 }
 
+// DevicePrompt is what the operator must be shown to complete an RFC
+// 8628 device authorization: the page to open in any browser and the
+// code to enter there. Expiry is when the code stops being accepted.
+type DevicePrompt struct {
+	VerificationURI         string
+	VerificationURIComplete string
+	UserCode                string
+	Expiry                  time.Time
+}
+
+// DeviceLoginSession exposes the asynchronous state of an in-flight
+// LoginWithDeviceCode call. Prompt emits the code and verification page
+// as soon as the authorization server issues them, then closes. Done
+// receives the result of the underlying CachedTokenSource.Token() call
+// (nil on success), then closes.
+type DeviceLoginSession struct {
+	Prompt <-chan DevicePrompt
+	Done   <-chan error
+}
+
+// ErrDeviceLoginUnsupported is returned by LoginWithDeviceCode when the
+// API server's oauth2 configuration does not advertise a device
+// authorization endpoint.
+var ErrDeviceLoginUnsupported = errors.New(
+	"the API server does not offer sign-in by code")
+
+// LoginWithDeviceCode authenticates the user using the oauth2 device
+// authorization grant: no browser is opened and no local listener is
+// bound, so it works on machines the operator only reaches through a
+// service log. Cancelling ctx aborts the poll; Done still resolves with
+// the cancellation error and Prompt is closed.
+func (a *Client) LoginWithDeviceCode(ctx context.Context) DeviceLoginSession {
+	promptCh := make(chan DevicePrompt, 1)
+	done := make(chan error, 1)
+	ctx = withDevicePromptCh(ctx, promptCh)
+	go debug.CapturePanicReport(func() {
+		defer close(done)
+		defer close(promptCh)
+		_, err := a.tokenSource.TokenCtx(ctx)
+		if err != nil {
+			log.Warnf("login by code: %v", err)
+		}
+		done <- err
+	})
+	return DeviceLoginSession{Prompt: promptCh, Done: done}
+}
+
 // AccountStatus returns the authenticated user's account details parsed
 // from the cached access token. It returns ok=false when no token is
 // cached (the user is not signed in) and an error only when a cached
@@ -521,6 +568,7 @@ func defaultProdNativeConfig(api *url.URL) auth.Config {
 	conf.MgmtTokenURL = "https://rune-prod.us.auth0.com/oauth/token"
 	conf.ClientID = "XHBpJIm3q6PYazpxZMAhcwxAuR5Ks9B7"
 	conf.Endpoint.AuthURL = "https://auth.rune.build/authorize"
+	conf.Endpoint.DeviceAuthURL = "https://auth.rune.build/oauth/device/code"
 	return conf
 }
 
@@ -563,6 +611,10 @@ func (a *Client) tokenSourceRefresh(ctx context.Context, token *oauth2.Token, re
 		return nil, auth.ErrUnavailable
 	}
 
+	if promptCh, ok := devicePromptChFrom(ctx); ok {
+		return a.deviceLogin(ctx, conf, promptCh)
+	}
+
 	urlCh, isLogin := loginURLChFrom(ctx)
 	if !isLogin {
 		// Do not implicitly open a browser for background or incidental
@@ -600,4 +652,36 @@ func (a *Client) tokenSourceRefresh(ctx context.Context, token *oauth2.Token, re
 	}
 	log.Debugf("oauth2: successfully generated token source")
 	return source, nil
+}
+
+// deviceLogin runs the RFC 8628 device authorization grant against conf,
+// publishing the code the operator must enter on promptCh and polling
+// the token endpoint until the grant is authorized, denied or expires.
+func (a *Client) deviceLogin(
+	ctx context.Context, conf auth.Config, promptCh chan<- DevicePrompt,
+) (oauth2.TokenSource, error) {
+	if conf.Endpoint.DeviceAuthURL == "" {
+		return nil, ErrDeviceLoginUnsupported
+	}
+	resp, err := conf.DeviceAuth(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("device authorization: %w", err)
+	}
+	select {
+	case promptCh <- DevicePrompt{
+		VerificationURI:         resp.VerificationURI,
+		VerificationURIComplete: resp.VerificationURIComplete,
+		UserCode:                resp.UserCode,
+		Expiry:                  resp.Expiry,
+	}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	tok, err := conf.DeviceAccessToken(ctx, resp)
+	if err != nil {
+		return nil, fmt.Errorf("device token: %w", err)
+	}
+	// use component lifecycle ctx rather than this rpc's ctx
+	// to ensure that the refresh process is not canceled incorrectly
+	return conf.TokenSource(a.ctx, tok), nil
 }
