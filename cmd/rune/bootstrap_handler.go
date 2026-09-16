@@ -885,7 +885,7 @@ func (b *bootstrapHandler) openWelcomePrompt() {
 		"Learning a new editor is hard, and it can feel daunting at first. We've all been there. " +
 		"These first steps are designed to make that process easier, and we promise that once Rune starts to click, " +
 		"the payoff will be huge.\n\n" +
-		"If this text is too small, press " + metaKeySymbol() + " and `+` to make the font bigger; " +
+		"If this text is too small, press " + metaKeySymbol() + " and `=` to make the font bigger; " +
 		"if it's too big, press " + metaKeySymbol() + " and `-` to make it smaller."
 	guard := b.promptGuard()
 	b.preIDE.Prompt(
