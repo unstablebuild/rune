@@ -509,8 +509,8 @@ github.com/u-root/uio v0.0.0-20240224005618-d2acac8f3701 h1:pyC9PaHYZFgEKFdlp3G8
 github.com/u-root/uio v0.0.0-20240224005618-d2acac8f3701/go.mod h1:P3a5rG4X7tI17Nn3aOIAYr5HbIMukwXG0urG0WuL8OA=
 github.com/unstablebuild/blue v1.84.1 h1:x62SNDMltzXwFJv9vSc/kYkE1xinCQGIniniJP9QJUU=
 github.com/unstablebuild/blue v1.84.1/go.mod h1:9yTwjlRwKO9rBPFiHCPb91jwM1GKf/+x5MJXS6tRN5I=
-github.com/unstablebuild/ebiten/v2 v2.7.5-ub.27 h1:6jGCjs7KXe/N8IUo9PLUso24jqrG69qJgFPvmuQv/zw=
-github.com/unstablebuild/ebiten/v2 v2.7.5-ub.27/go.mod h1:ktenNSafDcraZPupfeBBts/GZ9uP9oDbB4IXMJweNwk=
+github.com/unstablebuild/ebiten/v2 v2.7.5-ub.32 h1:hrz41+X1fnLIpUOukUJQUzkmU6hZLv2pP5YNNg7V9KQ=
+github.com/unstablebuild/ebiten/v2 v2.7.5-ub.32/go.mod h1:ktenNSafDcraZPupfeBBts/GZ9uP9oDbB4IXMJweNwk=
 github.com/unstablebuild/go-billy/v6 v6.0.0-ub.1 h1:pPmxLsBLNuZv+LWeytIcvwzxeUAMYzeY2MDKmSWXMTA=
 github.com/unstablebuild/go-billy/v6 v6.0.0-ub.1/go.mod h1:E3VhlS+AKkrq6ZNn1axE2/nDRJ87l1FJk9r5HT2vPX0=
 github.com/unstablebuild/go-git/v6 v6.0.1-ub.1 h1:xBomYWGQkSIm023lhJxu+F1uU4YjZlIZaKpnm+7nIak=
@@ -521,8 +521,8 @@ github.com/unstablebuild/notify v0.10.4 h1:AStjrILfwMmW8RxnN656wtnTTAtXodVdyWdoQ
 github.com/unstablebuild/notify v0.10.4/go.mod h1:Q1U21KXundJt7qEvc4z4fFtzuDTZOTrhvCIJDZp5SBk=
 github.com/unstablebuild/pty v1.3.1 h1:GQSjqGKSOkOCu+X/F5yFUSuwp7Fi08xXn28DcuXhu/k=
 github.com/unstablebuild/pty v1.3.1/go.mod h1:BpzWw5G39oyDqoJhusXyOiTk9/bsAblSD4Js9K462Pw=
-github.com/unstablebuild/rune-go-sdk v0.2.0 h1:EHRK5X6i58MQ2T7RQYCYKpeoO/JTpdNS03vHHOpp1iU=
-github.com/unstablebuild/rune-go-sdk v0.2.0/go.mod h1:NOvmmFvveXFC1AolJjwZfzA/EndgYoZ1fkt2RStmXsc=
+github.com/unstablebuild/rune-go-sdk v0.2.1 h1:wi2W3kyxPdBTSpH31rw0CRJNANFw0949qMCgLoCBgzA=
+github.com/unstablebuild/rune-go-sdk v0.2.1/go.mod h1:NOvmmFvveXFC1AolJjwZfzA/EndgYoZ1fkt2RStmXsc=
 github.com/unstablebuild/tcell/v3 v3.6.5 h1:ZokqnobK5xMQud8uqRI0PjcWWnlWb2zR5kyhrhMpuW4=
 github.com/unstablebuild/tcell/v3 v3.6.5/go.mod h1:nfcmtlSfOVfBq07+ZeP4vcEmBRMDgYnPV1Yo67gORvw=
 github.com/vishvananda/netns v0.0.0-20200728191858-db3c7e526aae/go.mod h1:DD4vA1DwXk04H54A1oHXtwZmA0grkVMdPxx/VGLCah0=

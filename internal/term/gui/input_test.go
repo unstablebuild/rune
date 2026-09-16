@@ -59,6 +59,14 @@ func release(key ebiten.Key, mods ...ebiten.KeyModifier) ebiten.InputEvent {
 	return keyEvent(key, ebiten.KeyActionRelease, mods)
 }
 
+// on stamps the characters the active keyboard layout produces for the key,
+// as the platform reports them. The other helpers leave both at 0, which is
+// what a platform with no layout data for the key reports.
+func on(ev ebiten.InputEvent, char, shiftChar rune) ebiten.InputEvent {
+	ev.Char, ev.ShiftChar = char, shiftChar
+	return ev
+}
+
 func committed(key ebiten.InputEvent, normalText bool, runes []rune) []ebiten.InputEvent {
 	events := make([]ebiten.InputEvent, 0, len(runes)+1)
 	events = append(events, key)
@@ -406,6 +414,120 @@ func TestInputFireOnce(t *testing.T) {
 		{
 			description: "does not dispatch releases",
 			events:      action(release(ebiten.KeyA)),
+		},
+		{
+			// AZERTY: the key labelled M sits where the US keyboard has ';'.
+			description: "alt chord is named by the layout, not the US key position",
+			events:      action(on(press(ebiten.KeySemicolon, ebiten.KeyModAlt), 'm', 'M')),
+			expectedEvents: []term.Event{
+				{Type: term.EventKey, Mod: term.ModAlt, Ch: 'm', Raw: []byte{0x1b, 'm'}},
+			},
+		},
+		{
+			// AZERTY: the key labelled A sits where the US keyboard has 'q'.
+			description: "alt chord on a swapped letter follows the layout",
+			events:      action(on(press(ebiten.KeyQ, ebiten.KeyModAlt), 'a', 'A')),
+			expectedEvents: []term.Event{
+				{Type: term.EventKey, Mod: term.ModAlt, Ch: 'a', Raw: []byte{0x1b, 'a'}},
+			},
+		},
+		{
+			// Colemak: P sits where the US keyboard has 'r'.
+			description: "ctrl+shift chord takes the shifted level from the layout",
+			events: action(on(press(ebiten.KeyR,
+				ebiten.KeyModControl, ebiten.KeyModShift), 'p', 'P')),
+			expectedEvents: []term.Event{
+				{Type: term.EventKey, Mod: term.ModCtrl, Ch: 'P', Raw: []byte{0x10}},
+			},
+		},
+		{
+			// Colemak: ';' sits where the US keyboard has 'p'.
+			description: "ctrl+shift chord on a layout symbol takes its shifted level",
+			events: action(on(press(ebiten.KeyP,
+				ebiten.KeyModControl, ebiten.KeyModShift), ';', ':')),
+			expectedEvents: []term.Event{
+				{Type: term.EventKey, Mod: term.ModCtrl, Ch: ':'},
+			},
+		},
+		{
+			// Nordic: '+' sits where the US keyboard has '-'.
+			description: "meta chord is named by the layout symbol",
+			events:      action(on(press(ebiten.KeyMinus, ebiten.KeyModSuper), '+', '?')),
+			expectedEvents: []term.Event{
+				{Type: term.EventKey, Mod: term.ModMeta, Ch: '+'},
+			},
+		},
+		{
+			// Nordic: '-' sits where the US keyboard has '/'.
+			description: "meta chord on the layout's minus key is not the US slash",
+			events:      action(on(press(ebiten.KeySlash, ebiten.KeyModSuper), '-', '_')),
+			expectedEvents: []term.Event{
+				{Type: term.EventKey, Mod: term.ModMeta, Ch: '-'},
+			},
+		},
+		{
+			// Nordic: '/' is Shift+7, so <alt-/> is reached as Alt+Shift+7.
+			description: "alt+shift chord on a digit takes the layout's shifted symbol",
+			events: action(on(press(ebiten.KeyDigit7,
+				ebiten.KeyModAlt, ebiten.KeyModShift), '7', '/')),
+			expectedEvents: []term.Event{
+				{Type: term.EventKey, Mod: term.ModAlt, Ch: '/', Raw: []byte{0x1b, '/'}},
+			},
+		},
+		{
+			// Nordic: '¨' sits where the US keyboard has ']'.
+			description: "chord on a non-ASCII layout character dispatches that character",
+			events:      action(on(press(ebiten.KeyBracketRight, ebiten.KeyModAlt), '¨', 0)),
+			expectedEvents: []term.Event{
+				{Type: term.EventKey, Mod: term.ModAlt, Ch: '¨',
+					Raw: append([]byte{0x1b}, "¨"...)},
+			},
+		},
+		{
+			// Nordic: '=' is Shift+0, not Shift+'='.
+			description: "shift+meta chord takes the layout's shifted level",
+			events: action(on(press(ebiten.KeyDigit0,
+				ebiten.KeyModSuper, ebiten.KeyModShift), '0', '=')),
+			expectedEvents: []term.Event{
+				{Type: term.EventKey, Mod: term.ModMeta, Ch: '='},
+			},
+		},
+		{
+			// Dvorak: X sits where the US keyboard has 'b'.
+			description: "alt chord on a dvorak letter follows the layout",
+			events:      action(on(press(ebiten.KeyB, ebiten.KeyModAlt), 'x', 'X')),
+			expectedEvents: []term.Event{
+				{Type: term.EventKey, Mod: term.ModAlt, Ch: 'x', Raw: []byte{0x1b, 'x'}},
+			},
+		},
+		{
+			description: "ctrl control byte follows the layout letter",
+			events:      action(on(press(ebiten.KeySemicolon, ebiten.KeyModControl), 'm', 'M')),
+			expectedEvents: []term.Event{
+				{Type: term.EventKey, Mod: term.ModCtrl, Ch: 'm', Raw: []byte{0x0d}},
+			},
+		},
+		{
+			description: "the layout character wins over the key enum",
+			events:      action(on(press(ebiten.KeyA, ebiten.KeyModControl), 'q', 'Q')),
+			expectedEvents: []term.Event{
+				{Type: term.EventKey, Mod: term.ModCtrl, Ch: 'q', Raw: []byte{0x11}},
+			},
+		},
+		{
+			description: "a printable key with no layout character falls back to the key enum",
+			events:      action(press(ebiten.KeySemicolon, ebiten.KeyModAlt)),
+			expectedEvents: []term.Event{
+				{Type: term.EventKey, Mod: term.ModAlt, Ch: ';', Raw: []byte{0x1b, ';'}},
+			},
+		},
+		{
+			description: "a key with no shifted level folds Shift onto its only character",
+			events: action(on(press(ebiten.KeyNumpad1,
+				ebiten.KeyModControl, ebiten.KeyModShift), '1', 0)),
+			expectedEvents: []term.Event{
+				{Type: term.EventKey, Mod: term.ModCtrl, Ch: '1'},
+			},
 		},
 	}
 
@@ -879,6 +1001,18 @@ func TestInputSourceOwnership(t *testing.T) {
 				expectedEvents: []term.Event{
 					{Key: term.KeySpace},
 					{Ch: ' '},
+				},
+			}},
+		},
+		{
+			// macOS composes Option chords into text. On AZERTY the key
+			// labelled M sits on the US semicolon and Option+M commits 'µ',
+			// which is the chord's own echo and must not reach the terminal.
+			description: "an alt chord named by the layout still consumes its own echo",
+			frames: []frame{{
+				events: action(on(press(ebiten.KeySemicolon, ebiten.KeyModAlt), 'm', 'M'), 'µ'),
+				expectedEvents: []term.Event{
+					{Mod: term.ModAlt, Ch: 'm'},
 				},
 			}},
 		},

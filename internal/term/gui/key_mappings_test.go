@@ -64,7 +64,7 @@ func expectedComb(key ebiten.Key, m term.Modifier) (term.KeyComb, bool) {
 	case ebiten.KeyContextMenu:
 		return term.KeyComb{Mod: m, Key: term.KeyMenu}, true
 	}
-	if base, shift, ok := keyToBaseAndShift(key); ok {
+	if base, shift, ok := keyEnumChars(key); ok {
 		ch, cmod := resolveCharKey(base, shift, m)
 		return term.KeyComb{Mod: cmod, Ch: ch}, true
 	}
