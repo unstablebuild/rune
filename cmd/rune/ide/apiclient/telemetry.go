@@ -390,3 +390,28 @@ type telemetrySystemPayload struct {
 	SystemRelease      string
 	SystemVersion      string
 }
+
+// ExampleUsagePayloadJSON returns a formatted JSON representation of a
+// representative usage telemetry payload for display in onboarding and documentation.
+func ExampleUsagePayloadJSON() string {
+	payload := telemetryUsagePayload{
+		Type:           "ClientUsage",
+		SID:            "s_abc123",
+		EditorMode:     "modal",
+		Opened:         12,
+		Closed:         8,
+		Edited:         45,
+		Flushed:        10,
+		WatchedChanges: 3,
+		Commands:       14,
+		Languages: map[string]int{
+			"go":   8,
+			"rust": 4,
+		},
+	}
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		panic(err)
+	}
+	return string(data)
+}

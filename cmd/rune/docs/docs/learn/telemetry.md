@@ -10,8 +10,10 @@ features and languages people actually use, and which platforms and
 versions need support. This page lists every field that leaves your
 machine, and how to stop all of it with one setting.
 
-Telemetry is on by default. Everything below is sent over HTTPS to
-`api.rune.build`.
+New installs are prompted to choose whether to enable telemetry during the
+first-run bootstrap wizard, and their choice is recorded in `config.yaml`.
+Existing configurations without an explicit setting default to enabled.
+Everything below is sent over HTTPS to `api.rune.build`.
 
 ## What Rune sends
 
