@@ -144,7 +144,7 @@ func newTestRPCBrowser(t *testing.T,
 		ex.syncCommandPrompt = true
 		err = ex.init(func(exoeditor.Reloader, schemeapi.Terminal) (text.Editor, error) { return ed, nil }, &testLoader{}, svc, notifications, uri,
 			vte.DefaultConfig(), plugin.DefaultBarConfig(),
-			nopPublishEvent, 0, clip, nil, nil, nil, nil, testPromptEditor(), opts...)
+			nopPublishEvent, 0, clip, nil, nil, nil, nil, testPromptEditor(), &sync.Mutex{}, opts...)
 		if err != nil {
 			return nil, nil, err
 		}

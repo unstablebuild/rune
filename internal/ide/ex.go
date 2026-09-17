@@ -121,6 +121,7 @@ type ex struct {
 	extensionsExecutor       *workspaceshell.Executor
 	storage                  storageapi.Service
 	workspaceURI             workspaceapi.URI
+	outOfRootTabs            *outOfRootWatcher
 	closed                   bool
 	home                     bool
 	reservoir                *vtereservoir.Facility
@@ -233,12 +234,13 @@ func newEx(
 	editorMode string,
 	editorAutoSave bool,
 	consoleCfg consoleConfig,
+	uiMu sync.Locker,
 	opts ...text.Option,
 ) (e *ex, err error) {
 	e = new(ex)
 	err = e.init(edFactory, m, storage, notifications, uri,
 		emulatorConfig, pluginBarConfig, publishEvent, initialVTECapacity, clip, macro,
-		dispatchOnPreview, tm, parser, promptEditor, opts...)
+		dispatchOnPreview, tm, parser, promptEditor, uiMu, opts...)
 	if err != nil {
 		// The async terminal's worker goroutine outlives a failed
 		// construction otherwise: nothing will ever call Close.
@@ -274,6 +276,7 @@ func (e *ex) init(
 	tm browser.TabManager,
 	parser syntaxapi.Parser,
 	promptEditor command.Editor,
+	uiMu sync.Locker,
 	opts ...text.Option,
 ) (err error) {
 	if promptEditor == nil {
@@ -387,6 +390,11 @@ func (e *ex) init(
 	e.tasks.SetFrameAttr(e.config.FrameAttr)
 	e.tasks.SetFocusFrameAttr(e.config.FocusFrameAttr)
 	e.comp.SubscribeWindow(e.tasks)
+	e.outOfRootTabs = newOutOfRootWatcher(e, m, uri, uiMu)
+	if !ed.IsExternal() {
+		// External editors watch their own files.
+		err = e.comp.SubscribeEvents(outOfRootTabEvents, e.outOfRootTabs)
+	}
 	return
 }
 
@@ -2931,6 +2939,7 @@ func (e *ex) Close() (ret error) {
 	if err := e.comp.Close(); err != nil {
 		ret = multierror.Append(ret, err)
 	}
+	e.outOfRootTabs.Close()
 	if e.reservoir != nil {
 		if err := e.reservoir.Close(); err != nil {
 			ret = multierror.Append(ret, err)

@@ -696,6 +696,7 @@ func (h *workspaceManagerHandler) init(
 		cfg.editorMode(),
 		cfg.editorAutoSave(),
 		cfg.consoleCfg(),
+		h.mu,
 		globalOpts...)
 	if err != nil {
 		return fmt.Errorf("new ex: %w", err)
@@ -1857,6 +1858,7 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 		cfg.editorMode(),
 		cfg.editorAutoSave(),
 		cfg.consoleCfg(),
+		h.mu,
 		textOpts...)
 	if err != nil {
 		if symbolDBCloser != nil {
