@@ -58,3 +58,8 @@ uv.lock
 !/deploy/rune-linux/
 !/deploy/rune-agent/
 !/deploy/fuzzy-search/
+
+# Local direnv environment for flake-based development
+.direnv/
+# `nix build` result link to nix package directory
+result

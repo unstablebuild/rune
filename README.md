@@ -36,6 +36,31 @@ https://github.com/user-attachments/assets/4ab84f7f-47c8-47af-9d32-7c69afd02669
 curl -fsSL https://rune.build/install.sh | sh
 ```
 
+### Nix
+
+Run Rune directly without installation:
+```bash
+nix run github:unstablebuild/rune
+```
+
+Install Rune into your user profile:
+```bash
+nix profile install github:unstablebuild/rune
+```
+
+Or add Rune to NixOS (`configuration.nix`) or Home Manager (`home.nix`) via flake inputs:
+```nix
+# In your system flake.nix: `inputs.rune-ide.url = "github:unstablebuild/rune";`
+environment.systemPackages = [
+  inputs.rune-ide.packages.${pkgs.system}.rune-ide
+];
+```
+
+Or build the binary locally into `./result/bin/rune`:
+```bash
+nix build
+```
+
 ## development
 
 ```bash
@@ -45,6 +70,18 @@ git clone git@github.com:unstablebuild/rune.git
 Then run:
 ```bash
 go run ./cmd/rune
+```
+
+### Nix and direnv
+
+Start a development shell with the Go toolchain and C libraries (`libGL`, `X11`, `wayland`, `alsa-lib`):
+```bash
+nix develop
+```
+
+If you use `direnv`, allow `.envrc` to load the shell environment automatically:
+```bash
+direnv allow
 ```
 
 To create a macOS application bundle:
