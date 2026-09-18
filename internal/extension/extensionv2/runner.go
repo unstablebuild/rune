@@ -241,6 +241,11 @@ func (s contextServerStream) Context() context.Context {
 func (r *Runner) newUnixListener(uri workspaceapi.URI) (ret net.Listener, err error) {
 	ctx := context.Background()
 	socket := r.socketPath(uri)
+	// Create the directory up front rather than on ENOENT: Windows reports a
+	// missing parent directory from bind(2) as WSAENETDOWN.
+	if err := os.MkdirAll(filepath.Dir(socket), 0766); err != nil {
+		return nil, fmt.Errorf("create socket dir: %w", err)
+	}
 	err = retry.Retry(ctx, retrySocketStrategy, func(context.Context) (bool, error) {
 		var cfg net.ListenConfig
 		ret, err = cfg.Listen(ctx, "unix", socket)
@@ -250,15 +255,6 @@ func (r *Runner) newUnixListener(uri workspaceapi.URI) (ret net.Listener, err er
 
 		if errors.Is(err, syscall.EACCES) {
 			return false, err
-		}
-
-		if errors.Is(err, syscall.ENOENT) { // a component of the path does not exist
-			mkdirErr := os.MkdirAll(filepath.Dir(socket), 0766)
-			if mkdirErr != nil {
-				err = fmt.Errorf("listen: %w", err)
-				return false, multierror.Append(err, mkdirErr)
-			}
-			return true, err
 		}
 
 		_ = os.Remove(socket)

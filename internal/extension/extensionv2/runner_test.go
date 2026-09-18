@@ -57,6 +57,26 @@ func TestWithServerInterceptorsAppendsToConfig(t *testing.T) {
 	assert.Len(t, cfg.extraUnaryInterceptors, 2)
 }
 
+func TestNewUnixListenerCreatesSocketDir(t *testing.T) {
+	t.Parallel()
+
+	dataDir := filepath.Join(t.TempDir(), "data")
+	r := &Runner{dataDir: dataDir}
+	uri, err := workspaceapi.ParseURI("file:///home/me/proj")
+	require.NoError(t, err)
+	require.Equal(t, filepath.Join(dataDir, "sockets"), filepath.Dir(r.socketPath(uri)),
+		"test data dir too long: the socket fell back to os.TempDir()")
+
+	listener, err := r.newUnixListener(uri)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = listener.Close() })
+
+	assert.Equal(t, r.socketPath(uri), listener.Addr().String())
+	info, err := os.Stat(filepath.Join(dataDir, "sockets"))
+	require.NoError(t, err)
+	assert.True(t, info.IsDir())
+}
+
 func TestRunnerSocketPath(t *testing.T) {
 	t.Parallel()
 
