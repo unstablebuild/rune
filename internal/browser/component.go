@@ -1011,7 +1011,46 @@ func (c *Component) SetFocus(win Window) Window {
 
 // Handle proxies events to either the underlying Tabs or WindowManager.
 func (c *Component) Handle(ev term.Event) (exit, handled bool) {
-	return c.union.Handle(ev)
+	exit, handled = c.union.Handle(ev)
+	if exit {
+		c.RemoveWindowContent(c.focus())
+		exit = false
+	}
+	return
+}
+
+func (c *Component) OnTabExit(uri workspaceapi.URI) bool {
+	for _, t := range c.buffers {
+		if t.uri.String() == uri.String() {
+			return c.RemoveTab(t)
+		}
+	}
+	var exited *browserWindow
+	c.wm.Iterate(func(w thandler.Window) {
+		if exited != nil {
+			return
+		}
+		content := w.Content()
+		for {
+			if bc, ok := content.(interface {
+				Content() browserapi.Handler
+			}); ok {
+				content = bc.Content()
+				continue
+			}
+			if u, ok := content.(interface {
+				URI() workspaceapi.URI
+			}); ok && u.URI().String() == uri.String() {
+				exited, _ = c.findWindow(w.ID())
+			}
+			break
+		}
+	})
+	if exited == nil {
+		return false
+	}
+	c.RemoveWindowContent(exited)
+	return true
 }
 
 // Cursor calls the underlying FrameUnion's Cursor.

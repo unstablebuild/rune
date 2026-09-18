@@ -51,6 +51,7 @@ type Component struct {
 	cfg       Config
 	pty       workspaceapi.Pty
 	watcher   workspaceapi.ProcessWatcher
+	tm        browser.TabManager
 	scroll    component.Scroll
 	ctx       context.Context
 	cancelCtx func()
@@ -116,6 +117,7 @@ func (t *Component) Init(
 ) error {
 	t.clipboard = cfg.Clipboard
 	t.watcher = cfg.Watcher
+	t.tm = tm
 	t.defAttr = cfg.Attributes
 	t.selectionAttr = cfg.SelectionAttributes
 	t.terminal = term
@@ -174,10 +176,19 @@ func (t *Component) triggerBell() {
 	}
 }
 
-// Run must be called in a separate goroutine to start processing incoming
-// data from the pty master.
+type TabExiter interface {
+	OnTabExit(uri workspaceapi.URI) bool
+}
+
 func (t *Component) Run(publisher browser.EventPublisher) error {
-	return t.run(publisher)
+	err := t.run(publisher)
+	if ex, ok := t.tm.(TabExiter); ok {
+		uri := t.uri
+		if !t.cfg.ScheduleNextTick(func() { ex.OnTabExit(uri) }) {
+			ex.OnTabExit(uri)
+		}
+	}
+	return err
 }
 
 // Title returns the Title of this Component.

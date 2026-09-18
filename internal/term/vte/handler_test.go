@@ -294,6 +294,60 @@ func TestHandlerPublishesEventOnPtyExit(t *testing.T) {
 			"further user input")
 }
 
+type tabExiterRecorder struct {
+	nopTabManager
+	mu     sync.Mutex
+	exited []workspaceapi.URI
+}
+
+func (r *tabExiterRecorder) OnTabExit(uri workspaceapi.URI) bool {
+	r.mu.Lock()
+	r.exited = append(r.exited, uri)
+	r.mu.Unlock()
+	return true
+}
+
+func (r *tabExiterRecorder) ExitedURIs() []workspaceapi.URI {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]workspaceapi.URI(nil), r.exited...)
+}
+
+func TestHandlerCallsTabExiterOnPtyExit(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	uri, err := workspaceapi.CurrentUserHostURI(os.TempDir())
+	require.NoError(t, err)
+	scheme, err := workspace.NewFileScheme(ctx, config.NopConfig(), uri)
+	require.NoError(t, err)
+	t.Cleanup(func() { scheme.Close() })
+
+	tm := &tabExiterRecorder{}
+	cfg := DefaultConfig()
+	cfg.WidthHint = 20
+	cfg.HeightHint = 10
+	cfg.CommandAndArgs = []string{"sh"}
+
+	handler, err := NewHandler(&exitWakePublisher{}, nopNotifications{}, scheme, scheme, tm, cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { handler.Close() })
+
+	handler.Resize(20, 10)
+
+	for _, b := range []byte("exit\n") {
+		handler.Handle(term.Event{Type: term.EventKey, Ch: rune(b), Raw: []byte{b}})
+	}
+
+	require.Eventually(t, func() bool {
+		uris := tm.ExitedURIs()
+		return len(uris) == 1 && uris[0].String() == handler.Component().URI().String()
+	}, 5*time.Second, 10*time.Millisecond,
+		"vte.Handler must ask its TabManager to drop it by URI when the pty child exits")
+}
+
 type exitWakePublisher struct {
 	mu      sync.Mutex
 	sawNone bool
