@@ -32,6 +32,68 @@ import (
 
 var _ workspace.FlusherCloser = (*editorFlusherCloser)(nil)
 
+// inflightFileOps tracks the saves and reloads of one file between the moment
+// the operation starts and the moment its result has been applied on the
+// event loop. That second edge is what an observer needs: until it passes,
+// the file's saved timestamp and dirty state still describe the world before
+// the operation, whichever caller started it.
+type inflightFileOps struct {
+	count int
+	after []func()
+}
+
+func (c *Component) beginFileOp(uri workspaceapi.URI) {
+	c.inflightMu.Lock()
+	defer c.inflightMu.Unlock()
+	ops := c.inflight[uri.String()]
+	if ops == nil {
+		ops = new(inflightFileOps)
+		c.inflight[uri.String()] = ops
+	}
+	ops.count++
+}
+
+// endFileOp closes out one operation. Deferred callbacks run only when the
+// result reached the event loop; a refused schedule means the UI is going
+// away, and running them on this goroutine would touch event-loop state from
+// the wrong thread.
+func (c *Component) endFileOp(uri workspaceapi.URI, applied bool) {
+	c.inflightMu.Lock()
+	ops := c.inflight[uri.String()]
+	if ops == nil {
+		c.inflightMu.Unlock()
+		return
+	}
+	if !applied {
+		ops.after = nil
+	}
+	ops.count--
+	if ops.count > 0 {
+		c.inflightMu.Unlock()
+		return
+	}
+	delete(c.inflight, uri.String())
+	c.inflightMu.Unlock()
+	for _, fn := range ops.after {
+		fn()
+	}
+}
+
+// AfterSettled defers fn until every in-flight save or reload for uri has
+// been applied on the event loop, and reports whether there was anything to
+// wait for. Callers that must not act on a half-applied save use the return
+// value to skip their own handling.
+func (c *Component) AfterSettled(uri workspaceapi.URI, fn func()) bool {
+	c.inflightMu.Lock()
+	defer c.inflightMu.Unlock()
+	ops := c.inflight[uri.String()]
+	if ops == nil {
+		return false
+	}
+	ops.after = append(ops.after, fn)
+	return true
+}
+
 // used to intercept calls to Close and Flush to dispatch
 // corresponding events to subscribers.
 type editorFlusherCloser struct {
@@ -67,12 +129,18 @@ func (c *editorFlusherCloser) OnDidEdit(
 	c.parent.setDirtyFileAttr(c.uri, c.buf, c.lastFlush)
 }
 
+// reloadVersion tells wrapAndDispatch to take the buffer version at
+// completion: a reload replaces the buffer with what is on disk, so the
+// version that ends up saved is only known once the worker is done.
+const reloadVersion = -1
+
 func (e *editorFlusherCloser) ForceFlush(ctx context.Context) (<-chan error, error) {
+	saved := e.buf.Version()
 	inner, err := e.fc.ForceFlush(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return e.wrapAndDispatch(inner, false, false), nil
+	return e.wrapAndDispatch(inner, false, saved), nil
 }
 
 func (e *editorFlusherCloser) LastFlush() time.Time {
@@ -80,11 +148,15 @@ func (e *editorFlusherCloser) LastFlush() time.Time {
 }
 
 func (e *editorFlusherCloser) Flush(ctx context.Context) (<-chan error, error) {
+	// The save writes the buffer as it is now, so this is the version it
+	// makes durable. Edits that land while it runs are not in it and must
+	// keep the file unflushed.
+	saved := e.buf.Version()
 	inner, err := e.fc.Flush(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return e.wrapAndDispatch(inner, false, false), nil
+	return e.wrapAndDispatch(inner, false, saved), nil
 }
 
 func (e *editorFlusherCloser) Reload(ctx context.Context) (<-chan error, error) {
@@ -94,42 +166,47 @@ func (e *editorFlusherCloser) Reload(ctx context.Context) (<-chan error, error) 
 		e.reloading = false
 		return nil, err
 	}
-	return e.wrapAndDispatch(inner, true, true), nil
+	return e.wrapAndDispatch(inner, true, reloadVersion), nil
 }
 
 func (e *editorFlusherCloser) wrapAndDispatch(
-	inner <-chan error, skipOnErr, isReload bool,
+	inner <-chan error, isReload bool, savedVersion int,
 ) <-chan error {
 	out := make(chan error, 1)
+	e.parent.beginFileOp(e.uri)
 	go debug.CapturePanicReport(func() {
 		err := <-inner
-		doDispatch := err == nil || !skipOnErr
-		if !doDispatch {
-			if isReload {
-				e.parent.config.ScheduleNextTick(func() {
-					e.reloading = false
-				})
+		applied := e.parent.config.ScheduleNextTick(func() {
+			// Nothing reached disk on failure, so the buffer is still
+			// unflushed and subscribers must not be told otherwise.
+			if err == nil {
+				_ = e.dispatchFlush(savedVersion)
 			}
-			out <- err
-			close(out)
-			return
-		}
-		e.parent.config.ScheduleNextTick(func() {
-			_ = e.dispatchFlush()
 			if isReload {
 				e.reloading = false
 			}
+			e.parent.endFileOp(e.uri, true)
 		})
+		if !applied {
+			e.parent.endFileOp(e.uri, false)
+		}
 		out <- err
 		close(out)
 	})
 	return out
 }
 
-func (e *editorFlusherCloser) dispatchFlush() error {
-	e.lastFlush = e.buf.Version()
+func (e *editorFlusherCloser) dispatchFlush(savedVersion int) error {
+	if savedVersion == reloadVersion {
+		savedVersion = e.buf.Version()
+	}
+	e.lastFlush = savedVersion
 	e.parent.log(log.TraceLevel, "flushed, new snapshot is at %d", e.lastFlush)
-	return e.parent.dispatchFlush(e.uri, e.h)
+	err := e.parent.dispatchFlush(e.uri, e.h)
+	// dispatchFlush clears the tab's dirty marker for the whole file, so
+	// raise it again when the buffer has moved past what was written.
+	e.parent.setDirtyFileAttr(e.uri, e.buf, e.lastFlush)
+	return err
 }
 
 func (e *editorFlusherCloser) Close() error {

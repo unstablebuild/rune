@@ -1540,6 +1540,95 @@ func TestRowScannerJoinsWrappedURLWithLaterCandidateOnTheSameRow(t *testing.T) {
 	}, got)
 }
 
+// A line can break on a character that ends a sentence in prose, and an
+// oauth redirect wrapping on the dot of a host is the common case. The
+// break says the address continues, so the dot is interior to it and
+// trimming it would both shorten the address and move its end off the
+// marker cell, losing every continuation row.
+func TestRowScannerJoinsWrappedURLBreakingOnPunctuation(t *testing.T) {
+	const width = 40
+	head := "xx api_url=https://rune-prod.us."
+	cells := pane(width, 0, head, "auth0.com/api/v2/ done")
+	cells[0][len(head)-1].Bytes = cell.WrapMarker
+
+	whole := "https://rune-prod.us.auth0.com/api/v2/"
+	got := new(rowScanner).scan(cells, nil)
+	assert.Equal(t, []linkSpan{
+		{y: 0, x0: 11, x1: len(head), url: whole},
+		{y: 1, x0: 0, x1: 17, url: whole},
+	}, got)
+}
+
+// Every row a link breaks on can break on punctuation, not just the
+// first, so no intermediate row may be trimmed either.
+func TestRowScannerJoinsWrappedURLBreakingOnPunctuationRepeatedly(t *testing.T) {
+	cells := markWrapped(pane(30, 0,
+		"https://rune.build/a,",
+		"b.c(d)e,f.g/h?i=j,k.",
+		"l.m/n",
+	), 0, 1)
+
+	whole := "https://rune.build/a,b.c(d)e,f.g/h?i=j,k.l.m/n"
+	got := new(rowScanner).scan(cells, nil)
+	assert.Equal(t, []linkSpan{
+		{y: 0, x0: 0, x1: 21, url: whole},
+		{y: 1, x0: 0, x1: 20, url: whole},
+		{y: 2, x0: 0, x1: 5, url: whole},
+	}, got)
+}
+
+// Only the end of the whole address belongs to the prose around it, so
+// the trim still applies once the continuations have been read.
+func TestRowScannerTrimsWrappedURLOnlyAtItsEnd(t *testing.T) {
+	cells := markWrapped(pane(30, 0, "https://rune.build/a.", "b/c."), 0)
+
+	whole := "https://rune.build/a.b/c"
+	got := new(rowScanner).scan(cells, nil)
+	assert.Equal(t, []linkSpan{
+		{y: 0, x0: 0, x1: 21, url: whole},
+		{y: 1, x0: 0, x1: 3, url: whole},
+	}, got)
+}
+
+// A link that breaks on punctuation before it has a host is still only a
+// link once the continuation supplies one.
+func TestRowScannerJoinsWrappedURLWithHostOnTheContinuation(t *testing.T) {
+	cells := markWrapped(pane(30, 0, "https://", "rune.build/a"), 0)
+
+	whole := "https://rune.build/a"
+	got := new(rowScanner).scan(cells, nil)
+	assert.Equal(t, []linkSpan{
+		{y: 0, x0: 0, x1: 8, url: whole},
+		{y: 1, x0: 0, x1: 12, url: whole},
+	}, got)
+}
+
+// An oauth login URL is long enough to break three times. The rows and
+// marker column below are what the terminal emulator produces for it in
+// a 103 column pane, so the whole address has to survive the join.
+func TestRowScannerJoinsWrappedURLAcrossFourRows(t *testing.T) {
+	const width, margin = 110, 102
+	rows := []string{
+		"https://auth.rune.build/authorize?access_type=offline&client_id=XHBpJIm3q6PYazpxZMAhcwxAuR5Ks9B7&code_c",
+		"hallenge=82mRxm5ftn_YTsr2kc0-imEjqLl9Q07b-gpFpb3z2QI&code_challenge_method=S256&redirect_uri=http%3A%2F",
+		"%2F127.0.0.1%3A11524%2Fo%2Foauth2%2Fredirect&response_type=code&scope=offline_access+openid&state=435f9",
+		"295-a571-4f50-bf70-7b00cbe5e44c",
+	}
+	cells := pane(width, 0, rows...)
+	for _, y := range []int{0, 1, 2} {
+		cells[y][margin].Bytes = cell.WrapMarker
+	}
+
+	whole := strings.Join(rows, "")
+	got := new(rowScanner).scan(cells, nil)
+	assert.Equal(t, []linkSpan{
+		{y: 0, x0: 0, x1: margin + 1, url: whole},
+		{y: 1, x0: 0, x1: margin + 1, url: whole},
+		{y: 2, x0: 0, x1: margin + 1, url: whole},
+		{y: 3, x0: 0, x1: len(rows[3]), url: whole},
+	}, got)
+}
+
 // benchWrappedGrid builds a frame whose links overflow a pane and carry
 // on across rows, so the join path is measured instead of skipped. Rows
 // come in groups of three: a head and a middle that both overflow, then

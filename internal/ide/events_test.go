@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -588,7 +589,7 @@ func TestMarkdownViewReload(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			var mu sync.Mutex
 			schedule, drain := newTestScheduler(t, &mu)
-			x := newExForEventTestingWithScheduler(t, schedule)
+			x := newExForEventTestingWithScheduler(t, schedule).ex
 			drain()
 			uri, err := x.workspace.URI("README.md")
 			require.NoError(t, err)
@@ -638,7 +639,8 @@ func TestHandleFSChange_NoPromptForSecondWriteDuringReload(t *testing.T) {
 	var mu sync.Mutex
 	ignores := vctrl.NopMatcher(false)
 
-	x := newExForEventTesting(t, &mu)
+	harness := newEventTestEx(t, &mu)
+	x := harness.ex
 	testURI, err := x.workspace.URI("a")
 	require.NoError(t, err)
 
@@ -692,7 +694,286 @@ func TestHandleFSChange_NoPromptForSecondWriteDuringReload(t *testing.T) {
 	// Final sanity: drain everything and confirm the buffer
 	// reflects the latest disk content.
 	x.waitInflight()
+	harness.scheduler.Flush(&mu)
+	x.waitInflight()
+	harness.scheduler.Flush(&mu)
 	assertBufferContent(t, x, testURI, "xyz")
+}
+
+type pausedCreateScheme struct {
+	schemeapi.Scheme
+	path    string
+	touched chan struct{}
+	release chan struct{}
+}
+
+func (s *pausedCreateScheme) OpenFile(path string, flag int, mode os.FileMode) (workspaceapi.File, error) {
+	f, err := s.Scheme.OpenFile(path, flag, mode)
+	if err == nil && path == s.path && flag&os.O_EXCL != 0 {
+		close(s.touched)
+		<-s.release
+	}
+	return f, err
+}
+
+// The test delivers watcher events explicitly at the save's intermediate states.
+func (s *pausedCreateScheme) Watch(string, chan<- schemeapi.EventInfo, ...schemeapi.Event) (int, error) {
+	return 0, nil
+}
+
+func (s *pausedCreateScheme) StopWatch(int) error { return nil }
+
+type pausedRenameScheme struct {
+	pausedCreateScheme
+}
+
+func (s *pausedRenameScheme) Rename(oldPath, newPath string) error {
+	if err := s.Scheme.Rename(oldPath, newPath); err != nil {
+		return err
+	}
+	if newPath == s.path {
+		close(s.touched)
+		<-s.release
+	}
+	return nil
+}
+
+func TestHandleFSChange_ExternalEditBetweenSaveRenameAndReopen(t *testing.T) {
+	cfg := defaultConfigWithWrap(false)
+	mu, sched, drain := buildTestSchedulerForCfg(t, &cfg)
+	manager := workspace.NewManager(config.NopConfig(), sched)
+	require.NoError(t, manager.RegisterScheme(workspace.MemoryScheme, workspace.NewMemoryScheme))
+	dir := t.TempDir()
+	uri, err := workspaceapi.ParseURI("file://" + dir)
+	require.NoError(t, err)
+	path := filepath.Join(dir, "dakar.md")
+	require.NoError(t, os.WriteFile(path, []byte("original\n"), 0o644))
+	s := &pausedRenameScheme{pausedCreateScheme: pausedCreateScheme{
+		path: "dakar.md", touched: make(chan struct{}), release: make(chan struct{}),
+	}}
+	require.NoError(t, manager.RegisterScheme(workspace.FileScheme,
+		func(ctx context.Context, cfg config.Config, root workspaceapi.URI) (schemeapi.Scheme, error) {
+			base, err := workspace.NewFileScheme(ctx, cfg, root)
+			if root.Equal(uri) {
+				s.Scheme = base
+				return s, err
+			}
+			return base, err
+		}))
+	m := newTestWorkspaceManagerHandlerWithManager(t, manager, mu, drain, uri, cfg)
+	t.Cleanup(func() { require.NoError(t, m.Close()) })
+	unblock := sync.OnceFunc(func() { close(s.release) })
+	t.Cleanup(unblock)
+	h := newSafeHandler(m)
+	h.Resize(30, 9)
+	h.Handle(term.Event{Type: term.EventKey, Mod: term.ModCtrl, Ch: '\\'})
+	feedLiteral(t, h, "edit dakar.md")
+	h.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
+	feedLiteral(t, h, "isaved ")
+	h.Handle(term.Event{Type: term.EventKey, Key: term.KeyEsc})
+	x := m.focusEx()
+	file, err := x.workspace.URI("dakar.md")
+	require.NoError(t, err)
+	m.locked(func() {
+		_, tab, ok := x.focusTab()
+		require.True(t, ok)
+		require.NoError(t, x.flusher.flushAndThen(file, tab, false, nil))
+	})
+	select {
+	case <-s.touched:
+	case <-time.After(5 * time.Second):
+		t.Fatal("save did not rename the swap file")
+	}
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, "saved original\n", string(data))
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, []byte("external update\n"), 0o644))
+	// Avoid relying on filesystem timestamp resolution to distinguish the writes.
+	modified := info.ModTime().Add(time.Second)
+	require.NoError(t, os.Chtimes(path, modified, modified))
+	dispatchFilesystemEvent(x, mu, vctrl.NopMatcher(false), testEventInfo{e: schemeapi.Write, u: file})
+	unblock()
+	m.quiesce()
+	m.locked(func() {
+		focused, _, ok := x.focusTab()
+		require.True(t, ok, "the completed save should reload rather than prompt")
+		require.Equal(t, file, focused)
+		assertBufferContent(t, x, file, "external update")
+	})
+	data, err = os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, "external update\n", string(data))
+}
+
+func TestHandleFSChangeDuringOwnSave(t *testing.T) {
+	t.Run("started by the command layer", func(t *testing.T) {
+		testFSChangeDuringOwnSave(t, false)
+	})
+	// Auto-save and the extension RPC flush the tab straight through
+	// text.Component, so a watcher rule that only knows about saves the ex
+	// command layer started would leave those callers unprotected.
+	t.Run("started outside the command layer", func(t *testing.T) {
+		testFSChangeDuringOwnSave(t, true)
+	})
+}
+
+func testFSChangeDuringOwnSave(t *testing.T, directSave bool) {
+	t.Helper()
+	cfg := defaultConfigWithWrap(false)
+	mu, sched, drain := buildTestSchedulerForCfg(t, &cfg)
+	manager := workspace.NewManager(config.NopConfig(), sched)
+	uri, err := workspaceapi.ParseURI("memory:///project")
+	require.NoError(t, err)
+	s := &pausedCreateScheme{
+		path: "dakar.md", touched: make(chan struct{}), release: make(chan struct{}),
+	}
+	require.NoError(t, manager.RegisterScheme(workspace.MemoryScheme,
+		func(ctx context.Context, cfg config.Config, root workspaceapi.URI) (schemeapi.Scheme, error) {
+			base, err := workspace.NewMemoryScheme(ctx, cfg, root)
+			if root.Equal(uri) {
+				s.Scheme = base
+				return s, err
+			}
+			return base, err
+		}))
+	m := newTestWorkspaceManagerHandlerWithManager(t, manager, mu, drain, uri, cfg)
+	t.Cleanup(func() { require.NoError(t, m.Close()) })
+	unblock := sync.OnceFunc(func() { close(s.release) })
+	t.Cleanup(unblock)
+	h := newSafeHandler(m)
+	h.Resize(30, 9)
+	h.Handle(term.Event{Type: term.EventKey, Mod: term.ModCtrl, Ch: '\\'})
+	feedLiteral(t, h, "edit dakar.md")
+	h.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
+	feedLiteral(t, h, "igentleman")
+	h.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
+	feedLiteral(t, h, "driver")
+	h.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
+	feedLiteral(t, h, "gentleman")
+	h.Handle(term.Event{Type: term.EventKey, Key: term.KeyEsc})
+
+	x := m.focusEx()
+	file, err := x.workspace.URI("dakar.md")
+	require.NoError(t, err)
+	m.locked(func() {
+		_, tab, ok := x.focusTab()
+		require.True(t, ok)
+		if directSave {
+			_, err := x.comp.FlushTab(context.Background(), tab)
+			require.NoError(t, err)
+			return
+		}
+		require.NoError(t, x.flusher.flushAndThen(file, tab, false, nil))
+	})
+	select {
+	case <-s.touched:
+	case <-time.After(5 * time.Second):
+		t.Fatal("save did not create the file")
+	}
+	dispatchFilesystemEvent(x, mu, vctrl.NopMatcher(false), testEventInfo{e: schemeapi.Create, u: file})
+	m.locked(func() {
+		focused, _, ok := x.focusTab()
+		require.True(t, ok, "an own-save event must not steal focus with a conflict prompt")
+		require.Equal(t, file, focused)
+	})
+	unblock()
+	m.quiesce()
+	feedLiteral(t, h, "/gentleman")
+	h.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
+	m.locked(func() {
+		require.NoError(t, x.dispatchCommand(text.CommandLocationJump, "next", "search"))
+		_, ed, ok := x.handlerInFocus()
+		require.True(t, ok)
+		require.Equal(t, term.Coordinates{Y: 2}, ed.CursorAtScroll())
+	})
+}
+
+// pausedReopenScheme blocks the reload worker's reopen of path so
+// further watcher events can arrive while that reload is in flight.
+type pausedReopenScheme struct {
+	schemeapi.Scheme
+	path    string
+	opens   atomic.Int32
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *pausedReopenScheme) OpenFile(path string, flag int, mode os.FileMode) (workspaceapi.File, error) {
+	// The first plain open is the tab's own; the second is the reload's.
+	if path == s.path && flag&os.O_EXCL == 0 && s.opens.Add(1) == 2 {
+		close(s.entered)
+		<-s.release
+	}
+	return s.Scheme.OpenFile(path, flag, mode)
+}
+
+// TestHandleFSChange_NoPromptForWriteBurstDuringReload covers the conflict
+// prompt that opened on a clean tab when an external tool rewrote the file
+// several times in quick succession (an agent applying a patch and then
+// formatting it, git replaying commits). The second Write arrived while the
+// first reload was still reopening the file; its own reload attempt was
+// refused with ErrFlushInProgress, and the refusal cleared the reloading
+// flag the first reload still relied on. That reload's buffer replacement
+// then marked the tab dirty, so a third Write found a "dirty" tab and asked
+// the user which changes to discard.
+func TestHandleFSChange_NoPromptForWriteBurstDuringReload(t *testing.T) {
+	var mu sync.Mutex
+	ignores := vctrl.NopMatcher(false)
+	s := &pausedReopenScheme{
+		path: "a", entered: make(chan struct{}), release: make(chan struct{}),
+	}
+	release := sync.OnceFunc(func() { close(s.release) })
+	t.Cleanup(release)
+	harness := newExForEventTestingWithScheme(t, &mu, func(base schemeapi.Scheme) schemeapi.Scheme {
+		s.Scheme = base
+		return s
+	})
+	x := harness.ex
+	testURI, err := x.workspace.URI("a")
+	require.NoError(t, err)
+	createOpenWriteFile(t, x, testURI, "abc")
+
+	dispatchFilesystemEvent(x, &mu, ignores, testEventInfo{e: schemeapi.Write, u: testURI})
+	select {
+	case <-s.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first reload did not reopen the file")
+	}
+
+	writeFileNewer(t, testURI, "def")
+	dispatchFilesystemEvent(x, &mu, ignores, testEventInfo{e: schemeapi.Write, u: testURI})
+
+	// Let the first reload replace the buffer; its dispatchFlush stays
+	// queued on the host scheduler, which is the window the prompt opened in.
+	release()
+	x.waitInflight()
+
+	writeFileNewer(t, testURI, "xyz")
+	dispatchFilesystemEvent(x, &mu, ignores, testEventInfo{e: schemeapi.Write, u: testURI})
+	assertNoPrompt(t, x, &mu)
+
+	for range 3 {
+		harness.scheduler.Flush(&mu)
+		x.waitInflight()
+	}
+	dirty, ok := x.comp.IsDirty(testURI)
+	require.True(t, ok)
+	assert.False(t, dirty, "no user edit was made, so the tab must not be dirty")
+	assertBufferContent(t, x, testURI, "xyz")
+}
+
+// writeFileNewer writes content and gives the file a strictly newer mtime,
+// so the write cannot be mistaken for an echo of the previous one on
+// filesystems with coarse timestamps.
+func writeFileNewer(t *testing.T, file workspaceapi.URI, content string) {
+	t.Helper()
+	info, err := os.Stat(file.Path())
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(file.Path(), []byte(content), 0o666))
+	bumped := info.ModTime().Add(10 * time.Millisecond)
+	require.NoError(t, os.Chtimes(file.Path(), bumped, bumped))
 }
 
 func assertFileContent(t *testing.T, x *ex, file workspaceapi.URI, content string) {
@@ -741,19 +1022,41 @@ func assertNoPrompt(t *testing.T, x *ex, mu sync.Locker) {
 // dispatchFilesystemEvent) so the async reload worker's buffer
 // mutations cannot race in-flight event handling.
 func newExForEventTesting(t *testing.T, mu sync.Locker) *ex {
+	return newEventTestEx(t, mu).ex
+}
+
+func newEventTestEx(t *testing.T, mu sync.Locker) testEx {
+	t.Helper()
+	return newExForEventTestingWithScheme(t, mu, nil)
+}
+
+// newExForEventTestingWithScheme is newEventTestEx with the workspace's
+// file scheme passed through wrap, so a test can intercept file operations.
+func newExForEventTestingWithScheme(
+	t *testing.T, mu sync.Locker, wrap func(schemeapi.Scheme) schemeapi.Scheme,
+) testEx {
+	t.Helper()
 	lockedSchedule := func(fn func()) bool {
 		mu.Lock()
 		defer mu.Unlock()
 		fn()
 		return true
 	}
-	return newExForEventTestingWithScheduler(t, lockedSchedule)
+	return newExForEventTestingWithSchedulerAndScheme(t, lockedSchedule, wrap)
 }
 
 func newExForEventTestingWithScheduler(
 	t *testing.T,
 	schedule func(func()) bool,
-) *ex {
+) testEx {
+	return newExForEventTestingWithSchedulerAndScheme(t, schedule, nil)
+}
+
+func newExForEventTestingWithSchedulerAndScheme(
+	t *testing.T,
+	schedule func(func()) bool,
+	wrap func(schemeapi.Scheme) schemeapi.Scheme,
+) testEx {
 	ctx := context.Background()
 	opts := []text.Option{
 		text.WithCommandKey(testCommandKey),
@@ -770,7 +1073,11 @@ func newExForEventTestingWithScheduler(
 	fileScheme, err := workspace.NewFileScheme(ctx, config.NopConfig(), uri)
 	require.NoError(t, err)
 
-	workspace := workspace.NewSchemeWorkspace(uri, fileScheme, schedule)
+	var scheme schemeapi.Scheme = fileScheme
+	if wrap != nil {
+		scheme = wrap(scheme)
+	}
+	workspace := workspace.NewSchemeWorkspace(uri, scheme, schedule)
 	emulatorConfig := vte.DefaultConfig()
 	emulatorConfig.ScheduleNextTick = schedule
 
@@ -782,7 +1089,7 @@ func newExForEventTestingWithScheduler(
 		require.NoError(t, fileScheme.Close())
 	})
 
-	return e.ex
+	return e
 }
 
 type testEventInfo struct {

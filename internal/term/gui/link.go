@@ -113,11 +113,12 @@ func (s *rowScanner) joinWrapped(
 			break
 		}
 	}
-	if last == first {
-		return dst, y
-	}
-
 	trimmed := trimURL(s.wrapped)
+	if !hasHost(trimmed) {
+		// The run reached the margin on nothing but its scheme and the
+		// rows below it did not carry a host after all.
+		return dst[:first], y
+	}
 	// Trimming drops nothing but ASCII punctuation, which never
 	// continues a grapheme cluster and so always had a cell to itself.
 	dst[last].x1 -= len(s.wrapped) - len(trimmed)
@@ -136,10 +137,15 @@ func (s *rowScanner) joinWrapped(
 // copy of the row, so prose never reaches the scratch buffer: it is only
 // touched once a scheme is found.
 func (s *rowScanner) scanRow(y int, row []term.Cell, dst []linkSpan) []linkSpan {
+	// A run that ends on the wrap marker is half an address, so it is
+	// appended raw and left for joinWrapped to finish. Only the last
+	// span of a row can still be waiting: anything matched after it
+	// proves the join will never reach it.
+	pending := -1
 	for x := 0; x < len(row); {
 		found := schemeStart(row[x:])
 		if found < 0 {
-			return dst
+			break
 		}
 		x += found
 
@@ -160,8 +166,18 @@ func (s *rowScanner) scanRow(y int, row []term.Cell, dst []linkSpan) []linkSpan 
 		for i := x; i < end; i++ {
 			s.text = appendCluster(s.text, &row[i])
 		}
+
+		if wrapMarked(row, end) {
+			dst = s.settle(row, dst, pending)
+			dst = append(dst, linkSpan{y: y, x0: x, x1: end, url: string(s.text)})
+			pending = len(dst) - 1
+			x = end
+			continue
+		}
 		trimmed := trimURL(s.text)
 		if hasHost(trimmed) {
+			dst = s.settle(row, dst, pending)
+			pending = -1
 			// Trimming only ever drops ASCII punctuation, which never
 			// continues a cluster and so always had a cell to itself.
 			dst = append(dst, linkSpan{
@@ -173,6 +189,26 @@ func (s *rowScanner) scanRow(y int, row []term.Cell, dst []linkSpan) []linkSpan 
 		}
 		x = end
 	}
+	return dst
+}
+
+// settle finishes a span left raw for a join that the rest of the row
+// has just ruled out, reading its address back from the cells because
+// the scratch buffer has moved on to the next match.
+func (s *rowScanner) settle(row []term.Cell, dst []linkSpan, i int) []linkSpan {
+	if i < 0 {
+		return dst
+	}
+	s.wrapped = s.wrapped[:0]
+	for x := dst[i].x0; x < dst[i].x1; x++ {
+		s.wrapped = appendCluster(s.wrapped, &row[x])
+	}
+	trimmed := trimURL(s.wrapped)
+	if !hasHost(trimmed) {
+		return dst[:i]
+	}
+	dst[i].x1 -= len(s.wrapped) - len(trimmed)
+	dst[i].url = string(trimmed)
 	return dst
 }
 

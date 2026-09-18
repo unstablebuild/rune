@@ -86,6 +86,9 @@ type Component struct {
 	editors         map[string]Handler
 	fileRegistry    FileCommandRegistry
 	streamingLoads  sync.WaitGroup
+
+	inflightMu sync.Mutex
+	inflight   map[string]*inflightFileOps
 }
 
 // NewComponent allocates storage for a new Component and initializes it.
@@ -261,6 +264,7 @@ func (c *Component) Init(
 	c.cmdSubscribers = make(map[string]commandAll)
 	c.replSubscribers = make(map[string]replCommandAll)
 	c.editors = make(map[string]Handler)
+	c.inflight = make(map[string]*inflightFileOps)
 
 	// validate that config aliases are not recursive
 	return ValidateCommandAliases(c.config.CommandAliases)

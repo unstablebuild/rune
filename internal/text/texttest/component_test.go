@@ -2830,6 +2830,76 @@ func TestReload(t *testing.T) {
 	})
 }
 
+// TestDirtyStateAfterFlush covers what an observer sees once a save settles.
+// The filesystem watcher asks whether a file has unflushed changes at exactly
+// that moment to decide between reloading it and prompting about a conflict,
+// so a tab that claims to be clean while the buffer differs from disk sends it
+// down the wrong branch and silently discards the user's work.
+func TestDirtyStateAfterFlush(t *testing.T) {
+	resource1, err := workspaceapi.ParseURI("file:///a")
+	require.NoError(t, err)
+
+	t.Run("a failed save leaves the tab dirty", func(t *testing.T) {
+		ctx := context.Background()
+		c, testLoader := newTestComponent(t, NopEditor())
+		win, err := c.Focus()
+		require.NoError(t, err)
+		var flushErr error
+		testLoader.flusherCloser = &testFlusherCloser{
+			flushFn: func() error { return flushErr },
+		}
+
+		h, err := c.OpenFileTab(resource1, true)
+		require.NoError(t, err)
+		require.NoError(t, win.SetContent(h))
+
+		ed, err := c.Editor(resource1)
+		require.NoError(t, err)
+		_, _, _ = ed.CellEditor().Edit(ctx, term.Coordinates{}, term.Coordinates{}, "ABC")
+		dirty, ok := c.IsDirty(resource1)
+		require.True(t, ok)
+		require.True(t, dirty)
+
+		flushErr = workspaceapi.ErrStaleData
+		require.ErrorIs(t, awaitErr(c.Flush(ctx, win)), workspaceapi.ErrStaleData)
+
+		dirty, ok = c.IsDirty(resource1)
+		require.True(t, ok)
+		assert.True(t, dirty, "a save that failed must not report the buffer as saved")
+	})
+
+	t.Run("an edit during a save leaves the tab dirty", func(t *testing.T) {
+		ctx := context.Background()
+		c, testLoader := newTestComponent(t, NopEditor())
+		win, err := c.Focus()
+		require.NoError(t, err)
+		var editDuringSave func()
+		testLoader.flusherCloser = &testFlusherCloser{
+			// The save writes the buffer as it was when the flush started; an
+			// edit that lands while the disk write is in flight is not in it.
+			flushFn: func() error {
+				editDuringSave()
+				return nil
+			},
+		}
+
+		h, err := c.OpenFileTab(resource1, true)
+		require.NoError(t, err)
+		require.NoError(t, win.SetContent(h))
+
+		ed, err := c.Editor(resource1)
+		require.NoError(t, err)
+		editDuringSave = func() {
+			_, _, _ = ed.CellEditor().Edit(ctx, term.Coordinates{}, term.Coordinates{}, "ABC")
+		}
+		require.NoError(t, awaitErr(c.Flush(ctx, win)))
+
+		dirty, ok := c.IsDirty(resource1)
+		require.True(t, ok)
+		assert.True(t, dirty, "an edit the save did not write must stay unflushed")
+	})
+}
+
 // TestReloadClampsStaleCursor guards the editorFlusherCloser reload seam: when a
 // reload replaces the buffer with a shorter file, a caret left on a now-missing
 // row must be pulled back into bounds before any row-indexed buffer access runs.

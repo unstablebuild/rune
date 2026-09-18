@@ -108,6 +108,17 @@ func handleFSChange(ex *ex, flag schemeapi.Event, uri workspaceapi.URI) {
 		return
 	}
 
+	// A save can emit Create/Write/Rename before publishing its final mtime.
+	// Recheck after completion rather than treating our intermediate state as
+	// an external edit, or dropping a real external change that arrived during it.
+	if ex.comp.AfterSettled(uri, func() {
+		if current, ok := ex.comp.Resource(uri); !ex.closed && ok && current == t {
+			handleFSChange(ex, flag, uri)
+		}
+	}) {
+		return
+	}
+
 	var modTime time.Time
 	lastFlush, _ := ex.comp.LastFlush(t)
 	info, err := ex.workspace.Stat(uri.Path())

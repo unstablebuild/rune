@@ -175,14 +175,21 @@ func (s *Server) SubscribeCommand(srv textrpc.Editor_SubscribeCommandServer) err
 		s.editor.Unlock()
 		return fmt.Errorf("unsubscribe existing command %q: %w", man.Name, uerr)
 	}
-	// NOTE this unlock here causes a race towards the first SendMsg.
-	// In practice, this is not a problem, since for a command to be dispatched
-	// the user needs to type it first, which gives plenty of time for this
-	// goroutine to proceed and schedule the response below via SendMsg.
 	err = s.editor.SubscribeCommand(man, clientStream)
+	if err != nil {
+		s.editor.Unlock()
+		return err
+	}
+	// The client takes the first message on the stream as the subscribe
+	// response. Dispatches run under the editor lock, so sending while it
+	// is still held is what keeps a dispatch that lands the moment the
+	// command becomes visible from overtaking the response.
+	resp := textrpc.SubscribeCommandResponse{}
+	err = clientStream.send(&textrpc.ServerCommandMessage{
+		Type: textrpc.ServerCommandMessage_Response, Response: &resp})
 	s.editor.Unlock()
 	if err != nil {
-		return err
+		return fmt.Errorf("send subscribe command response: %w", err)
 	}
 
 	go debug.CapturePanicReport(func() {
@@ -203,13 +210,6 @@ func (s *Server) SubscribeCommand(srv textrpc.Editor_SubscribeCommandServer) err
 			}
 		}
 	})
-
-	resp := textrpc.SubscribeCommandResponse{}
-	respMsg := textrpc.ServerCommandMessage{
-		Type: textrpc.ServerCommandMessage_Response, Response: &resp}
-	if err := srv.SendMsg(&respMsg); err != nil {
-		return fmt.Errorf("send bar install response: %w", err)
-	}
 
 	err = clientStream.receiveMessages()
 	cancelStream()
@@ -254,18 +254,18 @@ func (s *Server) SubscribeREPLCommand(srv textrpc.Editor_SubscribeREPLCommandSer
 		return fmt.Errorf("unregister existing repl command %q: %w", man.Name, uerr)
 	}
 	err = s.editor.RegisterREPLCommand(man, clientStream)
-	s.editor.Unlock()
 	if err != nil {
+		s.editor.Unlock()
 		return err
 	}
-
 	resp := textrpc.SubscribeREPLCommandResponse{}
-	respMsg := textrpc.ServerREPLCommandMessage{
+	err = clientStream.send(&textrpc.ServerREPLCommandMessage{
 		Type:     textrpc.ServerREPLCommandMessage_Response,
 		Response: &resp,
-	}
-	if err := srv.SendMsg(&respMsg); err != nil {
-		return fmt.Errorf("send repl install response: %w", err)
+	})
+	s.editor.Unlock()
+	if err != nil {
+		return fmt.Errorf("send subscribe repl command response: %w", err)
 	}
 
 	return clientStream.receiveMessages()

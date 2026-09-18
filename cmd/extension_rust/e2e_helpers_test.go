@@ -18,7 +18,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -120,7 +119,11 @@ func initRustAnalyzer(t *testing.T, raBin string, openFiles []string) *rustEnvE2
 	ready := make(chan struct{})
 	var once sync.Once
 	cb := &raCallback{
-		onProgress: readyOnCachePrimed(&once, ready),
+		onServerStatus: func(s serverStatus) {
+			if s.Quiescent && s.Health == "ok" {
+				once.Do(func() { close(ready) })
+			}
+		},
 	}
 	cfg := idelsp.Config{MaxRetries: 1, Callback: cb, WorkDoneProgress: true}
 
@@ -152,7 +155,11 @@ func initRustAnalyzer(t *testing.T, raBin string, openFiles []string) *rustEnvE2
 	}
 
 	env := &rustEnvE2E{mgr: mgr, cb: cb, dir: dir, fileURIs: fileURIs}
-	waitRustAnalyzerReady(t, ready, mgr, env)
+	select {
+	case <-ready:
+	case <-time.After(120 * time.Second):
+		t.Fatal("rust-analyzer did not become quiescent")
+	}
 	t.Cleanup(func() { require.NoError(t, mgr.Close()) })
 
 	env.simulateEditorEvents()
@@ -339,77 +346,6 @@ func parseTestURI(t *testing.T, fileURI string) workspaceapi.URI {
 	u, err := workspaceapi.ParseURI(fileURI)
 	require.NoError(t, err)
 	return u
-}
-
-// readyOnCachePrimed closes ready when rust-analyzer's cachePriming
-// progress reports "end". rust-analyzer only computes assists once the
-// crate is indexed, and it emits several earlier progress sequences
-// (Fetching, Building CrateGraph, Roots Scanned) whose "end" fires before
-// the project is ready, so the token must be matched explicitly.
-func readyOnCachePrimed(once *sync.Once, ready chan struct{}) func(semanticapi.ProgressParams) {
-	return func(p semanticapi.ProgressParams) {
-		if p.Token.StringValue != "rustAnalyzer/cachePriming" {
-			return
-		}
-		var v struct {
-			Kind string `json:"kind"`
-		}
-		if json.Unmarshal(p.Value, &v) != nil {
-			return
-		}
-		if v.Kind == "end" {
-			once.Do(func() { close(ready) })
-		}
-	}
-}
-
-// waitRustAnalyzerReady blocks until rust-analyzer has primed its cache,
-// which is when assists first become available. It waits for the
-// cachePriming progress "end" (fed through the callback), then confirms
-// the server actually answers assists at a known extractable position to
-// absorb the brief window between the end signal and the first successful
-// codeAction.
-func waitRustAnalyzerReady(
-	t *testing.T, ready <-chan struct{}, mgr *idelsp.Manager, env *rustEnvE2E,
-) {
-	t.Helper()
-	select {
-	case <-ready:
-	case <-time.After(120 * time.Second):
-		t.Fatal("rust-analyzer did not finish cache priming")
-	}
-
-	var fileURI string
-	for _, u := range env.fileURIs {
-		fileURI = u
-		break
-	}
-	if fileURI == "" {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	for {
-		results, err := mgr.CodeAction(ctx, semanticapi.CodeActionParams{
-			TextDocument: semanticapi.TextDocumentIdentifier{URI: fileURI},
-			Range: semanticapi.Range{
-				Start: semanticapi.Position{Line: 1, Character: 4},
-				End:   semanticapi.Position{Line: 1, Character: 4},
-			},
-			Context: semanticapi.CodeActionContext{
-				Diagnostics: []semanticapi.Diagnostic{},
-				TriggerKind: semanticapi.CodeActionTriggerKindInvoked,
-			},
-		})
-		if err == nil && len(results) > 0 {
-			return
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(200 * time.Millisecond):
-		}
-	}
 }
 
 // stubPkgManager implements idelsp.PkgManager, resolving the language

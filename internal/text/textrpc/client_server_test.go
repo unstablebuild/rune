@@ -820,6 +820,86 @@ func TestClientServerIntegration(t *testing.T) {
 		assert.Equal(t, "ok", renderResponsiveString(out[0], 80))
 	})
 
+	// A dispatcher that takes the editor lock the moment the server releases
+	// it after registering the command (xsandbox's expect_command +
+	// invoke_command, or a keystroke landing on the event loop) must still
+	// see the subscribe response on the wire before its own dispatch.
+	t.Run("dispatch right after registration follows the subscribe response", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+		ed := texttest.NewMockEditor(ctrl)
+		lock := &dispatchOnUnlockLocker{}
+		s := NewServer(nopNotifications{}, ed, lock)
+
+		client, closeFn := setupIntTest(t, s)
+		defer closeFn()
+
+		var wg sync.WaitGroup
+		handler := textapi.FuncCommandHandler(func(_ context.Context, cmd textapi.Command) error {
+			defer wg.Done()
+			assert.Equal(t, "bla", cmd.Name)
+			return nil
+		}, nil)
+
+		ed.EXPECT().UnsubscribeCommand(gomock.Any()).Return(text.ErrCommandNotRegistered)
+		ed.EXPECT().SubscribeCommand(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(_ textapi.CommandManual, h text.CommandHandler) error {
+				lock.dispatch = func() {
+					assert.NoError(t, h.HandleCommand(
+						context.Background(), textapi.Command{Name: "bla"}))
+				}
+				return nil
+			})
+		// Stream teardown replaces the handler; on the failing path it runs
+		// after the client has already given up on the stream.
+		ed.EXPECT().UnsubscribeCommand(gomock.Any()).Return(nil).AnyTimes()
+		ed.EXPECT().SubscribeCommand(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+
+		wg.Add(1)
+		require.NoError(t, client.SubscribeCommand(textapi.CommandManual{Name: "bla"}, handler))
+		wg.Wait()
+	})
+
+	t.Run("repl dispatch right after registration follows the subscribe response", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+		ed := texttest.NewMockEditor(ctrl)
+		lock := &dispatchOnUnlockLocker{}
+		s := NewServer(nopNotifications{}, ed, lock)
+
+		client, closeFn := setupIntTest(t, s)
+		defer closeFn()
+
+		var wg sync.WaitGroup
+		handler := &testREPLHandler{
+			handleFn: func(_ context.Context, cmd repl.Command, _ repl.ProgressWriter) (
+				iterator.Iterator[component.Responsive], error,
+			) {
+				defer wg.Done()
+				assert.Equal(t, "status", cmd.Name)
+				return iterator.FromSlice[component.Responsive](nil), nil
+			},
+		}
+
+		ed.EXPECT().UnregisterREPLCommand(gomock.Any()).Return(text.ErrCommandNotRegistered)
+		ed.EXPECT().RegisterREPLCommand(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(_ textapi.CommandManual, h textapi.REPLHandler) error {
+				lock.dispatch = func() {
+					it, err := h.HandleCommand(context.Background(),
+						repl.Command{Name: "status"}, repl.NopProgressWriter())
+					if assert.NoError(t, err) {
+						_, err = iterator.ToSlice(context.Background(), it)
+						assert.NoError(t, err)
+					}
+				}
+				return nil
+			})
+
+		wg.Add(1)
+		require.NoError(t, client.RegisterREPLCommand(textapi.CommandManual{Name: "status"}, handler))
+		wg.Wait()
+	})
+
 	t.Run("completes repl commands", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
@@ -1086,6 +1166,24 @@ func TestClientServer_ShellProgressE2E(t *testing.T) {
 // models the lookup step done by a production command registry.
 type replByNameHandler struct {
 	router textapi.REPLHandler
+}
+
+// dispatchOnUnlockLocker runs dispatch, once, while still holding the lock
+// on the first Unlock after it was armed: the earliest instant a competing
+// dispatcher can observe the registered command.
+type dispatchOnUnlockLocker struct {
+	mu       sync.Mutex
+	dispatch func()
+}
+
+func (l *dispatchOnUnlockLocker) Lock() { l.mu.Lock() }
+
+func (l *dispatchOnUnlockLocker) Unlock() {
+	if fn := l.dispatch; fn != nil {
+		l.dispatch = nil
+		fn()
+	}
+	l.mu.Unlock()
 }
 
 func (h replByNameHandler) HandleCommand(

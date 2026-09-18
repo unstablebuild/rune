@@ -18,6 +18,7 @@ package workspace
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -78,12 +79,15 @@ type file struct {
 	readOnly        bool
 	infoModTime     time.Time
 	swapInfoModTime time.Time
-	orig, swap      workspaceapi.File
-	delayedError    error
-	unflushed       bool
-	lastFlush       time.Time
-	flushing        bool
-	pendingEdits    bool
+	// swapHash follows the same serialized ownership as swap, not content:
+	// edits may update content while a flush owns the saved bytes.
+	swapHash     [sha256.Size]byte
+	orig, swap   workspaceapi.File
+	delayedError error
+	unflushed    bool
+	lastFlush    time.Time
+	flushing     bool
+	pendingEdits bool
 	// closed and reloadOwnsFiles form the close handoff for the
 	// descriptor state (orig/swap/fileName and friends):
 	// beginFileSwap hands ownership to the reload worker,
@@ -156,6 +160,7 @@ func (f *file) initSwapFile(orig workspaceapi.File, origPerms os.FileMode) (work
 	}
 
 	if orig == nil {
+		f.swapHash = sha256.Sum256(nil)
 		return swap, nil
 	}
 
@@ -187,6 +192,7 @@ func (f *file) initSwapFile(orig workspaceapi.File, origPerms os.FileMode) (work
 		return nil, err
 	}
 
+	f.swapHash = sha256.Sum256(content)
 	return swap, nil
 }
 
@@ -302,9 +308,17 @@ func (f *file) initBuffer(buf *cell.Buffer, file workspaceapi.File) (err error) 
 		file = f.swap
 	}
 	if file != nil {
-		_, err = buf.ReadFrom(file)
+		var reader io.Reader = file
+		h := sha256.New()
+		if file == f.swap {
+			reader = io.TeeReader(file, h)
+		}
+		_, err = buf.ReadFrom(reader)
 		if err != nil {
 			return
+		}
+		if file == f.swap {
+			f.swapHash = [sha256.Size]byte(h.Sum(nil))
 		}
 
 		defer func() {
@@ -492,7 +506,8 @@ func (f *file) copyFlushSwapFile(str string) (ok bool) {
 		str += "\n"
 	}
 
-	if _, err = f.swap.Write([]byte(str)); err != nil {
+	data := []byte(str)
+	if _, err = f.swap.Write(data); err != nil {
 		f.delayCopySwapError(err)
 		return
 	}
@@ -512,8 +527,35 @@ func (f *file) copyFlushSwapFile(str string) (ok bool) {
 	// because we cannot use the host's clock or a skew on a remote
 	// workspace would introduce all sorts of bugs
 	f.swapInfoModTime = finfo.ModTime()
+	f.swapHash = sha256.Sum256(data)
 	ok = true
 	return
+}
+
+func fileContentHash(file workspaceapi.File) ([sha256.Size]byte, error) {
+	h := sha256.New()
+	_, err := io.Copy(h, file)
+	_, seekErr := file.Seek(0, io.SeekStart)
+	return [sha256.Size]byte(h.Sum(nil)), errors.Join(err, seekErr)
+}
+
+// reopenedMatchesSave reports whether the file reopened after the rename
+// still holds the bytes this flush wrote. initFiles re-stages the swap from
+// that reopened file, so on the writable path its digest already identifies
+// the content and no second read is needed; only the read-only fallback,
+// which skips staging, has to hash the file itself.
+func (f *file) reopenedMatchesSave(savedHash [sha256.Size]byte) (bool, error) {
+	if f.orig == nil {
+		return false, nil
+	}
+	if !f.readOnly {
+		return f.swapHash == savedHash, nil
+	}
+	hash, err := fileContentHash(f.orig)
+	if err != nil {
+		return false, err
+	}
+	return hash == savedHash, nil
 }
 
 func (f *file) OnWillEdit(ctx context.Context, start, end term.Coordinates, str string) {
@@ -923,8 +965,9 @@ func (f *file) flush(force bool) error {
 		return workspaceapi.ErrStaleData
 	}
 
+	savedModTime, savedHash := f.swapInfoModTime, f.swapHash
 	f.mu.Lock()
-	f.lastFlush = f.swapInfoModTime
+	f.lastFlush = savedModTime
 	f.mu.Unlock()
 
 	if f.orig != nil {
@@ -944,6 +987,19 @@ func (f *file) flush(force bool) error {
 	err = f.initFiles(f.fileName, f.swapDir, readOnly)
 	if err != nil {
 		return err
+	}
+
+	if !f.infoModTime.Equal(savedModTime) {
+		ours, err := f.reopenedMatchesSave(savedHash)
+		if err != nil {
+			return err
+		}
+		if !ours {
+			// A rename may bump mtime, but an external write that landed in
+			// this window must stay pending for the watcher and the next
+			// stale-data check instead of becoming our own baseline.
+			f.infoModTime = savedModTime
+		}
 	}
 
 	f.unflushed = false
