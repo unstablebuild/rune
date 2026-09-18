@@ -24,16 +24,17 @@ import (
 )
 
 // loadDir scans dir for subdirectories containing SKILL.md using the
-// registry's FileSystem. Returns all successfully parsed skills; logs
-// and skips failures.
-func (r *SkillRegistry) loadDir(dir string) []Skill {
+// registry's FileSystem. Returns all successfully parsed skills and
+// any parsing/validation errors encountered.
+func (r *SkillRegistry) loadDir(dir string) ([]Skill, []SkillError) {
 	entries, err := r.fs.ReadDir(dir)
 	if err != nil {
 		slog.Debug("skills: cannot read directory", "dir", dir, "error", err)
-		return nil
+		return nil, nil
 	}
 
 	var result []Skill
+	var errs []SkillError
 	for _, e := range entries {
 		if !e.IsDir() {
 			if e.Type()&os.ModeSymlink == 0 {
@@ -54,11 +55,12 @@ func (r *SkillRegistry) loadDir(dir string) []Skill {
 		if err != nil {
 			slog.Warn("skills: failed to parse",
 				"path", skillPath, "error", err)
+			errs = append(errs, SkillError{Path: skillPath, Err: err})
 			continue
 		}
 		result = append(result, skill)
 	}
-	return result
+	return result, errs
 }
 
 // readFile reads the entire contents of path via r.fs.

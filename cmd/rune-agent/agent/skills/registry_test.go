@@ -464,6 +464,80 @@ body`)
 			assert.True(t, ok, "builtin %s must survive Reload", name)
 		}
 	})
+
+	t.Run("returns differential reload result and surfaces errors", func(t *testing.T) {
+		dir := t.TempDir()
+		writeSkill(t, dir, "initial", `---
+name: initial
+description: Initial
+---
+body`)
+
+		r := NewRegistry(osFileSystem{}, dirURI(""), []string{dir}, nil)
+
+		// Unchanged reload
+		res := r.Reload()
+		assert.Equal(t, []string{dir}, res.Dirs)
+		assert.Empty(t, res.Added)
+		assert.Empty(t, res.Updated)
+		assert.Empty(t, res.Dropped)
+		assert.Empty(t, res.Errors)
+		assert.Len(t, res.Loaded, 3)
+
+		// Added
+		writeSkill(t, dir, "added", `---
+name: added
+description: Added skill
+---
+body`)
+		res = r.Reload()
+		require.Len(t, res.Added, 1)
+		assert.Equal(t, "added", res.Added[0].Name)
+		assert.Empty(t, res.Updated)
+		assert.Empty(t, res.Dropped)
+		assert.Empty(t, res.Errors)
+		for _, s := range res.Added {
+			assert.NotEqual(t, "explore", s.Name)
+			assert.NotEqual(t, "plan", s.Name)
+		}
+
+		// Updated
+		writeSkill(t, dir, "initial", `---
+name: initial
+description: Updated initial
+---
+body`)
+		res = r.Reload()
+		assert.Empty(t, res.Added)
+		require.Len(t, res.Updated, 1)
+		assert.Equal(t, "initial", res.Updated[0].Name)
+		assert.Equal(t, "Updated initial", res.Updated[0].Description)
+		assert.Empty(t, res.Dropped)
+		assert.Empty(t, res.Errors)
+
+		// Dropped
+		require.NoError(t, os.RemoveAll(filepath.Join(dir, "added")))
+		res = r.Reload()
+		assert.Empty(t, res.Added)
+		assert.Empty(t, res.Updated)
+		require.Len(t, res.Dropped, 1)
+		assert.Equal(t, "added", res.Dropped[0].Name)
+		for _, s := range res.Dropped {
+			assert.NotEqual(t, "explore", s.Name)
+			assert.NotEqual(t, "plan", s.Name)
+		}
+
+		// Errors
+		writeSkill(t, dir, "broken", `---
+name: broken
+---
+missing description`)
+		res = r.Reload()
+		require.Len(t, res.Errors, 1)
+		assert.Contains(t, res.Errors[0].Path, "broken")
+		assert.Error(t, res.Errors[0].Err)
+		assert.Contains(t, res.Errors[0].Error(), "description")
+	})
 }
 
 func TestRegistryConcurrentAccess(t *testing.T) {
