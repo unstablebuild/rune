@@ -24,6 +24,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -466,4 +467,16 @@ func TestTelemetrySystemPayloadInstallID(t *testing.T) {
 		assert.Contains(t, p.InstallIDErr, errSetFailed.Error(),
 			"store write failure must be posted, not silently dropped")
 	})
+}
+
+// TestExampleUsagePayloadJSONFieldCoverage asserts that the example JSON
+// payload contains every field from telemetryUsagePayload, preventing
+// documentation drift as the payload structure evolves.
+func TestExampleUsagePayloadJSONFieldCoverage(t *testing.T) {
+	example := ExampleUsagePayloadJSON()
+	typ := reflect.TypeOf(telemetryUsagePayload{})
+	for i := 0; i < typ.NumField(); i++ {
+		field := typ.Field(i)
+		assert.Contains(t, example, fmt.Sprintf("%q:", field.Name))
+	}
 }

@@ -93,7 +93,7 @@ func migrateConfigKeyBindings(configPath string) error {
 		return nil
 	}
 
-	preset, err := renderPreset(presetEditorFor(cfg))
+	preset, err := renderPreset(presetEditorFor(cfg), true)
 	if err != nil {
 		return err
 	}

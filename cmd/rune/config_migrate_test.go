@@ -87,7 +87,7 @@ var legacyConfigs = []struct {
 func TestMigrateConfigKeyBindingsAppliesCurrentPreset(t *testing.T) {
 	for _, tc := range legacyConfigs {
 		t.Run(tc.name, func(t *testing.T) {
-			preset, err := renderPreset(tc.editor)
+			preset, err := renderPreset(tc.editor, true)
 			require.NoError(t, err)
 			want := bindingsOf(t, []byte(preset))
 			require.NotEmpty(t, want)
@@ -108,7 +108,7 @@ func TestMigrateConfigKeyBindingsAppliesCurrentPreset(t *testing.T) {
 // config tracks a binding the preset has relocated since it was written,
 // rather than being frozen at the value it originally shipped with.
 func TestMigrateConfigKeyBindingsPicksUpMovedBindings(t *testing.T) {
-	preset, err := renderPreset(editorEmacs)
+	preset, err := renderPreset(editorEmacs, true)
 	require.NoError(t, err)
 	want := bindingsOf(t, []byte(preset))
 
@@ -193,7 +193,7 @@ func TestMigrateConfigKeyBindingsSelectsPresetByEditor(t *testing.T) {
 			require.NoError(t, yaml.Unmarshal([]byte(tc.config), &cfg))
 			require.Equal(t, tc.want, presetEditorFor(cfg))
 
-			preset, err := renderPreset(tc.want)
+			preset, err := renderPreset(tc.want, true)
 			require.NoError(t, err)
 			want := bindingsOf(t, []byte(preset))
 
@@ -226,7 +226,7 @@ command:
 // still carrying a preset binding at its old value: the preset owns it,
 // so the current value must replace it rather than be kept.
 func TestMigrateConfigKeyBindingsPresetWinsOverStaleValue(t *testing.T) {
-	preset, err := renderPreset(editorModal)
+	preset, err := renderPreset(editorModal, true)
 	require.NoError(t, err)
 	want := bindingsOf(t, []byte(preset))
 	require.Equal(t, "quit", want["<meta-q>"])
