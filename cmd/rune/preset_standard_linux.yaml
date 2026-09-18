@@ -97,6 +97,7 @@ command:
 #     conf: config
   key_bindings:
     "<ctrl-s>": write
+    "<meta-q>": quit
     "<ctrl-shift-s>": writeall
     "<ctrl-o>": searchfile
     "<ctrl-,>": config

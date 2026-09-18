@@ -150,6 +150,7 @@ func TestStandardPresetsAvoidEditorKeyConflicts(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.path, func(t *testing.T) {
 			bindings := bindingsOfFile(t, tc.path)
+			require.Equal(t, "quit", bindings["<meta-q>"])
 			require.Equal(t, "fexplorer", bindings[tc.explorerKey])
 			require.Equal(t, "cursorhistory prev", bindings["<alt-,>"])
 			require.Equal(t, "cursorhistory next", bindings["<alt-.>"])

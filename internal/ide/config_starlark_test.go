@@ -465,11 +465,10 @@ func TestRuneStarModelsConfig(t *testing.T) {
 
 	models, ok := cfg["models"].(map[string]any)
 	require.True(t, ok, "models block missing")
-	// rune.star no longer ships a `models.default`; the loader keeps the
-	// built-in default when the key is absent and the bootstrap override
-	// is what sets a concrete model.
+	// The default model is a router alias (`models alias set default
+	// <provider/model>`), not a config key.
 	_, hasDefault := models["default"]
-	assert.False(t, hasDefault, "models.default should not be set in rune.star")
+	assert.False(t, hasDefault, "models.default is not a config key")
 	assert.Equal(t, "auto", models["reasoning_summary"])
 	assert.Equal(t, false, models["debug_http"])
 

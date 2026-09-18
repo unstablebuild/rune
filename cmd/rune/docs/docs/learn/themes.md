@@ -37,6 +37,10 @@ Themes live under the `gui` section of your config:
 
 The default configuration ships sixteen themes and starts on `romero`.
 
+A theme decides what each color name looks like; it does not decide which
+parts of your code use which name. For per-capture control over code
+colors, see [Syntax Highlighting](./syntax-highlighting.md).
+
 ## Switching themes
 
 Change the active theme at any time with the `guitheme` command:
