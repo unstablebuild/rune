@@ -44,7 +44,7 @@ const (
 	widthBlockSize  = 1 << widthBlockShift
 )
 
-const header = `// Copyright (C) 2017-2026 Unstable Build, LLC
+const header = `// Copyright (C) 2017-2026 The Rune Authors
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // This program is free software: you can redistribute it and/or modify
