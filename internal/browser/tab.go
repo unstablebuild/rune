@@ -44,6 +44,9 @@ type Tab struct {
 	win         Window
 	subscribers []TabSubscriber
 	prev        *Tab
+
+	origName     string
+	manualRename bool
 }
 
 // Resize satisfies tui.Component
