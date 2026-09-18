@@ -1833,7 +1833,7 @@ func cleanSummary(raw string) string {
 	text := reAnalysis.ReplaceAllString(raw, "")
 	if m := reSummary.FindStringSubmatch(text); len(m) >= 2 {
 		inner := strings.TrimSpace(m[1])
-		text = reSummary.ReplaceAllString(text, "Summary:\n"+inner)
+		text = reSummary.ReplaceAllLiteralString(text, "Summary:\n"+inner)
 	}
 	text = reBlankLines.ReplaceAllString(text, "\n")
 	return strings.TrimSpace(text)

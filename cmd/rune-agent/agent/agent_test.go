@@ -4426,6 +4426,11 @@ func TestCleanSummary(t *testing.T) {
 			want: "Summary:\nContent here",
 		},
 		{
+			name: "dollar signs kept literally",
+			raw:  "<summary>\nSet $HOME and ran ./build.sh $1; cost was $5\n</summary>",
+			want: "Summary:\nSet $HOME and ran ./build.sh $1; cost was $5",
+		},
+		{
 			name: "analysis only no summary",
 			raw:  "<analysis>\nthinking\n</analysis>\nSome leftover text",
 			want: "Some leftover text",
