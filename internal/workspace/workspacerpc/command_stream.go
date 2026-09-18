@@ -21,7 +21,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"syscall"
 
 	multierr "github.com/ernestrc/go-multierror"
 	log "github.com/sirupsen/logrus"
@@ -31,6 +30,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi/workspacerpc"
 	"unstable.build/rune/internal/debug"
+	"unstable.build/rune/internal/procattr"
 )
 
 type serverCommandStreamer struct {
@@ -69,7 +69,7 @@ func newServerCommandStreamer(
 		Watcher: workspaceapi.ChanProcessWatcher(doneCh),
 	}
 	if setsid || setctty {
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: setsid, Setctty: setctty}
+		cmd.SysProcAttr = procattr.NewSession(setsid, setctty)
 	}
 
 	ret := new(serverCommandStreamer)

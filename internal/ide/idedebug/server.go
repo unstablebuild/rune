@@ -26,7 +26,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/google/go-dap"
@@ -34,6 +33,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"unstable.build/rune/internal/debug"
+	"unstable.build/rune/internal/procattr"
 	"unstable.build/rune/internal/workspace/processctx"
 )
 
@@ -151,7 +151,7 @@ func (s *debugServer) start(ctx context.Context) error {
 		// the adapter as a grandchild, and they spawn the debuggee in
 		// turn. Heading its own process group is what lets ending the
 		// session tear the whole tree down.
-		SysProcAttr: &syscall.SysProcAttr{Setpgid: true},
+		SysProcAttr: procattr.NewGroup(),
 	}
 
 	// Do not use ctx for lifecycle cancellation: it is scoped to the initial

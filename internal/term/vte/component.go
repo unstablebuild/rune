@@ -23,7 +23,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -38,6 +37,7 @@ import (
 	"unstable.build/rune/internal/cell"
 	"unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/debug"
+	"unstable.build/rune/internal/procattr"
 	"unstable.build/rune/internal/term/vte/vteparser"
 	"unstable.build/rune/internal/text"
 )
@@ -960,11 +960,8 @@ func (t *Component) startCommand(ctx context.Context, cmdAndArgsStr string) erro
 	}
 	t.log(log.DebugLevel, "creating pty with cmdAndArgs: %#v", cmdAndArgs)
 	cmd := workspaceapi.Cmd{
-		SysProcAttr: &syscall.SysProcAttr{
-			Setsid:  true,
-			Setctty: true,
-		},
-		Watcher: t.watcher,
+		SysProcAttr: procattr.NewSession(true, true),
+		Watcher:     t.watcher,
 	}
 	cmd.Env = appendDefaultTerminalEnv(cmd.Env)
 	// When the user hasn't configured a CommandAndArgs, leave
