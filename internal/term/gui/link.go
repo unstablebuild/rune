@@ -75,12 +75,30 @@ func wrapMarked(row []term.Cell, x1 int) bool {
 	return x1 > 0 && x1 <= len(row) && row[x1-1].Bytes == cell.WrapMarker
 }
 
-// paneStart walks left to the first unwritten cell. Whatever drew the
-// row filled its own pane and nothing beyond it, so the written run
-// bounds the pane the continuation resumes in.
+// paneStart walks left to the first cell the pane did not write.
+// Whatever drew the row filled its own pane and nothing beyond it, so
+// the written run bounds the pane the continuation resumes in.
 func paneStart(row []term.Cell, x int) int {
-	for x > 0 && row[x-1].Ch != 0 {
+	for x > 0 && row[x-1].Ch != 0 && !isFrameRune(row[x-1].Ch) {
 		x--
+	}
+	return x
+}
+
+// lineEnd returns the index one past the last cell a line can reach from
+// x. Any rune beyond ASCII counts, so that an internationalized host
+// survives, which also means the run would otherwise swallow the border
+// or scroll bar the window drew hard against the pane. The wrap marker
+// is the one thing that names the pane's right margin, so a line that
+// reaches it stops there.
+func lineEnd(row []term.Cell, x int) int {
+	// Ch == 0 is both a blank cell and the continuation half of a wide
+	// character, so it ends the line either way.
+	for x < len(row) && row[x].Ch != 0 && isURLRune(row[x].Ch) {
+		if row[x].Bytes == cell.WrapMarker {
+			return x + 1
+		}
+		x++
 	}
 	return x
 }
@@ -98,13 +116,12 @@ func (s *rowScanner) joinWrapped(
 		if left >= len(row) {
 			break
 		}
-		end := left
-		for end < len(row) && row[end].Ch != 0 && isURLRune(row[end].Ch) {
-			s.wrapped = appendCluster(s.wrapped, &row[end])
-			end++
-		}
+		end := lineEnd(row, left)
 		if end == left {
 			break
+		}
+		for i := left; i < end; i++ {
+			s.wrapped = appendCluster(s.wrapped, &row[i])
 		}
 		y++
 		dst = append(dst, linkSpan{y: y, x0: left, x1: end})
@@ -113,11 +130,12 @@ func (s *rowScanner) joinWrapped(
 			break
 		}
 	}
-	if last == first {
-		return dst, y
-	}
-
 	trimmed := trimURL(s.wrapped)
+	if !hasHost(trimmed) {
+		// The run reached the margin on nothing but its scheme and the
+		// rows below it did not carry a host after all.
+		return dst[:first], y
+	}
 	// Trimming drops nothing but ASCII punctuation, which never
 	// continues a grapheme cluster and so always had a cell to itself.
 	dst[last].x1 -= len(s.wrapped) - len(trimmed)
@@ -136,10 +154,15 @@ func (s *rowScanner) joinWrapped(
 // copy of the row, so prose never reaches the scratch buffer: it is only
 // touched once a scheme is found.
 func (s *rowScanner) scanRow(y int, row []term.Cell, dst []linkSpan) []linkSpan {
+	// A run that ends on the wrap marker is half an address, so it is
+	// appended raw and left for joinWrapped to finish. Only the last
+	// span of a row can still be waiting: anything matched after it
+	// proves the join will never reach it.
+	pending := -1
 	for x := 0; x < len(row); {
 		found := schemeStart(row[x:])
 		if found < 0 {
-			return dst
+			break
 		}
 		x += found
 
@@ -149,19 +172,24 @@ func (s *rowScanner) scanRow(y int, row []term.Cell, dst []linkSpan) []linkSpan 
 			continue
 		}
 
-		end := x + width
-		// Ch == 0 is both a blank cell and the continuation half of a
-		// wide character, so it ends the URL either way.
-		for end < len(row) && row[end].Ch != 0 && isURLRune(row[end].Ch) {
-			end++
-		}
+		end := lineEnd(row, x+width)
 
 		s.text = s.text[:0]
 		for i := x; i < end; i++ {
 			s.text = appendCluster(s.text, &row[i])
 		}
+
+		if wrapMarked(row, end) {
+			dst = s.settle(row, dst, pending)
+			dst = append(dst, linkSpan{y: y, x0: x, x1: end, url: string(s.text)})
+			pending = len(dst) - 1
+			x = end
+			continue
+		}
 		trimmed := trimURL(s.text)
 		if hasHost(trimmed) {
+			dst = s.settle(row, dst, pending)
+			pending = -1
 			// Trimming only ever drops ASCII punctuation, which never
 			// continues a cluster and so always had a cell to itself.
 			dst = append(dst, linkSpan{
@@ -173,6 +201,26 @@ func (s *rowScanner) scanRow(y int, row []term.Cell, dst []linkSpan) []linkSpan 
 		}
 		x = end
 	}
+	return dst
+}
+
+// settle finishes a span left raw for a join that the rest of the row
+// has just ruled out, reading its address back from the cells because
+// the scratch buffer has moved on to the next match.
+func (s *rowScanner) settle(row []term.Cell, dst []linkSpan, i int) []linkSpan {
+	if i < 0 {
+		return dst
+	}
+	s.wrapped = s.wrapped[:0]
+	for x := dst[i].x0; x < dst[i].x1; x++ {
+		s.wrapped = appendCluster(s.wrapped, &row[x])
+	}
+	trimmed := trimURL(s.wrapped)
+	if !hasHost(trimmed) {
+		return dst[:i]
+	}
+	dst[i].x1 -= len(s.wrapped) - len(trimmed)
+	dst[i].url = string(trimmed)
 	return dst
 }
 
@@ -258,12 +306,21 @@ func matchesScheme(cells []term.Cell, scheme string) bool {
 }
 
 // isURLRune reports whether r can appear in a URL rendered in prose.
-// Anything beyond ASCII is kept, so an internationalized host survives.
+// Anything beyond ASCII is kept, so an internationalized host survives,
+// bar the glyphs the window draws its own chrome with.
 func isURLRune(r rune) bool {
 	if r > unicode.MaxASCII {
-		return true
+		return !isFrameRune(r)
 	}
 	return isURLByte(byte(r))
+}
+
+// isFrameRune reports whether r is one of the box drawing or block
+// element glyphs that frame a pane, split two of them, or draw a scroll
+// bar. The frame covers the whole window, so this chrome is rendered
+// hard against the text it surrounds, and no address contains it.
+func isFrameRune(r rune) bool {
+	return r >= '\u2500' && r <= '\u259f'
 }
 
 // isURLByte reports whether b can appear in a URL rendered in prose.

@@ -167,6 +167,24 @@ the editor you chose:
 For ready-to-copy `exo` configs (Vim, Neovim, Helix, Nano, and more), see the
 [examples in the Exoeditor guide](./learn/exoeditor.md#examples).
 
+## Syntax Highlighting
+
+- `editor.highlights`: the attributes applied to each Tree-sitter capture
+  name, merged key by key onto Rune's defaults. See
+  [Syntax Highlighting](./learn/syntax-highlighting.md).
+
+  ```yaml tab
+  editor:
+    highlights:
+      comment:
+        fg: silver
+        flags: italic
+  ```
+
+  ```python tab
+  config["editor"]["highlights"]["comment"] = {"fg": "silver", "flags": "italic"}
+  ```
+
 ## Command Prompt
 
 - `command.key`: the [key combination](./learn/key-syntax.md) that opens the

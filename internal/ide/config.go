@@ -350,7 +350,6 @@ func (c ideConfig) llmConfig() llm.Config {
 		c.recordLLMValidationError(llm.ValidateConfig(out))
 		return out
 	}
-	overrideString(models, "default", &out.Default)
 	overrideString(models, "reasoning_summary", &out.ReasoningSummary)
 	overrideBool(models, "debug_http", &out.DebugHTTP)
 
