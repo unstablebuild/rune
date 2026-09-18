@@ -47,7 +47,6 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
-	"golang.org/x/sys/unix"
 	"google.golang.org/grpc"
 	"unstable.build/rune/auth"
 	"unstable.build/rune/cmd/rune/crashreport"
@@ -231,10 +230,10 @@ func startWorkspaceServer() int {
 				case syscall.SIGKILL:
 					log.Info("Received SIGKILL signal: exiting")
 					os.Exit(1)
-				case syscall.SIGURG:
-					/* received when socket urgent data is ready to be read */
 				default:
-					log.Debugf("Received unhandled signal: %#v", sig)
+					if !isUrgentDataSignal(sig) {
+						log.Debugf("Received unhandled signal: %#v", sig)
+					}
 				}
 			case <-quitch:
 				return
@@ -350,11 +349,7 @@ func main() {
 			logPath := crashreport.DefaultLaunchLogPath(*flagDataPath)
 			f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 			if err == nil {
-				// syscall.Dup2 isn't defined on linux/arm64 (the
-				// kernel only exposes Dup3 there); golang.org/x/sys/unix
-				// papers over the difference.
-				fd := int(f.Fd())
-				_ = unix.Dup2(fd, int(os.Stderr.Fd()))
+				redirectStderr(f)
 			}
 			flag.Parse()
 		}
