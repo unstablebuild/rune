@@ -308,7 +308,7 @@ func (t *Tree) Close() (ret error) {
 	if t.indents != nil {
 		t.indents.Close()
 	}
-	if err := purego.Dlclose(t.lib); err != nil {
+	if err := sysDlclose(t.lib); err != nil {
 		ret = multierror.Append(ret, err)
 	}
 	for ch := range t.statesubs {
@@ -484,7 +484,7 @@ func (t *Tree) initParser(
 		return nil
 	}
 
-	lib, err := purego.Dlopen(langfile, purego.RTLD_NOW|purego.RTLD_GLOBAL)
+	lib, err := sysDlopen(langfile, dlNow|dlGlobal)
 	if err != nil {
 		return fmt.Errorf("dlopen %q: %w", langfile, err)
 	}
@@ -494,9 +494,9 @@ func (t *Tree) initParser(
 	t.log(log.TraceLevel, "loading parser %q", parserID)
 
 	var lang func() uintptr
-	sym, err := purego.Dlsym(lib, parserID)
+	sym, err := sysDlsym(lib, parserID)
 	if err != nil {
-		_ = purego.Dlclose(t.lib)
+		_ = sysDlclose(t.lib)
 		return fmt.Errorf("load symbol %q: %w", parserID, err)
 	}
 	purego.RegisterFunc(&lang, sym)
@@ -504,14 +504,14 @@ func (t *Tree) initParser(
 	language := tree_sitter.NewLanguage(unsafe.Pointer(lang()))
 	t.parser = tree_sitter.NewParser()
 	if err := t.parser.SetLanguage(language); err != nil {
-		_ = purego.Dlclose(t.lib)
+		_ = sysDlclose(t.lib)
 		t.parser.Close()
 		return fmt.Errorf("set parser language: %v", err)
 	}
 
 	if highlightsfile != "" {
 		if err := t.initHighlights(language, highlightsfile); err != nil {
-			_ = purego.Dlclose(t.lib)
+			_ = sysDlclose(t.lib)
 			t.parser.Close()
 			return fmt.Errorf("initialize highlights: %w", err)
 		}

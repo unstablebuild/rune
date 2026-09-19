@@ -14,32 +14,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-package debug
-
-import (
-	"fmt"
-	"net"
-	"net/http"
-	_ "net/http/pprof"
-	"runtime"
-
-	log "github.com/sirupsen/logrus"
-)
-
-// StartPProfHTTP serves pprof on addr and returns the bound address.
-func StartPProfHTTP(addr string) (string, error) {
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		return "", fmt.Errorf("pprof listen %q: %w", addr, err)
-	}
-	runtime.SetBlockProfileRate(1)
-	runtime.SetMutexProfileFraction(1)
-	bound := ln.Addr().String()
-	log.Infof("pprof server listening on http://%s/debug/pprof/", bound)
-	go CapturePanicReport(func() {
-		if err := http.Serve(ln, nil); err != http.ErrServerClosed {
-			log.Errorf("pprof serve: %v", err)
-		}
-	})
-	return bound, nil
-}
+// Package wingfx applies native Windows window-graphics attributes to
+// the Ebiten/Direct3D surface Rune already presents on GOOS=windows.
+//
+// Linux talks to the GPU through OpenGL. macOS talks through Metal.
+// Windows talks through Ebiten's Direct3D 11 driver. This package is
+// the missing compositor half of that path: per-monitor DPI, a dark
+// title bar, rounded corners, and DWM backdrop (Mica on Windows 11,
+// Acrylic blur on Windows 10) so transparent themes match the other
+// platforms instead of rendering as an opaque Win32 frame.
+package wingfx

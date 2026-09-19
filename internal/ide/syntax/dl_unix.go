@@ -14,32 +14,25 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-package debug
+//go:build !windows
 
-import (
-	"fmt"
-	"net"
-	"net/http"
-	_ "net/http/pprof"
-	"runtime"
+package syntax
 
-	log "github.com/sirupsen/logrus"
+import "github.com/ebitengine/purego"
+
+const (
+	dlNow    = purego.RTLD_NOW
+	dlGlobal = purego.RTLD_GLOBAL
 )
 
-// StartPProfHTTP serves pprof on addr and returns the bound address.
-func StartPProfHTTP(addr string) (string, error) {
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		return "", fmt.Errorf("pprof listen %q: %w", addr, err)
-	}
-	runtime.SetBlockProfileRate(1)
-	runtime.SetMutexProfileFraction(1)
-	bound := ln.Addr().String()
-	log.Infof("pprof server listening on http://%s/debug/pprof/", bound)
-	go CapturePanicReport(func() {
-		if err := http.Serve(ln, nil); err != http.ErrServerClosed {
-			log.Errorf("pprof serve: %v", err)
-		}
-	})
-	return bound, nil
+func sysDlopen(path string, flags int) (uintptr, error) {
+	return purego.Dlopen(path, flags)
+}
+
+func sysDlsym(lib uintptr, name string) (uintptr, error) {
+	return purego.Dlsym(lib, name)
+}
+
+func sysDlclose(lib uintptr) error {
+	return purego.Dlclose(lib)
 }

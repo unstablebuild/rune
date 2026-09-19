@@ -14,32 +14,22 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-package debug
+//go:build windows
+
+package font
 
 import (
-	"fmt"
-	"net"
-	"net/http"
-	_ "net/http/pprof"
-	"runtime"
-
-	log "github.com/sirupsen/logrus"
+	"os"
+	"path/filepath"
 )
 
-// StartPProfHTTP serves pprof on addr and returns the bound address.
-func StartPProfHTTP(addr string) (string, error) {
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		return "", fmt.Errorf("pprof listen %q: %w", addr, err)
+func emojiFontPaths() []string {
+	win := os.Getenv("windir")
+	local := os.Getenv("localappdata")
+	return []string{
+		filepath.Join(win, "Fonts", "seguiemj.ttf"),
+		filepath.Join(win, "Fonts", "seguisym.ttf"),
+		filepath.Join(local, "Microsoft", "Windows", "Fonts", "seguiemj.ttf"),
+		filepath.Join(local, "Microsoft", "Windows", "Fonts", "NotoColorEmoji.ttf"),
 	}
-	runtime.SetBlockProfileRate(1)
-	runtime.SetMutexProfileFraction(1)
-	bound := ln.Addr().String()
-	log.Infof("pprof server listening on http://%s/debug/pprof/", bound)
-	go CapturePanicReport(func() {
-		if err := http.Serve(ln, nil); err != http.ErrServerClosed {
-			log.Errorf("pprof serve: %v", err)
-		}
-	})
-	return bound, nil
 }

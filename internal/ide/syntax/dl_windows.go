@@ -14,32 +14,34 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-package debug
+//go:build windows
 
-import (
-	"fmt"
-	"net"
-	"net/http"
-	_ "net/http/pprof"
-	"runtime"
+package syntax
 
-	log "github.com/sirupsen/logrus"
+import "golang.org/x/sys/windows"
+
+const (
+	dlNow    = 0
+	dlGlobal = 0
 )
 
-// StartPProfHTTP serves pprof on addr and returns the bound address.
-func StartPProfHTTP(addr string) (string, error) {
-	ln, err := net.Listen("tcp", addr)
+func sysDlopen(path string, flags int) (uintptr, error) {
+	dll, err := windows.LoadDLL(path)
 	if err != nil {
-		return "", fmt.Errorf("pprof listen %q: %w", addr, err)
+		return 0, err
 	}
-	runtime.SetBlockProfileRate(1)
-	runtime.SetMutexProfileFraction(1)
-	bound := ln.Addr().String()
-	log.Infof("pprof server listening on http://%s/debug/pprof/", bound)
-	go CapturePanicReport(func() {
-		if err := http.Serve(ln, nil); err != http.ErrServerClosed {
-			log.Errorf("pprof serve: %v", err)
-		}
-	})
-	return bound, nil
+	return uintptr(dll.Handle), nil
+}
+
+func sysDlsym(lib uintptr, name string) (uintptr, error) {
+	dll := windows.DLL{Handle: windows.Handle(lib)}
+	p, err := dll.FindProc(name)
+	if err != nil {
+		return 0, err
+	}
+	return p.Addr(), nil
+}
+
+func sysDlclose(lib uintptr) error {
+	return windows.FreeLibrary(windows.Handle(lib))
 }
