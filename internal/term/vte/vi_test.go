@@ -22,6 +22,7 @@ import (
 	"context"
 	"os"
 	"path"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -38,6 +39,7 @@ import (
 	"unstable.build/rune/internal/term/vte/vtescreen"
 	"unstable.build/rune/internal/term/vte/vtetest"
 	"unstable.build/rune/internal/text"
+	"unstable.build/rune/internal/workspace"
 )
 
 func TestHandlerViIntegration(t *testing.T) {
@@ -722,6 +724,71 @@ aaaaaa
 		cfg.Modal = true
 		testSequenceShell(t, cfg, defaultWaitForIdleVte, zshPath, cases)
 	})
+}
+
+// TestBashViModeEdgeCases checks that modal mode engages under bash in vi
+// mode. The vte synchronizes with the shell by sending ^A^G and waiting for
+// the bell; without Rune's inputrc, bash's vi-insert keymap self-inserts both
+// bytes instead.
+func TestBashViModeEdgeCases(t *testing.T) {
+	bashPath, err := find.Executable("bash")
+	if err != nil {
+		t.SkipNow()
+	}
+	inputrc, err := filepath.Abs("../../../extra/osx/Rune.app/Contents/Resources/zdot/inputrc")
+	require.NoError(t, err)
+	t.Setenv("INPUTRC", inputrc)
+
+	rc := filepath.Join(t.TempDir(), "bashrc")
+	require.NoError(t, os.WriteFile(rc, []byte("set -o vi\nPS1='$ '\n"), 0o644))
+
+	cases := []vtetest.Case{
+		{"echo blaaa<0Cecho hi", `$ echo hi▐          
+                    
+                    
+                    
+                    
+                    
+                    
+                    
+                    
+                    `},
+	}
+	cfg := DefaultConfig()
+	cfg.Modal = true
+	testSequenceCommand(t, cfg, defaultWaitForIdleVte,
+		[]string{bashPath, "--noprofile", "--rcfile", rc, "-i"}, cases)
+}
+
+// TestFishEdgeCases checks that modal mode engages under fish with the
+// bindings the file scheme passes through --init-command.
+func TestFishEdgeCases(t *testing.T) {
+	fishPath, err := find.Executable("fish")
+	if err != nil {
+		t.SkipNow()
+	}
+	// CommandAndArgs is joined and re-split like a shell command line, so
+	// the init command goes through a file sourced from one quoted argument.
+	init := filepath.Join(t.TempDir(), "init.fish")
+	require.NoError(t, os.WriteFile(init, []byte(workspace.FishInitCommand+
+		"\nset -g fish_greeting\nfunction fish_prompt; printf '$ '; end\n"), 0o644))
+
+	cases := []vtetest.Case{
+		{"echo blaaa<0Cecho hi", `$ echo hi▐          
+                    
+                    
+                    
+                    
+                    
+                    
+                    
+                    
+                    `},
+	}
+	cfg := DefaultConfig()
+	cfg.Modal = true
+	testSequenceCommand(t, cfg, defaultWaitForIdleVte,
+		[]string{fishPath, "--no-config", "--private", "-i", "-C", "'source " + init + "'"}, cases)
 }
 
 func TestViEditUnit(t *testing.T) {

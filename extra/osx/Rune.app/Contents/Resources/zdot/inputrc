@@ -1,0 +1,14 @@
+# Rune terminal readline bindings; see internal/workspace/file_scheme.go.
+$include /etc/inputrc
+$include ~/.inputrc
+$if Bash
+set bell-style audible
+set keymap vi-insert
+"\C-a": beginning-of-line
+"\C-g": abort
+set keymap vi-command
+"\C-g": abort
+set keymap emacs
+"\C-a": beginning-of-line
+"\C-g": abort
+$endif

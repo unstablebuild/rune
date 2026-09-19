@@ -547,6 +547,55 @@ func TestStartCommand(t *testing.T) {
 				"got %q", stdout.String())
 	})
 
+	t.Run("empty Cmd.Path with bash exports INPUTRC only when zdotdir has one", func(t *testing.T) {
+		// readline does not fall back to ~/.inputrc when $INPUTRC names a
+		// missing file, so a stale zdotdir must not be exported.
+		for _, tc := range []struct {
+			name        string
+			withInputrc bool
+			want        func(zdotDir string) string
+		}{
+			{"inputrc present", true, func(zdotDir string) string {
+				return "INPUTRC=" + filepath.Join(zdotDir, "inputrc") + "\n"
+			}},
+			{"inputrc missing", false, func(string) string { return "INPUTRC=unset\n" }},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				zdotDir := t.TempDir()
+				if tc.withInputrc {
+					require.NoError(t, os.WriteFile(
+						filepath.Join(zdotDir, "inputrc"), nil, 0o644))
+				}
+				s, dir := newZdotDirFileScheme(t, zdotDir)
+				t.Setenv("INPUTRC", "")
+
+				got := runShellCommand(t, s, dir, "bash",
+					"#!/bin/sh\nexec /bin/sh \"$@\"\n",
+					workspaceapi.Cmd{Args: []string{"-c", "echo INPUTRC=${INPUTRC:-unset}"}})
+				assert.Equal(t, tc.want(zdotDir), got)
+			})
+		}
+	})
+
+	t.Run("empty Cmd.Path with fish adds the init command to default args only", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			args []string
+			want string
+		}{
+			{"default args", nil, "--login\n-i\n-C\n" + FishInitCommand + "\n"},
+			{"explicit args", []string{"-c", "true"}, "-c\ntrue\n"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				s, dir := newZdotDirFileScheme(t, t.TempDir())
+				got := runShellCommand(t, s, dir, "fish",
+					"#!/bin/sh\nprintf '%s\\n' \"$@\"\n",
+					workspaceapi.Cmd{Args: tc.args})
+				assert.Equal(t, tc.want, got)
+			})
+		}
+	})
+
 	// Reproduces the bug from RUNE-184: a Cmd.Path beginning with ~
 	// was forwarded verbatim to fork/exec because StartCommand
 	// didn't expand it, even though every other path-taking
@@ -967,6 +1016,48 @@ func TestReadFileClosesFile(t *testing.T) {
 // unwrap-to-fork window, so the pair runs repeatedly from a common
 // barrier to cover the interleavings deterministically enough for
 // the race detector.
+// newZdotDirFileScheme returns a fileScheme rooted at a temp dir whose
+// config sets zdotdir, as the IDE does for bundled shell dotfiles.
+func newZdotDirFileScheme(t *testing.T, zdotDir string) (*fileScheme, string) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	uri, err := workspaceapi.ParseURI("file://" + tmpDir)
+	require.NoError(t, err)
+
+	s := new(fileScheme)
+	s.osStat = os.Stat
+	s.getUser = func() (*user.User, error) {
+		return &user.User{Username: "git", HomeDir: "/home/git"}, nil
+	}
+	s.lookupUser = func(name string) (*user.User, error) {
+		return &user.User{Username: name, HomeDir: "/home/" + name}, nil
+	}
+	require.NoError(t, s.init(
+		config.MapConfig(map[string]any{"zdotdir": zdotDir}), uri))
+	return s, tmpDir
+}
+
+// runShellCommand starts cmd through s with SHELL pointed at a script named
+// shellName, so the fileScheme's shell detection sees that basename, and
+// returns the script's stdout.
+func runShellCommand(
+	t *testing.T, s *fileScheme, dir, shellName, script string, cmd workspaceapi.Cmd,
+) string {
+	t.Helper()
+	bin := filepath.Join(dir, shellName)
+	require.NoError(t, os.WriteFile(bin, []byte(script), 0o755))
+	t.Setenv("SHELL", bin)
+
+	var stdout bytes.Buffer
+	ch := make(chan error)
+	cmd.Stdout = &stdout
+	cmd.Watcher = workspaceapi.ChanProcessWatcher(ch)
+	_, err := s.StartCommand(context.Background(), cmd)
+	require.NoError(t, err)
+	require.NoError(t, <-ch)
+	return stdout.String()
+}
+
 func TestFileSchemeCloseDoesNotRaceStartCommand(t *testing.T) {
 	dir := t.TempDir()
 	uri, err := makeLocalURI(dir)
