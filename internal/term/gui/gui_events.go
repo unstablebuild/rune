@@ -14,32 +14,38 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-package debug
+package gui
 
 import (
-	"fmt"
-	"net"
-	"net/http"
-	_ "net/http/pprof"
-	"runtime"
+	"time"
 
-	log "github.com/sirupsen/logrus"
+	ebiten "github.com/hajimehoshi/ebiten/v2"
+	"github.com/unstablebuild/rune-go-sdk/term"
 )
 
-// StartPProfHTTP serves pprof on addr and returns the bound address.
-func StartPProfHTTP(addr string) (string, error) {
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		return "", fmt.Errorf("pprof listen %q: %w", addr, err)
+// PublishEvent enqueues ev for the next frame and wakes the run loop.
+func (g *GUI) PublishEvent(ev term.Event) bool {
+	if ev.Type == term.EventInterrupt && ev.Raw == nil && ev.UserFunc == nil {
+		g.interruptPending.Store(true)
+		ebiten.ScheduleFrame()
+		return true
 	}
-	runtime.SetBlockProfileRate(1)
-	runtime.SetMutexProfileFraction(1)
-	bound := ln.Addr().String()
-	log.Infof("pprof server listening on http://%s/debug/pprof/", bound)
-	go CapturePanicReport(func() {
-		if err := http.Serve(ln, nil); err != http.ErrServerClosed {
-			log.Errorf("pprof serve: %v", err)
+	select {
+	case g.updateChan <- ev:
+		ebiten.ScheduleFrame()
+		return true
+	default:
+		return false
+	}
+}
+
+func (g *GUI) awaitEchoInterrupt() bool {
+	deadline := time.Now().Add(echoWaitBudget)
+	for !g.interruptPending.Load() {
+		if !time.Now().Before(deadline) {
+			return false
 		}
-	})
-	return bound, nil
+		time.Sleep(echoPollInterval)
+	}
+	return true
 }

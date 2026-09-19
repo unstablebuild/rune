@@ -1038,7 +1038,7 @@ func (l *loadedLanguage) close() {
 		l.parser.Close()
 	}
 	if l.lib != 0 {
-		_ = purego.Dlclose(l.lib)
+		_ = sysDlclose(l.lib)
 	}
 }
 
@@ -1088,15 +1088,15 @@ func loadLanguage(
 		query = string(data)
 	}
 
-	lib, err := purego.Dlopen(langfile, purego.RTLD_NOW|purego.RTLD_GLOBAL)
+	lib, err := sysDlopen(langfile, dlNow|dlGlobal)
 	if err != nil {
 		return nil, "", fmt.Errorf("dlopen %q: %w", langfile, err)
 	}
 
 	parserID := fmt.Sprintf("tree_sitter_%s", langID)
-	sym, err := purego.Dlsym(lib, parserID)
+	sym, err := sysDlsym(lib, parserID)
 	if err != nil {
-		_ = purego.Dlclose(lib)
+		_ = sysDlclose(lib)
 		return nil, "", fmt.Errorf("load symbol %q: %w", parserID, err)
 	}
 	var langFn func() uintptr
@@ -1105,7 +1105,7 @@ func loadLanguage(
 	language := sitter.NewLanguage(unsafe.Pointer(langFn()))
 	sitterParser := sitter.NewParser()
 	if err = sitterParser.SetLanguage(language); err != nil {
-		_ = purego.Dlclose(lib)
+		_ = sysDlclose(lib)
 		sitterParser.Close()
 		return nil, "", fmt.Errorf("set parser language: %v", err)
 	}
@@ -1128,7 +1128,7 @@ func (t *parser) Close() (ret error) {
 	t.closed = true
 	t.parser.Close()
 	t.query.Close()
-	ret = purego.Dlclose(t.lib)
+	ret = sysDlclose(t.lib)
 	return
 }
 

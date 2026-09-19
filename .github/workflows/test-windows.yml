@@ -1,0 +1,43 @@
+name: Windows
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: windows-2022
+    runs-on: windows-2022
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build GUI binary
+        shell: bash
+        run: |
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 \
+            go build -tags=ebitensinglethread -o bin/rune.exe ./cmd/rune
+
+      - name: Smoke test the built binary
+        shell: bash
+        run: ./bin/rune.exe --version
+
+      - name: Test graphics packages
+        shell: bash
+        run: go test -count=1 ./internal/term/gui/wingfx ./internal/term/gui/font

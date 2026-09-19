@@ -14,32 +14,23 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-package debug
+//go:build windows
+
+package vte
 
 import (
-	"fmt"
-	"net"
-	"net/http"
-	_ "net/http/pprof"
-	"runtime"
+	"context"
 
-	log "github.com/sirupsen/logrus"
+	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 )
 
-// StartPProfHTTP serves pprof on addr and returns the bound address.
-func StartPProfHTTP(addr string) (string, error) {
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		return "", fmt.Errorf("pprof listen %q: %w", addr, err)
-	}
-	runtime.SetBlockProfileRate(1)
-	runtime.SetMutexProfileFraction(1)
-	bound := ln.Addr().String()
-	log.Infof("pprof server listening on http://%s/debug/pprof/", bound)
-	go CapturePanicReport(func() {
-		if err := http.Serve(ln, nil); err != http.ErrServerClosed {
-			log.Errorf("pprof serve: %v", err)
-		}
-	})
-	return bound, nil
+type ptyGather struct {
+	ready chan []byte
+	err   error
 }
+
+func newPtyGather(context.Context, workspaceapi.File) (*ptyGather, bool) {
+	return nil, false
+}
+
+func (g *ptyGather) release([]byte) {}
