@@ -98,6 +98,11 @@ type request struct {
 	// by resolving the request. Atomic because a Stop-driven close
 	// can stamp it from the run goroutine.
 	winClosed atomic.Bool
+	// skipRequested is stamped by the content's "Skip"
+	// button while the overlay-browser lock is held; the TUI loop
+	// reaps it in Handle (or via the scheduled exitOnSkip tick) by
+	// stopping the run.
+	skipRequested atomic.Bool
 
 	// stepNum is the 1-based "visible content" step number snapshot
 	// at publish time. Only reqFloatingWindow and reqMarkdown bump

@@ -546,11 +546,17 @@ func (t *Tutorial) Handle(ev term.Event) (bool, bool) {
 	active := t.active
 	finished := t.finished
 	t.mu.Unlock()
-	if !finished && active != nil && active.winClosed.Load() {
-		switch active.kind {
-		case reqFloatingWindow, reqConfirm, reqChoice:
-			t.resolve(active, dismissalOrPendingResponse(active))
+	if !finished && active != nil {
+		if active.skipRequested.Load() {
+			t.Stop()
 			return t.exitState(), true
+		}
+		if active.winClosed.Load() {
+			switch active.kind {
+			case reqFloatingWindow, reqConfirm, reqChoice:
+				t.resolve(active, dismissalOrPendingResponse(active))
+				return t.exitState(), true
+			}
 		}
 	}
 	if ev.Type != term.EventKey {
@@ -669,6 +675,10 @@ func (t *Tutorial) handlePrompt(r *request, ev term.Event) (bool, bool) {
 		return false, false
 	}
 	_, handled := t.winOverlay.Handle(ev)
+	if r.skipRequested.Load() {
+		t.Stop()
+		return t.exitState(), true
+	}
 	if !r.winClosed.Load() {
 		return false, handled
 	}
@@ -941,6 +951,32 @@ func (t *Tutorial) exitState() bool {
 	finished := t.finished
 	t.mu.Unlock()
 	return finished
+}
+
+// requestSkip stamps the request's skip flag and schedules a TUI-loop
+// reap. It runs while the overlay-browser lock is held (a button
+// click dispatched by the browser), so it may only stamp state and
+// queue the tick — never call back into the overlay or block on the
+// loop.
+func (r *request) requestSkip(t *Tutorial) {
+	r.skipRequested.Store(true)
+	if t.scheduleNextTick != nil {
+		t.scheduleNextTick(t.exitOnSkip)
+	}
+}
+
+// exitOnSkip is the scheduled reap for a "Skip" click: the
+// tutorial exits as if `tutorial stop` ran, provided the armed
+// request is still the clicked one.
+func (t *Tutorial) exitOnSkip() {
+	t.mu.Lock()
+	active := t.active
+	finished := t.finished
+	t.mu.Unlock()
+	if finished || active == nil || !active.skipRequested.Load() {
+		return
+	}
+	t.Stop()
 }
 
 // WaitActive blocks until the run goroutine publishes a request whose

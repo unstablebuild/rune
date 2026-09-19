@@ -114,7 +114,7 @@ func TestFloatingWindowContentPadding(t *testing.T) {
 	t.Parallel()
 	md, ok := newHintMarkdown("body")
 	require.True(t, ok)
-	content := newFloatingWindowContent(md, 80, 24, nil)
+	content := newFloatingWindowContent(md, 80, 24, nil, nil)
 
 	w := term.NewStringWriter(12, 5)
 	comptest.TestComponent(t, content, w, []comptest.TestCase{
@@ -133,7 +133,7 @@ func TestFloatingWindowContentHandlerSequence(t *testing.T) {
 	t.Parallel()
 	md, ok := newHintMarkdown("Line1\n\nLine2\n\nLine3\n\nLine4")
 	require.True(t, ok)
-	content := newFloatingWindowContent(md, 80, 24, nil)
+	content := newFloatingWindowContent(md, 80, 24, nil, nil)
 
 	cases := []handlertest.SingleTestCase{
 		{

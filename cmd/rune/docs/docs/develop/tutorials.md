@@ -764,7 +764,8 @@ into the hint text rather than trying to observe those keys with a
   surfaces as an error notification and ends the tutorial.
 - `fail("message")` ends the tutorial with an error notification.
 - The user can always run the `tutorial stop` command to dismiss the
-  overlay.
+  overlay. Step windows and prompts also carry a `Skip`
+  button that stops the tutorial the same way.
 
 ## See also
 

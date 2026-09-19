@@ -2091,3 +2091,130 @@ tutorial(entry=run)
 		"prompt No option must be rendered on the tutorial layer")
 	tut.Stop()
 }
+
+// TestSkipButtonRendersOnStepWindow asserts that every step window
+// carries the "Skip" button on its last content row.
+func TestSkipButtonRendersOnStepWindow(t *testing.T) {
+	t.Parallel()
+	src := `
+def run():
+    floating_window(text="hi")
+tutorial(entry=run)
+`
+	tut, _ := newTutorial(t, src)
+	resetAndWait(t, tut, time.Second)
+	require.Equal(t, "floating_window", activeKindFor(tut))
+
+	g := newGridWriter(80, 24)
+	tut.Draw(g)
+	tut.winOverlay.Draw(g)
+	assert.True(t, gridContains(g, "Skip"),
+		"step window must render the skip button")
+	tut.Stop()
+}
+
+// TestSkipButtonClickExitsTutorial asserts that clicking the button
+// region of a floating_window step exits the whole tutorial, while a
+// click elsewhere in the window does not.
+func TestSkipButtonClickExitsTutorial(t *testing.T) {
+	t.Parallel()
+	src := `
+def run():
+    floating_window(text="hi")
+    notify(message="reached")
+tutorial(entry=run)
+`
+	tut, notis := newTutorial(t, src)
+	resetAndWait(t, tut, time.Second)
+	tut.mu.Lock()
+	req := tut.active
+	tut.mu.Unlock()
+	require.NotNil(t, req)
+	pos, winW, winH, ok := tut.winOverlay.WindowRect(req.win)
+	require.True(t, ok)
+
+	// A press inside the window but off the button row (the frame
+	// insets content by one cell) must not arm a skip.
+	_, _ = tut.winOverlay.HandleMouse(term.Event{
+		Type: term.EventMouse, Key: term.MouseLeft,
+		MouseX: pos.X + 1, MouseY: pos.Y + 1,
+	})
+	assert.False(t, req.skipRequested.Load(),
+		"click off the button must not arm a skip")
+	_, _ = tut.winOverlay.HandleMouse(term.Event{
+		Type: term.EventMouse, Key: term.MouseRelease,
+		MouseX: pos.X + 1, MouseY: pos.Y + 1,
+	})
+
+	// The button occupies the last content row's rightmost cells.
+	_, _ = tut.winOverlay.HandleMouse(term.Event{
+		Type: term.EventMouse, Key: term.MouseLeft,
+		MouseX: pos.X + winW - 2, MouseY: pos.Y + winH - 2,
+	})
+	require.True(t, req.skipRequested.Load(),
+		"click on the button must arm a skip")
+
+	exit, _ := tut.Handle(term.Event{Type: term.EventKey, Key: term.KeyEsc})
+	assert.True(t, exit, "skip must exit the tutorial")
+	waitFinished(t, tut, time.Second)
+	assert.False(t, notis.containsSubstring("reached"),
+		"steps after the skipped one must not run")
+}
+
+// TestSkipButtonClickOnWaitHint asserts the same button works on the
+// non-modal hint window of a wait_* step, the surface that previously
+// had no working exit affordance.
+func TestSkipButtonClickOnWaitHint(t *testing.T) {
+	t.Parallel()
+	src := `
+def run():
+    wait_key(key="<f1>")
+    notify(message="reached")
+tutorial(entry=run)
+`
+	tut, notis := newTutorial(t, src)
+	resetAndWait(t, tut, time.Second)
+	tut.mu.Lock()
+	req := tut.active
+	tut.mu.Unlock()
+	require.NotNil(t, req)
+	require.Equal(t, "wait_key", req.kind.String())
+	pos, winW, winH, ok := tut.winOverlay.WindowRect(req.win)
+	require.True(t, ok)
+
+	_, _ = tut.winOverlay.HandleMouse(term.Event{
+		Type: term.EventMouse, Key: term.MouseLeft,
+		MouseX: pos.X + winW - 2, MouseY: pos.Y + winH - 2,
+	})
+	require.True(t, req.skipRequested.Load())
+
+	exit, _ := tut.Handle(term.Event{Type: term.EventKey, Key: term.KeyEsc})
+	assert.True(t, exit)
+	waitFinished(t, tut, time.Second)
+	assert.False(t, notis.containsSubstring("reached"))
+}
+
+// TestPromptSkipOptionExitsTutorial asserts that the appended "Skip
+// tutorial" option on a choice prompt exits the whole tutorial rather
+// than resolving the step with a value.
+func TestPromptSkipOptionExitsTutorial(t *testing.T) {
+	t.Parallel()
+	src := `
+def run():
+    pick = choice(message="pick", options=["A", "B"])
+    notify(message="reached")
+tutorial(entry=run)
+`
+	tut, notis := newTutorial(t, src)
+	resetAndWait(t, tut, time.Second)
+	require.Equal(t, "choice", activeKindFor(tut))
+
+	// The appended skip option sits one past the last real option.
+	_, _ = tut.Handle(term.Event{Type: term.EventKey, Key: term.KeyArrowRight})
+	_, _ = tut.Handle(term.Event{Type: term.EventKey, Key: term.KeyArrowRight})
+	exit, _ := tut.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
+	assert.True(t, exit, "skip option must exit the tutorial")
+	waitFinished(t, tut, time.Second)
+	assert.False(t, notis.containsSubstring("reached"),
+		"steps after the skipped prompt must not run")
+}

@@ -32,6 +32,15 @@ import (
 
 var _ browser.ScrollableFloating = (*floatingWindowContent)(nil)
 
+// skipButtonLabel is the "Skip" button text drawn on the last row of
+// every step window. The label is padded so it reads as a button
+// rather than part of the step copy.
+const skipButtonLabel = " Skip "
+
+// skipButtonAttr renders the button in reverse video so it reads as a
+// clickable affordance under any theme.
+var skipButtonAttr = term.Attributes{Attrs: term.AttrReverse}
+
 // floatingWindowContent is the browser-window content of a
 // floating_window step or a wait_* hint: the step's markdown body
 // behind a less-like mouse-scrollable viewer. Dimensions reproduces
@@ -56,10 +65,18 @@ type floatingWindowContent struct {
 	// only stamp state — it is called while the overlay-browser lock
 	// is held.
 	onClose func()
+	// onSkip runs when the user clicks the "Skip" button on
+	// the content's last row. The same overlay-browser lock rule
+	// applies as for onClose.
+	onSkip func()
+	// width and height record the last Resize dimensions so Draw and
+	// Handle can share the button's row geometry.
+	width, height int
 }
 
 func newFloatingWindowContent(
-	md *markdown.Component, width, height int, onClose func(),
+	md *markdown.Component, width, height int,
+	onClose, onSkip func(),
 ) *floatingWindowContent {
 	mdh := mdhandler.New(md)
 	c := &floatingWindowContent{
@@ -71,6 +88,7 @@ func newFloatingWindowContent(
 				component.AlignmentHorizontallyCentered,
 		}),
 		onClose: onClose,
+		onSkip:  onSkip,
 	}
 	c.setScreen(width, height)
 	return c
@@ -82,14 +100,41 @@ func (c *floatingWindowContent) setScreen(width, height int) {
 
 func (c *floatingWindowContent) Draw(w term.Writer) {
 	c.span.Draw(w)
+	c.drawSkipButton(w)
 }
 
 func (c *floatingWindowContent) Resize(width, height int) {
+	c.width, c.height = width, height
 	c.span.Resize(width, height)
 }
 
 func (c *floatingWindowContent) Handle(ev term.Event) (bool, bool) {
+	if c.onSkip != nil && ev.Type == term.EventMouse &&
+		ev.Key == term.MouseLeft && c.inSkipButton(ev.MouseX, ev.MouseY) {
+		c.onSkip()
+		return false, true
+	}
 	return c.span.Handle(ev)
+}
+
+// drawSkipButton paints the "Skip" button right-aligned on
+// the content's last row.
+func (c *floatingWindowContent) drawSkipButton(w term.Writer) {
+	if c.width < len(skipButtonLabel) || c.height < 1 {
+		return
+	}
+	x0 := c.width - len(skipButtonLabel)
+	for i, r := range skipButtonLabel {
+		w.SetCell(term.Coordinates{X: x0 + i, Y: c.height - 1},
+			term.NewCell(r, 1, skipButtonAttr))
+	}
+}
+
+// inSkipButton reports whether the content-local point (x, y) is on
+// the button row drawn by drawSkipButton.
+func (c *floatingWindowContent) inSkipButton(x, y int) bool {
+	return c.width >= len(skipButtonLabel) &&
+		y == c.height-1 && x >= c.width-len(skipButtonLabel)
 }
 
 func (c *floatingWindowContent) Cursor() (term.Coordinates, term.CursorStyle, bool) {
@@ -138,9 +183,9 @@ func (t *Tutorial) openFloatingWindow(r *request, width, height int) {
 	if t.winOverlay == nil || r.md == nil {
 		return
 	}
-	content := newFloatingWindowContent(r.md, width, height, func() {
-		r.winClosed.Store(true)
-	})
+	content := newFloatingWindowContent(r.md, width, height,
+		func() { r.winClosed.Store(true) },
+		func() { r.requestSkip(t) })
 	align := r.align
 	if align == 0 {
 		align = defaultStepAlignment
@@ -178,6 +223,10 @@ func (t *Tutorial) openPromptWindow(r *request) {
 	}
 	ph := handler.FuncPromptHandler(
 		func(idx int, option string) {
+			if idx == len(r.options) {
+				r.requestSkip(t)
+				return
+			}
 			value := option
 			if idx >= 0 && idx < len(r.options) {
 				value = r.options[idx]
@@ -197,8 +246,8 @@ func (t *Tutorial) openPromptWindow(r *request) {
 			return nil
 		},
 	)
-	r.win = t.winOverlay.Prompt(
-		r.message, padPromptOptions(r.options), nil, ph)
+	options := append(padPromptOptions(r.options), skipButtonLabel)
+	r.win = t.winOverlay.Prompt(r.message, options, nil, ph)
 }
 
 // defaultStepAlignment anchors step windows at the bottom of the
@@ -227,9 +276,9 @@ func (t *Tutorial) openHintWindow(r *request, width, height int) {
 	if !ok {
 		return
 	}
-	content := newFloatingWindowContent(md, width, height, func() {
-		r.winClosed.Store(true)
-	})
+	content := newFloatingWindowContent(md, width, height,
+		func() { r.winClosed.Store(true) },
+		func() { r.requestSkip(t) })
 	r.winContent = content
 	align := defaultStepAlignment
 	switch {
