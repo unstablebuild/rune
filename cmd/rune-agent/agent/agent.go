@@ -1779,9 +1779,10 @@ func NextArchivedID(ctx context.Context, store dialoguemanager.Store, dialogueID
 }
 
 var (
-	reAnalysis   = regexp.MustCompile(`(?s)<analysis>.*?</analysis>`)
-	reSummary    = regexp.MustCompile(`(?s)<summary>(.*?)</summary>`)
-	reBlankLines = regexp.MustCompile(`\n\n+`)
+	reAnalysis         = regexp.MustCompile(`(?s)<analysis>.*?</analysis>`)
+	reSummary          = regexp.MustCompile(`(?s)<summary>(.*?)</summary>`)
+	reBlankLines       = regexp.MustCompile(`\n\n+`)
+	reTrailingToolTags = regexp.MustCompile(`(?:\s*</(?:parameter|invoke)>)+\s*$`)
 )
 
 // SummarizePrompt is the prompt sent to the LLM when compacting a
@@ -1834,7 +1835,10 @@ func cleanSummary(raw string) string {
 	if m := reSummary.FindStringSubmatch(text); len(m) >= 2 {
 		inner := strings.TrimSpace(m[1])
 		text = reSummary.ReplaceAllString(text, "Summary:\n"+inner)
+	} else if before, after, ok := strings.Cut(text, "<summary>"); ok {
+		text = before + "Summary:\n" + strings.TrimSpace(after)
 	}
+	text = reTrailingToolTags.ReplaceAllString(text, "")
 	text = reBlankLines.ReplaceAllString(text, "\n")
 	return strings.TrimSpace(text)
 }
@@ -1860,6 +1864,7 @@ func Summarize(ctx context.Context, svc llmapi.Service, model llmapi.ModelEntry,
 	defer it.Close() //nolint:errcheck
 
 	var sb strings.Builder
+	var done *llmapi.DoneData
 	for {
 		ev, ok := it.Next(ctx)
 		if !ok {
@@ -1868,12 +1873,19 @@ func Summarize(ctx context.Context, svc llmapi.Service, model llmapi.ModelEntry,
 		if ev.Type == llmapi.EventTextDelta {
 			sb.WriteString(ev.Text)
 		}
+		if ev.Type == llmapi.EventStreamDone {
+			done = ev.DoneData
+		}
 		if ev.Type == llmapi.EventStreamError {
 			return "", ev.Error
 		}
 	}
 	if err := it.Err(); err != nil {
 		return "", err
+	}
+	if done != nil && done.FinishReason == llmapi.FinishReasonLength {
+		return "", fmt.Errorf("summary truncated after %d output tokens; raise /max_tokens",
+			done.Usage.TokensReceived)
 	}
 	summary := cleanSummary(sb.String())
 	if summary == "" {
