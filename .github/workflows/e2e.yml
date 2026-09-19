@@ -25,15 +25,47 @@ jobs:
         with:
           extra-packages: mesa-utils vim
 
-      # The e2e suites drive real toolchains; each one skips when its
-      # binary is absent, so a missing tool degrades coverage rather
-      # than failing the run.
+      # The e2e suites self-skip when a binary is absent, so a failed
+      # install here would silently shrink the run to a green no-op.
+      # Install strictly and export every install dir so the suites see
+      # the tools.
       - name: Install language toolchains
         run: |
           go install golang.org/x/tools/gopls@latest
           go install github.com/go-delve/delve/cmd/dlv@latest
-          rustup component add rust-analyzer || true
+          rustup component add rust-analyzer
           curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # The Python suites fail, rather than skip, when the host ty/ruff
+      # diverges from the version the language package distributes, so
+      # read the pins from the suite instead of duplicating them here.
+      - name: Install pinned Python language servers
+        run: |
+          py=internal/ide/idelsp/py_test.go
+          ty_version=$(sed -n 's/.*pinnedTyVersion[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p' $py)
+          ruff_version=$(sed -n 's/.*pinnedRuffVersion[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p' $py)
+          if [ -z "$ty_version" ] || [ -z "$ruff_version" ]; then
+            echo "could not read ty/ruff pins from $py" >&2
+            exit 1
+          fi
+          uv tool install "ty==$ty_version"
+          uv tool install "ruff==$ruff_version"
+
+      # Every suite gates on exec.LookPath, so an unexported install dir
+      # turns into skipped coverage that still reports success.
+      - name: Verify toolchains resolve on PATH
+        run: |
+          status=0
+          for bin in gopls dlv rust-analyzer cargo uv uvx ty ruff; do
+            if ! command -v "$bin"; then
+              echo "$bin is not on PATH; e2e suites would silently skip" >&2
+              status=1
+            fi
+          done
+          exit $status
 
       # The GUI e2e suites open real windows through ebiten/glfw,
       # which needs an X display; the hosted runners are headless.
