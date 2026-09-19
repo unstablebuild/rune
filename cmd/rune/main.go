@@ -860,6 +860,8 @@ func runGUI(
 	defer func() { _ = root.Close() }()
 	guiRef.Store(g)
 	root.attachGUI(g, transparentWindow)
+	defer watchGUISignals(publishEvent,
+		quitEvent(appMenuKeyBindings(cfg)))()
 
 	if fg, bg := getGUIWindowOpacity(browser, cfg); transparentWindow && (fg != 1 || bg != 1) {
 		g.SetOpacity(bg, fg)
