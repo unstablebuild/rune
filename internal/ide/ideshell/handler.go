@@ -987,9 +987,11 @@ func (h *Handler) handleCompletion(ev term.Event) (exit, handled bool) {
 			return false, true
 		case term.KeyArrowUp:
 			h.list.FocusUp()
+			h.compMoved = true
 			return false, true
 		case term.KeyArrowDown:
 			h.list.FocusDown()
+			h.compMoved = true
 			return false, true
 		case term.KeyBackspace:
 			return h.completionBackspace()
