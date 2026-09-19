@@ -428,7 +428,7 @@ func appLaunchArgs(goos, zdotDir string) ([]string, bool) {
 		args = append(args, "--rune-zdotdir="+zdotDir)
 	}
 	switch goos {
-	case "darwin", "linux":
+	case "darwin", "linux", "windows":
 		return append(args, "-G", "-w", ""), true
 	default:
 		return nil, false
