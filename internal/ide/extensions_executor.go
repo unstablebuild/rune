@@ -47,12 +47,6 @@ type extensionsExecutor struct {
 	shell *workspaceshell.Executor
 }
 
-// extensionsCmdDir is the working directory installed on every
-// extension Cmd. /tmp is the only path POSIX guarantees to exist and
-// to be writable by all users; we don't care where the extension
-// runs as long as it doesn't blow up on chdir.
-const extensionsCmdDir = "/tmp"
-
 // newExtensionsExecutor builds a fresh extensionsExecutor backed by
 // a local fileScheme rooted at extensionsCmdDir and a tracking
 // workspaceshell.Executor.

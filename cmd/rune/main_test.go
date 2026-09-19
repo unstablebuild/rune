@@ -439,3 +439,25 @@ func TestResolveDefaultConfigPathUsesDatadirDefaultLocation(t *testing.T) {
 		t.Fatalf("resolveDefaultConfigPath() = %q, want %q", got, want)
 	}
 }
+
+func TestDataPathDefaultsUseOSPaths(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skipf("no home directory: %v", err)
+	}
+	for _, tc := range []struct {
+		name string
+		got  string
+		want string
+	}{
+		{"datadir", defaultDataPath, filepath.Join(home, ".rune")},
+		{"workspace server log", flag.Lookup("workspace-server-log").DefValue,
+			filepath.Join(home, ".rune", "server.log")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.got != tc.want {
+				t.Fatalf("default = %q, want %q", tc.got, tc.want)
+			}
+		})
+	}
+}
