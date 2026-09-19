@@ -19,6 +19,7 @@ package firstmover
 import (
 	"context"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -506,6 +507,40 @@ func TestPartitionRoutesThroughRootLeader(t *testing.T) {
 	var got testStruct
 	require.NoError(t, followerPart.Get(context.Background(), "k", &got))
 	assert.Equal(t, "via-leader", got.A)
+}
+
+// TestServiceTakesOverStaleLock covers a leader that died without cleaning up
+// (the socket file is left behind with nobody listening) and a data directory
+// that does not exist yet: either way the next process must become leader.
+func TestServiceTakesOverStaleLock(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		lockFile func(t *testing.T) string
+	}{
+		{"socket left by a dead leader", func(t *testing.T) string {
+			lockFile := makeTempLockFile(t)
+			l, err := net.Listen("unix", lockFile)
+			require.NoError(t, err)
+			l.(*net.UnixListener).SetUnlinkOnClose(false)
+			require.NoError(t, l.Close())
+			_, err = os.Stat(lockFile)
+			require.NoError(t, err, "stale socket must remain on disk")
+			return lockFile
+		}},
+		{"lock directory does not exist yet", func(t *testing.T) string {
+			return filepath.Join(t.TempDir(), "missing", "db.lock")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := New(factoryFor(storagestub.NewInMemoryService()), tc.lockFile(t), testConfig())
+			t.Cleanup(func() { _ = svc.Close() })
+
+			part, err := svc.Partition("p")
+			require.NoError(t, err)
+			require.NoError(t, part.Set(context.Background(), "k", &testStruct{A: "v"}))
+			assert.True(t, svc.IsLeader())
+		})
+	}
 }
 
 func TestPartitionWorksAfterLeaderFailoverWithoutGoodbye(t *testing.T) {
