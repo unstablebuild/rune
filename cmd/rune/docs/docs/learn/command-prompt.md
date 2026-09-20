@@ -55,7 +55,7 @@ editors a bare printable key would be inserted into the buffer, so the prompt
 needs a modified combination. In `exo` (exoeditor) mode there is no safe
 default at all: the prompt key has to be one your guest editor will leave for
 Rune. Pick a modified combination such as `<shift-meta-p>`.
-See the [command-prompt configuration](../config#command-prompt) for
+See the [command-prompt configuration](../config.md#command-prompt) for
 the full rules and recommended combinations.
 
 ## Arguments and quoting
