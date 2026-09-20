@@ -17,6 +17,7 @@
 package dialoguetui
 
 import (
+	"net/url"
 	"time"
 
 	"github.com/unstablebuild/rune-go-sdk/clipboard"
@@ -53,7 +54,7 @@ type ComponentConfig struct {
 	// messages and control their alignment.
 	QueuedMessageSpanConfig component.SpanConfig
 	// QueuedMessagePrefix is the prefix shown before each queued message.
-	// Defaults to "󰄝 " when empty.
+	// Defaults to "󰑝 " when empty.
 	QueuedMessagePrefix string
 
 	// ReceiveMessageStringConfig determines the StringConfig of the received
@@ -140,13 +141,13 @@ type ComponentConfig struct {
 	// icon (?) in the collapsed tool view. Defaults to aqua.
 	CollapsedPromptAttr term.Attributes
 	// CollapsedMemoryAttr determines the attributes for the memory
-	// icon (󰍛) in the collapsed tool view. Defaults to purple.
+	// icon (󰭛) in the collapsed tool view. Defaults to purple.
 	CollapsedMemoryAttr term.Attributes
 	// CollapsedResultAttr determines the attributes for the sub-agent
-	// result icon (󰮹) in the collapsed tool view. Defaults to green.
+	// result icon (󲾹) in the collapsed tool view. Defaults to green.
 	CollapsedResultAttr term.Attributes
 	// CollapsedResultErrorAttr determines the attributes for the sub-agent
-	// error result icon (󱑑) in the collapsed tool view. Defaults to red.
+	// error result icon (󵑑) in the collapsed tool view. Defaults to red.
 	CollapsedResultErrorAttr term.Attributes
 	// MemoryIDStringConfig determines the StringConfig for the memory
 	// ID text displayed in both expanded and collapsed views.
@@ -232,6 +233,11 @@ type ComponentConfig struct {
 	// StatusBar configures the dialogue's bottom status row. A
 	// zero value leaves the bar disabled and the layout unchanged.
 	StatusBar StatusBarConfig
+
+	// OnLinkClick is called when a markdown link is clicked in the messages area.
+	// Returning true marks the click as handled and suppresses text selection.
+	// A nil callback ignores clicks.
+	OnLinkClick func(*url.URL) bool
 }
 
 // DefaultMarkdownConfig returns the markdown config the transcript uses

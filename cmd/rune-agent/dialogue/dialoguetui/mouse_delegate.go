@@ -17,6 +17,8 @@
 package dialoguetui
 
 import (
+	"net/url"
+
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/mouse"
 	"github.com/unstablebuild/rune-go-sdk/term"
@@ -53,7 +55,18 @@ type mouseDelegate struct {
 }
 
 func (d *mouseDelegate) OnAction(ev term.Event, pos term.Coordinates, action mouse.Action) bool {
-	return false
+	if action != mouse.LeftClick || d.comp == nil || d.comp.cfg.OnLinkClick == nil {
+		return false
+	}
+	link := d.comp.LinkAt(pos)
+	if link == nil || link.URL == "" {
+		return false
+	}
+	parsed, err := url.Parse(link.URL)
+	if err != nil {
+		return false
+	}
+	return d.comp.cfg.OnLinkClick(parsed)
 }
 
 func (d *mouseDelegate) ScrollUp(n int) (ok bool) {
