@@ -354,6 +354,7 @@ linux-cross-compile:
 		--build-arg GIT_SSH_KEY="$$GIT_SSH_KEY" \
 		--build-arg RUNE_BUILD_TAG="$(VERSION)" \
 		--build-arg RUNE_BUILD_COMMIT="$(COMMIT)" \
+		--build-arg RUNE_BUILD_DATE="$(strip $(BUILD_DATE))" \
 		--build-arg RUNE_RELEASE_TAR="$(RUNE_LINUX_RELEASE_TAR)" \
 		--build-arg RUNE_ENV="$(RUNE_ENV)" \
 		--output type=local,dest=$(RUNE_LINUX_OUTPUT_DIR) \

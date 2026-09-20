@@ -75,7 +75,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 	GOOS=$TARGETOS \
 	GOARCH=$TARGETARCH \
 	go build \
-		-ldflags="-X unstable.build/rune/debug.Tag=$RUNE_BUILD_TAG -X unstable.build/rune/debug.Commit=$RUNE_BUILD_COMMIT -X unstable.build/rune/debug.Package=six" \
+		-ldflags="-X unstable.build/rune/internal/debug.Tag=$RUNE_BUILD_TAG -X unstable.build/rune/internal/debug.Commit=$RUNE_BUILD_COMMIT -X unstable.build/rune/internal/debug.Package=six" \
 		-o /out/fuzzy-search/bin/extension_fuzzy_search \
 		./cmd/extension_fuzzy_search; \
 	\

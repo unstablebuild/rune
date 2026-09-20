@@ -14,9 +14,9 @@ workspaceopen rune://<machine>/path/to/project
 
 There is no SSH server to run, no port to forward, no public address to
 expose, and no credentials to hand out. The machines find each other
-through Rune's coordination server and talk directly, so a laptop behind
-a home router and a workstation behind an office firewall reach each
-other without either being reachable from the internet.
+through Rune's coordination server and punch through the NATs in front
+of them, so from a cafe you can open the workspaces on the machine at
+home without opening a hole in your home network's firewall.
 
 A `rune://` workspace behaves exactly like an [SSH
 workspace](./ssh.md) once it is open: files, terminals, language
@@ -234,9 +234,10 @@ network.
 
 When a machine joins, Rune's coordination server checks your account,
 hands the machine short-lived credentials, and tells your machines about
-each other. Your files and terminals do not travel through it. Traffic
-goes directly between the two machines, encrypted end to end, and falls
-back to an encrypted relay only when no direct path can be established.
+each other. Your files and terminals do not travel through it: knowing
+where to find each other, the two machines hole-punch through their NATs
+and talk directly, encrypted end to end, and fall back to an encrypted
+relay only when no direct path can be established.
 
 Each machine serves its workspaces on port 7473 of its network address
 only. Every request carries the identity of the machine behind it, and
@@ -255,7 +256,7 @@ once open. They differ in what they need from you:
 | | [`ssh://`](./ssh.md) | `rune://` |
 | --- | --- | --- |
 | Addressed by | user, host, and port | machine name |
-| Reachability | the host must be reachable over SSH | neither machine needs to be reachable from outside |
+| Reachability | the host must be reachable over SSH, so a NAT or firewall in front of it needs a forwarded port | neither machine needs to be reachable from outside; Rune traverses the NATs between them |
 | Credentials | your SSH keys and `known_hosts` | your Rune account, nothing to manage |
 | The other end runs | a workspace server that Rune starts over SSH | the Rune instance already running there |
 | Toolchains | Rune mirrors your local language packages onto the host | the machine's own Rune install and packages |

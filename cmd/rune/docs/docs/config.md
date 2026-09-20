@@ -49,6 +49,58 @@ standard Starlark only, with no `load()`, no file I/O, and no environment
 access. A `config.star` that binds nothing (for example, a file with only
 comments) is treated as an empty overlay.
 
+## Applying config changes
+
+Rune does not watch the config file. Open it with `:config`, edit it, save it —
+nothing happens until you reload. There are two levels of reload.
+
+### `:workspacereload`
+
+`:workspacereload` closes the focused workspace and opens it again. The open
+buffers, cursor positions and window layout are restored, but everything the
+workspace owns is rebuilt from a fresh read of your config file and the
+workspace's `.rune/config.yaml`. This is the fastest way to try out a change
+and covers most of the configuration surface:
+
+- `editor.*`: mode, auto-save, tabspaces, comments, syntax size limits
+- `command.*`: prompt key, aliases, key bindings, history key, overlay
+- `syntax.*`, icons, frame and tab attributes, wallpaper
+- `terminal.*`, including the plugin bar
+- `extensions`: every extension process is stopped and started again
+- `debugger.*` adapters and language-server settings
+- `workspace.symbol_db` and extension auto-authorize settings
+
+Only the focused workspace is reloaded; other workspace tabs keep running with
+the configuration they were opened with.
+
+### Restart
+
+Everything that belongs to the process or to the GUI window is built once at
+startup and needs a restart:
+
+- all `gui.*` settings: fonts, themes, ligatures, opacity, blur,
+  scroll multiplier, key mapping, quick menu, `gui.env`
+- `log.output_path` and `log.level`
+- `models.*` (the LLM router), `notifications.*`, `telemetry.*`
+- `animations.*`, `workspace.home`, clipboard and macro settings
+- the configuration of the home screen shown when no workspace is open
+
+Some `gui.*` values can be changed for the current session with commands such
+as `guitheme`, `guifont`, `guifontsize` and `guiopacity`. Those changes are
+transient: write the corresponding key to your config file to make them
+permanent.
+
+You do not have to quit to try a `gui.*` change, though: `guiwindownew` spawns
+a second Rune process in its own OS window, and that process reads the config
+file from scratch. The new window comes up with your edited `gui.*` settings
+while the current one keeps running, which makes it a convenient way to test
+fonts, themes and window settings. Everything else in the restart list is
+per-process too, so the new window picks those up as well.
+
+Installing a package is the one case where config is applied without a reload:
+`gui.env` variables, newly added extensions and newly added tutorials are
+picked up live. If a package changes anything else, Rune tells you to restart.
+
 ## Editor Modes
 
 Rune ships with three built-in editors and supports running any terminal

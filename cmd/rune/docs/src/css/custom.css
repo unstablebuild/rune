@@ -13,6 +13,16 @@
   --ifm-code-font-size: 90%;
 }
 
+/* JetBrains Mono ships programming ligatures; key sequences like
+   `<shift-meta-->` must render literally. */
+code,
+pre,
+kbd,
+samp {
+  font-variant-ligatures: none;
+  font-feature-settings: "liga" 0, "clig" 0, "calt" 0;
+}
+
 /* ============================================================
    Theme palettes — selectable via the navbar dropdown.
    Each block sets only the eight palette slots; the panel,
