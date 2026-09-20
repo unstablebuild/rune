@@ -12,7 +12,9 @@ combinations are claimed by the operating system before any application sees the
 `<ctrl-space>`, for example, is bound by default to "Select the previous input source"
 and never makes it through to Rune, even though Rune binds it by default.
 
-### 1. Disable the conflicting macOS shortcut
+### Solution 1: Disable the conflicting shortcut
+
+#### 1. Disable the conflicting macOS shortcut
 
 For `<ctrl-space>` specifically:
 
@@ -35,7 +37,7 @@ component governs input on your system and remove or remap the conflicting short
 - **Tiling window managers** (i3, Sway, Hyprland, dwm, …): check the relevant config file (for example `~/.config/i3/config`, `~/.config/sway/config`, or `~/.config/hypr/hyprland.conf`) for a `bindsym`/`bind` line that claims the combination, and either remove it or rebind it.
 - **Input method frameworks** (IBus, Fcitx, ibus-anthy, …) also intercept keys such as `<ctrl-space>` for input-source switching. Disable the trigger in the framework's settings if you do not need it.
 
-### 2. Confirm the keystroke reaches Rune with the `keydump` command
+#### 2. Confirm the keystroke reaches Rune with the `keydump` command
 
 Once the OS-level shortcut is disabled, run the `keydump` command inside Rune to see exactly
 which key events Rune receives. Press the binding you want to verify. Each keystroke that reaches Rune is printed
@@ -46,6 +48,22 @@ also be claiming the combination.
 :::tip
 Press `<ctrl-c>` followed by `<ctrl-d>` to exit `keydump` and return to the normal prompt.
 :::
+
+### Solution 2: Run your OS in Kiosk Mode
+
+In Linux and Ubuntu, you can use [Gnome Kiosk](https://github.com/GNOME/gnome-kiosk)
+out of the box. It runs a minimal display server, so keys like `<meta>` pass through
+into Rune IDE instead of opening the start menu (and, `<alt+tab>` still tabs through OS windows).
+Other OSes may have similar software to run them in Kiosk Mode as well.
+
+Here is a step-by-step guide of how to set up Kiosk Mode for Ubuntu:
+
+1. Install Gnome Kiosk and script session: `sudo apt install gnome-kiosk gnome-kiosk-script-session`
+2. Edit `~/.local/bin/gnome-kiosk-script`, inserting commands to start Rune.
+3. Log out, select a user, then select the Kiosk session in the gear icon at the bottom right, and login.
+4. Rune IDE will start up, alongside any other apps you may have configured in "Startup Applications Preferences".
+
+If you then need to open other applications, you may open them by entering their command line equivalent in Rune terminals.
 
 ## My remapped key is not honored in Rune
 
