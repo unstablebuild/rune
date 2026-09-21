@@ -25,15 +25,8 @@ jobs:
         with:
           version: v2.11.3
           args: --timeout=600s
-      - name: Run GoHawk
-        run: |
-          archive="$RUNNER_TEMP/gohawk.tar.gz"
-          curl --fail --location --proto '=https' --tlsv1.2 \
-            --output "$archive" \
-            https://github.com/kojah/gohawk/releases/download/v0.3.5/gohawk_0.3.5_linux_amd64.tar.gz
-          echo "c7e80dec8e3aa0c85a66930032164bf27803f4591435fdb6588527684edac2ee  $archive" | sha256sum --check --strict
-          tar -xzf "$archive" -C "$RUNNER_TEMP" --strip-components=1 gohawk_0.3.5_linux_amd64/gohawk
-          "$RUNNER_TEMP/gohawk" -json -enable-all -disable=exitpolicy,goroutineownership,lockorder,processownership ./...
+      - name: Run gohawk
+        run: go run github.com/kojah/gohawk@v0.3.5 -json -enable-all -disable=exitpolicy,goroutineownership,lockorder,processownership ./...
 
   # gofmt and the header scan are both seconds of work, so they share a
   # runner rather than each paying for a checkout and a Go install.
