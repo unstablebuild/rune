@@ -125,7 +125,7 @@ func (c *Component) setDirtyFileAttr(file workspaceapi.URI, buf *cell.Buffer, la
 }
 
 func (c *Component) getSwapDir(file workspaceapi.URI) (workspaceapi.URI, error) {
-	return workspace.DefaultSwapDirectory(file)
+	return workspace.SwapDirectory(c.config.SwapDirectory, file)
 }
 
 // fileExists reports whether file is present on the backing

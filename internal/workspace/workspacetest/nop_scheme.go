@@ -197,7 +197,7 @@ func (t *NopScheme) ReadDir(string) (
 
 // MkdirAll satisfies schemeapi.Scheme
 func (t *NopScheme) MkdirAll(path string, perm os.FileMode) error {
-	panic("unimplemented")
+	return nil
 }
 
 // Watch satisfies schemeapi.Scheme

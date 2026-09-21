@@ -3476,6 +3476,23 @@ func (c ideConfig) editorMaxSizeForSyntax() (size int) {
 	return
 }
 
+// editorSwapDir reports whether swap files are kept in the data
+// directory rather than next to the file being edited.
+func (c ideConfig) editorSwapDir() bool {
+	cfg, ok := c.editor()
+	if !ok {
+		return true
+	}
+	enabled, err := cfg.GetBool("swap_dir")
+	if err != nil {
+		if err != config.ErrNotFound {
+			c.errors["editor.swap_dir"] = err
+		}
+		return true
+	}
+	return enabled
+}
+
 func (c ideConfig) wallpaper() (ret browser.Wallpaper) {
 	backgroundAttr := c.workspaceWallpaperBackgroundAttr()
 

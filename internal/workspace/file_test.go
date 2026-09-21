@@ -120,7 +120,9 @@ func openFile(
 	if err != nil {
 		return nil, err
 	}
-	l, err := newFile(scheme, filename, buf, swapDir, readOnly, inlineSchedule)
+	dir, swapFilePath := swapFileName(swapDir, filename)
+	l, err := newFile(scheme, filename, buf, sharedSwapDir(dir, filename),
+		swapFilePath, readOnly, inlineSchedule)
 	if err != nil {
 		return nil, err
 	}
@@ -1258,14 +1260,19 @@ func testFileBufferFlush(t *testing.T, newBuffer newBufferFunc) {
 		assert.True(t, called)
 	})
 
-	t.Run("flush bubbles up rename errors", func(t *testing.T) {
+	t.Run("flush bubbles up save errors when the rename fallback also fails", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 
 		f, mock, _ := newBuffer(t, ctrl)
 		myErr := errors.New("wtf")
 		f.scheme.(*testScheme).renameFunc = func(oldName, newName string) error {
-			return myErr
+			return errors.New("cross-device link")
+		}
+		f.scheme.(*testScheme).openFunc = func(
+			string, int, os.FileMode,
+		) (workspaceapi.File, error) {
+			return nil, myErr
 		}
 
 		mock.EXPECT().Close().Return(nil).Times(2)
@@ -1751,7 +1758,7 @@ func TestFileFlushPublishesLastFlushBeforeRename(t *testing.T) {
 	)
 	hook := &renameHookScheme{Scheme: inner}
 
-	f, err := newFile(hook, fileObj.Name(), buf, "", false, inlineSchedule)
+	f, err := newFile(hook, fileObj.Name(), buf, "", "", false, inlineSchedule)
 	require.NoError(t, err)
 	defer f.Close()
 
@@ -1833,7 +1840,7 @@ func TestFileFlushPostRenameModification(t *testing.T) {
 			inner, err := newTestFileScheme(workspaceURI)
 			require.NoError(t, err)
 			hook := &renameHookScheme{Scheme: inner}
-			f, err := newFile(hook, fileObj.Name(), buf, "", false, inlineSchedule)
+			f, err := newFile(hook, fileObj.Name(), buf, "", "", false, inlineSchedule)
 			require.NoError(t, err)
 			defer f.Close()
 			buf.WriteString("editor change")
@@ -1932,7 +1939,7 @@ func TestFileFlushReadsSavedFileOncePerSave(t *testing.T) {
 	require.NoError(t, err)
 	counter := &readCountingScheme{Scheme: inner, path: fileObj.Name()}
 	hook := &renameHookScheme{Scheme: counter}
-	f, err := newFile(hook, fileObj.Name(), buf, "", false, inlineSchedule)
+	f, err := newFile(hook, fileObj.Name(), buf, "", "", false, inlineSchedule)
 	require.NoError(t, err)
 	defer f.Close()
 
@@ -1983,7 +1990,7 @@ func TestFileFlushNewFilePublishesLastFlushAfterTouch(t *testing.T) {
 	buf.WriteString("data\n")
 
 	hook := &statHookScheme{Scheme: inner}
-	f, err := newFile(hook, target, buf, "", false, inlineSchedule)
+	f, err := newFile(hook, target, buf, "", "", false, inlineSchedule)
 	require.NoError(t, err)
 	defer f.Close()
 
@@ -2067,7 +2074,7 @@ func TestFileReloadBufferMutationOnEventLoop(t *testing.T) {
 		return true
 	}
 
-	f, err := newFile(scheme, fileObj.Name(), buf, "", false, sched)
+	f, err := newFile(scheme, fileObj.Name(), buf, "", "", false, sched)
 	require.NoError(t, err)
 	defer func() {
 		close(loopCh)
@@ -2141,7 +2148,7 @@ func TestFileCloseDoesNotWaitForInFlightReload(t *testing.T) {
 		return true
 	}
 
-	f, err := newFile(scheme, fileObj.Name(), buf, "", false, queueSchedule)
+	f, err := newFile(scheme, fileObj.Name(), buf, "", "", false, queueSchedule)
 	require.NoError(t, err)
 
 	ch, err := f.Reload(context.Background())
@@ -2330,7 +2337,7 @@ func TestFileCloseWaitsForInFlightFlush(t *testing.T) {
 		<-renameGate
 	}}
 
-	f, err := newFile(hook, fileObj.Name(), buf, "", false, inlineSchedule)
+	f, err := newFile(hook, fileObj.Name(), buf, "", "", false, inlineSchedule)
 	require.NoError(t, err)
 
 	flushCh, err := f.Flush(context.Background())
@@ -2425,7 +2432,7 @@ func TestFileEditsDuringFlushReachDiskViaCatchUp(t *testing.T) {
 	editApplied := make(chan struct{})
 	hook := &renameHookScheme{Scheme: inner}
 
-	f, err := newFile(hook, fileObj.Name(), buf, "", false, inlineSchedule)
+	f, err := newFile(hook, fileObj.Name(), buf, "", "", false, inlineSchedule)
 	require.NoError(t, err)
 	defer f.Close()
 
@@ -2511,7 +2518,7 @@ func TestFileEditsDuringReloadAreDiscarded(t *testing.T) {
 		},
 	}
 
-	f, err := newFile(hook, fileObj.Name(), buf, "", false, inlineSchedule)
+	f, err := newFile(hook, fileObj.Name(), buf, "", "", false, inlineSchedule)
 	require.NoError(t, err)
 	defer f.Close()
 
@@ -2800,7 +2807,7 @@ func runFileCloseReloadCase(t *testing.T, tc fileCloseReloadCase) {
 		}
 	}
 
-	f, err := newFile(scheme, fileObj.Name(), buf, "", false, sched)
+	f, err := newFile(scheme, fileObj.Name(), buf, "", "", false, sched)
 	require.NoError(t, err)
 
 	if tc.deleteOnDisk {

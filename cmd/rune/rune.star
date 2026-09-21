@@ -358,6 +358,21 @@ config = {
         # set to True to flush file tabs ~2s after the last edit.
         "auto_save":  False,
         "tabspaces": 4,
+        # Where swap files are kept.
+        #
+        #   True   (default) keep them together under swap/ in the data
+        #          directory (--datadir). Each entry is named after the
+        #          edited file's full path, with "+" for the separators, so
+        #          files with the same name never collide. Nothing is
+        #          written next to the file, so no .gitignore entry is
+        #          needed and files in read-only directories stay editable.
+        #   False  keep the swap next to the edited file, as ".<name>.rswp".
+        #          Visible to git; needs write permission on the file's
+        #          directory.
+        #
+        # The data directory is resolved on the host that owns the file, so
+        # remote workspaces keep their swaps on the remote machine.
+        "swap_dir": True,
         # Maximum buffer size (in bytes) for which Rune installs a syntax
         # tree on tab open. Files larger than this skip syntax parsing to
         # avoid freezing the editor inside the tree-sitter parser on

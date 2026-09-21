@@ -84,11 +84,15 @@ type Config struct {
 	// reported by cell.Buffer.Size) above which a file's tab
 	// installs no syntax tree.
 	MaxSyntaxParseSize int
-	PkgManager         syntax.PkgManager
-	Markdown           markdown.Config
-	Clipboard          clipboard.Register
-	OpenRouter         OpenRouter
-	Comments           CommentConfig
+	// SwapDirectory holds swap entries, named after the full path of
+	// the file each one backs. Empty keeps each swap next to its file
+	// instead. The path is resolved by the scheme that owns the file.
+	SwapDirectory string
+	PkgManager    syntax.PkgManager
+	Markdown      markdown.Config
+	Clipboard     clipboard.Register
+	OpenRouter    OpenRouter
+	Comments      CommentConfig
 	// StreamingOpen enables the async streaming file-open path.
 	// When true, OpenFileTab returns a lightweight read-only
 	// streaming handler immediately and runs workspace.Load on a
@@ -413,6 +417,14 @@ func WithSyntaxConfig(syntax syntax.Config) Option {
 func WithMaxSyntaxParseSize(size int) Option {
 	return func(cfg *Config) {
 		cfg.MaxSyntaxParseSize = size
+	}
+}
+
+// WithSwapDirectory returns an Option that sets the directory holding
+// swap entries. See Config.SwapDirectory.
+func WithSwapDirectory(dir string) Option {
+	return func(cfg *Config) {
+		cfg.SwapDirectory = dir
 	}
 }
 

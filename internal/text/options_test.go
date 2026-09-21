@@ -36,6 +36,47 @@ func TestDefaultConfigPkgManagerReturnsNotFound(t *testing.T) {
 	require.ErrorIs(t, err, storageapi.ErrNotFound)
 }
 
+// TestGetSwapDir checks that the editor resolves a file's swap
+// directory from Config.SwapDirectory, on the host that owns the file.
+func TestGetSwapDir(t *testing.T) {
+	t.Parallel()
+
+	tsuite := []struct {
+		name    string
+		swapDir string
+		file    string
+		want    string
+	}{{
+		name: "the default keeps the swap next to the file",
+		file: "file:///Users/x/src/proj/main.go",
+		want: "file:///Users/x/src/proj",
+	}, {
+		name:    "a configured directory is used verbatim",
+		swapDir: "/Users/x/.rune/swap",
+		file:    "file:///Users/x/src/proj/main.go",
+		want:    "file:///Users/x/.rune/swap",
+	}, {
+		name:    "a remote file keeps its swap on the remote host",
+		swapDir: "~/.rune/swap",
+		file:    "ssh://user@my_host/srv/main.go",
+		want:    "ssh://user@my_host/~/.rune/swap",
+	}}
+
+	for _, tcase := range tsuite {
+		t.Run(tcase.name, func(t *testing.T) {
+			file, err := workspaceapi.ParseURI(tcase.file)
+			require.NoError(t, err)
+
+			c := &Component{config: Config{SwapDirectory: tcase.swapDir}}
+			swapDir, err := c.getSwapDir(file)
+			require.NoError(t, err)
+			assert.Equal(t, tcase.want, swapDir.String())
+			assert.Equal(t, file.Scheme(), swapDir.Scheme())
+			assert.Equal(t, file.User(), swapDir.User())
+		})
+	}
+}
+
 func TestWithComments(t *testing.T) {
 	t.Parallel()
 

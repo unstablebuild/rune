@@ -682,7 +682,7 @@ func (h *workspaceManagerHandler) init(
 	// don't install a fs watcher for the home workspace,
 	// to prevent unecessary resource consumption
 	homeParser := syntax.NewParser(h.homeWorkspace, h.pkgmanager, h.homeURI)
-	globalOpts := h.textOpts(cfg, homeParser, h.homeURI)
+	globalOpts := h.textOpts(cfg, homeParser, h.homeURI, h.homeWorkspace)
 	tm := new(workspaceTabManager)
 	tm.parent = h
 	h.empty, err = newEx(
@@ -1445,10 +1445,18 @@ func (h *workspaceManagerHandler) afterPackageConfigMerge(
 
 func (h *workspaceManagerHandler) textOpts(
 	cfg ideConfig, parser syntaxapi.Parser, uri workspaceapi.URI,
+	ws workspace.Workspace,
 ) []text.Option {
 	markdownConfig := markdown.DefaultConfig()
 	markdownConfig.Parser = parser
 	markdownConfig.ScheduleNextTick = cfg.scheduleNextTick
+	// Per host, so a remote workspace keeps its swaps on the remote
+	// machine rather than on the IDE host.
+	var swapDir string
+	if cfg.editorSwapDir() {
+		swapDir = filepath.Join(
+			installDataDir(ws, uri, h.sixDir), workspace.SwapDirName)
+	}
 	ret := []text.Option{
 		text.WithTabspaces(cfg.editorTabspaces()),
 		text.WithComments(cfg.editorComments()),
@@ -1486,6 +1494,7 @@ func (h *workspaceManagerHandler) textOpts(
 		text.WithPackageManager(h.pkgmanager),
 		text.WithSyntaxConfig(cfg.syntaxConfig()),
 		text.WithMaxSyntaxParseSize(cfg.editorMaxSizeForSyntax()),
+		text.WithSwapDirectory(swapDir),
 		text.WithMarkdownConfig(markdownConfig),
 		text.WithClipboard(h.clip),
 		text.WithOpenRouter(h),
@@ -1835,7 +1844,7 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 			symbolDBCloser = sdb
 		}
 	}
-	textOpts := h.textOpts(cfg, wsParser, uri)
+	textOpts := h.textOpts(cfg, wsParser, uri, cwd)
 	vctrlService, err := gogit.NewService(uri, cwd)
 	if err != nil {
 		h.empty.log(log.ErrorLevel, "new git service for workspace %q: %v",

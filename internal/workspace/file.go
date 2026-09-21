@@ -23,7 +23,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -104,7 +103,7 @@ type file struct {
 }
 
 func newFile(
-	p schemeapi.Scheme, path string, buf *cell.Buffer, swapDir string,
+	p schemeapi.Scheme, path string, buf *cell.Buffer, swapDir, swapFilePath string,
 	readOnly bool, scheduleNextTick func(func()) bool,
 ) (*file, error) {
 	if scheduleNextTick == nil {
@@ -114,6 +113,8 @@ func newFile(
 	ret.scheme = p
 	ret.scheduleNextTick = scheduleNextTick
 	ret.closedCh = make(chan struct{})
+	ret.swapFileName = swapFilePath
+	ret.swapDir = swapDir
 
 	err := ret.init(path, buf, swapDir, readOnly)
 	if err != nil {
@@ -141,13 +142,6 @@ func newFileRecover(
 		return nil, err
 	}
 	return ret, err
-}
-
-func swapFileName(swapDir, filePath string) (string, string) {
-	if swapDir == "" {
-		swapDir = filepath.Dir(filePath)
-	}
-	return swapDir, path.Join(swapDir, "."+filepath.Base(filePath)+SwapFileExtensionName)
 }
 
 func (f *file) initSwapFile(orig workspaceapi.File, origPerms os.FileMode) (workspaceapi.File, error) {
@@ -271,9 +265,16 @@ func (f *file) initFiles(filePath, swapDir string, readOnly bool) error {
 func (f *file) initSwap(
 	swapDir, filePath string, orig workspaceapi.File, fileInfo os.FileInfo,
 ) error {
-	swapDir, swapFileName := swapFileName(swapDir, filePath)
 	if f.swapFileName == "" {
-		f.swapFileName = swapFileName
+		var dir string
+		dir, f.swapFileName = swapFileName(swapDir, filePath)
+		swapDir = sharedSwapDir(dir, filePath)
+	}
+
+	if swapDir != "" {
+		if err := f.scheme.MkdirAll(swapDir, swapDirMode); err != nil {
+			return err
+		}
 	}
 
 	mode := os.FileMode(defaultFileMode)
@@ -360,7 +361,7 @@ func (f *file) initRecover(filePath, swapFilePath string, buf *cell.Buffer, forc
 	}
 	f.swapInfoModTime = swapFileInfo.ModTime()
 	f.swapFileName = swapFilePath
-	f.swapDir = filepath.Dir(swapFilePath)
+	f.swapDir = sharedSwapDir(filepath.Dir(swapFilePath), filePath)
 	f.fileName = filePath
 
 	err = f.initBuffer(buf, f.swap)
@@ -414,8 +415,8 @@ func (f *file) setupCopySwapWorker() {
 }
 
 // init instantiates opens the file at filePath and initializes
-// buf with the contents of it. If swapDir is "", then filePath directory is
-// used as a swap directory
+// buf with the contents of it. swapDir is the shared directory that
+// holds the swap entry, or "" when the entry sits next to the file.
 func (f *file) init(
 	file string, buf *cell.Buffer, swapDir string, readOnly bool,
 ) error {
@@ -484,6 +485,66 @@ func (f *file) recoverFiles() error {
 	return err
 }
 
+// writeThroughSwap is the fallback for a Rename that cannot cross from
+// the swap directory to the file's filesystem.
+func (f *file) writeThroughSwap(origTarget string) error {
+	swap, err := f.scheme.OpenFile(f.swapFileName, os.O_RDONLY, defaultFileMode)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = swap.Close() }()
+
+	mode := defaultFileMode
+	if info, serr := swap.Stat(); serr == nil {
+		mode = info.Mode()
+	}
+	orig, err := f.scheme.OpenFile(origTarget, os.O_WRONLY|os.O_CREATE, mode)
+	if err != nil {
+		return err
+	}
+	err = func() error {
+		if err := orig.Truncate(0); err != nil {
+			return err
+		}
+		if _, err := io.Copy(orig, swap); err != nil {
+			return err
+		}
+		return orig.Sync()
+	}()
+	return errors.Join(err, orig.Close())
+}
+
+// reopenFiles stands in for initFiles after writeThroughSwap: the swap
+// entry survived the save, so re-creating it with O_EXCL would fail.
+func (f *file) reopenFiles(readOnly bool) error {
+	flag := os.O_RDWR
+	if readOnly {
+		flag = os.O_RDONLY
+	}
+	orig, origInfo, err := f.openFile(f.fileName, flag)
+	if err != nil {
+		return err
+	}
+	swap, _, err := f.openFile(f.swapFileName, os.O_RDWR)
+	if err != nil {
+		_ = orig.Close()
+		return err
+	}
+	swapInfo, err := swap.Stat()
+	if err != nil {
+		return errors.Join(err, orig.Close(), swap.Close())
+	}
+
+	f.orig = orig
+	if origInfo != nil {
+		f.infoModTime = origInfo.ModTime()
+	}
+	f.swap = swap
+	f.swapInfoModTime = swapInfo.ModTime()
+	f.readOnly = readOnly
+	return nil
+}
+
 func (f *file) copyFlushSwapFile(str string) (ok bool) {
 	if f.swap == nil {
 		return
@@ -539,16 +600,17 @@ func fileContentHash(file workspaceapi.File) ([sha256.Size]byte, error) {
 	return [sha256.Size]byte(h.Sum(nil)), errors.Join(err, seekErr)
 }
 
-// reopenedMatchesSave reports whether the file reopened after the rename
-// still holds the bytes this flush wrote. initFiles re-stages the swap from
-// that reopened file, so on the writable path its digest already identifies
-// the content and no second read is needed; only the read-only fallback,
-// which skips staging, has to hash the file itself.
-func (f *file) reopenedMatchesSave(savedHash [sha256.Size]byte) (bool, error) {
+// reopenedMatchesSave reports whether the file reopened after the save
+// still holds the bytes this flush wrote. staged spares it a read: the
+// swap was re-staged from the reopened file, so its digest already
+// identifies the content.
+func (f *file) reopenedMatchesSave(
+	savedHash [sha256.Size]byte, staged bool,
+) (bool, error) {
 	if f.orig == nil {
 		return false, nil
 	}
-	if !f.readOnly {
+	if staged && !f.readOnly {
 		return f.swapHash == savedHash, nil
 	}
 	hash, err := fileContentHash(f.orig)
@@ -834,8 +896,8 @@ func (f *file) startAsync(
 //   - the worker writes f.buf.String() into f.swap whenever an
 //     edit signals f.ch;
 //   - flush also writes f.swap (via copyFlushSwapFile) and then
-//     renames it onto f.orig, so it must be the sole writer for
-//     the duration of the rename.
+//     publishes it onto f.orig, so it must be the sole writer for
+//     the duration of the save.
 //
 // startAsync set f.flushing = true before invoking flush. Edits
 // that land while flushing is true do not enqueue copy-swap work;
@@ -975,27 +1037,34 @@ func (f *file) flush(force bool) error {
 	}
 	_ = f.swap.Close()
 
-	err = f.scheme.Rename(f.swapFileName, origTarget)
-	if err != nil {
-		return err
-	}
-
 	readOnly := f.readOnly
 	if readOnly && force {
 		readOnly = false
 	}
-	err = f.initFiles(f.fileName, f.swapDir, readOnly)
+
+	// The rename is an optimisation: the swap is already a complete,
+	// fsynced copy, so the original is recoverable either way.
+	var staged bool
+	if err = f.scheme.Rename(f.swapFileName, origTarget); err != nil {
+		if err = f.writeThroughSwap(origTarget); err != nil {
+			return err
+		}
+		err = f.reopenFiles(readOnly)
+	} else {
+		staged = true
+		err = f.initFiles(f.fileName, f.swapDir, readOnly)
+	}
 	if err != nil {
 		return err
 	}
 
 	if !f.infoModTime.Equal(savedModTime) {
-		ours, err := f.reopenedMatchesSave(savedHash)
+		ours, err := f.reopenedMatchesSave(savedHash, staged)
 		if err != nil {
 			return err
 		}
 		if !ours {
-			// A rename may bump mtime, but an external write that landed in
+			// A save bumps mtime, but an external write that landed in
 			// this window must stay pending for the watcher and the next
 			// stale-data check instead of becoming our own baseline.
 			f.infoModTime = savedModTime

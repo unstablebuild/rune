@@ -59,20 +59,24 @@ func TestDefaultSwapFile(t *testing.T) {
 		wantSwapFile string
 		wantErr      bool
 	}{
+		// A swap directory that is the file's own directory keeps the
+		// sibling name; any other directory is shared, so the entry is
+		// named after the file's full path.
 		{"other:///tmp/a.go", "other:///tmp", "other:///tmp/.a.go.rswp", false},
-		{"file:///a.go", "file:///tmp", "file:///tmp/.a.go.rswp", false},
+		{"file:///a.go", "file:///tmp", "file:///tmp/+a.go.rswp", false},
 		{"file:///a.go", "file:///", "file:///.a.go.rswp", false},
 		{"file:///tmp/a.go", "file:///tmp", "file:///tmp/.a.go.rswp", false},
-		{"file:///tmp/a.go", "file:///", "file:///.a.go.rswp", false},
-		{"file://./tmp/a.go", "file://./", "file://./.a.go.rswp", false},
-		{"file://./a.go", "file://./tmp", "file://./tmp/.a.go.rswp", false},
+		{"file:///tmp/a.go", "file:///", "file:///+tmp+a.go.rswp", false},
+		{"file://./tmp/a.go", "file://./", "file://./+tmp+a.go.rswp", false},
+		{"file://./a.go", "file://./tmp", "file://./tmp/+a.go.rswp", false},
 		{"ssh:///a.go", "ssh://my_host/tmp", "", true},
 		{"ssh://my_host/a.go", "ssh:///tmp", "", true},
 		{"ssh://my_host/a.go", "ssh://creepy_host/tmp", "", true},
 		{"ssh://unstablebuild@my_host/a.go", "ssh://jj.furman@my_host/tmp", "", true},
-		{"ssh://user@my_host/a.go", "ssh://user@my_host/tmp", "ssh://user@my_host/tmp/.a.go.rswp", false},
-		{"ssh://my_host/a.go", "ssh://my_host/tmp", "ssh://my_host/tmp/.a.go.rswp", false},
-		{"ssh://my_host/./a.go", "ssh://my_host/./tmp", "ssh://my_host/tmp/.a.go.rswp", false},
+		{"ssh://user@my_host/a.go", "ssh://user@my_host/tmp", "ssh://user@my_host/tmp/+a.go.rswp", false},
+		{"ssh://my_host/a.go", "ssh://my_host/tmp", "ssh://my_host/tmp/+a.go.rswp", false},
+		{"ssh://my_host/./a.go", "ssh://my_host/./tmp", "ssh://my_host/tmp/+a.go.rswp", false},
+		{"ssh://my_host/tmp/a.go", "ssh://my_host/tmp", "ssh://my_host/tmp/.a.go.rswp", false},
 	}
 
 	for i, tcase := range tsuite {
