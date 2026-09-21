@@ -20,12 +20,16 @@ import (
 	"fmt"
 	"runtime"
 	"slices"
+	"strings"
 
 	"unstable.build/rune/internal/ide/idepreset"
 	"unstable.build/rune/internal/ide/keymeta"
+	"unstable.build/rune/internal/term/gui"
 )
 
-func renderPreset(editor string, meta keymeta.Meta, telemetry bool) (string, error) {
+func renderPreset(
+	editor string, meta keymeta.Meta, telemetry bool, altModifier gui.AltModifier,
+) (string, error) {
 	var body, mode string
 	switch editor {
 	case editorVim:
@@ -43,5 +47,11 @@ func renderPreset(editor string, meta keymeta.Meta, telemetry bool) (string, err
 		return "", fmt.Errorf("meta key %s is not offered for %s on %s",
 			meta, mode, runtime.GOOS)
 	}
+	const guiSection = "gui:\n"
+	if !strings.Contains(body, guiSection) {
+		return "", fmt.Errorf("preset %q has no gui section", editor)
+	}
+	body = strings.Replace(body, guiSection,
+		fmt.Sprintf("%s  alt_modifier: %s\n", guiSection, altModifier), 1)
 	return idepreset.Render(body, idepreset.Data{Meta: meta, Telemetry: telemetry})
 }

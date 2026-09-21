@@ -263,7 +263,7 @@ func newGUIBenchSession(tb testing.TB, cfg guiBenchConfig) *guiBenchSession {
 	root, err := newBootstrapHandler(
 		s.dataDir, configPath, s.workDir, "" /* zdotDir */, files,
 		nil /* launchCmd */, ide.FuncExtensionsRunner(testE2EExtensionsRunner),
-		s.mu, publishEvent, cellPixelSize,
+		s.mu, publishEvent, cellPixelSize, nil, /* setAltModifier */
 		func(*url.URL) error { return nil }, clipboard.NewInMemory(),
 		s.dataDir /* installBackupDir */, rootCfg,
 		pkgtrust.NewStore(s.dataDir, nil),

@@ -720,6 +720,11 @@ func (g *GUI) resize(width, height int, deviceScale float64) {
 	g.needsDraw = true
 }
 
+// SetAltModifier sets the reserved Alt key. Safe from any goroutine.
+func (g *GUI) SetAltModifier(modifier AltModifier) {
+	g.input.setAltModifier(modifier)
+}
+
 // CellPixelSize reports the cell pitch in device pixels, which is what
 // image placements are scaled by and what the kitty graphics protocol
 // advertises to clients. It is zero before the first resize and safe

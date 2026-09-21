@@ -571,7 +571,7 @@ func newConfiguredBootstrapForEnvTest(
 	b, err := newBootstrapHandler(
 		dataDir, configPath, "" /* workspace */, "" /* zdotDir */, nil, /* filenames */
 		nil /* launchCmd */, ide.FuncExtensionsRunner(testE2EExtensionsRunner),
-		mu, publishEvent, nil, /* cellPixelSize */
+		mu, publishEvent, nil /* cellPixelSize */, nil, /* setAltModifier */
 		func(*url.URL) error { return nil }, clipboard.NewInMemory(),
 		installBackupDir, rootCfg, pkgtrust.NewStore(dataDir, nil),
 	)

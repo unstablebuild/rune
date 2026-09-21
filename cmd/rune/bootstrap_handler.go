@@ -72,6 +72,7 @@ type bootstrapHandler struct {
 	mu                *sync.Mutex
 	publishEvent      func(term.Event) bool
 	cellPixelSize     func() (int, int)
+	setAltModifier    func(gui.AltModifier)
 	openBrowser       func(*url.URL) error
 	clip              clipboard.Register
 	installBackupDir  string
@@ -91,6 +92,7 @@ type bootstrapHandler struct {
 	lastResizeH       int
 	chosenEditor      string
 	chosenMeta        keymeta.Meta
+	chosenAltModifier gui.AltModifier
 	telemetryEnabled  bool
 	prompter          bootstrapPrompter
 	// goos overrides runtime.GOOS for the meta prompt; tests set it.
@@ -113,6 +115,7 @@ func newBootstrapHandler(
 	mu *sync.Mutex,
 	publishEvent func(term.Event) bool,
 	cellPixelSize func() (int, int),
+	setAltModifier func(gui.AltModifier),
 	openBrowser func(*url.URL) error,
 	clip clipboard.Register,
 	installBackupDir string,
@@ -132,6 +135,7 @@ func newBootstrapHandler(
 		mu:               mu,
 		publishEvent:     publishEvent,
 		cellPixelSize:    cellPixelSize,
+		setAltModifier:   setAltModifier,
 		openBrowser:      openBrowser,
 		clip:             clip,
 		installBackupDir: installBackupDir,
@@ -797,7 +801,7 @@ func (b *bootstrapHandler) recordRecentOpen(command string, args ...string) {
 }
 
 func (b *bootstrapHandler) writePresetConfig() error {
-	body, err := renderPreset(b.chosenEditor, b.chosenMeta, b.telemetryEnabled)
+	body, err := renderPreset(b.chosenEditor, b.chosenMeta, b.telemetryEnabled, b.chosenAltModifier)
 	if err != nil {
 		return fmt.Errorf("render preset: %w", err)
 	}
@@ -896,6 +900,14 @@ var (
 	bootstrapTelemetryKeys = []term.KeyComb{
 		{Ch: 'y'}, {Ch: 'n'},
 	}
+	bootstrapAltModifierKeys = []term.KeyComb{
+		{Ch: 'l'}, {Ch: 'r'},
+	}
+)
+
+const (
+	optAltLeft  = " left Alt "
+	optAltRight = " right Alt "
 )
 
 func (b *bootstrapHandler) openBootstrapFlow() {
@@ -967,7 +979,7 @@ func (b *bootstrapHandler) openVimPrompt() {
 					b.openMetaPrompt()
 					return
 				}
-				b.openTelemetryPrompt()
+				b.openAltModifierPrompt()
 			}),
 			guard.onClose(b.openVimPrompt),
 		),
@@ -1029,9 +1041,39 @@ func (b *bootstrapHandler) openMetaPrompt() {
 						b.chosenMeta = m
 					}
 				}
-				b.openTelemetryPrompt()
+				b.openAltModifierPrompt()
 			}),
 			guard.onClose(b.openMetaPrompt),
+		),
+	)
+}
+
+func (b *bootstrapHandler) openAltModifierPrompt() {
+	msg := "## Choose your Alt key\n\n" +
+		"Many keyboard layouts type extra characters with Alt held — the key " +
+		"labelled Option on a Mac, and AltGr on layouts that use the right " +
+		"one. Rune can reserve a single Alt key for those characters while " +
+		"the other keeps triggering Alt shortcuts.\n\n" +
+		"**Which Alt key should type layout characters?**"
+	guard := b.promptGuard()
+	b.prompt(
+		msg,
+		[]string{optAltLeft, optAltRight},
+		bootstrapAltModifierKeys,
+		sdkhandler.FuncPromptHandler(
+			guard.onSelect(func(_ int, option string) {
+				if option == optAltLeft {
+					b.chosenAltModifier = gui.AltModifierLeft
+				} else {
+					b.chosenAltModifier = gui.AltModifierRight
+				}
+				// The GUI predates this config, so tell it directly.
+				if b.setAltModifier != nil {
+					b.setAltModifier(b.chosenAltModifier)
+				}
+				b.openTelemetryPrompt()
+			}),
+			guard.onClose(b.openAltModifierPrompt),
 		),
 	)
 }
