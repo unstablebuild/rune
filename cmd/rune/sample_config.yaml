@@ -13,6 +13,8 @@
 #  #font_size: 13
 #  # Lines scrolled per unit of mouse-wheel movement (higher is faster).
 #  #scroll_multiplier: 3
+#  # Alt key that types layout characters instead of shortcuts: left or right.
+#  #alt_modifier: right
 #  window_opacity: { fg: 1, bg: 1 }
 
 #editor:

@@ -916,6 +916,7 @@ func buildGUIOptions(
 		gui.WithLocker(mu),
 		gui.WithPrintFPS(printFPS),
 		gui.WithKeyMapping(getGUIKeyMapping(b, cfg)),
+		gui.WithAltModifier(getGUIAltModifier(b, cfg)),
 		gui.WithCloseRequestEvent(quitEvent(appMenuKeyBindings(cfg))),
 	}
 }

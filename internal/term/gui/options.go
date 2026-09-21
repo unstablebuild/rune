@@ -17,6 +17,7 @@
 package gui
 
 import (
+	"fmt"
 	"net/url"
 	"sync"
 
@@ -27,6 +28,41 @@ import (
 
 // Option allows configuring an instance of GUI.
 type Option func(g *GUI) error
+
+// AltModifier names the Alt key reserved for layout characters — Option on
+// macOS, AltGr elsewhere. The zero value reserves neither.
+type AltModifier uint8
+
+const (
+	AltModifierNone AltModifier = iota
+	AltModifierRight
+	AltModifierLeft
+)
+
+// String returns the config spelling of m.
+func (m AltModifier) String() string {
+	switch m {
+	case AltModifierRight:
+		return "right"
+	case AltModifierLeft:
+		return "left"
+	}
+	return "none"
+}
+
+// ParseAltModifier resolves a config value; "" and "none" reserve neither.
+func ParseAltModifier(s string) (AltModifier, error) {
+	switch s {
+	case "", "none":
+		return AltModifierNone, nil
+	case "right":
+		return AltModifierRight, nil
+	case "left":
+		return AltModifierLeft, nil
+	}
+	return AltModifierNone,
+		fmt.Errorf("expected 'left', 'right' or 'none', got %q", s)
+}
 
 // WithFontFamily defines the opentype font family to use.
 // See font.Manager.SetFontByFamilyName for more details.
@@ -62,6 +98,14 @@ func WithBackgroundBlur(radius int) Option {
 func WithKeyMapping(m map[term.KeyComb]term.KeyComb) Option {
 	return func(g *GUI) error {
 		g.input.setKeyMapping(m)
+		return nil
+	}
+}
+
+// WithAltModifier selects which Alt key produces layout characters.
+func WithAltModifier(modifier AltModifier) Option {
+	return func(g *GUI) error {
+		g.input.setAltModifier(modifier)
 		return nil
 	}
 }

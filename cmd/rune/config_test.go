@@ -29,6 +29,7 @@ import (
 
 	"unstable.build/rune/internal/browser/browsertest"
 	"unstable.build/rune/internal/ide"
+	"unstable.build/rune/internal/term/gui"
 )
 
 // TestIDEConfigOverlaySubscriptResolvesDefaultTree is a regression test for
@@ -157,6 +158,52 @@ func TestGetGUIKeyMapping(t *testing.T) {
 		}
 		assert.Equal(t, want, got)
 	})
+}
+
+func TestGetGUIAltModifier(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  config.Config
+		want gui.AltModifier
+	}{
+		{"absent reserves neither", config.MapConfig(map[string]any{}), gui.AltModifierNone},
+		{"none", config.MapConfig(map[string]any{"alt_modifier": "none"}), gui.AltModifierNone},
+		{"right", config.MapConfig(map[string]any{"alt_modifier": "right"}), gui.AltModifierRight},
+		{"left", config.MapConfig(map[string]any{"alt_modifier": "left"}), gui.AltModifierLeft},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			b := browsertest.NewMockBrowser(ctrl)
+			require.Equal(t, tc.want, getGUIAltModifier(b, tc.cfg))
+		})
+	}
+
+	t.Run("invalid value reserves neither", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		b := browsertest.NewMockBrowser(ctrl)
+		b.EXPECT().Notify(gomock.Any(), gomock.Any(), gomock.Any()).Return("", nil)
+
+		got := getGUIAltModifier(b, config.MapConfig(map[string]any{"alt_modifier": "middle"}))
+		require.Equal(t, gui.AltModifierNone, got)
+	})
+}
+
+// TestGetGUIAltModifierUnconfigured asserts the contract through the real
+// config loader: a user config that never set the key reserves neither.
+func TestGetGUIAltModifierUnconfigured(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path,
+		[]byte("gui:\n  default_theme: romero\n"), 0o644))
+
+	guiCfg, err := mustLoadConfig(t, path).GetConfig("gui")
+	require.NoError(t, err)
+
+	ctrl := gomock.NewController(t)
+	b := browsertest.NewMockBrowser(ctrl)
+	require.Equal(t, gui.AltModifierNone, getGUIAltModifier(b, guiCfg))
 }
 
 func TestGetGUIFontSize(t *testing.T) {
