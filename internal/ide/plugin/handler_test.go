@@ -302,8 +302,11 @@ func (n nopBrowser) SetTabName(workspaceapi.URI, string, term.Attributes) error 
 	panic("should not be called")
 }
 
+// Unlike its neighbours this one is reached: the vte run goroutine
+// notifies the TabManager whenever the pty child exits. A plugin is not
+// a tab and owns its own teardown, so there is nothing to drop.
 func (n nopBrowser) OnTabExit(workspaceapi.URI) bool {
-	panic("should not be called")
+	return false
 }
 
 func (n nopBrowser) UpdateNotificationProgress(

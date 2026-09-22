@@ -1484,6 +1484,10 @@ func (m *fakeBrowser) RemoveTab(h browserapi.Handler) error {
 	return nil
 }
 
+func (m *fakeBrowser) OnTabExit(workspaceapi.URI) bool {
+	return false
+}
+
 func (m *fakeBrowser) Floating(h browser.Floating, cfg browserapi.FloatingConfig) (
 	browser.Window, error,
 ) {
