@@ -8032,6 +8032,90 @@ func TestInstallRoot(t *testing.T) {
 	}
 }
 
+func swapDirIDEConfig(t *testing.T, enabled bool) ideConfig {
+	f, err := os.CreateTemp("", "")
+	require.NoError(t, err)
+	defer os.Remove(f.Name())
+
+	_, err = fmt.Fprintf(f, "\neditor:\n  swap_dir: %t\n", enabled)
+	require.NoError(t, err)
+
+	var cfg ideConfig
+	require.NoError(t, loadConfig(&cfg, f.Name(), browser.NopWallpaper(),
+		DefaultConfig{src: "config = {}"},
+		term.RingBell, term.ScheduleNextTick, ""))
+	return cfg
+}
+
+// TestSwapDirectory pins the swap directory to the host that owns the
+// file: an editor rooted in a remote workspace still opens local
+// files, and the remote data directory it resolved does not exist on
+// the IDE host. Writing there failed outright under /home on macOS,
+// where autofs rejects the mkdir with ENOTSUP.
+func TestSwapDirectory(t *testing.T) {
+	tests := []struct {
+		name string
+		uri  string
+		file string
+		want string
+	}{
+		{
+			name: "a local workspace resolves the local data dir",
+			uri:  "file:///Users/x/src/proj",
+			file: "file:///Users/x/src/proj/main.go",
+			want: "/Users/x/.rune/swap",
+		},
+		{
+			name: "a remote workspace resolves the host's data dir",
+			uri:  "rune://peer/home/remote/src/proj",
+			file: "rune://peer/home/remote/src/proj/main.go",
+			want: "/home/remote/.rune/swap",
+		},
+		{
+			name: "a local file opened from a remote workspace stays local",
+			uri:  "rune://peer/home/remote/src/proj",
+			file: "file:///Users/x/src/proj/main.go",
+			want: "/Users/x/.rune/swap",
+		},
+		{
+			// No data directory was ever resolved for a third host, so
+			// the sibling layout is the only one that can work there.
+			name: "a file on a third host falls back to the sibling layout",
+			uri:  "rune://peer/home/remote/src/proj",
+			file: "ssh://other/srv/main.go",
+			want: "",
+		},
+		{
+			name: "another user on the workspace's host has another home",
+			uri:  "ssh://x@host/home/x/src/proj",
+			file: "ssh://y@host/home/y/src/proj/main.go",
+			want: "",
+		},
+	}
+
+	cfg := swapDirIDEConfig(t, true)
+	h := &workspaceManagerHandler{sixDir: "/Users/x/.rune"}
+	ws := uriWorkspace{install: func(context.Context) (string, error) {
+		return "/home/remote/.rune", nil
+	}}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			uri, err := workspaceapi.ParseURI(tt.uri)
+			require.NoError(t, err)
+			file, err := workspaceapi.ParseURI(tt.file)
+			require.NoError(t, err)
+
+			assert.Equal(t, tt.want, h.swapDirectory(cfg, ws, uri)(file))
+		})
+	}
+
+	t.Run("editor.swap_dir false installs no resolver", func(t *testing.T) {
+		uri, err := workspaceapi.ParseURI("file:///Users/x/src/proj")
+		require.NoError(t, err)
+		assert.Nil(t, h.swapDirectory(swapDirIDEConfig(t, false), ws, uri))
+	})
+}
+
 // TestWorkspaceRootURI pins the fix for the remote gopls failure
 // "root uri is not contained in the workspace root": the manager root must
 // be resolved through the workspace host (expanding a literal ~) so it

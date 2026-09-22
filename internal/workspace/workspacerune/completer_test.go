@@ -26,6 +26,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/blue/iterator"
+	"unstable.build/rune/internal/handler/command"
 	"unstable.build/rune/internal/runenet"
 )
 
@@ -160,7 +161,12 @@ func TestCompleterOffersPeerDirectories(t *testing.T) {
 				context.Background(), []string{"workspaceopen", tcase.last})
 			require.NoError(t, err)
 			assert.Empty(t, newLastArg)
-			assert.ElementsMatch(t, tcase.want, drain(t, it))
+			got := drain(t, it)
+			assert.ElementsMatch(t, tcase.want, got)
+			for _, candidate := range got {
+				assert.True(t, command.IsPartialCandidate(candidate),
+					"peer directory candidate %q must be partial", candidate)
+			}
 		})
 	}
 }

@@ -245,6 +245,7 @@ func TestClientServerIntegration(t *testing.T) {
 		wg.Wait()
 
 		// proceed to trigger
+		wg.Add(1)
 		ed.Edit(context.Background(), uri, cell.NewBuffer(), false, false)
 
 		// wg panics if Done called but not added

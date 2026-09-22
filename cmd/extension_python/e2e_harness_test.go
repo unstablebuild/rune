@@ -27,13 +27,74 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/api/semanticapi"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/cmd/extension_python/pyshim"
+	"unstable.build/rune/internal/extension/langext"
 )
+
+// fakeWindowManager replays a scripted key sequence into every floated
+// handler and then closes it, matching the real window manager, which
+// tears the window down once a handler reports exit. The prompt reports
+// its answer over a buffered channel, so the replay can run inline and
+// keep the tests deterministic.
+type fakeWindowManager struct {
+	events []term.Event
+
+	mu    sync.Mutex
+	calls int
+}
+
+var _ browserapi.WindowManager = (*fakeWindowManager)(nil)
+
+func (w *fakeWindowManager) Floating(
+	h browserapi.Floating, _ browserapi.FloatingConfig,
+) (browserapi.Window, error) {
+	w.mu.Lock()
+	w.calls++
+	w.mu.Unlock()
+	for _, ev := range w.events {
+		if exit, _ := h.Handle(ev); exit {
+			break
+		}
+	}
+	return nil, h.Close()
+}
+
+func (w *fakeWindowManager) callCount() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.calls
+}
+
+func (w *fakeWindowManager) Focus() (browserapi.Window, error) { return nil, nil }
+
+func (w *fakeWindowManager) Split(
+	browserapi.Orientation, browserapi.Window, browserapi.Handler,
+) (browserapi.Window, error) {
+	return nil, nil
+}
+
+func (w *fakeWindowManager) Bar(browserapi.BarConfig, tui.Handler) error { return nil }
+
+func (w *fakeWindowManager) Tab(
+	workspaceapi.URI, rune, string, browserapi.Handler,
+) (browserapi.Handler, error) {
+	return nil, nil
+}
+
+func (w *fakeWindowManager) SetWindowContent(browserapi.Window, browserapi.Handler) error {
+	return nil
+}
+
+func (w *fakeWindowManager) CloseWindow(browserapi.Window) error { return nil }
 
 // realFS is a minimal workspaceapi.FileSystem backed by the OS and
 // rooted at a workspace directory. Relative paths resolve against root,
@@ -180,7 +241,9 @@ type scenarioEnv struct {
 	lsp     *captureLSP
 	notify  *fakeNotifications
 	editor  *fakeEditor
+	storage storageapi.Service
 	manuals []textapi.CommandManual
+	handler textapi.REPLHandler
 }
 
 // loadScenario copies testdata/<name> into a fresh temp directory so each
@@ -263,6 +326,27 @@ func seedManagedFallback(t *testing.T, dataDir string) {
 // environment for assertions.
 func runExtensionOnDir(t *testing.T, dir string) scenarioEnv {
 	t.Helper()
+	storage := storagestub.NewInMemoryService()
+	require.NoError(t, newEnvSetting(storage).set(
+		context.Background(), dirRoot(dir), true))
+	// Nested roots discovered later have no stored answer, so an
+	// auto-accepting prompt keeps them managed like the workspace root.
+	return runExtensionOnDirWith(t, dir, storage, &fakeWindowManager{events: enterEvents})
+}
+
+// dirRoot builds the langext.Root the extension derives for a workspace
+// root directory, so tests can seed a policy for it up front.
+func dirRoot(dir string) langext.Root {
+	return langext.Root{Dir: dir, URI: "file://" + dir}
+}
+
+// runExtensionOnDirWith runs the extension bring-up against dir with an
+// explicit storage service and window manager, so tests can control the
+// environment policy and the prompt.
+func runExtensionOnDirWith(
+	t *testing.T, dir string, storage storageapi.Service, wm *fakeWindowManager,
+) scenarioEnv {
+	t.Helper()
 	dataDir := t.TempDir()
 	seedManagedFallback(t, dataDir)
 	ex := newDirExecutor(dir)
@@ -272,6 +356,11 @@ func runExtensionOnDir(t *testing.T, dir string) scenarioEnv {
 	env := scenarioEnv{
 		dir: dir, dataDir: dataDir,
 		exec: ex, lsp: lsp, notify: notify, editor: editor,
+		storage: storage,
+	}
+	var windows browserapi.WindowManager
+	if wm != nil {
+		windows = wm
 	}
 
 	ext := &pyExtension{}
@@ -284,8 +373,11 @@ func runExtensionOnDir(t *testing.T, dir string) scenarioEnv {
 		fakeInstaller{fs: realFS{root: dir}, root: ""},
 		config.NopConfig(),
 		dataDir,
-		func(m textapi.CommandManual, _ textapi.REPLHandler) error {
+		storage,
+		windows,
+		func(m textapi.CommandManual, h textapi.REPLHandler) error {
 			env.manuals = append(env.manuals, m)
+			env.handler = h
 			return nil
 		},
 	)

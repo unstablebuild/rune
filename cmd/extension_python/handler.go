@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
@@ -29,6 +30,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/handler/repl"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
 	"unstable.build/rune/internal/component/markdown"
+	"unstable.build/rune/internal/extension/langext"
 )
 
 // pyCommandName is the top-level REPL command exposed by this extension.
@@ -66,9 +68,9 @@ var uvRoutes = map[string][]string{
 
 // pySubcommandNames is the deterministic completion order at depth 0.
 var pySubcommandNames = []string{
-	"add", "build", "cache", "find", "init", "install", "list", "lock",
-	"pin", "pip", "remove", "run", "self", "sync", "tool", "tree",
-	"uninstall", "venv",
+	"add", "build", "cache", "disable", "enable", "find", "init",
+	"install", "list", "lock", "pin", "pip", "remove", "run", "self",
+	"status", "sync", "tool", "tree", "uninstall", "venv",
 }
 
 var pyManual = textapi.CommandManual{
@@ -94,6 +96,21 @@ var pyManual = textapi.CommandManual{
 		{Name: "venv", Summary: "Create a virtual environment.", Synopsis: "[<path>]"},
 		{Name: "cache", Summary: "Manage the uv cache.", Synopsis: "<args>"},
 		{Name: "self", Summary: "Manage the uv executable.", Synopsis: "<args>"},
+		{
+			Name:     "enable",
+			Summary:  "Let Rune manage the project's Python environment.",
+			Synopsis: "[<path>]",
+		},
+		{
+			Name:     "disable",
+			Summary:  "Stop Rune from managing the project's Python environment.",
+			Synopsis: "[<path>]",
+		},
+		{
+			Name:     "status",
+			Summary:  "Show whether Rune manages the project's Python environment.",
+			Synopsis: "[<path>]",
+		},
 	},
 }
 
@@ -105,18 +122,40 @@ var uvNestedSubcommands = map[string][]string{
 }
 
 type pyHandler struct {
-	exec   workspaceapi.Executor
-	notify browserapi.Notifications
-	cwd    string
+	exec    workspaceapi.Executor
+	notify  browserapi.Notifications
+	fs      workspaceapi.FileSystem
+	setting *envSetting
+	syncEnv func(context.Context, langext.Root) error
+	wsRoot  workspaceapi.URI
+	cwd     string
 }
 
 var _ textapi.REPLHandler = (*pyHandler)(nil)
 
+// pyHandlerConfig groups the handler dependencies; the environment
+// subcommands need far more of the workspace than the uv passthrough
+// ones do.
+type pyHandlerConfig struct {
+	exec    workspaceapi.Executor
+	notify  browserapi.Notifications
+	fs      workspaceapi.FileSystem
+	setting *envSetting
+	syncEnv func(context.Context, langext.Root) error
+	wsRoot  workspaceapi.URI
+}
+
 // newPyHandler builds the `python` REPL command handler and its manual.
-func newPyHandler(
-	exec workspaceapi.Executor, notify browserapi.Notifications, cwd string,
-) (textapi.CommandManual, textapi.REPLHandler) {
-	return pyManual, &pyHandler{exec: exec, notify: notify, cwd: cwd}
+func newPyHandler(cfg pyHandlerConfig) (textapi.CommandManual, textapi.REPLHandler) {
+	return pyManual, &pyHandler{
+		exec:    cfg.exec,
+		notify:  cfg.notify,
+		fs:      cfg.fs,
+		setting: cfg.setting,
+		syncEnv: cfg.syncEnv,
+		wsRoot:  cfg.wsRoot,
+		cwd:     cfg.wsRoot.Path(),
+	}
 }
 
 // HandleCommand routes the first arg to the matching uv subcommand.
@@ -127,12 +166,25 @@ func (h *pyHandler) HandleCommand(
 		return markdownOutput(usageMarkdown(pyManual)), nil
 	}
 	sub := cmd.Args[0]
-	if sub == "help" {
+	switch sub {
+	case "help":
 		return h.Help(ctx, cmd.Args[1:])
+	case "enable":
+		return h.enable(ctx, cmd.Args[1:])
+	case "disable":
+		return h.disable(ctx, cmd.Args[1:])
+	case "status":
+		return h.status(ctx, cmd.Args[1:])
 	}
 	prefix, ok := uvRoutes[sub]
 	if !ok {
 		return nil, fmt.Errorf("unknown command: %s", sub)
+	}
+	root := h.resolveRoot(nil)
+	if managed, known, err := h.setting.get(ctx, root); err == nil && known && !managed {
+		return nil, fmt.Errorf(
+			"rune does not manage the Python environment in %s; "+
+				"run `python enable` to turn it back on", root.Dir)
 	}
 	args := append(append([]string{}, prefix...), cmd.Args[1:]...)
 	out, err := h.runUVCapture(ctx, args...)
@@ -140,6 +192,100 @@ func (h *pyHandler) HandleCommand(
 		return nil, err
 	}
 	return markdownOutput(fmt.Sprintf("```\n%s\n```", out)), nil
+}
+
+// enable records that Rune may manage root and brings the environment up
+// right away. The language server was already initialized against this
+// root and the extension API has no per-root restart, so the user is
+// told to reload the workspace for it to see the new interpreter.
+func (h *pyHandler) enable(
+	ctx context.Context, args []string,
+) (iterator.Iterator[component.Responsive], error) {
+	root := h.resolveRoot(args)
+	if err := h.setting.set(ctx, root, true); err != nil {
+		return nil, fmt.Errorf("store python environment policy: %w", err)
+	}
+	if h.syncEnv != nil {
+		if err := h.syncEnv(ctx, root); err != nil {
+			return nil, fmt.Errorf("set up python environment in %s: %w", root.Dir, err)
+		}
+	}
+	_, _ = h.notify.Notify(browserapi.LevelInfo,
+		"Reload the workspace so the Python language server picks up %s", root.Dir)
+	return markdownOutput(fmt.Sprintf(
+		"Rune now manages the Python environment in `%s`.\n\n"+
+			"Reload the workspace so the language server picks it up.\n",
+		root.Dir)), nil
+}
+
+func (h *pyHandler) disable(
+	ctx context.Context, args []string,
+) (iterator.Iterator[component.Responsive], error) {
+	root := h.resolveRoot(args)
+	if err := h.setting.set(ctx, root, false); err != nil {
+		return nil, fmt.Errorf("store python environment policy: %w", err)
+	}
+	return markdownOutput(fmt.Sprintf(
+		"Rune no longer manages the Python environment in `%s`.\n\n"+
+			"It will not install an interpreter, create or sync `.venv`, or\n"+
+			"prepare the debugger there. The other `python` subcommands stay\n"+
+			"disabled for this project until you run `python enable`.\n",
+		root.Dir)), nil
+}
+
+func (h *pyHandler) status(
+	ctx context.Context, args []string,
+) (iterator.Iterator[component.Responsive], error) {
+	root := h.resolveRoot(args)
+	managed, known, err := h.setting.get(ctx, root)
+	if err != nil {
+		return nil, fmt.Errorf("read python environment policy: %w", err)
+	}
+	state := "not asked yet"
+	switch {
+	case known && managed:
+		state = "managed by Rune"
+	case known:
+		state = "not managed by Rune"
+	}
+	return markdownOutput(fmt.Sprintf(
+		"- **Project root:** `%s`\n- **Environment:** %s\n- **Detected layout:** %s\n",
+		root.Dir, state, pyProjectKindNames[detectProjectAt(ctx, h.fs, root.Dir)])), nil
+}
+
+var pyProjectKindNames = map[projectKind]string{
+	kindNone:         "no Python project detected",
+	kindProject:      "pyproject.toml",
+	kindRequirements: "requirements file",
+	kindVenvOnly:     ".venv only",
+	kindScript:       "loose scripts",
+}
+
+// resolveRoot maps an optional path argument to the enclosing Python
+// project root, falling back to the workspace root when the path has no
+// enclosing project.
+func (h *pyHandler) resolveRoot(args []string) langext.Root {
+	fallback := langext.Root{Dir: h.wsRoot.Path(), URI: "file://" + h.wsRoot.Path()}
+	if h.fs == nil {
+		return fallback
+	}
+	target := h.cwd
+	if len(args) > 0 && args[0] != "" {
+		target = args[0]
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(h.cwd, target)
+		}
+	}
+	// FindProjectRoot walks up from a file, so probe with a name inside
+	// the target directory to have the walk start at the directory itself.
+	uri, err := h.fs.URI(filepath.Join(target, "__probe__.py"))
+	if err != nil {
+		return fallback
+	}
+	if root, ok := langext.FindProjectRoot(h.fs, h.wsRoot, uri, pyMarkers); ok {
+		return root
+	}
+	return fallback
 }
 
 // Complete offers the `python` subcommands at depth 0 and the nested uv

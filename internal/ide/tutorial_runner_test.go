@@ -331,6 +331,34 @@ func TestTutorialRunnerStop(t *testing.T) {
 	assert.Nil(t, r.overlay)
 }
 
+// TestTutorialRunnerRunningIsRaceFree pins that running() may be read
+// off the event loop: the package-install gate consults it from the
+// background syntax and LSP goroutines while the event loop starts and
+// stops tutorials.
+func TestTutorialRunnerRunningIsRaceFree(t *testing.T) {
+	t.Parallel()
+	r, _ := newTestRunner(map[string]idetutorial.Tutorial{"basics": &tutStub{}})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range 1000 {
+			_ = r.running()
+		}
+	}()
+
+	ctx := context.Background()
+	for range 100 {
+		require.NoError(t, r.HandleCommand(ctx,
+			textapi.Command{Name: "tutorial", Args: []string{"start", "basics"}}))
+		assert.True(t, r.running())
+		require.NoError(t, r.HandleCommand(ctx,
+			textapi.Command{Name: "tutorial", Args: []string{"stop"}}))
+		assert.False(t, r.running())
+	}
+	<-done
+}
+
 func TestTutorialRunnerComplete(t *testing.T) {
 	t.Parallel()
 	r, _ := newTestRunner(map[string]idetutorial.Tutorial{

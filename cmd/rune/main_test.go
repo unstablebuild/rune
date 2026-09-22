@@ -206,8 +206,17 @@ func TestAppLaunchArgs(t *testing.T) {
 			wantOK: true,
 		},
 		{
-			name:    "windows unsupported",
+			name:    "windows without zdotdir",
 			goos:    "windows",
+			zdotDir: "",
+			wantArgs: []string{
+				"-G", "-w", "",
+			},
+			wantOK: true,
+		},
+		{
+			name:    "freebsd unsupported",
+			goos:    "freebsd",
 			zdotDir: "",
 			wantOK:  false,
 		},

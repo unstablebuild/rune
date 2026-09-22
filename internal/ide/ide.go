@@ -671,7 +671,7 @@ func (i *IDE) init(
 	i.workspaceHandler.tutorialsInstalled = i.onTutorialsInstalled
 	i.workspaceHandler.sessionReopenDisabled = op.disableSessionReopen
 	i.workspaceHandler.onboardingActive = func() bool {
-		return op.startingTutorial != ""
+		return op.startingTutorial != "" || i.tutorial.running()
 	}
 	err = i.workspaceHandler.init(cwdURI, homeDirURI, workspaceManager,
 		i.ideConfig.notificationsConfig(), i.ideConfig, i.storage, dataDir,

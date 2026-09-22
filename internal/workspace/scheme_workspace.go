@@ -146,11 +146,20 @@ func (w *schemeWorkspace) Load(
 		return
 	}
 
+	// The entry name derives from the absolute path, and has to match
+	// what the recovery prompts derive through DefaultSwapFile.
+	swapFile, err := DefaultSwapFile(swapDir, uri)
+	if err != nil {
+		return
+	}
+
 	// turn into relative if possible
 	path := workspaceapi.RelPath(w.w, uri)
-	swapDirPath := workspaceapi.RelPath(w.w, swapDir)
+	swapFilePath := workspaceapi.RelPath(w.w, swapFile)
+	swapDirPath := sharedSwapDir(workspaceapi.RelPath(w.w, swapDir), path)
 
-	ret, err = newFile(w.Scheme, path, buf, swapDirPath, readOnly, w.scheduleNextTick)
+	ret, err = newFile(
+		w.Scheme, path, buf, swapDirPath, swapFilePath, readOnly, w.scheduleNextTick)
 	if err == os.ErrNotExist {
 		if readOnly {
 			err = errors.New("cannot open file that doesn't exist in read-only")

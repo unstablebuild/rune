@@ -690,24 +690,27 @@ func TestNonRecursiveDirsCompleterUsesReaderRoot(t *testing.T) {
 	fix := newCompleterFixture(t)
 	c := NonRecursiveDirsCompleter(fix.reader)
 
+	// Candidates are URI paths, so they are slash-separated on every
+	// platform regardless of the host separator used to build the
+	// fixture on disk.
 	tests := []struct {
 		path    string
 		want    []string
 		wantNot []string
 	}{
 		{
-			want:    []string{"src", "docs"},
-			wantNot: []string{"src/cmd", "src/cmd/rune"},
+			want:    []string{"src/", "docs/"},
+			wantNot: []string{"src/cmd/", "src/cmd/rune/"},
 		},
 		{
 			path:    "src/",
-			want:    []string{"src/cmd", "src/pkg"},
-			wantNot: []string{"src/cmd/rune"},
+			want:    []string{"src/cmd/", "src/pkg/"},
+			wantNot: []string{"src/cmd/rune/"},
 		},
 		{
 			path:    "src/c",
-			want:    []string{"src/cmd", "src/pkg"},
-			wantNot: []string{"src/cmd/rune"},
+			want:    []string{"src/cmd/", "src/pkg/"},
+			wantNot: []string{"src/cmd/rune/"},
 		},
 	}
 
@@ -723,6 +726,36 @@ func TestNonRecursiveDirsCompleterUsesReaderRoot(t *testing.T) {
 		for _, wantNot := range tc.wantNot {
 			assert.NotContains(t, got, wantNot)
 		}
+		for _, entry := range got {
+			assert.True(t, IsPartialCandidate(entry),
+				"directory candidate %q must be partial", entry)
+		}
+	}
+}
+
+// TestNonRecursiveDirsCompleterMarksCandidatesPartial verifies that every
+// directory candidate carries the partial marker inside its quoting, so
+// accepting one descends into the directory instead of terminating the
+// argument.
+func TestNonRecursiveDirsCompleterMarksCandidatesPartial(t *testing.T) {
+	t.Parallel()
+	fix := newCompleterFixture(t)
+	c := NonRecursiveDirsCompleter(fix.reader)
+
+	it, _, err := c.Complete(t.Context(), []string{"workspaceopen", ""})
+	require.NoError(t, err)
+	got := collectAll(t, it)
+
+	require.Contains(t, got, "'with space/'",
+		"a spaced directory must carry the marker inside its quotes; got %v", got)
+	for _, entry := range got {
+		parts := SplitCommandLine(entry)
+		require.Len(t, parts, 1,
+			"completion entry %q must tokenise into exactly one argument", entry)
+		assert.True(t, IsPartialCandidate(entry),
+			"directory candidate %q must be partial", entry)
+		assert.True(t, strings.HasSuffix(UnquoteToken(parts[0]), PartialCandidateSuffix),
+			"unquoted candidate %q must end in a separator", entry)
 	}
 }
 
@@ -751,7 +784,7 @@ func TestNonRecursiveDirsCompleterShowsPersonalHomeDirs(t *testing.T) {
 	got := collectAll(t, it)
 
 	assert.ElementsMatch(t,
-		[]string{"Documents", "Desktop", "Downloads"}, got)
+		[]string{"Documents/", "Desktop/", "Downloads/"}, got)
 }
 
 func TestPathCompletersDoNotCompleteMismatchedOriginURI(t *testing.T) {
@@ -1168,6 +1201,99 @@ func TestMultiCompleterNewLastArgFromAnyChild(t *testing.T) {
 // fakeHistoryAccessor is a HistoryAccessor backed by a function so tests
 // can express the desired behavior inline.
 type fakeHistoryAccessor func(ctx context.Context, args []string) (iterator.Iterator[string], bool)
+
+func TestPartialCandidateMarker(t *testing.T) {
+	t.Parallel()
+
+	// The marker is the subject here, so cases are built from the
+	// constant rather than a literal. hostSep is what a user typing a
+	// native path produces: a backslash on Windows, "/" elsewhere.
+	const sep = PartialCandidateSuffix
+	hostSep := string(filepath.Separator)
+
+	tests := []struct {
+		name      string
+		candidate string
+		partial   bool
+		marked    string
+	}{
+		{"plain name", "alpha", false, "alpha" + sep},
+		{"already marked", "alpha" + sep, true, "alpha" + sep},
+		{"host separator", "alpha" + hostSep, true, "alpha" + hostSep},
+		{"absolute path", sep + "a" + sep + "b", false, sep + "a" + sep + "b" + sep},
+		{"marked absolute path", sep + "a" + sep + "b" + sep, true, sep + "a" + sep + "b" + sep},
+		{"quoted name with a space", "'my dir'", false, "'my dir" + sep + "'"},
+		{"marked quoted name with a space", "'my dir" + sep + "'", true, "'my dir" + sep + "'"},
+		{"escaped name with a space", `my\ dir`, false, "'my dir" + sep + "'"},
+		{"remote uri", "ssh://host/src", false, "ssh://host/src" + sep},
+		{"filesystem root", sep, true, sep},
+		{"empty", "", false, sep},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.partial, IsPartialCandidate(tc.candidate))
+			marked := MarkPartialCandidate(tc.candidate)
+			assert.Equal(t, tc.marked, marked)
+			assert.True(t, IsPartialCandidate(marked),
+				"a marked candidate must classify as partial")
+			require.Len(t, SplitCommandLine(marked), 1,
+				"a marked candidate must stay a single token")
+		})
+	}
+}
+
+func TestTrimPartialCandidateSuffix(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"unmarked path", "/a/b", "/a/b"},
+		{"marked path", "/a/b/", "/a/b"},
+		{"repeated separators", "/a/b//", "/a/b"},
+		{"relative path", "alpha/", "alpha"},
+		{"name with a space", "my dir/", "my dir"},
+		{"filesystem root", "/", "/"},
+		{"host separator root", string(filepath.Separator), string(filepath.Separator)},
+		{"empty", "", ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, TrimPartialCandidateSuffix(tc.in))
+		})
+	}
+}
+
+// TestPartialCompleterMarksEveryCandidate covers the wrapper the
+// workspaceopen completer uses to replay history entries, which are
+// stored canonically and therefore arrive without the marker.
+func TestPartialCompleterMarksEveryCandidate(t *testing.T) {
+	t.Parallel()
+
+	inner := FuncCompleter(func(context.Context, []string) (
+		iterator.Iterator[string], string, error,
+	) {
+		return iterator.FromSlice([]string{
+			"/a/b", "/a/c/", "'my dir'",
+		}), "expanded", nil
+	})
+
+	it, newLastArg, err := PartialCompleter(inner).Complete(
+		t.Context(), []string{"workspaceopen", ""})
+	require.NoError(t, err)
+	assert.Equal(t, "expanded", newLastArg,
+		"the wrapper must forward the inner completer's expansion")
+
+	got := collectAll(t, it)
+	assert.Equal(t, []string{"/a/b/", "/a/c/", "'my dir/'"}, got)
+	for _, candidate := range got {
+		assert.True(t, IsPartialCandidate(candidate), candidate)
+	}
+}
 
 func (f fakeHistoryAccessor) HistoryIterator(
 	ctx context.Context, args []string,

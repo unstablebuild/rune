@@ -886,6 +886,32 @@ func TestEnsureGitRepoIgnoresHookGitEnv(t *testing.T) {
 		"hook repo must not receive the memory-module commit")
 }
 
+// TestEnsureGitRepoIgnoresUserCommitSigning guards the memory module's
+// bootstrap commit against the user's commit.gpgsign: signing an
+// automated commit needs a key and may block on a pinentry prompt that
+// no one is there to answer.
+func TestEnsureGitRepoIgnoresUserCommitSigning(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available on PATH")
+	}
+
+	globalConfig := filepath.Join(t.TempDir(), "gitconfig")
+	require.NoError(t, os.WriteFile(globalConfig, []byte(
+		"[commit]\n\tgpgsign = true\n[gpg]\n\tprogram = /nonexistent-signer\n",
+	), 0o600))
+	t.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
+
+	dataPath := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dataPath, "memory.go"),
+		[]byte("package memory\n"), 0o600))
+
+	require.NoError(t, ensureGitRepo(
+		context.Background(), newOSFileSystem(), osExec{}, dataPath))
+
+	log := strings.TrimSpace(string(testgit.Run(t, dataPath, "log", "--format=%s")))
+	assert.Equal(t, "initialize memory module", log)
+}
+
 // --- Test helpers ---
 
 func validDeps(t *testing.T, dir string) Deps {

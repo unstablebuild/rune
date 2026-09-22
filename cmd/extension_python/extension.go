@@ -26,6 +26,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/api/extensionapi"
 	"github.com/unstablebuild/rune-go-sdk/api/semanticapi"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"unstable.build/rune/cmd/extension_python/pyshim"
@@ -51,6 +52,8 @@ func NewExtension() (extensionapi.WorkspaceExtension, extensionapi.Metadata) {
 			extensionapi.PermissionExecute,
 			extensionapi.PermissionFileSystem,
 			extensionapi.PermissionSyntaxTree,
+			extensionapi.PermissionStorage,
+			extensionapi.PermissionBrowserWindowManager,
 		),
 	}
 	return ext, meta
@@ -70,6 +73,8 @@ func (e *pyExtension) ExtendWorkspace(
 		w,
 		cfg,
 		w.DataDir(ctx),
+		w.Storage(ctx),
+		w.WindowManager(ctx),
 		w.RegisterREPLCommand,
 	)
 }
@@ -90,6 +95,8 @@ func (e *pyExtension) extendWorkspaceWith(
 	inst installer,
 	cfg config.Config,
 	dataDir string,
+	storage storageapi.Service,
+	wm browserapi.WindowManager,
 	registerREPL func(textapi.CommandManual, textapi.REPLHandler) error,
 ) error {
 	// The REPL command's cwd is always the workspace root, independent of
@@ -99,7 +106,14 @@ func (e *pyExtension) extendWorkspaceWith(
 	if err != nil {
 		return fmt.Errorf("resolve cwd uri: %w", err)
 	}
-	manual, handler := newPyHandler(exec, notify, cwd.Path())
+	setting := newEnvSetting(storage)
+	syncEnv := func(ctx context.Context, root langext.Root) error {
+		return setupManagedEnvironment(ctx, fs, exec, notify, inst, cfg, dataDir, root)
+	}
+	manual, handler := newPyHandler(pyHandlerConfig{
+		exec: exec, notify: notify, fs: fs,
+		setting: setting, syncEnv: syncEnv, wsRoot: cwd,
+	})
 	if err := registerREPL(manual, handler); err != nil {
 		return fmt.Errorf("register python command: %w", err)
 	}
@@ -110,7 +124,8 @@ func (e *pyExtension) extendWorkspaceWith(
 		FileMatch:   isPythonFile,
 		WatchEvents: pyWatchEvents(cfg, notify),
 		InitRoot: func(ctx context.Context, root langext.Root) error {
-			return initializeProjectRoot(ctx, fs, exec, notify, lsp, inst, cfg, dataDir, root)
+			return initializeProjectRoot(
+				ctx, fs, exec, notify, lsp, inst, cfg, dataDir, setting, wm, root)
 		},
 	})
 	if err := init.Start(); err != nil {
@@ -122,18 +137,37 @@ func (e *pyExtension) extendWorkspaceWith(
 	// waiting for the first open. Discovery still drives nested projects.
 	if detectProjectAt(ctx, fs, ".") != kindNone {
 		root := langext.Root{Dir: cwd.Path(), URI: fmt.Sprintf("file://%s", cwd.Path())}
+		// An undecided root has to ask the user first, and
+		// ExtendWorkspace must not block on that answer.
+		if _, known, err := setting.get(ctx, root); err == nil && !known {
+			go debug.CapturePanicReport(func() {
+				slog.Info("initializing language project at known root",
+					"dir", root.Dir, "uri", root.URI)
+				if err := init.InitializeAt(ctx, root); err != nil {
+					slog.Warn("python workspace root bring-up failed",
+						"root", root.Dir, "error", err)
+				}
+			})
+			return nil
+		} else {
+			slog.Info("initializing language project at root",
+				"dir", root.Dir, "uri", root.URI)
+		}
 		if err := init.InitializeAt(ctx, root); err != nil {
 			return err
 		}
+	} else {
+		slog.Info("no python projects found at root")
 	}
 	return nil
 }
 
 // initializeProjectRoot performs the language-specific bring-up for a
-// discovered project root: it bootstraps the uv environment rooted there
-// (best-effort), installs the venv-aware python shims, prewarms the
-// debugpy adapter env, resolves ty/ruff, applies config overrides, and
-// initializes the language server with the nested root URI.
+// discovered project root. The environment work (uv bootstrap, venv-aware
+// shims, debugpy prewarm) only runs once the user has agreed to let Rune
+// manage the root; ty and ruff are bundled tooling and come up either
+// way. The decision must be made before Initialize, which rejects a
+// second init for the same root.
 func initializeProjectRoot(
 	ctx context.Context,
 	fs workspaceapi.FileSystem,
@@ -143,28 +177,24 @@ func initializeProjectRoot(
 	inst installer,
 	cfg config.Config,
 	dataDir string,
+	setting *envSetting,
+	wm browserapi.WindowManager,
 	root langext.Root,
 ) error {
-	kind := detectProjectAt(ctx, fs, root.Dir)
-
-	uvBin := resolvePyTool(ctx, fs, exec, inst, "uv")
-	if err := ensureEnvironment(ctx, uvBin, exec, notify, kind, fs, root.Dir, dataDir); err != nil {
-		_, _ = notify.Notify(browserapi.LevelWarn,
-			"Python environment setup failed, continuing without a synced env: %v", err)
-		slog.Warn("python env setup failed", "root", root.Dir, "error", err)
-	}
-
-	if dataDir != "" {
-		if err := pyshim.Write(fs, dataDir); err != nil {
-			slog.Warn("python shim install failed", "dataDir", dataDir, "error", err)
+	managed := managedEnvironmentAllowed(ctx, notify, setting, wm, root)
+	slog.Warn("initializing project root", "managed",
+		managed, "root", root.Dir, "uri", root.URI)
+	if managed {
+		if err := setupManagedEnvironment(
+			ctx, fs, exec, notify, inst, cfg, dataDir, root); err != nil {
+			_, _ = notify.Notify(browserapi.LevelWarn,
+				"Python environment setup failed, continuing without a synced env: %v", err)
+			slog.Warn("python env setup failed", "root", root.Dir, "error", err)
 		}
-	}
-
-	if pin := debugpyPin(cfg, notify); pin != "" {
-		uvxBin := resolvePyTool(ctx, fs, exec, inst, "uvx")
-		go debug.CapturePanicReport(func() {
-			prewarmDebugpy(ctx, uvxBin, exec, root.Dir, pin)
-		})
+	} else {
+		_, _ = notify.NotifyOnce(browserapi.LevelInfo,
+			"Rune is not managing the Python environment in %s. "+
+				"Run `python enable` to let it.", root.Dir)
 	}
 
 	tyBin := resolvePyTool(ctx, fs, exec, inst, "ty")
@@ -188,6 +218,68 @@ func initializeProjectRoot(
 	}
 	slog.Info("python lsp initialized", "root", root.Dir, "command", command)
 	return nil
+}
+
+// managedEnvironmentAllowed resolves the stored policy for root, asking
+// the user when there is no stored answer. A dismissed prompt is not
+// persisted, so the question is asked again next session.
+func managedEnvironmentAllowed(
+	ctx context.Context,
+	notify browserapi.Notifications,
+	setting *envSetting,
+	wm browserapi.WindowManager,
+	root langext.Root,
+) bool {
+	managed, known, err := setting.get(ctx, root)
+	if err != nil {
+		slog.Warn("python env policy read failed", "root", root.Dir, "error", err)
+		return false
+	}
+	if known {
+		return managed
+	}
+	answer, answered := askManageEnvironment(ctx, wm, root)
+	if !answered {
+		return false
+	}
+	if err := setting.set(ctx, root, answer); err != nil {
+		_, _ = notify.Notify(browserapi.LevelWarn,
+			"Could not remember the Python environment choice for %s: %v", root.Dir, err)
+		slog.Warn("python env policy write failed", "root", root.Dir, "error", err)
+	}
+	return answer
+}
+
+// setupManagedEnvironment bootstraps the uv environment rooted at root,
+// installs the venv-aware python shims and prewarms the debugpy adapter
+// env. It is shared by bring-up and `python enable`.
+func setupManagedEnvironment(
+	ctx context.Context,
+	fs workspaceapi.FileSystem,
+	exec workspaceapi.Executor,
+	notify browserapi.Notifications,
+	inst installer,
+	cfg config.Config,
+	dataDir string,
+	root langext.Root,
+) error {
+	kind := detectProjectAt(ctx, fs, root.Dir)
+	uvBin := resolvePyTool(ctx, fs, exec, inst, "uv")
+	envErr := ensureEnvironment(ctx, uvBin, exec, notify, kind, fs, root.Dir, dataDir)
+
+	if dataDir != "" {
+		if err := pyshim.Write(fs, dataDir); err != nil {
+			slog.Warn("python shim install failed", "dataDir", dataDir, "error", err)
+		}
+	}
+
+	if pin := debugpyPin(cfg, notify); pin != "" {
+		uvxBin := resolvePyTool(ctx, fs, exec, inst, "uvx")
+		go debug.CapturePanicReport(func() {
+			prewarmDebugpy(ctx, uvxBin, exec, root.Dir, pin)
+		})
+	}
+	return envErr
 }
 
 func pyLogLevel(cfg config.Config, notify browserapi.Notifications) string {

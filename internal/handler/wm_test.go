@@ -2041,12 +2041,22 @@ func TestFloatingBarDragLifecycle(t *testing.T) {
 			want: []barEvent{barDrag(10, 3), barDrag(12, 5), barDrop(12, 5)},
 		},
 		{
-			name: "a release without a move still drops",
+			name: "a release without a move cancels instead of dropping",
 			seq: []term.Event{
 				mouseEv(term.MouseLeft, 4, 0),
 				mouseEv(term.MouseRelease, 4, 0),
 			},
-			want: []barEvent{barDrop(4, 0)},
+			want: []barEvent{barCancel()},
+		},
+		{
+			name: "a move back to the press position still drops",
+			seq: []term.Event{
+				mouseEv(term.MouseLeft, 4, 0),
+				mouseEv(term.MouseLeft, 10, 3),
+				mouseEv(term.MouseLeft, 4, 0),
+				mouseEv(term.MouseRelease, 4, 0),
+			},
+			want: []barEvent{barDrag(10, 3), barDrag(4, 0), barDrop(4, 0)},
 		},
 		{
 			name: "moves after the drop belong to no drag",

@@ -427,7 +427,7 @@ func appLaunchArgs(goos, zdotDir string) ([]string, bool) {
 		args = append(args, "--rune-zdotdir="+zdotDir)
 	}
 	switch goos {
-	case "darwin", "linux":
+	case "darwin", "linux", "windows":
 		return append(args, "-G", "-w", ""), true
 	default:
 		return nil, false
@@ -859,6 +859,8 @@ func runGUI(
 	defer func() { _ = root.Close() }()
 	guiRef.Store(g)
 	root.attachGUI(g, transparentWindow)
+	defer watchGUISignals(publishEvent,
+		quitEvent(appMenuKeyBindings(cfg)))()
 
 	if fg, bg := getGUIWindowOpacity(browser, cfg); transparentWindow && (fg != 1 || bg != 1) {
 		g.SetOpacity(bg, fg)

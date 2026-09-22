@@ -411,6 +411,8 @@ func TestRuneStarAsDefaultConfig(t *testing.T) {
 	assert.Equal(t, "modal", cfg.editorMode())
 	assert.False(t, cfg.editorAutoPair())
 	assert.False(t, cfg.editorAutoSave())
+	assert.True(t, cfg.editorSwapDir())
+	assert.NotContains(t, cfg.errors, "editor.swap_dir")
 	assert.Equal(t, "info", cfg.cfg["log_level"])
 	assert.Equal(t, 2000, cfg.consoleMaxHistory())
 	assert.True(t, cfg.telemetryEnabled())

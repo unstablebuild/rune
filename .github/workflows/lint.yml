@@ -25,6 +25,8 @@ jobs:
         with:
           version: v2.11.3
           args: --timeout=600s
+      - name: Run gohawk
+        run: go run github.com/kojah/gohawk@v0.3.5 -json -enable-all -disable=exitpolicy,goroutineownership,lockorder,processownership ./...
 
   # gofmt and the header scan are both seconds of work, so they share a
   # runner rather than each paying for a checkout and a Go install.

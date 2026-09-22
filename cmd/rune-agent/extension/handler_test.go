@@ -35,6 +35,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/semanticapi"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/handler/handlertest"
+	"github.com/unstablebuild/rune-go-sdk/term"
 
 	"unstable.build/rune/cmd/rune-agent/agent"
 	"unstable.build/rune/cmd/rune-agent/agent/skills"
@@ -916,7 +917,7 @@ func TestPlanSkillSpawnInheritsQualifiedModel(t *testing.T) {
 		defer close(done)
 		createAgentCompletions(ctx, cancel, tx, rx, ag, spawner,
 			childEvents, skillReg, dialogueID,
-			syncComponent{mu: new(sync.Mutex), comp: dialoguetui.NewComponent(dialoguetui.ComponentConfig{}), h: &aiEditorHandler{n: stubNotifications{}}, hintSlot: &hintSlot{}},
+			syncComponent{mu: new(sync.Mutex), comp: dialoguetui.NewComponent(dialoguetui.ComponentConfig{}), h: &aiEditorHandler{n: stubNotifications{}, p: term.NopInterrupter()}, hintSlot: &hintSlot{}},
 			stubNotifications{}, nil, store)
 	}()
 

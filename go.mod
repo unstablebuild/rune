@@ -258,6 +258,6 @@ replace github.com/go-git/go-billy/v6 => github.com/unstablebuild/go-billy/v6 v6
 
 replace github.com/go-git/go-git/v6 => github.com/unstablebuild/go-git/v6 v6.0.1-ub.1
 
-replace github.com/tree-sitter/go-tree-sitter => github.com/unstablebuild/go-tree-sitter v0.25.0-ub.1
+replace github.com/tree-sitter/go-tree-sitter => github.com/unstablebuild/go-tree-sitter v0.25.0-ub.2
 
 replace github.com/hajimehoshi/ebiten/v2 => github.com/unstablebuild/ebiten/v2 v2.7.5-ub.32

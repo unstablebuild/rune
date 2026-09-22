@@ -515,8 +515,8 @@ github.com/unstablebuild/go-billy/v6 v6.0.0-ub.1 h1:pPmxLsBLNuZv+LWeytIcvwzxeUAM
 github.com/unstablebuild/go-billy/v6 v6.0.0-ub.1/go.mod h1:E3VhlS+AKkrq6ZNn1axE2/nDRJ87l1FJk9r5HT2vPX0=
 github.com/unstablebuild/go-git/v6 v6.0.1-ub.1 h1:xBomYWGQkSIm023lhJxu+F1uU4YjZlIZaKpnm+7nIak=
 github.com/unstablebuild/go-git/v6 v6.0.1-ub.1/go.mod h1:tIIje+70YSWoGCyaB/J5ncOtrRkrdRqZ9Wc2SC7tETk=
-github.com/unstablebuild/go-tree-sitter v0.25.0-ub.1 h1:rItCdzfbMxnE5Y00pXNS41sZDmHpaY/ycJCMQqpaUNY=
-github.com/unstablebuild/go-tree-sitter v0.25.0-ub.1/go.mod h1:r77ig7BikoZhHrrsjAnv8RqGti5rtSyvDHPzgTPsUuU=
+github.com/unstablebuild/go-tree-sitter v0.25.0-ub.2 h1:oMUgNWVomwLDD8cPc87yB7M3L9IaTeUkjFFbNYQhKTA=
+github.com/unstablebuild/go-tree-sitter v0.25.0-ub.2/go.mod h1:r77ig7BikoZhHrrsjAnv8RqGti5rtSyvDHPzgTPsUuU=
 github.com/unstablebuild/notify v0.10.4 h1:AStjrILfwMmW8RxnN656wtnTTAtXodVdyWdoQzz/kc0=
 github.com/unstablebuild/notify v0.10.4/go.mod h1:Q1U21KXundJt7qEvc4z4fFtzuDTZOTrhvCIJDZp5SBk=
 github.com/unstablebuild/pty v1.3.1 h1:GQSjqGKSOkOCu+X/F5yFUSuwp7Fi08xXn28DcuXhu/k=

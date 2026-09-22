@@ -544,6 +544,26 @@ func TestLoginRespectsContextCancellation(t *testing.T) {
 	}
 }
 
+func TestStorageCancellationReleasesCacheLock(t *testing.T) {
+	source := NewCachedTokenSource(nil, successfulGetService{})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := source.TokenCtx(ctx)
+	require.ErrorIs(t, err, context.Canceled)
+
+	done := make(chan struct{})
+	go func() {
+		_ = source.Purge()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("cache lock remained held after cancellation")
+	}
+}
+
 // TestSecondLoginSupersedesFirst asserts that cancelling the first
 // login's ctx (as the caller does when a new login starts) aborts the
 // in-flight first login and lets a second login proceed to completion.
@@ -687,6 +707,14 @@ func (s blockingSource) Token() (*oauth2.Token, error) {
 }
 
 type failingDocumentService struct {
+}
+
+type successfulGetService struct {
+	failingDocumentService
+}
+
+func (successfulGetService) Get(context.Context, string, interface{}) error {
+	return nil
 }
 
 func (failingDocumentService) Create(ctx context.Context, ID string, doc interface{}) error {

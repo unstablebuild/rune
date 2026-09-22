@@ -1854,6 +1854,48 @@ editor:
 	assert.Equal(t, 2048, cfg.editorMaxSizeForSyntax())
 }
 
+func TestEditorSwapDir(t *testing.T) {
+	tsuite := []struct {
+		name     string
+		value    string
+		want     bool
+		wantErrs bool
+	}{
+		{name: "absent key keeps swaps in the data directory", value: "", want: true},
+		{name: "enabled", value: "true", want: true},
+		{name: "disabled keeps swaps next to the file", value: "false", want: false},
+		{name: "malformed value", value: `"yes please"`, want: true, wantErrs: true},
+	}
+
+	for _, tcase := range tsuite {
+		t.Run(tcase.name, func(t *testing.T) {
+			f, err := os.CreateTemp("", "")
+			require.NoError(t, err)
+			defer os.Remove(f.Name())
+
+			src := "\neditor:\n  tabspaces: 4\n"
+			if tcase.value != "" {
+				src += "  swap_dir: " + tcase.value + "\n"
+			}
+			_, err = f.WriteString(src)
+			require.NoError(t, err)
+
+			var cfg ideConfig
+			err = loadConfig(&cfg, f.Name(), browser.NopWallpaper(),
+				DefaultConfig{src: "config = {}"},
+				term.RingBell, term.ScheduleNextTick, "")
+			require.NoError(t, err)
+
+			assert.Equal(t, tcase.want, cfg.editorSwapDir())
+			if tcase.wantErrs {
+				assert.Contains(t, cfg.errors, "editor.swap_dir")
+			} else {
+				assert.NotContains(t, cfg.errors, "editor.swap_dir")
+			}
+		})
+	}
+}
+
 func TestEditorIndentType(t *testing.T) {
 	f, err := os.CreateTemp("", "")
 	require.NoError(t, err)

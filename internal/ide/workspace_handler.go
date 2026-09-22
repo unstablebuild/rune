@@ -25,6 +25,7 @@ import (
 	"net/url"
 	"os"
 	"os/user"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -682,7 +683,7 @@ func (h *workspaceManagerHandler) init(
 	// don't install a fs watcher for the home workspace,
 	// to prevent unecessary resource consumption
 	homeParser := syntax.NewParser(h.homeWorkspace, h.pkgmanager, h.homeURI)
-	globalOpts := h.textOpts(cfg, homeParser, h.homeURI)
+	globalOpts := h.textOpts(cfg, homeParser, h.homeURI, h.homeWorkspace)
 	tm := new(workspaceTabManager)
 	tm.parent = h
 	h.empty, err = newEx(
@@ -1445,6 +1446,7 @@ func (h *workspaceManagerHandler) afterPackageConfigMerge(
 
 func (h *workspaceManagerHandler) textOpts(
 	cfg ideConfig, parser syntaxapi.Parser, uri workspaceapi.URI,
+	ws workspace.Workspace,
 ) []text.Option {
 	markdownConfig := markdown.DefaultConfig()
 	markdownConfig.Parser = parser
@@ -1486,6 +1488,7 @@ func (h *workspaceManagerHandler) textOpts(
 		text.WithPackageManager(h.pkgmanager),
 		text.WithSyntaxConfig(cfg.syntaxConfig()),
 		text.WithMaxSyntaxParseSize(cfg.editorMaxSizeForSyntax()),
+		text.WithSwapDirectory(h.swapDirectory(cfg, ws, uri)),
 		text.WithMarkdownConfig(markdownConfig),
 		text.WithClipboard(h.clip),
 		text.WithOpenRouter(h),
@@ -1835,7 +1838,7 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 			symbolDBCloser = sdb
 		}
 	}
-	textOpts := h.textOpts(cfg, wsParser, uri)
+	textOpts := h.textOpts(cfg, wsParser, uri, cwd)
 	vctrlService, err := gogit.NewService(uri, cwd)
 	if err != nil {
 		h.empty.log(log.ErrorLevel, "new git service for workspace %q: %v",
@@ -2369,6 +2372,36 @@ func (h *workspaceManagerHandler) buildExtensions(
 	return runner, lsp, dap, promptStorage, nil
 }
 
+// swapDirectory resolves where a file the editor for ws opens keeps
+// its swap, per file rather than once per editor: a directory path
+// only names a directory on the host it was resolved against, and an
+// editor rooted in a remote workspace still opens local files.
+//
+// A file on any other host would need a data directory this editor
+// never resolved, so it keeps its swap next to itself. The resolver
+// stays a pure function of the file URI because the recovery prompts
+// have to derive the same swap entry the open did.
+func (h *workspaceManagerHandler) swapDirectory(
+	cfg ideConfig, ws workspace.Workspace, uri workspaceapi.URI,
+) func(workspaceapi.URI) string {
+	if !cfg.editorSwapDir() {
+		return nil
+	}
+	local := filepath.Join(h.sixDir, workspace.SwapDirName)
+	host := path.Join(installDataDir(ws, uri, h.sixDir), workspace.SwapDirName)
+	return func(file workspaceapi.URI) string {
+		switch {
+		case file.Scheme() == workspace.FileScheme:
+			return local
+		case file.Scheme() == uri.Scheme() &&
+			file.User() == uri.User() && file.Host() == uri.Host():
+			return host
+		default:
+			return ""
+		}
+	}
+}
+
 func installDataDir(ws workspace.Workspace, uri workspaceapi.URI, localDataDir string) string {
 	if uri.Scheme() == workspace.FileScheme {
 		return localDataDir
@@ -2560,7 +2593,10 @@ func (h *workspaceManagerHandler) commandAddWorkspace(args ...string) error {
 	if len(args) == 0 {
 		return errors.New("expected at least one argument with the workspace path")
 	}
-	path := args[0]
+	// Directory completion candidates carry a trailing separator so that
+	// accepting one descends instead of terminating the argument; the
+	// user can dispatch straight from that state.
+	path := command.TrimPartialCandidateSuffix(args[0])
 
 	if uri, err := workspaceapi.ParseURI(path); err == nil {
 		return h.addOrCreateWorkspace(uri)
@@ -3245,9 +3281,14 @@ func (h *workspaceManagerHandler) completeCommand(
 		// inspects the trailing token, so passing the command name as
 		// args[0] (required by HistoryCompleter to strip the prefix) is
 		// safe for both.
+		//
+		// History stores workspace paths canonically, without the partial
+		// marker, so its entries are marked here: every workspaceopen
+		// argument is a directory, and picking one must not stop the user
+		// from descending further.
 		argv := append([]string{cmd.Name}, cmd.Args...)
 		completers := append([]command.Completer{
-			command.HistoryCompleter(h.commandHistory),
+			command.PartialCompleter(command.HistoryCompleter(h.commandHistory)),
 			command.NonRecursiveDirsCompleter(h.empty.workspace),
 		}, h.workspaceOpenCompleters...)
 		return command.MultiCompleter(completers...).Complete(ctx, argv)

@@ -87,6 +87,39 @@ Environment setup is best-effort: if a sync fails (say, a broken
 dependency), Rune warns you and still starts the language server, so
 code intelligence keeps working while you fix the environment.
 
+## Who manages the environment
+
+Rune asks before it touches a project's environment. The first time it
+brings a Python project up, it shows the project's path and offers two
+answers:
+
+- **Let Rune manage this environment** — Rune installs its managed
+  interpreter, creates and syncs the `.venv`, and keeps the debugger
+  pointed at it, as described above.
+- **I manage it myself** — Rune leaves your conda env, pyenv shims,
+  hand-rolled `.venv` or system interpreter completely alone. Code
+  intelligence still works: ty and ruff are bundled with Rune and start
+  either way.
+
+The answer is remembered per project, so a monorepo can have Rune
+manage one project while you drive another yourself. Dismissing the
+question with `Esc` leaves the environment alone for the session and
+asks again next time.
+
+Change your mind at any point from the console:
+
+- `python enable` hands the current project back to Rune and prepares
+  the environment right away. Reload the workspace afterwards so the
+  language server picks up the new interpreter.
+- `python disable` stops Rune from managing the current project.
+- `python status` shows the project root, who manages it, and the
+  detected project shape.
+
+All three accept an optional path, so you can point them at another
+project in the same workspace. While a project is unmanaged, the other
+`python` subcommands refuse to run against it and tell you to run
+`python enable` first.
+
 ## Code intelligence: the `lsp` command
 
 The cross-language `lsp` command drives code intelligence for Python
@@ -151,6 +184,9 @@ it as `python <subcommand>`, or submit a one-off from the
 | `python venv [<path>]` | Create a virtual environment. |
 | `python cache <args>` | Manage the uv cache. |
 | `python self <args>` | Manage the uv executable. |
+| `python enable [<path>]` | Let Rune manage the project's environment. |
+| `python disable [<path>]` | Stop Rune from managing the project's environment. |
+| `python status [<path>]` | Show who manages the project's environment. |
 
 ## Bringing nested projects up on edits
 

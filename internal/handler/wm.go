@@ -108,6 +108,7 @@ type WindowManager struct {
 	winDrag                  winDragMode
 	winDragWin               component.Window
 	winDragGrab              term.Coordinates
+	winDragMoved             bool
 	winBarPressID            uint64
 	winBarPressTime          time.Time
 	// defAttr holds the live theme default attributes so the grayscale
@@ -731,6 +732,7 @@ func (wm *WindowManager) resetScrollBarMouse() {
 func (wm *WindowManager) resetWindowDrag() {
 	wm.winDrag = 0
 	wm.winDragWin = component.Window{}
+	wm.winDragMoved = false
 }
 
 // cancelWindowDrag ends an in-progress drag without a drop, notifying
@@ -751,16 +753,25 @@ func (wm *WindowManager) handleWindowDrag(
 	switch ev.Key {
 	case term.MouseLeft:
 		win := wm.newNode(wm.winDragWin)
+		before := wm.winDragWin.Position()
 		wm.applyWindowDrag(mouse)
+		if wm.winDragWin.Position() != before {
+			wm.winDragMoved = true
+		}
 		if barMove {
 			wm.config.FloatingBar.OnBarDrag(win, mouse)
 		}
 		return false, true
 	case term.MouseRelease:
-		if barMove {
+		// A press and release with no motion in between is a click,
+		// not a drop: docking the float there would silently turn it
+		// into a tab.
+		if barMove && wm.winDragMoved {
 			wm.config.FloatingBar.OnBarDrop(wm.newNode(wm.winDragWin), mouse)
+			wm.resetWindowDrag()
+			return false, true
 		}
-		wm.resetWindowDrag()
+		wm.cancelWindowDrag()
 		return false, true
 	default:
 		wm.cancelWindowDrag()

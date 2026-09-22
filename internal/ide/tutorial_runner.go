@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"sync/atomic"
 
 	"github.com/unstablebuild/blue/iterator"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
@@ -41,6 +42,10 @@ type tutorialRunner struct {
 	width, height  int
 	onCompleted    func(name string)
 	exitRequested  func(term.Event) bool
+	// active mirrors overlay != nil for readers off the event loop,
+	// such as the package-install gate called from syntax and LSP
+	// goroutines.
+	active atomic.Bool
 }
 
 var _ commandObserver = (*tutorialRunner)(nil)
@@ -74,6 +79,7 @@ func (r *tutorialRunner) setActive(name string, t idetutorial.Tutorial) {
 	}
 	r.overlay = idetutorial.New(r.Handler, t, r.browserOverlay, r.interrupter)
 	r.activeName = name
+	r.active.Store(true)
 	if r.width > 0 && r.height > 0 {
 		r.overlay.Resize(r.width, r.height)
 	}
@@ -86,6 +92,7 @@ func (r *tutorialRunner) clearActive() {
 	}
 	r.overlay = nil
 	r.activeName = ""
+	r.active.Store(false)
 }
 
 func (r *tutorialRunner) finishActive() {
@@ -121,9 +128,9 @@ func (r *tutorialRunner) has(name string) bool {
 }
 
 // running reports whether a tutorial overlay is currently active. It
-// must be called on the event loop, where overlay is mutated.
+// is safe to call from any goroutine.
 func (r *tutorialRunner) running() bool {
-	return r.overlay != nil
+	return r.active.Load()
 }
 
 func (r *tutorialRunner) Resize(width, height int) {

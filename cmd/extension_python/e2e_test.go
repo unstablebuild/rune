@@ -34,6 +34,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/handler/repl"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
@@ -156,8 +157,11 @@ func TestE2EPythonLoggingConfigReachesServers(t *testing.T) {
 		"debug": map[string]any{"log_level": "debug"},
 	})
 	installer := e2eInstaller{"ty": tyBin, "ruff": ruffBin, "uv": "uv"}
+	root := langext.Root{Dir: dir, URI: rootURI}
+	setting := newEnvSetting(storagestub.NewInMemoryService())
+	require.NoError(t, setting.set(t.Context(), root, true))
 	err = initializeProjectRoot(t.Context(), scheme, &successfulExecutor{}, newFakeNotifications(),
-		mgr, installer, cfg, "", langext.Root{Dir: dir, URI: rootURI})
+		mgr, installer, cfg, "", setting, nil, root)
 	require.NoError(t, err)
 
 	ty, ok := scheme.startedProcess(tyBin)
@@ -231,7 +235,15 @@ func TestE2E_PyHandler_PythonList(t *testing.T) {
 	findUV(t)
 
 	dir := t.TempDir()
-	_, handler := newPyHandler(newDirExecutor(dir), newFakeNotifications(), dir)
+	uri, err := workspaceapi.ParseURI("file://" + dir)
+	require.NoError(t, err)
+	_, handler := newPyHandler(pyHandlerConfig{
+		exec:    newDirExecutor(dir),
+		notify:  newFakeNotifications(),
+		fs:      realFS{root: dir},
+		setting: newEnvSetting(storagestub.NewInMemoryService()),
+		wsRoot:  uri,
+	})
 	it, err := handler.HandleCommand(
 		context.Background(),
 		repl.Command{Name: "python", Args: []string{"list"}},

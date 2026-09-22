@@ -375,6 +375,8 @@ for key, dir in [
     config["command"]["key_bindings"][key] = "windowfocus " + dir
 ```
 
-Set a binding to `""` to unbind it. See [Config](../config.md) for where
-the file lives and [key syntax](./key-syntax.md) for the full grammar of
-key combinations.
+Set a binding to `""` to unbind it: the key you rebind a command *from* keeps
+its shipped binding until you reset it explicitly, see [Move a binding to
+another key](./command-prompt.md#move-a-binding-to-another-key). See
+[Config](../config.md) for where the file lives and [key
+syntax](./key-syntax.md) for the full grammar of key combinations.

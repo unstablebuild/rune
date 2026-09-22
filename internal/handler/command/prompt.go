@@ -461,7 +461,18 @@ func (h *Prompt) dispatchCommand() (
 		}
 		// trim empty args (i.e. client added more spaces than required between args)
 		h.commandAndArgs = h.trimmedCommandAndArgs(h.commandAndArgs[0], h.commandAndArgs[1:]...)
-		commandAndArgsString = strings.Join(h.commandAndArgs, " ")
+		// A trailing separator marks an argument the completer left in
+		// progress, so it is not part of the value. History keeps the
+		// canonical form, which is what makes an entry recorded before
+		// the partial-candidate convention existed match one recorded
+		// after it.
+		historyArgs := make([]string, len(h.commandAndArgs))
+		historyArgs[0] = h.commandAndArgs[0]
+		for i, a := range h.commandAndArgs[1:] {
+			historyArgs[i+1] = ShellQuote(
+				TrimPartialCandidateSuffix(UnquoteToken(a)))
+		}
+		commandAndArgsString = strings.Join(historyArgs, " ")
 
 		h.log(log.TraceLevel, "dispatching command and args %#v", h.commandAndArgs)
 		// Strip shell-style quoting/escaping from each argument before
@@ -926,20 +937,29 @@ func (h *Prompt) handleEditMode(ev term.Event, sync bool) (quit, handled bool) {
 	return false, handled
 }
 
-func (h *Prompt) completeTopList() bool {
+// completeTopList accepts the focused candidate. It reports whether a
+// candidate was accepted and whether that candidate was partial, i.e.
+// it advances the current argument without terminating it.
+func (h *Prompt) completeTopList() (completed, partial bool) {
 	match, ok := h.list.Focus()
 	if !ok {
 		h.log(log.TraceLevel, "completeTopList: no matches on search list with %q",
 			h.list.Buffer().String())
-		return false
+		return false, false
+	}
+	candidate := string(match.Data())
+	if h.mode != modeCommandPromptCommand && IsPartialCandidate(candidate) {
+		h.list.Buffer().Replace(candidate)
+		h.buf.Replace(strings.Join(h.commandAndArgs, " ") + " " + candidate)
+		return true, true
 	}
 	// could have completed multiple arguments
-	parts := SplitCommandLine(string(match.Data()))
+	parts := SplitCommandLine(candidate)
 	h.commandAndArgs = append(h.commandAndArgs, parts...)
 	newCmdAndArgs := strings.Join(h.commandAndArgs, " ")
 	h.buf.Replace(newCmdAndArgs + " ")
 
-	return true
+	return true, false
 }
 
 func (h *Prompt) log(level log.Level, msg string, args ...any) {
@@ -952,7 +972,17 @@ func (h *Prompt) log(level log.Level, msg string, args ...any) {
 
 func (h *Prompt) incArgsCompleteMode(complete bool, sync bool) {
 	defer h.resetManualComponent()
-	if !complete || !h.completeTopList() {
+	completed, partial := false, false
+	if complete {
+		completed, partial = h.completeTopList()
+	}
+	if partial {
+		h.log(log.TraceLevel, "partial argument completion (sync=%v): %+v",
+			sync, h.commandAndArgs)
+		h.setCompletionList(false, sync, h.commandAndArgs[0], h.completionArgs()...)
+		return
+	}
+	if !completed {
 		h.commandAndArgs = append(h.commandAndArgs, h.list.Buffer().String())
 	}
 

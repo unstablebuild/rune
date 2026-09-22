@@ -24,6 +24,7 @@ import (
 	"io"
 	"os"
 	"os/user"
+	"path"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -39,12 +40,72 @@ import (
 	"unstable.build/rune/internal/workspace/walkdir"
 )
 
+// PartialCandidateSuffix marks a completion candidate that only advances
+// the current argument instead of terminating it. Candidates are URI
+// paths, so it is "/" on every platform.
+const PartialCandidateSuffix = "/"
+
+// separatorCutset also accepts the host separator so a natively typed
+// Windows path classifies like an emitted candidate.
+var separatorCutset = func() string {
+	if filepath.Separator == '/' {
+		return PartialCandidateSuffix
+	}
+	return PartialCandidateSuffix + string(filepath.Separator)
+}()
+
+// IsPartialCandidate reports whether candidate only advances the current
+// argument. Quoted candidates are accepted.
+func IsPartialCandidate(candidate string) bool {
+	unquoted := UnquoteToken(candidate)
+	if unquoted == "" {
+		return false
+	}
+	return strings.ContainsRune(separatorCutset, rune(unquoted[len(unquoted)-1]))
+}
+
+// MarkPartialCandidate returns candidate as a partial candidate,
+// preserving its quoting. Already-partial candidates are unchanged.
+func MarkPartialCandidate(candidate string) string {
+	if IsPartialCandidate(candidate) {
+		return candidate
+	}
+	return ShellQuote(UnquoteToken(candidate) + PartialCandidateSuffix)
+}
+
+// TrimPartialCandidateSuffix returns the argument value s denotes. A
+// path of only separators is the root and is returned as is.
+func TrimPartialCandidateSuffix(s string) string {
+	trimmed := strings.TrimRight(s, separatorCutset)
+	if trimmed == "" {
+		return s
+	}
+	return trimmed
+}
+
+// PartialCompleter returns a Completer that marks every candidate from c
+// as partial.
+func PartialCompleter(c Completer) Completer {
+	return FuncCompleter(func(ctx context.Context, args []string) (
+		iterator.Iterator[string], string, error,
+	) {
+		it, last, err := c.Complete(ctx, args)
+		if err != nil || it == nil {
+			return it, last, err
+		}
+		return iterator.Map(it, MarkPartialCandidate), last, nil
+	})
+}
+
 // Completer abstracts the ability to complete command arguments.
 type Completer interface {
 	// Complete takes the given command and arguments and returns an iterator
 	// over an expanded list of options for the last argument. It also returns
 	// an expanded version of the last argument, if there is one, or an empty
 	// string if the last argument could/should not be automatically expanded.
+	//
+	// A candidate ending in PartialCandidateSuffix only advances the last
+	// argument; every other candidate terminates it.
 	Complete(ctx context.Context, args []string) (
 		iterator.Iterator[string], string, error,
 	)
@@ -230,6 +291,13 @@ func listNonRecursiveDirCompletions(
 		return nil, err
 	}
 
+	// Candidates are URI paths, which are slash-separated on every
+	// platform, so a natively typed Windows path is folded to slashes up
+	// front and all the arithmetic below stays slash-based. Emitting the
+	// host separator instead would also collide with the shell-escape
+	// layer, which treats a backslash as a metacharacter.
+	last = filepath.ToSlash(last)
+
 	pathURI := cwd
 	completeURI := false
 	if last != "" {
@@ -249,10 +317,10 @@ func listNonRecursiveDirCompletions(
 	}
 
 	enteredDir := last == "" || last == "~" || last == "/~" ||
-		strings.HasSuffix(last, "/") || strings.HasSuffix(last, string(filepath.Separator))
+		strings.HasSuffix(last, PartialCandidateSuffix)
 	dirPath := pathURI.Path()
 	if !enteredDir {
-		dirPath = filepath.Dir(dirPath)
+		dirPath = path.Dir(dirPath)
 	}
 
 	entries, err := reader.ReadDir(dirPath)
@@ -261,9 +329,9 @@ func listNonRecursiveDirCompletions(
 	}
 	filter := vctrl.AnyMatcher(
 		vctrl.ProtectedDirMatcher(reader), vctrl.HiddenBaseMatcher())
-	outputBase := filepath.Dir(last)
+	outputBase := path.Dir(last)
 	if enteredDir {
-		outputBase = filepath.Clean(last)
+		outputBase = path.Clean(last)
 	}
 
 	results := make([]string, 0, len(entries))
@@ -277,7 +345,7 @@ func listNonRecursiveDirCompletions(
 			continue
 		}
 		childURI, err := workspaceapi.WithPath(
-			pathURI, filepath.Join(dirPath, entry.Name()))
+			pathURI, path.Join(dirPath, entry.Name()))
 		if err != nil {
 			return nil, err
 		}
@@ -292,9 +360,9 @@ func listNonRecursiveDirCompletions(
 		case outputBase == "." || outputBase == "":
 			result = entry.Name()
 		default:
-			result = filepath.Join(outputBase, entry.Name())
+			result = path.Join(outputBase, entry.Name())
 		}
-		results = append(results, ShellQuote(result))
+		results = append(results, ShellQuote(result+PartialCandidateSuffix))
 	}
 	return results, nil
 }

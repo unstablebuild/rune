@@ -61,6 +61,7 @@ import (
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/extension"
 	"unstable.build/rune/internal/extension/extensionv2"
+	"unstable.build/rune/internal/handler/command"
 	"unstable.build/rune/internal/handler/handlertest"
 	"unstable.build/rune/internal/ide/ideauthorizer"
 	"unstable.build/rune/internal/ide/idepkg/idepkgtest"
@@ -893,11 +894,16 @@ workspace:
 	require.NotEmpty(t, got,
 		"workspaceopen completion must surface at least the prior "+
 			"`workspaceopen %s` history entry, got nothing", repoA)
-	assert.Equal(t, repoA, got[0],
+	assert.Equal(t, repoA+"/", got[0],
 		"first completion must be the prior workspaceopen argument from "+
-			"history; got %q. full result: %v", got[0], got)
-	assert.Contains(t, got, "projects")
-	assert.NotContains(t, got, "projects/nested")
+			"history, marked so the user can keep descending from it; "+
+			"got %q. full result: %v", got[0], got)
+	assert.Contains(t, got, "projects/")
+	assert.NotContains(t, got, "projects/nested/")
+	for _, candidate := range got {
+		assert.True(t, command.IsPartialCandidate(candidate),
+			"every workspaceopen candidate must be partial, got %q", candidate)
+	}
 
 	mu.Lock()
 	nested, _, err := ex.comp.CompleteCommand(t.Context(),
@@ -907,7 +913,7 @@ workspace:
 	defer func() { _ = nested.Close() }()
 	nestedGot, err := iterator.ToSlice(t.Context(), nested)
 	require.NoError(t, err)
-	assert.Contains(t, nestedGot, "projects/nested")
+	assert.Contains(t, nestedGot, "projects/nested/")
 }
 
 // TestRecentWorkspaceOpensReflectsPromptHistory asserts the exported
@@ -965,6 +971,97 @@ command:
 	openViaPrompt(repoA)
 	openViaPrompt(repoB)
 	openViaPrompt(repoA)
+
+	assert.Equal(t, []string{repoA, repoB}, i.RecentWorkspaceOpens())
+}
+
+// TestWorkspaceOpenToleratesTrailingSeparator asserts that dispatching a
+// directory candidate straight from its partial (descended) form opens
+// the same workspace as the separator-free form, and that both forms
+// collapse into a single Open Recent entry.
+func TestWorkspaceOpenToleratesTrailingSeparator(t *testing.T) {
+	dataDir := t.TempDir()
+	repoA := t.TempDir()
+	repoB := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+
+	configPath := filepath.Join(dataDir, "rune.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte(`
+editor:
+  mode: modal
+command:
+  show_manual: false
+  key: ":"
+`), 0666))
+
+	repoBFile := filepath.Join(repoB, "seed.txt")
+	require.NoError(t, os.WriteFile(repoBFile, nil, 0666))
+
+	mu := new(sync.Mutex)
+	scheduleNextTick, drain := newTestScheduler(t, mu)
+	i, err := New(repoB, configPath, dataDir, pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir),
+		WithPublishEvent(nopPublishEvent),
+		WithExtensionsRunner(FuncExtensionsRunner(testRunnerFn)),
+		WithLocker(mu),
+		WithScheduleNextTick(scheduleNextTick),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = i.Close() })
+	root := i.Ready()
+	mu.Lock()
+	root.Resize(80, 24)
+	mu.Unlock()
+	drain()
+	i.WaitWorkspaces()
+	drain()
+
+	repoBURI, err := workspaceapi.CurrentUserHostURI(repoBFile)
+	require.NoError(t, err)
+	mu.Lock()
+	require.NoError(t, i.Open(repoBURI))
+	mu.Unlock()
+	i.WaitWorkspaces()
+	drain()
+
+	wh := i.workspaceHandler
+	openViaPrompt := func(path string) {
+		keys, err := term.ParseKeys(":workspaceopen<space>" + path + "<enter>")
+		require.NoError(t, err)
+		for _, k := range keys {
+			mu.Lock()
+			root.Handle(term.Event{Type: term.EventKey, Ch: k.Ch, Mod: k.Mod, Key: k.Key})
+			mu.Unlock()
+		}
+		mu.Lock()
+		ex := wh.focusEx()
+		mu.Unlock()
+		ex.Wait()
+		i.WaitWorkspaces()
+		drain()
+	}
+
+	openViaPrompt(repoA)
+	openViaPrompt(repoB)
+	openViaPrompt(repoA + "/")
+
+	wantURI, err := wh.homeWorkspace.URI(repoA)
+	require.NoError(t, err)
+	mu.Lock()
+	var matches int
+	var gotURIs []string
+	for _, w := range wh.workspaces {
+		if w == nil {
+			continue
+		}
+		gotURIs = append(gotURIs, w.uri.String())
+		if w.uri == wantURI {
+			matches++
+		}
+	}
+	mu.Unlock()
+	assert.Equal(t, 1, matches,
+		"a trailing separator must resolve to the already-open workspace; "+
+			"want=%q got=%v", wantURI.String(), gotURIs)
 
 	assert.Equal(t, []string{repoA, repoB}, i.RecentWorkspaceOpens())
 }
@@ -2745,7 +2842,7 @@ func TestIDEStartingTutorialDispatchesOnReady(t *testing.T) {
 // wired into the workspace handler: a session started with a starting
 // tutorial is onboarding for its whole lifetime — including before the
 // deferred tutorial dispatch, when extensions boot and ask to run
-// commands — and no other session ever is.
+// commands — and survives the gap between playlist tutorials.
 func TestIDEOnboardingActiveGate(t *testing.T) {
 	cases := []struct {
 		name         string
@@ -2786,8 +2883,7 @@ func TestIDEOnboardingActiveGate(t *testing.T) {
 			require.NoError(t, i.tutorial.HandleCommand(context.Background(),
 				textapi.Command{Name: "tutorial", Args: []string{"start", "basics"}}))
 			mu.Unlock()
-			assert.Equal(t, tc.withStarting, gate(),
-				"gate must stay active while the tutorial runs")
+			assert.True(t, gate(), "gate must be active while any tutorial runs")
 
 			mu.Lock()
 			require.NoError(t, i.tutorial.HandleCommand(context.Background(),

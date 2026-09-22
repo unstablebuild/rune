@@ -576,14 +576,14 @@ func (m *Manager) loadFallbackFont() error {
 }
 
 func (m *Manager) loadFontAtPath(path string) (fonts []*sfnt.Font, err error) {
-	f, err := os.Open(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("open %q: %w", path, err)
+		return nil, fmt.Errorf("read %q: %w", path, err)
 	}
 
 	switch filepath.Ext(path) {
 	case ".ttc", ".otc":
-		col, err := opentype.ParseCollectionReaderAt(f)
+		col, err := opentype.ParseCollection(data)
 		if err != nil {
 			return nil, fmt.Errorf("opentype parse collection: %w", err)
 		}
@@ -595,7 +595,7 @@ func (m *Manager) loadFontAtPath(path string) (fonts []*sfnt.Font, err error) {
 			fonts = append(fonts, font)
 		}
 	case ".ttf", ".otf":
-		font, serr := opentype.ParseReaderAt(f)
+		font, serr := opentype.Parse(data)
 		if serr != nil {
 			return nil, multierr.Append(err, fmt.Errorf("opentype parse font: %w", serr))
 		}

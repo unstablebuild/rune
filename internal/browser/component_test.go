@@ -1921,6 +1921,21 @@ func TestWinDropThroughMouseEvents(t *testing.T) {
 		assert.Equal(t, winDropNone, b.winDrop.zone)
 		assert.Empty(t, b.buffers, "closing a float creates no tab")
 	})
+
+	t.Run("a click on the bar is not a drop", func(t *testing.T) {
+		b, _, float, _ := framedDragBrowser(t, 60, 20)
+		bar := float.Position()
+		press := term.Coordinates{X: bar.X + 4, Y: bar.Y}
+
+		b.Handle(mouseAt(b, term.MouseLeft, press))
+		b.Handle(mouseAt(b, term.MouseRelease, press))
+
+		assert.Equal(t, 1, b.Tiles())
+		assert.Equal(t, 1, b.FloatingWindows(), "the float survives a click")
+		assert.Empty(t, b.buffers, "a click creates no tab")
+		assert.Equal(t, bar, float.Position(), "a click must not move the float")
+		assert.Equal(t, winDropNone, b.winDrop.zone)
+	})
 }
 
 // complexDragBrowser returns a browser with a deliberately awkward

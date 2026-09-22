@@ -140,8 +140,8 @@ func (m *pkgManager) LibDir(ctx context.Context, pkgID string) (
 		return newPendingIterator(m.pkg, pkgID, gate.(*installGate)), nil
 	}
 
-	// First-run onboarding stands in for the operator opt-in so the
-	// install prompt does not fight the tutorial overlay.
+	// Onboarding stands in for the operator opt-in so the install
+	// prompt does not fight the tutorial overlay.
 	if m.autoInstall || m.onboardingActive() {
 		return m.installLatest(ctx, pkgID, version)
 	}

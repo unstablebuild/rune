@@ -20,6 +20,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -736,6 +738,7 @@ func TestCommandHandlerDispatch(t *testing.T) {
 	cfg.ShowManual = false
 	cfg.HistoryCycleKey = term.KeyComb{Ch: '@'}
 	cfg.Sync = true
+	dirs := testDirTree(t)
 
 	tsuite := []struct {
 		desc        string
@@ -836,6 +839,44 @@ func TestCommandHandlerDispatch(t *testing.T) {
 		{"dispatch double-quoted arg stays in same arg",
 			`lo "path with space">`, []string{"lane", "lorelai", "rori"},
 			nopComplete, expectDispatch("lorelai", "path with space")},
+		{"dispatch tab on a directory candidate descends instead of terminating",
+			"wo a#>", []string{"workspaceopen"},
+			completeDirsUnder(dirs), expectDispatch("workspaceopen", "alpha/")},
+		{"dispatch repeated tabs descend one level per tab",
+			"wo a#b#>", []string{"workspaceopen"},
+			completeDirsUnder(dirs), expectDispatch("workspaceopen", "alpha/beta/")},
+		{"dispatch tabs descend to the bottom of the tree",
+			"wo a#b#g#>", []string{"workspaceopen"},
+			completeDirsUnder(dirs), expectDispatch("workspaceopen", "alpha/beta/gamma/")},
+		{"dispatch typing after a descent narrows within that directory",
+			"wo a#d#>", []string{"workspaceopen"},
+			completeDirsUnder(dirs), expectDispatch("workspaceopen", "alpha/delta/")},
+		{"dispatch descent into a directory whose name has a space",
+			"wo m#>", []string{"workspaceopen"},
+			completeDirsUnder(dirs), expectDispatch("workspaceopen", "my dir/")},
+		{"dispatch descent past a directory whose name has a space",
+			"wo m##>", []string{"workspaceopen"},
+			completeDirsUnder(dirs), expectDispatch("workspaceopen", "my dir/inner/")},
+		{"dispatch backspace after a descent edits the same argument",
+			"wo a#^>", []string{"workspaceopen"},
+			completeDirsUnder(dirs), expectDispatch("workspaceopen", "alpha")},
+		{"dispatch space after a descent terminates the argument",
+			"wo a# x>", []string{"workspaceopen"},
+			completeDirsUnder(dirs), expectDispatch("workspaceopen", "alpha/", "x")},
+		{"dispatch tab with no matching directory keeps the typed token",
+			"wo zzz#>", []string{"workspaceopen"},
+			completeDirsUnder(dirs), expectDispatch("workspaceopen", "zzz")},
+		{"dispatch tab on a terminal candidate still terminates the argument",
+			"wo p#x>", []string{"workspaceopen"},
+			completeWith("/prev/ws", "alpha/"),
+			expectDispatch("workspaceopen", "/prev/ws", "x")},
+		{"dispatch tab on a partial candidate picked out of a mixed list",
+			"wo a#>", []string{"workspaceopen"},
+			completeWith("/prev/ws", "alpha/"),
+			expectDispatch("workspaceopen", "alpha/")},
+		{"dispatch tab on a command name ending in a separator still commits",
+			"ws#>", []string{"ws/"},
+			completeDirsUnder(dirs), expectDispatch("ws/")},
 	}
 
 	for _, tcase := range tsuite {
@@ -870,6 +911,95 @@ func TestCommandHandlerDispatch(t *testing.T) {
 		})
 	}
 }
+
+// TestCommandHandlerPartialCompletionState pins the prompt state that a
+// partial candidate must leave behind. Accepting one may not append the
+// argument separator, commit the token into commandAndArgs, or advance
+// the completion mode, because any of those resets the next completion
+// back to the completer's root instead of descending.
+func TestCommandHandlerPartialCompletionState(t *testing.T) {
+	cfg := testDefaultConfig()
+	cfg.ShowManual = false
+	cfg.Sync = true
+	dirs := testDirTree(t)
+
+	// mode counts the command plus every committed argument, so the
+	// command alone leaves it at 1 and a committed argument at 2.
+	const (
+		argInProgress commandPromptMode = 1
+		argCommitted  commandPromptMode = 2
+	)
+
+	tsuite := []struct {
+		desc        string
+		sequence    string
+		completeCmd func() (func(context.Context, []string) (iterator.Iterator[string], string, error), func(*testing.T))
+		wantBuf     string
+		wantArgs    []string
+		wantMode    commandPromptMode
+	}{
+		{"descent leaves the argument in progress",
+			"a<tab>", completeDirsUnder(dirs),
+			"workspaceopen alpha/", []string{"workspaceopen"}, argInProgress},
+		{"a second descent advances the same argument",
+			"a<tab>b<tab>", completeDirsUnder(dirs),
+			"workspaceopen alpha/beta/", []string{"workspaceopen"}, argInProgress},
+		{"a third descent advances the same argument",
+			"a<tab>b<tab>g<tab>", completeDirsUnder(dirs),
+			"workspaceopen alpha/beta/gamma/", []string{"workspaceopen"}, argInProgress},
+		{"a quoted candidate carries the marker inside the quotes",
+			"m<tab>", completeDirsUnder(dirs),
+			"workspaceopen 'my dir/'", []string{"workspaceopen"}, argInProgress},
+		{"typing after a descent extends the same argument",
+			"a<tab>d", completeDirsUnder(dirs),
+			"workspaceopen alpha/d", []string{"workspaceopen"}, argInProgress},
+		{"backspace after a descent edits the same argument",
+			"a<tab><backspace>", completeDirsUnder(dirs),
+			"workspaceopen alpha", []string{"workspaceopen"}, argInProgress},
+		{"space after a descent terminates the argument",
+			"a<tab><space>", completeDirsUnder(dirs),
+			"workspaceopen alpha/ ",
+			[]string{"workspaceopen", "alpha/"}, argCommitted},
+		{"a terminal candidate still terminates the argument",
+			"p<tab>", completeWith("/prev/ws", "alpha/"),
+			"workspaceopen /prev/ws ",
+			[]string{"workspaceopen", "/prev/ws"}, argCommitted},
+		{"a tab with no matches commits the typed token",
+			"zzz<tab>", completeDirsUnder(dirs),
+			"workspaceopen zzz", []string{"workspaceopen", "zzz"}, argCommitted},
+	}
+
+	for _, tcase := range tsuite {
+		t.Run(tcase.desc, func(t *testing.T) {
+			completeFn, cleanupComplete := tcase.completeCmd()
+			defer cleanupComplete(t)
+
+			b := NewPrompt(
+				storagestub.NewInMemoryService(), FuncCompleter(completeFn),
+				FuncDispatcher(nopDispatchFn), term.NopInterrupter(),
+				testNoManualCommands([]string{"workspaceopen"}), cfg,
+			)
+			defer b.Close()
+
+			keys, err := term.ParseKeys("workspaceopen<space>" + tcase.sequence)
+			require.NoError(t, err)
+			for _, key := range keys {
+				testCommandHandler{b}.Handle(term.Event{
+					Type: term.EventKey,
+					Ch:   key.Ch,
+					Mod:  key.Mod,
+					Key:  key.Key,
+				})
+			}
+
+			assert.Equal(t, tcase.wantBuf, b.buf.String())
+			assert.Equal(t, tcase.wantArgs, b.commandAndArgs)
+			assert.Equal(t, tcase.wantMode, b.mode)
+		})
+	}
+}
+
+func nopDispatchFn(string, ...string) bool { return false }
 
 func TestCommandHandlerBackspacePreservesRemoteWorkspaceURI(t *testing.T) {
 	cfg := testDefaultConfig()
@@ -1819,6 +1949,7 @@ func TestCommandHandlerDraw(t *testing.T) {
 	cfg.ShowManual = false
 	cfg.HistoryCycleKey = term.KeyComb{Ch: '@'}
 	cfg.Sync = true
+	dirs := testDirTree(t)
 
 	tsuite := []struct {
 		desc         string
@@ -2326,6 +2457,33 @@ myArg 5
                     
                     
                     `},
+
+		{"tab on a directory candidate descends and lists its children",
+			"wo a✌", []string{"wo"},
+			completeDirsUnder(dirs), nopDispatch, `
+wo alpha/▐          
+alpha/beta/         
+alpha/delta/        
+                    
+                    
+                    
+                    
+                    
+                    
+                    `},
+		{"tab on a directory candidate twice descends two levels",
+			"wo a✌b✌", []string{"wo"},
+			completeDirsUnder(dirs), nopDispatch, `
+wo alpha/beta/▐     
+alpha/beta/gamma/   
+                    
+                    
+                    
+                    
+                    
+                    
+                    
+                    `},
 	}
 
 	for _, tcase := range tsuite {
@@ -2455,6 +2613,62 @@ func TestCommandHandlerCancel(t *testing.T) {
 		assert.True(t, quit)
 		assert.True(t, handled)
 	})
+}
+
+// TestCommandHandlerHistoryCanonicalizesArguments asserts that the
+// partial marker never reaches history. Storing it would split one
+// workspace into two entries — the form recorded before the
+// partial-candidate convention existed and the form recorded after —
+// and force the user to work around the stale one.
+func TestCommandHandlerHistoryCanonicalizesArguments(t *testing.T) {
+	cfg := testDefaultConfig()
+	cfg.ShowManual = false
+	cfg.Sync = true
+	dirs := testDirTree(t)
+
+	tsuite := []struct {
+		desc     string
+		sequence string
+		want     string
+	}{
+		{"descended argument drops the marker",
+			"a<tab><enter>", "workspaceopen alpha"},
+		{"twice-descended argument drops the marker",
+			"a<tab>b<tab><enter>", "workspaceopen alpha/beta"},
+		{"quoted descended argument drops the marker inside the quotes",
+			"m<tab><enter>", "workspaceopen 'my dir'"},
+		{"a hand-typed trailing separator is canonicalized too",
+			"alpha/<enter>", "workspaceopen alpha"},
+		{"an argument without a marker is stored verbatim",
+			"alpha<enter>", "workspaceopen alpha"},
+		{"the filesystem root survives canonicalization",
+			"/<enter>", "workspaceopen /"},
+	}
+
+	for _, tcase := range tsuite {
+		t.Run(tcase.desc, func(t *testing.T) {
+			b := NewPrompt(
+				storagestub.NewInMemoryService(),
+				FuncCompleter(NonRecursiveDirsCompleter(newFSReader(dirs)).Complete),
+				FuncDispatcher(nopDispatchFn), term.NopInterrupter(),
+				testNoManualCommands([]string{"workspaceopen"}), cfg,
+			)
+			defer b.Close()
+
+			keys, err := term.ParseKeys("workspaceopen<space>" + tcase.sequence)
+			require.NoError(t, err)
+			for _, key := range keys {
+				testCommandHandler{b}.Handle(term.Event{
+					Type: term.EventKey,
+					Ch:   key.Ch,
+					Mod:  key.Mod,
+					Key:  key.Key,
+				})
+			}
+
+			assert.Equal(t, []string{tcase.want}, b.history.Slice())
+		})
+	}
 }
 
 func TestCommandHandlerHideProgressHint(t *testing.T) {
@@ -2936,6 +3150,37 @@ func nopComplete() (
 	return func(ctx context.Context, args []string) (iterator.Iterator[string], string, error) {
 		return iterator.FromSlice[string](nil), "", nil
 	}, func(*testing.T) {}
+}
+
+// testDirTree lays out the fixture the directory-descent cases walk.
+// Entries are ordered so the first candidate of every listing is
+// deterministic: alpha before "my dir", beta before delta. The tree is
+// built with the host separator, but the candidates the cases assert on
+// are URI paths and therefore always slash-separated.
+func testDirTree(tb testing.TB) string {
+	tb.Helper()
+	root := tb.TempDir()
+	for _, dir := range []string{
+		filepath.Join("alpha", "beta", "gamma"),
+		filepath.Join("alpha", "delta"),
+		filepath.Join("my dir", "inner"),
+	} {
+		require.NoError(tb, os.MkdirAll(filepath.Join(root, dir), 0o700))
+	}
+	return root
+}
+
+// completeDirsUnder drives the cases through the production
+// non-recursive directory completer rather than a stub, so the partial
+// marker the prompt reacts to is the one real completions carry.
+func completeDirsUnder(root string) func() (
+	func(context.Context, []string) (iterator.Iterator[string], string, error), func(*testing.T),
+) {
+	return func() (
+		func(context.Context, []string) (iterator.Iterator[string], string, error), func(*testing.T),
+	) {
+		return NonRecursiveDirsCompleter(newFSReader(root)).Complete, func(*testing.T) {}
+	}
 }
 
 func completeWith(data ...string) func() (

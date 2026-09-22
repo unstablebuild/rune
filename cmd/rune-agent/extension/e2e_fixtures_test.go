@@ -304,9 +304,7 @@ func newPromptHandler(t *testing.T, opts promptHandlerOpts) tui.Handler {
 		Prompter:     prompter,
 	})
 
-	// Minimal aiEditorHandler: wrapDialogueHandler only reads h.n via
-	// the Ctrl-C notify path.
-	owner := &aiEditorHandler{n: stubNotifications{}}
+	owner := &aiEditorHandler{n: stubNotifications{}, p: interrupter}
 	syncComp := syncComponent{mu: mu, comp: comp, h: owner, hintSlot: &hintSlot{}}
 	wrapped, msgRx := owner.wrapDialogueHandler(ctx, syncComp, dhandler, rx, "e2e-fixture")
 
@@ -482,7 +480,7 @@ func agentE2EHandler(t *testing.T, svc *llmtest.Service, workspaceDir string, ls
 		Workspace:    cwd,
 	})
 
-	owner := &aiEditorHandler{n: stubNotifications{}}
+	owner := &aiEditorHandler{n: stubNotifications{}, p: interrupter}
 	syncComp := syncComponent{mu: mu, comp: comp, h: owner, hintSlot: &hintSlot{}}
 	wrapped, msgRx := owner.wrapDialogueHandler(ctx, syncComp, dhandler, rx, "e2e-fixture")
 
@@ -574,7 +572,7 @@ func stopReasonE2EHandler(t *testing.T, svc *llmtest.Service) tui.Handler {
 		Model:        llmapi.ModelEntry{Provider: "test", Name: "test-model", ContextWindow: 128_000},
 	})
 
-	owner := &aiEditorHandler{n: stubNotifications{}}
+	owner := &aiEditorHandler{n: stubNotifications{}, p: interrupter}
 	syncComp := syncComponent{mu: mu, comp: comp, h: owner, hintSlot: &hintSlot{}}
 	wrapped, msgRx := owner.wrapDialogueHandler(ctx, syncComp, dhandler, rx, "e2e-fixture")
 
@@ -679,7 +677,7 @@ func subAgentSpawnE2EHandler(
 		AgentID:      agentID,
 	})
 
-	owner := &aiEditorHandler{n: stubNotifications{}}
+	owner := &aiEditorHandler{n: stubNotifications{}, p: interrupter}
 	syncComp := syncComponent{mu: mu, comp: comp, h: owner, hintSlot: &hintSlot{}}
 	wrapped, msgRx := owner.wrapDialogueHandler(ctx, syncComp, dhandler, rx, "e2e-fixture")
 
@@ -736,7 +734,7 @@ func maxTokensE2EHandler(t *testing.T, model llmapi.ModelEntry) (tui.Handler, *a
 		dialoguetui.WithCommands(adapter),
 	)
 
-	owner := &aiEditorHandler{n: stubNotifications{}}
+	owner := &aiEditorHandler{n: stubNotifications{}, p: interrupter}
 	syncComp := syncComponent{mu: mu, comp: comp, h: owner, hintSlot: &hintSlot{}}
 	wrapped, _ := owner.wrapDialogueHandler(ctx, syncComp, dhandler, rx, "e2e-fixture")
 
