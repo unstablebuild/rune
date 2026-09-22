@@ -659,6 +659,7 @@ func newCommandEventHandler(
 	// hook return value is ignored.
 	ret.n = newNotificationsWithHooks(
 		w.Notifications(ctx), ret.hookRunner, ret.cwd)
+	ret.cfg.OnLinkClick = newLinkClickHandler(ret.clip, ret.n)
 	ret.resources = make(map[string]string)
 
 	ret.dialogueStore = dialogueStore
@@ -721,6 +722,36 @@ func newCommandEventHandler(
 	}
 
 	return ret, nil
+}
+
+func newLinkClickHandler(
+	clip clipboard.Register,
+	noti browserapi.Notifications,
+) func(*url.URL) bool {
+	return func(link *url.URL) bool {
+		if link.Scheme != "http" && link.Scheme != "https" {
+			return false
+		}
+		linkstr := link.String()
+		meta := clipboard.Data{Text: linkstr}
+		err := clip.Copy(clipboard.DefaultRegisterID, meta)
+		if err != nil {
+			if noti != nil {
+				_, _ = noti.Notify(
+					browserapi.LevelError,
+					"copy URL to clipboard: %v", err,
+				)
+			}
+		} else {
+			if noti != nil {
+				_, _ = noti.Notify(
+					browserapi.LevelSuccess,
+					"copied URL %s to clipboard", linkstr,
+				)
+			}
+		}
+		return true
+	}
 }
 
 type aiEditorHandler struct {

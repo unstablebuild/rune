@@ -125,7 +125,7 @@ func Handler(
 	for _, o := range opts {
 		o(sh)
 	}
-	sh.mouseDelegate = newMouseDelegate(&sh.grid, &c.messages)
+	sh.mouseDelegate = newMouseDelegate(&sh.grid, c)
 	mouse := mouse.New(sh.mouseDelegate)
 	sh.mouse = mouse
 	go debug.CapturePanicReport(sh.consumeIncoming)

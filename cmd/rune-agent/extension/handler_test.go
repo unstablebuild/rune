@@ -19,6 +19,7 @@ package extension
 import (
 	"context"
 	"errors"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -31,9 +32,11 @@ import (
 	gomcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
 	"github.com/unstablebuild/rune-go-sdk/api/semanticapi"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
+	"github.com/unstablebuild/rune-go-sdk/clipboard"
 	"github.com/unstablebuild/rune-go-sdk/handler/handlertest"
 	"github.com/unstablebuild/rune-go-sdk/term"
 
@@ -1151,4 +1154,91 @@ func TestWarnPendingMCPServersReportsConnecting(t *testing.T) {
 	default:
 		t.Fatal("expected a pending-MCP warning event")
 	}
+}
+
+type recordingNotifications struct {
+	stubNotifications
+	calls     int
+	lastLevel browserapi.NotificationLevel
+	lastMsg   string
+	lastArgs  []any
+}
+
+func (r *recordingNotifications) Notify(level browserapi.NotificationLevel, format string, args ...any) (string, error) {
+	r.calls++
+	r.lastLevel = level
+	r.lastMsg = format
+	r.lastArgs = args
+	return "", nil
+}
+
+type failingClipboard struct {
+	err error
+}
+
+func (f *failingClipboard) Copy(string, clipboard.Data) error {
+	return f.err
+}
+
+func (f *failingClipboard) Paste(string) (clipboard.Data, error) {
+	return clipboard.Data{}, f.err
+}
+
+func TestExtensionDialogue_LinkClick_CopiesToClipboard(t *testing.T) {
+	clip := clipboard.NewInMemory()
+	noti := &recordingNotifications{}
+	ret := &aiEditorHandler{
+		clip: clip,
+		n:    noti,
+	}
+	ret.cfg.OnLinkClick = newLinkClickHandler(ret.clip, ret.n)
+
+	// Valid https URL
+	u, err := url.Parse("https://example.com/repo")
+	require.NoError(t, err)
+	handled := ret.cfg.OnLinkClick(u)
+	assert.True(t, handled)
+
+	data, err := clip.Paste(clipboard.DefaultRegisterID)
+	require.NoError(t, err)
+	assert.Equal(t, "https://example.com/repo", data.Text)
+	assert.Equal(t, browserapi.LevelSuccess, noti.lastLevel)
+	assert.Contains(t, noti.lastMsg, "copied URL %s to clipboard")
+
+	// Valid http URL
+	uHTTP, err := url.Parse("http://example.com/docs")
+	require.NoError(t, err)
+	handled = ret.cfg.OnLinkClick(uHTTP)
+	assert.True(t, handled)
+	data, err = clip.Paste(clipboard.DefaultRegisterID)
+	require.NoError(t, err)
+	assert.Equal(t, "http://example.com/docs", data.Text)
+
+	// Non-http URL (fragment / anchor)
+	noti.calls = 0
+	uAnchor, err := url.Parse("#section")
+	require.NoError(t, err)
+	handled = ret.cfg.OnLinkClick(uAnchor)
+	assert.False(t, handled)
+	assert.Equal(t, 0, noti.calls)
+
+	// Non-http URL (file scheme)
+	noti.calls = 0
+	uFile, err := url.Parse("file:///etc/passwd")
+	require.NoError(t, err)
+	handled = ret.cfg.OnLinkClick(uFile)
+	assert.False(t, handled)
+	assert.Equal(t, 0, noti.calls)
+
+	// Clipboard error notification
+	failClip := &failingClipboard{err: errors.New("clipboard failure")}
+	retFail := &aiEditorHandler{
+		clip: failClip,
+		n:    noti,
+	}
+	retFail.cfg.OnLinkClick = newLinkClickHandler(retFail.clip, retFail.n)
+	handled = retFail.cfg.OnLinkClick(u)
+	assert.True(t, handled)
+	assert.Equal(t, browserapi.LevelError, noti.lastLevel)
+	assert.Contains(t, noti.lastMsg, "copy URL to clipboard: %v")
 }

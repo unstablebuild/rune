@@ -17,6 +17,7 @@
 package dialoguetui
 
 import (
+	"net/url"
 	"time"
 
 	"github.com/unstablebuild/rune-go-sdk/component"
@@ -52,7 +53,7 @@ type ComponentConfig struct {
 	// messages and control their alignment.
 	QueuedMessageSpanConfig component.SpanConfig
 	// QueuedMessagePrefix is the prefix shown before each queued message.
-	// Defaults to "󰄝 " when empty.
+	// Defaults to "󰑝 " when empty.
 	QueuedMessagePrefix string
 
 	// ReceiveMessageStringConfig determines the StringConfig of the received
@@ -139,13 +140,13 @@ type ComponentConfig struct {
 	// icon (?) in the collapsed tool view. Defaults to aqua.
 	CollapsedPromptAttr term.Attributes
 	// CollapsedMemoryAttr determines the attributes for the memory
-	// icon (󰍛) in the collapsed tool view. Defaults to purple.
+	// icon (󰭛) in the collapsed tool view. Defaults to purple.
 	CollapsedMemoryAttr term.Attributes
 	// CollapsedResultAttr determines the attributes for the sub-agent
-	// result icon (󰮹) in the collapsed tool view. Defaults to green.
+	// result icon (󲾹) in the collapsed tool view. Defaults to green.
 	CollapsedResultAttr term.Attributes
 	// CollapsedResultErrorAttr determines the attributes for the sub-agent
-	// error result icon (󱑑) in the collapsed tool view. Defaults to red.
+	// error result icon (󵑑) in the collapsed tool view. Defaults to red.
 	CollapsedResultErrorAttr term.Attributes
 	// MemoryIDStringConfig determines the StringConfig for the memory
 	// ID text displayed in both expanded and collapsed views.
@@ -220,6 +221,11 @@ type ComponentConfig struct {
 	// text by an accepted '#' completion, for as long as that label is
 	// still linked to a pending attachment.
 	InlineAttachmentAttr term.Attributes
+
+	// OnLinkClick is called when a markdown link is clicked in the messages area.
+	// Returning true marks the click as handled and suppresses text selection.
+	// A nil callback ignores clicks.
+	OnLinkClick func(*url.URL) bool
 }
 
 // InputBoxConfig holds styling configuration for the compose input

@@ -17,6 +17,8 @@
 package dialoguetui
 
 import (
+	"net/url"
+
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/mouse"
 	"github.com/unstablebuild/rune-go-sdk/term"
@@ -25,9 +27,13 @@ import (
 
 func newMouseDelegate(
 	grid *tterm.SelectionWriter,
-	list *component.ResponsiveList,
+	comp *Component,
 ) *mouseDelegate {
-	return &mouseDelegate{grid: grid, list: list}
+	var list *component.ResponsiveList
+	if comp != nil {
+		list = &comp.messages
+	}
+	return &mouseDelegate{grid: grid, list: list, comp: comp}
 }
 
 var _ mouse.Delegate = (*mouseDelegate)(nil)
@@ -35,6 +41,7 @@ var _ mouse.Delegate = (*mouseDelegate)(nil)
 type mouseDelegate struct {
 	grid   *tterm.SelectionWriter
 	list   *component.ResponsiveList
+	comp   *Component
 	offset term.Coordinates // messages-area offset within the grid, updated each Draw
 	// sel holds both selection endpoints in content coordinates: each Y is a
 	// row index into the full conversation, independent of the scroll offset.
@@ -52,7 +59,18 @@ type mouseDelegate struct {
 }
 
 func (d *mouseDelegate) OnAction(ev term.Event, pos term.Coordinates, action mouse.Action) bool {
-	return false
+	if action != mouse.LeftClick || d.comp == nil || d.comp.cfg.OnLinkClick == nil {
+		return false
+	}
+	link := d.comp.LinkAt(pos)
+	if link == nil || link.URL == "" {
+		return false
+	}
+	parsed, err := url.Parse(link.URL)
+	if err != nil {
+		return false
+	}
+	return d.comp.cfg.OnLinkClick(parsed)
 }
 
 func (d *mouseDelegate) ScrollUp(n int) (ok bool) {

@@ -1380,6 +1380,60 @@ func (c *Component) alignVisibleAnchorTop(anchor component.ListNode, offset int)
 	}
 }
 
+// LinkAt queries for a markdown link at the messages-relative coordinate pos.
+// It searches visible message nodes in c.messages, unwrapping any outer spans
+// or handlers to find the underlying markdown component, and returns the
+// LinkInfo if a link is found.
+func (c *Component) LinkAt(pos term.Coordinates) *markdown.LinkInfo {
+	width, height := c.messages.SizeWidth(), c.messages.SizeHeight()
+	if width <= 0 || height <= 0 {
+		return nil
+	}
+	if pos.X < 0 || pos.X >= width || pos.Y < 0 || pos.Y >= height {
+		return nil
+	}
+	c.refreshMessagesLayout()
+	for node, ok := c.messages.Front(); ok; node, ok = node.Next() {
+		resp, ok := node.Value().(component.Responsive)
+		if !ok {
+			continue
+		}
+		top := node.Position().Y
+		bottom := top + resp.Height(width)
+		if pos.Y < top || pos.Y >= bottom {
+			continue
+		}
+		md, spanOffset := extractMarkdown(node.Value())
+		if md == nil {
+			continue
+		}
+		relX := pos.X - (node.Position().X + spanOffset.X)
+		relY := pos.Y - (node.Position().Y + spanOffset.Y)
+		if link := md.LinkAt(relX, relY); link != nil && link.URL != "" {
+			return link
+		}
+	}
+	return nil
+}
+
+func extractMarkdown(c any) (*markdown.Component, term.Coordinates) {
+	var offset term.Coordinates
+	for c != nil {
+		switch v := c.(type) {
+		case *component.Span:
+			offset = term.CoordinatesSum(offset, v.ContentOffset())
+			c = v.Content()
+		case *mdhandler.Handler:
+			return v.Component(), offset
+		case *markdown.Component:
+			return v, offset
+		default:
+			return nil, term.Coordinates{}
+		}
+	}
+	return nil, term.Coordinates{}
+}
+
 // scrollState captures the current scroll position for later restoration.
 func (c *Component) scrollState() (maxOffset int, scrolledUp bool) {
 	return c.messages.MaxOffset(), c.messages.CanSeekUp()

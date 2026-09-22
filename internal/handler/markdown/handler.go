@@ -87,6 +87,11 @@ func New(comp *markdown.Component, opts ...Option) *Handler {
 	return h
 }
 
+// Component returns the underlying markdown component.
+func (h *Handler) Component() *markdown.Component {
+	return h.comp
+}
+
 // SetComponent swaps the underlying markdown component. Selection
 // state is cleared and the component is resized to the handler's
 // current dimensions.
