@@ -17,6 +17,7 @@
 package fileexplorer
 
 import (
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -75,24 +76,50 @@ func readChildren(
 	if err != nil {
 		return err
 	}
-	children := make([]*node, 0, len(entries))
+	visible := make([]*node, 0, len(entries))
+	hidden := make([]*node, 0, len(entries))
 	for _, e := range entries {
 		childURI := workspaceapi.Join(n.uri, e.Name())
-		if ignore != nil && ignore.Match(childURI, e.IsDir()) {
-			continue
-		}
+
 		child := &node{
 			name:   e.Name(),
 			uri:    childURI,
-			isDir:  e.IsDir(),
+			isDir:  dirEntryIsDir(fs, e, childURI),
 			depth:  n.depth + 1,
 			parent: n,
 		}
-		children = append(children, child)
+		// Match the unresolved DirEntry so a dir-only gitignore
+		// pattern does not hide a symlink (git treats it as a blob).
+		if ignore != nil && ignore.Match(childURI, e.IsDir()) {
+			hidden = append(hidden, child)
+			continue
+		}
+		visible = append(visible, child)
 	}
-	sortChildren(children)
-	n.children = children
+	// Keep those children so the folder stays browsable; mixed
+	// directories still hide ignored noise.
+	if len(visible) == 0 {
+		visible = hidden
+	}
+	sortChildren(visible)
+	n.children = visible
 	return nil
+}
+
+func dirEntryIsDir(
+	fs workspaceapi.FileSystem, e os.DirEntry, uri workspaceapi.URI,
+) bool {
+	if e.IsDir() {
+		return true
+	}
+	if e.Type()&os.ModeSymlink == 0 {
+		return false
+	}
+	info, err := fs.Stat(uri.Path())
+	if err != nil {
+		return false
+	}
+	return info.IsDir()
 }
 
 func sortChildren(children []*node) {
