@@ -1019,7 +1019,7 @@ type uriHandler interface {
 	URI() workspaceapi.URI
 }
 
-// Drops the terminal with the given uri.
+// OnTabExit drops the terminal with the given uri.
 func (c *Component) OnTabExit(uri workspaceapi.URI) bool {
 	for _, t := range c.buffers {
 		if t.uri.String() == uri.String() {
