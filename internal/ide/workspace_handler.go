@@ -25,6 +25,7 @@ import (
 	"net/url"
 	"os"
 	"os/user"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -1450,13 +1451,6 @@ func (h *workspaceManagerHandler) textOpts(
 	markdownConfig := markdown.DefaultConfig()
 	markdownConfig.Parser = parser
 	markdownConfig.ScheduleNextTick = cfg.scheduleNextTick
-	// Per host, so a remote workspace keeps its swaps on the remote
-	// machine rather than on the IDE host.
-	var swapDir string
-	if cfg.editorSwapDir() {
-		swapDir = filepath.Join(
-			installDataDir(ws, uri, h.sixDir), workspace.SwapDirName)
-	}
 	ret := []text.Option{
 		text.WithTabspaces(cfg.editorTabspaces()),
 		text.WithComments(cfg.editorComments()),
@@ -1494,7 +1488,7 @@ func (h *workspaceManagerHandler) textOpts(
 		text.WithPackageManager(h.pkgmanager),
 		text.WithSyntaxConfig(cfg.syntaxConfig()),
 		text.WithMaxSyntaxParseSize(cfg.editorMaxSizeForSyntax()),
-		text.WithSwapDirectory(swapDir),
+		text.WithSwapDirectory(h.swapDirectory(cfg, ws, uri)),
 		text.WithMarkdownConfig(markdownConfig),
 		text.WithClipboard(h.clip),
 		text.WithOpenRouter(h),
@@ -2376,6 +2370,36 @@ func (h *workspaceManagerHandler) buildExtensions(
 		return nil, nil, nil, nil, fmt.Errorf("new workspace extensions runner: %v", err)
 	}
 	return runner, lsp, dap, promptStorage, nil
+}
+
+// swapDirectory resolves where a file the editor for ws opens keeps
+// its swap, per file rather than once per editor: a directory path
+// only names a directory on the host it was resolved against, and an
+// editor rooted in a remote workspace still opens local files.
+//
+// A file on any other host would need a data directory this editor
+// never resolved, so it keeps its swap next to itself. The resolver
+// stays a pure function of the file URI because the recovery prompts
+// have to derive the same swap entry the open did.
+func (h *workspaceManagerHandler) swapDirectory(
+	cfg ideConfig, ws workspace.Workspace, uri workspaceapi.URI,
+) func(workspaceapi.URI) string {
+	if !cfg.editorSwapDir() {
+		return nil
+	}
+	local := filepath.Join(h.sixDir, workspace.SwapDirName)
+	host := path.Join(installDataDir(ws, uri, h.sixDir), workspace.SwapDirName)
+	return func(file workspaceapi.URI) string {
+		switch {
+		case file.Scheme() == workspace.FileScheme:
+			return local
+		case file.Scheme() == uri.Scheme() &&
+			file.User() == uri.User() && file.Host() == uri.Host():
+			return host
+		default:
+			return ""
+		}
+	}
 }
 
 func installDataDir(ws workspace.Workspace, uri workspaceapi.URI, localDataDir string) string {

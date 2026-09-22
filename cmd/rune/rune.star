@@ -370,8 +370,10 @@ config = {
         #          Visible to git; needs write permission on the file's
         #          directory.
         #
-        # The data directory is resolved on the host that owns the file, so
-        # remote workspaces keep their swaps on the remote machine.
+        # The data directory is resolved per file, on the host that owns it,
+        # so a remote workspace keeps its swaps on the remote machine. Files
+        # on a host with no data directory of its own keep the swap next to
+        # them, as with False.
         "swap_dir": True,
         # Maximum buffer size (in bytes) for which Rune installs a syntax
         # tree on tab open. Files larger than this skip syntax parsing to

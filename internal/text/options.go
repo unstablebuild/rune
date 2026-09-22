@@ -84,10 +84,12 @@ type Config struct {
 	// reported by cell.Buffer.Size) above which a file's tab
 	// installs no syntax tree.
 	MaxSyntaxParseSize int
-	// SwapDirectory holds swap entries, named after the full path of
-	// the file each one backs. Empty keeps each swap next to its file
-	// instead. The path is resolved by the scheme that owns the file.
-	SwapDirectory string
+	// SwapDirectory reports the directory holding file's swap entry,
+	// named after the full path of the file it backs. It is asked per
+	// file because one editor opens files on many hosts, and a
+	// directory only exists on the host it was resolved against. A nil
+	// resolver, or an empty result, keeps the swap next to its file.
+	SwapDirectory func(file workspaceapi.URI) string
 	PkgManager    syntax.PkgManager
 	Markdown      markdown.Config
 	Clipboard     clipboard.Register
@@ -420,11 +422,11 @@ func WithMaxSyntaxParseSize(size int) Option {
 	}
 }
 
-// WithSwapDirectory returns an Option that sets the directory holding
-// swap entries. See Config.SwapDirectory.
-func WithSwapDirectory(dir string) Option {
+// WithSwapDirectory returns an Option that sets the resolver for the
+// directory holding swap entries. See Config.SwapDirectory.
+func WithSwapDirectory(resolve func(file workspaceapi.URI) string) Option {
 	return func(cfg *Config) {
-		cfg.SwapDirectory = dir
+		cfg.SwapDirectory = resolve
 	}
 }
 

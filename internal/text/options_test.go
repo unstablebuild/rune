@@ -37,7 +37,9 @@ func TestDefaultConfigPkgManagerReturnsNotFound(t *testing.T) {
 }
 
 // TestGetSwapDir checks that the editor resolves a file's swap
-// directory from Config.SwapDirectory, on the host that owns the file.
+// directory through Config.SwapDirectory, on the host that owns the
+// file, and falls back to the sibling layout when the resolver has no
+// directory for that host.
 func TestGetSwapDir(t *testing.T) {
 	t.Parallel()
 
@@ -67,7 +69,11 @@ func TestGetSwapDir(t *testing.T) {
 			file, err := workspaceapi.ParseURI(tcase.file)
 			require.NoError(t, err)
 
-			c := &Component{config: Config{SwapDirectory: tcase.swapDir}}
+			c := &Component{config: Config{
+				SwapDirectory: func(workspaceapi.URI) string {
+					return tcase.swapDir
+				},
+			}}
 			swapDir, err := c.getSwapDir(file)
 			require.NoError(t, err)
 			assert.Equal(t, tcase.want, swapDir.String())
@@ -75,6 +81,19 @@ func TestGetSwapDir(t *testing.T) {
 			assert.Equal(t, file.User(), swapDir.User())
 		})
 	}
+}
+
+// TestGetSwapDirWithoutResolver covers the zero Config: without a
+// resolver every swap stays next to its file.
+func TestGetSwapDirWithoutResolver(t *testing.T) {
+	t.Parallel()
+
+	file, err := workspaceapi.ParseURI("file:///Users/x/src/proj/main.go")
+	require.NoError(t, err)
+
+	swapDir, err := (&Component{}).getSwapDir(file)
+	require.NoError(t, err)
+	assert.Equal(t, "file:///Users/x/src/proj", swapDir.String())
 }
 
 func TestWithComments(t *testing.T) {
