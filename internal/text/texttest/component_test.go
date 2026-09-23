@@ -3219,3 +3219,26 @@ func expectFocusEvent(
 			return false
 		})
 }
+
+func TestDisambiguateTabTitles_TextIntegration(t *testing.T) {
+	c, _ := newTestComponent(t, NopEditor())
+	c.Resize(120, 20)
+
+	uri1, err := workspaceapi.ParseURI("file:///root/dir/dir2/README.md")
+	require.NoError(t, err)
+	uri2, err := workspaceapi.ParseURI("file:///root/other/dir2/README.md")
+	require.NoError(t, err)
+
+	_, err = c.OpenFileTab(uri1, false)
+	require.NoError(t, err)
+
+	_, err = c.OpenFileTab(uri2, false)
+	require.NoError(t, err)
+
+	w := term.NewStringWriter(120, 20)
+	c.Draw(w)
+	require.NoError(t, w.Flush())
+	rendered := w.String()
+	assert.Contains(t, rendered, "dir/dir2/README.md")
+	assert.Contains(t, rendered, "other/dir2/README.md")
+}

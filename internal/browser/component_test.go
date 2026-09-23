@@ -2425,3 +2425,132 @@ func TestWinDropTabName(t *testing.T) {
 			assert.Equal(t, "notes.md", name)
 		})
 }
+
+func TestDisambiguateTabTitles(t *testing.T) {
+	type tabSpec struct {
+		uriStr string
+		name   string
+	}
+
+	suite := []struct {
+		name   string
+		tabs   []tabSpec
+		mutate func(t *testing.T, b *Component, uris []workspaceapi.URI, tabs []*Tab)
+		expect map[string]string
+	}{
+		{
+			name: "two colliding files",
+			tabs: []tabSpec{
+				{"file:///proj/client/main.go", "main.go"},
+				{"file:///proj/server/main.go", "main.go"},
+			},
+			expect: map[string]string{
+				"file:///proj/client/main.go": "client/main.go",
+				"file:///proj/server/main.go": "server/main.go",
+			},
+		},
+		{
+			name: "multi-level nested collisions under lowest common ancestor",
+			tabs: []tabSpec{
+				{"file:///repo/forge/src/api/__init__.py", "__init__.py"},
+				{"file:///repo/forge/src/core/__init__.py", "__init__.py"},
+				{"file:///repo/forge/src/engine/__init__.py", "__init__.py"},
+				{"file:///repo/forge/src/models/__init__.py", "__init__.py"},
+				{"file:///repo/forge/src/__init__.py", "__init__.py"},
+				{"file:///repo/forge/test/unit/__init__.py", "__init__.py"},
+			},
+			expect: map[string]string{
+				"file:///repo/forge/src/api/__init__.py":    "src/api/__init__.py",
+				"file:///repo/forge/src/core/__init__.py":   "src/core/__init__.py",
+				"file:///repo/forge/src/engine/__init__.py": "src/engine/__init__.py",
+				"file:///repo/forge/src/models/__init__.py": "src/models/__init__.py",
+				"file:///repo/forge/src/__init__.py":        "src/__init__.py",
+				"file:///repo/forge/test/unit/__init__.py":  "test/unit/__init__.py",
+			},
+		},
+		{
+			name: "multi-level parent collisions",
+			tabs: []tabSpec{
+				{"file:///root/dir/dir2/README.md", "README.md"},
+				{"file:///root/other/dir2/README.md", "README.md"},
+			},
+			expect: map[string]string{
+				"file:///root/dir/dir2/README.md":   "dir/dir2/README.md",
+				"file:///root/other/dir2/README.md": "other/dir2/README.md",
+			},
+		},
+		{
+			name: "tab close reverts remaining tab to basename",
+			tabs: []tabSpec{
+				{"file:///root/dir/dir2/README.md", "README.md"},
+				{"file:///root/other/dir2/README.md", "README.md"},
+			},
+			mutate: func(t *testing.T, b *Component, uris []workspaceapi.URI, tabs []*Tab) {
+				require.True(t, b.RemoveTab(tabs[1]))
+			},
+			expect: map[string]string{
+				"file:///root/dir/dir2/README.md": "README.md",
+			},
+		},
+		{
+			name: "dirty tab retains dirty marker when disambiguated",
+			tabs: []tabSpec{
+				{"file:///proj/client/main.go", "main.go"},
+			},
+			mutate: func(t *testing.T, b *Component, uris []workspaceapi.URI, tabs []*Tab) {
+				require.True(t, b.SetTabNameAndAttrs(uris[0], "main.go*", term.Attributes{}))
+				uri2, err := workspaceapi.ParseURI("file:///proj/server/main.go")
+				require.NoError(t, err)
+				_ = b.NewTab(uri2, 'o', "main.go", newTestHandler(), nil)
+			},
+			expect: map[string]string{
+				"file:///proj/client/main.go": "client/main.go*",
+				"file:///proj/server/main.go": "server/main.go",
+			},
+		},
+		{
+			name: "manually renamed tab is immune to disambiguation",
+			tabs: []tabSpec{
+				{"file:///proj/client/main.go", "main.go"},
+				{"file:///proj/server/main.go", "main.go"},
+			},
+			mutate: func(t *testing.T, b *Component, uris []workspaceapi.URI, tabs []*Tab) {
+				require.True(t, b.SetTabDefaultNameAndAttrs(uris[0], "custom-notes", term.Attributes{}))
+				require.True(t, b.SetTabNameAndAttrs(uris[0], "custom-notes", term.Attributes{}))
+				uri3, err := workspaceapi.ParseURI("file:///proj/other/main.go")
+				require.NoError(t, err)
+				_ = b.NewTab(uri3, 'o', "main.go", newTestHandler(), nil)
+			},
+			expect: map[string]string{
+				"file:///proj/client/main.go": "custom-notes",
+				"file:///proj/server/main.go": "server/main.go",
+				"file:///proj/other/main.go":  "other/main.go",
+			},
+		},
+	}
+
+	for _, tc := range suite {
+		t.Run(tc.name, func(t *testing.T) {
+			b := NewComponent(DefaultConfig())
+			var uris []workspaceapi.URI
+			var tabs []*Tab
+			for _, spec := range tc.tabs {
+				uri, err := workspaceapi.ParseURI(spec.uriStr)
+				require.NoError(t, err)
+				tab := b.NewTab(uri, 'o', spec.name, newTestHandler(), nil)
+				uris = append(uris, uri)
+				tabs = append(tabs, tab)
+			}
+			if tc.mutate != nil {
+				tc.mutate(t, b, uris, tabs)
+			}
+			for uriStr, expectedName := range tc.expect {
+				uri, err := workspaceapi.ParseURI(uriStr)
+				require.NoError(t, err)
+				actualName, _, ok := b.TabName(uri)
+				require.True(t, ok, "tab should exist: %s", uriStr)
+				assert.Equal(t, expectedName, actualName, "mismatch for %s", uriStr)
+			}
+		})
+	}
+}

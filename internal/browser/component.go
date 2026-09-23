@@ -246,8 +246,10 @@ func (c *Component) NewTab(
 		icon = c.config.TabOverrideIcon
 	}
 	t := newTab(c, resource, h, f)
+	t.origName = name
 	c.buffers = append(c.buffers, t)
 	c.tabs.Add(icon, name)
+	c.disambiguateTabs()
 	return t
 }
 
@@ -328,8 +330,16 @@ func (c *Component) SetTabNameAndAttrs(
 ) bool {
 	for i, t := range c.buffers {
 		if t.uri.String() == uri.String() {
+			defName := c.tabs.DefaultTabName(i)
+			if name != defName && name != defName+"*" {
+				t.manualRename = true
+				c.tabs.SetTabDefaultName(i, name)
+			}
 			c.tabs.SetTabName(i, name)
 			c.tabs.SetTabAttr(i, attr)
+			if t.manualRename {
+				c.disambiguateTabs()
+			}
 			return true
 		}
 	}
@@ -398,8 +408,11 @@ func (c *Component) SetTabDefaultNameAndAttrs(
 ) bool {
 	for i, t := range c.buffers {
 		if t.uri.String() == uri.String() {
+			t.manualRename = true
 			c.tabs.SetTabDefaultAttr(i, attr)
 			c.tabs.SetTabDefaultName(i, name)
+			c.tabs.SetTabName(i, name)
+			c.disambiguateTabs()
 			return true
 		}
 	}
@@ -1271,6 +1284,7 @@ func (c *Component) removeTab(t *Tab) bool {
 	if !ok {
 		panic(fmt.Sprintf("corrupted tabs: could not find tab with id %v", id))
 	}
+	c.disambiguateTabs()
 	return true
 }
 
@@ -2233,4 +2247,114 @@ func (c *Component) dropLabel(win *browserWindow) string {
 		return label
 	}
 	return defaultDropLabel
+}
+
+// disambiguateTabs recalibrates tab default names for tabs with colliding basenames.
+func (c *Component) disambiguateTabs() {
+	groups := make(map[string][]int)
+	for i, t := range c.buffers {
+		if t.manualRename || t.uri.Path() == "" {
+			continue
+		}
+		base := t.origName
+		if base == "" {
+			p := t.uri.Path()
+			if p != "" && p != "/" {
+				base = path.Base(p)
+			}
+			if base == "" || base == "." || base == "/" {
+				base = c.tabs.DefaultTabName(i)
+			}
+			t.origName = base
+		}
+		if base == "" {
+			continue
+		}
+		groups[base] = append(groups[base], i)
+	}
+
+	for base, indices := range groups {
+		if len(indices) <= 1 {
+			idx := indices[0]
+			c.updateTabLabel(idx, base)
+			continue
+		}
+
+		// Multi-tab collision: compute paths relative to lowest common ancestor
+		paths := make([]string, len(indices))
+		for j, idx := range indices {
+			p := strings.ReplaceAll(c.buffers[idx].uri.Path(), "\\", "/")
+			paths[j] = path.Clean(p)
+		}
+
+		lca := findLowestCommonAncestor(paths)
+		rels := make([]string, len(indices))
+		for j := range indices {
+			rel := strings.TrimPrefix(paths[j], lca)
+			rel = strings.TrimPrefix(rel, "/")
+			if rel == "" {
+				rel = base
+			}
+			rels[j] = rel
+		}
+
+		relCounts := make(map[string]int)
+		for _, r := range rels {
+			relCounts[r]++
+		}
+
+		for j, idx := range indices {
+			label := rels[j]
+			if relCounts[label] > 1 {
+				u := c.buffers[idx].uri
+				if u.Scheme() != "" && u.Scheme() != "file" {
+					label = u.Scheme() + "://" + u.Host() + u.Path()
+				} else if u.Host() != "" {
+					label = u.Host() + u.Path()
+				} else {
+					label = paths[j]
+				}
+			}
+			c.updateTabLabel(idx, label)
+		}
+	}
+	c.dirtyTabs = true
+}
+
+// findLowestCommonAncestor finds the deepest directory common to all given absolute paths.
+func findLowestCommonAncestor(paths []string) string {
+	if len(paths) == 0 {
+		return ""
+	}
+	dirSegments := strings.Split(path.Dir(paths[0]), "/")
+	common := []string{}
+
+	for i, seg := range dirSegments {
+		matchAll := true
+		for _, p := range paths[1:] {
+			otherSegs := strings.Split(path.Dir(p), "/")
+			if i >= len(otherSegs) || otherSegs[i] != seg {
+				matchAll = false
+				break
+			}
+		}
+		if !matchAll {
+			break
+		}
+		common = append(common, seg)
+	}
+	return strings.Join(common, "/")
+}
+
+// updateTabLabel updates the default and active display names, preserving dirty status.
+func (c *Component) updateTabLabel(idx int, label string) {
+	curName := c.tabs.TabName(idx)
+	curDefName := c.tabs.DefaultTabName(idx)
+	isDirty := curName == curDefName+"*" || (strings.HasSuffix(curName, "*") && curName != curDefName)
+	c.tabs.SetTabDefaultName(idx, label)
+	if isDirty {
+		c.tabs.SetTabName(idx, label+"*")
+	} else {
+		c.tabs.SetTabName(idx, label)
+	}
 }
