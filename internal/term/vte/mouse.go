@@ -36,15 +36,21 @@ type mouseDriver struct {
 	// with the content. Recording the offset lets SetSelectionEnd keep the
 	// anchor pinned to the originally pressed content cell.
 	selectionStartScrollY int
-	hookRawBytes          []byte
-	clipboard             clipboard.Register
-	lastButton            rune // last pressed button (0=left, 1=middle, 2=right)
+	// dragging is set once a drag leaves the pressed cell. The SDK calls
+	// SetSelectionEnd for every held-button event, including jitter
+	// inside the pressed cell, so without it a plain click (for example
+	// to focus the window) would highlight one cell and copy it over
+	// whatever the clipboard held.
+	dragging     bool
+	hookRawBytes []byte
+	clipboard    clipboard.Register
+	lastButton   rune // last pressed button (0=left, 1=middle, 2=right)
 }
 
 func (e *mouseDriver) OnAction(
 	ev term.Event, pos term.Coordinates, action mouse.Action,
 ) bool {
-	if e.t.MouseModeReportMouseClicks() || e.t.MouseModeReportCellMouseMotion() {
+	if e.appTracksMouse() {
 		return e.reportAction(ev, pos, action)
 	}
 	switch action {
@@ -114,14 +120,23 @@ func (e *mouseDriver) ClearSelection() {
 	e.t.Unselect()
 	e.selectionStart = term.Coordinates{}
 	e.selectionStartScrollY = 0
+	e.dragging = false
 }
 
 func (e *mouseDriver) SetSelectionStart(pos term.Coordinates) {
 	e.selectionStart = pos
 	e.selectionStartScrollY = e.t.scrollY()
+	e.dragging = false
 }
 
 func (e *mouseDriver) SetSelectionEnd(pos term.Coordinates) {
+	// When the running program tracks the mouse, the press was reported
+	// to it and never anchored a selection here. Highlighting on the
+	// following drag events would paint a stale selection over the
+	// program's own (e.g. vim's visual mode) and copy it.
+	if e.appTracksMouse() {
+		return
+	}
 	// The start was captured at selectionStartScrollY, but Select translates
 	// window->buffer coordinates by subtracting the current scroll offset.
 	// Shift the stored start into the current window coordinate system by the
@@ -134,6 +149,12 @@ func (e *mouseDriver) SetSelectionEnd(pos term.Coordinates) {
 	// produce from > to, and the buffer's internal sort then drops the
 	// press cell and the drag-end cell from the selection.
 	end := pos
+	if !e.dragging {
+		if end == start {
+			return
+		}
+		e.dragging = true
+	}
 	if end.Y < start.Y || (end.Y == start.Y && end.X < start.X) {
 		start, end = end, start
 	}
@@ -151,6 +172,12 @@ func (e *mouseDriver) SelectLine(y int) {
 	pos := term.Coordinates{Y: y}
 	e.t.SelectLine(pos)
 	e.copySelectionToClipboard()
+}
+
+// appTracksMouse reports whether the running program asked for mouse
+// events, in which case clicks and drags belong to it.
+func (e *mouseDriver) appTracksMouse() bool {
+	return e.t.MouseModeReportMouseClicks() || e.t.MouseModeReportCellMouseMotion()
 }
 
 func (e *mouseDriver) Width() int {

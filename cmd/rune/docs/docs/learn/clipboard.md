@@ -78,6 +78,19 @@ The `clipboard` setting lives alongside the rest of your editor
 configuration; see [Config](../config.md) for where the file lives and
 how to edit it.
 
+## Highlighting in the terminal
+
+Dragging across text in a terminal highlights it and copies it to the
+clipboard, as do double-clicking a word and triple-clicking a line. A
+highlight starts only once the pointer leaves the cell you pressed, so a
+click (for example to focus the window) does not replace what you copied
+before.
+
+When the program running in the terminal tracks the mouse, as vim does
+with `set mouse=a`, clicks and drags go to that program instead and the
+terminal does not highlight or copy. Use the program's own copy command,
+such as yanking to the `+` register in vim.
+
 ## See also
 
 - [Vim editor](./vim-editor.md): registers and the `+` system clipboard register
