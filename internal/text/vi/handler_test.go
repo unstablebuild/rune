@@ -2405,6 +2405,42 @@ func TestViCountedMotionScenarios(t *testing.T) {
 	}
 }
 
+func TestViWordMotionEmptyLines(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		content     string
+		seq         string
+		wantScroll  term.Coordinates
+		wantContent string
+	}{
+		{name: "w from line end stops on empty line", content: "one\n\ntwo", seq: "$w", wantScroll: term.Coordinates{Y: 1}},
+		{name: "w from empty line moves to next line", content: "one\n\ntwo", seq: "jw", wantScroll: term.Coordinates{Y: 2}},
+		{name: "w stops on each empty line", content: "one\n\n\ntwo", seq: "$ww", wantScroll: term.Coordinates{Y: 2}},
+		{name: "W from line end stops on empty line", content: "one\n\ntwo", seq: "$W", wantScroll: term.Coordinates{Y: 1}},
+		{name: "w skips whitespace-only line", content: "one\n  \ntwo", seq: "$w", wantScroll: term.Coordinates{Y: 2}},
+		{name: "dw at line end keeps following empty line", content: "one\n\ntwo", seq: "$dw", wantScroll: term.Coordinates{X: 1}, wantContent: "on\n\ntwo"},
+		{name: "dw on empty line deletes it", content: "one\n\ntwo", seq: "jdw", wantScroll: term.Coordinates{Y: 1}, wantContent: "one\ntwo"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vi := setupVi(t, tc.content, 2)
+			vi.Resize(80, 8)
+			vi.Draw(term.NoopWriter{})
+
+			for _, eventChar := range tc.seq {
+				_, handled := vi.Handle(term.Event{Type: term.EventKey, Ch: eventChar})
+				require.True(t, handled, "event %q", eventChar)
+			}
+
+			wantContent := tc.wantContent
+			if wantContent == "" {
+				wantContent = tc.content
+			}
+			assert.Equal(t, wantContent, vi.less.Buffer().String())
+			assert.Equal(t, tc.wantScroll, vi.cursor.CursorAtScroll())
+		})
+	}
+}
+
 func TestViCountedOperatorScenarios(t *testing.T) {
 	type testCase struct {
 		name           string
