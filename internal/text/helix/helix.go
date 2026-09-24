@@ -248,7 +248,9 @@ func (hx *Helix) Copy(registerID string, data clipboard.Data) error {
 // Handle satisfies tui.Handler.
 func (hx *Helix) Handle(ev term.Event) (quit, handled bool) {
 	if ev.Type == term.EventMouse {
-		return hx.mouse.Handle(ev)
+		quit, handled = hx.mouse.Handle(ev)
+		hx.handler.adoptCursor()
+		return quit, handled
 	}
 
 	oobEdited := hx.oobEdited

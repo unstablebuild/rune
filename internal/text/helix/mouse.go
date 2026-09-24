@@ -39,7 +39,6 @@ func (d mouseDelegate) SetSelectionStart(pos term.Coordinates) {
 	}
 	d.Delegate.SetSelectionStart(pos)
 	d.h.anchor = d.h.cursorAtScroll()
-	d.h.explicitSel = false
 	d.h.markMatchingBrace()
 }
 
