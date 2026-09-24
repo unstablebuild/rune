@@ -41,29 +41,6 @@ var jumpLabelAttr = term.Attributes{
 	Attrs: term.AttrBold,
 }
 
-// jumpRange is one candidate's (anchor, head) pair in document space.
-type jumpRange struct {
-	anchor term.Coordinates
-	head   term.Coordinates
-}
-
-func (r jumpRange) backward() bool { return coordinatesBefore(r.head, r.anchor) }
-
-func (r jumpRange) from() term.Coordinates {
-	if r.backward() {
-		return r.head
-	}
-	return r.anchor
-}
-
-// forward is Range::with_direction(Direction::Forward).
-func (r jumpRange) forward() jumpRange {
-	if r.backward() {
-		return jumpRange{anchor: r.head, head: r.anchor}
-	}
-	return r
-}
-
 func jumpAlphabetIndex(ch rune) int {
 	for i, a := range jumpAlphabet {
 		if a == ch {
@@ -76,21 +53,21 @@ func jumpAlphabetIndex(ch rune) int {
 // jumpCandidates walks outward from the caret, alternating forwards and
 // backwards, so the labels closest to the caret come first. The word the
 // caret is already on is skipped: the walk starts from its own edges.
-func jumpCandidates(buf *cell.Buffer, caret, start, end term.Coordinates) []jumpRange {
+func jumpCandidates(buf *cell.Buffer, caret, start, end term.Coordinates) []rng {
 	limit := len(jumpAlphabet) * len(jumpAlphabet)
-	fwd := jumpRange{anchor: caret, head: caret}
+	fwd := rng{anchor: caret, head: caret}
 	rev := fwd
 	if ch, ok := charAt(buf, caret); ok && !unicode.IsSpace(ch) {
 		if a, hd := wordMove(buf, caret, caret, 1, nextWordEnd); a == caret {
-			fwd = jumpRange{anchor: a, head: hd}
+			fwd = rng{anchor: a, head: hd}
 		}
 		after, ok := nextPos(buf, caret)
 		if a, hd := wordMove(buf, caret, caret, 1, prevWordStart); ok && a == after {
-			rev = jumpRange{anchor: a, head: hd}
+			rev = rng{anchor: a, head: hd}
 		}
 	}
 
-	words := make([]jumpRange, 0, limit)
+	words := make([]rng, 0, limit)
 	for len(words) < limit {
 		changed := false
 		for coordinatesBefore(fwd.head, end) {
@@ -131,9 +108,9 @@ func jumpCandidates(buf *cell.Buffer, caret, start, end term.Coordinates) []jump
 	return words
 }
 
-func jumpStep(buf *cell.Buffer, r jumpRange, target wordMotionTarget) jumpRange {
+func jumpStep(buf *cell.Buffer, r rng, target wordMotionTarget) rng {
 	anchor, head := wordMove(buf, r.anchor, r.head, 1, target)
-	return jumpRange{anchor: anchor, head: head}
+	return rng{anchor: anchor, head: head}
 }
 
 // visibleBounds is the half-open document range labels are offered over:
@@ -194,7 +171,7 @@ func skipToWord(buf *cell.Buffer, pos term.Coordinates, forward bool) term.Coord
 // extendedJumpAnchor keeps whichever end of the live selection [from, to)
 // is further from the label, so extend_to_word grows the range instead
 // of replacing it.
-func extendedJumpAnchor(buf *cell.Buffer, from, to term.Coordinates, target jumpRange) term.Coordinates {
+func extendedJumpAnchor(buf *cell.Buffer, from, to term.Coordinates, target rng) term.Coordinates {
 	if target.backward() {
 		to = docPos(buf, to)
 		if coordinatesBefore(to, target.anchor) {
@@ -208,7 +185,7 @@ func extendedJumpAnchor(buf *cell.Buffer, from, to term.Coordinates, target jump
 	return from
 }
 
-func drawJumpLabels(w term.Writer, scroll *component.Scroll, labels []jumpRange) {
+func drawJumpLabels(w term.Writer, scroll *component.Scroll, labels []rng) {
 	for i, label := range labels {
 		first := label.from()
 		second, ok := nextPos(scroll.Buffer(), first)

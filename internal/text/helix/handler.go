@@ -77,11 +77,6 @@ const (
 	maxJumps    = 64
 )
 
-type jumpEntry struct {
-	anchor term.Coordinates
-	head   term.Coordinates
-}
-
 var _ helixHandler = (*helixHandlerImpl)(nil)
 
 type helixHandler interface {
@@ -158,12 +153,12 @@ type helixHandlerImpl struct {
 	// pulling it back onto the text just typed.
 	insertKeepsCaret bool
 
-	jumps   []jumpEntry
+	jumps   []rng
 	jumpIdx int
 
 	// jumpLabels holds goto_word's live candidates while the two label
 	// keys are pending; jumpOuter is -1 until the first one lands.
-	jumpLabels []jumpRange
+	jumpLabels []rng
 	jumpOuter  int
 	jumpExtend bool
 
@@ -1758,9 +1753,9 @@ func (h *helixHandlerImpl) moved(fn func() bool) bool {
 	return h.cursor.CursorAtScroll() != before
 }
 
-// helixRange reads the current selection as a Helix (anchor, head) pair
-// in document space, where head is the exclusive edge of the range.
-func (h *helixHandlerImpl) helixRange() (anchor, head term.Coordinates) {
+// helixRange reads the current selection as a Helix range in document
+// space, where head is the exclusive edge of the range.
+func (h *helixHandlerImpl) helixRange() rng {
 	from, to, ok := h.cursor.SelectionRange()
 	if !ok {
 		caret := h.cursor.CursorAtScroll()
@@ -1768,18 +1763,19 @@ func (h *helixHandlerImpl) helixRange() (anchor, head term.Coordinates) {
 		if !ok {
 			next = caret
 		}
-		return caret, next
+		return rng{anchor: caret, head: next}
 	}
 	if h.selectionBackward() {
-		return docPos(h.buf(), to), from
+		return rng{anchor: docPos(h.buf(), to), head: from}
 	}
-	return from, docPos(h.buf(), to)
+	return rng{anchor: from, head: docPos(h.buf(), to)}
 }
 
-// applyHelixRange installs a Helix (anchor, head) pair as the cursor's
-// inclusive cell selection.
-func (h *helixHandlerImpl) applyHelixRange(anchor, head term.Coordinates) {
+// applyHelixRange installs a Helix range as the cursor's inclusive cell
+// selection.
+func (h *helixHandlerImpl) applyHelixRange(r rng) {
 	buf := h.buf()
+	anchor, head := r.anchor, r.head
 	switch {
 	case coordinatesBefore(anchor, head):
 		last, ok := prevPos(buf, head)
@@ -1799,59 +1795,20 @@ func (h *helixHandlerImpl) applyHelixRange(anchor, head term.Coordinates) {
 	}
 }
 
-// rangeCursor is Range::cursor: the block cursor sits on the last cell
-// the range covers.
-func (h *helixHandlerImpl) rangeCursor(anchor, head term.Coordinates) term.Coordinates {
-	if !coordinatesBefore(anchor, head) {
-		return head
-	}
-	prev, ok := prevPos(h.buf(), head)
-	if !ok {
-		return head
-	}
-	return prev
-}
-
-// putCursor is Range::put_cursor with extend set: the anchor survives,
-// shifting by one cell when the range flips direction.
-func (h *helixHandlerImpl) putCursor(
-	anchor, head, target term.Coordinates,
-) (term.Coordinates, term.Coordinates) {
-	buf := h.buf()
-	switch {
-	case !coordinatesBefore(head, anchor) && coordinatesBefore(target, anchor):
-		if next, ok := nextPos(buf, anchor); ok {
-			anchor = next
-		}
-	case coordinatesBefore(head, anchor) && !coordinatesBefore(target, anchor):
-		if prev, ok := prevPos(buf, anchor); ok {
-			anchor = prev
-		}
-	}
-	if !coordinatesBefore(target, anchor) {
-		next, ok := nextPos(buf, target)
-		if !ok {
-			next = target
-		}
-		return anchor, next
-	}
-	return anchor, target
-}
-
 // wordMotion implements w/W, e/E and b/B. Normal mode installs the
 // range word_move produced; select mode keeps the existing anchor and
 // only adopts the new cursor, which is what extend_word_impl does.
 func (h *helixHandlerImpl) wordMotion(target wordMotionTarget) bool {
-	anchor, head := h.helixRange()
-	newAnchor, newHead := wordMove(h.buf(), anchor, head, h.motionCount(), target)
-	if newAnchor == anchor && newHead == head {
+	r := h.helixRange()
+	anchor, head := wordMove(h.buf(), r.anchor, r.head, h.motionCount(), target)
+	next := rng{anchor: anchor, head: head}
+	if next == r {
 		return false
 	}
 	if h.extend {
-		newAnchor, newHead = h.putCursor(
-			anchor, head, h.rangeCursor(newAnchor, newHead))
+		next = r.putCursor(h.buf(), next.cursor(h.buf()), true)
 	}
-	h.applyHelixRange(newAnchor, newHead)
+	h.applyHelixRange(next)
 	return true
 }
 
@@ -2096,13 +2053,13 @@ func (h *helixHandlerImpl) scrollBy(dir, by int) bool {
 // jumpIdx mirrors helix-view's JumpList::current: it points one past the
 // newest entry after a push, so the first C-o records where the caret is
 // now and then steps back onto the last pushed jump.
-func (h *helixHandlerImpl) currentJump() jumpEntry {
+func (h *helixHandlerImpl) currentJump() rng {
 	head := h.cursor.CursorAtScroll()
 	anchor := head
 	if a, ok := h.selectionAnchor(); ok {
 		anchor = a
 	}
-	return jumpEntry{anchor: anchor, head: head}
+	return rng{anchor: anchor, head: head}
 }
 
 func (h *helixHandlerImpl) pushJump() bool {
@@ -2124,7 +2081,7 @@ func (h *helixHandlerImpl) jumping(fn func() bool) bool {
 
 // pushJumpEntry reports how many entries were dropped off the front so a
 // caller holding an index into the list can rebase it.
-func (h *helixHandlerImpl) pushJumpEntry(entry jumpEntry) int {
+func (h *helixHandlerImpl) pushJumpEntry(entry rng) int {
 	if h.jumpIdx >= 0 && h.jumpIdx < len(h.jumps) {
 		h.jumps = h.jumps[:h.jumpIdx]
 	}
@@ -2175,7 +2132,7 @@ func (h *helixHandlerImpl) jumpForward() bool {
 	return true
 }
 
-func (h *helixHandlerImpl) restoreJump(entry jumpEntry) {
+func (h *helixHandlerImpl) restoreJump(entry rng) {
 	h.setSelectionRange(entry.anchor, entry.head)
 }
 
@@ -2980,16 +2937,16 @@ func (h *helixHandlerImpl) cancelJump() {
 	h.setMode(normalMode)
 }
 
-func (h *helixHandlerImpl) applyJump(target jumpRange, extend bool) {
-	rng := target.forward()
+func (h *helixHandlerImpl) applyJump(target rng, extend bool) {
+	r := target.forward()
 	if extend {
-		rng = jumpRange{anchor: target.anchor, head: target.head}
+		r = target
 		if from, to, ok := h.cursor.SelectionRange(); ok {
-			rng.anchor = extendedJumpAnchor(h.buf(), from, to, target)
+			r.anchor = extendedJumpAnchor(h.buf(), from, to, target)
 		}
 	}
 	h.pushJump()
-	h.applyHelixRange(rng.anchor, rng.head)
+	h.applyHelixRange(r)
 }
 
 // --- plumbing ---
