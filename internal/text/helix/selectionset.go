@@ -247,7 +247,8 @@ func (h *helixHandlerImpl) syncPrimary() {
 // the cursor holds no selection, so the primary's cells go through the
 // first list as well, which keeps the range visible while typing as it
 // is in Helix. The message bar carries the count the Helix status line
-// would show.
+// would show, written when it changes so a message a command leaves
+// there is not wiped by the next event.
 func (h *helixHandlerImpl) markSecondaries() {
 	buf := h.buf()
 	var sels, carets []textapi.Location
@@ -272,14 +273,21 @@ func (h *helixHandlerImpl) markSecondaries() {
 			locationsOrNil(carets))
 		h.secondariesDrawn = len(sels) > 0 || len(carets) > 0
 	}
+	n, p := h.sel.len(), h.sel.primary
 	switch {
-	case h.sel.len() > 1:
-		h.less.SetMessage("%d/%d sels", h.sel.primary+1, h.sel.len())
-		h.countShown = true
-	case h.countShown:
-		h.less.SetMessage("")
-		h.countShown = false
+	case n > 1 && (!h.countShown || n != h.shownCount || p != h.shownPrimary):
+		h.less.SetMessage("%d/%d sels", p+1, n)
+		h.countShown, h.shownCount, h.shownPrimary = true, n, p
+	case n <= 1 && h.countShown:
+		h.clearMessage()
 	}
+}
+
+// clearMessage empties the message bar; the count goes back up with
+// the next selection change.
+func (h *helixHandlerImpl) clearMessage() {
+	h.less.SetMessage("")
+	h.countShown = false
 }
 
 func locationsOrNil(locs []textapi.Location) text.LocationList {

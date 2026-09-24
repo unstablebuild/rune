@@ -19,6 +19,7 @@ package helix
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -74,6 +75,7 @@ const (
 	matchingLocID            = "_matchingMark"
 	selectionsLocID          = "helix.selections"
 	cursorsLocID             = "helix.cursors"
+	searchLocID              = "helix.search"
 )
 
 const (
@@ -135,9 +137,12 @@ type helixHandlerImpl struct {
 	// secondariesDrawn remembers that the location lists for the
 	// ranges the cursor does not hold are populated, so an empty set
 	// does not rebuild them on every event; countShown does the same
-	// for the selection count in the message bar.
+	// for the selection count in the message bar, with the count and
+	// primary it shows.
 	secondariesDrawn bool
 	countShown       bool
+	shownCount       int
+	shownPrimary     int
 
 	// extend is Helix's sticky select mode (v): motions grow the
 	// selection instead of replacing it.
@@ -149,8 +154,10 @@ type helixHandlerImpl struct {
 	moveMode     moveMode
 	lastMoveMode moveMode
 	moveChar     rune
-	searchDir    moveMode
-	searchText   string
+
+	// prompt is the regex prompt in progress while the less prompt is
+	// open, if it is one of ours.
+	prompt regexPrompt
 
 	matchPending   bool
 	matchAround    bool
@@ -261,23 +268,23 @@ func (h *helixHandlerImpl) Resize(width, height int) {
 	}
 }
 
-func (h *helixHandlerImpl) setActiveLocationListMessage(locs []textapi.Location) {
-	for _, loc := range locs {
-		if loc.Message != "" {
-			h.less.SetMessage("%s", loc.Message)
-			return
-		}
-	}
-	h.less.SetMessage("")
-}
-
+// drawLocationMessage shows the message of the location under the
+// caret, if any, and clears it once the caret has left. A location
+// without a message, such as one of the selection set's own, leaves
+// the message bar alone.
 func (h *helixHandlerImpl) drawLocationMessage() {
 	locs, ok := h.cursor.LocationsAtCursor()
 	if ok {
-		h.setActiveLocationListMessage(locs)
-		h.setLocations = true
-	} else if h.setLocations {
-		h.less.SetMessage("")
+		for _, loc := range locs {
+			if loc.Message != "" {
+				h.less.SetMessage("%s", loc.Message)
+				h.setLocations = true
+				return
+			}
+		}
+	}
+	if h.setLocations {
+		h.clearMessage()
 		h.setLocations = false
 	}
 }
@@ -353,6 +360,7 @@ func (h *helixHandlerImpl) setMode(mode helixMode) {
 func (h *helixHandlerImpl) setNormalMode() bool {
 	if h.less.Mode() == handler.LessSearchMode {
 		h.less.SetNormalMode()
+		h.prompt = regexPrompt{}
 	}
 	h.resetCount()
 	h.extend = false
@@ -414,7 +422,7 @@ func (h *helixHandlerImpl) setInsertMode() {
 	h.extend = false
 	h.restoreCursor = false
 	h.setMode(insertMode)
-	h.less.SetMessage("")
+	h.clearMessage()
 	h.resetCount()
 }
 
@@ -446,8 +454,6 @@ func (h *helixHandlerImpl) takeUndoCheckpoint() bool {
 func (h *helixHandlerImpl) logError(err error) {
 	log.WithField(logging.KeyClass, "helix.handler").Error(err)
 }
-
-func (h *helixHandlerImpl) selectionText() string { return h.cursor.Selection() }
 
 // --- counts ---
 
@@ -514,80 +520,12 @@ func (h *helixHandlerImpl) macroPlaybackActive() bool {
 
 // --- search ---
 
+// search arms the pattern n and N follow with a literal, for the IDE.
 func (h *helixHandlerImpl) search(target string) {
 	if h.config.disableSearch {
 		return
 	}
-	if h.searchDir == moveNone {
-		h.searchDir = moveToNext
-	}
-	h.searchText = target
-	h.cursor.Search(target)
-}
-
-// searchSelection implements * and A-*: the selected text becomes the
-// search pattern, optionally anchored at word boundaries.
-func (h *helixHandlerImpl) searchSelection(detectWordBoundaries bool) bool {
-	target := h.selectionText()
-	if target == "" || h.config.disableSearch {
-		return false
-	}
-	h.searchDir = moveToNext
-	h.searchText = target
-	if detectWordBoundaries && h.cursor.Word() == target {
-		h.cursor.SearchWord(target)
-	} else {
-		h.cursor.Search(target)
-	}
-	if err := h.writeRegister('/', clipboard.Data{Text: target}); err != nil {
-		h.logError(err)
-	}
-	return true
-}
-
-func (h *helixHandlerImpl) handleSearch(ev term.Event) (bool, bool) {
-	if ev.Mod == 0 && ev.Key == term.KeyEnter {
-		target := h.less.SearchText()
-		h.less.SetNormalMode()
-		if target == "" {
-			h.less.SetMessage("")
-		} else {
-			h.less.SetMessage("searching '%s'", target)
-		}
-		h.search(target)
-		if err := h.writeRegister('/', clipboard.Data{Text: target}); err != nil {
-			h.logError(err)
-		}
-		// Confirming the prompt jumps to and selects the first match,
-		// which is what search_impl does on Enter.
-		h.moveToMatch(h.searchDir)
-		return false, true
-	}
-	return h.less.Handle(ev)
-}
-
-func (h *helixHandlerImpl) beginSearch(ev term.Event, dir moveMode) bool {
-	h.searchDir = dir
-	if h.config.disableSearch {
-		return false
-	}
-	_, handled := h.less.Handle(ev)
-	return handled
-}
-
-func reverseDirection(mode moveMode) moveMode {
-	switch mode {
-	case moveToNext:
-		return moveToPrev
-	case moveToPrev:
-		return moveToNext
-	case moveTillNext:
-		return moveTillPrev
-	case moveTillPrev:
-		return moveTillNext
-	default:
-		return moveNone
-	}
+	h.setSearchPattern(regexp.QuoteMeta(target))
 }
 
 // --- matching brace highlight ---
@@ -828,6 +766,12 @@ func (h *helixHandlerImpl) handleNormal(ev term.Event) (quit, handled bool) {
 				handled = h.mergeConsecutiveSelections()
 			case 's':
 				handled = h.splitSelectionOnNewline()
+			case 'K':
+				handled = h.openPrompt(promptRemove, false)
+			case '(':
+				handled = h.rotateSelectionContents(false)
+			case ')':
+				handled = h.rotateSelectionContents(true)
 			default:
 				handled = false
 			}
@@ -916,6 +860,14 @@ func (h *helixHandlerImpl) handleNormal(ev term.Event) (quit, handled bool) {
 			handled = h.rotateSelections(false)
 		case ')':
 			handled = h.rotateSelections(true)
+		case 's':
+			handled = h.openPrompt(promptSelect, false)
+		case 'S':
+			handled = h.openPrompt(promptSplit, false)
+		case 'K':
+			handled = h.openPrompt(promptKeep, false)
+		case '&':
+			handled = h.alignSelections()
 		case 'i':
 			h.insertBeforeSelection()
 		case 'a':
@@ -965,13 +917,13 @@ func (h *helixHandlerImpl) handleNormal(ev term.Event) (quit, handled bool) {
 		case '=':
 			handled = h.formatSelection()
 		case 'n':
-			handled = h.moveToMatch(h.searchDir)
+			handled = h.searchNext(false)
 		case 'N':
-			handled = h.moveToMatch(reverseDirection(h.searchDir))
+			handled = h.searchNext(true)
 		case '/':
-			handled = h.beginSearch(ev, moveToNext)
+			handled = h.openPrompt(promptSearch, false)
 		case '?':
-			handled = h.beginSearch(ev, moveToPrev)
+			handled = h.openPrompt(promptSearch, true)
 		case '*':
 			handled = h.searchSelection(true)
 		case 'Q':
@@ -1300,15 +1252,15 @@ func (h *helixHandlerImpl) handleView(ev term.Event) (quit, handled bool) {
 		case 'k':
 			return false, h.scrollLine(-1)
 		case 'n':
-			return false, h.moveToMatch(h.searchDir)
+			return false, h.searchNext(false)
 		case 'N':
-			return false, h.moveToMatch(reverseDirection(h.searchDir))
+			return false, h.searchNext(true)
 		case '/':
 			stay = false
-			return false, h.beginSearch(ev, moveToNext)
+			return false, h.openPrompt(promptSearch, false)
 		case '?':
 			stay = false
-			return false, h.beginSearch(ev, moveToPrev)
+			return false, h.openPrompt(promptSearch, true)
 		}
 	}
 	return false, false
@@ -1890,71 +1842,6 @@ func (h *helixHandlerImpl) gotoLastLine() bool {
 	}
 	_, ok := h.cursor.MoveToScroll(term.Coordinates{Y: target})
 	return ok
-}
-
-// moveToMatch implements n/N as search_impl does: the scan starts from
-// the far edge of the primary so a match already under the caret is
-// not found again, and the hit replaces the primary or, in select
-// mode, joins the set as a new primary, which is how a search grows a
-// selection per match.
-func (h *helixHandlerImpl) moveToMatch(dir moveMode) bool {
-	return h.jumping(func() bool {
-		h.carryEdits()
-		moved := false
-		for range h.motionCount() {
-			if !h.stepToMatch(dir) {
-				break
-			}
-			moved = true
-		}
-		return moved
-	})
-}
-
-func (h *helixHandlerImpl) stepToMatch(dir moveMode) bool {
-	primary := h.sel.primaryRange()
-	from, to, hadSelection := h.cursor.SelectionRange()
-	h.cursor.Unselect()
-	if hadSelection {
-		if dir == moveToPrev {
-			h.cursor.MoveToScroll(from)
-		} else {
-			last := to
-			if last.X > 0 {
-				last.X--
-			}
-			h.cursor.MoveToScroll(last)
-		}
-	}
-	var ok bool
-	if dir == moveToPrev {
-		ok = h.cursor.MoveToPrevMatch()
-	} else {
-		ok = h.cursor.MoveToNextMatch()
-	}
-	if !ok {
-		h.installRange(primary)
-		return false
-	}
-	h.selectMatchAtCaret()
-	hit := h.readRange().withDirection(primary.backward())
-	if h.extend {
-		h.setSelection(h.sel.with(hit))
-	} else {
-		h.setSelection(h.sel.replace(h.sel.primary, hit))
-	}
-	return true
-}
-
-// selectMatchAtCaret covers the search hit the caret was just moved to.
-func (h *helixHandlerImpl) selectMatchAtCaret() {
-	width := len([]rune(h.searchText))
-	h.cursor.Select()
-	for range max(0, width-1) {
-		if !h.cursor.MoveRightWrap() {
-			break
-		}
-	}
 }
 
 // scrollLine scrolls the viewport and only drags the caret along when it

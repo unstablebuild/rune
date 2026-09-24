@@ -71,6 +71,7 @@ type Less struct {
 	usedSearchBarAttr term.Attributes
 	delEOF            bool
 	cursorOffset      int
+	promptLen         int
 	height            int
 	width             int
 	search            string
@@ -152,24 +153,34 @@ func (l *Less) InitWithScroll(scroll *component.Scroll, cfg LessConfig) {
 // SetNormalMode sets the mode to normal.
 func (l *Less) SetNormalMode() {
 	l.cursorOffset = 1
+	l.promptLen = 1
 	l.searchScrollVirt.C.Buffer().Reset()
 	l.mode = LessNormalMode
 }
 
 // SetSearchMode sets the mode to search mode.
 func (l *Less) SetSearchMode(moveMode LessMoveMode) {
-	buf := l.searchScrollVirt.C.Buffer()
-	buf.Reset()
-
 	switch moveMode {
 	case LessMoveForward:
-		buf.WriteString("/")
+		l.SetPromptMode("/")
 	case LessMoveBackward:
-		buf.WriteString("?")
+		l.SetPromptMode("?")
 	}
-
-	l.mode = LessSearchMode
 	l.moveMode = moveMode
+}
+
+// SetPromptMode enters search mode behind an arbitrary prompt label,
+// for a caller that reads the input back with SearchText and acts on
+// it itself. Enter still runs the less search; intercept it when the
+// input is not a search. The label must be ASCII.
+func (l *Less) SetPromptMode(prompt string) {
+	buf := l.searchScrollVirt.C.Buffer()
+	buf.Reset()
+	buf.WriteString(prompt)
+	l.promptLen = len(prompt)
+	l.cursorOffset = l.promptLen
+	l.mode = LessSearchMode
+	l.moveMode = LessMoveForward
 
 	if l.config.SuperimposeMessage && l.scroll.Attributes != l.usedSearchBarAttr {
 		l.updateSearchBarAttr()
@@ -180,7 +191,7 @@ func (l *Less) SetSearchMode(moveMode LessMoveMode) {
 // SearchText returns the contents of the search buffer.
 func (l *Less) SearchText() string {
 	str := l.searchScrollVirt.C.Buffer().String()
-	bytes := []byte(str)[1:]
+	bytes := []byte(str)[min(l.promptLen, len(str)):]
 	return string(bytes)
 }
 
@@ -276,7 +287,7 @@ func (l *Less) searchHandleEvent(ev term.Event) (bool, bool) {
 
 	switch ev.Key {
 	case term.KeyBackspace:
-		if l.cursorOffset > 1 {
+		if l.cursorOffset > l.promptLen {
 			l.cursorOffset--
 			l.searchScrollVirt.C.Buffer().
 				DeleteCell(term.Coordinates{X: l.cursorOffset, Y: 0})

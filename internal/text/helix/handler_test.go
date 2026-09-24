@@ -1912,7 +1912,9 @@ func TestSearch(t *testing.T) {
 		assert.Equal(t, "foo", sel(t, hx))
 	})
 
-	t.Run("? reverses the meaning of n", func(t *testing.T) {
+	// search_next always walks forward and search_prev backward; unlike
+	// vi, ? does not turn n around.
+	t.Run("? searches backwards and n still walks forward", func(t *testing.T) {
 		hx, _, _ := newHelix(t, "foo\nbar\nfoo", term.Coordinates{Y: 2})
 		send(t, hx, key('?'))
 		require.True(t, hx.IsSearchMode())
@@ -1920,7 +1922,9 @@ func TestSearch(t *testing.T) {
 		send(t, hx, namedKey(term.KeyEnter))
 		require.Equal(t, 0, hx.CursorAtScroll().Y)
 		send(t, hx, key('n'))
-		assert.Equal(t, 2, hx.CursorAtScroll().Y, "n keeps searching backwards")
+		assert.Equal(t, 2, hx.CursorAtScroll().Y)
+		send(t, hx, key('N'))
+		assert.Equal(t, 0, hx.CursorAtScroll().Y)
 	})
 
 	t.Run("* searches the selected word", func(t *testing.T) {
