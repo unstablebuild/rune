@@ -33,6 +33,13 @@ func xy(x, y int) term.Coordinates { return term.Coordinates{X: x, Y: y} }
 // TestChangeSetMapPos pins ChangeSet::map_pos over every arm of the
 // mapping: positions before, at, inside and after an edit, on the same
 // row and on later rows, for inserts, deletes and replaces.
+// replacing describes an edit of [from, to) by text, with end derived
+// by walking text from from. Every cell holds one rune here, which is
+// true of the ASCII the cases build changes from.
+func replacing(from, to term.Coordinates, text string) change {
+	return change{from: from, to: to, end: advance(from, text)}
+}
+
 func TestChangeSetMapPos(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -88,6 +95,26 @@ func TestChangeSetMapPos(t *testing.T) {
 			pos: xy(5, 0), wantBefore: xy(3, 0), wantAfter: xy(3, 0)},
 		{name: "replace: same row after", cs: changeSet{replacing(xy(2, 0), xy(5, 0), "Q")},
 			pos: xy(9, 0), wantBefore: xy(7, 0), wantAfter: xy(7, 0)},
+
+		// replace [2,5) with "QRS", the same size: positions inside keep
+		// their offset, as Assoc::BeforeSticky/AfterSticky have it
+		{name: "same-size replace: inside keeps its offset",
+			cs:  changeSet{replacing(xy(2, 0), xy(5, 0), "QRS")},
+			pos: xy(4, 0), wantBefore: xy(4, 0), wantAfter: xy(4, 0)},
+		{name: "same-size replace: at from sticks to the start",
+			cs:  changeSet{replacing(xy(2, 0), xy(5, 0), "QRS")},
+			pos: xy(2, 0), wantBefore: xy(2, 0), wantAfter: xy(2, 0)},
+		{name: "same-size replace: at to is after it",
+			cs:  changeSet{replacing(xy(2, 0), xy(5, 0), "QRS")},
+			pos: xy(5, 0), wantBefore: xy(5, 0), wantAfter: xy(5, 0)},
+		{name: "same-size replace over a line ending does not stick",
+			cs:  changeSet{replacing(xy(2, 0), xy(0, 1), " ")},
+			pos: xy(2, 0), wantBefore: xy(2, 0), wantAfter: xy(2, 0)},
+
+		// negative and far-away positions are left alone
+		{name: "negative position is before every change",
+			cs:  changeSet{replacing(xy(2, 0), xy(5, 0), "Q")},
+			pos: xy(-1, -1), wantBefore: xy(-1, -1), wantAfter: xy(-1, -1)},
 
 		// replace a whole line span with a longer multi-line text
 		{name: "multi-line replace: later row",

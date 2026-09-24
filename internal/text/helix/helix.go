@@ -38,8 +38,8 @@ import (
 var _ text.Handler = (*Helix)(nil)
 
 // Helix implements a Helix-like modal text editor which satisfies
-// text.Handler. Motions create or extend the single selection owned by
-// the underlying text.Cursor and operators act on that selection.
+// text.Handler. Motions create or extend a set of selections, one of
+// them primary, and operators act on all of them.
 type Helix struct {
 	resource  workspaceapi.URI
 	handler   helixHandler
@@ -66,6 +66,12 @@ type Helix struct {
 	changeList          *changeList
 	pendingChange       term.Coordinates
 	pendingChangeExists bool
+
+	// selAt is the selection set the buffer had at each undo version
+	// it has rested at, which is what Helix's history stores with
+	// every revision so undo and redo bring the selection back with
+	// the text.
+	selAt map[int]selection
 
 	resetting bool
 }
@@ -146,6 +152,7 @@ func (hx *Helix) init(
 	hx.repeatEdits = make([]term.Event, 0)
 	hx.currEdits = make([]term.Event, 0)
 	hx.changeList = newChangeList()
+	hx.selAt = make(map[int]selection)
 	hx.oob = true
 
 	hx.snapshotContent()
@@ -306,8 +313,13 @@ func (hx *Helix) Handle(ev term.Event) (quit, handled bool) {
 		hx.currEdits = append(hx.currEdits, ev)
 	case prevMode != insertMode && nextMode == insertMode:
 		// The entering command (i, a, o, c, ...) is not replayed: `.`
-		// re-inserts at the current selection.
+		// re-inserts at the current selection. The edit it made, if
+		// any, stays in the open undo group: Helix commits history
+		// only once insert mode is left, so c and o undo together
+		// with what was typed after them.
+		edited := hx.currEdited
 		hx.resetEdits()
+		hx.currEdited = edited
 	case prevMode == insertMode && nextMode != insertMode:
 		hx.currEdits = append(hx.currEdits, ev)
 		hx.copyRepeat()
@@ -533,7 +545,11 @@ func (hx *Helix) resetToSnapshot(op func() (bool, term.Coordinates)) bool {
 	hx.resetting = true
 	ok, at := op()
 	if ok {
-		hx.handler.setCursorAtScroll(at)
+		if sel, found := hx.selAt[hx.buf.Version()]; found {
+			hx.handler.restoreSelection(sel)
+		} else {
+			hx.handler.setCursorAtScroll(at)
+		}
 	}
 	hx.resetting = false
 	return ok
@@ -546,6 +562,7 @@ func (hx *Helix) setStatusBar(bar statusBar) {
 func (hx *Helix) snapshotContent() {
 	hx.commitChange()
 	hx.buf.GroupUndo()
+	hx.selAt[hx.buf.Version()] = hx.handler.selectionAfter()
 }
 
 type cellSubscriber = Helix
@@ -556,10 +573,28 @@ func (hx *cellSubscriber) OnWillEdit(
 ) {
 	if (!hx.oob && hx.oobEdited) || (!hx.currEdited && !hx.resetting) {
 		hx.buf.MarkStartUndo()
+		if !hx.resetting {
+			hx.rememberSelectionBefore()
+		}
 	}
 	if !hx.resetting {
 		hx.beginChange(from)
 	}
+}
+
+// rememberSelectionBefore stores the selection the new undo group
+// starts from. The undoer has already counted this edit, so the
+// version the buffer rests at before it is one less; every version
+// beyond it is now unreachable, as a fresh edit discards the redo
+// timeline.
+func (hx *Helix) rememberSelectionBefore() {
+	version := hx.buf.Version() - 1
+	for v := range hx.selAt {
+		if v > version {
+			delete(hx.selAt, v)
+		}
+	}
+	hx.selAt[version] = hx.handler.selectionBefore()
 }
 
 // OnDidEdit satisfies cell.Subscriber.

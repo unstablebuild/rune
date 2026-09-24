@@ -216,13 +216,23 @@ An operator acts on the current selection.
 | `>` / `<` | Indent / unindent |
 | `=` | Reindent to the syntax target |
 | `C-c` | Toggle line comments |
-| `C-a` / `C-x` | Increment / decrement the number |
+| `C-a` / `C-x` | Increment / decrement the selected number or date |
 | `u` / `U` | Undo / redo |
 | `A-u` / `A-U` | Undo / redo, taking a count |
 
 `c` on a whole-line selection opens a fresh blank line instead of pulling the
 next line up, so `x c` leaves you a line to type on — the same behaviour as
 Helix's `only_whole_lines` branch.
+
+`C-a` and `C-x` work on exactly the text under the selection, as they do in
+Helix: a cursor on one digit of `123` changes that digit alone, so select the
+whole number first (`m i w`). Decimal, `0x`, `0o` and `0b` numbers keep their
+zero padding and `_` separators, and a date or time such as `2021-12-31`,
+`23:59` or `Nov 24, 2021` moves by a day or a minute.
+
+`J` keeps the selections where they were, dropping the indentation of the
+joined line and, when the file's language has line comments, the comment
+leader the first line already carries. `A-J` selects the separators instead.
 
 ### Surround
 

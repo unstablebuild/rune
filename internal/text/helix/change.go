@@ -45,13 +45,6 @@ type change struct {
 	end      term.Coordinates
 }
 
-// replacing describes an edit of [from, to) by text, with end derived
-// by walking text from from. Every cell holds one rune here, which is
-// true of the ASCII the callers build changes from.
-func replacing(from, to term.Coordinates, text string) change {
-	return change{from: from, to: to, end: advance(from, text)}
-}
-
 // advance returns where s ends when written at pos.
 func advance(pos term.Coordinates, s string) term.Coordinates {
 	for _, ch := range s {
@@ -66,8 +59,10 @@ func advance(pos term.Coordinates, s string) term.Coordinates {
 
 // mapPos moves pos through the change. Inside the replaced span a
 // position collapses to the start (before) or to the end of the new
-// text (after); the start of a replaced span maps to itself for both,
-// which is what keeps a range's from on the text that replaced it.
+// text (after), unless the new text is as long as the old on the same
+// row, when it keeps its offset; the start of a replaced span maps to
+// itself for both, which is what keeps a range's from on the text
+// that replaced it.
 func (c change) mapPos(pos term.Coordinates, a assoc) term.Coordinates {
 	if coordinatesBefore(pos, c.from) {
 		return pos
@@ -83,6 +78,11 @@ func (c change) mapPos(pos term.Coordinates, a assoc) term.Coordinates {
 	case pos == c.from && deleted && inserted:
 		return c.from
 	case coordinatesBefore(pos, c.to):
+		// A replacement of the same size keeps a position's offset
+		// into it, as Assoc::BeforeSticky and AfterSticky do.
+		if c.to.Y == c.from.Y && c.end.Y == c.from.Y && c.to.X-c.from.X == c.end.X-c.from.X && pos.Y == c.from.Y {
+			return pos
+		}
 		if a == assocBefore {
 			return c.from
 		}

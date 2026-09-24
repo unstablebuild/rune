@@ -201,10 +201,12 @@ func TestSetCursorAtScroll(t *testing.T) {
 			at: term.Coordinates{Y: -5}, want: term.Coordinates{}},
 		{name: "clamps a row past the end", content: "abc\ndef",
 			at: term.Coordinates{Y: 99}, want: term.Coordinates{Y: 1}},
+		// The caret shows a position past the last cell on that cell,
+		// as it does for any selection ending on a line ending.
 		{name: "clamps a column past the end", content: "abc",
-			at: term.Coordinates{X: 99}, want: term.Coordinates{X: 3}},
+			at: term.Coordinates{X: 99}, want: term.Coordinates{X: 2}},
 		{name: "clamps both", content: "ab\ncd",
-			at: term.Coordinates{X: 99, Y: 99}, want: term.Coordinates{X: 2, Y: 1}},
+			at: term.Coordinates{X: 99, Y: 99}, want: term.Coordinates{X: 1, Y: 1}},
 		{name: "an empty line pins column zero", content: "a\n\nb",
 			at: term.Coordinates{X: 4, Y: 1}, want: term.Coordinates{Y: 1}},
 	} {

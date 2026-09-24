@@ -17,9 +17,12 @@
 package helix
 
 import (
+	"context"
+	"strings"
 	"unicode"
 
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
+	"github.com/unstablebuild/rune-go-sdk/clipboard"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/cell"
 	"unstable.build/rune/internal/text"
@@ -47,7 +50,11 @@ import (
 // ranges are carried through any edit made since the last sync. That
 // is what turns a pinned selection (a text object, select all, a
 // syntax expansion) back into an anchor/head pair the next motion can
-// extend.
+// extend. A cursor that still reads as it did when the primary was
+// installed has not moved, and the primary stays as it is: the cursor
+// cannot hold every range exactly, a range over a line ending being
+// shown on the last cell of its row, and that lossy image must not
+// replace the range it stands for.
 func (h *helixHandlerImpl) adoptCursor() {
 	h.carryEdits()
 	r := h.readRange()
@@ -56,7 +63,7 @@ func (h *helixHandlerImpl) adoptCursor() {
 		return
 	}
 	p := h.sel.primaryRange()
-	if r.same(p) {
+	if r.same(p) || r.same(h.mirror) {
 		h.syncPrimary()
 		return
 	}
@@ -70,6 +77,36 @@ func (h *helixHandlerImpl) adoptCursor() {
 func (h *helixHandlerImpl) resetSelection() {
 	h.carryEdits()
 	h.setSelection(single(h.readRange()))
+}
+
+// selectionBefore is the set an edit is about to change. It is read
+// mid-operation, so the recorder is left alone: whatever it holds is
+// the operation's own doing and belongs to the ranges still being
+// worked on.
+func (h *helixHandlerImpl) selectionBefore() selection {
+	return h.sel.clone()
+}
+
+// selectionAfter is the set once an undo group is committed, with any
+// edit made since the last event carried through.
+func (h *helixHandlerImpl) selectionAfter() selection {
+	if h.carryEdits() {
+		h.syncPrimary()
+	}
+	return h.sel.clone()
+}
+
+// restoreSelection installs a set stored with an undo revision. The
+// edits that brought the text back are dropped from the recorder: the
+// set already describes the restored text.
+func (h *helixHandlerImpl) restoreSelection(s selection) {
+	h.rec.take()
+	buf := h.buf()
+	h.setSelection(s.transform(func(r rng) rng {
+		r.anchor = clampInsert(buf, r.anchor)
+		r.head = clampInsert(buf, r.head)
+		return r
+	}))
 }
 
 // carryEdits maps the selection set and the jumplist through every
@@ -101,9 +138,40 @@ func (h *helixHandlerImpl) desiredCol(r rng) int {
 }
 
 // setSelection replaces the selection set and installs its primary.
+// The set is clamped into the document first, so a caller handing over
+// coordinates the buffer no longer has, or never had, cannot leave a
+// range the cursor cannot show or the text under it cannot be read.
+// An empty set, or a primary that points at no range, falls back to
+// what the cursor holds, which is the one range Helix never lets go
+// of.
 func (h *helixHandlerImpl) setSelection(s selection) {
-	h.sel = h.ensureInvariants(s.normalized())
+	buf := h.buf()
+	s.primary = max(0, min(s.primary, len(s.ranges)-1))
+	s = s.transform(func(r rng) rng {
+		r.anchor = clampDoc(buf, r.anchor)
+		r.head = clampDoc(buf, r.head)
+		return r
+	})
+	if len(s.ranges) == 0 {
+		s = single(h.readRange())
+	}
+	h.sel = h.ensureInvariants(s)
 	h.syncPrimary()
+}
+
+// clampDoc moves a position onto the nearest one the document has:
+// a row it owns with a column no further than its line ending, or the
+// position past the final line ending.
+func clampDoc(buf *cell.Buffer, pos term.Coordinates) term.Coordinates {
+	rows := buf.Rows()
+	switch {
+	case rows == 0 || pos.Y < 0:
+		return term.Coordinates{}
+	case pos.Y >= rows:
+		return docEnd(buf)
+	}
+	pos.X = max(0, min(pos.X, buf.Columns(pos.Y)))
+	return pos
 }
 
 // transformSelection is Selection::transform followed by
@@ -115,30 +183,36 @@ func (h *helixHandlerImpl) transformSelection(fn func(rng) rng) bool {
 }
 
 // ensureInvariants is Selection::ensure_invariants: outside insert mode
-// every range covers at least one cell. A caret on a line ending stays
-// a point: the cell model has no cell there to widen onto, so the
-// one-cell selection the cursor shows on an empty row covers no text.
+// every range covers at least one character, which for a point on a
+// line ending is the line ending itself, as Range::min_width_1 has it.
+// The buffer stores no line ending after its last row, so a point
+// there, like one at the end of the document, has nothing to widen
+// onto and stays a point, as it does in Helix on a file without a
+// final newline.
 func (h *helixHandlerImpl) ensureInvariants(s selection) selection {
 	if h.currMode == insertMode {
 		return s
 	}
 	buf := h.buf()
+	rows := buf.Rows()
 	return s.transform(func(r rng) rng {
 		if !r.isPoint() {
 			return r
 		}
-		if next, ok := nextPos(buf, r.head); ok && next.Y == r.head.Y {
+		if next, ok := nextPos(buf, r.head); ok && (next.Y == r.head.Y || next.Y < rows) {
 			r.head = next
 		}
 		return r
 	})
 }
 
-// syncPrimary installs the primary range into the cursor and refreshes
-// the highlight of the other ranges.
+// syncPrimary installs the primary range into the cursor, remembers
+// what it reads back as, and refreshes the highlight of the other
+// ranges.
 func (h *helixHandlerImpl) syncPrimary() {
 	before := h.cursor.CursorAtScroll()
 	h.installRange(h.sel.primaryRange())
+	h.mirror = h.readRange()
 	if h.cursor.CursorAtScroll() != before {
 		h.anchor = h.cursorAtScroll()
 	}
@@ -275,7 +349,7 @@ func (h *helixHandlerImpl) installRange(r rng) {
 		h.cursor.MoveToScroll(caret)
 		return
 	case r.isPoint():
-		anchorCell = clampInsert(buf, head)
+		anchorCell = clampCell(buf, head)
 		caret = anchorCell
 	case lineShaped(r):
 		mode = text.LineSelection
@@ -360,20 +434,18 @@ func (h *helixHandlerImpl) clampCursor() {
 // walks from the last range in the document to the first: an edit can
 // only shift the text after it, so every range still to be visited
 // stays valid and only the results already collected need carrying
-// through the recorded changes. With one range the cursor is the
-// primary already and op runs as it always has.
+// through the recorded changes. A range is kept as it was when the op
+// neither moved the cursor nor edited, so a range the cursor can only
+// approximate survives an op that did nothing to it.
 func (h *helixHandlerImpl) forEachRange(op func() bool) bool {
 	h.carryEdits()
-	if h.sel.len() < 2 {
-		return op()
-	}
 	src := h.sel
-	buf := h.buf()
 	out := selection{ranges: make([]rng, src.len()), primary: src.primary}
 	done := false
 	for i := src.len() - 1; i >= 0; i-- {
 		r := src.ranges[i]
 		h.installRange(r)
+		mirror := h.readRange()
 		h.anchor = h.cursorAtScroll()
 		if r.col > h.anchor.X {
 			h.anchor.X = r.col
@@ -381,13 +453,11 @@ func (h *helixHandlerImpl) forEachRange(op func() bool) bool {
 		if op() {
 			done = true
 		}
-		landed := h.cursor.CursorAtScroll()
-		h.clampCursor()
-		next := h.readRange()
-		if c := next.cursor(buf); landed.Y == c.Y && landed.X > c.X {
-			next.col = landed.X
-		}
+		next := h.settleRange()
 		cs := h.rec.take()
+		if len(cs) == 0 && next.same(mirror) {
+			next = r
+		}
 		for j := i + 1; j < src.len(); j++ {
 			out.ranges[j] = out.ranges[j].mapThrough(cs)
 		}
@@ -395,6 +465,107 @@ func (h *helixHandlerImpl) forEachRange(op func() bool) bool {
 	}
 	h.setSelection(out)
 	return done
+}
+
+// settleRange clamps the cursor the way the end of the event would and
+// reads the range back, remembering the column the caret overshot to
+// so the next vertical motion can return to it.
+func (h *helixHandlerImpl) settleRange() rng {
+	landed := h.cursor.CursorAtScroll()
+	h.clampCursor()
+	next := h.readRange()
+	if c := next.cursor(h.buf()); landed.Y == c.Y && landed.X > c.X {
+		next.col = landed.X
+	}
+	return next
+}
+
+// edit is one replacement an operator wants made: [from, to) becomes
+// text.
+type edit struct {
+	from, to term.Coordinates
+	text     string
+}
+
+// applyEdits is Transaction::change_by_selection for operators whose
+// edits are plain data. edits must be in document order and must not
+// overlap; they are applied from the last to the first, so none of
+// them shifts the coordinates of one still to be applied. It returns
+// the span every replacement occupies afterwards and the recorded
+// changes, for the caller to carry the ranges it keeps through. The
+// registers are left alone: no operator built on this yanks.
+func (h *helixHandlerImpl) applyEdits(edits []edit) ([]rng, changeSet) {
+	h.carryEdits()
+	h.suppressCopyDelete = true
+	defer func() { h.suppressCopyDelete = false }()
+	buf := h.buf()
+	ctx := context.Background()
+	spans := make([]rng, len(edits))
+	var all changeSet
+	for i := len(edits) - 1; i >= 0; i-- {
+		e := edits[i]
+		buf.Edit(ctx, clampInsert(buf, e.from), clampInsert(buf, e.to), e.text)
+		cs := h.rec.take()
+		for j := i + 1; j < len(edits); j++ {
+			spans[j] = rng{
+				anchor: cs.mapPos(spans[j].anchor, assocAfter),
+				head:   cs.mapPos(spans[j].head, assocAfter),
+			}
+		}
+		spans[i] = rng{anchor: e.from, head: e.from}
+		if n := len(cs); n > 0 {
+			spans[i] = rng{anchor: cs[0].from, head: cs[n-1].end}
+		}
+		all = append(all, cs...)
+	}
+	return spans, all
+}
+
+// fragmentsData is the register value for the whole selection set:
+// the text under every range, linewise when the primary is.
+func (h *helixHandlerImpl) fragmentsData() clipboard.Data {
+	mode := text.StandardSelection
+	if lineShaped(h.sel.primaryRange()) {
+		mode = text.LineSelection
+	}
+	return registerData(mode, h.sel.fragments(h.buf()))
+}
+
+// deleteEdits is delete_by_selection: one deletion per range that
+// covers anything. A range over the empty row past the final line
+// ending has no text of its own and takes the line ending before it,
+// which is the row the cursor was really on.
+func (h *helixHandlerImpl) deleteEdits() []edit {
+	buf := h.buf()
+	rows := buf.Rows()
+	edits := make([]edit, 0, h.sel.len())
+	for _, r := range h.sel.ranges {
+		if r.isPoint() {
+			continue
+		}
+		from, to := r.from(), r.to()
+		if to == docEnd(buf) && from.Y == rows-1 && from.X == 0 && rows > 1 && buf.Columns(from.Y) == 0 {
+			from = term.Coordinates{X: buf.Columns(from.Y - 1), Y: from.Y - 1}
+		}
+		edits = append(edits, edit{from: from, to: to})
+	}
+	return edits
+}
+
+// registerValues reads a register as one value per range, repeating
+// the last value for any range beyond what the register holds, which
+// is how paste_impl and replace_selections_with_register spread a
+// register over the selection.
+func (h *helixHandlerImpl) registerValues(data clipboard.Data, count int) ([]string, text.SelectMode) {
+	fragments, mode := registerFragments(data)
+	if len(fragments) == 0 {
+		fragments = []string{data.Text}
+	}
+	values := make([]string, h.sel.len())
+	for i := range values {
+		values[i] = strings.Repeat(fragments[min(i, len(fragments)-1)], max(1, count))
+	}
+	return values, mode
 }
 
 // --- selection commands ---

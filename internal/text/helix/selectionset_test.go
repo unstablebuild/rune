@@ -18,12 +18,15 @@ package helix
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
+	"github.com/unstablebuild/rune-go-sdk/clipboard"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"unstable.build/rune/internal/cell"
 	"unstable.build/rune/internal/text"
 )
 
@@ -84,8 +87,55 @@ func runSelCases(t *testing.T, cases []selCase) {
 			if tc.wantHandled != nil {
 				assert.Equal(t, *tc.wantHandled, handled, "handled")
 			}
+			assertSelectionInvariants(t, hx)
 		})
 	}
+}
+
+// assertSelectionInvariants checks what every command must leave
+// behind, whatever it did: at least one range, a primary that exists,
+// ranges sorted and disjoint, every end inside the document, and the
+// cursor showing the primary.
+func assertSelectionInvariants(t *testing.T, hx *Helix) {
+	t.Helper()
+	h := impl(hx)
+	buf := h.buf()
+	s := h.sel
+	require.NotEmpty(t, s.ranges, "the selection set is never empty")
+	require.True(t, s.primary >= 0 && s.primary < len(s.ranges),
+		"primary %d of %d ranges", s.primary, len(s.ranges))
+	rows := buf.Rows()
+	inDoc := func(pos term.Coordinates) bool {
+		if pos.Y < 0 || pos.X < 0 {
+			return false
+		}
+		if pos.Y == rows {
+			return pos.X == 0
+		}
+		return pos.Y < rows && pos.X <= buf.Columns(pos.Y)
+	}
+	for i, r := range s.ranges {
+		assert.True(t, inDoc(r.anchor), "range %d anchor %v is outside the document", i, r.anchor)
+		assert.True(t, inDoc(r.head), "range %d head %v is outside the document", i, r.head)
+		if i == 0 {
+			continue
+		}
+		prev := s.ranges[i-1]
+		assert.False(t, coordinatesBefore(r.from(), prev.to()),
+			"range %d %v overlaps range %d %v", i, r, i-1, prev)
+		assert.False(t, r.from() == prev.from(), "ranges %d and %d start on the same cell", i-1, i)
+	}
+	if rows == 0 {
+		return
+	}
+	p := s.primaryRange()
+	if hx.IsEditMode() {
+		assert.Equal(t, clampInsert(buf, p.cursor(buf)), hx.CursorAtScroll(),
+			"the caret sits on the primary's cursor")
+		return
+	}
+	assert.Equal(t, clampCell(buf, p.cursor(buf)), hx.CursorAtScroll(),
+		"the caret sits on the primary's cursor")
 }
 
 // TestCopySelectionOnLine pins copy_selection_on_line: C and A-C copy
@@ -263,7 +313,7 @@ func TestMotionsOverAllRanges(t *testing.T) {
 		{name: "ranges that land on the same cell merge", content: "ab\nab", evs: keys("Cll"),
 			wantSels: []string{"b", "b"}, wantPrimary: 1, wantAt: xy(1, 1)},
 		{name: "ranges pushed into each other merge", content: "abc\ndef", evs: keys("Cxx"),
-			wantSels: []string{"abc\ndef"}, wantAt: xy(2, 1)},
+			wantSels: []string{"abc\ndef\n"}, wantAt: xy(2, 1)},
 	})
 }
 
@@ -352,6 +402,327 @@ func TestSecondaryCaretIsDim(t *testing.T) {
 	assert.NotZero(t, ghost.Attrs&term.AttrReverse)
 }
 
+// opSelCase drives an operator over a selection set and checks the
+// buffer as well as the set it leaves behind.
+type opSelCase struct {
+	name        string
+	content     string
+	at          term.Coordinates
+	sel         *selection
+	seed        string
+	seedData    *clipboard.Data
+	regs        map[rune]clipboard.Data
+	opts        []Option
+	setup       func(t *testing.T, hx *Helix, buf *cell.Buffer)
+	evs         []term.Event
+	want        string
+	wantSels    []string
+	wantPrimary int
+	wantAt      term.Coordinates
+	wantInsert  bool
+	wantSelect  bool
+	wantHandled *bool
+	wantRegs    map[rune]string
+	wantFrags   map[rune][]string
+	wantMsg     string
+}
+
+func runOpSelCases(t *testing.T, cases []opSelCase) {
+	t.Helper()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			hx, buf, clip := newHelix(t, tc.content, tc.at)
+			if tc.seed != "" {
+				seedClipboard(t, clip, tc.seed, text.StandardSelection)
+			}
+			if tc.seedData != nil {
+				require.NoError(t, clip.Copy(clipboard.DefaultRegisterID, *tc.seedData))
+			}
+			for name, data := range tc.regs {
+				require.NoError(t, clip.Copy(registerNameToID(name), data))
+			}
+			if tc.setup != nil {
+				tc.setup(t, hx, buf)
+			}
+			if tc.sel != nil {
+				impl(hx).setSelection(*tc.sel)
+			}
+			var handled bool
+			for _, ev := range tc.evs {
+				_, handled = hx.Handle(ev)
+			}
+			assert.Equal(t, tc.want, buf.String(), "buffer")
+			assert.Equal(t, tc.wantSels, sels(hx), "fragments")
+			assert.Equal(t, tc.wantPrimary, primaryIdx(hx), "primary index")
+			assert.Equal(t, tc.wantAt, hx.CursorAtScroll(), "caret")
+			assert.Equal(t, tc.wantInsert, hx.IsEditMode(), "insert mode")
+			assert.Equal(t, tc.wantSelect, hx.IsSelectMode(), "select mode")
+			if tc.wantHandled != nil {
+				assert.Equal(t, *tc.wantHandled, handled, "handled")
+			}
+			for name, want := range tc.wantRegs {
+				data, err := clip.Paste(registerNameToID(name))
+				require.NoError(t, err)
+				assert.Equal(t, want, data.Text, "register %q", string(name))
+			}
+			for name, want := range tc.wantFrags {
+				data, err := clip.Paste(registerNameToID(name))
+				require.NoError(t, err)
+				frags, _ := registerFragments(data)
+				assert.Equal(t, want, frags, "fragments of register %q", string(name))
+			}
+			if tc.wantMsg != "" {
+				hx.Resize(80, 8)
+				w := term.NewStringWriter(80, 8)
+				hx.Draw(w)
+				require.NoError(t, w.Flush())
+				assert.Contains(t, w.String(), tc.wantMsg, "message")
+			}
+			assertSelectionInvariants(t, hx)
+		})
+	}
+}
+
+func selOf(primary int, ranges ...rng) *selection {
+	return &selection{ranges: ranges, primary: primary}
+}
+
+// TestOperatorsOverAllRanges pins the editing operators acting on every
+// range: same-row ranges exercise the column shift of the mapping and
+// cross-row ranges the row shift.
+func TestOperatorsOverAllRanges(t *testing.T) {
+	const grid = "abc\ndef"
+	ctrl := func(ch rune) term.Event { return modKey(term.ModCtrl, ch) }
+	sameRow := selOf(1, fwd(1, 0, 2, 0), fwd(4, 0, 5, 0))
+	runOpSelCases(t, []opSelCase{
+		{name: "d on one row", content: "abcdef", sel: sameRow, evs: keys("d"),
+			want: "acdf", wantSels: []string{"c", "f"}, wantPrimary: 1, wantAt: xy(3, 0)},
+		{name: "d across rows", content: grid, at: xy(1, 0), evs: keys("Cd"),
+			want: "ac\ndf", wantSels: []string{"c", "f"}, wantPrimary: 1, wantAt: xy(1, 1)},
+		{name: "d on whole lines", content: "a\nb\nc\nd", evs: keys("Cxd"),
+			want: "c\nd", wantSels: []string{"c"}, wantAt: xy(0, 0)},
+		{name: "A-d deletes every range without yanking", content: grid, at: xy(1, 0),
+			evs:  cat(keys("C"), altKeys("d")),
+			want: "ac\ndf", wantSels: []string{"c", "f"}, wantPrimary: 1, wantAt: xy(1, 1)},
+		{name: "c deletes every range and enters insert", content: grid, at: xy(1, 0),
+			evs: keys("Cc"), want: "ac\ndf", wantSels: []string{"", ""}, wantPrimary: 1,
+			wantAt: xy(1, 1), wantInsert: true},
+		{name: "c on whole lines opens one line for the merged ranges", content: "a\nb\nc",
+			evs: keys("Cxc"), want: "\nc", wantSels: []string{""}, wantAt: xy(0, 0), wantInsert: true},
+		{name: "p pastes the same text after every range", content: grid, at: xy(1, 0),
+			seed: "X", evs: keys("Cp"),
+			want: "abXc\ndeXf", wantSels: []string{"X", "X"}, wantPrimary: 1, wantAt: xy(2, 1)},
+		{name: "P pastes before every range", content: grid, at: xy(1, 0), seed: "X",
+			evs:  keys("CP"),
+			want: "aXbc\ndXef", wantSels: []string{"X", "X"}, wantPrimary: 1, wantAt: xy(1, 1)},
+		{name: "yank then paste pairs fragments with ranges", content: grid, at: xy(1, 0),
+			evs:  keys("Cyp"),
+			want: "abbc\ndeef", wantSels: []string{"b", "e"}, wantPrimary: 1, wantAt: xy(2, 1)},
+		{name: "paste repeats the last fragment for extra ranges", content: "abc\ndef\nghi",
+			at: xy(1, 0), evs: keys("CyCp"),
+			want: "abbc\ndeef\nghei", wantSels: []string{"b", "e", "e"}, wantPrimary: 2, wantAt: xy(2, 2)},
+		{name: "counted p repeats every fragment", content: grid, at: xy(1, 0), evs: keys("Cy2p"),
+			want: "abbbc\ndeeef", wantSels: []string{"bb", "ee"}, wantPrimary: 1, wantAt: xy(3, 1)},
+		{name: "linewise paste lands under every range", content: "a\nb", evs: keys("xyCp"),
+			want: "a\na\nb\na", wantSels: []string{"a\n", "a\n"}, wantPrimary: 1, wantAt: xy(0, 3)},
+		{name: "R replaces every range with its fragment", content: grid, at: xy(1, 0),
+			evs:  keys("CylR"),
+			want: "abb\ndee", wantSels: []string{"b", "e"}, wantPrimary: 1, wantAt: xy(2, 1)},
+		{name: "R spreads a plain register over every range", content: grid, at: xy(1, 0),
+			seed: "XY", evs: keys("CR"),
+			want: "aXYc\ndXYf", wantSels: []string{"XY", "XY"}, wantPrimary: 1, wantAt: xy(2, 1)},
+		{name: "r rewrites every range", content: grid, at: xy(1, 0), evs: keys("Crz"),
+			want: "azc\ndzf", wantSels: []string{"z", "z"}, wantPrimary: 1, wantAt: xy(1, 1)},
+		{name: "r keeps line endings", content: "ab\ncd", evs: keys("Cvlr-"),
+			want: "--\n--", wantSels: []string{"--", "--"}, wantPrimary: 1, wantAt: xy(1, 1)},
+		{name: "~ toggles every range", content: grid, at: xy(1, 0), evs: keys("C~"),
+			want: "aBc\ndEf", wantSels: []string{"B", "E"}, wantPrimary: 1, wantAt: xy(1, 1)},
+		{name: "backtick lowercases every range", content: "ABC\nDEF", at: xy(1, 0), evs: keys("C`"),
+			want: "AbC\nDeF", wantSels: []string{"b", "e"}, wantPrimary: 1, wantAt: xy(1, 1)},
+		{name: "A-backtick uppercases every range", content: grid, at: xy(1, 0),
+			evs:  cat(keys("C"), altKeys("`")),
+			want: "aBc\ndEf", wantSels: []string{"B", "E"}, wantPrimary: 1, wantAt: xy(1, 1)},
+		{name: "J joins after every range and keeps them", content: "a\nb\nc\nd", evs: keys("CJ"),
+			want: "a b c\nd", wantSels: []string{"a", "b"}, wantPrimary: 1, wantAt: xy(2, 0)},
+		{name: "A-J selects every inserted space", content: "a\nb\nc\nd",
+			evs:  cat(keys("C"), altKeys("J")),
+			want: "a b c\nd", wantSels: []string{" ", " "}, wantAt: xy(1, 0)},
+		{name: "> indents every line once and carries the ranges", content: "a\nb", evs: keys("C>"),
+			want: "  a\n  b", wantSels: []string{"a", "b"}, wantPrimary: 1, wantAt: xy(2, 1)},
+		{name: "> on two ranges of one line indents it once", content: "ab",
+			sel: selOf(0, fwd(0, 0, 1, 0), fwd(1, 0, 2, 0)), evs: keys(">"),
+			want: "  ab", wantSels: []string{"a", "b"}, wantAt: xy(2, 0)},
+		{name: "< unindents every line", content: "  a\n  b", evs: keys("C<"),
+			want: "a\nb", wantSels: []string{"a", "b"}, wantPrimary: 1, wantAt: xy(0, 1)},
+		{name: "o opens a line under every range", content: "a\nb", evs: keys("Co"),
+			want: "a\n\nb\n", wantSels: []string{"", ""}, wantPrimary: 1, wantAt: xy(0, 3), wantInsert: true},
+		{name: "O opens a line above every range", content: "a\nb", evs: keys("CO"),
+			want: "\na\n\nb", wantSels: []string{"", ""}, wantPrimary: 1, wantAt: xy(0, 2), wantInsert: true},
+		{name: "counted o puts a cursor on every new line", content: "a", evs: keys("3o"),
+			want: "a\n\n\n", wantSels: []string{"", "", ""}, wantAt: xy(0, 1), wantInsert: true},
+		{name: "]<space> adds a line under every range", content: "a\nb",
+			evs:  cat(keys("C]"), []term.Event{namedKey(term.KeySpace)}),
+			want: "a\n\nb\n", wantSels: []string{"a", "b"}, wantPrimary: 1, wantAt: xy(0, 2)},
+		{name: "[<space> adds a line above every range", content: "a\nb",
+			evs:  cat(keys("C["), []term.Event{namedKey(term.KeySpace)}),
+			want: "\na\n\nb", wantSels: []string{"a", "b"}, wantPrimary: 1, wantAt: xy(0, 3)},
+		{name: "ms wraps every range", content: "ab\ncd", evs: keys("Cms("),
+			want: "(a)b\n(c)d", wantSels: []string{"(a)", "(c)"}, wantPrimary: 1, wantAt: xy(2, 1)},
+		{name: "md unwraps every range", content: "(a)\n(b)", at: xy(1, 0), evs: keys("Cmd("),
+			want: "a\nb", wantSels: []string{"a", "b"}, wantPrimary: 1, wantAt: xy(0, 1)},
+		{name: "md on two ranges in one pair refuses", content: "(ab)",
+			sel: selOf(0, fwd(1, 0, 2, 0), fwd(2, 0, 3, 0)), evs: keys("md("),
+			want: "(ab)", wantSels: []string{"a", "b"}, wantAt: xy(1, 0), wantHandled: new(false)},
+		{name: "mr swaps the pair around every range", content: "(a)\n(b)", at: xy(1, 0),
+			evs:  keys("Cmr(["),
+			want: "[a]\n[b]", wantSels: []string{"a", "b"}, wantPrimary: 1, wantAt: xy(1, 1)},
+		{name: "md with a range lacking a pair does nothing", content: "(a)\nb", at: xy(1, 0),
+			evs: keys("Cmd("), want: "(a)\nb", wantSels: []string{"a", ""}, wantPrimary: 1, wantAt: xy(0, 1)},
+		{name: "C-a increments every range", content: "1\n1", evs: []term.Event{key('C'), ctrl('a')},
+			want: "2\n2", wantSels: []string{"2", "2"}, wantPrimary: 1, wantAt: xy(0, 1)},
+		{name: "the # register makes a sequence", content: "1\n1\n1",
+			evs:  []term.Event{key('C'), key('C'), key('"'), key('#'), ctrl('a')},
+			want: "2\n3\n4", wantSels: []string{"2", "3", "4"}, wantPrimary: 2, wantAt: xy(0, 2)},
+		{name: "the # register counts down too", content: "5\n5",
+			evs:  []term.Event{key('C'), key('"'), key('#'), ctrl('x')},
+			want: "4\n3", wantSels: []string{"4", "3"}, wantPrimary: 1, wantAt: xy(0, 1)},
+		{name: "a counted # increment starts from the count", content: "1\n1",
+			evs:  []term.Event{key('C'), key('"'), key('#'), key('3'), ctrl('a')},
+			want: "4\n5", wantSels: []string{"4", "5"}, wantPrimary: 1, wantAt: xy(0, 1)},
+		{name: "ranges without a number are carried along", content: "1 x\n1 x",
+			sel: selOf(1, fwd(0, 0, 1, 0), fwd(2, 0, 3, 0)), evs: []term.Event{key('9'), ctrl('a')},
+			want: "10 x\n1 x", wantSels: []string{"10", "x"}, wantPrimary: 1, wantAt: xy(3, 0)},
+	})
+}
+
+// TestRegisterFragments pins what a yank or delete over several ranges
+// stores, and how a register written elsewhere reads back.
+func TestRegisterFragments(t *testing.T) {
+	t.Run("y stores one fragment per range and the joined text", func(t *testing.T) {
+		hx, _, clip := newHelix(t, "abc\ndef", term.Coordinates{X: 1})
+		send(t, hx, keys("Cy")...)
+		data, err := clip.Paste(clipboard.DefaultRegisterID)
+		require.NoError(t, err)
+		assert.Equal(t, "b\ne", data.Text)
+		assert.Equal(t, fragmentsMetadata{Mode: text.StandardSelection, Fragments: []string{"b", "e"}}, data.Metadata)
+		data, err = clip.Paste(registerNameToID('0'))
+		require.NoError(t, err)
+		assert.Equal(t, "b\ne", data.Text)
+	})
+
+	t.Run("d stores the fragments once for the batch", func(t *testing.T) {
+		hx, _, clip := newHelix(t, "abc\ndef", term.Coordinates{X: 1})
+		send(t, hx, keys("Cd")...)
+		data, err := clip.Paste(clipboard.DefaultRegisterID)
+		require.NoError(t, err)
+		assert.Equal(t, "b\ne", data.Text)
+		assert.Equal(t, []string{"b", "e"}, data.Metadata.(fragmentsMetadata).Fragments)
+		data, err = clip.Paste(registerNameToID('-'))
+		require.NoError(t, err)
+		assert.Equal(t, "b\ne", data.Text)
+	})
+
+	t.Run("a single range keeps the plain select mode metadata", func(t *testing.T) {
+		hx, _, clip := newHelix(t, "abc\ndef", term.Coordinates{})
+		send(t, hx, keys("xy")...)
+		data, err := clip.Paste(clipboard.DefaultRegisterID)
+		require.NoError(t, err)
+		assert.Equal(t, "abc\n", data.Text)
+		assert.Equal(t, text.LineSelection, data.Metadata)
+	})
+
+	t.Run("the black hole register drops every fragment", func(t *testing.T) {
+		hx, _, clip := newHelix(t, "abc\ndef", term.Coordinates{X: 1})
+		seedClipboard(t, clip, "KEEP", text.StandardSelection)
+		send(t, hx, keys("C\"_d")...)
+		data, err := clip.Paste(clipboard.DefaultRegisterID)
+		require.NoError(t, err)
+		assert.Equal(t, "KEEP", data.Text)
+	})
+
+	t.Run("registerFragments reads every metadata shape", func(t *testing.T) {
+		frags, mode := registerFragments(clipboard.Data{Text: "a\nb", Metadata: fragmentsMetadata{
+			Mode: text.StandardSelection, Fragments: []string{"a", "b"}}})
+		assert.Equal(t, []string{"a", "b"}, frags)
+		assert.Equal(t, text.StandardSelection, mode)
+		frags, mode = registerFragments(clipboard.Data{Text: "x\n", Metadata: text.LineSelection})
+		assert.Equal(t, []string{"x\n"}, frags)
+		assert.Equal(t, text.LineSelection, mode)
+		frags, mode = registerFragments(clipboard.Data{Text: "sys"})
+		assert.Equal(t, []string{"sys"}, frags)
+		assert.Equal(t, text.NoSelection, mode)
+	})
+}
+
+// TestUndoRestoresSelectionSet pins that undo and redo bring back the
+// selection set stored with the revision, as Helix's history does,
+// rather than a single caret.
+func TestUndoRestoresSelectionSet(t *testing.T) {
+	t.Run("undo restores the set before a delete and redo the one after", func(t *testing.T) {
+		hx, buf, _ := newHelix(t, "abc\ndef", term.Coordinates{X: 1})
+		send(t, hx, keys("Cd")...)
+		require.Equal(t, "ac\ndf", buf.String())
+		send(t, hx, key('u'))
+		assert.Equal(t, "abc\ndef", buf.String())
+		assert.Equal(t, []string{"b", "e"}, sels(hx))
+		assert.Equal(t, 1, primaryIdx(hx))
+		send(t, hx, key('U'))
+		assert.Equal(t, "ac\ndf", buf.String())
+		assert.Equal(t, []string{"c", "f"}, sels(hx))
+		assert.Equal(t, 1, primaryIdx(hx))
+	})
+
+	t.Run("undo after an insert session restores the set it started from", func(t *testing.T) {
+		hx, buf, _ := newHelix(t, "abc\ndef", term.Coordinates{X: 1})
+		send(t, hx, cat(keys("CiX"), []term.Event{namedKey(term.KeyEsc)})...)
+		require.NotEqual(t, "abc\ndef", buf.String())
+		send(t, hx, key('u'))
+		assert.Equal(t, "abc\ndef", buf.String())
+		assert.Equal(t, []string{"b", "e"}, sels(hx))
+	})
+
+	t.Run("a new edit after undo forgets the redo selections", func(t *testing.T) {
+		hx, buf, _ := newHelix(t, "abc\ndef", term.Coordinates{X: 1})
+		send(t, hx, keys("Cd")...)
+		send(t, hx, keys("u,d")...)
+		require.Equal(t, "abc\ndf", buf.String())
+		send(t, hx, key('u'))
+		assert.Equal(t, "abc\ndef", buf.String())
+		assert.Equal(t, []string{"e"}, sels(hx))
+		send(t, hx, key('U'))
+		assert.Equal(t, "abc\ndf", buf.String())
+		assert.Equal(t, []string{"f"}, sels(hx))
+	})
+
+	t.Run("undo across a jump keeps the jumplist in step", func(t *testing.T) {
+		hx, buf, _ := newHelix(t, "abc\ndef\nghi", term.Coordinates{})
+		send(t, hx, keys("3Gd")...)
+		require.Equal(t, "abc\ndef\nhi", buf.String())
+		send(t, hx, key('u'))
+		send(t, hx, modKey(term.ModCtrl, 'o'))
+		assert.Equal(t, xy(0, 0), hx.CursorAtScroll())
+	})
+}
+
+// BenchmarkDeleteManySelections guards the fan-out against quadratic
+// behaviour in the set maintenance.
+func BenchmarkDeleteManySelections(b *testing.B) {
+	const ranges = 500
+	content := strings.Repeat("abcdef\n", ranges)
+	for b.Loop() {
+		b.StopTimer()
+		hx, _, _ := newHelix(&testing.T{}, content, term.Coordinates{X: 2})
+		h := impl(hx)
+		rs := make([]rng, ranges)
+		for i := range rs {
+			rs[i] = fwd(2, i, 3, i)
+		}
+		h.setSelection(selection{ranges: rs})
+		b.StartTimer()
+		send(&testing.T{}, hx, key('d'))
+	}
+}
+
 // cursorState is everything installRange is allowed to change.
 type cursorState struct {
 	mode     text.SelectMode
@@ -424,7 +795,20 @@ func TestSelectionSetMirrorsCursor(t *testing.T) {
 			require.Equal(t, 1, h.sel.len())
 			primary := h.sel.primaryRange()
 			primary.col = 0
-			assert.Equal(t, h.readRange(), primary, "set mirrors the cursor")
+			buf := h.buf()
+			if hx.IsEditMode() {
+				// Insert mode keeps the range but the cursor holds only
+				// its caret, on the range's cursor.
+				assert.Equal(t, clampInsert(buf, primary.cursor(buf)), hx.CursorAtScroll(),
+					"caret sits on the primary's cursor")
+			} else {
+				// A range over a line ending reads back from the cursor
+				// as the last cell of its row; what the cursor holds is
+				// then the primary's image rather than the primary.
+				assert.Equal(t, clampCell(buf, primary.cursor(buf)), hx.CursorAtScroll(),
+					"caret sits on the primary's cursor")
+				assert.Equal(t, h.mirror, h.readRange(), "the cursor holds the primary's image")
+			}
 
 			before := snapshotCursor(hx)
 			h.installRange(h.readRange())
@@ -467,9 +851,9 @@ func TestInstallRangeShapes(t *testing.T) {
 			mode: text.StandardSelection, from: xy(0, 2), to: xy(1, 2), caret: xy(0, 2)},
 		{name: "a range over the empty row", r: fwd(0, 2, 1, 3),
 			mode: text.StandardSelection, from: xy(0, 2), to: xy(1, 3), caret: xy(0, 3)},
-		{name: "past the document end clamps", r: fwd(9, 9, 9, 9),
-			mode: text.StandardSelection, from: xy(3, 3), to: xy(4, 3), caret: xy(3, 3),
-			readBack: fwd(3, 3, 3, 3)},
+		{name: "past the document end clamps onto the last cell", r: fwd(9, 9, 9, 9),
+			mode: text.StandardSelection, from: xy(2, 3), to: xy(3, 3), caret: xy(2, 3),
+			readBack: fwd(2, 3, 3, 3)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			hx, _, _ := newHelix(t, content, term.Coordinates{})

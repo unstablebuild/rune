@@ -19,8 +19,10 @@ package helix
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 
 	log "github.com/sirupsen/logrus"
 	"github.com/unstablebuild/blue/logging"
@@ -96,6 +98,9 @@ type helixHandler interface {
 	moveToBounds()
 	adoptCursor()
 	resetSelection()
+	selectionBefore() selection
+	selectionAfter() selection
+	restoreSelection(selection)
 	unselect() bool
 	copySuppressed() bool
 	setStatusBar(bar statusBar)
@@ -122,6 +127,10 @@ type helixHandlerImpl struct {
 	// makes on one range so the others can be carried through them.
 	sel selection
 	rec changeRecorder
+
+	// mirror is what the cursor read back as when the primary was last
+	// installed: the same range, or the nearest the cursor can show.
+	mirror rng
 
 	// secondariesDrawn remembers that the location lists for the
 	// non-primary ranges are populated, so an empty set does not
@@ -388,7 +397,13 @@ func (h *helixHandlerImpl) mode() helixMode {
 
 func (h *helixHandlerImpl) extending() bool { return h.extend }
 
-func (h *helixHandlerImpl) unselect() bool { return h.cursor.Unselect() }
+// unselect is the text.Handler hook: the set collapses onto the cell
+// under the caret, the least Helix ever selects.
+func (h *helixHandlerImpl) unselect() bool {
+	ok := h.cursor.Unselect()
+	h.resetSelection()
+	return ok
+}
 
 func (h *helixHandlerImpl) copySuppressed() bool { return h.suppressCopyDelete }
 
@@ -748,7 +763,6 @@ func (h *helixHandlerImpl) handleNormal(ev term.Event) (quit, handled bool) {
 			switch ev.Ch {
 			case 'd':
 				handled = h.deleteSelection(false)
-				h.anchorHere()
 				h.exitSelectMode()
 			case 'c':
 				h.changeSelection(false)
@@ -763,7 +777,7 @@ func (h *helixHandlerImpl) handleNormal(ev term.Event) (quit, handled bool) {
 			case 'i':
 				handled = h.shrinkSelection()
 			case '`':
-				handled = h.keepSelection(h.cursor.UppercaseSelection)
+				handled = h.switchCase(strings.ToUpper)
 				h.exitSelectMode()
 			case '.':
 				handled = h.repeatLastMotion()
@@ -883,7 +897,6 @@ func (h *helixHandlerImpl) handleNormal(ev term.Event) (quit, handled bool) {
 			h.openLine(true)
 		case 'd':
 			handled = h.deleteSelection(true)
-			h.anchorHere()
 			h.exitSelectMode()
 		case 'c':
 			h.changeSelection(true)
@@ -903,10 +916,10 @@ func (h *helixHandlerImpl) handleNormal(ev term.Event) (quit, handled bool) {
 			h.setMode(replaceMode)
 			doResetCount = false
 		case '~':
-			handled = h.keepSelection(h.cursor.ToggleCaseSelection)
+			handled = h.switchCase(toggleCase)
 			h.exitSelectMode()
 		case '`':
-			handled = h.keepSelection(h.cursor.LowercaseSelection)
+			handled = h.switchCase(strings.ToLower)
 			h.exitSelectMode()
 		case 'J':
 			handled = h.joinSelection(false)
@@ -2011,145 +2024,191 @@ func (h *helixHandlerImpl) restoreJump(entry selection) {
 
 // --- operators ---
 
-// reselectRange restores an anchor/head selection spanning the
-// half-open range [from, to). Helix operators keep their selection, but
-// the cursor primitives clear it, so it has to be rebuilt afterwards.
-func (h *helixHandlerImpl) reselectRange(from, to term.Coordinates) {
-	last := to
-	if last.X > 0 {
-		last.X--
+// forEachLineBlock runs op once per run of consecutive lines the
+// ranges touch, with that run installed as a linewise selection, and
+// carries the ranges through the edits. It is what Helix's get_lines
+// gives the line operators: a line shared by two ranges is handled
+// once, and the ranges keep their shape through Range::map rather than
+// snapping to the lines.
+func (h *helixHandlerImpl) forEachLineBlock(op func()) bool {
+	h.carryEdits()
+	buf := h.buf()
+	rows := buf.Rows()
+	if rows == 0 {
+		return false
 	}
-	h.setSelectionRange(from, last)
+	type block struct{ first, last int }
+	var blocks []block
+	for _, r := range h.sel.ranges {
+		first, last := r.lineRange(buf)
+		if n := len(blocks); n > 0 && first <= blocks[n-1].last+1 {
+			blocks[n-1].last = max(blocks[n-1].last, last)
+			continue
+		}
+		blocks = append(blocks, block{first, last})
+	}
+	src := h.sel
+	var all changeSet
+	for i := len(blocks) - 1; i >= 0; i-- {
+		b := blocks[i]
+		h.installRange(rng{
+			anchor: term.Coordinates{Y: b.first},
+			head:   term.Coordinates{Y: min(b.last+1, rows)},
+		})
+		op()
+		all = append(all, h.rec.take()...)
+	}
+	h.setSelection(src.mapThrough(all))
+	return len(all) > 0
 }
 
-func (h *helixHandlerImpl) reselectLines(startY, endY int) {
-	h.cursor.Unselect()
-	h.cursor.MoveToScroll(term.Coordinates{Y: startY})
-	h.cursor.SelectLine()
-	if endY > startY {
-		h.cursor.MoveDownLines(endY - startY)
+// shiftSelection is indent and unindent: every line any range touches
+// is shifted once, count levels deep, and the ranges are carried
+// through the whitespace that came or went. Indenting skips blank
+// lines; unindenting takes up to count levels of the whitespace a
+// line starts with, a tab counting for the columns it reaches.
+func (h *helixHandlerImpl) shiftSelection(right bool) bool {
+	h.carryEdits()
+	count := h.motionCount()
+	buf := h.buf()
+	indent := strings.Repeat(h.indentUnit(), count)
+	width := count * h.config.indentTabspaces
+	var edits []edit
+	for _, line := range h.selectedLines() {
+		row := []rune(rowString(buf, line))
+		if right {
+			if strings.TrimSpace(string(row)) == "" {
+				continue
+			}
+			at := term.Coordinates{Y: line}
+			edits = append(edits, edit{from: at, to: at, text: indent})
+			continue
+		}
+		tab := max(1, h.config.indentTabspaces)
+		cols, pos := 0, 0
+	blanks:
+		for pos < len(row) && cols < width {
+			switch row[pos] {
+			case ' ':
+				cols++
+			case '\t':
+				cols = (cols/tab + 1) * tab
+			default:
+				break blanks
+			}
+			pos++
+		}
+		if pos > 0 {
+			edits = append(edits, edit{from: term.Coordinates{Y: line}, to: term.Coordinates{X: pos, Y: line}})
+		}
 	}
-}
-
-// keepSelection runs an in-place operator that clears the selection as
-// a side effect and puts an equivalent selection back.
-func (h *helixHandlerImpl) keepSelection(fn func() bool) bool {
-	from, to, ok := h.cursor.SelectionRange()
-	if !ok {
-		return fn()
+	if len(edits) == 0 {
+		return false
 	}
-	mode, _ := h.cursor.SelectionMode()
-	changed := fn()
-	if mode == text.LineSelection {
-		h.reselectLines(from.Y, to.Y)
-	} else {
-		h.reselectRange(from, to)
-	}
-	return changed
-}
-
-// keepLineSelection runs an operator that rewrites the indentation of
-// the selected lines, so only the line span can be restored.
-func (h *helixHandlerImpl) keepLineSelection(fn func()) bool {
-	from, to, ok := h.cursor.SelectionRange()
-	if !ok {
-		fn()
-		return true
-	}
-	fn()
-	h.reselectLines(from.Y, to.Y)
+	_, cs := h.applyEdits(edits)
+	h.setSelection(h.sel.mapThrough(cs))
 	return true
 }
 
-func (h *helixHandlerImpl) shiftSelection(right bool) bool {
-	return h.keepLineSelection(func() {
-		for range h.motionCount() {
-			if right {
-				h.cursor.ShiftSelectionRight(h.config.indentRune, h.config.indentTabspaces)
-			} else {
-				h.cursor.ShiftSelectionLeft(h.config.indentRune, h.config.indentTabspaces)
+// indentUnit is one level of indentation as the buffer writes it.
+func (h *helixHandlerImpl) indentUnit() string {
+	if h.config.indentRune == text.IndentRuneTab {
+		return "\t"
+	}
+	return strings.Repeat(" ", max(1, h.config.indentTabspaces))
+}
+
+// selectedLines is get_lines: every row some range touches, once, in
+// order.
+func (h *helixHandlerImpl) selectedLines() []int {
+	buf := h.buf()
+	var lines []int
+	for _, r := range h.sel.ranges {
+		first, last := r.lineRange(buf)
+		for y := first; y <= last; y++ {
+			if n := len(lines); n == 0 || lines[n-1] < y {
+				lines = append(lines, y)
 			}
 		}
-	})
+	}
+	return lines
 }
 
 func (h *helixHandlerImpl) formatSelection() bool {
-	return h.keepLineSelection(func() {
+	return h.forEachLineBlock(func() {
 		h.cursor.ReindentSelection(h.config.indentRune, h.config.indentTabspaces)
 	})
 }
 
 func (h *helixHandlerImpl) toggleComments() bool {
-	return h.keepLineSelection(func() { h.cursor.ToggleLineComment() })
+	return h.forEachLineBlock(func() { h.cursor.ToggleLineComment() })
 }
 
+// yankSelection is yank_impl: the register receives one fragment per
+// range.
 func (h *helixHandlerImpl) yankSelection() bool {
-	mode, ok := h.cursor.SelectionMode()
-	if !ok {
-		return false
-	}
-	data := clipboard.Data{Text: h.selectionText(), Metadata: mode}
+	h.carryEdits()
+	data := h.fragmentsData()
 	reg := h.consumeActiveRegister()
-	if _, err := h.cursor.CopySelectionNoUnselect(
-		registerNameToID(reg), h.config.clipboard); err != nil {
-		h.logError(err)
-		return false
-	}
-	if reg != unnamedRegister {
-		if err := h.writeRegister(unnamedRegister, data); err != nil {
+	for _, name := range []rune{reg, unnamedRegister, lastYankRegister} {
+		if err := h.writeRegister(name, data); err != nil {
 			h.logError(err)
-		}
-	}
-	if reg != lastYankRegister {
-		if err := h.writeRegister(lastYankRegister, data); err != nil {
-			h.logError(err)
+			return false
 		}
 	}
 	return true
 }
 
-// copySelectionForDelete fills the registers Helix writes on a delete
-// and reports whether the cursor's own copy-on-delete must be
-// suppressed, which is what the black hole register asks for.
-func (h *helixHandlerImpl) copySelectionForDelete() bool {
+// copySelectionForDelete fills the registers Helix writes on a delete,
+// unless the black hole register asks for the text to be dropped.
+func (h *helixHandlerImpl) copySelectionForDelete() {
 	reg := h.consumeActiveRegister()
 	if reg == blackHoleRegister {
-		return true
+		return
 	}
-	mode, _ := h.cursor.SelectionMode()
-	data := clipboard.Data{Text: h.selectionText(), Metadata: mode}
-	if reg != unnamedRegister {
-		if err := h.writeRegister(reg, data); err != nil {
+	data := h.fragmentsData()
+	names := []rune{reg, unnamedRegister}
+	if !h.selectionLinewise() {
+		names = append(names, '-')
+	}
+	for _, name := range names {
+		if err := h.writeRegister(name, data); err != nil {
 			h.logError(err)
 		}
 	}
-	if err := h.writeRegister(unnamedRegister, data); err != nil {
-		h.logError(err)
-	}
-	if mode != text.LineSelection {
-		if err := h.writeRegister('-', data); err != nil {
-			h.logError(err)
-		}
-	}
-	return false
 }
 
-// deleteSelection removes the selection. Helix's Alt-d/Alt-c variants
-// pass yank=false so the registers and the system clipboard are left
-// untouched.
+// selectionLinewise is selection_is_linewise: every range covers whole
+// lines.
+func (h *helixHandlerImpl) selectionLinewise() bool {
+	for _, r := range h.sel.ranges {
+		if !lineShaped(r) {
+			return false
+		}
+	}
+	return true
+}
+
+// deleteSelection is delete_selection_impl: the registers are filled
+// once for the whole set, then every range is removed and each
+// collapses onto where its text was. Helix's Alt-d/Alt-c variants pass
+// yank=false so the registers are left untouched. Nothing to remove,
+// which is a set of points, reports false.
 func (h *helixHandlerImpl) deleteSelection(yank bool) bool {
-	if _, ok := h.cursor.SelectionMode(); !ok {
+	h.carryEdits()
+	edits := h.deleteEdits()
+	if len(edits) == 0 {
+		h.selectedRegister = 0
 		return false
 	}
 	if yank {
-		h.suppressCopyDelete = h.copySelectionForDelete()
+		h.copySelectionForDelete()
 	} else {
 		h.selectedRegister = 0
-		h.suppressCopyDelete = true
 	}
-	ok := h.cursor.DeleteSelection()
-	h.suppressCopyDelete = false
-	return ok
+	_, cs := h.applyEdits(edits)
+	h.setSelection(h.sel.mapThrough(cs))
+	return true
 }
 
 // changeSelection implements c and Alt-c. A selection that covers whole
@@ -2157,22 +2216,24 @@ func (h *helixHandlerImpl) deleteSelection(yank bool) bool {
 // surrounding ones, which is delete_selection_impl's only_whole_lines
 // branch.
 func (h *helixHandlerImpl) changeSelection(yank bool) bool {
-	mode, ok := h.cursor.SelectionMode()
-	linewise := ok && mode == text.LineSelection
-	deleted := h.deleteSelection(yank)
-	if linewise {
+	h.carryEdits()
+	if h.selectionLinewise() {
+		deleted := h.deleteSelection(yank)
 		h.openLine(true)
 		return deleted
 	}
+	// Insert mode goes first so the points the delete leaves behind are
+	// not widened back onto a cell by the normal-mode invariant.
 	h.setInsertMode()
-	return deleted
+	return h.deleteSelection(yank)
 }
 
-// pasteClipboard inserts the register contents next to the selection.
-// Unlike vi's visual-mode paste, Helix never replaces the selection:
-// that is what R does. paste_impl anchors a characterwise paste at
-// range.from()/range.to() and a linewise paste at the surrounding line
-// boundaries.
+// pasteClipboard is paste_impl: the i-th register fragment lands next
+// to the i-th range, the last fragment serving every range beyond
+// that, and the pasted text becomes the selection. Unlike vi's
+// visual-mode paste, Helix never replaces the selection: that is what
+// R does. A characterwise paste goes at range.from()/range.to(), a
+// linewise one at the surrounding line boundaries.
 func (h *helixHandlerImpl) pasteClipboard(after bool) bool {
 	data, err := h.readRegister(h.consumeActiveRegister())
 	if err != nil {
@@ -2182,114 +2243,236 @@ func (h *helixHandlerImpl) pasteClipboard(after bool) bool {
 	if data.Text == "" {
 		return false
 	}
-	mode, _ := data.Metadata.(text.SelectMode)
-
-	from, to, hasSelection := h.cursor.SelectionRange()
-	h.cursor.Unselect()
-	if hasSelection {
-		target := from
-		if after {
-			target = to
-			if target.X > 0 {
-				target.X--
-			}
-		}
-		h.cursor.MoveToScroll(target)
-	}
+	h.carryEdits()
 	// paste_impl repeats the register contents, not the insertion, so a
 	// counted paste lands as one contiguous run.
-	h.cursor.Paste(strings.Repeat(data.Text, h.motionCount()), mode, after)
-	h.anchorHere()
+	values, mode := h.registerValues(data, h.motionCount())
+	linewise := mode == text.LineSelection
+	for _, v := range values {
+		linewise = linewise || strings.HasSuffix(v, "\n")
+	}
+	buf := h.buf()
+	rows := buf.Rows()
+	edits := make([]edit, len(values))
+	opened := make([]bool, len(values))
+	for i, r := range h.sel.ranges {
+		value := values[i]
+		var pos term.Coordinates
+		switch {
+		case linewise && !after:
+			pos = term.Coordinates{Y: r.from().Y}
+		case linewise:
+			_, last := r.lineRange(buf)
+			pos = term.Coordinates{Y: min(last+1, rows)}
+		case !after:
+			pos = r.from()
+		default:
+			pos = r.to()
+		}
+		if linewise && !strings.HasSuffix(value, "\n") {
+			value += "\n"
+		}
+		// The buffer has no position past its last row, so a line
+		// pasted after it opens the row it needs first.
+		if pos.Y >= rows && rows > 0 {
+			pos = term.Coordinates{X: buf.Columns(rows - 1), Y: rows - 1}
+			value = "\n" + strings.TrimSuffix(value, "\n")
+			opened[i] = true
+		}
+		edits[i] = edit{from: pos, to: pos, text: value}
+	}
+	spans, _ := h.applyEdits(edits)
+	for i := range spans {
+		if opened[i] {
+			// The span starts on the line-break it opened with; the
+			// pasted lines are the rows after it, down to the document
+			// end, which is where its trailing line ending went.
+			spans[i] = rng{
+				anchor: term.Coordinates{Y: spans[i].anchor.Y + 1},
+				head:   term.Coordinates{Y: spans[i].head.Y + 1},
+			}
+		}
+		spans[i] = spans[i].withDirection(h.sel.ranges[i].backward())
+	}
+	h.setSelection(selection{ranges: spans, primary: h.sel.primary})
 	return true
 }
 
-// replaceWithYanked implements Helix's R: swap the selection for the
-// register contents.
+// replaceWithYanked is replace_selections_with_register: every range
+// is swapped for its register fragment.
 func (h *helixHandlerImpl) replaceWithYanked() bool {
 	data, err := h.readRegister(h.consumeActiveRegister())
 	if err != nil {
 		h.logError(err)
 		return false
 	}
-	if _, ok := h.cursor.SelectionMode(); !ok {
+	if data.Text == "" {
 		return false
 	}
-	mode, _ := data.Metadata.(text.SelectMode)
-	h.suppressCopyDelete = true
-	h.cursor.Paste(data.Text, mode, false)
-	h.suppressCopyDelete = false
-	h.anchorHere()
+	h.carryEdits()
+	values, _ := h.registerValues(data, h.motionCount())
+	edits := make([]edit, 0, len(values))
+	for i, r := range h.sel.ranges {
+		if r.isPoint() {
+			continue
+		}
+		edits = append(edits, edit{from: r.from(), to: r.to(), text: values[i]})
+	}
+	_, cs := h.applyEdits(edits)
+	h.setSelection(h.sel.mapThrough(cs))
 	return true
 }
 
-// replaceSelection implements Helix's r<char>: every character in the
-// selection becomes ch and the selection survives.
+// replaceSelection is replace: every character under every range
+// becomes ch, line endings excepted, and the ranges survive.
 func (h *helixHandlerImpl) replaceSelection(ch rune) bool {
-	from, to, ok := h.cursor.SelectionRange()
-	if !ok {
+	h.carryEdits()
+	buf := h.buf()
+	edits := make([]edit, 0, h.sel.len())
+	for _, r := range h.sel.ranges {
+		if r.isPoint() {
+			continue
+		}
+		var b strings.Builder
+		for _, c := range rangeText(buf, r) {
+			if c == '\n' {
+				b.WriteRune(c)
+			} else {
+				b.WriteRune(ch)
+			}
+		}
+		edits = append(edits, edit{from: r.from(), to: r.to(), text: b.String()})
+	}
+	if len(edits) == 0 {
 		return false
 	}
-	buf := h.less.Buffer()
-	replacement := string(ch)
-	replaced := false
-	ctx := context.Background()
-	for y := from.Y; y <= to.Y && y < buf.Rows(); y++ {
-		columns := buf.Columns(y)
-		startX := 0
-		if y == from.Y {
-			startX = from.X
-		}
-		endX := columns
-		if y == to.Y {
-			endX = min(to.X, columns)
-		}
-		for x := startX; x < endX; x++ {
-			buf.Edit(ctx, term.Coordinates{X: x, Y: y},
-				term.Coordinates{X: x + 1, Y: y}, replacement)
-			replaced = true
-		}
-	}
-	if !replaced {
-		return false
-	}
-	if ch == '\n' {
-		// Newlines change the shape of the buffer, so the original
-		// range no longer describes anything meaningful.
-		h.anchorHere()
-		return true
-	}
-	h.reselectRange(from, to)
+	_, cs := h.applyEdits(edits)
+	h.setSelection(h.sel.mapThrough(cs))
 	return true
 }
 
-// joinSelection collapses every line the selection touches onto the
-// first of them. selectSpace implements A-J, which leaves the inserted
-// separator selected.
-func (h *helixHandlerImpl) joinSelection(selectSpace bool) bool {
-	from, to, ok := h.cursor.SelectionRange()
-	lines := 1
-	if ok {
-		lines = max(1, to.Y-from.Y)
-	}
-	h.cursor.Unselect()
-	if ok {
-		h.cursor.MoveToScroll(from)
-	}
-	joined := false
-	var lastJoin term.Coordinates
-	for range lines {
-		if !h.cursor.Join() {
-			break
+// switchCase is switch_case_impl over every range: the text under each
+// range is rewritten in place and the ranges survive.
+func (h *helixHandlerImpl) switchCase(fn func(string) string) bool {
+	h.carryEdits()
+	buf := h.buf()
+	edits := make([]edit, 0, h.sel.len())
+	for _, r := range h.sel.ranges {
+		if r.isPoint() {
+			continue
 		}
-		lastJoin = h.cursor.CursorAtScroll()
-		joined = true
+		text := rangeText(buf, r)
+		if next := fn(text); next != text {
+			edits = append(edits, edit{from: r.from(), to: r.to(), text: next})
+		}
 	}
-	if joined && selectSpace {
-		h.setSelectionRange(lastJoin, lastJoin)
-		return true
+	if len(edits) == 0 {
+		return false
 	}
-	h.anchorHere()
-	return joined
+	_, cs := h.applyEdits(edits)
+	h.setSelection(h.sel.mapThrough(cs))
+	return true
+}
+
+// toggleCase is switch_case: every letter flips its case.
+func toggleCase(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case unicode.IsLower(r):
+			return unicode.ToUpper(r)
+		case unicode.IsUpper(r):
+			return unicode.ToLower(r)
+		}
+		return r
+	}, s)
+}
+
+// joinSelection is join_selections: every line a range touches but
+// the last is joined with the line after it, a range on one line
+// taking the next line. The ranges are carried through the joins.
+// selectSpace implements A-J, which instead selects every separator
+// the joins inserted, or keeps the carried ranges when none was.
+func (h *helixHandlerImpl) joinSelection(selectSpace bool) bool {
+	h.carryEdits()
+	edits := h.joinEdits()
+	if len(edits) == 0 {
+		return false
+	}
+	spans, cs := h.applyEdits(edits)
+	if selectSpace {
+		var spaces []rng
+		for i, e := range edits {
+			if e.text != "" {
+				spaces = append(spaces, point(spans[i].from()))
+			}
+		}
+		if len(spaces) > 0 {
+			h.setSelection(selection{ranges: spaces})
+			return true
+		}
+	}
+	h.setSelection(h.sel.mapThrough(cs))
+	return true
+}
+
+// joinEdits is the change list join_selections_impl builds: each join
+// replaces a line ending and the indentation of the line after it
+// with one space, or with nothing when that line is blank. A line
+// comment leader the block's first line carries is stripped from the
+// joined lines that carry the same one, so joining a comment keeps
+// one leader; a different leader is kept and becomes the one to
+// strip from then on. Two ranges asking for the same join produce it
+// once.
+func (h *helixHandlerImpl) joinEdits() []edit {
+	buf := h.buf()
+	rows := buf.Rows()
+	tokens := slices.Clone(h.cursor.CommentSpec().Line)
+	slices.SortStableFunc(tokens, func(a, b string) int { return len(b) - len(a) })
+	leader := func(line []rune) string {
+		for _, tok := range tokens {
+			if strings.HasPrefix(string(line), tok) {
+				return tok
+			}
+		}
+		return ""
+	}
+	skipBlank := func(line []rune, at int) int {
+		for at < len(line) && (line[at] == ' ' || line[at] == '\t') {
+			at++
+		}
+		return at
+	}
+	var edits []edit
+	for _, r := range h.sel.ranges {
+		start, end := r.lineRange(buf)
+		if start == end {
+			end = min(end+1, rows-1)
+		}
+		first := []rune(rowString(buf, start))
+		current := leader(first[skipBlank(first, 0):])
+		for line := start; line < end; line++ {
+			next := []rune(rowString(buf, line+1))
+			at := skipBlank(next, 0)
+			if tok := leader(next[at:]); tok != "" {
+				if tok == current {
+					at = skipBlank(next, at+len([]rune(tok)))
+				} else {
+					current = tok
+				}
+			}
+			separator := " "
+			if at == len(next) {
+				separator = ""
+			}
+			edits = append(edits, edit{
+				from: term.Coordinates{X: buf.Columns(line), Y: line},
+				to:   term.Coordinates{X: at, Y: line + 1},
+				text: separator,
+			})
+		}
+	}
+	sortEdits(edits)
+	return slices.CompactFunc(edits, func(a, b edit) bool { return a.from == b.from })
 }
 
 // selectAll implements %: one range over the whole document.
@@ -2341,38 +2524,74 @@ func (h *helixHandlerImpl) insertAtLineEnd() {
 	h.setInsertMode()
 }
 
+// openLine is open: a line goes in next to every range, count times,
+// and a cursor lands on each new line, which is what makes 3o three
+// cursors. o opens under the last row a range covers and O above its
+// first, whichever end the head is on.
 func (h *helixHandlerImpl) openLine(above bool) {
 	count := h.motionCount()
-	h.cursor.Unselect()
+	h.carryEdits()
 	h.setInsertMode()
-	for i := range count {
-		if above && i == 0 {
-			h.cursor.InsertLineAbove(h.config.indentRune, h.config.indentTabspaces)
-			continue
+	primary := h.sel.primary
+	buf := h.buf()
+	h.forEachRange(func() bool {
+		r := h.readRange()
+		h.cursor.Unselect()
+		row := r.from().Y
+		if !above {
+			_, row = r.lineRange(buf)
 		}
-		h.cursor.InsertLineBelow(h.config.indentRune, h.config.indentTabspaces)
+		h.cursor.MoveToScroll(term.Coordinates{Y: row})
+		for i := range count {
+			if above && i == 0 {
+				h.cursor.InsertLineAbove(h.config.indentRune, h.config.indentTabspaces)
+				continue
+			}
+			h.cursor.InsertLineBelow(h.config.indentRune, h.config.indentTabspaces)
+		}
+		return true
+	})
+	if count < 2 {
+		return
 	}
+	// The cursor ends on the last line it opened; the others sit
+	// directly above it with the same indentation.
+	ranges := make([]rng, 0, h.sel.len()*count)
+	for _, r := range h.sel.ranges {
+		for i := count - 1; i >= 0; i-- {
+			ranges = append(ranges, point(term.Coordinates{X: r.head.X, Y: r.head.Y - i}))
+		}
+	}
+	h.setSelection(selection{ranges: ranges, primary: primary})
 }
 
-// addNewline implements [<space> and ]<space>: a blank line is added
-// without leaving normal mode or moving the caret.
+// addNewline is add_newline_impl: a blank line goes above or below the
+// lines every range touches, without leaving normal mode, and the
+// ranges follow the text. The line below goes in at the start of the
+// following row, so a range ending there stays short of it; on the
+// last row it is appended instead.
 func (h *helixHandlerImpl) addNewline(below bool) bool {
-	origin := h.cursor.CursorAtScroll()
-	buf := h.less.Buffer()
-	at := term.Coordinates{Y: origin.Y}
-	if below {
-		at = term.Coordinates{Y: origin.Y, X: buf.Columns(origin.Y)}
+	h.carryEdits()
+	buf := h.buf()
+	rows := buf.Rows()
+	if rows == 0 {
+		return false
 	}
-	ctx := context.Background()
-	for range h.motionCount() {
-		buf.Edit(ctx, at, at, "\n")
+	newlines := strings.Repeat("\n", h.motionCount())
+	edits := make([]edit, 0, h.sel.len())
+	for _, r := range h.sel.ranges {
+		first, last := r.lineRange(buf)
+		at := term.Coordinates{Y: first}
+		switch {
+		case below && last+1 < rows:
+			at = term.Coordinates{Y: last + 1}
+		case below:
+			at = term.Coordinates{Y: last, X: buf.Columns(last)}
+		}
+		edits = append(edits, edit{from: at, to: at, text: newlines})
 	}
-	target := origin
-	if !below {
-		target.Y += h.motionCount()
-	}
-	h.cursor.MoveToScroll(target)
-	h.anchorHere()
+	_, cs := h.applyEdits(edits)
+	h.setSelection(h.sel.mapThrough(cs))
 	return true
 }
 
@@ -2493,83 +2712,117 @@ func (h *helixHandlerImpl) handleSurroundKey(ch rune) (quit, handled bool) {
 	return false, true
 }
 
-// surroundAdd implements ms<char>: wrap the selection in the pair and
-// keep the delimiters selected.
+// surroundAdd is surround_add: every range is wrapped in the pair and
+// the delimiters join the range.
 func (h *helixHandlerImpl) surroundAdd(ch rune) bool {
-	from, to, ok := h.cursor.SelectionRange()
-	if !ok {
+	if _, ok := h.cursor.SelectionMode(); !ok {
 		return false
 	}
+	h.carryEdits()
 	open, closing := surroundPair(ch)
-	buf := h.buf()
-	ctx := context.Background()
-	// Insert the closing delimiter first so the opening insert cannot
-	// shift the position it was computed from.
-	buf.Edit(ctx, to, to, string(closing))
-	buf.Edit(ctx, from, from, string(open))
-
-	end := to
-	if end.Y == from.Y {
-		end.X += 2
-	} else {
-		end.X++
+	src := h.sel
+	edits := make([]edit, 0, src.len()*2)
+	for _, r := range src.ranges {
+		edits = append(edits,
+			edit{from: r.from(), to: r.from(), text: string(open)},
+			edit{from: r.to(), to: r.to(), text: string(closing)})
 	}
-	h.reselectRange(from, end)
+	spans, _ := h.applyEdits(edits)
+	ranges := make([]rng, src.len())
+	for i, r := range src.ranges {
+		ranges[i] = rng{anchor: spans[2*i].from(), head: spans[2*i+1].to()}.withDirection(r.backward())
+	}
+	h.setSelection(selection{ranges: ranges, primary: src.primary})
 	h.exitSelectMode()
 	return true
 }
 
-// surroundDelete implements md<char>.
+// surroundPositions is surround::get_surround_pos: the opening and
+// closing delimiter of the pair enclosing every range, as consecutive
+// pairs in range order. A range without one, or two ranges sharing
+// one, fail the whole command with the message Helix shows.
+func (h *helixHandlerImpl) surroundPositions(open, closing rune) ([]term.Coordinates, bool) {
+	h.carryEdits()
+	var pairs []term.Coordinates
+	var err string
+	for _, r := range h.sel.ranges {
+		h.installRange(r)
+		from, to, found := h.surroundBounds(open, closing)
+		if !found || to.X == 0 {
+			err = "pair not found"
+			break
+		}
+		last := term.Coordinates{X: to.X - 1, Y: to.Y}
+		if slices.Contains(pairs, from) || slices.Contains(pairs, last) {
+			err = "cursors overlap for a single surround pair"
+			break
+		}
+		pairs = append(pairs, from, last)
+	}
+	h.syncPrimary()
+	if err != "" {
+		h.less.SetMessage("%s", err)
+		return nil, false
+	}
+	return pairs, true
+}
+
+// surroundDelete is surround_delete: the pair around every range goes
+// away and the ranges are carried through the deletions.
 func (h *helixHandlerImpl) surroundDelete(ch rune) bool {
-	from, to, ok := h.surroundBounds(surroundPair(ch))
+	pairs, ok := h.surroundPositions(surroundPair(ch))
 	if !ok {
 		return false
 	}
-	last := to
-	if last.X == 0 {
-		return false
+	edits := make([]edit, 0, len(pairs))
+	for _, at := range pairs {
+		edits = append(edits, edit{from: at, to: term.Coordinates{X: at.X + 1, Y: at.Y}})
 	}
-	last.X--
-	buf := h.buf()
-	buf.Delete(last, to)
-	buf.Delete(from, term.Coordinates{Y: from.Y, X: from.X + 1})
-
-	inner := from
-	innerEnd := last
-	if innerEnd.Y == from.Y {
-		innerEnd.X -= 2
-	} else {
-		innerEnd.X--
-	}
-	if coordinatesBefore(innerEnd, inner) {
-		h.cursor.MoveToScroll(inner)
-		h.anchorHere()
-		return true
-	}
-	h.setSelectionRange(inner, innerEnd)
+	sortEdits(edits)
+	_, cs := h.applyEdits(edits)
+	h.setSelection(h.sel.mapThrough(cs))
 	h.exitSelectMode()
 	return true
 }
 
-// surroundReplace implements mr<from><to>.
+// surroundReplace is surround_replace: each delimiter of the pair
+// around every range becomes the matching half of the new pair,
+// nested pairs included, since every delimiter keeps the half it was
+// paired with before the edits are put in document order.
 func (h *helixHandlerImpl) surroundReplace(from, to rune) bool {
-	start, end, ok := h.surroundBounds(surroundPair(from))
+	pairs, ok := h.surroundPositions(surroundPair(from))
 	if !ok {
 		return false
 	}
 	openTo, closeTo := surroundPair(to)
-	last := end
-	if last.X == 0 {
-		return false
+	edits := make([]edit, 0, len(pairs))
+	for i, at := range pairs {
+		replacement := openTo
+		if i%2 == 1 {
+			replacement = closeTo
+		}
+		edits = append(edits, edit{
+			from: at, to: term.Coordinates{X: at.X + 1, Y: at.Y}, text: string(replacement),
+		})
 	}
-	last.X--
-	ctx := context.Background()
-	buf := h.buf()
-	buf.Edit(ctx, last, end, string(closeTo))
-	buf.Edit(ctx, start, term.Coordinates{Y: start.Y, X: start.X + 1}, string(openTo))
-	h.reselectRange(start, end)
+	sortEdits(edits)
+	_, cs := h.applyEdits(edits)
+	h.setSelection(h.sel.mapThrough(cs))
 	h.exitSelectMode()
 	return true
+}
+
+// sortEdits puts edits in document order, which applyEdits needs.
+func sortEdits(edits []edit) {
+	slices.SortStableFunc(edits, func(a, b edit) int {
+		switch {
+		case coordinatesBefore(a.from, b.from):
+			return -1
+		case coordinatesBefore(b.from, a.from):
+			return 1
+		}
+		return 0
+	})
 }
 
 // surroundBounds locates the delimiter pair enclosing the caret without
@@ -2598,49 +2851,57 @@ func (h *helixHandlerImpl) surroundBounds(open, closing rune) (from, to term.Coo
 
 // --- increment ---
 
-// increment applies C-a / C-x and drops select mode when the number
-// actually changed, matching increment_impl's guarded exit.
+// increment applies C-a / C-x and drops select mode when a number
+// actually changed, matching increment_impl's guarded exit. With the #
+// register the amount grows by one per range, so a column of equal
+// numbers becomes a sequence.
 func (h *helixHandlerImpl) increment(by int) bool {
-	if !h.incrementSelection(by) {
+	step := 0
+	if h.selectedRegister == sequenceRegister {
+		step = by / max(1, h.motionCount())
+	}
+	h.selectedRegister = 0
+	if !h.incrementSelection(by, step) {
 		return false
 	}
 	h.exitSelectMode()
 	return true
 }
 
-// incrementSelection implements C-a / C-x. Helix looks for a number
-// inside the selection, or the first one starting at the caret, and
-// rewrites it in place keeping the selection over the new digits.
-func (h *helixHandlerImpl) incrementSelection(by int) bool {
-	from, to, ok := h.cursor.SelectionRange()
-	if !ok {
-		return false
-	}
-	row := from.Y
+// incrementSelection is increment_impl over every range: the text a
+// range covers is handed to the incrementors as it is, so a cursor on
+// one digit of a number changes that digit alone, as it does in
+// Helix, and a range that holds no integer or date is left as it is.
+// The amount grows by step from one range to the next, which is what
+// the # register asks for, whether or not the range before changed.
+func (h *helixHandlerImpl) incrementSelection(by, step int) bool {
+	h.carryEdits()
 	buf := h.buf()
-	if row >= buf.Rows() || row != to.Y {
+	src := h.sel
+	edits := make([]edit, 0, src.len())
+	ranges := slices.Clone(src.ranges)
+	changed := make([]int, 0, src.len())
+	amount := int64(by)
+	for i, r := range src.ranges {
+		next, ok := incrementText(rangeText(buf, r), amount)
+		amount += int64(step)
+		if !ok {
+			continue
+		}
+		edits = append(edits, edit{from: r.from(), to: r.to(), text: next})
+		changed = append(changed, i)
+	}
+	if len(edits) == 0 {
 		return false
 	}
-	line := []rune(rowString(buf, row))
-	start, end, ok := numberAround(line, from.X, min(to.X, len(line)))
-	if !ok {
-		return false
+	spans, cs := h.applyEdits(edits)
+	for i := range ranges {
+		ranges[i] = ranges[i].mapThrough(cs)
 	}
-	value, err := strconv.ParseInt(string(line[start:end]), 10, 64)
-	if err != nil {
-		return false
+	for j, i := range changed {
+		ranges[i] = spans[j].withDirection(src.ranges[i].backward())
 	}
-	next := strconv.FormatInt(value+int64(by), 10)
-	// Fixed-width numbers such as 007 keep their padding.
-	if padded := zeroPadded(string(line[start:end])); padded > 0 && value+int64(by) >= 0 {
-		next = padLeft(next, padded)
-	}
-	buf.Edit(context.Background(),
-		term.Coordinates{X: start, Y: row},
-		term.Coordinates{X: end, Y: row}, next)
-	h.reselectRange(
-		term.Coordinates{X: start, Y: row},
-		term.Coordinates{X: start + len([]rune(next)), Y: row})
+	h.setSelection(selection{ranges: ranges, primary: src.primary})
 	return true
 }
 

@@ -2460,6 +2460,12 @@ func (c *Cursor) SetCommentSpec(spec CommentSpec) {
 	c.commentSpec = spec
 }
 
+// CommentSpec returns the active language-specific comment delimiters,
+// the zero value when none were set.
+func (c *Cursor) CommentSpec() CommentSpec {
+	return c.commentSpec
+}
+
 // InsertBlock inserts a string in a block-wise fashion meaning it
 // will insert each of the lines at corresponding relative x and y positions
 // shifting content to the right accordingly.

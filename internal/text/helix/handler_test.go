@@ -348,8 +348,8 @@ func TestModeTransitions(t *testing.T) {
 		send(t, hx, modKey(term.ModCtrl, 'a'))
 		assert.True(t, hx.IsSelectMode())
 
-		hx2, _, _ := newHelix(t, "n 41", term.Coordinates{})
-		send(t, hx2, key('v'), key('w'), key('e'))
+		hx2, _, _ := newHelix(t, "41 n", term.Coordinates{})
+		send(t, hx2, key('v'), key('e'))
 		require.True(t, hx2.IsSelectMode())
 		send(t, hx2, modKey(term.ModCtrl, 'a'))
 		assert.False(t, hx2.IsSelectMode())
@@ -462,9 +462,9 @@ func TestInsertModeKeys(t *testing.T) {
 		{name: "alt-delete deletes the next word", content: "foo bar",
 			evs:  []term.Event{key('i'), modNamedKey(term.ModAlt, term.KeyDelete)},
 			want: " bar"},
-		{name: "ctrl-u kills back to the first non blank", content: "  foo",
-			at:  term.Coordinates{X: 5},
-			evs: []term.Event{key('i'), modKey(term.ModCtrl, 'u')}, want: "  "},
+		{name: "ctrl-u kills back to the first non blank", content: "  foo\nx",
+			at:  term.Coordinates{X: 4},
+			evs: []term.Event{key('a'), modKey(term.ModCtrl, 'u')}, want: "  \nx"},
 		{name: "ctrl-u at the first non blank kills the indent", content: "  foo",
 			at:  term.Coordinates{X: 2},
 			evs: []term.Event{key('i'), modKey(term.ModCtrl, 'u')}, want: "foo"},
@@ -556,8 +556,8 @@ func TestInsertModeKeys(t *testing.T) {
 	})
 
 	t.Run("ctrl-u on a blank line kills the whole indent", func(t *testing.T) {
-		hx, buf, _ := newHelix(t, "   \nx", term.Coordinates{X: 3})
-		send(t, hx, key('i'), modKey(term.ModCtrl, 'u'))
+		hx, buf, _ := newHelix(t, "   \nx", term.Coordinates{X: 2})
+		send(t, hx, key('a'), modKey(term.ModCtrl, 'u'))
 		assert.Equal(t, "\nx", buf.String())
 	})
 
@@ -2181,11 +2181,16 @@ func TestYankAndPaste(t *testing.T) {
 		assert.Equal(t, "foo ", data.Text)
 	})
 
-	t.Run("y with no selection is unhandled", func(t *testing.T) {
-		hx, _, _ := newHelix(t, "abc", term.Coordinates{})
+	// Helix never has less than one range, so dropping the cursor's
+	// selection leaves the cell under the caret selected.
+	t.Run("y after Unselect yanks the cell under the caret", func(t *testing.T) {
+		hx, _, clip := newHelix(t, "abc", term.Coordinates{})
 		require.True(t, hx.Unselect())
 		_, handled := hx.Handle(key('y'))
-		assert.False(t, handled)
+		assert.True(t, handled)
+		data, err := clip.Paste(clipboard.DefaultRegisterID)
+		require.NoError(t, err)
+		assert.Equal(t, "a", data.Text)
 	})
 
 	// Helix's p/P never replace the selection; only R does.
@@ -2351,10 +2356,16 @@ func TestIndentOperators(t *testing.T) {
 		assert.Equal(t, "a", buf.String())
 	})
 
-	t.Run("indent keeps a line selection", func(t *testing.T) {
+	// Helix maps the selection through the indent it inserts rather
+	// than snapping it back to whole lines, so the first line's new
+	// indent falls outside the range while the line ending it ended on
+	// stays inside. The cursor has no cell for that line ending and
+	// shows the range ending on b.
+	t.Run("indent carries the selection through the inserted indent", func(t *testing.T) {
 		hx, _, _ := newHelix(t, "a\nb\nc", term.Coordinates{})
 		send(t, hx, keys("xx>")...)
-		assert.Equal(t, "  a\n  b\n", sel(t, hx))
+		assert.Equal(t, "a\n  b", sel(t, hx))
+		assert.Equal(t, []string{"a\n  b\n"}, sels(hx))
 	})
 }
 
@@ -2458,7 +2469,7 @@ func TestInsertEntry(t *testing.T) {
 		{name: "O opens above", content: "a\nb",
 			evs: append(keys("O"), keys("X")...), want: "X\na\nb"},
 		{name: "counted o opens several lines", content: "a",
-			evs: append(keys("3o"), keys("X")...), want: "a\n\n\nX"},
+			evs: keys("3o"), want: "a\n\n\n"},
 		{name: "a at the buffer end appends", content: "ab",
 			at: term.Coordinates{X: 1}, evs: append(keys("a"), keys("X")...),
 			want: "abX"},
@@ -2577,7 +2588,10 @@ func TestSurround(t *testing.T) {
 	})
 }
 
-// TestIncrement pins C-a and C-x.
+// TestIncrement pins C-a and C-x, which hand the text under the
+// selection to the incrementors as it is: a cursor on one digit of a
+// number changes that digit alone, so the whole number has to be
+// selected for it to be counted as one.
 func TestIncrement(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -2594,22 +2608,27 @@ func TestIncrement(t *testing.T) {
 			evs: append(keys("5"), modKey(term.ModCtrl, 'a')), want: "6"},
 		{name: "rolls over digits", content: "9",
 			evs: []term.Event{modKey(term.ModCtrl, 'a')}, want: "10"},
-		{name: "borrows across digits", content: "10",
-			evs: []term.Event{modKey(term.ModCtrl, 'x')}, want: "9"},
+		{name: "borrows across the selected digits", content: "10",
+			evs: append(keys("miw"), modKey(term.ModCtrl, 'x')), want: "9"},
 		{name: "keeps zero padding", content: "007",
-			evs: []term.Event{modKey(term.ModCtrl, 'a')}, want: "008"},
+			evs: append(keys("miw"), modKey(term.ModCtrl, 'a')), want: "008"},
 		{name: "padding survives a carry", content: "099",
-			evs: []term.Event{modKey(term.ModCtrl, 'a')}, want: "100"},
+			evs: append(keys("miw"), modKey(term.ModCtrl, 'a')), want: "100"},
 		{name: "crosses zero into negative", content: "0",
 			evs: []term.Event{modKey(term.ModCtrl, 'x')}, want: "-1"},
-		{name: "negative numbers increment", content: "-2",
-			at: term.Coordinates{X: 1}, evs: []term.Event{modKey(term.ModCtrl, 'a')},
-			want: "-1"},
-		{name: "finds the number after the caret", content: "ab 12",
-			evs: []term.Event{modKey(term.ModCtrl, 'a')}, want: "ab 13"},
-		{name: "picks up the whole run from the middle", content: "1234",
+		{name: "a selected negative number increments", content: "-2",
+			evs: append(keys("vl"), modKey(term.ModCtrl, 'a')), want: "-1"},
+		{name: "a cursor off the number does nothing", content: "ab 12",
+			evs: []term.Event{modKey(term.ModCtrl, 'a')}, want: "ab 12"},
+		{name: "a cursor on one digit changes that digit alone", content: "1234",
 			at: term.Coordinates{X: 2}, evs: []term.Event{modKey(term.ModCtrl, 'a')},
-			want: "1235"},
+			want: "1244"},
+		{name: "a selected word with letters is left alone", content: "a1",
+			evs: append(keys("miw"), modKey(term.ModCtrl, 'a')), want: "a1"},
+		{name: "hexadecimal", content: "0x0f",
+			evs: append(keys("miw"), modKey(term.ModCtrl, 'a')), want: "0x10"},
+		{name: "a date moves by a day", content: "2021-12-31",
+			evs: append(keys("vlllllllll"), modKey(term.ModCtrl, 'a')), want: "2022-01-01"},
 		{name: "no number leaves the line alone", content: "abc",
 			evs: []term.Event{modKey(term.ModCtrl, 'a')}, want: "abc"},
 		{name: "empty buffer is inert", content: "",

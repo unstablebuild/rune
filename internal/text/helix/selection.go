@@ -404,10 +404,14 @@ func (s selection) fragments(buf *cell.Buffer) []string {
 
 // rangeText is the document text of [r.from(), r.to()), with a
 // newline for every line ending the range crosses. The position past
-// the last row is the end of the document, not a line ending.
+// the last row is the end of the document, not a line ending, except
+// for a linewise range, which owns the line ending of its last line
+// whether or not the buffer stores one, as the cursor's own linewise
+// selection does.
 func rangeText(buf *cell.Buffer, r rng) string {
 	from, to := r.from(), r.to()
 	cells := buf.View().RawCells()
+	linewise := lineShaped(r)
 	var b strings.Builder
 	for y := from.Y; y <= to.Y && y < len(cells); y++ {
 		row := cells[y]
@@ -424,7 +428,7 @@ func rangeText(buf *cell.Buffer, r rng) string {
 				b.WriteRune(comb)
 			}
 		}
-		if y < to.Y && y+1 < len(cells) {
+		if y < to.Y && (y+1 < len(cells) || linewise) {
 			b.WriteByte('\n')
 		}
 	}
