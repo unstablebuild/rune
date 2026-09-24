@@ -83,7 +83,9 @@ Learn more in the [standard editor guide](https://docs.rune.build/learn/standard
 {{- else if eq .EditorMode "helix" -}}
 You are using the built-in **helix** editor: a motion first selects the text
 you mean, then an operator acts on that selection, so you press `w` then `d`
-rather than `dw`.
+rather than `dw`. There can be many selections at once: `C` copies the
+selection onto the next line, `s` selects every regex match inside it, and
+every motion, operator and insert-mode key then acts on all of them.
 
 Learn more in the [helix editor guide](https://docs.rune.build/learn/helix-editor).
 {{- else if eq .EditorMode "exo" -}}

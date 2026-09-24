@@ -116,7 +116,11 @@ type helixHandler interface {
 // handler owns the selection set in document space; text.Cursor holds
 // exactly one selection, the primary, which is re-installed after every
 // event so the caret, viewport, mouse and every other consumer of
-// text.Handler keep working unchanged.
+// text.Handler keep working unchanged. Every motion, operator and
+// insert-mode key acts on all the ranges, either as a pure function of
+// the set or by lending the cursor to each range in turn and carrying
+// the others through the edits it makes; the non-primary ranges are
+// drawn through location lists and counted in the message bar.
 type helixHandlerImpl struct {
 	config    helixConfig
 	less      handler.Less

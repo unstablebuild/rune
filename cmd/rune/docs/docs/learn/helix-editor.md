@@ -50,12 +50,10 @@ foo bar baz        w d    deletes "foo ", leaving "bar baz"
 foo bar baz        v w w  selects "foo bar " (select mode keeps the anchor)
 ```
 
-Rune's helix editor is **single-selection**. Helix's multiple-selection
-commands are deliberately left unbound rather than approximated, so they stay
-free for your own `command.key_bindings`: `s`, `S`, `C`, `A-C`, `A-s`,
-`A-minus`, `A-_`, `K`, `A-K`, `,`, `A-,`, `&`, `(`, `)`, `A-(`, `A-)`, `A-I`,
-`A-a`. The syntax-tree sibling and parent motions (`A-n`, `A-p`, `A-e`,
-`A-b`, `A-left`, `A-right`) are unbound for the same reason.
+There can be any number of them: see [Multiple selections](#multiple-selections).
+The syntax-tree sibling and parent motions (`A-n`, `A-p`, `A-e`, `A-b`,
+`A-left`, `A-right`) are left unbound, so they stay free for your own
+`command.key_bindings`.
 
 ## Modes
 
@@ -132,10 +130,17 @@ target character.
 
 | Key | Motion |
 | --- | --- |
-| `/` / `?` | Search forward / backward; `<enter>` jumps to and selects the first match |
-| `n` / `N` | Next / previous match |
-| `*` | Search for the selection, anchored at word boundaries |
-| `A-*` | Search for the selection verbatim |
+| `/` / `?` | Search forward / backward for a regex; the first match is selected as you type, `<enter>` confirms |
+| `n` / `N` | Next / previous match. In select mode every match joins the selection |
+| `*` | Make the selection the search pattern, anchored at word boundaries |
+| `A-*` | Make the selection the search pattern verbatim |
+
+Patterns are regular expressions, case-insensitive unless they contain an
+upper-case letter. `n` always walks forward and `N` backward, whichever of
+`/` and `?` set the pattern, and both wrap around the document, reporting
+`Wrapped around document` or `No more matches`. `*` with several selections
+joins their texts with `|`, so `n` finds the next occurrence of any of them.
+The pattern lives in the `/` register.
 
 ### Jumps
 
@@ -181,6 +186,74 @@ In select mode `g w` extends the selection to the label instead of replacing it.
 | `_` | Trim whitespace off both ends |
 | `A-o` / `A-<up>` | Expand to the enclosing syntax node |
 | `A-i` / `A-<down>` | Shrink to the child syntax node |
+
+## Multiple selections
+
+Every motion, operator and insert-mode key acts on **all** selections at
+once. One of them is the **primary**: it carries the terminal cursor, and the
+others show as dimmed ghost cursors over their reversed text. The message bar
+counts them Helix-style (`2/5 sels`: primary 2 of 5). Selections never
+overlap; two that touch merge into one.
+
+### Making selections
+
+| Key | Action |
+| --- | --- |
+| `C` / `A-C` | Copy every selection onto the next / previous line, on the same columns; lines too short to hold it are skipped |
+| `s` | Select every regex match inside every selection |
+| `S` | Split every selection on every regex match |
+| `A-s` | Split every selection on line endings |
+| `K` / `A-K` | Keep / remove the selections whose text matches a regex |
+| `n` / `N` in select mode | Add the next / previous search match |
+| `/` in select mode | Add the confirmed match |
+
+`s`, `S`, `K` and `A-K` open a prompt; the result is shown as you type and
+`<esc>` puts the selection back. `s ^` puts a cursor on every line of the
+selection and `% s {pattern}` is the idiom for "every occurrence in the file".
+A pattern that selects nothing reports `nothing selected`; `K` and `A-K`
+report `no selections remaining`.
+
+### Managing selections
+
+| Key | Action |
+| --- | --- |
+| `,` | Keep only the primary |
+| `A-,` | Remove the primary |
+| `(` / `)` | Make the previous / next selection primary |
+| `A-(` / `A-)` | Rotate the text under the selections backward / forward |
+| `A-minus` | Merge everything into one selection |
+| `A-_` | Merge selections that touch |
+| `&` | Align: pad the *n*-th selection of every line onto the same column |
+| `;` `A-;` `A-:` `x` `X` `A-x` `_` | As in [Changing the selection](#changing-the-selection), on every selection |
+
+### Operators and insert mode
+
+Operators fan out: `d` deletes every selection, `>` indents every line any
+selection touches (once), `J` joins after each one, `r`, `~`, `m s`, `C-a`
+and the rest act per selection. `o` opens a line under each selection and
+leaves a cursor on every new line, and `3o` opens three lines per selection
+with a cursor on each.
+
+Yank stores one fragment per selection; a later `p`, `P`, `R` or `C-r` pairs
+the *n*-th fragment with the *n*-th selection, repeating the last fragment
+for any selection beyond that. A register written elsewhere pastes into all
+of them. The `#` register turns `C-a` into a running count: with three
+selections on `1`, `"#C-a` writes `2`, `3`, `4`.
+
+Insert mode types at every selection: `i` puts a cursor at the start of
+each, `a` at the end of each, `I` and `A` at every line's edges, and every
+key on the [insert mode](#insert-mode) table, a paste burst and `C-r` act at
+all of them. `<esc>` leaves one selection per cursor, and `u` undoes the
+whole session in one step, bringing every selection back.
+
+```text
+foo bar        %s\w+<enter>   selects "foo" and "bar"
+foo bar        (              makes "foo" primary
+foo bar        ,              keeps "foo"
+
+a              C C            three cursors, one per line
+a              iX<esc>        every line now starts with X
+```
 
 ## Text objects
 
@@ -257,10 +330,14 @@ leader the first line already carries. `A-J` selects the separators instead.
 | `o` / `O` | On a new line below / above |
 | `c` | After deleting the selection |
 
-`i` is the one entry that leaves a non-empty range behind, so `<esc>` keeps
-the caret where it already was rather than pulling it back onto the text you
-just typed. Every other entry lands on the last character inserted. This
-matches Helix, where only `a` sets `restore_cursor`.
+The selection survives insert mode, as it does in Helix. `i` flips it so its
+cursor sits on its first cell, and the text you type goes in front of it:
+`<esc>` keeps the caret where it already was. `a` widens it one cell past its
+end so the text goes after it, and `<esc>` pulls that cell back off, leaving
+the selection over the original text plus what you typed. `I`, `A`, `o`, `O`
+and `c` start from a bare cursor, so `<esc>` lands on the cell after the
+last character inserted. `a` at the very end of a file with no final line
+ending adds one, so there is a cell to widen onto.
 
 While inserting:
 
@@ -268,7 +345,7 @@ While inserting:
 | --- | --- |
 | `<esc>` | Back to normal mode |
 | `C-s` | Commit an undo checkpoint |
-| `C-r{reg}` | Insert a register |
+| `C-r{reg}` | Insert a register, one fragment per selection |
 | `C-w` / `A-<backspace>` | Delete the word before the caret |
 | `A-d` / `A-<del>` | Delete the word after the caret |
 | `C-u` | Kill to the line start |
@@ -354,11 +431,16 @@ drive the editor grammar itself.
 
 ## What's different from Helix
 
-- **Single selection.** Phase one ships one selection; the multi-selection
-  keys are listed above and stay unbound.
 - **No tree-sitter objects.** `m i f`, `m i t`, `m i a`, `m i c` and the
   sibling motions need a syntax service the editor does not own. `A-o` /
   `A-i` expansion still works because Rune supplies it.
+- **Go regular expressions.** Patterns use Go's RE2 syntax rather than
+  Rust's regex crate: no look-around or back-references in either, but `\w`
+  and `\b` are ASCII-only here, so reach for `\pL` for letters beyond it. A
+  pattern runs on the text of each selection, so `^`, `$` and `\b` see the
+  selection's edges as boundaries.
+- **Search matches are highlighted.** Helix only selects the match; Rune
+  also lights up every other occurrence, as its other editors do.
 - **`:` is Rune's prompt.** There is no separate Helix command mode; `:`
   opens the global [command prompt](./command-prompt.md), so `:w`, `:q` and
   friends are Rune commands.
@@ -371,6 +453,7 @@ drive the editor grammar itself.
 ## What's not here
 
 Shell piping (`\|`, `!`, `$`), `C-z` suspend, LSP-driven `g d` / `g r` / `g i`
-navigation and the `[`/`]` diagnostic and syntax jumps are not bound by the
+navigation, `A-I` / `A-a` (insert at the start / end of every line of the
+selection) and the `[`/`]` diagnostic and syntax jumps are not bound by the
 editor. Use the [command prompt](./command-prompt.md) and the preset's
 `<space>` menu for the ones Rune provides.
