@@ -846,6 +846,7 @@ func (b *bootstrapHandler) Close() error {
 
 const (
 	editorModal    = "modal"
+	editorHelix    = "helix"
 	editorStandard = "standard"
 	editorEmacs    = "emacs"
 	// editorModeless is the deprecated alias for editorStandard, kept so
@@ -857,13 +858,14 @@ const (
 // stay byte-identical between the prompt and the callback.
 const (
 	optVimYes   = "    vim    "
+	optHelix    = "   helix   "
 	optStandard = " standard "
 	optEmacs    = "   emacs   "
 )
 
 var (
 	bootstrapVimKeys = []term.KeyComb{
-		{Ch: 's'}, {Ch: 'e'}, {Ch: 'v'},
+		{Ch: 's'}, {Ch: 'e'}, {Ch: 'v'}, {Ch: 'h'},
 	}
 
 	bootstrapWelcomeKeys = []term.KeyComb{
@@ -933,17 +935,19 @@ func (b *bootstrapHandler) openWelcomePrompt() {
 
 func (b *bootstrapHandler) openVimPrompt() {
 	msg := "## Choose your key bindings\n" +
-		"Rune ships with three built-in editors, so pick the one that feels like home.\n\n" +
+		"Rune ships with four built-in editors, so pick the one that feels like home.\n\n" +
 		"Know vim? Pick **vim** and you get it **everywhere**, not just in editor " +
 		"buffers: the terminal, input boxes, and the file explorer.\n\n" +
 		"Used to VS Code, Cursor, Sublime or a plain text editor? Pick **standard** and Rune uses " +
 		"those familiar, standard key bindings everywhere instead.\n\n" +
 		"Prefer Emacs? Pick **emacs** for an Emacs-style keymap everywhere.\n\n" +
+		"Coming from Helix? Pick **helix** for its selection-first grammar, " +
+		"where a motion picks the target and the operator acts on it.\n\n" +
 		"**Which key bindings do you want?**"
 	guard := b.promptGuard()
 	b.prompt(
 		msg,
-		[]string{optStandard, optEmacs, optVimYes},
+		[]string{optStandard, optEmacs, optVimYes, optHelix},
 		bootstrapVimKeys,
 		sdkhandler.FuncPromptHandler(
 			guard.onSelect(func(_ int, option string) {
@@ -1093,6 +1097,8 @@ func optionToChoice(option string) string {
 		return editorStandard
 	case optEmacs:
 		return editorEmacs
+	case optHelix:
+		return editorHelix
 	}
 	return editorModal
 }

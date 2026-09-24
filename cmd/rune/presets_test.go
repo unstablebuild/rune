@@ -22,11 +22,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/unstablebuild/rune-go-sdk/term"
 	"gopkg.in/yaml.v3"
+	"unstable.build/rune/internal/handler"
 )
 
 var presetFiles = []string{
 	"preset_modal.yaml",
+	"preset_helix.yaml",
 	"preset_standard_darwin.yaml",
 	"preset_standard_linux.yaml",
 	"preset_emacs.yaml",
@@ -65,5 +68,37 @@ func TestPresetCommentedBlocksUncomment(t *testing.T) {
 		}
 		t.Logf("%s: shipped=%d keys, uncommented=%d keys",
 			name, len(shipped), len(full))
+	}
+}
+
+// TestPresetKeyBindingsParse pins that every shipped binding survives the
+// same parse the IDE performs, so a preset cannot ship a key spelling the
+// command layer silently drops.
+func TestPresetKeyBindingsParse(t *testing.T) {
+	for _, name := range presetFiles {
+		raw, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var cfg struct {
+			Command struct {
+				KeyBindings map[string]any `yaml:"key_bindings"`
+			} `yaml:"command"`
+		}
+		if err := yaml.Unmarshal(raw, &cfg); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if len(cfg.Command.KeyBindings) == 0 {
+			t.Errorf("%s: no command key bindings", name)
+			continue
+		}
+		for key, cmd := range cfg.Command.KeyBindings {
+			if _, err := handler.ParseSequence(key); err == nil {
+				continue
+			}
+			if _, err := term.ParseKey(key); err != nil {
+				t.Errorf("%s: key binding %q (%v): %v", name, key, cmd, err)
+			}
+		}
 	}
 }

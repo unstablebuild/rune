@@ -80,6 +80,12 @@ buffer and editing commands are triggered with modifier chords, so there is
 no separate command mode to switch into.
 
 Learn more in the [standard editor guide](https://docs.rune.build/learn/standard-editor).
+{{- else if eq .EditorMode "helix" -}}
+You are using the built-in **helix** editor: a motion first selects the text
+you mean, then an operator acts on that selection, so you press `w` then `d`
+rather than `dw`.
+
+Learn more in the [helix editor guide](https://docs.rune.build/learn/helix-editor).
 {{- else if eq .EditorMode "exo" -}}
 You are using an **exo** editor: Rune hands editing off to your own external
 editor (for example Vim or Neovim) while keeping its windows, tabs, and

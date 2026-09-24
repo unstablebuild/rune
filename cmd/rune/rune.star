@@ -368,8 +368,9 @@ config = {
     "editor": {
         # Editor mode and exo settings are not configured here. The
         # bootstrap flow writes an editor preset with the user's choice
-        # ("modal", "standard", "emacs", or "exo" with a preset). Without an
-        # editor preset, Rune defaults to modal as configured below.
+        # ("modal", "helix", "standard", "emacs", or "exo" with a preset).
+        # Without an editor preset, Rune defaults to modal as configured
+        # below.
         # Enable or disable syntax-driven indentation.
         "autoindent": True,
         # Auto-pair quotes, brackets, and braces while editing. Explicitly off
@@ -403,6 +404,20 @@ config = {
         # guard and always parse.
         "max_size_for_syntax": 1048576,
         "modal": {
+            # Default text attributes.
+            "attr":        attr(fg = "default", bg = "default"),
+            "message_bar": {
+                # Base attributes of the message bar and the search prompt.
+                "attr":   attr(fg = "default", bg = "gray"),
+                # Layout of the superimposed message bar shown while
+                # searching. The Message component supports the same styling
+                # operators as status-bar components.
+                "layout": '░▒▓█ {{ .Message | fg "white" }} ',
+            },
+            # Search result attributes.
+            "search_attr": attr(fg = "grey", bg = "yellow"),
+        },
+        "helix": {
             # Default text attributes.
             "attr":        attr(fg = "default", bg = "default"),
             "message_bar": {
@@ -498,8 +513,9 @@ config = {
             "goto":    "<esc>:{line}<enter>{col}|",
             # Rune-native editor used to serve URIs the external editor
             # cannot meaningfully edit (memory:// pseudo-URIs such as
-            # the file explorer's tab). Valid values are "modal", "standard",
-            # or "emacs". "modeless" remains a deprecated alias for "standard".
+            # the file explorer's tab). Valid values are "modal", "helix",
+            # "standard", or "emacs". "modeless" remains a deprecated alias
+            # for "standard".
             "fallback": "modal",
             # Experimental. When True, Rune overlays its own location-list
             # attributes (syntax highlights, LSP diagnostics, debugger variables)

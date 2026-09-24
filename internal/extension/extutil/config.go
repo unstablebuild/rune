@@ -28,6 +28,7 @@ import (
 	"unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/text"
 	"unstable.build/rune/internal/text/emacs"
+	"unstable.build/rune/internal/text/helix"
 	"unstable.build/rune/internal/text/standard"
 	"unstable.build/rune/internal/text/vi"
 )
@@ -209,6 +210,8 @@ func Editor(clipboard clipboard.Register, cfg config.Config) (text.Editor, error
 	switch mode {
 	case "modal":
 		return viEditor(clipboard), nil
+	case "helix":
+		return helixEditor(clipboard), nil
 	case "emacs":
 		return emacsEditor(clipboard), nil
 	case "exo":
@@ -219,6 +222,8 @@ func Editor(clipboard clipboard.Register, cfg config.Config) (text.Editor, error
 		switch fallback {
 		case "modal":
 			return viEditor(clipboard), nil
+		case "helix":
+			return helixEditor(clipboard), nil
 		case "emacs":
 			return emacsEditor(clipboard), nil
 		}
@@ -229,23 +234,24 @@ func Editor(clipboard clipboard.Register, cfg config.Config) (text.Editor, error
 }
 
 // EditorModal reports whether the configured compose editor is modal
-// (vi-style). It mirrors the resolution Editor performs, including the
-// editor.exo fallback. A bare <Enter> submits in modal normal mode and
-// inserts a newline in insert mode, so callers gate submission on this.
+// (vi- or helix-style). It mirrors the resolution Editor performs,
+// including the editor.exo fallback. A bare <Enter> submits in modal
+// normal mode and inserts a newline in insert mode, so callers gate
+// submission on this.
 func EditorModal(cfg config.Config) (bool, error) {
 	mode, err := editorMode(cfg)
 	if err != nil {
 		return false, err
 	}
 	switch mode {
-	case "modal":
+	case "modal", "helix":
 		return true, nil
 	case "exo":
 		fallback, err := exoFallback(cfg)
 		if err != nil {
 			return false, err
 		}
-		return fallback == "modal", nil
+		return fallback == "modal" || fallback == "helix", nil
 	default:
 		return false, nil
 	}
@@ -288,6 +294,20 @@ func emacsEditor(clipboard clipboard.Register) text.Editor {
 		emacs.WithAuxiliaryBar(false, text.AuxBarConfig{}),
 		emacs.WithIconsBar(false, text.IconsBarConfig{}),
 		emacs.WithGitBar(false, text.IconsBarConfig{}),
+	)
+}
+
+// helixEditor builds a helix editor with all chrome bars disabled so an
+// extension-hosted compose buffer shows only the text area.
+func helixEditor(clipboard clipboard.Register) text.Editor {
+	return helix.Editor(
+		helix.WithClipboard(clipboard),
+		helix.WithWrap(true),
+		helix.WithSearch(false),
+		helix.WithStatusBarConfig(false, text.StatusBarConfig{}),
+		helix.WithAuxiliaryBar(false, text.AuxBarConfig{}),
+		helix.WithIconsBar(false, text.IconsBarConfig{}),
+		helix.WithGitIcons(false),
 	)
 }
 
@@ -354,8 +374,8 @@ func editorMode(cfg config.Config) (string, error) {
 // exoFallback returns the Rune-native fallback editor used when
 // editor.mode is "exo". The full external editor is not viable inside
 // an extension process, so compose input uses this fallback. Valid
-// values are "modal", "standard", or "emacs"; the deprecated "modeless"
-// alias resolves to "standard". Defaults to "standard".
+// values are "modal", "helix", "standard", or "emacs"; the deprecated
+// "modeless" alias resolves to "standard". Defaults to "standard".
 func exoFallback(cfg config.Config) (string, error) {
 	def := "standard"
 	edConfig, err := cfg.GetConfig("editor")
@@ -383,7 +403,7 @@ func exoFallback(cfg config.Config) (string, error) {
 	}
 
 	switch fallback {
-	case "modal", "standard", "emacs":
+	case "modal", "helix", "standard", "emacs":
 		return fallback, nil
 	case "modeless":
 		return "standard", nil

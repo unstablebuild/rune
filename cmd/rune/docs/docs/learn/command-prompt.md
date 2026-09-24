@@ -126,12 +126,15 @@ available.
 
 The editor follows your `editor.mode`: `modal` mode gives you
 [modal editing](./vim-editor.md) with normal-mode motions and text objects,
-`standard` mode gives you the [standard editor](./standard-editor.md), and
-`emacs` mode gives you the [Emacs editor](./emacs-editor.md). In `exo` mode the
-prompt cannot host your external editor, so it uses your
+`helix` mode gives you the [Helix editor](./helix-editor.md) and its
+selection-first grammar, `standard` mode gives you the
+[standard editor](./standard-editor.md), and `emacs` mode gives you the
+[Emacs editor](./emacs-editor.md). In `exo` mode the prompt cannot host your
+external editor, so it uses your
 [fallback editor](./exoeditor.md#fallback-editor) (`editor.exo.fallback`),
-which may be modal, standard, or Emacs. Either way you are editing the command
-itself, not a file, so the buffer is the single line that will be dispatched.
+which may be modal, Helix, standard, or Emacs. Either way you are editing the
+command itself, not a file, so the buffer is the single line that will be
+dispatched.
 
 While edit mode is active, completion, history, and the manual are
 suspended so your keystrokes go straight to the editor. To leave it:

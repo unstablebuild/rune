@@ -863,6 +863,7 @@ func TestEditorModeNormalizesModelessToStandard(t *testing.T) {
 		{"standard", editorModeStandard},
 		{"emacs", editorModeEmacs},
 		{"modal", editorModeModal},
+		{"helix", editorModeHelix},
 		{"exo", editorModeExo},
 		{"bogus", editorModeModal},
 	} {
@@ -873,6 +874,56 @@ func TestEditorModeNormalizesModelessToStandard(t *testing.T) {
 			assert.Equal(t, tc.want, cfg.editorMode())
 		})
 	}
+}
+
+// TestHelixIsAModalEditorMode pins that helix travels the same gating
+// paths as vi: it is a legal editor.exo.fallback, and the console input
+// line and the terminal keymap default to modal for it.
+func TestHelixIsAModalEditorMode(t *testing.T) {
+	t.Parallel()
+
+	t.Run("exo fallback accepts helix", func(t *testing.T) {
+		t.Parallel()
+		canonical, ok := normalizeEditorFallback("helix")
+		require.True(t, ok)
+		assert.Equal(t, editorFallbackHelix, canonical)
+
+		c := ideConfig{cfg: map[string]any{
+			"editor": map[string]any{
+				"mode": "exo",
+				"exo":  map[string]any{"fallback": "helix"},
+			},
+		}, errors: map[string]error{}}
+		assert.Equal(t, editorFallbackHelix, c.exoFallback())
+		assert.Equal(t, editorModeHelix, c.pkgEditorMode())
+	})
+
+	for _, tc := range []struct {
+		mode string
+		want bool
+	}{
+		{editorModeModal, true},
+		{editorModeHelix, true},
+		{editorModeStandard, false},
+		{editorModeEmacs, false},
+	} {
+		t.Run(tc.mode+" modal gating", func(t *testing.T) {
+			c := ideConfig{cfg: map[string]any{
+				"editor": map[string]any{"mode": tc.mode},
+			}, errors: map[string]error{}}
+			assert.Equal(t, tc.want, modalEditorMode(c.pkgEditorMode()))
+			assert.Equal(t, tc.want, c.consoleEditorModal())
+			assert.Equal(t, tc.want, c.terminalModalDefault())
+		})
+	}
+
+	t.Run("helix keeps the modal command key", func(t *testing.T) {
+		t.Parallel()
+		c := ideConfig{cfg: map[string]any{
+			"editor": map[string]any{"mode": editorModeHelix},
+		}, errors: map[string]error{}}
+		assert.Equal(t, defaultModalCommandKey, c.commandKey())
+	})
 }
 
 // TestDebuggerConfigsTemplates asserts that debuggerConfigs reads the

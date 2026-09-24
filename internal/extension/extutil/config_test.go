@@ -24,6 +24,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/clipboard"
 	"unstable.build/rune/internal/text/emacs"
+	"unstable.build/rune/internal/text/helix"
 	"unstable.build/rune/internal/text/standard"
 	"unstable.build/rune/internal/text/vi"
 )
@@ -32,6 +33,7 @@ func TestEditor(t *testing.T) {
 	modalType := reflect.TypeOf(vi.Editor())
 	standardType := reflect.TypeOf(standard.Editor())
 	emacsType := reflect.TypeOf(emacs.Editor())
+	helixType := reflect.TypeOf(helix.Editor())
 
 	tests := []struct {
 		name string
@@ -67,6 +69,11 @@ func TestEditor(t *testing.T) {
 			name: "emacs",
 			cfg:  map[string]any{"editor": map[string]any{"mode": "emacs"}},
 			want: emacsType,
+		},
+		{
+			name: "helix",
+			cfg:  map[string]any{"editor": map[string]any{"mode": "helix"}},
+			want: helixType,
 		},
 		{
 			name: "exo no fallback defaults to standard",
@@ -106,6 +113,14 @@ func TestEditor(t *testing.T) {
 			want: emacsType,
 		},
 		{
+			name: "exo fallback helix",
+			cfg: map[string]any{"editor": map[string]any{
+				"mode": "exo",
+				"exo":  map[string]any{"fallback": "helix"},
+			}},
+			want: helixType,
+		},
+		{
 			name: "exo unknown fallback defaults to standard",
 			cfg: map[string]any{"editor": map[string]any{
 				"mode": "exo",
@@ -136,6 +151,7 @@ func TestEditorModal(t *testing.T) {
 		{"standard", map[string]any{"editor": map[string]any{"mode": "standard"}}, false},
 		{"deprecated modeless alias", map[string]any{"editor": map[string]any{"mode": "modeless"}}, false},
 		{"emacs", map[string]any{"editor": map[string]any{"mode": "emacs"}}, false},
+		{"helix", map[string]any{"editor": map[string]any{"mode": "helix"}}, true},
 		{"exo no fallback defaults to standard", map[string]any{"editor": map[string]any{"mode": "exo"}}, false},
 		{
 			name: "exo fallback modal",
@@ -160,6 +176,14 @@ func TestEditorModal(t *testing.T) {
 				"exo":  map[string]any{"fallback": "emacs"},
 			}},
 			want: false,
+		},
+		{
+			name: "exo fallback helix",
+			cfg: map[string]any{"editor": map[string]any{
+				"mode": "exo",
+				"exo":  map[string]any{"fallback": "helix"},
+			}},
+			want: true,
 		},
 	}
 

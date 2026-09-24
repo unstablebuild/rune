@@ -10,6 +10,7 @@ type BindingMap = Record<string, BindingValue>;
 
 interface KeybindingData {
   modal: PresetData;
+  helix: PresetData;
   standard: Record<Platform, PresetData>;
   emacs: PresetData;
 }

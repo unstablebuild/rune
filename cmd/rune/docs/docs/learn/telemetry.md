@@ -48,7 +48,7 @@ Example startup report:
 | Reset flag | Whether the install identifier appears to have been reset. See [Your install identifier](#your-install-identifier). |
 | Session identifier | A random identifier generated fresh on every launch. |
 | Rune version | The version of the running build. |
-| Editor mode | `modal`, `standard`, `emacs`, or `exo`. |
+| Editor mode | `modal`, `helix`, `standard`, `emacs`, or `exo`. |
 | Operating system | For example `darwin` or `linux`. |
 | Architecture | For example `arm64` or `x86_64`. |
 | Kernel release and version | The kernel strings your operating system reports. |
@@ -84,7 +84,7 @@ Example usage report:
 | Field | Value |
 | --- | --- |
 | Session identifier | The same per-launch identifier as above. |
-| Editor mode | `modal`, `standard`, `emacs`, or `exo`. |
+| Editor mode | `modal`, `helix`, `standard`, `emacs`, or `exo`. |
 | Files opened, closed, edited, saved | Four counts. Counts only, never which files. |
 | Watched file changes | How many files changed on disk under a language server's watch. |
 | Commands run | How many commands you ran. |

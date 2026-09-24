@@ -124,7 +124,7 @@ func validateCommandPrompt(c *ideConfig, cfg map[string]any) (err error) {
 	editorMode := c.editorMode()
 
 	switch editorMode {
-	case editorModeModal:
+	case editorModeModal, editorModeHelix:
 		/* no validation needed */
 	case editorModeStandard, editorModeEmacs:
 		// <c-space> parses/dispatches with Ch == ' ', so treat it as a

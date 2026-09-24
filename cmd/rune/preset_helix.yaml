@@ -1,0 +1,249 @@
+# Rune user configuration (helix editor preset).
+
+# ---------------------------------------------------------------------------
+# GUI theme
+#
+# Rune ships a catalog of themes. Set `default_theme` to any of:
+#   furman, romero, carmack, reynolds, brevik, thompson, pike, hopper,
+#   kernighan, wozniak, auge, ritchie, kelleher, sanfilippo, greig, mullen
+# Run `:guitheme` to preview live.
+# ---------------------------------------------------------------------------
+gui:
+  default_theme: romero
+#   font_size: 13
+#   window_opacity: {fg: 1, bg: 1}
+#   window_blur_radius: 100
+#   # Remap physical keys before they reach the editor (see the key-mapping
+#   # docs). Both sides use the command key-binding syntax. <capslock>,
+#   # <numlock>, <scrolllock> and <menu> only act when remapped here.
+#   key_mapping:
+#     "<capslock>": "<esc>"
+
+# ---------------------------------------------------------------------------
+# Editor
+#
+# `aux_bar` is the strip left of each editor pane, `status_bar` the bar at the
+# bottom of each pane, and `helix.message_bar` the line showing search prompts
+# and echoed messages.
+# ---------------------------------------------------------------------------
+editor:
+  mode: helix
+  helix:
+    attr: {fg: default, bg: default}
+    search_attr: {fg: grey, bg: yellow}
+#     message_bar:
+#       attr: {fg: default, bg: gray}
+#       layout: '░▒▓█ {{ .Message | fg "white" }} '
+#   tabspaces: 4
+#   ruler: 90
+#   autoindent: true            # syntax-driven indentation
+#   auto_pair: false            # auto-pair quotes/brackets/braces
+#   auto_save: false            # flush dirty buffers ~2s after last edit
+#   initial_folds: true         # collapse language-defined folds on open
+#   aux_bar:
+#     enabled:          true
+#     lines:            absolute   # disabled | absolute | relative
+#     git:              inline     # bar | inline | all | disabled
+#     folds:            true
+#     icons:            true
+#     highlight_cursor: true
+#   status_bar:
+#     enabled: true
+#     # Components: Status, Filepath, GitShortRef, GitDiffAdd, GitDiffDel,
+#     # ShiftRight, CursorColumn, CursorLine, TotalLines, Language.
+#     # Pipe operators: bg, fg, bold, italic, underline, reverse, dim.
+#     layout: ' {{ .Status | bg "red" | fg "white" | bold }} █▓▒░  {{ .Filepath | fg "white" }}  {{ .GitShortRef | fg "white" }}   {{ .GitDiffAdd | fg "green" }}   {{ .GitDiffDel | fg "red" }} {{ .ShiftRight }} {{ .CursorColumn | fg "white" }}:{{ .CursorLine | fg "white" }}  {{ .TotalLines | fg "white" }} lines  ░▒▓█ {{ .Language | bold | fg "white" | bg "red" }} '
+#     background_attr:       {bg: gray}
+#     foreground_error_attr: {fg: yellow}
+
+# ---------------------------------------------------------------------------
+# Terminal
+# ---------------------------------------------------------------------------
+# terminal:
+#   modal:             true        # enter modal terminal mode on <esc>
+#   max_lines:         1000
+#   initial_reservoir: 0           # set to non-zero to speed up terminal initialization
+#   plugin:
+#     # Layout of the bar shown above a `!` command. Components:
+#     # Command, StatusIcon, ExitStatus, Elapsed, AlignRight, AlignCenter.
+#     # Pipe operators: bg, fg, bold, italic, underline, reverse, dim.
+#     bar_layout: ' {{ .StatusIcon | bg "gray" | fg "white" }} █▓▒░{{ .AlignCenter }}{{ .Command | fg "white" | bold }}{{ .AlignRight }}  ░▒▓█ {{ .Elapsed | fg "white" | bg "gray" }} '
+#     bar_background_attr: {bg: default}
+#     bar_align_bottom:    true
+#     status_success_icon: ""
+#     status_success_attr: {fg: green}
+#     status_error_icon:   ""
+#     status_error_attr:   {fg: red}
+#     animation: "⠃⠅⠆⠘⠨⠰⠉⠒⠤⠑⠡⠢⠊⠌⠔⠇⠸⠎⠱⠣⠜⠪⠕⠋⠙⠓⠚⠍⠩⠥⠬⠖⠲⠦⠴⠏⠹⠧⠼⠫⠝⠮⠵⠺⠗⠞⠳⠛⠭⠶⠟⠻⠷⠾⠯⠽⠿"
+
+# ---------------------------------------------------------------------------
+# Command prompt
+#
+# `key` opens the command prompt; `history_key` toggles between the command
+# list and history. Aliases layer on top of built-ins: a string value is the
+# substitution, a dict with `command` + `completer` adds completion. Set a
+# key_binding value to "" to unbind one added by an extension.
+# ---------------------------------------------------------------------------
+command:
+#   key:         ":"
+#   history_key: <meta-r>
+#   max_history: 20000
+#   aliases:
+#     # Simple alias: `:w` runs `:write`.
+#     w: write
+#     # Alias with a completer: typing `:e <tab>` suggests files.
+#     e:    {command: edit, completer: files}
+#     # Alias with a shell completer (here: git branch names).
+#     # The `! …` template runs a shell line whose stdout becomes one
+#     # completion candidate per line.
+#     gitcheckout:
+#       command:   "!! git -C $WORKSPACE_PATH checkout $1"
+#       completer: '! git -C $WORKSPACE_PATH branch --format="%(refname:short)"'
+#     # Open this configuration file (already bound to <meta-,>).
+#     conf: config
+  key_bindings:
+    # Helix's <space> leader menu. The editor owns every key it binds, so a
+    # sequence only reaches the command layer when the editor declines its
+    # first key: <space> and <ctrl-w> are free in normal mode and taken in
+    # insert mode, which is exactly the gate these need.
+    "<space>f": searchfile                # file_picker
+    "<space>e": fexplorer                 # file_explorer
+    "<space>b": tabsearch                 # buffer_picker
+    "<space>j": "cursorhistory prev"      # jumplist_picker
+    "<space>/": searchtext                # global_search
+    "<space>k": "lsp hover"               # hover
+    "<space>r": "lsp rename"              # rename_symbol
+    "<space>h": "lsp references"          # select references to symbol
+    "<space>d": "lsp diagnostics"         # diagnostics_picker
+    "<space>g": gitnextchange             # changed_file_picker
+    "<space>y": clipboardcopy             # yank_to_clipboard
+    "<space>p": clipboardpaste            # paste_clipboard_after
+    "<space>?": history                   # command_palette
+    "<space>s": "echo {prompt}jumptoast<space>locals.scm<space>local.definition.method|local.definition.function<space>"
+    "<space>t": "echo {prompt}jumptoast<space>locals.scm<space>local.definition.type<space>"
+    "<space>v": "echo {prompt}jumptoast<space>locals.scm<space>local.definition.var<space>"
+    # Helix's <ctrl-w> window menu. <space>w reaches the same commands in
+    # Helix, but a Rune sequence is exactly two keys, so only the <ctrl-w>
+    # spelling survives the translation.
+    "<ctrl-w>h": "windowfocus left"
+    "<ctrl-w>j": "windowfocus down"
+    "<ctrl-w>k": "windowfocus up"
+    "<ctrl-w>l": "windowfocus right"
+    "<ctrl-w>H": "windowmove left"
+    "<ctrl-w>J": "windowmove down"
+    "<ctrl-w>K": "windowmove up"
+    "<ctrl-w>L": "windowmove right"
+    "<ctrl-w>w": "windowfocus other"      # rotate_view
+    "<ctrl-w>s": "windownew down"         # hsplit
+    "<ctrl-w>v": "windownew right"        # vsplit
+    "<ctrl-w>q": windowclose              # wclose
+    "<ctrl-w>o": windowcloseall           # wonly
+    "<ctrl-w>f": "echo {prompt}edit<space>"   # goto_file
+    # Bindings shared with the other presets. Helix keeps <alt> for its own
+    # grammar, so Rune-only commands live on <meta>, the host layer (Command
+    # on macOS, Super on Linux), with <shift> meaning move for layout, prompt
+    # for LSP, and reverse for anything that steps through a list.
+    "<shift-tab>": "fexplorer"
+    "<meta-r>": "history"
+    "<meta-,>": "config"
+    "<meta-/>": "cheatsheet"
+    "<meta-q>": "quit"
+    "<meta-=>": "guifontsize increase"
+    "<meta-->": "guifontsize decrease"
+    "<meta-t>": "tabnew"
+    "<meta-w>": "tabclose"
+    "<meta-]>": "tabnext"
+    "<meta-[>": "tabprevious"
+    "<shift-meta-]>": "tabmove right"
+    "<shift-meta-[>": "tabmove left"
+    "<ctrl-tab>": "tabnext"
+    "<ctrl-shift-tab>": "tabprevious"
+    "<meta-n>": "windownew"
+    "<meta-c>": "clipboardcopy"
+    "<meta-v>": "clipboardpaste"
+    "<meta-`>": "workspacesearch"
+    "<meta-h>": "windowfocus left"
+    "<meta-l>": "windowfocus right"
+    "<meta-j>": "windowfocus down"
+    "<meta-k>": "windowfocus up"
+    "<shift-meta-h>": "windowmove left"
+    "<shift-meta-l>": "windowmove right"
+    "<shift-meta-j>": "windowmove down"
+    "<shift-meta-k>": "windowmove up"
+    "<shift-meta-backspace>": "windowresize reset"
+    "<shift-meta-+>": ["windowresize max width", "windowresize max height"]
+    "<shift-meta-->": ["windowresize min width", "windowresize min height"]
+    "<alt-meta-h>": "windowresize decrease width"
+    "<alt-meta-j>": "windowresize decrease height"
+    "<alt-meta-k>": "windowresize increase height"
+    "<alt-meta-l>": "windowresize increase width"
+    "<ctrl-meta-h>": "windowdefaultsplit h"
+    "<ctrl-meta-v>": "windowdefaultsplit v"
+    "<shift-meta-f>": "windowtogglemaximize"
+    "<meta-enter>": "terminalneworsplit"
+    "<shift-meta-enter>": "!"
+    "<meta-f>": "lsp rename"
+    "<meta-d>": "lsp definition"
+    "<meta-i>": "lsp implementation"
+    "<shift-meta-d>": "echo {prompt}lsp<space>definition<space>"
+    "<shift-meta-i>": "echo {prompt}lsp<space>implementation<space>"
+    "<meta-e>": "lsp diagnostics"
+    "<meta-b>": "lsp format"
+    "<meta-.>": "lspnextdiagnostic"
+    "<meta-;>": "lspprevdiagnostic"
+    "<shift-meta-.>": "gitnextchange"
+    "<shift-meta-;>": "gitprevchange"
+    # on MacOS <ctrl-space> is a shortcut. To disable it and enable this
+    # key binding, go to System Settings → Keyboard → Keyboard Shortcuts
+    # → Input Sources → uncheck both entries.
+    "<ctrl-space>": "lsp complete"
+    "<alt-1>": "tabfocus 1"
+    "<alt-2>": "tabfocus 2"
+    "<alt-3>": "tabfocus 3"
+    "<alt-4>": "tabfocus 4"
+    "<alt-5>": "tabfocus 5"
+    "<alt-6>": "tabfocus 6"
+    "<alt-7>": "tabfocus 7"
+    "<alt-8>": "tabfocus 8"
+    "<alt-9>": "tabfocus 9"
+    "<meta-1>": "workspacefocus 1"
+    "<meta-2>": "workspacefocus 2"
+    "<meta-3>": "workspacefocus 3"
+    "<meta-4>": "workspacefocus 4"
+    "<meta-5>": "workspacefocus 5"
+    "<meta-6>": "workspacefocus 6"
+    "<meta-7>": "workspacefocus 7"
+    "<meta-8>": "workspacefocus 8"
+    "<meta-9>": "workspacefocus 9"
+    "<shift-meta-1>": "workspacemove 1"
+    "<shift-meta-2>": "workspacemove 2"
+    "<shift-meta-3>": "workspacemove 3"
+    "<shift-meta-4>": "workspacemove 4"
+    "<shift-meta-5>": "workspacemove 5"
+    "<shift-meta-6>": "workspacemove 6"
+    "<shift-meta-7>": "workspacemove 7"
+    "<shift-meta-8>": "workspacemove 8"
+    "<shift-meta-9>": "workspacemove 9"
+
+# ---------------------------------------------------------------------------
+# Animations between workspaces
+# ---------------------------------------------------------------------------
+# animations:
+#   loading_workspace: true
+#   open_workspace:
+#     enabled:  true
+#     # shader:   burn
+#     # duration: 1s
+
+# ---------------------------------------------------------------------------
+# Self-upgrade
+# ---------------------------------------------------------------------------
+# upgrade:
+#   auto_check_enabled: true
+#   check_period:       24h
+
+# ---------------------------------------------------------------------------
+# Notifications
+# ---------------------------------------------------------------------------
+# notifications:
+#   auto_close:   5s

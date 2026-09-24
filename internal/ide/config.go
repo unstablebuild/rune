@@ -80,11 +80,13 @@ const (
 	editorModeModal        = "modal"
 	editorModeStandard     = "standard"
 	editorModeEmacs        = "emacs"
+	editorModeHelix        = "helix"
 	editorModeModeless     = "modeless" // deprecated alias for editorModeStandard
 	editorModeExo          = "exo"
 	editorFallbackModal    = "modal"
 	editorFallbackStandard = "standard"
 	editorFallbackEmacs    = "emacs"
+	editorFallbackHelix    = "helix"
 	editorFallbackModeless = "modeless" // deprecated alias for editorFallbackStandard
 	keyCommandAliases      = "aliases"
 	keyCommandKey          = "key"
@@ -923,7 +925,7 @@ func (c ideConfig) consolePrompt() (ret string) {
 // switch: exo cannot host the in-memory prompt surface, so it follows
 // its configured fallback, leaving only resolved-modal as modal here.
 func (c ideConfig) consoleEditorModal() bool {
-	return c.pkgEditorMode() == editorModeModal
+	return modalEditorMode(c.pkgEditorMode())
 }
 
 func (c ideConfig) commandHistoryKey() (ret term.KeyComb) {
@@ -2574,6 +2576,18 @@ func (c ideConfig) emacs() (config.Config, bool) {
 	return c.getConfig(b, "emacs")
 }
 
+// helix returns the `editor.helix` configuration block, if any.
+func (c ideConfig) helix() (config.Config, bool) {
+	if c.cfg == nil {
+		return nil, false
+	}
+	b, ok := c.editor()
+	if !ok {
+		return nil, false
+	}
+	return c.getConfig(b, "helix")
+}
+
 // exo returns the `editor.exo` configuration block, if any.
 func (c ideConfig) exo() (config.Config, bool) {
 	if c.cfg == nil {
@@ -2638,8 +2652,8 @@ func (c ideConfig) exoQuit() string {
 
 // exoFallback returns the Rune-native fallback editor used by the
 // exofallback router for URIs that exo cannot serve (e.g.
-// memory://). Valid values are "modal", "standard", or "emacs"
-// ("modeless" is accepted as a deprecated alias for "standard");
+// memory://). Valid values are "modal", "helix", "standard", or
+// "emacs" ("modeless" is accepted as a deprecated alias for "standard");
 // defaults to "standard".
 func (c ideConfig) exoFallback() string {
 	cfg, ok := c.exo()
@@ -2660,20 +2674,30 @@ func (c ideConfig) exoFallback() string {
 }
 
 // normalizeEditorFallback resolves a raw editor.exo.fallback value to a
-// canonical fallback ("modal", "standard", or "emacs"), mapping the
-// deprecated "modeless" alias to "standard". ok is false for an
+// canonical fallback ("modal", "helix", "standard", or "emacs"), mapping
+// the deprecated "modeless" alias to "standard". ok is false for an
 // unrecognised value. This is the single place the deprecated alias is
 // understood so no other file needs to know about it.
 func normalizeEditorFallback(raw string) (canonical string, ok bool) {
 	switch raw {
 	case editorFallbackModal:
 		return editorFallbackModal, true
+	case editorFallbackHelix:
+		return editorFallbackHelix, true
 	case editorFallbackModeless, editorFallbackStandard:
 		return editorFallbackStandard, true
 	case editorFallbackEmacs:
 		return editorFallbackEmacs, true
 	}
 	return "", false
+}
+
+// modalEditorMode reports whether a resolved editor mode drives a modal
+// grammar. The console input line, the terminal keymap and the ex
+// command layer all key off this rather than off "modal" alone, so
+// helix gets the same treatment as vi.
+func modalEditorMode(mode string) bool {
+	return mode == editorModeModal || mode == editorModeHelix
 }
 
 // exoExperimentalHighlights reports whether Rune should overlay its
@@ -2715,7 +2739,7 @@ func (c ideConfig) editorMode() (ret string) {
 	switch mode {
 	case editorModeModeless, editorModeStandard:
 		ret = editorModeStandard
-	case editorModeModal, editorModeEmacs, editorModeExo:
+	case editorModeModal, editorModeHelix, editorModeEmacs, editorModeExo:
 		ret = mode
 	}
 	return
@@ -2845,6 +2869,51 @@ func (c ideConfig) modalMessageBarAttr() term.Attributes {
 		return term.Attributes{}
 	}
 	return c.messageBarAttr(cfg, "editor.modal")
+}
+
+func (c ideConfig) helixResultAttr() (attr term.Attributes) {
+	attr = term.Attributes{Bg: term.ColorYellow, Fg: term.ColorBlack}
+	cfg, ok := c.helix()
+	if !ok {
+		return
+	}
+	attr, err := config.GetAttributes(cfg, "search_attr")
+	if err != nil {
+		if err != config.ErrNotFound {
+			c.errors["editor.helix.search_attr"] = err
+		}
+	}
+	return attr
+}
+
+func (c ideConfig) helixAttr() (attr term.Attributes) {
+	cfg, ok := c.helix()
+	if !ok {
+		return
+	}
+	attr, err := config.GetAttributes(cfg, "attr")
+	if err != nil {
+		if err != config.ErrNotFound {
+			c.errors["editor.helix.attr"] = err
+		}
+	}
+	return attr
+}
+
+func (c ideConfig) helixMessageBarLayout() handler.LessMessageLayout {
+	cfg, ok := c.helix()
+	if !ok {
+		return handler.DefaultLessMessageLayout()
+	}
+	return c.messageBarLayout(cfg, "editor.helix")
+}
+
+func (c ideConfig) helixMessageBarAttr() term.Attributes {
+	cfg, ok := c.helix()
+	if !ok {
+		return term.Attributes{}
+	}
+	return c.messageBarAttr(cfg, "editor.helix")
 }
 
 func (c ideConfig) initialFolds() bool {
@@ -4187,7 +4256,7 @@ func (c ideConfig) terminalModal() (ret bool) {
 // editors default to modal terminals, modeless editors to modeless. exo
 // follows its configured fallback.
 func (c ideConfig) terminalModalDefault() bool {
-	return c.pkgEditorMode() == editorModeModal
+	return modalEditorMode(c.pkgEditorMode())
 }
 
 func (c ideConfig) terminalDebug() (ret bool) {

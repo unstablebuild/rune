@@ -103,21 +103,21 @@ picked up live. If a package changes anything else, Rune tells you to restart.
 
 ## Editor Modes
 
-Rune ships with three built-in editors and supports running any terminal
+Rune ships with four built-in editors and supports running any terminal
 editor as another option. Pick one with `editor.mode`:
 
 ```yaml tab
 editor:
-  mode: "emacs" # or "standard", "modal", or "exo"
+  mode: "emacs" # or "standard", "modal", "helix", or "exo"
 ```
 
 ```python tab
 "editor": {
-    "mode": "emacs", # or "standard", "modal", or "exo"
+    "mode": "emacs", # or "standard", "modal", "helix", or "exo"
 },
 ```
 
-The four supported configurations are:
+The five supported configurations are:
 
 ### Vim
 
@@ -184,6 +184,28 @@ The first-run Emacs choice installs command bindings in addition to selecting
 `editor.mode`. If you switch an existing custom config by hand, changing only
 the mode does not replace your `command.key_bindings` map.
 
+### Helix
+
+A [Helix](https://helix-editor.com)-style editor with an inverted modal
+grammar: a motion first selects the text you mean, then an operator acts on
+that selection. You press `w` then `d` to delete a word, not `dw`, and you
+always see what an operator is about to touch.
+
+Pick this if your muscle memory comes from Helix, or if you like modal editing
+but want the selection to be visible before you act on it.
+
+See the [Helix Editor cheatsheet](./learn/helix-editor.md) for the exact
+keystrokes and what is or isn't supported.
+
+Rune's helix editor is single-selection. Helix's multiple-selection commands
+(`s`, `S`, `C`, `K`, `,`, `(`, `)`, ...) are deliberately left unbound rather
+than approximated, so they stay free for your own `command.key_bindings`.
+
+The first-run Helix choice installs command bindings in addition to selecting
+`editor.mode`, including Helix's `<space>` leader menu and its `<ctrl-w>`
+window menu. If you switch an existing custom config by hand, changing only
+the mode does not replace your `command.key_bindings` map.
+
 ### Exoeditor
 
 Exoeditor mode (`editor.mode = "exo"`) runs a real terminal editor
@@ -197,7 +219,7 @@ For the list of what does and does not work inside `exo` mode (file
 watching, LSP, search integration, ...), see the
 [Exoeditor](./learn/exoeditor.md) guide.
 
-Exoeditor has three fallback choices, picked with `editor.exo.fallback`. The
+Exoeditor has four fallback choices, picked with `editor.exo.fallback`. The
 fallback is what Rune uses for buffers whose URI is not a real file path,
 anything that is not `file://` or `ssh://`. Today the single concrete example
 that ships with Rune is the file explorer
@@ -208,6 +230,9 @@ the editor you chose:
 - `editor.exo.fallback: "modal"` keeps those buffers modal. Use it when your
   external editor is Vim or Neovim, so a keystroke like `j`/`k` keeps its vi
   meaning across the whole UI.
+- `editor.exo.fallback: "helix"` keeps those buffers on Helix's
+  selection-first grammar. Use it when your external editor is Helix, so a
+  keystroke like `w`/`e` keeps its Helix meaning across the whole UI.
 - `editor.exo.fallback: "standard"` keeps those buffers in the standard editor.
   Use it when your external editor is modeless (Nano, Micro, Kakoune, Emacs in its
   default bindings, ...), so a printable keystroke is always insertion, not a

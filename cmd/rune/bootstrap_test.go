@@ -60,6 +60,7 @@ func TestOptionToChoiceMapping(t *testing.T) {
 		{optVimYes, editorModal},
 		{optStandard, editorStandard},
 		{optEmacs, editorEmacs},
+		{optHelix, editorHelix},
 		{"unknown", editorModal}, // default fallback
 	}
 	for _, tc := range cases {
@@ -100,6 +101,25 @@ func TestRenderPreset(t *testing.T) {
 		"telemetry=false must render enabled: false")
 	require.Contains(t, ema, "mode: emacs",
 		"the emacs choice must switch the editor into emacs")
+
+	hx, err := renderPreset(editorHelix, true)
+	require.NoError(t, err)
+	require.Contains(t, hx, "mode: helix",
+		"the helix choice must switch the editor into helix")
+	require.Contains(t, hx, "enabled: true",
+		"telemetry=true must render enabled: true")
+	for _, binding := range []string{
+		`"<space>f": searchfile`,
+		`"<space>e": fexplorer`,
+		`"<space>b": tabsearch`,
+		`"<space>/": searchtext`,
+		`"<ctrl-w>v": "windownew right"`,
+	} {
+		require.Contains(t, hx, binding,
+			"helix must reach commands through its <space> and <ctrl-w> menus")
+	}
+	require.NotContains(t, hx, `"<alt-d>"`,
+		"helix keeps <alt> for its own grammar")
 	require.Contains(t, ema, `"<meta-f>": "windowfocus right"`,
 		"emacs must use the PNBF direction layer for window focus")
 	require.Contains(t, ema, `"<ctrl-x>u": "undo prefix"`,
@@ -314,7 +334,9 @@ func TestBootstrapPromptProgression(t *testing.T) {
 	// Selecting welcome advances to Vim prompt.
 	prompter.prompts[0].handler.OnSelect(0, optWelcomeGo)
 	require.Len(t, prompter.prompts, 2)
-	require.Equal(t, []string{optStandard, optEmacs, optVimYes}, prompter.prompts[1].options)
+	require.Equal(t,
+		[]string{optStandard, optEmacs, optVimYes, optHelix},
+		prompter.prompts[1].options)
 
 	// Selecting an editor option in Vim prompt advances to Telemetry prompt.
 	prompter.prompts[1].handler.OnSelect(0, optStandard)

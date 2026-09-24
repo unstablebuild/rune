@@ -123,6 +123,7 @@ func TestNewPromptEditorExo(t *testing.T) {
 		{"deprecated modeless fallback", "modeless", standardPromptEditor{}},
 		{"explicit emacs fallback", "emacs", emacsPromptEditor{}},
 		{"explicit modal fallback", "modal", viPromptEditor{}},
+		{"explicit helix fallback", "helix", helixPromptEditor{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := &workspaceManagerHandler{}
@@ -136,6 +137,36 @@ func TestNewPromptEditorExo(t *testing.T) {
 						"mode": "exo",
 						"exo":  exo,
 					},
+				},
+				errors: map[string]error{},
+			}
+			var ed command.Editor
+			require.NotPanics(t, func() {
+				ed = h.newPromptEditor(cfg)
+			})
+			assert.IsType(t, tc.want, ed)
+		})
+	}
+}
+
+// TestNewPromptEditorMode asserts that each built-in editor mode picks
+// its own in-memory prompt editor, so the command prompt and console
+// input line keep the grammar the user configured.
+func TestNewPromptEditorMode(t *testing.T) {
+	for _, tc := range []struct {
+		mode string
+		want command.Editor
+	}{
+		{editorModeModal, viPromptEditor{}},
+		{editorModeHelix, helixPromptEditor{}},
+		{editorModeStandard, standardPromptEditor{}},
+		{editorModeEmacs, emacsPromptEditor{}},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			h := &workspaceManagerHandler{}
+			cfg := ideConfig{
+				cfg: map[string]any{
+					"editor": map[string]any{"mode": tc.mode},
 				},
 				errors: map[string]error{},
 			}

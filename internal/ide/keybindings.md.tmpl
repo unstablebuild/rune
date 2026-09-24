@@ -16,6 +16,11 @@ In the keys below, `<meta>` is {{.MetaKey}}.
 These are your command key bindings. In-buffer editing keys come from the
 vim editor and are documented in the
 [vim editor guide](https://docs.rune.build/learn/vim-editor).
+{{- else if eq .EditorMode "helix"}}
+
+These are your command key bindings. In-buffer editing keys come from the
+helix editor and are documented in the
+[helix editor guide](https://docs.rune.build/learn/helix-editor).
 {{- else if eq .EditorMode "standard"}}
 
 These are your command key bindings. In-buffer editing keys come from the
@@ -56,6 +61,23 @@ A recorded macro is stored in a plain register, so you can bind it to a
 key or wrap it in an alias with the `echo` command's `{register}`
 instruction, for example `echo {register}a`. See the
 [vim editor guide](https://docs.rune.build/learn/vim-editor#macros)
+for recording examples.
+{{- else if eq .EditorMode "helix"}}
+
+## Macros
+
+Record a sequence of keystrokes into a register and replay it on demand.
+In normal mode:
+
+- `Q`: Start recording into the selected register; press again to stop
+- `q`: Replay the selected register
+- `"{reg}Q`: Record into register `{reg}` (`a`-`z`; `A`-`Z` appends)
+- `"{reg}q`: Replay register `{reg}`
+
+A recorded macro is stored in a plain register, so you can bind it to a
+key or wrap it in an alias with the `echo` command's `{register}`
+instruction, for example `echo {register}a`. See the
+[helix editor guide](https://docs.rune.build/learn/helix-editor#macros)
 for recording examples.
 {{- else if eq .EditorMode "standard"}}
 

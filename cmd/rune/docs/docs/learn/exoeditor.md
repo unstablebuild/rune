@@ -101,8 +101,9 @@ Pick any modifier combination the external editor does not interpret. A bare `:`
 Not every URI Rune opens lives on disk. The file explorer is served from a `memory://` pseudo-URI (`memory:///fexplorer`) that an external terminal editor cannot meaningfully open. The general rule is "anything not `file://` or `ssh://`", but today the file explorer is the single concrete pseudo-URI Rune ships with. In `exo` mode Rune routes those URIs to a built-in Rune editor instead.
 
 `editor.exo.fallback` selects which built-in editor handles them. Valid values
-are `"modal"` (vi/vim-like), `"standard"` (conventional, the default), and
-`"emacs"`. The deprecated `"modeless"` value is an alias for `"standard"`.
+are `"modal"` (vi/vim-like), `"helix"` (Helix's selection-first grammar),
+`"standard"` (conventional, the default), and `"emacs"`. The deprecated
+`"modeless"` value is an alias for `"standard"`.
 The workspace as a whole is still considered externally managed (auto-save,
 file-watcher reloads, and writes to disk all stay disabled); only the editing
 surface for these IDE-owned URIs changes.
