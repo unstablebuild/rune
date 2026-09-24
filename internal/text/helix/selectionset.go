@@ -57,6 +57,10 @@ import (
 // replace the range it stands for.
 func (h *helixHandlerImpl) adoptCursor() {
 	h.carryEdits()
+	if h.sel.len() > 0 && h.currMode == insertMode {
+		h.adoptCaret()
+		return
+	}
 	r := h.readRange()
 	if h.sel.len() == 0 {
 		h.setSelection(single(r))
@@ -67,6 +71,24 @@ func (h *helixHandlerImpl) adoptCursor() {
 		h.syncPrimary()
 		return
 	}
+	r.col = h.desiredCol(r)
+	h.setSelection(h.sel.replace(h.sel.primary, r))
+}
+
+// adoptCaret is adoptCursor for insert mode, where the cursor holds no
+// selection and only its caret is telling: a caret still on the
+// primary's cursor changes nothing, any other lands the primary as a
+// point there, which is what every insert-mode movement in Helix
+// produces.
+func (h *helixHandlerImpl) adoptCaret() {
+	buf := h.buf()
+	caret := h.cursor.CursorAtScroll()
+	p := h.sel.primaryRange()
+	if caret == clampInsert(buf, p.cursor(buf)) {
+		h.syncPrimary()
+		return
+	}
+	r := point(caret)
 	r.col = h.desiredCol(r)
 	h.setSelection(h.sel.replace(h.sel.primary, r))
 }
@@ -221,22 +243,19 @@ func (h *helixHandlerImpl) syncPrimary() {
 
 // markSecondaries draws every non-primary range through two location
 // lists: the covered cells in reverse and, on top, the cell the range's
-// cursor sits on dimmed so it reads as a ghost caret. The message bar
-// carries the count the Helix status line would show.
+// cursor sits on dimmed so it reads as a ghost caret. In insert mode
+// the cursor holds no selection, so the primary's cells go through the
+// first list as well, which keeps the range visible while typing as it
+// is in Helix. The message bar carries the count the Helix status line
+// would show.
 func (h *helixHandlerImpl) markSecondaries() {
-	if h.sel.len() < 2 {
-		if h.secondariesDrawn {
-			h.cursor.SetLocationList(textapi.LocationPriorityCritical, selectionsLocID, nil)
-			h.cursor.SetLocationList(textapi.LocationPriorityCritical, cursorsLocID, nil)
-			h.less.SetMessage("")
-			h.secondariesDrawn = false
-		}
-		return
-	}
 	buf := h.buf()
 	var sels, carets []textapi.Location
 	for i, r := range h.sel.ranges {
 		if i == h.sel.primary {
+			if h.currMode == insertMode {
+				sels = append(sels, rowLocations(buf, r, term.Attributes{Attrs: term.AttrReverse})...)
+			}
 			continue
 		}
 		sels = append(sels, rowLocations(buf, r, term.Attributes{Attrs: term.AttrReverse})...)
@@ -246,12 +265,28 @@ func (h *helixHandlerImpl) markSecondaries() {
 			Attr: term.Attributes{Attrs: term.AttrReverse | term.AttrDim},
 		})
 	}
-	h.cursor.SetLocationList(textapi.LocationPriorityCritical, selectionsLocID,
-		textapi.LocationSlice(sels))
-	h.cursor.SetLocationList(textapi.LocationPriorityCritical, cursorsLocID,
-		textapi.LocationSlice(carets))
-	h.less.SetMessage("%d/%d sels", h.sel.primary+1, h.sel.len())
-	h.secondariesDrawn = true
+	if len(sels) > 0 || len(carets) > 0 || h.secondariesDrawn {
+		h.cursor.SetLocationList(textapi.LocationPriorityCritical, selectionsLocID,
+			locationsOrNil(sels))
+		h.cursor.SetLocationList(textapi.LocationPriorityCritical, cursorsLocID,
+			locationsOrNil(carets))
+		h.secondariesDrawn = len(sels) > 0 || len(carets) > 0
+	}
+	switch {
+	case h.sel.len() > 1:
+		h.less.SetMessage("%d/%d sels", h.sel.primary+1, h.sel.len())
+		h.countShown = true
+	case h.countShown:
+		h.less.SetMessage("")
+		h.countShown = false
+	}
+}
+
+func locationsOrNil(locs []textapi.Location) text.LocationList {
+	if len(locs) == 0 {
+		return nil
+	}
+	return textapi.LocationSlice(locs)
 }
 
 // rowLocations splits a range into one location per row it covers.
@@ -327,10 +362,12 @@ func lineShaped(r rng) bool {
 
 // installRange makes r the cursor's selection. It is a no-op when the
 // cursor already holds exactly that, so re-installing after every event
-// costs nothing on the common path. Outside insert mode a point is the
-// one-cell selection anchored where the caret is, line-ending slot
-// included: the next event's bounds correction clamps it, as it does
-// for a caret the IDE parks there.
+// costs nothing on the common path. In insert mode the cursor holds no
+// selection and the caret sits on the range's cursor, which is where
+// Helix inserts. Outside insert mode a point is the one-cell selection
+// anchored where the caret is, line-ending slot included: the next
+// event's bounds correction clamps it, as it does for a caret the IDE
+// parks there.
 func (h *helixHandlerImpl) installRange(r rng) {
 	buf := h.buf()
 	if buf.Rows() == 0 {
@@ -340,8 +377,8 @@ func (h *helixHandlerImpl) installRange(r rng) {
 	var anchorCell, caret term.Coordinates
 	mode := text.StandardSelection
 	switch {
-	case r.isPoint() && h.currMode == insertMode:
-		caret = clampInsert(buf, head)
+	case h.currMode == insertMode:
+		caret = clampInsert(buf, r.cursor(buf))
 		if _, ok := h.cursor.SelectionMode(); !ok && h.cursor.CursorAtScroll() == caret {
 			return
 		}
@@ -434,10 +471,24 @@ func (h *helixHandlerImpl) clampCursor() {
 // walks from the last range in the document to the first: an edit can
 // only shift the text after it, so every range still to be visited
 // stays valid and only the results already collected need carrying
-// through the recorded changes. A range is kept as it was when the op
-// neither moved the cursor nor edited, so a range the cursor can only
-// approximate survives an op that did nothing to it.
+// through the recorded changes.
 func (h *helixHandlerImpl) forEachRange(op func() bool) bool {
+	return h.fanOut(func(int) bool { return op() }, nil)
+}
+
+// rangeRule decides what a range becomes after an op ran with the
+// caret on its cursor, given the changes the op made and where it left
+// the caret.
+type rangeRule func(r rng, cs changeSet, caret term.Coordinates) rng
+
+// fanOut is forEachRange with the range's index handed to op and the
+// resulting range decided by rule. A nil rule reads the range back
+// from the cursor, which is right whenever the cursor holds it, and
+// keeps the range as it was when the op neither moved the cursor nor
+// edited, so a range the cursor can only approximate survives an op
+// that did nothing to it. The insert-mode rules below are for when the
+// cursor holds only a caret.
+func (h *helixHandlerImpl) fanOut(op func(i int) bool, rule rangeRule) bool {
 	h.carryEdits()
 	src := h.sel
 	out := selection{ranges: make([]rng, src.len()), primary: src.primary}
@@ -450,13 +501,20 @@ func (h *helixHandlerImpl) forEachRange(op func() bool) bool {
 		if r.col > h.anchor.X {
 			h.anchor.X = r.col
 		}
-		if op() {
+		if op(i) {
 			done = true
 		}
-		next := h.settleRange()
-		cs := h.rec.take()
-		if len(cs) == 0 && next.same(mirror) {
-			next = r
+		var next rng
+		var cs changeSet
+		if rule == nil {
+			next = h.settleRange()
+			cs = h.rec.take()
+			if len(cs) == 0 && next.same(mirror) {
+				next = r
+			}
+		} else {
+			cs = h.rec.take()
+			next = rule(r, cs, h.cursor.CursorAtScroll())
 		}
 		for j := i + 1; j < src.len(); j++ {
 			out.ranges[j] = out.ranges[j].mapThrough(cs)
@@ -465,6 +523,60 @@ func (h *helixHandlerImpl) forEachRange(op func() bool) bool {
 	}
 	h.setSelection(out)
 	return done
+}
+
+// edited is the rule for an insert-mode edit: Range::map, then the
+// cursor follows the caret for the few primitives that park it short
+// of the inserted text.
+func (h *helixHandlerImpl) edited(r rng, cs changeSet, caret term.Coordinates) rng {
+	return r.mapThrough(cs).withCursor(h.buf(), caret)
+}
+
+// paired is auto_pairs::get_next_range: where a range lands once an
+// auto-pair keystroke ran at its cursor. Nothing inserted means a
+// closer was typed over and the range slides one cell; a lone opener
+// is a plain insert; a whole pair puts the cursor between the two and,
+// for a one-cell range, moves the range onto the closer.
+func (h *helixHandlerImpl) paired(r rng, cs changeSet, caret term.Coordinates) rng {
+	buf := h.buf()
+	step := func(pos term.Coordinates) term.Coordinates {
+		if next, ok := nextPos(buf, pos); ok {
+			return next
+		}
+		return pos
+	}
+	switch insertedCells(cs) {
+	case 0:
+		anchor := r.anchor
+		if r.singleCell(buf) {
+			anchor = step(anchor)
+		}
+		return rng{anchor: anchor, head: step(r.head)}
+	case 1:
+		return r.mapThrough(cs)
+	}
+	switch {
+	case r.isPoint():
+		return point(caret)
+	case r.singleCell(buf) && r.backward():
+		return rng{anchor: step(caret), head: caret}
+	case r.singleCell(buf):
+		return rng{anchor: caret, head: step(caret)}
+	case r.backward():
+		return rng{anchor: cs.mapPos(r.anchor, assocAfter), head: caret}
+	}
+	return rng{anchor: r.anchor, head: step(caret)}
+}
+
+// insertedCells counts the cells a run of same-row insertions added.
+func insertedCells(cs changeSet) int {
+	n := 0
+	for _, c := range cs {
+		if c.end.Y == c.from.Y {
+			n += c.end.X - c.from.X
+		}
+	}
+	return n
 }
 
 // settleRange clamps the cursor the way the end of the event would and

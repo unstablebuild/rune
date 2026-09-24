@@ -475,6 +475,8 @@ func TestUndoRedo(t *testing.T) {
 }
 
 // TestDotRepeat pins `.`, which replays the last insert session.
+// Leaving insert mode does not step the cursor back as vi does, so
+// the replayed insert goes in where typing stopped.
 func TestDotRepeat(t *testing.T) {
 	t.Run("repeats the last insert", func(t *testing.T) {
 		hx, buf, _ := newHelix(t, "", term.Coordinates{})
@@ -482,7 +484,7 @@ func TestDotRepeat(t *testing.T) {
 		send(t, hx, namedKey(term.KeyEsc))
 		require.Equal(t, "hi", buf.String())
 		send(t, hx, key('.'))
-		assert.Equal(t, "hhii", buf.String())
+		assert.Equal(t, "hihi", buf.String())
 	})
 
 	t.Run("with nothing recorded it is unhandled", func(t *testing.T) {

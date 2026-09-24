@@ -133,9 +133,11 @@ type helixHandlerImpl struct {
 	mirror rng
 
 	// secondariesDrawn remembers that the location lists for the
-	// non-primary ranges are populated, so an empty set does not
-	// rebuild them on every event.
+	// ranges the cursor does not hold are populated, so an empty set
+	// does not rebuild them on every event; countShown does the same
+	// for the selection count in the message bar.
 	secondariesDrawn bool
+	countShown       bool
 
 	// extend is Helix's sticky select mode (v): motions grow the
 	// selection instead of replacing it.
@@ -166,11 +168,10 @@ type helixHandlerImpl struct {
 	pendingInsertRegister bool
 	undoCheckpoint        bool
 
-	// insertKeepsCaret marks the one insert entry (i) that leaves a
-	// non-empty range behind with its head at the start. Escaping such
-	// a range leaves the caret on the cell it was already on instead of
-	// pulling it back onto the text just typed.
-	insertKeepsCaret bool
+	// restoreCursor is Document::restore_cursor: an append (a) widens
+	// every range one cell past its end so the insertion lands after
+	// it, and leaving insert mode pulls that cell back off.
+	restoreCursor bool
 
 	jumps   []selection
 	jumpIdx int
@@ -362,8 +363,37 @@ func (h *helixHandlerImpl) setNormalMode() bool {
 	h.pendingRegister = false
 	h.pendingInsertRegister = false
 	h.clearJumpLabels()
+	leavingInsert := h.currMode == insertMode
 	h.setMode(normalMode)
+	if leavingInsert {
+		h.leaveInsert()
+	}
 	return true
+}
+
+// leaveInsert is the selection half of Editor::enter_normal_mode. The
+// ranges survive insert mode as they are; only an append pulls every
+// range back off the cell it was widened onto so the cursor rests on
+// the last cell typed. Normal mode's one-cell invariant then widens
+// whatever is left as a point.
+func (h *helixHandlerImpl) leaveInsert() {
+	h.carryEdits()
+	restore := h.restoreCursor
+	h.restoreCursor = false
+	sel := h.sel
+	if restore {
+		buf := h.buf()
+		sel = sel.transform(func(r rng) rng {
+			head := r.to()
+			if coordinatesBefore(r.anchor, r.head) {
+				if prev, ok := prevPos(buf, head); ok {
+					head = prev
+				}
+			}
+			return rng{anchor: r.from(), head: head}
+		})
+	}
+	h.setSelection(sel)
 }
 
 // exitSelectMode mirrors Helix's exit_select_mode: operators drop the
@@ -382,7 +412,7 @@ func (h *helixHandlerImpl) setInsertMode() {
 	h.matchPending = false
 	h.surroundMode = surroundNone
 	h.extend = false
-	h.insertKeepsCaret = false
+	h.restoreCursor = false
 	h.setMode(insertMode)
 	h.less.SetMessage("")
 	h.resetCount()
@@ -620,8 +650,11 @@ func (h *helixHandlerImpl) Handle(ev term.Event) (quit, handled bool) {
 		str := h.pasteBuf.String()
 		h.pasteStarted = false
 		if h.mode() == insertMode && str != "" {
-			h.cursor.InsertString(str)
+			// A paste goes in at every cursor and closes an undo step
+			// of its own, as paste_impl does in insert mode.
+			h.insertAtCursors(func() bool { h.cursor.InsertString(str); return true })
 			h.insertRegister.WriteString(str)
+			h.undoCheckpoint = true
 		}
 		return false, true
 	}
@@ -1347,6 +1380,8 @@ func (h *helixHandlerImpl) handleReplace(ev term.Event) (quit, handled bool) {
 
 // --- insert ---
 
+// exitInsert is normal_mode on <esc>: the session's keystrokes go to
+// the . register and the ranges are left as leaveInsert has them.
 func (h *helixHandlerImpl) exitInsert() {
 	if inserted := h.insertRegister.String(); inserted != "" {
 		if err := h.writeRegister('.', clipboard.Data{
@@ -1356,11 +1391,6 @@ func (h *helixHandlerImpl) exitInsert() {
 		}
 	}
 	h.setNormalMode()
-	if !h.insertKeepsCaret {
-		h.cursor.MoveLeft()
-	}
-	h.insertKeepsCaret = false
-	h.anchorHere()
 }
 
 func (h *helixHandlerImpl) insertTabIndent() {
@@ -1525,6 +1555,10 @@ func (h *helixHandlerImpl) firstNonBlank(row int) (term.Coordinates, bool) {
 	return term.Coordinates{}, false
 }
 
+// insertRegisterContents is insert_register, C-r: paste_impl at every
+// cursor, so a register holding one fragment per range puts each
+// fragment at its own range, and the paste closes an undo step of its
+// own as append_changes_to_history does there.
 func (h *helixHandlerImpl) insertRegisterContents(name rune) bool {
 	data, err := h.readRegister(name)
 	if err != nil {
@@ -1534,9 +1568,58 @@ func (h *helixHandlerImpl) insertRegisterContents(name rune) bool {
 	if data.Text == "" {
 		return false
 	}
-	h.cursor.InsertString(data.Text)
+	h.carryEdits()
+	values, _ := h.registerValues(data, 1)
+	h.fanOut(func(i int) bool {
+		h.cursor.InsertString(values[i])
+		return true
+	}, h.edited)
 	h.insertRegister.WriteString(data.Text)
+	h.undoCheckpoint = true
 	return true
+}
+
+// insertAtCursors runs an insert-mode edit at every range's cursor,
+// reporting whether it did anything at any of them.
+func (h *helixHandlerImpl) insertAtCursors(op func() bool) bool {
+	return h.fanOut(func(int) bool { return op() }, h.edited)
+}
+
+// insertRune is insert_char: the auto-pair hook when it is on, a plain
+// insert otherwise.
+func (h *helixHandlerImpl) insertRune(ch rune) {
+	if h.config.autoPair {
+		h.fanOut(func(int) bool {
+			return h.cursor.InsertWithAutoPair(ch, h.config.indentRune, h.config.indentTabspaces)
+		}, h.paired)
+	} else {
+		h.insertAtCursors(func() bool {
+			h.cursor.InsertWithIndentRune(ch, h.config.indentRune, h.config.indentTabspaces)
+			return true
+		})
+	}
+	h.insertRegister.WriteRune(ch)
+}
+
+// insertNewline is insert_newline.
+func (h *helixHandlerImpl) insertNewline() {
+	h.insertAtCursors(func() bool {
+		if h.config.autoPair {
+			return h.cursor.InsertAutoPairNewline(h.config.indentRune, h.config.indentTabspaces)
+		}
+		h.cursor.InsertWithIndentRune('\n', h.config.indentRune, h.config.indentTabspaces)
+		return true
+	})
+	h.insertRegister.WriteRune('\n')
+}
+
+// moveCursors runs an insert-mode movement at every range, each of
+// which becomes a point where its caret lands.
+func (h *helixHandlerImpl) moveCursors(op func() bool) bool {
+	return h.forEachRange(func() bool {
+		h.cursor.MoveToScroll(h.anchor)
+		return op()
+	})
 }
 
 func (h *helixHandlerImpl) handleInsert(ev term.Event) (quit, handled bool) {
@@ -1555,77 +1638,66 @@ func (h *helixHandlerImpl) handleInsert(ev term.Event) (quit, handled bool) {
 	case 0:
 		switch ev.Key {
 		case term.KeyEnter:
-			if h.config.autoPair {
-				h.cursor.InsertAutoPairNewline(h.config.indentRune, h.config.indentTabspaces)
-			} else {
-				h.cursor.InsertWithIndentRune('\n', h.config.indentRune, h.config.indentTabspaces)
-			}
-			h.insertRegister.WriteRune('\n')
+			h.insertNewline()
 			handled = true
 		case term.KeySpace:
-			h.cursor.InsertWithIndentRune(' ', h.config.indentRune, h.config.indentTabspaces)
-			h.insertRegister.WriteRune(' ')
+			h.insertRune(' ')
 			handled = true
 		case term.KeyTab:
-			h.insertTabIndent()
+			h.insertAtCursors(func() bool { h.insertTabIndent(); return true })
 			handled = true
 		case term.KeyBackspace:
-			h.backspace()
+			h.insertAtCursors(h.backspace)
 			handled = true
 		case term.KeyDelete:
-			h.cursor.Delete()
+			h.insertAtCursors(h.cursor.Delete)
 			handled = true
 		case term.KeyEsc:
 			h.exitInsert()
 			handled = true
 		case term.KeyArrowUp:
-			h.cursor.MoveToScroll(h.anchor)
-			handled = h.cursor.MoveUp()
+			handled = h.moveCursors(h.cursor.MoveUp)
 		case term.KeyArrowRight:
-			h.cursor.MoveToScroll(h.anchor)
-			handled = h.cursor.MoveRight()
+			handled = h.moveCursors(h.cursor.MoveRight)
 		case term.KeyArrowDown:
-			h.cursor.MoveToScroll(h.anchor)
-			handled = h.cursor.MoveDown()
+			handled = h.moveCursors(h.cursor.MoveDown)
 		case term.KeyArrowLeft:
-			h.cursor.MoveToScroll(h.anchor)
-			handled = h.cursor.MoveLeft()
+			handled = h.moveCursors(h.cursor.MoveLeft)
 		case term.KeyHome:
-			handled = h.cursor.MoveStartLine()
+			handled = h.moveCursors(h.cursor.MoveStartLine)
 		case term.KeyEnd:
-			handled = h.cursor.MoveEndLine()
+			handled = h.moveCursors(h.cursor.MoveEndLine)
 		case term.KeyPgup:
-			handled = h.cursor.MoveUpLines(max(1, h.less.Scroll().SizeHeight()-pagePadding))
+			handled = h.moveCursors(func() bool {
+				return h.cursor.MoveUpLines(max(1, h.less.Scroll().SizeHeight()-pagePadding))
+			})
 		case term.KeyPgdn:
-			handled = h.cursor.MoveDownLines(max(1, h.less.Scroll().SizeHeight()-pagePadding))
+			handled = h.moveCursors(func() bool {
+				return h.cursor.MoveDownLines(max(1, h.less.Scroll().SizeHeight()-pagePadding))
+			})
 		default:
 			if ev.Ch != 0 {
-				if h.config.autoPair {
-					h.cursor.InsertWithAutoPair(ev.Ch, h.config.indentRune, h.config.indentTabspaces)
-				} else {
-					h.cursor.InsertWithIndentRune(ev.Ch, h.config.indentRune, h.config.indentTabspaces)
-				}
-				h.insertRegister.WriteRune(ev.Ch)
+				h.insertRune(ev.Ch)
 				handled = true
 			}
 		}
 	case term.ModShift:
 		switch ev.Key {
 		case term.KeyTab:
-			h.insertIndentLiteral()
+			h.insertAtCursors(func() bool { h.insertIndentLiteral(); return true })
 			handled = true
 		case term.KeyBackspace:
-			handled = h.backspace()
+			handled = h.insertAtCursors(h.backspace)
 		}
 	case term.ModAlt:
 		switch ev.Key {
 		case term.KeyBackspace:
-			handled = h.cursor.BackspaceWord()
+			handled = h.insertAtCursors(h.cursor.BackspaceWord)
 		case term.KeyDelete:
-			handled = h.deleteWordForward()
+			handled = h.insertAtCursors(h.deleteWordForward)
 		default:
 			if ev.Ch == 'd' {
-				handled = h.deleteWordForward()
+				handled = h.insertAtCursors(h.deleteWordForward)
 			}
 		}
 	case term.ModCtrl:
@@ -1634,18 +1706,17 @@ func (h *helixHandlerImpl) handleInsert(ev term.Event) (quit, handled bool) {
 			h.exitInsert()
 			handled = true
 		case 'h':
-			handled = h.backspace()
+			handled = h.insertAtCursors(h.backspace)
 		case 'w':
-			handled = h.cursor.BackspaceWord()
+			handled = h.insertAtCursors(h.cursor.BackspaceWord)
 		case 'u':
-			handled = h.deleteToLineStart()
+			handled = h.insertAtCursors(h.deleteToLineStart)
 		case 'k':
-			handled = h.deleteToLineEnd()
+			handled = h.insertAtCursors(h.deleteToLineEnd)
 		case 'd':
-			handled = h.cursor.Delete()
+			handled = h.insertAtCursors(h.cursor.Delete)
 		case 'j':
-			h.cursor.InsertWithIndentRune('\n', h.config.indentRune, h.config.indentTabspaces)
-			h.insertRegister.WriteRune('\n')
+			h.insertNewline()
 			handled = true
 		case 'r':
 			h.pendingInsertRegister = true
@@ -2222,10 +2293,13 @@ func (h *helixHandlerImpl) changeSelection(yank bool) bool {
 		h.openLine(true)
 		return deleted
 	}
-	// Insert mode goes first so the points the delete leaves behind are
-	// not widened back onto a cell by the normal-mode invariant.
+	deleted := h.deleteSelection(yank)
 	h.setInsertMode()
-	return h.deleteSelection(yank)
+	// The delete left a point at the start of every range, which the
+	// normal-mode invariant widened onto a cell; insert mode has them
+	// collapsed again.
+	h.setSelection(h.sel.transform(func(r rng) rng { return point(r.from()) }))
+	return deleted
 }
 
 // pasteClipboard is paste_impl: the i-th register fragment lands next
@@ -2491,37 +2565,70 @@ func (h *helixHandlerImpl) selectAll() bool {
 	return true
 }
 
-// insertBeforeSelection implements i and is also the entry point the
-// Helix wrapper uses to replay the last insert for `.`.
+// insertBeforeSelection is insert_mode, i, and also the entry point
+// the Helix wrapper uses to replay the last insert for `.`: every
+// range flips so its cursor sits on its first cell.
 func (h *helixHandlerImpl) insertBeforeSelection() {
-	if from, _, ok := h.cursor.SelectionRange(); ok {
-		h.cursor.Unselect()
-		h.cursor.MoveToScroll(from)
-	}
+	h.carryEdits()
 	h.setInsertMode()
-	h.insertKeepsCaret = true
+	h.setSelection(h.sel.transform(func(r rng) rng {
+		return rng{anchor: r.to(), head: r.from()}
+	}))
 }
 
-// insertAfterSelection implements a: the caret lands one cell past the
-// selection, which is where Helix appends.
+// insertAfterSelection is append_mode, a: every range widens one cell
+// past its end so its cursor, and so the insertion, lands right after
+// it. A range ending at the end of the document gets a line ending
+// put there first so there is a cell to widen onto.
 func (h *helixHandlerImpl) insertAfterSelection() {
-	if _, to, ok := h.cursor.SelectionRange(); ok {
-		h.cursor.Unselect()
-		h.cursor.MoveToScroll(to)
-	}
+	h.carryEdits()
 	h.setInsertMode()
+	h.restoreCursor = true
+	buf := h.buf()
+	if rows, n := buf.Rows(), h.sel.len(); rows > 0 && n > 0 {
+		end := term.Coordinates{X: buf.Columns(rows - 1), Y: rows - 1}
+		last := h.sel.ranges[n-1]
+		if !last.isPoint() && last.to() == end {
+			buf.Edit(context.Background(), end, end, "\n")
+			h.carryEdits()
+		}
+	}
+	h.setSelection(h.sel.transform(func(r rng) rng {
+		head := r.to()
+		if next, ok := nextPos(buf, head); ok {
+			head = next
+		}
+		return rng{anchor: r.from(), head: head}
+	}))
 }
 
+// insertAtLineStart and insertAtLineEnd are insert_with_indent, I and
+// A: every range's cursor goes to the first non-blank or the end of
+// its line, as a point, or extending the range when select mode was
+// on.
 func (h *helixHandlerImpl) insertAtLineStart() {
-	h.cursor.Unselect()
-	h.cursor.MoveStartLineNonBlank()
-	h.setInsertMode()
+	h.insertWithIndent(false)
 }
 
 func (h *helixHandlerImpl) insertAtLineEnd() {
-	h.cursor.Unselect()
-	h.cursor.MoveEndLine()
+	h.insertWithIndent(true)
+}
+
+func (h *helixHandlerImpl) insertWithIndent(lineEnd bool) {
+	wasSelect := h.extend
+	h.carryEdits()
 	h.setInsertMode()
+	buf := h.buf()
+	h.setSelection(h.sel.transform(func(r rng) rng {
+		line := clampInsert(buf, r.cursor(buf)).Y
+		pos := term.Coordinates{Y: line}
+		if lineEnd {
+			pos.X = buf.Columns(line)
+		} else if first, ok := h.firstNonBlank(line); ok {
+			pos = first
+		}
+		return r.putCursor(buf, pos, wasSelect)
+	}))
 }
 
 // openLine is open: a line goes in next to every range, count times,
@@ -2534,8 +2641,8 @@ func (h *helixHandlerImpl) openLine(above bool) {
 	h.setInsertMode()
 	primary := h.sel.primary
 	buf := h.buf()
-	h.forEachRange(func() bool {
-		r := h.readRange()
+	h.fanOut(func(i int) bool {
+		r := h.sel.ranges[i]
 		h.cursor.Unselect()
 		row := r.from().Y
 		if !above {
@@ -2550,7 +2657,7 @@ func (h *helixHandlerImpl) openLine(above bool) {
 			h.cursor.InsertLineBelow(h.config.indentRune, h.config.indentTabspaces)
 		}
 		return true
-	})
+	}, nil)
 	if count < 2 {
 		return
 	}

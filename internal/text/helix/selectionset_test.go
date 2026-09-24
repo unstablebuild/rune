@@ -431,7 +431,7 @@ func runOpSelCases(t *testing.T, cases []opSelCase) {
 	t.Helper()
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			hx, buf, clip := newHelix(t, tc.content, tc.at)
+			hx, buf, clip := newHelix(t, tc.content, tc.at, tc.opts...)
 			if tc.seed != "" {
 				seedClipboard(t, clip, tc.seed, text.StandardSelection)
 			}
@@ -658,6 +658,7 @@ func TestRegisterFragments(t *testing.T) {
 // selection set stored with the revision, as Helix's history does,
 // rather than a single caret.
 func TestUndoRestoresSelectionSet(t *testing.T) {
+	esc := namedKey(term.KeyEsc)
 	t.Run("undo restores the set before a delete and redo the one after", func(t *testing.T) {
 		hx, buf, _ := newHelix(t, "abc\ndef", term.Coordinates{X: 1})
 		send(t, hx, keys("Cd")...)
@@ -701,6 +702,123 @@ func TestUndoRestoresSelectionSet(t *testing.T) {
 		send(t, hx, key('u'))
 		send(t, hx, modKey(term.ModCtrl, 'o'))
 		assert.Equal(t, xy(0, 0), hx.CursorAtScroll())
+	})
+
+	t.Run("a two-cursor insert session undoes in one step", func(t *testing.T) {
+		hx, buf, _ := newHelix(t, "abc\ndef", term.Coordinates{X: 1})
+		send(t, hx, cat(keys("CiXY"), []term.Event{esc})...)
+		require.Equal(t, "aXYbc\ndXYef", buf.String())
+		send(t, hx, key('u'))
+		assert.Equal(t, "abc\ndef", buf.String())
+		assert.Equal(t, []string{"b", "e"}, sels(hx))
+	})
+
+	t.Run("C-s splits the session once for every cursor", func(t *testing.T) {
+		hx, buf, _ := newHelix(t, "abc\ndef", term.Coordinates{X: 1})
+		send(t, hx, cat(keys("CiX"), []term.Event{modKey(term.ModCtrl, 's')}, keys("Y"), []term.Event{esc})...)
+		require.Equal(t, "aXYbc\ndXYef", buf.String())
+		send(t, hx, key('u'))
+		assert.Equal(t, "aXbc\ndXef", buf.String())
+		send(t, hx, key('u'))
+		assert.Equal(t, "abc\ndef", buf.String())
+	})
+}
+
+// TestInsertModeOverAllRanges pins insert mode with several ranges:
+// every entry places a cursor per range the way insert_mode,
+// append_mode and insert_with_indent do, every key edits at all of
+// them, and the ranges ride along the way Range::map and the
+// auto-pair hook carry them in Helix.
+func TestInsertModeOverAllRanges(t *testing.T) {
+	const grid = "abc\ndef"
+	esc := []term.Event{namedKey(term.KeyEsc)}
+	pair := []Option{WithAutoPair(true)}
+	burst := func(str string) []term.Event {
+		evs := []term.Event{{Type: term.EventPasteStart}}
+		evs = append(evs, keys(str)...)
+		return append(evs, term.Event{Type: term.EventPasteEnd})
+	}
+	runOpSelCases(t, []opSelCase{
+		{name: "i types before every range", content: grid, at: xy(1, 0), evs: keys("CiX"),
+			want: "aXbc\ndXef", wantSels: []string{"b", "e"}, wantPrimary: 1, wantAt: xy(2, 1), wantInsert: true},
+		{name: "a types after every range", content: grid, at: xy(1, 0), evs: keys("CaX"),
+			want: "abXc\ndeXf", wantSels: []string{"bXc", "eXf"}, wantPrimary: 1, wantAt: xy(3, 1), wantInsert: true},
+		{name: "esc after a pulls every range back onto the text", content: grid, at: xy(1, 0),
+			evs:  cat(keys("CaX"), esc),
+			want: "abXc\ndeXf", wantSels: []string{"bX", "eX"}, wantPrimary: 1, wantAt: xy(2, 1)},
+		{name: "esc after i keeps every range", content: grid, at: xy(1, 0), evs: cat(keys("CiX"), esc),
+			want: "aXbc\ndXef", wantSels: []string{"b", "e"}, wantPrimary: 1, wantAt: xy(2, 1)},
+		{name: "A appends at every line end", content: grid, at: xy(1, 0), evs: keys("CAX"),
+			want: "abcX\ndefX", wantSels: []string{"", ""}, wantPrimary: 1, wantAt: xy(4, 1), wantInsert: true},
+		{name: "I inserts at every first non-blank", content: "  abc\n  def", at: xy(3, 0), evs: keys("CIX"),
+			want: "  Xabc\n  Xdef", wantSels: []string{"", ""}, wantPrimary: 1, wantAt: xy(3, 1), wantInsert: true},
+		{name: "I in select mode extends every range to the line start", content: grid, at: xy(1, 0),
+			evs:  keys("CvIX"),
+			want: "Xabc\nXdef", wantSels: []string{"ab", "de"}, wantPrimary: 1, wantAt: xy(1, 1), wantInsert: true},
+		{name: "c then typing replaces every range", content: grid, at: xy(1, 0), evs: keys("CcX"),
+			want: "aXc\ndXf", wantSels: []string{"", ""}, wantPrimary: 1, wantAt: xy(2, 1), wantInsert: true},
+		{name: "o then typing fills every new line", content: "a\nb", evs: keys("CoX"),
+			want: "a\nX\nb\nX", wantSels: []string{"", ""}, wantPrimary: 1, wantAt: xy(1, 3), wantInsert: true},
+		{name: "enter at every cursor", content: "ab\ncd", at: xy(1, 0),
+			evs:  cat(keys("Ci"), []term.Event{namedKey(term.KeyEnter)}),
+			want: "a\nb\nc\nd", wantSels: []string{"b", "d"}, wantPrimary: 1, wantAt: xy(0, 3), wantInsert: true},
+		{name: "backspace dedents every line", content: "    a\n    b", at: xy(4, 0),
+			evs:  cat(keys("Ci"), []term.Event{namedKey(term.KeyBackspace)}),
+			want: "  a\n  b", wantSels: []string{"a", "b"}, wantPrimary: 1, wantAt: xy(2, 1), wantInsert: true},
+		{name: "delete at every cursor", content: grid, at: xy(1, 0),
+			evs:  cat(keys("Ci"), []term.Event{namedKey(term.KeyDelete)}),
+			want: "ac\ndf", wantSels: []string{"", ""}, wantPrimary: 1, wantAt: xy(1, 1), wantInsert: true},
+		{name: "C-w kills a word at every cursor", content: "foo bar\nfoo baz", at: xy(4, 0),
+			evs:  cat(keys("Ci"), []term.Event{modKey(term.ModCtrl, 'w')}),
+			want: "bar\nbaz", wantSels: []string{"b", "b"}, wantPrimary: 1, wantAt: xy(0, 1), wantInsert: true},
+		{name: "arrows collapse every range to a point", content: grid, at: xy(1, 0),
+			evs:  cat(keys("Ca"), []term.Event{namedKey(term.KeyArrowRight)}),
+			want: grid, wantSels: []string{"", ""}, wantPrimary: 1, wantAt: xy(3, 1), wantInsert: true},
+		{name: "a full pair goes in at every cursor", content: grid, at: xy(1, 0), opts: pair, evs: keys("Ca("),
+			want: "ab()c\nde()f", wantSels: []string{"b()", "e()"}, wantPrimary: 1, wantAt: xy(3, 1), wantInsert: true},
+		{name: "a pair after i moves a one-cell range onto the closer", content: grid, at: xy(1, 0), opts: pair,
+			evs:  keys("Ci("),
+			want: "a()bc\nd()ef", wantSels: []string{")", ")"}, wantPrimary: 1, wantAt: xy(2, 1), wantInsert: true},
+		{name: "typing over a closer slides every range", content: "()x\n()y", at: xy(1, 0), opts: pair,
+			evs:  keys("Ci)"),
+			want: "()x\n()y", wantSels: []string{"x", "y"}, wantPrimary: 1, wantAt: xy(2, 1), wantInsert: true},
+		{name: "C-r puts each register fragment at its own cursor", content: grid, at: xy(1, 0),
+			evs:  cat(keys("CyA"), []term.Event{modKey(term.ModCtrl, 'r'), key('"')}),
+			want: "abcb\ndefe", wantSels: []string{"", ""}, wantPrimary: 1, wantAt: xy(4, 1), wantInsert: true},
+		{name: "a paste burst lands at every cursor", content: grid, at: xy(1, 0),
+			evs:  cat(keys("CA"), burst("XY")),
+			want: "abcXY\ndefXY", wantSels: []string{"", ""}, wantPrimary: 1, wantAt: xy(5, 1), wantInsert: true},
+		{name: "dot replays the session at every range", content: grid, at: xy(1, 0),
+			evs:  cat(keys("CiX"), esc, keys(".")),
+			want: "aXXbc\ndXXef", wantSels: []string{"b", "e"}, wantPrimary: 1, wantAt: xy(3, 1)},
+	})
+
+	t.Run("the primary range stays drawn while typing", func(t *testing.T) {
+		hx, _, _ := newHelix(t, "abc", term.Coordinates{})
+		hx.Resize(10, 3)
+		send(t, hx, keys("aX")...)
+		w := term.NewStringWriter(10, 3)
+		hx.Draw(w)
+		require.NoError(t, w.Flush())
+		cells := w.Cells()
+		require.GreaterOrEqual(t, len(cells), 4)
+		assert.Equal(t, "aXbc", string([]rune{cells[0].Ch, cells[1].Ch, cells[2].Ch, cells[3].Ch}))
+		for i := range 3 {
+			assert.NotZero(t, cells[i].Attrs&term.AttrReverse, "cell %d is part of the range", i)
+		}
+		assert.Zero(t, cells[3].Attrs&term.AttrReverse, "the cell past the range is plain")
+		send(t, hx, namedKey(term.KeyEsc))
+		assert.Equal(t, "aX", sel(t, hx))
+	})
+
+	t.Run("the count stays up while typing", func(t *testing.T) {
+		hx, _, _ := newHelix(t, "abc\ndef", term.Coordinates{})
+		hx.Resize(20, 5)
+		send(t, hx, keys("CiX")...)
+		w := term.NewStringWriter(20, 5)
+		hx.Draw(w)
+		require.NoError(t, w.Flush())
+		assert.Contains(t, w.String(), "2/2 sels")
 	})
 }
 

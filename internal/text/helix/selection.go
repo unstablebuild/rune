@@ -140,6 +140,26 @@ func (r rng) putCursor(buf *cell.Buffer, target term.Coordinates, extend bool) r
 	return rng{anchor: anchor, head: target}
 }
 
+// withCursor moves the cursor of r onto caret with the anchor staying
+// put, which is where an insert-mode edit leaves a range whose cursor
+// the primitive parked somewhere Range::map cannot predict, such as
+// between an auto-inserted pair. A point simply moves.
+func (r rng) withCursor(buf *cell.Buffer, caret term.Coordinates) rng {
+	if r.isPoint() {
+		return point(caret)
+	}
+	if r.cursor(buf) == caret {
+		return r
+	}
+	return r.putCursor(buf, caret, true)
+}
+
+// singleCell is Range::is_single_grapheme.
+func (r rng) singleCell(buf *cell.Buffer) bool {
+	next, ok := nextPos(buf, r.from())
+	return ok && next == r.to()
+}
+
 // overlaps is Range::overlaps. Two points at the same position overlap,
 // which is what keeps collapsed cursors from piling up.
 func (r rng) overlaps(o rng) bool {

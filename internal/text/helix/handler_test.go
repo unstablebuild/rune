@@ -602,9 +602,9 @@ func TestInsertModeKeys(t *testing.T) {
 		assert.Equal(t, "abc", data.Text)
 	})
 
-	// i is the one entry that leaves a non-empty range behind with its
-	// head at the start, so escaping keeps the caret where it was
-	// rather than dropping it onto the text just typed.
+	// insert_mode flips the range so its cursor sits on its first
+	// cell, and the range rides along in front of the text typed, so
+	// escaping leaves the caret on the cell it was on.
 	t.Run("esc after i keeps the caret on the original cell", func(t *testing.T) {
 		hx, buf, _ := newHelix(t, "ab", term.Coordinates{})
 		send(t, hx, keys("iX")...)
@@ -620,26 +620,32 @@ func TestInsertModeKeys(t *testing.T) {
 		assert.Equal(t, term.Coordinates{X: 3}, hx.CursorAtScroll())
 	})
 
-	// Every other entry starts from an empty range, which the
-	// min-width-1 invariant widens backwards on the way out.
+	// enter_normal_mode keeps every range as insert mode left it. An
+	// append widened the range past its end so the text lands after
+	// it, and leaving pulls that cell back off, so the range covers
+	// the original text plus what was typed. The other entries leave
+	// a point after the typed text, which the normal-mode invariant
+	// widens onto the following cell, or onto the last cell of the
+	// row when the point sits on its line ending.
 	for _, tc := range []struct {
-		name string
-		evs  []term.Event
-		want term.Coordinates
+		name    string
+		evs     []term.Event
+		want    term.Coordinates
+		wantSel string
 	}{
-		{name: "a", evs: keys("aX"), want: term.Coordinates{X: 1}},
-		{name: "A", evs: keys("AX"), want: term.Coordinates{X: 2}},
-		{name: "I", evs: keys("IX"), want: term.Coordinates{}},
-		{name: "o", evs: keys("oX"), want: term.Coordinates{Y: 1}},
-		{name: "O", evs: keys("OX"), want: term.Coordinates{}},
-		{name: "c", evs: keys("cX"), want: term.Coordinates{}},
+		{name: "a", evs: keys("aX"), want: term.Coordinates{X: 1}, wantSel: "aX"},
+		{name: "A", evs: keys("AX"), want: term.Coordinates{X: 2}, wantSel: "X"},
+		{name: "I", evs: keys("IX"), want: term.Coordinates{X: 1}, wantSel: "a"},
+		{name: "o", evs: keys("oX"), want: term.Coordinates{Y: 1}, wantSel: "X"},
+		{name: "O", evs: keys("OX"), want: term.Coordinates{}, wantSel: "X"},
+		{name: "c", evs: keys("cX"), want: term.Coordinates{X: 1}, wantSel: "b"},
 	} {
-		t.Run("esc after "+tc.name+" lands on the last insert", func(t *testing.T) {
+		t.Run("esc after "+tc.name, func(t *testing.T) {
 			hx, _, _ := newHelix(t, "ab", term.Coordinates{})
 			send(t, hx, tc.evs...)
 			send(t, hx, namedKey(term.KeyEsc))
 			assert.Equal(t, tc.want, hx.CursorAtScroll())
-			assert.Equal(t, "X", sel(t, hx))
+			assert.Equal(t, tc.wantSel, sel(t, hx))
 		})
 	}
 }
@@ -2470,9 +2476,15 @@ func TestInsertEntry(t *testing.T) {
 			evs: append(keys("O"), keys("X")...), want: "X\na\nb"},
 		{name: "counted o opens several lines", content: "a",
 			evs: keys("3o"), want: "a\n\n\n"},
-		{name: "a at the buffer end appends", content: "ab",
+		// append_mode puts a line ending at the end of the document
+		// when the last range butts up against it, so there is a cell
+		// to widen the range onto.
+		{name: "a at the buffer end appends and adds the final line ending", content: "ab",
 			at: term.Coordinates{X: 1}, evs: append(keys("a"), keys("X")...),
-			want: "abX"},
+			want: "abX\n"},
+		{name: "a at the end of a final line that has a line ending", content: "ab\n",
+			at: term.Coordinates{X: 1}, evs: append(keys("a"), keys("X")...),
+			want: "abX\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			hx, buf, _ := newHelix(t, tc.content, tc.at)
