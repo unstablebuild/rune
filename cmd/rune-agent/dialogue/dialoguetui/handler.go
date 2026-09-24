@@ -387,7 +387,9 @@ func (s *dialogueHandler) Handle(ev term.Event) (exit, handled bool) {
 					return
 				}
 			}
-			if ev.Ch == ' ' {
+			// The space bar arrives as Key=KeySpace; Ch=' ' is also
+			// accepted for synthetic and legacy events.
+			if ev.Key == term.KeySpace || ev.Ch == ' ' {
 				s.comp.PromptToggle()
 			}
 			// absorb all other keys

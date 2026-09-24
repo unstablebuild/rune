@@ -178,6 +178,80 @@ func TestE2ECtrlCDismissesSelectionPrompt(t *testing.T) {
 	})
 }
 
+// TestE2EMultiSelectSpaceToggles drives a multiSelect ask_user_question
+// prompt through handlertest.RunHandlerSequence, whose <space> token
+// arrives as Key=KeySpace with Ch=0, the shape input backends deliver
+// it in. Enter with nothing checked must leave the prompt open (a nil
+// result would be reported to the agent as a dismissal), <space> must
+// tick the checkbox under the cursor, and Enter must then submit.
+func TestE2EMultiSelectSpaceToggles(t *testing.T) {
+	args := mustJSON(t, map[string]any{
+		"questions": []map[string]any{{
+			"question": "Pick some", "header": "Choice",
+			"options": []map[string]any{
+				{"label": "A", "description": ""},
+				{"label": "B", "description": ""},
+			},
+			"multiSelect": true,
+		}},
+	})
+	h := newPromptHandler(t, promptHandlerOpts{toolArgs: args})
+	unchecked := frame(
+		"hi",
+		"Pick some                       [Choice]",
+		blanks(),
+		">[ ] A",
+		"[ ] B",
+		"[ ] Other",
+		"      None of the above",
+		"   ┌───────────────────────────────┐    ",
+		"   │                               │    ",
+		"   └───────────────────────────────┘    ",
+	)
+	handlertest.RunHandlerSequence(t, h, frameWidth, frameHeight, []handlertest.SequenceTestCase{
+		{
+			// Submit the user message; the agent loop emits the
+			// tool call and the multiSelect prompt becomes visible.
+			InputSequence: "hi<enter>",
+			Expected:      unchecked,
+		},
+		{
+			// Enter with nothing checked is ignored: the prompt
+			// stays exactly as it was.
+			InputSequence: "<enter>",
+			Expected:      unchecked,
+		},
+		{
+			// Space ticks the box under the cursor.
+			InputSequence: "<space>",
+			Expected: frame(
+				"hi",
+				"Pick some                       [Choice]",
+				blanks(),
+				">[x] A",
+				"[ ] B",
+				"[ ] Other",
+				"      None of the above",
+				"   ┌───────────────────────────────┐    ",
+				"   │                               │    ",
+				"   └───────────────────────────────┘    ",
+			),
+		},
+		{
+			// Enter submits the checked option; the prompt is
+			// cleared and focus returns to the empty input box.
+			InputSequence: "<enter>",
+			Expected: frame(
+				"hi",
+				blanks(), blanks(), blanks(), blanks(), blanks(), blanks(),
+				"   ┌───────────────────────────────┐    ",
+				"   │▐                              │    ",
+				"   └───────────────────────────────┘    ",
+			),
+		},
+	})
+}
+
 // TestE2ENoLSPLanguageDisablesAutoDiagnostics is the RUNE-AGENT-96
 // end-to-end regression. The scripted LLM edits a .py file on two
 // consecutive turns through a real apply_patch tool, while the stub LSP

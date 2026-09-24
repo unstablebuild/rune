@@ -362,28 +362,57 @@ func TestHandlerPromptCursorHidden(t *testing.T) {
 }
 
 func TestHandlerPromptMultiSelectSpaceToggles(t *testing.T) {
-	h, tx, interrupt := newPromptHandler(t)
-	resultCh := make(chan []string, 1)
+	// Input backends deliver the space bar as Key=KeySpace; a bare
+	// Ch=' ' covers synthetic and legacy events. Both must toggle the
+	// checkbox.
+	for _, tc := range []struct {
+		name  string
+		space term.Event
+	}{
+		{"synthetic-ch", term.Event{Type: term.EventKey, Ch: ' '}},
+		{"key", term.Event{Type: term.EventKey, Key: term.KeySpace}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, tx, interrupt := newPromptHandler(t)
+			resultCh := make(chan []string, 1)
 
-	tx <- MessageEvent{
-		Type:              MessageEventPrompt,
-		PromptTitle:       "Features",
-		PromptOptions:     []PromptEventOption{{Label: "Logging"}, {Label: "Metrics"}, {Label: "Tracing"}},
-		PromptMultiSelect: true,
-		PromptResult:      resultCh,
+			tx <- MessageEvent{
+				Type:              MessageEventPrompt,
+				PromptTitle:       "Features",
+				PromptOptions:     []PromptEventOption{{Label: "Logging"}, {Label: "Metrics"}, {Label: "Tracing"}},
+				PromptMultiSelect: true,
+				PromptResult:      resultCh,
+			}
+			<-interrupt
+
+			// Enter with nothing checked must not resolve the prompt:
+			// a nil result would be read as a dismissal.
+			_, handled := h.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
+			assert.True(t, handled)
+			select {
+			case vals := <-resultCh:
+				t.Fatalf("empty Enter resolved the prompt with %v", vals)
+			default:
+			}
+			_, _, ok := h.Cursor()
+			assert.False(t, ok, "prompt should still be active after empty Enter")
+
+			// Toggle first option
+			h.Handle(tc.space)
+			// Move down and toggle second
+			h.Handle(term.Event{Type: term.EventKey, Key: term.KeyArrowDown})
+			h.Handle(tc.space)
+			// Confirm
+			h.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
+
+			select {
+			case vals := <-resultCh:
+				assert.Equal(t, []string{"Logging", "Metrics"}, vals)
+			case <-time.After(2 * time.Second):
+				t.Fatal("prompt was not resolved after toggling and Enter")
+			}
+		})
 	}
-	<-interrupt
-
-	// Toggle first option
-	h.Handle(term.Event{Type: term.EventKey, Ch: ' '})
-	// Move down and toggle second
-	h.Handle(term.Event{Type: term.EventKey, Key: term.KeyArrowDown})
-	h.Handle(term.Event{Type: term.EventKey, Ch: ' '})
-	// Confirm
-	h.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
-
-	vals := <-resultCh
-	assert.Equal(t, []string{"Logging", "Metrics"}, vals)
 }
 
 func TestHandlerPromptDismissEvent(t *testing.T) {
