@@ -1720,7 +1720,7 @@ func (c *Component) StartPromptInput() bool {
 	maxOff, scrolled := c.scrollState()
 	defer c.restoreScroll(maxOff, scrolled)
 
-	c.promptLabel = c.activePrompt.Selected()[0]
+	c.promptLabel = c.activePrompt.CursorLabel()
 
 	// Remove the selection node from the list (but keep activePrompt
 	// reference so HasActivePrompt still returns true for the outer

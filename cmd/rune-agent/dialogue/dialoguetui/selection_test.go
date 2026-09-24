@@ -125,6 +125,24 @@ func TestSelectionMultiSelectToggle(t *testing.T) {
 	assert.Equal(t, []string{"SQLite"}, sel.Selected())
 }
 
+func TestSelectionCursorLabelMultiSelect(t *testing.T) {
+	sel := newTestSelection(true)
+
+	// Cursor starts on PostgreSQL; nothing checked.
+	assert.Equal(t, "PostgreSQL", sel.CursorLabel())
+
+	// Check PostgreSQL, then move to SQLite without checking it.
+	// CursorLabel must follow the cursor, not the checked set.
+	sel.Toggle()
+	sel.MoveDown()
+	assert.Equal(t, "SQLite", sel.CursorLabel())
+	assert.Equal(t, []string{"PostgreSQL"}, sel.Selected())
+
+	// Move to the last, unchecked option.
+	sel.MoveDown()
+	assert.Equal(t, "MySQL", sel.CursorLabel())
+}
+
 func TestSelectionMultiSelectRender(t *testing.T) {
 	sel := newTestSelection(true)
 	sel.Toggle() // check PostgreSQL

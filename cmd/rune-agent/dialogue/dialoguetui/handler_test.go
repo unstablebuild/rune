@@ -415,6 +415,98 @@ func TestHandlerPromptMultiSelectSpaceToggles(t *testing.T) {
 	}
 }
 
+// TestHandlerPromptMultiSelectEnterOnOtherWithRequiresInput verifies that
+// pressing <enter> on a RequiresInput option ("Other") in a multi-select
+// prompt attributes the typed text to the option under the cursor, not to
+// whatever happens to be checked — with and without another box checked.
+func TestHandlerPromptMultiSelectEnterOnOtherWithRequiresInput(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		checkA bool
+	}{
+		{"nothing checked", false},
+		{"A checked", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, tx, interrupt := newPromptHandler(t)
+			resultCh := make(chan []string, 1)
+
+			tx <- MessageEvent{
+				Type:        MessageEventPrompt,
+				PromptTitle: "Features",
+				PromptOptions: []PromptEventOption{
+					{Label: "A"},
+					{Label: "Other", RequiresInput: true},
+				},
+				PromptMultiSelect: true,
+				PromptResult:      resultCh,
+			}
+			<-interrupt
+
+			if tc.checkA {
+				h.Handle(term.Event{Type: term.EventKey, Key: term.KeySpace})
+			}
+
+			// Move the cursor to "Other" without checking it, then submit.
+			h.Handle(term.Event{Type: term.EventKey, Key: term.KeyArrowDown})
+			_, handled := h.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
+			require.True(t, handled)
+
+			typeText(h, "feedback")
+			h.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
+
+			select {
+			case vals := <-resultCh:
+				require.Len(t, vals, 2)
+				assert.Equal(t, "Other", vals[0], "typed text must be attributed to the option under the cursor")
+				assert.Equal(t, "feedback", vals[1])
+			case <-time.After(2 * time.Second):
+				t.Fatal("prompt was not resolved after typing and Enter")
+			}
+		})
+	}
+}
+
+// TestHandlerPromptToggleRequiresNoModifier verifies that ctrl-space and
+// meta-space, which are bound to other actions, do not also toggle the
+// checkbox under the cursor. Meta arrives here as term.ModAlt: a bare
+// term.ModMeta event never reaches this code, since Handle's top-level
+// modifier switch drops it before dispatch.
+func TestHandlerPromptToggleRequiresNoModifier(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		event term.Event
+	}{
+		{"ctrl-space", term.Event{Type: term.EventKey, Key: term.KeySpace, Mod: term.ModCtrl}},
+		{"meta-space", term.Event{Type: term.EventKey, Key: term.KeySpace, Mod: term.ModAlt}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, tx, interrupt := newPromptHandler(t)
+			resultCh := make(chan []string, 1)
+
+			tx <- MessageEvent{
+				Type:              MessageEventPrompt,
+				PromptTitle:       "Features",
+				PromptOptions:     []PromptEventOption{{Label: "Logging"}},
+				PromptMultiSelect: true,
+				PromptResult:      resultCh,
+			}
+			<-interrupt
+
+			h.Handle(tc.event)
+
+			// Enter with nothing checked must not resolve the prompt; if the
+			// modifier combo had toggled the box, this would send ["Logging"].
+			h.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
+			select {
+			case vals := <-resultCh:
+				t.Fatalf("%s toggled the checkbox: %v", tc.name, vals)
+			default:
+			}
+		})
+	}
+}
+
 func TestHandlerPromptDismissEvent(t *testing.T) {
 	h, tx, interrupt := newPromptHandler(t)
 	resultCh := make(chan []string, 1)
