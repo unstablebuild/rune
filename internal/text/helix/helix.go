@@ -249,7 +249,7 @@ func (hx *Helix) Copy(registerID string, data clipboard.Data) error {
 func (hx *Helix) Handle(ev term.Event) (quit, handled bool) {
 	if ev.Type == term.EventMouse {
 		quit, handled = hx.mouse.Handle(ev)
-		hx.handler.adoptCursor()
+		hx.handler.resetSelection()
 		return quit, handled
 	}
 

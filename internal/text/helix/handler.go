@@ -95,6 +95,7 @@ type helixHandler interface {
 	search(string)
 	moveToBounds()
 	adoptCursor()
+	resetSelection()
 	unselect() bool
 	copySuppressed() bool
 	setStatusBar(bar statusBar)
@@ -162,7 +163,7 @@ type helixHandlerImpl struct {
 	// pulling it back onto the text just typed.
 	insertKeepsCaret bool
 
-	jumps   []rng
+	jumps   []selection
 	jumpIdx int
 
 	// jumpLabels holds goto_word's live candidates while the two label
@@ -472,6 +473,9 @@ func (h *helixHandlerImpl) search(target string) {
 	if h.config.disableSearch {
 		return
 	}
+	if h.searchDir == moveNone {
+		h.searchDir = moveToNext
+	}
 	h.searchText = target
 	h.cursor.Search(target)
 }
@@ -614,6 +618,13 @@ func (h *helixHandlerImpl) Handle(ev term.Event) (quit, handled bool) {
 		return false, true
 	}
 
+	// An edit made between events leaves the cursor where it was but
+	// the set carried through the change, so the set is what the
+	// command must start from.
+	if h.carryEdits() {
+		h.syncPrimary()
+	}
+
 	mode := h.mode()
 	defer h.doneHandle(mode)
 
@@ -659,15 +670,8 @@ func (h *helixHandlerImpl) doMoveToBounds() {
 	if h.cursor.CursorAtScroll().Y < h.less.Buffer().Rows() {
 		h.anchor = h.cursorAtScroll()
 	}
-	if !h.config.cursorCorrections {
-		return
-	}
-	if h.mode() == insertMode {
-		h.cursor.MoveToBounds(1)
-		return
-	}
 	prev := h.cursor.Coordinates()
-	h.cursor.MoveToBounds(0)
+	h.clampCursor()
 	if h.cursor.Coordinates().Y != prev.Y {
 		h.anchor = h.cursorAtScroll()
 	}
@@ -749,9 +753,9 @@ func (h *helixHandlerImpl) handleNormal(ev term.Event) (quit, handled bool) {
 			case 'c':
 				h.changeSelection(false)
 			case ';':
-				handled = h.cursor.SwapSelectionEnd()
+				handled = h.flipSelections()
 			case ':':
-				handled = h.ensureSelectionForward()
+				handled = h.ensureSelectionsForward()
 			case 'x':
 				handled = h.shrinkToLineBounds()
 			case 'o':
@@ -767,6 +771,16 @@ func (h *helixHandlerImpl) handleNormal(ev term.Event) (quit, handled bool) {
 				handled = h.joinSelection(true)
 			case '*':
 				handled = h.searchSelection(false)
+			case 'C':
+				handled = h.copySelectionOnLine(false)
+			case ',':
+				handled = h.removePrimarySelection()
+			case '-':
+				handled = h.mergeSelections()
+			case '_':
+				handled = h.mergeConsecutiveSelections()
+			case 's':
+				handled = h.splitSelectionOnNewline()
 			default:
 				handled = false
 			}
@@ -838,15 +852,23 @@ func (h *helixHandlerImpl) handleNormal(ev term.Event) (quit, handled bool) {
 		case 'v':
 			h.toggleExtend()
 		case ';':
-			h.anchorHere()
+			h.collapseSelection()
 		case 'x':
-			handled = h.extendLineBelow()
+			handled = h.extendLine(false)
 		case 'X':
 			handled = h.extendToLineBounds()
 		case '%':
 			handled = h.selectAll()
 		case '_':
-			handled = h.trimSelection()
+			handled = h.trimSelections()
+		case 'C':
+			handled = h.copySelectionOnLine(true)
+		case ',':
+			handled = h.keepPrimarySelection()
+		case '(':
+			handled = h.rotateSelections(false)
+		case ')':
+			handled = h.rotateSelections(true)
 		case 'i':
 			h.insertBeforeSelection()
 		case 'a':
@@ -968,13 +990,17 @@ func (h *helixHandlerImpl) moveVertically(dir int) bool {
 }
 
 func (h *helixHandlerImpl) expandSelection() bool {
-	h.pinSelection()
-	return h.cursor.ExpandSelection(context.Background())
+	return h.forEachRange(func() bool {
+		h.pinSelection()
+		return h.cursor.ExpandSelection(context.Background())
+	})
 }
 
 func (h *helixHandlerImpl) shrinkSelection() bool {
-	h.pinSelection()
-	return h.cursor.ShrinkSelection()
+	return h.forEachRange(func() bool {
+		h.pinSelection()
+		return h.cursor.ShrinkSelection()
+	})
 }
 
 // pinSelection hands the highlighted range to the cursor as an explicit
@@ -990,15 +1016,6 @@ func (h *helixHandlerImpl) pinSelection() {
 		return
 	}
 	h.cursor.SelectRange(from, to)
-}
-
-// ensureSelectionForward implements A-: so the head always trails the
-// anchor, which makes the following operator direction-independent.
-func (h *helixHandlerImpl) ensureSelectionForward() bool {
-	if !h.selectionBackward() {
-		return false
-	}
-	return h.cursor.SwapSelectionEnd()
 }
 
 func (h *helixHandlerImpl) toggleMacroRecording() bool {
@@ -1090,7 +1107,7 @@ func (h *helixHandlerImpl) handleGoto(ev term.Event) (quit, handled bool) {
 			return false, h.jumping(func() bool { return h.moveCaret(h.gotoLine) })
 		}
 		h.pushJump()
-		return false, h.moveCaret(h.cursor.MoveFirstLine)
+		return false, h.moveCaret(h.gotoFirstLine)
 	case 'e':
 		h.pushJump()
 		return false, h.moveCaret(h.gotoLastLine)
@@ -1628,375 +1645,22 @@ func (h *helixHandlerImpl) handleInsert(ev term.Event) (quit, handled bool) {
 	return quit, handled
 }
 
-// --- selection grammar ---
-
-// Helix's selection grammar, mirroring helix-core/src/movement.rs and
-// Range::put_cursor in helix-core/src/selection.rs.
-//
-// Every range is an (anchor, head) pair and is never empty: Helix stores
-// selections through Selection::ensure_invariants, which widens a
-// collapsed range to one grapheme. text.Cursor with
-// RightInclusiveSemantics has the same shape, so a motion is a matter of
-// deciding where the anchor lands before moving the head.
-//
-// In normal mode put_cursor drops a fresh anchor on the landing cell; in
-// select mode the existing anchor survives. Word motions additionally
-// re-anchor one cell along when the caret already sits on the boundary
-// the motion looks for, which is what makes repeated presses walk
-// forward instead of standing still (word_move's `head == head_start`
-// branch).
-
-// anchorHere drops a fresh anchor on the caret, collapsing the selection
-// to the single cell under it.
-func (h *helixHandlerImpl) anchorHere() {
-	h.cursor.Unselect()
-	h.cursor.Select()
-}
-
-// setSelectionRange rebuilds the selection as the (anchor, head) pair,
-// leaving the caret on head. The anchor is placed without seeking so
-// the viewport only ever follows the caret.
-func (h *helixHandlerImpl) setSelectionRange(anchor, head term.Coordinates) {
-	h.cursor.Unselect()
-	h.cursor.SetCursorAtScroll(anchor)
-	h.cursor.Select()
-	h.cursor.MoveToScroll(head)
-}
-
-// selectionAnchor returns the cell the selection is anchored on.
-func (h *helixHandlerImpl) selectionAnchor() (term.Coordinates, bool) {
-	anchor, _, ok := h.cursor.SelectionBounds()
-	return anchor, ok
-}
-
-func (h *helixHandlerImpl) selectionBackward() bool {
-	anchor, head, ok := h.cursor.SelectionBounds()
-	return ok && coordinatesBefore(head, anchor)
-}
-
-// runMotion applies step count times. Select mode restores the original
-// anchor afterwards, matching extend_word_impl: the head is computed as
-// if the motion were unextended, then put back on the old anchor.
-func (h *helixHandlerImpl) runMotion(step func() bool) bool {
-	return h.applyMotion(step, h.motionCount())
-}
-
-// runMotionOnce is for motions that consume the count themselves.
-func (h *helixHandlerImpl) runMotionOnce(step func() bool) bool {
-	return h.applyMotion(step, 1)
-}
-
-func (h *helixHandlerImpl) applyMotion(step func() bool, times int) bool {
-	run := func() bool {
-		moved := false
-		for range max(1, times) {
-			if !step() {
-				break
-			}
-			moved = true
-		}
-		return moved
-	}
-	if !h.extend {
-		return run()
-	}
-	if _, ok := h.cursor.SelectionMode(); !ok {
-		h.cursor.Select()
-	}
-	anchor, ok := h.selectionAnchor()
-	if !ok {
-		return run()
-	}
-	moved := run()
-	h.setSelectionRange(anchor, h.cursor.CursorAtScroll())
-	return moved
-}
-
-// moveCaret runs a motion that leaves a single-cell selection behind in
-// normal mode: put_cursor(extend=false) collapses to the landing cell.
-func (h *helixHandlerImpl) moveCaret(fn func() bool) bool {
-	return h.runMotion(h.caretStep(fn))
-}
-
-// moveCaretOnce is moveCaret for motions that apply the count inside fn.
-func (h *helixHandlerImpl) moveCaretOnce(fn func() bool) bool {
-	return h.runMotionOnce(h.caretStep(fn))
-}
-
-func (h *helixHandlerImpl) caretStep(fn func() bool) func() bool {
-	return func() bool {
-		h.cursor.Unselect()
-		ok := h.moved(fn)
-		h.anchorHere()
-		return ok
-	}
-}
-
-// moved runs a cursor primitive and reports whether the caret actually
-// changed position. The primitives disagree on what their boolean
-// means: Cursor.MoveRightEndWord returns false under
-// RightInclusiveSemantics even when it moved, so position is the only
-// reliable signal.
-func (h *helixHandlerImpl) moved(fn func() bool) bool {
-	before := h.cursor.CursorAtScroll()
-	fn()
-	return h.cursor.CursorAtScroll() != before
-}
-
-// --- selection set ---
-
-// The handler keeps the selection set in document space and text.Cursor
-// mirrors only the primary. readRange and installRange are the two
-// bridges between them; everything else goes through setSelection so
-// the set is always normalized and the primary always installed.
-//
-// A linewise cursor selection is the Helix range from the start of its
-// first line to the start of the line after its last, which is what x
-// and extend_line_below build there, and any range of that shape is
-// installed back as a linewise selection so d, y and p keep their
-// whole-line semantics.
-
-// adoptCursor makes whatever selection the cursor holds the whole
-// selection set. It runs after every event, which is what turns a
-// pinned selection (a text object, select all, a syntax expansion) back
-// into an anchor/head pair the next motion can extend.
-func (h *helixHandlerImpl) adoptCursor() {
-	h.setSelection(single(h.readRange()))
-}
-
-// setSelection replaces the selection set and installs its primary.
-func (h *helixHandlerImpl) setSelection(s selection) {
-	h.sel = h.ensureInvariants(s.normalized())
-	h.syncPrimary()
-}
-
-// ensureInvariants is Selection::ensure_invariants: outside insert mode
-// every range covers at least one cell. A caret on a line ending stays
-// a point: the cell model has no cell there to widen onto, so the
-// one-cell selection the cursor shows on an empty row covers no text.
-func (h *helixHandlerImpl) ensureInvariants(s selection) selection {
-	if h.currMode == insertMode {
-		return s
-	}
-	buf := h.buf()
-	return s.transform(func(r rng) rng {
-		if !r.isPoint() {
-			return r
-		}
-		if next, ok := nextPos(buf, r.head); ok && next.Y == r.head.Y {
-			r.head = next
-		}
-		return r
-	})
-}
-
-// syncPrimary installs the primary range into the cursor and refreshes
-// the highlight of the other ranges.
-func (h *helixHandlerImpl) syncPrimary() {
-	before := h.cursor.CursorAtScroll()
-	h.installRange(h.sel.primaryRange())
-	if h.cursor.CursorAtScroll() != before {
-		h.anchor = h.cursorAtScroll()
-	}
-	h.markSecondaries()
-}
-
-// markSecondaries draws every non-primary range through two location
-// lists: the covered cells in reverse and, on top, the cell the range's
-// cursor sits on dimmed so it reads as a ghost caret.
-func (h *helixHandlerImpl) markSecondaries() {
-	if h.sel.len() < 2 {
-		if h.secondariesDrawn {
-			h.cursor.SetLocationList(textapi.LocationPriorityCritical, selectionsLocID, nil)
-			h.cursor.SetLocationList(textapi.LocationPriorityCritical, cursorsLocID, nil)
-			h.secondariesDrawn = false
-		}
-		return
-	}
-	buf := h.buf()
-	var sels, carets []textapi.Location
-	for i, r := range h.sel.ranges {
-		if i == h.sel.primary {
-			continue
-		}
-		sels = append(sels, rowLocations(buf, r, term.Attributes{Attrs: term.AttrReverse})...)
-		c := clampCell(buf, r.cursor(buf))
-		carets = append(carets, textapi.Location{
-			From: c, To: term.Coordinates{X: c.X + 1, Y: c.Y},
-			Attr: term.Attributes{Attrs: term.AttrReverse | term.AttrDim},
-		})
-	}
-	h.cursor.SetLocationList(textapi.LocationPriorityCritical, selectionsLocID,
-		textapi.LocationSlice(sels))
-	h.cursor.SetLocationList(textapi.LocationPriorityCritical, cursorsLocID,
-		textapi.LocationSlice(carets))
-	h.secondariesDrawn = true
-}
-
-// rowLocations splits a range into one location per row it covers.
-func rowLocations(buf *cell.Buffer, r rng, attr term.Attributes) []textapi.Location {
-	from, to := r.from(), r.to()
-	var locs []textapi.Location
-	for y := from.Y; y <= to.Y && y < buf.Rows(); y++ {
-		start := term.Coordinates{Y: y}
-		if y == from.Y {
-			start.X = from.X
-		}
-		end := term.Coordinates{Y: y, X: buf.Columns(y)}
-		if y == to.Y {
-			end.X = min(to.X, end.X)
-		}
-		if end.X <= start.X {
-			continue
-		}
-		locs = append(locs, textapi.Location{From: start, To: end, Attr: attr})
-	}
-	return locs
-}
-
-// readRange reads the cursor's selection as a Helix range in document
-// space, where head is the exclusive edge of the range. Without a
-// selection the caret is a point.
-func (h *helixHandlerImpl) readRange() rng {
-	from, to, ok := h.cursor.SelectionRange()
-	if !ok {
-		caret := h.cursor.CursorAtScroll()
-		return rng{anchor: caret, head: caret}
-	}
-	buf := h.buf()
-	if mode, _ := h.cursor.SelectionMode(); mode == text.LineSelection {
-		from = term.Coordinates{Y: from.Y}
-		to = term.Coordinates{Y: min(to.Y+1, buf.Rows())}
-	} else {
-		to = docTo(buf, to)
-	}
-	if h.selectionBackward() {
-		return rng{anchor: to, head: from}
-	}
-	return rng{anchor: from, head: to}
-}
-
-// docTo maps the far edge of a cell selection into document space. The
-// cursor reports it one column past the caret, which for a caret on the
-// line-ending slot lands past the last position the row has; that edge
-// is the line ending itself, so the range covers no more than the row.
-func docTo(buf *cell.Buffer, to term.Coordinates) term.Coordinates {
-	if to.Y < 0 || to.Y >= buf.Rows() || to.X <= buf.Columns(to.Y) {
-		return to
-	}
-	return term.Coordinates{X: buf.Columns(to.Y), Y: to.Y}
-}
-
-// lineShaped reports whether r runs from a line start to a line start,
-// which is the shape a linewise selection reads back as.
-func lineShaped(r rng) bool {
-	from, to := r.from(), r.to()
-	return from.X == 0 && to.X == 0 && to.Y > from.Y
-}
-
-// installRange makes r the cursor's selection. It is a no-op when the
-// cursor already holds exactly that, so re-installing after every event
-// costs nothing on the common path. Outside insert mode a point is the
-// one-cell selection anchored where the caret is, line-ending slot
-// included: the next event's bounds correction clamps it, as it does
-// for a caret the IDE parks there.
-func (h *helixHandlerImpl) installRange(r rng) {
-	buf := h.buf()
-	if buf.Rows() == 0 {
-		return
-	}
-	anchor, head := r.anchor, r.head
-	var anchorCell, caret term.Coordinates
-	mode := text.StandardSelection
-	switch {
-	case r.isPoint() && h.currMode == insertMode:
-		caret = clampInsert(buf, head)
-		if _, ok := h.cursor.SelectionMode(); !ok && h.cursor.CursorAtScroll() == caret {
-			return
-		}
-		h.cursor.Unselect()
-		h.cursor.MoveToScroll(caret)
-		return
-	case r.isPoint():
-		anchorCell = clampInsert(buf, head)
-		caret = anchorCell
-	case lineShaped(r):
-		mode = text.LineSelection
-		first, last := r.from().Y, r.to().Y-1
-		lastCell := clampCell(buf, term.Coordinates{X: buf.Columns(last), Y: last})
-		if r.backward() {
-			anchorCell, caret = lastCell, term.Coordinates{Y: first}
-		} else {
-			anchorCell, caret = term.Coordinates{Y: first}, lastCell
-		}
-	case coordinatesBefore(anchor, head):
-		last, ok := prevPos(buf, head)
-		if !ok {
-			last = anchor
-		}
-		anchorCell, caret = clampCell(buf, anchor), clampCell(buf, last)
-	default:
-		first, ok := prevPos(buf, anchor)
-		if !ok {
-			first = head
-		}
-		anchorCell, caret = clampCell(buf, first), clampCell(buf, head)
-	}
-	if h.cursorHolds(mode, anchorCell, caret) {
-		return
-	}
-	if mode == text.LineSelection {
-		h.cursor.Unselect()
-		h.cursor.SetCursorAtScroll(anchorCell)
-		h.cursor.SelectLine()
-		h.cursor.MoveToScroll(caret)
-		return
-	}
-	h.setSelectionRange(anchorCell, caret)
-}
-
-// cursorHolds reports whether the cursor's selection is exactly the
-// anchor/caret pair in the given mode. A pinned selection never
-// matches: its far edge is exclusive where the caret cell is not.
-func (h *helixHandlerImpl) cursorHolds(mode text.SelectMode, anchor, caret term.Coordinates) bool {
-	m, ok := h.cursor.SelectionMode()
-	if !ok || m != mode {
-		return false
-	}
-	a, c, ok := h.cursor.SelectionBounds()
-	return ok && a == anchor && c == caret && h.cursor.CursorAtScroll() == caret
-}
-
-// clampInsert clamps a document position onto the cells the caret can
-// occupy in insert mode, which includes the slot past the last cell.
-func clampInsert(buf *cell.Buffer, pos term.Coordinates) term.Coordinates {
-	rows := buf.Rows()
-	if rows == 0 {
-		return term.Coordinates{}
-	}
-	if pos.Y >= rows {
-		return term.Coordinates{X: buf.Columns(rows - 1), Y: rows - 1}
-	}
-	pos.Y = max(0, pos.Y)
-	pos.X = max(0, min(pos.X, buf.Columns(pos.Y)))
-	return pos
-}
-
-// wordMotion implements w/W, e/E and b/B. Normal mode installs the
-// range word_move produced; select mode keeps the existing anchor and
-// only adopts the new cursor, which is what extend_word_impl does.
+// wordMotion implements w/W, e/E and b/B over every range. Normal mode
+// keeps the range word_move produced; select mode keeps the existing
+// anchor and only adopts the new cursor, which is what
+// extend_word_impl does.
 func (h *helixHandlerImpl) wordMotion(target wordMotionTarget) bool {
-	r := h.readRange()
-	anchor, head := wordMove(h.buf(), r.anchor, r.head, h.motionCount(), target)
-	next := rng{anchor: anchor, head: head}
-	if next == r {
-		return false
-	}
-	if h.extend {
-		next = r.putCursor(h.buf(), next.cursor(h.buf()), true)
-	}
-	h.installRange(next)
-	return true
+	h.carryEdits()
+	buf := h.buf()
+	count := h.motionCount()
+	return h.transformSelection(func(r rng) rng {
+		anchor, head := wordMove(buf, r.anchor, r.head, count, target)
+		next := rng{anchor: anchor, head: head}
+		if h.extend {
+			return r.putCursor(buf, next.cursor(buf), true)
+		}
+		return next
+	})
 }
 
 func (h *helixHandlerImpl) moveNextWordStart(group bool) bool {
@@ -2121,6 +1785,13 @@ func (h *helixHandlerImpl) gotoLine() bool {
 	return ok
 }
 
+// gotoFirstLine is goto_file_start: the very first position, not the
+// current column on the first line.
+func (h *helixHandlerImpl) gotoFirstLine() bool {
+	_, ok := h.cursor.MoveToScroll(term.Coordinates{})
+	return ok
+}
+
 // gotoLastLine skips a trailing blank last line, matching
 // goto_last_line_impl.
 func (h *helixHandlerImpl) gotoLastLine() bool {
@@ -2137,40 +1808,58 @@ func (h *helixHandlerImpl) gotoLastLine() bool {
 	return ok
 }
 
-// moveToMatch implements n/N: the caret jumps to the match and the
-// selection covers it, as search_impl does. The scan starts from the
-// far edge of the current selection so a match already under the caret
-// is not found again.
+// moveToMatch implements n/N as search_impl does: the scan starts from
+// the far edge of the primary so a match already under the caret is
+// not found again, and the hit replaces the primary or, in select
+// mode, joins the set as a new primary, which is how a search grows a
+// selection per match.
 func (h *helixHandlerImpl) moveToMatch(dir moveMode) bool {
 	return h.jumping(func() bool {
-		return h.runMotion(func() bool {
-			from, to, hadSelection := h.cursor.SelectionRange()
-			h.cursor.Unselect()
-			if hadSelection {
-				if dir == moveToPrev {
-					h.cursor.MoveToScroll(from)
-				} else {
-					last := to
-					if last.X > 0 {
-						last.X--
-					}
-					h.cursor.MoveToScroll(last)
-				}
+		h.carryEdits()
+		moved := false
+		for range h.motionCount() {
+			if !h.stepToMatch(dir) {
+				break
 			}
-			var ok bool
-			if dir == moveToPrev {
-				ok = h.cursor.MoveToPrevMatch()
-			} else {
-				ok = h.cursor.MoveToNextMatch()
-			}
-			if !ok {
-				h.anchorHere()
-				return false
-			}
-			h.selectMatchAtCaret()
-			return true
-		})
+			moved = true
+		}
+		return moved
 	})
+}
+
+func (h *helixHandlerImpl) stepToMatch(dir moveMode) bool {
+	primary := h.sel.primaryRange()
+	from, to, hadSelection := h.cursor.SelectionRange()
+	h.cursor.Unselect()
+	if hadSelection {
+		if dir == moveToPrev {
+			h.cursor.MoveToScroll(from)
+		} else {
+			last := to
+			if last.X > 0 {
+				last.X--
+			}
+			h.cursor.MoveToScroll(last)
+		}
+	}
+	var ok bool
+	if dir == moveToPrev {
+		ok = h.cursor.MoveToPrevMatch()
+	} else {
+		ok = h.cursor.MoveToNextMatch()
+	}
+	if !ok {
+		h.installRange(primary)
+		return false
+	}
+	h.selectMatchAtCaret()
+	hit := h.readRange().withDirection(primary.backward())
+	if h.extend {
+		h.setSelection(h.sel.with(hit))
+	} else {
+		h.setSelection(h.sel.replace(h.sel.primary, hit))
+	}
+	return true
 }
 
 // selectMatchAtCaret covers the search hit the caret was just moved to.
@@ -2207,16 +1896,19 @@ func (h *helixHandlerImpl) scrollLine(dir int) bool {
 	return true
 }
 
+// pageMotion is page_up/page_down, which drag only the primary along
+// with the view; halfPageMotion is page_cursor_half_up/down, which
+// move every range.
 func (h *helixHandlerImpl) pageMotion(dir int) bool {
-	return h.scrollBy(dir, max(1, h.less.Scroll().SizeHeight()-pagePadding))
+	return h.primaryMotion(h.scrollStep(dir, max(1, h.less.Scroll().SizeHeight()-pagePadding)))
 }
 
 func (h *helixHandlerImpl) halfPageMotion(dir int) bool {
-	return h.scrollBy(dir, max(1, h.less.Scroll().SizeHeight()/2))
+	return h.moveCaret(h.scrollStep(dir, max(1, h.less.Scroll().SizeHeight()/2)))
 }
 
-func (h *helixHandlerImpl) scrollBy(dir, by int) bool {
-	return h.moveCaret(func() bool {
+func (h *helixHandlerImpl) scrollStep(dir, by int) func() bool {
+	return func() bool {
 		if dir > 0 {
 			if !h.cursor.MoveDownLines(by) {
 				return false
@@ -2229,15 +1921,19 @@ func (h *helixHandlerImpl) scrollBy(dir, by int) bool {
 		}
 		h.cursor.RepositionBottom()
 		return true
-	})
+	}
 }
 
 // --- jumplist ---
 
 // jumpIdx mirrors helix-view's JumpList::current: it points one past the
 // newest entry after a push, so the first C-o records where the caret is
-// now and then steps back onto the last pushed jump.
-func (h *helixHandlerImpl) currentJump() rng { return h.readRange() }
+// now and then steps back onto the last pushed jump. An entry is the
+// whole selection set, as JumpList::push stores it.
+func (h *helixHandlerImpl) currentJump() selection {
+	h.carryEdits()
+	return h.sel.clone()
+}
 
 func (h *helixHandlerImpl) pushJump() bool {
 	h.pushJumpEntry(h.currentJump())
@@ -2258,11 +1954,11 @@ func (h *helixHandlerImpl) jumping(fn func() bool) bool {
 
 // pushJumpEntry reports how many entries were dropped off the front so a
 // caller holding an index into the list can rebase it.
-func (h *helixHandlerImpl) pushJumpEntry(entry rng) int {
+func (h *helixHandlerImpl) pushJumpEntry(entry selection) int {
 	if h.jumpIdx >= 0 && h.jumpIdx < len(h.jumps) {
 		h.jumps = h.jumps[:h.jumpIdx]
 	}
-	if n := len(h.jumps); n > 0 && h.jumps[n-1] == entry {
+	if n := len(h.jumps); n > 0 && h.jumps[n-1].equal(entry) {
 		return 0
 	}
 	removed := 0
@@ -2288,7 +1984,7 @@ func (h *helixHandlerImpl) jumpBackward() bool {
 		return false
 	}
 	// Helix skips an entry that matches where the caret already is.
-	if h.jumps[next] == h.currentJump() {
+	if h.jumps[next].equal(h.currentJump()) {
 		if next == 0 {
 			return false
 		}
@@ -2309,8 +2005,8 @@ func (h *helixHandlerImpl) jumpForward() bool {
 	return true
 }
 
-func (h *helixHandlerImpl) restoreJump(entry rng) {
-	h.installRange(entry)
+func (h *helixHandlerImpl) restoreJump(entry selection) {
+	h.setSelection(entry.clone())
 }
 
 // --- operators ---
@@ -2596,101 +2292,7 @@ func (h *helixHandlerImpl) joinSelection(selectSpace bool) bool {
 	return joined
 }
 
-// extendLineBelow implements x: the first press snaps the selection to
-// whole lines, repeats grow it downwards by count lines.
-func (h *helixHandlerImpl) extendLineBelow() bool {
-	count := h.motionCount()
-	mode, ok := h.cursor.SelectionMode()
-	if ok && mode == text.LineSelection {
-		return h.cursor.MoveDownLines(count)
-	}
-	h.cursor.Unselect()
-	selected := h.cursor.SelectLine()
-	if count > 1 {
-		h.cursor.MoveDownLines(count - 1)
-	}
-	return selected
-}
-
-// extendToLineBounds implements X: snap whatever is selected out to
-// whole lines without moving further.
-func (h *helixHandlerImpl) extendToLineBounds() bool {
-	if _, ok := h.cursor.SelectionMode(); !ok {
-		return false
-	}
-	return h.cursor.SelectLine()
-}
-
-// shrinkToLineBounds implements A-x: drop the partially covered first
-// and last lines. Selections inside a single line are left alone, which
-// is what shrink_to_line_bounds does.
-func (h *helixHandlerImpl) shrinkToLineBounds() bool {
-	from, to, ok := h.cursor.SelectionRange()
-	if !ok {
-		return false
-	}
-	mode, _ := h.cursor.SelectionMode()
-	lastY := to.Y
-	if to.X == 0 && lastY > from.Y {
-		lastY--
-	}
-	if from.Y == lastY {
-		return false
-	}
-	startY, endY := from.Y, lastY
-	if from.X > 0 {
-		startY++
-	}
-	if mode != text.LineSelection && to.X < h.less.Buffer().Columns(lastY) {
-		endY--
-	}
-	if startY > endY {
-		return false
-	}
-	h.reselectLines(startY, endY)
-	return true
-}
-
-// trimSelection implements _: shrink the selection past the whitespace
-// at either end. An all-whitespace selection collapses onto the caret,
-// which is what trim_selections falls back to.
-func (h *helixHandlerImpl) trimSelection() bool {
-	from, to, ok := h.cursor.SelectionRange()
-	if !ok {
-		return false
-	}
-	buf := h.buf()
-	last, ok := prevPos(buf, to)
-	if !ok {
-		return false
-	}
-	// A linewise selection owns the separator of its last line, which
-	// the cell range reports as the position just past it.
-	if mode, _ := h.cursor.SelectionMode(); mode == text.LineSelection {
-		last = to
-	}
-	start, startOK := skipSpace(buf, from, last, nextPos)
-	end, endOK := skipSpace(buf, last, from, prevPos)
-	if !startOK || !endOK || coordinatesBefore(end, start) {
-		h.anchorHere()
-		return true
-	}
-	// A line selection carries its separator implicitly, so there is
-	// always a newline to shave off even when the range itself starts
-	// and ends on non-blank cells.
-	mode, _ := h.cursor.SelectionMode()
-	if start == from && end == last && mode != text.LineSelection {
-		return false
-	}
-	if h.selectionBackward() {
-		h.setSelectionRange(end, start)
-	} else {
-		h.setSelectionRange(start, end)
-	}
-	return true
-}
-
-// selectAll implements %.
+// selectAll implements %: one range over the whole document.
 func (h *helixHandlerImpl) selectAll() bool {
 	buf := h.less.Buffer()
 	rows := buf.Rows()
@@ -2699,7 +2301,11 @@ func (h *helixHandlerImpl) selectAll() bool {
 	}
 	lastY := rows - 1
 	to := term.Coordinates{X: buf.Columns(lastY), Y: lastY}
-	return h.cursor.SelectRange(term.Coordinates{}, to)
+	if !h.cursor.SelectRange(term.Coordinates{}, to) {
+		return false
+	}
+	h.resetSelection()
+	return true
 }
 
 // insertBeforeSelection implements i and is also the entry point the
@@ -2770,12 +2376,15 @@ func (h *helixHandlerImpl) addNewline(below bool) bool {
 	return true
 }
 
-// selectTextObject implements the mi/ma pairs.
+// selectTextObject implements the mi/ma pairs over every range.
 func (h *helixHandlerImpl) selectTextObject(ch rune) bool {
 	around := h.matchAround
 	h.matchPending = false
 	h.matchAround = false
+	return h.forEachRange(func() bool { return h.selectTextObjectAt(ch, around) })
+}
 
+func (h *helixHandlerImpl) selectTextObjectAt(ch rune, around bool) bool {
 	var ok bool
 	switch ch {
 	case 'm':
@@ -3103,7 +2712,7 @@ func (h *helixHandlerImpl) applyJump(target rng, extend bool) {
 		}
 	}
 	h.pushJump()
-	h.installRange(r)
+	h.setSelection(single(r))
 }
 
 // --- plumbing ---
@@ -3133,7 +2742,7 @@ func (h *helixHandlerImpl) setCursorAtScroll(pos term.Coordinates) bool {
 	if h.mode() == normalMode && !h.extend {
 		h.anchorHere()
 	}
-	h.adoptCursor()
+	h.resetSelection()
 	h.markMatchingBrace()
 	return ok
 }
@@ -3141,7 +2750,7 @@ func (h *helixHandlerImpl) setCursorAtScroll(pos term.Coordinates) bool {
 func (h *helixHandlerImpl) moveToNextLocation(ID string) bool {
 	ok := h.cursor.MoveToNextLocation(ID)
 	h.anchor = h.cursorAtScroll()
-	h.adoptCursor()
+	h.resetSelection()
 	h.markMatchingBrace()
 	return ok
 }
@@ -3149,7 +2758,7 @@ func (h *helixHandlerImpl) moveToNextLocation(ID string) bool {
 func (h *helixHandlerImpl) moveToPrevLocation(ID string) bool {
 	ok := h.cursor.MoveToPrevLocation(ID)
 	h.anchor = h.cursorAtScroll()
-	h.adoptCursor()
+	h.resetSelection()
 	h.markMatchingBrace()
 	return ok
 }

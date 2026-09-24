@@ -66,8 +66,8 @@ func TestRangePutCursor(t *testing.T) {
 		extend bool
 		want   rng
 	}{
-		{name: "no extend collapses to one cell", r: fwd(0, 0, 4, 0), target: 2,
-			want: fwd(2, 0, 3, 0)},
+		{name: "no extend collapses to a point", r: fwd(0, 0, 4, 0), target: 2,
+			want: fwd(2, 0, 2, 0)},
 		{name: "extend forward past the head", r: fwd(1, 0, 3, 0), target: 4, extend: true,
 			want: fwd(1, 0, 5, 0)},
 		{name: "extend forward inside the range", r: fwd(1, 0, 4, 0), target: 2, extend: true,
@@ -79,7 +79,7 @@ func TestRangePutCursor(t *testing.T) {
 		{name: "extend onto the anchor itself", r: fwd(3, 0, 1, 0), target: 3, extend: true,
 			want: fwd(2, 0, 4, 0)},
 		{name: "no extend at the buffer end", r: fwd(0, 0, 1, 0), target: 6,
-			want: fwd(6, 0, 0, 1)},
+			want: fwd(6, 0, 6, 0)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.want, tc.r.putCursor(buf, xy(tc.target, 0), tc.extend))
@@ -265,4 +265,69 @@ func TestRangeTextAndFragments(t *testing.T) {
 
 	s := selection{ranges: []rng{fwd(0, 0, 1, 0), fwd(0, 1, 3, 1), fwd(0, 3, 1, 3)}}
 	assert.Equal(t, []string{"a", "def", "g"}, s.fragments(buf))
+}
+
+// TestRangeLineRange pins Range::line_range: a range ending at a line
+// start does not touch that line.
+func TestRangeLineRange(t *testing.T) {
+	buf := cell.NewBuffer()
+	buf.ReadFrom(strings.NewReader("abc\ndef\nghi"))
+	for _, tc := range []struct {
+		name        string
+		r           rng
+		first, last int
+	}{
+		{name: "within a row", r: fwd(1, 0, 2, 0), first: 0, last: 0},
+		{name: "a point", r: fwd(1, 1, 1, 1), first: 1, last: 1},
+		{name: "a point at a line start", r: fwd(0, 1, 0, 1), first: 1, last: 1},
+		{name: "one whole line", r: fwd(0, 0, 0, 1), first: 0, last: 0},
+		{name: "backward whole line", r: fwd(0, 1, 0, 0), first: 0, last: 0},
+		{name: "across rows", r: fwd(2, 0, 1, 2), first: 0, last: 2},
+		{name: "to the document end", r: fwd(0, 2, 0, 3), first: 2, last: 2},
+		{name: "past the document end", r: fwd(0, 2, 5, 9), first: 2, last: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			first, last := tc.r.lineRange(buf)
+			assert.Equal(t, [2]int{tc.first, tc.last}, [2]int{first, last})
+		})
+	}
+}
+
+// TestSelectionMergeAndSplit pins merged, mergedConsecutive and
+// splitOnNewline.
+func TestSelectionMergeAndSplit(t *testing.T) {
+	buf := cell.NewBuffer()
+	buf.ReadFrom(strings.NewReader("abc\ndef\n\nghi"))
+
+	t.Run("merged spans first to last", func(t *testing.T) {
+		s := selection{ranges: []rng{fwd(1, 0, 2, 0), fwd(0, 1, 1, 1), fwd(1, 3, 2, 3)}, primary: 1}
+		assert.Equal(t, single(fwd(1, 0, 2, 3)), s.merged())
+	})
+
+	t.Run("merged keeps a backward direction only when both ends face back", func(t *testing.T) {
+		s := selection{ranges: []rng{fwd(2, 0, 1, 0), fwd(2, 3, 1, 3)}}
+		assert.Equal(t, single(fwd(2, 3, 1, 0)), s.merged())
+		s = selection{ranges: []rng{fwd(1, 0, 2, 0), fwd(2, 3, 1, 3)}}
+		assert.Equal(t, single(fwd(1, 0, 2, 3)), s.merged())
+	})
+
+	t.Run("mergedConsecutive joins touching ranges and tracks the primary", func(t *testing.T) {
+		s := selection{ranges: []rng{fwd(0, 0, 1, 0), fwd(1, 0, 2, 0), fwd(2, 0, 3, 0), fwd(0, 1, 1, 1)}, primary: 2}
+		got := s.mergedConsecutive()
+		assert.Equal(t, []rng{fwd(0, 0, 3, 0), fwd(0, 1, 1, 1)}, got.ranges)
+		assert.Equal(t, 0, got.primary)
+		s.primary = 3
+		assert.Equal(t, 1, s.mergedConsecutive().primary)
+	})
+
+	t.Run("splitOnNewline drops the line endings and keeps a point on a blank row", func(t *testing.T) {
+		s := single(fwd(1, 0, 2, 3))
+		assert.Equal(t, []rng{fwd(1, 0, 3, 0), fwd(0, 1, 3, 1), fwd(0, 2, 0, 2), fwd(0, 3, 2, 3)},
+			s.splitOnNewline(buf).ranges)
+	})
+
+	t.Run("splitOnNewline leaves a range within a row alone", func(t *testing.T) {
+		s := single(fwd(1, 0, 3, 0))
+		assert.Equal(t, s, s.splitOnNewline(buf))
+	})
 }

@@ -683,19 +683,14 @@ func TestBracketedPaste(t *testing.T) {
 	})
 }
 
-// TestUnboundMultiSelectionKeys pins the phase-one contract: Helix's
-// selection-set commands stay unbound so they cannot be mistaken for
-// working, and the keymap layer can claim them later.
-func TestUnboundMultiSelectionKeys(t *testing.T) {
+// TestUnboundShellKeys pins the shell and command-line entries, which
+// belong to the IDE rather than the buffer, and the syntax-tree
+// selection commands that need a tree this handler does not own.
+func TestUnboundShellKeys(t *testing.T) {
 	for _, ev := range []term.Event{
-		key('s'), key('S'), key('C'), key('&'), key('('), key(')'),
-		key(','), key('|'), key('!'), key('$'), key('K'), key(':'),
-		modKey(term.ModAlt, 'C'), modKey(term.ModAlt, 's'),
-		modKey(term.ModAlt, '_'), modKey(term.ModAlt, '-'),
-		modKey(term.ModAlt, '('), modKey(term.ModAlt, ')'),
-		modKey(term.ModAlt, ','), modKey(term.ModAlt, 'I'),
-		modKey(term.ModAlt, 'a'),
-		modKey(term.ModAlt, 'K'), modKey(term.ModAlt, '|'),
+		key('|'), key('!'), key('$'), key(':'),
+		modKey(term.ModAlt, 'I'), modKey(term.ModAlt, 'a'),
+		modKey(term.ModAlt, '|'),
 		modKey(term.ModAlt, '!'), modKey(term.ModCtrl, 'z'),
 	} {
 		hx, buf, _ := newHelix(t, "foo bar", term.Coordinates{})

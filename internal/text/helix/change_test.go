@@ -161,20 +161,20 @@ func TestChangeRecorderCapturesEdits(t *testing.T) {
 	buf.Subscribe(&rec)
 	ctx := context.Background()
 
-	buf.Edit(ctx, xy(1, 0), xy(1, 0), "unrecorded")
-	rec.arm()
+	buf.Edit(ctx, xy(1, 0), xy(1, 0), "taken")
+	rec.take()
 	buf.Edit(ctx, xy(0, 0), xy(2, 0), "")
 	buf.Edit(ctx, xy(0, 1), xy(0, 1), "e\u0301x")
 	buf.Edit(ctx, xy(1, 0), xy(0, 1), "")
-	got := rec.disarm()
-	buf.Edit(ctx, xy(0, 0), xy(0, 0), "unrecorded")
+	got := rec.take()
+	buf.Edit(ctx, xy(0, 0), xy(0, 0), "later")
 
 	require.Equal(t, changeSet{
 		{from: xy(0, 0), to: xy(2, 0), end: xy(0, 0)},
 		{from: xy(0, 1), to: xy(0, 1), end: xy(2, 1)},
 		{from: xy(1, 0), to: xy(0, 1), end: xy(1, 0)},
 	}, got)
-	assert.Empty(t, rec.changes, "disarm hands the recording over")
+	assert.Len(t, rec.changes, 1, "take hands the recording over")
 }
 
 // TestChangeSetMapPosOracle checks the mapping against the buffer
@@ -224,7 +224,7 @@ func TestChangeSetMapPosOracle(t *testing.T) {
 		orig := randomPos(buf)
 		buf.Edit(ctx, orig, orig, string(sentinel))
 
-		rec.arm()
+		rec.take()
 		deleted := false
 		for range 1 + rnd.Intn(4) {
 			pos, ok := find(buf)
@@ -243,7 +243,7 @@ func TestChangeSetMapPosOracle(t *testing.T) {
 				break
 			}
 		}
-		cs := rec.disarm()
+		cs := rec.take()
 		if deleted {
 			continue
 		}

@@ -106,23 +106,18 @@ func (cs changeSet) mapPos(pos term.Coordinates, a assoc) term.Coordinates {
 	return pos
 }
 
-// changeRecorder is a cell.Subscriber that captures every edit made
-// while it is armed. It lives on the buffer rather than the scroll so
-// both handler constructors see the same edits.
+// changeRecorder is a cell.Subscriber that captures every edit made to
+// the buffer until the handler takes them. It lives on the buffer
+// rather than the scroll so both handler constructors see the same
+// edits, and it records edits from outside the handler too, so the
+// selection set can be carried through them as well.
 type changeRecorder struct {
-	armed   bool
 	changes changeSet
 }
 
-func (r *changeRecorder) arm() {
-	r.armed = true
-	r.changes = r.changes[:0]
-}
-
-// disarm stops recording and hands back what was captured. The slice
-// is owned by the caller: the next arm starts a fresh one.
-func (r *changeRecorder) disarm() changeSet {
-	r.armed = false
+// take hands back what was captured since the last take. The slice is
+// owned by the caller.
+func (r *changeRecorder) take() changeSet {
 	cs := r.changes
 	r.changes = nil
 	return cs
@@ -130,9 +125,6 @@ func (r *changeRecorder) disarm() changeSet {
 
 // OnWillEdit satisfies cell.Subscriber.
 func (r *changeRecorder) OnWillEdit(_ context.Context, start, end term.Coordinates, _ string) {
-	if !r.armed {
-		return
-	}
 	from, to := term.CoordinatesSort(start, end)
 	r.changes = append(r.changes, change{from: from, to: to, end: from})
 }
@@ -141,7 +133,7 @@ func (r *changeRecorder) OnWillEdit(_ context.Context, start, end term.Coordinat
 // inserted text really ended, which is the only reliable measure when
 // a cell can hold a whole grapheme cluster.
 func (r *changeRecorder) OnDidEdit(_ context.Context, _, to term.Coordinates, _ string) {
-	if !r.armed || len(r.changes) == 0 {
+	if len(r.changes) == 0 {
 		return
 	}
 	r.changes[len(r.changes)-1].end = to

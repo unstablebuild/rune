@@ -222,31 +222,6 @@ func clampCell(buf *cell.Buffer, pos term.Coordinates) term.Coordinates {
 	return pos
 }
 
-// skipSpace walks from pos towards limit while the character under it is
-// whitespace, reporting false when the whole span is blank.
-func skipSpace(
-	buf *cell.Buffer, pos, limit term.Coordinates,
-	step func(*cell.Buffer, term.Coordinates) (term.Coordinates, bool),
-) (term.Coordinates, bool) {
-	for {
-		ch, ok := charAt(buf, pos)
-		if !ok {
-			return pos, false
-		}
-		if !unicode.IsSpace(ch) {
-			return pos, true
-		}
-		if pos == limit {
-			return pos, false
-		}
-		next, ok := step(buf, pos)
-		if !ok {
-			return pos, false
-		}
-		pos = next
-	}
-}
-
 // wordMove is helix-core/src/movement.rs word_move: normalise the range
 // to a one-cell block cursor facing the motion direction, then scan for
 // the target count times.
