@@ -58,6 +58,15 @@ func (e *mouseDriver) OnAction(
 		paste, _ := e.clipboard.Paste(clipboard.DefaultRegisterID)
 		e.hookRawBytes = []byte(paste.Text)
 		return true
+	case mouse.Release:
+		// Copy once the gesture is finished. Copying on every drag
+		// tick spawns a clipboard process synchronously, and a slow
+		// one stalls the UI on the first cell that leaves the anchor,
+		// so the highlight never grows past those two cells.
+		if e.dragging {
+			e.copySelectionToClipboard()
+		}
+		return false
 	default:
 		return false
 	}
@@ -133,8 +142,10 @@ func (e *mouseDriver) SetSelectionEnd(pos term.Coordinates) {
 	// When the running program tracks the mouse, the press was reported
 	// to it and never anchored a selection here. Highlighting on the
 	// following drag events would paint a stale selection over the
-	// program's own (e.g. vim's visual mode) and copy it.
+	// program's own (e.g. vim's visual mode) and copy it. Motion while
+	// a button is held still belongs to the program, so report it.
 	if e.appTracksMouse() {
+		e.reportMotion(pos)
 		return
 	}
 	// The start was captured at selectionStartScrollY, but Select translates
@@ -160,7 +171,6 @@ func (e *mouseDriver) SetSelectionEnd(pos term.Coordinates) {
 	}
 	e.t.Select(start)
 	e.t.SelectEnd(end)
-	e.copySelectionToClipboard()
 }
 
 func (e *mouseDriver) SelectWordAt(pos term.Coordinates) {
@@ -177,7 +187,31 @@ func (e *mouseDriver) SelectLine(y int) {
 // appTracksMouse reports whether the running program asked for mouse
 // events, in which case clicks and drags belong to it.
 func (e *mouseDriver) appTracksMouse() bool {
-	return e.t.MouseModeReportMouseClicks() || e.t.MouseModeReportCellMouseMotion()
+	return e.t.MouseModeReportMouseClicks() || e.tracksMotion()
+}
+
+// tracksMotion reports whether the program wants motion while a button
+// is held (1002) or all motion (1003). Click-only tracking (1000) does
+// not.
+func (e *mouseDriver) tracksMotion() bool {
+	return e.t.MouseModeReportCellMouseMotion() || e.t.MouseModeReportAllMouseMotion()
+}
+
+// reportMotion encodes a button-held move for the program. The legacy
+// protocol stores the motion flag (32) on top of the 32 already added
+// when the button byte is written; SGR carries that flag in the button
+// field itself.
+func (e *mouseDriver) reportMotion(pos term.Coordinates) {
+	if !e.tracksMotion() {
+		return
+	}
+	button := e.lastButton + 32
+	tx, ty := pos.X, pos.Y
+	if e.t.MouseModeSgrMouse() {
+		e.hookRawBytes = fmt.Appendf(nil, "\x1b[<%d;%d;%dM", button, tx+1, ty+1)
+	} else {
+		e.hookRawBytes = fmt.Appendf(nil, "\x1b[M%c%c%c", button+32, tx+33, ty+33)
+	}
 }
 
 func (e *mouseDriver) Width() int {

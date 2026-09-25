@@ -22,6 +22,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/clipboard"
+	"github.com/unstablebuild/rune-go-sdk/mouse"
 	"github.com/unstablebuild/rune-go-sdk/term"
 )
 
@@ -64,6 +65,13 @@ func TestMouseDriverSelectionCopy(t *testing.T) {
 			desc: "drag right",
 			drag: []term.Coordinates{press, {X: 4}},
 			want: "ello",
+		},
+		{
+			// A direct jump to the final cell hides a drag that sticks
+			// after the first cell boundary. Walk one cell at a time.
+			desc: "drag right one cell at a time",
+			drag: []term.Coordinates{{X: 2}, {X: 3}, {X: 4}, {X: 5}},
+			want: "ello ",
 		},
 		{
 			desc: "drag left",
@@ -112,6 +120,17 @@ func TestMouseDriverSelectionCopy(t *testing.T) {
 			}
 			for _, pos := range tc.drag {
 				driver.SetSelectionEnd(pos)
+			}
+			if tc.want != "" {
+				highlighted, highlightedOK := comp.Selection()
+				require.True(t, highlightedOK)
+				assert.Equal(t, tc.want, highlighted, "highlight before release")
+				held, err := clip.Paste(clipboard.DefaultRegisterID)
+				require.NoError(t, err)
+				assert.Equal(t, sentinel, held.Text, "clipboard waits for release")
+			}
+			if !tc.trackMouse {
+				driver.OnAction(term.Event{}, term.Coordinates{}, mouse.Release)
 			}
 
 			got, ok := comp.Selection()
@@ -172,4 +191,28 @@ func TestMouseDriverWordAndLineSelectionCopy(t *testing.T) {
 			assert.Equal(t, tc.want, pasted.Text)
 		})
 	}
+}
+
+// TestMouseDriverDragMotionReported pins that a program tracking button
+// motion receives the drag, and the terminal does not paint its own
+// highlight over that drag.
+func TestMouseDriverDragMotionReported(t *testing.T) {
+	t.Parallel()
+
+	tm := mockTabManager{}
+	comp, err := NewComponent(&testExecutor{}, &testExecutor{}, &tm, DefaultConfig())
+	require.NoError(t, err)
+	p := comp.parserHandler
+	p.sync.primBuf.SetDefaultChar(' ')
+	comp.Resize(16, 3)
+	writeToBuffer(p, "hello world\nfoo_bar")
+	p.modeReportCellMouseMotion = true
+	p.modeSgrMouse = true
+
+	driver := &mouseDriver{t: comp, clipboard: clipboard.NewInMemory(), lastButton: 0}
+	driver.SetSelectionEnd(term.Coordinates{X: 4, Y: 1})
+
+	assert.Equal(t, "\x1b[<32;5;2M", string(driver.hookRawBytes))
+	_, ok := comp.Selection()
+	assert.False(t, ok)
 }
