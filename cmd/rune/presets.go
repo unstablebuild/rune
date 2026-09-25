@@ -19,6 +19,9 @@ package main
 import (
 	_ "embed"
 	"fmt"
+	"strings"
+
+	"unstable.build/rune/internal/term/gui"
 )
 
 //go:embed preset_modal.yaml
@@ -27,12 +30,12 @@ var presetModalYAML string
 //go:embed preset_emacs.yaml
 var presetEmacsYAML string
 
-// renderPreset returns the preset-config file body for the given
-// editor choice and telemetry preference. The modal choice enables vim mode everywhere; the
+// renderPreset returns the preset-config file body for the given editor
+// choice, telemetry preference and Alt modifier. The modal choice enables vim mode everywhere; the
 // standard choice uses platform-native standard editor bindings;
 // the emacs choice uses an Emacs keymap. The deprecated "modeless" alias
 // resolves to the standard preset.
-func renderPreset(editor string, telemetry bool) (string, error) {
+func renderPreset(editor string, telemetry bool, altModifier gui.AltModifier) (string, error) {
 	var body string
 	switch editor {
 	case editorModal:
@@ -44,6 +47,12 @@ func renderPreset(editor string, telemetry bool) (string, error) {
 	default:
 		return "", fmt.Errorf("unknown editor choice: %q", editor)
 	}
+	const guiSection = "gui:\n"
+	if !strings.Contains(body, guiSection) {
+		return "", fmt.Errorf("preset %q has no gui section", editor)
+	}
+	body = strings.Replace(body, guiSection,
+		fmt.Sprintf("%s  alt_modifier: %s\n", guiSection, altModifier), 1)
 	const tmpl = "%s\ntelemetry:\n" +
 		"  # Report anonymous usage and system information. See the Telemetry\n" +
 		"  # page in the Rune docs for the full list of what is reported.\n" +

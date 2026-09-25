@@ -49,6 +49,10 @@ type input struct {
 	// transitions rather than ebiten.IsKeyPressed, which always reports
 	// false on GLFW desktop platforms.
 	metaDown bool
+	// altModifier names the Alt key reserved for layout characters; the
+	// zero value reserves neither.
+	altModifier     AltModifier
+	selectedAltDown bool
 }
 
 func newInput(fontManager *font.Manager) *input {
@@ -93,6 +97,10 @@ func (i *input) setKeyMapping(m map[term.KeyComb]term.KeyComb) {
 	} else {
 		i.modMapping = mods
 	}
+}
+
+func (i *input) setAltModifier(modifier AltModifier) {
+	i.altModifier = modifier
 }
 
 // bareModBit reports the modifier bit a pure-modifier key event represents.
@@ -163,6 +171,7 @@ func (i *input) processEvents(dst []term.Event) []term.Event {
 		}
 
 		i.trackMeta(ev)
+		i.trackSelectedAlt(ev)
 
 		if ev.Action == ebiten.KeyActionRelease {
 			continue
@@ -190,6 +199,10 @@ func (i *input) processEvents(dst []term.Event) []term.Event {
 		}
 
 		mod := ebitenModToTermMod(mods)
+		// The reserved Alt key must not swallow the text it produced.
+		if i.selectedAltDown && mod&term.ModAlt != 0 && i.committedNormalText(ev.Source) {
+			continue
+		}
 
 		// A chord means the character the key produces under the layout the
 		// user selected; ev.Key only names the physical button, by its US
@@ -233,22 +246,31 @@ func (i *input) processEvents(dst []term.Event) []term.Event {
 	return dst
 }
 
+// committedNormalText reports whether the platform classified this action's
+// text as ordinary typing rather than a shortcut.
+func (i *input) committedNormalText(source ebiten.InputSource) bool {
+	if source == 0 {
+		return false
+	}
+	for _, other := range i.events {
+		if other.Kind == ebiten.InputEventKindText &&
+			other.Source == source && other.NormalText {
+			return true
+		}
+	}
+	return false
+}
+
 // isLayoutText reports whether a key action carrying Ctrl+Alt produced
 // ordinary typed text rather than a shortcut. Windows reports AltGr as
 // Ctrl+Alt, so the modifier mask alone cannot tell an international layout
 // character from a Ctrl+Alt chord; only the platform's own classification of
 // the text it committed for this action can.
 func (i *input) isLayoutText(ev ebiten.InputEvent, mod term.Modifier) bool {
-	if mod&(term.ModCtrl|term.ModAlt|term.ModMeta) != term.ModCtrlAlt || ev.Source == 0 {
+	if mod&(term.ModCtrl|term.ModAlt|term.ModMeta) != term.ModCtrlAlt {
 		return false
 	}
-	for _, other := range i.events {
-		if other.Kind == ebiten.InputEventKindText &&
-			other.Source == ev.Source && other.NormalText {
-			return true
-		}
-	}
-	return false
+	return i.committedNormalText(ev.Source)
 }
 
 // trackMeta keeps metaDown in sync with the platform's view of the
@@ -261,6 +283,19 @@ func (i *input) trackMeta(ev ebiten.InputEvent) {
 		i.metaDown = ev.Action != ebiten.KeyActionRelease
 	default:
 		i.metaDown = ev.Mods&ebiten.KeyModSuper != 0
+	}
+}
+
+// trackSelectedAlt tracks the reserved Alt key. An action without the Alt bit
+// resynchronizes a release the window never observed.
+func (i *input) trackSelectedAlt(ev ebiten.InputEvent) {
+	if ev.Mods&ebiten.KeyModAlt == 0 {
+		i.selectedAltDown = false
+		return
+	}
+	if (i.altModifier == AltModifierRight && ev.Key == ebiten.KeyAltRight) ||
+		(i.altModifier == AltModifierLeft && ev.Key == ebiten.KeyAltLeft) {
+		i.selectedAltDown = ev.Action != ebiten.KeyActionRelease
 	}
 }
 

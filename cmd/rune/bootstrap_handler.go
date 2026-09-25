@@ -88,6 +88,7 @@ type bootstrapHandler struct {
 	lastResizeW       int
 	lastResizeH       int
 	chosenEditor      string
+	chosenAltModifier gui.AltModifier
 	telemetryEnabled  bool
 	prompter          bootstrapPrompter
 	closingPreIDE     bool
@@ -792,7 +793,7 @@ func (b *bootstrapHandler) recordRecentOpen(command string, args ...string) {
 }
 
 func (b *bootstrapHandler) writePresetConfig() error {
-	body, err := renderPreset(b.chosenEditor, b.telemetryEnabled)
+	body, err := renderPreset(b.chosenEditor, b.telemetryEnabled, b.chosenAltModifier)
 	if err != nil {
 		return fmt.Errorf("render preset: %w", err)
 	}
@@ -889,6 +890,14 @@ var (
 	bootstrapTelemetryKeys = []term.KeyComb{
 		{Ch: 'y'}, {Ch: 'n'},
 	}
+	bootstrapAltModifierKeys = []term.KeyComb{
+		{Ch: 'l'}, {Ch: 'r'},
+	}
+)
+
+const (
+	optAltLeft  = " left Alt "
+	optAltRight = " right Alt "
 )
 
 func (b *bootstrapHandler) openBootstrapFlow() {
@@ -953,9 +962,35 @@ func (b *bootstrapHandler) openVimPrompt() {
 		sdkhandler.FuncPromptHandler(
 			guard.onSelect(func(_ int, option string) {
 				b.chosenEditor = optionToChoice(option)
-				b.openTelemetryPrompt()
+				b.openAltModifierPrompt()
 			}),
 			guard.onClose(b.openVimPrompt),
+		),
+	)
+}
+
+func (b *bootstrapHandler) openAltModifierPrompt() {
+	msg := "## Choose your Alt key\n\n" +
+		"Many keyboard layouts type extra characters with Alt held — the key " +
+		"labelled Option on a Mac, and AltGr on layouts that use the right " +
+		"one. Rune can reserve a single Alt key for those characters while " +
+		"the other keeps triggering Alt shortcuts.\n\n" +
+		"**Which Alt key should type layout characters?**"
+	guard := b.promptGuard()
+	b.prompt(
+		msg,
+		[]string{optAltLeft, optAltRight},
+		bootstrapAltModifierKeys,
+		sdkhandler.FuncPromptHandler(
+			guard.onSelect(func(_ int, option string) {
+				if option == optAltLeft {
+					b.chosenAltModifier = gui.AltModifierLeft
+				} else {
+					b.chosenAltModifier = gui.AltModifierRight
+				}
+				b.openTelemetryPrompt()
+			}),
+			guard.onClose(b.openAltModifierPrompt),
 		),
 	)
 }

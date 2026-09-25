@@ -30,6 +30,7 @@ import (
 
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/ide"
+	"unstable.build/rune/internal/term/gui"
 )
 
 func TestTelemetryOptionToChoiceMapping(t *testing.T) {
@@ -75,31 +76,33 @@ func TestOptionToChoiceMapping(t *testing.T) {
 // the emacs preset, the deprecated modeless alias resolves to the
 // standard preset, and that an unknown choice is an error.
 func TestRenderPreset(t *testing.T) {
-	modal, err := renderPreset(editorModal, false)
+	modal, err := renderPreset(editorModal, false, gui.AltModifierRight)
 	require.NoError(t, err)
 	require.NotContains(t, modal, "mode: standard",
 		"vim mode must not switch the editor into standard")
 	require.Contains(t, modal, "enabled: false",
 		"telemetry=false must render enabled: false")
+	require.Contains(t, modal, "alt_modifier: right")
 
-	std, err := renderPreset(editorStandard, true)
+	std, err := renderPreset(editorStandard, true, gui.AltModifierRight)
 	require.NoError(t, err)
 	require.Contains(t, std, "mode: standard",
 		"the standard choice must switch the editor into standard")
 	require.Contains(t, std, "enabled: true",
 		"telemetry=true must render enabled: true")
 
-	deprecated, err := renderPreset(editorModeless, true)
+	deprecated, err := renderPreset(editorModeless, true, gui.AltModifierRight)
 	require.NoError(t, err)
 	require.Equal(t, std, deprecated,
 		"the deprecated modeless alias must resolve to the standard preset")
 
-	ema, err := renderPreset(editorEmacs, false)
+	ema, err := renderPreset(editorEmacs, false, gui.AltModifierLeft)
 	require.NoError(t, err)
 	require.Contains(t, ema, "enabled: false",
 		"telemetry=false must render enabled: false")
 	require.Contains(t, ema, "mode: emacs",
 		"the emacs choice must switch the editor into emacs")
+	require.Contains(t, ema, "alt_modifier: left")
 	require.Contains(t, ema, `"<meta-f>": "windowfocus right"`,
 		"emacs must use the PNBF direction layer for window focus")
 	require.Contains(t, ema, `"<ctrl-x>u": "undo prefix"`,
@@ -133,7 +136,7 @@ func TestRenderPreset(t *testing.T) {
 		`"<meta-f>": "echo {prompt}jumptoast<space>locals.scm<space>`,
 		"the displaced function search binding must remain prompt-only")
 
-	_, err = renderPreset("bogus", true)
+	_, err = renderPreset("bogus", true, gui.AltModifierRight)
 	require.Error(t, err)
 }
 
@@ -316,12 +319,22 @@ func TestBootstrapPromptProgression(t *testing.T) {
 	require.Len(t, prompter.prompts, 2)
 	require.Equal(t, []string{optStandard, optEmacs, optVimYes}, prompter.prompts[1].options)
 
-	// Selecting an editor option in Vim prompt advances to Telemetry prompt.
+	// Selecting an editor option in the Vim prompt advances to the Alt prompt.
 	prompter.prompts[1].handler.OnSelect(0, optStandard)
 	require.Equal(t, editorStandard, b.chosenEditor)
 	require.Len(t, prompter.prompts, 3)
 
-	telPrompt := prompter.prompts[2]
+	altPrompt := prompter.prompts[2]
+	require.Contains(t, altPrompt.message, "## Choose your Alt key")
+	require.Equal(t, []string{optAltLeft, optAltRight}, altPrompt.options)
+	require.Equal(t, bootstrapAltModifierKeys, altPrompt.bindings)
+
+	// Selecting an Alt key advances to the Telemetry prompt.
+	altPrompt.handler.OnSelect(0, optAltLeft)
+	require.Equal(t, gui.AltModifierLeft, b.chosenAltModifier)
+	require.Len(t, prompter.prompts, 4)
+
+	telPrompt := prompter.prompts[3]
 	require.Contains(t, telPrompt.message, "## Help us pick what to build next")
 	require.Contains(t, telPrompt.message, "We never send file names, paths, file contents, terminal output, or anything you type.")
 	require.Contains(t, telPrompt.message, "any time in your config")
@@ -330,6 +343,27 @@ func TestBootstrapPromptProgression(t *testing.T) {
 	require.NotContains(t, telPrompt.message, "```json")
 	require.Equal(t, []string{optTelemetryYes, optTelemetryNo}, telPrompt.options)
 	require.Equal(t, bootstrapTelemetryKeys, telPrompt.bindings)
+}
+
+func TestBootstrapAltModifierPrompt(t *testing.T) {
+	for _, tc := range []struct {
+		option string
+		want   gui.AltModifier
+	}{
+		{optAltLeft, gui.AltModifierLeft},
+		{optAltRight, gui.AltModifierRight},
+	} {
+		t.Run(tc.option, func(t *testing.T) {
+			prompter := &fakeBootstrapPrompter{}
+			b := &bootstrapHandler{prompter: prompter}
+			b.openAltModifierPrompt()
+
+			require.Len(t, prompter.prompts, 1)
+			prompter.prompts[0].handler.OnSelect(0, tc.option)
+			require.Equal(t, tc.want, b.chosenAltModifier)
+			require.Len(t, prompter.prompts, 2)
+		})
+	}
 }
 
 func TestBootstrapTelemetryPersistenceRoundTrip(t *testing.T) {
