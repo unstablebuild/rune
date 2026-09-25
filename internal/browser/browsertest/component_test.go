@@ -939,6 +939,226 @@ func TestComponentOnTabsClick(t *testing.T) {
 	assert.Equal(t, 1, called)
 }
 
+// TestComponentOnTabIconClick drives clicks and drags on the tab bar
+// through the browser's own mouse routing, locating each tab's icon on
+// the drawn screen.
+func TestComponentOnTabIconClick(t *testing.T) {
+	const width, height = 30, 8
+	type fixture struct {
+		c       *browser.Component
+		tabs    []*browser.Tab
+		clicked []*browser.Tab
+	}
+	// setup opens tabs A, B and C, whose windows fill with 1, 2 and 3,
+	// and shows A. onIconClick is installed as OnTabIconClick unless nil.
+	setup := func(
+		t *testing.T, cfg browser.Config, onIconClick func(*fixture, *browser.Tab),
+	) *fixture {
+		f := &fixture{}
+		if onIconClick != nil {
+			cfg.OnTabIconClick = func(tab *browser.Tab) {
+				f.clicked = append(f.clicked, tab)
+				onIconClick(f, tab)
+			}
+		}
+		f.c = browser.NewComponent(cfg)
+		f.c.Resize(width, height)
+		for i, name := range []string{"one", "two", "three"} {
+			uri, err := workspaceapi.ParseURI("file:///" + name)
+			require.NoError(t, err)
+			h := NewTestHandler()
+			h.Ch = '1' + rune(i)
+			f.tabs = append(f.tabs, f.c.NewTab(uri, 'A'+rune(i), name, h, nil))
+		}
+		require.NoError(t, f.c.Focus().SetContent(f.tabs[0]))
+		return f
+	}
+	remove := func(f *fixture, tab *browser.Tab) { f.c.RemoveTab(tab) }
+	record := func(*fixture, *browser.Tab) {}
+	draw := func(c *browser.Component) *term.StringWriter {
+		w := term.NewStringWriter(width, height)
+		c.Draw(w)
+		require.NoError(t, w.Flush())
+		return w
+	}
+	// iconOf finds where the icon is drawn, like a user would.
+	iconOf := func(t *testing.T, c *browser.Component, icon rune) term.Coordinates {
+		t.Helper()
+		var found []term.Coordinates
+		for i, cell := range draw(c).Cells() {
+			if cell.Ch == icon {
+				found = append(found, term.Coordinates{X: i % width, Y: i / width})
+			}
+		}
+		require.Len(t, found, 1, "icon %q", icon)
+		return found[0]
+	}
+	mouse := func(c *browser.Component, key term.Key, pos term.Coordinates) {
+		c.Handle(term.Event{Type: term.EventMouse, Key: key, MouseX: pos.X, MouseY: pos.Y})
+		draw(c)
+	}
+	click := func(c *browser.Component, pos term.Coordinates) {
+		mouse(c, term.MouseLeft, pos)
+		mouse(c, term.MouseRelease, pos)
+	}
+	name := func(icon term.Coordinates) term.Coordinates {
+		return term.Coordinates{X: icon.X + 2, Y: icon.Y}
+	}
+	window := term.Coordinates{X: 5, Y: 4}
+
+	t.Run("closes a tab no window shows", func(t *testing.T) {
+		f := setup(t, browser.DefaultConfig(), remove)
+		click(f.c, iconOf(t, f.c, 'B'))
+
+		assert.Equal(t, []*browser.Tab{f.tabs[1]}, f.clicked)
+		assert.Equal(t, []*browser.Tab{f.tabs[0], f.tabs[2]}, f.c.Tabs())
+		assert.Equal(t, `┌━━━━━───────────────────────┐
+│A one  C three              │
+├────────────────────────────┤
+│1111111111111111111111111111│
+│1111111111111111111111111111│
+│1111111111111111111111111111│
+│1111111111111111111111111111│
+└────────────────────────────┘`, draw(f.c).String())
+	})
+
+	t.Run("closes the tab the focused window shows", func(t *testing.T) {
+		f := setup(t, browser.DefaultConfig(), remove)
+		click(f.c, iconOf(t, f.c, 'A'))
+
+		assert.Equal(t, []*browser.Tab{f.tabs[0]}, f.clicked)
+		assert.Equal(t, `┌━━━━━───────────────────────┐
+│B two  C three              │
+├────────────────────────────┤
+│2222222222222222222222222222│
+│2222222222222222222222222222│
+│2222222222222222222222222222│
+│2222222222222222222222222222│
+└────────────────────────────┘`, draw(f.c).String())
+	})
+
+	t.Run("closes the tab an unfocused window shows", func(t *testing.T) {
+		f := setup(t, browser.DefaultConfig(), remove)
+		focus := f.c.Focus()
+		right, ok := f.c.Split(browserapi.OrientationRight, focus, f.tabs[1])
+		require.True(t, ok)
+		f.c.SetFocus(focus)
+
+		click(f.c, iconOf(t, f.c, 'B'))
+
+		assert.Equal(t, []*browser.Tab{f.tabs[1]}, f.clicked)
+		assert.Equal(t, []*browser.Tab{f.tabs[0], f.tabs[2]}, f.c.Tabs())
+		assert.Equal(t, focus, f.c.Focus())
+		assertWindowContent(t, right, f.tabs[2])
+	})
+
+	t.Run("neither shows nor focuses the tab", func(t *testing.T) {
+		f := setup(t, browser.DefaultConfig(), record)
+		focus := f.c.Focus()
+		_, ok := f.c.Split(browserapi.OrientationRight, focus, f.tabs[1])
+		require.True(t, ok)
+		f.c.SetFocus(focus)
+
+		click(f.c, iconOf(t, f.c, 'B'))
+		assert.Equal(t, []*browser.Tab{f.tabs[1]}, f.clicked)
+		assert.Equal(t, focus, f.c.Focus())
+		click(f.c, iconOf(t, f.c, 'C'))
+		assert.Equal(t, []*browser.Tab{f.tabs[1], f.tabs[2]}, f.clicked)
+		assertWindowContent(t, focus, f.tabs[0])
+		assertFreeTab(t, f.tabs[2], true)
+	})
+
+	t.Run("drag along the bar neither closes nor shows the tab", func(t *testing.T) {
+		f := setup(t, browser.DefaultConfig(), remove)
+		icon := iconOf(t, f.c, 'B')
+		mouse(f.c, term.MouseLeft, icon)
+		mouse(f.c, term.MouseLeft, name(icon))
+		mouse(f.c, term.MouseRelease, name(icon))
+
+		assert.Empty(t, f.clicked)
+		assert.Len(t, f.c.Tabs(), 3)
+		assertWindowContent(t, f.c.Focus(), f.tabs[0])
+	})
+
+	t.Run("drag into a window does not close", func(t *testing.T) {
+		f := setup(t, browser.DefaultConfig(), remove)
+		icon := iconOf(t, f.c, 'B')
+		mouse(f.c, term.MouseLeft, icon)
+		mouse(f.c, term.MouseLeft, window)
+		mouse(f.c, term.MouseRelease, window)
+
+		assert.Empty(t, f.clicked)
+		assert.Len(t, f.c.Tabs(), 3)
+		assertWindowContent(t, f.c.Focus(), f.tabs[0])
+	})
+
+	// The tab bar never sees the release of a drag that ends in a window.
+	t.Run("click after a drag into a window", func(t *testing.T) {
+		for _, hover := range []bool{false, true} {
+			f := setup(t, browser.DefaultConfig(), remove)
+			icon := iconOf(t, f.c, 'B')
+			mouse(f.c, term.MouseLeft, icon)
+			mouse(f.c, term.MouseLeft, window)
+			mouse(f.c, term.MouseRelease, window)
+			if hover {
+				mouse(f.c, 0, icon)
+			}
+			click(f.c, icon)
+
+			assert.Equal(t, []*browser.Tab{f.tabs[1]}, f.clicked, "hover: %v", hover)
+		}
+	})
+
+	t.Run("drag from a window onto the icon does not close", func(t *testing.T) {
+		f := setup(t, browser.DefaultConfig(), remove)
+		icon := iconOf(t, f.c, 'B')
+		mouse(f.c, term.MouseLeft, window)
+		mouse(f.c, term.MouseLeft, icon)
+		mouse(f.c, term.MouseRelease, icon)
+
+		assert.Empty(t, f.clicked)
+		assert.Len(t, f.c.Tabs(), 3)
+	})
+
+	t.Run("tab bar offset", func(t *testing.T) {
+		cfg := browser.DefaultConfig()
+		cfg.TabBarOffset = 4
+		f := setup(t, cfg, remove)
+		icon := iconOf(t, f.c, 'C')
+		require.GreaterOrEqual(t, icon.X, cfg.TabBarOffset)
+		click(f.c, icon)
+
+		assert.Equal(t, []*browser.Tab{f.tabs[2]}, f.clicked)
+		assert.Equal(t, []*browser.Tab{f.tabs[0], f.tabs[1]}, f.c.Tabs())
+	})
+
+	t.Run("without frame", func(t *testing.T) {
+		cfg := browser.DefaultConfig()
+		cfg.Frame = false
+		f := setup(t, cfg, remove)
+		click(f.c, iconOf(t, f.c, 'C'))
+
+		assert.Equal(t, []*browser.Tab{f.tabs[2]}, f.clicked)
+		assert.Equal(t, []*browser.Tab{f.tabs[0], f.tabs[1]}, f.c.Tabs())
+	})
+
+	t.Run("clicks on the name still show the tab", func(t *testing.T) {
+		f := setup(t, browser.DefaultConfig(), remove)
+		click(f.c, name(iconOf(t, f.c, 'B')))
+
+		assert.Empty(t, f.clicked)
+		assertWindowContent(t, f.c.Focus(), f.tabs[1])
+	})
+
+	t.Run("without OnTabIconClick the icon shows the tab", func(t *testing.T) {
+		f := setup(t, browser.DefaultConfig(), nil)
+		click(f.c, iconOf(t, f.c, 'B'))
+
+		assert.Len(t, f.c.Tabs(), 3)
+		assertWindowContent(t, f.c.Focus(), f.tabs[1])
+	})
+}
+
 func TestComponentSplitNil(t *testing.T) {
 	t.Run("Split with nil sets a wallpaper", func(t *testing.T) {
 		w := term.NewStringWriter(24, 8)

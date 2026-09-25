@@ -64,6 +64,12 @@ const (
 // rather than as a waiting agent.
 const idleStatusText = "IDLE"
 
+// AskingStatusText is the phase a host reports while the turn is
+// blocked on a prompt. The bar treats it specially: it outranks a task
+// description, because what the turn was doing matters less than the
+// fact that it cannot go on until the user answers.
+const AskingStatusText = "ASKING"
+
 // DefaultStatusBarBackground and DefaultStatusBarForeground are the
 // bar's base attributes, matching the editor's status bar so both read
 // as the same widget.
@@ -154,6 +160,14 @@ var DefaultStatuses = map[string]StatusBarStatusConfig{
 			Frames: SpinnerFrames("⣉⠶⠶⠒⠒⠒⠶⠶⣉"),
 		},
 	},
+	AskingStatusText: {
+		Attrs: term.Attributes{
+			Fg: term.ColorBlack, Bg: term.ColorYellow, Attrs: term.AttrBold,
+		},
+		Animation: StatusBarAnimation{
+			Frames: SpinnerFrames("⠁⠂⠄⡀⢀⠠⠐⠈"),
+		},
+	},
 	"ERROR": {
 		Attrs: term.Attributes{Bg: term.ColorMaroon, Attrs: term.AttrBold},
 		Animation: StatusBarAnimation{
@@ -240,6 +254,15 @@ type StatusBarConfig struct {
 	// Shader names an effect drawn over the whole bar while a turn
 	// runs. An empty name leaves the bar unshaded.
 	Shader string
+	// ShaderFPS is the cadence the effect is redrawn at. A zero or
+	// negative value falls back to DefaultStatusBarShaderFPS.
+	ShaderFPS int
+	// ShaderLoop is how long one visual loop of the effect lasts.
+	// Effects whose clock runs off the frame index rather than
+	// against the loop, such as blaze and inferno, animate in real
+	// time and ignore it. A zero or negative value falls back to
+	// DefaultStatusBarShaderLoop.
+	ShaderLoop time.Duration
 	// DurationPrecision, when positive, truncates the elapsed time to
 	// this granularity.
 	DurationPrecision time.Duration
@@ -502,6 +525,9 @@ func (b *StatusBar) statusLabel() string {
 func (b *StatusBar) statusName() string {
 	if !b.state.Active {
 		return idleStatusText
+	}
+	if b.state.Phase == AskingStatusText {
+		return b.state.Phase
 	}
 	if b.state.ActiveForm != "" {
 		return b.state.ActiveForm

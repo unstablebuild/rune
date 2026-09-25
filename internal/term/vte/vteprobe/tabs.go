@@ -134,10 +134,7 @@ func cellWidth(cell term.Cell) int {
 func lineRuneLen(line []term.Cell) int {
 	n := 0
 	for _, cell := range line {
-		n++
-		if cell.Combining != nil {
-			n += len(*cell.Combining)
-		}
+		n += 1 + len(cell.CombiningRunes())
 	}
 	return n
 }

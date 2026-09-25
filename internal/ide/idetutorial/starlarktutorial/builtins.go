@@ -25,10 +25,6 @@ import (
 
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
-	"github.com/unstablebuild/rune-go-sdk/component"
-	"github.com/unstablebuild/rune-go-sdk/term"
-
-	"unstable.build/rune/internal/component/markdown"
 )
 
 // builtins returns the predeclared globals exposed to a tutorial
@@ -41,6 +37,7 @@ func builtins(t *Tutorial) starlark.StringDict {
 		"command_key":    starlark.NewBuiltin("command_key", builtinCommandKey(t)),
 		"editor_mode":    starlark.NewBuiltin("editor_mode", builtinEditorMode(t)),
 		"os":             starlark.NewBuiltin("os", builtinOS(t)),
+		"config_path":    starlark.NewBuiltin("config_path", builtinConfigPath(t)),
 		"key_for":        starlark.NewBuiltin("key_for", builtinKeyFor(t)),
 		"command_exists": starlark.NewBuiltin("command_exists", builtinCommandExists(t)),
 		"workspace_open": starlark.NewBuiltin("workspace_open", builtinWorkspaceOpen(t)),
@@ -55,15 +52,13 @@ func builtins(t *Tutorial) starlark.StringDict {
 		"info":    starlark.MakeInt(int(browserapi.LevelInfo)),
 		"success": starlark.MakeInt(int(browserapi.LevelSuccess)),
 
-		// Blocking UI builtins.
-		"floating_window": starlark.NewBuiltin("floating_window", builtinFloatingWindow(t)),
-		"markdown":        starlark.NewBuiltin("markdown", builtinMarkdown(t)),
-		"wait_key":        starlark.NewBuiltin("wait_key", builtinWaitKey(t)),
-		"wait_command":    starlark.NewBuiltin("wait_command", builtinWaitCommand(t)),
-		"wait_shell":      starlark.NewBuiltin("wait_shell", builtinWaitShell(t)),
-		"wait_event":      starlark.NewBuiltin("wait_event", builtinWaitEvent(t)),
-		"confirm":         starlark.NewBuiltin("confirm", builtinConfirm(t)),
-		"choice":          starlark.NewBuiltin("choice", builtinChoice(t)),
+		// Blocking UI builtins: each one is a step of the lesson
+		// that ends when its milestone is met.
+		"wait_command": starlark.NewBuiltin("wait_command", builtinWaitCommand(t)),
+		"wait_shell":   starlark.NewBuiltin("wait_shell", builtinWaitShell(t)),
+		"wait_event":   starlark.NewBuiltin("wait_event", builtinWaitEvent(t)),
+		"confirm":      starlark.NewBuiltin("confirm", builtinConfirm(t)),
+		"choice":       starlark.NewBuiltin("choice", builtinChoice(t)),
 
 		// Side-effect builtins.
 		"notify":           starlark.NewBuiltin("notify", builtinNotify(t)),
@@ -112,109 +107,6 @@ func builtinTutorial(t *Tutorial) func(*starlark.Thread, *starlark.Builtin,
 	}
 }
 
-// builtinFloatingWindow runs synchronously on the Starlark goroutine.
-// It builds a request, posts it via publishRequest, and returns when
-// the TUI loop delivers a response. Returns None to the script.
-func builtinFloatingWindow(t *Tutorial) func(*starlark.Thread, *starlark.Builtin,
-	starlark.Tuple, []starlark.Tuple,
-) (starlark.Value, error) {
-	return func(_ *starlark.Thread, _ *starlark.Builtin,
-		args starlark.Tuple, kwargs []starlark.Tuple,
-	) (starlark.Value, error) {
-		var (
-			text        starlark.String
-			title       starlark.String
-			alignment   starlark.String
-			offset      starlark.Value
-			allowKeys   *starlark.List
-			dismissKeys *starlark.List
-		)
-		if err := starlark.UnpackArgs("floating_window", args, kwargs,
-			"text", &text,
-			"title?", &title,
-			"alignment?", &alignment,
-			"offset?", &offset,
-			"allow_keys?", &allowKeys,
-			"dismiss_keys?", &dismissKeys); err != nil {
-			return nil, err
-		}
-		align, err := parseFloatingAlignment(string(alignment))
-		if err != nil {
-			return nil, fmt.Errorf("floating_window: %w", err)
-		}
-		off, err := parseFloatingOffset(offset)
-		if err != nil {
-			return nil, fmt.Errorf("floating_window: %w", err)
-		}
-		keys, err := parseKeyList(allowKeys, "allow_keys")
-		if err != nil {
-			return nil, fmt.Errorf("floating_window: %w", err)
-		}
-		dkeys, err := parseKeyList(dismissKeys, "dismiss_keys")
-		if err != nil {
-			return nil, fmt.Errorf("floating_window: %w", err)
-		}
-		mdCfg := markdown.DefaultConfig()
-		mdCfg.HeaderPrefix = false
-		md, err := markdown.NewWithConfig(string(text), mdCfg)
-		if err != nil {
-			return nil, fmt.Errorf("floating_window: parse: %w", err)
-		}
-		req := &request{
-			kind:        reqFloatingWindow,
-			text:        string(text),
-			title:       string(title),
-			align:       align,
-			offset:      off,
-			md:          md,
-			allowKeys:   keys,
-			dismissKeys: dkeys,
-		}
-		if _, err := t.publishRequest(req); err != nil {
-			return nil, err
-		}
-		return starlark.None, nil
-	}
-}
-
-func builtinMarkdown(t *Tutorial) func(*starlark.Thread, *starlark.Builtin,
-	starlark.Tuple, []starlark.Tuple,
-) (starlark.Value, error) {
-	return func(_ *starlark.Thread, _ *starlark.Builtin,
-		args starlark.Tuple, kwargs []starlark.Tuple,
-	) (starlark.Value, error) {
-		var text starlark.String
-		if err := starlark.UnpackArgs("markdown", args, kwargs,
-			"text", &text); err != nil {
-			return nil, err
-		}
-		req := &request{kind: reqMarkdown, text: string(text)}
-		if _, err := t.publishRequest(req); err != nil {
-			return nil, err
-		}
-		return starlark.None, nil
-	}
-}
-
-func builtinWaitKey(t *Tutorial) func(*starlark.Thread, *starlark.Builtin,
-	starlark.Tuple, []starlark.Tuple,
-) (starlark.Value, error) {
-	return func(_ *starlark.Thread, _ *starlark.Builtin,
-		args starlark.Tuple, kwargs []starlark.Tuple,
-	) (starlark.Value, error) {
-		var key starlark.String
-		if err := starlark.UnpackArgs("wait_key", args, kwargs,
-			"key", &key); err != nil {
-			return nil, err
-		}
-		req := &request{kind: reqWaitKey, waitKey: string(key)}
-		if _, err := t.publishRequest(req); err != nil {
-			return nil, err
-		}
-		return starlark.None, nil
-	}
-}
-
 func builtinWaitCommand(t *Tutorial) func(*starlark.Thread, *starlark.Builtin,
 	starlark.Tuple, []starlark.Tuple,
 ) (starlark.Value, error) {
@@ -223,29 +115,19 @@ func builtinWaitCommand(t *Tutorial) func(*starlark.Thread, *starlark.Builtin,
 	) (starlark.Value, error) {
 		var (
 			command starlark.String
-			onError starlark.String
 			title   starlark.String
-			align   starlark.String
 			text    starlark.String
 		)
 		if err := starlark.UnpackArgs("wait_command", args, kwargs,
 			"command", &command,
-			"on_error?", &onError,
 			"title?", &title,
-			"alignment?", &align,
 			"text?", &text); err != nil {
 			return nil, err
-		}
-		alignment, err := parseFloatingAlignment(string(align))
-		if err != nil {
-			return nil, fmt.Errorf("wait_command: %w", err)
 		}
 		req := &request{
 			kind:    reqWaitCommand,
 			command: string(command),
-			onError: string(onError),
 			title:   string(title),
-			align:   alignment,
 			text:    string(text),
 		}
 		res, err := t.publishRequest(req)
@@ -264,13 +146,11 @@ func builtinWaitShell(t *Tutorial) func(*starlark.Thread, *starlark.Builtin,
 	) (starlark.Value, error) {
 		var (
 			argList *starlark.List
-			onError starlark.String
 			title   starlark.String
 			text    starlark.String
 		)
 		if err := starlark.UnpackArgs("wait_shell", args, kwargs,
 			"args", &argList,
-			"on_error?", &onError,
 			"title?", &title,
 			"text?", &text); err != nil {
 			return nil, err
@@ -285,7 +165,6 @@ func builtinWaitShell(t *Tutorial) func(*starlark.Thread, *starlark.Builtin,
 		req := &request{
 			kind:      reqWaitShell,
 			shellArgs: want,
-			onError:   string(onError),
 			title:     string(title),
 			text:      string(text),
 		}
@@ -337,25 +216,17 @@ func builtinWaitEvent(t *Tutorial) func(*starlark.Thread, *starlark.Builtin,
 		args starlark.Tuple, kwargs []starlark.Tuple,
 	) (starlark.Value, error) {
 		var (
-			event   starlark.String
-			uri     starlark.String
-			text    starlark.String
-			title   starlark.String
-			onError starlark.String
-			align   starlark.String
+			event starlark.String
+			uri   starlark.String
+			text  starlark.String
+			title starlark.String
 		)
 		if err := starlark.UnpackArgs("wait_event", args, kwargs,
 			"event", &event,
 			"uri?", &uri,
 			"text?", &text,
-			"title?", &title,
-			"on_error?", &onError,
-			"alignment?", &align); err != nil {
+			"title?", &title); err != nil {
 			return nil, err
-		}
-		alignment, err := parseFloatingAlignment(string(align))
-		if err != nil {
-			return nil, fmt.Errorf("wait_event: %w", err)
 		}
 		req := &request{
 			kind:     reqWaitEvent,
@@ -363,8 +234,6 @@ func builtinWaitEvent(t *Tutorial) func(*starlark.Thread, *starlark.Builtin,
 			eventURI: string(uri),
 			text:     string(text),
 			title:    string(title),
-			onError:  string(onError),
-			align:    alignment,
 		}
 		if _, err := t.publishRequest(req); err != nil {
 			return nil, err
@@ -586,65 +455,6 @@ func (t *Tutorial) runOnTUI(fn func()) {
 	}
 }
 
-// parseFloatingAlignment maps a Starlark alignment keyword to a
-// component.Alignment bitmask. An empty string yields zero, which
-// floatingWindowAnchor treats as AlignmentCentered.
-func parseFloatingAlignment(s string) (component.Alignment, error) {
-	switch s {
-	case "":
-		return 0, nil
-	case "center", "centered":
-		return component.AlignmentCentered, nil
-	case "top":
-		return component.AlignmentTop | component.AlignmentHorizontallyCentered, nil
-	case "bottom":
-		return component.AlignmentBottom | component.AlignmentHorizontallyCentered, nil
-	case "left":
-		return component.AlignmentLeft | component.AlignmentVerticallyCentered, nil
-	case "right":
-		return component.AlignmentRight | component.AlignmentVerticallyCentered, nil
-	case "top-left", "topleft":
-		return component.AlignmentTop | component.AlignmentLeft, nil
-	case "top-right", "topright":
-		return component.AlignmentTop | component.AlignmentRight, nil
-	case "bottom-left", "bottomleft":
-		return component.AlignmentBottom | component.AlignmentLeft, nil
-	case "bottom-right", "bottomright":
-		return component.AlignmentBottom | component.AlignmentRight, nil
-	}
-	return 0, fmt.Errorf("alignment %q: want one of "+
-		`"center", "top", "bottom", "left", "right", `+
-		`"top-left", "top-right", "bottom-left", "bottom-right"`, s)
-}
-
-// parseFloatingOffset accepts None or a 2-element tuple/list of ints
-// and returns a term.Coordinates. An absent value yields the zero
-// coordinate.
-func parseFloatingOffset(v starlark.Value) (term.Coordinates, error) {
-	if v == nil || v == starlark.None {
-		return term.Coordinates{}, nil
-	}
-	iter, ok := v.(starlark.Indexable)
-	if !ok {
-		return term.Coordinates{}, fmt.Errorf(
-			"offset: want a (x, y) tuple, got %s", v.Type())
-	}
-	if iter.Len() != 2 {
-		return term.Coordinates{}, fmt.Errorf(
-			"offset: want a 2-element (x, y) tuple, got %d elements",
-			iter.Len())
-	}
-	x, err := starlark.AsInt32(iter.Index(0))
-	if err != nil {
-		return term.Coordinates{}, fmt.Errorf("offset.x: %w", err)
-	}
-	y, err := starlark.AsInt32(iter.Index(1))
-	if err != nil {
-		return term.Coordinates{}, fmt.Errorf("offset.y: %w", err)
-	}
-	return term.Coordinates{X: x, Y: y}, nil
-}
-
 func starlarkStringList(list *starlark.List, key string) ([]string, error) {
 	if list == nil {
 		return nil, fmt.Errorf("missing required param %q", key)
@@ -669,37 +479,6 @@ func starlarkStringList(list *starlark.List, key string) ([]string, error) {
 // nil so callers can treat absence as "no entries" without an extra
 // check. The kwarg name is used in error messages so authors can
 // spot which kwarg owns a bad string.
-func parseKeyList(list *starlark.List, kwarg string) ([]term.KeyComb, error) {
-	if list == nil {
-		return nil, nil
-	}
-	out := make([]term.KeyComb, 0, list.Len())
-	iter := list.Iterate()
-	defer iter.Done()
-	var item starlark.Value
-	for iter.Next(&item) {
-		s, ok := item.(starlark.String)
-		if !ok {
-			return nil, fmt.Errorf(
-				"%s[]: want string, got %s", kwarg, item.Type())
-		}
-		// Parse as a sequence so a two-key chord binding (e.g. the emacs
-		// "<c-x>3" split-window key) is accepted; the floating window
-		// matches one event at a time, so register the first chord. That
-		// is the key that must fall through to the IDE root to begin the
-		// sequence the rest of which the sequencer then completes.
-		ks, err := term.ParseKeys(string(s))
-		if err != nil {
-			return nil, fmt.Errorf("%s[%q]: %w", kwarg, string(s), err)
-		}
-		if len(ks) == 0 {
-			return nil, fmt.Errorf("%s[%q]: no key combinations", kwarg, string(s))
-		}
-		out = append(out, ks[0])
-	}
-	return out, nil
-}
-
 func builtinCommandKey(t *Tutorial) func(*starlark.Thread, *starlark.Builtin,
 	starlark.Tuple, []starlark.Tuple,
 ) (starlark.Value, error) {
@@ -733,6 +512,20 @@ func builtinOS(t *Tutorial) func(*starlark.Thread, *starlark.Builtin,
 		_ starlark.Tuple, _ []starlark.Tuple,
 	) (starlark.Value, error) {
 		return starlark.String(t.os), nil
+	}
+}
+
+// builtinConfigPath implements config_path(): it returns the file the
+// running Rune reads its user configuration from, or "" when the host
+// wired none. The path follows the data directory, so copy that names
+// it stays right under `rune -d`.
+func builtinConfigPath(t *Tutorial) func(*starlark.Thread, *starlark.Builtin,
+	starlark.Tuple, []starlark.Tuple,
+) (starlark.Value, error) {
+	return func(_ *starlark.Thread, _ *starlark.Builtin,
+		_ starlark.Tuple, _ []starlark.Tuple,
+	) (starlark.Value, error) {
+		return starlark.String(t.configPath), nil
 	}
 }
 

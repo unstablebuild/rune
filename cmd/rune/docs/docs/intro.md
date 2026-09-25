@@ -95,9 +95,10 @@ debugging, terminals, and tasks ship in the box.
 ### 2. Run the basics tutorial
 
 Rune starts the **basics** tutorial for you right after the first-run setup.
-It renders as an overlay on top of the real IDE, using your bindings and your
+It runs in a pane beside the real IDE, using your bindings and your
 theme, and it advances when you actually run the command it asks for, not when
-you click through a slideshow.
+you click through a slideshow. **Skip** moves past a step; **Stop** ends the
+lesson.
 
 Have a project directory handy. The first step asks you to open it as a
 workspace.

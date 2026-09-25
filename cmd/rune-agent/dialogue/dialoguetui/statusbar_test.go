@@ -475,6 +475,19 @@ func TestStatusBarActiveFormOverridesPhase(t *testing.T) {
 	assert.Contains(t, render(t, bar, 60), "Running tests")
 }
 
+// A pending prompt blocks the turn, so it outranks a task description:
+// the description would otherwise read as work still moving.
+func TestStatusBarAskingOverridesActiveForm(t *testing.T) {
+	bar := newTestStatusBar(t)
+	bar.SetState(func(s *StatusBarState) {
+		s.Phase = AskingStatusText
+		s.ActiveForm = "Running tests"
+	})
+	row := render(t, bar, 60)
+	assert.Contains(t, row, AskingStatusText)
+	assert.NotContains(t, row, "Running tests")
+}
+
 // Every status is padded to the widest one the palette knows, so the
 // elements to the right of the pill do not shuffle sideways each time
 // the turn moves to a phase with a shorter name. The padding all goes

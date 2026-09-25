@@ -41,15 +41,15 @@ func TestTerminalSnapshotStorageRoundTripTermCells(t *testing.T) {
 			Cells: [][]term.Cell{
 				{
 					{
-						Fg:        term.ColorRed,
-						Bg:        term.ColorBlue,
-						Attrs:     term.AttrBold | term.AttrUnderline,
-						Ch:        'e',
-						Combining: &[]rune{'\u0301'},
-						Width:     1,
-						Bytes:     3,
+						Fg:    term.ColorRed,
+						Bg:    term.ColorBlue,
+						Attrs: term.AttrBold | term.AttrUnderline,
+						Ch:    'e',
+						Extra: &term.CellExtra{Combining: []rune{'\u0301'}},
+						Width: 1,
+						Bytes: 3,
 					},
-					{Ch: '界', Combining: nil, Width: 2, Bytes: 3},
+					{Ch: '界', Width: 2, Bytes: 3},
 				},
 			},
 		},

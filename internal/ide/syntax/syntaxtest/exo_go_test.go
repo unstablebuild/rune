@@ -338,6 +338,8 @@ func (stubExoTabManager) OnTabExit(workspaceapi.URI) bool {
 	return false
 }
 
+func (stubExoTabManager) SetTabActivity(workspaceapi.URI, bool) error { return nil }
+
 type stubExoReloader struct{}
 
 func (stubExoReloader) Reload(workspaceapi.URI) error { return nil }

@@ -21,6 +21,10 @@ const (
 	MaxIntermediates = 2
 	MaxOSCParams     = 16
 	MaxOSCRaw        = 1024
+	// MaxAPCRaw bounds an APC string. kitty accepts 256 KiB per escape
+	// and graphics clients chunk at 4 KiB, so this leaves ample room
+	// while keeping a runaway sequence from growing without bound.
+	MaxAPCRaw = 1024 * 1024
 	// MaxParams represents the max number of parameters
 	// passed to the Perform ifc.
 	MaxParams = 32

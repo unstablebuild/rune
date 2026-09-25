@@ -47,3 +47,7 @@ func (w dimWriter) UnionAttributes(pos term.Coordinates, attr term.Attributes) {
 func (w dimWriter) Context() context.Context {
 	return w.w.Context()
 }
+
+func (w dimWriter) DrawImage(img term.Image) bool {
+	return w.w.DrawImage(img)
+}

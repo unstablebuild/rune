@@ -35,7 +35,8 @@ func newCellRecorder() *cellRecorder {
 	return &cellRecorder{cells: make(map[term.Coordinates]term.Cell)}
 }
 
-func (r *cellRecorder) Context() context.Context { return context.Background() }
+func (r *cellRecorder) Context() context.Context  { return context.Background() }
+func (r *cellRecorder) DrawImage(term.Image) bool { return false }
 
 func (r *cellRecorder) SetCell(pos term.Coordinates, c term.Cell) {
 	r.cells[pos] = c

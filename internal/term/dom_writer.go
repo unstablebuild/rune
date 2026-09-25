@@ -310,6 +310,10 @@ func (w *domWriter) UnionAttributes(pos Coordinates, attr Attributes) {
 	w.w.UnionAttributes(pos, attr)
 }
 
+func (w *domWriter) DrawImage(img Image) bool {
+	return w.w.DrawImage(img)
+}
+
 func (w *domWriter) Flush() error {
 	err := w.w.Flush()
 	if err != nil {

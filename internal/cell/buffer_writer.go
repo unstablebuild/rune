@@ -67,6 +67,12 @@ func (w *BufferWriter) UnionAttributes(pos term.Coordinates, attr term.Attribute
 		w.cells[pos.Y][pos.X].Attributes(), attr))
 }
 
+// DrawImage satisfies term.Writer. A cell buffer carries cells only;
+// the GUI wraps this writer to collect placements.
+func (w *BufferWriter) DrawImage(term.Image) bool {
+	return false
+}
+
 // Flush satisfies term.Writer
 func (w *BufferWriter) Flush() error {
 	return nil

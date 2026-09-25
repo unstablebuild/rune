@@ -20,6 +20,7 @@ import (
 	"os"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -180,8 +181,7 @@ func TestShippedStatusBarConfigParses(t *testing.T) {
 		"the cache ramp lists the context ramp's stops backwards")
 	assert.EqualValues(t, dialoguetui.DefaultGaugeStartRune, got.GaugeStartRune)
 	assert.EqualValues(t, dialoguetui.DefaultGaugeEndRune, got.GaugeEndRune)
-	assert.True(t, dialoguetui.ValidStatusBarShader(got.Shader))
-	assert.NotEmpty(t, got.Shader, "the shipped config names an effect")
+	assert.Empty(t, got.Shader, "the shipped bar is not animated")
 }
 
 // An effect the bar cannot build must not be accepted, or the config
@@ -191,6 +191,39 @@ func TestStatusBarConfigRejectsUnknownShader(t *testing.T) {
 		"status_bar": map[string]any{"shader": "nonsense"},
 	}), noTheme, stubNotifications{})
 	assert.Empty(t, got.Shader)
+}
+
+// The cadence knobs are optional and fall back to the bar's own
+// defaults, which is what a zero value means downstream.
+func TestStatusBarConfigShaderCadence(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		block    map[string]any
+		wantFPS  int
+		wantLoop time.Duration
+	}{
+		{
+			name:    "named",
+			block:   map[string]any{"shader_fps": 12, "shader_loop": "3s"},
+			wantFPS: 12, wantLoop: 3 * time.Second,
+		},
+		{
+			name:  "absent",
+			block: map[string]any{},
+		},
+		{
+			name:  "unparsable loop is ignored",
+			block: map[string]any{"shader_loop": "soon"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := statusBarConfig(config.MapConfig(map[string]any{
+				"status_bar": tc.block,
+			}), noTheme, stubNotifications{})
+			assert.Equal(t, tc.wantFPS, got.ShaderFPS)
+			assert.Equal(t, tc.wantLoop, got.ShaderLoop)
+		})
+	}
 }
 
 // The gauge blends between its stops in this process, so a stop has to

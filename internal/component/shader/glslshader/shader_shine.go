@@ -54,7 +54,11 @@ const (
 //
 // The effect is applied to every cell: as the band moves over a cell its
 // foreground color is interpolated towards [ShineParams.Color] giving a
-// glint impression that travels across the whole screen.
+// glint impression that travels across the whole screen. A glyph that
+// renders as background, such as a fade block or a powerline separator,
+// is left untouched: its foreground is what paints the cell, so glinting
+// it would recolour scenery rather than text. Blank cells are left
+// untouched too.
 //
 // See [ShineFrame] for a variant that only applies the effect to cells
 // matching a [github.com/unstablebuild/rune-go-sdk/component.FrameCharSet].
@@ -77,6 +81,12 @@ type ShineParams struct {
 	// Cycles is the number of times the shine band sweeps across the
 	// animation. Values less than 1 are treated as 1.
 	Cycles int
+	// Intensity scales how far a cell's foreground is blended towards
+	// Color at the centre of the band. Zero means full strength, so
+	// existing callers are unaffected.
+	//
+	// (range 0..1 clamped)
+	Intensity float
 }
 
 // DefaultShineParams returns a sane set of [ShineParams].
@@ -121,6 +131,10 @@ func (s *shine) Shade(frame, total int, in [][]term.Cell) {
 	if bandWidth <= 0 {
 		return
 	}
+	strength := 1.0
+	if s.Intensity > 0 {
+		strength = clamp(s.Intensity, 0.0, 1.0)
+	}
 
 	// Sweep "pulse" from -bandWidth to 1+bandWidth so the band fully enters
 	// from the bottom-left corner and fully exits past the top-right corner.
@@ -145,9 +159,12 @@ func (s *shine) Shade(frame, total int, in [][]term.Cell) {
 		// aspect ratio so the diagonal looks visually balanced.
 		yNorm := (float(rows-1-y) * asciiart.HeightToWidthCellAspectRatio) / maxY
 		for x, cell := range row {
+			if !paintsText(cell.Ch) {
+				continue
+			}
 			xNorm := float(x) / maxX
 			t := directionT(s.Direction, xNorm, yNorm)
-			intensity := smoothstep(bandWidth, 0.0, abs(t-pos))
+			intensity := smoothstep(bandWidth, 0.0, abs(t-pos)) * strength
 			if intensity <= 0 {
 				continue
 			}

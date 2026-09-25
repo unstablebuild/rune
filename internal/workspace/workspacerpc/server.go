@@ -413,7 +413,12 @@ func (s *Server) SetPtySize(ctx context.Context, req *workspacerpc.SetPtySizeReq
 		Master: master,
 		// no need to set slave, as it's not used for setting the pty size
 	}
-	err := s.s.SetPtySize(pty, int(req.GetWidth()), int(req.GetHeight()))
+	err := s.s.SetPtySize(pty, workspaceapi.PtySize{
+		Columns:     int(req.GetWidth()),
+		Rows:        int(req.GetHeight()),
+		PixelWidth:  int(req.GetPixelWidth()),
+		PixelHeight: int(req.GetPixelHeight()),
+	})
 	if err != nil {
 		return nil, err
 	}

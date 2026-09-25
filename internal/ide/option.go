@@ -85,7 +85,7 @@ func WithDispatchOnPreview(cmd string, fn previewFunc) Option {
 }
 
 // WithPublishEvent sets the EventPublisher of the IDE.
-// The default is tui.PublishEvent.
+// The given EventPublisher must be safe for concurrent use.
 func WithPublishEvent(p EventPublisher) Option {
 	return func(opts *options) {
 		opts.publishEvent = p
@@ -269,6 +269,16 @@ func WithBell(bell func()) Option {
 func WithScheduleNextTick(scheduleFn func(func()) bool) Option {
 	return func(opts *options) {
 		opts.scheduleFn = scheduleFn
+	}
+}
+
+// WithCellPixelSize sets how terminals learn the cell size in pixels,
+// which enables the kitty graphics protocol. Without it, or while it
+// reports zero, terminals behave as a cells-only display and clients
+// fall back to text.
+func WithCellPixelSize(cellPixelSize func() (width, height int)) Option {
+	return func(opts *options) {
+		opts.cellPixelSize = cellPixelSize
 	}
 }
 
@@ -503,6 +513,7 @@ type options struct {
 	defaultConfig        string
 	bell                 func()
 	scheduleFn           func(func()) bool
+	cellPixelSize        func() (int, int)
 	afterFunc            func(time.Duration, func()) *time.Timer
 	debugCommands        bool
 	streamingOpen        bool

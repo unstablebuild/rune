@@ -388,17 +388,17 @@ func (m *MockTerminal) EXPECT() *MockTerminalMockRecorder {
 }
 
 // SetPtySize mocks base method.
-func (m *MockTerminal) SetPtySize(arg0 workspaceapi.Pty, arg1, arg2 int) error {
+func (m *MockTerminal) SetPtySize(arg0 workspaceapi.Pty, arg1 workspaceapi.PtySize) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "SetPtySize", arg0, arg1, arg2)
+	ret := m.ctrl.Call(m, "SetPtySize", arg0, arg1)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // SetPtySize indicates an expected call of SetPtySize.
-func (mr *MockTerminalMockRecorder) SetPtySize(arg0, arg1, arg2 any) *gomock.Call {
+func (mr *MockTerminalMockRecorder) SetPtySize(arg0, arg1 any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetPtySize", reflect.TypeOf((*MockTerminal)(nil).SetPtySize), arg0, arg1, arg2)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetPtySize", reflect.TypeOf((*MockTerminal)(nil).SetPtySize), arg0, arg1)
 }
 
 // StartPty mocks base method.

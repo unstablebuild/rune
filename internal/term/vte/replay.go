@@ -60,6 +60,9 @@ func Replay(width, height int, data []byte) (*cell.Buffer, term.Coordinates, err
 		false, // useTitleAsTabname=false: SetTitle becomes a no-op
 		0,     // maxScrollLength: caller controls history via screen size
 		0,     // minWidth: width is the authoritative dimension
+		nil,   // cellPixelSize: no graphics in a cell-only replay
+		nil,   // fs: no file transmissions in a replay
+		"",    // tempDir: likewise
 	)
 	// Match the convention used by parser_handler tests so empty cells
 	// render as visible spaces rather than the implementation-detail
@@ -97,6 +100,10 @@ func (replayTabManager) SetTabName(
 
 func (replayTabManager) OnTabExit(workspaceapi.URI) bool {
 	return false
+}
+
+func (replayTabManager) SetTabActivity(workspaceapi.URI, bool) error {
+	return nil
 }
 
 // replayFile satisfies workspaceapi.File for the replay pty.

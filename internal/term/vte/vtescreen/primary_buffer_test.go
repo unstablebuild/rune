@@ -161,11 +161,11 @@ func TestPrimaryCoordinates(t *testing.T) {
 	assert.Equal(t, term.Coordinates{}, b.CursorAtScroll())
 	assert.Equal(t, term.Coordinates{}, b.CursorAtScreen())
 
-	b.SetCursorAtScreen(term.Coordinates{Y: 4, X: 4}, false)
+	b.SetCursorAtScreen(term.Coordinates{Y: 4, X: 4})
 	assert.Equal(t, term.Coordinates{Y: 4, X: 4}, b.CursorAtScroll())
 	assert.Equal(t, term.Coordinates{Y: 4, X: 4}, b.CursorAtScreen())
 
-	b.SetCursorAtScreen(term.Coordinates{Y: 5, X: 5}, false)
+	b.SetCursorAtScreen(term.Coordinates{Y: 5, X: 5})
 	assert.Equal(t, term.Coordinates{Y: 4, X: 4}, b.CursorAtScroll())
 	assert.Equal(t, term.Coordinates{Y: 4, X: 4}, b.CursorAtScreen())
 }
@@ -247,7 +247,7 @@ func TestPrimaryClear(t *testing.T) {
 			resetPrimaryBuffer(b, test.content)
 
 			initialCursor := b.CursorAtScreen()
-			cleared := b.Clear()
+			cleared := b.Clear() > 0
 			writer := term.NewStringWriter(test.width, test.height)
 			b.Draw(writer)
 			writer.Flush()
@@ -604,17 +604,17 @@ func writeToPrimaryBuffer(b *PrimaryBuffer, str string) {
 			} else {
 				pos.Y++
 			}
-			b.SetCursorAtScreen(pos, false)
+			b.SetCursorAtScreen(pos)
 		} else {
 			b.Write(ch, uniseg.StringWidth(string(ch)), 0)
 			pos.X++
-			b.SetCursorAtScreen(pos, false)
+			b.SetCursorAtScreen(pos)
 		}
 	}
 }
 
 func resetPrimaryBuffer(b *PrimaryBuffer, to string) {
 	b.ResetLines(0, b.Height())
-	b.SetCursorAtScreen(term.Coordinates{}, false)
+	b.SetCursorAtScreen(term.Coordinates{})
 	writeToPrimaryBuffer(b, to)
 }

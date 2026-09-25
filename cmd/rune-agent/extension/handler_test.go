@@ -126,6 +126,42 @@ func TestHandleChatRejectsAlreadyOpenDialogue(t *testing.T) {
 	assert.Contains(t, err.Error(), `agent chat "RUNE-256" is already open`)
 }
 
+// A chat's turns mark the tab it was opened in, so the status component
+// must carry the same URI the tab was created with.
+func TestHandleChatTracksTabURIForActivity(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	const dialogueID = "rolling-fox"
+	svc := llmtest.New([]llmapi.ModelEntry{{Provider: "test", Name: "test-model"}})
+	wm := &recordingWindowManager{}
+	fs := nopFileSystem{}
+	h := &aiEditorHandler{
+		ctx:            ctx,
+		llmSvc:         svc,
+		defaultModel:   "test-model",
+		dialogueStore:  newMemDialogueStore(),
+		wm:             wm,
+		n:              stubNotifications{},
+		p:              term.NopInterrupter(),
+		config:         configedit.NopConfig(),
+		skillRegistry:  skills.NewRegistry(fs, dirURI(""), nil, nil),
+		toolRegistry:   agent.NewRegistry(),
+		agentsConfig:   agent.NewConfig([]agent.Definition{{ID: "default", AllowAny: true}}),
+		cwd:            dirURI(""),
+		fs:             fs,
+		memoryDataPath: t.TempDir(),
+	}
+
+	require.NoError(t, h.handleChat(textapi.Command{Args: []string{dialogueID}}))
+	require.NotNil(t, wm.gotHandler)
+	t.Cleanup(func() { require.NoError(t, wm.gotHandler.Close()) })
+
+	v, ok := h.openChats.Load(dialogueID)
+	require.True(t, ok)
+	assert.Equal(t, wm.gotURI, v.(syncComponent).uri)
+}
+
 // TestE2ECtrlCDismissesSelectionPrompt drives the chat tab handler
 // end-to-end through the public handlertest.RunHandlerSequence API:
 // the user types "hi" and presses Enter, the scripted LLM emits an

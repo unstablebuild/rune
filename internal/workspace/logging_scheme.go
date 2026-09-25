@@ -193,10 +193,10 @@ func (t loggingScheme) NewPty(ctx context.Context) (ret workspaceapi.Pty, err er
 	return
 }
 
-func (t loggingScheme) SetPtySize(p workspaceapi.Pty, width, height int) (err error) {
-	t.trace("SetPtySize(%v, %d, %d)", p, width, height)
-	err = t.other.SetPtySize(p, width, height)
-	t.trace("SetPtySize(%v, %d, %d): %v", p, width, height, err)
+func (t loggingScheme) SetPtySize(p workspaceapi.Pty, size workspaceapi.PtySize) (err error) {
+	t.trace("SetPtySize(%v, %+v)", p, size)
+	err = t.other.SetPtySize(p, size)
+	t.trace("SetPtySize(%v, %+v): %v", p, size, err)
 	return
 }
 

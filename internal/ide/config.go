@@ -49,6 +49,7 @@ import (
 	tcomponent "unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/component/asciiart"
 	"unstable.build/rune/internal/component/notifications"
+	"unstable.build/rune/internal/component/shader/shaderloop"
 	tconfig "unstable.build/rune/internal/config"
 	"unstable.build/rune/internal/extension/extutil"
 	"unstable.build/rune/internal/handler"
@@ -262,6 +263,7 @@ type ideConfig struct {
 	errors           map[string]error
 	ringBell         func()
 	scheduleNextTick func(func()) bool
+	cellPixelSize    func() (int, int)
 	zdotDir          string
 	// storage is the IDE-wide storage service. It's owned by the IDE
 	// and shared across workspaces; commandAliases consults it to
@@ -1337,6 +1339,99 @@ func (c ideConfig) animationsOpenWorkspaceDuration() (time.Duration, bool) {
 		return 0, false
 	}
 	return dur, true
+}
+
+const (
+	// animActiveContentTab configures the effect run over the content
+	// tabs an extension marks as having work in progress.
+	animActiveContentTab = "active_content_tab"
+	// animActiveWorkspaceTab configures the effect run over the
+	// workspace tabs that own such content tabs.
+	animActiveWorkspaceTab = "active_workspace_tab"
+	// defaultActiveTabShader is the effect run over active tabs when
+	// animations.<key>.shader is absent.
+	defaultActiveTabShader = "pulse"
+)
+
+// animationsActiveTabShader returns the continuous effect configured
+// under animations.<key>, one of animActiveContentTab or
+// animActiveWorkspaceTab. It returns "" when the animation is disabled.
+// An unknown name is recorded as a soft error and falls back to the
+// default.
+func (c ideConfig) animationsActiveTabShader(key string) string {
+	if !c.animationsBool(key) {
+		return ""
+	}
+	d, ok := c.animationsDict(key)
+	if !ok {
+		return defaultActiveTabShader
+	}
+	name, err := config.MapConfig(d).GetString("shader")
+	if err != nil {
+		if err != config.ErrNotFound {
+			c.errors["animations."+key+".shader"] = err
+		}
+		return defaultActiveTabShader
+	}
+	if name == "" {
+		return defaultActiveTabShader
+	}
+	if !slices.Contains(shaderloop.Names(), name) {
+		c.errors["animations."+key+".shader"] = fmt.Errorf(
+			"unknown shader %q, expected one of %s",
+			name, strings.Join(shaderloop.Names(), ", "))
+		return defaultActiveTabShader
+	}
+	return name
+}
+
+// animationsActiveTabFPS returns the cadence of the effect configured
+// under animations.<key>.
+func (c ideConfig) animationsActiveTabFPS(key string) int {
+	d, ok := c.animationsDict(key)
+	if !ok {
+		return shaderloop.DefaultFPS
+	}
+	fps, err := config.MapConfig(d).GetInt("fps")
+	if err != nil {
+		if err != config.ErrNotFound {
+			c.errors["animations."+key+".fps"] = err
+		}
+		return shaderloop.DefaultFPS
+	}
+	if fps <= 0 {
+		c.errors["animations."+key+".fps"] = fmt.Errorf(
+			"expected a positive integer, got %d", fps)
+		return shaderloop.DefaultFPS
+	}
+	return fps
+}
+
+// animationsActiveTabLoop returns how long one visual loop of the
+// effect configured under animations.<key> lasts.
+func (c ideConfig) animationsActiveTabLoop(key string) time.Duration {
+	d, ok := c.animationsDict(key)
+	if !ok {
+		return shaderloop.DefaultLoop
+	}
+	s, err := config.MapConfig(d).GetString("loop")
+	if err != nil {
+		if err != config.ErrNotFound {
+			c.errors["animations."+key+".loop"] = err
+		}
+		return shaderloop.DefaultLoop
+	}
+	loop, err := time.ParseDuration(s)
+	if err != nil {
+		c.errors["animations."+key+".loop"] = err
+		return shaderloop.DefaultLoop
+	}
+	if loop <= 0 {
+		c.errors["animations."+key+".loop"] = fmt.Errorf(
+			"expected a positive duration, got %s", s)
+		return shaderloop.DefaultLoop
+	}
+	return loop
 }
 
 func (c ideConfig) prompt() (config.Config, bool) {
@@ -4134,6 +4229,7 @@ func (c ideConfig) terminalConfig() vte.Config {
 	ret.Clipboard = c.clipboard()
 	ret.ScheduleNextTick = c.scheduleNextTick
 	ret.RingBell = c.ringBell
+	ret.CellPixelSize = c.cellPixelSize
 	ret.MinWidth = defaultMinWidth
 	ret.Search = c.terminalSearchConfig()
 	return ret

@@ -17,6 +17,7 @@
 package component
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -384,6 +385,348 @@ func TestTileAtNoGapWithFixedTailChildHorizontal(t *testing.T) {
 		require.NotPanics(t, func() {
 			tree.TileAt(term.Coordinates{X: 0, Y: y})
 		}, "TileAt({0, %d})", y)
+	}
+}
+
+// tileAxis abstracts the split axis so the same fixed-size scenario
+// runs over columns and over rows: "main" is the axis the tiles are
+// laid along, "cross" the one they span.
+type tileAxis struct {
+	name       string
+	dir        splitDir
+	split      func(*TileTree, *TileNode, tui.Component) *TileNode
+	crossSplit func(*TileTree, *TileNode, tui.Component) *TileNode
+	fix        func(*TileNode, int) bool
+	crossFix   func(*TileNode, int) bool
+	size       func(main, cross int) (width, height int)
+	// render maps a picture drawn with main running left to right onto
+	// this axis.
+	render func(string) string
+}
+
+var tileAxes = []tileAxis{
+	{
+		name:       "columns",
+		dir:        vertical,
+		split:      (*TileTree).SplitVertical,
+		crossSplit: (*TileTree).SplitHorizontal,
+		fix:        (*TileNode).SetFixedWidth,
+		crossFix:   (*TileNode).SetFixedHeight,
+		size:       func(main, cross int) (int, int) { return main, cross },
+		render:     func(s string) string { return s },
+	},
+	{
+		name:       "rows",
+		dir:        horizontal,
+		split:      (*TileTree).SplitHorizontal,
+		crossSplit: (*TileTree).SplitVertical,
+		fix:        (*TileNode).SetFixedHeight,
+		crossFix:   (*TileNode).SetFixedWidth,
+		size:       func(main, cross int) (int, int) { return cross, main },
+		render:     transposeScreen,
+	},
+}
+
+func transposeScreen(s string) string {
+	lines := strings.Split(strings.TrimLeft(s, "\n"), "\n")
+	grid := make([][]rune, len(lines))
+	for i, l := range lines {
+		grid[i] = []rune(l)
+	}
+	out := make([]string, len(grid[0]))
+	for x := range out {
+		col := make([]rune, len(grid))
+		for y := range grid {
+			col[y] = grid[y][x]
+		}
+		out[x] = string(col)
+	}
+	return "\n" + strings.Join(out, "\n")
+}
+
+// tileFixture is a tree whose tiles are named by the rune they draw.
+type tileFixture struct {
+	t     *testing.T
+	axis  tileAxis
+	cross int
+	tree  *TileTree
+	tiles map[rune]*TileNode
+	w     *term.StringWriter
+}
+
+type tileStep func(*tileFixture)
+
+func (f *tileFixture) add(ch rune, n *TileNode) { f.tiles[ch] = n }
+
+// appendTile adds ch as the last tile along the main axis of the root.
+func appendTile(ch rune) tileStep {
+	return func(f *tileFixture) {
+		f.add(ch, f.tree.SplitRoot(f.axis.dir, len(f.tree.root.children),
+			&component.TestComponent{Ch: ch}))
+	}
+}
+
+// prependTile adds ch as the first tile along the main axis of the root.
+func prependTile(ch rune) tileStep {
+	return func(f *tileFixture) {
+		f.add(ch, f.tree.SplitRoot(f.axis.dir, 0, &component.TestComponent{Ch: ch}))
+	}
+}
+
+// splitAlong adds ch right after over, along the main axis.
+func splitAlong(over, ch rune) tileStep {
+	return func(f *tileFixture) {
+		f.add(ch, f.axis.split(f.tree, f.tiles[over], &component.TestComponent{Ch: ch}))
+	}
+}
+
+// splitAcross adds ch after over, across the main axis.
+func splitAcross(over, ch rune) tileStep {
+	return func(f *tileFixture) {
+		f.add(ch, f.axis.crossSplit(f.tree, f.tiles[over], &component.TestComponent{Ch: ch}))
+	}
+}
+
+func fixTile(ch rune, size int) tileStep {
+	return func(f *tileFixture) {
+		assert.True(f.t, f.axis.fix(f.tiles[ch], size), "fix %c to %d", ch, size)
+	}
+}
+
+func refuseFix(ch rune, size int) tileStep {
+	return func(f *tileFixture) {
+		assert.False(f.t, f.axis.fix(f.tiles[ch], size), "fix %c to %d", ch, size)
+	}
+}
+
+func fixTileAcross(ch rune, size int) tileStep {
+	return func(f *tileFixture) {
+		assert.True(f.t, f.axis.crossFix(f.tiles[ch], size), "fix %c across to %d", ch, size)
+	}
+}
+
+func closeTile(ch rune) tileStep {
+	return func(f *tileFixture) {
+		f.tiles[ch].Close()
+		delete(f.tiles, ch)
+	}
+}
+
+func resizeTree(main int) tileStep {
+	return func(f *tileFixture) {
+		w, h := f.axis.size(main, f.cross)
+		f.tree.Resize(w, h)
+		f.w.Resize(w, h)
+	}
+}
+
+// TestTileFixedSizes covers tiles that pick a size and keep it, such
+// as the file explorer, next to each other and to flexible tiles. A
+// fixed tile keeps its size across its siblings being fixed, reset,
+// split and closed, and only yields when no flexible tile would be
+// left to absorb the rest. Each scenario starts from a single 'E'
+// tile, 20 cells along the main axis, and is drawn after every step.
+func TestTileFixedSizes(t *testing.T) {
+	type step struct {
+		do   tileStep
+		want string
+	}
+	tests := []struct {
+		name  string
+		cross int // defaults to 1
+		steps []step
+	}{
+		{
+			name: "fixing a second side keeps the first",
+			steps: []step{
+				{nil, "\nEEEEEEEEEEEEEEEEEEEE"},
+				{appendTile('R'), "\nEEEEEEEEEERRRRRRRRRR"},
+				{fixTile('R', 5), "\nEEEEEEEEEEEEEEERRRRR"},
+				{prependTile('L'), "\nLLLLLLLEEEEEEEERRRRR"},
+				{fixTile('L', 4), "\nLLLLEEEEEEEEEEERRRRR"},
+				{fixTile('L', 0), "\nLLLLLLLEEEEEEEERRRRR"},
+				{fixTile('R', 0), "\nLLLLLLEEEEEEERRRRRRR"},
+			},
+		},
+		{
+			name: "closing a fixed side keeps the other",
+			steps: []step{
+				{appendTile('R'), "\nEEEEEEEEEERRRRRRRRRR"},
+				{fixTile('R', 5), "\nEEEEEEEEEEEEEEERRRRR"},
+				{prependTile('L'), "\nLLLLLLLEEEEEEEERRRRR"},
+				{fixTile('L', 4), "\nLLLLEEEEEEEEEEERRRRR"},
+				{closeTile('L'), "\nEEEEEEEEEEEEEEERRRRR"},
+				{closeTile('R'), "\nEEEEEEEEEEEEEEEEEEEE"},
+			},
+		},
+		{
+			name: "closing the only flexible tile unfixes the rest",
+			steps: []step{
+				{appendTile('R'), "\nEEEEEEEEEERRRRRRRRRR"},
+				{fixTile('R', 5), "\nEEEEEEEEEEEEEEERRRRR"},
+				{prependTile('L'), "\nLLLLLLLEEEEEEEERRRRR"},
+				{fixTile('L', 4), "\nLLLLEEEEEEEEEEERRRRR"},
+				{closeTile('E'), "\nLLLLLLLLLLRRRRRRRRRR"},
+				// Neither kept its size in reserve.
+				{appendTile('S'), "\nLLLLLLRRRRRRRSSSSSSS"},
+			},
+		},
+		{
+			name: "a fixed tile left alone fills the tree",
+			steps: []step{
+				{appendTile('R'), "\nEEEEEEEEEERRRRRRRRRR"},
+				{fixTile('R', 5), "\nEEEEEEEEEEEEEEERRRRR"},
+				{closeTile('E'), "\nRRRRRRRRRRRRRRRRRRRR"},
+				{appendTile('S'), "\nRRRRRRRRRRSSSSSSSSSS"},
+			},
+		},
+		{
+			name: "fixing the only flexible tile makes its siblings yield",
+			steps: []step{
+				{appendTile('R'), "\nEEEEEEEEEERRRRRRRRRR"},
+				{fixTile('R', 5), "\nEEEEEEEEEEEEEEERRRRR"},
+				{fixTile('E', 12), "\nEEEEEEEEEEEERRRRRRRR"},
+				{appendTile('S'), "\nEEEEEEEEEEEERRRRSSSS"},
+			},
+		},
+		{
+			name: "siblings yield only when the flexible tile would drop below the minimum",
+			steps: []step{
+				{appendTile('R'), "\nEEEEEEEEEERRRRRRRRRR"},
+				{prependTile('L'), "\nLLLLLLEEEEEEERRRRRRR"},
+				{fixTile('L', 5), "\nLLLLLEEEEEEERRRRRRRR"},
+				// E keeps exactly the minimum of 3.
+				{fixTile('R', 12), "\nLLLLLEEERRRRRRRRRRRR"},
+				// E would get 2, so L yields and shares the rest with E.
+				{fixTile('R', 13), "\nLLLEEEERRRRRRRRRRRRR"},
+				// Even with L yielding, L and E would get 2 each.
+				{refuseFix('R', 15), "\nLLLEEEERRRRRRRRRRRRR"},
+				// The latest fix wins: now R yields to L.
+				{fixTile('L', 5), "\nLLLLLEEEEEEERRRRRRRR"},
+			},
+		},
+		{
+			name: "fixing a tile at its current size pins it",
+			steps: []step{
+				{appendTile('R'), "\nEEEEEEEEEERRRRRRRRRR"},
+				{fixTile('R', 10), "\nEEEEEEEEEERRRRRRRRRR"},
+				{prependTile('L'), "\nLLLLLEEEEERRRRRRRRRR"},
+			},
+		},
+		{
+			name: "a tile spanning the tree only accepts the size it has",
+			steps: []step{
+				{fixTile('E', 20), "\nEEEEEEEEEEEEEEEEEEEE"},
+				{refuseFix('E', 12), "\nEEEEEEEEEEEEEEEEEEEE"},
+				{fixTileAcross('E', 1), "\nEEEEEEEEEEEEEEEEEEEE"},
+				// Accepting did not pin it.
+				{appendTile('R'), "\nEEEEEEEEEERRRRRRRRRR"},
+				{fixTileAcross('R', 1), "\nEEEEEEEEEERRRRRRRRRR"},
+			},
+		},
+		{
+			name: "splitting a fixed tile along the axis adds a flexible sibling",
+			steps: []step{
+				{appendTile('R'), "\nEEEEEEEEEERRRRRRRRRR"},
+				{fixTile('R', 5), "\nEEEEEEEEEEEEEEERRRRR"},
+				{splitAlong('R', 'S'), "\nEEEEEEERRRRRSSSSSSSS"},
+				{closeTile('S'), "\nEEEEEEEEEEEEEEERRRRR"},
+			},
+		},
+		{
+			name:  "splitting a fixed tile across keeps its size until the split closes",
+			cross: 2,
+			steps: []step{
+				{appendTile('R'), "\nEEEEEEEEEERRRRRRRRRR\nEEEEEEEEEERRRRRRRRRR"},
+				{fixTile('R', 5), "\nEEEEEEEEEEEEEEERRRRR\nEEEEEEEEEEEEEEERRRRR"},
+				{splitAcross('R', 'S'), "\nEEEEEEEEEEEEEEERRRRR\nEEEEEEEEEEEEEEESSSSS"},
+				{closeTile('S'), "\nEEEEEEEEEEEEEEERRRRR\nEEEEEEEEEEEEEEERRRRR"},
+				{splitAcross('R', 'S'), "\nEEEEEEEEEEEEEEERRRRR\nEEEEEEEEEEEEEEESSSSS"},
+				{closeTile('R'), "\nEEEEEEEEEEEEEEESSSSS\nEEEEEEEEEEEEEEESSSSS"},
+			},
+		},
+		{
+			name:  "a fixed cross size is not mistaken for a main size",
+			cross: 8,
+			steps: []step{
+				{appendTile('R'), `
+EEEEEEEEEERRRRRRRRRR
+EEEEEEEEEERRRRRRRRRR
+EEEEEEEEEERRRRRRRRRR
+EEEEEEEEEERRRRRRRRRR
+EEEEEEEEEERRRRRRRRRR
+EEEEEEEEEERRRRRRRRRR
+EEEEEEEEEERRRRRRRRRR
+EEEEEEEEEERRRRRRRRRR`},
+				{splitAcross('R', 'S'), `
+EEEEEEEEEERRRRRRRRRR
+EEEEEEEEEERRRRRRRRRR
+EEEEEEEEEERRRRRRRRRR
+EEEEEEEEEERRRRRRRRRR
+EEEEEEEEEESSSSSSSSSS
+EEEEEEEEEESSSSSSSSSS
+EEEEEEEEEESSSSSSSSSS
+EEEEEEEEEESSSSSSSSSS`},
+				{fixTileAcross('R', 5), `
+EEEEEEEEEERRRRRRRRRR
+EEEEEEEEEERRRRRRRRRR
+EEEEEEEEEERRRRRRRRRR
+EEEEEEEEEERRRRRRRRRR
+EEEEEEEEEERRRRRRRRRR
+EEEEEEEEEESSSSSSSSSS
+EEEEEEEEEESSSSSSSSSS
+EEEEEEEEEESSSSSSSSSS`},
+				{fixTile('R', 5), `
+EEEEEEEEEEEEEEERRRRR
+EEEEEEEEEEEEEEERRRRR
+EEEEEEEEEEEEEEERRRRR
+EEEEEEEEEEEEEEERRRRR
+EEEEEEEEEEEEEEERRRRR
+EEEEEEEEEEEEEEESSSSS
+EEEEEEEEEEEEEEESSSSS
+EEEEEEEEEEEEEEESSSSS`},
+			},
+		},
+		{
+			name: "shrinking below the fixed sizes squeezes them without overlap",
+			steps: []step{
+				{appendTile('R'), "\nEEEEEEEEEERRRRRRRRRR"},
+				{fixTile('R', 5), "\nEEEEEEEEEEEEEEERRRRR"},
+				{prependTile('L'), "\nLLLLLLLEEEEEEEERRRRR"},
+				{fixTile('L', 4), "\nLLLLEEEEEEEEEEERRRRR"},
+				{resizeTree(12), "\nLLLLEEERRRRR"},
+				{resizeTree(9), "\nLLLLRRRRR"},
+				{resizeTree(6), "\nLLRRRR"},
+				{resizeTree(1), "\nR"},
+				// The fixed sizes were only squeezed, not forgotten.
+				{resizeTree(20), "\nLLLLEEEEEEEEEEERRRRR"},
+			},
+		},
+	}
+
+	for _, axis := range tileAxes {
+		t.Run(axis.name, func(t *testing.T) {
+			for _, tt := range tests {
+				t.Run(tt.name, func(t *testing.T) {
+					f := &tileFixture{t: t, axis: axis, cross: max(tt.cross, 1),
+						tiles: map[rune]*TileNode{}}
+					var e *TileNode
+					f.tree, e = NewTileTree(&component.TestComponent{Ch: 'E'})
+					f.add('E', e)
+					f.w = term.NewStringWriter(axis.size(20, f.cross))
+					resizeTree(20)(f)
+
+					cases := make([]comptest.TestCase, len(tt.steps))
+					for i, s := range tt.steps {
+						cases[i].Expected = axis.render(s.want)
+						if s.do != nil {
+							cases[i].Action = func() { s.do(f) }
+						}
+					}
+					comptest.TestComponent(t, f.tree, f.w, cases)
+				})
+			}
+		})
 	}
 }
 

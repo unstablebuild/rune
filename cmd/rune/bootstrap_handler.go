@@ -69,6 +69,7 @@ type bootstrapHandler struct {
 	trust             *pkgtrust.Store
 	mu                *sync.Mutex
 	publishEvent      func(term.Event) bool
+	cellPixelSize     func() (int, int)
 	openBrowser       func(*url.URL) error
 	clip              clipboard.Register
 	installBackupDir  string
@@ -106,6 +107,7 @@ func newBootstrapHandler(
 	runner ide.ExtensionsRunner,
 	mu *sync.Mutex,
 	publishEvent func(term.Event) bool,
+	cellPixelSize func() (int, int),
 	openBrowser func(*url.URL) error,
 	clip clipboard.Register,
 	installBackupDir string,
@@ -124,6 +126,7 @@ func newBootstrapHandler(
 		trust:            trust,
 		mu:               mu,
 		publishEvent:     publishEvent,
+		cellPixelSize:    cellPixelSize,
 		openBrowser:      openBrowser,
 		clip:             clip,
 		installBackupDir: installBackupDir,
@@ -184,6 +187,7 @@ func (b *bootstrapHandler) buildPreIDE() (*ide.IDE, error) {
 		ide.WithBell(func() {}),
 		ide.WithPublishEvent(b.publishEvent),
 		ide.WithScheduleNextTick(b.scheduleNextTick),
+		ide.WithCellPixelSize(b.cellPixelSize),
 		ide.WithZdotDir(b.zdotDir),
 		ide.WithTabsClickCallback(b.handleTabsClick),
 	}
@@ -220,6 +224,7 @@ func (b *bootstrapHandler) buildConfiguredIDE(
 		ide.WithBell(func() {}),
 		ide.WithPublishEvent(b.publishEvent),
 		ide.WithScheduleNextTick(b.scheduleNextTick),
+		ide.WithCellPixelSize(b.cellPixelSize),
 		ide.WithZdotDir(b.zdotDir),
 		ide.WithScheme(docsScheme, newDocsSchemeFunc(b.configPath)),
 		ide.WithTabsClickCallback(b.handleTabsClick),

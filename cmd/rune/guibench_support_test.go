@@ -242,6 +242,13 @@ func newGUIBenchSession(tb testing.TB, cfg guiBenchConfig) *guiBenchSession {
 		}
 		return g.PublishEvent(ev)
 	}
+	cellPixelSize := func() (int, int) {
+		g := guiRef.Load()
+		if g == nil {
+			return 0, 0
+		}
+		return g.CellPixelSize()
+	}
 
 	var files []string
 	for _, rel := range cfg.files {
@@ -256,7 +263,7 @@ func newGUIBenchSession(tb testing.TB, cfg guiBenchConfig) *guiBenchSession {
 	root, err := newBootstrapHandler(
 		s.dataDir, configPath, s.workDir, "" /* zdotDir */, files,
 		nil /* launchCmd */, ide.FuncExtensionsRunner(testE2EExtensionsRunner),
-		s.mu, publishEvent,
+		s.mu, publishEvent, cellPixelSize,
 		func(*url.URL) error { return nil }, clipboard.NewInMemory(),
 		s.dataDir /* installBackupDir */, rootCfg,
 		pkgtrust.NewStore(s.dataDir, nil),

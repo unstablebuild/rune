@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -158,6 +159,24 @@ func TestRustInitializeParams(t *testing.T) {
 	require.NoError(t, json.Unmarshal(noSysroot.InitializeOptions, &opts2))
 	_, hasSysroot := opts2["sysroot"]
 	assert.False(t, hasSysroot)
+}
+
+// Cache priming defaults to one worker per physical core, which is the
+// burst that saturates the machine on a cold project and leaves the
+// editor's render loop without a core to run on.
+func TestRustInitializeParamsCapsWorkerThreads(t *testing.T) {
+	params, err := rustInitializeParams("file:///ws", "ra", "", "info", false)
+	require.NoError(t, err)
+
+	var opts map[string]any
+	require.NoError(t, json.Unmarshal(params.InitializeOptions, &opts))
+
+	want := float64(max(1, runtime.NumCPU()/2))
+	assert.Equal(t, want, opts["numThreads"])
+	priming, _ := opts["cachePriming"].(map[string]any)
+	assert.Equal(t, want, priming["numThreads"],
+		"0 would mean 'pick automatically' and restore the default pool")
+	assert.Positive(t, want, "a zero cap would restore the default pool size")
 }
 
 func TestRustLogFilter(t *testing.T) {

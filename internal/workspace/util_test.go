@@ -181,7 +181,7 @@ func (t *testScheme) NewPty(ctx context.Context) (ret workspaceapi.Pty, err erro
 	panic("unimplemented")
 }
 
-func (t *testScheme) SetPtySize(p workspaceapi.Pty, width, height int) (err error) {
+func (t *testScheme) SetPtySize(p workspaceapi.Pty, size workspaceapi.PtySize) (err error) {
 	panic("unimplemented")
 }
 

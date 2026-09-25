@@ -24,6 +24,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/term"
+
+	"unstable.build/rune/internal/ide/idetutorial"
 )
 
 // fuzzySearchTutorialPath is the shipped tutorial the fuzzy-search
@@ -37,8 +39,7 @@ func newFuzzySearchTutorial(t *testing.T) (*Tutorial, *fakeNotis) {
 	notis := &fakeNotis{}
 	tut, err := New(
 		"fuzzy_search", string(src),
-		nil, nil, notis, nil,
-		term.Attributes{},
+		idetutorial.PromptStyle{}, nil, notis, nil,
 		nil, nil,
 		term.KeyComb{Ch: ':'},
 		"standard", "", nil,
@@ -48,7 +49,7 @@ func newFuzzySearchTutorial(t *testing.T) (*Tutorial, *fakeNotis) {
 	)
 	require.NoError(t, err)
 	require.NotNil(t, tut)
-	tut.Resize(80, 24)
+	tut.Resize(bodyW, bodyH)
 	return tut, notis
 }
 
@@ -62,98 +63,47 @@ func TestFuzzySearchTutorialRegisters(t *testing.T) {
 }
 
 // TestFuzzySearchTutorialFlow drives the shipped tutorial through its
-// full step sequence: the searchfile/searchtext commands resolve via
-// the command observer, and the type/navigate/open/cancel keys advance
-// the bottom-anchored teaching windows through their dismiss keys.
+// full step sequence: the search commands resolve via the command
+// observer and the live search step via the open event, while every
+// key falls through to the focused finder.
 func TestFuzzySearchTutorialFlow(t *testing.T) {
 	t.Parallel()
-	tut, _ := newFuzzySearchTutorial(t)
+	tut, notis := newFuzzySearchTutorial(t)
 	resetAndWait(t, tut, time.Second)
 
-	key := func(spec string) {
-		t.Helper()
-		ks, err := term.ParseKeys(spec)
-		require.NoError(t, err)
-		require.Len(t, ks, 1)
-		kc := ks[0]
-		_, _ = tut.Handle(term.Event{
-			Type: term.EventKey, Key: kc.Key, Mod: kc.Mod, Ch: kc.Ch,
-		})
-	}
-
-	// Intro window -> dismiss with the command-prompt key.
-	require.Equal(t, "floating_window", activeKindFor(tut))
-	key("<enter>")
-
-	// "Search files" window -> dismiss, then dispatch searchfile.
-	waitNextActive(t, tut, "floating_window", time.Second)
-	key("<enter>")
-	waitNextActive(t, tut, "wait_command", time.Second)
+	require.Equal(t, "wait_command", activeKindFor(tut))
 	tut.ObserveCommand("searchfile", "searchfile", nil, nil)
 
-	// "Find and open a file": a wait_event step. It must pass every key
-	// through to the focused finder so the user can type and navigate;
-	// it resolves only on the file-open event, not from keystrokes.
+	// "Find and open a file": a wait_event step. It resolves only on
+	// the file-open event, never from keystrokes, and the keys a user
+	// types into the finder are not its business.
 	waitNextActive(t, tut, "wait_event", time.Second)
-	ks, err := term.ParseKeys("a")
-	require.NoError(t, err)
-	_, handled := tut.Handle(term.Event{Type: term.EventKey, Ch: ks[0].Ch})
-	require.False(t, handled,
-		"wait_event must not swallow typing; keys reach the finder")
-	require.Equal(t, "wait_event", activeKindFor(tut),
-		"a printable key must not resolve the wait_event step")
+	for _, spec := range []string{"a", "<enter>", "<esc>"} {
+		ks, err := term.ParseKeys(spec)
+		require.NoError(t, err)
+		exit, handled := tut.Handle(term.Event{
+			Type: term.EventKey, Key: ks[0].Key, Mod: ks[0].Mod, Ch: ks[0].Ch,
+		})
+		require.False(t, exit, "%s must never close the tile", spec)
+		require.False(t, handled,
+			"wait_event must not swallow %s; keys reach the finder", spec)
+		require.Equal(t, "wait_event", activeKindFor(tut),
+			"%s must not resolve the wait_event step", spec)
+	}
 	tut.ObserveEvent("open", "file:///workspace/main.go")
 
-	// "Search file contents" window -> dismiss, then dispatch searchtext.
-	waitNextActive(t, tut, "floating_window", time.Second)
-	key("<enter>")
 	waitNextActive(t, tut, "wait_command", time.Second)
 	tut.ObserveCommand("searchtext", "searchtext", nil, nil)
 
-	// "Search functions" window -> dismiss, then dispatch searchfunc.
-	waitNextActive(t, tut, "floating_window", time.Second)
-	key("<enter>")
 	waitNextActive(t, tut, "wait_command", time.Second)
 	tut.ObserveCommand("searchfunc", "searchast", nil, nil)
 
-	// "Search types" window -> dismiss, then dispatch searchtype.
-	waitNextActive(t, tut, "floating_window", time.Second)
-	key("<enter>")
 	waitNextActive(t, tut, "wait_command", time.Second)
 	tut.ObserveCommand("searchtype", "searchast", nil, nil)
 
-	// Wrap-up window -> dismiss to finish.
-	waitNextActive(t, tut, "floating_window", time.Second)
-	key("<enter>")
 	waitFinished(t, tut, time.Second)
-}
-
-// TestFloatingWindowEscIsSwallowedNotPassedThrough documents why a
-// floating_window cannot teach "press <esc> to cancel the finder": <esc>
-// (like <enter>/<space>) is a reserved auto-advance key that the overlay
-// consumes (handled=true) before the dismiss_keys/allow_keys checks, so it
-// never falls through to the focused window. A tutorial that needs the user
-// to actually cancel a finder must not rely on <esc> reaching the IDE root
-// through a teaching panel.
-func TestFloatingWindowEscIsSwallowedNotPassedThrough(t *testing.T) {
-	t.Parallel()
-	src := `
-def run():
-    floating_window(text="cancel the finder", dismiss_keys=["<esc>"])
-    floating_window(text="done")
-tutorial(entry=run)
-`
-	tut, _ := newTutorial(t, src)
-	resetAndWait(t, tut, time.Second)
-	require.Equal(t, "floating_window", activeKindFor(tut))
-
-	exit, handled := tut.Handle(term.Event{Type: term.EventKey, Key: term.KeyEsc})
-	assert.False(t, exit)
-	assert.True(t, handled,
-		"<esc> is swallowed by the overlay; it never reaches the finder, "+
-			"so dismiss_keys=[\"<esc>\"] cannot cancel a focused window")
-
-	// It still advances the tutorial (auto-advance), proving the step
-	// resolves without the finder ever seeing <esc>.
-	waitNextActive(t, tut, "floating_window", time.Second)
+	assert.True(t, tut.Completed())
+	assert.True(t, notis.containsSubstring("Happy searching"),
+		"the wrap-up must be delivered as a notification: %v",
+		notis.renderedCalls())
 }

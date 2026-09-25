@@ -94,10 +94,9 @@ extensions:
         # only sets the fallback for a status the palette does not cover.
         layout: ' {{ .Spinner }} {{ .Status | bold }} █▓▒░  {{ .Model | fg "white" }}  {{ .Effort }}{{ .ShiftRight }}󰗂 {{ .Cache }}  {{ .Elapsed }}  {{ .Conversation | bold | fg "white" }}  {{ .ContextGauge }} '
         # Effect drawn over the whole bar while a turn runs. One of
-        # blaze, burn, embers, fade, flames, grayFade, incendium,
-        # inferno, noise, pulse, risingChars, shine, trippy. Leave it
-        # out to keep the bar still.
-        shader: pulse
+        # blaze, burn, inferno, noise, pulse, shine, trippy. Off by
+        # default: every frame of the effect redraws the whole chat.
+        #shader: pulse
         # Base attributes of the bar, matching the editor's status bar.
         # bg fills the whole row; fg is the foreground inherited by any
         # layout component that does not name one of its own.
@@ -166,6 +165,15 @@ extensions:
               flags: bold
             animation:
               ch: "⣉⠶⠶⠒⠒⠒⠶⠶⣉"
+              attr:
+                fg: "default"
+          ASKING:
+            attr:
+              fg: "black"
+              bg: "yellow"
+              flags: bold
+            animation:
+              ch: "⠁⠂⠄⡀⢀⠠⠐⠈"
               attr:
                 fg: "default"
           ERROR:

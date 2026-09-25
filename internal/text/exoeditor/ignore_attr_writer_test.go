@@ -42,6 +42,7 @@ func (w *setCellRecorder) SetCell(pos term.Coordinates, c term.Cell) {
 
 func (w *setCellRecorder) UnionAttributes(term.Coordinates, term.Attributes) {}
 func (w *setCellRecorder) Context() context.Context                          { return context.Background() }
+func (w *setCellRecorder) DrawImage(term.Image) bool                         { return false }
 
 func TestIgnoreAttrWriterSetCellPreservesBgAndReverse(t *testing.T) {
 	red := term.NewColor(255, 0, 0)

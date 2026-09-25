@@ -307,6 +307,8 @@ func (r *tabExiterRecorder) OnTabExit(uri workspaceapi.URI) bool {
 	return true
 }
 
+func (r *tabExiterRecorder) SetTabActivity(workspaceapi.URI, bool) error { return nil }
+
 func (r *tabExiterRecorder) ExitedURIs() []workspaceapi.URI {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -697,10 +699,12 @@ func (n *recordingNotifications) Messages() []string {
 }
 
 func newHandleTestHandler(master workspaceapi.File) *Handler {
+	ph := &parserHandler{keyboard: new(keyboardState)}
 	handler := &Handler{
 		comp: &Component{
 			pty:           workspaceapi.Pty{Master: master},
-			parserHandler: &parserHandler{},
+			parserHandler: ph,
+			keyboard:      ph.keyboard,
 		},
 		ctx:           context.Background(),
 		notifications: nopNotifications{},

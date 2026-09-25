@@ -1309,6 +1309,112 @@ func TestRemoveTabDoesNotRetainPointersInTail(t *testing.T) {
 	}
 }
 
+// newActivityComponent returns a Component that shades active tabs,
+// with tabs a, b and c open.
+func newActivityComponent(t *testing.T, onActivity func()) (*Component, []*Tab) {
+	t.Helper()
+	cfg := DefaultConfig()
+	cfg.ActiveTabShader = "pulse"
+	cfg.OnTabActivity = onActivity
+	b := NewComponent(cfg)
+	b.SetInterrupter(term.NopInterrupter())
+	b.Resize(40, 10)
+	t.Cleanup(func() { _ = b.Close() })
+	var tabs []*Tab
+	for _, name := range []string{"a", "b", "c"} {
+		uri, err := workspaceapi.ParseURI("file:///" + name)
+		require.NoError(t, err)
+		h := newTestHandler()
+		tabs = append(tabs, b.NewTab(uri, 'o', name, h, h))
+	}
+	return b, tabs
+}
+
+// Activity is a per-tab level: the shader runs while any tab is active,
+// setting the current state again changes nothing and the listener only
+// hears about actual changes.
+func TestSetTabActivity(t *testing.T) {
+	var calls int
+	b, tabs := newActivityComponent(t, func() { calls++ })
+
+	unknown, err := workspaceapi.ParseURI("file:///unknown")
+	require.NoError(t, err)
+	assert.False(t, b.SetTabActivity(unknown, true))
+	assert.False(t, b.HasActiveTabs())
+	assert.False(t, b.shadedTabs.Running())
+	assert.Zero(t, calls)
+
+	require.True(t, b.SetTabActivity(tabs[1].uri, true))
+	assert.True(t, b.HasActiveTabs())
+	assert.True(t, b.shadedTabs.Running())
+	assert.Equal(t, []int{1}, b.activeTabIndices())
+	assert.Equal(t, 1, calls)
+
+	require.True(t, b.SetTabActivity(tabs[1].uri, true))
+	assert.Equal(t, 1, calls, "setting the current state again is a no-op")
+
+	require.True(t, b.SetTabActivity(tabs[2].uri, true))
+	assert.Equal(t, []int{1, 2}, b.activeTabIndices())
+
+	require.True(t, b.SetTabActivity(tabs[1].uri, false))
+	assert.True(t, b.shadedTabs.Running(), "another tab is still active")
+	require.True(t, b.SetTabActivity(tabs[2].uri, false))
+	assert.False(t, b.HasActiveTabs())
+	assert.False(t, b.shadedTabs.Running())
+	assert.Equal(t, 4, calls)
+}
+
+// Activity follows the tab rather than its position in the bar.
+func TestTabActivityFollowsMovedTab(t *testing.T) {
+	b, tabs := newActivityComponent(t, nil)
+	require.True(t, b.SetTabActivity(tabs[0].uri, true))
+	require.True(t, b.SetContentToTab(b.Focus(), 0))
+	require.NoError(t, b.MoveTabRight(b.Focus()))
+	assertTabNames(t, b, []string{"b", "a", "c"})
+	assert.Equal(t, []int{1}, b.activeTabIndices())
+}
+
+// A tab's activity dies with it, so a crashed extension cannot leave a
+// stale mark behind.
+func TestRemoveTabClearsActivity(t *testing.T) {
+	var calls int
+	b, tabs := newActivityComponent(t, func() { calls++ })
+	require.True(t, b.SetTabActivity(tabs[0].uri, true))
+	require.True(t, b.RemoveTab(tabs[0]))
+	assert.False(t, b.HasActiveTabs())
+	assert.False(t, b.shadedTabs.Running())
+	assert.Equal(t, 2, calls)
+
+	// Removing an idle tab does not report a change.
+	require.True(t, b.RemoveTab(tabs[1]))
+	assert.Equal(t, 2, calls)
+
+	// A tab reopened under the same uri starts idle.
+	h := newTestHandler()
+	b.NewTab(tabs[0].uri, 'o', "a", h, h)
+	assert.False(t, b.HasActiveTabs())
+}
+
+// Activity marked before the host installs an interrupter is shown as
+// soon as it does, and closing the browser stops the effect.
+func TestSetInterrupterStartsPendingActivity(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.ActiveTabShader = "pulse"
+	b := NewComponent(cfg)
+	uri, err := workspaceapi.ParseURI("file:///a")
+	require.NoError(t, err)
+	h := newTestHandler()
+	b.NewTab(uri, 'o', "a", h, h)
+
+	require.True(t, b.SetTabActivity(uri, true))
+	assert.False(t, b.shadedTabs.Running())
+	b.SetInterrupter(term.NopInterrupter())
+	assert.True(t, b.shadedTabs.Running())
+
+	require.NoError(t, b.Close())
+	assert.False(t, b.shadedTabs.Running())
+}
+
 func TestTabAttrs(t *testing.T) {
 	b := NewComponent(DefaultConfig())
 

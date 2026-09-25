@@ -25,6 +25,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -54,6 +55,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/internal/browser"
+	"unstable.build/rune/internal/browser/browsertest"
 	tcomponent "unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/component/notifications"
 	"unstable.build/rune/internal/component/shader"
@@ -892,6 +894,108 @@ func TestCrossWorkspaceNotifications(t *testing.T) {
 		h, 30, 9, cases)
 
 	require.NoError(t, m.Close())
+}
+
+// newActivityTestManager opens two workspaces and returns the manager
+// with the slot of the one that is not focused.
+func newActivityTestManager(t *testing.T, cfg ideConfig) (*testWorkspaceManagerHandler, int) {
+	t.Helper()
+	dir := t.TempDir()
+	uri1, err := workspaceapi.ParseURI("memory://" + dir)
+	require.NoError(t, err)
+	uri2, err := workspaceapi.ParseURI("memory:///b")
+	require.NoError(t, err)
+
+	m := newTestWorkspaceManagerHandlerWithDir(t, cfg, dir, nopShutdownShaderConfig())
+	require.NoError(t, m.addOrCreateWorkspace(uri1))
+	m.quiesce()
+	require.NoError(t, m.addOrCreateWorkspace(uri2))
+	m.quiesce()
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.Resize(30, 9)
+	for slot, w := range m.workspaces {
+		if w != nil && slot != m.focus {
+			return m, slot
+		}
+	}
+	t.Fatal("no unfocused workspace")
+	return nil, 0
+}
+
+// The workspace bar runs its active-tab effect while any workspace has a
+// tab an extension marked active, whether or not it is focused, and
+// stops once the last such tab is gone.
+func TestWorkspaceBarShadesActiveWorkspaces(t *testing.T) {
+	m, slot := newActivityTestManager(t, defaultConfigWithWrap(false))
+	chat, err := workspaceapi.ParseURI("rune-agent://model/rolling-fox")
+	require.NoError(t, err)
+
+	m.mu.Lock()
+	require.NotNil(t, m.shadedBar)
+	assert.False(t, m.shadedBar.Running())
+
+	comp := &m.workspaces[slot].ex.comp
+	_, err = comp.Tab(chat, 'x', "rolling-fox", browsertest.NewTestHandler())
+	require.NoError(t, err)
+	require.NoError(t, comp.SetTabActivity(chat, true))
+	assert.True(t, m.shadedBar.Running(),
+		"an unfocused workspace's activity shows on the bar")
+	barIdx := slices.Index(m.barIdxToSlot, slot)
+	require.GreaterOrEqual(t, barIdx, 0)
+	assert.Equal(t, []int{barIdx}, m.activeWorkspaceBarIndices())
+
+	require.True(t, comp.OnTabExit(chat))
+	assert.False(t, comp.HasActiveTabs())
+	assert.False(t, m.shadedBar.Running(),
+		"closing the active tab stops the effect")
+	assert.Empty(t, m.activeWorkspaceBarIndices())
+	m.mu.Unlock()
+
+	require.NoError(t, m.Close())
+}
+
+// Content and workspace tabs are animated separately: the workspace bar
+// follows animations.active_workspace_tab alone, and still sees the
+// activity of content tabs whose own animation is disabled.
+func TestWorkspaceBarActiveTabAnimationConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		animations map[string]any
+		running    bool
+	}{{
+		name: "workspace disabled",
+		animations: map[string]any{
+			"active_workspace_tab": map[string]any{"enabled": false},
+		},
+		running: false,
+	}, {
+		name: "content disabled",
+		animations: map[string]any{
+			"active_content_tab": false,
+		},
+		running: true,
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := defaultConfigWithWrap(false)
+			cfg.cfg["animations"] = tc.animations
+			m, slot := newActivityTestManager(t, cfg)
+			chat, err := workspaceapi.ParseURI("rune-agent://model/rolling-fox")
+			require.NoError(t, err)
+
+			m.mu.Lock()
+			comp := &m.workspaces[slot].ex.comp
+			_, err = comp.Tab(chat, 'x', "rolling-fox", browsertest.NewTestHandler())
+			require.NoError(t, err)
+			require.NoError(t, comp.SetTabActivity(chat, true))
+			assert.True(t, comp.HasActiveTabs())
+			assert.Equal(t, tc.running, m.shadedBar.Running())
+			m.mu.Unlock()
+
+			require.NoError(t, m.Close())
+		})
+	}
 }
 
 func TestCustomLocations(t *testing.T) {
@@ -3214,7 +3318,7 @@ func (s *terminalSessionTestScheme) NewPty(context.Context) (workspaceapi.Pty, e
 	}, nil
 }
 
-func (s *terminalSessionTestScheme) SetPtySize(workspaceapi.Pty, int, int) error {
+func (s *terminalSessionTestScheme) SetPtySize(workspaceapi.Pty, workspaceapi.PtySize) error {
 	return nil
 }
 
@@ -4606,6 +4710,7 @@ func TestComponentOnTabsClickIntegration(t *testing.T) {
 	_, handled := m.Handle(term.Event{Type: term.EventMouse, Key: term.MouseLeft})
 	assert.True(t, handled)
 	assert.Equal(t, 1, called)
+	m.Handle(term.Event{Type: term.EventMouse, Key: term.MouseRelease})
 
 	// the bottom row is a window resize grip: handled, but no tab click
 	_, handled = m.Handle(term.Event{Type: term.EventMouse, Key: term.MouseLeft, MouseY: 7})
@@ -5148,7 +5253,13 @@ func newTestWorkspaceManagerHandlerWithManagerMu(
 	}
 	err = m.workspaceManagerHandler.init(uri, homeURI, manager,
 		notiConfig, cfg, storage, dir, publish, runner, pkgtrust.NewStore(dir, nil), mu, extensions,
-		func() (ideConfig, error) { return cfg, nil },
+		func() (ideConfig, error) {
+			// Like a real reload, every workspace build records its
+			// soft errors into its own map.
+			ret := cfg
+			ret.errors = map[string]error{}
+			return ret, nil
+		},
 		".sixrc", 0, 0, 0, '1', 0, 0, true, onTabsClick, releaseManager, shRunner, 0, nil, false,
 		false, newCommandObserverRegistry())
 

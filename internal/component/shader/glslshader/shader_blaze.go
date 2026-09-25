@@ -51,6 +51,11 @@ func Blaze(params BlazeParams, fps float) shader.Shader {
 type BlazeParams struct {
 	Speed       vec2D
 	SwapRedBlue bool
+	// PaintForeground colours the characters rather than the cell
+	// background, so the fire is only visible through existing text.
+	// Blank cells and glyphs that render as background, such as fade
+	// blocks, are left untouched.
+	PaintForeground bool
 }
 
 // DefaultBlazeParams return a set of sane BlazeParams.
@@ -85,6 +90,10 @@ func (s *blaze) runCell(
 	resolutionX, resolutionY int,
 	inChar rune, inFg, inBg term.Color,
 ) (char rune, fg, bg term.Color) {
+	if s.PaintForeground && !paintsText(inChar) {
+		return inChar, inFg, inBg
+	}
+
 	fragCoord := vec2(float(fragCoordX), float(fragCoordY))
 	iTime := time
 	iResolution := vec2(float(resolutionX), float(resolutionY))
@@ -131,8 +140,12 @@ func (s *blaze) runCell(
 
 	color = color.multSc(255.0)
 
-	fg = inFg
-	bg = term.NewRGBColor(int32(color.x), int32(color.y), int32(color.z))
+	fire := term.NewRGBColor(int32(color.x), int32(color.y), int32(color.z))
+	if s.PaintForeground {
+		fg, bg = fire, inBg
+	} else {
+		fg, bg = inFg, fire
+	}
 	char = inChar
 
 	return

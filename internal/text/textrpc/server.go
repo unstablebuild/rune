@@ -166,7 +166,7 @@ func (s *Server) SubscribeCommand(srv textrpc.Editor_SubscribeCommandServer) err
 	streamCtx, cancelStream := context.WithCancel(s.ctx)
 	defer cancelStream()
 	clientStream := newCommandClientStream(
-		streamCtx, srv, req.GetSupportsCompleteCancel())
+		streamCtx, srv, req.GetSupportsCompleteCancel(), req.GetSupportsHandleCancel())
 	man := makeStdMan(req.GetCommand())
 
 	s.editor.Lock()
@@ -244,7 +244,7 @@ func (s *Server) SubscribeREPLCommand(srv textrpc.Editor_SubscribeREPLCommandSer
 	}
 
 	clientStream := newREPLCommandClientStream(
-		s.ctx, srv, req.GetSupportsCompleteCancel())
+		s.ctx, srv, req.GetSupportsCompleteCancel(), req.GetSupportsHandleCancel())
 	man := makeStdMan(req.GetCommand())
 
 	s.editor.Lock()

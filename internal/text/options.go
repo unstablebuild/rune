@@ -713,6 +713,26 @@ func WithDirtyTabAttr(attr term.Attributes) Option {
 	}
 }
 
+// WithActiveTabShader defines the continuous effect run over the labels
+// of tabs marked active via SetTabActivity, and its cadence. An empty
+// name disables it; zero fps or loop keep the catalog defaults.
+func WithActiveTabShader(name string, fps int, loop time.Duration) Option {
+	return func(cfg *Config) {
+		cfg.ActiveTabShader = name
+		cfg.ActiveTabShaderFPS = fps
+		cfg.ActiveTabShaderLoop = loop
+	}
+}
+
+// WithOnTabActivity registers fn to be called on the host event loop
+// whenever a tab's activity changes, including when an active tab is
+// removed.
+func WithOnTabActivity(fn func()) Option {
+	return func(cfg *Config) {
+		cfg.OnTabActivity = fn
+	}
+}
+
 // WithCommandOverlayConfig defines the command overlay interface properties.
 func WithCommandOverlayConfig(c CommandOverlayConfig) Option {
 	return func(cfg *Config) {
@@ -756,6 +776,7 @@ func WithFileExplorer(explorer FileExplorerConfig) Option {
 }
 
 // WithEventPublisher sets the Component's event publisher
+// The given function must be safe for concurrent use.
 func WithEventPublisher(f func(term.Event) bool) Option {
 	return func(cfg *Config) {
 		cfg.EventPublisher = f

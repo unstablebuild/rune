@@ -33,7 +33,7 @@ import (
 
 func TestCommandClientStreamCompleteCloseTombstonesCompleter(t *testing.T) {
 	stream := &recordingServerStream{}
-	c := newCommandClientStream(context.Background(), stream, true)
+	c := newCommandClientStream(context.Background(), stream, true, true)
 
 	it, _, err := c.Complete(context.Background(), textapi.Command{Name: "cmd"})
 	if err != nil {
@@ -89,7 +89,7 @@ func TestCommandClientStreamCompleteCancelLifecycle(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			stream := newWaitableServerStream()
 			c := newCommandClientStream(
-				context.Background(), stream, tc.supportsCancel)
+				context.Background(), stream, tc.supportsCancel, tc.supportsCancel)
 			var logs syncBuffer
 			c.log = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{
 				Level: slog.LevelWarn,
@@ -211,7 +211,7 @@ func TestCommandClientStreamHandleCommandWaiter(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			stream := newWaitableServerStream()
-			c := newCommandClientStream(context.Background(), stream, true)
+			c := newCommandClientStream(context.Background(), stream, true, true)
 			go func() { _ = c.receiveMessages() }()
 
 			w := &Waiter{Ch: make(chan error, 1)}
@@ -258,7 +258,7 @@ func TestCommandClientStreamHandleCommandWaiter(t *testing.T) {
 // command dispatched with a Waiter must reach the waiter instead.
 func TestCommandClientStreamHandleResponseRouting(t *testing.T) {
 	stream := newWaitableServerStream()
-	c := newCommandClientStream(context.Background(), stream, true)
+	c := newCommandClientStream(context.Background(), stream, true, true)
 	go func() { _ = c.receiveMessages() }()
 
 	stream.replyHandle("loose error")
@@ -301,7 +301,7 @@ func TestCommandClientStreamHandleResponseRouting(t *testing.T) {
 // belonging to a different command sent between it and its own reply.
 func TestCommandClientStreamHandleResponseFIFO(t *testing.T) {
 	stream := newWaitableServerStream()
-	c := newCommandClientStream(context.Background(), stream, true)
+	c := newCommandClientStream(context.Background(), stream, true, true)
 	go func() { _ = c.receiveMessages() }()
 
 	wA := &Waiter{Ch: make(chan error, 1)}
@@ -352,7 +352,7 @@ func TestCommandClientStreamHandleResponseFIFO(t *testing.T) {
 func TestCommandClientStreamHandleResponseDropOnTeardown(t *testing.T) {
 	stream := newWaitableServerStream()
 	streamCtx, cancelStream := context.WithCancel(context.Background())
-	c := newCommandClientStream(streamCtx, stream, true)
+	c := newCommandClientStream(streamCtx, stream, true, true)
 
 	recvDone := make(chan error, 1)
 	go func() { recvDone <- c.receiveMessages() }()

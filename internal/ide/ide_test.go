@@ -65,6 +65,7 @@ import (
 	"unstable.build/rune/internal/handler/handlertest"
 	"unstable.build/rune/internal/ide/ideauthorizer"
 	"unstable.build/rune/internal/ide/idepkg/idepkgtest"
+	"unstable.build/rune/internal/ide/idetutorial"
 	"unstable.build/rune/internal/ide/pkgshell"
 	"unstable.build/rune/internal/ide/pkgtrust"
 	"unstable.build/rune/internal/ide/syntax/grammarfixture"
@@ -436,6 +437,33 @@ func TestHomeWorkspaceDoesNotStartExtensions(t *testing.T) {
 
 	assert.Empty(t, recorder.runCalls(),
 		"no extension may be started on the home workspace")
+}
+
+// TestTutorialsSeeTheConfiguredConfigPath asserts a tutorial's
+// config_path() reports the file this session actually loaded. The
+// data directory is a launch flag, so lesson copy that names the
+// config file has to follow it.
+func TestTutorialsSeeTheConfiguredConfigPath(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "rune.yaml")
+	require.NoError(t, os.WriteFile(configPath,
+		[]byte("workspace:\n  home: "+dir+"\n"), 0o644))
+
+	i, err := New("", configPath, dir, pkgtrust.NewStore(dir, nil),
+		newTestStorage(t, dir),
+		WithPublishEvent(nopPublishEvent),
+		WithLocker(new(sync.Mutex)),
+		WithScheduleNextTick(func(fn func()) bool {
+			fn()
+			return true
+		}),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = i.Close() })
+
+	assert.Equal(t, configPath, newTutorialsConfig(i).configPath)
 }
 
 func TestSignedPackageTrustIntegration(t *testing.T) {
@@ -2706,12 +2734,12 @@ func TestIDEExoWellFormedConfigDoesNotFallBack(t *testing.T) {
 	assert.NoError(t, i.closeResources())
 }
 
-// minimalStarTutorial is a self-contained Starlark tutorial that
-// renders a single floating window. It is enough for the runner to
-// install an overlay once dispatched.
+// minimalStarTutorial is a self-contained Starlark tutorial with a
+// single step. It is enough for the runner to open the tile once
+// dispatched.
 const minimalStarTutorial = `
 def run():
-    floating_window(title="welcome", text="hello")
+    wait_command(command="nonesuch", title="welcome", text="hello")
 tutorial(entry=run)
 `
 
@@ -2810,7 +2838,7 @@ func TestIDEStartingTutorialDispatchesOnReady(t *testing.T) {
 					fn()
 					mu.Unlock()
 				}
-				assert.Nil(t, i.tutorial.overlay,
+				assert.False(t, i.tutorial.running(),
 					"no tutorial overlay should be active")
 				return
 			}
@@ -2831,7 +2859,7 @@ func TestIDEStartingTutorialDispatchesOnReady(t *testing.T) {
 			scheduled[0]()
 			mu.Unlock()
 
-			assert.NotNil(t, i.tutorial.overlay,
+			assert.True(t, i.tutorial.running(),
 				"tutorial overlay should be active after dispatch")
 			assert.Equal(t, tc.wantActive, i.tutorial.activeName)
 		})
@@ -2895,6 +2923,145 @@ func TestIDEOnboardingActiveGate(t *testing.T) {
 	}
 }
 
+// TestIDESetRightInsetReachesTheHomeWorkspace pins that the column
+// reserved for a bar floating over the right edge is relayed to the
+// home workspace too, which is where a session starts.
+func TestIDESetRightInsetReachesTheHomeWorkspace(t *testing.T) {
+	configFile, _ := makeTestFiles(t)
+	dataDir := t.TempDir()
+	mu := new(sync.Mutex)
+	i, err := New("", configFile.Name(), dataDir,
+		pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir),
+		WithPublishEvent(nopPublishEvent),
+		WithExtensionsRunner(FuncExtensionsRunner(testRunnerFn)),
+		WithLocker(mu),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = i.Close() })
+	root := i.Ready()
+	mu.Lock()
+	defer mu.Unlock()
+	root.Resize(160, 40)
+	home := i.workspaceHandler.focusEx()
+	require.True(t, home.home)
+	wmWidth := func() int {
+		width, _ := home.comp.Browser().WindowManagerSize()
+		return width
+	}
+	require.Equal(t, 160, wmWidth())
+
+	i.SetRightInset(3)
+	assert.Equal(t, 157, wmWidth(), "the home workspace reserves the column")
+	assert.Equal(t, 3, i.RightInset())
+
+	i.SetRightInset(0)
+	assert.Equal(t, 160, wmWidth(), "and gets it back")
+}
+
+// TestIDETutorialTileSitsOutsideTheWorkspaces drives a lesson through
+// the whole IDE: the tile is not a window of any workspace, so the
+// window commands the workspace dispatches leave it alone, and the
+// reserved right column moves to the tile while a lesson runs.
+func TestIDETutorialTileSitsOutsideTheWorkspaces(t *testing.T) {
+	configFile, _ := makeTestFiles(t)
+	dataDir := t.TempDir()
+	mu := new(sync.Mutex)
+	i, err := New("", configFile.Name(), dataDir,
+		pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir),
+		WithPublishEvent(nopPublishEvent),
+		WithExtensionsRunner(FuncExtensionsRunner(testRunnerFn)),
+		WithLocker(mu),
+		WithScheduleNextTick(func(fn func()) bool {
+			fn()
+			return true
+		}),
+		WithStarlarkTutorial("basics", `
+def run():
+    wait_command(command="windowcloseall", text="clear the layout")
+    wait_command(command="edit", text="now edit")
+tutorial(entry=run)
+`),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = i.Close() })
+	root := i.Ready()
+	mu.Lock()
+	defer mu.Unlock()
+	root.Resize(160, 40)
+	i.SetRightInset(3)
+	e := i.workspaceHandler.focusEx()
+	// The reserved column comes out of the workspace's window manager.
+	wmWidth := func() int {
+		width, _ := e.comp.Browser().WindowManagerSize()
+		return width
+	}
+	require.Equal(t, 160, e.width)
+	require.Equal(t, 157, wmWidth())
+
+	require.NoError(t, i.DispatchCommand("windownew"))
+	require.Equal(t, 2, e.comp.Browser().Tiles())
+	require.NoError(t, i.DispatchCommand("tutorial", "start", "basics"))
+	require.True(t, i.tutorial.running())
+	assert.Equal(t, 2, e.comp.Browser().Tiles(), "the tile is not a workspace window")
+	tile := idetutorial.TileWidth(160) + 2
+	assert.Equal(t, 160-tile-3, e.width,
+		"the workspace gives up the tile and the reserved column")
+	assert.Equal(t, 160-tile-3, wmWidth(), "the tile reserves the column now")
+	assert.Equal(t, 3, i.RightInset())
+
+	require.NoError(t, i.DispatchCommand("windowcloseall"))
+	assert.True(t, i.tutorial.running(), "clearing the layout is the step, not the end")
+	assert.Equal(t, 1, e.comp.Browser().Tiles())
+
+	require.NoError(t, i.DispatchCommand("tutorial", "stop"))
+	assert.Equal(t, 160, e.width)
+	assert.Equal(t, 157, wmWidth(), "the workspaces get the column back")
+}
+
+// TestIDETutorialTileLinesUpWithTheWorkspaceWindows asserts the pane
+// covers exactly the rows the workspace's windows cover, tab bar and
+// workspaces bar excluded, so it reads as one of them.
+func TestIDETutorialTileLinesUpWithTheWorkspaceWindows(t *testing.T) {
+	configFile, _ := makeTestFiles(t)
+	dataDir := t.TempDir()
+	mu := new(sync.Mutex)
+	i, err := New("", configFile.Name(), dataDir,
+		pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir),
+		WithPublishEvent(nopPublishEvent),
+		WithExtensionsRunner(FuncExtensionsRunner(testRunnerFn)),
+		WithLocker(mu),
+		WithScheduleNextTick(func(fn func()) bool {
+			fn()
+			return true
+		}),
+		WithStarlarkTutorial("basics", minimalStarTutorial),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = i.Close() })
+	root := i.Ready()
+	mu.Lock()
+	defer mu.Unlock()
+	root.Resize(160, 40)
+	require.NoError(t, i.DispatchCommand("tutorial", "start", "basics"))
+
+	// The home workspace draws the workspaces bar along the bottom,
+	// so the pane is padded at both ends.
+	top, rows := i.workspaceHandler.windowRows()
+	require.Positive(t, top)
+	require.Less(t, top+rows, 40)
+
+	w := term.NewStringWriter(160, 40)
+	root.Draw(w)
+	require.NoError(t, w.Flush())
+	screen := strings.Split(w.String(), "\n")
+	x := 160 - idetutorial.TileWidth(160) - 2
+	cell := func(y int) string { return string([]rune(screen[y])[x]) }
+	assert.Equal(t, "┌", cell(top), "the pane starts where the windows start")
+	assert.Equal(t, "└", cell(top+rows-1), "and ends where they end")
+	assert.Equal(t, " ", cell(top-1), "the tab bar's rows are left clear")
+	assert.Equal(t, " ", cell(top+rows), "so are the workspaces bar's")
+}
+
 func TestIDEPlaylistPromptsForNextTutorial(t *testing.T) {
 	newIDE := func(t *testing.T, registerNavigation bool) (*IDE, *sync.Mutex) {
 		t.Helper()
@@ -2944,6 +3111,10 @@ tutorial(entry=run)
 		require.NoError(t, i.tutorial.HandleCommand(context.Background(),
 			textapi.Command{Name: "tutorial", Args: []string{"start", "basics"}}))
 		_, _ = i.tutorial.Handle(term.Event{Type: term.EventInterrupt})
+		// A lesson that ran to its end stays on the tile until the
+		// user closes it, and only counts as done then.
+		require.NoError(t, i.tutorial.HandleCommand(context.Background(),
+			textapi.Command{Name: "tutorial", Args: []string{"stop"}}))
 	}
 
 	prompt := func(t *testing.T, i *IDE, mu sync.Locker) *sdkhandler.Prompt {
@@ -2997,7 +3168,7 @@ tutorial(entry=run)
 		mu.Lock()
 		_, handled := p.Handle(term.Event{Type: term.EventKey, Ch: 'n'})
 		assert.True(t, handled)
-		assert.Nil(t, i.tutorial.overlay)
+		assert.False(t, i.tutorial.running())
 		assert.Empty(t, i.tutorial.activeName)
 		mu.Unlock()
 	})

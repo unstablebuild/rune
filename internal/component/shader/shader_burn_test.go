@@ -22,6 +22,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"github.com/unstablebuild/rune-go-sdk/term/graphemecluster"
 	"unstable.build/rune/internal/component/shader"
 	"unstable.build/rune/internal/component/shader/shadertest"
 )
@@ -29,6 +30,65 @@ import (
 func TestBurn_Suite(t *testing.T) {
 	sh := shader.Burn(shader.DefaultBurnParams(), term.Attributes{})
 	shadertest.TestShader(t, sh)
+}
+
+// With PaintForeground the wave recolours text in place: no glyph is
+// swapped for a fire block, no particle rises, and blanks and glyphs
+// that render as background are never touched.
+func TestBurn_PaintForegroundOnlyRecolorsText(t *testing.T) {
+	params := shader.DefaultBurnParams()
+	params.PaintForeground = true
+
+	t.Run("suite", func(t *testing.T) {
+		shadertest.TestShader(t, shader.Burn(params, term.Attributes{}))
+	})
+
+	fg := term.NewRGBColor(10, 20, 30)
+	bg := term.NewRGBColor(40, 50, 60)
+	glyphs := []rune{'R', 'E', ' ', '█', '▓', '▒', '░', 'x', 0, 'y'}
+	in := [][]term.Cell{make([]term.Cell, len(glyphs))}
+	for x, ch := range glyphs {
+		width := uint8(1)
+		if ch == 0 {
+			width = 0
+		}
+		in[0][x] = term.Cell{Ch: ch, Width: width, Fg: fg, Bg: bg}
+	}
+
+	sh := shader.Burn(params, term.Attributes{})
+	const total = 30
+	var recolored bool
+	for frame := range total + 1 {
+		cells := cloneCells(in)
+		sh.Shade(frame, total, cells)
+		for x, cell := range cells[0] {
+			want := in[0][x]
+			isText := want.Ch != 0 && want.Ch != ' ' &&
+				!graphemecluster.IsBackground(want.Ch)
+			if !isText {
+				assert.Equal(t, want, cell, "frame %d col %d", frame, x)
+				continue
+			}
+			assert.Equal(t, want.Ch, cell.Ch, "frame %d col %d", frame, x)
+			assert.Equal(t, want.Bg, cell.Bg, "frame %d col %d", frame, x)
+			recolored = recolored || cell.Fg != want.Fg
+		}
+	}
+	assert.True(t, recolored, "the wave must recolour the text")
+
+	// The bar redraws every frame, so a snapshot taken on the first draw
+	// would freeze the spinner and the elapsed time wherever the wave has
+	// not reached yet.
+	t.Run("shows live content", func(t *testing.T) {
+		sh := shader.Burn(params, term.Attributes{})
+		sh.Shade(0, total, cloneCells(in))
+		for frame := range total + 1 {
+			live := cloneCells(in)
+			live[0][0].Ch = 'Z'
+			sh.Shade(frame, total, live)
+			assert.Equal(t, 'Z', live[0][0].Ch, "frame %d", frame)
+		}
+	})
 }
 
 func TestBurn_FramesAfterTotalRestoreInput(t *testing.T) {

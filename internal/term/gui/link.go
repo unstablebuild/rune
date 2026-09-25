@@ -264,7 +264,7 @@ func schemeLead(ch rune) bool {
 func appendCluster(dst []byte, c *term.Cell) []byte {
 	// Unsigned, so a negative rune takes the slow path that replaces it
 	// rather than being truncated to a byte.
-	if uint32(c.Ch) < utf8.RuneSelf && c.Combining == nil {
+	if uint32(c.Ch) < utf8.RuneSelf && c.Extra == nil {
 		return append(dst, byte(c.Ch))
 	}
 	return appendWideCluster(dst, c)
@@ -274,10 +274,7 @@ func appendCluster(dst []byte, c *term.Cell) []byte {
 // a URL is almost entirely made of inlines at the call site.
 func appendWideCluster(dst []byte, c *term.Cell) []byte {
 	dst = utf8.AppendRune(dst, c.Ch)
-	if c.Combining == nil {
-		return dst
-	}
-	for _, r := range *c.Combining {
+	for _, r := range c.CombiningRunes() {
 		dst = utf8.AppendRune(dst, r)
 	}
 	return dst

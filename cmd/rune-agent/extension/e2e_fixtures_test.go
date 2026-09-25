@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -46,12 +47,22 @@ import (
 )
 
 // recordingWindowManager is a stub browserapi.WindowManager that records the
-// arguments passed to Tab so tests can verify the visible label.
+// arguments passed to Tab so tests can verify the visible label, and every
+// SetTabActivity call so tests can follow a chat tab's activity.
 type recordingWindowManager struct {
 	gotURI     workspaceapi.URI
 	gotIcon    rune
 	gotName    string
 	gotHandler browserapi.Handler
+
+	activityMu  sync.Mutex
+	activity    []tabActivity
+	activityErr error
+}
+
+type tabActivity struct {
+	uri    workspaceapi.URI
+	active bool
 }
 
 func (m *recordingWindowManager) Focus() (browserapi.Window, error) { return nil, nil }
@@ -79,6 +90,19 @@ func (m *recordingWindowManager) SetWindowContent(_ browserapi.Window, _ browser
 	return nil
 }
 func (m *recordingWindowManager) CloseWindow(_ browserapi.Window) error { return nil }
+
+func (m *recordingWindowManager) SetTabActivity(uri workspaceapi.URI, active bool) error {
+	m.activityMu.Lock()
+	defer m.activityMu.Unlock()
+	m.activity = append(m.activity, tabActivity{uri: uri, active: active})
+	return m.activityErr
+}
+
+func (m *recordingWindowManager) tabActivity() []tabActivity {
+	m.activityMu.Lock()
+	defer m.activityMu.Unlock()
+	return slices.Clone(m.activity)
+}
 
 // stubNotifications is a no-op browserapi.Notifications. wrapDialogueHandler
 // calls Notify(LevelInfo, "canceled completion request") when Ctrl-C cancels
@@ -293,7 +317,10 @@ func newPromptHandler(t *testing.T, opts promptHandlerOpts) tui.Handler {
 	mu := new(sync.Mutex)
 	dhandler, tx, rx := dialoguetui.Handler(ctx, mu, comp, interrupter)
 
-	prompter := &tuiPrompter{tx: tx, noti: stubNotifications{}}
+	owner := &aiEditorHandler{n: stubNotifications{}, p: interrupter}
+	syncComp := syncComponent{mu: mu, comp: comp, h: owner}
+
+	prompter := &tuiPrompter{tx: tx, noti: stubNotifications{}, status: syncComp}
 	askUser := agentools.NewAskUser(prompter)
 	registry := agent.NewRegistry(askUser)
 	skillReg := skills.NewRegistry(nopFileSystem{}, dirURI(""), nil, nil)
@@ -304,8 +331,6 @@ func newPromptHandler(t *testing.T, opts promptHandlerOpts) tui.Handler {
 		Prompter:     prompter,
 	})
 
-	owner := &aiEditorHandler{n: stubNotifications{}, p: interrupter}
-	syncComp := syncComponent{mu: mu, comp: comp, h: owner}
 	wrapped, msgRx := owner.wrapDialogueHandler(ctx, syncComp, dhandler, rx, "e2e-fixture")
 
 	var wg sync.WaitGroup

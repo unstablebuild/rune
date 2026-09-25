@@ -100,6 +100,8 @@ func (h *searchSequenceHarness) CloseWindow(browserapi.Window) error {
 	return nil
 }
 
+func (h *searchSequenceHarness) SetTabActivity(workspaceapi.URI, bool) error { return nil }
+
 func (h *searchSequenceHarness) Resize(width, height int) {
 	h.width, h.height = width, height
 	h.owner.Handler.Resize(width, height)
@@ -277,6 +279,8 @@ func (m searchBrowserWindowManager) CloseWindow(win browserapi.Window) error {
 	return win.(browser.Window).Close()
 }
 
+func (m searchBrowserWindowManager) SetTabActivity(workspaceapi.URI, bool) error { return nil }
+
 func TestSearchFloatingRealBrowserLifecycle(t *testing.T) {
 	cfg := browser.DefaultConfig()
 	cfg.WindowManagerConfig.NoMaxSize = false
@@ -438,6 +442,8 @@ func (m *searchTestWindowManager) CloseWindow(browserapi.Window) error {
 	m.closed++
 	return m.closeErr
 }
+
+func (m *searchTestWindowManager) SetTabActivity(workspaceapi.URI, bool) error { return nil }
 
 func TestWithSearchConfigRequiresWindowManager(t *testing.T) {
 	assert.PanicsWithValue(t, "standard: SearchConfig.WindowManager must not be nil", func() {

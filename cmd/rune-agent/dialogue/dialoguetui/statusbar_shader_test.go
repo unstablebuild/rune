@@ -18,31 +18,55 @@ package dialoguetui
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"unstable.build/rune/internal/component/shader/shaderloop"
 )
 
-// Every name the config accepts must resolve, or a valid config would
-// silently leave the bar unshaded.
-func TestStatusBarShaderNamesAllResolve(t *testing.T) {
+// status_bar.shader accepts exactly the continuous catalog, plus an
+// empty name that leaves the bar unshaded.
+func TestValidStatusBarShader(t *testing.T) {
 	require.NotEmpty(t, StatusBarShaderNames())
 	for _, name := range StatusBarShaderNames() {
-		t.Run(name, func(t *testing.T) {
-			sh, ok := buildStatusBarShader(name, term.Attributes{})
-			assert.True(t, ok)
-			assert.NotNil(t, sh)
-			assert.True(t, ValidStatusBarShader(name))
-		})
+		assert.True(t, ValidStatusBarShader(name), name)
 	}
+	for _, name := range []string{"radarFrame", "incendium", "embers", "flames", "risingChars"} {
+		assert.False(t, ValidStatusBarShader(name), name)
+	}
+	assert.True(t, ValidStatusBarShader(""), "an empty name disables the effect")
 }
 
-func TestStatusBarShaderRejectsUnknownNames(t *testing.T) {
-	_, ok := buildStatusBarShader("radarFrame", term.Attributes{})
-	assert.False(t, ok, "frame shaders have nothing to paint on a bar")
-	assert.False(t, ValidStatusBarShader("radarFrame"))
-	assert.True(t, ValidStatusBarShader(""), "an empty name disables the effect")
+// The cadence knobs reach the effect rather than staying pinned to the
+// shipped constants. A zero knob keeps the shipped value, which is what
+// a config naming neither key leaves behind.
+func TestShadedBarHonoursConfiguredFPS(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		fps  int
+		want int
+	}{
+		{name: "configured", fps: 12, want: 12},
+		{name: "unset falls back", fps: 0, want: DefaultStatusBarShaderFPS},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bar := shippedStatusBar(t)
+			bar.Resize(40, 1)
+			s := &shadedBar{root: bar, name: "pulse", fps: tc.fps}
+			s.Resize(40, 1)
+
+			require.True(t, s.setRunning(true, term.NopInterrupter()))
+			require.NotNil(t, s.shader)
+			// Total is the frame budget the cadence buys over
+			// shaderloop.Duration, so it reads the fps back out.
+			assert.Equal(t,
+				int(shaderloop.Duration/(time.Second/time.Duration(tc.want))),
+				s.shader.Total())
+			require.True(t, s.setRunning(false, term.NopInterrupter()))
+		})
+	}
 }
 
 // The effect only runs while a turn does, and stopping it must put the

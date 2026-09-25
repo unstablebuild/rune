@@ -1312,6 +1312,8 @@ func (m *mockWindowManager) SetWindowContent(_ browserapi.Window, _ browserapi.H
 }
 func (m *mockWindowManager) CloseWindow(_ browserapi.Window) error { return nil }
 
+func (m *mockWindowManager) SetTabActivity(workspaceapi.URI, bool) error { return nil }
+
 type mockWindow struct{}
 
 func (m *mockWindow) WindowID() uint64 { return 0 }
@@ -1426,7 +1428,7 @@ func (s *localScheme) NewPty(_ context.Context) (workspaceapi.Pty, error) {
 	panic("not implemented")
 }
 
-func (s *localScheme) SetPtySize(_ workspaceapi.Pty, _, _ int) error {
+func (s *localScheme) SetPtySize(workspaceapi.Pty, workspaceapi.PtySize) error {
 	panic("not implemented")
 }
 

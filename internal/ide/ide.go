@@ -92,7 +92,7 @@ func (i *IDE) provisionManifest() string {
 }
 
 // EventPublisher is a function that publishes the given event back
-// into the event loop.
+// into the event loop. It should be safe for concurrent use.
 type EventPublisher func(term.Event) bool
 
 // New allocates storage for a new IDE and initializes it with config
@@ -249,13 +249,6 @@ func (i *IDE) InputMode() term.InputMode {
 // has to take it explicitly.
 func (i *IDE) SetDefaultAttributes(defAttr term.Attributes) {
 	i.root.defAttr = defAttr
-	// Propagate to every registered tutorial so per-step shaders
-	// (e.g. floating_window hint blinks) blend against the active
-	// theme. Tutorials snapshot their
-	// host services at build time, but the IDE's default
-	// attribute pair is theme-time, not configuration-time, so it
-	// has to flow through the live setter.
-	i.tutorial.setDefaultAttributes(defAttr)
 	// Propagate to every workspace ex so grayscale dimming of unfocused
 	// windows and the command prompt resolves a ColorDefault foreground
 	// against the current theme rather than keeping its native hue.
@@ -364,16 +357,17 @@ func (i *IDE) Size() (width, height int) {
 }
 
 // SetRightInset resizes the column reserved along the right edge for a
-// UI element floating over it, relaying out every live workspace. Zero
-// gives the column back to the editor. It must run on the event loop.
+// UI element floating over it, relaying out whatever sits at that
+// edge: the workspaces, or the tutorial tile while a lesson runs. Zero
+// gives the column back. It must run on the event loop.
 func (i *IDE) SetRightInset(cells int) {
-	i.workspaceHandler.setRightInset(cells)
+	i.tutorial.setRightInset(cells)
 }
 
 // RightInset returns the width of the column currently reserved along
 // the right edge.
 func (i *IDE) RightInset() int {
-	return i.workspaceHandler.rightInset
+	return i.tutorial.inset
 }
 
 // Open opens the given file, in the currently active workspace.
@@ -681,6 +675,7 @@ func (i *IDE) init(
 				op.defaultWallpaper, defaultCfg, op.bell, op.scheduleFn,
 				op.zdotDir)
 			cfg.storage = i.ideConfig.storage
+			cfg.cellPixelSize = op.cellPixelSize
 			return cfg, err
 		}, op.workspaceConfig, op.tabBarOffset,
 		op.rightInset, op.tabBarHeight, op.workspacesIcon, op.workspacesBarHeight,
@@ -742,10 +737,9 @@ func (i *IDE) init(
 	if dur, ok := i.ideConfig.animationsOpenWorkspaceDuration(); ok {
 		openShaderCfg.duration = dur
 	}
-	i.tutorial.init(i.workspaceHandler, tutorials,
-		i.tutorialsConfig.overlay,
-		i.workspaceHandler.events.globalInterrupter(), i.onTutorialCompleted,
-		i.workspaceHandler.exitRequested)
+	i.tutorial.init(i.workspaceHandler, tutorials, newTutorialTileStyle(i),
+		i.workspaceHandler.rightInset, i.workspaceHandler.setRightInset,
+		i.onTutorialCompleted)
 	commandObserver.subscribe(&i.tutorial)
 	if op.commandDispatchHook != nil {
 		commandObserver.subscribe(funcCommandObserver(op.commandDispatchHook))
@@ -800,6 +794,7 @@ func loadIDEConfig(cfgfilename string, op options) (ideConfig, error) {
 	err := loadConfig(&cfg, cfgfilename,
 		op.defaultWallpaper, newDefaultConfig(op), op.bell,
 		op.scheduleFn, op.zdotDir)
+	cfg.cellPixelSize = op.cellPixelSize
 	return cfg, err
 }
 

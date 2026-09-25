@@ -657,6 +657,8 @@ func (nopBrowser) OnTabExit(workspaceapi.URI) bool {
 	return false
 }
 
+func (nopBrowser) SetTabActivity(workspaceapi.URI, bool) error { return nil }
+
 func newTestFacility(
 	initCap int, newFn func(*Facility) (VTE, error),
 ) *Facility {
@@ -686,7 +688,7 @@ type nopTerminal struct{}
 func (nopTerminal) NewPty(context.Context) (workspaceapi.Pty, error) {
 	return workspaceapi.Pty{}, nil
 }
-func (nopTerminal) SetPtySize(workspaceapi.Pty, int, int) error { return nil }
+func (nopTerminal) SetPtySize(workspaceapi.Pty, workspaceapi.PtySize) error { return nil }
 
 var _ VTE = (*testVte)(nil)
 

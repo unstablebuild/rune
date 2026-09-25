@@ -31,7 +31,10 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/term/termrpc"
 	gomock "go.uber.org/mock/gomock"
+	codes "google.golang.org/grpc/codes"
+	status "google.golang.org/grpc/status"
 	"unstable.build/rune/internal/browser/browsertest"
+	"unstable.build/rune/internal/debug"
 )
 
 const asyncResultsSleepDuration = 300 * time.Millisecond
@@ -120,6 +123,57 @@ func TestServerOpen(t *testing.T) {
 	})
 }
 
+func TestServerSetTabActivity(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("delegates to underlying Browser under the lock", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+		mu := new(sync.Mutex)
+		s, mock := newTestServer(ctrl, mu)
+		uri, err := workspaceapi.ParseURI("rune-agent://model/rolling-fox")
+		require.NoError(t, err)
+
+		mock.EXPECT().SetTabActivity(gomock.Eq(uri), true).
+			DoAndReturn(func(workspaceapi.URI, bool) error {
+				assert.False(t, mu.TryLock(), "must be called under the UI lock")
+				return nil
+			})
+
+		res, err := s.SetTabActivity(ctx, &browserrpc.SetTabActivityRequest{
+			ResourceId: uri.String(), Active: true,
+		})
+		require.NoError(t, err)
+		assert.NotNil(t, res)
+	})
+
+	t.Run("bubbles up Browser error", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+		s, mock := newTestServer(ctrl, new(sync.Mutex))
+
+		mock.EXPECT().SetTabActivity(gomock.Any(), false).
+			Return(errors.New("unknown tab"))
+
+		_, err := s.SetTabActivity(ctx, &browserrpc.SetTabActivityRequest{
+			ResourceId: "file:///a",
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unknown tab")
+	})
+
+	t.Run("rejects a malformed resource id", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+		s, _ := newTestServer(ctrl, new(sync.Mutex))
+
+		_, err := s.SetTabActivity(ctx, &browserrpc.SetTabActivityRequest{
+			ResourceId: "%zz", Active: true,
+		})
+		assert.Equal(t, codes.InvalidArgument, status.Code(err))
+	})
+}
+
 func TestServerPublish(t *testing.T) {
 	ctx := context.Background()
 
@@ -182,6 +236,39 @@ func TestServerPublish(t *testing.T) {
 
 func TestServerSetContent(t *testing.T) {
 	/* tested via ex integration tests */
+}
+
+// Publish reaches a deliberately lock-free sink: eventRouter.newPublisher
+// (an atomic load) into gui.PublishEvent (an atomic store or a buffered
+// channel send, plus the concurrent-safe ebiten.ScheduleFrame). Taking the
+// UI lock to get there only queued extension redraws behind the render
+// loop, which holds that lock for its entire tick.
+func TestServerPublishDoesNotWaitOnUILock(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	var mu sync.Mutex
+	s, mock := newTestServer(ctrl, &mu)
+	mock.EXPECT().PublishEvent(gomock.Any()).Times(1)
+
+	// Stand in for gui.Update holding the lock across a whole tick.
+	mu.Lock()
+	defer mu.Unlock()
+
+	done := make(chan error, 1)
+	go debug.CapturePanicReport(func() {
+		_, err := s.Publish(context.Background(), &browserrpc.PublishRequest{
+			Ev: &termrpc.Event{Type: termrpc.Event_TypeInterrupt},
+		})
+		done <- err
+	})
+
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Publish blocked on the UI lock held by the render loop")
+	}
 }
 
 // resizeRecorder stands in for the handler on the far end of a tab's

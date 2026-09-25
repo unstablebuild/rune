@@ -226,12 +226,12 @@ func (t *TileNode) Resize(width, height int) {
 	}
 
 	if t.childSplit == vertical {
-		t.resizeVertical(width, height)
+		t.resizeChildren(width, width, height)
 		return
 
 	}
 
-	t.resizeHorizontal(width, height)
+	t.resizeChildren(height, width, height)
 }
 
 // Draw satisfies tui.Component.
@@ -372,7 +372,10 @@ func removeChild(parent, child *TileNode) {
 		proxyNode.parent.children[idx] = lastNode
 
 		lastNode.C.parent = proxyNode.parent
-		lastNode.C.fixedSize = 0
+		// The survivor takes the proxy's place, and with it the size the
+		// proxy held along the grandparent's axis; its own was along the
+		// proxy's axis, which is gone.
+		lastNode.C.fixedSize = proxyNode.fixedSize
 
 		proxyNode.parent.Resize(proxyNode.parent.width, proxyNode.parent.height)
 
@@ -382,8 +385,9 @@ func removeChild(parent, child *TileNode) {
 		return
 	}
 
-	// be extra safe: when a child is removed from a parent, reset all fixed sizes
-	parent.resetFixedSizes()
+	if parent.flexChildren() == 0 {
+		parent.resetFixedSizes()
+	}
 	parent.Resize(parent.width, parent.height)
 }
 
@@ -673,27 +677,28 @@ func (t *TileNode) SetContentResize(c tui.Component, resize bool) (prev tui.Comp
 // SetFixedHeight sets the height of this node, or returns
 // false if this node's height cannot be fixed.
 //
+// A node that spans its whole tree's height, and so cannot be fixed,
+// reports true when asked for the height it already has.
+//
 // Calling this method with height=0 effectively resets the
 // height to be automatically calculated based on the space available.
 func (t *TileNode) SetFixedHeight(height int) bool {
 	if t.parent == nil {
 		panic("corrupted tile tree: exposed root node")
 	}
-	if height != 0 && (t.height == height || t.fixedSize == height) {
-		return true
-	}
-	if t.parent.childSplit == horizontal {
-		if !t.parent.canSetFixedSize(t.parent.height, height) {
+	if t.parent.childSplit == horizontal && len(t.parent.children) > 1 {
+		if height != 0 && t.fixedSize == height {
+			return true
+		}
+		if !t.parent.fixChildSize(t, t.parent.height, height) {
 			return false
 		}
-		t.parent.resetFixedSizes()
-		t.fixedSize = height
 		t.parent.dirty = true
 		t.dirty = true
 		return true
 	}
 	if t.parent.parent == nil {
-		return false
+		return height != 0 && t.height == height
 	}
 	return t.parent.SetFixedHeight(height)
 }
@@ -701,27 +706,28 @@ func (t *TileNode) SetFixedHeight(height int) bool {
 // SetFixedWidth sets the width of this node, or returns
 // false if this node's width cannot be fixed.
 //
+// A node that spans its whole tree's width, and so cannot be fixed,
+// reports true when asked for the width it already has.
+//
 // Calling this method with width=0 effectively resets the
 // width to be automatically calculated based on the space available.
 func (t *TileNode) SetFixedWidth(width int) bool {
 	if t.parent == nil {
 		panic("corrupted tile tree: exposed root node")
 	}
-	if width != 0 && (t.width == width || t.fixedSize == width) {
-		return true
-	}
-	if t.parent.childSplit == vertical {
-		if !t.parent.canSetFixedSize(t.parent.width, width) {
+	if t.parent.childSplit == vertical && len(t.parent.children) > 1 {
+		if width != 0 && t.fixedSize == width {
+			return true
+		}
+		if !t.parent.fixChildSize(t, t.parent.width, width) {
 			return false
 		}
-		t.parent.resetFixedSizes()
-		t.fixedSize = width
 		t.parent.dirty = true
 		t.dirty = true
 		return true
 	}
 	if t.parent.parent == nil {
-		return false
+		return width != 0 && t.width == width
 	}
 	return t.parent.SetFixedWidth(width)
 }
@@ -813,70 +819,100 @@ func (t *TileNode) fixedSizeNodes() (totalFixedSize, fixedSizeNodes int) {
 	return
 }
 
-func (t *TileNode) resizeHorizontal(width, height int) {
-	length := len(t.children)
-	fixedHeight, fixedSizeNodes := t.fixedSizeNodes()
-	flexNodes := length - fixedSizeNodes
-	cheight := (height - fixedHeight) / flexNodes
-	hspare := height - fixedHeight - cheight*flexNodes
-	// Distribute spare rows to the last hspare non-fixed children so
-	// fixed children never absorb (and lose) a spare row.
-	useSpareFlexIdx := flexNodes - hspare
+// resizeChildren lays t's children out along its split axis, whose
+// length is total. Flexible children share what the fixed ones leave,
+// the last ones taking the spare cells so a fixed child never absorbs
+// (and loses) one. When the fixed sizes do not fit, or no flexible
+// child is left to fill the gap, the fixed children are scaled to
+// total and the flexible ones collapse: children never overlap, and
+// fixedSize is untouched so they regain their size once there is room.
+func (t *TileNode) resizeChildren(total, width, height int) {
+	fixedTotal, fixedNodes := t.fixedSizeNodes()
+	flexNodes := len(t.children) - fixedNodes
+	scale := flexNodes == 0 || fixedTotal > total
 
-	var offset int
-	flexIdx := 0
+	var flexSize, spareFrom int
+	if !scale {
+		flexSize = (total - fixedTotal) / flexNodes
+		spareFrom = flexNodes - (total - fixedTotal - flexSize*flexNodes)
+	}
+
+	var offset, flexIdx, fixedIdx int
 	for _, ti := range t.children {
-		fixedSize := ti.C.fixedSize
-		ti.Move(term.Coordinates{Y: offset})
-		if fixedSize != 0 {
-			ti.Resize(width, fixedSize)
-			offset += fixedSize
-			continue
+		var size int
+		switch fixed := ti.C.fixedSize; {
+		case fixed == 0:
+			if flexIdx >= spareFrom {
+				size = flexSize + 1
+			} else {
+				size = flexSize
+			}
+			if scale {
+				size = 0
+			}
+			flexIdx++
+		case !scale:
+			size = fixed
+		default:
+			fixedIdx++
+			if fixedIdx == fixedNodes {
+				size = total - offset
+			} else {
+				size = fixed * total / fixedTotal
+			}
 		}
-		nheight := cheight
-		if flexIdx >= useSpareFlexIdx {
-			nheight++
+		if t.childSplit == horizontal {
+			ti.Move(term.Coordinates{Y: offset})
+			ti.Resize(width, size)
+		} else {
+			ti.Move(term.Coordinates{X: offset})
+			ti.Resize(size, height)
 		}
-		ti.Resize(width, nheight)
-		offset += nheight
-		flexIdx++
+		offset += size
 	}
 }
 
-func (t *TileNode) resizeVertical(width, height int) {
-	length := len(t.children)
-	fixedWidth, fixedSizeNodes := t.fixedSizeNodes()
-	flexNodes := length - fixedSizeNodes
-	cwidth := (width - fixedWidth) / flexNodes
-	wspare := width - fixedWidth - cwidth*flexNodes
-	useSpareFlexIdx := flexNodes - wspare
+// minFlexSize is the least a flexible tile may be squeezed to by its
+// fixed-size siblings.
+const minFlexSize = 3
 
-	var offset int
-	flexIdx := 0
-	for _, ti := range t.children {
-		fixedSize := ti.C.fixedSize
-		ti.Move(term.Coordinates{X: offset})
-		if fixedSize != 0 {
-			ti.Resize(fixedSize, height)
-			offset += fixedSize
-			continue
-		}
-		nwidth := cwidth
-		if flexIdx >= useSpareFlexIdx {
-			nwidth++
-		}
-		ti.Resize(nwidth, height)
-		offset += nwidth
-		flexIdx++
-	}
-}
-
-func (t *TileNode) canSetFixedSize(avail, fixedSize int) bool {
+// fixChildSize fixes child's size along t's split axis, or resets it
+// when size is 0. The other fixed children keep their sizes as long as
+// a flexible child remains to absorb the rest; otherwise they yield,
+// since a split needs at least one flexible tile. Returns false when
+// the flexible tiles would be left with less than minFlexSize each.
+func (t *TileNode) fixChildSize(child *TileNode, avail, size int) bool {
 	if len(t.children) <= 1 {
 		return false
 	}
-	effective := (avail - fixedSize) / (len(t.children) - 1)
-	return effective >= 3 // do not let a fixed compress to much th rest of tiles
+	if size == 0 {
+		child.fixedSize = 0
+		return true
+	}
+	fixed := size
+	flex := len(t.children) - 1
+	for _, c := range t.children {
+		if c.C != child && c.C.fixedSize != 0 {
+			fixed += c.C.fixedSize
+			flex--
+		}
+	}
+	if flex > 0 && (avail-fixed)/flex >= minFlexSize {
+		child.fixedSize = size
+		return true
+	}
+	if (avail-size)/(len(t.children)-1) < minFlexSize {
+		return false
+	}
+	t.resetFixedSizes()
+	child.fixedSize = size
+	return true
+}
+
+// flexChildren counts the children whose size is not fixed.
+func (t *TileNode) flexChildren() int {
+	_, fixed := t.fixedSizeNodes()
+	return len(t.children) - fixed
 }
 
 func (t *TileNode) resetFixedSizes() {

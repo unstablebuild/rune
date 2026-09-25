@@ -20,6 +20,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/clipboard"
 	"github.com/unstablebuild/rune-go-sdk/term"
@@ -109,6 +110,24 @@ type Config struct {
 	// Search enables searching the scrollback of the primary buffer.
 	// A nil Search.Editor disables the feature.
 	Search SearchConfig
+
+	// CellPixelSize reports the size of a character cell in pixels.
+	// It enables the kitty graphics protocol, which needs it to size
+	// placements and answer pixel-size queries; leave it nil on a
+	// cells-only display so clients probing for graphics support get
+	// no answer and fall back.
+	CellPixelSize func() (width, height int)
+
+	// FileSystem reads the files a graphics t=f, t=t or t=s
+	// transmission names. It must be the filesystem the terminal's
+	// command runs on, so a remote workspace reads them there. A nil
+	// FileSystem refuses those mediums.
+	FileSystem schemeapi.FileSystem
+
+	// TempDir is the temporary directory of the machine FileSystem
+	// serves, when known. A t=t graphics transmission is deleted after
+	// it is read only from there, /tmp or /dev/shm.
+	TempDir string
 }
 
 // SearchConfig configures the terminal's scrollback search. The box is

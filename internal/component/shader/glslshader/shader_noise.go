@@ -50,6 +50,12 @@ type NoiseParams struct {
 	ScaleX    float
 	ScaleY    float
 	Speed     float
+	// PaintForeground shades the characters with the noise field rather
+	// than filling the cell background and scattering glyphs, so the
+	// effect is only visible through existing text. Blank cells and
+	// glyphs that render as background, such as fade blocks, are left
+	// untouched.
+	PaintForeground bool
 }
 
 type noise struct {
@@ -69,6 +75,10 @@ func (s *noise) runCell(
 	resolutionX, resolutionY int,
 	inChar rune, inFg, inBg term.Color,
 ) (char rune, fg, bg term.Color) {
+	if s.PaintForeground && !paintsText(inChar) {
+		return inChar, inFg, inBg
+	}
+
 	spedTime := s.Speed * time
 
 	ar := float(resolutionX) / float(resolutionY)
@@ -102,6 +112,10 @@ func (s *noise) runCell(
 
 	fgBase := int32(255.0 * (1.0 - out) * (1.0 - out))
 	bgBase := int32(255 * out)
+
+	if s.PaintForeground {
+		return inChar, term.NewRGBColor(bgBase, bgBase, bgBase), inBg
+	}
 
 	char = inChar
 	if out > 0.5 {

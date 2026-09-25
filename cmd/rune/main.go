@@ -778,6 +778,13 @@ func runGUI(
 		}
 		return g.PublishEvent(ev)
 	}
+	cellPixelSize := func() (int, int) {
+		g := guiRef.Load()
+		if g == nil {
+			return 0, 0
+		}
+		return g.CellPixelSize()
+	}
 
 	// We load config twice, but it's better than the race conditions caused
 	// by env var resolution order.
@@ -807,7 +814,7 @@ func runGUI(
 	root, err := newBootstrapHandler(
 		*flagDataPath, *flagConfigPath,
 		*flagWorkspace, *flagZdotDir, filenames,
-		launchCmd, runner, mu, publishEvent,
+		launchCmd, runner, mu, publishEvent, cellPixelSize,
 		func(u *url.URL) error { return extbrowser.Browse(u) },
 		text.NewSystemClipboard(), os.TempDir(), rootCfg, trust,
 	)

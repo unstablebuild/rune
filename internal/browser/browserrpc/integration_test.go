@@ -18,6 +18,7 @@ package browserrpc
 
 import (
 	context "context"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -195,4 +196,26 @@ func TestClientServerIntegrationTab(t *testing.T) {
 
 	mock.EXPECT().Window(gomock.Any()).Return(win1, true).AnyTimes()
 	require.NoError(t, client.SetWindowContent(win, tab))
+}
+
+func TestClientServerIntegrationSetTabActivity(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mock := browsertest.NewMockBrowser(ctrl)
+	client, cleanup := newClientServerIntegration(t, mock)
+	defer cleanup()
+
+	uri, err := workspaceapi.ParseURI("rune-agent://model/rolling-fox")
+	require.NoError(t, err)
+
+	gomock.InOrder(
+		mock.EXPECT().SetTabActivity(uri, true).Return(nil),
+		mock.EXPECT().SetTabActivity(uri, false).Return(errors.New("unknown tab")),
+	)
+	require.NoError(t, client.SetTabActivity(uri, true))
+	err = client.SetTabActivity(uri, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown tab")
 }

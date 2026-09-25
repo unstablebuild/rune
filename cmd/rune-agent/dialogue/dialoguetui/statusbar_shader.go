@@ -24,72 +24,21 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/internal/component/shader"
-	"unstable.build/rune/internal/component/shader/glslshader"
-	"unstable.build/rune/internal/component/shader/timeshader"
+	"unstable.build/rune/internal/component/shader/shaderloop"
 )
 
 const (
-	statusBarShaderFPS = 30
-	// A turn has no known length, so the animation is built long
-	// enough to outlast any of them and looped within that span.
-	statusBarShaderDuration = 24 * time.Hour
-	statusBarShaderLoop     = 1200 * time.Millisecond
+	// DefaultStatusBarShaderFPS is the cadence a status-bar effect is
+	// redrawn at when the config names none.
+	DefaultStatusBarShaderFPS = shaderloop.DefaultFPS
+	// DefaultStatusBarShaderLoop is how long one visual loop of a
+	// status-bar effect lasts when the config names none.
+	DefaultStatusBarShaderLoop = shaderloop.DefaultLoop
 )
 
 // StatusBarShaderNames lists the effects status_bar.shader accepts.
-// The frame shaders are deliberately absent: they only paint
-// box-drawing characters, of which a status bar has none.
 func StatusBarShaderNames() []string {
-	return []string{
-		"blaze", "burn", "embers", "fade", "flames", "grayFade",
-		"incendium", "inferno", "noise", "pulse", "risingChars",
-		"shine", "trippy",
-	}
-}
-
-// buildStatusBarShader resolves a name from StatusBarShaderNames into
-// an effect looping for as long as the turn runs.
-func buildStatusBarShader(
-	name string, defAttr term.Attributes,
-) (shader.Shader, bool) {
-	const fps = float64(statusBarShaderFPS)
-	var inner shader.Shader
-	switch name {
-	case "blaze":
-		inner = glslshader.Blaze(glslshader.DefaultBlazeParams(), fps)
-	case "burn":
-		inner = shader.Burn(shader.DefaultBurnParams(), defAttr)
-	case "embers":
-		inner = glslshader.Embers(
-			glslshader.DefaultEmbersParams(), defAttr, fps)
-	case "fade":
-		inner = shader.Fade(defAttr)
-	case "flames":
-		inner = glslshader.Flames(
-			glslshader.DefaultFlamesParams(), defAttr, fps)
-	case "grayFade":
-		inner = shader.GrayFade(shader.DefaultGrayFadeParams(), defAttr)
-	case "incendium":
-		inner = glslshader.Incendium(
-			glslshader.DefaultIncendiumParams(), defAttr, fps)
-	case "inferno":
-		inner = glslshader.Inferno(glslshader.DefaultInfernoParams(), fps)
-	case "noise":
-		inner = glslshader.Noise(glslshader.DefaultNoiseParams(), fps)
-	case "pulse":
-		inner = shader.Pulse(shader.DefaultPulseParams(), defAttr)
-	case "risingChars":
-		inner = glslshader.RisingChars(
-			glslshader.DefaultRisingCharsParams(), defAttr)
-	case "shine":
-		inner = glslshader.Shine(glslshader.DefaultShineParams(), defAttr)
-	case "trippy":
-		inner = glslshader.Trippy(glslshader.DefaultTrippyParams(), fps)
-	default:
-		return nil, false
-	}
-	return timeshader.Loop(
-		inner, int(statusBarShaderDuration/statusBarShaderLoop)), true
+	return shaderloop.Names()
 }
 
 // ValidStatusBarShader reports whether name selects a known effect.
@@ -105,6 +54,8 @@ type shadedBar struct {
 	mu            sync.Mutex
 	root          tui.Component
 	name          string
+	fps           int
+	loop          time.Duration
 	defAttr       term.Attributes
 	shader        *shader.Component
 	width, height int
@@ -144,13 +95,20 @@ func (s *shadedBar) setRunning(running bool, interrupter term.Interrupter) bool 
 	}
 	var closing *shader.Component
 	if running {
-		sh, ok := buildStatusBarShader(s.name, s.defAttr)
+		fps, loop := s.fps, s.loop
+		if fps <= 0 {
+			fps = DefaultStatusBarShaderFPS
+		}
+		if loop <= 0 {
+			loop = DefaultStatusBarShaderLoop
+		}
+		sh, ok := shaderloop.New(s.name, s.defAttr, fps, loop)
 		if !ok {
 			s.mu.Unlock()
 			return false
 		}
 		s.shader = shader.New(s.root, sh, interrupter,
-			statusBarShaderFPS, statusBarShaderDuration)
+			fps, shaderloop.Duration)
 		s.shader.Resize(s.width, s.height)
 	} else {
 		closing = s.shader

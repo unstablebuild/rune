@@ -423,7 +423,7 @@ func TestPkgInstallRegistersTutorialLive(t *testing.T) {
 	const (
 		pkgID    = "tutpkg"
 		tutName  = "go-intro"
-		tutorial = "def run():\n    floating_window(title=\"hi\", text=\"hello\")\n" +
+		tutorial = "def run():\n    wait_event(event=\"open\", title=\"hi\", text=\"hello\")\n" +
 			"tutorial(entry=run)\n"
 	)
 
@@ -502,7 +502,7 @@ func TestPkgInstallRegistersTutorialLive(t *testing.T) {
 func TestPkgInstallMultipleTutorialsPromptsOnce(t *testing.T) {
 	const pkgID = "multitutpkg"
 	tutNames := []string{"alpha-intro", "beta-intro"}
-	tutorialSrc := "def run():\n    floating_window(title=\"hi\", text=\"hello\")\n" +
+	tutorialSrc := "def run():\n    wait_event(event=\"open\", title=\"hi\", text=\"hello\")\n" +
 		"tutorial(entry=run)\n"
 
 	dir := t.TempDir()
@@ -583,7 +583,7 @@ func TestPkgInstallTutorialDoesNotPromptDuringActiveTutorial(t *testing.T) {
 	const (
 		pkgID   = "livetutpkg"
 		tutName = "gamma-intro"
-		tutSrc  = "def run():\n    floating_window(title=\"hi\", text=\"hello\")\n" +
+		tutSrc  = "def run():\n    wait_event(event=\"open\", title=\"hi\", text=\"hello\")\n" +
 			"tutorial(entry=run)\n"
 	)
 

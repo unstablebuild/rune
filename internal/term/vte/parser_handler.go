@@ -23,17 +23,21 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"os"
 	"sync"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
 	"github.com/rivo/uniseg"
 	log "github.com/sirupsen/logrus"
 	"github.com/unstablebuild/blue/logging"
+	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/clipboard"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/browser"
+	"unstable.build/rune/internal/term/vte/vtegraphics"
 	"unstable.build/rune/internal/term/vte/vteparser"
 	"unstable.build/rune/internal/term/vte/vtescreen"
 )
@@ -64,6 +68,8 @@ type parserHandler struct {
 	needsAttentionAttr        term.Attributes
 	needsAttention            bool
 	uri                       workspaceapi.URI
+	fs                        schemeapi.FileSystem
+	tempDir                   string
 	width, height             int
 	inFocus                   bool
 	cursorStyle               term.CursorStyle
@@ -73,6 +79,7 @@ type parserHandler struct {
 	modeCursorKeys            bool
 	modeInsert                bool
 	modeOrigin                bool
+	modeReverseScreen         bool
 	modeBlinkingCursor        bool
 	modeLineFeedNewLine       bool
 	modeShowCursor            bool
@@ -93,16 +100,22 @@ type parserHandler struct {
 	usedAlt        bool
 	currentCharset vteparser.CharsetIndex
 
+	// keyboard outlives ResetState, which only resets it, because the
+	// Component hands it to the input path.
+	keyboard *keyboardState
+
 	// clusterBuf is reused scratch for the mergeContinuation probe.
 	clusterBuf []byte
 	// glyphBuf is reused scratch for the batched non-ASCII write.
 	glyphBuf []vtescreen.Glyph
+
+	graphics graphicsState
 }
 
 // use a common api for alternate and primary buffers
 // used to simplify critical path calls and avoid extra branches
 type screenBuffer interface {
-	SetCursorAtScreen(c term.Coordinates, relative bool)
+	SetCursorAtScreen(c term.Coordinates)
 	CursorAtScreen() term.Coordinates
 	CursorAtScroll() term.Coordinates
 	Insert(c rune, width int, charset vteparser.CharsetIndex)
@@ -120,9 +133,13 @@ type screenBuffer interface {
 	ResetLines(start, end int)
 	BottomScrollableRegion() int
 	TopScrollableRegion() int
+	SetScrollableRegion(top, bottom int, end bool)
 	Columns(line int) int
 	Rows() int
 	CellAt(pos term.Coordinates) *term.Cell
+	// RowCells returns the cells of the given content row, aliasing
+	// the buffer's storage; nil when the row does not exist.
+	RowCells(y int) []term.Cell
 	PrevCellAtCursor() *term.Cell
 	// AdvanceColumns reports how far the cursor moves after writing a
 	// glyph of the given display width. The primary buffer tracks visual
@@ -144,10 +161,15 @@ func newParserHandler(
 	useTitleAsTabname bool,
 	maxScrollLength int,
 	minWidth int,
+	cellPixelSize func() (int, int),
+	fs schemeapi.FileSystem,
+	tempDir string,
 ) *parserHandler {
 	ret := new(parserHandler)
 	ret.init(mu, pty, tm, clipboard, bell, uri,
-		needsAttentionAttr, useTitleAsTabname, maxScrollLength, minWidth)
+		needsAttentionAttr, useTitleAsTabname, maxScrollLength, minWidth,
+		cellPixelSize, fs, tempDir)
+	ret.keyboard = new(keyboardState)
 	return ret
 }
 
@@ -161,6 +183,9 @@ func (t *parserHandler) init(
 	useTitleAsTabname bool,
 	maxScrollLength int,
 	minWidth int,
+	cellPixelSize func() (int, int),
+	fs schemeapi.FileSystem,
+	tempDir string,
 ) {
 	t.maxScrollLength = maxScrollLength
 	t.minWidth = minWidth
@@ -176,6 +201,9 @@ func (t *parserHandler) init(
 	t.bell = bell
 	t.needsAttentionAttr = needsAttentionAttr
 	t.useTitleAsTabname = useTitleAsTabname
+	t.fs = fs
+	t.tempDir = tempDir
+	t.graphics.init(cellPixelSize)
 
 	// assume we are in focus when initialized
 	t.inFocus = true
@@ -201,11 +229,13 @@ func (t *parserHandler) resizeLocked(width, height int) {
 	if width < 0 || height < 0 {
 		return
 	}
+	anchors := t.graphicsAnchored()
 	t.sync.primBuf.Resize(width, height)
 	t.sync.altBuf.Resize(width, height)
 	t.width = width
 	t.height = height
 	t.tabs.resize(width)
+	t.graphicsResized(anchors)
 }
 
 // OSC to set window title.
@@ -299,7 +329,7 @@ func (t *parserHandler) input(c rune) {
 	pos.X += advance
 
 	if pos.X < t.width {
-		t.setCursorAtScreen(pos, t.modeOrigin)
+		t.setCursorAtScreen(pos)
 	} else {
 		// implementations that use DECAWM usually expect the next call to Input
 		// to push the cursor down to the next line; i.e. there could be
@@ -368,7 +398,7 @@ func (t *parserHandler) inputGlyphRun(run []byte) int {
 		pos.X -= last
 		t.shouldWrap = true
 	}
-	t.setCursorAtScreen(pos, t.modeOrigin)
+	t.setCursorAtScreen(pos)
 	return size
 }
 
@@ -405,11 +435,11 @@ func (t *parserHandler) inputASCIIRun(run []byte) int {
 	}
 	pos.X += w
 	if pos.X < t.width {
-		t.setCursorAtScreen(pos, t.modeOrigin)
+		t.setCursorAtScreen(pos)
 	} else {
 		// wrapLine relies on the cursor sitting on the marked cell.
 		pos.X = t.width - 1
-		t.setCursorAtScreen(pos, t.modeOrigin)
+		t.setCursorAtScreen(pos)
 		t.shouldWrap = true
 	}
 	return w
@@ -553,7 +583,7 @@ func (t *parserHandler) GotoCol(col int) {
 	t.sync.mu.Lock()
 	defer t.sync.mu.Unlock()
 
-	t.goTo(t.sync.buf.CursorAtScreen().Y, col)
+	t.setColumn(col)
 }
 
 // Insert blank characters in current line starting from cursor.
@@ -575,7 +605,7 @@ func (t *parserHandler) MoveUp(rows int) {
 	t.sync.mu.Lock()
 	defer t.sync.mu.Unlock()
 
-	t.moveUp(rows)
+	t.moveRows(-rows)
 }
 
 // Move cursor down `rows`.
@@ -583,7 +613,7 @@ func (t *parserHandler) MoveDown(rows int) {
 	t.sync.mu.Lock()
 	defer t.sync.mu.Unlock()
 
-	t.moveDown(rows)
+	t.moveRows(rows)
 }
 
 // IdentifyTerminal identifies the terminal implementatino.
@@ -608,6 +638,9 @@ func (t *parserHandler) DeviceStatus(status int) {
 	case 6:
 		t.sync.mu.Lock()
 		pos := t.sync.buf.CursorAtScreen()
+		if t.modeOrigin {
+			pos.Y -= min(pos.Y, t.sync.buf.TopScrollableRegion())
+		}
 		t.sync.mu.Unlock()
 		text := fmt.Sprintf("\x1b[%d;%dR", pos.Y+1, pos.X+1)
 		_, err = t.pty.Master.Write([]byte(text))
@@ -624,8 +657,7 @@ func (t *parserHandler) MoveForward(cols int) {
 	t.sync.mu.Lock()
 	defer t.sync.mu.Unlock()
 
-	t.moveRight(cols)
-	t.shouldWrap = false
+	t.setColumn(t.sync.buf.CursorAtScreen().X + cols)
 }
 
 // Move cursor backward `cols`.
@@ -633,8 +665,7 @@ func (t *parserHandler) MoveBackward(cols int) {
 	t.sync.mu.Lock()
 	defer t.sync.mu.Unlock()
 
-	t.moveLeft(cols)
-	t.shouldWrap = false
+	t.setColumn(t.sync.buf.CursorAtScreen().X - cols)
 }
 
 // Move cursor down `rows` and set to column 1.
@@ -642,9 +673,8 @@ func (t *parserHandler) MoveDownAndCR(rows int) {
 	t.sync.mu.Lock()
 	defer t.sync.mu.Unlock()
 
-	pos := t.sync.buf.CursorAtScreen()
-	pos.Y += rows
-	t.goTo(pos.Y, 0)
+	t.moveRows(rows)
+	t.setColumn(0)
 }
 
 // Move cursor up `rows` and set to column 1.
@@ -652,9 +682,8 @@ func (t *parserHandler) MoveUpAndCR(rows int) {
 	t.sync.mu.Lock()
 	defer t.sync.mu.Unlock()
 
-	pos := t.sync.buf.CursorAtScreen()
-	pos.Y -= rows
-	t.goTo(pos.Y, 0)
+	t.moveRows(-rows)
+	t.setColumn(0)
 }
 
 // Put a tab.
@@ -697,7 +726,7 @@ func (t *parserHandler) PutTab() {
 			break
 		}
 
-		t.sync.buf.SetCursorAtScreen(pos, false)
+		t.sync.buf.SetCursorAtScreen(pos)
 
 		if t.tabs.get(pos.X) {
 			break
@@ -710,11 +739,11 @@ func (t *parserHandler) Backspace() {
 	t.sync.mu.Lock()
 	defer t.sync.mu.Unlock()
 
-	if t.sync.buf.CursorAtScreen().X <= 0 {
+	x := t.sync.buf.CursorAtScreen().X
+	if x <= 0 {
 		return
 	}
-	t.moveLeft(1)
-	t.shouldWrap = false
+	t.setColumn(x - 1)
 }
 
 // Carriage return.
@@ -731,15 +760,7 @@ func (t *parserHandler) Linefeed() {
 	t.sync.mu.Lock()
 	defer t.sync.mu.Unlock()
 
-	buf := t.sync.buf
-	pos := buf.CursorAtScreen()
-	pos.Y++
-
-	if pos.Y >= buf.BottomScrollableRegion() {
-		t.scrollUp(1)
-	} else if pos.Y < t.height {
-		t.setCursorAtScreen(pos, t.modeOrigin)
-	}
+	t.index()
 }
 
 // Ring the bell.
@@ -811,13 +832,18 @@ func (t *parserHandler) InsertBlankLines(count int) {
 	defer t.sync.mu.Unlock()
 
 	start := t.sync.buf.CursorAtScreen().Y
-	if start >= t.sync.buf.TopScrollableRegion() && start < t.sync.buf.BottomScrollableRegion() {
-		if t.useAlt {
-			t.scrollDownAltRelative(start, count)
-		} else {
-			t.sync.primBuf.InsertLinesCursor(count)
-		}
+	bottom := t.sync.buf.BottomScrollableRegion()
+	if start < t.sync.buf.TopScrollableRegion() || start >= bottom {
+		return
 	}
+	if t.useAlt {
+		t.scrollDownAltRelative(start, count)
+		return
+	}
+	// The rows pushed past the bottom margin are dropped, never saved
+	// to history (kitty screen_insert_lines, screen.c:1722).
+	screenTop := t.sync.primBuf.Rows() - t.height
+	t.sync.primBuf.ScrollDown(screenTop+start, screenTop+bottom, min(count, bottom-start))
 }
 
 // Delete `count` lines.
@@ -830,16 +856,16 @@ func (t *parserHandler) DeleteLines(count int) {
 	}
 
 	start := t.sync.buf.CursorAtScreen().Y
-	if start >= t.sync.buf.TopScrollableRegion() &&
-		start < t.sync.buf.BottomScrollableRegion() {
-		count = min(count, t.height-start)
-		if t.useAlt {
-			t.scrollUpAltRelative(start, count)
-		} else {
-			end := start + count - 1
-			t.sync.primBuf.ScrollUp(start, end, count)
-		}
+	bottom := t.sync.buf.BottomScrollableRegion()
+	if start < t.sync.buf.TopScrollableRegion() || start >= bottom {
+		return
 	}
+	if t.useAlt {
+		t.scrollUpAltRelative(start, min(count, t.height-start))
+		return
+	}
+	screenTop := t.sync.primBuf.Rows() - t.height
+	t.sync.primBuf.ScrollUp(screenTop+start, screenTop+bottom, min(count, bottom-start))
 }
 
 // Erase `count` chars in the current line following the cursor.
@@ -945,23 +971,22 @@ func (t *parserHandler) ClearScreen(mode vteparser.ClearMode) {
 		}
 
 	case vteparser.ClearModeAbove:
-		if pos.Y > 1 {
-			t.sync.buf.ResetLines(0, pos.Y)
-		}
-		start := 0
-		end := min(pos.X+1, columns)
-		t.sync.buf.ResetCells(start, end)
+		screenTop := pos.Y - t.sync.buf.CursorAtScreen().Y
+		t.sync.buf.ResetLines(screenTop, pos.Y)
+		t.sync.buf.ResetCells(0, min(pos.X+1, columns))
 
 	case vteparser.ClearModeAll:
 		if t.useAlt {
 			t.resetBufLines(t.sync.buf)
+			t.graphicsCleared(0)
 		} else {
-			t.sync.primBuf.Clear()
+			t.graphicsCleared(t.sync.primBuf.Clear())
 		}
 
 	case vteparser.ClearModeSaved:
 		if !t.useAlt {
 			t.sync.primBuf.ClearHistory()
+			t.graphics.prim.ClearHistory()
 		}
 	default:
 		t.log(log.WarnLevel, "unknown clear screen mode: %v", mode)
@@ -985,9 +1010,16 @@ func (t *parserHandler) ResetState() {
 	mu := t.sync.mu
 	width := t.width
 	height := t.height
+	cellPixelSize := t.graphics.cellPixelSize
+	fs := t.fs
+	tempDir := t.tempDir
+	keyboard := t.keyboard
 	*t = parserHandler{}
 	t.init(mu, pty, tm, clipboard, bell, uri,
-		needsAttentionAttr, useTitleAsTabname, maxScrollLength, minWidth)
+		needsAttentionAttr, useTitleAsTabname, maxScrollLength, minWidth,
+		cellPixelSize, fs, tempDir)
+	t.keyboard = keyboard
+	t.keyboard.reset()
 
 	// resize
 	t.sync.altBuf.Resize(width, height)
@@ -1001,17 +1033,21 @@ func (t *parserHandler) ResetState() {
 //
 // Move the active position to the same horizontal position on the
 // preceding line. If the active position is at the top margin, a scroll
-// down is performed.
+// down is performed; above it the cursor stops at the first line
+// (kitty screen_reverse_index, screen.c:2435).
 func (t *parserHandler) ReverseIndex() {
 	t.sync.mu.Lock()
 	defer t.sync.mu.Unlock()
 
 	pos := t.sync.buf.CursorAtScreen()
-	if pos.Y <= t.sync.buf.TopScrollableRegion() {
+	switch {
+	case pos.Y == t.sync.buf.TopScrollableRegion():
 		t.scrollDown(1)
-	} else {
-		t.moveUp(1)
+	case pos.Y > 0:
+		pos.Y--
+		t.setCursorAtScreen(pos)
 	}
+	t.shouldWrap = false
 }
 
 // Set a parserHandler attribute.
@@ -1026,6 +1062,7 @@ func (t *parserHandler) TerminalAttribute(pattr vteparser.Attr) {
 		attr.Fg = 0
 		attr.Bg = 0
 		attr.Attrs = 0
+		attr.Underline = 0
 	case vteparser.BoldAttr:
 		attr.Attrs |= term.AttrBold
 	case vteparser.DimAttr:
@@ -1065,9 +1102,10 @@ func (t *parserHandler) TerminalAttribute(pattr vteparser.Attr) {
 		attr.Fg = pattr.Color
 	case vteparser.BackgroundAttr:
 		attr.Bg = pattr.Color
+	case vteparser.UnderlineColorAttr:
+		attr.Underline = pattr.Color
 	case vteparser.DoubleUnderlineAttr, vteparser.UndercurlAttr,
-		vteparser.DottedUnderlineAttr, vteparser.DashedUnderlineAttr,
-		vteparser.UnderlineColorAttr:
+		vteparser.DottedUnderlineAttr, vteparser.DashedUnderlineAttr:
 		/* ignored */
 		return
 	}
@@ -1088,7 +1126,7 @@ func (t *parserHandler) ReportPrivateMode(mode vteparser.PrivateMode) {
 	case vteparser.PrivateModeOrigin:
 		modeVar = &t.modeOrigin
 	case vteparser.PrivateModeScreen:
-		/* DECSCNM not supported */
+		modeVar = &t.modeReverseScreen
 	case vteparser.PrivateModeLineWrap:
 		modeVar = &t.modeWrap
 	case vteparser.PrivateModeBlinkingCursor:
@@ -1135,8 +1173,9 @@ func (t *parserHandler) SetPrivateMode(mode vteparser.PrivateMode) {
 		t.deccolm()
 	case vteparser.PrivateModeOrigin:
 		t.modeOrigin = true
+		t.goTo(0, 0)
 	case vteparser.PrivateModeScreen:
-		/* DECSCNM not supported */
+		t.modeReverseScreen = true
 	case vteparser.PrivateModeLineWrap:
 		t.modeWrap = true
 	case vteparser.PrivateModeBlinkingCursor:
@@ -1185,8 +1224,9 @@ func (t *parserHandler) UnsetPrivateMode(mode vteparser.PrivateMode) {
 		t.deccolm()
 	case vteparser.PrivateModeOrigin:
 		t.modeOrigin = false
+		t.goTo(0, 0)
 	case vteparser.PrivateModeScreen:
-		/* DECSCNM not supported */
+		t.modeReverseScreen = false
 	case vteparser.PrivateModeLineWrap:
 		t.modeWrap = false
 	case vteparser.PrivateModeBlinkingCursor:
@@ -1277,11 +1317,7 @@ func (t *parserHandler) SetScrollingRegion(top, bottom int, end bool) {
 	t.sync.mu.Lock()
 	defer t.sync.mu.Unlock()
 
-	if t.useAlt {
-		t.setScrollingRegion(top, bottom, end)
-	} else {
-		t.shouldWrap = false
-	}
+	t.setScrollingRegion(top, bottom, end)
 }
 
 // DECKPAM - Set the keypad to applications mode (ESCape instead of digits).
@@ -1402,7 +1438,9 @@ func (t *parserHandler) Decaln() {
 	} else {
 		buf = &t.sync.primBuf.AltBuffer
 	}
-	buf.ResetLinesWith(0, buf.Cells.Rows(), 'E')
+	rows := buf.Cells.Rows()
+	buf.ResetLinesWith(max(0, rows-t.height), rows, 'E')
+	t.resetScrollingRegion()
 }
 
 // Push a title onto the stack.
@@ -1428,11 +1466,6 @@ func (t *parserHandler) PopTitle() {
 	}
 }
 
-// Report text area size in pixels.
-func (t *parserHandler) TextAreaSizePixels() {
-	t.log(log.DebugLevel, "unsupported call to TextAreaSizePixels")
-}
-
 // Report text area size in characters.
 func (t *parserHandler) TextAreaSizeChars() {
 	t.sync.mu.Lock()
@@ -1452,38 +1485,41 @@ func (t *parserHandler) SetHyperlink(link *vteparser.Hyperlink) {
 
 // ReportKeyboardMode reports current keyboard mode.
 func (t *parserHandler) ReportKeyboardMode() {
-	t.log(log.DebugLevel, "unsupported call to ReportKeyboardMode")
+	_, err := fmt.Fprintf(t.pty.Master, "\x1b[?%du", t.keyboard.kittyFlags(t.useAlt))
+	if err != nil {
+		t.log(log.WarnLevel, "report keyboard mode: %v", err)
+	}
 }
 
 // PushKeyboardMode pushes the keyboard mode into the keyboard mode stack.
 func (t *parserHandler) PushKeyboardMode(mode vteparser.KeyboardMode) {
-	t.log(log.DebugLevel, "unsupported call to PushKeyboardMode: "+
-		"kitty keyboard handling not supported yet")
+	t.keyboard.pushKitty(t.useAlt, mode)
 }
 
 // PopKeyboardModes pops the given amount of keyboard modes
 // from the keyboard mode stack.
 func (t *parserHandler) PopKeyboardModes(count int) {
-	t.log(log.DebugLevel, "unsupported call to PopKeyboardModes: "+
-		"kitty keyboard handling not supported yet")
+	t.keyboard.popKitty(t.useAlt, count)
 }
 
 // SetKeyboardMode sets the [`keyboard mode`] using the given [`behavior`].
 func (t *parserHandler) SetKeyboardMode(
 	mode vteparser.KeyboardMode, behavior vteparser.KeyboardModesApplyBehavior,
 ) {
-	t.log(log.DebugLevel, "unsupported call to SetKeyboardMode: "+
-		"kitty keyboard handling not supported yet")
+	t.keyboard.setKitty(t.useAlt, mode, behavior)
 }
 
 // SetModifyOtherKeys sets XTerm's [`ModifyOtherKeys`] option.
 func (t *parserHandler) SetModifyOtherKeys(mode vteparser.ModifyOtherKeysMode) {
-	t.log(log.DebugLevel, "unsupported call to SetModifyOtherKeys")
+	t.keyboard.setModifyOtherKeys(mode)
 }
 
 // ReportModifyOtherKeys report XTerm's [`ModifyOtherKeys`] state.
 func (t *parserHandler) ReportModifyOtherKeys() {
-	t.log(log.DebugLevel, "unsupported call to ReportModifyOtherKeys")
+	mode := t.keyboard.encoding().modifyOtherKeys
+	if _, err := fmt.Fprintf(t.pty.Master, "\x1b[>4;%dm", mode); err != nil {
+		t.log(log.WarnLevel, "report modifyOtherKeys: %v", err)
+	}
 }
 
 func (t *parserHandler) log(level log.Level, line string, params ...any) {
@@ -1520,6 +1556,7 @@ func (t *parserHandler) swapAlt() {
 
 		// Reset alternate screen contents.
 		t.resetBufLines(t.sync.altBuf)
+		t.graphics.alt.Clear(true)
 
 		t.sync.buf = t.sync.altBuf
 		t.useAlt = true
@@ -1529,15 +1566,12 @@ func (t *parserHandler) swapAlt() {
 		t.sync.buf = t.sync.primBuf
 		t.useAlt = false
 	}
+	t.keyboard.activate(t.useAlt)
 }
 
 func (t *parserHandler) deccolm() {
-	if t.useAlt {
-		t.setScrollingRegion(1, 0, true)
-	} else {
-		t.shouldWrap = false
-	}
 	t.resetBufLines(t.sync.buf)
+	t.resetScrollingRegion()
 }
 
 func (t *parserHandler) resetBufLines(buf screenBuffer) {
@@ -1550,24 +1584,30 @@ func (t *parserHandler) carriageReturn() {
 	t.setCursorAtScreen(term.Coordinates{
 		X: 0,
 		Y: t.sync.buf.CursorAtScreen().Y,
-	}, false)
+	})
 }
 
 func (t *parserHandler) scrollDown(rows int) bool {
 	if t.useAlt {
-		return t.scrollDownAltRelative(t.sync.buf.TopScrollableRegion(), rows)
+		ok, count := t.scrollDownAltRelative(t.sync.buf.TopScrollableRegion(), rows)
+		if ok {
+			t.graphicsScrolled(-count)
+		}
+		return ok
 	}
 
 	buf := t.sync.primBuf
 	t.shouldWrap = false
 
-	// primary buffer includes history so we cannot simply
-	// use bottom and top of scrollable region.
-	start := buf.Rows() - t.height
-	end := buf.Rows()
+	// The primary buffer keeps history in the same matrix, so the
+	// region rows have to be offset by the screen's first row.
+	screenTop := buf.Rows() - t.height
+	start := screenTop + buf.TopScrollableRegion()
+	end := screenTop + buf.BottomScrollableRegion()
 	count := max(0, min(rows, end-start))
 	if count > 0 {
 		buf.ScrollDown(start, end, count)
+		t.graphicsScrolled(-count)
 		return true
 	}
 	return false
@@ -1575,21 +1615,53 @@ func (t *parserHandler) scrollDown(rows int) bool {
 
 func (t *parserHandler) scrollUp(count int) bool {
 	if t.useAlt {
-		return t.scrollUpAltRelative(t.sync.buf.TopScrollableRegion(), count)
+		ok, scrolled := t.scrollUpAltRelative(t.sync.buf.TopScrollableRegion(), count)
+		if ok {
+			t.graphicsScrolled(scrolled)
+		}
+		return ok
 	}
 	buf := t.sync.primBuf
 	t.shouldWrap = false
 
+	top, bottom := buf.TopScrollableRegion(), buf.BottomScrollableRegion()
+	if top > 0 {
+		// Lines leaving a region that does not start at the top of the
+		// screen are discarded rather than saved (kitty screen.c:2408,
+		// :2427).
+		count = max(0, min(count, bottom-top))
+		if count <= 0 {
+			return false
+		}
+		screenTop := buf.Rows() - t.height
+		buf.ScrollUp(screenTop+top, screenTop+bottom, count)
+		t.graphicsScrolled(count)
+		return true
+	}
+
 	rows := buf.Rows()
+	if bottom < t.height {
+		rows = bottom
+	}
 	count = max(0, min(count, rows))
 	if count <= 0 {
 		return false
 	}
 	buf.ScrollUpHistory(count)
+	if bottom < t.height {
+		// ScrollUpHistory moved the whole screen up to save the top
+		// rows; rotate the rows below the bottom margin back down over
+		// the blanks it appended.
+		r := buf.Rows()
+		buf.ScrollDown(r-(t.height-bottom)-count, r, count)
+	}
+	t.graphicsScrolled(count)
 	return true
 }
 
-func (t *parserHandler) scrollUpAltRelative(start int, count int) bool {
+// scrollUpAltRelative scrolls the alternate buffer's region up and
+// reports whether it did and by how many rows.
+func (t *parserHandler) scrollUpAltRelative(start int, count int) (bool, int) {
 	if t.sync.buf != t.sync.altBuf {
 		panic("called scroll up relative on non alternate buffer")
 	}
@@ -1599,10 +1671,12 @@ func (t *parserHandler) scrollUpAltRelative(start int, count int) bool {
 	if ok {
 		t.sync.altBuf.ScrollUp(start, end, count)
 	}
-	return ok
+	return ok, count
 }
 
-func (t *parserHandler) scrollDownAltRelative(start int, count int) bool {
+// scrollDownAltRelative scrolls the alternate buffer's region down and
+// reports whether it did and by how many rows.
+func (t *parserHandler) scrollDownAltRelative(start int, count int) (bool, int) {
 	if t.sync.buf != t.sync.altBuf {
 		panic("called scroll down relative on non alternate buffer")
 	}
@@ -1620,35 +1694,33 @@ func (t *parserHandler) scrollDownAltRelative(start int, count int) bool {
 	if ok {
 		t.sync.altBuf.ScrollDown(start, end, count)
 	}
-	return ok
+	return ok, count
 }
 
-// moveUp moves the cursor up delta lines.
-func (t *parserHandler) moveUp(delta int) {
-	pos := t.sync.buf.CursorAtScreen()
-	pos.Y -= delta
-	t.goTo(pos.Y, pos.X)
+// moveRows moves the cursor by delta rows. A cursor inside the margins
+// stops at them and one outside stops at the screen edge (DEC STD 070;
+// xterm CursorUp and CursorDown).
+func (t *parserHandler) moveRows(delta int) {
+	buf := t.sync.buf
+	pos := buf.CursorAtScreen()
+	top, bottom := 0, t.height-1
+	if delta > 0 && pos.Y < buf.BottomScrollableRegion() {
+		bottom = buf.BottomScrollableRegion() - 1
+	}
+	if delta < 0 && pos.Y >= buf.TopScrollableRegion() {
+		top = buf.TopScrollableRegion()
+	}
+	pos.Y = max(top, min(pos.Y+delta, bottom))
+	t.setCursorAtScreen(pos)
+	t.shouldWrap = false
 }
 
-// moveDown moves the cursor down delta lines.
-func (t *parserHandler) moveDown(delta int) {
+// setColumn moves the cursor to col on its row.
+func (t *parserHandler) setColumn(col int) {
 	pos := t.sync.buf.CursorAtScreen()
-	pos.Y += delta
-	t.goTo(pos.Y, pos.X)
-}
-
-// moveRight moves the cursor right delta cells.
-func (t *parserHandler) moveRight(delta int) {
-	pos := t.sync.buf.CursorAtScreen()
-	pos.X += delta
-	t.goTo(pos.Y, pos.X)
-}
-
-// moveLeft moves the cursor left delta cells.
-func (t *parserHandler) moveLeft(delta int) {
-	pos := t.sync.buf.CursorAtScreen()
-	pos.X -= delta
-	t.goTo(pos.Y, pos.X)
+	pos.X = max(0, min(col, t.width-1))
+	t.setCursorAtScreen(pos)
+	t.shouldWrap = false
 }
 
 func (t *parserHandler) setCursorShape(shape vteparser.CursorShape) {
@@ -1671,15 +1743,28 @@ func (t *parserHandler) setCursorShape(shape vteparser.CursorShape) {
 	}
 }
 
+// setScrollingRegion implements DECSTBM. top and bottom are 1-based;
+// bottom is kept as is since it doubles as the exclusive end of the
+// 0-based region. A region of fewer than two rows is ignored, as in
+// kitty and xterm, so that DECSTBM never traps the cursor on one line.
 func (t *parserHandler) setScrollingRegion(top, bottom int, end bool) {
-	if t.sync.buf != t.sync.altBuf {
-		panic("called set scrolling region on non alternate buffer")
+	top = min(top-1, t.height)
+	if end || bottom > t.height {
+		bottom = t.height
 	}
-	// top and bottom are not zero indexed. We leave bottom intact to
-	// maintain right exclusive range semantics.
-	top--
-	t.sync.altBuf.SetScrollableRegion(top, bottom, end)
-	t.setCursorAtScreen(term.Coordinates{}, true)
+	if bottom-top < 2 {
+		return
+	}
+	t.sync.buf.SetScrollableRegion(top, bottom, false)
+	t.goTo(0, 0)
+}
+
+// resetScrollingRegion opens the margins to the whole screen and homes
+// the cursor, as the sequences that reset the margins as a side effect
+// do.
+func (t *parserHandler) resetScrollingRegion() {
+	t.sync.buf.SetScrollableRegion(0, 0, true)
+	t.goTo(0, 0)
 }
 
 func (t *parserHandler) wrapLine() {
@@ -1691,21 +1776,28 @@ func (t *parserHandler) wrapLine() {
 		t.sync.primBuf.MarkWrapAtCursor()
 	}
 
+	t.carriageReturn()
+	t.index()
+}
+
+// index moves the cursor down a line. Only a cursor on the bottom
+// margin scrolls the region; below it the cursor stops at the last
+// line (kitty screen_index, screen.c:2404).
+func (t *parserHandler) index() {
 	buf := t.sync.buf
 	pos := buf.CursorAtScreen()
-	pos.X = 0
-	if pos.Y+1 >= buf.BottomScrollableRegion() {
+	switch {
+	case pos.Y == buf.BottomScrollableRegion()-1:
 		t.scrollUp(1)
-	} else {
+	case pos.Y < t.height-1:
 		pos.Y++
+		t.setCursorAtScreen(pos)
 	}
-
-	t.setCursorAtScreen(pos, false)
 	t.shouldWrap = false
 }
 
-func (t *parserHandler) setCursorAtScreen(pos term.Coordinates, relative bool) {
-	t.sync.buf.SetCursorAtScreen(pos, relative)
+func (t *parserHandler) setCursorAtScreen(pos term.Coordinates) {
+	t.sync.buf.SetCursorAtScreen(pos)
 }
 
 func (t *parserHandler) endOfLine(y int) int {
@@ -1768,18 +1860,278 @@ func (t *parserHandler) usedAlternate() bool {
 	return t.usedAlt
 }
 
+// goTo implements CUP: line and col are relative to the origin, which
+// DECOM moves to the top margin and confines to the region.
 func (t *parserHandler) goTo(line int, col int) {
-	var yoffset, maxy int
+	top, bottom := 0, t.height-1
 	if t.modeOrigin {
-		yoffset = t.sync.buf.TopScrollableRegion()
-		maxy = t.sync.buf.BottomScrollableRegion() - 1
-	} else {
-		maxy = t.height - 1
+		top = t.sync.buf.TopScrollableRegion()
+		bottom = t.sync.buf.BottomScrollableRegion() - 1
 	}
-	pos := term.Coordinates{
-		Y: max(0, min(line+yoffset, maxy)),
+	t.setCursorAtScreen(term.Coordinates{
+		Y: max(top, min(line+top, bottom)),
 		X: max(0, min(col, t.width-1)),
-	}
-	t.setCursorAtScreen(pos, t.modeOrigin)
+	})
 	t.shouldWrap = false
+}
+
+// store returns the store of the active screen buffer.
+func (t *parserHandler) graphicsStore() *vtegraphics.Storage {
+	if t.useAlt {
+		return t.graphics.alt
+	}
+	return t.graphics.prim
+}
+
+// GraphicsCommand satisfies vteparser.Handler.
+func (t *parserHandler) GraphicsCommand(data []byte) {
+	cell, ok := t.graphics.cell()
+	if !ok {
+		return
+	}
+	cmd, err := vtegraphics.Parse(data)
+	if err != nil {
+		t.log(log.DebugLevel, "graphics command: %v", err)
+		return
+	}
+	// The workspace filesystem may be remote, and drawing waits on the
+	// lock for as long as it is held.
+	cmd.ReadMedium(t.readGraphicsMedium)
+
+	t.sync.mu.Lock()
+	pos := t.sync.buf.CursorAtScreen()
+	cur := vtegraphics.Cursor{X: pos.X, Y: pos.Y}
+	before := cur
+	resp, ok := t.graphicsStore().Handle(cmd, &cur, cell)
+	if cur != before {
+		t.moveCursorAfterPlacement(cur)
+	}
+	t.sync.mu.Unlock()
+
+	// The response must reach the client before later input is parsed
+	// (spec §6.2), which holds because the parse stage is what writes
+	// it.
+	if ok {
+		if _, err := t.pty.Master.Write(resp); err != nil {
+			t.log(log.WarnLevel, "write graphics response: %v", err)
+		}
+	}
+}
+
+// moveCursorAfterPlacement applies the cursor movement of a placement
+// (spec §8.7): wrap at the right edge, scroll past the bottom margin
+// and clamp to the screen, as kitty's screen_handle_graphics_command.
+func (t *parserHandler) moveCursorAfterPlacement(cur vtegraphics.Cursor) {
+	x, y := cur.X, cur.Y
+	if x >= t.width {
+		x = 0
+		y++
+	}
+	bottom := t.sync.buf.BottomScrollableRegion() - 1
+	if y > bottom {
+		t.scrollUp(y - bottom)
+		y = bottom
+	}
+	t.setCursorAtScreen(term.Coordinates{
+		X: max(0, min(x, t.width-1)),
+		Y: max(0, min(y, t.height-1)),
+	})
+	t.shouldWrap = false
+}
+
+// graphicsScrolled moves placements with the text after the active
+// buffer scrolled up by count rows (spec §15); a negative count is a
+// scroll down.
+func (t *parserHandler) graphicsScrolled(count int) {
+	top, bottom := t.sync.buf.TopScrollableRegion(), t.sync.buf.BottomScrollableRegion()
+	var margins *vtegraphics.Margins
+	if top != 0 || bottom != t.height {
+		margins = &vtegraphics.Margins{Top: top, Bottom: bottom - 1}
+	}
+	t.graphicsShift(count, margins)
+}
+
+// graphicsShift moves the active buffer's placements up by count rows,
+// confined to margins when given.
+func (t *parserHandler) graphicsShift(count int, margins *vtegraphics.Margins) {
+	if count == 0 {
+		return
+	}
+	cell, ok := t.graphics.cell()
+	if !ok {
+		return
+	}
+	store := t.graphicsStore()
+	if store.Empty() {
+		return
+	}
+	limit := 0
+	if margins == nil && !t.useAlt && t.maxScrollLength > 0 {
+		limit = -t.maxScrollLength
+	}
+	store.Scroll(-count, limit, margins, cell)
+}
+
+// graphicsCleared implements the erase-display interactions
+// (spec §15). moved is how many rows the primary buffer pushed into
+// history to blank the screen, which it does regardless of the margins.
+func (t *parserHandler) graphicsCleared(moved int) {
+	t.graphicsShift(moved, nil)
+	t.graphicsStore().Clear(false)
+}
+
+// graphicsAnchored records where each primary placement sits in the
+// buffer's logical lines, which a reflow preserves. A width change
+// moves each line by a different number of rows, so a single shift
+// cannot follow them all.
+func (t *parserHandler) graphicsAnchored() []vtescreen.LogicalRow {
+	if t.graphics.prim.Empty() {
+		return nil
+	}
+	rows := t.graphics.prim.Rows(t.sync.primBuf.Rows()-t.height, nil)
+	anchors := make([]vtescreen.LogicalRow, len(rows))
+	for i, y := range rows {
+		anchors[i].Line, anchors[i].Offset = t.sync.primBuf.LogicalRow(y)
+	}
+	return anchors
+}
+
+// graphicsResized moves the primary placements back onto the rows their
+// logical lines now occupy. The alternate buffer is blanked by a
+// resize, so its placements go too.
+func (t *parserHandler) graphicsResized(anchors []vtescreen.LogicalRow) {
+	t.graphics.alt.Clear(true)
+	if len(anchors) == 0 {
+		return
+	}
+	rows := make([]int, len(anchors))
+	for i, a := range anchors {
+		rows[i] = t.sync.primBuf.RowForLogical(a.Line, a.Offset)
+	}
+	t.graphics.prim.SetRows(t.sync.primBuf.Rows()-t.height, rows)
+}
+
+// TextAreaSizePixels satisfies vteparser.Handler.
+func (t *parserHandler) TextAreaSizePixels() {
+	cell, ok := t.graphics.cell()
+	if !ok {
+		t.log(log.DebugLevel, "unsupported call to TextAreaSizePixels")
+		return
+	}
+	t.sync.mu.Lock()
+	data := fmt.Sprintf("\x1b[4;%d;%dt", t.height*cell.Height, t.width*cell.Width)
+	t.sync.mu.Unlock()
+	if _, err := t.pty.Master.Write([]byte(data)); err != nil {
+		t.log(log.WarnLevel, "write text area size in pixels: %v", err)
+	}
+}
+
+// CellSizePixels satisfies vteparser.Handler.
+func (t *parserHandler) CellSizePixels() {
+	cell, ok := t.graphics.cell()
+	if !ok {
+		t.log(log.DebugLevel, "unsupported call to CellSizePixels")
+		return
+	}
+	data := fmt.Sprintf("\x1b[6;%d;%dt", cell.Height, cell.Width)
+	if _, err := t.pty.Master.Write([]byte(data)); err != nil {
+		t.log(log.WarnLevel, "write cell size in pixels: %v", err)
+	}
+}
+
+// drawGraphics draws the active buffer's placements and placeholder
+// images over the cells already drawn to w, and advances animations.
+// It reports when the next animation frame is due. Callers must hold
+// t.sync.mu.
+func (t *parserHandler) drawGraphics(w term.Writer, scrolledBy int, now time.Time) (time.Duration, bool) {
+	cell, ok := t.graphics.cell()
+	if !ok {
+		return 0, false
+	}
+	store := t.graphicsStore()
+	runs := t.scanPlaceholders(w, scrolledBy)
+	if store.Empty() {
+		return 0, false
+	}
+	if cell != t.graphics.lastCell {
+		t.graphics.prim.Rescale(cell)
+		t.graphics.alt.Rescale(cell)
+		t.graphics.lastCell = cell
+	}
+	view := vtegraphics.View{
+		Width: t.width, Height: t.height, ScrolledBy: scrolledBy, Cell: cell,
+	}
+	for _, img := range store.Visible(view, runs) {
+		if !w.DrawImage(img) {
+			break
+		}
+	}
+	_, next, running := store.Animate(now)
+	return next, running
+}
+
+// scanPlaceholders collects the placeholder runs of the visible rows
+// and blanks their cells, since the placeholder glyph itself must not
+// render (spec §9).
+func (t *parserHandler) scanPlaceholders(w term.Writer, scrolledBy int) []vtegraphics.PlaceholderRun {
+	buf := t.sync.buf
+	base := buf.CursorAtScroll().Y - buf.CursorAtScreen().Y - scrolledBy
+	runs := t.graphics.runs[:0]
+	for y := 0; y < t.height; y++ {
+		abs := base + y
+		if abs < 0 || abs >= buf.Rows() {
+			continue
+		}
+		row := buf.RowCells(abs)
+		if len(row) > t.width {
+			row = row[:t.width]
+		}
+		runs = vtegraphics.ScanPlaceholders(runs, y, row)
+	}
+	for _, run := range runs {
+		abs := base + run.Row
+		row := buf.RowCells(abs)
+		for x := run.Col; x < run.Col+run.Len && x < len(row); x++ {
+			c := row[x]
+			c.Ch = ' '
+			c.SetCombining(nil)
+			c.Width = 1
+			w.SetCell(term.Coordinates{X: x, Y: run.Row}, c)
+		}
+	}
+	t.graphics.runs = runs
+	return runs
+}
+
+// readGraphicsMedium implements vtegraphics.ReadTransmission over the
+// workspace filesystem, so a file transmitted by a program running on a
+// remote workspace is read there (spec §4.4). It runs without t.sync.mu
+// held, so it must not touch the state that lock guards.
+func (t *parserHandler) readGraphicsMedium(
+	medium byte, name string, offset, size int64,
+) ([]byte, error) {
+	if t.fs == nil {
+		return nil, errRefused
+	}
+	p, err := graphicsMediumPath(t.fs, medium, name)
+	if err != nil {
+		return nil, err
+	}
+	f, err := t.fs.OpenFile(p, os.O_RDONLY, 0)
+	if err != nil {
+		return nil, errRefused
+	}
+	defer func() { _ = f.Close() }()
+
+	data, err := readGraphicsFile(f, offset, size)
+	if err != nil {
+		return nil, err
+	}
+	if medium == 's' || (medium == 't' && isGraphicsTempFile(t.fs, p, t.tempDir)) {
+		// kitty deletes a shared memory object unconditionally and a
+		// temp file only when its name marks it as ours (kitty
+		// graphics.c:640-644).
+		_ = t.fs.Remove(p)
+	}
+	return data, nil
 }

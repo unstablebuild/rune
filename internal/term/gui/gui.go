@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -33,7 +34,6 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"github.com/unstablebuild/tcell/v3"
-	"unstable.build/rune/internal/cell"
 	"unstable.build/rune/internal/term/gui/drawrect"
 	"unstable.build/rune/internal/term/gui/font"
 )
@@ -70,7 +70,7 @@ type GUI struct {
 	fontManager       *font.Manager
 	updateChan        chan term.Event
 	handler           tui.Handler
-	writer            *cell.BufferWriter
+	writer            *frameWriter
 	mouse             *mouse
 	input             *input
 	drag              *dragPoller
@@ -112,6 +112,10 @@ type GUI struct {
 	lastPositionY int
 	iteration     int64
 	deviceScale   float64
+	// cellPixelSize is the cell pitch in device pixels, packed as
+	// width<<32|height and published on every resize for readers off
+	// the event loop.
+	cellPixelSize atomic.Uint64
 
 	links linkScanner
 
@@ -270,7 +274,7 @@ func (g *GUI) Draw(screen *ebiten.Image) {
 	if g.links.armed() {
 		cells = g.links.overlay(cells)
 	}
-	g.renderer.Draw(screen, cells, g.cursor.show,
+	g.renderer.Draw(screen, cells, g.writer.Images(), g.cursor.show,
 		g.cursor.pos, g.cursor.style, float64(g.renderOffset.X),
 		float64(g.renderOffset.Y))
 	g.needsRender = false
@@ -372,6 +376,17 @@ func (g *GUI) Update() error {
 		if g.prevTickKey {
 			g.echoLikely = true
 		}
+	}
+
+	// The loop wakes on every vsync whether or not anything happened.
+	// Taking the UI lock to do nothing would contend, for no benefit,
+	// with the extension RPC goroutines that need it, and the loop holds
+	// it for the whole tick. An empty queue means no interrupt was
+	// pending either, so no draw and no echo wait can be owed.
+	if len(g.pendingEvents) == 0 && !needsDraw && g.drag.idle() {
+		g.prevTickKey = false
+		g.iteration++
+		return nil
 	}
 
 	// set context with default iteration
@@ -692,7 +707,9 @@ func (g *GUI) resize(width, height int, deviceScale float64) {
 
 	g.handler.Resize(cellsWidth, cellsHeight)
 	g.mouse.resize(cellsWidth, cellsHeight)
-	g.writer = cell.NewBufferWriter(g.ctx, cellsWidth, cellsHeight)
+	g.cellPixelSize.Store(uint64(math.Round(g.fontManager.PixelX(1)))<<32 |
+		uint64(math.Round(g.fontManager.PixelY(1))))
+	g.writer = newFrameWriter(g.ctx, cellsWidth, cellsHeight)
 	if g.renderer != nil {
 		g.renderer.deallocate()
 	}
@@ -701,6 +718,15 @@ func (g *GUI) resize(width, height int, deviceScale float64) {
 		g.cursorAttributes, g.defaultAttr)
 	g.renderer.forceFullRepaint = g.forceFullRepaint
 	g.needsDraw = true
+}
+
+// CellPixelSize reports the cell pitch in device pixels, which is what
+// image placements are scaled by and what the kitty graphics protocol
+// advertises to clients. It is zero before the first resize and safe
+// to call from any goroutine.
+func (g *GUI) CellPixelSize() (width, height int) {
+	packed := g.cellPixelSize.Load()
+	return int(packed >> 32), int(packed & 0xffffffff)
 }
 
 // CellRect returns the origin and size, in points relative to the

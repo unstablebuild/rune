@@ -17,6 +17,8 @@
 package handler
 
 import (
+	"slices"
+
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
@@ -30,6 +32,15 @@ import (
 type FrameUnion struct {
 	main tui.Handler
 	component.FrameUnion
+
+	// capturing are the members registered with CaptureDrags.
+	capturing []tui.Handler
+	// leftHeld reports that a left press came and no release or hover
+	// has since. pressed is the member it came on when that member
+	// captures drags.
+	leftHeld        bool
+	pressedCaptures bool
+	pressed         component.Virtual[tui.Component]
 }
 
 // NewFrameUnion allocates storage for a new FrameUnion and initializes it.
@@ -101,6 +112,15 @@ func (u *FrameUnion) UnionRightFrame(right tui.Component, width int, frame bool)
 	u.FrameUnion.UnionRightFrame(right, width, frame)
 }
 
+// CaptureDrags makes member, which must already be part of this union,
+// own the whole gesture of every left press on it: the drags and the
+// release reach member wherever the pointer goes, with coordinates past
+// its bounds once the pointer leaves it, and drags that start on other
+// members never reach it. Members that tell clicks from drags need both.
+func (u *FrameUnion) CaptureDrags(member tui.Handler) {
+	u.capturing = append(u.capturing, member)
+}
+
 // Resize satisfies tui.Handler.
 func (u *FrameUnion) Resize(width, height int) {
 	u.FrameUnion.Resize(width, height)
@@ -112,13 +132,37 @@ func (u *FrameUnion) Draw(w term.Writer) {
 }
 
 // Handle delegates ev to main handler, unless event is a mouse event,
-// in which case it's delegated to the component at ev.MouseX and ev.MouseY.
+// in which case it's delegated to the component at ev.MouseX and ev.MouseY,
+// except for the drags and releases CaptureDrags reserves.
 func (u *FrameUnion) Handle(ev term.Event) (exit, handled bool) {
 	if ev.Type != term.EventMouse {
 		return u.main.Handle(ev)
 	}
 
 	c, ok := u.FrameUnion.ComponentAt(term.Coordinates{X: ev.MouseX, Y: ev.MouseY})
+	dragging := u.leftHeld && (ev.Key == term.MouseLeft || ev.Key == term.MouseRelease)
+	switch ev.Key {
+	case term.MouseLeft:
+		if !u.leftHeld {
+			u.leftHeld = true
+			u.pressedCaptures = ok && u.captures(c.C)
+			u.pressed = c
+		}
+	case term.MouseRelease, 0:
+		// Hovering means no button is held, so a release that never
+		// reached this union cannot hold on to the next press.
+		u.leftHeld = false
+	}
+	if dragging {
+		if u.pressedCaptures {
+			ev.MouseX -= u.pressed.Position().X
+			ev.MouseY -= u.pressed.Position().Y
+			return u.pressed.C.(tui.Handler).Handle(ev)
+		}
+		if ok && u.captures(c.C) {
+			return
+		}
+	}
 	if !ok {
 		return
 	}
@@ -132,6 +176,12 @@ func (u *FrameUnion) Handle(ev term.Event) (exit, handled bool) {
 		ev.MouseY = 0
 	}
 	return handler.Handle(ev)
+}
+
+func (u *FrameUnion) captures(c tui.Component) bool {
+	return slices.ContainsFunc(u.capturing, func(h tui.Handler) bool {
+		return tui.Component(h) == c
+	})
 }
 
 // Cursor returns the main component's cursor position.

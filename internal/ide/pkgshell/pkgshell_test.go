@@ -121,6 +121,8 @@ func (m *fixtureWindowManager) SetWindowContent(_ browserapi.Window, _ browserap
 }
 func (m *fixtureWindowManager) CloseWindow(_ browserapi.Window) error { return nil }
 
+func (m *fixtureWindowManager) SetTabActivity(workspaceapi.URI, bool) error { return nil }
+
 type fixtureWindow struct{}
 
 func (m *fixtureWindow) WindowID() uint64 { return 0 }
@@ -201,7 +203,7 @@ func (s *fixtureScheme) Close() error { return nil }
 func (s *fixtureScheme) NewPty(_ context.Context) (workspaceapi.Pty, error) {
 	panic("not implemented")
 }
-func (s *fixtureScheme) SetPtySize(_ workspaceapi.Pty, _, _ int) error {
+func (s *fixtureScheme) SetPtySize(workspaceapi.Pty, workspaceapi.PtySize) error {
 	panic("not implemented")
 }
 

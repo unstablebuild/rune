@@ -218,6 +218,7 @@ type workspaceManagerHandler struct {
 
 	union               handler.FrameUnion
 	bar                 handler.Tabs
+	shadedBar           *handler.ShadedTabs
 	barIdxToSlot        []int
 	focusProxy          handler.Proxy
 	width, height       int
@@ -1145,6 +1146,7 @@ func (h *workspaceManagerHandler) Resize(width, height int) {
 	if drawBar {
 		h.union.Resize(h.width, h.height)
 	}
+	h.refreshWorkspaceActivity()
 	if h.openPrevFiles != nil && h.width != 0 && h.height != 0 {
 		err := h.openPrevSessionFiles(h.openPrevFilesEx, h.openPrevFiles, h.openPrevWindows)
 		if err != nil {
@@ -1169,6 +1171,9 @@ func (h *workspaceManagerHandler) setRightInset(cells int) {
 		return
 	}
 	h.rightInset = cells
+	if h.empty != nil {
+		h.empty.setRightInset(cells)
+	}
 	for _, w := range h.workspaces {
 		if w == nil || w.ex == nil {
 			continue
@@ -1176,6 +1181,17 @@ func (h *workspaceManagerHandler) setRightInset(cells int) {
 		w.setRightInset(cells)
 	}
 	h.Resize(h.width, h.height)
+}
+
+// windowRows satisfies windowRows: the rows the focused workspace's
+// windows occupy, which exclude both the bar this handler lays out
+// around them and the bars the workspace lays out around its own.
+func (h *workspaceManagerHandler) windowRows() (top, rows int) {
+	if h.drawBar() {
+		top = h.union.MainPosition().Y
+	}
+	exTop, exRows := h.focusEx().windowRows()
+	return top + exTop, exRows
 }
 
 func (h *workspaceManagerHandler) Draw(w term.Writer) {
@@ -1257,35 +1273,6 @@ func (h *workspaceManagerHandler) Handle(ev term.Event) (exit, handled bool) {
 
 func (h *workspaceManagerHandler) Cursor() (term.Coordinates, term.CursorStyle, bool) {
 	return h.focusHandler().Cursor()
-}
-
-// isExitCommand reports whether name is a command that exits the IDE.
-func isExitCommand(name string) bool {
-	switch name {
-	case "quit", "forcequit!", "writequit", "writeforcequit!":
-		return true
-	}
-	return false
-}
-
-// exitRequested reports whether ev is bound to a command that exits
-// the IDE under the focused workspace's key bindings. Two-key
-// sequences (e.g. the emacs <c-x><c-c>) are resolved by the sequencer
-// inside ex and are not visible here.
-func (h *workspaceManagerHandler) exitRequested(ev term.Event) bool {
-	if ev.Type != term.EventKey {
-		return false
-	}
-	cmdsAndArgs, ok := h.focusEx().comp.CommandKeyBinding(ev.KeyComb())
-	if !ok {
-		return false
-	}
-	for _, cmd := range cmdsAndArgs {
-		if len(cmd) > 0 && isExitCommand(cmd[0]) {
-			return true
-		}
-	}
-	return false
 }
 
 func (h *workspaceManagerHandler) Selection() (string, bool) {
@@ -1470,6 +1457,11 @@ func (h *workspaceManagerHandler) textOpts(
 				"rune-agent": "Drop files here to add to chat",
 			}),
 		text.WithDirtyTabAttr(cfg.dirtyTabAttr()),
+		text.WithActiveTabShader(
+			cfg.animationsActiveTabShader(animActiveContentTab),
+			cfg.animationsActiveTabFPS(animActiveContentTab),
+			cfg.animationsActiveTabLoop(animActiveContentTab)),
+		text.WithOnTabActivity(h.refreshWorkspaceActivity),
 		text.WithIconSet(cfg.icons()),
 		text.WithTabOverrideIcon(cfg.tabOverrideIcon()),
 		text.WithCommandOverlayConfig(cfg.commandOverlayConfig()),
@@ -3130,14 +3122,61 @@ func (h *workspaceManagerHandler) initTabs(
 	h.workspacesBarHeight = workspacesBarHeight
 	h.bar.SetBorder(workspacesBarFrame)
 	h.bar.SetNameSeparator(cfg.tabNameSeparator())
-	var bar tui.Handler = &h.bar
+	h.shadedBar = handler.NewShadedTabs(&h.bar, handler.ShadedTabsConfig{
+		Shader:      cfg.animationsActiveTabShader(animActiveWorkspaceTab),
+		FPS:         cfg.animationsActiveTabFPS(animActiveWorkspaceTab),
+		Loop:        cfg.animationsActiveTabLoop(animActiveWorkspaceTab),
+		DefAttr:     cfg.nonFocusTabAttr(),
+		Interrupter: h.events.globalInterrupter(),
+		Active:      h.activeWorkspaceBarIndices,
+	})
+	var bar tui.Handler = h.shadedBar
 	if workspacesBarOffset != 0 {
-		v := new(handlerapi.Virtual[*handler.Tabs])
-		v.C = &h.bar
+		v := new(handlerapi.Virtual[*handler.ShadedTabs])
+		v.C = h.shadedBar
 		v.Move(term.Coordinates{X: workspacesBarOffset})
 		bar = v
 	}
 	h.union.UnionBottomFrame(bar, h.barSize(), workspacesBarFrame)
+	h.refreshWorkspaceActivity()
+}
+
+// workspaceActive reports whether any tab of the workspace in slot is
+// marked active by an extension.
+func (h *workspaceManagerHandler) workspaceActive(slot int) bool {
+	w := h.workspaces[slot]
+	return w != nil && w.ex != nil && w.ex.comp.HasActiveTabs()
+}
+
+// activeWorkspaceBarIndices returns the workspace bar indices of the
+// workspaces with at least one active tab, whether or not they are in
+// focus.
+func (h *workspaceManagerHandler) activeWorkspaceBarIndices() []int {
+	var ret []int
+	for idx, slot := range h.barIdxToSlot {
+		if h.workspaceActive(slot) {
+			ret = append(ret, idx)
+		}
+	}
+	return ret
+}
+
+// refreshWorkspaceActivity runs the workspace bar's active-tab effect
+// while the bar is shown and any workspace has an active tab. It must
+// be called on the host event loop whenever either can change.
+func (h *workspaceManagerHandler) refreshWorkspaceActivity() {
+	if h.shadedBar == nil {
+		// initTabs has not run yet; it refreshes once the bar exists.
+		return
+	}
+	anyActive := false
+	for slot := range h.workspaces {
+		if h.workspaceActive(slot) {
+			anyActive = true
+			break
+		}
+	}
+	h.shadedBar.SetRunning(anyActive && h.drawBar())
 }
 
 func (h *workspaceManagerHandler) subscribeAllCommands(ex *ex) error {
@@ -3806,6 +3845,23 @@ func (f *workspaceTabManager) SetTabName(
 
 func (f *workspaceTabManager) OnTabExit(uri workspaceapi.URI) bool {
 	return f.tm != nil && f.tm.OnTabExit(uri)
+}
+
+// SetTabActivity satisfies browser.TabManager. Callers may be off the
+// event loop, so the mark is applied on the next tick; the browser then
+// reports the change back through refreshWorkspaceActivity.
+func (f *workspaceTabManager) SetTabActivity(
+	uri workspaceapi.URI, active bool,
+) error {
+	if f.tm == nil {
+		return errors.New("tab manager is not initialized")
+	}
+	f.parent.scheduleNextTick(func() {
+		if err := f.tm.SetTabActivity(uri, active); err != nil {
+			log.Debugf("SetTabActivity on workspace tab manager %p: %v", f, err)
+		}
+	})
+	return nil
 }
 
 func lspCommandsConfig(

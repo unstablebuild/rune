@@ -22,6 +22,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
@@ -104,6 +105,24 @@ func statusBarBlock(
 		}
 	} else if !errors.Is(err, config.ErrNotFound) {
 		slog.Warn("get 'status_bar.shader' from extension config", "error", err)
+	}
+
+	if v, err := sub.GetInt("shader_fps"); err == nil {
+		ret.ShaderFPS = v
+	} else if !errors.Is(err, config.ErrNotFound) {
+		slog.Warn("get 'status_bar.shader_fps' from extension config", "error", err)
+	}
+
+	if v, err := sub.GetString("shader_loop"); err == nil {
+		d, perr := time.ParseDuration(v)
+		if perr != nil {
+			_, _ = noti.Notify(browserapi.LevelWarn,
+				"status_bar: invalid shader_loop %q: %v", v, perr)
+		} else {
+			ret.ShaderLoop = d
+		}
+	} else if !errors.Is(err, config.ErrNotFound) {
+		slog.Warn("get 'status_bar.shader_loop' from extension config", "error", err)
 	}
 
 	if v, err := config.GetAttributes(sub, "background_attr"); err == nil {

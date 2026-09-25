@@ -40,8 +40,8 @@ const asyncTerminalResizeQueue = 1
 var errInvalidMasterPtyFd = workspace.ErrInvalidMasterPtyFd.Error()
 
 type ptyResize struct {
-	pty           workspaceapi.Pty
-	width, height int
+	pty  workspaceapi.Pty
+	size workspaceapi.PtySize
 }
 
 type asyncTerminal struct {
@@ -72,9 +72,9 @@ func newAsyncTerminal(
 // SetPtySize queues the resize and returns nil immediately. Transport
 // failures surface later, as a notification raised by the worker.
 func (t *asyncTerminal) SetPtySize(
-	p workspaceapi.Pty, width, height int,
+	p workspaceapi.Pty, size workspaceapi.PtySize,
 ) error {
-	req := ptyResize{pty: p, width: width, height: height}
+	req := ptyResize{pty: p, size: size}
 	if t.offer(req) {
 		return nil
 	}
@@ -83,12 +83,12 @@ func (t *asyncTerminal) SetPtySize(
 	select {
 	case dropped := <-t.resizes:
 		t.log(log.DebugLevel, "dropped superseded pty resize %dx%d",
-			dropped.width, dropped.height)
+			dropped.size.Columns, dropped.size.Rows)
 	default:
 	}
 	if !t.offer(req) {
 		t.log(log.WarnLevel, "dropped pty resize %dx%d: queue is saturated",
-			width, height)
+			size.Columns, size.Rows)
 	}
 	return nil
 }
@@ -125,10 +125,10 @@ func (t *asyncTerminal) run() {
 		case <-t.stop:
 			return
 		case req := <-t.resizes:
-			err := t.Terminal.SetPtySize(req.pty, req.width, req.height)
+			err := t.Terminal.SetPtySize(req.pty, req.size)
 			if err != nil {
 				t.log(log.ErrorLevel, "set pty size %dx%d: %v",
-					req.width, req.height, err)
+					req.size.Columns, req.size.Rows, err)
 				// A pty that is already gone cannot be resized, and
 				// the terminal is tearing down anyway, so the toast
 				// would only be noise.
@@ -137,7 +137,7 @@ func (t *asyncTerminal) run() {
 				}
 				_, _ = t.notifications.Notify(browserapi.LevelError,
 					"resize terminal to %dx%d: %v",
-					req.width, req.height, err)
+					req.size.Columns, req.size.Rows, err)
 			}
 		}
 	}

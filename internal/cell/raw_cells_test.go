@@ -154,20 +154,20 @@ func TestRawCellsStringReadFrom(t *testing.T) {
 	}{
 		{"", [][]term.Cell{{}}},
 		{"\n", [][]term.Cell{{}, {}}},
-		{"\t\n", [][]term.Cell{{{Combining: nil, Bytes: 1, Ch: '\t'}}, {}}},
-		{"\t", [][]term.Cell{{{Combining: nil, Bytes: 1, Ch: '\t'}}}},
-		{"a", [][]term.Cell{{{Ch: 'a', Combining: nil, Bytes: 1, Width: 1}}}},
-		{"\nb", [][]term.Cell{{}, {{Ch: 'b', Combining: nil, Bytes: 1, Width: 1}}}},
-		{"c\n", [][]term.Cell{{{Ch: 'c', Combining: nil, Bytes: 1, Width: 1}}, {}}},
+		{"\t\n", [][]term.Cell{{{Bytes: 1, Ch: '\t'}}, {}}},
+		{"\t", [][]term.Cell{{{Bytes: 1, Ch: '\t'}}}},
+		{"a", [][]term.Cell{{{Ch: 'a', Bytes: 1, Width: 1}}}},
+		{"\nb", [][]term.Cell{{}, {{Ch: 'b', Bytes: 1, Width: 1}}}},
+		{"c\n", [][]term.Cell{{{Ch: 'c', Bytes: 1, Width: 1}}, {}}},
 		{"\n\n\n", [][]term.Cell{{}, {}, {}, {}}},
-		{"\n\n\na", [][]term.Cell{{}, {}, {}, {{Ch: 'a', Combining: nil, Bytes: 1, Width: 1}}}},
-		{"💥", [][]term.Cell{{{Ch: '💥', Width: 2, Combining: nil, Bytes: 4}}}},
-		{"👨‍👧‍👦", [][]term.Cell{{{Ch: '👨', Combining: &[]rune{
+		{"\n\n\na", [][]term.Cell{{}, {}, {}, {{Ch: 'a', Bytes: 1, Width: 1}}}},
+		{"💥", [][]term.Cell{{{Ch: '💥', Width: 2, Bytes: 4}}}},
+		{"👨‍👧‍👦", [][]term.Cell{{{Ch: '👨', Extra: &term.CellExtra{Combining: []rune{
 			rune(8205),
 			rune(128103),
 			rune(8205),
 			rune(128102),
-		}, Width: 2, Bytes: 18}}}},
+		}}, Width: 2, Bytes: 18}}}},
 	}
 
 	for i, _tcase := range tsuite {
@@ -378,12 +378,12 @@ func TestRawCellsInsertGraphemeCluster(t *testing.T) {
 	_, next = c.insert(next, "👦")
 
 	assert.Equal(t, [][]term.Cell{
-		{{Ch: '👨', Combining: &[]rune{
+		{{Ch: '👨', Extra: &term.CellExtra{Combining: []rune{
 			rune(8205),
 			rune(128103),
 			rune(8205),
 			rune(128102),
-		}, Bytes: 18, Width: 2}},
+		}}, Bytes: 18, Width: 2}},
 	}, c.RawCells())
 }
 
@@ -398,7 +398,7 @@ func TestRawCellsInsertModifierCluster(t *testing.T) {
 		_, _, _ = c.Edit(context.Background(), next, next, "\U0001F3FC")
 
 		assert.Equal(t, [][]term.Cell{
-			{{Ch: '\U0001F91F', Combining: &[]rune{'\U0001F3FC'}, Bytes: 8, Width: 2}},
+			{{Ch: '\U0001F91F', Extra: &term.CellExtra{Combining: []rune{'\U0001F3FC'}}, Bytes: 8, Width: 2}},
 		}, c.RawCells())
 	})
 
@@ -409,7 +409,7 @@ func TestRawCellsInsertModifierCluster(t *testing.T) {
 		_, _, _ = c.Edit(context.Background(), next, next, "\uFE0F")
 
 		assert.Equal(t, [][]term.Cell{
-			{{Ch: '\u2764', Combining: &[]rune{'\uFE0F'}, Bytes: 6, Width: 2}},
+			{{Ch: '\u2764', Extra: &term.CellExtra{Combining: []rune{'\uFE0F'}}, Bytes: 6, Width: 2}},
 		}, c.RawCells())
 	})
 
@@ -426,10 +426,10 @@ func TestRawCellsInsertModifierCluster(t *testing.T) {
 
 		assert.Equal(t, [][]term.Cell{
 			{{
-				Ch:        '\U0001F468',
-				Combining: &[]rune{'\u200D', '\U0001F469', '\u200D', '\U0001F467'},
-				Bytes:     18,
-				Width:     2,
+				Ch:    '\U0001F468',
+				Extra: &term.CellExtra{Combining: []rune{'\u200D', '\U0001F469', '\u200D', '\U0001F467'}},
+				Bytes: 18,
+				Width: 2,
 			}},
 		}, c.RawCells())
 		assert.Equal(t, term.Coordinates{X: 1}, pos,
@@ -804,11 +804,11 @@ func TestRawCellsCell(t *testing.T) {
 
 	cell, ok = c.Cell(term.Coordinates{Y: 1, X: 4})
 	assert.True(t, ok)
-	assert.Equal(t, term.Cell{Ch: 'L', Bytes: 1, Combining: nil, Width: 1}, cell)
+	assert.Equal(t, term.Cell{Ch: 'L', Bytes: 1, Width: 1}, cell)
 
 	cell, ok = c.Cell(term.Coordinates{Y: 3, X: 25})
 	assert.True(t, ok)
-	assert.Equal(t, term.Cell{Ch: '中', Combining: nil, Bytes: 3, Width: 2}, cell)
+	assert.Equal(t, term.Cell{Ch: '中', Bytes: 3, Width: 2}, cell)
 
 	cell, ok = c.Cell(term.Coordinates{Y: 666})
 	assert.False(t, ok)

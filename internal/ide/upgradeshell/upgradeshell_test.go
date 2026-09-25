@@ -69,6 +69,8 @@ func (m *promptWindowManager) SetWindowContent(browserapi.Window, browserapi.Han
 }
 func (m *promptWindowManager) CloseWindow(browserapi.Window) error { return nil }
 
+func (m *promptWindowManager) SetTabActivity(workspaceapi.URI, bool) error { return nil }
+
 type recordingProgressWriter struct {
 	mu    sync.Mutex
 	units []string

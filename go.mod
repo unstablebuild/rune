@@ -24,7 +24,7 @@ require (
 	github.com/sourcegraph/go-diff v0.7.0
 	github.com/spf13/pflag v1.0.10
 	github.com/stretchr/testify v1.12.1
-	github.com/unstablebuild/rune-go-sdk v0.2.1
+	github.com/unstablebuild/rune-go-sdk v0.5.0
 	github.com/unstablebuild/tcell/v3 v3.6.5
 	go.uber.org/goleak v1.3.0
 	golang.org/x/crypto v0.56.0

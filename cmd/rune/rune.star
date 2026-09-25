@@ -256,6 +256,27 @@ config = {
             "angular_width": 0.33,
             "cycles": 1,
         },
+        # Plays over content tabs that an extension marks as having
+        # work in progress (e.g. a rune-agent turn), until the work
+        # ends or the tab closes. "shader" is one of blaze, burn,
+        # inferno, noise, pulse, shine or trippy. "fps" is the redraw
+        # cadence and "loop" how long one visual loop lasts, as a Go
+        # duration string.
+        "active_content_tab": {
+            "enabled": True,
+            "shader":  "shine",
+            "fps":     10,
+            "loop":    "1400ms",
+        },
+        # Plays over the workspace tabs that own an active content
+        # tab, whether or not the workspace is focused. Takes the same
+        # keys as active_content_tab.
+        "active_workspace_tab": {
+            "enabled": True,
+            "shader":  "shine",
+            "fps":     10,
+            "loop":    "1400ms",
+        },
     },
     # Self-upgrade configuration. Rune polls a public manifest endpoint
     # to discover new releases and prompts before installing them.

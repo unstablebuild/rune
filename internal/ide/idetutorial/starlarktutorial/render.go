@@ -20,85 +20,14 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/unstablebuild/rune-go-sdk/component"
-	"github.com/unstablebuild/rune-go-sdk/term"
-
 	"unstable.build/rune/internal/handler/command"
 )
 
-// overlayComponent draws the active step's overlay in local
-// coordinates so a single [component.Virtual] both positions the box
-// on screen and answers ComponentAt hit-tests against the same
-// geometry the last Draw painted.
-type overlayComponent struct {
-	width, height int
-	draw          func(w term.Writer)
-}
-
-// Resize satisfies tui.Component.
-func (c *overlayComponent) Resize(width, height int) {
-	c.width, c.height = width, height
-}
-
-// Draw satisfies tui.Component.
-func (c *overlayComponent) Draw(w term.Writer) {
-	if c.draw == nil {
-		return
-	}
-	c.draw(w)
-}
-
-// drawBanner paints lines top-left into v within (width, height).
-// Out-of-range writes are dropped silently.
-func drawBanner(
-	v *component.Virtual[*overlayComponent], w term.Writer,
-	width, height int, lines []string,
-) {
-	if width <= 0 || height <= 0 {
-		return
-	}
-	maxW := 0
-	for _, line := range lines {
-		maxW = max(maxW, min(len(line), width))
-	}
-	v.Move(term.Coordinates{})
-	v.Resize(maxW, min(len(lines), height))
-	v.C.draw = func(lw term.Writer) {
-		for y, line := range lines {
-			for x, r := range line {
-				lw.SetCell(term.Coordinates{X: x, Y: y}, term.Cell{Ch: r})
-			}
-		}
-	}
-	v.Draw(w)
-}
-
-// commandPromptTopFraction mirrors the command prompt's vertical
-// anchor: the IDE opens the prompt at Y = 0.2 * height (see
-// (*ex).newCommandPrompt). The bottom-anchored wait hint window caps
-// its height against that row so it never grows up into the prompt the
-// user is asked to open.
-const commandPromptTopFraction = 0.2
-
-// hintBoxMinInnerH keeps the hint window tall enough to show its
-// wrapped instruction line even on short screens, where the
-// prompt-aware cap (0.2*height) would otherwise squeeze it below
-// readability.
-const hintBoxMinInnerH = 4
-
-// hintBoxMaxHeightSlack lets the hint window extend a few rows past the
-// prompt-aware cap before truncating its body, so longer command
-// manuals are not cut off mid-sentence.
-const hintBoxMaxHeightSlack = 3
-
-// buildWaitCommandHint composes the markdown body for the
-// wait_command hint window. The body always opens with a one-line
-// prompt — "Waiting for you to open the command prompt `<cmd>` and
-// try the `<command>` command:" — followed by the command's
-// markdown-rendered manual when lookup returns one. A non-empty
-// request.text wins over the manual and is rendered verbatim after
-// the prompt opener: it is either the step's own instruction or the
-// on_error message the runtime swapped in after a failed dispatch.
+// buildWaitCommandHint composes the markdown body of a wait_command
+// screen. A step that declared text is rendered as written: the copy
+// is expected to say what to run and how. A step without text gets a
+// generated hint naming the command, the key bound to it and its
+// manual when lookup returns one.
 func buildWaitCommandHint(
 	r *request, cmdKey string, lookup CommandManualLookup,
 	keyForCommand func(cmd string, args []string) string,
@@ -106,26 +35,19 @@ func buildWaitCommandHint(
 	if r == nil {
 		return ""
 	}
+	if r.text != "" {
+		return expandCmdTemplate(r.text, cmdKey)
+	}
 	cmdName := r.command
 	var b strings.Builder
-	fmt.Fprintf(&b,
-		"Waiting for you to open the command prompt `%s` and try the `%s` command:\n\n",
-		cmdKey, cmdName)
-	if boundKey := waitCommandBoundKey(cmdName, keyForCommand); boundKey != "" &&
-		!strings.Contains(r.text, "`"+boundKey+"`") {
-		fmt.Fprintf(&b,
-			"Or you can press `%s` to run it.\n\n", boundKey)
+	fmt.Fprintf(&b, "Run `%s` from the command prompt (`%s`)", cmdName, cmdKey)
+	if boundKey := waitCommandBoundKey(cmdName, keyForCommand); boundKey != "" {
+		fmt.Fprintf(&b, ", or press `%s`", boundKey)
 	}
-	if r.text != "" {
-		// Author-supplied markdown, rendered as-is.
-		b.WriteString(expandCmdTemplate(r.text, cmdKey))
-		b.WriteString("\n")
-		return b.String()
-	}
+	b.WriteString(".\n\n")
 	if lookup != nil {
 		if man, ok := lookup(commandName(cmdName)); ok {
 			b.WriteString(renderCommandManual(man))
-			return b.String()
 		}
 	}
 	return b.String()
@@ -158,28 +80,22 @@ func commandName(cmd string) string {
 	return fields[0]
 }
 
-// buildWaitShellHint composes the markdown body for a wait_shell hint
-// window: it asks the user to run the expected command inside Rune's
-// console. A non-empty request.text is rendered verbatim after the
-// prompt opener: it is either the step's own instruction or the
-// on_error message the runtime swapped in after a wrong command.
+// buildWaitShellHint composes the markdown body of a wait_shell
+// screen: the step's own text, or a generated line asking the user to
+// run the expected command inside Rune's console.
 func buildWaitShellHint(r *request, cmdKey string) string {
 	if r == nil {
 		return ""
 	}
-	var b strings.Builder
-	fmt.Fprintf(&b,
-		"Waiting for you to run `%s` in Rune's console:\n\n",
-		strings.Join(r.shellArgs, " "))
 	if r.text != "" {
-		b.WriteString(expandCmdTemplate(r.text, cmdKey))
-		b.WriteString("\n")
+		return expandCmdTemplate(r.text, cmdKey)
 	}
-	return b.String()
+	return fmt.Sprintf("Run `%s` in Rune's console.\n",
+		strings.Join(r.shellArgs, " "))
 }
 
 // renderCommandManual returns a compact, markdown summary of man
-// suitable for embedding in the wait_command hint window. The
+// suitable for embedding in the wait_command screen. The
 // layout intentionally mirrors what handler/command renders in its
 // own manual overlay so the user sees the same shape they would in
 // the live prompt.

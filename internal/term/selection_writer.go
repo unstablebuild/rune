@@ -120,6 +120,12 @@ func (g *SelectionWriter) UnionAttributes(pos term.Coordinates, attr term.Attrib
 	g.cells[idx].SetAttributes(term.AttributesUnion(g.cells[idx].Attributes(), attr))
 }
 
+// DrawImage satisfies term.Writer. The selection grid carries cells
+// only, so callers draw a cell-based fallback instead.
+func (g *SelectionWriter) DrawImage(term.Image) bool {
+	return false
+}
+
 // Context satisfies term.Writer, returning the context set via
 // SetContext or context.Background when none was set.
 func (g *SelectionWriter) Context() context.Context {

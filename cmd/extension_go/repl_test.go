@@ -1798,6 +1798,8 @@ func (m *fakeWM) Bar(browserapi.BarConfig, tui.Handler) error {
 
 func (m *fakeWM) CloseWindow(browserapi.Window) error { return nil }
 
+func (m *fakeWM) SetTabActivity(workspaceapi.URI, bool) error { return nil }
+
 // TestNewREPLSubcommandOpensShell drives the repl subcommand end to end
 // against a fake window manager and asserts it installs an ideshell
 // handler whose `go` REPL command is registered and dispatches Go

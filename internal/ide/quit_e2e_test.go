@@ -32,25 +32,31 @@ import (
 	"unstable.build/rune/internal/ide"
 )
 
-// quitTutorialSrc parks on a floating_window step. Floating windows
-// swallow every key that is not Enter/Esc/Space, which is what made
-// the IDE unquittable mid-tutorial.
+// quitTutorialSrc parks on window commands the e2e IDE can run, so
+// the lesson can be walked to its end from the command prompt.
 const quitTutorialSrc = `
 def run():
-    floating_window(title="welcome", text="hello there")
-    floating_window(title="second", text="almost done")
+    wait_command(command="windownew", title="welcome", text="hello there")
+    wait_command(command="windowclose", title="second", text="almost done")
 tutorial(entry=run)
 `
 
-// waitTutorialSrc parks on a wait_command step, which passes keys
-// through to the IDE root. It exercises the other half of the quit
-// path: an exit decided by the root under a live tutorial overlay.
+// waitTutorialSrc parks on a wait_command step that never resolves in
+// the e2e IDE, so a typed :quit is decided by the IDE under a live
+// lesson.
 const waitTutorialSrc = `
 def run():
     wait_command(command="edit")
-    floating_window(title="done", text="finished up")
+    wait_event(event="open", title="done", text="finished up")
 tutorial(entry=run)
 `
+
+// The tutorial tile is a quarter of the screen, so the e2e screen has
+// to be wide enough for the editor to keep a usable width beside it.
+const (
+	quitE2EWidth  = 100
+	quitE2EHeight = 24
+)
 
 // newQuitE2EIDE builds a real IDE with <m-q> bound to quit and the
 // tutorials above registered under the `tutorials:` config key, then
@@ -81,7 +87,7 @@ tutorials:
 	var mu sync.Mutex
 	i, drain := newHostIDE(t, &mu, dir, cfgPath)
 	h := e2eLockedHandler{Handler: i.Ready(), mu: &mu, ide: i, drain: drain}
-	h.Resize(40, 14)
+	h.Resize(quitE2EWidth, quitE2EHeight)
 	i.WaitWorkspaces()
 	drain()
 	return h, i
@@ -89,7 +95,7 @@ tutorials:
 
 func e2eRender(t *testing.T, h e2eLockedHandler) string {
 	t.Helper()
-	w := term.NewStringWriter(40, 14)
+	w := term.NewStringWriter(quitE2EWidth, quitE2EHeight)
 	h.Draw(w)
 	require.NoError(t, w.Flush())
 	return w.String()
@@ -144,9 +150,8 @@ func e2eFeed(t *testing.T, h e2eLockedHandler, seq string) (exit bool) {
 }
 
 // TestE2EQuit drives a real IDE end to end and pins that the quit
-// chord is always escapable, including while a tutorial overlay is
-// parked on a floating_window step, and that a tutorial finishing on
-// its own never exits the IDE.
+// chord is always escapable, including while a tutorial tile is up,
+// and that a tutorial finishing on its own never exits the IDE.
 func TestE2EQuit(t *testing.T) {
 	t.Parallel()
 
@@ -163,7 +168,7 @@ func TestE2EQuit(t *testing.T) {
 			"answering Yes must exit the IDE")
 	})
 
-	t.Run("quit chord exits while a tutorial is parked on a floating window",
+	t.Run("quit chord exits while a tutorial tile is up",
 		func(t *testing.T) {
 			t.Parallel()
 			h, i := newQuitE2EIDE(t)
@@ -175,8 +180,8 @@ func TestE2EQuit(t *testing.T) {
 			require.False(t, e2eFeed(t, h, "<m-q>"),
 				"quit must open the confirm prompt before exiting")
 			frame := e2eRender(t, h)
-			assert.NotContains(t, frame, "hello there",
-				"the tutorial must be torn down so the confirm prompt is visible")
+			assert.Contains(t, frame, "hello there",
+				"the lesson stays up under the confirm prompt")
 			e2eWaitFor(t, h, "Yes")
 
 			assert.True(t, e2eFeed(t, h, "y"),
@@ -191,9 +196,8 @@ func TestE2EQuit(t *testing.T) {
 
 			require.False(t, e2eFeed(t, h, ":tutorial<space>start<space>waiting<enter>"))
 
-			// A wait_command step passes keys through, so the quit is
-			// decided by the IDE root underneath a live overlay. Its
-			// exit signal has to survive both tutorial frames.
+			// The quit is decided by the IDE under a live lesson; its
+			// exit signal has to survive the runner's frame.
 			require.False(t, e2eFeed(t, h, ":quit<enter>"),
 				"quit must open the confirm prompt before exiting")
 			e2eWaitFor(t, h, "Yes")
@@ -211,13 +215,15 @@ func TestE2EQuit(t *testing.T) {
 		e2eWaitFor(t, h, "hello there")
 
 		require.False(t, e2eFeed(t, h, "<enter>"),
+			"a key never advances a step, nor exits the IDE")
+		assert.Contains(t, e2eRender(t, h), "hello there")
+
+		require.False(t, e2eFeed(t, h, ":windownew<enter>"),
 			"advancing a tutorial step must not exit the IDE")
 		e2eWaitFor(t, h, "almost done")
 
-		require.False(t, e2eFeed(t, h, "<enter>"),
+		require.False(t, e2eFeed(t, h, ":windowclose<enter>"),
 			"the tutorial's final step must not exit the IDE")
-		// The script's finish publishes an interrupt in production;
-		// the overlay is cleared when the event loop delivers it.
 		e2eWaitGone(t, h, "almost done")
 
 		// The IDE is still alive and still quittable.

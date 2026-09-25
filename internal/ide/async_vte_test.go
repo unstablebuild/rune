@@ -362,6 +362,8 @@ func (r *recordingTabManager) OnTabExit(uri workspaceapi.URI) bool {
 	return true
 }
 
+func (r *recordingTabManager) SetTabActivity(workspaceapi.URI, bool) error { return nil }
+
 func TestTabNameAliaser(t *testing.T) {
 	mustURI := func(s string) workspaceapi.URI {
 		uri, err := workspaceapi.ParseURI(s)

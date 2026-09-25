@@ -205,11 +205,10 @@ func (i *IDE) promptRunTutorial(name, description string) {
 // once during IDE init and reused when packages install new tutorials.
 type tutorialsConfig struct {
 	partition        storageapi.Service
-	overlay          *idetutorial.OverlayBrowser
+	style            idetutorial.PromptStyle
 	ed               currentEditor
 	parser           currentParser
 	notifications    browserapi.Notifications
-	defaultAttr      term.Attributes
 	scheduleNextTick func(func()) bool
 	commandKey       term.KeyComb
 	editorMode       string
@@ -218,6 +217,7 @@ type tutorialsConfig struct {
 	manualLookup     starlarktutorial.CommandManualLookup
 	workspaceOpen    func() bool
 	lspServerRunning func() bool
+	configPath       string
 }
 
 func newTutorialsConfig(i *IDE) tutorialsConfig {
@@ -228,11 +228,10 @@ func newTutorialsConfig(i *IDE) tutorialsConfig {
 	rawKeyFor := i.ideConfig.commandKeyBindingLookup()
 	return tutorialsConfig{
 		partition:        partition,
-		overlay:          newTutorialOverlayBrowser(i),
+		style:            newTutorialPromptStyle(i),
 		ed:               currentEditor{root: i.workspaceHandler},
 		parser:           currentParser{root: i.workspaceHandler},
 		notifications:    i.workspaceHandler.notifications.current(),
-		defaultAttr:      i.ideConfig.defaultAttr(),
 		scheduleNextTick: i.options.scheduleFn,
 		commandKey:       i.ideConfig.commandKey(),
 		editorMode:       i.ideConfig.pkgEditorMode(),
@@ -248,19 +247,35 @@ func newTutorialsConfig(i *IDE) tutorialsConfig {
 			m := i.workspaceHandler.focusLSPManager()
 			return m != nil && m.AnyServerRunning()
 		},
+		configPath: i.ideConfig.configPath,
 	}
 }
 
-// newTutorialOverlayBrowser builds the dedicated floating-only browser
-// component that hosts tutorial step windows above the whole IDE root,
-// mirroring the command-prompt browser precedent in (*ex).init, with
-// the user's window-manager and prompt styling applied.
-func newTutorialOverlayBrowser(i *IDE) *idetutorial.OverlayBrowser {
-	cfg := idetutorial.DefaultOverlayBrowserConfig()
-	cfg.WindowManagerConfig = i.ideConfig.windowManagerConfig()
-	cfg.FrameUnionCharSet = i.ideConfig.frameUnionCharset()
-	cfg.PromptConfig = i.ideConfig.promptConfig()
-	return idetutorial.NewOverlayBrowser(browser.NewComponent(cfg))
+// newTutorialPromptStyle styles the tile's buttons and the prompt of
+// a confirm or choice step like the prompts the IDE opens elsewhere.
+func newTutorialPromptStyle(i *IDE) idetutorial.PromptStyle {
+	cfg := i.ideConfig.promptConfig()
+	return idetutorial.PromptStyle{
+		TextAttr:       cfg.TextAttr,
+		HighlightAttr:  cfg.HighlightAttr,
+		BackgroundAttr: cfg.BackgroundAttr,
+	}
+}
+
+// newTutorialTileStyle frames the tile like the IDE frames its
+// windows, so it reads as one of them.
+func newTutorialTileStyle(i *IDE) idetutorial.TileStyle {
+	wm := i.ideConfig.windowManagerConfig()
+	return idetutorial.TileStyle{
+		Frame:             wm.Frame,
+		FrameCharSet:      wm.FrameCharSet,
+		FocusFrameCharSet: wm.FocusFrameCharSet,
+		FrameAttr:         wm.FrameAttr,
+		FocusFrameAttr:    wm.FocusFrameAttr,
+		ScrollBarAttr:     wm.ScrollBarAttr,
+		ScrollBarChar:     wm.ScrollBarChar,
+		Prompt:            newTutorialPromptStyle(i),
+	}
 }
 
 // build constructs a single tutorial from its starlark source.
@@ -269,12 +284,12 @@ func (c tutorialsConfig) build(
 ) (idetutorial.Tutorial, error) {
 	return starlarktutorial.New(
 		name, src,
-		c.overlay, c.ed, c.notifications, c.parser,
-		c.defaultAttr,
+		c.style, c.ed, c.notifications, c.parser,
 		c.scheduleNextTick, c.partition, c.commandKey,
 		c.editorMode, c.os, c.keyForCommand, c.manualLookup,
 		c.workspaceOpen,
 		c.lspServerRunning,
+		starlarktutorial.WithConfigPath(c.configPath),
 	)
 }
 
@@ -282,7 +297,7 @@ func (c tutorialsConfig) build(
 // a command name to its registered command.Manual. It consults the
 // focused editor's subscribed commands first and then the workspace
 // handler's alias expander so authors writing `wait_command("e")`
-// (an alias for `edit`) see the alias entry in the hint window.
+// (an alias for `edit`) see the alias entry in the generated hint.
 func buildTutorialCommandManualLookup(
 	root *workspaceManagerHandler,
 ) starlarktutorial.CommandManualLookup {

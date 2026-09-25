@@ -19,6 +19,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"runtime"
 
 	"github.com/unstablebuild/rune-go-sdk/api/semanticapi"
 )
@@ -31,11 +32,21 @@ import (
 func rustInitializeParams(
 	rootURI, command, sysroot, logFilter string, experimental bool,
 ) (semanticapi.InitializeParams, error) {
+	// rust-analyzer sizes its main loop and its cache-priming pool from
+	// the core count, and priming a cold project is the burst that
+	// saturates the machine; the editor's render loop is then left
+	// without a core to run on. Half the cores keeps the server useful
+	// while leaving the editor somewhere to run.
+	workers := max(1, runtime.NumCPU()/2)
 	initOptions := map[string]any{
 		"langID":  "rust",
 		"command": command,
 		"env": map[string]string{
 			"RA_LOG": logFilter,
+		},
+		"numThreads": workers,
+		"cachePriming": map[string]any{
+			"numThreads": workers,
 		},
 		"cargo": map[string]any{
 			"buildScripts": map[string]any{

@@ -68,6 +68,7 @@ type recordingWMWriter struct {
 func (w *recordingWMWriter) SetCell(_ term.Coordinates, c term.Cell)           { w.cell = c }
 func (w *recordingWMWriter) UnionAttributes(term.Coordinates, term.Attributes) {}
 func (w *recordingWMWriter) Context() context.Context                          { return context.Background() }
+func (w *recordingWMWriter) DrawImage(term.Image) bool                         { return false }
 
 func TestWindowManagerDimmedWriter(t *testing.T) {
 	red := term.NewRGBColor(255, 0, 0)
@@ -574,7 +575,7 @@ func TestWindowManagerMouseDrag(t *testing.T) {
 		},
 
 		{
-			desc:   "hover over unfocused window is dropped (no focus switch)",
+			desc:   "hover over unfocused window reaches it without taking focus",
 			layout: vsplitLayout("L", "R"),
 			frame:  true,
 			width:  24, height: 8,
@@ -583,7 +584,7 @@ func TestWindowManagerMouseDrag(t *testing.T) {
 				hover(15, 2),
 			},
 			expect: []dispatch{
-				dropped(),
+				to("R", 0, 2, 1),
 			},
 			expectFocus: "L",
 		},
@@ -601,13 +602,27 @@ func TestWindowManagerMouseDrag(t *testing.T) {
 			},
 		},
 		{
-			desc:   "wheel event in unfocused window is dropped (no focus switch)",
+			desc:   "wheel over unfocused window scrolls it without taking focus",
 			layout: vsplitLayout("L", "R"),
 			frame:  true,
 			width:  24, height: 8,
 			initial: "L",
 			events: []mouseEvent{
 				{key: term.MouseWheelDown, x: 15, y: 3},
+			},
+			expect: []dispatch{
+				to("R", term.MouseWheelDown, 2, 2),
+			},
+			expectFocus: "L",
+		},
+		{
+			desc:   "release over unfocused window without a drag is dropped",
+			layout: vsplitLayout("L", "R"),
+			frame:  true,
+			width:  24, height: 8,
+			initial: "L",
+			events: []mouseEvent{
+				release(15, 2),
 			},
 			expect: []dispatch{
 				dropped(),
@@ -726,6 +741,57 @@ func TestWindowManagerMouseDragSurvivesPinnedWindowClose(t *testing.T) {
 	require.NotPanics(t, func() {
 		wm.Handle(term.Event{Type: term.EventMouse, Key: term.MouseLeft, MouseX: 3, MouseY: 2})
 	})
+}
+
+// TestWindowManagerMouseUnderFocusedFloat pins that a focused floating
+// window keeps the wheel and pointer motion from reaching the tiles it
+// floats over, which would move content out from under it.
+func TestWindowManagerMouseUnderFocusedFloat(t *testing.T) {
+	lh := handler.NewTestHandler()
+	rh := handler.NewTestHandler()
+	_, wm := prepareTest(24, 8, true, lh)
+	_, ok := wm.SplitVertical(wm.Focus(), rh)
+	require.True(t, ok)
+	fh := handler.NewTestHandler()
+	wm.SetFocus(wm.FloatingWindow(handler.StaticFloating(fh, 2, 2), component.FloatingConfig{}))
+
+	var seen []string
+	for name, h := range map[string]*handler.TestHandler{"L": lh, "R": rh, "F": fh} {
+		h.HandleOverride = func(ev term.Event) (bool, bool) {
+			seen = append(seen, name)
+			return false, true
+		}
+	}
+
+	for _, key := range []term.Key{0, term.MouseWheelUp} {
+		wm.Handle(term.Event{Type: term.EventMouse, Key: key, MouseX: 15, MouseY: 3})
+	}
+	assert.Empty(t, seen, "tiles under a focused float must not see the wheel or hover")
+
+	wm.Handle(term.Event{Type: term.EventMouse, Key: term.MouseWheelUp, MouseX: 1, MouseY: 1})
+	assert.Equal(t, []string{"F"}, seen)
+}
+
+// TestWindowManagerMouseExitFromUnfocusedWindow pins that a tile asking
+// to exit on a wheel event it received without focus is closed, and
+// that focus stays on the tile the user was working in.
+func TestWindowManagerMouseExitFromUnfocusedWindow(t *testing.T) {
+	lh := handler.NewTestHandler()
+	rh := handler.NewTestHandler()
+	_, wm := prepareTest(24, 8, true, lh)
+	lw := wm.Focus()
+	rw, ok := wm.SplitVertical(lw, rh)
+	require.True(t, ok)
+	wm.SetFocus(lw)
+	rh.HandleOverride = func(term.Event) (bool, bool) { return true, true }
+
+	exit, handled := wm.Handle(term.Event{
+		Type: term.EventMouse, Key: term.MouseWheelDown, MouseX: 15, MouseY: 3,
+	})
+	assert.False(t, exit)
+	assert.True(t, handled)
+	assert.True(t, rw.Closed())
+	assert.Equal(t, lw, wm.Focus())
 }
 
 func TestWindowManagerInit(t *testing.T) {

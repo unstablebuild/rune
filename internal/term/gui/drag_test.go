@@ -260,3 +260,55 @@ func drawBrowser(b *browser.Component, width, height int) string {
 	_ = w.Flush()
 	return w.String()
 }
+
+// idle is what lets the render loop skip a whole tick without taking the
+// UI lock, so it must never report true for a frame on which poll would
+// notify an observer that mutates UI state. A new branch in poll that
+// idle does not account for has to fail here. idle is allowed to be
+// conservative in the other direction.
+func TestDragPollerIdleImpliesPollIsNoOp(t *testing.T) {
+	cases := []struct {
+		name     string
+		hovering bool
+		dragging bool
+		paths    []string
+	}{
+		{name: "quiescent"},
+		{name: "dragging", dragging: true},
+		{name: "hovering", hovering: true},
+		{name: "hovering and dragging", hovering: true, dragging: true},
+		{name: "drop pending", paths: []string{"/tmp/a.png"}},
+		{name: "drop pending while hovering", hovering: true, paths: []string{"/tmp/a.png"}},
+		{name: "drop pending while dragging", dragging: true, paths: []string{"/tmp/a.png"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			host, d, events := newTestDragPoller(t)
+			host.dragging = tc.dragging
+			host.paths = tc.paths
+			d.hovering = tc.hovering
+
+			if !d.idle() {
+				return
+			}
+			assert.False(t, d.poll(), "an idle frame must not change drag state")
+			assert.Empty(t, *events, "an idle frame must not notify the observer")
+		})
+	}
+}
+
+// The render loop probes idle before deciding whether to take the UI
+// lock, then polls under it. Probing reads per-tick host state, so it
+// must leave the transition for poll to report.
+func TestDragPollerIdleDoesNotConsumeTransition(t *testing.T) {
+	host, d, events := newTestDragPoller(t)
+	host.dragging = true
+	host.x, host.y = 100, 100
+
+	require.False(t, d.idle())
+	require.False(t, d.idle(), "probing must be repeatable within a tick")
+
+	require.True(t, d.poll(), "probing must not consume the hover transition")
+	require.Len(t, *events, 1)
+	assert.Equal(t, DragHover, (*events)[0].Kind)
+}

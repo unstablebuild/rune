@@ -857,6 +857,20 @@ func (mr *MockWindowManagerMockRecorder) SetFocus(win any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetFocus", reflect.TypeOf((*MockWindowManager)(nil).SetFocus), win)
 }
 
+// SetTabActivity mocks base method.
+func (m *MockWindowManager) SetTabActivity(uri workspaceapi.URI, active bool) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "SetTabActivity", uri, active)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// SetTabActivity indicates an expected call of SetTabActivity.
+func (mr *MockWindowManagerMockRecorder) SetTabActivity(uri, active any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetTabActivity", reflect.TypeOf((*MockWindowManager)(nil).SetTabActivity), uri, active)
+}
+
 // SetTabName mocks base method.
 func (m *MockWindowManager) SetTabName(arg0 workspaceapi.URI, arg1 string, arg2 term.Attributes) error {
 	m.ctrl.T.Helper()
@@ -951,6 +965,20 @@ func (m *MockTabManager) OnTabExit(uri workspaceapi.URI) bool {
 func (mr *MockTabManagerMockRecorder) OnTabExit(uri any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "OnTabExit", reflect.TypeOf((*MockTabManager)(nil).OnTabExit), uri)
+}
+
+// SetTabActivity mocks base method.
+func (m *MockTabManager) SetTabActivity(uri workspaceapi.URI, active bool) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "SetTabActivity", uri, active)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// SetTabActivity indicates an expected call of SetTabActivity.
+func (mr *MockTabManagerMockRecorder) SetTabActivity(uri, active any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetTabActivity", reflect.TypeOf((*MockTabManager)(nil).SetTabActivity), uri, active)
 }
 
 // SetTabName mocks base method.
@@ -1456,6 +1484,20 @@ func (m *MockBrowser) SetFocus(win browser.Window) (browser.Window, error) {
 func (mr *MockBrowserMockRecorder) SetFocus(win any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetFocus", reflect.TypeOf((*MockBrowser)(nil).SetFocus), win)
+}
+
+// SetTabActivity mocks base method.
+func (m *MockBrowser) SetTabActivity(uri workspaceapi.URI, active bool) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "SetTabActivity", uri, active)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// SetTabActivity indicates an expected call of SetTabActivity.
+func (mr *MockBrowserMockRecorder) SetTabActivity(uri, active any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetTabActivity", reflect.TypeOf((*MockBrowser)(nil).SetTabActivity), uri, active)
 }
 
 // SetTabName mocks base method.

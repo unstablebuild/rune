@@ -152,6 +152,8 @@ func (stubWindowManager) Tab(workspaceapi.URI, rune, string, browserapi.Handler)
 func (stubWindowManager) SetWindowContent(browserapi.Window, browserapi.Handler) error { return nil }
 func (stubWindowManager) CloseWindow(browserapi.Window) error                          { return nil }
 
+func (stubWindowManager) SetTabActivity(workspaceapi.URI, bool) error { return nil }
+
 var _ browserapi.WindowManager = stubWindowManager{}
 
 type emptyDialogueStore struct{}

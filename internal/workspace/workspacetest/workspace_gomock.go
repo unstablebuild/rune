@@ -314,17 +314,17 @@ func (mr *MockWorkspaceMockRecorder) Root() *gomock.Call {
 }
 
 // SetPtySize mocks base method.
-func (m *MockWorkspace) SetPtySize(p workspaceapi.Pty, width, height int) error {
+func (m *MockWorkspace) SetPtySize(p workspaceapi.Pty, size workspaceapi.PtySize) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "SetPtySize", p, width, height)
+	ret := m.ctrl.Call(m, "SetPtySize", p, size)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // SetPtySize indicates an expected call of SetPtySize.
-func (mr *MockWorkspaceMockRecorder) SetPtySize(p, width, height any) *gomock.Call {
+func (mr *MockWorkspaceMockRecorder) SetPtySize(p, size any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetPtySize", reflect.TypeOf((*MockWorkspace)(nil).SetPtySize), p, width, height)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetPtySize", reflect.TypeOf((*MockWorkspace)(nil).SetPtySize), p, size)
 }
 
 // Signal mocks base method.

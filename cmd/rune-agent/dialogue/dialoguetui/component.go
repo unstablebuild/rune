@@ -305,6 +305,8 @@ func (c *Component) Init(cfg ComponentConfig) {
 		c.statusBar = NewStatusBar(cfg.StatusBar, nil)
 		c.shadedBar.root = c.statusBar
 		c.shadedBar.name = cfg.StatusBar.Shader
+		c.shadedBar.fps = cfg.StatusBar.ShaderFPS
+		c.shadedBar.loop = cfg.StatusBar.ShaderLoop
 		c.shadedBar.defAttr = term.Attributes{
 			Fg: cfg.StatusBar.ForegroundColor,
 			Bg: cfg.StatusBar.BackgroundColor,

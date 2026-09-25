@@ -26,3 +26,32 @@ func TestBlaze(t *testing.T) {
 	sh := Blaze(DefaultBlazeParams(), 30)
 	shadertest.TestShader(t, sh)
 }
+
+func TestBlazePaintForeground(t *testing.T) {
+	params := DefaultBlazeParams()
+	params.PaintForeground = true
+
+	t.Run("suite", func(t *testing.T) {
+		shadertest.TestShader(t, Blaze(params, 30))
+	})
+
+	t.Run("paints the channel it was asked for", func(t *testing.T) {
+		for _, tc := range []struct {
+			name            string
+			paintForeground bool
+		}{
+			{name: "background by default"},
+			{name: "foreground when enabled", paintForeground: true},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				p := DefaultBlazeParams()
+				p.PaintForeground = tc.paintForeground
+				assertPaintsChannel(t, Blaze(p, 30), tc.paintForeground)
+			})
+		}
+	})
+
+	t.Run("leaves background glyphs bare", func(t *testing.T) {
+		assertPaintsOnlyText(t, Blaze(params, 30))
+	})
+}

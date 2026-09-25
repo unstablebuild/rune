@@ -54,6 +54,10 @@ func (b toBrowser) OnTabExit(uri workspaceapi.URI) bool {
 	return false
 }
 
+func (b toBrowser) SetTabActivity(uri workspaceapi.URI, active bool) error {
+	return b.b.SetTabActivity(uri, active)
+}
+
 func (b toBrowser) SetFocus(browser.Window) (browser.Window, error) {
 	return nil, errors.New("unimplemented")
 }

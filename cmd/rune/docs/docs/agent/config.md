@@ -385,13 +385,16 @@ how much of the window is already in use before you send anything.
 | `status_bar.enabled` | boolean | `true` | Whether the chat reserves its bottom row for the bar. |
 | `status_bar.layout` | string | see below | Template describing what the bar shows and where. |
 | `status_bar.background_attr` | attribute | `bg: gray, fg: silver` | The bar's base attributes, matching the editor's status bar. `bg` fills the whole row, including the gaps between elements. `fg` is the foreground inherited by every layout component that does not name one of its own, so a theme can restyle the row from a single key. |
-| `status_bar.status` | map | see below | How the `Spinner` and `Status` elements dress per turn state. The keys are the text `Status` draws: `IDLE`, `SENDING`, `REASONING`, `RECEIVING`, `EXECUTING`, `COMPACTING`, and `ERROR`. Each takes an `attr` colouring both elements and an `animation` of `ch`, the spinner frames one character per frame, and `attr`, which overrides the status colours for the spinner alone so the icon can carry a colour of its own. Naming one status, or one of its keys, leaves the rest on their built-in values. |
+| `status_bar.status` | map | see below | How the `Spinner` and `Status` elements dress per turn state. The keys are the text `Status` draws: `IDLE`, `SENDING`, `REASONING`, `RECEIVING`, `EXECUTING`, `COMPACTING`, `ASKING`, and `ERROR`. Each takes an `attr` colouring both elements and an `animation` of `ch`, the spinner frames one character per frame, and `attr`, which overrides the status colours for the spinner alone so the icon can carry a colour of its own. Naming one status, or one of its keys, leaves the rest on their built-in values. `ASKING` is reported while the agent waits on an answer, and is the one status that outranks a running task's description. |
 | `status_bar.gauge_empty_attr` | attribute | `fg: silver, bg: gray` | Styles the gauge's track. It sits flush with the bar, and its foreground doubles as the label color over the unfilled part. |
 | `status_bar.context_gauge_fill_attrs` | list of attribute | green, yellow, red on black | The stops the context gauge's fill ramps through, left edge to right. |
 | `status_bar.cache_gauge_fill_attrs` | list of attribute | red, yellow, green on black | The same for the cache gauge, listed backwards because a full cache is good news where a full context window is not. |
 | `status_bar.gauge_start_rune` / `status_bar.gauge_end_rune` | string | `""` / `""` | Brackets around a gauge. Each takes one cell out of `gauge_width` rather than widening the field, and an empty string drops that bracket and gives its cell back to the track. Blank by default: the ramp already marks where the track starts and ends. |
 | `status_bar.gauge_cap_attr` | attribute | `fg: green` | Styles the brackets. They sit on the bar rather than on the track, so leaving `bg` out inherits `background_attr`'s. |
 | `status_bar.gauge_width` | integer | `18` | Cell width of each gauge. |
+| `status_bar.shader` | string | none | Effect drawn over the bar while a turn runs. `blaze`, `burn`, `inferno`, `noise`, `shine` and `trippy` recolor only the text, leaving background colors and glyphs such as the `█▓▒░` fade as the layout drew them. `pulse` gently brightens the whole bar. Leave it unset or empty to keep the bar still. |
+| `status_bar.shader_fps` | integer | `30` | Cadence the effect is redrawn at. Lower it to spend less time animating the bar. |
+| `status_bar.shader_loop` | duration | `1200ms` | How long one visual loop of the effect lasts, written as a Go duration such as `2s` or `1200ms`. For `pulse` it is the length of one pulse. `blaze`, `inferno`, `noise` and `trippy` animate in real time and ignore this key; lowering `shader_fps` makes them choppier, not slower. |
 
 ### Layout
 
@@ -519,6 +522,15 @@ extensions:
               flags: bold
             animation:
               ch: "⣉⠶⠶⠒⠒⠒⠶⠶⣉"
+              attr:
+                fg: default
+          ASKING:
+            attr:
+              fg: black
+              bg: yellow
+              flags: bold
+            animation:
+              ch: "⠁⠂⠄⡀⢀⠠⠐⠈"
               attr:
                 fg: default
           ERROR:

@@ -1313,7 +1313,7 @@ func (f *fakeScheme) NewPty(ctx context.Context) (workspaceapi.Pty, error) {
 	}, nil
 }
 
-func (f *fakeScheme) SetPtySize(workspaceapi.Pty, int, int) error {
+func (f *fakeScheme) SetPtySize(workspaceapi.Pty, workspaceapi.PtySize) error {
 	return nil
 }
 
@@ -1487,6 +1487,8 @@ func (m *fakeBrowser) RemoveTab(h browserapi.Handler) error {
 func (m *fakeBrowser) OnTabExit(workspaceapi.URI) bool {
 	return false
 }
+
+func (m *fakeBrowser) SetTabActivity(workspaceapi.URI, bool) error { return nil }
 
 func (m *fakeBrowser) Floating(h browser.Floating, cfg browserapi.FloatingConfig) (
 	browser.Window, error,

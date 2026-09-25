@@ -42,6 +42,12 @@ func DefaultTrippyParams() TrippyParams {
 // TrippyParams defines the parameters used by the Trippy shader.
 type TrippyParams struct {
 	Speed float // float is an alias of float64
+	// PaintForeground colours the characters rather than the cell
+	// background and keeps them, so the effect is only visible through
+	// existing text. Blank cells and glyphs that render as background,
+	// such as fade blocks, are left untouched. When off, the effect fills
+	// the cell background and clears the character.
+	PaintForeground bool
 }
 
 type trippy struct {
@@ -63,6 +69,10 @@ func (s *trippy) runCell(
 	resolutionX, resolutionY int,
 	inChar rune, inFg, inBg term.Color,
 ) (char rune, fg, bg term.Color) {
+	if s.PaintForeground && !paintsText(inChar) {
+		return inChar, inFg, inBg
+	}
+
 	fragCoord := vec2(float(fragCoordX), float(fragCoordY))
 
 	iTime := time // time in seconds
@@ -91,7 +101,11 @@ func (s *trippy) runCell(
 	)
 
 	col = col.multSc(255.0)
-	bg = term.NewRGBColor(int32(col.x), int32(col.y), int32(col.z))
+	color := term.NewRGBColor(int32(col.x), int32(col.y), int32(col.z))
+	if s.PaintForeground {
+		return inChar, color, inBg
+	}
+	bg = color
 	return
 }
 

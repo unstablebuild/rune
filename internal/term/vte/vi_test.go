@@ -1720,3 +1720,5 @@ func (nopTabManager) SetTabName(workspaceapi.URI, string, term.Attributes) error
 func (nopTabManager) OnTabExit(workspaceapi.URI) bool {
 	return false
 }
+
+func (nopTabManager) SetTabActivity(workspaceapi.URI, bool) error { return nil }

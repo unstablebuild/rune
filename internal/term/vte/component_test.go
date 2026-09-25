@@ -482,7 +482,7 @@ func (e *testExecutor) NewPty(context.Context) (workspaceapi.Pty, error) {
 	return workspaceapi.Pty{Master: &mockPtyFile, Slave: &mockPtyFile}, nil
 }
 
-func (e *testExecutor) SetPtySize(p workspaceapi.Pty, width, height int) error {
+func (e *testExecutor) SetPtySize(p workspaceapi.Pty, size workspaceapi.PtySize) error {
 	return nil
 }
 
@@ -650,7 +650,7 @@ func TestComponentAlternateScroll(t *testing.T) {
 		require.NoError(t, comp.Resize(5, 3))
 
 		resetBuffer(t, ph, "abcde\nfg   \n     ")
-		ph.setCursorAtScreen(term.Coordinates{X: 2, Y: 1}, false)
+		ph.setCursorAtScreen(term.Coordinates{X: 2, Y: 1})
 
 		assert.False(t, comp.IsAltBuffer(),
 			"primary must be the active buffer by default")
@@ -680,7 +680,7 @@ func TestComponentAlternateScroll(t *testing.T) {
 		require.True(t, comp.IsAltBuffer(),
 			"alt buffer must be active after DECSET 1049")
 		resetBuffer(t, ph, "ALT  \nBUF  \n     ")
-		ph.setCursorAtScreen(term.Coordinates{X: 3, Y: 0}, false)
+		ph.setCursorAtScreen(term.Coordinates{X: 3, Y: 0})
 
 		scroll, mu := comp.AlternateScroll()
 		require.NotNil(t, scroll)
@@ -1003,6 +1003,97 @@ func TestComponentWidenWhileScrolledUpKeepsContentVisible(t *testing.T) {
 	assert.True(t, comp.ScrollDown(1), "must be able to scroll back down after widening")
 }
 
+// TestComponentReverseScreen pins DECSCNM (CSI ? 5 h): like kitty and
+// xterm, the whole screen is drawn in reverse video, including the cells
+// no program has written, and cells already in SGR 7 flip back to normal
+// video. vttest's "light background" pages rely on it.
+func TestComponentReverseScreen(t *testing.T) {
+	t.Parallel()
+
+	// reverseMap renders each cell as 'r' (reverse video) or 'n' (normal
+	// video).
+	reverseMap := func(w *term.StringWriter, width int) string {
+		var sb strings.Builder
+		for i, c := range w.Cells() {
+			if i != 0 && i%width == 0 {
+				sb.WriteByte('\n')
+			}
+			if c.Attrs&term.AttrReverse != 0 {
+				sb.WriteByte('r')
+			} else {
+				sb.WriteByte('n')
+			}
+		}
+		return sb.String()
+	}
+
+	cases := []struct {
+		desc   string
+		input  string
+		want   string
+		report string
+	}{
+		{
+			desc:   "normal video",
+			input:  "ab\x1b[7mc\x1b[m",
+			want:   "nnrn\nnnnn\nnnnn",
+			report: "\x1b[?5;2$y",
+		},
+		{
+			desc:   "reverse video fills the screen and cancels SGR 7",
+			input:  "ab\x1b[7mc\x1b[m\x1b[?5h",
+			want:   "rrnr\nrrrr\nrrrr",
+			report: "\x1b[?5;1$y",
+		},
+		{
+			desc:   "reverse video applies to the alternate screen",
+			input:  "\x1b[?1049h\x1b[?5hab",
+			want:   "rrrr\nrrrr\nrrrr",
+			report: "\x1b[?5;1$y",
+		},
+		{
+			desc:   "reset restores normal video",
+			input:  "ab\x1b[7mc\x1b[m\x1b[?5h\x1b[?5l",
+			want:   "nnrn\nnnnn\nnnnn",
+			report: "\x1b[?5;2$y",
+		},
+		{
+			desc:   "RIS restores normal video",
+			input:  "\x1b[?5h\x1bcab",
+			want:   "nnnn\nnnnn\nnnnn",
+			report: "\x1b[?5;2$y",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.desc, func(t *testing.T) {
+			t.Parallel()
+
+			// Without default attributes, as the default theme leaves
+			// them, a row in the middle of the screen is only drawn once
+			// written to, which a two-row screen would not show.
+			const width, height = 4, 3
+			comp, err := NewComponent(&testExecutor{}, &testExecutor{},
+				&mockTabManager{}, DefaultConfig())
+			require.NoError(t, err)
+			require.NoError(t, comp.Resize(width, height))
+			comp.parser.AdvanceBytes([]byte(tc.input))
+
+			writer := term.NewStringWriter(width, height)
+			comp.Draw(writer)
+			assert.Equal(t, tc.want, reverseMap(writer, width))
+
+			pty := comp.pty.Master.(*workspacetest.File)
+			pty.Writes = nil
+			comp.parser.AdvanceBytes([]byte("\x1b[?5$p"))
+			var report strings.Builder
+			for _, w := range pty.Writes {
+				report.Write(w)
+			}
+			assert.Equal(t, tc.report, report.String(), "DECRQM")
+		})
+	}
+}
+
 // newPopulatedComponentForBench builds a component with a fully written
 // grid so Snapshot/SnapshotInto copy a realistic amount of cells.
 func newPopulatedComponentForBench(b *testing.B, width, height int) *Component {
@@ -1059,7 +1150,8 @@ func BenchmarkSnapshotInto(b *testing.B) {
 // ptySize captures a single SetPtySize call so tests can assert the
 // component drives the pty winsize via the schemeapi.Terminal contract.
 type ptySize struct {
-	width, height int
+	width, height           int
+	pixelWidth, pixelHeight int
 }
 
 // expanderFunc adapts a plain function into the CommandExpander
@@ -1163,10 +1255,13 @@ func TestComponentInitAsyncExpanderErrorReachesWatcher(t *testing.T) {
 		"StartCommand must not run when the expander errors")
 }
 
-func (e *recordingExecutor) SetPtySize(p workspaceapi.Pty, width, height int) error {
+func (e *recordingExecutor) SetPtySize(p workspaceapi.Pty, size workspaceapi.PtySize) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.setPtySize = append(e.setPtySize, ptySize{width: width, height: height})
+	e.setPtySize = append(e.setPtySize, ptySize{
+		width: size.Columns, height: size.Rows,
+		pixelWidth: size.PixelWidth, pixelHeight: size.PixelHeight,
+	})
 	return nil
 }
 
@@ -1358,6 +1453,39 @@ func TestComponentRestoreFromSnapshotDrivesSetPtySize(t *testing.T) {
 	require.NoError(t, comp.Resize(w, h))
 	assert.Empty(t, exe.setPtySize,
 		"follow-up Resize at the same size is a legitimate no-op")
+}
+
+// TestComponentResizeDrivesPixelSize pins that the pty learns the pixel
+// size graphics clients read from TIOCGWINSZ, and that a font change
+// re-issues the ioctl for the new pixel size without resizing buffers.
+func TestComponentResizeDrivesPixelSize(t *testing.T) {
+	t.Parallel()
+
+	tm := mockTabManager{}
+	exe := &recordingExecutor{}
+	cfg := DefaultConfig()
+	cellW, cellH := 10, 20
+	cfg.CellPixelSize = func() (int, int) { return cellW, cellH }
+	comp, err := NewComponent(exe, exe, &tm, cfg)
+	require.NoError(t, err)
+
+	require.NoError(t, comp.Resize(80, 24))
+	require.Len(t, exe.setPtySize, 1)
+	assert.Equal(t, ptySize{width: 80, height: 24, pixelWidth: 800, pixelHeight: 480},
+		exe.setPtySize[0])
+
+	exe.setPtySize = nil
+	require.NoError(t, comp.Resize(80, 24))
+	assert.Empty(t, exe.setPtySize, "same cells and pixels is a no-op")
+
+	cellW, cellH = 12, 24
+	writeToBuffer(comp.parserHandler, "keep")
+	require.NoError(t, comp.Resize(80, 24))
+	require.Len(t, exe.setPtySize, 1, "a font change re-issues the ioctl")
+	assert.Equal(t, ptySize{width: 80, height: 24, pixelWidth: 960, pixelHeight: 576},
+		exe.setPtySize[0])
+	assert.Equal(t, "keep", term.CellsToString([][]term.Cell{firstRowCells(comp.parserHandler)[:4]}),
+		"the buffers are not resized when only the pixel size changed")
 }
 
 // TestComponentRestoreFromSnapshotCursorWithScrollback reproduces a bug

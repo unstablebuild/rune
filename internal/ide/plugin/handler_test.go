@@ -309,6 +309,8 @@ func (n nopBrowser) OnTabExit(workspaceapi.URI) bool {
 	return false
 }
 
+func (n nopBrowser) SetTabActivity(workspaceapi.URI, bool) error { return nil }
+
 func (n nopBrowser) UpdateNotificationProgress(
 	id, message string, progress, total int64,
 ) error {
@@ -334,6 +336,6 @@ func (e *pluginTestExecutor) NewPty(context.Context) (workspaceapi.Pty, error) {
 	return workspaceapi.Pty{Master: &mockPtyFile, Slave: &mockPtyFile}, nil
 }
 
-func (e *pluginTestExecutor) SetPtySize(p workspaceapi.Pty, width, height int) error {
+func (e *pluginTestExecutor) SetPtySize(p workspaceapi.Pty, size workspaceapi.PtySize) error {
 	return nil
 }

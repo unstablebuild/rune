@@ -66,6 +66,11 @@ func anthropicParamsFromRequest(model string, request llmapi.Request, config Con
 		params.MaxTokens = int64(request.MaxOutputTokens)
 	case config.MaxTokens > 0:
 		params.MaxTokens = int64(config.MaxTokens)
+	case MaxOutputTokens(model) > 0:
+		// Streaming requests are billed on generated tokens, not the
+		// requested budget, so the ceiling costs nothing extra and keeps
+		// high-effort thinking from truncating visible output.
+		params.MaxTokens = int64(MaxOutputTokens(model))
 	case config.EnableThinking:
 		// Adaptive thinking shares the max_tokens budget between thinking
 		// and text output. With high/max effort Opus 4.6 can easily

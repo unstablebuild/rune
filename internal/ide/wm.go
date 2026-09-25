@@ -81,3 +81,11 @@ func (c currentWorkspaceWindowManager) SetWindowContent(
 func (c currentWorkspaceWindowManager) CloseWindow(win browserapi.Window) error {
 	return win.(browser.Window).Close()
 }
+
+// SetTabActivity marks the tab identified by uri in the current
+// workspace as active or idle.
+func (c currentWorkspaceWindowManager) SetTabActivity(
+	uri workspaceapi.URI, active bool,
+) error {
+	return c.root.focusBrowser().SetTabActivity(uri, active)
+}

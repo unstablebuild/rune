@@ -478,7 +478,7 @@ func TestRowScannerScanRow(t *testing.T) {
 		{
 			description: "an empty combining slice is harmless",
 			row: append(cellRow("https://a"), term.Cell{
-				Ch: 'b', Width: 1, Combining: &[]rune{},
+				Ch: 'b', Width: 1, Extra: &term.CellExtra{Combining: []rune{}},
 			}),
 			expected: []linkSpan{
 				{y: 3, x0: 0, x1: 10, url: "https://ab"},
@@ -488,7 +488,7 @@ func TestRowScannerScanRow(t *testing.T) {
 			description: "a cluster of blank base and marks is skipped",
 			row: slices.Concat(
 				cellRow("https://a"),
-				[]term.Cell{{Ch: 0, Combining: &[]rune{combiningAcute}}},
+				[]term.Cell{{Ch: 0, Extra: &term.CellExtra{Combining: []rune{combiningAcute}}}},
 				cellRow("b"),
 			),
 			expected: []linkSpan{

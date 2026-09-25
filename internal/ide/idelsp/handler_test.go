@@ -2462,6 +2462,8 @@ func (m *mockWindowManager) CloseWindow(
 	return nil
 }
 
+func (m *mockWindowManager) SetTabActivity(workspaceapi.URI, bool) error { return nil }
+
 type mockWindow struct{}
 
 func (m *mockWindow) WindowID() uint64 { return 0 }

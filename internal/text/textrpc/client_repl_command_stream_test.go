@@ -27,10 +27,103 @@ import (
 	"github.com/stretchr/testify/require"
 
 	sdktextrpc "github.com/unstablebuild/rune-go-sdk/api/textapi/textrpc"
+	"github.com/unstablebuild/rune-go-sdk/handler/repl"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/term/termrpc"
 	"google.golang.org/protobuf/proto"
 )
+
+func protoRows(n int) []*termrpc.CellRow {
+	rows := make([]*termrpc.CellRow, n)
+	for i := range rows {
+		var pc termrpc.Cell
+		pc.FromModel(term.NewCell('x', 1, term.Attributes{}))
+		rows[i] = &termrpc.CellRow{Cells: []*termrpc.Cell{&pc}}
+	}
+	return rows
+}
+
+// Anything an interrupted command streams afterwards must not land in
+// the command that follows it.
+func TestREPLCommandClientStreamHandleCancelLifecycle(t *testing.T) {
+	stream := newWaitableREPLServerStream()
+	c := newREPLCommandClientStream(context.Background(), stream, true, true)
+	go func() { _ = c.receiveMessages() }()
+
+	abandoned, err := c.HandleCommand(
+		context.Background(), repl.Command{Name: "dream"}, nil)
+	require.NoError(t, err)
+	msg := requireSent(t, stream)
+	require.Equal(t, sdktextrpc.ServerREPLCommandMessage_Handle, msg.GetType())
+	firstID := msg.GetHandle().GetId()
+	require.NotZero(t, firstID)
+
+	require.NoError(t, abandoned.Close())
+	msg = requireSent(t, stream)
+	require.Equal(t,
+		sdktextrpc.ServerREPLCommandMessage_HandleCancel, msg.GetType())
+	require.Equal(t, firstID, msg.GetHandleCancel().GetId())
+
+	pw := &recordingProgressWriter{}
+	next, err := c.HandleCommand(
+		context.Background(), repl.Command{Name: "help"}, pw)
+	require.NoError(t, err)
+	msg = requireSent(t, stream)
+	secondID := msg.GetHandle().GetId()
+	require.NotEqual(t, firstID, secondID)
+
+	stream.recv <- &sdktextrpc.ClientREPLCommandMessage{
+		Type: sdktextrpc.ClientREPLCommandMessage_HandleValue,
+		HandleValue: &sdktextrpc.HandleREPLCommandValue{
+			Id: firstID, Rows: protoRows(1),
+		},
+	}
+	stream.recv <- &sdktextrpc.ClientREPLCommandMessage{
+		Type: sdktextrpc.ClientREPLCommandMessage_HandleProgress,
+		HandleProgress: &sdktextrpc.HandleREPLCommandProgress{
+			Id: firstID, Progress: 7, Total: 9,
+		},
+	}
+	stream.recv <- &sdktextrpc.ClientREPLCommandMessage{
+		Type: sdktextrpc.ClientREPLCommandMessage_HandleDone,
+		HandleDone: &sdktextrpc.HandleREPLCommandDone{
+			Id: firstID, Error: "context canceled",
+		},
+	}
+	stream.recv <- &sdktextrpc.ClientREPLCommandMessage{
+		Type: sdktextrpc.ClientREPLCommandMessage_HandleProgress,
+		HandleProgress: &sdktextrpc.HandleREPLCommandProgress{
+			Id: secondID, Progress: 1, Total: 1,
+		},
+	}
+	stream.recv <- &sdktextrpc.ClientREPLCommandMessage{
+		Type: sdktextrpc.ClientREPLCommandMessage_HandleValue,
+		HandleValue: &sdktextrpc.HandleREPLCommandValue{
+			Id: secondID, Rows: protoRows(2),
+		},
+	}
+
+	val, ok := next.Next(context.Background())
+	require.True(t, ok, "the abandoned command's done must not end this one")
+	require.Equal(t, 2, val.Height(1),
+		"the running command received the abandoned command's output")
+	require.Equal(t, []progressSample{{progress: 1, total: 1}}, pw.get(),
+		"the running command's progress bar showed the abandoned "+
+			"command's progress")
+}
+
+func requireSent(
+	t *testing.T, stream *waitableREPLServerStream,
+) *sdktextrpc.ServerREPLCommandMessage {
+	t.Helper()
+	select {
+	case msg := <-stream.sent:
+		return msg
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for a message on the stream")
+		return nil
+	}
+}
 
 type waitableREPLServerStream struct {
 	sent chan *sdktextrpc.ServerREPLCommandMessage
@@ -74,7 +167,7 @@ func TestREPLCommandClientStreamCompleteCancelLifecycle(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			stream := newWaitableREPLServerStream()
 			c := newREPLCommandClientStream(
-				context.Background(), stream, tc.supportsCancel)
+				context.Background(), stream, tc.supportsCancel, tc.supportsCancel)
 			var logs syncBuffer
 			c.log = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{
 				Level: slog.LevelWarn,

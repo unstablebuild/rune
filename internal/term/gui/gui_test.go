@@ -18,8 +18,10 @@ package gui
 
 import (
 	"context"
+	"image"
 	"sync"
 	"testing"
+	"time"
 
 	ebiten "github.com/hajimehoshi/ebiten/v2"
 	"github.com/stretchr/testify/assert"
@@ -27,6 +29,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"github.com/unstablebuild/tcell/v3"
+	"unstable.build/rune/internal/debug"
 )
 
 func TestUpdate(t *testing.T) {
@@ -504,6 +507,25 @@ func TestCloseRestoresColorValues(t *testing.T) {
 	require.NoError(t, g.Close(), "Close must be idempotent")
 }
 
+// TestCellPixelSizeMatchesImagePlacement pins that the cell size the
+// kitty graphics protocol advertises is the pitch image placements are
+// scaled by, so a client sizing an image to N cells gets exactly N
+// cells, and that it follows font changes.
+func TestCellPixelSizeMatchesImagePlacement(t *testing.T) {
+	gui, _ := newTestGUI(t, &mockHandler{})
+
+	w, h := gui.CellPixelSize()
+	require.Positive(t, w)
+	require.Positive(t, h)
+	cells := cellRectToPixels(image.Rect(0, 0, 3, 2), gui.fontManager, 0, 0)
+	assert.Equal(t, 3*w, cells.Dx())
+	assert.Equal(t, 2*h, cells.Dy())
+
+	require.NoError(t, gui.IncreaseFontSize())
+	w2, h2 := gui.CellPixelSize()
+	assert.Greater(t, w2*h2, w*h, "a larger font means larger cells")
+}
+
 // stubWindowClosing installs a processWindowClosed that reports one
 // pending close request for ev, mirroring ebiten consuming the closing
 // flag on the first read of a frame.
@@ -595,6 +617,90 @@ func newTestGUI(t *testing.T, mock *mockHandler) (*GUI, *mockInputManager) {
 	gui.input.input = ret
 
 	return gui, ret
+}
+
+func newLockedTestGUI(t *testing.T, mu sync.Locker) *GUI {
+	t.Helper()
+	mock := &mockHandler{
+		assertDraw:  func(term.Writer) {},
+		assertEvent: func(term.Event) (bool, bool) { return false, true },
+	}
+	gui, err := New(mock, WithLocker(mu))
+	require.NoError(t, err)
+	gui.input.input = &mockInputManager{}
+	// Settle any redraw owed by construction so the next tick is idle.
+	require.NoError(t, gui.Update())
+	return gui
+}
+
+// updateWhileHeld runs one tick on another goroutine while the caller
+// holds the UI lock, reporting whether it finished without acquiring it.
+func updateWhileHeld(t *testing.T, gui *GUI) bool {
+	t.Helper()
+	done := make(chan error, 1)
+	go debug.CapturePanicReport(func() { done <- gui.Update() })
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+		return true
+	case <-time.After(2 * time.Second):
+		return false
+	}
+}
+
+// The render loop wakes on every vsync regardless of whether anything
+// happened. Taking the UI lock on a frame with nothing to do contends
+// with the extension RPC goroutines that need it, for no benefit.
+func TestUpdateSkipsUILockOnIdleFrame(t *testing.T) {
+	var mu sync.Mutex
+	gui := newLockedTestGUI(t, &mu)
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.True(t, updateWhileHeld(t, gui),
+		"an idle tick must not wait on the UI lock")
+}
+
+// The skip must be an optimization, not a hole in the locking: a tick
+// with an event to route still mutates UI state and must serialize.
+func TestUpdateTakesUILockWhenEventPending(t *testing.T) {
+	var mu sync.Mutex
+	gui := newLockedTestGUI(t, &mu)
+	gui.updateChan <- term.Event{Type: term.EventKey}
+
+	mu.Lock()
+	assert.False(t, updateWhileHeld(t, gui),
+		"a tick that routes an event must hold the UI lock")
+	mu.Unlock()
+}
+
+// A drag in flight produces no pending events and owes no redraw, so the
+// drag probe is the only thing keeping its observer callbacks — which
+// reach into browser window state — under the UI lock.
+func TestUpdateTakesUILockWhileDragging(t *testing.T) {
+	t.Run("drag in progress", func(t *testing.T) {
+		var mu sync.Mutex
+		gui := newLockedTestGUI(t, &mu)
+		gui.drag.position = func() (int, int, bool) { return 10, 10, true }
+
+		mu.Lock()
+		assert.False(t, updateWhileHeld(t, gui),
+			"a tick with a drag transition must hold the UI lock")
+		mu.Unlock()
+	})
+
+	t.Run("drop pending after the drag ended", func(t *testing.T) {
+		var mu sync.Mutex
+		gui := newLockedTestGUI(t, &mu)
+		// The host reports paths a tick or more after the drag ends, by
+		// which point nothing else marks the frame as busy.
+		gui.drag.paths = func() []string { return []string{"/tmp/a.png"} }
+
+		mu.Lock()
+		assert.False(t, updateWhileHeld(t, gui),
+			"a tick that delivers a drop must hold the UI lock")
+		mu.Unlock()
+	})
 }
 
 type mockHandler struct {

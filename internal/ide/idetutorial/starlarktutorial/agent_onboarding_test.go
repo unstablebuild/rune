@@ -28,17 +28,15 @@ import (
 )
 
 // agentOnboardingSrc mirrors the install → provider → credentials
-// shape of teach_agent() in cmd/rune/tutorials/basics.star so the DSL
+// shape of teach_agent() in cmd/rune/tutorials/agent.star so the DSL
 // mechanics the real tutorial relies on (the wait_shell builtin's
 // open-shell gate, its token-containment re-arm, and choice branching)
 // are exercised here without linking the cmd/rune native libraries.
 const agentOnboardingSrc = `
 def run():
-    floating_window(text="open the console")
-    wait_command(command="console")
-    floating_window(text="install the agent")
+    wait_command(command="console", text="open the console")
     wait_shell(args=["pkg", "install", "rune-agent"],
-               on_error="run pkg install rune-agent")
+               text="run pkg install rune-agent")
     notify(level=success, message="Rune Agent installed.")
 
     pick = choice(message="provider?",
@@ -47,12 +45,10 @@ def run():
         notify(level=info, message="skipped provider setup")
         return
 
-    floating_window(text="connect " + pick.value)
     wait_shell(args=["models", "providers", "openai", "add"],
-               on_error="run models providers openai add default")
+               text="connect " + pick.value)
     notify(level=success, message="OpenAI connected.")
-    floating_window(text="open the agent")
-    wait_command(command="agent", on_error="run agent")
+    wait_command(command="agent", text="open the agent")
     notify(level=success, message="Rune Agent is ready.")
 
 tutorial(entry=run)
@@ -68,14 +64,10 @@ func TestAgentOnboardingInstallGateReArmsOnWrongCommand(t *testing.T) {
 	tut, notis := newTutorial(t, agentOnboardingSrc)
 	resetAndWait(t, tut, time.Second)
 
-	require.Equal(t, "floating_window", activeKindFor(tut))
-	_, _ = tut.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
-	waitNextActive(t, tut, "wait_command", time.Second)
+	require.Equal(t, "wait_command", activeKindFor(tut))
 
-	// Open the companion shell, then advance to the install window.
+	// Open the companion shell, then advance to the install step.
 	tut.ObserveCommand("console", "console", nil, nil)
-	waitNextActive(t, tut, "floating_window", time.Second)
-	_, _ = tut.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
 	waitNextActive(t, tut, "wait_shell", time.Second)
 
 	// A shell submission that is not the install command keeps the
@@ -93,18 +85,14 @@ func TestAgentOnboardingInstallGateReArmsOnWrongCommand(t *testing.T) {
 
 	// Pick OpenAI (index 0, already highlighted).
 	_, _ = tut.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
-	waitNextActive(t, tut, "floating_window", time.Second)
-	_, _ = tut.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
 	waitNextActive(t, tut, "wait_shell", time.Second)
 
 	tut.ObserveCommand("console", "console",
 		[]string{"models", "providers", "openai", "add", "default"}, nil)
-	waitNextActive(t, tut, "floating_window", time.Second)
+	waitNextActive(t, tut, "wait_command", time.Second)
 	assert.True(t, notis.containsSubstring("OpenAI connected."))
 
 	// The final step waits for the user to open the agent.
-	_, _ = tut.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
-	waitNextActive(t, tut, "wait_command", time.Second)
 	tut.ObserveCommand("agent", "agent", nil, nil)
 	waitFinished(t, tut, time.Second)
 	assert.True(t, notis.containsSubstring("Rune Agent is ready."))
@@ -118,11 +106,7 @@ func TestAgentOnboardingSkipProviderExits(t *testing.T) {
 	tut, notis := newTutorial(t, agentOnboardingSrc)
 	resetAndWait(t, tut, time.Second)
 
-	_, _ = tut.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
-	waitNextActive(t, tut, "wait_command", time.Second)
 	tut.ObserveCommand("console", "console", nil, nil)
-	waitNextActive(t, tut, "floating_window", time.Second)
-	_, _ = tut.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
 	waitNextActive(t, tut, "wait_shell", time.Second)
 	tut.ObserveCommand("console", "console",
 		[]string{"pkg", "install", "rune-agent"}, nil)
@@ -146,11 +130,7 @@ func TestAgentOnboardingDismissedProviderExits(t *testing.T) {
 	tut, notis := newTutorial(t, agentOnboardingSrc)
 	resetAndWait(t, tut, time.Second)
 
-	_, _ = tut.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
-	waitNextActive(t, tut, "wait_command", time.Second)
 	tut.ObserveCommand("console", "console", nil, nil)
-	waitNextActive(t, tut, "floating_window", time.Second)
-	_, _ = tut.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
 	waitNextActive(t, tut, "wait_shell", time.Second)
 	tut.ObserveCommand("console", "console",
 		[]string{"pkg", "install", "rune-agent"}, nil)
@@ -243,32 +223,41 @@ tutorial(entry=run)
 		notis.renderedCalls())
 }
 
-// TestWaitShellErrorStaysArmedAndSwapsHint asserts that a dispatch
-// error keeps the step armed and swaps the on_error hint into the
-// rendered window.
-func TestWaitShellErrorStaysArmedAndSwapsHint(t *testing.T) {
+// TestWaitShellErrorStaysArmedWithUnchangedCopy asserts that a
+// dispatch error keeps the step armed and leaves the step's copy
+// exactly as the user was reading it: a screen that rewrites itself
+// mid-step moves the instructions out from under them.
+func TestWaitShellErrorStaysArmedWithUnchangedCopy(t *testing.T) {
 	t.Parallel()
 	src := `
 def run():
     wait_shell(args=["pkg", "install", "rune-agent"],
-               on_error="install failed, try again")
+               text="Type it and press Enter.")
     notify(message="installed")
 tutorial(entry=run)
 `
 	tut, _ := newTutorial(t, src)
-	tut.Resize(80, 60)
+	// A body wide enough for the step's instruction to render on a
+	// single row, so the assertion reads the copy, not the wrapping.
+	const bodyWidth, bodyHeight = 40, 24
+	tut.Resize(bodyWidth, bodyHeight)
 	resetAndWait(t, tut, time.Second)
+
+	draw := func() string {
+		g := newAttrGridWriter(bodyWidth, bodyHeight)
+		tut.Draw(g)
+		return gridText(g)
+	}
+	before := draw()
+	assert.Contains(t, before, "Type it and press Enter.",
+		"the step's own instruction must render before any dispatch")
 
 	exit := tut.ObserveCommand("console", "console",
 		[]string{"pkg", "install", "rune-agent"}, assert.AnError)
 	assert.False(t, exit)
 	assert.Equal(t, "wait_shell", activeKindFor(tut),
 		"a dispatch error must keep the wait_shell step armed")
-
-	g := newGridWriter(80, 60)
-	tut.Draw(g)
-	tut.winOverlay.Draw(g)
-	assert.True(t, gridContains(g, "install failed"),
-		"on_error hint must be rendered after a dispatch error")
+	assert.Equal(t, before, draw(),
+		"a dispatch error must leave the step's copy unchanged")
 	tut.Stop()
 }

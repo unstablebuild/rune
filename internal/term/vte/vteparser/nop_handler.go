@@ -259,6 +259,10 @@ func (h nopHandler) TextAreaSizeChars() {
 
 }
 
+func (h nopHandler) CellSizePixels() {
+
+}
+
 func (h nopHandler) SetHyperlink(link *Hyperlink) {
 
 }
@@ -286,5 +290,9 @@ func (h nopHandler) SetModifyOtherKeys(mode ModifyOtherKeysMode) {
 }
 
 func (h nopHandler) ReportModifyOtherKeys() {
+
+}
+
+func (h nopHandler) GraphicsCommand(data []byte) {
 
 }

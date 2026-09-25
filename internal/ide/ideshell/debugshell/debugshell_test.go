@@ -636,8 +636,10 @@ func (b *fakeBrowser) SetTabName(
 func (b *fakeBrowser) OnTabExit(workspaceapi.URI) bool {
 	return false
 }
-func (b *fakeBrowser) PublishEvent(term.Event) error { return nil }
-func (b *fakeBrowser) Close() error                  { return nil }
+
+func (b *fakeBrowser) SetTabActivity(workspaceapi.URI, bool) error { return nil }
+func (b *fakeBrowser) PublishEvent(term.Event) error               { return nil }
+func (b *fakeBrowser) Close() error                                { return nil }
 
 func (b *fakeBrowser) DragHover(term.Coordinates) bool          { return false }
 func (b *fakeBrowser) DragCancel()                              {}

@@ -44,6 +44,9 @@ type Tab struct {
 	win         Window
 	subscribers []TabSubscriber
 	prev        *Tab
+	// active marks the tab as having work in progress. See
+	// Component.SetTabActivity.
+	active bool
 }
 
 // Resize satisfies tui.Component

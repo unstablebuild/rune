@@ -262,7 +262,7 @@ func newBenchParserHandler(width, height int) *parserHandler {
 	ph := newParserHandler(
 		new(sync.Mutex), pty, tm,
 		clipboard.NewInMemory(), tm.bell, uri,
-		cfg.NeedsAttentionAttributes, false, cfg.MaxLines, cfg.MinWidth)
+		cfg.NeedsAttentionAttributes, false, cfg.MaxLines, cfg.MinWidth, nil, nil, "")
 	ph.sync.primBuf.SetDefaultChar(' ')
 	ph.sync.altBuf.SetDefaultChar(' ')
 	ph.Resize(width, height)

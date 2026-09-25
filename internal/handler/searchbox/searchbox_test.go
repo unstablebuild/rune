@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
+	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/handler/handlertest"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/handler/searchbox"
@@ -62,6 +63,8 @@ func (m *testWindowManager) CloseWindow(browserapi.Window) error {
 	}
 	return m.closeErr
 }
+
+func (m *testWindowManager) SetTabActivity(workspaceapi.URI, bool) error { return nil }
 
 // findController records the calls a find-only host would receive.
 type findController struct {

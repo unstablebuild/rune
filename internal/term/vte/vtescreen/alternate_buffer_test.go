@@ -48,7 +48,7 @@ func TestNewAltBuffer(t *testing.T) {
 
 	b.Resize(4, 4)
 	b.Insert('\t', 1, 0)
-	b.SetCursorAtScreen(term.Coordinates{X: 1}, false)
+	b.SetCursorAtScreen(term.Coordinates{X: 1})
 	b.Insert('a', 1, 0)
 	w := term.NewStringWriter(4, 4)
 	b.Draw(w)
@@ -511,7 +511,7 @@ func TestDelete(t *testing.T) {
 	t.Run("deletes one character", func(t *testing.T) {
 		b := makeAltBufferForTesting(1, 10)
 		resetAltBuffer(t, b, "a\nb\n \n \n \n \n \n \n \n ")
-		b.SetCursorAtScreen(term.Coordinates{}, false)
+		b.SetCursorAtScreen(term.Coordinates{})
 		b.Delete(1)
 		assertEqualBuf(t, b, " \nb\n \n \n \n \n \n \n \n ")
 	})
@@ -519,7 +519,7 @@ func TestDelete(t *testing.T) {
 	t.Run("deletes partial start of row", func(t *testing.T) {
 		b := makeAltBufferForTesting(2, 10)
 		resetAltBuffer(t, b, "aa\nbb\n  \n  \n  \n  \n  \n  \n  \n  ")
-		b.SetCursorAtScreen(term.Coordinates{}, false)
+		b.SetCursorAtScreen(term.Coordinates{})
 		b.Delete(1)
 		assertEqualBuf(t, b, "a \nbb\n  \n  \n  \n  \n  \n  \n  \n  ")
 	})
@@ -527,7 +527,7 @@ func TestDelete(t *testing.T) {
 	t.Run("deletes partial end of row", func(t *testing.T) {
 		b := makeAltBufferForTesting(2, 10)
 		resetAltBuffer(t, b, "aa\nbb\n  \n  \n  \n  \n  \n  \n  \n  ")
-		b.SetCursorAtScreen(term.Coordinates{X: 1}, false)
+		b.SetCursorAtScreen(term.Coordinates{X: 1})
 		b.Delete(1)
 		assertEqualBuf(t, b, "a \nbb\n  \n  \n  \n  \n  \n  \n  \n  ")
 	})
@@ -535,7 +535,7 @@ func TestDelete(t *testing.T) {
 	t.Run("deletes multiple characters", func(t *testing.T) {
 		b := makeAltBufferForTesting(2, 10)
 		resetAltBuffer(t, b, "aa\nbb\n  \n  \n  \n  \n  \n  \n  \n  ")
-		b.SetCursorAtScreen(term.Coordinates{}, false)
+		b.SetCursorAtScreen(term.Coordinates{})
 		b.Delete(2)
 		assertEqualBuf(t, b, "  \nbb\n  \n  \n  \n  \n  \n  \n  \n  ")
 	})
@@ -543,7 +543,7 @@ func TestDelete(t *testing.T) {
 	t.Run("past last column does nothing past last column", func(t *testing.T) {
 		b := makeAltBufferForTesting(2, 10)
 		resetAltBuffer(t, b, "aa\nbb\n  \n  \n  \n  \n  \n  \n  \n  ")
-		b.SetCursorAtScreen(term.Coordinates{}, false)
+		b.SetCursorAtScreen(term.Coordinates{})
 		b.Delete(3)
 		assertEqualBuf(t, b, "  \nbb\n  \n  \n  \n  \n  \n  \n  \n  ")
 	})
@@ -551,7 +551,7 @@ func TestDelete(t *testing.T) {
 	t.Run("count + pos.X oob", func(t *testing.T) {
 		b := makeAltBufferForTesting(2, 10)
 		resetAltBuffer(t, b, "aa\nbb\n  \n  \n  \n  \n  \n  \n  \n  ")
-		b.SetCursorAtScreen(term.Coordinates{X: 1}, false)
+		b.SetCursorAtScreen(term.Coordinates{X: 1})
 		b.Delete(2)
 		assertEqualBuf(t, b, "a \nbb\n  \n  \n  \n  \n  \n  \n  \n  ")
 	})
@@ -559,7 +559,7 @@ func TestDelete(t *testing.T) {
 	t.Run("zero count does nothing", func(t *testing.T) {
 		b := makeAltBufferForTesting(2, 10)
 		resetAltBuffer(t, b, "aa\nbb\n  \n  \n  \n  \n  \n  \n  \n  ")
-		b.SetCursorAtScreen(term.Coordinates{}, false)
+		b.SetCursorAtScreen(term.Coordinates{})
 		b.Delete(0)
 		assertEqualBuf(t, b, "aa\nbb\n  \n  \n  \n  \n  \n  \n  \n  ")
 	})
@@ -567,7 +567,7 @@ func TestDelete(t *testing.T) {
 	t.Run("deletes first few characters in long line", func(t *testing.T) {
 		b := makeAltBufferForTesting(10, 2)
 		resetAltBuffer(t, b, "0123456789\nabcdefghij")
-		b.SetCursorAtScreen(term.Coordinates{X: 2}, false)
+		b.SetCursorAtScreen(term.Coordinates{X: 2})
 		b.Delete(3)
 		assertEqualBuf(t, b, "0156789   \nabcdefghij")
 	})
@@ -577,7 +577,7 @@ func TestWriteInsert(t *testing.T) {
 	t.Run("maps character to ' ' if SetHiddenCursor(true) was called", func(t *testing.T) {
 		b := makeAltBufferForTesting(2, 10)
 		resetAltBuffer(t, b, "aa\nbb\n  \n  \n  \n  \n  \n  \n  \n  ")
-		b.SetCursorAtScreen(term.Coordinates{}, false)
+		b.SetCursorAtScreen(term.Coordinates{})
 		b.SetHiddenCursor(true)
 		b.Write('X', 1, 0)
 		assertEqualBuf(t, b, " a\nbb\n  \n  \n  \n  \n  \n  \n  \n  ")
@@ -589,7 +589,7 @@ func TestWriteInsert(t *testing.T) {
 	t.Run("copies the attributes last set via SetCursorAttributes", func(t *testing.T) {
 		b := makeAltBufferForTesting(2, 10)
 		resetAltBuffer(t, b, "aa\nbb\n  \n  \n  \n  \n  \n  \n  \n  ")
-		b.SetCursorAtScreen(term.Coordinates{}, false)
+		b.SetCursorAtScreen(term.Coordinates{})
 
 		attrs := term.Attributes{
 			Fg:    term.ColorYellow,
@@ -607,7 +607,7 @@ func TestWriteInsert(t *testing.T) {
 	t.Run("maps the character using the given charset index", func(t *testing.T) {
 		b := makeAltBufferForTesting(2, 10)
 		resetAltBuffer(t, b, "aa\nbb\n  \n  \n  \n  \n  \n  \n  \n  ")
-		b.SetCursorAtScreen(term.Coordinates{}, false)
+		b.SetCursorAtScreen(term.Coordinates{})
 
 		b.ConfigureCharset(vteparser.CharsetIndexG1, vteparser.StandardCharsetSpecialCharacterAndLineDrawing)
 		b.Write('`', 1, vteparser.CharsetIndexG1)
@@ -617,7 +617,7 @@ func TestWriteInsert(t *testing.T) {
 	t.Run("does nothing if passed charset has not been configured", func(t *testing.T) {
 		b := makeAltBufferForTesting(2, 10)
 		resetAltBuffer(t, b, "aa\nbb\n  \n  \n  \n  \n  \n  \n  \n  ")
-		b.SetCursorAtScreen(term.Coordinates{}, false)
+		b.SetCursorAtScreen(term.Coordinates{})
 
 		b.Write('`', 1, vteparser.CharsetIndexG1)
 		assertEqualBuf(t, b, "`a\nbb\n  \n  \n  \n  \n  \n  \n  \n  ")
@@ -626,7 +626,7 @@ func TestWriteInsert(t *testing.T) {
 	t.Run("writes character at max column if if out of bounds (x)", func(t *testing.T) {
 		b := makeAltBufferForTesting(2, 10)
 		resetAltBuffer(t, b, "aa\nbb\n  \n  \n  \n  \n  \n  \n  \n  ")
-		b.SetCursorAtScreen(term.Coordinates{X: 4}, false)
+		b.SetCursorAtScreen(term.Coordinates{X: 4})
 
 		b.Write('X', 1, 0)
 		assertEqualBuf(t, b, "aX\nbb\n  \n  \n  \n  \n  \n  \n  \n  ")
@@ -635,7 +635,7 @@ func TestWriteInsert(t *testing.T) {
 	t.Run("inserts character at max column if writing out of bounds (x)", func(t *testing.T) {
 		b := makeAltBufferForTesting(2, 10)
 		resetAltBuffer(t, b, "aa\nbb\n  \n  \n  \n  \n  \n  \n  \n  ")
-		b.SetCursorAtScreen(term.Coordinates{X: 4}, false)
+		b.SetCursorAtScreen(term.Coordinates{X: 4})
 
 		b.Write('X', 1, 0)
 		assertEqualBuf(t, b, "aX\nbb\n  \n  \n  \n  \n  \n  \n  \n  ")
@@ -644,7 +644,7 @@ func TestWriteInsert(t *testing.T) {
 	t.Run("inserts character at max line if writing out of bounds (y)", func(t *testing.T) {
 		b := makeAltBufferForTesting(2, 10)
 		resetAltBuffer(t, b, "aa\nbb\n  \n  \n  \n  \n  \n  \n  \n  ")
-		b.SetCursorAtScreen(term.Coordinates{Y: 12, X: 6}, false)
+		b.SetCursorAtScreen(term.Coordinates{Y: 12, X: 6})
 
 		b.Write('X', 1, 0)
 		assertEqualBuf(t, b, "aa\nbb\n  \n  \n  \n  \n  \n  \n  \n X")
@@ -653,7 +653,7 @@ func TestWriteInsert(t *testing.T) {
 	t.Run("inserts character in bounds", func(t *testing.T) {
 		b := makeAltBufferForTesting(2, 10)
 		resetAltBuffer(t, b, "aa\nbb\n  \n  \n  \n  \n  \n  \n  \n  ")
-		b.SetCursorAtScreen(term.Coordinates{X: 1}, false)
+		b.SetCursorAtScreen(term.Coordinates{X: 1})
 
 		b.Insert('X', 1, 0)
 		assertEqualBuf(t, b, "aX\nbb\n  \n  \n  \n  \n  \n  \n  \n  ")
@@ -663,7 +663,7 @@ func TestWriteInsert(t *testing.T) {
 		b := makeAltBufferForTesting(2, 10)
 		resetAltBuffer(t, b, "aa\nbb\n  \n  \n  \n  \n  \n  \n  \n  ")
 
-		b.SetCursorAtScreen(term.Coordinates{Y: 10}, false)
+		b.SetCursorAtScreen(term.Coordinates{Y: 10})
 		// invalidate cursor position
 		b.Resize(2, 9)
 
@@ -677,7 +677,7 @@ func TestWriteInsert(t *testing.T) {
 		b := makeAltBufferForTesting(2, 10)
 		resetAltBuffer(t, b, "aa\nbb\n  \n  \n  \n  \n  \n  \n  \n  ")
 
-		b.SetCursorAtScreen(term.Coordinates{Y: 10}, false)
+		b.SetCursorAtScreen(term.Coordinates{Y: 10})
 		// invalidate cursor position
 		b.Resize(2, 9)
 
@@ -754,11 +754,11 @@ func writeToAltBuffer(b *AltBuffer, str string) {
 		if ch == '\n' {
 			pos.Y++
 			pos.X = 0
-			b.SetCursorAtScreen(pos, false)
+			b.SetCursorAtScreen(pos)
 		} else {
 			b.Write(ch, uniseg.StringWidth(string(ch)), 0)
 			pos.X++
-			b.SetCursorAtScreen(pos, false)
+			b.SetCursorAtScreen(pos)
 		}
 	}
 }
@@ -769,7 +769,7 @@ func assertEqualBuf(t *testing.T, p *AltBuffer, expected string) {
 
 func resetAltBuffer(t *testing.T, b *AltBuffer, to string) {
 	b.ResetLines(0, b.Height())
-	b.SetCursorAtScreen(term.Coordinates{}, false)
+	b.SetCursorAtScreen(term.Coordinates{})
 	writeToAltBuffer(b, to)
 	require.Equal(t, to, term.CellsToString(b.Cells.RawCells()))
 }
@@ -863,7 +863,7 @@ func TestAltBufferWriteRunTable(t *testing.T) {
 				tt.seed(rows)
 			}
 			b.Cells.ResetCells(rows)
-			b.SetCursorAtScreen(tt.pos, false)
+			b.SetCursorAtScreen(tt.pos)
 			if tt.pos.X < 0 || tt.pos.Y < 0 || tt.pos.Y >= b.Rows() {
 				b.cursor.position = tt.pos
 			}
@@ -976,7 +976,7 @@ func TestWriteGlyphRunTable(t *testing.T) {
 					} else {
 						b = newScreenTestAltBuffer(8, 3)
 					}
-					b.SetCursorAtScreen(tt.pos, false)
+					b.SetCursorAtScreen(tt.pos)
 					b.SetCursorAttributes(screenTestAttributes())
 					b.SetHiddenCursor(tt.hidden)
 					if tt.mappedCharset {
@@ -1054,7 +1054,7 @@ func TestPrevCellAtCursorTable(t *testing.T) {
 			rows[0][1] = screenTestCell('漢', 2)
 			rows[0][2] = *screenTestCombiningCellPtr()
 			b.cellBuffer().ResetCells(rows)
-			b.SetCursorAtScreen(tt.cursor, false)
+			b.SetCursorAtScreen(tt.cursor)
 
 			got := b.PrevCellAtCursor()
 			if tt.want == nil {
@@ -1169,7 +1169,7 @@ func TestPrimaryBulkWritesAfterHistoryRingWrapTable(t *testing.T) {
 				tt.seed(rows)
 			}
 			b := newHistoryWrappedPrimaryBuffer(t, 8, 3, rows)
-			b.SetCursorAtScreen(tt.cursor, false)
+			b.SetCursorAtScreen(tt.cursor)
 			cursorScreen := b.CursorAtScreen()
 			cursorScroll := b.CursorAtScroll()
 			before := b.Cells.CopyRows(nil)
@@ -1227,7 +1227,7 @@ func primaryRingWriteRows(width, count int) [][]term.Cell {
 
 type screenTestBuffer interface {
 	WriteGlyphRun([]Glyph, vteparser.CharsetIndex) int
-	SetCursorAtScreen(term.Coordinates, bool)
+	SetCursorAtScreen(term.Coordinates)
 	CursorAtScreen() term.Coordinates
 	SetCursorAttributes(term.Attributes)
 	SetHiddenCursor(bool)
@@ -1319,7 +1319,7 @@ func TestAltBufferDeleteAtRingTable(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			rows := screenRingRows(5, 4)
 			b := newWrappedScreenAltBuffer('.', term.ColorBlue, rows)
-			b.SetCursorAtScreen(term.Coordinates{X: 4}, false)
+			b.SetCursorAtScreen(term.Coordinates{X: 4})
 			cursor := b.CursorAtScreen()
 			want := cloneScreenRows(rows)
 			modelScreenDelete(want, tt.pos, tt.count, screenResetCell('.', term.ColorBlue))
@@ -1360,7 +1360,7 @@ func TestAltBufferScrollRingTable(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			rows := screenRingRows(5, 5)
 			b := newWrappedScreenAltBuffer(tt.defaultCh, term.ColorPurple, rows)
-			b.SetCursorAtScreen(term.Coordinates{X: 3, Y: 2}, false)
+			b.SetCursorAtScreen(term.Coordinates{X: 3, Y: 2})
 			cursor := b.CursorAtScreen()
 			want := cloneScreenRows(rows)
 			modelScreenScroll(
@@ -1505,7 +1505,7 @@ func TestPrimaryWriteConsumesCoveredCellsTable(t *testing.T) {
 				repeatScreenCell(term.Cell{Ch: '.', Width: 1, Bytes: 1}, 6),
 			}
 			b.Cells.ResetCells(rows)
-			b.SetCursorAtScreen(term.Coordinates{}, false)
+			b.SetCursorAtScreen(term.Coordinates{})
 
 			b.Write(tt.write.Ch, int(tt.write.Width), vteparser.CharsetIndexG0)
 

@@ -553,7 +553,7 @@ func (p *fileScheme) NewPty(ctx context.Context) (workspaceapi.Pty, error) {
 	}, nil
 }
 
-func (p *fileScheme) SetPtySize(pp workspaceapi.Pty, width, height int) error {
+func (p *fileScheme) SetPtySize(pp workspaceapi.Pty, size workspaceapi.PtySize) error {
 	ptyFile, ok := pp.Master.(*fileSchemeFile)
 	if !ok {
 		return fmt.Errorf("extraneous pty: %+v", pp)
@@ -568,8 +568,10 @@ func (p *fileScheme) SetPtySize(pp workspaceapi.Pty, width, height int) error {
 		return ErrInvalidMasterPtyFd
 	}
 	err := pty.Setsize(ptyFile.Fd(), &pty.Winsize{
-		Rows: uint16(height),
-		Cols: uint16(width),
+		Rows: uint16(size.Rows),
+		Cols: uint16(size.Columns),
+		X:    uint16(size.PixelWidth),
+		Y:    uint16(size.PixelHeight),
 	})
 	if err != nil {
 		// Close may have landed between the check above and the

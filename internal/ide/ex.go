@@ -328,6 +328,7 @@ func (e *ex) init(
 	e.config.CommandFallbacks["searchfile"] = e
 	e.config.CommandFallbacks["searchtext"] = e
 	e.config.CommandFallbacks["searchast"] = e
+	e.config.OnTabIconClick = e.closeTabFromIcon
 	err = e.comp.Init(ed, m, e.config)
 	if err != nil {
 		return
@@ -503,6 +504,14 @@ func (e *ex) doInit(
 	e.publishEvent = publishEvent
 	e.storage = storage
 	e.workspaceURI = uri
+	// A t=f, t=t or t=s graphics transmission names a file on the
+	// machine the terminal's command runs on, which is this workspace.
+	emulatorConfig.FileSystem = m
+	if uri.Scheme() == workspace.FileScheme {
+		// The command inherits this process's environment, TMPDIR
+		// included; a remote machine's is unknown.
+		emulatorConfig.TempDir = os.TempDir()
+	}
 	e.emulatorConfig = emulatorConfig
 
 	e.config = text.DefaultConfig()
@@ -773,6 +782,24 @@ func (e *ex) tabclose(_ context.Context, args ...string) error {
 	// on focus dispatch to vte.Handler via Close
 	b.RemoveWindowContent(win)
 	return nil
+}
+
+// closeTabFromIcon closes tab like tabclose closes the one in focus,
+// asking first when it has changes pending to be written.
+func (e *ex) closeTabFromIcon(tab *browser.Tab) {
+	b := e.comp.Browser()
+	if e.tabIsDirty(tab) {
+		e.openCloseDirtyTabsPrompt(
+			fmt.Sprintf("File '%s' has changes pending to be written. "+
+				"Close and discard changes?", tab.URI().Name()),
+			func() error {
+				b.RemoveTab(tab)
+				return nil
+			},
+		)
+		return
+	}
+	b.RemoveTab(tab)
 }
 
 func (e *ex) tabcloseall(_ context.Context, args ...string) error {
@@ -2844,6 +2871,14 @@ func (e *ex) Cursor() (
 // Selection satisfies tui.Handler.
 func (e *ex) Selection() (string, bool) {
 	return e.focusHandler().Selection()
+}
+
+// windowRows satisfies windowRows: the rows this workspace's windows
+// occupy, which exclude the bars laid out around them.
+func (e *ex) windowRows() (top, rows int) {
+	b := e.comp.Browser()
+	_, height := b.WindowManagerSize()
+	return b.WindowManagerPosition().Y, height
 }
 
 // setRightInset resizes the column reserved along the right edge, both

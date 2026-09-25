@@ -210,6 +210,7 @@ func (wm *WindowManager) Handle(ev term.Event) (exit bool, handled bool) {
 	// Cleared after dispatch so MouseRelease ending a drag still
 	// reaches the press window instead of being re-routed by position.
 	var endDragAfter bool
+	target := wm.focus
 	if ev.Type == term.EventMouse {
 		mousePos := term.Coordinates{X: ev.MouseX, Y: ev.MouseY}
 		// The cancel hook may close windows, so nothing may be
@@ -303,14 +304,28 @@ func (wm *WindowManager) Handle(ev term.Event) (exit bool, handled bool) {
 			ev.MouseY = maxY
 		}
 
-		if wm.Focus().Window != childAtMouse {
-			if ev.Key == term.MouseLeft {
+		if target.Window != childAtMouse {
+			switch ev.Key {
+			case term.MouseLeft:
 				wm.SetFocus(wm.newNode(childAtMouse))
+				target = wm.focus
 				// Fall through: the inner mouse.Mouse must see the
 				// press to anchor a selection at the pressed cell.
-			} else if ev.Key == term.MouseRelease && endDragAfter {
+			case term.MouseRelease:
+				if !endDragAfter {
+					return
+				}
 				// Captured-drag release: dispatch without changing focus.
-			} else {
+			case 0, term.MouseWheelUp, term.MouseWheelDown:
+				// As in kitty, pointer motion and the wheel reach the
+				// window under the pointer without focusing it, but not
+				// past a focused float, which can be anchored to the
+				// content that would move beneath it.
+				if target.IsFloating() {
+					return
+				}
+				target = wm.newNode(childAtMouse)
+			default:
 				return
 			}
 		}
@@ -322,18 +337,18 @@ func (wm *WindowManager) Handle(ev term.Event) (exit bool, handled bool) {
 	}
 
 	var hexit bool
-	focus := wm.focus
+	focused := target == wm.focus
 	size := wm.comp.SizeTiles()
-	hexit, handled = focus.Content().Handle(ev)
+	hexit, handled = target.Content().Handle(ev)
 	if endDragAfter {
 		wm.prevMouseLeftDrag = false
 	}
 
-	// if handler in focus wants to exit, close the window,
+	// if the dispatched handler wants to exit, close the window,
 	// or signal exit to upstream handler if it was last window
 	if hexit {
-		if focus.IsFloating() {
-			focus.Close()
+		if target.IsFloating() {
+			target.Close()
 			return
 		}
 
@@ -341,10 +356,10 @@ func (wm *WindowManager) Handle(ev term.Event) (exit bool, handled bool) {
 			return
 		}
 
-		// Close the original tile that produced the exit signal. There
-		// are two cases the conditions below must distinguish:
+		// Close the original tile that produced the exit signal. The
+		// conditions below must distinguish these cases:
 		//   1) Handle did not change the layout: wm.focus still equals
-		//      focus. Shift focus to a sibling and close the tile.
+		//      target. Shift focus to a sibling and close the tile.
 		//   2) Handle opened a floating window (e.g. a recovery prompt
 		//      via Component.Prompt) that took over wm.focus mid-Handle.
 		//      In that case the original tile must still be closed so
@@ -353,17 +368,19 @@ func (wm *WindowManager) Handle(ev term.Event) (exit bool, handled bool) {
 		//      prompt is the intended new focus.
 		//   3) Handle itself swapped focus to another tile (e.g. opened
 		//      a new tile and shifted focus). Skip closing.
+		//   4) The tile never had focus: it received the wheel or
+		//      pointer motion. Close it and leave focus alone.
 		size := wm.comp.SizeTiles()
-		if focus.Closed() || size == 1 {
+		if target.Closed() || size == 1 {
 			return
 		}
 		curr := wm.focus
 		switch {
-		case curr.ID() == focus.ID():
+		case curr.ID() == target.ID():
 			wm.ShiftFocus()
-			focus.Close()
-		case curr.IsFloating():
-			focus.Close()
+			target.Close()
+		case curr.IsFloating(), !focused:
+			target.Close()
 		}
 	}
 

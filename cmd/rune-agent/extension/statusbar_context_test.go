@@ -154,6 +154,55 @@ func TestBeginTurnKeepsContextOccupancy(t *testing.T) {
 	assert.Equal(t, start, got.TurnStart)
 }
 
+// A chat tab's activity follows its turn, so the host can show which
+// chats are working while they are not focused.
+func TestTurnMarksChatTabActivity(t *testing.T) {
+	wm := &recordingWindowManager{}
+	s := newStatusBarSyncComponent()
+	t.Cleanup(func() { _ = s.comp.Close() })
+	s.h.wm = wm
+	uri, err := getModelUri("rolling-fox", "gpt-5")
+	require.NoError(t, err)
+	s.uri = uri
+
+	s.beginTurn(time.Now())
+	assert.Equal(t, []tabActivity{{uri: uri, active: true}}, wm.tabActivity())
+	s.endTurn()
+	assert.Equal(t, []tabActivity{
+		{uri: uri, active: true}, {uri: uri, active: false},
+	}, wm.tabActivity())
+}
+
+// The indicator is best-effort: a host that cannot mark the tab must not
+// keep the turn from driving the status bar.
+func TestTurnSurvivesTabActivityErrors(t *testing.T) {
+	wm := &recordingWindowManager{activityErr: errors.New("unknown tab")}
+	s := newStatusBarSyncComponent()
+	t.Cleanup(func() { _ = s.comp.Close() })
+	s.h.wm = wm
+	uri, err := getModelUri("rolling-fox", "gpt-5")
+	require.NoError(t, err)
+	s.uri = uri
+
+	s.beginTurn(time.Now())
+	assert.True(t, s.comp.StatusBarState().Active)
+	s.endTurn()
+	assert.False(t, s.comp.StatusBarState().Active)
+	assert.Len(t, wm.tabActivity(), 2)
+}
+
+// Chats that are not tabs, such as queries, have no tab to mark.
+func TestTurnWithoutTabSkipsActivity(t *testing.T) {
+	wm := &recordingWindowManager{}
+	s := newStatusBarSyncComponent()
+	t.Cleanup(func() { _ = s.comp.Close() })
+	s.h.wm = wm
+
+	s.beginTurn(time.Now())
+	s.endTurn()
+	assert.Empty(t, wm.tabActivity())
+}
+
 // An unset session effort must name the level the provider applies,
 // not leave the bar reading "default".
 func TestSyncStatusBarModelResolvesProviderDefaultEffort(t *testing.T) {
