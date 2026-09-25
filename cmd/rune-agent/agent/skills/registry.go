@@ -18,7 +18,9 @@ package skills
 
 import (
 	"fmt"
+	"maps"
 	"os/user"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -28,6 +30,27 @@ import (
 
 	builtins "unstable.build/rune/cmd/rune-agent/skills"
 )
+
+// SkillError captures a parsing or validation error encountered while
+// reading a SKILL.md file.
+type SkillError struct {
+	Path string
+	Err  error
+}
+
+func (e SkillError) Error() string {
+	return fmt.Sprintf("%s: %v", e.Path, e.Err)
+}
+
+// ReloadResult summarizes the outcome of a skill registry re-scan.
+type ReloadResult struct {
+	Dirs    []string     // Tracked directories that were scanned
+	Loaded  []Skill      // All currently loaded skills (sorted by name)
+	Added   []Skill      // Skills newly discovered during reload
+	Updated []Skill      // Skills whose definitions changed during reload
+	Dropped []Skill      // Skills removed since the previous scan
+	Errors  []SkillError // Parsing/validation errors encountered
+}
 
 // SkillRegistry is a thread-safe, mutable registry of skills.
 // Created once at startup and shared by the skill tool and agentshell.
@@ -57,7 +80,11 @@ func NewRegistry(fs workspaceapi.FileSystem, cwd workspaceapi.URI, dirs []string
 			continue
 		}
 		r.dirs = append(r.dirs, abs)
-		for _, s := range r.loadDir(abs) {
+		loaded, errs := r.loadDir(abs)
+		for _, e := range errs {
+			r.notify("skill load error in %s: %v", e.Path, e.Err)
+		}
+		for _, s := range loaded {
 			r.warnDescription(s)
 			if existing, exists := r.byName[s.Name]; !exists {
 				r.byName[s.Name] = s
@@ -99,6 +126,10 @@ func (r *SkillRegistry) GetFold(name string) (Skill, bool) {
 func (r *SkillRegistry) List() []Skill {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	return r.listLocked()
+}
+
+func (r *SkillRegistry) listLocked() []Skill {
 	result := make([]Skill, 0, len(r.byName))
 	for _, s := range r.byName {
 		result = append(result, s)
@@ -118,19 +149,20 @@ func (r *SkillRegistry) Dirs() []string {
 
 // AddDir adds a skill directory. Resolves relative paths against
 // cwd (stored at construction). Scans the directory and
-// registers all found skills. Returns the list of newly added skills.
+// registers all found skills. Returns the list of newly added skills
+// and any parsing/validation errors encountered.
 // Returns error if directory is already tracked.
-func (r *SkillRegistry) AddDir(dir string) ([]Skill, error) {
+func (r *SkillRegistry) AddDir(dir string) ([]Skill, []SkillError, error) {
 	abs := r.resolve(dir)
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	if slices.Contains(r.dirs, abs) {
-		return nil, fmt.Errorf("directory already tracked: %s", abs)
+		return nil, nil, fmt.Errorf("directory already tracked: %s", abs)
 	}
 
-	loaded := r.loadDir(abs)
+	loaded, errs := r.loadDir(abs)
 	var added []Skill
 	for _, s := range loaded {
 		r.warnDescription(s)
@@ -143,7 +175,7 @@ func (r *SkillRegistry) AddDir(dir string) ([]Skill, error) {
 		}
 	}
 	r.dirs = append(r.dirs, abs)
-	return added, nil
+	return added, errs, nil
 }
 
 // RemoveDir removes a skill directory and unregisters all skills
@@ -168,18 +200,42 @@ func (r *SkillRegistry) RemoveDir(dir string) error {
 	return nil
 }
 
+// Snapshot returns a copy of the currently registered skills mapped by name.
+func (r *SkillRegistry) Snapshot() map[string]Skill {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return maps.Clone(r.byName)
+}
+
 // Reload re-scans all tracked directories and re-registers builtins.
 // New or updated skills become visible; skills whose SKILL.md was
-// removed are dropped. This is safe to call from the agent loop on
-// every turn so that out-of-band skill installations are picked up.
-func (r *SkillRegistry) Reload() {
+// removed are dropped. Diff fields (Added, Updated, Dropped) are computed
+// against the registry's state immediately prior to reload.
+// This is safe to call from the agent loop on every turn so that
+// out-of-band skill installations are picked up.
+func (r *SkillRegistry) Reload() ReloadResult {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	prev := maps.Clone(r.byName)
+	return r.reloadLocked(prev)
+}
 
-	// Reset to empty, then re-load from tracked dirs + builtins.
+// ReloadSince re-scans all tracked directories and computes differential
+// changes (Added, Updated, Dropped) against the provided prev baseline snapshot.
+func (r *SkillRegistry) ReloadSince(prev map[string]Skill) ReloadResult {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.reloadLocked(prev)
+}
+
+func (r *SkillRegistry) reloadLocked(prev map[string]Skill) ReloadResult {
 	r.byName = make(map[string]Skill, len(r.byName))
+	var allErrors []SkillError
+
 	for _, abs := range r.dirs {
-		for _, s := range r.loadDir(abs) {
+		loaded, errs := r.loadDir(abs)
+		allErrors = append(allErrors, errs...)
+		for _, s := range loaded {
 			r.warnDescription(s)
 			if existing, exists := r.byName[s.Name]; !exists {
 				r.byName[s.Name] = s
@@ -190,6 +246,50 @@ func (r *SkillRegistry) Reload() {
 		}
 	}
 	r.registerBuiltins()
+
+	res := ReloadResult{
+		Dirs:   slices.Clone(r.dirs),
+		Errors: allErrors,
+	}
+
+	// Compute Added and Updated
+	for name, curr := range r.byName {
+		prevSkill, existed := prev[name]
+		if !existed {
+			// Builtins are always present and not considered newly added.
+			if !strings.HasPrefix(curr.Dir, "<builtin>/") {
+				res.Added = append(res.Added, curr)
+			}
+		} else if !skillEqual(prevSkill, curr) {
+			res.Updated = append(res.Updated, curr)
+		}
+	}
+
+	// Compute Dropped
+	for name, prevSkill := range prev {
+		if _, exists := r.byName[name]; !exists {
+			if !strings.HasPrefix(prevSkill.Dir, "<builtin>/") {
+				res.Dropped = append(res.Dropped, prevSkill)
+			}
+		}
+	}
+
+	sortByName := func(a, b Skill) int { return strings.Compare(a.Name, b.Name) }
+	slices.SortFunc(res.Added, sortByName)
+	slices.SortFunc(res.Updated, sortByName)
+	slices.SortFunc(res.Dropped, sortByName)
+
+	res.Loaded = r.listLocked()
+	return res
+}
+
+func skillEqual(a, b Skill) bool {
+	if !maps.Equal(a.Metadata, b.Metadata) {
+		return false
+	}
+	a.Metadata = nil
+	b.Metadata = nil
+	return reflect.DeepEqual(a, b)
 }
 
 func (r *SkillRegistry) resolve(dir string) string {

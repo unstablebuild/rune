@@ -165,6 +165,17 @@ body`)
 		assert.Equal(t, []string{dir}, r.Dirs(), "resolved dirs should be tracked once")
 		assert.Empty(t, notifications.notifications(), "duplicate resolved dirs should not warn")
 	})
+
+	t.Run("notifies on skill load error", func(t *testing.T) {
+		dir := t.TempDir()
+		writeSkill(t, dir, "broken", "---\nname: broken\n---\nno description")
+		notifications := &recordingNotifications{}
+		_ = NewRegistry(osFileSystem{}, dirURI(""), []string{dir}, notifications)
+		notifs := notifications.notifications()
+		require.NotEmpty(t, notifs)
+		assert.Contains(t, notifs[0].msg, "skill load error in")
+		assert.Contains(t, notifs[0].msg, "broken")
+	})
 }
 
 func TestRegistryGet(t *testing.T) {
@@ -271,8 +282,9 @@ description: New
 ---
 body`)
 
-		added, err := r.AddDir(dir)
+		added, errs, err := r.AddDir(dir)
 		require.NoError(t, err)
+		assert.Empty(t, errs)
 		assert.Len(t, added, 1)
 		assert.Equal(t, "new-skill", added[0].Name)
 
@@ -286,7 +298,7 @@ body`)
 		dir := t.TempDir()
 		r := NewRegistry(osFileSystem{}, dirURI(""), []string{dir}, nil)
 
-		_, err := r.AddDir(dir)
+		_, _, err := r.AddDir(dir)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "already tracked")
 	})
@@ -301,7 +313,7 @@ description: Relative
 body`)
 
 		r := NewRegistry(osFileSystem{}, dirURI(workspace), nil, nil)
-		_, err := r.AddDir(relDir)
+		_, _, err := r.AddDir(relDir)
 		require.NoError(t, err)
 
 		_, ok := r.Get("rel")
@@ -352,12 +364,27 @@ description: Duplicate
 dup`)
 
 		r := NewRegistry(osFileSystem{}, dirURI(""), []string{dir1}, nil)
-		added, err := r.AddDir(dir2)
+		added, _, err := r.AddDir(dir2)
 		require.NoError(t, err)
 		assert.Empty(t, added, "existing name should be skipped")
 
 		s, _ := r.Get("shared")
 		assert.Equal(t, "Original", s.Description)
+	})
+
+	t.Run("surfaces parse errors for broken skills", func(t *testing.T) {
+		dir := t.TempDir()
+		writeSkill(t, dir, "valid", "---\nname: valid\ndescription: Valid\n---\nbody")
+		writeSkill(t, dir, "broken", "---\nname: broken\n---\nno description")
+
+		r := NewRegistry(osFileSystem{}, dirURI(""), nil, nil)
+		added, errs, err := r.AddDir(dir)
+		require.NoError(t, err)
+		assert.Len(t, added, 1)
+		assert.Equal(t, "valid", added[0].Name)
+		require.Len(t, errs, 1)
+		assert.Contains(t, errs[0].Path, "broken")
+		assert.Error(t, errs[0].Err)
 	})
 }
 
@@ -464,6 +491,170 @@ body`)
 			assert.True(t, ok, "builtin %s must survive Reload", name)
 		}
 	})
+
+	t.Run("returns differential reload result and surfaces errors", func(t *testing.T) {
+		dir := t.TempDir()
+		writeSkill(t, dir, "initial", `---
+name: initial
+description: Initial
+---
+body`)
+
+		r := NewRegistry(osFileSystem{}, dirURI(""), []string{dir}, nil)
+
+		// Unchanged reload
+		res := r.Reload()
+		assert.Equal(t, []string{dir}, res.Dirs)
+		assert.Empty(t, res.Added)
+		assert.Empty(t, res.Updated)
+		assert.Empty(t, res.Dropped)
+		assert.Empty(t, res.Errors)
+		assert.Len(t, res.Loaded, 3)
+
+		// Added
+		writeSkill(t, dir, "added", `---
+name: added
+description: Added skill
+---
+body`)
+		res = r.Reload()
+		require.Len(t, res.Added, 1)
+		assert.Equal(t, "added", res.Added[0].Name)
+		assert.Empty(t, res.Updated)
+		assert.Empty(t, res.Dropped)
+		assert.Empty(t, res.Errors)
+		for _, s := range res.Added {
+			assert.NotEqual(t, "explore", s.Name)
+			assert.NotEqual(t, "plan", s.Name)
+		}
+
+		// Updated
+		writeSkill(t, dir, "initial", `---
+name: initial
+description: Updated initial
+---
+body`)
+		res = r.Reload()
+		assert.Empty(t, res.Added)
+		require.Len(t, res.Updated, 1)
+		assert.Equal(t, "initial", res.Updated[0].Name)
+		assert.Equal(t, "Updated initial", res.Updated[0].Description)
+		assert.Empty(t, res.Dropped)
+		assert.Empty(t, res.Errors)
+
+		// Dropped
+		require.NoError(t, os.RemoveAll(filepath.Join(dir, "added")))
+		res = r.Reload()
+		assert.Empty(t, res.Added)
+		assert.Empty(t, res.Updated)
+		require.Len(t, res.Dropped, 1)
+		assert.Equal(t, "added", res.Dropped[0].Name)
+		for _, s := range res.Dropped {
+			assert.NotEqual(t, "explore", s.Name)
+			assert.NotEqual(t, "plan", s.Name)
+		}
+
+		// Errors
+		writeSkill(t, dir, "broken", `---
+name: broken
+---
+missing description`)
+		res = r.Reload()
+		require.Len(t, res.Errors, 1)
+		assert.Contains(t, res.Errors[0].Path, "broken")
+		assert.Error(t, res.Errors[0].Err)
+		assert.Contains(t, res.Errors[0].Error(), "description")
+
+		// Unreadable / nonexistent tracked directory surfaces as SkillError
+		missingDir := filepath.Join(t.TempDir(), "nonexistent")
+		rMissing := NewRegistry(osFileSystem{}, dirURI(""), []string{missingDir}, nil)
+		resMissing := rMissing.Reload()
+		require.Len(t, resMissing.Errors, 1)
+		assert.Equal(t, missingDir, resMissing.Errors[0].Path)
+		assert.Error(t, resMissing.Errors[0].Err)
+	})
+}
+
+func TestRegistryReloadSince(t *testing.T) {
+	dir := t.TempDir()
+	writeSkill(t, dir, "skill-1", "---\nname: skill-1\ndescription: Skill 1\n---\nbody")
+
+	r := NewRegistry(osFileSystem{}, dirURI(""), []string{dir}, nil)
+	baseline := r.Snapshot()
+	assert.Contains(t, baseline, "skill-1")
+	assert.Contains(t, baseline, "explore")
+
+	// Add a new skill
+	writeSkill(t, dir, "skill-2", "---\nname: skill-2\ndescription: Skill 2\n---\nbody")
+
+	// Intermediate standard reloads update registry state
+	for range 3 {
+		r.Reload()
+	}
+
+	// ReloadSince against the older baseline must still identify skill-2 as Added
+	res := r.ReloadSince(baseline)
+	require.Len(t, res.Added, 1)
+	assert.Equal(t, "skill-2", res.Added[0].Name)
+	assert.Empty(t, res.Updated)
+	assert.Empty(t, res.Dropped)
+}
+
+func TestSkillEqual(t *testing.T) {
+	base := Skill{
+		Name:          "skill",
+		Description:   "desc",
+		Body:          "body",
+		Dir:           "/path/to/skill",
+		License:       "MIT",
+		Compatibility: ">=1.0",
+		Metadata:      map[string]string{"author": "alice"},
+		AllowedTools:  "read_file",
+		Type:          "agent",
+		Model:         "claude",
+		ParentContext: true,
+	}
+
+	t.Run("identical skills are equal", func(t *testing.T) {
+		other := base
+		other.Metadata = map[string]string{"author": "alice"}
+		assert.True(t, skillEqual(base, other))
+	})
+
+	t.Run("nil and empty metadata handling", func(t *testing.T) {
+		s1 := base
+		s1.Metadata = nil
+		s2 := base
+		s2.Metadata = map[string]string{}
+		assert.True(t, skillEqual(s1, s2))
+	})
+
+	t.Run("different metadata is not equal", func(t *testing.T) {
+		other := base
+		other.Metadata = map[string]string{"author": "bob"}
+		assert.False(t, skillEqual(base, other))
+	})
+
+	t.Run("different field is not equal", func(t *testing.T) {
+		fields := []func(*Skill){
+			func(s *Skill) { s.Name = "diff" },
+			func(s *Skill) { s.Description = "diff" },
+			func(s *Skill) { s.Body = "diff" },
+			func(s *Skill) { s.Dir = "diff" },
+			func(s *Skill) { s.License = "diff" },
+			func(s *Skill) { s.Compatibility = "diff" },
+			func(s *Skill) { s.AllowedTools = "diff" },
+			func(s *Skill) { s.Type = "diff" },
+			func(s *Skill) { s.Model = "diff" },
+			func(s *Skill) { s.ParentContext = false },
+		}
+		for i, mod := range fields {
+			other := base
+			other.Metadata = map[string]string{"author": "alice"}
+			mod(&other)
+			assert.False(t, skillEqual(base, other), "field %d should not be equal", i)
+		}
+	})
 }
 
 func TestRegistryConcurrentAccess(t *testing.T) {
@@ -499,7 +690,7 @@ b`)
 	}()
 	go func() {
 		defer wg.Done()
-		r.AddDir(dir2) //nolint:errcheck
+		_, _, _ = r.AddDir(dir2)
 	}()
 	go func() {
 		defer wg.Done()

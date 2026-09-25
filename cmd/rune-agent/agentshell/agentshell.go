@@ -25,6 +25,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -148,22 +149,23 @@ func New(
 		panic("agentshell: memoryDataPath must not be empty")
 	}
 	s := &shell{
-		wm:             wm,
-		llmSvc:         llmSvc,
-		defaultModel:   defaultModel,
-		store:          store,
-		registry:       registry,
-		agentsConfig:   agentsConfig,
-		cfg:            cfg,
-		skillRegistry:  skillRegistry,
-		cwd:            cwd,
-		fs:             fs,
-		storage:        storage,
-		exec:           exec,
-		lsp:            lsp,
-		parser:         parser,
-		notifications:  notifications,
-		memoryDataPath: memoryDataPath,
+		wm:                 wm,
+		llmSvc:             llmSvc,
+		defaultModel:       defaultModel,
+		store:              store,
+		registry:           registry,
+		agentsConfig:       agentsConfig,
+		cfg:                cfg,
+		skillRegistry:      skillRegistry,
+		lastReportedSkills: skillRegistry.Snapshot(),
+		cwd:                cwd,
+		fs:                 fs,
+		storage:            storage,
+		exec:               exec,
+		lsp:                lsp,
+		parser:             parser,
+		notifications:      notifications,
+		memoryDataPath:     memoryDataPath,
 	}
 	for _, o := range opts {
 		o(s)
@@ -185,6 +187,8 @@ type shell struct {
 	llmSvc              llmapi.Service
 	historySystemPrompt bool
 	auditStore          *audit.Store
+	muSkills            sync.Mutex
+	lastReportedSkills  map[string]skills.Skill
 	skillRegistry       *skills.SkillRegistry
 	cwd                 workspaceapi.URI
 	fs                  workspaceapi.FileSystem
@@ -249,10 +253,11 @@ var commandManual = textapi.CommandManual{
 		{
 			Name:     "skills",
 			Summary:  "Inspect discovered skills and configured skill directories.",
-			Synopsis: "(list|show|list-dirs|add-dir|remove-dir) [<args>]",
+			Synopsis: "(list|show|reload|list-dirs|add-dir|remove-dir) [<args>]",
 			Commands: []textapi.CommandManual{
 				{Name: "list", Summary: "List discovered skills."},
 				{Name: "show", Summary: "Show a skill's full instructions.", Synopsis: "<name>"},
+				{Name: "reload", Summary: "Re-scan tracked skill directories and report changes."},
 				{Name: "list-dirs", Summary: "List configured skill directories."},
 				{Name: "add-dir", Summary: "Add a skill directory to config.", Synopsis: "<dir>"},
 				{Name: "remove-dir", Summary: "Remove a skill directory from config.", Synopsis: "<dir>"},
@@ -423,16 +428,16 @@ func (s *shell) handleCommand(
 func (s *shell) HandleCommand(
 	ctx context.Context, cmd repl.Command, pw repl.ProgressWriter,
 ) (iterator.Iterator[component.Responsive], error) {
-	// Re-scan skill directories so out-of-band changes are picked up,
-	// mirroring the agent loop's per-turn Reload in agent.go.
-	s.skillRegistry.Reload()
-
 	if cmd.Name == CommandName {
 		if len(cmd.Args) == 0 {
 			return s.Help(ctx, nil)
 		}
 		cmd = repl.Command{Name: cmd.Args[0], Args: cmd.Args[1:]}
 	}
+
+	// Re-scan skill directories so out-of-band changes are picked up,
+	// mirroring the agent loop's per-turn Reload in agent.go.
+	s.skillRegistry.Reload()
 
 	return s.handleCommand(ctx, cmd, pw)
 }
@@ -1212,7 +1217,7 @@ func (s *shell) handleEffort(args []string) (iterator.Iterator[component.Respons
 
 func (s *shell) handleSkills(args []string) (iterator.Iterator[component.Responsive], error) {
 	if len(args) == 0 {
-		return nil, errors.New("usage: skills <list|show|list-dirs|add-dir|remove-dir> [args]")
+		return nil, errors.New("usage: skills <list|show|reload|list-dirs|add-dir|remove-dir> [args]")
 	}
 	switch args[0] {
 	case "list":
@@ -1222,6 +1227,8 @@ func (s *shell) handleSkills(args []string) (iterator.Iterator[component.Respons
 			return nil, errors.New("usage: skills show <name>")
 		}
 		return s.showSkill(args[1])
+	case "reload":
+		return s.reloadSkills(), nil
 	case "list-dirs":
 		return s.listSkillDirs(), nil
 	case "add-dir":
@@ -1253,6 +1260,71 @@ func (s *shell) listSkills() iterator.Iterator[component.Responsive] {
 		}
 		fmt.Fprintf(&b, "- **%s** — %s\n", sk.Name, desc)
 	}
+	return markdownOutput(b.String())
+}
+
+func (s *shell) reloadSkills() iterator.Iterator[component.Responsive] {
+	s.muSkills.Lock()
+	res := s.skillRegistry.ReloadSince(s.lastReportedSkills)
+	s.lastReportedSkills = s.skillRegistry.Snapshot()
+	s.muSkills.Unlock()
+	var b strings.Builder
+	b.WriteString("## Skills Reloaded\n\n")
+
+	if len(res.Dirs) > 0 {
+		b.WriteString("**Tracked directories:**\n")
+		for _, d := range res.Dirs {
+			fmt.Fprintf(&b, "- `%s`\n", d)
+		}
+		b.WriteString("\n")
+	} else {
+		b.WriteString("*(no skill directories configured)*\n\n")
+	}
+
+	hasChanges := len(res.Added) > 0 || len(res.Updated) > 0 || len(res.Dropped) > 0
+	if hasChanges {
+		if len(res.Added) > 0 {
+			fmt.Fprintf(&b, "### Added (%d)\n\n", len(res.Added))
+			for _, sk := range res.Added {
+				fmt.Fprintf(&b, "- **%s** — %s\n", sk.Name, sk.Description)
+			}
+			b.WriteString("\n")
+		}
+		if len(res.Updated) > 0 {
+			fmt.Fprintf(&b, "### Updated (%d)\n\n", len(res.Updated))
+			for _, sk := range res.Updated {
+				fmt.Fprintf(&b, "- **%s** — %s\n", sk.Name, sk.Description)
+			}
+			b.WriteString("\n")
+		}
+		if len(res.Dropped) > 0 {
+			fmt.Fprintf(&b, "### Dropped (%d)\n\n", len(res.Dropped))
+			for _, sk := range res.Dropped {
+				fmt.Fprintf(&b, "- **%s**\n", sk.Name)
+			}
+			b.WriteString("\n")
+		}
+	} else {
+		b.WriteString("No skill changes detected.\n\n")
+	}
+
+	if len(res.Errors) > 0 {
+		fmt.Fprintf(&b, "### Errors (%d)\n\n", len(res.Errors))
+		for _, err := range res.Errors {
+			fmt.Fprintf(&b, "- `%s`: %v\n", err.Path, err.Err)
+		}
+		b.WriteString("\n")
+	}
+
+	fmt.Fprintf(&b, "### Active Skills (%d)\n\n", len(res.Loaded))
+	for _, sk := range res.Loaded {
+		desc := sk.Description
+		if len(desc) > 42 {
+			desc = desc[:39] + "..."
+		}
+		fmt.Fprintf(&b, "- **%s** — %s\n", sk.Name, desc)
+	}
+
 	return markdownOutput(b.String())
 }
 
@@ -1310,7 +1382,7 @@ func (s *shell) addSkillDir(dir string) (iterator.Iterator[component.Responsive]
 		}
 		return nil, fmt.Errorf("update config: %w", err)
 	}
-	added, err := s.skillRegistry.AddDir(dir)
+	added, errs, err := s.skillRegistry.AddDir(dir)
 	if err != nil {
 		return markdownOutput(fmt.Sprintf("Added directory `%s` to config *(registry: %v)*", dir, err)), nil
 	}
@@ -1320,6 +1392,12 @@ func (s *shell) addSkillDir(dir string) (iterator.Iterator[component.Responsive]
 		fmt.Fprintf(&b, "\nDiscovered %d skill(s):\n\n", len(added))
 		for _, sk := range added {
 			fmt.Fprintf(&b, "- **%s** — %s\n", sk.Name, sk.Description)
+		}
+	}
+	if len(errs) > 0 {
+		fmt.Fprintf(&b, "\n### Errors (%d)\n\n", len(errs))
+		for _, e := range errs {
+			fmt.Fprintf(&b, "- `%s`: %v\n", e.Path, e.Err)
 		}
 	}
 	return markdownOutput(b.String()), nil
@@ -1411,7 +1489,7 @@ func (s *shell) completeAgentIDs() iterator.Iterator[string] {
 
 func (s *shell) completeSkills(ctx context.Context, args []string) (iterator.Iterator[string], error) {
 	if len(args) == 1 {
-		subcmds := []string{"add-dir", "list", "list-dirs", "remove-dir", "show"}
+		subcmds := []string{"add-dir", "list", "list-dirs", "reload", "remove-dir", "show"}
 		prefix := args[0]
 		var matches []string
 		for _, sc := range subcmds {

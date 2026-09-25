@@ -36,6 +36,7 @@ console command](./intro.md#the-agent-console-command):
 | --- | --- |
 | `agent skills list` | List the discovered skills. |
 | `agent skills show <name>` | Show a skill's full instructions. |
+| `agent skills reload` | Re-scan tracked skill directories and report changes. |
 | `agent skills list-dirs` | List the configured skill directories. |
 | `agent skills add-dir <dir>` | Add a directory to the search list. |
 | `agent skills remove-dir <dir>` | Remove a directory from the search list. |
