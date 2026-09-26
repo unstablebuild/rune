@@ -44,6 +44,7 @@ import (
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/extension"
 	"unstable.build/rune/internal/ide/ideauthorizer"
+	"unstable.build/rune/internal/procattr"
 	"unstable.build/rune/internal/workspace"
 	"unstable.build/rune/internal/workspace/processctx"
 )
@@ -313,7 +314,7 @@ func (m *workspaceRunner) makeCommand(
 		// `cargo run`, which exec the extension as a grandchild that
 		// SIGKILL cannot be forwarded to. Heading its own process
 		// group is what lets stopping the extension reach it.
-		SysProcAttr: &syscall.SysProcAttr{Setpgid: true},
+		SysProcAttr: procattr.NewGroup(),
 	}
 
 	// if local workspace, then do set dir in a best effort for
