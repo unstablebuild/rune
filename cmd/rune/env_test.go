@@ -269,6 +269,24 @@ func TestResolveLoginPathFallsBackShell(t *testing.T) {
 
 // TestSetupManagedBinPathPrependsBinDirOnce asserts that setupManagedBinPath
 // creates the managed dirs and prepends the bin dir to PATH exactly once.
+func TestPrependPATH(t *testing.T) {
+	for _, tc := range []struct {
+		name, dir, base string
+		sep             rune
+		want            string
+	}{
+		{"unix", "/rune/bin", "/usr/bin:/bin", ':', "/rune/bin:/usr/bin:/bin"},
+		{"windows", `C:\rune\bin`, `C:\Windows;C:\Tools`, ';', `C:\rune\bin;C:\Windows;C:\Tools`},
+		{"empty base", "/rune/bin", "", ':', "/rune/bin:"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := prependPATH(tc.dir, tc.base, tc.sep); got != tc.want {
+				t.Fatalf("prependPATH() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestSetupManagedBinPathPrependsBinDirOnce(t *testing.T) {
 	dataDir := t.TempDir()
 	t.Setenv("PATH", "/usr/bin:/usr/local/bin")
@@ -278,7 +296,7 @@ func TestSetupManagedBinPathPrependsBinDirOnce(t *testing.T) {
 	}
 
 	binDir := filepath.Join(dataDir, "bin")
-	want := binDir + ":/usr/bin:/usr/local/bin"
+	want := binDir + string(os.PathListSeparator) + "/usr/bin:/usr/local/bin"
 	if got := os.Getenv("PATH"); got != want {
 		t.Fatalf("got PATH %q, want %q", got, want)
 	}
