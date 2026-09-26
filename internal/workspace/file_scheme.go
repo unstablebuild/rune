@@ -62,6 +62,12 @@ var (
 // resize worker matches on the text to drop the resize silently.
 var ErrInvalidMasterPtyFd = errors.New("invalid master pty fd")
 
+// FishInitCommand binds ^A/^G in fish so the vte's bell handshake
+// (see vte.ptyWriter.triggerBell) works: fish binds neither by default
+// and has no beep widget, so ^G prints BEL itself.
+const FishInitCommand = `bind \ca beginning-of-line; bind \cg 'printf \a'; ` +
+	`bind -M insert \ca beginning-of-line; bind -M insert \cg 'printf \a'`
+
 // NewFileScheme returns a Scheme that manages resources
 // on the local file system.
 func NewFileScheme(
@@ -117,7 +123,8 @@ type fileScheme struct {
 
 	// zdotDir, when non-empty, is exported as ZDOTDIR to the shell
 	// processes started via the empty-cmd-Path protocol contract (see
-	// StartCommand). Resolved from the scheme's config at init time so
+	// StartCommand), and also hosts the inputrc exported to bash as
+	// INPUTRC. Resolved from the scheme's config at init time so
 	// it always reflects the executor's host: for SSH workspaces the
 	// remote `rune -x` server reads its own config, so the local IDE's
 	// zdotdir (which points at a host-specific path) doesn't leak into
@@ -382,11 +389,28 @@ func (p *fileScheme) StartCommand(ctx context.Context, cmd workspaceapi.Cmd) (
 	// shell on the executor's host".
 	if cmd.Path == "" {
 		cmd.Path = resolveLoginShell()
-		if len(cmd.Args) == 0 {
+		argsDefaulted := len(cmd.Args) == 0
+		if argsDefaulted {
 			cmd.Args = []string{"--login", "-i"}
 		}
-		if filepath.Base(cmd.Path) == "zsh" && p.zdotDir != "" {
-			cmd.Env = append(cmd.Env, fmt.Sprintf("ZDOTDIR=%s", p.zdotDir))
+		switch filepath.Base(cmd.Path) {
+		case "zsh":
+			if p.zdotDir != "" {
+				cmd.Env = append(cmd.Env, fmt.Sprintf("ZDOTDIR=%s", p.zdotDir))
+			}
+		case "bash":
+			// readline does not fall back to ~/.inputrc when INPUTRC names a
+			// missing file, so only export one that exists.
+			if p.zdotDir != "" {
+				inputrc := filepath.Join(p.zdotDir, "inputrc")
+				if _, err := p.osStat(inputrc); err == nil {
+					cmd.Env = append(cmd.Env, "INPUTRC="+inputrc)
+				}
+			}
+		case "fish":
+			if argsDefaulted {
+				cmd.Args = append(cmd.Args, "-C", FishInitCommand)
+			}
 		}
 	}
 	// Unlike file paths, the executable comes from configuration such as

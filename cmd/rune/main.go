@@ -419,7 +419,7 @@ func main() {
 	os.Exit(4)
 }
 
-var zdotFiles = []string{".zshenv", ".zprofile", ".zshrc", ".zlogin"}
+var zdotFiles = []string{".zshenv", ".zprofile", ".zshrc", ".zlogin", "inputrc"}
 
 func appLaunchArgs(goos, zdotDir string) ([]string, bool) {
 	var args []string

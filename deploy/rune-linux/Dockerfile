@@ -208,7 +208,8 @@ RUN set -eux; \
 	cp /src/extra/osx/Rune.app/Contents/Resources/zdot/.zlogin /out/rune.app/share/zdot/; \
 	cp /src/extra/osx/Rune.app/Contents/Resources/zdot/.zprofile /out/rune.app/share/zdot/; \
 	cp /src/extra/osx/Rune.app/Contents/Resources/zdot/.zshenv /out/rune.app/share/zdot/; \
-	cp /src/extra/osx/Rune.app/Contents/Resources/zdot/.zshrc /out/rune.app/share/zdot/
+	cp /src/extra/osx/Rune.app/Contents/Resources/zdot/.zshrc /out/rune.app/share/zdot/; \
+	cp /src/extra/osx/Rune.app/Contents/Resources/zdot/inputrc /out/rune.app/share/zdot/
 
 # Package the Linux bundle inside the Linux container so host-specific metadata
 # such as macOS xattrs cannot be written into the release archive. Use ustar for

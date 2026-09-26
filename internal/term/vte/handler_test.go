@@ -591,6 +591,12 @@ func testSequence(t *testing.T, cfg Config, timeout time.Duration, cases []vtete
 func testSequenceShell(t *testing.T, cfg Config, timeout time.Duration, shell string, cases []vtetest.Case) (
 	*Handler, chan struct{},
 ) {
+	return testSequenceCommand(t, cfg, timeout, []string{shell}, cases)
+}
+
+func testSequenceCommand(
+	t *testing.T, cfg Config, timeout time.Duration, commandAndArgs []string, cases []vtetest.Case,
+) (*Handler, chan struct{}) {
 	ctx := context.Background()
 	ctx, cancel := context.WithCancel(context.Background())
 	temp := os.TempDir()
@@ -604,7 +610,7 @@ func testSequenceShell(t *testing.T, cfg Config, timeout time.Duration, shell st
 	ch := make(chan struct{}, 50 /* big enough for the max length sequence of events */)
 	cfg.WidthHint = 20
 	cfg.HeightHint = 10
-	cfg.CommandAndArgs = []string{shell}
+	cfg.CommandAndArgs = commandAndArgs
 	handler, err := NewHandler(chanEventPublisher{ch}, nopNotifications{},
 		scheme, scheme, nopTabManager{}, cfg)
 	require.NoError(t, err)
