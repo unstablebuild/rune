@@ -140,12 +140,16 @@ written.
 | <KeyBinding command="lspprevdiagnostic" /> | Previous diagnostic | The whole file |
 | <KeyBinding command="lsp complete" /> | `lsp complete` | The cursor position |
 
+<Platform when="darwin">
+
 :::note
-On macOS, `<ctrl-space>`, used for completion by the Vim and Standard
+`<ctrl-space>`, used for completion by the Vim and Standard
 presets, is reserved for input source switching. To use it for completion,
 go to System Settings → Keyboard → Keyboard Shortcuts → Input Sources and
 uncheck both entries.
 :::
+
+</Platform>
 
 Everything bound to a key is also available from the [command
 prompt](../learn/command-prompt.md), so you can run any `lsp` subcommand

@@ -222,9 +222,11 @@ func WithDefaultConfigYAML(base string, overrides ...string) Option {
 
 // WithDefaultConfigStarlark sets the default baseline config as a Starlark
 // source. The script must bind a top-level `config` dict. The loader exposes
-// two predeclared globals to the script:
+// three predeclared globals to the script:
 //   - mode: "vim" when modal is true, otherwise "standard"
 //   - tui: the given tui boolean
+//   - os: the host's runtime.GOOS, so defaults can follow the platform's
+//     shortcut conventions
 func WithDefaultConfigStarlark(src string, modal bool, tui bool) Option {
 	return func(opts *options) {
 		opts.defaultConfig = src
@@ -243,11 +245,15 @@ type DefaultConfig struct {
 	src   string
 	modal bool
 	tui   bool
+	// os is the platform exposed to the script as `os`; empty means the
+	// host's runtime.GOOS. Tests set it to decode another platform's
+	// defaults.
+	os string
 }
 
 // StarlarkDefaultConfig builds a DefaultConfig from a Starlark source. The
 // script must bind a top-level `config` dict and receives the predeclared
-// `mode` and `tui` globals, matching WithDefaultConfigStarlark.
+// `mode`, `tui` and `os` globals, matching WithDefaultConfigStarlark.
 func StarlarkDefaultConfig(src string, modal bool, tui bool) DefaultConfig {
 	return DefaultConfig{src: src, modal: modal, tui: tui}
 }

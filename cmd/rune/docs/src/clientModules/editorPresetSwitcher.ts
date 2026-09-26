@@ -1,18 +1,15 @@
 type EditorPreset = 'modal' | 'helix' | 'standard' | 'emacs';
 type EffectiveEditor = EditorPreset | 'exo';
 type Platform = 'darwin' | 'linux';
-type PresetSelection =
-  | 'standard-darwin'
-  | 'standard-linux'
-  | 'modal'
-  | 'helix'
-  | 'emacs';
+// Every preset ships a macOS and a Linux variant: Super belongs to the
+// desktop on Linux, so the Linux presets move Rune's layer to Alt.
+type PresetSelection = `${EditorPreset}-${Platform}`;
 
 interface PresetDef {
   id: PresetSelection;
   editor: EditorPreset;
   label: string;
-  platform?: Platform;
+  platform: Platform;
 }
 
 interface FixedGuide {
@@ -24,23 +21,31 @@ interface RuneConsent {
   functional: boolean;
 }
 
-const PRESETS: PresetDef[] = [
-  {
-    id: 'standard-darwin',
-    editor: 'standard',
-    label: 'Standard (macOS)',
-    platform: 'darwin',
-  },
-  {
-    id: 'standard-linux',
-    editor: 'standard',
-    label: 'Standard (Linux)',
-    platform: 'linux',
-  },
-  {id: 'modal', editor: 'modal', label: 'Vim'},
-  {id: 'helix', editor: 'helix', label: 'Helix'},
-  {id: 'emacs', editor: 'emacs', label: 'Emacs'},
-];
+const EDITOR_LABELS: Record<EditorPreset, string> = {
+  standard: 'Standard',
+  modal: 'Vim',
+  helix: 'Helix',
+  emacs: 'Emacs',
+};
+const PLATFORM_LABELS: Record<Platform, string> = {
+  darwin: 'macOS',
+  linux: 'Linux',
+};
+
+function presetLabel(editor: EditorPreset, platform: Platform): string {
+  return `${EDITOR_LABELS[editor]} (${PLATFORM_LABELS[platform]})`;
+}
+
+const PRESETS: PresetDef[] = (
+  Object.keys(EDITOR_LABELS) as EditorPreset[]
+).flatMap((editor) =>
+  (['darwin', 'linux'] as Platform[]).map((platform) => ({
+    id: `${editor}-${platform}` as PresetSelection,
+    editor,
+    label: presetLabel(editor, platform),
+    platform,
+  })),
+);
 const FIXED_GUIDES: Record<string, FixedGuide> = {
   '/learn/exoeditor': {id: 'exo', label: 'Exoeditor'},
   '/learn/vim-editor': {id: 'modal', label: 'Vim'},
@@ -60,7 +65,7 @@ function canPersist(): boolean {
 }
 
 function defaultSelection(): PresetSelection {
-  return detectPlatform() === 'darwin' ? 'standard-darwin' : 'standard-linux';
+  return `standard-${detectPlatform()}`;
 }
 
 function loadPreset(): PresetSelection {
@@ -70,8 +75,11 @@ function loadPreset(): PresetSelection {
     if (PRESETS.some((preset) => preset.id === value)) {
       return value as PresetSelection;
     }
-    // Migrate the original platform-detected Standard selection.
+    // Migrate selections saved before every preset had a platform.
     if (value === 'standard') return defaultSelection();
+    if (value === 'modal' || value === 'helix' || value === 'emacs') {
+      return `${value}-${detectPlatform()}`;
+    }
   } catch {
     /* ignore */
   }
@@ -116,22 +124,18 @@ function effectiveSelection(): {
   if (!guide) {
     return {
       editor: selected.editor,
-      platform: selected.platform ?? detectPlatform(),
+      platform: selected.platform,
       label: selected.label,
     };
   }
-  if (guide.id === 'standard') {
-    const standard =
-      selected.editor === 'standard'
-        ? selected
-        : PRESETS.find((preset) => preset.id === defaultSelection())!;
-    return {
-      editor: 'standard',
-      platform: standard.platform!,
-      label: standard.label,
-    };
+  if (guide.id === 'exo') {
+    return {editor: guide.id, platform: detectPlatform(), label: guide.label};
   }
-  return {editor: guide.id, platform: detectPlatform(), label: guide.label};
+  return {
+    editor: guide.id,
+    platform: selected.platform,
+    label: presetLabel(guide.id, selected.platform),
+  };
 }
 
 function publish(): void {
@@ -173,12 +177,18 @@ function mountInto(slot: HTMLElement): void {
     const fixed = currentGuide();
     const active = effectiveSelection();
     label.textContent = `Preset: ${active.label}`;
-    button.disabled = fixed !== null && fixed.id !== 'standard';
-    if (fixed && fixed.id !== 'standard') {
+    button.disabled = fixed?.id === 'exo';
+    if (fixed?.id === 'exo') {
       button.title = `This guide always shows ${fixed.label} keybindings`;
       button.setAttribute(
         'aria-label',
         `This guide always shows ${fixed.label} keybindings`,
+      );
+    } else if (fixed) {
+      button.title = `${active.label}. Click to switch platform`;
+      button.setAttribute(
+        'aria-label',
+        `Switch platform. Current: ${active.label}`,
       );
     } else {
       button.title = `Editor preset: ${active.label}. Click for next`;
@@ -192,13 +202,13 @@ function mountInto(slot: HTMLElement): void {
   renderers.add(render);
   button.addEventListener('click', () => {
     const fixed = currentGuide();
-    if (fixed && fixed.id !== 'standard') return;
-    if (fixed?.id === 'standard') {
-      const next =
-        effectiveSelection().platform === 'darwin'
-          ? 'standard-linux'
-          : 'standard-darwin';
-      selectPreset(next, true);
+    if (fixed?.id === 'exo') return;
+    if (fixed) {
+      // An editor guide always shows its own editor, so the button only
+      // switches between that editor's macOS and Linux presets.
+      const next: Platform =
+        effectiveSelection().platform === 'darwin' ? 'linux' : 'darwin';
+      selectPreset(`${fixed.id}-${next}`, true);
       return;
     }
     const currentIndex = PRESETS.findIndex((preset) => preset.id === selectedPreset);

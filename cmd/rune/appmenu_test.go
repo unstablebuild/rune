@@ -89,11 +89,12 @@ func submenuByTitle(t *testing.T, items []appmenu.Item, title string) appmenu.Su
 }
 
 // appMenuPresetFiles are the presets that can back a macOS menu bar.
-// The Linux standard preset is excluded: the menu bar is macOS-only.
+// The Linux presets are excluded: the menu bar is macOS-only.
 var appMenuPresetFiles = []string{
-	"preset_modal.yaml",
+	"preset_vim_darwin.yaml",
+	"preset_helix_darwin.yaml",
 	"preset_standard_darwin.yaml",
-	"preset_emacs.yaml",
+	"preset_emacs_darwin.yaml",
 }
 
 var appMenuTestModels = []string{"anthropic/claude"}
@@ -401,9 +402,11 @@ func TestAppMenuKeyBindingsBootstrapFallback(t *testing.T) {
 	assert.Equal(t, bootstrapQuitChord, bindings["quit"])
 	assert.Equal(t, term.Event{
 		Type: term.EventKey,
-		Mod:  term.ModMeta,
+		Mod:  hostAppModifier,
 		Ch:   'q',
 	}, quitEvent(bindings))
+	assert.True(t, isBootstrapQuitEvent(quitEvent(bindings)),
+		"a window close during bootstrap must reach the wizard's quit")
 }
 
 // TestQuitEventFollowsConfiguredBinding asserts a window close request

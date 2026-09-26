@@ -136,12 +136,49 @@ More generally, a keystroke can be intercepted before it reaches Rune by:
 entirely, but it does let you re-purpose keys that *do* reach Rune, including
 physical keys Rune would otherwise ignore.
 
+## Why Alt on Linux
+
+On macOS the shipped presets put Rune's own commands on `<meta>`, the Command
+key. On Linux, Super belongs to the desktop: GNOME, KDE, and most tiling window
+managers bind Super chords for launchers, workspaces, and tiling, and consume
+them before Rune sees them. The Linux presets therefore bind nothing to
+`<meta>` and use `alt` combinations instead. A focused terminal declines every
+`alt` combination, so these chords reach Rune from a shell just as Command does
+on macOS.
+
+- App-wide commands take the familiar Linux `ctrl` shortcut plus `alt`, since
+  plain `ctrl` belongs to the program in a terminal: `<ctrl-alt-q>` quits,
+  `<ctrl-alt-=>` / `<ctrl-alt-->` change the font size, and `<ctrl-alt>` digits
+  pick workspaces.
+- The vim and Helix presets focus windows with `<alt>` and `h` `j` `k` `l`,
+  and keep the rest of the layout on that same `<ctrl-alt>` layer: `h` `j` `k`
+  `l` resize, the brackets step through tabs, and `` ` `` searches tabs.
+  `<ctrl-shift-alt>` moves windows, tabs, and workspaces.
+- The Standard preset keeps its `<alt>` IJKL window layer, which works the
+  same on both platforms.
+- The Emacs preset puts Rune's layer on `<alt-shift>`, because `<alt>` is
+  Emacs Meta, and moves with `<ctrl-shift-alt>`.
+
+The presets keep common desktop chords free: `ctrl-alt` with F1–F12 (virtual
+consoles), `ctrl-alt` and `ctrl-shift-alt` with the arrow keys (workspace
+switching), `<ctrl-alt-t>`, `<ctrl-alt-d>`, `<ctrl-alt-delete>`,
+`<ctrl-alt-backspace>`, `alt` with F1–F12, and `<alt-tab>`, `<alt-space>`, and
+`<alt-esc>`. The one exception is `<ctrl-alt-l>`: the vim and Helix presets use
+it to widen the focused window, and KDE, Cinnamon, Xfce, and MATE lock the
+screen with it. Desktops differ, so if yours claims a chord a preset uses,
+[move the binding](./command-prompt.md#move-a-binding-to-another-key) or remap
+the key here.
+
+Rune still reads Super as `meta`, so if your desktop leaves it alone you can
+bind commands to `<meta-...>` chords yourself.
+
 ## Linux: Super, Meta, and Hyper
 
 On Linux, Rune reads four modifiers: `ctrl`, `shift`, `alt`, and `meta`. `meta`
 is the Super key, the one most keyboards label with the Windows logo, so a
 Super combination is written `<meta-...>` and pressing Super registers as
-`meta`. This is expected, not a lost keypress.
+`meta`. This is expected, not a lost keypress. The shipped Linux presets leave
+`meta` unbound; see [Why Alt on Linux](#why-alt-on-linux).
 
 If your xkb layout defines the historical Meta or Hyper modifiers on separate
 keys (for example Hyper on Caps Lock), Rune does not yet see them as their own

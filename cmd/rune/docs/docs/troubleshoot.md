@@ -134,9 +134,12 @@ so a bare `:` is never a suitable command-prompt key when one of them is your
 guest editor. There is no safe activation key that works across every guest
 editor, so in `exo` mode you must pick one your guest editor will not capture.
 
-The exo presets default `command.key` to `<shift-meta-p>` for exactly this
-reason. If you have overridden it, choose a combination that carries a `meta`,
+The exo examples set `command.key` to
+<Platform when="darwin">`<shift-meta-p>`</Platform><Platform when="linux">`<ctrl-shift-alt-p>`</Platform> for exactly this reason.
+If you have overridden it, choose a combination that carries a `meta`,
 `ctrl`, or `alt` modifier, which guest editors rarely bind:
+
+<Platform when="darwin">
 
 ```yaml tab
 command:
@@ -148,6 +151,22 @@ command:
     "key": "<shift-meta-p>",
 },
 ```
+
+</Platform>
+<Platform when="linux">
+
+```yaml tab
+command:
+  key: "<ctrl-shift-alt-p>"
+```
+
+```python tab
+"command": {
+    "key": "<ctrl-shift-alt-p>",
+},
+```
+
+</Platform>
 
 `<ctrl-space>` is another common choice, but note that the OS often claims it
 (see [A key binding is not firing](#a-key-binding-is-not-firing) above). If the

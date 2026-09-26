@@ -46,8 +46,12 @@ command is already running in that console, Rune interrupts it with
 `<ctrl-c>` first.
 
 There is no default key binding for `console`; bind one yourself if you use
-it often. For example, to mirror the companion terminal's
-`<shift-meta-enter>`, bind the console to `<shift-alt-enter>`:
+it often.
+
+<Platform when="darwin">
+
+For example, to mirror the companion terminal's `<shift-meta-enter>`, bind the
+console to `<shift-alt-enter>`:
 
 ```yaml tab
 command:
@@ -58,6 +62,24 @@ command:
 ```python tab
 config["command"]["key_bindings"]["<shift-alt-enter>"] = "console"
 ```
+
+</Platform>
+<Platform when="linux">
+
+The presets already use `<alt-shift-enter>` for the companion terminal, so
+pick another chord, such as `<ctrl-shift-alt-enter>`:
+
+```yaml tab
+command:
+  key_bindings:
+    "<ctrl-shift-alt-enter>": "console"
+```
+
+```python tab
+config["command"]["key_bindings"]["<ctrl-shift-alt-enter>"] = "console"
+```
+
+</Platform>
 
 ## What you can run
 

@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"maps"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
@@ -386,6 +387,15 @@ func DefaultCommandOverlayConfig() (cfg CommandOverlayConfig) {
 	return
 }
 
+// defaultCommandHistoryKey is the history toggle for goos: Super belongs
+// to the desktop on Linux, so it moves to Ctrl+Alt there.
+func defaultCommandHistoryKey(goos string) term.KeyComb {
+	if goos == "darwin" {
+		return term.KeyComb{Mod: term.ModMeta, Ch: 'r'}
+	}
+	return term.KeyComb{Mod: term.ModCtrlAlt, Ch: 'r'}
+}
+
 // DefaultConfig returns the default Config.
 func DefaultConfig() Config {
 	cfg := Config{
@@ -393,7 +403,7 @@ func DefaultConfig() Config {
 		CommandEvent:            term.KeyComb{Ch: ':'},
 		CommandMaxHistory:       2000,
 		ShellMaxHistory:         2000,
-		CommandHistoryKey:       term.KeyComb{Mod: term.ModMeta, Ch: 'r'},
+		CommandHistoryKey:       defaultCommandHistoryKey(runtime.GOOS),
 		Config:                  browser.DefaultConfig(),
 		DirtyTabAttr:            term.Attributes{Attrs: term.AttrBold},
 		CommandKeyBindings:      make(map[term.KeyComb][][]string),

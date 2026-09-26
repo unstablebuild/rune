@@ -30,6 +30,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -1425,7 +1426,7 @@ func idePkgStarlarkParams(
 	pkgID string, pkgVersion release.Version, dataDir string,
 	editorMode string,
 ) map[string]any {
-	params := map[string]any{}
+	params := map[string]any{"RUNE_OS": runtime.GOOS}
 	if dataDir != "" {
 		params["RUNE_DATADIR"] = dataDir
 	}

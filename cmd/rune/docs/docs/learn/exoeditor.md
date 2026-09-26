@@ -20,7 +20,7 @@ Because you get a production-grade environment wrapped around the editor you alr
 
 - **Your editor is the editor, everywhere.** When an extension, a code-search result, a diagnostic, or a stack frame opens a file, it opens in your configured editor, rather than one of the builtin editors. A fallback editor is configured to edit in-memory buffers like the [file explorer's buffer](./file-explorer.md).
 - **Semantic features work like the built-ins.** Rune tracks your cursor position inside the external editor, so go to definition, find references, find implementations, hover, signature help, diagnostics and renames behave just like they do in `vim`/`standard`; no LSP setup required on your editor side.
-- **Drop the plugins.** Once the IDE handles file pickers, LSP, search, debuggers, git, and tasks, you can strip your editor's config back to motions, colors, and in-file key bindings. A sane division of modifiers is encouraged: Your editor owns `<ctrl>`/`<alt>` modifiers, and Rune owns `<meta>`.
+- **Drop the plugins.** Once the IDE handles file pickers, LSP, search, debuggers, git, and tasks, you can strip your editor's config back to motions, colors, and in-file key bindings. A sane division of modifiers is encouraged: Your editor owns `<ctrl>`/`<alt>` modifiers, and Rune owns <Platform when="darwin">`<meta>`.</Platform><Platform when="linux">the combinations your editor leaves free, such as `<ctrl-shift-alt>`, since the desktop usually owns Super; see [Why Alt on Linux](./key-mapping.md#why-alt-on-linux).</Platform>
 
 ## How it fits together
 
@@ -81,7 +81,9 @@ The `command` template is the argv Rune executes inside a vte to open a file. Av
 
 ### Command prompt key
 
-In `exo` mode you set [`command.key`](../config.md#command-prompt) yourself, and a good default is `<shift-meta-p>`, because almost every terminal editor already binds `:` for something of its own. Modal editors (Vim, Neovim, Helix, Kakoune) consume `:` for their command-line mode, and naturally modeless editors (Nano, Emacs, Micro, …) treat `:` as text to insert. In both cases the editor swallows the keystroke and the [Command Prompt](./command-prompt.md) never opens, so a modified combination the editor will not capture works best:
+In `exo` mode you set [`command.key`](../config.md#command-prompt) yourself, and a good default is <Platform when="darwin">`<shift-meta-p>`</Platform><Platform when="linux">`<ctrl-shift-alt-p>`</Platform>, because almost every terminal editor already binds `:` for something of its own. Modal editors (Vim, Neovim, Helix, Kakoune) consume `:` for their command-line mode, and naturally modeless editors (Nano, Emacs, Micro, …) treat `:` as text to insert. In both cases the editor swallows the keystroke and the [Command Prompt](./command-prompt.md) never opens, so a modified combination the editor will not capture works best:
+
+<Platform when="darwin">
 
 ```yaml tab
 command:
@@ -93,6 +95,22 @@ command:
     "key": "<shift-meta-p>",
 },
 ```
+
+</Platform>
+<Platform when="linux">
+
+```yaml tab
+command:
+  key: "<ctrl-shift-alt-p>"
+```
+
+```python tab
+"command": {
+    "key": "<ctrl-shift-alt-p>",
+},
+```
+
+</Platform>
 
 Pick any modifier combination the external editor does not interpret. A bare `:` is never a suitable command-prompt key in `exo` mode.
 
@@ -158,6 +176,8 @@ built-in editor that best matches the guest editor's muscle memory: `vim`
 for the vi-family editors, `emacs` for Emacs, and `standard` for everything
 else. It only affects IDE-owned surfaces like the file explorer; pick whichever
 built-in you would rather use there.
+
+<Platform when="darwin">
 
 Vim / Neovim:
 
@@ -332,6 +352,185 @@ command:
     "key": "<shift-meta-p>",
 },
 ```
+
+</Platform>
+<Platform when="linux">
+
+Vim / Neovim:
+
+```yaml tab
+editor:
+  mode: exo
+  exo:
+    command: 'vim "+call cursor({line}, {col})" {file}'
+    goto: "<esc>:{line}<enter>{col}|"
+    quit: "<esc>:qa!<enter>"
+    fallback: vim
+command:
+  key: "<ctrl-shift-alt-p>"
+```
+
+```python tab
+"editor": {
+    "mode": "exo",
+    "exo": {
+        "command": 'vim "+call cursor({line}, {col})" {file}',
+        "goto":    "<esc>:{line}<enter>{col}|",
+        "quit":    "<esc>:qa!<enter>",
+        "fallback": "vim",
+    },
+},
+"command": {
+    "key": "<ctrl-shift-alt-p>",
+},
+```
+
+Helix:
+
+```yaml tab
+editor:
+  mode: exo
+  exo:
+    command: "hx {file}:{line}:{col}"
+    goto: "<esc>:goto<space>{line}<enter>"
+    quit: "<esc>:q!<enter>"
+    fallback: standard
+command:
+  key: "<ctrl-shift-alt-p>"
+```
+
+```python tab
+"editor": {
+    "mode": "exo",
+    "exo": {
+        "command": "hx {file}:{line}:{col}",
+        "goto":    "<esc>:goto<space>{line}<enter>",
+        "quit":    "<esc>:q!<enter>",
+        "fallback": "standard",
+    },
+},
+"command": {
+    "key": "<ctrl-shift-alt-p>",
+},
+```
+
+Kakoune:
+
+```yaml tab
+editor:
+  mode: exo
+  exo:
+    command: "kak {file} +{line}:{col}"
+    goto: "<esc>:edit<space>-existing<space>{file}<space>{line}<space>{col}<enter>"
+    quit: "<esc>:q!<enter>"
+    fallback: standard
+command:
+  key: "<ctrl-shift-alt-p>"
+```
+
+```python tab
+"editor": {
+    "mode": "exo",
+    "exo": {
+        "command": "kak {file} +{line}:{col}",
+        "goto":    "<esc>:edit<space>-existing<space>{file}<space>{line}<space>{col}<enter>",
+        "quit":    "<esc>:q!<enter>",
+        "fallback": "standard",
+    },
+},
+"command": {
+    "key": "<ctrl-shift-alt-p>",
+},
+```
+
+Micro:
+
+```yaml tab
+editor:
+  mode: exo
+  exo:
+    command: "micro {file}:{line}:{col}"
+    goto: "<ctrl-l>{line}:{col}<enter>"
+    quit: "<ctrl-q>"
+    fallback: standard
+command:
+  key: "<ctrl-shift-alt-p>"
+```
+
+```python tab
+"editor": {
+    "mode": "exo",
+    "exo": {
+        "command": "micro {file}:{line}:{col}",
+        "goto":    "<ctrl-l>{line}:{col}<enter>",
+        "quit":    "<ctrl-q>",
+        "fallback": "standard",
+    },
+},
+"command": {
+    "key": "<ctrl-shift-alt-p>",
+},
+```
+
+Emacs (no window system):
+
+```yaml tab
+editor:
+  mode: exo
+  exo:
+    command: "emacs -nw +{line}:{col} {file}"
+    goto: "<alt-x>goto-line<enter>{line}<enter>"
+    quit: "<alt-x>kill-emacs<enter>"
+    fallback: emacs
+command:
+  key: "<ctrl-shift-alt-p>"
+```
+
+```python tab
+"editor": {
+    "mode": "exo",
+    "exo": {
+        "command": "emacs -nw +{line}:{col} {file}",
+        "goto":    "<alt-x>goto-line<enter>{line}<enter>",
+        "quit":    "<alt-x>kill-emacs<enter>",
+        "fallback": "emacs",
+    },
+},
+"command": {
+    "key": "<ctrl-shift-alt-p>",
+},
+```
+
+Nano:
+
+```yaml tab
+editor:
+  mode: exo
+  exo:
+    command: "nano +{line},{col} {file}"
+    goto: "<ctrl-_>{line},{col}<enter>"
+    quit: "<ctrl-x>n"
+    fallback: standard
+command:
+  key: "<ctrl-shift-alt-p>"
+```
+
+```python tab
+"editor": {
+    "mode": "exo",
+    "exo": {
+        "command": "nano +{line},{col} {file}",
+        "goto":    "<ctrl-_>{line},{col}<enter>",
+        "quit":    "<ctrl-x>n",
+        "fallback": "standard",
+    },
+},
+"command": {
+    "key": "<ctrl-shift-alt-p>",
+},
+```
+
+</Platform>
 
 If `editor.exo.command` is missing or does not contain `{file}`, Rune logs a config error and falls back to `mode = "vim"` so the IDE still boots. An invalid `goto` template is blanked, leaving click-to-line as a nop.
 

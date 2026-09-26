@@ -98,26 +98,58 @@ config sets the same setting under both, `editor.vim` wins.
 
 When configuring Rune for the first time, we offer the ability to choose one of three
 presets. If you choose the vim preset, Rune extends the editor's `hjkl` directions to
-window management, tabs, diagnostics, and Git changes. The same layout bindings apply on
-macOS and Linux.
+window management, tabs, diagnostics, and Git changes.
+
+The keys below follow the platform picked with the **Preset** button at the
+top of the page.
+
+<Platform when="darwin">
+
+Windows and workspaces live on `<meta>`, the Command key.
 
 ![Rune Vim editor preset default keybindings](https://assets.rune.build/images/modal-editor-keyboard-cheatsheet-v4.svg)
 
-The tables below provide a copyable reference for the bindings shown in the
-diagram:
+The tables below provide a copyable reference:
 
-| Action | Left / down / up / right |
+| Action | Key |
 | --- | --- |
 | Focus a window | `<meta-h>` / `<meta-j>` / `<meta-k>` / `<meta-l>` |
 | Move a window | `<shift-meta-h>` / `<shift-meta-j>` / `<shift-meta-k>` / `<shift-meta-l>` |
 | Resize a window | `<alt-meta-h>` / `<alt-meta-j>` / `<alt-meta-k>` / `<alt-meta-l>` |
+| Reset a window's size | `<shift-meta-backspace>` |
+| Maximise / minimise a window's size | `<shift-meta-+>` / `<shift-meta-->` |
 
-The resize directions are narrower, shorter, taller, and wider.
-`<shift-meta-backspace>` resets a window to its default size, and
-`<shift-meta-+>` / `<shift-meta-->` maximise or minimise it in both
-dimensions.
+</Platform>
+<Platform when="linux">
 
-Common window actions use memorable `<meta>` and `<alt>` bindings:
+Super belongs to the desktop on Linux, so `<alt>` with `hjkl` focuses windows,
+while workspaces, resizing, and app-wide commands live on `<ctrl-alt>` and tabs
+step with the bracket keys. See
+[Why Alt on Linux](./key-mapping.md#why-alt-on-linux).
+
+| Action | Key |
+| --- | --- |
+| Focus a window | `<alt-h>` / `<alt-j>` / `<alt-k>` / `<alt-l>` |
+| Move a window | `<ctrl-shift-alt-h>` / `<ctrl-shift-alt-j>` / `<ctrl-shift-alt-k>` / `<ctrl-shift-alt-l>` |
+| Resize a window | `<ctrl-alt-h>` / `<ctrl-alt-j>` / `<ctrl-alt-k>` / `<ctrl-alt-l>` |
+| Reset a window's size | `<ctrl-shift-alt-backspace>` |
+| Maximise / minimise a window's size | `<ctrl-shift-alt-=>` / `<ctrl-shift-alt-->` |
+
+</Platform>
+
+The directions are left, down, up, and right; for resizing, that is narrower,
+shorter, taller, and wider.
+
+<Platform when="linux">
+
+KDE, Cinnamon, Xfce, and MATE lock the screen on `<ctrl-alt-l>`. On those
+desktops, [remap it](./key-mapping.md) or rebind `windowresize increase width`.
+
+</Platform>
+
+Common window actions:
+
+<Platform when="darwin">
 
 | Action | Key |
 | --- | --- |
@@ -125,6 +157,7 @@ Common window actions use memorable `<meta>` and `<alt>` bindings:
 | Split horizontally / vertically | `<ctrl-meta-h>` / `<ctrl-meta-v>` |
 | Maximise the focused window | `<shift-meta-f>` |
 | Open a terminal in place or in a new split | `<meta-enter>` |
+| Run a program with `!` | `<shift-meta-enter>` |
 | Close the focused window / the others | `<meta-w>` / `<shift-meta-w>` |
 | Prefill `windowconverttab` in the command prompt | `<alt-enter>` |
 
@@ -140,15 +173,15 @@ tab:
 | Move the current tab to slot 1…9 | `<alt-shift-1>` … `<alt-shift-9>` |
 | Search open tabs | ``<alt-`>`` |
 
-The vertical `k` / `j` pair moves through diagnostics. Add `<shift>` to move
-through Git changes instead:
+The vertical `k` / `j` pair moves through diagnostics, and adding `<shift>`
+moves through Git changes instead:
 
 | Action | Key |
 | --- | --- |
 | Previous / next diagnostic | `<alt-k>` / `<alt-j>` |
 | Previous / next Git change | `<alt-shift-k>` / `<alt-shift-j>` |
 
-Workspaces stay on `<meta>`, with `<shift>` moving instead of focusing:
+Workspaces are one level above tabs, with `<shift>` moving instead of focusing:
 
 | Action | Key |
 | --- | --- |
@@ -156,6 +189,72 @@ Workspaces stay on `<meta>`, with `<shift>` moving instead of focusing:
 | Move the focused window to workspace 1…9 | `<shift-meta-1>` … `<shift-meta-9>` |
 | Search workspaces | ``<meta-`>`` |
 | Toggle the file explorer | `<shift-tab>` |
+
+App-wide commands:
+
+| Action | Key |
+| --- | --- |
+| Quit | `<meta-q>` |
+| Open the configuration | `<meta-,>` |
+| Cheatsheet | `<meta-/>` |
+| Command history | `<meta-r>` |
+| Font size bigger / smaller | `<meta-=>` / `<meta-->` |
+| Copy / paste the clipboard | `<meta-c>` / `<meta-v>` |
+
+</Platform>
+<Platform when="linux">
+
+| Action | Key |
+| --- | --- |
+| New window | `<ctrl-alt-n>` |
+| Split horizontally / vertically | `<ctrl-alt-s>` / `<ctrl-alt-v>` |
+| Maximise the focused window | `<alt-m>` |
+| Open a terminal in place or in a new split | `<alt-enter>` |
+| Run a program with `!` | `<alt-shift-enter>` |
+| Close the focused window / the others | `<alt-w>` / `<alt-shift-w>` |
+| Prefill `windowconverttab` in the command prompt | `<ctrl-alt-enter>` |
+
+Tabs step with the brackets, since `<alt>` with `h` / `l` focuses windows.
+Add `<shift>` to reorder the current tab:
+
+| Action | Key |
+| --- | --- |
+| New / close tab | `<alt-n>` / `<ctrl-alt-w>` |
+| Previous / next tab | `<ctrl-alt-[>` / `<ctrl-alt-]>` |
+| Move tab left / right | `<ctrl-shift-alt-[>` / `<ctrl-shift-alt-]>` |
+| Focus tab 1…9 | `<alt-1>` … `<alt-9>` |
+| Move the current tab to slot 1…9 | `<alt-shift-1>` … `<alt-shift-9>` |
+| Search open tabs | ``<ctrl-alt-`>`` |
+
+`e` and `g` step forward through diagnostics and Git changes, and `<shift>`
+steps back:
+
+| Action | Key |
+| --- | --- |
+| Previous / next diagnostic | `<alt-shift-e>` / `<alt-e>` |
+| Previous / next Git change | `<alt-shift-g>` / `<alt-g>` |
+
+Workspaces are one level above tabs, with `<shift>` moving instead of focusing:
+
+| Action | Key |
+| --- | --- |
+| Focus workspace 1…9 | `<ctrl-alt-1>` … `<ctrl-alt-9>` |
+| Move the focused window to workspace 1…9 | `<ctrl-shift-alt-1>` … `<ctrl-shift-alt-9>` |
+| Search workspaces | ``<ctrl-shift-alt-`>`` |
+| Toggle the file explorer | `<shift-tab>` |
+
+App-wide commands:
+
+| Action | Key |
+| --- | --- |
+| Quit | `<ctrl-alt-q>` |
+| Open the configuration | `<ctrl-alt-,>` |
+| Cheatsheet | `<ctrl-alt-/>` |
+| Command history | `<ctrl-alt-r>` |
+| Font size bigger / smaller | `<ctrl-alt-=>` / `<ctrl-alt-->` |
+| Copy / paste the clipboard | `<ctrl-alt-y>` / `<ctrl-alt-p>` |
+
+</Platform>
 
 See [Layout Management](./layout-management.md) for the complete layout system.
 
@@ -177,9 +276,9 @@ The remaining language commands do not take a symbol argument:
 | Action | Key |
 | --- | --- |
 | `lsp format` (file, or selection) | `<alt-b>` |
-| `lsp diagnostics` (whole file) | `<alt-shift-e>` |
+| `lsp diagnostics` (whole file) | <Platform when="darwin">`<alt-shift-e>`</Platform><Platform when="linux">`<ctrl-alt-e>`</Platform> |
 | `lsp complete` | `<ctrl-space>` |
-| `lsp rename` | `<meta-f>` |
+| `lsp rename` | <Platform when="darwin">`<meta-f>`</Platform><Platform when="linux">`<f2>`</Platform> |
 | Step back / forward through cursor history | `<ctrl-o>` / `<ctrl-i>` |
 
 `<alt-f>`, `<alt-v>`, and `<alt-s>` jump to a function, variable, or type

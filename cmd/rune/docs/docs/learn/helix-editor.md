@@ -434,16 +434,49 @@ the gate these menus need.
 ### Windows and tabs
 
 The helix preset shares the vim preset's layout keys, which work from every
-surface, including a terminal in INSERT mode:
+surface, including a terminal in INSERT mode. The keys below follow the
+platform picked with the **Preset** button at the top of the page.
 
-| Key | Action |
+<Platform when="darwin">
+
+| Action | Key |
 | --- | --- |
-| `<meta-h>` `j` `k` `l` | Focus the window left / down / up / right |
-| `<shift-meta-h>` `j` `k` `l` | Move the window left / down / up / right |
-| `<meta-w>` / `<shift-meta-w>` | Close this window / close the others |
-| `<alt-h>` / `<alt-l>` | Focus the previous / next tab |
-| `<shift-alt-h>` / `<shift-alt-l>` | Move the tab left / right |
-| `<alt-w>` | Close the tab |
+| Focus the window left / down / up / right | `<meta-h>` `j` `k` `l` |
+| Move the window left / down / up / right | `<shift-meta-h>` `j` `k` `l` |
+| Resize the window narrower / shorter / taller / wider | `<alt-meta-h>` `j` `k` `l` |
+| Close this window / close the others | `<meta-w>` / `<shift-meta-w>` |
+| Focus the previous / next tab | `<alt-h>` / `<alt-l>` |
+| Move the tab left / right | `<shift-alt-h>` / `<shift-alt-l>` |
+| Close the tab | `<alt-w>` |
+| Search open tabs / workspaces | `<space>b` / ``<meta-`>`` |
+
+</Platform>
+<Platform when="linux">
+
+Super belongs to the desktop on Linux, so `<alt>` with `h` `j` `k` `l` focuses
+windows, `<ctrl-alt>` resizes them, and tabs step with the brackets. See
+[Why Alt on Linux](./key-mapping.md#why-alt-on-linux).
+
+| Action | Key |
+| --- | --- |
+| Focus the window left / down / up / right | `<alt-h>` `j` `k` `l` |
+| Move the window left / down / up / right | `<ctrl-shift-alt-h>` `j` `k` `l` |
+| Resize the window narrower / shorter / taller / wider | `<ctrl-alt-h>` `j` `k` `l` |
+| Close this window / close the others | `<alt-w>` / `<alt-shift-w>` |
+| Focus the previous / next tab | `<ctrl-alt-[>` / `<ctrl-alt-]>` |
+| Move the tab left / right | `<ctrl-shift-alt-[>` / `<ctrl-shift-alt-]>` |
+| Close the tab | `<ctrl-alt-w>` |
+| Search open tabs / workspaces | ``<ctrl-alt-`>`` / ``<ctrl-shift-alt-`>`` |
+
+KDE, Cinnamon, Xfce, and MATE lock the screen on `<ctrl-alt-l>`. On those
+desktops, [remap it](./key-mapping.md) or rebind `windowresize increase width`.
+
+Helix's own `A-d` and `A-i` keep their meaning, so go to definition and
+implementation stay on `gd` and `gi`; the by-name prompts are `<alt-shift-d>`
+and `<ctrl-shift-alt-i>`. Rename is `<alt-f>`, and diagnostics step with
+`<ctrl-alt-.>` / `<ctrl-alt-;>`.
+
+</Platform>
 
 ### The `<ctrl-w>` window menu
 

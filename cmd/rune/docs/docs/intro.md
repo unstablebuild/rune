@@ -75,8 +75,9 @@ docs show. Click it until it matches the editor you picked, and every key on
 every page will match your setup.
 :::
 
-If the text is too small, press `<meta>` and `=` to make the font bigger, or
-`<meta>` and `-` to make it smaller.
+If the text is too small, press <KeyBinding command="guifontsize increase" />
+to make the font bigger, or <KeyBinding command="guifontsize decrease" /> to
+make it smaller.
 
 Whichever you pick, the rest is already wired: language intelligence,
 debugging, terminals, and tasks ship in the box.

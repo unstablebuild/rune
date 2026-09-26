@@ -21,9 +21,11 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -306,7 +308,7 @@ func TestRuneStarFixture(t *testing.T) {
 	}{
 		{
 			name:   "gui",
-			params: map[string]any{"mode": "modal", "tui": false},
+			params: map[string]any{"mode": "modal", "tui": false, "os": "darwin"},
 			checks: func(t *testing.T, cfg map[string]any) {
 				editor := cfg["editor"].(map[string]any)
 				// rune.star no longer sets editor.mode; the bootstrap
@@ -338,7 +340,7 @@ func TestRuneStarFixture(t *testing.T) {
 		},
 		{
 			name:   "tui",
-			params: map[string]any{"mode": "modal", "tui": true},
+			params: map[string]any{"mode": "modal", "tui": true, "os": "darwin"},
 			checks: func(t *testing.T, cfg map[string]any) {
 				assert.Contains(t, cfg, "default_attr")
 				wm := cfg["browser"].(map[string]any)["window_manager"].(map[string]any)
@@ -418,37 +420,82 @@ func TestRuneStarAsDefaultConfig(t *testing.T) {
 	assert.True(t, cfg.telemetryEnabled())
 }
 
+// TestRuneStarPlatformShortcuts pins the defaults rune.star derives from the
+// host OS: Super belongs to the desktop on Linux, so no Linux default may
+// reach for it.
+func TestRuneStarPlatformShortcuts(t *testing.T) {
+	for _, tc := range []struct {
+		os            string
+		history       string
+		find, replace string
+		terminalFind  string
+	}{
+		{os: "darwin", history: "<m-r>", find: "<m-f>", replace: "<m-r>", terminalFind: "<m-f>"},
+		{os: "linux", history: "<c-a-r>", find: "<c-f>", replace: "<c-h>", terminalFind: "<c-s-f>"},
+	} {
+		t.Run(tc.os, func(t *testing.T) {
+			raw, err := decodeDefaultConfig(DefaultConfig{
+				src: string(readRuneStar(t)), modal: true, os: tc.os,
+			})
+			require.NoError(t, err)
+			c := ideConfig{cfg: raw, errors: map[string]error{}}
+
+			parse := func(key string) term.KeyComb {
+				k, err := term.ParseKey(key)
+				require.NoError(t, err)
+				return k
+			}
+			assert.Equal(t, parse(tc.history), c.commandHistoryKey())
+			search := c.standardSearchConfig(nil)
+			assert.Equal(t, parse(tc.find), search.FindKey)
+			assert.Equal(t, parse(tc.replace), search.ReplaceKey)
+			assert.Equal(t, parse(tc.terminalFind), c.terminalSearchConfig().FindKey)
+			assert.Empty(t, c.errors)
+		})
+	}
+}
+
 func TestModalPresetUsesHomeRowResizeBindings(t *testing.T) {
 	base, err := decodeDefaultConfig(DefaultConfig{
 		src: string(readRuneStar(t)), modal: true, tui: false,
 	})
 	require.NoError(t, err)
 
-	overlay, err := os.ReadFile("../../cmd/rune/preset_modal.yaml")
-	require.NoError(t, err)
-	raw, err := decodeOverlayConfigFile(
-		bytes.NewReader(overlay), "preset_modal.yaml", base)
-	require.NoError(t, err)
-
-	cfg := ideConfig{cfg: raw, errors: map[string]error{}}
-	mappings := cfg.commandKeyMappings()
-	for key, wantCmd := range map[string]string{
-		"<alt-meta-h>": "windowresize decrease width",
-		"<alt-meta-j>": "windowresize decrease height",
-		"<alt-meta-k>": "windowresize increase height",
-		"<alt-meta-l>": "windowresize increase width",
+	for _, tc := range []struct {
+		file   string
+		resize string
+	}{
+		{file: "preset_vim_darwin.yaml", resize: "alt-meta"},
+		{file: "preset_vim_linux.yaml", resize: "ctrl-alt"},
 	} {
-		seq := mustParseBindingKey(t, key)
-		require.Equalf(t, [][]string{strings.Split(wantCmd, " ")}, mappings[seq],
-			"%s must run %q", key, wantCmd)
-	}
+		t.Run(tc.file, func(t *testing.T) {
+			overlay, err := os.ReadFile("../../cmd/rune/" + tc.file)
+			require.NoError(t, err)
+			raw, err := decodeOverlayConfigFile(bytes.NewReader(overlay), tc.file, base)
+			require.NoError(t, err)
 
-	for _, key := range []string{
-		"<shift-meta-up>", "<shift-meta-down>",
-		"<shift-meta-left>", "<shift-meta-right>",
-	} {
-		_, ok := mappings[mustParseBindingKey(t, key)]
-		require.Falsef(t, ok, "%s must not remain bound", key)
+			cfg := ideConfig{cfg: raw, errors: map[string]error{}}
+			mappings := cfg.commandKeyMappings()
+			for dir, wantCmd := range map[string]string{
+				"h": "windowresize decrease width",
+				"j": "windowresize decrease height",
+				"k": "windowresize increase height",
+				"l": "windowresize increase width",
+			} {
+				key := "<" + tc.resize + "-" + dir + ">"
+				seq := mustParseBindingKey(t, key)
+				require.Equalf(t, [][]string{strings.Split(wantCmd, " ")}, mappings[seq],
+					"%s must run %q", key, wantCmd)
+			}
+
+			for _, key := range []string{
+				"<shift-meta-up>", "<shift-meta-down>",
+				"<shift-meta-left>", "<shift-meta-right>",
+			} {
+				_, ok := mappings[mustParseBindingKey(t, key)]
+				require.Falsef(t, ok, "%s must not remain bound", key)
+			}
+		})
 	}
 }
 
@@ -461,7 +508,7 @@ func TestRuneStarModelsConfig(t *testing.T) {
 	cfg, err := decodeStarlarkConfig(starlarkConfigSource{
 		src:      data,
 		filename: "rune.star",
-		params:   map[string]any{"mode": "modal", "tui": false},
+		params:   map[string]any{"mode": "modal", "tui": false, "os": "darwin"},
 	})
 	require.NoError(t, err)
 
@@ -706,43 +753,47 @@ config["extensions"]["git"]["config"]["nested"]["override"] = "star"
 // first run does, and pins that its Helix typable command aliases and key
 // spellings reach the command layer without config errors.
 func TestHelixPresetLoads(t *testing.T) {
-	preset, err := os.ReadFile("../../cmd/rune/preset_helix.yaml")
-	require.NoError(t, err)
-	path := filepath.Join(t.TempDir(), "config.yaml")
-	require.NoError(t, os.WriteFile(path, preset, 0o644))
-	var cfg ideConfig
-	require.NoError(t, loadConfig(&cfg, path, browser.NopWallpaper(),
-		DefaultConfig{src: string(readRuneStar(t)), modal: true},
-		term.RingBell, term.ScheduleNextTick, ""))
+	for _, file := range []string{"preset_helix_darwin.yaml", "preset_helix_linux.yaml"} {
+		t.Run(file, func(t *testing.T) {
+			preset, err := os.ReadFile("../../cmd/rune/" + file)
+			require.NoError(t, err)
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			require.NoError(t, os.WriteFile(path, preset, 0o644))
+			var cfg ideConfig
+			require.NoError(t, loadConfig(&cfg, path, browser.NopWallpaper(),
+				DefaultConfig{src: string(readRuneStar(t)), modal: true},
+				term.RingBell, term.ScheduleNextTick, ""))
 
-	aliases, err := cfg.parseAliasCommands()
-	require.NoError(t, err)
-	for alias, cmds := range map[string][]string{
-		"q":   {"windowclose"},
-		"wq":  {"write", "windowclose"},
-		"qa!": {"forcequit!"},
-		"o":   {"edit"},
-		"vs":  {"windownew right"},
-	} {
-		assert.Equalf(t, cmds, aliases[alias].Commands, "alias %s", alias)
-	}
-	helixAliases := []string{
-		"q", "wq", "x", "qa", "qa!", "wa", "o", "bc", "bca", "bn", "bp",
-		"vs", "hs", "sp", "rl",
-	}
-	for _, alias := range helixAliases {
-		require.Containsf(t, aliases, alias, "alias %s", alias)
-		for _, cmd := range aliases[alias].Commands {
-			name := strings.Fields(cmd)[0]
-			_, ok := exCommands[name]
-			assert.Truef(t, ok, "alias %s runs unknown command %q", alias, name)
-		}
-	}
+			aliases, err := cfg.parseAliasCommands()
+			require.NoError(t, err)
+			for alias, cmds := range map[string][]string{
+				"q":   {"windowclose"},
+				"wq":  {"write", "windowclose"},
+				"qa!": {"forcequit!"},
+				"o":   {"edit"},
+				"vs":  {"windownew right"},
+			} {
+				assert.Equalf(t, cmds, aliases[alias].Commands, "alias %s", alias)
+			}
+			helixAliases := []string{
+				"q", "wq", "x", "qa", "qa!", "wa", "o", "bc", "bca", "bn", "bp",
+				"vs", "hs", "sp", "rl",
+			}
+			for _, alias := range helixAliases {
+				require.Containsf(t, aliases, alias, "alias %s", alias)
+				for _, cmd := range aliases[alias].Commands {
+					name := strings.Fields(cmd)[0]
+					_, ok := exCommands[name]
+					assert.Truef(t, ok, "alias %s runs unknown command %q", alias, name)
+				}
+			}
 
-	seq, err := handler.ParseSequence("<ctrl-w><ctrl-h>")
-	require.NoError(t, err)
-	assert.Equal(t, [][]string{{"windowfocus", "left"}}, cfg.commandKeyMappings()[seq])
-	assert.Empty(t, cfg.errors)
+			seq, err := handler.ParseSequence("<ctrl-w><ctrl-h>")
+			require.NoError(t, err)
+			assert.Equal(t, [][]string{{"windowfocus", "left"}}, cfg.commandKeyMappings()[seq])
+			assert.Empty(t, cfg.errors)
+		})
+	}
 }
 
 func TestLoadWorkspaceConfigYAML(t *testing.T) {
@@ -982,25 +1033,19 @@ func TestStandardPresetUsesModifierLayoutBindings(t *testing.T) {
 		"<alt-shift-k>": "windowmove down",
 		"<alt-shift-l>": "windowmove right",
 
-		"<alt-meta-i>": "windowresize increase height",
-		"<alt-meta-j>": "windowresize decrease width",
-		"<alt-meta-k>": "windowresize decrease height",
-		"<alt-meta-l>": "windowresize increase width",
-
 		"<alt-h>": "windowdefaultsplit h",
 		"<alt-v>": "windowdefaultsplit v",
 
-		"<alt-n>":           "windownew",
-		"<alt-enter>":       "terminalneworsplit",
-		"<alt-q>":           "windowclose",
-		"<alt-shift-q>":     "windowcloseall",
-		"<alt-m>":           "windowtogglemaximize",
-		"<alt-shift-enter>": "echo {prompt}windowconverttab<space>",
-		"<alt-w>":           "tabclose",
-		"<alt-[>":           "tabprevious",
-		"<alt-]>":           "tabnext",
-		"<alt-shift-[>":     "tabmove left",
-		"<alt-shift-]>":     "tabmove right",
+		"<alt-n>":       "windownew",
+		"<alt-enter>":   "terminalneworsplit",
+		"<alt-q>":       "windowclose",
+		"<alt-shift-q>": "windowcloseall",
+		"<alt-m>":       "windowtogglemaximize",
+		"<alt-w>":       "tabclose",
+		"<alt-[>":       "tabprevious",
+		"<alt-]>":       "tabnext",
+		"<alt-shift-[>": "tabmove left",
+		"<alt-shift-]>": "tabmove right",
 
 		"<alt-t>":       "lsp hover",
 		"<alt-shift-t>": "echo {prompt}lsp<space>hover<space>",
@@ -1011,26 +1056,43 @@ func TestStandardPresetUsesModifierLayoutBindings(t *testing.T) {
 
 		"<alt-,>": "cursorhistory prev",
 		"<alt-.>": "cursorhistory next",
-
-		"<ctrl-meta-i>": "gitprevchange",
-		"<ctrl-meta-k>": "gitnextchange",
-		"<ctrl-meta-j>": "lspprevdiagnostic",
-		"<ctrl-meta-l>": "lspnextdiagnostic",
 	}
 	tests := []struct {
 		name    string
 		file    string
+		bound   map[string]string
 		unbound []string
 	}{
 		{
 			name: "darwin",
 			file: "preset_standard_darwin.yaml",
+			bound: map[string]string{
+				"<alt-meta-i>":      "windowresize increase height",
+				"<alt-meta-j>":      "windowresize decrease width",
+				"<alt-meta-k>":      "windowresize decrease height",
+				"<alt-meta-l>":      "windowresize increase width",
+				"<alt-shift-enter>": "echo {prompt}windowconverttab<space>",
+				"<ctrl-meta-i>":     "gitprevchange",
+				"<ctrl-meta-k>":     "gitnextchange",
+				"<ctrl-meta-j>":     "lspprevdiagnostic",
+				"<ctrl-meta-l>":     "lspnextdiagnostic",
+			},
 		},
 		{
 			name: "linux",
 			file: "preset_standard_linux.yaml",
+			bound: map[string]string{
+				"<ctrl-shift-alt-i>": "windowresize increase height",
+				"<ctrl-shift-alt-j>": "windowresize decrease width",
+				"<ctrl-shift-alt-k>": "windowresize decrease height",
+				"<ctrl-shift-alt-l>": "windowresize increase width",
+				"<ctrl-alt-enter>":   "echo {prompt}windowconverttab<space>",
+				"<ctrl-alt-i>":       "gitprevchange",
+				"<ctrl-alt-k>":       "gitnextchange",
+				"<shift-f8>":         "lspprevdiagnostic",
+				"<f8>":               "lspnextdiagnostic",
+			},
 			unbound: []string{
-				"<c-s-a-j>", "<c-s-a-l>",
 				"<c-s-m-i>", "<c-s-m-j>", "<c-s-m-k>", "<c-s-m-l>",
 			},
 		},
@@ -1052,10 +1114,8 @@ func TestStandardPresetUsesModifierLayoutBindings(t *testing.T) {
 			c := &ideConfig{cfg: cfg, errors: map[string]error{}}
 			mappings := c.commandKeyMappings()
 
-			wantBound := make(map[string]string, len(common))
-			for key, cmd := range common {
-				wantBound[key] = cmd
-			}
+			wantBound := maps.Clone(common)
+			maps.Copy(wantBound, tc.bound)
 			for key, wantCmd := range wantBound {
 				seq := mustParseBindingKey(t, key)
 				got, ok := mappings[seq]
@@ -1065,36 +1125,34 @@ func TestStandardPresetUsesModifierLayoutBindings(t *testing.T) {
 			}
 
 			lookup := c.commandKeyBindingLookup()
-			for wantCmd, wantKey := range map[string]string{
-				"windowfocus up":               "<alt-i>",
-				"windowfocus left":             "<alt-j>",
-				"windowfocus down":             "<alt-k>",
-				"windowfocus right":            "<alt-l>",
-				"windowmove up":                "<alt-shift-i>",
-				"windowmove left":              "<alt-shift-j>",
-				"windowmove down":              "<alt-shift-k>",
-				"windowmove right":             "<alt-shift-l>",
-				"windowresize increase height": "<alt-meta-i>",
-				"windowresize decrease width":  "<alt-meta-j>",
-				"windowresize decrease height": "<alt-meta-k>",
-				"windowresize increase width":  "<alt-meta-l>",
-				"tabprevious":                  "<alt-[>",
-				"tabnext":                      "<alt-]>",
-				"tabmove left":                 "<alt-shift-[>",
-				"tabmove right":                "<alt-shift-]>",
-				"lspprevdiagnostic":            "<ctrl-meta-j>",
-				"lspnextdiagnostic":            "<ctrl-meta-l>",
-				"gitprevchange":                "<ctrl-meta-i>",
-				"gitnextchange":                "<ctrl-meta-k>",
-				"windowdefaultsplit h":         "<alt-h>",
-				"windowdefaultsplit v":         "<alt-v>",
-				"lsp hover":                    "<alt-t>",
-				"lsp implementation":           "<alt-p>",
-				"lsp diagnostics":              "<alt-e>",
-				"cursorhistory prev":           "<alt-,>",
-				"cursorhistory next":           "<alt-.>",
-				"windowtogglemaximize":         "<alt-m>",
-			} {
+			wantLookup := map[string]string{
+				"windowfocus up":       "<alt-i>",
+				"windowfocus left":     "<alt-j>",
+				"windowfocus down":     "<alt-k>",
+				"windowfocus right":    "<alt-l>",
+				"windowmove up":        "<alt-shift-i>",
+				"windowmove left":      "<alt-shift-j>",
+				"windowmove down":      "<alt-shift-k>",
+				"windowmove right":     "<alt-shift-l>",
+				"tabprevious":          "<alt-[>",
+				"tabnext":              "<alt-]>",
+				"tabmove left":         "<alt-shift-[>",
+				"tabmove right":        "<alt-shift-]>",
+				"windowdefaultsplit h": "<alt-h>",
+				"windowdefaultsplit v": "<alt-v>",
+				"lsp hover":            "<alt-t>",
+				"lsp implementation":   "<alt-p>",
+				"lsp diagnostics":      "<alt-e>",
+				"cursorhistory prev":   "<alt-,>",
+				"cursorhistory next":   "<alt-.>",
+				"windowtogglemaximize": "<alt-m>",
+			}
+			for key, cmd := range tc.bound {
+				if !strings.HasPrefix(cmd, "echo ") {
+					wantLookup[cmd] = key
+				}
+			}
+			for wantCmd, wantKey := range wantLookup {
 				cmd := strings.Split(wantCmd, " ")
 				require.Equalf(t, wantKey, lookup(cmd[0], cmd[1:]),
 					"%q must resolve to %s", wantCmd, wantKey)
@@ -1166,6 +1224,8 @@ func TestStandardPresetUsesPlatformApplicationBindings(t *testing.T) {
 				"<c-n>":   "tabnew",
 				"<a-w>":   "tabclose",
 				"<c-s-f>": "searchtext",
+				"<c-a-q>": "quit",
+				"<c-a-r>": "history",
 			},
 		},
 	} {
@@ -1273,264 +1333,385 @@ func TestStandardPresetUnbindsStaleModalChords(t *testing.T) {
 // TestEmacsPresetKeepsCommandsOffEditorChords pins that the emacs preset
 // opens the command prompt with M-x (on <alt>, authentic Emacs Meta) and
 // uses GNU Emacs navigation keys where Rune has matching behavior, and homes
-// Rune-only commands on the <meta> (Cmd) window/workspace/tab layer. The emacs editor owns the single-modifier
-// control and alt chords (motion, kill, yank, mark, folds, M-x), so any host
-// command sharing one of those would be shadowed and unreachable — every base
-// <alt> command binding is therefore explicitly unbound. <meta> is free of
-// editor bindings, so frequent directional operations live there and remain
-// available when terminal programs intercept <c-x>. GNU-compatible file and
-// session commands can still use C-x, but layout management remains global.
+// Rune-only commands on a layer the emacs editor leaves free: <meta> (Cmd)
+// on macOS, <alt-shift> on Linux, where Super belongs to the desktop. The
+// emacs editor owns the single-modifier control and alt chords (motion,
+// kill, yank, mark, folds, M-x), so any host command sharing one of those
+// would be shadowed and unreachable. The Rune layer stays available when
+// terminal programs intercept <c-x>. GNU-compatible file and session
+// commands can still use C-x, but layout management remains global.
 func TestEmacsPresetKeepsCommandsOffEditorChords(t *testing.T) {
 	runeStar := readRuneStar(t)
 
-	base, err := decodeDefaultConfig(DefaultConfig{
-		src: string(runeStar), modal: true, tui: false,
-	})
-	require.NoError(t, err)
+	jumpMethod := "echo {prompt}jumptoast<space>locals.scm<space>" +
+		"local.definition.method|local.definition.function<space>"
+	jumpType := "echo {prompt}jumptoast<space>locals.scm<space>" +
+		"local.definition.type<space>"
+	jumpVar := "echo {prompt}jumptoast<space>locals.scm<space>" +
+		"local.definition.var<space>"
 
-	overlay, err := os.ReadFile("../../cmd/rune/preset_emacs.yaml")
-	require.NoError(t, err)
-	cfg, err := decodeOverlayConfigFile(
-		bytes.NewReader(overlay), "preset_emacs.yaml", base)
-	require.NoError(t, err)
+	for _, tc := range []struct {
+		file string
+		// live are the Rune-only chords on the host layer.
+		live map[string]string
+		// lookup is the chord each command resolves to for key hints.
+		lookup map[string]string
+		// reserved are editor chords that must not carry a command.
+		reserved []string
+	}{
+		{
+			file: "preset_emacs_darwin.yaml",
+			live: map[string]string{
+				"<m-p>":   "windowfocus up",
+				"<m-b>":   "windowfocus left",
+				"<m-n>":   "windowfocus down",
+				"<m-f>":   "windowfocus right",
+				"<m-g>":   "jumptolocation next search",
+				"<s-m-g>": "jumptolocation prev search",
+				"<m-i>":   "lsp implementation",
+				"<s-m-i>": "echo {prompt}lsp<space>implementation<space>",
+				"<m-h>":   "lsp hover",
+				"<s-m-h>": "echo {prompt}lsp<space>hover<space>",
 
-	require.NoError(t, validateConfig(cfg),
-		"the emacs preset must validate cleanly")
+				"<s-m-p>": "windowmove up",
+				"<s-m-b>": "windowmove left",
+				"<s-m-n>": "windowmove down",
+				"<s-m-f>": "windowmove right",
 
-	c := &ideConfig{cfg: cfg, errors: map[string]error{}}
-	require.Equal(t, editorModeEmacs, c.editorMode())
+				"<m-up>":    "windowresize increase height",
+				"<m-left>":  "windowresize decrease width",
+				"<m-down>":  "windowresize decrease height",
+				"<m-right>": "windowresize increase width",
 
-	// The terminal's scrollback find reuses isearch-forward's key instead
-	// of the default <meta-f>, which this preset keeps live for
-	// windowfocus right (see the wantLive table below).
-	require.Equal(t, term.KeyComb{Mod: term.ModCtrl, Ch: 's'},
-		c.terminalSearchConfig().FindKey)
+				"<m-d>":   "windownew down",
+				"<m-r>":   "windownew right",
+				"<m-k>":   "windowclose",
+				"<s-m-k>": "windowcloseall",
+				"<m-m>":   "windowtogglemaximize",
 
-	// The command prompt opens with M-x (execute-extended-command) on the
-	// authentic Meta layer (<alt>).
-	require.Equal(t, term.KeyComb{Mod: term.ModAlt, Ch: 'x'}, c.commandKey())
+				"<c-m-h>":   "windowdefaultsplit h",
+				"<c-m-v>":   "windowdefaultsplit v",
+				"<m-w>":     "tabclose",
+				"<m-1>":     "workspacefocus 1",
+				"<s-m-1>":   "workspacemove 1",
+				"<m-enter>": "terminalneworsplit",
+				"<m-]>":     "tabnext",
+				"<m-[>":     "tabprevious",
+				"<s-m-]>":   "tabmove right",
+				"<s-m-[>":   "tabmove left",
 
-	mappings := c.commandKeyMappings()
+				"<m-o>":    "fexplorer",
+				"<m-l>":    "lspnextdiagnostic",
+				"<s-m-l>":  "lspprevdiagnostic",
+				"<m-e>":    "lsp diagnostics",
+				"<m-j>":    jumpMethod,
+				"<m-s>":    jumpType,
+				"<m-x>":    jumpVar,
+				"<m-f3>":   "jumptolocation next bookmark",
+				"<s-m-f3>": "jumptolocation previous bookmark",
+				"<m-f4>":   "locationhighlight bookmark",
+			},
+			lookup: map[string]string{
+				"windowfocus up":               "<meta-p>",
+				"windowfocus left":             "<meta-b>",
+				"windowfocus down":             "<meta-n>",
+				"windowfocus right":            "<meta-f>",
+				"windowmove up":                "<shift-meta-p>",
+				"windowmove left":              "<shift-meta-b>",
+				"windowmove down":              "<shift-meta-n>",
+				"windowmove right":             "<shift-meta-f>",
+				"windowresize increase height": "<meta-up>",
+				"windowresize decrease width":  "<meta-left>",
+				"windowresize decrease height": "<meta-down>",
+				"windowresize increase width":  "<meta-right>",
+				"windowclose":                  "<meta-k>",
+				"windowcloseall":               "<shift-meta-k>",
+				"windownew down":               "<meta-d>",
+				"windownew right":              "<meta-r>",
+				"windowtogglemaximize":         "<meta-m>",
+				"lsp implementation":           "<meta-i>",
+				"lsp hover":                    "<meta-h>",
+				"lsp diagnostics":              "<meta-e>",
+				"jumptolocation next search":   "<meta-g>",
+				"jumptolocation prev search":   "<shift-meta-g>",
+				"fexplorer":                    "<meta-o>",
+				"tabclose":                     "<meta-w>",
+				"tabprevious":                  "<meta-[>",
+				"tabnext":                      "<meta-]>",
+				"tabmove left":                 "<shift-meta-[>",
+				"tabmove right":                "<shift-meta-]>",
+				"lspprevdiagnostic":            "<shift-meta-l>",
+				"lspnextdiagnostic":            "<meta-l>",
+			},
+			reserved: []string{"<a-s-l>", "<a-s-h>", "<alt-enter>"},
+		},
+		{
+			file: "preset_emacs_linux.yaml",
+			live: map[string]string{
+				"<a-s-p>":   "windowfocus up",
+				"<a-s-b>":   "windowfocus left",
+				"<a-s-n>":   "windowfocus down",
+				"<a-s-f>":   "windowfocus right",
+				"<a-s-g>":   "jumptolocation next search",
+				"<c-s-a-g>": "jumptolocation prev search",
+				"<a-s-i>":   "lsp implementation",
+				"<c-s-a-i>": "echo {prompt}lsp<space>implementation<space>",
+				"<a-s-h>":   "lsp hover",
+				"<c-s-a-h>": "echo {prompt}lsp<space>hover<space>",
 
-	wantBound := map[string]string{
-		"<c-x><c-s>": "write",
-		"<c-x>s":     "writeall",
-		"<c-x><c-c>": "quit",
-		"<c-x><c-f>": "searchfile",
-		"<a-,>":      "cursorhistory prev",
-		"<c-a-,>":    "cursorhistory next",
-		"<c-x><c-x>": "exchangepointandmark",
-		"<a-.>":      "lsp definition",
-		"<a-s-/>":    "lsp references",
-		"<c-a-.>":    "echo {prompt}lsp<space>definition<space>",
-		"<c-s-a-/>":  "echo {prompt}lsp<space>references<space>",
-		"<m-j>": "echo {prompt}jumptoast<space>locals.scm<space>" +
-			"local.definition.method|local.definition.function<space>",
-		"<a-s>o":     "searchtext",
-		"<m-h>":      "lsp hover",
-		"<c-a-\\\\>": "lsp format",
-		"<c-a-i>":    "lsp complete",
-		"<f5>":       "gitprevchange",
-		"<f6>":       "gitnextchange",
-		"<f7>":       "lspprevdiagnostic",
-		"<f8>":       "lspnextdiagnostic",
-		"<f9>":       "lsp diagnostics",
-		"<m-f3>":     "jumptolocation next bookmark",
-		"<s-m-f3>":   "jumptolocation previous bookmark",
-		"<m-f4>":     "locationhighlight bookmark",
-	}
-	for key, wantCmd := range wantBound {
-		seq := mustParseBindingKey(t, key)
-		got, ok := mappings[seq]
-		require.Truef(t, ok, "%s must be bound", key)
-		require.Equalf(t, [][]string{strings.Split(wantCmd, " ")},
-			got, "%s must run %q", key, wantCmd)
-	}
+				"<c-s-a-p>": "windowmove up",
+				"<c-s-a-b>": "windowmove left",
+				"<c-s-a-n>": "windowmove down",
+				"<c-s-a-f>": "windowmove right",
 
-	// The host layout uses Emacs's P/N/B/F direction vocabulary without
-	// consuming the editor-owned C-P/N/B/F and M-P/N/B/F chords.
-	wantLive := map[string]string{
-		"<m-p>":   "windowfocus up",
-		"<m-b>":   "windowfocus left",
-		"<m-n>":   "windowfocus down",
-		"<m-f>":   "windowfocus right",
-		"<m-g>":   "jumptolocation next search",
-		"<s-m-g>": "jumptolocation prev search",
-		"<m-i>":   "lsp implementation",
-		"<s-m-i>": "echo {prompt}lsp<space>implementation<space>",
-		"<s-m-h>": "echo {prompt}lsp<space>hover<space>",
+				"<c-s-up>":          "windowresize increase height",
+				"<c-s-left>":        "windowresize decrease width",
+				"<c-s-down>":        "windowresize decrease height",
+				"<c-s-right>":       "windowresize increase width",
+				"<c-x>^":            "windowresize increase height",
+				"<c-x>{":            "windowresize decrease width",
+				"<c-x>-":            "windowresize decrease height",
+				"<c-x>}":            "windowresize increase width",
+				"<c-x>+":            "windowresize reset",
+				"<c-s-a-backspace>": "windowresize reset",
 
-		"<s-m-p>": "windowmove up",
-		"<s-m-b>": "windowmove left",
-		"<s-m-n>": "windowmove down",
-		"<s-m-f>": "windowmove right",
+				"<a-s-d>":   "windownew down",
+				"<a-s-r>":   "windownew right",
+				"<a-s-k>":   "windowclose",
+				"<c-s-a-k>": "windowcloseall",
+				"<a-s-m>":   "windowtogglemaximize",
 
-		"<m-up>":    "windowresize increase height",
-		"<m-left>":  "windowresize decrease width",
-		"<m-down>":  "windowresize decrease height",
-		"<m-right>": "windowresize increase width",
+				"<c-s-a-s>":   "windowdefaultsplit h",
+				"<c-s-a-v>":   "windowdefaultsplit v",
+				"<a-s-w>":     "tabclose",
+				"<a-s-t>":     "tabnew",
+				"<c-s-a-1>":   "workspacefocus 1",
+				"<alt-enter>": "terminalneworsplit",
+				"<a-]>":       "tabnext",
+				"<a-[>":       "tabprevious",
+				"<c-s-a-]>":   "tabmove right",
+				"<c-s-a-[>":   "tabmove left",
+				"<c-a-w>":     "clipboardcopy",
+				"<c-a-y>":     "clipboardpaste",
+				"<c-a-q>":     "quit",
+				"<c-s-a-,>":   "config",
+				"<a-s-=>":     "guifontsize increase",
+				"<a-s-->":     "guifontsize decrease",
+				"<c-a-`>":     "workspacesearch",
 
-		"<m-d>":   "windownew down",
-		"<m-r>":   "windownew right",
-		"<m-k>":   "windowclose",
-		"<s-m-k>": "windowcloseall",
-		"<m-m>":   "windowtogglemaximize",
-		"<a-s-x>": "history",
-
-		"<c-m-h>":   "windowdefaultsplit h",
-		"<c-m-v>":   "windowdefaultsplit v",
-		"<m-w>":     "tabclose",
-		"<m-1>":     "workspacefocus 1",
-		"<s-m-1>":   "workspacemove 1",
-		"<m-enter>": "terminalneworsplit",
-		"<c-tab>":   "tabnext",
-		"<c-s-tab>": "tabprevious",
-		"<m-]>":     "tabnext",
-		"<m-[>":     "tabprevious",
-		"<s-m-]>":   "tabmove right",
-		"<s-m-[>":   "tabmove left",
-
-		"<m-o>":   "fexplorer",
-		"<m-l>":   "lspnextdiagnostic",
-		"<s-m-l>": "lspprevdiagnostic",
-		"<m-e>":   "lsp diagnostics",
-		"<m-s>": "echo {prompt}jumptoast<space>locals.scm<space>" +
-			"local.definition.type<space>",
-		"<m-x>": "echo {prompt}jumptoast<space>locals.scm<space>" +
-			"local.definition.var<space>",
-	}
-	for key, wantCmd := range wantLive {
-		seq := mustParseBindingKey(t, key)
-		got, ok := mappings[seq]
-		require.Truef(t, ok, "%s must be bound on the <meta> IDE layer", key)
-		require.Equalf(t, [][]string{strings.Split(wantCmd, " ")},
-			got, "%s must run %q", key, wantCmd)
-	}
-
-	lookup := c.commandKeyBindingLookup()
-	for wantCmd, wantKey := range map[string]string{
-		"windowfocus up":               "<meta-p>",
-		"windowfocus left":             "<meta-b>",
-		"windowfocus down":             "<meta-n>",
-		"windowfocus right":            "<meta-f>",
-		"windowmove up":                "<shift-meta-p>",
-		"windowmove left":              "<shift-meta-b>",
-		"windowmove down":              "<shift-meta-n>",
-		"windowmove right":             "<shift-meta-f>",
-		"windowresize increase height": "<meta-up>",
-		"windowresize decrease width":  "<meta-left>",
-		"windowresize decrease height": "<meta-down>",
-		"windowresize increase width":  "<meta-right>",
-		"windowclose":                  "<meta-k>",
-		"windowcloseall":               "<shift-meta-k>",
-		"windownew down":               "<meta-d>",
-		"windownew right":              "<meta-r>",
-		"windowtogglemaximize":         "<meta-m>",
-		"history":                      "<alt-shift-x>",
-		"cursorhistory prev":           "<alt-,>",
-		"cursorhistory next":           "<ctrl-alt-,>",
-		"lsp definition":               "<alt-.>",
-		"lsp references":               "<alt-shift-/>",
-		"lsp implementation":           "<meta-i>",
-		"lsp hover":                    "<meta-h>",
-		"lsp format":                   "<ctrl-alt-\\\\>",
-		"lsp diagnostics":              "<meta-e>",
-		"searchtext":                   "<alt-s>o",
-		"jumptolocation next search":   "<meta-g>",
-		"jumptolocation prev search":   "<shift-meta-g>",
-		"fexplorer":                    "<meta-o>",
-		"lsp complete":                 "<ctrl-alt-i>",
-		"tabclose":                     "<meta-w>",
-		"tabprevious":                  "<meta-[>",
-		"tabnext":                      "<meta-]>",
-		"tabmove left":                 "<shift-meta-[>",
-		"tabmove right":                "<shift-meta-]>",
-		"gitprevchange":                "<f5>",
-		"gitnextchange":                "<f6>",
-		"lspprevdiagnostic":            "<shift-meta-l>",
-		"lspnextdiagnostic":            "<meta-l>",
+				"<a-s-o>":   "fexplorer",
+				"<a-s-l>":   "lspnextdiagnostic",
+				"<c-s-a-l>": "lspprevdiagnostic",
+				"<a-s-e>":   "lsp diagnostics",
+				"<a-s-j>":   jumpMethod,
+				"<a-s-s>":   jumpType,
+				"<a-s-v>":   jumpVar,
+				"<a-s-f2>":  "locationtoggle bookmark",
+				"<a-s-f3>":  "jumptolocation next bookmark",
+				"<a-s-f4>":  "locationhighlight bookmark",
+			},
+			lookup: map[string]string{
+				"windowfocus up":               "<alt-shift-p>",
+				"windowfocus left":             "<alt-shift-b>",
+				"windowfocus down":             "<alt-shift-n>",
+				"windowfocus right":            "<alt-shift-f>",
+				"windowmove up":                "<ctrl-shift-alt-p>",
+				"windowmove left":              "<ctrl-shift-alt-b>",
+				"windowmove down":              "<ctrl-shift-alt-n>",
+				"windowmove right":             "<ctrl-shift-alt-f>",
+				"windowresize increase height": "<ctrl-shift-up>",
+				"windowresize decrease width":  "<ctrl-shift-left>",
+				"windowresize decrease height": "<ctrl-shift-down>",
+				"windowresize increase width":  "<ctrl-shift-right>",
+				"windowclose":                  "<alt-shift-k>",
+				"windowcloseall":               "<ctrl-shift-alt-k>",
+				"windownew down":               "<alt-shift-d>",
+				"windownew right":              "<alt-shift-r>",
+				"windowtogglemaximize":         "<alt-shift-m>",
+				"lsp implementation":           "<alt-shift-i>",
+				"lsp hover":                    "<alt-shift-h>",
+				"lsp diagnostics":              "<alt-shift-e>",
+				"jumptolocation next search":   "<alt-shift-g>",
+				"jumptolocation prev search":   "<ctrl-shift-alt-g>",
+				"fexplorer":                    "<alt-shift-o>",
+				"tabclose":                     "<alt-shift-w>",
+				"tabprevious":                  "<alt-[>",
+				"tabnext":                      "<alt-]>",
+				"tabmove left":                 "<ctrl-shift-alt-[>",
+				"tabmove right":                "<ctrl-shift-alt-]>",
+				"lspprevdiagnostic":            "<ctrl-shift-alt-l>",
+				"lspnextdiagnostic":            "<alt-shift-l>",
+			},
+			// M-digit and C-M-digit are numeric arguments, M-{ / M-} are
+			// paragraph motions, and C-M-_ is undo-redo.
+			reserved: []string{
+				"<c-a-1>", "<c-a-9>", "<a-s-[>", "<a-s-]>", "<c-s-a-->",
+			},
+		},
 	} {
-		cmd := strings.Split(wantCmd, " ")
-		require.Equalf(t, wantKey, lookup(cmd[0], cmd[1:]),
-			"%q must resolve to %s", wantCmd, wantKey)
-	}
+		t.Run(tc.file, func(t *testing.T) {
+			base, err := decodeDefaultConfig(DefaultConfig{
+				src: string(runeStar), modal: true, tui: false,
+			})
+			require.NoError(t, err)
 
-	for _, key := range []string{
-		"<s-m-j>",
-		"<alt-meta-h>", "<alt-meta-j>", "<alt-meta-k>", "<alt-meta-l>",
-		"<c-m-i>", "<c-m-j>", "<c-m-k>", "<c-m-l>",
-		"<c-s-m-i>", "<c-s-m-j>", "<c-s-m-k>", "<c-s-m-l>",
-		"<c-a-m-i>", "<c-a-m-j>", "<c-a-m-k>", "<c-a-m-l>",
-		"<c-a-m-up>", "<c-a-m-left>", "<c-a-m-down>", "<c-a-m-right>",
-		"<c-o>", "<c-i>", "<s-tab>", "<f2>",
-	} {
-		seq := mustParseBindingKey(t, key)
-		if got, ok := mappings[seq]; ok {
-			require.Equalf(t, [][]string{{""}}, got,
-				"%s is a stale HJKL layout chord", key)
-		}
-	}
+			overlay, err := os.ReadFile("../../cmd/rune/" + tc.file)
+			require.NoError(t, err)
+			cfg, err := decodeOverlayConfigFile(bytes.NewReader(overlay), tc.file, base)
+			require.NoError(t, err)
 
-	for _, key := range []string{
-		"<c-x>9", "<c-x>d", "<c-x>b", "<c-x>j", "<c-x>?",
-	} {
-		_, ok := mappings[mustParseBindingKey(t, key)]
-		require.Falsef(t, ok,
-			"%s must not remain as a terminal-inaccessible layout binding", key)
-	}
+			require.NoError(t, validateConfig(cfg),
+				"the emacs preset must validate cleanly")
 
-	for _, key := range []string{
-		"<c-x>[", "<c-x>]", "<c-x>g", "<c-x>n", "<c-x>p",
-		"<c-x>r", "<c-x>i", "<c-x>t", "<c-x>e", "<c-x>/",
-	} {
-		seq := mustParseBindingKey(t, key)
-		if got, ok := mappings[seq]; ok {
-			require.Equalf(t, [][]string{{""}}, got,
-				"%s must not carry an unrelated Rune command", key)
-		}
-	}
+			c := &ideConfig{cfg: cfg, errors: map[string]error{}}
+			require.Equal(t, editorModeEmacs, c.editorMode())
 
-	// None of the emacs editor's single-modifier editing chords may carry
-	// a live host command binding: they belong to the editor and would be
-	// shadowed if the command layer claimed them. An explicit unbind maps
-	// to the empty command [[""]], which the dispatcher treats as no-op.
-	// <alt> is authentic Meta (M-f/b/d/w, M-x, case ops), so every base
-	// <alt> command chord is unbound; C-SPC is set-mark.
-	reserved := []string{
-		"<a-f>", "<a-b>", "<a-d>", "<a-w>", "<a-l>", "<a-h>",
-		"<a-t>", "<a-r>", "<a-i>", "<a-j>", "<a-k>", "<a-v>",
-		"<a-s>", "<a-`>", "<a-s-l>", "<a-s-h>",
-		"<a-1>", "<a-2>", "<a-9>", "<a-s-1>", "<a-s-9>",
-		"<alt-enter>", "<c-space>",
-		// Sentence motion, zap, digit arguments, negative argument and the
-		// GNU undo chords also belong to the editor.
-		"<a-a>", "<a-e>", "<a-z>", "<a-0>", "<a-->",
-		"<c-u>", "<c-/>", "<c-_>", "<c-->",
-	}
-	for _, key := range reserved {
-		seq := mustParseBindingKey(t, key)
-		if got, ok := mappings[seq]; ok {
-			require.Equalf(t, [][]string{{""}}, got,
-				"%s is an emacs editor chord and must not carry a live "+
-					"command binding (found %v)", key, got)
-		}
-	}
+			// The terminal's scrollback find reuses isearch-forward's key
+			// instead of the platform default.
+			require.Equal(t, term.KeyComb{Mod: term.ModCtrl, Ch: 's'},
+				c.terminalSearchConfig().FindKey)
 
-	// C-c cannot be a command prefix: the editor claims a bare <c-c> for
-	// copy, so no <c-c>-prefixed sequence would ever fire. Guard against a
-	// future edit reintroducing one.
-	for seq := range mappings {
-		require.NotEqualf(t, term.KeyComb{Mod: term.ModCtrl, Ch: 'c'}, seq.First,
-			"no command may use <c-c> as a prefix in emacs mode: %v", seq)
+			// The command prompt opens with M-x (execute-extended-command)
+			// on the authentic Meta layer (<alt>).
+			require.Equal(t, term.KeyComb{Mod: term.ModAlt, Ch: 'x'}, c.commandKey())
+
+			mappings := c.commandKeyMappings()
+
+			wantBound := map[string]string{
+				"<c-x><c-s>": "write",
+				"<c-x>s":     "writeall",
+				"<c-x><c-c>": "quit",
+				"<c-x><c-f>": "searchfile",
+				"<a-,>":      "cursorhistory prev",
+				"<c-a-,>":    "cursorhistory next",
+				"<c-x><c-x>": "exchangepointandmark",
+				"<a-.>":      "lsp definition",
+				"<a-s-/>":    "lsp references",
+				"<c-a-.>":    "echo {prompt}lsp<space>definition<space>",
+				"<c-s-a-/>":  "echo {prompt}lsp<space>references<space>",
+				"<a-s>o":     "searchtext",
+				"<c-a-\\\\>": "lsp format",
+				"<c-a-i>":    "lsp complete",
+				"<f5>":       "gitprevchange",
+				"<f6>":       "gitnextchange",
+				"<f7>":       "lspprevdiagnostic",
+				"<f8>":       "lspnextdiagnostic",
+				"<f9>":       "lsp diagnostics",
+				"<a-s-x>":    "history",
+				"<c-tab>":    "tabnext",
+				"<c-s-tab>":  "tabprevious",
+			}
+			maps.Copy(wantBound, tc.live)
+			for key, wantCmd := range wantBound {
+				seq := mustParseBindingKey(t, key)
+				got, ok := mappings[seq]
+				require.Truef(t, ok, "%s must be bound", key)
+				require.Equalf(t, [][]string{strings.Split(wantCmd, " ")},
+					got, "%s must run %q", key, wantCmd)
+			}
+
+			lookup := c.commandKeyBindingLookup()
+			wantLookup := map[string]string{
+				"history":            "<alt-shift-x>",
+				"cursorhistory prev": "<alt-,>",
+				"cursorhistory next": "<ctrl-alt-,>",
+				"lsp definition":     "<alt-.>",
+				"lsp references":     "<alt-shift-/>",
+				"lsp format":         "<ctrl-alt-\\\\>",
+				"searchtext":         "<alt-s>o",
+				"lsp complete":       "<ctrl-alt-i>",
+				"gitprevchange":      "<f5>",
+				"gitnextchange":      "<f6>",
+			}
+			maps.Copy(wantLookup, tc.lookup)
+			for wantCmd, wantKey := range wantLookup {
+				cmd := strings.Split(wantCmd, " ")
+				require.Equalf(t, wantKey, lookup(cmd[0], cmd[1:]),
+					"%q must resolve to %s", wantCmd, wantKey)
+			}
+
+			for _, key := range []string{
+				"<s-m-j>",
+				"<alt-meta-h>", "<alt-meta-j>", "<alt-meta-k>", "<alt-meta-l>",
+				"<c-m-i>", "<c-m-j>", "<c-m-k>", "<c-m-l>",
+				"<c-s-m-i>", "<c-s-m-j>", "<c-s-m-k>", "<c-s-m-l>",
+				"<c-a-m-i>", "<c-a-m-j>", "<c-a-m-k>", "<c-a-m-l>",
+				"<c-a-m-up>", "<c-a-m-left>", "<c-a-m-down>", "<c-a-m-right>",
+				"<c-o>", "<c-i>", "<s-tab>", "<f2>",
+			} {
+				seq := mustParseBindingKey(t, key)
+				if got, ok := mappings[seq]; ok {
+					require.Equalf(t, [][]string{{""}}, got,
+						"%s is a stale HJKL layout chord", key)
+				}
+			}
+
+			for _, key := range []string{
+				"<c-x>9", "<c-x>d", "<c-x>b", "<c-x>j", "<c-x>?",
+			} {
+				_, ok := mappings[mustParseBindingKey(t, key)]
+				require.Falsef(t, ok,
+					"%s must not remain as a terminal-inaccessible layout binding", key)
+			}
+
+			for _, key := range []string{
+				"<c-x>[", "<c-x>]", "<c-x>g", "<c-x>n", "<c-x>p",
+				"<c-x>r", "<c-x>i", "<c-x>t", "<c-x>e", "<c-x>/",
+			} {
+				seq := mustParseBindingKey(t, key)
+				if got, ok := mappings[seq]; ok {
+					require.Equalf(t, [][]string{{""}}, got,
+						"%s must not carry an unrelated Rune command", key)
+				}
+			}
+
+			// None of the emacs editor's single-modifier editing chords may
+			// carry a live host command binding: they belong to the editor
+			// and would be shadowed if the command layer claimed them. An
+			// explicit unbind maps to the empty command [[""]], which the
+			// dispatcher treats as no-op. <alt> is authentic Meta (M-f/b/d/w,
+			// M-x, case ops), so every base <alt> command chord is unbound;
+			// C-SPC is set-mark.
+			reserved := []string{
+				"<a-f>", "<a-b>", "<a-d>", "<a-w>", "<a-l>", "<a-h>",
+				"<a-t>", "<a-r>", "<a-i>", "<a-j>", "<a-k>", "<a-v>",
+				"<a-s>", "<a-`>",
+				"<a-1>", "<a-2>", "<a-9>", "<a-s-1>", "<a-s-9>",
+				"<c-space>",
+				// Sentence motion, zap, digit arguments, negative argument
+				// and the GNU undo chords also belong to the editor.
+				"<a-a>", "<a-e>", "<a-z>", "<a-0>", "<a-->",
+				"<c-u>", "<c-/>", "<c-_>", "<c-->",
+			}
+			for _, key := range append(reserved, tc.reserved...) {
+				seq := mustParseBindingKey(t, key)
+				if got, ok := mappings[seq]; ok {
+					require.Equalf(t, [][]string{{""}}, got,
+						"%s is an emacs editor chord and must not carry a live "+
+							"command binding (found %v)", key, got)
+				}
+			}
+
+			// C-c cannot be a command prefix: the editor claims a bare <c-c>
+			// for copy, so no <c-c>-prefixed sequence would ever fire. Guard
+			// against a future edit reintroducing one.
+			for seq := range mappings {
+				require.NotEqualf(t, term.KeyComb{Mod: term.ModCtrl, Ch: 'c'}, seq.First,
+					"no command may use <c-c> as a prefix in emacs mode: %v", seq)
+			}
+		})
 	}
 }
 
 // TestValidateCommandPromptFallback pins the command.key guard for the
 // non-modal editors: a bare unmodified key cannot open the prompt (the
-// editor would swallow it), so validation rewrites it to <s-m-p>, which
-// stays clear of the emacs control chords. Modified keys, <c-space>, and
-// modal mode are left untouched.
+// editor would swallow it), so validation rewrites it to the platform's
+// fallback, which stays clear of the emacs control chords. Modified keys,
+// <c-space>, and modal mode are left untouched.
 func TestValidateCommandPromptFallback(t *testing.T) {
+	fallback := func(mode string) string {
+		return commandKeyFallback(mode, runtime.GOOS)
+	}
 	for _, tc := range []struct {
 		name    string
 		mode    string
@@ -1538,8 +1719,8 @@ func TestValidateCommandPromptFallback(t *testing.T) {
 		wantErr bool
 		wantKey string
 	}{
-		{"standard bare key rewritten", "standard", "p", true, "<s-m-p>"},
-		{"emacs bare key rewritten", "emacs", "p", true, "<s-m-p>"},
+		{"standard bare key rewritten", "standard", "p", true, fallback("standard")},
+		{"emacs bare key rewritten", "emacs", "p", true, fallback("emacs")},
 		{"emacs alt-x (M-x) kept", "emacs", "<a-x>", false, "<a-x>"},
 		{"standard shift-meta-p kept", "standard", "<s-m-p>", false, "<s-m-p>"},
 		{"emacs ctrl-space kept", "emacs", "<c-space>", false, "<c-space>"},
@@ -1561,6 +1742,13 @@ func TestValidateCommandPromptFallback(t *testing.T) {
 				cfg["command"].(map[string]any)["key"])
 		})
 	}
+
+	// Super belongs to the desktop on Linux, so each editor falls back to
+	// the command key its Linux preset ships.
+	require.Equal(t, "<s-m-p>", commandKeyFallback(editorModeStandard, "darwin"))
+	require.Equal(t, "<s-m-p>", commandKeyFallback(editorModeEmacs, "darwin"))
+	require.Equal(t, "<c-s-p>", commandKeyFallback(editorModeStandard, "linux"))
+	require.Equal(t, "<a-x>", commandKeyFallback(editorModeEmacs, "linux"))
 }
 
 // mustParseBindingKey mirrors commandKeyMappings' own key parsing: it

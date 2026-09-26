@@ -67,7 +67,7 @@ const cmdWorkspaceOpen = "workspaceopen"
 // bootstrapQuitChord is the fallback for the quit accelerator. Before
 // the wizard writes an editor preset the config binds nothing, and this
 // is the chord the wizard itself recognizes as a clean exit.
-var bootstrapQuitChord = term.KeyComb{Mod: term.ModMeta, Ch: 'q'}
+var bootstrapQuitChord = term.KeyComb{Mod: hostAppModifier, Ch: 'q'}
 
 // appMenuKeyBindings resolves the chords backing the menu's command
 // items from the live configuration.

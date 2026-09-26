@@ -897,14 +897,27 @@ func (b *bootstrapHandler) openBootstrapFlow() {
 	b.openWelcomePrompt()
 }
 
-// metaKeySymbol names the physical key that produces <meta> chords on
-// the user's platform, matching ide.metaKeyName. On macOS <meta> is the
-// Command key (⌘); elsewhere it is the Windows or Super key.
-func metaKeySymbol() string {
-	if runtime.GOOS == "darwin" {
+// appModifier is the modifier the shipped presets put app-wide commands
+// such as quit and font size on for goos: Command on macOS; Ctrl+Alt on
+// Linux, where Super belongs to the desktop and plain Ctrl to the
+// terminal.
+func appModifier(goos string) term.Modifier {
+	if goos == "darwin" {
+		return term.ModMeta
+	}
+	return term.ModCtrlAlt
+}
+
+// hostAppModifier is appModifier for the running platform.
+var hostAppModifier = appModifier(runtime.GOOS)
+
+// appModifierSymbol names the keys that make up appModifier(goos) in
+// prose, e.g. "press ⌘ and `=`".
+func appModifierSymbol(goos string) string {
+	if goos == "darwin" {
 		return "\u2318"
 	}
-	return "the Windows or Super key"
+	return "Ctrl+Alt"
 }
 
 func (b *bootstrapHandler) prompt(
@@ -922,8 +935,10 @@ func (b *bootstrapHandler) openWelcomePrompt() {
 		"Learning a new editor is hard, and it can feel daunting at first. We've all been there. " +
 		"These first steps are designed to make that process easier, and we promise that once Rune starts to click, " +
 		"the payoff will be huge.\n\n" +
-		"If this text is too small, press " + metaKeySymbol() + " and `=` to make the font bigger; " +
-		"if it's too big, press " + metaKeySymbol() + " and `-` to make it smaller."
+		"If this text is too small, press " + appModifierSymbol(runtime.GOOS) +
+		" and `=` to make the font bigger; " +
+		"if it's too big, press " + appModifierSymbol(runtime.GOOS) +
+		" and `-` to make it smaller."
 	guard := b.promptGuard()
 	b.prompt(
 		msg,
@@ -1027,13 +1042,13 @@ func (b *bootstrapHandler) promptGuard() *guardedPromptChain {
 }
 
 // bootstrapFontSizeDelta reports the font-size adjustment ev requests,
-// mirroring the editor presets' <m-=> / <m--> guifontsize bindings.
+// mirroring the editor presets' guifontsize bindings on the app modifier.
 // Those presets are only written at the end of bootstrap, so the
 // bindings the welcome prompt tells the user to press do not exist yet
 // and the chords have to be recognized here. The shifted forms count
 // too because the prompt copy says "+" and "-".
 func bootstrapFontSizeDelta(ev term.Event) int {
-	if ev.Type != term.EventKey || ev.Mod&term.ModMeta == 0 {
+	if ev.Type != term.EventKey || ev.Mod&hostAppModifier != hostAppModifier {
 		return 0
 	}
 	switch ev.Ch {
@@ -1066,7 +1081,8 @@ func (b *bootstrapHandler) adjustBootstrapFontSize(ev term.Event) bool {
 // every shipped editor preset. During bootstrap nothing is open and
 // nothing is unsaved, so it exits without a confirmation prompt.
 func isBootstrapQuitEvent(ev term.Event) bool {
-	return ev.Type == term.EventKey && ev.Ch == 'q' && ev.Mod&term.ModMeta != 0
+	return ev.Type == term.EventKey && ev.Ch == 'q' &&
+		ev.Mod&hostAppModifier == hostAppModifier
 }
 
 // shouldSwallowBootstrapEvent must NOT swallow Esc: the SDK prompt

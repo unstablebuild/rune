@@ -531,10 +531,13 @@ func TestKeyBindingsEditorModeIntro(t *testing.T) {
 }
 
 // TestKeyBindingsMetaKeyHint verifies the top-of-document hint names the
-// physical key that produces <meta> chords on the user's platform.
+// physical key that produces <meta> chords on the user's platform, and is
+// left out when nothing is bound to <meta>, as on every Linux preset.
 func TestKeyBindingsMetaKeyHint(t *testing.T) {
 	cfg := text.DefaultConfig()
-	cfg.CommandKeyBindings = nil
+	cfg.CommandKeyBindings = map[term.KeyComb][][]string{
+		{Ch: 'q', Mod: term.ModMeta}: {{"quit"}},
+	}
 	cfg.CommandSequenceBindings = nil
 
 	for _, tc := range []struct {
@@ -555,6 +558,15 @@ func TestKeyBindingsMetaKeyHint(t *testing.T) {
 			assert.Less(t, hint, intro, "the meta hint renders at the very top")
 		})
 	}
+
+	cfg.CommandKeyBindings = map[term.KeyComb][][]string{
+		{Ch: 'q', Mod: term.ModCtrlAlt}: {{"quit"}},
+	}
+	md, err := renderKeyBindings(cfg, keybindingsTestManuals(), "vim", "linux")
+	require.NoError(t, err)
+	assert.NotContains(t, md, "`<meta>` is")
+	assert.True(t, strings.HasPrefix(md, "# Key bindings\n\nThese are your command key bindings."),
+		"the intro follows the title directly: %q", md)
 }
 
 // TestKeyBindingsMacrosSection verifies the bespoke macros section

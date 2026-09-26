@@ -30,6 +30,7 @@ import (
 	"os"
 	"reflect"
 	"regexp"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
@@ -4743,12 +4744,17 @@ func loadConfig(
 
 func decodeDefaultConfig(d DefaultConfig) (map[string]any, error) {
 	src := []byte(d.src)
+	goos := d.os
+	if goos == "" {
+		goos = runtime.GOOS
+	}
 	cfg, err := decodeStarlarkConfig(starlarkConfigSource{
 		src:      src,
 		filename: "rune.star",
 		params: map[string]any{
 			"mode": map[bool]string{true: editorModeVim, false: editorModeStandard}[d.modal],
 			"tui":  d.tui,
+			"os":   goos,
 		},
 	})
 	if err != nil {

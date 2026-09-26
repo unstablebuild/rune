@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/cell"
 )
 
@@ -34,6 +35,15 @@ func TestDefaultConfigPkgManagerReturnsNotFound(t *testing.T) {
 	it, err := cfg.PkgManager.LibDir(context.Background(), "go")
 	require.Nil(t, it)
 	require.ErrorIs(t, err, storageapi.ErrNotFound)
+}
+
+// TestDefaultCommandHistoryKey pins the history toggle fallback per
+// platform: Super belongs to the desktop on Linux.
+func TestDefaultCommandHistoryKey(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, term.KeyComb{Mod: term.ModMeta, Ch: 'r'}, defaultCommandHistoryKey("darwin"))
+	assert.Equal(t, term.KeyComb{Mod: term.ModCtrlAlt, Ch: 'r'}, defaultCommandHistoryKey("linux"))
 }
 
 // TestGetSwapDir checks that the editor resolves a file's swap

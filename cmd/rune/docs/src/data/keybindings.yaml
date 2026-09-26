@@ -2,248 +2,488 @@
 # Source: cmd/rune/preset_*.yaml in the Rune repository.
 # Contains only command.key and command.key_bindings from each Rune editor preset.
 modal:
-  command_key: ":"
-  key_bindings:
-    <shift-tab>: fexplorer
-    <meta-r>: history
-    <meta-,>: config
-    <meta-/>: cheatsheet
-    <meta-q>: quit
-    <meta-=>: guifontsize increase
-    <meta-->: guifontsize decrease
-    <meta-t>: tabnew
-    <alt-enter>: echo {prompt}windowconverttab<space>
-    <alt-w>: tabclose
-    <alt-l>: tabnext
-    <alt-h>: tabprevious
-    <meta-n>: windownew
-    <meta-c>: clipboardcopy
-    <meta-v>: clipboardpaste
-    <alt-`>: tabsearch
-    <alt-shift-l>: tabmove right
-    <alt-shift-h>: tabmove left
-    <meta-h>: windowfocus left
-    <meta-l>: windowfocus right
-    <meta-j>: windowfocus down
-    <meta-k>: windowfocus up
-    <shift-meta-h>: windowmove left
-    <shift-meta-l>: windowmove right
-    <shift-meta-j>: windowmove down
-    <shift-meta-k>: windowmove up
-    <shift-meta-backspace>: windowresize reset
-    <shift-meta-+>:
-      - windowresize max width
-      - windowresize max height
-    <shift-meta-->:
-      - windowresize min width
-      - windowresize min height
-    <alt-meta-h>: windowresize decrease width
-    <alt-meta-j>: windowresize decrease height
-    <alt-meta-k>: windowresize increase height
-    <alt-meta-l>: windowresize increase width
-    <meta-w>: windowclose
-    <shift-meta-w>: windowcloseall
-    <ctrl-meta-h>: windowdefaultsplit h
-    <ctrl-meta-v>: windowdefaultsplit v
-    <shift-meta-f>: windowtogglemaximize
-    <alt-f>: echo {prompt}jumptoast<space>locals.scm<space>local.definition.method|local.definition.function<space>
-    <alt-v>: echo {prompt}jumptoast<space>locals.scm<space>local.definition.var<space>
-    <alt-s>: echo {prompt}jumptoast<space>locals.scm<space>local.definition.type<space>
-    <alt-j>: lspnextdiagnostic
-    <alt-k>: lspprevdiagnostic
-    <alt-t>: lsp hover
-    <alt-shift-t>: echo {prompt}lsp<space>hover<space>
-    <alt-shift-e>: lsp diagnostics
-    <meta-f>: lsp rename
-    <alt-r>: lsp references
-    <alt-shift-r>: echo {prompt}lsp<space>references<space>
-    <alt-d>: lsp definition
-    <alt-shift-d>: echo {prompt}lsp<space>definition<space>
-    <alt-i>: lsp implementation
-    <alt-shift-i>: echo {prompt}lsp<space>implementation<space>
-    <ctrl-o>: cursorhistory prev
-    <ctrl-i>: cursorhistory next
-    <alt-b>: lsp format
-    <ctrl-space>: lsp complete
-    <alt-shift-j>: gitnextchange
-    <alt-shift-k>: gitprevchange
-    <meta-enter>: terminalneworsplit
-    <shift-meta-enter>: "!"
-    <meta-`>: workspacesearch
-    <alt-1>: tabfocus 1
-    <alt-2>: tabfocus 2
-    <alt-3>: tabfocus 3
-    <alt-4>: tabfocus 4
-    <alt-5>: tabfocus 5
-    <alt-6>: tabfocus 6
-    <alt-7>: tabfocus 7
-    <alt-8>: tabfocus 8
-    <alt-9>: tabfocus 9
-    <alt-shift-1>: tabmove 1
-    <alt-shift-2>: tabmove 2
-    <alt-shift-3>: tabmove 3
-    <alt-shift-4>: tabmove 4
-    <alt-shift-5>: tabmove 5
-    <alt-shift-6>: tabmove 6
-    <alt-shift-7>: tabmove 7
-    <alt-shift-8>: tabmove 8
-    <alt-shift-9>: tabmove 9
-    <meta-1>: workspacefocus 1
-    <meta-2>: workspacefocus 2
-    <meta-3>: workspacefocus 3
-    <meta-4>: workspacefocus 4
-    <meta-5>: workspacefocus 5
-    <meta-6>: workspacefocus 6
-    <meta-7>: workspacefocus 7
-    <meta-8>: workspacefocus 8
-    <meta-9>: workspacefocus 9
-    <shift-meta-1>: workspacemove 1
-    <shift-meta-2>: workspacemove 2
-    <shift-meta-3>: workspacemove 3
-    <shift-meta-4>: workspacemove 4
-    <shift-meta-5>: workspacemove 5
-    <shift-meta-6>: workspacemove 6
-    <shift-meta-7>: workspacemove 7
-    <shift-meta-8>: workspacemove 8
-    <shift-meta-9>: workspacemove 9
+  darwin:
+    command_key: ":"
+    key_bindings:
+      <shift-tab>: fexplorer
+      <meta-r>: history
+      <meta-,>: config
+      <meta-/>: cheatsheet
+      <meta-q>: quit
+      <meta-=>: guifontsize increase
+      <meta-->: guifontsize decrease
+      <meta-t>: tabnew
+      <alt-enter>: echo {prompt}windowconverttab<space>
+      <alt-w>: tabclose
+      <alt-l>: tabnext
+      <alt-h>: tabprevious
+      <meta-n>: windownew
+      <meta-c>: clipboardcopy
+      <meta-v>: clipboardpaste
+      <alt-`>: tabsearch
+      <alt-shift-l>: tabmove right
+      <alt-shift-h>: tabmove left
+      <meta-h>: windowfocus left
+      <meta-l>: windowfocus right
+      <meta-j>: windowfocus down
+      <meta-k>: windowfocus up
+      <shift-meta-h>: windowmove left
+      <shift-meta-l>: windowmove right
+      <shift-meta-j>: windowmove down
+      <shift-meta-k>: windowmove up
+      <shift-meta-backspace>: windowresize reset
+      <shift-meta-+>:
+        - windowresize max width
+        - windowresize max height
+      <shift-meta-->:
+        - windowresize min width
+        - windowresize min height
+      <alt-meta-h>: windowresize decrease width
+      <alt-meta-j>: windowresize decrease height
+      <alt-meta-k>: windowresize increase height
+      <alt-meta-l>: windowresize increase width
+      <meta-w>: windowclose
+      <shift-meta-w>: windowcloseall
+      <ctrl-meta-h>: windowdefaultsplit h
+      <ctrl-meta-v>: windowdefaultsplit v
+      <shift-meta-f>: windowtogglemaximize
+      <alt-f>: echo {prompt}jumptoast<space>locals.scm<space>local.definition.method|local.definition.function<space>
+      <alt-v>: echo {prompt}jumptoast<space>locals.scm<space>local.definition.var<space>
+      <alt-s>: echo {prompt}jumptoast<space>locals.scm<space>local.definition.type<space>
+      <alt-j>: lspnextdiagnostic
+      <alt-k>: lspprevdiagnostic
+      <alt-t>: lsp hover
+      <alt-shift-t>: echo {prompt}lsp<space>hover<space>
+      <alt-shift-e>: lsp diagnostics
+      <meta-f>: lsp rename
+      <alt-r>: lsp references
+      <alt-shift-r>: echo {prompt}lsp<space>references<space>
+      <alt-d>: lsp definition
+      <alt-shift-d>: echo {prompt}lsp<space>definition<space>
+      <alt-i>: lsp implementation
+      <alt-shift-i>: echo {prompt}lsp<space>implementation<space>
+      <ctrl-o>: cursorhistory prev
+      <ctrl-i>: cursorhistory next
+      <alt-b>: lsp format
+      <ctrl-space>: lsp complete
+      <alt-shift-j>: gitnextchange
+      <alt-shift-k>: gitprevchange
+      <meta-enter>: terminalneworsplit
+      <shift-meta-enter>: "!"
+      <meta-`>: workspacesearch
+      <alt-1>: tabfocus 1
+      <alt-2>: tabfocus 2
+      <alt-3>: tabfocus 3
+      <alt-4>: tabfocus 4
+      <alt-5>: tabfocus 5
+      <alt-6>: tabfocus 6
+      <alt-7>: tabfocus 7
+      <alt-8>: tabfocus 8
+      <alt-9>: tabfocus 9
+      <alt-shift-1>: tabmove 1
+      <alt-shift-2>: tabmove 2
+      <alt-shift-3>: tabmove 3
+      <alt-shift-4>: tabmove 4
+      <alt-shift-5>: tabmove 5
+      <alt-shift-6>: tabmove 6
+      <alt-shift-7>: tabmove 7
+      <alt-shift-8>: tabmove 8
+      <alt-shift-9>: tabmove 9
+      <meta-1>: workspacefocus 1
+      <meta-2>: workspacefocus 2
+      <meta-3>: workspacefocus 3
+      <meta-4>: workspacefocus 4
+      <meta-5>: workspacefocus 5
+      <meta-6>: workspacefocus 6
+      <meta-7>: workspacefocus 7
+      <meta-8>: workspacefocus 8
+      <meta-9>: workspacefocus 9
+      <shift-meta-1>: workspacemove 1
+      <shift-meta-2>: workspacemove 2
+      <shift-meta-3>: workspacemove 3
+      <shift-meta-4>: workspacemove 4
+      <shift-meta-5>: workspacemove 5
+      <shift-meta-6>: workspacemove 6
+      <shift-meta-7>: workspacemove 7
+      <shift-meta-8>: workspacemove 8
+      <shift-meta-9>: workspacemove 9
+  linux:
+    command_key: ":"
+    key_bindings:
+      <shift-tab>: fexplorer
+      <ctrl-alt-r>: history
+      <ctrl-alt-,>: config
+      <ctrl-alt-/>: cheatsheet
+      <ctrl-alt-q>: quit
+      <ctrl-alt-=>: guifontsize increase
+      <ctrl-alt-->: guifontsize decrease
+      <alt-n>: tabnew
+      <ctrl-alt-enter>: echo {prompt}windowconverttab<space>
+      <ctrl-alt-w>: tabclose
+      <ctrl-alt-]>: tabnext
+      <ctrl-alt-[>: tabprevious
+      <ctrl-alt-n>: windownew
+      <ctrl-alt-y>: clipboardcopy
+      <ctrl-alt-p>: clipboardpaste
+      <ctrl-alt-`>: tabsearch
+      <ctrl-shift-alt-`>: workspacesearch
+      <ctrl-shift-alt-]>: tabmove right
+      <ctrl-shift-alt-[>: tabmove left
+      <alt-h>: windowfocus left
+      <alt-l>: windowfocus right
+      <alt-j>: windowfocus down
+      <alt-k>: windowfocus up
+      <ctrl-shift-alt-h>: windowmove left
+      <ctrl-shift-alt-l>: windowmove right
+      <ctrl-shift-alt-j>: windowmove down
+      <ctrl-shift-alt-k>: windowmove up
+      <ctrl-alt-h>: windowresize decrease width
+      <ctrl-alt-j>: windowresize decrease height
+      <ctrl-alt-k>: windowresize increase height
+      <ctrl-alt-l>: windowresize increase width
+      <ctrl-shift-alt-backspace>: windowresize reset
+      <ctrl-shift-alt-=>:
+        - windowresize max width
+        - windowresize max height
+      <ctrl-shift-alt-->:
+        - windowresize min width
+        - windowresize min height
+      <alt-w>: windowclose
+      <alt-shift-w>: windowcloseall
+      <ctrl-alt-s>: windowdefaultsplit h
+      <ctrl-alt-v>: windowdefaultsplit v
+      <alt-m>: windowtogglemaximize
+      <alt-f>: echo {prompt}jumptoast<space>locals.scm<space>local.definition.method|local.definition.function<space>
+      <alt-v>: echo {prompt}jumptoast<space>locals.scm<space>local.definition.var<space>
+      <alt-s>: echo {prompt}jumptoast<space>locals.scm<space>local.definition.type<space>
+      <alt-e>: lspnextdiagnostic
+      <alt-shift-e>: lspprevdiagnostic
+      <alt-t>: lsp hover
+      <alt-shift-t>: echo {prompt}lsp<space>hover<space>
+      <ctrl-alt-e>: lsp diagnostics
+      <f2>: lsp rename
+      <alt-r>: lsp references
+      <alt-shift-r>: echo {prompt}lsp<space>references<space>
+      <alt-d>: lsp definition
+      <alt-shift-d>: echo {prompt}lsp<space>definition<space>
+      <alt-i>: lsp implementation
+      <alt-shift-i>: echo {prompt}lsp<space>implementation<space>
+      <ctrl-o>: cursorhistory prev
+      <ctrl-i>: cursorhistory next
+      <alt-b>: lsp format
+      <ctrl-space>: lsp complete
+      <alt-g>: gitnextchange
+      <alt-shift-g>: gitprevchange
+      <alt-enter>: terminalneworsplit
+      <alt-shift-enter>: "!"
+      <alt-1>: tabfocus 1
+      <alt-2>: tabfocus 2
+      <alt-3>: tabfocus 3
+      <alt-4>: tabfocus 4
+      <alt-5>: tabfocus 5
+      <alt-6>: tabfocus 6
+      <alt-7>: tabfocus 7
+      <alt-8>: tabfocus 8
+      <alt-9>: tabfocus 9
+      <alt-shift-1>: tabmove 1
+      <alt-shift-2>: tabmove 2
+      <alt-shift-3>: tabmove 3
+      <alt-shift-4>: tabmove 4
+      <alt-shift-5>: tabmove 5
+      <alt-shift-6>: tabmove 6
+      <alt-shift-7>: tabmove 7
+      <alt-shift-8>: tabmove 8
+      <alt-shift-9>: tabmove 9
+      <ctrl-alt-1>: workspacefocus 1
+      <ctrl-alt-2>: workspacefocus 2
+      <ctrl-alt-3>: workspacefocus 3
+      <ctrl-alt-4>: workspacefocus 4
+      <ctrl-alt-5>: workspacefocus 5
+      <ctrl-alt-6>: workspacefocus 6
+      <ctrl-alt-7>: workspacefocus 7
+      <ctrl-alt-8>: workspacefocus 8
+      <ctrl-alt-9>: workspacefocus 9
+      <ctrl-shift-alt-1>: workspacemove 1
+      <ctrl-shift-alt-2>: workspacemove 2
+      <ctrl-shift-alt-3>: workspacemove 3
+      <ctrl-shift-alt-4>: workspacemove 4
+      <ctrl-shift-alt-5>: workspacemove 5
+      <ctrl-shift-alt-6>: workspacemove 6
+      <ctrl-shift-alt-7>: workspacemove 7
+      <ctrl-shift-alt-8>: workspacemove 8
+      <ctrl-shift-alt-9>: workspacemove 9
 helix:
-  command_key: ":"
-  key_bindings:
-    <space>f: searchfile
-    <space>e: fexplorer
-    <space>b: tabsearch
-    <space>j: cursorhistory jump
-    <space>/: searchtext
-    <space>k: lsp hover
-    <space>r: lsp rename
-    <space>h: lsp references
-    <space>d: lsp diagnostics
-    <space>D: lsp diagnostics
-    <space>g: gitnextchange
-    <space>y: clipboardcopy
-    <space>p: clipboardpaste
-    <space>?: history
-    <space>s: echo {prompt}jumptoast<space>locals.scm<space>local.definition.method|local.definition.function<space>
-    <space>t: echo {prompt}jumptoast<space>locals.scm<space>local.definition.type<space>
-    <space>v: echo {prompt}jumptoast<space>locals.scm<space>local.definition.var<space>
-    <ctrl-w>h: windowfocus left
-    <ctrl-w>j: windowfocus down
-    <ctrl-w>k: windowfocus up
-    <ctrl-w>l: windowfocus right
-    <ctrl-w><ctrl-h>: windowfocus left
-    <ctrl-w><ctrl-j>: windowfocus down
-    <ctrl-w><ctrl-k>: windowfocus up
-    <ctrl-w><ctrl-l>: windowfocus right
-    <ctrl-w><left>: windowfocus left
-    <ctrl-w><down>: windowfocus down
-    <ctrl-w><up>: windowfocus up
-    <ctrl-w><right>: windowfocus right
-    <ctrl-w>H: windowmove left
-    <ctrl-w>J: windowmove down
-    <ctrl-w>K: windowmove up
-    <ctrl-w>L: windowmove right
-    <ctrl-w>w: windowfocus other
-    <ctrl-w><ctrl-w>: windowfocus other
-    <ctrl-w>s: windownew down
-    <ctrl-w><ctrl-s>: windownew down
-    <ctrl-w>v: windownew right
-    <ctrl-w><ctrl-v>: windownew right
-    <ctrl-w>q: windowclose
-    <ctrl-w><ctrl-q>: windowclose
-    <ctrl-w>o: windowcloseall
-    <ctrl-w><ctrl-o>: windowcloseall
-    <ctrl-w>f: echo {prompt}edit<space>
-    <ctrl-o>: cursorhistory prev
-    <ctrl-i>: cursorhistory next
-    <shift-tab>: fexplorer
-    <meta-r>: history
-    <meta-,>: config
-    <meta-/>: cheatsheet
-    <meta-q>: quit
-    <meta-=>: guifontsize increase
-    <meta-->: guifontsize decrease
-    <meta-t>: tabnew
-    <meta-w>: windowclose
-    <shift-meta-w>: windowcloseall
-    <meta-]>: tabnext
-    <meta-[>: tabprevious
-    <shift-meta-]>: tabmove right
-    <shift-meta-[>: tabmove left
-    <alt-l>: tabnext
-    <alt-h>: tabprevious
-    <alt-shift-l>: tabmove right
-    <alt-shift-h>: tabmove left
-    <alt-w>: tabclose
-    <alt-enter>: echo {prompt}windowconverttab<space>
-    <ctrl-tab>: tabnext
-    <ctrl-shift-tab>: tabprevious
-    <meta-n>: windownew
-    <meta-c>: clipboardcopy
-    <meta-v>: clipboardpaste
-    <meta-`>: workspacesearch
-    <meta-h>: windowfocus left
-    <meta-l>: windowfocus right
-    <meta-j>: windowfocus down
-    <meta-k>: windowfocus up
-    <shift-meta-h>: windowmove left
-    <shift-meta-l>: windowmove right
-    <shift-meta-j>: windowmove down
-    <shift-meta-k>: windowmove up
-    <shift-meta-backspace>: windowresize reset
-    <shift-meta-+>:
-      - windowresize max width
-      - windowresize max height
-    <shift-meta-->:
-      - windowresize min width
-      - windowresize min height
-    <alt-meta-h>: windowresize decrease width
-    <alt-meta-j>: windowresize decrease height
-    <alt-meta-k>: windowresize increase height
-    <alt-meta-l>: windowresize increase width
-    <ctrl-meta-h>: windowdefaultsplit h
-    <ctrl-meta-v>: windowdefaultsplit v
-    <shift-meta-f>: windowtogglemaximize
-    <meta-enter>: terminalneworsplit
-    <shift-meta-enter>: "!"
-    <meta-f>: lsp rename
-    <meta-d>: lsp definition
-    <meta-i>: lsp implementation
-    <shift-meta-d>: echo {prompt}lsp<space>definition<space>
-    <shift-meta-i>: echo {prompt}lsp<space>implementation<space>
-    <meta-e>: lsp diagnostics
-    <meta-b>: lsp format
-    <meta-.>: lspnextdiagnostic
-    <meta-;>: lspprevdiagnostic
-    <shift-meta-.>: gitnextchange
-    <shift-meta-;>: gitprevchange
-    <ctrl-space>: lsp complete
-    <alt-1>: tabfocus 1
-    <alt-2>: tabfocus 2
-    <alt-3>: tabfocus 3
-    <alt-4>: tabfocus 4
-    <alt-5>: tabfocus 5
-    <alt-6>: tabfocus 6
-    <alt-7>: tabfocus 7
-    <alt-8>: tabfocus 8
-    <alt-9>: tabfocus 9
-    <meta-1>: workspacefocus 1
-    <meta-2>: workspacefocus 2
-    <meta-3>: workspacefocus 3
-    <meta-4>: workspacefocus 4
-    <meta-5>: workspacefocus 5
-    <meta-6>: workspacefocus 6
-    <meta-7>: workspacefocus 7
-    <meta-8>: workspacefocus 8
-    <meta-9>: workspacefocus 9
-    <shift-meta-1>: workspacemove 1
-    <shift-meta-2>: workspacemove 2
-    <shift-meta-3>: workspacemove 3
-    <shift-meta-4>: workspacemove 4
-    <shift-meta-5>: workspacemove 5
-    <shift-meta-6>: workspacemove 6
-    <shift-meta-7>: workspacemove 7
-    <shift-meta-8>: workspacemove 8
-    <shift-meta-9>: workspacemove 9
+  darwin:
+    command_key: ":"
+    key_bindings:
+      <space>f: searchfile
+      <space>e: fexplorer
+      <space>b: tabsearch
+      <space>j: cursorhistory jump
+      <space>/: searchtext
+      <space>k: lsp hover
+      <space>r: lsp rename
+      <space>h: lsp references
+      <space>d: lsp diagnostics
+      <space>D: lsp diagnostics
+      <space>g: gitnextchange
+      <space>y: clipboardcopy
+      <space>p: clipboardpaste
+      <space>?: history
+      <space>s: echo {prompt}jumptoast<space>locals.scm<space>local.definition.method|local.definition.function<space>
+      <space>t: echo {prompt}jumptoast<space>locals.scm<space>local.definition.type<space>
+      <space>v: echo {prompt}jumptoast<space>locals.scm<space>local.definition.var<space>
+      <ctrl-w>h: windowfocus left
+      <ctrl-w>j: windowfocus down
+      <ctrl-w>k: windowfocus up
+      <ctrl-w>l: windowfocus right
+      <ctrl-w><ctrl-h>: windowfocus left
+      <ctrl-w><ctrl-j>: windowfocus down
+      <ctrl-w><ctrl-k>: windowfocus up
+      <ctrl-w><ctrl-l>: windowfocus right
+      <ctrl-w><left>: windowfocus left
+      <ctrl-w><down>: windowfocus down
+      <ctrl-w><up>: windowfocus up
+      <ctrl-w><right>: windowfocus right
+      <ctrl-w>H: windowmove left
+      <ctrl-w>J: windowmove down
+      <ctrl-w>K: windowmove up
+      <ctrl-w>L: windowmove right
+      <ctrl-w>w: windowfocus other
+      <ctrl-w><ctrl-w>: windowfocus other
+      <ctrl-w>s: windownew down
+      <ctrl-w><ctrl-s>: windownew down
+      <ctrl-w>v: windownew right
+      <ctrl-w><ctrl-v>: windownew right
+      <ctrl-w>q: windowclose
+      <ctrl-w><ctrl-q>: windowclose
+      <ctrl-w>o: windowcloseall
+      <ctrl-w><ctrl-o>: windowcloseall
+      <ctrl-w>f: echo {prompt}edit<space>
+      <ctrl-o>: cursorhistory prev
+      <ctrl-i>: cursorhistory next
+      <shift-tab>: fexplorer
+      <meta-r>: history
+      <meta-,>: config
+      <meta-/>: cheatsheet
+      <meta-q>: quit
+      <meta-=>: guifontsize increase
+      <meta-->: guifontsize decrease
+      <meta-t>: tabnew
+      <meta-w>: windowclose
+      <shift-meta-w>: windowcloseall
+      <meta-]>: tabnext
+      <meta-[>: tabprevious
+      <shift-meta-]>: tabmove right
+      <shift-meta-[>: tabmove left
+      <alt-l>: tabnext
+      <alt-h>: tabprevious
+      <alt-shift-l>: tabmove right
+      <alt-shift-h>: tabmove left
+      <alt-w>: tabclose
+      <alt-enter>: echo {prompt}windowconverttab<space>
+      <ctrl-tab>: tabnext
+      <ctrl-shift-tab>: tabprevious
+      <meta-n>: windownew
+      <meta-c>: clipboardcopy
+      <meta-v>: clipboardpaste
+      <meta-`>: workspacesearch
+      <meta-h>: windowfocus left
+      <meta-l>: windowfocus right
+      <meta-j>: windowfocus down
+      <meta-k>: windowfocus up
+      <shift-meta-h>: windowmove left
+      <shift-meta-l>: windowmove right
+      <shift-meta-j>: windowmove down
+      <shift-meta-k>: windowmove up
+      <shift-meta-backspace>: windowresize reset
+      <shift-meta-+>:
+        - windowresize max width
+        - windowresize max height
+      <shift-meta-->:
+        - windowresize min width
+        - windowresize min height
+      <alt-meta-h>: windowresize decrease width
+      <alt-meta-j>: windowresize decrease height
+      <alt-meta-k>: windowresize increase height
+      <alt-meta-l>: windowresize increase width
+      <ctrl-meta-h>: windowdefaultsplit h
+      <ctrl-meta-v>: windowdefaultsplit v
+      <shift-meta-f>: windowtogglemaximize
+      <meta-enter>: terminalneworsplit
+      <shift-meta-enter>: "!"
+      <meta-f>: lsp rename
+      <meta-d>: lsp definition
+      <meta-i>: lsp implementation
+      <shift-meta-d>: echo {prompt}lsp<space>definition<space>
+      <shift-meta-i>: echo {prompt}lsp<space>implementation<space>
+      <meta-e>: lsp diagnostics
+      <meta-b>: lsp format
+      <meta-.>: lspnextdiagnostic
+      <meta-;>: lspprevdiagnostic
+      <shift-meta-.>: gitnextchange
+      <shift-meta-;>: gitprevchange
+      <ctrl-space>: lsp complete
+      <alt-1>: tabfocus 1
+      <alt-2>: tabfocus 2
+      <alt-3>: tabfocus 3
+      <alt-4>: tabfocus 4
+      <alt-5>: tabfocus 5
+      <alt-6>: tabfocus 6
+      <alt-7>: tabfocus 7
+      <alt-8>: tabfocus 8
+      <alt-9>: tabfocus 9
+      <meta-1>: workspacefocus 1
+      <meta-2>: workspacefocus 2
+      <meta-3>: workspacefocus 3
+      <meta-4>: workspacefocus 4
+      <meta-5>: workspacefocus 5
+      <meta-6>: workspacefocus 6
+      <meta-7>: workspacefocus 7
+      <meta-8>: workspacefocus 8
+      <meta-9>: workspacefocus 9
+      <shift-meta-1>: workspacemove 1
+      <shift-meta-2>: workspacemove 2
+      <shift-meta-3>: workspacemove 3
+      <shift-meta-4>: workspacemove 4
+      <shift-meta-5>: workspacemove 5
+      <shift-meta-6>: workspacemove 6
+      <shift-meta-7>: workspacemove 7
+      <shift-meta-8>: workspacemove 8
+      <shift-meta-9>: workspacemove 9
+  linux:
+    command_key: ":"
+    key_bindings:
+      <space>f: searchfile
+      <space>e: fexplorer
+      <space>b: tabsearch
+      <space>j: cursorhistory jump
+      <space>/: searchtext
+      <space>k: lsp hover
+      <space>r: lsp rename
+      <space>h: lsp references
+      <space>d: lsp diagnostics
+      <space>D: lsp diagnostics
+      <space>g: gitnextchange
+      <space>y: clipboardcopy
+      <space>p: clipboardpaste
+      <space>?: history
+      <space>s: echo {prompt}jumptoast<space>locals.scm<space>local.definition.method|local.definition.function<space>
+      <space>t: echo {prompt}jumptoast<space>locals.scm<space>local.definition.type<space>
+      <space>v: echo {prompt}jumptoast<space>locals.scm<space>local.definition.var<space>
+      <ctrl-w>h: windowfocus left
+      <ctrl-w>j: windowfocus down
+      <ctrl-w>k: windowfocus up
+      <ctrl-w>l: windowfocus right
+      <ctrl-w><ctrl-h>: windowfocus left
+      <ctrl-w><ctrl-j>: windowfocus down
+      <ctrl-w><ctrl-k>: windowfocus up
+      <ctrl-w><ctrl-l>: windowfocus right
+      <ctrl-w><left>: windowfocus left
+      <ctrl-w><down>: windowfocus down
+      <ctrl-w><up>: windowfocus up
+      <ctrl-w><right>: windowfocus right
+      <ctrl-w>H: windowmove left
+      <ctrl-w>J: windowmove down
+      <ctrl-w>K: windowmove up
+      <ctrl-w>L: windowmove right
+      <ctrl-w>w: windowfocus other
+      <ctrl-w><ctrl-w>: windowfocus other
+      <ctrl-w>s: windownew down
+      <ctrl-w><ctrl-s>: windownew down
+      <ctrl-w>v: windownew right
+      <ctrl-w><ctrl-v>: windownew right
+      <ctrl-w>q: windowclose
+      <ctrl-w><ctrl-q>: windowclose
+      <ctrl-w>o: windowcloseall
+      <ctrl-w><ctrl-o>: windowcloseall
+      <ctrl-w>f: echo {prompt}edit<space>
+      <ctrl-o>: cursorhistory prev
+      <ctrl-i>: cursorhistory next
+      <shift-tab>: fexplorer
+      <ctrl-alt-r>: history
+      <ctrl-alt-,>: config
+      <ctrl-alt-/>: cheatsheet
+      <ctrl-alt-q>: quit
+      <ctrl-alt-=>: guifontsize increase
+      <ctrl-alt-->: guifontsize decrease
+      <alt-n>: tabnew
+      <ctrl-alt-n>: windownew
+      <alt-w>: windowclose
+      <alt-shift-w>: windowcloseall
+      <ctrl-alt-w>: tabclose
+      <ctrl-alt-]>: tabnext
+      <ctrl-alt-[>: tabprevious
+      <ctrl-shift-alt-]>: tabmove right
+      <ctrl-shift-alt-[>: tabmove left
+      <ctrl-alt-enter>: echo {prompt}windowconverttab<space>
+      <ctrl-tab>: tabnext
+      <ctrl-shift-tab>: tabprevious
+      <ctrl-alt-y>: clipboardcopy
+      <ctrl-alt-p>: clipboardpaste
+      <ctrl-alt-`>: tabsearch
+      <ctrl-shift-alt-`>: workspacesearch
+      <alt-h>: windowfocus left
+      <alt-l>: windowfocus right
+      <alt-j>: windowfocus down
+      <alt-k>: windowfocus up
+      <ctrl-shift-alt-h>: windowmove left
+      <ctrl-shift-alt-l>: windowmove right
+      <ctrl-shift-alt-j>: windowmove down
+      <ctrl-shift-alt-k>: windowmove up
+      <ctrl-alt-h>: windowresize decrease width
+      <ctrl-alt-j>: windowresize decrease height
+      <ctrl-alt-k>: windowresize increase height
+      <ctrl-alt-l>: windowresize increase width
+      <ctrl-shift-alt-backspace>: windowresize reset
+      <ctrl-shift-alt-=>:
+        - windowresize max width
+        - windowresize max height
+      <ctrl-shift-alt-->:
+        - windowresize min width
+        - windowresize min height
+      <ctrl-alt-s>: windowdefaultsplit h
+      <ctrl-alt-v>: windowdefaultsplit v
+      <alt-m>: windowtogglemaximize
+      <alt-enter>: terminalneworsplit
+      <alt-shift-enter>: "!"
+      <alt-f>: lsp rename
+      <alt-shift-d>: echo {prompt}lsp<space>definition<space>
+      <ctrl-shift-alt-i>: echo {prompt}lsp<space>implementation<space>
+      <ctrl-alt-e>: lsp diagnostics
+      <ctrl-alt-b>: lsp format
+      <ctrl-alt-.>: lspnextdiagnostic
+      <ctrl-alt-;>: lspprevdiagnostic
+      <ctrl-shift-alt-.>: gitnextchange
+      <ctrl-shift-alt-;>: gitprevchange
+      <ctrl-space>: lsp complete
+      <alt-1>: tabfocus 1
+      <alt-2>: tabfocus 2
+      <alt-3>: tabfocus 3
+      <alt-4>: tabfocus 4
+      <alt-5>: tabfocus 5
+      <alt-6>: tabfocus 6
+      <alt-7>: tabfocus 7
+      <alt-8>: tabfocus 8
+      <alt-9>: tabfocus 9
+      <ctrl-alt-1>: workspacefocus 1
+      <ctrl-alt-2>: workspacefocus 2
+      <ctrl-alt-3>: workspacefocus 3
+      <ctrl-alt-4>: workspacefocus 4
+      <ctrl-alt-5>: workspacefocus 5
+      <ctrl-alt-6>: workspacefocus 6
+      <ctrl-alt-7>: workspacefocus 7
+      <ctrl-alt-8>: workspacefocus 8
+      <ctrl-alt-9>: workspacefocus 9
+      <ctrl-shift-alt-1>: workspacemove 1
+      <ctrl-shift-alt-2>: workspacemove 2
+      <ctrl-shift-alt-3>: workspacemove 3
+      <ctrl-shift-alt-4>: workspacemove 4
+      <ctrl-shift-alt-5>: workspacemove 5
+      <ctrl-shift-alt-6>: workspacemove 6
+      <ctrl-shift-alt-7>: workspacemove 7
+      <ctrl-shift-alt-8>: workspacemove 8
+      <ctrl-shift-alt-9>: workspacemove 9
 standard:
   darwin:
     command_key: <shift-meta-p>
@@ -371,17 +611,17 @@ standard:
     command_key: <ctrl-shift-p>
     key_bindings:
       <ctrl-s>: write
-      <meta-q>: quit
+      <ctrl-alt-q>: quit
       <ctrl-shift-s>: writeall
       <ctrl-o>: searchfile
       <ctrl-,>: config
       <ctrl-n>: tabnew
       <ctrl-shift-f>: searchtext
-      <meta-f2>: locationtoggle bookmark
+      <ctrl-f2>: locationtoggle bookmark
       <f2>: jumptolocation next bookmark
       <shift-f2>: jumptolocation previous bookmark
-      <alt-f2>: locationhighlight bookmark
-      <shift-meta-f2>: locationdeleteall bookmark
+      <alt-shift-f2>: locationhighlight bookmark
+      <ctrl-shift-f2>: locationdeleteall bookmark
       <f3>: jumptolocation next search
       <shift-f3>: jumptolocation prev search
       <alt-c>: lsp declaration
@@ -399,16 +639,17 @@ standard:
       <alt-shift-j>: windowmove left
       <alt-shift-k>: windowmove down
       <alt-shift-l>: windowmove right
-      <alt-meta-i>: windowresize increase height
-      <alt-meta-j>: windowresize decrease width
-      <alt-meta-k>: windowresize decrease height
-      <alt-meta-l>: windowresize increase width
+      <ctrl-shift-alt-i>: windowresize increase height
+      <ctrl-shift-alt-j>: windowresize decrease width
+      <ctrl-shift-alt-k>: windowresize decrease height
+      <ctrl-shift-alt-l>: windowresize increase width
       <alt-n>: windownew
       <alt-enter>: terminalneworsplit
       <alt-q>: windowclose
       <alt-shift-q>: windowcloseall
       <alt-m>: windowtogglemaximize
-      <alt-shift-enter>: echo {prompt}windowconverttab<space>
+      <alt-shift-enter>: "!"
+      <ctrl-alt-enter>: echo {prompt}windowconverttab<space>
       <alt-w>: tabclose
       <alt-[>: tabprevious
       <alt-]>: tabnext
@@ -416,27 +657,26 @@ standard:
       <alt-shift-]>: tabmove right
       <alt-h>: windowdefaultsplit h
       <alt-v>: windowdefaultsplit v
-      <ctrl-meta-i>: gitprevchange
-      <ctrl-meta-k>: gitnextchange
-      <ctrl-meta-j>: lspprevdiagnostic
-      <ctrl-meta-l>: lspnextdiagnostic
+      <ctrl-alt-i>: gitprevchange
+      <ctrl-alt-k>: gitnextchange
+      <shift-f8>: lspprevdiagnostic
+      <f8>: lspnextdiagnostic
       <alt-t>: lsp hover
       <alt-shift-t>: echo {prompt}lsp<space>hover<space>
       <alt-p>: lsp implementation
       <alt-shift-p>: echo {prompt}lsp<space>implementation<space>
       <alt-x>: echo {prompt}jumptoast<space>locals.scm<space>local.definition.var<space>
-      <shift-meta-r>: history
+      <ctrl-alt-r>: history
       <ctrl-shift-e>: fexplorer
-      <meta-,>: config
       <alt-/>: cheatsheet
-      <meta-=>: guifontsize increase
-      <meta-->: guifontsize decrease
+      <ctrl-alt-=>: guifontsize increase
+      <ctrl-alt-->: guifontsize decrease
       <alt-`>: tabsearch
-      <shift-meta-backspace>: windowresize reset
-      <shift-meta-+>:
+      <ctrl-shift-alt-backspace>: windowresize reset
+      <ctrl-shift-alt-=>:
         - windowresize max width
         - windowresize max height
-      <shift-meta-->:
+      <ctrl-shift-alt-->:
         - windowresize min width
         - windowresize min height
       <alt-f>: echo {prompt}jumptoast<space>locals.scm<space>local.definition.method|local.definition.function<space>
@@ -448,9 +688,7 @@ standard:
       <alt-shift-d>: echo {prompt}lsp<space>definition<space>
       <alt-b>: lsp format
       <ctrl-space>: lsp complete
-      <meta-enter>: terminalneworsplit
-      <shift-meta-enter>: "!"
-      <meta-`>: workspacesearch
+      <ctrl-alt-`>: workspacesearch
       <alt-1>: tabfocus 1
       <alt-2>: tabfocus 2
       <alt-3>: tabfocus 3
@@ -469,6 +707,116 @@ standard:
       <alt-shift-7>: tabmove 7
       <alt-shift-8>: tabmove 8
       <alt-shift-9>: tabmove 9
+      <ctrl-alt-1>: workspacefocus 1
+      <ctrl-alt-2>: workspacefocus 2
+      <ctrl-alt-3>: workspacefocus 3
+      <ctrl-alt-4>: workspacefocus 4
+      <ctrl-alt-5>: workspacefocus 5
+      <ctrl-alt-6>: workspacefocus 6
+      <ctrl-alt-7>: workspacefocus 7
+      <ctrl-alt-8>: workspacefocus 8
+      <ctrl-alt-9>: workspacefocus 9
+      <ctrl-shift-alt-1>: workspacemove 1
+      <ctrl-shift-alt-2>: workspacemove 2
+      <ctrl-shift-alt-3>: workspacemove 3
+      <ctrl-shift-alt-4>: workspacemove 4
+      <ctrl-shift-alt-5>: workspacemove 5
+      <ctrl-shift-alt-6>: workspacemove 6
+      <ctrl-shift-alt-7>: workspacemove 7
+      <ctrl-shift-alt-8>: workspacemove 8
+      <ctrl-shift-alt-9>: workspacemove 9
+emacs:
+  darwin:
+    command_key: <alt-x>
+    key_bindings:
+      <ctrl-x><ctrl-s>: write
+      <ctrl-x>s: writeall
+      <ctrl-x>u: undo prefix
+      <ctrl-x><ctrl-c>: quit
+      <ctrl-x><ctrl-f>: searchfile
+      <ctrl-x>0: windowclose
+      <ctrl-x>1: windowcloseall
+      <ctrl-x>2: windownew down
+      <ctrl-x>3: windownew right
+      <ctrl-x>o: windowfocus other
+      <alt-shift-x>: history
+      <meta-p>: windowfocus up
+      <meta-b>: windowfocus left
+      <meta-n>: windowfocus down
+      <meta-f>: windowfocus right
+      <shift-meta-p>: windowmove up
+      <shift-meta-b>: windowmove left
+      <shift-meta-n>: windowmove down
+      <shift-meta-f>: windowmove right
+      <meta-d>: windownew down
+      <meta-r>: windownew right
+      <meta-k>: windowclose
+      <shift-meta-k>: windowcloseall
+      <meta-m>: windowtogglemaximize
+      <meta-i>: lsp implementation
+      <meta-g>: jumptolocation next search
+      <shift-meta-g>: jumptolocation prev search
+      <meta-h>: lsp hover
+      <shift-meta-h>: echo {prompt}lsp<space>hover<space>
+      <shift-meta-i>: echo {prompt}lsp<space>implementation<space>
+      <meta-up>: windowresize increase height
+      <meta-left>: windowresize decrease width
+      <meta-down>: windowresize decrease height
+      <meta-right>: windowresize increase width
+      <meta-]>: tabnext
+      <meta-[>: tabprevious
+      <ctrl-tab>: tabnext
+      <ctrl-shift-tab>: tabprevious
+      <meta-w>: tabclose
+      <shift-meta-]>: tabmove right
+      <shift-meta-[>: tabmove left
+      <alt-,>: cursorhistory prev
+      <ctrl-alt-,>: cursorhistory next
+      <ctrl-x><ctrl-x>: exchangepointandmark
+      <alt-.>: lsp definition
+      <alt-shift-/>: lsp references
+      <ctrl-alt-.>: echo {prompt}lsp<space>definition<space>
+      <ctrl-shift-alt-/>: echo {prompt}lsp<space>references<space>
+      <meta-o>: fexplorer
+      <meta-j>: echo {prompt}jumptoast<space>locals.scm<space>local.definition.method|local.definition.function<space>
+      <meta-s>: echo {prompt}jumptoast<space>locals.scm<space>local.definition.type<space>
+      <meta-x>: echo {prompt}jumptoast<space>locals.scm<space>local.definition.var<space>
+      <alt-s>o: searchtext
+      <ctrl-alt-\\>: lsp format
+      <ctrl-alt-i>: lsp complete
+      <meta-l>: lspnextdiagnostic
+      <shift-meta-l>: lspprevdiagnostic
+      <meta-e>: lsp diagnostics
+      <f5>: gitprevchange
+      <f6>: gitnextchange
+      <f7>: lspprevdiagnostic
+      <f8>: lspnextdiagnostic
+      <f9>: lsp diagnostics
+      <meta-f2>: locationtoggle bookmark
+      <shift-meta-f2>: locationdeleteall bookmark
+      <meta-f3>: jumptolocation next bookmark
+      <shift-meta-f3>: jumptolocation previous bookmark
+      <meta-f4>: locationhighlight bookmark
+      <meta-,>: config
+      <meta-/>: cheatsheet
+      <meta-q>: quit
+      <meta-=>: guifontsize increase
+      <meta-->: guifontsize decrease
+      <meta-t>: tabnew
+      <meta-c>: clipboardcopy
+      <meta-v>: clipboardpaste
+      <shift-meta-backspace>: windowresize reset
+      <shift-meta-+>:
+        - windowresize max width
+        - windowresize max height
+      <shift-meta-->:
+        - windowresize min width
+        - windowresize min height
+      <ctrl-meta-h>: windowdefaultsplit h
+      <ctrl-meta-v>: windowdefaultsplit v
+      <meta-enter>: terminalneworsplit
+      <shift-meta-enter>: "!"
+      <meta-`>: workspacesearch
       <meta-1>: workspacefocus 1
       <meta-2>: workspacefocus 2
       <meta-3>: workspacefocus 3
@@ -487,112 +835,100 @@ standard:
       <shift-meta-7>: workspacemove 7
       <shift-meta-8>: workspacemove 8
       <shift-meta-9>: workspacemove 9
-emacs:
-  command_key: <alt-x>
-  key_bindings:
-    <ctrl-x><ctrl-s>: write
-    <ctrl-x>s: writeall
-    <ctrl-x>u: undo prefix
-    <ctrl-x><ctrl-c>: quit
-    <ctrl-x><ctrl-f>: searchfile
-    <ctrl-x>0: windowclose
-    <ctrl-x>1: windowcloseall
-    <ctrl-x>2: windownew down
-    <ctrl-x>3: windownew right
-    <ctrl-x>o: windowfocus other
-    <alt-shift-x>: history
-    <meta-p>: windowfocus up
-    <meta-b>: windowfocus left
-    <meta-n>: windowfocus down
-    <meta-f>: windowfocus right
-    <shift-meta-p>: windowmove up
-    <shift-meta-b>: windowmove left
-    <shift-meta-n>: windowmove down
-    <shift-meta-f>: windowmove right
-    <meta-d>: windownew down
-    <meta-r>: windownew right
-    <meta-k>: windowclose
-    <shift-meta-k>: windowcloseall
-    <meta-m>: windowtogglemaximize
-    <meta-i>: lsp implementation
-    <meta-g>: jumptolocation next search
-    <shift-meta-g>: jumptolocation prev search
-    <meta-h>: lsp hover
-    <shift-meta-h>: echo {prompt}lsp<space>hover<space>
-    <shift-meta-i>: echo {prompt}lsp<space>implementation<space>
-    <meta-up>: windowresize increase height
-    <meta-left>: windowresize decrease width
-    <meta-down>: windowresize decrease height
-    <meta-right>: windowresize increase width
-    <meta-]>: tabnext
-    <meta-[>: tabprevious
-    <ctrl-tab>: tabnext
-    <ctrl-shift-tab>: tabprevious
-    <meta-w>: tabclose
-    <shift-meta-]>: tabmove right
-    <shift-meta-[>: tabmove left
-    <alt-,>: cursorhistory prev
-    <ctrl-alt-,>: cursorhistory next
-    <ctrl-x><ctrl-x>: exchangepointandmark
-    <alt-.>: lsp definition
-    <alt-shift-/>: lsp references
-    <ctrl-alt-.>: echo {prompt}lsp<space>definition<space>
-    <ctrl-shift-alt-/>: echo {prompt}lsp<space>references<space>
-    <meta-o>: fexplorer
-    <meta-j>: echo {prompt}jumptoast<space>locals.scm<space>local.definition.method|local.definition.function<space>
-    <meta-s>: echo {prompt}jumptoast<space>locals.scm<space>local.definition.type<space>
-    <meta-x>: echo {prompt}jumptoast<space>locals.scm<space>local.definition.var<space>
-    <alt-s>o: searchtext
-    <ctrl-alt-\\>: lsp format
-    <ctrl-alt-i>: lsp complete
-    <meta-l>: lspnextdiagnostic
-    <shift-meta-l>: lspprevdiagnostic
-    <meta-e>: lsp diagnostics
-    <f5>: gitprevchange
-    <f6>: gitnextchange
-    <f7>: lspprevdiagnostic
-    <f8>: lspnextdiagnostic
-    <f9>: lsp diagnostics
-    <meta-f2>: locationtoggle bookmark
-    <shift-meta-f2>: locationdeleteall bookmark
-    <meta-f3>: jumptolocation next bookmark
-    <shift-meta-f3>: jumptolocation previous bookmark
-    <meta-f4>: locationhighlight bookmark
-    <meta-,>: config
-    <meta-/>: cheatsheet
-    <meta-q>: quit
-    <meta-=>: guifontsize increase
-    <meta-->: guifontsize decrease
-    <meta-t>: tabnew
-    <meta-c>: clipboardcopy
-    <meta-v>: clipboardpaste
-    <shift-meta-backspace>: windowresize reset
-    <shift-meta-+>:
-      - windowresize max width
-      - windowresize max height
-    <shift-meta-->:
-      - windowresize min width
-      - windowresize min height
-    <ctrl-meta-h>: windowdefaultsplit h
-    <ctrl-meta-v>: windowdefaultsplit v
-    <meta-enter>: terminalneworsplit
-    <shift-meta-enter>: "!"
-    <meta-`>: workspacesearch
-    <meta-1>: workspacefocus 1
-    <meta-2>: workspacefocus 2
-    <meta-3>: workspacefocus 3
-    <meta-4>: workspacefocus 4
-    <meta-5>: workspacefocus 5
-    <meta-6>: workspacefocus 6
-    <meta-7>: workspacefocus 7
-    <meta-8>: workspacefocus 8
-    <meta-9>: workspacefocus 9
-    <shift-meta-1>: workspacemove 1
-    <shift-meta-2>: workspacemove 2
-    <shift-meta-3>: workspacemove 3
-    <shift-meta-4>: workspacemove 4
-    <shift-meta-5>: workspacemove 5
-    <shift-meta-6>: workspacemove 6
-    <shift-meta-7>: workspacemove 7
-    <shift-meta-8>: workspacemove 8
-    <shift-meta-9>: workspacemove 9
+  linux:
+    command_key: <alt-x>
+    key_bindings:
+      <ctrl-x><ctrl-s>: write
+      <ctrl-x>s: writeall
+      <ctrl-x>u: undo prefix
+      <ctrl-x><ctrl-c>: quit
+      <ctrl-x><ctrl-f>: searchfile
+      <ctrl-x>0: windowclose
+      <ctrl-x>1: windowcloseall
+      <ctrl-x>2: windownew down
+      <ctrl-x>3: windownew right
+      <ctrl-x>o: windowfocus other
+      <ctrl-x>^: windowresize increase height
+      <ctrl-x>{: windowresize decrease width
+      <ctrl-x>-: windowresize decrease height
+      <ctrl-x>}: windowresize increase width
+      <ctrl-x>+: windowresize reset
+      <alt-shift-x>: history
+      <alt-shift-p>: windowfocus up
+      <alt-shift-b>: windowfocus left
+      <alt-shift-n>: windowfocus down
+      <alt-shift-f>: windowfocus right
+      <ctrl-shift-alt-p>: windowmove up
+      <ctrl-shift-alt-b>: windowmove left
+      <ctrl-shift-alt-n>: windowmove down
+      <ctrl-shift-alt-f>: windowmove right
+      <alt-shift-d>: windownew down
+      <alt-shift-r>: windownew right
+      <alt-shift-k>: windowclose
+      <ctrl-shift-alt-k>: windowcloseall
+      <alt-shift-m>: windowtogglemaximize
+      <alt-shift-i>: lsp implementation
+      <alt-shift-g>: jumptolocation next search
+      <ctrl-shift-alt-g>: jumptolocation prev search
+      <alt-shift-h>: lsp hover
+      <ctrl-shift-alt-h>: echo {prompt}lsp<space>hover<space>
+      <ctrl-shift-alt-i>: echo {prompt}lsp<space>implementation<space>
+      <ctrl-shift-up>: windowresize increase height
+      <ctrl-shift-left>: windowresize decrease width
+      <ctrl-shift-down>: windowresize decrease height
+      <ctrl-shift-right>: windowresize increase width
+      <alt-]>: tabnext
+      <alt-[>: tabprevious
+      <ctrl-tab>: tabnext
+      <ctrl-shift-tab>: tabprevious
+      <alt-shift-w>: tabclose
+      <ctrl-shift-alt-]>: tabmove right
+      <ctrl-shift-alt-[>: tabmove left
+      <alt-,>: cursorhistory prev
+      <ctrl-alt-,>: cursorhistory next
+      <ctrl-x><ctrl-x>: exchangepointandmark
+      <alt-.>: lsp definition
+      <alt-shift-/>: lsp references
+      <ctrl-alt-.>: echo {prompt}lsp<space>definition<space>
+      <ctrl-shift-alt-/>: echo {prompt}lsp<space>references<space>
+      <alt-shift-o>: fexplorer
+      <alt-shift-j>: echo {prompt}jumptoast<space>locals.scm<space>local.definition.method|local.definition.function<space>
+      <alt-shift-s>: echo {prompt}jumptoast<space>locals.scm<space>local.definition.type<space>
+      <alt-shift-v>: echo {prompt}jumptoast<space>locals.scm<space>local.definition.var<space>
+      <alt-s>o: searchtext
+      <ctrl-alt-\\>: lsp format
+      <ctrl-alt-i>: lsp complete
+      <alt-shift-l>: lspnextdiagnostic
+      <ctrl-shift-alt-l>: lspprevdiagnostic
+      <alt-shift-e>: lsp diagnostics
+      <f5>: gitprevchange
+      <f6>: gitnextchange
+      <f7>: lspprevdiagnostic
+      <f8>: lspnextdiagnostic
+      <f9>: lsp diagnostics
+      <alt-shift-f2>: locationtoggle bookmark
+      <alt-shift-f3>: jumptolocation next bookmark
+      <alt-shift-f4>: locationhighlight bookmark
+      <ctrl-shift-alt-,>: config
+      <alt-/>: cheatsheet
+      <ctrl-alt-q>: quit
+      <alt-shift-=>: guifontsize increase
+      <alt-shift-->: guifontsize decrease
+      <alt-shift-t>: tabnew
+      <ctrl-alt-w>: clipboardcopy
+      <ctrl-alt-y>: clipboardpaste
+      <ctrl-shift-alt-backspace>: windowresize reset
+      <ctrl-shift-alt-s>: windowdefaultsplit h
+      <ctrl-shift-alt-v>: windowdefaultsplit v
+      <alt-enter>: terminalneworsplit
+      <alt-shift-enter>: "!"
+      <ctrl-alt-`>: workspacesearch
+      <ctrl-shift-alt-1>: workspacefocus 1
+      <ctrl-shift-alt-2>: workspacefocus 2
+      <ctrl-shift-alt-3>: workspacefocus 3
+      <ctrl-shift-alt-4>: workspacefocus 4
+      <ctrl-shift-alt-5>: workspacefocus 5
+      <ctrl-shift-alt-6>: workspacefocus 6
+      <ctrl-shift-alt-7>: workspacefocus 7
+      <ctrl-shift-alt-8>: workspacefocus 8
+      <ctrl-shift-alt-9>: workspacefocus 9

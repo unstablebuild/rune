@@ -82,10 +82,20 @@ Notes on individual modifiers:
 
 - **`ctrl`** combines with letters, digits, function keys, arrows, mouse events, and most named keys (e.g. `<ctrl-a>`, `<ctrl-_>`, `<ctrl-space>`, `<ctrl-pgdn>`).
 - **`shift`** is meaningful on non-letter keys where Rune can detect it (`<shift-tab>`, `<shift-up>`, `<shift-f5>`). For plain letters, prefer the uppercase character (`A`) over `<shift-a>`.
-- **`alt`** is Option on macOS and Alt on Linux.
-- **`meta`** is Command on macOS and Super on Linux.
+<Platform when="darwin">
 
-On Linux, Rune recognizes exactly four modifiers: `ctrl`, `shift`, `alt`, and
+- **`alt`** is Option.
+- **`meta`** is Command.
+
+</Platform>
+<Platform when="linux">
+
+- **`alt`** is Alt.
+- **`meta`** is Super. The shipped presets bind nothing to it, because Super
+  belongs to the desktop; see
+  [Why Alt on Linux](./key-mapping.md#why-alt-on-linux).
+
+Rune recognizes exactly four modifiers: `ctrl`, `shift`, `alt`, and
 `meta`. `meta` is the Super key, which is the key most keyboards label with the
 Windows logo, so pressing Super registers as `meta`. This is expected: Rune has
 no separate Super modifier, and a Super combination such as Super+P is written
@@ -100,6 +110,8 @@ command (see [Troubleshooting](../troubleshoot.md)). Tools that read the
 compositor directly, such as `wev`, can still show those keys because they
 observe a layer below the one Rune reads. To repurpose such a key inside Rune
 in the meantime, remap it with [`gui.key_mapping`](./key-mapping.md).
+
+</Platform>
 
 ### Short-form modifiers
 

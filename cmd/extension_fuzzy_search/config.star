@@ -13,12 +13,22 @@
 #                             "standard", and substitutes exo with its
 #                             configured editor.exo.fallback value, so
 #                             neither an alias nor "exo" ever reaches here.
+#   RUNE_OS           string  the host's GOOS, e.g. "darwin" or "linux".
 #
 # The script writes the merged settings into the user's rune config so that
 # fuzzy_search options and search* aliases/key bindings are only registered
 # when the extension is actually installed.
 
 mode = RUNE_EDITOR_MODE
+
+# Super belongs to the desktop on Linux, where the Rune presets keep their
+# app-wide commands on Ctrl+Alt instead.
+if RUNE_OS == "linux":
+    file_key = "<c-a-o>"
+    text_key = "<c-a-\\\\>"
+else:
+    file_key = "<m-p>"
+    text_key = "<m-\\\\>"
 
 def attr(fg = None, bg = None, flags = None):
     out = {}
@@ -38,7 +48,7 @@ config = {
                 "file": {
                     "case_sensitive":     True,
                     "algo":               "fuzzy",
-                    "history_key":        "<m-p>",
+                    "history_key":        file_key,
                     "history":            50000,
                     "element_attr":       attr(fg = "default", bg = "default", flags = ["dim"]),
                     "matched_text_attr":  attr(fg = "blue", bg = "default", flags = ["bold"]),
@@ -48,7 +58,7 @@ config = {
                 "line": {
                     "case_sensitive":     True,
                     "algo":               "fuzzy",
-                    "history_key":        "<m-\\\\>",
+                    "history_key":        text_key,
                     "history":            2000,
                     "element_attr":       attr(fg = "default", bg = "default", flags = ["dim"]),
                     "matched_text_attr":  attr(fg = "blue", bg = "default", flags = ["bold"]),
@@ -82,12 +92,14 @@ if mode == "emacs":
     }
 else:
     config["command"]["key_bindings"] = {
-        "<m-p>":    "searchfile",
-        "<m-\\\\>": "searchtext",
-        "<a-s-f>":  "searchfunc",
-        "<a-s-v>":  "searchvar",
-        "<a-s-s>":  "searchtype",
+        file_key:  "searchfile",
+        text_key:  "searchtext",
+        "<a-s-f>": "searchfunc",
+        "<a-s-v>": "searchvar",
+        "<a-s-s>": "searchtype",
     }
 
-if mode == "standard":
+# Sublime-style project search; the Linux standard preset already binds
+# <ctrl-shift-f> to searchtext.
+if mode == "standard" and RUNE_OS != "linux":
     config["command"]["key_bindings"]["<s-m-f>"] = "searchtext"

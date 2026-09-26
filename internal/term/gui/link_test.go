@@ -19,6 +19,7 @@ package gui
 import (
 	"fmt"
 	"net/url"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -952,12 +953,22 @@ func linkTestGUI(t *testing.T, rows ...string) (*GUI, *mockInputManager, *[]*url
 	return g, input, &opened
 }
 
+// linkModKey returns the key that arms links on goos and its modifier bit.
+func linkModKey(goos string) (ebiten.Key, ebiten.KeyModifier) {
+	if goos == "darwin" {
+		return ebiten.KeyMetaLeft, ebiten.KeyModSuper
+	}
+	return ebiten.KeyControlLeft, ebiten.KeyModControl
+}
+
 func metaDown(m *mockInputManager) {
-	m.events = []ebiten.InputEvent{press(ebiten.KeyMetaLeft, ebiten.KeyModSuper)}
+	key, mod := linkModKey(runtime.GOOS)
+	m.events = []ebiten.InputEvent{press(key, mod)}
 }
 
 func metaUp(m *mockInputManager) {
-	m.events = []ebiten.InputEvent{release(ebiten.KeyMetaLeft)}
+	key, _ := linkModKey(runtime.GOOS)
+	m.events = []ebiten.InputEvent{release(key)}
 }
 
 func TestGUIMetaTransitionSchedulesRenderWithoutMouseInput(t *testing.T) {
@@ -1350,31 +1361,64 @@ func TestGUIClickWithoutMetaIsForwarded(t *testing.T) {
 	assert.Len(t, handled, 1)
 }
 
-func TestInputTracksMetaFromKeyTransitions(t *testing.T) {
-	mock, in := newTestInput(t)
-	assert.False(t, in.metaHeld())
+// TestInputTracksLinkModifierFromKeyTransitions pins the modifier that arms
+// links per platform: Cmd on macOS and Ctrl on Linux, where Super belongs to
+// the desktop.
+func TestInputTracksLinkModifierFromKeyTransitions(t *testing.T) {
+	for _, tc := range []struct {
+		goos        string
+		left, right ebiten.Key
+		mod         ebiten.KeyModifier
+		otherKey    ebiten.Key
+		otherMod    ebiten.KeyModifier
+	}{
+		{
+			goos: "darwin", left: ebiten.KeyMetaLeft, right: ebiten.KeyMetaRight,
+			mod: ebiten.KeyModSuper, otherKey: ebiten.KeyControlLeft,
+			otherMod: ebiten.KeyModControl,
+		},
+		{
+			goos: "linux", left: ebiten.KeyControlLeft, right: ebiten.KeyControlRight,
+			mod: ebiten.KeyModControl, otherKey: ebiten.KeyMetaLeft,
+			otherMod: ebiten.KeyModSuper,
+		},
+	} {
+		t.Run(tc.goos, func(t *testing.T) {
+			mock, in := newTestInput(t)
+			in.linkMod = linkModifier(tc.goos)
+			assert.False(t, in.linkModHeld())
 
-	mock.events = []ebiten.InputEvent{press(ebiten.KeyMetaLeft, ebiten.KeyModSuper)}
-	in.processEvents(nil)
-	assert.True(t, in.metaHeld())
+			mock.events = []ebiten.InputEvent{press(tc.left, tc.mod)}
+			in.processEvents(nil)
+			assert.True(t, in.linkModHeld())
 
-	// A chord typed while meta is held keeps the modifier down.
-	mock.events = shortcut(press(ebiten.KeyA, ebiten.KeyModSuper), 'a')
-	in.processEvents(nil)
-	assert.True(t, in.metaHeld())
+			// A chord typed while the modifier is held keeps it down.
+			mock.events = shortcut(press(ebiten.KeyA, tc.mod), 'a')
+			in.processEvents(nil)
+			assert.True(t, in.linkModHeld())
 
-	// A key action reported without Super resynchronizes a missed release.
-	mock.events = action(press(ebiten.KeyB), 'b')
-	in.processEvents(nil)
-	assert.False(t, in.metaHeld())
+			// A key action reported without the modifier resynchronizes a
+			// missed release.
+			mock.events = action(press(ebiten.KeyB), 'b')
+			in.processEvents(nil)
+			assert.False(t, in.linkModHeld())
 
-	mock.events = []ebiten.InputEvent{press(ebiten.KeyMetaRight, ebiten.KeyModSuper)}
-	in.processEvents(nil)
-	assert.True(t, in.metaHeld())
+			mock.events = []ebiten.InputEvent{press(tc.right, tc.mod)}
+			in.processEvents(nil)
+			assert.True(t, in.linkModHeld())
 
-	mock.events = []ebiten.InputEvent{release(ebiten.KeyMetaRight)}
-	in.processEvents(nil)
-	assert.False(t, in.metaHeld())
+			mock.events = []ebiten.InputEvent{release(tc.right)}
+			in.processEvents(nil)
+			assert.False(t, in.linkModHeld())
+
+			// The other platform's modifier never arms links.
+			mock.events = []ebiten.InputEvent{press(tc.otherKey, tc.otherMod)}
+			in.processEvents(nil)
+			assert.False(t, in.linkModHeld())
+			mock.events = []ebiten.InputEvent{release(tc.otherKey)}
+			in.processEvents(nil)
+		})
+	}
 }
 
 // benchGrid builds a rows x cols frame where every linkEvery-th row ends

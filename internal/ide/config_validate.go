@@ -19,6 +19,7 @@ package ide
 import (
 	"errors"
 	"fmt"
+	"runtime"
 	"slices"
 	"strings"
 
@@ -134,15 +135,30 @@ func validateCommandPrompt(c *ideConfig, cfg map[string]any) (err error) {
 		isIncompatible := !isCtrlSpace && commandKey.Ch != 0 && commandKey.Mod == 0
 
 		if isIncompatible {
-			// <s-m-p> stays clear of the emacs control chords (e.g.
-			// <c-space> set-mark) so the prompt is always reachable.
-			cfg["command"].(map[string]any)[keyCommandKey] = "<s-m-p>"
-			return fmt.Errorf("command key must use ctrl, alt, or meta modifiers in " +
-				"standard or emacs editor mode otherwise you wouldn't be able to activate it," +
-				" falling back to <s-m-p>")
+			fallback := commandKeyFallback(editorMode, runtime.GOOS)
+			cfg["command"].(map[string]any)[keyCommandKey] = fallback
+			return fmt.Errorf("command key must use ctrl, alt, or meta modifiers in "+
+				"standard or emacs editor mode otherwise you wouldn't be able to activate it,"+
+				" falling back to %s", fallback)
 		}
 	}
 	return
+}
+
+// commandKeyFallback is the command key restored when the configured one
+// cannot be typed in a modeless editor. It stays clear of the emacs
+// control chords (e.g. <c-space> set-mark) so the prompt is always
+// reachable. On Linux, where Super belongs to the desktop, each editor
+// gets the command key its preset ships.
+func commandKeyFallback(editorMode, goos string) string {
+	switch {
+	case goos == "darwin":
+		return "<s-m-p>"
+	case editorMode == editorModeEmacs:
+		return "<a-x>"
+	default:
+		return "<c-s-p>"
+	}
 }
 
 // validateExo checks that editor.exo.command is well-formed when the

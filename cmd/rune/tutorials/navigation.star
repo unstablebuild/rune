@@ -29,10 +29,11 @@ else:
 # The by-name definition lookup is a prompt-prefill macro, which
 # `key_for` cannot resolve, so its chord is spelled per mode and
 # TestNavigationTutorialPrefillKeysMatchPresets pins each one against
-# the preset that binds it.
+# the preset that binds it. Super belongs to the desktop on Linux, where
+# Helix's lookup moves to the chord the other presets use.
 if mode == "emacs":
     def_by_name_key = "<ctrl-alt-.>"
-elif mode == "helix":
+elif mode == "helix" and os() != "linux":
     def_by_name_key = "<shift-meta-d>"
 else:
     def_by_name_key = "<alt-shift-d>"
@@ -43,9 +44,10 @@ def_by_name_cta = "press `" + def_by_name_key + "`"
 # differs by mode. `key_for` cannot resolve prefill macros, so hardcode
 # it; TestNavigationTutorialPrefillKeysMatchPresets pins each chord
 # against the preset that binds it. Helix keeps it on the <space> leader,
-# where its own symbol_picker lives.
+# where its own symbol_picker lives. On Linux, Emacs moves it from Super
+# to <alt-shift>, since its editor owns the plain Alt chords.
 if mode == "emacs":
-    jump_symbol_key = "<meta-j>"
+    jump_symbol_key = "<alt-shift-j>" if os() == "linux" else "<meta-j>"
 elif mode == "helix":
     jump_symbol_key = "<space>s"
 else:
@@ -447,4 +449,4 @@ def run():
     teach_lsp_more()
 
 
-tutorial(id = "navigation", title = "Navigate code", version = "27", entry = run)
+tutorial(id = "navigation", title = "Navigate code", version = "28", entry = run)
