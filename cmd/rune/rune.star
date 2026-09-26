@@ -5,10 +5,11 @@
 #
 # Use normal Starlark `if` / `for` / dict-merge idioms to customise.
 
-# The Rune loader passes `tui` (bool) as a predeclared global; the script
-# branches on it below. The `mode` global is also exposed for backwards
-# compatibility but is no longer consulted here; editor mode is selected by
-# the editor preset written to the user config by the bootstrap flow.
+# The Rune loader passes `tui` (bool) and `os` (the host's GOOS, e.g.
+# "darwin" or "linux") as predeclared globals; the script branches on them
+# below. The `mode` global is also exposed for backwards compatibility but
+# is no longer consulted here; editor mode is selected by the editor preset
+# written to the user config by the bootstrap flow.
 
 # Box-drawing frame characters used by the terminal-specific overrides below.
 TUI_FRAME_CHARSET = {
@@ -295,7 +296,7 @@ config = {
     "gui": {
         # Font size in points. When unset, Rune picks a DPI-aware default
         # (larger on low-DPI displays). The guifontsize command and the
-        # <m-=> / <m--> bindings adjust it at runtime.
+        # preset's font-size bindings adjust it at runtime.
         # "font_size":          13,
         # Add or remove pixels from the font's default column width.
         "column_width_offset": -1,
@@ -748,8 +749,8 @@ config = {
             ],
         },
         # Key bindings are owned entirely by the editor preset written to
-        # the user config (preset_modal.yaml, preset_standard_*.yaml,
-        # preset_emacs.yaml). Set a value to "" there to unbind.
+        # the user config (preset_<editor>_<os>.yaml). Set a value to ""
+        # there to unbind.
         "key_bindings": {},
         # Prompt colors.
         "element_attr":       attr(fg = "default", bg = "default", flags = ["dim"]),
@@ -934,6 +935,14 @@ config = {
     },
 }
 
+# Super belongs to the desktop on Linux, so the Linux defaults take the
+# Ctrl shortcuts Linux applications share and keep Rune's own keys on Alt.
+if os == "linux":
+    config["command"]["history_key"] = "<ctrl-alt-r>"
+    config["editor"]["standard"]["search"]["find_key"] = "<ctrl-f>"
+    config["editor"]["standard"]["search"]["replace_key"] = "<ctrl-h>"
+    # Plain Ctrl+F belongs to the shell.
+    config["terminal"]["search"]["find_key"] = "<ctrl-shift-f>"
 
 if tui:
     tui_cmd_bindings = {

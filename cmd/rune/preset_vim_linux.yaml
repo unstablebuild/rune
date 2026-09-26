@@ -1,9 +1,9 @@
-# Rune user configuration (standard editor preset).
+# Rune user configuration (vim editor preset).
 
 # ---------------------------------------------------------------------------
 # GUI theme
 #
-# Rune ships a catalog of themes:
+# Rune ships a catalog of themes. Set `default_theme` to any of:
 #   furman, romero, carmack, reynolds, brevik, thompson, pike, hopper,
 #   kernighan, wozniak, auge, ritchie, kelleher, sanfilippo, greig, mullen
 # Run `:guitheme` to preview live.
@@ -22,23 +22,15 @@ gui:
 # ---------------------------------------------------------------------------
 # Editor
 #
-# `aux_bar` is the strip left of each editor pane and `status_bar` the bar at
-# the bottom of each pane.
+# `aux_bar` is the strip left of each editor pane, `status_bar` the bar at the
+# bottom of each pane, and `modal.message_bar` the line showing search prompts
+# and echoed messages.
 # ---------------------------------------------------------------------------
-editor:
-  mode: standard
-  auto_pair: true
-  standard:
-    attr: {fg: default, bg: default}
-    search_attr: {fg: grey, bg: yellow}
-  # The :fexplorer tree is an editable buffer: renaming a line renames
-  # the file. It starts read-only here; <shift-esc> unlocks it for the
-  # rest of the visit.
-  file_explorer:
-    read_only: true
+# editor:
 #   tabspaces: 4
 #   ruler: 90
 #   autoindent: true            # syntax-driven indentation
+#   auto_pair: false            # auto-pair quotes/brackets/braces (vim default)
 #   auto_save: false            # flush dirty buffers ~2s after last edit
 #   initial_folds: true         # collapse language-defined folds on open
 #   aux_bar:
@@ -56,12 +48,16 @@ editor:
 #     layout: ' {{ .Status | bg "red" | fg "white" | bold }} █▓▒░  {{ .Filepath | fg "white" }}  {{ .GitShortRef | fg "white" }}   {{ .GitDiffAdd | fg "green" }}   {{ .GitDiffDel | fg "red" }} {{ .ShiftRight }} {{ .CursorColumn | fg "white" }}:{{ .CursorLine | fg "white" }}  {{ .TotalLines | fg "white" }} lines  ░▒▓█ {{ .Language | bold | fg "white" | bg "red" }} '
 #     background_attr:       {bg: gray}
 #     foreground_error_attr: {fg: yellow}
+#   vim:
+#     message_bar:
+#       attr: {fg: default, bg: gray}
+#       layout: '░▒▓█ {{ .Message | fg "white" }} '
 
 # ---------------------------------------------------------------------------
 # Terminal
 # ---------------------------------------------------------------------------
-terminal:
-  modal: false
+# terminal:
+#   modal:             true        # enter modal terminal mode on <esc>
 #   max_lines:         1000
 #   initial_reservoir: 0           # set to non-zero to speed up terminal initialization
 #   plugin:
@@ -83,11 +79,11 @@ terminal:
 # `key` opens the command prompt; `history_key` toggles between the command
 # list and history. Aliases layer on top of built-ins: a string value is the
 # substitution, a dict with `command` + `completer` adds completion. Set a
-# key_binding value to "" to unbind a built-in.
+# key_binding value to "" to unbind one added by an extension.
 # ---------------------------------------------------------------------------
 command:
-  key: <ctrl-shift-p>
-  history_key: <ctrl-r>
+#   key:         ":"
+#   history_key: <ctrl-alt-r>
 #   max_history: 20000
 #   aliases:
 #     # Simple alias: `:w` runs `:write`.
@@ -95,97 +91,89 @@ command:
 #     # Alias with a completer: typing `:e <tab>` suggests files.
 #     e:    {command: edit, completer: files}
 #     # Alias with a shell completer (here: git branch names).
+#     # The `! …` template runs a shell line whose stdout becomes one
+#     # completion candidate per line.
 #     gitcheckout:
 #       command:   "!! git -C $WORKSPACE_PATH checkout $1"
 #       completer: '! git -C $WORKSPACE_PATH branch --format="%(refname:short)"'
+#     # Open this configuration file (already bound to <ctrl-alt-,>).
 #     conf: config
   key_bindings:
     # Super belongs to the desktop on Linux, so Rune's own chords live on
-    # <ctrl> where the editor leaves it free and on <alt>, which a focused
-    # terminal hands back to Rune. <ctrl-alt> carries the app-wide commands.
-    "<ctrl-s>": write
-    "<ctrl-alt-q>": quit
-    "<ctrl-shift-s>": writeall
-    "<ctrl-o>": searchfile
-    "<ctrl-,>": config
-    "<ctrl-n>": tabnew
-    "<ctrl-shift-f>": searchtext
-    "<ctrl-f2>": "locationtoggle bookmark"
-    "<f2>": "jumptolocation next bookmark"
-    "<shift-f2>": "jumptolocation previous bookmark"
-    # <alt-f2> opens the desktop's run dialog.
-    "<alt-shift-f2>": "locationhighlight bookmark"
-    "<ctrl-shift-f2>": "locationdeleteall bookmark"
-    "<f3>": "jumptolocation next search"
-    "<shift-f3>": "jumptolocation prev search"
-    "<alt-c>": "lsp declaration"
-    "<alt-y>": "lsp type-definition"
-    "<alt-shift-y>": "echo {prompt}lsp<space>type-definition<space>"
-    "<alt-shift-c>": "echo {prompt}lsp<space>declaration<space>"
-    "<alt-g>": "lsp signature-help"
-    "<alt-.>": "cursorhistory next"
-    "<alt-,>": "cursorhistory prev"
-    # IJKL points up, left, down, right. <alt> focuses a window;
-    # add <shift> to move it and <ctrl> as well to resize it.
-    "<alt-i>": "windowfocus up"
-    "<alt-j>": "windowfocus left"
-    "<alt-k>": "windowfocus down"
-    "<alt-l>": "windowfocus right"
-    "<alt-shift-i>": "windowmove up"
-    "<alt-shift-j>": "windowmove left"
-    "<alt-shift-k>": "windowmove down"
-    "<alt-shift-l>": "windowmove right"
-    "<ctrl-shift-alt-i>": "windowresize increase height"
-    "<ctrl-shift-alt-j>": "windowresize decrease width"
-    "<ctrl-shift-alt-k>": "windowresize decrease height"
-    "<ctrl-shift-alt-l>": "windowresize increase width"
-    # Create and close windows on the same <alt> layer.
-    "<alt-n>": windownew
-    "<alt-enter>": terminalneworsplit
-    "<alt-q>": windowclose
-    "<alt-shift-q>": windowcloseall
-    "<alt-m>": windowtogglemaximize
-    "<alt-shift-enter>": "!"
-    "<ctrl-alt-enter>": "echo {prompt}windowconverttab<space>"
-    "<alt-w>": tabclose
-    # Brackets switch tabs; add <shift> to reorder them.
-    "<alt-[>": tabprevious
-    "<alt-]>": tabnext
-    "<alt-shift-[>": "tabmove left"
-    "<alt-shift-]>": "tabmove right"
-    "<alt-h>": "windowdefaultsplit h"
-    "<alt-v>": "windowdefaultsplit v"
-    # Ctrl-Alt reuses I/K from the IJKL cluster to visit Git changes.
-    # Diagnostics take F8 as in VS Code, since <ctrl-alt-l> locks the screen.
-    "<ctrl-alt-i>": gitprevchange
-    "<ctrl-alt-k>": gitnextchange
-    "<shift-f8>": lspprevdiagnostic
-    "<f8>": lspnextdiagnostic
-    "<alt-t>": "lsp hover"
-    "<alt-shift-t>": "echo {prompt}lsp<space>hover<space>"
-    "<alt-p>": "lsp implementation"
-    "<alt-shift-p>": "echo {prompt}lsp<space>implementation<space>"
-    "<alt-x>": "echo {prompt}jumptoast<space>locals.scm<space>local.definition.var<space>"
-    "<ctrl-alt-r>": history
-    # Bindings shared with the other presets.
-    "<ctrl-shift-e>": "fexplorer"
-    "<alt-/>": "cheatsheet"
+    # <ctrl-alt> and <alt>, which a focused terminal hands back to Rune.
+    # <alt> with h/j/k/l focuses a window. <ctrl-alt> carries the app-wide
+    # commands and the rest of the layout: h/j/k/l resize, brackets step
+    # through tabs, digits pick a workspace. <shift> means move for layout,
+    # prompt for LSP, and reverse for anything that steps through a list.
+    "<shift-tab>": "fexplorer"
+    "<ctrl-alt-r>": "history"
+    "<ctrl-alt-,>": "config"
+    "<ctrl-alt-/>": "cheatsheet"
+    "<ctrl-alt-q>": "quit"
     "<ctrl-alt-=>": "guifontsize increase"
     "<ctrl-alt-->": "guifontsize decrease"
-    "<alt-`>": "tabsearch"
+    "<alt-n>": "tabnew"
+    "<ctrl-alt-enter>": "echo {prompt}windowconverttab<space>"
+    "<ctrl-alt-w>": "tabclose"
+    "<ctrl-alt-]>": "tabnext"
+    "<ctrl-alt-[>": "tabprevious"
+    "<ctrl-alt-n>": "windownew"
+    # Yank and put on the <ctrl-alt> layer, since <ctrl-c>/<ctrl-v> belong
+    # to the terminal.
+    "<ctrl-alt-y>": "clipboardcopy"
+    "<ctrl-alt-p>": "clipboardpaste"
+    # GNOME and KDE cycle an application's windows on <alt-`>.
+    "<ctrl-alt-`>": "tabsearch"
+    "<ctrl-shift-alt-`>": "workspacesearch"
+    "<ctrl-shift-alt-]>": "tabmove right"
+    "<ctrl-shift-alt-[>": "tabmove left"
+    "<alt-h>": "windowfocus left"
+    "<alt-l>": "windowfocus right"
+    "<alt-j>": "windowfocus down"
+    "<alt-k>": "windowfocus up"
+    "<ctrl-shift-alt-h>": "windowmove left"
+    "<ctrl-shift-alt-l>": "windowmove right"
+    "<ctrl-shift-alt-j>": "windowmove down"
+    "<ctrl-shift-alt-k>": "windowmove up"
+    # KDE, Cinnamon, Xfce and MATE lock the screen on <ctrl-alt-l>; remap it
+    # with gui.key_mapping on those desktops.
+    "<ctrl-alt-h>": "windowresize decrease width"
+    "<ctrl-alt-j>": "windowresize decrease height"
+    "<ctrl-alt-k>": "windowresize increase height"
+    "<ctrl-alt-l>": "windowresize increase width"
     "<ctrl-shift-alt-backspace>": "windowresize reset"
     "<ctrl-shift-alt-=>": ["windowresize max width", "windowresize max height"]
     "<ctrl-shift-alt-->": ["windowresize min width", "windowresize min height"]
+    "<alt-w>": "windowclose"
+    "<alt-shift-w>": "windowcloseall"
+    # s and v follow vim's <ctrl-w>s / <ctrl-w>v; the fuzzy-search
+    # extension takes <alt-shift-v> for its workspace-wide variable search.
+    "<ctrl-alt-s>": "windowdefaultsplit h"
+    "<ctrl-alt-v>": "windowdefaultsplit v"
+    "<alt-m>": "windowtogglemaximize"
     "<alt-f>": "echo {prompt}jumptoast<space>locals.scm<space>local.definition.method|local.definition.function<space>"
+    "<alt-v>": "echo {prompt}jumptoast<space>locals.scm<space>local.definition.var<space>"
     "<alt-s>": "echo {prompt}jumptoast<space>locals.scm<space>local.definition.type<space>"
-    "<alt-e>": "lsp diagnostics"
+    "<alt-e>": "lspnextdiagnostic"
+    "<alt-shift-e>": "lspprevdiagnostic"
+    "<alt-t>": "lsp hover"
+    "<alt-shift-t>": "echo {prompt}lsp<space>hover<space>"
+    "<ctrl-alt-e>": "lsp diagnostics"
+    "<f2>": "lsp rename"
     "<alt-r>": "lsp references"
     "<alt-shift-r>": "echo {prompt}lsp<space>references<space>"
     "<alt-d>": "lsp definition"
     "<alt-shift-d>": "echo {prompt}lsp<space>definition<space>"
+    "<alt-i>": "lsp implementation"
+    "<alt-shift-i>": "echo {prompt}lsp<space>implementation<space>"
+    "<ctrl-o>": "cursorhistory prev"
+    "<ctrl-i>": "cursorhistory next"
     "<alt-b>": "lsp format"
     "<ctrl-space>": "lsp complete"
-    "<ctrl-alt-`>": "workspacesearch"
+    "<alt-g>": "gitnextchange"
+    "<alt-shift-g>": "gitprevchange"
+    "<alt-enter>": "terminalneworsplit"
+    "<alt-shift-enter>": "!"
     "<alt-1>": "tabfocus 1"
     "<alt-2>": "tabfocus 2"
     "<alt-3>": "tabfocus 3"

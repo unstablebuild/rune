@@ -38,12 +38,17 @@ func TestBundledConfigStar(t *testing.T) {
 	cases := []struct {
 		name string
 		mode string
+		os   string
 	}{
-		{"vim", "vim"},
-		{"helix", "helix"},
-		{"standard", "standard"},
-		{"emacs", "emacs"},
-		{"empty_mode_acts_as_non_standard", ""},
+		{"vim", "vim", "darwin"},
+		{"helix", "helix", "darwin"},
+		{"standard", "standard", "darwin"},
+		{"emacs", "emacs", "darwin"},
+		{"empty_mode_acts_as_non_standard", "", "darwin"},
+		{"vim_linux", "vim", "linux"},
+		{"helix_linux", "helix", "linux"},
+		{"standard_linux", "standard", "linux"},
+		{"emacs_linux", "emacs", "linux"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -55,6 +60,7 @@ func TestBundledConfigStar(t *testing.T) {
 					"RUNE_PKG_ID":      "fuzzy_search",
 					"RUNE_PKG_VERSION": "1",
 					"RUNE_EDITOR_MODE": tc.mode,
+					"RUNE_OS":          tc.os,
 				},
 			})
 			require.NoError(t, err)
@@ -62,21 +68,34 @@ func TestBundledConfigStar(t *testing.T) {
 			cmd := cfg["command"].(map[string]any)
 			kb := cmd["key_bindings"].(map[string]any)
 
+			// Super belongs to the desktop on Linux, so the finders move
+			// to Ctrl+Alt there.
+			fileKey, textKey := "<m-p>", "<m-\\\\>"
+			if tc.os == "linux" {
+				fileKey, textKey = "<c-a-o>", "<c-a-\\\\>"
+			}
+
 			if tc.mode == "emacs" {
 				assert.Equal(t, "searchfile", kb["<c-x><c-f>"])
 				assert.Equal(t, "searchtext", kb["<a-s>o"])
 				for _, key := range []string{
-					"<m-p>", "<m-\\\\>", "<a-s-f>", "<a-s-v>", "<a-s-s>",
+					fileKey, textKey, "<a-s-f>", "<a-s-v>", "<a-s-s>",
 				} {
 					assert.NotContains(t, kb, key,
 						"the Emacs package map must not replace preset or editing keys")
 				}
 			} else {
-				assert.Equal(t, "searchfile", kb["<m-p>"])
-				assert.Equal(t, "searchtext", kb["<m-\\\\>"])
+				assert.Equal(t, "searchfile", kb[fileKey])
+				assert.Equal(t, "searchtext", kb[textKey])
 				assert.Equal(t, "searchfunc", kb["<a-s-f>"])
 				assert.Equal(t, "searchvar", kb["<a-s-v>"])
 				assert.Equal(t, "searchtype", kb["<a-s-s>"])
+			}
+			if tc.os == "linux" {
+				for key := range kb {
+					assert.NotContains(t, key, "m-",
+						"Linux must not bind Super, which belongs to the desktop")
+				}
 			}
 
 			// Aliases present in all modes.
@@ -91,8 +110,9 @@ func TestBundledConfigStar(t *testing.T) {
 			// <s-m-f>: searchtext is the only standard-specific override
 			// (Sublime-style project search); modal must NOT bind it. The
 			// other standard bindings (<m-f>, <m-;>, <a-g>, <s-m-r>) live
-			// in the user-editable standard override preset.
-			if tc.mode == "standard" {
+			// in the user-editable standard override preset, and the Linux
+			// one already binds <ctrl-shift-f>.
+			if tc.mode == "standard" && tc.os != "linux" {
 				assert.Equal(t, "searchtext", kb["<s-m-f>"],
 					"standard should bind <s-m-f> to searchtext")
 			} else {
@@ -109,8 +129,10 @@ func TestBundledConfigStar(t *testing.T) {
 			fsCfg := fs["config"].(map[string]any)
 			fileCfg := fsCfg["file"].(map[string]any)
 			assert.Equal(t, "fuzzy", fileCfg["algo"])
-			assert.Equal(t, "<m-p>", fileCfg["history_key"])
+			assert.Equal(t, fileKey, fileCfg["history_key"])
 			assert.Equal(t, true, fileCfg["case_sensitive"])
+			lineCfg := fsCfg["line"].(map[string]any)
+			assert.Equal(t, textKey, lineCfg["history_key"])
 
 			// The bundled onboarding tutorial is registered so Rune offers
 			// to run it right after install (RUNE-268). The $RUNE_* refs are

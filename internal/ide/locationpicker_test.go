@@ -137,7 +137,7 @@ func loadRuneStarAliases(t *testing.T) map[string][]string {
 	cfg, err := decodeStarlarkConfig(starlarkConfigSource{
 		src:      data,
 		filename: "rune.star",
-		params:   map[string]any{"mode": "modal", "tui": false},
+		params:   map[string]any{"mode": "modal", "tui": false, "os": "darwin"},
 	})
 	require.NoError(t, err)
 

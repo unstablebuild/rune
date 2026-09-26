@@ -1,0 +1,262 @@
+# Rune user configuration (emacs editor preset).
+
+# ---------------------------------------------------------------------------
+# GUI theme
+#
+# Rune ships a catalog of themes:
+#   furman, romero, carmack, reynolds, brevik, thompson, pike, hopper,
+#   kernighan, wozniak, auge, ritchie, kelleher, sanfilippo, greig, mullen
+# Run `:guitheme` to preview live.
+# ---------------------------------------------------------------------------
+gui:
+  default_theme: romero
+#   font_size: 13
+#   window_opacity: {fg: 1, bg: 1}
+#   window_blur_radius: 100
+#   # Remap physical keys before they reach the editor (see the key-mapping
+#   # docs). Both sides use the command key-binding syntax. <capslock>,
+#   # <numlock>, <scrolllock> and <menu> only act when remapped here.
+#   key_mapping:
+#     "<capslock>": "<esc>"
+
+# ---------------------------------------------------------------------------
+# Editor
+#
+# `aux_bar` is the strip left of each editor pane and `status_bar` the bar at
+# the bottom of each pane. `emacs.message_bar` is the echo area; its `attr`
+# sets the base attributes and `layout` wins over them. The transient mode
+# label (ISEARCH, QUERY, ...) is styled by `editor.status_bar.layout` instead.
+# ---------------------------------------------------------------------------
+editor:
+  mode: emacs
+  auto_pair: true
+  standard:
+    attr: {fg: default, bg: default}
+    search_attr: {fg: grey, bg: yellow}
+  # The :fexplorer tree is an editable buffer: renaming a line renames
+  # the file. It starts read-only here; <shift-esc> unlocks it for the
+  # rest of the visit.
+  file_explorer:
+    read_only: true
+#   tabspaces: 4
+#   ruler: 90
+#   autoindent: true            # syntax-driven indentation
+#   auto_save: false            # flush dirty buffers ~2s after last edit
+#   initial_folds: true         # collapse language-defined folds on open
+#   aux_bar:
+#     enabled:          true
+#     lines:            absolute   # disabled | absolute | relative
+#     git:              inline     # bar | inline | all | disabled
+#     folds:            true
+#     icons:            true
+#     highlight_cursor: true
+#   status_bar:
+#     enabled: true
+#     # Components: Status, Filepath, GitShortRef, GitDiffAdd, GitDiffDel,
+#     # ShiftRight, CursorColumn, CursorLine, TotalLines, Language.
+#     # Pipe operators: bg, fg, bold, italic, underline, reverse, dim.
+#     layout: ' {{ .Status | bg "red" | fg "white" | bold }} █▓▒░  {{ .Filepath | fg "white" }}  {{ .GitShortRef | fg "white" }}   {{ .GitDiffAdd | fg "green" }}   {{ .GitDiffDel | fg "red" }} {{ .ShiftRight }} {{ .CursorColumn | fg "white" }}:{{ .CursorLine | fg "white" }}  {{ .TotalLines | fg "white" }} lines  ░▒▓█ {{ .Language | bold | fg "white" | bg "red" }} '
+#     background_attr:       {bg: gray}
+#     foreground_error_attr: {fg: yellow}
+#   emacs:
+#     message_bar:
+#       attr: {fg: default, bg: gray}
+#       layout: '░▒▓█ {{ .Message | fg "white" }} '
+
+# ---------------------------------------------------------------------------
+# Terminal
+# ---------------------------------------------------------------------------
+terminal:
+  modal: false
+  # C-s is isearch-forward's key everywhere else in this preset (see
+  # command.key_bindings and the editor's own incremental search), so
+  # scrollback search reuses it instead of the default <meta-f>.
+  search:
+    find_key: "<ctrl-s>"
+#   max_lines:         1000
+#   initial_reservoir: 0           # set to non-zero to speed up terminal initialization
+#   plugin:
+#     # Layout of the bar shown above a `!` command. Components:
+#     # Command, StatusIcon, ExitStatus, Elapsed, AlignRight, AlignCenter.
+#     # Pipe operators: bg, fg, bold, italic, underline, reverse, dim.
+#     bar_layout: ' {{ .StatusIcon | bg "gray" | fg "white" }} █▓▒░{{ .AlignCenter }}{{ .Command | fg "white" | bold }}{{ .AlignRight }}  ░▒▓█ {{ .Elapsed | fg "white" | bg "gray" }} '
+#     bar_background_attr: {bg: default}
+#     bar_align_bottom:    true
+#     status_success_icon: ""
+#     status_success_attr: {fg: green}
+#     status_error_icon:   ""
+#     status_error_attr:   {fg: red}
+#     animation: "⠃⠅⠆⠘⠨⠰⠉⠒⠤⠑⠡⠢⠊⠌⠔⠇⠸⠎⠱⠣⠜⠪⠕⠋⠙⠓⠚⠍⠩⠥⠬⠖⠲⠦⠴⠏⠹⠧⠼⠫⠝⠮⠵⠺⠗⠞⠳⠛⠭⠶⠟⠻⠷⠾⠯⠽⠿"
+
+# ---------------------------------------------------------------------------
+# Command prompt
+#
+# `key` opens the command prompt; `history_key` toggles between the command
+# list and history. Aliases layer on top of built-ins: a string value is the
+# substitution, a dict with `command` + `completer` adds completion. Set a
+# key_binding value to "" to unbind a built-in.
+# ---------------------------------------------------------------------------
+command:
+  key: <alt-x>                       # execute-extended-command (M-x)
+#   history_key: <alt-shift-x>
+#   max_history: 20000
+#   aliases:
+#     # Simple alias: `:w` runs `:write`.
+#     w: write
+#     # Alias with a completer: typing `:e <tab>` suggests files.
+#     e:    {command: edit, completer: files}
+#     # Alias with a shell completer (here: git branch names).
+#     gitcheckout:
+#       command:   "!! git -C $WORKSPACE_PATH checkout $1"
+#       completer: '! git -C $WORKSPACE_PATH branch --format="%(refname:short)"'
+#     conf: config
+  key_bindings:
+    # Files and sessions use familiar Emacs C-x chords.
+    # A focused terminal swallows C-x before Rune sees it, so everything here
+    # also has a <meta> chord below; C-x is the GNU-native second path.
+    "<ctrl-x><ctrl-s>": write            # save-buffer
+    "<ctrl-x>s": writeall             # save-some-buffers
+    "<ctrl-x>u": "undo prefix"           # undo
+    "<ctrl-x><ctrl-c>": quit             # exit when no buffers have pending changes
+    "<ctrl-x><ctrl-f>": searchfile       # find-file
+    "<ctrl-x>0": windowclose             # delete-window
+    "<ctrl-x>1": windowcloseall          # delete-other-windows
+    "<ctrl-x>2": "windownew down"        # split-window-below
+    "<ctrl-x>3": "windownew right"       # split-window-right
+    "<ctrl-x>o": "windowfocus other"     # other-window
+    "<alt-shift-x>": history             # M-X, the M-x history sibling
+    # P/N/B/F follows Emacs's previous, next, backward, and forward directions.
+    "<meta-p>": "windowfocus up"
+    "<meta-b>": "windowfocus left"
+    "<meta-n>": "windowfocus down"
+    "<meta-f>": "windowfocus right"
+    "<shift-meta-p>": "windowmove up"
+    "<shift-meta-b>": "windowmove left"
+    "<shift-meta-n>": "windowmove down"
+    "<shift-meta-f>": "windowmove right"
+    "<meta-d>": "windownew down"
+    "<meta-r>": "windownew right"
+    "<meta-k>": windowclose
+    "<shift-meta-k>": windowcloseall
+    "<meta-m>": windowtogglemaximize
+    "<meta-i>": "lsp implementation"
+    "<meta-g>": "jumptolocation next search"
+    "<shift-meta-g>": "jumptolocation prev search"
+    "<meta-h>": "lsp hover"
+    "<shift-meta-h>": "echo {prompt}lsp<space>hover<space>"
+    "<shift-meta-i>": "echo {prompt}lsp<space>implementation<space>"
+    # Host-Meta arrows resize without consuming Emacs editing letters.
+    "<meta-up>": "windowresize increase height"
+    "<meta-left>": "windowresize decrease width"
+    "<meta-down>": "windowresize decrease height"
+    "<meta-right>": "windowresize increase width"
+    # Tabs use <meta-[> / <meta-]> so <alt> stays available as Emacs Meta.
+    "<meta-]>": tabnext
+    "<meta-[>": tabprevious
+    "<ctrl-tab>": tabnext
+    "<ctrl-shift-tab>": tabprevious
+    "<meta-w>": tabclose
+    "<shift-meta-]>": "tabmove right"
+    "<shift-meta-[>": "tabmove left"
+    # M-, / C-M-, follows GNU xref history; C-x C-x exchanges point and mark.
+    "<alt-,>": "cursorhistory prev"
+    "<ctrl-alt-,>": "cursorhistory next"
+    "<ctrl-x><ctrl-x>": exchangepointandmark
+    # GNU xref, Dired, switch-buffer, symbol-jump, and completion semantics guide these keys.
+    "<alt-.>": "lsp definition"
+    "<alt-shift-/>": "lsp references"    # alt+shift+slash chord, i.e. M-?
+    "<ctrl-alt-.>": "echo {prompt}lsp<space>definition<space>"
+    "<ctrl-shift-alt-/>": "echo {prompt}lsp<space>references<space>"
+    # Dired and the symbol jumps sit on <meta> so they stay reachable while a
+    # terminal owns the keyboard. GNU has no chord to inherit here: M-g i
+    # (imenu) is the natural home, but the editor owns the M-g goto-map.
+    "<meta-o>": fexplorer
+    "<meta-j>": "echo {prompt}jumptoast<space>locals.scm<space>local.definition.method|local.definition.function<space>"
+    "<meta-s>": "echo {prompt}jumptoast<space>locals.scm<space>local.definition.type<space>"
+    "<meta-x>": "echo {prompt}jumptoast<space>locals.scm<space>local.definition.var<space>"
+    "<alt-s>o": searchtext           # two-key M-s o, not the M-? chord above
+    "<ctrl-alt-\\\\>": "lsp format"
+    "<ctrl-alt-i>": "lsp complete"
+    # <meta-l> steps diagnostics and <meta-e> opens their picker. The F-keys
+    # repeat those and visit Git changes, but a focused terminal eats them.
+    # <f3>/<f4> stay unbound: the editor owns them as GNU's kmacro keys.
+    "<meta-l>": lspnextdiagnostic
+    "<shift-meta-l>": lspprevdiagnostic
+    "<meta-e>": "lsp diagnostics"
+    "<f5>": gitprevchange
+    "<f6>": gitnextchange
+    "<f7>": lspprevdiagnostic
+    "<f8>": lspnextdiagnostic
+    "<f9>": "lsp diagnostics"
+    # Bookmarks stay on <meta>+F-key so a focused terminal cannot eat them:
+    # F2 sets and clears, F3 visits, F4 highlights. GNU's own C-x r m / C-x r b
+    # / C-x r l are three-chord sequences.
+    "<meta-f2>": "locationtoggle bookmark"
+    "<shift-meta-f2>": "locationdeleteall bookmark"
+    "<meta-f3>": "jumptolocation next bookmark"
+    "<shift-meta-f3>": "jumptolocation previous bookmark"
+    "<meta-f4>": "locationhighlight bookmark"
+    # Bindings shared with the other presets. <alt> and <ctrl> carry only what
+    # GNU Emacs itself defines (M-x, M-., M-,, M-?, M-s o, C-M-., C-M-,, C-M-\,
+    # C-M-i and the C-x chords); everything Rune-only lives on <meta>, the
+    # Command key. On <meta>, <shift> means move
+    # for layout, prompt for LSP, and reverse for anything that steps through a
+    # list. <meta> is not an editing layer, so it carries no undo/redo
+    # counterpart to <meta-c>/<meta-v>: undo is the editor's C-/ and C-_.
+    "<meta-,>": "config"
+    "<meta-/>": "cheatsheet"
+    "<meta-q>": "quit"
+    "<meta-=>": "guifontsize increase"
+    "<meta-->": "guifontsize decrease"
+    "<meta-t>": "tabnew"
+    "<meta-c>": "clipboardcopy"
+    "<meta-v>": "clipboardpaste"
+    "<shift-meta-backspace>": "windowresize reset"
+    "<shift-meta-+>": ["windowresize max width", "windowresize max height"]
+    "<shift-meta-->": ["windowresize min width", "windowresize min height"]
+    "<ctrl-meta-h>": "windowdefaultsplit h"
+    "<ctrl-meta-v>": "windowdefaultsplit v"
+    "<meta-enter>": "terminalneworsplit"
+    "<shift-meta-enter>": "!"
+    "<meta-`>": "workspacesearch"
+    "<meta-1>": "workspacefocus 1"
+    "<meta-2>": "workspacefocus 2"
+    "<meta-3>": "workspacefocus 3"
+    "<meta-4>": "workspacefocus 4"
+    "<meta-5>": "workspacefocus 5"
+    "<meta-6>": "workspacefocus 6"
+    "<meta-7>": "workspacefocus 7"
+    "<meta-8>": "workspacefocus 8"
+    "<meta-9>": "workspacefocus 9"
+    "<shift-meta-1>": "workspacemove 1"
+    "<shift-meta-2>": "workspacemove 2"
+    "<shift-meta-3>": "workspacemove 3"
+    "<shift-meta-4>": "workspacemove 4"
+    "<shift-meta-5>": "workspacemove 5"
+    "<shift-meta-6>": "workspacemove 6"
+    "<shift-meta-7>": "workspacemove 7"
+    "<shift-meta-8>": "workspacemove 8"
+    "<shift-meta-9>": "workspacemove 9"
+
+# ---------------------------------------------------------------------------
+# Animations between workspaces
+# ---------------------------------------------------------------------------
+# animations:
+#   loading_workspace: true
+#   open_workspace:
+#     enabled:  true
+#     # shader:   burn
+#     # duration: 1s
+
+# ---------------------------------------------------------------------------
+# Self-upgrade
+# ---------------------------------------------------------------------------
+# upgrade:
+#   auto_check_enabled: true
+#   check_period:       24h
+
+# ---------------------------------------------------------------------------
+# Notifications
+# ---------------------------------------------------------------------------
+# notifications:
+#   auto_close:   5s

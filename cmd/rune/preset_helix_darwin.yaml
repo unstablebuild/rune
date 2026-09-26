@@ -179,8 +179,8 @@ command:
     "<ctrl-o>": "cursorhistory prev"      # jump_backward
     "<ctrl-i>": "cursorhistory next"      # jump_forward
     # Bindings shared with the other presets. Helix keeps most <alt> chords for
-    # its own grammar, so Rune-only commands live on <meta>, the host layer (Command
-    # on macOS, Super on Linux), with <shift> meaning move for layout, prompt
+    # its own grammar, so Rune-only commands live on <meta>, the Command key,
+    # with <shift> meaning move for layout, prompt
     # for LSP, and reverse for anything that steps through a list.
     "<shift-tab>": "fexplorer"
     "<meta-r>": "history"

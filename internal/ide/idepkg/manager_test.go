@@ -27,6 +27,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -3435,6 +3436,20 @@ else:
 	}
 }
 
+// TestHostOSParamExposed verifies that RUNE_OS reaches package config.star
+// scripts so they can follow the platform's shortcut conventions (Super
+// belongs to the desktop on Linux).
+func TestHostOSParamExposed(t *testing.T) {
+	t.Parallel()
+
+	got, err := loadIdePkgConfigFromBytes(
+		"config.star", []byte(`config = {"os": RUNE_OS}`),
+		nil, "pkg", release.Version("1"), "/data", "",
+	)
+	require.NoError(t, err)
+	assert.Equal(t, runtime.GOOS, got["os"])
+}
+
 // TestPkgConfigFilePrefersYAML and TestPkgConfigFileFallsBackToStar lock in
 // the shared discovery used by download/untar/UsePackageVersion/
 // ProcessInstalledSettings: config.yaml wins when both formats are present,
@@ -4635,21 +4650,25 @@ func TestInstallPackagePreservesUserConfigComments(t *testing.T) {
 }
 
 // TestInstallPackagePreservesShippedPresetComments runs the merge over
-// the emacs preset bootstrap writes into a fresh datadir, which is where
+// the emacs presets bootstrap writes into a fresh datadir, which is where
 // the comment loss was reported.
 func TestInstallPackagePreservesShippedPresetComments(t *testing.T) {
 	t.Parallel()
 
-	preset, err := os.ReadFile(filepath.Join(
-		"..", "..", "..", "cmd", "rune", "preset_emacs.yaml"))
-	require.NoError(t, err)
+	for _, name := range []string{"preset_emacs_darwin.yaml", "preset_emacs_linux.yaml"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			preset, err := os.ReadFile(filepath.Join("..", "..", "..", "cmd", "rune", name))
+			require.NoError(t, err)
 
-	configPath, merged := installConfigPkgOver(t, string(preset))
+			configPath, merged := installConfigPkgOver(t, string(preset))
 
-	assert.Equal(t, yamlComments(string(preset)), yamlComments(merged),
-		"the shipped preset must keep every comment after a package install")
-	assertKeyOrderPreserved(t, string(preset), merged)
-	assertConfigPkgMerged(t, configPath)
+			assert.Equal(t, yamlComments(string(preset)), yamlComments(merged),
+				"the shipped preset must keep every comment after a package install")
+			assertKeyOrderPreserved(t, string(preset), merged)
+			assertConfigPkgMerged(t, configPath)
+		})
+	}
 }
 
 func TestInstallPackagePreservesStarConfigComments(t *testing.T) {

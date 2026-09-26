@@ -375,9 +375,10 @@ func hasHost(u []byte) bool {
 }
 
 // linkScanner gives every URL rendered as plain text a link affordance:
-// it underlines the spans while the meta modifier is held and turns a
-// meta-click on one into an observer call. It works off the composited
-// frame, so it is agnostic to which handler drew the text.
+// it underlines the spans while the link modifier (Cmd on macOS, Ctrl
+// elsewhere) is held and turns a modified click on one into an observer
+// call. It works off the composited frame, so it is agnostic to which
+// handler drew the text.
 type linkScanner struct {
 	observer func(*url.URL)
 	// setShape is the window's cursor-shape setter, replaced in tests.

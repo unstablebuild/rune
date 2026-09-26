@@ -18,6 +18,7 @@ package gui
 
 import (
 	"fmt"
+	"runtime"
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/unstablebuild/rune-go-sdk/term"
@@ -45,17 +46,29 @@ type input struct {
 	input       keysManager
 	keyMapping  map[ebiten.KeyEvent]ebiten.KeyEvent
 	modMapping  map[ebiten.KeyModifier]ebiten.KeyModifier
-	// metaDown tracks whether Meta/Super is held. It is derived from key
+	// linkMod is the modifier that arms link clicks: Cmd on macOS and
+	// Ctrl elsewhere, as in the platform's own terminals. Super belongs
+	// to the desktop on Linux.
+	linkMod ebiten.KeyModifier
+	// linkModDown tracks whether linkMod is held. It is derived from key
 	// transitions rather than ebiten.IsKeyPressed, which always reports
 	// false on GLFW desktop platforms.
-	metaDown bool
+	linkModDown bool
 }
 
 func newInput(fontManager *font.Manager) *input {
 	return &input{
 		fontManager: fontManager,
 		input:       ebitenInputManager{},
+		linkMod:     linkModifier(runtime.GOOS),
 	}
+}
+
+func linkModifier(goos string) ebiten.KeyModifier {
+	if goos == "darwin" {
+		return ebiten.KeyModSuper
+	}
+	return ebiten.KeyModControl
 }
 
 func (i *input) setKeyMapping(m map[term.KeyComb]term.KeyComb) {
@@ -162,7 +175,7 @@ func (i *input) processEvents(dst []term.Event) []term.Event {
 			continue
 		}
 
-		i.trackMeta(ev)
+		i.trackLinkMod(ev)
 
 		if ev.Action == ebiten.KeyActionRelease {
 			continue
@@ -251,22 +264,21 @@ func (i *input) isLayoutText(ev ebiten.InputEvent, mod term.Modifier) bool {
 	return false
 }
 
-// trackMeta keeps metaDown in sync with the platform's view of the
-// Meta/Super modifier. A transition of a meta key sets it directly; any
-// other key action carries the modifier mask the platform observed and
-// so resynchronizes a release that never reached the window.
-func (i *input) trackMeta(ev ebiten.InputEvent) {
-	switch ev.Key {
-	case ebiten.KeyMeta, ebiten.KeyMetaLeft, ebiten.KeyMetaRight:
-		i.metaDown = ev.Action != ebiten.KeyActionRelease
-	default:
-		i.metaDown = ev.Mods&ebiten.KeyModSuper != 0
+// trackLinkMod keeps linkModDown in sync with the platform's view of the
+// link modifier. A transition of that modifier's key sets it directly;
+// any other key action carries the modifier mask the platform observed
+// and so resynchronizes a release that never reached the window.
+func (i *input) trackLinkMod(ev ebiten.InputEvent) {
+	if bit, ok := bareModBit(ebiten.KeyEvent{Key: ev.Key}); ok && bit == i.linkMod {
+		i.linkModDown = ev.Action != ebiten.KeyActionRelease
+		return
 	}
+	i.linkModDown = ev.Mods&i.linkMod != 0
 }
 
-// metaHeld reports whether the Meta/Super modifier is currently held.
-func (i *input) metaHeld() bool {
-	return i.metaDown
+// linkModHeld reports whether the link modifier is currently held.
+func (i *input) linkModHeld() bool {
+	return i.linkModDown
 }
 
 // claim records that a key action has already been turned into a terminal

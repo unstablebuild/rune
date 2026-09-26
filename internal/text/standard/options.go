@@ -17,6 +17,8 @@
 package standard
 
 import (
+	"runtime"
+
 	"github.com/sirupsen/logrus"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
@@ -56,6 +58,7 @@ type standardConfig struct {
 	statusBarConfig    text.StatusBarConfig
 	statusBarEnabled   bool
 	scheduleNextTick   func(fn func()) bool
+	hostMeta           bool
 }
 
 // SearchWindowManager manages the floating window used by standard search.
@@ -124,8 +127,13 @@ func defaultConfig() standardConfig {
 		},
 		notifications:     nopNotifications{},
 		cursorCorrections: true,
+		hostMeta:          defaultHostMetaChords,
 	}
 }
+
+// defaultHostMetaChords reports whether the host keeps editing chords on
+// Command. Linux desktops own Super, so there they move to Ctrl.
+var defaultHostMetaChords = runtime.GOOS == "darwin"
 
 // Option represents a Editor configuration option.
 type Option func(*standardConfig)
@@ -311,6 +319,37 @@ func WithWrap(wrap bool) Option {
 func WithCursorCorrections(enabled bool) Option {
 	return func(cfg *standardConfig) {
 		cfg.cursorCorrections = enabled
+	}
+}
+
+// WithHostMetaChords selects the platform chord layout. When enabled, as on
+// macOS, editing chords use Command (<meta>) and Ctrl+Alt. When disabled, as
+// on Linux, where the desktop owns Super and Rune's own commands use
+// Ctrl+Alt, the editor ignores every chord carrying <meta> or Ctrl+Alt and
+// the chords that exist only there move to Ctrl, Ctrl+Shift and Alt:
+//
+//	<meta-backspace>  <ctrl-shift-backspace>  delete to line start
+//	<meta-delete>     <ctrl-shift-delete>     delete to line end
+//	<meta-u>          <ctrl-u>                undo cursor move
+//	<shift-meta-u>    <ctrl-shift-u>          redo cursor move
+//	<meta-l>          <ctrl-shift-l>          select line
+//	<shift-meta-j>    <ctrl-shift-i>          select indentation level
+//	<shift-meta-v>    <ctrl-shift-v>          paste and reindent
+//	<meta-k> prefix   <ctrl-k> prefix         second key keeps <ctrl> held;
+//	                                          <ctrl-k><ctrl-k> cuts to line end
+//	<alt-meta-v>      <ctrl-k><ctrl-v>        paste from history
+//	<alt-meta-/>      <ctrl-shift-/>          toggle block comment
+//	<alt-meta-q>      <ctrl-shift-g>          wrap paragraph
+//	<ctrl-meta-d>     <ctrl-shift-d>          select previous occurrence
+//	<ctrl-alt-up>     <alt-pgup>              scroll up
+//	<ctrl-alt-down>   <alt-pgdn>              scroll down
+//	<ctrl-alt-h>      <ctrl-shift-h>          hide selection
+//	<ctrl-alt-v>      <ctrl-shift-r>          reveal hidden lines
+//
+// The default follows the host platform.
+func WithHostMetaChords(enabled bool) Option {
+	return func(cfg *standardConfig) {
+		cfg.hostMeta = enabled
 	}
 }
 

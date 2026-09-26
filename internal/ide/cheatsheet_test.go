@@ -73,6 +73,21 @@ func TestCheatsheetUnboundCommandFallbackKeepsArgs(t *testing.T) {
 	assert.NotContains(t, md, "| `: tutorial` | Start the basics tutorial |")
 }
 
+// TestCheatsheetCloseHintFollowsWindowClose verifies the close hint names
+// the configured windowclose chord, which is <alt-w> rather than <meta-w>
+// on Linux, where Super belongs to the desktop.
+func TestCheatsheetCloseHintFollowsWindowClose(t *testing.T) {
+	cfg := cheatsheetTestConfig()
+	md, err := renderCheatsheet(cfg, true, "vim", false)
+	require.NoError(t, err)
+	assert.Contains(t, md, "To close this cheatsheet press `: windowclose`.")
+
+	cfg.CommandKeyBindings[term.KeyComb{Ch: 'w', Mod: term.ModAlt}] = [][]string{{"windowclose"}}
+	md, err = renderCheatsheet(cfg, true, "vim", false)
+	require.NoError(t, err)
+	assert.Contains(t, md, "To close this cheatsheet press `<alt-w>`.")
+}
+
 // TestCheatsheetModalTips verifies the prompt-navigation rows switch on
 // editor mode: modal shows the vi-style chords, standard shows arrows.
 func TestCheatsheetModalTips(t *testing.T) {

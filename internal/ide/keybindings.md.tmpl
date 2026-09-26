@@ -8,9 +8,10 @@
 {{- end}}
 {{- end -}}
 # Key bindings
+{{- if .MetaKey}}
 
 In the keys below, `<meta>` is {{.MetaKey}}.
-
+{{- end}}
 {{- if eq .EditorMode "vim"}}
 
 These are your command key bindings. In-buffer editing keys come from the

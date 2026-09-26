@@ -3754,17 +3754,17 @@ func TestCommandPromptKeyBindingHintsIntegration(t *testing.T) {
 
 	// pin the test to the shipped default: the modal preset must keep
 	// binding <alt-enter> to the windowconverttab prompt prefill.
-	preset, err := os.ReadFile("../../cmd/rune/preset_modal.yaml")
+	preset, err := os.ReadFile("../../cmd/rune/preset_vim_darwin.yaml")
 	require.NoError(t, err)
 	presetCfg, err := decodeOverlayConfigFile(
-		bytes.NewReader(preset), "preset_modal.yaml", map[string]any{})
+		bytes.NewReader(preset), "preset_vim_darwin.yaml", map[string]any{})
 	require.NoError(t, err)
 	presetCmd, ok := presetCfg["command"].(map[string]any)
-	require.True(t, ok, "preset_modal.yaml: missing `command` section")
+	require.True(t, ok, "preset_vim_darwin.yaml: missing `command` section")
 	presetBindings, ok := presetCmd["key_bindings"].(map[string]any)
-	require.True(t, ok, "preset_modal.yaml: missing `command.key_bindings`")
+	require.True(t, ok, "preset_vim_darwin.yaml: missing `command.key_bindings`")
 	echoBody, ok := presetBindings[echoKey].(string)
-	require.Truef(t, ok, "preset_modal.yaml: missing %q key binding", echoKey)
+	require.Truef(t, ok, "preset_vim_darwin.yaml: missing %q key binding", echoKey)
 	require.Equal(t, "echo {prompt}windowconverttab<space>", echoBody)
 
 	cfg := defaultConfigWithWrap(false)

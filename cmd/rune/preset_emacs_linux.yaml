@@ -70,7 +70,7 @@ terminal:
   modal: false
   # C-s is isearch-forward's key everywhere else in this preset (see
   # command.key_bindings and the editor's own incremental search), so
-  # scrollback search reuses it instead of the default <meta-f>.
+  # scrollback search reuses it instead of the default <ctrl-shift-f>.
   search:
     find_key: "<ctrl-s>"
 #   max_lines:         1000
@@ -113,7 +113,7 @@ command:
   key_bindings:
     # Files and sessions use familiar Emacs C-x chords.
     # A focused terminal swallows C-x before Rune sees it, so everything here
-    # also has a <meta> chord below; C-x is the GNU-native second path.
+    # also has an <alt-shift> chord below; C-x is the GNU-native second path.
     "<ctrl-x><ctrl-s>": write            # save-buffer
     "<ctrl-x>s": writeall             # save-some-buffers
     "<ctrl-x>u": "undo prefix"           # undo
@@ -124,40 +124,48 @@ command:
     "<ctrl-x>2": "windownew down"        # split-window-below
     "<ctrl-x>3": "windownew right"       # split-window-right
     "<ctrl-x>o": "windowfocus other"     # other-window
+    "<ctrl-x>^": "windowresize increase height"   # enlarge-window
+    "<ctrl-x>{": "windowresize decrease width"    # shrink-window-horizontally
+    "<ctrl-x>-": "windowresize decrease height"   # shrink-window-if-larger-than-buffer
+    "<ctrl-x>}": "windowresize increase width"    # enlarge-window-horizontally
+    "<ctrl-x>+": "windowresize reset"             # balance-windows
     "<alt-shift-x>": history             # M-X, the M-x history sibling
     # P/N/B/F follows Emacs's previous, next, backward, and forward directions.
-    "<meta-p>": "windowfocus up"
-    "<meta-b>": "windowfocus left"
-    "<meta-n>": "windowfocus down"
-    "<meta-f>": "windowfocus right"
-    "<shift-meta-p>": "windowmove up"
-    "<shift-meta-b>": "windowmove left"
-    "<shift-meta-n>": "windowmove down"
-    "<shift-meta-f>": "windowmove right"
-    "<meta-d>": "windownew down"
-    "<meta-r>": "windownew right"
-    "<meta-k>": windowclose
-    "<shift-meta-k>": windowcloseall
-    "<meta-m>": windowtogglemaximize
-    "<meta-i>": "lsp implementation"
-    "<meta-g>": "jumptolocation next search"
-    "<shift-meta-g>": "jumptolocation prev search"
-    "<meta-h>": "lsp hover"
-    "<shift-meta-h>": "echo {prompt}lsp<space>hover<space>"
-    "<shift-meta-i>": "echo {prompt}lsp<space>implementation<space>"
-    # Host-Meta arrows resize without consuming Emacs editing letters.
-    "<meta-up>": "windowresize increase height"
-    "<meta-left>": "windowresize decrease width"
-    "<meta-down>": "windowresize decrease height"
-    "<meta-right>": "windowresize increase width"
-    # Tabs use <meta-[> / <meta-]> so <alt> stays available as Emacs Meta.
-    "<meta-]>": tabnext
-    "<meta-[>": tabprevious
+    "<alt-shift-p>": "windowfocus up"
+    "<alt-shift-b>": "windowfocus left"
+    "<alt-shift-n>": "windowfocus down"
+    "<alt-shift-f>": "windowfocus right"
+    "<ctrl-shift-alt-p>": "windowmove up"
+    "<ctrl-shift-alt-b>": "windowmove left"
+    "<ctrl-shift-alt-n>": "windowmove down"
+    "<ctrl-shift-alt-f>": "windowmove right"
+    "<alt-shift-d>": "windownew down"
+    "<alt-shift-r>": "windownew right"
+    "<alt-shift-k>": windowclose
+    "<ctrl-shift-alt-k>": windowcloseall
+    "<alt-shift-m>": windowtogglemaximize
+    "<alt-shift-i>": "lsp implementation"
+    "<alt-shift-g>": "jumptolocation next search"
+    "<ctrl-shift-alt-g>": "jumptolocation prev search"
+    "<alt-shift-h>": "lsp hover"
+    "<ctrl-shift-alt-h>": "echo {prompt}lsp<space>hover<space>"
+    "<ctrl-shift-alt-i>": "echo {prompt}lsp<space>implementation<space>"
+    # Control-Shift arrows resize, as windsize.el's defaults do, without
+    # consuming Emacs editing letters; M-S-up / M-S-down duplicate the line.
+    # Like the C-x chords, a focused terminal keeps them.
+    "<ctrl-shift-up>": "windowresize increase height"
+    "<ctrl-shift-left>": "windowresize decrease width"
+    "<ctrl-shift-down>": "windowresize decrease height"
+    "<ctrl-shift-right>": "windowresize increase width"
+    # M-[ and M-] are free in GNU; their shifted M-{ / M-} are paragraph
+    # motions, so reordering tabs moves up to <ctrl-shift-alt>.
+    "<alt-]>": tabnext
+    "<alt-[>": tabprevious
     "<ctrl-tab>": tabnext
     "<ctrl-shift-tab>": tabprevious
-    "<meta-w>": tabclose
-    "<shift-meta-]>": "tabmove right"
-    "<shift-meta-[>": "tabmove left"
+    "<alt-shift-w>": tabclose
+    "<ctrl-shift-alt-]>": "tabmove right"
+    "<ctrl-shift-alt-[>": "tabmove left"
     # M-, / C-M-, follows GNU xref history; C-x C-x exchanges point and mark.
     "<alt-,>": "cursorhistory prev"
     "<ctrl-alt-,>": "cursorhistory next"
@@ -167,76 +175,69 @@ command:
     "<alt-shift-/>": "lsp references"    # alt+shift+slash chord, i.e. M-?
     "<ctrl-alt-.>": "echo {prompt}lsp<space>definition<space>"
     "<ctrl-shift-alt-/>": "echo {prompt}lsp<space>references<space>"
-    # Dired and the symbol jumps sit on <meta> so they stay reachable while a
-    # terminal owns the keyboard. GNU has no chord to inherit here: M-g i
-    # (imenu) is the natural home, but the editor owns the M-g goto-map.
-    "<meta-o>": fexplorer
-    "<meta-j>": "echo {prompt}jumptoast<space>locals.scm<space>local.definition.method|local.definition.function<space>"
-    "<meta-s>": "echo {prompt}jumptoast<space>locals.scm<space>local.definition.type<space>"
-    "<meta-x>": "echo {prompt}jumptoast<space>locals.scm<space>local.definition.var<space>"
+    # Dired and the symbol jumps sit on <alt-shift> so they stay reachable
+    # while a terminal owns the keyboard. GNU has no chord to inherit here:
+    # M-g i (imenu) is the natural home, but the editor owns the M-g
+    # goto-map. Variables take V because M-X is the history key.
+    "<alt-shift-o>": fexplorer
+    "<alt-shift-j>": "echo {prompt}jumptoast<space>locals.scm<space>local.definition.method|local.definition.function<space>"
+    "<alt-shift-s>": "echo {prompt}jumptoast<space>locals.scm<space>local.definition.type<space>"
+    "<alt-shift-v>": "echo {prompt}jumptoast<space>locals.scm<space>local.definition.var<space>"
     "<alt-s>o": searchtext           # two-key M-s o, not the M-? chord above
     "<ctrl-alt-\\\\>": "lsp format"
     "<ctrl-alt-i>": "lsp complete"
-    # <meta-l> steps diagnostics and <meta-e> opens their picker. The F-keys
-    # repeat those and visit Git changes, but a focused terminal eats them.
-    # <f3>/<f4> stay unbound: the editor owns them as GNU's kmacro keys.
-    "<meta-l>": lspnextdiagnostic
-    "<shift-meta-l>": lspprevdiagnostic
-    "<meta-e>": "lsp diagnostics"
+    # <alt-shift-l> steps diagnostics and <alt-shift-e> opens their picker.
+    # The F-keys repeat those and visit Git changes, but a focused terminal
+    # eats them. <f3>/<f4> stay unbound: the editor owns them as GNU's
+    # kmacro keys.
+    "<alt-shift-l>": lspnextdiagnostic
+    "<ctrl-shift-alt-l>": lspprevdiagnostic
+    "<alt-shift-e>": "lsp diagnostics"
     "<f5>": gitprevchange
     "<f6>": gitnextchange
     "<f7>": lspprevdiagnostic
     "<f8>": lspnextdiagnostic
     "<f9>": "lsp diagnostics"
-    # Bookmarks stay on <meta>+F-key so a focused terminal cannot eat them:
-    # F2 sets and clears, F3 visits, F4 highlights. GNU's own C-x r m / C-x r b
-    # / C-x r l are three-chord sequences.
-    "<meta-f2>": "locationtoggle bookmark"
-    "<shift-meta-f2>": "locationdeleteall bookmark"
-    "<meta-f3>": "jumptolocation next bookmark"
-    "<shift-meta-f3>": "jumptolocation previous bookmark"
-    "<meta-f4>": "locationhighlight bookmark"
+    # Bookmarks stay on <alt-shift>+F-key so a focused terminal cannot eat
+    # them: F2 sets and clears, F3 visits, F4 highlights. GNU's own C-x r m /
+    # C-x r b / C-x r l are three-chord sequences. Visiting backwards and
+    # deleting them all are left to the command prompt.
+    "<alt-shift-f2>": "locationtoggle bookmark"
+    "<alt-shift-f3>": "jumptolocation next bookmark"
+    "<alt-shift-f4>": "locationhighlight bookmark"
     # Bindings shared with the other presets. <alt> and <ctrl> carry only what
     # GNU Emacs itself defines (M-x, M-., M-,, M-?, M-s o, C-M-., C-M-,, C-M-\,
-    # C-M-i and the C-x chords); everything Rune-only lives on <meta>, the host
-    # layer (Command on macOS, Super on Linux). On <meta>, <shift> means move
-    # for layout, prompt for LSP, and reverse for anything that steps through a
-    # list. <meta> is not an editing layer, so it carries no undo/redo
-    # counterpart to <meta-c>/<meta-v>: undo is the editor's C-/ and C-_.
-    "<meta-,>": "config"
-    "<meta-/>": "cheatsheet"
-    "<meta-q>": "quit"
-    "<meta-=>": "guifontsize increase"
-    "<meta-->": "guifontsize decrease"
-    "<meta-t>": "tabnew"
-    "<meta-c>": "clipboardcopy"
-    "<meta-v>": "clipboardpaste"
-    "<shift-meta-backspace>": "windowresize reset"
-    "<shift-meta-+>": ["windowresize max width", "windowresize max height"]
-    "<shift-meta-->": ["windowresize min width", "windowresize min height"]
-    "<ctrl-meta-h>": "windowdefaultsplit h"
-    "<ctrl-meta-v>": "windowdefaultsplit v"
-    "<meta-enter>": "terminalneworsplit"
-    "<shift-meta-enter>": "!"
-    "<meta-`>": "workspacesearch"
-    "<meta-1>": "workspacefocus 1"
-    "<meta-2>": "workspacefocus 2"
-    "<meta-3>": "workspacefocus 3"
-    "<meta-4>": "workspacefocus 4"
-    "<meta-5>": "workspacefocus 5"
-    "<meta-6>": "workspacefocus 6"
-    "<meta-7>": "workspacefocus 7"
-    "<meta-8>": "workspacefocus 8"
-    "<meta-9>": "workspacefocus 9"
-    "<shift-meta-1>": "workspacemove 1"
-    "<shift-meta-2>": "workspacemove 2"
-    "<shift-meta-3>": "workspacemove 3"
-    "<shift-meta-4>": "workspacemove 4"
-    "<shift-meta-5>": "workspacemove 5"
-    "<shift-meta-6>": "workspacemove 6"
-    "<shift-meta-7>": "workspacemove 7"
-    "<shift-meta-8>": "workspacemove 8"
-    "<shift-meta-9>": "workspacemove 9"
+    # C-M-i and the C-x chords); Super belongs to the desktop on Linux, so
+    # everything Rune-only lives on <alt-shift>, which the editor leaves free
+    # and a focused terminal hands back to Rune. <ctrl-shift-alt> means move
+    # for layout, prompt for LSP, and reverse for anything that steps through
+    # a list. M-digit and C-M-digit are numeric arguments, so workspaces take
+    # <ctrl-shift-alt>, and moving a window to one is left to the command
+    # prompt, as are the maximum and minimum window sizes. The clipboard
+    # pairs GNU's M-w / C-y letters with <ctrl-alt>.
+    "<ctrl-shift-alt-,>": "config"
+    "<alt-/>": "cheatsheet"
+    "<ctrl-alt-q>": "quit"
+    "<alt-shift-=>": "guifontsize increase"
+    "<alt-shift-->": "guifontsize decrease"
+    "<alt-shift-t>": "tabnew"
+    "<ctrl-alt-w>": "clipboardcopy"
+    "<ctrl-alt-y>": "clipboardpaste"
+    "<ctrl-shift-alt-backspace>": "windowresize reset"
+    "<ctrl-shift-alt-s>": "windowdefaultsplit h"
+    "<ctrl-shift-alt-v>": "windowdefaultsplit v"
+    "<alt-enter>": "terminalneworsplit"
+    "<alt-shift-enter>": "!"
+    "<ctrl-alt-`>": "workspacesearch"
+    "<ctrl-shift-alt-1>": "workspacefocus 1"
+    "<ctrl-shift-alt-2>": "workspacefocus 2"
+    "<ctrl-shift-alt-3>": "workspacefocus 3"
+    "<ctrl-shift-alt-4>": "workspacefocus 4"
+    "<ctrl-shift-alt-5>": "workspacefocus 5"
+    "<ctrl-shift-alt-6>": "workspacefocus 6"
+    "<ctrl-shift-alt-7>": "workspacefocus 7"
+    "<ctrl-shift-alt-8>": "workspacefocus 8"
+    "<ctrl-shift-alt-9>": "workspacefocus 9"
 
 # ---------------------------------------------------------------------------
 # Animations between workspaces

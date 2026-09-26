@@ -149,12 +149,10 @@ caret, and adding `<shift>` selects through the same movement.
 
 Broad strokes of what's supported:
 
-- Native application shortcuts: `<meta-c>`/`<meta-v>`/`<meta-z>` on macOS and
-  `<ctrl-c>`/`<ctrl-v>`/`<ctrl-z>` on Linux.
-- Native movement: `<alt-left>`/`<alt-right>` and
-  `<meta-left>`/`<meta-right>` line boundaries on macOS; `<ctrl-left>`/
-  `<ctrl-right>` words and `<ctrl-home>`/`<ctrl-end>` document boundaries on
-  Linux.
+- Native application shortcuts:
+  <Platform when="darwin">`<meta-c>`/`<meta-v>`/`<meta-z>`.</Platform><Platform when="linux">`<ctrl-c>`/`<ctrl-v>`/`<ctrl-z>`.</Platform>
+- Native movement:
+  <Platform when="darwin">`<alt-left>`/`<alt-right>` words and `<meta-left>`/`<meta-right>` line boundaries.</Platform><Platform when="linux">`<ctrl-left>`/`<ctrl-right>` words and `<ctrl-home>`/`<ctrl-end>` document boundaries.</Platform>
 - Adding `<shift>` extends every movement, including word, line, and document
   jumps.
 - Line operations: duplicate, move, kill, join, indent/outdent,
@@ -162,9 +160,11 @@ Broad strokes of what's supported:
 - Semantic selection: expand/shrink, select line, select all,
   select-next-occurrence of word at cursor.
 - Copy and cut use the current line when no text is selected.
-- Search and replace via `<meta-f>` on macOS and `<ctrl-f>` on Linux. Open
-  replace directly with `<meta-r>`, or switch an open search to replace mode
-  with `<meta-r>`.
+- Search and replace via
+  <Platform when="darwin">`<meta-f>`</Platform><Platform when="linux">`<ctrl-f>`</Platform>.
+  Open replace directly with
+  <Platform when="darwin">`<meta-r>`</Platform><Platform when="linux">`<ctrl-h>`</Platform>,
+  or switch an open search to replace mode with the same key.
 - Folds: toggle one, toggle all, collapse/expand range.
 - Auto-pair for `()`, `[]`, `{}`, `"`, `'`.
 - Macros recorded on the unnamed register via `<ctrl-q>`.
@@ -295,7 +295,8 @@ For ready-to-copy `exo` configs (Vim, Neovim, Helix, Nano, and more), see the
   [Standard](#standard) editing the editor always treats the next
   character as text to insert, so pressing `:` would insert `:` at the
   cursor instead of opening the prompt; that is why the standard
-  bootstrap rebinds `command.key` to `<shift-meta-p>`.
+  bootstrap rebinds `command.key` to
+  <Platform when="darwin">`<shift-meta-p>`</Platform><Platform when="linux">`<ctrl-shift-p>`</Platform>.
 
   In [Exoeditor](#exoeditor) mode the right `command.key` depends on your
   **external editor's** modality, not on the fallback. There is no
@@ -305,7 +306,8 @@ For ready-to-copy `exo` configs (Vim, Neovim, Helix, Nano, and more), see the
     where `:` is free, so keep `command.key` at `:`.
   - Naturally modeless external editors (Micro, Emacs, Nano) treat `:` as
     text to insert, so a single-character `command.key` can never open the
-    prompt; rebind it to a modified combination such as `<shift-meta-p>`.
+    prompt; rebind it to a modified combination such as
+    <Platform when="darwin">`<shift-meta-p>`</Platform><Platform when="linux">`<ctrl-shift-alt-p>` (the desktop usually owns Super)</Platform>.
 
   See the [Examples](./learn/exoeditor.md#examples) in the Exoeditor guide for
   the recommended `command.key` per editor.

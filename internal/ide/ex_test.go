@@ -2175,6 +2175,36 @@ func newExSequencerHarness(
 	timeout time.Duration,
 ) exSequencerHarness {
 	t.Helper()
+	var recMu sync.Mutex
+	editorSaw := &[]term.KeyComb{}
+	consume := make(map[term.KeyComb]struct{}, len(editorConsumes))
+	for _, k := range editorConsumes {
+		consume[k] = struct{}{}
+	}
+	editor := seqStubEditor{
+		TestEditor: texttest.NopEditor(),
+		consume:    consume,
+		recMu:      &recMu,
+		seen:       editorSaw,
+	}
+	h := newExSequencerHarnessWithEditor(t, editor, &recMu, sequences, keyBindings, timeout)
+	h.editorSaw = editorSaw
+	return h
+}
+
+// newExSequencerHarnessWithEditor is newExSequencerHarness over a caller
+// supplied editor, so a real editor decides which keys it claims. recMu
+// guards the fired recorder and must be the mutex the editor records
+// under, if it records at all.
+func newExSequencerHarnessWithEditor(
+	t *testing.T,
+	editor text.Editor,
+	recMu *sync.Mutex,
+	sequences map[thandler.Sequence][][]string,
+	keyBindings map[term.KeyComb][][]string,
+	timeout time.Duration,
+) exSequencerHarness {
+	t.Helper()
 	// exMu serializes ex.Handle calls (the test goroutine plus the
 	// re-issue timer goroutine). recMu independently guards the fired
 	// and seen recorders, which are touched from inside ex.Handle (while
@@ -2182,14 +2212,7 @@ func newExSequencerHarness(
 	// both would deadlock because ex.Handle synchronously invokes the
 	// editor and command sinks.
 	var mu sync.Mutex
-	var recMu sync.Mutex
 	fired := &[]string{}
-	editorSaw := &[]term.KeyComb{}
-
-	consume := make(map[term.KeyComb]struct{}, len(editorConsumes))
-	for _, k := range editorConsumes {
-		consume[k] = struct{}{}
-	}
 
 	opts := []text.Option{
 		text.WithCommandKey(testCommandKey),
@@ -2211,12 +2234,6 @@ func newExSequencerHarness(
 	svc := storagestub.NewInMemoryService()
 	notifications := newWorkspaceNotifications(svc, notificationsConfig(),
 		&workspaceManagerMock{workspace: ex})
-	editor := seqStubEditor{
-		TestEditor: texttest.NopEditor(),
-		consume:    consume,
-		recMu:      &recMu,
-		seen:       editorSaw,
-	}
 	require.NoError(t, ex.init(
 		func(exoeditor.Reloader, schemeapi.Terminal) (text.Editor, error) { return editor, nil },
 		&testLoader{}, svc, notifications, file,
@@ -2272,7 +2289,7 @@ func newExSequencerHarness(
 		defer mu.Unlock()
 		b.Close()
 	})
-	return exSequencerHarness{ex: b, fired: fired, editorSaw: editorSaw, recMu: &recMu}
+	return exSequencerHarness{ex: b, fired: fired, editorSaw: &[]term.KeyComb{}, recMu: recMu}
 }
 
 // TestExSequencerModifierVsBarePrefix drives the ex event pipeline with
@@ -2564,7 +2581,9 @@ func TestExStandardNavigationPrecedesLayoutBindings(t *testing.T) {
 	buf := new(cell.Buffer)
 	buf.Init()
 	buf.WriteString("  first line\nlast line")
-	ed := standard.NewHandler(buf, resource, text.IndentRuneTab, 0)
+	// The Meta navigation chords only exist on macOS hosts.
+	ed := standard.NewHandler(buf, resource, text.IndentRuneTab, 0,
+		standard.WithHostMetaChords(true))
 	ed.Resize(40, 10)
 	require.True(t, ed.SetCursorAtScroll(term.Coordinates{X: 7}))
 	require.NoError(t, h.ex.invokeWindow().SetContent(ed))
@@ -2775,49 +2794,92 @@ func TestExEmacsMetaLayoutBindingsReachCommandLayer(t *testing.T) {
 }
 
 func TestExEmacsLifecycleBindingsReachCommandLayerFromTerminal(t *testing.T) {
+	for _, tc := range []struct {
+		file string
+		want map[string]string
+		// cx maps each GNU C-x lifecycle chord to the terminal-safe chord
+		// it duplicates.
+		cx map[string]string
+	}{
+		{
+			file: "preset_emacs_darwin.yaml",
+			want: map[string]string{
+				"<meta-up>":      "windowresize increase height",
+				"<meta-left>":    "windowresize decrease width",
+				"<meta-down>":    "windowresize decrease height",
+				"<meta-right>":   "windowresize increase width",
+				"<meta-d>":       "windownew down",
+				"<meta-r>":       "windownew right",
+				"<meta-k>":       "windowclose",
+				"<shift-meta-k>": "windowcloseall",
+				"<meta-m>":       "windowtogglemaximize",
+				"<meta-o>":       "fexplorer",
+			},
+			cx: map[string]string{
+				"<ctrl-x>0": "<meta-k>",
+				"<ctrl-x>1": "<shift-meta-k>",
+				"<ctrl-x>2": "<meta-d>",
+				"<ctrl-x>3": "<meta-r>",
+			},
+		},
+		{
+			file: "preset_emacs_linux.yaml",
+			want: map[string]string{
+				"<ctrl-shift-alt-backspace>": "windowresize reset",
+				"<alt-shift-d>":              "windownew down",
+				"<alt-shift-r>":              "windownew right",
+				"<alt-shift-k>":              "windowclose",
+				"<ctrl-shift-alt-k>":         "windowcloseall",
+				"<alt-shift-m>":              "windowtogglemaximize",
+				"<alt-shift-o>":              "fexplorer",
+			},
+			cx: map[string]string{
+				"<ctrl-x>0": "<alt-shift-k>",
+				"<ctrl-x>1": "<ctrl-shift-alt-k>",
+				"<ctrl-x>2": "<alt-shift-d>",
+				"<ctrl-x>3": "<alt-shift-r>",
+				"<ctrl-x>^": "<ctrl-shift-up>",
+				"<ctrl-x>{": "<ctrl-shift-left>",
+				"<ctrl-x>-": "<ctrl-shift-down>",
+				"<ctrl-x>}": "<ctrl-shift-right>",
+				"<ctrl-x>+": "<ctrl-shift-alt-backspace>",
+			},
+		},
+	} {
+		t.Run(tc.file, func(t *testing.T) {
+			testEmacsLifecycleBindingsReachCommandLayerFromTerminal(t, tc.file, tc.want, tc.cx)
+		})
+	}
+}
+
+func testEmacsLifecycleBindingsReachCommandLayerFromTerminal(
+	t *testing.T, file string, wantBindings, cxMirrors map[string]string,
+) {
 	runeStar := readRuneStar(t)
 	base, err := decodeDefaultConfig(DefaultConfig{
 		src: string(runeStar), modal: true, tui: false,
 	})
 	require.NoError(t, err)
-	overlay, err := os.ReadFile("../../cmd/rune/preset_emacs.yaml")
+	overlay, err := os.ReadFile("../../cmd/rune/" + file)
 	require.NoError(t, err)
-	cfg, err := decodeOverlayConfigFile(
-		bytes.NewReader(overlay), "preset_emacs.yaml", base)
+	cfg, err := decodeOverlayConfigFile(bytes.NewReader(overlay), file, base)
 	require.NoError(t, err)
 	mappings := (&ideConfig{cfg: cfg, errors: map[string]error{}}).commandKeyMappings()
 
-	wantBindings := map[string]string{
-		"<meta-up>":      "windowresize increase height",
-		"<meta-left>":    "windowresize decrease width",
-		"<meta-down>":    "windowresize decrease height",
-		"<meta-right>":   "windowresize increase width",
-		"<meta-d>":       "windownew down",
-		"<meta-r>":       "windownew right",
-		"<meta-k>":       "windowclose",
-		"<shift-meta-k>": "windowcloseall",
-		"<meta-m>":       "windowtogglemaximize",
-		"<meta-o>":       "fexplorer",
-	}
 	for key, command := range wantBindings {
 		seq := mustParseBindingKey(t, key)
 		require.Equalf(t, [][]string{strings.Split(command, " ")}, mappings[seq],
 			"%s must run %q", key, command)
 	}
 	// The GNU C-x lifecycle chords are optional duplicates: a focused terminal
-	// eats them, so each one must mirror a <meta> binding above.
-	for cx, meta := range map[string]string{
-		"<ctrl-x>0": "<meta-k>",
-		"<ctrl-x>1": "<shift-meta-k>",
-		"<ctrl-x>2": "<meta-d>",
-		"<ctrl-x>3": "<meta-r>",
-	} {
+	// eats them, so each one must mirror a single-chord binding above.
+	for cx, chord := range cxMirrors {
 		got, ok := mappings[mustParseBindingKey(t, cx)]
 		if !ok {
 			continue
 		}
-		require.Equalf(t, mappings[mustParseBindingKey(t, meta)], got,
-			"%s must duplicate %s, not diverge from it", cx, meta)
+		require.Equalf(t, mappings[mustParseBindingKey(t, chord)], got,
+			"%s must duplicate %s, not diverge from it", cx, chord)
 	}
 	for _, key := range []string{
 		"<ctrl-x>9", "<ctrl-x>d", "<ctrl-x>b", "<ctrl-x>j", "<ctrl-x>?",

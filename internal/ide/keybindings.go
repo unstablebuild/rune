@@ -24,6 +24,7 @@ import (
 	"strings"
 	"text/template"
 
+	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/handler/command"
 	"unstable.build/rune/internal/ide/idetutorial/starlarktutorial"
 	"unstable.build/rune/internal/text"
@@ -116,9 +117,11 @@ type keyBindingSection struct {
 // trailing catch-all.
 type keybindingsData struct {
 	EditorMode string
-	MetaKey    string
-	Sections   []keyBindingSection
-	Other      *keyBindingSection
+	// MetaKey names the key behind `<meta>`, and is empty when no binding
+	// uses it, as with every Linux preset.
+	MetaKey  string
+	Sections []keyBindingSection
+	Other    *keyBindingSection
 }
 
 // kbEntry is one effective binding before compression and rendering.
@@ -172,7 +175,10 @@ func renderKeyBindings(cfg text.Config, cmdManuals []command.Manual, editorMode,
 		addRow(e.key(), e.cmds, "")
 	}
 
-	data := keybindingsData{EditorMode: editorMode, MetaKey: metaKeyName(goos)}
+	data := keybindingsData{EditorMode: editorMode}
+	if bindsMeta(cfg) {
+		data.MetaKey = metaKeyName(goos)
+	}
 	for i := range sections {
 		s := &sections[i]
 		if len(s.Rows) == 0 {
@@ -204,6 +210,20 @@ func metaKeyName(goos string) string {
 		return "the Command key"
 	}
 	return "the Windows or Super key"
+}
+
+func bindsMeta(cfg text.Config) bool {
+	for kc := range cfg.CommandKeyBindings {
+		if kc.Mod&term.ModMeta != 0 {
+			return true
+		}
+	}
+	for seq := range cfg.CommandSequenceBindings {
+		if (seq.First.Mod|seq.Last.Mod)&term.ModMeta != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func collectKeyBindingEntries(cfg text.Config) []kbEntry {

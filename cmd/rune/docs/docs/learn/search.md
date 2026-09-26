@@ -27,7 +27,7 @@ At a glance:
 | [Open an arbitrary symbol's documentation](#semantic-symbol-search) | `lsp hover <symbol>` | <KeyBinding command="echo {prompt}lsp<space>hover<space>" /> |
 | [List an arbitrary symbol's references](#semantic-symbol-search) | `lsp references <symbol>` | <KeyBinding command="echo {prompt}lsp<space>references<space>" /> |
 | [Turn any `grep`/`rg` output into a jump list](#turn-command-output-into-a-jump-list) | `locationpicker <program>` | (define your own) |
-| [Search a terminal's scrollback](#search-a-terminals-scrollback) | (built into the terminal) | `<meta-f>` |
+| [Search a terminal's scrollback](#search-a-terminals-scrollback) | (built into the terminal) | <Platform when="darwin">`<meta-f>`</Platform><Platform when="linux">`<ctrl-shift-f>`</Platform> |
 
 ## Structural search and navigation
 
@@ -130,9 +130,10 @@ text-search tools you already know.
 ## Search a terminal's scrollback
 
 Terminals get their own find, independent of everything else on this page.
-`<meta-f>` opens a floating find box over the focused terminal and searches
-its entire scrollback, not just the visible screen. `<enter>` or `<meta-f>`
-again jumps to the next match, and `<esc>` or `<ctrl-c>` closes the box and
+<Platform when="darwin">`<meta-f>`</Platform><Platform when="linux">`<ctrl-shift-f>`</Platform> opens a floating find box
+over the focused terminal and searches its entire scrollback, not just the
+visible screen. `<enter>` or the same key again jumps to the next match, and
+`<esc>` or `<ctrl-c>` closes the box and
 leaves the current match selected, so a follow-up copy shortcut copies it.
 It works whether or not the terminal is in [modal mode](./vim-editor.md).
 There is no replace: a shell has no buffer to write into.
@@ -143,6 +144,10 @@ There is no replace: a shell has no buffer to write into.
 the rest of its appearance always follows
 [`editor.standard.search`](./standard-editor.md#search-configuration). Leave
 it unset and the terminal follows whatever `find_key` you configured there.
+<Platform when="linux">The default is `<ctrl-shift-f>` rather than the standard editor's
+`<ctrl-f>`, which the shell running in the terminal needs.</Platform>
+
+<Platform when="darwin">
 
 ```yaml tab
 terminal:
@@ -157,6 +162,25 @@ terminal:
     },
 },
 ```
+
+</Platform>
+<Platform when="linux">
+
+```yaml tab
+terminal:
+  search:
+    find_key: "<ctrl-shift-f>"
+```
+
+```python tab
+"terminal": {
+    "search": {
+        "find_key": "<ctrl-shift-f>",
+    },
+},
+```
+
+</Platform>
 
 The [emacs preset](./emacs-editor.md#incremental-search) rebinds it to
 `<ctrl-s>`, isearch-forward's key, so it shares muscle memory with the

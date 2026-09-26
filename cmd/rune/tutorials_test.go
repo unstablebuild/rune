@@ -18,6 +18,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"regexp"
 	"slices"
 	"strings"
@@ -78,7 +79,7 @@ func TestBasicsTutorialParses(t *testing.T) {
 
 	assert.Equal(t, "basics", tut.ID())
 	assert.Equal(t, "Rune basics", tut.Title())
-	assert.Equal(t, "71", tut.Version())
+	assert.Equal(t, "72", tut.Version())
 }
 
 // TestBasicsTutorialWorkspaceOpenCopyByOS asserts the welcome window's
@@ -404,6 +405,7 @@ func TestBasicsTutorialLayoutIntro(t *testing.T) {
 	tests := []struct {
 		name     string
 		mode     string
+		os       string
 		contains []string
 	}{
 		{
@@ -449,6 +451,28 @@ func TestBasicsTutorialLayoutIntro(t *testing.T) {
 				"Add <shift> to move its content, or add <meta> to resize it",
 			},
 		},
+		{
+			name: "emacs linux",
+			mode: "emacs",
+			os:   "linux",
+			contains: []string{
+				"hold <alt-shift> with the same PNBF directions to focus windows",
+				"then add <ctrl> to move window content instead",
+				"the <alt-shift> layer stays reachable from terminals",
+				"Hold <alt-shift> and press P/N/B/F to focus a window in that direction",
+				"Add <ctrl> to move the content instead of focus it",
+				"<ctrl-shift-alt> + P/N/B/F moves the focused window's content",
+			},
+		},
+		{
+			name: "standard linux",
+			mode: "standard",
+			os:   "linux",
+			contains: []string{
+				"So hold <alt> and press IJKL to focus a window",
+				"Add <shift> to move its content, or add <ctrl> as well to resize it",
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -467,7 +491,17 @@ func TestBasicsTutorialLayoutIntro(t *testing.T) {
 					"tabnew":             "<alt-t>",
 					"tabclose":           "<alt-w>",
 				}
-				if tt.mode == "emacs" {
+				switch {
+				case tt.mode == "emacs" && tt.os == "linux":
+					keys["windownew down"] = "<alt-shift-d>"
+					keys["windownew right"] = "<alt-shift-r>"
+					keys["windowclose"] = "<alt-shift-k>"
+					keys["windowcloseall"] = "<ctrl-shift-alt-k>"
+					keys["windowtogglemaximize"] = "<alt-shift-m>"
+					keys["tabclose"] = "<alt-shift-w>"
+					keys["tabmove left"] = "<ctrl-shift-alt-[>"
+					keys["tabmove right"] = "<ctrl-shift-alt-]>"
+				case tt.mode == "emacs":
 					keys["windownew down"] = "<meta-d>"
 					keys["windownew right"] = "<meta-r>"
 					keys["windowclose"] = "<meta-k>"
@@ -486,7 +520,7 @@ func TestBasicsTutorialLayoutIntro(t *testing.T) {
 				idetutorial.PromptStyle{}, nil, nil, nil,
 				nil, nil,
 				term.KeyComb{Ch: ':'},
-				tt.mode, "", keyFor,
+				tt.mode, tt.os, keyFor,
 				nil, nil, nil,
 			)
 			require.NoError(t, err)
@@ -508,6 +542,11 @@ func TestBasicsTutorialLayoutIntro(t *testing.T) {
 				strings.ReplaceAll(w.String(), "│", " ")), " ")
 			for _, expected := range tt.contains {
 				assert.Contains(t, rendered, expected)
+			}
+			if tt.os == "linux" {
+				assert.NotContains(t, rendered, "meta",
+					"Super belongs to the desktop on Linux")
+				assert.NotContains(t, rendered, "Meta")
 			}
 			assert.NotContains(t, rendered, "standard and Emacs")
 			if tt.mode != "vim" && tt.mode != "helix" {
@@ -585,11 +624,12 @@ func TestBasicsTutorialHasNoHardcodedCommandKeys(t *testing.T) {
 // tutorial spells out literally against the presets that bind them: the
 // HJKL layout chords shared by the vim and helix lessons, and Helix's
 // <space>e leader key, which key_for cannot name because <shift-tab> also
-// runs fexplorer.
+// runs fexplorer. Super belongs to the desktop on Linux, so the Linux
+// lessons teach the <ctrl-alt> layer and bracket tab keys instead.
 func TestBasicsTutorialHelixKeysMatchPreset(t *testing.T) {
 	t.Parallel()
 
-	layout := map[string]string{
+	darwin := map[string]string{
 		`"<meta-h>"`:       `"windowfocus left"`,
 		`"<meta-j>"`:       `"windowfocus down"`,
 		`"<meta-k>"`:       `"windowfocus up"`,
@@ -603,28 +643,65 @@ func TestBasicsTutorialHelixKeysMatchPreset(t *testing.T) {
 		`"<alt-shift-h>"`:  `"tabmove left"`,
 		`"<alt-shift-l>"`:  `"tabmove right"`,
 	}
-	for preset, body := range map[string]string{
-		"vim": presetModalYAML, "helix": presetHelixYAML,
+	linux := map[string]string{
+		`"<ctrl-alt-[>"`:       `"tabprevious"`,
+		`"<ctrl-alt-]>"`:       `"tabnext"`,
+		`"<ctrl-shift-alt-[>"`: `"tabmove left"`,
+		`"<ctrl-shift-alt-]>"`: `"tabmove right"`,
+	}
+	for dir, key := range map[string]string{
+		"left": "h", "down": "j", "up": "k", "right": "l",
 	} {
+		linux[`"<alt-`+key+`>"`] = `"windowfocus ` + dir + `"`
+		linux[`"<ctrl-shift-alt-`+key+`>"`] = `"windowmove ` + dir + `"`
+	}
+	linux[`"<ctrl-alt-h>"`] = `"windowresize decrease width"`
+	linux[`"<ctrl-alt-j>"`] = `"windowresize decrease height"`
+	linux[`"<ctrl-alt-k>"`] = `"windowresize increase height"`
+	linux[`"<ctrl-alt-l>"`] = `"windowresize increase width"`
+	for preset, layout := range map[string]map[string]string{
+		"preset_vim_darwin.yaml":   darwin,
+		"preset_helix_darwin.yaml": darwin,
+		"preset_vim_linux.yaml":    linux,
+		"preset_helix_linux.yaml":  linux,
+	} {
+		raw, err := os.ReadFile(preset)
+		require.NoError(t, err)
+		body := string(raw)
 		for key, command := range layout {
 			assert.Containsf(t, body, key+": "+command,
 				"the %s preset must bind %s to %s as the tutorial teaches",
 				preset, key, command)
 		}
+		if strings.HasPrefix(preset, "preset_helix") {
+			assert.Contains(t, body, `"<space>e": fexplorer`)
+		}
 	}
-	assert.Contains(t, presetHelixYAML, `"<space>e": fexplorer`)
 
+	linuxLayout := []string{
+		"Hold <alt> with h j k l to focus a window in that direction",
+		"Hold <ctrl-alt> with [ or ] to focus the previous or next tab",
+		"Hold <ctrl-shift-alt> to move the content instead of focus it",
+		"<ctrl-shift-alt> + h j k l moves the focused window's content",
+		"<ctrl-shift-alt> + [ or ] moves the current tab left or right in the tab list",
+		"<ctrl-alt> + h j k l resizes the focused window",
+	}
 	tests := []struct {
 		mode string
+		os   string
 		want bool
+		// layout is what the lesson teaches for window and tab keys.
+		layout []string
 	}{
-		{mode: "helix", want: true},
-		{mode: "vim", want: false},
-		{mode: "standard", want: false},
-		{mode: "emacs", want: false},
+		{mode: "helix", os: "darwin", want: true, layout: hjklLayoutList},
+		{mode: "vim", os: "darwin", want: false, layout: hjklLayoutList},
+		{mode: "helix", os: "linux", want: true, layout: linuxLayout},
+		{mode: "vim", os: "linux", want: false, layout: linuxLayout},
+		{mode: "standard", os: "darwin", want: false},
+		{mode: "emacs", os: "darwin", want: false},
 	}
 	for _, tt := range tests {
-		t.Run(tt.mode, func(t *testing.T) {
+		t.Run(tt.mode+"_"+tt.os, func(t *testing.T) {
 			t.Parallel()
 			src := withoutTutorialCall(t, basicsTutorial) + `
 def run():
@@ -635,16 +712,24 @@ tutorial(entry=run)
 				"basics-helix-keys", src,
 				idetutorial.PromptStyle{}, nil, nil, nil,
 				nil, nil,
-				term.KeyComb{Ch: ':'}, tt.mode, "",
+				term.KeyComb{Ch: ':'}, tt.mode, tt.os,
 				nil, nil, nil, nil,
 			)
 			require.NoError(t, err)
-			tut.Resize(80, 24)
+			tut.Resize(120, 40)
 			tut.Reset()
 			t.Cleanup(tut.Stop)
 			require.True(t, tut.WaitActive("wait_event", time.Second))
 
 			text := tut.ActiveText()
+			flat := strings.ReplaceAll(strings.Join(strings.Fields(text), " "), "`", "")
+			for _, want := range tt.layout {
+				assert.Contains(t, flat, want)
+			}
+			if tt.os == "linux" {
+				assert.NotContains(t, flat, "meta",
+					"Super belongs to the desktop on Linux")
+			}
 			if tt.want {
 				assert.Contains(t, text, "<space>e")
 				return
@@ -1251,6 +1336,63 @@ tutorial(entry=run)
 	}
 }
 
+// TestAgentTutorialTipsFollowThePlatform asserts the closing tips name the
+// user's history key and the modifier that opens links, which is Ctrl on
+// Linux, where Super belongs to the desktop.
+func TestAgentTutorialTipsFollowThePlatform(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		os, history string
+		want        []string
+	}{
+		{os: "darwin", history: "<shift-meta-r>", want: []string{
+			"press `<shift-meta-r>` to open the command prompt in history mode",
+			"hold `<meta>` and click the",
+		}},
+		{os: "linux", history: "<ctrl-alt-r>", want: []string{
+			"press `<ctrl-alt-r>` to open the command prompt in history mode",
+			"hold `<ctrl>` and click the",
+		}},
+		{os: "linux", want: []string{
+			"run `history` to open the command prompt in history mode",
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.os+tt.history, func(t *testing.T) {
+			t.Parallel()
+			src := withoutTutorialCall(t, agentTutorial) + `
+def run():
+    wait_command(command = "help", text = help_md)
+tutorial(entry=run)
+`
+			keyFor := func(cmd string, _ []string) string {
+				if cmd == "history" {
+					return tt.history
+				}
+				return ""
+			}
+			tut, err := starlarktutorial.New(
+				"agent-tips", src,
+				idetutorial.PromptStyle{}, nil, nil, nil,
+				nil, nil,
+				term.KeyComb{Ch: ':'}, "vim", tt.os,
+				keyFor, nil, nil, nil,
+			)
+			require.NoError(t, err)
+			tut.Resize(80, 24)
+			tut.Reset()
+			t.Cleanup(tut.Stop)
+			require.True(t, tut.WaitActive("wait_command", time.Second))
+
+			text := strings.Join(strings.Fields(tut.ActiveText()), " ")
+			for _, want := range tt.want {
+				assert.Contains(t, text, want)
+			}
+		})
+	}
+}
+
 func TestTutorialPackageInstallOwnership(t *testing.T) {
 	t.Parallel()
 	// The basics tutorial installs nothing and never sends the user to
@@ -1447,41 +1589,76 @@ func TestNavigationTutorialPrefillKeysMatchPresets(t *testing.T) {
 	)
 	tests := []struct {
 		mode    string
+		os      string
 		jumpKey string
 		defKey  string
 		preset  string
 	}{
 		{
 			mode:    "emacs",
+			os:      "darwin",
 			jumpKey: "<meta-j>",
 			defKey:  "<ctrl-alt-.>",
-			preset:  presetEmacsYAML,
+			preset:  "preset_emacs_darwin.yaml",
+		},
+		{
+			mode:    "emacs",
+			os:      "linux",
+			jumpKey: "<alt-shift-j>",
+			defKey:  "<ctrl-alt-.>",
+			preset:  "preset_emacs_linux.yaml",
 		},
 		{
 			mode:    "vim",
+			os:      "darwin",
 			jumpKey: "<alt-f>",
 			defKey:  "<alt-shift-d>",
-			preset:  presetModalYAML,
+			preset:  "preset_vim_darwin.yaml",
+		},
+		{
+			mode:    "vim",
+			os:      "linux",
+			jumpKey: "<alt-f>",
+			defKey:  "<alt-shift-d>",
+			preset:  "preset_vim_linux.yaml",
 		},
 		{
 			mode:    "standard",
+			os:      "darwin",
 			jumpKey: "<alt-f>",
 			defKey:  "<alt-shift-d>",
-			preset:  presetStandardYAML,
+			preset:  "preset_standard_darwin.yaml",
+		},
+		{
+			mode:    "standard",
+			os:      "linux",
+			jumpKey: "<alt-f>",
+			defKey:  "<alt-shift-d>",
+			preset:  "preset_standard_linux.yaml",
 		},
 		{
 			mode:    "helix",
+			os:      "darwin",
 			jumpKey: "<space>s",
 			defKey:  "<shift-meta-d>",
-			preset:  presetHelixYAML,
+			preset:  "preset_helix_darwin.yaml",
+		},
+		{
+			mode:    "helix",
+			os:      "linux",
+			jumpKey: "<space>s",
+			defKey:  "<alt-shift-d>",
+			preset:  "preset_helix_linux.yaml",
 		},
 	}
 	for _, tt := range tests {
-		t.Run(tt.mode, func(t *testing.T) {
+		t.Run(tt.preset, func(t *testing.T) {
 			t.Parallel()
-			assert.Contains(t, tt.preset, `"`+tt.jumpKey+jumpPrefill,
+			preset, err := os.ReadFile(tt.preset)
+			require.NoError(t, err)
+			assert.Contains(t, string(preset), `"`+tt.jumpKey+jumpPrefill,
 				"the preset must bind the chord the tutorial teaches")
-			assert.Contains(t, tt.preset, `"`+tt.defKey+defPrefill,
+			assert.Contains(t, string(preset), `"`+tt.defKey+defPrefill,
 				"the preset must bind the chord the tutorial teaches")
 
 			src := `
@@ -1494,7 +1671,7 @@ tutorial(entry=run)
 				"navigation-prefill-keys", modeSrc,
 				idetutorial.PromptStyle{}, nil, nil, nil,
 				nil, nil,
-				term.KeyComb{Ch: ':'}, tt.mode, "",
+				term.KeyComb{Ch: ':'}, tt.mode, tt.os,
 				nil, nil, nil, nil,
 			)
 			require.NoError(t, err)
@@ -1793,7 +1970,7 @@ func TestNavigationTutorialParses(t *testing.T) {
 
 	assert.Equal(t, "navigation", tut.ID())
 	assert.Equal(t, "Navigate code", tut.Title())
-	assert.Equal(t, "27", tut.Version())
+	assert.Equal(t, "28", tut.Version())
 }
 
 func TestAgentTutorialParses(t *testing.T) {
@@ -1813,7 +1990,7 @@ func TestAgentTutorialParses(t *testing.T) {
 	require.NotNil(t, tut)
 	assert.Equal(t, "agent", tut.ID())
 	assert.Equal(t, "Rune Agent", tut.Title())
-	assert.Equal(t, "13", tut.Version())
+	assert.Equal(t, "14", tut.Version())
 }
 
 func TestEmbeddedTutorialPlaylist(t *testing.T) {
@@ -1836,32 +2013,34 @@ func TestEmbeddedTutorialPlaylist(t *testing.T) {
 }
 
 // TestShippedTutorialsParseInEveryMode asserts every embedded tutorial
-// parses under each editor mode editor_mode() can report, so a branch
-// only one mode reaches cannot ship broken.
+// parses under each editor mode editor_mode() can report on each host OS,
+// so a branch only one mode or platform reaches cannot ship broken.
 func TestShippedTutorialsParseInEveryMode(t *testing.T) {
 	t.Parallel()
 
 	versions := map[string]string{
-		"basics":     "71",
-		"navigation": "27",
-		"agent":      "13",
+		"basics":     "72",
+		"navigation": "28",
+		"agent":      "14",
 	}
 	for name, src := range shippedTutorials() {
 		for _, mode := range []string{"vim", "helix", "standard", "emacs"} {
-			t.Run(name+"/"+mode, func(t *testing.T) {
-				t.Parallel()
-				tut, err := starlarktutorial.New(
-					name, src,
-					idetutorial.PromptStyle{}, nil, nil, nil,
-					nil, nil,
-					term.KeyComb{Ch: ':'}, mode, "",
-					nil, nil, nil, nil,
-				)
-				require.NoError(t, err)
-				require.NotNil(t, tut)
-				assert.Equal(t, name, tut.ID())
-				assert.Equal(t, versions[name], tut.Version())
-			})
+			for _, goos := range []string{"darwin", "linux"} {
+				t.Run(name+"/"+mode+"/"+goos, func(t *testing.T) {
+					t.Parallel()
+					tut, err := starlarktutorial.New(
+						name, src,
+						idetutorial.PromptStyle{}, nil, nil, nil,
+						nil, nil,
+						term.KeyComb{Ch: ':'}, mode, goos,
+						nil, nil, nil, nil,
+					)
+					require.NoError(t, err)
+					require.NotNil(t, tut)
+					assert.Equal(t, name, tut.ID())
+					assert.Equal(t, versions[name], tut.Version())
+				})
+			}
 		}
 	}
 }

@@ -39,6 +39,8 @@ press it again to cycle through suggestions.
 
 The key is configurable under `command.key`, overriding the preset value:
 
+<Platform when="darwin">
+
 ```yaml tab
 command:
   key: "<meta-p>"
@@ -50,11 +52,28 @@ command:
 },
 ```
 
+</Platform>
+<Platform when="linux">
+
+```yaml tab
+command:
+  key: "<ctrl-shift-alt-p>"
+```
+
+```python tab
+"command": {
+    "key": "<ctrl-shift-alt-p>",
+},
+```
+
+</Platform>
+
 The choice of key matters more than it looks. In the standard and Emacs
 editors a bare printable key would be inserted into the buffer, so the prompt
 needs a modified combination. In `exo` (exoeditor) mode there is no safe
 default at all: the prompt key has to be one your guest editor will leave for
-Rune. Pick a modified combination such as `<shift-meta-p>`.
+Rune. Pick a modified combination such as
+<Platform when="darwin">`<shift-meta-p>`</Platform><Platform when="linux">`<ctrl-shift-alt-p>` (the desktop usually owns Super)</Platform>.
 See the [command-prompt configuration](../config.md#command-prompt) for
 the full rules and recommended combinations.
 

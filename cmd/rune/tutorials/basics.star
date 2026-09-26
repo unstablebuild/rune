@@ -16,6 +16,10 @@
 
 ck = command_key()
 mode = editor_mode()
+# Super belongs to the desktop on Linux, so the Linux presets hold Rune's
+# layout on <alt> and <ctrl-alt> (<alt-shift> in Emacs mode, whose editor
+# owns the Alt chords) and step tabs with the bracket keys.
+linux = os() == "linux"
 # Helix is modal too: every surface has NORMAL and INSERT modes, the
 # prompt sits on the same key, and motion is on the home row. Only the
 # picker keys differ, so copy about modality branches on this and copy
@@ -148,6 +152,34 @@ resize_key_row = " | ".join([
 # Use the rightward one so every mode ends up with the same layout.
 split_window_args = ["right"] if mode == "emacs" else []
 
+if linux:
+    hjkl_layout_list = """\
+- Hold `<alt>` with `h` `j` `k` `l` to focus a window in that direction.
+- Hold `<ctrl-alt>` with `[` or `]` to focus the previous or next tab.
+- Hold `<ctrl-shift-alt>` to move the content instead of focus it:
+  - `<ctrl-shift-alt>` + `h` `j` `k` `l` moves the focused window's content.
+  - `<ctrl-shift-alt>` + `[` or `]` moves the current tab left or right in the tab list.
+- `<ctrl-alt>` + `h` `j` `k` `l` resizes the focused window.
+"""
+    emacs_layer = "`<alt-shift>`"
+    emacs_layer_name = "`<alt-shift>` layer"
+    emacs_move_add = "`<ctrl>`"
+    emacs_move_layer = "`<ctrl-shift-alt>`"
+    standard_resize_add = "add `<ctrl>` as well"
+else:
+    hjkl_layout_list = """\
+- Hold `<meta>` with `h` `j` `k` `l` to focus a window in that direction.
+- Hold `<alt>` with `h` or `l` to focus the previous or next tab.
+- Add `<shift>` to move the content instead of focus it:
+  - `<shift-meta>` + `h` `j` `k` `l` moves the focused window's content.
+  - `<shift-alt>` + `h` or `l` moves the current tab left or right in the tab list.
+"""
+    emacs_layer = "`<meta>`"
+    emacs_layer_name = "host Meta layer"
+    emacs_move_add = "`<shift>`"
+    emacs_move_layer = "`<shift-meta>`"
+    standard_resize_add = "add `<meta>`"
+
 if mode == "vim":
     layout_pattern_md = """\
 ## HJKL controls the layout
@@ -159,12 +191,7 @@ controls and can keep your attention on the work.
 Rune carries that same HJKL language into layout management: `H` points left,
 `J` down, `K` up, and `L` right.
 
-- Hold `<meta>` with `h` `j` `k` `l` to focus a window in that direction.
-- Hold `<alt>` with `h` or `l` to focus the previous or next tab.
-- Add `<shift>` to move the content instead of focus it:
-  - `<shift-meta>` + `h` `j` `k` `l` moves the focused window's content.
-  - `<shift-alt>` + `h` or `l` moves the current tab left or right in the tab list.
-"""
+""" + hjkl_layout_list
 elif mode == "helix":
     layout_pattern_md = """\
 ## HJKL controls the layout
@@ -176,26 +203,21 @@ controls and can keep your attention on the work.
 Rune carries that same HJKL language into layout management: `H` points left,
 `J` down, `K` up, and `L` right.
 
-- Hold `<meta>` with `h` `j` `k` `l` to focus a window in that direction.
-- Hold `<alt>` with `h` or `l` to focus the previous or next tab.
-- Add `<shift>` to move the content instead of focus it:
-  - `<shift-meta>` + `h` `j` `k` `l` moves the focused window's content.
-  - `<shift-alt>` + `h` or `l` moves the current tab left or right in the tab list.
-"""
+""" + hjkl_layout_list
 elif mode == "emacs":
     layout_pattern_md = """\
 ## Emacs directions control the layout
 
 Rune keeps `<ctrl-p>` / `<ctrl-n>` and `<ctrl-b>` / `<ctrl-f>` available for
 editing. Rather than teach a second direction map, Rune changes the target:
-hold `<meta>` with the same PNBF directions to focus windows, then add `<shift>`
+hold """ + emacs_layer + """ with the same PNBF directions to focus windows, then add """ + emacs_move_add + """
 to move window content instead. Reusing that muscle memory keeps repeated
-layout actions fast, and the host Meta layer stays reachable from terminals.
+layout actions fast, and the """ + emacs_layer_name + """ stays reachable from terminals.
 
-- Hold `<meta>` and press P/N/B/F to focus a window in that direction.
+- Hold """ + emacs_layer + """ and press P/N/B/F to focus a window in that direction.
 - Press """ + keylabel("tabprevious") + """ / """ + keylabel("tabnext") + """ to focus the previous or next tab.
-- Add `<shift>` to move the content instead of focus it:
-  - `<shift-meta>` + P/N/B/F moves the focused window's content.
+- Add """ + emacs_move_add + """ to move the content instead of focus it:
+  - """ + emacs_move_layer + """ + P/N/B/F moves the focused window's content.
   - """ + keylabel("tabmove", "left") + """ / """ + keylabel("tabmove", "right") + """ moves the current tab left or right in the tab list.
 - Manage windows:
   - """ + keylabel("windownew", "down") + """ / """ + keylabel("windownew", "right") + """ splits below or right.
@@ -221,7 +243,7 @@ as a second set of arrow keys:
 ```
 
 `I` points up, `J` left, `K` down, and `L` right. So hold `<alt>` and press IJKL to focus
-a window. Add `<shift>` to move its content, or add `<meta>` to resize it.
+a window. Add `<shift>` to move its content, or """ + standard_resize_add + """ to resize it.
 
 The pattern is Alt plus the target: IJKL affects windows, brackets affect tabs,
 and adding `<shift>` moves content instead of focus.
@@ -397,11 +419,16 @@ Do both, in order:
 resize_direction_md = ("""\
 Window resizing keeps the IJKL directions: `I` makes the window taller, `J`
 narrower, `K` shorter, and `L` wider.
-""" if mode == "standard" else ("""\
+""" if mode == "standard" else (("""\
+Emacs mode keeps resize on `<ctrl-shift>` arrows instead of taking more editing
+letters: up makes the window taller, left narrower, down shorter, and right
+wider. The GNU `<ctrl-x>^` / `<ctrl-x>{` / `<ctrl-x>-` / `<ctrl-x>}` chords
+resize too.
+""" if linux else """\
 Emacs mode keeps resize on host-Meta arrows instead of taking more editing
 letters: up makes the window taller, left narrower, down shorter, and right
 wider. These work from terminals as well as editors.
-""" if mode == "emacs" else """\
+""") if mode == "emacs" else """\
 Window resizing uses matching arrow directions: up makes the window taller,
 left narrower, down shorter, and right wider.
 """))
@@ -446,7 +473,7 @@ Keep only this window: """ + keypress("windowcloseall") + """.
 
 tabs_intro_md = ("""\
 A window shows one **tab** at a time: a file, a terminal, task output or agent. Emacs
-mode keeps tab lifecycle on Rune's host Meta layer: """ + keylabel("tabnew") + """ starts a
+mode keeps tab lifecycle on Rune's """ + emacs_layer_name + """: """ + keylabel("tabnew") + """ starts a
 new tab and """ + keylabel("tabclose") + """ closes the current one.
 """ if mode == "emacs" else ("""\
 A window shows one **tab** at a time: a file, a terminal, task output. Helix's
@@ -878,4 +905,4 @@ def run():
     teach_cheatsheet()
 
 
-tutorial(id = "basics", title = "Rune basics", version = "71", entry = run)
+tutorial(id = "basics", title = "Rune basics", version = "72", entry = run)

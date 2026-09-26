@@ -360,7 +360,7 @@ func (g *GUI) Update() error {
 
 	// Underlines must appear and disappear on the modifier alone, with no
 	// mouse movement and no handler event, so a transition renders by itself.
-	if g.links.setMeta(g.input.metaHeld()) {
+	if g.links.setMeta(g.input.linkModHeld()) {
 		g.needsRender = true
 	}
 	if g.links.armed() {

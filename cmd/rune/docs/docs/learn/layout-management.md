@@ -12,8 +12,20 @@ primitive at a time, and along the way you will see why the preset
 keybindings are the way they are. The bindings below follow the editor preset
 selected at the top of the page.
 
-On macOS, `<meta>` is the Command key. On Linux it is the Super key. See the
+<Platform when="darwin">
+
+`<meta>` is the Command key. See the [key syntax](./key-syntax.md) reference
+for how modifiers are spelled.
+
+</Platform>
+<Platform when="linux">
+
+Super belongs to the desktop, so the presets bind nothing to it and put Rune's
+layout layer on `<alt>`, `<ctrl-alt>`, and `<ctrl-shift-alt>` instead; see
+[Why Alt on Linux](./key-mapping.md#why-alt-on-linux). See the
 [key syntax](./key-syntax.md) reference for how modifiers are spelled.
+
+</Platform>
 
 ## The big idea
 
@@ -278,7 +290,9 @@ These are the shipped preset assignments. Every layout binding lives in
 
 ### Vim
 
-| Command | Binding |
+<Platform when="darwin">
+
+| Command | Key |
 | --- | --- |
 | `windowfocus left/right/down/up` | `<meta-h>` / `<meta-l>` / `<meta-j>` / `<meta-k>` |
 | `windowmove left/right/down/up` | `<shift-meta-h>` / `<shift-meta-l>` / `<shift-meta-j>` / `<shift-meta-k>` |
@@ -301,9 +315,47 @@ These are the shipped preset assignments. Every layout binding lives in
 | `workspacemove 1..9` | `<shift-meta-1>` … `<shift-meta-9>` |
 | `workspacesearch` | `` <meta-`> `` |
 
+</Platform>
+<Platform when="linux">
+
+| Command | Key |
+| --- | --- |
+| `windowfocus left/right/down/up` | `<alt-h>` / `<alt-l>` / `<alt-j>` / `<alt-k>` |
+| `windowmove left/right/down/up` | `<ctrl-shift-alt-h>` / `<ctrl-shift-alt-l>` / `<ctrl-shift-alt-j>` / `<ctrl-shift-alt-k>` |
+| `windowresize` narrower/wider/shorter/taller | `<ctrl-alt-h>` / `<ctrl-alt-l>` / `<ctrl-alt-j>` / `<ctrl-alt-k>` |
+| `windowresize` max / min / reset | `<ctrl-shift-alt-=>` / `<ctrl-shift-alt-->` / `<ctrl-shift-alt-backspace>` |
+| `windowtogglemaximize` | `<alt-m>` |
+| `windowdefaultsplit h/v` | `<ctrl-alt-s>` / `<ctrl-alt-v>` |
+| `windownew` | `<ctrl-alt-n>` |
+| `windowclose` / `windowcloseall` | `<alt-w>` / `<alt-shift-w>` |
+| `tabnew` | `<alt-n>` |
+| `tabnext` / `tabprevious` | `<ctrl-alt-]>` / `<ctrl-alt-[>` |
+| `tabfocus 1..9` | `<alt-1>` … `<alt-9>` |
+| `tabmove left/right` | `<ctrl-shift-alt-[>` / `<ctrl-shift-alt-]>` |
+| `tabmove 1..9` | `<alt-shift-1>` … `<alt-shift-9>` |
+| `tabsearch` | `` <ctrl-alt-`> `` |
+| `tabclose` | `<ctrl-alt-w>` |
+| `windowconverttab` | `<ctrl-alt-enter>` |
+| `terminalneworsplit` | `<alt-enter>` |
+| `workspacefocus 1..9` | `<ctrl-alt-1>` … `<ctrl-alt-9>` |
+| `workspacemove 1..9` | `<ctrl-shift-alt-1>` … `<ctrl-shift-alt-9>` |
+| `workspacesearch` | `` <ctrl-shift-alt-`> `` |
+
+`<alt>` with `h` `j` `k` `l` focuses windows, and `<ctrl-alt>` carries
+the rest of the layout: `h` `j` `k` `l` resize, the brackets step through tabs,
+and digits pick workspaces. `<ctrl-shift-alt>` moves windows, tabs, and
+workspaces. The Helix preset shares this layout. KDE, Cinnamon, Xfce, and MATE
+lock the screen on `<ctrl-alt-l>`; on those desktops, rebind
+`windowresize increase width` or remap the key with
+[`gui.key_mapping`](./key-mapping.md).
+
+</Platform>
+
 ### Standard
 
-| Command | Binding |
+<Platform when="darwin">
+
+| Command | Key |
 | --- | --- |
 | `windowfocus left/right/down/up` | `<alt-j>` / `<alt-l>` / `<alt-k>` / `<alt-i>` |
 | `windowmove left/right/down/up` | `<alt-shift-j>` / `<alt-shift-l>` / `<alt-shift-k>` / `<alt-shift-i>` |
@@ -314,21 +366,51 @@ These are the shipped preset assignments. Every layout binding lives in
 | `windownew` | `<alt-n>` |
 | `windowclose` / `windowcloseall` | `<alt-q>` / `<alt-shift-q>` |
 | `windowconverttab` prompt | `<alt-shift-enter>` |
-| `tabnew` | `<meta-t>` on macOS; `<ctrl-n>` on Linux |
+| `tabnew` | `<meta-t>` |
+| `tabnext` / `tabprevious` | `<alt-]>` / `<alt-[>` |
+| `tabfocus 1..9` | `<alt-1>` … `<alt-9>` |
+| `tabmove left/right` | `<alt-shift-[>` / `<alt-shift-]>` |
+| `tabmove 1..9` | `<alt-shift-1>` … `<alt-shift-9>` |
+| `tabsearch` | `` <alt-`> `` |
+| `tabclose` | `<alt-w>` / `<meta-w>` |
+| `terminalneworsplit` | `<alt-enter>` / `<meta-enter>` |
+| `workspacefocus 1..9` | `<meta-1>` … `<meta-9>` |
+| `workspacemove 1..9` | `<shift-meta-1>` … `<shift-meta-9>` |
+| `workspacesearch` | `` <meta-`> `` |
+
+</Platform>
+<Platform when="linux">
+
+| Command | Key |
+| --- | --- |
+| `windowfocus left/right/down/up` | `<alt-j>` / `<alt-l>` / `<alt-k>` / `<alt-i>` |
+| `windowmove left/right/down/up` | `<alt-shift-j>` / `<alt-shift-l>` / `<alt-shift-k>` / `<alt-shift-i>` |
+| `windowresize` narrower/wider/shorter/taller | `<ctrl-shift-alt-j>` / `<ctrl-shift-alt-l>` / `<ctrl-shift-alt-k>` / `<ctrl-shift-alt-i>` |
+| `windowresize` max / min / reset | `<ctrl-shift-alt-=>` / `<ctrl-shift-alt-->` / `<ctrl-shift-alt-backspace>` |
+| `windowtogglemaximize` | `<alt-m>` |
+| `windowdefaultsplit h/v` | `<alt-h>` / `<alt-v>` |
+| `windownew` | `<alt-n>` |
+| `windowclose` / `windowcloseall` | `<alt-q>` / `<alt-shift-q>` |
+| `windowconverttab` prompt | `<ctrl-alt-enter>` |
+| `tabnew` | `<ctrl-n>` |
 | `tabnext` / `tabprevious` | `<alt-]>` / `<alt-[>` |
 | `tabfocus 1..9` | `<alt-1>` … `<alt-9>` |
 | `tabmove left/right` | `<alt-shift-[>` / `<alt-shift-]>` |
 | `tabmove 1..9` | `<alt-shift-1>` … `<alt-shift-9>` |
 | `tabsearch` | `` <alt-`> `` |
 | `tabclose` | `<alt-w>` |
-| `terminalneworsplit` | `<alt-enter>` / `<meta-enter>` |
-| `workspacefocus 1..9` | `<meta-1>` … `<meta-9>` |
-| `workspacemove 1..9` | `<shift-meta-1>` … `<shift-meta-9>` |
-| `workspacesearch` | `` <meta-`> `` |
+| `terminalneworsplit` | `<alt-enter>` |
+| `workspacefocus 1..9` | `<ctrl-alt-1>` … `<ctrl-alt-9>` |
+| `workspacemove 1..9` | `<ctrl-shift-alt-1>` … `<ctrl-shift-alt-9>` |
+| `workspacesearch` | `` <ctrl-alt-`> `` |
+
+</Platform>
 
 ### Emacs
 
-| Command | Binding |
+<Platform when="darwin">
+
+| Command | Key |
 | --- | --- |
 | `windowfocus left/right/down/up` | `<meta-b>` / `<meta-f>` / `<meta-n>` / `<meta-p>` |
 | `windowfocus other` | `<ctrl-x>o` |
@@ -348,13 +430,44 @@ These are the shipped preset assignments. Every layout binding lives in
 | `workspacemove 1..9` | `<shift-meta-1>` … `<shift-meta-9>` |
 | `workspacesearch` | `` <meta-`> `` |
 
+</Platform>
+<Platform when="linux">
+
+| Command | Key |
+| --- | --- |
+| `windowfocus left/right/down/up` | `<alt-shift-b>` / `<alt-shift-f>` / `<alt-shift-n>` / `<alt-shift-p>` |
+| `windowfocus other` | `<ctrl-x>o` |
+| `windowmove left/right/down/up` | `<ctrl-shift-alt-b>` / `<ctrl-shift-alt-f>` / `<ctrl-shift-alt-n>` / `<ctrl-shift-alt-p>` |
+| `windowresize` narrower/wider/shorter/taller | `<ctrl-shift-left>` / `<ctrl-shift-right>` / `<ctrl-shift-down>` / `<ctrl-shift-up>`; `<ctrl-x>{` / `<ctrl-x>}` / `<ctrl-x>-` / `<ctrl-x>^` |
+| `windowresize` max / min / reset | command prompt / command prompt / `<ctrl-shift-alt-backspace>`, `<ctrl-x>+` |
+| `windowclose` / `windowcloseall` | `<alt-shift-k>` / `<ctrl-shift-alt-k>`; `<ctrl-x>0` / `<ctrl-x>1` |
+| `windownew down/right` | `<alt-shift-d>` / `<alt-shift-r>`; `<ctrl-x>2` / `<ctrl-x>3` |
+| `windowtogglemaximize` | `<alt-shift-m>` |
+| `windowdefaultsplit h/v` | `<ctrl-shift-alt-s>` / `<ctrl-shift-alt-v>` |
+| `tabnext` / `tabprevious` | `<alt-]>` / `<alt-[>`; `<ctrl-tab>` / `<ctrl-shift-tab>` |
+| `tabmove left/right` | `<ctrl-shift-alt-[>` / `<ctrl-shift-alt-]>` |
+| `tabnew` | `<alt-shift-t>` |
+| `tabclose` | `<alt-shift-w>` |
+| `terminalneworsplit` | `<alt-enter>` |
+| `workspacefocus 1..9` | `<ctrl-shift-alt-1>` … `<ctrl-shift-alt-9>` |
+| `workspacemove 1..9` | command prompt |
+| `workspacesearch` | `` <ctrl-alt-`> `` |
+
+Rune's layer moves up one modifier, to `<alt-shift>`,
+because `<alt>` is Emacs Meta. `<alt>` and `<ctrl-alt>` digits are numeric
+arguments, so workspaces take `<ctrl-shift-alt>` digits. `<ctrl-shift>` arrows
+and the `<ctrl-x>` resize sequences go to the program in a focused terminal.
+
+</Platform>
+
 ## Rebinding
 
 None of these bindings are fixed. They are entries in `command.key_bindings`,
 and you can override any of them in your config. A command binding does not
 take precedence over a key handled by the active editor, so choose an unused
-key combination. For example, this places window focus on `<ctrl-alt>` plus the arrow
-keys:
+key combination. For example, this places window focus on `<ctrl-alt>` plus the
+arrow keys<Platform when="linux"> (GNOME and several other desktops switch
+workspaces with those chords, so pick another modifier if yours does)</Platform>:
 
 ```yaml tab
 command:

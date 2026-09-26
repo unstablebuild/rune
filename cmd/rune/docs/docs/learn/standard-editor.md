@@ -19,18 +19,27 @@ editor:
   mode: "standard"
 ```
 
-The preset adapts application shortcuts to the operating system:
+The preset adapts application shortcuts to the operating system, and the keys
+on this page follow the platform chosen with the Preset button at the top.
 
-- On macOS, `<meta>` is Command and `<alt>` is Option.
-- On Linux, common application shortcuts use `<ctrl>`, while `<meta>` is Super.
+<Platform when="darwin">
 
-Every key on this page uses Rune's [key syntax](./key-syntax.md). Tables omit a
-platform when the same shortcut works everywhere.
+`<meta>` is Command and `<alt>` is Option. Where a table lists two keys, the
+Standard editor accepts both.
 
-The Standard editor accepts the same built-in editing and movement keys on
-every operating system. The tables list the conventional macOS and Linux forms,
-but either form works on either platform. Application commands come from the
-platform's preset and can differ by operating system.
+</Platform>
+<Platform when="linux">
+
+Common application shortcuts use `<ctrl>`, and Rune binds nothing to Super,
+which belongs to the desktop. Rune's own commands use `<alt>` and `<ctrl-alt>`;
+see [Why Alt on Linux](./key-mapping.md#why-alt-on-linux). The Standard editor
+ignores every chord that carries `<meta>` or `<ctrl-alt>`, so the few editing
+chords that exist only on Command elsewhere move to `<ctrl>`, `<ctrl-shift>`,
+or `<alt>`.
+
+</Platform>
+
+Every key on this page uses Rune's [key syntax](./key-syntax.md).
 
 ## Remapping keys
 
@@ -51,10 +60,13 @@ already handles. Choose an unused chord when remapping a command.
 When configuring Rune for the first time, we offer the ability to choose one of three
 presets. If you choose the standard preset, Rune keeps familiar text-editing conventions
 while putting windows, tabs, Git changes, and diagnostics on consistent keyboard layers,
-powered by adding a second arrow key cluster at the `ijkl` keys. The same
-layout-management bindings apply on macOS and Linux.
+powered by adding a second arrow key cluster at the `ijkl` keys.
+
+<Platform when="darwin">
 
 ![Rune Standard editor preset default keybindings](https://assets.rune.build/images/standard-editor-keyboard-cheatsheet-v6.svg)
+
+</Platform>
 
 The preset uses a single `<alt>` layer, so a binding is guessable from the
 key alone:
@@ -63,33 +75,73 @@ key alone:
 - `<alt>` plus a layout letter acts on a window or a tab.
 - `<alt>` plus a code letter asks the language server about the caret.
 - Adding `<shift>` turns focus into movement, or asks for a symbol by name.
-- Adding `<meta>` to the `ijkl` cluster resizes instead of focusing.
+- Adding <Platform when="darwin">`<meta>`</Platform><Platform when="linux">`<ctrl-shift>`</Platform>
+  to the `ijkl` cluster resizes instead of focusing.
+
+<Platform when="darwin">
 
 No application binding in this preset needs three modifiers.
 
+</Platform>
+
 The tables below provide a copyable reference for the preset bindings:
 
-| Action | Up / left / down / right |
+<Platform when="darwin">
+
+| Action | Key |
 | --- | --- |
 | Focus a window | `<alt-i>` / `<alt-j>` / `<alt-k>` / `<alt-l>` |
 | Move a window | `<alt-shift-i>` / `<alt-shift-j>` / `<alt-shift-k>` / `<alt-shift-l>` |
 | Resize a window | `<alt-meta-i>` / `<alt-meta-j>` / `<alt-meta-k>` / `<alt-meta-l>` |
+| Restore the default size | `<shift-meta-backspace>` |
+| Maximize / minimize the size | `<shift-meta-+>` / `<shift-meta-->` |
 
-The resize directions are taller, narrower, shorter, and wider.
-`<shift-meta-backspace>` restores the default size, while `<shift-meta-+>`
-and `<shift-meta-->` maximize and minimize the focused window.
+</Platform>
+<Platform when="linux">
+
+| Action | Key |
+| --- | --- |
+| Focus a window | `<alt-i>` / `<alt-j>` / `<alt-k>` / `<alt-l>` |
+| Move a window | `<alt-shift-i>` / `<alt-shift-j>` / `<alt-shift-k>` / `<alt-shift-l>` |
+| Resize a window | `<ctrl-shift-alt-i>` / `<ctrl-shift-alt-j>` / `<ctrl-shift-alt-k>` / `<ctrl-shift-alt-l>` |
+| Restore the default size | `<ctrl-shift-alt-backspace>` |
+| Maximize / minimize the size | `<ctrl-shift-alt-=>` / `<ctrl-shift-alt-->` |
+
+</Platform>
+
+The directions are up, left, down, and right; for resizing, that is taller,
+narrower, shorter, and wider.
 
 Common window actions stay on the same `<alt>` layer:
+
+<Platform when="darwin">
 
 | Action | Key |
 | --- | --- |
 | Split the focused window | `<alt-n>` |
 | Open a terminal in place or in a new split | `<alt-enter>` |
+| Run a program with `!` | `<shift-meta-enter>` |
 | Close the focused window | `<alt-q>` |
 | Close every window | `<alt-shift-q>` |
 | Toggle maximization of the focused window | `<alt-m>` |
 | Set horizontal / vertical split orientation | `<alt-h>` / `<alt-v>` |
 | Prefill `windowconverttab` in the command prompt | `<alt-shift-enter>` |
+
+</Platform>
+<Platform when="linux">
+
+| Action | Key |
+| --- | --- |
+| Split the focused window | `<alt-n>` |
+| Open a terminal in place or in a new split | `<alt-enter>` |
+| Run a program with `!` | `<alt-shift-enter>` |
+| Close the focused window | `<alt-q>` |
+| Close every window | `<alt-shift-q>` |
+| Toggle maximization of the focused window | `<alt-m>` |
+| Set horizontal / vertical split orientation | `<alt-h>` / `<alt-v>` |
+| Prefill `windowconverttab` in the command prompt | `<ctrl-alt-enter>` |
+
+</Platform>
 
 Tabs use brackets for left and right. Add `<shift>` to reorder the current
 tab:
@@ -104,17 +156,52 @@ tab:
 | Search open tabs | ``<alt-`>`` |
 
 New tab is a platform-native shortcut rather than an `<alt>` binding:
-`<meta-t>` on macOS and `<ctrl-n>` on Linux. macOS also keeps `<meta-w>` as a
-native close-tab alias. See
-[Layout Management](./layout-management.md) for the complete layout system.
+<Platform when="darwin">`<meta-t>`. `<meta-w>` is also kept as a native
+close-tab alias.</Platform><Platform when="linux">`<ctrl-n>`.</Platform>
+
+Workspaces sit one level above tabs:
+
+<Platform when="darwin">
+
+| Action | Key |
+| --- | --- |
+| Focus workspace 1 to 9 | `<meta-1>` … `<meta-9>` |
+| Move the focused window to workspace 1 to 9 | `<shift-meta-1>` … `<shift-meta-9>` |
+| Search workspaces | ``<meta-`>`` |
+
+</Platform>
+<Platform when="linux">
+
+| Action | Key |
+| --- | --- |
+| Focus workspace 1 to 9 | `<ctrl-alt-1>` … `<ctrl-alt-9>` |
+| Move the focused window to workspace 1 to 9 | `<ctrl-shift-alt-1>` … `<ctrl-shift-alt-9>` |
+| Search workspaces | ``<ctrl-alt-`>`` |
+
+</Platform>
+
+See [Layout Management](./layout-management.md) for the complete layout system.
 
 Common navigation commands avoid keys owned by the editor:
 
-| Action | macOS | Linux |
-| --- | --- | --- |
-| Toggle the file explorer | `<shift-meta-e>` | `<ctrl-shift-e>` |
-| Previous / next cursor position | `<alt-,>` / `<alt-.>` | `<alt-,>` / `<alt-.>` |
-| Open the cheatsheet | `<alt-/>` | `<alt-/>` |
+<Platform when="darwin">
+
+| Action | Key |
+| --- | --- |
+| Toggle the file explorer | `<shift-meta-e>` |
+| Previous / next cursor position | `<alt-,>` / `<alt-.>` |
+| Open the cheatsheet | `<alt-/>` |
+
+</Platform>
+<Platform when="linux">
+
+| Action | Key |
+| --- | --- |
+| Toggle the file explorer | `<ctrl-shift-e>` |
+| Previous / next cursor position | `<alt-,>` / `<alt-.>` |
+| Open the cheatsheet | `<alt-/>` |
+
+</Platform>
 
 Code-intelligence commands share the same `<alt>` layer and are listed under
 [Language intelligence](#language-intelligence-diagnostics-and-git-changes).
@@ -126,34 +213,71 @@ Add `<shift>` to a movement to select through the same destination. Releasing
 clears the selection. `<ctrl-shift-left>` and `<ctrl-shift-right>` are semantic
 selection commands rather than word-selection variants.
 
-| Movement | macOS | Linux |
-| --- | --- | --- |
-| Select one character | `<shift-left>` / `<shift-right>` | `<shift-left>` / `<shift-right>` |
-| Select one line vertically | `<shift-up>` / `<shift-down>` | `<shift-up>` / `<shift-down>` |
-| Select by word | `<alt-shift-left>` / `<alt-shift-right>` | `<alt-shift-left>` / `<alt-shift-right>` |
-| Select to line boundary | `<shift-meta-left>` / `<shift-meta-right>` | `<shift-home>` / `<shift-end>` |
-| Select to document boundary | `<shift-meta-up>` / `<shift-meta-down>` | `<ctrl-shift-home>` / `<ctrl-shift-end>` |
-| Select to previous / next paragraph | `<ctrl-shift-up>` / `<ctrl-shift-down>` | `<ctrl-shift-up>` / `<ctrl-shift-down>` |
+<Platform when="darwin">
+
+| Movement | Key |
+| --- | --- |
+| Select one character | `<shift-left>` / `<shift-right>` |
+| Select one line vertically | `<shift-up>` / `<shift-down>` |
+| Select by word | `<alt-shift-left>` / `<alt-shift-right>` |
+| Select to line boundary | `<shift-meta-left>` / `<shift-meta-right>` |
+| Select to document boundary | `<shift-meta-up>` / `<shift-meta-down>` |
+| Select to previous / next paragraph | `<ctrl-shift-up>` / `<ctrl-shift-down>` |
+
+</Platform>
+<Platform when="linux">
+
+| Movement | Key |
+| --- | --- |
+| Select one character | `<shift-left>` / `<shift-right>` |
+| Select one line vertically | `<shift-up>` / `<shift-down>` |
+| Select by word | `<alt-shift-left>` / `<alt-shift-right>` |
+| Select to line boundary | `<shift-home>` / `<shift-end>` |
+| Select to document boundary | `<ctrl-shift-home>` / `<ctrl-shift-end>` |
+| Select to previous / next paragraph | `<ctrl-shift-up>` / `<ctrl-shift-down>` |
+
+</Platform>
 
 Line-start movements include leading whitespace. For example,
-`<shift-meta-left>` on macOS selects all the way to column zero, not only to the
-first non-blank character.
+<Platform when="darwin">`<shift-meta-left>`</Platform><Platform when="linux">`<shift-home>`</Platform>
+selects all the way to column zero, not only to the first non-blank character.
 
 ### Selection commands
 
-| Action | macOS | Linux |
-| --- | --- | --- |
-| Select all | `<meta-a>` or `<ctrl-a>` | `<ctrl-a>` or `<meta-a>` |
-| Select current line; repeat to extend | `<meta-l>` | `<meta-l>` |
-| Select next occurrence | `<meta-d>` or `<ctrl-d>` | `<ctrl-d>` or `<meta-d>` |
-| Select previous occurrence | `<ctrl-meta-d>` | `<ctrl-meta-d>` |
-| Select indentation level | `<shift-meta-j>` | `<shift-meta-j>` |
-| Expand semantic selection | `<ctrl-w>` or `<shift-meta-space>` | `<ctrl-w>` or `<shift-meta-space>` |
-| Shrink semantic selection | `<ctrl-shift-w>` | `<ctrl-shift-w>` |
-| Shrink / expand semantic selection | `<ctrl-shift-left>` / `<ctrl-shift-right>` | `<ctrl-shift-left>` / `<ctrl-shift-right>` |
-| Select enclosing `()`, `{}`, or `[]` | `<ctrl-shift-m>` | `<ctrl-shift-m>` |
-| Undo / redo a selection change | `<meta-u>` / `<shift-meta-u>` | `<meta-u>` / `<shift-meta-u>` |
-| Clear selection | `<esc>` | `<esc>` |
+<Platform when="darwin">
+
+| Action | Key |
+| --- | --- |
+| Select all | `<meta-a>` or `<ctrl-a>` |
+| Select current line; repeat to extend | `<meta-l>` |
+| Select next occurrence | `<meta-d>` or `<ctrl-d>` |
+| Select previous occurrence | `<ctrl-meta-d>` |
+| Select indentation level | `<shift-meta-j>` |
+| Expand semantic selection | `<ctrl-w>` or `<shift-meta-space>` |
+| Shrink semantic selection | `<ctrl-shift-w>` |
+| Shrink / expand semantic selection | `<ctrl-shift-left>` / `<ctrl-shift-right>` |
+| Select enclosing `()`, `{}`, or `[]` | `<ctrl-shift-m>` |
+| Undo / redo a selection change | `<meta-u>` / `<shift-meta-u>` |
+| Clear selection | `<esc>` |
+
+</Platform>
+<Platform when="linux">
+
+| Action | Key |
+| --- | --- |
+| Select all | `<ctrl-a>` |
+| Select current line; repeat to extend | `<ctrl-shift-l>` |
+| Select next occurrence | `<ctrl-d>` |
+| Select previous occurrence | `<ctrl-shift-d>` |
+| Select indentation level | `<ctrl-shift-i>` |
+| Expand semantic selection | `<ctrl-w>` |
+| Shrink semantic selection | `<ctrl-shift-w>` |
+| Shrink / expand semantic selection | `<ctrl-shift-left>` / `<ctrl-shift-right>` |
+| Select enclosing `()`, `{}`, or `[]` | `<ctrl-shift-m>` |
+| Undo / redo a selection change | `<ctrl-u>` / `<ctrl-shift-u>` |
+| Clear selection | `<esc>` |
+
+</Platform>
 
 Semantic selection depends on language support for the current buffer.
 
@@ -170,102 +294,227 @@ Semantic selection depends on language support for the current buffer.
 
 ### Platform movement
 
-| Movement | macOS | Linux |
-| --- | --- | --- |
-| Previous word start | `<alt-left>` | `<ctrl-left>` |
-| Next word end | `<alt-right>` | `<ctrl-right>` |
-| Previous / next paragraph | `<ctrl-up>` / `<ctrl-down>` | `<ctrl-up>` / `<ctrl-down>` |
-| Start of line | `<meta-left>` | `<home>` |
-| End of line | `<meta-right>` | `<end>` |
-| Start of document | `<meta-up>` | `<ctrl-home>` |
-| End of document | `<meta-down>` | `<ctrl-end>` |
-| Jump to matching delimiter | `<ctrl-m>` | `<ctrl-m>` |
+<Platform when="darwin">
+
+| Movement | Key |
+| --- | --- |
+| Previous word start | `<alt-left>` |
+| Next word end | `<alt-right>` |
+| Previous / next paragraph | `<ctrl-up>` / `<ctrl-down>` |
+| Start of line | `<meta-left>` |
+| End of line | `<meta-right>` |
+| Start of document | `<meta-up>` |
+| End of document | `<meta-down>` |
+| Jump to matching delimiter | `<ctrl-m>` |
+
+</Platform>
+<Platform when="linux">
+
+| Movement | Key |
+| --- | --- |
+| Previous word start | `<ctrl-left>` |
+| Next word end | `<ctrl-right>` |
+| Previous / next paragraph | `<ctrl-up>` / `<ctrl-down>` |
+| Start of line | `<home>` |
+| End of line | `<end>` |
+| Start of document | `<ctrl-home>` |
+| End of document | `<ctrl-end>` |
+| Jump to matching delimiter | `<ctrl-m>` |
+
+</Platform>
+
+<Platform when="darwin">
 
 `<meta-left>` always means the actual start of the line. Rune keeps the
 Meta-arrow combinations available to the editor rather than using them for
 window focus or movement.
 
+</Platform>
+
 ### Scrolling
 
-| Action | macOS | Linux |
-| --- | --- | --- |
-| Move one viewport | `<pgup>` / `<pgdn>` | `<pgup>` / `<pgdn>` |
-| Select one viewport | `<shift-pgup>` / `<shift-pgdn>` | `<shift-pgup>` / `<shift-pgdn>` |
-| Center the current line | `<ctrl-l>` | `<ctrl-l>` |
-| Scroll one line without moving the caret | `<ctrl-alt-up>` / `<ctrl-alt-down>` | `<ctrl-alt-up>` / `<ctrl-alt-down>` |
+<Platform when="darwin">
+
+| Action | Key |
+| --- | --- |
+| Move one viewport | `<pgup>` / `<pgdn>` |
+| Select one viewport | `<shift-pgup>` / `<shift-pgdn>` |
+| Center the current line | `<ctrl-l>` |
+| Scroll one line without moving the caret | `<ctrl-alt-up>` / `<ctrl-alt-down>` |
+
+</Platform>
+<Platform when="linux">
+
+| Action | Key |
+| --- | --- |
+| Move one viewport | `<pgup>` / `<pgdn>` |
+| Select one viewport | `<shift-pgup>` / `<shift-pgdn>` |
+| Center the current line | `<ctrl-l>` |
+| Scroll one line without moving the caret | `<alt-pgup>` / `<alt-pgdn>` |
+
+</Platform>
 
 ## Editing
 
 ### Typing and deletion
 
-| Action | macOS | Linux |
-| --- | --- | --- |
-| Insert text | any printable key | any printable key |
-| Newline | `<enter>` | `<enter>` |
-| Indent / outdent | `<tab>` / `<shift-tab>` | `<tab>` / `<shift-tab>` |
-| Delete left / right | `<backspace>` / `<delete>` | `<backspace>` / `<delete>` |
-| Delete previous word | `<alt-backspace>` or `<ctrl-backspace>` | `<ctrl-backspace>` or `<alt-backspace>` |
-| Delete next word | `<alt-delete>` or `<ctrl-delete>` | `<ctrl-delete>` or `<alt-delete>` |
-| Delete to start of line | `<meta-backspace>` | `<meta-backspace>` |
-| Delete to end of line | `<meta-delete>` | `<meta-delete>` |
-| Cut to end of line | `<ctrl-k>` | `<ctrl-k>` |
-| Delete current line | `<shift-meta-k>` | `<ctrl-shift-k>` |
-| Transpose characters around the caret | `<ctrl-t>` | `<ctrl-t>` |
+<Platform when="darwin">
+
+| Action | Key |
+| --- | --- |
+| Insert text | any printable key |
+| Newline | `<enter>` |
+| Indent / outdent | `<tab>` / `<shift-tab>` |
+| Delete left / right | `<backspace>` / `<delete>` |
+| Delete previous word | `<alt-backspace>` or `<ctrl-backspace>` |
+| Delete next word | `<alt-delete>` or `<ctrl-delete>` |
+| Delete to start of line | `<meta-backspace>` |
+| Delete to end of line | `<meta-delete>` |
+| Cut to end of line | `<ctrl-k>` |
+| Delete current line | `<shift-meta-k>` |
+| Transpose characters around the caret | `<ctrl-t>` |
+
+</Platform>
+<Platform when="linux">
+
+| Action | Key |
+| --- | --- |
+| Insert text | any printable key |
+| Newline | `<enter>` |
+| Indent / outdent | `<tab>` / `<shift-tab>` |
+| Delete left / right | `<backspace>` / `<delete>` |
+| Delete previous word | `<ctrl-backspace>` or `<alt-backspace>` |
+| Delete next word | `<ctrl-delete>` or `<alt-delete>` |
+| Delete to start of line | `<ctrl-shift-backspace>` |
+| Delete to end of line | `<ctrl-shift-delete>` |
+| Cut to end of line | `<ctrl-k><ctrl-k>` |
+| Delete current line | `<ctrl-shift-k>` |
+| Transpose characters around the caret | `<ctrl-t>` |
+
+</Platform>
 
 Word deletion follows the caret direction: Backspace deletes the word to the
 left, and Delete removes the word to the right. At the end of a line,
-`<ctrl-k>` cuts the newline and joins the following line.
+cutting to the end of the line cuts the newline and joins the following line.
+<Platform when="linux">`<ctrl-k>` starts the [`<ctrl-k>` prefix](#legacy-prefix), so
+cutting to the end of the line takes it twice.</Platform>
 
 ### Clipboard
 
-| Action | macOS | Linux |
-| --- | --- | --- |
-| Copy | `<meta-c>` or `<ctrl-c>` | `<ctrl-c>` or `<meta-c>` |
-| Cut | `<meta-x>` or `<ctrl-x>` | `<ctrl-x>` or `<meta-x>` |
-| Paste | `<meta-v>` or `<ctrl-v>` | `<ctrl-v>` or `<meta-v>` |
-| Paste and reindent | `<shift-meta-v>` or `<ctrl-shift-v>` | `<ctrl-shift-v>` or `<shift-meta-v>` |
-| Paste from clipboard history | `<alt-meta-v>` | `<alt-meta-v>` |
+<Platform when="darwin">
+
+| Action | Key |
+| --- | --- |
+| Copy | `<meta-c>` or `<ctrl-c>` |
+| Cut | `<meta-x>` or `<ctrl-x>` |
+| Paste | `<meta-v>` or `<ctrl-v>` |
+| Paste and reindent | `<shift-meta-v>` or `<ctrl-shift-v>` |
+| Paste from clipboard history | `<alt-meta-v>` or `<meta-k><meta-v>` |
+
+</Platform>
+<Platform when="linux">
+
+| Action | Key |
+| --- | --- |
+| Copy | `<ctrl-c>` |
+| Cut | `<ctrl-x>` |
+| Paste | `<ctrl-v>` |
+| Paste and reindent | `<ctrl-shift-v>` |
+| Paste from clipboard history | `<ctrl-k><ctrl-v>` |
+
+</Platform>
 
 Copy and cut use the current line when there is no selection. Copy leaves the
 buffer unchanged; cut removes the line. A later paste preserves the line-wise
-clipboard behavior. After pasting, repeat `<alt-meta-v>` to replace that paste
-with progressively older clipboard-history entries.
+clipboard behavior. After pasting, repeat paste from clipboard history to
+replace that paste with progressively older clipboard-history entries.
 
 ### Undo and redo
 
-| Action | macOS | Linux |
-| --- | --- | --- |
-| Undo | `<meta-z>` or `<ctrl-z>` | `<ctrl-z>` or `<meta-z>` |
-| Redo | `<shift-meta-z>`, `<meta-y>`, `<ctrl-shift-z>`, or `<ctrl-y>` | `<ctrl-shift-z>`, `<ctrl-y>`, `<shift-meta-z>`, or `<meta-y>` |
+<Platform when="darwin">
+
+| Action | Key |
+| --- | --- |
+| Undo | `<meta-z>` or `<ctrl-z>` |
+| Redo | `<shift-meta-z>`, `<meta-y>`, `<ctrl-shift-z>`, or `<ctrl-y>` |
+
+</Platform>
+<Platform when="linux">
+
+| Action | Key |
+| --- | --- |
+| Undo | `<ctrl-z>` |
+| Redo | `<ctrl-shift-z>` or `<ctrl-y>` |
+
+</Platform>
 
 ### Line operations
 
-| Action | macOS | Linux |
-| --- | --- | --- |
-| Insert line below | `<ctrl-enter>` | `<ctrl-enter>` |
-| Insert line above | `<ctrl-shift-enter>` | `<ctrl-shift-enter>` |
-| Move line up / down | `<alt-up>` / `<alt-down>` | `<alt-up>` / `<alt-down>` |
-| Duplicate line up / down | `<alt-shift-up>` / `<alt-shift-down>` | `<alt-shift-up>` / `<alt-shift-down>` |
-| Duplicate line below | `<shift-meta-d>` | `<shift-meta-d>` |
-| Join with next line | `<meta-j>` or `<ctrl-shift-j>` | `<meta-j>` or `<ctrl-shift-j>` |
-| Indent line | `<meta-]>` or `<ctrl-]>` | `<ctrl-]>` or `<meta-]>` |
-| Outdent line | `<meta-[>` or `<ctrl-[>` | `<ctrl-[>` or `<meta-[>` |
-| Toggle line comment | `<meta-/>` or `<ctrl-/>` | `<ctrl-/>` or `<meta-/>` |
-| Toggle block comment | `<alt-meta-/>` | `<alt-meta-/>` |
-| Reflow paragraph at the ruler | `<alt-meta-q>` | `<alt-meta-q>` |
-| Toggle soft wrap | `<alt-z>` | `<alt-z>` |
+<Platform when="darwin">
+
+| Action | Key |
+| --- | --- |
+| Insert line below | `<ctrl-enter>` |
+| Insert line above | `<ctrl-shift-enter>` |
+| Move line up / down | `<alt-up>` / `<alt-down>` |
+| Duplicate line up / down | `<alt-shift-up>` / `<alt-shift-down>` |
+| Duplicate line below | `<shift-meta-d>` |
+| Join with next line | `<meta-j>` or `<ctrl-shift-j>` |
+| Indent line | `<meta-]>` or `<ctrl-]>` |
+| Outdent line | `<meta-[>` or `<ctrl-[>` |
+| Toggle line comment | `<meta-/>` or `<ctrl-/>` |
+| Toggle block comment | `<alt-meta-/>` |
+| Reflow paragraph at the ruler | `<alt-meta-q>` |
+| Toggle soft wrap | `<alt-z>` |
+
+</Platform>
+<Platform when="linux">
+
+| Action | Key |
+| --- | --- |
+| Insert line below | `<ctrl-enter>` |
+| Insert line above | `<ctrl-shift-enter>` |
+| Move line up / down | `<alt-up>` / `<alt-down>` |
+| Duplicate line up / down | `<alt-shift-up>` / `<alt-shift-down>` |
+| Duplicate line below | `<alt-shift-down>` |
+| Join with next line | `<ctrl-shift-j>` |
+| Indent line | `<ctrl-]>` |
+| Outdent line | `<ctrl-[>` |
+| Toggle line comment | `<ctrl-/>` |
+| Toggle block comment | `<ctrl-shift-/>` |
+| Reflow paragraph at the ruler | `<ctrl-shift-g>` |
+| Toggle soft wrap | `<alt-z>` |
+
+</Platform>
 
 ## Search
 
-| Action | macOS | Linux |
-| --- | --- | --- |
-| Find in the current buffer | `<meta-f>` or `<ctrl-f>` | `<ctrl-f>` or `<meta-f>` |
-| Open replace | `<meta-r>` | `<meta-r>` |
-| Upgrade an open find to replace | `<meta-r>` | `<meta-r>` |
-| Next match while open | `<enter>`, `<meta-f>`, or `<ctrl-f>` | `<enter>`, `<ctrl-f>`, or `<meta-f>` |
-| Cycle between find and replacement inputs | `<tab>` / `<shift-tab>` | `<tab>` / `<shift-tab>` |
-| Close and leave the active match selected | `<esc>` | `<esc>` |
-| Next / previous match after closing | `<ctrl-->` / `<ctrl-shift-->` | `<ctrl-->` / `<ctrl-shift-->` |
+<Platform when="darwin">
+
+| Action | Key |
+| --- | --- |
+| Find in the current buffer | `<meta-f>` or `<ctrl-f>` |
+| Open replace | `<meta-r>` |
+| Upgrade an open find to replace | `<meta-r>` |
+| Next match while open | `<enter>`, `<meta-f>`, or `<ctrl-f>` |
+| Cycle between find and replacement inputs | `<tab>` / `<shift-tab>` |
+| Close and leave the active match selected | `<esc>` |
+| Next / previous match after closing | `<ctrl-->` / `<ctrl-shift-->` |
+
+</Platform>
+<Platform when="linux">
+
+| Action | Key |
+| --- | --- |
+| Find in the current buffer | `<ctrl-f>` |
+| Open replace | `<ctrl-h>` |
+| Upgrade an open find to replace | `<ctrl-h>` |
+| Next match while open | `<enter>` or `<ctrl-f>` |
+| Cycle between find and replacement inputs | `<tab>` / `<shift-tab>` |
+| Close and leave the active match selected | `<esc>` |
+| Next / previous match after closing | `<ctrl-->` / `<ctrl-shift-->` |
+
+</Platform>
 
 Find opens a floating widget and selects the active match in the buffer as you
 type. In replace mode, **Replace** changes the active occurrence and advances
@@ -279,8 +528,10 @@ to its starting position instead of leaving a match selected.
 
 ### Search configuration
 
-Configure the widget under `editor.standard.search`. The examples show the
-default keys and visual attributes:
+Configure the widget under `editor.standard.search`. `find_key` and
+`replace_key` open find and replace; the example shows their defaults:
+
+<Platform when="darwin">
 
 ```yaml tab
 editor:
@@ -288,6 +539,38 @@ editor:
     search:
       find_key: "<meta-f>"
       replace_key: "<meta-r>"
+```
+
+```python tab
+config["editor"]["standard"]["search"]["find_key"] = "<meta-f>"
+config["editor"]["standard"]["search"]["replace_key"] = "<meta-r>"
+```
+
+</Platform>
+<Platform when="linux">
+
+```yaml tab
+editor:
+  standard:
+    search:
+      find_key: "<ctrl-f>"
+      replace_key: "<ctrl-h>"
+```
+
+```python tab
+config["editor"]["standard"]["search"]["find_key"] = "<ctrl-f>"
+config["editor"]["standard"]["search"]["replace_key"] = "<ctrl-h>"
+```
+
+</Platform>
+
+The remaining keys style the widget; the example shows the default visual
+attributes:
+
+```yaml tab
+editor:
+  standard:
+    search:
       attr: { fg: default, bg: default }
       input_attr: { fg: default, bg: default }
       placeholder_attr: { fg: gray, bg: default }
@@ -300,9 +583,7 @@ editor:
 ```
 
 ```python tab
-config["editor"]["standard"]["search"] = {
-    "find_key": "<meta-f>",
-    "replace_key": "<meta-r>",
+config["editor"]["standard"]["search"].update({
     "attr": attr(fg = "default", bg = "default"),
     "input_attr": attr(fg = "default", bg = "default"),
     "placeholder_attr": attr(fg = "gray", bg = "default"),
@@ -312,7 +593,7 @@ config["editor"]["standard"]["search"] = {
     "button_hover_attr": attr(fg = "default", bg = "blue"),
     "match_attr": attr(fg = "grey", bg = "yellow"),
     "current_match_attr": attr(fg = "default", bg = "default"),
-}
+})
 ```
 
 `attr` styles the widget background. The input, placeholder, frame, focused
@@ -324,9 +605,22 @@ window; it is unset by default.
 
 ## Language intelligence, diagnostics, and Git changes
 
+<Platform when="darwin">
+
 In-file navigation uses a `<ctrl-meta>` IJKL layer. The vertical `i` / `k`
 pair visits Git changes, while the horizontal `j` / `l` pair visits
 diagnostics:
+
+</Platform>
+<Platform when="linux">
+
+The vertical `i` / `k` pair on `<ctrl-alt>` visits Git changes. Diagnostics sit
+on `<f8>`, as in VS Code, since several desktops lock the screen on
+`<ctrl-alt-l>`:
+
+</Platform>
+
+<Platform when="darwin">
 
 | Action | Key |
 | --- | --- |
@@ -334,6 +628,18 @@ diagnostics:
 | Next Git change | `<ctrl-meta-k>` |
 | Previous diagnostic | `<ctrl-meta-j>` |
 | Next diagnostic | `<ctrl-meta-l>` |
+
+</Platform>
+<Platform when="linux">
+
+| Action | Key |
+| --- | --- |
+| Previous Git change | `<ctrl-alt-i>` |
+| Next Git change | `<ctrl-alt-k>` |
+| Previous diagnostic | `<shift-f8>` |
+| Next diagnostic | `<f8>` |
+
+</Platform>
 
 Everything else the language server offers sits on a plain `<alt>` letter.
 Each binding acts on the symbol under the caret; adding `<shift>` opens the
@@ -367,6 +673,8 @@ Symbol rename is available through the
 
 ## Folds
 
+<Platform when="darwin">
+
 | Key | Action |
 | --- | --- |
 | `<ctrl-{>` | collapse the fold at the caret |
@@ -376,12 +684,37 @@ Symbol rename is available through the
 | `<meta-k><meta-j>` | expand all folds |
 | `<meta-k><meta-1>` | collapse all folds |
 
-## Hidden lines
+</Platform>
+<Platform when="linux">
 
 | Key | Action |
 | --- | --- |
-| `<ctrl-alt-h>` | hide the lines covered by the selection |
-| `<ctrl-alt-v>` | reveal the hidden block at the caret |
+| `<ctrl-{>` | collapse the fold at the caret |
+| `<ctrl-}>` | expand the fold at the caret |
+| `<ctrl-shift-a>` | toggle all folds |
+| `<ctrl-k><ctrl-j>` | expand all folds |
+| `<ctrl-k><ctrl-1>` | collapse all folds |
+
+</Platform>
+
+## Hidden lines
+
+<Platform when="darwin">
+
+| Action | Key |
+| --- | --- |
+| Hide the lines covered by the selection | `<ctrl-alt-h>` |
+| Reveal the hidden block at the caret | `<ctrl-alt-v>` |
+
+</Platform>
+<Platform when="linux">
+
+| Action | Key |
+| --- | --- |
+| Hide the lines covered by the selection | `<ctrl-shift-h>` |
+| Reveal the hidden block at the caret | `<ctrl-shift-r>` |
+
+</Platform>
 
 ## Macros
 
@@ -390,7 +723,9 @@ Symbol rename is available through the
 | `<ctrl-q>` | start or stop recording to the unnamed register |
 | `<ctrl-shift-q>` | play the recorded macro |
 
-## Legacy `<meta-k>` prefix
+## Legacy prefix
+
+<Platform when="darwin">
 
 The standard editor retains a one-shot `<meta-k>` compatibility layer for a
 small set of advanced operations:
@@ -408,9 +743,36 @@ small set of advanced operations:
 | `<meta-k><meta-backspace>` | delete to start of line |
 | `<meta-k><meta-j>` | expand all folds |
 | `<meta-k><meta-1>` | collapse all folds |
+| `<meta-k><meta-v>` | paste from clipboard history |
 
-This layer is optional compatibility, not the primary standard keymap. On
-Linux, normal cut remains `<ctrl-x>`.
+This layer is optional compatibility, not the primary standard keymap.
+
+</Platform>
+<Platform when="linux">
+
+The standard editor retains a one-shot `<ctrl-k>` compatibility layer for a
+small set of advanced operations. The second key also takes `<ctrl>`, as in
+VS Code's `Ctrl+K` chords:
+
+| Sequence | Action |
+| --- | --- |
+| `<ctrl-k><ctrl-space>` | set mark at the caret |
+| `<ctrl-k><ctrl-a>` | select from mark to caret |
+| `<ctrl-k><ctrl-w>` | delete from mark to caret |
+| `<ctrl-k><ctrl-x>` | swap caret and mark |
+| `<ctrl-k><ctrl-g>` | clear mark |
+| `<ctrl-k><ctrl-u>` | uppercase selection |
+| `<ctrl-k><ctrl-l>` | lowercase selection |
+| `<ctrl-k><ctrl-k>` | cut to end of line |
+| `<ctrl-k><ctrl-backspace>` | delete to start of line |
+| `<ctrl-k><ctrl-j>` | expand all folds |
+| `<ctrl-k><ctrl-1>` | collapse all folds |
+| `<ctrl-k><ctrl-v>` | paste from clipboard history |
+
+This layer is optional compatibility, not the primary standard keymap. Normal
+cut remains `<ctrl-x>`.
+
+</Platform>
 
 ## Auto-pair and paste
 
@@ -425,10 +787,28 @@ one text run. It does not add auto-paired closers or rewrite indentation.
 
 ## Command prompt and configuration
 
-| Action | macOS | Linux |
-| --- | --- | --- |
-| Open the command prompt | `<shift-meta-p>` | `<ctrl-shift-p>` |
-| Open Rune's configuration | `<meta-,>` | `<ctrl-,>` or `<meta-,>` |
+<Platform when="darwin">
+
+| Action | Key |
+| --- | --- |
+| Open the command prompt | `<shift-meta-p>` |
+| Open Rune's configuration | `<meta-,>` |
+| Command history | `<shift-meta-r>` |
+| Quit | `<meta-q>` |
+| Font size bigger / smaller | `<meta-=>` / `<meta-->` |
+
+</Platform>
+<Platform when="linux">
+
+| Action | Key |
+| --- | --- |
+| Open the command prompt | `<ctrl-shift-p>` |
+| Open Rune's configuration | `<ctrl-,>` |
+| Command history | `<ctrl-alt-r>` |
+| Quit | `<ctrl-alt-q>` |
+| Font size bigger / smaller | `<ctrl-alt-=>` / `<ctrl-alt-->` |
+
+</Platform>
 
 See [Command Prompt](./command-prompt.md) for commands, aliases, completion,
 and custom bindings.

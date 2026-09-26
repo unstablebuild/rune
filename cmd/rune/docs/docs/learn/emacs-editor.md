@@ -38,13 +38,29 @@ page.
 Rune keeps the Emacs editing layer and Rune's window-management layer on
 different modifiers:
 
-- `<alt>` is the Emacs Meta modifier. It is Option on macOS and Alt on Linux.
-- `<meta>` is Rune's window and workspace modifier. It is Command on macOS and
-  Super on Linux.
+<Platform when="darwin">
+
+- `<alt>`, the Option key, is the Emacs Meta modifier.
+- `<meta>`, the Command key, is Rune's window and workspace layer.
 
 For example, Emacs `forward-word` is `<alt-f>`, while Rune window focus uses
 `<meta-b>` and `<meta-f>`. An Emacs control-plus-Meta command such as
 `forward-sexp` is `<ctrl-alt-f>`.
+
+</Platform>
+<Platform when="linux">
+
+- `<alt>` is the Emacs Meta modifier.
+- `<alt-shift>` is Rune's window and workspace layer, and `<ctrl-shift-alt>`
+  moves. Super belongs to the desktop, the Emacs editor uses neither
+  chord family, and a focused terminal hands both back to Rune. See
+  [Why Alt on Linux](./key-mapping.md#why-alt-on-linux).
+
+For example, Emacs `forward-word` is `<alt-f>`, while Rune window focus uses
+`<alt-shift-b>` and `<alt-shift-f>`. An Emacs control-plus-Meta command such as
+`forward-sexp` is `<ctrl-alt-f>`.
+
+</Platform>
 
 ## Editing-layer conventions
 
@@ -56,7 +72,8 @@ reserves them for `suspend-frame` and the major-mode prefix map.
 
 Rune's own editor features mostly live on `<ctrl-shift>` combinations and
 modified arrow keys. Rune's window, workspace, and system-clipboard commands
-live on `<meta>`, which is a separate layer and not an editing layer.
+live on a separate layer that is not an editing layer:
+<Platform when="darwin">`<meta>`</Platform><Platform when="linux">`<alt-shift>`</Platform>.
 
 ## Where Emacs editing applies
 
@@ -127,12 +144,19 @@ When configuring Rune for the first time, we offer the ability to choose one of 
 presets. If you choose the emacs preset, Rune keeps layout commands away from the
 single-modifier `<ctrl>` and `<alt>` key combinations used by Emacs editing. Window
 directions reuse Emacs's PNBF vocabulary: `p` is previous/up, `n` next/down, `b`
-backward/left, and `f` forward/right. Hold `<meta>`, which means Command on macOS and
-Super on Linux, with those letters to affect Rune windows instead of moving through text.
+backward/left, and `f` forward/right. Hold
+<Platform when="darwin">`<meta>`, the Command key,</Platform><Platform when="linux">`<alt-shift>`</Platform>
+with those letters to affect Rune windows instead of moving through text.
+
+<Platform when="darwin">
 
 ![Rune Emacs editor preset default keybindings](https://assets.rune.build/images/emacs-editor-keyboard-cheatsheet-v8.svg)
 
+</Platform>
+
 The most important defaults are:
+
+<Platform when="darwin">
 
 | Key | Action |
 | --- | --- |
@@ -140,6 +164,7 @@ The most important defaults are:
 | `<ctrl-x>o` | focus the other window, following GNU's other-window |
 | `<shift-meta-p>` `<shift-meta-b>` `<shift-meta-n>` `<shift-meta-f>` | move the current window up, left, down, or right |
 | `<meta-up>` `<meta-left>` `<meta-down>` `<meta-right>` | make the window taller, narrower, shorter, or wider |
+| `<shift-meta-backspace>` | reset window sizes |
 | `<meta-d>` | split below |
 | `<meta-r>` | split right |
 | `<meta-k>` | close the current window |
@@ -149,6 +174,7 @@ The most important defaults are:
 | `<ctrl-meta-v>` | make right the default split direction |
 | `<ctrl-tab>` `<ctrl-shift-tab>` | next or previous tab |
 | `<meta-]>` `<meta-[>` | next or previous tab |
+| `<meta-t>` | open a new tab |
 | `<meta-w>` | close the current tab |
 | `<shift-meta-]>` `<shift-meta-[>` | move the current tab right or left |
 | `<meta-enter>` | open a terminal, or split when the current window already contains tabs or a terminal |
@@ -156,17 +182,64 @@ The most important defaults are:
 | `<meta-1>` through `<meta-9>` | focus workspace 1 through 9 |
 | `<shift-meta-1>` through `<shift-meta-9>` | swap the current workspace with an existing position 1 through 9 |
 
+</Platform>
+<Platform when="linux">
+
+| Key | Action |
+| --- | --- |
+| `<alt-shift-p>` `<alt-shift-b>` `<alt-shift-n>` `<alt-shift-f>` | focus a neighboring window up, left, down, or right |
+| `<ctrl-x>o` | focus the other window, following GNU's other-window |
+| `<ctrl-shift-alt-p>` `<ctrl-shift-alt-b>` `<ctrl-shift-alt-n>` `<ctrl-shift-alt-f>` | move the current window up, left, down, or right |
+| `<ctrl-shift-up>` `<ctrl-shift-left>` `<ctrl-shift-down>` `<ctrl-shift-right>` | make the window taller, narrower, shorter, or wider |
+| `<ctrl-x>^` `<ctrl-x>{` `<ctrl-x>-` `<ctrl-x>}` | make the window taller, narrower, shorter, or wider, following GNU |
+| `<ctrl-shift-alt-backspace>` `<ctrl-x>+` | reset window sizes |
+| `<alt-shift-d>` | split below |
+| `<alt-shift-r>` | split right |
+| `<alt-shift-k>` | close the current window |
+| `<ctrl-shift-alt-k>` | keep the current window and close every other window |
+| `<alt-shift-m>` | expand or restore the current window |
+| `<ctrl-shift-alt-s>` | make below the default split direction |
+| `<ctrl-shift-alt-v>` | make right the default split direction |
+| `<ctrl-tab>` `<ctrl-shift-tab>` | next or previous tab |
+| `<alt-]>` `<alt-[>` | next or previous tab |
+| `<alt-shift-t>` | open a new tab |
+| `<alt-shift-w>` | close the current tab |
+| `<ctrl-shift-alt-]>` `<ctrl-shift-alt-[>` | move the current tab right or left |
+| `<alt-enter>` | open a terminal, or split when the current window already contains tabs or a terminal |
+| ``<ctrl-alt-`>`` | search workspaces |
+| `<ctrl-shift-alt-1>` through `<ctrl-shift-alt-9>` | focus workspace 1 through 9 |
+
+</Platform>
+
 GNU's `<ctrl-x>0`, `<ctrl-x>1`, `<ctrl-x>2`, `<ctrl-x>3`, and `<ctrl-x>o` are
 bound to the same window commands, but a focused terminal sends `<ctrl-x>` to
-the program running inside it, so the `<meta>` layer covers all of them too:
+the program running inside it, so the Rune layer covers all of them too:
 the PNBF directions reach the same windows `<ctrl-x>o` toggles between. The
-`<meta>` spelling is the one that works from editors, terminals, explorers,
+Rune-layer spelling is the one that works from editors, terminals, explorers,
 and every other Rune surface, and it is what the cheatsheet and the command
 prompt advertise.
+
+<Platform when="darwin">
 
 On the `<meta>` layer, `<shift>` has one meaning per family: it moves rather
 than focuses for layout, it prompts for a name for language commands, and it
 reverses direction for anything that steps through a list.
+
+</Platform>
+<Platform when="linux">
+
+The resize chords are the exception: like the `<ctrl-x>` resize sequences,
+`<ctrl-shift>` arrows reach the program in a focused terminal, so focus an
+editor window to resize from the keyboard.
+
+On the `<alt-shift>` layer, adding `<ctrl>` has one meaning per family: it
+moves rather than focuses for layout, it prompts for a name for language
+commands, and it reverses direction for anything that steps through a list.
+`<alt>` digits and `<ctrl-alt>` digits are Emacs numeric arguments, so
+workspaces take `<ctrl-shift-alt>` digits and moving a workspace is left to the
+command prompt.
+
+</Platform>
 
 See [Layout Management](./layout-management.md) for the complete window and
 workspace system.
@@ -414,7 +487,9 @@ numeric argument, `<ctrl-u>N<ctrl-y>` yanks the Nth most recent entry and
 Like GNU, `<alt-w>` and `<ctrl-w>` act on the mark-to-point region, and a
 shift-selection counts as an active region. `<alt-w>` leaves point where it
 was. `<ctrl-c>` is not copy: GNU reserves it as the major-mode prefix, and
-Rune places its own clipboard commands on `<meta-c>` and `<meta-v>` instead.
+Rune places its own system-clipboard commands on
+<Platform when="darwin">`<meta-c>` and `<meta-v>`</Platform><Platform when="linux">`<ctrl-alt-w>` and `<ctrl-alt-y>`, GNU's copy and yank letters,</Platform>
+instead.
 
 ### Words, paragraphs, and comments
 
@@ -455,8 +530,9 @@ A focused terminal reuses `<ctrl-s>` too: it opens a find box over the
 terminal's scrollback instead of the buffer-local incremental search
 described above. See [Search](./search.md#search-a-terminals-scrollback)
 for how it behaves there. The emacs preset moves it off the default
-`<meta-f>` so terminal search shares the same muscle memory, which also
-frees `<meta-f>` for `windowfocus right`.
+<Platform when="darwin">`<meta-f>`</Platform><Platform when="linux">`<ctrl-shift-f>`</Platform>
+so terminal search shares the same muscle memory<Platform when="darwin">, which
+also frees `<meta-f>` for `windowfocus right`</Platform>.
 
 ### Query replace
 
@@ -492,8 +568,8 @@ search and uses familiar GUI find-result keys afterward:
 | Key | Action |
 | --- | --- |
 | `<alt-s>o` | search text across the workspace, following GNU `occur` |
-| `<meta-g>` | next workspace-search result |
-| `<shift-meta-g>` | previous workspace-search result |
+| <Platform when="darwin">`<meta-g>`</Platform><Platform when="linux">`<alt-shift-g>`</Platform> | next workspace-search result |
+| <Platform when="darwin">`<shift-meta-g>`</Platform><Platform when="linux">`<ctrl-shift-alt-g>`</Platform> | previous workspace-search result |
 
 See the [Search](./search.md) tools for everything beyond the current
 buffer.
@@ -582,7 +658,7 @@ GNU's `M-X` as the sibling of `M-x`.
 
 These bindings are installed by Rune's full Emacs setup preset. `<alt>` and
 `<ctrl>` carry only what GNU Emacs itself defines. Everything Rune-only lives
-on `<meta>`, the host layer, which is Command on macOS and Super on Linux.
+on <Platform when="darwin">`<meta>`, the Command key</Platform><Platform when="linux">`<alt-shift>`</Platform>.
 
 ### Files and session
 
@@ -591,10 +667,15 @@ on `<meta>`, the host layer, which is Command on macOS and Super on Linux.
 | `<ctrl-x><ctrl-s>` | save the current buffer |
 | `<ctrl-x>s` | save all modified buffers |
 | `<ctrl-x><ctrl-f>` | search for a workspace file |
-| `<ctrl-x><ctrl-c>` | quit Rune |
+| `<ctrl-x><ctrl-c>` <Platform when="darwin">`<meta-q>`</Platform><Platform when="linux">`<ctrl-alt-q>`</Platform> | quit Rune |
+| <Platform when="darwin">`<meta-,>`</Platform><Platform when="linux">`<ctrl-shift-alt-,>`</Platform> | open the configuration |
+| <Platform when="darwin">`<meta-=>` `<meta-->`</Platform><Platform when="linux">`<alt-shift-=>` `<alt-shift-->`</Platform> | grow or shrink the GUI font |
+| <Platform when="darwin">`<meta-/>`</Platform><Platform when="linux">`<alt-/>`</Platform> | show the cheatsheet |
 
 The `<ctrl-x>` sequences are Rune command bindings, not an open-ended Emacs
-prefix map. A focused terminal consumes them, so `<meta-q>` also quits.
+prefix map. A focused terminal consumes them, so
+<Platform when="darwin">`<meta-q>`</Platform><Platform when="linux">`<ctrl-alt-q>`</Platform>
+also quits.
 Quitting does not implicitly run save-all. Save first when you want to keep
 all modified buffers.
 
@@ -602,16 +683,17 @@ all modified buffers.
 
 | Key | Action |
 | --- | --- |
-| `<meta-o>` | toggle the workspace file explorer, following GNU Dired |
-| `<meta-j>` | jump to a function or method in the current file |
-| `<meta-s>` | jump to a type in the current file |
-| `<meta-x>` | jump to a variable in the current file |
+| <Platform when="darwin">`<meta-o>`</Platform><Platform when="linux">`<alt-shift-o>`</Platform> | toggle the workspace file explorer, following GNU Dired |
+| <Platform when="darwin">`<meta-j>`</Platform><Platform when="linux">`<alt-shift-j>`</Platform> | jump to a function or method in the current file |
+| <Platform when="darwin">`<meta-s>`</Platform><Platform when="linux">`<alt-shift-s>`</Platform> | jump to a type in the current file |
+| <Platform when="darwin">`<meta-x>`</Platform><Platform when="linux">`<alt-shift-v>`</Platform> | jump to a variable in the current file |
 
-These sit on the host `<meta>` layer rather than `<ctrl-x>` because a focused
+These sit on the Rune layer rather than `<ctrl-x>` because a focused
 terminal consumes every `<ctrl-x>` chord as input for the program running
 inside it before Rune sees it. GNU has no chord to inherit for the symbol
 jumps: `M-g i` (imenu) would be the natural home, but the editor owns the
-`M-g` goto-map.
+`M-g` goto-map.<Platform when="linux"> Variables take `v` because
+`<alt-shift-x>` is GNU's `M-X` history key.</Platform>
 
 ### Cursor history and mark
 
@@ -627,16 +709,16 @@ jumps: `M-g i` (imenu) would be the natural home, but the editor owns the
 | --- | --- |
 | `<alt-.>` | go to definition, following GNU xref |
 | `<alt-shift-/>` | find references, following GNU xref |
-| `<meta-i>` | go to implementation |
-| `<meta-h>` | show hover and type information |
+| <Platform when="darwin">`<meta-i>`</Platform><Platform when="linux">`<alt-shift-i>`</Platform> | go to implementation |
+| <Platform when="darwin">`<meta-h>`</Platform><Platform when="linux">`<alt-shift-h>`</Platform> | show hover and type information |
 | `<ctrl-alt-\\>` | format the current buffer, using GNU's indent-region chord |
 | `<ctrl-alt-i>` | request language completion |
 | `<ctrl-alt-.>` | find a definition by name, following GNU xref apropos |
 | `<ctrl-shift-alt-/>` | find references by name |
-| `<shift-meta-i>` | find implementations by name |
-| `<shift-meta-h>` | show hover information by name |
-| `<meta-l>` `<shift-meta-l>` | next or previous diagnostic |
-| `<meta-e>` | open the diagnostics picker |
+| <Platform when="darwin">`<shift-meta-i>`</Platform><Platform when="linux">`<ctrl-shift-alt-i>`</Platform> | find implementations by name |
+| <Platform when="darwin">`<shift-meta-h>`</Platform><Platform when="linux">`<ctrl-shift-alt-h>`</Platform> | show hover information by name |
+| <Platform when="darwin">`<meta-l>` `<shift-meta-l>`</Platform><Platform when="linux">`<alt-shift-l>` `<ctrl-shift-alt-l>`</Platform> | next or previous diagnostic |
+| <Platform when="darwin">`<meta-e>`</Platform><Platform when="linux">`<alt-shift-e>`</Platform> | open the diagnostics picker |
 | `<f5>` | previous Git change |
 | `<f6>` | next Git change |
 | `<f7>` `<f8>` `<f9>` | previous diagnostic, next diagnostic, diagnostics picker |
@@ -653,6 +735,8 @@ namespaces clear as Rune's built-in Emacs support grows.
 
 ### Bookmarks
 
+<Platform when="darwin">
+
 | Key | Action |
 | --- | --- |
 | `<meta-f2>` | toggle a bookmark at point |
@@ -661,8 +745,23 @@ namespaces clear as Rune's built-in Emacs support grows.
 | `<shift-meta-f3>` | previous bookmark |
 | `<meta-f4>` | highlight bookmarks |
 
-Bookmarks stay on `<meta>` plus an F-key so a focused terminal cannot eat
-them. GNU's own `C-x r m`, `C-x r b`, and `C-x r l` are three-chord sequences.
+</Platform>
+<Platform when="linux">
+
+| Key | Action |
+| --- | --- |
+| `<alt-shift-f2>` | toggle a bookmark at point |
+| `<alt-shift-f3>` | next bookmark |
+| `<alt-shift-f4>` | highlight bookmarks |
+
+Visiting the previous bookmark and deleting them all are left to the command
+prompt.
+
+</Platform>
+
+Bookmarks stay on the Rune layer plus an F-key so a focused terminal cannot
+eat them. GNU's own `C-x r m`, `C-x r b`, and `C-x r l` are three-chord
+sequences.
 
 ## Differences from GNU Emacs
 
@@ -672,21 +771,28 @@ the complete GNU Emacs command system. The main differences are:
 - Implemented GNU chords keep their familiar purpose, although structural
   commands use the approximations described below. Rune's own editing
   features mostly use `<ctrl-shift>` combinations and modified arrow keys.
-- `<alt>` is Emacs Meta, while `<meta>` is reserved for Rune layouts.
-- Window focus uses `<meta>` plus PNBF. Adding `<shift>` moves window content,
-  while host-Meta arrows resize.
+- `<alt>` is Emacs Meta, while
+  <Platform when="darwin">`<meta>`</Platform><Platform when="linux">`<alt-shift>`</Platform>
+  is reserved for Rune layouts.
+- Window focus uses
+  <Platform when="darwin">`<meta>`</Platform><Platform when="linux">`<alt-shift>`</Platform>
+  plus PNBF. Adding
+  <Platform when="darwin">`<shift>`</Platform><Platform when="linux">`<ctrl>`</Platform>
+  moves window content, while
+  <Platform when="darwin">`<meta>`</Platform><Platform when="linux">`<ctrl-shift>`</Platform>
+  arrows resize.
 - Window creation and lifecycle are reachable through GNU's `<ctrl-x>` number
-  family and through direct host-Meta chords, because a focused terminal eats
+  family and through direct Rune-layer chords, because a focused terminal eats
   `<ctrl-x>`.
 - Xref navigation keeps GNU's `<alt-.>`, `<alt-shift-/>`, `<alt-,>`,
   `<ctrl-alt-,>`, and `<ctrl-alt-.>` meanings. Rune-only language actions live
-  on the separate `<meta>` host layer.
+  on the separate Rune layer.
 - `<ctrl-c>`, `<ctrl-z>`, and `<ctrl-m>` keep their GNU meanings, so they are
   not copy, undo, and goto-matching-bracket. `<ctrl-c>` is unbound because
   Rune has no major-mode prefix map, `<ctrl-z>` is unbound because Rune has
   nothing to suspend, and `<ctrl-m>` inserts a newline like `RET`.
 - `<ctrl-x>` contains the specific Rune command sequences listed above, not a
-  general Emacs prefix keymap. Each one duplicates a `<meta>` chord.
+  general Emacs prefix keymap. Each one duplicates a Rune-layer chord.
 - The kill ring is Rune's shared clipboard history, so kills and copies are
   visible to the rest of Rune and to other buffers.
 - Expression motion is bracket-based and does not move across bare atoms.

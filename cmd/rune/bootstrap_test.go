@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -122,37 +123,51 @@ func TestRenderPreset(t *testing.T) {
 	}
 	require.NotContains(t, hx, `"<alt-d>"`,
 		"helix keeps <alt> for its own grammar")
-	require.Contains(t, ema, `"<meta-f>": "windowfocus right"`,
+	// renderPreset embeds the host's preset: emacs puts Rune's layer on
+	// Command on macOS and on Alt+Shift on Linux, where Super belongs to the
+	// desktop and Alt is Emacs Meta.
+	layer, move, resizeLeft := "meta", "shift-meta", "<meta-left>"
+	if runtime.GOOS != "darwin" {
+		layer, move, resizeLeft = "alt-shift", "ctrl-shift-alt", "<ctrl-shift-left>"
+	}
+	on := func(mods, key, command string) string {
+		return fmt.Sprintf(`"<%s-%s>": %s`, mods, key, command)
+	}
+	require.Contains(t, ema, on(layer, "f", `"windowfocus right"`),
 		"emacs must use the PNBF direction layer for window focus")
 	require.Contains(t, ema, `"<ctrl-x>u": "undo prefix"`,
 		"emacs must expose GNU's C-x u undo alias")
+	closeWindow := on(layer, "k", "windowclose")
+	closeOthers := on(move, "k", "windowcloseall")
+	splitDown := on(layer, "d", `"windownew down"`)
+	splitRight := on(layer, "r", `"windownew right"`)
 	for _, binding := range []string{
-		`"<meta-d>": "windownew down"`,
-		`"<meta-r>": "windownew right"`,
-		`"<meta-k>": windowclose`,
-		`"<shift-meta-k>": windowcloseall`,
-		`"<meta-m>": windowtogglemaximize`,
-		`"<meta-o>": fexplorer`,
-		`"<meta-left>": "windowresize decrease width"`,
+		splitDown,
+		splitRight,
+		closeWindow,
+		closeOthers,
+		on(layer, "m", "windowtogglemaximize"),
+		on(layer, "o", "fexplorer"),
+		fmt.Sprintf(`"%s": "windowresize decrease width"`, resizeLeft),
 	} {
 		require.Contains(t, ema, binding,
 			"emacs layout bindings must remain reachable from terminals")
 	}
 	// A focused terminal eats C-x, so the GNU lifecycle chords may only ever
-	// duplicate a <meta> binding, never be the sole way to reach a command.
-	for cx, meta := range map[string]string{
-		`"<ctrl-x>0": windowclose`:       `"<meta-k>": windowclose`,
-		`"<ctrl-x>1": windowcloseall`:    `"<shift-meta-k>": windowcloseall`,
-		`"<ctrl-x>2": "windownew down"`:  `"<meta-d>": "windownew down"`,
-		`"<ctrl-x>3": "windownew right"`: `"<meta-r>": "windownew right"`,
+	// duplicate a Rune-layer binding, never be the sole way to reach a command.
+	for cx, direct := range map[string]string{
+		`"<ctrl-x>0": windowclose`:       closeWindow,
+		`"<ctrl-x>1": windowcloseall`:    closeOthers,
+		`"<ctrl-x>2": "windownew down"`:  splitDown,
+		`"<ctrl-x>3": "windownew right"`: splitRight,
 	} {
 		if strings.Contains(ema, cx) {
-			require.Contains(t, ema, meta,
-				"%s must duplicate a <meta> binding, not replace it", cx)
+			require.Contains(t, ema, direct,
+				"%s must duplicate a Rune-layer binding, not replace it", cx)
 		}
 	}
 	require.NotContains(t, ema,
-		`"<meta-f>": "echo {prompt}jumptoast<space>locals.scm<space>`,
+		on(layer, "f", `"echo {prompt}jumptoast<space>locals.scm<space>`),
 		"the displaced function search binding must remain prompt-only")
 
 	_, err = renderPreset("bogus", true)
@@ -209,10 +224,11 @@ func TestShouldSwallowBootstrapEvent(t *testing.T) {
 		// Dangerous: default close-window / close-tab bindings from
 		// the editor presets. Quit is not swallowed: it is handled
 		// as a real exit by bootstrapHandler.Handle.
-		{"meta-q quit", keyEv('q', term.ModMeta), false},
+		{"app-q quit", keyEv('q', hostAppModifier), false},
 		{"meta-w windowclose", keyEv('w', term.ModMeta), true},
 		{"alt-w tabclose", keyEv('w', term.ModAlt), true},
 		{"ctrl-w tabclose", keyEv('w', term.ModCtrl), true},
+		{"ctrl-alt-w tabclose", keyEv('w', term.ModCtrlAlt), true},
 		{"meta-shift-w", keyEv('w', term.ModMeta|term.ModShift), true},
 
 		// Pass-through: arrow keys (prompt navigation), mouse,
@@ -233,15 +249,15 @@ func TestShouldSwallowBootstrapEvent(t *testing.T) {
 	}
 }
 
-// TestBootstrapHandleQuit asserts Cmd+Q exits the app while the
-// bootstrap wizard is still up, and stops being special once the real
-// IDE has been swapped in.
+// TestBootstrapHandleQuit asserts the platform's quit chord (Cmd+Q,
+// Ctrl+Alt+Q) exits the app while the bootstrap wizard is still up, and
+// stops being special once the real IDE has been swapped in.
 func TestBootstrapHandleQuit(t *testing.T) {
 	t.Run("quits while pre-config IDE is up", func(t *testing.T) {
 		inner := &recordingHandler{}
 		b := &bootstrapHandler{inner: inner}
-		exit, handled := b.Handle(keyEv('q', term.ModMeta))
-		require.True(t, exit, "meta-q must exit during bootstrap")
+		exit, handled := b.Handle(keyEv('q', hostAppModifier))
+		require.True(t, exit, "the quit chord must exit during bootstrap")
 		require.True(t, handled)
 		require.Zero(t, inner.handled,
 			"quit must not reach the pre-config IDE")
@@ -250,11 +266,20 @@ func TestBootstrapHandleQuit(t *testing.T) {
 	t.Run("delegates once the real IDE is ready", func(t *testing.T) {
 		inner := &recordingHandler{}
 		b := &bootstrapHandler{inner: inner, realIDE: &ide.IDE{}}
-		exit, handled := b.Handle(keyEv('q', term.ModMeta))
+		exit, handled := b.Handle(keyEv('q', hostAppModifier))
 		require.False(t, exit)
 		require.False(t, handled)
 		require.Equal(t, 1, inner.handled)
 	})
+}
+
+// TestAppModifier pins the modifier app-wide chords use per platform. On
+// Linux Super belongs to the desktop and plain Ctrl to the terminal.
+func TestAppModifier(t *testing.T) {
+	require.Equal(t, term.ModMeta, appModifier("darwin"))
+	require.Equal(t, "\u2318", appModifierSymbol("darwin"))
+	require.Equal(t, term.ModCtrlAlt, appModifier("linux"))
+	require.Equal(t, "Ctrl+Alt", appModifierSymbol("linux"))
 }
 
 type recordingHandler struct {
@@ -272,22 +297,27 @@ func keyEv(ch rune, mod term.Modifier) term.Event {
 }
 
 // TestBootstrapFontSizeDelta covers the chords the welcome prompt tells
-// the user to press before any editor preset (and its <m-=> / <m-->
+// the user to press before any editor preset (and its guifontsize
 // bindings) has been written to the user config.
 func TestBootstrapFontSizeDelta(t *testing.T) {
+	other := term.ModCtrlAlt
+	if hostAppModifier == term.ModCtrlAlt {
+		other = term.ModMeta
+	}
 	cases := []struct {
 		name string
 		ev   term.Event
 		want int
 	}{
-		{"meta-equals increases", keyEv('=', term.ModMeta), 1},
-		{"meta-plus increases", keyEv('+', term.ModMeta), 1},
-		{"meta-shift-plus increases", keyEv('+', term.ModMeta|term.ModShift), 1},
-		{"meta-minus decreases", keyEv('-', term.ModMeta), -1},
-		{"meta-underscore decreases", keyEv('_', term.ModMeta), -1},
-		{"equals without meta", keyEv('=', 0), 0},
+		{"app-equals increases", keyEv('=', hostAppModifier), 1},
+		{"app-plus increases", keyEv('+', hostAppModifier), 1},
+		{"app-shift-plus increases", keyEv('+', hostAppModifier|term.ModShift), 1},
+		{"app-minus decreases", keyEv('-', hostAppModifier), -1},
+		{"app-underscore decreases", keyEv('_', hostAppModifier), -1},
+		{"equals without modifier", keyEv('=', 0), 0},
 		{"ctrl-equals", keyEv('=', term.ModCtrl), 0},
-		{"meta-a", keyEv('a', term.ModMeta), 0},
+		{"other platform's modifier", keyEv('=', other), 0},
+		{"app-a", keyEv('a', hostAppModifier), 0},
 		{"mouse", term.Event{Type: term.EventMouse}, 0},
 	}
 	for _, tc := range cases {

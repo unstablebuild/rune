@@ -38,6 +38,12 @@ def keypress(cmd, *args):
     return ("open the command prompt (`" + ck + "`) and run `" +
             cmd + ((" " + " ".join(args)) if len(args) else "") + "`")
 
+history_key = key_for("history")
+history_opens = ("press `" + history_key + "` to open") if history_key else "run `history` to open"
+
+# Links open on Ctrl-click on Linux, where Super belongs to the desktop.
+link_modifier = "`<ctrl>`" if os() == "linux" else "`<meta>`"
+
 cleanup_md = """\
 Let's start fresh. Clear the layout: """ + keypress("windowcloseall") + """.
 """
@@ -94,11 +100,11 @@ Start a conversation with the agent using the `agent` command.
 help_md = """\
 You're almost done 🎉 A few tips worth remembering:
 
-- If you find yourself wondering what commands you typed on a previous session, press
-  `<meta-r>` to open the command prompt in history mode and search through your command history.
+- If you find yourself wondering what commands you typed on a previous session,
+  """ + history_opens + """ the command prompt in history mode and search through your command history.
 
 - If you need a hand, or want to learn about hacking on Rune, join us on
-  Discord: https://discord.gg/quxhV7khwg 👾 hold `<meta>` and click the
+  Discord: https://discord.gg/quxhV7khwg 👾 hold """ + link_modifier + """ and click the
   link to open it in your browser.
 
 - There's a `help` command that opens the documentation on a separate workspace
@@ -230,4 +236,4 @@ def run():
     teach_agent()
     teach_help()
 
-tutorial(id = "agent", title = "Rune Agent", version = "13", entry = run)
+tutorial(id = "agent", title = "Rune Agent", version = "14", entry = run)

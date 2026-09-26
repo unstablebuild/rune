@@ -112,3 +112,11 @@ func (f *Floating) ReplacementText() string {
 func (f *Floating) HandleReplacement(ev term.Event) {
 	f.replacement.Handle(ev)
 }
+
+// SetCopyShortcutFor installs goos's copy chord and returns a function
+// that restores the host's.
+func SetCopyShortcutFor(goos string) (restore func()) {
+	prev := copyShortcut
+	copyShortcut = hostCopyShortcut(goos)
+	return func() { copyShortcut = prev }
+}

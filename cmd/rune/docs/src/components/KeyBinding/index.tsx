@@ -2,18 +2,14 @@ import React from 'react';
 import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 import {
   useEditorSelection,
+  type EditorPreset,
   type Platform,
 } from '@site/src/components/editorSelection';
 
 type BindingValue = string | string[];
 type BindingMap = Record<string, BindingValue>;
 
-interface KeybindingData {
-  modal: PresetData;
-  helix: PresetData;
-  standard: Record<Platform, PresetData>;
-  emacs: PresetData;
-}
+type KeybindingData = Record<EditorPreset, Record<Platform, PresetData>>;
 
 interface PresetData {
   command_key: string;
@@ -37,9 +33,7 @@ export default function KeyBinding({command}: KeyBindingProps): React.ReactNode 
   const {siteConfig} = useDocusaurusContext();
   const data = siteConfig.customFields?.keybindings as unknown as KeybindingData;
   const {preset, platform} = useEditorSelection();
-  const presetData =
-    preset === 'standard' ? data.standard[platform] : data[preset];
-  const bindings = presetData.key_bindings;
+  const bindings = data[preset][platform].key_bindings;
   const keys = Object.entries(bindings)
     .filter(([, value]) => commandMatches(value, command))
     .map(([key]) => key);
@@ -72,7 +66,5 @@ export function CommandPromptKey(): React.ReactNode {
   const {siteConfig} = useDocusaurusContext();
   const data = siteConfig.customFields?.keybindings as unknown as KeybindingData;
   const {preset, platform} = useEditorSelection();
-  const presetData =
-    preset === 'standard' ? data.standard[platform] : data[preset];
-  return <code>{presetData.command_key}</code>;
+  return <code>{data[preset][platform].command_key}</code>;
 }

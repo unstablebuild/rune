@@ -17,6 +17,7 @@
 package searchbox
 
 import (
+	"runtime"
 	"strings"
 
 	"github.com/unstablebuild/rune-go-sdk/component"
@@ -484,11 +485,17 @@ func (f *floating) Handle(ev term.Event) (bool, bool) {
 		}
 		return false, true
 	}
+	in := f.query
+	if f.focus == focusReplacement && f.replacement != nil {
+		in = f.replacement
+	}
 	if ev.Type == term.EventKey {
-		if ev.Key == term.KeyEsc || (ev.Ch == 'c' && ev.Mod == term.ModCtrl) {
+		if ev.Key == term.KeyEsc ||
+			(ev.Ch == 'c' && ev.Mod == term.ModCtrl && !copiesOwnSelection(in, ev)) {
 			// ctrl-c is the terminal's own cancel gesture, so it closes
 			// the box like <esc> instead of being treated as a request
-			// to edit the query.
+			// to edit the query, unless it is also the copy chord and
+			// something inside the box is selected.
 			return true, true
 		}
 		if ev.Key == term.KeyTab {
@@ -510,17 +517,11 @@ func (f *floating) Handle(ev term.Event) (bool, bool) {
 	if ev.Type == term.EventMouse {
 		return f.handleMouse(ev)
 	}
-	in := f.query
-	if f.focus == focusReplacement && f.replacement != nil {
-		in = f.replacement
-	}
-	if isCopyShortcut(ev) {
-		if _, ok := in.box.Selection(); !ok {
-			// nothing is selected in the query/replacement input, so this
-			// is not a request to copy them: let the host's own copy
-			// binding see the event and act on whatever else is selected.
-			return false, false
-		}
+	if isCopyShortcut(ev) && !copiesOwnSelection(in, ev) {
+		// nothing is selected in the query/replacement input, so this
+		// is not a request to copy them: let the host's own copy
+		// binding see the event and act on whatever else is selected.
+		return false, false
 	}
 	before := in.text()
 	_, handled := in.Handle(ev)
@@ -533,14 +534,33 @@ func (f *floating) Handle(ev term.Event) (bool, bool) {
 	return false, handled
 }
 
-// isCopyShortcut reports whether ev is the query/replacement editor's
-// own empty-selection-copies-the-line shortcut (cmd-c). ctrl-c is
-// handled earlier as the box's cancel gesture, so it never reaches
-// here. Config always wires these inputs to the standard editor, so
-// the combination is fixed regardless of what edits the content behind
-// the box.
+// copyShortcut is the query/replacement editor's own
+// empty-selection-copies-the-line chord: cmd-c on macOS and ctrl-c
+// elsewhere, where the standard editor leaves Super to the desktop.
+// Config always wires these inputs to the standard editor, so the
+// combination is fixed regardless of what edits the content behind the
+// box.
+var copyShortcut = hostCopyShortcut(runtime.GOOS)
+
+func hostCopyShortcut(goos string) term.KeyComb {
+	if goos == "darwin" {
+		return term.KeyComb{Mod: term.ModMeta, Ch: 'c'}
+	}
+	return term.KeyComb{Mod: term.ModCtrl, Ch: 'c'}
+}
+
 func isCopyShortcut(ev term.Event) bool {
-	return ev.Type == term.EventKey && ev.Ch == 'c' && ev.Mod == term.ModMeta
+	return ev.Type == term.EventKey && ev.Ch == copyShortcut.Ch && ev.Mod == copyShortcut.Mod
+}
+
+// copiesOwnSelection reports whether ev copies a selection made inside
+// in, which is the only copy the box itself claims.
+func copiesOwnSelection(in *textInput, ev term.Event) bool {
+	if !isCopyShortcut(ev) {
+		return false
+	}
+	_, ok := in.box.Selection()
+	return ok
 }
 
 func (f *floating) buttonAt(x, y int) button {

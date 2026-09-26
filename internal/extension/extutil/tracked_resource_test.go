@@ -46,7 +46,8 @@ func TestResourceTrackerIntegration(t *testing.T) {
 	for _, test := range suite {
 		t.Run(test.description, func(t *testing.T) {
 			tabspaces := 4
-			simpleEd := standard.Editor()
+			// The key events below are the macOS chords.
+			simpleEd := standard.Editor(standard.WithHostMetaChords(true))
 
 			cfg := text.DefaultConfig()
 

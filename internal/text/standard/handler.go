@@ -293,7 +293,11 @@ func (h *standardHandler) handleMetaK(ev term.Event) (handled bool) {
 	case 'l':
 		handled = h.cursor.LowercaseSelection()
 	case 'k':
-		if h.cursor.Select() {
+		if !h.cfg.hostMeta {
+			// <ctrl-k> alone cut to the line end before it became the
+			// prefix, so the doubled chord keeps cutting.
+			handled = h.cutToEndOfLine()
+		} else if h.cursor.Select() {
 			h.cursor.MoveEndLine()
 			handled = h.cursor.DeleteSelection()
 		}
@@ -301,8 +305,54 @@ func (h *standardHandler) handleMetaK(ev term.Event) (handled bool) {
 		handled = h.cursor.ExpandAllFolds(context.Background())
 	case '1':
 		handled = h.cursor.CollapseAllFolds(context.Background())
+	case 'v':
+		// Sublime's paste from history, and the Linux home of <alt-meta-v>.
+		handled = h.pasteFromHistory()
 	}
 	return
+}
+
+// linuxHostChords maps the Linux home of every chord the editor otherwise
+// keeps on Command or Ctrl+Alt to that chord, so both layouts share one
+// implementation. See WithHostMetaChords.
+var linuxHostChords = map[term.KeyComb]term.KeyComb{
+	{Mod: term.ModCtrlShift, Key: term.KeyBackspace}: {Mod: term.ModMeta, Key: term.KeyBackspace},
+	{Mod: term.ModCtrlShift, Key: term.KeyDelete}:    {Mod: term.ModMeta, Key: term.KeyDelete},
+	{Mod: term.ModCtrl, Ch: 'u'}:                     {Mod: term.ModMeta, Ch: 'u'},
+	{Mod: term.ModCtrl, Ch: 'U'}:                     {Mod: term.ModMeta, Ch: 'U'},
+	{Mod: term.ModCtrl, Ch: 'L'}:                     {Mod: term.ModMeta, Ch: 'l'},
+	{Mod: term.ModCtrl, Ch: 'I'}:                     {Mod: term.ModMeta, Ch: 'J'},
+	{Mod: term.ModCtrl, Ch: 'V'}:                     {Mod: term.ModMeta, Ch: 'V'},
+	{Mod: term.ModCtrl, Ch: 'k'}:                     {Mod: term.ModMeta, Ch: 'k'},
+	{Mod: term.ModCtrl, Ch: '?'}:                     {Mod: term.ModAltMeta, Ch: '/'},
+	{Mod: term.ModCtrl, Ch: 'G'}:                     {Mod: term.ModAltMeta, Ch: 'q'},
+	{Mod: term.ModCtrl, Ch: 'D'}:                     {Mod: term.ModCtrlMeta, Ch: 'd'},
+	{Mod: term.ModAlt, Key: term.KeyPgup}:            {Mod: term.ModCtrlAlt, Key: term.KeyArrowUp},
+	{Mod: term.ModAlt, Key: term.KeyPgdn}:            {Mod: term.ModCtrlAlt, Key: term.KeyArrowDown},
+	{Mod: term.ModCtrl, Ch: 'H'}:                     {Mod: term.ModCtrlAlt, Ch: 'h'},
+	{Mod: term.ModCtrl, Ch: 'R'}:                     {Mod: term.ModCtrlAlt, Ch: 'v'},
+}
+
+// linuxChord rewrites ev from the Linux layout into the Command layout the
+// handler implements, and reports false for a chord the Linux layout
+// leaves to the desktop or to Rune's command layer.
+func (h *standardHandler) linuxChord(ev term.Event) (term.Event, bool) {
+	if ev.Mod&term.ModMeta != 0 || ev.Mod&term.ModCtrlAlt == term.ModCtrlAlt {
+		return ev, false
+	}
+	if h.metaK && ev.Mod == term.ModCtrl {
+		ev.Mod = term.ModMeta
+		return ev, true
+	}
+	k := term.KeyComb{Mod: ev.Mod, Key: ev.Key, Ch: ev.Ch}
+	if k.Mod == term.ModCtrlShift && k.Ch != 0 {
+		// Some input paths keep Shift alongside the shifted glyph.
+		k.Mod = term.ModCtrl
+	}
+	if to, ok := linuxHostChords[k]; ok {
+		ev.Mod, ev.Key, ev.Ch = to.Mod, to.Key, to.Ch
+	}
+	return ev, true
 }
 
 func (h *standardHandler) Handle(ev term.Event) (exit, handled bool) {
@@ -386,6 +436,14 @@ func (h *standardHandler) Handle(ev term.Event) (exit, handled bool) {
 		}
 	}
 
+	if !h.cfg.hostMeta {
+		var ok bool
+		if ev, ok = h.linuxChord(ev); !ok {
+			h.metaK = false
+			return
+		}
+	}
+
 	var shift bool
 	if ev.Mod&term.ModShift != 0 && ev.Mod == term.ModShift {
 		if _, ok := h.cursor.SelectionMode(); !ok {
@@ -401,6 +459,9 @@ func (h *standardHandler) Handle(ev term.Event) (exit, handled bool) {
 		h.metaK = false
 		handled = h.handleMetaK(ev)
 		if handled {
+			if ev.Ch == 'v' {
+				pastedThisTurn = true
+			}
 			return
 		}
 	}
@@ -553,6 +614,9 @@ func (h *standardHandler) Handle(ev term.Event) (exit, handled bool) {
 				h.log(log.TraceLevel, "waiting for metaK event")
 				h.metaK = true
 				handled = true
+				// <meta-k><meta-v> walks back through clipboard history,
+				// so the prefix must not end a paste.
+				pastedThisTurn = h.lastPaste
 			case 'u':
 				handled = h.cursor.UndoSelection()
 				return

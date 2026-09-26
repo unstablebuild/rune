@@ -709,9 +709,12 @@ func TestFloatingReportsHostSelection(t *testing.T) {
 // empty-selection-copies-the-line fallback. The host must get a chance
 // to act on it instead, e.g. to copy the selection made on its own
 // content after the box opened. ctrl-c is not covered here: it always
-// exits the box, like <esc> (see TestFloatingCtrlCActsLikeEscape).
+// exits the box, like <esc>, when nothing inside it is selected (see
+// TestFloatingCtrlCActsLikeEscape).
 func TestFloatingCopyShortcutFallsThroughWithNoOwnSelection(t *testing.T) {
+	defer searchbox.SetCopyShortcutFor("darwin")()
 	cfg := testConfig()
+	cfg.Editor = standard.Editor(standard.WithHostMetaChords(true))
 	cfg.WindowManager = new(testWindowManager)
 	ctrl := &selectionController{selection: "from the host"}
 	box := searchbox.New(ctrl, cfg)
@@ -732,4 +735,37 @@ func TestFloatingCopyShortcutFallsThroughWithNoOwnSelection(t *testing.T) {
 	selected, ok := f.Selection()
 	assert.True(t, ok)
 	assert.Equal(t, "from the host", selected)
+}
+
+// TestFloatingCtrlCCopiesOwnSelectionOnLinux pins that where ctrl-c is
+// also the standard editor's copy chord (Super belongs to the desktop on
+// Linux), it copies a selection made inside the box instead of closing it.
+func TestFloatingCtrlCCopiesOwnSelectionOnLinux(t *testing.T) {
+	defer searchbox.SetCopyShortcutFor("linux")()
+	cfg := testConfig()
+	cfg.Editor = standard.Editor(standard.WithHostMetaChords(false))
+	cfg.WindowManager = new(testWindowManager)
+	box := searchbox.New(&selectionController{selection: "from the host"}, cfg)
+
+	require.True(t, box.HandleKey(term.Event{Type: term.EventKey, Mod: term.ModMeta, Ch: 'f'}))
+	f := box.Floating()
+	require.NotNil(t, f)
+	f.Resize(48, 5)
+	for _, ch := range "query" {
+		f.Handle(term.Event{Type: term.EventKey, Ch: ch})
+	}
+	r := f.QueryRect()
+	x, y := r.X+1, r.Y+1
+	f.Handle(mouseEvent(term.MouseLeft, x, y))
+	f.Handle(mouseEvent(term.MouseRelease, x, y))
+	f.Handle(mouseEvent(term.MouseLeft, x, y))
+	f.Handle(mouseEvent(term.MouseRelease, x, y))
+	selected, ok := f.Selection()
+	require.True(t, ok)
+	require.Equal(t, "query", selected)
+
+	exit, handled := f.Handle(term.Event{Type: term.EventKey, Mod: term.ModCtrl, Ch: 'c'})
+	assert.False(t, exit, "ctrl-c must copy the box's own selection, not close it")
+	assert.True(t, handled)
+	assert.Equal(t, "query", f.QueryText())
 }

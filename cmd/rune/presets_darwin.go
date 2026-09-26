@@ -14,11 +14,20 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//go:build linux
+//go:build darwin
 
 package main
 
 import _ "embed"
 
-//go:embed preset_standard_linux.yaml
+//go:embed preset_vim_darwin.yaml
+var presetVimYAML string
+
+//go:embed preset_helix_darwin.yaml
+var presetHelixYAML string
+
+//go:embed preset_standard_darwin.yaml
 var presetStandardYAML string
+
+//go:embed preset_emacs_darwin.yaml
+var presetEmacsYAML string
