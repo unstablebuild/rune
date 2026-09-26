@@ -2120,9 +2120,14 @@ func (vi *viHandlerImpl) handleMetaNormal(ev term.Event) (quit, handled, done bo
 		switch ev.Ch {
 		case 'e', 'E':
 		case 'w', 'W':
+			if before.Y < after.Y && vi.less.Buffer().Columns(before.Y) == 0 {
+				vi.cursor.MoveToScroll(before)
+				vi.cursor.SelectLine()
+				break
+			}
 			vi.cursor.MoveLeft()
-			if before.Y < after.Y {
-				vi.cursor.MoveLeftEndWord()
+			if before.Y < after.Y && !vi.cursor.MoveLeftEndWord() {
+				vi.cursor.MoveLeftWrap()
 			}
 		case 'b', 'B':
 			if before.Y > after.Y {

@@ -838,6 +838,12 @@ func (c *Cursor) cellAtCursor() (cell term.Cell, ok bool) {
 	return
 }
 
+func (c *Cursor) atEmptyLine() bool {
+	cursorAtScroll := c.cursorAtScroll()
+	cells := c.view().RawCells()
+	return cursorAtScroll.Y >= 0 && cursorAtScroll.Y < len(cells) && len(cells[cursorAtScroll.Y]) == 0
+}
+
 func isOneOf(cell term.Cell, special map[rune]struct{}) bool {
 	_, ok := special[cell.Ch]
 	return ok
@@ -848,7 +854,7 @@ func isNoneOf(cell term.Cell, skip map[rune]struct{}) (none bool) {
 	return !ok
 }
 
-func (c *Cursor) moveAfterRune(budget int, skip, special map[rune]struct{}, move func() bool) (ok bool) {
+func (c *Cursor) moveAfterRune(budget int, skip, special map[rune]struct{}, stopAtEmptyLine bool, move func() bool) (ok bool) {
 	enable := c.disablePublishing()
 	defer enable()
 
@@ -862,17 +868,20 @@ func (c *Cursor) moveAfterRune(budget int, skip, special map[rune]struct{}, move
 	state := init
 
 	cell, cOk := c.cellAtCursor()
-	if !cOk {
+	if !cOk && !(stopAtEmptyLine && c.atEmptyLine()) {
 		return
 	}
 
-	if isOneOf(cell, special) {
+	if !cOk || isOneOf(cell, special) {
 		state = foundRune
 	}
 
 	for i := 0; i < budget && move(); i++ {
 		cell, cOk := c.cellAtCursor()
 		if !cOk {
+			if stopAtEmptyLine && c.atEmptyLine() && initialScrollPos.Y != c.cursorAtScroll().Y {
+				return true
+			}
 			continue
 		}
 		ok = true
@@ -974,7 +983,7 @@ const budgetFindWord = 100
 
 // MoveRightStartWordGroup moves the cursor right to the start of the next word.
 func (c *Cursor) MoveRightStartWordGroup() bool {
-	return c.moveAfterRune(budgetFindWord, skipCharacters, skipCharacters, c.MoveRightWrap)
+	return c.moveAfterRune(budgetFindWord, skipCharacters, skipCharacters, true, c.MoveRightWrap)
 }
 
 // MoveLeftStartWordGroup moves the cursor left to the start of the previous word.
@@ -997,7 +1006,7 @@ func (c *Cursor) MoveRightEndWordGroup() bool {
 // MoveLeftEndWordGroup moves the cursor left to the end of the previous word.
 func (c *Cursor) MoveLeftEndWordGroup() bool {
 	ok := c.moveAfterRune(budgetFindWord, skipCharacters,
-		skipCharacters, c.MoveLeftWrap)
+		skipCharacters, false, c.MoveLeftWrap)
 	if !ok || c.RightInclusiveSemantics {
 		return false
 	}
@@ -1008,7 +1017,7 @@ func (c *Cursor) MoveLeftEndWordGroup() bool {
 // MoveRightStartWord moves the cursor right to the start of the next word.
 func (c *Cursor) MoveRightStartWord() bool {
 	return c.moveAfterRune(budgetFindWord, skipCharacters,
-		allSpecialCharacters, c.MoveRightWrap)
+		allSpecialCharacters, true, c.MoveRightWrap)
 }
 
 // MoveLeftStartWord moves the cursor left to the start of the previous word.
@@ -1052,7 +1061,7 @@ func (c *Cursor) MoveRightEndWordNoWrap() bool {
 // MoveLeftEndWord moves the cursor left to the end of the previous word.
 func (c *Cursor) MoveLeftEndWord() bool {
 	ok := c.moveAfterRune(budgetFindWord, skipCharacters,
-		allSpecialCharacters, c.MoveLeftWrap)
+		allSpecialCharacters, false, c.MoveLeftWrap)
 	if !ok || c.RightInclusiveSemantics {
 		return ok
 	}
