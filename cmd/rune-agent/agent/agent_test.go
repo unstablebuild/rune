@@ -995,6 +995,41 @@ func TestCompactDialoguePreservesSkillContent(t *testing.T) {
 	assert.True(t, foundSkill, "skill content must survive CompactDialogue")
 }
 
+func TestCompactDialogueRejectsTruncatedSummary(t *testing.T) {
+	svc := &mockService{
+		responses: []mockResponse{{
+			chunks:       []string{"<summary>\n1. Primary Request: port the parser\n```go\nfunc parse("},
+			finishReason: llmapi.FinishReasonLength,
+			usage:        llmapi.Usage{TokensReceived: 8192},
+		}},
+	}
+	store := newMockStore()
+	d := dialoguemanager.Dialogue{
+		ID: "d",
+		Messages: []llmapi.Message{
+			{Role: llmapi.RoleSystem, Content: "sys"},
+			{Role: llmapi.RoleUser, Content: "hello"},
+			{Role: llmapi.RoleAssistant, Content: "hi there"},
+		},
+		Version: 1,
+	}
+	store.mu.Lock()
+	store.data["d"] = d
+	store.mu.Unlock()
+
+	compacted, archivedID, err := CompactDialogue(context.Background(), svc, llmapi.ModelEntry{}, store, d)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "summary truncated after 8192 output tokens")
+	assert.Nil(t, compacted)
+	assert.Empty(t, archivedID)
+
+	current, ok := store.getDialogue("d")
+	require.True(t, ok)
+	assert.Equal(t, d.Messages, current.Messages)
+	_, archived := store.getDialogue(ArchivedID("d"))
+	assert.False(t, archived, "a truncated summary must not archive the dialogue")
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchSubstring(s, substr)
 }
@@ -4279,6 +4314,63 @@ func TestAutoCompact(t *testing.T) {
 		assert.Equal(t, "Kept going despite compact failure", textEvents[0].Text)
 	})
 
+	t.Run("auto-compact with a truncated summary keeps the full dialogue", func(t *testing.T) {
+		countCalls := 0
+		svc := &mockService{
+			responses: []mockResponse{
+				{
+					chunks:       []string{"<summary>\n1. Primary Request: port the parser\n```go\nfunc parse("},
+					finishReason: llmapi.FinishReasonLength,
+					usage:        llmapi.Usage{TokensReceived: 8192},
+				},
+				stopResponse("Kept going with full context"),
+			},
+			contextWindowN: 1000,
+			countTokensFn: func(_ llmapi.ModelEntry, msgs []llmapi.Message) (int, error) {
+				countCalls++
+				if countCalls <= 1 {
+					return 900, nil
+				}
+				return 100, nil
+			},
+		}
+		store := newMockStore()
+		require.NoError(t, store.Create(context.Background(), dialoguemanager.Dialogue{
+			ID: "d",
+			Messages: []llmapi.Message{
+				{Role: llmapi.RoleSystem, Content: "test"},
+				{Role: llmapi.RoleUser, Content: "prior"},
+				{Role: llmapi.RoleAssistant, Content: "prior answer"},
+			},
+		}))
+		ag := NewAgent(svc, NewRegistry(), noSkills(), store, NoMemory(),
+			Config{SystemPrompt: "test", Model: llmapi.ModelEntry{ContextWindow: 1000}})
+
+		it := ag.Run(context.Background(), "d", "test message")
+		events := collectEvents(t, it)
+
+		errEvents := eventsByType(events, EventError)
+		require.Len(t, errEvents, 1)
+		assert.Contains(t, errEvents[0].Error.Error(), "summary truncated")
+		assert.False(t, hasEventType(events, EventCompacted))
+
+		require.Equal(t, 2, svc.getCallCount())
+		var contents []string
+		for _, m := range svc.requests[1].Messages {
+			contents = append(contents, m.Content)
+		}
+		assert.Contains(t, contents, "prior answer")
+		for _, c := range contents {
+			assert.NotContains(t, c, "<summary>")
+		}
+
+		_, archived := store.getDialogue(ArchivedID("d"))
+		assert.False(t, archived)
+		textEvents := eventsByType(events, EventText)
+		require.NotEmpty(t, textEvents)
+		assert.Equal(t, "Kept going with full context", textEvents[0].Text)
+	})
+
 	t.Run("auto-compact with project instructions does not panic", func(t *testing.T) {
 		// Regression test: after auto-compaction, userMsgIdx pointed past
 		// the end of the (now shorter) messages slice, causing a panic
@@ -4670,6 +4762,16 @@ func TestCleanSummary(t *testing.T) {
 			name: "empty after strip",
 			raw:  "<analysis>\nthinking\n</analysis>\n\n",
 			want: "",
+		},
+		{
+			name: "unclosed summary tag",
+			raw:  "<analysis>\nthinking\n</analysis>\n<summary>\n1. Primary Request\n2. Key Concepts",
+			want: "Summary:\n1. Primary Request\n2. Key Concepts",
+		},
+		{
+			name: "trailing tool-call closing tags",
+			raw:  "<summary>\nContent here\n</summary>\n</parameter>\n</invoke>\n</parameter>\n</invoke>",
+			want: "Summary:\nContent here",
 		},
 	}
 	for _, tt := range tests {
