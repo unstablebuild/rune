@@ -29,7 +29,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/ernestrc/go-multierror"
@@ -840,6 +839,12 @@ func (s *Service) leadOrFollow() {
 
 	})
 
+	// Create the directory up front rather than on ENOENT: Windows reports a
+	// missing parent directory from bind(2) as WSAENETDOWN.
+	if err := os.MkdirAll(filepath.Dir(s.lockFileListen), 0766); err != nil {
+		s.log(log.WarnLevel, "create lock dir: %v", err)
+	}
+
 	fn := func(ctx context.Context) (bool, error) {
 		var cfg net.ListenConfig
 		listener, err := cfg.Listen(ctx, "unix", s.lockFileListen)
@@ -852,18 +857,9 @@ func (s *Service) leadOrFollow() {
 			return true, err
 		}
 
-		if errors.Is(err, syscall.ENOENT) { // a component of the path does not exist
-			mkdirErr := os.MkdirAll(filepath.Dir(s.lockFileListen), 0766)
-			if mkdirErr != nil {
-				s.log(log.WarnLevel, "create lock dir: %v", mkdirErr)
-				return false, multierror.Append(err, mkdirErr)
-			}
-			return true, err
-		}
-
 		// depending on whether the error is a bind error or other we need to
 		// wrap syscall errors and their os counterparts
-		if !errors.Is(err, syscall.EADDRINUSE) && // address already in use
+		if !isAddrInUse(err) && // address already in use
 			!errors.Is(err, os.ErrExist) && // file already exists
 			!errors.Is(err, os.ErrInvalid) { // socket already bound to an address
 			s.log(log.WarnLevel, "Unexpected error while trying to "+
