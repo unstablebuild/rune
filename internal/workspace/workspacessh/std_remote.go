@@ -184,8 +184,6 @@ var sigMap = map[syscall.Signal]ssh.Signal{
 	syscall.SIGQUIT: "QUIT",
 	syscall.SIGSEGV: "SEGV",
 	syscall.SIGTERM: "TERM",
-	syscall.SIGUSR1: "USR1",
-	syscall.SIGUSR2: "USR2",
 }
 
 // used to adapt ssh.Client to sshClient
