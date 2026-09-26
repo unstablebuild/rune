@@ -286,3 +286,60 @@ func TestTabOnSlowScanDoesNotFreeze(t *testing.T) {
 	}
 	assert.False(t, h.searching)
 }
+
+// TestCompletion_ArrowKeyNavigationPreservedOnAccept asserts that navigating
+// completion candidates with arrow keys preserves the selection upon
+// acceptance (via Enter or Tab) rather than resetting back to the first
+// candidate.
+func TestCompletion_ArrowKeyNavigationPreservedOnAccept(t *testing.T) {
+	tests := []struct {
+		name     string
+		navKeys  []term.Key
+		accept   term.Key
+		expected string
+	}{
+		{
+			name:     "arrow down then enter accepts second candidate",
+			navKeys:  []term.Key{term.KeyArrowDown},
+			accept:   term.KeyEnter,
+			expected: "g beta",
+		},
+		{
+			name:     "arrow down then tab accepts second candidate",
+			navKeys:  []term.Key{term.KeyArrowDown},
+			accept:   term.KeyTab,
+			expected: "g beta",
+		},
+		{
+			name:     "arrow down twice then arrow up accepts second candidate",
+			navKeys:  []term.Key{term.KeyArrowDown, term.KeyArrowDown, term.KeyArrowUp},
+			accept:   term.KeyEnter,
+			expected: "g beta",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newTestHandlerFull(t, nil, 100, func(r *CommandRegistry) {
+				r.Register("g", "", iterCmd{iter: func() iterator.Iterator[string] {
+					return iterator.FromSlice([]string{"alpha", "beta", "gamma"})
+				}})
+			})
+			h.Resize(testWidthH, testHeight)
+
+			feedRunes(h, "g ")
+			h.Handle(term.Event{Type: term.EventKey, Key: term.KeyTab})
+			h.WaitCompletion()
+			drainTicks(h)
+
+			require.True(t, h.searching)
+
+			for _, k := range tc.navKeys {
+				h.Handle(term.Event{Type: term.EventKey, Key: k})
+			}
+			h.Handle(term.Event{Type: term.EventKey, Key: tc.accept})
+
+			assert.False(t, h.searching)
+			assert.Equal(t, tc.expected, h.editBuf.String())
+		})
+	}
+}
