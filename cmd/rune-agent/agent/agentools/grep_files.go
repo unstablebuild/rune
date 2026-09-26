@@ -30,6 +30,8 @@ import (
 
 	"github.com/unstablebuild/blue/iterator"
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
+	"github.com/unstablebuild/rune-go-sdk/api/semanticapi"
+	"github.com/unstablebuild/rune-go-sdk/api/syntaxapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"unstable.build/rune/cmd/rune-agent/agent"
 	"unstable.build/rune/cmd/rune-agent/agent/utf8validate"
@@ -45,6 +47,8 @@ type grepFilesTool struct {
 	fs      workspaceapi.FileSystem
 	cwd     workspaceapi.URI
 	tracker *FileTracker
+	lsp     semanticapi.LSP
+	parser  syntaxapi.Parser
 }
 
 type grepFilesArgs struct {
@@ -58,8 +62,20 @@ type grepFilesArgs struct {
 // contents match a regex pattern, sorted by modification time. It is
 // designed to override search_content for providers that expect the
 // Codex grep_files interface (e.g. OpenAI).
-func NewGrepFiles(wfs workspaceapi.FileSystem, cwd workspaceapi.URI, tracker *FileTracker) agent.Tool {
-	return &grepFilesTool{fs: wfs, cwd: cwd, tracker: tracker}
+func NewGrepFiles(
+	wfs workspaceapi.FileSystem,
+	cwd workspaceapi.URI,
+	tracker *FileTracker,
+	lsp semanticapi.LSP,
+	parser syntaxapi.Parser,
+) agent.Tool {
+	return &grepFilesTool{
+		fs:      wfs,
+		cwd:     cwd,
+		tracker: tracker,
+		lsp:     lsp,
+		parser:  parser,
+	}
 }
 
 func (t *grepFilesTool) NeedsDeterministicOrder() bool { return false }
@@ -137,6 +153,40 @@ func (t *grepFilesTool) Execute(ctx context.Context, arguments string) agent.Too
 		if limit > maxGrepLimit {
 			limit = maxGrepLimit
 		}
+	}
+
+	if dotted, ok := resolveDottedReferences(ctx, t.parser, t.lsp, args.Pattern); ok {
+		seen := make(map[string]struct{})
+		var relPaths []string
+		var discovered []string
+		for _, refs := range dotted.references {
+			for _, ref := range refs {
+				rel := uriToRelPath(ref.URI, t.cwd)
+				if _, dup := seen[rel]; !dup {
+					seen[rel] = struct{}{}
+					relPaths = append(relPaths, rel)
+					if parsed, err := workspaceapi.ParseURI(ref.URI); err == nil {
+						discovered = append(discovered, parsed.Path())
+					}
+				}
+			}
+		}
+		truncated := len(relPaths) > limit
+		if truncated {
+			relPaths = relPaths[:limit]
+			if len(discovered) > limit {
+				discovered = discovered[:limit]
+			}
+		}
+		if t.tracker != nil {
+			t.tracker.TrackDiscovery(ctx, dedupPaths(discovered))
+		}
+		note := fmt.Sprintf(symbolRedirectNote, args.Pattern)
+		output := note + "\n\n" + strings.Join(relPaths, "\n")
+		if truncated {
+			output += fmt.Sprintf("\n\n(results truncated at %d files)", limit)
+		}
+		return agent.ToolResult{Content: output}
 	}
 
 	root := t.cwd.Path()

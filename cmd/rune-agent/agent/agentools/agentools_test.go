@@ -143,7 +143,7 @@ func dirURI(dir string) workspaceapi.URI {
 }
 
 func TestDefaultTools(t *testing.T) {
-	tools, tracker := DefaultTools(localFS{}, localExec{}, dirURI("/workspace"), nil, Config{}, configedit.NopConfig())
+	tools, tracker := DefaultTools(localFS{}, localExec{}, dirURI("/workspace"), nil, nil, Config{}, configedit.NopConfig())
 	require.Len(t, tools, 6)
 	require.NotNil(t, tracker)
 
@@ -189,7 +189,7 @@ func TestDefinitions(t *testing.T) {
 	}{
 		{"read_file", newReadFile(fs, dirURI(dir), NewFileTracker(), 0), "read_file"},
 		{"apply_patch", newApplyPatch(fs, dirURI(dir), NewFileTracker(), &stubLSP{}), "apply_patch"},
-		{"search_content", newSearch(fs, dirURI(dir), NewFileTracker(), nil), "search_content"},
+		{"search_content", newSearch(fs, dirURI(dir), NewFileTracker(), nil, nil, nil), "search_content"},
 		{"find_files", newFindFiles(fs, dirURI(dir), NewFileTracker(), nil), "find_files"},
 		{"list_dir", NewListDir(fs, dirURI(dir)), "list_dir"},
 		{"bash", newBash(ex, dirURI(dir), configedit.NopConfig()), "bash"},
@@ -224,7 +224,7 @@ func TestToolDescriptionsCrossReferenceSemanticSkills(t *testing.T) {
 		},
 		{
 			"search_content mentions search_symbols and find_definition tools",
-			newSearch(fs, dirURI(dir), NewFileTracker(), nil),
+			newSearch(fs, dirURI(dir), NewFileTracker(), nil, nil, nil),
 			[]string{"search_symbols", "find_definition"},
 		},
 	}
@@ -260,9 +260,9 @@ func TestSummary(t *testing.T) {
 		{"apply_patch multi file", newApplyPatch(fs, dirURI(dir), NewFileTracker(), &stubLSP{}), `{"patch":"*** Begin Patch\n*** Add File: a.go\n+pkg\n*** Delete File: b.go\n*** End Patch"}`, "a.go, b.go"},
 		{"apply_patch invalid json", newApplyPatch(fs, dirURI(dir), NewFileTracker(), &stubLSP{}), `bad`, ""},
 		// search_content
-		{"search pattern only", newSearch(fs, dirURI(dir), NewFileTracker(), nil), `{"pattern":"TODO"}`, `"TODO"`},
-		{"search with path", newSearch(fs, dirURI(dir), NewFileTracker(), nil), `{"pattern":"TODO","path":"src"}`, `"TODO" in src`},
-		{"search invalid json", newSearch(fs, dirURI(dir), NewFileTracker(), nil), `bad`, ""},
+		{"search pattern only", newSearch(fs, dirURI(dir), NewFileTracker(), nil, nil, nil), `{"pattern":"TODO"}`, `"TODO"`},
+		{"search with path", newSearch(fs, dirURI(dir), NewFileTracker(), nil, nil, nil), `{"pattern":"TODO","path":"src"}`, `"TODO" in src`},
+		{"search invalid json", newSearch(fs, dirURI(dir), NewFileTracker(), nil, nil, nil), `bad`, ""},
 		// find_files
 		{"find pattern only", newFindFiles(fs, dirURI(dir), NewFileTracker(), nil), `{"pattern":"*.go"}`, `"*.go"`},
 		{"find with path", newFindFiles(fs, dirURI(dir), NewFileTracker(), nil), `{"pattern":"*.go","path":"lib"}`, `"*.go" in lib`},
@@ -647,7 +647,7 @@ func TestReadFile_imagePathWithSpaces(t *testing.T) {
 	result := tool.Execute(context.Background(), `{"path": "`+imgPath+`"}`)
 
 	assert.False(t, result.IsError)
-	assert.Equal(t, "Read image file: Screenshot 2026-03-25 at 6.55.08 AM.png (73 bytes, image/png)", result.Content)
+	assert.Equal(t, fmt.Sprintf("Read image file: Screenshot 2026-03-25 at 6.55.08 AM.png (%d bytes, image/png)", buf.Len()), result.Content)
 	require.Len(t, result.MultiContent, 2)
 	assert.Equal(t, llmapi.ContentPartTypeText, result.MultiContent[0].Type)
 	assert.Equal(t, llmapi.ContentPartTypeImageURL, result.MultiContent[1].Type)
@@ -867,7 +867,7 @@ func TestSearch(t *testing.T) {
 				require.NoError(t, err)
 				filter = m
 			}
-			tool := newSearch(localFS{root: dir}, dirURI(dir), NewFileTracker(), filter)
+			tool := newSearch(localFS{root: dir}, dirURI(dir), NewFileTracker(), filter, nil, nil)
 
 			result := tool.Execute(context.Background(), tt.args)
 			tt.assertFn(t, result)
@@ -1514,7 +1514,7 @@ func TestSearchTools_explicitFilePath(t *testing.T) {
 	}{
 		{
 			"search_content",
-			newSearch(localFS{root: dir}, dirURI(dir), NewFileTracker(), nil),
+			newSearch(localFS{root: dir}, dirURI(dir), NewFileTracker(), nil, nil, nil),
 			`{"pattern":"needle","path":"target.txt","include":null}`,
 		},
 		{
@@ -1524,7 +1524,7 @@ func TestSearchTools_explicitFilePath(t *testing.T) {
 		},
 		{
 			"grep_files",
-			NewGrepFiles(localFS{root: dir}, dirURI(dir), NewFileTracker()),
+			NewGrepFiles(localFS{root: dir}, dirURI(dir), NewFileTracker(), nil, nil),
 			`{"pattern":"needle","path":"target.txt"}`,
 		},
 	}
@@ -1548,7 +1548,7 @@ func TestSearchContent_skipsBinaryFiles(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "text.txt"),
 		[]byte("needle in text\n"), 0o644))
 
-	tool := newSearch(localFS{root: dir}, dirURI(dir), NewFileTracker(), nil)
+	tool := newSearch(localFS{root: dir}, dirURI(dir), NewFileTracker(), nil, nil, nil)
 	result := tool.Execute(t.Context(), `{"pattern":"needle","path":"","include":null}`)
 
 	require.False(t, result.IsError, result.Content)
@@ -1567,7 +1567,7 @@ func TestSearchTools_canceledContext(t *testing.T) {
 	}{
 		{
 			"search_content",
-			newSearch(localFS{root: dir}, dirURI(dir), NewFileTracker(), nil),
+			newSearch(localFS{root: dir}, dirURI(dir), NewFileTracker(), nil, nil, nil),
 			`{"pattern":"hello","path":"","include":null}`,
 		},
 		{
@@ -1577,7 +1577,7 @@ func TestSearchTools_canceledContext(t *testing.T) {
 		},
 		{
 			"grep_files",
-			NewGrepFiles(localFS{root: dir}, dirURI(dir), NewFileTracker()),
+			NewGrepFiles(localFS{root: dir}, dirURI(dir), NewFileTracker(), nil, nil),
 			`{"pattern":"hello"}`,
 		},
 	}
@@ -1613,7 +1613,7 @@ func TestSearchContent_cancelDuringSearch(t *testing.T) {
 		close(fs.release)
 	}()
 
-	tool := newSearch(fs, dirURI(dir), NewFileTracker(), nil)
+	tool := newSearch(fs, dirURI(dir), NewFileTracker(), nil, nil, nil)
 	result := tool.Execute(ctx, `{"pattern":"needle","path":"","include":null}`)
 
 	assert.True(t, result.IsError, result.Content)
@@ -1622,7 +1622,7 @@ func TestSearchContent_cancelDuringSearch(t *testing.T) {
 
 func TestDefaultTools_wiresApplyPatchLSP(t *testing.T) {
 	lsp := &stubLSP{}
-	tools, _ := DefaultTools(localFS{}, localExec{}, dirURI("/workspace"), lsp, Config{}, configedit.NopConfig())
+	tools, _ := DefaultTools(localFS{}, localExec{}, dirURI("/workspace"), lsp, nil, Config{}, configedit.NopConfig())
 
 	// Verify the apply_patch tool got the lsp reference.
 	var found bool

@@ -1040,7 +1040,7 @@ func newGitPatchWorkspace(
 	cwd, err := scheme.URI(".")
 	require.NoError(t, err)
 	tools, _ := agentools.DefaultTools(
-		scheme, nil, cwd, watchedFilesLSP{},
+		scheme, nil, cwd, watchedFilesLSP{}, nil,
 		agentools.Config{}, configedit.NopConfig())
 	for _, tool := range tools {
 		if tool.Definition().Function.Name == applyPatchToolName {

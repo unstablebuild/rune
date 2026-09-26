@@ -174,7 +174,7 @@ func TestGrepFiles(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := setupWorkspace(t)
-			tool := NewGrepFiles(localFS{root: dir}, dirURI(dir), NewFileTracker())
+			tool := NewGrepFiles(localFS{root: dir}, dirURI(dir), NewFileTracker(), nil, nil)
 
 			if tt.setup != nil {
 				tt.setup(t, dir)
@@ -187,7 +187,7 @@ func TestGrepFiles(t *testing.T) {
 }
 
 func TestGrepFiles_definition(t *testing.T) {
-	tool := NewGrepFiles(localFS{}, dirURI("/workspace"), NewFileTracker())
+	tool := NewGrepFiles(localFS{}, dirURI("/workspace"), NewFileTracker(), nil, nil)
 	def := tool.Definition()
 	assert.Equal(t, "grep_files", def.Function.Name)
 	assert.Equal(t, "Finds files whose contents match the pattern and lists them by modification time.",
@@ -197,7 +197,7 @@ func TestGrepFiles_definition(t *testing.T) {
 func TestGrepFiles_tracksDiscovery(t *testing.T) {
 	dir := setupWorkspace(t)
 	tracker := NewFileTracker()
-	tool := NewGrepFiles(localFS{root: dir}, dirURI(dir), tracker)
+	tool := NewGrepFiles(localFS{root: dir}, dirURI(dir), tracker, nil, nil)
 
 	ctx := agent.WithParentToolCallID(t.Context(), "grep_1")
 	result := tool.Execute(ctx, `{"pattern":"hello"}`)
@@ -212,7 +212,7 @@ func TestGrepFiles_tracksDiscovery(t *testing.T) {
 }
 
 func TestGrepFiles_summary(t *testing.T) {
-	tool := NewGrepFiles(localFS{}, dirURI("/workspace"), NewFileTracker())
+	tool := NewGrepFiles(localFS{}, dirURI("/workspace"), NewFileTracker(), nil, nil)
 	tests := []struct {
 		name     string
 		args     string
@@ -241,7 +241,7 @@ func TestGrepFiles_skipsBinaryFiles(t *testing.T) {
 	// Plain text file with the same token.
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "text.txt"), []byte("a needle in a haystack\n"), 0o644))
 
-	tool := NewGrepFiles(localFS{root: dir}, dirURI(dir), NewFileTracker())
+	tool := NewGrepFiles(localFS{root: dir}, dirURI(dir), NewFileTracker(), nil, nil)
 	result := tool.Execute(t.Context(), `{"pattern":"needle"}`)
 
 	require.False(t, result.IsError)

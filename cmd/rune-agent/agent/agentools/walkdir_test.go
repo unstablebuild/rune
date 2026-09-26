@@ -43,7 +43,7 @@ func TestGrepFiles_boundsWalkdirWorkers(t *testing.T) {
 		localFS: localFS{root: dir},
 		delay:   20 * time.Millisecond,
 	}
-	tool := NewGrepFiles(fs, dirURI(dir), NewFileTracker())
+	tool := NewGrepFiles(fs, dirURI(dir), NewFileTracker(), nil, nil)
 
 	result := tool.Execute(context.Background(), `{"pattern":"match"}`)
 	require.False(t, result.IsError, result.Content)

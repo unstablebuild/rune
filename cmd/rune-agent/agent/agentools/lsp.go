@@ -99,25 +99,51 @@ func LSPTools(
 	}
 }
 
+const symbolRedirectNote = "Note: %q resolved to a known symbol; showing find_references results\n(call find_references directly for symbol lookups)."
+
+type dottedReferences struct {
+	locations  []semanticapi.Location
+	references [][]semanticapi.Location
+	truncated  bool
+	totalCount int
+}
+
+func resolveIndexedSymbol(
+	ctx context.Context, parser syntaxapi.Parser, symbol string,
+) ([]semanticapi.Location, bool, error) {
+	if parser == nil {
+		return nil, false, nil
+	}
+	it, err := parser.ResolveSymbol(ctx, symbol, nil)
+	if err != nil {
+		return nil, false, err
+	}
+	matches, err := iterator.ToSlice(ctx, it)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(matches) == 0 {
+		return nil, false, nil
+	}
+	locs := make([]semanticapi.Location, 0, len(matches))
+	for _, m := range matches {
+		pos := semanticapi.Position{
+			Line:      uint32(m.Pos.Y),
+			Character: uint32(m.Pos.X),
+		}
+		locs = append(locs, semanticapi.Location{
+			URI:   m.URI,
+			Range: semanticapi.Range{Start: pos, End: pos},
+		})
+	}
+	return capLocations(locs)
+}
+
 func resolveSymbol(
 	ctx context.Context, lsp semanticapi.LSP, parser syntaxapi.Parser, symbol string,
 ) ([]semanticapi.Location, bool, error) {
-	if it, err := parser.ResolveSymbol(ctx, symbol, nil); err == nil {
-		matches, err := iterator.ToSlice(ctx, it)
-		if err == nil && len(matches) > 0 {
-			locs := make([]semanticapi.Location, 0, len(matches))
-			for _, m := range matches {
-				pos := semanticapi.Position{
-					Line:      uint32(m.Pos.Y),
-					Character: uint32(m.Pos.X),
-				}
-				locs = append(locs, semanticapi.Location{
-					URI:   m.URI,
-					Range: semanticapi.Range{Start: pos, End: pos},
-				})
-			}
-			return capLocations(locs)
-		}
+	if locs, truncated, err := resolveIndexedSymbol(ctx, parser, symbol); err == nil && len(locs) > 0 {
+		return locs, truncated, nil
 	}
 	syms, err := lsp.WorkspaceSymbol(ctx, semanticapi.WorkspaceSymbolParams{
 		Query: symbol,
@@ -136,6 +162,41 @@ func resolveSymbol(
 		locs = append(locs, s.Location)
 	}
 	return capLocations(locs)
+}
+
+func resolveDottedReferences(
+	ctx context.Context, parser syntaxapi.Parser, lsp semanticapi.LSP, pattern string,
+) (*dottedReferences, bool) {
+	if !strings.Contains(pattern, ".") || parser == nil || lsp == nil {
+		return nil, false
+	}
+	locs, truncated, err := resolveIndexedSymbol(ctx, parser, pattern)
+	if err != nil || len(locs) == 0 {
+		return nil, false
+	}
+	allRefs := make([][]semanticapi.Location, 0, len(locs))
+	total := 0
+	for _, loc := range locs {
+		refs, err := lsp.References(ctx, semanticapi.ReferenceParams{
+			TextDocument: semanticapi.TextDocumentIdentifier{URI: loc.URI},
+			Position:     loc.Range.Start,
+			Context:      semanticapi.ReferenceContext{IncludeDeclaration: true},
+		})
+		if err != nil {
+			return nil, false
+		}
+		allRefs = append(allRefs, refs)
+		total += len(refs)
+	}
+	if total == 0 {
+		return nil, false
+	}
+	return &dottedReferences{
+		locations:  locs,
+		references: allRefs,
+		truncated:  truncated,
+		totalCount: total,
+	}, true
 }
 
 func capLocations(locs []semanticapi.Location) ([]semanticapi.Location, bool, error) {
