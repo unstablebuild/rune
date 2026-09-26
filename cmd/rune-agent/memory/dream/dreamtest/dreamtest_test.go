@@ -833,6 +833,18 @@ func (s *mockDialogueStore) ArchiveAndReplace(context.Context, dialoguemanager.A
 	return nil
 }
 
+func (s *mockDialogueStore) SetTitle(_ context.Context, id, title string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, d := range s.dialogues {
+		if d.ID == id {
+			s.dialogues[i].Title = title
+			return nil
+		}
+	}
+	return storageapi.ErrNotFound
+}
+
 // mockExec implements workspaceapi.Executor. Every Start returns
 // success without spawning a process — `go test ./...` and
 // `go mod tidy` thus pass instantly.

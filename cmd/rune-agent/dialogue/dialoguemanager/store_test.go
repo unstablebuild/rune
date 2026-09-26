@@ -1118,3 +1118,136 @@ func TestStoreCreateWithEmptyMessages(t *testing.T) {
 	require.Len(t, all, 1)
 	assert.Equal(t, 0, all[0].MessageCount)
 }
+
+func TestStoreSetTitle(t *testing.T) {
+	ctx := context.Background()
+	s := newTempStore(t, storagestub.NewInMemoryService())
+
+	require.NoError(t, s.Create(ctx, Dialogue{
+		ID: "d1",
+		Messages: []llmapi.Message{
+			{Role: llmapi.RoleUser, Content: "hello"},
+		},
+	}))
+
+	d, err := s.Get(ctx, "d1")
+	require.NoError(t, err)
+	assert.Empty(t, d.Title)
+
+	require.NoError(t, s.SetTitle(ctx, "d1", "fix the flaky test"))
+
+	d, err = s.Get(ctx, "d1")
+	require.NoError(t, err)
+	assert.Equal(t, "fix the flaky test", d.Title)
+	assert.Len(t, d.Messages, 1, "rename must not disturb messages")
+
+	it, err := s.List(ctx)
+	require.NoError(t, err)
+	headers, err := iterator.ToSlice(ctx, it)
+	require.NoError(t, err)
+	require.Len(t, headers, 1)
+	assert.Equal(t, "fix the flaky test", headers[0].Title)
+
+	require.NoError(t, s.SetTitle(ctx, "d1", "second name"))
+	d, err = s.Get(ctx, "d1")
+	require.NoError(t, err)
+	assert.Equal(t, "second name", d.Title)
+
+	require.NoError(t, s.SetTitle(ctx, "d1", ""))
+	d, err = s.Get(ctx, "d1")
+	require.NoError(t, err)
+	assert.Empty(t, d.Title, "clearing the title returns to the unnamed state")
+}
+
+func TestStoreSetTitleNonExistent(t *testing.T) {
+	ctx := context.Background()
+	s := newTempStore(t, storagestub.NewInMemoryService())
+
+	assert.Error(t, s.SetTitle(ctx, "ghost", "name"))
+
+	it, err := s.List(ctx)
+	require.NoError(t, err)
+	headers, err := iterator.ToSlice(ctx, it)
+	require.NoError(t, err)
+	assert.Empty(t, headers, "a failed rename must not create index entries")
+}
+
+func TestStoreSetTitleSurvivesAppendMessages(t *testing.T) {
+	ctx := context.Background()
+	s := newTempStore(t, storagestub.NewInMemoryService())
+
+	require.NoError(t, s.Create(ctx, Dialogue{ID: "d1"}))
+	require.NoError(t, s.SetTitle(ctx, "d1", "named"))
+
+	require.NoError(t, s.AppendMessages(ctx, Dialogue{ID: "d1"}, []llmapi.Message{
+		{Role: llmapi.RoleUser, Content: "after rename"},
+	}, llmapi.DialogueUsage{}))
+
+	d, err := s.Get(ctx, "d1")
+	require.NoError(t, err)
+	assert.Equal(t, "named", d.Title, "append must not clobber the title")
+
+	it, err := s.List(ctx)
+	require.NoError(t, err)
+	headers, err := iterator.ToSlice(ctx, it)
+	require.NoError(t, err)
+	require.Len(t, headers, 1)
+	assert.Equal(t, "named", headers[0].Title)
+	assert.Equal(t, 1, headers[0].MessageCount)
+}
+
+func TestStoreSetTitleConcurrentAppendMessages(t *testing.T) {
+	ctx := context.Background()
+	s := newTempStore(t, storagestub.NewInMemoryService())
+
+	require.NoError(t, s.Create(ctx, Dialogue{ID: "d1", Messages: []llmapi.Message{
+		{Role: llmapi.RoleUser, Content: "seed"},
+	}}))
+
+	var wg sync.WaitGroup
+	for i := range 20 {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			_ = s.SetTitle(ctx, "d1", fmt.Sprintf("name-%d", i))
+		}()
+		go func() {
+			defer wg.Done()
+			_ = s.AppendMessages(ctx, Dialogue{ID: "d1"}, []llmapi.Message{
+				{Role: llmapi.RoleUser, Content: fmt.Sprintf("msg-%d", i)},
+			}, llmapi.DialogueUsage{})
+		}()
+	}
+	wg.Wait()
+
+	d, err := s.Get(ctx, "d1")
+	require.NoError(t, err)
+	assert.NotEmpty(t, d.Title, "a rename must not be lost")
+	assert.Greater(t, d.MessageCount, 1, "appends must not be lost")
+
+	it, err := s.List(ctx)
+	require.NoError(t, err)
+	headers, err := iterator.ToSlice(ctx, it)
+	require.NoError(t, err)
+	require.Len(t, headers, 1)
+	assert.Regexp(t, `^name-\d+$`, headers[0].Title,
+		"the index must hold a title committed by one of the renames")
+}
+
+func TestDialogueHeaderNamedID(t *testing.T) {
+	assert.Equal(t, "rolling-fox", DialogueHeader{ID: "rolling-fox"}.NamedID())
+	assert.Equal(t, "fix the flaky test (rolling-fox)",
+		DialogueHeader{ID: "rolling-fox", Title: "fix the flaky test"}.NamedID())
+}
+
+func TestParseNamedID(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"rolling-fox", "rolling-fox"},
+		{"fix the flaky test (rolling-fox)", "rolling-fox"},
+		{"fix (auth) bug (rolling-fox)", "rolling-fox"},
+		{"no close (paren", "no close (paren"},
+		{"trailing (paren", "trailing (paren"},
+	} {
+		assert.Equal(t, tc.want, ParseNamedID(tc.in), "input %q", tc.in)
+	}
+}

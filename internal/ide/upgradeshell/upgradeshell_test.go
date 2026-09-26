@@ -67,7 +67,8 @@ func (m *promptWindowManager) Tab(
 func (m *promptWindowManager) SetWindowContent(browserapi.Window, browserapi.Handler) error {
 	return nil
 }
-func (m *promptWindowManager) CloseWindow(browserapi.Window) error { return nil }
+func (m *promptWindowManager) CloseWindow(browserapi.Window) error       { return nil }
+func (m *promptWindowManager) SetTabName(workspaceapi.URI, string) error { return nil }
 
 func (m *promptWindowManager) SetTabActivity(workspaceapi.URI, bool) error { return nil }
 

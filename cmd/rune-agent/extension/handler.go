@@ -25,7 +25,7 @@ import (
 	"log/slog"
 	"maps"
 	"math/rand"
-	"net/url"
+
 	"os"
 	"path/filepath"
 	"slices"
@@ -71,6 +71,7 @@ import (
 	"unstable.build/rune/internal/component/markdown"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/extension/extutil"
+	"unstable.build/rune/internal/handler/command"
 	"unstable.build/rune/internal/ide/vctrl"
 	"unstable.build/rune/internal/text"
 
@@ -95,6 +96,7 @@ const (
 	commandReviewAll     = "chatreviewall"
 	commandExport        = "chatexport"
 	commandLog           = "chatlog"
+	commandRename        = "chatrename"
 	commandAddSymbol     = "chataddsymbol"
 )
 
@@ -785,8 +787,12 @@ type aiEditorHandler struct {
 	// commands into the focused chat. Stored and deleted alongside
 	// openChats / openChatAgents.
 	openChatTx sync.Map
-	ctx        context.Context
-	cancelCtx  func()
+	// openChatURI maps an open chat's dialogue ID to the URI its tab was
+	// created with; the embedded model argument cannot be reconstructed
+	// from the stored dialogue.
+	openChatURI sync.Map
+	ctx         context.Context
+	cancelCtx   func()
 
 	// hookRunner dispatches Claude-Code-style hooks. nil when no
 	// hooks are configured.
@@ -997,7 +1003,7 @@ func (h *aiEditorHandler) HandleCommand(
 		return h.handleChat(cmd)
 	case commandModel, commandEffort, commandMaxTokens, commandSkill,
 		commandClear, commandCompact, commandFork, commandReviewChanges,
-		commandReviewAll, commandExport, commandLog:
+		commandReviewAll, commandExport, commandLog, commandRename:
 		return h.routeChatCommand(cmd)
 	case commandAddSymbol:
 		return h.handleChatAddSymbol(cmd)
@@ -1102,6 +1108,8 @@ func (h *aiEditorHandler) routeChatCommand(cmd textapi.Command) error {
 			return err
 		}
 		name = "log"
+	case commandRename:
+		name = "rename"
 	case commandMaxTokens:
 		// The prompt command "chatmaxtokens" maps to the in-chat adapter's
 		// "max_tokens" command name.
@@ -1217,6 +1225,7 @@ func (h *aiEditorHandler) newAgentShell() textapi.REPLHandler {
 	if h.auditStore != nil {
 		opts = append(opts, agentshell.WithAuditStore(h.auditStore))
 	}
+	opts = append(opts, agentshell.WithTabRetitle(h.retitleOpenChat))
 	return agentshell.New(
 		h.wm,
 		h.llmSvc,
@@ -1235,7 +1244,7 @@ func (h *aiEditorHandler) handleChat(cmd textapi.Command) error {
 	if err != nil {
 		return err
 	}
-	tab, err := openChatTab(h.wm, c.uri, c.id, c.content)
+	tab, err := openChatTab(h.wm, c.uri, c.name, c.content)
 	if err != nil {
 		_ = c.content.Close()
 		return err
@@ -1252,6 +1261,7 @@ type chat struct {
 	content browserapi.Handler
 	id      string
 	uri     workspaceapi.URI
+	name    string
 }
 
 // newChat opens the chat cmd names, or a new one. The chat is known as uri,
@@ -1297,6 +1307,7 @@ func (h *aiEditorHandler) newChat(
 			cancel()
 			h.openChatAgents.Delete(d.ID)
 			h.openChatTx.Delete(d.ID)
+			h.openChatURI.Delete(d.ID)
 			h.openChats.Delete(d.ID)
 		}
 	}()
@@ -1319,6 +1330,7 @@ func (h *aiEditorHandler) newChat(
 	if h.auditStore != nil {
 		cmdShellOpts = append(cmdShellOpts, agentshell.WithAuditStore(h.auditStore))
 	}
+	cmdShellOpts = append(cmdShellOpts, agentshell.WithTabRetitle(h.retitleOpenChat))
 	cmdShell := agentshell.New(
 		h.wm, backendService,
 		model,
@@ -1487,6 +1499,7 @@ func (h *aiEditorHandler) newChat(
 		h.unsubscribeTools(d.ID)
 		h.openChatAgents.Delete(d.ID)
 		h.openChatTx.Delete(d.ID)
+		h.openChatURI.Delete(d.ID)
 		h.openChats.Delete(d.ID)
 		// SessionEnd hook (reason=tab_close): fire-and-forget.
 		// Purely observational; no result fields are honored.
@@ -1498,20 +1511,34 @@ func (h *aiEditorHandler) newChat(
 		})
 		return nil
 	})
+	h.openChatURI.Store(d.ID, uri)
 	opened = true
-	return &chat{content: bhandler, id: d.ID, uri: uri}, nil
+	return &chat{content: bhandler, id: d.ID, uri: uri, name: d.DisplayName()}, nil
 }
 
-// openChatTab creates the rune-agent chat tab. The visible tab label is the
-// dialogue's petname ID (e.g. "rolling-fox"), not the internal
-// "rune-agent://<model>/<id>" URI, which would not be useful to users. The
-// URI argument remains the tab's unique identity.
+// retitleOpenChat relabels an open dialogue's chat tab after a rename.
+func (h *aiEditorHandler) retitleOpenChat(ctx context.Context, id string) {
+	v, ok := h.openChatURI.Load(id)
+	if !ok {
+		return
+	}
+	d, err := h.dialogueStore.Get(ctx, id)
+	if err != nil {
+		return
+	}
+	if err := h.wm.SetTabName(v.(workspaceapi.URI), d.DisplayName()); err != nil {
+		slog.Error("retitle open chat tab", "id", id, "error", err)
+	}
+}
+
+// openChatTab creates the rune-agent chat tab: the URI is the tab's
+// identity while the display name is its visible label.
 func openChatTab(
-	wm browserapi.WindowManager, uri workspaceapi.URI, dialogueID string,
+	wm browserapi.WindowManager, uri workspaceapi.URI, displayName string,
 	h browserapi.Handler,
 ) (browserapi.Handler, error) {
 	const icon = '󱫆'
-	tab, err := wm.Tab(uri, icon, dialogueID, h)
+	tab, err := wm.Tab(uri, icon, displayName, h)
 	if err != nil {
 		return nil, fmt.Errorf("create tab: %v", err)
 	}
@@ -1519,11 +1546,7 @@ func openChatTab(
 }
 
 func getModelUri(id, model string) (workspaceapi.URI, error) {
-	model = strings.ReplaceAll(model, "/", "_") // i.e. hf.co/org/model
-	model = strings.ReplaceAll(model, ":", "_") // i.e. llama4:scout
-	model = url.PathEscape(model)
-	uriStr := fmt.Sprintf("rune-agent://%s/%s", model, id)
-	return workspaceapi.ParseURI(uriStr)
+	return dialoguemanager.TabURI(id, model)
 }
 
 func (h *aiEditorHandler) handleQuery(cmd textapi.Command) error {
@@ -1693,24 +1716,27 @@ func (h *aiEditorHandler) completeWithDialoguesIterator(ctx context.Context, sho
 		return filtered[i].UpdatedAt.After(filtered[j].UpdatedAt)
 	})
 
-	// Map to display strings.
+	// Candidates are shell-quoted "title (id)" strings so they land as a
+	// single argument that parseDialogueID unwraps back to the bare ID.
 	out := make([]string, len(filtered))
 	for i, d := range filtered {
 		ws, hasWS := d.Workspace()
+		name := d.NamedID()
 		switch {
 		case !hasWS || ws.Equal(h.cwd):
 			// Legacy dialogues are tagged so the user can tell they
 			// have no workspace association.
 			if !hasWS {
-				out[i] = "<legacy>:" + d.ID
+				out[i] = "<legacy>:" + name
 			} else {
-				out[i] = d.ID
+				out[i] = name
 			}
 		case h.gitID.worktrees[ws.String()] != "":
-			out[i] = h.gitID.worktrees[ws.String()] + ":" + d.ID
+			out[i] = h.gitID.worktrees[ws.String()] + ":" + name
 		default:
-			out[i] = ws.String() + ":" + d.ID
+			out[i] = ws.String() + ":" + name
 		}
+		out[i] = command.ShellQuote(out[i])
 	}
 	return iterator.FromSlice(out), nil
 }
@@ -1810,6 +1836,7 @@ func parseDialogueID(cmd textapi.Command) string {
 	if id == "" {
 		return ""
 	}
+	id = dialoguemanager.ParseNamedID(id)
 	// Strip workspace prefix (e.g. "worktree-name:myid" → "myid").
 	if i := strings.IndexByte(id, ':'); i >= 0 {
 		id = id[i+1:]

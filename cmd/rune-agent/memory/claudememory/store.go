@@ -173,6 +173,11 @@ func (s *Store) ArchiveAndReplace(_ context.Context, _ dialoguemanager.ArchiveAn
 	return errReadOnly
 }
 
+// SetTitle is not supported on a read-only store.
+func (s *Store) SetTitle(_ context.Context, _, _ string) error {
+	return errReadOnly
+}
+
 func parseFile(path, id string) (dialoguemanager.Dialogue, error) {
 	f, err := os.Open(path)
 	if err != nil {

@@ -234,6 +234,56 @@ func TestServerPublish(t *testing.T) {
 	})
 }
 
+func TestServerSetTabName(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("delegates SetTabName to underlying Browser", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+		var mu sync.Mutex
+		s, mock := newTestServer(ctrl, &mu)
+		uri, err := workspaceapi.ParseURI("rune-agent://model/rolling-fox")
+		require.NoError(t, err)
+
+		mock.EXPECT().
+			SetTabName(gomock.Eq(uri), gomock.Eq("new name"), gomock.Eq(term.Attributes{})).
+			Return(nil)
+
+		req := browserrpc.SetTabNameRequest{
+			ResourceId: "rune-agent://model/rolling-fox",
+			Name:       "new name",
+		}
+		res, err := s.SetTabName(ctx, &req)
+		require.NoError(t, err)
+		assert.NotNil(t, res)
+	})
+
+	t.Run("rejects a malformed resource URI", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+		var mu sync.Mutex
+		s, _ := newTestServer(ctrl, &mu)
+
+		_, err := s.SetTabName(ctx, &browserrpc.SetTabNameRequest{ResourceId: "::::"})
+		require.Error(t, err)
+	})
+
+	t.Run("bubbles up SetTabName Browser error", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+		var mu sync.Mutex
+		s, mock := newTestServer(ctrl, &mu)
+
+		mock.EXPECT().SetTabName(gomock.Any(), gomock.Any(), gomock.Any()).
+			Return(errors.New("oopsie daisy"))
+
+		req := browserrpc.SetTabNameRequest{ResourceId: "file:///a"}
+		_, err := s.SetTabName(ctx, &req)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "oopsie")
+	})
+}
+
 func TestServerSetContent(t *testing.T) {
 	/* tested via ex integration tests */
 }

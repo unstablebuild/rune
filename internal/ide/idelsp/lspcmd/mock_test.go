@@ -232,6 +232,9 @@ func (m *mockWindowManager) CloseWindow(_ browserapi.Window) error {
 }
 
 func (m *mockWindowManager) SetTabActivity(workspaceapi.URI, bool) error { return nil }
+func (m *mockWindowManager) SetTabName(_ workspaceapi.URI, _ string) error {
+	return nil
+}
 
 // mockResourceOpener implements
 // browserapi.ResourceOpener.

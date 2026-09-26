@@ -1308,6 +1308,21 @@ func (s *mockDialogueStore) AppendMessages(
 	return nil
 }
 
+func (s *mockDialogueStore) SetTitle(_ context.Context, id, title string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.data == nil {
+		return storageapi.ErrNotFound
+	}
+	d, ok := s.data[id]
+	if !ok {
+		return storageapi.ErrNotFound
+	}
+	d.Title = title
+	s.data[id] = d
+	return nil
+}
+
 func (s *mockDialogueStore) List(
 	_ context.Context,
 ) (iterator.Iterator[dialoguemanager.DialogueHeader], error) {

@@ -107,8 +107,12 @@ func (t *listConversationsTool) Execute(ctx context.Context, _ string) agent.Too
 		}
 		messagesPath := filepath.Join(t.sessionsDir,
 			base64.RawURLEncoding.EncodeToString([]byte(h.ID))+".json")
-		fmt.Fprintf(&sb, "%s  workspace=%s  path=%s  updated=%s",
-			h.ID, h.WorkspaceURI, messagesPath,
+		title := ""
+		if h.Title != "" {
+			title = fmt.Sprintf("  title=%q", h.Title)
+		}
+		fmt.Fprintf(&sb, "%s%s  workspace=%s  path=%s  updated=%s",
+			h.ID, title, h.WorkspaceURI, messagesPath,
 			h.UpdatedAt.Format("2006-01-02T15:04:05Z"))
 		count++
 	}

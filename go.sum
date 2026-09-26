@@ -14,6 +14,8 @@ filippo.io/mkcert v1.4.4 h1:8eVbbwfVlaqUM7OwuftKc2nuYOoTDQWqsoXmzoXZdbc=
 filippo.io/mkcert v1.4.4/go.mod h1:VyvOchVuAye3BoUsPUOOofKygVwLV2KQMVFJNRq+1dA=
 github.com/BurntSushi/toml v1.6.0 h1:dRaEfpa2VI55EwlIW72hMRHdWouJeRF7TPYhI+AUQjk=
 github.com/BurntSushi/toml v1.6.0/go.mod h1:ukJfTF/6rtPPRCnwkur4qwRxa8vTRFBF0uk2lLoLwho=
+github.com/JoeJoeflyn/rune-go-sdk v0.7.1-0.20260926113514-e1294192b995 h1:hf8t4G5Xv6Pxl920is0v/C7WWReDUYWydNRJzqv+fLE=
+github.com/JoeJoeflyn/rune-go-sdk v0.7.1-0.20260926113514-e1294192b995/go.mod h1:NOvmmFvveXFC1AolJjwZfzA/EndgYoZ1fkt2RStmXsc=
 github.com/JohannesKaufmann/html-to-markdown v1.6.0 h1:04VXMiE50YYfCfLboJCLcgqF5x+rHJnb1ssNmqpLH/k=
 github.com/JohannesKaufmann/html-to-markdown v1.6.0/go.mod h1:NUI78lGg/a7vpEJTz/0uOcYMaibytE4BUOQS8k78yPQ=
 github.com/Microsoft/go-winio v0.6.2 h1:F2VQgta7ecxGYO8k3ZZz3RS8fVIXVxONVUPlNERoyfY=
@@ -521,8 +523,6 @@ github.com/unstablebuild/notify v0.10.4 h1:AStjrILfwMmW8RxnN656wtnTTAtXodVdyWdoQ
 github.com/unstablebuild/notify v0.10.4/go.mod h1:Q1U21KXundJt7qEvc4z4fFtzuDTZOTrhvCIJDZp5SBk=
 github.com/unstablebuild/pty v1.3.1 h1:GQSjqGKSOkOCu+X/F5yFUSuwp7Fi08xXn28DcuXhu/k=
 github.com/unstablebuild/pty v1.3.1/go.mod h1:BpzWw5G39oyDqoJhusXyOiTk9/bsAblSD4Js9K462Pw=
-github.com/unstablebuild/rune-go-sdk v0.7.0 h1:6e4MetfB5IbbJhHuW0ePKg4RHxfnkKOdg7VrsD0Ri8g=
-github.com/unstablebuild/rune-go-sdk v0.7.0/go.mod h1:NOvmmFvveXFC1AolJjwZfzA/EndgYoZ1fkt2RStmXsc=
 github.com/unstablebuild/tcell/v3 v3.6.5 h1:ZokqnobK5xMQud8uqRI0PjcWWnlWb2zR5kyhrhMpuW4=
 github.com/unstablebuild/tcell/v3 v3.6.5/go.mod h1:nfcmtlSfOVfBq07+ZeP4vcEmBRMDgYnPV1Yo67gORvw=
 github.com/vishvananda/netns v0.0.0-20200728191858-db3c7e526aae/go.mod h1:DD4vA1DwXk04H54A1oHXtwZmA0grkVMdPxx/VGLCah0=

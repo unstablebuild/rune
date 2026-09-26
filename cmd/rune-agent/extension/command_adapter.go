@@ -218,6 +218,9 @@ func (a *commandAdapter) HandleCommand(
 		}
 		name = "chats"
 		args = []string{"log", a.dialogueID}
+	case "rename":
+		name = "chats"
+		args = append([]string{"rename", a.dialogueID}, args...)
 	case "model":
 		return a.handleModel(ctx, args)
 	case "effort":

@@ -762,3 +762,4 @@ func (m *fakeWM) SetWindowContent(browserapi.Window, browserapi.Handler) error {
 func (m *fakeWM) CloseWindow(browserapi.Window) error                          { return nil }
 
 func (m *fakeWM) SetTabActivity(workspaceapi.URI, bool) error { return nil }
+func (m *fakeWM) SetTabName(workspaceapi.URI, string) error   { return nil }

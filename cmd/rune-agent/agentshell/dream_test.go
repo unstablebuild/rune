@@ -151,6 +151,7 @@ func (stubWindowManager) Tab(workspaceapi.URI, rune, string, browserapi.Handler)
 }
 func (stubWindowManager) SetWindowContent(browserapi.Window, browserapi.Handler) error { return nil }
 func (stubWindowManager) CloseWindow(browserapi.Window) error                          { return nil }
+func (stubWindowManager) SetTabName(workspaceapi.URI, string) error                    { return nil }
 
 func (stubWindowManager) SetTabActivity(workspaceapi.URI, bool) error { return nil }
 
@@ -179,6 +180,7 @@ func (emptyDialogueStore) List(context.Context) (
 ) {
 	return iterator.FromSlice([]dialoguemanager.DialogueHeader{}), nil
 }
+func (emptyDialogueStore) SetTitle(context.Context, string, string) error { return nil }
 
 var _ dialoguemanager.Store = emptyDialogueStore{}
 

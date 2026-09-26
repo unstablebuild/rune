@@ -22,9 +22,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
@@ -50,6 +52,7 @@ type Store interface {
 	AppendMessages(context.Context, Dialogue, []llmapi.Message, llmapi.DialogueUsage) error
 	ArchiveAndReplace(context.Context, ArchiveAndReplaceParams) error
 	List(context.Context) (iterator.Iterator[DialogueHeader], error)
+	SetTitle(context.Context, string, string) error
 }
 
 // ApprovedPlan holds the durable, first-class state for a user-approved plan.
@@ -74,6 +77,7 @@ type store struct {
 // Dialogue holds a dialogue's data as stored in durable storage.
 type Dialogue struct {
 	ID           string
+	Title        string
 	AgentID      string
 	Model        string
 	WorkspaceURI string
@@ -89,6 +93,7 @@ type Dialogue struct {
 
 type storedDialogue struct {
 	ID                string
+	Title             string
 	AgentID           string
 	Model             string
 	WorkspaceURI      string
@@ -102,11 +107,50 @@ type storedDialogue struct {
 	UpdatedAt         time.Time
 }
 
+// NamedID formats the header as "title (id)", or the bare ID when untitled.
+// ParseNamedID unwraps this form back to the addressable ID.
+func (h DialogueHeader) NamedID() string {
+	if h.Title == "" {
+		return h.ID
+	}
+	return h.Title + " (" + h.ID + ")"
+}
+
+// ParseNamedID extracts the dialogue ID from a NamedID-formatted " (id)"
+// suffix; arguments without it are returned unchanged.
+func ParseNamedID(arg string) string {
+	if strings.HasSuffix(arg, ")") {
+		if i := strings.LastIndex(arg, "("); i >= 0 {
+			return arg[i+1 : len(arg)-1]
+		}
+	}
+	return arg
+}
+
+// DisplayName is the dialogue's user-facing name: its title when set,
+// otherwise the generated ID.
+func (d Dialogue) DisplayName() string {
+	if d.Title != "" {
+		return d.Title
+	}
+	return d.ID
+}
+
+// TabURI is the identity of the chat tab hosting a dialogue —
+// "rune-agent://<model>/<id>".
+func TabURI(id, model string) (workspaceapi.URI, error) {
+	model = strings.ReplaceAll(model, "/", "_") // i.e. hf.co/org/model
+	model = strings.ReplaceAll(model, ":", "_") // i.e. llama4:scout
+	model = url.PathEscape(model)
+	return workspaceapi.ParseURI(fmt.Sprintf("rune-agent://%s/%s", model, id))
+}
+
 // DialogueHeader holds the metadata of a dialogue without the full message
 // history. Use this for listing/filtering dialogues without paying the
 // deserialization cost of Messages.
 type DialogueHeader struct {
 	ID              string
+	Title           string
 	AgentID         string
 	Model           string
 	WorkspaceURI    string
@@ -164,6 +208,7 @@ func (d Dialogue) Header() DialogueHeader {
 	}
 	return DialogueHeader{
 		ID:              d.ID,
+		Title:           d.Title,
 		AgentID:         d.AgentID,
 		Model:           d.Model,
 		WorkspaceURI:    d.WorkspaceURI,
@@ -179,6 +224,7 @@ func (d Dialogue) Header() DialogueHeader {
 func storedDialogueFromDialogue(d Dialogue) storedDialogue {
 	return storedDialogue{
 		ID:                d.ID,
+		Title:             d.Title,
 		AgentID:           d.AgentID,
 		Model:             d.Model,
 		WorkspaceURI:      d.WorkspaceURI,
@@ -200,6 +246,7 @@ func dialogueFromStoredDialogue(d storedDialogue) Dialogue {
 	}
 	return Dialogue{
 		ID:           d.ID,
+		Title:        d.Title,
 		AgentID:      d.AgentID,
 		Model:        d.Model,
 		WorkspaceURI: d.WorkspaceURI,
@@ -542,16 +589,31 @@ func (s store) ArchiveAndReplace(ctx context.Context, p ArchiveAndReplaceParams)
 		_ = os.Remove(archived.MessagesPath)
 		return fmt.Errorf("archive-and-replace replace write: %w", err)
 	}
-	storedReplaced := storedDialogueFromDialogue(replaced)
-	if err := s.backend.Set(ctx, replaced.ID, &storedReplaced); err != nil {
+	err = s.backend.Update(ctx, replaced.ID, []storageapi.Update{
+		{FieldPath: []string{"ApprovedPlan"}, Value: replaced.ApprovedPlan},
+		{FieldPath: []string{"MessageCount"}, Value: replaced.MessageCount},
+		{FieldPath: []string{"MessagesPath"}, Value: replaced.MessagesPath},
+		{FieldPath: []string{"Version"}, Value: replaced.Version},
+		{FieldPath: []string{"UpdatedAt"}, Value: replaced.UpdatedAt},
+		{FieldPath: []string{"DialogueUpdatedAt"}, Value: replaced.UpdatedAt},
+	})
+	if errors.Is(err, storageapi.ErrNotFound) {
+		storedReplaced := storedDialogueFromDialogue(replaced)
+		err = s.backend.Set(ctx, replaced.ID, &storedReplaced)
+	}
+	if err != nil {
 		s.rollbackMessages(replaced.MessagesPath, p.Dialogue.Messages)
 		_ = s.backend.Delete(ctx, archived.ID)
 		_ = os.Remove(archived.MessagesPath)
-		return fmt.Errorf("archive-and-replace replace: document service set: %w", err)
+		return fmt.Errorf("archive-and-replace replace: document service update: %w", err)
 	}
 	return s.updateIndex(ctx, func(idx dialogueIndex) dialogueIndex {
 		idx.Headers[archived.ID] = archived.Header()
-		idx.Headers[replaced.ID] = replaced.Header()
+		header := replaced.Header()
+		if prev, ok := idx.Headers[replaced.ID]; ok {
+			header.Title = prev.Title
+		}
+		idx.Headers[replaced.ID] = header
 		return idx
 	})
 }
@@ -599,6 +661,35 @@ func (s store) Delete(
 	return nil
 }
 
+// SetTitle patches only the Title field so a rename cannot clobber a
+// concurrent AppendMessages; the index header follows through the same
+// CAS path other mutations use.
+func (s store) SetTitle(ctx context.Context, id, title string) error {
+	var stored storedDialogue
+	err := storageapi.ConsistentUpdate(ctx, s.backend, id, &stored, retryStrategy,
+		func() ([]storageapi.Update, []storageapi.Precondition) {
+			if stored.Title == title {
+				return nil, nil
+			}
+			return []storageapi.Update{
+					{FieldPath: []string{"Title"}, Value: title},
+					{FieldPath: []string{"Version"}, Value: stored.Version + 1},
+				}, []storageapi.Precondition{
+					{FieldPath: []string{"Version"}, Value: stored.Version},
+				}
+		})
+	if err != nil {
+		return fmt.Errorf("set title: document service update: %w", err)
+	}
+	return s.updateIndex(ctx, func(idx dialogueIndex) dialogueIndex {
+		if h, ok := idx.Headers[id]; ok {
+			h.Title = title
+			idx.Headers[id] = h
+		}
+		return idx
+	})
+}
+
 func (s store) AppendMessages(
 	ctx context.Context, d Dialogue, msgs []llmapi.Message, usage llmapi.DialogueUsage,
 ) error {
@@ -638,14 +729,24 @@ func (s store) AppendMessages(
 	if err := s.writeMessages(updated.MessagesPath, updated.Messages); err != nil {
 		return fmt.Errorf("append messages: write dialogue messages: %w", err)
 	}
-	stored := storedDialogueFromDialogue(updated)
-	err = s.backend.Set(ctx, updated.ID, &stored)
+	err = s.backend.Update(ctx, updated.ID, []storageapi.Update{
+		{FieldPath: []string{"Usage"}, Value: updated.Usage},
+		{FieldPath: []string{"MessageCount"}, Value: updated.MessageCount},
+		{FieldPath: []string{"MessagesPath"}, Value: updated.MessagesPath},
+		{FieldPath: []string{"Version"}, Value: updated.Version},
+		{FieldPath: []string{"UpdatedAt"}, Value: updated.UpdatedAt},
+		{FieldPath: []string{"DialogueUpdatedAt"}, Value: updated.UpdatedAt},
+	})
 	if err != nil {
 		s.rollbackMessages(updated.MessagesPath, currentMessages)
-		return fmt.Errorf("append messages: document service set: %w", err)
+		return fmt.Errorf("append messages: document service update: %w", err)
 	}
 	err = s.updateIndex(ctx, func(idx dialogueIndex) dialogueIndex {
-		idx.Headers[updated.ID] = updated.Header()
+		header := updated.Header()
+		if prev, ok := idx.Headers[updated.ID]; ok {
+			header.Title = prev.Title
+		}
+		idx.Headers[updated.ID] = header
 		return idx
 	})
 	if err != nil {

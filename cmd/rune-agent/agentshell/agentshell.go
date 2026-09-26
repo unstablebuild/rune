@@ -107,6 +107,12 @@ func WithDreamModel(model string) Option {
 	return func(s *shell) { s.dreamModel = model }
 }
 
+// WithTabRetitle registers a callback invoked after a rename so an open
+// chat tab can be relabeled; the shell cannot reconstruct the tab URI.
+func WithTabRetitle(fn func(context.Context, string)) Option {
+	return func(s *shell) { s.retitleTab = fn }
+}
+
 // CommandName is the parent REPL command exposed by the agent shell.
 const CommandName = "agent"
 
@@ -185,6 +191,7 @@ type shell struct {
 	llmSvc              llmapi.Service
 	historySystemPrompt bool
 	auditStore          *audit.Store
+	retitleTab          func(context.Context, string)
 	skillRegistry       *skills.SkillRegistry
 	cwd                 workspaceapi.URI
 	fs                  workspaceapi.FileSystem
@@ -225,8 +232,8 @@ var commandManual = textapi.CommandManual{
 		{Name: "agents", Summary: "List configured agent definitions."},
 		{
 			Name:     "chats",
-			Summary:  "Inspect, export, compact, clear, and fork saved conversations.",
-			Synopsis: "(list|show|log|export|clear|compact|fork) [<args>]",
+			Summary:  "Inspect, export, compact, clear, rename, and fork saved conversations.",
+			Synopsis: "(list|show|log|export|clear|compact|fork|rename) [<args>]",
 			Commands: []textapi.CommandManual{
 				{Name: "list", Summary: "List saved conversations."},
 				{Name: "show", Summary: "Show message history for a conversation.", Synopsis: "<id>"},
@@ -235,6 +242,7 @@ var commandManual = textapi.CommandManual{
 				{Name: "clear", Summary: "Clear a conversation and archive its previous contents.", Synopsis: "<id>"},
 				{Name: "compact", Summary: "Compact a conversation into a summarized copy using the compact model alias by default.", Synopsis: "<id> [<model>]"},
 				{Name: "fork", Summary: "Open a picker to fork a conversation at a selected message.", Synopsis: "<id>"},
+				{Name: "rename", Summary: "Give a conversation a meaningful name; without a title a popup asks for one.", Synopsis: "<id> [title]"},
 			},
 		},
 		{Name: "config", Summary: "Show current LLM config parameters."},
@@ -441,7 +449,7 @@ func (s *shell) handleChats(
 	ctx context.Context, args []string,
 ) (iterator.Iterator[component.Responsive], error) {
 	if len(args) == 0 {
-		return nil, errors.New("usage: chats <list|show|log|export|clear|compact|fork> [id]")
+		return nil, errors.New("usage: chats <list|show|log|export|clear|compact|fork|rename> [id]")
 	}
 	switch args[0] {
 	case "list":
@@ -450,7 +458,8 @@ func (s *shell) handleChats(
 		if len(args) < 2 {
 			return nil, errors.New("usage: chats show <id>")
 		}
-		return s.showHistory(ctx, args[1])
+		id, _ := s.resolveChatsID(ctx, args[1:])
+		return s.showHistory(ctx, id)
 	case "log":
 		if s.auditStore == nil {
 			return nil, errors.New("audit log is disabled; set audit_enabled = true in config")
@@ -458,21 +467,23 @@ func (s *shell) handleChats(
 		if len(args) < 2 {
 			return nil, errors.New("usage: chats log <id>")
 		}
-		return s.showAudit(ctx, args[1])
+		id, _ := s.resolveChatsID(ctx, args[1:])
+		return s.showAudit(ctx, id)
 	case "export":
 		var audit bool
-		var id string
+		var idArgs []string
 		for _, a := range args[1:] {
 			switch a {
 			case "--audit":
 				audit = true
 			default:
-				id = a
+				idArgs = append(idArgs, a)
 			}
 		}
-		if id == "" {
+		if len(idArgs) == 0 {
 			return nil, errors.New("usage: chats export [--audit] <id>")
 		}
+		id, _ := s.resolveChatsID(ctx, idArgs)
 		if audit {
 			if s.auditStore == nil {
 				return nil, errors.New("audit log is disabled; set audit_enabled = true in config")
@@ -484,24 +495,35 @@ func (s *shell) handleChats(
 		if len(args) < 2 {
 			return nil, errors.New("usage: chats clear <id>")
 		}
-		return s.clearConversation(ctx, args[1])
+		id, _ := s.resolveChatsID(ctx, args[1:])
+		return s.clearConversation(ctx, id)
 	case "compact":
-		if len(args) < 2 || len(args) > 3 {
+		if len(args) < 2 {
+			return nil, errors.New("usage: chats compact <id> [<model>]")
+		}
+		id, rest := s.resolveChatsID(ctx, args[1:])
+		if len(rest) > 1 {
 			return nil, errors.New("usage: chats compact <id> [<model>]")
 		}
 		var model string
-		if len(args) == 3 {
-			model = args[2]
+		if len(rest) == 1 {
+			model = rest[0]
 		}
-		return s.compactConversation(ctx, args[1], model)
+		return s.compactConversation(ctx, id, model)
 	case "fork":
 		if len(args) < 2 {
 			return nil, errors.New("usage: chats fork <id>")
 		}
-		if len(args) > 2 {
+		id, rest := s.resolveChatsID(ctx, args[1:])
+		if len(rest) > 0 {
 			return nil, errors.New("usage: chats fork <id>")
 		}
-		return s.forkConversation(ctx, args[1])
+		return s.forkConversation(ctx, id)
+	case "rename":
+		if len(args) < 2 {
+			return nil, errors.New("usage: chats rename <id> [title]")
+		}
+		return s.renameConversation(ctx, args[1:])
 	default:
 		return nil, fmt.Errorf("unknown chats subcommand: %s", args[0])
 	}
@@ -715,7 +737,7 @@ func (s *shell) listConversations(
 		}
 		count++
 		fmt.Fprintf(&b, "- **%s** — %d messages, updated %s\n",
-			d.ID, d.MessageCount, d.UpdatedAt.Format("2006-01-02 15:04"))
+			d.NamedID(), d.MessageCount, d.UpdatedAt.Format("2006-01-02 15:04"))
 	}
 	if it.Err() != nil {
 		return nil, it.Err()
@@ -1344,7 +1366,7 @@ func (s *shell) exit() (iterator.Iterator[component.Responsive], error) {
 
 func (s *shell) completeChats(ctx context.Context, args []string) (iterator.Iterator[string], error) {
 	if len(args) == 1 {
-		subcmds := []string{"clear", "compact", "export", "fork", "list", "log", "show"}
+		subcmds := []string{"clear", "compact", "export", "fork", "list", "log", "rename", "show"}
 		prefix := args[0]
 		var matches []string
 		for _, sc := range subcmds {
@@ -1356,9 +1378,7 @@ func (s *shell) completeChats(ctx context.Context, args []string) (iterator.Iter
 	}
 	if len(args) == 2 {
 		switch args[0] {
-		case "show", "log", "export", "clear", "compact":
-			return s.completeDialogueIDs(ctx)
-		case "fork":
+		case "show", "log", "export", "clear", "compact", "fork", "rename":
 			return s.completeDialogueIDs(ctx)
 		}
 	}
@@ -1383,7 +1403,7 @@ func (s *shell) completeDialogueIDs(ctx context.Context) (iterator.Iterator[stri
 		return d.ID != ""
 	})
 	return iterator.Map(filtered, func(d dialoguemanager.DialogueHeader) string {
-		return d.ID
+		return d.NamedID()
 	}), nil
 }
 

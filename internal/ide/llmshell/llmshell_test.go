@@ -169,7 +169,8 @@ func (s *stubWindowManager) Tab(
 func (s *stubWindowManager) SetWindowContent(browserapi.Window, browserapi.Handler) error {
 	return nil
 }
-func (s *stubWindowManager) CloseWindow(browserapi.Window) error { return nil }
+func (s *stubWindowManager) CloseWindow(browserapi.Window) error       { return nil }
+func (s *stubWindowManager) SetTabName(workspaceapi.URI, string) error { return nil }
 
 func (s *stubWindowManager) SetTabActivity(workspaceapi.URI, bool) error { return nil }
 

@@ -51,6 +51,7 @@ import (
 // of SetWindowContent calls, and every SetTabActivity call so tests can
 // follow a chat tab's activity.
 type recordingWindowManager struct {
+	mu         sync.Mutex
 	gotURI     workspaceapi.URI
 	gotIcon    rune
 	gotName    string
@@ -61,11 +62,18 @@ type recordingWindowManager struct {
 	activityMu  sync.Mutex
 	activity    []tabActivity
 	activityErr error
+
+	renames []tabRename
 }
 
 type tabActivity struct {
 	uri    workspaceapi.URI
 	active bool
+}
+
+type tabRename struct {
+	uri  workspaceapi.URI
+	name string
 }
 
 func (m *recordingWindowManager) Focus() (browserapi.Window, error) { return nil, nil }
@@ -94,6 +102,20 @@ func (m *recordingWindowManager) SetWindowContent(_ browserapi.Window, _ browser
 	return nil
 }
 func (m *recordingWindowManager) CloseWindow(_ browserapi.Window) error { return nil }
+func (m *recordingWindowManager) SetTabName(uri workspaceapi.URI, name string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.renames = append(m.renames, tabRename{uri: uri, name: name})
+	return nil
+}
+
+func (m *recordingWindowManager) Renames() []tabRename {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]tabRename, len(m.renames))
+	copy(out, m.renames)
+	return out
+}
 
 func (m *recordingWindowManager) SetTabActivity(uri workspaceapi.URI, active bool) error {
 	m.activityMu.Lock()
@@ -181,6 +203,18 @@ func (s *memDialogueStore) List(
 func (s *memDialogueStore) ArchiveAndReplace(
 	context.Context, dialoguemanager.ArchiveAndReplaceParams,
 ) error {
+	return nil
+}
+
+func (s *memDialogueStore) SetTitle(_ context.Context, id, title string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d, ok := s.dialogues[id]
+	if !ok {
+		return storageapi.ErrNotFound
+	}
+	d.Title = title
+	s.dialogues[id] = d
 	return nil
 }
 

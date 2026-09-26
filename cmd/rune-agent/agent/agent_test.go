@@ -3746,6 +3746,18 @@ func (s *mockStore) ArchiveAndReplace(_ context.Context, p dialoguemanager.Archi
 	return nil
 }
 
+func (s *mockStore) SetTitle(_ context.Context, id, title string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d, ok := s.data[id]
+	if !ok {
+		return storageapi.ErrNotFound
+	}
+	d.Title = title
+	s.data[id] = d
+	return nil
+}
+
 func (s *mockStore) getDialogue(id string) (dialoguemanager.Dialogue, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

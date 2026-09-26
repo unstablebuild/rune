@@ -31,6 +31,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/handler/handlerrpc"
+	"github.com/unstablebuild/rune-go-sdk/term"
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
@@ -329,6 +330,24 @@ func (s *Server) CloseWindow(
 	}
 
 	return new(browserrpc.WindowCloseResponse), nil
+}
+
+// SetTabName satisfies BrowserServer.
+func (s *Server) SetTabName(
+	ctx context.Context, req *browserrpc.SetTabNameRequest,
+) (*browserrpc.SetTabNameResponse, error) {
+	uri, err := workspaceapi.ParseURI(req.GetResourceId())
+	if err != nil {
+		return nil, fmt.Errorf("parse uri: %w", err)
+	}
+
+	s.browser.Lock()
+	defer s.browser.Unlock()
+
+	if err := s.browser.SetTabName(uri, req.GetName(), term.Attributes{}); err != nil {
+		return nil, err
+	}
+	return new(browserrpc.SetTabNameResponse), nil
 }
 
 // Floating satisfies BrowserServer

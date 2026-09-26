@@ -326,6 +326,7 @@ func TestCompleteWithDialoguesIterator(t *testing.T) {
 		{ID: "sibling-chat", WorkspaceURI: "file:///my/worktree-b", UpdatedAt: now.Add(-10 * time.Minute)},
 		{ID: "sub-agent-explore-fuzzy-dog", WorkspaceURI: "file:///my/workspace", SubAgent: true, UpdatedAt: now.Add(-30 * time.Minute)},
 		{ID: "local-new", WorkspaceURI: "file:///my/workspace", UpdatedAt: now.Add(-1 * time.Hour)},
+		{ID: "local-named", Title: "fix the flaky test", WorkspaceURI: "file:///my/workspace", UpdatedAt: now.Add(-90 * time.Minute)},
 		{ID: "local-old", WorkspaceURI: "file:///my/workspace", UpdatedAt: now.Add(-2 * time.Hour)},
 		{ID: "legacy", UpdatedAt: now.Add(-3 * time.Hour)},
 	}}
@@ -350,6 +351,7 @@ func TestCompleteWithDialoguesIterator(t *testing.T) {
 
 		assert.Equal(t, []string{
 			"local-new",
+			"'fix the flaky test (local-named)'",
 			"local-old",
 			"worktree-b:sibling-chat",
 			"<legacy>:legacy",
@@ -364,6 +366,7 @@ func TestCompleteWithDialoguesIterator(t *testing.T) {
 
 		assert.Equal(t, []string{
 			"local-new",
+			"'fix the flaky test (local-named)'",
 			"local-old",
 			"worktree-b:sibling-chat",
 			"<legacy>:legacy",
