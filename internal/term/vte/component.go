@@ -515,8 +515,8 @@ func (t *Component) Draw(w term.Writer) {
 	t.drawLocked(w)
 }
 
-// drawLocked paints the active buffer and selection to w. The caller
-// must hold t.mu.
+// drawLocked paints the active buffer, selection and graphics to w. The
+// caller must hold t.mu.
 func (t *Component) drawLocked(w term.Writer) {
 	screen := w
 	if t.parserHandler.modeReverseScreen {
@@ -539,9 +539,10 @@ func (t *Component) drawLocked(w term.Writer) {
 		t.scroll.Draw(screen)
 		scrolledBy = t.scroll.Offset().Y
 	}
-	t.drawGraphicsLocked(screen, scrolledBy)
-
+	// The selection belongs to the cell layer, which cells written after
+	// a placement would cover.
 	t.drawSelection(w)
+	t.drawGraphicsLocked(screen, scrolledBy)
 }
 
 // reverseScreenWriter draws DECSCNM by toggling rather than setting
