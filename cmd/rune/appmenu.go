@@ -207,7 +207,7 @@ func appMenus(
 			cmd("New Window", "windownew"),
 			cmd("Close Window", "windowclose"),
 			cmd("Toggle Maximize", "windowtogglemaximize"),
-			cmd("Convert to Tab", "windowconverttab"),
+			cmd("Convert to Tab…", "echo", "{prompt}windowconverttab<space>"),
 			prefill("Resize Window…", "windowresize"),
 			prefill("Focus Window…", "windowfocus"),
 			prefill("Move Window…", "windowmove"),
