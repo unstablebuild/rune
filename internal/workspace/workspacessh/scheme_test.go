@@ -88,6 +88,43 @@ func TestNewScheme(t *testing.T) {
 	}
 }
 
+func TestSetPipesClosesEarlierPipesOnFailure(t *testing.T) {
+	tsuite := []struct {
+		desc      string
+		failingAt int
+	}{
+		{"stderr pipe fails", 2},
+		{"stdin pipe fails", 3},
+	}
+
+	for _, tcase := range tsuite {
+		t.Run(tcase.desc, func(t *testing.T) {
+			var opened []*os.File
+			calls := 0
+			original := newPipe
+			t.Cleanup(func() { newPipe = original })
+			newPipe = func() (*os.File, *os.File, error) {
+				calls++
+				if calls == tcase.failingAt {
+					return nil, nil, syscall.EMFILE
+				}
+				r, w, err := original()
+				if err == nil {
+					opened = append(opened, r, w)
+				}
+				return r, w, err
+			}
+
+			_, _, _, _, err := (&scheme{}).setPipes(&workspaceapi.Cmd{})
+			require.ErrorContains(t, err, "too many open files")
+			require.Len(t, opened, 2*(tcase.failingAt-1))
+			for _, file := range opened {
+				assert.ErrorIs(t, file.Close(), os.ErrClosed)
+			}
+		})
+	}
+}
+
 func TestURI(t *testing.T) {
 	tsuite := []struct {
 		desc         string

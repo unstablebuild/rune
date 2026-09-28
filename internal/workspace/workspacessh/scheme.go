@@ -692,19 +692,24 @@ func (t *stderrTail) String() string {
 	return string(t.buf)
 }
 
+// newPipe is os.Pipe. Tests replace it to make a later pipe fail.
+var newPipe = os.Pipe
+
 func (s *scheme) setPipes(
 	cmd *workspaceapi.Cmd,
 ) (stdout, stderr, stdin *os.File, closers []io.Closer, err error) {
-	stdoutRead, stdoutWrite, err := os.Pipe()
+	stdoutRead, stdoutWrite, err := newPipe()
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("pipe: %v", err)
 	}
-	stderrRead, stderrWrite, err := os.Pipe()
+	stderrRead, stderrWrite, err := newPipe()
 	if err != nil {
+		closeFiles(stdoutRead, stdoutWrite)
 		return nil, nil, nil, nil, fmt.Errorf("pipe: %v", err)
 	}
-	stdinRead, stdinWrite, err := os.Pipe()
+	stdinRead, stdinWrite, err := newPipe()
 	if err != nil {
+		closeFiles(stdoutRead, stdoutWrite, stderrRead, stderrWrite)
 		return nil, nil, nil, nil, fmt.Errorf("pipe: %v", err)
 	}
 	cmd.Stdout = stdoutWrite
@@ -715,6 +720,12 @@ func (s *scheme) setPipes(
 		stdoutRead, stderrRead, stdinRead,
 	}
 	return stdoutRead, stderrRead, stdinWrite, closers, nil
+}
+
+func closeFiles(files ...*os.File) {
+	for _, file := range files {
+		_ = file.Close()
+	}
 }
 
 func (s *scheme) init(
