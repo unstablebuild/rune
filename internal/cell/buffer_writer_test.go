@@ -75,6 +75,47 @@ func TestWriteFlush(t *testing.T) {
 	assert.Equal(t, expected, term.CellsToString(writer.RawCells()))
 }
 
+func TestBufferWriterSetCellOutOfBounds(t *testing.T) {
+	const width, height = 3, 2
+	for _, pos := range []term.Coordinates{
+		{X: -1}, {Y: -1}, {X: width}, {Y: height}, {X: width, Y: height}, {X: -1, Y: -1},
+	} {
+		writer := NewBufferWriter(context.Background(), width, height)
+		assert.NotPanics(t, func() { writer.SetCell(pos, term.Cell{Ch: 'x'}) }, "%v", pos)
+		assert.Equal(t, "\x00\x00\x00\n\x00\x00\x00", term.CellsToString(writer.RawCells()), "%v", pos)
+	}
+}
+
+func TestBufferWriterClear(t *testing.T) {
+	tests := []struct {
+		name string
+		attr term.Attributes
+	}{
+		{name: "default attributes"},
+		{name: "colours", attr: term.Attributes{Fg: term.ColorRed, Bg: term.ColorBlue, Attrs: term.AttrBold}},
+		{name: "underline colour", attr: term.Attributes{Attrs: term.AttrUnderline, Underline: term.ColorGreen}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			const width, height = 7, 3
+			writer := NewBufferWriter(context.Background(), width, height)
+			for y := range height {
+				for x := range width {
+					writer.SetCell(term.Coordinates{X: x, Y: y}, term.NewCell('漢', 2, term.Attributes{Fg: term.ColorRed}))
+				}
+			}
+			require.NoError(t, writer.Clear(tt.attr))
+			want := term.NewCell(0, 0, tt.attr)
+			for y, row := range writer.RawCells() {
+				require.Len(t, row, width)
+				for x, c := range row {
+					assert.Equal(t, want, c, "(%d,%d)", x, y)
+				}
+			}
+		})
+	}
+}
+
 func benchBufferWriter(b *testing.B, n int) {
 	width, height := n, n
 	writer := NewBufferWriter(context.Background(), width, height)
@@ -100,4 +141,57 @@ func BenchmarkBufferWriter100(b *testing.B) {
 }
 func BenchmarkBufferWriter1000(b *testing.B) {
 	benchBufferWriter(b, 1000)
+}
+
+// BenchmarkBufferWriterFrame measures the writer as the GUI drives it
+// every frame: Clear with the theme's attributes, then a handler setting
+// every cell through term.Writer.
+func BenchmarkBufferWriterFrame(b *testing.B) {
+	themed := term.Attributes{Fg: term.NewColor(200, 200, 200), Bg: term.NewColor(30, 30, 30)}
+	underlined := term.Attributes{Attrs: term.AttrUnderline, Underline: term.ColorGreen}
+	glyph := term.NewCell('x', 1, themed)
+	sizes := []struct {
+		name          string
+		width, height int
+	}{
+		{name: "1080p", width: 213, height: 60},
+		{name: "2160p", width: 426, height: 120},
+	}
+	for _, size := range sizes {
+		run := func(name string, frame func(w *BufferWriter)) {
+			b.Run(size.name+"/"+name, func(b *testing.B) {
+				w := NewBufferWriter(context.Background(), size.width, size.height)
+				b.ReportAllocs()
+				for b.Loop() {
+					frame(w)
+				}
+			})
+		}
+		run("clear", func(w *BufferWriter) {
+			_ = w.Clear(themed)
+		})
+		run("clear-underlined", func(w *BufferWriter) {
+			_ = w.Clear(underlined)
+		})
+		run("set-cells", func(w *BufferWriter) {
+			setEveryCell(w, size.width, size.height, glyph)
+		})
+		run("frame", func(w *BufferWriter) {
+			_ = w.Clear(themed)
+			setEveryCell(w, size.width, size.height, glyph)
+		})
+	}
+}
+
+// setEveryCell writes c to every cell of a width x height grid.
+// Handlers reach SetCell through term.Writer, so it must not be inlined
+// into a caller that knows the concrete writer and devirtualizes the call.
+//
+//go:noinline
+func setEveryCell(w term.Writer, width, height int, c term.Cell) {
+	for y := range height {
+		for x := range width {
+			w.SetCell(term.Coordinates{X: x, Y: y}, c)
+		}
+	}
 }

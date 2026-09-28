@@ -33,6 +33,11 @@ var _ term.Writer = (*frameWriter)(nil)
 // needs no bookkeeping of its own.
 const imageMarkWidth = math.MaxUint8
 
+// coveredFrom is the first a resolved mark takes when the cell was
+// written over after the last placement that marked it, so no pending
+// placement shows there.
+const coveredFrom = math.MaxInt32
+
 // glyphSpill is how many columns past its own a cell's glyph paints:
 // grapheme clusters are at most two cells wide. A wide cell written
 // just left of a placement therefore covers its first column.
@@ -58,10 +63,12 @@ type frameWriter struct {
 
 // imageMark is what DrawImage keeps for a cell it marks.
 type imageMark struct {
-	// width is the cell width the mark replaced.
+	// width is the cell width the mark replaced, or imageMarkWidth once
+	// the cell is resolved and holds its width again.
 	width uint8
 	// first is the earliest pending placement the cell still shows.
-	// Placements before it were written over and re-marked since.
+	// Placements before it were written over and re-marked since, and
+	// none shows at coveredFrom.
 	first int32
 }
 
@@ -107,17 +114,25 @@ func (w *frameWriter) DrawImage(img term.Image) bool {
 	cells := w.BufferWriter.RawCells()
 	m := markedArea(img.Visible())
 	for y := m.Min.Y; y < m.Max.Y; y++ {
-		row, marks := cells[y], w.marks[y*w.width:]
-		for x := m.Min.X; x < m.Max.X; x++ {
-			if row[x].Width == imageMarkWidth {
+		row, marks := w.rowMarks(cells, y, m.Min.X, m.Max.X)
+		for x := range row {
+			c := &row[x]
+			if c.Width == imageMarkWidth {
 				continue
 			}
-			marks[x] = imageMark{width: row[x].Width, first: idx}
-			row[x].Width = imageMarkWidth
+			marks[x] = imageMark{width: c.Width, first: idx}
+			c.Width = imageMarkWidth
 		}
 	}
 	w.pending = append(w.pending, img)
 	return true
+}
+
+// rowMarks returns row y's cells and marks over columns [x0, x1).
+func (w *frameWriter) rowMarks(cells [][]term.Cell, y, x0, x1 int) ([]term.Cell, []imageMark) {
+	row := cells[y][x0:x1]
+	base := y * w.width
+	return row, w.marks[base+x0 : base+x1][:len(row)]
 }
 
 // Images returns the placements collected since the last Clear, in the
@@ -145,68 +160,54 @@ func (w *frameWriter) resolve() {
 	for i, img := range w.pending {
 		w.appendUncovered(cells, img, int32(i))
 	}
-	for _, img := range w.pending {
-		m := markedArea(img.Visible())
-		for y := m.Min.Y; y < m.Max.Y; y++ {
-			row, marks := cells[y], w.marks[y*w.width:]
-			for x := m.Min.X; x < m.Max.X; x++ {
-				if row[x].Width == imageMarkWidth {
-					row[x].Width = marks[x].width
-				}
-			}
-		}
-	}
 	clear(w.pending)
 	w.pending = w.pending[:0]
 }
 
 // appendUncovered appends pending placement i to images, clipped to the
-// cells that still show it. Each row's visible runs are merged with the
-// rectangle above them when their columns match, so a placement with a
-// window over it splits into a handful of rectangles rather than one
-// per row.
+// cells that still show it, and resolves the marks in its area. Each
+// row's visible runs are merged with the rectangle above them when their
+// columns match, so a placement with a window over it splits into a
+// handful of rectangles rather than one per row.
 func (w *frameWriter) appendUncovered(cells [][]term.Cell, img term.Image, i int32) {
 	r := img.Visible()
 	m := markedArea(r)
 	open := w.open[:0]
 	for y := r.Min.Y; y < r.Max.Y; y++ {
-		row, marks := cells[y], w.marks[y*w.width:]
+		row, marks := w.rowMarks(cells, y, m.Min.X, m.Max.X)
 		next := w.next[:0]
-		j, start, coveredTo := 0, -1, 0
-		for x := m.Min.X; x <= r.Max.X; x++ {
-			shown := false
-			if x < r.Max.X {
-				width, after := row[x].Width, true
-				if width == imageMarkWidth {
-					width, after = marks[x].width, marks[x].first > i
+		j, start := 0, -1
+		// Columns are relative to m.Min.X, so the spill column left of
+		// the placement starts out covered.
+		coveredTo := r.Min.X - m.Min.X
+		for x := range row {
+			c, mark := &row[x], &marks[x]
+			if mark.width != imageMarkWidth {
+				if c.Width == imageMarkWidth {
+					c.Width = mark.width
+				} else {
+					mark.first = coveredFrom
 				}
-				if after {
-					// A cell written after the placement covers it, and so
-					// does the rest of its glyph when it is wide.
-					coveredTo = max(coveredTo, x+max(1, int(width)))
-				}
-				shown = x >= r.Min.X && x >= coveredTo
+				mark.width = imageMarkWidth
 			}
-			if shown {
+			if mark.first > i {
+				// A cell written after the placement covers it, and so
+				// does the rest of its glyph when it is wide.
+				coveredTo = max(coveredTo, x+max(1, int(c.Width)))
+			}
+			if x >= coveredTo {
 				if start < 0 {
 					start = x
 				}
 				continue
 			}
-			if start < 0 {
-				continue
+			if start >= 0 {
+				next, j = w.endRun(img, open, next, j, image.Rect(m.Min.X+start, y, m.Min.X+x, y+1))
+				start = -1
 			}
-			for j < len(open) && open[j].Min.X < start {
-				w.images = append(w.images, clippedTo(img, open[j]))
-				j++
-			}
-			if j < len(open) && open[j].Min.X == start && open[j].Max.X == x {
-				next = append(next, open[j].Union(image.Rect(start, y, x, y+1)))
-				j++
-			} else {
-				next = append(next, image.Rect(start, y, x, y+1))
-			}
-			start = -1
+		}
+		if start >= 0 {
+			next, j = w.endRun(img, open, next, j, image.Rect(m.Min.X+start, y, r.Max.X, y+1))
 		}
 		for ; j < len(open); j++ {
 			w.images = append(w.images, clippedTo(img, open[j]))
@@ -218,6 +219,23 @@ func (w *frameWriter) appendUncovered(cells [][]term.Cell, img term.Image, i int
 		w.images = append(w.images, clippedTo(img, rect))
 	}
 	w.open = open
+}
+
+// endRun adds run, a row's visible run, to next: it extends the
+// rectangle in open[j:] above it with the same columns, and appends to
+// images the ones left of it, which no later run can extend.
+func (w *frameWriter) endRun(
+	img term.Image, open, next []image.Rectangle, j int, run image.Rectangle,
+) ([]image.Rectangle, int) {
+	for j < len(open) && open[j].Min.X < run.Min.X {
+		w.images = append(w.images, clippedTo(img, open[j]))
+		j++
+	}
+	if j < len(open) && open[j].Min.X == run.Min.X && open[j].Max.X == run.Max.X {
+		run = open[j].Union(run)
+		j++
+	}
+	return append(next, run), j
 }
 
 func clippedTo(img term.Image, r image.Rectangle) term.Image {
