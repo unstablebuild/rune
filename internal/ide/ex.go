@@ -61,6 +61,7 @@ import (
 	"unstable.build/rune/internal/ide/ideshell"
 	"unstable.build/rune/internal/ide/ideshell/workspaceshell"
 	"unstable.build/rune/internal/ide/idetask"
+	"unstable.build/rune/internal/ide/keymeta"
 	"unstable.build/rune/internal/ide/plugin"
 	"unstable.build/rune/internal/ide/vctrl"
 	tterm "unstable.build/rune/internal/term"
@@ -187,6 +188,9 @@ type ex struct {
 	// or exo). The cheatsheet uses it to describe the active editor; unlike
 	// editorModeModal it preserves the exo distinction.
 	editorMode string
+	// metaKey is what <meta> means in the configured bindings, which the
+	// key bindings view names in its header.
+	metaKey keymeta.Meta
 	// editorAutoSave records whether the editor flushes buffers
 	// automatically. The cheatsheet uses it to gate the manual write row.
 	editorAutoSave   bool
@@ -256,6 +260,7 @@ func newEx(
 	commandPromptCfg commandPromptConfig,
 	editorModeModal bool,
 	editorMode string,
+	metaKey keymeta.Meta,
 	editorAutoSave bool,
 	consoleCfg consoleConfig,
 	opts ...text.Option,
@@ -276,6 +281,7 @@ func newEx(
 	e.commandPromptCfg = commandPromptCfg
 	e.editorModeModal = editorModeModal
 	e.editorMode = editorMode
+	e.metaKey = metaKey
 	e.editorAutoSave = editorAutoSave
 	e.consoleCfg = consoleCfg
 	return
@@ -3422,7 +3428,8 @@ func (e *ex) cheatsheet(_ context.Context, _ ...string) error {
 // Markdown table and opens it in a centered floating window, mirroring
 // the cheatsheet view.
 func (e *ex) keybindings(_ context.Context, _ ...string) error {
-	md, err := renderKeyBindings(e.config, e.comp.Commands(), e.editorMode, runtime.GOOS)
+	md, err := renderKeyBindings(
+		e.config, e.comp.Commands(), e.editorMode, runtime.GOOS, e.metaKey)
 	if err != nil {
 		return err
 	}

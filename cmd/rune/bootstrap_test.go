@@ -20,6 +20,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -27,9 +29,11 @@ import (
 	sdkhandler "github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
+	"gopkg.in/yaml.v3"
 
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/ide"
+	"unstable.build/rune/internal/ide/keymeta"
 )
 
 func TestTelemetryOptionToChoiceMapping(t *testing.T) {
@@ -76,7 +80,7 @@ func TestOptionToChoiceMapping(t *testing.T) {
 // the emacs preset, the deprecated modeless alias resolves to the
 // standard preset, and that an unknown choice is an error.
 func TestRenderPreset(t *testing.T) {
-	vim, err := renderPreset(editorVim, false)
+	vim, err := renderPreset(editorVim, keymeta.Super, false)
 	require.NoError(t, err)
 	require.NotContains(t, vim, "mode: standard",
 		"vim mode must not switch the editor into standard")
@@ -85,26 +89,26 @@ func TestRenderPreset(t *testing.T) {
 	require.Contains(t, vim, "enabled: false",
 		"telemetry=false must render enabled: false")
 
-	std, err := renderPreset(editorStandard, true)
+	std, err := renderPreset(editorStandard, keymeta.Super, true)
 	require.NoError(t, err)
 	require.Contains(t, std, "mode: standard",
 		"the standard choice must switch the editor into standard")
 	require.Contains(t, std, "enabled: true",
 		"telemetry=true must render enabled: true")
 
-	deprecated, err := renderPreset(editorModeless, true)
+	deprecated, err := renderPreset(editorModeless, keymeta.Super, true)
 	require.NoError(t, err)
 	require.Equal(t, std, deprecated,
 		"the deprecated modeless alias must resolve to the standard preset")
 
-	ema, err := renderPreset(editorEmacs, false)
+	ema, err := renderPreset(editorEmacs, keymeta.Super, false)
 	require.NoError(t, err)
 	require.Contains(t, ema, "enabled: false",
 		"telemetry=false must render enabled: false")
 	require.Contains(t, ema, "mode: emacs",
 		"the emacs choice must switch the editor into emacs")
 
-	hx, err := renderPreset(editorHelix, true)
+	hx, err := renderPreset(editorHelix, keymeta.Super, true)
 	require.NoError(t, err)
 	require.Contains(t, hx, "mode: helix",
 		"the helix choice must switch the editor into helix")
@@ -155,8 +159,47 @@ func TestRenderPreset(t *testing.T) {
 		`"<meta-f>": "echo {prompt}jumptoast<space>locals.scm<space>`,
 		"the displaced function search binding must remain prompt-only")
 
-	_, err = renderPreset("bogus", true)
+	_, err = renderPreset("bogus", keymeta.Super, true)
 	require.Error(t, err)
+}
+
+// TestRenderPresetMetaKey renders every editor with every <meta> meaning
+// the host offers it, and rejects the ones it does not.
+func TestRenderPresetMetaKey(t *testing.T) {
+	all := []keymeta.Meta{keymeta.Super, keymeta.Alt, keymeta.CtrlSuper, keymeta.AltSuper}
+	for _, editor := range []string{editorVim, editorHelix, editorStandard, editorEmacs} {
+		offered := keymeta.Options(runtime.GOOS, editor)
+		for _, meta := range all {
+			for _, telemetry := range []bool{true, false} {
+				name := fmt.Sprintf("%s/%s/%t", editor, meta, telemetry)
+				t.Run(name, func(t *testing.T) {
+					body, err := renderPreset(editor, meta, telemetry)
+					if !slices.Contains(offered, meta) {
+						require.ErrorContains(t, err, "not offered")
+						return
+					}
+					require.NoError(t, err)
+					require.NotContains(t, body, "[[")
+					var got struct {
+						GUI struct {
+							MetaKey string `yaml:"meta_key"`
+						} `yaml:"gui"`
+						Telemetry struct {
+							Enabled bool `yaml:"enabled"`
+						} `yaml:"telemetry"`
+					}
+					require.NoError(t, yaml.Unmarshal([]byte(body), &got))
+					require.Equal(t, telemetry, got.Telemetry.Enabled)
+					if len(offered) > 1 {
+						require.Equal(t, meta.String(), got.GUI.MetaKey)
+					} else {
+						require.Empty(t, got.GUI.MetaKey,
+							"a host with a single option writes no meta_key")
+					}
+				})
+			}
+		}
+	}
 }
 
 // TestGuardedPromptChainReopensOnUnadvancedClose proves that an Esc
@@ -327,6 +370,7 @@ func TestBootstrapPromptProgression(t *testing.T) {
 	b := &bootstrapHandler{
 		prompter:     prompter,
 		publishEvent: func(term.Event) bool { return true },
+		goos:         "darwin",
 	}
 
 	b.openWelcomePrompt()
@@ -354,6 +398,104 @@ func TestBootstrapPromptProgression(t *testing.T) {
 	require.NotContains(t, telPrompt.message, "```json")
 	require.Equal(t, []string{optTelemetryYes, optTelemetryNo}, telPrompt.options)
 	require.Equal(t, bootstrapTelemetryKeys, telPrompt.bindings)
+}
+
+// TestBootstrapMetaPrompt pins that Linux asks what <meta> means between
+// the editor and telemetry prompts, offering exactly keymeta.Options.
+func TestBootstrapMetaPrompt(t *testing.T) {
+	superAlt := []string{" super ", " alt "}
+	superAltKeys := []term.KeyComb{{Ch: 's'}, {Ch: 'a'}}
+	emacs := []string{" super ", " ctrl+super ", " alt+super "}
+	emacsKeys := []term.KeyComb{{Ch: 's'}, {Ch: 'c'}, {Ch: 'a'}}
+	for _, tc := range []struct {
+		option   string
+		editor   string
+		labels   []string
+		keys     []term.KeyComb
+		pick     int
+		wantMeta keymeta.Meta
+	}{
+		{optVimYes, editorVim, superAlt, superAltKeys, 1, keymeta.Alt},
+		{optHelix, editorHelix, superAlt, superAltKeys, 0, keymeta.Super},
+		{optStandard, editorStandard, superAlt, superAltKeys, 1, keymeta.Alt},
+		{optEmacs, editorEmacs, emacs, emacsKeys, 1, keymeta.CtrlSuper},
+		{optEmacs, editorEmacs, emacs, emacsKeys, 2, keymeta.AltSuper},
+	} {
+		t.Run(tc.editor+tc.labels[tc.pick], func(t *testing.T) {
+			prompter := &fakeBootstrapPrompter{}
+			b := &bootstrapHandler{
+				prompter:     prompter,
+				publishEvent: func(term.Event) bool { return true },
+				goos:         "linux",
+			}
+			b.openVimPrompt()
+			prompter.prompts[0].handler.OnSelect(0, tc.option)
+			require.Equal(t, tc.editor, b.chosenEditor)
+			require.Len(t, prompter.prompts, 2)
+
+			meta := prompter.prompts[1]
+			require.Contains(t, meta.message, "`<meta>`")
+			require.Contains(t, meta.message, "gui.meta_key")
+			require.Equal(t, tc.labels, meta.options)
+			require.Equal(t, tc.keys, meta.bindings)
+
+			require.NoError(t, meta.handler.OnClose())
+			require.Len(t, prompter.prompts, 3, "dismissing the meta prompt reopens it")
+			require.Equal(t, tc.labels, prompter.prompts[2].options)
+
+			prompter.prompts[2].handler.OnSelect(tc.pick, tc.labels[tc.pick])
+			require.Equal(t, tc.wantMeta, b.chosenMeta)
+			require.Len(t, prompter.prompts, 4)
+			require.Equal(t, []string{optTelemetryYes, optTelemetryNo},
+				prompter.prompts[3].options)
+		})
+	}
+}
+
+// TestBootstrapMetaPromptOptionsFollowTheTable couples the prompt to the
+// option table on every OS, so an option added there is offered here
+// with a key of its own.
+func TestBootstrapMetaPromptOptionsFollowTheTable(t *testing.T) {
+	for _, goos := range []string{"linux", "darwin"} {
+		for _, editor := range []string{editorVim, editorHelix, editorStandard, editorEmacs} {
+			b := &bootstrapHandler{goos: goos, chosenEditor: editor}
+			require.Equal(t, keymeta.Options(goos, editor), b.metaOptions())
+			seen := map[byte]bool{}
+			for _, m := range b.metaOptions() {
+				key := strings.TrimSpace(metaOptionLabel(m))[0]
+				require.Falsef(t, seen[key], "%s/%s: two options share key %c",
+					goos, editor, key)
+				seen[key] = true
+			}
+		}
+	}
+}
+
+// TestBootstrapMetaChoiceRoundTrip writes the preset for each option the
+// host offers and loads it back without a config error.
+func TestBootstrapMetaChoiceRoundTrip(t *testing.T) {
+	for _, editor := range []string{editorVim, editorHelix, editorStandard, editorEmacs} {
+		offered := keymeta.Options(runtime.GOOS, editor)
+		for _, meta := range offered {
+			t.Run(editor+meta.String(), func(t *testing.T) {
+				dir := t.TempDir()
+				b := &bootstrapHandler{
+					dataDir: dir, chosenEditor: editor, chosenMeta: meta,
+				}
+				require.NoError(t, b.writePresetConfig())
+				cfg := mustLoadConfig(t, filepath.Join(dir, configFilename))
+				guiCfg, err := cfg.GetConfig("gui")
+				require.NoError(t, err)
+				got, err := guiCfg.GetString("meta_key")
+				if len(offered) == 1 {
+					require.Error(t, err, "a host with a single option writes no meta_key")
+					return
+				}
+				require.NoError(t, err)
+				require.Equal(t, meta.String(), got)
+			})
+		}
+	}
 }
 
 func TestBootstrapTelemetryPersistenceRoundTrip(t *testing.T) {

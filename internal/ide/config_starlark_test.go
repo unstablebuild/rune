@@ -36,6 +36,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/handler"
+	"unstable.build/rune/internal/ide/idepreset"
 	"unstable.build/rune/internal/workspace"
 )
 
@@ -1168,8 +1169,7 @@ func TestStandardPresetUsesModifierLayoutBindings(t *testing.T) {
 			})
 			require.NoError(t, err)
 
-			overlay, err := os.ReadFile(filepath.Join("../../cmd/rune", tc.file))
-			require.NoError(t, err)
+			overlay := readPreset(t, tc.file, idepreset.Data{})
 			cfg, err := decodeOverlayConfigFile(
 				bytes.NewReader(overlay), tc.file, base)
 			require.NoError(t, err)
@@ -1243,8 +1243,7 @@ func TestStandardPresetUsesPlatformApplicationBindings(t *testing.T) {
 			})
 			require.NoError(t, err)
 
-			overlay, err := os.ReadFile(filepath.Join("../../cmd/rune", tc.file))
-			require.NoError(t, err)
+			overlay := readPreset(t, tc.file, idepreset.Data{})
 			cfg, err := decodeOverlayConfigFile(
 				bytes.NewReader(overlay), tc.file, base)
 			require.NoError(t, err)
@@ -1613,8 +1612,7 @@ func TestEmacsLinuxPresetKeepsCommandsOffEditorChords(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	overlay, err := os.ReadFile("../../cmd/rune/preset_emacs_linux.yaml")
-	require.NoError(t, err)
+	overlay := readPreset(t, "preset_emacs_linux.yaml", idepreset.Data{})
 	cfg, err := decodeOverlayConfigFile(
 		bytes.NewReader(overlay), "preset_emacs_linux.yaml", base)
 	require.NoError(t, err)
@@ -1962,4 +1960,15 @@ func stringifyTestScalar(v any) string {
 	default:
 		return fmt.Sprint(t)
 	}
+}
+
+// readPreset renders cmd/rune's preset file name with data, the way the
+// first-run wizard writes it as the user's config.
+func readPreset(t *testing.T, name string, data idepreset.Data) []byte {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("../../cmd/rune", name))
+	require.NoError(t, err)
+	body, err := idepreset.Render(string(raw), data)
+	require.NoError(t, err)
+	return []byte(body)
 }

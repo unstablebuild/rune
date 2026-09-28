@@ -330,6 +330,36 @@ For ready-to-copy `exo` configs (Vim, Neovim, Helix, Nano, and more), see the
   config["gui"]["key_mapping"] = {"<capslock>": "<esc>"}
   ```
 
+- `gui.meta_key`: the physical key or keys that `<meta>` stands for in Rune's
+  own key specs: `command.key_bindings`, `command.key`,
+  `command.history_key`, and the search and file explorer `*_key` settings.
+  The editors, terminals and extensions still receive the key you actually
+  pressed, so this is not a remap. The value is one of the following:
+
+  | Value | `<meta-x>` means | Offered for |
+  | --- | --- | --- |
+  | `<super>` (default) | Super+X (Command+X on macOS) | every editor |
+  | `<alt>` | Alt+X | Linux: vim, helix, standard |
+  | `<ctrl-super>` | Ctrl+Super+X | Linux: emacs |
+  | `<alt-super>` | Alt+Super+X | Linux: emacs |
+
+  macOS accepts only `<super>`. First-run setup on Linux asks for this value
+  because desktops often keep Super+digits, Super+L and Super+arrows for
+  themselves. A value the editor does not offer is reported as a config error,
+  and Rune falls back to `<super>`. If two bindings end up on the same chord
+  (for example `<meta-x>` and an explicit `<alt-x>` under `<alt>`), Rune
+  reports the clash and the spelling without `<meta>` wins. See
+  [Key combination syntax](./learn/key-syntax.md#what-meta-means).
+
+  ```yaml tab
+  gui:
+    meta_key: "<alt>"
+  ```
+
+  ```python tab
+  config["gui"]["meta_key"] = "<alt>"
+  ```
+
 ## Telemetry
 
 - `telemetry.enabled`: whether Rune reports anonymous usage data. It is `true`

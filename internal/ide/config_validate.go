@@ -29,7 +29,16 @@ import (
 )
 
 func validateConfig(cfg map[string]any) (err error) {
-	c := ideConfig{cfg: cfg, errors: make(map[string]error)}
+	return validateConfigOn(cfg, "")
+}
+
+// validateConfigOn validates cfg as loaded on goos; "" is the host OS.
+func validateConfigOn(cfg map[string]any, goos string) (err error) {
+	c := ideConfig{cfg: cfg, errors: make(map[string]error), goos: goos}
+
+	// A bad meta key only resets itself, so the other checks still run.
+	metaErr := validateMetaKey(&c, cfg)
+	defer func() { err = errors.Join(metaErr, err) }()
 
 	if err = validateAliases(&c, cfg); err != nil {
 		return

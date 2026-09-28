@@ -32,12 +32,13 @@ else:
 # the preset that binds it. The macOS and Linux presets place Rune's
 # layer on different modifiers, so the chords also branch on the OS.
 linux = os() == "linux"
+# key() spells `<meta>` on the keys gui.meta_key puts it on.
 if mode == "emacs":
-    def_by_name_key = "<ctrl-alt-.>"
+    def_by_name_key = key("<ctrl-alt-.>")
 elif mode == "helix":
-    def_by_name_key = "<ctrl-shift-meta-d>" if linux else "<shift-meta-d>"
+    def_by_name_key = key("<ctrl-shift-meta-d>" if linux else "<shift-meta-d>")
 else:
-    def_by_name_key = "<shift-meta-d>" if linux else "<alt-shift-d>"
+    def_by_name_key = key("<shift-meta-d>" if linux else "<alt-shift-d>")
 def_by_name_cta = "press `" + def_by_name_key + "`"
 
 # The `jumptoast` prefill fuzzy-jumps to a function or method defined in
@@ -47,15 +48,15 @@ def_by_name_cta = "press `" + def_by_name_key + "`"
 # against the preset that binds it. Helix keeps it on the <space> leader,
 # where its own symbol_picker lives.
 if mode == "emacs":
-    jump_symbol_key = "<meta-j>"
+    jump_symbol_key = key("<meta-j>")
 elif mode == "helix":
-    jump_symbol_key = "<space>s"
+    jump_symbol_key = key("<space>s")
 elif mode == "standard" and linux:
-    jump_symbol_key = "<ctrl-meta-f>"
+    jump_symbol_key = key("<ctrl-meta-f>")
 elif linux:
-    jump_symbol_key = "<meta-f>"
+    jump_symbol_key = key("<meta-f>")
 else:
-    jump_symbol_key = "<alt-f>"
+    jump_symbol_key = key("<alt-f>")
 
 def keyhint(cmd, *args):
     k = key_for(cmd, *args)

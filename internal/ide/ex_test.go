@@ -24,6 +24,7 @@ import (
 	"io"
 	"io/fs"
 	"os/user"
+	"runtime"
 
 	"os"
 	"os/exec"
@@ -3642,6 +3643,7 @@ func testPromptEditor() command.Editor {
 		tabspaces:        4,
 		scheduleNextTick: func(fn func()) bool { fn(); return true },
 		clipboard:        clipboard.NewInMemory(),
+		goos:             runtime.GOOS,
 	}
 }
 

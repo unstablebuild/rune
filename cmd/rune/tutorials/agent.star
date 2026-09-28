@@ -95,7 +95,7 @@ help_md = """\
 You're almost done 🎉 A few tips worth remembering:
 
 - If you find yourself wondering what commands you typed on a previous session, press
-  `<meta-r>` to open the command prompt in history mode and search through your command history.
+  `""" + key("<meta-r>") + """` to open the command prompt in history mode and search through your command history.
 
 - If you need a hand, or want to learn about hacking on Rune, join us on
   Discord: https://discord.gg/quxhV7khwg 👾 hold `<meta>` and click the

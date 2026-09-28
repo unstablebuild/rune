@@ -40,7 +40,10 @@ different modifiers:
 
 - `<alt>` is the Emacs Meta modifier. It is Option on macOS and Alt on Linux.
 - `<meta>` is Rune's window and workspace modifier. It is Command on macOS and
-  Super on Linux.
+  Super on Linux. On Linux, first-run setup lets you move it to `<ctrl-super>`
+  or `<alt-super>` if your desktop keeps Super chords for itself. Change it
+  later with [`gui.meta_key`](./key-syntax.md#what-meta-means). `<alt>` is not
+  offered, because Alt is already Emacs Meta.
 
 For example, Emacs `forward-word` is `<alt-f>`, while Rune window focus uses
 `<meta-b>` and `<meta-f>`. An Emacs control-plus-Meta command such as

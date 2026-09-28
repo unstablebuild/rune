@@ -26,6 +26,7 @@ import (
 	"image/png"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"os"
 	"reflect"
@@ -59,6 +60,7 @@ import (
 	"unstable.build/rune/internal/handler/searchbox"
 	"unstable.build/rune/internal/ide/idedebug"
 	"unstable.build/rune/internal/ide/idelsp"
+	"unstable.build/rune/internal/ide/keymeta"
 	"unstable.build/rune/internal/ide/plugin"
 	"unstable.build/rune/internal/ide/starlarkconfig"
 	"unstable.build/rune/internal/ide/syntax"
@@ -279,6 +281,8 @@ type ideConfig struct {
 	// May be nil during validation paths or in tests that don't need
 	// to actually run completer chains.
 	storage storageapi.Service
+	// goos overrides runtime.GOOS for the gui.meta_key options; see hostOS.
+	goos string
 }
 
 func overrideConfig(ideConfig, cfg map[string]any) {
@@ -659,11 +663,16 @@ func (c ideConfig) commandKeyMappings() map[handler.Sequence][][]string {
 	if !ok {
 		return make(map[handler.Sequence][][]string)
 	}
-	return parseCommandKeyMappings(cfg, c.errors)
+	return parseCommandKeyMappings(cfg, c.metaKey(), c.errors)
 }
 
+// parseCommandKeyMappings parses command.key_bindings, giving <meta> the
+// meaning of meta. When two spellings land on one chord only because of
+// meta, an error names both and the spelling written without <meta>
+// wins, or the lexically first one when both carry it. A binding to ""
+// only frees a chord, so any real binding beats it silently.
 func parseCommandKeyMappings(
-	cfg config.Config, errs map[string]error,
+	cfg config.Config, meta keymeta.Meta, errs map[string]error,
 ) map[handler.Sequence][][]string {
 	ret := make(map[handler.Sequence][][]string)
 	m, err := cfg.GetMap("key_bindings")
@@ -674,15 +683,24 @@ func parseCommandKeyMappings(
 		return ret
 	}
 
-	for k, v := range m {
-		seq, err := handler.ParseSequence(k)
+	type owner struct {
+		spec    string
+		written handler.Sequence
+	}
+	owners := make(map[handler.Sequence]owner)
+	keys := slices.Sorted(maps.Keys(m))
+	for _, k := range keys {
+		v := m[k]
+		written, err := handler.ParseSequence(k)
 		if err != nil {
-			seq.First, err = term.ParseKey(k)
+			written.First, err = term.ParseKey(k)
 			if err != nil {
 				errs["key_bindings."+k] = err
 				continue
 			}
 		}
+		seq := meta.ApplySequence(written)
+		var cmds [][]string
 		cmdsAndArgsSliceIfc, ok := v.([]any)
 		if ok {
 			var cmdsAndArgs [][]string
@@ -698,9 +716,10 @@ func parseCommandKeyMappings(
 				cmdsAndArgs = append(cmdsAndArgs,
 					strings.Split(strings.Trim(cmdAndArgs, " "), " "))
 			}
-			if len(cmdsAndArgs) != 0 {
-				ret[seq] = cmdsAndArgs
+			if len(cmdsAndArgs) == 0 {
+				continue
 			}
+			cmds = cmdsAndArgs
 		} else {
 			cmd, ok := v.(string)
 			if !ok {
@@ -709,25 +728,60 @@ func parseCommandKeyMappings(
 						"[]string but found unknown type")
 				continue
 			}
-			parts := strings.Split(strings.Trim(cmd, " "), " ")
-			ret[seq] = [][]string{parts}
+			cmds = [][]string{strings.Split(strings.Trim(cmd, " "), " ")}
 		}
+		prev, taken := owners[seq]
+		if !taken || (prev.written == seq && written == seq) {
+			owners[seq] = owner{spec: k, written: written}
+			ret[seq] = cmds
+			continue
+		}
+		switch prevUnbind, unbind := isUnbindCommand(ret[seq]), isUnbindCommand(cmds); {
+		case unbind:
+			continue
+		case prevUnbind:
+			owners[seq] = owner{spec: k, written: written}
+			ret[seq] = cmds
+			continue
+		}
+		winner, loser := prev.spec, k
+		if prev.written != seq && written == seq {
+			winner, loser = k, prev.spec
+			owners[seq] = owner{spec: k, written: written}
+			ret[seq] = cmds
+		}
+		errs["key_bindings."+loser] = fmt.Errorf(
+			"%s and %s are both %s with %s %s; %s wins",
+			prev.spec, k, sequenceSpec(seq), pathGUIMetaKey, meta, winner)
 	}
 
 	return ret
 }
 
+// isUnbindCommand reports whether cmds is the binding to "" that frees a
+// chord an extension claimed.
+func isUnbindCommand(cmds [][]string) bool {
+	return len(cmds) == 1 && len(cmds[0]) == 1 && cmds[0][0] == ""
+}
+
 // CommandKeyBindings inverts cfg's `command.key_bindings` into a map
 // from full command line ("quit", "echo hello") to the single chord
-// bound to it. Two-key sequences are omitted: a native menu accelerator
-// can only be a single chord. Printable chords win over named-key
-// aliases, then lexical order makes the choice stable.
+// bound to it, with <meta> read as `gui.meta_key` says. Two-key sequences
+// are omitted: a native menu accelerator can only be a single chord.
+// Printable chords win over named-key aliases, then lexical order makes
+// the choice stable.
 func CommandKeyBindings(cfg config.Config) map[string]term.KeyComb {
+	return commandKeyBindingsOn(cfg, "")
+}
+
+// commandKeyBindingsOn is CommandKeyBindings as resolved on goos; "" is
+// the host OS.
+func commandKeyBindingsOn(cfg config.Config, goos string) map[string]term.KeyComb {
 	cmdCfg, err := cfg.GetConfig("command")
 	if err != nil {
 		return nil
 	}
-	mappings := parseCommandKeyMappings(cmdCfg, map[string]error{})
+	mappings := parseCommandKeyMappings(cmdCfg, configMetaKey(cfg, goos), map[string]error{})
 
 	lookup := make(map[string]term.KeyComb)
 	for _, seq := range sortedCommandKeySequences(mappings) {
@@ -810,6 +864,7 @@ func (c ideConfig) commandKey() (ret term.KeyComb) {
 	default:
 		ret = defaultModalCommandKey
 	}
+	ret = c.metaKey().Apply(ret)
 	cfg, ok := c.command()
 	if !ok {
 		return
@@ -821,7 +876,7 @@ func (c ideConfig) commandKey() (ret term.KeyComb) {
 		}
 		return
 	}
-	key, err := term.ParseKey(cfgKey)
+	key, err := c.parseRuneKey(cfgKey)
 	if err != nil {
 		if err != config.ErrNotFound {
 			c.errors[fmt.Sprintf("command.%s", keyCommandKey)] = err
@@ -935,7 +990,7 @@ func (c ideConfig) consoleEditorModal() bool {
 }
 
 func (c ideConfig) commandHistoryKey() (ret term.KeyComb) {
-	ret = text.DefaultConfig().CommandHistoryKey
+	ret = c.metaKey().Apply(text.DefaultConfig().CommandHistoryKey)
 	cfg, ok := c.command()
 	if !ok {
 		return
@@ -947,7 +1002,7 @@ func (c ideConfig) commandHistoryKey() (ret term.KeyComb) {
 		}
 		return
 	}
-	key, err := term.ParseKey(cfgKey)
+	key, err := c.parseRuneKey(cfgKey)
 	if err != nil {
 		c.errors[fmt.Sprintf("command.%s", keyCommandHistoryKey)] = err
 		return
@@ -3074,7 +3129,7 @@ func (c ideConfig) fileExplorerEditKey() term.KeyComb {
 			"expected a single key combination, got %d", len(keys))
 		return def
 	}
-	return keys[0]
+	return c.metaKey().Apply(keys[0])
 }
 
 // fileExplorerMinWidth returns the width the explorer reports when
@@ -3409,10 +3464,11 @@ func (c ideConfig) standardAttr() (attr term.Attributes) {
 
 func (c ideConfig) standardSearchConfig(wm standard.SearchWindowManager) standard.SearchConfig {
 	standardAttr := c.standardAttr()
+	meta := c.metaKey()
 	ret := standard.SearchConfig{
 		WindowManager:    wm,
-		FindKey:          term.KeyComb{Mod: term.ModMeta, Ch: 'f'},
-		ReplaceKey:       term.KeyComb{Mod: term.ModMeta, Ch: 'r'},
+		FindKey:          meta.Apply(term.KeyComb{Mod: term.ModMeta, Ch: 'f'}),
+		ReplaceKey:       meta.Apply(term.KeyComb{Mod: term.ModMeta, Ch: 'r'}),
 		Attr:             standardAttr,
 		InputAttr:        standardAttr,
 		PlaceholderAttr:  standardAttr,
@@ -3449,7 +3505,7 @@ func (c ideConfig) standardSearchConfig(wm standard.SearchWindowManager) standar
 			}
 			continue
 		}
-		parsed, err := term.ParseKey(configured)
+		parsed, err := c.parseRuneKey(configured)
 		if err != nil {
 			c.errors[path+".search."+key] = err
 			continue
@@ -4036,7 +4092,7 @@ func (c extensionConfig) path() (string, bool) {
 }
 
 func (c extensionConfig) config() (config.Config, bool) {
-	cfg, err := c.cfg.GetConfig("config")
+	cfg, err := c.cfg.GetMap("config")
 	if err != nil {
 		if err != config.ErrNotFound {
 			errorID := fmt.Sprintf("extension.%s.config", c.id)
@@ -4044,7 +4100,7 @@ func (c extensionConfig) config() (config.Config, bool) {
 		}
 		return nil, false
 	}
-	return cfg, true
+	return config.MapConfig(cfg), true
 }
 
 func (c ideConfig) workspace() config.Config {
@@ -4361,7 +4417,7 @@ func (c ideConfig) terminalSearchConfig() vte.SearchConfig {
 		}
 		return ret
 	}
-	parsed, err := term.ParseKey(configured)
+	parsed, err := c.parseRuneKey(configured)
 	if err != nil {
 		c.errors["terminal.search.find_key"] = err
 		return ret

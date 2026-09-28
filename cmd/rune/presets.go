@@ -16,32 +16,32 @@
 
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"runtime"
+	"slices"
 
-// renderPreset returns the preset-config file body for the given
-// editor choice and telemetry preference, in the variant for the host
-// OS. The vim choice enables vim mode everywhere; the helix choice uses
-// Helix's selection-first grammar with its <space> leader menu; the
-// standard choice uses platform-native standard editor bindings; the
-// emacs choice uses an Emacs keymap. The deprecated "modeless" alias
-// resolves to the standard preset.
-func renderPreset(editor string, telemetry bool) (string, error) {
-	var body string
+	"unstable.build/rune/internal/ide/idepreset"
+	"unstable.build/rune/internal/ide/keymeta"
+)
+
+func renderPreset(editor string, meta keymeta.Meta, telemetry bool) (string, error) {
+	var body, mode string
 	switch editor {
 	case editorVim:
-		body = presetModalYAML
+		body, mode = presetModalYAML, editorVim
 	case editorHelix:
-		body = presetHelixYAML
+		body, mode = presetHelixYAML, editorHelix
 	case editorStandard, editorModeless:
-		body = presetStandardYAML
+		body, mode = presetStandardYAML, editorStandard
 	case editorEmacs:
-		body = presetEmacsYAML
+		body, mode = presetEmacsYAML, editorEmacs
 	default:
 		return "", fmt.Errorf("unknown editor choice: %q", editor)
 	}
-	const tmpl = "%s\ntelemetry:\n" +
-		"  # Report anonymous usage and system information. See the Telemetry\n" +
-		"  # page in the Rune docs for the full list of what is reported.\n" +
-		"  enabled: %t\n"
-	return fmt.Sprintf(tmpl, body, telemetry), nil
+	if !slices.Contains(keymeta.Options(runtime.GOOS, mode), meta) {
+		return "", fmt.Errorf("meta key %s is not offered for %s on %s",
+			meta, mode, runtime.GOOS)
+	}
+	return idepreset.Render(body, idepreset.Data{Meta: meta, Telemetry: telemetry})
 }

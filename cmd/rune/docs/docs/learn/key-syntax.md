@@ -83,7 +83,9 @@ Notes on individual modifiers:
 - **`ctrl`** combines with letters, digits, function keys, arrows, mouse events, and most named keys (e.g. `<ctrl-a>`, `<ctrl-_>`, `<ctrl-space>`, `<ctrl-pgdn>`).
 - **`shift`** is meaningful on non-letter keys where Rune can detect it (`<shift-tab>`, `<shift-up>`, `<shift-f5>`). For plain letters, prefer the uppercase character (`A`) over `<shift-a>`.
 - **`alt`** is Option on macOS and Alt on Linux.
-- **`meta`** is Command on macOS and Super on Linux.
+- **`meta`** is Command on macOS and Super on Linux. In Rune's own key
+  bindings, `gui.meta_key` can give it another meaning; see
+  [What `<meta>` means](#what-meta-means).
 
 On Linux, Rune recognizes exactly four modifiers: `ctrl`, `shift`, `alt`, and
 `meta`. `meta` is the Super key, which is the key most keyboards label with the
@@ -100,6 +102,39 @@ command (see [Troubleshooting](../troubleshoot.md)). Tools that read the
 compositor directly, such as `wev`, can still show those keys because they
 observe a layer below the one Rune reads. To repurpose such a key inside Rune
 in the meantime, remap it with [`gui.key_mapping`](./key-mapping.md).
+
+### What `<meta>` means
+
+Rune's shipped bindings are written with `<meta-…>`. The
+[`gui.meta_key`](../config.md#gui) setting decides which physical key or keys
+`<meta>` stands for when Rune reads its own key specs: `command.key_bindings`,
+`command.key`, `command.history_key`, and the `*_key` search and file explorer
+settings.
+
+| `gui.meta_key` | `<meta-f>` fires on | Offered for |
+| --- | --- | --- |
+| `<super>` (default) | Super+F (Command+F on macOS) | every editor |
+| `<alt>` | Alt+F | Linux: vim, helix, standard |
+| `<ctrl-super>` | Ctrl+Super+F | Linux: emacs |
+| `<alt-super>` | Alt+Super+F | Linux: emacs |
+
+Emacs is not offered `<alt>` because Emacs uses Alt as its own Meta key. On
+macOS `<meta>` is always Command.
+
+This setting only changes how Rune reads its key specs. Editors, terminals, and
+input boxes still receive the key you pressed, so with `<alt>` an editor that
+binds `<alt-left>` keeps it, and Rune's `<meta-…>` binding fires only when the
+focused window declines the key. Rune also shows the physical chord in its
+hints and cheatsheet, for example `<alt-f>` instead of `<meta-f>`.
+
+Some combinations become the same chord. Under `<alt>`, `<meta-x>` and
+`<alt-x>` are both Alt+X. Under `<ctrl-super>`, `<meta-x>` and
+`<ctrl-meta-x>` are both Ctrl+Super+X. If two bindings land on one chord, Rune
+reports a config error. The binding spelled without `<meta>` wins; when both
+use `<meta>`, the one that sorts first wins.
+
+[`gui.key_mapping`](./key-mapping.md) is not affected: it always names
+physical keys.
 
 ### Short-form modifiers
 

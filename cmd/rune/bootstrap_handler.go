@@ -25,6 +25,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -45,6 +46,7 @@ import (
 	"unstable.build/rune/internal/ide"
 	"unstable.build/rune/internal/ide/idepkg"
 	"unstable.build/rune/internal/ide/ideupgrade"
+	"unstable.build/rune/internal/ide/keymeta"
 	"unstable.build/rune/internal/ide/pkgtrust"
 	"unstable.build/rune/internal/term/gui"
 	"unstable.build/rune/internal/term/gui/appmenu"
@@ -88,10 +90,13 @@ type bootstrapHandler struct {
 	lastResizeW       int
 	lastResizeH       int
 	chosenEditor      string
+	chosenMeta        keymeta.Meta
 	telemetryEnabled  bool
 	prompter          bootstrapPrompter
-	closingPreIDE     bool
-	recent            *recentWorkspaces
+	// goos overrides runtime.GOOS for the meta prompt; tests set it.
+	goos          string
+	closingPreIDE bool
+	recent        *recentWorkspaces
 	// quickMenu is the configured native quick menu. It is parsed once
 	// per config load because the reserved grid column it implies is
 	// fixed at ide.New time.
@@ -792,7 +797,7 @@ func (b *bootstrapHandler) recordRecentOpen(command string, args ...string) {
 }
 
 func (b *bootstrapHandler) writePresetConfig() error {
-	body, err := renderPreset(b.chosenEditor, b.telemetryEnabled)
+	body, err := renderPreset(b.chosenEditor, b.chosenMeta, b.telemetryEnabled)
 	if err != nil {
 		return fmt.Errorf("render preset: %w", err)
 	}
@@ -957,9 +962,76 @@ func (b *bootstrapHandler) openVimPrompt() {
 		sdkhandler.FuncPromptHandler(
 			guard.onSelect(func(_ int, option string) {
 				b.chosenEditor = optionToChoice(option)
+				b.chosenMeta = keymeta.Super
+				if len(b.metaOptions()) > 1 {
+					b.openMetaPrompt()
+					return
+				}
 				b.openTelemetryPrompt()
 			}),
 			guard.onClose(b.openVimPrompt),
+		),
+	)
+}
+
+// metaOptions returns the meanings of <meta> the chosen editor is offered
+// on this OS.
+func (b *bootstrapHandler) metaOptions() []keymeta.Meta {
+	goos := b.goos
+	if goos == "" {
+		goos = runtime.GOOS
+	}
+	mode := b.chosenEditor
+	if mode == editorModeless {
+		mode = editorStandard
+	}
+	return keymeta.Options(goos, mode)
+}
+
+// metaOptionLabel is the prompt label of m, such as " ctrl+super ". Its
+// first letter is the option's key.
+func metaOptionLabel(m keymeta.Meta) string {
+	return " " + strings.ToLower(m.Name()) + " "
+}
+
+func (b *bootstrapHandler) openMetaPrompt() {
+	metas := b.metaOptions()
+	labels := make([]string, len(metas))
+	keys := make([]term.KeyComb, len(metas))
+	for i, m := range metas {
+		labels[i] = metaOptionLabel(m)
+		keys[i] = term.KeyComb{Ch: rune(strings.TrimSpace(labels[i])[0])}
+	}
+	msg := "## Choose your `<meta>` key\n\n" +
+		"Rune keeps its own commands, such as windows, tabs, workspaces and " +
+		"pickers, on one `<meta>` layer. Your editor and terminal keep their " +
+		"own keys, and they still get every key first.\n\n"
+	if b.chosenEditor == editorEmacs {
+		msg += "Emacs already uses Alt as its Meta. Many Linux desktops grab " +
+			"Super with the digits, `L` or the arrows, so if yours does, pick " +
+			"**ctrl+super** or **alt+super** to move Rune out of their way.\n\n"
+	} else {
+		msg += "Many Linux desktops grab Super with the digits, `L` or the " +
+			"arrows. If yours does, pick **alt**: Rune then takes the Alt " +
+			"chords your editor leaves free.\n\n"
+	}
+	msg += "You can change this later with `gui.meta_key` in your config.\n\n" +
+		"**Which key should `<meta>` be?**"
+	guard := b.promptGuard()
+	b.prompt(
+		msg,
+		labels,
+		keys,
+		sdkhandler.FuncPromptHandler(
+			guard.onSelect(func(_ int, option string) {
+				for _, m := range metas {
+					if metaOptionLabel(m) == option {
+						b.chosenMeta = m
+					}
+				}
+				b.openTelemetryPrompt()
+			}),
+			guard.onClose(b.openMetaPrompt),
 		),
 	)
 }

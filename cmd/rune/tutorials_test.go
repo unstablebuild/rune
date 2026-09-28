@@ -37,6 +37,7 @@ import (
 	"unstable.build/rune/internal/ide"
 	"unstable.build/rune/internal/ide/idetutorial"
 	"unstable.build/rune/internal/ide/idetutorial/starlarktutorial"
+	"unstable.build/rune/internal/ide/keymeta"
 )
 
 var tutorialCallRe = regexp.MustCompile(`(?m)^tutorial\([^\n]*\)$`)
@@ -1557,6 +1558,100 @@ tutorial(entry=run)
 			require.True(t, tut.WaitActive("wait_command", time.Second))
 			assert.Contains(t, tut.ActiveText(), tt.jumpKey)
 			assert.Contains(t, tut.ActiveText(), tt.defKey)
+		})
+	}
+}
+
+// TestTutorialsSpellMetaKey pins that the tutorials spell Rune's <meta>
+// chords on the keys gui.meta_key puts <meta> on.
+func TestTutorialsSpellMetaKey(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		os, mode string
+		meta     keymeta.Meta
+		// want holds copy each tutorial must contain.
+		navigation, basics []string
+		agent              string
+	}{
+		{
+			os: "darwin", mode: "vim", meta: keymeta.Super,
+			navigation: []string{"`<alt-f>`", "`<alt-shift-d>`"},
+			basics:     []string{"Hold `<meta>` with `h`", "`<shift-meta>` + `h`"},
+			agent:      "`<meta-r>`",
+		},
+		{
+			os: "linux", mode: "vim", meta: keymeta.Super,
+			navigation: []string{"`<meta-f>`", "`<shift-meta-d>`"},
+			basics:     []string{"Hold `<meta>` with `h`", "`<shift-meta>` + `[`"},
+			agent:      "`<meta-r>`",
+		},
+		{
+			os: "linux", mode: "vim", meta: keymeta.Alt,
+			navigation: []string{"`<alt-f>`", "`<alt-shift-d>`"},
+			basics:     []string{"Hold `<alt>` with `h`", "`<alt-shift>` + `[`"},
+			agent:      "`<alt-r>`",
+		},
+		{
+			os: "linux", mode: "helix", meta: keymeta.Alt,
+			navigation: []string{"`<space>s`", "`<ctrl-shift-alt-d>`"},
+			basics:     []string{"Hold `<alt>` with `h`", "`<ctrl-alt>` + `h`"},
+			agent:      "`<alt-r>`",
+		},
+		{
+			os: "linux", mode: "standard", meta: keymeta.Alt,
+			navigation: []string{"`<ctrl-alt-f>`", "`<alt-shift-d>`"},
+			basics:     []string{"hold `<alt>` and press IJKL"},
+			agent:      "`<alt-r>`",
+		},
+		{
+			os: "linux", mode: "emacs", meta: keymeta.CtrlSuper,
+			navigation: []string{"`<ctrl-meta-j>`", "`<ctrl-alt-.>`"},
+			basics: []string{"Hold `<ctrl-meta>` and press P/N/B/F",
+				"`<ctrl-shift-meta>` + P/N/B/F"},
+			agent: "`<ctrl-meta-r>`",
+		},
+		{
+			os: "linux", mode: "emacs", meta: keymeta.AltSuper,
+			navigation: []string{"`<alt-meta-j>`", "`<ctrl-alt-.>`"},
+			basics:     []string{"Hold `<alt-meta>` and press P/N/B/F"},
+			agent:      "`<alt-meta-r>`",
+		},
+	}
+	render := func(t *testing.T, src, show, os, mode string, meta keymeta.Meta) string {
+		t.Helper()
+		tut, err := starlarktutorial.New(
+			"meta-key", withoutTutorialCall(t, src)+`
+def run():
+    wait_command(command = "nonesuch", text = `+show+`)
+tutorial(entry=run)
+`,
+			idetutorial.PromptStyle{}, nil, nil, nil,
+			nil, nil,
+			term.KeyComb{Ch: ':'}, mode, os,
+			nil, nil, nil, nil,
+			starlarktutorial.WithMetaKey(meta),
+		)
+		require.NoError(t, err)
+		tut.Resize(120, 60)
+		tut.Reset()
+		require.True(t, tut.WaitActive("wait_command", time.Second))
+		return tut.ActiveText()
+	}
+	for _, tt := range tests {
+		t.Run(tt.os+"/"+tt.mode+"/"+tt.meta.String(), func(t *testing.T) {
+			t.Parallel()
+			nav := render(t, navigationTutorial,
+				"jump_symbol_md + lsp_definition_name_md", tt.os, tt.mode, tt.meta)
+			for _, want := range tt.navigation {
+				assert.Contains(t, nav, want)
+			}
+			basics := render(t, basicsTutorial, "layout_pattern_md", tt.os, tt.mode, tt.meta)
+			for _, want := range tt.basics {
+				assert.Contains(t, basics, want)
+			}
+			agent := render(t, agentTutorial, "help_md", tt.os, tt.mode, tt.meta)
+			assert.Contains(t, agent, tt.agent+" to open the command prompt in history mode")
 		})
 	}
 }

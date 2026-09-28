@@ -433,6 +433,11 @@ the gate these menus need.
 
 ### Windows and tabs
 
+`<meta>` is Command on macOS. On Linux, first-run setup asks whether it should be
+Super or Alt, and you can change it later with
+[`gui.meta_key`](./key-syntax.md#what-meta-means). With Alt, Helix's own Alt keys
+such as `<alt-c>` still come first.
+
 The helix preset shares the vim preset's layout keys, which work from every
 surface, including a terminal in INSERT mode:
 

@@ -101,6 +101,11 @@ presets. If you choose the vim preset, Rune extends the editor's `hjkl` directio
 window management, tabs, diagnostics, and Git changes. The same layout bindings apply on
 macOS and Linux.
 
+`<meta>` is Command on macOS. On Linux, first-run setup asks whether it should be
+Super or Alt, and you can change it later with
+[`gui.meta_key`](./key-syntax.md#what-meta-means). With Alt, the editor still gets
+its own Alt keys first.
+
 ![Rune Vim editor preset default keybindings](https://assets.rune.build/images/modal-editor-keyboard-cheatsheet-v4.svg)
 
 The tables below provide a copyable reference for the bindings shown in the

@@ -10,6 +10,9 @@
 # Key bindings
 
 In the keys below, `<meta>` is {{.MetaKey}}.
+{{- if .MetaLayer}} Rune's own `<meta>` keys are listed on `{{.MetaLayer}}`, as
+`gui.meta_key` sets.
+{{- end}}
 
 {{- if eq .EditorMode "vim"}}
 

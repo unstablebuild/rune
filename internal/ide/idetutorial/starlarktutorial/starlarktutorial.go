@@ -46,6 +46,7 @@ import (
 
 	"unstable.build/rune/internal/handler/command"
 	"unstable.build/rune/internal/ide/idetutorial"
+	"unstable.build/rune/internal/ide/keymeta"
 	"unstable.build/rune/internal/text"
 )
 
@@ -124,6 +125,10 @@ type Tutorial struct {
 	// the host rather than hardcode a path.
 	configPath string
 
+	// metaKey is what <meta> means in the user's key bindings, which the
+	// DSL's key() applies to the specs it renders.
+	metaKey keymeta.Meta
+
 	// retired names the first DSL feature the source uses that this
 	// Rune no longer implements, or "" when the lesson is supported.
 	retired string
@@ -182,6 +187,12 @@ type Option func(*Tutorial)
 // from, which the DSL exposes as config_path().
 func WithConfigPath(path string) Option {
 	return func(t *Tutorial) { t.configPath = path }
+}
+
+// WithMetaKey sets what <meta> means in the user's key bindings, which
+// the DSL's key() applies. Without it <meta> stays Super.
+func WithMetaKey(meta keymeta.Meta) Option {
+	return func(t *Tutorial) { t.metaKey = meta }
 }
 
 // New parses src as a starlark tutorial DSL program and returns a

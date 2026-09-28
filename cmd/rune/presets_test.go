@@ -27,6 +27,8 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"gopkg.in/yaml.v3"
 	"unstable.build/rune/internal/handler"
+	"unstable.build/rune/internal/ide/idepreset"
+	"unstable.build/rune/internal/ide/keymeta"
 	"unstable.build/rune/internal/ide/starlarkconfig"
 )
 
@@ -74,6 +76,38 @@ func TestPresetCommentedBlocksUncomment(t *testing.T) {
 		}
 		t.Logf("%s: shipped=%d keys, uncommented=%d keys",
 			name, len(shipped), len(full))
+	}
+}
+
+var linuxPresetModes = map[string]string{
+	"preset_modal_linux.yaml":    "vim",
+	"preset_helix_linux.yaml":    "helix",
+	"preset_standard_linux.yaml": "standard",
+	"preset_emacs_linux.yaml":    "emacs",
+}
+
+// TestLinuxPresetsRenderEveryMetaKey renders each Linux preset with every
+// <meta> meaning its editor is offered, whatever the host OS, so the
+// files cannot drift from the prompt's option table.
+func TestLinuxPresetsRenderEveryMetaKey(t *testing.T) {
+	for name, mode := range linuxPresetModes {
+		raw, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, meta := range keymeta.Options("linux", mode) {
+			for _, telemetry := range []bool{true, false} {
+				body, err := idepreset.Render(string(raw),
+					idepreset.Data{Meta: meta, Telemetry: telemetry})
+				if err != nil {
+					t.Errorf("%s with %s: %v", name, meta, err)
+					continue
+				}
+				if !strings.Contains(body, fmt.Sprintf("meta_key: %q", meta.String())) {
+					t.Errorf("%s with %s: meta_key not written", name, meta)
+				}
+			}
+		}
 	}
 }
 
@@ -366,37 +400,6 @@ func TestLinuxPresetsKeepRuneOffAlt(t *testing.T) {
 				continue
 			}
 			t.Errorf("%s binds %s to %q on <alt>", name, key, cmd)
-		}
-	}
-}
-
-// TestLinuxPresetsSurviveAltAsMeta pins that the vim, helix and standard
-// Linux presets stay unambiguous when <meta> is read as Alt: no two
-// commands meet on one chord once every <meta> becomes <alt>. Emacs is
-// exempt because <alt> is its Meta.
-func TestLinuxPresetsSurviveAltAsMeta(t *testing.T) {
-	asAlt := func(c term.KeyComb) term.KeyComb {
-		if c.Mod&term.ModMeta != 0 {
-			c.Mod = c.Mod&^term.ModMeta | term.ModAlt
-		}
-		return c
-	}
-	for _, name := range []string{
-		"preset_modal_linux.yaml", "preset_helix_linux.yaml",
-		"preset_standard_linux.yaml",
-	} {
-		seen := map[handler.Sequence]string{}
-		for key, cmd := range presetKeyBindings(t, name) {
-			if cmd == "" {
-				continue
-			}
-			seq := parseBinding(t, key)
-			seq.First, seq.Last = asAlt(seq.First), asAlt(seq.Last)
-			if prev, ok := seen[seq]; ok && prev != cmd {
-				t.Errorf("%s: with <meta> on Alt, %s runs both %q and %q",
-					name, key, prev, cmd)
-			}
-			seen[seq] = cmd
 		}
 	}
 }

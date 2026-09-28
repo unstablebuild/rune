@@ -34,8 +34,11 @@ every key on this page follows that choice and uses Rune's
 <Platform when="linux">
 
 Editing keys use `<ctrl>`, as in Sublime Text and VS Code for Linux, and every
-Rune command sits on `<meta>` (Super). The editor handles no `<meta>` key, so
-Rune's commands work from any buffer.
+Rune command sits on `<meta>`. The editor handles no `<meta>` key, so Rune's
+commands work from any buffer. First-run setup asks whether `<meta>` should be
+Super or Alt. Change it later with
+[`gui.meta_key`](./key-syntax.md#what-meta-means). With Alt, the editor's own
+Alt keys, such as `<alt-left>`, still come first.
 
 </Platform>
 

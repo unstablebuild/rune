@@ -25,6 +25,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	thandler "unstable.build/rune/internal/handler"
 	"unstable.build/rune/internal/handler/command"
+	"unstable.build/rune/internal/ide/keymeta"
 	"unstable.build/rune/internal/text"
 )
 
@@ -410,7 +411,7 @@ func TestKeyBindingsRender(t *testing.T) {
 			cfg.CommandSequenceBindings = tc.seqs
 			cfg.CommandAliases = tc.aliases
 
-			md, err := renderKeyBindings(cfg, keybindingsTestManuals(), "vim", "darwin")
+			md, err := renderKeyBindings(cfg, keybindingsTestManuals(), "vim", "darwin", keymeta.Super)
 			require.NoError(t, err)
 
 			require.True(t, strings.HasPrefix(md, "# Key bindings"),
@@ -438,7 +439,7 @@ func TestKeyBindingsSectionsOrdered(t *testing.T) {
 	}
 	cfg.CommandSequenceBindings = nil
 
-	md, err := renderKeyBindings(cfg, keybindingsTestManuals(), "vim", "darwin")
+	md, err := renderKeyBindings(cfg, keybindingsTestManuals(), "vim", "darwin", keymeta.Super)
 	require.NoError(t, err)
 
 	lang := strings.Index(md, "## Language intelligence")
@@ -475,7 +476,7 @@ func TestKeyBindingsCodeNavigationSection(t *testing.T) {
 	}
 	cfg.CommandSequenceBindings = nil
 
-	md, err := renderKeyBindings(cfg, keybindingsTestManuals(), "vim", "darwin")
+	md, err := renderKeyBindings(cfg, keybindingsTestManuals(), "vim", "darwin", keymeta.Super)
 	require.NoError(t, err)
 
 	lang := strings.Index(md, "## Language intelligence")
@@ -523,7 +524,7 @@ func TestKeyBindingsEditorModeIntro(t *testing.T) {
 		{"exo", "consult its documentation for in-buffer key bindings"},
 	} {
 		t.Run(tc.mode, func(t *testing.T) {
-			md, err := renderKeyBindings(cfg, keybindingsTestManuals(), tc.mode, "darwin")
+			md, err := renderKeyBindings(cfg, keybindingsTestManuals(), tc.mode, "darwin", keymeta.Super)
 			require.NoError(t, err)
 			assert.Contains(t, md, tc.want)
 		})
@@ -545,7 +546,7 @@ func TestKeyBindingsMetaKeyHint(t *testing.T) {
 		{"linux", "`<meta>` is the Windows or Super key."},
 	} {
 		t.Run(tc.goos, func(t *testing.T) {
-			md, err := renderKeyBindings(cfg, keybindingsTestManuals(), "vim", tc.goos)
+			md, err := renderKeyBindings(cfg, keybindingsTestManuals(), "vim", tc.goos, keymeta.Super)
 			require.NoError(t, err)
 			assert.Contains(t, md, tc.want)
 			hint := strings.Index(md, "`<meta>` is")
@@ -553,6 +554,34 @@ func TestKeyBindingsMetaKeyHint(t *testing.T) {
 			require.GreaterOrEqual(t, hint, 0)
 			require.GreaterOrEqual(t, intro, 0)
 			assert.Less(t, hint, intro, "the meta hint renders at the very top")
+		})
+	}
+}
+
+// TestKeyBindingsMetaLayerHint pins that the header says where Rune's
+// <meta> keys are listed once gui.meta_key moves them.
+func TestKeyBindingsMetaLayerHint(t *testing.T) {
+	cfg := text.DefaultConfig()
+	cfg.CommandKeyBindings = nil
+	cfg.CommandSequenceBindings = nil
+
+	for _, tc := range []struct {
+		meta keymeta.Meta
+		want string
+	}{
+		{keymeta.Super, ""},
+		{keymeta.Alt, "Rune's own `<meta>` keys are listed on `<alt>`"},
+		{keymeta.CtrlSuper, "Rune's own `<meta>` keys are listed on `<ctrl-meta>`"},
+		{keymeta.AltSuper, "Rune's own `<meta>` keys are listed on `<alt-meta>`"},
+	} {
+		t.Run(tc.meta.String(), func(t *testing.T) {
+			md, err := renderKeyBindings(cfg, keybindingsTestManuals(), "vim", "linux", tc.meta)
+			require.NoError(t, err)
+			if tc.want == "" {
+				assert.NotContains(t, md, "Rune's own `<meta>` keys")
+				return
+			}
+			assert.Contains(t, md, tc.want)
 		})
 	}
 }
@@ -570,7 +599,7 @@ func TestKeyBindingsMacrosSection(t *testing.T) {
 		withOther.CommandKeyBindings = map[term.KeyComb][][]string{
 			{Ch: 'q', Mod: term.ModMeta}: {{"quit"}},
 		}
-		md, err := renderKeyBindings(withOther, keybindingsTestManuals(), "vim", "darwin")
+		md, err := renderKeyBindings(withOther, keybindingsTestManuals(), "vim", "darwin", keymeta.Super)
 		require.NoError(t, err)
 		assertKeyBindingListIntegrity(t, md)
 		assert.Contains(t, md, "## Macros")
@@ -588,7 +617,7 @@ func TestKeyBindingsMacrosSection(t *testing.T) {
 	})
 
 	t.Run("standard", func(t *testing.T) {
-		md, err := renderKeyBindings(cfg, keybindingsTestManuals(), "standard", "darwin")
+		md, err := renderKeyBindings(cfg, keybindingsTestManuals(), "standard", "darwin", keymeta.Super)
 		require.NoError(t, err)
 		assertKeyBindingListIntegrity(t, md)
 		assert.Contains(t, md, "## Macros")
@@ -598,7 +627,7 @@ func TestKeyBindingsMacrosSection(t *testing.T) {
 	})
 
 	t.Run("exo", func(t *testing.T) {
-		md, err := renderKeyBindings(cfg, keybindingsTestManuals(), "exo", "darwin")
+		md, err := renderKeyBindings(cfg, keybindingsTestManuals(), "exo", "darwin", keymeta.Super)
 		require.NoError(t, err)
 		assert.NotContains(t, md, "## Macros")
 	})
@@ -611,7 +640,7 @@ func TestKeyBindingsEmptyConfig(t *testing.T) {
 	cfg.CommandKeyBindings = nil
 	cfg.CommandSequenceBindings = nil
 
-	md, err := renderKeyBindings(cfg, keybindingsTestManuals(), "vim", "darwin")
+	md, err := renderKeyBindings(cfg, keybindingsTestManuals(), "vim", "darwin", keymeta.Super)
 	require.NoError(t, err)
 
 	assert.True(t, strings.HasPrefix(md, "# Key bindings"),
@@ -629,10 +658,10 @@ func TestKeyBindingsDeterministic(t *testing.T) {
 	cfg.CommandKeyBindings[term.KeyComb{Ch: 'n', Mod: term.ModMeta}] = [][]string{{"windownew"}}
 	cfg.CommandSequenceBindings = markJumpSequences()
 
-	first, err := renderKeyBindings(cfg, keybindingsTestManuals(), "vim", "darwin")
+	first, err := renderKeyBindings(cfg, keybindingsTestManuals(), "vim", "darwin", keymeta.Super)
 	require.NoError(t, err)
 	for range 5 {
-		got, err := renderKeyBindings(cfg, keybindingsTestManuals(), "vim", "darwin")
+		got, err := renderKeyBindings(cfg, keybindingsTestManuals(), "vim", "darwin", keymeta.Super)
 		require.NoError(t, err)
 		assert.Equal(t, first, got)
 	}

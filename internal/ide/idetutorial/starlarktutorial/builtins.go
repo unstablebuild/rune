@@ -20,11 +20,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"go.starlark.net/starlark"
 
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"github.com/unstablebuild/rune-go-sdk/term"
 )
 
 // builtins returns the predeclared globals exposed to a tutorial
@@ -39,6 +41,7 @@ func builtins(t *Tutorial) starlark.StringDict {
 		"os":             starlark.NewBuiltin("os", builtinOS(t)),
 		"config_path":    starlark.NewBuiltin("config_path", builtinConfigPath(t)),
 		"key_for":        starlark.NewBuiltin("key_for", builtinKeyFor(t)),
+		"key":            starlark.NewBuiltin("key", builtinKey(t)),
 		"command_exists": starlark.NewBuiltin("command_exists", builtinCommandExists(t)),
 		"workspace_open": starlark.NewBuiltin("workspace_open", builtinWorkspaceOpen(t)),
 		"is_lsp_server_running": starlark.NewBuiltin(
@@ -563,6 +566,32 @@ func builtinKeyFor(t *Tutorial) func(*starlark.Thread, *starlark.Builtin,
 			return starlark.String(""), nil
 		}
 		return starlark.String(t.keyForCommand(cmd, cmdArgs)), nil
+	}
+}
+
+// builtinKey implements key(spec): it renders a key spec written with
+// <meta>, such as "<shift-meta-d>" or the modifiers alone as in
+// "<ctrl-meta>", on the keys the user's <meta> stands for, prettified
+// for copy. A spec that does not parse is an error.
+func builtinKey(t *Tutorial) func(*starlark.Thread, *starlark.Builtin,
+	starlark.Tuple, []starlark.Tuple,
+) (starlark.Value, error) {
+	return func(_ *starlark.Thread, b *starlark.Builtin,
+		args starlark.Tuple, kwargs []starlark.Tuple,
+	) (starlark.Value, error) {
+		var spec starlark.String
+		if err := starlark.UnpackPositionalArgs(b.Name(), args, kwargs, 1, &spec); err != nil {
+			return nil, err
+		}
+		keys, err := term.ParseKeys(string(spec))
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", b.Name(), err)
+		}
+		var out strings.Builder
+		for _, k := range keys {
+			out.WriteString(PrettyKeySpec(t.metaKey.Apply(k).String()))
+		}
+		return starlark.String(out.String()), nil
 	}
 }
 

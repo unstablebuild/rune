@@ -10,6 +10,10 @@
 # ---------------------------------------------------------------------------
 gui:
   default_theme: romero
+  # The physical key <meta> means in Rune's key bindings. Editors still
+  # receive the key itself. Linux emacs: <super>, <ctrl-super> or
+  # <alt-super>, since <alt> is Emacs's own Meta.
+  meta_key: "[[.Meta]]"
 #   font_size: 13
 #   window_opacity: {fg: 1, bg: 1}
 #   window_blur_radius: 100

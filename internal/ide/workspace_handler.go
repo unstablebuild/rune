@@ -527,6 +527,7 @@ func (h *workspaceManagerHandler) newPromptEditor(
 			scheduleNextTick: cfg.scheduleNextTick,
 			clipboard:        h.clip,
 			autoPair:         cfg.editorAutoPair(),
+			goos:             cfg.hostOS(),
 		}
 	case editorModeEmacs:
 		return emacsPromptEditor{
@@ -563,11 +564,13 @@ type standardPromptEditor struct {
 	scheduleNextTick func(func()) bool
 	clipboard        clipboard.Register
 	autoPair         bool
+	// goos picks the keymap, as the buffer editor's default does.
+	goos string
 }
 
 func (m standardPromptEditor) Edit(buf *cell.Buffer) command.EditHandler {
 	uri := workspaceapi.RandomURI("memory")
-	return standard.NewHandler(buf, uri, text.IndentRuneTab, m.tabspaces,
+	opts := []standard.Option{
 		standard.WithCommandBar(false),
 		standard.WithTabspaces(m.tabspaces),
 		standard.WithIndents(m.indents),
@@ -575,7 +578,13 @@ func (m standardPromptEditor) Edit(buf *cell.Buffer) command.EditHandler {
 		standard.WithClipboard(m.clipboard),
 		standard.WithAutoPair(m.autoPair),
 		standard.WithWrap(false),
-	)
+	}
+	keymap := standard.KeymapLinux
+	if m.goos == "darwin" {
+		keymap = standard.KeymapMacOS
+	}
+	return standard.NewHandler(buf, uri, text.IndentRuneTab, m.tabspaces,
+		append(opts, standard.WithKeymap(keymap))...)
 }
 
 type emacsPromptEditor struct {
@@ -768,6 +777,7 @@ func (h *workspaceManagerHandler) init(
 		cfg.commandPromptCfg(),
 		modalEditorMode(cfg.pkgEditorMode()),
 		cfg.editorMode(),
+		cfg.metaKey(),
 		cfg.editorAutoSave(),
 		cfg.consoleCfg(),
 		globalOpts...)
@@ -1932,6 +1942,7 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 		cfg.commandPromptCfg(),
 		modalEditorMode(cfg.pkgEditorMode()),
 		cfg.editorMode(),
+		cfg.metaKey(),
 		cfg.editorAutoSave(),
 		cfg.consoleCfg(),
 		textOpts...)
