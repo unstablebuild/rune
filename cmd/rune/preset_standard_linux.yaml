@@ -22,15 +22,12 @@ gui:
 # ---------------------------------------------------------------------------
 # Editor
 #
-# `aux_bar` is the strip left of each editor pane and `status_bar` the bar at
-# the bottom of each pane.
+# `aux_bar` is the strip left of each buffer, `status_bar` the bar at the
+# bottom of each buffer, and `standard.search` the find and replace box.
 # ---------------------------------------------------------------------------
 editor:
   mode: standard
   auto_pair: true
-  standard:
-    attr: {fg: default, bg: default}
-    search_attr: {fg: grey, bg: yellow}
   # The :fexplorer tree is an editable buffer: renaming a line renames
   # the file. It starts read-only here; <shift-esc> unlocks it for the
   # rest of the visit.
@@ -56,12 +53,33 @@ editor:
 #     layout: ' {{ .Status | bg "red" | fg "white" | bold }} █▓▒░  {{ .Filepath | fg "white" }}  {{ .GitShortRef | fg "white" }}   {{ .GitDiffAdd | fg "green" }}   {{ .GitDiffDel | fg "red" }} {{ .ShiftRight }} {{ .CursorColumn | fg "white" }}:{{ .CursorLine | fg "white" }}  {{ .TotalLines | fg "white" }} lines  ░▒▓█ {{ .Language | bold | fg "white" | bg "red" }} '
 #     background_attr:       {bg: gray}
 #     foreground_error_attr: {fg: yellow}
+  standard:
+#     attr:        {fg: default, bg: default}   # buffer text
+#     search_attr: {fg: grey, bg: yellow}       # search matches
+    search:
+      # Find and replace follow the editor's own <ctrl> layer on Linux;
+      # <meta> is left to Rune.
+      find_key:    "<ctrl-f>"
+      replace_key: "<ctrl-r>"
+#       attr:               {fg: default, bg: default}
+#       input_attr:         {fg: default, bg: default}
+#       placeholder_attr:   {fg: gray, bg: default}
+#       frame_attr:         {fg: gray, bg: default}
+#       focus_frame_attr:   {fg: silver, bg: default}
+#       button_attr:        {fg: default, bg: gray}
+#       button_hover_attr:  {fg: default, bg: blue}
+#       match_attr:         {fg: grey, bg: yellow}
+#       current_match_attr: {fg: default, bg: default}
+#       status_attr:        {fg: default, bg: default}
 
 # ---------------------------------------------------------------------------
 # Terminal
 # ---------------------------------------------------------------------------
 terminal:
   modal: false
+  # <ctrl-f> belongs to the shell; scrollback search sits on Rune's layer.
+  search:
+    find_key: "<meta-f>"
 #   max_lines:         1000
 #   initial_reservoir: 0           # set to non-zero to speed up terminal initialization
 #   plugin:
@@ -86,8 +104,8 @@ terminal:
 # key_binding value to "" to unbind a built-in.
 # ---------------------------------------------------------------------------
 command:
-  key: <ctrl-shift-p>
-  history_key: <ctrl-r>
+  key: "<meta-;>"
+  history_key: "<shift-meta-;>"
 #   max_history: 20000
 #   aliases:
 #     # Simple alias: `:w` runs `:write`.
@@ -100,108 +118,55 @@ command:
 #       completer: '! git -C $WORKSPACE_PATH branch --format="%(refname:short)"'
 #     conf: config
   key_bindings:
-    "<ctrl-s>": write
-    "<meta-q>": quit
-    "<ctrl-shift-s>": writeall
-    "<ctrl-o>": searchfile
-    "<ctrl-,>": config
-    "<ctrl-n>": tabnew
-    "<ctrl-shift-f>": searchtext
-    "<meta-f2>": "locationtoggle bookmark"
+    # Rune's own commands live on one <meta> layer (Super on Linux), clear of
+    # the editor and the terminal. <ctrl> belongs to the editor and the terminal.
+    "<meta-s>": "write"
+    "<shift-meta-s>": "writeall"
+    "<meta-o>": "searchfile"
+    "<shift-meta-o>": "fexplorer"
+    "<shift-meta-;>": "history"
+    "<meta-/>": "cheatsheet"
+    "<ctrl-meta-q>": "quit"
+    "<meta-=>": "guifontsize increase"
+    "<meta-->": "guifontsize decrease"
     "<f2>": "jumptolocation next bookmark"
     "<shift-f2>": "jumptolocation previous bookmark"
-    "<alt-f2>": "locationhighlight bookmark"
+    "<meta-f2>": "locationtoggle bookmark"
     "<shift-meta-f2>": "locationdeleteall bookmark"
     "<f3>": "jumptolocation next search"
     "<shift-f3>": "jumptolocation prev search"
-    "<alt-c>": "lsp declaration"
-    "<alt-y>": "lsp type-definition"
-    "<alt-shift-y>": "echo {prompt}lsp<space>type-definition<space>"
-    "<alt-shift-c>": "echo {prompt}lsp<space>declaration<space>"
-    "<alt-g>": "lsp signature-help"
-    "<alt-.>": "cursorhistory next"
-    "<alt-,>": "cursorhistory prev"
-    # IJKL points up, left, down, right. <alt> focuses a window;
-    # add <shift> to move it and <meta> to resize it.
-    "<alt-i>": "windowfocus up"
-    "<alt-j>": "windowfocus left"
-    "<alt-k>": "windowfocus down"
-    "<alt-l>": "windowfocus right"
-    "<alt-shift-i>": "windowmove up"
-    "<alt-shift-j>": "windowmove left"
-    "<alt-shift-k>": "windowmove down"
-    "<alt-shift-l>": "windowmove right"
-    "<alt-meta-i>": "windowresize increase height"
-    "<alt-meta-j>": "windowresize decrease width"
-    "<alt-meta-k>": "windowresize decrease height"
-    "<alt-meta-l>": "windowresize increase width"
-    # Create and close windows on the same <alt> layer.
-    "<alt-n>": windownew
-    "<alt-enter>": terminalneworsplit
-    "<alt-q>": windowclose
-    "<alt-shift-q>": windowcloseall
-    "<alt-m>": windowtogglemaximize
-    "<alt-shift-enter>": "echo {prompt}windowconverttab<space>"
-    "<alt-w>": tabclose
-    # Brackets switch tabs; add <shift> to reorder them.
-    "<alt-[>": tabprevious
-    "<alt-]>": tabnext
-    "<alt-shift-[>": "tabmove left"
-    "<alt-shift-]>": "tabmove right"
-    "<alt-h>": "windowdefaultsplit h"
-    "<alt-v>": "windowdefaultsplit v"
-    # Ctrl-Meta reuses the IJKL cluster to step through occurrences:
-    # I/K visits Git changes, J/L visits diagnostics.
-    "<ctrl-meta-i>": gitprevchange
-    "<ctrl-meta-k>": gitnextchange
-    "<ctrl-meta-j>": lspprevdiagnostic
-    "<ctrl-meta-l>": lspnextdiagnostic
-    "<alt-t>": "lsp hover"
-    "<alt-shift-t>": "echo {prompt}lsp<space>hover<space>"
-    "<alt-p>": "lsp implementation"
-    "<alt-shift-p>": "echo {prompt}lsp<space>implementation<space>"
-    "<alt-x>": "echo {prompt}jumptoast<space>locals.scm<space>local.definition.var<space>"
-    "<shift-meta-r>": history
-    # Bindings shared with the other presets.
-    "<ctrl-shift-e>": "fexplorer"
-    "<meta-,>": "config"
-    "<alt-/>": "cheatsheet"
-    "<meta-=>": "guifontsize increase"
-    "<meta-->": "guifontsize decrease"
-    "<alt-`>": "tabsearch"
+    # IJKL points up, left, down, right. <meta> focuses a window, <shift>
+    # moves it.
+    "<meta-i>": "windowfocus up"
+    "<meta-j>": "windowfocus left"
+    "<meta-k>": "windowfocus down"
+    "<meta-l>": "windowfocus right"
+    "<shift-meta-i>": "windowmove up"
+    "<shift-meta-j>": "windowmove left"
+    "<shift-meta-k>": "windowmove down"
+    "<shift-meta-l>": "windowmove right"
+    "<meta-n>": "windownew"
+    "<meta-q>": "windowclose"
+    "<shift-meta-q>": "windowcloseall"
+    "<meta-m>": "windowtogglemaximize"
+    "<meta-h>": "windowdefaultsplit h"
+    "<meta-v>": "windowdefaultsplit v"
     "<shift-meta-backspace>": "windowresize reset"
     "<shift-meta-+>": ["windowresize max width", "windowresize max height"]
     "<shift-meta-->": ["windowresize min width", "windowresize min height"]
-    "<alt-f>": "echo {prompt}jumptoast<space>locals.scm<space>local.definition.method|local.definition.function<space>"
-    "<alt-s>": "echo {prompt}jumptoast<space>locals.scm<space>local.definition.type<space>"
-    "<alt-e>": "lsp diagnostics"
-    "<alt-r>": "lsp references"
-    "<alt-shift-r>": "echo {prompt}lsp<space>references<space>"
-    "<alt-d>": "lsp definition"
-    "<alt-shift-d>": "echo {prompt}lsp<space>definition<space>"
-    "<alt-b>": "lsp format"
-    "<ctrl-space>": "lsp complete"
     "<meta-enter>": "terminalneworsplit"
     "<shift-meta-enter>": "!"
+    # Tabs: brackets step through them, <shift> reorders.
+    "<shift-meta-n>": "tabnew"
+    "<meta-w>": "tabclose"
+    "<meta-[>": "tabprevious"
+    "<meta-]>": "tabnext"
+    "<shift-meta-[>": "tabmove left"
+    "<shift-meta-]>": "tabmove right"
+    "<ctrl-meta-enter>": "echo {prompt}windowconverttab<space>"
+    "<shift-meta-`>": "tabsearch"
+    # Workspaces: digits focus, <shift> moves.
     "<meta-`>": "workspacesearch"
-    "<alt-1>": "tabfocus 1"
-    "<alt-2>": "tabfocus 2"
-    "<alt-3>": "tabfocus 3"
-    "<alt-4>": "tabfocus 4"
-    "<alt-5>": "tabfocus 5"
-    "<alt-6>": "tabfocus 6"
-    "<alt-7>": "tabfocus 7"
-    "<alt-8>": "tabfocus 8"
-    "<alt-9>": "tabfocus 9"
-    "<alt-shift-1>": "tabmove 1"
-    "<alt-shift-2>": "tabmove 2"
-    "<alt-shift-3>": "tabmove 3"
-    "<alt-shift-4>": "tabmove 4"
-    "<alt-shift-5>": "tabmove 5"
-    "<alt-shift-6>": "tabmove 6"
-    "<alt-shift-7>": "tabmove 7"
-    "<alt-shift-8>": "tabmove 8"
-    "<alt-shift-9>": "tabmove 9"
     "<meta-1>": "workspacefocus 1"
     "<meta-2>": "workspacefocus 2"
     "<meta-3>": "workspacefocus 3"
@@ -220,9 +185,49 @@ command:
     "<shift-meta-7>": "workspacemove 7"
     "<shift-meta-8>": "workspacemove 8"
     "<shift-meta-9>": "workspacemove 9"
+    # Code: <meta> asks about the caret, <shift> prompts for a name. Period
+    # and comma step forward and back through diagnostics, and with <shift>
+    # through Git changes; U steps back and forward through cursor history.
+    "<meta-t>": "lsp hover"
+    "<shift-meta-t>": "echo {prompt}lsp<space>hover<space>"
+    "<meta-r>": "lsp references"
+    "<shift-meta-r>": "echo {prompt}lsp<space>references<space>"
+    "<meta-d>": "lsp definition"
+    "<shift-meta-d>": "echo {prompt}lsp<space>definition<space>"
+    # Spelled as fuzzy_search spells its searchfile chord so this wins.
+    "<m-p>": "lsp implementation"
+    "<shift-meta-p>": "echo {prompt}lsp<space>implementation<space>"
+    "<meta-c>": "lsp declaration"
+    "<shift-meta-c>": "echo {prompt}lsp<space>declaration<space>"
+    "<meta-y>": "lsp type-definition"
+    "<shift-meta-y>": "echo {prompt}lsp<space>type-definition<space>"
+    "<meta-g>": "lsp signature-help"
+    "<meta-e>": "lsp diagnostics"
+    "<meta-b>": "lsp format"
+    "<ctrl-space>": "lsp complete"
+    "<meta-.>": "lspnextdiagnostic"
+    "<meta-,>": "lspprevdiagnostic"
+    "<shift-meta-.>": "gitnextchange"
+    "<shift-meta-,>": "gitprevchange"
+    "<meta-u>": "cursorhistory prev"
+    "<shift-meta-u>": "cursorhistory next"
+    "<ctrl-meta-f>": "echo {prompt}jumptoast<space>locals.scm<space>local.definition.method|local.definition.function<space>"
+    "<ctrl-meta-s>": "echo {prompt}jumptoast<space>locals.scm<space>local.definition.type<space>"
+    "<ctrl-meta-x>": "echo {prompt}jumptoast<space>locals.scm<space>local.definition.var<space>"
+    # The fuzzy_search package binds its symbol pickers on <alt-shift>;
+    # free that layer for the editor and the terminal. Package installs
+    # match keys by spelling, so these repeat the package's own spelling.
+    "<a-s-f>": ""
+    "<a-s-v>": ""
+    "<a-s-s>": ""
+    "<s-m-f>": ""
 
 # ---------------------------------------------------------------------------
-# Animations between workspaces
+# Animations
+#
+# `active_content_tab` plays over tabs with work in progress, such as an agent
+# turn, and `active_workspace_tab` over the workspace tabs that own them. Their
+# shaders: blaze, burn, inferno, noise, pulse, shine, trippy.
 # ---------------------------------------------------------------------------
 # animations:
 #   loading_workspace: true
@@ -230,13 +235,16 @@ command:
 #     enabled:  true
 #     # shader:   burn
 #     # duration: 1s
-
-# ---------------------------------------------------------------------------
-# Self-upgrade
-# ---------------------------------------------------------------------------
-# upgrade:
-#   auto_check_enabled: true
-#   check_period:       24h
+#   active_content_tab:
+#     enabled: true
+#     shader:  inferno
+#     fps:     10
+#     loop:    1400ms
+#   active_workspace_tab:
+#     enabled: true
+#     shader:  inferno
+#     fps:     10
+#     loop:    1400ms
 
 # ---------------------------------------------------------------------------
 # Notifications

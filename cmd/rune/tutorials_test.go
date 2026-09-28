@@ -18,6 +18,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"regexp"
 	"slices"
 	"strings"
@@ -589,27 +590,50 @@ func TestBasicsTutorialHasNoHardcodedCommandKeys(t *testing.T) {
 func TestBasicsTutorialHelixKeysMatchPreset(t *testing.T) {
 	t.Parallel()
 
-	layout := map[string]string{
-		`"<meta-h>"`:       `"windowfocus left"`,
-		`"<meta-j>"`:       `"windowfocus down"`,
-		`"<meta-k>"`:       `"windowfocus up"`,
-		`"<meta-l>"`:       `"windowfocus right"`,
-		`"<alt-h>"`:        `"tabprevious"`,
-		`"<alt-l>"`:        `"tabnext"`,
+	focus := map[string]string{
+		`"<meta-h>"`: `"windowfocus left"`,
+		`"<meta-j>"`: `"windowfocus down"`,
+		`"<meta-k>"`: `"windowfocus up"`,
+		`"<meta-l>"`: `"windowfocus right"`,
+	}
+	shiftMove := map[string]string{
 		`"<shift-meta-h>"`: `"windowmove left"`,
 		`"<shift-meta-j>"`: `"windowmove down"`,
 		`"<shift-meta-k>"`: `"windowmove up"`,
 		`"<shift-meta-l>"`: `"windowmove right"`,
-		`"<alt-shift-h>"`:  `"tabmove left"`,
-		`"<alt-shift-l>"`:  `"tabmove right"`,
 	}
-	for preset, body := range map[string]string{
-		"vim": presetModalYAML, "helix": presetHelixYAML,
+	darwinTabs := map[string]string{
+		`"<alt-h>"`:       `"tabprevious"`,
+		`"<alt-l>"`:       `"tabnext"`,
+		`"<alt-shift-h>"`: `"tabmove left"`,
+		`"<alt-shift-l>"`: `"tabmove right"`,
+	}
+	linuxTabs := map[string]string{
+		`"<meta-[>"`:       `"tabprevious"`,
+		`"<meta-]>"`:       `"tabnext"`,
+		`"<shift-meta-[>"`: `"tabmove left"`,
+		`"<shift-meta-]>"`: `"tabmove right"`,
+	}
+	linuxHelixMove := map[string]string{
+		`"<ctrl-meta-h>"`: `"windowmove left"`,
+		`"<ctrl-meta-j>"`: `"windowmove down"`,
+		`"<ctrl-meta-k>"`: `"windowmove up"`,
+		`"<ctrl-meta-l>"`: `"windowmove right"`,
+	}
+	for file, layouts := range map[string][]map[string]string{
+		"preset_modal_darwin.yaml": {focus, shiftMove, darwinTabs},
+		"preset_helix_darwin.yaml": {focus, shiftMove, darwinTabs},
+		"preset_modal_linux.yaml":  {focus, shiftMove, linuxTabs},
+		"preset_helix_linux.yaml":  {focus, linuxHelixMove, linuxTabs},
 	} {
-		for key, command := range layout {
-			assert.Containsf(t, body, key+": "+command,
-				"the %s preset must bind %s to %s as the tutorial teaches",
-				preset, key, command)
+		raw, err := os.ReadFile(file)
+		require.NoError(t, err)
+		for _, layout := range layouts {
+			for key, command := range layout {
+				assert.Containsf(t, string(raw), key+": "+command,
+					"%s must bind %s to %s as the tutorial teaches",
+					file, key, command)
+			}
 		}
 	}
 	assert.Contains(t, presetHelixYAML, `"<space>e": fexplorer`)
@@ -624,34 +648,36 @@ func TestBasicsTutorialHelixKeysMatchPreset(t *testing.T) {
 		{mode: "emacs", want: false},
 	}
 	for _, tt := range tests {
-		t.Run(tt.mode, func(t *testing.T) {
-			t.Parallel()
-			src := withoutTutorialCall(t, basicsTutorial) + `
+		for _, goos := range []string{"darwin", "linux"} {
+			t.Run(goos+"/"+tt.mode, func(t *testing.T) {
+				t.Parallel()
+				src := withoutTutorialCall(t, basicsTutorial) + `
 def run():
     wait_event(event = "open", text = layout_pattern_md + tabs_intro_md)
 tutorial(entry=run)
 `
-			tut, err := starlarktutorial.New(
-				"basics-helix-keys", src,
-				idetutorial.PromptStyle{}, nil, nil, nil,
-				nil, nil,
-				term.KeyComb{Ch: ':'}, tt.mode, "",
-				nil, nil, nil, nil,
-			)
-			require.NoError(t, err)
-			tut.Resize(80, 24)
-			tut.Reset()
-			t.Cleanup(tut.Stop)
-			require.True(t, tut.WaitActive("wait_event", time.Second))
+				tut, err := starlarktutorial.New(
+					"basics-helix-keys", src,
+					idetutorial.PromptStyle{}, nil, nil, nil,
+					nil, nil,
+					term.KeyComb{Ch: ':'}, tt.mode, goos,
+					nil, nil, nil, nil,
+				)
+				require.NoError(t, err)
+				tut.Resize(80, 24)
+				tut.Reset()
+				t.Cleanup(tut.Stop)
+				require.True(t, tut.WaitActive("wait_event", time.Second))
 
-			text := tut.ActiveText()
-			if tt.want {
-				assert.Contains(t, text, "<space>e")
-				return
-			}
-			assert.NotContains(t, text, "<space>e",
-				"only the helix preset binds Helix's leader menu")
-		})
+				text := tut.ActiveText()
+				if tt.want {
+					assert.Contains(t, text, "<space>e")
+					return
+				}
+				assert.NotContains(t, text, "<space>e",
+					"only the helix preset binds Helix's leader menu")
+			})
+		}
 	}
 }
 
@@ -1438,42 +1464,78 @@ func TestNavigationTutorialPrefillKeysMatchPresets(t *testing.T) {
 		defPrefill = `": "echo {prompt}lsp<space>definition<space>"`
 	)
 	tests := []struct {
+		os      string
 		mode    string
 		jumpKey string
 		defKey  string
 		preset  string
 	}{
 		{
+			os:      "darwin",
 			mode:    "emacs",
 			jumpKey: "<meta-j>",
 			defKey:  "<ctrl-alt-.>",
-			preset:  presetEmacsYAML,
+			preset:  "preset_emacs_darwin.yaml",
 		},
 		{
+			os:      "darwin",
 			mode:    "vim",
 			jumpKey: "<alt-f>",
 			defKey:  "<alt-shift-d>",
-			preset:  presetModalYAML,
+			preset:  "preset_modal_darwin.yaml",
 		},
 		{
+			os:      "darwin",
 			mode:    "standard",
 			jumpKey: "<alt-f>",
 			defKey:  "<alt-shift-d>",
-			preset:  presetStandardYAML,
+			preset:  "preset_standard_darwin.yaml",
 		},
 		{
+			os:      "darwin",
 			mode:    "helix",
 			jumpKey: "<space>s",
 			defKey:  "<shift-meta-d>",
-			preset:  presetHelixYAML,
+			preset:  "preset_helix_darwin.yaml",
+		},
+		{
+			os:      "linux",
+			mode:    "emacs",
+			jumpKey: "<meta-j>",
+			defKey:  "<ctrl-alt-.>",
+			preset:  "preset_emacs_linux.yaml",
+		},
+		{
+			os:      "linux",
+			mode:    "vim",
+			jumpKey: "<meta-f>",
+			defKey:  "<shift-meta-d>",
+			preset:  "preset_modal_linux.yaml",
+		},
+		{
+			os:      "linux",
+			mode:    "standard",
+			jumpKey: "<ctrl-meta-f>",
+			defKey:  "<shift-meta-d>",
+			preset:  "preset_standard_linux.yaml",
+		},
+		{
+			os:      "linux",
+			mode:    "helix",
+			jumpKey: "<space>s",
+			defKey:  "<ctrl-shift-meta-d>",
+			preset:  "preset_helix_linux.yaml",
 		},
 	}
 	for _, tt := range tests {
-		t.Run(tt.mode, func(t *testing.T) {
+		t.Run(tt.os+"/"+tt.mode, func(t *testing.T) {
 			t.Parallel()
-			assert.Contains(t, tt.preset, `"`+tt.jumpKey+jumpPrefill,
+			raw, err := os.ReadFile(tt.preset)
+			require.NoError(t, err)
+			preset := string(raw)
+			assert.Contains(t, preset, `"`+tt.jumpKey+jumpPrefill,
 				"the preset must bind the chord the tutorial teaches")
-			assert.Contains(t, tt.preset, `"`+tt.defKey+defPrefill,
+			assert.Contains(t, preset, `"`+tt.defKey+defPrefill,
 				"the preset must bind the chord the tutorial teaches")
 
 			src := `
@@ -1486,7 +1548,7 @@ tutorial(entry=run)
 				"navigation-prefill-keys", modeSrc,
 				idetutorial.PromptStyle{}, nil, nil, nil,
 				nil, nil,
-				term.KeyComb{Ch: ':'}, tt.mode, "",
+				term.KeyComb{Ch: ':'}, tt.mode, tt.os,
 				nil, nil, nil, nil,
 			)
 			require.NoError(t, err)

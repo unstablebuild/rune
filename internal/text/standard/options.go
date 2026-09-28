@@ -17,6 +17,8 @@
 package standard
 
 import (
+	"runtime"
+
 	"github.com/sirupsen/logrus"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
@@ -56,6 +58,29 @@ type standardConfig struct {
 	statusBarConfig    text.StatusBarConfig
 	statusBarEnabled   bool
 	scheduleNextTick   func(fn func()) bool
+	keymap             Keymap
+}
+
+// Keymap selects the platform convention the standard editor's built-in
+// chords follow.
+type Keymap int
+
+const (
+	// KeymapMacOS puts editing chords on <meta> (Command), with <ctrl>
+	// twins for the common ones.
+	KeymapMacOS Keymap = iota
+	// KeymapLinux puts editing chords on <ctrl>, with <ctrl-k> as the chord
+	// prefix, and handles no <meta> chord so all of them reach Rune's
+	// command layer.
+	KeymapLinux
+)
+
+// hostKeymap is the keymap for the operating system Rune runs on.
+func hostKeymap() Keymap {
+	if runtime.GOOS == "darwin" {
+		return KeymapMacOS
+	}
+	return KeymapLinux
 }
 
 // SearchWindowManager manages the floating window used by standard search.
@@ -124,11 +149,20 @@ func defaultConfig() standardConfig {
 		},
 		notifications:     nopNotifications{},
 		cursorCorrections: true,
+		keymap:            hostKeymap(),
 	}
 }
 
 // Option represents a Editor configuration option.
 type Option func(*standardConfig)
+
+// WithKeymap selects the keymap. Without it, the handler follows the
+// operating system Rune runs on.
+func WithKeymap(keymap Keymap) Option {
+	return func(cfg *standardConfig) {
+		cfg.keymap = keymap
+	}
+}
 
 // WithSearchConfig configures floating standard-editor search.
 func WithSearchConfig(search SearchConfig) Option {

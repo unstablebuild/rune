@@ -148,6 +148,27 @@ resize_key_row = " | ".join([
 # Use the rightward one so every mode ends up with the same layout.
 split_window_args = ["right"] if mode == "emacs" else []
 
+# The Linux presets keep Rune's layer on `<meta>` so users can pick which
+# physical key acts as it; macOS puts tabs on `<alt>` beside the `<meta>`
+# window keys. Helix moves windows with `<ctrl-meta>` on Linux because
+# `<shift-meta>` + HJKL would collide with Helix's own `<alt>` chords when
+# `<meta>` is Alt.
+if os() == "linux":
+    tab_focus_md = "- Hold `<meta>` with `[` or `]` to focus the previous or next tab.\n"
+    tab_move_md = "  - `<shift-meta>` + `[` or `]` moves the current tab left or right in the tab list.\n"
+    helix_move_md = """\
+- Add `<ctrl>` to move the content instead of focus it:
+  - `<ctrl-meta>` + `h` `j` `k` `l` moves the focused window's content.
+- Add `<shift>` to move a tab instead of focus it:
+"""
+else:
+    tab_focus_md = "- Hold `<alt>` with `h` or `l` to focus the previous or next tab.\n"
+    tab_move_md = "  - `<shift-alt>` + `h` or `l` moves the current tab left or right in the tab list.\n"
+    helix_move_md = """\
+- Add `<shift>` to move the content instead of focus it:
+  - `<shift-meta>` + `h` `j` `k` `l` moves the focused window's content.
+"""
+
 if mode == "vim":
     layout_pattern_md = """\
 ## HJKL controls the layout
@@ -160,11 +181,10 @@ Rune carries that same HJKL language into layout management: `H` points left,
 `J` down, `K` up, and `L` right.
 
 - Hold `<meta>` with `h` `j` `k` `l` to focus a window in that direction.
-- Hold `<alt>` with `h` or `l` to focus the previous or next tab.
+""" + tab_focus_md + """\
 - Add `<shift>` to move the content instead of focus it:
   - `<shift-meta>` + `h` `j` `k` `l` moves the focused window's content.
-  - `<shift-alt>` + `h` or `l` moves the current tab left or right in the tab list.
-"""
+""" + tab_move_md
 elif mode == "helix":
     layout_pattern_md = """\
 ## HJKL controls the layout
@@ -177,11 +197,7 @@ Rune carries that same HJKL language into layout management: `H` points left,
 `J` down, `K` up, and `L` right.
 
 - Hold `<meta>` with `h` `j` `k` `l` to focus a window in that direction.
-- Hold `<alt>` with `h` or `l` to focus the previous or next tab.
-- Add `<shift>` to move the content instead of focus it:
-  - `<shift-meta>` + `h` `j` `k` `l` moves the focused window's content.
-  - `<shift-alt>` + `h` or `l` moves the current tab left or right in the tab list.
-"""
+""" + tab_focus_md + helix_move_md + tab_move_md
 elif mode == "emacs":
     layout_pattern_md = """\
 ## Emacs directions control the layout
@@ -201,6 +217,30 @@ layout actions fast, and the host Meta layer stays reachable from terminals.
   - """ + keylabel("windownew", "down") + """ / """ + keylabel("windownew", "right") + """ splits below or right.
   - """ + keylabel("windowclose") + """ closes a window, and """ + keylabel("windowcloseall") + """ closes the others.
   - """ + keylabel("windowtogglemaximize") + """ toggles maximization.
+"""
+elif os() == "linux":
+    layout_pattern_md = """\
+## Meta drives the layout
+
+Vim made generations of programmers extraordinarily productive by keeping
+navigation under their fingers. Repeated actions become muscle memory,
+reducing menu hunting and the mental fatigue of switching attention between
+code and interface controls.
+
+Keyboard-driven does not have to mean learning an entirely new way to edit.
+Rune brings that advantage to a familiar, non-modal editor by treating IJKL
+as a second set of arrow keys:
+
+```text
+    I
+  J K L
+```
+
+`I` points up, `J` left, `K` down, and `L` right. So hold `<meta>` and press IJKL to focus
+a window. Add `<shift>` to move its content.
+
+The pattern is Meta plus the target: IJKL affects windows, brackets affect tabs,
+and adding `<shift>` moves content instead of focus.
 """
 else:
     layout_pattern_md = """\

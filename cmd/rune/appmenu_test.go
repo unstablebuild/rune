@@ -89,11 +89,11 @@ func submenuByTitle(t *testing.T, items []appmenu.Item, title string) appmenu.Su
 }
 
 // appMenuPresetFiles are the presets that can back a macOS menu bar.
-// The Linux standard preset is excluded: the menu bar is macOS-only.
+// The Linux presets are excluded: the menu bar is macOS-only.
 var appMenuPresetFiles = []string{
-	"preset_modal.yaml",
+	"preset_modal_darwin.yaml",
 	"preset_standard_darwin.yaml",
-	"preset_emacs.yaml",
+	"preset_emacs_darwin.yaml",
 }
 
 var appMenuTestModels = []string{"anthropic/claude"}

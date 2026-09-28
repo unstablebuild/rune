@@ -29,13 +29,15 @@ else:
 # The by-name definition lookup is a prompt-prefill macro, which
 # `key_for` cannot resolve, so its chord is spelled per mode and
 # TestNavigationTutorialPrefillKeysMatchPresets pins each one against
-# the preset that binds it.
+# the preset that binds it. The macOS and Linux presets place Rune's
+# layer on different modifiers, so the chords also branch on the OS.
+linux = os() == "linux"
 if mode == "emacs":
     def_by_name_key = "<ctrl-alt-.>"
 elif mode == "helix":
-    def_by_name_key = "<shift-meta-d>"
+    def_by_name_key = "<ctrl-shift-meta-d>" if linux else "<shift-meta-d>"
 else:
-    def_by_name_key = "<alt-shift-d>"
+    def_by_name_key = "<shift-meta-d>" if linux else "<alt-shift-d>"
 def_by_name_cta = "press `" + def_by_name_key + "`"
 
 # The `jumptoast` prefill fuzzy-jumps to a function or method defined in
@@ -48,6 +50,10 @@ if mode == "emacs":
     jump_symbol_key = "<meta-j>"
 elif mode == "helix":
     jump_symbol_key = "<space>s"
+elif mode == "standard" and linux:
+    jump_symbol_key = "<ctrl-meta-f>"
+elif linux:
+    jump_symbol_key = "<meta-f>"
 else:
     jump_symbol_key = "<alt-f>"
 

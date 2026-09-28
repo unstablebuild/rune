@@ -41,7 +41,7 @@ func TestFoldsIntegration(t *testing.T) {
 		buf.WriteString(snippet)
 		fs := &testFoldsService{}
 		fs.view = buf.WithView(fs)
-		h := NewHandler(buf, uri, '\t', 0)
+		h := NewHandler(buf, uri, '\t', 0, WithKeymap(KeymapMacOS))
 		h.Resize(50, 10)
 		require.True(t, h.SetCursorAtScroll(term.Coordinates{Y: 7}))
 
@@ -78,6 +78,7 @@ func TestFoldsIntegration(t *testing.T) {
 		mu.Lock()
 		h := NewHandler(buf, uri,
 			'\t', 0,
+			WithKeymap(KeymapMacOS),
 			WithHideInitialFolds(true),
 			WithScheduleNextTick(cb),
 			WithAutoCenter(true),
@@ -142,6 +143,7 @@ diff_buf_adjust(win_
 		// context). Tests that want to exercise the bar wiring stack
 		// the bars on top of a bare standard handler directly.
 		root := NewHandler(buf, uri, '\t', 0,
+			WithKeymap(KeymapMacOS),
 			WithScheduleNextTick(cb),
 			WithAutoCenter(true),
 		)
@@ -257,6 +259,7 @@ diff_buf_adjust(win_
 		}
 		h := NewHandler(buf, uri,
 			'\t', 0,
+			WithKeymap(KeymapMacOS),
 			WithHideInitialFolds(true),
 			WithAutoCenter(true),
 			WithScheduleNextTick(cb),
@@ -404,6 +407,7 @@ func newStatusFindIntegrationHandler(t *testing.T, content string) text.Handler 
 	uri, err := workspaceapi.ParseURI("memory:///find-status.txt")
 	require.NoError(t, err)
 	root := NewHandler(buf, uri, '\t', 0,
+		WithKeymap(KeymapMacOS),
 		WithBarAttr(term.Attributes{Fg: term.ColorBlack, Bg: term.ColorWhite}),
 		WithCommandBar(true),
 	)

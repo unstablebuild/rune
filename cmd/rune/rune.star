@@ -748,8 +748,8 @@ config = {
             ],
         },
         # Key bindings are owned entirely by the editor preset written to
-        # the user config (preset_modal.yaml, preset_standard_*.yaml,
-        # preset_emacs.yaml). Set a value to "" there to unbind.
+        # the user config (cmd/rune/preset_<editor>_<os>.yaml). Set a value
+        # to "" there to unbind.
         "key_bindings": {},
         # Prompt colors.
         "element_attr":       attr(fg = "default", bg = "default", flags = ["dim"]),

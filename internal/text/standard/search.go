@@ -38,7 +38,7 @@ func newSearchHandler(
 ) *searchHandler {
 	boxConfig := searchbox.Config{
 		WindowManager: cfg.WindowManager,
-		Editor:        Editor(),
+		Editor:        Editor(WithKeymap(controller.cfg.keymap)),
 		Title:         "Find / Replace",
 		FindKey:       cfg.FindKey,
 		ReplaceKey:    cfg.ReplaceKey,

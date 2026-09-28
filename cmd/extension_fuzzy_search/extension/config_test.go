@@ -109,7 +109,13 @@ func TestBundledConfigStar(t *testing.T) {
 			fsCfg := fs["config"].(map[string]any)
 			fileCfg := fsCfg["file"].(map[string]any)
 			assert.Equal(t, "fuzzy", fileCfg["algo"])
-			assert.Equal(t, "<m-p>", fileCfg["history_key"])
+			// The history toggle is the key that opens the picker, and the
+			// standard presets open searchfile with <m-o>.
+			wantHistoryKey := "<m-p>"
+			if tc.mode == "standard" {
+				wantHistoryKey = "<m-o>"
+			}
+			assert.Equal(t, wantHistoryKey, fileCfg["history_key"])
 			assert.Equal(t, true, fileCfg["case_sensitive"])
 
 			// The bundled onboarding tutorial is registered so Rune offers

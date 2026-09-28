@@ -22,17 +22,14 @@ gui:
 # ---------------------------------------------------------------------------
 # Editor
 #
-# `aux_bar` is the strip left of each editor pane and `status_bar` the bar at
-# the bottom of each pane. `emacs.message_bar` is the echo area; its `attr`
+# `aux_bar` is the strip left of each buffer and `status_bar` the bar at the
+# bottom of each buffer. `emacs.message_bar` is the echo area; its `attr`
 # sets the base attributes and `layout` wins over them. The transient mode
 # label (ISEARCH, QUERY, ...) is styled by `editor.status_bar.layout` instead.
 # ---------------------------------------------------------------------------
 editor:
   mode: emacs
   auto_pair: true
-  standard:
-    attr: {fg: default, bg: default}
-    search_attr: {fg: grey, bg: yellow}
   # The :fexplorer tree is an editable buffer: renaming a line renames
   # the file. It starts read-only here; <shift-esc> unlocks it for the
   # rest of the visit.
@@ -59,8 +56,10 @@ editor:
 #     background_attr:       {bg: gray}
 #     foreground_error_attr: {fg: yellow}
 #   emacs:
+#     attr:        {fg: default, bg: default}   # buffer text
+#     search_attr: {fg: grey, bg: yellow}       # search matches
 #     message_bar:
-#       attr: {fg: default, bg: gray}
+#       attr:   {fg: default, bg: gray}
 #       layout: '░▒▓█ {{ .Message | fg "white" }} '
 
 # ---------------------------------------------------------------------------
@@ -239,7 +238,11 @@ command:
     "<shift-meta-9>": "workspacemove 9"
 
 # ---------------------------------------------------------------------------
-# Animations between workspaces
+# Animations
+#
+# `active_content_tab` plays over tabs with work in progress, such as an agent
+# turn, and `active_workspace_tab` over the workspace tabs that own them. Their
+# shaders: blaze, burn, inferno, noise, pulse, shine, trippy.
 # ---------------------------------------------------------------------------
 # animations:
 #   loading_workspace: true
@@ -247,13 +250,16 @@ command:
 #     enabled:  true
 #     # shader:   burn
 #     # duration: 1s
-
-# ---------------------------------------------------------------------------
-# Self-upgrade
-# ---------------------------------------------------------------------------
-# upgrade:
-#   auto_check_enabled: true
-#   check_period:       24h
+#   active_content_tab:
+#     enabled: true
+#     shader:  inferno
+#     fps:     10
+#     loop:    1400ms
+#   active_workspace_tab:
+#     enabled: true
+#     shader:  inferno
+#     fps:     10
+#     loop:    1400ms
 
 # ---------------------------------------------------------------------------
 # Notifications

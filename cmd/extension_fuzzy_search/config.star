@@ -91,3 +91,6 @@ else:
 
 if mode == "standard":
     config["command"]["key_bindings"]["<s-m-f>"] = "searchtext"
+    # The standard presets open searchfile with <m-o>, so the same key
+    # toggles the picker's history.
+    config["extensions"]["fuzzy_search"]["config"]["file"]["history_key"] = "<m-o>"

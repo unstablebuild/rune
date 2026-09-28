@@ -56,12 +56,13 @@ type searchSequenceHarness struct {
 }
 
 func newSearchSequenceHarness(
-	t *testing.T, content string, mode searchbox.Mode,
+	t *testing.T, content string, mode searchbox.Mode, opts ...Option,
 ) *searchSequenceHarness {
 	t.Helper()
 	buf := cell.NewBuffer()
 	buf.WriteString(content)
-	root := NewHandler(buf, workspaceapi.URI{}, '\t', 0).(*standardHandler)
+	root := NewHandler(buf, workspaceapi.URI{}, '\t', 0,
+		append([]Option{WithKeymap(KeymapMacOS)}, opts...)...).(*standardHandler)
 	h := &searchSequenceHarness{}
 	cfg := defaultConfig().search
 	cfg.WindowManager = h
@@ -246,6 +247,19 @@ func TestSearchFloatingUsesStandardInputEditing(t *testing.T) {
 	handlertest.RunHandlerSequence(t, h, 48, 5, []handlertest.SequenceTestCase{
 		{InputSequence: "<meta-f>one<meta-left>X", Expected: golden(48,
 			"", " ┌──────────────────────────────┐", " │X▐ne                          │  Replace ",
+			" └──────────────────────────────┘", "")},
+	})
+}
+
+// TestSearchFloatingInputFollowsOwnerKeymap pins that the find input
+// edits with its owner's keymap rather than the host's: under the Linux
+// keymap <meta-left> belongs to Rune's command layer, not line start.
+func TestSearchFloatingInputFollowsOwnerKeymap(t *testing.T) {
+	h := newSearchSequenceHarness(t, "one Xone", searchbox.ModeFind,
+		WithKeymap(KeymapLinux))
+	handlertest.RunHandlerSequence(t, h, 48, 5, []handlertest.SequenceTestCase{
+		{InputSequence: "<meta-f>one<meta-left>X", Expected: golden(48,
+			"", " ┌──────────────────────────────┐", " │oneX▐                         │  Replace ",
 			" └──────────────────────────────┘", "")},
 	})
 }

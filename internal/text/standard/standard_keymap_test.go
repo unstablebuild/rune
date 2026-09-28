@@ -42,7 +42,8 @@ func newStandardKeymapHandler(
 	buf.ReadFrom(strings.NewReader(content))
 	clip := clipboard.NewInMemory()
 	h := NewHandler(buf, uri, text.IndentRuneTab, 0,
-		append([]Option{WithClipboard(clip), WithTabspaces(1)}, opts...)...)
+		append([]Option{WithKeymap(KeymapMacOS), WithClipboard(clip), WithTabspaces(1)},
+			opts...)...)
 	h.Resize(80, 20)
 	if at.X != 0 || at.Y != 0 {
 		require.True(t, h.SetCursorAtScroll(at))
@@ -936,4 +937,101 @@ func TestStandardKeymapDeleteToEndOfLine(t *testing.T) {
 	_, handled := h.Handle(term.Event{Type: term.EventKey, Mod: term.ModMeta, Key: term.KeyDelete})
 	require.True(t, handled)
 	assert.Equal(t, "hello", buf.String())
+}
+
+// TestStandardKeymapLinuxLeavesMetaToRune pins that the Linux keymap handles
+// no <meta> chord, so every one reaches Rune's command layer whichever
+// physical key the user picked as <meta>.
+func TestStandardKeymapLinuxLeavesMetaToRune(t *testing.T) {
+	for _, keys := range []string{
+		"<meta-a>", "<meta-c>", "<meta-v>", "<meta-x>", "<meta-z>",
+		"<meta-l>", "<meta-d>", "<meta-j>", "<meta-k>", "<meta-/>",
+		"<meta-]>", "<meta-u>", "<shift-meta-d>", "<shift-meta-z>",
+		"<meta-left>", "<meta-right>", "<meta-up>", "<meta-down>",
+		"<meta-backspace>", "<meta-delete>", "<shift-meta-left>",
+		"<shift-meta-space>", "<ctrl-meta-d>", "<alt-meta-/>", "<alt-meta-v>",
+	} {
+		t.Run(keys, func(t *testing.T) {
+			h, buf, _ := newStandardKeymapHandler(t, "one two\nthree", term.Coordinates{X: 4},
+				WithKeymap(KeymapLinux))
+			seq, err := term.ParseKeys(keys)
+			require.NoError(t, err)
+			require.Len(t, seq, 1)
+			_, handled := h.Handle(term.Event{
+				Type: term.EventKey, Key: seq[0].Key, Mod: seq[0].Mod, Ch: seq[0].Ch,
+			})
+			assert.False(t, handled, "%s belongs to Rune on Linux", keys)
+			assert.Equal(t, "one two\nthree", buf.String())
+			assert.Equal(t, term.Coordinates{X: 4}, h.CursorAtScroll())
+			_, selected := h.Selection()
+			assert.False(t, selected)
+		})
+	}
+}
+
+// TestStandardKeymapLinuxCtrlLayer pins the Linux chords that differ from
+// their macOS <ctrl> twins.
+func TestStandardKeymapLinuxCtrlLayer(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content string
+		at      term.Coordinates
+		input   string
+		want    string
+		wantSel string
+		wantAt  *term.Coordinates
+	}{
+		{
+			name:    "ctrl-l selects the line instead of recentering",
+			content: "one\ntwo",
+			input:   "<ctrl-l>",
+			want:    "one\ntwo",
+			wantSel: "one\n",
+		},
+		{
+			name:    "ctrl-k waits for a chord instead of cutting",
+			content: "hello world",
+			at:      term.Coordinates{X: 6},
+			input:   "<ctrl-k>",
+			want:    "hello world",
+		},
+		{
+			name:    "ctrl-alt-d selects the previous occurrence",
+			content: "foo bar foo baz",
+			at:      term.Coordinates{X: 9},
+			input:   "<ctrl-alt-d>",
+			want:    "foo bar foo baz",
+			wantSel: "foo",
+			wantAt:  &term.Coordinates{X: 3},
+		},
+		{
+			name:    "ctrl-u undoes the selection",
+			content: "one\ntwo",
+			input:   "<ctrl-l><ctrl-u>",
+			want:    "one\ntwo",
+		},
+		{
+			name:    "ctrl-shift-u redoes the selection",
+			content: "one\ntwo",
+			input:   "<ctrl-l><ctrl-u><ctrl-shift-u>",
+			want:    "one\ntwo",
+			wantSel: "one\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, buf, _ := newStandardKeymapHandler(t, tc.content, tc.at, WithKeymap(KeymapLinux))
+			feedKeys(t, h, tc.input)
+			assert.Equal(t, tc.want, buf.String())
+			sel, selected := h.Selection()
+			if tc.wantSel == "" {
+				assert.False(t, selected, "no selection expected, got %q", sel)
+			} else {
+				require.True(t, selected)
+				assert.Equal(t, tc.wantSel, sel)
+			}
+			if tc.wantAt != nil {
+				assert.Equal(t, *tc.wantAt, h.CursorAtScroll())
+			}
+		})
+	}
 }

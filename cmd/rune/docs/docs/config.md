@@ -163,8 +163,8 @@ Broad strokes of what's supported:
   select-next-occurrence of word at cursor.
 - Copy and cut use the current line when no text is selected.
 - Search and replace via `<meta-f>` on macOS and `<ctrl-f>` on Linux. Open
-  replace directly with `<meta-r>`, or switch an open search to replace mode
-  with `<meta-r>`.
+  replace directly with `<meta-r>` on macOS or `<ctrl-r>` on Linux, which also
+  switch an open search to replace mode.
 - Folds: toggle one, toggle all, collapse/expand range.
 - Auto-pair for `()`, `[]`, `{}`, `"`, `'`.
 - Macros recorded on the unnamed register via `<ctrl-q>`.

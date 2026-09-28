@@ -305,6 +305,55 @@ func (h *standardHandler) handleMetaK(ev term.Event) (handled bool) {
 	return
 }
 
+// linuxChord rewrites a Linux chord into the macOS chord for the same action
+// so both keymaps share one set of actions. It reports false for a <meta>
+// chord, which the Linux keymap leaves to Rune's command layer.
+func (h *standardHandler) linuxChord(ev term.Event) (term.Event, bool) {
+	if ev.Mod&term.ModMeta != 0 {
+		return ev, false
+	}
+	if h.metaK {
+		if ev.Mod != term.ModCtrl {
+			return ev, true
+		}
+		// The macOS keymap reaches these three without the prefix.
+		switch ev.Ch {
+		case 'c':
+			h.metaK = false
+			ev.Ch = 'l'
+		case 'v', 'q':
+			h.metaK = false
+			ev.Mod = term.ModAltMeta
+		default:
+			ev.Mod = term.ModMeta
+		}
+		return ev, true
+	}
+	switch ev.Mod {
+	case term.ModCtrl:
+		switch ev.Ch {
+		case 'k', 'l', 'j', 'J', 'u', 'U', 'D', 'V':
+			ev.Mod = term.ModMeta
+		case '?':
+			ev.Mod, ev.Ch = term.ModAltMeta, '/'
+		case 'W':
+			ev.Mod = term.ModCtrlShift
+		}
+	case term.ModCtrlAlt:
+		if ev.Key == 0 && ev.Ch == 'd' {
+			ev.Mod = term.ModCtrlMeta
+		}
+	case term.ModCtrlShift:
+		switch ev.Key {
+		case term.KeySpace:
+			ev.Mod = term.ModShiftMeta
+		case term.KeyBackspace, term.KeyDelete:
+			ev.Mod = term.ModMeta
+		}
+	}
+	return ev, true
+}
+
 func (h *standardHandler) Handle(ev term.Event) (exit, handled bool) {
 	ctx := context.Background()
 
@@ -393,6 +442,13 @@ func (h *standardHandler) Handle(ev term.Event) (exit, handled bool) {
 		}
 		ev.Mod = ev.Mod &^ term.ModShift
 		shift = true
+	}
+
+	if h.cfg.keymap == KeymapLinux {
+		var ok bool
+		if ev, ok = h.linuxChord(ev); !ok {
+			return
+		}
 	}
 
 	// if only Mod is pressed, then user might be
@@ -553,6 +609,8 @@ func (h *standardHandler) Handle(ev term.Event) (exit, handled bool) {
 				h.log(log.TraceLevel, "waiting for metaK event")
 				h.metaK = true
 				handled = true
+				// The prefix must not end a paste-history cycle.
+				pastedThisTurn = h.lastPaste
 			case 'u':
 				handled = h.cursor.UndoSelection()
 				return

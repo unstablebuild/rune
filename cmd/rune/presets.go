@@ -16,26 +16,15 @@
 
 package main
 
-import (
-	_ "embed"
-	"fmt"
-)
-
-//go:embed preset_modal.yaml
-var presetModalYAML string
-
-//go:embed preset_helix.yaml
-var presetHelixYAML string
-
-//go:embed preset_emacs.yaml
-var presetEmacsYAML string
+import "fmt"
 
 // renderPreset returns the preset-config file body for the given
-// editor choice and telemetry preference. The vim choice enables vim
-// mode everywhere; the helix choice uses Helix's selection-first grammar
-// with its <space> leader menu; the standard choice uses platform-native
-// standard editor bindings; the emacs choice uses an Emacs keymap. The
-// deprecated "modeless" alias resolves to the standard preset.
+// editor choice and telemetry preference, in the variant for the host
+// OS. The vim choice enables vim mode everywhere; the helix choice uses
+// Helix's selection-first grammar with its <space> leader menu; the
+// standard choice uses platform-native standard editor bindings; the
+// emacs choice uses an Emacs keymap. The deprecated "modeless" alias
+// resolves to the standard preset.
 func renderPreset(editor string, telemetry bool) (string, error) {
 	var body string
 	switch editor {

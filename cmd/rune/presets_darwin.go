@@ -20,5 +20,14 @@ package main
 
 import _ "embed"
 
+//go:embed preset_modal_darwin.yaml
+var presetModalYAML string
+
+//go:embed preset_helix_darwin.yaml
+var presetHelixYAML string
+
 //go:embed preset_standard_darwin.yaml
 var presetStandardYAML string
+
+//go:embed preset_emacs_darwin.yaml
+var presetEmacsYAML string

@@ -314,7 +314,7 @@ These are the shipped preset assignments. Every layout binding lives in
 | `windownew` | `<alt-n>` |
 | `windowclose` / `windowcloseall` | `<alt-q>` / `<alt-shift-q>` |
 | `windowconverttab` prompt | `<alt-shift-enter>` |
-| `tabnew` | `<meta-t>` on macOS; `<ctrl-n>` on Linux |
+| `tabnew` | `<meta-t>` |
 | `tabnext` / `tabprevious` | `<alt-]>` / `<alt-[>` |
 | `tabfocus 1..9` | `<alt-1>` … `<alt-9>` |
 | `tabmove left/right` | `<alt-shift-[>` / `<alt-shift-]>` |

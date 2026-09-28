@@ -27,14 +27,18 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"gopkg.in/yaml.v3"
 	"unstable.build/rune/internal/handler"
+	"unstable.build/rune/internal/ide/starlarkconfig"
 )
 
 var presetFiles = []string{
-	"preset_modal.yaml",
-	"preset_helix.yaml",
+	"preset_modal_darwin.yaml",
+	"preset_modal_linux.yaml",
+	"preset_helix_darwin.yaml",
+	"preset_helix_linux.yaml",
 	"preset_standard_darwin.yaml",
 	"preset_standard_linux.yaml",
-	"preset_emacs.yaml",
+	"preset_emacs_darwin.yaml",
+	"preset_emacs_linux.yaml",
 }
 
 // commentedOption matches a commented-out YAML mapping entry or nested
@@ -126,6 +130,50 @@ func presetKeyBindings(t *testing.T, name string) map[string]string {
 	return out
 }
 
+// TestPresetsSpellPackageKeysLikeThePackage pins that a preset overriding a
+// chord the fuzzy_search package binds spells it exactly as the package
+// does. Package installs merge key bindings by their raw spelling, so a
+// different spelling of the same chord lands next to the preset's and
+// which one runs is left to map order.
+func TestPresetsSpellPackageKeysLikeThePackage(t *testing.T) {
+	src, err := os.ReadFile("../extension_fuzzy_search/config.star")
+	if err != nil {
+		t.Fatal(err)
+	}
+	modes := map[string]string{
+		"modal": "vim", "helix": "helix", "standard": "standard", "emacs": "emacs",
+	}
+	for _, name := range presetFiles {
+		mode := modes[strings.Split(name, "_")[1]]
+		pkg, err := starlarkconfig.Decode(starlarkconfig.Source{
+			Src:      src,
+			Filename: "config.star",
+			Params: map[string]any{
+				"RUNE_DATADIR":     "/data",
+				"RUNE_PKG_ID":      "fuzzy_search",
+				"RUNE_PKG_VERSION": "1",
+				"RUNE_EDITOR_MODE": mode,
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		pkgKeys := map[handler.Sequence]string{}
+		pkgBindings := pkg["command"].(map[string]any)["key_bindings"].(map[string]any)
+		for key := range pkgBindings {
+			pkgKeys[parseBinding(t, key)] = key
+		}
+		for key, cmd := range presetKeyBindings(t, name) {
+			pkgKey, ok := pkgKeys[parseBinding(t, key)]
+			if !ok || pkgKey == key || fmt.Sprint(pkgBindings[pkgKey]) == cmd {
+				continue
+			}
+			t.Errorf("%s binds %s to %q; spell it %s like fuzzy_search does",
+				name, key, cmd, pkgKey)
+		}
+	}
+}
+
 // TestPresetsBindBothCursorHistoryDirections pins that a preset which binds
 // a step back through the cursor history also binds the step forward, so
 // the way back out of a jump is never a typed command.
@@ -145,18 +193,20 @@ func TestPresetsBindBothCursorHistoryDirections(t *testing.T) {
 // command.
 var layoutCommand = regexp.MustCompile(`^(echo \{prompt\})?(window|tab)`)
 
-// TestHelixPresetSharesVimLayoutChords pins that the helix preset binds every
-// layout chord the vim preset binds, so both editors share one set of Runic
-// layout keys and one tutorial copy. Helix's own <ctrl-w> window menu stays
-// as a backup for muscle memory, since a focused terminal swallows it.
+// TestHelixPresetSharesVimLayoutChords pins that the macOS helix preset
+// binds every layout chord the macOS vim preset binds, so both editors
+// share one set of Runic layout keys and one tutorial copy. Helix's own
+// <ctrl-w> window menu stays as a backup for muscle memory, since a
+// focused terminal swallows it. The Linux presets diverge on purpose: see
+// TestLinuxPresetsSurviveAltAsMeta.
 func TestHelixPresetSharesVimLayoutChords(t *testing.T) {
 	// Chords Helix already binds by default, so the helix preset leaves them
 	// to the editor.
 	helixOwned := map[string]string{
 		"<alt-`>": "switch_to_uppercase",
 	}
-	vim := presetKeyBindings(t, "preset_modal.yaml")
-	helix := presetKeyBindings(t, "preset_helix.yaml")
+	vim := presetKeyBindings(t, "preset_modal_darwin.yaml")
+	helix := presetKeyBindings(t, "preset_helix_darwin.yaml")
 	for key, cmd := range vim {
 		if !layoutCommand.MatchString(cmd) {
 			continue
@@ -188,49 +238,44 @@ func TestHelixPresetSharesVimLayoutChords(t *testing.T) {
 			t.Errorf("vim preset binds %s to %q, want %q", key, vim[key], cmd)
 		}
 	}
-	for key, cmd := range map[string]string{
-		"<ctrl-w>q": "windowclose",
-		"<ctrl-w>o": "windowcloseall",
-		"<ctrl-w>s": "windownew down",
-		"<ctrl-w>v": "windownew right",
-	} {
-		if helix[key] != cmd {
-			t.Errorf("helix preset must keep Helix's %s bound to %q as a backup, got %q",
-				key, cmd, helix[key])
-		}
-	}
 }
 
 // TestHelixPresetKeepsHelixSpellings pins the Helix key spellings the helix
-// preset keeps as backups for muscle memory: the window menu with <ctrl>
-// still held or with arrows, as Helix accepts it, and the workspace
-// diagnostics picker, which Rune's diagnostics list already covers. The
-// jumplist keys reach the cursor history once the editor's own jumplist
-// declines them, so both directions stay bound, and <space>j opens the
-// history picker as it opens Helix's jumplist picker.
+// presets keep as backups for muscle memory on every OS: the window menu,
+// also with <ctrl> still held or with arrows, as Helix accepts it, and the
+// workspace diagnostics picker, which Rune's diagnostics list already
+// covers. The jumplist keys reach the cursor history once the editor's
+// own jumplist declines them, so both directions stay bound, and <space>j
+// opens the history picker as it opens Helix's jumplist picker.
 func TestHelixPresetKeepsHelixSpellings(t *testing.T) {
-	helix := presetKeyBindings(t, "preset_helix.yaml")
-	for key, cmd := range map[string]string{
-		"<ctrl-w><ctrl-h>": "windowfocus left",
-		"<ctrl-w><ctrl-j>": "windowfocus down",
-		"<ctrl-w><ctrl-k>": "windowfocus up",
-		"<ctrl-w><ctrl-l>": "windowfocus right",
-		"<ctrl-w><left>":   "windowfocus left",
-		"<ctrl-w><down>":   "windowfocus down",
-		"<ctrl-w><up>":     "windowfocus up",
-		"<ctrl-w><right>":  "windowfocus right",
-		"<ctrl-w><ctrl-w>": "windowfocus other",
-		"<ctrl-w><ctrl-s>": "windownew down",
-		"<ctrl-w><ctrl-v>": "windownew right",
-		"<ctrl-w><ctrl-q>": "windowclose",
-		"<ctrl-w><ctrl-o>": "windowcloseall",
-		"<space>D":         "lsp diagnostics",
-		"<ctrl-o>":         "cursorhistory prev",
-		"<ctrl-i>":         "cursorhistory next",
-		"<space>j":         "cursorhistory jump",
-	} {
-		if helix[key] != cmd {
-			t.Errorf("helix preset binds %s to %q, want %q", key, helix[key], cmd)
+	for _, name := range []string{"preset_helix_darwin.yaml", "preset_helix_linux.yaml"} {
+		helix := presetKeyBindings(t, name)
+		for key, cmd := range map[string]string{
+			"<ctrl-w>q":        "windowclose",
+			"<ctrl-w>o":        "windowcloseall",
+			"<ctrl-w>s":        "windownew down",
+			"<ctrl-w>v":        "windownew right",
+			"<ctrl-w><ctrl-h>": "windowfocus left",
+			"<ctrl-w><ctrl-j>": "windowfocus down",
+			"<ctrl-w><ctrl-k>": "windowfocus up",
+			"<ctrl-w><ctrl-l>": "windowfocus right",
+			"<ctrl-w><left>":   "windowfocus left",
+			"<ctrl-w><down>":   "windowfocus down",
+			"<ctrl-w><up>":     "windowfocus up",
+			"<ctrl-w><right>":  "windowfocus right",
+			"<ctrl-w><ctrl-w>": "windowfocus other",
+			"<ctrl-w><ctrl-s>": "windownew down",
+			"<ctrl-w><ctrl-v>": "windownew right",
+			"<ctrl-w><ctrl-q>": "windowclose",
+			"<ctrl-w><ctrl-o>": "windowcloseall",
+			"<space>D":         "lsp diagnostics",
+			"<ctrl-o>":         "cursorhistory prev",
+			"<ctrl-i>":         "cursorhistory next",
+			"<space>j":         "cursorhistory jump",
+		} {
+			if helix[key] != cmd {
+				t.Errorf("%s binds %s to %q, want %q", name, key, helix[key], cmd)
+			}
 		}
 	}
 }
@@ -239,18 +284,6 @@ func TestHelixPresetKeepsHelixSpellings(t *testing.T) {
 // the helix preset aliases to their Rune counterparts. Rune has no per-split
 // quit, so :q and :wq close the window, as <ctrl-w>q does.
 func TestHelixPresetTypableCommandAliases(t *testing.T) {
-	raw, err := os.ReadFile("preset_helix.yaml")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var cfg struct {
-		Command struct {
-			Aliases map[string]any `yaml:"aliases"`
-		} `yaml:"command"`
-	}
-	if err := yaml.Unmarshal(raw, &cfg); err != nil {
-		t.Fatal(err)
-	}
 	openFile := map[string]any{"command": "edit", "completer": "files"}
 	want := map[string]any{
 		"q":   "windowclose",
@@ -270,7 +303,100 @@ func TestHelixPresetTypableCommandAliases(t *testing.T) {
 		"fmt": "lsp format",
 		"rl":  "reloadfile!",
 	}
-	if !reflect.DeepEqual(cfg.Command.Aliases, want) {
-		t.Errorf("helix preset aliases:\n got %v\nwant %v", cfg.Command.Aliases, want)
+	for _, name := range []string{"preset_helix_darwin.yaml", "preset_helix_linux.yaml"} {
+		raw, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var cfg struct {
+			Command struct {
+				Aliases map[string]any `yaml:"aliases"`
+			} `yaml:"command"`
+		}
+		if err := yaml.Unmarshal(raw, &cfg); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(cfg.Command.Aliases, want) {
+			t.Errorf("%s aliases:\n got %v\nwant %v", name, cfg.Command.Aliases, want)
+		}
+	}
+}
+
+// parseBinding parses a command.key_bindings key the way the IDE does: as
+// a two-key sequence when possible, otherwise as a single chord.
+func parseBinding(t *testing.T, key string) handler.Sequence {
+	t.Helper()
+	if seq, err := handler.ParseSequence(key); err == nil {
+		return seq
+	}
+	comb, err := term.ParseKey(key)
+	if err != nil {
+		t.Fatalf("parse %q: %v", key, err)
+	}
+	return handler.Sequence{First: comb}
+}
+
+// emacsGNUChords are the only <alt> and <ctrl-alt> command bindings the
+// Linux emacs preset may carry: chords GNU Emacs itself defines for the
+// same action. Everything Rune-only lives on <meta>.
+var emacsGNUChords = map[string]bool{
+	"<alt-shift-x>": true, "<alt-,>": true, "<ctrl-alt-,>": true,
+	"<alt-.>": true, "<ctrl-alt-.>": true, "<alt-shift-/>": true,
+	"<ctrl-alt-shift-/>": true, "<alt-s>o": true, `<ctrl-alt-\\>`: true,
+	"<ctrl-alt-i>": true,
+}
+
+// TestLinuxPresetsKeepRuneOffAlt pins that every Linux preset keeps its
+// Rune commands on the <meta> layer, so <alt> stays with the editors and
+// the terminal. A binding to "" only frees a chord an extension claimed.
+func TestLinuxPresetsKeepRuneOffAlt(t *testing.T) {
+	for _, name := range []string{
+		"preset_modal_linux.yaml", "preset_helix_linux.yaml",
+		"preset_standard_linux.yaml", "preset_emacs_linux.yaml",
+	} {
+		for key, cmd := range presetKeyBindings(t, name) {
+			if cmd == "" {
+				continue
+			}
+			seq := parseBinding(t, key)
+			if (seq.First.Mod|seq.Last.Mod)&term.ModAlt == 0 {
+				continue
+			}
+			if name == "preset_emacs_linux.yaml" && emacsGNUChords[key] {
+				continue
+			}
+			t.Errorf("%s binds %s to %q on <alt>", name, key, cmd)
+		}
+	}
+}
+
+// TestLinuxPresetsSurviveAltAsMeta pins that the vim, helix and standard
+// Linux presets stay unambiguous when <meta> is read as Alt: no two
+// commands meet on one chord once every <meta> becomes <alt>. Emacs is
+// exempt because <alt> is its Meta.
+func TestLinuxPresetsSurviveAltAsMeta(t *testing.T) {
+	asAlt := func(c term.KeyComb) term.KeyComb {
+		if c.Mod&term.ModMeta != 0 {
+			c.Mod = c.Mod&^term.ModMeta | term.ModAlt
+		}
+		return c
+	}
+	for _, name := range []string{
+		"preset_modal_linux.yaml", "preset_helix_linux.yaml",
+		"preset_standard_linux.yaml",
+	} {
+		seen := map[handler.Sequence]string{}
+		for key, cmd := range presetKeyBindings(t, name) {
+			if cmd == "" {
+				continue
+			}
+			seq := parseBinding(t, key)
+			seq.First, seq.Last = asAlt(seq.First), asAlt(seq.Last)
+			if prev, ok := seen[seq]; ok && prev != cmd {
+				t.Errorf("%s: with <meta> on Alt, %s runs both %q and %q",
+					name, key, prev, cmd)
+			}
+			seen[seq] = cmd
+		}
 	}
 }
