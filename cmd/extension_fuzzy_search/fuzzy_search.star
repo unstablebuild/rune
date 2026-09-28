@@ -9,15 +9,11 @@
 #
 # The DSL is interpreted by ide/idetutorial/starlarktutorial. The entry
 # function runs on its own Starlark goroutine; each blocking builtin
-# (floating_window, wait_command) returns when the user performs the
-# described action, so the steps below read top to bottom.
-#
-# Key handling note: a floating_window swallows every key except its
-# dismiss/allow keys, so it cannot host the "type to filter, navigate,
-# open" interaction. The live finder steps use wait_event instead: it
-# resolves only when the host observes the named editor event, never
-# from keystrokes, so every key reaches the focused finder while the
-# hint stays up.
+# (wait_command, wait_event) is one screen of the tutorial tile that
+# stays up until the user performs the described action, so the steps
+# below read top to bottom. Every key reaches the focused finder while a
+# step is up: the live search steps use wait_event, which resolves only
+# when the host observes the named editor event.
 
 ck = command_key()
 
@@ -40,14 +36,6 @@ def keypress_sentence(cmd, *args):
     s = keypress(cmd, *args)
     return s[0].upper() + s[1:]
 
-def dismiss_for(cmd, *args):
-    # Keys that dismiss a teaching window: always the command prompt key,
-    # plus the command's bound key when it has one, so a single press
-    # both dismisses the window and dispatches the command the following
-    # wait_command observes.
-    k = key_for(cmd, *args)
-    return [ck, k] if k else [ck]
-
 intro_md = """\
 **Fuzzy Search** adds fast, fuzzy finders for everything in your
 workspace. Results are scored and sorted best-match first, and each
@@ -69,8 +57,6 @@ finder opens in its own window so your editor layout stays put.
 Type to filter. The list re-ranks as you type. Move the selection with
 the arrow keys or `<ctrl-j>` / `<ctrl-k>`, press `<enter>` to open the
 focused result in a new tab, and `<esc>` to cancel.
-
-Press `<enter>` or `<space>` to start a hands-on search.
 """
 
 open_file_md = """\
@@ -121,28 +107,16 @@ Run it now: """ + keypress("searchtype") + """.
 (`searchvar` rounds out the set for **variables**.""" + keyhint("searchvar") + """)
 """
 
-wrap_up_md = """\
-That's Fuzzy Search:
-
-- `searchfile` for file names,
-- `searchtext` for file contents,
-- `searchast` (and `searchfunc` / `searchvar` / `searchtype`) for
-  syntax nodes.
-
-Type to filter, navigate with the arrow keys or `<ctrl-j>` / `<ctrl-k>`,
-`<enter>` to open, `<esc>` to cancel. Replay this tour any time with
-`tutorial start fuzzy_search`.
-
-Press `<enter>` or `<space>` to finish. Happy searching!
-"""
+wrap_up_msg = ("That's Fuzzy Search: `searchfile` for file names, `searchtext` " +
+               "for file contents, `searchast` (and `searchfunc` / `searchvar` / " +
+               "`searchtype`) for syntax nodes. Replay this tour any time with " +
+               "`tutorial start fuzzy_search`. Happy searching!")
 
 def teach_file_search():
-    floating_window(title = "Search files", text = open_file_md,
-                    dismiss_keys = dismiss_for("searchfile"))
     wait_command(
-        title    = "Search files",
-        command  = "searchfile",
-        on_error = "Open the file finder with `<cmd>searchfile`.",
+        title   = "Search files",
+        command = "searchfile",
+        text    = intro_md + "\n" + open_file_md,
     )
     notify(level = success, message = "File finder open.")
 
@@ -150,55 +124,44 @@ def teach_file_search():
     # user types, navigates, and opens a result freely; the step resolves
     # on the file-open event rather than from keystrokes.
     wait_event(
-        event    = "open",
-        title    = "Find and open a file",
-        text     = find_file_md,
-        on_error = "Type to filter, move with the arrow keys, then press " +
-                   "`<enter>` to open a result.",
+        event = "open",
+        title = "Find and open a file",
+        text  = find_file_md,
     )
     notify(level = success, message = "You opened a file from the finder.")
 
 
 def teach_text_search():
-    floating_window(title = "Search file contents", text = text_md,
-                    dismiss_keys = dismiss_for("searchtext"))
     wait_command(
-        title    = "Search file contents",
-        command  = "searchtext",
-        on_error = "Open the text finder with `<cmd>searchtext`.",
+        title   = "Search file contents",
+        command = "searchtext",
+        text    = text_md,
     )
     notify(level = success, message = "Text finder open.")
 
 
 def teach_ast_search():
-    floating_window(title = "Search functions", text = searchfunc_md,
-                    dismiss_keys = dismiss_for("searchfunc"))
     wait_command(
-        title    = "Search functions",
-        command  = "searchfunc",
-        on_error = "Run `<cmd>searchfunc` to fuzzy-find functions and methods.",
+        title   = "Search functions",
+        command = "searchfunc",
+        text    = searchfunc_md,
     )
     notify(level = success, message = "You searched for functions.")
 
-    floating_window(title = "Search types", text = searchtype_md,
-                    dismiss_keys = dismiss_for("searchtype"))
     wait_command(
-        title    = "Search types",
-        command  = "searchtype",
-        on_error = "Run `<cmd>searchtype` to fuzzy-find types.",
+        title   = "Search types",
+        command = "searchtype",
+        text    = searchtype_md,
     )
     notify(level = success, message = "You searched for types.")
 
 
 def run():
-    floating_window(title = "Fuzzy Search", text = intro_md,
-                    dismiss_keys = [ck])
     teach_file_search()
     teach_text_search()
     teach_ast_search()
-    floating_window(title = "You're all set", text = wrap_up_md,
-                    dismiss_keys = [ck])
+    notify(level = success, message = wrap_up_msg)
 
 
-tutorial(id = "fuzzy_search", title = "Fuzzy Search", version = "1",
+tutorial(id = "fuzzy_search", title = "Fuzzy Search", version = "3",
          entry = run)

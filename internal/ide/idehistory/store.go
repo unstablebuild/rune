@@ -16,7 +16,7 @@
 
 // Package idehistory consolidates all persisted workspace session state
 // (open files, file→window mapping, tile layout, open terminal sessions,
-// open task sessions) behind a single Store.
+// open task sessions, extension tabs) behind a single Store.
 package idehistory
 
 import (
@@ -25,11 +25,14 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	log "github.com/sirupsen/logrus"
 	"github.com/unstablebuild/blue/logging"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagerpc"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/component"
@@ -43,32 +46,43 @@ const (
 	workspaceStateDocumentKind   = "workspace-state"
 	workspaceStateDocumentPrefix = "workspace-state:"
 
+	// TerminalStatePartition is the sub-partition that holds terminal
+	// snapshots. Listing a partition decodes every document in it to
+	// evaluate filters, and one snapshot runs to megabytes, so they
+	// must not share a partition with the documents that are listed.
+	TerminalStatePartition = "terminal-state"
+
+	terminalStateDocumentKind   = "terminal-state"
+	terminalStateDocumentPrefix = "terminal-state:"
+
 	lastSessionDocumentKind = "last-session"
 	lastSessionDocumentID   = "last-session"
 )
 
 // State is the unified workspace state persisted by Store.
 type State struct {
-	Name      string
-	Files     []File
-	Layout    tcomponent.TileLayout
-	HasLayout bool
-	Terminals []TerminalSession
-	Tasks     []TaskSession
+	Name       string
+	Files      []File
+	Layout     tcomponent.TileLayout
+	HasLayout  bool
+	Terminals  []TerminalSession
+	Tasks      []TaskSession
+	Extensions []ExtensionTab
 }
 
 // IsEmpty reports whether there's nothing worth restoring. A persisted
 // layout alone is not considered worth restoring: the IDE always saves
 // a layout on workspace close, so observing a layout with no
-// files/terminals/tasks is the common "empty workspace" case and
-// triggering restore on it produces an empty-but-visible window.
+// files/terminals/tasks/extension tabs is the common "empty workspace"
+// case and triggering restore on it produces an empty-but-visible window.
 //
 // The workspace name is likewise not content: it is applied whenever
 // the workspace opens, without going through restore.
 func (s State) IsEmpty() bool {
 	return len(s.Files) == 0 &&
 		len(s.Terminals) == 0 &&
-		len(s.Tasks) == 0
+		len(s.Tasks) == 0 &&
+		len(s.Extensions) == 0
 }
 
 // File describes a file that was open in the previous session.
@@ -103,6 +117,15 @@ type TaskSession struct {
 	WindowMinimizedAlignment component.Alignment
 }
 
+// ExtensionTab is a tab whose content an extension serves, shown in a tiled window.
+type ExtensionTab struct {
+	URI      workspaceapi.URI
+	Icon     rune
+	Name     string
+	WindowID uint64
+	Focus    bool
+}
+
 // Snapshotter supplies live workspace state when the Store needs to
 // persist a fresh snapshot at close/reload time.
 type Snapshotter interface {
@@ -111,6 +134,7 @@ type Snapshotter interface {
 	Name() string
 	Terminals() []TerminalSession
 	Tasks() []TaskSession
+	ExtensionTabs() []ExtensionTab
 	Layout() (tcomponent.TileLayout, bool)
 	FileWindowIDs() map[string]uint64
 }
@@ -137,21 +161,50 @@ type Session struct {
 // Store is not safe for concurrent use. It expects to be called from
 // a single goroutine (typically the IDE event loop).
 type Store struct {
-	storage  storageapi.Service
-	trackers map[string]*tracker
+	storage   storageapi.Service
+	terminals storageapi.Service
+	trackers  map[string]*tracker
 }
 
 // New constructs a Store backed by storage. The Store does NOT take
 // ownership of storage and never calls Close on it.
 func New(storage storageapi.Service) *Store {
 	return &Store{
-		storage:  storage,
-		trackers: make(map[string]*tracker),
+		storage:   storage,
+		terminals: storageapi.WithPartition(storage, TerminalStatePartition),
+		trackers:  make(map[string]*tracker),
 	}
 }
 
-// StoreWorkspaceState writes state for uri.
+// StoreWorkspaceState writes the whole of state for uri, terminal
+// snapshots included.
 func (s *Store) StoreWorkspaceState(
+	ctx context.Context, uri workspaceapi.URI, state State,
+) error {
+	if err := s.storeWorkspaceStateDocument(ctx, uri, state); err != nil {
+		return err
+	}
+	id := terminalStateDocumentID(uri)
+	if len(state.Terminals) == 0 {
+		if err := s.terminals.Delete(ctx, id); err != nil &&
+			!errors.Is(err, storageapi.ErrNotFound) {
+			return fmt.Errorf(
+				"idehistory: clear terminals %q: %w", uri.String(), err)
+		}
+		return nil
+	}
+	doc := newTerminalStateDocument(uri, state.Terminals)
+	if err := s.terminals.Set(ctx, id, doc); err != nil {
+		return fmt.Errorf(
+			"idehistory: store terminals %q: %w", uri.String(), err)
+	}
+	return nil
+}
+
+// storeWorkspaceStateDocument writes everything but the terminal
+// snapshots. It is the per-editor-event path: snapshotting every open
+// terminal costs far more than the file list it would ride along with.
+func (s *Store) storeWorkspaceStateDocument(
 	ctx context.Context, uri workspaceapi.URI, state State,
 ) error {
 	doc := newWorkspaceStateDocument(uri, state)
@@ -190,6 +243,7 @@ func (s *Store) StoreWorkspaceStateForClose(
 		state.HasLayout = hasLayout
 		state.Terminals = snap.Terminals()
 		state.Tasks = snap.Tasks()
+		state.Extensions = snap.ExtensionTabs()
 		state.Name = snap.Name()
 	}
 	return s.StoreWorkspaceState(ctx, uri, state)
@@ -207,17 +261,20 @@ func (s *Store) PersistWorkspaceState(
 	if !ok {
 		return nil
 	}
-	return s.StoreWorkspaceState(ctx, uri, t.buildState())
+	return s.storeWorkspaceStateDocument(ctx, uri, t.buildState())
 }
 
 // ClearWorkspaceState deletes the persisted state for uri.
 func (s *Store) ClearWorkspaceState(
 	ctx context.Context, uri workspaceapi.URI,
 ) error {
-	id := workspaceStateDocumentID(uri)
-	if err := s.storage.Delete(ctx, id); err != nil &&
+	if err := s.storage.Delete(ctx, workspaceStateDocumentID(uri)); err != nil &&
 		!errors.Is(err, storageapi.ErrNotFound) {
 		return fmt.Errorf("idehistory: clear %q: %w", uri.String(), err)
+	}
+	if err := s.terminals.Delete(ctx, terminalStateDocumentID(uri)); err != nil &&
+		!errors.Is(err, storageapi.ErrNotFound) {
+		return fmt.Errorf("idehistory: clear terminals %q: %w", uri.String(), err)
 	}
 	return nil
 }
@@ -236,7 +293,20 @@ func (s *Store) LoadWorkspaceState(
 		return State{}, fmt.Errorf(
 			"idehistory: load %q: %w", uri.String(), err)
 	}
-	return doc.toState(), nil
+	state := doc.toState()
+	var tdoc terminalStateDocument
+	err = s.terminals.Get(ctx, terminalStateDocumentID(uri), &tdoc)
+	if errors.Is(err, storageapi.ErrNotFound) {
+		// Documents written before terminals had their own partition
+		// carry them inline; toState already picked those up.
+		return state, nil
+	}
+	if err != nil {
+		return State{}, fmt.Errorf(
+			"idehistory: load terminals %q: %w", uri.String(), err)
+	}
+	state.Terminals = tdoc.toSessions()
+	return state, nil
 }
 
 // StoreLastSession records which workspaces are currently open so a
@@ -286,11 +356,14 @@ func (s *Store) LoadLastSession(ctx context.Context) (Session, error) {
 }
 
 // ListWorkspaceURIs returns the URI of every workspace that has
-// persisted state.
+// persisted state. Documents from before TerminalStatePartition still
+// carry their snapshots inline, and a storage led by another process
+// cannot stream a document that large, so only the identifying fields
+// are requested.
 func (s *Store) ListWorkspaceURIs(
 	ctx context.Context,
 ) ([]workspaceapi.URI, error) {
-	it, err := s.storage.List(ctx, []storageapi.Filter{{
+	it, err := s.storage.List(withFields(ctx, "Kind", "WorkspaceURI"), []storageapi.Filter{{
 		Field: storageapi.Field{
 			FieldPath: []string{"Kind"},
 			Value:     workspaceStateDocumentKind,
@@ -304,7 +377,7 @@ func (s *Store) ListWorkspaceURIs(
 
 	var uris []workspaceapi.URI
 	for it.HasNext() {
-		var doc workspaceStateDocument
+		var doc struct{ WorkspaceURI string }
 		if err := it.NextTo(&doc); err != nil {
 			return nil, fmt.Errorf("idehistory: list workspace states: %w", err)
 		}
@@ -320,30 +393,39 @@ func (s *Store) ListWorkspaceURIs(
 	return uris, nil
 }
 
+// withFields asks a storage reached over RPC to send only the named
+// top-level fields of each listed document. The projection matches the
+// stored keys verbatim, and marshalers differ on their case, so both
+// spellings are requested.
+func withFields(ctx context.Context, fields ...string) context.Context {
+	all := make([]string, 0, 2*len(fields))
+	for _, field := range fields {
+		all = append(all, field, strings.ToLower(field))
+	}
+	return storagerpc.WithFields(ctx, all...)
+}
+
 // SubscribeEvents subscribes to ed's events and maintains the
 // in-memory File list + cursor map for uri. snap is invoked when the
 // tracker needs terminal/task/layout context for the next Store call.
 // The returned Closer unsubscribes.
 //
-// skip lists URIs whose events must be ignored entirely — typically
-// pseudo-buffers like the file explorer that must never enter the
-// persisted file list.
+// skip lists pseudo-buffer namespaces whose events must be ignored
+// entirely — the file explorer, the :gitshow diff popup and anything
+// else that must never enter the persisted file list. Entries match by
+// path prefix, so a namespace covers resources minted under it.
 func (s *Store) SubscribeEvents(
 	ctx context.Context,
 	uri workspaceapi.URI, ed text.Editor, snap Snapshotter,
 	skip ...workspaceapi.URI,
 ) io.Closer {
-	skipSet := make(map[string]struct{}, len(skip))
-	for _, u := range skip {
-		skipSet[u.String()] = struct{}{}
-	}
 	t := &tracker{
 		store: s,
 		uri:   uri,
 		snap:  snap,
 		ctx:   ctx,
 		files: make(map[string]File),
-		skip:  skipSet,
+		skip:  skip,
 	}
 	err := ed.SubscribeEvents([]textapi.EventType{
 		textapi.EventTypeOpen,
@@ -382,8 +464,17 @@ type workspaceStateDocument struct {
 	Files        []fileDoc
 	Layout       tcomponent.TileLayout
 	HasLayout    bool
+	// Terminals is only ever read: documents predating
+	// TerminalStatePartition stored the snapshots inline.
+	Terminals  []terminalDoc `bson:",omitempty"`
+	Tasks      []taskDoc
+	Extensions []extensionTabDoc
+}
+
+type terminalStateDocument struct {
+	Kind         string
+	WorkspaceURI string
 	Terminals    []terminalDoc
-	Tasks        []taskDoc
 }
 
 type fileDoc struct {
@@ -415,6 +506,14 @@ type taskDoc struct {
 	WindowMinimizedAlignment component.Alignment
 }
 
+type extensionTabDoc struct {
+	URI      string
+	Icon     string
+	Name     string
+	WindowID uint64
+	Focus    bool
+}
+
 type lastSessionDocument struct {
 	Kind       string
 	Workspaces []sessionWorkspaceDoc
@@ -429,6 +528,31 @@ type sessionWorkspaceDoc struct {
 
 func workspaceStateDocumentID(uri workspaceapi.URI) string {
 	return workspaceStateDocumentPrefix + url.QueryEscape(uri.String())
+}
+
+func terminalStateDocumentID(uri workspaceapi.URI) string {
+	return terminalStateDocumentPrefix + url.QueryEscape(uri.String())
+}
+
+func newTerminalStateDocument(
+	uri workspaceapi.URI, terminals []TerminalSession,
+) terminalStateDocument {
+	doc := terminalStateDocument{
+		Kind:         terminalStateDocumentKind,
+		WorkspaceURI: uri.String(),
+	}
+	for _, t := range terminals {
+		doc.Terminals = append(doc.Terminals, terminalDoc(t))
+	}
+	return doc
+}
+
+func (d terminalStateDocument) toSessions() []TerminalSession {
+	var ret []TerminalSession
+	for _, t := range d.Terminals {
+		ret = append(ret, TerminalSession(t))
+	}
+	return ret
 }
 
 func newWorkspaceStateDocument(
@@ -450,9 +574,6 @@ func newWorkspaceStateDocument(
 			WindowID: f.WindowID,
 		})
 	}
-	for _, t := range state.Terminals {
-		doc.Terminals = append(doc.Terminals, terminalDoc(t))
-	}
 	for _, t := range state.Tasks {
 		doc.Tasks = append(doc.Tasks, taskDoc{
 			Name:                     t.Name,
@@ -464,6 +585,15 @@ func newWorkspaceStateDocument(
 			WindowID:                 t.WindowID,
 			WindowMinimized:          t.WindowMinimized,
 			WindowMinimizedAlignment: t.WindowMinimizedAlignment,
+		})
+	}
+	for _, e := range state.Extensions {
+		doc.Extensions = append(doc.Extensions, extensionTabDoc{
+			URI:      e.URI.String(),
+			Icon:     string(e.Icon),
+			Name:     e.Name,
+			WindowID: e.WindowID,
+			Focus:    e.Focus,
 		})
 	}
 	return doc
@@ -502,6 +632,23 @@ func (d workspaceStateDocument) toState() State {
 			WindowID:                 t.WindowID,
 			WindowMinimized:          t.WindowMinimized,
 			WindowMinimizedAlignment: t.WindowMinimizedAlignment,
+		})
+	}
+	for _, e := range d.Extensions {
+		uri, err := workspaceapi.ParseURI(e.URI)
+		if err != nil {
+			continue
+		}
+		var icon rune
+		if r, size := utf8.DecodeRuneInString(e.Icon); size > 0 {
+			icon = r
+		}
+		state.Extensions = append(state.Extensions, ExtensionTab{
+			URI:      uri,
+			Icon:     icon,
+			Name:     e.Name,
+			WindowID: e.WindowID,
+			Focus:    e.Focus,
 		})
 	}
 	return state

@@ -10,8 +10,10 @@ features and languages people actually use, and which platforms and
 versions need support. This page lists every field that leaves your
 machine, and how to stop all of it with one setting.
 
-Telemetry is on by default. Everything below is sent over HTTPS to
-`api.rune.build`.
+New installs are prompted to choose whether to enable telemetry during the
+first-run bootstrap wizard, and their choice is recorded in `config.yaml`.
+Existing configurations without an explicit setting default to enabled.
+Everything below is sent over HTTPS to `api.rune.build`.
 
 ## What Rune sends
 
@@ -21,13 +23,32 @@ There are exactly two reports.
 
 A system report is sent when Rune starts:
 
+Example startup report:
+
+```json
+{
+  "Type": "ClientSystem",
+  "InstallID": "7570ed69-3cf0-4aa4-b817-57351e31a30e",
+  "Tampered": false,
+  "InstallIDErr": "",
+  "SID": "ad560109-289a-45e3-bf74-e581ca3cc101",
+  "Version": "v0.8.2",
+  "EditorMode": "vim",
+  "SystemArquitecture": "x86_64",
+  "SystemOS": "linux",
+  "SystemName": "nua",
+  "SystemRelease": "7.2.3-arch1-3",
+  "SystemVersion": "#1 SMP PREEMPT_DYNAMIC Sun, 06 Sep 2026 13:01:04 +0000"
+}
+```
+
 | Field | Value |
 | --- | --- |
 | Install identifier | A random identifier generated the first time you run Rune. It is not derived from your hardware, your account, or anything else about you. |
 | Reset flag | Whether the install identifier appears to have been reset. See [Your install identifier](#your-install-identifier). |
 | Session identifier | A random identifier generated fresh on every launch. |
 | Rune version | The version of the running build. |
-| Editor mode | `modal`, `standard`, `emacs`, or `exo`. |
+| Editor mode | `vim`, `helix`, `standard`, `emacs`, or `exo`. |
 | Operating system | For example `darwin` or `linux`. |
 | Architecture | For example `arm64` or `x86_64`. |
 | Kernel release and version | The kernel strings your operating system reports. |
@@ -39,10 +60,31 @@ A usage report is sent every hour, and once more when you quit Rune.
 Every counter is reset after a successful report, so each one covers
 only the period since the last report:
 
+Example usage report:
+
+```json
+{
+  "Type": "ClientUsage",
+  "SID": "ad560109-289a-45e3-bf74-e581ca3cc101",
+  "EditorMode": "vim",
+  "Opened": 14,
+  "Closed": 11,
+  "Edited": 58,
+  "Flushed": 4,
+  "WatchedChanges": 9,
+  "Commands": 32,
+  "Languages": {
+    "go": 14,
+    "markdown": 2,
+    "python": 3
+  }
+}
+```
+
 | Field | Value |
 | --- | --- |
 | Session identifier | The same per-launch identifier as above. |
-| Editor mode | `modal`, `standard`, `emacs`, or `exo`. |
+| Editor mode | `vim`, `helix`, `standard`, `emacs`, or `exo`. |
 | Files opened, closed, edited, saved | Four counts. Counts only, never which files. |
 | Watched file changes | How many files changed on disk under a language server's watch. |
 | Commands run | How many commands you ran. |

@@ -319,7 +319,6 @@ an optional `fg` (foreground color), `bg` (background color), and `flags`
 | `input_box_frame_attr` | The composer's border. |
 | `input_box_frame_charset` | The character set used to draw the composer's border. |
 | `input_background_color` | The composer's background color. |
-| `context_hint_attr` | The context-usage hint shown near the composer. |
 | `completion_matched_text_attr` | The matched substring in `#` context completion results. |
 | `completion_focus_element_attr` | The selected row in the `#` context completion list. |
 | `completion_element_attr` | Unselected rows in the `#` context completion list. |
@@ -355,8 +354,6 @@ extensions:
       input_box_placeholder_attr:
         fg: red
         bg: default
-      context_hint_attr:
-        fg: red
       completion_matched_text_attr:
         fg: blue
         bg: default
@@ -373,4 +370,197 @@ extensions:
         fg: aqua
         bg: default
         flags: underline
+```
+
+## Status bar
+
+Every chat reserves its bottom row for a status bar. It stays put while you
+scroll, and it stays visible between turns: idle blanks the spinner and reads
+`READY`, while the model, effort, context and cache remain. Reopening
+a conversation fills the context gauge from its history, so the bar reflects
+how much of the window is already in use before you send anything.
+
+| Key | Type | Default | What it does |
+| --- | --- | --- | --- |
+| `status_bar.enabled` | boolean | `true` | Whether the chat reserves its bottom row for the bar. |
+| `status_bar.layout` | string | see below | Template describing what the bar shows and where. |
+| `status_bar.background_attr` | attribute | `bg: gray, fg: silver` | The bar's base attributes, matching the editor's status bar. `bg` fills the whole row, including the gaps between elements. `fg` is the foreground inherited by every layout component that does not name one of its own, so a theme can restyle the row from a single key. |
+| `status_bar.status` | map | see below | How the `Spinner` and `Status` elements dress per turn state. The keys are the text `Status` draws: `IDLE`, `SENDING`, `REASONING`, `RECEIVING`, `EXECUTING`, `COMPACTING`, `ASKING`, and `ERROR`. Each takes an `attr` colouring both elements and an `animation` of `ch`, the spinner frames one character per frame, and `attr`, which overrides the status colours for the spinner alone so the icon can carry a colour of its own. Naming one status, or one of its keys, leaves the rest on their built-in values. `ASKING` is reported while the agent waits on an answer, and is the one status that outranks a running task's description. |
+| `status_bar.gauge_empty_attr` | attribute | `fg: silver, bg: gray` | Styles the gauge's track. It sits flush with the bar, and its foreground doubles as the label color over the unfilled part. |
+| `status_bar.context_gauge_fill_attrs` | list of attribute | green, yellow, red on black | The stops the context gauge's fill ramps through, left edge to right. |
+| `status_bar.cache_gauge_fill_attrs` | list of attribute | red, yellow, green on black | The same for the cache gauge, listed backwards because a full cache is good news where a full context window is not. |
+| `status_bar.gauge_start_rune` / `status_bar.gauge_end_rune` | string | `""` / `""` | Brackets around a gauge. Each takes one cell out of `gauge_width` rather than widening the field, and an empty string drops that bracket and gives its cell back to the track. Blank by default: the ramp already marks where the track starts and ends. |
+| `status_bar.gauge_cap_attr` | attribute | `fg: green` | Styles the brackets. They sit on the bar rather than on the track, so leaving `bg` out inherits `background_attr`'s. |
+| `status_bar.gauge_width` | integer | `18` | Cell width of each gauge. |
+| `status_bar.shader` | string | none | Effect drawn over the bar while a turn runs. `blaze`, `burn`, `inferno`, `noise`, `shine` and `trippy` recolor only the text, leaving background colors and glyphs such as the `█▓▒░` fade as the layout drew them. `pulse` gently brightens the whole bar. Leave it unset or empty to keep the bar still. |
+| `status_bar.shader_fps` | integer | `30` | Cadence the effect is redrawn at. Lower it to spend less time animating the bar. |
+| `status_bar.shader_loop` | duration | `1200ms` | How long one visual loop of the effect lasts, written as a Go duration such as `2s` or `1200ms`. For `pulse` it is the length of one pulse. `blaze`, `inferno`, `noise` and `trippy` animate in real time and ignore this key; lowering `shader_fps` makes them choppier, not slower. |
+
+### Layout
+
+The layout is a template of elements written as `{{ .Name }}`. Everything
+outside an element is literal text drawn as-is, so separators, padding, and
+powerline glyphs all belong in the layout string. `{{ .ShiftRight }}` is the
+alignment pivot: elements before it hug the left edge, elements after it hug
+the right.
+
+| Element | What it shows |
+| --- | --- |
+| `Spinner` | Activity spinner. Blank while the agent is idle. Takes its colors and its animation from `status`. |
+| `Status` | What the turn is doing, or the running task's description when the agent is working through a plan. Reads `IDLE` between turns. Takes its colors from `status`, keyed by the turn's state rather than by the text shown, so a task description keeps the state's color. |
+| `Conversation` | The name of the open chat, matching its tab label. |
+| `Elapsed` | Time spent in the current turn. |
+| `Model` | The model answering the conversation. |
+| `Provider` | The provider serving that model. |
+| `Effort` | The reasoning effort in use. When the conversation sets none, this names the level the provider applies instead — and reads `default` only for providers that publish no such level. |
+| `MaxTokens` | The per-response output token budget. |
+| `TokensSent` / `TokensReceived` | Input and output tokens for the turn. |
+| `ContextTokens` / `ContextWindow` | Context occupancy and the model's total window. |
+| `ContextPct` / `CachePct` | Context occupancy and prompt cache hit rate as percentages. |
+| `Cache` | The prompt cache hit rate, as `87%`. Drops out until the conversation has sent something to report a rate on. |
+| `ContextGauge` | Fixed-width context gauge: the numbers centered on top, bracketed by `gauge_start_rune` and `gauge_end_rune`, with a color boundary marking how full the window is. |
+| `CacheGauge` | The same gauge for the prompt cache hit rate. |
+
+A gauge marks its fill with color rather than with a texture, so the numbers
+stay readable on both sides of the boundary.
+
+The fill ramps through the stops in `_fill_attrs`, spread evenly across the
+whole field rather than across the part the fill reaches — a cell keeps its
+color as the gauge grows, so how far along the ramp the boundary sits is
+itself a reading. Cells landing between two stops blend them, which is what
+keeps every cell of a wide gauge a slightly different color; name more stops
+to keep the blend closer to colors the theme defines. Reversing a gauge is a
+matter of listing its stops backwards; there is no direction setting.
+
+Any element accepts pipe operators to style it: `bg`, `fg`, `bold`, `italic`,
+`underline`, `reverse`, and `dim`. `bg` and `fg` take a hex value or a W3C
+color name. For `Spinner` and `Status`, `status` wins over `bg` and `fg`
+written in the layout, which then only apply to a state the palette does not
+cover.
+
+Shade characters such as `█▓▒░` are drawn inverted against the bar background,
+so placing them next to an element with its own `bg` fades that element out
+into the row, and reversing them to `░▒▓█` fades it back in. The default
+layout uses the first: the spinner and the status share a block that fades out
+to the right. Give every element in such a block the same `bg`, or the ones without it
+leave unpainted gaps. An element with nothing to show takes the literals
+around it down with it, so a pill never fades into an empty name. Separate two
+elements with a double space to start a new run; a single
+space belongs to the element on its left.
+
+The two gauges are fixed-width fields that already centre their label, so they
+need less padding around them than the text elements do.
+
+### Narrow terminals
+
+When the row cannot fit everything, elements drop out in a fixed order rather
+than the status text being cut short: the output budget first, then the
+conversation name, the cache gauge, the cache percentage, the provider, the
+effort, the token counts, the context numbers, the model, the context gauge,
+and finally the elapsed time. The spinner and the status text are never
+dropped; the status text clips to whatever room is left.
+
+```yaml
+extensions:
+  rune-agent:
+    config:
+      status_bar:
+        enabled: true
+        layout: ' {{ .Spinner }} {{ .Status | bold }} █▓▒░  {{ .Model | fg "white" }}  {{ .Effort }}{{ .ShiftRight }}󰗂 {{ .Cache }}  {{ .Elapsed }}  {{ .Conversation | bold | fg "white" }}  {{ .ContextGauge }} '
+        shader: pulse
+        background_attr:
+          bg: gray
+          fg: silver
+        status:
+          IDLE:
+            attr:
+              fg: white
+              bg: silver
+              flags: bold
+            animation:
+              ch: ""
+              attr:
+                fg: yellow
+          SENDING:
+            attr:
+              fg: black
+              bg: teal
+              flags: bold
+            animation:
+              ch: "⡘⡌⠆⢃⢡⠰"
+              attr:
+                fg: default
+          REASONING:
+            attr:
+              fg: white
+              bg: navy
+              flags: bold
+            animation:
+              ch: "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+              attr:
+                fg: default
+          RECEIVING:
+            attr:
+              fg: black
+              bg: magenta
+              flags: bold
+            animation:
+              ch: "⢡⢃⠆⡌⡘⠰"
+              attr:
+                fg: default
+          EXECUTING:
+            attr:
+              bg: red
+              flags: bold
+            animation:
+              ch: "⢀⢀⣀⢄⢂⢀⣀⣠⣤⣦⣧⣶⣦⣧⣦⣤⣴⣼⣴⣶⣧⣦⣤⣴⣼⣴⣶⣧⣦⣤⣴⣼⣴⣶⣧⣦⣤⣄⣀⣀⡠⡠⠔⠊⠁⠁  "
+              attr:
+                fg: default
+          COMPACTING:
+            attr:
+              bg: gray
+              flags: bold
+            animation:
+              ch: "⣉⠶⠶⠒⠒⠒⠶⠶⣉"
+              attr:
+                fg: default
+          ASKING:
+            attr:
+              fg: black
+              bg: yellow
+              flags: bold
+            animation:
+              ch: "⠁⠂⠄⡀⢀⠠⠐⠈"
+              attr:
+                fg: default
+          ERROR:
+            attr:
+              bg: maroon
+              flags: bold
+            animation:
+              ch: ""
+              attr:
+                fg: red
+        gauge_empty_attr:
+          fg: silver
+          bg: gray
+        gauge_start_rune: ""
+        gauge_end_rune: ""
+        gauge_cap_attr:
+          fg: green
+        context_gauge_fill_attrs:
+          - fg: black
+            bg: green
+          - fg: black
+            bg: yellow
+          - fg: black
+            bg: red
+        cache_gauge_fill_attrs:
+          - fg: black
+            bg: red
+          - fg: black
+            bg: yellow
+          - fg: black
+            bg: green
+        gauge_width: 18
 ```

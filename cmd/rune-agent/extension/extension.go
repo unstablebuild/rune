@@ -178,6 +178,10 @@ func (e *workspaceExtension) ExtendWorkspace(
 		return fmt.Errorf("register repl command %q: %w", agentshell.CommandName, err)
 	}
 
+	if err := w.RegisterResourceOpener(chatScheme, h); err != nil {
+		return fmt.Errorf("register %s resource opener: %w", chatScheme, err)
+	}
+
 	ed := w.Editor(ctx)
 	if err := ed.SubscribeEvents(events, h); err != nil {
 		return fmt.Errorf("subscribe events: %w", err)

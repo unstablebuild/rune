@@ -219,11 +219,9 @@ func (s *embers) processCell(x, y int, frame, total int, cells [][]term.Cell) (
 	fg := vecToCol(mix3D(
 		mix3D(ashesFg, embersFg, fgEmbersAshesFade), hotRingsFg, embersProgress*hotRings),
 	)
-	bg := vecToCol(mix3D(ashesBg, embersBg, embersAmount))
-	_ = embersAmount
 
 	cells[y][x].Fg = fg
-	cells[y][x].Bg = bg
+	cells[y][x].Bg = vecToCol(mix3D(ashesBg, embersBg, embersAmount))
 	cells[y][x].Ch = char
 
 	// A cell with a character to be visible must have width set.

@@ -42,7 +42,8 @@ func (w *recordingWriter) UnionAttributes(pos term.Coordinates, attr term.Attrib
 	w.attr = attr
 }
 
-func (w *recordingWriter) Context() context.Context { return context.Background() }
+func (w *recordingWriter) Context() context.Context  { return context.Background() }
+func (w *recordingWriter) DrawImage(term.Image) bool { return false }
 
 func gray(c term.Color) term.Color {
 	r, g, b := c.RGB()

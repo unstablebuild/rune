@@ -764,7 +764,7 @@ func (c *rawCells) singleASCIICellAt(start, end term.Coordinates) (rune, bool) {
 		return 0, false
 	}
 	cell := c.cells[start.Y][start.X]
-	if cell.Combining != nil || cell.Ch < 0 || cell.Ch >= utf8.RuneSelf {
+	if cell.CombiningRunes() != nil || cell.Ch < 0 || cell.Ch >= utf8.RuneSelf {
 		return 0, false
 	}
 	return cell.Ch, true

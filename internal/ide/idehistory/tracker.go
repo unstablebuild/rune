@@ -26,6 +26,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"unstable.build/rune/internal/text"
+	"unstable.build/rune/internal/workspace"
 )
 
 // tracker subscribes to editor events for one workspace URI and
@@ -44,8 +45,9 @@ type tracker struct {
 	ctx context.Context
 
 	files map[string]File // keyed by URI string
-	// skip lists URIs whose events should be ignored entirely.
-	skip map[string]struct{}
+	// skip lists pseudo-buffer namespaces whose events should be
+	// ignored entirely, matched by path prefix.
+	skip []workspaceapi.URI
 }
 
 // Handle implements text.EventHandler. Open/Close/Flush events trigger
@@ -57,8 +59,10 @@ func (t *tracker) Handle(ctx context.Context, ev textapi.Event) bool {
 		return false
 	}
 	uriStr := ev.URI.String()
-	if _, skip := t.skip[uriStr]; skip {
-		return false
+	for _, s := range t.skip {
+		if workspace.URIUnderPrefix(ev.URI, s) {
+			return false
+		}
 	}
 	prev, ok := t.files[uriStr]
 
@@ -108,15 +112,17 @@ func (t *tracker) Handle(ctx context.Context, ev textapi.Event) bool {
 }
 
 // persist assembles a State from the in-memory file map and the
-// snapshotter, then writes it via the Store.
+// snapshotter, then writes it via the Store. Terminal snapshots are
+// deliberately left out: they are captured once, at close.
 func (t *tracker) persist() {
 	state := t.buildState()
-	if err := t.store.StoreWorkspaceState(t.ctx, t.uri, state); err != nil {
+	if err := t.store.storeWorkspaceStateDocument(t.ctx, t.uri, state); err != nil {
 		log.WithFields(log.Fields{logging.KeyClass: "ide.idehistory"}).
 			Warnf("persist workspace state: %v", err)
 	}
 }
 
+// buildState gathers everything but the terminal snapshots.
 func (t *tracker) buildState() State {
 	files := make([]File, 0, len(t.files))
 	for _, f := range t.files {
@@ -140,8 +146,8 @@ func (t *tracker) buildState() State {
 		layout, hasLayout := t.snap.Layout()
 		state.Layout = layout
 		state.HasLayout = hasLayout
-		state.Terminals = t.snap.Terminals()
 		state.Tasks = t.snap.Tasks()
+		state.Extensions = t.snap.ExtensionTabs()
 		state.Name = t.snap.Name()
 	}
 	return state

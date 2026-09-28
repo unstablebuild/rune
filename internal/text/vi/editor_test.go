@@ -27,6 +27,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/cell"
+	"unstable.build/rune/internal/ide/vctrl"
 	"unstable.build/rune/internal/text"
 	"unstable.build/rune/internal/text/texttest"
 )
@@ -97,6 +98,79 @@ func TestEditorDispatchScroll(t *testing.T) {
 	at = term.Coordinates{X: -1}
 	h.Handle(term.Event{Type: term.EventKey, Ch: 'j'})
 	assert.Equal(t, term.Coordinates{X: -1}, at)
+}
+
+// TestEditorBarOptions pins the bar selection :gitshow depends on: the
+// caller can drop the aux and icons bars for one Edit while keeping the
+// status bar, and can redirect the status bar's git lookups at a
+// resource the editor's own configuration cannot resolve.
+func TestEditorBarOptions(t *testing.T) {
+	tick := func(fn func()) bool { fn(); return true }
+	newEditor := func() text.Editor {
+		return Editor(
+			WithAuxiliaryBar(true, text.AuxBarConfig{
+				LinesEnabled: true, ScheduleNextTick: tick,
+			}),
+			WithStatusBarConfig(true, text.StatusBarConfig{
+				Publisher:        &texttest.TestEditor{},
+				ScheduleNextTick: tick,
+			}),
+		)
+	}
+	open := func(t *testing.T, opts text.BarOptions) text.Handler {
+		t.Helper()
+		buf := cell.NewBuffer()
+		buf.WriteString("Atzari\nSurinach\n")
+		h, err := newEditor().Edit(
+			text.WithBars(context.Background(), opts),
+			workspaceapi.URI{}, buf, true, false)
+		require.NoError(t, err)
+		return h
+	}
+
+	withBars := open(t, text.BarOptions{})
+	require.IsType(t, &text.StatusBar{}, withBars)
+	full, _ := withBars.Dimensions()
+
+	disabled := open(t, text.BarOptions{DisableAuxBar: true, DisableIconsBar: true})
+	require.IsType(t, &text.StatusBar{}, disabled,
+		"disabling the aux bar must leave the status bar installed")
+	narrow, _ := disabled.Dimensions()
+	assert.Less(t, narrow, full,
+		"without the aux bar the handler must not claim its gutter")
+}
+
+func TestEditorStatusBarOverride(t *testing.T) {
+	tick := func(fn func()) bool { fn(); return true }
+	base, err := workspaceapi.ParseURI("memory:///gitshow")
+	require.NoError(t, err)
+	file, err := workspaceapi.ParseURI("memory:///gitshow/hello.go.diff")
+	require.NoError(t, err)
+
+	ed := Editor(WithStatusBarConfig(true, text.StatusBarConfig{
+		Publisher:        &texttest.TestEditor{},
+		ScheduleNextTick: tick,
+		Layout: []text.StatusBarComponent{
+			{Type: text.StatusBarFilePath, Template: "%s"},
+		},
+	}))
+	buf := cell.NewBuffer()
+	buf.WriteString("--- a/hello.go\n")
+	h, err := ed.Edit(text.WithBars(context.Background(), text.BarOptions{
+		StatusBar: &text.StatusBarOverride{
+			Workspace: base, GitService: vctrl.NopService(),
+		},
+	}), file, buf, true, false)
+	require.NoError(t, err)
+
+	h.Resize(40, 4)
+	w := term.NewStringWriter(40, 4)
+	h.Draw(w)
+	require.NoError(t, w.Flush())
+	assert.Contains(t, w.String(), "hello.go.diff",
+		"the status bar must resolve the path against the override base")
+	assert.NotContains(t, w.String(), "memory:",
+		"the popup path must not fall back to the whole URI")
 }
 
 func TestEditorDispatchCursor(t *testing.T) {

@@ -34,7 +34,7 @@ import (
 )
 
 // outOfRootPollInterval bounds how long an out-of-root tab can show stale
-// content after an external change. A var so tests can shorten it.
+// content after an external change.
 var outOfRootPollInterval = 2 * time.Second
 
 var outOfRootTabEvents = []textapi.EventType{
@@ -55,17 +55,17 @@ type statScheme interface {
 // fact, so watching the parent of a file in $HOME would stream every change
 // under $HOME. The backend belongs to the workspace host, which may differ
 // from the local OS, so it cannot be special-cased. Remote workspaces are
-// not polled, since every Stat would be a round trip.
+// not polled at all, since every Stat would be a round trip.
 //
-// Changes go straight to handleFSChange instead of being dispatched as
-// editor events, so LSP servers and extensions keep seeing only in-root
-// filesystem events.
+// Changes are handed to handleFSChange on the host scheduler, not published
+// as editor events, so LSP servers and extensions keep seeing only in-root
+// filesystem events. handleFSChange also drops them for externally-managed
+// editors, which install a watcher of their own.
 type outOfRootWatcher struct {
-	ex     *ex
-	scheme statScheme
-	// uiMu is the lock handleFSChange runs under.
-	uiMu     sync.Locker
-	root     string
+	ex       *ex
+	scheme   statScheme
+	root     workspaceapi.URI
+	rootPath string
 	interval time.Duration
 	enabled  bool
 
@@ -82,24 +82,34 @@ type outOfRootTab struct {
 	state fileState
 }
 
+// fileState is the last observation of a file. A state that is not known
+// (the initial Stat failed) is never compared, so a transient failure cannot
+// be mistaken for the file having been created or removed.
 type fileState struct {
+	known   bool
 	exists  bool
 	modTime time.Time
 	size    int64
 }
 
 func newOutOfRootWatcher(
-	e *ex, m workspace.Workspace, root workspaceapi.URI, uiMu sync.Locker,
+	e *ex, m workspace.Workspace, root workspaceapi.URI,
 ) *outOfRootWatcher {
-	return &outOfRootWatcher{
+	ctx, cancel := context.WithCancel(context.Background())
+	w := &outOfRootWatcher{
 		ex:       e,
 		scheme:   m,
-		uiMu:     uiMu,
-		root:     resolvePath(root.Path()),
+		root:     root,
+		rootPath: resolvePath(root.Path()),
 		interval: outOfRootPollInterval,
 		enabled:  !isRemoteWorkspace(m),
 		tabs:     make(map[string]*outOfRootTab),
+		cancel:   cancel,
 	}
+	if w.enabled {
+		w.startPolling(ctx)
+	}
+	return w
 }
 
 func isRemoteWorkspace(m workspace.Workspace) bool {
@@ -135,11 +145,13 @@ func (w *outOfRootWatcher) Handle(_ context.Context, ev textapi.Event) bool {
 }
 
 func (w *outOfRootWatcher) isOutOfRoot(uri workspaceapi.URI) bool {
-	// Internal tabs (memory://, terminals) have no file on disk.
-	if uri.Scheme() != "file" || !filepath.IsAbs(uri.Path()) {
+	// A URI on another scheme or host is not reachable through this
+	// workspace, and internal tabs (memory://, terminals) have no file.
+	sameRoot, err := workspaceapi.WithPath(uri, w.root.Path())
+	if err != nil || !sameRoot.Equal(w.root) || !filepath.IsAbs(uri.Path()) {
 		return false
 	}
-	rel, err := filepath.Rel(w.root, resolvePath(uri.Path()))
+	rel, err := filepath.Rel(w.rootPath, resolvePath(uri.Path()))
 	if err != nil {
 		return true
 	}
@@ -154,34 +166,20 @@ func (w *outOfRootWatcher) add(uri workspaceapi.URI) {
 		return
 	}
 	w.tabs[uri.String()] = &outOfRootTab{uri: uri, state: state}
-	if w.cancel == nil {
-		ctx, cancel := context.WithCancel(context.Background())
-		w.cancel = cancel
-		w.polls.Add(1)
-		go debug.CapturePanicReport(func() {
-			defer w.polls.Done()
-			w.poll(ctx)
-		})
-	}
 }
 
 func (w *outOfRootWatcher) remove(uri workspaceapi.URI) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if _, ok := w.tabs[uri.String()]; !ok {
-		return
-	}
 	delete(w.tabs, uri.String())
-	if len(w.tabs) == 0 {
-		w.stopPolling()
-	}
 }
 
-func (w *outOfRootWatcher) stopPolling() {
-	if w.cancel != nil {
-		w.cancel()
-		w.cancel = nil
-	}
+func (w *outOfRootWatcher) startPolling(ctx context.Context) {
+	w.polls.Add(1)
+	go debug.CapturePanicReport(func() {
+		defer w.polls.Done()
+		w.poll(ctx)
+	})
 }
 
 func (w *outOfRootWatcher) poll(ctx context.Context) {
@@ -197,8 +195,8 @@ func (w *outOfRootWatcher) poll(ctx context.Context) {
 	}
 }
 
-// pollOnce stats every tab without holding any lock, then reports the
-// changes under uiMu, as the workspace watcher does.
+// pollOnce stats every tracked file off the host goroutine and reports only
+// the files whose state actually changed.
 func (w *outOfRootWatcher) pollOnce(ctx context.Context) {
 	w.mu.Lock()
 	uris := make([]workspaceapi.URI, 0, len(w.tabs))
@@ -210,36 +208,51 @@ func (w *outOfRootWatcher) pollOnce(ctx context.Context) {
 	for _, uri := range uris {
 		state, err := w.statErr(uri)
 		if err != nil {
-			// Transient: the previous state is kept, so the change is
+			// Transient: the last known state is kept, so the change is
 			// reported by the first poll that succeeds.
 			w.ex.log(log.DebugLevel, "poll out-of-root tab %s: %v", uri, err)
 			continue
 		}
-		w.report(ctx, uri, state)
+		flag, changed := w.observe(uri, state)
+		if !changed {
+			continue
+		}
+		w.report(ctx, uri, flag)
 	}
 }
 
-func (w *outOfRootWatcher) report(ctx context.Context, uri workspaceapi.URI, state fileState) {
-	w.uiMu.Lock()
-	defer w.uiMu.Unlock()
-	if ctx.Err() != nil {
-		return
-	}
+// observe records the new state of uri and reports how it changed.
+func (w *outOfRootWatcher) observe(
+	uri workspaceapi.URI, state fileState,
+) (schemeapi.Event, bool) {
 	w.mu.Lock()
+	defer w.mu.Unlock()
 	tab, ok := w.tabs[uri.String()]
-	var flag schemeapi.Event
-	var changed bool
-	if ok {
-		flag, changed = fileChange(tab.state, state)
-		tab.state = state
+	if !ok {
+		return 0, false
 	}
-	w.mu.Unlock()
-	if changed {
-		handleFSChange(w.ex, flag, uri)
-	}
+	flag, changed := fileChange(tab.state, state)
+	tab.state = state
+	return flag, changed
+}
+
+// report hands the change to the host scheduler, where handleFSChange runs
+// under the same lock as the workspace watcher's own dispatch.
+func (w *outOfRootWatcher) report(
+	ctx context.Context, uri workspaceapi.URI, flag schemeapi.Event,
+) {
+	w.ex.sched(func() {
+		if ctx.Err() != nil || w.ex.closed {
+			return
+		}
+		handleFSChange(w.ex, flag, uri, nil)
+	})
 }
 
 func fileChange(prev, cur fileState) (schemeapi.Event, bool) {
+	if !prev.known {
+		return 0, false
+	}
 	switch {
 	case !prev.exists && cur.exists:
 		return schemeapi.Create, true
@@ -252,29 +265,37 @@ func fileChange(prev, cur fileState) (schemeapi.Event, bool) {
 }
 
 func (w *outOfRootWatcher) stat(uri workspaceapi.URI) fileState {
-	state, _ := w.statErr(uri)
+	state, err := w.statErr(uri)
+	if err != nil {
+		w.ex.log(log.DebugLevel, "stat out-of-root tab %s: %v", uri, err)
+	}
 	return state
 }
 
 func (w *outOfRootWatcher) statErr(uri workspaceapi.URI) (fileState, error) {
 	info, err := w.scheme.Stat(uri.Path())
 	if errors.Is(err, os.ErrNotExist) {
-		return fileState{}, nil
+		return fileState{known: true}, nil
 	}
 	if err != nil {
 		return fileState{}, err
 	}
-	return fileState{exists: true, modTime: info.ModTime(), size: info.Size()}, nil
+	return fileState{
+		known:   true,
+		exists:  true,
+		modTime: info.ModTime(),
+		size:    info.Size(),
+	}, nil
 }
 
 // Close stops polling. It does not wait for the poll goroutine, which may be
-// blocked on the UI lock Close is called under.
+// blocked on the host scheduler Close is called from.
 func (w *outOfRootWatcher) Close() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.closed = true
 	clear(w.tabs)
-	w.stopPolling()
+	w.cancel()
 }
 
 // wait blocks until the poll goroutine has exited. It should be used for

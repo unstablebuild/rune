@@ -2460,6 +2460,12 @@ func (c *Cursor) SetCommentSpec(spec CommentSpec) {
 	c.commentSpec = spec
 }
 
+// CommentSpec returns the active language-specific comment delimiters,
+// the zero value when none were set.
+func (c *Cursor) CommentSpec() CommentSpec {
+	return c.commentSpec
+}
+
 // InsertBlock inserts a string in a block-wise fashion meaning it
 // will insert each of the lines at corresponding relative x and y positions
 // shifting content to the right accordingly.
@@ -2644,7 +2650,10 @@ func (c *Cursor) Backspace() (ok bool) {
 }
 
 // BackspaceWord deletes from the current cursor position back to the start of
-// the previous word, using the cursor's existing word-motion semantics.
+// the previous word, using the cursor's existing word-motion semantics. A line
+// ending is a word boundary: only a cursor at the start of a line reaches back
+// into the previous one, and then removes the line ending with the word or
+// spaces before it.
 func (c *Cursor) BackspaceWord() (ok bool) {
 	end := c.CursorAtScroll()
 	start, ok := c.previousCellPosition(end)
@@ -2657,10 +2666,17 @@ func (c *Cursor) BackspaceWord() (ok bool) {
 		return false
 	}
 	class := c.wordClass(cell.Ch, false)
+	prevInRow := func(pos term.Coordinates) (term.Coordinates, bool) {
+		prev, ok := c.previousCellPosition(pos)
+		if !ok || prev.Y != pos.Y {
+			return term.Coordinates{}, false
+		}
+		return prev, true
+	}
 
 	if class == 0 {
 		for {
-			prev, ok := c.previousCellPosition(start)
+			prev, ok := prevInRow(start)
 			if !ok {
 				break
 			}
@@ -2671,7 +2687,7 @@ func (c *Cursor) BackspaceWord() (ok bool) {
 			start = prev
 		}
 
-		prev, ok := c.previousCellPosition(start)
+		prev, ok := prevInRow(start)
 		if !ok {
 			if !c.SelectRange(start, end) {
 				return false
@@ -2690,7 +2706,7 @@ func (c *Cursor) BackspaceWord() (ok bool) {
 	}
 
 	for {
-		prev, ok := c.previousCellPosition(start)
+		prev, ok := prevInRow(start)
 		if !ok {
 			break
 		}

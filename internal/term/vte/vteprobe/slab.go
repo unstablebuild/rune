@@ -115,10 +115,8 @@ func (s *Slab) expandCellsInto(line []term.Cell, tabstop int) []rune {
 	for _, cell := range line {
 		if cell.Ch != '\t' {
 			s.runes = appendRune(s.runes, &s.used, cell.Ch)
-			if cell.Combining != nil {
-				for _, comb := range *cell.Combining {
-					s.runes = appendRune(s.runes, &s.used, comb)
-				}
+			for _, comb := range cell.CombiningRunes() {
+				s.runes = appendRune(s.runes, &s.used, comb)
 			}
 			col++
 			continue

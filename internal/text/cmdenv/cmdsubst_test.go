@@ -396,7 +396,7 @@ func (e *recordingExecutor) Close() error { return nil }
 func (e *recordingExecutor) NewPty(context.Context) (workspaceapi.Pty, error) {
 	return workspaceapi.Pty{}, errors.New("recordingExecutor: no pty")
 }
-func (e *recordingExecutor) SetPtySize(workspaceapi.Pty, int, int) error {
+func (e *recordingExecutor) SetPtySize(workspaceapi.Pty, workspaceapi.PtySize) error {
 	return nil
 }
 
@@ -450,7 +450,7 @@ func (e *osExecutor) Close() error                                  { return nil
 func (e *osExecutor) NewPty(context.Context) (workspaceapi.Pty, error) {
 	return workspaceapi.Pty{}, nil
 }
-func (e *osExecutor) SetPtySize(workspaceapi.Pty, int, int) error { return nil }
+func (e *osExecutor) SetPtySize(workspaceapi.Pty, workspaceapi.PtySize) error { return nil }
 
 // recursiveExecutor returns a different canned stdout per call.
 // Calls past len(responses) error.
@@ -493,7 +493,7 @@ func (e *recursiveExecutor) Close() error { return nil }
 func (e *recursiveExecutor) NewPty(context.Context) (workspaceapi.Pty, error) {
 	return workspaceapi.Pty{}, errors.New("recursiveExecutor: no pty")
 }
-func (e *recursiveExecutor) SetPtySize(workspaceapi.Pty, int, int) error {
+func (e *recursiveExecutor) SetPtySize(workspaceapi.Pty, workspaceapi.PtySize) error {
 	return nil
 }
 

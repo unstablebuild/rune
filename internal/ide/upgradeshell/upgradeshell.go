@@ -54,11 +54,16 @@ type Config struct {
 	// Manager performs the manifest check, the confirmation prompt
 	// and the in-place upgrade.
 	Manager *ideupgrade.Manager
+	// OSPackaged reports that an OS package manager installed this
+	// build. The command then explains where updates come from
+	// instead of reaching for the network.
+	OSPackaged bool
 }
 
 // Handler implements the `upgrade` command.
 type Handler struct {
-	mgr *ideupgrade.Manager
+	mgr        *ideupgrade.Manager
+	osPackaged bool
 }
 
 var _ textapi.REPLHandler = (*Handler)(nil)
@@ -71,8 +76,15 @@ func New(cfg Config) *Handler {
 	if cfg.Manager == nil {
 		panic("upgradeshell: Config.Manager must not be nil")
 	}
-	return &Handler{mgr: cfg.Manager}
+	return &Handler{mgr: cfg.Manager, osPackaged: cfg.OSPackaged}
 }
+
+// osPackagedMessage is shown instead of running an upgrade when the
+// build came from an OS package: the install prefix belongs to the
+// package manager, which is also where the next version comes from.
+const osPackagedMessage = "This build was distributed by an OS package " +
+	"manager, so auto-updates are disabled. Check your distribution's " +
+	"package manager for updates."
 
 // HandleCommand satisfies repl.CommandHandler. It runs off the IDE
 // event loop, which is what lets it block on both the network fetch
@@ -93,6 +105,10 @@ func (h *Handler) upgrade(
 ) (string, error) {
 	if len(cmd.Args) > 0 && cmd.Args[0] == "help" {
 		return usageMarkdown(), nil
+	}
+
+	if h.osPackaged {
+		return osPackagedMessage, nil
 	}
 
 	pw.Progress(0, 1, "checking for updates")

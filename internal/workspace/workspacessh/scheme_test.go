@@ -118,6 +118,8 @@ func TestURI(t *testing.T) {
 			"ssh://ernest.photography/home/git", ""},
 		{"relative upwards workspace tree ./ path", "ssh://ernest.photography/home/git/src/blue", "./../../file.txt",
 			"ssh://ernest.photography/home/git/file.txt", ""},
+		{"dollar in name is literal", "ssh://ernest.photography/home/git/src", "routes/$RUNE_TEST_UNSET_VAR/f",
+			"ssh://ernest.photography/home/git/src/routes/$RUNE_TEST_UNSET_VAR/f", ""},
 	}
 
 	for _, tcase := range tsuite {

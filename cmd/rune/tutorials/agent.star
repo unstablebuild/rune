@@ -18,27 +18,25 @@
 # agent.star — the Rune Agent tutorial.
 
 ck = command_key()
+mode = editor_mode()
 
-if editor_mode() == "modal":
-    shell_esc_step = "1. Press `<esc>` to enter modal mode.\n"
+# A focused console is in INSERT mode under a modal editor, so the
+# command key would be typed into the shell line instead.
+if mode == "vim" or mode == "helix":
+    shell_esc_step = "1. Press `<esc>` to go back to NORMAL mode.\n\n"
     shell_prompt_step_num = "2"
     shell_run_step_num = "3"
-    esc_allow_keys = ["<esc>"]
 else:
     shell_esc_step = ""
     shell_prompt_step_num = "1"
     shell_run_step_num = "2"
-    esc_allow_keys = []
 
 def keypress(cmd, *args):
     k = key_for(cmd, *args)
     if k:
         return "press `" + k + "`"
-    return "open the command prompt (`" + ck + "`) and run `" + cmd + "`"
-
-def dismiss_for(cmd, *args):
-    k = key_for(cmd, *args)
-    return [ck, k] if k else [ck]
+    return ("open the command prompt (`" + ck + "`) and run `" +
+            cmd + ((" " + " ".join(args)) if len(args) else "") + "`")
 
 cleanup_md = """\
 Let's start fresh. Clear the layout: """ + keypress("windowcloseall") + """.
@@ -49,88 +47,94 @@ The **Rune Agent** is Rune's builtin AI coding assistant. It ships as a
 package you install on demand, so the first step is to install it.
 
 Packages are installed from the **Rune console**, which is not the
-command prompt you have been using. The prompt (`""" + ck + """`) is the
-one-line prompt that closes again as soon as the command runs. The
-console is a separate, durable tab with its own REPL, wired with the
-commands that want a persistent output window, like installing a package
-or checking an extension's status.
+command prompt you have been using.
+
+- The prompt (`""" + ck + """`) is one line, and closes again as soon as
+  the command runs.
+
+- The console is a separate, durable tab with its own REPL, for the
+  commands that want a persistent output window — installing a package,
+  checking an extension's status.
 
 The console **sets up** Rune, the prompt **drives** it.
 
 Open the console now:
 
 1. Press `""" + ck + """` to open the command prompt.
+
 2. Type `console` and press Enter.
 """
 
 agent_pkg_install_md = """\
-You're in Rune's console now: type `pkg install rune-agent` and press
-Enter. The install takes a few seconds; this hint clears once it
-finishes.
+You're in Rune's console now.
+
+- Type `pkg install rune-agent` and press `<enter>`.
+
+- The install takes a few seconds. This step clears once it finishes.
+
+If the agent is already installed, press **Skip** below to move on.
 """
 
 agent_open_md = """\
 Start a conversation with the agent using the `agent` command.
 
 """ + shell_esc_step + shell_prompt_step_num + """. Press `""" + ck + """` to open the command prompt.
+
 """ + shell_run_step_num + """. Run `agent`.
 
-`agent` takes two optional arguments: a conversation name and a model.
-Run `agent <name>` to name the conversation, or `agent <name> <model>`
-to also pick the model. With no arguments, the agent starts a new
-conversation using your default provider.
+`agent` takes two optional arguments, a conversation name and a model:
 
-Press `<enter>` or `<space>` to continue.
+- `agent` alone starts a new conversation on your default provider.
+
+- `agent <name>` names the conversation.
+
+- `agent <name> <model>` names it and picks the model.
 """
 
 help_md = """\
-You're almost done. A few tips worth remembering:
+You're almost done 🎉 A few tips worth remembering:
 
 - If you find yourself wondering what commands you typed on a previous session, press
   `<meta-r>` to open the command prompt in history mode and search through your command history.
+
+- If you need a hand, or want to learn about hacking on Rune, join us on
+  Discord: https://discord.gg/quxhV7khwg 👾 hold `<meta>` and click the
+  link to open it in your browser.
+
 - There's a `help` command that opens the documentation on a separate workspace
   and fires a help agent that you can ask questions.
 
-Try it now: """ + keypress("help") + """. Happy hacking!
+Try it now: """ + keypress("help") + """.
+
+Happy hacking 🔥
 """
 
-def teach_provider(provider, label, action_tokens, run_md, success_msg):
-    title = "Connect " + label
-    floating_window(title = title, text = run_md, alignment = "top")
+def teach_provider(provider, label, action_tokens, run_md):
     wait_shell(
-        title    = title,
-        args     = ["models", "providers", provider] + action_tokens,
-        on_error = ("In Rune's console, run `models providers " +
-                    provider + " " + " ".join(action_tokens) + "`."),
+        title = "Connect " + label,
+        args  = ["models", "providers", provider] + action_tokens,
+        text  = run_md,
     )
-    notify(level = success, message = success_msg)
 
 def teach_cleanup():
-    floating_window(title = "Clear the layout", text = cleanup_md,
-                    dismiss_keys = dismiss_for("windowcloseall"))
     wait_command(
-        title    = "Clear the layout",
-        command  = "windowcloseall",
-        on_error = "Close every window except the focused one with `<cmd>windowcloseall`.",
+        title   = "Clear the layout",
+        command = "windowcloseall",
+        text    = cleanup_md,
     )
-    notify(level = success, message = "Layout cleared.")
 
 def teach_agent():
-    floating_window(title = "Set up the Rune Agent", text = agent_install_md,
-                    dismiss_keys = [ck])
     wait_command(
-        title    = "Set up the Rune Agent",
-        command  = "console",
-        on_error = "Open Rune's console: run the `<cmd>console` command.",
+        title   = "Set up the Rune Agent",
+        command = "console",
+        text    = agent_install_md,
     )
 
     wait_shell(
-        title    = "Install the agent package",
-        args     = ["pkg", "install", "rune-agent"],
-        text     = agent_pkg_install_md,
-        on_error = "In Rune's console, run `pkg install rune-agent`.",
+        title = "Install the agent package",
+        args  = ["pkg", "install", "rune-agent"],
+        text  = agent_pkg_install_md,
     )
-    notify(level = success, message = "Rune Agent installed.")
 
     pick = choice(
         message = ("Which provider do you want to connect?\n\n" +
@@ -158,11 +162,8 @@ written to your config file.
 
 1. In Rune's console, run `models providers openai add default`.
 2. Paste your API key at the redacted prompt.
-
-Press `<enter>` or `<space>` to continue.
 """
-        teach_provider("openai", "OpenAI", ["add", "default"], run_md,
-                       "OpenAI connected.")
+        teach_provider("openai", "OpenAI", ["add", "default"], run_md)
     elif pick.value == "Anthropic":
         run_md = """\
 Add your Anthropic credentials. The key is stored securely and never
@@ -170,11 +171,8 @@ written to your config file.
 
 1. In Rune's console, run `models providers anthropic add default`.
 2. Paste your API key at the redacted prompt.
-
-Press `<enter>` or `<space>` to continue.
 """
-        teach_provider("anthropic", "Anthropic", ["add", "default"], run_md,
-                       "Anthropic connected.")
+        teach_provider("anthropic", "Anthropic", ["add", "default"], run_md)
     elif pick.value == "Gemini":
         run_md = """\
 Add your Gemini credentials. The key is stored securely and never
@@ -182,21 +180,16 @@ written to your config file.
 
 1. In Rune's console, run `models providers gemini add default`.
 2. Paste your API key at the redacted prompt.
-
-Press `<enter>` or `<space>` to continue.
 """
-        teach_provider("gemini", "Gemini", ["add", "default"], run_md,
-                       "Gemini connected.")
+        teach_provider("gemini", "Gemini", ["add", "default"], run_md)
     elif pick.value == "Codex":
         run_md = """\
 Codex authenticates through your browser. No API key is needed.
 
 1. In Rune's console, run `models providers codex login`.
 2. Finish the sign-in in your browser.
-
-Press `<enter>` or `<space>` to continue.
 """
-        teach_provider("codex", "Codex", ["login"], run_md, "Codex connected.")
+        teach_provider("codex", "Codex", ["login"], run_md)
     else:
         run_md = """\
 Claude signs in through your browser with your Claude Pro or Max
@@ -211,36 +204,30 @@ API key instead.
 
 1. In Rune's console, run `models providers claude login`.
 2. Finish the sign-in in your browser.
-
-Press `<enter>` or `<space>` to continue.
 """
-        teach_provider("claude", "Claude", ["login"], run_md, "Claude connected.")
+        teach_provider("claude", "Claude", ["login"], run_md)
 
-    floating_window(title = "Open the Rune Agent", text = agent_open_md,
-                    allow_keys = esc_allow_keys,
-                    dismiss_keys = [ck])
     wait_command(
-        title    = "Open the Rune Agent",
-        command  = "agent",
-        on_error = ("Run `<cmd>agent` to start a conversation. Add an " +
-                    "optional conversation name and model: " +
-                    "`<cmd>agent <name> <model>`."),
+        title   = "Open the Rune Agent",
+        command = "agent",
+        text    = agent_open_md,
     )
-    notify(level = success, message = "Rune Agent is ready.")
 
 def teach_help():
-    floating_window(title = "One last thing", text = help_md,
-                    dismiss_keys = dismiss_for("help"))
     wait_command(
-        title    = "One last thing",
-        command  = "help",
-        on_error = "Run the `<cmd>help` command to open the docs and ask the help agent.",
+        title   = "One last thing",
+        command = "help",
+        text    = help_md,
     )
-    notify(level = success, message = "That is the help command.")
 
 def run():
+    if not workspace_open():
+        fail("Open a workspace first before running this tutorial. Open the " +
+             "command prompt with `" + ck + "` and run `workspaceopen`.")
+        return
+
     teach_cleanup()
     teach_agent()
     teach_help()
 
-tutorial(id = "agent", title = "Rune Agent", version = "4", entry = run)
+tutorial(id = "agent", title = "Rune Agent", version = "13", entry = run)

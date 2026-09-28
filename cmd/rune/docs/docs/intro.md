@@ -41,7 +41,9 @@ Rune runs on macOS and Linux. Find your platform below for the specifics.
   the system OpenGL and X11 libraries installed and an OpenGL-capable driver.
   On a minimal or headless install you may need to add your distribution's
   OpenGL (Mesa) and X11 client library packages. Most desktop installs
-  already include them.
+  already include them. This applies to the windowed editor only: `rune
+  --tui` and `rune --headless` load no graphical library and run on a
+  machine that has none.
 
 ## Install
 
@@ -54,11 +56,13 @@ tutorial that runs inside the IDE.
 
 ### 1. Pick your key bindings
 
-Rune ships with three built-in editors, so pick the one that feels like home:
+Rune ships with four built-in editors, so pick the one that feels like home:
 
 - **standard**, if you come from VS Code, Cursor, Sublime, or a plain text editor.
 - **vim**, if you come from Vim or Neovim and want modal editing everywhere.
 - **emacs**, if you come from GNU Emacs and want an Emacs-style keymap everywhere.
+- **helix**, if you come from Helix and want its selection-first grammar, where
+  a motion picks the target and the operator acts on it.
 
 The choice applies everywhere, not just in editor buffers: terminals, input
 boxes, and the file explorer all follow it. Rune writes the matching preset
@@ -93,9 +97,10 @@ debugging, terminals, and tasks ship in the box.
 ### 2. Run the basics tutorial
 
 Rune starts the **basics** tutorial for you right after the first-run setup.
-It renders as an overlay on top of the real IDE, using your bindings and your
+It runs in a pane beside the real IDE, using your bindings and your
 theme, and it advances when you actually run the command it asks for, not when
-you click through a slideshow.
+you click through a slideshow. **Skip** moves past a step; **Stop** ends the
+lesson.
 
 Have a project directory handy. The first step asks you to open it as a
 workspace.

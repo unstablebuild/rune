@@ -24,7 +24,7 @@ require (
 	github.com/sourcegraph/go-diff v0.7.0
 	github.com/spf13/pflag v1.0.10
 	github.com/stretchr/testify v1.12.1
-	github.com/unstablebuild/rune-go-sdk v0.2.1
+	github.com/unstablebuild/rune-go-sdk v0.7.0
 	github.com/unstablebuild/tcell/v3 v3.6.5
 	go.uber.org/goleak v1.3.0
 	golang.org/x/crypto v0.56.0
@@ -72,7 +72,7 @@ require (
 	github.com/tidwall/gjson v1.18.0
 	github.com/tidwall/sjson v1.2.5
 	github.com/tree-sitter/go-tree-sitter v0.25.0
-	github.com/unstablebuild/blue v1.84.1
+	github.com/unstablebuild/blue v1.85.0
 	github.com/unstablebuild/notify v0.10.4
 	github.com/unstablebuild/pty v1.3.1
 	github.com/yuin/goldmark v1.7.1
@@ -258,6 +258,6 @@ replace github.com/go-git/go-billy/v6 => github.com/unstablebuild/go-billy/v6 v6
 
 replace github.com/go-git/go-git/v6 => github.com/unstablebuild/go-git/v6 v6.0.1-ub.1
 
-replace github.com/tree-sitter/go-tree-sitter => github.com/unstablebuild/go-tree-sitter v0.25.0-ub.1
+replace github.com/tree-sitter/go-tree-sitter => github.com/unstablebuild/go-tree-sitter v0.25.0-ub.2
 
 replace github.com/hajimehoshi/ebiten/v2 => github.com/unstablebuild/ebiten/v2 v2.7.5-ub.32

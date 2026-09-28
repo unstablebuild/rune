@@ -17,16 +17,39 @@
 package main
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	sdkhandler "github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
 
+	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/ide"
 )
 
+func TestTelemetryOptionToChoiceMapping(t *testing.T) {
+	require.Equal(t, " yes ", optTelemetryYes)
+	require.Equal(t, " no thanks ", optTelemetryNo)
+
+	cases := []struct {
+		option string
+		want   bool
+	}{
+		{optTelemetryYes, true},
+		{optTelemetryNo, false},
+		{"unknown", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.option, func(t *testing.T) {
+			require.Equal(t, tc.want, telemetryOptionToChoice(tc.option))
+		})
+	}
+}
 func TestOptionToChoiceMapping(t *testing.T) {
 	require.Equal(t, " standard ", optStandard)
 
@@ -34,10 +57,11 @@ func TestOptionToChoiceMapping(t *testing.T) {
 		option string
 		want   string
 	}{
-		{optVimYes, editorModal},
+		{optVimYes, editorVim},
 		{optStandard, editorStandard},
 		{optEmacs, editorEmacs},
-		{"unknown", editorModal}, // default fallback
+		{optHelix, editorHelix},
+		{"unknown", editorVim}, // default fallback
 	}
 	for _, tc := range cases {
 		t.Run(tc.option, func(t *testing.T) {
@@ -46,31 +70,58 @@ func TestOptionToChoiceMapping(t *testing.T) {
 	}
 }
 
-// TestRenderPreset pins that the vim-mode choice maps to the modal
+// TestRenderPreset pins that the vim choice maps to the vim
 // preset, the standard-editor choice maps to the standard preset
 // (which switches editor.mode to standard), the emacs choice maps to
 // the emacs preset, the deprecated modeless alias resolves to the
 // standard preset, and that an unknown choice is an error.
 func TestRenderPreset(t *testing.T) {
-	modal, err := renderPreset(editorModal)
+	vim, err := renderPreset(editorVim, false)
 	require.NoError(t, err)
-	require.NotContains(t, modal, "mode: standard",
+	require.NotContains(t, vim, "mode: standard",
 		"vim mode must not switch the editor into standard")
+	require.NotContains(t, vim, "modal editor preset",
+		"the preset written to the user config must not name the retired mode")
+	require.Contains(t, vim, "enabled: false",
+		"telemetry=false must render enabled: false")
 
-	std, err := renderPreset(editorStandard)
+	std, err := renderPreset(editorStandard, true)
 	require.NoError(t, err)
 	require.Contains(t, std, "mode: standard",
 		"the standard choice must switch the editor into standard")
+	require.Contains(t, std, "enabled: true",
+		"telemetry=true must render enabled: true")
 
-	deprecated, err := renderPreset(editorModeless)
+	deprecated, err := renderPreset(editorModeless, true)
 	require.NoError(t, err)
 	require.Equal(t, std, deprecated,
 		"the deprecated modeless alias must resolve to the standard preset")
 
-	ema, err := renderPreset(editorEmacs)
+	ema, err := renderPreset(editorEmacs, false)
 	require.NoError(t, err)
+	require.Contains(t, ema, "enabled: false",
+		"telemetry=false must render enabled: false")
 	require.Contains(t, ema, "mode: emacs",
 		"the emacs choice must switch the editor into emacs")
+
+	hx, err := renderPreset(editorHelix, true)
+	require.NoError(t, err)
+	require.Contains(t, hx, "mode: helix",
+		"the helix choice must switch the editor into helix")
+	require.Contains(t, hx, "enabled: true",
+		"telemetry=true must render enabled: true")
+	for _, binding := range []string{
+		`"<space>f": searchfile`,
+		`"<space>e": fexplorer`,
+		`"<space>b": tabsearch`,
+		`"<space>/": searchtext`,
+		`"<ctrl-w>v": "windownew right"`,
+	} {
+		require.Contains(t, hx, binding,
+			"helix must reach commands through its <space> and <ctrl-w> menus")
+	}
+	require.NotContains(t, hx, `"<alt-d>"`,
+		"helix keeps <alt> for its own grammar")
 	require.Contains(t, ema, `"<meta-f>": "windowfocus right"`,
 		"emacs must use the PNBF direction layer for window focus")
 	require.Contains(t, ema, `"<ctrl-x>u": "undo prefix"`,
@@ -104,7 +155,7 @@ func TestRenderPreset(t *testing.T) {
 		`"<meta-f>": "echo {prompt}jumptoast<space>locals.scm<space>`,
 		"the displaced function search binding must remain prompt-only")
 
-	_, err = renderPreset("bogus")
+	_, err = renderPreset("bogus", true)
 	require.Error(t, err)
 }
 
@@ -248,4 +299,119 @@ func TestBootstrapFontSizeDelta(t *testing.T) {
 
 func namedKeyEv(k term.Key) term.Event {
 	return term.Event{Type: term.EventKey, Key: k}
+}
+
+type fakePromptCall struct {
+	message  string
+	options  []string
+	bindings []term.KeyComb
+	handler  sdkhandler.PromptHandler
+}
+
+type fakeBootstrapPrompter struct {
+	prompts []fakePromptCall
+}
+
+func (f *fakeBootstrapPrompter) Prompt(message string, options []string, bindings []term.KeyComb, h sdkhandler.PromptHandler) browser.Window {
+	f.prompts = append(f.prompts, fakePromptCall{
+		message:  message,
+		options:  options,
+		bindings: bindings,
+		handler:  h,
+	})
+	return nil
+}
+
+func TestBootstrapPromptProgression(t *testing.T) {
+	prompter := &fakeBootstrapPrompter{}
+	b := &bootstrapHandler{
+		prompter:     prompter,
+		publishEvent: func(term.Event) bool { return true },
+	}
+
+	b.openWelcomePrompt()
+	require.Len(t, prompter.prompts, 1)
+	require.Equal(t, []string{optWelcomeGo}, prompter.prompts[0].options)
+
+	// Selecting welcome advances to Vim prompt.
+	prompter.prompts[0].handler.OnSelect(0, optWelcomeGo)
+	require.Len(t, prompter.prompts, 2)
+	require.Equal(t,
+		[]string{optStandard, optEmacs, optVimYes, optHelix},
+		prompter.prompts[1].options)
+
+	// Selecting an editor option in Vim prompt advances to Telemetry prompt.
+	prompter.prompts[1].handler.OnSelect(0, optStandard)
+	require.Equal(t, editorStandard, b.chosenEditor)
+	require.Len(t, prompter.prompts, 3)
+
+	telPrompt := prompter.prompts[2]
+	require.Contains(t, telPrompt.message, "## Help us pick what to build next")
+	require.Contains(t, telPrompt.message, "We never send file names, paths, file contents, terminal output, or anything you type.")
+	require.Contains(t, telPrompt.message, "any time in your config")
+	require.Contains(t, telPrompt.message, "Telemetry page in the docs")
+	require.NotContains(t, telPrompt.message, "[Telemetry](")
+	require.NotContains(t, telPrompt.message, "```json")
+	require.Equal(t, []string{optTelemetryYes, optTelemetryNo}, telPrompt.options)
+	require.Equal(t, bootstrapTelemetryKeys, telPrompt.bindings)
+}
+
+func TestBootstrapTelemetryPersistenceRoundTrip(t *testing.T) {
+	cases := []struct {
+		name        string
+		option      string
+		wantEnabled bool
+	}{
+		{"yes enables telemetry", optTelemetryYes, true},
+		{"no thanks disables telemetry", optTelemetryNo, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			prompter := &fakeBootstrapPrompter{}
+			b := &bootstrapHandler{
+				dataDir:      dir,
+				chosenEditor: editorVim,
+				prompter:     prompter,
+				publishEvent: func(term.Event) bool { return true },
+			}
+
+			b.openTelemetryPrompt()
+			require.Len(t, prompter.prompts, 1)
+
+			prompter.prompts[0].handler.OnSelect(0, tc.option)
+			require.Equal(t, tc.wantEnabled, b.telemetryEnabled)
+
+			require.NoError(t, b.writePresetConfig())
+
+			cfgPath := filepath.Join(dir, configFilename)
+			content, err := os.ReadFile(cfgPath)
+			require.NoError(t, err)
+			require.Contains(t, string(content), fmt.Sprintf("enabled: %t", tc.wantEnabled))
+
+			cfg := mustLoadConfig(t, cfgPath)
+			require.Equal(t, tc.wantEnabled, ide.TelemetryEnabled(cfg))
+		})
+	}
+}
+
+func TestGuardedTelemetryPromptReopensOnDismiss(t *testing.T) {
+	prompter := &fakeBootstrapPrompter{}
+	b := &bootstrapHandler{
+		prompter: prompter,
+	}
+
+	b.openTelemetryPrompt()
+	require.Len(t, prompter.prompts, 1)
+
+	// Dismissing without selecting (e.g. Esc) triggers OnClose, which must re-open.
+	require.NoError(t, prompter.prompts[0].handler.OnClose())
+	require.Len(t, prompter.prompts, 2, "dismissing telemetry prompt must re-open it")
+
+	// Now selecting an option and then closing should NOT re-open.
+	b.publishEvent = func(term.Event) bool { return true }
+	prompter.prompts[1].handler.OnSelect(0, optTelemetryYes)
+	require.NoError(t, prompter.prompts[1].handler.OnClose())
+	require.Len(t, prompter.prompts, 2, "closing after selection must not re-open")
 }

@@ -78,7 +78,7 @@ func TestRendererRoutesEmojiToColorPath(t *testing.T) {
 	img := ebiten.NewImage(int(r.font.CellSize.X*8)+8, int(r.font.CellSize.Y)+8)
 
 	benchdraw.BeginFrame(t)
-	r.Draw(img, cells, false, term.Coordinates{}, term.CursorStyleDefault, 0, 0)
+	r.Draw(img, cells, nil, false, term.Coordinates{}, term.CursorStyleDefault, 0, 0)
 	benchdraw.EndFrame(t)
 
 	assert.Contains(t, spy.glyphCalls, "😀", "emoji cell must reach the color path")
@@ -101,7 +101,7 @@ func TestRendererRoutesClusterToColorPath(t *testing.T) {
 	img := ebiten.NewImage(int(r.font.CellSize.X*8)+8, int(r.font.CellSize.Y)+8)
 
 	benchdraw.BeginFrame(t)
-	r.Draw(img, cells, false, term.Coordinates{}, term.CursorStyleDefault, 0, 0)
+	r.Draw(img, cells, nil, false, term.Coordinates{}, term.CursorStyleDefault, 0, 0)
 	benchdraw.EndFrame(t)
 
 	assert.Contains(t, spy.glyphCalls, family,
@@ -125,7 +125,7 @@ func TestRendererNilEmojiFaceFallsBack(t *testing.T) {
 
 	benchdraw.BeginFrame(t)
 	assert.NotPanics(t, func() {
-		r.Draw(img, cells, false, term.Coordinates{}, term.CursorStyleDefault, 0, 0)
+		r.Draw(img, cells, nil, false, term.Coordinates{}, term.CursorStyleDefault, 0, 0)
 	})
 	benchdraw.EndFrame(t)
 }

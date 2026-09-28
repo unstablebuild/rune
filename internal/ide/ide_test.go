@@ -61,9 +61,11 @@ import (
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/extension"
 	"unstable.build/rune/internal/extension/extensionv2"
+	"unstable.build/rune/internal/handler/command"
 	"unstable.build/rune/internal/handler/handlertest"
 	"unstable.build/rune/internal/ide/ideauthorizer"
 	"unstable.build/rune/internal/ide/idepkg/idepkgtest"
+	"unstable.build/rune/internal/ide/idetutorial"
 	"unstable.build/rune/internal/ide/pkgshell"
 	"unstable.build/rune/internal/ide/pkgtrust"
 	"unstable.build/rune/internal/ide/syntax/grammarfixture"
@@ -435,6 +437,33 @@ func TestHomeWorkspaceDoesNotStartExtensions(t *testing.T) {
 
 	assert.Empty(t, recorder.runCalls(),
 		"no extension may be started on the home workspace")
+}
+
+// TestTutorialsSeeTheConfiguredConfigPath asserts a tutorial's
+// config_path() reports the file this session actually loaded. The
+// data directory is a launch flag, so lesson copy that names the
+// config file has to follow it.
+func TestTutorialsSeeTheConfiguredConfigPath(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "rune.yaml")
+	require.NoError(t, os.WriteFile(configPath,
+		[]byte("workspace:\n  home: "+dir+"\n"), 0o644))
+
+	i, err := New("", configPath, dir, pkgtrust.NewStore(dir, nil),
+		newTestStorage(t, dir),
+		WithPublishEvent(nopPublishEvent),
+		WithLocker(new(sync.Mutex)),
+		WithScheduleNextTick(func(fn func()) bool {
+			fn()
+			return true
+		}),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = i.Close() })
+
+	assert.Equal(t, configPath, newTutorialsConfig(i).configPath)
 }
 
 func TestSignedPackageTrustIntegration(t *testing.T) {
@@ -893,11 +922,16 @@ workspace:
 	require.NotEmpty(t, got,
 		"workspaceopen completion must surface at least the prior "+
 			"`workspaceopen %s` history entry, got nothing", repoA)
-	assert.Equal(t, repoA, got[0],
+	assert.Equal(t, repoA+"/", got[0],
 		"first completion must be the prior workspaceopen argument from "+
-			"history; got %q. full result: %v", got[0], got)
-	assert.Contains(t, got, "projects")
-	assert.NotContains(t, got, "projects/nested")
+			"history, marked so the user can keep descending from it; "+
+			"got %q. full result: %v", got[0], got)
+	assert.Contains(t, got, "projects/")
+	assert.NotContains(t, got, "projects/nested/")
+	for _, candidate := range got {
+		assert.True(t, command.IsPartialCandidate(candidate),
+			"every workspaceopen candidate must be partial, got %q", candidate)
+	}
 
 	mu.Lock()
 	nested, _, err := ex.comp.CompleteCommand(t.Context(),
@@ -907,7 +941,7 @@ workspace:
 	defer func() { _ = nested.Close() }()
 	nestedGot, err := iterator.ToSlice(t.Context(), nested)
 	require.NoError(t, err)
-	assert.Contains(t, nestedGot, "projects/nested")
+	assert.Contains(t, nestedGot, "projects/nested/")
 }
 
 // TestRecentWorkspaceOpensReflectsPromptHistory asserts the exported
@@ -965,6 +999,97 @@ command:
 	openViaPrompt(repoA)
 	openViaPrompt(repoB)
 	openViaPrompt(repoA)
+
+	assert.Equal(t, []string{repoA, repoB}, i.RecentWorkspaceOpens())
+}
+
+// TestWorkspaceOpenToleratesTrailingSeparator asserts that dispatching a
+// directory candidate straight from its partial (descended) form opens
+// the same workspace as the separator-free form, and that both forms
+// collapse into a single Open Recent entry.
+func TestWorkspaceOpenToleratesTrailingSeparator(t *testing.T) {
+	dataDir := t.TempDir()
+	repoA := t.TempDir()
+	repoB := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+
+	configPath := filepath.Join(dataDir, "rune.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte(`
+editor:
+  mode: modal
+command:
+  show_manual: false
+  key: ":"
+`), 0666))
+
+	repoBFile := filepath.Join(repoB, "seed.txt")
+	require.NoError(t, os.WriteFile(repoBFile, nil, 0666))
+
+	mu := new(sync.Mutex)
+	scheduleNextTick, drain := newTestScheduler(t, mu)
+	i, err := New(repoB, configPath, dataDir, pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir),
+		WithPublishEvent(nopPublishEvent),
+		WithExtensionsRunner(FuncExtensionsRunner(testRunnerFn)),
+		WithLocker(mu),
+		WithScheduleNextTick(scheduleNextTick),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = i.Close() })
+	root := i.Ready()
+	mu.Lock()
+	root.Resize(80, 24)
+	mu.Unlock()
+	drain()
+	i.WaitWorkspaces()
+	drain()
+
+	repoBURI, err := workspaceapi.CurrentUserHostURI(repoBFile)
+	require.NoError(t, err)
+	mu.Lock()
+	require.NoError(t, i.Open(repoBURI))
+	mu.Unlock()
+	i.WaitWorkspaces()
+	drain()
+
+	wh := i.workspaceHandler
+	openViaPrompt := func(path string) {
+		keys, err := term.ParseKeys(":workspaceopen<space>" + path + "<enter>")
+		require.NoError(t, err)
+		for _, k := range keys {
+			mu.Lock()
+			root.Handle(term.Event{Type: term.EventKey, Ch: k.Ch, Mod: k.Mod, Key: k.Key})
+			mu.Unlock()
+		}
+		mu.Lock()
+		ex := wh.focusEx()
+		mu.Unlock()
+		ex.Wait()
+		i.WaitWorkspaces()
+		drain()
+	}
+
+	openViaPrompt(repoA)
+	openViaPrompt(repoB)
+	openViaPrompt(repoA + "/")
+
+	wantURI, err := wh.homeWorkspace.URI(repoA)
+	require.NoError(t, err)
+	mu.Lock()
+	var matches int
+	var gotURIs []string
+	for _, w := range wh.workspaces {
+		if w == nil {
+			continue
+		}
+		gotURIs = append(gotURIs, w.uri.String())
+		if w.uri == wantURI {
+			matches++
+		}
+	}
+	mu.Unlock()
+	assert.Equal(t, 1, matches,
+		"a trailing separator must resolve to the already-open workspace; "+
+			"want=%q got=%v", wantURI.String(), gotURIs)
 
 	assert.Equal(t, []string{repoA, repoB}, i.RecentWorkspaceOpens())
 }
@@ -1502,6 +1627,201 @@ workspace:
 	}
 }
 
+// TestE2EDollarPaths reproduces GitHub #137 through the real IDE and
+// command prompt: a file or workspace directory whose name contains
+// "$" must resolve to itself. Before the fix "a/$x" resolved to its
+// parent "a/", so :edit read and wrote the wrong file and
+// :workspaceopen rooted the workspace at the parent directory. Typed
+// commands expand $VAR, so the literal "$" is typed with the
+// documented "$$" escape, and <tab> completion must insert it too.
+func TestE2EDollarPaths(t *testing.T) {
+	type dollarIDE struct {
+		sendKeys    func(string)
+		focusedPath func() string
+		slotPaths   func() []string
+		// complete lists the prompt's candidates for arg of cmd.
+		complete func(cmd, arg string) []string
+	}
+	// start boots the IDE with cwd as its boot workspace and home as
+	// the home workspace, which resolves bare :workspaceopen paths.
+	// Both are file workspaces, as in the reported setup.
+	start := func(t *testing.T, cwd, home string) dollarIDE {
+		t.Helper()
+		dataDir := t.TempDir()
+		configPath := filepath.Join(dataDir, "rune.yaml")
+		require.NoError(t, os.WriteFile(configPath, fmt.Appendf(nil, `
+editor:
+  mode: modal
+command:
+  key: "<c-\\\\>"
+workspace:
+  auto_restore: false
+  home: %q
+`, home), 0o666))
+
+		mu := new(sync.Mutex)
+		scheduleNextTick, drainSchedule := newTestScheduler(t, mu)
+		i, err := New(cwd, configPath, dataDir, pkgtrust.NewStore(dataDir, nil),
+			newTestStorage(t, dataDir),
+			WithLocker(mu),
+			WithScheduleNextTick(scheduleNextTick),
+			WithExtensionsRunner(FuncExtensionsRunner(testRunnerFn)),
+			WithPublishEvent(func(term.Event) bool { return true }),
+		)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = i.Close() })
+
+		root := i.Ready()
+		mu.Lock()
+		root.Resize(80, 24)
+		mu.Unlock()
+		drainSchedule()
+		i.WaitWorkspaces()
+
+		sendKeys := func(seq string) {
+			t.Helper()
+			keys, err := term.ParseKeys(seq)
+			require.NoError(t, err)
+			for _, k := range keys {
+				mu.Lock()
+				// Complete on the test goroutine so <tab> accepts
+				// a settled candidate list.
+				i.workspaceHandler.focusEx().syncCommandPrompt = true
+				root.Handle(term.Event{
+					Type: term.EventKey, Ch: k.Ch, Mod: k.Mod, Key: k.Key,
+				})
+				mu.Unlock()
+				i.WaitInflight()
+			}
+			i.WaitWorkspaces()
+		}
+		focusedPath := func() string {
+			mu.Lock()
+			defer mu.Unlock()
+			win, _ := i.workspaceHandler.focusEx().comp.Focus()
+			if win == nil {
+				return ""
+			}
+			content, err := win.Content()
+			if err != nil {
+				return ""
+			}
+			tab, ok := content.(*browser.Tab)
+			if !ok {
+				return ""
+			}
+			return tab.URI().Path()
+		}
+		slotPaths := func() []string {
+			mu.Lock()
+			defer mu.Unlock()
+			var paths []string
+			for _, w := range i.workspaceHandler.workspaces {
+				if w != nil {
+					paths = append(paths, w.uri.Path())
+				}
+			}
+			return paths
+		}
+		complete := func(cmd, arg string) []string {
+			t.Helper()
+			mu.Lock()
+			it, _, err := i.workspaceHandler.focusEx().comp.CompleteCommand(
+				t.Context(), textapi.Command{Name: cmd, Args: []string{arg}})
+			mu.Unlock()
+			require.NoError(t, err)
+			defer func() { _ = it.Close() }()
+			got, err := sdkiterator.ToSlice(t.Context(), it)
+			require.NoError(t, err)
+			return got
+		}
+		return dollarIDE{sendKeys, focusedPath, slotPaths, complete}
+	}
+	tempDir := func(t *testing.T) string {
+		t.Helper()
+		dir, err := filepath.EvalSymlinks(t.TempDir())
+		require.NoError(t, err)
+		return dir
+	}
+
+	t.Run("edit a file under a dollar directory", func(t *testing.T) {
+		ws := tempDir(t)
+		file := filepath.Join(ws, "a", "$x", "f")
+		require.NoError(t, os.MkdirAll(filepath.Dir(file), 0o755))
+		require.NoError(t, os.WriteFile(file, []byte("original\n"), 0o644))
+		require.NoError(t, os.WriteFile(
+			filepath.Join(ws, "a", "g.txt"), []byte("sibling\n"), 0o644))
+
+		ide := start(t, ws, tempDir(t))
+		ide.sendKeys("<c-\\\\>edit<space>a/$$x/f<enter>")
+		require.Equal(t, file, ide.focusedPath())
+		ide.sendKeys("iabc<esc><c-\\\\>write<enter>")
+
+		data, err := os.ReadFile(file)
+		require.NoError(t, err)
+		assert.Equal(t, "abcoriginal\n", string(data))
+		assert.NoFileExists(t, filepath.Join(ws, "a", "f"),
+			"a/$x must not resolve to its parent a/")
+	})
+
+	t.Run("workspaceopen a dollar directory", func(t *testing.T) {
+		home := tempDir(t)
+		ws := filepath.Join(home, "$ws")
+		file := filepath.Join(ws, "f")
+		require.NoError(t, os.MkdirAll(ws, 0o755))
+		require.NoError(t, os.WriteFile(file, []byte("original\n"), 0o644))
+
+		ide := start(t, "", home)
+		ide.sendKeys("<c-\\\\>workspaceopen<space>$$ws<enter>")
+		require.Equal(t, []string{ws}, ide.slotPaths())
+		ide.sendKeys("<c-\\\\>edit<space>f<enter>")
+		require.Equal(t, file, ide.focusedPath())
+		ide.sendKeys("iabc<esc><c-\\\\>write<enter>")
+
+		data, err := os.ReadFile(file)
+		require.NoError(t, err)
+		assert.Equal(t, "abcoriginal\n", string(data))
+		assert.NoFileExists(t, filepath.Join(home, "f"),
+			"$ws must not resolve to its parent directory")
+	})
+
+	t.Run("tab completes a file under a dollar directory", func(t *testing.T) {
+		ws := tempDir(t)
+		file := filepath.Join(ws, "a", "$x", "f")
+		require.NoError(t, os.MkdirAll(filepath.Dir(file), 0o755))
+		require.NoError(t, os.WriteFile(file, []byte("original\n"), 0o644))
+		require.NoError(t, os.WriteFile(
+			filepath.Join(ws, "a", "g.txt"), []byte("sibling\n"), 0o644))
+
+		ide := start(t, ws, tempDir(t))
+		candidates := ide.complete("edit", "")
+		assert.Contains(t, candidates, "a/$$x/f")
+		assert.NotContains(t, candidates, "a/$x/f")
+
+		// "f" matches only a/$x/f, so <tab> accepts it.
+		ide.sendKeys("<c-\\\\>edit<space>f<tab><enter>")
+		require.Equal(t, file, ide.focusedPath())
+	})
+
+	t.Run("tab completes a dollar workspace directory", func(t *testing.T) {
+		// The dollar directories sit under a/ so that, if the escape
+		// regresses, "a/$x" resolves to the harmless parent a/.
+		home := tempDir(t)
+		ws := filepath.Join(home, "a", "$x", "$y")
+		require.NoError(t, os.MkdirAll(ws, 0o755))
+
+		ide := start(t, "", home)
+		candidates := ide.complete("workspaceopen", "a/")
+		assert.Contains(t, candidates, "a/$$x/")
+		assert.NotContains(t, candidates, "a/$x/")
+
+		// Each <tab> accepts the only matching directory and descends
+		// into it, so the last two must resolve the typed "$$".
+		ide.sendKeys("<c-\\\\>workspaceopen<space>a<tab>x<tab>y<tab><enter>")
+		require.Equal(t, []string{ws}, ide.slotPaths())
+	})
+}
+
 func TestE2EClipboardPasteIntoNoEchoTerminalRead(t *testing.T) {
 	dir := t.TempDir()
 	dataDir := t.TempDir()
@@ -1513,6 +1833,8 @@ stty -echo
 IFS= read -r secret
 stty echo
 printf '\nRESULT:%s\n' "$secret"
+# stay alive so the drop does not remove the terminal mid-assertion
+sleep 30
 `), 0o755))
 
 	configPath := filepath.Join(dataDir, "rune.yaml")
@@ -2450,8 +2772,8 @@ func (r testRunner) WaitReady(ctx context.Context, id string) error {
 // guard against exoeditor.New panics when the user's config selects
 // `editor.mode = "exo"` but does not supply both required fields
 // (`editor.exo.command` containing {file}, and `editor.exo.goto`).
-// validateExo rewrites the mode back to "modal" so the IDE boots
-// with the built-in modal editor; this test asserts that the
+// validateExo rewrites the mode back to "vim" so the IDE boots
+// with the built-in vim editor; this test asserts that the
 // rewrite actually happens at the config layer so the workspace
 // handler never reaches exoeditor.New on a misconfigured input.
 //
@@ -2531,7 +2853,7 @@ func TestIDEExoMisconfigurationFallsBackToDefault(t *testing.T) {
 			// the post-load ideConfig before any workspace
 			// handler reaches exoeditor.New. init() must not panic
 			// for any of these inputs: validateExo rewrites
-			// the mode back to "modal" before the workspace
+			// the mode back to "vim" before the workspace
 			// handler instantiates the editor.
 			i := new(IDE)
 			require.NotPanics(t, func() {
@@ -2553,9 +2875,9 @@ func TestIDEExoMisconfigurationFallsBackToDefault(t *testing.T) {
 				"after validateExo, editor.mode must not "+
 					"remain exo; got %q",
 				i.ideConfig.editorMode())
-			assert.Equal(t, "modal", i.ideConfig.editorMode(),
+			assert.Equal(t, "vim", i.ideConfig.editorMode(),
 				"validateExo falls back to the safe "+
-					"default mode (modal); a different "+
+					"default mode (vim); a different "+
 					"value means the validator regressed "+
 					"or a new code path skipped the "+
 					"rewrite")
@@ -2567,7 +2889,7 @@ func TestIDEExoMisconfigurationFallsBackToDefault(t *testing.T) {
 
 // TestIDEExoWellFormedConfigDoesNotFallBack guards against an
 // over-eager validateExo that would rewrite legitimate exo
-// configurations back to "modal". This is the positive
+// configurations back to "vim". This is the positive
 // counterexample to TestIDEExoMisconfigurationFallsBackToDefault.
 func TestIDEExoWellFormedConfigDoesNotFallBack(t *testing.T) {
 	configFile, _ := makeTestFiles(t)
@@ -2607,12 +2929,12 @@ func TestIDEExoWellFormedConfigDoesNotFallBack(t *testing.T) {
 	assert.NoError(t, i.closeResources())
 }
 
-// minimalStarTutorial is a self-contained Starlark tutorial that
-// renders a single floating window. It is enough for the runner to
-// install an overlay once dispatched.
+// minimalStarTutorial is a self-contained Starlark tutorial with a
+// single step. It is enough for the runner to open the tile once
+// dispatched.
 const minimalStarTutorial = `
 def run():
-    floating_window(title="welcome", text="hello")
+    wait_command(command="nonesuch", title="welcome", text="hello")
 tutorial(entry=run)
 `
 
@@ -2711,7 +3033,7 @@ func TestIDEStartingTutorialDispatchesOnReady(t *testing.T) {
 					fn()
 					mu.Unlock()
 				}
-				assert.Nil(t, i.tutorial.overlay,
+				assert.False(t, i.tutorial.running(),
 					"no tutorial overlay should be active")
 				return
 			}
@@ -2732,7 +3054,7 @@ func TestIDEStartingTutorialDispatchesOnReady(t *testing.T) {
 			scheduled[0]()
 			mu.Unlock()
 
-			assert.NotNil(t, i.tutorial.overlay,
+			assert.True(t, i.tutorial.running(),
 				"tutorial overlay should be active after dispatch")
 			assert.Equal(t, tc.wantActive, i.tutorial.activeName)
 		})
@@ -2743,7 +3065,7 @@ func TestIDEStartingTutorialDispatchesOnReady(t *testing.T) {
 // wired into the workspace handler: a session started with a starting
 // tutorial is onboarding for its whole lifetime — including before the
 // deferred tutorial dispatch, when extensions boot and ask to run
-// commands — and no other session ever is.
+// commands — and survives the gap between playlist tutorials.
 func TestIDEOnboardingActiveGate(t *testing.T) {
 	cases := []struct {
 		name         string
@@ -2784,8 +3106,7 @@ func TestIDEOnboardingActiveGate(t *testing.T) {
 			require.NoError(t, i.tutorial.HandleCommand(context.Background(),
 				textapi.Command{Name: "tutorial", Args: []string{"start", "basics"}}))
 			mu.Unlock()
-			assert.Equal(t, tc.withStarting, gate(),
-				"gate must stay active while the tutorial runs")
+			assert.True(t, gate(), "gate must be active while any tutorial runs")
 
 			mu.Lock()
 			require.NoError(t, i.tutorial.HandleCommand(context.Background(),
@@ -2795,6 +3116,145 @@ func TestIDEOnboardingActiveGate(t *testing.T) {
 				"gate must survive the gap between playlist tutorials")
 		})
 	}
+}
+
+// TestIDESetRightInsetReachesTheHomeWorkspace pins that the column
+// reserved for a bar floating over the right edge is relayed to the
+// home workspace too, which is where a session starts.
+func TestIDESetRightInsetReachesTheHomeWorkspace(t *testing.T) {
+	configFile, _ := makeTestFiles(t)
+	dataDir := t.TempDir()
+	mu := new(sync.Mutex)
+	i, err := New("", configFile.Name(), dataDir,
+		pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir),
+		WithPublishEvent(nopPublishEvent),
+		WithExtensionsRunner(FuncExtensionsRunner(testRunnerFn)),
+		WithLocker(mu),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = i.Close() })
+	root := i.Ready()
+	mu.Lock()
+	defer mu.Unlock()
+	root.Resize(160, 40)
+	home := i.workspaceHandler.focusEx()
+	require.True(t, home.home)
+	wmWidth := func() int {
+		width, _ := home.comp.Browser().WindowManagerSize()
+		return width
+	}
+	require.Equal(t, 160, wmWidth())
+
+	i.SetRightInset(3)
+	assert.Equal(t, 157, wmWidth(), "the home workspace reserves the column")
+	assert.Equal(t, 3, i.RightInset())
+
+	i.SetRightInset(0)
+	assert.Equal(t, 160, wmWidth(), "and gets it back")
+}
+
+// TestIDETutorialTileSitsOutsideTheWorkspaces drives a lesson through
+// the whole IDE: the tile is not a window of any workspace, so the
+// window commands the workspace dispatches leave it alone, and the
+// reserved right column moves to the tile while a lesson runs.
+func TestIDETutorialTileSitsOutsideTheWorkspaces(t *testing.T) {
+	configFile, _ := makeTestFiles(t)
+	dataDir := t.TempDir()
+	mu := new(sync.Mutex)
+	i, err := New("", configFile.Name(), dataDir,
+		pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir),
+		WithPublishEvent(nopPublishEvent),
+		WithExtensionsRunner(FuncExtensionsRunner(testRunnerFn)),
+		WithLocker(mu),
+		WithScheduleNextTick(func(fn func()) bool {
+			fn()
+			return true
+		}),
+		WithStarlarkTutorial("basics", `
+def run():
+    wait_command(command="windowcloseall", text="clear the layout")
+    wait_command(command="edit", text="now edit")
+tutorial(entry=run)
+`),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = i.Close() })
+	root := i.Ready()
+	mu.Lock()
+	defer mu.Unlock()
+	root.Resize(160, 40)
+	i.SetRightInset(3)
+	e := i.workspaceHandler.focusEx()
+	// The reserved column comes out of the workspace's window manager.
+	wmWidth := func() int {
+		width, _ := e.comp.Browser().WindowManagerSize()
+		return width
+	}
+	require.Equal(t, 160, e.width)
+	require.Equal(t, 157, wmWidth())
+
+	require.NoError(t, i.DispatchCommand("windownew"))
+	require.Equal(t, 2, e.comp.Browser().Tiles())
+	require.NoError(t, i.DispatchCommand("tutorial", "start", "basics"))
+	require.True(t, i.tutorial.running())
+	assert.Equal(t, 2, e.comp.Browser().Tiles(), "the tile is not a workspace window")
+	tile := idetutorial.TileWidth(160) + 2
+	assert.Equal(t, 160-tile-3, e.width,
+		"the workspace gives up the tile and the reserved column")
+	assert.Equal(t, 160-tile-3, wmWidth(), "the tile reserves the column now")
+	assert.Equal(t, 3, i.RightInset())
+
+	require.NoError(t, i.DispatchCommand("windowcloseall"))
+	assert.True(t, i.tutorial.running(), "clearing the layout is the step, not the end")
+	assert.Equal(t, 1, e.comp.Browser().Tiles())
+
+	require.NoError(t, i.DispatchCommand("tutorial", "stop"))
+	assert.Equal(t, 160, e.width)
+	assert.Equal(t, 157, wmWidth(), "the workspaces get the column back")
+}
+
+// TestIDETutorialTileLinesUpWithTheWorkspaceWindows asserts the pane
+// covers exactly the rows the workspace's windows cover, tab bar and
+// workspaces bar excluded, so it reads as one of them.
+func TestIDETutorialTileLinesUpWithTheWorkspaceWindows(t *testing.T) {
+	configFile, _ := makeTestFiles(t)
+	dataDir := t.TempDir()
+	mu := new(sync.Mutex)
+	i, err := New("", configFile.Name(), dataDir,
+		pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir),
+		WithPublishEvent(nopPublishEvent),
+		WithExtensionsRunner(FuncExtensionsRunner(testRunnerFn)),
+		WithLocker(mu),
+		WithScheduleNextTick(func(fn func()) bool {
+			fn()
+			return true
+		}),
+		WithStarlarkTutorial("basics", minimalStarTutorial),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = i.Close() })
+	root := i.Ready()
+	mu.Lock()
+	defer mu.Unlock()
+	root.Resize(160, 40)
+	require.NoError(t, i.DispatchCommand("tutorial", "start", "basics"))
+
+	// The home workspace draws the workspaces bar along the bottom,
+	// so the pane is padded at both ends.
+	top, rows := i.workspaceHandler.windowRows()
+	require.Positive(t, top)
+	require.Less(t, top+rows, 40)
+
+	w := term.NewStringWriter(160, 40)
+	root.Draw(w)
+	require.NoError(t, w.Flush())
+	screen := strings.Split(w.String(), "\n")
+	x := 160 - idetutorial.TileWidth(160) - 2
+	cell := func(y int) string { return string([]rune(screen[y])[x]) }
+	assert.Equal(t, "┌", cell(top), "the pane starts where the windows start")
+	assert.Equal(t, "└", cell(top+rows-1), "and ends where they end")
+	assert.Equal(t, " ", cell(top-1), "the tab bar's rows are left clear")
+	assert.Equal(t, " ", cell(top+rows), "so are the workspaces bar's")
 }
 
 func TestIDEPlaylistPromptsForNextTutorial(t *testing.T) {
@@ -2846,6 +3306,10 @@ tutorial(entry=run)
 		require.NoError(t, i.tutorial.HandleCommand(context.Background(),
 			textapi.Command{Name: "tutorial", Args: []string{"start", "basics"}}))
 		_, _ = i.tutorial.Handle(term.Event{Type: term.EventInterrupt})
+		// A lesson that ran to its end stays on the tile until the
+		// user closes it, and only counts as done then.
+		require.NoError(t, i.tutorial.HandleCommand(context.Background(),
+			textapi.Command{Name: "tutorial", Args: []string{"stop"}}))
 	}
 
 	prompt := func(t *testing.T, i *IDE, mu sync.Locker) *sdkhandler.Prompt {
@@ -2899,7 +3363,7 @@ tutorial(entry=run)
 		mu.Lock()
 		_, handled := p.Handle(term.Event{Type: term.EventKey, Ch: 'n'})
 		assert.True(t, handled)
-		assert.Nil(t, i.tutorial.overlay)
+		assert.False(t, i.tutorial.running())
 		assert.Empty(t, i.tutorial.activeName)
 		mu.Unlock()
 	})

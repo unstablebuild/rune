@@ -1,0 +1,6 @@
+rune (1.1.4) unstable; urgency=medium
+
+  * Placeholder entry: dist/debian/build-deb.sh regenerates this file
+    from `git describe` at build time.
+
+ -- Unstable Build LLC <support@unstable.build>  Thu, 04 Sep 2026 00:00:00 +0000

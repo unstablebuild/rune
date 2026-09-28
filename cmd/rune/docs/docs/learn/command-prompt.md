@@ -55,7 +55,7 @@ editors a bare printable key would be inserted into the buffer, so the prompt
 needs a modified combination. In `exo` (exoeditor) mode there is no safe
 default at all: the prompt key has to be one your guest editor will leave for
 Rune. Pick a modified combination such as `<shift-meta-p>`.
-See the [command-prompt configuration](../config#command-prompt) for
+See the [command-prompt configuration](../config.md#command-prompt) for
 the full rules and recommended combinations.
 
 ## Arguments and quoting
@@ -85,6 +85,36 @@ what its arguments mean.
 If you need a `*.go` glob or a real pipe, hand the line to a shell
 with `!` or `!!` (see below).
 
+## Fixing the line
+
+The prompt accepts the shell's editing keys for the end of the line:
+
+| Key | What it does |
+| --- | --- |
+| `<backspace>` | Delete the previous character. On an empty line, close the prompt. |
+| `<ctrl-w>` | Delete the previous word. |
+| `<ctrl-backspace>`, `<alt-backspace>` | Delete the previous word. |
+| `<ctrl-u>` | Clear the whole line. |
+
+A "word" ends at anything that is not a letter, digit or `_`, so
+`<ctrl-w>` walks back one path component at a time while you are
+completing a file argument:
+
+```
+edit internal/handler/command/prompt.go
+edit internal/handler/command/          <- <ctrl-w>
+edit internal/handler/                  <- <ctrl-w>
+```
+
+Deleting past a completed argument unwinds the completion for it, so
+the suggestion list follows the line back. Unlike `<backspace>`,
+neither `<ctrl-w>` nor `<ctrl-u>` closes the prompt when the line runs
+out.
+
+Not all terminals distinguish `<ctrl-backspace>`; many send `^H`
+instead, which the prompt treats the same way. For anything more than
+trailing edits, use edit mode below.
+
 ## Edit the prompt with `<shift-esc>`
 
 The prompt line is fine for short commands, but editing a long or
@@ -94,14 +124,17 @@ becomes a buffer you edit with a full Rune editor, with cursor motions,
 word jumps, selection, yank and paste, undo, and auto-pairing all
 available.
 
-The editor follows your `editor.mode`: `modal` mode gives you
-[modal editing](./modal-editor.md) with normal-mode motions and text objects,
-`standard` mode gives you the [standard editor](./standard-editor.md), and
-`emacs` mode gives you the [Emacs editor](./emacs-editor.md). In `exo` mode the
-prompt cannot host your external editor, so it uses your
+The editor follows your `editor.mode`: `vim` mode gives you
+[modal editing](./vim-editor.md) with normal-mode motions and text objects,
+`helix` mode gives you the [Helix editor](./helix-editor.md) and its
+selection-first grammar, `standard` mode gives you the
+[standard editor](./standard-editor.md), and `emacs` mode gives you the
+[Emacs editor](./emacs-editor.md). In `exo` mode the prompt cannot host your
+external editor, so it uses your
 [fallback editor](./exoeditor.md#fallback-editor) (`editor.exo.fallback`),
-which may be modal, standard, or Emacs. Either way you are editing the command
-itself, not a file, so the buffer is the single line that will be dispatched.
+which may be modal, Helix, standard, or Emacs. Either way you are editing the
+command itself, not a file, so the buffer is the single line that will be
+dispatched.
 
 While edit mode is active, completion, history, and the manual are
 suspended so your keystrokes go straight to the editor. To leave it:
@@ -194,6 +227,35 @@ the shell. See [When a command binding doesn't
 fire](./key-mapping.md#when-a-command-binding-doesnt-fire) for how to keep the
 key you want to press and still have the binding run everywhere.
 
+## Move a binding to another key
+
+`command.key_bindings` is keyed by the key combination, not by the command, and
+your config is merged onto the shipped bindings. Binding a command to a new key
+therefore *adds* a second way to run it: the original key stays bound. This
+surprises people who rebind a key that their keyboard layout needs for typing.
+On a French layout, for example, `<alt-shift-l>` types `|`, but the standard
+preset binds it to `windowmove right`, so the pipe character never reaches the
+editor.
+
+To free the key, "reset" it by binding it to the empty string, and bind the
+command to the key you actually want:
+
+```yaml tab
+command:
+  key_bindings:
+    "<alt-shift-l>": ""              # reset the original binding
+    "<alt-shift-right>": "windowmove right"
+```
+
+```python tab
+config["command"]["key_bindings"]["<alt-shift-l>"] = ""
+config["command"]["key_bindings"]["<alt-shift-right>"] = "windowmove right"
+```
+
+An empty value is an explicit unbind: the entry stays in the map, but Rune
+dispatches nothing for it. Deleting the key from your own config is not the
+same thing, because the shipped binding underneath still applies.
+
 ## Replay keys as macros with `echo`
 
 Some workflows can't be expressed as a single command and its
@@ -272,7 +334,7 @@ recorded macro by name. Register expansion is recursive and guards
 against cycles, and you cannot echo a register while it is actively
 being recorded.
 
-In the [modal editor](./modal-editor.md#macros), normal mode records a
+In the [vim editor](./vim-editor.md#macros), normal mode records a
 macro into a register with `q{reg}` and replays it with `@{reg}` (for
 example `qa` … `q` to record, `@a` to play). That recording is stored in
 the same register, so `{register}` replays exactly those keys.

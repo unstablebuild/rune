@@ -16,8 +16,8 @@
 #  window_opacity: { fg: 1, bg: 1 }
 
 #editor:
-#  # 'modal' (vi-like), 'standard' (conventional), 'emacs', or 'exo'.
-#  mode: modal
+#  # 'vim', 'helix', 'standard' (conventional), 'emacs', or 'exo'.
+#  mode: vim
 #  autoindent: true
 #  #standard:
 #  #  search:

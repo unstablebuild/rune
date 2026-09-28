@@ -76,6 +76,12 @@ func (w *HTMLWriter) UnionAttributes(pos term.Coordinates, attr term.Attributes)
 	w.cellbuf[idx].SetAttributes(term.AttributesUnion(w.cellbuf[idx].Attributes(), attr))
 }
 
+// DrawImage satisfies Writer. The rendered HTML carries cells only, so
+// callers draw a cell-based fallback instead.
+func (w *HTMLWriter) DrawImage(term.Image) bool {
+	return false
+}
+
 func (w *HTMLWriter) convertToCSS(attr term.Attributes, ignoreDefault bool) (
 	css string, needsFg, needsBg bool,
 ) {

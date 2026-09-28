@@ -119,13 +119,28 @@ func fakeInterpreter(t *testing.T, path, tag string) {
 	require.NoError(t, os.WriteFile(path, []byte(body), 0o755))
 }
 
+// utilBin returns a directory holding only the external utility the
+// shim needs, so a test PATH can stay free of any real interpreter.
+func utilBin(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	dirname, err := exec.LookPath("dirname")
+	require.NoError(t, err)
+	require.NoError(t, os.Symlink(dirname, filepath.Join(dir, "dirname")))
+	return dir
+}
+
 // runShim executes the shim through sh with a controlled environment so
-// an activated venv or dev PATH cannot leak into the assertion.
-func runShim(t *testing.T, shim, cwd string, env []string, args ...string) (string, string, int) {
+// an activated venv or dev PATH cannot leak into the assertion. Only
+// pathDirs (plus a utility dir) are on the child's PATH.
+func runShim(
+	t *testing.T, shim, cwd string, pathDirs, env []string, args ...string,
+) (string, string, int) {
 	t.Helper()
 	cmd := exec.Command("sh", append([]string{shim}, args...)...)
 	cmd.Dir = cwd
-	cmd.Env = append([]string{"PATH=/usr/bin:/bin"}, env...)
+	path := strings.Join(append(append([]string{}, pathDirs...), utilBin(t)), ":")
+	cmd.Env = append([]string{"PATH=" + path}, env...)
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -151,7 +166,7 @@ func TestShimResolution(t *testing.T) {
 		cwd := filepath.Join(root, "a", "b")
 		require.NoError(t, os.MkdirAll(cwd, 0o755))
 
-		out, _, exit := runShim(t, shim, cwd, nil, "-V", "extra")
+		out, _, exit := runShim(t, shim, cwd, nil, nil, "-V", "extra")
 		assert.Zero(t, exit)
 		assert.Equal(t, "venv-a -V extra", out)
 	})
@@ -162,16 +177,67 @@ func TestShimResolution(t *testing.T) {
 		venv := t.TempDir()
 		fakeInterpreter(t, filepath.Join(venv, "bin", "python"), "venv-activated")
 
-		out, _, exit := runShim(t, shim, root, []string{"VIRTUAL_ENV=" + venv})
+		out, _, exit := runShim(t, shim, root, nil, []string{"VIRTUAL_ENV=" + venv})
 		assert.Zero(t, exit)
 		assert.Equal(t, "venv-activated", out)
+	})
+
+	t.Run("PATH interpreter wins over managed fallback", func(t *testing.T) {
+		fakeInterpreter(t, FallbackPath(dataDir), "managed")
+		sys := t.TempDir()
+		fakeInterpreter(t, filepath.Join(sys, "python3"), "system")
+
+		out, _, exit := runShim(t, shim, t.TempDir(), []string{sys}, nil, "-c", "pass")
+		assert.Zero(t, exit)
+		assert.Equal(t, "system -c pass", out)
+	})
+
+	t.Run("python3 wins over python on the same PATH entry", func(t *testing.T) {
+		sys := t.TempDir()
+		fakeInterpreter(t, filepath.Join(sys, "python"), "system-python")
+		fakeInterpreter(t, filepath.Join(sys, "python3"), "system-python3")
+
+		out, _, exit := runShim(t, shim, t.TempDir(), []string{sys}, nil)
+		assert.Zero(t, exit)
+		assert.Equal(t, "system-python3", out)
+	})
+
+	t.Run("python is used when no python3 is on PATH", func(t *testing.T) {
+		sys := t.TempDir()
+		fakeInterpreter(t, filepath.Join(sys, "python"), "system-python")
+
+		out, _, exit := runShim(t, shim, t.TempDir(), []string{sys}, nil)
+		assert.Zero(t, exit)
+		assert.Equal(t, "system-python", out)
+	})
+
+	t.Run("project venv wins over PATH interpreter", func(t *testing.T) {
+		root := t.TempDir()
+		fakeInterpreter(t, filepath.Join(root, ".venv", "bin", "python"), "venv")
+		sys := t.TempDir()
+		fakeInterpreter(t, filepath.Join(sys, "python3"), "system")
+
+		out, _, exit := runShim(t, shim, root, []string{sys}, nil)
+		assert.Zero(t, exit)
+		assert.Equal(t, "venv", out)
+	})
+
+	// The shim dir is itself on the Rune PATH, so a scan that did not
+	// skip data-dir entries would exec the shim again forever.
+	t.Run("data dir PATH entries are skipped", func(t *testing.T) {
+		fakeInterpreter(t, FallbackPath(dataDir), "managed")
+
+		out, _, exit := runShim(
+			t, shim, t.TempDir(), []string{Dir(dataDir), filepath.Join(dataDir, "python", "uvbin")}, nil)
+		assert.Zero(t, exit)
+		assert.Equal(t, "managed", out)
 	})
 
 	t.Run("no venv falls back to managed interpreter", func(t *testing.T) {
 		fakeInterpreter(t, FallbackPath(dataDir), "managed")
 		cwd := t.TempDir()
 
-		out, _, exit := runShim(t, shim, cwd, nil, "script.py")
+		out, _, exit := runShim(t, shim, cwd, nil, nil, "script.py")
 		assert.Zero(t, exit)
 		assert.Equal(t, "managed script.py", out)
 	})
@@ -181,8 +247,9 @@ func TestShimResolution(t *testing.T) {
 		require.NoError(t, Write(osFS{}, bare))
 		bareShim := filepath.Join(Dir(bare), "python3")
 
-		_, stderr, exit := runShim(t, bareShim, t.TempDir(), nil)
+		_, stderr, exit := runShim(t, bareShim, t.TempDir(), nil, nil)
 		assert.Equal(t, 127, exit)
 		assert.Contains(t, stderr, "rune: no Python found")
+		assert.Contains(t, stderr, "python enable")
 	})
 }

@@ -17,7 +17,7 @@
 // Package starlarktutorial parses a starlark tutorial DSL program and
 // runs it as an in-process [idetutorial.Tutorial]. The DSL exposes a
 // single `tutorial(entry=fn)` registration plus a set of blocking
-// builtins (floating_window, wait_command, choice, ...) that authors
+// builtins (wait_command, wait_event, choice, ...) that authors
 // invoke from a regular Starlark function. The entry function runs on
 // a dedicated goroutine; each blocking builtin posts a request to the
 // TUI loop, waits for a response, and returns a real Starlark value
@@ -34,6 +34,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"go.starlark.net/starlark"
 	"go.starlark.net/syntax"
@@ -41,9 +42,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
 	"github.com/unstablebuild/rune-go-sdk/api/syntaxapi"
-	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/term"
-	"github.com/unstablebuild/rune-go-sdk/tui"
 
 	"unstable.build/rune/internal/handler/command"
 	"unstable.build/rune/internal/ide/idetutorial"
@@ -61,7 +60,7 @@ var errStopped = errors.New("starlarktutorial: stopped")
 var errExitRequested = errors.New("starlarktutorial: exit requested")
 
 // CommandManualLookup resolves a registered command name to its
-// manual, so the wait_command hint window can render the command's
+// manual, so a wait_command step without copy can render the command's
 // synopsis and description. ok=false when no command (or alias)
 // matches name. Implementations may be called from the TUI loop in
 // Tutorial.Draw; they must be safe to call concurrently and return
@@ -76,17 +75,10 @@ type Tutorial struct {
 	id      string
 	version string
 
-	// winOverlay hosts the tutorial's step windows on a dedicated
-	// browser component drawn above the whole IDE root. Windows are
-	// opened at publish time (on the run goroutine) and closed on
-	// resolve/Reset/Stop; OverlayBrowser's internal mutex makes that
-	// safe. Its lock is a leaf: never hold t.mu while calling into
-	// it, and never block on respond/barrier channels while inside.
-	winOverlay       *idetutorial.OverlayBrowser
+	promptStyle      idetutorial.PromptStyle
 	editor           text.Editor
 	notifications    browserapi.Notifications
 	parser           syntaxapi.Parser
-	defaultAttr      term.Attributes
 	scheduleNextTick func(func()) bool
 	storage          storageapi.Service
 	// commandKeyDisplay is the prettified, display-ready command-prompt
@@ -95,9 +87,10 @@ type Tutorial struct {
 	// raw term.KeyComb, so a new render site cannot reintroduce the ugly
 	// spec.
 	commandKeyDisplay string
-	// editorMode is the user's resolved editor mode ("modal",
-	// "standard", or "emacs"), exposed to the DSL via editor_mode(). exo is
-	// resolved to its fallback by the host before New.
+	// editorMode is the user's resolved editor mode ("vim",
+	// "helix", "standard", or "emacs"), exposed to the DSL via
+	// editor_mode(). exo is resolved to its fallback by the host before
+	// New.
 	editorMode string
 	// os is the host operating system (runtime.GOOS), exposed to the
 	// DSL via os(). Tutorials branch on it to teach OS-specific flows
@@ -108,10 +101,9 @@ type Tutorial struct {
 	// key_for() lookups (they return ""). Used by key_for().
 	keyForCommand func(cmd string, args []string) string
 	// commandManualLookup resolves a command name to its registered
-	// manual, used by the wait_command hint window so the user sees
-	// the command's synopsis and description while the request is
-	// armed. nil disables manual rendering: the hint falls back to a
-	// plain prefix line.
+	// manual, used by a wait_command step that declared no copy so
+	// the user still sees the command's synopsis and description. nil
+	// disables manual rendering: the hint falls back to a plain line.
 	commandManualLookup CommandManualLookup
 
 	// workspaceOpen reports whether a project workspace is open in the
@@ -126,14 +118,34 @@ type Tutorial struct {
 	// tutorials/tests without the wiring are not spuriously blocked.
 	lspServerRunning func() bool
 
+	// configPath is the file the running Rune reads its user
+	// configuration from, exposed to the DSL via config_path(). It
+	// moves with the data directory, so copy that names it has to ask
+	// the host rather than hardcode a path.
+	configPath string
+
+	// retired names the first DSL feature the source uses that this
+	// Rune no longer implements, or "" when the lesson is supported.
+	retired string
+
 	// parsed entry function. Set once at New time.
 	entry *starlark.Function
 
 	// Runtime state. mu guards everything below.
-	mu        sync.Mutex
-	width     int
-	height    int
-	active    *request
+	mu     sync.Mutex
+	width  int
+	height int
+	active *request
+	// history is every screen the run has shown, oldest first, so the
+	// user can page back through copy they already read.
+	history []*request
+	// viewing indexes history while an earlier screen is on show; -1
+	// means the tile shows the live step.
+	viewing int
+	// closing is the screen a completed run leaves on the tile, where
+	// it waits for the user to press Stop. nil until a run returns
+	// normally.
+	closing   *request
 	runCtx    context.Context
 	cancel    context.CancelFunc
 	thread    *starlark.Thread
@@ -141,11 +153,16 @@ type Tutorial struct {
 	finished  bool
 	completed bool
 
-	// stepCount is the count of "visible content" requests
-	// published so far (reqFloatingWindow / reqMarkdown). Each
-	// publish snapshots this value into request.stepNum. Reset()
-	// zeroes it so re-running the tutorial restarts at Step 1.
-	stepCount int
+	// skipStranded is set while a skipped step's response has not
+	// yet been vindicated by the run publishing another request. A
+	// skip hands the script what the step was waiting for, but a
+	// lesson can still read information only the real action would
+	// have produced (an argument the author never declared, say).
+	// The resulting Starlark error is the skip's fault, not the
+	// author's, so it ends the run with an explanation instead of an
+	// error notification. publishRequest clears it: surviving to the
+	// next step proves the skip did no harm.
+	skipStranded bool
 
 	// firstSignal is set by Reset to a one-shot signal that the
 	// runtime has made user-visible progress (posted its first
@@ -154,15 +171,18 @@ type Tutorial struct {
 	// stable state — and so a test that drives input immediately
 	// after Reset never races with the run goroutine.
 	firstSignal func()
-
-	// overlay positions the active step's box on screen and renders
-	// it in local coordinates. ComponentAt hit-tests against the
-	// same geometry the last Draw painted so the host can tell what
-	// the overlay covers. Only the TUI loop touches it.
-	overlay component.Virtual[*overlayComponent]
 }
 
 var _ idetutorial.Tutorial = (*Tutorial)(nil)
+
+// Option configures a host service that only some embedders wire.
+type Option func(*Tutorial)
+
+// WithConfigPath names the file Rune reads its user configuration
+// from, which the DSL exposes as config_path().
+func WithConfigPath(path string) Option {
+	return func(t *Tutorial) { t.configPath = path }
+}
 
 // New parses src as a starlark tutorial DSL program and returns a
 // runnable Tutorial. The program must call `tutorial(entry=fn)`
@@ -172,11 +192,10 @@ var _ idetutorial.Tutorial = (*Tutorial)(nil)
 // are the host services the DSL builtins resolve at runtime.
 func New(
 	name, src string,
-	overlay *idetutorial.OverlayBrowser,
+	promptStyle idetutorial.PromptStyle,
 	ed text.Editor,
 	notifications browserapi.Notifications,
 	parser syntaxapi.Parser,
-	defaultAttr term.Attributes,
 	scheduleNextTick func(func()) bool,
 	storage storageapi.Service,
 	commandKey term.KeyComb,
@@ -186,17 +205,17 @@ func New(
 	commandManualLookup CommandManualLookup,
 	workspaceOpen func() bool,
 	lspServerRunning func() bool,
+	opts ...Option,
 ) (*Tutorial, error) {
 	if src == "" {
 		return nil, errors.New("starlarktutorial: empty source")
 	}
 	t := &Tutorial{
 		name:                name,
-		winOverlay:          overlay,
+		promptStyle:         promptStyle,
 		editor:              ed,
 		notifications:       notifications,
 		parser:              parser,
-		defaultAttr:         defaultAttr,
 		scheduleNextTick:    scheduleNextTick,
 		storage:             storage,
 		commandKeyDisplay:   PrettyKeySpec(commandKey.String()),
@@ -207,7 +226,9 @@ func New(
 		workspaceOpen:       workspaceOpen,
 		lspServerRunning:    lspServerRunning,
 	}
-	t.overlay.C = &overlayComponent{}
+	for _, opt := range opts {
+		opt(t)
+	}
 
 	if err := t.parse(src); err != nil {
 		return nil, fmt.Errorf("starlarktutorial %q: %w", name, err)
@@ -238,6 +259,12 @@ func (t *Tutorial) parse(src string) error {
 		Recursion:       true,
 	}
 	predeclared := builtins(t)
+	t.retired = retiredUse(opts, t.name+".star", src, predeclared)
+	for name, stub := range retiredBuiltins() {
+		if _, taken := predeclared[name]; !taken {
+			predeclared[name] = stub
+		}
+	}
 	_, err := starlark.ExecFileOptions(opts, thread, t.name+".star",
 		[]byte(src), predeclared)
 	if err != nil {
@@ -282,6 +309,21 @@ func (t *Tutorial) Completed() bool {
 	return t.completed
 }
 
+// Finished reports whether the most recent run has ended.
+func (t *Tutorial) Finished() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.finished
+}
+
+// PromptActive reports whether the screen on show is a live prompt:
+// the confirm or choice step the run is blocked on, rather than copy
+// or a screen the user paged back to.
+func (t *Tutorial) PromptActive() bool {
+	r, live := t.visibleScreen()
+	return live && r.prompt != nil
+}
+
 // Reset stops any in-progress run and starts a fresh Starlark thread
 // that calls the entry function on its own goroutine. Reset returns
 // after launching the goroutine; Draw/Handle observe an empty active
@@ -290,10 +332,21 @@ func (t *Tutorial) Completed() bool {
 func (t *Tutorial) Reset() {
 	t.Stop()
 	t.mu.Lock()
+	if t.retired != "" {
+		t.finished = true
+		t.completed = false
+		t.active = nil
+		t.closing = nil
+		t.mu.Unlock()
+		t.notifyRetired()
+		return
+	}
 	t.finished = false
 	t.completed = false
 	t.active = nil
-	t.stepCount = 0
+	t.history = nil
+	t.viewing = -1
+	t.closing = nil
 	t.runCtx, t.cancel = context.WithCancel(context.Background())
 	t.thread = &starlark.Thread{
 		Name:  t.name + ".run",
@@ -336,6 +389,7 @@ func (t *Tutorial) Stop() {
 	t.thread = nil
 	t.runDone = nil
 	t.active = nil
+	t.closing = nil
 	t.completed = false
 	t.mu.Unlock()
 }
@@ -377,10 +431,21 @@ func (t *Tutorial) runLoop() {
 // cleared only after the notification path returns.
 func (t *Tutorial) handleRunResult(err error) {
 	t.mu.Lock()
+	width, height := t.width, t.height
+	t.mu.Unlock()
+
+	var closing *request
+	if err == nil {
+		closing = t.closingScreen(width, height)
+	}
+
+	t.mu.Lock()
 	t.finished = true
 	t.completed = err == nil
 	t.active = nil
 	t.thread = nil
+	t.closing = closing
+	t.viewing = -1
 	signal := t.firstSignal
 	t.firstSignal = nil
 	t.mu.Unlock()
@@ -410,6 +475,24 @@ func (t *Tutorial) notifyRunError(err error) {
 		return
 	}
 	if isStarlarkExit(err) {
+		return
+	}
+	if isRetiredDSL(err) {
+		t.notifyRetired()
+		return
+	}
+	t.mu.Lock()
+	stranded := t.skipStranded
+	t.skipStranded = false
+	t.mu.Unlock()
+	if stranded {
+		t.runOnTUI(func() {
+			if t.notifications != nil {
+				_, _ = t.notifications.Notify(browserapi.LevelInfo,
+					"%s: ended because a skipped step left the lesson "+
+						"without something it needed", t.Title())
+			}
+		})
 		return
 	}
 	var evalErr *starlark.EvalError
@@ -443,237 +526,218 @@ func isStarlarkExit(err error) bool {
 	return false
 }
 
-// Shader returns the armed hint-pulse spec for the active
-// floating_window step, derived from the live overlay-window
-// geometry (the last content row above the bottom frame edge). The
-// spec is cached until the window moves, resizes, or the theme
-// changes, so the composing handler's value comparison only restages
-// the pulse when the geometry actually changed. ok=false when the
-// tutorial is done, no request is active, or the pulse is not armed.
-func (t *Tutorial) Shader() (idetutorial.Shader, bool) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.finished || t.active == nil || !t.active.hasShader {
-		return idetutorial.Shader{}, false
+// isRetiredDSL reports whether err came from a DSL feature this Rune
+// no longer implements.
+func isRetiredDSL(err error) bool {
+	if errors.Is(err, errRetiredDSL) {
+		return true
 	}
-	r := t.active
-	if r.kind != reqFloatingWindow || t.winOverlay == nil {
-		return idetutorial.Shader{}, false
+	var evalErr *starlark.EvalError
+	if errors.As(err, &evalErr) && evalErr.Unwrap() != nil {
+		return errors.Is(evalErr.Unwrap(), errRetiredDSL)
 	}
-	pos, width, height, ok := t.winOverlay.WindowRect(r.win)
-	if !ok || width < 4 || height < 3 {
-		return idetutorial.Shader{}, false
-	}
-	if r.shaderBuilt && pos == r.shaderPos &&
-		width == r.shaderW && height == r.shaderH {
-		return r.shaderSpec, true
-	}
-	hintX := pos.X + 1
-	hintY := pos.Y + height - 2
-	hintW := width - 2
-	r.shaderSpec = idetutorial.Shader{
-		Shader:   buildHintPulse(t.defaultAttr, hintX, hintY, hintW),
-		Offset:   term.Coordinates{X: hintX, Y: hintY},
-		Width:    hintW,
-		Height:   1,
-		FPS:      hintFPS,
-		Duration: hintDuration,
-	}
-	r.shaderPos, r.shaderW, r.shaderH = pos, width, height
-	r.shaderBuilt = true
-	return r.shaderSpec, true
+	return false
 }
 
-// SetDefaultAttributes updates the tutorial's view of the default
-// terminal attributes and invalidates the active step's cached
-// shader spec so the next reconcile rebuilds it with the new
-// attributes.
-func (t *Tutorial) SetDefaultAttributes(defAttr term.Attributes) {
-	t.mu.Lock()
-	t.defaultAttr = defAttr
-	if t.active != nil {
-		t.active.shaderBuilt = false
-	}
-	t.mu.Unlock()
+// notifyRetired tells the user their tutorial is too old for this
+// Rune and where the fix lives: the package that ships the lesson,
+// not their config.
+func (t *Tutorial) notifyRetired() {
+	t.runOnTUI(func() {
+		if t.notifications == nil {
+			return
+		}
+		_, _ = t.notifications.Notify(browserapi.LevelError,
+			"%s: this tutorial is not supported by this version of Rune. "+
+				"Upgrade the package that provides it.", t.Title())
+	})
 }
 
-// Resize records the most recent dimensions and forwards them to the
-// overlay browser and to the active step's window content so its
-// Dimensions heuristic tracks the screen; the window manager
-// re-queries it on the next draw.
+// Resize records the tile body's dimensions and reflows the active
+// screen inside them.
 func (t *Tutorial) Resize(width, height int) {
 	t.mu.Lock()
 	t.width, t.height = width, height
-	active := t.active
+	visible, _ := t.visibleLocked()
 	t.mu.Unlock()
-	if t.winOverlay != nil {
-		t.winOverlay.Resize(width, height)
-	}
-	if active != nil && active.winContent != nil {
-		active.winContent.setScreen(width, height)
+	if visible != nil {
+		visible.body.Resize(width, height)
 	}
 }
 
-// Draw paints the reqMarkdown banner, the only step surface still
-// rendered bespoke — every other step lives in a window on the
-// overlay browser, drawn by the composing handler. Out-of-range
-// writes are silently dropped. The only state Draw mutates is the
-// overlay virtual geometry that backs ComponentAt.
+// Draw paints the screen on show in body-local coordinates. The tile
+// clips writes to the body rectangle, so a screen taller than the body
+// is simply truncated.
 func (t *Tutorial) Draw(w term.Writer) {
+	if r, _ := t.visibleScreen(); r != nil {
+		r.body.Draw(w)
+	}
+}
+
+// visibleScreen returns the screen on show and whether it is the live
+// step rather than one the user paged back to, or nil when there is
+// nothing to draw.
+func (t *Tutorial) visibleScreen() (r *request, live bool) {
 	t.mu.Lock()
-	active := t.active
+	defer t.mu.Unlock()
+	return t.visibleLocked()
+}
+
+func (t *Tutorial) visibleLocked() (r *request, live bool) {
+	if t.finished && t.closing == nil {
+		return nil, false
+	}
+	if t.viewing >= 0 && t.viewing < len(t.history) {
+		return t.history[t.viewing], false
+	}
+	if t.closing != nil {
+		return t.closing, false
+	}
+	if t.active == nil || t.active.body == nil {
+		return nil, false
+	}
+	return t.active, true
+}
+
+// Back pages the tile one screen back through the copy the lesson
+// already showed, wrapping from the oldest screen to the live step so
+// a reader is never stranded in the past. Nothing is rewound: the live
+// step stays armed, and reaching its milestone (or skipping it) brings
+// the tile back to it. A finished lesson pages from its closing screen
+// instead, so the whole lesson is still readable after the last step.
+func (t *Tutorial) Back() bool {
+	t.mu.Lock()
+	if len(t.history) == 0 || (t.finished && t.closing == nil) {
+		t.mu.Unlock()
+		return false
+	}
+	switch {
+	case t.viewing < 0 && t.closing != nil:
+		// The closing screen is not part of the lesson, so the step
+		// behind it is the last one the lesson showed.
+		t.viewing = len(t.history) - 1
+	case t.viewing < 0:
+		if len(t.history) < 2 {
+			t.mu.Unlock()
+			return false
+		}
+		t.viewing = len(t.history) - 2
+	case t.viewing == 0:
+		t.viewing = -1
+	default:
+		t.viewing--
+	}
+	visible, _ := t.visibleLocked()
 	width, height := t.width, t.height
-	finished := t.finished
 	t.mu.Unlock()
-	// Cover nothing unless the per-kind draw claims geometry.
-	t.overlay.Resize(0, 0)
-	if finished || active == nil {
-		return
+	if visible != nil {
+		visible.body.Resize(width, height)
 	}
-	if active.kind == reqMarkdown {
-		drawBanner(&t.overlay, w, width, height, []string{active.text})
-	}
+	return true
 }
 
-// Handle advances the state machine on input. exit=true once the
-// tutorial finishes or is dismissed. Before per-kind dispatch it
-// reaps a step window the browser closed out from under the request
-// (the window-bar ✕ click), resolving dismissible kinds with the
-// per-kind dismissal response; wait_* steps stay armed with their
-// hint gone, since only the awaited key/command/event resolves them.
+// Forward pages the tile one screen back towards the step the lesson
+// is on, landing on the live step itself rather than on the read-only
+// copy of it kept in history. It reports whether the tile now shows a
+// different screen; false when the live screen is already on show.
+func (t *Tutorial) Forward() bool {
+	t.mu.Lock()
+	if t.viewing < 0 || t.viewing >= len(t.history) {
+		t.mu.Unlock()
+		return false
+	}
+	// The live step is the newest entry in history; a finished lesson
+	// has none, and its closing screen sits after them all instead.
+	last := len(t.history) - 1
+	if t.closing == nil {
+		last--
+	}
+	if t.viewing >= last {
+		t.viewing = -1
+	} else {
+		t.viewing++
+	}
+	visible, _ := t.visibleLocked()
+	width, height := t.width, t.height
+	t.mu.Unlock()
+	if visible != nil {
+		visible.body.Resize(width, height)
+	}
+	return true
+}
+
+// ViewingPast reports whether the tile shows a screen the user paged
+// back to rather than the one the lesson is on.
+func (t *Tutorial) ViewingPast() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.viewing >= 0 && t.viewing < len(t.history)
+}
+
+// Handle routes ev to the content of the screen on show: the markdown
+// viewer of a wait_* step or the prompt of a confirm/choice step. A
+// step only ends when its milestone is met, so a wait_* screen never
+// resolves from here and the viewer's own quit keys are ignored; a
+// prompt resolves its step when an option is selected or the prompt is
+// dismissed. A screen the user paged back to is read-only, since its
+// step is long resolved. exit is always false: the tutorial is the content of the
+// tile and reporting exit would close it. handled reflects
+// what the content did with ev so unhandled keys reach the IDE's
+// bindings.
 func (t *Tutorial) Handle(ev term.Event) (bool, bool) {
-	t.mu.Lock()
-	active := t.active
-	finished := t.finished
-	t.mu.Unlock()
-	if !finished && active != nil && active.winClosed.Load() {
-		switch active.kind {
-		case reqFloatingWindow, reqConfirm, reqChoice:
-			t.resolve(active, dismissalOrPendingResponse(active))
-			return t.exitState(), true
-		}
-	}
-	if ev.Type != term.EventKey {
-		return t.exitState(), false
-	}
-	if finished {
-		return true, false
-	}
-	if active == nil {
+	r, live := t.visibleScreen()
+	if r == nil {
 		return false, false
 	}
-	switch active.kind {
-	case reqFloatingWindow:
-		return t.handleFloatingWindow(active, ev)
-	case reqMarkdown:
-		return t.handleMarkdown(active, ev)
-	case reqWaitKey:
-		return t.handleWaitKey(active, ev)
-	case reqWaitCommand:
-		return t.handleWaitCommand(active, ev)
-	case reqWaitShell:
-		return t.handleWaitCommand(active, ev)
-	case reqWaitEvent:
-		return t.handleWaitEvent(active, ev)
-	case reqChoice, reqConfirm:
-		return t.handlePrompt(active, ev)
-	}
-	return false, false
-}
-
-func (t *Tutorial) handleFloatingWindow(r *request, ev term.Event) (bool, bool) {
-	// allow_keys takes precedence over the default Enter/Esc/Space
-	// dismissal so an author can reclaim one of those keys for
-	// pass-through. The modal-surfaces step needs <esc> to reach a
-	// focused terminal or console (switching it to NORMAL mode)
-	// instead of dismissing the overlay.
-	if ev.Type == term.EventKey && slices.Contains(r.allowKeys, ev.KeyComb()) {
+	if ev.Type != term.EventMouse && ev.Type != term.EventKey {
 		return false, false
 	}
-	if ev.Mod == 0 && (ev.Key == term.KeyEnter || ev.Key == term.KeyEsc ||
-		ev.Key == term.KeySpace || ev.Ch == ' ') {
-		t.resolve(r, response{})
-		return t.exitState(), true
+	exit, handled := r.body.Handle(ev)
+	if r.prompt == nil || !live {
+		// The viewer's quit keys are dropped, so they were not
+		// really handled: let them reach the IDE's bindings.
+		return false, handled && !exit
 	}
-	if ev.Type == term.EventKey {
-		kc := ev.KeyComb()
-		// dismiss_keys: resolve the window AND let the event reach
-		// the IDE root, so a read-then-act binding (e.g. "Press
-		// `:` to open the command prompt") advances the tutorial
-		// at the same time the user's keypress triggers the
-		// described action.
-		if slices.Contains(r.dismissKeys, kc) {
-			t.resolve(r, response{})
-			return t.exitState(), false
-		}
+	if exit {
+		_ = r.prompt.Close()
 	}
-	// Swallow stray keys so the IDE root never sees a stray ':' that
-	// would open a command prompt under the overlay; arm the hint
-	// pulse so the user notices.
-	t.mu.Lock()
-	r.hasShader = true
-	t.mu.Unlock()
-	return false, true
+	if r.closed {
+		t.resolve(r, dismissalOrPendingResponse(r))
+	}
+	return false, handled
 }
 
-func (t *Tutorial) handleMarkdown(r *request, ev term.Event) (bool, bool) {
-	if ev.Key == term.KeyEnter || ev.Key == term.KeyEsc ||
-		ev.Key == term.KeySpace || ev.Ch == ' ' {
-		t.resolve(r, response{})
-		return t.exitState(), true
+// SeekUp satisfies component.Scrollable by scrolling the active
+// screen's viewer, so the tile's scroll bar drives the step's copy.
+func (t *Tutorial) SeekUp() bool {
+	if r, _ := t.visibleScreen(); r != nil && r.viewer != nil {
+		return r.viewer.SeekUp()
 	}
-	return false, false
+	return false
 }
 
-func (t *Tutorial) handleWaitKey(r *request, ev term.Event) (bool, bool) {
-	want, err := term.ParseKeys(r.waitKey)
-	if err != nil || len(want) != 1 {
-		// Bad key spec: advance on any keystroke so the user is
-		// never stuck on an unreachable step.
-		t.resolve(r, response{})
-		return t.exitState(), true
+// SeekDown satisfies component.Scrollable.
+func (t *Tutorial) SeekDown() bool {
+	if r, _ := t.visibleScreen(); r != nil && r.viewer != nil {
+		return r.viewer.SeekDown()
 	}
-	k := want[0]
-	if ev.Key == k.Key && ev.Mod == k.Mod && ev.Ch == k.Ch {
-		t.resolve(r, response{})
-		return t.exitState(), true
-	}
-	return false, false
+	return false
 }
 
-// handleWaitCommand never resolves from keystrokes: the host's
-// command observer is the source of truth for command dispatches and
-// carries the real args. handleWaitCommand only swallows events when
-// the on_error hint has been swapped in so the user sees the hint
-// instead of falling through to the root.
-func (t *Tutorial) handleWaitCommand(_ *request, _ term.Event) (bool, bool) {
-	return false, false
+// SeekOffset satisfies component.Scrollable.
+func (t *Tutorial) SeekOffset() int {
+	if r, _ := t.visibleScreen(); r != nil && r.viewer != nil {
+		return r.viewer.SeekOffset()
+	}
+	return 0
 }
 
-// handleWaitEvent never resolves from keystrokes and never swallows:
-// the host's editor-event observer is the source of truth, so every
-// key falls through to the IDE root while the hint stays up.
-func (t *Tutorial) handleWaitEvent(_ *request, _ term.Event) (bool, bool) {
-	return false, false
-}
-
-// handlePrompt routes ev to the overlay browser, whose focused window
-// is the active confirm/choice prompt. Enter fires OnSelect (which
-// stamps r.pendingResp/pendingSelected); both selection and Esc close
-// the prompt window, which fires OnClose and stamps winClosed. The
-// request is then resolved with the pending response or the per-kind
-// dismissal response. resolve() installs the barrier before delivery
-// so the run goroutine's next publish is observed.
-func (t *Tutorial) handlePrompt(r *request, ev term.Event) (bool, bool) {
-	if r.win == nil || t.winOverlay == nil {
-		return false, false
+// MaxSeekOffset satisfies component.Scrollable.
+func (t *Tutorial) MaxSeekOffset() int {
+	if r, _ := t.visibleScreen(); r != nil && r.viewer != nil {
+		return r.viewer.MaxSeekOffset()
 	}
-	_, handled := t.winOverlay.Handle(ev)
-	if !r.winClosed.Load() {
-		return false, handled
-	}
-	t.resolve(r, dismissalOrPendingResponse(r))
-	return t.exitState(), handled
+	return 0
 }
 
 // dismissalOrPendingResponse returns the response a closed request
@@ -692,40 +756,61 @@ func dismissalOrPendingResponse(r *request) response {
 	return response{}
 }
 
-// Cursor returns no cursor; tutorial overlays do not own the cursor.
+// skipResponse is the response a skipped step resolves with, and
+// whether that response may strand the lesson.
+//
+// The wait_command and wait_shell builtins hand their response to the
+// script as a command_result, so a zero response would give the lesson
+// an empty name and an empty args tuple. Both kinds know what they
+// were waiting for, so a skip reports that: the script sees the
+// command it asked the user to run. Every other kind either discards
+// its response or already defines a dismissal, so skipping one cannot
+// strand anything.
+//
+// mayStrand is true only for a wait_command whose spec declared no
+// arguments. The live path resolves such a step with the arguments the
+// user actually typed, so a lesson may read an argument the author
+// never wrote down (basics.star awaits "edit" and then reads
+// .args[0]). That is the one case where a skip cannot reproduce what
+// the real action would have produced.
+func skipResponse(r *request) (res response, mayStrand bool) {
+	switch r.kind {
+	case reqWaitCommand:
+		fields := strings.Fields(r.command)
+		if len(fields) == 0 {
+			return response{}, true
+		}
+		return response{cmdName: fields[0], cmdArgs: fields[1:]},
+			len(fields) == 1
+	case reqWaitShell:
+		return response{
+			cmdName: shellCommandName, cmdArgs: r.shellArgs,
+		}, false
+	}
+	return dismissalOrPendingResponse(r), false
+}
+
+// Cursor returns no cursor; tutorial screens do not own the cursor.
 func (t *Tutorial) Cursor() (term.Coordinates, term.CursorStyle, bool) {
 	return term.Coordinates{}, term.CursorStyleDefault, false
 }
 
-// Selection returns no selection.
-func (t *Tutorial) Selection() (string, bool) { return "", false }
-
-// ComponentAt returns the handler behind the bespoke overlay cell at
-// pos (the wait-hint boxes and banner); browser-hosted windows are
-// hit-tested by the composing handler against the overlay browser
-// instead. ok=false when the last Draw painted nothing at pos.
-func (t *Tutorial) ComponentAt(pos term.Coordinates) (tui.Handler, bool) {
-	t.mu.Lock()
-	active := t.active
-	finished := t.finished
-	t.mu.Unlock()
-	if finished || active == nil {
-		return nil, false
+// Selection returns the text selected with the mouse in the viewer of
+// the screen on show, if any.
+func (t *Tutorial) Selection() (string, bool) {
+	if r, _ := t.visibleScreen(); r != nil && r.viewer != nil {
+		return r.viewer.Selection()
 	}
-	vpos := t.overlay.Position()
-	if pos.X < vpos.X || pos.Y < vpos.Y ||
-		pos.X >= vpos.X+t.overlay.Width() ||
-		pos.Y >= vpos.Y+t.overlay.Height() {
-		return nil, false
-	}
-	return t, true
+	return "", false
 }
 
 // ObserveCommand advances the state machine when the current step is
 // wait_command, the dispatched command matches typed or resolved, and
-// err is nil. On dispatch error the request is kept armed and the
-// hint is swapped to the on_error message. Returns exit=true when
-// the tutorial finishes as a result of this observation.
+// err is nil. On dispatch error the step stays armed with its copy
+// unchanged: the IDE's command prompt already reports the error, and a
+// screen that rewrites itself mid-step moves the instructions the user
+// is reading. Returns exit=true when the tutorial finishes as a result
+// of this observation.
 func (t *Tutorial) ObserveCommand(
 	typed, resolved string, args []string, err error,
 ) bool {
@@ -750,12 +835,6 @@ func (t *Tutorial) ObserveCommand(
 		return false
 	}
 	if err != nil {
-		// Do not surface err as a tutorial notification: the IDE's
-		// command prompt already shows the underlying error.
-		if active.onError != "" {
-			active.text = expandCmdTemplate(active.onError, t.commandKeyDisplay)
-			t.refreshHintWindow(active)
-		}
 		return false
 	}
 	t.resolve(active, response{cmdName: want, cmdArgs: args})
@@ -796,7 +875,7 @@ const shellCommandName = "console"
 // companion-shell observations (typed/resolved == shellCommandName)
 // and requires every expected token to be present in the observed
 // args (containment, so completion and alias variants still match). A
-// dispatch error keeps the step armed and swaps in the on_error hint.
+// dispatch error keeps the step armed with its copy unchanged.
 func (t *Tutorial) observeShellCommand(
 	active *request, typed, resolved string, args []string, err error,
 ) bool {
@@ -804,10 +883,6 @@ func (t *Tutorial) observeShellCommand(
 		return false
 	}
 	if err != nil {
-		if active.onError != "" {
-			active.text = expandCmdTemplate(active.onError, t.commandKeyDisplay)
-			t.refreshHintWindow(active)
-		}
 		return false
 	}
 	if !argsContainAll(args, active.shellArgs) {
@@ -831,11 +906,9 @@ func argsContainAll(have, want []string) bool {
 // the active request and waits for the TUI loop to deliver a
 // response or for the run context to be cancelled. Side-effect
 // builtins (notify, open_file, highlight_window) do not call this;
-// they run inline via runOnTUI instead. A floating_window's browser
-// window is opened here, on the run goroutine, before the request
-// becomes active — the overlay browser's leaf lock makes that safe —
-// and is closed by resolve, by the user's ✕ click, or below when the
-// run is cancelled while the request is in flight.
+// they run inline via runOnTUI instead. The screen the tile draws for
+// r is built here, on the run goroutine, before the request becomes
+// active, so nothing else can be touching it yet.
 func (t *Tutorial) publishRequest(r *request) (response, error) {
 	t.mu.Lock()
 	if t.runCtx == nil {
@@ -845,30 +918,24 @@ func (t *Tutorial) publishRequest(r *request) (response, error) {
 	ctx := t.runCtx
 	width, height := t.width, t.height
 	r.respond = make(chan response, 1)
-	if r.kind == reqFloatingWindow || r.kind == reqMarkdown {
-		t.stepCount++
-		r.stepNum = t.stepCount
-	} else {
-		r.stepNum = t.stepCount
-	}
+	t.skipStranded = false
 	t.mu.Unlock()
 
-	switch r.kind {
-	case reqFloatingWindow:
-		t.openFloatingWindow(r, width, height)
-	case reqConfirm, reqChoice:
-		t.openPromptWindow(r)
-	case reqWaitKey, reqWaitCommand, reqWaitShell, reqWaitEvent:
-		t.openHintWindow(r, width, height)
+	t.openScreen(r, width)
+	if r.body != nil {
+		r.body.Resize(width, height)
 	}
 
 	t.mu.Lock()
 	if t.runCtx == nil {
 		t.mu.Unlock()
-		t.closeRequestWindow(r)
 		return response{}, errStopped
 	}
 	t.active = r
+	if r.body != nil {
+		t.history = append(t.history, r)
+	}
+	t.viewing = -1
 	signal := t.firstSignal
 	t.firstSignal = nil
 	t.mu.Unlock()
@@ -880,29 +947,46 @@ func (t *Tutorial) publishRequest(r *request) (response, error) {
 	case res := <-r.respond:
 		return res, nil
 	case <-ctx.Done():
-		t.closeRequestWindow(r)
 		return response{}, errStopped
 	}
 }
 
-// padPromptOptions surrounds each option label with a single space on
+// padPromptOptions surrounds each option label with pad spaces on
 // either side so the rendered prompt buttons are naturally padded,
 // matching the IDE's browser-driven prompts. The returned slice is for
 // display only; the unpadded labels remain the authoritative selection
 // values via request.options.
-func padPromptOptions(options []string) []string {
+func padPromptOptions(options []string, pad int) []string {
+	gutter := strings.Repeat(" ", max(pad, 0))
 	padded := make([]string, len(options))
 	for i, o := range options {
-		padded[i] = " " + o + " "
+		padded[i] = gutter + o + gutter
 	}
 	return padded
 }
 
+// promptOptionPad is how much every option label can be padded in a
+// prompt width cells wide. The prompt gives each button the width of
+// the widest one and spreads what is left over the gaps between them,
+// so padding labels that leave nothing over buries the buttons in one
+// another. A cramped row drops the padding rather than the air that
+// tells the buttons apart.
+func promptOptionPad(options []string, width int) int {
+	widest := 0
+	for _, o := range options {
+		widest = max(widest, utf8.RuneCountInString(o))
+	}
+	n := len(options)
+	// One cell between every pair of buttons and at both edges.
+	if n*(widest+2)+n+1 <= width {
+		return 1
+	}
+	return 0
+}
+
 // resolve delivers res to r and clears the active slot. The TUI loop
 // calls this from Draw/Handle; multiple resolves on the same request
-// are no-ops thanks to request.deliver's sync.Once. The request's
-// browser window is closed before delivery so the old window is gone
-// before the run goroutine can open the next one. After delivery,
+// are no-ops thanks to request.deliver's sync.Once. After delivery,
 // resolve installs a one-shot barrier and blocks until the run
 // goroutine reaches its next observable state (a freshly published
 // request, an inline side effect, or run completion), so that
@@ -922,14 +1006,11 @@ func (t *Tutorial) resolve(r *request, res response) {
 		// exit/fail with the dispatch). Skip the barrier — there
 		// will be no more state transitions.
 		t.mu.Unlock()
-		t.closeRequestWindow(r)
 		r.deliver(res)
 		return
 	}
 	t.firstSignal = signal
 	t.mu.Unlock()
-
-	t.closeRequestWindow(r)
 	r.deliver(res)
 	<-barrier
 }
@@ -943,14 +1024,36 @@ func (t *Tutorial) exitState() bool {
 	return finished
 }
 
+// Skip resolves the active step as though the user had performed it,
+// advancing the run past steps a user cannot or does not want to do.
+// wait_* steps have no dismissal of their own, so this is their only
+// escape. See skipResponse for what the script receives.
+func (t *Tutorial) Skip() (exit bool) {
+	t.mu.Lock()
+	active := t.active
+	finished := t.finished
+	t.mu.Unlock()
+	if finished || active == nil {
+		return finished
+	}
+	res, mayStrand := skipResponse(active)
+	if mayStrand {
+		t.mu.Lock()
+		t.skipStranded = true
+		t.mu.Unlock()
+	}
+	t.resolve(active, res)
+	return t.exitState()
+}
+
 // WaitActive blocks until the run goroutine publishes a request whose
 // kind matches want or the tutorial finishes, whichever happens
 // first. It is intended for tests that drive the runtime
 // synchronously through Handle/ObserveCommand and need a barrier
 // between events. Returns true when the matching request became
 // active, false on timeout or when the tutorial finished without
-// publishing such a request. want is one of "floating_window",
-// "markdown", "wait_key", "wait_command", "confirm", "choice".
+// publishing such a request. want is one of "wait_command",
+// "wait_shell", "wait_event", "confirm", "choice".
 func (t *Tutorial) WaitActive(want string, d time.Duration) bool {
 	deadline := time.Now().Add(d)
 	for {
@@ -981,6 +1084,29 @@ func (t *Tutorial) ActiveText() string {
 		return ""
 	}
 	return t.active.text
+}
+
+// ActiveTitle returns the title the active step declared, or "" when
+// no step is active. Intended for tests.
+func (t *Tutorial) ActiveTitle() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.active == nil {
+		return ""
+	}
+	return t.active.title
+}
+
+// ActiveKind returns the name of the builtin the run goroutine is
+// blocked on ("wait_command", "confirm", ...), or "" when no step is
+// active. Intended for tests.
+func (t *Tutorial) ActiveKind() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.finished || t.active == nil {
+		return ""
+	}
+	return t.active.kind.String()
 }
 
 // WaitFinished blocks until the run goroutine has exited or d

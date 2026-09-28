@@ -39,7 +39,8 @@ func TestBundledConfigStar(t *testing.T) {
 		name string
 		mode string
 	}{
-		{"modal", "modal"},
+		{"vim", "vim"},
+		{"helix", "helix"},
 		{"standard", "standard"},
 		{"emacs", "emacs"},
 		{"empty_mode_acts_as_non_standard", ""},

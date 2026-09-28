@@ -59,6 +59,12 @@ import (
 func NewRunner(
 	ctx context.Context, locker sync.Locker, dataDir string, opts ...Option,
 ) (*Runner, error) {
+	return newRunner(locker, dataDir, generateRunnerCert, opts...)
+}
+
+func newRunner(
+	locker sync.Locker, dataDir string, generateCert certGenerator, opts ...Option,
+) (*Runner, error) {
 	ret := &Runner{
 		locker:  locker,
 		dataDir: dataDir,
@@ -72,10 +78,49 @@ func NewRunner(
 	for _, o := range opts {
 		o(&ret.cfg)
 	}
+	if !ret.cfg.insecureTransport {
+		ret.cert = generateCertAsync(generateCert)
+	}
 	return ret, nil
 }
 
 const certExpiresIn = 10 * 24 * 365 * time.Hour
+
+type certGenerator func() (certPEM, keyPEM []byte, err error)
+
+// generateRunnerCert issues the TLS cert shared by every workspace
+// extension server in this process. Extensions pin it via RootCAs with
+// hostname verification disabled, so the SAN does not need to match the
+// socket and one cert can serve every workspace.
+func generateRunnerCert() (certPEM, keyPEM []byte, err error) {
+	return auth.GenerateSelfSignedCert(
+		[]string{"rune"}, pkix.Name{CommonName: "ox"}, certExpiresIn)
+}
+
+// asyncCert holds the result of a cert generation started in the
+// background. RSA-4096 keygen costs close to a second, so the runner
+// starts it at construction and only blocks on it when the first
+// workspace server needs the cert.
+type asyncCert struct {
+	done chan struct{}
+	cert []byte
+	key  []byte
+	err  error
+}
+
+func generateCertAsync(generate certGenerator) *asyncCert {
+	ret := &asyncCert{done: make(chan struct{})}
+	go debug.CapturePanicReport(func() {
+		defer close(ret.done)
+		ret.cert, ret.key, ret.err = generate()
+	})
+	return ret
+}
+
+func (c *asyncCert) wait() (certPEM, keyPEM []byte, err error) {
+	<-c.done
+	return c.cert, c.key, c.err
+}
 
 // Runner implements the extension host gRPC server lifecycle.
 type Runner struct {
@@ -84,6 +129,8 @@ type Runner struct {
 	locker  sync.Locker
 	keys    auth.Keys
 	dataDir string
+	// cert is nil when the transport is insecure.
+	cert *asyncCert
 }
 
 // TrustVerifier attests that an extension entrypoint belongs to a verified
@@ -111,6 +158,14 @@ func (r *Runner) WorkspaceExtensionsRunner(
 	}
 	var ret wrapCloser
 	ret.URI = uri
+
+	var cert, key []byte
+	if !r.cfg.insecureTransport {
+		var err error
+		if cert, key, err = r.cert.wait(); err != nil {
+			return nil, fmt.Errorf("generate tls cert: %w", err)
+		}
+	}
 
 	listener, err := r.newUnixListener(uri)
 	if err != nil {
@@ -142,16 +197,7 @@ func (r *Runner) WorkspaceExtensionsRunner(
 		grpc.MaxRecvMsgSize(llmrpc.MaxRecvMsgSize),
 		grpc.MaxSendMsgSize(llmrpc.MaxSendMsgSize),
 	}
-	var cert, key []byte
 	if !r.cfg.insecureTransport {
-		cert, key, err = auth.GenerateSelfSignedCert(
-			[]string{socket}, pkix.Name{CommonName: "ox"}, certExpiresIn)
-		if err != nil {
-			if cerr := listener.Close(); cerr != nil {
-				err = multierror.Append(err, cerr)
-			}
-			return nil, fmt.Errorf("new extension runner: %v", err)
-		}
 		tlsCert, err := tls.X509KeyPair(cert, key)
 		if err != nil {
 			if cerr := listener.Close(); cerr != nil {
@@ -241,6 +287,11 @@ func (s contextServerStream) Context() context.Context {
 func (r *Runner) newUnixListener(uri workspaceapi.URI) (ret net.Listener, err error) {
 	ctx := context.Background()
 	socket := r.socketPath(uri)
+	// Create the directory up front rather than on ENOENT: Windows reports a
+	// missing parent directory from bind(2) as WSAENETDOWN.
+	if err := os.MkdirAll(filepath.Dir(socket), 0766); err != nil {
+		return nil, fmt.Errorf("create socket dir: %w", err)
+	}
 	err = retry.Retry(ctx, retrySocketStrategy, func(context.Context) (bool, error) {
 		var cfg net.ListenConfig
 		ret, err = cfg.Listen(ctx, "unix", socket)
@@ -250,15 +301,6 @@ func (r *Runner) newUnixListener(uri workspaceapi.URI) (ret net.Listener, err er
 
 		if errors.Is(err, syscall.EACCES) {
 			return false, err
-		}
-
-		if errors.Is(err, syscall.ENOENT) { // a component of the path does not exist
-			mkdirErr := os.MkdirAll(filepath.Dir(socket), 0766)
-			if mkdirErr != nil {
-				err = fmt.Errorf("listen: %w", err)
-				return false, multierror.Append(err, mkdirErr)
-			}
-			return true, err
 		}
 
 		_ = os.Remove(socket)

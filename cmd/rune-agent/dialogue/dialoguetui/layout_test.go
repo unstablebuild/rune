@@ -584,3 +584,70 @@ type resizeCounter struct {
 func (r *resizeCounter) Resize(int, int)  { r.resizes++ }
 func (r *resizeCounter) Draw(term.Writer) {}
 func (r *resizeCounter) Height(int) int   { return r.rows }
+
+// TestDialogueLayoutStatusBarRow pins the bottom row the status bar
+// claims, and the row every other region gives up for it.
+func TestDialogueLayoutStatusBarRow(t *testing.T) {
+	const width, height = 40, 12
+
+	tests := []struct {
+		name    string
+		cfg     ComponentConfig
+		wantBar int
+	}{
+		{name: "bar disabled", cfg: ComponentConfig{}, wantBar: 0},
+		{
+			name:    "bar enabled",
+			cfg:     ComponentConfig{StatusBar: StatusBarConfig{Enabled: true}},
+			wantBar: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			comp := NewComponent(tt.cfg)
+			t.Cleanup(func() { _ = comp.Close() })
+			comp.Resize(width, height)
+
+			assert.Equal(t, tt.wantBar, comp.barHeight())
+
+			boxH := comp.boxHeight(comp.boxWidth(width))
+			assert.Equal(t, height-tt.wantBar,
+				comp.InputPosition().Y+boxH,
+				"compose box must sit directly above the bar")
+
+			if tt.wantBar > 0 {
+				assert.Equal(t, height-1, comp.barArea.Position().Y)
+				assert.Equal(t, width, comp.barArea.Width())
+				assert.Equal(t, 1, comp.barArea.Height())
+			}
+		})
+	}
+}
+
+// TestDialogueLayoutStatusBarYieldsToTranscript covers the vertical
+// starvation guard: the compose box gives up rows before the transcript
+// drops below minMessagesRows, and the bar gives up its row entirely
+// once the viewport cannot afford it.
+func TestDialogueLayoutStatusBarYieldsToTranscript(t *testing.T) {
+	for height := 1; height <= 12; height++ {
+		comp := NewComponent(ComponentConfig{
+			StatusBar: StatusBarConfig{Enabled: true},
+		})
+		comp.Resize(40, height)
+
+		barH := comp.barHeight()
+		if height <= minMessagesRows {
+			assert.Zero(t, barH, "height %d", height)
+		} else {
+			assert.Equal(t, 1, barH, "height %d", height)
+		}
+
+		boxH := comp.boxHeight(comp.boxWidth(40))
+		assert.LessOrEqual(t, boxH, max(3, height-minMessagesRows-barH),
+			"compose box must yield rows at height %d", height)
+		assert.Equal(t, height-barH, comp.InputPosition().Y+min(boxH, height-barH),
+			"height %d", height)
+		_ = comp.Close()
+	}
+}

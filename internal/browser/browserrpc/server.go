@@ -253,8 +253,10 @@ func (s *Server) Publish(
 		return nil, err
 	}
 
-	s.browser.Lock()
-	defer s.browser.Unlock()
+	// Deliberately unlocked: EventPublisher is contracted to be
+	// concurrent-safe, and the sink is an atomic store or a buffered
+	// channel send. Taking the UI lock here would queue every extension
+	// redraw behind a render loop that holds it for a whole tick.
 	err = s.browser.PublishEvent(ev)
 	if err != nil {
 		return nil, err
@@ -281,6 +283,25 @@ func (s *Server) Focus(
 	}
 
 	return res, nil
+}
+
+// SetTabActivity satisfies BrowserServer.
+func (s *Server) SetTabActivity(
+	ctx context.Context, req *browserrpc.SetTabActivityRequest,
+) (*browserrpc.SetTabActivityResponse, error) {
+	uri, err := workspaceapi.ParseURI(req.GetResourceId())
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"parse resource id %q: %v", req.GetResourceId(), err)
+	}
+
+	s.browser.Lock()
+	defer s.browser.Unlock()
+
+	if err := s.browser.SetTabActivity(uri, req.GetActive()); err != nil {
+		return nil, err
+	}
+	return new(browserrpc.SetTabActivityResponse), nil
 }
 
 // CloseWindow satisfies BrowserServer.
@@ -641,8 +662,11 @@ func (f *streamHandler) Resize(width, height int) {
 
 func (f *streamHandler) doneSetup() {
 	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.Handler.Resize(f.width, f.height)
-	f.mu.Unlock()
+	// Resizes reach this handler under the same lock, so publishing the
+	// flag here is what stops one that lands now from being recorded as
+	// pending setup and never forwarded.
 	f.setup.Store(true)
 }
 

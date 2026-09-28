@@ -17,7 +17,7 @@
 // Command buildstamp prints the current time formatted for the
 // debug.BuildDate ldflag. Go, not the host's date(1), renders the
 // string, so it is identical across platforms and always parses with
-// the exact layout the plan-gating parser uses.
+// debug.BuildDateLayout.
 //
 // Usage:
 //
@@ -31,8 +31,7 @@ import (
 )
 
 // formatStamp renders t as the debug.BuildDate string: RFC3339 in UTC,
-// using the same layout the plan-gating parser consumes so the round
-// trip is exact.
+// so the stamp `rune --version` reports round trips exactly.
 func formatStamp(t time.Time) string {
 	return t.UTC().Format(debug.BuildDateLayout)
 }

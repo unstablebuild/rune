@@ -758,6 +758,7 @@ func ensureGitRepo(ctx context.Context, fs workspaceapi.FileSystem,
 	}
 	if err := runGitCmd(ctx, exec, dataPath,
 		"-c", "user.name=rune-agent", "-c", "user.email=rune-agent@localhost",
+		"-c", "commit.gpgsign=false",
 		"commit", "-m", "initialize memory module"); err != nil {
 		return fmt.Errorf("git commit: %w", err)
 	}
@@ -774,6 +775,7 @@ func gitCommitAll(ctx context.Context, exec workspaceapi.Executor,
 	}
 	err := runGitCmd(ctx, exec, dataPath,
 		"-c", "user.name=rune-agent", "-c", "user.email=rune-agent@localhost",
+		"-c", "commit.gpgsign=false",
 		"commit", "-m", message)
 	// git exits non-zero when there is nothing to commit; this is expected
 	// and not an error for our use case.

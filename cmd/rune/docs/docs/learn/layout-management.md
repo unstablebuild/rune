@@ -276,7 +276,7 @@ These are the shipped preset assignments. Every layout binding lives in
 `command.key_bindings`, so you can remap it (see [Rebinding](#rebinding)). Run
 `cheatsheet` to see the bindings active in your configuration.
 
-### Modal
+### Vim
 
 | Command | Binding |
 | --- | --- |
@@ -287,7 +287,7 @@ These are the shipped preset assignments. Every layout binding lives in
 | `windowtogglemaximize` | `<shift-meta-f>` |
 | `windowdefaultsplit h/v` | `<ctrl-meta-h>` / `<ctrl-meta-v>` |
 | `windownew` | `<meta-n>` |
-| `windowclose` | `<meta-w>` |
+| `windowclose` / `windowcloseall` | `<meta-w>` / `<shift-meta-w>` |
 | `tabnew` | `<meta-t>` |
 | `tabnext` / `tabprevious` | `<alt-l>` / `<alt-h>` |
 | `tabfocus 1..9` | `<alt-1>` … `<alt-9>` |
@@ -375,6 +375,8 @@ for key, dir in [
     config["command"]["key_bindings"][key] = "windowfocus " + dir
 ```
 
-Set a binding to `""` to unbind it. See [Config](../config.md) for where
-the file lives and [key syntax](./key-syntax.md) for the full grammar of
-key combinations.
+Set a binding to `""` to unbind it: the key you rebind a command *from* keeps
+its shipped binding until you reset it explicitly, see [Move a binding to
+another key](./command-prompt.md#move-a-binding-to-another-key). See
+[Config](../config.md) for where the file lives and [key
+syntax](./key-syntax.md) for the full grammar of key combinations.

@@ -575,7 +575,7 @@ func (s *remoteScheme) StopWatch(id int) error {
 	return scheme.StopWatch(id)
 }
 
-func (s *remoteScheme) SetPtySize(pty workspaceapi.Pty, width, height int) error {
+func (s *remoteScheme) SetPtySize(pty workspaceapi.Pty, size workspaceapi.PtySize) error {
 	scheme, generation, err := s.stateWithGeneration()
 	if err != nil {
 		return err
@@ -592,7 +592,7 @@ func (s *remoteScheme) SetPtySize(pty workspaceapi.Pty, width, height int) error
 	// file is transient, do not Close on GC
 	runtime.SetFinalizer(pty.Master, nil)
 	runtime.SetFinalizer(pty.Slave, nil)
-	return scheme.SetPtySize(pty, width, height)
+	return scheme.SetPtySize(pty, size)
 }
 
 func (s *remoteScheme) Close() (ret error) {

@@ -120,7 +120,9 @@ func openFile(
 	if err != nil {
 		return nil, err
 	}
-	l, err := newFile(scheme, filename, buf, swapDir, readOnly, inlineSchedule)
+	dir, swapFilePath := swapFileName(swapDir, filename)
+	l, err := newFile(scheme, filename, buf, sharedSwapDir(dir, filename),
+		swapFilePath, readOnly, inlineSchedule)
 	if err != nil {
 		return nil, err
 	}
@@ -1258,14 +1260,19 @@ func testFileBufferFlush(t *testing.T, newBuffer newBufferFunc) {
 		assert.True(t, called)
 	})
 
-	t.Run("flush bubbles up rename errors", func(t *testing.T) {
+	t.Run("flush bubbles up save errors when the rename fallback also fails", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 
 		f, mock, _ := newBuffer(t, ctrl)
 		myErr := errors.New("wtf")
 		f.scheme.(*testScheme).renameFunc = func(oldName, newName string) error {
-			return myErr
+			return errors.New("cross-device link")
+		}
+		f.scheme.(*testScheme).openFunc = func(
+			string, int, os.FileMode,
+		) (workspaceapi.File, error) {
+			return nil, myErr
 		}
 
 		mock.EXPECT().Close().Return(nil).Times(2)
@@ -1751,7 +1758,7 @@ func TestFileFlushPublishesLastFlushBeforeRename(t *testing.T) {
 	)
 	hook := &renameHookScheme{Scheme: inner}
 
-	f, err := newFile(hook, fileObj.Name(), buf, "", false, inlineSchedule)
+	f, err := newFile(hook, fileObj.Name(), buf, "", "", false, inlineSchedule)
 	require.NoError(t, err)
 	defer f.Close()
 
@@ -1798,14 +1805,89 @@ func TestFileFlushPublishesLastFlushBeforeRename(t *testing.T) {
 // transparently.
 type renameHookScheme struct {
 	schemeapi.Scheme
-	onRename func(oldpath, newpath string)
+	onRename    func(oldpath, newpath string)
+	afterRename func(oldpath, newpath string) error
 }
 
 func (s *renameHookScheme) Rename(oldpath, newpath string) error {
 	if s.onRename != nil {
 		s.onRename(oldpath, newpath)
 	}
-	return s.Scheme.Rename(oldpath, newpath)
+	if err := s.Scheme.Rename(oldpath, newpath); err != nil {
+		return err
+	}
+	if s.afterRename != nil {
+		return s.afterRename(oldpath, newpath)
+	}
+	return nil
+}
+
+func TestFileFlushPostRenameModification(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		externalEdit bool
+		pendingEdit  bool
+	}{
+		{name: "rename_changes_mtime_only"},
+		{name: "external_edit_before_rename_returns", externalEdit: true},
+		{name: "rename_with_pending_edit", pendingEdit: true},
+		{name: "external_and_pending_edit", externalEdit: true, pendingEdit: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			buf, fileObj := newIntegrationTestCase(t, true)
+			workspaceURI, err := makeLocalURI(filepath.Dir(fileObj.Name()))
+			require.NoError(t, err)
+			inner, err := newTestFileScheme(workspaceURI)
+			require.NoError(t, err)
+			hook := &renameHookScheme{Scheme: inner}
+			f, err := newFile(hook, fileObj.Name(), buf, "", "", false, inlineSchedule)
+			require.NoError(t, err)
+			defer f.Close()
+			buf.WriteString("editor change")
+			saved := buf.String()
+			modified := time.Date(2040, time.January, 2, 3, 4, 5, 0, time.UTC)
+			var duringRename time.Time
+			hook.afterRename = func(_, path string) error {
+				if tc.pendingEdit {
+					buf.WriteString("pending user edit")
+				}
+				if tc.externalEdit {
+					if err := os.WriteFile(path, []byte("external change"), 0600); err != nil {
+						return err
+					}
+				}
+				if err := os.Chtimes(path, modified, modified); err != nil {
+					return err
+				}
+				duringRename = f.LastFlush()
+				return nil
+			}
+			require.NoError(t, awaitFlushErr(f.Flush(context.Background())))
+			info, err := os.Stat(fileObj.Name())
+			require.NoError(t, err)
+			require.True(t, info.ModTime().Equal(modified))
+			data, err := os.ReadFile(fileObj.Name())
+			require.NoError(t, err)
+			wantBuffer := saved
+			if tc.pendingEdit {
+				wantBuffer += "pending user edit"
+			}
+			assert.Equal(t, wantBuffer, buf.String())
+			assert.False(t, duringRename.Equal(modified))
+			if tc.externalEdit {
+				assert.Equal(t, "external change", string(data))
+				assert.False(t, f.LastFlush().Equal(info.ModTime()),
+					"external edit must not be published as our saved timestamp")
+				assert.True(t, f.infoModTime.Equal(duringRename))
+				buf.WriteString("pending edit")
+				require.ErrorIs(t, awaitFlushErr(f.Flush(context.Background())), workspaceapi.ErrStaleData)
+			} else {
+				assert.Equal(t, saved+"\n", string(data))
+				assert.True(t, f.LastFlush().Equal(info.ModTime()),
+					"rename-only mtime change must still be recognized as our save")
+			}
+		})
+	}
 }
 
 // statHookScheme wraps a schemeapi.Scheme so a test can observe Stat
@@ -1814,6 +1896,71 @@ func (s *renameHookScheme) Rename(oldpath, newpath string) error {
 type statHookScheme struct {
 	schemeapi.Scheme
 	onStat func(path string)
+}
+
+type readCountingFile struct {
+	workspaceapi.File
+	read *int
+}
+
+func (f readCountingFile) Read(p []byte) (int, error) {
+	n, err := f.File.Read(p)
+	*f.read += n
+	return n, err
+}
+
+// readCountingScheme totals the bytes read from one path so a test can assert
+// how much of the saved file a flush pulls back off the wire.
+type readCountingScheme struct {
+	schemeapi.Scheme
+	path string
+	read int
+}
+
+func (s *readCountingScheme) OpenFile(
+	name string, flag int, perm os.FileMode,
+) (workspaceapi.File, error) {
+	file, err := s.Scheme.OpenFile(name, flag, perm)
+	if err != nil || name != s.path {
+		return file, err
+	}
+	return readCountingFile{File: file, read: &s.read}, nil
+}
+
+// TestFileFlushReadsSavedFileOncePerSave pins the I/O cost of verifying that
+// the reopened file is still ours. Re-staging the swap already reads the file,
+// so a second verification pass would double the transfer of every save on a
+// remote workspace.
+func TestFileFlushReadsSavedFileOncePerSave(t *testing.T) {
+	buf, fileObj := newIntegrationTestCase(t, true)
+	workspaceURI, err := makeLocalURI(filepath.Dir(fileObj.Name()))
+	require.NoError(t, err)
+	inner, err := newTestFileScheme(workspaceURI)
+	require.NoError(t, err)
+	counter := &readCountingScheme{Scheme: inner, path: fileObj.Name()}
+	hook := &renameHookScheme{Scheme: counter}
+	f, err := newFile(hook, fileObj.Name(), buf, "", "", false, inlineSchedule)
+	require.NoError(t, err)
+	defer f.Close()
+
+	buf.WriteString("editor change")
+	modified := time.Date(2040, time.January, 2, 3, 4, 5, 0, time.UTC)
+	// A rename that moves mtime is the case that has to be verified; without
+	// the change there is nothing to check and no read to count.
+	hook.afterRename = func(_, path string) error {
+		return os.Chtimes(path, modified, modified)
+	}
+
+	counter.read = 0
+	require.NoError(t, awaitFlushErr(f.Flush(context.Background())))
+
+	info, err := os.Stat(fileObj.Name())
+	require.NoError(t, err)
+	require.True(t, info.ModTime().Equal(modified))
+	require.True(t, f.LastFlush().Equal(modified),
+		"an unchanged file must still be recognized as our save")
+	assert.Equal(t, int(info.Size()), counter.read,
+		"verifying the reopened file must reuse the read that re-stages the swap")
 }
 
 func (s *statHookScheme) Stat(path string) (os.FileInfo, error) {
@@ -1843,7 +1990,7 @@ func TestFileFlushNewFilePublishesLastFlushAfterTouch(t *testing.T) {
 	buf.WriteString("data\n")
 
 	hook := &statHookScheme{Scheme: inner}
-	f, err := newFile(hook, target, buf, "", false, inlineSchedule)
+	f, err := newFile(hook, target, buf, "", "", false, inlineSchedule)
 	require.NoError(t, err)
 	defer f.Close()
 
@@ -1927,7 +2074,7 @@ func TestFileReloadBufferMutationOnEventLoop(t *testing.T) {
 		return true
 	}
 
-	f, err := newFile(scheme, fileObj.Name(), buf, "", false, sched)
+	f, err := newFile(scheme, fileObj.Name(), buf, "", "", false, sched)
 	require.NoError(t, err)
 	defer func() {
 		close(loopCh)
@@ -2001,7 +2148,7 @@ func TestFileCloseDoesNotWaitForInFlightReload(t *testing.T) {
 		return true
 	}
 
-	f, err := newFile(scheme, fileObj.Name(), buf, "", false, queueSchedule)
+	f, err := newFile(scheme, fileObj.Name(), buf, "", "", false, queueSchedule)
 	require.NoError(t, err)
 
 	ch, err := f.Reload(context.Background())
@@ -2190,7 +2337,7 @@ func TestFileCloseWaitsForInFlightFlush(t *testing.T) {
 		<-renameGate
 	}}
 
-	f, err := newFile(hook, fileObj.Name(), buf, "", false, inlineSchedule)
+	f, err := newFile(hook, fileObj.Name(), buf, "", "", false, inlineSchedule)
 	require.NoError(t, err)
 
 	flushCh, err := f.Flush(context.Background())
@@ -2285,7 +2432,7 @@ func TestFileEditsDuringFlushReachDiskViaCatchUp(t *testing.T) {
 	editApplied := make(chan struct{})
 	hook := &renameHookScheme{Scheme: inner}
 
-	f, err := newFile(hook, fileObj.Name(), buf, "", false, inlineSchedule)
+	f, err := newFile(hook, fileObj.Name(), buf, "", "", false, inlineSchedule)
 	require.NoError(t, err)
 	defer f.Close()
 
@@ -2371,7 +2518,7 @@ func TestFileEditsDuringReloadAreDiscarded(t *testing.T) {
 		},
 	}
 
-	f, err := newFile(hook, fileObj.Name(), buf, "", false, inlineSchedule)
+	f, err := newFile(hook, fileObj.Name(), buf, "", "", false, inlineSchedule)
 	require.NoError(t, err)
 	defer f.Close()
 
@@ -2660,7 +2807,7 @@ func runFileCloseReloadCase(t *testing.T, tc fileCloseReloadCase) {
 		}
 	}
 
-	f, err := newFile(scheme, fileObj.Name(), buf, "", false, sched)
+	f, err := newFile(scheme, fileObj.Name(), buf, "", "", false, sched)
 	require.NoError(t, err)
 
 	if tc.deleteOnDisk {

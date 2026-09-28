@@ -100,6 +100,23 @@ func TestApply(t *testing.T) {
 			},
 		},
 		{
+			name: "add file under dollar directory keeps name literal",
+			patch: Patch{Ops: []FileOp{
+				{
+					Type:  OpAdd,
+					Path:  "routes/$RUNE_TEST_UNSET_VAR/index.tsx",
+					Lines: []Line{{Kind: LineAdd, Content: "route"}},
+				},
+			}},
+			wantApply: 1,
+			verify: func(t *testing.T, dir string) {
+				data, err := os.ReadFile(
+					filepath.Join(dir, "routes", "$RUNE_TEST_UNSET_VAR", "index.tsx"))
+				require.NoError(t, err)
+				assert.Equal(t, "route", string(data))
+			},
+		},
+		{
 			name: "add file already exists errors",
 			setup: func(t *testing.T, dir string) {
 				require.NoError(t, os.WriteFile(filepath.Join(dir, "exists.txt"), []byte("old"), 0o644))

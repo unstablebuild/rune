@@ -167,6 +167,7 @@ func (f *deferFakeReal) SetDefaultAttributes(a term.Attributes) {
 
 func (f *deferFakeReal) Dimensions() (width, height int) { return f.dimW, f.dimH }
 func (f *deferFakeReal) IsSearchMode() bool              { return f.searchMode }
+func (f *deferFakeReal) IsNormalMode() bool              { return false }
 
 func (f *deferFakeReal) Close() error { return nil }
 func (f *deferFakeReal) Cursor() (term.Coordinates, term.CursorStyle, bool) {

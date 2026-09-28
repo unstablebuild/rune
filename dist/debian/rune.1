@@ -1,0 +1,56 @@
+.TH RUNE 1 "2026" "Rune" "User Commands"
+.SH NAME
+rune \- fast, GPU-accelerated, full-featured IDE and terminal multiplexer
+.SH SYNOPSIS
+.B rune
+.RI [ options ]
+.RI [ file ...]
+.SH DESCRIPTION
+.B Rune
+is a keyboard-driven IDE that combines code editing, terminals, CLI
+tools, language intelligence, debugging and AI agents in one
+multi-workspace environment. The GUI is GPU-rendered and needs an X11
+and OpenGL capable display; \fB\-\-tui\fR and \fB\-\-headless\fR load no
+graphical library and run on a host that has none installed.
+.PP
+Any files named on the command line are opened in the initial
+workspace.
+.SH OPTIONS
+.TP
+.BR \-c ", " \-\-config " " \fIfile\fR
+Use \fIfile\fR to configure Rune. Defaults to \fBconfig.yaml\fR inside
+the data directory.
+.TP
+.BR \-d ", " \-\-datadir " " \fIdir\fR
+Set the data directory. Defaults to \fB~/.rune\fR.
+.TP
+.BR \-f ", " \-\-fps
+Render the frame rate in GUI mode.
+.TP
+.BR \-G ", " \-\-gui
+Run Rune in manual GUI mode.
+.TP
+.BR \-\-tui
+Run Rune in TUI mode.
+.TP
+.BR \-\-headless
+Run Rune as a headless network node for other Rune instances to connect.
+.TP
+.BR \-v ", " \-\-version
+Print version information and exit.
+.TP
+.BR \-w ", " \-\-workspace " " \fIuri\fR
+Set the initial workspace to open, in the format
+.IR [scheme:][//[userinfo@]host][/]path .
+.SH FILES
+.TP
+.I ~/.rune
+Default data directory holding configuration, state and installed
+extensions.
+.TP
+.I /usr/lib/rune.app/share/zdot
+Z shell startup files used to bootstrap Rune's integrated terminals.
+.SH SEE ALSO
+Full documentation is available at
+.UR https://docs.rune.build
+.UE .

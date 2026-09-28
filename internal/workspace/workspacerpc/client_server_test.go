@@ -331,17 +331,17 @@ func TestClientServer(t *testing.T) {
 			mockFile.EXPECT().Close().Return(nil).
 				AnyTimes( /* Close runs in runtime.Finalizer */ )
 
+			want := workspaceapi.PtySize{Columns: 1, Rows: 1, PixelWidth: 10, PixelHeight: 20}
 			s.s.(*workspacetest.MockWorkspace).EXPECT().
-				SetPtySize(gomock.Any(), gomock.Eq(1), gomock.Eq(1)).
-				DoAndReturn(func(pty workspaceapi.Pty, width, height int) error {
-					assert.Equal(t, 1, width)
-					assert.Equal(t, 1, height)
+				SetPtySize(gomock.Any(), gomock.Eq(want)).
+				DoAndReturn(func(pty workspaceapi.Pty, size workspaceapi.PtySize) error {
+					assert.Equal(t, want, size, "the pixel size travels with the cells")
 					// must be exact instance returned by underlying Scheme
 					// or else certain implementations might fail
 					assert.Equal(t, mockFile, pty.Master)
 					return nil
 				})
-			err = c.SetPtySize(pty, 1, 1)
+			err = c.SetPtySize(pty, want)
 			assert.NoError(t, err)
 		}},
 		{"SetPtySize error", func(t *testing.T, mock *workspaceapitest.MockFile, c *workspacerpc.Client, s *Server) {
@@ -363,9 +363,9 @@ func TestClientServer(t *testing.T) {
 				Return(mockFile).AnyTimes()
 
 			s.s.(*workspacetest.MockWorkspace).EXPECT().
-				SetPtySize(gomock.Any(), gomock.Eq(1), gomock.Eq(1)).
+				SetPtySize(gomock.Any(), gomock.Eq(workspaceapi.PtySize{Columns: 1, Rows: 1})).
 				Return(errors.New("bummer"))
-			err = c.SetPtySize(pty, 1, 1)
+			err = c.SetPtySize(pty, workspaceapi.PtySize{Columns: 1, Rows: 1})
 			assert.Error(t, err)
 			assert.Contains(t, err.Error(), "bummer")
 		}},

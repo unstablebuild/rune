@@ -1459,7 +1459,7 @@ func TestListDrawWideClusters(t *testing.T) {
 			start:    3,
 			items:    []listItem{{content: textRun{{text: "中"}}}},
 			width:    10,
-			expected: []string{"3.中"},
+			expected: []string{"3. 中"},
 		},
 		{
 			name: "task items",

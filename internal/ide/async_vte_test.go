@@ -341,6 +341,7 @@ func TestNewEmulatorHandlerAlwaysAsync(t *testing.T) {
 // finally resolved to.
 type recordingTabManager struct {
 	names map[string]string
+	exits []string
 }
 
 func (r *recordingTabManager) Tab(
@@ -355,6 +356,13 @@ func (r *recordingTabManager) SetTabName(
 	r.names[uri.String()] = name
 	return nil
 }
+
+func (r *recordingTabManager) OnTabExit(uri workspaceapi.URI) bool {
+	r.exits = append(r.exits, uri.String())
+	return true
+}
+
+func (r *recordingTabManager) SetTabActivity(workspaceapi.URI, bool) error { return nil }
 
 func TestTabNameAliaser(t *testing.T) {
 	mustURI := func(s string) workspaceapi.URI {
@@ -405,6 +413,13 @@ func TestTabNameAliaser(t *testing.T) {
 		require.NoError(t, a.SetTabName(wrapperURI, "make", term.Attributes{}))
 		assert.Equal(t, "make", rec.names[sessionURI.String()],
 			"unrelated aliases must survive")
+	})
+
+	t.Run("OnTabExit resolves aliases to the tab key", func(t *testing.T) {
+		a, rec := newAliaser()
+		a.addAlias(ptyURI, wrapperURI)
+		require.True(t, a.OnTabExit(ptyURI))
+		assert.Equal(t, []string{wrapperURI.String()}, rec.exits)
 	})
 }
 

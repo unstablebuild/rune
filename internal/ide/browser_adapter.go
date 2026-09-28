@@ -94,6 +94,12 @@ func (a browserAdapter) CloseWindow(
 	return bw.Close()
 }
 
+func (a browserAdapter) SetTabActivity(
+	uri workspaceapi.URI, active bool,
+) error {
+	return a.b.SetTabActivity(uri, active)
+}
+
 func (a browserAdapter) Interrupt(
 	ctx context.Context,
 ) error {

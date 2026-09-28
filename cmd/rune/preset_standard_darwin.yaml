@@ -1,5 +1,4 @@
 # Rune user configuration (standard editor preset).
-config_version: 2
 
 # ---------------------------------------------------------------------------
 # GUI theme
@@ -32,6 +31,11 @@ editor:
   standard:
     attr: {fg: default, bg: default}
     search_attr: {fg: grey, bg: yellow}
+  # The :fexplorer tree is an editable buffer: renaming a line renames
+  # the file. It starts read-only here; <shift-esc> unlocks it for the
+  # rest of the visit.
+  file_explorer:
+    read_only: true
 #   tabspaces: 4
 #   ruler: 90
 #   autoindent: true            # syntax-driven indentation

@@ -31,6 +31,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"unstable.build/rune/internal/browser"
+	"unstable.build/rune/internal/ide/idehistory"
 	"unstable.build/rune/internal/term/vte"
 	"unstable.build/rune/internal/term/vte/vtereservoir"
 )
@@ -60,6 +61,14 @@ func terminalSessionURI(name string) (workspaceapi.URI, error) {
 
 func terminalSessionDocumentID(name string) string {
 	return terminalSessionDocumentPrefix + url.QueryEscape(name)
+}
+
+func (e *ex) terminalSessionStorage() storageapi.Service {
+	if e.terminalStorage == nil {
+		e.terminalStorage = storageapi.WithPartition(
+			e.storage, idehistory.TerminalStatePartition)
+	}
+	return e.terminalStorage
 }
 
 func (e *ex) terminalInFocus() (vtereservoir.VTE, bool) {
@@ -99,7 +108,7 @@ func (e *ex) nextTerminalSessionName(ctx context.Context, h vtereservoir.VTE) (s
 		}
 		ctx, cancel := context.WithTimeout(ctx, time.Second)
 		var doc terminalSessionDocument
-		err := e.storage.Get(ctx, terminalSessionDocumentID(name), &doc)
+		err := e.terminalSessionStorage().Get(ctx, terminalSessionDocumentID(name), &doc)
 		cancel()
 		if errors.Is(err, storageapi.ErrNotFound) {
 			return name, nil
@@ -121,7 +130,8 @@ func (e *ex) saveTerminalSession(ctx context.Context, name string, h vtereservoi
 
 	ctx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
-	err = e.storage.Set(ctx, terminalSessionDocumentID(name), terminalSessionDocument{
+	err = e.terminalSessionStorage().Set(ctx, terminalSessionDocumentID(name), terminalSessionDocument{
+		Kind:     terminalSessionDocumentKind,
 		Name:     name,
 		Snapshot: snapshot,
 	})
@@ -154,8 +164,8 @@ func (e *ex) terminalresume(ctx context.Context, args ...string) error {
 
 	ctx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
-	var doc terminalSessionDocument
-	if err := e.storage.Get(ctx, terminalSessionDocumentID(name), &doc); err != nil {
+	doc, err := e.loadTerminalSession(ctx, name)
+	if err != nil {
 		return fmt.Errorf("resume terminal session %q: %w", name, err)
 	}
 	if doc.Name == "" {
@@ -164,6 +174,30 @@ func (e *ex) terminalresume(ctx context.Context, args ...string) error {
 
 	_, err = e.restoreTerminalSessionTab(doc, e.invokeWindow())
 	return err
+}
+
+// loadTerminalSession reads a saved session. Sessions saved before they
+// had their own partition still live beside the workspace state, where
+// every startup listing decodes them; a hit there moves the document.
+func (e *ex) loadTerminalSession(
+	ctx context.Context, name string,
+) (terminalSessionDocument, error) {
+	id := terminalSessionDocumentID(name)
+	var doc terminalSessionDocument
+	err := e.terminalSessionStorage().Get(ctx, id, &doc)
+	if !errors.Is(err, storageapi.ErrNotFound) {
+		return doc, err
+	}
+	if err := e.storage.Get(ctx, id, &doc); err != nil {
+		return doc, err
+	}
+	if doc.Kind == "" {
+		doc.Kind = terminalSessionDocumentKind
+	}
+	if err := e.terminalSessionStorage().Set(ctx, id, doc); err == nil {
+		_ = e.storage.Delete(ctx, id)
+	}
+	return doc, nil
 }
 
 func (e *ex) newTerminalSessionHandler(
@@ -236,7 +270,7 @@ func (e *ex) completeTerminalSessions(ctx context.Context, _ textapi.Command) (
 ) {
 	ctx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
-	it, err := e.storage.List(ctx, []storageapi.Filter{{
+	it, err := e.terminalSessionStorage().List(ctx, []storageapi.Filter{{
 		Field: storageapi.Field{FieldPath: []string{"Kind"}, Value: terminalSessionDocumentKind},
 		Op:    storageapi.OpEqual,
 	}})

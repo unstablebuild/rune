@@ -53,10 +53,6 @@ func WithHistory(
 	scheduleNextTick func(func()) bool,
 	skip ...workspaceapi.URI,
 ) (io.Closer, error) {
-	skipSet := make(map[string]struct{}, len(skip))
-	for _, u := range skip {
-		skipSet[u.String()] = struct{}{}
-	}
 	h := &handler{
 		editor:           ed,
 		store:            storage,
@@ -69,7 +65,7 @@ func WithHistory(
 		scheduleNextTick: scheduleNextTick,
 		docID:            documentID(workspaceURI),
 		doc:              newHistoryDocument(workspaceURI),
-		skip:             skipSet,
+		skip:             skip,
 	}
 	if err := h.load(context.Background()); err != nil {
 		return nil, err
@@ -107,7 +103,9 @@ type handler struct {
 	lastCursor  location
 	hasLast     bool
 	lastWasOpen bool
-	skip        map[string]struct{}
+	// skip lists pseudo-buffer namespaces whose events are ignored,
+	// matched by path prefix.
+	skip []workspaceapi.URI
 }
 
 func manual() textapi.CommandManual {
@@ -136,8 +134,10 @@ func (h *handler) Handle(ctx context.Context, ev textapi.Event) bool {
 	// text locations. Recording them would let a later prev/next
 	// navigation re-open the pseudo-URI, re-registering per-file
 	// commands and re-locking the swap file.
-	if _, ok := h.skip[ev.URI.String()]; ok {
-		return false
+	for _, s := range h.skip {
+		if workspace.URIUnderPrefix(ev.URI, s) {
+			return false
+		}
 	}
 	next := location{
 		URI:          ev.URI.String(),

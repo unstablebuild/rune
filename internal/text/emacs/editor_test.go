@@ -27,6 +27,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/cell"
+	"unstable.build/rune/internal/ide/vctrl"
 	"unstable.build/rune/internal/text"
 	"unstable.build/rune/internal/text/texttest"
 )
@@ -411,4 +412,65 @@ type mockIndentView struct {
 func (v mockIndentView) IndentationAt(line int) (int, bool) {
 	indent, ok := v.indents[line]
 	return indent, ok
+}
+
+// TestEditorBarOptions pins the bar selection :gitshow depends on: a
+// caller can drop the aux and icons bars for one Edit while keeping the
+// status bar, and can redirect the status bar at a namespace the
+// editor's own configuration cannot resolve.
+func TestEditorBarOptions(t *testing.T) {
+	tick := func(fn func()) bool { fn(); return true }
+	base, err := workspaceapi.ParseURI("memory:///gitshow")
+	require.NoError(t, err)
+	file, err := workspaceapi.ParseURI("memory:///gitshow/hello.go.diff")
+	require.NoError(t, err)
+
+	open := func(t *testing.T, opts text.BarOptions) text.Handler {
+		t.Helper()
+		ed := Editor(
+			WithAuxiliaryBar(true, text.AuxBarConfig{
+				LinesEnabled: true, ScheduleNextTick: tick,
+			}),
+			WithStatusBarConfig(true, text.StatusBarConfig{
+				Publisher:        &texttest.TestEditor{},
+				ScheduleNextTick: tick,
+				Layout: []text.StatusBarComponent{
+					{Type: text.StatusBarFilePath, Template: "%s"},
+				},
+			}),
+		)
+		buf := cell.NewBuffer()
+		buf.WriteString("--- a/hello.go\n+++ b/hello.go\n")
+		h, err := ed.Edit(text.WithBars(context.Background(), opts),
+			file, buf, true, false)
+		require.NoError(t, err)
+		return h
+	}
+
+	withBars := open(t, text.BarOptions{})
+	require.IsType(t, &text.StatusBar{}, withBars)
+	full, _ := withBars.Dimensions()
+
+	disabled := open(t, text.BarOptions{
+		DisableAuxBar: true, DisableIconsBar: true,
+	})
+	require.IsType(t, &text.StatusBar{}, disabled,
+		"disabling the aux bar must leave the status bar installed")
+	narrow, _ := disabled.Dimensions()
+	assert.Less(t, narrow, full,
+		"without the aux bar the handler must not claim its gutter")
+
+	override := open(t, text.BarOptions{
+		StatusBar: &text.StatusBarOverride{
+			Workspace: base, GitService: vctrl.NopService(),
+		},
+	})
+	override.Resize(40, 4)
+	w := term.NewStringWriter(40, 4)
+	override.Draw(w)
+	require.NoError(t, w.Flush())
+	assert.Contains(t, w.String(), "hello.go.diff",
+		"the status bar must resolve the path against the override base")
+	assert.NotContains(t, w.String(), "memory:",
+		"the popup path must not fall back to the whole URI")
 }

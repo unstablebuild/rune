@@ -256,3 +256,6 @@ func (t translateWriter) SetCell(pos term.Coordinates, c term.Cell) {
 func (t translateWriter) UnionAttributes(pos term.Coordinates, attr term.Attributes) {
 	t.w.UnionAttributes(term.Coordinates{X: pos.X + t.dx, Y: pos.Y + t.dy}, attr)
 }
+func (t translateWriter) DrawImage(img term.Image) bool {
+	return t.w.DrawImage(img.Translated(term.Coordinates{X: t.dx, Y: t.dy}))
+}

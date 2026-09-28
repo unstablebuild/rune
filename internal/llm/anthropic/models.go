@@ -32,6 +32,8 @@ const (
 	// ClaudeFable5 is Anthropic's Claude Fable 5 model — its most capable
 	// widely released model.
 	ClaudeFable5 = "claude-fable-5"
+	// ClaudeOpus5Dot5 is Anthropic's Claude Opus 5.5 model.
+	ClaudeOpus5Dot5 = "claude-opus-5-5"
 	// ClaudeOpus5 is Anthropic's Claude Opus 5 model.
 	ClaudeOpus5 = "claude-opus-5"
 	// ClaudeSonnet5 is Anthropic's Claude Sonnet 5 model.
@@ -73,6 +75,7 @@ func AvailableModels() map[string]int {
 	return map[string]int{
 		ClaudeFable5Dot1:  1000000,
 		ClaudeFable5:      1000000,
+		ClaudeOpus5Dot5:   1000000,
 		ClaudeOpus5:       1000000,
 		ClaudeSonnet5:     1000000,
 		ClaudeOpus4Dot8:   1000000,
@@ -96,7 +99,8 @@ func AvailableModels() map[string]int {
 func SupportsAdaptiveThinking(model string) bool {
 	switch model {
 	case ClaudeOpus4Dot6, ClaudeSonnet4Dot6, ClaudeOpus4Dot7, ClaudeOpus4Dot8,
-		ClaudeOpus5, ClaudeSonnet5, ClaudeFable5, ClaudeFable5Dot1:
+		ClaudeOpus5, ClaudeOpus5Dot5, ClaudeSonnet5, ClaudeFable5,
+		ClaudeFable5Dot1:
 		return true
 	default:
 		return false
@@ -109,6 +113,7 @@ func SupportsAdaptiveThinking(model string) bool {
 var maxOutputTokens = map[string]int{
 	ClaudeFable5Dot1:  128000,
 	ClaudeFable5:      128000,
+	ClaudeOpus5Dot5:   128000,
 	ClaudeOpus5:       128000,
 	ClaudeSonnet5:     128000,
 	ClaudeOpus4Dot8:   128000,
@@ -151,6 +156,22 @@ var claude46Efforts = map[string]bool{
 	"high":   true,
 	"xhigh":  true,
 	"max":    true,
+}
+
+// DefaultEffortFor returns the effort level the provider applies when a
+// request omits one, or an empty string when the model publishes no
+// such default. Adaptive-thinking models document high, except Opus 5.5
+// which documents medium; earlier models take an explicit thinking
+// budget instead of an effort level.
+func DefaultEffortFor(model string) string {
+	switch {
+	case model == ClaudeOpus5Dot5:
+		return "medium"
+	case SupportsAdaptiveThinking(model):
+		return "high"
+	default:
+		return ""
+	}
 }
 
 // NormalizeEffort validates the requested effort level against the given
@@ -201,4 +222,4 @@ func ModelEntries() []llmapi.ModelEntry {
 // FlagshipModel returns the provider's top model identifier. It is
 // deterministic, unlike iterating ModelEntries() whose order is
 // map-random.
-func FlagshipModel() string { return ClaudeOpus5 }
+func FlagshipModel() string { return ClaudeOpus5Dot5 }

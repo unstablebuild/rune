@@ -19,6 +19,8 @@ package ide
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -199,4 +201,13 @@ func renderResponsives(
 	}
 	require.NoError(t, iter.Err())
 	return b.String()
+}
+
+func TestExtensionsCmdDirExistsOnHost(t *testing.T) {
+	assert.True(t, filepath.IsAbs(extensionsCmdDir),
+		"extensionsCmdDir %q must be absolute so it does not resolve against the caller's cwd",
+		extensionsCmdDir)
+	info, err := os.Stat(extensionsCmdDir)
+	require.NoError(t, err, "extensionsCmdDir must exist on the IDE host")
+	assert.True(t, info.IsDir())
 }

@@ -39,6 +39,8 @@ type Scanner struct {
 	oscRaw          []byte
 	oscParams       [MaxOSCParams][2]uint16
 	oscNumParams    int
+	apcRaw          []byte
+	apcOverflow     bool
 	ignoring        bool
 }
 
@@ -62,6 +64,16 @@ func (p *Scanner) Init(driver Driver) {
 func (p *Scanner) Advance(ch byte) {
 	if p.state == Utf8 {
 		p.processUtf8(ch)
+		return
+	}
+
+	// The generated table ignores BEL inside a control string, but
+	// kitty accepts it as a terminator alongside ST (kitty
+	// vt-parser.c:419-441, :466-468). Without this an APC terminated
+	// with BEL swallows everything up to the next ST.
+	if p.state == SosPmApcString && ch == 0x07 {
+		p.apcEnd()
+		p.state = Ground
 		return
 	}
 
@@ -134,6 +146,12 @@ func (p *Scanner) processUtf8(ch byte) {
 func (p *Scanner) performStateChange(state State, action Action, ch byte) {
 	// p.log(log.TraceLevel, "state change: %v to %v, action: %v, ch: %c", p.state, state, action, ch)
 	if state == Anywhere {
+		// The table ignores every byte of an SOS/PM/APC string; the
+		// scanner collects them so APC payloads can be dispatched.
+		if p.state == SosPmApcString {
+			p.apcPut(ch)
+			return
+		}
 		p.performAction(action, ch)
 		return
 	}
@@ -143,6 +161,8 @@ func (p *Scanner) performStateChange(state State, action Action, ch byte) {
 		p.performAction(Unhook, ch)
 	case OSCString:
 		p.performAction(OSCEnd, ch)
+	case SosPmApcString:
+		p.apcEnd()
 	}
 
 	if action != None {
@@ -156,10 +176,47 @@ func (p *Scanner) performStateChange(state State, action Action, ch byte) {
 		p.performAction(Hook, ch)
 	case OSCString:
 		p.performAction(OSCStart, ch)
+	case SosPmApcString:
+		p.apcStart(ch)
 	}
 
 	p.state = state
 
+}
+
+// apcStart begins collecting a control string. Only APC (ESC _) is
+// dispatched; SOS (ESC X) and PM (ESC ^) are collected and discarded
+// as before.
+func (p *Scanner) apcStart(introducer byte) {
+	p.apcRaw = p.apcRaw[:0]
+	p.apcOverflow = introducer != '_'
+}
+
+func (p *Scanner) apcPut(ch byte) {
+	if p.apcOverflow {
+		return
+	}
+	if len(p.apcRaw) >= MaxAPCRaw {
+		p.apcOverflow = true
+		p.apcRaw = p.apcRaw[:0]
+		return
+	}
+	p.apcRaw = append(p.apcRaw, ch)
+}
+
+func (p *Scanner) apcEnd() {
+	if p.apcOverflow {
+		p.apcOverflow = false
+		return
+	}
+	p.driver.APCDispatch(p.apcRaw)
+	// Release a large payload's storage rather than pinning it for the
+	// scanner's lifetime.
+	if cap(p.apcRaw) > 64*1024 {
+		p.apcRaw = nil
+	} else {
+		p.apcRaw = p.apcRaw[:0]
+	}
 }
 
 // DriverAction performs the specified action.

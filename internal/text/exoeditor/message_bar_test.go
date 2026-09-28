@@ -67,6 +67,7 @@ func (s *stubTextHandler) CellEditor() cell.Editor              { return nil }
 func (s *stubTextHandler) SetDefaultAttributes(term.Attributes) {}
 func (s *stubTextHandler) Dimensions() (int, int)               { return 0, 0 }
 func (s *stubTextHandler) IsSearchMode() bool                   { return false }
+func (s *stubTextHandler) IsNormalMode() bool                   { return false }
 func (s *stubTextHandler) SeekUp() bool                         { return false }
 func (s *stubTextHandler) SeekDown() bool                       { return false }
 func (s *stubTextHandler) SeekOffset() int                      { return 0 }

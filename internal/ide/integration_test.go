@@ -96,7 +96,7 @@ func TestLastEOLUndoFileIntegration(t *testing.T) {
 	initialCells := buf.RawCells()
 	assert.Equal(t, "a", initialString)
 	assert.Equal(t,
-		[][]term.Cell{{{Ch: 'a', Combining: nil, Bytes: 1, Width: 1}}}, initialCells)
+		[][]term.Cell{{{Ch: 'a', Bytes: 1, Width: 1}}}, initialCells)
 
 	at := term.Coordinates{Y: 1}
 	buf.Edit(context.Background(), at, at, "\n")
@@ -104,7 +104,7 @@ func TestLastEOLUndoFileIntegration(t *testing.T) {
 	newCells := buf.RawCells()
 	assert.Equal(t, "a\n", newString)
 	assert.Equal(t,
-		[][]term.Cell{{{Ch: 'a', Combining: nil, Bytes: 1, Width: 1}}, {}}, newCells)
+		[][]term.Cell{{{Ch: 'a', Bytes: 1, Width: 1}}, {}}, newCells)
 
 	ok, _ := buf.Undo()
 	assert.True(t, ok)
@@ -118,7 +118,7 @@ func TestLastEOLUndoFileIntegration(t *testing.T) {
 	newCells = buf.RawCells()
 	assert.Equal(t, "a\n", newString)
 	assert.Equal(t,
-		[][]term.Cell{{{Ch: 'a', Combining: nil, Bytes: 1, Width: 1}}, {}}, newCells)
+		[][]term.Cell{{{Ch: 'a', Bytes: 1, Width: 1}}, {}}, newCells)
 }
 
 func TestViIntegration(t *testing.T) {

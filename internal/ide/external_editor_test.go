@@ -59,6 +59,14 @@ func (externalEditorStub) UnregisterREPLCommand(string) error {
 	return errors.New("not supported")
 }
 
+func (externalEditorStub) RegisterResourceOpener(string, textapi.ResourceOpenHandler) error {
+	return errors.New("not supported")
+}
+
+func (externalEditorStub) UnregisterResourceOpener(string) error {
+	return errors.New("not supported")
+}
+
 func (externalEditorStub) Editor(workspaceapi.URI) (text.Handler, error) {
 	return nil, errors.New("not supported")
 }

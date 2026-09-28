@@ -10,6 +10,7 @@ ARG TARGETARCH
 ARG GIT_SSH_KEY
 ARG RUNE_BUILD_TAG
 ARG RUNE_BUILD_COMMIT
+ARG RUNE_BUILD_DATE
 ARG RUNE_RELEASE_TAR
 # RUNE_ENV selects the baked-in API endpoints. "prod" (default) keeps the
 # api.rune.build / rpc.rune.build defaults compiled into the source;
@@ -133,6 +134,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 	set -eux; \
 	: "${RUNE_BUILD_TAG:?RUNE_BUILD_TAG build arg is required}"; \
 	: "${RUNE_BUILD_COMMIT:?RUNE_BUILD_COMMIT build arg is required}"; \
+	: "${RUNE_BUILD_DATE:?RUNE_BUILD_DATE build arg is required}"; \
 	case "$TARGETARCH" in \
 		amd64) \
 			CC=x86_64-linux-gnu-gcc; \
@@ -158,7 +160,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 	GOARCH=$TARGETARCH \
 	/usr/local/go/bin/go build \
 		-tags=ebitensinglethread \
-		-ldflags="-X unstable.build/rune/debug.Tag=$RUNE_BUILD_TAG -X unstable.build/rune/debug.Commit=$RUNE_BUILD_COMMIT -X unstable.build/rune/debug.Package=rune $STAGING_LDFLAGS" \
+		-ldflags="-X unstable.build/rune/internal/debug.Tag=$RUNE_BUILD_TAG -X unstable.build/rune/internal/debug.Commit=$RUNE_BUILD_COMMIT -X unstable.build/rune/internal/debug.BuildDate=$RUNE_BUILD_DATE -X unstable.build/rune/internal/debug.Package=rune $STAGING_LDFLAGS" \
 		-o /out/rune.app/bin/rune \
 		./cmd/rune; \
 	\

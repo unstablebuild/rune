@@ -1388,6 +1388,8 @@ func (h *emacsHandler) IsSearchMode() bool {
 		h.minibuffer.active || h.isearch.active || h.queryReplace.active
 }
 
+func (h *emacsHandler) IsNormalMode() bool { return false }
+
 func (t *emacsHandler) ShowCommandBar(show bool) {
 	t.less.ShowCommandBar(show)
 }

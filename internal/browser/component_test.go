@@ -626,6 +626,69 @@ func TestTabClickFreeTabLoadsIntoFocusedWindow(t *testing.T) {
 		"clicking a free tab must load it into the focused window")
 }
 
+// TestSwapContentRebindsTabs reproduces a crash where swapping window
+// contents left each tab bound to the window it moved out of. Closing
+// one of the windows then freed the wrong tab, and clicking the other
+// tab focused the closed window and panicked in SetFocus.
+func TestSwapContentRebindsTabs(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		split     browserapi.Orientation
+		fromFirst bool
+		swap      func(*Component) bool
+	}{
+		{"left", browserapi.OrientationRight, false, (*Component).SwapContentLeft},
+		{"right", browserapi.OrientationRight, true, (*Component).SwapContentRight},
+		{"up", browserapi.OrientationBottom, false, (*Component).SwapContentUp},
+		{"down", browserapi.OrientationBottom, true, (*Component).SwapContentDown},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.Frame = false
+			cfg.FrameUnion = false
+			b := NewComponent(cfg)
+
+			uriA, err := workspaceapi.ParseURI("file:///a")
+			require.NoError(t, err)
+			tabA := b.NewTab(uriA, 'A', "a", newTestHandler(), nil)
+			first := b.Focus()
+			require.NoError(t, first.SetContent(tabA))
+
+			uriB, err := workspaceapi.ParseURI("file:///b")
+			require.NoError(t, err)
+			tabB := b.NewTab(uriB, 'B', "b", newTestHandler(), nil)
+			second, ok := b.Split(tc.split, first, tabB)
+			require.True(t, ok)
+			b.Resize(40, 20)
+			if tc.fromFirst {
+				b.SetFocus(first)
+			}
+
+			require.True(t, tc.swap(b))
+
+			for _, win := range []Window{first, second} {
+				content, err := win.Content()
+				require.NoError(t, err)
+				tab := content.(*Tab)
+				bound, ok := tab.Window()
+				require.True(t, ok)
+				assert.Equal(t, win, bound,
+					"tab %q must be bound to the window showing it", tab.URI())
+			}
+
+			require.NoError(t, second.Close())
+			_, ok = tabA.Window()
+			assert.False(t, ok, "closing the window showing tab A must free it")
+			bound, ok := tabB.Window()
+			require.True(t, ok)
+			assert.Equal(t, first, bound)
+
+			require.NotPanics(t, func() { b.tabs.OnClick(1) })
+			assert.Equal(t, first, b.Focus())
+		})
+	}
+}
+
 // TestLayoutAliasSwitchingThenTabClick reproduces the user's crash: open
 // a file (a tab in the focused window), repeatedly switch window layouts
 // via aliases that run `windowcloseall` followed by one or more
@@ -1309,6 +1372,112 @@ func TestRemoveTabDoesNotRetainPointersInTail(t *testing.T) {
 	}
 }
 
+// newActivityComponent returns a Component that shades active tabs,
+// with tabs a, b and c open.
+func newActivityComponent(t *testing.T, onActivity func()) (*Component, []*Tab) {
+	t.Helper()
+	cfg := DefaultConfig()
+	cfg.ActiveTabShader = "pulse"
+	cfg.OnTabActivity = onActivity
+	b := NewComponent(cfg)
+	b.SetInterrupter(term.NopInterrupter())
+	b.Resize(40, 10)
+	t.Cleanup(func() { _ = b.Close() })
+	var tabs []*Tab
+	for _, name := range []string{"a", "b", "c"} {
+		uri, err := workspaceapi.ParseURI("file:///" + name)
+		require.NoError(t, err)
+		h := newTestHandler()
+		tabs = append(tabs, b.NewTab(uri, 'o', name, h, h))
+	}
+	return b, tabs
+}
+
+// Activity is a per-tab level: the shader runs while any tab is active,
+// setting the current state again changes nothing and the listener only
+// hears about actual changes.
+func TestSetTabActivity(t *testing.T) {
+	var calls int
+	b, tabs := newActivityComponent(t, func() { calls++ })
+
+	unknown, err := workspaceapi.ParseURI("file:///unknown")
+	require.NoError(t, err)
+	assert.False(t, b.SetTabActivity(unknown, true))
+	assert.False(t, b.HasActiveTabs())
+	assert.False(t, b.shadedTabs.Running())
+	assert.Zero(t, calls)
+
+	require.True(t, b.SetTabActivity(tabs[1].uri, true))
+	assert.True(t, b.HasActiveTabs())
+	assert.True(t, b.shadedTabs.Running())
+	assert.Equal(t, []int{1}, b.activeTabIndices())
+	assert.Equal(t, 1, calls)
+
+	require.True(t, b.SetTabActivity(tabs[1].uri, true))
+	assert.Equal(t, 1, calls, "setting the current state again is a no-op")
+
+	require.True(t, b.SetTabActivity(tabs[2].uri, true))
+	assert.Equal(t, []int{1, 2}, b.activeTabIndices())
+
+	require.True(t, b.SetTabActivity(tabs[1].uri, false))
+	assert.True(t, b.shadedTabs.Running(), "another tab is still active")
+	require.True(t, b.SetTabActivity(tabs[2].uri, false))
+	assert.False(t, b.HasActiveTabs())
+	assert.False(t, b.shadedTabs.Running())
+	assert.Equal(t, 4, calls)
+}
+
+// Activity follows the tab rather than its position in the bar.
+func TestTabActivityFollowsMovedTab(t *testing.T) {
+	b, tabs := newActivityComponent(t, nil)
+	require.True(t, b.SetTabActivity(tabs[0].uri, true))
+	require.True(t, b.SetContentToTab(b.Focus(), 0))
+	require.NoError(t, b.MoveTabRight(b.Focus()))
+	assertTabNames(t, b, []string{"b", "a", "c"})
+	assert.Equal(t, []int{1}, b.activeTabIndices())
+}
+
+// A tab's activity dies with it, so a crashed extension cannot leave a
+// stale mark behind.
+func TestRemoveTabClearsActivity(t *testing.T) {
+	var calls int
+	b, tabs := newActivityComponent(t, func() { calls++ })
+	require.True(t, b.SetTabActivity(tabs[0].uri, true))
+	require.True(t, b.RemoveTab(tabs[0]))
+	assert.False(t, b.HasActiveTabs())
+	assert.False(t, b.shadedTabs.Running())
+	assert.Equal(t, 2, calls)
+
+	// Removing an idle tab does not report a change.
+	require.True(t, b.RemoveTab(tabs[1]))
+	assert.Equal(t, 2, calls)
+
+	// A tab reopened under the same uri starts idle.
+	h := newTestHandler()
+	b.NewTab(tabs[0].uri, 'o', "a", h, h)
+	assert.False(t, b.HasActiveTabs())
+}
+
+// Activity marked before the host installs an interrupter is shown as
+// soon as it does, and closing the browser stops the effect.
+func TestSetInterrupterStartsPendingActivity(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.ActiveTabShader = "pulse"
+	b := NewComponent(cfg)
+	uri, err := workspaceapi.ParseURI("file:///a")
+	require.NoError(t, err)
+	h := newTestHandler()
+	b.NewTab(uri, 'o', "a", h, h)
+
+	require.True(t, b.SetTabActivity(uri, true))
+	assert.False(t, b.shadedTabs.Running())
+	b.SetInterrupter(term.NopInterrupter())
+	assert.True(t, b.shadedTabs.Running())
+
+	require.NoError(t, b.Close())
+	assert.False(t, b.shadedTabs.Running())
+}
+
 func TestTabAttrs(t *testing.T) {
 	b := NewComponent(DefaultConfig())
 
@@ -1920,6 +2089,21 @@ func TestWinDropThroughMouseEvents(t *testing.T) {
 		assert.Equal(t, 1, b.Tiles())
 		assert.Equal(t, winDropNone, b.winDrop.zone)
 		assert.Empty(t, b.buffers, "closing a float creates no tab")
+	})
+
+	t.Run("a click on the bar is not a drop", func(t *testing.T) {
+		b, _, float, _ := framedDragBrowser(t, 60, 20)
+		bar := float.Position()
+		press := term.Coordinates{X: bar.X + 4, Y: bar.Y}
+
+		b.Handle(mouseAt(b, term.MouseLeft, press))
+		b.Handle(mouseAt(b, term.MouseRelease, press))
+
+		assert.Equal(t, 1, b.Tiles())
+		assert.Equal(t, 1, b.FloatingWindows(), "the float survives a click")
+		assert.Empty(t, b.buffers, "a click creates no tab")
+		assert.Equal(t, bar, float.Position(), "a click must not move the float")
+		assert.Equal(t, winDropNone, b.winDrop.zone)
 	})
 }
 

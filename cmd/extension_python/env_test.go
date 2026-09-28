@@ -252,13 +252,15 @@ func TestEnsureEnvironmentCommands(t *testing.T) {
 			wantSync:  "Verifying virtual environment",
 		},
 		{
-			name: "script only guards interpreter",
+			name: "script only creates venv",
 			kind: kindScript,
 			responses: map[string]scriptedCmd{
-				"uv python find": {},
+				"uv python find":           {},
+				"uv venv --allow-existing": {},
 			},
-			wantCalls: []string{"uv python find"},
+			wantCalls: []string{"uv python find", "uv venv --allow-existing"},
 			wantTotal: 3,
+			wantSync:  "Creating virtual environment",
 		},
 	}
 	for _, tc := range cases {
@@ -312,10 +314,10 @@ func TestEnsureEnvironmentInstallsInterpreterOnFirstRun(t *testing.T) {
 
 // TestEnsureInterpreterRelinksMissingManagedFallback covers installs
 // migrated from the layout where uv's links lived in python/bin: the
-// interpreter is found, but the shim's uvbin fallback target is absent,
-// so an install must run to relink it.
+// managed interpreter is installed and found, but the shim's uvbin
+// fallback target is absent, so an install must run to relink it.
 func TestEnsureInterpreterRelinksMissingManagedFallback(t *testing.T) {
-	fs := newFakeFS()
+	fs := newFakeFS().addDir("/data/python/python")
 	ex := newFakeExecutor()
 	ex.respond("uv python find", scriptedCmd{})
 	ex.respond("uv python install --default", scriptedCmd{})
@@ -328,8 +330,22 @@ func TestEnsureInterpreterRelinksMissingManagedFallback(t *testing.T) {
 		ex.callsSnapshot())
 }
 
+// TestEnsureInterpreterSkipsInstallWithoutManagedInterpreter pins the
+// no-download guarantee: uv found an interpreter and none is managed, so
+// there is nothing to relink and no CPython to fetch.
+func TestEnsureInterpreterSkipsInstallWithoutManagedInterpreter(t *testing.T) {
+	fs := newFakeFS()
+	ex := newFakeExecutor()
+	ex.respond("uv python find", scriptedCmd{})
+	ex.respond("uv sync", scriptedCmd{})
+	notify := newFakeNotifications()
+	err := ensureEnvironment(context.Background(), "uv", ex, notify, kindProject, fs, "", "/data")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"uv python find", "uv sync"}, ex.callsSnapshot())
+}
+
 func TestEnsureInterpreterSkipsInstallWhenFallbackPresent(t *testing.T) {
-	fs := newFakeFS().addFile("/data/python/uvbin/python3")
+	fs := newFakeFS().addFile("/data/python/uvbin/python3").addDir("/data/python/python")
 	ex := newFakeExecutor()
 	ex.respond("uv python find", scriptedCmd{})
 	ex.respond("uv sync", scriptedCmd{})

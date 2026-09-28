@@ -63,6 +63,8 @@ func TestModelEntries(t *testing.T) {
 	_, hasBareGPT56 := byName["gpt-5.6"]
 	assert.False(t, hasBareGPT56)
 	assert.Equal(t, 872000, byName["gpt-6-astra"])
+	assert.Equal(t, 872000, byName["gpt-6-sol"])
+	assert.Equal(t, 872000, byName["gpt-6-luna"])
 	assert.Equal(t, 872000, byName["gpt-5.6-sol"])
 	assert.Equal(t, 872000, byName["gpt-5.6-terra"])
 	assert.Equal(t, 872000, byName["gpt-5.6-luna"])

@@ -29,9 +29,12 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"sort"
 
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"github.com/unstablebuild/rune-go-sdk/iterator"
+	"unstable.build/rune/internal/workspace/walkdir"
 )
 
 // ProjectConfig is the per-language plug-in contract consumed by
@@ -116,6 +119,93 @@ func dirHasMarker(fs workspaceapi.FileSystem, dir string, markers []string) bool
 		}
 	}
 	return false
+}
+
+// FindProjectRoots streams every project root at or below the workspace
+// root, including roots nested inside another root. Each Next advances the
+// walk only as far as the next root. Roots are yielded depth-first and
+// pre-order, subdirectories in lexical order.
+//
+// Descent stops at maxDepth and skips directories ignore matches; a nil
+// ignore disables filtering.
+func FindProjectRoots(
+	fs workspaceapi.FileSystem, workspaceRootURI workspaceapi.URI,
+	markers []string, ignore walkdir.Filter, maxDepth int,
+) iterator.Iterator[Root] {
+	wsDir := filepath.Clean(workspaceRootURI.Path())
+	stack := []scanFrame{{dir: wsDir}}
+	next := func(ctx context.Context) (Root, bool, error) {
+		for len(stack) > 0 {
+			if err := ctx.Err(); err != nil {
+				return Root{}, false, err
+			}
+			frame := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			if frame.expanded {
+				stack = expand(stack, fs, ignore, frame, maxDepth)
+				continue
+			}
+			frame.expanded = true
+			if dirHasMarker(fs, frame.dir, markers) {
+				// Deferred so reaching a root never reads more than it must.
+				stack = append(stack, frame)
+				return rootForDir(fs, wsDir, frame.dir), true, nil
+			}
+			stack = expand(stack, fs, ignore, frame, maxDepth)
+		}
+		return Root{}, false, nil
+	}
+	return iterator.FromFunc(next, func() error { return nil })
+}
+
+// scanFrame is a directory the project scan has yet to finish with. rel is
+// carried because the ignore filter matches workspace-relative paths.
+type scanFrame struct {
+	dir      string
+	rel      string
+	depth    int
+	expanded bool
+}
+
+func expand(
+	stack []scanFrame, fs workspaceapi.FileSystem,
+	ignore walkdir.Filter, frame scanFrame, maxDepth int,
+) []scanFrame {
+	if frame.depth >= maxDepth {
+		return stack
+	}
+	return pushSubdirs(stack, fs, ignore, frame)
+}
+
+// pushSubdirs appends frame's unignored subdirectories in reverse lexical
+// order, so the caller's stack pops them in lexical order.
+func pushSubdirs(
+	stack []scanFrame, fs workspaceapi.FileSystem,
+	ignore walkdir.Filter, frame scanFrame,
+) []scanFrame {
+	entries, err := fs.ReadDir(frame.dir)
+	if err != nil {
+		return stack
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(names)))
+	for _, name := range names {
+		rel := filepath.Join(frame.rel, name)
+		if ignore != nil && ignore.MatchRelPath(rel, true) {
+			continue
+		}
+		stack = append(stack, scanFrame{
+			dir:   filepath.Join(frame.dir, name),
+			rel:   rel,
+			depth: frame.depth + 1,
+		})
+	}
+	return stack
 }
 
 // rootForDir builds a Root for an absolute project directory.

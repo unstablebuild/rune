@@ -1,10 +1,11 @@
-type EditorPreset = 'modal' | 'standard' | 'emacs';
+type EditorPreset = 'modal' | 'helix' | 'standard' | 'emacs';
 type EffectiveEditor = EditorPreset | 'exo';
 type Platform = 'darwin' | 'linux';
 type PresetSelection =
   | 'standard-darwin'
   | 'standard-linux'
   | 'modal'
+  | 'helix'
   | 'emacs';
 
 interface PresetDef {
@@ -36,12 +37,14 @@ const PRESETS: PresetDef[] = [
     label: 'Standard (Linux)',
     platform: 'linux',
   },
-  {id: 'modal', editor: 'modal', label: 'Modal'},
+  {id: 'modal', editor: 'modal', label: 'Vim'},
+  {id: 'helix', editor: 'helix', label: 'Helix'},
   {id: 'emacs', editor: 'emacs', label: 'Emacs'},
 ];
 const FIXED_GUIDES: Record<string, FixedGuide> = {
   '/learn/exoeditor': {id: 'exo', label: 'Exoeditor'},
-  '/learn/modal-editor': {id: 'modal', label: 'Modal'},
+  '/learn/vim-editor': {id: 'modal', label: 'Vim'},
+  '/learn/helix-editor': {id: 'helix', label: 'Helix'},
   '/learn/standard-editor': {id: 'standard', label: 'Standard'},
   '/learn/emacs-editor': {id: 'emacs', label: 'Emacs'},
 };

@@ -46,8 +46,6 @@ extensions:
       input_box_frame_attr:
         fg: default
         bg: default
-      context_hint_attr:
-        fg: red
       # Styling for the '#' context completion overlay. Defaults mirror
       # the command prompt (see "command.*_attr" in rune.star) so both
       # search overlays look consistent.
@@ -82,3 +80,144 @@ extensions:
       # own, so the review reads the rest from the file as it stands
       # now. Set to 0 to show only the lines the agent changed.
       review_context_lines: 3
+      # status_bar configures the chat's bottom status row.
+      status_bar:
+        # Whether the chat reserves its bottom row for the status bar.
+        enabled: true
+        # Layout of the status bar. Available components include:
+        # Spinner, Status, Conversation, Elapsed, Model, Provider,
+        # Effort, MaxTokens, TokensSent, TokensReceived, ContextTokens,
+        # ContextWindow, ContextPct, Cache, CachePct, ContextGauge,
+        # CacheGauge, and ShiftRight. Pipe operators support bg, fg,
+        # bold, italic, underline, reverse, and dim. Spinner and Status
+        # take their colors from status below, so naming one here
+        # only sets the fallback for a status the palette does not cover.
+        layout: ' {{ .Spinner }} {{ .Status | bold }} █▓▒░  {{ .Model | fg "white" }}  {{ .Effort }}{{ .ShiftRight }}󰗂 {{ .Cache }}  {{ .Elapsed }}  {{ .Conversation | bold | fg "white" }}  {{ .ContextGauge }} '
+        # Effect drawn over the whole bar while a turn runs. One of
+        # blaze, burn, inferno, noise, pulse, shine, trippy. Off by
+        # default: every frame of the effect redraws the whole chat.
+        #shader: pulse
+        # Base attributes of the bar, matching the editor's status bar.
+        # bg fills the whole row; fg is the foreground inherited by any
+        # layout component that does not name one of its own.
+        background_attr:
+          bg: gray
+          fg: silver
+        # How the Spinner and Status elements dress per turn status. The
+        # keys are the text the Status element draws, so a status missing
+        # from this map keeps whatever colors its layout component
+        # declares. `attr` colors both elements. `animation.ch` is the
+        # spinner frames cycled while the turn reports that status, one
+        # character per frame, and falls back to the built-in animation
+        # when empty. `animation.attr` overrides `attr` for the spinner
+        # alone, so the icon can carry a color of its own without
+        # breaking the block it shares with the status text.
+        status:
+          IDLE:
+            attr:
+              fg: "white"
+              bg: "silver"
+              flags: bold
+            animation:
+              ch: ""
+              attr:
+                fg: "yellow"
+          SENDING:
+            attr:
+              fg: "black"
+              bg: "teal"
+              flags: bold
+            animation:
+              ch: "⡘⡌⠆⢃⢡⠰"
+              attr:
+                fg: "default"
+          REASONING:
+            attr:
+              fg: "white"
+              bg: "navy"
+              flags: bold
+            animation:
+              ch: "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+              attr:
+                fg: "default"
+          RECEIVING:
+            attr:
+              fg: "black"
+              bg: "magenta"
+              flags: bold
+            animation:
+              ch: "⢡⢃⠆⡌⡘⠰"
+              attr:
+                fg: "default"
+          EXECUTING:
+            attr:
+              fg: "default"
+              bg: "red"
+              flags: bold
+            animation:
+              ch: "⢀⢀⣀⢄⢂⢀⣀⣠⣤⣦⣧⣶⣦⣧⣦⣤⣴⣼⣴⣶⣧⣦⣤⣴⣼⣴⣶⣧⣦⣤⣴⣼⣴⣶⣧⣦⣤⣄⣀⣀⡠⡠⠔⠊⠁⠁  "
+              attr:
+                fg: "default"
+          COMPACTING:
+            attr:
+              fg: "default"
+              bg: "gray"
+              flags: bold
+            animation:
+              ch: "⣉⠶⠶⠒⠒⠒⠶⠶⣉"
+              attr:
+                fg: "default"
+          ASKING:
+            attr:
+              fg: "black"
+              bg: "yellow"
+              flags: bold
+            animation:
+              ch: "⠁⠂⠄⡀⢀⠠⠐⠈"
+              attr:
+                fg: "default"
+          ERROR:
+            attr:
+              fg: "default"
+              bg: "maroon"
+              flags: bold
+            animation:
+              ch: ""
+              attr:
+                fg: "red"
+        # The unfilled side of a gauge. It is darker than the bar so the
+        # track's start and end are unmistakable; its fg doubles as the
+        # label color over the unfilled part.
+        gauge_empty_attr:
+          fg: silver
+          bg: gray
+        # Brackets around a gauge, one cell each out of gauge_width.
+        # They sit on the bar rather than on the track, so leaving their
+        # bg out inherits background_attr's. Blank by default: the ramp
+        # already marks where the track starts and ends.
+        gauge_start_rune: ""
+        gauge_end_rune: ""
+        gauge_cap_attr:
+          fg: green
+        # A gauge's fill ramps through these stops across the track, so
+        # how far along it the boundary sits is itself a reading. Cells
+        # between two stops blend them, which is what keeps every cell
+        # of a wide gauge a slightly different color. A full context
+        # window is bad news and a full cache is good news, so the cache
+        # gauge lists the same stops backwards.
+        context_gauge_fill_attrs:
+          - fg: black
+            bg: green
+          - fg: black
+            bg: yellow
+          - fg: black
+            bg: red
+        cache_gauge_fill_attrs:
+          - fg: black
+            bg: red
+          - fg: black
+            bg: yellow
+          - fg: black
+            bg: green
+        # Cell width of the context and cache gauges.
+        gauge_width: 18

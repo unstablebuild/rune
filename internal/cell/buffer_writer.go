@@ -51,11 +51,14 @@ func (w *BufferWriter) Init(ctx context.Context, width, height int) {
 
 // SetCell satisfies term.Writer
 func (w *BufferWriter) SetCell(pos term.Coordinates, c term.Cell) {
-	if pos.X >= w.width || pos.Y >= w.height || pos.X < 0 || pos.Y < 0 {
+	if pos.Y < 0 || pos.Y >= len(w.cells) {
 		return
 	}
-
-	w.cells[pos.Y][pos.X] = c
+	row := w.cells[pos.Y]
+	if pos.X < 0 || pos.X >= len(row) {
+		return
+	}
+	row[pos.X] = c
 }
 
 // UnionAttributes satisfies term.Writer
@@ -67,6 +70,12 @@ func (w *BufferWriter) UnionAttributes(pos term.Coordinates, attr term.Attribute
 		w.cells[pos.Y][pos.X].Attributes(), attr))
 }
 
+// DrawImage satisfies term.Writer. A cell buffer carries cells only;
+// the GUI wraps this writer to collect placements.
+func (w *BufferWriter) DrawImage(term.Image) bool {
+	return false
+}
+
 // Flush satisfies term.Writer
 func (w *BufferWriter) Flush() error {
 	return nil
@@ -74,9 +83,19 @@ func (w *BufferWriter) Flush() error {
 
 // Clear satisfies term.Writer
 func (w *BufferWriter) Clear(attr term.Attributes) error {
-	for y, row := range w.cells {
-		for x := range row {
-			w.cells[y][x] = term.NewCell(0, 0, attr)
+	if len(w.cells) == 0 {
+		return nil
+	}
+	blank := term.NewCell(0, 0, attr)
+	first := w.cells[0]
+	for x := range first {
+		first[x] = blank
+	}
+	// A cell carries a pointer, so storing one pays a write barrier
+	// check; copy pays it once per row.
+	for _, row := range w.cells[1:] {
+		for x := copy(row, first); x < len(row); x++ {
+			row[x] = blank
 		}
 	}
 	return nil

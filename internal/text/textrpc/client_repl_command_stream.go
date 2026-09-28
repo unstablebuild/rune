@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi/textrpc"
@@ -48,11 +49,17 @@ type replCommandClientStream struct {
 
 	completers sync.Map
 	counter    int64
+	// unlike counter, reqCounter is bumped off the event loop, from
+	// whichever goroutine dispatches the command.
+	reqCounter atomic.Int64
 
 	sendMu sync.Mutex
 	// whether the extension understands CompleteCancel messages; older
 	// SDKs terminate the stream when they receive an unknown message type.
 	supportsCompleteCancel bool
+	// whether the extension understands HandleCancel/HelpCancel messages
+	// and echoes request ids back. Same caveat as supportsCompleteCancel.
+	supportsHandleCancel bool
 }
 
 // subset of Editor_SubscribeREPLCommandServer
@@ -62,6 +69,7 @@ type replServerStream interface {
 }
 
 type responsiveCtx struct {
+	id     int64
 	ctx    context.Context
 	cancel func()
 	ch     chan responsiveValue
@@ -74,7 +82,8 @@ type responsiveValue struct {
 }
 
 func newREPLCommandClientStream(
-	ctx context.Context, stream replServerStream, supportsCompleteCancel bool,
+	ctx context.Context, stream replServerStream,
+	supportsCompleteCancel, supportsHandleCancel bool,
 ) *replCommandClientStream {
 	ctx, cancelCtx := context.WithCancel(ctx)
 	return &replCommandClientStream{
@@ -83,6 +92,7 @@ func newREPLCommandClientStream(
 		cancelCtx:              cancelCtx,
 		stream:                 stream,
 		supportsCompleteCancel: supportsCompleteCancel,
+		supportsHandleCancel:   supportsHandleCancel,
 	}
 }
 
@@ -103,21 +113,25 @@ func (c *replCommandClientStream) receiveMessages() error {
 
 		switch msg.GetType() {
 		case textrpc.ClientREPLCommandMessage_HandleValue:
-			c.sendResponsiveValue(c.activeHandle(), responsiveFromProtoRows(
-				msg.GetHandleValue().GetRows(),
+			val := msg.GetHandleValue()
+			c.sendResponsiveValue(c.activeHandle(val.GetId()), responsiveFromProtoRows(
+				val.GetRows(),
 			), "handle")
 		case textrpc.ClientREPLCommandMessage_HandleProgress:
 			if prw := msg.GetHandleProgress(); prw != nil {
 				c.forwardProgress(prw)
 			}
 		case textrpc.ClientREPLCommandMessage_HandleDone:
-			c.finishResponsive(c.takeHandle(), msg.GetHandleDone().GetError())
+			done := msg.GetHandleDone()
+			c.finishResponsive(c.takeHandle(done.GetId()), done.GetError())
 		case textrpc.ClientREPLCommandMessage_HelpValue:
-			c.sendResponsiveValue(c.activeHelp(), responsiveFromProtoRows(
-				msg.GetHelpValue().GetRows(),
+			val := msg.GetHelpValue()
+			c.sendResponsiveValue(c.activeHelp(val.GetId()), responsiveFromProtoRows(
+				val.GetRows(),
 			), "help")
 		case textrpc.ClientREPLCommandMessage_HelpDone:
-			c.finishResponsive(c.takeHelp(), msg.GetHelpDone().GetError())
+			done := msg.GetHelpDone()
+			c.finishResponsive(c.takeHelp(done.GetId()), done.GetError())
 		case textrpc.ClientREPLCommandMessage_CompleteValue:
 			complete := msg.GetCompleteValue()
 			id := complete.GetId()
@@ -189,6 +203,7 @@ func (c *replCommandClientStream) HandleCommand(
 		Name:  cmd.Name,
 		Args:  cmd.Args,
 		Width: defaultREPLResponsiveWidth,
+		Id:    respCtx.id,
 	}
 	msg := textrpc.ServerREPLCommandMessage{
 		Type:   textrpc.ServerREPLCommandMessage_Handle,
@@ -271,6 +286,7 @@ func (c *replCommandClientStream) Help(
 	req := textrpc.HelpCommandRequest{
 		Args:  args,
 		Width: defaultREPLResponsiveWidth,
+		Id:    respCtx.id,
 	}
 	msg := textrpc.ServerREPLCommandMessage{
 		Type: textrpc.ServerREPLCommandMessage_Help,
@@ -289,6 +305,7 @@ func (c *replCommandClientStream) installResponsiveRequest(
 ) (responsiveCtx, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	respCtx := responsiveCtx{
+		id:     c.reqCounter.Add(1), // start at 1, so 0 means "no id"
 		ctx:    ctx,
 		cancel: cancel,
 		ch:     make(chan responsiveValue),
@@ -311,63 +328,78 @@ func (c *replCommandClientStream) installResponsiveRequest(
 	return respCtx, nil
 }
 
-func (c *replCommandClientStream) clearResponsiveRequest(isHandle bool, ch chan responsiveValue) {
+// clearResponsiveRequest drops the request still reading from ch, if it
+// is the installed one, and reports whether it did.
+func (c *replCommandClientStream) clearResponsiveRequest(
+	isHandle bool, ch chan responsiveValue,
+) bool {
 	var cancel func()
 	c.mu.Lock()
+	slot := &c.help
 	if isHandle {
-		if c.handle != nil && c.handle.ch == ch {
-			cancel = c.handle.cancel
-			c.handle = nil
-		}
-		c.mu.Unlock()
-		if cancel != nil {
-			cancel()
-		}
-		return
+		slot = &c.handle
 	}
-	if c.help != nil && c.help.ch == ch {
-		cancel = c.help.cancel
-		c.help = nil
+	if *slot != nil && (*slot).ch == ch {
+		cancel = (*slot).cancel
+		*slot = nil
 	}
 	c.mu.Unlock()
-	if cancel != nil {
-		cancel()
+	if cancel == nil {
+		return false
 	}
+	cancel()
+	return true
 }
 
-func (c *replCommandClientStream) activeHandle() *responsiveCtx {
+// activeHandle returns the in-flight command request when id names it,
+// and nil for a message belonging to an abandoned request. An id of zero
+// comes from an extension that predates request ids; such an extension is
+// never sent a cancel, so its replies can only belong to the live one.
+func (c *replCommandClientStream) activeHandle(id int64) *responsiveCtx {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.handle == nil || (id != 0 && c.handle.id != id) {
+		return nil
+	}
 	return c.handle
 }
 
 func (c *replCommandClientStream) forwardProgress(
 	p *textrpc.HandleREPLCommandProgress,
 ) {
-	respCtx := c.activeHandle()
+	respCtx := c.activeHandle(p.GetId())
 	if respCtx == nil || respCtx.pw == nil {
 		return
 	}
 	respCtx.pw.Progress(p.GetProgress(), p.GetTotal(), p.GetUnits())
 }
 
-func (c *replCommandClientStream) takeHandle() *responsiveCtx {
+func (c *replCommandClientStream) takeHandle(id int64) *responsiveCtx {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.handle == nil || (id != 0 && c.handle.id != id) {
+		return nil
+	}
 	ret := c.handle
 	c.handle = nil
 	return ret
 }
 
-func (c *replCommandClientStream) activeHelp() *responsiveCtx {
+func (c *replCommandClientStream) activeHelp(id int64) *responsiveCtx {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.help == nil || (id != 0 && c.help.id != id) {
+		return nil
+	}
 	return c.help
 }
 
-func (c *replCommandClientStream) takeHelp() *responsiveCtx {
+func (c *replCommandClientStream) takeHelp(id int64) *responsiveCtx {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.help == nil || (id != 0 && c.help.id != id) {
+		return nil
+	}
 	ret := c.help
 	c.help = nil
 	return ret
@@ -424,9 +456,28 @@ func (c *replCommandClientStream) responsiveIterator(
 			return nil, false, c.ctx.Err()
 		}
 	}, func() error {
-		c.clearResponsiveRequest(isHandle, respCtx.ch)
+		if c.clearResponsiveRequest(isHandle, respCtx.ch) {
+			c.sendRequestCancel(isHandle, respCtx.id)
+		}
 		return nil
 	})
+}
+
+func (c *replCommandClientStream) sendRequestCancel(isHandle bool, id int64) {
+	if !c.supportsHandleCancel {
+		return
+	}
+	var msg textrpc.ServerREPLCommandMessage
+	if isHandle {
+		msg.Type = textrpc.ServerREPLCommandMessage_HandleCancel
+		msg.HandleCancel = &textrpc.RequestCancel{Id: id}
+	} else {
+		msg.Type = textrpc.ServerREPLCommandMessage_HelpCancel
+		msg.HelpCancel = &textrpc.RequestCancel{Id: id}
+	}
+	if err := c.send(&msg); err != nil {
+		c.log.Warn("send repl request cancel", "error", err, "handle", isHandle)
+	}
 }
 
 func responsiveFromProtoRows(rows []*termrpc.CellRow) component.Responsive {

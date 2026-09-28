@@ -36,6 +36,10 @@ import (
 // registration should compare against this error with errors.Is.
 var ErrCommandNotRegistered = errors.New("command not registered")
 
+// ErrResourceOpenerNotRegistered is returned by UnregisterResourceOpener
+// when no resource opener is registered for the scheme.
+var ErrResourceOpenerNotRegistered = errors.New("resource opener not registered")
+
 // Handler just wraps a tui.Handler to indicate that this API's handlers might
 // not be compatible with other APIs.
 type Handler interface {
@@ -108,6 +112,13 @@ type Handler interface {
 	// so the search can be committed instead of being captured
 	// for an unrelated shortcut.
 	IsSearchMode() bool
+
+	// IsNormalMode reports whether the handler is in a modal editor's
+	// normal mode, where keystrokes are commands rather than text.
+	// Modeless editors are never in it. Outer handlers that repurpose
+	// <Enter> may only do so while this is true; in every other mode
+	// the key keeps its editor meaning, such as inserting a newline.
+	IsNormalMode() bool
 }
 
 // EventPublisher wraps subscribing and unsubscribing to file events.
@@ -149,6 +160,15 @@ type Editor interface {
 	// command. Returns ErrCommandNotRegistered if no such command is
 	// registered.
 	UnregisterREPLCommand(string) error
+
+	// RegisterResourceOpener registers h as the opener of the resources
+	// whose URI has the given scheme. It fails if the scheme already has
+	// an opener.
+	RegisterResourceOpener(scheme string, h textapi.ResourceOpenHandler) error
+
+	// UnregisterResourceOpener un-registers the opener of scheme. Returns
+	// ErrResourceOpenerNotRegistered if the scheme has no opener.
+	UnregisterResourceOpener(scheme string) error
 
 	// IsExternal reports whether this editor manages its buffer
 	// contents out of band (e.g. via an external TUI editor

@@ -25,6 +25,7 @@ import (
 	"sort"
 	"strings"
 	"sync/atomic"
+	"unicode"
 
 	"github.com/ernestrc/go-multierror"
 	log "github.com/sirupsen/logrus"
@@ -460,7 +461,18 @@ func (h *Prompt) dispatchCommand() (
 		}
 		// trim empty args (i.e. client added more spaces than required between args)
 		h.commandAndArgs = h.trimmedCommandAndArgs(h.commandAndArgs[0], h.commandAndArgs[1:]...)
-		commandAndArgsString = strings.Join(h.commandAndArgs, " ")
+		// A trailing separator marks an argument the completer left in
+		// progress, so it is not part of the value. History keeps the
+		// canonical form, which is what makes an entry recorded before
+		// the partial-candidate convention existed match one recorded
+		// after it.
+		historyArgs := make([]string, len(h.commandAndArgs))
+		historyArgs[0] = h.commandAndArgs[0]
+		for i, a := range h.commandAndArgs[1:] {
+			historyArgs[i+1] = ShellQuote(
+				TrimPartialCandidateSuffix(UnquoteToken(a)))
+		}
+		commandAndArgsString = strings.Join(historyArgs, " ")
 
 		h.log(log.TraceLevel, "dispatching command and args %#v", h.commandAndArgs)
 		// Strip shell-style quoting/escaping from each argument before
@@ -607,7 +619,17 @@ func (h *Prompt) handleCommon(ev *term.Event, sync bool) (quit, handled bool) {
 		}
 	case term.ModCtrl:
 		handled = true
+		if ev.Key == term.KeyBackspace {
+			h.deleteWordBack(sync)
+			return
+		}
 		switch ev.Ch {
+		// 'h' is bound because terminals without the kitty keyboard
+		// protocol collapse <c-backspace> onto ^H before Rune sees it.
+		case 'w', 'h':
+			h.deleteWordBack(sync)
+		case 'u':
+			h.deleteLineBack(sync)
 		case 'j', 'n':
 			if h.userScrolling {
 				handled = h.list.FocusDown()
@@ -636,8 +658,89 @@ func (h *Prompt) handleCommon(ev *term.Event, sync bool) (quit, handled bool) {
 		default:
 			handled = false
 		}
+	case term.ModAlt:
+		if ev.Key != term.KeyBackspace {
+			return
+		}
+		handled = true
+		h.deleteWordBack(sync)
 	}
 	return
+}
+
+// deleteCellBack removes the last cell of the prompt buffer, keeping
+// the fuzzy-match token buffer in sync and unwinding one level of
+// argument completion when that token buffer drains. It reports
+// whether there was anything left to remove.
+func (h *Prompt) deleteCellBack(sync bool) bool {
+	cols := h.buf.Columns(0)
+	if cols != 0 {
+		h.buf.DeleteCell(term.Coordinates{X: cols - 1})
+	}
+	if h.mode == modeCommandPromptCommand {
+		if cols == 0 {
+			return false
+		}
+		h.list.Buffer().Replace(h.buf.String())
+		return true
+	}
+	if buf := h.list.Buffer(); buf.Size() != 0 {
+		buf.DeleteCell(term.Coordinates{X: buf.Columns(0) - 1})
+		return true
+	}
+	if !h.decArgsCompleteMode(sync) {
+		h.setCommandMode()
+	}
+	return true
+}
+
+// isWordRune classifies a rune for the prompt's shell-style word
+// deletion. The boundary is narrower than whitespace on purpose so a
+// single <c-w> walks back one path component while completing a file
+// argument, matching the inputbox handler in the SDK.
+func isWordRune(r rune) bool {
+	return r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r)
+}
+
+// lastCellRune returns the leading rune of the prompt buffer's final
+// cell. Word boundaries are classified per cell rather than per rune
+// so wide characters and combining marks are never split.
+func (h *Prompt) lastCellRune() (rune, bool) {
+	cols := h.buf.Columns(0)
+	if cols == 0 {
+		return 0, false
+	}
+	c, ok := h.buf.Cell(term.Coordinates{X: cols - 1})
+	if !ok {
+		return 0, false
+	}
+	return c.Ch, true
+}
+
+// deleteWordBack drops the run of separators before the cursor and
+// then the word preceding them. Unlike <backspace> it never closes
+// the prompt when the line drains.
+func (h *Prompt) deleteWordBack(sync bool) {
+	h.cancelPreview()
+	for _, word := range [...]bool{false, true} {
+		for {
+			r, ok := h.lastCellRune()
+			if !ok || isWordRune(r) != word {
+				break
+			}
+			if !h.deleteCellBack(sync) {
+				return
+			}
+		}
+	}
+}
+
+// deleteLineBack clears the whole input, returning the prompt to
+// command mode without closing it.
+func (h *Prompt) deleteLineBack(sync bool) {
+	h.cancelPreview()
+	for h.deleteCellBack(sync) {
+	}
 }
 
 // deleteHistoryCompletionFocusItem will remove the entry from the history as well as
@@ -684,17 +787,12 @@ func (h *Prompt) handleCommand(ev term.Event, sync bool) (quit, handled bool) {
 
 	switch ev.Key {
 	case term.KeyBackspace:
-		cols := h.buf.Columns(0)
-		if cols == 0 {
-			handled = true
+		handled = true
+		if !h.deleteCellBack(sync) {
 			quit = true
 			h.cancelPreview()
 			h.Cancel()
-			return
 		}
-		h.buf.DeleteCell(term.Coordinates{X: cols - 1})
-		h.list.Buffer().Replace(h.buf.String())
-		handled = true
 		return
 	}
 
@@ -746,19 +844,7 @@ func (h *Prompt) handleCompleteArgs(ev term.Event, sync bool) (quit, handled boo
 
 		h.cancelPreview()
 		handled = true
-		cols := h.buf.Columns(0)
-		if cols != 0 {
-			h.buf.DeleteCell(term.Coordinates{X: cols - 1})
-		}
-		if h.list.Buffer().Size() != 0 {
-			h.list.Buffer().DeleteCell(
-				term.Coordinates{X: h.list.Buffer().Columns(0) - 1},
-			)
-			return
-		}
-		if !h.decArgsCompleteMode(sync) {
-			h.setCommandMode()
-		}
+		h.deleteCellBack(sync)
 		return
 	}
 
@@ -851,20 +937,29 @@ func (h *Prompt) handleEditMode(ev term.Event, sync bool) (quit, handled bool) {
 	return false, handled
 }
 
-func (h *Prompt) completeTopList() bool {
+// completeTopList accepts the focused candidate. It reports whether a
+// candidate was accepted and whether that candidate was partial, i.e.
+// it advances the current argument without terminating it.
+func (h *Prompt) completeTopList() (completed, partial bool) {
 	match, ok := h.list.Focus()
 	if !ok {
 		h.log(log.TraceLevel, "completeTopList: no matches on search list with %q",
 			h.list.Buffer().String())
-		return false
+		return false, false
+	}
+	candidate := string(match.Data())
+	if h.mode != modeCommandPromptCommand && IsPartialCandidate(candidate) {
+		h.list.Buffer().Replace(candidate)
+		h.buf.Replace(strings.Join(h.commandAndArgs, " ") + " " + candidate)
+		return true, true
 	}
 	// could have completed multiple arguments
-	parts := SplitCommandLine(string(match.Data()))
+	parts := SplitCommandLine(candidate)
 	h.commandAndArgs = append(h.commandAndArgs, parts...)
 	newCmdAndArgs := strings.Join(h.commandAndArgs, " ")
 	h.buf.Replace(newCmdAndArgs + " ")
 
-	return true
+	return true, false
 }
 
 func (h *Prompt) log(level log.Level, msg string, args ...any) {
@@ -877,7 +972,17 @@ func (h *Prompt) log(level log.Level, msg string, args ...any) {
 
 func (h *Prompt) incArgsCompleteMode(complete bool, sync bool) {
 	defer h.resetManualComponent()
-	if !complete || !h.completeTopList() {
+	completed, partial := false, false
+	if complete {
+		completed, partial = h.completeTopList()
+	}
+	if partial {
+		h.log(log.TraceLevel, "partial argument completion (sync=%v): %+v",
+			sync, h.commandAndArgs)
+		h.setCompletionList(false, sync, h.commandAndArgs[0], h.completionArgs()...)
+		return
+	}
+	if !completed {
 		h.commandAndArgs = append(h.commandAndArgs, h.list.Buffer().String())
 	}
 

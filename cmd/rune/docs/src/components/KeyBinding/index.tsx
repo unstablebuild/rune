@@ -1,13 +1,16 @@
-import React, {useSyncExternalStore} from 'react';
+import React from 'react';
 import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
+import {
+  useEditorSelection,
+  type Platform,
+} from '@site/src/components/editorSelection';
 
-type EditorPreset = 'modal' | 'standard' | 'emacs';
-type Platform = 'darwin' | 'linux';
 type BindingValue = string | string[];
 type BindingMap = Record<string, BindingValue>;
 
 interface KeybindingData {
   modal: PresetData;
+  helix: PresetData;
   standard: Record<Platform, PresetData>;
   emacs: PresetData;
 }
@@ -15,42 +18,6 @@ interface KeybindingData {
 interface PresetData {
   command_key: string;
   key_bindings: BindingMap;
-}
-
-interface Selection {
-  preset: EditorPreset;
-  platform: Platform;
-}
-
-const CHANGE_EVENT = 'runeeditorpresetchange';
-const SERVER_SELECTION = 'standard:darwin';
-
-function readSelection(): string {
-  if (typeof document === 'undefined') return SERVER_SELECTION;
-  const preset = document.documentElement.getAttribute(
-    'data-rune-editor-preset',
-  );
-  const platform = document.documentElement.getAttribute('data-rune-platform');
-  const safePreset: EditorPreset =
-    preset === 'modal' || preset === 'emacs' ? preset : 'standard';
-  const safePlatform: Platform = platform === 'linux' ? 'linux' : 'darwin';
-  return `${safePreset}:${safePlatform}`;
-}
-
-function subscribe(onChange: () => void): () => void {
-  if (typeof window === 'undefined') return () => undefined;
-  window.addEventListener(CHANGE_EVENT, onChange);
-  return () => window.removeEventListener(CHANGE_EVENT, onChange);
-}
-
-function useSelection(): Selection {
-  const value = useSyncExternalStore(
-    subscribe,
-    readSelection,
-    () => SERVER_SELECTION,
-  );
-  const [preset, platform] = value.split(':') as [EditorPreset, Platform];
-  return {preset, platform};
 }
 
 function commandMatches(value: BindingValue, command: BindingValue): boolean {
@@ -69,7 +36,7 @@ export interface KeyBindingProps {
 export default function KeyBinding({command}: KeyBindingProps): React.ReactNode {
   const {siteConfig} = useDocusaurusContext();
   const data = siteConfig.customFields?.keybindings as unknown as KeybindingData;
-  const {preset, platform} = useSelection();
+  const {preset, platform} = useEditorSelection();
   const presetData =
     preset === 'standard' ? data.standard[platform] : data[preset];
   const bindings = presetData.key_bindings;
@@ -104,7 +71,7 @@ export default function KeyBinding({command}: KeyBindingProps): React.ReactNode 
 export function CommandPromptKey(): React.ReactNode {
   const {siteConfig} = useDocusaurusContext();
   const data = siteConfig.customFields?.keybindings as unknown as KeybindingData;
-  const {preset, platform} = useSelection();
+  const {preset, platform} = useEditorSelection();
   const presetData =
     preset === 'standard' ? data.standard[platform] : data[preset];
   return <code>{presetData.command_key}</code>;

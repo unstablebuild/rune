@@ -19,6 +19,8 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"runtime"
+	"strconv"
 
 	"github.com/unstablebuild/rune-go-sdk/api/semanticapi"
 )
@@ -52,6 +54,15 @@ func pyInitializeParams(
 	initOptions := map[string]any{
 		"langID":  "python",
 		"command": command,
+		// ty and ruff size their rayon pool from the core count, so an
+		// indexing burst saturates the machine and the editor's render
+		// loop is left waiting for a thread to run on. Half the cores
+		// keeps the servers useful while leaving the editor somewhere
+		// to run. Alternate-command children inherit this env, so the
+		// cap reaches ruff as well as ty.
+		"env": map[string]any{
+			"RAYON_NUM_THREADS": strconv.Itoa(max(1, runtime.NumCPU()/2)),
+		},
 	}
 	if len(alternates) > 0 {
 		initOptions["alternate_commands"] = alternates

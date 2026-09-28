@@ -374,6 +374,11 @@ func (h loggingHandler) TextAreaSizeChars() {
 
 }
 
+func (h loggingHandler) CellSizePixels() {
+	h.log("CellSizePixels ")
+	h.h.CellSizePixels()
+}
+
 func (h loggingHandler) SetHyperlink(link *Hyperlink) {
 	h.log("SetHyperlink ")
 	h.h.SetHyperlink(link)
@@ -414,6 +419,11 @@ func (h loggingHandler) SetModifyOtherKeys(mode ModifyOtherKeysMode) {
 func (h loggingHandler) ReportModifyOtherKeys() {
 	h.log("ReportModifyOtherKeys: ")
 	h.h.ReportModifyOtherKeys()
+}
+
+func (h loggingHandler) GraphicsCommand(data []byte) {
+	h.log("GraphicsCommand len(data)=%d", len(data))
+	h.h.GraphicsCommand(data)
 }
 
 func (h loggingHandler) log(line string, params ...any) {

@@ -6,13 +6,13 @@
 #   RUNE_DATADIR      string  Rune's data directory.
 #   RUNE_PKG_ID       string  the installed package's ID.
 #   RUNE_PKG_VERSION  string  the installed package's version.
-#   RUNE_EDITOR_MODE  string  "modal" | "standard" | "emacs" — the resolved
-#                             host editor mode (empty when not yet known).
-#                             "modeless" is a deprecated alias for
-#                             "standard". The
-#                             host substitutes exo with its configured
-#                             editor.exo.fallback value before invoking
-#                             this script, so "exo" never reaches here.
+#   RUNE_EDITOR_MODE  string  "vim" | "helix" | "standard" | "emacs" — the
+#                             resolved host editor mode (empty when not yet
+#                             known). The host resolves the deprecated
+#                             "modal" and "modeless" aliases to "vim" and
+#                             "standard", and substitutes exo with its
+#                             configured editor.exo.fallback value, so
+#                             neither an alias nor "exo" ever reaches here.
 #
 # The script writes the merged settings into the user's rune config so that
 # fuzzy_search options and search* aliases/key bindings are only registered

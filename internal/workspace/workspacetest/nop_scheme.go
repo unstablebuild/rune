@@ -174,7 +174,7 @@ func (t *NopScheme) NewPty(ctx context.Context) (ret workspaceapi.Pty, err error
 }
 
 // SetPtySize satisfies schemeapi.Scheme
-func (t *NopScheme) SetPtySize(p workspaceapi.Pty, width, height int) (err error) {
+func (t *NopScheme) SetPtySize(workspaceapi.Pty, workspaceapi.PtySize) (err error) {
 	return nil
 }
 
@@ -197,7 +197,7 @@ func (t *NopScheme) ReadDir(string) (
 
 // MkdirAll satisfies schemeapi.Scheme
 func (t *NopScheme) MkdirAll(path string, perm os.FileMode) error {
-	panic("unimplemented")
+	return nil
 }
 
 // Watch satisfies schemeapi.Scheme

@@ -17,6 +17,7 @@
 package extension
 
 import (
+	"errors"
 	"io"
 	"sync"
 
@@ -62,6 +63,12 @@ func (s *editorResourceServer) Register(
 	registrar rpc.ServiceRegistrar, lock sync.Locker,
 ) (io.Closer, error) {
 	server := ttextrpc.NewServer(s.b, s.ed, lock)
+	server.SetEventPublisher(func(ev term.Event) error {
+		if !s.publishEvent(ev) {
+			return errors.New("event stream not ready")
+		}
+		return nil
+	})
 	textrpc.RegisterEditorServer(registrar,
 		interruptEditorServer(server, func() {
 			s.publishEvent(term.Event{Type: term.EventInterrupt})

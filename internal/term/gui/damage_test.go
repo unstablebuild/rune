@@ -17,6 +17,7 @@
 package gui
 
 import (
+	"image"
 	"testing"
 
 	ebiten "github.com/hajimehoshi/ebiten/v2"
@@ -295,14 +296,14 @@ func TestDrawPartialRepaintAfterFull(t *testing.T) {
 	screen := ebiten.NewImage(r.frame.Bounds().Dx(), r.frame.Bounds().Dy())
 
 	benchdraw.BeginFrame(t)
-	r.Draw(screen, grid, false, term.Coordinates{}, term.CursorStyleDefault, 0, 0)
+	r.Draw(screen, grid, nil, false, term.Coordinates{}, term.CursorStyleDefault, 0, 0)
 	benchdraw.EndFrame(t)
 	require.True(t, r.prevValid)
 
 	next := cloneGrid(grid)
 	next[5][2].Ch = 'y'
 	benchdraw.BeginFrame(t)
-	r.Draw(screen, next, false, term.Coordinates{}, term.CursorStyleDefault, 0, 0)
+	r.Draw(screen, next, nil, false, term.Coordinates{}, term.CursorStyleDefault, 0, 0)
 	benchdraw.EndFrame(t)
 
 	// After the second Draw the snapshot matches the latest grid, so a
@@ -313,4 +314,44 @@ func TestDrawPartialRepaintAfterFull(t *testing.T) {
 	for y := range rows {
 		assert.Falsef(t, r.dirtyRows[y], "row %d clean on identical redraw", y)
 	}
+}
+
+// TestDrawImageDoesNotDirtyRows asserts the image layer composites over
+// the cell frame rather than through it: placing, changing and removing
+// a picture never repaints a row, so an animated image costs an upload
+// and a draw call instead of a full-frame repaint.
+func TestDrawImageDoesNotDirtyRows(t *testing.T) {
+	r, cols, rows := newTestRenderer(t, 16, 10)
+	grid := filledGrid(rows, cols, 'x')
+	screen := ebiten.NewImage(r.frame.Bounds().Dx(), r.frame.Bounds().Dy())
+	t.Cleanup(screen.Deallocate)
+
+	pixels := image.NewRGBA(image.Rect(0, 0, 4, 4))
+	img := term.Image{Src: pixels, ID: term.NewImageID(), Width: 2, Height: 2}
+
+	benchdraw.BeginFrame(t)
+	r.Draw(screen, grid, nil, false, term.Coordinates{}, term.CursorStyleDefault, 0, 0)
+	benchdraw.EndFrame(t)
+	require.True(t, r.prevValid)
+
+	assertNoDirtyRows := func(t *testing.T, images []term.Image, why string) {
+		t.Helper()
+		benchdraw.BeginFrame(t)
+		r.Draw(screen, cloneGrid(grid), images, false,
+			term.Coordinates{}, term.CursorStyleDefault, 0, 0)
+		benchdraw.EndFrame(t)
+		for y := range rows {
+			assert.Falsef(t, r.dirtyRows[y], "row %d clean %s", y, why)
+		}
+	}
+
+	assertNoDirtyRows(t, []term.Image{img}, "when a picture appears")
+	require.Len(t, r.images.textures, 1, "the picture is uploaded once")
+
+	img.Version++
+	assertNoDirtyRows(t, []term.Image{img}, "when a picture changes")
+	require.Len(t, r.images.textures, 1, "a new version replaces the upload")
+
+	assertNoDirtyRows(t, nil, "when a picture disappears")
+	assert.Empty(t, r.images.textures, "an unplaced picture is released")
 }

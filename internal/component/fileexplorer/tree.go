@@ -17,9 +17,11 @@
 package fileexplorer
 
 import (
+	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
+	"unicode"
 
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
@@ -268,4 +270,41 @@ func parseLine(line string, indent rune, width int) parsedEntry {
 		isDir: isDir,
 		depth: depth,
 	}
+}
+
+// invalidNameRune reports whether r may never appear in an entry name.
+// Private Use Area runes are the explorer's own rendering alphabet
+// (icon glyphs) and the indent guide is structural, so a name carrying
+// either is a yanked row pasted into the filename column rather than
+// something the user meant to create. '/' is rejected because the
+// renderer uses it as the directory marker and parseLine strips only
+// the trailing one.
+func invalidNameRune(r rune, cfg Config) bool {
+	if unicode.In(r, unicode.Co) {
+		return true
+	}
+	if cfg.IndentRune != 0 && r == cfg.IndentRune {
+		return true
+	}
+	return r == '/'
+}
+
+// validateEntryName rejects names the explorer must not write to the
+// filesystem.
+func validateEntryName(name string, cfg Config) error {
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("invalid name %q: name is empty", name)
+	}
+	for _, r := range name {
+		if !invalidNameRune(r, cfg) {
+			continue
+		}
+		if unicode.In(r, unicode.Co) {
+			return fmt.Errorf(
+				"invalid name %q: contains an icon glyph", name)
+		}
+		return fmt.Errorf(
+			"invalid name %q: contains %q", name, r)
+	}
+	return nil
 }

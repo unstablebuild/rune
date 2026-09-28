@@ -216,6 +216,9 @@ type Handler interface {
 	// TextAreaSizeChars reports text area size in characters.
 	TextAreaSizeChars()
 
+	// CellSizePixels reports the size of a character cell in pixels.
+	CellSizePixels()
+
 	// SetHyperlink sets hyperlink.
 	SetHyperlink(link *Hyperlink)
 
@@ -238,6 +241,12 @@ type Handler interface {
 	// ReportModifyOtherKeys report XTerm's [`ModifyOtherKeys`] state
 	// back into the pty stream.
 	ReportModifyOtherKeys()
+
+	// GraphicsCommand handles a kitty graphics protocol command. data
+	// is the APC string after its leading 'G': the control data and,
+	// after an optional ';', the base64 payload. It is only valid for
+	// the duration of the call.
+	GraphicsCommand(data []byte)
 }
 
 // KeyboardMode is the vte keyboard mode.

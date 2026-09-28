@@ -69,6 +69,7 @@ import (
 	"unstable.build/rune/internal/text"
 	"unstable.build/rune/internal/text/cmdenv"
 	"unstable.build/rune/internal/text/exoeditor"
+	"unstable.build/rune/internal/text/textrpc"
 	"unstable.build/rune/internal/workspace"
 )
 
@@ -111,15 +112,24 @@ type ex struct {
 	ed             text.Editor
 	editorObserver *commandRegisterObserver
 	parser         syntaxapi.Parser
-	wsExecutor     *workspaceshell.Executor
-	aliasExpander  *idecmd.Expander
+	svc            vctrl.Service
+	// gitshowSeq keeps a second :gitshow popup for the same file from
+	// colliding with one the user has not closed yet.
+	gitshowSeq    int
+	wsExecutor    *workspaceshell.Executor
+	aliasExpander *idecmd.Expander
 	// executor is a forwarding proxy: long-lived consumers (the
 	// CommandSubstResolver, plugin.New, the VTE) capture this value
 	// once and continue to route through whatever underlying
 	// schemeapi.Executor setExecutor last installed.
-	executor                 *currentExecutor
-	extensionsExecutor       *workspaceshell.Executor
-	storage                  storageapi.Service
+	executor           *currentExecutor
+	extensionsExecutor *workspaceshell.Executor
+	storage            storageapi.Service
+	// terminalStorage holds saved terminal sessions, whose snapshots
+	// are too large to share a partition with anything that is listed.
+	// It is opened on first use and released by Close: a firstmover
+	// partition caches backend handles once resolved.
+	terminalStorage          storageapi.Service
 	workspaceURI             workspaceapi.URI
 	outOfRootTabs            *outOfRootWatcher
 	closed                   bool
@@ -145,11 +155,22 @@ type ex struct {
 	reissueEvent             term.Event
 	cmd                      *command.Prompt
 	syncCommandPrompt        bool
+	// editorPrefix is the previous key if the editor consumed it even
+	// though it starts a sequence binding. A modal editor can open a
+	// pending command of its own with such a key, as Helix's g menu
+	// does, and the binding completes when the editor declines the next
+	// key.
+	editorPrefix term.KeyComb
 	// promptEditor backs both the command prompt's modal edit mode
 	// and the companion shell's input line. It is a required
 	// dependency (see newEx) so neither consumer has to guard nil.
 	promptEditor      command.Editor
 	pluginWaitTimeout time.Duration
+	// stepWaitTimeout bounds how long one alias step may hold the
+	// dispatch slot after claiming its waiter. Must exceed
+	// pluginWaitTimeout, the budget of the only step kind that bounds
+	// itself; the rest can claim and then never report at all.
+	stepWaitTimeout time.Duration
 	// use floating windows functionality without having to work around focus commands
 	// and how to se cmd.Window correctly.
 	cmdV   handler.Virtual[*browser.Component]
@@ -163,8 +184,8 @@ type ex struct {
 	// editorModeModal records whether the editor backing this ex runs in
 	// modal mode. The cheatsheet uses it to gate modal-only key tips.
 	editorModeModal bool
-	// editorMode is the resolved editor mode (modal, standard, emacs, or
-	// exo). The cheatsheet uses it to describe the active editor; unlike
+	// editorMode is the resolved editor mode (vim, helix, standard, emacs,
+	// or exo). The cheatsheet uses it to describe the active editor; unlike
 	// editorModeModal it preserves the exo distinction.
 	editorMode string
 	// editorAutoSave records whether the editor flushes buffers
@@ -188,12 +209,15 @@ type ex struct {
 	fileExplorerHandler *fileExplorerHandler
 	sched               func(func()) bool
 	flusher             *flusher
+	pendingTabs         *pendingTabOpener
 	debugCommands       bool
 	commandObserver     commandObserver
 	consoleCfg          consoleConfig
 	extReady            map[string]chan extReadyJob
-	extReadyCtx         context.Context
-	extReadyCancel      context.CancelFunc
+	bgCtx               context.Context
+	bgCancel            context.CancelFunc
+	runInFlight         *aliasRun
+	runQueue            []queuedDispatch
 	// asyncVTELoads tracks in-flight asyncVTE and asyncPlugin factory
 	// goroutines. Test-only synchronization point.
 	asyncVTELoads sync.WaitGroup
@@ -226,6 +250,7 @@ func newEx(
 	dispatchOnPreview map[string]previewFunc,
 	tm browser.TabManager,
 	parser syntaxapi.Parser,
+	svc vctrl.Service,
 	promptEditor command.Editor,
 	commandObserver commandObserver,
 	debugCommands bool,
@@ -234,13 +259,13 @@ func newEx(
 	editorMode string,
 	editorAutoSave bool,
 	consoleCfg consoleConfig,
-	uiMu sync.Locker,
 	opts ...text.Option,
 ) (e *ex, err error) {
 	e = new(ex)
+	e.svc = svc
 	err = e.init(edFactory, m, storage, notifications, uri,
 		emulatorConfig, pluginBarConfig, publishEvent, initialVTECapacity, clip, macro,
-		dispatchOnPreview, tm, parser, promptEditor, uiMu, opts...)
+		dispatchOnPreview, tm, parser, promptEditor, opts...)
 	if err != nil {
 		// The async terminal's worker goroutine outlives a failed
 		// construction otherwise: nothing will ever call Close.
@@ -276,7 +301,6 @@ func (e *ex) init(
 	tm browser.TabManager,
 	parser syntaxapi.Parser,
 	promptEditor command.Editor,
-	uiMu sync.Locker,
 	opts ...text.Option,
 ) (err error) {
 	if promptEditor == nil {
@@ -284,13 +308,16 @@ func (e *ex) init(
 	}
 	e.promptEditor = promptEditor
 	e.extReady = make(map[string]chan extReadyJob)
-	e.extReadyCtx, e.extReadyCancel = context.WithCancel(context.Background())
+	e.bgCtx, e.bgCancel = context.WithCancel(context.Background())
 	err = e.doInit(m, storage, notifications, uri,
 		emulatorConfig, publishEvent, clip, opts...)
 	if err != nil {
 		return
 	}
 	e.parser = parser
+	if e.svc == nil {
+		e.svc = vctrl.NopService()
+	}
 	if emulatorConfig.ScheduleNextTick == nil {
 		panic("ide.ex: emulatorConfig.ScheduleNextTick must not be nil")
 	}
@@ -309,11 +336,15 @@ func (e *ex) init(
 	e.config.CommandFallbacks["searchfile"] = e
 	e.config.CommandFallbacks["searchtext"] = e
 	e.config.CommandFallbacks["searchast"] = e
+	e.config.OnTabIconClick = e.closeTabFromIcon
 	err = e.comp.Init(ed, m, e.config)
 	if err != nil {
 		return
 	}
 	e.editorObserver = newCommandRegisterObserver(&e.comp)
+	e.pendingTabs = newPendingTabOpener(e.bgCtx, &e.comp, e.notifications,
+		e.sched, extensionHandleWait)
+	e.editorObserver.onResourceOpener = e.pendingTabs.reopenAsync
 	if tm == nil {
 		tm = e.Browser()
 	}
@@ -390,11 +421,8 @@ func (e *ex) init(
 	e.tasks.SetFrameAttr(e.config.FrameAttr)
 	e.tasks.SetFocusFrameAttr(e.config.FocusFrameAttr)
 	e.comp.SubscribeWindow(e.tasks)
-	e.outOfRootTabs = newOutOfRootWatcher(e, m, uri, uiMu)
-	if !ed.IsExternal() {
-		// External editors watch their own files.
-		err = e.comp.SubscribeEvents(outOfRootTabEvents, e.outOfRootTabs)
-	}
+	e.outOfRootTabs = newOutOfRootWatcher(e, m, uri)
+	err = e.comp.SubscribeEvents(outOfRootTabEvents, e.outOfRootTabs)
 	return
 }
 
@@ -480,6 +508,7 @@ func (e *ex) doInit(
 	e.executor = &currentExecutor{}
 	e.executor.set(m)
 	e.pluginWaitTimeout = 60 * time.Second
+	e.stepWaitTimeout = e.pluginWaitTimeout + 30*time.Second
 	e.clip = clip
 	e.workspace = m
 	e.container = notifications.New(&e.comp, n.cfg)
@@ -488,6 +517,14 @@ func (e *ex) doInit(
 	e.publishEvent = publishEvent
 	e.storage = storage
 	e.workspaceURI = uri
+	// A t=f, t=t or t=s graphics transmission names a file on the
+	// machine the terminal's command runs on, which is this workspace.
+	emulatorConfig.FileSystem = m
+	if uri.Scheme() == workspace.FileScheme {
+		// The command inherits this process's environment, TMPDIR
+		// included; a remote machine's is unknown.
+		emulatorConfig.TempDir = os.TempDir()
+	}
 	e.emulatorConfig = emulatorConfig
 
 	e.config = text.DefaultConfig()
@@ -760,6 +797,24 @@ func (e *ex) tabclose(_ context.Context, args ...string) error {
 	return nil
 }
 
+// closeTabFromIcon closes tab like tabclose closes the one in focus,
+// asking first when it has changes pending to be written.
+func (e *ex) closeTabFromIcon(tab *browser.Tab) {
+	b := e.comp.Browser()
+	if e.tabIsDirty(tab) {
+		e.openCloseDirtyTabsPrompt(
+			fmt.Sprintf("File '%s' has changes pending to be written. "+
+				"Close and discard changes?", tab.URI().Name()),
+			func() error {
+				b.RemoveTab(tab)
+				return nil
+			},
+		)
+		return
+	}
+	b.RemoveTab(tab)
+}
+
 func (e *ex) tabcloseall(_ context.Context, args ...string) error {
 	b := e.comp.Browser()
 	dirty := e.dirtyTabCount(e.comp.Tabs())
@@ -998,7 +1053,70 @@ func (e *ex) dispatchCommand(cmd string, args ...string) (err error) {
 // dispatchCommandCtx is dispatchCommand with a caller-supplied base
 // context, letting the caller thread values (e.g. a textrpc.Waiter) down
 // to the leaf command handler so it can observe asynchronous completion.
+//
+// Dispatches are serialised: while an earlier one is still in flight the
+// command queues and the returned error is nil. A Waiter on ctx is
+// claimed in that case and receives the result instead.
 func (e *ex) dispatchCommandCtx(
+	ctx context.Context, cmd string, args ...string,
+) (err error) {
+	if e.runInFlight != nil {
+		var w *textrpc.Waiter
+		if cw, ok := textrpc.WaiterFromContext(ctx); ok {
+			cw.Claimed = true
+			w = cw
+		}
+		e.runQueue = append(e.runQueue, queuedDispatch{
+			ctx: ctx, cmd: cmd, args: args, waiter: w,
+		})
+		return nil
+	}
+	return e.dispatchResolved(ctx, cmd, args...)
+}
+
+// drainRunQueue dispatches queued commands in arrival order until the
+// queue empties or one of them takes the dispatch slot in turn.
+func (e *ex) drainRunQueue() {
+	for e.runInFlight == nil && len(e.runQueue) > 0 {
+		q := e.runQueue[0]
+		e.runQueue = e.runQueue[1:]
+		e.dispatchQueued(q)
+	}
+}
+
+// dispatchQueued runs a deferred command and delivers its result to the
+// waiter the caller was promised, as a notification when there is none.
+func (e *ex) dispatchQueued(q queuedDispatch) {
+	ctx := q.ctx
+	inner := &textrpc.Waiter{Ch: make(chan error, 1)}
+	if q.waiter != nil {
+		// Shadowed so the handler cannot report on q.waiter directly:
+		// the result must be delivered exactly once, from here.
+		ctx = textrpc.ContextWithWaiter(ctx, inner)
+	}
+	err := e.dispatchResolved(ctx, q.cmd, q.args...)
+	if q.waiter == nil {
+		if err != nil {
+			e.setError(err)
+		}
+		return
+	}
+	if err != nil || !inner.Claimed {
+		q.waiter.Ch <- err
+		return
+	}
+	go debug.CapturePanicReport(func() {
+		select {
+		case res := <-inner.Ch:
+			q.waiter.Ch <- res
+		case <-e.bgCtx.Done():
+		}
+	})
+}
+
+// dispatchResolved expands cmd and dispatches it, bypassing the
+// serialisation dispatchCommandCtx applies.
+func (e *ex) dispatchResolved(
 	ctx context.Context, cmd string, args ...string,
 ) (err error) {
 	uri, h, ok := e.handlerInFocus()
@@ -1020,7 +1138,25 @@ func (e *ex) dispatchCommandCtx(
 	if isAlias && idecmd.ChainFromContext(ctx) == nil {
 		ctx = idecmd.WithChain(ctx, cmd, idecmd.NewChain())
 	}
-	handled, err := e.dispatchExpanded(ctx, cmd, scmd, isAlias, nil)
+	var handled bool
+	if isAlias {
+		var parent *textrpc.Waiter
+		if w, wok := textrpc.WaiterFromContext(ctx); wok {
+			parent = w
+		}
+		r, rerr := newAliasRun(e, ctx, scmd, nil, parent, false)
+		if rerr != nil {
+			return rerr
+		}
+		r.step()
+		if r.detached {
+			// The run owns its result from here on.
+			return nil
+		}
+		handled, err = r.handled, r.err
+	} else {
+		handled, err = e.dispatchLeaf(ctx, cmd, scmd)
+	}
 	if err != nil {
 		return err
 	}
@@ -1033,27 +1169,10 @@ func (e *ex) dispatchCommandCtx(
 	return fmt.Errorf("%s is aliased to an unknown command %v", cmd, target.Commands)
 }
 
-// dispatchExpanded expands scmd through the alias table and dispatches
-// each resulting step in order. When a step's name is itself an alias
-// it is re-expanded recursively, sharing ctx (hence the same chain) so
-// captures flow across nesting levels, instead of being handed to the
-// leaf dispatcher which only resolves subscribed commands. stack holds
-// the alias names currently being expanded so a self- or
-// mutually-recursive alias is rejected instead of looping forever.
-func (e *ex) dispatchExpanded(
-	ctx context.Context, cmd string, scmd textapi.Command, isAlias bool,
-	stack map[string]bool,
+// dispatchLeaf expands a non-alias command's args and dispatches it.
+func (e *ex) dispatchLeaf(
+	ctx context.Context, cmd string, scmd textapi.Command,
 ) (handled bool, err error) {
-	if isAlias {
-		if stack[cmd] {
-			return false, fmt.Errorf("alias cycle through %q", cmd)
-		}
-		if stack == nil {
-			stack = make(map[string]bool)
-		}
-		stack[cmd] = true
-		defer delete(stack, cmd)
-	}
 	it, err := e.aliasExpander.Expand(ctx, scmd)
 	if err != nil {
 		return false, err
@@ -1064,22 +1183,11 @@ func (e *ex) dispatchExpanded(
 		if !ok {
 			break
 		}
-		var (
-			h    bool
-			derr error
-		)
-		if _, isStepAlias := e.aliasExpander.ResolveAlias(next.Name); isStepAlias {
-			h, derr = e.dispatchExpanded(ctx, next.Name, next, true, stack)
-		} else {
-			h, derr = e.comp.DispatchCommand(ctx, next)
-		}
+		h, derr := e.comp.DispatchCommand(ctx, next)
 		if e.commandObserver != nil {
 			e.commandObserver.observeCommand(cmd, next.Name, next.Args, derr)
 		}
 		if derr != nil {
-			if isAlias {
-				return false, fmt.Errorf("%s: %s", formatStep(next), derr)
-			}
 			return false, derr
 		}
 		handled = handled || h
@@ -1699,8 +1807,18 @@ func (e *ex) executePluginWait(ctx context.Context, args ...string) error {
 	}
 
 	notifyName := firstWord(line)
-	_, isAliasCtx := idecmd.IsContext(ctx)
-	run := func(ctx context.Context) error {
+	waiter, hasWaiter := textrpc.WaiterFromContext(ctx)
+	if hasWaiter {
+		waiter.Claimed = true
+	}
+
+	notifID, nerr := e.notifications.Notify(browserapi.LevelInfo,
+		"%s: running...", notifyName)
+	if nerr == nil {
+		_ = e.notifications.UpdateNotificationProgress(notifID, "", 0, 1)
+	}
+
+	go debug.CapturePanicReport(func() {
 		runCtx, cancel := context.WithTimeout(ctx, e.pluginWaitTimeout)
 		defer cancel()
 		var stderrBuf strings.Builder
@@ -1711,48 +1829,31 @@ func (e *ex) executePluginWait(ctx context.Context, args ...string) error {
 			Stderr:    &stderrBuf,
 		}
 		captured, runErr := runner.Run(runCtx, line, parsed)
-		if runErr != nil {
-			return runErr
+		if runErr == nil {
+			// Must land before the waiter is released: whatever the
+			// caller does next has to see the captures.
+			idecmd.UpdateChainVars(ctx, captured)
 		}
-		idecmd.UpdateChainVars(ctx, captured)
-		return nil
-	}
-
-	notifID, nerr := e.notifications.Notify(browserapi.LevelInfo,
-		"%s: running...", notifyName)
-	if nerr == nil {
-		_ = e.notifications.UpdateNotificationProgress(notifID, "", 0, 1)
-	}
-
-	if isAliasCtx {
-		runErr := run(ctx)
-		if nerr == nil {
-			_ = e.notifications.UpdateNotificationProgress(notifID, "", 1, 1)
-		}
-		if runErr != nil {
-			return runErr
-		}
-		_, _ = e.notifications.Notify(browserapi.LevelSuccess,
-			fmt.Sprintf("%s: done in %s", notifyName,
-				time.Since(start).Truncate(time.Millisecond)))
-		return nil
-	}
-
-	go debug.CapturePanicReport(func() {
-		runErr := run(ctx)
 		e.config.ScheduleNextTick(func() {
 			if nerr == nil {
 				_ = e.notifications.UpdateNotificationProgress(notifID, "", 1, 1)
 			}
 			if runErr != nil {
-				_, _ = e.notifications.Notify(browserapi.LevelError,
-					fmt.Sprintf("%s: %s", notifyName, runErr))
+				if !hasWaiter {
+					// A claimed waiter takes delivery of runErr and
+					// reports it, so this would be a duplicate.
+					_, _ = e.notifications.Notify(browserapi.LevelError,
+						fmt.Sprintf("%s: %s", notifyName, runErr))
+				}
 				return
 			}
 			_, _ = e.notifications.Notify(browserapi.LevelSuccess,
 				fmt.Sprintf("%s: done in %s", notifyName,
 					time.Since(start).Truncate(time.Millisecond)))
 		})
+		if hasWaiter {
+			waiter.Ch <- runErr
+		}
 	})
 	return nil
 }
@@ -1989,8 +2090,8 @@ func (e *ex) initFileExplorer() error {
 		comp, err := fileexplorercomp.New(buf, e.workspace, rootURI, fileexplorercomp.Config{
 			Icons:       e.config.Icons,
 			IndentWidth: e.config.Tabspaces,
-			IndentAttr:  e.config.FileExplorerIndentAttr,
-			IconAttr:    e.config.FileExplorerIconAttr,
+			IndentAttr:  e.config.FileExplorer.IndentAttr,
+			IconAttr:    e.config.FileExplorer.IconAttr,
 			Ignore:      ignore,
 		})
 		if err != nil {
@@ -2011,6 +2112,10 @@ func (e *ex) initFileExplorer() error {
 		}
 		wrapped, err := newFileExplorerHandler(
 			exFileExplorerHost{ex: e}, comp, buf, ed, uri, e.fileExplorerTarget,
+			fileExplorerConfig{
+				FileExplorerConfig: e.config.FileExplorer,
+				SaveKey:            e.fileExplorerSaveKey(),
+			},
 		)
 		if err != nil {
 			return fmt.Errorf("file explorer: wrap component: %w", err)
@@ -2037,6 +2142,17 @@ func (e *ex) initFileExplorer() error {
 	e.fileExplorerHandler.syncWidth()
 	_, _ = e.comp.SetFocus(prev)
 	return nil
+}
+
+// fileExplorerSaveKey resolves the key label bound to `write` so the
+// explorer hint names the key the user actually has. Presets bind it
+// differently per editor mode; modal binds no chord at all, and an
+// empty result drops the hint rather than naming the command prompt.
+func (e *ex) fileExplorerSaveKey() string {
+	if e.commandPromptCfg.keyBindingHint == nil {
+		return ""
+	}
+	return e.commandPromptCfg.keyBindingHint("write")
 }
 
 func (e *ex) fexplorer(_ context.Context, args ...string) error {
@@ -2464,6 +2580,7 @@ func (e *ex) handleEvent(ev term.Event) (
 	exit, handled bool,
 ) {
 	if ev.Type == term.EventMouse {
+		e.editorPrefix = term.KeyComb{}
 		_, handled = e.comp.Browser().Handle(ev)
 		return
 	}
@@ -2481,6 +2598,9 @@ func (e *ex) handleEvent(ev term.Event) (
 		_, handled = e.comp.Browser().Handle(ev)
 		return
 	}
+
+	editorPrefix := e.editorPrefix
+	e.editorPrefix = term.KeyComb{}
 
 	// If ex is configured with non character
 	// command mode trigger event, then this takes
@@ -2502,16 +2622,33 @@ func (e *ex) handleEvent(ev term.Event) (
 		// delegated to handler, otherwise it'll handle it and switch to insert mode.
 		_, handled = e.comp.Browser().Handle(ev)
 		if handled {
+			if e.sequencer.IsPrefix(keyComb) {
+				e.editorPrefix = keyComb
+			}
 			return
 		}
 	}
 
 	var seq thandler.Sequence
 	var match thandler.SequenceMatchResult
-	// err nil indicates that match is still valid as timer hasn't expired
-	// and it was not canceled yet or simply it hasn't even started and
-	// this is first event in sequence.
-	if e.ctxPartialReissue.Err() == nil {
+	switch {
+	case editorPrefix != (term.KeyComb{}):
+		// The editor declined keyComb after it consumed the prefix, so
+		// its pending command is over. A bare keyComb that misses must
+		// not start a sequence of its own either: the editor has
+		// declined it once, and re-issuing it on a timeout would land
+		// in the editor's reset state as a fresh command, as the second
+		// g of a gg that cannot move would open Helix's g menu.
+		seq = thandler.Sequence{First: editorPrefix, Last: keyComb}
+		if _, ok := e.config.CommandSequenceBindings[seq]; ok {
+			match = thandler.SequenceMatch
+		} else if keyComb.Mod != 0 {
+			seq, match = e.sequencer.Sequence(keyComb)
+		}
+	case e.ctxPartialReissue.Err() == nil:
+		// err nil indicates that match is still valid as timer hasn't
+		// expired and it was not canceled yet or simply it hasn't even
+		// started and this is first event in sequence.
 		seq, match = e.sequencer.Sequence(keyComb)
 	}
 
@@ -2770,6 +2907,14 @@ func (e *ex) Selection() (string, bool) {
 	return e.focusHandler().Selection()
 }
 
+// windowRows satisfies windowRows: the rows this workspace's windows
+// occupy, which exclude the bars laid out around them.
+func (e *ex) windowRows() (top, rows int) {
+	b := e.comp.Browser()
+	_, height := b.WindowManagerSize()
+	return b.WindowManagerPosition().Y, height
+}
+
 // setRightInset resizes the column reserved along the right edge, both
 // in the editor layout and for the notifications floating over it.
 func (e *ex) setRightInset(cells int) {
@@ -2933,7 +3078,7 @@ func (e *ex) Close() (ret error) {
 		return nil
 	}
 	e.closed = true
-	e.extReadyCancel()
+	e.bgCancel()
 	e.sequencer.Reset()
 	e.stopTerminal()
 	if err := e.comp.Close(); err != nil {
@@ -2971,6 +3116,12 @@ func (e *ex) Close() (ret error) {
 	e.stopPromptShader()
 	if err := e.container.Close(); err != nil {
 		ret = multierror.Append(ret, err)
+	}
+	if e.terminalStorage != nil {
+		if err := e.terminalStorage.Close(); err != nil {
+			ret = multierror.Append(ret, err)
+		}
+		e.terminalStorage = nil
 	}
 	return ret
 }
@@ -3280,4 +3431,96 @@ func (e *ex) keybindings(_ context.Context, _ ...string) error {
 		return err
 	}
 	return e.openMarkdownFloating(md, "Key bindings", keybindingsWidth)
+}
+
+func (e *ex) gitshow(ctx context.Context, _ ...string) error {
+	_, err := e.openGitshow(ctx)
+	return err
+}
+
+func (e *ex) openGitshow(ctx context.Context) (text.Handler, error) {
+	uri, h, ok := e.handlerInFocus()
+	if !ok {
+		return nil, errors.New("gitshow: no file in focus")
+	}
+	rel := workspaceapi.RelPath(e.workspaceURI, uri)
+	// The diff is computed against disk, so a dirty buffer would make
+	// the popup and the gutter marks describe different bytes.
+	if dirty, _ := e.comp.IsDirty(uri); dirty {
+		return nil, fmt.Errorf(
+			"gitshow: %s has unsaved changes; write it first", rel)
+	}
+	diff, err := e.svc.Diff(ctx, uri)
+	if err != nil {
+		return nil, fmt.Errorf("gitshow: diff %s: %w", rel, err)
+	}
+	content, err := readFile(e.workspace, uri)
+	if err != nil {
+		return nil, fmt.Errorf("gitshow: read %s: %w", rel, err)
+	}
+	hunks := vctrl.UnifiedHunks(diff, content, gitshowContextLines)
+	if len(hunks) == 0 {
+		// A service with nothing to report returns an empty FileDiff
+		// and no error, so this is the only place it surfaces.
+		return nil, fmt.Errorf("gitshow: no changes in %s", rel)
+	}
+
+	buf, anchors := vctrl.UnifiedBuffer(hunks, rel, rel)
+	// The real file URI, so snippets parse as the file's language
+	// rather than as a diff.
+	vctrl.HighlightSnippets(ctx, buf.RawCells(),
+		vctrl.UnifiedSnippets(hunks, anchors, uri), e.parser, gitshowGutter)
+
+	diffURI, err := e.gitshowURI(rel)
+	if err != nil {
+		return nil, fmt.Errorf("gitshow: %w", err)
+	}
+	edh, err := e.ed.Edit(text.WithBars(ctx, text.BarOptions{
+		DisableAuxBar:   true,
+		DisableIconsBar: true,
+		StatusBar: &text.StatusBarOverride{
+			Workspace:  gitshowBaseURI(),
+			GitService: gitshowService{Service: e.svc, file: uri, diff: diff},
+		},
+	}), diffURI, buf, true /* readOnly */, false)
+	if err != nil {
+		return nil, fmt.Errorf("gitshow: open editor: %w", err)
+	}
+
+	edh.SetLocationList(textapi.LocationPriorityInfo, gitshowLocationList,
+		textapi.LocationSlice(gitshowLocations(
+			hunks, anchors, gitshowLabel(ctx, e.svc, uri))))
+	edh.SetCursorAtScroll(term.Coordinates{
+		Y: anchors[gitshowSeek(hunks, h.CursorAtScroll().Y+1)].Row,
+	})
+
+	var win browser.Window
+	bhandler := browser.FuncHandler(
+		gitshowKeyHandler(edh, e.editorModeModal), func() error {
+			defer win.Close() //nolint:errcheck
+			return edh.Close()
+		})
+	win, err = e.comp.Floating(
+		browser.FuncFloating(bhandler, func() (int, int) {
+			w, height := edh.Dimensions()
+			// dimensions does not account for the row the editors
+			// draw the cursor's location message over.
+			return min(w, gitshowMaxWidth), height + 1
+		}),
+		browserapi.FloatingConfig{
+			Alignment: component.AlignmentCentered,
+			Title:     "git diff · " + rel,
+		})
+	if err != nil {
+		return nil, errors.Join(
+			fmt.Errorf("gitshow: open window: %w", err), edh.Close())
+	}
+	return edh, nil
+}
+
+func (e *ex) gitshowURI(rel string) (workspaceapi.URI, error) {
+	e.gitshowSeq++
+	joined := workspaceapi.Join(gitshowBaseURI(), rel+".diff")
+	return workspaceapi.ParseURI(
+		fmt.Sprintf("%s?n=%d", joined.String(), e.gitshowSeq))
 }

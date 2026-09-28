@@ -27,25 +27,31 @@ import (
 
 // TestPkgEditorMode asserts the exported helper the remote provisioning server
 // uses to resolve RUNE_EDITOR_MODE from a config.Config applies the same
-// normalization the editor uses: exo resolves to its fallback, modeless maps to
-// standard, and a missing/unset editor.mode defaults to modal.
+// normalization the editor uses: exo resolves to its fallback, the deprecated
+// modal and modeless map to vim and standard, and a missing/unset editor.mode
+// defaults to vim.
 func TestPkgEditorMode(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		cfg  config.Config
 		want string
 	}{
-		{"nil config defaults to modal", nil, "modal"},
-		{"empty config defaults to modal", config.MapConfig(map[string]any{}), "modal"},
+		{"nil config defaults to vim", nil, "vim"},
+		{"empty config defaults to vim", config.MapConfig(map[string]any{}), "vim"},
 		{
-			"missing editor.mode defaults to modal",
+			"missing editor.mode defaults to vim",
 			config.MapConfig(map[string]any{"editor": map[string]any{}}),
-			"modal",
+			"vim",
 		},
 		{
-			"modal passes through",
+			"vim passes through",
+			config.MapConfig(map[string]any{"editor": map[string]any{"mode": "vim"}}),
+			"vim",
+		},
+		{
+			"modal maps to vim",
 			config.MapConfig(map[string]any{"editor": map[string]any{"mode": "modal"}}),
-			"modal",
+			"vim",
 		},
 		{
 			"standard passes through",
@@ -68,12 +74,20 @@ func TestPkgEditorMode(t *testing.T) {
 			"standard",
 		},
 		{
-			"exo with modal fallback resolves to modal",
+			"exo with vim fallback resolves to vim",
+			config.MapConfig(map[string]any{"editor": map[string]any{
+				"mode": "exo",
+				"exo":  map[string]any{"fallback": "vim"},
+			}}),
+			"vim",
+		},
+		{
+			"exo with modal fallback resolves to vim",
 			config.MapConfig(map[string]any{"editor": map[string]any{
 				"mode": "exo",
 				"exo":  map[string]any{"fallback": "modal"},
 			}}),
-			"modal",
+			"vim",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -88,17 +102,37 @@ func TestEditorMode(t *testing.T) {
 		cfg  config.Config
 		want string
 	}{
-		{"missing editor defaults to modal", config.MapConfig(map[string]any{}), "modal"},
+		{"missing editor defaults to vim", config.MapConfig(map[string]any{}), "vim"},
+		{
+			"vim passes through",
+			config.MapConfig(map[string]any{"editor": map[string]any{"mode": "vim"}}),
+			"vim",
+		},
+		{
+			"modal maps to vim",
+			config.MapConfig(map[string]any{"editor": map[string]any{"mode": "modal"}}),
+			"vim",
+		},
 		{
 			"modeless maps to standard",
 			config.MapConfig(map[string]any{"editor": map[string]any{"mode": "modeless"}}),
 			"standard",
 		},
 		{
+			"helix passes through",
+			config.MapConfig(map[string]any{"editor": map[string]any{"mode": "helix"}}),
+			"helix",
+		},
+		{
+			"an unknown mode falls back to vim",
+			config.MapConfig(map[string]any{"editor": map[string]any{"mode": "vi"}}),
+			"vim",
+		},
+		{
 			"exo is preserved",
 			config.MapConfig(map[string]any{"editor": map[string]any{
 				"mode": "exo",
-				"exo":  map[string]any{"fallback": "modal"},
+				"exo":  map[string]any{"fallback": "vim"},
 			}}),
 			"exo",
 		},
@@ -122,7 +156,9 @@ func TestNewPromptEditorExo(t *testing.T) {
 		{"explicit standard fallback", "standard", standardPromptEditor{}},
 		{"deprecated modeless fallback", "modeless", standardPromptEditor{}},
 		{"explicit emacs fallback", "emacs", emacsPromptEditor{}},
-		{"explicit modal fallback", "modal", viPromptEditor{}},
+		{"explicit vim fallback", "vim", viPromptEditor{}},
+		{"deprecated modal fallback", "modal", viPromptEditor{}},
+		{"explicit helix fallback", "helix", helixPromptEditor{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := &workspaceManagerHandler{}
@@ -136,6 +172,37 @@ func TestNewPromptEditorExo(t *testing.T) {
 						"mode": "exo",
 						"exo":  exo,
 					},
+				},
+				errors: map[string]error{},
+			}
+			var ed command.Editor
+			require.NotPanics(t, func() {
+				ed = h.newPromptEditor(cfg)
+			})
+			assert.IsType(t, tc.want, ed)
+		})
+	}
+}
+
+// TestNewPromptEditorMode asserts that each built-in editor mode picks
+// its own in-memory prompt editor, so the command prompt and console
+// input line keep the grammar the user configured.
+func TestNewPromptEditorMode(t *testing.T) {
+	for _, tc := range []struct {
+		mode string
+		want command.Editor
+	}{
+		{editorModeVim, viPromptEditor{}},
+		{editorModeModal, viPromptEditor{}},
+		{editorModeHelix, helixPromptEditor{}},
+		{editorModeStandard, standardPromptEditor{}},
+		{editorModeEmacs, emacsPromptEditor{}},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			h := &workspaceManagerHandler{}
+			cfg := ideConfig{
+				cfg: map[string]any{
+					"editor": map[string]any{"mode": tc.mode},
 				},
 				errors: map[string]error{},
 			}
@@ -170,7 +237,7 @@ func TestExoModeAndAccessors(t *testing.T) {
 
 // TestPkgEditorModeSubstitutesExoFallback verifies the value forwarded to
 // package config.star scripts: exo mode is rewritten to the configured
-// exo.fallback so packages always see a concrete modal or modeless mode.
+// exo.fallback so packages always see a concrete built-in editor mode.
 func TestPkgEditorModeSubstitutesExoFallback(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -178,7 +245,8 @@ func TestPkgEditorModeSubstitutesExoFallback(t *testing.T) {
 		want     string
 	}{
 		{"default_fallback_is_standard", "", "standard"},
-		{"explicit_modal_fallback", "modal", "modal"},
+		{"explicit_vim_fallback", "vim", "vim"},
+		{"deprecated_modal_fallback", "modal", "vim"},
 		{"explicit_modeless_fallback", "modeless", "standard"},
 		{"explicit_standard_fallback", "standard", "standard"},
 	}
@@ -206,14 +274,16 @@ func TestPkgEditorModeSubstitutesExoFallback(t *testing.T) {
 	}
 }
 
-// TestPkgEditorModePassesNonExoThrough verifies modal/modeless are
-// forwarded verbatim to packages.
+// TestPkgEditorModePassesNonExoThrough verifies built-in modes are forwarded
+// to packages in their canonical spelling, never as a deprecated alias.
 func TestPkgEditorModePassesNonExoThrough(t *testing.T) {
 	for _, tc := range []struct {
 		mode string
 		want string
 	}{
-		{"modal", "modal"},
+		{"vim", "vim"},
+		{"modal", "vim"},
+		{"helix", "helix"},
 		{"modeless", "standard"},
 		{"standard", "standard"},
 		{"emacs", "emacs"},
@@ -231,7 +301,7 @@ func TestPkgEditorModePassesNonExoThrough(t *testing.T) {
 }
 
 // TestValidateExoFallsBackOnMissingFile verifies that a exo mode
-// with an invalid (no {file}) command is rewritten back to "modal" so
+// with an invalid (no {file}) command is rewritten back to "vim" so
 // the IDE still boots.
 func TestValidateExoFallsBackOnMissingFile(t *testing.T) {
 	cfg := map[string]any{
@@ -244,12 +314,15 @@ func TestValidateExoFallsBackOnMissingFile(t *testing.T) {
 	}
 	err := validateConfig(cfg)
 	require.Error(t, err)
+	assert.ErrorContains(t, err, `falling back to "vim"`)
 	ic := &ideConfig{cfg: cfg, errors: map[string]error{}}
-	assert.Equal(t, "modal", ic.editorMode())
+	assert.Equal(t, "vim", ic.editorMode())
+	assert.Equal(t, "vim", cfg["editor"].(map[string]any)["mode"],
+		"the rewrite must use the canonical spelling")
 }
 
 // TestValidateExoFallsBackOnInvalidGoto verifies that an unparseable
-// goto rewrites editor.mode back to "modal". exo relies on goto to
+// goto rewrites editor.mode back to "vim". exo relies on goto to
 // position the cursor, so a bad value is a hard misconfiguration.
 func TestValidateExoFallsBackOnInvalidGoto(t *testing.T) {
 	cfg := map[string]any{
@@ -264,11 +337,11 @@ func TestValidateExoFallsBackOnInvalidGoto(t *testing.T) {
 	err := validateConfig(cfg)
 	require.Error(t, err)
 	ic := &ideConfig{cfg: cfg, errors: map[string]error{}}
-	assert.Equal(t, "modal", ic.editorMode())
+	assert.Equal(t, "vim", ic.editorMode())
 }
 
 // TestValidateExoFallsBackOnMissingGoto verifies that an unset goto
-// rewrites editor.mode back to "modal" for the same reason as an
+// rewrites editor.mode back to "vim" for the same reason as an
 // invalid goto: exo requires both editor.exo.command and
 // editor.exo.goto.
 func TestValidateExoFallsBackOnMissingGoto(t *testing.T) {
@@ -283,7 +356,7 @@ func TestValidateExoFallsBackOnMissingGoto(t *testing.T) {
 	err := validateConfig(cfg)
 	require.Error(t, err)
 	ic := &ideConfig{cfg: cfg, errors: map[string]error{}}
-	assert.Equal(t, "modal", ic.editorMode())
+	assert.Equal(t, "vim", ic.editorMode())
 }
 
 func TestValidateExoFallsBackOnMissingQuit(t *testing.T) {
@@ -299,7 +372,7 @@ func TestValidateExoFallsBackOnMissingQuit(t *testing.T) {
 	err := validateConfig(cfg)
 	require.Error(t, err)
 	ic := &ideConfig{cfg: cfg, errors: map[string]error{}}
-	assert.Equal(t, "modal", ic.editorMode())
+	assert.Equal(t, "vim", ic.editorMode())
 }
 
 func TestValidateExoFallsBackOnInvalidQuit(t *testing.T) {
@@ -316,7 +389,7 @@ func TestValidateExoFallsBackOnInvalidQuit(t *testing.T) {
 	err := validateConfig(cfg)
 	require.Error(t, err)
 	ic := &ideConfig{cfg: cfg, errors: map[string]error{}}
-	assert.Equal(t, "modal", ic.editorMode())
+	assert.Equal(t, "vim", ic.editorMode())
 }
 
 // TestValidateExoAcceptsKnownTemplates table-tests the bundled sample
@@ -353,15 +426,18 @@ func TestExoFallbackDefaults(t *testing.T) {
 	assert.Equal(t, "standard", cfg.exoFallback())
 }
 
-// TestExoFallbackExplicitValues asserts "modal" and "standard"
-// round-trip through the accessor, and the deprecated "modeless"
-// alias normalizes to "standard".
+// TestExoFallbackExplicitValues asserts every built-in editor round-trips
+// through the accessor, and the deprecated "modal" and "modeless" aliases
+// normalize to "vim" and "standard".
 func TestExoFallbackExplicitValues(t *testing.T) {
 	for _, tc := range []struct {
 		fallback string
 		want     string
 	}{
-		{"modal", "modal"},
+		{"vim", "vim"},
+		{"modal", "vim"},
+		{"helix", "helix"},
+		{"emacs", "emacs"},
 		{"standard", "standard"},
 		{"modeless", "standard"},
 	} {
@@ -384,6 +460,32 @@ func TestExoFallbackExplicitValues(t *testing.T) {
 	}
 }
 
+// TestValidateExoFallbackAcceptsEveryBuiltIn asserts validation keeps each
+// canonical fallback and deprecated alias as written, so it never rewrites a
+// working config.
+func TestValidateExoFallbackAcceptsEveryBuiltIn(t *testing.T) {
+	for _, fallback := range []string{
+		"vim", "modal", "helix", "standard", "modeless", "emacs",
+	} {
+		t.Run(fallback, func(t *testing.T) {
+			cfg := map[string]any{
+				"editor": map[string]any{
+					"mode": "exo",
+					"exo": map[string]any{
+						"command":  "vim {file}",
+						"goto":     "<esc>:{line}<enter>",
+						"quit":     "<esc>:qa<enter>",
+						"fallback": fallback,
+					},
+				},
+			}
+			require.NoError(t, validateConfig(cfg))
+			exo := cfg["editor"].(map[string]any)["exo"].(map[string]any)
+			assert.Equal(t, fallback, exo["fallback"])
+		})
+	}
+}
+
 // TestValidateExoFallbackInvalidValueRewrites verifies an unknown
 // fallback string is rewritten to "standard" so the IDE still boots.
 func TestValidateExoFallbackInvalidValueRewrites(t *testing.T) {
@@ -400,6 +502,8 @@ func TestValidateExoFallbackInvalidValueRewrites(t *testing.T) {
 	}
 	err := validateConfig(cfg)
 	require.Error(t, err)
+	assert.ErrorContains(t, err,
+		`editor.exo.fallback must be "vim", "helix", "standard", or "emacs"; got "bogus"`)
 
 	ic := ideConfig{cfg: cfg, errors: map[string]error{}}
 	assert.Equal(t, "standard", ic.exoFallback(),

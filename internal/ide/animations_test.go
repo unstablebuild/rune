@@ -18,6 +18,7 @@ package ide
 
 import (
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -26,6 +27,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/component/shader"
+	"unstable.build/rune/internal/component/shader/shaderloop"
 	"unstable.build/rune/internal/ide/pkgtrust"
 )
 
@@ -540,6 +542,127 @@ config = {
 `)
 	assert.True(t, c.animationsOpenWorkspace())
 	require.Contains(t, c.errors, "animations.open_workspace.enabled")
+}
+
+// TestAnimationsActiveTab covers the effects run over content tabs
+// extensions mark as active and over the workspace tabs that own them.
+// Each defaults to pulse, can be tuned or disabled from either the bool
+// or the dict form, and never lets a bad value turn it off silently. KEY
+// in src and errors stands for the animation under test.
+func TestAnimationsActiveTab(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		src    string
+		shader string
+		fps    int
+		loop   time.Duration
+		errors []string
+	}{{
+		name:   "absent",
+		src:    `config = {"animations": {}}`,
+		shader: "pulse",
+		fps:    shaderloop.DefaultFPS,
+		loop:   shaderloop.DefaultLoop,
+	}, {
+		name: "configured",
+		src: `config = {"animations": {"KEY": {
+    "enabled": True, "shader": "shine", "fps": 12, "loop": "2s",
+}}}`,
+		shader: "shine",
+		fps:    12,
+		loop:   2 * time.Second,
+	}, {
+		name:   "enabled missing defaults true",
+		src:    `config = {"animations": {"KEY": {"fps": 12}}}`,
+		shader: "pulse",
+		fps:    12,
+		loop:   shaderloop.DefaultLoop,
+	}, {
+		name:   "empty shader keeps the default",
+		src:    `config = {"animations": {"KEY": {"shader": ""}}}`,
+		shader: "pulse",
+		fps:    shaderloop.DefaultFPS,
+		loop:   shaderloop.DefaultLoop,
+	}, {
+		name:   "dict disabled",
+		src:    `config = {"animations": {"KEY": {"enabled": False, "shader": "shine"}}}`,
+		shader: "",
+		fps:    shaderloop.DefaultFPS,
+		loop:   shaderloop.DefaultLoop,
+	}, {
+		name:   "bool disabled",
+		src:    `config = {"animations": {"KEY": False}}`,
+		shader: "",
+		fps:    shaderloop.DefaultFPS,
+		loop:   shaderloop.DefaultLoop,
+	}, {
+		name:   "unknown shader falls back and warns",
+		src:    `config = {"animations": {"KEY": {"shader": "bogus"}}}`,
+		shader: "pulse",
+		fps:    shaderloop.DefaultFPS,
+		loop:   shaderloop.DefaultLoop,
+		errors: []string{"animations.KEY.shader"},
+	}, {
+		name: "invalid cadence falls back and warns",
+		src: `config = {"animations": {"KEY": {
+    "fps": 0, "loop": "soon",
+}}}`,
+		shader: "pulse",
+		fps:    shaderloop.DefaultFPS,
+		loop:   shaderloop.DefaultLoop,
+		errors: []string{"animations.KEY.fps", "animations.KEY.loop"},
+	}, {
+		name: "wrong types fall back and warn",
+		src: `config = {"animations": {"KEY": {
+    "enabled": "yes", "shader": 42, "fps": "fast", "loop": 1200,
+}}}`,
+		shader: "pulse",
+		fps:    shaderloop.DefaultFPS,
+		loop:   shaderloop.DefaultLoop,
+		errors: []string{
+			"animations.KEY.enabled", "animations.KEY.shader",
+			"animations.KEY.fps", "animations.KEY.loop",
+		},
+	}} {
+		for _, key := range []string{animActiveContentTab, animActiveWorkspaceTab} {
+			t.Run(key+"/"+tc.name, func(t *testing.T) {
+				c := newAnimConfig(t, strings.ReplaceAll(tc.src, "KEY", key))
+				assert.Equal(t, tc.shader, c.animationsActiveTabShader(key))
+				assert.Equal(t, tc.fps, c.animationsActiveTabFPS(key))
+				assert.Equal(t, tc.loop, c.animationsActiveTabLoop(key))
+				want := make([]string, len(tc.errors))
+				for i, e := range tc.errors {
+					want[i] = strings.ReplaceAll(e, "KEY", key)
+				}
+				var got []string
+				for k := range c.errors {
+					got = append(got, k)
+				}
+				assert.ElementsMatch(t, want, got)
+			})
+		}
+	}
+}
+
+// TestAnimationsActiveTabIndependent verifies that content and workspace
+// tabs are configured separately: tuning or disabling one leaves the
+// other at its own settings.
+func TestAnimationsActiveTabIndependent(t *testing.T) {
+	c := newAnimConfig(t, `
+config = {
+    "animations": {
+        "active_content_tab":   False,
+        "active_workspace_tab": {"shader": "shine", "fps": 12, "loop": "2s"},
+    },
+}
+`)
+	assert.Empty(t, c.animationsActiveTabShader(animActiveContentTab))
+	assert.Equal(t, "shine", c.animationsActiveTabShader(animActiveWorkspaceTab))
+	assert.Equal(t, shaderloop.DefaultFPS, c.animationsActiveTabFPS(animActiveContentTab))
+	assert.Equal(t, 12, c.animationsActiveTabFPS(animActiveWorkspaceTab))
+	assert.Equal(t, shaderloop.DefaultLoop, c.animationsActiveTabLoop(animActiveContentTab))
+	assert.Equal(t, 2*time.Second, c.animationsActiveTabLoop(animActiveWorkspaceTab))
+	assert.Empty(t, c.errors)
 }
 
 // TestIDEOpenShaderConfigOverrideAppliesToRoot wires up an IDE the

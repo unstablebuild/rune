@@ -90,6 +90,9 @@ type commandAdapter struct {
 	reviewContext int
 	attachFn      func(dialoguetui.Attachment)
 	reviewSeq     int
+	// statusBarFn mutates the chat status bar state under the component
+	// lock. It is nil for sessions without a status bar.
+	statusBarFn func(func(*dialoguetui.StatusBarState))
 }
 
 // commandAdapterDeps groups the values commandAdapter borrows from its
@@ -115,10 +118,9 @@ type commandAdapterDeps struct {
 	git           vctrl.Service
 	reviewContext int
 
-	// mu guards comp / hintSlot writes; the closures below take it.
+	// mu guards comp writes; the closures below take it.
 	mu          *sync.Mutex
 	comp        **dialoguetui.Component // late-bound: caller assigns *comp later
-	hintSlot    *hintSlot
 	interrupter term.Interrupter
 }
 
@@ -156,6 +158,11 @@ func newCommandAdapter(deps commandAdapterDeps) *commandAdapter {
 			(*deps.comp).UpsertAttachment(a)
 			deps.mu.Unlock()
 		},
+		statusBarFn: func(fn func(*dialoguetui.StatusBarState)) {
+			deps.mu.Lock()
+			(*deps.comp).SetStatusBarState(fn)
+			deps.mu.Unlock()
+		},
 		compactFn: func(msgs []llmapi.Message) {
 			deps.mu.Lock()
 			comp := *deps.comp
@@ -163,14 +170,6 @@ func newCommandAdapter(deps commandAdapterDeps) *commandAdapter {
 			pending := make(map[string]llmapi.ToolCall)
 			for _, msg := range msgs {
 				addMessage(comp, msg, pending)
-			}
-			// Re-add the status hint if one is active. Reset and
-			// AddSendMessageMarkdown (called during replay) both
-			// remove it, so we restore it after all messages are
-			// replayed to keep the progress animation visible
-			// during compaction.
-			if deps.hintSlot.comp != nil {
-				comp.AddReceiveMessageHint(deps.hintSlot.comp, deps.hintSlot.conf)
 			}
 			deps.mu.Unlock()
 			_ = deps.interrupter.Interrupt(context.Background())
@@ -383,6 +382,7 @@ func (a *commandAdapter) handleModel(
 		svc = audit.NewService(svc, a.auditStore, entry)
 	}
 	a.agent.SwapService(svc, entry)
+	a.syncStatusBarModel()
 	qualified := entry.Provider + "/" + entry.Name
 	a.currentModel = qualified
 	md, err := markdown.New(fmt.Sprintf("Switched to model **%s**", qualified))
@@ -402,6 +402,32 @@ func (a *commandAdapter) resolvedModelLabel(ctx context.Context) string {
 		return entry.Provider + "/" + entry.Name
 	}
 	return a.currentModel
+}
+
+// syncStatusBarModel republishes the agent's model, effort and token
+// budgets to the chat status bar. Call it after anything that rebinds
+// the session to a different model or changes those budgets.
+func (a *commandAdapter) syncStatusBarModel() {
+	if a.agent == nil || a.statusBarFn == nil {
+		return
+	}
+	entry := a.agent.ModelEntry()
+	effort := string(a.agent.Effort())
+	if effort == "" {
+		// Name the level the provider will actually apply rather than
+		// leaving the bar reading "default".
+		effort = string(llmarg.DefaultEffort(entry))
+	}
+	maxTokens := a.agent.MaxOutputTokens()
+	a.statusBarFn(func(s *dialoguetui.StatusBarState) {
+		s.Model = entry.Name
+		s.Provider = entry.Provider
+		s.Effort = effort
+		s.MaxTokens = maxTokens
+		if entry.ContextWindow > 0 {
+			s.ContextWindow = entry.ContextWindow
+		}
+	})
 }
 
 // validEffortLevels lists the allowed reasoning effort values.
@@ -447,6 +473,7 @@ func (a *commandAdapter) handleEffort(args []string) (dialoguetui.CommandResult,
 	}
 
 	a.agent.SetEffort(level)
+	a.syncStatusBarModel()
 	md, err := markdown.New(fmt.Sprintf("Set effort level to **%s**.", level))
 	if err != nil {
 		return dialoguetui.CommandResult{}, err
@@ -484,6 +511,7 @@ func (a *commandAdapter) handleMaxTokens(args []string) (dialoguetui.CommandResu
 	}
 
 	a.agent.SetMaxOutputTokens(n)
+	a.syncStatusBarModel()
 	md, err := markdown.New(fmt.Sprintf("Set max output tokens to **%d**.", n))
 	if err != nil {
 		return dialoguetui.CommandResult{}, err
@@ -531,6 +559,7 @@ func (a *commandAdapter) handleCompact(
 		model = args[0]
 	}
 	return dialoguetui.CommandResult{
+		Phase: phaseCompacting,
 		Display: &compactIterator{
 			handler:    a.handler,
 			store:      a.store,

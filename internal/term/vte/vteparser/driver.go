@@ -125,6 +125,14 @@ func (p *driver) Unhook() {
 	p.log(log.DebugLevel, "unhandled unhook")
 }
 
+func (p *driver) APCDispatch(data []byte) {
+	if len(data) > 0 && data[0] == 'G' {
+		p.handler.GraphicsCommand(data[1:])
+		return
+	}
+	p.log(log.DebugLevel, "unhandled apc len=%d", len(data))
+}
+
 func (p *driver) OSCDispatch(params [][]byte, bellTerminated bool) {
 	terminator := "\x1b\\"
 	if bellTerminated {
@@ -466,6 +474,8 @@ func (p *driver) CSIDispatch(
 		switch param {
 		case 14:
 			handler.TextAreaSizePixels()
+		case 16:
+			handler.CellSizePixels()
 		case 18:
 			handler.TextAreaSizeChars()
 		case 22:
@@ -704,7 +714,7 @@ func (p *driver) attrsFromSgrParameters(params [][]uint16) []Attr {
 		case 49:
 			attrs = append(attrs, Attr{Type: BackgroundAttr, Color: term.ColorDefault})
 		case 59:
-			attrs = append(attrs, Attr{Type: UnderlineColorAttr, Color: term.ColorBlack})
+			attrs = append(attrs, Attr{Type: UnderlineColorAttr, Color: term.ColorDefault})
 		case 90:
 			attrs = append(attrs, Attr{Type: ForegroundAttr, Color: term.ColorGray})
 		case 91:

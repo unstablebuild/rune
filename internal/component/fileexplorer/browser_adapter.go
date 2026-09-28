@@ -96,6 +96,9 @@ type Browser interface {
 		workspaceapi.URI, string, term.Attributes,
 	) error
 
+	// SetTabActivity marks the given tab as active or idle.
+	SetTabActivity(workspaceapi.URI, bool) error
+
 	// Focus returns the current Window in focus.
 	Focus() (Window, error)
 
@@ -229,6 +232,12 @@ func (a *browserAdapter) CloseWindow(
 		)
 	}
 	return bw.Close()
+}
+
+func (a *browserAdapter) SetTabActivity(
+	uri workspaceapi.URI, active bool,
+) error {
+	return a.b.SetTabActivity(uri, active)
 }
 
 func (a *browserAdapter) Interrupt(

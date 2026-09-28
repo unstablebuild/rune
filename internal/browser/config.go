@@ -17,6 +17,8 @@
 package browser
 
 import (
+	"time"
+
 	log "github.com/sirupsen/logrus"
 	"github.com/unstablebuild/blue/logging"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
@@ -94,6 +96,21 @@ type Config struct {
 	TabNameSeparator string
 	FrameUnion       bool
 	OnTabsClick      func(int) bool
+	// OnTabIconClick, when set, receives clicks on a tab's icon in the
+	// tab bar in place of the usual tab click, so the tab is neither
+	// focused nor shown. A press dragged off the icon is not a click.
+	OnTabIconClick func(*Tab)
+
+	// ActiveTabShader names the continuous effect run over the labels of
+	// tabs marked active via Component.SetTabActivity. Empty disables
+	// it. ActiveTabShaderFPS and ActiveTabShaderLoop tune the effect and
+	// fall back to the catalog defaults when zero.
+	ActiveTabShader     string
+	ActiveTabShaderFPS  int
+	ActiveTabShaderLoop time.Duration
+	// OnTabActivity is called whenever a tab's activity changes,
+	// including when an active tab is removed.
+	OnTabActivity func()
 
 	// RightInset reserves a column of this width in cells to the right
 	// of the window manager, leaving room for another UI element to

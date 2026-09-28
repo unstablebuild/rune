@@ -177,5 +177,7 @@ func (h *indentTestHandler) Dimensions() (int, int) { return 0, 0 }
 
 func (h *indentTestHandler) IsSearchMode() bool { return false }
 
+func (h *indentTestHandler) IsNormalMode() bool { return false }
+
 var _ Handler = (*indentTestHandler)(nil)
 var _ browserapi.Handler = (*indentTestHandler)(nil)

@@ -408,9 +408,11 @@ func TestRuneStarAsDefaultConfig(t *testing.T) {
 			tui:   false,
 		},
 		term.RingBell, term.ScheduleNextTick, ""))
-	assert.Equal(t, "modal", cfg.editorMode())
+	assert.Equal(t, "vim", cfg.editorMode())
 	assert.False(t, cfg.editorAutoPair())
 	assert.False(t, cfg.editorAutoSave())
+	assert.True(t, cfg.editorSwapDir())
+	assert.NotContains(t, cfg.errors, "editor.swap_dir")
 	assert.Equal(t, "info", cfg.cfg["log_level"])
 	assert.Equal(t, 2000, cfg.consoleMaxHistory())
 	assert.True(t, cfg.telemetryEnabled())
@@ -465,11 +467,10 @@ func TestRuneStarModelsConfig(t *testing.T) {
 
 	models, ok := cfg["models"].(map[string]any)
 	require.True(t, ok, "models block missing")
-	// rune.star no longer ships a `models.default`; the loader keeps the
-	// built-in default when the key is absent and the bootstrap override
-	// is what sets a concrete model.
+	// The default model is a router alias (`models alias set default
+	// <provider/model>`), not a config key.
 	_, hasDefault := models["default"]
-	assert.False(t, hasDefault, "models.default should not be set in rune.star")
+	assert.False(t, hasDefault, "models.default is not a config key")
 	assert.Equal(t, "auto", models["reasoning_summary"])
 	assert.Equal(t, false, models["debug_http"])
 
@@ -617,7 +618,7 @@ func TestLoadConfigStarUserOverlayPreservesEmbeddedRuneStar(t *testing.T) {
 
 	assert.Equal(t, "debug", cfg.cfg["log_level"])
 	// Defaults from cmd/rune/rune.star survive the top-level rebind.
-	assert.Equal(t, "modal", cfg.editorMode())
+	assert.Equal(t, "vim", cfg.editorMode())
 	assert.False(t, cfg.editorAutoPair())
 	assert.Equal(t, 2000, cfg.consoleMaxHistory())
 }
@@ -701,6 +702,49 @@ config["extensions"]["git"]["config"]["nested"]["override"] = "star"
 	assert.Equal(t, "star", override)
 }
 
+// TestHelixPresetLoads loads the shipped helix preset over rune.star, as a
+// first run does, and pins that its Helix typable command aliases and key
+// spellings reach the command layer without config errors.
+func TestHelixPresetLoads(t *testing.T) {
+	preset, err := os.ReadFile("../../cmd/rune/preset_helix.yaml")
+	require.NoError(t, err)
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(path, preset, 0o644))
+	var cfg ideConfig
+	require.NoError(t, loadConfig(&cfg, path, browser.NopWallpaper(),
+		DefaultConfig{src: string(readRuneStar(t)), modal: true},
+		term.RingBell, term.ScheduleNextTick, ""))
+
+	aliases, err := cfg.parseAliasCommands()
+	require.NoError(t, err)
+	for alias, cmds := range map[string][]string{
+		"q":   {"windowclose"},
+		"wq":  {"write", "windowclose"},
+		"qa!": {"forcequit!"},
+		"o":   {"edit"},
+		"vs":  {"windownew right"},
+	} {
+		assert.Equalf(t, cmds, aliases[alias].Commands, "alias %s", alias)
+	}
+	helixAliases := []string{
+		"q", "wq", "x", "qa", "qa!", "wa", "o", "bc", "bca", "bn", "bp",
+		"vs", "hs", "sp", "rl",
+	}
+	for _, alias := range helixAliases {
+		require.Containsf(t, aliases, alias, "alias %s", alias)
+		for _, cmd := range aliases[alias].Commands {
+			name := strings.Fields(cmd)[0]
+			_, ok := exCommands[name]
+			assert.Truef(t, ok, "alias %s runs unknown command %q", alias, name)
+		}
+	}
+
+	seq, err := handler.ParseSequence("<ctrl-w><ctrl-h>")
+	require.NoError(t, err)
+	assert.Equal(t, [][]string{{"windowfocus", "left"}}, cfg.commandKeyMappings()[seq])
+	assert.Empty(t, cfg.errors)
+}
+
 func TestLoadWorkspaceConfigYAML(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
@@ -718,6 +762,184 @@ func TestLoadWorkspaceConfigYAML(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, isConfigErr)
 	assert.Equal(t, "warn", c.cfg["log_level"])
+}
+
+// TestVimSettingsSectionSpellings pins that the vim editor's settings read
+// the same whether a config spells the section editor.vim or editor.modal,
+// its name before editor.mode "modal" became "vim", in YAML and in
+// Starlark. editor.vim wins where one file sets a key under both, and a
+// later file wins over an earlier one whichever spelling each used.
+func TestVimSettingsSectionSpellings(t *testing.T) {
+	type file struct{ name, src string }
+	red := term.Attributes{Fg: term.ColorRed, Bg: term.ColorBlue}
+	green := term.Attributes{Fg: term.ColorGreen, Bg: term.ColorBlack}
+	navy := term.Attributes{Fg: term.ColorWhite, Bg: term.ColorNavy}
+	tests := []struct {
+		name      string
+		user      file
+		workspace file
+		// A zero value expects the shipped default.
+		wantSearch, wantBar term.Attributes
+	}{
+		{name: "defaults"},
+		{
+			name:       "yaml modal",
+			user:       file{"config.yaml", "editor:\n  modal:\n    search_attr: {fg: red, bg: blue}\n"},
+			wantSearch: red,
+		},
+		{
+			name:       "yaml vim",
+			user:       file{"config.yaml", "editor:\n  vim:\n    search_attr: {fg: red, bg: blue}\n"},
+			wantSearch: red,
+		},
+		{
+			name: "yaml vim wins per key",
+			user: file{"config.yaml", `
+editor:
+  vim:
+    search_attr: {fg: green, bg: black}
+  modal:
+    search_attr: {fg: red, bg: blue}
+    message_bar:
+      attr: {fg: white, bg: navy}
+`},
+			wantSearch: green,
+			wantBar:    navy,
+		},
+		{
+			name:       "star modal",
+			user:       file{"config.star", `config["editor"]["modal"]["search_attr"] = {"fg": "red", "bg": "blue"}`},
+			wantSearch: red,
+		},
+		{
+			name:       "star vim",
+			user:       file{"config.star", `config["editor"]["vim"]["search_attr"] = {"fg": "red", "bg": "blue"}`},
+			wantSearch: red,
+		},
+		{
+			name: "star nested modal key survives the untouched vim section",
+			user: file{"config.star",
+				`config["editor"]["modal"]["message_bar"]["attr"] = {"fg": "white", "bg": "navy"}`},
+			wantBar: navy,
+		},
+		{
+			name: "star reads either spelling",
+			user: file{"config.star", `
+config["editor"]["vim"]["search_attr"] = {"fg": "red", "bg": "blue"}
+config["editor"]["modal"]["message_bar"]["attr"] = config["editor"]["vim"]["search_attr"]
+`},
+			wantSearch: red,
+			wantBar:    red,
+		},
+		{
+			name: "star vim wins per key whatever the order",
+			user: file{"config.star", `
+config["editor"]["vim"]["search_attr"] = {"fg": "green", "bg": "black"}
+config["editor"]["modal"]["search_attr"] = {"fg": "red", "bg": "blue"}
+config["editor"]["modal"]["message_bar"] = {"attr": {"fg": "white", "bg": "navy"}}
+`},
+			wantSearch: green,
+			wantBar:    navy,
+		},
+		{
+			name:       "star rebind",
+			user:       file{"config.star", `config = {"editor": {"modal": {"search_attr": {"fg": "red", "bg": "blue"}}}}`},
+			wantSearch: red,
+		},
+		{
+			name:       "workspace modal overrides user vim",
+			user:       file{"config.yaml", "editor:\n  vim:\n    search_attr: {fg: green, bg: black}\n"},
+			workspace:  file{"config.star", `config["editor"]["modal"]["search_attr"] = {"fg": "red", "bg": "blue"}`},
+			wantSearch: red,
+		},
+		{
+			name:       "workspace vim overrides user modal",
+			user:       file{"config.star", `config["editor"]["modal"]["search_attr"] = {"fg": "red", "bg": "blue"}`},
+			workspace:  file{"config.yaml", "editor:\n  vim:\n    search_attr: {fg: green, bg: black}\n"},
+			wantSearch: green,
+		},
+	}
+	runeStar := readRuneStar(t)
+	load := func(t *testing.T, user, ws file) ideConfig {
+		t.Helper()
+		dir := t.TempDir()
+		userPath := filepath.Join(dir, "config.yaml")
+		if user.name != "" {
+			userPath = filepath.Join(dir, user.name)
+			require.NoError(t, os.WriteFile(userPath, []byte(user.src), 0o644))
+		}
+		var cfg ideConfig
+		require.NoError(t, loadConfig(&cfg, userPath, browser.NopWallpaper(),
+			DefaultConfig{src: string(runeStar), modal: true},
+			term.RingBell, term.ScheduleNextTick, ""))
+		if ws.name == "" {
+			return cfg
+		}
+		wsDir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(wsDir, ws.name), []byte(ws.src), 0o644))
+		uri, err := workspaceapi.CurrentUserHostURI(wsDir)
+		require.NoError(t, err)
+		scheme, err := workspace.NewFileScheme(context.Background(), config.NopConfig(), uri)
+		require.NoError(t, err)
+		w := workspace.NewSchemeWorkspace(uri, scheme, inlineSchedule)
+		t.Cleanup(func() { w.Close() })
+		_, err = loadWorkspaceConfig(ws.name, w, uri, &cfg)
+		require.NoError(t, err)
+		return cfg
+	}
+	defaults := load(t, file{}, file{})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := load(t, tt.user, tt.workspace)
+			wantSearch, wantBar := tt.wantSearch, tt.wantBar
+			if wantSearch == (term.Attributes{}) {
+				wantSearch = defaults.vimResultAttr()
+			}
+			if wantBar == (term.Attributes{}) {
+				wantBar = defaults.vimMessageBarAttr()
+			}
+			assert.Equal(t, wantSearch, cfg.vimResultAttr())
+			assert.Equal(t, wantBar, cfg.vimMessageBarAttr())
+			assert.Equal(t, defaults.vimAttr(), cfg.vimAttr())
+			assert.Equal(t, defaults.vimMessageBarLayout(), cfg.vimMessageBarLayout())
+			assert.Empty(t, cfg.errors)
+			// Extensions read the served tree under either spelling.
+			editor := cfg.cfg["editor"].(map[string]any)
+			assert.Equal(t, editor["vim"], editor["modal"])
+		})
+	}
+}
+
+// TestVimSettingsSectionMalformed pins that a vim editor section that is not
+// a map is reported under either spelling unless a well-formed editor.vim
+// overrides it.
+func TestVimSettingsSectionMalformed(t *testing.T) {
+	tests := []struct {
+		name, src string
+		wantErr   bool
+	}{
+		{"vim", "editor:\n  vim: bad\n", true},
+		{"modal", "editor:\n  modal: bad\n", true},
+		{"vim wins over a well-formed modal", "editor:\n  vim: bad\n  modal: {wrap: true}\n", true},
+		{"well-formed vim wins over modal", "editor:\n  vim: {wrap: true}\n  modal: bad\n", false},
+	}
+	runeStar := readRuneStar(t)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			require.NoError(t, os.WriteFile(path, []byte(tt.src), 0o644))
+			var cfg ideConfig
+			require.NoError(t, loadConfig(&cfg, path, browser.NopWallpaper(),
+				DefaultConfig{src: string(runeStar), modal: true},
+				term.RingBell, term.ScheduleNextTick, ""))
+			cfg.vimAttr()
+			if tt.wantErr {
+				assert.Error(t, cfg.errors[editorSectionVim])
+			} else {
+				assert.Empty(t, cfg.errors)
+			}
+		})
+	}
 }
 
 func TestDecodeOverlayConfigFileUsesFilenameExtension(t *testing.T) {

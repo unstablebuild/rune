@@ -93,21 +93,31 @@ func (c *cmdGitService) Diff(ctx context.Context, file workspaceapi.URI) (FileDi
 	if d == nil {
 		return FileDiff{}, errors.New("parse nil diff")
 	}
+	return gitFileDiff(d), nil
+}
 
-	var ret FileDiff
-	ret.OrigName = d.OrigName
-	ret.NewName = d.NewName
+// gitFileDiff converts a parsed "git diff" into the hunk numbering the
+// rest of this package speaks, which ConvertChangesToFileDiff — the
+// source the other Service implementation diffs through — defines.
+func gitFileDiff(d *diff.FileDiff) FileDiff {
+	ret := FileDiff{OrigName: d.OrigName, NewName: d.NewName}
 	for _, hunk := range d.Hunks {
-		ret.Hunks = append(ret.Hunks, Hunk{
+		h := Hunk{
 			OrigStartLine: hunk.OrigStartLine,
 			OrigLines:     hunk.OrigLines,
 			NewStartLine:  hunk.NewStartLine,
 			NewLines:      hunk.NewLines,
 			Section:       hunk.Section,
 			Body:          string(hunk.Body),
-		})
+		}
+		// git reports a removal as "+c,0", naming the new-side line the
+		// removed block followed. NewStartLine names the line it sat at.
+		if h.NewLines == 0 {
+			h.NewStartLine++
+		}
+		ret.Hunks = append(ret.Hunks, h)
 	}
-	return ret, nil
+	return ret
 }
 
 // devNull is how a unified diff names the absent side of an added or

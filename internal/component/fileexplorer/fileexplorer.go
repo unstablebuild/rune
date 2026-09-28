@@ -423,7 +423,27 @@ func (c *Component) CollapseAll() {
 // view tree. It does not mutate the filesystem or the buffer.
 func (c *Component) DryFlush() *ChangeSet {
 	view := c.parseViewTree()
-	return computeChangeSet(c.baseTree, view)
+	cs := computeChangeSet(c.baseTree, view)
+	c.appendNameConflicts(cs, view)
+	return cs
+}
+
+// appendNameConflicts records a conflict for every view entry whose
+// name the explorer refuses to write. Reported as conflicts (rather
+// than dropped operations) so the whole batch is refused and the user
+// sees why, instead of silently losing part of their edit.
+func (c *Component) appendNameConflicts(cs *ChangeSet, view *node) {
+	for _, e := range collectEntries(view) {
+		err := validateEntryName(e.Name, c.cfg)
+		if err == nil {
+			continue
+		}
+		cs.Conflicts = append(cs.Conflicts, Conflict{
+			Path:    e.URI.Path(),
+			Entry1:  e.ID,
+			Message: err.Error(),
+		})
+	}
 }
 
 // HasPendingEdits returns true when the user has edited the buffer
@@ -505,6 +525,7 @@ func (c *Component) ExpandDirectories(uris []workspaceapi.URI) {
 func (c *Component) Flush() (*ChangeSet, error) {
 	view := c.parseViewTree()
 	cs := computeChangeSet(c.baseTree, view)
+	c.appendNameConflicts(cs, view)
 	if cs.HasConflicts() {
 		return cs, fmt.Errorf(
 			"file explorer: %d conflicting change(s)",

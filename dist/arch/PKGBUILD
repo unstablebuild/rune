@@ -1,0 +1,85 @@
+# Maintainer: Unstable Build, LLC <support@unstable.build>
+pkgname=rune
+pkgver=1.2.1
+pkgrel=1
+# namcap rejects the package name in pkgdesc, so this is the name-free
+# short form of the description used across dist/.
+pkgdesc="Fast, GPU-accelerated, full-featured IDE and terminal multiplexer"
+arch=(x86_64 aarch64)
+url="https://rune.build"
+license=(GPL-3.0-or-later)
+# The GUI dlopens its graphics and X11 libraries only when a window
+# opens. Keeping them optional lets --tui and --headless run on a host
+# with no graphical stack installed. libglvnd works with either Mesa or
+# proprietary drivers and provides both the GL and EGL client libraries.
+# hicolor-icon-theme owns the icon hierarchy this package installs into
+# and ships no libraries, so it costs a headless install nothing.
+depends=(glibc hicolor-icon-theme)
+makedepends=(go git alsa-lib wayland libxkbcommon libx11 libxcursor libxext
+	libxi libxinerama libxrandr libxrender libxxf86vm libglvnd)
+# gcc and pkgconf are omitted from makedepends: makepkg assumes
+# base-devel is installed.
+optdepends=('zsh: bundled shell profile bootstrap'
+	'libglvnd: OpenGL and EGL GUI support'
+	'libx11: X11 GUI support'
+	'libxcursor: X11 cursor support'
+	'libxext: X11 extension support'
+	'libxi: XInput GUI support'
+	'libxinerama: Xinerama multi-monitor GUI support'
+	'libxrandr: RandR display configuration support'
+	'libxrender: XRender GUI support'
+	'libxxf86vm: XF86VidMode GUI support')
+source=("$pkgname::git+https://github.com/unstablebuild/rune.git#tag=v$pkgver")
+sha256sums=('SKIP')
+# makepkg's default LTO CFLAGS can break cgo builds. The debug package
+# is disabled too: Go emits no DWARF that makepkg's split can use, so it
+# produces an empty /usr/src/debug and a dangling .build-id symlink.
+options=(!lto !debug)
+
+build() {
+	cd "$pkgname"
+	export CGO_ENABLED=1
+	export GOFLAGS="-buildmode=pie -trimpath -mod=readonly -modcacherw"
+	local builddate commit
+	builddate="$(go run ./cmd/buildstamp)"
+	# A source tree staged by CI has no .git to describe; the AUR build
+	# clones the tag, so git answers there.
+	commit="${RUNE_COMMIT:-$(git rev-parse --short HEAD)}"
+	# Mirrors RUNE_ENV=prod in cmd/rune/Makefile: version stamps plus
+	# the production API/download/website endpoints.
+	local ldflags="-linkmode=external
+		-X unstable.build/rune/internal/debug.Tag=v$pkgver
+		-X unstable.build/rune/internal/debug.Commit=$commit
+		-X unstable.build/rune/internal/debug.BuildDate=$builddate
+		-X unstable.build/rune/internal/debug.Package=rune
+		-X unstable.build/rune/internal/debug.OSPackaged=true
+		-X unstable.build/rune/cmd/rune/ide/apiclient.DefaultHTTPEndpointAddress=https://api.rune.build
+		-X unstable.build/rune/cmd/rune/ide/apiclient.DefaultGRPCEndpointAddress=rpc.rune.build:443
+		-X unstable.build/rune/cmd/rune/ide/apiclient.DefaultDownloadsHost=https://downloads.rune.build
+		-X unstable.build/rune/cmd/rune/ide/apiclient.DefaultWebsiteAddress=https://rune.build"
+	go build -tags ebitensinglethread -ldflags "$ldflags" -o rune ./cmd/rune
+}
+
+package() {
+	cd "$pkgname"
+	# rune.app/bin layout is required: the binary only enables its
+	# bundled-zdot bootstrap when /proc/self/exe resolves into
+	# .../rune.app/bin/ (linuxAppDir in cmd/rune/main.go).
+	install -Dm755 rune "$pkgdir/usr/lib/rune.app/bin/rune"
+	install -dm755 "$pkgdir/usr/bin"
+	ln -s ../lib/rune.app/bin/rune "$pkgdir/usr/bin/rune"
+
+	local f
+	for f in .zshenv .zprofile .zshrc .zlogin; do
+		install -Dm644 "extra/osx/Rune.app/Contents/Resources/zdot/$f" \
+			"$pkgdir/usr/lib/rune.app/share/zdot/$f"
+	done
+
+	install -Dm644 deploy/rune-linux/rune.desktop \
+		"$pkgdir/usr/share/applications/rune.desktop"
+	install -Dm644 extra/icon.iconset/icon_512x512.png \
+		"$pkgdir/usr/share/icons/hicolor/512x512/apps/rune.png"
+	install -Dm644 extra/icon.iconset/icon_512x512@2x.png \
+		"$pkgdir/usr/share/icons/hicolor/1024x1024/apps/rune.png"
+	install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

@@ -18,18 +18,149 @@ package extensionv2
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/pem"
+	"errors"
+	"math/big"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"google.golang.org/grpc"
 	"unstable.build/rune/internal/debug"
+	"unstable.build/rune/internal/extension"
+	"unstable.build/rune/internal/text/texttest"
 )
+
+// shortTempDir returns a temp dir short enough that
+// <dir>/sockets/<hash>.sock fits in sun_path; t.TempDir() bakes the
+// test name into the path and overflows it on macOS.
+func shortTempDir(t *testing.T) string {
+	t.Helper()
+	base, err := os.MkdirTemp("", "rn")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	return base
+}
+
+// ecdsaSelfSignedCert is a fast stand-in for auth.GenerateSelfSignedCert,
+// whose RSA-4096 keygen takes close to a second.
+func ecdsaSelfSignedCert() (certPEM, keyPEM []byte, err error) {
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, nil, err
+	}
+	tmpl := x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &priv.PublicKey, priv)
+	if err != nil {
+		return nil, nil, err
+	}
+	keyDER, err := x509.MarshalECPrivateKey(priv)
+	if err != nil {
+		return nil, nil, err
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
+		pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), nil
+}
+
+func newTestWorkspaceExtensionsRunner(
+	t *testing.T, r *Runner, uri workspaceapi.URI,
+) (extension.Runner, error) {
+	t.Helper()
+	exec := &recordingExecutor{}
+	runner, err := r.WorkspaceExtensionsRunner(
+		uri, nil, nil, nopTrustVerifier{}, r.dataDir, r.dataDir, nil,
+		exec, exec, extension.GrantAll(), texttest.NopEditor(), nil, nil,
+		func(fn func()) bool { fn(); return true },
+	)
+	if err == nil {
+		t.Cleanup(func() { _ = runner.Close() })
+	}
+	return runner, err
+}
+
+func envValue(env []string, key string) string {
+	for _, kv := range env {
+		if v, ok := strings.CutPrefix(kv, key+"="); ok {
+			return v
+		}
+	}
+	return ""
+}
+
+func TestRunnerSharesOneCertAcrossWorkspaces(t *testing.T) {
+	t.Parallel()
+
+	var generated atomic.Int32
+	r, err := newRunner(new(sync.Mutex), shortTempDir(t), func() ([]byte, []byte, error) {
+		generated.Add(1)
+		return ecdsaSelfSignedCert()
+	}, WithInsecureAuth())
+	require.NoError(t, err)
+
+	var certs []string
+	for _, raw := range []string{"file:///home/me/shared-a", "file:///home/me/shared-b"} {
+		uri, err := workspaceapi.ParseURI(raw)
+		require.NoError(t, err)
+		runner, err := newTestWorkspaceExtensionsRunner(t, r, uri)
+		require.NoError(t, err)
+		env, err := runner.(wrapCloser).commandEnvs(context.Background(), "ext", nil)
+		require.NoError(t, err)
+		certs = append(certs, envValue(env, "RUNE_CERT"))
+	}
+
+	assert.NotEmpty(t, certs[0], "extensions must be handed the tls cert")
+	assert.Equal(t, certs[0], certs[1],
+		"every workspace runner must hand extensions the same process-wide cert")
+	assert.Equal(t, int32(1), generated.Load(), "cert must be generated once per process")
+}
+
+func TestRunnerSurfacesCertGenerationErrorAtFirstUse(t *testing.T) {
+	t.Parallel()
+
+	r, err := newRunner(new(sync.Mutex), shortTempDir(t), func() ([]byte, []byte, error) {
+		return nil, nil, errors.New("keygen exploded")
+	}, WithInsecureAuth())
+	require.NoError(t, err, "the async generator must not fail construction")
+
+	uri, err := workspaceapi.ParseURI("file:///home/me/cert-error")
+	require.NoError(t, err)
+	_, err = newTestWorkspaceExtensionsRunner(t, r, uri)
+	require.ErrorContains(t, err, "keygen exploded")
+}
+
+func TestRunnerInsecureTransportSkipsCertGeneration(t *testing.T) {
+	t.Parallel()
+
+	r, err := newRunner(new(sync.Mutex), shortTempDir(t), func() ([]byte, []byte, error) {
+		t.Error("cert generator must not run with insecure transport")
+		return nil, nil, nil
+	}, WithInsecureAuth(), WithInsecureTransport())
+	require.NoError(t, err)
+
+	uri, err := workspaceapi.ParseURI("file:///home/me/insecure")
+	require.NoError(t, err)
+	runner, err := newTestWorkspaceExtensionsRunner(t, r, uri)
+	require.NoError(t, err)
+	env, err := runner.(wrapCloser).commandEnvs(context.Background(), "ext", nil)
+	require.NoError(t, err)
+	assert.Empty(t, envValue(env, "RUNE_CERT"))
+}
 
 func TestWithServerInterceptorsAppendsToConfig(t *testing.T) {
 	t.Parallel()
@@ -55,6 +186,26 @@ func TestWithServerInterceptorsAppendsToConfig(t *testing.T) {
 
 	assert.Len(t, cfg.extraStreamInterceptors, 2)
 	assert.Len(t, cfg.extraUnaryInterceptors, 2)
+}
+
+func TestNewUnixListenerCreatesSocketDir(t *testing.T) {
+	t.Parallel()
+
+	dataDir := filepath.Join(shortTempDir(t), "d")
+	r := &Runner{dataDir: dataDir}
+	uri, err := workspaceapi.ParseURI("file:///home/me/proj")
+	require.NoError(t, err)
+	require.Equal(t, filepath.Join(dataDir, "sockets"), filepath.Dir(r.socketPath(uri)),
+		"test data dir too long: the socket fell back to os.TempDir()")
+
+	listener, err := r.newUnixListener(uri)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = listener.Close() })
+
+	assert.Equal(t, r.socketPath(uri), listener.Addr().String())
+	info, err := os.Stat(filepath.Join(dataDir, "sockets"))
+	require.NoError(t, err)
+	assert.True(t, info.IsDir())
 }
 
 func TestRunnerSocketPath(t *testing.T) {

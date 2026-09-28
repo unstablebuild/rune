@@ -18,6 +18,12 @@ repos:
     hooks:
     -   id: golangci-lint-full
 
+-   repo: https://github.com/kojah/gohawk
+    rev: v0.3.5
+    hooks:
+    -   id: gohawk
+        args: [-json, -enable-all, '-disable=exitpolicy,goroutineownership,lockorder,processownership', ./...]
+
 -   repo: local
     hooks:
     -   id: validate_generate

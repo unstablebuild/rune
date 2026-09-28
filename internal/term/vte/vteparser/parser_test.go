@@ -308,6 +308,11 @@ func TestSGRColorsTable(t *testing.T) {
 			want:   []Attr{{Type: UnderlineColorAttr, Color: term.NewRGBColor(10, 20, 30)}},
 		},
 		{
+			name:   "reset underline colour",
+			stream: "\x1b[59m",
+			want:   []Attr{{Type: UnderlineColorAttr, Color: term.ColorDefault}},
+		},
+		{
 			name:   "semicolon indexed foreground",
 			stream: "\x1b[38;5;196m",
 			want:   []Attr{{Type: ForegroundAttr, Color: term.PaletteColor(196)}},

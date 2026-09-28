@@ -35,3 +35,17 @@ func loginURLChFrom(ctx context.Context) (chan<- *url.URL, bool) {
 	ch, ok := ctx.Value(loginURLCtxKey{}).(chan<- *url.URL)
 	return ch, ok
 }
+
+// devicePromptCtxKey identifies the per-call device prompt channel
+// attached to a LoginWithDeviceCode context. Like the URL channel it
+// is the only signal that a device-code flow was explicitly requested.
+type devicePromptCtxKey struct{}
+
+func withDevicePromptCh(ctx context.Context, ch chan<- DevicePrompt) context.Context {
+	return context.WithValue(ctx, devicePromptCtxKey{}, ch)
+}
+
+func devicePromptChFrom(ctx context.Context) (chan<- DevicePrompt, bool) {
+	ch, ok := ctx.Value(devicePromptCtxKey{}).(chan<- DevicePrompt)
+	return ch, ok
+}

@@ -82,7 +82,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 	GOARCH=$TARGETARCH \
 	go build \
 		-tags="$TAGS" \
-		-ldflags="-X unstable.build/rune/debug.Tag=$RUNE_BUILD_TAG -X unstable.build/rune/debug.Commit=$RUNE_BUILD_COMMIT -X unstable.build/rune/debug.Package=rune" \
+		-ldflags="-X unstable.build/rune/internal/debug.Tag=$RUNE_BUILD_TAG -X unstable.build/rune/internal/debug.Commit=$RUNE_BUILD_COMMIT -X unstable.build/rune/internal/debug.Package=rune" \
 		-o /out/rune-agent/bin/rune-agent \
 		./cmd/rune-agent; \
 	\

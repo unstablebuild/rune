@@ -62,6 +62,7 @@ func (nopPubHandler) CellEditor() cell.Editor              { return cell.NewBuff
 func (nopPubHandler) SetDefaultAttributes(term.Attributes) {}
 func (nopPubHandler) Dimensions() (int, int)               { return 0, 0 }
 func (nopPubHandler) IsSearchMode() bool                   { return false }
+func (nopPubHandler) IsNormalMode() bool                   { return false }
 
 // TestPublishEditPanicsOnNilCursor enforces the new contract that
 // PublishEdit requires a non-nil cursor. Cursor-less editors must use

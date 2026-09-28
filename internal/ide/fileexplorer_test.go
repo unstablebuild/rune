@@ -61,7 +61,7 @@ func TestFileExplorerHandlerRenderAndInteraction(t *testing.T) {
 			height: 6,
 			sequence: []handlertest.SequenceTestCase{{
 				InputSequence: "",
-				Expected:      " ▐  .claude/        \n o .gitignore       \n                    \n                    \n                    \n                    ",
+				Expected:      " ▐  .claude/        \n o .gitignore       \n                    \n                    \n                    \n save <meta-s>      ",
 			}},
 		},
 		{
@@ -77,9 +77,9 @@ func TestFileExplorerHandlerRenderAndInteraction(t *testing.T) {
 			width:  20,
 			height: 6,
 			sequence: []handlertest.SequenceTestCase{
-				{InputSequence: "", Expected: " ▐  src/            \n                    \n                    \n                    \n                    \n                    "},
-				{InputSequence: "<enter>", Expected: " ▐  src/            \n │   o main.go      \n                    \n                    \n                    \n                    "},
-				{InputSequence: "<enter>", Expected: " ▐  src/            \n                    \n                    \n                    \n                    \n                    "},
+				{InputSequence: "", Expected: " ▐  src/            \n                    \n                    \n                    \n                    \n save <meta-s>      "},
+				{InputSequence: "<enter>", Expected: " ▐  src/            \n │   o main.go      \n                    \n                    \n                    \n save <meta-s>      "},
+				{InputSequence: "<enter>", Expected: " ▐  src/            \n                    \n                    \n                    \n                    \n save <meta-s>      "},
 			},
 		},
 		{
@@ -93,7 +93,7 @@ func TestFileExplorerHandlerRenderAndInteraction(t *testing.T) {
 			height: 6,
 			sequence: []handlertest.SequenceTestCase{{
 				InputSequence: "<enter>",
-				Expected:      " ▐ file.go          \n                    \n                    \n                    \n                    \n                    ",
+				Expected:      " ▐ file.go          \n                    \n                    \n                    \n                    \n save <meta-s>      ",
 			}},
 			assert: func(t *testing.T, _ *fileExplorerHandler, host *testFileExplorerHost) {
 				require.Len(t, host.opened, 1)
@@ -114,7 +114,7 @@ func TestFileExplorerHandlerRenderAndInteraction(t *testing.T) {
 			height: 6,
 			sequence: []handlertest.SequenceTestCase{{
 				InputSequence: "",
-				Expected:      " ▐  src/            \n                    \n                    \n                    \n                    \n                    ",
+				Expected:      " ▐  src/            \n                    \n                    \n                    \n                    \n save <meta-s>      ",
 			}},
 			assert: func(t *testing.T, h *fileExplorerHandler, _ *testFileExplorerHost) {
 				click := func() {
@@ -150,7 +150,7 @@ func TestFileExplorerHandlerRenderAndInteraction(t *testing.T) {
 			height: 6,
 			sequence: []handlertest.SequenceTestCase{{
 				InputSequence: "",
-				Expected:      " ▐  src/            \n o file.go          \n                    \n                    \n                    \n                    ",
+				Expected:      " ▐  src/            \n o file.go          \n                    \n                    \n                    \n save <meta-s>      ",
 			}},
 			assert: func(t *testing.T, h *fileExplorerHandler, host *testFileExplorerHost) {
 				// Click the second row (the file), not the cursor's
@@ -178,12 +178,12 @@ func TestFileExplorerHandlerRenderAndInteraction(t *testing.T) {
 			height: 4,
 			sequence: []handlertest.SequenceTestCase{{
 				InputSequence: "",
-				Expected:      " ▐ very-long-file-name.go               \n                                        \n                                        \n                                        ",
+				Expected:      " ▐ very-long-file-name.go               \n                                        \n                                        \n save <meta-s>                          ",
 			}},
 			assert: func(t *testing.T, h *fileExplorerHandler, _ *testFileExplorerHost) {
 				w, hgt := h.Dimensions()
 				require.GreaterOrEqual(t, w, len("  very-long-file-name.go"))
-				require.Equal(t, 1, hgt)
+				require.Equal(t, 1+fileExplorerHintHeight, hgt)
 			},
 		},
 	}
@@ -385,7 +385,8 @@ func TestFileExplorerHandlerRuntimeLikeDimensionsAndRender(t *testing.T) {
 	require.NoError(t, err)
 	edh, err := ed.Edit(context.Background(), uri, buf, false, false)
 	require.NoError(t, err)
-	h, err := newFileExplorerHandler(host, comp, buf, edh, uri, host.focus)
+	h, err := newFileExplorerHandler(host, comp, buf, edh, uri, host.focus,
+		testFileExplorerConfig())
 	require.NoError(t, err)
 	h.SetWindow(&testExplorerWindow{id: 2})
 	h.Resize(32, 6)
@@ -397,7 +398,7 @@ func TestFileExplorerHandlerRuntimeLikeDimensionsAndRender(t *testing.T) {
 		// explorer goes through the bare editor path and so renders
 		// the buffer view directly, with no leading "1 " line-number
 		// column.
-		Expected: " ▐  .claude/                    \n o very-long-file-name.go       \n                                \n                                \n                                \n                                ",
+		Expected: " ▐  .claude/                    \n o very-long-file-name.go       \n                                \n                                \n                                \n save <meta-s>                  ",
 	}})
 
 	// With no bars, the handler's Dimensions reflect just the
@@ -479,7 +480,8 @@ func TestFileExplorerHandlerDimensionsForPrecommitConfig(t *testing.T) {
 	require.NoError(t, err)
 	edh, err := ed.Edit(context.Background(), uri, buf, false, false)
 	require.NoError(t, err)
-	h, err := newFileExplorerHandler(host, comp, buf, edh, uri, host.focus)
+	h, err := newFileExplorerHandler(host, comp, buf, edh, uri, host.focus,
+		testFileExplorerConfig())
 	require.NoError(t, err)
 	h.SetWindow(&testExplorerWindow{id: 2})
 	// Resize to a generous width so the editor renders the full row.
@@ -491,7 +493,8 @@ func TestFileExplorerHandlerDimensionsForPrecommitConfig(t *testing.T) {
 	wantHandler := wantContent
 
 	w, hgt := h.Dimensions()
-	require.Equal(t, 1, hgt, "single visible row")
+	require.Equal(t, 1+fileExplorerHintHeight, hgt,
+		"single visible row plus the hint row")
 	require.GreaterOrEqual(t, w, wantHandler,
 		"handler.Dimensions().width must cover '%s' "+
 			"(icon+space+name=%d); got %d",
@@ -925,6 +928,231 @@ func cloneExplorerMockDirs(in map[string][]explorerMockEntry) map[string][]explo
 	return out
 }
 
+// TestFileExplorerEmptyWorkspaceIsVisible reproduces the "no size,
+// didn't show anything" report. A workspace with nothing to render
+// yields a zero-height, zero-width component, which the host would
+// turn into an invisible sliver. The handler must floor that into a
+// window the user can see and type the first entry into.
+func TestFileExplorerEmptyWorkspaceIsVisible(t *testing.T) {
+	h, host := newTestFileExplorerHandler(t, map[string][]explorerMockEntry{
+		"/project": {},
+	})
+
+	compW, compH := h.comp.Dimensions()
+	require.Zero(t, compW)
+	require.Zero(t, compH)
+
+	w, height := h.Dimensions()
+	require.GreaterOrEqual(t, w, h.cfg.MinWidth)
+	require.Equal(t, 1+fileExplorerHintHeight, height)
+
+	h.syncWidth()
+	require.GreaterOrEqual(t, host.lastWidth, h.cfg.MinWidth)
+}
+
+// TestFileExplorerEnterOnUnsavedRowReportsError covers the "I can't do
+// anything with it" half of the pasted-row report: a row the user
+// typed has no node identity yet, so <enter> resolves to nothing.
+// Silently swallowing it leaves the user stuck; say why instead.
+func TestFileExplorerEnterOnUnsavedRowReportsError(t *testing.T) {
+	h, host := newTestFileExplorerHandler(t, map[string][]explorerMockEntry{
+		"/project": {{name: "main.go", isDir: false}},
+	})
+	cols := h.buf.View().Columns(0)
+	h.buf.Edit(context.Background(),
+		term.Coordinates{Y: 0, X: cols},
+		term.Coordinates{Y: 0, X: cols},
+		"\nnewfile.go")
+	require.True(t, h.ed.SetCursorAtScroll(term.Coordinates{Y: 1}))
+
+	_, handled := h.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
+	require.True(t, handled)
+	require.Empty(t, host.opened)
+	require.Len(t, host.errs, 1)
+	require.Contains(t, host.errs[0].Error(), "unsaved row")
+}
+
+// TestFileExplorerReadOnlyRefusesEdits verifies that read-only mode
+// refuses buffer mutations outright and refuses writes, while leaving
+// navigation, expansion and opening intact.
+func TestFileExplorerReadOnlyRefusesEdits(t *testing.T) {
+	h, host := newTestFileExplorerHandler(t, map[string][]explorerMockEntry{
+		"/project": {
+			{name: "src", isDir: true},
+			{name: "main.go", isDir: false},
+		},
+		"/project/src": {{name: "util.go", isDir: false}},
+	})
+	h.readOnly, h.cfg.ReadOnly = true, true
+	const width, height = 20, 6
+	h.Resize(width, height)
+	before := handlertest.DrawHandler(h, width, height)
+	version := h.buf.Version()
+
+	sendExplorerKeys(t, h, "ihello<esc>")
+	require.Equal(t, before, handlertest.DrawHandler(h, width, height))
+	require.False(t, h.comp.HasPendingEdits())
+	require.Equal(t, h.buf.Version(), version,
+		"a locked buffer must never take the edit, not take it and "+
+			"undo it")
+	require.Empty(t, host.errs,
+		"the hint row already says the explorer is locked; a "+
+			"notification per keystroke is noise")
+	require.NoError(t, h.flush())
+	require.Zero(t, host.promptCalls, "read-only must never offer to write")
+
+	// Navigation and expansion still work.
+	host.errs = nil
+	sendExplorerKeys(t, h, "<enter>")
+	require.Equal(t, 3, h.ed.CellView().Rows(),
+		"<enter> on a directory row must still expand it")
+	sendExplorerKeys(t, h, "j<enter>")
+	require.Len(t, host.opened, 1)
+	require.Equal(t, "file:///project/src/util.go", host.opened[0].String())
+	require.Empty(t, host.errs)
+}
+
+// TestFileExplorerReadOnlyUnlocksWithShiftEsc verifies the hint row
+// names the way out of read-only, that <shift-esc> takes it, and that
+// closing the explorer re-arms the configured default.
+func TestFileExplorerReadOnlyUnlocksWithShiftEsc(t *testing.T) {
+	h, host := newTestFileExplorerHandler(t, map[string][]explorerMockEntry{
+		"/project": {{name: "main.go", isDir: false}},
+	})
+	h.readOnly, h.cfg.ReadOnly = true, true
+	const width, height = 40, 4
+	h.Resize(width, height)
+
+	require.Contains(t, handlertest.DrawHandler(h, width, height),
+		"<shift-esc> to enter edit mode")
+
+	sendExplorerKeys(t, h, "<shift-esc>")
+	require.False(t, h.readOnly)
+	require.Contains(t, handlertest.DrawHandler(h, width, height),
+		"save <meta-s>",
+		"the hint names the key bound to write, not a hard-coded one")
+
+	sendExplorerKeys(t, h, "ix<esc>")
+	require.True(t, h.comp.HasPendingEdits(), "edits land once unlocked")
+	require.Empty(t, host.errs)
+
+	h.onWindowClosed()
+	require.True(t, h.readOnly, "closing re-arms the configured default")
+}
+
+// TestFileExplorerUnboundSaveKeyHidesHint verifies that an unbound
+// `write` drops the hint instead of naming the command prompt
+// ("save <shift-;> write"), and gives the row back to the tree.
+func TestFileExplorerUnboundSaveKeyHidesHint(t *testing.T) {
+	h, _ := newTestFileExplorerHandler(t, map[string][]explorerMockEntry{
+		"/project": {{name: "main.go", isDir: false}},
+	})
+	const width, height = 40, 4
+	h.cfg.SaveKey = ""
+	h.Resize(width, height)
+
+	frame := handlertest.DrawHandler(h, width, height)
+	require.NotContains(t, frame, "save")
+	require.NotContains(t, frame, "write")
+
+	_, bare := h.Dimensions()
+	h.cfg.SaveKey = "<meta-s>"
+	_, hinted := h.Dimensions()
+	require.Equal(t, bare+1, hinted,
+		"the hint row only exists when there is something to say")
+}
+
+// TestFileExplorerUnlockDropsHintWithoutSaveKey covers the transition
+// the two other hint tests do not: locked with no `write` binding
+// shows the unlock hint, and unlocking then leaves nothing to show.
+func TestFileExplorerUnlockDropsHintWithoutSaveKey(t *testing.T) {
+	h, _ := newTestFileExplorerHandler(t, map[string][]explorerMockEntry{
+		"/project": {{name: "main.go", isDir: false}},
+	})
+	h.readOnly, h.cfg.ReadOnly, h.cfg.SaveKey = true, true, ""
+	const width, height = 40, 4
+	h.Resize(width, height)
+	require.Contains(t, handlertest.DrawHandler(h, width, height),
+		"<shift-esc> to enter edit mode")
+
+	sendExplorerKeys(t, h, "<shift-esc>")
+	require.NotContains(t, handlertest.DrawHandler(h, width, height),
+		"shift-esc")
+	require.Equal(t, height, h.contentHeight(),
+		"unlocking hands the hint row back to the tree")
+}
+
+// TestFileExplorerEnterInInsertModeIsNewline verifies that once a
+// modal editor leaves normal mode, <enter> keeps its text meaning in
+// an editable explorer instead of expanding the row under the cursor.
+func TestFileExplorerEnterInInsertModeIsNewline(t *testing.T) {
+	h, host := newTestFileExplorerHandler(t, map[string][]explorerMockEntry{
+		"/project":     {{name: "src", isDir: true}},
+		"/project/src": {{name: "util.go", isDir: false}},
+	})
+	h.Resize(20, 6)
+	require.True(t, h.ed.IsNormalMode())
+
+	sendExplorerKeys(t, h, "i<enter>")
+	require.False(t, h.ed.IsNormalMode())
+	require.Equal(t, 2, h.ed.CellView().Rows(),
+		"<enter> in insert mode must split the row, not expand it")
+	require.NotContains(t, h.buf.String(), "util.go")
+	require.True(t, h.comp.HasPendingEdits())
+	require.Empty(t, host.opened)
+
+	sendExplorerKeys(t, h, "<esc>")
+	require.True(t, h.ed.IsNormalMode())
+}
+
+// TestFileExplorerEnterLockedIgnoresEditorMode pins the lock as the
+// override: a modal user who pressed `i` on a locked explorer still
+// gets expand-or-open from <enter>, since nothing they type lands.
+func TestFileExplorerEnterLockedIgnoresEditorMode(t *testing.T) {
+	h, _ := newTestFileExplorerHandler(t, map[string][]explorerMockEntry{
+		"/project":     {{name: "src", isDir: true}},
+		"/project/src": {{name: "util.go", isDir: false}},
+	})
+	h.readOnly, h.cfg.ReadOnly = true, true
+	h.Resize(20, 6)
+
+	sendExplorerKeys(t, h, "i<enter>")
+	require.Contains(t, h.buf.String(), "util.go",
+		"<enter> on a locked explorer expands regardless of mode")
+	require.False(t, h.comp.HasPendingEdits())
+}
+
+// TestFileExplorerClickOnHintRowIsNoop guards the row reserved for the
+// hint: it sits past the tree, so a click there must not resolve to
+// the last node.
+func TestFileExplorerClickOnHintRowIsNoop(t *testing.T) {
+	h, host := newTestFileExplorerHandler(t, map[string][]explorerMockEntry{
+		"/project": {
+			{name: "a.go", isDir: false},
+			{name: "b.go", isDir: false},
+		},
+	})
+	h.Resize(20, 3)
+
+	_, handled := h.Handle(term.Event{
+		Type: term.EventMouse, Key: term.MouseLeft, MouseY: 2,
+	})
+	require.True(t, handled)
+	require.Empty(t, host.opened)
+	require.Empty(t, host.errs)
+}
+
+func sendExplorerKeys(t *testing.T, h *fileExplorerHandler, seq string) {
+	t.Helper()
+	keys, err := term.ParseKeys(seq)
+	require.NoError(t, err)
+	for _, key := range keys {
+		h.Handle(term.Event{
+			Ch: key.Ch, Mod: key.Mod, Key: key.Key, Type: term.EventKey,
+		})
+	}
+}
+
 func expandExplorerRowContaining(t *testing.T, h *fileExplorerHandler, label string) {
 	t.Helper()
 	for y, line := range strings.Split(h.buf.String(), "\n") {
@@ -955,13 +1183,23 @@ func newTestFileExplorerHandler(t *testing.T, dirs map[string][]explorerMockEntr
 	require.NoError(t, err)
 	edh, err := ed.Edit(context.Background(), uri, buf, false, false)
 	require.NoError(t, err)
-	h, err := newFileExplorerHandler(host, comp, buf, edh, uri, host.focus)
+	h, err := newFileExplorerHandler(host, comp, buf, edh, uri, host.focus,
+		testFileExplorerConfig())
 	require.NoError(t, err)
 	win := &testExplorerWindow{id: 2}
 	h.SetWindow(win)
 	h.SetTargetWindow(host.focus)
 	h.Resize(40, 10)
 	return h, host
+}
+
+// testFileExplorerConfig mirrors the shipped defaults, with a `write`
+// binding so the hint row has a key to name.
+func testFileExplorerConfig() fileExplorerConfig {
+	return fileExplorerConfig{
+		FileExplorerConfig: text.DefaultFileExplorerConfig(),
+		SaveKey:            "<meta-s>",
+	}
 }
 
 type testFileExplorerHost struct {

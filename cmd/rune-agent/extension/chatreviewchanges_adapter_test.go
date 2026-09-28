@@ -68,6 +68,8 @@ func (m *reviewWindowManager) CloseWindow(browserapi.Window) error {
 	return nil
 }
 
+func (m *reviewWindowManager) SetTabActivity(workspaceapi.URI, bool) error { return nil }
+
 // countingEditor wraps a real editor so tests can count handler closes
 // and simulate an editor that refuses to open.
 type countingEditor struct {
@@ -124,6 +126,16 @@ func (e *countingEditor) UnsubscribeCommand(name string) error {
 
 func (e *countingEditor) UnregisterREPLCommand(name string) error {
 	return e.ed.UnregisterREPLCommand(name)
+}
+
+func (e *countingEditor) RegisterResourceOpener(
+	scheme string, h textapi.ResourceOpenHandler,
+) error {
+	return e.ed.RegisterResourceOpener(scheme, h)
+}
+
+func (e *countingEditor) UnregisterResourceOpener(scheme string) error {
+	return e.ed.UnregisterResourceOpener(scheme)
 }
 
 func (e *countingEditor) IsExternal() bool { return e.ed.IsExternal() }

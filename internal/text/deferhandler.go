@@ -254,6 +254,16 @@ func (h *deferHandler) IsSearchMode() bool {
 	return h.Handler.InSearchMode()
 }
 
+func (h *deferHandler) IsNormalMode() bool {
+	h.mu.Lock()
+	real := h.real
+	h.mu.Unlock()
+	if real != nil {
+		return real.IsNormalMode()
+	}
+	return false
+}
+
 // deferQueueingCellEditor records edits issued before Swap so they can
 // be replayed on the real handler's buffer. Without this, a
 // server-driven workspace/applyEdit that force-opens a closed file

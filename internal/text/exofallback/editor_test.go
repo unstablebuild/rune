@@ -34,14 +34,16 @@ import (
 type stubEditor struct {
 	name string
 
-	editURIs   []string
-	editorURIs []string
-	subEvts    int
-	unsubCalls int
-	cmdRegs    int
-	cmdUnregs  int
-	replRegs   int
-	replUnregs int
+	editURIs     []string
+	editorURIs   []string
+	subEvts      int
+	unsubCalls   int
+	cmdRegs      int
+	cmdUnregs    int
+	replRegs     int
+	replUnregs   int
+	openerRegs   int
+	openerUnregs int
 
 	editErr     error
 	subErr      error
@@ -85,6 +87,18 @@ func (s *stubEditor) UnsubscribeCommand(string) error {
 
 func (s *stubEditor) UnregisterREPLCommand(string) error {
 	s.replUnregs++
+	return nil
+}
+
+func (s *stubEditor) RegisterResourceOpener(
+	string, textapi.ResourceOpenHandler,
+) error {
+	s.openerRegs++
+	return nil
+}
+
+func (s *stubEditor) UnregisterResourceOpener(string) error {
+	s.openerUnregs++
 	return nil
 }
 
@@ -235,8 +249,8 @@ func TestSubscribeAndUnsubscribeForwardToExo(t *testing.T) {
 	assert.Equal(t, 0, fallback.unsubCalls)
 }
 
-// TestCommandAndREPLForwardToFallback proves command and REPL
-// register/unregister calls hit only the fallback (exo returns
+// TestCommandAndREPLForwardToFallback proves command, REPL and resource
+// opener register/unregister calls hit only the fallback (exo returns
 // "not supported" for these by design).
 func TestCommandAndREPLForwardToFallback(t *testing.T) {
 	exoEd := &stubEditor{}
@@ -247,13 +261,19 @@ func TestCommandAndREPLForwardToFallback(t *testing.T) {
 	require.NoError(t, r.RegisterREPLCommand(textapi.CommandManual{}, nil))
 	require.NoError(t, r.UnsubscribeCommand(""))
 	require.NoError(t, r.UnregisterREPLCommand(""))
+	require.NoError(t, r.RegisterResourceOpener("", nil))
+	require.NoError(t, r.UnregisterResourceOpener(""))
 
 	assert.Equal(t, 0, exoEd.cmdRegs)
 	assert.Equal(t, 0, exoEd.replRegs)
 	assert.Equal(t, 0, exoEd.cmdUnregs)
 	assert.Equal(t, 0, exoEd.replUnregs)
+	assert.Equal(t, 0, exoEd.openerRegs)
+	assert.Equal(t, 0, exoEd.openerUnregs)
 	assert.Equal(t, 1, fallback.cmdRegs)
 	assert.Equal(t, 1, fallback.replRegs)
 	assert.Equal(t, 1, fallback.cmdUnregs)
 	assert.Equal(t, 1, fallback.replUnregs)
+	assert.Equal(t, 1, fallback.openerRegs)
+	assert.Equal(t, 1, fallback.openerUnregs)
 }

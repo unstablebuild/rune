@@ -146,6 +146,48 @@ func (s exSnapshotter) FileWindowIDs() map[string]uint64 {
 	return ret
 }
 
+// ExtensionTabs snapshots the tiled windows showing a tab that the resource
+// opener of its URI's scheme can reopen, or a placeholder still waiting
+// for that opener. Tabs that are only in the tab bar are not captured, and
+// neither are workspace files, which are restored as files even if an
+// extension registered an opener for their scheme.
+func (s exSnapshotter) ExtensionTabs() []idehistory.ExtensionTab {
+	var ret []idehistory.ExtensionTab
+	b := s.ex.comp.Browser()
+	b.IterateWindows(func(win browser.Window) {
+		if win.IsFloating() {
+			return
+		}
+		content, err := win.Content()
+		if err != nil {
+			return
+		}
+		tab, ok := content.(*browser.Tab)
+		if !ok {
+			return
+		}
+		if _, ok := tab.Closer().(workspace.FlusherCloser); ok {
+			return
+		}
+		uri := tab.URI()
+		_, hasOpener := s.ex.comp.ResourceOpener(uri.Scheme())
+		if !hasOpener && !s.ex.comp.PendingTabs().Contains(uri) {
+			return
+		}
+		_, icon, _ := b.TabIcon(uri)
+		_, name, _ := b.TabName(uri)
+		focus, _ := win.Focus()
+		ret = append(ret, idehistory.ExtensionTab{
+			URI:      uri,
+			Icon:     icon,
+			Name:     name,
+			WindowID: win.WindowID(),
+			Focus:    focus,
+		})
+	})
+	return ret
+}
+
 type openTerminalWindow struct {
 	tab      bool
 	visible  bool

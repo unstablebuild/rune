@@ -28,10 +28,15 @@ import (
 
 var _ text.Editor = (*commandRegisterObserver)(nil)
 
-// commandRegisterObserver wraps a text.Editor and observes command
-// registrations made through it.
+// commandRegisterObserver wraps a text.Editor and observes the command
+// and resource opener registrations made through it.
 type commandRegisterObserver struct {
 	ed text.Editor
+
+	// onResourceOpener, if set, is called after a resource opener is
+	// registered, with its scheme, while the caller of the registration
+	// may still hold the editor lock.
+	onResourceOpener func(scheme string)
 
 	mu         sync.Mutex
 	registered map[string]struct{}
@@ -101,6 +106,22 @@ func (o *commandRegisterObserver) RegisterREPLCommand(
 	}
 	o.markRegistered(cmd.Name)
 	return nil
+}
+
+func (o *commandRegisterObserver) RegisterResourceOpener(
+	scheme string, h textapi.ResourceOpenHandler,
+) error {
+	if err := o.ed.RegisterResourceOpener(scheme, h); err != nil {
+		return err
+	}
+	if o.onResourceOpener != nil {
+		o.onResourceOpener(scheme)
+	}
+	return nil
+}
+
+func (o *commandRegisterObserver) UnregisterResourceOpener(scheme string) error {
+	return o.ed.UnregisterResourceOpener(scheme)
 }
 
 func (o *commandRegisterObserver) markRegistered(cmd string) {

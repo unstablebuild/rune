@@ -20,6 +20,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -736,6 +738,7 @@ func TestCommandHandlerDispatch(t *testing.T) {
 	cfg.ShowManual = false
 	cfg.HistoryCycleKey = term.KeyComb{Ch: '@'}
 	cfg.Sync = true
+	dirs := testDirTree(t)
 
 	tsuite := []struct {
 		desc        string
@@ -836,6 +839,44 @@ func TestCommandHandlerDispatch(t *testing.T) {
 		{"dispatch double-quoted arg stays in same arg",
 			`lo "path with space">`, []string{"lane", "lorelai", "rori"},
 			nopComplete, expectDispatch("lorelai", "path with space")},
+		{"dispatch tab on a directory candidate descends instead of terminating",
+			"wo a#>", []string{"workspaceopen"},
+			completeDirsUnder(dirs), expectDispatch("workspaceopen", "alpha/")},
+		{"dispatch repeated tabs descend one level per tab",
+			"wo a#b#>", []string{"workspaceopen"},
+			completeDirsUnder(dirs), expectDispatch("workspaceopen", "alpha/beta/")},
+		{"dispatch tabs descend to the bottom of the tree",
+			"wo a#b#g#>", []string{"workspaceopen"},
+			completeDirsUnder(dirs), expectDispatch("workspaceopen", "alpha/beta/gamma/")},
+		{"dispatch typing after a descent narrows within that directory",
+			"wo a#d#>", []string{"workspaceopen"},
+			completeDirsUnder(dirs), expectDispatch("workspaceopen", "alpha/delta/")},
+		{"dispatch descent into a directory whose name has a space",
+			"wo m#>", []string{"workspaceopen"},
+			completeDirsUnder(dirs), expectDispatch("workspaceopen", "my dir/")},
+		{"dispatch descent past a directory whose name has a space",
+			"wo m##>", []string{"workspaceopen"},
+			completeDirsUnder(dirs), expectDispatch("workspaceopen", "my dir/inner/")},
+		{"dispatch backspace after a descent edits the same argument",
+			"wo a#^>", []string{"workspaceopen"},
+			completeDirsUnder(dirs), expectDispatch("workspaceopen", "alpha")},
+		{"dispatch space after a descent terminates the argument",
+			"wo a# x>", []string{"workspaceopen"},
+			completeDirsUnder(dirs), expectDispatch("workspaceopen", "alpha/", "x")},
+		{"dispatch tab with no matching directory keeps the typed token",
+			"wo zzz#>", []string{"workspaceopen"},
+			completeDirsUnder(dirs), expectDispatch("workspaceopen", "zzz")},
+		{"dispatch tab on a terminal candidate still terminates the argument",
+			"wo p#x>", []string{"workspaceopen"},
+			completeWith("/prev/ws", "alpha/"),
+			expectDispatch("workspaceopen", "/prev/ws", "x")},
+		{"dispatch tab on a partial candidate picked out of a mixed list",
+			"wo a#>", []string{"workspaceopen"},
+			completeWith("/prev/ws", "alpha/"),
+			expectDispatch("workspaceopen", "alpha/")},
+		{"dispatch tab on a command name ending in a separator still commits",
+			"ws#>", []string{"ws/"},
+			completeDirsUnder(dirs), expectDispatch("ws/")},
 	}
 
 	for _, tcase := range tsuite {
@@ -871,6 +912,95 @@ func TestCommandHandlerDispatch(t *testing.T) {
 	}
 }
 
+// TestCommandHandlerPartialCompletionState pins the prompt state that a
+// partial candidate must leave behind. Accepting one may not append the
+// argument separator, commit the token into commandAndArgs, or advance
+// the completion mode, because any of those resets the next completion
+// back to the completer's root instead of descending.
+func TestCommandHandlerPartialCompletionState(t *testing.T) {
+	cfg := testDefaultConfig()
+	cfg.ShowManual = false
+	cfg.Sync = true
+	dirs := testDirTree(t)
+
+	// mode counts the command plus every committed argument, so the
+	// command alone leaves it at 1 and a committed argument at 2.
+	const (
+		argInProgress commandPromptMode = 1
+		argCommitted  commandPromptMode = 2
+	)
+
+	tsuite := []struct {
+		desc        string
+		sequence    string
+		completeCmd func() (func(context.Context, []string) (iterator.Iterator[string], string, error), func(*testing.T))
+		wantBuf     string
+		wantArgs    []string
+		wantMode    commandPromptMode
+	}{
+		{"descent leaves the argument in progress",
+			"a<tab>", completeDirsUnder(dirs),
+			"workspaceopen alpha/", []string{"workspaceopen"}, argInProgress},
+		{"a second descent advances the same argument",
+			"a<tab>b<tab>", completeDirsUnder(dirs),
+			"workspaceopen alpha/beta/", []string{"workspaceopen"}, argInProgress},
+		{"a third descent advances the same argument",
+			"a<tab>b<tab>g<tab>", completeDirsUnder(dirs),
+			"workspaceopen alpha/beta/gamma/", []string{"workspaceopen"}, argInProgress},
+		{"a quoted candidate carries the marker inside the quotes",
+			"m<tab>", completeDirsUnder(dirs),
+			"workspaceopen 'my dir/'", []string{"workspaceopen"}, argInProgress},
+		{"typing after a descent extends the same argument",
+			"a<tab>d", completeDirsUnder(dirs),
+			"workspaceopen alpha/d", []string{"workspaceopen"}, argInProgress},
+		{"backspace after a descent edits the same argument",
+			"a<tab><backspace>", completeDirsUnder(dirs),
+			"workspaceopen alpha", []string{"workspaceopen"}, argInProgress},
+		{"space after a descent terminates the argument",
+			"a<tab><space>", completeDirsUnder(dirs),
+			"workspaceopen alpha/ ",
+			[]string{"workspaceopen", "alpha/"}, argCommitted},
+		{"a terminal candidate still terminates the argument",
+			"p<tab>", completeWith("/prev/ws", "alpha/"),
+			"workspaceopen /prev/ws ",
+			[]string{"workspaceopen", "/prev/ws"}, argCommitted},
+		{"a tab with no matches commits the typed token",
+			"zzz<tab>", completeDirsUnder(dirs),
+			"workspaceopen zzz", []string{"workspaceopen", "zzz"}, argCommitted},
+	}
+
+	for _, tcase := range tsuite {
+		t.Run(tcase.desc, func(t *testing.T) {
+			completeFn, cleanupComplete := tcase.completeCmd()
+			defer cleanupComplete(t)
+
+			b := NewPrompt(
+				storagestub.NewInMemoryService(), FuncCompleter(completeFn),
+				FuncDispatcher(nopDispatchFn), term.NopInterrupter(),
+				testNoManualCommands([]string{"workspaceopen"}), cfg,
+			)
+			defer b.Close()
+
+			keys, err := term.ParseKeys("workspaceopen<space>" + tcase.sequence)
+			require.NoError(t, err)
+			for _, key := range keys {
+				testCommandHandler{b}.Handle(term.Event{
+					Type: term.EventKey,
+					Ch:   key.Ch,
+					Mod:  key.Mod,
+					Key:  key.Key,
+				})
+			}
+
+			assert.Equal(t, tcase.wantBuf, b.buf.String())
+			assert.Equal(t, tcase.wantArgs, b.commandAndArgs)
+			assert.Equal(t, tcase.wantMode, b.mode)
+		})
+	}
+}
+
+func nopDispatchFn(string, ...string) bool { return false }
+
 func TestCommandHandlerBackspacePreservesRemoteWorkspaceURI(t *testing.T) {
 	cfg := testDefaultConfig()
 	cfg.ShowManual = false
@@ -900,6 +1030,344 @@ func TestCommandHandlerBackspacePreservesRemoteWorkspaceURI(t *testing.T) {
 			Key:  key.Key,
 		})
 	}
+}
+
+// newLineEditingPrompt builds a prompt with a completer that never
+// suggests anything, so every assertion below is about the literal
+// text the user typed rather than about completion.
+func newLineEditingPrompt(t *testing.T, commands []string) *Prompt {
+	t.Helper()
+	cfg := testDefaultConfig()
+	cfg.ShowManual = false
+	cfg.Sync = true
+
+	completeFn, cleanupComplete := nopComplete()
+	t.Cleanup(func() { cleanupComplete(t) })
+	dispatchFn, cleanupDispatch := nopDispatch()
+	t.Cleanup(func() { cleanupDispatch(t) })
+
+	b := NewPrompt(
+		storagestub.NewInMemoryService(),
+		FuncCompleter(completeFn), FuncDispatcher(dispatchFn),
+		term.NopInterrupter(), testNoManualCommands(commands), cfg,
+	)
+	t.Cleanup(func() { _ = b.Close() })
+	return b
+}
+
+func feedKeys(t *testing.T, b *Prompt, sequence string) (quit, handled bool) {
+	t.Helper()
+	keys, err := term.ParseKeys(sequence)
+	require.NoError(t, err)
+	h := testCommandHandler{b}
+	for _, key := range keys {
+		q, ok := h.Handle(term.Event{
+			Type: term.EventKey,
+			Ch:   key.Ch,
+			Mod:  key.Mod,
+			Key:  key.Key,
+		})
+		quit = quit || q
+		handled = ok
+	}
+	return
+}
+
+// TestCommandPromptLineEditing covers the shell-style editing keys
+// (<c-w>, <c-h>, <c-backspace>, <a-backspace> and <c-u>) alongside
+// plain <backspace>, which they share a deletion primitive with. The
+// assertions pin all four pieces of prompt state at once because word
+// deletion can walk backwards across the argument boundary and unwind
+// the completion stack.
+func TestCommandPromptLineEditing(t *testing.T) {
+	tsuite := []struct {
+		desc string
+		// commands seeds the command list; the first token typed in a
+		// sequence is completed against it on <space>.
+		commands []string
+		// width resizes the prompt when non-zero so that sequences
+		// longer than the prompt wrap on screen.
+		width     int
+		sequence  string
+		wantBuf   string
+		wantToken string
+		wantArgs  []string
+		wantMode  commandPromptMode
+		wantQuit  bool
+	}{
+		// empty prompt
+		{desc: "c-w on an empty prompt is a no-op",
+			commands: []string{"edit"}, sequence: "<c-w>",
+			wantBuf: "", wantToken: "", wantArgs: []string{}},
+		{desc: "c-u on an empty prompt is a no-op",
+			commands: []string{"edit"}, sequence: "<c-u>",
+			wantBuf: "", wantToken: "", wantArgs: []string{}},
+		{desc: "c-w on an empty prompt with no commands is a no-op",
+			commands: nil, sequence: "<c-w>",
+			wantBuf: "", wantToken: "", wantArgs: []string{}},
+		{desc: "backspace on an empty prompt still closes the prompt",
+			commands: []string{"edit"}, sequence: "<backspace>",
+			wantBuf: "", wantToken: "", wantArgs: []string{}, wantQuit: true},
+		{desc: "c-w draining the line does not close the prompt",
+			commands: []string{"edit"}, sequence: "edi<c-w><c-w>",
+			wantBuf: "", wantToken: "", wantArgs: []string{}},
+
+		// command mode
+		{desc: "c-w deletes a partially typed command",
+			commands: []string{"edit"}, sequence: "edi<c-w>",
+			wantBuf: "", wantToken: "", wantArgs: []string{}},
+		{desc: "c-u deletes a partially typed command",
+			commands: []string{"edit"}, sequence: "edi<c-u>",
+			wantBuf: "", wantToken: "", wantArgs: []string{}},
+		{desc: "backspace deletes one cell of a partially typed command",
+			commands: []string{"edit"}, sequence: "edi<backspace>",
+			wantBuf: "ed", wantToken: "ed", wantArgs: []string{}},
+
+		// argument mode
+		{desc: "c-w deletes the argument and stops at the separator",
+			commands: []string{"edit"}, sequence: "edit<space>foo<c-w>",
+			wantBuf: "edit ", wantToken: "", wantArgs: []string{"edit"}, wantMode: 1},
+		{desc: "backspace deletes one cell of the argument",
+			commands: []string{"edit"}, sequence: "edit<space>foo<backspace>",
+			wantBuf: "edit fo", wantToken: "fo", wantArgs: []string{"edit"}, wantMode: 1},
+		{desc: "c-w crossing the separator unwinds to command mode",
+			commands: []string{"edit"}, sequence: "edit<space>foo<c-w><c-w>",
+			wantBuf: "", wantToken: "", wantArgs: []string{}},
+		{desc: "c-w unwinds one completed argument at a time",
+			commands: []string{"edit"}, sequence: "edit<space>one<space>two<c-w>",
+			wantBuf: "edit one ", wantToken: "", wantArgs: []string{"edit", "one"}, wantMode: 2},
+		{desc: "c-w deletes the separator together with the preceding argument",
+			commands: []string{"edit"}, sequence: "edit<space>one<space>two<c-w><c-w>",
+			wantBuf: "edit ", wantToken: "", wantArgs: []string{"edit"}, wantMode: 1},
+		{desc: "c-u clears every completed argument",
+			commands: []string{"edit"}, sequence: "edit<space>one<space>two<c-u>",
+			wantBuf: "", wantToken: "", wantArgs: []string{}},
+		{desc: "c-u clears a half-typed argument",
+			commands: []string{"edit"}, sequence: "edit<space>src/main<c-u>",
+			wantBuf: "", wantToken: "", wantArgs: []string{}},
+
+		// path components
+		{desc: "c-w walks back one path component",
+			commands: []string{"edit"}, sequence: "edit<space>a/bb/ccc<c-w>",
+			wantBuf: "edit a/bb/", wantToken: "a/bb/", wantArgs: []string{"edit"}, wantMode: 1},
+		{desc: "repeated c-w walks back each path component",
+			commands: []string{"edit"}, sequence: "edit<space>a/bb/ccc<c-w><c-w>",
+			wantBuf: "edit a/", wantToken: "a/", wantArgs: []string{"edit"}, wantMode: 1},
+		{desc: "c-w on a trailing slash removes it with the component before it",
+			commands: []string{"edit"}, sequence: "edit<space>a/bb/<c-w>",
+			wantBuf: "edit a/", wantToken: "a/", wantArgs: []string{"edit"}, wantMode: 1},
+		{desc: "c-w drains a whole path one component per press",
+			commands: []string{"edit"}, sequence: "edit<space>a/bb/ccc<c-w><c-w><c-w>",
+			wantBuf: "edit ", wantToken: "", wantArgs: []string{"edit"}, wantMode: 1},
+		{desc: "c-w keeps a scheme prefix intact until its own press",
+			commands:  []string{"workspaceopen"},
+			sequence:  "workspaceopen<space>ssh://host/src/rune<c-w>",
+			wantBuf:   "workspaceopen ssh://host/src/",
+			wantToken: "ssh://host/src/",
+			wantArgs:  []string{"workspaceopen"}, wantMode: 1},
+
+		// wrapped input
+		{desc: "c-w operates on logical cells when the line wraps on screen",
+			commands: []string{"edit"}, width: 12,
+			sequence: "edit<space>aaaa/bbbb/cccc<c-w>",
+			wantBuf:  "edit aaaa/bbbb/", wantToken: "aaaa/bbbb/",
+			wantArgs: []string{"edit"}, wantMode: 1},
+
+		// quoting
+		{desc: "c-w stops at an escaped space inside one argument",
+			commands: []string{"edit"}, sequence: `edit<space>my\\<space>file<c-w>`,
+			wantBuf: `edit my\ `, wantToken: `my\ `,
+			wantArgs: []string{"edit"}, wantMode: 1},
+
+		// wide and non-alphanumeric runes
+		{desc: "c-w deletes an ascii extension without splitting wide runes",
+			commands: []string{"edit"}, sequence: "edit<space>世界.txt<c-w>",
+			wantBuf: "edit 世界.", wantToken: "世界.",
+			wantArgs: []string{"edit"}, wantMode: 1},
+		{desc: "c-w treats wide letters as word runes",
+			commands: []string{"edit"}, sequence: "edit<space>世界.txt<c-w><c-w>",
+			wantBuf: "edit ", wantToken: "", wantArgs: []string{"edit"}, wantMode: 1},
+		{desc: "c-w deletes a precomposed accent with its word",
+			commands: []string{"edit"}, sequence: "edit<space>a/café<c-w>",
+			wantBuf: "edit a/", wantToken: "a/", wantArgs: []string{"edit"}, wantMode: 1},
+		{desc: "c-w deletes a decomposed accent with its word",
+			commands: []string{"edit"}, sequence: "edit<space>a/cafe\u0301<c-w>",
+			wantBuf: "edit a/", wantToken: "a/", wantArgs: []string{"edit"}, wantMode: 1},
+		{desc: "c-w treats a zwj emoji cluster as one separator",
+			commands: []string{"edit"}, sequence: "edit<space>ab\U0001F468\u200D\U0001F4BB<c-w>",
+			wantBuf: "edit ", wantToken: "", wantArgs: []string{"edit"}, wantMode: 1},
+		{desc: "c-w skips a trailing emoji before deleting the word",
+			commands: []string{"edit"}, sequence: "edit<space>ab🙂<c-w>",
+			wantBuf: "edit ", wantToken: "", wantArgs: []string{"edit"}, wantMode: 1},
+		{desc: "c-w on only separators keeps deleting into the previous word",
+			commands: []string{"edit"}, sequence: "edit<space>🙂<c-w>",
+			wantBuf: "", wantToken: "", wantArgs: []string{}},
+		{desc: "c-w keeps digits and underscores in the same word",
+			commands: []string{"edit"}, sequence: "edit<space>a/my_file2<c-w>",
+			wantBuf: "edit a/", wantToken: "a/", wantArgs: []string{"edit"}, wantMode: 1},
+
+		// alternate bindings
+		{desc: "alt-backspace deletes a word",
+			commands: []string{"edit"}, sequence: "edit<space>a/bb<a-backspace>",
+			wantBuf: "edit a/", wantToken: "a/", wantArgs: []string{"edit"}, wantMode: 1},
+		{desc: "ctrl-backspace deletes a word",
+			commands: []string{"edit"}, sequence: "edit<space>a/bb<c-backspace>",
+			wantBuf: "edit a/", wantToken: "a/", wantArgs: []string{"edit"}, wantMode: 1},
+		{desc: "ctrl-h deletes a word for terminals that collapse ctrl-backspace",
+			commands: []string{"edit"}, sequence: "edit<space>a/bb<c-h>",
+			wantBuf: "edit a/", wantToken: "a/", wantArgs: []string{"edit"}, wantMode: 1},
+
+		// retyping after a deletion
+		{desc: "typing resumes on the argument left behind by c-w",
+			commands: []string{"edit"}, sequence: "edit<space>a/bb/ccc<c-w>dd",
+			wantBuf: "edit a/bb/dd", wantToken: "a/bb/dd",
+			wantArgs: []string{"edit"}, wantMode: 1},
+		{desc: "typing resumes on the argument restored by c-w unwinding",
+			commands: []string{"edit"}, sequence: "edit<space>one<space>two<c-w><c-w>x",
+			wantBuf: "edit x", wantToken: "x", wantArgs: []string{"edit"}, wantMode: 1},
+		{desc: "typing resumes in command mode after c-u",
+			commands: []string{"edit"}, sequence: "edit<space>one<c-u>ed",
+			wantBuf: "ed", wantToken: "ed", wantArgs: []string{}},
+	}
+
+	for _, tcase := range tsuite {
+		t.Run(tcase.desc, func(t *testing.T) {
+			b := newLineEditingPrompt(t, tcase.commands)
+			if tcase.width != 0 {
+				b.Resize(tcase.width, 10)
+			}
+
+			quit, handled := feedKeys(t, b, tcase.sequence)
+
+			assert.True(t, handled, "last key must not leak to the ide")
+			assert.Equal(t, tcase.wantQuit, quit, "quit")
+			assert.Equal(t, tcase.wantBuf, b.buf.String(), "prompt buffer")
+			assert.Equal(t, tcase.wantToken, b.list.Buffer().String(), "completion token")
+			assert.Equal(t, tcase.wantArgs,
+				append([]string{}, b.commandAndArgs...), "completed args")
+			assert.Equal(t, tcase.wantMode, b.mode, "prompt mode")
+		})
+	}
+}
+
+// TestCommandPromptLineEditingDispatch asserts that a line repaired
+// with the editing keys dispatches the arguments the prompt displays,
+// i.e. that the buffer and the completion stack stay in agreement.
+func TestCommandPromptLineEditingDispatch(t *testing.T) {
+	tsuite := []struct {
+		desc     string
+		commands []string
+		sequence string
+		dispatch func() (func(string, ...string) bool, func(*testing.T))
+	}{
+		{"retyped path component after c-w",
+			[]string{"edit"}, "edit<space>src/mian<c-w>main.go<enter>",
+			expectDispatch("edit", "src/main.go")},
+		{"argument replaced after c-w unwinding",
+			[]string{"edit"}, "edit<space>one<space>two<c-w><c-w>three<enter>",
+			expectDispatch("edit", "three")},
+		{"command retyped after c-u",
+			[]string{"edit", "quit"}, "edit<space>one<c-u>quit<enter>",
+			expectDispatch("quit")},
+		{"alt-backspace correction",
+			[]string{"edit"}, "edit<space>a/bb<a-backspace>cc<enter>",
+			expectDispatch("edit", "a/cc")},
+	}
+
+	for _, tcase := range tsuite {
+		t.Run(tcase.desc, func(t *testing.T) {
+			cfg := testDefaultConfig()
+			cfg.ShowManual = false
+			cfg.Sync = true
+
+			completeFn, cleanupComplete := nopComplete()
+			defer cleanupComplete(t)
+			dispatchFn, cleanupDispatch := tcase.dispatch()
+			defer cleanupDispatch(t)
+
+			b := NewPrompt(
+				storagestub.NewInMemoryService(),
+				FuncCompleter(completeFn), FuncDispatcher(dispatchFn),
+				term.NopInterrupter(), testNoManualCommands(tcase.commands), cfg,
+			)
+			defer b.Close()
+
+			feedKeys(t, b, tcase.sequence)
+		})
+	}
+}
+
+// TestCommandPromptLineEditingInEditMode pins that the editing keys
+// are only the prompt's own fallback: while the modal edit session is
+// active every one of them belongs to the spawned editor.
+func TestCommandPromptLineEditingInEditMode(t *testing.T) {
+	var seen []term.Event
+	cfg := testDefaultConfig()
+	cfg.ShowManual = false
+	cfg.Sync = true
+	cfg.Editor = stubEditorImpl{seen: &seen}
+
+	completeFn, cleanupComplete := nopComplete()
+	defer cleanupComplete(t)
+	dispatchFn, cleanupDispatch := nopDispatch()
+	defer cleanupDispatch(t)
+
+	b := NewPrompt(
+		storagestub.NewInMemoryService(),
+		FuncCompleter(completeFn), FuncDispatcher(dispatchFn),
+		term.NopInterrupter(), testNoManualCommands([]string{"edit"}), cfg,
+	)
+	defer b.Close()
+
+	feedKeys(t, b, "edit<shift-esc><c-w><c-u><a-backspace><c-backspace>")
+
+	require.Len(t, seen, 4)
+	assert.Equal(t, []term.Event{
+		{Type: term.EventKey, Mod: term.ModCtrl, Ch: 'w'},
+		{Type: term.EventKey, Mod: term.ModCtrl, Ch: 'u'},
+		{Type: term.EventKey, Mod: term.ModAlt, Key: term.KeyBackspace},
+		{Type: term.EventKey, Mod: term.ModCtrl, Key: term.KeyBackspace},
+	}, seen)
+}
+
+// TestCommandPromptWordDeleteKeepsHistoryEntries pins the one place
+// where word deletion deliberately diverges from <backspace>: while
+// scrolling history-backed argument suggestions, <backspace> removes
+// the focused entry from history, whereas <c-w> must only edit text.
+func TestCommandPromptWordDeleteKeepsHistoryEntries(t *testing.T) {
+	cfg := testDefaultConfig()
+	cfg.ShowManual = false
+	cfg.Sync = true
+
+	completeFn, cleanupComplete := nopComplete()
+	defer cleanupComplete(t)
+
+	b := NewPrompt(
+		storagestub.NewInMemoryService(),
+		FuncCompleter(completeFn),
+		FuncDispatcher(func(string, ...string) bool { return true }),
+		term.NopInterrupter(), testNoManualCommands([]string{"edit"}), cfg,
+	)
+	defer b.Close()
+
+	feedKeys(t, b, "edit<space>src/main.go<enter>")
+	require.Equal(t, []string{"edit src/main.go"}, b.history.Slice())
+
+	// re-enter argument mode so the history-backed suggestion is
+	// focused, which is what arms the removal path.
+	armHistoryFocus := func() {
+		feedKeys(t, b, "edit<space><down>")
+		require.True(t, b.completingWithHistory.Load())
+		require.True(t, b.userScrolling)
+	}
+
+	armHistoryFocus()
+	feedKeys(t, b, "<c-w>")
+	assert.Equal(t, []string{"edit src/main.go"}, b.history.Slice())
+
+	armHistoryFocus()
+	feedKeys(t, b, "<backspace>")
+	assert.Empty(t, b.history.Slice())
 }
 
 // TestCommandHandlerCancelsCompletionBeforeDispatch ensures that the
@@ -1481,6 +1949,7 @@ func TestCommandHandlerDraw(t *testing.T) {
 	cfg.ShowManual = false
 	cfg.HistoryCycleKey = term.KeyComb{Ch: '@'}
 	cfg.Sync = true
+	dirs := testDirTree(t)
 
 	tsuite := []struct {
 		desc         string
@@ -1988,6 +2457,33 @@ myArg 5
                     
                     
                     `},
+
+		{"tab on a directory candidate descends and lists its children",
+			"wo a✌", []string{"wo"},
+			completeDirsUnder(dirs), nopDispatch, `
+wo alpha/▐          
+alpha/beta/         
+alpha/delta/        
+                    
+                    
+                    
+                    
+                    
+                    
+                    `},
+		{"tab on a directory candidate twice descends two levels",
+			"wo a✌b✌", []string{"wo"},
+			completeDirsUnder(dirs), nopDispatch, `
+wo alpha/beta/▐     
+alpha/beta/gamma/   
+                    
+                    
+                    
+                    
+                    
+                    
+                    
+                    `},
 	}
 
 	for _, tcase := range tsuite {
@@ -2117,6 +2613,62 @@ func TestCommandHandlerCancel(t *testing.T) {
 		assert.True(t, quit)
 		assert.True(t, handled)
 	})
+}
+
+// TestCommandHandlerHistoryCanonicalizesArguments asserts that the
+// partial marker never reaches history. Storing it would split one
+// workspace into two entries — the form recorded before the
+// partial-candidate convention existed and the form recorded after —
+// and force the user to work around the stale one.
+func TestCommandHandlerHistoryCanonicalizesArguments(t *testing.T) {
+	cfg := testDefaultConfig()
+	cfg.ShowManual = false
+	cfg.Sync = true
+	dirs := testDirTree(t)
+
+	tsuite := []struct {
+		desc     string
+		sequence string
+		want     string
+	}{
+		{"descended argument drops the marker",
+			"a<tab><enter>", "workspaceopen alpha"},
+		{"twice-descended argument drops the marker",
+			"a<tab>b<tab><enter>", "workspaceopen alpha/beta"},
+		{"quoted descended argument drops the marker inside the quotes",
+			"m<tab><enter>", "workspaceopen 'my dir'"},
+		{"a hand-typed trailing separator is canonicalized too",
+			"alpha/<enter>", "workspaceopen alpha"},
+		{"an argument without a marker is stored verbatim",
+			"alpha<enter>", "workspaceopen alpha"},
+		{"the filesystem root survives canonicalization",
+			"/<enter>", "workspaceopen /"},
+	}
+
+	for _, tcase := range tsuite {
+		t.Run(tcase.desc, func(t *testing.T) {
+			b := NewPrompt(
+				storagestub.NewInMemoryService(),
+				FuncCompleter(NonRecursiveDirsCompleter(newFSReader(dirs)).Complete),
+				FuncDispatcher(nopDispatchFn), term.NopInterrupter(),
+				testNoManualCommands([]string{"workspaceopen"}), cfg,
+			)
+			defer b.Close()
+
+			keys, err := term.ParseKeys("workspaceopen<space>" + tcase.sequence)
+			require.NoError(t, err)
+			for _, key := range keys {
+				testCommandHandler{b}.Handle(term.Event{
+					Type: term.EventKey,
+					Ch:   key.Ch,
+					Mod:  key.Mod,
+					Key:  key.Key,
+				})
+			}
+
+			assert.Equal(t, []string{tcase.want}, b.history.Slice())
+		})
+	}
 }
 
 func TestCommandHandlerHideProgressHint(t *testing.T) {
@@ -2598,6 +3150,37 @@ func nopComplete() (
 	return func(ctx context.Context, args []string) (iterator.Iterator[string], string, error) {
 		return iterator.FromSlice[string](nil), "", nil
 	}, func(*testing.T) {}
+}
+
+// testDirTree lays out the fixture the directory-descent cases walk.
+// Entries are ordered so the first candidate of every listing is
+// deterministic: alpha before "my dir", beta before delta. The tree is
+// built with the host separator, but the candidates the cases assert on
+// are URI paths and therefore always slash-separated.
+func testDirTree(tb testing.TB) string {
+	tb.Helper()
+	root := tb.TempDir()
+	for _, dir := range []string{
+		filepath.Join("alpha", "beta", "gamma"),
+		filepath.Join("alpha", "delta"),
+		filepath.Join("my dir", "inner"),
+	} {
+		require.NoError(tb, os.MkdirAll(filepath.Join(root, dir), 0o700))
+	}
+	return root
+}
+
+// completeDirsUnder drives the cases through the production
+// non-recursive directory completer rather than a stub, so the partial
+// marker the prompt reacts to is the one real completions carry.
+func completeDirsUnder(root string) func() (
+	func(context.Context, []string) (iterator.Iterator[string], string, error), func(*testing.T),
+) {
+	return func() (
+		func(context.Context, []string) (iterator.Iterator[string], string, error), func(*testing.T),
+	) {
+		return NonRecursiveDirsCompleter(newFSReader(root)).Complete, func(*testing.T) {}
+	}
 }
 
 func completeWith(data ...string) func() (

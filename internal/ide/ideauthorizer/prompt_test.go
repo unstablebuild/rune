@@ -402,7 +402,7 @@ func TestPluginPermissionPromptMessageWithShellWrappedCommandUsesInnerScope(t *t
 	assert.Contains(t, message, "\n\nChoosing **Always** approves **grep** for all future authorization requests, for any argument combination.")
 }
 
-func TestPluginPermissionPromptMessageWithUnknownShellScriptUsesExactScopeLabel(t *testing.T) {
+func TestPluginPermissionPromptMessageWithUnknownShellScriptUsesExactScopeNote(t *testing.T) {
 	t.Parallel()
 
 	message := pluginPermissionPromptMessage(PermissionRequest{
@@ -410,15 +410,15 @@ func TestPluginPermissionPromptMessageWithUnknownShellScriptUsesExactScopeLabel(
 		Args:              []string{"run"},
 		Permission:        extensionapi.PermissionExecute,
 		CommandPath:       "/bin/bash",
-		CommandArgs:       []string{"-c", "echo foo; grep bar file.txt"},
-		CommandScopeLabel: "/bin/bash -c echo foo; grep bar file.txt @ /tmp",
+		CommandArgs:       []string{"-c", "$CMD foo"},
 		CommandDir:        "/tmp",
+		CommandScopeExact: true,
 	})
 
-	assert.Contains(t, message, "run **/bin/bash** with args **[-c echo foo; grep bar file.txt]** in **/tmp**")
-	assert.Contains(t, message,
-		"\n\nChoosing **Always** approves **/bin/bash -c echo foo; grep bar file.txt @ /tmp** for all future authorization requests, for any argument combination.")
-	assert.NotContains(t, message, "approves **bash ***")
+	assert.Equal(t, "Program **/usr/local/bin/plugin-cli** with args **[run]** "+
+		"wants to run **/bin/bash** with args **[-c $CMD foo]** in **/tmp**."+
+		"\n\nChoosing **Always** approves only this exact command. "+
+		"Any change to its arguments or working directory will prompt again.", message)
 }
 
 func TestPluginPermissionPromptMessageWithMultipleScopeLabels(t *testing.T) {

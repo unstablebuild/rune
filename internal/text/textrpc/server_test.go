@@ -31,10 +31,14 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi/textrpc"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"github.com/unstablebuild/rune-go-sdk/handler/handlerrpc"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/term/termrpc"
 	gomock "go.uber.org/mock/gomock"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/cell"
@@ -490,6 +494,100 @@ func TestServerSubscribeREPLCommandReturnsUnexpectedUnregisterError(t *testing.T
 	assert.ErrorContains(t, err, `unregister existing repl command "test-repl-command": boom`)
 }
 
+func TestServerSubscribeResourceOpenerRejects(t *testing.T) {
+	request := func(scheme string) *textrpc.ClientResourceOpenerMessage {
+		return &textrpc.ClientResourceOpenerMessage{
+			Type:    textrpc.ClientResourceOpenerMessage_Request,
+			Request: &textrpc.SubscribeResourceOpenerRequest{Scheme: scheme},
+		}
+	}
+	tests := []struct {
+		name     string
+		ed       text.Editor
+		msg      *textrpc.ClientResourceOpenerMessage
+		wantCode codes.Code
+		wantErr  string
+	}{
+		{
+			name:     "empty scheme",
+			ed:       texttest.NopEditor(),
+			msg:      request(""),
+			wantCode: codes.InvalidArgument,
+			wantErr:  "empty scheme",
+		},
+		{
+			name: "missing request",
+			ed:   texttest.NopEditor(),
+			msg: &textrpc.ClientResourceOpenerMessage{
+				Type: textrpc.ClientResourceOpenerMessage_Open,
+			},
+			wantErr: "missing request",
+		},
+		{
+			name:    "unexpected unregister error",
+			ed:      &failingUnregisterOpenerEditor{err: errors.New("boom")},
+			msg:     request("fake"),
+			wantErr: `unregister existing resource opener "fake": boom`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := NewServer(nopNotifications{}, tt.ed, nopLocker{})
+			stream := &testSubscribeResourceOpenerServer{
+				recv: []*textrpc.ClientResourceOpenerMessage{tt.msg},
+			}
+
+			err := s.SubscribeResourceOpener(stream)
+			require.ErrorContains(t, err, tt.wantErr)
+			if tt.wantCode != codes.OK {
+				assert.Equal(t, tt.wantCode, status.Code(err))
+			}
+			assert.Empty(t, stream.sent, "a rejected subscription must not be acknowledged")
+		})
+	}
+}
+
+func TestServerOpenResourceRejects(t *testing.T) {
+	tests := []struct {
+		name     string
+		msg      *textrpc.OpenResourceMessage
+		wantCode codes.Code
+		wantErr  string
+	}{
+		{
+			name: "missing request",
+			msg: &textrpc.OpenResourceMessage{
+				Type: handlerrpc.MessageType_Draw,
+			},
+			wantErr: "missing request",
+		},
+		{
+			name: "no open request is waiting",
+			msg: &textrpc.OpenResourceMessage{
+				Type:    handlerrpc.MessageType_Request,
+				Request: &textrpc.OpenResourceStreamRequest{Id: 7},
+			},
+			wantCode: codes.FailedPrecondition,
+			wantErr:  "no open request 7 is waiting",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := NewServer(nopNotifications{}, texttest.NopEditor(), nopLocker{})
+			stream := &testOpenResourceServer{
+				recv: []*textrpc.OpenResourceMessage{tt.msg},
+			}
+
+			err := s.OpenResource(stream)
+			require.ErrorContains(t, err, tt.wantErr)
+			if tt.wantCode != codes.OK {
+				assert.Equal(t, tt.wantCode, status.Code(err))
+			}
+			assert.Empty(t, stream.sent, "a rejected stream must not be acknowledged")
+		})
+	}
+}
+
 func TestServerSubscribeEventCleansUpOnUnsubscribeEOFAndClose(t *testing.T) {
 	t.Run("normal unsubscribe", func(t *testing.T) {
 		ed := texttest.NopEditor()
@@ -708,6 +806,72 @@ func (e *failingUnregisterREPLEditor) RegisterREPLCommand(textapi.CommandManual,
 
 func (e *failingUnregisterREPLEditor) UnregisterREPLCommand(string) error {
 	return e.err
+}
+
+type failingUnregisterOpenerEditor struct {
+	texttest.TestEditor
+	err error
+}
+
+func (e *failingUnregisterOpenerEditor) UnregisterResourceOpener(string) error {
+	return e.err
+}
+
+// testSubscribeResourceOpenerServer replays recv to the server and records
+// what it sends back.
+type testSubscribeResourceOpenerServer struct {
+	grpc.ServerStream
+	recv []*textrpc.ClientResourceOpenerMessage
+	sent []*textrpc.ServerResourceOpenerMessage
+}
+
+func (s *testSubscribeResourceOpenerServer) Recv() (*textrpc.ClientResourceOpenerMessage, error) {
+	if len(s.recv) == 0 {
+		return nil, io.EOF
+	}
+	msg := s.recv[0]
+	s.recv = s.recv[1:]
+	return msg, nil
+}
+
+func (s *testSubscribeResourceOpenerServer) RecvMsg(msg any) error {
+	next, err := s.Recv()
+	if err != nil {
+		return err
+	}
+	proto.Merge(msg.(*textrpc.ClientResourceOpenerMessage), next)
+	return nil
+}
+
+func (s *testSubscribeResourceOpenerServer) Send(msg *textrpc.ServerResourceOpenerMessage) error {
+	s.sent = append(s.sent, msg)
+	return nil
+}
+
+// testOpenResourceServer replays recv to the server and records what it
+// sends back.
+type testOpenResourceServer struct {
+	grpc.ServerStream
+	recv []*textrpc.OpenResourceMessage
+	sent []*handlerrpc.ServerMessage
+}
+
+func (s *testOpenResourceServer) Recv() (*textrpc.OpenResourceMessage, error) {
+	if len(s.recv) == 0 {
+		return nil, io.EOF
+	}
+	msg := s.recv[0]
+	s.recv = s.recv[1:]
+	return msg, nil
+}
+
+func (s *testOpenResourceServer) Send(msg *handlerrpc.ServerMessage) error {
+	s.sent = append(s.sent, msg)
+	return nil
+}
+
+func (s *testOpenResourceServer) SendMsg(msg any) error {
+	return s.Send(msg.(*handlerrpc.ServerMessage))
 }
 
 type testSubscribeREPLCommandServer struct {

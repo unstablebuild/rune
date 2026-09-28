@@ -19,6 +19,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -29,8 +30,80 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
+	"github.com/unstablebuild/rune-go-sdk/handler/repl"
+	"github.com/unstablebuild/rune-go-sdk/iterator"
 	"unstable.build/rune/cmd/extension_python/pyshim"
 )
+
+// TestE2E_OptOutLeavesEnvironmentAlone covers a project the user has
+// opted out of: bring-up must not create a .venv or install a managed
+// interpreter, the language server must still come up, and the uv
+// passthrough subcommands must refuse until `python enable`.
+func TestE2E_OptOutLeavesEnvironmentAlone(t *testing.T) {
+	findUV(t)
+	ctx := context.Background()
+
+	dir := loadScenario(t, "pyproject")
+	storage := storagestub.NewInMemoryService()
+	require.NoError(t, newEnvSetting(storage).set(ctx, dirRoot(dir), false))
+
+	env := runExtensionOnDirWith(t, dir, storage, nil)
+
+	assert.NoDirExists(t, filepath.Join(dir, ".venv"),
+		"an unmanaged project must not get a virtual environment")
+	assert.NoFileExists(t, filepath.Join(pyshim.Dir(env.dataDir), "python3"),
+		"an unmanaged project must not get the venv-aware shims")
+
+	_, count := env.lsp.captured()
+	assert.Equal(t, 1, count, "ty and ruff must still come up for an unmanaged project")
+
+	require.NotNil(t, env.handler)
+	_, err := env.handler.HandleCommand(ctx,
+		repl.Command{Name: "python", Args: []string{"sync"}},
+		repl.NopProgressWriter())
+	require.ErrorContains(t, err, "python enable")
+}
+
+// TestE2E_EnableCreatesEnvironment covers flipping an opted-out project
+// back on from the console: `python enable` syncs the environment right
+// away and tells the user to reload for the server to see it.
+func TestE2E_EnableCreatesEnvironment(t *testing.T) {
+	findUV(t)
+	ctx := context.Background()
+
+	dir := loadScenario(t, "pyproject")
+	storage := storagestub.NewInMemoryService()
+	require.NoError(t, newEnvSetting(storage).set(ctx, dirRoot(dir), false))
+
+	env := runExtensionOnDirWith(t, dir, storage, nil)
+	require.NoDirExists(t, filepath.Join(dir, ".venv"))
+
+	it, err := env.handler.HandleCommand(ctx,
+		repl.Command{Name: "python", Args: []string{"enable"}},
+		repl.NopProgressWriter())
+	require.NoError(t, err)
+	out, err := iterator.ToSlice(ctx, it)
+	require.NoError(t, err)
+	require.Len(t, out, 1)
+
+	assert.DirExists(t, filepath.Join(dir, ".venv"),
+		"python enable must create the project environment")
+	assert.Equal(t, normalize(mustReadFile(t, filepath.Join("testdata", "pyproject", "expected.txt"))),
+		normalize(runPython(t, dir)))
+
+	managed, known, err := newEnvSetting(storage).get(ctx, dirRoot(dir))
+	require.NoError(t, err)
+	assert.True(t, known)
+	assert.True(t, managed)
+}
+
+func mustReadFile(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	return string(data)
+}
 
 // TestE2E_Scenarios_EnvAndLSP runs the extension against each testdata
 // scenario, then runs the scenario's main.py through the synced

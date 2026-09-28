@@ -124,7 +124,7 @@ func validateCommandPrompt(c *ideConfig, cfg map[string]any) (err error) {
 	editorMode := c.editorMode()
 
 	switch editorMode {
-	case editorModeModal:
+	case editorModeVim, editorModeHelix:
 		/* no validation needed */
 	case editorModeStandard, editorModeEmacs:
 		// <c-space> parses/dispatches with Ch == ' ', so treat it as a
@@ -147,51 +147,51 @@ func validateCommandPrompt(c *ideConfig, cfg map[string]any) (err error) {
 
 // validateExo checks that editor.exo.command is well-formed when the
 // editor mode is "exo". On failure it rewrites editor.mode back to
-// "modal" so the IDE still boots, and returns a descriptive error.
+// "vim" so the IDE still boots, and returns a descriptive error.
 // editor.exo.goto and editor.exo.quit are required and validated
-// the same way; an empty or unparseable value falls back to "modal".
+// the same way; an empty or unparseable value falls back to "vim".
 func validateExo(c *ideConfig, cfg map[string]any) (err error) {
 	if c.editorMode() != editorModeExo {
 		return
 	}
 	command := c.exoCommand()
 	if command == "" || !strings.Contains(command, "{file}") {
-		// Rewrite editor.mode back to modal so the IDE boots.
+		// Rewrite editor.mode back to vim so the IDE boots.
 		if ed, ok := cfg["editor"].(map[string]any); ok {
-			ed["mode"] = editorModeModal
+			ed["mode"] = editorModeVim
 		}
 		return fmt.Errorf("editor.exo.command is required and must contain " +
-			"{file} when editor.mode = \"exo\"; falling back to \"modal\"")
+			"{file} when editor.mode = \"exo\"; falling back to \"vim\"")
 	}
 	gotoTpl := c.exoGoto()
 	if gotoTpl == "" {
 		if ed, ok := cfg["editor"].(map[string]any); ok {
-			ed["mode"] = editorModeModal
+			ed["mode"] = editorModeVim
 		}
 		return fmt.Errorf("editor.exo.goto is required when " +
-			"editor.mode = \"exo\"; falling back to \"modal\"")
+			"editor.mode = \"exo\"; falling back to \"vim\"")
 	}
 	if perr := parseGotoTemplate(gotoTpl); perr != nil {
 		if ed, ok := cfg["editor"].(map[string]any); ok {
-			ed["mode"] = editorModeModal
+			ed["mode"] = editorModeVim
 		}
 		return fmt.Errorf("editor.exo.goto is invalid: %w; "+
-			"falling back to \"modal\"", perr)
+			"falling back to \"vim\"", perr)
 	}
 	quitTpl := c.exoQuit()
 	if quitTpl == "" {
 		if ed, ok := cfg["editor"].(map[string]any); ok {
-			ed["mode"] = editorModeModal
+			ed["mode"] = editorModeVim
 		}
 		return fmt.Errorf("editor.exo.quit is required when " +
-			"editor.mode = \"exo\"; falling back to \"modal\"")
+			"editor.mode = \"exo\"; falling back to \"vim\"")
 	}
 	if _, perr := term.ParseKeys(quitTpl); perr != nil {
 		if ed, ok := cfg["editor"].(map[string]any); ok {
-			ed["mode"] = editorModeModal
+			ed["mode"] = editorModeVim
 		}
 		return fmt.Errorf("editor.exo.quit is invalid: %w; "+
-			"falling back to \"modal\"", perr)
+			"falling back to \"vim\"", perr)
 	}
 	if err = validateExoFallback(c, cfg); err != nil {
 		return
@@ -226,10 +226,10 @@ func validateExoFallback(c *ideConfig, cfg map[string]any) error {
 			b["fallback"] = editorFallbackStandard
 		}
 	}
-	return fmt.Errorf("editor.exo.fallback must be %q or %q; got %q, "+
+	return fmt.Errorf("editor.exo.fallback must be %q, %q, %q, or %q; got %q, "+
 		"falling back to %q",
-		editorFallbackModal, editorFallbackStandard, raw,
-		editorFallbackStandard)
+		editorFallbackVim, editorFallbackHelix, editorFallbackStandard,
+		editorFallbackEmacs, raw, editorFallbackStandard)
 }
 
 // parseGotoTemplate splits tpl around {line}/{col} placeholders and

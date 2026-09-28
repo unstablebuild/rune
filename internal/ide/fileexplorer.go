@@ -18,7 +18,9 @@ package ide
 
 import (
 	"context"
+	"errors"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
@@ -27,6 +29,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/cell"
+	tcomponent "unstable.build/rune/internal/component"
 	fileexplorercomp "unstable.build/rune/internal/component/fileexplorer"
 	"unstable.build/rune/internal/text"
 )
@@ -49,6 +52,38 @@ var fileExplorerFSEvents = []textapi.EventType{
 // file explorer's editor content so that there is breathing room on
 // the left and right sides of the rendered tree.
 const fileExplorerSpanHPad = 2
+
+// fileExplorerHintHeight is the row reserved at the bottom of the
+// explorer for the mode hint.
+const fileExplorerHintHeight = 1
+
+// fileExplorerConfig is the user-facing explorer configuration plus
+// the bindings only the IDE can resolve.
+type fileExplorerConfig struct {
+	text.FileExplorerConfig
+	// SaveKey is the key label bound to `write`, resolved from the
+	// user's own bindings so the hint row names the key they have.
+	SaveKey string
+}
+
+// lockedEditor gates the buffer's user-edit path. Every mutation the
+// editor performs funnels through cell.Buffer's installed Editor, so
+// refusing here means a locked explorer never mutates in the first
+// place. The Component's own renders enter the buffer below this layer
+// via ReloadContents and are unaffected.
+type lockedEditor struct {
+	inner  cell.Editor
+	locked func() bool
+}
+
+func (e *lockedEditor) Edit(
+	ctx context.Context, start, end term.Coordinates, str string,
+) (from, to term.Coordinates, old string) {
+	if e.locked() {
+		return start, start, ""
+	}
+	return e.inner.Edit(ctx, start, end, str)
+}
 
 type fileExplorerHost interface {
 	Prompt(message string, options []string, bindings []term.KeyComb, promptHandler handler.PromptHandler) browser.Window
@@ -74,6 +109,17 @@ type fileExplorerHandler struct {
 	win    browser.Window
 	target browser.Window
 
+	cfg fileExplorerConfig
+
+	// readOnly refuses every filesystem-mutating edit. Enforced here
+	// rather than through Editor.Edit's readOnly argument, which only
+	// drives the status-bar indicator and does not block buffer
+	// mutation in any of the editor modes. It tracks the current
+	// visit and is re-armed from cfg.ReadOnly when the explorer is
+	// toggled shut, so leaving read-only is a deliberate, per-visit
+	// act.
+	readOnly bool
+
 	// pendingRefresh is set when an FS event arrives while the
 	// explorer is visible AND has unflushed user edits. The
 	// refresh is deferred until either the user successfully
@@ -95,19 +141,24 @@ func newFileExplorerHandler(
 	ed text.Handler,
 	uri workspaceapi.URI,
 	target browser.Window,
+	cfg fileExplorerConfig,
 ) (*fileExplorerHandler, error) {
 	h := &fileExplorerHandler{
-		host:   host,
-		comp:   comp,
-		buf:    buf,
-		ed:     ed,
-		uri:    uri,
-		target: target,
+		host:     host,
+		comp:     comp,
+		buf:      buf,
+		ed:       ed,
+		uri:      uri,
+		target:   target,
+		cfg:      cfg,
+		readOnly: cfg.ReadOnly,
 	}
 	h.span = handler.NewSpan(ed, component.SpanConfig{
 		PadHorizontal:    fileExplorerSpanHPad,
 		ContentAlignment: component.AlignmentCentered,
 	})
+	gate := &lockedEditor{locked: func() bool { return h.readOnly }}
+	gate.inner = buf.WithEditor(gate)
 	h.ScrollableFloating = browser.FuncScrollableFloatingHandler(h, func() error { return nil })
 	return h, nil
 }
@@ -121,12 +172,21 @@ func (h *fileExplorerHandler) SetTargetWindow(win browser.Window) {
 }
 
 func (h *fileExplorerHandler) Handle(ev term.Event) (exit, handled bool) {
-	if ev.Type == term.EventKey && ev.Mod == 0 && ev.Key == term.KeyEnter {
-		if !h.ed.IsSearchMode() {
-			if handled = h.enterAtCursor(); handled {
-				h.syncWidth()
-				return false, true
-			}
+	if h.readOnly && ev.Type == term.EventKey &&
+		ev.Key == h.cfg.EditKey.Key && ev.Ch == h.cfg.EditKey.Ch &&
+		ev.Mod == h.cfg.EditKey.Mod {
+		h.readOnly = false
+		// The hint changes with the mode, and may vanish entirely, so
+		// the tree's share of the window has to be recomputed.
+		h.Resize(h.width, h.height)
+		h.syncWidth()
+		return false, true
+	}
+	if ev.Type == term.EventKey && ev.Mod == 0 && ev.Key == term.KeyEnter &&
+		h.enterSelectsNode() {
+		if handled = h.enterAtCursor(); handled {
+			h.syncWidth()
+			return false, true
 		}
 	}
 	// A left click opens/closes the node under the pointer (or opens
@@ -139,7 +199,8 @@ func (h *fileExplorerHandler) Handle(ev term.Event) (exit, handled bool) {
 	if ev.Type == term.EventMouse && ev.Key == term.MouseLeft {
 		press := !h.mouseDown
 		h.mouseDown = true
-		if press && h.enterAtClick(ev.MouseY) {
+		if press && ev.MouseY < h.contentHeight() &&
+			h.enterAtClick(ev.MouseY) {
 			h.syncWidth()
 		}
 		return false, true
@@ -158,6 +219,19 @@ func (h *fileExplorerHandler) Handle(ev term.Event) (exit, handled bool) {
 		return false, true
 	}
 	return false, true
+}
+
+// enterSelectsNode reports whether <Enter> acts on the tree rather
+// than on the text. While the explorer is locked the buffer is a
+// browser and <Enter> opens or toggles. Once it is editable, <Enter>
+// keeps its editor meaning wherever it would insert text: always in a
+// modeless editor, and outside normal mode in a modal one. Otherwise
+// the row under the cursor could never be split into a new entry.
+func (h *fileExplorerHandler) enterSelectsNode() bool {
+	if h.ed.IsSearchMode() {
+		return false
+	}
+	return h.readOnly || h.ed.IsNormalMode()
 }
 
 // Handle implements text.EventHandler. Filesystem watcher events
@@ -263,6 +337,7 @@ func (h *fileExplorerHandler) clampCursorToBuffer() {
 // while the user had unflushed edits), run it now and discard
 // those edits — they would conflict with the new on-disk state.
 func (h *fileExplorerHandler) onWindowClosed() {
+	h.readOnly = h.cfg.ReadOnly
 	if !h.pendingRefresh {
 		return
 	}
@@ -272,12 +347,54 @@ func (h *fileExplorerHandler) onWindowClosed() {
 
 func (h *fileExplorerHandler) Draw(w term.Writer) {
 	h.span.Draw(w)
+	h.drawHint(w)
+}
+
+// drawHint renders the bottom row naming the one thing the user can do
+// next: write the staged edits, or leave read-only mode.
+func (h *fileExplorerHandler) drawHint(w term.Writer) {
+	hint := h.hint()
+	if hint == "" || h.height < fileExplorerHintHeight+1 {
+		return
+	}
+	tcomponent.WriteText(w, fileExplorerSpanHPad/2, h.height-1, h.width,
+		hint, h.cfg.HintAttr)
+}
+
+func (h *fileExplorerHandler) hint() string {
+	if !h.cfg.Hint {
+		return ""
+	}
+	if h.readOnly {
+		return h.cfg.EditKey.String() + " to enter edit mode"
+	}
+	// Naming the command prompt instead of a chord the user does not
+	// have ("save <shift-;> write") is noise, not a hint.
+	if h.cfg.SaveKey == "" {
+		return ""
+	}
+	return "save " + h.cfg.SaveKey
+}
+
+// hintHeight is the row the hint occupies, or zero when there is
+// nothing to say: an empty row is worse than no row.
+func (h *fileExplorerHandler) hintHeight() int {
+	if h.hint() == "" {
+		return 0
+	}
+	return fileExplorerHintHeight
+}
+
+// contentHeight is the height left for the tree once the hint row is
+// reserved.
+func (h *fileExplorerHandler) contentHeight() int {
+	return max(0, h.height-h.hintHeight())
 }
 
 func (h *fileExplorerHandler) Resize(width, height int) {
 	h.width = width
 	h.height = height
-	h.span.Resize(width, height)
+	h.span.Resize(width, h.contentHeight())
 }
 
 func (h *fileExplorerHandler) Cursor() (term.Coordinates, term.CursorStyle, bool) {
@@ -295,7 +412,22 @@ func (h *fileExplorerHandler) Dimensions() (int, int) {
 	// configured horizontal breathing room so the parent window
 	// can size itself to fit the chrome, the full tree, and the
 	// padding without truncation.
-	return h.span.Dimensions()
+	w, height := h.span.Dimensions()
+	if _, rows := h.comp.Dimensions(); rows == 0 {
+		w, height = max(w, h.cfg.MinWidth), 1
+	}
+	return max(w, h.hintWidth()), height + h.hintHeight()
+}
+
+// hintWidth is the width the hint row needs including the span's
+// horizontal padding, so syncWidth never sizes the window narrower
+// than the message it is about to draw.
+func (h *fileExplorerHandler) hintWidth() int {
+	hint := h.hint()
+	if hint == "" {
+		return 0
+	}
+	return utf8.RuneCountInString(hint) + fileExplorerSpanHPad
 }
 
 func (h *fileExplorerHandler) SeekUp() bool {
@@ -381,6 +513,10 @@ func (h *fileExplorerHandler) enterAt(pos term.Coordinates) bool {
 		h.open(uri)
 		return true
 	}
+	if _, known := h.comp.NodeAt(pos); !known && h.rowHasContent(pos.Y) {
+		h.host.SetError(errors.New(
+			"file explorer: unsaved row, write to create it"))
+	}
 	// Component may have rewritten the buffer; restore the cursor
 	// clamped to the new bounds.
 	rows := h.ed.CellView().Rows()
@@ -399,7 +535,21 @@ func (h *fileExplorerHandler) enterAt(pos term.Coordinates) bool {
 	return true
 }
 
+// rowHasContent reports whether y addresses a rendered, non-blank
+// buffer row. Clicks past the last row resolve to a no-op and must
+// not report an error.
+func (h *fileExplorerHandler) rowHasContent(y int) bool {
+	view := h.ed.CellView()
+	if y < 0 || y >= view.Rows() {
+		return false
+	}
+	return view.Columns(y) > 0
+}
+
 func (h *fileExplorerHandler) flush() error {
+	if h.readOnly {
+		return nil
+	}
 	cs := h.comp.DryFlush()
 	if cs.HasConflicts() {
 		h.host.SetError(conflictsError(cs))

@@ -18,14 +18,10 @@ package starlarktutorial
 
 import (
 	"sync"
-	"sync/atomic"
 
-	"github.com/unstablebuild/rune-go-sdk/component"
-	"github.com/unstablebuild/rune-go-sdk/term"
+	"github.com/unstablebuild/rune-go-sdk/handler"
 
-	"unstable.build/rune/internal/browser"
-	"unstable.build/rune/internal/component/markdown"
-	"unstable.build/rune/internal/ide/idetutorial"
+	mdhandler "unstable.build/rune/internal/handler/markdown"
 )
 
 // requestKind selects which builtin enqueued a request and which
@@ -33,11 +29,8 @@ import (
 type requestKind int
 
 const (
-	// Blocking UI: live in Tutorial.active and gate Draw/Handle.
-	reqFloatingWindow requestKind = iota + 1
-	reqMarkdown
-	reqWaitKey
-	reqWaitCommand
+	// Blocking screens: live in Tutorial.active and gate Draw/Handle.
+	reqWaitCommand requestKind = iota + 1
 	reqWaitShell
 	reqWaitEvent
 	reqConfirm
@@ -47,12 +40,6 @@ const (
 // String renders the requestKind for diagnostics and test assertions.
 func (k requestKind) String() string {
 	switch k {
-	case reqFloatingWindow:
-		return "floating_window"
-	case reqMarkdown:
-		return "markdown"
-	case reqWaitKey:
-		return "wait_key"
 	case reqWaitCommand:
 		return "wait_command"
 	case reqWaitShell:
@@ -76,51 +63,25 @@ func (k requestKind) String() string {
 type request struct {
 	kind requestKind
 
-	// floating_window / markdown.
+	// title heads the screen; text is the step's markdown copy. Both
+	// are optional for the wait_* kinds, which fall back to a
+	// generated hint when text is empty.
 	text, title string
-	offset      term.Coordinates
-	md          *markdown.Component
 
-	// align overrides where the step's window is anchored. Zero means
-	// the per-kind default. wait_* steps accept it too so a lesson can
-	// keep its page and its hint on the same side of the screen,
-	// clear of the layout the step asks the user to work with.
-	align component.Alignment
+	// viewer is the markdown viewer of a wait_* screen, prompt the
+	// in-tile prompt of a confirm/choice screen; exactly one is set.
+	// body wraps whichever is set with the screen's padding and is
+	// what Tutorial.Draw/Resize/Handle actually drive. All are built
+	// at publish time on the run goroutine and only ever touched by
+	// the TUI loop afterwards.
+	viewer *mdhandler.Handler
+	prompt *handler.Prompt
+	body   *handler.Span
 
-	// win is the overlay-browser window backing this request, opened
-	// at publish time on the run goroutine and closed on resolve,
-	// Stop, or the user's window-bar ✕ click. winContent tracks the
-	// live screen size for the window's Dimensions.
-	win        browser.Window
-	winContent *floatingWindowContent
-	// winClosed is stamped by the content's close callback while the
-	// overlay-browser lock is held; the TUI loop reaps it in Handle
-	// by resolving the request. Atomic because a Stop-driven close
-	// can stamp it from the run goroutine.
-	winClosed atomic.Bool
-
-	// stepNum is the 1-based "visible content" step number snapshot
-	// at publish time. Only reqFloatingWindow and reqMarkdown bump
-	// the counter; other request kinds inherit the prior value but
-	// only floating_window renders it in the title bar.
-	stepNum int
-
-	// allowKeys is the set of key combinations that the floating
-	// window does NOT swallow: matching events fall through to the
-	// IDE root so the user can e.g. press <meta-1>..<meta-9> to
-	// switch workspace slots while reading instructions that mention
-	// those very bindings. Empty for every other kind.
-	allowKeys []term.KeyComb
-
-	// dismissKeys behaves like allowKeys but ALSO resolves the
-	// floating window: matching events dismiss the request and
-	// reach the IDE root. Authors use this for read-then-act keys
-	// such as the command-prompt key when the next step expects
-	// the prompt to be open.
-	dismissKeys []term.KeyComb
-
-	// wait_key.
-	waitKey string
+	// closed is stamped when a prompt screen resolves itself (a
+	// selection or Esc); the TUI loop reads it right after routing
+	// the event to decide whether to resolve the request.
+	closed bool
 
 	// wait_command: the awaited command, optionally argument-
 	// qualified ("! git log"). Matching only ever uses the command
@@ -128,7 +89,6 @@ type request struct {
 	// that asks for an invocation with arguments does not advertise
 	// a key bound to the bare command.
 	command string
-	onError string
 
 	// wait_event: the awaited editor event-type name (e.g. "open").
 	event string
@@ -152,17 +112,6 @@ type request struct {
 	// response is synthesised at resolve time.
 	pendingResp     response
 	pendingSelected bool
-
-	// hasShader arms the floating_window hint pulse after a stray
-	// keystroke; the spec itself is derived lazily from the live
-	// window geometry and cached until the geometry or theme
-	// changes.
-	shaderSpec  idetutorial.Shader
-	hasShader   bool
-	shaderBuilt bool
-	shaderPos   term.Coordinates
-	shaderW     int
-	shaderH     int
 
 	respond chan response
 	once    sync.Once

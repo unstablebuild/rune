@@ -18,6 +18,8 @@ package main
 
 import (
 	"encoding/json"
+	"runtime"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -121,6 +123,24 @@ func TestPyInitializeParams(t *testing.T) {
 			"textDocument/formatting":      "ruff server",
 			"textDocument/rangeFormatting": "ruff server",
 		}, initOpts["alternate_commands"])
+	})
+
+	// ty and ruff both size their rayon pool from the core count. Left
+	// uncapped they saturate every core, and the editor's render loop
+	// is then stuck waiting for a thread to run on.
+	t.Run("caps the server worker pool at half the cores", func(t *testing.T) {
+		params, err := pyInitializeParams("file:///tmp/repo", "ty server", map[string]string{
+			"textDocument/formatting": "ruff server",
+		}, "", "")
+		require.NoError(t, err)
+
+		var initOpts map[string]any
+		require.NoError(t, json.Unmarshal(params.InitializeOptions, &initOpts))
+
+		want := strconv.Itoa(max(1, runtime.NumCPU()/2))
+		assert.Equal(t, map[string]any{"RAYON_NUM_THREADS": want}, initOpts["env"],
+			"env reaches ruff too: alternate-command children inherit langConfig.env")
+		assert.NotEqual(t, "0", want, "a zero cap would restore the default pool size")
 	})
 
 	t.Run("single server omits alternate_commands", func(t *testing.T) {

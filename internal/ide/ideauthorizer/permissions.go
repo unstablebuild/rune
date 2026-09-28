@@ -246,7 +246,8 @@ func pluginPermissionPersistedCommandIdentities(
 
 // pluginPermissionApprovalScopeLabels returns the human-readable labels
 // describing what "Yes, All" will approve for command. Mirrors the
-// identities returned by pluginPermissionPersistedCommandIdentities.
+// identities returned by pluginPermissionPersistedCommandIdentities, and
+// returns nil when "Yes, All" approves only the exact command.
 func pluginPermissionApprovalScopeLabels(
 	command pluginPermissionCommandDetail,
 ) []string {
@@ -257,7 +258,7 @@ func pluginPermissionApprovalScopeLabels(
 		}
 		return out
 	}
-	return []string{pluginPermissionExactCommandLabel(command)}
+	return nil
 }
 
 func pluginPermissionExactCommandIdentity(command pluginPermissionCommandDetail) string {

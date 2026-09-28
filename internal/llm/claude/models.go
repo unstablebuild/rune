@@ -41,8 +41,9 @@ func ModelEntries() []llmapi.ModelEntry {
 	return out
 }
 
-// FlagshipModel returns the provider's top model identifier.
-func FlagshipModel() string { return anthropic.ClaudeOpus5 }
+// FlagshipModel returns the provider's top model identifier. The slugs are
+// identical to the api-key provider's, so it tracks the Anthropic flagship.
+func FlagshipModel() string { return anthropic.FlagshipModel() }
 
 // MaxOutputTokens returns the model's documented maximum output-token
 // ceiling. It mirrors the Anthropic catalog since the slugs are identical.

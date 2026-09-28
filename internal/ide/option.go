@@ -85,7 +85,7 @@ func WithDispatchOnPreview(cmd string, fn previewFunc) Option {
 }
 
 // WithPublishEvent sets the EventPublisher of the IDE.
-// The default is tui.PublishEvent.
+// The given EventPublisher must be safe for concurrent use.
 func WithPublishEvent(p EventPublisher) Option {
 	return func(opts *options) {
 		opts.publishEvent = p
@@ -223,7 +223,7 @@ func WithDefaultConfigYAML(base string, overrides ...string) Option {
 // WithDefaultConfigStarlark sets the default baseline config as a Starlark
 // source. The script must bind a top-level `config` dict. The loader exposes
 // two predeclared globals to the script:
-//   - mode: "modal" when modal is true, otherwise "standard"
+//   - mode: "vim" when modal is true, otherwise "standard"
 //   - tui: the given tui boolean
 func WithDefaultConfigStarlark(src string, modal bool, tui bool) Option {
 	return func(opts *options) {
@@ -269,6 +269,16 @@ func WithBell(bell func()) Option {
 func WithScheduleNextTick(scheduleFn func(func()) bool) Option {
 	return func(opts *options) {
 		opts.scheduleFn = scheduleFn
+	}
+}
+
+// WithCellPixelSize sets how terminals learn the cell size in pixels,
+// which enables the kitty graphics protocol. Without it, or while it
+// reports zero, terminals behave as a cells-only display and clients
+// fall back to text.
+func WithCellPixelSize(cellPixelSize func() (width, height int)) Option {
+	return func(opts *options) {
+		opts.cellPixelSize = cellPixelSize
 	}
 }
 
@@ -472,30 +482,42 @@ func WithStartingTutorial(name string) Option {
 	}
 }
 
+// WithoutSessionReopen disables the one-shot startup prompt offering to
+// reopen the previous session's workspaces. Instances spawned as
+// additional OS windows share the storage of the instance that spawned
+// them, so reopening its workspaces would duplicate them.
+func WithoutSessionReopen() Option {
+	return func(opts *options) {
+		opts.disableSessionReopen = true
+	}
+}
+
 type options struct {
-	publishEvent        EventPublisher
-	extensionRunner     ExtensionsRunner
-	releaseManager      release.Manager
-	tabBarOffset        int
-	rightInset          int
-	tabsClickCallback   func(int) bool
-	tabBarHeight        int
-	workspacesBarFrame  bool
-	workspacesBarHeight int
-	workspacesIcon      rune
-	workspacesBarOffset int
-	locker              sync.Locker
-	dispatchOnPreview   map[string]previewFunc
-	extensions          map[string]Extension
-	schemes             map[string]schemeapi.SchemeFunc
-	workspaceConfig     string
-	defaultWallpaper    browser.Wallpaper
-	defaultConfig       string
-	bell                func()
-	scheduleFn          func(func()) bool
-	afterFunc           func(time.Duration, func()) *time.Timer
-	debugCommands       bool
-	streamingOpen       bool
+	publishEvent         EventPublisher
+	extensionRunner      ExtensionsRunner
+	releaseManager       release.Manager
+	tabBarOffset         int
+	rightInset           int
+	tabsClickCallback    func(int) bool
+	tabBarHeight         int
+	workspacesBarFrame   bool
+	workspacesBarHeight  int
+	workspacesIcon       rune
+	workspacesBarOffset  int
+	locker               sync.Locker
+	dispatchOnPreview    map[string]previewFunc
+	extensions           map[string]Extension
+	schemes              map[string]schemeapi.SchemeFunc
+	workspaceConfig      string
+	defaultWallpaper     browser.Wallpaper
+	defaultConfig        string
+	bell                 func()
+	scheduleFn           func(func()) bool
+	cellPixelSize        func() (int, int)
+	afterFunc            func(time.Duration, func()) *time.Timer
+	debugCommands        bool
+	streamingOpen        bool
+	disableSessionReopen bool
 
 	workspaceOpenCompleters []command.Completer
 

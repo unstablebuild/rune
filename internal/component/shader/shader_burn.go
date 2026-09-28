@@ -21,6 +21,7 @@ import (
 	"math/rand"
 
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"github.com/unstablebuild/rune-go-sdk/term/graphemecluster"
 	"unstable.build/rune/internal/component/shader/shaderutils"
 )
 
@@ -163,6 +164,13 @@ type BurnParams struct {
 	// symbols and smoke chances so repeated runs at the same canvas size
 	// are visually identical. Defaults to a fixed value if zero.
 	Seed int64
+	// PaintForeground makes the wave recolour text in place with
+	// BurnGradient instead of burning it: characters keep their glyph and
+	// background, no particle rises, and blank cells and glyphs that
+	// render as background, such as fade blocks, are left untouched.
+	// Cells show their live content throughout rather than the snapshot
+	// Burn otherwise reveals from.
+	PaintForeground bool
 }
 
 // DefaultBurnParams returns a sane set of [BurnParams].
@@ -251,7 +259,7 @@ func (s *burn) Shade(frame, total int, cells [][]term.Cell) {
 	// loading→open transition needs this: if the loading shader stopped
 	// part-way through desaturating, SetInitialDesaturation has already
 	// applied that amount to s.initialCells.
-	if frame == 0 {
+	if frame == 0 && !s.PaintForeground {
 		for y := range cells {
 			for x := range cells[y] {
 				cells[y][x] = s.initialCell(y, x, cells[y][x])
@@ -267,6 +275,10 @@ func (s *burn) Shade(frame, total int, cells [][]term.Cell) {
 	s.ensureCache(s.initialCells, rows, cols, total, bounds)
 
 	burnFrames := s.burnFrameCount(total)
+	if s.PaintForeground {
+		s.recolorText(frame, burnFrames, bounds, cells)
+		return
+	}
 	smokeFrames := s.smokeFrameCount(total)
 	activeBurn := make([][]bool, rows)
 	for y := range activeBurn {
@@ -394,6 +406,25 @@ func (s *burn) Shade(frame, total int, cells [][]term.Cell) {
 // shifted by half a cell on chrome rows.
 const burnGlyphStripAttrs = term.AttrVerticalRenderOffset |
 	term.AttrNegativeVerticalRenderOffset
+
+func (s *burn) recolorText(
+	frame, burnFrames int, bounds burnBounds, cells [][]term.Cell,
+) {
+	for y := bounds.minY; y <= bounds.maxY && y < len(cells); y++ {
+		row := cells[y]
+		for x := bounds.minX; x <= min(bounds.maxX, len(row)-1); x++ {
+			if !hasOriginalChar(row[x]) || graphemecluster.IsBackground(row[x].Ch) {
+				continue
+			}
+			localFrame := frame - s.igniteFrame[y][x]
+			if s.igniteFrame[y][x] < 0 || localFrame < 0 || localFrame >= burnFrames {
+				continue
+			}
+			frac := float64(localFrame) / float64(max(1, burnFrames-1))
+			row[x].Fg = shaderutils.SampleGradient(frac, s.BurnGradient)
+		}
+	}
+}
 
 func (s *burn) ensureInitialCells(cells [][]term.Cell) {
 	if sameCellShape(s.initialCells, cells) {

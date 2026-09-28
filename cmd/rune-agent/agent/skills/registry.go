@@ -18,6 +18,7 @@ package skills
 
 import (
 	"fmt"
+	"os"
 	"os/user"
 	"slices"
 	"strings"
@@ -193,7 +194,7 @@ func (r *SkillRegistry) Reload() {
 }
 
 func (r *SkillRegistry) resolve(dir string) string {
-	expanded, err := workspaceapi.ExpandPath(dir, user.Current, func() (string, error) {
+	expanded, err := workspaceapi.ExpandPath(os.ExpandEnv(dir), user.Current, func() (string, error) {
 		return r.cwd.Path(), nil
 	})
 	if err != nil {

@@ -103,7 +103,7 @@ type stubTerminal struct{}
 func (stubTerminal) NewPty(context.Context) (workspaceapi.Pty, error) {
 	return workspaceapi.Pty{}, nil
 }
-func (stubTerminal) SetPtySize(workspaceapi.Pty, int, int) error {
+func (stubTerminal) SetPtySize(workspaceapi.Pty, workspaceapi.PtySize) error {
 	return nil
 }
 
@@ -125,6 +125,12 @@ func (stubTabManager) Tab(workspaceapi.URI, rune, string, browserapi.Handler) (
 func (stubTabManager) SetTabName(workspaceapi.URI, string, term.Attributes) error {
 	return nil
 }
+
+func (stubTabManager) OnTabExit(workspaceapi.URI) bool {
+	return false
+}
+
+func (stubTabManager) SetTabActivity(workspaceapi.URI, bool) error { return nil }
 
 // stubReloader satisfies exoeditor.Reloader for tests that only need a
 // non-nil value to satisfy exoeditor.New's invariants.

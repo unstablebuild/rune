@@ -108,12 +108,12 @@ func TestFileSchemeSetPtySizeClosedMaster(t *testing.T) {
 		_ = pty.Slave.Close()
 	})
 
-	require.NoError(t, s.SetPtySize(pty, 80, 24),
+	require.NoError(t, s.SetPtySize(pty, workspaceapi.PtySize{Columns: 80, Rows: 24}),
 		"a live master must resize fine")
 
 	require.NoError(t, pty.Master.Close())
 
-	err = s.SetPtySize(pty, 32, 5)
+	err = s.SetPtySize(pty, workspaceapi.PtySize{Columns: 32, Rows: 5})
 	require.ErrorIs(t, err, ErrInvalidMasterPtyFd)
 	require.Contains(t, err.Error(), "invalid master pty fd",
 		"the message is the wire contract the ide resize worker matches on")

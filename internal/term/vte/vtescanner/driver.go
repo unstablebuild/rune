@@ -54,4 +54,10 @@ type Driver interface {
 	// The ignore flag indicates that more than two intermediates arrived and
 	// subsequent characters were ignored.
 	ESCDispatch(intermediates []byte, ignore bool, ch byte)
+
+	// APCDispatch is called when an application program command string
+	// (ESC _ ... ST) has been terminated. data excludes the introducer
+	// and terminator and is only valid for the duration of the call.
+	// Strings longer than MaxAPCRaw are dropped without dispatch.
+	APCDispatch(data []byte)
 }

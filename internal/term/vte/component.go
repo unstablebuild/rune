@@ -51,6 +51,7 @@ type Component struct {
 	cfg       Config
 	pty       workspaceapi.Pty
 	watcher   workspaceapi.ProcessWatcher
+	tm        browser.TabManager
 	scroll    component.Scroll
 	ctx       context.Context
 	cancelCtx func()
@@ -80,13 +81,20 @@ type Component struct {
 	// closes it on teardown paths where no spawn succeeded.
 	slaveClosed atomic.Bool
 
-	width, height     int
+	width, height int
+	// ptySize is the last size driven into the pty, so a font change
+	// that keeps the cell count re-issues the ioctl for the new pixel
+	// size without resizing the buffers.
+	ptySize           workspaceapi.PtySize
 	parserHandler     *parserHandler
 	waitParserHandler *waitParserHandler
 	parser            vteparser.Parser
-	complete          bool
-	selectionAttr     term.Attributes
-	defAttr           term.Attributes
+	// keyboard is the parser handler's, held here for the input path
+	// because ResetState rewrites the parser handler's fields.
+	keyboard      *keyboardState
+	complete      bool
+	selectionAttr term.Attributes
+	defAttr       term.Attributes
 
 	// version increments after each batch of pty output the parser
 	// applies, so it changes whenever the rendered grid may have. It
@@ -94,6 +102,11 @@ type Component struct {
 	// cells; it is not a lock — Snapshot/Draw still take mu. It starts
 	// at 1 so the zero value reads as "never observed".
 	version atomic.Uint64
+
+	// publisher is the redraw channel Run was given; animations use it
+	// to request the frame after the next gap.
+	publisher browser.EventPublisher
+	animTimer *time.Timer
 }
 
 // NOTE: this is an integrator implementation, it shouldn't really do much other
@@ -116,6 +129,7 @@ func (t *Component) Init(
 ) error {
 	t.clipboard = cfg.Clipboard
 	t.watcher = cfg.Watcher
+	t.tm = tm
 	t.defAttr = cfg.Attributes
 	t.selectionAttr = cfg.SelectionAttributes
 	t.terminal = term
@@ -137,7 +151,9 @@ func (t *Component) Init(
 
 	t.parserHandler = newParserHandler(
 		&t.mu, t.pty, tm, t.clipboard, cfg.scheduleBell, t.uri,
-		cfg.NeedsAttentionAttributes, cfg.DynamicTabName, cfg.MaxLines, cfg.MinWidth)
+		cfg.NeedsAttentionAttributes, cfg.DynamicTabName, cfg.MaxLines, cfg.MinWidth,
+		cfg.CellPixelSize, cfg.FileSystem, cfg.TempDir)
+	t.keyboard = t.parserHandler.keyboard
 
 	// start with pty slave file name as title
 	var h vteparser.Handler = t.parserHandler
@@ -177,7 +193,14 @@ func (t *Component) triggerBell() {
 // Run must be called in a separate goroutine to start processing incoming
 // data from the pty master.
 func (t *Component) Run(publisher browser.EventPublisher) error {
-	return t.run(publisher)
+	t.mu.Lock()
+	t.publisher = publisher
+	t.mu.Unlock()
+	err := t.run(publisher)
+	if t.pid.Load() != 0 {
+		_ = t.cfg.ScheduleNextTick(func() { t.tm.OnTabExit(t.uri) })
+	}
+	return err
 }
 
 // Title returns the Title of this Component.
@@ -218,21 +241,28 @@ func (t *Component) Resize(width, height int) error {
 	}
 
 	t.mu.Lock()
-	sameSize := t.width == width && t.height == height
+	size := t.ptySizeFor(width, height)
+	sameCells := t.width == width && t.height == height
+	samePixels := size == t.ptySize
 	t.mu.Unlock()
-	if sameSize {
+	if sameCells && samePixels {
 		// some programs will not re-print if width and height
 		// are the same, but resizing buffers does clear all the content
 		// so we would be left with an empty screen buffer.
 		return nil
 	}
 
-	err := t.terminal.SetPtySize(t.pty, width, height)
+	err := t.terminal.SetPtySize(t.pty, size)
 	if err != nil {
 		return err
 	}
 
 	t.mu.Lock()
+	t.ptySize = size
+	if sameCells {
+		t.mu.Unlock()
+		return nil
+	}
 	t.width = width
 	t.height = height
 	t.parserHandler.resizeLocked(width, height)
@@ -246,6 +276,17 @@ func (t *Component) Resize(width, height int) error {
 	return nil
 }
 
+// ptySizeFor is the pty window size for a grid of the given cells,
+// with the pixel size a cells-only display leaves at zero.
+func (t *Component) ptySizeFor(width, height int) workspaceapi.PtySize {
+	size := workspaceapi.PtySize{Columns: width, Rows: height}
+	if t.cfg.CellPixelSize != nil {
+		cellW, cellH := t.cfg.CellPixelSize()
+		size.PixelWidth, size.PixelHeight = width*cellW, height*cellH
+	}
+	return size
+}
+
 // ModeBracketedPaste returns whether bracketed paste mode is set.
 func (t *Component) ModeBracketedPaste() bool {
 	t.mu.Lock()
@@ -253,39 +294,28 @@ func (t *Component) ModeBracketedPaste() bool {
 	return t.parserHandler.modeBracketedPaste
 }
 
-// MouseModeReportMouseClicks returns whether PrivateMode 1000 (MouseModeVT200) is set.
-func (t *Component) MouseModeReportMouseClicks() bool {
+// mouseModes resolves the mouse modes the program has set. The modes
+// are kept as independent flags, so the most capable one set wins.
+func (t *Component) mouseModes() (m mouseModes) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.parserHandler.modeReportMouseClicks
-}
-
-// MouseModeReportCellMouseMotion returns whether PrivateMode 1002 (MouseModeButtonEvent) is set.
-func (t *Component) MouseModeReportCellMouseMotion() bool {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.parserHandler.modeReportCellMouseMotion
-}
-
-// MouseModeReportAllMouseMotion returns whether PrivateMode 1003 (MouseModeAnyEvent) is set.
-func (t *Component) MouseModeReportAllMouseMotion() bool {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.parserHandler.modeReportAllMouseMotion
-}
-
-// MouseModeUtf8Mouse returns whether PrivateMode 1005 (MouseExtUTF) is set.
-func (t *Component) MouseModeUtf8Mouse() bool {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.parserHandler.modeUtf8Mouse
-}
-
-// MouseModeSgrMouse returns whether PrivateMode 1006 (MouseExtSGR) is set.
-func (t *Component) MouseModeSgrMouse() bool {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.parserHandler.modeSgrMouse
+	p := t.parserHandler
+	switch {
+	case p.modeReportAllMouseMotion:
+		m.tracking = mouseTrackingAny
+	case p.modeReportCellMouseMotion:
+		m.tracking = mouseTrackingButton
+	case p.modeReportMouseClicks:
+		m.tracking = mouseTrackingClick
+	}
+	switch {
+	case p.modeSgrMouse:
+		m.encoding = mouseEncodingSGR
+	case p.modeUtf8Mouse:
+		m.encoding = mouseEncodingUTF8
+	}
+	m.alternateScroll = p.useAlt && p.modeAlternateScroll
+	return m
 }
 
 // CursorVisible returns whether the cursor should be rendered or not.
@@ -485,18 +515,69 @@ func (t *Component) Draw(w term.Writer) {
 	t.drawLocked(w)
 }
 
-// drawLocked paints the active buffer and selection to w. The caller
-// must hold t.mu.
+// drawLocked paints the active buffer, selection and graphics to w. The
+// caller must hold t.mu.
 func (t *Component) drawLocked(w term.Writer) {
-	if t.parserHandler.useAlt {
-		t.parserHandler.sync.altBuf.Draw(w)
-	} else if t.scroll.Offset().Y == 0 {
-		t.parserHandler.sync.primBuf.Draw(w)
-	} else {
-		t.scroll.Draw(w)
+	screen := w
+	if t.parserHandler.modeReverseScreen {
+		screen = reverseScreenWriter{w}
+		// Without default attributes the buffers skip cells no program
+		// has written, which would otherwise stay in normal video.
+		blank := term.NewCell(0, 1, t.scroll.Attributes)
+		for y := range t.height {
+			for x := range t.width {
+				screen.SetCell(term.Coordinates{X: x, Y: y}, blank)
+			}
+		}
 	}
-
+	scrolledBy := 0
+	if t.parserHandler.useAlt {
+		t.parserHandler.sync.altBuf.Draw(screen)
+	} else if t.scroll.Offset().Y == 0 {
+		t.parserHandler.sync.primBuf.Draw(screen)
+	} else {
+		t.scroll.Draw(screen)
+		scrolledBy = t.scroll.Offset().Y
+	}
+	// The selection belongs to the cell layer, which cells written after
+	// a placement would cover.
 	t.drawSelection(w)
+	t.drawGraphicsLocked(screen, scrolledBy)
+}
+
+// reverseScreenWriter draws DECSCNM by toggling rather than setting
+// reverse video, so a cell already in SGR 7 shows in normal video as in
+// kitty and xterm.
+type reverseScreenWriter struct {
+	term.Writer
+}
+
+func (w reverseScreenWriter) SetCell(pos term.Coordinates, c term.Cell) {
+	c.Attrs ^= term.AttrReverse
+	w.Writer.SetCell(pos, c)
+}
+
+// drawGraphicsLocked overlays the kitty graphics placements and keeps
+// animations ticking by scheduling a redraw for the next frame.
+func (t *Component) drawGraphicsLocked(w term.Writer, scrolledBy int) {
+	next, running := t.parserHandler.drawGraphics(w, scrolledBy, time.Now())
+	if !running || t.publisher == nil || t.closed.Load() {
+		return
+	}
+	publisher := t.publisher
+	redraw := func() {
+		debug.CapturePanicReport(func() {
+			if t.closed.Load() {
+				return
+			}
+			_ = publisher.PublishEvent(term.Event{Type: term.EventInterrupt})
+		})
+	}
+	if t.animTimer == nil {
+		t.animTimer = time.AfterFunc(next, redraw)
+		return
+	}
+	t.animTimer.Reset(next)
 }
 
 // IsComplete returnes whether this terminal has stopped processing
@@ -599,6 +680,11 @@ func (t *Component) Selection() (data string, ok bool) {
 
 // OnFocusChange allows clients to report whether this vte.Component is on focus or not.
 func (t *Component) OnFocusChange(inFocus bool) error {
+	// Closing a tab releases the master before the browser unfocuses it,
+	// so there is no program left to report to.
+	if t.closed.Load() {
+		return nil
+	}
 	t.mu.Lock()
 	cmd, ok := t.parserHandler.onFocusChange(inFocus)
 	t.mu.Unlock()
@@ -808,6 +894,9 @@ func (t *Component) Close() (ret error) {
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.animTimer != nil {
+		t.animTimer.Stop()
+	}
 	if err := t.closeSlave(); err != nil {
 		ret = multierr.Append(ret, err)
 	}

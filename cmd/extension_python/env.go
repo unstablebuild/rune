@@ -145,7 +145,7 @@ func ensureEnvironment(
 // `python3` executables (not just the versioned `python3.X`) into
 // UV_PYTHON_BIN_DIR (<dataDir>/python/uvbin per config.yaml gui.env),
 // which the Rune-owned shims in <dataDir>/python/bin fall back to when
-// no project venv applies.
+// neither a project venv nor a PATH interpreter applies.
 func ensureInterpreter(
 	ctx context.Context,
 	uvBin string,
@@ -158,7 +158,7 @@ func ensureInterpreter(
 ) (bool, error) {
 	_ = notify.UpdateNotificationProgress(notifID, "Finding Python interpreter", 1, 4)
 	if err := runUV(ctx, uvBin, exec, dir, "python", "find"); err == nil &&
-		managedFallbackPresent(fs, dataDir) {
+		!managedRelinkNeeded(fs, dataDir) {
 		return false, nil
 	}
 	_ = notify.UpdateNotificationProgress(notifID, "Installing Python interpreter", 2, 4)
@@ -168,15 +168,23 @@ func ensureInterpreter(
 	return true, nil
 }
 
-// managedFallbackPresent reports whether the shim's managed-interpreter
-// fallback target exists. An empty dataDir skips the probe (no shims are
-// written without a data dir).
-func managedFallbackPresent(fs workspaceapi.FileSystem, dataDir string) bool {
+// managedRelinkNeeded reports whether uv already has a managed
+// interpreter installed but the link the shims fall back to is missing,
+// which is the state of an install migrated from the old layout (uv
+// links in python/bin). Relinking that costs no download. With no
+// managed interpreter there is nothing to relink, and forcing an
+// install would fetch a whole CPython on a machine that already has one
+// on PATH, which the shim resolves anyway.
+func managedRelinkNeeded(fs workspaceapi.FileSystem, dataDir string) bool {
 	if dataDir == "" {
-		return true
+		return false
 	}
-	_, err := fs.Stat(pyshim.FallbackPath(dataDir))
-	return err == nil
+	if _, err := fs.Stat(pyshim.FallbackPath(dataDir)); err == nil {
+		return false
+	}
+	// UV_PYTHON_INSTALL_DIR per config.yaml gui.env.
+	info, err := fs.Stat(filepath.Join(dataDir, "python", "python"))
+	return err == nil && info != nil && info.IsDir()
 }
 
 // runSyncStep installs or verifies the project dependencies for the
@@ -208,6 +216,9 @@ func runSyncStep(
 	case kindVenvOnly:
 		_ = notify.UpdateNotificationProgress(notifID, "Verifying virtual environment", step, total)
 		return runUV(ctx, uvBin, exec, dir, "python", "find")
+	case kindScript:
+		_ = notify.UpdateNotificationProgress(notifID, "Creating virtual environment", step, total)
+		return runUV(ctx, uvBin, exec, dir, "venv", "--allow-existing")
 	default:
 		return nil
 	}

@@ -21,7 +21,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
+	"sync/atomic"
 
 	"github.com/unstablebuild/blue/iterator"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
@@ -37,12 +39,27 @@ type commandClientStream struct {
 	stream        serverStream
 	completers    sync.Map
 	counter       int64
-	pendingMu     sync.Mutex
-	pending       []chan error
-	sendMu        sync.Mutex
+	// unlike counter, reqCounter is bumped from whichever goroutine
+	// dispatches the command.
+	reqCounter atomic.Int64
+	pendingMu  sync.Mutex
+	pending    []pendingHandle
+	sendMu     sync.Mutex
 	// whether the extension understands CompleteCancel messages; older
 	// SDKs terminate the stream when they receive an unknown message type.
 	supportsCompleteCancel bool
+	// whether the extension understands HandleCancel messages and echoes
+	// request ids back. Same caveat as supportsCompleteCancel.
+	supportsHandleCancel bool
+}
+
+// pendingHandle is a dispatched command awaiting its reply. A nil ch
+// means a fire-and-forget dispatch, whose result only gets logged.
+type pendingHandle struct {
+	id int64
+	ch chan error
+	// closed once the reply lands, so a cancel watcher stops waiting
+	done chan struct{}
 }
 
 // subset of Editor_SubscribeCommandServer
@@ -52,7 +69,8 @@ type serverStream interface {
 }
 
 func newCommandClientStream(
-	ctx context.Context, stream serverStream, supportsCompleteCancel bool,
+	ctx context.Context, stream serverStream,
+	supportsCompleteCancel, supportsHandleCancel bool,
 ) *commandClientStream {
 	log := slog.Default().With("struct", "textrpc.commandClientStream")
 	return &commandClientStream{
@@ -61,6 +79,7 @@ func newCommandClientStream(
 		ctx:                    ctx,
 		handleCommand:          make(chan string),
 		supportsCompleteCancel: supportsCompleteCancel,
+		supportsHandleCancel:   supportsHandleCancel,
 	}
 }
 
@@ -80,19 +99,10 @@ func (c *commandClientStream) receiveMessages() error {
 
 		switch msg.GetType() {
 		case textrpc.ClientCommandMessage_Handle:
-			errStr := msg.GetHandle().GetError()
-			c.pendingMu.Lock()
-			var waitCh chan error
-			if len(c.pending) > 0 {
-				waitCh = c.pending[0]
-				if len(c.pending) == 1 {
-					c.pending = c.pending[:0]
-				} else {
-					c.pending = c.pending[1:]
-				}
-			}
-			c.pendingMu.Unlock()
-			if waitCh != nil {
+			handle := msg.GetHandle()
+			errStr := handle.GetError()
+			waitCh, claimed := c.takePending(handle.GetId())
+			if claimed && waitCh != nil {
 				var err error
 				if errStr != "" {
 					err = errors.New(errStr)
@@ -176,28 +186,75 @@ func (c *commandClientStream) receiveMessages() error {
 func (c *commandClientStream) HandleCommand(
 	ctx context.Context, cmd textapi.Command,
 ) error {
-	// Every send reserves a slot in the reply FIFO (held across Send so
-	// the slot order matches the wire order). A caller that attaches a
-	// Waiter reserves its channel and is told, via Claimed, to wait for
-	// the result on it; otherwise the slot is nil and the reply takes the
-	// fire-and-forget log path. Claim must happen before this returns.
+	// Every send reserves a slot for its reply, held across Send so that
+	// slot order matches wire order for extensions that predate request
+	// ids. A caller that attaches a Waiter reserves its channel and is
+	// told, via Claimed, to wait for the result on it; otherwise the
+	// slot carries no channel and the reply takes the fire-and-forget
+	// log path. Claim must happen before this returns.
 	var replyCh chan error
 	if w, ok := WaiterFromContext(ctx); ok {
 		replyCh = w.Ch
 		w.Claimed = true
 	}
+	pending := pendingHandle{
+		id:   c.reqCounter.Add(1), // start at 1, so 0 means "no id"
+		ch:   replyCh,
+		done: make(chan struct{}),
+	}
 	c.pendingMu.Lock()
 	defer c.pendingMu.Unlock()
-	c.pending = append(c.pending, replyCh)
-	if err := c.send(c.buildHandleRequest(cmd)); err != nil {
+	c.pending = append(c.pending, pending)
+	if err := c.send(c.buildHandleRequest(cmd, pending.id)); err != nil {
 		c.pending = c.pending[:len(c.pending)-1]
 		return fmt.Errorf("send complete request: %w", err)
+	}
+	if replyCh != nil && c.supportsHandleCancel {
+		go c.cancelOnDone(ctx, pending)
 	}
 	return nil
 }
 
+// takePending removes the slot the reply belongs to and reports whether
+// there was one. An id of zero comes from an extension that predates
+// request ids, whose replies still arrive in dispatch order.
+func (c *commandClientStream) takePending(id int64) (chan error, bool) {
+	c.pendingMu.Lock()
+	defer c.pendingMu.Unlock()
+	idx := 0
+	if id != 0 {
+		idx = slices.IndexFunc(c.pending, func(p pendingHandle) bool {
+			return p.id == id
+		})
+		if idx < 0 {
+			return nil, false
+		}
+	} else if len(c.pending) == 0 {
+		return nil, false
+	}
+	slot := c.pending[idx]
+	c.pending = slices.Delete(c.pending, idx, idx+1)
+	close(slot.done)
+	return slot.ch, true
+}
+
+func (c *commandClientStream) cancelOnDone(ctx context.Context, p pendingHandle) {
+	select {
+	case <-p.done:
+	case <-c.ctx.Done():
+	case <-ctx.Done():
+		msg := textrpc.ServerCommandMessage{
+			Type:         textrpc.ServerCommandMessage_HandleCancel,
+			HandleCancel: &textrpc.RequestCancel{Id: p.id},
+		}
+		if err := c.send(&msg); err != nil {
+			c.log.Warn("send handle cancel", "error", err)
+		}
+	}
+}
+
 func (c *commandClientStream) buildHandleRequest(
-	cmd textapi.Command,
+	cmd textapi.Command, id int64,
 ) *textrpc.ServerCommandMessage {
 	var cursorContent, cursorWindow termrpc.Coordinates
 	cursorContent.FromModel(cmd.Cursor.Content)
@@ -208,6 +265,7 @@ func (c *commandClientStream) buildHandleRequest(
 		Args:          cmd.Args,
 		CursorContent: &cursorContent,
 		CursorWindow:  &cursorWindow,
+		Id:            id,
 	}
 	if cmd.Window != nil {
 		req.WindowId = cmd.Window.WindowID()

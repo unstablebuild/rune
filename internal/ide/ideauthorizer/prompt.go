@@ -342,6 +342,10 @@ func joinAdjacentPromptFragments(left promptFragment, right promptFragment) prom
 // provided, each is rendered bold and separated by commas so the user
 // sees which commands will be broadened.
 func commandScopeNote(req PermissionRequest) string {
+	if req.CommandScopeExact {
+		return "\n\nChoosing **Always** approves only this exact command. " +
+			"Any change to its arguments or working directory will prompt again."
+	}
 	labels := displayScopeLabels(req)
 	if len(labels) == 0 {
 		return ""

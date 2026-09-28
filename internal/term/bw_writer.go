@@ -60,6 +60,10 @@ func (w bwWriter) Context() context.Context {
 	return w.w.Context()
 }
 
+func (w bwWriter) DrawImage(img term.Image) bool {
+	return w.w.DrawImage(img)
+}
+
 // grayscaleFg resolves a ColorDefault foreground to defaultFg before
 // grayscaling so unfocused body text follows the theme default rather
 // than keeping its native hue. It is only appropriate for SetCell, where

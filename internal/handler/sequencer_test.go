@@ -27,6 +27,16 @@ import (
 )
 
 func TestSequencer(t *testing.T) {
+	t.Run("reports only first keys as prefixes", func(t *testing.T) {
+		s := NewSequencer([]Sequence{{
+			First: term.KeyComb{Ch: 'g'},
+			Last:  term.KeyComb{Ch: 'd'},
+		}}, time.Hour)
+
+		assert.True(t, s.IsPrefix(term.KeyComb{Ch: 'g'}))
+		assert.False(t, s.IsPrefix(term.KeyComb{Ch: 'd'}))
+		assert.False(t, s.IsPrefix(term.KeyComb{Ch: 'g', Mod: term.ModCtrl}))
+	})
 	t.Run("returns sequence match", func(t *testing.T) {
 		interests := []Sequence{{
 			First: term.KeyComb{Ch: 'd'},

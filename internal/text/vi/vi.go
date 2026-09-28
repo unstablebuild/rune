@@ -502,6 +502,11 @@ func (vi *Vi) IsSearchMode() bool {
 	return vi.handler.mode() == searchMode
 }
 
+// IsNormalMode returns whether the current mode is normal mode.
+func (vi *Vi) IsNormalMode() bool {
+	return vi.handler.mode() == normalMode
+}
+
 // Search runs a text search on the underlying scroll content.
 func (vi *Vi) Search(target string) {
 	vi.handler.search(target)

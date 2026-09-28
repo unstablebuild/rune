@@ -256,6 +256,27 @@ config = {
             "angular_width": 0.33,
             "cycles": 1,
         },
+        # Plays over content tabs that an extension marks as having
+        # work in progress (e.g. a rune-agent turn), until the work
+        # ends or the tab closes. "shader" is one of blaze, burn,
+        # inferno, noise, pulse, shine or trippy. "fps" is the redraw
+        # cadence and "loop" how long one visual loop lasts, as a Go
+        # duration string.
+        "active_content_tab": {
+            "enabled": True,
+            "shader":  "shine",
+            "fps":     10,
+            "loop":    "1400ms",
+        },
+        # Plays over the workspace tabs that own an active content
+        # tab, whether or not the workspace is focused. Takes the same
+        # keys as active_content_tab.
+        "active_workspace_tab": {
+            "enabled": True,
+            "shader":  "shine",
+            "fps":     10,
+            "loop":    "1400ms",
+        },
     },
     # Self-upgrade configuration. Rune polls a public manifest endpoint
     # to discover new releases and prompts before installing them.
@@ -347,24 +368,59 @@ config = {
     "editor": {
         # Editor mode and exo settings are not configured here. The
         # bootstrap flow writes an editor preset with the user's choice
-        # ("modal", "standard", "emacs", or "exo" with a preset). Without an
-        # editor preset, Rune defaults to modal as configured below.
+        # ("vim", "helix", "standard", "emacs", or "exo" with a preset).
+        # Without an editor preset, Rune defaults to vim as configured
+        # below.
         # Enable or disable syntax-driven indentation.
         "autoindent": True,
         # Auto-pair quotes, brackets, and braces while editing. Explicitly off
-        # for modal mode by default; the standard override enables it.
+        # for vim mode by default; the standard override enables it.
         "auto_pair":  False,
         # Auto-save dirty buffers after a brief idle period. Off by default;
         # set to True to flush file tabs ~2s after the last edit.
         "auto_save":  False,
         "tabspaces": 4,
+        # Where swap files are kept.
+        #
+        #   True   (default) keep them together under swap/ in the data
+        #          directory (--datadir). Each entry is named after the
+        #          edited file's full path, with "+" for the separators, so
+        #          files with the same name never collide. Nothing is
+        #          written next to the file, so no .gitignore entry is
+        #          needed and files in read-only directories stay editable.
+        #   False  keep the swap next to the edited file, as ".<name>.rswp".
+        #          Visible to git; needs write permission on the file's
+        #          directory.
+        #
+        # The data directory is resolved per file, on the host that owns it,
+        # so a remote workspace keeps its swaps on the remote machine. Files
+        # on a host with no data directory of its own keep the swap next to
+        # them, as with False.
+        "swap_dir": True,
         # Maximum buffer size (in bytes) for which Rune installs a syntax
         # tree on tab open. Files larger than this skip syntax parsing to
         # avoid freezing the editor inside the tree-sitter parser on
         # large log files and other big blobs. Set to 0 to disable the
         # guard and always parse.
         "max_size_for_syntax": 1048576,
-        "modal": {
+        # Settings for the vim editor. Configs may also spell this section
+        # "modal", its name before editor.mode "modal" became "vim"; where
+        # both set a key, "vim" wins.
+        "vim": {
+            # Default text attributes.
+            "attr":        attr(fg = "default", bg = "default"),
+            "message_bar": {
+                # Base attributes of the message bar and the search prompt.
+                "attr":   attr(fg = "default", bg = "gray"),
+                # Layout of the superimposed message bar shown while
+                # searching. The Message component supports the same styling
+                # operators as status-bar components.
+                "layout": '░▒▓█ {{ .Message | fg "white" }} ',
+            },
+            # Search result attributes.
+            "search_attr": attr(fg = "grey", bg = "yellow"),
+        },
+        "helix": {
             # Default text attributes.
             "attr":        attr(fg = "default", bg = "default"),
             "message_bar": {
@@ -460,9 +516,10 @@ config = {
             "goto":    "<esc>:{line}<enter>{col}|",
             # Rune-native editor used to serve URIs the external editor
             # cannot meaningfully edit (memory:// pseudo-URIs such as
-            # the file explorer's tab). Valid values are "modal", "standard",
-            # or "emacs". "modeless" remains a deprecated alias for "standard".
-            "fallback": "modal",
+            # the file explorer's tab). Valid values are "vim", "helix",
+            # "standard", or "emacs". "modal" and "modeless" remain deprecated
+            # aliases for "vim" and "standard".
+            "fallback": "vim",
             # Experimental. When True, Rune overlays its own location-list
             # attributes (syntax highlights, LSP diagnostics, debugger variables)
             # on top of the external editor's output. Set to False to
@@ -560,6 +617,18 @@ config = {
         "file_explorer": {
             "indent_attr": attr(fg = "gray"),
             "icon_attr":   attr(fg = "gray"),
+            # When True, the explorer refuses edits and writes; browsing,
+            # expanding and opening files still work.
+            "read_only":   False,
+            # Key that leaves read_only for the rest of the visit.
+            "edit_key":    "<shift-esc>",
+            # Width the split falls back to when the tree renders nothing,
+            # so an empty or fully ignored workspace stays usable.
+            "min_width":   24,
+            # Bottom row naming the next action available in the current
+            # mode, styled by hint_attr.
+            "hint":        True,
+            "hint_attr":   attr(fg = "gray"),
         },
     },
     # This maps extension ID to extension configuration.
@@ -908,7 +977,7 @@ if tui:
         "log_level": "info",
         "input_mode": ["esc", "mouse"],
         "editor": {
-            "modal": {
+            "vim": {
                 "attr":        attr(fg = "default", bg = "#1e1e1e"),
                 "message_bar": {"attr": attr(fg = "default", bg = "#1e1e1e")},
                 "search_attr": attr(fg = "default", bg = "#1e1e1e", flags = "reverse"),

@@ -177,5 +177,7 @@ func (h *locationCommandTestHandler) Dimensions() (int, int) { return 0, 0 }
 
 func (h *locationCommandTestHandler) IsSearchMode() bool { return false }
 
+func (h *locationCommandTestHandler) IsNormalMode() bool { return false }
+
 var _ Handler = (*locationCommandTestHandler)(nil)
 var _ browserapi.Handler = (*locationCommandTestHandler)(nil)

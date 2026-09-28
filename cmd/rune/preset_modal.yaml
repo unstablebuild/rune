@@ -1,5 +1,4 @@
-# Rune user configuration (modal editor preset).
-config_version: 2
+# Rune user configuration (vim editor preset).
 
 # ---------------------------------------------------------------------------
 # GUI theme
@@ -31,7 +30,7 @@ gui:
 #   tabspaces: 4
 #   ruler: 90
 #   autoindent: true            # syntax-driven indentation
-#   auto_pair: false            # auto-pair quotes/brackets/braces (modal default)
+#   auto_pair: false            # auto-pair quotes/brackets/braces (vim default)
 #   auto_save: false            # flush dirty buffers ~2s after last edit
 #   initial_folds: true         # collapse language-defined folds on open
 #   aux_bar:
@@ -49,7 +48,7 @@ gui:
 #     layout: ' {{ .Status | bg "red" | fg "white" | bold }} █▓▒░  {{ .Filepath | fg "white" }}  {{ .GitShortRef | fg "white" }}   {{ .GitDiffAdd | fg "green" }}   {{ .GitDiffDel | fg "red" }} {{ .ShiftRight }} {{ .CursorColumn | fg "white" }}:{{ .CursorLine | fg "white" }}  {{ .TotalLines | fg "white" }} lines  ░▒▓█ {{ .Language | bold | fg "white" | bg "red" }} '
 #     background_attr:       {bg: gray}
 #     foreground_error_attr: {fg: yellow}
-#   modal:
+#   vim:
 #     message_bar:
 #       attr: {fg: default, bg: gray}
 #       layout: '░▒▓█ {{ .Message | fg "white" }} '
@@ -134,6 +133,7 @@ command:
     "<alt-meta-k>": "windowresize increase height"
     "<alt-meta-l>": "windowresize increase width"
     "<meta-w>": "windowclose"
+    "<shift-meta-w>": "windowcloseall"
     "<ctrl-meta-h>": "windowdefaultsplit h"
     "<ctrl-meta-v>": "windowdefaultsplit v"
     "<shift-meta-f>": "windowtogglemaximize"

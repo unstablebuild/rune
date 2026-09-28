@@ -382,6 +382,10 @@ func (h *editorHandler) SetDefaultAttributes(term.Attributes) {}
 // IsSearchMode returns false.
 func (h *editorHandler) IsSearchMode() bool { return false }
 
+// IsNormalMode returns false: keys are forwarded to the external
+// editor, which owns their meaning.
+func (h *editorHandler) IsNormalMode() bool { return false }
+
 // CellView returns the watcher-synced buffer view.
 func (h *editorHandler) CellView() cell.View { return h.buf.View() }
 

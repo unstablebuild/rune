@@ -50,7 +50,7 @@ func TestWriteRun(t *testing.T) {
 	t.Run("writes at the cursor position", func(t *testing.T) {
 		b := newBuf()
 		resetPrimaryBuffer(b, "aaaaaaaaaa\nbbbbbbbbbb\ncccccccccc")
-		b.SetCursorAtScreen(term.Coordinates{X: 3, Y: 1}, false)
+		b.SetCursorAtScreen(term.Coordinates{X: 3, Y: 1})
 		n := b.WriteRun([]byte("xy"), vteparser.CharsetIndexG0)
 		require.Equal(t, 2, n)
 		assert.Equal(t, "bbbxy", cellsRowString(b, 1)[:5])
@@ -120,7 +120,7 @@ func TestWriteGlyphRun(t *testing.T) {
 		b := NewPrimaryBuffer(0, testHistory)
 		b.SetDefaultChar(' ')
 		b.Resize(10, 3)
-		b.SetCursorAtScreen(term.Coordinates{X: 6}, false)
+		b.SetCursorAtScreen(term.Coordinates{X: 6})
 
 		// Three wide glyphs need six columns but only four remain.
 		assert.Equal(t, 0, b.WriteGlyphRun(wide("漢字漢"), vteparser.CharsetIndexG0))

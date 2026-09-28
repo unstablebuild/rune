@@ -158,6 +158,20 @@ func (mr *MockHandlerMockRecorder) Handle(arg0 any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Handle", reflect.TypeOf((*MockHandler)(nil).Handle), arg0)
 }
 
+// IsNormalMode mocks base method.
+func (m *MockHandler) IsNormalMode() bool {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "IsNormalMode")
+	ret0, _ := ret[0].(bool)
+	return ret0
+}
+
+// IsNormalMode indicates an expected call of IsNormalMode.
+func (mr *MockHandlerMockRecorder) IsNormalMode() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsNormalMode", reflect.TypeOf((*MockHandler)(nil).IsNormalMode))
+}
+
 // IsSearchMode mocks base method.
 func (m *MockHandler) IsSearchMode() bool {
 	m.ctrl.T.Helper()
@@ -506,6 +520,20 @@ func (mr *MockEditorMockRecorder) RegisterREPLCommand(arg0, arg1 any) *gomock.Ca
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RegisterREPLCommand", reflect.TypeOf((*MockEditor)(nil).RegisterREPLCommand), arg0, arg1)
 }
 
+// RegisterResourceOpener mocks base method.
+func (m *MockEditor) RegisterResourceOpener(scheme string, h textapi.ResourceOpenHandler) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "RegisterResourceOpener", scheme, h)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// RegisterResourceOpener indicates an expected call of RegisterResourceOpener.
+func (mr *MockEditorMockRecorder) RegisterResourceOpener(scheme, h any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RegisterResourceOpener", reflect.TypeOf((*MockEditor)(nil).RegisterResourceOpener), scheme, h)
+}
+
 // SubscribeCommand mocks base method.
 func (m *MockEditor) SubscribeCommand(arg0 textapi.CommandManual, arg1 text.CommandHandler) error {
 	m.ctrl.T.Helper()
@@ -546,6 +574,20 @@ func (m *MockEditor) UnregisterREPLCommand(arg0 string) error {
 func (mr *MockEditorMockRecorder) UnregisterREPLCommand(arg0 any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UnregisterREPLCommand", reflect.TypeOf((*MockEditor)(nil).UnregisterREPLCommand), arg0)
+}
+
+// UnregisterResourceOpener mocks base method.
+func (m *MockEditor) UnregisterResourceOpener(scheme string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UnregisterResourceOpener", scheme)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// UnregisterResourceOpener indicates an expected call of UnregisterResourceOpener.
+func (mr *MockEditorMockRecorder) UnregisterResourceOpener(scheme any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UnregisterResourceOpener", reflect.TypeOf((*MockEditor)(nil).UnregisterResourceOpener), scheme)
 }
 
 // UnsubscribeCommand mocks base method.

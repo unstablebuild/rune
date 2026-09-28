@@ -84,11 +84,17 @@ type Config struct {
 	// reported by cell.Buffer.Size) above which a file's tab
 	// installs no syntax tree.
 	MaxSyntaxParseSize int
-	PkgManager         syntax.PkgManager
-	Markdown           markdown.Config
-	Clipboard          clipboard.Register
-	OpenRouter         OpenRouter
-	Comments           CommentConfig
+	// SwapDirectory reports the directory holding file's swap entry,
+	// named after the full path of the file it backs. It is asked per
+	// file because one editor opens files on many hosts, and a
+	// directory only exists on the host it was resolved against. A nil
+	// resolver, or an empty result, keeps the swap next to its file.
+	SwapDirectory func(file workspaceapi.URI) string
+	PkgManager    syntax.PkgManager
+	Markdown      markdown.Config
+	Clipboard     clipboard.Register
+	OpenRouter    OpenRouter
+	Comments      CommentConfig
 	// StreamingOpen enables the async streaming file-open path.
 	// When true, OpenFileTab returns a lightweight read-only
 	// streaming handler immediately and runs workspace.Load on a
@@ -107,15 +113,9 @@ type Config struct {
 	// scheduler (a queueing or lock-serialising one for fixtures that
 	// also drive UI mutations from another goroutine).
 	ScheduleNextTick func(func()) bool
-	// FileExplorerIndentAttr selects the attributes applied to the
-	// indent guide rune drawn at the start of every depth level in
-	// the file explorer. Defaults to term.ColorGray when zero.
-	FileExplorerIndentAttr term.Attributes
-	// FileExplorerIconAttr selects the attributes applied to the
-	// per-row icon glyph (directory, default file, or per-extension
-	// override) drawn after the indent guides in the file explorer.
-	// Defaults to term.ColorGray when zero.
-	FileExplorerIconAttr term.Attributes
+	// FileExplorer tunes the :fexplorer tree without affecting the
+	// code editor itself.
+	FileExplorer FileExplorerConfig
 	// EnvSource resolves command-time variables referenced by alias
 	// bodies and by dispatched argv. The text component additionally
 	// overlays a fixed set of editor-state variables on top of this
@@ -333,6 +333,47 @@ type CommandAlias struct {
 	Completers []func(*Component) command.Completer
 }
 
+// FileExplorerConfig tunes the :fexplorer tree. Every field is
+// user-overridable through the editor.file_explorer config block.
+type FileExplorerConfig struct {
+	// IndentAttr selects the attributes applied to the indent guide
+	// rune drawn at the start of every depth level.
+	IndentAttr term.Attributes
+	// IconAttr selects the attributes applied to the per-row icon
+	// glyph (directory, default file, or per-extension override)
+	// drawn after the indent guides.
+	IconAttr term.Attributes
+	// ReadOnly disables every filesystem-mutating edit: buffer edits
+	// are refused before they land, leaving navigation and
+	// expand/collapse intact.
+	ReadOnly bool
+	// EditKey leaves read-only mode for the rest of the visit.
+	EditKey term.KeyComb
+	// MinWidth is the width the explorer falls back to when the tree
+	// renders nothing, so an empty or fully ignored workspace does
+	// not collapse the split into an unusable sliver.
+	MinWidth int
+	// Hint draws a single row at the bottom of the explorer naming
+	// the next action available in the current mode.
+	Hint bool
+	// HintAttr selects the attributes applied to that hint row.
+	HintAttr term.Attributes
+}
+
+// DefaultFileExplorerConfig returns the default FileExplorerConfig.
+// The same values ship as the editor.file_explorer defaults in
+// rune.star.
+func DefaultFileExplorerConfig() FileExplorerConfig {
+	return FileExplorerConfig{
+		IndentAttr: term.Attributes{Fg: term.ColorGray},
+		IconAttr:   term.Attributes{Fg: term.ColorGray},
+		EditKey:    term.KeyComb{Key: term.KeyEsc, Mod: term.ModShift},
+		MinWidth:   24,
+		Hint:       true,
+		HintAttr:   term.Attributes{Fg: term.ColorGray},
+	}
+}
+
 // DefaultCommandOverlayConfig returns the default Config's CommandOverlayConfig.
 func DefaultCommandOverlayConfig() (cfg CommandOverlayConfig) {
 	// NOTE: cannot use handler/command config: dependency cycle
@@ -369,14 +410,13 @@ func DefaultConfig() Config {
 		// rune.star ships the same value via
 		// editor.max_size_for_syntax; user configs and tests can
 		// override the field through text.WithMaxSyntaxParseSize.
-		MaxSyntaxParseSize:     1 * 1024 * 1024,
-		PkgManager:             nopPkgManager{},
-		Markdown:               markdown.DefaultConfig(),
-		Clipboard:              clipboard.NewInMemory(),
-		OpenRouter:             nopOpenRouter{},
-		Comments:               CommentConfig{},
-		FileExplorerIndentAttr: term.Attributes{Fg: term.ColorGray},
-		FileExplorerIconAttr:   term.Attributes{Fg: term.ColorGray},
+		MaxSyntaxParseSize: 1 * 1024 * 1024,
+		PkgManager:         nopPkgManager{},
+		Markdown:           markdown.DefaultConfig(),
+		Clipboard:          clipboard.NewInMemory(),
+		OpenRouter:         nopOpenRouter{},
+		Comments:           CommentConfig{},
+		FileExplorer:       DefaultFileExplorerConfig(),
 		Icons: IconSet{
 			Extensions:    map[string]rune{},
 			Directory:     '',
@@ -413,6 +453,14 @@ func WithSyntaxConfig(syntax syntax.Config) Option {
 func WithMaxSyntaxParseSize(size int) Option {
 	return func(cfg *Config) {
 		cfg.MaxSyntaxParseSize = size
+	}
+}
+
+// WithSwapDirectory returns an Option that sets the resolver for the
+// directory holding swap entries. See Config.SwapDirectory.
+func WithSwapDirectory(resolve func(file workspaceapi.URI) string) Option {
+	return func(cfg *Config) {
+		cfg.SwapDirectory = resolve
 	}
 }
 
@@ -665,6 +713,26 @@ func WithDirtyTabAttr(attr term.Attributes) Option {
 	}
 }
 
+// WithActiveTabShader defines the continuous effect run over the labels
+// of tabs marked active via SetTabActivity, and its cadence. An empty
+// name disables it; zero fps or loop keep the catalog defaults.
+func WithActiveTabShader(name string, fps int, loop time.Duration) Option {
+	return func(cfg *Config) {
+		cfg.ActiveTabShader = name
+		cfg.ActiveTabShaderFPS = fps
+		cfg.ActiveTabShaderLoop = loop
+	}
+}
+
+// WithOnTabActivity registers fn to be called on the host event loop
+// whenever a tab's activity changes, including when an active tab is
+// removed.
+func WithOnTabActivity(fn func()) Option {
+	return func(cfg *Config) {
+		cfg.OnTabActivity = fn
+	}
+}
+
 // WithCommandOverlayConfig defines the command overlay interface properties.
 func WithCommandOverlayConfig(c CommandOverlayConfig) Option {
 	return func(cfg *Config) {
@@ -700,23 +768,15 @@ func WithIconSet(icons IconSet) Option {
 	}
 }
 
-// WithFileExplorerIndentAttr sets the attributes used to render the
-// indent guide rune of every depth level in the file explorer.
-func WithFileExplorerIndentAttr(attr term.Attributes) Option {
+// WithFileExplorer sets the :fexplorer tree configuration.
+func WithFileExplorer(explorer FileExplorerConfig) Option {
 	return func(cfg *Config) {
-		cfg.FileExplorerIndentAttr = attr
-	}
-}
-
-// WithFileExplorerIconAttr sets the attributes used to render the
-// per-row icon glyph in the file explorer.
-func WithFileExplorerIconAttr(attr term.Attributes) Option {
-	return func(cfg *Config) {
-		cfg.FileExplorerIconAttr = attr
+		cfg.FileExplorer = explorer
 	}
 }
 
 // WithEventPublisher sets the Component's event publisher
+// The given function must be safe for concurrent use.
 func WithEventPublisher(f func(term.Event) bool) Option {
 	return func(cfg *Config) {
 		cfg.EventPublisher = f

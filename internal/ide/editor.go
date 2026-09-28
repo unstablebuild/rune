@@ -101,6 +101,24 @@ func (c currentEditor) UnregisterREPLCommand(name string) error {
 	return ed.UnregisterREPLCommand(name)
 }
 
+func (c currentEditor) RegisterResourceOpener(
+	scheme string, h textapi.ResourceOpenHandler,
+) error {
+	ed := c.editor()
+	if ed == nil {
+		return errNoEditor
+	}
+	return ed.RegisterResourceOpener(scheme, h)
+}
+
+func (c currentEditor) UnregisterResourceOpener(scheme string) error {
+	ed := c.editor()
+	if ed == nil {
+		return errNoEditor
+	}
+	return ed.UnregisterResourceOpener(scheme)
+}
+
 func (c currentEditor) IsExternal() bool {
 	ed := c.editor()
 	if ed == nil {

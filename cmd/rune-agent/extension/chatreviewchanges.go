@@ -26,15 +26,12 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/sergi/go-diff/diffmatchpatch"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
 	"github.com/unstablebuild/rune-go-sdk/api/syntaxapi"
-	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
-	"github.com/unstablebuild/rune-go-sdk/term"
 
 	"unstable.build/rune/cmd/rune-agent/agent/agentools/applypatch"
 	"unstable.build/rune/internal/cell"
@@ -73,11 +70,6 @@ type reviewPatchArgs struct {
 // writes ahead of every content line. Source handed to the syntax parser
 // has it stripped, and highlight columns are shifted back by it.
 const diffGutter = 1
-
-// highlightBudget bounds the syntax pass. Rendering the review runs on
-// the event loop, so a pathological conversation opens unhighlighted
-// rather than freezing the UI.
-const highlightBudget = 250 * time.Millisecond
 
 // defaultHunkContextLines is how many surrounding source lines are
 // pulled in around each hunk when review_context_lines is unset.
@@ -312,69 +304,15 @@ func reviewBuffer(
 	buf := vctrl.DiffBuffer(review.diffs)
 	cells := buf.RawCells()
 	for _, h := range review.headers {
-		boldRow(cells, h.row, len([]rune(h.text)))
+		vctrl.BoldRow(cells, h.row, len([]rune(h.text)))
 	}
-	highlightSnippets(ctx, cells, review.snippets, parser)
+	snippets := make([]vctrl.Snippet, 0, len(review.snippets))
+	for _, s := range review.snippets {
+		snippets = append(snippets,
+			vctrl.Snippet{URI: s.uri, Text: s.text, Rows: s.rows})
+	}
+	vctrl.HighlightSnippets(ctx, cells, snippets, parser, diffGutter)
 	return buf
-}
-
-func boldRow(cells [][]term.Cell, row, width int) {
-	if row >= len(cells) {
-		return
-	}
-	for x := 0; x < width && x < len(cells[row]); x++ {
-		cells[row][x].Attrs |= term.AttrBold
-	}
-}
-
-// highlightSnippets overlays tree-sitter colours on the rendered source
-// lines. Every failure mode — no parser, no grammar for the language, a
-// slow parse — degrades to an unhighlighted but otherwise correct diff.
-func highlightSnippets(
-	ctx context.Context, cells [][]term.Cell,
-	snippets []reviewSnippet, parser syntaxapi.Parser,
-) {
-	if parser == nil || len(snippets) == 0 {
-		return
-	}
-	ctx, cancel := context.WithTimeout(ctx, highlightBudget)
-	defer cancel()
-	for _, s := range snippets {
-		it, err := parser.Highlight(s.uri, s.text)
-		if err != nil {
-			continue
-		}
-		for loc, ok := it.Next(ctx); ok; loc, ok = it.Next(ctx) {
-			applyHighlight(cells, s, loc)
-		}
-		_ = it.Close()
-	}
-}
-
-// applyHighlight paints one snippet-relative location onto the buffer.
-// The cell background carries the add/remove tint, so only the
-// foreground and text attributes are taken from the syntax location.
-func applyHighlight(
-	cells [][]term.Cell, s reviewSnippet, loc textapi.Location,
-) {
-	for y := loc.From.Y; y <= loc.To.Y && y < len(s.rows); y++ {
-		row := s.rows[y]
-		if row >= len(cells) {
-			continue
-		}
-		startX, endX := diffGutter, len(cells[row])
-		if y == loc.From.Y {
-			startX = loc.From.X + diffGutter
-		}
-		if y == loc.To.Y {
-			endX = loc.To.X + diffGutter
-		}
-		for x := startX; x < endX && x < len(cells[row]); x++ {
-			attr := loc.Attr
-			attr.Bg = cells[row][x].Bg
-			cells[row][x].SetAttributes(attr)
-		}
-	}
 }
 
 // patchOutcome labels an invocation from the tool result the agent

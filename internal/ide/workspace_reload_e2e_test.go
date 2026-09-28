@@ -47,7 +47,8 @@ import (
 //  2. Open a test file (left window).
 //  3. windownew right creates a fresh empty window on the right.
 //  4. terminalnew opens a real vte.Handler in that right window
-//     running `echo abc`.
+//     running a script that prints `abc` and stays alive, since a
+//     terminal whose process exits is closed.
 //  5. After the terminal output settles, the test snapshots the
 //     layout topology and the textual content of the terminal cells.
 //  6. :workspacereload is dispatched the same way a user would
@@ -80,6 +81,8 @@ workspace:
 
 	testFile := filepath.Join(dir, "hello.txt")
 	require.NoError(t, os.WriteFile(testFile, []byte("hello world\n"), 0o644))
+	script := filepath.Join(dir, "abc.sh")
+	require.NoError(t, os.WriteFile(script, []byte("#!/bin/sh\necho abc\nexec cat\n"), 0o755))
 
 	mu := new(sync.Mutex)
 	scheduleNextTick, drainSchedule := newTestScheduler(t, mu)
@@ -115,11 +118,11 @@ workspace:
 
 	// 1) Open the file (left window).
 	// 2) Open an empty window on the right.
-	// 3) Open a terminal in that right window running `echo abc`.
+	// 3) Open a terminal in that right window printing `abc`.
 	sendKeys(t,
 		"<c-\\\\>edit<space>"+testFile+"<enter>"+
 			"<c-\\\\>windownew<space>right<enter>"+
-			"<c-\\\\>terminalnew<space>echo<space>abc<enter>",
+			"<c-\\\\>terminalnew<space>"+script+"<enter>",
 	)
 
 	// Find the terminal we just created and wait for "abc" to land

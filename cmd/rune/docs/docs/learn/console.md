@@ -149,7 +149,7 @@ models local list                   # list locally cached models
 
 ## Editing, history, and completion
 
-The console input line is edited with the same [editor](./modal-editor.md)
+The console input line is edited with the same [editor](./vim-editor.md)
 you use everywhere else in Rune, so your motions and text objects work
 while composing a command. The most useful keys:
 

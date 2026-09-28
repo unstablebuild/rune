@@ -56,10 +56,14 @@ RACE_FLAG=$(if $(filter true,$(RUNE_DEBUG_BUILD)),-race)
 # buildstamp exits zero, so any failure leaves BUILD_DATE empty (the
 # error still reaches stderr). BUILD_DATE_LDFLAG $(error)s on an empty
 # stamp so a broken buildstamp aborts the build instead of baking in a
-# missing debug.BuildDate that would silently disable the one-off
-# upgrade-entitlement lockdown.
+# missing debug.BuildDate that would leave `rune --version` reporting no
+# build date.
 BUILD_DATE := $(shell out=$$(cd $(ROOT_DIR) && $(GO) run ./cmd/buildstamp) && printf '%s' "$$out")
 BUILD_DATE_LDFLAG = $(if $(strip $(BUILD_DATE)),,$(error buildstamp produced no build date; refusing to build a binary with an empty debug.BuildDate))-X unstable.build/rune/internal/debug.BuildDate=$(strip $(BUILD_DATE))
+# dist/arch/PKGBUILD and dist/debian/debian/rules re-declare this set
+# because makepkg and dpkg-buildpackage drive the compiler themselves and
+# never call these rules. A flag added or renamed here has to be mirrored
+# in both, or packaged builds quietly ship without it.
 COMMON_LDFLAGS=-X unstable.build/rune/internal/debug.Tag=$$(git describe --tags) -X unstable.build/rune/internal/debug.Commit=$$(git rev-parse --short HEAD) $(BUILD_DATE_LDFLAG) $(DEBUG_LDFLAGS)
 GOFLAGS=$(RACE_FLAG) -ldflags="$(COMMON_LDFLAGS) -X unstable.build/rune/internal/debug.Package=six"
 
@@ -350,6 +354,7 @@ linux-cross-compile:
 		--build-arg GIT_SSH_KEY="$$GIT_SSH_KEY" \
 		--build-arg RUNE_BUILD_TAG="$(VERSION)" \
 		--build-arg RUNE_BUILD_COMMIT="$(COMMIT)" \
+		--build-arg RUNE_BUILD_DATE="$(strip $(BUILD_DATE))" \
 		--build-arg RUNE_RELEASE_TAR="$(RUNE_LINUX_RELEASE_TAR)" \
 		--build-arg RUNE_ENV="$(RUNE_ENV)" \
 		--output type=local,dest=$(RUNE_LINUX_OUTPUT_DIR) \

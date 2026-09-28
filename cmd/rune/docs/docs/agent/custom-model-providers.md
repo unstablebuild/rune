@@ -144,30 +144,17 @@ custom/qwen2.5-coder-7b
 A bare name (without the `custom/` prefix) resolves only when exactly one
 provider exposes it; if the name is ambiguous, Rune asks you to prefix it
 with the intended provider. To make a custom model the default for new
-chats, use its qualified name:
+chats, point the `default` [alias](./intro.md#model-aliases) at its
+qualified name:
 
-```yaml tab
-models:
-  default: "custom/qwen2.5-coder-7b"
-  custom:
-    url: "http://localhost:8080/v1"
-    api_key: "sk-local"
-    available_models:
-      qwen2.5-coder-7b: 32768
+```
+models alias set default custom/qwen2.5-coder-7b
 ```
 
-```python tab
-"models": {
-    "default": "custom/qwen2.5-coder-7b",
-    "custom": {
-        "url": "http://localhost:8080/v1",
-        "api_key": "sk-local",
-        "available_models": {
-            "qwen2.5-coder-7b": 32768,
-        },
-    },
-},
-```
+A model name may itself contain slashes, which is common for gateways that
+namespace their catalog. Only the first `/` separates the provider, so
+`custom/openrouter/free` selects the model named `openrouter/free` from the
+`custom` provider.
 
 ## Popular backends
 

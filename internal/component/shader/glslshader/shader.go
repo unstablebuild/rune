@@ -22,9 +22,17 @@ import (
 	"sync"
 
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"github.com/unstablebuild/rune-go-sdk/term/graphemecluster"
 	"unstable.build/rune/internal/component/asciiart"
 	"unstable.build/rune/internal/debug"
 )
+
+// paintsText reports whether a foreground-only effect should touch a
+// cell. A blank has no foreground to show, and a glyph that renders as
+// background, such as a fade block, is scenery rather than text.
+func paintsText(ch rune) bool {
+	return ch != 0 && ch != ' ' && !graphemecluster.IsBackground(ch)
+}
 
 type cellRunner interface {
 	// runCell adapts the shader interface to be closer to pixel-shader.

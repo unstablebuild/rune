@@ -61,6 +61,14 @@ var (
 			},
 			handler: (*ex).keybindings,
 		},
+		"gitshow": {
+			man: textapi.CommandManual{
+				Summary: "Show the focused file's diff against HEAD in a floating window, " +
+					"opened at the hunk nearest the cursor. The file must have no unsaved " +
+					"changes, since the diff describes what is on disk.",
+			},
+			handler: (*ex).gitshow,
+		},
 		"history": {
 			man: textapi.CommandManual{
 				Summary: "Open the command prompt showing previously executed commands.",
@@ -453,8 +461,8 @@ var (
 					"is used by default. This allows opening files in " +
 					"workspaces outside the current workspace or on a different host. " +
 					"A " + workspace.SwapFileExtensionName +
-					" file is created in the same directory to prevent multiple sessions " +
-					"from overwriting each other's changes. " +
+					" file is created in the directory named by editor.swap_dir to " +
+					"prevent multiple sessions from overwriting each other's changes. " +
 					"If the file has any pending changes that were lost due to a crash, or " +
 					"another session is currently editing the file, a prompt is shown " +
 					"to resolve the conflict.",

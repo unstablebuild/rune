@@ -176,9 +176,21 @@ func (f *flusher) Reload(uri workspaceapi.URI) error {
 	return f.reloadAsync(uri, h, nil)
 }
 
+// after runs fn on the sched goroutine once settled is closed. The wait
+// counts as in flight so wait drains it like a save or reload awaiter.
+func (f *flusher) after(settled <-chan struct{}, fn func()) {
+	f.mu.Lock()
+	f.inflight++
+	f.mu.Unlock()
+	go debug.CapturePanicReport(func() {
+		defer f.done()
+		<-settled
+		f.sched(fn)
+	})
+}
+
 // inFlightCount reports how many awaiter goroutines are still
 // pending. Used by :q / :wq to refuse exit while saves are pending.
-// Used by :q / :wq to refuse exit while saves are pending.
 func (f *flusher) inFlightCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()

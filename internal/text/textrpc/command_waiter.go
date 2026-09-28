@@ -30,6 +30,10 @@ import "context"
 // Claimed only after dispatch returns, so a plain bool is sufficient —
 // no synchronization is needed. When Claimed is false the command
 // completed synchronously and nothing is sent on Ch.
+//
+// Ch must be buffered: a claimed result is reported from whichever
+// goroutine finished the command, including the event loop, and must
+// never block on the caller reading it.
 type Waiter struct {
 	Ch      chan error
 	Claimed bool

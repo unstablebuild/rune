@@ -218,7 +218,9 @@ func (w *blockWalker) parseList(n *ast.List) *listBlock {
 			items = append(items, li)
 		}
 	}
-	return newListBlock(n.IsOrdered(), n.Start, items, w.cfg)
+	list := newListBlock(n.IsOrdered(), n.Start, items, w.cfg)
+	list.loose = !n.IsTight
+	return list
 }
 
 func (w *blockWalker) parseInlineContentSkipFirst(n ast.Node) textRun {

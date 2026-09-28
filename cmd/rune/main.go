@@ -25,9 +25,9 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
-	"path"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -70,12 +70,14 @@ import (
 const (
 	doubleClickTimeout = 500 * time.Millisecond
 	telemetryPeriod    = 1 * time.Hour
+
+	flagNameNoSessionReopen = "no-session-reopen"
 )
 
 var (
 	apicfg = apiclient.DefaultConfig()
-	// Version is a combination of Tag and Commit, representing
-	// this executables version.
+	// Version is a combination of Tag, Commit and BuildDate,
+	// representing this executables version.
 	version string
 
 	configFilename          = "config.yaml"
@@ -93,9 +95,11 @@ var (
 	flagVersion   = flag.BoolP("version", "v", false, "Print version information and exit")
 	flagWorkspace = flag.StringP("workspace", "w", cwdURI().String(),
 		"Set the initial workspace to open in the format [scheme:][//[userinfo@]host][/]path")
-	flagFPS = flag.BoolP("fps", "f", false, "Render FPS on GUI mode")
-	flagGUI = flag.BoolP("gui", "G", false, "Run Rune in manual GUI mode")
-	flagTUI = flag.Bool("hardcore", false, "Run Rune in manual TUI mode")
+	flagFPS      = flag.BoolP("fps", "f", false, "Render FPS on GUI mode")
+	flagGUI      = flag.BoolP("gui", "G", false, "Run Rune in manual GUI mode")
+	flagTUI      = flag.Bool("tui", false, "Run Rune in TUI mode")
+	flagHeadless = flag.Bool("headless", false,
+		"Run Rune as a headless network node, with no editor UI")
 
 	// marked hidden
 	flagWorkspaceServer = flag.StringP("workspace-server", "x", "",
@@ -117,6 +121,9 @@ var (
 	flagWebsiteAddress = flag.String("rune-website-address", apiclient.DefaultWebsiteAddress,
 		"Base URL of the Rune website. Used to build the checkout URL "+
 			"opened by the upgrade prompt during bootstrap and lockdown.")
+	flagNoSessionReopen = flag.Bool(flagNameNoSessionReopen, false,
+		"Do not offer to reopen the workspaces from the last session. "+
+			"Set on the processes spawned by guiwindownew.")
 )
 
 func init() {
@@ -131,20 +138,30 @@ func init() {
 	flagConfigPath = flag.StringP("config", "c", defaultConfigPath,
 		"Use this file for configuring rune")
 
-	defaultDataPath = path.Join(home, ".rune")
+	defaultDataPath = filepath.Join(home, ".rune")
 	flagDataPath = flag.StringP("datadir", "d", defaultDataPath,
 		"Set temporary data directory")
 
 	flagWorkspaceServerLogFile = flag.StringP("workspace-server-log", "o",
-		path.Join(defaultDataPath, "server.log"),
+		filepath.Join(defaultDataPath, "server.log"),
 		"Log workspace server logs to this file")
 
-	version = fmt.Sprintf("%s (HEAD is %s)", debug.Tag, debug.Commit)
+	version = versionString(debug.Tag, debug.Commit, debug.BuildDate)
+}
+
+// versionString renders the --version line. buildDate is empty for
+// builds that go through plain `go build` rather than the Makefile or
+// a distro package, so it is reported only when the ldflag is set.
+func versionString(tag, commit, buildDate string) string {
+	if buildDate == "" {
+		return fmt.Sprintf("%s (HEAD is %s)", tag, commit)
+	}
+	return fmt.Sprintf("%s (HEAD is %s, built %s)", tag, commit, buildDate)
 }
 
 func resolveDefaultConfigPath(dataDir string) string {
-	yamlPath := path.Join(dataDir, configFilename)
-	starPath := path.Join(dataDir, configStarFilename)
+	yamlPath := filepath.Join(dataDir, configFilename)
+	starPath := filepath.Join(dataDir, configStarFilename)
 	if _, err := os.Stat(yamlPath); err == nil {
 		return yamlPath
 	}
@@ -308,7 +325,7 @@ func main() {
 	if err := flag.CommandLine.MarkHidden("rune-website-address"); err != nil {
 		panic(err)
 	}
-	if err := flag.CommandLine.MarkHidden("hardcore"); err != nil {
+	if err := flag.CommandLine.MarkHidden(flagNameNoSessionReopen); err != nil {
 		panic(err)
 	}
 
@@ -323,7 +340,7 @@ func main() {
 	exec, _ := os.Executable()
 	// If no manual tui/gui flag was set, assume we were launched as a desktop
 	// app and inject the same defaults the platform launcher would normally pass.
-	if !*flagGUI && !*flagTUI && *flagWorkspaceServer == "" {
+	if !*flagGUI && !*flagTUI && !*flagHeadless && *flagWorkspaceServer == "" {
 		if err := os.MkdirAll(*flagDataPath, 0777); err != nil {
 			fmt.Fprintf(os.Stderr, "mkdir datadir %q: %s",
 				*flagDataPath, err)
@@ -410,7 +427,7 @@ func appLaunchArgs(goos, zdotDir string) ([]string, bool) {
 		args = append(args, "--rune-zdotdir="+zdotDir)
 	}
 	switch goos {
-	case "darwin", "linux":
+	case "darwin", "linux", "windows":
 		return append(args, "-G", "-w", ""), true
 	default:
 		return nil, false
@@ -470,6 +487,60 @@ func linuxAppDir(execPath string) (string, bool) {
 	return appDir, true
 }
 
+// headlessFlags are the flags a headless node reads. Any other flag
+// passed with --headless is rejected rather than ignored, so a script
+// finds out instead of getting a node that quietly differs from what it
+// asked for.
+var headlessFlags = map[string]bool{
+	"headless":                true,
+	"version":                 true,
+	"config":                  true,
+	"datadir":                 true,
+	"rune-http-address":       true,
+	"rune-grpc-address":       true,
+	"rune-grpc-insecure":      true,
+	"rune-release-collection": true,
+	"rune-website-address":    true,
+}
+
+// checkModeArgs rejects the argument combinations the mode dispatch in
+// run would otherwise resolve silently.
+func checkModeArgs(
+	fs *flag.FlagSet, gui, tui, headless bool, files []string,
+) error {
+	var modes []string
+	for _, m := range []struct {
+		name string
+		set  bool
+	}{{"gui", gui}, {"tui", tui}, {"headless", headless}} {
+		if m.set {
+			modes = append(modes, "--"+m.name)
+		}
+	}
+	if len(modes) > 1 {
+		return fmt.Errorf(
+			"only one of --gui, --tui or --headless can be passed at once, got %s",
+			strings.Join(modes, " "))
+	}
+	if !headless {
+		return nil
+	}
+
+	var rejected []string
+	fs.Visit(func(f *flag.Flag) {
+		if !headlessFlags[f.Name] {
+			rejected = append(rejected, "--"+f.Name)
+		}
+	})
+	if len(files) > 0 {
+		rejected = append(rejected, "file arguments")
+	}
+	if len(rejected) == 0 {
+		return nil
+	}
+	return fmt.Errorf("--headless does not take %s", strings.Join(rejected, ", "))
+}
+
 func run() int {
 	var filenames []string
 
@@ -479,16 +550,21 @@ func run() int {
 	}
 
 	filenames = append(filenames, flag.Args()...)
+	if err := checkModeArgs(flag.CommandLine,
+		*flagGUI, *flagTUI, *flagHeadless, filenames); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
 
 	if err := setupRuneBinPATH(*flagDataPath); err != nil {
 		log.Errorf("installed executables will not be available: "+
 			"set the PATH env variable: %v", err)
 	}
 
-	// TUI inherits the parent-shell PATH the user already exported, so it
-	// skips the login SHELL PATH resolve.
+	// TUI and headless inherit the parent-shell PATH the user already
+	// exported, so they skip the login SHELL PATH resolve.
 	var pathDone <-chan error
-	if !*flagTUI {
+	if !*flagTUI && !*flagHeadless {
 		pathDone = startLoginShellPATHResolve(*flagDataPath)
 	} else {
 		ch := make(chan error)
@@ -509,8 +585,13 @@ func run() int {
 		return code
 	}
 
-	var mu sync.Mutex
 	ctx := context.Background()
+
+	if *flagHeadless {
+		return runHeadless(ctx)
+	}
+
+	var mu sync.Mutex
 	runner, err := extensionv2.NewRunner(ctx, &mu, *flagDataPath)
 	if err != nil {
 		err = fmt.Errorf("new extension runner: %v", err)
@@ -538,7 +619,8 @@ func run() int {
 	} else if *flagTUI {
 		return runTUI(filenames, runner, trust, &mu)
 	} else {
-		fmt.Fprintf(os.Stderr, "--gui must be set if running on %s\n",
+		fmt.Fprintf(os.Stderr,
+			"one of --gui, --tui or --headless must be set if running on %s\n",
 			runtime.GOOS)
 		return 1
 	}
@@ -665,12 +747,18 @@ func runGUI(
 	// Capture the launch command for guiwindownew. Visit iterates
 	// only over flags that were explicitly set (including
 	// macOS-injected defaults after the second flag.Parse), so
-	// positional filename args are naturally excluded.
+	// positional filename args are naturally excluded. The reopen
+	// flag is re-added unconditionally rather than inherited, so a
+	// spawned window never restores the parent instance's session.
 	execPath, _ := os.Executable()
 	var launchArgs []string
 	flag.CommandLine.Visit(func(f *flag.Flag) {
+		if f.Name == flagNameNoSessionReopen {
+			return
+		}
 		launchArgs = append(launchArgs, fmt.Sprintf("--%s=%s", f.Name, f.Value.String()))
 	})
+	launchArgs = append(launchArgs, "--"+flagNameNoSessionReopen)
 	launchCmd := append([]string{execPath}, launchArgs...)
 
 	chdirerr := os.Chdir(home)
@@ -689,6 +777,13 @@ func runGUI(
 			return false
 		}
 		return g.PublishEvent(ev)
+	}
+	cellPixelSize := func() (int, int) {
+		g := guiRef.Load()
+		if g == nil {
+			return 0, 0
+		}
+		return g.CellPixelSize()
 	}
 
 	// We load config twice, but it's better than the race conditions caused
@@ -719,7 +814,7 @@ func runGUI(
 	root, err := newBootstrapHandler(
 		*flagDataPath, *flagConfigPath,
 		*flagWorkspace, *flagZdotDir, filenames,
-		launchCmd, runner, mu, publishEvent,
+		launchCmd, runner, mu, publishEvent, cellPixelSize,
 		func(u *url.URL) error { return extbrowser.Browse(u) },
 		text.NewSystemClipboard(), os.TempDir(), rootCfg, trust,
 	)
@@ -771,6 +866,8 @@ func runGUI(
 	defer func() { _ = root.Close() }()
 	guiRef.Store(g)
 	root.attachGUI(g, transparentWindow)
+	defer watchGUISignals(publishEvent,
+		quitEvent(appMenuKeyBindings(cfg)))()
 
 	if fg, bg := getGUIWindowOpacity(browser, cfg); transparentWindow && (fg != 1 || bg != 1) {
 		g.SetOpacity(bg, fg)

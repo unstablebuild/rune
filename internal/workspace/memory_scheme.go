@@ -398,7 +398,7 @@ func (m *memoryScheme) NewPty(ctx context.Context) (workspaceapi.Pty, error) {
 	return workspaceapi.Pty{}, errExecute
 }
 
-func (m *memoryScheme) SetPtySize(p workspaceapi.Pty, width, height int) error {
+func (m *memoryScheme) SetPtySize(workspaceapi.Pty, workspaceapi.PtySize) error {
 	return errExecute
 }
 

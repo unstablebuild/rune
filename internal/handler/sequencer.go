@@ -135,6 +135,13 @@ func (s *Sequencer) Reset() {
 	s.ctxClean()
 }
 
+// IsPrefix reports whether key is the first key of any sequence this
+// Sequencer is interested in.
+func (s *Sequencer) IsPrefix(key term.KeyComb) bool {
+	_, ok := s.interests[key]
+	return ok
+}
+
 // ParseSequence parses str into a Sequence or returns
 // error if it fails to parse it. This function is not case sensitive.
 // It accepts two key string representation, as they would be individually

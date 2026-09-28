@@ -67,8 +67,9 @@ func (b *blockingTerminal) NewPty(context.Context) (workspaceapi.Pty, error) {
 }
 
 func (b *blockingTerminal) SetPtySize(
-	_ workspaceapi.Pty, width, height int,
+	_ workspaceapi.Pty, size workspaceapi.PtySize,
 ) error {
+	width, height := size.Columns, size.Rows
 	b.entered <- [2]int{width, height}
 	<-b.release
 	b.mu.Lock()
@@ -113,7 +114,7 @@ func TestAsyncTerminal(t *testing.T) {
 		defer at.Close()
 
 		done := make(chan error, 1)
-		go func() { done <- at.SetPtySize(workspaceapi.Pty{}, 80, 24) }()
+		go func() { done <- at.SetPtySize(workspaceapi.Pty{}, workspaceapi.PtySize{Columns: 80, Rows: 24}) }()
 		select {
 		case err := <-done:
 			require.NoError(t, err)
@@ -130,7 +131,7 @@ func TestAsyncTerminal(t *testing.T) {
 		}
 
 		done2 := make(chan error, 1)
-		go func() { done2 <- at.SetPtySize(workspaceapi.Pty{}, 100, 30) }()
+		go func() { done2 <- at.SetPtySize(workspaceapi.Pty{}, workspaceapi.PtySize{Columns: 100, Rows: 30}) }()
 		select {
 		case err := <-done2:
 			require.NoError(t, err)
@@ -154,7 +155,7 @@ func TestAsyncTerminal(t *testing.T) {
 		for i := range asyncTerminalResizeQueue * 3 {
 			done := make(chan error, 1)
 			go func() {
-				done <- at.SetPtySize(workspaceapi.Pty{}, 80+i, 24)
+				done <- at.SetPtySize(workspaceapi.Pty{}, workspaceapi.PtySize{Columns: 80 + i, Rows: 24})
 			}()
 			select {
 			case err := <-done:
@@ -188,7 +189,7 @@ func TestAsyncTerminal(t *testing.T) {
 		at := newAsyncTerminal(wrapped, notis)
 		defer at.Close()
 
-		require.NoError(t, at.SetPtySize(workspaceapi.Pty{}, 80, 24))
+		require.NoError(t, at.SetPtySize(workspaceapi.Pty{}, workspaceapi.PtySize{Columns: 80, Rows: 24}))
 		require.Eventually(t, func() bool {
 			return len(notis.notified()) == 1
 		}, 5*time.Second, 5*time.Millisecond)
@@ -205,7 +206,7 @@ func TestAsyncTerminal(t *testing.T) {
 		at := newAsyncTerminal(wrapped, notis)
 		defer at.Close()
 
-		require.NoError(t, at.SetPtySize(workspaceapi.Pty{}, 80, 24))
+		require.NoError(t, at.SetPtySize(workspaceapi.Pty{}, workspaceapi.PtySize{Columns: 80, Rows: 24}))
 		require.Eventually(t, func() bool {
 			return len(wrapped.delivered()) == 1
 		}, 5*time.Second, 5*time.Millisecond)
@@ -216,13 +217,13 @@ func TestAsyncTerminal(t *testing.T) {
 		wrapped := newBlockingTerminal()
 		at := newAsyncTerminal(wrapped, nopNotifications{})
 
-		require.NoError(t, at.SetPtySize(workspaceapi.Pty{}, 80, 24))
+		require.NoError(t, at.SetPtySize(workspaceapi.Pty{}, workspaceapi.PtySize{Columns: 80, Rows: 24}))
 		select {
 		case <-wrapped.entered:
 		case <-time.After(5 * time.Second):
 			t.Fatal("resize worker never dispatched the queued resize")
 		}
-		require.NoError(t, at.SetPtySize(workspaceapi.Pty{}, 100, 30))
+		require.NoError(t, at.SetPtySize(workspaceapi.Pty{}, workspaceapi.PtySize{Columns: 100, Rows: 30}))
 
 		closed := make(chan struct{})
 		go func() {

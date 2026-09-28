@@ -265,6 +265,15 @@ func (e *Editor) UnsubscribeCommand(string) error { return errors.New("not suppo
 // UnregisterREPLCommand returns an error: nothing was ever registered.
 func (e *Editor) UnregisterREPLCommand(string) error { return errors.New("not supported") }
 
+// RegisterResourceOpener returns an error: exo does not host Rune-side
+// resource openers.
+func (e *Editor) RegisterResourceOpener(string, textapi.ResourceOpenHandler) error {
+	return errors.New("not supported")
+}
+
+// UnregisterResourceOpener returns an error: nothing was ever registered.
+func (e *Editor) UnregisterResourceOpener(string) error { return errors.New("not supported") }
+
 // Editor returns an error: exo does not track multiple handlers.
 func (e *Editor) Editor(workspaceapi.URI) (text.Handler, error) {
 	return nil, errors.New("not supported")

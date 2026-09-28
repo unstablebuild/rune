@@ -36,11 +36,6 @@ import (
 // provider client takes at construction time, so there are no
 // untyped maps anywhere in the router.
 type Config struct {
-	// Default is the model name used when a caller does not specify
-	// one. The router does not enforce it; consumers (e.g. the agent
-	// loop) read it through ide config.
-	Default string
-
 	// ReasoningSummary is forwarded to every OpenAI-compatible client
 	// (OpenAI, Codex, Gemini, custom) as the Responses API
 	// reasoning summary level ("auto", "concise", "detailed",
@@ -136,7 +131,6 @@ type LocalConfig struct {
 // from rune.star.
 func DefaultConfig() Config {
 	return Config{
-		Default:          "gpt-5.4",
 		ReasoningSummary: "auto",
 		Local: LocalConfig{
 			Service: llamaserver.DefaultConfig(),

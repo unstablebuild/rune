@@ -33,10 +33,10 @@ import (
 )
 
 // names are the interpreter entrypoints shadowed by Rune-owned shims
-// in Dir(dataDir), which is first on the Rune PATH. uv's own
-// interpreter links and tool bins live in <dataDir>/python/uvbin (later
-// on PATH), so the shim can fall back to the managed interpreter without
-// the two fighting over one directory.
+// in Dir(dataDir), which is first on the Rune PATH. uv's own interpreter
+// links live in <dataDir>/python/uvbin, which is kept off PATH entirely,
+// so the shim can fall back to the managed interpreter without it ever
+// shadowing the user's.
 var names = []string{"python", "python3"}
 
 // Dir returns the directory the shims are written to.
@@ -88,13 +88,17 @@ func Write(fs workspaceapi.FileSystem, dataDir string) error {
 
 // script renders the POSIX shim body. Resolution order: an activated
 // venv, the nearest enclosing project .venv walking up from $PWD (which
-// makes launches monorepo-correct per invocation), then the uv-managed
-// interpreter embedded at write time.
+// makes launches monorepo-correct per invocation), the user's own
+// interpreter on PATH, then the uv-managed interpreter embedded at write
+// time. PATH entries under dataDir are skipped: the shim dir is itself
+// on PATH, so scanning it would re-enter the shim.
 func script(dataDir string) string {
 	fallback := shQuote(FallbackPath(dataDir))
+	dd := shQuote(dataDir)
 	return `#!/bin/sh
 # Rune-managed Python shim: prefer the activated venv, then the nearest
-# enclosing project venv, then the uv-managed interpreter.
+# enclosing project venv, then the user's interpreter on PATH, then the
+# uv-managed interpreter.
 if [ -n "$VIRTUAL_ENV" ] && [ -x "$VIRTUAL_ENV/bin/python" ]; then
 	exec "$VIRTUAL_ENV/bin/python" "$@"
 fi
@@ -107,11 +111,27 @@ while :; do
 	[ "$n" = "$d" ] && break
 	d=$n
 done
+datadir=` + dd + `
+oldifs=$IFS
+IFS=:
+for name in python3 python; do
+	for p in $PATH; do
+		[ -n "$p" ] || continue
+		case $p in
+		"$datadir" | "$datadir"/*) continue ;;
+		esac
+		if [ -f "$p/$name" ] && [ -x "$p/$name" ]; then
+			IFS=$oldifs
+			exec "$p/$name" "$@"
+		fi
+	done
+done
+IFS=$oldifs
 fallback=` + fallback + `
 if [ -x "$fallback" ]; then
 	exec "$fallback" "$@"
 fi
-echo 'rune: no Python found; open a .py file in Rune to bootstrap one' >&2
+echo "rune: no Python found; install one or run 'python enable' in Rune" >&2
 exit 127
 `
 }

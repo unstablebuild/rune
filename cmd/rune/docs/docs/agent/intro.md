@@ -33,7 +33,7 @@ commands, depending on how much you need from it:
 
 Type either at the command prompt. When the editor is in modal mode, the
 chat input is itself a
-[modal editor](../learn/modal-editor.md), so you get the same motions and
+[vim editor](../learn/vim-editor.md), so you get the same motions and
 text objects you use everywhere else while composing messages.
 
 ### Quick questions with `?`
@@ -201,7 +201,7 @@ you use everywhere else and type straight into it. That is the point: write your
 comments where the code they refer to is.
 
 Close the window with `<ctrl-w>`. If your editor is not a
-[modal editor](../learn/modal-editor.md), `<esc>` closes it too.
+[vim editor](../learn/vim-editor.md), `<esc>` closes it too.
 
 If you edited the diff, the result is attached to the composer as a **changes
 review** and travels with your next message, so the agent reads your comments

@@ -24,8 +24,9 @@ import (
 	"unstable.build/rune/internal/llm/anthropic"
 )
 
-func TestFlagshipModelIsOpus5(t *testing.T) {
-	assert.Equal(t, anthropic.ClaudeOpus5, FlagshipModel())
+func TestFlagshipModelTracksAnthropic(t *testing.T) {
+	assert.Equal(t, anthropic.FlagshipModel(), FlagshipModel())
+	assert.Equal(t, anthropic.ClaudeOpus5Dot5, FlagshipModel())
 }
 
 func TestMaxOutputTokensMirrorsAnthropic(t *testing.T) {

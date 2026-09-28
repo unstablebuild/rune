@@ -196,6 +196,9 @@ func (t *TestEditorHandler) Dimensions() (int, int) {
 // IsSearchMode satisfies text.Handler.
 func (t *TestEditorHandler) IsSearchMode() bool { return false }
 
+// IsNormalMode satisfies text.Handler.
+func (t *TestEditorHandler) IsNormalMode() bool { return false }
+
 func (e *TestEditor) SubscribeCommand(cmd textapi.CommandManual, h text.CommandHandler) error {
 	return nil
 }
@@ -216,6 +219,14 @@ func (e *TestEditor) UnsubscribeCommand(cmd string) error {
 
 func (e *TestEditor) UnregisterREPLCommand(cmd string) error {
 	return nil
+}
+
+func (e *TestEditor) RegisterResourceOpener(string, textapi.ResourceOpenHandler) error {
+	return nil
+}
+
+func (e *TestEditor) UnregisterResourceOpener(string) error {
+	return text.ErrResourceOpenerNotRegistered
 }
 
 func (h *TestEditorHandler) LocationLists() []text.LocationSet {

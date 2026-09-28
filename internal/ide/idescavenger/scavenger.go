@@ -35,11 +35,16 @@ import (
 
 const (
 	// partitionName is the sub-partition the Cleaner owns. It holds
-	// nothing but the tracking document.
+	// nothing but the tracking document and the seed marker.
 	partitionName = "scavenger"
 
 	trackedDocumentID   = "workspaces"
 	trackedDocumentKind = "scavenger-workspaces"
+
+	// The seed marker has its own document: an older IDE process
+	// rewriting the tracking document whole must not erase it.
+	seedDocumentID   = "seed"
+	seedDocumentKind = "scavenger-seed"
 
 	fileScheme = "file"
 )
@@ -61,6 +66,13 @@ type Config struct {
 	// is considered open.
 	OpenWorkspaces func(ctx context.Context) ([]workspaceapi.URI, error)
 
+	// Seed lists the workspaces that predate the Cleaner, typically
+	// recovered from another IDE dataset. That listing decodes every
+	// document in the dataset, so the pass Start runs consults it once
+	// per dataset, off the caller's goroutine, and records that it
+	// did. Optional.
+	Seed func(ctx context.Context) ([]workspaceapi.URI, error)
+
 	// Stat resolves a workspace root. Defaults to os.Stat.
 	Stat func(name string) (fs.FileInfo, error)
 
@@ -76,6 +88,7 @@ type Config struct {
 type Cleaner struct {
 	storage        storageapi.Service
 	openWorkspaces func(ctx context.Context) ([]workspaceapi.URI, error)
+	seed           func(ctx context.Context) ([]workspaceapi.URI, error)
 	stat           func(name string) (fs.FileInfo, error)
 	startRetry     retry.Strategy
 
@@ -106,6 +119,7 @@ func New(cfg Config) (*Cleaner, error) {
 	return &Cleaner{
 		storage:        storage,
 		openWorkspaces: cfg.OpenWorkspaces,
+		seed:           cfg.Seed,
 		stat:           stat,
 		startRetry:     startRetry,
 	}, nil
@@ -127,18 +141,12 @@ func (c *Cleaner) RegisterNewWorkspace(
 	return c.register(ctx, uri)
 }
 
-// Seed starts tracking workspaces that predate the Cleaner, typically
-// recovered from another IDE dataset.
-func (c *Cleaner) Seed(
-	ctx context.Context, uris []workspaceapi.URI,
-) error {
-	return c.register(ctx, uris...)
-}
-
-// Start runs a single pass in the background, retrying a failed pass
-// with the configured backoff: the pass first runs while the IDE is
-// still starting up, when the event loop does not accept work yet and
-// the open workspaces cannot be determined. Close stops the retries.
+// Start seeds the dataset if that has not happened yet, then runs a
+// single pass, in the background and retrying a failure with the
+// configured backoff: the pass first runs while the IDE is still
+// starting up, when the event loop does not accept work yet and the
+// open workspaces cannot be determined, and the seed listing can be
+// refused by a storage another process leads. Close stops the retries.
 func (c *Cleaner) Start(ctx context.Context) {
 	ctx, cancel := context.WithCancel(ctx)
 	c.mu.Lock()
@@ -147,7 +155,10 @@ func (c *Cleaner) Start(ctx context.Context) {
 	go debug.CapturePanicReport(func() {
 		defer cancel()
 		for attempt := uint(1); ; attempt++ {
-			err := c.RunOnce(ctx)
+			err := c.seedOnce(ctx)
+			if err == nil {
+				err = c.RunOnce(ctx)
+			}
 			if err == nil || ctx.Err() != nil {
 				return
 			}
@@ -165,6 +176,36 @@ func (c *Cleaner) Start(ctx context.Context) {
 			}
 		}
 	})
+}
+
+// seedOnce recovers the workspaces that predate the Cleaner unless a
+// previous launch already did. The marker is only written once the
+// listing and the registration both succeeded, so a refused listing is
+// retried on the next launch.
+func (c *Cleaner) seedOnce(ctx context.Context) error {
+	if c.seed == nil {
+		return nil
+	}
+	var marker seedDocument
+	err := c.storage.Get(ctx, seedDocumentID, &marker)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, storageapi.ErrNotFound) {
+		return fmt.Errorf("idescavenger: load seed marker: %w", err)
+	}
+	uris, err := c.seed(ctx)
+	if err != nil {
+		return fmt.Errorf("idescavenger: seed: %w", err)
+	}
+	if err := c.register(ctx, uris...); err != nil {
+		return err
+	}
+	marker = seedDocument{Kind: seedDocumentKind, SeededAt: time.Now()}
+	if err := c.storage.Set(ctx, seedDocumentID, &marker); err != nil {
+		return fmt.Errorf("idescavenger: store seed marker: %w", err)
+	}
+	return nil
 }
 
 // RunOnce drops the storage of every tracked workspace whose root
@@ -298,6 +339,11 @@ func (c *Cleaner) register(
 type trackedWorkspaces struct {
 	Kind string
 	URIs []string
+}
+
+type seedDocument struct {
+	Kind     string
+	SeededAt time.Time
 }
 
 func (c *Cleaner) load(ctx context.Context) (trackedWorkspaces, error) {

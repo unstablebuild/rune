@@ -1047,6 +1047,8 @@ func (h *standardHandler) IsSearchMode() bool {
 	return h.find.active
 }
 
+func (h *standardHandler) IsNormalMode() bool { return false }
+
 func (t *standardHandler) ShowCommandBar(show bool) {
 	t.less.ShowCommandBar(show)
 }

@@ -1,0 +1,67 @@
+#!/usr/bin/make -f
+
+include /usr/share/dpkg/pkg-info.mk
+
+export CGO_ENABLED = 1
+# Keep both caches inside the build tree: sbuild/pbuilder run with a
+# read-only HOME. -modcacherw leaves the module cache writable so
+# dh_auto_clean can remove it without chmod games.
+# -buildmode=pie satisfies Debian's hardening expectations
+# (lintian hardening-no-pie).
+export GOFLAGS = -trimpath -mod=readonly -modcacherw -buildmode=pie
+export GOCACHE = $(CURDIR)/debian/.gocache
+export GOMODCACHE = $(CURDIR)/debian/.gomodcache
+
+# build-deb.sh exports the real git tag/commit; fall back to the
+# changelog version for builds driven directly by dpkg-buildpackage.
+RUNE_TAG ?= v$(DEB_VERSION_UPSTREAM)
+RUNE_COMMIT ?= unknown
+
+# Mirrors RUNE_ENV=prod in cmd/rune/Makefile: version stamps plus the
+# production API/download/website endpoints.
+RUNE_LDFLAGS = \
+	-X unstable.build/rune/internal/debug.Tag=$(RUNE_TAG) \
+	-X unstable.build/rune/internal/debug.Commit=$(RUNE_COMMIT) \
+	-X unstable.build/rune/internal/debug.Package=rune \
+	-X unstable.build/rune/internal/debug.OSPackaged=true \
+	-X unstable.build/rune/cmd/rune/ide/apiclient.DefaultHTTPEndpointAddress=https://api.rune.build \
+	-X unstable.build/rune/cmd/rune/ide/apiclient.DefaultGRPCEndpointAddress=rpc.rune.build:443 \
+	-X unstable.build/rune/cmd/rune/ide/apiclient.DefaultDownloadsHost=https://downloads.rune.build \
+	-X unstable.build/rune/cmd/rune/ide/apiclient.DefaultWebsiteAddress=https://rune.build
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	set -e; \
+	build_date=$$(go run ./cmd/buildstamp); \
+	go build -tags ebitensinglethread \
+		-ldflags "$(RUNE_LDFLAGS) -X unstable.build/rune/internal/debug.BuildDate=$$build_date" \
+		-o debian/build/rune ./cmd/rune
+
+override_dh_auto_install:
+	# rune.app/bin layout is required: the binary only enables its
+	# bundled-zdot bootstrap when /proc/self/exe resolves into
+	# .../rune.app/bin/ (linuxAppDir in cmd/rune/main.go). The
+	# /usr/bin/rune symlink is created by debian/links.
+	install -Dm755 debian/build/rune debian/rune/usr/lib/rune.app/bin/rune
+	set -e; for f in .zshenv .zprofile .zshrc .zlogin; do \
+		install -Dm644 extra/osx/Rune.app/Contents/Resources/zdot/$$f \
+			debian/rune/usr/lib/rune.app/share/zdot/$$f; \
+	done
+	install -Dm644 deploy/rune-linux/rune.desktop \
+		debian/rune/usr/share/applications/rune.desktop
+	install -Dm644 extra/icon.iconset/icon_512x512.png \
+		debian/rune/usr/share/icons/hicolor/512x512/apps/rune.png
+	install -Dm644 extra/icon.iconset/icon_512x512@2x.png \
+		debian/rune/usr/share/icons/hicolor/1024x1024/apps/rune.png
+	install -Dm644 dist/debian/rune.1 debian/rune/usr/share/man/man1/rune.1
+
+# No tests during package builds; the repo's suite runs in CI.
+override_dh_auto_test:
+
+# dwz does not understand Go DWARF.
+override_dh_dwz:
+
+override_dh_auto_clean:
+	rm -rf debian/build debian/.gocache debian/.gomodcache

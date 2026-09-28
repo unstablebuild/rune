@@ -18,21 +18,43 @@ package text
 
 import (
 	"context"
+
+	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"unstable.build/rune/internal/ide/vctrl"
 )
 
 type ctxKey int
 
 var barsKey ctxKey
 
-func withAuxiliaryBars(ctx context.Context) context.Context {
-	return context.WithValue(ctx, barsKey, true)
+// BarOptions selects which auxiliary bars an Edit call installs and,
+// when the caller renders a synthetic resource, what the status bar
+// should resolve git state against.
+type BarOptions struct {
+	DisableAuxBar   bool
+	DisableIconsBar bool
+	// StatusBar, when set, overrides the editor's configured workspace
+	// and git service for this Edit only.
+	StatusBar *StatusBarOverride
 }
 
-// BarsFromContext reports whether the context was prepared by
-// withAuxiliaryBars. text.Editor implementations call it to decide
-// whether to wrap the returned text.Handler with status / icons /
-// aux bars.
-func BarsFromContext(ctx context.Context) bool {
-	v, _ := ctx.Value(barsKey).(bool)
-	return v
+// StatusBarOverride redirects the status bar at a resource the editor's
+// own configuration cannot resolve.
+type StatusBarOverride struct {
+	Workspace  workspaceapi.URI
+	GitService vctrl.Service
+}
+
+// WithBars marks ctx as requesting auxiliary bars under opts.
+func WithBars(ctx context.Context, opts BarOptions) context.Context {
+	return context.WithValue(ctx, barsKey, opts)
+}
+
+// BarsFromContext returns the options WithBars stored and whether the
+// context asked for bars at all. text.Editor implementations call it to
+// decide whether to wrap the returned text.Handler with status / icons
+// / aux bars.
+func BarsFromContext(ctx context.Context) (BarOptions, bool) {
+	v, ok := ctx.Value(barsKey).(BarOptions)
+	return v, ok
 }

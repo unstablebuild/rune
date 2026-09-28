@@ -21,6 +21,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,7 +34,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"github.com/unstablebuild/rune-go-sdk/iterator"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"unstable.build/rune/internal/workspace/walkdir"
 )
 
 func TestFindProjectRoot(t *testing.T) {
@@ -116,6 +120,128 @@ func TestFindProjectRoot(t *testing.T) {
 			assert.Equal(t, "file://"+wantDir, root.URI)
 		})
 	}
+}
+
+func TestFindProjectRoots(t *testing.T) {
+	const ws = "/ws"
+	markers := []string{"pyproject.toml", ".venv"}
+
+	cases := []struct {
+		name     string
+		paths    []string
+		ignore   []string
+		maxDepth int
+		want     []string
+	}{
+		{
+			name:     "reports nested roots alongside the ancestor",
+			paths:    []string{"pyproject.toml", "svc/api/pyproject.toml"},
+			maxDepth: 6,
+			want:     []string{"", "svc/api"},
+		},
+		{
+			name:     "sibling roots stream in lexical order",
+			paths:    []string{"svc/web/pyproject.toml", "svc/api/pyproject.toml"},
+			maxDepth: 6,
+			want:     []string{"svc/api", "svc/web"},
+		},
+		{
+			name:     "ignored venv marks its parent, not itself",
+			paths:    []string{"svc/.venv/"},
+			ignore:   []string{"svc/.venv"},
+			maxDepth: 6,
+			want:     []string{"svc"},
+		},
+		{
+			name:     "descent stops at maxDepth",
+			paths:    []string{"a/b/c/pyproject.toml"},
+			maxDepth: 2,
+			want:     nil,
+		},
+		{
+			name:     "ignored trees are not descended into",
+			paths:    []string{"vendor/pkg/pyproject.toml", "svc/pyproject.toml"},
+			ignore:   []string{"vendor"},
+			maxDepth: 6,
+			want:     []string{"svc"},
+		},
+		{
+			name:     "workspace with no project yields nothing",
+			paths:    []string{"svc/main.py"},
+			maxDepth: 6,
+			want:     nil,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mfs := newMemFS(ws)
+			for _, p := range tc.paths {
+				if strings.HasSuffix(p, "/") {
+					mfs.addDir(filepath.Join(ws, p))
+					continue
+				}
+				mfs.addFile(filepath.Join(ws, p))
+			}
+			wsURI, err := workspaceapi.ParseURI("file://" + ws)
+			require.NoError(t, err)
+
+			roots, err := iterator.ToSlice(context.Background(),
+				FindProjectRoots(mfs, wsURI, markers, stubFilter(tc.ignore), tc.maxDepth))
+			require.NoError(t, err)
+			got := make([]string, 0, len(roots))
+			for _, r := range roots {
+				got = append(got, r.RelPath)
+				wantDir := filepath.Join(ws, r.RelPath)
+				assert.Equal(t, wantDir, r.Dir)
+				assert.Equal(t, "file://"+wantDir, r.URI)
+			}
+			if tc.want == nil {
+				assert.Empty(t, got)
+				return
+			}
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestFindProjectRootsStreams(t *testing.T) {
+	const ws = "/ws"
+	mfs := newMemFS(ws)
+	mfs.addFile(filepath.Join(ws, "a/pyproject.toml"))
+	mfs.addFile(filepath.Join(ws, "b/pyproject.toml"))
+	mfs.addFile(filepath.Join(ws, "c/pyproject.toml"))
+	wsURI, err := workspaceapi.ParseURI("file://" + ws)
+	require.NoError(t, err)
+
+	it := FindProjectRoots(mfs, wsURI, []string{"pyproject.toml"}, nil, 6)
+	t.Cleanup(func() { require.NoError(t, it.Close()) })
+
+	first, ok := it.Next(context.Background())
+	require.True(t, ok)
+	assert.Equal(t, "a", first.RelPath)
+	assert.Equal(t, int32(1), mfs.readDirs.Load(),
+		"only the workspace root should have been listed to reach the first root")
+
+	rest, err := iterator.ToSlice(context.Background(), it)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"b", "c"}, []string{rest[0].RelPath, rest[1].RelPath})
+}
+
+// stubFilter ignores the exact relative paths listed.
+func stubFilter(paths []string) walkdir.Filter {
+	if paths == nil {
+		return nil
+	}
+	return filterFunc(func(relpath string, _ bool) bool {
+		return slices.Contains(paths, relpath)
+	})
+}
+
+type filterFunc func(relpath string, isDir bool) bool
+
+func (f filterFunc) MatchRelPath(relpath string, isDir bool) bool {
+	return f(relpath, isDir)
 }
 
 func TestInitializerOpenTriggersOneInitRoot(t *testing.T) {
@@ -788,10 +914,11 @@ func (e *fakeEditor) SetDefaultAttributes(textapi.Handler, term.Attributes) erro
 // semantics so the upward marker walk can be exercised without touching
 // disk.
 type memFS struct {
-	root  string
-	files map[string]bool
-	dirs  map[string]bool
-	stats atomic.Int32
+	root     string
+	files    map[string]bool
+	dirs     map[string]bool
+	stats    atomic.Int32
+	readDirs atomic.Int32
 }
 
 func newMemFS(root string) *memFS {
@@ -824,7 +951,34 @@ func (m *memFS) Stat(p string) (os.FileInfo, error) {
 	return nil, &fs.PathError{Op: "stat", Path: p, Err: os.ErrNotExist}
 }
 
-func (m *memFS) ReadDir(string) ([]os.DirEntry, error) { return nil, os.ErrNotExist }
+// ReadDir synthesizes the listing implied by the registered files and
+// dirs, so an unregistered intermediate path still lists as a directory.
+func (m *memFS) ReadDir(p string) ([]os.DirEntry, error) {
+	m.readDirs.Add(1)
+	dir := m.resolve(p)
+	isDir := map[string]bool{}
+	mark := func(path string, registered bool) {
+		rel, err := filepath.Rel(dir, path)
+		if err != nil || rel == "." || rel == ".." || hasParentPrefix(rel) {
+			return
+		}
+		name, _, nested := strings.Cut(rel, string(filepath.Separator))
+		isDir[name] = isDir[name] || nested || registered
+	}
+	for f := range m.files {
+		mark(f, false)
+	}
+	for d := range m.dirs {
+		mark(d, true)
+	}
+	out := make([]os.DirEntry, 0, len(isDir))
+	for name, d := range isDir {
+		out = append(out, memDirEntry{memFileInfo{name: name, dir: d}})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name() < out[j].Name() })
+	return out, nil
+}
+
 func (m *memFS) OpenFile(string, int, os.FileMode) (workspaceapi.File, error) {
 	return nil, os.ErrInvalid
 }
@@ -842,3 +996,8 @@ func (i memFileInfo) Mode() os.FileMode  { return 0 }
 func (i memFileInfo) ModTime() time.Time { return time.Time{} }
 func (i memFileInfo) IsDir() bool        { return i.dir }
 func (i memFileInfo) Sys() any           { return nil }
+
+type memDirEntry struct{ memFileInfo }
+
+func (e memDirEntry) Type() os.FileMode          { return e.Mode() }
+func (e memDirEntry) Info() (os.FileInfo, error) { return e.memFileInfo, nil }

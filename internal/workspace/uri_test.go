@@ -59,20 +59,24 @@ func TestDefaultSwapFile(t *testing.T) {
 		wantSwapFile string
 		wantErr      bool
 	}{
+		// A swap directory that is the file's own directory keeps the
+		// sibling name; any other directory is shared, so the entry is
+		// named after the file's full path.
 		{"other:///tmp/a.go", "other:///tmp", "other:///tmp/.a.go.rswp", false},
-		{"file:///a.go", "file:///tmp", "file:///tmp/.a.go.rswp", false},
+		{"file:///a.go", "file:///tmp", "file:///tmp/+a.go.rswp", false},
 		{"file:///a.go", "file:///", "file:///.a.go.rswp", false},
 		{"file:///tmp/a.go", "file:///tmp", "file:///tmp/.a.go.rswp", false},
-		{"file:///tmp/a.go", "file:///", "file:///.a.go.rswp", false},
-		{"file://./tmp/a.go", "file://./", "file://./.a.go.rswp", false},
-		{"file://./a.go", "file://./tmp", "file://./tmp/.a.go.rswp", false},
+		{"file:///tmp/a.go", "file:///", "file:///+tmp+a.go.rswp", false},
+		{"file://./tmp/a.go", "file://./", "file://./+tmp+a.go.rswp", false},
+		{"file://./a.go", "file://./tmp", "file://./tmp/+a.go.rswp", false},
 		{"ssh:///a.go", "ssh://my_host/tmp", "", true},
 		{"ssh://my_host/a.go", "ssh:///tmp", "", true},
 		{"ssh://my_host/a.go", "ssh://creepy_host/tmp", "", true},
 		{"ssh://unstablebuild@my_host/a.go", "ssh://jj.furman@my_host/tmp", "", true},
-		{"ssh://user@my_host/a.go", "ssh://user@my_host/tmp", "ssh://user@my_host/tmp/.a.go.rswp", false},
-		{"ssh://my_host/a.go", "ssh://my_host/tmp", "ssh://my_host/tmp/.a.go.rswp", false},
-		{"ssh://my_host/./a.go", "ssh://my_host/./tmp", "ssh://my_host/tmp/.a.go.rswp", false},
+		{"ssh://user@my_host/a.go", "ssh://user@my_host/tmp", "ssh://user@my_host/tmp/+a.go.rswp", false},
+		{"ssh://my_host/a.go", "ssh://my_host/tmp", "ssh://my_host/tmp/+a.go.rswp", false},
+		{"ssh://my_host/./a.go", "ssh://my_host/./tmp", "ssh://my_host/tmp/+a.go.rswp", false},
+		{"ssh://my_host/tmp/a.go", "ssh://my_host/tmp", "ssh://my_host/tmp/.a.go.rswp", false},
 	}
 
 	for i, tcase := range tsuite {
@@ -171,4 +175,33 @@ func TestIsWorkspaceURI(t *testing.T) {
 		require.NoError(t, err)
 		assert.False(t, actualOut)
 	})
+}
+
+func TestURIUnderPrefix(t *testing.T) {
+	for _, tc := range []struct {
+		uri    string
+		prefix string
+		want   bool
+	}{
+		{"memory:///gitshow", "memory:///gitshow", true},
+		{"memory:///gitshow/a.go.diff", "memory:///gitshow", true},
+		{"memory:///gitshow/a/b/c.go.diff?n=2", "memory:///gitshow", true},
+		{"memory:///gitshow/a.go.diff", "memory:///gitshow/", true},
+		{"memory:///fexplorer", "memory:///fexplorer", true},
+		// A sibling that merely shares a textual prefix is unrelated:
+		// the file explorer's tests open memory:///fexplorer-test-1.
+		{"memory:///fexplorer-test-1", "memory:///fexplorer", false},
+		{"memory:///gitshowcase", "memory:///gitshow", false},
+		{"memory:///other/a.go", "memory:///gitshow", false},
+		{"file:///gitshow/a.go.diff", "memory:///gitshow", false},
+		{"memory://host/gitshow/a.go", "memory:///gitshow", false},
+	} {
+		t.Run(fmt.Sprintf("%s in %s", tc.uri, tc.prefix), func(t *testing.T) {
+			uri, err := workspaceapi.ParseURI(tc.uri)
+			require.NoError(t, err)
+			prefix, err := workspaceapi.ParseURI(tc.prefix)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, URIUnderPrefix(uri, prefix))
+		})
+	}
 }

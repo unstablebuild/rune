@@ -38,3 +38,31 @@ func TestTrippy(t *testing.T) {
 		assert.True(t, res > -1.0 && res < 1.0)
 	})
 }
+
+func TestTrippyPaintForeground(t *testing.T) {
+	params := DefaultTrippyParams()
+	params.PaintForeground = true
+
+	t.Run("suite", func(t *testing.T) {
+		shadertest.TestShader(t, Trippy(params, 30))
+	})
+
+	t.Run("paints the characters and keeps them", func(t *testing.T) {
+		in := paintTestCells()
+		Trippy(params, 30).Shade(3, 20, in)
+		want := paintTestCells()
+		var fgChanged bool
+		for y, row := range in {
+			for x, cell := range row {
+				assert.Equal(t, want[y][x].Ch, cell.Ch, "text must survive")
+				assert.Equal(t, want[y][x].Bg, cell.Bg, "background must stay bare")
+				fgChanged = fgChanged || cell.Fg != want[y][x].Fg
+			}
+		}
+		assert.True(t, fgChanged, "foreground painted")
+	})
+
+	t.Run("leaves background glyphs bare", func(t *testing.T) {
+		assertPaintsOnlyText(t, Trippy(params, 30))
+	})
+}

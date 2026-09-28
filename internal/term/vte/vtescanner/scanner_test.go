@@ -70,6 +70,10 @@ type dispatchedExecute struct {
 	ch byte
 }
 
+type dispatchedApc struct {
+	data []byte
+}
+
 func (d *testDispatcher) Print(r rune) {
 	d.dispatched = append(d.dispatched, dispatchedPrint{r: r})
 }
@@ -100,6 +104,10 @@ func (d *testDispatcher) CSIDispatch(params [][]uint16, intermediates []byte, ig
 
 func (d *testDispatcher) ESCDispatch(intermediates []byte, ignore bool, ch byte) {
 	d.dispatched = append(d.dispatched, dispatchedEsc{intermediates, ignore, ch})
+}
+
+func (d *testDispatcher) APCDispatch(data []byte) {
+	d.dispatched = append(d.dispatched, dispatchedApc{append([]byte(nil), data...)})
 }
 
 // copyingDispatcher deep-copies the params of every CSI dispatch. The
@@ -196,6 +204,104 @@ func TestScannerDCSParamsPerDispatch(t *testing.T) {
 }
 
 func TestScanner(t *testing.T) {
+	t.Run("parse apc", func(t *testing.T) {
+		var d testDispatcher
+		scanner := NewScanner(&d)
+		input := "\x1b_Ga=q,i=31,s=1,v=1;AAAA\x1b\\after"
+		for _, ch := range []byte(input) {
+			scanner.Advance(ch)
+		}
+
+		require.GreaterOrEqual(t, len(d.dispatched), 2)
+		apc, ok := d.dispatched[0].(dispatchedApc)
+		require.True(t, ok)
+		assert.Equal(t, []byte("Ga=q,i=31,s=1,v=1;AAAA"), apc.data)
+		// The ST's backslash reaches the driver as an ESC dispatch, and
+		// printing resumes afterwards.
+		esc, ok := d.dispatched[1].(dispatchedEsc)
+		require.True(t, ok)
+		assert.Equal(t, byte('\\'), esc.ch)
+		assert.Equal(t, dispatchedPrint{r: 'a'}, d.dispatched[2])
+	})
+
+	t.Run("apc payload bytes are not printed", func(t *testing.T) {
+		var d testDispatcher
+		scanner := NewScanner(&d)
+		for _, ch := range []byte("\x1b_G;\x1b\\\x1b_\x1b\\") {
+			scanner.Advance(ch)
+		}
+		var apcs []string
+		for _, ev := range d.dispatched {
+			switch ev := ev.(type) {
+			case dispatchedApc:
+				apcs = append(apcs, string(ev.data))
+			case dispatchedPrint:
+				t.Fatalf("unexpected print %q", ev.r)
+			}
+		}
+		assert.Equal(t, []string{"G;", ""}, apcs)
+	})
+
+	// kitty terminates an APC string on BEL as well as ST
+	// (vt-parser.c:419-441, :466-468). Without it the scanner keeps
+	// collecting and swallows every byte until the next ST.
+	t.Run("bel terminates an apc string", func(t *testing.T) {
+		var d testDispatcher
+		scanner := NewScanner(&d)
+		for _, ch := range []byte("\x1b_Gi=1;AAAA\x07hi") {
+			scanner.Advance(ch)
+		}
+		var apcs []string
+		var printed []rune
+		for _, ev := range d.dispatched {
+			switch ev := ev.(type) {
+			case dispatchedApc:
+				apcs = append(apcs, string(ev.data))
+			case dispatchedPrint:
+				printed = append(printed, ev.r)
+			}
+		}
+		assert.Equal(t, []string{"Gi=1;AAAA"}, apcs)
+		assert.Equal(t, []rune("hi"), printed)
+	})
+
+	t.Run("sos and pm strings are discarded", func(t *testing.T) {
+		var d testDispatcher
+		scanner := NewScanner(&d)
+		for _, ch := range []byte("\x1bXsos\x1b\\\x1b^pm\x1b\\\x1b_apc\x1b\\") {
+			scanner.Advance(ch)
+		}
+		var apcs [][]byte
+		for _, ev := range d.dispatched {
+			if ev, ok := ev.(dispatchedApc); ok {
+				apcs = append(apcs, ev.data)
+			}
+		}
+		assert.Equal(t, [][]byte{[]byte("apc")}, apcs)
+	})
+
+	t.Run("apc longer than the limit is dropped", func(t *testing.T) {
+		var d testDispatcher
+		scanner := NewScanner(&d)
+		scanner.Advance(0x1b)
+		scanner.Advance('_')
+		for range MaxAPCRaw + 1 {
+			scanner.Advance('x')
+		}
+		scanner.Advance(0x1b)
+		scanner.Advance('\\')
+		for _, ch := range []byte("\x1b_ok\x1b\\") {
+			scanner.Advance(ch)
+		}
+		var apcs [][]byte
+		for _, ev := range d.dispatched {
+			if ev, ok := ev.(dispatchedApc); ok {
+				apcs = append(apcs, ev.data)
+			}
+		}
+		assert.Equal(t, [][]byte{[]byte("ok")}, apcs)
+	})
+
 	t.Run("parse osc", func(t *testing.T) {
 		var d testDispatcher
 		scanner := NewScanner(&d)

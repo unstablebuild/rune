@@ -141,6 +141,16 @@ func isGemini3(model string) bool {
 	return strings.HasPrefix(model, "gemini-3")
 }
 
+// DefaultEffortFor returns the thinking level applied when a request
+// omits one, or an empty string when the thinking config is omitted
+// entirely and the provider decides.
+func DefaultEffortFor(model string) string {
+	if isGemini3(model) {
+		return defaultGemini3Effort
+	}
+	return ""
+}
+
 // NormalizeEffort validates the requested effort against Gemini's thinking
 // levels. It returns the effort to use (empty means omit the thinking config)
 // and a human-readable warning when the requested effort is unsupported.

@@ -24,22 +24,35 @@ import (
 //go:embed preset_modal.yaml
 var presetModalYAML string
 
+//go:embed preset_helix.yaml
+var presetHelixYAML string
+
 //go:embed preset_emacs.yaml
 var presetEmacsYAML string
 
 // renderPreset returns the preset-config file body for the given
-// editor choice. The modal choice enables vim mode everywhere; the
-// standard choice uses platform-native standard editor bindings;
-// the emacs choice uses an Emacs keymap. The deprecated "modeless" alias
-// resolves to the standard preset.
-func renderPreset(editor string) (string, error) {
+// editor choice and telemetry preference. The vim choice enables vim
+// mode everywhere; the helix choice uses Helix's selection-first grammar
+// with its <space> leader menu; the standard choice uses platform-native
+// standard editor bindings; the emacs choice uses an Emacs keymap. The
+// deprecated "modeless" alias resolves to the standard preset.
+func renderPreset(editor string, telemetry bool) (string, error) {
+	var body string
 	switch editor {
-	case editorModal:
-		return presetModalYAML, nil
+	case editorVim:
+		body = presetModalYAML
+	case editorHelix:
+		body = presetHelixYAML
 	case editorStandard, editorModeless:
-		return presetStandardYAML, nil
+		body = presetStandardYAML
 	case editorEmacs:
-		return presetEmacsYAML, nil
+		body = presetEmacsYAML
+	default:
+		return "", fmt.Errorf("unknown editor choice: %q", editor)
 	}
-	return "", fmt.Errorf("unknown editor choice: %q", editor)
+	const tmpl = "%s\ntelemetry:\n" +
+		"  # Report anonymous usage and system information. See the Telemetry\n" +
+		"  # page in the Rune docs for the full list of what is reported.\n" +
+		"  enabled: %t\n"
+	return fmt.Sprintf(tmpl, body, telemetry), nil
 }

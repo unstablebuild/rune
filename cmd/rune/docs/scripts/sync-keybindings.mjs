@@ -13,6 +13,7 @@ const outputPath = join(docsRoot, 'src', 'data', 'keybindings.yaml');
 
 const sources = {
   modal: 'cmd/rune/preset_modal.yaml',
+  helix: 'cmd/rune/preset_helix.yaml',
   standard: {
     darwin: 'cmd/rune/preset_standard_darwin.yaml',
     linux: 'cmd/rune/preset_standard_linux.yaml',
@@ -59,6 +60,7 @@ async function readPreset(relativePath, fallbackCommandKey) {
 
 const keybindings = {
   modal: await readPreset(sources.modal, ':'),
+  helix: await readPreset(sources.helix, ':'),
   standard: {
     darwin: await readPreset(sources.standard.darwin, ':'),
     linux: await readPreset(sources.standard.linux, ':'),

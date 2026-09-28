@@ -362,28 +362,149 @@ func TestHandlerPromptCursorHidden(t *testing.T) {
 }
 
 func TestHandlerPromptMultiSelectSpaceToggles(t *testing.T) {
-	h, tx, interrupt := newPromptHandler(t)
-	resultCh := make(chan []string, 1)
+	// Input backends deliver the space bar as Key=KeySpace; a bare
+	// Ch=' ' covers synthetic and legacy events. Both must toggle the
+	// checkbox.
+	for _, tc := range []struct {
+		name  string
+		space term.Event
+	}{
+		{"synthetic-ch", term.Event{Type: term.EventKey, Ch: ' '}},
+		{"key", term.Event{Type: term.EventKey, Key: term.KeySpace}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, tx, interrupt := newPromptHandler(t)
+			resultCh := make(chan []string, 1)
 
-	tx <- MessageEvent{
-		Type:              MessageEventPrompt,
-		PromptTitle:       "Features",
-		PromptOptions:     []PromptEventOption{{Label: "Logging"}, {Label: "Metrics"}, {Label: "Tracing"}},
-		PromptMultiSelect: true,
-		PromptResult:      resultCh,
+			tx <- MessageEvent{
+				Type:              MessageEventPrompt,
+				PromptTitle:       "Features",
+				PromptOptions:     []PromptEventOption{{Label: "Logging"}, {Label: "Metrics"}, {Label: "Tracing"}},
+				PromptMultiSelect: true,
+				PromptResult:      resultCh,
+			}
+			<-interrupt
+
+			// Enter with nothing checked must not resolve the prompt:
+			// a nil result would be read as a dismissal.
+			_, handled := h.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
+			assert.True(t, handled)
+			select {
+			case vals := <-resultCh:
+				t.Fatalf("empty Enter resolved the prompt with %v", vals)
+			default:
+			}
+			_, _, ok := h.Cursor()
+			assert.False(t, ok, "prompt should still be active after empty Enter")
+
+			// Toggle first option
+			h.Handle(tc.space)
+			// Move down and toggle second
+			h.Handle(term.Event{Type: term.EventKey, Key: term.KeyArrowDown})
+			h.Handle(tc.space)
+			// Confirm
+			h.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
+
+			select {
+			case vals := <-resultCh:
+				assert.Equal(t, []string{"Logging", "Metrics"}, vals)
+			case <-time.After(2 * time.Second):
+				t.Fatal("prompt was not resolved after toggling and Enter")
+			}
+		})
 	}
-	<-interrupt
+}
 
-	// Toggle first option
-	h.Handle(term.Event{Type: term.EventKey, Ch: ' '})
-	// Move down and toggle second
-	h.Handle(term.Event{Type: term.EventKey, Key: term.KeyArrowDown})
-	h.Handle(term.Event{Type: term.EventKey, Ch: ' '})
-	// Confirm
-	h.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
+// TestHandlerPromptMultiSelectEnterOnOtherWithRequiresInput verifies that
+// pressing <enter> on a RequiresInput option ("Other") in a multi-select
+// prompt attributes the typed text to the option under the cursor, not to
+// whatever happens to be checked — with and without another box checked.
+func TestHandlerPromptMultiSelectEnterOnOtherWithRequiresInput(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		checkA bool
+	}{
+		{"nothing checked", false},
+		{"A checked", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, tx, interrupt := newPromptHandler(t)
+			resultCh := make(chan []string, 1)
 
-	vals := <-resultCh
-	assert.Equal(t, []string{"Logging", "Metrics"}, vals)
+			tx <- MessageEvent{
+				Type:        MessageEventPrompt,
+				PromptTitle: "Features",
+				PromptOptions: []PromptEventOption{
+					{Label: "A"},
+					{Label: "Other", RequiresInput: true},
+				},
+				PromptMultiSelect: true,
+				PromptResult:      resultCh,
+			}
+			<-interrupt
+
+			if tc.checkA {
+				h.Handle(term.Event{Type: term.EventKey, Key: term.KeySpace})
+			}
+
+			// Move the cursor to "Other" without checking it, then submit.
+			h.Handle(term.Event{Type: term.EventKey, Key: term.KeyArrowDown})
+			_, handled := h.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
+			require.True(t, handled)
+
+			typeText(h, "feedback")
+			h.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
+
+			select {
+			case vals := <-resultCh:
+				require.Len(t, vals, 2)
+				assert.Equal(t, "Other", vals[0], "typed text must be attributed to the option under the cursor")
+				assert.Equal(t, "feedback", vals[1])
+			case <-time.After(2 * time.Second):
+				t.Fatal("prompt was not resolved after typing and Enter")
+			}
+		})
+	}
+}
+
+// TestHandlerPromptToggleRequiresNoModifier verifies that ctrl-space and
+// meta-space, which are bound to other actions, do not also toggle the
+// checkbox under the cursor. Meta arrives here as term.ModAlt: a bare
+// term.ModMeta event never reaches this code, since Handle's top-level
+// modifier switch drops it before dispatch.
+func TestHandlerPromptToggleRequiresNoModifier(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		event term.Event
+	}{
+		{"ctrl-space", term.Event{Type: term.EventKey, Key: term.KeySpace, Mod: term.ModCtrl}},
+		{"meta-space", term.Event{Type: term.EventKey, Key: term.KeySpace, Mod: term.ModAlt}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, tx, interrupt := newPromptHandler(t)
+			resultCh := make(chan []string, 1)
+
+			tx <- MessageEvent{
+				Type:              MessageEventPrompt,
+				PromptTitle:       "Features",
+				PromptOptions:     []PromptEventOption{{Label: "Logging"}},
+				PromptMultiSelect: true,
+				PromptResult:      resultCh,
+			}
+			<-interrupt
+
+			h.Handle(tc.event)
+
+			// Enter with nothing checked must not resolve the prompt; if the
+			// modifier combo had toggled the box, this would send ["Logging"].
+			h.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
+			select {
+			case vals := <-resultCh:
+				t.Fatalf("%s toggled the checkbox: %v", tc.name, vals)
+			default:
+			}
+		})
+	}
 }
 
 func TestHandlerPromptDismissEvent(t *testing.T) {
@@ -1129,130 +1250,6 @@ func TestHandlerCommandSideEffectInterrupts(t *testing.T) {
 // TestHandlerPromptHintRestoredAfterSelect verifies that when a prompt
 // event arrives through the handler's tx channel, the receive-message hint
 // is hidden while the prompt is active, and restored after the user selects.
-func TestHandlerPromptHintRestoredAfterSelect(t *testing.T) {
-	mu := new(sync.Mutex)
-	comp := NewComponent(ComponentConfig{})
-	interrupt := make(chan struct{}, 10)
-	h, tx, _ := Handler(context.Background(), mu, comp,
-		term.FuncInterrupter(func(context.Context) error {
-			interrupt <- struct{}{}
-			return nil
-		}))
-	defer close(tx)
-	h.Resize(20, 10)
-
-	// Add hint under lock (simulates syncComponent.addStatusHint).
-	mu.Lock()
-	comp.AddReceiveMessageHint(component.NewString("$"), component.SpanConfig{
-		PadHorizontal:    -1,
-		ContentAlignment: component.AlignmentLeft,
-	})
-	mu.Unlock()
-
-	w := term.NewStringWriter(21, 11)
-
-	// Hint should be visible.
-	h.Draw(w)
-	_ = w.Flush()
-	hintVisible := "$                    \n" +
-		"                     \n" +
-		"                     \n" +
-		"                     \n" +
-		"                     \n" +
-		"                     \n" +
-		"                     \n" +
-		" ┌──────────────┐    \n" +
-		" │              │    \n" +
-		" └──────────────┘    \n" +
-		"                     "
-	assert.Equal(t, hintVisible, w.String(), "hint visible before prompt")
-
-	// Send prompt — hint should be hidden.
-	resultCh := make(chan []string, 1)
-	tx <- MessageEvent{
-		Type:          MessageEventPrompt,
-		PromptTitle:   "OK?",
-		PromptOptions: []PromptEventOption{{Label: "Yes"}, {Label: "No"}},
-		PromptResult:  resultCh,
-	}
-	<-interrupt
-
-	_ = w.Clear(term.Attributes{})
-	h.Draw(w)
-	_ = w.Flush()
-	assert.False(t, containsStr(w.String(), "$"), "hint hidden during prompt")
-	assert.True(t, containsStr(w.String(), "OK?"), "prompt visible")
-
-	// Select first option — hint should be restored.
-	_, handled := h.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
-	assert.True(t, handled)
-	vals := <-resultCh
-	assert.Equal(t, []string{"Yes"}, vals)
-
-	_ = w.Clear(term.Attributes{})
-	h.Draw(w)
-	_ = w.Flush()
-	assert.Equal(t, hintVisible, w.String(), "hint restored after prompt select")
-}
-
-// TestHandlerPromptHintRestoredAfterDismiss verifies that the hint is
-// restored when the prompt is dismissed via Esc through the handler.
-func TestHandlerPromptHintRestoredAfterDismiss(t *testing.T) {
-	mu := new(sync.Mutex)
-	comp := NewComponent(ComponentConfig{})
-	interrupt := make(chan struct{}, 10)
-	h, tx, _ := Handler(context.Background(), mu, comp,
-		term.FuncInterrupter(func(context.Context) error {
-			interrupt <- struct{}{}
-			return nil
-		}))
-	defer close(tx)
-	h.Resize(20, 10)
-
-	// Add hint.
-	mu.Lock()
-	comp.AddReceiveMessageHint(component.NewString("$"), component.SpanConfig{
-		PadHorizontal:    -1,
-		ContentAlignment: component.AlignmentLeft,
-	})
-	mu.Unlock()
-
-	// Send prompt.
-	resultCh := make(chan []string, 1)
-	tx <- MessageEvent{
-		Type:          MessageEventPrompt,
-		PromptTitle:   "OK?",
-		PromptOptions: []PromptEventOption{{Label: "Yes"}, {Label: "No"}},
-		PromptResult:  resultCh,
-	}
-	<-interrupt
-
-	// Dismiss via Esc.
-	_, handled := h.Handle(term.Event{Type: term.EventKey, Key: term.KeyEsc})
-	assert.True(t, handled)
-	vals := <-resultCh
-	assert.Nil(t, vals)
-
-	// Hint should be restored.
-	w := term.NewStringWriter(21, 11)
-	h.Draw(w)
-	_ = w.Flush()
-	assert.Equal(t, "$                    \n"+
-		"                     \n"+
-		"                     \n"+
-		"                     \n"+
-		"                     \n"+
-		"                     \n"+
-		"                     \n"+
-		" ┌──────────────┐    \n"+
-		" │              │    \n"+
-		" └──────────────┘    \n"+
-		"                     ", w.String(), "hint restored after Esc dismiss")
-}
-
-// TestHandlerFreeFormPromptRendersQuestion verifies that when a prompt
-// with empty options is sent, the question text appears in the messages area
-// and the cursor remains visible (unlike selection prompts which hide it).
 func TestHandlerFreeFormPromptRendersQuestion(t *testing.T) {
 	h, tx, interrupt := newPromptHandler(t)
 	resultCh := make(chan []string, 1)
@@ -1388,59 +1385,6 @@ func TestHandlerFreeFormPromptDismissEvent(t *testing.T) {
 // TestHandlerPromptDismissEventRestoresHint verifies that the hint is
 // restored when a MessageEventPromptDismiss event dismisses the prompt
 // (e.g. context cancellation path).
-func TestHandlerPromptDismissEventRestoresHint(t *testing.T) {
-	mu := new(sync.Mutex)
-	comp := NewComponent(ComponentConfig{})
-	interrupt := make(chan struct{}, 10)
-	h, tx, _ := Handler(context.Background(), mu, comp,
-		term.FuncInterrupter(func(context.Context) error {
-			interrupt <- struct{}{}
-			return nil
-		}))
-	defer close(tx)
-	h.Resize(20, 10)
-
-	// Add hint.
-	mu.Lock()
-	comp.AddReceiveMessageHint(component.NewString("$"), component.SpanConfig{
-		PadHorizontal:    -1,
-		ContentAlignment: component.AlignmentLeft,
-	})
-	mu.Unlock()
-
-	// Send prompt.
-	resultCh := make(chan []string, 1)
-	tx <- MessageEvent{
-		Type:          MessageEventPrompt,
-		PromptTitle:   "OK?",
-		PromptOptions: []PromptEventOption{{Label: "Yes"}, {Label: "No"}},
-		PromptResult:  resultCh,
-	}
-	<-interrupt
-
-	// Dismiss via event (context cancellation path).
-	tx <- MessageEvent{Type: MessageEventPromptDismiss}
-	<-interrupt
-	vals := <-resultCh
-	assert.Nil(t, vals)
-
-	// Hint should be restored.
-	w := term.NewStringWriter(21, 11)
-	h.Draw(w)
-	_ = w.Flush()
-	assert.Equal(t, "$                    \n"+
-		"                     \n"+
-		"                     \n"+
-		"                     \n"+
-		"                     \n"+
-		"                     \n"+
-		"                     \n"+
-		" ┌──────────────┐    \n"+
-		" │              │    \n"+
-		" └──────────────┘    \n"+
-		"                     ", w.String(), "hint restored after dismiss event")
-}
-
 func containsStr(haystack, needle string) bool {
 	return len(haystack) >= len(needle) && searchStr(haystack, needle)
 }
@@ -1782,4 +1726,94 @@ func TestHandlerCommandHistoryEntriesAreTextOnly(t *testing.T) {
 	assert.Equal(t, Draft{Text: "/help"}, dh.history[0])
 	assert.Len(t, comp.Attachments(), 1,
 		"a command must not consume the pending attachments")
+}
+
+// blockingIterator stands in for a command that blocks on a slow call,
+// such as the LLM summarisation behind /compact.
+type blockingIterator struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (b *blockingIterator) Next(context.Context) (component.Responsive, bool) {
+	b.once.Do(func() { close(b.started) })
+	<-b.release
+	return nil, false
+}
+
+func (b *blockingIterator) Err() error   { return nil }
+func (b *blockingIterator) Close() error { return nil }
+
+// A command that blocks on an LLM call runs off the turn loop, so
+// without a declared phase the status bar would read IDLE for the whole
+// call and the user would have no sign the editor was working.
+func TestHandlerCommandPhaseDrivesStatusBar(t *testing.T) {
+	it := &blockingIterator{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	mock := &mockCommandHandler{
+		handleFunc: func(context.Context, string, []string) (CommandResult, error) {
+			return CommandResult{Phase: "COMPACTING", Display: it}, nil
+		},
+	}
+	comp := NewComponent(ComponentConfig{
+		StatusBar: StatusBarConfig{Enabled: true},
+	})
+	h, tx, _ := Handler(context.Background(), new(sync.Mutex), comp,
+		term.FuncInterrupter(func(context.Context) error { return nil }),
+		WithCommands(mock),
+	)
+	defer close(tx)
+	h.Resize(80, 9)
+
+	require.Equal(t, StatusBarState{}, comp.StatusBarState())
+
+	typeText(h, "/compact")
+	h.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
+
+	select {
+	case <-it.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the command to start draining")
+	}
+	got := comp.StatusBarState()
+	assert.True(t, got.Active)
+	assert.Equal(t, "COMPACTING", got.Phase)
+	assert.False(t, got.TurnStart.IsZero())
+
+	close(it.release)
+	assert.Eventually(t, func() bool {
+		return !comp.StatusBarState().Active
+	}, 2*time.Second, 10*time.Millisecond)
+	assert.Empty(t, comp.StatusBarState().Phase)
+}
+
+// A command with no phase must leave the bar alone: most commands
+// return instantly and flipping the bar for them would only flicker.
+func TestHandlerCommandWithoutPhaseLeavesStatusBar(t *testing.T) {
+	mock := &mockCommandHandler{
+		handleFunc: func(context.Context, string, []string) (CommandResult, error) {
+			return CommandResult{Display: iterator.Empty[component.Responsive]()}, nil
+		},
+	}
+	comp := NewComponent(ComponentConfig{
+		StatusBar: StatusBarConfig{Enabled: true},
+	})
+	comp.SetStatusBarState(func(s *StatusBarState) { s.Model = "sonnet" })
+	h, tx, _ := Handler(context.Background(), new(sync.Mutex), comp,
+		term.FuncInterrupter(func(context.Context) error { return nil }),
+		WithCommands(mock),
+	)
+	defer close(tx)
+	h.Resize(80, 9)
+
+	typeText(h, "/history")
+	h.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
+
+	assert.Never(t, func() bool {
+		return comp.StatusBarState().Active
+	}, 200*time.Millisecond, 10*time.Millisecond)
+	assert.Equal(t, "sonnet", comp.StatusBarState().Model)
 }

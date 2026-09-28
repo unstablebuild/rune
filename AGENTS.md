@@ -207,17 +207,12 @@ shows what it does. Do not pepper code with narrative comments.
 
 - Do not add comments that restate the adjacent code in prose.
 - Do not add comments describing what you just changed (e.g.
-  `// now also handles X`, `// removed Y`). Use the commit message
-  for that.
+  `// now also handles X`, `// removed Y`).
 - Do not add docstrings, header banners, or type annotations to code
   you did not change.
-- Only add a comment when the intent, trade-off, invariant, or
-  non-obvious constraint cannot be inferred from the code and names.
-- Prefer clearer naming and smaller functions over explanatory
-  comments.
-- Exported API doc comments (`// FuncName ...`) are fine where Go
-  convention or lint requires them; keep them about the contract,
-  not the implementation.
+- Docstrings and export API doc comments **must** explain the
+  contract and clarify edge cases. Don't explain how it works or what
+  calls it.
 
 ## Bug-fix policy
 

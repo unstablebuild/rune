@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -46,12 +47,25 @@ import (
 )
 
 // recordingWindowManager is a stub browserapi.WindowManager that records the
-// arguments passed to Tab so tests can verify the visible label.
+// arguments passed to Tab so tests can verify the visible label, the number
+// of SetWindowContent calls, and every SetTabActivity call so tests can
+// follow a chat tab's activity.
 type recordingWindowManager struct {
 	gotURI     workspaceapi.URI
 	gotIcon    rune
 	gotName    string
 	gotHandler browserapi.Handler
+
+	setContentCalls int
+
+	activityMu  sync.Mutex
+	activity    []tabActivity
+	activityErr error
+}
+
+type tabActivity struct {
+	uri    workspaceapi.URI
+	active bool
 }
 
 func (m *recordingWindowManager) Focus() (browserapi.Window, error) { return nil, nil }
@@ -76,9 +90,23 @@ func (m *recordingWindowManager) Tab(
 	return h, nil
 }
 func (m *recordingWindowManager) SetWindowContent(_ browserapi.Window, _ browserapi.Handler) error {
+	m.setContentCalls++
 	return nil
 }
 func (m *recordingWindowManager) CloseWindow(_ browserapi.Window) error { return nil }
+
+func (m *recordingWindowManager) SetTabActivity(uri workspaceapi.URI, active bool) error {
+	m.activityMu.Lock()
+	defer m.activityMu.Unlock()
+	m.activity = append(m.activity, tabActivity{uri: uri, active: active})
+	return m.activityErr
+}
+
+func (m *recordingWindowManager) tabActivity() []tabActivity {
+	m.activityMu.Lock()
+	defer m.activityMu.Unlock()
+	return slices.Clone(m.activity)
+}
 
 // stubNotifications is a no-op browserapi.Notifications. wrapDialogueHandler
 // calls Notify(LevelInfo, "canceled completion request") when Ctrl-C cancels
@@ -293,7 +321,10 @@ func newPromptHandler(t *testing.T, opts promptHandlerOpts) tui.Handler {
 	mu := new(sync.Mutex)
 	dhandler, tx, rx := dialoguetui.Handler(ctx, mu, comp, interrupter)
 
-	prompter := &tuiPrompter{tx: tx, noti: stubNotifications{}}
+	owner := &aiEditorHandler{n: stubNotifications{}, p: interrupter}
+	syncComp := syncComponent{mu: mu, comp: comp, h: owner}
+
+	prompter := &tuiPrompter{tx: tx, noti: stubNotifications{}, status: syncComp}
 	askUser := agentools.NewAskUser(prompter)
 	registry := agent.NewRegistry(askUser)
 	skillReg := skills.NewRegistry(nopFileSystem{}, dirURI(""), nil, nil)
@@ -304,10 +335,6 @@ func newPromptHandler(t *testing.T, opts promptHandlerOpts) tui.Handler {
 		Prompter:     prompter,
 	})
 
-	// Minimal aiEditorHandler: wrapDialogueHandler only reads h.n via
-	// the Ctrl-C notify path.
-	owner := &aiEditorHandler{n: stubNotifications{}}
-	syncComp := syncComponent{mu: mu, comp: comp, h: owner, hintSlot: &hintSlot{}}
 	wrapped, msgRx := owner.wrapDialogueHandler(ctx, syncComp, dhandler, rx, "e2e-fixture")
 
 	var wg sync.WaitGroup
@@ -482,8 +509,8 @@ func agentE2EHandler(t *testing.T, svc *llmtest.Service, workspaceDir string, ls
 		Workspace:    cwd,
 	})
 
-	owner := &aiEditorHandler{n: stubNotifications{}}
-	syncComp := syncComponent{mu: mu, comp: comp, h: owner, hintSlot: &hintSlot{}}
+	owner := &aiEditorHandler{n: stubNotifications{}, p: interrupter}
+	syncComp := syncComponent{mu: mu, comp: comp, h: owner}
 	wrapped, msgRx := owner.wrapDialogueHandler(ctx, syncComp, dhandler, rx, "e2e-fixture")
 
 	var wg sync.WaitGroup
@@ -574,8 +601,8 @@ func stopReasonE2EHandler(t *testing.T, svc *llmtest.Service) tui.Handler {
 		Model:        llmapi.ModelEntry{Provider: "test", Name: "test-model", ContextWindow: 128_000},
 	})
 
-	owner := &aiEditorHandler{n: stubNotifications{}}
-	syncComp := syncComponent{mu: mu, comp: comp, h: owner, hintSlot: &hintSlot{}}
+	owner := &aiEditorHandler{n: stubNotifications{}, p: interrupter}
+	syncComp := syncComponent{mu: mu, comp: comp, h: owner}
 	wrapped, msgRx := owner.wrapDialogueHandler(ctx, syncComp, dhandler, rx, "e2e-fixture")
 
 	childEvents := make(chan agent.ChildEvent)
@@ -679,8 +706,8 @@ func subAgentSpawnE2EHandler(
 		AgentID:      agentID,
 	})
 
-	owner := &aiEditorHandler{n: stubNotifications{}}
-	syncComp := syncComponent{mu: mu, comp: comp, h: owner, hintSlot: &hintSlot{}}
+	owner := &aiEditorHandler{n: stubNotifications{}, p: interrupter}
+	syncComp := syncComponent{mu: mu, comp: comp, h: owner}
 	wrapped, msgRx := owner.wrapDialogueHandler(ctx, syncComp, dhandler, rx, "e2e-fixture")
 
 	go debug.CapturePanicReport(func() {
@@ -736,8 +763,8 @@ func maxTokensE2EHandler(t *testing.T, model llmapi.ModelEntry) (tui.Handler, *a
 		dialoguetui.WithCommands(adapter),
 	)
 
-	owner := &aiEditorHandler{n: stubNotifications{}}
-	syncComp := syncComponent{mu: mu, comp: comp, h: owner, hintSlot: &hintSlot{}}
+	owner := &aiEditorHandler{n: stubNotifications{}, p: interrupter}
+	syncComp := syncComponent{mu: mu, comp: comp, h: owner}
 	wrapped, _ := owner.wrapDialogueHandler(ctx, syncComp, dhandler, rx, "e2e-fixture")
 
 	t.Cleanup(cancel)

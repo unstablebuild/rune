@@ -54,11 +54,11 @@ var _ DragTarget = (*Component)(nil)
 // actually visible viewport — otherwise the focused tab would render
 // past the right edge of the viewport.
 type offsetTabs struct {
-	handler.Virtual[*thandler.Tabs]
+	handler.Virtual[*thandler.ShadedTabs]
 	offset int
 }
 
-func newOffsetTabs(tabs *thandler.Tabs, offset int) *offsetTabs {
+func newOffsetTabs(tabs *thandler.ShadedTabs, offset int) *offsetTabs {
 	v := &offsetTabs{offset: offset}
 	v.C = tabs
 	v.Move(term.Coordinates{X: offset})
@@ -83,12 +83,15 @@ func (v *offsetTabs) Resize(width, height int) {
 // to a call to Handle. Conversely, tui.Handlers installed via NewTab
 // will remain as a tab and can be managed independently from windows.
 type Component struct {
-	tabs      thandler.Tabs
-	wm        thandler.WindowManager
-	union     thandler.FrameUnion
-	width     int
-	height    int
-	nextSplit browserapi.Orientation
+	tabs thandler.Tabs
+	// shadedTabs wraps tabs to animate the labels of active tabs. It is
+	// what gets installed in the frame union.
+	shadedTabs *thandler.ShadedTabs
+	wm         thandler.WindowManager
+	union      thandler.FrameUnion
+	width      int
+	height     int
+	nextSplit  browserapi.Orientation
 
 	dirtyTabs   bool
 	focusWindow thandler.Window
@@ -158,6 +161,11 @@ func (c *Component) Init(config Config) {
 		}
 		return true
 	}
+	if config.OnTabIconClick != nil {
+		c.tabs.OnIconClick = func(id int) {
+			config.OnTabIconClick(c.buffers[id])
+		}
+	}
 
 	c.wm.Init(c.wallpaper(), c.config.WindowManagerConfig)
 	c.focusWindow = c.wm.Focus()
@@ -178,6 +186,14 @@ func (c *Component) Init(config Config) {
 		highlightAttr, frameAttr, bgAttr)
 	c.tabs.SetFrameCharSet(config.WindowManagerConfig.FrameCharSet)
 	c.tabs.SetFocusFrameChar(config.FocusTabHighlightChar)
+	c.shadedTabs = thandler.NewShadedTabs(&c.tabs, thandler.ShadedTabsConfig{
+		Shader:      config.ActiveTabShader,
+		FPS:         config.ActiveTabShaderFPS,
+		Loop:        config.ActiveTabShaderLoop,
+		DefAttr:     config.NonFocusTabAttr,
+		Interrupter: c.interrupter,
+		Active:      c.activeTabIndices,
+	})
 
 	c.rightInset = config.RightInset
 	c.initUnion()
@@ -205,12 +221,14 @@ func (c *Component) initUnion() {
 	// if tab bar offset is set, the remove frame from tabs
 	// and install via union and no frame unioning.
 	if c.config.TabBarOffset > 0 {
-		vtabs := newOffsetTabs(&c.tabs, c.config.TabBarOffset)
+		vtabs := newOffsetTabs(c.shadedTabs, c.config.TabBarOffset)
 		c.tabs.SetBorder(false)
 		c.union.UnionTopFrame(vtabs, c.tabsSize(), false)
+		c.union.CaptureDrags(vtabs)
 	} else {
 		c.tabs.SetBorder(c.config.Frame)
-		c.union.UnionTop(&c.tabs, c.tabsSize())
+		c.union.UnionTop(c.shadedTabs, c.tabsSize())
+		c.union.CaptureDrags(c.shadedTabs)
 	}
 	// The union sizes top members before left/right ones, so an empty
 	// right member starts below the tab bar and narrows only the window
@@ -310,6 +328,17 @@ func (c *Component) TabName(uri workspaceapi.URI) (string, string, bool) {
 	return "", "", false
 }
 
+// TabIcon returns the icon and default icon of the tab with the given uri
+// or false if there's no tab with the given uri.
+func (c *Component) TabIcon(uri workspaceapi.URI) (icon, defaultIcon rune, ok bool) {
+	for i, t := range c.buffers {
+		if t.uri.String() == uri.String() {
+			return c.tabs.TabIcon(i), c.tabs.DefaultTabIcon(i), true
+		}
+	}
+	return 0, 0, false
+}
+
 // TabAttrs returns the attributes of the tab with the given uri or false
 // if there's no tab with the given uri.
 func (c *Component) TabAttrs(uri workspaceapi.URI) (term.Attributes, bool) {
@@ -348,6 +377,45 @@ func (c *Component) SetTabAttrs(
 		}
 	}
 	return false
+}
+
+// SetTabActivity marks the tab with the given uri as having work in
+// progress or as idle. The active-tab shader runs over the labels of
+// active tabs for as long as there is at least one. Activity is dropped
+// when the tab is removed. It returns false if there's no tab with the
+// given uri; setting the current state again is a no-op.
+func (c *Component) SetTabActivity(uri workspaceapi.URI, active bool) bool {
+	t, ok := c.Tab(uri)
+	if !ok {
+		return false
+	}
+	if t.active != active {
+		t.active = active
+		c.tabActivityChanged()
+	}
+	return true
+}
+
+// HasActiveTabs reports whether any tab is marked active.
+func (c *Component) HasActiveTabs() bool {
+	return slices.ContainsFunc(c.buffers, func(t *Tab) bool { return t.active })
+}
+
+func (c *Component) activeTabIndices() []int {
+	var ret []int
+	for i, t := range c.buffers {
+		if t.active {
+			ret = append(ret, i)
+		}
+	}
+	return ret
+}
+
+func (c *Component) tabActivityChanged() {
+	c.shadedTabs.SetRunning(c.HasActiveTabs())
+	if c.config.OnTabActivity != nil {
+		c.config.OnTabActivity()
+	}
 }
 
 // SetTabIcon overrides the icon of the tab with the given uri.
@@ -912,22 +980,52 @@ func (c *Component) FocusUp() bool {
 
 // SwapContentDown calls the underlying WindowManager.SwapContentDown.
 func (c *Component) SwapContentDown() bool {
-	return c.wm.SwapContentDown()
+	return c.swapContent((*thandler.WindowManager).SwapContentDown, thandler.Window.TileDown)
 }
 
 // SwapContentLeft calls the underlying WindowManager.SwapContentLeft.
 func (c *Component) SwapContentLeft() bool {
-	return c.wm.SwapContentLeft()
+	return c.swapContent((*thandler.WindowManager).SwapContentLeft, thandler.Window.TileLeft)
 }
 
 // SwapContentRight calls the underlying WindowManager.SwapContentRight.
 func (c *Component) SwapContentRight() bool {
-	return c.wm.SwapContentRight()
+	return c.swapContent((*thandler.WindowManager).SwapContentRight, thandler.Window.TileRight)
 }
 
 // SwapContentUp calls the underlying WindowManager.SwapContentUp.
 func (c *Component) SwapContentUp() bool {
-	return c.wm.SwapContentUp()
+	return c.swapContent((*thandler.WindowManager).SwapContentUp, thandler.Window.TileUp)
+}
+
+// swapContent rebinds the tabs the window manager moved, as it swaps
+// content without knowing about tabs. A tab left bound to the window it
+// moved out of is not freed when its new window closes, and focusing it
+// then targets the closed window.
+func (c *Component) swapContent(
+	swap func(*thandler.WindowManager) bool,
+	tile func(thandler.Window) (thandler.Window, bool),
+) bool {
+	if !swap(&c.wm) {
+		return false
+	}
+	focus := c.wm.Focus()
+	other, ok := tile(focus)
+	if !ok {
+		panic("corrupted browser: cannot find swapped window")
+	}
+	for _, w := range []thandler.Window{focus, other} {
+		win, ok := c.findWindow(w.ID())
+		if !ok {
+			panic("corrupted browser: cannot find swapped window")
+		}
+		if t, ok := browserTabAtWindow(win); ok {
+			t.setWindow(nil, win)
+			t.callOnFocus()
+		}
+	}
+	c.dirtyTabs = true
+	return true
 }
 
 // ResetWindowSize resets width and height to be automatically calculated.
@@ -1012,6 +1110,31 @@ func (c *Component) SetFocus(win Window) Window {
 // Handle proxies events to either the underlying Tabs or WindowManager.
 func (c *Component) Handle(ev term.Event) (exit, handled bool) {
 	return c.union.Handle(ev)
+}
+
+// uriHandler is the identity OnTabExit matches window content by.
+type uriHandler interface {
+	URI() workspaceapi.URI
+}
+
+// OnTabExit drops the terminal with the given uri.
+func (c *Component) OnTabExit(uri workspaceapi.URI) bool {
+	for _, t := range c.buffers {
+		if t.uri.String() == uri.String() {
+			return c.RemoveTab(t)
+		}
+	}
+	for _, bw := range c.windows {
+		h, err := bw.Content()
+		if err != nil {
+			continue
+		}
+		if u, ok := h.(uriHandler); ok && u.URI().String() == uri.String() {
+			c.RemoveWindowContent(bw)
+			return true
+		}
+	}
+	return false
 }
 
 // Cursor calls the underlying FrameUnion's Cursor.
@@ -1189,6 +1312,7 @@ func (c *Component) Close() (ret error) {
 	// than waiting for subsequent appends to overwrite the slots.
 	clear(c.buffers)
 	c.buffers = c.buffers[:0]
+	c.shadedTabs.SetRunning(false)
 	c.wm.UnsubscribeAll()
 
 	c.wm.Iterate(func(w thandler.Window) {
@@ -1245,6 +1369,10 @@ func (c *Component) removeTab(t *Tab) bool {
 	ok := c.tabs.Remove(id)
 	if !ok {
 		panic(fmt.Sprintf("corrupted tabs: could not find tab with id %v", id))
+	}
+	if t.active {
+		t.active = false
+		c.tabActivityChanged()
 	}
 	return true
 }
@@ -2012,6 +2140,8 @@ func (c *Component) winDropVeil() (win *browserWindow, label string, ok bool) {
 // repaints when the host redraws for another reason.
 func (c *Component) SetInterrupter(i term.Interrupter) {
 	c.interrupter = i
+	c.shadedTabs.SetInterrupter(i)
+	c.shadedTabs.SetRunning(c.HasActiveTabs())
 }
 
 // WindowAt returns the window rendered at pos, which is relative to

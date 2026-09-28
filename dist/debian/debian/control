@@ -1,0 +1,44 @@
+Source: rune
+Section: editors
+Priority: optional
+Maintainer: Unstable Build LLC <support@unstable.build>
+Build-Depends: debhelper-compat (= 13),
+               golang-go (>= 2:1.26~) | golang-1.26-go,
+               git,
+               ca-certificates,
+               g++,
+               pkg-config,
+               libgl1-mesa-dev,
+               libx11-dev,
+               libxcursor-dev,
+               libxi-dev,
+               libxinerama-dev,
+               libxrandr-dev,
+               libxxf86vm-dev,
+               libasound2-dev,
+               libwayland-dev,
+               libxkbcommon-dev
+Standards-Version: 4.7.0
+Homepage: https://rune.build
+
+Package: rune
+Architecture: amd64 arm64
+Depends: ${shlibs:Depends},
+         ${misc:Depends}
+Recommends: zsh,
+         libgl1,
+         libegl1,
+         libx11-xcb1,
+         libxcursor1,
+         libxext6,
+         libxi6,
+         libxinerama1,
+         libxrandr2,
+         libxrender1,
+         libxxf86vm1
+Description: Fast, GPU-accelerated, full-featured IDE and terminal multiplexer
+ Rune is a fast, GPU-accelerated, full-featured IDE and terminal
+ multiplexer, suitable both for automatic and manual programming.
+ .
+ X11 and OpenGL support is required only when opening a GUI window;
+ TUI and headless modes run without a graphical stack.

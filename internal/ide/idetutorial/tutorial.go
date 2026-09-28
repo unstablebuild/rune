@@ -14,33 +14,78 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-// Package idetutorial implements the interactive tutorial overlay used
-// by the IDE.
+// Package idetutorial hosts interactive tutorials in a tile laid out
+// beside the IDE's workspaces.
 package idetutorial
 
 import (
+	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
-	"github.com/unstablebuild/rune-go-sdk/tui"
 )
 
-// Tutorial is the in-process state machine driving a single tutorial run.
-// Implementations draw an overlay on top of the IDE root via direct
-// [term.Writer] writes and return exit=true from Handle when the tutorial
-// finishes or is dismissed. Reset zeroes runtime progress so the same
-// instance can be dispatched again; host services and parsed content are
-// retained.
+// PromptStyle styles the option buttons a tutorial draws: the Skip and
+// Stop buttons of the tile and the options of a confirm or choice step.
+// It mirrors the prompts the IDE opens elsewhere.
+type PromptStyle struct {
+	TextAttr       term.Attributes
+	HighlightAttr  term.Attributes
+	BackgroundAttr term.Attributes
+}
+
+// Tutorial is the in-process state machine driving a single tutorial
+// run. Implementations draw the active step as the body of the tile,
+// which frames and scrolls it like any other window. A step
+// only ends when its milestone is met (a command is dispatched, an
+// event is observed, a prompt is answered) or when the user skips it;
+// Handle therefore never returns exit=true, since that would close the
+// tile. Reset zeroes runtime progress so the same instance can be
+// dispatched again; host services and parsed content are retained.
 type Tutorial interface {
-	tui.Handler
+	handler.Scrollable
 	Reset()
 
 	// Stop tears down any background work the tutorial owns (the
-	// Starlark goroutine, an installed Prompt overlay, etc.) without
+	// Starlark goroutine, the active step's content, etc.) without
 	// implying that the tutorial will be re-run. Stop must be safe
 	// to call multiple times and on a tutorial that never ran.
 	Stop()
 
-	// Completed reports whether the most recent run reached a normal return.
+	// Skip resolves the active step as though the user had performed
+	// it, advancing the run. It is a no-op when no step is active.
+	// Returns exit=true when the skipped step was the last one. Must
+	// be called on the event loop.
+	Skip() (exit bool)
+
+	// Back shows the screen before the one on show, wrapping from the
+	// oldest back to the live step. It rewinds nothing: the live step
+	// stays armed while an earlier screen is read. Reports whether the
+	// tile now shows a different screen. Must be called on the event
+	// loop.
+	Back() bool
+
+	// Forward shows the screen after the one on show, landing on the
+	// live step from the newest screen already read. Reports whether
+	// the tile now shows a different screen; false when the live
+	// screen is already on show. Must be called on the event loop.
+	Forward() bool
+
+	// ViewingPast reports whether the tile shows a screen the user
+	// paged back to rather than the one the tutorial is on.
+	ViewingPast() bool
+
+	// Finished reports whether the most recent run has ended, for
+	// any reason: it returned, failed, or was stopped.
+	Finished() bool
+
+	// Completed reports whether the most recent run reached a normal
+	// return.
 	Completed() bool
+
+	// PromptActive reports whether the screen on show is a question
+	// waiting for an answer. Its options are walked with the arrow
+	// keys and taken with Enter, so the host hands those keys to the
+	// tutorial while one is up instead of to the workspace.
+	PromptActive() bool
 
 	// ObserveCommand reports a dispatched IDE command to the tutorial.
 	// typed is the user-typed name (possibly an alias), resolved is the
@@ -55,24 +100,4 @@ type Tutorial interface {
 	// is the affected document URI. Returns exit=true when the tutorial
 	// finishes as a result of this observation.
 	ObserveEvent(eventType, uri string) (exit bool)
-
-	// Shader returns the background shader the tutorial wants installed
-	// over the IDE root, and ok=true when one is desired. ok=false means
-	// no shader should be installed. Returning a different Shader value
-	// triggers a tear-down and rebuild of the underlying shader
-	// component by value equality.
-	Shader() (Shader, bool)
-
-	// SetDefaultAttributes updates the tutorial's view of the current
-	// default terminal attributes so per-step shaders read live theme
-	// colors. Implementations must restage any active step's shader spec
-	// so the next Draw rebuilds it with the new attributes.
-	SetDefaultAttributes(defAttr term.Attributes)
-
-	// ComponentAt returns the tutorial handler drawn at pos, ok=false
-	// when the tutorial's overlay does not cover pos. The composing
-	// [Handler] hides the root's terminal cursor when the overlay
-	// covers it so the cursor does not bleed through; a cursor outside
-	// the overlay stays visible.
-	ComponentAt(pos term.Coordinates) (tui.Handler, bool)
 }

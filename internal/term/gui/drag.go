@@ -110,3 +110,12 @@ func (d *dragPoller) poll() bool {
 	}
 	return changed
 }
+
+// idle reports whether poll would observe no transition and notify no
+// observer, letting the caller skip work that has to hold the UI lock.
+// Both accessors report per-tick state, so probing them does not consume
+// the transition poll would otherwise see.
+func (d *dragPoller) idle() bool {
+	_, _, dragging := d.position()
+	return !dragging && !d.hovering && len(d.paths()) == 0
+}

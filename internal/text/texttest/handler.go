@@ -126,6 +126,9 @@ func (t *TestHandler) Dimensions() (int, int) { return 0, 0 }
 // IsSearchMode satisfies text.Handler.
 func (t *TestHandler) IsSearchMode() bool { return false }
 
+// IsNormalMode satisfies text.Handler.
+func (t *TestHandler) IsNormalMode() bool { return false }
+
 // CursorAtScroll satisfies text.Handler.
 func (t *TestHandler) CursorAtScroll() term.Coordinates {
 	return term.Coordinates{}

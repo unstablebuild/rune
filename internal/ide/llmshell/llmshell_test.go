@@ -171,6 +171,8 @@ func (s *stubWindowManager) SetWindowContent(browserapi.Window, browserapi.Handl
 }
 func (s *stubWindowManager) CloseWindow(browserapi.Window) error { return nil }
 
+func (s *stubWindowManager) SetTabActivity(workspaceapi.URI, bool) error { return nil }
+
 type stubWindow uint64
 
 func (w stubWindow) WindowID() uint64 { return uint64(w) }

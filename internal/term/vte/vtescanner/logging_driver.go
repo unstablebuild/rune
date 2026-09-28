@@ -78,6 +78,11 @@ func (p loggingDriverer) ESCDispatch(
 	p.driver.ESCDispatch(intermediates, ignore, ch)
 }
 
+func (p loggingDriverer) APCDispatch(data []byte) {
+	p.log(log.TraceLevel, "APCDispatch len(data)=%d", len(data))
+	p.driver.APCDispatch(data)
+}
+
 func (p loggingDriverer) log(level log.Level, msg string, args ...any) {
 	log.WithField(logging.KeyClass, "scanner.Driver").
 		Logf(level, msg, args...)

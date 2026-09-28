@@ -39,4 +39,10 @@ var (
 	// BuildDate is a compile-time variable holding the RFC3339 UTC
 	// date this binary was built (see BuildDateLayout).
 	BuildDate = ""
+	// OSPackaged is a compile-time variable set to "true" by the
+	// distribution packaging under dist/. The package manager owns
+	// the install prefix and the upgrade path, so the in-product
+	// upgrader stands down rather than fighting it over files it
+	// does not own.
+	OSPackaged = ""
 )

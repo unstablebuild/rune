@@ -342,10 +342,12 @@ func (e *Handler) Handle(ev term.Event) (exit, handled bool) {
 	}
 
 	var raw []byte
-	if !e.bracketedPaste && ev.Type == term.EventKey && ev.Mod == 0 && ev.Ch != 0 {
+	enc := e.comp.keyboard.encoding()
+	if !e.bracketedPaste && ev.Type == term.EventKey && ev.Mod == 0 && ev.Ch != 0 &&
+		!enc.reportsAllKeys() {
 		raw = ev.Raw
 	} else {
-		handled, raw = e.handleInput(ev)
+		handled, raw = e.handleInput(ev, enc)
 	}
 	if handled || len(raw) == 0 {
 		return
@@ -490,7 +492,7 @@ func (e *Handler) Close() error {
 	return ret
 }
 
-func (e *Handler) handleInput(ev term.Event) (handled bool, raw []byte) {
+func (e *Handler) handleInput(ev term.Event, enc keyEncoding) (handled bool, raw []byte) {
 	if (ev.Type == term.EventKey || ev.Type == term.EventRaw) && e.bracketedPaste {
 		e.bracketedPasteBuf.Write(ev.Raw)
 		handled = true
@@ -535,6 +537,13 @@ func (e *Handler) handleInput(ev term.Event) (handled bool, raw []byte) {
 	}
 
 	if ev.Type == term.EventMouse {
+		if raw, tracking := e.mouseDriver.report(ev); tracking {
+			e.log(log.TraceLevel, "input: mouse report: raw=%q", raw)
+			return len(raw) == 0, raw
+		}
+		if raw := e.mouseDriver.alternateScroll(ev); raw != nil {
+			return false, raw
+		}
 		e.mouseDriver.hookRawBytes = nil
 		_, handled = e.mouse.Handle(ev)
 		raw = e.mouseDriver.hookRawBytes
@@ -551,6 +560,12 @@ func (e *Handler) handleInput(ev term.Event) (handled bool, raw []byte) {
 		e.mouseDriver.ClearSelection()
 	} else if ev.Mod == 0 && ev.Key == term.KeyEsc {
 		e.comp.Unselect()
+	}
+
+	if ev.Type == term.EventKey {
+		if raw, ok := enc.encode(ev); ok {
+			return false, raw
+		}
 	}
 
 	// we cannot simply send raw bytes coming from termbox.

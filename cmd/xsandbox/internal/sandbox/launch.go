@@ -124,10 +124,8 @@ func (s *sandbox) launch() error {
 	}
 
 	cwd := workspace.NewSchemeWorkspace(uri, scheme, tick)
-	publishEvent := func(term.Event) bool { return true }
 	res := s.browser.resources()
-	res = extension.MergeResourceMap(res,
-		extension.EditorResources(s.browser, s.editor, publishEvent))
+	res = extension.MergeResourceMap(res, s.editor.resources(s.browser))
 	res = extension.MergeResourceMap(res,
 		extension.WorkspaceResources(cwd, authorizer))
 	s.extStorage = localstorage.New(s.ctx,

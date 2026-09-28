@@ -32,8 +32,10 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
+	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/handler/handlertest"
 	"unstable.build/rune/internal/ide/pkgtrust"
+	"unstable.build/rune/internal/term/vte/vtereservoir"
 	"unstable.build/rune/internal/text"
 )
 
@@ -237,6 +239,152 @@ command:
 │                  │
 └──────────────────┘`,
 		}})
+}
+
+// TestE2ETerminalExitDropsUnfocusedTerminal is the counterpart to the
+// test above for a terminal that is not in focus. The chain documented
+// there — publish term.EventNone, dispatch through root.Handle, let the
+// WindowManager route it to the focused handler — can only ever reach
+// whatever holds focus, so an unfocused terminal whose child exited
+// stayed on screen until the user happened to focus it. The push
+// through browser.TabManager.OnTabExit has to reach the browser with no
+// event routing at all.
+//
+// The terminal is opened as plain window content rather than as a tab
+// because that is what :terminalnew installs, and the assertion spans
+// every hop the notification takes (vte.Component.Run -> tabNameAliaser
+// resolving the pty URI to the tab key -> workspaceTabManager ->
+// browser.Component); each hop is otherwise only covered against a stub.
+func TestE2ETerminalExitDropsUnfocusedTerminal(t *testing.T) {
+	dir := t.TempDir()
+	dataDir := t.TempDir()
+
+	configPath := filepath.Join(dataDir, "rune.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte(`
+editor:
+  mode: modal
+command:
+  key: "<c-\\\\>"
+`), 0o666))
+
+	// The child prints a marker so the test can wait for a live shell,
+	// then blocks until the test releases it. Releasing it from Go
+	// rather than by typing keeps the exit independent of focus, which
+	// is the whole point of the test.
+	release := filepath.Join(dir, "release")
+	script := filepath.Join(dir, "wait.sh")
+	require.NoError(t, os.WriteFile(script, []byte(
+		"#!/bin/sh\n"+
+			"echo READY\n"+
+			"while [ ! -f "+release+" ]; do sleep 1; done\n",
+	), 0o755))
+
+	mu := new(sync.Mutex)
+	scheduleNextTick, drainSchedule := newTestScheduler(t, mu)
+
+	i, err := New(dir, configPath, dataDir, pkgtrust.NewStore(dataDir, nil),
+		newTestStorage(t, dataDir),
+		WithLocker(mu),
+		WithScheduleNextTick(scheduleNextTick),
+		WithPublishEvent(func(term.Event) bool { return true }),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = i.Close() })
+
+	root := i.Ready()
+	mu.Lock()
+	root.Resize(80, 24)
+	mu.Unlock()
+	drainSchedule()
+	i.WaitWorkspaces()
+
+	sendKeys := func(seq string) {
+		t.Helper()
+		keys, err := term.ParseKeys(seq)
+		require.NoError(t, err)
+		for _, k := range keys {
+			mu.Lock()
+			root.Handle(term.Event{
+				Type: term.EventKey, Ch: k.Ch, Mod: k.Mod, Key: k.Key,
+			})
+			mu.Unlock()
+			i.WaitInflight()
+		}
+	}
+
+	terminalWindow := func() (id uint64, cells string, found bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		i.workspaceHandler.focusEx().comp.Browser().IterateWindows(
+			func(win browser.Window) {
+				if found {
+					return
+				}
+				content, cerr := win.Content()
+				if cerr != nil {
+					return
+				}
+				v, isVTE := content.(vtereservoir.VTE)
+				if !isVTE {
+					return
+				}
+				snap, sErr := v.Snapshot()
+				if sErr != nil {
+					return
+				}
+				id, cells, found = win.WindowID(),
+					term.CellsToString(snap.ActiveCells()), true
+			})
+		return id, cells, found
+	}
+
+	countWindows := func() (n int) {
+		mu.Lock()
+		defer mu.Unlock()
+		i.workspaceHandler.focusEx().comp.Browser().
+			IterateWindows(func(browser.Window) { n++ })
+		return n
+	}
+
+	focusedWindow := func() uint64 {
+		mu.Lock()
+		defer mu.Unlock()
+		return i.workspaceHandler.focusEx().comp.Browser().Focus().WindowID()
+	}
+
+	sendKeys(`<c-\\>terminalnew<space>` + script + `<enter>`)
+
+	var termWin uint64
+	require.Eventually(t, func() bool {
+		id, cells, ok := terminalWindow()
+		if !ok || !strings.Contains(cells, "READY") {
+			return false
+		}
+		termWin = id
+		return true
+	}, 30*time.Second, 50*time.Millisecond,
+		"terminal did not start the child process")
+
+	sendKeys(`<c-\\>windownew<space>right<enter>`)
+
+	require.Equal(t, 2, countWindows(),
+		"expected the terminal window plus a new one")
+	require.NotEqual(t, termWin, focusedWindow(),
+		"the terminal must be unfocused for this test to mean anything")
+
+	// Nothing is typed from here on, so the terminal's Handle is never
+	// called: only the push can drop it.
+	require.NoError(t, os.WriteFile(release, nil, 0o644))
+
+	require.Eventually(t, func() bool {
+		drainSchedule()
+		_, _, stillThere := terminalWindow()
+		return !stillThere
+	}, 30*time.Second, 50*time.Millisecond,
+		"terminal whose child exited was not dropped while unfocused")
+
+	require.Equal(t, 2, countWindows(),
+		"dropping the terminal must swap the window's content, not close the window")
 }
 
 // lockedHandler serializes Handle/Draw/Resize/Cursor on the shared

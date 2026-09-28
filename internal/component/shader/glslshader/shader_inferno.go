@@ -42,6 +42,11 @@ func Inferno(params InfernoParams, fps float) shader.Shader {
 type InfernoParams struct {
 	Speed       vec2D
 	SwapRedBlue bool
+	// PaintForeground colours the characters rather than the cell
+	// background, so the fire is only visible through existing text.
+	// Blank cells and glyphs that render as background, such as fade
+	// blocks, are left untouched.
+	PaintForeground bool
 }
 
 // DefaultInfernoParams return a set of sane InfernoParams.
@@ -73,6 +78,10 @@ func (s *inferno) runCell(
 	resolutionX, resolutionY int,
 	inChar rune, inFg, inBg term.Color,
 ) (char rune, fg, bg term.Color) {
+	if s.PaintForeground && !paintsText(inChar) {
+		return inChar, inFg, inBg
+	}
+
 	fragCoord := vec2(float(fragCoordX), float(fragCoordY))
 
 	iTime := time
@@ -91,8 +100,12 @@ func (s *inferno) runCell(
 		col = vec3(col.z, col.y, col.x) // blue flames insteead of red
 	}
 
-	fg = inFg
-	bg = term.NewRGBColor(int32(col.x), int32(col.y), int32(col.z))
+	fire := term.NewRGBColor(int32(col.x), int32(col.y), int32(col.z))
+	if s.PaintForeground {
+		fg, bg = fire, inBg
+	} else {
+		fg, bg = inFg, fire
+	}
 	char = inChar
 	return
 }

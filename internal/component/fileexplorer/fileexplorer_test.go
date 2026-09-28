@@ -1255,6 +1255,9 @@ func TestDryFlush(t *testing.T) {
 			// Backspace at column 0 merges two rows into one.
 			// The remaining row inherits the id of the PREVIOUS
 			// row (from.Y), so it becomes a rename of that file.
+			// Joining also drags the second row's icon glyph into
+			// the middle of the name, which name validation
+			// refuses.
 			name: "backspace_at_start_joins_rows",
 			dirs: map[string][]mockEntry{
 				"/project": {{name: "alpha.go"}, {name: "beta.go"}},
@@ -1274,6 +1277,7 @@ func TestDryFlush(t *testing.T) {
 				{Type: OpRename, Path: "/project/alpha.go", New: "/project/alpha.go beta.go"},
 				{Type: OpDelete, Path: "/project/beta.go"},
 			},
+			wantConflictSubstrings: []string{"contains an icon glyph"},
 		},
 		// --- Deletion variants ---
 		{
@@ -2492,6 +2496,87 @@ func TestIgnoreNilDefaultsToNoFiltering(t *testing.T) {
 	c, buf, _ := newComp(t, dirs, Config{})
 	assert.Equal(t, "\uf4d3 .git/\n\uf40d main.go", buf.String())
 	_ = c
+}
+
+// TestValidateEntryName covers the names the explorer refuses to
+// write. The icon-glyph case is what a yanked row pasted into the
+// filename column produces.
+func TestValidateEntryName(t *testing.T) {
+	cfg := Config{IndentRune: '│', IndentWidth: 4}
+	cases := []struct {
+		name    string
+		entry   string
+		wantErr string
+	}{
+		{name: "plain", entry: "main.go"},
+		{name: "dotfile", entry: ".gitignore"},
+		{name: "spaces_inside", entry: "my notes.md"},
+		{
+			name:    "empty",
+			entry:   "   ",
+			wantErr: "name is empty",
+		},
+		{
+			name:    "icon_glyph",
+			entry:   "eeeee\ueeee cmd",
+			wantErr: "contains an icon glyph",
+		},
+		{
+			name:    "indent_guide",
+			entry:   "cmd│",
+			wantErr: "contains",
+		},
+		{
+			name:    "path_separator",
+			entry:   "a/b",
+			wantErr: "contains",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateEntryName(tc.entry, cfg)
+			if tc.wantErr == "" {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
+}
+
+// TestFlushRefusesPastedIconGlyphName reproduces yanking a directory
+// row and pasting it: the rendered icon travels with the row and
+// lands inside the new filename. The write must be refused instead of
+// creating a directory named with a private-use glyph.
+func TestFlushRefusesPastedIconGlyphName(t *testing.T) {
+	dirs := map[string][]mockEntry{
+		"/project":     {{name: "cmd", isDir: true}},
+		"/project/cmd": {},
+	}
+	c, buf, mfs := newComp(t, dirs, Config{
+		Icons: text.IconSet{Directory: '\ueeee'},
+	})
+	require.Equal(t, "\ueeee cmd/", buf.String())
+
+	pasted := "eeeee\ueeee cmd/"
+	cols := buf.View().Columns(0)
+	buf.Edit(context.Background(),
+		term.Coordinates{Y: 0, X: cols},
+		term.Coordinates{Y: 0, X: cols},
+		"\n"+pasted)
+
+	dry := c.DryFlush()
+	require.True(t, dry.HasConflicts())
+	assert.Contains(t, dry.Conflicts[0].Message, "contains an icon glyph")
+
+	before := buf.String()
+	_, err := c.Flush()
+	require.Error(t, err)
+	assert.Equal(t, before, buf.String())
+	for path := range mfs.dirs {
+		assert.NotContains(t, path, "\ueeee cmd")
+	}
 }
 
 // suffixIgnore is a minimal Matcher used by the ignore tests. It

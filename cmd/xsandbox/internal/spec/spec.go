@@ -63,6 +63,12 @@ type Host interface {
 	// InvokeCommand dispatches a registered command to the extension
 	// and waits for its completion.
 	InvokeCommand(name string, args []string, repl bool, timeout time.Duration) error
+	// ExpectResourceOpener blocks until a resource opener is registered
+	// for scheme.
+	ExpectResourceOpener(scheme string, timeout time.Duration) error
+	// OpenResource asks the resource opener of scheme for the content of
+	// uri and shows it as the tab of uri in the focused window.
+	OpenResource(scheme, uri string, timeout time.Duration) error
 	// PublishEvent dispatches an editor event to extension subscribers.
 	PublishEvent(evType, uri, content string) error
 	// WaitIdle blocks until no RPC activity is recorded for d.
@@ -146,6 +152,8 @@ func (e *environment) builtins() starlark.StringDict {
 		"expect_repl_command":       starlark.NewBuiltin("expect_repl_command", e.expectREPLCommand),
 		"invoke_command":            starlark.NewBuiltin("invoke_command", e.invokeCommand),
 		"invoke_repl_command":       starlark.NewBuiltin("invoke_repl_command", e.invokeREPLCommand),
+		"expect_resource_opener":    starlark.NewBuiltin("expect_resource_opener", e.expectResourceOpener),
+		"open_resource":             starlark.NewBuiltin("open_resource", e.openResource),
 		"publish_event":             starlark.NewBuiltin("publish_event", e.publishEvent),
 		"wait_idle":                 starlark.NewBuiltin("wait_idle", e.waitIdle),
 		"assert_no_unexpected_rpcs": starlark.NewBuiltin("assert_no_unexpected_rpcs", e.assertNoUnexpectedRPCs),
@@ -399,6 +407,51 @@ func commandName(v starlark.Value, repl bool) (string, error) {
 		return "", fmt.Errorf(
 			"command must be a string or a handle from expect_command, got %s", v.Type())
 	}
+}
+
+func (e *environment) expectResourceOpener(
+	_ *starlark.Thread, b *starlark.Builtin,
+	args starlark.Tuple, kwargs []starlark.Tuple,
+) (starlark.Value, error) {
+	var scheme, timeout string
+	if err := starlark.UnpackArgs(b.Name(), args, kwargs,
+		"scheme", &scheme, "timeout?", &timeout); err != nil {
+		return nil, err
+	}
+	if scheme == "" {
+		return nil, fmt.Errorf("%s: scheme must not be empty", b.Name())
+	}
+	d, err := e.timeout(timeout)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", b.Name(), err)
+	}
+	if err := e.host.ExpectResourceOpener(scheme, d); err != nil {
+		return nil, err
+	}
+	return resourceOpenerHandle{scheme: scheme}, nil
+}
+
+func (e *environment) openResource(
+	_ *starlark.Thread, b *starlark.Builtin,
+	args starlark.Tuple, kwargs []starlark.Tuple,
+) (starlark.Value, error) {
+	var opener starlark.Value
+	var uri, timeout string
+	if err := starlark.UnpackArgs(b.Name(), args, kwargs,
+		"opener", &opener, "uri", &uri, "timeout?", &timeout); err != nil {
+		return nil, err
+	}
+	h, ok := opener.(resourceOpenerHandle)
+	if !ok {
+		return nil, fmt.Errorf(
+			"%s: opener must be a handle from expect_resource_opener, got %s",
+			b.Name(), opener.Type())
+	}
+	d, err := e.timeout(timeout)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", b.Name(), err)
+	}
+	return starlark.None, e.host.OpenResource(h.scheme, uri, d)
 }
 
 func (e *environment) publishEvent(

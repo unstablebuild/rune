@@ -52,6 +52,10 @@ import (
 	"unstable.build/rune/internal/term/gui/openpanel"
 )
 
+type bootstrapPrompter interface {
+	Prompt(message string, options []string, bindings []term.KeyComb, h sdkhandler.PromptHandler) browser.Window
+}
+
 type bootstrapHandler struct {
 	inner             tui.Handler
 	dataDir           string
@@ -65,6 +69,7 @@ type bootstrapHandler struct {
 	trust             *pkgtrust.Store
 	mu                *sync.Mutex
 	publishEvent      func(term.Event) bool
+	cellPixelSize     func() (int, int)
 	openBrowser       func(*url.URL) error
 	clip              clipboard.Register
 	installBackupDir  string
@@ -83,6 +88,8 @@ type bootstrapHandler struct {
 	lastResizeW       int
 	lastResizeH       int
 	chosenEditor      string
+	telemetryEnabled  bool
+	prompter          bootstrapPrompter
 	closingPreIDE     bool
 	recent            *recentWorkspaces
 	// quickMenu is the configured native quick menu. It is parsed once
@@ -100,6 +107,7 @@ func newBootstrapHandler(
 	runner ide.ExtensionsRunner,
 	mu *sync.Mutex,
 	publishEvent func(term.Event) bool,
+	cellPixelSize func() (int, int),
 	openBrowser func(*url.URL) error,
 	clip clipboard.Register,
 	installBackupDir string,
@@ -118,6 +126,7 @@ func newBootstrapHandler(
 		trust:            trust,
 		mu:               mu,
 		publishEvent:     publishEvent,
+		cellPixelSize:    cellPixelSize,
 		openBrowser:      openBrowser,
 		clip:             clip,
 		installBackupDir: installBackupDir,
@@ -127,7 +136,6 @@ func newBootstrapHandler(
 	bh.rootCfg = rootCfg
 
 	if isBootstrapped(dataDir) {
-		migrateBootstrappedConfig(configPath)
 		client, releaseManager := newAPIClient(bh.storage, installBackupDir, rootCfg)
 		bh.network = newNetwork(rootCfg, dataDir, newNetworkGate(client))
 		bh.network.startAutoJoin()
@@ -147,6 +155,7 @@ func newBootstrapHandler(
 		return nil, fmt.Errorf("new pre-config ide: %w", err)
 	}
 	bh.preIDE = preIDE
+	bh.prompter = preIDE
 	bh.inner = preIDE.Ready()
 	bh.openBootstrapFlow()
 	return bh, nil
@@ -178,6 +187,7 @@ func (b *bootstrapHandler) buildPreIDE() (*ide.IDE, error) {
 		ide.WithBell(func() {}),
 		ide.WithPublishEvent(b.publishEvent),
 		ide.WithScheduleNextTick(b.scheduleNextTick),
+		ide.WithCellPixelSize(b.cellPixelSize),
 		ide.WithZdotDir(b.zdotDir),
 		ide.WithTabsClickCallback(b.handleTabsClick),
 	}
@@ -214,6 +224,7 @@ func (b *bootstrapHandler) buildConfiguredIDE(
 		ide.WithBell(func() {}),
 		ide.WithPublishEvent(b.publishEvent),
 		ide.WithScheduleNextTick(b.scheduleNextTick),
+		ide.WithCellPixelSize(b.cellPixelSize),
 		ide.WithZdotDir(b.zdotDir),
 		ide.WithScheme(docsScheme, newDocsSchemeFunc(b.configPath)),
 		ide.WithTabsClickCallback(b.handleTabsClick),
@@ -248,6 +259,9 @@ func (b *bootstrapHandler) buildConfiguredIDE(
 	}
 	if debug.DebugBuild == "true" {
 		opts = append(opts, ide.WithDebugCommands(true))
+	}
+	if *flagNoSessionReopen {
+		opts = append(opts, ide.WithoutSessionReopen())
 	}
 	opts = append(opts,
 		ide.WithReleaseManager(releaseManager),
@@ -542,7 +556,8 @@ func (b *bootstrapHandler) performSwap() error {
 	defer b.mu.Lock()
 
 	rootCfg := config.MapConfig(map[string]any{
-		"editor": map[string]any{"mode": b.chosenEditor},
+		"editor":    map[string]any{"mode": b.chosenEditor},
+		"telemetry": map[string]any{"enabled": b.telemetryEnabled},
 	})
 	client, releaseManager := newAPIClient(b.storage, b.installBackupDir, rootCfg)
 	// The network gates on the account, so it exists only from the
@@ -777,7 +792,7 @@ func (b *bootstrapHandler) recordRecentOpen(command string, args ...string) {
 }
 
 func (b *bootstrapHandler) writePresetConfig() error {
-	body, err := renderPreset(b.chosenEditor)
+	body, err := renderPreset(b.chosenEditor, b.telemetryEnabled)
 	if err != nil {
 		return fmt.Errorf("render preset: %w", err)
 	}
@@ -835,7 +850,8 @@ func (b *bootstrapHandler) Close() error {
 }
 
 const (
-	editorModal    = "modal"
+	editorVim      = "vim"
+	editorHelix    = "helix"
 	editorStandard = "standard"
 	editorEmacs    = "emacs"
 	// editorModeless is the deprecated alias for editorStandard, kept so
@@ -847,13 +863,14 @@ const (
 // stay byte-identical between the prompt and the callback.
 const (
 	optVimYes   = "    vim    "
+	optHelix    = "   helix   "
 	optStandard = " standard "
 	optEmacs    = "   emacs   "
 )
 
 var (
 	bootstrapVimKeys = []term.KeyComb{
-		{Ch: 's'}, {Ch: 'e'}, {Ch: 'v'},
+		{Ch: 's'}, {Ch: 'e'}, {Ch: 'v'}, {Ch: 'h'},
 	}
 
 	bootstrapWelcomeKeys = []term.KeyComb{
@@ -863,6 +880,17 @@ var (
 
 const (
 	optWelcomeGo = " Let's go "
+)
+
+const (
+	optTelemetryYes = " yes "
+	optTelemetryNo  = " no thanks "
+)
+
+var (
+	bootstrapTelemetryKeys = []term.KeyComb{
+		{Ch: 'y'}, {Ch: 'n'},
+	}
 )
 
 func (b *bootstrapHandler) openBootstrapFlow() {
@@ -879,6 +907,15 @@ func metaKeySymbol() string {
 	return "the Windows or Super key"
 }
 
+func (b *bootstrapHandler) prompt(
+	message string,
+	options []string,
+	bindings []term.KeyComb,
+	h sdkhandler.PromptHandler,
+) browser.Window {
+	return b.prompter.Prompt(message, options, bindings, h)
+}
+
 func (b *bootstrapHandler) openWelcomePrompt() {
 	msg := "## Welcome to Rune\n\n" +
 		"Glad you're here. Let's get everything set up.\n\n" +
@@ -888,7 +925,7 @@ func (b *bootstrapHandler) openWelcomePrompt() {
 		"If this text is too small, press " + metaKeySymbol() + " and `=` to make the font bigger; " +
 		"if it's too big, press " + metaKeySymbol() + " and `-` to make it smaller."
 	guard := b.promptGuard()
-	b.preIDE.Prompt(
+	b.prompt(
 		msg,
 		[]string{optWelcomeGo},
 		bootstrapWelcomeKeys,
@@ -903,28 +940,54 @@ func (b *bootstrapHandler) openWelcomePrompt() {
 
 func (b *bootstrapHandler) openVimPrompt() {
 	msg := "## Choose your key bindings\n" +
-		"Rune ships with three built-in editors, so pick the one that feels like home.\n\n" +
+		"Rune ships with four built-in editors, so pick the one that feels like home.\n\n" +
 		"Know vim? Pick **vim** and you get it **everywhere**, not just in editor " +
 		"buffers: the terminal, input boxes, and the file explorer.\n\n" +
 		"Used to VS Code, Cursor, Sublime or a plain text editor? Pick **standard** and Rune uses " +
 		"those familiar, standard key bindings everywhere instead.\n\n" +
 		"Prefer Emacs? Pick **emacs** for an Emacs-style keymap everywhere.\n\n" +
+		"Coming from Helix? Pick **helix** for its selection-first grammar, " +
+		"where a motion picks the target and the operator acts on it.\n\n" +
 		"**Which key bindings do you want?**"
 	guard := b.promptGuard()
-	b.preIDE.Prompt(
+	b.prompt(
 		msg,
-		[]string{optStandard, optEmacs, optVimYes},
+		[]string{optStandard, optEmacs, optVimYes, optHelix},
 		bootstrapVimKeys,
 		sdkhandler.FuncPromptHandler(
 			guard.onSelect(func(_ int, option string) {
 				b.chosenEditor = optionToChoice(option)
+				b.openTelemetryPrompt()
+			}),
+			guard.onClose(b.openVimPrompt),
+		),
+	)
+}
+
+func (b *bootstrapHandler) openTelemetryPrompt() {
+	msg := "## Help us pick what to build next\n\n" +
+		"Rune reports a small amount of anonymous usage data. The most useful " +
+		"signal is which languages people actually edit, and it is how we decide " +
+		"which language support to build next.\n\n" +
+		"We never send file names, paths, file contents, terminal output, or " +
+		"anything you type.\n\n" +
+		"You can change this any time in your config. A complete report " +
+		"and sample payloads are on the Telemetry page in the docs."
+	guard := b.promptGuard()
+	b.prompt(
+		msg,
+		[]string{optTelemetryYes, optTelemetryNo},
+		bootstrapTelemetryKeys,
+		sdkhandler.FuncPromptHandler(
+			guard.onSelect(func(_ int, option string) {
+				b.telemetryEnabled = telemetryOptionToChoice(option)
 				b.scheduleNextTick(func() {
 					if err := b.performSwap(); err != nil {
 						b.notifyError("finish bootstrap", err)
 					}
 				})
 			}),
-			guard.onClose(b.openVimPrompt),
+			guard.onClose(b.openTelemetryPrompt),
 		),
 	)
 }
@@ -1039,6 +1102,12 @@ func optionToChoice(option string) string {
 		return editorStandard
 	case optEmacs:
 		return editorEmacs
+	case optHelix:
+		return editorHelix
 	}
-	return editorModal
+	return editorVim
+}
+
+func telemetryOptionToChoice(option string) bool {
+	return option == optTelemetryYes
 }

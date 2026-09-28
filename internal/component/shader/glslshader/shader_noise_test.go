@@ -31,6 +31,13 @@ import (
 func TestNoise(t *testing.T) {
 	shadertest.TestShader(t, Noise(DefaultNoiseParams(), 30))
 
+	t.Run("paint foreground", func(t *testing.T) {
+		params := DefaultNoiseParams()
+		params.PaintForeground = true
+		shadertest.TestShader(t, Noise(params, 30))
+		assertPaintsOnlyText(t, Noise(params, 30))
+	})
+
 	tsuite := []struct {
 		name   string
 		scale  float

@@ -299,7 +299,7 @@ diff_buf_adjust(win_
 		}
 		mu.Lock()
 		// text.Editor only installs auxiliary chrome when called via
-		// text.Component (which threads withAuxiliaryBars in the
+		// text.Component (which threads text.WithBars in the
 		// context). Tests that want to exercise the bar wiring stack
 		// the bars on top of a bare vi handler directly.
 		root := New(buf, uri,

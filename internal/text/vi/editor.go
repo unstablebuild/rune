@@ -100,7 +100,8 @@ func (e *viEditor) Edit(
 		}
 	}
 	ret = e.Publisher.PublishEdit(file, buf, ret, cursor)
-	if !text.BarsFromContext(ctx) {
+	bars, ok := text.BarsFromContext(ctx)
+	if !ok {
 		return ret, nil
 	}
 	auxBarConfig := e.config.auxBarConfig
@@ -108,18 +109,23 @@ func (e *viEditor) Edit(
 	iconsBarConfig := e.config.iconsBarConfig
 	iconsBarConfig.CommandRegistry = e.registry
 	iconsBarConfig.Publisher = publisherEventsAdapter{pub: &e.Publisher}
-	if e.config.enableAuxBar {
+	if e.config.enableAuxBar && !bars.DisableAuxBar {
 		ret = text.WithAuxBar(ret, buf, scroll, auxBarConfig)
 	}
-	if e.config.enableIconsBar {
+	if e.config.enableIconsBar && !bars.DisableIconsBar {
 		ret = text.WithIconsBar(e.config.auxBarConfig.Service, e.config.enableGitIcons, ret, buf,
 			scroll, iconsBarConfig)
 	}
 	if !e.config.statusBarEnabled {
 		return ret, nil
 	}
+	statusBarConfig := e.config.statusBarConfig
+	if bars.StatusBar != nil {
+		statusBarConfig.Workspace = bars.StatusBar.Workspace
+		statusBarConfig.GitService = bars.StatusBar.GitService
+	}
 	bar := text.WithStatusBar(ret, buf, scroll,
-		readOnly, recovered, e.config.statusBarConfig)
+		readOnly, recovered, statusBarConfig)
 	root.setStatusBar(bar)
 	return bar, nil
 }
@@ -144,6 +150,14 @@ func (c *viEditor) UnsubscribeCommand(cmd string) error {
 }
 
 func (c *viEditor) UnregisterREPLCommand(cmd string) error {
+	return errors.New("not supported")
+}
+
+func (e *viEditor) RegisterResourceOpener(string, textapi.ResourceOpenHandler) error {
+	return errors.New("not supported")
+}
+
+func (e *viEditor) UnregisterResourceOpener(string) error {
 	return errors.New("not supported")
 }
 

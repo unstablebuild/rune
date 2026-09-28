@@ -30,6 +30,9 @@ import (
 type tuiPrompter struct {
 	tx   chan<- dialoguetui.MessageEvent
 	noti browserapi.Notifications
+	// status is the chat the prompt belongs to, whose bar reports
+	// phaseAsking for as long as the prompt is pending.
+	status syncComponent
 }
 
 func (tp *tuiPrompter) Prompt(ctx context.Context, req agent.PromptRequest) (agent.PromptResponse, error) {
@@ -65,6 +68,12 @@ func (tp *tuiPrompter) Prompt(ctx context.Context, req agent.PromptRequest) (age
 	case <-ctx.Done():
 		return agent.PromptResponse{}, ctx.Err()
 	}
+	// Restoring the phase the prompt displaced, rather than assuming
+	// the turn was executing tools, is what lets prompts that overlap
+	// unwind in order: the last one to open hands back phaseAsking and
+	// the first hands back the turn's own phase.
+	prevPhase := tp.status.swapPhase(phaseAsking)
+	defer tp.status.swapPhase(prevPhase)
 	_, _ = tp.noti.Notify(browserapi.LevelWarn, "Input required: %s", req.Title)
 	select {
 	case vals := <-resultCh:

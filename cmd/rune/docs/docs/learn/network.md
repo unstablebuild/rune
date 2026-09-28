@@ -14,9 +14,9 @@ workspaceopen rune://<machine>/path/to/project
 
 There is no SSH server to run, no port to forward, no public address to
 expose, and no credentials to hand out. The machines find each other
-through Rune's coordination server and talk directly, so a laptop behind
-a home router and a workstation behind an office firewall reach each
-other without either being reachable from the internet.
+through Rune's coordination server and punch through the NATs in front
+of them, so from a cafe you can open the workspaces on the machine at
+home without opening a hole in your home network's firewall.
 
 A `rune://` workspace behaves exactly like an [SSH
 workspace](./ssh.md) once it is open: files, terminals, language
@@ -35,7 +35,8 @@ the code.
 - **Rune running on both machines, signed into the same account.** A
   machine serves its workspaces from the Rune instance running on it. If
   Rune is not open there, the machine is not reachable, and only your own
-  machines are ever allowed to connect.
+  machines are ever allowed to connect. A machine nobody sits at can run
+  Rune as a service instead; see [Headless](./headless.md).
 
 ## Joining the network
 
@@ -146,6 +147,54 @@ own and the workspace carries on. Two failures are final rather than
 retried, because retrying cannot fix them: a machine that is not on the
 network at all, and one that belongs to a different account.
 
+## Running a machine without the editor
+
+A build box or a server has code you want to open from your laptop, but
+nobody sits in front of it. `rune --headless` puts such a machine on the
+network with no editor at all: no window, no terminal UI, just the node
+and the workspace server its peers connect to.
+
+```bash
+rune --headless
+```
+
+:::tip[Keep it running]
+A machine serves its workspaces only while `rune --headless` runs. To
+start it at boot and keep it up, install it as a service: the
+[Headless](./headless.md) guide has recipes for systemd, launchd, OpenRC,
+runit, and Docker.
+:::
+
+It needs no display and no graphical libraries, so it runs on a minimal
+server install or inside a container. Everything the editor would show
+you goes to standard output, and the Rune log (`log_path`) is teed there
+too, so `journalctl` or `docker logs` shows what the machine is doing.
+
+The first run has no account signed in, so Rune prints a code to
+authorize the machine:
+
+```
+To sign this machine in, open
+
+    https://auth.rune.build/activate
+
+in any browser and enter the code ABCD-EFGH (expires 14:32).
+```
+
+Open that page on any machine, laptop or phone, enter the code, and
+Rune signs in as soon as you approve it. Nothing needs to reach the
+machine running Rune: it only polls out, so no port forward or SSH
+tunnel is involved.
+
+The sign-in is cached in the data directory, so later runs go straight
+to joining and print the node's name, state, and addresses. From then on
+the machine shows up in `network peers` on your other machines and
+`workspaceopen rune://<machine>/path` works against it.
+
+A headless node serves the network and nothing else, so it needs
+`network.auto_join` left on: with it off there is no console to run
+`network up` in, and Rune says so and exits.
+
 ## Configuration
 
 The network reads its settings from the `network` section of your
@@ -185,9 +234,10 @@ network.
 
 When a machine joins, Rune's coordination server checks your account,
 hands the machine short-lived credentials, and tells your machines about
-each other. Your files and terminals do not travel through it. Traffic
-goes directly between the two machines, encrypted end to end, and falls
-back to an encrypted relay only when no direct path can be established.
+each other. Your files and terminals do not travel through it: knowing
+where to find each other, the two machines hole-punch through their NATs
+and talk directly, encrypted end to end, and fall back to an encrypted
+relay only when no direct path can be established.
 
 Each machine serves its workspaces on port 7473 of its network address
 only. Every request carries the identity of the machine behind it, and
@@ -206,7 +256,7 @@ once open. They differ in what they need from you:
 | | [`ssh://`](./ssh.md) | `rune://` |
 | --- | --- | --- |
 | Addressed by | user, host, and port | machine name |
-| Reachability | the host must be reachable over SSH | neither machine needs to be reachable from outside |
+| Reachability | the host must be reachable over SSH, so a NAT or firewall in front of it needs a forwarded port | neither machine needs to be reachable from outside; Rune traverses the NATs between them |
 | Credentials | your SSH keys and `known_hosts` | your Rune account, nothing to manage |
 | The other end runs | a workspace server that Rune starts over SSH | the Rune instance already running there |
 | Toolchains | Rune mirrors your local language packages onto the host | the machine's own Rune install and packages |

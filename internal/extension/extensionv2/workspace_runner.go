@@ -370,7 +370,7 @@ func (m *workspaceRunner) resolveEntrypoint(path string) (string, error) {
 			return "", err
 		}
 	}
-	return workspaceapi.ExpandPath(path, user.Current, func() (string, error) {
+	return workspaceapi.ExpandPath(os.ExpandEnv(path), user.Current, func() (string, error) {
 		return cwd, nil
 	})
 }
@@ -403,7 +403,7 @@ func (m *workspaceRunner) sourceEntrypointArgv(
 		// package dir so go run picks up all its files). Otherwise it
 		// is a plain command and passes through unchanged.
 		dir, err := workspaceapi.ExpandPath(
-			argv[0], user.Current,
+			os.ExpandEnv(argv[0]), user.Current,
 			func() (string, error) { return "", nil },
 		)
 		if err != nil {
@@ -421,7 +421,7 @@ func (m *workspaceRunner) sourceEntrypointArgv(
 	}
 
 	script, err := workspaceapi.ExpandPath(
-		argv[0], user.Current,
+		os.ExpandEnv(argv[0]), user.Current,
 		func() (string, error) { return "", nil },
 	)
 	if err != nil {

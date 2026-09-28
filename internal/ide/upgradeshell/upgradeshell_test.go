@@ -69,6 +69,8 @@ func (m *promptWindowManager) SetWindowContent(browserapi.Window, browserapi.Han
 }
 func (m *promptWindowManager) CloseWindow(browserapi.Window) error { return nil }
 
+func (m *promptWindowManager) SetTabActivity(workspaceapi.URI, bool) error { return nil }
+
 type recordingProgressWriter struct {
 	mu    sync.Mutex
 	units []string
@@ -94,6 +96,15 @@ func newHandler(
 	t *testing.T, status int, body any, key rune,
 ) *Handler {
 	t.Helper()
+	return newHandlerOSPackaged(t, status, body, key, false)
+}
+
+// newHandlerOSPackaged is newHandler with control over the
+// OS-packaged flag.
+func newHandlerOSPackaged(
+	t *testing.T, status int, body any, key rune, osPackaged bool,
+) *Handler {
+	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/manifest-"+runtime.GOOS+"-"+runtime.GOARCH+".json",
 		func(w http.ResponseWriter, _ *http.Request) {
@@ -116,7 +127,7 @@ func newHandler(
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = mgr.Close() })
-	return New(Config{Manager: mgr})
+	return New(Config{Manager: mgr, OSPackaged: osPackaged})
 }
 
 func availableManifest() map[string]any {
@@ -194,6 +205,40 @@ func TestHandleCommandReportsCheckProgress(t *testing.T) {
 		repl.Command{Name: CommandName}, pw)
 	require.NoError(t, err)
 	require.Equal(t, []string{"checking for updates"}, pw.snapshot())
+}
+
+// TestHandleCommandOSPackaged pins the behaviour of an OS-packaged
+// build: the command explains where updates come from and never
+// reaches the manifest endpoint. The endpoint is wired to fail, so a
+// missing short-circuit surfaces as an error rather than passing.
+func TestHandleCommandOSPackaged(t *testing.T) {
+	h := newHandlerOSPackaged(
+		t, http.StatusInternalServerError, nil, 0, true)
+	pw := &recordingProgressWriter{}
+
+	got, err := h.upgrade(context.Background(),
+		repl.Command{Name: CommandName}, pw)
+
+	require.NoError(t, err)
+	require.Equal(t, "This build was distributed by an OS package manager, "+
+		"so auto-updates are disabled. Check your distribution's package "+
+		"manager for updates.", got)
+	require.Empty(t, pw.snapshot(),
+		"must not report check progress when no check runs")
+}
+
+// TestHandleCommandOSPackagedHelp keeps `upgrade help` useful in
+// OS-packaged builds.
+func TestHandleCommandOSPackagedHelp(t *testing.T) {
+	h := newHandlerOSPackaged(
+		t, http.StatusInternalServerError, nil, 0, true)
+
+	got, err := h.upgrade(context.Background(),
+		repl.Command{Name: CommandName, Args: []string{"help"}},
+		&recordingProgressWriter{})
+
+	require.NoError(t, err)
+	require.Equal(t, usageMarkdown(), got)
 }
 
 // TestHandleCommandUpgradeNowForwardsProgress covers the "Upgrade Now"

@@ -60,6 +60,7 @@ func (w *recordingWriter) UnionAttributes(pos term.Coordinates, attr term.Attrib
 }
 
 func (w *recordingWriter) Context() context.Context            { return context.Background() }
+func (w *recordingWriter) DrawImage(term.Image) bool           { return false }
 func (w *recordingWriter) SetCell(term.Coordinates, term.Cell) {}
 
 func screenCoords(calls []writerCall) []term.Coordinates {

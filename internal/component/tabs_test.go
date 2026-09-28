@@ -683,6 +683,148 @@ func TestTabsDrawResize(t *testing.T) {
 	comptest.TestComponent(t, l, w, tests)
 }
 
+// TestTabsTabRect checks that TabRect lands on the cells Draw actually
+// paints a tab's label into, across the frame and highlight modes that
+// move the label row and a layout that shrinks or hides tabs.
+func TestTabsTabRect(t *testing.T) {
+	type want struct {
+		x, y, width int
+	}
+	for _, tc := range []struct {
+		name          string
+		width, height int
+		border        bool
+		bottom        bool
+		separator     string
+		noIcon        bool
+		action        rune
+		tabs          []string
+		focus         int
+		want          map[int]want
+	}{
+		{
+			name: "bordered", width: 20, height: 3, border: true,
+			tabs: []string{"alpha", "beta"},
+			want: map[int]want{0: {3, 1, 5}, 1: {12, 1, 4}},
+		},
+		{
+			name: "bordered tall centres the label", width: 20, height: 9,
+			border: true, tabs: []string{"alpha"},
+			want: map[int]want{0: {3, 4, 5}},
+		},
+		{
+			name: "borderless below highlight", width: 20, height: 2,
+			tabs: []string{"alpha", "beta"},
+			want: map[int]want{0: {2, 1, 5}, 1: {11, 1, 4}},
+		},
+		{
+			name: "borderless tall below highlight", width: 20, height: 3,
+			tabs: []string{"alpha", "beta"},
+			want: map[int]want{0: {2, 2, 5}, 1: {11, 2, 4}},
+		},
+		{
+			name: "borderless taller below highlight", width: 20, height: 4,
+			tabs: []string{"alpha"},
+			want: map[int]want{0: {2, 2, 5}},
+		},
+		{
+			name: "borderless tallest below highlight", width: 20, height: 5,
+			tabs: []string{"alpha"},
+			want: map[int]want{0: {2, 3, 5}},
+		},
+		{
+			name: "borderless tall bottom highlight", width: 20, height: 3,
+			bottom: true, tabs: []string{"alpha"},
+			want: map[int]want{0: {2, 1, 5}},
+		},
+		{
+			name: "borderless bottom highlight", width: 20, height: 2,
+			bottom: true, tabs: []string{"alpha", "beta"},
+			want: map[int]want{0: {2, 0, 5}, 1: {11, 0, 4}},
+		},
+		{
+			name: "borderless single row", width: 20, height: 1,
+			tabs: []string{"alpha", "beta"},
+			want: map[int]want{0: {2, 0, 5}, 1: {11, 0, 4}},
+		},
+		{
+			name: "custom separator", width: 20, height: 1,
+			separator: " | ", tabs: []string{"alpha", "beta"},
+			want: map[int]want{0: {2, 0, 5}, 1: {12, 0, 4}},
+		},
+		{
+			name: "without icons", width: 20, height: 1, noIcon: true,
+			tabs: []string{"alpha", "beta"},
+			want: map[int]want{0: {0, 0, 5}, 1: {7, 0, 4}},
+		},
+		{
+			name: "action glyph", width: 30, height: 1, action: 'x',
+			tabs: []string{"alpha", "beta"},
+			want: map[int]want{0: {2, 0, 8}, 1: {14, 0, 7}},
+		},
+		{
+			// Same geometry as TestTabsDrawResize at width 20 with
+			// focus on E: D, E and F are visible, the rest are not,
+			// and D and F shrank to their icons.
+			name: "shrunk layout hides tabs", width: 20, height: 4,
+			border: true, focus: 4,
+			tabs: []string{"alpha", "beta", "gamma", "delta", "epsilon", "zeta"},
+			want: map[int]want{4: {7, 1, 7}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			l := NewTabs()
+			l.SetBorder(tc.border)
+			l.SetBottomHighlight(tc.bottom)
+			if tc.separator != "" {
+				l.SetNameSeparator(tc.separator)
+			}
+			l.Resize(tc.width, tc.height)
+			icon := func(idx int) rune {
+				if tc.noIcon {
+					return 0
+				}
+				return rune(tc.tabs[idx][0] - 'a' + 'A')
+			}
+			for idx, name := range tc.tabs {
+				l.Add(icon(idx), name)
+				if tc.action != 0 {
+					l.SetTabAction(idx, tc.action, term.Attributes{})
+				}
+			}
+			l.ResetFocus()
+			l.SetFocus(tc.focus)
+
+			_, _, ok := l.TabRect(0)
+			assert.False(t, ok, "no layout before the first draw")
+
+			w := term.NewStringWriter(tc.width, tc.height)
+			l.Draw(w)
+			cells := w.Cells()
+
+			for idx := range tc.tabs {
+				offset, width, ok := l.TabRect(idx)
+				exp, visible := tc.want[idx]
+				require.Equal(t, visible, ok, "tab %d", idx)
+				if !visible {
+					continue
+				}
+				assert.Equal(t, exp, want{offset.X, offset.Y, width}, "tab %d", idx)
+				// The rect opens on the tab's name, leaving the icon
+				// and the blank after it outside.
+				row := cells[offset.Y*tc.width : (offset.Y+1)*tc.width]
+				assert.Equal(t, rune(tc.tabs[idx][0]), row[offset.X].Ch, "tab %d", idx)
+				if !tc.noIcon {
+					assert.Equal(t, icon(idx), row[offset.X-2].Ch, "tab %d", idx)
+					assert.Equal(t, ' ', row[offset.X-1].Ch, "tab %d", idx)
+				}
+			}
+			_, _, ok = l.TabRect(len(tc.tabs))
+			assert.False(t, ok, "an index past the tabs is not laid out")
+		})
+	}
+}
+
 func TestTabsTabAt(t *testing.T) {
 	t.Run("should return false if no tab in list", func(t *testing.T) {
 		l := NewTabs()
@@ -723,6 +865,258 @@ func TestTabsTabAt(t *testing.T) {
 		idx, ok := l.TabAt(term.Coordinates{})
 		require.True(t, ok)
 		assert.Equal(t, "4", l.tabs[idx].name)
+	})
+}
+
+// TestTabsTabIconAt scans every cell around the bar and checks that
+// TabIconAt hits exactly the cells Draw paints an icon into, across the
+// frame and highlight modes that move the label row and layouts that
+// shrink, hide or blank tabs.
+func TestTabsTabIconAt(t *testing.T) {
+	const wide = '界'
+	type tabSpec struct {
+		icon   rune
+		name   string
+		action rune
+	}
+	letters := func(names ...string) []tabSpec {
+		specs := make([]tabSpec, len(names))
+		for i, name := range names {
+			specs[i] = tabSpec{icon: rune(name[0] - 'a' + 'A'), name: name}
+		}
+		return specs
+	}
+	withAction := func(specs []tabSpec) []tabSpec {
+		for i := range specs {
+			specs[i].action = 'x'
+		}
+		return specs
+	}
+	for _, tc := range []struct {
+		name          string
+		width, height int
+		border        bool
+		bottom        bool
+		separator     string
+		tabs          []tabSpec
+		focus         int
+		row           int
+		// icons maps each tab whose icon is drawn to its first column.
+		icons map[int]int
+	}{
+		{
+			name: "bordered", width: 20, height: 3, border: true,
+			tabs: letters("alpha", "beta"), row: 1,
+			icons: map[int]int{0: 1, 1: 10},
+		},
+		{
+			name: "bordered tall centres the icon", width: 20, height: 9,
+			border: true, tabs: letters("alpha"), row: 4,
+			icons: map[int]int{0: 1},
+		},
+		{
+			name: "borderless below highlight", width: 20, height: 2,
+			tabs: letters("alpha", "beta"), row: 1,
+			icons: map[int]int{0: 0, 1: 9},
+		},
+		{
+			name: "borderless tall below highlight", width: 20, height: 3,
+			tabs: letters("alpha", "beta"), row: 2,
+			icons: map[int]int{0: 0, 1: 9},
+		},
+		{
+			name: "borderless tallest below highlight", width: 20, height: 5,
+			tabs: letters("alpha"), row: 3,
+			icons: map[int]int{0: 0},
+		},
+		{
+			name: "borderless bottom highlight", width: 20, height: 2,
+			bottom: true, tabs: letters("alpha", "beta"), row: 0,
+			icons: map[int]int{0: 0, 1: 9},
+		},
+		{
+			name: "borderless single row", width: 20, height: 1,
+			tabs: letters("alpha", "beta"), row: 0,
+			icons: map[int]int{0: 0, 1: 9},
+		},
+		{
+			name: "custom separator", width: 20, height: 1,
+			separator: " | ", tabs: letters("alpha", "beta"), row: 0,
+			icons: map[int]int{0: 0, 1: 10},
+		},
+		{
+			name: "tabs without icons", width: 20, height: 1,
+			tabs: []tabSpec{{name: "alpha"}, {name: "beta"}}, row: 0,
+		},
+		{
+			name: "only the tabs with an icon", width: 20, height: 1,
+			tabs: []tabSpec{{name: "alpha"}, {icon: 'B', name: "beta"}}, row: 0,
+			icons: map[int]int{1: 7},
+		},
+		{
+			name: "action glyph is not the icon", width: 30, height: 1,
+			tabs: withAction(letters("alpha", "beta")), row: 0,
+			icons: map[int]int{0: 0, 1: 12},
+		},
+		{
+			// B and C shrink to two cells, too narrow for the action
+			// glyph, so they drop it and keep their icons.
+			name: "shrunk cell drops the action glyph", width: 20, height: 1,
+			tabs: withAction(letters("alpha", "beta", "gamma")), row: 0,
+			icons: map[int]int{0: 0, 1: 12, 2: 16},
+		},
+		{
+			// B and C shrink to three cells, which the action glyph's
+			// block takes whole, so they are drawn blank.
+			name: "cell taken by the action glyph is blank", width: 22, height: 1,
+			tabs: withAction(letters("alpha", "beta", "gamma")), row: 0,
+			icons: map[int]int{0: 0},
+		},
+		{
+			// Same geometry as TestTabsDrawResize at width 20 with
+			// focus on E: D and F shrank to their icons and the rest
+			// are scrolled out of view.
+			name: "shrunk layout hides tabs", width: 20, height: 4,
+			border: true, focus: 4, row: 1,
+			tabs:  letters("alpha", "beta", "gamma", "delta", "epsilon", "zeta"),
+			icons: map[int]int{3: 1, 4: 5, 5: 16},
+		},
+		{
+			name: "wide icons", width: 20, height: 1, row: 0,
+			tabs:  []tabSpec{{icon: wide, name: "alpha"}, {icon: wide, name: "beta"}},
+			icons: map[int]int{0: 0, 1: 10},
+		},
+		{
+			// The focused tab leaves a single cell to the last one,
+			// which cannot hold a two-cell icon.
+			name: "wide icon without room is left out", width: 18, height: 1,
+			focus: 1, row: 0,
+			tabs: []tabSpec{
+				{icon: wide, name: "aaaa"},
+				{icon: wide, name: "bbbbbbbbbb"},
+				{icon: wide, name: "c"},
+			},
+			icons: map[int]int{1: 0},
+		},
+		{
+			name:  "bar narrower than the focused tab keeps its icon",
+			width: 3, height: 1, row: 0,
+			tabs:  letters("alpha"),
+			icons: map[int]int{0: 0},
+		},
+		{
+			name:  "bar narrower than the focused tab's wide icon",
+			width: 3, height: 1, row: 0,
+			tabs: []tabSpec{{icon: wide, name: "alpha"}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			l := NewTabs()
+			l.SetBorder(tc.border)
+			l.SetBottomHighlight(tc.bottom)
+			if tc.separator != "" {
+				l.SetNameSeparator(tc.separator)
+			}
+			l.Resize(tc.width, tc.height)
+			icons := map[rune]bool{}
+			for idx, spec := range tc.tabs {
+				l.Add(spec.icon, spec.name)
+				if spec.action != 0 {
+					l.SetTabAction(idx, spec.action, term.Attributes{})
+				}
+				if spec.icon != 0 {
+					icons[spec.icon] = true
+				}
+			}
+			l.ResetFocus()
+			l.SetFocus(tc.focus)
+
+			w := term.NewStringWriter(tc.width, tc.height)
+			l.Draw(w)
+			cells := w.Cells()
+			row := cells[tc.row*tc.width : (tc.row+1)*tc.width]
+
+			want := map[term.Coordinates]int{}
+			for idx, x := range tc.icons {
+				icon := tc.tabs[idx].icon
+				require.Equal(t, icon, row[x].Ch, "tab %d icon", idx)
+				for dx := range runeCellWidth(icon) {
+					want[term.Coordinates{X: x + dx, Y: tc.row}] = idx
+				}
+			}
+			for x, c := range row {
+				if icons[c.Ch] {
+					_, ok := want[term.Coordinates{X: x, Y: tc.row}]
+					assert.True(t, ok, "icon %q drawn at %d is not expected", c.Ch, x)
+				}
+			}
+
+			for y := -1; y <= tc.height; y++ {
+				for x := -1; x <= tc.width; x++ {
+					pos := term.Coordinates{X: x, Y: y}
+					wantIdx, wantOK := want[pos]
+					if !wantOK {
+						wantIdx = -1
+					}
+					idx, ok := l.TabIconAt(pos)
+					assert.Equal(t, wantOK, ok, "at %+v", pos)
+					assert.Equal(t, wantIdx, idx, "at %+v", pos)
+				}
+			}
+		})
+	}
+
+	t.Run("not before the first draw", func(t *testing.T) {
+		l := NewTabs()
+		l.SetBorder(false)
+		l.Resize(20, 1)
+		l.Add('A', "alpha")
+
+		_, ok := l.TabAt(term.Coordinates{})
+		require.True(t, ok)
+		_, ok = l.TabIconAt(term.Coordinates{})
+		assert.False(t, ok)
+	})
+
+	t.Run("tab removed since the last draw", func(t *testing.T) {
+		l := NewTabs()
+		l.SetBorder(false)
+		l.Resize(20, 1)
+		l.Add('A', "alpha")
+		l.Add('B', "beta")
+		l.Draw(term.NewStringWriter(20, 1))
+
+		idx, ok := l.TabIconAt(term.Coordinates{X: 9})
+		require.True(t, ok)
+		require.Equal(t, 1, idx)
+
+		l.Remove(1)
+		_, ok = l.TabIconAt(term.Coordinates{X: 9})
+		assert.False(t, ok)
+		idx, ok = l.TabIconAt(term.Coordinates{X: 0})
+		assert.True(t, ok)
+		assert.Equal(t, 0, idx)
+	})
+
+	t.Run("icon cleared since the last draw", func(t *testing.T) {
+		l := NewTabs()
+		l.SetBorder(false)
+		l.Resize(20, 1)
+		l.Add('A', "alpha")
+		l.Draw(term.NewStringWriter(20, 1))
+
+		l.SetTabIcon(0, 0)
+		_, ok := l.TabIconAt(term.Coordinates{})
+		assert.False(t, ok)
+	})
+
+	t.Run("no tabs", func(t *testing.T) {
+		l := NewTabs()
+		l.Resize(20, 3)
+		l.Draw(term.NewStringWriter(20, 3))
+
+		_, ok := l.TabIconAt(term.Coordinates{X: 1, Y: 1})
+		assert.False(t, ok)
 	})
 }
 

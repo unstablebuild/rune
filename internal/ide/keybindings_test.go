@@ -410,7 +410,7 @@ func TestKeyBindingsRender(t *testing.T) {
 			cfg.CommandSequenceBindings = tc.seqs
 			cfg.CommandAliases = tc.aliases
 
-			md, err := renderKeyBindings(cfg, keybindingsTestManuals(), "modal", "darwin")
+			md, err := renderKeyBindings(cfg, keybindingsTestManuals(), "vim", "darwin")
 			require.NoError(t, err)
 
 			require.True(t, strings.HasPrefix(md, "# Key bindings"),
@@ -438,7 +438,7 @@ func TestKeyBindingsSectionsOrdered(t *testing.T) {
 	}
 	cfg.CommandSequenceBindings = nil
 
-	md, err := renderKeyBindings(cfg, keybindingsTestManuals(), "modal", "darwin")
+	md, err := renderKeyBindings(cfg, keybindingsTestManuals(), "vim", "darwin")
 	require.NoError(t, err)
 
 	lang := strings.Index(md, "## Language intelligence")
@@ -475,7 +475,7 @@ func TestKeyBindingsCodeNavigationSection(t *testing.T) {
 	}
 	cfg.CommandSequenceBindings = nil
 
-	md, err := renderKeyBindings(cfg, keybindingsTestManuals(), "modal", "darwin")
+	md, err := renderKeyBindings(cfg, keybindingsTestManuals(), "vim", "darwin")
 	require.NoError(t, err)
 
 	lang := strings.Index(md, "## Language intelligence")
@@ -516,7 +516,8 @@ func TestKeyBindingsEditorModeIntro(t *testing.T) {
 		mode string
 		want string
 	}{
-		{"modal", "https://docs.rune.build/learn/modal-editor"},
+		{"vim", "https://docs.rune.build/learn/vim-editor"},
+		{"helix", "https://docs.rune.build/learn/helix-editor"},
 		{"standard", "https://docs.rune.build/learn/standard-editor"},
 		{"emacs", "https://docs.rune.build/learn/emacs-editor"},
 		{"exo", "consult its documentation for in-buffer key bindings"},
@@ -544,7 +545,7 @@ func TestKeyBindingsMetaKeyHint(t *testing.T) {
 		{"linux", "`<meta>` is the Windows or Super key."},
 	} {
 		t.Run(tc.goos, func(t *testing.T) {
-			md, err := renderKeyBindings(cfg, keybindingsTestManuals(), "modal", tc.goos)
+			md, err := renderKeyBindings(cfg, keybindingsTestManuals(), "vim", tc.goos)
 			require.NoError(t, err)
 			assert.Contains(t, md, tc.want)
 			hint := strings.Index(md, "`<meta>` is")
@@ -564,12 +565,12 @@ func TestKeyBindingsMacrosSection(t *testing.T) {
 	cfg.CommandKeyBindings = nil
 	cfg.CommandSequenceBindings = nil
 
-	t.Run("modal", func(t *testing.T) {
+	t.Run("vim", func(t *testing.T) {
 		withOther := cfg
 		withOther.CommandKeyBindings = map[term.KeyComb][][]string{
 			{Ch: 'q', Mod: term.ModMeta}: {{"quit"}},
 		}
-		md, err := renderKeyBindings(withOther, keybindingsTestManuals(), "modal", "darwin")
+		md, err := renderKeyBindings(withOther, keybindingsTestManuals(), "vim", "darwin")
 		require.NoError(t, err)
 		assertKeyBindingListIntegrity(t, md)
 		assert.Contains(t, md, "## Macros")
@@ -578,7 +579,7 @@ func TestKeyBindingsMacrosSection(t *testing.T) {
 		assert.Contains(t, md, "- `@{reg}`: Play register `{reg}`")
 		assert.Contains(t, md, "- `@@`: Replay the last played register")
 		assert.Contains(t, md, "echo {register}a")
-		assert.Contains(t, md, "https://docs.rune.build/learn/modal-editor#macros")
+		assert.Contains(t, md, "https://docs.rune.build/learn/vim-editor#macros")
 
 		macros := strings.Index(md, "## Macros")
 		other := strings.Index(md, "## Other")
@@ -610,7 +611,7 @@ func TestKeyBindingsEmptyConfig(t *testing.T) {
 	cfg.CommandKeyBindings = nil
 	cfg.CommandSequenceBindings = nil
 
-	md, err := renderKeyBindings(cfg, keybindingsTestManuals(), "modal", "darwin")
+	md, err := renderKeyBindings(cfg, keybindingsTestManuals(), "vim", "darwin")
 	require.NoError(t, err)
 
 	assert.True(t, strings.HasPrefix(md, "# Key bindings"),
@@ -628,10 +629,10 @@ func TestKeyBindingsDeterministic(t *testing.T) {
 	cfg.CommandKeyBindings[term.KeyComb{Ch: 'n', Mod: term.ModMeta}] = [][]string{{"windownew"}}
 	cfg.CommandSequenceBindings = markJumpSequences()
 
-	first, err := renderKeyBindings(cfg, keybindingsTestManuals(), "modal", "darwin")
+	first, err := renderKeyBindings(cfg, keybindingsTestManuals(), "vim", "darwin")
 	require.NoError(t, err)
 	for range 5 {
-		got, err := renderKeyBindings(cfg, keybindingsTestManuals(), "modal", "darwin")
+		got, err := renderKeyBindings(cfg, keybindingsTestManuals(), "vim", "darwin")
 		require.NoError(t, err)
 		assert.Equal(t, first, got)
 	}

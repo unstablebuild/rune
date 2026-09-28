@@ -83,8 +83,10 @@ type Component struct {
 	edSubscribers   map[textapi.EventType][]EventHandler
 	cmdSubscribers  map[string]commandAll
 	replSubscribers map[string]replCommandAll
+	openers         map[string]textapi.ResourceOpenHandler
 	editors         map[string]Handler
 	fileRegistry    FileCommandRegistry
+	pending         PendingTabs
 	streamingLoads  sync.WaitGroup
 }
 
@@ -125,7 +127,11 @@ func (c *Component) setDirtyFileAttr(file workspaceapi.URI, buf *cell.Buffer, la
 }
 
 func (c *Component) getSwapDir(file workspaceapi.URI) (workspaceapi.URI, error) {
-	return workspace.DefaultSwapDirectory(file)
+	var dir string
+	if c.config.SwapDirectory != nil {
+		dir = c.config.SwapDirectory(file)
+	}
+	return workspace.SwapDirectory(dir, file)
 }
 
 // fileExists reports whether file is present on the backing
@@ -204,7 +210,7 @@ func (c *Component) buildEditorHandler(
 		fc = tree
 	}
 
-	handler, err = c.ed.Edit(withAuxiliaryBars(c.ctx), file, buf, readOnly, recover)
+	handler, err = c.ed.Edit(WithBars(c.ctx, BarOptions{}), file, buf, readOnly, recover)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -254,12 +260,14 @@ func (c *Component) Init(
 	c.comp.SetInterrupter(browser.EventPublisherInterrupter(c))
 	c.comp.Subscribe((*handlerWindowSubscriber)(c))
 	c.fileRegistry = newFileCommandRegistryFromComponent(c)
+	c.pending = newPendingTabs(&c.comp, c.animateTabLoading)
 
 	c.ed = ed
 	c.workspace = w
 	c.edSubscribers = make(map[textapi.EventType][]EventHandler)
 	c.cmdSubscribers = make(map[string]commandAll)
 	c.replSubscribers = make(map[string]replCommandAll)
+	c.openers = make(map[string]textapi.ResourceOpenHandler)
 	c.editors = make(map[string]Handler)
 
 	// validate that config aliases are not recursive
@@ -1242,6 +1250,24 @@ func (c *Component) LastFlush(h browserapi.Handler) (time.Time, error) {
 	return fc.LastFlush(), nil
 }
 
+// Settled returns nil when the given handler has no save or reload whose
+// result is still pending, and otherwise a channel that is closed once
+// every pending result has been handed to the scheduler. Callers that must
+// not act on the half-applied state of a file (its saved timestamp, its
+// dirty marker) wait on it and then schedule their retry, which runs behind
+// those results.
+func (c *Component) Settled(h browserapi.Handler) <-chan struct{} {
+	t, ok := h.(*browser.Tab)
+	if !ok {
+		return nil
+	}
+	efc, ok := t.Closer().(*editorFlusherCloser)
+	if !ok {
+		return nil
+	}
+	return efc.settled
+}
+
 func (c *Component) getContent(h Handler) string {
 	cells := h.CellView().RawCells()
 	return term.CellsToString(cells)
@@ -1425,6 +1451,36 @@ func (c *Component) REPLCommands() (ret []textapi.CommandManual) {
 	return ret
 }
 
+// RegisterResourceOpener satisfies Editor.
+func (c *Component) RegisterResourceOpener(
+	scheme string, h textapi.ResourceOpenHandler,
+) error {
+	if _, ok := c.openers[scheme]; ok {
+		return errors.New("resource opener already registered")
+	}
+	c.openers[scheme] = h
+	return nil
+}
+
+// UnregisterResourceOpener satisfies Editor.
+func (c *Component) UnregisterResourceOpener(scheme string) error {
+	if _, ok := c.openers[scheme]; !ok {
+		return ErrResourceOpenerNotRegistered
+	}
+	delete(c.openers, scheme)
+	return nil
+}
+
+// ResourceOpener returns the opener registered for scheme. Callers must
+// invoke it without the editor lock held: an opener typically installs the
+// resource by calling back into the editor.
+func (c *Component) ResourceOpener(
+	scheme string,
+) (textapi.ResourceOpenHandler, bool) {
+	h, ok := c.openers[scheme]
+	return h, ok
+}
+
 // UnsubscribeCommand un-registers command.
 func (c *Component) UnsubscribeCommand(cmd string) error {
 	if _, ok := c.cmdSubscribers[cmd]; !ok {
@@ -1437,6 +1493,12 @@ func (c *Component) UnsubscribeCommand(cmd string) error {
 // Browser returns this Component's underlying browser.Component.
 func (c *Component) Browser() *browser.Component {
 	return &c.comp
+}
+
+// PendingTabs returns the tabs of this Component that wait for an
+// extension to open them.
+func (c *Component) PendingTabs() *PendingTabs {
+	return &c.pending
 }
 
 // Resize satisfies tui.Component.
@@ -1556,6 +1618,25 @@ func (c *Component) SetTabName(uri workspaceapi.URI, title string, attr term.Att
 	}
 	_ = c.comp.SetTabNameAndAttrs(uri, title, attr)
 	return nil
+}
+
+// OnTabExit satisfies browser.TabManager.
+func (c *Component) OnTabExit(uri workspaceapi.URI) bool {
+	return c.comp.OnTabExit(uri)
+}
+
+// SetTabActivity satisfies browser.TabManager.
+func (c *Component) SetTabActivity(uri workspaceapi.URI, active bool) error {
+	if !c.comp.SetTabActivity(uri, active) {
+		return errors.New("set activity called on unknown tab")
+	}
+	return nil
+}
+
+// HasActiveTabs reports whether any tab of this Component is marked
+// active via SetTabActivity.
+func (c *Component) HasActiveTabs() bool {
+	return c.comp.HasActiveTabs()
 }
 
 // Prompt creates a new prompt to be drawn as an overlay on the next call to Draw

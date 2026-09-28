@@ -41,7 +41,7 @@ const (
 	// claudeCodeVersion is the Claude Code CLI version advertised in the
 	// billing header's cc_version field. The API gates newer models behind
 	// a minimum client version, so this must track a recent CLI release.
-	claudeCodeVersion = "2.1.268"
+	claudeCodeVersion = "2.1.281"
 	// claudeCodeEntrypoint is the cc_entrypoint value the CLI sends.
 	claudeCodeEntrypoint = "cli"
 	// fingerprintSalt is the salt Claude Code uses to derive the 3-char

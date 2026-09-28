@@ -581,6 +581,59 @@ func TestWorkspaceRunnerRunSourceEntrypoint(t *testing.T) {
 	}
 }
 
+// TestWorkspaceRunnerExpandsEnvInEntrypoint verifies that the runner
+// expands env vars in extensions.<id>.path itself, because workspace
+// path resolution treats "$" literally.
+func TestWorkspaceRunnerExpandsEnvInEntrypoint(t *testing.T) {
+	goPkgDir := t.TempDir()
+	require.NoError(t, os.WriteFile(
+		filepath.Join(goPkgDir, "go.mod"), []byte("module ext\n"), 0o644))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(goPkgDir, "main.go"),
+		[]byte("package main\n\nfunc main() {}\n"), 0o644))
+	t.Setenv("RUNE_TEST_EXT_DIR", goPkgDir)
+
+	newRunner := func(t *testing.T) (*workspaceRunner, *recordingExecutor) {
+		keys, err := auth.GenerateKeys()
+		require.NoError(t, err)
+		uri, err := workspaceapi.ParseURI("file:///tmp")
+		require.NoError(t, err)
+		dataDir := t.TempDir()
+		binDir := filepath.Join(dataDir, "bin")
+		require.NoError(t, os.MkdirAll(binDir, 0o755))
+		require.NoError(t, os.WriteFile(
+			filepath.Join(binDir, "go"), []byte("#!/bin/sh\n"), 0o755))
+		exec := &recordingExecutor{}
+		return newWorkspaceRunner(
+			exec, exec, nil, nopTrustVerifier{}, uri,
+			"/tmp/ext.sock", dataDir, "/tmp/ext-install",
+			[]byte("cert"), keys,
+		), exec
+	}
+
+	t.Run("trust verification entrypoint", func(t *testing.T) {
+		runner, _ := newRunner(t)
+		got, err := runner.resolveEntrypoint("$RUNE_TEST_EXT_DIR/main.go")
+		require.NoError(t, err)
+		assert.Equal(t, filepath.Join(goPkgDir, "main.go"), got)
+	})
+
+	for _, tt := range []struct {
+		name       string
+		cmdAndArgs string
+	}{
+		{"source file", "$RUNE_TEST_EXT_DIR/main.go --flag"},
+		{"package directory", "$RUNE_TEST_EXT_DIR --flag"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			runner, exec := newRunner(t)
+			require.NoError(t, runner.Run("src-ext", tt.cmdAndArgs, config.NopConfig()))
+			assert.Equal(t, []string{"-C", goPkgDir, "run", ".", "--flag"},
+				exec.snapshotCmd().Args)
+		})
+	}
+}
+
 func TestWorkspaceRunnerPythonEntrypointResolvesPackageSymlink(t *testing.T) {
 	t.Parallel()
 

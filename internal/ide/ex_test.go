@@ -62,6 +62,7 @@ import (
 	thandler "unstable.build/rune/internal/handler"
 	"unstable.build/rune/internal/handler/command"
 	"unstable.build/rune/internal/handler/handlertest"
+	"unstable.build/rune/internal/ide/idehistory"
 	"unstable.build/rune/internal/ide/ideshell"
 	"unstable.build/rune/internal/ide/plugin"
 	"unstable.build/rune/internal/term/vte"
@@ -70,6 +71,7 @@ import (
 	"unstable.build/rune/internal/text/cmdenv"
 	"unstable.build/rune/internal/text/emacs"
 	"unstable.build/rune/internal/text/exoeditor"
+	"unstable.build/rune/internal/text/helix"
 	"unstable.build/rune/internal/text/registerset"
 	"unstable.build/rune/internal/text/standard"
 	"unstable.build/rune/internal/text/texttest"
@@ -218,7 +220,7 @@ func (w *testLoader) NewPty(context.Context) (workspaceapi.Pty, error) {
 	}, nil
 }
 
-func (w *testLoader) SetPtySize(p workspaceapi.Pty, width, height int) error {
+func (w *testLoader) SetPtySize(p workspaceapi.Pty, size workspaceapi.PtySize) error {
 	return nil
 }
 
@@ -403,10 +405,16 @@ func TestFileExplorerOpenFile(t *testing.T) {
 	require.NoError(t, err)
 	touchTestFile(t, scheme, "alpha.go")
 
+	// NopEditor is modeless, and an editable modeless explorer keeps
+	// <enter> as a newline; lock it, as the modeless presets do, so
+	// <enter> opens the node.
+	explorerCfg := text.DefaultFileExplorerConfig()
+	explorerCfg.ReadOnly = true
 	b := newExForTestingWithWorkspace(t, workspace.NewSchemeWorkspace(uri, scheme, inlineSchedule),
 		texttest.NopEditor(), vte.DefaultConfig(), nopPublishEvent,
 		clipboard.NewInMemory(), text.WithCommandKey(testCommandKey),
-		text.WithCommandOverlayConfig(testCommandOverlayConfig()))
+		text.WithCommandOverlayConfig(testCommandOverlayConfig()),
+		text.WithFileExplorer(explorerCfg))
 	defer b.Close()
 
 	require.Nil(t, b.fileExplorerWin)
@@ -2078,7 +2086,7 @@ func TestExKeySequence(t *testing.T) {
 				defer mu.Unlock()
 				ex.Handle(ev)
 				return true
-			}, 0, clipboard.NewInMemory(), nil, nil, nil, nil, testPromptEditor(), &sync.Mutex{}, opts...))
+			}, 0, clipboard.NewInMemory(), nil, nil, nil, nil, testPromptEditor(), opts...))
 		ex.subscribeCommands()
 		b := testEx{ex: ex}
 		closeFns = append(closeFns, func() error {
@@ -2222,7 +2230,7 @@ func newExSequencerHarness(
 			ex.Handle(ev)
 			return true
 		}, 0, clipboard.NewInMemory(), nil, nil, nil, nil,
-		testPromptEditor(), &sync.Mutex{}, opts...))
+		testPromptEditor(), opts...))
 	ex.subscribeCommands()
 
 	// Register a recording sink for every command named by a binding so
@@ -2371,6 +2379,169 @@ func TestExSequencerModifierVsBarePrefix(t *testing.T) {
 			assert.Equal(t, tc.wantFired, nonEmpty(h.firedCommands()))
 			if tc.wantConsumed != nil {
 				assert.Equal(t, tc.wantConsumed, h.editorConsumed())
+			}
+		})
+	}
+}
+
+// TestExSequenceCompletesEditorPrefix covers a sequence whose first key
+// the editor consumes as the start of a pending command of its own, as
+// Helix's g, [ and ] menus do: the sequence fires when the editor
+// declines the second key.
+func TestExSequenceCompletesEditorPrefix(t *testing.T) {
+	const timeout = 20 * time.Millisecond
+	const longGap = 80 * time.Millisecond
+
+	g := term.KeyComb{Ch: 'g'}
+	d := term.KeyComb{Ch: 'd'}
+	j := term.KeyComb{Ch: 'j'}
+	bracket := term.KeyComb{Ch: ']'}
+	ctrlX := term.KeyComb{Ch: 'x', Mod: term.ModCtrl}
+	ctrlS := term.KeyComb{Ch: 's', Mod: term.ModCtrl}
+
+	sequences := map[thandler.Sequence][][]string{
+		{First: g, Last: d}:         {{"seqgd"}},
+		{First: bracket, Last: d}:   {{"seqbd"}},
+		{First: ctrlX, Last: ctrlS}: {{"seqctrls"}},
+	}
+	keyBindings := map[term.KeyComb][][]string{
+		{Ch: 'x'}: {{"keyx"}},
+	}
+
+	cases := []struct {
+		name           string
+		editorConsumes []term.KeyComb
+		keys           []term.KeyComb
+		gap            time.Duration
+		wantFired      []string
+		wantConsumed   []term.KeyComb
+	}{
+		{
+			name:           "editor declines the second key",
+			editorConsumes: []term.KeyComb{g},
+			keys:           []term.KeyComb{g, d},
+			wantFired:      []string{"seqgd"},
+			wantConsumed:   []term.KeyComb{g, d},
+		},
+		{
+			name:           "editor prefix outlasts the sequencer timeout",
+			editorConsumes: []term.KeyComb{g},
+			keys:           []term.KeyComb{g, d},
+			gap:            longGap,
+			wantFired:      []string{"seqgd"},
+		},
+		{
+			name:           "editor consumes the second key",
+			editorConsumes: []term.KeyComb{g, d},
+			keys:           []term.KeyComb{g, d},
+			wantFired:      nil,
+		},
+		{
+			name:           "declined bare key after an editor prefix opens no sequence",
+			editorConsumes: []term.KeyComb{g},
+			keys:           []term.KeyComb{g, bracket, d},
+			wantFired:      nil,
+			wantConsumed:   []term.KeyComb{g, bracket, d},
+		},
+		{
+			name:           "modifier sequence still opens after an editor prefix",
+			editorConsumes: []term.KeyComb{g},
+			keys:           []term.KeyComb{g, ctrlX, ctrlS},
+			wantFired:      []string{"seqctrls"},
+		},
+		{
+			name:           "declined key keeps its own binding after an editor prefix",
+			editorConsumes: []term.KeyComb{g},
+			keys:           []term.KeyComb{g, {Ch: 'x'}},
+			wantFired:      []string{"keyx"},
+		},
+		{
+			name:           "consumed key that opens no sequence leaves the sequencer alone",
+			editorConsumes: []term.KeyComb{j},
+			keys:           []term.KeyComb{j, bracket, d},
+			wantFired:      []string{"seqbd"},
+		},
+		{
+			name:           "intervening consumed key drops the editor prefix",
+			editorConsumes: []term.KeyComb{g, j},
+			keys:           []term.KeyComb{g, j, d},
+			wantFired:      nil,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newExSequencerHarness(t, sequences, keyBindings, tc.editorConsumes, timeout)
+			for i, k := range tc.keys {
+				if i > 0 && tc.gap > 0 {
+					time.Sleep(tc.gap)
+				}
+				h.ex.Handle(term.Event{
+					Type: term.EventKey, Mod: k.Mod, Key: k.Key, Ch: k.Ch,
+				})
+			}
+			time.Sleep(timeout + reissuePadding + 20*time.Millisecond)
+			assert.Equal(t, tc.wantFired, nonEmpty(h.firedCommands()))
+			if tc.wantConsumed != nil {
+				assert.Equal(t, tc.wantConsumed, h.editorConsumed())
+			}
+		})
+	}
+}
+
+// TestExHelixSequencesAfterEditorMenus drives the real helix editor: its
+// g and ] menus consume the first key, so the sequence must fire from the
+// declined second key, and a key those menus decline must not be
+// re-issued later as a fresh menu.
+func TestExHelixSequencesAfterEditorMenus(t *testing.T) {
+	const timeout = 20 * time.Millisecond
+	sequences := map[thandler.Sequence][][]string{
+		{First: term.KeyComb{Ch: 'g'}, Last: term.KeyComb{Ch: 'd'}}: {{"seqgd"}},
+		{First: term.KeyComb{Ch: ']'}, Last: term.KeyComb{Ch: 'd'}}: {{"seqbd"}},
+	}
+
+	cases := []struct {
+		name      string
+		keys      string
+		wantFired []string
+		wantAt    term.Coordinates
+		wantText  string
+	}{
+		{name: "gd", keys: "gd", wantFired: []string{"seqgd"}},
+		{name: "]d", keys: "]d", wantFired: []string{"seqbd"}},
+		// gg at the top moves nothing and the editor declines it; the
+		// following l must still be a plain move right, not gl.
+		{name: "gg at the top", keys: "ggl", wantAt: term.Coordinates{X: 1}},
+		// ]] is no bracket command: l must not land in a bracket menu.
+		{name: "]]", keys: "]]l", wantAt: term.Coordinates{X: 1}},
+		{name: "insert mode types the prefix", keys: "igd",
+			wantAt: term.Coordinates{X: 2}, wantText: "gdhello world\nsecond line"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newExSequencerHarness(t, sequences, nil, nil, timeout)
+			resource, err := workspaceapi.ParseURI("file:///helix-sequences.go")
+			require.NoError(t, err)
+			buf := new(cell.Buffer)
+			buf.Init()
+			buf.WriteString("hello world\nsecond line")
+			ed := helix.New(buf, resource)
+			ed.Resize(40, 10)
+			require.NoError(t, h.ex.invokeWindow().SetContent(ed))
+
+			for i, ch := range tc.keys {
+				if i == len(tc.keys)-1 {
+					// Outlast any re-issue timer before the last key.
+					time.Sleep(timeout + reissuePadding + 20*time.Millisecond)
+				}
+				h.ex.Handle(term.Event{Type: term.EventKey, Ch: ch})
+			}
+			time.Sleep(timeout + reissuePadding + 20*time.Millisecond)
+			assert.Equal(t, tc.wantFired, nonEmpty(h.firedCommands()))
+			assert.Equal(t, tc.wantAt, ed.CursorAtScroll())
+			if tc.wantText != "" {
+				assert.Equal(t, tc.wantText, buf.String())
 			}
 		})
 	}
@@ -2680,6 +2851,8 @@ func TestExEmacsLifecycleBindingsReachCommandLayerFromTerminal(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, fileScheme.Close()) })
 	vteCfg := vte.DefaultConfig()
+	// keep OnTabExit on the test goroutine, not the vte run goroutine
+	installDefaultTestScheduler(&vteCfg)
 	vteCfg.Modal = false
 	vteCfg.CommandAndArgs = []string{"sh", "-c", "sleep 30"}
 	vteHandler, err := vte.NewHandler(h.ex.Browser(), h.ex.Browser(),
@@ -2895,6 +3068,172 @@ func TestExTabcloseDirtyTabNoKeepsTabOpen(t *testing.T) {
 	assert.Equal(t, 0, b.comp.Browser().FloatingWindows())
 }
 
+// TestExTabIconClick clicks and drags on the icons of the rendered tab
+// bar: A one shows in the only window and B two is not shown anywhere.
+func TestExTabIconClick(t *testing.T) {
+	const width, height = 30, 8
+	// The frame puts the icons on row 1: A at column 1, B at column 8.
+	iconA := term.Coordinates{X: 1, Y: 1}
+	iconB := term.Coordinates{X: 8, Y: 1}
+	window := term.Coordinates{X: 8, Y: 5}
+	type step struct {
+		key term.Key
+		pos term.Coordinates
+	}
+	click := func(pos term.Coordinates) []step {
+		return []step{{term.MouseLeft, pos}, {term.MouseRelease, pos}}
+	}
+	const untouched = `┌━━━━━───────────────────────┐
+│A one  B two                │
+├────────────────────────────┤
+│1111111111111111111111111111│
+│1111111111111111111111111111│
+│1111111111111111111111111111│
+│1111111111111111111111111111│
+└────────────────────────────┘`
+	for _, tc := range []struct {
+		name  string
+		steps []step
+		want  string
+	}{
+		{
+			name:  "closes a tab no window shows",
+			steps: click(iconB),
+			want: `┌━━━━━───────────────────────┐
+│A one                       │
+├────────────────────────────┤
+│1111111111111111111111111111│
+│1111111111111111111111111111│
+│1111111111111111111111111111│
+│1111111111111111111111111111│
+└────────────────────────────┘`,
+		},
+		{
+			name:  "closes the shown tab and shows the next",
+			steps: click(iconA),
+			want: `┌━━━━━───────────────────────┐
+│B two                       │
+├────────────────────────────┤
+│2222222222222222222222222222│
+│2222222222222222222222222222│
+│2222222222222222222222222222│
+│2222222222222222222222222222│
+└────────────────────────────┘`,
+		},
+		{
+			name:  "closes tab after tab",
+			steps: append(click(iconA), click(iconA)...),
+			want: `┌────────────────────────────┐
+│                            │
+├────────────────────────────┤
+│                            │
+│                            │
+│                            │
+│                            │
+└────────────────────────────┘`,
+		},
+		{
+			name: "drag from the icon into the window",
+			steps: []step{
+				{term.MouseLeft, iconB}, {term.MouseLeft, window},
+				{term.MouseRelease, window},
+			},
+			want: untouched,
+		},
+		{
+			name: "drag from the window onto the icon",
+			steps: []step{
+				{term.MouseLeft, window}, {term.MouseLeft, iconB},
+				{term.MouseRelease, iconB},
+			},
+			want: untouched,
+		},
+		{
+			name: "drag between the icons",
+			steps: []step{
+				{term.MouseLeft, iconB}, {term.MouseLeft, iconA},
+				{term.MouseRelease, iconA},
+			},
+			want: untouched,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := newExForTesting(t, texttest.NopEditor(),
+				text.WithCommandKey(testCommandKey),
+				text.WithCommandOverlayConfig(testCommandOverlayConfig()),
+			)
+			defer b.Close()
+			var tabs []*browser.Tab
+			for i, name := range []string{"one", "two"} {
+				uri, err := workspaceapi.ParseURI("file:///" + name)
+				require.NoError(t, err)
+				h := browsertest.NewTestHandler()
+				h.Ch = '1' + rune(i)
+				// Keep the content still so the screen only shows tab changes.
+				h.HandleOverride = func(term.Event) (bool, bool) { return false, true }
+				tab, err := b.comp.Tab(uri, 'A'+rune(i), name, h)
+				require.NoError(t, err)
+				tabs = append(tabs, tab.(*browser.Tab))
+			}
+			focus, err := b.comp.Focus()
+			require.NoError(t, err)
+			require.NoError(t, focus.SetContent(tabs[0]))
+			b.Resize(width, height)
+			require.Equal(t, untouched, handlertest.DrawHandler(b, width, height))
+
+			for _, s := range tc.steps {
+				b.Handle(term.Event{
+					Type: term.EventMouse, Key: s.key, MouseX: s.pos.X, MouseY: s.pos.Y,
+				})
+				handlertest.DrawHandler(b, width, height)
+			}
+			assert.Equal(t, tc.want, handlertest.DrawHandler(b, width, height))
+		})
+	}
+}
+
+func TestExTabIconClickPromptsForDirtyTab(t *testing.T) {
+	for _, tc := range []struct {
+		answer   rune
+		wantTabs int
+	}{
+		{answer: 'y', wantTabs: 0},
+		{answer: 'n', wantTabs: 1},
+	} {
+		t.Run(string(tc.answer), func(t *testing.T) {
+			b := newExForTesting(t, texttest.NopEditor(),
+				text.WithCommandKey(testCommandKey),
+				text.WithCommandOverlayConfig(testCommandOverlayConfig()),
+			)
+			defer b.Close()
+			b.Resize(30, 8)
+
+			uri, err := workspaceapi.ParseURI("file:///dirty.go")
+			require.NoError(t, err)
+			_, err = b.editFileURI(uri, b.invokeWindow(), false)
+			require.NoError(t, err)
+			editBuffer(t, b.ex, uri, "ABC")
+			handlertest.DrawHandler(b, 30, 8)
+
+			// The only tab's icon sits right past the frame.
+			icon := term.Coordinates{X: 1, Y: 1}
+			b.Handle(term.Event{Type: term.EventMouse, Key: term.MouseLeft, MouseX: icon.X, MouseY: icon.Y})
+			b.Handle(term.Event{Type: term.EventMouse, Key: term.MouseRelease, MouseX: icon.X, MouseY: icon.Y})
+
+			assert.Len(t, b.comp.Tabs(), 1)
+			assert.Equal(t, 1, b.comp.Browser().FloatingWindows())
+
+			exit, handled := b.Handle(term.Event{Type: term.EventKey, Ch: tc.answer})
+			assert.False(t, exit)
+			assert.True(t, handled)
+			assert.Len(t, b.comp.Tabs(), tc.wantTabs)
+			assert.Equal(t, 0, b.comp.Browser().FloatingWindows())
+			dirty, ok := b.comp.IsDirty(uri)
+			assert.Equal(t, tc.wantTabs == 1, ok && dirty)
+		})
+	}
+}
+
 func TestExTabcloseallPromptsForDirtyTabs(t *testing.T) {
 	b := newExForTesting(t, texttest.NopEditor(),
 		text.WithCommandKey(testCommandKey),
@@ -3049,6 +3388,8 @@ func (m *exSearchWindowManager) CloseWindow(win browserapi.Window) error {
 	return win.(browser.Window).Close()
 }
 
+func (m *exSearchWindowManager) SetTabActivity(workspaceapi.URI, bool) error { return nil }
+
 func (t testEx) Handle(ev term.Event) (bool, bool) {
 	unlock := t.lock()
 	quit, handle := t.ex.Handle(ev)
@@ -3065,6 +3406,7 @@ func (t testEx) Handle(ev term.Event) (bool, bool) {
 	// same way the production event loop processes them.
 	t.ex.waitInflight()
 	t.flushScheduled()
+	t.drainAliasRuns()
 	return quit, handle
 }
 
@@ -3106,6 +3448,23 @@ func (t testEx) flushScheduled() {
 		return
 	}
 	t.scheduler.Flush(t.mu)
+}
+
+// drainAliasRuns pumps the test scheduler until no command dispatch is
+// in flight or queued, or a bound elapses. It stands in for the host
+// event loop, which keeps ticking while a dispatch is parked.
+func (t testEx) drainAliasRuns() {
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		t.flushScheduled()
+		unlock := t.lock()
+		quiet := t.ex.runInFlight == nil && len(t.ex.runQueue) == 0
+		unlock()
+		if quiet || time.Now().After(deadline) {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 type queuedScheduler struct {
@@ -3272,7 +3631,7 @@ func newExForTestingTerminal(
 	scheduler, mu := installDefaultTestScheduler(&emulatorCfg)
 	require.NoError(t, ex.init(func(exoeditor.Reloader, schemeapi.Terminal) (text.Editor, error) { return ed, nil }, workspace, svc,
 		notifications, uri, emulatorCfg, barCfg, publishEvent,
-		0, clipboard.NewInMemory(), nil, nil, nil, nil, testPromptEditor(), &sync.Mutex{}, opts...))
+		0, clipboard.NewInMemory(), nil, nil, nil, nil, testPromptEditor(), opts...))
 	ex.subscribeCommands()
 	return testEx{ex: ex, mu: mu, scheduler: scheduler}
 }
@@ -3305,7 +3664,7 @@ func newExForTestingVTECapacity(
 		}, ws, svc,
 		notifications, uri, emulatorCfg, plugin.DefaultBarConfig(),
 		nopPublishEvent, initialVTECapacity, clipboard.NewInMemory(),
-		nil, nil, nil, nil, testPromptEditor(), &sync.Mutex{}, opts...))
+		nil, nil, nil, nil, testPromptEditor(), opts...))
 	return testEx{ex: e, mu: mu, scheduler: scheduler}
 }
 
@@ -3332,8 +3691,9 @@ func newBlockingResizeWorkspace() *blockingResizeWorkspace {
 }
 
 func (w *blockingResizeWorkspace) SetPtySize(
-	_ workspaceapi.Pty, width, height int,
+	_ workspaceapi.Pty, size workspaceapi.PtySize,
 ) error {
+	width, height := size.Columns, size.Rows
 	if !w.armed.Load() {
 		return nil
 	}
@@ -3417,6 +3777,29 @@ func TestExResizeDoesNotBlockOnPtyResize(t *testing.T) {
 	})
 }
 
+// remoteURILoader is a testLoader whose workspace lives on another
+// machine.
+type remoteURILoader struct {
+	*testLoader
+}
+
+func (remoteURILoader) URI(string) (workspaceapi.URI, error) {
+	return workspaceapi.ParseURI("ssh://host/remote")
+}
+
+// TestExGraphicsTempDir pins that only a local workspace lends the
+// terminal this process's temp dir, where a t=t graphics transmission
+// may be deleted: a remote machine's TMPDIR is unknown.
+func TestExGraphicsTempDir(t *testing.T) {
+	local := newExForTestingVTECapacity(t, &testLoader{}, 0)
+	defer local.Close()
+	assert.Equal(t, os.TempDir(), local.emulatorConfig.TempDir)
+
+	remote := newExForTestingVTECapacity(t, remoteURILoader{&testLoader{}}, 0)
+	defer remote.Close()
+	assert.Empty(t, remote.emulatorConfig.TempDir)
+}
+
 func newExForTestingWithWorkspace(
 	t *testing.T, workspace workspace.Workspace,
 	ed text.Editor,
@@ -3443,7 +3826,7 @@ func newExForTestingWithWorkspace(
 	scheduler, mu := installDefaultTestScheduler(&emulatorCfg)
 	require.NoError(t, ex.init(func(exoeditor.Reloader, schemeapi.Terminal) (text.Editor, error) { return ed, nil }, workspace, svc,
 		notifications, uri, emulatorCfg, plugin.DefaultBarConfig(),
-		publishEvent, 0, clip, nil, nil, nil, nil, testPromptEditor(), &sync.Mutex{}, finalOpts...))
+		publishEvent, 0, clip, nil, nil, nil, nil, testPromptEditor(), finalOpts...))
 	ex.subscribeCommands()
 	ex.newEmulatorHandler = func(args []string) (vtereservoir.VTE, error) {
 		return newTestVteWithConfig(args), nil
@@ -3482,7 +3865,7 @@ func newExForTestingCommandsPreview(
 	scheduler, mu := installDefaultTestScheduler(&emulatorCfg)
 	require.NoError(t, ex.init(func(exoeditor.Reloader, schemeapi.Terminal) (text.Editor, error) { return ed, nil }, workspace, svc,
 		notifications, uri, emulatorCfg, plugin.DefaultBarConfig(),
-		publishEvent, 0, clip, nil, previews, nil, nil, testPromptEditor(), &sync.Mutex{}, finalOpts...))
+		publishEvent, 0, clip, nil, previews, nil, nil, testPromptEditor(), finalOpts...))
 	ex.subscribeCommands()
 	ex.newEmulatorHandler = func(args []string) (vtereservoir.VTE, error) {
 		return newTestVteWithConfig(args), nil
@@ -3532,7 +3915,7 @@ func newExForTestingWithStorage(
 
 	require.NoError(t, ex.init(func(exoeditor.Reloader, schemeapi.Terminal) (text.Editor, error) { return ed, nil }, workspace, svc,
 		notifications, uri, emulatorCfg, plugin.DefaultBarConfig(),
-		publishEvent, 0, clip, nil, nil, nil, nil, testPromptEditor(), &sync.Mutex{}, finalOpts...))
+		publishEvent, 0, clip, nil, nil, nil, nil, testPromptEditor(), finalOpts...))
 	ex.subscribeCommands()
 	ex.newEmulatorHandler = func(args []string) (vtereservoir.VTE, error) {
 		return newTestVteWithConfig(args), nil
@@ -4471,6 +4854,19 @@ func (r *pluginWaitNotifications) terminalReached() bool {
 	return false
 }
 
+// errorMessages returns every LevelError notification body seen so far.
+func (r *pluginWaitNotifications) errorMessages() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []string
+	for _, nf := range r.notifies {
+		if nf.level == browserapi.LevelError {
+			out = append(out, nf.msg)
+		}
+	}
+	return out
+}
+
 func TestIntegrationEphemeralTerminal(t *testing.T) {
 	cases := []handlertest.SequenceTestCase{
 		{":! sleep 20>",
@@ -4834,9 +5230,11 @@ func TestTerminalWriteOpensSavePrompt(t *testing.T) {
 	require.Nil(t, b.ex.cmd)
 
 	var doc terminalSessionDocument
-	require.NoError(t, b.ex.storage.Get(context.Background(),
+	require.NoError(t, b.ex.terminalSessionStorage().Get(context.Background(),
 		terminalSessionDocumentID("terminal-saved"), &doc))
 	require.Equal(t, "terminal-saved", doc.Name)
+	require.Equal(t, terminalSessionDocumentKind, doc.Kind,
+		"saved sessions must carry the kind the completer filters on")
 	require.Contains(t, term.CellsToString(doc.Snapshot.ActiveCells()), "terminal output")
 }
 
@@ -5021,7 +5419,7 @@ func newExForReservoirTesting(
 	require.NoError(t, e.init(func(exoeditor.Reloader, schemeapi.Terminal) (text.Editor, error) { return texttest.NopEditor(), nil }, ws, svc,
 		notifications, uri, emCfg, plugin.DefaultBarConfig(),
 		nopPublishEvent, initialCapacity, clipboard.NewInMemory(),
-		nil, nil, nil, nil, testPromptEditor(), &sync.Mutex{}, finalOpts...))
+		nil, nil, nil, nil, testPromptEditor(), finalOpts...))
 	require.NoError(t, e.subscribeCommands())
 
 	// Wrap the closure created by init so we can observe which branch
@@ -5056,7 +5454,7 @@ func TestTerminalWriteUsesNextAvailableName(t *testing.T) {
 	require.NoError(t, b.ex.flush(context.Background()))
 
 	var doc terminalSessionDocument
-	require.NoError(t, b.ex.storage.Get(context.Background(),
+	require.NoError(t, b.ex.terminalSessionStorage().Get(context.Background(),
 		terminalSessionDocumentID("terminal-saved-1"), &doc))
 	require.Equal(t, "terminal-saved-1", doc.Name)
 }
@@ -5080,6 +5478,39 @@ func TestTerminalSaveAndResume(t *testing.T) {
 	cursor, _, _ := session.Cursor()
 	require.Equal(t, term.Coordinates{X: 4, Y: 1}, cursor)
 	require.Equal(t, 2, session.SeekOffset())
+}
+
+// TestTerminalResumeFindsSessionsSavedBeforeThePartitionMove covers
+// sessions written when they shared the workspace-state partition.
+func TestTerminalResumeFindsSessionsSavedBeforeThePartitionMove(t *testing.T) {
+	b := newExForTesting(t, texttest.NopEditor())
+	defer b.Close()
+
+	require.NoError(t, b.ex.storage.Set(context.Background(),
+		terminalSessionDocumentID("legacy"), terminalSessionDocument{
+			Name:     "legacy",
+			Snapshot: vte.Snapshot{Schema: 1, Title: "old"},
+		}))
+	require.NoError(t, b.ex.terminalresume(context.Background(), "legacy"))
+
+	content, err := b.ex.invokeWindow().Content()
+	require.NoError(t, err)
+	tab, ok := content.(*browser.Tab)
+	require.True(t, ok)
+	session, ok := tab.Handler().(*testVte)
+	require.True(t, ok)
+	require.True(t, session.restoredSnapshot)
+
+	var moved terminalSessionDocument
+	require.NoError(t, b.ex.terminalSessionStorage().Get(context.Background(),
+		terminalSessionDocumentID("legacy"), &moved))
+	require.Equal(t, terminalSessionDocumentKind, moved.Kind)
+	require.ErrorIs(t, b.ex.storage.Get(context.Background(),
+		terminalSessionDocumentID("legacy"), &moved), storageapi.ErrNotFound,
+		"a resumed legacy session must leave the listed partition")
+
+	require.ErrorIs(t,
+		b.ex.terminalresume(context.Background(), "missing"), storageapi.ErrNotFound)
 }
 
 func TestOpenTerminalSessionsPersistAndRestore(t *testing.T) {
@@ -5125,8 +5556,8 @@ func TestTerminalSessionCompletionListsUserSavedSessions(t *testing.T) {
 	b := newExForTesting(t, texttest.NopEditor())
 	defer b.Close()
 
-	require.NoError(t, b.ex.storage.Set(context.Background(), terminalSessionDocumentID("manual"),
-		terminalSessionDocument{Kind: terminalSessionDocumentKind, Name: "manual"}))
+	require.NoError(t, b.ex.terminalnew(context.Background(), "terminal output"))
+	require.NoError(t, b.ex.terminalsave(context.Background(), "manual"))
 
 	it, _, err := b.ex.completeTerminalSessions(context.Background(), textapi.Command{})
 	require.NoError(t, err)
@@ -5199,15 +5630,26 @@ func TestExUsesSharedIDEStorage(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, ex.init(func(exoeditor.Reloader, schemeapi.Terminal) (text.Editor, error) { return texttest.NopEditor(), nil }, workspace, storage,
 		notifications, uri, vte.DefaultConfig(), plugin.DefaultBarConfig(),
-		nopPublishEvent, 0, clipboard.NewInMemory(), nil, nil, nil, nil, testPromptEditor(), &sync.Mutex{}))
+		nopPublishEvent, 0, clipboard.NewInMemory(), nil, nil, nil, nil, testPromptEditor()))
 
 	require.Equal(t, 0, storage.partitionCalls)
 	require.Same(t, storage, ex.storage)
 
+	// Saved terminal sessions live in their own partition, opened on
+	// demand and released with the ex so cached backend handles are not
+	// leaked per workspace.
+	_, _, err = ex.completeTerminalSessions(context.Background(), textapi.Command{})
+	require.NoError(t, err)
+	require.Equal(t, 1, storage.partitionCalls)
+	terminals := storage.partitions[idehistory.TerminalStatePartition]
+	require.NotNil(t, terminals)
+
 	require.NoError(t, ex.Close())
 	require.Equal(t, 0, storage.closeCalls)
+	require.Equal(t, 1, terminals.closeCalls)
 	require.NoError(t, ex.Close())
 	require.Equal(t, 0, storage.closeCalls)
+	require.Equal(t, 1, terminals.closeCalls)
 }
 
 func TestFullScreen(t *testing.T) {
@@ -7165,6 +7607,7 @@ func newExForCapturingCommand(t *testing.T, aliasCommands []string) textapi.Comm
 	require.NoError(t, err)
 
 	require.NoError(t, b.ex.dispatchCommand("chaintest"))
+	b.drainAliasRuns()
 	require.True(t, subscribed,
 		"the post-capture alias step must have been dispatched")
 	return got
@@ -7243,6 +7686,7 @@ func TestWorktreeRemoveAliasResolvesFromInsideWorktree(t *testing.T) {
 		)
 		defer e.Close()
 		_ = e.dispatchCommand("worktreeremove", worktreeName)
+		e.drainAliasRuns()
 		require.NotEmpty(t, captured.cmds,
 			"!! must have reached the executor's StartCommand")
 		got := captured.cmds[0]

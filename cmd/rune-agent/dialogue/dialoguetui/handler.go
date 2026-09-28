@@ -61,6 +61,10 @@ type CommandResult struct {
 	SkillName string
 	// Exit, when true, signals the handler to close the chat.
 	Exit bool
+	// Phase, when non-empty, is the status the bar reports while Display
+	// drains. Commands that block on an LLM call need it: they run off
+	// the turn loop, so nothing else would move the bar off IDLE.
+	Phase string
 }
 
 // CommandHandler handles /commands typed in the chat input.
@@ -111,6 +115,9 @@ func Handler(
 ) (h tui.Handler, tx chan<- MessageEvent, rx <-chan SubmitMessage) {
 	c.interrupter = interrupter
 	c.mu = locker
+	if c.statusBar != nil {
+		c.statusBar.startTicker(interrupter)
+	}
 	ch1 := make(chan SubmitMessage)
 	ch2 := make(chan MessageEvent)
 	sh := &dialogueHandler{
@@ -380,7 +387,11 @@ func (s *dialogueHandler) Handle(ev term.Event) (exit, handled bool) {
 					return
 				}
 			}
-			if ev.Ch == ' ' {
+			// The space bar arrives as Key=KeySpace; Ch=' ' is also
+			// accepted for synthetic and legacy events. Require no
+			// modifier so combinations like ctrl-space and meta-space,
+			// which are bound to other actions, don't also toggle.
+			if ev.Mod == 0 && (ev.Key == term.KeySpace || ev.Ch == ' ') {
 				s.comp.PromptToggle()
 			}
 			// absorb all other keys
@@ -738,7 +749,7 @@ func (s *dialogueHandler) executeCommand(name string, args []string) {
 		return
 	}
 	if result.Display != nil {
-		s.comp.AddCommand(s.ctx, result.Display)
+		s.comp.AddCommand(s.ctx, result.Phase, result.Display)
 	}
 }
 

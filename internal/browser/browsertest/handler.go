@@ -17,6 +17,7 @@
 package browsertest
 
 import (
+	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/handler"
 	"unstable.build/rune/internal/browser"
 )
@@ -25,6 +26,7 @@ import (
 type TestHandler struct {
 	handler.TestHandler
 	CloseCallback func() error
+	URIVal        workspaceapi.URI
 }
 
 // NewTestHandler allocates storage for a new TestHandler and initializes it.
@@ -32,6 +34,11 @@ func NewTestHandler() *TestHandler {
 	ret := new(TestHandler)
 	ret.TestHandler = *handler.NewTestHandler()
 	return ret
+}
+
+// URI satisfies the identity OnTabExit matches window content by.
+func (t *TestHandler) URI() workspaceapi.URI {
+	return t.URIVal
 }
 
 // Close calls t.Close.

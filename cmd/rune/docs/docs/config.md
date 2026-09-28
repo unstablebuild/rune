@@ -37,7 +37,7 @@ place:
 
 ```python title="config.star"
 # `config` already holds Rune's defaults; mutate what you need.
-config["editor"]["mode"] = "modal"
+config["editor"]["mode"] = "vim"
 
 for key in ["<ctrl-h>", "<ctrl-l>"]:
     config["command"]["key_bindings"][key] = "tabnext"
@@ -49,37 +49,95 @@ standard Starlark only, with no `load()`, no file I/O, and no environment
 access. A `config.star` that binds nothing (for example, a file with only
 comments) is treated as an empty overlay.
 
+## Applying config changes
+
+Rune does not watch the config file. Open it with `:config`, edit it, save it —
+nothing happens until you reload. There are two levels of reload.
+
+### `:workspacereload`
+
+`:workspacereload` closes the focused workspace and opens it again. The open
+buffers, cursor positions, window layout and the extension tabs shown in it,
+such as agent chats, are restored, but everything the workspace owns is
+rebuilt from a fresh read of your config file and the workspace's
+`.rune/config.yaml`. This is the fastest way to try out a change
+and covers most of the configuration surface:
+
+- `editor.*`: mode, auto-save, tabspaces, comments, syntax size limits
+- `command.*`: prompt key, aliases, key bindings, history key, overlay
+- `syntax.*`, icons, frame and tab attributes, wallpaper
+- `terminal.*`, including the plugin bar
+- `extensions`: every extension process is stopped and started again
+- `debugger.*` adapters and language-server settings
+- `workspace.symbol_db` and extension auto-authorize settings
+
+Only the focused workspace is reloaded; other workspace tabs keep running with
+the configuration they were opened with.
+
+### Restart
+
+Everything that belongs to the process or to the GUI window is built once at
+startup and needs a restart:
+
+- all `gui.*` settings: fonts, themes, ligatures, opacity, blur,
+  scroll multiplier, key mapping, quick menu, `gui.env`
+- `log.output_path` and `log.level`
+- `models.*` (the LLM router), `notifications.*`, `telemetry.*`
+- `animations.*`, `workspace.home`, clipboard and macro settings
+- the configuration of the home screen shown when no workspace is open
+
+Some `gui.*` values can be changed for the current session with commands such
+as `guitheme`, `guifont`, `guifontsize` and `guiopacity`. Those changes are
+transient: write the corresponding key to your config file to make them
+permanent.
+
+You do not have to quit to try a `gui.*` change, though: `guiwindownew` spawns
+a second Rune process in its own OS window, and that process reads the config
+file from scratch. The new window comes up with your edited `gui.*` settings
+while the current one keeps running, which makes it a convenient way to test
+fonts, themes and window settings. Everything else in the restart list is
+per-process too, so the new window picks those up as well.
+
+Installing a package is the one case where config is applied without a reload:
+`gui.env` variables, newly added extensions and newly added tutorials are
+picked up live. If a package changes anything else, Rune tells you to restart.
+
 ## Editor Modes
 
-Rune ships with three built-in editors and supports running any terminal
+Rune ships with four built-in editors and supports running any terminal
 editor as another option. Pick one with `editor.mode`:
 
 ```yaml tab
 editor:
-  mode: "emacs" # or "standard", "modal", or "exo"
+  mode: "emacs" # or "standard", "vim", "helix", or "exo"
 ```
 
 ```python tab
 "editor": {
-    "mode": "emacs", # or "standard", "modal", or "exo"
+    "mode": "emacs", # or "standard", "vim", "helix", or "exo"
 },
 ```
 
-The four supported configurations are:
+The older `"modal"` and `"modeless"` values still work as deprecated aliases
+for `"vim"` and `"standard"`, and the vim editor's settings section may still
+be spelled `editor.modal` instead of `editor.vim`. Switch to the new names when
+you next edit your config.
 
-### Modal
+The five supported configurations are:
+
+### Vim
 
 A vi-style editor with modes, motions, operators, text objects,
 marks, registers, and macros. Pick this if your muscle memory comes
 from Vim or Neovim.
 
-See the [Modal Editor cheatsheet](./learn/modal-editor.md) for the
+See the [Vim Editor cheatsheet](./learn/vim-editor.md) for the
 exact keystrokes and what is or isn't supported.
 
 There is no ex command mode: in Rune the `:` prompt is the global
 [command prompt](#command-prompt), not a vi-internal one, so
 `:s/foo/bar/g`, `:g/pattern/`, and similar ex commands are not part
-of the editor. Modal is not a 100% Vim/Neovim port either; if you
+of the editor. The vim preset is not a 100% Vim/Neovim port either; if you
 rely on vimscript or the long tail of plugins, use [Exoeditor](#exoeditor)
 with `vim` or `nvim` instead.
 
@@ -132,6 +190,29 @@ The first-run Emacs choice installs command bindings in addition to selecting
 `editor.mode`. If you switch an existing custom config by hand, changing only
 the mode does not replace your `command.key_bindings` map.
 
+### Helix
+
+A [Helix](https://helix-editor.com)-style editor with an inverted modal
+grammar: a motion first selects the text you mean, then an operator acts on
+that selection. You press `w` then `d` to delete a word, not `dw`, and you
+always see what an operator is about to touch.
+
+Pick this if your muscle memory comes from Helix, or if you like modal editing
+but want the selection to be visible before you act on it.
+
+See the [Helix Editor cheatsheet](./learn/helix-editor.md) for the exact
+keystrokes and what is or isn't supported.
+
+Multiple selections work as in Helix: `C` copies a selection onto the next
+line, `s` selects every regex match, `,` drops back to one selection, and every
+motion, operator and insert-mode keystroke acts on all of them. See
+[Multiple selections](./learn/helix-editor.md#multiple-selections).
+
+The first-run Helix choice installs command bindings in addition to selecting
+`editor.mode`, including Helix's `<space>` leader menu and its `<ctrl-w>`
+window menu. If you switch an existing custom config by hand, changing only
+the mode does not replace your `command.key_bindings` map.
+
 ### Exoeditor
 
 Exoeditor mode (`editor.mode = "exo"`) runs a real terminal editor
@@ -145,7 +226,7 @@ For the list of what does and does not work inside `exo` mode (file
 watching, LSP, search integration, ...), see the
 [Exoeditor](./learn/exoeditor.md) guide.
 
-Exoeditor has three fallback choices, picked with `editor.exo.fallback`. The
+Exoeditor has four fallback choices, picked with `editor.exo.fallback`. The
 fallback is what Rune uses for buffers whose URI is not a real file path,
 anything that is not `file://` or `ssh://`. Today the single concrete example
 that ships with Rune is the file explorer
@@ -153,9 +234,12 @@ that ships with Rune is the file explorer
 make sense. Picking the right fallback keeps those buffers feeling like
 the editor you chose:
 
-- `editor.exo.fallback: "modal"` keeps those buffers modal. Use it when your
-  external editor is Vim or Neovim, so a keystroke like `j`/`k` keeps its vi
-  meaning across the whole UI.
+- `editor.exo.fallback: "vim"` keeps those buffers in the vim editor. Use it
+  when your external editor is Vim or Neovim, so a keystroke like `j`/`k` keeps
+  its vi meaning across the whole UI.
+- `editor.exo.fallback: "helix"` keeps those buffers on Helix's
+  selection-first grammar. Use it when your external editor is Helix, so a
+  keystroke like `w`/`e` keeps its Helix meaning across the whole UI.
 - `editor.exo.fallback: "standard"` keeps those buffers in the standard editor.
   Use it when your external editor is modeless (Nano, Micro, Kakoune, Emacs in its
   default bindings, ...), so a printable keystroke is always insertion, not a
@@ -166,6 +250,24 @@ the editor you chose:
 
 For ready-to-copy `exo` configs (Vim, Neovim, Helix, Nano, and more), see the
 [examples in the Exoeditor guide](./learn/exoeditor.md#examples).
+
+## Syntax Highlighting
+
+- `editor.highlights`: the attributes applied to each Tree-sitter capture
+  name, merged key by key onto Rune's defaults. See
+  [Syntax Highlighting](./learn/syntax-highlighting.md).
+
+  ```yaml tab
+  editor:
+    highlights:
+      comment:
+        fg: silver
+        flags: italic
+  ```
+
+  ```python tab
+  config["editor"]["highlights"]["comment"] = {"fg": "silver", "flags": "italic"}
+  ```
 
 ## Command Prompt
 
@@ -187,7 +289,7 @@ For ready-to-copy `exo` configs (Vim, Neovim, Helix, Nano, and more), see the
   },
   ```
 
-  A bare printable key like `:` only works with [Modal](#modal)
+  A bare printable key like `:` only works with [Vim](#vim)
   editing, where the editor distinguishes a normal mode from an insert
   mode and the command key is bound outside insert mode. With
   [Standard](#standard) editing the editor always treats the next

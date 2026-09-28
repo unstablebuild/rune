@@ -26,6 +26,11 @@ binding runs the `fexplorer` command, so you can remap it like any other
 Rune remembers the window you came from. When you open a file from the
 explorer, it lands in that window, not on top of the explorer.
 
+In an empty workspace, or one where everything is ignored, the explorer
+opens as an empty buffer rather than a tree. That is the expected
+state: type the first file or directory name into it and save to create
+it. `editor.file_explorer.min_width` sets how wide that empty split is.
+
 ## Moving around
 
 The explorer renders the workspace as an indented tree inside a normal
@@ -40,6 +45,22 @@ Expanding a directory reads its contents lazily and nests them under the
 line, so you stay in one buffer instead of navigating away. There is no
 separate "go up" command: the whole tree is right there, and you fold
 directories closed when you want them out of sight.
+
+<Preset when="modal">
+
+`<enter>` acts on the tree while the editor is in NORMAL mode. In
+insert mode it inserts a newline like anywhere else, which is how you
+split a row into a new entry.
+
+</Preset>
+
+<Preset when="standard emacs">
+
+`<enter>` acts on the tree until you enter edit mode with
+`<shift-esc>`. After that it inserts a newline like anywhere else,
+which is how you split a row into a new entry.
+
+</Preset>
 
 ## Editing is how you manage files
 
@@ -57,6 +78,18 @@ you can reshape your whole workspace with plain text edits:
   Indent a line one level deeper to push it *into* the directory above
   it; outdent it to move it back toward the parent.
 - **Copy** a file by duplicating its line (yank and paste it elsewhere).
+
+<Preset when="standard emacs">
+
+The explorer opens read-only, so press `<shift-esc>` to enter edit mode
+before any of this takes. See [Read-only mode](#read-only-mode).
+
+</Preset>
+
+When you yank a row, you also yank the icon glyph rendered in front of
+the name. Paste the name only, or fix the pasted line up so it reads
+like the rest of the tree. Rune refuses to write a name containing an
+icon glyph, and tells you which line is at fault.
 
 None of this touches the disk while you type. You can stage as many
 changes as you like, across as many directories as you like, and review
@@ -100,6 +133,63 @@ worth seeing. It honors your workspace `.gitignore` and skips the usual
 noise like `.git/` and editor swap files, so the tree stays focused on
 the files you actually work with. File and directory icons match the
 icon set the rest of the editor uses.
+
+## Read-only mode
+
+<Preset when="standard emacs">
+
+The explorer starts read-only, so a stray keystroke in a tree you were
+only browsing can never rename a file. Press `<shift-esc>` to enter
+edit mode for the rest of the visit; close the explorer and it goes
+back to read-only.
+
+</Preset>
+
+<Preset when="modal">
+
+The explorer starts editable in this preset, because normal mode
+already keeps stray keystrokes out of the buffer. The standard and
+emacs presets start it read-only instead, and `<shift-esc>` enters edit
+mode for the rest of the visit.
+
+</Preset>
+
+The bottom row of the explorer always names the next step: the key that
+enters edit mode while it is read-only, and the key bound to `write`
+once it is not. Rebind `write` and the hint follows; bind nothing to it
+and the row disappears.
+
+Read-only is a config setting, so the modal preset can opt in and the
+other presets can opt out. The key that leaves it, the hint row and
+its color, and the width the split falls back to on an empty tree are
+configurable too:
+
+```yaml tab
+editor:
+  file_explorer:
+    read_only: true
+    edit_key: "<shift-esc>"
+    min_width: 24
+    hint: true
+    hint_attr: {fg: gray}
+```
+
+```python tab
+"editor": {
+    "file_explorer": {
+        "read_only": True,
+        "edit_key":  "<shift-esc>",
+        "min_width": 24,
+        "hint":      True,
+        "hint_attr": attr(fg = "gray"),
+    },
+},
+```
+
+Browsing, expanding, collapsing and opening files all keep working.
+Outside edit mode the buffer refuses every keystroke that would change
+it and saving does nothing, so the explorer cannot modify your
+workspace until you ask it to.
 
 ## Throwaway edits
 

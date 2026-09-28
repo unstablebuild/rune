@@ -19,6 +19,7 @@ package idelsp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -141,27 +142,25 @@ type deadlineWriter struct {
 	conn  net.Conn
 }
 
-func lspSocketpair() ([2]int, error) {
-	syscall.ForkLock.Lock()
-	defer syscall.ForkLock.Unlock()
-
-	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
-	if err != nil {
-		return fds, err
-	}
-	syscall.CloseOnExec(fds[0])
-	syscall.CloseOnExec(fds[1])
-	return fds, nil
-}
-
 func (w *deadlineWriter) Write(ctx context.Context, msg jsonrpc2.Message) error {
-	if deadline, ok := ctx.Deadline(); ok {
-		if err := w.conn.SetWriteDeadline(deadline); err != nil {
-			return fmt.Errorf("set write deadline: %w", err)
-		}
-		defer func() { _ = w.conn.SetWriteDeadline(time.Time{}) }()
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return w.inner.Write(ctx, msg)
 	}
-	return w.inner.Write(ctx, msg)
+	if err := w.conn.SetWriteDeadline(deadline); err != nil {
+		return fmt.Errorf("set write deadline: %w", err)
+	}
+	defer func() { _ = w.conn.SetWriteDeadline(time.Time{}) }()
+	err := w.inner.Write(ctx, msg)
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		// The socket deadline is the context's, but the context's own
+		// timer can lag it under load. jsonrpc2 attributes a failed write
+		// to the context only when ctx.Err() is already set; otherwise it
+		// declares the writer broken and closes the connection, so wait
+		// for the timer before reporting the timeout.
+		<-ctx.Done()
+	}
+	return err
 }
 
 func newLangServer(

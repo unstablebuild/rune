@@ -1312,6 +1312,8 @@ func (m *mockWindowManager) SetWindowContent(_ browserapi.Window, _ browserapi.H
 }
 func (m *mockWindowManager) CloseWindow(_ browserapi.Window) error { return nil }
 
+func (m *mockWindowManager) SetTabActivity(workspaceapi.URI, bool) error { return nil }
+
 type mockWindow struct{}
 
 func (m *mockWindow) WindowID() uint64 { return 0 }
@@ -1426,7 +1428,7 @@ func (s *localScheme) NewPty(_ context.Context) (workspaceapi.Pty, error) {
 	panic("not implemented")
 }
 
-func (s *localScheme) SetPtySize(_ workspaceapi.Pty, _, _ int) error {
+func (s *localScheme) SetPtySize(workspaceapi.Pty, workspaceapi.PtySize) error {
 	panic("not implemented")
 }
 
@@ -2497,6 +2499,42 @@ func TestReconcile(t *testing.T) {
 		assertStorageEntryNotExists(t, storage, "go", "1")
 	})
 
+	t.Run("skips_installed_version_trees", func(t *testing.T) {
+		t.Parallel()
+		pkgs := idepkgtest.MakePackages()
+		versions := idepkgtest.MakeBundles()
+		m, _, _, datadir, storage := newTestManagerWithStorage(t, pkgs, versions)
+		require.NoError(t, makePkgDirs(datadir))
+
+		// An installed toolchain tree is thousands of entries; the sweep
+		// must not descend into it. Staging-looking names inside it belong
+		// to the package and must survive as proof the tree was skipped.
+		createCompleteEntry(t, storage, "go", "1")
+		installed := makePackageVersionDirname(datadir, "go", "1")
+		insideStaging := filepath.Join(installed, "src", ".staging-vendored")
+		require.NoError(t, os.MkdirAll(insideStaging, 0777))
+		insideManifest := filepath.Join(installed, "src", ".manifest-vendored.json")
+		require.NoError(t, os.WriteFile(insideManifest, []byte("{}"), 0644))
+
+		// Package-level leftovers from an aborted install of another version.
+		strayStaging := makeStagingDirname(datadir, "go", "2")
+		require.NoError(t, os.MkdirAll(strayStaging, 0777))
+		orphanManifest := makeManifestFilename(datadir, "go", "2")
+		require.NoError(t, os.WriteFile(orphanManifest, []byte("{}"), 0644))
+
+		require.NoError(t, m.Reconcile(context.Background()))
+
+		_, err := os.Stat(insideStaging)
+		assert.NoError(t, err, "walk must not descend into installed version trees")
+		_, err = os.Stat(insideManifest)
+		assert.NoError(t, err, "walk must not descend into installed version trees")
+		_, err = os.Stat(strayStaging)
+		assert.True(t, os.IsNotExist(err), "stray package-level staging dir must be removed")
+		_, err = os.Stat(orphanManifest)
+		assert.True(t, os.IsNotExist(err), "orphan package-level manifest must be removed")
+		assertStorageEntryComplete(t, storage, "go", "1")
+	})
+
 	t.Run("then_install_succeeds", func(t *testing.T) {
 		t.Parallel()
 		pkgs := idepkgtest.MakePackages()
@@ -3381,7 +3419,7 @@ else:
 		mode    string
 		wantMod string
 	}{
-		{"modal", "other"},
+		{"vim", "other"},
 		{"standard", "standard"},
 	}
 	for _, tc := range cases {

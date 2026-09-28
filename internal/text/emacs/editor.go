@@ -112,7 +112,8 @@ func (e *editor) Edit(
 	}
 	scroll := handler.(*emacsHandler).less.Scroll()
 	ret = e.pub.PublishEdit(file, buf, ret, cursor)
-	if !text.BarsFromContext(ctx) {
+	bars, ok := text.BarsFromContext(ctx)
+	if !ok {
 		return ret, nil
 	}
 	auxBarConfig := e.auxBarConfig
@@ -120,17 +121,22 @@ func (e *editor) Edit(
 	iconsBarConfig := e.iconsBarConfig
 	iconsBarConfig.CommandRegistry = e.fileRegistry
 	iconsBarConfig.Publisher = publisherEventsAdapter{pub: &e.pub}
-	if e.enableAuxBar {
+	if e.enableAuxBar && !bars.DisableAuxBar {
 		ret = text.WithAuxBar(ret, buf, scroll, auxBarConfig)
 	}
-	if e.enableIconsBar {
+	if e.enableIconsBar && !bars.DisableIconsBar {
 		ret = text.WithIconsBar(e.auxBarConfig.Service, e.enableGitIcons, ret, buf,
 			scroll, iconsBarConfig)
 	}
 	if !e.statusBarEnabled {
 		return ret, nil
 	}
-	bar := text.WithStatusBar(ret, buf, scroll, readOnly, recovered, e.statusBarConfig)
+	statusBarConfig := e.statusBarConfig
+	if bars.StatusBar != nil {
+		statusBarConfig.Workspace = bars.StatusBar.Workspace
+		statusBarConfig.GitService = bars.StatusBar.GitService
+	}
+	bar := text.WithStatusBar(ret, buf, scroll, readOnly, recovered, statusBarConfig)
 	handler.(*emacsHandler).setStatusBar(bar)
 	if !e.commandBar {
 		bar.ShowCommandBar(false)
@@ -157,6 +163,14 @@ func (c *editor) UnsubscribeCommand(cmd string) error {
 }
 
 func (c *editor) UnregisterREPLCommand(cmd string) error {
+	return errors.New("not supported")
+}
+
+func (e *editor) RegisterResourceOpener(string, textapi.ResourceOpenHandler) error {
+	return errors.New("not supported")
+}
+
+func (e *editor) UnregisterResourceOpener(string) error {
 	return errors.New("not supported")
 }
 

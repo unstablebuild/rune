@@ -160,15 +160,8 @@ model claude/claude-opus-4-6
 
 You can also make a Claude subscription model the default for new chats:
 
-```yaml tab
-models:
-  default: "claude/claude-opus-4-6"
 ```
-
-```python tab
-"models": {
-    "default": "claude/claude-opus-4-6",
-},
+models alias set default claude/claude-opus-4-6
 ```
 
 Most users do not need any `models.claude` config. Authentication is managed by
@@ -206,18 +199,14 @@ model name can be served by more than one provider, Rune identifies models as
 `codex/gpt-5.4`. A bare name resolves when only one provider exposes it;
 otherwise prefix it with the provider.
 
-Set the default model for new chats in your config:
+Set the default model for new chats by pointing the `default` alias at it:
 
-```yaml tab
-models:
-  default: "anthropic/claude-opus-4-6"
+```
+models alias set default anthropic/claude-opus-4-6
 ```
 
-```python tab
-"models": {
-    "default": "anthropic/claude-opus-4-6",
-},
-```
+The default model is not a config-file setting: it is stored with the rest of
+your [model aliases](./intro.md#model-aliases).
 
 You can also switch a focused chat's model with the `chatmodel` command-prompt
 command. See the [agent intro](./intro.md#models) for the model-selection
@@ -345,7 +334,6 @@ keep the built-in provider's authentication and known model catalog.
 
 | Key | Type | Description |
 | --- | --- | --- |
-| `models.default` | string | Default model for new chats, as `provider/name`. |
 | `models.reasoning_summary` | string | Reasoning summary level for OpenAI and Codex: `auto`, `concise`, `detailed`, or `disabled`. |
 | `models.openai.base_url` | string | Override the OpenAI API base URL. |
 | `models.openai.reasoning_effort` | string | Reasoning effort for OpenAI models. |

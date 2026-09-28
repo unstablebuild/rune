@@ -484,6 +484,8 @@ func (a testBrowserAdapter) CloseWindow(w browserapi.Window) error {
 	return win.Close()
 }
 
+func (a testBrowserAdapter) SetTabActivity(workspaceapi.URI, bool) error { return nil }
+
 func (a testBrowserAdapter) Open(uri workspaceapi.URI) (browserapi.Handler, error) {
 	return a.component.Open(uri)
 }

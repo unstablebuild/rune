@@ -141,7 +141,7 @@ written.
 | <KeyBinding command="lsp complete" /> | `lsp complete` | The cursor position |
 
 :::note
-On macOS, `<ctrl-space>`, used for completion by the Modal and Standard
+On macOS, `<ctrl-space>`, used for completion by the Vim and Standard
 presets, is reserved for input source switching. To use it for completion,
 go to System Settings → Keyboard → Keyboard Shortcuts → Input Sources and
 uncheck both entries.

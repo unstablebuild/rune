@@ -134,7 +134,7 @@ Terminals get their own find, independent of everything else on this page.
 its entire scrollback, not just the visible screen. `<enter>` or `<meta-f>`
 again jumps to the next match, and `<esc>` or `<ctrl-c>` closes the box and
 leaves the current match selected, so a follow-up copy shortcut copies it.
-It works whether or not the terminal is in [modal mode](./modal-editor.md).
+It works whether or not the terminal is in [modal mode](./vim-editor.md).
 There is no replace: a shell has no buffer to write into.
 
 ### Search configuration

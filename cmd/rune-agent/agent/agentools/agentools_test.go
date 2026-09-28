@@ -343,6 +343,12 @@ func TestResolvePath(t *testing.T) {
 			path:     "sub dir/file with spaces.txt",
 			wantPath: "/workspace root/sub dir/file with spaces.txt",
 		},
+		{
+			name:     "dollar in name is literal",
+			root:     "/workspace",
+			path:     "routes/$RUNE_TEST_UNSET_VAR/index.tsx",
+			wantPath: "/workspace/routes/$RUNE_TEST_UNSET_VAR/index.tsx",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

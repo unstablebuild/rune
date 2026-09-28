@@ -44,13 +44,9 @@ const (
 	authStyle = oauth2.AuthStyleAutoDetect
 )
 
-// APIURL, TokenURL, MgmtTokenURL, AuthURL, JWKSURL, ClientID, and
-// SignupURL are the auth0/signup endpoints baked into the binary at
-// build time. They default to the development tenant; production
-// builds override them via `-ldflags -X` (see the ox-api repo
-// docker-build-gcp-prod). They are package-level variables (not
-// constants) so the linker can replace them; do not assign to them
-// at runtime.
+// APIURL, TokenURL, MgmtTokenURL, AuthURL, DeviceAuthURL, JWKSURL,
+// ClientID, and SignupURL are the auth0/signup endpoints baked into the
+// binary at build time.
 var (
 	APIURL = "https://dev-fv7z5qrer6vkxhxf.us.auth0.com/api/v2/"
 	// TokenURL is used for the end-user / first-party API oauth2 flow and
@@ -61,11 +57,12 @@ var (
 	// canonical tenant hostname — Auth0 does not register the `<tenant>/api/v2/` audience
 	// on custom domains, so requests there 404 at /oauth/token. See
 	// ox-api's api/user/auth0_store.go.
-	MgmtTokenURL = "https://dev-fv7z5qrer6vkxhxf.us.auth0.com/oauth/token"
-	AuthURL      = "https://dev-fv7z5qrer6vkxhxf.us.auth0.com/authorize"
-	JWKSURL      = "https://dev-fv7z5qrer6vkxhxf.us.auth0.com/.well-known/jwks.json"
-	ClientID     = "AhY5YlLUiEjOXNFmmyw4Nve32Hp0ag22"
-	SignupURL    = "https://unstable-build-blue-dev.web.app/signup"
+	MgmtTokenURL  = "https://dev-fv7z5qrer6vkxhxf.us.auth0.com/oauth/token"
+	AuthURL       = "https://dev-fv7z5qrer6vkxhxf.us.auth0.com/authorize"
+	DeviceAuthURL = "https://dev-fv7z5qrer6vkxhxf.us.auth0.com/oauth/device/code"
+	JWKSURL       = "https://dev-fv7z5qrer6vkxhxf.us.auth0.com/.well-known/jwks.json"
+	ClientID      = "AhY5YlLUiEjOXNFmmyw4Nve32Hp0ag22"
+	SignupURL     = "https://unstable-build-blue-dev.web.app/signup"
 )
 
 // Config represents a full oauth2 configuration for clients and servers to use.
@@ -144,9 +141,10 @@ func DefaultNativeConfig(api *url.URL) Config {
 				"openid",         /* to ensure it returns an id token */
 			},
 			Endpoint: oauth2.Endpoint{
-				AuthStyle: oauth2.AuthStyleInParams,
-				AuthURL:   AuthURL,
-				TokenURL:  tokenURL,
+				AuthStyle:     oauth2.AuthStyleInParams,
+				AuthURL:       AuthURL,
+				DeviceAuthURL: DeviceAuthURL,
+				TokenURL:      tokenURL,
 			},
 		},
 	}

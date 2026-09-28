@@ -26,6 +26,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
 	"unstable.build/rune/cmd/extension_python/pyshim"
 	"unstable.build/rune/internal/extension/langext"
 )
@@ -42,9 +43,11 @@ func initRootHarness(t *testing.T, dataDir string, cfg config.Config) *fakeExecu
 	ex.respond("uv python install --default", scriptedCmd{})
 	ex.respond("uvx --from debugpy==1.8.17 python -c ", scriptedCmd{})
 	root := langext.Root{Dir: work, URI: "file://" + work}
+	setting := newEnvSetting(storagestub.NewInMemoryService())
+	require.NoError(t, setting.set(context.Background(), root, true))
 	err := initializeProjectRoot(context.Background(), fs, ex,
 		newFakeNotifications(), &captureLSP{},
-		fakeInstaller{fs: fs, root: dataDir}, cfg, dataDir, root)
+		fakeInstaller{fs: fs, root: dataDir}, cfg, dataDir, setting, nil, root)
 	require.NoError(t, err)
 	return ex
 }

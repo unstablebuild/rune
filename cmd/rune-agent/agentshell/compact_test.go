@@ -28,6 +28,7 @@ import (
 
 	"unstable.build/rune/cmd/rune-agent/dialogue/dialoguemanager"
 	"unstable.build/rune/cmd/rune-agent/llm/llmtest"
+	"unstable.build/rune/internal/llm/anthropic"
 )
 
 type compactAliasService struct {
@@ -112,6 +113,53 @@ func TestCompactConversationModelSelection(t *testing.T) {
 			require.NoError(t, err)
 			require.Len(t, backend.Requests(), 1)
 			assert.Equal(t, tc.wantModel, backend.Requests()[0].Model)
+		})
+	}
+}
+
+// The manual /compact path resolves its own model (the `compact` alias by
+// default), so the session budget set through /max_tokens - which is only
+// validated against the chat model - must still be clamped here.
+func TestCompactConversationMaxOutputTokens(t *testing.T) {
+	compactModel := llmapi.ModelEntry{
+		Provider:      anthropic.LLMProvider,
+		Name:          anthropic.ClaudeSonnet4Dot5, // 64000 output-token ceiling
+		ContextWindow: 200_000,
+	}
+
+	for _, tc := range []struct {
+		name         string
+		getMaxTokens func() int
+		want         int
+	}{
+		{"no getter wired uses the model-capped default", nil, 32768},
+		{"unset session override uses the model-capped default", func() int { return 0 }, 32768},
+		{"session override is forwarded", func() int { return 50_000 }, 50_000},
+		{"session override above the compact model ceiling is clamped", func() int { return 128_000 }, 64_000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			backend := llmtest.New(
+				[]llmapi.ModelEntry{compactModel},
+				llmtest.Response{Chunks: []string{"summary"}},
+			)
+			store := &compactDialogueStore{dialogue: dialoguemanager.Dialogue{
+				ID: "rolling-fox",
+				Messages: []llmapi.Message{
+					{Role: llmapi.RoleSystem, Content: "system"},
+					{Role: llmapi.RoleUser, Content: "question"},
+				},
+			}}
+			s := &shell{
+				llmSvc:       &compactAliasService{Service: backend, target: compactModel},
+				defaultModel: "anthropic/" + anthropic.ClaudeSonnet4Dot5,
+				store:        store,
+				getMaxTokens: tc.getMaxTokens,
+			}
+
+			_, err := s.handleChats(t.Context(), []string{"compact", "rolling-fox"})
+			require.NoError(t, err)
+			require.Len(t, backend.Requests(), 1)
+			assert.Equal(t, tc.want, backend.Requests()[0].Request.MaxOutputTokens)
 		})
 	}
 }

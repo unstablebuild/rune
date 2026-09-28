@@ -101,10 +101,12 @@ expect_rpc("workspace.Files/Read", respond = {...})  # install + wait
 
 h = expect_command("hello")          # command registration arrived
 r = expect_repl_command("shell")     # REPL command registration arrived
+o = expect_resource_opener("chat")   # resource opener for chat:// arrived
 
 # -- actions (host -> extension) --------------------------------------
 invoke_command(h, args = ["world"])  # dispatch and wait for completion
 invoke_repl_command(r, args = [])
+open_resource(o, "chat://host/1")    # ask for the content and show it
 publish_event("open", uri = "file:///tmp/x", content = "...")
 
 # -- rendering installed handlers -------------------------------------
@@ -134,6 +136,15 @@ For streams, `where` matches any client message on the stream.
 80x24 viewport; `send_key` key tokens follow the same grammar as
 `handlertest.SequenceTestCase.InputSequence` (e.g. `<space>`, `<c-d>`,
 `<enter>`).
+
+`open_resource` calls the extension's resource opener the way Rune does
+when it restores a tab: the uri must have the opener's scheme, and the
+call returns once the extension has returned the content of that uri,
+failing with the error the extension returned. The content is shown as
+the tab of the uri in the focused window, so `render` draws it and
+`send_key` reaches it. Like any stream, the registration itself can also
+be matched with `expect_rpc("text.Editor/SubscribeResourceOpener")`, and
+the content's stream with `expect_rpc("text.Editor/OpenResource")`.
 
 ## Report
 

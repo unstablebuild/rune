@@ -440,9 +440,9 @@ func assertDefaultConfig(t *testing.T, cfg *ideConfig) {
 	assert.Equal(t, term.Attributes{}, cfg.standardAttr())
 	assert.Equal(t, cfg.standardResultAttr(), cfg.emacsResultAttr())
 	assert.Equal(t, term.Attributes{}, cfg.emacsMessageBarAttr())
-	assert.Equal(t, term.Attributes{}, cfg.modalMessageBarAttr())
+	assert.Equal(t, term.Attributes{}, cfg.vimMessageBarAttr())
 	assert.Equal(t, cfg.standardAttr(), cfg.emacsAttr())
-	assert.Equal(t, term.Attributes{}, cfg.modalAttr())
+	assert.Equal(t, term.Attributes{}, cfg.vimAttr())
 	assert.True(t, cfg.autoRestore())
 	assert.Equal(t, "  ", cfg.tabNameSeparator())
 	assert.Equal(t, 90, cfg.editorRuler())
@@ -457,7 +457,7 @@ func assertDefaultConfig(t *testing.T, cfg *ideConfig) {
 	assert.Equal(t, expectedSyntaxConfig, syntaxConfig)
 	assert.Empty(t, cfg.editorComments())
 
-	assert.Equal(t, "modal", cfg.editorMode())
+	assert.Equal(t, "vim", cfg.editorMode())
 	os.Setenv("SHELL", "fish")
 }
 
@@ -815,8 +815,13 @@ func TestTerminalModalDefaultFromEditorMode(t *testing.T) {
 		want   bool
 	}{
 		{"unset editor defaults modal", nil, true},
-		{"modal", map[string]any{"mode": "modal"}, true},
+		{"vim", map[string]any{"mode": "vim"}, true},
+		{"deprecated modal", map[string]any{"mode": "modal"}, true},
 		{"modeless", map[string]any{"mode": "modeless"}, false},
+		{"exo fallback vim", map[string]any{
+			"mode": "exo",
+			"exo":  map[string]any{"command": "vim {file}", "fallback": "vim"},
+		}, true},
 		{"exo fallback modal", map[string]any{
 			"mode": "exo",
 			"exo":  map[string]any{"command": "vim {file}", "fallback": "modal"},
@@ -844,17 +849,17 @@ func TestTerminalModalDefaultFromEditorMode(t *testing.T) {
 	assert.True(t, cfg.terminalModal())
 
 	cfg = &ideConfig{cfg: map[string]any{
-		"editor":   map[string]any{"mode": "modal"},
+		"editor":   map[string]any{"mode": "vim"},
 		"terminal": map[string]any{"modal": false},
 	}, errors: map[string]error{}}
 	assert.False(t, cfg.terminalModal())
 }
 
-// TestEditorModeNormalizesModelessToStandard pins that editorMode()
-// resolves the deprecated "modeless" alias and the new "standard"
-// value to editorModeStandard, while modal/exo/emacs pass through and
-// an unknown mode falls back to modal.
-func TestEditorModeNormalizesModelessToStandard(t *testing.T) {
+// TestEditorModeNormalizesDeprecatedAliases pins that editorMode()
+// resolves the deprecated "modeless" and "modal" aliases to "standard"
+// and "vim", while the canonical modes pass through and an unknown mode
+// falls back to vim.
+func TestEditorModeNormalizesDeprecatedAliases(t *testing.T) {
 	for _, tc := range []struct {
 		mode string
 		want string
@@ -862,17 +867,71 @@ func TestEditorModeNormalizesModelessToStandard(t *testing.T) {
 		{"modeless", editorModeStandard},
 		{"standard", editorModeStandard},
 		{"emacs", editorModeEmacs},
-		{"modal", editorModeModal},
+		{"vim", editorModeVim},
+		{"modal", editorModeVim},
+		{"helix", editorModeHelix},
 		{"exo", editorModeExo},
-		{"bogus", editorModeModal},
+		{"bogus", editorModeVim},
 	} {
 		t.Run(tc.mode, func(t *testing.T) {
 			cfg := &ideConfig{cfg: map[string]any{
 				"editor": map[string]any{"mode": tc.mode},
 			}, errors: map[string]error{}}
 			assert.Equal(t, tc.want, cfg.editorMode())
+			assert.Empty(t, cfg.errors, "a deprecated alias is not a config error")
 		})
 	}
+}
+
+// TestHelixIsAModalEditorMode pins that helix travels the same gating
+// paths as vi: it is a legal editor.exo.fallback, and the console input
+// line and the terminal keymap default to modal for it.
+func TestHelixIsAModalEditorMode(t *testing.T) {
+	t.Parallel()
+
+	t.Run("exo fallback accepts helix", func(t *testing.T) {
+		t.Parallel()
+		canonical, ok := normalizeEditorFallback("helix")
+		require.True(t, ok)
+		assert.Equal(t, editorFallbackHelix, canonical)
+
+		c := ideConfig{cfg: map[string]any{
+			"editor": map[string]any{
+				"mode": "exo",
+				"exo":  map[string]any{"fallback": "helix"},
+			},
+		}, errors: map[string]error{}}
+		assert.Equal(t, editorFallbackHelix, c.exoFallback())
+		assert.Equal(t, editorModeHelix, c.pkgEditorMode())
+	})
+
+	for _, tc := range []struct {
+		mode string
+		want bool
+	}{
+		{editorModeVim, true},
+		{editorModeModal, true},
+		{editorModeHelix, true},
+		{editorModeStandard, false},
+		{editorModeEmacs, false},
+	} {
+		t.Run(tc.mode+" modal gating", func(t *testing.T) {
+			c := ideConfig{cfg: map[string]any{
+				"editor": map[string]any{"mode": tc.mode},
+			}, errors: map[string]error{}}
+			assert.Equal(t, tc.want, modalEditorMode(c.pkgEditorMode()))
+			assert.Equal(t, tc.want, c.consoleEditorModal())
+			assert.Equal(t, tc.want, c.terminalModalDefault())
+		})
+	}
+
+	t.Run("helix keeps the modal command key", func(t *testing.T) {
+		t.Parallel()
+		c := ideConfig{cfg: map[string]any{
+			"editor": map[string]any{"mode": editorModeHelix},
+		}, errors: map[string]error{}}
+		assert.Equal(t, defaultModalCommandKey, c.commandKey())
+	})
 }
 
 // TestDebuggerConfigsTemplates asserts that debuggerConfigs reads the
@@ -1081,6 +1140,28 @@ func TestWorkspaceHome(t *testing.T) {
 		"workspace": map[string]any{"home": "~/work"},
 	}, errors: map[string]error{}}
 	assert.Equal(t, "~/work", cfg.workspaceHome())
+
+	// env vars expand at the config boundary; file APIs keep "$" literal
+	t.Setenv("RUNE_TEST_WORKSPACE_HOME", "/srv/work")
+	cfg = &ideConfig{cfg: map[string]any{
+		"workspace": map[string]any{"home": "$RUNE_TEST_WORKSPACE_HOME/src"},
+	}, errors: map[string]error{}}
+	assert.Equal(t, "/srv/work/src", cfg.workspaceHome())
+
+	// expanding to empty → default "~"
+	cfg = &ideConfig{cfg: map[string]any{
+		"workspace": map[string]any{"home": "$RUNE_TEST_UNSET_WORKSPACE_HOME"},
+	}, errors: map[string]error{}}
+	assert.Equal(t, "~", cfg.workspaceHome())
+}
+
+func TestLogOutputPathExpandsEnv(t *testing.T) {
+	t.Setenv("RUNE_TEST_LOG_DIR", "/var/log/rune")
+	cfg := &ideConfig{cfg: map[string]any{
+		"log_path": "$RUNE_TEST_LOG_DIR/debug.log",
+	}, errors: map[string]error{}}
+	assert.Equal(t, "/var/log/rune/debug.log", cfg.logOutputPath())
+	assert.Empty(t, cfg.errors)
 }
 
 func TestConfigDecodeError(t *testing.T) {
@@ -1181,7 +1262,7 @@ func TestConfigSetting(t *testing.T) {
 			Fg:    term.ColorSilver,
 			Attrs: term.AttrItalic,
 		},
-	}, cfg.modalMessageBarLayout())
+	}, cfg.vimMessageBarLayout())
 	expectedLSPIcons := idelsp.IconSet{
 		idelsp.IconDiagnosticError:       "E",
 		idelsp.IconDiagnosticWarning:     "W",
@@ -1471,7 +1552,7 @@ func TestConfigSetting(t *testing.T) {
 	assert.Equal(t, expectedPrompt, cfg.promptConfig())
 
 	assert.Equal(t, term.Attributes{Bg: term.ColorRed,
-		Fg: term.GetColor("#f0f0f0")}, cfg.modalResultAttr())
+		Fg: term.GetColor("#f0f0f0")}, cfg.vimResultAttr())
 
 	assert.Equal(t, term.Attributes{Bg: term.ColorRed,
 		Fg: term.GetColor("#f1f1f1")}, cfg.standardResultAttr())
@@ -1480,7 +1561,7 @@ func TestConfigSetting(t *testing.T) {
 	assert.Equal(t, term.Attributes{Bg: term.ColorTeal,
 		Fg: term.ColorWhite}, cfg.emacsMessageBarAttr())
 	assert.Equal(t, term.Attributes{Bg: term.ColorNavy,
-		Fg: term.ColorSilver}, cfg.modalMessageBarAttr())
+		Fg: term.ColorSilver}, cfg.vimMessageBarAttr())
 
 	expectedSyntaxConfig := syntax.DefaultConfig()
 	expectedSyntaxConfig.Autoindent = false
@@ -1497,9 +1578,9 @@ func TestConfigSetting(t *testing.T) {
 	assert.Equal(t, term.Attributes{Bg: term.ColorBlue,
 		Fg: term.GetColor("#f8f8f8")}, cfg.emacsAttr())
 	assert.Equal(t, term.Attributes{Bg: term.ColorYellow,
-		Fg: term.GetColor("#f2f2f2")}, cfg.modalAttr())
+		Fg: term.GetColor("#f2f2f2")}, cfg.vimAttr())
 
-	assert.Equal(t, "modal", cfg.editorMode())
+	assert.Equal(t, "vim", cfg.editorMode())
 	os.Setenv("SHELL", "")
 
 	wantMappings := map[handler.Sequence][][]string{
@@ -1768,8 +1849,13 @@ func TestShellEditorModalFromEditorMode(t *testing.T) {
 		want   bool
 	}{
 		{"unset editor defaults modal", nil, true},
-		{"modal", map[string]any{"mode": "modal"}, true},
+		{"vim", map[string]any{"mode": "vim"}, true},
+		{"deprecated modal", map[string]any{"mode": "modal"}, true},
 		{"modeless", map[string]any{"mode": "modeless"}, false},
+		{"exo fallback vim", map[string]any{
+			"mode": "exo",
+			"exo":  map[string]any{"command": "vim {file}", "fallback": "vim"},
+		}, true},
 		{"exo fallback modal", map[string]any{
 			"mode": "exo",
 			"exo":  map[string]any{"command": "vim {file}", "fallback": "modal"},
@@ -1852,6 +1938,48 @@ editor:
 		term.RingBell, term.ScheduleNextTick, "")
 	require.NoError(t, err)
 	assert.Equal(t, 2048, cfg.editorMaxSizeForSyntax())
+}
+
+func TestEditorSwapDir(t *testing.T) {
+	tsuite := []struct {
+		name     string
+		value    string
+		want     bool
+		wantErrs bool
+	}{
+		{name: "absent key keeps swaps in the data directory", value: "", want: true},
+		{name: "enabled", value: "true", want: true},
+		{name: "disabled keeps swaps next to the file", value: "false", want: false},
+		{name: "malformed value", value: `"yes please"`, want: true, wantErrs: true},
+	}
+
+	for _, tcase := range tsuite {
+		t.Run(tcase.name, func(t *testing.T) {
+			f, err := os.CreateTemp("", "")
+			require.NoError(t, err)
+			defer os.Remove(f.Name())
+
+			src := "\neditor:\n  tabspaces: 4\n"
+			if tcase.value != "" {
+				src += "  swap_dir: " + tcase.value + "\n"
+			}
+			_, err = f.WriteString(src)
+			require.NoError(t, err)
+
+			var cfg ideConfig
+			err = loadConfig(&cfg, f.Name(), browser.NopWallpaper(),
+				DefaultConfig{src: "config = {}"},
+				term.RingBell, term.ScheduleNextTick, "")
+			require.NoError(t, err)
+
+			assert.Equal(t, tcase.want, cfg.editorSwapDir())
+			if tcase.wantErrs {
+				assert.Contains(t, cfg.errors, "editor.swap_dir")
+			} else {
+				assert.NotContains(t, cfg.errors, "editor.swap_dir")
+			}
+		})
+	}
 }
 
 func TestEditorIndentType(t *testing.T) {
@@ -2152,4 +2280,74 @@ func TestValidateQuickMenuAcceptsValidConfig(t *testing.T) {
 	assert.NoError(t, validateQuickMenu(cfg))
 	assert.NoError(t, validateQuickMenu(map[string]any{}))
 	assert.NoError(t, validateQuickMenu(map[string]any{"gui": map[string]any{}}))
+}
+
+// TestFileExplorerMinWidthConfig pins the default the handler falls
+// back to when editor.file_explorer is absent, so an unconfigured
+// install still gets a visible explorer on an empty workspace.
+func TestFileExplorerMinWidthConfig(t *testing.T) {
+	t.Parallel()
+	bare := ideConfig{cfg: map[string]any{}, errors: map[string]error{}}
+	assert.Equal(t, 24, bare.fileExplorerMinWidth())
+	assert.Empty(t, bare.errors)
+
+	set := ideConfig{cfg: map[string]any{"editor": map[string]any{
+		"file_explorer": map[string]any{"min_width": 40},
+	}}, errors: map[string]error{}}
+	assert.Equal(t, 40, set.fileExplorerMinWidth())
+	assert.Empty(t, set.errors)
+}
+
+// TestFileExplorerReadOnlyConfigDefaults pins the defaults for the
+// read-only knobs, so an install that never touches the block still
+// gets an editable explorer with a named way into and out of it.
+func TestFileExplorerReadOnlyConfigDefaults(t *testing.T) {
+	t.Parallel()
+	c := ideConfig{cfg: map[string]any{}, errors: map[string]error{}}
+
+	assert.False(t, c.fileExplorerReadOnly())
+	assert.Equal(t, term.KeyComb{Key: term.KeyEsc, Mod: term.ModShift},
+		c.fileExplorerEditKey())
+	assert.True(t, c.fileExplorerHint())
+	assert.Equal(t, term.Attributes{Fg: term.ColorGray},
+		c.fileExplorerHintAttr())
+	assert.Empty(t, c.errors)
+}
+
+// TestFileExplorerReadOnlyConfigOverrides verifies every read-only
+// knob is reachable from editor.file_explorer.
+func TestFileExplorerReadOnlyConfigOverrides(t *testing.T) {
+	t.Parallel()
+	c := ideConfig{cfg: map[string]any{"editor": map[string]any{
+		"file_explorer": map[string]any{
+			"read_only": true,
+			"edit_key":  "<c-e>",
+			"hint":      false,
+			"hint_attr": map[string]any{"fg": "blue"},
+		},
+	}}, errors: map[string]error{}}
+
+	assert.True(t, c.fileExplorerReadOnly())
+	assert.Equal(t, term.KeyComb{Ch: 'e', Mod: term.ModCtrl},
+		c.fileExplorerEditKey())
+	assert.False(t, c.fileExplorerHint())
+	assert.Equal(t, term.Attributes{Fg: term.ColorBlue},
+		c.fileExplorerHintAttr())
+	assert.Empty(t, c.errors)
+}
+
+// TestFileExplorerEditKeyInvalid records the error and keeps the
+// default rather than leaving the explorer with no way out of
+// read-only.
+func TestFileExplorerEditKeyInvalid(t *testing.T) {
+	t.Parallel()
+	for _, spec := range []string{"<nope>", "ab"} {
+		c := ideConfig{cfg: map[string]any{"editor": map[string]any{
+			"file_explorer": map[string]any{"edit_key": spec},
+		}}, errors: map[string]error{}}
+
+		assert.Equal(t, term.KeyComb{Key: term.KeyEsc, Mod: term.ModShift},
+			c.fileExplorerEditKey())
+		assert.Contains(t, c.errors, "editor.file_explorer.edit_key")
+	}
 }

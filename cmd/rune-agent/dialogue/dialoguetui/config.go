@@ -220,6 +220,10 @@ type ComponentConfig struct {
 	// text by an accepted '#' completion, for as long as that label is
 	// still linked to a pending attachment.
 	InlineAttachmentAttr term.Attributes
+
+	// StatusBar configures the dialogue's bottom status row. A
+	// zero value leaves the bar disabled and the layout unchanged.
+	StatusBar StatusBarConfig
 }
 
 // InputBoxConfig holds styling configuration for the compose input

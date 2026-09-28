@@ -176,10 +176,135 @@ func TestRegisterNewWorkspaceIsIdempotent(t *testing.T) {
 	for range 3 {
 		require.NoError(t, f.cleaner.RegisterNewWorkspace(ctx, gone))
 	}
-	require.NoError(t, f.cleaner.Seed(ctx, []workspaceapi.URI{gone}))
 
 	require.NoError(t, f.cleaner.RunOnce(ctx))
 	assert.Equal(t, []string{gone.String()}, f.cleaned)
+}
+
+// seedFixture drives the seed listing a Cleaner consults for the
+// workspaces that predate it.
+type seedFixture struct {
+	storage storageapi.Service
+	mu      sync.Mutex
+	calls   int
+	uris    []workspaceapi.URI
+	errs    []error
+	release chan struct{}
+	cleaned []string
+}
+
+func newSeedFixture(uris ...workspaceapi.URI) *seedFixture {
+	return &seedFixture{storage: storagestub.NewInMemoryService(), uris: uris}
+}
+
+func (f *seedFixture) seed(ctx context.Context) ([]workspaceapi.URI, error) {
+	if f.release != nil {
+		select {
+		case <-f.release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	if len(f.errs) > 0 {
+		err := f.errs[0]
+		f.errs = f.errs[1:]
+		return nil, err
+	}
+	return f.uris, nil
+}
+
+func (f *seedFixture) seedCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+func (f *seedFixture) cleanedURIs() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.cleaned...)
+}
+
+// newCleaner builds a Cleaner on f's storage, as a fresh launch on the
+// same datadir would, with every workspace root reported missing.
+func (f *seedFixture) newCleaner(t *testing.T) *idescavenger.Cleaner {
+	t.Helper()
+	cleaner, err := idescavenger.New(idescavenger.Config{
+		Storage: f.storage,
+		Seed:    f.seed,
+		Stat: func(name string) (fs.FileInfo, error) {
+			return nil, &fs.PathError{
+				Op: "stat", Path: name, Err: fs.ErrNotExist,
+			}
+		},
+		StartRetry: retry.SequentialStrategy(time.Millisecond),
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = cleaner.Close() })
+	cleaner.AddWorkspaceHook(func(
+		_ context.Context, cwd workspaceapi.URI,
+	) error {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.cleaned = append(f.cleaned, cwd.String())
+		return nil
+	})
+	return cleaner
+}
+
+// The seed listing decodes every document in the dataset it recovers
+// from, so it must run once per dataset, from the background pass, and
+// never on the goroutine that starts the Cleaner.
+func TestStartSeedsOncePerDataset(t *testing.T) {
+	gone := uri(t, "/tmp/gone")
+	f := newSeedFixture(gone)
+	f.release = make(chan struct{})
+
+	f.newCleaner(t).Start(context.Background())
+	assert.Equal(t, 0, f.seedCalls(),
+		"Start must return without waiting on the seed listing")
+	close(f.release)
+	require.Eventually(t, func() bool {
+		return len(f.cleanedURIs()) == 1
+	}, 5*time.Second, 5*time.Millisecond,
+		"the first pass must reclaim the seeded workspace")
+	assert.Equal(t, []string{gone.String()}, f.cleanedURIs())
+	assert.Equal(t, 1, f.seedCalls())
+
+	f.release = nil
+	for range 2 {
+		next := f.newCleaner(t)
+		next.Start(context.Background())
+		require.NoError(t, next.RunOnce(context.Background()))
+	}
+	time.Sleep(20 * time.Millisecond)
+	assert.Equal(t, 1, f.seedCalls(),
+		"a later launch on the same dataset must not list again")
+}
+
+// A seed listing that fails, as it does while another process leads the
+// storage, must be retried with the pass and must not be recorded as
+// done until it succeeds.
+func TestStartRetriesAFailedSeed(t *testing.T) {
+	gone := uri(t, "/tmp/gone")
+	f := newSeedFixture(gone)
+	f.errs = []error{
+		errors.New("resource exhausted"), errors.New("resource exhausted"),
+	}
+
+	f.newCleaner(t).Start(context.Background())
+	require.Eventually(t, func() bool {
+		return len(f.cleanedURIs()) == 1
+	}, 5*time.Second, 5*time.Millisecond)
+	assert.Equal(t, 3, f.seedCalls())
+
+	f.newCleaner(t).Start(context.Background())
+	time.Sleep(20 * time.Millisecond)
+	assert.Equal(t, 3, f.seedCalls(),
+		"only a successful seed marks the dataset as seeded")
 }
 
 // Start runs its pass while the IDE is still starting up, before the

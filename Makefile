@@ -44,13 +44,17 @@ REPO_ROOT := $(patsubst %/,%,$(dir $(abspath $(firstword $(MAKEFILE_LIST)))))
 # error, panic, non-zero exit even after printing a partial line) leaves
 # BUILD_DATE empty; buildstamp's error still reaches stderr. BUILD_DATE_LDFLAG
 # then $(error)s on an empty stamp so a broken buildstamp aborts the build
-# instead of baking in a missing date that would silently disable the
-# one-off upgrade-entitlement lockdown. The guard lives in the ldflag (not
-# at parse time) so non-build targets like `clean` are unaffected; an
-# inline $$(...) substitution could not enforce this because its non-zero
-# exit would not fail the surrounding go build.
+# instead of shipping a release binary whose `rune --version` reports no
+# build date. The guard lives in the ldflag (not at parse time) so
+# non-build targets like `clean` are unaffected; an inline $$(...)
+# substitution could not enforce this because its non-zero exit would not
+# fail the surrounding go build.
 BUILD_DATE := $(shell out=$$(cd $(REPO_ROOT) && $(GO) run ./cmd/buildstamp) && printf '%s' "$$out")
 BUILD_DATE_LDFLAG = $(if $(strip $(BUILD_DATE)),,$(error buildstamp produced no build date; refusing to build a binary with an empty debug.BuildDate))-X unstable.build/rune/internal/debug.BuildDate=$(strip $(BUILD_DATE))
+# dist/arch/PKGBUILD and dist/debian/debian/rules re-declare this set
+# because makepkg and dpkg-buildpackage drive the compiler themselves and
+# never call these rules. A flag added or renamed here has to be mirrored
+# in both, or packaged builds quietly ship without it.
 COMMON_LDFLAGS=-X unstable.build/rune/internal/debug.Tag=$$(git describe --tags) -X unstable.build/rune/internal/debug.Commit=$$(git rev-parse --short HEAD) $(BUILD_DATE_LDFLAG) $(DEBUG_LDFLAGS)
 GOFLAGS=$(RACE_FLAG) -ldflags="$(COMMON_LDFLAGS) -X unstable.build/rune/internal/debug.Package=six"
 RUNE_GOFLAGS=$(RACE_FLAG) -tags=ebitensinglethread -ldflags="$(COMMON_LDFLAGS) -X unstable.build/rune/internal/debug.Package=rune"
@@ -126,6 +130,8 @@ RELEASE_FILES=$(wildcard release/*)
 	FORCE \
 	manual-ssh-test \
 	dist-tar-with-src dist-dmg-with-src dist-min-macos dist-min-linux \
+	pkg-deb pkg-deb-amd64 pkg-deb-arm64 pkg-deb-docker \
+	pkg-arch pkg-arch-srcinfo pkg-clean \
 	$(filter internal/workspace/workspacessh/manual_test/%.sh,$(MAKECMDGOALS))
 
 # bluectl config matrix. Each leaf config pins BOTH auth.project-id and
@@ -142,9 +148,14 @@ BLUECTL_CONFIG_ROOT := $(abspath deploy/bluectl)
 # Helper: resolve a leaf config dir given env (prod|staging) and os-arch slug.
 BLUECTL_CONFIG = $(BLUECTL_CONFIG_ROOT)/$(1)/$(2)
 
+# Inside a worktree `.git` is a file and the hooks live in the common dir, so a
+# literal .git/hooks/... target can never be satisfied and every build reruns
+# the install.
+GIT_HOOKS := $(shell git rev-parse --git-path hooks 2>/dev/null)
+
 default: CGO_ENABLED=CGO_ENABLED=1
 default: GOPRIVATE=github.com/unstablebuild,unstable.build/*
-default: .git/hooks/pre-commit .git/hooks/commit-msg $(EXECS)
+default: $(if $(GIT_HOOKS),$(GIT_HOOKS)/pre-commit) $(EXECS)
 
 debug: RUNE_DEBUG_BUILD := true
 debug: CGO_ENABLED=CGO_ENABLED=1
@@ -159,12 +170,11 @@ rune-agent: CGO_ENABLED=CGO_ENABLED=1
 rune-agent: GOPRIVATE=github.com/unstablebuild,unstable.build/*
 rune-agent: $(BIN)/rune-agent
 
-.git/hooks/pre-commit: .pre-commit-config.yaml
-	@ command -v pre-commit >/dev/null 2>&1 && pre-commit install \
-		|| echo "pre-commit not installed; skipping git hook setup"
-
-.git/hooks/commit-msg: .pre-commit-config.yaml
-	@ command -v pre-commit >/dev/null 2>&1 && pre-commit install \
+# One install covers both hook types (default_install_hook_types). Two
+# concurrent installs race writing these files and can strand a valid hook as
+# pre-commit.legacy, which makes every later commit abort in migration mode.
+$(GIT_HOOKS)/pre-commit: .pre-commit-config.yaml
+	@ command -v pre-commit >/dev/null 2>&1 && pre-commit install -f \
 		|| echo "pre-commit not installed; skipping git hook setup"
 
 test:
@@ -662,3 +672,76 @@ runectl-staging-dist-darwin-arm64: clean
 
 notary-credentials:
 	xcrun notarytool store-credentials "$(NOTARY_PROFILE)" --team-id "YYZRWD888J"
+
+# Distribution packages (dist/). Both build inside Docker so no
+# Debian/Arch host is required; artifacts land in dist/out/.
+#
+#   make pkg-deb            .deb for the host arch
+#   make pkg-deb-amd64      .deb for linux/amd64
+#   make pkg-deb-arm64      .deb for linux/arm64
+#   make pkg-arch           Arch package from dist/arch/PKGBUILD
+#   make pkg-arch-srcinfo   regenerate .SRCINFO only (fast)
+#
+# The version is resolved here rather than in the container: the build
+# context excludes .git, and a git worktree's .git is a file pointing
+# outside the context anyway.
+PKG_OUT ?= $(TARGET)/pkg
+PKG_GO_VERSION ?= 1.26.6
+DEB_BASE_IMAGE ?= debian:bookworm
+# archlinux is published for amd64 only. Emulating it is not viable:
+# the Go toolchain segfaults under qemu-user, so the full Arch build
+# needs an x86_64 builder (a native host or CI).
+PKG_ARCH_PLATFORM ?= linux/amd64
+PKG_HOST_ARCH := $(shell uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
+PKG_TAG := $(shell git describe --tags --match 'v*')
+PKG_COMMIT := $(shell git rev-parse --short HEAD)
+
+pkg-deb: pkg-deb-$(PKG_HOST_ARCH)
+
+pkg-deb-amd64:
+	@$(MAKE) pkg-deb-docker PKG_DEB_ARCH=amd64
+
+pkg-deb-arm64:
+	@$(MAKE) pkg-deb-docker PKG_DEB_ARCH=arm64
+
+pkg-deb-docker:
+	@mkdir -p $(PKG_OUT)
+	@echo "Building .deb for linux/$(PKG_DEB_ARCH) on $(DEB_BASE_IMAGE) ($(PKG_TAG)) ..."
+	@docker buildx build --rm \
+		-f dist/debian/Dockerfile \
+		--platform linux/$(PKG_DEB_ARCH) \
+		--build-arg BASE_IMAGE=$(DEB_BASE_IMAGE) \
+		--build-arg GO_VERSION=$(PKG_GO_VERSION) \
+		--build-arg RUNE_TAG=$(PKG_TAG) \
+		--build-arg RUNE_COMMIT=$(PKG_COMMIT) \
+		--target artifact \
+		--output type=local,dest=$(PKG_OUT) \
+		.
+	@ls -1 $(PKG_OUT)/*.deb
+
+pkg-arch:
+	@mkdir -p $(PKG_OUT)
+	@echo "Building Arch package from dist/arch/PKGBUILD ($(PKG_TAG)) ..."
+	@docker buildx build --rm \
+		-f dist/arch/Dockerfile \
+		--platform $(PKG_ARCH_PLATFORM) \
+		--build-arg RUNE_TAG=$(PKG_TAG) \
+		--build-arg RUNE_COMMIT=$(PKG_COMMIT) \
+		--target artifact \
+		--output type=local,dest=$(PKG_OUT) \
+		.
+	@ls -1 $(PKG_OUT)/*.pkg.tar.zst
+
+# Regenerates dist/arch/.SRCINFO in place; the AUR requires it to match
+# PKGBUILD on every push.
+pkg-arch-srcinfo:
+	@docker buildx build --rm \
+		-f dist/arch/Dockerfile \
+		--platform $(PKG_ARCH_PLATFORM) \
+		--target srcinfo-artifact \
+		--output type=local,dest=dist/arch \
+		.
+	@echo "Wrote dist/arch/.SRCINFO"
+
+pkg-clean:
+	@rm -rf $(PKG_OUT)

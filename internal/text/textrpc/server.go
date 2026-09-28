@@ -29,14 +29,20 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi/textrpc"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"github.com/unstablebuild/rune-go-sdk/handler/handlerrpc"
+	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/term/termrpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/debug"
+	thandlerrpc "unstable.build/rune/internal/handler/handlerrpc"
 	"unstable.build/rune/internal/text"
 )
 
 var (
-	errHandlerNotFound = errors.New("handler not found")
+	errHandlerNotFound  = errors.New("handler not found")
+	errNoEventPublisher = errors.New("text.Server: no event publisher")
 )
 
 // Server serves an Editor over GRPC.
@@ -51,6 +57,14 @@ type Server struct {
 		text.Editor
 		sync.Locker
 	}
+
+	syncMode bool
+	publish  func(term.Event) error
+
+	// scheme -> the stream whose opener is registered for it; guarded by
+	// the editor lock.
+	openers map[string]*resourceOpenerClientStream
+	opens   pendingOpens
 }
 
 // NewServer allocates storage for a new Server and initializes it.
@@ -69,7 +83,21 @@ func (s *Server) Init(
 	s.editor.Editor = editor
 	s.editor.Locker = lock
 	s.editor.Notifications = b
+	s.openers = make(map[string]*resourceOpenerClientStream)
+	s.publish = func(term.Event) error { return errNoEventPublisher }
 	s.ctx, s.cancelCtx = context.WithCancel(context.Background())
+}
+
+// SetEventPublisher sets the publisher the handlers served by extensions
+// use to request a redraw. Without one, those handlers cannot draw.
+func (s *Server) SetEventPublisher(publish func(term.Event) error) {
+	s.publish = publish
+}
+
+// SetSyncMode ensures that all future handler clients are fully synchronous.
+// This should be used only for testing.
+func (s *Server) SetSyncMode() {
+	s.syncMode = true
 }
 
 // Edit satisfies EditorServer
@@ -166,7 +194,7 @@ func (s *Server) SubscribeCommand(srv textrpc.Editor_SubscribeCommandServer) err
 	streamCtx, cancelStream := context.WithCancel(s.ctx)
 	defer cancelStream()
 	clientStream := newCommandClientStream(
-		streamCtx, srv, req.GetSupportsCompleteCancel())
+		streamCtx, srv, req.GetSupportsCompleteCancel(), req.GetSupportsHandleCancel())
 	man := makeStdMan(req.GetCommand())
 
 	s.editor.Lock()
@@ -175,14 +203,21 @@ func (s *Server) SubscribeCommand(srv textrpc.Editor_SubscribeCommandServer) err
 		s.editor.Unlock()
 		return fmt.Errorf("unsubscribe existing command %q: %w", man.Name, uerr)
 	}
-	// NOTE this unlock here causes a race towards the first SendMsg.
-	// In practice, this is not a problem, since for a command to be dispatched
-	// the user needs to type it first, which gives plenty of time for this
-	// goroutine to proceed and schedule the response below via SendMsg.
 	err = s.editor.SubscribeCommand(man, clientStream)
+	if err != nil {
+		s.editor.Unlock()
+		return err
+	}
+	// The client takes the first message on the stream as the subscribe
+	// response. Dispatches run under the editor lock, so sending while it
+	// is still held is what keeps a dispatch that lands the moment the
+	// command becomes visible from overtaking the response.
+	resp := textrpc.SubscribeCommandResponse{}
+	err = clientStream.send(&textrpc.ServerCommandMessage{
+		Type: textrpc.ServerCommandMessage_Response, Response: &resp})
 	s.editor.Unlock()
 	if err != nil {
-		return err
+		return fmt.Errorf("send subscribe command response: %w", err)
 	}
 
 	go debug.CapturePanicReport(func() {
@@ -203,13 +238,6 @@ func (s *Server) SubscribeCommand(srv textrpc.Editor_SubscribeCommandServer) err
 			}
 		}
 	})
-
-	resp := textrpc.SubscribeCommandResponse{}
-	respMsg := textrpc.ServerCommandMessage{
-		Type: textrpc.ServerCommandMessage_Response, Response: &resp}
-	if err := srv.SendMsg(&respMsg); err != nil {
-		return fmt.Errorf("send bar install response: %w", err)
-	}
 
 	err = clientStream.receiveMessages()
 	cancelStream()
@@ -244,7 +272,7 @@ func (s *Server) SubscribeREPLCommand(srv textrpc.Editor_SubscribeREPLCommandSer
 	}
 
 	clientStream := newREPLCommandClientStream(
-		s.ctx, srv, req.GetSupportsCompleteCancel())
+		s.ctx, srv, req.GetSupportsCompleteCancel(), req.GetSupportsHandleCancel())
 	man := makeStdMan(req.GetCommand())
 
 	s.editor.Lock()
@@ -254,21 +282,129 @@ func (s *Server) SubscribeREPLCommand(srv textrpc.Editor_SubscribeREPLCommandSer
 		return fmt.Errorf("unregister existing repl command %q: %w", man.Name, uerr)
 	}
 	err = s.editor.RegisterREPLCommand(man, clientStream)
-	s.editor.Unlock()
 	if err != nil {
+		s.editor.Unlock()
 		return err
 	}
-
 	resp := textrpc.SubscribeREPLCommandResponse{}
-	respMsg := textrpc.ServerREPLCommandMessage{
+	err = clientStream.send(&textrpc.ServerREPLCommandMessage{
 		Type:     textrpc.ServerREPLCommandMessage_Response,
 		Response: &resp,
-	}
-	if err := srv.SendMsg(&respMsg); err != nil {
-		return fmt.Errorf("send repl install response: %w", err)
+	})
+	s.editor.Unlock()
+	if err != nil {
+		return fmt.Errorf("send subscribe repl command response: %w", err)
 	}
 
 	return clientStream.receiveMessages()
+}
+
+// SubscribeResourceOpener satisfies EditorServer. A new subscription for a
+// scheme replaces the previous one, which is what lets a restarted
+// extension take over; the opener is only unregistered when the stream
+// that still owns the scheme ends.
+func (s *Server) SubscribeResourceOpener(
+	srv textrpc.Editor_SubscribeResourceOpenerServer,
+) error {
+	var msg textrpc.ClientResourceOpenerMessage
+	if err := srv.RecvMsg(&msg); err != nil {
+		return fmt.Errorf("receive subscribe resource opener request: %w", err)
+	}
+	req := msg.GetRequest()
+	if msg.GetType() != textrpc.ClientResourceOpenerMessage_Request || req == nil {
+		return errors.New("receive subscribe resource opener request: missing request")
+	}
+	scheme := req.GetScheme()
+	if scheme == "" {
+		return status.Error(codes.InvalidArgument,
+			"subscribe resource opener: empty scheme")
+	}
+
+	streamCtx, cancelStream := context.WithCancel(s.ctx)
+	defer cancelStream()
+	clientStream := newResourceOpenerClientStream(streamCtx, srv, &s.opens)
+
+	s.editor.Lock()
+	if uerr := s.editor.UnregisterResourceOpener(scheme); uerr != nil &&
+		!errors.Is(uerr, text.ErrResourceOpenerNotRegistered) {
+		s.editor.Unlock()
+		return fmt.Errorf("unregister existing resource opener %q: %w", scheme, uerr)
+	}
+	if err := s.editor.RegisterResourceOpener(scheme, clientStream); err != nil {
+		s.editor.Unlock()
+		return err
+	}
+	s.openers[scheme] = clientStream
+	err := clientStream.send(&textrpc.ServerResourceOpenerMessage{
+		Type:     textrpc.ServerResourceOpenerMessage_Response,
+		Response: &textrpc.SubscribeResourceOpenerResponse{},
+	})
+	s.editor.Unlock()
+	if err != nil {
+		err = fmt.Errorf("send subscribe resource opener response: %w", err)
+	} else {
+		err = clientStream.receiveMessages()
+	}
+	cancelStream()
+
+	s.editor.Lock()
+	defer s.editor.Unlock()
+	if s.openers[scheme] != clientStream {
+		return err
+	}
+	delete(s.openers, scheme)
+	if uerr := s.editor.UnregisterResourceOpener(scheme); uerr != nil {
+		err = multierror.Append(err, uerr)
+	}
+	return err
+}
+
+type openResourceClient interface {
+	browserapi.Handler
+	ReceiveMessages() error
+}
+
+// OpenResource satisfies EditorServer. It serves the handler an extension's
+// opener returned for the open request the stream names, and hands it to
+// whoever is waiting for that request.
+func (s *Server) OpenResource(srv textrpc.Editor_OpenResourceServer) error {
+	msg, err := srv.Recv()
+	if err != nil {
+		return fmt.Errorf("receive initial request: %w", err)
+	}
+	req := msg.GetRequest()
+	if msg.GetType() != handlerrpc.MessageType_Request || req == nil {
+		return errors.New("receive initial request: missing request")
+	}
+	reply, ok := s.opens.claim(req.GetId())
+	if !ok {
+		return status.Errorf(codes.FailedPrecondition,
+			"open resource: no open request %d is waiting", req.GetId())
+	}
+
+	newT := func() *textrpc.OpenResourceMessage {
+		return new(textrpc.OpenResourceMessage)
+	}
+	var client openResourceClient
+	if s.syncMode {
+		client = thandlerrpc.NewSyncClientStream(s.ctx, srv, newT)
+	} else {
+		client = thandlerrpc.NewClientStream(s.ctx, srv, newT, s.publish)
+	}
+
+	// The waiter may use the handler as soon as it has it, and the
+	// extension expects the response before any other message.
+	respMsg := handlerrpc.ServerMessage{
+		Type:     handlerrpc.MessageType_Response,
+		Response: &handlerrpc.InstallResourceResponse{},
+	}
+	if err := srv.SendMsg(&respMsg); err != nil {
+		err = fmt.Errorf("send open resource response: %w", err)
+		reply <- openResult{err: err}
+		return err
+	}
+	reply <- openResult{h: client}
+	return client.ReceiveMessages()
 }
 
 // SetLocationList satisfies EditorServer

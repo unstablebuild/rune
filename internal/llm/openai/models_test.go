@@ -113,6 +113,8 @@ func TestSupportsReasoning(t *testing.T) {
 		{"gpt-5.6-terra", true},
 		{"gpt-5.6-luna", true},
 		{"gpt-6-astra", true},
+		{"gpt-6-sol", true},
+		{"gpt-6-luna", true},
 		// Older models do not support reasoning.
 		{"gpt-4", false},
 		{"gpt-4-turbo", false},
@@ -192,6 +194,15 @@ func TestNormalizeEffort(t *testing.T) {
 		{"gpt-6-astra ultra", "gpt-6-astra", "ultra", "ultra", false},
 		{"gpt-6-astra none", "gpt-6-astra", "none", "", true},
 		{"gpt-6-astra minimal", "gpt-6-astra", "minimal", "", true},
+
+		// GPT-6 Sol matches Astra; GPT-6 Luna stops at max.
+		{"gpt-6-sol max", "gpt-6-sol", "max", "max", false},
+		{"gpt-6-sol ultra", "gpt-6-sol", "ultra", "ultra", false},
+		{"gpt-6-sol none", "gpt-6-sol", "none", "", true},
+		{"gpt-6-luna medium", "gpt-6-luna", "medium", "medium", false},
+		{"gpt-6-luna xhigh", "gpt-6-luna", "xhigh", "xhigh", false},
+		{"gpt-6-luna max", "gpt-6-luna", "max", "max", false},
+		{"gpt-6-luna ultra", "gpt-6-luna", "ultra", "", true},
 
 		// GPT-5.4-mini: none/low/medium/high/xhigh (same as gpt-5.4).
 		{"gpt-5.4-mini none", "gpt-5.4-mini", "none", "none", false},

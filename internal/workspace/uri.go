@@ -43,8 +43,22 @@ func checkURIRelative(a, b workspaceapi.URI) error {
 	return nil
 }
 
-// DefaultSwapFile returns a file's default swap directory in the
-// local or remote workspace.
+// URIUnderPrefix reports whether uri is prefix itself or a resource
+// nested under it. Unlike workspaceapi.HasPrefix it only matches on
+// path-segment boundaries, so a namespace like "memory:///gitshow"
+// does not swallow an unrelated "memory:///gitshowcase".
+func URIUnderPrefix(uri, prefix workspaceapi.URI) bool {
+	if uri.Scheme() != prefix.Scheme() ||
+		uri.Host() != prefix.Host() || uri.User() != prefix.User() {
+		return false
+	}
+	base := strings.TrimSuffix(prefix.Path(), "/")
+	return uri.Path() == base || strings.HasPrefix(uri.Path(), base+"/")
+}
+
+// DefaultSwapFile returns the swap entry a file gets inside swapDir,
+// on the same host as the file. swapDir must name a directory on that
+// host: see SwapDirectory.
 func DefaultSwapFile(swapDir workspaceapi.URI, file workspaceapi.URI) (workspaceapi.URI, error) {
 	err := checkURIRelative(swapDir, file)
 	if err != nil {
@@ -54,8 +68,8 @@ func DefaultSwapFile(swapDir workspaceapi.URI, file workspaceapi.URI) (workspace
 	return workspaceapi.WithPath(file, swapFilePath)
 }
 
-// DefaultSwapDirectory returns a file's default swap directory in the
-// local or remote workspace.
+// DefaultSwapDirectory returns the swap directory of the sibling
+// layout: the file's own directory, in the local or remote workspace.
 func DefaultSwapDirectory(file workspaceapi.URI) (workspaceapi.URI, error) {
 	swapDir, _ := swapFileName(filepath.Dir(file.Path()), file.Path())
 	return workspaceapi.WithPath(file, swapDir)

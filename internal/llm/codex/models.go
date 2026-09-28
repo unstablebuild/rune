@@ -26,6 +26,10 @@ const LLMProvider = "codex"
 const (
 	// GPT6Astra is the GPT-6 Astra Codex model.
 	GPT6Astra = "gpt-6-astra"
+	// GPT6Sol is the GPT-6 Sol Codex model.
+	GPT6Sol = "gpt-6-sol"
+	// GPT6Luna is the GPT-6 Luna Codex model.
+	GPT6Luna = "gpt-6-luna"
 	// GPT5Dot6Sol is the GPT-5.6 Sol Codex model.
 	GPT5Dot6Sol = "gpt-5.6-sol"
 	// GPT5Dot6Terra is the GPT-5.6 Terra Codex model.
@@ -53,10 +57,12 @@ const (
 func AvailableModels() map[string]int {
 	// Context windows mirror codex-rs/models-manager/models.json. For
 	// `gpt-5.4` and `codex-auto-review` the bundled `max_context_window`
-	// is 1M (with a 272k default plan budget); GPT-6 Astra and GPT-5.6
+	// is 1M (with a 272k default plan budget); the GPT-6 and GPT-5.6
 	// models have an 872k upstream ceiling.
 	return map[string]int{
 		GPT6Astra:       872000,
+		GPT6Sol:         872000,
+		GPT6Luna:        872000,
 		GPT5Dot6Sol:     872000,
 		GPT5Dot6Terra:   872000,
 		GPT5Dot6Luna:    872000,

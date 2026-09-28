@@ -19,6 +19,7 @@ package idelsp
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -245,6 +246,104 @@ func TestLangServerCallWriteDeadlineDoesNotDeadlock(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("call did not return after write deadline expired")
 	}
+}
+
+// lateTimerContext carries a deadline whose Done channel closes well after
+// it: the socket deadline derived from it fires on time while the
+// context's own timer, as under a loaded CI runner, runs late.
+type lateTimerContext struct {
+	context.Context
+	deadline time.Time
+	done     chan struct{}
+}
+
+func newLateTimerContext(deadline time.Time, lag time.Duration) *lateTimerContext {
+	c := &lateTimerContext{
+		Context: context.Background(), deadline: deadline, done: make(chan struct{}),
+	}
+	time.AfterFunc(time.Until(deadline)+lag, func() { close(c.done) })
+	return c
+}
+
+func (c *lateTimerContext) Deadline() (time.Time, bool) { return c.deadline, true }
+func (c *lateTimerContext) Done() <-chan struct{}       { return c.done }
+
+func (c *lateTimerContext) Err() error {
+	select {
+	case <-c.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
+
+// TestLangServerWriteDeadlineDoesNotBreakConnection covers a write that
+// times out on the socket deadline before the context's timer fires. The
+// connection must attribute that to the call's deadline; treating it as
+// a broken writer closes the transport and restarts the server under a
+// caller that merely hit its own timeout.
+func TestLangServerWriteDeadlineDoesNotBreakConnection(t *testing.T) {
+	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+	require.NoError(t, err)
+	lspFile := os.NewFile(uintptr(fds[1]), "fake-lsp")
+	ideFile := os.NewFile(uintptr(fds[0]), "fake-ide")
+	t.Cleanup(func() { _ = lspFile.Close() })
+
+	stdout, err := net.FileConn(ideFile)
+	require.NoError(t, err)
+	stdin, err := net.FileConn(ideFile)
+	require.NoError(t, err)
+	_ = ideFile.Close()
+	t.Cleanup(func() {
+		_ = stdout.Close()
+		_ = stdin.Close()
+	})
+
+	framer := jsonrpc2.HeaderFramer()
+	srv := &langServer{
+		cfg:     langConfig{id: "fake", command: "fake"},
+		rootURI: "file:///tmp",
+		log:     slog.Default(),
+	}
+	srv.stdin = stdin
+	srv.stdout = stdout
+	srv.conn = jsonrpc2.NewConnection(context.Background(), jsonrpc2.ConnectionConfig{
+		Reader: framer.Reader(stdout),
+		Writer: &deadlineWriter{inner: framer.Writer(stdin), conn: stdin},
+		Closer: pipeCloser{r: stdout, w: stdin},
+		Bind:   func(*jsonrpc2.Connection) jsonrpc2.Handler { return nil },
+	})
+	srv.alive = true
+	t.Cleanup(func() { _ = srv.Close() })
+
+	require.NoError(t, stdin.SetWriteDeadline(time.Now().Add(50*time.Millisecond)))
+	_, _ = stdin.Write(make([]byte, 1<<22))
+	require.NoError(t, stdin.SetWriteDeadline(time.Time{}))
+
+	late := newLateTimerContext(time.Now().Add(100*time.Millisecond), 300*time.Millisecond)
+	done := make(chan error, 1)
+	go func() {
+		var resp string
+		done <- srv.call(late, "any", map[string]any{
+			"payload": string(make([]byte, 1<<20)),
+		}, &resp)
+	}()
+	select {
+	case err := <-done:
+		require.Error(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("call did not return after write deadline expired")
+	}
+
+	// The peer drains what was written; the transport itself is fine.
+	go func() { _, _ = io.Copy(io.Discard, lspFile) }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	err = srv.conn.Notify(ctx, "ping", nil)
+	require.NotErrorIs(t, err, jsonrpc2.ErrClientClosing,
+		"a call timing out on its own deadline must not close the connection")
+	require.NoError(t, err)
 }
 
 // recordingStartExecutor is a schemeapi.Executor stub that records

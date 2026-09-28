@@ -2232,14 +2232,24 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 		return fmt.Errorf("read storage entries: %w", err)
 	}
 	manifests := make(map[string]struct{})
+	versionDirs := make(map[string]struct{})
 	for _, pkv := range entries {
 		if pkv.Complete && pkv.Provenance != nil {
 			manifests[makeManifestFilename(m.dataDir, pkv.Package, pkv.Version)] = struct{}{}
 		}
+		if pkv.Package != "" && pkv.Version != "" {
+			versionDirs[makePackageVersionDirname(m.dataDir, pkv.Package, pkv.Version)] = struct{}{}
+		}
 	}
+	// Staging dirs and manifests live next to the version dirs under
+	// pkg/<id>/; the version dirs themselves are whole toolchains (tens of
+	// thousands of entries) that the sweep has no business descending into.
 	_ = filepath.WalkDir(pkgRoot, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return nil
+		}
+		if _, ok := versionDirs[path]; ok {
+			return filepath.SkipDir
 		}
 		if entry.IsDir() && strings.HasPrefix(entry.Name(), ".staging-") {
 			_ = os.RemoveAll(path)

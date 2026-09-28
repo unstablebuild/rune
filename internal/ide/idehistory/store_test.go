@@ -27,7 +27,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/unstablebuild/blue/document"
 	"github.com/unstablebuild/blue/document/docmarshal/docbson"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagerpc"
@@ -39,7 +38,6 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	tcomponent "unstable.build/rune/internal/component"
-	"unstable.build/rune/internal/localstorage/bluestore"
 	localstoragerpc "unstable.build/rune/internal/localstorage/storagerpc"
 	"unstable.build/rune/internal/term/vte"
 )
@@ -334,6 +332,13 @@ func TestStoreWorkspaceStateForClose(t *testing.T) {
 		hasLayout: true,
 		terminals: []TerminalSession{{Name: "t1"}},
 		tasks:     []TaskSession{{Name: "task1", Cmd: "echo"}},
+		extensions: []ExtensionTab{{
+			URI:      mustURI(t, "fake://host/chat"),
+			Icon:     '󱫆',
+			Name:     "chat",
+			WindowID: 42,
+			Focus:    true,
+		}},
 	}
 	require.NoError(t, store.StoreWorkspaceStateForClose(
 		context.Background(), uri, snap))
@@ -346,21 +351,113 @@ func TestStoreWorkspaceStateForClose(t *testing.T) {
 	require.Len(t, got.Tasks, 1)
 	assert.Equal(t, "task1", got.Tasks[0].Name)
 	assert.Equal(t, "renamed", got.Name)
+	assert.Equal(t, snap.extensions, got.Extensions)
+}
+
+func TestExtensionTabsRoundTrip(t *testing.T) {
+	uri := mustURI(t, "memory:///extension-tabs")
+	chat := ExtensionTab{
+		URI:      mustURI(t, "rune-agent://model/rolling-fox"),
+		Icon:     '󱫆',
+		Name:     "rolling-fox",
+		WindowID: 3,
+		Focus:    true,
+	}
+	other := ExtensionTab{
+		URI:      mustURI(t, "other://host/view"),
+		WindowID: 4,
+	}
+	tests := []struct {
+		name string
+		docs []extensionTabDoc
+		want []ExtensionTab
+	}{
+		{
+			name: "no extension tabs",
+		},
+		{
+			name: "every field survives",
+			docs: []extensionTabDoc{
+				{URI: chat.URI.String(), Icon: string(chat.Icon), Name: chat.Name,
+					WindowID: chat.WindowID, Focus: chat.Focus},
+				{URI: other.URI.String(),
+					WindowID: other.WindowID},
+			},
+			want: []ExtensionTab{chat, other},
+		},
+		{
+			name: "unparsable uri is skipped",
+			docs: []extensionTabDoc{
+				{URI: "not-a-uri", WindowID: 9},
+				{URI: chat.URI.String(), Icon: string(chat.Icon), Name: chat.Name,
+					WindowID: chat.WindowID, Focus: chat.Focus},
+			},
+			want: []ExtensionTab{chat},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cs := newCountingStorage()
+			store := New(cs)
+			doc := newWorkspaceStateDocument(uri, State{})
+			doc.Extensions = tt.docs
+			require.NoError(t, cs.Set(context.Background(),
+				workspaceStateDocumentID(uri), doc))
+
+			got, err := store.LoadWorkspaceState(context.Background(), uri)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got.Extensions)
+
+			require.NoError(t, store.StoreWorkspaceState(
+				context.Background(), uri, got))
+			again, err := store.LoadWorkspaceState(context.Background(), uri)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, again.Extensions)
+		})
+	}
+}
+
+func TestStateIsEmpty(t *testing.T) {
+	uri := mustURI(t, "memory:///empty")
+	tests := []struct {
+		name  string
+		state State
+		want  bool
+	}{
+		{name: "zero", want: true},
+		{name: "layout and name only",
+			state: State{Name: "ws", HasLayout: true}, want: true},
+		{name: "files", state: State{Files: []File{{URI: uri}}}},
+		{name: "terminals",
+			state: State{Terminals: []TerminalSession{{Name: "t"}}}},
+		{name: "tasks", state: State{Tasks: []TaskSession{{Name: "t"}}}},
+		{name: "extension tabs",
+			state: State{Extensions: []ExtensionTab{{URI: uri}}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.state.IsEmpty())
+		})
+	}
 }
 
 // stubSnapshotter is a minimal Snapshotter for tracker tests.
 type stubSnapshotter struct {
-	name      string
-	layout    tcomponent.TileLayout
-	hasLayout bool
-	terminals []TerminalSession
-	tasks     []TaskSession
-	winIDs    map[string]uint64
+	name       string
+	layout     tcomponent.TileLayout
+	hasLayout  bool
+	terminals  []TerminalSession
+	tasks      []TaskSession
+	extensions []ExtensionTab
+	winIDs     map[string]uint64
 }
 
 func (s stubSnapshotter) Name() string                 { return s.name }
 func (s stubSnapshotter) Terminals() []TerminalSession { return s.terminals }
 func (s stubSnapshotter) Tasks() []TaskSession         { return s.tasks }
+func (s stubSnapshotter) ExtensionTabs() []ExtensionTab {
+	return s.extensions
+}
 func (s stubSnapshotter) Layout() (tcomponent.TileLayout, bool) {
 	return s.layout, s.hasLayout
 }
@@ -378,7 +475,7 @@ func TestTrackPersistsOnEditorEvents(t *testing.T) {
 		snap:  stubSnapshotter{},
 		ctx:   context.Background(),
 		files: make(map[string]File),
-		skip:  map[string]struct{}{},
+		skip:  nil,
 	}
 
 	// Open: persists.
@@ -439,7 +536,7 @@ func TestTrackDropsSkippedURIEvents(t *testing.T) {
 		snap:  stubSnapshotter{},
 		ctx:   context.Background(),
 		files: make(map[string]File),
-		skip:  map[string]struct{}{skippedURI.String(): {}},
+		skip:  []workspaceapi.URI{skippedURI},
 	}
 	tr.Handle(context.Background(), textapi.Event{
 		Type: textapi.EventTypeOpen,
@@ -449,6 +546,42 @@ func TestTrackDropsSkippedURIEvents(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, state.Files,
 		"skip-listed URI must not enter persisted state")
+}
+
+// TestTrackDropsURIsUnderSkippedPrefix covers pseudo-buffers that mint a
+// resource per invocation, such as the :gitshow diff popup. Their URIs
+// cannot be enumerated up front, so the skip entry names the namespace
+// and every resource under it must stay out of the persisted state —
+// otherwise a reload tries to reopen a buffer that was never a file.
+func TestTrackDropsURIsUnderSkippedPrefix(t *testing.T) {
+	store := New(newCountingStorage())
+	uri := mustURI(t, "memory:///explorer")
+
+	tr := &tracker{
+		store: store,
+		uri:   uri,
+		snap:  stubSnapshotter{},
+		ctx:   context.Background(),
+		files: make(map[string]File),
+		skip:  []workspaceapi.URI{mustURI(t, "memory:///gitshow")},
+	}
+	tr.Handle(context.Background(), textapi.Event{
+		Type: textapi.EventTypeOpen,
+		URI:  mustURI(t, "memory:///gitshow/a/b.go.diff?n=2"),
+	})
+	state, err := store.LoadWorkspaceState(context.Background(), uri)
+	require.NoError(t, err)
+	assert.Empty(t, state.Files,
+		"a resource under a skipped namespace must not be persisted")
+
+	tr.Handle(context.Background(), textapi.Event{
+		Type: textapi.EventTypeOpen,
+		URI:  mustURI(t, "memory:///gitshowcase/a.go"),
+	})
+	state, err = store.LoadWorkspaceState(context.Background(), uri)
+	require.NoError(t, err)
+	assert.Len(t, state.Files, 1,
+		"a sibling that merely shares a textual prefix must still be tracked")
 }
 
 // oldMaxMessageSize is firstmover's historical gRPC frame cap. A workspace
@@ -463,7 +596,7 @@ const oldMaxMessageSize = 4 << 20
 func cappedGRPCStorage(t *testing.T) storageapi.Service {
 	t.Helper()
 	marshaler := docbson.Marshaler()
-	backend := bluestore.AdaptTo(document.NewInMemoryServiceWithMarshaler(marshaler))
+	backend := storagestub.NewInMemoryServiceWithMarshaler(marshaler)
 
 	gsrv := grpc.NewServer(
 		grpc.MaxSendMsgSize(oldMaxMessageSize),
@@ -495,7 +628,10 @@ func cappedGRPCStorage(t *testing.T) storageapi.Service {
 // largeTerminalSnapshot builds a terminal snapshot whose marshaled size
 // exceeds oldMaxMessageSize so the round-trip exercises the streamed path.
 func largeTerminalSnapshot() vte.Snapshot {
-	const rows, cols = 256, 1024
+	return terminalSnapshot(256, 1024)
+}
+
+func terminalSnapshot(rows, cols int) vte.Snapshot {
 	cells := make([][]term.Cell, rows)
 	for y := range cells {
 		row := make([]term.Cell, cols)
@@ -548,4 +684,226 @@ func TestStoreLoadRoundTripOversizedTerminalSnapshot(t *testing.T) {
 	assert.Equal(t, snap.Width, got.Terminals[0].Snapshot.Width)
 	assert.Equal(t, snap.Height, got.Terminals[0].Snapshot.Height)
 	assert.Equal(t, snap.Primary.Cells, got.Terminals[0].Snapshot.Primary.Cells)
+}
+
+// rawDocs decodes every document in svc's own partition as a map.
+func rawDocs(t *testing.T, svc storageapi.Service) []map[string]any {
+	t.Helper()
+	it, err := svc.List(context.Background(), nil)
+	require.NoError(t, err)
+	defer it.Close()
+	var docs []map[string]any
+	for it.HasNext() {
+		var raw map[string]any
+		require.NoError(t, it.NextTo(&raw))
+		docs = append(docs, raw)
+	}
+	return docs
+}
+
+// TestTerminalSnapshotsLiveOutsideTheWorkspaceStatePartition pins the
+// storage shape ListWorkspaceURIs depends on: listing a partition
+// decodes every document in it to evaluate filters, so a multi-MB
+// terminal snapshot must never share the partition with the documents
+// the scavenger seeds from at startup.
+func TestTerminalSnapshotsLiveOutsideTheWorkspaceStatePartition(t *testing.T) {
+	cs := newCountingStorage()
+	store := New(cs)
+	uri := mustURI(t, "memory:///partitioned")
+	snap := terminalSnapshot(24, 80)
+
+	require.NoError(t, store.StoreWorkspaceStateForClose(
+		context.Background(), uri, stubSnapshotter{
+			terminals: []TerminalSession{{Name: "big", Snapshot: snap, WindowID: 7}},
+			tasks:     []TaskSession{{Name: "task1", Cmd: "echo"}},
+		}))
+
+	docs := rawDocs(t, cs)
+	require.Len(t, docs, 1)
+	assert.NotContains(t, docs[0], "terminals")
+	assert.Less(t, len(storageapi.Encode(docbson.Marshaler(), docs[0], false)), 16<<10,
+		"the listed workspace-state document must stay small")
+
+	terminals := rawDocs(t, storageapi.WithPartition(cs, TerminalStatePartition))
+	require.Len(t, terminals, 1)
+	assert.Contains(t, terminals[0], "terminals")
+
+	uris, err := store.ListWorkspaceURIs(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, []workspaceapi.URI{uri}, uris)
+
+	got, err := store.LoadWorkspaceState(context.Background(), uri)
+	require.NoError(t, err)
+	require.Len(t, got.Terminals, 1)
+	assert.Equal(t, "big", got.Terminals[0].Name)
+	assert.Equal(t, uint64(7), got.Terminals[0].WindowID)
+	assert.Equal(t, snap.Primary.Cells, got.Terminals[0].Snapshot.Primary.Cells)
+	require.Len(t, got.Tasks, 1)
+}
+
+// TestLoadFallsBackToInlineTerminals covers documents written before
+// terminals moved to their own partition: the snapshots they carry
+// inline must still restore, and the next full store rewrites the
+// state in the new shape.
+func TestLoadFallsBackToInlineTerminals(t *testing.T) {
+	cs := newCountingStorage()
+	store := New(cs)
+	uri := mustURI(t, "memory:///legacy")
+	require.NoError(t, cs.Set(context.Background(), workspaceStateDocumentID(uri),
+		workspaceStateDocument{
+			Kind:         workspaceStateDocumentKind,
+			WorkspaceURI: uri.String(),
+			Files:        []fileDoc{{URI: uri.String()}},
+			Terminals:    []terminalDoc{{Name: "inline", WindowID: 3}},
+		}))
+
+	got, err := store.LoadWorkspaceState(context.Background(), uri)
+	require.NoError(t, err)
+	require.Len(t, got.Terminals, 1)
+	assert.Equal(t, "inline", got.Terminals[0].Name)
+	assert.Equal(t, uint64(3), got.Terminals[0].WindowID)
+
+	require.NoError(t, store.StoreWorkspaceState(context.Background(), uri, got))
+	docs := rawDocs(t, cs)
+	require.Len(t, docs, 1)
+	assert.NotContains(t, docs[0], "terminals",
+		"a full store must migrate the terminals out of the legacy document")
+	got, err = store.LoadWorkspaceState(context.Background(), uri)
+	require.NoError(t, err)
+	require.Len(t, got.Terminals, 1)
+	assert.Equal(t, "inline", got.Terminals[0].Name)
+}
+
+// TestListWorkspaceURIsThroughACappedFollower reproduces the startup
+// failure on a datadir led by another process: a legacy document whose
+// inline snapshots exceed the gRPC frame cap must not abort the listing
+// the scavenger seeds from, since List, unlike Get, is not chunked.
+func TestListWorkspaceURIsThroughACappedFollower(t *testing.T) {
+	svc := cappedGRPCStorage(t)
+	store := New(svc)
+	small := mustURI(t, "memory:///small")
+	legacy := mustURI(t, "memory:///legacy")
+	require.NoError(t, store.StoreWorkspaceState(context.Background(), small,
+		State{Files: []File{{URI: small}}}))
+	require.NoError(t, svc.Set(context.Background(), workspaceStateDocumentID(legacy),
+		workspaceStateDocument{
+			Kind:         workspaceStateDocumentKind,
+			WorkspaceURI: legacy.String(),
+			Files:        []fileDoc{{URI: legacy.String()}},
+			Terminals: []terminalDoc{{
+				Name: "inline", Snapshot: largeTerminalSnapshot(),
+			}},
+		}))
+
+	uris, err := store.ListWorkspaceURIs(context.Background())
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []workspaceapi.URI{small, legacy}, uris)
+
+	// The listing is a read: what it cannot carry over the wire it must
+	// leave for the workspace's own reopen to migrate.
+	got, err := store.LoadWorkspaceState(context.Background(), legacy)
+	require.NoError(t, err)
+	require.Len(t, got.Files, 1)
+	require.Len(t, got.Terminals, 1)
+	assert.Equal(t, "inline", got.Terminals[0].Name)
+}
+
+func TestStoreWithoutTerminalsClearsThePreviousTerminalState(t *testing.T) {
+	store := New(newCountingStorage())
+	uri := mustURI(t, "memory:///no-terminals")
+	require.NoError(t, store.StoreWorkspaceState(context.Background(), uri, State{
+		Terminals: []TerminalSession{{Name: "t1"}},
+	}))
+	require.NoError(t, store.StoreWorkspaceState(context.Background(), uri, State{
+		Files: []File{{URI: uri}},
+	}))
+
+	got, err := store.LoadWorkspaceState(context.Background(), uri)
+	require.NoError(t, err)
+	assert.Empty(t, got.Terminals)
+	assert.Len(t, got.Files, 1)
+}
+
+func TestClearWorkspaceStateRemovesTerminalState(t *testing.T) {
+	cs := newCountingStorage()
+	store := New(cs)
+	uri := mustURI(t, "memory:///clear-terminals")
+	require.NoError(t, store.StoreWorkspaceState(context.Background(), uri, State{
+		Terminals: []TerminalSession{{Name: "t1"}},
+	}))
+	require.NoError(t, store.ClearWorkspaceState(context.Background(), uri))
+
+	assert.Empty(t, rawDocs(t, storageapi.WithPartition(cs, TerminalStatePartition)))
+	got, err := store.LoadWorkspaceState(context.Background(), uri)
+	require.NoError(t, err)
+	assert.True(t, got.IsEmpty())
+}
+
+// terminalCountingSnapshotter fails the test if Terminals is called:
+// snapshotting every open terminal on each editor event is the stall
+// this shape exists to avoid.
+type terminalCountingSnapshotter struct {
+	stubSnapshotter
+	t *testing.T
+}
+
+func (s terminalCountingSnapshotter) Terminals() []TerminalSession {
+	s.t.Error("tracker must not snapshot terminals on editor events")
+	return nil
+}
+
+func TestTrackerDoesNotSnapshotTerminalsOnEditorEvents(t *testing.T) {
+	cs := newCountingStorage()
+	store := New(cs)
+	uri := mustURI(t, "memory:///no-terminal-snapshot")
+	require.NoError(t, store.StoreWorkspaceState(context.Background(), uri, State{
+		Terminals: []TerminalSession{{Name: "from-close"}},
+	}))
+
+	tr := &tracker{
+		store: store,
+		uri:   uri,
+		snap:  terminalCountingSnapshotter{t: t, stubSnapshotter: stubSnapshotter{name: "ws"}},
+		ctx:   context.Background(),
+		files: make(map[string]File),
+	}
+	for _, typ := range []textapi.EventType{
+		textapi.EventTypeOpen, textapi.EventTypeFlush, textapi.EventTypeClose,
+	} {
+		tr.Handle(context.Background(), textapi.Event{
+			Type: typ, URI: mustURI(t, "memory:///no-terminal-snapshot/a.go"),
+		})
+	}
+
+	got, err := store.LoadWorkspaceState(context.Background(), uri)
+	require.NoError(t, err)
+	assert.Equal(t, "ws", got.Name)
+	require.Len(t, got.Terminals, 1, "editor events must leave the terminal state untouched")
+	assert.Equal(t, "from-close", got.Terminals[0].Name)
+}
+
+// A crash skips the close-time snapshot, so the extension tabs must ride
+// along with the per-editor-event writes.
+func TestTrackerPersistsExtensionTabsOnEditorEvents(t *testing.T) {
+	store := New(newCountingStorage())
+	uri := mustURI(t, "memory:///track-extension-tabs")
+	tabs := []ExtensionTab{{
+		URI:      mustURI(t, "rune-agent://model/rolling-fox"),
+		WindowID: 2,
+	}}
+	tr := &tracker{
+		store: store,
+		uri:   uri,
+		snap:  stubSnapshotter{extensions: tabs},
+		ctx:   context.Background(),
+		files: make(map[string]File),
+	}
+	tr.Handle(context.Background(), textapi.Event{
+		Type: textapi.EventTypeOpen,
+		URI:  mustURI(t, "memory:///track-extension-tabs/a.go"),
+	})
+
+	got, err := store.LoadWorkspaceState(context.Background(), uri)
+	require.NoError(t, err)
+	assert.Equal(t, tabs, got.Extensions)
 }
