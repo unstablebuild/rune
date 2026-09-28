@@ -21,6 +21,7 @@ import (
 	"time"
 
 	compapi "github.com/unstablebuild/rune-go-sdk/component"
+	ebiten "github.com/hajimehoshi/ebiten/v2"
 	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
@@ -319,6 +320,8 @@ func (wm *WindowManager) Handle(ev term.Event) (exit bool, handled bool) {
 			wm.prevMouseLeftDrag = true
 			wm.prevMouseLeftChild = childAtMouse
 		}
+		
+		ebiten.SetCursorShape(wm.resizeCursorAt(mousePos))
 	}
 
 	var hexit bool
@@ -830,6 +833,61 @@ func (wm *WindowManager) applyWindowDrag(mouse term.Coordinates) {
 	// relayout so Width/Height reflect the new size immediately.
 	// MoveWindow is a no-op for tiles, which relayout on draw.
 	wm.comp.MoveWindow(win, term.Coordinates{X: newX, Y: newY})
+}
+
+// Return the ebiten CursorShape when the cursor is at the positions mentioned
+// in handleWindowFramePress. Currently handleWindowFramePress only handles
+// presses at positions 0, w-1, and h-1 -- a single cell. So this function
+// resets the cursor when it moves beyond that cell.
+func (wm *WindowManager) resizeCursorAt(mousePos term.Coordinates) ebiten.CursorShapeType {
+	childAtMouse, ok := wm.comp.WindowAt(mousePos)
+	if !ok || childAtMouse.Closed() {
+		return ebiten.CursorShapeDefault
+	}
+	
+	// Although tiled windows have frames, their resize area is on the outermost cell.
+	// So we pass `false` to contentBounds, as if the window doesn't have a frame.
+	// TODO same maxX, maxY for tiled as well as floating windows? - wrt the `frame bool` arg.
+	maxX, maxY := contentBounds(childAtMouse, false)
+	//maxX, maxY := contentBounds(childAtMouse, wm.config.Frame)
+	
+	if !childAtMouse.IsFloating() {
+		// Tiled windows currently resize from their right and bottom edges
+		// TODO handle left and top edges when implemented, and maybe support the
+		// 4-way moving arrow cursor `ebiten.CursorShapeMove`.
+		
+		// Note: We +1 and +2 instead of +0 and +1 as contentBounds returns w-1,h-1.
+		right := mousePos.X == maxX && mousePos.X < maxX+1
+		bottom := mousePos.Y == maxY && mousePos.Y < maxY+1
+		switch {
+		case right && bottom:
+			return ebiten.CursorShapeNWSEResize
+		case right:
+			return ebiten.CursorShapeEWResize
+		case bottom:
+			return ebiten.CursorShapeNSResize
+		default:
+			return ebiten.CursorShapeDefault
+		}
+	}
+	
+	// Note: We +1 and +2 instead of +0 and +1 as contentBounds returns w-1,h-1.
+	left := mousePos.X == 0 && mousePos.X < 1
+	right := mousePos.X == maxX && mousePos.X < maxX+1
+	top := mousePos.Y == 0 && mousePos.Y < 1
+	bottom := mousePos.Y == maxY && mousePos.Y < maxY+1
+	switch {
+	case (left && top) || (right && bottom):
+		return ebiten.CursorShapeNWSEResize
+	case (right && top) || (left && bottom):
+		return ebiten.CursorShapeNESWResize
+	case left || right:
+		return ebiten.CursorShapeEWResize
+	case top || bottom:
+		return ebiten.CursorShapeNSResize
+	default:
+		return ebiten.CursorShapeDefault
+	}
 }
 
 // handleWindowFramePress detects presses on a floating window's bar
