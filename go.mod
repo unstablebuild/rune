@@ -68,6 +68,7 @@ require (
 	github.com/go-text/typesetting v0.3.4
 	github.com/google/go-dap v0.12.0
 	github.com/pion/webrtc/v4 v4.2.20
+	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2
 	github.com/sergi/go-diff v1.4.0
 	github.com/tidwall/gjson v1.18.0
 	github.com/tidwall/sjson v1.2.5

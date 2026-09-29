@@ -1382,7 +1382,7 @@ func (h *aiEditorHandler) newChat(
 	prompter := &tuiPrompter{tx: tx, noti: h.n, status: syncComp}
 	askUser := agentools.NewAskUser(prompter)
 	requestSkill := agentools.NewRequestSkill(prompter)
-	exitPlan := agentools.NewExitPlan(h.plansDir, prompter)
+	exitPlan := agentools.NewExitPlan(h.plansDir, prompter, h.fs, h.o)
 	if h.generatePlanPath != nil {
 		exitPlan.GeneratePlanPath = h.generatePlanPath
 	}
