@@ -178,7 +178,7 @@ func NewAgentPhase(name, description, systemPrompt string,
 			if err != nil {
 				return fmt.Errorf("resolve cwd URI: %w", err)
 			}
-			tools, _ := agentools.DefaultTools(deps.FS, deps.Exec, cwd, deps.LSP, agentools.Config{}, configedit.NopConfig())
+			tools, _ := agentools.DefaultTools(deps.FS, deps.Exec, cwd, deps.LSP, deps.Parser, agentools.Config{}, configedit.NopConfig())
 			registry := agent.NewRegistry(tools...)
 			skillRegistry := skills.NewRegistry(deps.FS, cwd, nil, deps.Notifications)
 			store := newEphemeralStore()
@@ -562,7 +562,7 @@ func dreamDialogue(
 	if err != nil {
 		return fmt.Errorf("resolve cwd URI: %w", err)
 	}
-	tools, _ := agentools.DefaultTools(deps.FS, deps.Exec, cwd, deps.LSP, agentools.Config{}, configedit.NopConfig())
+	tools, _ := agentools.DefaultTools(deps.FS, deps.Exec, cwd, deps.LSP, deps.Parser, agentools.Config{}, configedit.NopConfig())
 	registry := agent.NewRegistry(tools...)
 	skillRegistry := skills.NewRegistry(deps.FS, cwd, nil, deps.Notifications)
 	store := newEphemeralStore()
@@ -848,7 +848,7 @@ func fixUpgradeCompat(ctx context.Context, ch chan<- Progress, deps Deps, fromVe
 		if err != nil {
 			return fmt.Errorf("resolve cwd URI: %w", err)
 		}
-		tools, _ := agentools.DefaultTools(deps.FS, deps.Exec, cwd, deps.LSP, agentools.Config{}, configedit.NopConfig())
+		tools, _ := agentools.DefaultTools(deps.FS, deps.Exec, cwd, deps.LSP, deps.Parser, agentools.Config{}, configedit.NopConfig())
 		reg := agent.NewRegistry(tools...)
 		skillReg := skills.NewRegistry(deps.FS, cwd, nil, deps.Notifications)
 		store := newEphemeralStore()

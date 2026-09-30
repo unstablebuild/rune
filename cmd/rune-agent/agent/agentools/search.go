@@ -26,6 +26,8 @@ import (
 
 	"github.com/unstablebuild/blue/iterator"
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
+	"github.com/unstablebuild/rune-go-sdk/api/semanticapi"
+	"github.com/unstablebuild/rune-go-sdk/api/syntaxapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"unstable.build/rune/cmd/rune-agent/agent"
 	"unstable.build/rune/internal/workspace/walkdir"
@@ -38,6 +40,8 @@ type searchTool struct {
 	cwd     workspaceapi.URI
 	tracker *FileTracker
 	filter  walkdir.Filter
+	lsp     semanticapi.LSP
+	parser  syntaxapi.Parser
 }
 
 type searchArgs struct {
@@ -46,8 +50,22 @@ type searchArgs struct {
 	Include string `json:"include"`
 }
 
-func newSearch(wfs workspaceapi.FileSystem, cwd workspaceapi.URI, tracker *FileTracker, filter walkdir.Filter) agent.Tool {
-	return &searchTool{fs: wfs, cwd: cwd, tracker: tracker, filter: filter}
+func newSearch(
+	wfs workspaceapi.FileSystem,
+	cwd workspaceapi.URI,
+	tracker *FileTracker,
+	filter walkdir.Filter,
+	lsp semanticapi.LSP,
+	parser syntaxapi.Parser,
+) agent.Tool {
+	return &searchTool{
+		fs:      wfs,
+		cwd:     cwd,
+		tracker: tracker,
+		filter:  filter,
+		lsp:     lsp,
+		parser:  parser,
+	}
 }
 
 func (t *searchTool) NeedsDeterministicOrder() bool { return false }
@@ -124,6 +142,24 @@ func (t *searchTool) Execute(ctx context.Context, arguments string) agent.ToolRe
 	re, err := regexp.Compile(args.Pattern)
 	if err != nil {
 		return agent.ToolResult{Content: fmt.Sprintf("error: invalid regex: %v", err), IsError: true}
+	}
+
+	if dotted, ok := resolveDottedReferences(ctx, t.parser, t.lsp, args.Pattern); ok {
+		blocks := make([]string, 0, len(dotted.locations))
+		var discovered []string
+		fileCache := make(map[string][]string)
+		for i := range dotted.locations {
+			refs := dotted.references[i]
+			blocks = append(blocks, formatReferences(t.fs, t.cwd, refs, fileCache))
+			limit := min(len(refs), maxSearchResults)
+			discovered = append(discovered, pathsFromLocations(refs[:limit])...)
+		}
+		if t.tracker != nil {
+			t.tracker.TrackDiscovery(ctx, dedupPaths(discovered))
+		}
+		rendered := renderMultiLocation(t.cwd, dotted.locations, blocks, dotted.truncated, len(dotted.locations))
+		note := fmt.Sprintf(symbolRedirectNote, args.Pattern)
+		return agent.ToolResult{Content: note + "\n\n" + rendered}
 	}
 
 	root := t.cwd.Path()

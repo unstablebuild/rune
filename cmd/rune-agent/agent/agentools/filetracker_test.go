@@ -241,7 +241,7 @@ func TestFindFiles_tracksDiscovery(t *testing.T) {
 func TestSearchContent_tracksDiscovery(t *testing.T) {
 	dir := setupWorkspace(t)
 	tracker := NewFileTracker()
-	searchTool := newSearch(localFS{root: dir}, dirURI(dir), tracker, nil)
+	searchTool := newSearch(localFS{root: dir}, dirURI(dir), tracker, nil, nil, nil)
 
 	ctx := agent.WithParentToolCallID(t.Context(), "search_1")
 	result := searchTool.Execute(ctx, `{"pattern":"hello"}`)

@@ -311,13 +311,12 @@ func newCommandEventHandler(
 	}
 
 	lsp := w.LSP(ctx)
+	parser := w.Parser(ctx)
 	cfg := configedit.NewConfig(fs, cwd, pconfig)
-	tools, tracker := agentools.DefaultTools(fs, executor, cwd, lsp, toolsCfg, cfg)
+	tools, tracker := agentools.DefaultTools(fs, executor, cwd, lsp, parser, toolsCfg, cfg)
 
 	fetcher := webfetch.NewHTTPFetcher(webfetch.DefaultConfig())
 	tools = append(tools, agentools.NewWebFetch(fetcher))
-
-	parser := w.Parser(ctx)
 	tools = append(tools, agentools.LSPTools(lsp, fs, parser, cwd, tracker)...)
 	tools = append(tools, agentools.SyntaxTools(parser, fs, cwd, tracker)...)
 
@@ -368,7 +367,7 @@ func newCommandEventHandler(
 	)
 	for _, provider := range []string{"openai", "codex"} {
 		ret.toolRegistry.RegisterReplacement(provider, "search_content",
-			agentools.NewGrepFiles(fs, cwd, tracker))
+			agentools.NewGrepFiles(fs, cwd, tracker, lsp, parser))
 		ret.toolRegistry.RegisterReplacement(provider, "bash",
 			agentools.NewExecCommand(ret.sessionMgr, cwd, cfg))
 		ret.toolRegistry.RegisterExclusions(provider, "compact")

@@ -487,7 +487,7 @@ func agentE2EHandler(t *testing.T, svc *llmtest.Service, workspaceDir string, ls
 
 	fs := testLocalFS{root: workspaceDir}
 	tools, tracker := agentools.DefaultTools(
-		fs, testLocalExec{}, cwd, lsp, agentools.Config{}, configedit.NopConfig(),
+		fs, testLocalExec{}, cwd, lsp, nil, agentools.Config{}, configedit.NopConfig(),
 	)
 	// LSP-backed tools (including check_file_errors) are only wired when
 	// the fixture installs an LSP; they share DefaultTools' tracker so
@@ -499,7 +499,7 @@ func agentE2EHandler(t *testing.T, svc *llmtest.Service, workspaceDir string, ls
 	// integration covers that path in production). RUNE-179 fixed the
 	// in-process grep_files implementation, so register it explicitly
 	// for this e2e fixture.
-	tools = append(tools, agentools.NewGrepFiles(fs, cwd, agentools.NewFileTracker()))
+	tools = append(tools, agentools.NewGrepFiles(fs, cwd, agentools.NewFileTracker(), lsp, nil))
 	registry := agent.NewRegistry(tools...)
 	skillReg := skills.NewRegistry(fs, cwd, nil, nil)
 	store := newMemDialogueStore()

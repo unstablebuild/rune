@@ -20,6 +20,7 @@ import (
 	"log/slog"
 
 	"github.com/unstablebuild/rune-go-sdk/api/semanticapi"
+	"github.com/unstablebuild/rune-go-sdk/api/syntaxapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"unstable.build/rune/cmd/rune-agent/agent"
 	"unstable.build/rune/cmd/rune-agent/agent/skills"
@@ -49,6 +50,7 @@ func DefaultTools(
 	exec workspaceapi.Executor,
 	cwd workspaceapi.URI,
 	lsp semanticapi.LSP,
+	parser syntaxapi.Parser,
 	toolsCfg Config,
 	cfg configedit.Config,
 ) ([]agent.Tool, *FileTracker) {
@@ -68,7 +70,7 @@ func DefaultTools(
 	return []agent.Tool{
 		newReadFile(fs, cwd, tracker, toolsCfg.MaxLineBytes),
 		newApplyPatch(fs, cwd, tracker, lsp),
-		newSearch(fs, cwd, tracker, ignore),
+		newSearch(fs, cwd, tracker, ignore, lsp, parser),
 		newFindFiles(fs, cwd, tracker, ignore),
 		newBash(exec, cwd, cfg),
 		newCompact(),
