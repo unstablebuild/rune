@@ -95,7 +95,7 @@ type bootstrapHandler struct {
 	chosenAltModifier gui.AltModifier
 	telemetryEnabled  bool
 	prompter          bootstrapPrompter
-	// goos overrides runtime.GOOS for the meta prompt; tests set it.
+	// goos overrides runtime.GOOS for the OS-specific prompts; tests set it.
 	goos          string
 	closingPreIDE bool
 	recent        *recentWorkspaces
@@ -901,13 +901,14 @@ var (
 		{Ch: 'y'}, {Ch: 'n'},
 	}
 	bootstrapAltModifierKeys = []term.KeyComb{
-		{Ch: 'l'}, {Ch: 'r'},
+		{Ch: 'r'}, {Ch: 'l'}, {Ch: 'n'},
 	}
 )
 
 const (
-	optAltLeft  = " left Alt "
-	optAltRight = " right Alt "
+	optAltLeft  = " left \u2325 "
+	optAltRight = " right \u2325 "
+	optAltNone  = " neither "
 )
 
 func (b *bootstrapHandler) openBootstrapFlow() {
@@ -979,25 +980,33 @@ func (b *bootstrapHandler) openVimPrompt() {
 					b.openMetaPrompt()
 					return
 				}
-				b.openAltModifierPrompt()
+				if b.hostOS() == "darwin" {
+					b.openAltModifierPrompt()
+					return
+				}
+				b.openTelemetryPrompt()
 			}),
 			guard.onClose(b.openVimPrompt),
 		),
 	)
 }
 
+// hostOS is the OS the OS-specific prompts are asked for.
+func (b *bootstrapHandler) hostOS() string {
+	if b.goos != "" {
+		return b.goos
+	}
+	return runtime.GOOS
+}
+
 // metaOptions returns the meanings of <meta> the chosen editor is offered
 // on this OS.
 func (b *bootstrapHandler) metaOptions() []keymeta.Meta {
-	goos := b.goos
-	if goos == "" {
-		goos = runtime.GOOS
-	}
 	mode := b.chosenEditor
 	if mode == editorModeless {
 		mode = editorStandard
 	}
-	return keymeta.Options(goos, mode)
+	return keymeta.Options(b.hostOS(), mode)
 }
 
 // metaOptionLabel is the prompt label of m, such as " ctrl+super ". Its
@@ -1041,7 +1050,7 @@ func (b *bootstrapHandler) openMetaPrompt() {
 						b.chosenMeta = m
 					}
 				}
-				b.openAltModifierPrompt()
+				b.openTelemetryPrompt()
 			}),
 			guard.onClose(b.openMetaPrompt),
 		),
@@ -1049,23 +1058,27 @@ func (b *bootstrapHandler) openMetaPrompt() {
 }
 
 func (b *bootstrapHandler) openAltModifierPrompt() {
-	msg := "## Choose your Alt key\n\n" +
-		"Many keyboard layouts type extra characters with Alt held — the key " +
-		"labelled Option on a Mac, and AltGr on layouts that use the right " +
-		"one. Rune can reserve a single Alt key for those characters while " +
-		"the other keeps triggering Alt shortcuts.\n\n" +
-		"**Which Alt key should type layout characters?**"
+	msg := "## Choose your Alt/Option (\u2325) key\n\n" +
+		"Many keyboard layouts type characters such as `|`, `@` or `{` with " +
+		"\u2325 held. Rune can reserve one \u2325 key for typing those " +
+		"characters while the other keeps triggering Alt shortcuts. Pick " +
+		"**neither** to keep both as shortcuts. You can change this any time " +
+		"with `gui.alt_modifier` in your config.\n\n" +
+		"**Which \u2325 key should type layout characters?**"
 	guard := b.promptGuard()
 	b.prompt(
 		msg,
-		[]string{optAltLeft, optAltRight},
+		[]string{optAltRight, optAltLeft, optAltNone},
 		bootstrapAltModifierKeys,
 		sdkhandler.FuncPromptHandler(
 			guard.onSelect(func(_ int, option string) {
-				if option == optAltLeft {
+				switch option {
+				case optAltLeft:
 					b.chosenAltModifier = gui.AltModifierLeft
-				} else {
+				case optAltRight:
 					b.chosenAltModifier = gui.AltModifierRight
+				default:
+					b.chosenAltModifier = gui.AltModifierNone
 				}
 				// The GUI predates this config, so tell it directly.
 				if b.setAltModifier != nil {

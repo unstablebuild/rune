@@ -10,6 +10,9 @@
 # ---------------------------------------------------------------------------
 gui:
   default_theme: romero
+  # The Option key that types layout characters, such as | or @, instead
+  # of Alt shortcuts: left, right or none.
+  alt_modifier: "[[.AltModifier]]"
 #   font_size: 13
 #   window_opacity: {fg: 1, bg: 1}
 #   window_blur_radius: 100

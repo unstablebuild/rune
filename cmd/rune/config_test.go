@@ -170,6 +170,7 @@ func TestGetGUIAltModifier(t *testing.T) {
 		{"none", config.MapConfig(map[string]any{"alt_modifier": "none"}), gui.AltModifierNone},
 		{"right", config.MapConfig(map[string]any{"alt_modifier": "right"}), gui.AltModifierRight},
 		{"left", config.MapConfig(map[string]any{"alt_modifier": "left"}), gui.AltModifierLeft},
+		{"case-insensitive", config.MapConfig(map[string]any{"alt_modifier": "Right"}), gui.AltModifierRight},
 	}
 
 	for _, tc := range cases {

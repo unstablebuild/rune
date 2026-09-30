@@ -200,8 +200,10 @@ func (i *input) processEvents(dst []term.Event) []term.Event {
 		}
 
 		mod := ebitenModToTermMod(mods)
-		// The reserved Alt key must not swallow the text it produced.
-		if i.selectedAltDown && mod&term.ModAlt != 0 && i.committedNormalText(ev.Source) {
+		// The reserved Alt key must not swallow the text it produced. The
+		// physical mask decides, since a remap renames the modifier but not
+		// the key the user holds.
+		if i.selectedAltDown && ev.Mods&ebiten.KeyModAlt != 0 && i.committedNormalText(ev.Source) {
 			continue
 		}
 
@@ -286,17 +288,18 @@ func (i *input) trackMeta(ev ebiten.InputEvent) {
 	}
 }
 
-// trackSelectedAlt tracks the reserved Alt key. An action without the Alt bit
-// resynchronizes a release the window never observed.
+// trackSelectedAlt tracks the reserved Alt key. Its own transition decides
+// directly, because X11 reports a modifier press with the mask from before
+// it; any other action without the Alt bit resynchronizes a release the
+// window never observed.
 func (i *input) trackSelectedAlt(ev ebiten.InputEvent) {
-	if ev.Mods&ebiten.KeyModAlt == 0 {
-		i.selectedAltDown = false
-		return
-	}
 	modifier := AltModifier(i.altModifier.Load())
-	if (modifier == AltModifierRight && ev.Key == ebiten.KeyAltRight) ||
-		(modifier == AltModifierLeft && ev.Key == ebiten.KeyAltLeft) {
+	switch {
+	case modifier == AltModifierRight && ev.Key == ebiten.KeyAltRight,
+		modifier == AltModifierLeft && ev.Key == ebiten.KeyAltLeft:
 		i.selectedAltDown = ev.Action != ebiten.KeyActionRelease
+	case ev.Mods&ebiten.KeyModAlt == 0:
+		i.selectedAltDown = false
 	}
 }
 

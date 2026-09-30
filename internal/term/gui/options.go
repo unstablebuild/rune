@@ -19,6 +19,7 @@ package gui
 import (
 	"fmt"
 	"net/url"
+	"strings"
 	"sync"
 
 	ebiten "github.com/hajimehoshi/ebiten/v2"
@@ -29,10 +30,15 @@ import (
 // Option allows configuring an instance of GUI.
 type Option func(g *GUI) error
 
-// AltModifier names the Alt key reserved for layout characters — Option on
-// macOS, AltGr elsewhere. The zero value reserves neither.
+// AltModifier names the Alt key whose chords type the character the keyboard
+// layout composes instead of triggering an Alt shortcut. It matters where the
+// platform reports that key as plain Alt, as macOS does for Option; AltGr,
+// which platforms report as Ctrl+Alt, types layout characters regardless. A
+// chord that commits no text stays a shortcut. The zero value reserves
+// neither key.
 type AltModifier uint8
 
+// AltModifier values, spelled in config by String.
 const (
 	AltModifierNone AltModifier = iota
 	AltModifierRight
@@ -50,9 +56,10 @@ func (m AltModifier) String() string {
 	return "none"
 }
 
-// ParseAltModifier resolves a config value; "" and "none" reserve neither.
+// ParseAltModifier resolves a config value, ignoring case; "" and "none"
+// reserve neither key.
 func ParseAltModifier(s string) (AltModifier, error) {
-	switch s {
+	switch strings.ToLower(s) {
 	case "", "none":
 		return AltModifierNone, nil
 	case "right":

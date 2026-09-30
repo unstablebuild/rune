@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"runtime"
 	"slices"
-	"strings"
 
 	"unstable.build/rune/internal/ide/idepreset"
 	"unstable.build/rune/internal/ide/keymeta"
@@ -47,11 +46,13 @@ func renderPreset(
 		return "", fmt.Errorf("meta key %s is not offered for %s on %s",
 			meta, mode, runtime.GOOS)
 	}
-	const guiSection = "gui:\n"
-	if !strings.Contains(body, guiSection) {
-		return "", fmt.Errorf("preset %q has no gui section", editor)
+	data := idepreset.Data{Meta: meta, Telemetry: telemetry}
+	switch {
+	case runtime.GOOS == "darwin":
+		data.AltModifier = altModifier.String()
+	case altModifier != gui.AltModifierNone:
+		return "", fmt.Errorf("alt modifier %s is not offered on %s",
+			altModifier, runtime.GOOS)
 	}
-	body = strings.Replace(body, guiSection,
-		fmt.Sprintf("%s  alt_modifier: %s\n", guiSection, altModifier), 1)
-	return idepreset.Render(body, idepreset.Data{Meta: meta, Telemetry: telemetry})
+	return idepreset.Render(body, data)
 }
