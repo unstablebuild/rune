@@ -101,22 +101,20 @@ func TestSetPipesClosesEarlierPipesOnFailure(t *testing.T) {
 		t.Run(tcase.desc, func(t *testing.T) {
 			var opened []*os.File
 			calls := 0
-			original := newPipe
-			t.Cleanup(func() { newPipe = original })
-			newPipe = func() (*os.File, *os.File, error) {
+			newPipe := func() (*os.File, *os.File, error) {
 				calls++
 				if calls == tcase.failingAt {
 					return nil, nil, syscall.EMFILE
 				}
-				r, w, err := original()
+				r, w, err := os.Pipe()
 				if err == nil {
 					opened = append(opened, r, w)
 				}
 				return r, w, err
 			}
 
-			_, _, _, _, err := (&scheme{}).setPipes(&workspaceapi.Cmd{})
-			require.ErrorContains(t, err, "too many open files")
+			_, _, _, _, err := setPipes(&workspaceapi.Cmd{}, newPipe)
+			require.ErrorIs(t, err, syscall.EMFILE)
 			require.Len(t, opened, 2*(tcase.failingAt-1))
 			for _, file := range opened {
 				assert.ErrorIs(t, file.Close(), os.ErrClosed)
@@ -1278,6 +1276,83 @@ func (e *hangingServerExecutor) Close() error {
 	e.closeOnce.Do(func() { close(e.done) })
 	return nil
 }
+
+// TestConnectSchemeReleasesRemoteWhenStartFails asserts that an attempt
+// failing before the remote serves closes the remote and every pipe handed to
+// its command. maintainConnection retries, so a leak here repeats per attempt.
+func TestConnectSchemeReleasesRemoteWhenStartFails(t *testing.T) {
+	tsuite := []struct {
+		desc       string
+		sessionErr error
+		startErr   error
+		wantPipes  int
+	}{
+		{"session fails", fmt.Errorf("session refused"), nil, 0},
+		{"command fails", nil, fmt.Errorf("exec refused"), 3},
+	}
+
+	for _, tcase := range tsuite {
+		t.Run(tcase.desc, func(t *testing.T) {
+			rem := &startFailingRemote{sessionErr: tcase.sessionErr, startErr: tcase.startErr}
+			s := new(scheme)
+			s.ctx, s.cancelCtx = context.WithCancel(context.Background())
+			defer s.cancelCtx()
+			s.cfg.skipPreflight = true
+			s.remoteFn = func(context.Context, sshConfig, workspaceapi.URI) (remote, error) {
+				return rem, nil
+			}
+			uri, err := workspaceapi.ParseURI("ssh://test@example.com/tmp")
+			require.NoError(t, err)
+
+			_, err = s.connectScheme(context.Background(), uri, func(error) {})
+			require.Error(t, err)
+			assert.True(t, rem.closed, "the remote must be closed")
+			require.Len(t, rem.pipes, tcase.wantPipes)
+			for _, file := range rem.pipes {
+				assert.ErrorIs(t, file.Close(), os.ErrClosed)
+			}
+		})
+	}
+}
+
+// startFailingRemote refuses a session, or the command started on it, and
+// records the pipe ends connectScheme handed to that command.
+type startFailingRemote struct {
+	sessionErr error
+	startErr   error
+	pipes      []*os.File
+	closed     bool
+}
+
+func (r *startFailingRemote) NewSession() (schemeapi.Executor, error) {
+	if r.sessionErr != nil {
+		return nil, r.sessionErr
+	}
+	return startFailingExecutor{remote: r}, nil
+}
+
+func (r *startFailingRemote) Close() error {
+	r.closed = true
+	return nil
+}
+
+type startFailingExecutor struct {
+	remote *startFailingRemote
+}
+
+func (e startFailingExecutor) StartCommand(
+	_ context.Context, cmd workspaceapi.Cmd,
+) (workspaceapi.Pid, error) {
+	for _, end := range []any{cmd.Stdout, cmd.Stderr, cmd.Stdin} {
+		if file, ok := end.(*os.File); ok {
+			e.remote.pipes = append(e.remote.pipes, file)
+		}
+	}
+	return 0, e.remote.startErr
+}
+
+func (startFailingExecutor) Signal(workspaceapi.Pid, syscall.Signal) error { return nil }
+func (startFailingExecutor) Close() error                                  { return nil }
 
 // TestStderrTailBounded asserts the tail retains only the most recent
 // stderrTailCap bytes so a chatty remote cannot grow it without bound.
