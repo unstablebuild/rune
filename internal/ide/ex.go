@@ -132,6 +132,7 @@ type ex struct {
 	// partition caches backend handles once resolved.
 	terminalStorage          storageapi.Service
 	workspaceURI             workspaceapi.URI
+	outOfRootTabs            *outOfRootWatcher
 	closed                   bool
 	home                     bool
 	reservoir                *vtereservoir.Facility
@@ -426,6 +427,8 @@ func (e *ex) init(
 	e.tasks.SetFrameAttr(e.config.FrameAttr)
 	e.tasks.SetFocusFrameAttr(e.config.FocusFrameAttr)
 	e.comp.SubscribeWindow(e.tasks)
+	e.outOfRootTabs = newOutOfRootWatcher(e, m, uri)
+	err = e.comp.SubscribeEvents(outOfRootTabEvents, e.outOfRootTabs)
 	return
 }
 
@@ -3087,6 +3090,7 @@ func (e *ex) Close() (ret error) {
 	if err := e.comp.Close(); err != nil {
 		ret = multierror.Append(ret, err)
 	}
+	e.outOfRootTabs.Close()
 	if e.reservoir != nil {
 		if err := e.reservoir.Close(); err != nil {
 			ret = multierror.Append(ret, err)
