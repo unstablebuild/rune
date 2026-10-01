@@ -83,8 +83,10 @@ type Component struct {
 	edSubscribers   map[textapi.EventType][]EventHandler
 	cmdSubscribers  map[string]commandAll
 	replSubscribers map[string]replCommandAll
+	openers         map[string]textapi.ResourceOpenHandler
 	editors         map[string]Handler
 	fileRegistry    FileCommandRegistry
+	pending         PendingTabs
 	streamingLoads  sync.WaitGroup
 }
 
@@ -258,12 +260,14 @@ func (c *Component) Init(
 	c.comp.SetInterrupter(browser.EventPublisherInterrupter(c))
 	c.comp.Subscribe((*handlerWindowSubscriber)(c))
 	c.fileRegistry = newFileCommandRegistryFromComponent(c)
+	c.pending = newPendingTabs(&c.comp, c.animateTabLoading)
 
 	c.ed = ed
 	c.workspace = w
 	c.edSubscribers = make(map[textapi.EventType][]EventHandler)
 	c.cmdSubscribers = make(map[string]commandAll)
 	c.replSubscribers = make(map[string]replCommandAll)
+	c.openers = make(map[string]textapi.ResourceOpenHandler)
 	c.editors = make(map[string]Handler)
 
 	// validate that config aliases are not recursive
@@ -1447,6 +1451,36 @@ func (c *Component) REPLCommands() (ret []textapi.CommandManual) {
 	return ret
 }
 
+// RegisterResourceOpener satisfies Editor.
+func (c *Component) RegisterResourceOpener(
+	scheme string, h textapi.ResourceOpenHandler,
+) error {
+	if _, ok := c.openers[scheme]; ok {
+		return errors.New("resource opener already registered")
+	}
+	c.openers[scheme] = h
+	return nil
+}
+
+// UnregisterResourceOpener satisfies Editor.
+func (c *Component) UnregisterResourceOpener(scheme string) error {
+	if _, ok := c.openers[scheme]; !ok {
+		return ErrResourceOpenerNotRegistered
+	}
+	delete(c.openers, scheme)
+	return nil
+}
+
+// ResourceOpener returns the opener registered for scheme. Callers must
+// invoke it without the editor lock held: an opener typically installs the
+// resource by calling back into the editor.
+func (c *Component) ResourceOpener(
+	scheme string,
+) (textapi.ResourceOpenHandler, bool) {
+	h, ok := c.openers[scheme]
+	return h, ok
+}
+
 // UnsubscribeCommand un-registers command.
 func (c *Component) UnsubscribeCommand(cmd string) error {
 	if _, ok := c.cmdSubscribers[cmd]; !ok {
@@ -1459,6 +1493,12 @@ func (c *Component) UnsubscribeCommand(cmd string) error {
 // Browser returns this Component's underlying browser.Component.
 func (c *Component) Browser() *browser.Component {
 	return &c.comp
+}
+
+// PendingTabs returns the tabs of this Component that wait for an
+// extension to open them.
+func (c *Component) PendingTabs() *PendingTabs {
+	return &c.pending
 }
 
 // Resize satisfies tui.Component.

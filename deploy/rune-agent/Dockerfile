@@ -14,7 +14,7 @@ ARG TARGETARCH
 # ---------------------------------------------------------------------------
 # build: cross-compile the rune-agent Go binary on $BUILDPLATFORM (no qemu),
 # ---------------------------------------------------------------------------
-FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS build
+FROM --platform=$BUILDPLATFORM golang:1.27.1-bookworm AS build
 
 ARG TARGETOS
 ARG TARGETARCH

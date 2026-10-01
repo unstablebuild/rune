@@ -172,6 +172,8 @@ func (e *HostKeyError) Error() string { return e.err.Error() }
 
 func (e *HostKeyError) Unwrap() error { return e.err }
 
+// sigMap holds the signals defined on every GOOS; platformSigMap adds the
+// ones syscall only exposes on some platforms.
 var sigMap = map[syscall.Signal]ssh.Signal{
 	syscall.SIGABRT: "ABRT",
 	syscall.SIGALRM: "ALRM",
@@ -184,8 +186,6 @@ var sigMap = map[syscall.Signal]ssh.Signal{
 	syscall.SIGQUIT: "QUIT",
 	syscall.SIGSEGV: "SEGV",
 	syscall.SIGTERM: "TERM",
-	syscall.SIGUSR1: "USR1",
-	syscall.SIGUSR2: "USR2",
 }
 
 // used to adapt ssh.Client to sshClient
@@ -566,6 +566,9 @@ func (s *goSshSession) StartCommand(ctx context.Context, cmd workspaceapi.Cmd) (
 
 func (s *goSshSession) Signal(_ workspaceapi.Pid, sig syscall.Signal) error {
 	signal, ok := sigMap[sig]
+	if !ok {
+		signal, ok = platformSigMap[sig]
+	}
 	if !ok {
 		return errors.New("unknown signal")
 	}

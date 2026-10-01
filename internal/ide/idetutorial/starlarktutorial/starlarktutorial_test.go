@@ -1214,10 +1214,10 @@ def run():
     notify(message="mode=" + editor_mode())
 tutorial(entry=run)
 `
-	tut, notis := newTutorialWith(t, src, "modal", nil)
+	tut, notis := newTutorialWith(t, src, "vim", nil)
 	resetAndWait(t, tut, time.Second)
 	waitFinished(t, tut, time.Second)
-	assert.True(t, notis.containsSubstring("mode=modal"),
+	assert.True(t, notis.containsSubstring("mode=vim"),
 		"editor_mode() must expand to the injected mode, got %v",
 		notis.renderedCalls())
 }

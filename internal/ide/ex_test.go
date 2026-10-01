@@ -24,6 +24,7 @@ import (
 	"io"
 	"io/fs"
 	"os/user"
+	"runtime"
 
 	"os"
 	"os/exec"
@@ -71,6 +72,7 @@ import (
 	"unstable.build/rune/internal/text/cmdenv"
 	"unstable.build/rune/internal/text/emacs"
 	"unstable.build/rune/internal/text/exoeditor"
+	"unstable.build/rune/internal/text/helix"
 	"unstable.build/rune/internal/text/registerset"
 	"unstable.build/rune/internal/text/standard"
 	"unstable.build/rune/internal/text/texttest"
@@ -2383,6 +2385,169 @@ func TestExSequencerModifierVsBarePrefix(t *testing.T) {
 	}
 }
 
+// TestExSequenceCompletesEditorPrefix covers a sequence whose first key
+// the editor consumes as the start of a pending command of its own, as
+// Helix's g, [ and ] menus do: the sequence fires when the editor
+// declines the second key.
+func TestExSequenceCompletesEditorPrefix(t *testing.T) {
+	const timeout = 20 * time.Millisecond
+	const longGap = 80 * time.Millisecond
+
+	g := term.KeyComb{Ch: 'g'}
+	d := term.KeyComb{Ch: 'd'}
+	j := term.KeyComb{Ch: 'j'}
+	bracket := term.KeyComb{Ch: ']'}
+	ctrlX := term.KeyComb{Ch: 'x', Mod: term.ModCtrl}
+	ctrlS := term.KeyComb{Ch: 's', Mod: term.ModCtrl}
+
+	sequences := map[thandler.Sequence][][]string{
+		{First: g, Last: d}:         {{"seqgd"}},
+		{First: bracket, Last: d}:   {{"seqbd"}},
+		{First: ctrlX, Last: ctrlS}: {{"seqctrls"}},
+	}
+	keyBindings := map[term.KeyComb][][]string{
+		{Ch: 'x'}: {{"keyx"}},
+	}
+
+	cases := []struct {
+		name           string
+		editorConsumes []term.KeyComb
+		keys           []term.KeyComb
+		gap            time.Duration
+		wantFired      []string
+		wantConsumed   []term.KeyComb
+	}{
+		{
+			name:           "editor declines the second key",
+			editorConsumes: []term.KeyComb{g},
+			keys:           []term.KeyComb{g, d},
+			wantFired:      []string{"seqgd"},
+			wantConsumed:   []term.KeyComb{g, d},
+		},
+		{
+			name:           "editor prefix outlasts the sequencer timeout",
+			editorConsumes: []term.KeyComb{g},
+			keys:           []term.KeyComb{g, d},
+			gap:            longGap,
+			wantFired:      []string{"seqgd"},
+		},
+		{
+			name:           "editor consumes the second key",
+			editorConsumes: []term.KeyComb{g, d},
+			keys:           []term.KeyComb{g, d},
+			wantFired:      nil,
+		},
+		{
+			name:           "declined bare key after an editor prefix opens no sequence",
+			editorConsumes: []term.KeyComb{g},
+			keys:           []term.KeyComb{g, bracket, d},
+			wantFired:      nil,
+			wantConsumed:   []term.KeyComb{g, bracket, d},
+		},
+		{
+			name:           "modifier sequence still opens after an editor prefix",
+			editorConsumes: []term.KeyComb{g},
+			keys:           []term.KeyComb{g, ctrlX, ctrlS},
+			wantFired:      []string{"seqctrls"},
+		},
+		{
+			name:           "declined key keeps its own binding after an editor prefix",
+			editorConsumes: []term.KeyComb{g},
+			keys:           []term.KeyComb{g, {Ch: 'x'}},
+			wantFired:      []string{"keyx"},
+		},
+		{
+			name:           "consumed key that opens no sequence leaves the sequencer alone",
+			editorConsumes: []term.KeyComb{j},
+			keys:           []term.KeyComb{j, bracket, d},
+			wantFired:      []string{"seqbd"},
+		},
+		{
+			name:           "intervening consumed key drops the editor prefix",
+			editorConsumes: []term.KeyComb{g, j},
+			keys:           []term.KeyComb{g, j, d},
+			wantFired:      nil,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newExSequencerHarness(t, sequences, keyBindings, tc.editorConsumes, timeout)
+			for i, k := range tc.keys {
+				if i > 0 && tc.gap > 0 {
+					time.Sleep(tc.gap)
+				}
+				h.ex.Handle(term.Event{
+					Type: term.EventKey, Mod: k.Mod, Key: k.Key, Ch: k.Ch,
+				})
+			}
+			time.Sleep(timeout + reissuePadding + 20*time.Millisecond)
+			assert.Equal(t, tc.wantFired, nonEmpty(h.firedCommands()))
+			if tc.wantConsumed != nil {
+				assert.Equal(t, tc.wantConsumed, h.editorConsumed())
+			}
+		})
+	}
+}
+
+// TestExHelixSequencesAfterEditorMenus drives the real helix editor: its
+// g and ] menus consume the first key, so the sequence must fire from the
+// declined second key, and a key those menus decline must not be
+// re-issued later as a fresh menu.
+func TestExHelixSequencesAfterEditorMenus(t *testing.T) {
+	const timeout = 20 * time.Millisecond
+	sequences := map[thandler.Sequence][][]string{
+		{First: term.KeyComb{Ch: 'g'}, Last: term.KeyComb{Ch: 'd'}}: {{"seqgd"}},
+		{First: term.KeyComb{Ch: ']'}, Last: term.KeyComb{Ch: 'd'}}: {{"seqbd"}},
+	}
+
+	cases := []struct {
+		name      string
+		keys      string
+		wantFired []string
+		wantAt    term.Coordinates
+		wantText  string
+	}{
+		{name: "gd", keys: "gd", wantFired: []string{"seqgd"}},
+		{name: "]d", keys: "]d", wantFired: []string{"seqbd"}},
+		// gg at the top moves nothing and the editor declines it; the
+		// following l must still be a plain move right, not gl.
+		{name: "gg at the top", keys: "ggl", wantAt: term.Coordinates{X: 1}},
+		// ]] is no bracket command: l must not land in a bracket menu.
+		{name: "]]", keys: "]]l", wantAt: term.Coordinates{X: 1}},
+		{name: "insert mode types the prefix", keys: "igd",
+			wantAt: term.Coordinates{X: 2}, wantText: "gdhello world\nsecond line"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newExSequencerHarness(t, sequences, nil, nil, timeout)
+			resource, err := workspaceapi.ParseURI("file:///helix-sequences.go")
+			require.NoError(t, err)
+			buf := new(cell.Buffer)
+			buf.Init()
+			buf.WriteString("hello world\nsecond line")
+			ed := helix.New(buf, resource)
+			ed.Resize(40, 10)
+			require.NoError(t, h.ex.invokeWindow().SetContent(ed))
+
+			for i, ch := range tc.keys {
+				if i == len(tc.keys)-1 {
+					// Outlast any re-issue timer before the last key.
+					time.Sleep(timeout + reissuePadding + 20*time.Millisecond)
+				}
+				h.ex.Handle(term.Event{Type: term.EventKey, Ch: ch})
+			}
+			time.Sleep(timeout + reissuePadding + 20*time.Millisecond)
+			assert.Equal(t, tc.wantFired, nonEmpty(h.firedCommands()))
+			assert.Equal(t, tc.wantAt, ed.CursorAtScroll())
+			if tc.wantText != "" {
+				assert.Equal(t, tc.wantText, buf.String())
+			}
+		})
+	}
+}
+
 func TestExStandardNavigationPrecedesLayoutBindings(t *testing.T) {
 	metaLeft := term.KeyComb{Key: term.KeyArrowLeft, Mod: term.ModMeta}
 	shiftMetaRight := term.KeyComb{Key: term.KeyArrowRight, Mod: term.ModShiftMeta}
@@ -2400,7 +2565,8 @@ func TestExStandardNavigationPrecedesLayoutBindings(t *testing.T) {
 	buf := new(cell.Buffer)
 	buf.Init()
 	buf.WriteString("  first line\nlast line")
-	ed := standard.NewHandler(buf, resource, text.IndentRuneTab, 0)
+	ed := standard.NewHandler(buf, resource, text.IndentRuneTab, 0,
+		standard.WithKeymap(standard.KeymapMacOS))
 	ed.Resize(40, 10)
 	require.True(t, ed.SetCursorAtScroll(term.Coordinates{X: 7}))
 	require.NoError(t, h.ex.invokeWindow().SetContent(ed))
@@ -2425,6 +2591,39 @@ func TestExStandardNavigationPrecedesLayoutBindings(t *testing.T) {
 		Type: term.EventKey, Key: layoutUp.Key, Mod: layoutUp.Mod,
 	})
 	require.Equal(t, []string{"layoutfocus"}, h.firedCommands())
+}
+
+// TestExStandardLinuxMetaReachesCommandLayer pins that on Linux the standard
+// editor claims no <meta> chord, so a preset binding on one fires even while
+// the editor has focus.
+func TestExStandardLinuxMetaReachesCommandLayer(t *testing.T) {
+	metaLeft := term.KeyComb{Key: term.KeyArrowLeft, Mod: term.ModMeta}
+	metaL := term.KeyComb{Ch: 'l', Mod: term.ModMeta}
+
+	h := newExSequencerHarness(t, nil,
+		map[term.KeyComb][][]string{
+			metaLeft: {{"layoutresize"}},
+			metaL:    {{"layoutfocus"}},
+		}, nil, 20*time.Millisecond)
+
+	resource, err := workspaceapi.ParseURI("file:///standard-linux-meta.go")
+	require.NoError(t, err)
+	buf := new(cell.Buffer)
+	buf.Init()
+	buf.WriteString("  first line\nlast line")
+	ed := standard.NewHandler(buf, resource, text.IndentRuneTab, 0,
+		standard.WithKeymap(standard.KeymapLinux))
+	ed.Resize(40, 10)
+	require.True(t, ed.SetCursorAtScroll(term.Coordinates{X: 7}))
+	require.NoError(t, h.ex.invokeWindow().SetContent(ed))
+
+	for _, key := range []term.KeyComb{metaLeft, metaL} {
+		_, _ = h.ex.Handle(term.Event{Type: term.EventKey, Key: key.Key, Mod: key.Mod, Ch: key.Ch})
+	}
+	require.Equal(t, []string{"layoutresize", "layoutfocus"}, h.firedCommands())
+	require.Equal(t, term.Coordinates{X: 7}, ed.CursorAtScroll())
+	_, selected := ed.Selection()
+	require.False(t, selected)
 }
 
 func TestExStandardAltLayoutBindingsReachCommandLayer(t *testing.T) {
@@ -2616,10 +2815,10 @@ func TestExEmacsLifecycleBindingsReachCommandLayerFromTerminal(t *testing.T) {
 		src: string(runeStar), modal: true, tui: false,
 	})
 	require.NoError(t, err)
-	overlay, err := os.ReadFile("../../cmd/rune/preset_emacs.yaml")
+	overlay, err := os.ReadFile("../../cmd/rune/preset_emacs_darwin.yaml")
 	require.NoError(t, err)
 	cfg, err := decodeOverlayConfigFile(
-		bytes.NewReader(overlay), "preset_emacs.yaml", base)
+		bytes.NewReader(overlay), "preset_emacs_darwin.yaml", base)
 	require.NoError(t, err)
 	mappings := (&ideConfig{cfg: cfg, errors: map[string]error{}}).commandKeyMappings()
 
@@ -3444,6 +3643,7 @@ func testPromptEditor() command.Editor {
 		tabspaces:        4,
 		scheduleNextTick: func(fn func()) bool { fn(); return true },
 		clipboard:        clipboard.NewInMemory(),
+		goos:             runtime.GOOS,
 	}
 }
 
@@ -8388,6 +8588,14 @@ func (v *testVte) URI() workspaceapi.URI {
 
 func (v *testVte) Title() string {
 	return v.title
+}
+
+func (v *testVte) ExitErr() error {
+	return nil
+}
+
+func (v *testVte) CursorAtScroll() term.Coordinates {
+	return v.cursor
 }
 
 func newExForTestingTasks(t *testing.T) (testEx, *sync.Mutex, func()) {

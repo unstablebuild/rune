@@ -23,7 +23,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -38,6 +37,7 @@ import (
 	"unstable.build/rune/internal/cell"
 	"unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/debug"
+	"unstable.build/rune/internal/procattr"
 	"unstable.build/rune/internal/term/vte/vteparser"
 	"unstable.build/rune/internal/text"
 )
@@ -76,6 +76,12 @@ type Component struct {
 	// minutes or hours away.
 	spawnErrored atomic.Bool
 	pid          atomic.Int64
+	// exitCh receives the exit status of the process, alongside any
+	// Config.Watcher. It holds the one value so the executor never
+	// blocks on a terminal that stopped waiting for it.
+	exitCh chan error
+	// exitErr is the status Run collected from exitCh. Guarded by mu.
+	exitErr error
 	// slaveClosed makes the parent-side slave close idempotent:
 	// startCommand closes it after a successful spawn and Close
 	// closes it on teardown paths where no spawn succeeded.
@@ -140,6 +146,7 @@ func (t *Component) Init(
 	t.version.Store(1)
 
 	t.ctx, t.cancelCtx = context.WithCancel(context.Background())
+	t.exitCh = make(chan error, 1)
 	err := t.createPty(cfg.CommandAndArgs)
 	if err != nil {
 		return err
@@ -198,9 +205,42 @@ func (t *Component) Run(publisher browser.EventPublisher) error {
 	t.mu.Unlock()
 	err := t.run(publisher)
 	if t.pid.Load() != 0 {
+		t.awaitExitStatus()
 		_ = t.cfg.ScheduleNextTick(func() { t.tm.OnTabExit(t.uri) })
 	}
 	return err
+}
+
+// exitStatusTimeout bounds how long a terminal whose pty closed waits
+// for its process' exit status, which a process that outlives its pty
+// does not report in time.
+const exitStatusTimeout = 2 * time.Second
+
+// awaitExitStatus collects the exit status after the pty closed: the
+// executor reports it independently, so it may still be in flight.
+func (t *Component) awaitExitStatus() {
+	timer := time.NewTimer(exitStatusTimeout)
+	defer timer.Stop()
+	select {
+	case err := <-t.exitCh:
+		t.mu.Lock()
+		t.exitErr = err
+		t.mu.Unlock()
+	case <-timer.C:
+		t.log(log.DebugLevel, "exit status did not arrive within %v", exitStatusTimeout)
+	case <-t.ctx.Done():
+	}
+}
+
+// ExitErr returns the error the process exited with. It is nil while
+// the process runs, when it exited cleanly, when its status did not
+// arrive shortly after the pty closed, or when the command never
+// started. It is final by the time the TabManager's OnTabExit is
+// called.
+func (t *Component) ExitErr() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.exitErr
 }
 
 // Title returns the Title of this Component.
@@ -294,39 +334,28 @@ func (t *Component) ModeBracketedPaste() bool {
 	return t.parserHandler.modeBracketedPaste
 }
 
-// MouseModeReportMouseClicks returns whether PrivateMode 1000 (MouseModeVT200) is set.
-func (t *Component) MouseModeReportMouseClicks() bool {
+// mouseModes resolves the mouse modes the program has set. The modes
+// are kept as independent flags, so the most capable one set wins.
+func (t *Component) mouseModes() (m mouseModes) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.parserHandler.modeReportMouseClicks
-}
-
-// MouseModeReportCellMouseMotion returns whether PrivateMode 1002 (MouseModeButtonEvent) is set.
-func (t *Component) MouseModeReportCellMouseMotion() bool {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.parserHandler.modeReportCellMouseMotion
-}
-
-// MouseModeReportAllMouseMotion returns whether PrivateMode 1003 (MouseModeAnyEvent) is set.
-func (t *Component) MouseModeReportAllMouseMotion() bool {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.parserHandler.modeReportAllMouseMotion
-}
-
-// MouseModeUtf8Mouse returns whether PrivateMode 1005 (MouseExtUTF) is set.
-func (t *Component) MouseModeUtf8Mouse() bool {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.parserHandler.modeUtf8Mouse
-}
-
-// MouseModeSgrMouse returns whether PrivateMode 1006 (MouseExtSGR) is set.
-func (t *Component) MouseModeSgrMouse() bool {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.parserHandler.modeSgrMouse
+	p := t.parserHandler
+	switch {
+	case p.modeReportAllMouseMotion:
+		m.tracking = mouseTrackingAny
+	case p.modeReportCellMouseMotion:
+		m.tracking = mouseTrackingButton
+	case p.modeReportMouseClicks:
+		m.tracking = mouseTrackingClick
+	}
+	switch {
+	case p.modeSgrMouse:
+		m.encoding = mouseEncodingSGR
+	case p.modeUtf8Mouse:
+		m.encoding = mouseEncodingUTF8
+	}
+	m.alternateScroll = p.useAlt && p.modeAlternateScroll
+	return m
 }
 
 // CursorVisible returns whether the cursor should be rendered or not.
@@ -461,6 +490,15 @@ func (t *Component) scrollY() int {
 	return t.scroll.Offset().Y
 }
 
+// screenHeight returns the number of rows the terminal window shows, the
+// range of window coordinates such as mouse positions. Unlike Height it
+// excludes the scrollback.
+func (t *Component) screenHeight() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.height
+}
+
 // MaxScrollOffset returns the current vertical scroll offset.
 func (t *Component) MaxScrollOffset() int {
 	t.mu.Lock()
@@ -526,21 +564,46 @@ func (t *Component) Draw(w term.Writer) {
 	t.drawLocked(w)
 }
 
-// drawLocked paints the active buffer and selection to w. The caller
-// must hold t.mu.
+// drawLocked paints the active buffer, selection and graphics to w. The
+// caller must hold t.mu.
 func (t *Component) drawLocked(w term.Writer) {
+	screen := w
+	if t.parserHandler.modeReverseScreen {
+		screen = reverseScreenWriter{w}
+		// Without default attributes the buffers skip cells no program
+		// has written, which would otherwise stay in normal video.
+		blank := term.NewCell(0, 1, t.scroll.Attributes)
+		for y := range t.height {
+			for x := range t.width {
+				screen.SetCell(term.Coordinates{X: x, Y: y}, blank)
+			}
+		}
+	}
 	scrolledBy := 0
 	if t.parserHandler.useAlt {
-		t.parserHandler.sync.altBuf.Draw(w)
+		t.parserHandler.sync.altBuf.Draw(screen)
 	} else if t.scroll.Offset().Y == 0 {
-		t.parserHandler.sync.primBuf.Draw(w)
+		t.parserHandler.sync.primBuf.Draw(screen)
 	} else {
-		t.scroll.Draw(w)
+		t.scroll.Draw(screen)
 		scrolledBy = t.scroll.Offset().Y
 	}
-	t.drawGraphicsLocked(w, scrolledBy)
-
+	// The selection belongs to the cell layer, which cells written after
+	// a placement would cover.
 	t.drawSelection(w)
+	t.drawGraphicsLocked(screen, scrolledBy)
+}
+
+// reverseScreenWriter draws DECSCNM by toggling rather than setting
+// reverse video, so a cell already in SGR 7 shows in normal video as in
+// kitty and xterm.
+type reverseScreenWriter struct {
+	term.Writer
+}
+
+func (w reverseScreenWriter) SetCell(pos term.Coordinates, c term.Cell) {
+	c.Attrs ^= term.AttrReverse
+	w.Writer.SetCell(pos, c)
 }
 
 // drawGraphicsLocked overlays the kitty graphics placements and keeps
@@ -666,6 +729,11 @@ func (t *Component) Selection() (data string, ok bool) {
 
 // OnFocusChange allows clients to report whether this vte.Component is on focus or not.
 func (t *Component) OnFocusChange(inFocus bool) error {
+	// Closing a tab releases the master before the browser unfocuses it,
+	// so there is no program left to report to.
+	if t.closed.Load() {
+		return nil
+	}
 	t.mu.Lock()
 	cmd, ok := t.parserHandler.onFocusChange(inFocus)
 	t.mu.Unlock()
@@ -1030,11 +1098,11 @@ func (t *Component) startCommand(ctx context.Context, cmdAndArgsStr string) erro
 	}
 	t.log(log.DebugLevel, "creating pty with cmdAndArgs: %#v", cmdAndArgs)
 	cmd := workspaceapi.Cmd{
-		SysProcAttr: &syscall.SysProcAttr{
-			Setsid:  true,
-			Setctty: true,
-		},
-		Watcher: t.watcher,
+		SysProcAttr: procattr.NewSession(true, true),
+		Watcher:     workspaceapi.ChanProcessWatcher(t.exitCh),
+	}
+	if t.watcher != nil {
+		cmd.Watcher = workspaceapi.MultiProcessWatcher(t.watcher, cmd.Watcher)
 	}
 	cmd.Env = appendDefaultTerminalEnv(cmd.Env)
 	// When the user hasn't configured a CommandAndArgs, leave

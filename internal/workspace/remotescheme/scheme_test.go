@@ -272,9 +272,11 @@ func TestRemoteScheme(t *testing.T) {
 			_ = scheme.Close()
 		})
 
-		// Wait for connect to land.
 		mock.EXPECT().Close().Return(nil).AnyTimes()
 		closeHook := <-hookCh
+		// The hook is handed out before connect returns; firing it
+		// earlier would be overwritten by the connection landing.
+		require.NoError(t, scheme.(*remoteScheme).WaitConnected(ctx))
 
 		// Fire the close hook with a nil error (mirrors a clean
 		// remote process exit). State must still surface a typed

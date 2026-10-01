@@ -60,18 +60,44 @@ wrap it) works by:
 
 1. building `deploy/rune-linux/Dockerfile` with `docker buildx`
 2. running the Go toolchain on `$BUILDPLATFORM`
-3. passing `GIT_SSH_KEY` as a build arg so the private Go modules resolve
-4. installing the target-arch Linux cross compiler and development headers
-5. cross-compiling `./cmd/rune` to `linux/$TARGETARCH` with
+3. installing the target-arch Linux cross compiler and development headers
+4. cross-compiling `./cmd/rune` to `linux/$TARGETARCH` with
    `rpath=$ORIGIN/../lib` so the binary finds its bundled libraries
-6. copying each NEEDED shared library (and their transitive deps) into
+5. copying each NEEDED shared library (and their transitive deps) into
    `rune.app/lib/`, following symlinks so every file is a real ELF object
-7. packaging `rune.app/` into a `ustar` `.tar.gz` inside the Linux container
+6. packaging `rune.app/` into a `ustar` `.tar.gz` inside the Linux container
    so host-specific metadata such as macOS xattrs cannot enter the archive
-8. exporting both the `rune.app/` directory and `.tar.gz` from the final
+7. exporting both the `rune.app/` directory and `.tar.gz` from the final
    scratch stage
 
 ## Build commands
+
+For local development on Linux, build and install without Docker:
+
+```bash
+make rune-app-linux       # detect the host arch; build the bundle and tarball
+make rune-install-linux   # build, then install under ~/.local (no sudo)
+```
+
+The bundle is built at `target/rune_linux_<arch>/rune.app`. Installation
+replaces `~/.local/rune.app`, links `~/.local/bin/rune` to its executable,
+and installs the desktop entry and icons under `~/.local/share`. Add
+`~/.local/bin` to your `PATH` for CLI use; the desktop launcher does not
+require it. Existing Rune configuration is left untouched.
+
+Override the installation location with an absolute prefix:
+
+```bash
+make rune-install-linux PREFIX=/absolute/path/to/prefix
+```
+
+Native builds require Go, GCC, binutils (`objdump`), and the development
+libraries required by the GUI build installed on the host. They inherit
+the host's glibc requirement and are intended for local use, not portable
+releases. Neither target publishes a release or uses Docker.
+
+To exercise the installer and target wiring without building Rune or
+touching your installation, run `sh deploy/rune-linux/install-test.sh`.
 
 Cross-compile for `linux/amd64` (default):
 
@@ -105,7 +131,9 @@ make rune-release-linux-amd64-native
 make rune-release-linux-arm64-native
 ```
 
-To build, package, and publish as a GitHub release asset:
+Pushing a `v*` tag runs the Release workflow
+(`.github/workflows/release.yml`), which drafts the GitHub release and
+attaches both prod tarballs. To build and attach them by hand instead:
 
 ```bash
 # Production (unstablebuild/rune, prod API endpoints baked in)

@@ -73,6 +73,14 @@ func (m *mockHost) InvokeCommand(name string, args []string, repl bool, timeout 
 	return m.record("invoke_command", name, args, repl, timeout)
 }
 
+func (m *mockHost) ExpectResourceOpener(scheme string, timeout time.Duration) error {
+	return m.record("expect_resource_opener", scheme, timeout)
+}
+
+func (m *mockHost) OpenResource(scheme, uri string, timeout time.Duration) error {
+	return m.record("open_resource", scheme, uri, timeout)
+}
+
 func (m *mockHost) PublishEvent(evType, uri, content string) error {
 	return m.record("publish_event", evType, uri, content)
 }
@@ -214,6 +222,23 @@ func TestSpecRunInvokeByName(t *testing.T) {
 		host.calls[0].args)
 }
 
+func TestSpecRunResourceOpener(t *testing.T) {
+	t.Parallel()
+
+	src := `
+o = expect_resource_opener("fake", timeout = "3s")
+open_resource(o, "fake://host/a")
+open_resource(o, uri = "fake://host/b", timeout = "2s")
+`
+	host := &mockHost{}
+	require.NoError(t, runSpec(t, src, host))
+	assert.Equal(t, []hostCall{
+		{name: "expect_resource_opener", args: []any{"fake", 3 * time.Second}},
+		{name: "open_resource", args: []any{"fake", "fake://host/a", 7 * time.Second}},
+		{name: "open_resource", args: []any{"fake", "fake://host/b", 2 * time.Second}},
+	}, host.calls)
+}
+
 func TestSpecRunErrors(t *testing.T) {
 	t.Parallel()
 
@@ -296,6 +321,21 @@ func TestSpecRunErrors(t *testing.T) {
 			name:    "unknown event type is host error",
 			src:     `publish_event("open")`,
 			wantErr: "publish_event failed",
+		},
+		{
+			name:    "expect_resource_opener with empty scheme",
+			src:     `expect_resource_opener("")`,
+			wantErr: "scheme must not be empty",
+		},
+		{
+			name:    "open_resource with a scheme instead of a handle",
+			src:     `open_resource("fake", "fake://host/a")`,
+			wantErr: "must be a handle from expect_resource_opener",
+		},
+		{
+			name:    "open_resource without uri",
+			src:     "o = expect_resource_opener(\"fake\")\nopen_resource(o)",
+			wantErr: "missing argument for uri",
 		},
 	}
 	for _, tc := range cases {

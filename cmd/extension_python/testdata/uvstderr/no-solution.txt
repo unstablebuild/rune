@@ -1,0 +1,4 @@
+  × No solution found when resolving dependencies:
+  ╰─▶ Because nonexistentpkg-zzz was not found in the package registry and you
+      require nonexistentpkg-zzz==1.0, we can conclude that your requirements
+      are unsatisfiable.

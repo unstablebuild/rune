@@ -196,10 +196,10 @@ func TestConsistentUpdate(t *testing.T) {
 			err := storageapi.ConsistentUpdate(ctx, svc, "counter", &c, strategy,
 				func() ([]storageapi.Update, []storageapi.Precondition) {
 					return []storageapi.Update{
-							{FieldPath: []string{"Version"}, Value: c.Version + 1},
-						}, []storageapi.Precondition{
-							{FieldPath: []string{"Version"}, Value: c.Version},
-						}
+						{FieldPath: []string{"Version"}, Value: c.Version + 1},
+					}, []storageapi.Precondition{
+						{FieldPath: []string{"Version"}, Value: c.Version},
+					}
 				})
 			assert.NoError(t, err)
 		})

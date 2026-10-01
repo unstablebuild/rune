@@ -1627,6 +1627,201 @@ workspace:
 	}
 }
 
+// TestE2EDollarPaths reproduces GitHub #137 through the real IDE and
+// command prompt: a file or workspace directory whose name contains
+// "$" must resolve to itself. Before the fix "a/$x" resolved to its
+// parent "a/", so :edit read and wrote the wrong file and
+// :workspaceopen rooted the workspace at the parent directory. Typed
+// commands expand $VAR, so the literal "$" is typed with the
+// documented "$$" escape, and <tab> completion must insert it too.
+func TestE2EDollarPaths(t *testing.T) {
+	type dollarIDE struct {
+		sendKeys    func(string)
+		focusedPath func() string
+		slotPaths   func() []string
+		// complete lists the prompt's candidates for arg of cmd.
+		complete func(cmd, arg string) []string
+	}
+	// start boots the IDE with cwd as its boot workspace and home as
+	// the home workspace, which resolves bare :workspaceopen paths.
+	// Both are file workspaces, as in the reported setup.
+	start := func(t *testing.T, cwd, home string) dollarIDE {
+		t.Helper()
+		dataDir := t.TempDir()
+		configPath := filepath.Join(dataDir, "rune.yaml")
+		require.NoError(t, os.WriteFile(configPath, fmt.Appendf(nil, `
+editor:
+  mode: modal
+command:
+  key: "<c-\\\\>"
+workspace:
+  auto_restore: false
+  home: %q
+`, home), 0o666))
+
+		mu := new(sync.Mutex)
+		scheduleNextTick, drainSchedule := newTestScheduler(t, mu)
+		i, err := New(cwd, configPath, dataDir, pkgtrust.NewStore(dataDir, nil),
+			newTestStorage(t, dataDir),
+			WithLocker(mu),
+			WithScheduleNextTick(scheduleNextTick),
+			WithExtensionsRunner(FuncExtensionsRunner(testRunnerFn)),
+			WithPublishEvent(func(term.Event) bool { return true }),
+		)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = i.Close() })
+
+		root := i.Ready()
+		mu.Lock()
+		root.Resize(80, 24)
+		mu.Unlock()
+		drainSchedule()
+		i.WaitWorkspaces()
+
+		sendKeys := func(seq string) {
+			t.Helper()
+			keys, err := term.ParseKeys(seq)
+			require.NoError(t, err)
+			for _, k := range keys {
+				mu.Lock()
+				// Complete on the test goroutine so <tab> accepts
+				// a settled candidate list.
+				i.workspaceHandler.focusEx().syncCommandPrompt = true
+				root.Handle(term.Event{
+					Type: term.EventKey, Ch: k.Ch, Mod: k.Mod, Key: k.Key,
+				})
+				mu.Unlock()
+				i.WaitInflight()
+			}
+			i.WaitWorkspaces()
+		}
+		focusedPath := func() string {
+			mu.Lock()
+			defer mu.Unlock()
+			win, _ := i.workspaceHandler.focusEx().comp.Focus()
+			if win == nil {
+				return ""
+			}
+			content, err := win.Content()
+			if err != nil {
+				return ""
+			}
+			tab, ok := content.(*browser.Tab)
+			if !ok {
+				return ""
+			}
+			return tab.URI().Path()
+		}
+		slotPaths := func() []string {
+			mu.Lock()
+			defer mu.Unlock()
+			var paths []string
+			for _, w := range i.workspaceHandler.workspaces {
+				if w != nil {
+					paths = append(paths, w.uri.Path())
+				}
+			}
+			return paths
+		}
+		complete := func(cmd, arg string) []string {
+			t.Helper()
+			mu.Lock()
+			it, _, err := i.workspaceHandler.focusEx().comp.CompleteCommand(
+				t.Context(), textapi.Command{Name: cmd, Args: []string{arg}})
+			mu.Unlock()
+			require.NoError(t, err)
+			defer func() { _ = it.Close() }()
+			got, err := sdkiterator.ToSlice(t.Context(), it)
+			require.NoError(t, err)
+			return got
+		}
+		return dollarIDE{sendKeys, focusedPath, slotPaths, complete}
+	}
+	tempDir := func(t *testing.T) string {
+		t.Helper()
+		dir, err := filepath.EvalSymlinks(t.TempDir())
+		require.NoError(t, err)
+		return dir
+	}
+
+	t.Run("edit a file under a dollar directory", func(t *testing.T) {
+		ws := tempDir(t)
+		file := filepath.Join(ws, "a", "$x", "f")
+		require.NoError(t, os.MkdirAll(filepath.Dir(file), 0o755))
+		require.NoError(t, os.WriteFile(file, []byte("original\n"), 0o644))
+		require.NoError(t, os.WriteFile(
+			filepath.Join(ws, "a", "g.txt"), []byte("sibling\n"), 0o644))
+
+		ide := start(t, ws, tempDir(t))
+		ide.sendKeys("<c-\\\\>edit<space>a/$$x/f<enter>")
+		require.Equal(t, file, ide.focusedPath())
+		ide.sendKeys("iabc<esc><c-\\\\>write<enter>")
+
+		data, err := os.ReadFile(file)
+		require.NoError(t, err)
+		assert.Equal(t, "abcoriginal\n", string(data))
+		assert.NoFileExists(t, filepath.Join(ws, "a", "f"),
+			"a/$x must not resolve to its parent a/")
+	})
+
+	t.Run("workspaceopen a dollar directory", func(t *testing.T) {
+		home := tempDir(t)
+		ws := filepath.Join(home, "$ws")
+		file := filepath.Join(ws, "f")
+		require.NoError(t, os.MkdirAll(ws, 0o755))
+		require.NoError(t, os.WriteFile(file, []byte("original\n"), 0o644))
+
+		ide := start(t, "", home)
+		ide.sendKeys("<c-\\\\>workspaceopen<space>$$ws<enter>")
+		require.Equal(t, []string{ws}, ide.slotPaths())
+		ide.sendKeys("<c-\\\\>edit<space>f<enter>")
+		require.Equal(t, file, ide.focusedPath())
+		ide.sendKeys("iabc<esc><c-\\\\>write<enter>")
+
+		data, err := os.ReadFile(file)
+		require.NoError(t, err)
+		assert.Equal(t, "abcoriginal\n", string(data))
+		assert.NoFileExists(t, filepath.Join(home, "f"),
+			"$ws must not resolve to its parent directory")
+	})
+
+	t.Run("tab completes a file under a dollar directory", func(t *testing.T) {
+		ws := tempDir(t)
+		file := filepath.Join(ws, "a", "$x", "f")
+		require.NoError(t, os.MkdirAll(filepath.Dir(file), 0o755))
+		require.NoError(t, os.WriteFile(file, []byte("original\n"), 0o644))
+		require.NoError(t, os.WriteFile(
+			filepath.Join(ws, "a", "g.txt"), []byte("sibling\n"), 0o644))
+
+		ide := start(t, ws, tempDir(t))
+		candidates := ide.complete("edit", "")
+		assert.Contains(t, candidates, "a/$$x/f")
+		assert.NotContains(t, candidates, "a/$x/f")
+
+		// "f" matches only a/$x/f, so <tab> accepts it.
+		ide.sendKeys("<c-\\\\>edit<space>f<tab><enter>")
+		require.Equal(t, file, ide.focusedPath())
+	})
+
+	t.Run("tab completes a dollar workspace directory", func(t *testing.T) {
+		// The dollar directories sit under a/ so that, if the escape
+		// regresses, "a/$x" resolves to the harmless parent a/.
+		home := tempDir(t)
+		ws := filepath.Join(home, "a", "$x", "$y")
+		require.NoError(t, os.MkdirAll(ws, 0o755))
+
+		ide := start(t, "", home)
+		candidates := ide.complete("workspaceopen", "a/")
+		assert.Contains(t, candidates, "a/$$x/")
+		assert.NotContains(t, candidates, "a/$x/")
+
+		// Each <tab> accepts the only matching directory and descends
+		// into it, so the last two must resolve the typed "$$".
+		ide.sendKeys("<c-\\\\>workspaceopen<space>a<tab>x<tab>y<tab><enter>")
+		require.Equal(t, []string{ws}, ide.slotPaths())
+	})
+}
+
 func TestE2EClipboardPasteIntoNoEchoTerminalRead(t *testing.T) {
 	dir := t.TempDir()
 	dataDir := t.TempDir()
@@ -2577,8 +2772,8 @@ func (r testRunner) WaitReady(ctx context.Context, id string) error {
 // guard against exoeditor.New panics when the user's config selects
 // `editor.mode = "exo"` but does not supply both required fields
 // (`editor.exo.command` containing {file}, and `editor.exo.goto`).
-// validateExo rewrites the mode back to "modal" so the IDE boots
-// with the built-in modal editor; this test asserts that the
+// validateExo rewrites the mode back to "vim" so the IDE boots
+// with the built-in vim editor; this test asserts that the
 // rewrite actually happens at the config layer so the workspace
 // handler never reaches exoeditor.New on a misconfigured input.
 //
@@ -2658,7 +2853,7 @@ func TestIDEExoMisconfigurationFallsBackToDefault(t *testing.T) {
 			// the post-load ideConfig before any workspace
 			// handler reaches exoeditor.New. init() must not panic
 			// for any of these inputs: validateExo rewrites
-			// the mode back to "modal" before the workspace
+			// the mode back to "vim" before the workspace
 			// handler instantiates the editor.
 			i := new(IDE)
 			require.NotPanics(t, func() {
@@ -2680,9 +2875,9 @@ func TestIDEExoMisconfigurationFallsBackToDefault(t *testing.T) {
 				"after validateExo, editor.mode must not "+
 					"remain exo; got %q",
 				i.ideConfig.editorMode())
-			assert.Equal(t, "modal", i.ideConfig.editorMode(),
+			assert.Equal(t, "vim", i.ideConfig.editorMode(),
 				"validateExo falls back to the safe "+
-					"default mode (modal); a different "+
+					"default mode (vim); a different "+
 					"value means the validator regressed "+
 					"or a new code path skipped the "+
 					"rewrite")
@@ -2694,7 +2889,7 @@ func TestIDEExoMisconfigurationFallsBackToDefault(t *testing.T) {
 
 // TestIDEExoWellFormedConfigDoesNotFallBack guards against an
 // over-eager validateExo that would rewrite legitimate exo
-// configurations back to "modal". This is the positive
+// configurations back to "vim". This is the positive
 // counterexample to TestIDEExoMisconfigurationFallsBackToDefault.
 func TestIDEExoWellFormedConfigDoesNotFallBack(t *testing.T) {
 	configFile, _ := makeTestFiles(t)
@@ -3559,17 +3754,17 @@ func TestCommandPromptKeyBindingHintsIntegration(t *testing.T) {
 
 	// pin the test to the shipped default: the modal preset must keep
 	// binding <alt-enter> to the windowconverttab prompt prefill.
-	preset, err := os.ReadFile("../../cmd/rune/preset_modal.yaml")
+	preset, err := os.ReadFile("../../cmd/rune/preset_modal_darwin.yaml")
 	require.NoError(t, err)
 	presetCfg, err := decodeOverlayConfigFile(
-		bytes.NewReader(preset), "preset_modal.yaml", map[string]any{})
+		bytes.NewReader(preset), "preset_modal_darwin.yaml", map[string]any{})
 	require.NoError(t, err)
 	presetCmd, ok := presetCfg["command"].(map[string]any)
-	require.True(t, ok, "preset_modal.yaml: missing `command` section")
+	require.True(t, ok, "preset_modal_darwin.yaml: missing `command` section")
 	presetBindings, ok := presetCmd["key_bindings"].(map[string]any)
-	require.True(t, ok, "preset_modal.yaml: missing `command.key_bindings`")
+	require.True(t, ok, "preset_modal_darwin.yaml: missing `command.key_bindings`")
 	echoBody, ok := presetBindings[echoKey].(string)
-	require.Truef(t, ok, "preset_modal.yaml: missing %q key binding", echoKey)
+	require.Truef(t, ok, "preset_modal_darwin.yaml: missing %q key binding", echoKey)
 	require.Equal(t, "echo {prompt}windowconverttab<space>", echoBody)
 
 	cfg := defaultConfigWithWrap(false)

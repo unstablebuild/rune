@@ -33,7 +33,7 @@ Example startup report:
   "InstallIDErr": "",
   "SID": "ad560109-289a-45e3-bf74-e581ca3cc101",
   "Version": "v0.8.2",
-  "EditorMode": "modal",
+  "EditorMode": "vim",
   "SystemArquitecture": "x86_64",
   "SystemOS": "linux",
   "SystemName": "nua",
@@ -48,7 +48,7 @@ Example startup report:
 | Reset flag | Whether the install identifier appears to have been reset. See [Your install identifier](#your-install-identifier). |
 | Session identifier | A random identifier generated fresh on every launch. |
 | Rune version | The version of the running build. |
-| Editor mode | `modal`, `standard`, `emacs`, or `exo`. |
+| Editor mode | `vim`, `helix`, `standard`, `emacs`, or `exo`. |
 | Operating system | For example `darwin` or `linux`. |
 | Architecture | For example `arm64` or `x86_64`. |
 | Kernel release and version | The kernel strings your operating system reports. |
@@ -66,7 +66,7 @@ Example usage report:
 {
   "Type": "ClientUsage",
   "SID": "ad560109-289a-45e3-bf74-e581ca3cc101",
-  "EditorMode": "modal",
+  "EditorMode": "vim",
   "Opened": 14,
   "Closed": 11,
   "Edited": 58,
@@ -84,7 +84,7 @@ Example usage report:
 | Field | Value |
 | --- | --- |
 | Session identifier | The same per-launch identifier as above. |
-| Editor mode | `modal`, `standard`, `emacs`, or `exo`. |
+| Editor mode | `vim`, `helix`, `standard`, `emacs`, or `exo`. |
 | Files opened, closed, edited, saved | Four counts. Counts only, never which files. |
 | Watched file changes | How many files changed on disk under a language server's watch. |
 | Commands run | How many commands you ran. |

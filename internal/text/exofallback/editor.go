@@ -194,5 +194,18 @@ func (e *Editor) UnregisterREPLCommand(name string) error {
 	return e.fallback.UnregisterREPLCommand(name)
 }
 
+// RegisterResourceOpener forwards to the fallback only. See
+// SubscribeCommand for the rationale.
+func (e *Editor) RegisterResourceOpener(
+	scheme string, h textapi.ResourceOpenHandler,
+) error {
+	return e.fallback.RegisterResourceOpener(scheme, h)
+}
+
+// UnregisterResourceOpener forwards to the fallback only.
+func (e *Editor) UnregisterResourceOpener(scheme string) error {
+	return e.fallback.UnregisterResourceOpener(scheme)
+}
+
 // compile-time check
 var _ text.Editor = (*Editor)(nil)

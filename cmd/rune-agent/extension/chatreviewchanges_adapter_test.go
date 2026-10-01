@@ -128,6 +128,16 @@ func (e *countingEditor) UnregisterREPLCommand(name string) error {
 	return e.ed.UnregisterREPLCommand(name)
 }
 
+func (e *countingEditor) RegisterResourceOpener(
+	scheme string, h textapi.ResourceOpenHandler,
+) error {
+	return e.ed.RegisterResourceOpener(scheme, h)
+}
+
+func (e *countingEditor) UnregisterResourceOpener(scheme string) error {
+	return e.ed.UnregisterResourceOpener(scheme)
+}
+
 func (e *countingEditor) IsExternal() bool { return e.ed.IsExternal() }
 
 type countingHandler struct {

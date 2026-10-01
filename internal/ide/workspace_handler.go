@@ -89,6 +89,7 @@ import (
 	"unstable.build/rune/internal/text/emacs"
 	"unstable.build/rune/internal/text/exoeditor"
 	"unstable.build/rune/internal/text/exofallback"
+	"unstable.build/rune/internal/text/helix"
 	"unstable.build/rune/internal/text/standard"
 	"unstable.build/rune/internal/text/textrpc"
 	"unstable.build/rune/internal/text/vi"
@@ -329,8 +330,10 @@ func (h *workspaceManagerHandler) newEditor(
 	terminal schemeapi.Terminal, cfg ideConfig, svc vctrl.Service,
 ) (text.Editor, error) {
 	switch cfg.editorMode() {
-	case editorModeModal:
+	case editorModeVim:
 		return h.newBuiltinModalEditor(cwd, cfg, svc), nil
+	case editorModeHelix:
+		return h.newBuiltinHelixEditor(cwd, cfg, svc), nil
 	case editorModeStandard:
 		return h.newBuiltinStandardEditor(cwd, cfg, svc), nil
 	case editorModeEmacs:
@@ -350,16 +353,16 @@ func (h *workspaceManagerHandler) newBuiltinModalEditor(
 	iconsBarConfig := cfg.iconsBarConfig(h)
 	statusBarConfig := cfg.statusBarConfig(cwd, h, svc)
 	viOpts := append([]vi.Option{},
-		vi.WithResAttr(cfg.modalResultAttr()),
-		vi.WithBarAttr(cfg.modalMessageBarAttr()),
-		vi.WithMessageBarLayout(cfg.modalMessageBarLayout()),
+		vi.WithResAttr(cfg.vimResultAttr()),
+		vi.WithBarAttr(cfg.vimMessageBarAttr()),
+		vi.WithMessageBarLayout(cfg.vimMessageBarLayout()),
 		vi.WithTabspaces(cfg.editorTabspaces()),
 		vi.WithIndents(cfg.editorIndents()),
 		vi.WithRuler(cfg.editorRuler()),
 		vi.WithAutoPair(cfg.editorAutoPair()),
 		vi.WithComments(cfg.editorComments()),
 		vi.WithScheduleNextTick(cfg.scheduleNextTick),
-		vi.WithAttr(cfg.modalAttr()),
+		vi.WithAttr(cfg.vimAttr()),
 		vi.WithAuxiliaryBar(cfg.auxiliaryBarEnabled(), auxBarConfig),
 		vi.WithIconsBar(cfg.iconsBarEnabled(), iconsBarConfig),
 		vi.WithGitIcons(cfg.gitIconsEnabled()),
@@ -374,6 +377,38 @@ func (h *workspaceManagerHandler) newBuiltinModalEditor(
 		vi.WithNotifications(h.notifications.current()),
 	)
 	return vi.Editor(viOpts...)
+}
+
+func (h *workspaceManagerHandler) newBuiltinHelixEditor(
+	cwd workspaceapi.URI, cfg ideConfig, svc vctrl.Service,
+) text.Editor {
+	auxBarConfig := cfg.auxiliaryBarConfig(h, svc)
+	iconsBarConfig := cfg.iconsBarConfig(h)
+	statusBarConfig := cfg.statusBarConfig(cwd, h, svc)
+	return helix.Editor(
+		helix.WithResAttr(cfg.helixResultAttr()),
+		helix.WithBarAttr(cfg.helixMessageBarAttr()),
+		helix.WithMessageBarLayout(cfg.helixMessageBarLayout()),
+		helix.WithTabspaces(cfg.editorTabspaces()),
+		helix.WithIndents(cfg.editorIndents()),
+		helix.WithRuler(cfg.editorRuler()),
+		helix.WithAutoPair(cfg.editorAutoPair()),
+		helix.WithComments(cfg.editorComments()),
+		helix.WithScheduleNextTick(cfg.scheduleNextTick),
+		helix.WithAttr(cfg.helixAttr()),
+		helix.WithAuxiliaryBar(cfg.auxiliaryBarEnabled(), auxBarConfig),
+		helix.WithIconsBar(cfg.iconsBarEnabled(), iconsBarConfig),
+		helix.WithGitIcons(cfg.gitIconsEnabled()),
+		helix.WithStatusBarConfig(cfg.statusBarEnabled(), statusBarConfig),
+		helix.WithHideInitialFolds(cfg.initialFolds()),
+		helix.WithClipboard(h.clip),
+		helix.WithMacroRecorder(h.macro),
+		helix.WithMacroPlayer(h.macroPlayer),
+		helix.WithWorkspaceCommandRegistry(cwd, h),
+		helix.WithAutoCenter(true),
+		// See newBuiltinModalEditor for why we route notifications.
+		helix.WithNotifications(h.notifications.current()),
+	)
 }
 
 func (h *workspaceManagerHandler) newBuiltinStandardEditor(
@@ -449,6 +484,8 @@ func (h *workspaceManagerHandler) newExoFallbackEditor(
 ) text.Editor {
 	var fallback text.Editor
 	switch cfg.exoFallback() {
+	case editorFallbackHelix:
+		fallback = h.newBuiltinHelixEditor(cwd, cfg, svc)
 	case editorFallbackStandard:
 		fallback = h.newBuiltinStandardEditor(cwd, cfg, svc)
 	case editorFallbackEmacs:
@@ -490,6 +527,7 @@ func (h *workspaceManagerHandler) newPromptEditor(
 			scheduleNextTick: cfg.scheduleNextTick,
 			clipboard:        h.clip,
 			autoPair:         cfg.editorAutoPair(),
+			goos:             cfg.hostOS(),
 		}
 	case editorModeEmacs:
 		return emacsPromptEditor{
@@ -499,8 +537,16 @@ func (h *workspaceManagerHandler) newPromptEditor(
 			clipboard:        h.clip,
 			autoPair:         cfg.editorAutoPair(),
 		}
-	case editorModeModal:
+	case editorModeVim:
 		return viPromptEditor{
+			tabspaces:        cfg.editorTabspaces(),
+			indents:          cfg.editorIndents(),
+			scheduleNextTick: cfg.scheduleNextTick,
+			clipboard:        h.clip,
+			autoPair:         cfg.editorAutoPair(),
+		}
+	case editorModeHelix:
+		return helixPromptEditor{
 			tabspaces:        cfg.editorTabspaces(),
 			indents:          cfg.editorIndents(),
 			scheduleNextTick: cfg.scheduleNextTick,
@@ -518,11 +564,13 @@ type standardPromptEditor struct {
 	scheduleNextTick func(func()) bool
 	clipboard        clipboard.Register
 	autoPair         bool
+	// goos picks the keymap, as the buffer editor's default does.
+	goos string
 }
 
 func (m standardPromptEditor) Edit(buf *cell.Buffer) command.EditHandler {
 	uri := workspaceapi.RandomURI("memory")
-	return standard.NewHandler(buf, uri, text.IndentRuneTab, m.tabspaces,
+	opts := []standard.Option{
 		standard.WithCommandBar(false),
 		standard.WithTabspaces(m.tabspaces),
 		standard.WithIndents(m.indents),
@@ -530,7 +578,13 @@ func (m standardPromptEditor) Edit(buf *cell.Buffer) command.EditHandler {
 		standard.WithClipboard(m.clipboard),
 		standard.WithAutoPair(m.autoPair),
 		standard.WithWrap(false),
-	)
+	}
+	keymap := standard.KeymapLinux
+	if m.goos == "darwin" {
+		keymap = standard.KeymapMacOS
+	}
+	return standard.NewHandler(buf, uri, text.IndentRuneTab, m.tabspaces,
+		append(opts, standard.WithKeymap(keymap))...)
 }
 
 type emacsPromptEditor struct {
@@ -571,6 +625,26 @@ func (v viPromptEditor) Edit(buf *cell.Buffer) command.EditHandler {
 		vi.WithClipboard(v.clipboard),
 		vi.WithAutoPair(v.autoPair),
 		vi.WithWrap(false),
+	)
+}
+
+type helixPromptEditor struct {
+	tabspaces        int
+	indents          text.IndentConfig
+	scheduleNextTick func(func()) bool
+	clipboard        clipboard.Register
+	autoPair         bool
+}
+
+func (p helixPromptEditor) Edit(buf *cell.Buffer) command.EditHandler {
+	uri := workspaceapi.RandomURI("memory")
+	return helix.NewWithIndent(buf, uri, text.IndentRuneTab, p.tabspaces,
+		helix.WithTabspaces(p.tabspaces),
+		helix.WithIndents(p.indents),
+		helix.WithScheduleNextTick(p.scheduleNextTick),
+		helix.WithClipboard(p.clipboard),
+		helix.WithAutoPair(p.autoPair),
+		helix.WithWrap(false),
 	)
 }
 
@@ -701,8 +775,9 @@ func (h *workspaceManagerHandler) init(
 		vctrl.NopService(),
 		h.newPromptEditor(cfg), h.commandObserver, h.debugCommands,
 		cfg.commandPromptCfg(),
-		cfg.pkgEditorMode() == editorModeModal,
+		modalEditorMode(cfg.pkgEditorMode()),
 		cfg.editorMode(),
+		cfg.metaKey(),
 		cfg.editorAutoSave(),
 		cfg.consoleCfg(),
 		globalOpts...)
@@ -1491,17 +1566,16 @@ func (h *workspaceManagerHandler) textOpts(
 		text.WithEnvSource(h.envSource),
 		text.WithStreamingOpen(h.streamingOpen),
 	}
+	return append(ret, commandBindingOpts(cfg)...)
+}
 
-	for seq, cmd := range cfg.commandKeyMappings() {
-		if seq.Last != (term.KeyComb{}) {
-			ret = append(ret, text.WithCommandSequenceBinding(seq, cmd))
-		} else {
-			ret = append(ret, text.WithCommandKeyBinding(seq.First, cmd))
-		}
-	}
-
-	if cfg.editorMode() == editorModeModal {
-		for seq, cmd := range vi.KeyBindings() {
+// commandBindingOpts binds cfg's command key bindings, then the bindings
+// the configured editor brings with its own grammar, which win on the
+// same keys.
+func commandBindingOpts(cfg ideConfig) []text.Option {
+	var ret []text.Option
+	add := func(bindings map[handler.Sequence][][]string) {
+		for seq, cmd := range bindings {
 			if seq.Last != (term.KeyComb{}) {
 				ret = append(ret, text.WithCommandSequenceBinding(seq, cmd))
 			} else {
@@ -1509,7 +1583,13 @@ func (h *workspaceManagerHandler) textOpts(
 			}
 		}
 	}
-
+	add(cfg.commandKeyMappings())
+	switch cfg.editorMode() {
+	case editorModeVim:
+		add(vi.KeyBindings())
+	case editorModeHelix:
+		add(helix.KeyBindings())
+	}
 	return ret
 }
 
@@ -1860,8 +1940,9 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 		vctrlService,
 		h.newPromptEditor(cfg), h.commandObserver, h.debugCommands,
 		cfg.commandPromptCfg(),
-		cfg.pkgEditorMode() == editorModeModal,
+		modalEditorMode(cfg.pkgEditorMode()),
 		cfg.editorMode(),
+		cfg.metaKey(),
 		cfg.editorAutoSave(),
 		cfg.consoleCfg(),
 		textOpts...)
@@ -2477,11 +2558,16 @@ func (h *workspaceManagerHandler) restorePreviousSession(
 	layout := state.Layout
 	layout.Floating = nil
 	restoreTerminals := len(state.Terminals) > 0
+	restoreExtensions := len(state.Extensions) > 0
 	windows := h.restoreWorkspaceWindows(ex, state.Files, restoreTerminals,
-		layout, state.HasLayout)
+		restoreExtensions, layout, state.HasLayout)
 	if restoreTerminals {
 		ret = multierror.Append(ret,
 			restoreOpenTerminalSessions(ex, state.Terminals, windows))
+	}
+	if restoreExtensions {
+		ret = multierror.Append(ret,
+			h.restoreExtensionTabs(ex, state.Extensions, windows))
 	}
 	if len(state.Tasks) > 0 {
 		ret = multierror.Append(ret,
@@ -2506,19 +2592,56 @@ func (h *workspaceManagerHandler) restoreWorkspaceWindows(
 	ex *ex,
 	files []idehistory.File,
 	restoreTerminals bool,
+	restoreExtensions bool,
 	layout tcomponent.TileLayout,
 	hasLayout bool,
 ) map[uint64]browser.Window {
 	if !hasLayout {
 		return nil
 	}
-	if len(files) == 0 && !restoreTerminals {
+	if len(files) == 0 && !restoreTerminals && !restoreExtensions {
 		return nil
 	}
 	return ex.comp.Browser().RestoreTileLayout(layout, func(windowID uint64) browserapi.Handler {
 		return nil
 	})
 }
+
+// restoreExtensionTabs reopens each tab as a placeholder, in the window
+// its WindowID maps to when that window was restored and in the tab bar
+// otherwise. The extension owning the tab's scheme replaces the
+// placeholder once it registers its resource opener (see
+// pendingTabOpener), or right away if it already has.
+func (h *workspaceManagerHandler) restoreExtensionTabs(
+	ex *ex, tabs []idehistory.ExtensionTab, windows map[uint64]browser.Window,
+) error {
+	ret := new(multierror.Error)
+	schemes := make(map[string]struct{})
+	for _, tab := range tabs {
+		schemes[tab.URI.Scheme()] = struct{}{}
+		t := ex.comp.PendingTabs().Open(tab.URI, tab.Icon, tab.Name)
+		win, ok := windows[tab.WindowID]
+		if !ok {
+			continue
+		}
+		if err := win.SetContent(t); err != nil &&
+			!errors.Is(err, browserapi.ErrTabNotFree) {
+			ret = multierror.Append(ret,
+				fmt.Errorf("restore extension tab %s: %w", tab.URI, err))
+			continue
+		}
+		if tab.Focus {
+			ex.comp.Browser().SetFocus(win)
+		}
+	}
+	for scheme := range schemes {
+		if _, ok := ex.comp.ResourceOpener(scheme); ok {
+			ex.pendingTabs.reopenAsync(scheme)
+		}
+	}
+	return ret.ErrorOrNil()
+}
+
 func (h *workspaceManagerHandler) nextAvailableWorkspace() (idx int, ok bool) {
 	for i := h.focus; i >= 0 && i < len(h.workspaces); i++ {
 		if h.slotIsFree(i) {
@@ -3148,13 +3271,22 @@ func (h *workspaceManagerHandler) workspaceActive(slot int) bool {
 	return w != nil && w.ex != nil && w.ex.comp.HasActiveTabs()
 }
 
+// workspaceShaded reports whether the workspace in slot runs the bar's
+// active-tab effect. A pending notification takes precedence: the
+// effect would wash out or repaint its colour, hiding that the
+// workspace needs the user rather than just being busy.
+func (h *workspaceManagerHandler) workspaceShaded(slot int) bool {
+	return h.workspaceActive(slot) &&
+		h.workspaces[slot].attentionAttr == (term.Attributes{})
+}
+
 // activeWorkspaceBarIndices returns the workspace bar indices of the
 // workspaces with at least one active tab, whether or not they are in
-// focus.
+// focus. Workspaces with a pending notification are excluded.
 func (h *workspaceManagerHandler) activeWorkspaceBarIndices() []int {
 	var ret []int
 	for idx, slot := range h.barIdxToSlot {
-		if h.workspaceActive(slot) {
+		if h.workspaceShaded(slot) {
 			ret = append(ret, idx)
 		}
 	}
@@ -3162,8 +3294,9 @@ func (h *workspaceManagerHandler) activeWorkspaceBarIndices() []int {
 }
 
 // refreshWorkspaceActivity runs the workspace bar's active-tab effect
-// while the bar is shown and any workspace has an active tab. It must
-// be called on the host event loop whenever either can change.
+// while the bar is shown and any workspace without a pending
+// notification has an active tab. It must be called on the host event
+// loop whenever any of these can change.
 func (h *workspaceManagerHandler) refreshWorkspaceActivity() {
 	if h.shadedBar == nil {
 		// initTabs has not run yet; it refreshes once the bar exists.
@@ -3171,7 +3304,7 @@ func (h *workspaceManagerHandler) refreshWorkspaceActivity() {
 	}
 	anyActive := false
 	for slot := range h.workspaces {
-		if h.workspaceActive(slot) {
+		if h.workspaceShaded(slot) {
 			anyActive = true
 			break
 		}

@@ -302,6 +302,18 @@ func (s *Selection) CursorRequiresInput() bool {
 	return s.options[s.cursor].RequiresInput
 }
 
+// CursorLabel returns the label of the option under the cursor,
+// regardless of check state. Unlike Selected(), which in multi-select
+// mode returns only the checked labels, this always identifies the
+// option the cursor is currently on — the one StartPromptInput is
+// about to collect free text for.
+func (s *Selection) CursorLabel() string {
+	if len(s.options) == 0 {
+		return ""
+	}
+	return s.options[s.cursor].Label
+}
+
 const descIndent = 6
 
 // wrappedLines returns the number of lines needed to render text

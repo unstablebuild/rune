@@ -1116,7 +1116,7 @@ func loadLanguage(
 func compileQuery(lang *sitter.Language, query string) (*sitter.Query, error) {
 	q, qerr := sitter.NewQuery(lang, query)
 	if qerr != nil {
-		return nil, fmt.Errorf("invalid query: %w", qerr)
+		return nil, fmt.Errorf("invalid query: %w", *qerr)
 	}
 	return q, nil
 }

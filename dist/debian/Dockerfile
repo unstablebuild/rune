@@ -23,7 +23,7 @@ FROM ${BASE_IMAGE} AS build
 # Keep in sync with go.mod's go directive. bullseye's golang-go is far
 # too old, so the toolchain comes from the official tarball; it links
 # only a low glibc and runs fine here.
-ARG GO_VERSION=1.26.6
+ARG GO_VERSION=1.27.1
 ARG TARGETARCH
 # Computed on the host, where git metadata is available: this build
 # context excludes .git (a git worktree's .git is a file pointing

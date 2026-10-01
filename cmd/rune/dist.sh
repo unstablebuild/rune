@@ -103,13 +103,9 @@ if ! command -v gh >/dev/null 2>&1; then
 	exit 1
 fi
 
-# Each arch publishes independently, so the release may already exist from
-# a sibling dist-* run. Create it once, then upload into it.
-if ! gh release view "$GIT_TAG" --repo "$RELEASE_REPO" >/dev/null 2>&1; then
-	echo "Creating release ${GIT_TAG} in ${RELEASE_REPO} ..."
-	gh release create "$GIT_TAG" --repo "$RELEASE_REPO" \
-		--title "$GIT_TAG" --generate-notes
-fi
+# Each arch publishes independently, so the draft may already exist from the
+# Release workflow or a sibling dist-* run.
+RELEASE_REPO="$RELEASE_REPO" "$(dirname "${BASH_SOURCE[0]}")/draft-release.sh"
 
 stage_dir="$(mktemp -d "${TMPDIR:-/tmp}/rune-dist-XXXXXX")"
 cp "$BLUE_RELEASE_TAR" "${stage_dir}/${asset}"

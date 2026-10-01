@@ -27,6 +27,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"unstable.build/rune/internal/handler/handlertest"
 	"unstable.build/rune/internal/term/vte"
 	"unstable.build/rune/internal/term/vte/vtereservoir"
 	"unstable.build/rune/internal/text/texttest"
@@ -376,7 +377,8 @@ func TestTabNameAliaser(t *testing.T) {
 
 	newAliaser := func() (*tabNameAliaser, *recordingTabManager) {
 		rec := &recordingTabManager{names: map[string]string{}}
-		return newTabNameAliaser(rec), rec
+		inline := func(fn func()) bool { fn(); return true }
+		return newTabNameAliaser(rec, inline), rec
 	}
 
 	t.Run("no alias passes the URI through", func(t *testing.T) {
@@ -421,6 +423,20 @@ func TestTabNameAliaser(t *testing.T) {
 		require.True(t, a.OnTabExit(ptyURI))
 		assert.Equal(t, []string{wrapperURI.String()}, rec.exits)
 	})
+
+	t.Run("SetTabName resolves on the event loop", func(t *testing.T) {
+		rec := &recordingTabManager{names: map[string]string{}}
+		loop := newQueuedScheduler()
+		a := newTabNameAliaser(rec, loop.ScheduleNextTick)
+
+		// A vte can title itself before its spawn completes and
+		// aliases its URI to the tab.
+		require.NoError(t, a.SetTabName(ptyURI, "vim", term.Attributes{}))
+		assert.Empty(t, rec.names, "the tab manager is only touched on the event loop")
+		a.addAlias(ptyURI, wrapperURI)
+		loop.Flush(nil)
+		assert.Equal(t, map[string]string{wrapperURI.String(): "vim"}, rec.names)
+	})
 }
 
 func TestAsyncVTETabNameAliasing(t *testing.T) {
@@ -456,6 +472,7 @@ func TestAsyncVTETabNameAliasing(t *testing.T) {
 
 		require.NoError(t, b.ex.tm.SetTabName(
 			tv.uri, "make test", term.Attributes{}))
+		b.flushScheduled()
 		name, _, ok = b.comp.Browser().TabName(av.URI())
 		require.True(t, ok)
 		assert.Equal(t, "make test", name,
@@ -501,6 +518,7 @@ func TestAsyncVTETabNameAliasing(t *testing.T) {
 
 		require.NoError(t, b.ex.tm.SetTabName(
 			tv.uri, "make build", term.Attributes{}))
+		b.flushScheduled()
 		name, _, ok = b.comp.Browser().TabName(sessionURI)
 		require.True(t, ok)
 		assert.Equal(t, "make build", name,
@@ -509,5 +527,34 @@ func TestAsyncVTETabNameAliasing(t *testing.T) {
 		require.NoError(t, tab.Close())
 		assert.Empty(t, b.ex.tabAliases.alias,
 			"closing the session tab must clear its aliases")
+	})
+
+	t.Run("title updates from the parser goroutine land on the event loop", func(t *testing.T) {
+		b := newExForTesting(t, texttest.NopEditor())
+		defer b.Close()
+
+		tv := newTestVte()
+		tv.uri = mustURI("file:///dev/ttys044")
+		av := newAsyncVTE(b.ex, func() (vtereservoir.VTE, error) {
+			return tv, nil
+		})
+		_, err := b.comp.Tab(av.URI(), 'x', av.Title(), av)
+		require.NoError(t, err)
+		b.waitAsyncVTELoads()
+		b.flushScheduled()
+
+		parsed := make(chan struct{})
+		go func() {
+			defer close(parsed)
+			_ = b.ex.tm.SetTabName(tv.uri, "make test", term.Attributes{})
+		}()
+		// The event loop keeps drawing the tab bar meanwhile.
+		handlertest.DrawHandler(b, 40, 10)
+		<-parsed
+		b.flushScheduled()
+
+		name, _, ok := b.comp.Browser().TabName(av.URI())
+		require.True(t, ok)
+		assert.Equal(t, "make test", name)
 	})
 }

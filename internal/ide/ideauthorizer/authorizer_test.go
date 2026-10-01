@@ -34,10 +34,12 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi/workspacerpc"
 	"github.com/unstablebuild/rune-go-sdk/handler"
+	"github.com/unstablebuild/rune-go-sdk/handler/handlertest"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"google.golang.org/grpc/peer"
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/browser/browsertest"
+	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/extension/extensionv2/peerprocess"
 	"unstable.build/rune/internal/ide/pkgtrust"
 	"unstable.build/rune/internal/text"
@@ -1579,6 +1581,165 @@ func TestAuthorizerAuthorizeStartCommandPromptsWithCommandDetails(t *testing.T) 
 	assert.Contains(t, msg, "Always")
 	assert.Contains(t, msg, "\n\nChoosing **Always** approves **grep** for all future authorization requests, for any argument combination.")
 	assert.NotContains(t, msg, "grep ∗")
+}
+
+const moveTestsScript = `M=/tmp/movetests/movetests; D=internal/workspace/vtescheme; set -e
+$M -src $D/vte_scheme_test.go -dst $D/vte_scheme_e2e_test.go -names TestServerSchemeOwnsTerminals,TestServerChroot,TestClientSchemesShareTheMachineServer,TestLoopbackOwnsTerminalsInProcess
+$M -src $D/vteclient_test.go -dst $D/vteclient_e2e_test.go -names TestClientVTERendersCanonicalStream,TestClientVTEReplicasConverge,TestClientVTEConvergesAfterResize,TestClientVTEReportsTitleToItsOwnUI,TestClientVTEIsNotASecondResponder,TestClientVTEDeliversOSCToEveryClient
+$M -src $D/vtelifecycle_test.go -dst $D/vtelifecycle_e2e_test.go -names TestVTELifecycleOverRPC
+$M -src $D/vteregistry_test.go -dst $D/vteregistry_e2e_test.go -names TestVTERegistryLifecycle,TestVTERegistryResizeAuthority,TestVTERegistryDetachRestoresTheHeirsSize
+$M -src $D/vteserver_test.go -dst $D/vteserver_e2e_test.go -names TestVTEServerAttachStreamsOutput,TestVTEServerFansOutToEveryClient,TestVTEServerResizeFollowsFocus,TestVTEServerDetachLeavesEmulatorRunning,TestVTEServerDropsSlowClient,TestVTEServerSurvivesDegenerateResize,TestVTEServerClampsCreateDimensions,TestVTEServerRejectsWrongDirectionFrames,TestVTEServerRejectsSecondHello,TestVTEServerDetachKeepsTheEmulator,TestVTEServerHandlesEmptyInput
+$M -src $D/vteserver_unit_test.go -dst $D/vteserver_e2e_test.go -names TestAttachmentDelegatesToItsEmulator
+/Users/ernestrc/.rune/bin/goimports -w $D/*_test.go
+go vet ./$D/ && go vet -tags e2e ./$D/ && echo vet-ok; sed -n '17p' $D/test/persistence_test.go`
+
+// Regression: a script whose programs can't be determined is approved by exact
+// match. The prompt must say so, instead of repeating the script as the approval
+// scope and claiming that Always covers any argument combination.
+func TestAuthorizerAuthorizeOpaqueScriptPromptsForExactApproval(t *testing.T) {
+	t.Parallel()
+
+	const width, height = 120, 40
+	comp := browser.NewComponent(browser.DefaultConfig())
+	ticks := make(chan func())
+	noti := &capturingNotifications{}
+	a := newTestAuthorizerCore(comp, storagestub.NewInMemoryService())
+	a.prompter = newPermissionPrompter(comp, func(fn func()) bool {
+		ticks <- fn
+		return true
+	}, noti)
+	ctx := blueauth.ContextWithClaims(context.Background(), blueauth.UserClaims[Extension]{
+		Extra: testRegularExtension(extensionapi.NewPermissions(extensionapi.PermissionExecute)),
+	})
+	authorize := func(cmd workspaceapi.Cmd) <-chan error {
+		done := make(chan error, 1)
+		go debug.CapturePanicReport(func() { done <- a.AuthorizeCommand(ctx, cmd) })
+		return done
+	}
+	// Scheduled callbacks run on the test goroutine, as they would on the event
+	// loop, so the component is only ever touched from one goroutine.
+	openPrompt := func() {
+		t.Helper()
+		select {
+		case fn := <-ticks:
+			fn()
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for the prompt")
+		}
+	}
+	cmd := workspaceapi.Cmd{
+		Path: "bash",
+		Args: []string{"-c", moveTestsScript},
+		Dir:  "/Users/ernestrc/.rune/worktrees/rune-7bf2/RUNE-321-2",
+	}
+	closed := `
+┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                                                      │
+├──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘`[1:]
+
+	done := authorize(cmd)
+	openPrompt()
+	handlertest.RunHandlerSequence(t, comp, width, height, []handlertest.SequenceTestCase{
+		{Expected: `
+┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                                                      │
+├──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                                                      │
+│                                                                                                                      │
+│█●███████████████████████████████████████████████████████████████████████████████████████████████████████████████████ │
+││                                                                                                                   │ │
+││  Extension Test Extension by dev-id wants to run bash with args:                                                  │ │
+││                                                                                                                   │ │
+││  -c                                                                                                               │ │
+││  M=/tmp/movetests/movetests; D=internal/workspace/vtescheme; set -e                                               │ │
+││  $M -src $D/vte_scheme_test.go -dst $D/vte_scheme_e2e_test.go -names TestServerSchemeOwnsTerminals,TestServerChr  │ │
+││  oot,TestClientSchemesShareTheMachineServer,TestLoopbackOwnsTerminalsInProcess                                    │ │
+││  $M -src $D/vteclient_test.go -dst $D/vteclient_e2e_test.go -names TestClientVTERendersCanonicalStream,TestClien  │ │
+││  tVTEReplicasConverge,TestClientVTEConvergesAfterResize,TestClientVTEReportsTitleToItsOwnUI,TestClientVTEIsNotAS  │ │
+││  econdResponder,TestClientVTEDeliversOSCToEveryClient                                                             │ │
+││  $M -src $D/vtelifecycle_test.go -dst $D/vtelifecycle_e2e_test.go -names TestVTELifecycleOverRPC                  │ │
+││  $M -src $D/vteregistry_test.go -dst $D/vteregistry_e2e_test.go -names TestVTERegistryLifecycle,TestVTERegistryR  │ │
+││  esizeAuthority,TestVTERegistryDetachRestoresTheHeirsSize                                                         │ │
+││  $M -src $D/vteserver_test.go -dst $D/vteserver_e2e_test.go -names TestVTEServerAttachStreamsOutput,TestVTEServe  │ │
+││  rFansOutToEveryClient,TestVTEServerResizeFollowsFocus,TestVTEServerDetachLeavesEmulatorRunning,TestVTEServerDro  │ │
+││  psSlowClient,TestVTEServerSurvivesDegenerateResize,TestVTEServerClampsCreateDimensions,TestVTEServerRejectsWron  │ │
+││  gDirectionFrames,TestVTEServerRejectsSecondHello,TestVTEServerDetachKeepsTheEmulator,TestVTEServerHandlesEmptyI  │ │
+││  nput                                                                                                             │ │
+││  $M -src $D/vteserver_unit_test.go -dst $D/vteserver_e2e_test.go -names TestAttachmentDelegatesToItsEmulator      │ │
+││  /Users/ernestrc/.rune/bin/goimports -w $D/*_test.go                                                              │ │
+││  go vet ./$D/ && go vet -tags e2e ./$D/ && echo vet-ok; sed -n '17p' $D/test/persistence_test.go                  │ │
+││                                                                                                                   │ │
+││  in /Users/ernestrc/.rune/worktrees/rune-7bf2/RUNE-321-2                                                          │ │
+││                                                                                                                   │ │
+││  Choosing Always approves only this exact command. Any change to its arguments or working directory will prompt   │ │
+││  again.                                                                                                           │ │
+││                                                                                                                   │ │
+││                                                                                                                   │ │
+││                  Yes                     Always                     No                     Never                  │ │
+│└───────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘`[1:]},
+		{InputSequence: "A", Expected: closed},
+	})
+	require.NoError(t, <-done)
+	assert.Equal(t, []capturedNotification{{
+		Level: browserapi.LevelWarn,
+		Msg:   "User authorization required for bash",
+	}}, noti.captured())
+
+	select {
+	case err := <-authorize(cmd):
+		require.NoError(t, err)
+	case <-ticks:
+		t.Fatal("Always must cover the identical command")
+	}
+
+	cmd.Dir = "/tmp"
+	done = authorize(cmd)
+	openPrompt()
+	handlertest.RunHandlerSequence(t, comp, width, height, []handlertest.SequenceTestCase{
+		{InputSequence: "N", Expected: closed},
+	})
+	require.ErrorIs(t, <-done, blueauth.ErrForbidden)
 }
 
 func TestAuthorizerAuthorizeStartCommandRegularExtensionRequiresExecute(t *testing.T) {

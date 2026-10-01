@@ -4068,6 +4068,22 @@ func TestCursorBackspaceWord(t *testing.T) {
 			want:       "two",
 			wantCursor: term.Coordinates{},
 		},
+		{
+			name:       "stops at the line start when the word begins there",
+			content:    "foo bar\nfoo baz",
+			at:         term.Coordinates{X: 4, Y: 1},
+			wantOK:     true,
+			want:       "foo bar\nbaz",
+			wantCursor: term.Coordinates{Y: 1},
+		},
+		{
+			name:       "stops at the line start when spaces begin there",
+			content:    "foo\n  bar",
+			at:         term.Coordinates{X: 2, Y: 1},
+			wantOK:     true,
+			want:       "foo\nbar",
+			wantCursor: term.Coordinates{Y: 1},
+		},
 	}
 
 	for _, tc := range suite {

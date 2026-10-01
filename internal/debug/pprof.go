@@ -22,10 +22,7 @@ import (
 	"net/http"
 	// pprof handlers register themselves on http.DefaultServeMux on import.
 	_ "net/http/pprof"
-	"os"
-	"os/signal"
 	"runtime"
-	"syscall"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -53,20 +50,4 @@ func StartPProfHTTP(addr string) (string, error) {
 		}
 	})
 	return bound, nil
-}
-
-// StartPProfOnSignal installs a SIGUSR1 handler that, on the first
-// signal, starts a pprof HTTP server bound to a random localhost port
-// and logs the listening address at info level so the caller can find
-// it. Subsequent SIGUSR1 signals are ignored.
-func StartPProfOnSignal() {
-	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, syscall.SIGUSR1)
-	go CapturePanicReport(func() {
-		<-ch
-		signal.Stop(ch)
-		if _, err := StartPProfHTTP("127.0.0.1:0"); err != nil {
-			log.Errorf("StartPProfOnSignal: %v", err)
-		}
-	})
 }

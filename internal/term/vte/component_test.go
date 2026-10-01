@@ -19,6 +19,8 @@ package vte
 import (
 	"context"
 	"errors"
+	"os"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -27,6 +29,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
@@ -1003,6 +1006,97 @@ func TestComponentWidenWhileScrolledUpKeepsContentVisible(t *testing.T) {
 	assert.True(t, comp.ScrollDown(1), "must be able to scroll back down after widening")
 }
 
+// TestComponentReverseScreen pins DECSCNM (CSI ? 5 h): like kitty and
+// xterm, the whole screen is drawn in reverse video, including the cells
+// no program has written, and cells already in SGR 7 flip back to normal
+// video. vttest's "light background" pages rely on it.
+func TestComponentReverseScreen(t *testing.T) {
+	t.Parallel()
+
+	// reverseMap renders each cell as 'r' (reverse video) or 'n' (normal
+	// video).
+	reverseMap := func(w *term.StringWriter, width int) string {
+		var sb strings.Builder
+		for i, c := range w.Cells() {
+			if i != 0 && i%width == 0 {
+				sb.WriteByte('\n')
+			}
+			if c.Attrs&term.AttrReverse != 0 {
+				sb.WriteByte('r')
+			} else {
+				sb.WriteByte('n')
+			}
+		}
+		return sb.String()
+	}
+
+	cases := []struct {
+		desc   string
+		input  string
+		want   string
+		report string
+	}{
+		{
+			desc:   "normal video",
+			input:  "ab\x1b[7mc\x1b[m",
+			want:   "nnrn\nnnnn\nnnnn",
+			report: "\x1b[?5;2$y",
+		},
+		{
+			desc:   "reverse video fills the screen and cancels SGR 7",
+			input:  "ab\x1b[7mc\x1b[m\x1b[?5h",
+			want:   "rrnr\nrrrr\nrrrr",
+			report: "\x1b[?5;1$y",
+		},
+		{
+			desc:   "reverse video applies to the alternate screen",
+			input:  "\x1b[?1049h\x1b[?5hab",
+			want:   "rrrr\nrrrr\nrrrr",
+			report: "\x1b[?5;1$y",
+		},
+		{
+			desc:   "reset restores normal video",
+			input:  "ab\x1b[7mc\x1b[m\x1b[?5h\x1b[?5l",
+			want:   "nnrn\nnnnn\nnnnn",
+			report: "\x1b[?5;2$y",
+		},
+		{
+			desc:   "RIS restores normal video",
+			input:  "\x1b[?5h\x1bcab",
+			want:   "nnnn\nnnnn\nnnnn",
+			report: "\x1b[?5;2$y",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.desc, func(t *testing.T) {
+			t.Parallel()
+
+			// Without default attributes, as the default theme leaves
+			// them, a row in the middle of the screen is only drawn once
+			// written to, which a two-row screen would not show.
+			const width, height = 4, 3
+			comp, err := NewComponent(&testExecutor{}, &testExecutor{},
+				&mockTabManager{}, DefaultConfig())
+			require.NoError(t, err)
+			require.NoError(t, comp.Resize(width, height))
+			comp.parser.AdvanceBytes([]byte(tc.input))
+
+			writer := term.NewStringWriter(width, height)
+			comp.Draw(writer)
+			assert.Equal(t, tc.want, reverseMap(writer, width))
+
+			pty := comp.pty.Master.(*workspacetest.File)
+			pty.Writes = nil
+			comp.parser.AdvanceBytes([]byte("\x1b[?5$p"))
+			var report strings.Builder
+			for _, w := range pty.Writes {
+				report.Write(w)
+			}
+			assert.Equal(t, tc.report, report.String(), "DECRQM")
+		})
+	}
+}
+
 // newPopulatedComponentForBench builds a component with a fully written
 // grid so Snapshot/SnapshotInto copy a realistic amount of cells.
 func newPopulatedComponentForBench(b *testing.B, width, height int) *Component {
@@ -1204,6 +1298,55 @@ func TestComponentResizeAfterCloseSkipsSetPtySize(t *testing.T) {
 	defer exe.mu.Unlock()
 	assert.Empty(t, exe.setPtySize,
 		"a closed Component must not ioctl its released master descriptor")
+}
+
+// closablePtyFile fails writes after Close the way an *os.File does.
+type closablePtyFile struct {
+	workspacetest.File
+	closed bool
+}
+
+func (f *closablePtyFile) Write(b []byte) (int, error) {
+	if f.closed {
+		return 0, os.ErrClosed
+	}
+	return f.File.Write(b)
+}
+
+func (f *closablePtyFile) Close() error {
+	f.closed = true
+	return nil
+}
+
+type closablePtyExecutor struct {
+	testExecutor
+	master closablePtyFile
+}
+
+func (e *closablePtyExecutor) NewPty(context.Context) (workspaceapi.Pty, error) {
+	return workspaceapi.Pty{Master: &e.master, Slave: &workspacetest.File{}}, nil
+}
+
+// TestComponentOnFocusChangeAfterClose reproduces the "failed to report
+// focus changed: write to pty: file already closed" toast shown when
+// closing a terminal whose program enabled focus reporting: the tab is
+// unfocused after its handler was already closed.
+func TestComponentOnFocusChangeAfterClose(t *testing.T) {
+	t.Parallel()
+
+	exe := &closablePtyExecutor{}
+	comp, err := NewComponent(exe, exe, &mockTabManager{}, DefaultConfig())
+	require.NoError(t, err)
+	comp.parserHandler.SetPrivateMode(vteparser.PrivateModeReportFocusInOut)
+
+	require.NoError(t, comp.OnFocusChange(true))
+	require.Equal(t, [][]byte{[]byte("\x1b[I")}, exe.master.Writes)
+
+	require.NoError(t, comp.Close())
+	require.NoError(t, comp.OnFocusChange(false),
+		"unfocusing a closed terminal is a no-op, not a failure")
+	assert.Len(t, exe.master.Writes, 1,
+		"a closed Component must not write to its released master")
 }
 
 // parkedStartExecutor parks inside StartCommand, standing in for the
@@ -1507,4 +1650,247 @@ func TestComponentResizeIsSerialized(t *testing.T) {
 	}
 	close(stop)
 	<-done
+}
+
+// TestHandlerExitStatus pins how a terminal learns the way its process
+// ended. The pty hanging up and the executor reporting the exit status
+// race each other, and the host decides whether to keep a terminal's
+// tab from that status, so the terminal must not report its exit —
+// neither from Handle nor through OnTabExit — before the status is
+// final, and must not wait for it forever either.
+func TestHandlerExitStatus(t *testing.T) {
+	t.Parallel()
+	failure := errors.New("exit status 1")
+
+	suite := []struct {
+		desc string
+		// watched configures a Config.Watcher, which must receive the
+		// status too.
+		watched bool
+		// statusFirst reports the status before the pty hangs up.
+		statusFirst bool
+		// unreported never reports a status.
+		unreported bool
+		status     error
+		// closeWaiting closes the terminal while it waits.
+		closeWaiting bool
+		// wantWaiting is whether the terminal, with its pty hung up,
+		// holds back its exit until the status arrives.
+		wantWaiting bool
+		wantExitErr error
+	}{
+		{
+			desc:        "failure reported after the pty hangs up",
+			status:      failure,
+			wantWaiting: true,
+			wantExitErr: failure,
+		},
+		{
+			desc:        "clean exit reported after the pty hangs up",
+			wantWaiting: true,
+		},
+		{
+			desc:        "failure reported before the pty hangs up",
+			statusFirst: true,
+			status:      failure,
+			wantExitErr: failure,
+		},
+		{
+			desc:        "clean exit reported before the pty hangs up",
+			statusFirst: true,
+		},
+		{
+			desc:        "status never reported",
+			unreported:  true,
+			wantWaiting: true,
+		},
+		{
+			desc:         "terminal closed while waiting for the status",
+			unreported:   true,
+			closeWaiting: true,
+			wantWaiting:  true,
+		},
+		{
+			desc:        "failure reported after the pty hangs up, watched",
+			watched:     true,
+			status:      failure,
+			wantWaiting: true,
+			wantExitErr: failure,
+		},
+		{
+			desc:        "failure reported before the pty hangs up, watched",
+			watched:     true,
+			statusFirst: true,
+			status:      failure,
+			wantExitErr: failure,
+		},
+		{
+			desc:        "clean exit reported after the pty hangs up, watched",
+			watched:     true,
+			wantWaiting: true,
+		},
+	}
+
+	for _, tc := range suite {
+		t.Run(tc.desc, func(t *testing.T) {
+			t.Parallel()
+			h := newExitStatusHarness(t, tc.watched)
+			proc := h.proc
+
+			if tc.statusFirst {
+				proc.ReportExit(tc.status)
+			}
+			proc.HangUp()
+			hungUp := time.Now()
+
+			if tc.wantWaiting {
+				time.Sleep(50 * time.Millisecond)
+				require.False(t, h.exited(),
+					"the terminal reported its exit before the status arrived")
+				require.Empty(t, h.tm.exits(),
+					"the terminal asked to be dropped before the status arrived")
+			}
+			if tc.closeWaiting {
+				require.NoError(t, h.handler.Close())
+			}
+			if !tc.statusFirst && !tc.unreported {
+				proc.ReportExit(tc.status)
+			}
+
+			// Once the status is known the exit must follow at once;
+			// only a status that never comes is waited out.
+			bound := time.Second
+			if tc.unreported && !tc.closeWaiting {
+				bound += exitStatusTimeout
+			}
+			require.Eventually(t, h.exited, bound, 5*time.Millisecond,
+				"the terminal never reported its exit")
+			if tc.unreported && !tc.closeWaiting {
+				assert.GreaterOrEqual(t, time.Since(hungUp), exitStatusTimeout,
+					"a status that never comes must be waited out")
+			}
+
+			assert.Equal(t, tc.wantExitErr, h.handler.ExitErr())
+			assert.Equal(t, []error{tc.wantExitErr}, h.tm.exits(),
+				"the terminal must ask to be dropped once, with its status final")
+			assert.True(t, h.pub.sawEventNone(),
+				"the terminal must wake the event loop once it exited")
+			if tc.watched {
+				select {
+				case got := <-h.watched:
+					assert.Equal(t, tc.status, got)
+				case <-time.After(5 * time.Second):
+					t.Fatal("the configured watcher never received the status")
+				}
+			}
+		})
+	}
+}
+
+type exitStatusHarness struct {
+	handler *Handler
+	proc    *workspacetest.Process
+	tm      *exitStatusTabManager
+	pub     *exitStatusPublisher
+	// watched is the configured Config.Watcher, if any.
+	watched chan error
+}
+
+func newExitStatusHarness(t *testing.T, watched bool) *exitStatusHarness {
+	t.Helper()
+	h := &exitStatusHarness{
+		tm:  &exitStatusTabManager{},
+		pub: &exitStatusPublisher{},
+	}
+	cfg := DefaultConfig()
+	cfg.CommandAndArgs = []string{"make"}
+	if watched {
+		h.watched = make(chan error, 1)
+		cfg.Watcher = workspaceapi.ChanProcessWatcher(h.watched)
+	}
+	exe := workspacetest.NewPtyExecutor()
+	handler, err := NewHandler(h.pub, discardNotifications{}, exe, exe, h.tm, cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = handler.Close() })
+	h.handler = handler
+	h.tm.setHandler(handler)
+	select {
+	case h.proc = <-exe.Started():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the terminal never started its command")
+	}
+	return h
+}
+
+// exited reports whether Handle reports the terminal exited, as the
+// host sees it when the terminal's wake-up event reaches it.
+func (h *exitStatusHarness) exited() bool {
+	exit, _ := h.handler.Handle(term.Event{Type: term.EventNone})
+	return exit
+}
+
+// exitStatusTabManager records, for every OnTabExit, the exit status
+// the terminal reported at that moment.
+type exitStatusTabManager struct {
+	mockTabManager
+	mu       sync.Mutex
+	handler  *Handler
+	statuses []error
+}
+
+func (tm *exitStatusTabManager) setHandler(h *Handler) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	tm.handler = h
+}
+
+func (tm *exitStatusTabManager) OnTabExit(workspaceapi.URI) bool {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	tm.statuses = append(tm.statuses, tm.handler.ExitErr())
+	return true
+}
+
+func (tm *exitStatusTabManager) exits() []error {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	return slices.Clone(tm.statuses)
+}
+
+type exitStatusPublisher struct {
+	mu   sync.Mutex
+	none bool
+}
+
+func (p *exitStatusPublisher) PublishEvent(ev term.Event) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.none = p.none || ev.Type == term.EventNone
+	return nil
+}
+
+func (p *exitStatusPublisher) sawEventNone() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.none
+}
+
+type discardNotifications struct{}
+
+func (discardNotifications) Notify(
+	browserapi.NotificationLevel, string, ...any,
+) (string, error) {
+	return "", nil
+}
+
+func (discardNotifications) NotifyOnce(
+	browserapi.NotificationLevel, string, ...any,
+) (string, error) {
+	return "", nil
+}
+
+func (discardNotifications) UpdateNotificationProgress(
+	string, string, int64, int64,
+) error {
+	return nil
 }

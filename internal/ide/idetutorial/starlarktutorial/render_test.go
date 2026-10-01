@@ -139,6 +139,7 @@ func TestFloatingWindowContentHandlerSequence(t *testing.T) {
 	md, ok := newScreenMarkdown("Line1\n\nLine2\n\nLine3\n\nLine4")
 	require.True(t, ok)
 	_, content := newScreenContent(md)
+	arrow := "     " + string(moreBelowArrow) + "      "
 
 	cases := []handlertest.SingleTestCase{
 		{
@@ -147,7 +148,7 @@ func TestFloatingWindowContentHandlerSequence(t *testing.T) {
 				"            \n" +
 				" Line2      \n" +
 				"            \n" +
-				" Line3      ",
+				arrow,
 		},
 		{
 			Event: term.Event{Type: term.EventKey, Ch: 'j'},
@@ -155,7 +156,7 @@ func TestFloatingWindowContentHandlerSequence(t *testing.T) {
 				" Line2      \n" +
 				"            \n" +
 				" Line3      \n" +
-				"            ",
+				arrow,
 		},
 		{
 			Event: term.Event{Type: term.EventKey, Key: term.KeyArrowDown},
@@ -163,15 +164,23 @@ func TestFloatingWindowContentHandlerSequence(t *testing.T) {
 				"            \n" +
 				" Line3      \n" +
 				"            \n" +
-				" Line4      ",
+				arrow,
+		},
+		{
+			Event: term.Event{Type: term.EventKey, Key: term.KeyArrowDown},
+			Expected: "            \n" +
+				" Line3      \n" +
+				"            \n" +
+				" Line4      \n" +
+				"            ",
 		},
 		{
 			Event: term.Event{Type: term.EventKey, Ch: 'k'},
-			Expected: "            \n" +
-				" Line2      \n" +
+			Expected: " Line2      \n" +
 				"            \n" +
 				" Line3      \n" +
-				"            ",
+				"            \n" +
+				arrow,
 		},
 	}
 
@@ -186,6 +195,81 @@ func TestFloatingWindowContentHandlerSequence(t *testing.T) {
 	}
 
 	handlertest.RunHandlerSequence(t, content, 12, 5, sequence)
+}
+
+// TestScreenMoreBelowArrow asserts a step taller than the tile gives
+// its bottom row to an arrow centred in the tile, and a step that fits
+// keeps every row for its copy.
+func TestScreenMoreBelowArrow(t *testing.T) {
+	t.Parallel()
+	arrow := string(moreBelowArrow)
+	cases := []struct {
+		name string
+		// sizes are applied in order; the screen is as large as the last.
+		sizes    [][2]int
+		expected string
+	}{
+		{
+			name:  "copy exactly as tall as the tile",
+			sizes: [][2]int{{12, 5}},
+			expected: " Line1      \n" +
+				"            \n" +
+				" Line2      \n" +
+				"            \n" +
+				" Line3      ",
+		},
+		{
+			name:  "copy taller than the tile",
+			sizes: [][2]int{{12, 4}},
+			expected: " Line1      \n" +
+				"            \n" +
+				" Line2      \n" +
+				"     " + arrow + "      ",
+		},
+		{
+			name:  "odd width",
+			sizes: [][2]int{{11, 4}},
+			expected: " Line1     \n" +
+				"           \n" +
+				" Line2     \n" +
+				"     " + arrow + "     ",
+		},
+		{
+			name:     "a single row is left to the copy",
+			sizes:    [][2]int{{12, 1}},
+			expected: " Line1      ",
+		},
+		{
+			name:  "growing to fit takes the arrow away",
+			sizes: [][2]int{{12, 4}, {12, 5}},
+			expected: " Line1      \n" +
+				"            \n" +
+				" Line2      \n" +
+				"            \n" +
+				" Line3      ",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			md, ok := newScreenMarkdown("Line1\n\nLine2\n\nLine3")
+			require.True(t, ok)
+			_, content := newScreenContent(md)
+
+			last := tc.sizes[len(tc.sizes)-1]
+			w := term.NewStringWriter(last[0], last[1])
+			comptest.TestComponent(t, content, w, []comptest.TestCase{
+				{
+					Action: func() {
+						for _, size := range tc.sizes {
+							content.Resize(size[0], size[1])
+						}
+					},
+					Expected: tc.expected,
+				},
+			})
+		})
+	}
 }
 
 // TestWaitCommandHintRendersInBody asserts that the wait_command hint

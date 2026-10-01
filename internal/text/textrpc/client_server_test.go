@@ -1545,3 +1545,218 @@ func (n nopNotifications) UpdateNotificationProgress(
 ) error {
 	return nil
 }
+
+type openerFunc func(context.Context, workspaceapi.URI) (browserapi.Handler, error)
+
+func (f openerFunc) OpenResource(
+	ctx context.Context, uri workspaceapi.URI,
+) (browserapi.Handler, error) {
+	return f(ctx, uri)
+}
+
+// stringHandler is what an extension returns for a resource: content that
+// draws str, and records its Close.
+func stringHandler(str string, closed chan<- struct{}) browserapi.Handler {
+	return browserapi.FuncHandler(
+		handler.NopFromComponent(component.NewString(str)),
+		func() error {
+			close(closed)
+			return nil
+		})
+}
+
+// drawn renders h into a string, row by row.
+func drawn(h tui.Handler, width, height int) string {
+	h.Resize(width, height)
+	w := cell.NewBufferWriter(context.Background(), width, height)
+	h.Draw(w)
+	var b strings.Builder
+	for _, row := range w.RawCells() {
+		for _, c := range row {
+			if c.Ch != 0 {
+				b.WriteRune(c.Ch)
+			}
+		}
+		b.WriteRune('\n')
+	}
+	return b.String()
+}
+
+// TestResourceOpenerClientServer covers an extension's resource opener,
+// registered through the SDK client, as the editor sees it, and the
+// content it returns, served over its own stream.
+func TestResourceOpenerClientServer(t *testing.T) {
+	const scheme = "fake"
+	uri, err := workspaceapi.ParseURI("fake://host/chat")
+	require.NoError(t, err)
+
+	// setup returns the editor served over RPC, the lock guarding it and
+	// a constructor of extension clients connected to it.
+	setup := func(t *testing.T) (*text.Component, *sync.Mutex, func() *Client) {
+		c, err := newTestComponentErr(texttest.NopEditor())
+		require.NoError(t, err)
+		mu := new(sync.Mutex)
+		s := NewServer(nopNotifications{}, c, mu)
+		s.SetSyncMode()
+		conn, closeFn := doSetupIntTest(t, func(g *grpc.Server) {
+			textrpc.RegisterEditorServer(g, s)
+		})
+		t.Cleanup(func() {
+			_ = s.Close()
+			closeFn()
+		})
+		return c, mu, func() *Client {
+			client := NewClient(context.Background(), conn)
+			t.Cleanup(func() { _ = client.Close() })
+			return client
+		}
+	}
+	lookup := func(c *text.Component, mu *sync.Mutex) (textapi.ResourceOpenHandler, bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		return c.ResourceOpener(scheme)
+	}
+
+	tests := []struct {
+		name string
+		open func(ctx context.Context, started chan<- struct{}, closed chan<- struct{}) (browserapi.Handler, error)
+		// cancel cancels the editor's context once the extension's
+		// handler is running.
+		cancel  bool
+		wantErr error
+		wantMsg string
+	}{
+		{
+			name: "delivers the uri and serves the content",
+			open: func(_ context.Context, _, closed chan<- struct{}) (browserapi.Handler, error) {
+				return stringHandler("hello", closed), nil
+			},
+		},
+		{
+			name: "returns the extension's error",
+			open: func(context.Context, chan<- struct{}, chan<- struct{}) (browserapi.Handler, error) {
+				return nil, errors.New("boom")
+			},
+			wantMsg: "boom",
+		},
+		{
+			name: "reports an extension that returns no content",
+			open: func(context.Context, chan<- struct{}, chan<- struct{}) (browserapi.Handler, error) {
+				return nil, nil
+			},
+			wantMsg: "resource opener returned no handler",
+		},
+		{
+			name: "cancelling the editor's context cancels the extension's",
+			open: func(ctx context.Context, started, _ chan<- struct{}) (browserapi.Handler, error) {
+				close(started)
+				<-ctx.Done()
+				return nil, ctx.Err()
+			},
+			cancel:  true,
+			wantErr: context.Canceled,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, mu, newClient := setup(t)
+			calls := make(chan string, 1)
+			handlerErr := make(chan error, 1)
+			started := make(chan struct{})
+			closed := make(chan struct{})
+			require.NoError(t, newClient().RegisterResourceOpener(scheme, openerFunc(func(
+				ctx context.Context, uri workspaceapi.URI,
+			) (browserapi.Handler, error) {
+				calls <- uri.String()
+				h, err := tt.open(ctx, started, closed)
+				handlerErr <- err
+				return h, err
+			})))
+
+			opener, ok := lookup(c, mu)
+			require.True(t, ok, "the opener must be registered once RegisterResourceOpener returns")
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if tt.cancel {
+				go func() {
+					<-started
+					cancel()
+				}()
+			}
+			h, err := opener.OpenResource(ctx, uri)
+			switch {
+			case tt.wantErr != nil:
+				require.ErrorIs(t, err, tt.wantErr)
+				assert.Nil(t, h)
+			case tt.wantMsg != "":
+				require.EqualError(t, err, tt.wantMsg)
+				assert.Nil(t, h)
+			default:
+				require.NoError(t, err)
+				require.NotNil(t, h)
+				assert.Contains(t, drawn(h, 10, 1), "hello",
+					"the editor must be able to draw the extension's content")
+				require.NoError(t, h.Close())
+				select {
+				case <-closed:
+				case <-time.After(5 * time.Second):
+					t.Fatal("closing the content must close the extension's handler")
+				}
+			}
+			assert.Equal(t, uri.String(), <-calls)
+			if tt.cancel {
+				select {
+				case err := <-handlerErr:
+					require.ErrorIs(t, err, context.Canceled)
+				case <-time.After(5 * time.Second):
+					t.Fatal("the extension's handler was not cancelled")
+				}
+			}
+		})
+	}
+
+	t.Run("closing the stream unregisters the opener", func(t *testing.T) {
+		c, mu, newClient := setup(t)
+		client := newClient()
+		require.NoError(t, client.RegisterResourceOpener(scheme, openerFunc(
+			func(context.Context, workspaceapi.URI) (browserapi.Handler, error) {
+				return nil, errors.New("unused")
+			})))
+
+		require.NoError(t, client.Close())
+		require.Eventually(t, func() bool {
+			_, ok := lookup(c, mu)
+			return !ok
+		}, 5*time.Second, 10*time.Millisecond)
+	})
+
+	t.Run("a new subscription replaces the old one and survives its end", func(t *testing.T) {
+		c, mu, newClient := setup(t)
+		opened := make(chan string, 2)
+		openerNamed := func(name string) textapi.ResourceOpenHandler {
+			return openerFunc(func(context.Context, workspaceapi.URI) (browserapi.Handler, error) {
+				opened <- name
+				return stringHandler(name, make(chan struct{}, 1)), nil
+			})
+		}
+		first := newClient()
+		require.NoError(t, first.RegisterResourceOpener(scheme, openerNamed("first")))
+		require.NoError(t, newClient().RegisterResourceOpener(scheme, openerNamed("second")))
+
+		require.NoError(t, first.Close())
+		require.Never(t, func() bool {
+			_, ok := lookup(c, mu)
+			return !ok
+		}, 200*time.Millisecond, 10*time.Millisecond,
+			"the end of a replaced stream must not unregister its replacement")
+
+		opener, ok := lookup(c, mu)
+		require.True(t, ok)
+		h, err := opener.OpenResource(context.Background(), uri)
+		require.NoError(t, err)
+		assert.Equal(t, "second", <-opened)
+		assert.Contains(t, drawn(h, 10, 1), "second")
+		require.NoError(t, h.Close())
+	})
+}

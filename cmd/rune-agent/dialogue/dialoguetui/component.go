@@ -1671,12 +1671,18 @@ func (c *Component) PromptToggle() {
 
 // PreparePromptSelect removes the prompt and returns the result
 // channel and selected values. The caller must send vals on ch
-// outside the lock. Returns (nil, nil) if no prompt is active.
+// outside the lock. Returns (nil, nil) if no prompt is active, or
+// if nothing is selected: a multiSelect prompt with no boxes checked
+// stays open rather than sending nil, which the prompter reads as a
+// dismissal.
 func (c *Component) PreparePromptSelect() (chan<- []string, []string) {
 	if c.activePrompt == nil {
 		return nil, nil
 	}
 	vals := c.activePrompt.Selected()
+	if len(vals) == 0 {
+		return nil, nil
+	}
 	ch := c.promptResult
 	c.removePrompt()
 	return ch, vals
@@ -1716,7 +1722,7 @@ func (c *Component) StartPromptInput() bool {
 	maxOff, scrolled := c.scrollState()
 	defer c.restoreScroll(maxOff, scrolled)
 
-	c.promptLabel = c.activePrompt.Selected()[0]
+	c.promptLabel = c.activePrompt.CursorLabel()
 
 	// Remove the selection node from the list (but keep activePrompt
 	// reference so HasActivePrompt still returns true for the outer

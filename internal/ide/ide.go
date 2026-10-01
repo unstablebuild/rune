@@ -164,8 +164,9 @@ func DefaultConfigTree(def DefaultConfig) (map[string]any, error) {
 // PkgEditorMode resolves the editor mode exposed to package config.star scripts
 // (the RUNE_EDITOR_MODE predeclared global) from cfg, applying the same
 // normalization the running editor uses: exo resolves to its configured
-// fallback, the deprecated "modeless" maps to "standard", and a missing or
-// unreadable editor.mode defaults to "modal". A nil cfg yields "modal".
+// fallback, the deprecated "modal" and "modeless" map to "vim" and
+// "standard", and a missing or unreadable editor.mode defaults to "vim". A nil
+// cfg yields "vim".
 //
 // The remote `rune -x` provisioning server has no editor UI, so it calls this
 // to thread the user's mode into idepkg.NewProvisioningManager; without it, a

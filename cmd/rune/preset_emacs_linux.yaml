@@ -10,6 +10,10 @@
 # ---------------------------------------------------------------------------
 gui:
   default_theme: romero
+  # The physical key <meta> means in Rune's key bindings. Editors still
+  # receive the key itself. Linux emacs: <super>, <ctrl-super> or
+  # <alt-super>, since <alt> is Emacs's own Meta.
+  meta_key: "[[.Meta]]"
 #   font_size: 13
 #   window_opacity: {fg: 1, bg: 1}
 #   window_blur_radius: 100
@@ -22,17 +26,14 @@ gui:
 # ---------------------------------------------------------------------------
 # Editor
 #
-# `aux_bar` is the strip left of each editor pane and `status_bar` the bar at
-# the bottom of each pane. `emacs.message_bar` is the echo area; its `attr`
+# `aux_bar` is the strip left of each buffer and `status_bar` the bar at the
+# bottom of each buffer. `emacs.message_bar` is the echo area; its `attr`
 # sets the base attributes and `layout` wins over them. The transient mode
 # label (ISEARCH, QUERY, ...) is styled by `editor.status_bar.layout` instead.
 # ---------------------------------------------------------------------------
 editor:
   mode: emacs
   auto_pair: true
-  standard:
-    attr: {fg: default, bg: default}
-    search_attr: {fg: grey, bg: yellow}
   # The :fexplorer tree is an editable buffer: renaming a line renames
   # the file. It starts read-only here; <shift-esc> unlocks it for the
   # rest of the visit.
@@ -59,8 +60,10 @@ editor:
 #     background_attr:       {bg: gray}
 #     foreground_error_attr: {fg: yellow}
 #   emacs:
+#     attr:        {fg: default, bg: default}   # buffer text
+#     search_attr: {fg: grey, bg: yellow}       # search matches
 #     message_bar:
-#       attr: {fg: default, bg: gray}
+#       attr:   {fg: default, bg: gray}
 #       layout: '░▒▓█ {{ .Message | fg "white" }} '
 
 # ---------------------------------------------------------------------------
@@ -68,11 +71,10 @@ editor:
 # ---------------------------------------------------------------------------
 terminal:
   modal: false
-  # C-s is isearch-forward's key everywhere else in this preset (see
-  # command.key_bindings and the editor's own incremental search), so
-  # scrollback search reuses it instead of the default <meta-f>.
+  # <ctrl> belongs to the shell, so scrollback search sits on <meta-s>,
+  # the host-layer echo of isearch-forward's C-s.
   search:
-    find_key: "<ctrl-s>"
+    find_key: "<meta-s>"
 #   max_lines:         1000
 #   initial_reservoir: 0           # set to non-zero to speed up terminal initialization
 #   plugin:
@@ -98,7 +100,7 @@ terminal:
 # ---------------------------------------------------------------------------
 command:
   key: <alt-x>                       # execute-extended-command (M-x)
-#   history_key: <alt-shift-x>
+  history_key: <alt-shift-x>         # M-X, the M-x history sibling
 #   max_history: 20000
 #   aliases:
 #     # Simple alias: `:w` runs `:write`.
@@ -124,8 +126,31 @@ command:
     "<ctrl-x>2": "windownew down"        # split-window-below
     "<ctrl-x>3": "windownew right"       # split-window-right
     "<ctrl-x>o": "windowfocus other"     # other-window
-    "<alt-shift-x>": history             # M-X, the M-x history sibling
-    # P/N/B/F follows Emacs's previous, next, backward, and forward directions.
+    "<ctrl-x>^": "windowresize increase height"  # enlarge-window
+    "<ctrl-x>-": "windowresize decrease height"  # shrink-window-if-larger-than-buffer
+    "<ctrl-x>{": "windowresize decrease width"   # shrink-window-horizontally
+    "<ctrl-x>}": "windowresize increase width"   # enlarge-window-horizontally
+    "<ctrl-x>+": "windowresize reset"            # balance-windows
+    # <alt> and <ctrl> carry only what GNU Emacs itself defines (M-x, M-X,
+    # M-., M-,, M-?, M-s o, C-M-., C-M-,, C-M-?, C-M-\, C-M-i and the C-x
+    # chords). Everything Rune-only lives on <meta> (Super on Linux), which
+    # GNU leaves empty.
+    "<alt-shift-x>": "history"
+    "<alt-,>": "cursorhistory prev"
+    "<ctrl-alt-,>": "cursorhistory next"
+    "<ctrl-x><ctrl-x>": "exchangepointandmark"
+    "<alt-.>": "lsp definition"
+    "<ctrl-alt-.>": "echo {prompt}lsp<space>definition<space>"
+    "<alt-shift-/>": "lsp references"
+    "<ctrl-alt-shift-/>": "echo {prompt}lsp<space>references<space>"
+    "<alt-s>o": "searchtext"
+    "<ctrl-alt-\\\\>": "lsp format"
+    "<ctrl-alt-i>": "lsp complete"
+    # Windows: P/B/N/F follow Emacs's previous, backward, next and forward.
+    # <meta> focuses, <shift> moves and <ctrl-alt> resizes, echoing GNU's
+    # C-M-p/b/n/f motions. Resize stays off <meta> arrows, which desktops
+    # take under Super, and off <ctrl-shift-meta>, which folds onto
+    # <shift-meta> when <meta> is Ctrl+Super.
     "<meta-p>": "windowfocus up"
     "<meta-b>": "windowfocus left"
     "<meta-n>": "windowfocus down"
@@ -134,90 +159,31 @@ command:
     "<shift-meta-b>": "windowmove left"
     "<shift-meta-n>": "windowmove down"
     "<shift-meta-f>": "windowmove right"
+    "<ctrl-alt-meta-p>": "windowresize increase height"
+    "<ctrl-alt-meta-b>": "windowresize decrease width"
+    "<ctrl-alt-meta-n>": "windowresize decrease height"
+    "<ctrl-alt-meta-f>": "windowresize increase width"
     "<meta-d>": "windownew down"
+    "<shift-meta-d>": "windowdefaultsplit h"
     "<meta-r>": "windownew right"
-    "<meta-k>": windowclose
-    "<shift-meta-k>": windowcloseall
-    "<meta-m>": windowtogglemaximize
-    "<meta-i>": "lsp implementation"
-    "<meta-g>": "jumptolocation next search"
-    "<shift-meta-g>": "jumptolocation prev search"
-    "<meta-h>": "lsp hover"
-    "<shift-meta-h>": "echo {prompt}lsp<space>hover<space>"
-    "<shift-meta-i>": "echo {prompt}lsp<space>implementation<space>"
-    # Host-Meta arrows resize without consuming Emacs editing letters.
-    "<meta-up>": "windowresize increase height"
-    "<meta-left>": "windowresize decrease width"
-    "<meta-down>": "windowresize decrease height"
-    "<meta-right>": "windowresize increase width"
-    # Tabs use <meta-[> / <meta-]> so <alt> stays available as Emacs Meta.
-    "<meta-]>": tabnext
-    "<meta-[>": tabprevious
-    "<ctrl-tab>": tabnext
-    "<ctrl-shift-tab>": tabprevious
-    "<meta-w>": tabclose
-    "<shift-meta-]>": "tabmove right"
-    "<shift-meta-[>": "tabmove left"
-    # M-, / C-M-, follows GNU xref history; C-x C-x exchanges point and mark.
-    "<alt-,>": "cursorhistory prev"
-    "<ctrl-alt-,>": "cursorhistory next"
-    "<ctrl-x><ctrl-x>": exchangepointandmark
-    # GNU xref, Dired, switch-buffer, symbol-jump, and completion semantics guide these keys.
-    "<alt-.>": "lsp definition"
-    "<alt-shift-/>": "lsp references"    # alt+shift+slash chord, i.e. M-?
-    "<ctrl-alt-.>": "echo {prompt}lsp<space>definition<space>"
-    "<ctrl-shift-alt-/>": "echo {prompt}lsp<space>references<space>"
-    # Dired and the symbol jumps sit on <meta> so they stay reachable while a
-    # terminal owns the keyboard. GNU has no chord to inherit here: M-g i
-    # (imenu) is the natural home, but the editor owns the M-g goto-map.
-    "<meta-o>": fexplorer
-    "<meta-j>": "echo {prompt}jumptoast<space>locals.scm<space>local.definition.method|local.definition.function<space>"
-    "<meta-s>": "echo {prompt}jumptoast<space>locals.scm<space>local.definition.type<space>"
-    "<meta-x>": "echo {prompt}jumptoast<space>locals.scm<space>local.definition.var<space>"
-    "<alt-s>o": searchtext           # two-key M-s o, not the M-? chord above
-    "<ctrl-alt-\\\\>": "lsp format"
-    "<ctrl-alt-i>": "lsp complete"
-    # <meta-l> steps diagnostics and <meta-e> opens their picker. The F-keys
-    # repeat those and visit Git changes, but a focused terminal eats them.
-    # <f3>/<f4> stay unbound: the editor owns them as GNU's kmacro keys.
-    "<meta-l>": lspnextdiagnostic
-    "<shift-meta-l>": lspprevdiagnostic
-    "<meta-e>": "lsp diagnostics"
-    "<f5>": gitprevchange
-    "<f6>": gitnextchange
-    "<f7>": lspprevdiagnostic
-    "<f8>": lspnextdiagnostic
-    "<f9>": "lsp diagnostics"
-    # Bookmarks stay on <meta>+F-key so a focused terminal cannot eat them:
-    # F2 sets and clears, F3 visits, F4 highlights. GNU's own C-x r m / C-x r b
-    # / C-x r l are three-chord sequences.
-    "<meta-f2>": "locationtoggle bookmark"
-    "<shift-meta-f2>": "locationdeleteall bookmark"
-    "<meta-f3>": "jumptolocation next bookmark"
-    "<shift-meta-f3>": "jumptolocation previous bookmark"
-    "<meta-f4>": "locationhighlight bookmark"
-    # Bindings shared with the other presets. <alt> and <ctrl> carry only what
-    # GNU Emacs itself defines (M-x, M-., M-,, M-?, M-s o, C-M-., C-M-,, C-M-\,
-    # C-M-i and the C-x chords); everything Rune-only lives on <meta>, the host
-    # layer (Command on macOS, Super on Linux). On <meta>, <shift> means move
-    # for layout, prompt for LSP, and reverse for anything that steps through a
-    # list. <meta> is not an editing layer, so it carries no undo/redo
-    # counterpart to <meta-c>/<meta-v>: undo is the editor's C-/ and C-_.
-    "<meta-,>": "config"
-    "<meta-/>": "cheatsheet"
-    "<meta-q>": "quit"
-    "<meta-=>": "guifontsize increase"
-    "<meta-->": "guifontsize decrease"
-    "<meta-t>": "tabnew"
-    "<meta-c>": "clipboardcopy"
-    "<meta-v>": "clipboardpaste"
+    "<shift-meta-r>": "windowdefaultsplit v"
+    "<meta-k>": "windowclose"
+    "<shift-meta-k>": "windowcloseall"
+    "<meta-m>": "windowtogglemaximize"
     "<shift-meta-backspace>": "windowresize reset"
     "<shift-meta-+>": ["windowresize max width", "windowresize max height"]
     "<shift-meta-->": ["windowresize min width", "windowresize min height"]
-    "<ctrl-meta-h>": "windowdefaultsplit h"
-    "<ctrl-meta-v>": "windowdefaultsplit v"
     "<meta-enter>": "terminalneworsplit"
     "<shift-meta-enter>": "!"
+    # Tabs: brackets step through them, <shift> reorders.
+    "<meta-t>": "tabnew"
+    "<meta-w>": "tabclose"
+    "<meta-[>": "tabprevious"
+    "<meta-]>": "tabnext"
+    "<shift-meta-[>": "tabmove left"
+    "<shift-meta-]>": "tabmove right"
+    "<shift-meta-`>": "tabsearch"
+    # Workspaces: digits focus, <shift> moves.
     "<meta-`>": "workspacesearch"
     "<meta-1>": "workspacefocus 1"
     "<meta-2>": "workspacefocus 2"
@@ -237,9 +203,44 @@ command:
     "<shift-meta-7>": "workspacemove 7"
     "<shift-meta-8>": "workspacemove 8"
     "<shift-meta-9>": "workspacemove 9"
+    # Code. Period and comma step forward and back through diagnostics, and
+    # with <shift> through Git changes.
+    "<meta-h>": "lsp hover"
+    "<shift-meta-h>": "echo {prompt}lsp<space>hover<space>"
+    "<meta-i>": "lsp implementation"
+    "<shift-meta-i>": "echo {prompt}lsp<space>implementation<space>"
+    "<meta-e>": "lsp diagnostics"
+    "<meta-.>": "lspnextdiagnostic"
+    "<meta-,>": "lspprevdiagnostic"
+    "<shift-meta-.>": "gitnextchange"
+    "<shift-meta-,>": "gitprevchange"
+    "<meta-g>": "jumptolocation next search"
+    "<shift-meta-g>": "jumptolocation prev search"
+    "<meta-o>": "fexplorer"
+    "<meta-j>": "echo {prompt}jumptoast<space>locals.scm<space>local.definition.method|local.definition.function<space>"
+    "<meta-s>": "echo {prompt}jumptoast<space>locals.scm<space>local.definition.type<space>"
+    "<meta-x>": "echo {prompt}jumptoast<space>locals.scm<space>local.definition.var<space>"
+    # Bookmarks: F2 sets and clears, F3 visits.
+    "<meta-f2>": "locationtoggle bookmark"
+    "<shift-meta-f2>": "locationdeleteall bookmark"
+    "<meta-f3>": "jumptolocation next bookmark"
+    "<shift-meta-f3>": "jumptolocation previous bookmark"
+    # <meta> is not an editing layer, so it carries no undo/redo counterpart
+    # to <meta-c>/<meta-v>: undo is the editor's C-/ and C-_.
+    "<meta-c>": "clipboardcopy"
+    "<meta-v>": "clipboardpaste"
+    "<meta-/>": "cheatsheet"
+    "<meta-q>": "quit"
+    "<meta-=>": "guifontsize increase"
+    "<meta-->": "guifontsize decrease"
+
 
 # ---------------------------------------------------------------------------
-# Animations between workspaces
+# Animations
+#
+# `active_content_tab` plays over tabs with work in progress, such as an agent
+# turn, and `active_workspace_tab` over the workspace tabs that own them. Their
+# shaders: blaze, burn, inferno, noise, pulse, shine, trippy.
 # ---------------------------------------------------------------------------
 # animations:
 #   loading_workspace: true
@@ -247,13 +248,16 @@ command:
 #     enabled:  true
 #     # shader:   burn
 #     # duration: 1s
-
-# ---------------------------------------------------------------------------
-# Self-upgrade
-# ---------------------------------------------------------------------------
-# upgrade:
-#   auto_check_enabled: true
-#   check_period:       24h
+#   active_content_tab:
+#     enabled: true
+#     shader:  inferno
+#     fps:     10
+#     loop:    1400ms
+#   active_workspace_tab:
+#     enabled: true
+#     shader:  inferno
+#     fps:     10
+#     loop:    1400ms
 
 # ---------------------------------------------------------------------------
 # Notifications

@@ -46,6 +46,7 @@ import (
 
 	"unstable.build/rune/internal/handler/command"
 	"unstable.build/rune/internal/ide/idetutorial"
+	"unstable.build/rune/internal/ide/keymeta"
 	"unstable.build/rune/internal/text"
 )
 
@@ -87,9 +88,10 @@ type Tutorial struct {
 	// raw term.KeyComb, so a new render site cannot reintroduce the ugly
 	// spec.
 	commandKeyDisplay string
-	// editorMode is the user's resolved editor mode ("modal",
-	// "standard", or "emacs"), exposed to the DSL via editor_mode(). exo is
-	// resolved to its fallback by the host before New.
+	// editorMode is the user's resolved editor mode ("vim",
+	// "helix", "standard", or "emacs"), exposed to the DSL via
+	// editor_mode(). exo is resolved to its fallback by the host before
+	// New.
 	editorMode string
 	// os is the host operating system (runtime.GOOS), exposed to the
 	// DSL via os(). Tutorials branch on it to teach OS-specific flows
@@ -122,6 +124,10 @@ type Tutorial struct {
 	// moves with the data directory, so copy that names it has to ask
 	// the host rather than hardcode a path.
 	configPath string
+
+	// metaKey is what <meta> means in the user's key bindings, which the
+	// DSL's key() applies to the specs it renders.
+	metaKey keymeta.Meta
 
 	// retired names the first DSL feature the source uses that this
 	// Rune no longer implements, or "" when the lesson is supported.
@@ -181,6 +187,12 @@ type Option func(*Tutorial)
 // from, which the DSL exposes as config_path().
 func WithConfigPath(path string) Option {
 	return func(t *Tutorial) { t.configPath = path }
+}
+
+// WithMetaKey sets what <meta> means in the user's key bindings, which
+// the DSL's key() applies. Without it <meta> stays Super.
+func WithMetaKey(meta keymeta.Meta) Option {
+	return func(t *Tutorial) { t.metaKey = meta }
 }
 
 // New parses src as a starlark tutorial DSL program and returns a

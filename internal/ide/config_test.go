@@ -440,9 +440,9 @@ func assertDefaultConfig(t *testing.T, cfg *ideConfig) {
 	assert.Equal(t, term.Attributes{}, cfg.standardAttr())
 	assert.Equal(t, cfg.standardResultAttr(), cfg.emacsResultAttr())
 	assert.Equal(t, term.Attributes{}, cfg.emacsMessageBarAttr())
-	assert.Equal(t, term.Attributes{}, cfg.modalMessageBarAttr())
+	assert.Equal(t, term.Attributes{}, cfg.vimMessageBarAttr())
 	assert.Equal(t, cfg.standardAttr(), cfg.emacsAttr())
-	assert.Equal(t, term.Attributes{}, cfg.modalAttr())
+	assert.Equal(t, term.Attributes{}, cfg.vimAttr())
 	assert.True(t, cfg.autoRestore())
 	assert.Equal(t, "  ", cfg.tabNameSeparator())
 	assert.Equal(t, 90, cfg.editorRuler())
@@ -457,7 +457,7 @@ func assertDefaultConfig(t *testing.T, cfg *ideConfig) {
 	assert.Equal(t, expectedSyntaxConfig, syntaxConfig)
 	assert.Empty(t, cfg.editorComments())
 
-	assert.Equal(t, "modal", cfg.editorMode())
+	assert.Equal(t, "vim", cfg.editorMode())
 	os.Setenv("SHELL", "fish")
 }
 
@@ -815,8 +815,13 @@ func TestTerminalModalDefaultFromEditorMode(t *testing.T) {
 		want   bool
 	}{
 		{"unset editor defaults modal", nil, true},
-		{"modal", map[string]any{"mode": "modal"}, true},
+		{"vim", map[string]any{"mode": "vim"}, true},
+		{"deprecated modal", map[string]any{"mode": "modal"}, true},
 		{"modeless", map[string]any{"mode": "modeless"}, false},
+		{"exo fallback vim", map[string]any{
+			"mode": "exo",
+			"exo":  map[string]any{"command": "vim {file}", "fallback": "vim"},
+		}, true},
 		{"exo fallback modal", map[string]any{
 			"mode": "exo",
 			"exo":  map[string]any{"command": "vim {file}", "fallback": "modal"},
@@ -844,17 +849,17 @@ func TestTerminalModalDefaultFromEditorMode(t *testing.T) {
 	assert.True(t, cfg.terminalModal())
 
 	cfg = &ideConfig{cfg: map[string]any{
-		"editor":   map[string]any{"mode": "modal"},
+		"editor":   map[string]any{"mode": "vim"},
 		"terminal": map[string]any{"modal": false},
 	}, errors: map[string]error{}}
 	assert.False(t, cfg.terminalModal())
 }
 
-// TestEditorModeNormalizesModelessToStandard pins that editorMode()
-// resolves the deprecated "modeless" alias and the new "standard"
-// value to editorModeStandard, while modal/exo/emacs pass through and
-// an unknown mode falls back to modal.
-func TestEditorModeNormalizesModelessToStandard(t *testing.T) {
+// TestEditorModeNormalizesDeprecatedAliases pins that editorMode()
+// resolves the deprecated "modeless" and "modal" aliases to "standard"
+// and "vim", while the canonical modes pass through and an unknown mode
+// falls back to vim.
+func TestEditorModeNormalizesDeprecatedAliases(t *testing.T) {
 	for _, tc := range []struct {
 		mode string
 		want string
@@ -862,17 +867,71 @@ func TestEditorModeNormalizesModelessToStandard(t *testing.T) {
 		{"modeless", editorModeStandard},
 		{"standard", editorModeStandard},
 		{"emacs", editorModeEmacs},
-		{"modal", editorModeModal},
+		{"vim", editorModeVim},
+		{"modal", editorModeVim},
+		{"helix", editorModeHelix},
 		{"exo", editorModeExo},
-		{"bogus", editorModeModal},
+		{"bogus", editorModeVim},
 	} {
 		t.Run(tc.mode, func(t *testing.T) {
 			cfg := &ideConfig{cfg: map[string]any{
 				"editor": map[string]any{"mode": tc.mode},
 			}, errors: map[string]error{}}
 			assert.Equal(t, tc.want, cfg.editorMode())
+			assert.Empty(t, cfg.errors, "a deprecated alias is not a config error")
 		})
 	}
+}
+
+// TestHelixIsAModalEditorMode pins that helix travels the same gating
+// paths as vi: it is a legal editor.exo.fallback, and the console input
+// line and the terminal keymap default to modal for it.
+func TestHelixIsAModalEditorMode(t *testing.T) {
+	t.Parallel()
+
+	t.Run("exo fallback accepts helix", func(t *testing.T) {
+		t.Parallel()
+		canonical, ok := normalizeEditorFallback("helix")
+		require.True(t, ok)
+		assert.Equal(t, editorFallbackHelix, canonical)
+
+		c := ideConfig{cfg: map[string]any{
+			"editor": map[string]any{
+				"mode": "exo",
+				"exo":  map[string]any{"fallback": "helix"},
+			},
+		}, errors: map[string]error{}}
+		assert.Equal(t, editorFallbackHelix, c.exoFallback())
+		assert.Equal(t, editorModeHelix, c.pkgEditorMode())
+	})
+
+	for _, tc := range []struct {
+		mode string
+		want bool
+	}{
+		{editorModeVim, true},
+		{editorModeModal, true},
+		{editorModeHelix, true},
+		{editorModeStandard, false},
+		{editorModeEmacs, false},
+	} {
+		t.Run(tc.mode+" modal gating", func(t *testing.T) {
+			c := ideConfig{cfg: map[string]any{
+				"editor": map[string]any{"mode": tc.mode},
+			}, errors: map[string]error{}}
+			assert.Equal(t, tc.want, modalEditorMode(c.pkgEditorMode()))
+			assert.Equal(t, tc.want, c.consoleEditorModal())
+			assert.Equal(t, tc.want, c.terminalModalDefault())
+		})
+	}
+
+	t.Run("helix keeps the modal command key", func(t *testing.T) {
+		t.Parallel()
+		c := ideConfig{cfg: map[string]any{
+			"editor": map[string]any{"mode": editorModeHelix},
+		}, errors: map[string]error{}}
+		assert.Equal(t, defaultModalCommandKey, c.commandKey())
+	})
 }
 
 // TestDebuggerConfigsTemplates asserts that debuggerConfigs reads the
@@ -1081,6 +1140,28 @@ func TestWorkspaceHome(t *testing.T) {
 		"workspace": map[string]any{"home": "~/work"},
 	}, errors: map[string]error{}}
 	assert.Equal(t, "~/work", cfg.workspaceHome())
+
+	// env vars expand at the config boundary; file APIs keep "$" literal
+	t.Setenv("RUNE_TEST_WORKSPACE_HOME", "/srv/work")
+	cfg = &ideConfig{cfg: map[string]any{
+		"workspace": map[string]any{"home": "$RUNE_TEST_WORKSPACE_HOME/src"},
+	}, errors: map[string]error{}}
+	assert.Equal(t, "/srv/work/src", cfg.workspaceHome())
+
+	// expanding to empty → default "~"
+	cfg = &ideConfig{cfg: map[string]any{
+		"workspace": map[string]any{"home": "$RUNE_TEST_UNSET_WORKSPACE_HOME"},
+	}, errors: map[string]error{}}
+	assert.Equal(t, "~", cfg.workspaceHome())
+}
+
+func TestLogOutputPathExpandsEnv(t *testing.T) {
+	t.Setenv("RUNE_TEST_LOG_DIR", "/var/log/rune")
+	cfg := &ideConfig{cfg: map[string]any{
+		"log_path": "$RUNE_TEST_LOG_DIR/debug.log",
+	}, errors: map[string]error{}}
+	assert.Equal(t, "/var/log/rune/debug.log", cfg.logOutputPath())
+	assert.Empty(t, cfg.errors)
 }
 
 func TestConfigDecodeError(t *testing.T) {
@@ -1181,7 +1262,7 @@ func TestConfigSetting(t *testing.T) {
 			Fg:    term.ColorSilver,
 			Attrs: term.AttrItalic,
 		},
-	}, cfg.modalMessageBarLayout())
+	}, cfg.vimMessageBarLayout())
 	expectedLSPIcons := idelsp.IconSet{
 		idelsp.IconDiagnosticError:       "E",
 		idelsp.IconDiagnosticWarning:     "W",
@@ -1471,7 +1552,7 @@ func TestConfigSetting(t *testing.T) {
 	assert.Equal(t, expectedPrompt, cfg.promptConfig())
 
 	assert.Equal(t, term.Attributes{Bg: term.ColorRed,
-		Fg: term.GetColor("#f0f0f0")}, cfg.modalResultAttr())
+		Fg: term.GetColor("#f0f0f0")}, cfg.vimResultAttr())
 
 	assert.Equal(t, term.Attributes{Bg: term.ColorRed,
 		Fg: term.GetColor("#f1f1f1")}, cfg.standardResultAttr())
@@ -1480,7 +1561,7 @@ func TestConfigSetting(t *testing.T) {
 	assert.Equal(t, term.Attributes{Bg: term.ColorTeal,
 		Fg: term.ColorWhite}, cfg.emacsMessageBarAttr())
 	assert.Equal(t, term.Attributes{Bg: term.ColorNavy,
-		Fg: term.ColorSilver}, cfg.modalMessageBarAttr())
+		Fg: term.ColorSilver}, cfg.vimMessageBarAttr())
 
 	expectedSyntaxConfig := syntax.DefaultConfig()
 	expectedSyntaxConfig.Autoindent = false
@@ -1497,9 +1578,9 @@ func TestConfigSetting(t *testing.T) {
 	assert.Equal(t, term.Attributes{Bg: term.ColorBlue,
 		Fg: term.GetColor("#f8f8f8")}, cfg.emacsAttr())
 	assert.Equal(t, term.Attributes{Bg: term.ColorYellow,
-		Fg: term.GetColor("#f2f2f2")}, cfg.modalAttr())
+		Fg: term.GetColor("#f2f2f2")}, cfg.vimAttr())
 
-	assert.Equal(t, "modal", cfg.editorMode())
+	assert.Equal(t, "vim", cfg.editorMode())
 	os.Setenv("SHELL", "")
 
 	wantMappings := map[handler.Sequence][][]string{
@@ -1768,8 +1849,13 @@ func TestShellEditorModalFromEditorMode(t *testing.T) {
 		want   bool
 	}{
 		{"unset editor defaults modal", nil, true},
-		{"modal", map[string]any{"mode": "modal"}, true},
+		{"vim", map[string]any{"mode": "vim"}, true},
+		{"deprecated modal", map[string]any{"mode": "modal"}, true},
 		{"modeless", map[string]any{"mode": "modeless"}, false},
+		{"exo fallback vim", map[string]any{
+			"mode": "exo",
+			"exo":  map[string]any{"command": "vim {file}", "fallback": "vim"},
+		}, true},
 		{"exo fallback modal", map[string]any{
 			"mode": "exo",
 			"exo":  map[string]any{"command": "vim {file}", "fallback": "modal"},

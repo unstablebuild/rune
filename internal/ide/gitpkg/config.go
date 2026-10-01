@@ -32,7 +32,7 @@ func verifyRepoConfig(dir string) error {
 	if err != nil {
 		if os.IsNotExist(err) {
 			return fmt.Errorf("the repository must contain a config.yaml " +
-				"at its root declaring the extensions to install")
+				"at its root with a config overlay")
 		}
 		return fmt.Errorf("read config.yaml: %w", err)
 	}
@@ -40,8 +40,13 @@ func verifyRepoConfig(dir string) error {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return fmt.Errorf("parse config.yaml: %w", err)
 	}
-	if err := verifyExtensions(cfg["extensions"], dir); err != nil {
-		return err
+	if len(cfg) == 0 {
+		return fmt.Errorf("config.yaml must contain a non-empty config overlay")
+	}
+	if cfg["extensions"] != nil {
+		if err := verifyExtensions(cfg["extensions"], dir); err != nil {
+			return err
+		}
 	}
 	return verifyRequirements(cfg["requirements"])
 }

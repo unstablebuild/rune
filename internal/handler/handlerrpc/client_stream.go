@@ -528,6 +528,12 @@ func (s *ClientStream[T]) receiveMessages() (ret error) {
 					s.log(log.ErrorLevel, "convert handle event back into model: %v", err)
 					continue
 				}
+				// Mouse events are routed by position and ev carries
+				// coordinates local to this handler, so the root would
+				// deliver it to whichever window sits there instead.
+				if ev.Type == term.EventMouse {
+					continue
+				}
 				ev.Raw = clientStreamRepublishKey
 				err = s.publisher(ev)
 				if err != nil {

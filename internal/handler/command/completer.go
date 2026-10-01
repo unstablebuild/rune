@@ -36,6 +36,7 @@ import (
 	"mvdan.cc/sh/v3/shell"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/ide/vctrl"
+	"unstable.build/rune/internal/text/cmdenv"
 	"unstable.build/rune/internal/workspace"
 	"unstable.build/rune/internal/workspace/walkdir"
 )
@@ -192,11 +193,12 @@ func walkDirCompleter(reader walkdir.Reader, dirOnly bool) Completer {
 			if err != nil {
 				return nil, "", err
 			}
-			return iterator.Map(it, ShellQuote), "", nil
+			return iterator.Map(it, quotePathCandidate), "", nil
 		}
 
 		var modifiedLast string
 		last := UnquoteToken(args[len(args)-1])
+		resolved := dispatchedArg(ctx, last)
 
 		// take ~ as the home of the user using the editor.
 		// rather than the home directory of the user at the workspace.
@@ -204,9 +206,9 @@ func walkDirCompleter(reader walkdir.Reader, dirOnly bool) Completer {
 		// erasing trailing /, which prevents user from editing files
 		// in folders.
 		var err error
-		if last == "~" || last == "/~" ||
-			strings.HasPrefix(last, "~/") || strings.HasPrefix(last, "/~/") {
-			last, err = workspaceapi.ExpandPath(last, user.Current,
+		if resolved == "~" || resolved == "/~" ||
+			strings.HasPrefix(resolved, "~/") || strings.HasPrefix(resolved, "/~/") {
+			resolved, err = workspaceapi.ExpandPath(resolved, user.Current,
 				func() (string, error) {
 					// do not really expand to cwd,
 					// let parseURIOrWorkspaceURI take care of that
@@ -215,10 +217,14 @@ func walkDirCompleter(reader walkdir.Reader, dirOnly bool) Completer {
 			if err != nil {
 				return nil, "", fmt.Errorf("expand path: %v", err)
 			}
-			modifiedLast = last
+			modifiedLast = escapeDollar(resolved)
+		} else if startsWithEnvRef(last) && resolved != last {
+			// Like "~", a leading reference is replaced by its value so
+			// the listed paths extend what the prompt shows.
+			modifiedLast = escapeDollar(resolved)
 		}
 
-		uri, err := parseURIOrWorkspaceURI(reader, last)
+		uri, err := parseURIOrWorkspaceURI(reader, resolved)
 		if err != nil {
 			return nil, "", err
 		}
@@ -235,7 +241,7 @@ func walkDirCompleter(reader walkdir.Reader, dirOnly bool) Completer {
 		// directory of the given reader, the iterator returned by walkdir.ListFiles
 		// will return paths relative to it, but filter will be absolute, machting
 		// no results.
-		needsExpand := workspaceapi.HasPrefix(uri, cwd) && filepath.IsAbs(last)
+		needsExpand := workspaceapi.HasPrefix(uri, cwd) && filepath.IsAbs(resolved)
 
 		it, err := traverse(ctx, reader, uri.Path())
 		if err != nil {
@@ -246,7 +252,7 @@ func walkDirCompleter(reader walkdir.Reader, dirOnly bool) Completer {
 				return workspaceapi.Join(cwd, val).Path()
 			})
 		}
-		return iterator.Map(it, ShellQuote), modifiedLast, nil
+		return iterator.Map(it, quotePathCandidate), modifiedLast, nil
 	})
 }
 
@@ -297,15 +303,16 @@ func listNonRecursiveDirCompletions(
 	// host separator instead would also collide with the shell-escape
 	// layer, which treats a backslash as a metacharacter.
 	last = filepath.ToSlash(last)
+	resolved := dispatchedArg(ctx, last)
 
 	pathURI := cwd
 	completeURI := false
 	if last != "" {
-		pathURI, err = workspaceapi.ParseURI(last)
+		pathURI, err = workspaceapi.ParseURI(resolved)
 		if err == nil {
 			completeURI = true
 		} else {
-			pathURI, err = reader.URI(last)
+			pathURI, err = reader.URI(resolved)
 			if err != nil {
 				return nil, err
 			}
@@ -354,17 +361,49 @@ func listNonRecursiveDirCompletions(
 		}
 
 		var result string
+		// outputBase is typed text, so only the listed name is escaped.
 		switch {
 		case completeURI:
-			result = workspaceapi.RelPath(cwd, childURI)
+			result = escapeDollar(workspaceapi.RelPath(cwd, childURI))
 		case outputBase == "." || outputBase == "":
-			result = entry.Name()
+			result = escapeDollar(entry.Name())
 		default:
-			result = path.Join(outputBase, entry.Name())
+			result = path.Join(outputBase, escapeDollar(entry.Name()))
 		}
 		results = append(results, ShellQuote(result+PartialCandidateSuffix))
 	}
 	return results, nil
+}
+
+// dispatchedArg returns the value command dispatch passes for the
+// unquoted argument arg: $VAR and ${VAR} expanded and "$$" read as a
+// literal "$". Completion resolves this value because workspace paths
+// take "$" literally. arg is returned unchanged when expansion fails,
+// e.g. while a "${" is still being typed.
+func dispatchedArg(ctx context.Context, arg string) string {
+	expanded, err := cmdenv.Expand(ctx, cmdenv.EscapeDoubleDollar(arg), nil)
+	if err != nil {
+		return arg
+	}
+	return expanded
+}
+
+// escapeDollar returns s as an argument that command dispatch expands
+// back to s.
+func escapeDollar(s string) string {
+	return strings.ReplaceAll(s, "$", "$$")
+}
+
+// quotePathCandidate returns the path s as a completion candidate that
+// the prompt keeps as one argument and dispatch expands back to s.
+func quotePathCandidate(s string) string {
+	return ShellQuote(escapeDollar(s))
+}
+
+// startsWithEnvRef reports whether arg starts with a $VAR or ${VAR}
+// reference rather than an escaped "$$".
+func startsWithEnvRef(arg string) bool {
+	return len(arg) >= 2 && arg[0] == '$' && arg[1] != '$'
 }
 
 // OutputLinesCompleter returns a files path completer with the given

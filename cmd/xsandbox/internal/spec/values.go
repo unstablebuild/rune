@@ -77,6 +77,22 @@ func (h commandHandle) Freeze()               {}
 func (h commandHandle) Truth() starlark.Bool  { return starlark.True }
 func (h commandHandle) Hash() (uint32, error) { return starlark.String(h.name).Hash() }
 
+// resourceOpenerHandle is returned by expect_resource_opener so
+// open_resource can reference the registration.
+type resourceOpenerHandle struct {
+	scheme string
+}
+
+var _ starlark.Value = resourceOpenerHandle{}
+
+func (h resourceOpenerHandle) String() string {
+	return fmt.Sprintf("<resource opener %q>", h.scheme)
+}
+func (h resourceOpenerHandle) Type() string          { return "resource_opener" }
+func (h resourceOpenerHandle) Freeze()               {}
+func (h resourceOpenerHandle) Truth() starlark.Bool  { return starlark.True }
+func (h resourceOpenerHandle) Hash() (uint32, error) { return starlark.String(h.scheme).Hash() }
+
 // windowHandle is returned by expect_window so render and send_key can
 // reference the installed handler.
 type windowHandle struct {

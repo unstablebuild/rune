@@ -134,10 +134,9 @@ type Node struct {
 	started    bool
 	loginName  string
 	controlURL string
-	// lastErr is the most recent failure to bring the node up or join
-	// the mesh, kept so Status can report why the node is not Running
-	// instead of the failure dying in a log line.
-	lastErr error
+	lastErr    error
+	login      chan struct{}
+	joinSem    chan struct{}
 }
 
 // New builds a Node from cfg. The node stays offline until Start runs.
@@ -146,6 +145,7 @@ func New(cfg Config) *Node {
 	return &Node{
 		cfg:        cfg,
 		controlURL: cfg.ControlURL,
+		joinSem:    make(chan struct{}, 1),
 		srv: &tsnet.Server{
 			Dir:        filepath.Join(cfg.Dir, "runenet"),
 			Hostname:   cfg.Hostname,
@@ -204,7 +204,13 @@ func (n *Node) Start(ctx context.Context) error {
 	n.lc = lc
 
 	upCtx := n.ctx
+	login := make(chan struct{})
+	if st, err := lc.StatusWithoutPeers(ctx); err == nil &&
+		st.BackendState == ipn.NeedsLogin.String() {
+		n.login = login
+	}
 	go debug.CapturePanicReport(func() {
+		defer close(login)
 		_, err := n.srv.Up(upCtx)
 		n.recordJoin(err)
 		if err != nil {
@@ -285,11 +291,17 @@ func (n *Node) recordJoin(err error) {
 // Up joins the mesh, starting the node first if needed, and blocks
 // until this machine is a member or ctx ends. Unlike the background
 // join that Start kicks off, it returns the join failure to the
-// caller; the failure is also recorded for [Node.Status].
+// caller; the failure is also recorded for [Node.Status]. Concurrent
+// calls share one re-registration.
 func (n *Node) Up(ctx context.Context) error {
 	if err := n.Start(ctx); err != nil {
 		return err
 	}
+	unlock, err := n.lockJoin(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	if err := n.setWantRunning(ctx, true); err != nil {
 		return err
 	}
@@ -297,12 +309,25 @@ func (n *Node) Up(ctx context.Context) error {
 		n.recordJoin(err)
 		return err
 	}
+	return n.awaitJoin(ctx)
+}
+
+func (n *Node) awaitJoin(ctx context.Context) error {
 	_, err := n.srv.Up(ctx)
 	n.recordJoin(err)
 	if err != nil {
 		return fmt.Errorf("join network: %w", err)
 	}
 	return nil
+}
+
+func (n *Node) lockJoin(ctx context.Context) (unlock func(), err error) {
+	select {
+	case n.joinSem <- struct{}{}:
+		return func() { <-n.joinSem }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // reauthenticate re-registers this machine when the coordination
@@ -319,6 +344,9 @@ func (n *Node) reauthenticate(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if n.loggingIn() {
+		return nil
+	}
 	st, err := lc.Status(ctx)
 	if err != nil {
 		return fmt.Errorf("network status: %w", err)
@@ -329,8 +357,33 @@ func (n *Node) reauthenticate(ctx context.Context) error {
 	return n.reregister(ctx, lc)
 }
 
-// reregister mints fresh credentials and hands them to the backend.
+// loggingIn reports whether the login Start began is still going. It
+// looks like NeedsLogin from outside, but it already carries fresh
+// credentials.
+func (n *Node) loggingIn() bool {
+	n.mu.Lock()
+	login := n.login
+	n.mu.Unlock()
+	if login == nil {
+		return false
+	}
+	select {
+	case <-login:
+		return false
+	default:
+		return true
+	}
+}
+
+// reregister mints fresh credentials and logs the backend in with
+// them, the way tsnet does at boot. A logged-out backend has lost the
+// preferences that pointed it at the coordination server, and one
+// without a node key does not start logging in by itself.
 func (n *Node) reregister(ctx context.Context, lc *local.Client) error {
+	st, err := lc.StatusWithoutPeers(ctx)
+	if err != nil {
+		return fmt.Errorf("network status: %w", err)
+	}
 	controlURL, authKey, err := n.cfg.Credentials(ctx)
 	if err != nil {
 		return err
@@ -338,7 +391,18 @@ func (n *Node) reregister(ctx context.Context, lc *local.Client) error {
 	n.mu.Lock()
 	n.controlURL = controlURL
 	n.mu.Unlock()
-	if err := lc.Start(ctx, ipn.Options{AuthKey: authKey}); err != nil {
+	prefs := ipn.NewPrefs()
+	prefs.ControlURL = controlURL
+	prefs.Hostname = n.srv.Hostname
+	prefs.WantRunning = true
+	err = lc.Start(ctx, ipn.Options{UpdatePrefs: prefs, AuthKey: authKey})
+	if err != nil {
+		return fmt.Errorf("re-register machine: %w", err)
+	}
+	if st.HaveNodeKey {
+		return nil
+	}
+	if err := lc.StartLoginInteractive(ctx); err != nil {
 		return fmt.Errorf("re-register machine: %w", err)
 	}
 	return nil
@@ -357,16 +421,16 @@ func (n *Node) Rejoin(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	unlock, err := n.lockJoin(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	if err := n.reregister(ctx, lc); err != nil {
 		n.recordJoin(err)
 		return err
 	}
-	_, err = n.srv.Up(ctx)
-	n.recordJoin(err)
-	if err != nil {
-		return fmt.Errorf("join network: %w", err)
-	}
-	return nil
+	return n.awaitJoin(ctx)
 }
 
 // needsReauth reports whether the backend is waiting to be logged in,

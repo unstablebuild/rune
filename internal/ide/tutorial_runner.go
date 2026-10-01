@@ -476,18 +476,14 @@ func (r *tutorialRunner) answersPrompt(ev term.Event) bool {
 	return r.tut.PromptActive()
 }
 
-// Cursor satisfies tui.Handler. The tile owns the cursor while it
-// holds focus, as any focused window would.
+// Cursor satisfies tui.Handler. The cursor is always the workspaces':
+// the tile has nothing to type into, and every key reaches the
+// workspaces wherever the tile's focus is.
 func (r *tutorialRunner) Cursor() (term.Coordinates, term.CursorStyle, bool) {
-	if !r.tileFocused() {
-		if r.union == nil {
-			return r.Handler.Cursor()
-		}
-		return r.union.Cursor()
+	if r.union == nil {
+		return r.Handler.Cursor()
 	}
-	pos, style, show := r.pane.Cursor()
-	pos.X += r.tileColumn()
-	return pos, style, show
+	return r.union.Cursor()
 }
 
 // Selection satisfies tui.Handler.

@@ -196,6 +196,23 @@ func TestStartHeadlessLogging(t *testing.T) {
 		assert.Contains(t, out.String(), "headless node up")
 	})
 
+	t.Run("env vars in log_path are expanded", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("RUNE_TEST_HEADLESS_LOG_DIR", dir)
+		cfg := config.MapConfig(map[string]any{
+			"log_path": "$RUNE_TEST_HEADLESS_LOG_DIR/debug.log",
+		})
+
+		closeLog, err := startHeadlessLogging(cfg, &bytes.Buffer{})
+		require.NoError(t, err)
+		log.Info("expanded log path")
+		closeLog()
+
+		onDisk, err := os.ReadFile(filepath.Join(dir, "debug.log"))
+		require.NoError(t, err)
+		assert.Contains(t, string(onDisk), "expanded log path")
+	})
+
 	t.Run("without log_path only the extra writer is used", func(t *testing.T) {
 		var out bytes.Buffer
 		closeLog, err := startHeadlessLogging(

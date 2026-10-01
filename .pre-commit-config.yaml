@@ -14,15 +14,15 @@ repos:
         exclude: (^|/)testdata(_[a-z_]+)?/|\.asc$
 
 -   repo: https://github.com/golangci/golangci-lint
-    rev: v2.5.0
+    rev: v2.14.0
     hooks:
     -   id: golangci-lint-full
 
 -   repo: https://github.com/kojah/gohawk
-    rev: v0.3.5
+    rev: 43b44437f8a7a0be306e5fb3c80f976c360b9f30  # frozen: v0.5.0
     hooks:
     -   id: gohawk
-        args: [-json, -enable-all, '-disable=exitpolicy,goroutineownership,lockorder,processownership', ./...]
+        args: [-json, -enable-all, '-disable=goroutineownership,lockorder,processownership', ./...]
 
 -   repo: local
     hooks:

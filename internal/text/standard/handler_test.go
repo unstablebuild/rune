@@ -590,7 +590,7 @@ func TestStandardCursorCorrectionsAfterExternalEdit(t *testing.T) {
 	uri, err := workspaceapi.ParseURI("test:///cursor-corrections-external-edit")
 	require.NoError(t, err)
 	buf := cell.NewBuffer()
-	h := NewHandler(buf, uri, text.IndentRuneTab, 0)
+	h := NewHandler(buf, uri, text.IndentRuneTab, 0, WithKeymap(KeymapMacOS))
 	h.Resize(20, 10)
 	h.CellEditor().Edit(
 		context.Background(), term.Coordinates{}, term.Coordinates{},
@@ -718,19 +718,25 @@ func TestSyntacticSelectionKeyBindings(t *testing.T) {
 	assert.False(t, handled)
 }
 
-func TestSublimeKeyBindingsMacOS(t *testing.T) {
-	const snippet = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk"
-	spAll := func(add string) *string {
-		return new(snippet + add)
-	}
+// sublimeCase is one Sublime Text shortcut replayed against the standard
+// editor over sublimeSnippet.
+type sublimeCase struct {
+	description string
+	keycomb     string
+	result      *string
+	coordinates term.Coordinates
+	clipboard   *string
+}
 
-	suite := []struct {
-		description string
-		keycomb     string
-		result      *string
-		coordinates term.Coordinates
-		clipboard   *string
-	}{
+const sublimeSnippet = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk"
+
+func sublimeSnippetPlus(add string) *string {
+	return new(sublimeSnippet + add)
+}
+
+func TestSublimeKeyBindingsMacOS(t *testing.T) {
+	spAll := sublimeSnippetPlus
+	suite := []sublimeCase{
 		// General editing
 		{"Cut (cuts entire line when nothing selected)", "<meta-x>", new("b\nc\nd\ne\nf\ng\nh\ni\nj\nk"), term.Coordinates{Y: 0, X: 0}, nil},
 		{"Copy+Paste", "<shift-right><meta-c><meta-v>", new("aa\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk"), term.Coordinates{Y: 0, X: 1}, nil},
@@ -868,6 +874,13 @@ func TestSublimeKeyBindingsMacOS(t *testing.T) {
 		{"Add line between paired braces", "{<enter>", new("{\n\n}\na\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk"), term.Coordinates{Y: 1, X: 0}, nil},
 	}
 
+	runSublimeSuite(t, KeymapMacOS, suite)
+}
+
+// runSublimeSuite replays each case on a fresh handler using keymap and
+// requires every key of the case to be handled.
+func runSublimeSuite(t *testing.T, keymap Keymap, suite []sublimeCase) {
+	t.Helper()
 	uri, err := workspaceapi.ParseURI("memory:///myfile.go")
 	require.NoError(t, err)
 
@@ -878,7 +891,7 @@ func TestSublimeKeyBindingsMacOS(t *testing.T) {
 
 			clip := clipboard.NewInMemory()
 			reg := registerhistory.NewClipboard(registerset.New(clip))
-			content := snippet
+			content := sublimeSnippet
 			if test.description == "Wrap paragraph at ruler" {
 				content = "alpha beta gamma delta epsilon zeta eta theta\n\ni\nj\nk"
 			}
@@ -892,6 +905,7 @@ func TestSublimeKeyBindingsMacOS(t *testing.T) {
 			recorder := new(testMacroRecorder)
 			player := new(testMacroPlayer)
 			opts := []Option{
+				WithKeymap(keymap),
 				WithClipboard(reg),
 				WithMacroRecorder(recorder),
 				WithMacroPlayer(player),
@@ -941,6 +955,78 @@ func TestSublimeKeyBindingsMacOS(t *testing.T) {
 			assert.Equal(t, test.coordinates, handler.CursorAtScroll())
 		})
 	}
+}
+
+// TestSublimeKeyBindingsLinux replays the Sublime Text for Linux shortcuts:
+// editing lives on <ctrl>, with <ctrl-k> as the chord prefix, because every
+// <meta> chord belongs to Rune's command layer.
+func TestSublimeKeyBindingsLinux(t *testing.T) {
+	spAll := sublimeSnippetPlus
+	runSublimeSuite(t, KeymapLinux, []sublimeCase{
+		// General editing
+		{"Cut (cuts entire line when nothing selected)", "<ctrl-x>", new("b\nc\nd\ne\nf\ng\nh\ni\nj\nk"), term.Coordinates{Y: 0, X: 0}, nil},
+		{"Copy+Paste", "<shift-right><ctrl-c><ctrl-v>", new("aa\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk"), term.Coordinates{Y: 0, X: 1}, nil},
+		{"Copy+Paste and indent correctly", "<shift-right><ctrl-c><down><ctrl-shift-v>", new("a\nab\nc\nd\ne\nf\ng\nh\ni\nj\nk"), term.Coordinates{Y: 1, X: 1}, nil},
+		{"Paste from clipboard history", "<shift-right><ctrl-c><ctrl-v><ctrl-v><ctrl-k><ctrl-v>", new("aaa\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk"), term.Coordinates{Y: 0, X: 2}, nil},
+		{"Undo", "<ctrl-x><ctrl-z>", new("a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk"), term.Coordinates{Y: 0, X: 0}, nil},
+		{"Redo", "<ctrl-x><ctrl-z><ctrl-shift-z>", new("b\nc\nd\ne\nf\ng\nh\ni\nj\nk"), term.Coordinates{Y: 0, X: 0}, nil},
+		{"Redo or repeat last command", "<ctrl-x><ctrl-z><ctrl-y>", new("b\nc\nd\ne\nf\ng\nh\ni\nj\nk"), term.Coordinates{Y: 0, X: 0}, nil},
+
+		// Line manipulation
+		{"Insert line after current line", "<ctrl-enter>", new("a\n\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk"), term.Coordinates{Y: 1, X: 0}, nil},
+		{"Insert line before current line", "<ctrl-shift-enter>", new("\na\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk"), term.Coordinates{Y: 0, X: 0}, nil},
+		{"Duplicate line(s)", "<ctrl-shift-d>", new("a\na\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk"), term.Coordinates{Y: 1, X: 0}, nil},
+		{"Delete entire line", "<ctrl-shift-k>", new("b\nc\nd\ne\nf\ng\nh\ni\nj\nk"), term.Coordinates{Y: 0, X: 0}, nil},
+		{"Join line below to end of current line", "<ctrl-j>", new("ab\nc\nd\ne\nf\ng\nh\ni\nj\nk"), term.Coordinates{Y: 0, X: 1}, nil},
+		{"Indent current line(s)", "<ctrl-]>", new("\ta\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk"), term.Coordinates{Y: 0, X: 1}, nil},
+		{"Unindent current line(s)", "<ctrl-]><ctrl-[>", new("a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk"), term.Coordinates{Y: 0, X: 0}, nil},
+		{"Delete from cursor to end of line", "<ctrl-k><ctrl-k>", new("\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk"), term.Coordinates{Y: 0, X: 0}, nil},
+		{"Delete to beginning of line", "<right><ctrl-k><ctrl-backspace>", new("\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk"), term.Coordinates{Y: 0, X: 0}, nil},
+		{"Set mark at cursor position", "<ctrl-k><ctrl-space>", nil, term.Coordinates{}, nil},
+		{"Select from cursor to mark", "<ctrl-k><ctrl-space><down><down><ctrl-k><ctrl-a><ctrl-c>", nil, term.Coordinates{Y: 0, X: 0}, new("a\nb\n")},
+		{"Delete from cursor to mark", "<ctrl-k><ctrl-space><down><down><ctrl-k><ctrl-w>", new("c\nd\ne\nf\ng\nh\ni\nj\nk"), term.Coordinates{Y: 0, X: 0}, nil},
+		{"Swap cursor position with mark", "<ctrl-k><ctrl-space><down><down><ctrl-k><ctrl-x>", nil, term.Coordinates{Y: 0, X: 0}, nil},
+		{"Clear mark", "<ctrl-k><ctrl-space><ctrl-k><ctrl-g>", nil, term.Coordinates{}, nil},
+		{"Delete to end of line", "<ctrl-shift-delete>", new("\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk"), term.Coordinates{Y: 0, X: 0}, nil},
+		{"Delete to start of line", "<right><ctrl-shift-backspace>", new("\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk"), term.Coordinates{Y: 0, X: 0}, nil},
+
+		// Comments
+		{"Toggle line comment", "<ctrl-/>", new("// a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk"), term.Coordinates{Y: 0, X: 3}, nil},
+		{"Toggle block comment", "<shift-right><ctrl-shift-/>", new("/*a*/\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk"), term.Coordinates{Y: 0, X: 2}, nil},
+
+		// Text transformation
+		{"Transform selection to UPPERCASE", "<shift-right><ctrl-k><ctrl-u>", new("A\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk"), term.Coordinates{Y: 0, X: 1}, nil},
+		{"Transform selection to lowercase", "<shift-right><ctrl-k><ctrl-u><home><shift-right><ctrl-k><ctrl-l>", new("a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk"), term.Coordinates{Y: 0, X: 1}, nil},
+		{"Wrap paragraph at ruler", "<ctrl-k><ctrl-q>", new("alpha beta\ngamma delta\nepsilon zeta\neta theta\n\ni\nj\nk"), term.Coordinates{Y: 0, X: 0}, nil},
+
+		// Selection
+		{"Select all", "<ctrl-a><ctrl-c>", nil, term.Coordinates{}, spAll("\n")},
+		{"Select entire line (repeat to select additional lines)", "<down><ctrl-l><ctrl-l><ctrl-c>", nil, term.Coordinates{Y: 1, X: 0}, new("b\nc\n")},
+		{"Select word at cursor (repeat to select next occurrence)", "<ctrl-end>a<enter><ctrl-home><ctrl-d><ctrl-d><ctrl-d><ctrl-c>", nil, term.Coordinates{}, new("a")},
+		{"Expand selection to brackets", "{abc}<left><left><shift-left><ctrl-shift-m>", nil, term.Coordinates{X: 4}, nil},
+		{"Expand selection to scope", "<ctrl-shift-space>", nil, term.Coordinates{}, nil},
+		{"Expand selection to indentation level", "<ctrl-shift-j><ctrl-c>", nil, term.Coordinates{}, spAll("\n")},
+
+		// Navigation and movement
+		{"Move to start of line", "<space><right><home>", nil, term.Coordinates{Y: 0, X: 0}, nil},
+		{"Move to end of line", "<end>", nil, term.Coordinates{Y: 0, X: 1}, nil},
+		{"Jump to matching bracket", "{}<left><left><ctrl-m>", nil, term.Coordinates{X: 1}, nil},
+		{"Move to start of file", "<down><down><ctrl-home>", nil, term.Coordinates{Y: 0, X: 0}, nil},
+		{"Move to end of file", "<ctrl-end>", nil, term.Coordinates{Y: 10, X: 0}, nil},
+
+		// Scrolling
+		{"Center current line in view", "<ctrl-end>z<enter>z<enter>z<enter>z<enter>z<enter>z<enter><up><up><up><up><ctrl-k><ctrl-c>",
+			nil, term.Coordinates{Y: 12}, nil},
+		{"Scroll view up one line", "<ctrl-end><up><ctrl-alt-up>", nil, term.Coordinates{Y: 9}, nil},
+		{"Scroll view down one line", "<ctrl-alt-down>", nil, term.Coordinates{Y: 1}, nil},
+
+		// Search
+		{"Find", "<ctrl-f>", nil, term.Coordinates{}, nil},
+
+		// Macros
+		{"Start/stop recording macro", "<ctrl-q>", nil, term.Coordinates{}, nil},
+		{"Playback recorded macro", "<ctrl-q><right><ctrl-q><ctrl-shift-q>", nil, term.Coordinates{Y: 0, X: 1}, nil},
+	})
 }
 
 func TestAutoPairOption(t *testing.T) {
@@ -1004,7 +1090,7 @@ func TestMetaKMarkUsesSharedLocationList(t *testing.T) {
 
 	buf := cell.NewBuffer()
 	buf.ReadFrom(strings.NewReader("a\nb\nc"))
-	h := NewHandler(buf, uri, text.IndentRuneTab, 0)
+	h := NewHandler(buf, uri, text.IndentRuneTab, 0, WithKeymap(KeymapMacOS))
 	h.Resize(10, 3)
 
 	run := func(keys string) {
@@ -1048,7 +1134,7 @@ func TestMetaKSwapUpdatesSharedMarkLocation(t *testing.T) {
 
 	buf := cell.NewBuffer()
 	buf.ReadFrom(strings.NewReader("a\nb\nc"))
-	h := NewHandler(buf, uri, text.IndentRuneTab, 0)
+	h := NewHandler(buf, uri, text.IndentRuneTab, 0, WithKeymap(KeymapMacOS))
 	h.Resize(10, 3)
 
 	seq, err := term.ParseKeys("<meta-k><meta-space><down><meta-k><meta-space><down><meta-k><meta-x>")
@@ -1146,7 +1232,8 @@ func TestSublimeSelectIndentationLevelKeyBinding(t *testing.T) {
 			if tabspaces <= 0 {
 				tabspaces = 4
 			}
-			handler := NewHandler(buf, uri, text.IndentRuneTab, tabspaces, WithClipboard(reg)).(*standardHandler)
+			handler := NewHandler(buf, uri, text.IndentRuneTab, tabspaces,
+				WithKeymap(KeymapMacOS), WithClipboard(reg)).(*standardHandler)
 			handler.Resize(80, 10)
 			for i, key := range seq {
 				ev := term.Event{Type: term.EventKey, Key: key.Key, Mod: key.Mod, Ch: key.Ch}
@@ -1312,7 +1399,8 @@ func TestPasteFromClipboardHistory(t *testing.T) {
 
 			buf := cell.NewBuffer()
 			buf.ReadFrom(strings.NewReader(test.content))
-			h := NewHandler(buf, uri, text.IndentRuneTab, 0, WithClipboard(reg))
+			h := NewHandler(buf, uri, text.IndentRuneTab, 0,
+				WithKeymap(KeymapMacOS), WithClipboard(reg))
 			h.Resize(10, 3)
 
 			for _, step := range test.steps {
@@ -1518,6 +1606,7 @@ func TestPasteAndReindent(t *testing.T) {
 
 			handler := NewHandler(buf, uri,
 				text.IndentRuneTab, 0,
+				WithKeymap(KeymapMacOS),
 				WithClipboard(clip),
 				WithTabspaces(1),
 			)
@@ -2006,7 +2095,7 @@ func newStandardFindHandler(t *testing.T, content string, opts ...Option) (text.
 	buf.ReadFrom(strings.NewReader(content))
 	uri, err := workspaceapi.ParseURI("memory:///find.txt")
 	require.NoError(t, err)
-	opts = append(opts, WithCommandBar(true))
+	opts = append([]Option{WithKeymap(KeymapMacOS)}, append(opts, WithCommandBar(true))...)
 	root := NewHandler(buf, uri, text.IndentRuneTab, 0, opts...).(*standardHandler)
 	bar := text.WithStatusBar(root, buf, root.less.Scroll(), false, false, text.StatusBarConfig{
 		Publisher:        &texttest.TestEditor{},

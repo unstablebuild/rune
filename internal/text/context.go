@@ -25,7 +25,10 @@ import (
 
 type ctxKey int
 
-var barsKey ctxKey
+const (
+	barsKey ctxKey = iota
+	noAutoCenterKey
+)
 
 // BarOptions selects which auxiliary bars an Edit call installs and,
 // when the caller renders a synthetic resource, what the status bar
@@ -57,4 +60,20 @@ func WithBars(ctx context.Context, opts BarOptions) context.Context {
 func BarsFromContext(ctx context.Context) (BarOptions, bool) {
 	v, ok := ctx.Value(barsKey).(BarOptions)
 	return v, ok
+}
+
+// WithoutAutoCenter marks ctx as asking Edit for a handler whose
+// SetCursorAtScroll scrolls only as far as needed to show the cursor,
+// even when the editor is configured to center it. Callers restoring
+// a view (a scroll offset and a cursor within it) need it, since
+// centering moves the view and seeking it back moves the cursor.
+func WithoutAutoCenter(ctx context.Context) context.Context {
+	return context.WithValue(ctx, noAutoCenterKey, true)
+}
+
+// AutoCenterDisabled reports whether ctx was marked by
+// WithoutAutoCenter. text.Editor implementations call it from Edit.
+func AutoCenterDisabled(ctx context.Context) bool {
+	disabled, _ := ctx.Value(noAutoCenterKey).(bool)
+	return disabled
 }

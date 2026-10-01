@@ -547,6 +547,142 @@ func TestInputFireOnce(t *testing.T) {
 	}
 }
 
+func TestInputAltModifier(t *testing.T) {
+	cases := []struct {
+		name     string
+		modifier AltModifier
+		selected ebiten.Key
+		other    ebiten.Key
+	}{
+		{"right", AltModifierRight, ebiten.KeyAltRight, ebiten.KeyAltLeft},
+		{"left", AltModifierLeft, ebiten.KeyAltLeft, ebiten.KeyAltRight},
+	}
+
+	t.Run("default reserves neither Alt", func(t *testing.T) {
+		for _, key := range []ebiten.Key{ebiten.KeyAltRight, ebiten.KeyAltLeft} {
+			mock, input := newTestInput(t)
+			mock.events = slices.Concat(
+				action(press(key, ebiten.KeyModAlt)),
+				action(on(press(ebiten.KeyL, ebiten.KeyModAlt, ebiten.KeyModShift), 'l', 'L'), '|'),
+			)
+
+			events := input.processEvents(nil)
+			require.Len(t, events, 1)
+			events[0].Raw = nil
+			assert.Equal(t, term.Event{Type: term.EventKey, Mod: term.ModAlt, Ch: 'L'}, events[0])
+		}
+	})
+
+	t.Run("explicit none reserves neither Alt", func(t *testing.T) {
+		mock, input := newTestInput(t)
+		input.setAltModifier(AltModifierNone)
+		mock.events = slices.Concat(
+			action(press(ebiten.KeyAltRight, ebiten.KeyModAlt)),
+			action(on(press(ebiten.KeyL, ebiten.KeyModAlt, ebiten.KeyModShift), 'l', 'L'), '|'),
+		)
+
+		events := input.processEvents(nil)
+		require.Len(t, events, 1)
+		events[0].Raw = nil
+		assert.Equal(t, term.Event{Type: term.EventKey, Mod: term.ModAlt, Ch: 'L'}, events[0])
+	})
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Run("selected Alt preserves layout text", func(t *testing.T) {
+				mock, input := newTestInput(t)
+				input.setAltModifier(tc.modifier)
+				mock.events = slices.Concat(
+					action(press(tc.selected, ebiten.KeyModAlt)),
+					action(on(press(ebiten.KeyL, ebiten.KeyModAlt, ebiten.KeyModShift), 'l', 'L'), '|'),
+				)
+
+				require.Equal(t, []term.Event{{Type: term.EventKey, Ch: '|', Raw: []byte("|")}}, input.processEvents(nil))
+			})
+
+			t.Run("other Alt remains a shortcut", func(t *testing.T) {
+				mock, input := newTestInput(t)
+				input.setAltModifier(tc.modifier)
+				mock.events = slices.Concat(
+					action(press(tc.other, ebiten.KeyModAlt)),
+					action(on(press(ebiten.KeyL, ebiten.KeyModAlt, ebiten.KeyModShift), 'l', 'L'), '|'),
+				)
+
+				events := input.processEvents(nil)
+				require.Len(t, events, 1)
+				events[0].Raw = nil
+				assert.Equal(t, term.Event{Type: term.EventKey, Mod: term.ModAlt, Ch: 'L'}, events[0])
+			})
+
+			// X11 reports a modifier press with the mask from before it, so
+			// the Alt key's own press carries no Alt bit.
+			t.Run("selected Alt press without the Alt bit", func(t *testing.T) {
+				mock, input := newTestInput(t)
+				input.setAltModifier(tc.modifier)
+				mock.events = slices.Concat(
+					action(press(tc.selected)),
+					action(on(press(ebiten.KeyL, ebiten.KeyModAlt, ebiten.KeyModShift), 'l', 'L'), '|'),
+				)
+
+				require.Equal(t, []term.Event{{Type: term.EventKey, Ch: '|', Raw: []byte("|")}}, input.processEvents(nil))
+			})
+
+			t.Run("selected Alt still reserved when Alt is remapped", func(t *testing.T) {
+				mock, input := newTestInput(t)
+				input.setAltModifier(tc.modifier)
+				input.setKeyMapping(map[term.KeyComb]term.KeyComb{
+					{Mod: term.ModAlt}: {Mod: term.ModMeta},
+				})
+				mock.events = slices.Concat(
+					action(press(tc.selected, ebiten.KeyModAlt)),
+					action(on(press(ebiten.KeyL, ebiten.KeyModAlt, ebiten.KeyModShift), 'l', 'L'), '|'),
+				)
+
+				require.Equal(t, []term.Event{{Type: term.EventKey, Ch: '|', Raw: []byte("|")}}, input.processEvents(nil))
+			})
+
+			t.Run("selected Alt chord without text remains a shortcut", func(t *testing.T) {
+				mock, input := newTestInput(t)
+				input.setAltModifier(tc.modifier)
+				mock.events = slices.Concat(
+					action(press(tc.selected, ebiten.KeyModAlt)),
+					action(press(ebiten.KeyArrowLeft, ebiten.KeyModAlt)),
+				)
+
+				events := input.processEvents(nil)
+				require.Len(t, events, 1)
+				assert.Equal(t, term.KeyArrowLeft, events[0].Key)
+				assert.Equal(t, term.ModAlt, events[0].Mod)
+			})
+
+			for _, sub := range []struct {
+				name  string
+				clear []ebiten.InputEvent
+			}{
+				{"release frees the other Alt", action(release(tc.selected))},
+				{"unobserved release resynchronizes", action(on(press(ebiten.KeyA), 'a', 'A'), 'a')},
+			} {
+				t.Run(sub.name, func(t *testing.T) {
+					mock, input := newTestInput(t)
+					input.setAltModifier(tc.modifier)
+					mock.events = slices.Concat(
+						action(press(tc.selected, ebiten.KeyModAlt)),
+						sub.clear,
+						action(press(tc.other, ebiten.KeyModAlt)),
+						action(on(press(ebiten.KeyL, ebiten.KeyModAlt, ebiten.KeyModShift), 'l', 'L'), '|'),
+					)
+
+					events := input.processEvents(nil)
+					require.NotEmpty(t, events)
+					last := events[len(events)-1]
+					last.Raw = nil
+					assert.Equal(t, term.Event{Type: term.EventKey, Mod: term.ModAlt, Ch: 'L'}, last)
+				})
+			}
+		})
+	}
+}
+
 // frame represents one frame of input for multi-frame tests. events holds the
 // ordered observations of key actions and the text they committed; chars holds
 // text the platform could not attribute to any key action.

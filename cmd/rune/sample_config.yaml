@@ -13,11 +13,14 @@
 #  #font_size: 13
 #  # Lines scrolled per unit of mouse-wheel movement (higher is faster).
 #  #scroll_multiplier: 3
+#  # macOS Option key that types layout characters instead of Alt shortcuts:
+#  # left, right or none.
+#  #alt_modifier: right
 #  window_opacity: { fg: 1, bg: 1 }
 
 #editor:
-#  # 'modal' (vi-like), 'standard' (conventional), 'emacs', or 'exo'.
-#  mode: modal
+#  # 'vim', 'helix', 'standard' (conventional), 'emacs', or 'exo'.
+#  mode: vim
 #  autoindent: true
 #  #standard:
 #  #  search:

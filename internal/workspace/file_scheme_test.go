@@ -274,6 +274,26 @@ func TestStartCommand(t *testing.T) {
 		assert.Equal(t, "inherited", stdout.String())
 	})
 
+	t.Run("env vars in Cmd.Path are expanded", func(t *testing.T) {
+		t.Setenv("RUNE_FILE_SCHEME_BIN_TEST", "/bin")
+
+		s, err := newTestFileScheme(dirURI(t, t.TempDir()))
+		require.NoError(t, err)
+		defer s.Close()
+
+		var stdout bytes.Buffer
+		ch := make(chan error)
+		_, err = s.StartCommand(context.Background(), workspaceapi.Cmd{
+			Path:    "$RUNE_FILE_SCHEME_BIN_TEST/sh",
+			Args:    []string{"-c", "printf ok"},
+			Watcher: workspaceapi.ChanProcessWatcher(ch),
+			Stdout:  &stdout,
+		})
+		require.NoError(t, err)
+		require.NoError(t, <-ch)
+		assert.Equal(t, "ok", stdout.String())
+	})
+
 	t.Run("omitting Cmd.Dir makes command run on workspace dir", func(t *testing.T) {
 		tmpDir, err := os.MkdirTemp("", "")
 		require.NoError(t, err)
@@ -934,6 +954,13 @@ func TestOpenFileClosesSchemeOnCallerClose(t *testing.T) {
 
 	// Closing again should remain a no-op.
 	assert.NoError(t, f.Close())
+}
+
+func dirURI(t *testing.T, dir string) workspaceapi.URI {
+	t.Helper()
+	uri, err := workspaceapi.ParseURI("file://" + dir)
+	require.NoError(t, err)
+	return uri
 }
 
 func TestReadFileClosesFile(t *testing.T) {

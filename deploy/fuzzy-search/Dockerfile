@@ -11,7 +11,7 @@ ARG TARGETARCH
 # ---------------------------------------------------------------------------
 # build: cross-compile the extension_fuzzy_search Go binary on $BUILDPLATFORM.
 # ---------------------------------------------------------------------------
-FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS build
+FROM --platform=$BUILDPLATFORM golang:1.27.1-bookworm AS build
 
 ARG TARGETOS
 ARG TARGETARCH

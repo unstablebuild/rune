@@ -2405,6 +2405,51 @@ func TestViCountedMotionScenarios(t *testing.T) {
 	}
 }
 
+func TestViWordMotionEmptyLines(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		content     string
+		seq         string
+		wantScroll  term.Coordinates
+		wantContent string
+		wantMode    viMode
+	}{
+		{name: "w from line end stops on empty line", content: "one\n\ntwo", seq: "$w", wantScroll: term.Coordinates{Y: 1}},
+		{name: "w from empty line moves to next line", content: "one\n\ntwo", seq: "jw", wantScroll: term.Coordinates{Y: 2}},
+		{name: "w stops on each empty line", content: "one\n\n\ntwo", seq: "$ww", wantScroll: term.Coordinates{Y: 2}},
+		{name: "W from line end stops on empty line", content: "one\n\ntwo", seq: "$W", wantScroll: term.Coordinates{Y: 1}},
+		{name: "w skips whitespace-only line", content: "one\n  \ntwo", seq: "$w", wantScroll: term.Coordinates{Y: 2}},
+		{name: "dw at line end keeps following empty line", content: "one\n\ntwo", seq: "$dw", wantScroll: term.Coordinates{X: 1}, wantContent: "on\n\ntwo"},
+		{name: "dw on empty line deletes it", content: "one\n\ntwo", seq: "jdw", wantScroll: term.Coordinates{Y: 1}, wantContent: "one\ntwo"},
+		{name: "dW on empty line deletes it", content: "one\n\ntwo", seq: "jdW", wantScroll: term.Coordinates{Y: 1}, wantContent: "one\ntwo"},
+		{name: "dw deletes trailing blanks before line end", content: "one  \ntwo", seq: "dw", wantContent: "\ntwo"},
+		{name: "cw on empty line keeps the line", content: "one\n\ntwo", seq: "jcwX", wantScroll: term.Coordinates{X: 1, Y: 1}, wantContent: "one\nX\ntwo", wantMode: insertMode},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vi := setupVi(t, tc.content, 2)
+			vi.Resize(80, 8)
+			vi.Draw(term.NoopWriter{})
+
+			for _, eventChar := range tc.seq {
+				_, handled := vi.Handle(term.Event{Type: term.EventKey, Ch: eventChar})
+				require.True(t, handled, "event %q", eventChar)
+			}
+
+			wantContent := tc.wantContent
+			if wantContent == "" {
+				wantContent = tc.content
+			}
+			assert.Equal(t, wantContent, vi.less.Buffer().String())
+			assert.Equal(t, tc.wantScroll, vi.cursor.CursorAtScroll())
+			wantMode := tc.wantMode
+			if wantMode == 0 {
+				wantMode = normalMode
+			}
+			assert.Equal(t, wantMode, vi.mode())
+		})
+	}
+}
+
 func TestViCountedOperatorScenarios(t *testing.T) {
 	type testCase struct {
 		name           string
@@ -2456,6 +2501,21 @@ func TestViCountedOperatorScenarios(t *testing.T) {
 		{name: "d2tx deletes until before second x", content: "ax bx cx", seq: "d2tx", wantContent: "x cx", wantScroll: coord(0, 0)},
 		{name: "c2fx changes through second x", content: "ax bx cx", seq: "c2fx", wantContent: " cx", wantMode: insertMode, wantScroll: coord(0, 0)},
 		{name: "wrap d2fx deletes through second x", content: "ax bx cx", seq: "d2fx", wrap: true, width: 4, wantContent: " cx", wantScroll: coord(0, 0)},
+		{name: "dfw finds w instead of moving by word", content: "one two wow", seq: "dfw", wantContent: "o wow", wantScroll: coord(0, 0)},
+		{name: "dtw stops before w instead of moving by word", content: "one two wow", seq: "dtw", wantContent: "wo wow", wantScroll: coord(0, 0)},
+
+		// Counted word operators across empty lines: the last word stops at its
+		// line end, and an end in column 0 is pulled back to the previous line.
+		{name: "d2w from empty line deletes through next word", content: "\none two", seq: "d2w", wantContent: "two", wantScroll: coord(0, 0)},
+		{name: "d2w over two empty lines deletes them linewise", content: "\n\nthree", seq: "d2w", wantContent: "three", wantScroll: coord(0, 0)},
+		{name: "2dw over two empty lines deletes them linewise", content: "\n\nthree", seq: "2dw", wantContent: "three", wantScroll: coord(0, 0)},
+		{name: "d2w from first word over empty line deletes linewise", content: "one\n\ntwo", seq: "d2w", wantContent: "two", wantScroll: coord(0, 0)},
+		{name: "d2w from indented word over empty line deletes linewise", content: "  one\n\ntwo", seq: "wd2w", wantContent: "two", wantScroll: coord(0, 0)},
+		{name: "d2w from line end over empty line joins lines", content: "one\n\ntwo", seq: "$d2w", wantContent: "on\ntwo", wantScroll: coord(1, 0)},
+		{name: "c2w over two empty lines keeps one line", content: "\n\nthree", seq: "c2wX", wantContent: "X\nthree", wantMode: insertMode, wantScroll: coord(1, 0)},
+		{name: "c2w from indented word over empty line keeps indent", content: "  one\n\ntwo", seq: "wc2wX", wantContent: "  X\ntwo", wantMode: insertMode, wantScroll: coord(3, 0)},
+		{name: "y2w over two empty lines yanks linewise", content: "\n\nthree", seq: "y2w", wantClipboard: true, clipboardText: "\n\n", clipboardMode: text.LineSelection, wantScroll: coord(0, 0)},
+		{name: "y2w from line end over empty line yanks through newline", content: "one\n\ntwo", seq: "$y2w", wantClipboard: true, clipboardText: "e\n", clipboardMode: text.StandardSelection, wantScroll: coord(2, 0)},
 
 		// Yank counts and metadata for character-wise and line-wise selections.
 		{name: "2yw yanks two words", content: "one two three", seq: "2yw", wantClipboard: true, clipboardText: "one two ", clipboardMode: text.StandardSelection, wantScroll: coord(0, 0)},

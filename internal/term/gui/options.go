@@ -17,7 +17,9 @@
 package gui
 
 import (
+	"fmt"
 	"net/url"
+	"strings"
 	"sync"
 
 	ebiten "github.com/hajimehoshi/ebiten/v2"
@@ -27,6 +29,47 @@ import (
 
 // Option allows configuring an instance of GUI.
 type Option func(g *GUI) error
+
+// AltModifier names the Alt key whose chords type the character the keyboard
+// layout composes instead of triggering an Alt shortcut. It matters where the
+// platform reports that key as plain Alt, as macOS does for Option; AltGr,
+// which platforms report as Ctrl+Alt, types layout characters regardless. A
+// chord that commits no text stays a shortcut. The zero value reserves
+// neither key.
+type AltModifier uint8
+
+// AltModifier values, spelled in config by String.
+const (
+	AltModifierNone AltModifier = iota
+	AltModifierRight
+	AltModifierLeft
+)
+
+// String returns the config spelling of m.
+func (m AltModifier) String() string {
+	switch m {
+	case AltModifierRight:
+		return "right"
+	case AltModifierLeft:
+		return "left"
+	}
+	return "none"
+}
+
+// ParseAltModifier resolves a config value, ignoring case; "" and "none"
+// reserve neither key.
+func ParseAltModifier(s string) (AltModifier, error) {
+	switch strings.ToLower(s) {
+	case "", "none":
+		return AltModifierNone, nil
+	case "right":
+		return AltModifierRight, nil
+	case "left":
+		return AltModifierLeft, nil
+	}
+	return AltModifierNone,
+		fmt.Errorf("expected 'left', 'right' or 'none', got %q", s)
+}
 
 // WithFontFamily defines the opentype font family to use.
 // See font.Manager.SetFontByFamilyName for more details.
@@ -62,6 +105,14 @@ func WithBackgroundBlur(radius int) Option {
 func WithKeyMapping(m map[term.KeyComb]term.KeyComb) Option {
 	return func(g *GUI) error {
 		g.input.setKeyMapping(m)
+		return nil
+	}
+}
+
+// WithAltModifier selects which Alt key produces layout characters.
+func WithAltModifier(modifier AltModifier) Option {
+	return func(g *GUI) error {
+		g.input.setAltModifier(modifier)
 		return nil
 	}
 }
@@ -184,16 +235,6 @@ func WithLineHeightOffset(offset float64) Option {
 func WithColumnWidthOffset(offset float64) Option {
 	return func(g *GUI) error {
 		return g.fontManager.SetOffsetX(offset)
-	}
-}
-
-// WithRenderOffset defines the render offset in pixels.
-// Default is no offset.
-func WithRenderOffset(x, y int) Option {
-	return func(g *GUI) error {
-		g.renderOffset.X = x
-		g.renderOffset.Y = y
-		return nil
 	}
 }
 

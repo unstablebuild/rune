@@ -46,7 +46,6 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
-	"golang.org/x/sys/unix"
 	"google.golang.org/grpc"
 	"unstable.build/rune/auth"
 	"unstable.build/rune/cmd/rune/crashreport"
@@ -245,9 +244,10 @@ func startWorkspaceServer() int {
 				case syscall.SIGKILL:
 					log.Info("Received SIGKILL signal: exiting")
 					os.Exit(1)
-				case syscall.SIGURG:
-					/* received when socket urgent data is ready to be read */
 				default:
+					if isUrgentDataSignal(sig) {
+						break
+					}
 					log.Debugf("Received unhandled signal: %#v", sig)
 				}
 			case <-quitch:
@@ -367,11 +367,7 @@ func main() {
 			logPath := crashreport.DefaultLaunchLogPath(*flagDataPath)
 			f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 			if err == nil {
-				// syscall.Dup2 isn't defined on linux/arm64 (the
-				// kernel only exposes Dup3 there); golang.org/x/sys/unix
-				// papers over the difference.
-				fd := int(f.Fd())
-				_ = unix.Dup2(fd, int(os.Stderr.Fd()))
+				redirectStderr(f)
 			}
 			flag.Parse()
 		}
@@ -786,6 +782,12 @@ func runGUI(
 		return g.CellPixelSize()
 	}
 
+	setAltModifier := func(modifier gui.AltModifier) {
+		if g := guiRef.Load(); g != nil {
+			g.SetAltModifier(modifier)
+		}
+	}
+
 	// We load config twice, but it's better than the race conditions caused
 	// by env var resolution order.
 	rootCfg, envErr := ide.Config(*flagConfigPath, runeDefaultConfig())
@@ -814,7 +816,7 @@ func runGUI(
 	root, err := newBootstrapHandler(
 		*flagDataPath, *flagConfigPath,
 		*flagWorkspace, *flagZdotDir, filenames,
-		launchCmd, runner, mu, publishEvent, cellPixelSize,
+		launchCmd, runner, mu, publishEvent, cellPixelSize, setAltModifier,
 		func(u *url.URL) error { return extbrowser.Browse(u) },
 		text.NewSystemClipboard(), os.TempDir(), rootCfg, trust,
 	)
@@ -916,13 +918,13 @@ func buildGUIOptions(
 		gui.WithColumnWidthOffset(getGUIColumnWidthOffset(b, cfg)),
 		gui.WithLineHeightOffset(getGUILineHeightOffset(b, cfg)),
 		gui.WithScrollMultiplier(getGUIScrollMultiplier(b, cfg)),
-		gui.WithRenderOffset(0, 10),
 		gui.WithLigatures(getGUILigatures(b, cfg)),
 		gui.WithTransparentWindow(transparentWindow),
 		gui.WithBackgroundBlur(getGUIBackgroundBlur(b, cfg)),
 		gui.WithLocker(mu),
 		gui.WithPrintFPS(printFPS),
 		gui.WithKeyMapping(getGUIKeyMapping(b, cfg)),
+		gui.WithAltModifier(getGUIAltModifier(b, cfg)),
 		gui.WithCloseRequestEvent(quitEvent(appMenuKeyBindings(cfg))),
 	}
 }

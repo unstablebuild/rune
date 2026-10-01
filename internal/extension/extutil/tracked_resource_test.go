@@ -135,7 +135,7 @@ func TestResourceTrackerIntegration(t *testing.T) {
 			if setHasType(textapi.EventTypeScroll, test.evs) &&
 				setHasType(textapi.EventTypeEdit, test.evs) {
 				t.Run("scroll position is replicated to resource", func(t *testing.T) {
-					_, handled := bh.Handle(term.Event{Type: term.EventKey, Mod: term.ModMeta, Key: term.KeyArrowUp})
+					_, handled := bh.Handle(term.Event{Type: term.EventKey, Mod: term.ModCtrl, Key: term.KeyHome})
 					require.True(t, handled)
 					for handled {
 						_, handled = bh.Handle(term.Event{Type: term.EventKey, Key: term.KeyArrowDown})

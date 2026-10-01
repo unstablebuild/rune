@@ -362,6 +362,12 @@ func (t *Tabs) TabIcon(idx int) rune {
 	return t.tabs[idx].icon
 }
 
+// DefaultTabIcon returns the icon ResetTabIcon restores for the tab at
+// idx. If the tab at idx does not exist, this method will panic.
+func (t *Tabs) DefaultTabIcon(idx int) rune {
+	return t.tabs[idx].defIcon
+}
+
 // SetTabDefaultAttr sets the default attributes of the tab at idx. Calls to ResetTabAttr
 // will reset the tab attributes to the given attributes.
 // If the tab at idx does not exist, this method will panic.

@@ -10,6 +10,9 @@
 # ---------------------------------------------------------------------------
 gui:
   default_theme: romero
+  # The Option key that types layout characters, such as | or @, instead
+  # of Alt shortcuts: left, right or none.
+  alt_modifier: "[[.AltModifier]]"
 #   font_size: 13
 #   window_opacity: {fg: 1, bg: 1}
 #   window_blur_radius: 100
@@ -22,15 +25,12 @@ gui:
 # ---------------------------------------------------------------------------
 # Editor
 #
-# `aux_bar` is the strip left of each editor pane and `status_bar` the bar at
-# the bottom of each pane.
+# `aux_bar` is the strip left of each buffer, `status_bar` the bar at the
+# bottom of each buffer, and `standard.search` the find and replace box.
 # ---------------------------------------------------------------------------
 editor:
   mode: standard
   auto_pair: true
-  standard:
-    attr: {fg: default, bg: default}
-    search_attr: {fg: grey, bg: yellow}
   # The :fexplorer tree is an editable buffer: renaming a line renames
   # the file. It starts read-only here; <shift-esc> unlocks it for the
   # rest of the visit.
@@ -56,6 +56,22 @@ editor:
 #     layout: ' {{ .Status | bg "red" | fg "white" | bold }} █▓▒░  {{ .Filepath | fg "white" }}  {{ .GitShortRef | fg "white" }}   {{ .GitDiffAdd | fg "green" }}   {{ .GitDiffDel | fg "red" }} {{ .ShiftRight }} {{ .CursorColumn | fg "white" }}:{{ .CursorLine | fg "white" }}  {{ .TotalLines | fg "white" }} lines  ░▒▓█ {{ .Language | bold | fg "white" | bg "red" }} '
 #     background_attr:       {bg: gray}
 #     foreground_error_attr: {fg: yellow}
+#   standard:
+#     attr:        {fg: default, bg: default}   # buffer text
+#     search_attr: {fg: grey, bg: yellow}       # search matches
+#     search:
+#       find_key:           "<meta-f>"
+#       replace_key:        "<meta-r>"
+#       attr:               {fg: default, bg: default}
+#       input_attr:         {fg: default, bg: default}
+#       placeholder_attr:   {fg: gray, bg: default}
+#       frame_attr:         {fg: gray, bg: default}
+#       focus_frame_attr:   {fg: silver, bg: default}
+#       button_attr:        {fg: default, bg: gray}
+#       button_hover_attr:  {fg: default, bg: blue}
+#       match_attr:         {fg: grey, bg: yellow}
+#       current_match_attr: {fg: default, bg: default}
+#       status_attr:        {fg: default, bg: default}
 
 # ---------------------------------------------------------------------------
 # Terminal
@@ -224,7 +240,11 @@ command:
     "<shift-meta-9>": "workspacemove 9"
 
 # ---------------------------------------------------------------------------
-# Animations between workspaces
+# Animations
+#
+# `active_content_tab` plays over tabs with work in progress, such as an agent
+# turn, and `active_workspace_tab` over the workspace tabs that own them. Their
+# shaders: blaze, burn, inferno, noise, pulse, shine, trippy.
 # ---------------------------------------------------------------------------
 # animations:
 #   loading_workspace: true
@@ -232,13 +252,16 @@ command:
 #     enabled:  true
 #     # shader:   burn
 #     # duration: 1s
-
-# ---------------------------------------------------------------------------
-# Self-upgrade
-# ---------------------------------------------------------------------------
-# upgrade:
-#   auto_check_enabled: true
-#   check_period:       24h
+#   active_content_tab:
+#     enabled: true
+#     shader:  inferno
+#     fps:     10
+#     loop:    1400ms
+#   active_workspace_tab:
+#     enabled: true
+#     shader:  inferno
+#     fps:     10
+#     loop:    1400ms
 
 # ---------------------------------------------------------------------------
 # Notifications

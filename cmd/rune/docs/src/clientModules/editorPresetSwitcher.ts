@@ -1,17 +1,10 @@
-type EditorPreset = 'modal' | 'standard' | 'emacs';
+type EditorPreset = 'modal' | 'helix' | 'standard' | 'emacs';
 type EffectiveEditor = EditorPreset | 'exo';
 type Platform = 'darwin' | 'linux';
-type PresetSelection =
-  | 'standard-darwin'
-  | 'standard-linux'
-  | 'modal'
-  | 'emacs';
 
 interface PresetDef {
-  id: PresetSelection;
-  editor: EditorPreset;
+  id: EditorPreset;
   label: string;
-  platform?: Platform;
 }
 
 interface FixedGuide {
@@ -24,28 +17,27 @@ interface RuneConsent {
 }
 
 const PRESETS: PresetDef[] = [
-  {
-    id: 'standard-darwin',
-    editor: 'standard',
-    label: 'Standard (macOS)',
-    platform: 'darwin',
-  },
-  {
-    id: 'standard-linux',
-    editor: 'standard',
-    label: 'Standard (Linux)',
-    platform: 'linux',
-  },
-  {id: 'modal', editor: 'modal', label: 'Vim'},
-  {id: 'emacs', editor: 'emacs', label: 'Emacs'},
+  {id: 'standard', label: 'Standard'},
+  {id: 'modal', label: 'Vim'},
+  {id: 'helix', label: 'Helix'},
+  {id: 'emacs', label: 'Emacs'},
 ];
+const PLATFORM_LABELS: Record<Platform, string> = {
+  darwin: 'macOS',
+  linux: 'Linux',
+};
+// Each editor guide documents one editor, so its preset is fixed; the
+// platform still follows the switcher, since every editor ships a macOS and
+// a Linux preset.
 const FIXED_GUIDES: Record<string, FixedGuide> = {
   '/learn/exoeditor': {id: 'exo', label: 'Exoeditor'},
   '/learn/vim-editor': {id: 'modal', label: 'Vim'},
+  '/learn/helix-editor': {id: 'helix', label: 'Helix'},
   '/learn/standard-editor': {id: 'standard', label: 'Standard'},
   '/learn/emacs-editor': {id: 'emacs', label: 'Emacs'},
 };
-const STORAGE_KEY = 'rune-editor-preset';
+const PRESET_KEY = 'rune-editor-preset';
+const PLATFORM_KEY = 'rune-platform';
 const CHANGE_EVENT = 'runeeditorpresetchange';
 const isClient = typeof window !== 'undefined';
 
@@ -56,38 +48,31 @@ function canPersist(): boolean {
   return !!consent?.functional;
 }
 
-function defaultSelection(): PresetSelection {
-  return detectPlatform() === 'darwin' ? 'standard-darwin' : 'standard-linux';
-}
-
-function loadPreset(): PresetSelection {
-  if (!isClient || !canPersist()) return defaultSelection();
+function readStored(key: string): string | null {
+  if (!canPersist()) return null;
   try {
-    const value = window.localStorage.getItem(STORAGE_KEY);
-    if (PRESETS.some((preset) => preset.id === value)) {
-      return value as PresetSelection;
-    }
-    // Migrate the original platform-detected Standard selection.
-    if (value === 'standard') return defaultSelection();
+    return window.localStorage.getItem(key);
   } catch {
-    /* ignore */
+    return null;
   }
-  return defaultSelection();
 }
 
-function savePreset(preset: PresetSelection): void {
-  if (!isClient || !canPersist()) return;
+function store(key: string, value: string): void {
+  if (!canPersist()) return;
   try {
-    window.localStorage.setItem(STORAGE_KEY, preset);
+    window.localStorage.setItem(key, value);
   } catch {
     /* ignore */
   }
 }
 
+// Only a Mac runs the macOS build, so phones, tablets (iPadOS reports a Mac
+// platform but has touch points) and Windows get the Linux keys.
 function detectPlatform(): Platform {
   if (!isClient) return 'darwin';
   const platform = navigator.platform || navigator.userAgent;
-  return /Mac|iPhone|iPad|iPod/i.test(platform) ? 'darwin' : 'linux';
+  const touch = navigator.maxTouchPoints > 1;
+  return /Mac/i.test(platform) && !touch ? 'darwin' : 'linux';
 }
 
 function currentGuide(): FixedGuide | null {
@@ -96,39 +81,37 @@ function currentGuide(): FixedGuide | null {
   return FIXED_GUIDES[path] ?? null;
 }
 
-let selectedPreset: PresetSelection = defaultSelection();
+let selectedEditor: EditorPreset = 'standard';
+// null follows the browser's platform until the reader picks one.
+let selectedPlatform: Platform | null = null;
 const renderers = new Set<() => void>();
 
-function selectedDefinition(): PresetDef {
-  return PRESETS.find((preset) => preset.id === selectedPreset) ?? PRESETS[0];
+// Values from before the platform had its own switch, such as
+// "standard-linux", fall back to Standard on the detected platform.
+function load(): void {
+  const editor = readStored(PRESET_KEY);
+  const preset = PRESETS.find((p) => p.id === editor);
+  if (preset) selectedEditor = preset.id;
+  const platform = readStored(PLATFORM_KEY);
+  if (platform === 'darwin' || platform === 'linux') selectedPlatform = platform;
+}
+
+function save(): void {
+  store(PRESET_KEY, selectedEditor);
+  if (selectedPlatform) store(PLATFORM_KEY, selectedPlatform);
 }
 
 function effectiveSelection(): {
   editor: EffectiveEditor;
-  platform: Platform;
   label: string;
+  platform: Platform;
 } {
+  const platform = selectedPlatform ?? detectPlatform();
   const guide = currentGuide();
-  const selected = selectedDefinition();
-  if (!guide) {
-    return {
-      editor: selected.editor,
-      platform: selected.platform ?? detectPlatform(),
-      label: selected.label,
-    };
-  }
-  if (guide.id === 'standard') {
-    const standard =
-      selected.editor === 'standard'
-        ? selected
-        : PRESETS.find((preset) => preset.id === defaultSelection())!;
-    return {
-      editor: 'standard',
-      platform: standard.platform!,
-      label: standard.label,
-    };
-  }
-  return {editor: guide.id, platform: detectPlatform(), label: guide.label};
+  if (guide) return {editor: guide.id, label: guide.label, platform};
+  const preset =
+    PRESETS.find((p) => p.id === selectedEditor) ?? PRESETS[0];
+  return {editor: preset.id, label: preset.label, platform};
 }
 
 function publish(): void {
@@ -142,10 +125,13 @@ function publish(): void {
   for (const render of renderers) render();
 }
 
-function selectPreset(preset: PresetSelection, persist: boolean): void {
-  selectedPreset = preset;
-  if (persist) savePreset(preset);
-  publish();
+function makeButton(): [HTMLButtonElement, HTMLSpanElement] {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'rune-editor-preset-switcher__btn';
+  const label = document.createElement('span');
+  button.append(label);
+  return [button, label];
 }
 
 function mountInto(slot: HTMLElement): void {
@@ -154,55 +140,48 @@ function mountInto(slot: HTMLElement): void {
 
   const wrap = document.createElement('div');
   wrap.className = 'rune-editor-preset-switcher';
-
-  const button = document.createElement('button');
-  button.type = 'button';
-  button.className = 'rune-editor-preset-switcher__btn';
-
-  const label = document.createElement('span');
-  button.append(label);
+  const [presetButton, presetLabel] = makeButton();
+  const [platformButton, platformLabel] = makeButton();
 
   const render = (): void => {
     if (!slot.isConnected) {
       renderers.delete(render);
       return;
     }
-    const fixed = currentGuide();
+    const guide = currentGuide();
     const active = effectiveSelection();
-    label.textContent = `Preset: ${active.label}`;
-    button.disabled = fixed !== null && fixed.id !== 'standard';
-    if (fixed && fixed.id !== 'standard') {
-      button.title = `This guide always shows ${fixed.label} keybindings`;
-      button.setAttribute(
-        'aria-label',
-        `This guide always shows ${fixed.label} keybindings`,
-      );
-    } else {
-      button.title = `Editor preset: ${active.label}. Click for next`;
-      button.setAttribute(
-        'aria-label',
-        `Cycle editor preset. Current: ${active.label}`,
-      );
-    }
+    presetLabel.textContent = `Preset: ${active.label}`;
+    presetButton.disabled = guide !== null;
+    const presetHint = guide
+      ? `This guide always shows ${guide.label} keybindings`
+      : `Editor preset: ${active.label}. Click for next`;
+    presetButton.title = presetHint;
+    presetButton.setAttribute('aria-label', presetHint);
+
+    const current = PLATFORM_LABELS[active.platform];
+    const other = PLATFORM_LABELS[active.platform === 'darwin' ? 'linux' : 'darwin'];
+    platformLabel.textContent = `Platform: ${current}`;
+    const platformHint = `Showing ${current} keybindings. Click for ${other}`;
+    platformButton.title = platformHint;
+    platformButton.setAttribute('aria-label', platformHint);
   };
 
   renderers.add(render);
-  button.addEventListener('click', () => {
-    const fixed = currentGuide();
-    if (fixed && fixed.id !== 'standard') return;
-    if (fixed?.id === 'standard') {
-      const next =
-        effectiveSelection().platform === 'darwin'
-          ? 'standard-linux'
-          : 'standard-darwin';
-      selectPreset(next, true);
-      return;
-    }
-    const currentIndex = PRESETS.findIndex((preset) => preset.id === selectedPreset);
-    selectPreset(PRESETS[(currentIndex + 1) % PRESETS.length].id, true);
+  presetButton.addEventListener('click', () => {
+    if (currentGuide()) return;
+    const index = PRESETS.findIndex((p) => p.id === selectedEditor);
+    selectedEditor = PRESETS[(index + 1) % PRESETS.length].id;
+    save();
+    publish();
+  });
+  platformButton.addEventListener('click', () => {
+    selectedPlatform =
+      effectiveSelection().platform === 'darwin' ? 'linux' : 'darwin';
+    save();
+    publish();
   });
 
-  wrap.append(button);
+  wrap.append(presetButton, platformButton);
   slot.append(wrap);
   render();
 }
@@ -226,11 +205,11 @@ function mountWithRetry(remaining = 30): void {
 }
 
 if (isClient) {
-  selectedPreset = loadPreset();
+  load();
   publish();
 
   window.addEventListener('runeconsentchange', () => {
-    if (canPersist()) savePreset(selectedPreset);
+    if (canPersist()) save();
   });
 
   if (document.readyState === 'loading') {

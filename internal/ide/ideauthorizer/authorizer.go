@@ -75,6 +75,10 @@ type PermissionRequest struct {
 	CommandDir         string
 	CommandScopeLabel  string
 	CommandScopeLabels []string
+	// CommandScopeExact reports that approving Always covers only this exact
+	// command path, args and dir, because the programs it runs couldn't be
+	// determined. The scope labels are empty when it is set.
+	CommandScopeExact bool
 }
 
 // PermissionDecision is the user's decision for an extension permission request.
@@ -339,6 +343,7 @@ func (a *Authorizer) authorizePermission(
 		labels := pluginPermissionApprovalScopeLabels(*command)
 		req.CommandScopeLabels = labels
 		req.CommandScopeLabel = strings.Join(labels, ", ")
+		req.CommandScopeExact = len(labels) == 0
 	}
 	if !ext.Plugin {
 		req.ExtensionID = ext.ExtensionID

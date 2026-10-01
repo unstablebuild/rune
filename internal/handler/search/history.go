@@ -120,11 +120,11 @@ func (h *History) Add(query string) error {
 			}
 
 			return []storageapi.Update{
-					{FieldPath: []string{"Queries"}, Value: h.doc.Queries},
-					{FieldPath: []string{"Version"}, Value: h.doc.Version + 1},
-				}, []storageapi.Precondition{
-					{FieldPath: []string{"Version"}, Value: h.doc.Version},
-				}
+				{FieldPath: []string{"Queries"}, Value: h.doc.Queries},
+				{FieldPath: []string{"Version"}, Value: h.doc.Version + 1},
+			}, []storageapi.Precondition{
+				{FieldPath: []string{"Version"}, Value: h.doc.Version},
+			}
 		})
 	if err != nil {
 		return fmt.Errorf("could not set command history: %v", err)
@@ -155,11 +155,11 @@ func (h *History) Remove(cmd string) error {
 			h.doc.Queries = newQueries
 
 			return []storageapi.Update{
-					{FieldPath: []string{"Queries"}, Value: h.doc.Queries},
-					{FieldPath: []string{"Version"}, Value: h.doc.Version + 1},
-				}, []storageapi.Precondition{
-					{FieldPath: []string{"Version"}, Value: h.doc.Version},
-				}
+				{FieldPath: []string{"Queries"}, Value: h.doc.Queries},
+				{FieldPath: []string{"Version"}, Value: h.doc.Version + 1},
+			}, []storageapi.Precondition{
+				{FieldPath: []string{"Version"}, Value: h.doc.Version},
+			}
 		})
 	if err != nil {
 		return fmt.Errorf("could not remove item from command history: %v", err)

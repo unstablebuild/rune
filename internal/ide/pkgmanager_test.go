@@ -118,6 +118,30 @@ func TestPackageManagerConcurrent(t *testing.T) {
 	}
 }
 
+func TestPkgManager_InstallLatest_AlreadyInstalledByAnotherCaller(t *testing.T) {
+	t.Parallel()
+	pkgs := idepkgtest.MakePackages(release.Package{Name: "go"})
+	bundles := idepkgtest.MakeBundles(
+		[]release.Bundle{{Package: "go", Version: "1", CreatedAt: time.Now()}})
+	rm := idepkgtest.NewReleaseManager(pkgs, bundles)
+	rm.SetMissProgressComplete(true)
+	cfg := defaultCfg()
+	cfg.scheduleNextTick = func(fn func()) bool {
+		fn()
+		return true
+	}
+	m := newTestWorkspaceManagerHandlerForPkgManagerWithInterrupterCfg(t, rm, true,
+		term.NopInterrupter(), cfg, new(sync.Mutex))
+
+	// Another caller finishes the install after this one saw the
+	// package missing but before it starts installing.
+	require.NoError(t, m.pkgmanager.pkg.InstallPackageVersion(
+		context.Background(), "go", "1", nil))
+	it, err := m.pkgmanager.installLatest(context.Background(), "go", "1")
+	require.NoError(t, err)
+	require.NoError(t, it.Close())
+}
+
 func TestPkgManager_LibDir_NotAuthenticated(t *testing.T) {
 	t.Parallel()
 	pkgs := idepkgtest.MakePackages(release.Package{Name: "go"})

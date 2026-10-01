@@ -17,36 +17,42 @@
 package main
 
 import (
-	_ "embed"
 	"fmt"
+	"runtime"
+	"slices"
+
+	"unstable.build/rune/internal/ide/idepreset"
+	"unstable.build/rune/internal/ide/keymeta"
+	"unstable.build/rune/internal/term/gui"
 )
 
-//go:embed preset_modal.yaml
-var presetModalYAML string
-
-//go:embed preset_emacs.yaml
-var presetEmacsYAML string
-
-// renderPreset returns the preset-config file body for the given
-// editor choice and telemetry preference. The modal choice enables vim mode everywhere; the
-// standard choice uses platform-native standard editor bindings;
-// the emacs choice uses an Emacs keymap. The deprecated "modeless" alias
-// resolves to the standard preset.
-func renderPreset(editor string, telemetry bool) (string, error) {
-	var body string
+func renderPreset(
+	editor string, meta keymeta.Meta, telemetry bool, altModifier gui.AltModifier,
+) (string, error) {
+	var body, mode string
 	switch editor {
-	case editorModal:
-		body = presetModalYAML
+	case editorVim:
+		body, mode = presetModalYAML, editorVim
+	case editorHelix:
+		body, mode = presetHelixYAML, editorHelix
 	case editorStandard, editorModeless:
-		body = presetStandardYAML
+		body, mode = presetStandardYAML, editorStandard
 	case editorEmacs:
-		body = presetEmacsYAML
+		body, mode = presetEmacsYAML, editorEmacs
 	default:
 		return "", fmt.Errorf("unknown editor choice: %q", editor)
 	}
-	const tmpl = "%s\ntelemetry:\n" +
-		"  # Report anonymous usage and system information. See the Telemetry\n" +
-		"  # page in the Rune docs for the full list of what is reported.\n" +
-		"  enabled: %t\n"
-	return fmt.Sprintf(tmpl, body, telemetry), nil
+	if !slices.Contains(keymeta.Options(runtime.GOOS, mode), meta) {
+		return "", fmt.Errorf("meta key %s is not offered for %s on %s",
+			meta, mode, runtime.GOOS)
+	}
+	data := idepreset.Data{Meta: meta, Telemetry: telemetry}
+	switch {
+	case runtime.GOOS == "darwin":
+		data.AltModifier = altModifier.String()
+	case altModifier != gui.AltModifierNone:
+		return "", fmt.Errorf("alt modifier %s is not offered on %s",
+			altModifier, runtime.GOOS)
+	}
+	return idepreset.Render(body, data)
 }

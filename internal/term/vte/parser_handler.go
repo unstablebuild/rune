@@ -79,6 +79,7 @@ type parserHandler struct {
 	modeCursorKeys            bool
 	modeInsert                bool
 	modeOrigin                bool
+	modeReverseScreen         bool
 	modeBlinkingCursor        bool
 	modeLineFeedNewLine       bool
 	modeShowCursor            bool
@@ -1125,7 +1126,7 @@ func (t *parserHandler) ReportPrivateMode(mode vteparser.PrivateMode) {
 	case vteparser.PrivateModeOrigin:
 		modeVar = &t.modeOrigin
 	case vteparser.PrivateModeScreen:
-		/* DECSCNM not supported */
+		modeVar = &t.modeReverseScreen
 	case vteparser.PrivateModeLineWrap:
 		modeVar = &t.modeWrap
 	case vteparser.PrivateModeBlinkingCursor:
@@ -1174,7 +1175,7 @@ func (t *parserHandler) SetPrivateMode(mode vteparser.PrivateMode) {
 		t.modeOrigin = true
 		t.goTo(0, 0)
 	case vteparser.PrivateModeScreen:
-		/* DECSCNM not supported */
+		t.modeReverseScreen = true
 	case vteparser.PrivateModeLineWrap:
 		t.modeWrap = true
 	case vteparser.PrivateModeBlinkingCursor:
@@ -1225,7 +1226,7 @@ func (t *parserHandler) UnsetPrivateMode(mode vteparser.PrivateMode) {
 		t.modeOrigin = false
 		t.goTo(0, 0)
 	case vteparser.PrivateModeScreen:
-		/* DECSCNM not supported */
+		t.modeReverseScreen = false
 	case vteparser.PrivateModeLineWrap:
 		t.modeWrap = false
 	case vteparser.PrivateModeBlinkingCursor:

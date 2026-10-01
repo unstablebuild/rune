@@ -19,13 +19,23 @@ package runenet
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
+	"tailscale.com/net/netns"
 	"tailscale.com/tailcfg"
+	"tailscale.com/tstest/integration"
+	"tailscale.com/tstest/integration/testcontrol"
+	"tailscale.com/types/logger"
+	"unstable.build/rune/internal/debug"
 )
 
 func TestStartCredentials(t *testing.T) {
@@ -148,6 +158,180 @@ func TestRejoin(t *testing.T) {
 		assert.True(t, errors.Is(
 			node.Rejoin(context.Background()), ErrNotStarted))
 	})
+}
+
+// joinTimeout bounds a join against the in-process coordination
+// server. A join that was cut short never gets there.
+const joinTimeout = 20 * time.Second
+
+const testAuthKey = "tskey-auth-test"
+
+// startTestControl runs an in-process coordination server that only
+// registers nodes presenting testAuthKey. Every /key request is held
+// for a second, like the round-trip to the production server: without
+// it a login completes before anything else can see it in flight.
+func startTestControl(t *testing.T) string {
+	t.Helper()
+	netns.SetEnabled(false)
+	t.Cleanup(func() { netns.SetEnabled(true) })
+
+	control := &testcontrol.Server{
+		DERPMap:          integration.RunDERPAndSTUN(t, logger.Discard, "127.0.0.1"),
+		RequireAuthKey:   testAuthKey,
+		AllNodesSameUser: true,
+		Logf:             logger.Discard,
+	}
+	server := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/key" {
+				time.Sleep(time.Second)
+			}
+			control.ServeHTTP(w, r)
+		}))
+	t.Cleanup(server.Close)
+	return server.URL
+}
+
+// countingCredentials hands out the test control server's credentials
+// and counts how often it was asked: every call is an auth key the
+// account server mints.
+type countingCredentials struct {
+	controlURL string
+	calls      atomic.Int32
+}
+
+func (c *countingCredentials) get(context.Context) (string, string, error) {
+	c.calls.Add(1)
+	return c.controlURL, testAuthKey, nil
+}
+
+func newTestNode(t *testing.T, creds *countingCredentials) *Node {
+	t.Helper()
+	node := New(Config{
+		Hostname:    "workstation",
+		Port:        DefaultPort,
+		Dir:         t.TempDir(),
+		Credentials: creds.get,
+	})
+	t.Cleanup(func() { _ = node.Close() })
+	return node
+}
+
+// requireJoined checks the node reached the configured coordination
+// server, not the Tailscale default a reset preference falls back to.
+func requireJoined(t *testing.T, node *Node, controlURL string) {
+	t.Helper()
+	st, err := node.Status(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, StateRunning, st.State)
+	assert.Empty(t, st.LastError)
+
+	lc, err := node.client()
+	require.NoError(t, err)
+	prefs, err := lc.GetPrefs(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, controlURL, prefs.ControlURL)
+}
+
+// A machine that has never registered is still logging in with the
+// key its start minted when Up checks on it, and it reports NeedsLogin
+// the whole time. Minting another key for it cancels that login and
+// leaves the machine with none. `network up` starts the node before it
+// waits for it, so that order must hold up too.
+func TestUpFirstJoin(t *testing.T) {
+	cases := []struct {
+		name string
+		up   func(context.Context, *Node) error
+	}{
+		{name: "up", up: func(ctx context.Context, n *Node) error {
+			return n.Up(ctx)
+		}},
+		{name: "start then up", up: func(ctx context.Context, n *Node) error {
+			if err := n.Start(ctx); err != nil {
+				return err
+			}
+			return n.Up(ctx)
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			controlURL := startTestControl(t)
+			creds := &countingCredentials{controlURL: controlURL}
+			node := newTestNode(t, creds)
+
+			ctx, cancel := context.WithTimeout(context.Background(), joinTimeout)
+			defer cancel()
+			require.NoError(t, tc.up(ctx, node))
+
+			requireJoined(t, node, controlURL)
+			assert.Equal(t, int32(1), creds.calls.Load())
+		})
+	}
+}
+
+// A logged-out machine has lost its node key and the preferences that
+// pointed it at the coordination server, so re-registering has to hand
+// both back and start the login itself.
+func TestUpAfterLogout(t *testing.T) {
+	controlURL := startTestControl(t)
+	creds := &countingCredentials{controlURL: controlURL}
+	node := newTestNode(t, creds)
+	logOut(t, node, creds)
+
+	ctx, cancel := context.WithTimeout(context.Background(), joinTimeout)
+	defer cancel()
+	require.NoError(t, node.Up(ctx))
+
+	requireJoined(t, node, controlURL)
+	assert.Equal(t, int32(1), creds.calls.Load())
+}
+
+// `network up` can run while the handler for the move into NeedsLogin
+// is re-registering the machine. Whichever goes second must not cancel
+// the login the first started.
+func TestConcurrentUpAfterLogout(t *testing.T) {
+	controlURL := startTestControl(t)
+	creds := &countingCredentials{controlURL: controlURL}
+	node := newTestNode(t, creds)
+	logOut(t, node, creds)
+
+	ctx, cancel := context.WithTimeout(context.Background(), joinTimeout)
+	defer cancel()
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i := range errs {
+		wg.Add(1)
+		go debug.CapturePanicReport(func() {
+			defer wg.Done()
+			errs[i] = node.Up(ctx)
+		})
+	}
+	wg.Wait()
+
+	for _, err := range errs {
+		require.NoError(t, err)
+	}
+	requireJoined(t, node, controlURL)
+	assert.Equal(t, int32(1), creds.calls.Load())
+}
+
+// logOut joins node through the join Start runs in the background,
+// logs it out, and resets the credentials count.
+func logOut(t *testing.T, node *Node, creds *countingCredentials) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), joinTimeout)
+	defer cancel()
+	require.NoError(t, node.Start(ctx))
+	_, err := node.srv.Up(ctx)
+	require.NoError(t, err)
+	lc, err := node.client()
+	require.NoError(t, err)
+	require.NoError(t, lc.Logout(ctx))
+
+	st, err := node.Status(ctx)
+	require.NoError(t, err)
+	require.Equal(t, ipn.NeedsLogin.String(), st.State)
+	creds.calls.Store(0)
 }
 
 // Only the move into NeedsLogin is news. The bus repeats the current

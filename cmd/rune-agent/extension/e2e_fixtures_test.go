@@ -47,13 +47,16 @@ import (
 )
 
 // recordingWindowManager is a stub browserapi.WindowManager that records the
-// arguments passed to Tab so tests can verify the visible label, and every
-// SetTabActivity call so tests can follow a chat tab's activity.
+// arguments passed to Tab so tests can verify the visible label, the number
+// of SetWindowContent calls, and every SetTabActivity call so tests can
+// follow a chat tab's activity.
 type recordingWindowManager struct {
 	gotURI     workspaceapi.URI
 	gotIcon    rune
 	gotName    string
 	gotHandler browserapi.Handler
+
+	setContentCalls int
 
 	activityMu  sync.Mutex
 	activity    []tabActivity
@@ -87,6 +90,7 @@ func (m *recordingWindowManager) Tab(
 	return h, nil
 }
 func (m *recordingWindowManager) SetWindowContent(_ browserapi.Window, _ browserapi.Handler) error {
+	m.setContentCalls++
 	return nil
 }
 func (m *recordingWindowManager) CloseWindow(_ browserapi.Window) error { return nil }

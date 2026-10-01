@@ -31,7 +31,7 @@ jobs:
       # the tools.
       - name: Install language toolchains
         run: |
-          go install golang.org/x/tools/gopls@latest
+          go install golang.org/x/tools/gopls@v0.23.0
           go install github.com/go-delve/delve/cmd/dlv@latest
           rustup component add rust-analyzer
           curl -LsSf https://astral.sh/uv/install.sh | sh

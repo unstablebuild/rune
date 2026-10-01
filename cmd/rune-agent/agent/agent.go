@@ -1809,9 +1809,10 @@ func NextArchivedID(ctx context.Context, store dialoguemanager.Store, dialogueID
 }
 
 var (
-	reAnalysis   = regexp.MustCompile(`(?s)<analysis>.*?</analysis>`)
-	reSummary    = regexp.MustCompile(`(?s)<summary>(.*?)</summary>`)
-	reBlankLines = regexp.MustCompile(`\n\n+`)
+	reAnalysis         = regexp.MustCompile(`(?s)<analysis>.*?</analysis>`)
+	reSummary          = regexp.MustCompile(`(?s)<summary>(.*?)</summary>`)
+	reBlankLines       = regexp.MustCompile(`\n\n+`)
+	reTrailingToolTags = regexp.MustCompile(`(?:\s*</(?:parameter|invoke)>)+\s*$`)
 )
 
 // SummarizePrompt is the prompt sent to the LLM when compacting a
@@ -1857,14 +1858,18 @@ Please provide your output in the following format:
 IMPORTANT: Do NOT use any tools. You MUST respond with ONLY the <summary>...</summary> block as your text output.`
 
 // cleanSummary strips the <analysis> scratchpad from the raw LLM output
-// and extracts the <summary> content. If no <summary> tags are found the
-// text is returned as-is (plain-text fallback).
+// and extracts the <summary> content, also when the closing tag is missing.
+// Without a <summary> tag the text is kept as a plain-text fallback. A
+// trailing run of </parameter> and </invoke> tags is always dropped.
 func cleanSummary(raw string) string {
 	text := reAnalysis.ReplaceAllString(raw, "")
 	if m := reSummary.FindStringSubmatch(text); len(m) >= 2 {
 		inner := strings.TrimSpace(m[1])
 		text = reSummary.ReplaceAllLiteralString(text, "Summary:\n"+inner)
+	} else if before, after, ok := strings.Cut(text, "<summary>"); ok {
+		text = before + "Summary:\n" + strings.TrimSpace(after)
 	}
+	text = reTrailingToolTags.ReplaceAllString(text, "")
 	text = reBlankLines.ReplaceAllString(text, "\n")
 	return strings.TrimSpace(text)
 }
@@ -1901,6 +1906,7 @@ func Summarize(
 	defer it.Close() //nolint:errcheck
 
 	var sb strings.Builder
+	var done *llmapi.DoneData
 	for {
 		ev, ok := it.Next(ctx)
 		if !ok {
@@ -1909,12 +1915,26 @@ func Summarize(
 		if ev.Type == llmapi.EventTextDelta {
 			sb.WriteString(ev.Text)
 		}
+		if ev.Type == llmapi.EventStreamDone {
+			done = ev.DoneData
+		}
 		if ev.Type == llmapi.EventStreamError {
 			return "", ev.Error
 		}
 	}
 	if err := it.Err(); err != nil {
 		return "", err
+	}
+	if done != nil && done.FinishReason == llmapi.FinishReasonLength {
+		limit := "the provider's default output limit"
+		if maxOutputTokens > 0 {
+			limit = fmt.Sprintf("the %d-token output budget", maxOutputTokens)
+		}
+		advice := "raise /max_tokens"
+		if canRaise := llmarg.ValidateMaxOutputTokens(model, maxOutputTokens+1) == nil; !canRaise {
+			advice = "compact with a model that allows longer output"
+		}
+		return "", fmt.Errorf("summary truncated at %s; %s", limit, advice)
 	}
 	summary := cleanSummary(sb.String())
 	if summary == "" {

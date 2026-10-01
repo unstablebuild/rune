@@ -18,6 +18,7 @@ package workspacessh
 
 import (
 	"fmt"
+	"os"
 	"time"
 
 	multierr "github.com/ernestrc/go-multierror"
@@ -201,7 +202,7 @@ func getPrivateKeys(cfg config.Config) (ret []string, err error) {
 			err = multierr.Append(err, fmt.Errorf("slice of strings expected for 'private_keys' but found %v", key))
 			continue
 		}
-		ret = append(ret, key)
+		ret = append(ret, os.ExpandEnv(key))
 	}
 	if err != nil {
 		return nil, err

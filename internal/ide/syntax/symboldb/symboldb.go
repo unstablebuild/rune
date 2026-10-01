@@ -939,11 +939,11 @@ func (p *Parser) upsertSymbol(
 		}
 		wrote = true
 		return []storageapi.Update{
-				{FieldPath: []string{"Locs"}, Value: kept},
-				{FieldPath: []string{"Version"}, Value: doc.Version + 1},
-			}, []storageapi.Precondition{
-				{FieldPath: []string{"Version"}, Value: current},
-			}
+			{FieldPath: []string{"Locs"}, Value: kept},
+			{FieldPath: []string{"Version"}, Value: doc.Version + 1},
+		}, []storageapi.Precondition{
+			{FieldPath: []string{"Version"}, Value: current},
+		}
 	}
 	// Try the one-operation Create first: a cold scan over an empty
 	// database — the longest scan there is — mostly inserts brand-new

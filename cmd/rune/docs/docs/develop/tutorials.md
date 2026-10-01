@@ -234,13 +234,16 @@ The `text` of a `wait_*` step gets this for free: the literal token
 
 ### `editor_mode()`
 
-Returns the user's resolved editor mode: `"modal"`, `"standard"`, or
-`"emacs"`. When the workspace is set to exo, this resolves to the
-exo fallback so a tutorial always sees a concrete mode. Use it to
-adjust prose where the modes differ conceptually:
+Returns the user's resolved editor mode: `"vim"`, `"helix"`,
+`"standard"`, or `"emacs"`. When the workspace is set to exo, this
+resolves to the exo fallback so a tutorial always sees a concrete mode,
+and the deprecated `"modal"` and `"modeless"` config values arrive as
+`"vim"` and `"standard"`. Use it to adjust prose where the modes differ
+conceptually. Both `"vim"` and `"helix"` are modal editors, with NORMAL and INSERT modes
+on every surface, so copy about modality should cover both:
 
 ```python
-if editor_mode() == "modal":
+if editor_mode() in ("vim", "helix"):
     note = "Press `<esc>` to return to normal mode first."
 else:
     note = ""

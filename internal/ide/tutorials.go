@@ -33,6 +33,7 @@ import (
 	"unstable.build/rune/internal/handler/command"
 	"unstable.build/rune/internal/ide/idetutorial"
 	"unstable.build/rune/internal/ide/idetutorial/starlarktutorial"
+	"unstable.build/rune/internal/ide/keymeta"
 )
 
 const tutorialPlaylistPromptDelay = 3 * time.Second
@@ -218,6 +219,7 @@ type tutorialsConfig struct {
 	workspaceOpen    func() bool
 	lspServerRunning func() bool
 	configPath       string
+	metaKey          keymeta.Meta
 }
 
 func newTutorialsConfig(i *IDE) tutorialsConfig {
@@ -248,6 +250,7 @@ func newTutorialsConfig(i *IDE) tutorialsConfig {
 			return m != nil && m.AnyServerRunning()
 		},
 		configPath: i.ideConfig.configPath,
+		metaKey:    i.ideConfig.metaKey(),
 	}
 }
 
@@ -290,6 +293,7 @@ func (c tutorialsConfig) build(
 		c.workspaceOpen,
 		c.lspServerRunning,
 		starlarktutorial.WithConfigPath(c.configPath),
+		starlarktutorial.WithMetaKey(c.metaKey),
 	)
 }
 

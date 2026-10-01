@@ -77,6 +77,23 @@ func TestServerNotify(t *testing.T) {
 		assert.Equal(t, "1234", res.GetId())
 	})
 
+	t.Run("keeps line breaks and strips NUL", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+		s, mock := newServerWithNoBroker(ctrl)
+
+		mock.EXPECT().
+			Notify(gomock.Eq(browserapi.LevelWarn), gomock.Eq("%s"), gomock.Eq("failed:\n× cause\nhint: fix")).
+			Return("1", nil)
+
+		req := browserrpc.NotifyRequest{
+			Level: uint32(browserapi.LevelWarn),
+			Msg:   "failed:\r\n× ca\x00use\nhint: fix",
+		}
+		_, err := s.Notify(ctx, &req)
+		require.NoError(t, err)
+	})
+
 	t.Run("bubbles up Notify Browser error", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()

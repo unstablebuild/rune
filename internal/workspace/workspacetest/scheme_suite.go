@@ -1287,6 +1287,45 @@ func TestWorkspaceSchemeListFilesIntegration(
 		assert.Error(t, it.Err())
 	})
 
+	t.Run("names that look like env vars are literal", func(t *testing.T) {
+		scheme := schemeFn(t)
+		defer scheme.Close()
+
+		// Expanding the unset variable would resolve the directory to
+		// its parent, so the walk would recurse into itself.
+		dir := filepath.Join("a", "$RUNE_TEST_UNSET_VAR")
+		require.NoError(t, scheme.MkdirAll(dir, 0777))
+		_, cleanupF := createTestFile(t, scheme, filepath.Join(dir, "f"), "f")
+		defer cleanupF()
+		_, cleanupG := createTestFile(t, scheme, filepath.Join("a", "g.txt"), "g")
+		defer cleanupG()
+
+		entries, err := scheme.ReadDir(dir)
+		require.NoError(t, err)
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		require.Equal(t, []string{"f"}, names)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		it, err := walkdir.ListFiles(ctx, scheme, ".")
+		require.NoError(t, err)
+		defer it.Close()
+		var paths []string
+		for {
+			path, ok := it.Next(ctx)
+			if !ok {
+				break
+			}
+			paths = append(paths, path)
+		}
+		require.NoError(t, it.Err())
+		assert.ElementsMatch(t,
+			[]string{filepath.Join(dir, "f"), filepath.Join("a", "g.txt")}, paths)
+	})
+
 	t.Run("does not return error if root's base dir does not exist", func(t *testing.T) {
 		// DEPRECATED: this behaviour should not be relied upon as some implementations do
 		// directories and might error with a path like fi/fi/fi

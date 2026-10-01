@@ -217,6 +217,11 @@ type LoginSession struct {
 // a stuck OAuth round-trip; the session's Done channel still resolves
 // (with the cancellation error) and URL is closed without emitting if
 // the cancellation beats the local server binding.
+//
+// A user whose cached token still refreshes is signed in without the
+// browser, and URL closes without emitting. A cached token that no
+// longer refreshes, for whatever reason, is discarded and the browser
+// flow runs in its place.
 func (a *Client) Login(ctx context.Context) LoginSession {
 	urlCh := make(chan *url.URL, 1)
 	done := make(chan error, 1)
@@ -224,8 +229,7 @@ func (a *Client) Login(ctx context.Context) LoginSession {
 	go debug.CapturePanicReport(func() {
 		defer close(done)
 		defer close(urlCh)
-		_, err := a.tokenSource.TokenCtx(ctx)
-		if err != nil {
+		if err := a.signIn(ctx); err != nil {
 			log.Warnf("login: %v", err)
 			select {
 			case done <- err:
@@ -272,6 +276,10 @@ var ErrDeviceLoginUnsupported = errors.New(
 // bound, so it works on machines the operator only reaches through a
 // service log. Cancelling ctx aborts the poll; Done still resolves with
 // the cancellation error and Prompt is closed.
+//
+// A cached token is handled as in [Client.Login]: one that still
+// refreshes signs the user in without a code, and one that does not is
+// replaced by a new sign-in.
 func (a *Client) LoginWithDeviceCode(ctx context.Context) DeviceLoginSession {
 	promptCh := make(chan DevicePrompt, 1)
 	done := make(chan error, 1)
@@ -279,13 +287,31 @@ func (a *Client) LoginWithDeviceCode(ctx context.Context) DeviceLoginSession {
 	go debug.CapturePanicReport(func() {
 		defer close(done)
 		defer close(promptCh)
-		_, err := a.tokenSource.TokenCtx(ctx)
+		err := a.signIn(ctx)
 		if err != nil {
 			log.Warnf("login by code: %v", err)
 		}
 		done <- err
 	})
 	return DeviceLoginSession{Prompt: promptCh, Done: done}
+}
+
+// signIn acquires a token for a sign-in the user asked for. A failed
+// refresh of the cached token is not the end of it: background callers
+// never sign in, so a dead refresh token that is not dropped here would
+// make every sign-in fail the same way.
+func (a *Client) signIn(ctx context.Context) error {
+	hadToken := a.tokenSource.Cached(ctx) != nil
+	_, err := a.tokenSource.TokenCtx(ctx)
+	if err == nil || !hadToken || ctx.Err() != nil {
+		return err
+	}
+	log.Warnf("login: cached token no longer refreshes, signing in again: %v", err)
+	if err := a.tokenSource.Purge(); err != nil {
+		log.Warnf("login: discard cached token: %v", err)
+	}
+	_, err = a.tokenSource.TokenCtx(ctx)
+	return err
 }
 
 // AccountStatus returns the authenticated user's account details parsed

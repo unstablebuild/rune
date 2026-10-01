@@ -120,6 +120,7 @@ func ensureEnvironment(
 	total, step := int64(4), int64(3)
 	installed, err := ensureInterpreter(ctx, uvBin, exec, notify, notifID, fs, dir, dataDir)
 	if err != nil {
+		_ = notify.UpdateNotificationProgress(notifID, "Python environment setup failed", total, total)
 		return err
 	}
 	if !installed {
@@ -129,6 +130,7 @@ func ensureEnvironment(
 
 	err = runSyncStep(ctx, uvBin, exec, notify, notifID, kind, fs, dir, step, total)
 	if err != nil {
+		_ = notify.UpdateNotificationProgress(notifID, "Python environment setup failed", total, total)
 		return err
 	}
 	return notify.UpdateNotificationProgress(notifID, "Python environment ready", total, total)
@@ -224,11 +226,14 @@ func runSyncStep(
 	}
 }
 
-// runUV runs `uv <args>` through the workspace executor in workdir,
-// draining stderr so the process never blocks on a full pipe. A workdir
-// of "" or "." leaves the executor's default (the workspace root) in
-// place; a nested project root is passed so uv operates on that
-// project's environment.
+// uvStderrCap bounds both the head and the tail of retained uv stderr:
+// uv's diagnostic comes first and its hints last, with a potentially
+// huge build log in between.
+const uvStderrCap = 32 * 1024
+
+// runUV runs `uv <args>` in workdir, where "" or "." is the workspace
+// root. A failure's error wraps the exit error and includes uv's
+// diagnostic, suitable for showing to the user.
 func runUV(
 	ctx context.Context,
 	uvBin string,
@@ -242,6 +247,7 @@ func runUV(
 	}
 
 	stderrR, stderrW := io.Pipe()
+	stderr := &headTail{limit: uvStderrCap}
 	ch := make(chan error, 1)
 	cmd := workspaceapi.Cmd{
 		Path:    bin,
@@ -255,7 +261,7 @@ func runUV(
 	wg.Add(1)
 	go debug.CapturePanicReport(func() {
 		defer wg.Done()
-		_, _ = io.Copy(io.Discard, stderrR)
+		_, _ = io.Copy(stderr, stderrR)
 	})
 
 	if _, err := exec.Start(ctx, cmd); err != nil {
@@ -274,9 +280,131 @@ func runUV(
 	wg.Wait()
 
 	if runErr != nil {
-		return fmt.Errorf("uv %s: %w", strings.Join(args, " "), runErr)
+		command := "uv " + strings.Join(args, " ")
+		diag := uvDiagnostic(stderr.String())
+		if diag == "" {
+			return fmt.Errorf("`%s` failed: %w", command, runErr)
+		}
+		return fmt.Errorf("`%s` failed (%w):\n%s", command, runErr, diag)
 	}
 	return nil
+}
+
+// headTail is an io.Writer that keeps the first and the last limit bytes
+// written, dropping the middle.
+type headTail struct {
+	limit   int
+	head    []byte
+	tail    []byte
+	dropped bool
+}
+
+func (b *headTail) Write(p []byte) (int, error) {
+	n := len(p)
+	if room := b.limit - len(b.head); room > 0 {
+		k := min(room, len(p))
+		b.head = append(b.head, p[:k]...)
+		p = p[k:]
+	}
+	b.tail = append(b.tail, p...)
+	if over := len(b.tail) - b.limit; over > 0 {
+		b.tail = b.tail[over:]
+		b.dropped = true
+	}
+	return n, nil
+}
+
+func (b *headTail) String() string {
+	if b.dropped {
+		// Keeps uvDiagnostic from joining lines across the cut.
+		return string(b.head) + "\n\n" + string(b.tail)
+	}
+	return string(b.head) + string(b.tail)
+}
+
+const uvDiagnosticFallbackLines = 5
+
+// uvDiagnostic returns the lines of uv's stderr that explain a failure:
+// uv's error chain, the build backend's first error line, and uv's
+// hints, each unwrapped onto one line. Output without a recognizable
+// error yields its last few non-blank lines; empty output yields "".
+func uvDiagnostic(stderr string) string {
+	lines := strings.Split(strings.ReplaceAll(stderr, "\r\n", "\n"), "\n")
+
+	start := -1
+	for i, l := range lines {
+		if strings.HasPrefix(strings.TrimSpace(l), "×") || strings.HasPrefix(l, "error:") {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		var tail []string
+		for i := len(lines) - 1; i >= 0 && len(tail) < uvDiagnosticFallbackLines; i-- {
+			if l := strings.TrimSpace(lines[i]); l != "" {
+				tail = append([]string{l}, tail...)
+			}
+		}
+		return strings.Join(tail, "\n")
+	}
+
+	var out []string
+	i := start
+	for ; i < len(lines); i++ {
+		l := strings.TrimSpace(lines[i])
+		if l == "" {
+			break
+		}
+		if len(out) == 0 || strings.HasPrefix(l, "×") ||
+			strings.HasPrefix(l, "├─▶") || strings.HasPrefix(l, "╰─▶") {
+			out = append(out, l)
+			continue
+		}
+		out[len(out)-1] += " " + l
+	}
+
+	// The build backend's first error usually names the root cause,
+	// e.g. a missing tool or header.
+	rest := lines[i:]
+	for j, l := range rest {
+		if isTopLevel(l) || !isBuildErrorLine(l) {
+			continue
+		}
+		out = append(out, strings.TrimSpace(l))
+		for _, next := range rest[j+1:] {
+			next = strings.TrimSpace(next)
+			if next == "" || isBuildErrorLine(next) {
+				break
+			}
+			out[len(out)-1] += " " + next
+		}
+		break
+	}
+
+	for j, l := range rest {
+		if !strings.HasPrefix(l, "hint:") {
+			continue
+		}
+		out = append(out, strings.TrimSpace(l))
+		for _, next := range rest[j+1:] {
+			if next == "" || isTopLevel(next) {
+				break
+			}
+			out[len(out)-1] += " " + strings.TrimSpace(next)
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+func isTopLevel(line string) bool {
+	return line != "" && line[0] != ' ' && line[0] != '\t'
+}
+
+// isBuildErrorLine matches setup script ("Error: ...") and C compiler
+// ("foo.c:1:10: fatal error: ...") error lines.
+func isBuildErrorLine(line string) bool {
+	l := strings.ToLower(strings.TrimSpace(line))
+	return strings.HasPrefix(l, "error:") || strings.Contains(l, " error: ")
 }
 
 // uvWorkdir normalizes a project-root directory into a Cmd.Dir value,

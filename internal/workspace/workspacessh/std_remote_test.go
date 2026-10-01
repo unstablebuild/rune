@@ -29,6 +29,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -36,6 +37,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"golang.org/x/crypto/ssh"
+	"unstable.build/rune/internal/debug"
 )
 
 func TestStdRemoteAuthCallbacks(t *testing.T) {
@@ -605,4 +607,90 @@ func writeKeyAt(t *testing.T, dst string) ssh.PublicKey {
 	signer, err := ssh.NewPublicKey(pub)
 	require.NoError(t, err)
 	return signer
+}
+
+func TestGoSshSessionSignal(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		sig     syscall.Signal
+		want    ssh.Signal
+		wantErr bool
+	}{
+		{name: "term", sig: syscall.SIGTERM, want: "TERM"},
+		{name: "kill", sig: syscall.SIGKILL, want: "KILL"},
+		{name: "unknown", sig: syscall.Signal(0), wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := sentSSHSignal(t, tc.sig)
+			if tc.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+// sentSSHSignal calls goSshSession.Signal on a session opened against an
+// in-process server and returns the signal name the server received.
+func sentSSHSignal(t *testing.T, sig syscall.Signal) (ssh.Signal, error) {
+	t.Helper()
+	cfg := &ssh.ServerConfig{NoClientAuth: true}
+	cfg.AddHostKey(newServerSigner(t))
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = l.Close() })
+
+	received := make(chan ssh.Signal, 1)
+	go debug.CapturePanicReport(func() {
+		c, err := l.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		_, chans, reqs, err := ssh.NewServerConn(c, cfg)
+		if err != nil {
+			return
+		}
+		go debug.CapturePanicReport(func() { ssh.DiscardRequests(reqs) })
+		for newCh := range chans {
+			ch, chReqs, err := newCh.Accept()
+			if err != nil {
+				return
+			}
+			defer ch.Close()
+			go debug.CapturePanicReport(func() {
+				for req := range chReqs {
+					var msg struct{ Signal string }
+					if req.Type == "signal" && ssh.Unmarshal(req.Payload, &msg) == nil {
+						received <- ssh.Signal(msg.Signal)
+					}
+					if req.WantReply {
+						_ = req.Reply(false, nil)
+					}
+				}
+			})
+		}
+	})
+
+	client, err := ssh.Dial("tcp", l.Addr().String(), &ssh.ClientConfig{
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout:         5 * time.Second,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = client.Close() })
+	ses, err := client.NewSession()
+	require.NoError(t, err)
+
+	if err := (&goSshSession{ses: ses}).Signal(0, sig); err != nil {
+		return "", err
+	}
+	select {
+	case got := <-received:
+		return got, nil
+	case <-time.After(5 * time.Second):
+		t.Fatal("server did not receive a signal request")
+		return "", nil
+	}
 }

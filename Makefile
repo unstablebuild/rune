@@ -80,7 +80,7 @@ RELEASE_FILES=$(wildcard release/*)
 .PHONY: debug clean test test-e2e coverage generate rune rune-agent \
 	format cross-compile lint license assert_license dist \
 	rune-release rune-release-amd64 rune-release-arm64 rune-make-release \
-	rune-app-delve \
+	rune-app-delve rune-app-linux rune-install-linux \
 	rune-linux-cross-compile rune-app-amd64 rune-app-arm64 \
 	rune-staging-app-arm64 \
 	rune-dmg rune-dmg-amd64 rune-dmg-notarize rune-dmg-amd64-notarize rune-release-all \
@@ -122,6 +122,7 @@ RELEASE_FILES=$(wildcard release/*)
 	rune-prod-dist-linux-amd64-native rune-prod-dist-linux-arm64-native \
 	rune-prod-dist-linux-amd64-cross rune-prod-dist-linux-arm64-cross \
 	rune-prod-dist-darwin-arm64 rune-prod-dist-darwin-amd64 \
+	rune-prod-dist-homebrew \
 	rune-staging-dist-linux-amd64 rune-staging-dist-linux-arm64 \
 	rune-staging-dist-linux-amd64-native rune-staging-dist-linux-arm64-native \
 	rune-staging-dist-linux-amd64-cross rune-staging-dist-linux-arm64-cross \
@@ -251,6 +252,7 @@ generate: GOPRIVATE=github.com/unstablebuild,unstable.build/*
 generate:
 	@ rm -rf **/*rpc*/*.pb.go
 	@ go generate ./...
+	@ cd cmd/rune/docs && npm run --silent keybindings
 
 license:
 	@ bluectl license LICENSE_HEADER `find . -name \*.go -not -path ./cmd/rune/docs/\* | grep -v gomock | grep -v .pb.go | xargs`
@@ -330,6 +332,12 @@ FORCE:
 rune-linux-cross-compile:
 	@$(MAKE) -C cmd/rune linux-cross-compile
 
+rune-app-linux:
+	@$(MAKE) -C cmd/rune app-linux
+
+rune-install-linux:
+	@$(MAKE) -C cmd/rune install-linux
+
 rune-release-linux-amd64:
 	@$(MAKE) -C cmd/rune release-linux-amd64
 
@@ -348,8 +356,10 @@ rune-release-linux-amd64-cross:
 rune-release-linux-arm64-cross:
 	@$(MAKE) -C cmd/rune release-linux-arm64-cross
 
-# rune-prod-dist-* / rune-staging-dist-*: build a release artifact and
-# publish it as an asset on the corresponding GitHub release.
+# rune-prod-dist-* / rune-staging-dist-*: build a release artifact and attach
+# it to the tag's draft GitHub release, which users only see once published.
+# For prod, pushing the tag runs the Release workflow, which drafts the release
+# and attaches the Linux artifacts; the DMGs are signed and attached from a Mac.
 #
 #   prod    -> unstablebuild/rune          (api.rune.build / rpc.rune.build:443)
 #   staging -> unstablebuild/rune-staging  (api.unstable.build / rpc.unstable.build:443)
@@ -379,6 +389,11 @@ rune-prod-dist-darwin-arm64: clean
 
 rune-prod-dist-darwin-amd64: clean
 	@$(MAKE) -C cmd/rune prod-dist-darwin-amd64
+
+# Publishes the Homebrew cask for the release tagged at HEAD once the prod
+# dists report it READY TO BE PUBLISHED.
+rune-prod-dist-homebrew:
+	@$(MAKE) -C cmd/rune prod-dist-homebrew
 
 rune-staging-dist-linux-amd64: clean
 	@$(MAKE) -C cmd/rune staging-dist-linux-amd64
@@ -686,7 +701,7 @@ notary-credentials:
 # context excludes .git, and a git worktree's .git is a file pointing
 # outside the context anyway.
 PKG_OUT ?= $(TARGET)/pkg
-PKG_GO_VERSION ?= 1.26.6
+PKG_GO_VERSION ?= 1.27.1
 DEB_BASE_IMAGE ?= debian:bookworm
 # archlinux is published for amd64 only. Emulating it is not viable:
 # the Go toolchain segfaults under qemu-user, so the full Arch build

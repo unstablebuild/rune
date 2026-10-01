@@ -44,7 +44,7 @@ const config: Config = {
   },
 
   customFields: {
-    // Generated from Rune's preset YAML by `npm run keybindings`.
+    // Generated from Rune's preset YAML by `make generate`.
     keybindings: KEYBINDINGS,
   },
 

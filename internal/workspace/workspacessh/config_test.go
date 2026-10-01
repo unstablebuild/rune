@@ -112,3 +112,12 @@ func TestStrictHostKeyCheckingWrongTypeErrors(t *testing.T) {
 	}))
 	require.Error(t, err)
 }
+
+func TestPrivateKeysExpandEnv(t *testing.T) {
+	t.Setenv("RUNE_TEST_SSH_KEYS", "/keys")
+	cfg, err := fromConfig(config.MapConfig(map[string]any{
+		"private_keys": []any{"$RUNE_TEST_SSH_KEYS/id_ed25519", "~/.ssh/id_rsa"},
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"/keys/id_ed25519", "~/.ssh/id_rsa"}, cfg.privateKeys)
+}

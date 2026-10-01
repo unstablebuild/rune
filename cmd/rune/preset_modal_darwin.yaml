@@ -1,0 +1,237 @@
+# Rune user configuration (vim editor preset).
+
+# ---------------------------------------------------------------------------
+# GUI theme
+#
+# Rune ships a catalog of themes. Set `default_theme` to any of:
+#   furman, romero, carmack, reynolds, brevik, thompson, pike, hopper,
+#   kernighan, wozniak, auge, ritchie, kelleher, sanfilippo, greig, mullen
+# Run `:guitheme` to preview live.
+# ---------------------------------------------------------------------------
+gui:
+  default_theme: romero
+  # The Option key that types layout characters, such as | or @, instead
+  # of Alt shortcuts: left, right or none.
+  alt_modifier: "[[.AltModifier]]"
+#   font_size: 13
+#   window_opacity: {fg: 1, bg: 1}
+#   window_blur_radius: 100
+#   # Remap physical keys before they reach the editor (see the key-mapping
+#   # docs). Both sides use the command key-binding syntax. <capslock>,
+#   # <numlock>, <scrolllock> and <menu> only act when remapped here.
+#   key_mapping:
+#     "<capslock>": "<esc>"
+
+# ---------------------------------------------------------------------------
+# Editor
+#
+# `aux_bar` is the strip left of each buffer, `status_bar` the bar at the
+# bottom of each buffer, and `vim.message_bar` the line showing search prompts
+# and echoed messages.
+# ---------------------------------------------------------------------------
+# editor:
+#   tabspaces: 4
+#   ruler: 90
+#   autoindent: true            # syntax-driven indentation
+#   auto_pair: false            # auto-pair quotes/brackets/braces (vim default)
+#   auto_save: false            # flush dirty buffers ~2s after last edit
+#   initial_folds: true         # collapse language-defined folds on open
+#   aux_bar:
+#     enabled:          true
+#     lines:            absolute   # disabled | absolute | relative
+#     git:              inline     # bar | inline | all | disabled
+#     folds:            true
+#     icons:            true
+#     highlight_cursor: true
+#   status_bar:
+#     enabled: true
+#     # Components: Status, Filepath, GitShortRef, GitDiffAdd, GitDiffDel,
+#     # ShiftRight, CursorColumn, CursorLine, TotalLines, Language.
+#     # Pipe operators: bg, fg, bold, italic, underline, reverse, dim.
+#     layout: ' {{ .Status | bg "red" | fg "white" | bold }} █▓▒░  {{ .Filepath | fg "white" }}  {{ .GitShortRef | fg "white" }}   {{ .GitDiffAdd | fg "green" }}   {{ .GitDiffDel | fg "red" }} {{ .ShiftRight }} {{ .CursorColumn | fg "white" }}:{{ .CursorLine | fg "white" }}  {{ .TotalLines | fg "white" }} lines  ░▒▓█ {{ .Language | bold | fg "white" | bg "red" }} '
+#     background_attr:       {bg: gray}
+#     foreground_error_attr: {fg: yellow}
+#   vim:
+#     attr:        {fg: default, bg: default}   # buffer text
+#     search_attr: {fg: grey, bg: yellow}       # search matches
+#     message_bar:
+#       attr:   {fg: default, bg: gray}
+#       layout: '░▒▓█ {{ .Message | fg "white" }} '
+
+# ---------------------------------------------------------------------------
+# Terminal
+# ---------------------------------------------------------------------------
+# terminal:
+#   modal:             true        # enter modal terminal mode on <esc>
+#   max_lines:         1000
+#   initial_reservoir: 0           # set to non-zero to speed up terminal initialization
+#   plugin:
+#     # Layout of the bar shown above a `!` command. Components:
+#     # Command, StatusIcon, ExitStatus, Elapsed, AlignRight, AlignCenter.
+#     # Pipe operators: bg, fg, bold, italic, underline, reverse, dim.
+#     bar_layout: ' {{ .StatusIcon | bg "gray" | fg "white" }} █▓▒░{{ .AlignCenter }}{{ .Command | fg "white" | bold }}{{ .AlignRight }}  ░▒▓█ {{ .Elapsed | fg "white" | bg "gray" }} '
+#     bar_background_attr: {bg: default}
+#     bar_align_bottom:    true
+#     status_success_icon: ""
+#     status_success_attr: {fg: green}
+#     status_error_icon:   ""
+#     status_error_attr:   {fg: red}
+#     animation: "⠃⠅⠆⠘⠨⠰⠉⠒⠤⠑⠡⠢⠊⠌⠔⠇⠸⠎⠱⠣⠜⠪⠕⠋⠙⠓⠚⠍⠩⠥⠬⠖⠲⠦⠴⠏⠹⠧⠼⠫⠝⠮⠵⠺⠗⠞⠳⠛⠭⠶⠟⠻⠷⠾⠯⠽⠿"
+
+# ---------------------------------------------------------------------------
+# Command prompt
+#
+# `key` opens the command prompt; `history_key` toggles between the command
+# list and history. Aliases layer on top of built-ins: a string value is the
+# substitution, a dict with `command` + `completer` adds completion. Set a
+# key_binding value to "" to unbind one added by an extension.
+# ---------------------------------------------------------------------------
+command:
+#   key:         ":"
+#   history_key: <meta-r>
+#   max_history: 20000
+#   aliases:
+#     # Simple alias: `:w` runs `:write`.
+#     w: write
+#     # Alias with a completer: typing `:e <tab>` suggests files.
+#     e:    {command: edit, completer: files}
+#     # Alias with a shell completer (here: git branch names).
+#     # The `! …` template runs a shell line whose stdout becomes one
+#     # completion candidate per line.
+#     gitcheckout:
+#       command:   "!! git -C $WORKSPACE_PATH checkout $1"
+#       completer: '! git -C $WORKSPACE_PATH branch --format="%(refname:short)"'
+#     # Open this configuration file (already bound to <meta-,>).
+#     conf: config
+  key_bindings:
+    "<shift-tab>": "fexplorer"
+    "<meta-r>": "history"
+    "<meta-,>": "config"
+    "<meta-/>": "cheatsheet"
+    "<meta-q>": "quit"
+    "<meta-=>": "guifontsize increase"
+    "<meta-->": "guifontsize decrease"
+    "<meta-t>": "tabnew"
+    "<alt-enter>": "echo {prompt}windowconverttab<space>"
+    "<alt-w>": "tabclose"
+    "<alt-l>": "tabnext"
+    "<alt-h>": "tabprevious"
+    "<meta-n>": "windownew"
+    "<meta-c>": "clipboardcopy"
+    "<meta-v>": "clipboardpaste"
+    "<alt-`>": "tabsearch"
+    "<alt-shift-l>": "tabmove right"
+    "<alt-shift-h>": "tabmove left"
+    "<meta-h>": "windowfocus left"
+    "<meta-l>": "windowfocus right"
+    "<meta-j>": "windowfocus down"
+    "<meta-k>": "windowfocus up"
+    "<shift-meta-h>": "windowmove left"
+    "<shift-meta-l>": "windowmove right"
+    "<shift-meta-j>": "windowmove down"
+    "<shift-meta-k>": "windowmove up"
+    "<shift-meta-backspace>": "windowresize reset"
+    "<shift-meta-+>": ["windowresize max width", "windowresize max height"]
+    "<shift-meta-->": ["windowresize min width", "windowresize min height"]
+    "<alt-meta-h>": "windowresize decrease width"
+    "<alt-meta-j>": "windowresize decrease height"
+    "<alt-meta-k>": "windowresize increase height"
+    "<alt-meta-l>": "windowresize increase width"
+    "<meta-w>": "windowclose"
+    "<shift-meta-w>": "windowcloseall"
+    "<ctrl-meta-h>": "windowdefaultsplit h"
+    "<ctrl-meta-v>": "windowdefaultsplit v"
+    "<shift-meta-f>": "windowtogglemaximize"
+    "<alt-f>": "echo {prompt}jumptoast<space>locals.scm<space>local.definition.method|local.definition.function<space>"
+    "<alt-v>": "echo {prompt}jumptoast<space>locals.scm<space>local.definition.var<space>"
+    "<alt-s>": "echo {prompt}jumptoast<space>locals.scm<space>local.definition.type<space>"
+    "<alt-j>": "lspnextdiagnostic"
+    "<alt-k>": "lspprevdiagnostic"
+    "<alt-t>": "lsp hover"
+    "<alt-shift-t>": "echo {prompt}lsp<space>hover<space>"
+    "<alt-shift-e>": "lsp diagnostics"
+    "<meta-f>": "lsp rename"
+    "<alt-r>": "lsp references"
+    "<alt-shift-r>": "echo {prompt}lsp<space>references<space>"
+    "<alt-d>": "lsp definition"
+    "<alt-shift-d>": "echo {prompt}lsp<space>definition<space>"
+    "<alt-i>": "lsp implementation"
+    "<alt-shift-i>": "echo {prompt}lsp<space>implementation<space>"
+    "<ctrl-o>": "cursorhistory prev"
+    "<ctrl-i>": "cursorhistory next"
+    "<alt-b>": "lsp format"
+    # on MacOS <ctrl-space> is a shortcut. To disable it and enable this
+    # key binding, go to System Settings → Keyboard → Keyboard Shortcuts
+    # → Input Sources → uncheck both entries.
+    "<ctrl-space>": "lsp complete"
+    "<alt-shift-j>": "gitnextchange"
+    "<alt-shift-k>": "gitprevchange"
+    "<meta-enter>": "terminalneworsplit"
+    "<shift-meta-enter>": "!"
+    "<meta-`>": "workspacesearch"
+    "<alt-1>": "tabfocus 1"
+    "<alt-2>": "tabfocus 2"
+    "<alt-3>": "tabfocus 3"
+    "<alt-4>": "tabfocus 4"
+    "<alt-5>": "tabfocus 5"
+    "<alt-6>": "tabfocus 6"
+    "<alt-7>": "tabfocus 7"
+    "<alt-8>": "tabfocus 8"
+    "<alt-9>": "tabfocus 9"
+    "<alt-shift-1>": "tabmove 1"
+    "<alt-shift-2>": "tabmove 2"
+    "<alt-shift-3>": "tabmove 3"
+    "<alt-shift-4>": "tabmove 4"
+    "<alt-shift-5>": "tabmove 5"
+    "<alt-shift-6>": "tabmove 6"
+    "<alt-shift-7>": "tabmove 7"
+    "<alt-shift-8>": "tabmove 8"
+    "<alt-shift-9>": "tabmove 9"
+    "<meta-1>": "workspacefocus 1"
+    "<meta-2>": "workspacefocus 2"
+    "<meta-3>": "workspacefocus 3"
+    "<meta-4>": "workspacefocus 4"
+    "<meta-5>": "workspacefocus 5"
+    "<meta-6>": "workspacefocus 6"
+    "<meta-7>": "workspacefocus 7"
+    "<meta-8>": "workspacefocus 8"
+    "<meta-9>": "workspacefocus 9"
+    "<shift-meta-1>": "workspacemove 1"
+    "<shift-meta-2>": "workspacemove 2"
+    "<shift-meta-3>": "workspacemove 3"
+    "<shift-meta-4>": "workspacemove 4"
+    "<shift-meta-5>": "workspacemove 5"
+    "<shift-meta-6>": "workspacemove 6"
+    "<shift-meta-7>": "workspacemove 7"
+    "<shift-meta-8>": "workspacemove 8"
+    "<shift-meta-9>": "workspacemove 9"
+
+# ---------------------------------------------------------------------------
+# Animations
+#
+# `active_content_tab` plays over tabs with work in progress, such as an agent
+# turn, and `active_workspace_tab` over the workspace tabs that own them. Their
+# shaders: blaze, burn, inferno, noise, pulse, shine, trippy.
+# ---------------------------------------------------------------------------
+# animations:
+#   loading_workspace: true
+#   open_workspace:
+#     enabled:  true
+#     # shader:   burn
+#     # duration: 1s
+#   active_content_tab:
+#     enabled: true
+#     shader:  inferno
+#     fps:     10
+#     loop:    1400ms
+#   active_workspace_tab:
+#     enabled: true
+#     shader:  inferno
+#     fps:     10
+#     loop:    1400ms
+
+# ---------------------------------------------------------------------------
+# Notifications
+# ---------------------------------------------------------------------------
+# notifications:
+#   auto_close:   5s

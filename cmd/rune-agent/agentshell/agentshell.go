@@ -93,6 +93,8 @@ func WithEffort(get func() llmapi.ReasoningEffort, set func(llmapi.ReasoningEffo
 
 // WithMaxTokens wires the max_tokens command to a getter/setter pair so the
 // embedding extension can apply global config changes to live chats.
+// get also supplies the summary budget for `chats compact`. set may be nil
+// when the shell must not propagate changes.
 func WithMaxTokens(get func() int, set func(int)) Option {
 	return func(s *shell) {
 		s.getMaxTokens = get

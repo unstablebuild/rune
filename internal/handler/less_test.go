@@ -1267,3 +1267,117 @@ func TestLessNavigationKeys(t *testing.T) {
 
 	handlertest.RunHandlerSequence(t, less, width, height, cases)
 }
+
+// TestLessPromptMode pins SetPromptMode: the label is drawn but is not
+// part of the input, backspace cannot eat into it, and the mode is left
+// the way SetNormalMode and SetSearchMode expect to find it.
+func TestLessPromptMode(t *testing.T) {
+	type step struct {
+		ev       term.Event
+		wantText string
+	}
+	keyEv := func(ch rune) term.Event { return term.Event{Type: term.EventKey, Ch: ch} }
+	named := func(k term.Key) term.Event { return term.Event{Type: term.EventKey, Key: k} }
+	tests := []struct {
+		name     string
+		label    string
+		steps    []step
+		wantMode LessMode
+		wantBar  string
+	}{
+		{name: "the label is not part of the input", label: "select:",
+			steps: []step{{keyEv('a'), "a"}, {keyEv('b'), "ab"}}, wantMode: LessSearchMode, wantBar: "select:ab"},
+		{name: "backspace eats the input", label: "select:",
+			steps:    []step{{keyEv('a'), "a"}, {keyEv('b'), "ab"}, {named(term.KeyBackspace), "a"}},
+			wantMode: LessSearchMode, wantBar: "select:a"},
+		{name: "backspace stops at the label", label: "keep:",
+			steps:    []step{{keyEv('a'), "a"}, {named(term.KeyBackspace), ""}, {named(term.KeyBackspace), ""}, {keyEv('b'), "b"}},
+			wantMode: LessSearchMode, wantBar: "keep:b"},
+		{name: "a space is input", label: "split:",
+			steps: []step{{named(term.KeySpace), " "}}, wantMode: LessSearchMode, wantBar: "split: "},
+		{name: "a single character label", label: "/",
+			steps: []step{{keyEv('x'), "x"}}, wantMode: LessSearchMode, wantBar: "/x"},
+		{name: "an empty label", label: "",
+			steps:    []step{{keyEv('x'), "x"}, {named(term.KeyBackspace), ""}, {named(term.KeyBackspace), ""}},
+			wantMode: LessSearchMode, wantBar: ""},
+		{name: "esc leaves the prompt", label: "select:",
+			steps: []step{{keyEv('a'), "a"}, {named(term.KeyEsc), ""}}, wantMode: LessNormalMode},
+		{name: "enter leaves the prompt", label: "select:",
+			steps: []step{{keyEv('a'), "a"}, {named(term.KeyEnter), ""}}, wantMode: LessNormalMode},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b := NewLess(LessConfig{})
+			b.Buffer().WriteString("abc")
+			b.Resize(20, 3)
+			b.SetPromptMode(tt.label)
+			require.Equal(t, LessSearchMode, b.Mode())
+			require.Equal(t, "", b.SearchText())
+			for i, s := range tt.steps {
+				_, handled := b.Handle(s.ev)
+				require.True(t, handled, "step %d", i)
+				require.Equal(t, s.wantText, b.SearchText(), "step %d", i)
+			}
+			require.Equal(t, tt.wantMode, b.Mode())
+			if tt.wantBar != "" {
+				w := term.NewStringWriter(20, 3)
+				b.Draw(w)
+				require.NoError(t, w.Flush())
+				require.Contains(t, w.String(), tt.wantBar)
+			}
+		})
+	}
+
+	t.Run("enter runs the input as a search", func(t *testing.T) {
+		var got []LessEvent
+		b := NewLess(LessConfig{Handler: func(ev LessEvent) { got = append(got, ev) }})
+		b.Buffer().WriteString("abc\nxbc")
+		b.Resize(20, 3)
+		b.SetPromptMode("select:")
+		for _, ch := range "bc" {
+			b.Handle(term.Event{Type: term.EventKey, Ch: ch})
+		}
+		b.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
+		require.Equal(t, []LessEvent{{Type: Search, Data: []byte("bc")}}, got)
+		require.Equal(t, LessNormalMode, b.Mode())
+	})
+
+	t.Run("the prompt always searches forward", func(t *testing.T) {
+		b := NewLess(LessConfig{})
+		b.Buffer().WriteString("x\nx\nx")
+		b.Resize(20, 3)
+		b.SetSearchMode(LessMoveBackward)
+		b.SetPromptMode("select:")
+		require.Equal(t, LessMoveForward, b.moveMode)
+	})
+
+	t.Run("SetNormalMode puts the / label back for the next search", func(t *testing.T) {
+		b := NewLess(LessConfig{})
+		b.Buffer().WriteString("abc")
+		b.Resize(20, 3)
+		b.SetPromptMode("select:")
+		b.Handle(term.Event{Type: term.EventKey, Ch: 'a'})
+		b.SetNormalMode()
+		require.Equal(t, LessNormalMode, b.Mode())
+		b.SetSearchMode(LessMoveForward)
+		b.Handle(term.Event{Type: term.EventKey, Ch: 'z'})
+		require.Equal(t, "z", b.SearchText())
+		w := term.NewStringWriter(20, 3)
+		b.Draw(w)
+		require.NoError(t, w.Flush())
+		require.Contains(t, w.String(), "/z")
+		require.NotContains(t, w.String(), "select:")
+	})
+
+	t.Run("a second prompt replaces the first", func(t *testing.T) {
+		b := NewLess(LessConfig{})
+		b.Buffer().WriteString("abc")
+		b.Resize(20, 3)
+		b.SetPromptMode("select:")
+		b.Handle(term.Event{Type: term.EventKey, Ch: 'a'})
+		b.SetPromptMode("keep:")
+		require.Equal(t, "", b.SearchText())
+		b.Handle(term.Event{Type: term.EventKey, Ch: 'b'})
+		require.Equal(t, "b", b.SearchText())
+	})
+}

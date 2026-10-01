@@ -494,6 +494,7 @@ html { scrollbar-color: #4A5060 #282C34; }
 }
 .rune-editor-preset-switcher {
   padding-right: 0;
+  gap: 8px;
 }
 .rune-theme-switcher__btn,
 .rune-editor-preset-switcher__btn {
@@ -560,6 +561,11 @@ html { scrollbar-color: #4A5060 #282C34; }
 .navbar-sidebar .rune-editor-preset-switcher {
   width: 100%;
   padding: 4px 0;
+}
+.navbar-sidebar .rune-editor-preset-switcher {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
 }
 .navbar-sidebar .rune-theme-switcher__btn,
 .navbar-sidebar .rune-editor-preset-switcher__btn {

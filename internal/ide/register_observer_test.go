@@ -18,9 +18,11 @@ package ide
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"unstable.build/rune/internal/text"
@@ -28,7 +30,10 @@ import (
 
 // registerStubEditor is a text.Editor whose registration calls succeed,
 // so the observer records the command.
-type registerStubEditor struct{ externalEditorStub }
+type registerStubEditor struct {
+	externalEditorStub
+	openerErr error
+}
 
 func (registerStubEditor) SubscribeCommand(textapi.CommandManual, text.CommandHandler) error {
 	return nil
@@ -36,6 +41,10 @@ func (registerStubEditor) SubscribeCommand(textapi.CommandManual, text.CommandHa
 
 func (registerStubEditor) RegisterREPLCommand(textapi.CommandManual, textapi.REPLHandler) error {
 	return nil
+}
+
+func (e registerStubEditor) RegisterResourceOpener(string, textapi.ResourceOpenHandler) error {
+	return e.openerErr
 }
 
 func TestCommandRegisterObserverWait(t *testing.T) {
@@ -76,4 +85,25 @@ func TestCommandRegisterObserverWait(t *testing.T) {
 		defer cancel()
 		require.ErrorIs(t, obs.Wait(ctx, "cmd"), context.DeadlineExceeded)
 	})
+}
+
+func TestCommandRegisterObserverOnResourceOpener(t *testing.T) {
+	tests := []struct {
+		name        string
+		registerErr error
+		wantSchemes []string
+	}{
+		{name: "reports the registered scheme", wantSchemes: []string{"fake"}},
+		{name: "not when the editor refuses it", registerErr: errors.New("boom")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			obs := newCommandRegisterObserver(registerStubEditor{openerErr: tt.registerErr})
+			var schemes []string
+			obs.onResourceOpener = func(scheme string) { schemes = append(schemes, scheme) }
+			err := obs.RegisterResourceOpener("fake", nil)
+			require.ErrorIs(t, err, tt.registerErr)
+			assert.Equal(t, tt.wantSchemes, schemes)
+		})
+	}
 }

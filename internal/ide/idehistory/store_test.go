@@ -332,6 +332,13 @@ func TestStoreWorkspaceStateForClose(t *testing.T) {
 		hasLayout: true,
 		terminals: []TerminalSession{{Name: "t1"}},
 		tasks:     []TaskSession{{Name: "task1", Cmd: "echo"}},
+		extensions: []ExtensionTab{{
+			URI:      mustURI(t, "fake://host/chat"),
+			Icon:     '󱫆',
+			Name:     "chat",
+			WindowID: 42,
+			Focus:    true,
+		}},
 	}
 	require.NoError(t, store.StoreWorkspaceStateForClose(
 		context.Background(), uri, snap))
@@ -344,21 +351,113 @@ func TestStoreWorkspaceStateForClose(t *testing.T) {
 	require.Len(t, got.Tasks, 1)
 	assert.Equal(t, "task1", got.Tasks[0].Name)
 	assert.Equal(t, "renamed", got.Name)
+	assert.Equal(t, snap.extensions, got.Extensions)
+}
+
+func TestExtensionTabsRoundTrip(t *testing.T) {
+	uri := mustURI(t, "memory:///extension-tabs")
+	chat := ExtensionTab{
+		URI:      mustURI(t, "rune-agent://model/rolling-fox"),
+		Icon:     '󱫆',
+		Name:     "rolling-fox",
+		WindowID: 3,
+		Focus:    true,
+	}
+	other := ExtensionTab{
+		URI:      mustURI(t, "other://host/view"),
+		WindowID: 4,
+	}
+	tests := []struct {
+		name string
+		docs []extensionTabDoc
+		want []ExtensionTab
+	}{
+		{
+			name: "no extension tabs",
+		},
+		{
+			name: "every field survives",
+			docs: []extensionTabDoc{
+				{URI: chat.URI.String(), Icon: string(chat.Icon), Name: chat.Name,
+					WindowID: chat.WindowID, Focus: chat.Focus},
+				{URI: other.URI.String(),
+					WindowID: other.WindowID},
+			},
+			want: []ExtensionTab{chat, other},
+		},
+		{
+			name: "unparsable uri is skipped",
+			docs: []extensionTabDoc{
+				{URI: "not-a-uri", WindowID: 9},
+				{URI: chat.URI.String(), Icon: string(chat.Icon), Name: chat.Name,
+					WindowID: chat.WindowID, Focus: chat.Focus},
+			},
+			want: []ExtensionTab{chat},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cs := newCountingStorage()
+			store := New(cs)
+			doc := newWorkspaceStateDocument(uri, State{})
+			doc.Extensions = tt.docs
+			require.NoError(t, cs.Set(context.Background(),
+				workspaceStateDocumentID(uri), doc))
+
+			got, err := store.LoadWorkspaceState(context.Background(), uri)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got.Extensions)
+
+			require.NoError(t, store.StoreWorkspaceState(
+				context.Background(), uri, got))
+			again, err := store.LoadWorkspaceState(context.Background(), uri)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, again.Extensions)
+		})
+	}
+}
+
+func TestStateIsEmpty(t *testing.T) {
+	uri := mustURI(t, "memory:///empty")
+	tests := []struct {
+		name  string
+		state State
+		want  bool
+	}{
+		{name: "zero", want: true},
+		{name: "layout and name only",
+			state: State{Name: "ws", HasLayout: true}, want: true},
+		{name: "files", state: State{Files: []File{{URI: uri}}}},
+		{name: "terminals",
+			state: State{Terminals: []TerminalSession{{Name: "t"}}}},
+		{name: "tasks", state: State{Tasks: []TaskSession{{Name: "t"}}}},
+		{name: "extension tabs",
+			state: State{Extensions: []ExtensionTab{{URI: uri}}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.state.IsEmpty())
+		})
+	}
 }
 
 // stubSnapshotter is a minimal Snapshotter for tracker tests.
 type stubSnapshotter struct {
-	name      string
-	layout    tcomponent.TileLayout
-	hasLayout bool
-	terminals []TerminalSession
-	tasks     []TaskSession
-	winIDs    map[string]uint64
+	name       string
+	layout     tcomponent.TileLayout
+	hasLayout  bool
+	terminals  []TerminalSession
+	tasks      []TaskSession
+	extensions []ExtensionTab
+	winIDs     map[string]uint64
 }
 
 func (s stubSnapshotter) Name() string                 { return s.name }
 func (s stubSnapshotter) Terminals() []TerminalSession { return s.terminals }
 func (s stubSnapshotter) Tasks() []TaskSession         { return s.tasks }
+func (s stubSnapshotter) ExtensionTabs() []ExtensionTab {
+	return s.extensions
+}
 func (s stubSnapshotter) Layout() (tcomponent.TileLayout, bool) {
 	return s.layout, s.hasLayout
 }
@@ -781,4 +880,30 @@ func TestTrackerDoesNotSnapshotTerminalsOnEditorEvents(t *testing.T) {
 	assert.Equal(t, "ws", got.Name)
 	require.Len(t, got.Terminals, 1, "editor events must leave the terminal state untouched")
 	assert.Equal(t, "from-close", got.Terminals[0].Name)
+}
+
+// A crash skips the close-time snapshot, so the extension tabs must ride
+// along with the per-editor-event writes.
+func TestTrackerPersistsExtensionTabsOnEditorEvents(t *testing.T) {
+	store := New(newCountingStorage())
+	uri := mustURI(t, "memory:///track-extension-tabs")
+	tabs := []ExtensionTab{{
+		URI:      mustURI(t, "rune-agent://model/rolling-fox"),
+		WindowID: 2,
+	}}
+	tr := &tracker{
+		store: store,
+		uri:   uri,
+		snap:  stubSnapshotter{extensions: tabs},
+		ctx:   context.Background(),
+		files: make(map[string]File),
+	}
+	tr.Handle(context.Background(), textapi.Event{
+		Type: textapi.EventTypeOpen,
+		URI:  mustURI(t, "memory:///track-extension-tabs/a.go"),
+	})
+
+	got, err := store.LoadWorkspaceState(context.Background(), uri)
+	require.NoError(t, err)
+	assert.Equal(t, tabs, got.Extensions)
 }

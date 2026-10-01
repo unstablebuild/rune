@@ -72,7 +72,10 @@ func TestShadedTabsRunsOnlyWhileActive(t *testing.T) {
 // The effect paints an active tab's name but never its icon, whose
 // attributes are what set the focused tab apart.
 func TestShadedTabsLeavesIconsAlone(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	// glsl effects keep a worker pool that is reused across frames and
+	// only reaped once the shader is garbage collected.
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent(), goleak.IgnoreAnyFunction(
+		"unstable.build/rune/internal/component/shader/glslshader.(*glslHelper).initWorkers.func1"))
 	s := newTestShadedTabs(ShadedTabsConfig{
 		Shader:      "inferno",
 		FPS:         100,

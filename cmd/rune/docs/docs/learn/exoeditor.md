@@ -6,9 +6,9 @@ title: Exoeditor
 
 # Exoeditor <span className="badge badge--secondary" style={{fontSize: '0.5em', verticalAlign: 'middle'}}>Beta</span>
 
-Rune ships with three built-in editors: [`modal`](./vim-editor.md)
-(vi/vim-like), [`standard`](./standard-editor.md) (conventional), and
-[`emacs`](./emacs-editor.md). You can also run any terminal editor, including
+Rune ships with four built-in editors: [`vim`](./vim-editor.md),
+[`helix`](./helix-editor.md), [`standard`](./standard-editor.md)
+(conventional), and [`emacs`](./emacs-editor.md). You can also run any terminal editor, including
 Vim, Neovim, Helix, Kakoune, Micro, Emacs `-nw`, and Nano, inside a
 Rune-managed tab by setting `editor.mode = "exo"`.
 
@@ -19,7 +19,7 @@ In `exo` mode Rune becomes an an IDE host wrapped around the terminal editor you
 Because you get a production-grade environment wrapped around the editor you already love:
 
 - **Your editor is the editor, everywhere.** When an extension, a code-search result, a diagnostic, or a stack frame opens a file, it opens in your configured editor, rather than one of the builtin editors. A fallback editor is configured to edit in-memory buffers like the [file explorer's buffer](./file-explorer.md).
-- **Semantic features work like the built-ins.** Rune tracks your cursor position inside the external editor, so go to definition, find references, find implementations, hover, signature help, diagnostics and renames behave just like they do in `modal`/`standard`; no LSP setup required on your editor side.
+- **Semantic features work like the built-ins.** Rune tracks your cursor position inside the external editor, so go to definition, find references, find implementations, hover, signature help, diagnostics and renames behave just like they do in `vim`/`standard`; no LSP setup required on your editor side.
 - **Drop the plugins.** Once the IDE handles file pickers, LSP, search, debuggers, git, and tasks, you can strip your editor's config back to motions, colors, and in-file key bindings. A sane division of modifiers is encouraged: Your editor owns `<ctrl>`/`<alt>` modifiers, and Rune owns `<meta>`.
 
 ## How it fits together
@@ -50,7 +50,7 @@ editor:
     command: 'vim "+call cursor({line}, {col})" {file}'
     goto: "<esc>:{line}<enter>{col}|"
     quit: "<esc>:qa!<enter>"
-    fallback: modal
+    fallback: vim
 ```
 
 ```python tab
@@ -60,7 +60,7 @@ editor:
         "command": 'vim "+call cursor({line}, {col})" {file}',
         "goto":    "<esc>:{line}<enter>{col}|",
         "quit":    "<esc>:qa!<enter>",
-        "fallback": "modal",
+        "fallback": "vim",
     },
 },
 ```
@@ -101,8 +101,9 @@ Pick any modifier combination the external editor does not interpret. A bare `:`
 Not every URI Rune opens lives on disk. The file explorer is served from a `memory://` pseudo-URI (`memory:///fexplorer`) that an external terminal editor cannot meaningfully open. The general rule is "anything not `file://` or `ssh://`", but today the file explorer is the single concrete pseudo-URI Rune ships with. In `exo` mode Rune routes those URIs to a built-in Rune editor instead.
 
 `editor.exo.fallback` selects which built-in editor handles them. Valid values
-are `"modal"` (vi/vim-like), `"standard"` (conventional, the default), and
-`"emacs"`. The deprecated `"modeless"` value is an alias for `"standard"`.
+are `"vim"`, `"helix"` (Helix's selection-first grammar), `"standard"`
+(conventional, the default), and `"emacs"`. The deprecated `"modal"` and
+`"modeless"` values are aliases for `"vim"` and `"standard"`.
 The workspace as a whole is still considered externally managed (auto-save,
 file-watcher reloads, and writes to disk all stay disabled); only the editing
 surface for these IDE-owned URIs changes.
@@ -127,7 +128,7 @@ so the IDE still boots.
 
 ### Experimental highlights (beta)
 
-`editor.exo.experimental_highlights` lets Rune paint its own location-list attributes (syntax highlights, LSP diagnostics, and debugger highlights) directly on top of the guest editor's output. With it enabled, `exo` behaves almost like a built-in editor for visual feedback: the same colors you would see in `modal`/`standard` appear over your editor's viewport.
+`editor.exo.experimental_highlights` lets Rune paint its own location-list attributes (syntax highlights, LSP diagnostics, and debugger highlights) directly on top of the guest editor's output. With it enabled, `exo` behaves almost like a built-in editor for visual feedback: the same colors you would see in `vim`/`standard` appear over your editor's viewport.
 
 :::caution[Experimental]
 Rune infers the file-to-cell mapping from the rendered grid, so unusual editor chromes, status lines, or popups can throw the overlay off. Disable it if you see misaligned highlights.
@@ -153,7 +154,7 @@ When enabled, Rune suppresses the guest editor's own text attributes for the fil
 ### Examples
 
 Each example below sets [`editor.exo.fallback`](#fallback-editor) to the
-built-in editor that best matches the guest editor's muscle memory: `modal`
+built-in editor that best matches the guest editor's muscle memory: `vim`
 for the vi-family editors, `emacs` for Emacs, and `standard` for everything
 else. It only affects IDE-owned surfaces like the file explorer; pick whichever
 built-in you would rather use there.
@@ -167,7 +168,7 @@ editor:
     command: 'vim "+call cursor({line}, {col})" {file}'
     goto: "<esc>:{line}<enter>{col}|"
     quit: "<esc>:qa!<enter>"
-    fallback: modal
+    fallback: vim
 command:
   key: "<shift-meta-p>"
 ```
@@ -179,7 +180,7 @@ command:
         "command": 'vim "+call cursor({line}, {col})" {file}',
         "goto":    "<esc>:{line}<enter>{col}|",
         "quit":    "<esc>:qa!<enter>",
-        "fallback": "modal",
+        "fallback": "vim",
     },
 },
 "command": {
@@ -332,7 +333,7 @@ command:
 },
 ```
 
-If `editor.exo.command` is missing or does not contain `{file}`, Rune logs a config error and falls back to `mode = "modal"` so the IDE still boots. An invalid `goto` template is blanked, leaving click-to-line as a nop.
+If `editor.exo.command` is missing or does not contain `{file}`, Rune logs a config error and falls back to `mode = "vim"` so the IDE still boots. An invalid `goto` template is blanked, leaving click-to-line as a nop.
 
 :::note
 The `quit` sequences above force-discard so the editor exits without a save prompt. Vim/Neovim's `:qa!` quits all windows, while Helix and Kakoune's `:q!` close the single buffer. Micro's `<ctrl-q>` and Nano's `<ctrl-x>n` will still prompt if the buffer is dirty in ways Rune hasn't mirrored; the trailing `n` answers Nano's "Save modified buffer?" prompt with "No". Adjust the sequence if you have rebound these keys in your editor.
@@ -358,4 +359,4 @@ Handing editing off to a guest TUI editor means forfeiting the integration point
 
 ## When to use it
 
-Pick `exo` if your current terminal editor setup is non-negotiable and you want Rune as the workspace shell around it. For the deepest integration (semantic highlights, inline diagnostics, incremental edits) stick with `modal` or `standard`.
+Pick `exo` if your current terminal editor setup is non-negotiable and you want Rune as the workspace shell around it. For the deepest integration (semantic highlights, inline diagnostics, incremental edits) stick with `vim` or `standard`.

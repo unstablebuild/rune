@@ -342,6 +342,20 @@ func (s *scheme) connectScheme(
 	if err != nil {
 		return nil, fmt.Errorf("could not initialize remote: %w", err)
 	}
+	// Each attempt dials its own remote. Until the monitor goroutine below
+	// takes ownership, a failed attempt must release it and the pipes, or
+	// every maintainConnection retry leaks an SSH connection and six fds.
+	var closers []io.Closer
+	handedOff := false
+	defer func() {
+		if handedOff {
+			return
+		}
+		for _, closer := range closers {
+			_ = closer.Close()
+		}
+		_ = remote.Close()
+	}()
 
 	// NOTE: the next checks are to avoid error messages getting lost when
 	// trying to connect so we can provide better error messages
@@ -407,7 +421,7 @@ func (s *scheme) connectScheme(
 		Watcher: workspaceapi.ChanProcessWatcher(ch),
 	}
 
-	stdoutRead, stderrRead, stdinWrite, closers, err := s.setPipes(&cmd)
+	stdoutRead, stderrRead, stdinWrite, closers, err := setPipes(&cmd, os.Pipe)
 	if err != nil {
 		return nil, fmt.Errorf("could not create pipes: %s", err)
 	}
@@ -492,14 +506,11 @@ func (s *scheme) connectScheme(
 		// conn was never wrapped in a workspacerpc.Client, so nothing else
 		// owns it; close it here to release its background gRPC goroutines.
 		_ = conn.Close()
-		for _, closer := range closers {
-			_ = closer.Close()
-		}
-		_ = remote.Close()
 		return nil, fmt.Errorf("error executing remote rune workspace "+
 			"server over SSH: %s: %s", exitErr, tail.String())
 	}
 
+	handedOff = true
 	go debug.CapturePanicReport(func() {
 		defer remote.Close()
 		// Wait for the remote process to exit OR for the scheme's
@@ -692,20 +703,24 @@ func (t *stderrTail) String() string {
 	return string(t.buf)
 }
 
-func (s *scheme) setPipes(
-	cmd *workspaceapi.Cmd,
+// setPipes creates the command's stdio pipes with newPipe, normally os.Pipe.
+// On error it has closed every pipe it created.
+func setPipes(
+	cmd *workspaceapi.Cmd, newPipe func() (r, w *os.File, err error),
 ) (stdout, stderr, stdin *os.File, closers []io.Closer, err error) {
-	stdoutRead, stdoutWrite, err := os.Pipe()
+	stdoutRead, stdoutWrite, err := newPipe()
 	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("pipe: %v", err)
+		return nil, nil, nil, nil, fmt.Errorf("pipe: %w", err)
 	}
-	stderrRead, stderrWrite, err := os.Pipe()
+	stderrRead, stderrWrite, err := newPipe()
 	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("pipe: %v", err)
+		closeFiles(stdoutRead, stdoutWrite)
+		return nil, nil, nil, nil, fmt.Errorf("pipe: %w", err)
 	}
-	stdinRead, stdinWrite, err := os.Pipe()
+	stdinRead, stdinWrite, err := newPipe()
 	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("pipe: %v", err)
+		closeFiles(stdoutRead, stdoutWrite, stderrRead, stderrWrite)
+		return nil, nil, nil, nil, fmt.Errorf("pipe: %w", err)
 	}
 	cmd.Stdout = stdoutWrite
 	cmd.Stderr = stderrWrite
@@ -715,6 +730,12 @@ func (s *scheme) setPipes(
 		stdoutRead, stderrRead, stdinRead,
 	}
 	return stdoutRead, stderrRead, stdinWrite, closers, nil
+}
+
+func closeFiles(files ...*os.File) {
+	for _, file := range files {
+		_ = file.Close()
+	}
 }
 
 func (s *scheme) init(

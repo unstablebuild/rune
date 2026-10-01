@@ -1,6 +1,6 @@
 import {useSyncExternalStore} from 'react';
 
-export type EditorPreset = 'modal' | 'standard' | 'emacs';
+export type EditorPreset = 'modal' | 'helix' | 'standard' | 'emacs';
 export type Platform = 'darwin' | 'linux';
 
 export interface Selection {
@@ -21,7 +21,9 @@ function readSelection(): string {
   );
   const platform = document.documentElement.getAttribute('data-rune-platform');
   const safePreset: EditorPreset =
-    preset === 'modal' || preset === 'emacs' ? preset : 'standard';
+    preset === 'modal' || preset === 'helix' || preset === 'emacs'
+      ? preset
+      : 'standard';
   const safePlatform: Platform = platform === 'linux' ? 'linux' : 'darwin';
   return `${safePreset}:${safePlatform}`;
 }

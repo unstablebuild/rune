@@ -14,11 +14,30 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//go:build darwin
+//go:build !windows
 
-package main
+package debug
 
-import _ "embed"
+import (
+	"os"
+	"os/signal"
+	"syscall"
 
-//go:embed preset_standard_darwin.yaml
-var presetStandardYAML string
+	log "github.com/sirupsen/logrus"
+)
+
+// StartPProfOnSignal installs a SIGUSR1 handler that, on the first
+// signal, starts a pprof HTTP server bound to a random localhost port
+// and logs the listening address at info level so the caller can find
+// it. Subsequent SIGUSR1 signals are ignored.
+func StartPProfOnSignal() {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGUSR1)
+	go CapturePanicReport(func() {
+		<-ch
+		signal.Stop(ch)
+		if _, err := StartPProfHTTP("127.0.0.1:0"); err != nil {
+			log.Errorf("StartPProfOnSignal: %v", err)
+		}
+	})
+}

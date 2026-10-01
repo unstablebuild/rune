@@ -13,32 +13,50 @@
 # Starlark control flow.
 
 ck = command_key()
+mode = editor_mode()
 
 # How to move through a location picker / finder list, phrased per mode.
 # Keep the arrows as a universal fallback while naming each preset's
-# completion bindings.
-if editor_mode() == "modal":
+# completion bindings. Helix's own pickers walk their list with
+# <ctrl-n> / <ctrl-p>, the pair Rune's pickers share with Emacs.
+if mode == "vim":
     move_phrase = "`<ctrl-j>` / `<ctrl-k>` (or `<up>` / `<down>`)"
-elif editor_mode() == "emacs":
+elif mode == "emacs" or mode == "helix":
     move_phrase = "`<ctrl-p>` / `<ctrl-n>` (or `<up>` / `<down>`)"
 else:
     move_phrase = "the arrow keys `<up>` / `<down>`"
 
-if editor_mode() == "emacs":
-    def_by_name_key = "<ctrl-alt-.>"
+# The by-name definition lookup is a prompt-prefill macro, which
+# `key_for` cannot resolve, so its chord is spelled per mode and
+# TestNavigationTutorialPrefillKeysMatchPresets pins each one against
+# the preset that binds it. The macOS and Linux presets place Rune's
+# layer on different modifiers, so the chords also branch on the OS.
+linux = os() == "linux"
+# key() spells `<meta>` on the keys gui.meta_key puts it on.
+if mode == "emacs":
+    def_by_name_key = key("<ctrl-alt-.>")
+elif mode == "helix":
+    def_by_name_key = key("<ctrl-shift-meta-d>" if linux else "<shift-meta-d>")
 else:
-    def_by_name_key = "<alt-shift-d>"
+    def_by_name_key = key("<shift-meta-d>" if linux else "<alt-shift-d>")
 def_by_name_cta = "press `" + def_by_name_key + "`"
 
 # The `jumptoast` prefill fuzzy-jumps to a function or method defined in
 # the current file. It is bound as a prompt-prefill macro whose chord
 # differs by mode. `key_for` cannot resolve prefill macros, so hardcode
-# it; TestNavigationTutorialJumpToSymbolKeyMatchesPreset pins each chord
-# against the preset that binds it.
-if editor_mode() == "emacs":
-    jump_symbol_key = "<meta-j>"
+# it; TestNavigationTutorialPrefillKeysMatchPresets pins each chord
+# against the preset that binds it. Helix keeps it on the <space> leader,
+# where its own symbol_picker lives.
+if mode == "emacs":
+    jump_symbol_key = key("<meta-j>")
+elif mode == "helix":
+    jump_symbol_key = key("<space>s")
+elif mode == "standard" and linux:
+    jump_symbol_key = key("<ctrl-meta-f>")
+elif linux:
+    jump_symbol_key = key("<meta-f>")
 else:
-    jump_symbol_key = "<alt-f>"
+    jump_symbol_key = key("<alt-f>")
 
 def keyhint(cmd, *args):
     k = key_for(cmd, *args)
@@ -51,13 +69,17 @@ def keypress(cmd, *args):
     k = key_for(cmd, *args)
     if k:
         return "press `" + k + "`"
-    return "open the command prompt (`" + ck + "`) and run `" + cmd + "`"
+    return ("open the command prompt (`" + ck + "`) and run `" +
+            command_line(cmd, args) + "`")
+
+def command_line(cmd, args):
+    return cmd + ((" " + " ".join(args)) if len(args) else "")
 
 def keylabel(cmd, *args):
     # The bound key as a bare label, for copy that names a key rather
     # than asks for it. Falls back to the command name when unbound.
     k = key_for(cmd, *args)
-    return "`" + (k if k else cmd) + "`"
+    return "`" + (k if k else command_line(cmd, args)) + "`"
 
 cleanup_md = """\
 Let's start fresh. Clear the layout: """ + keypress("windowcloseall") + """.
@@ -88,6 +110,13 @@ We will answer these questions, one at a time:
 - What else can I ask about the symbol under my cursor?
 """
 
+# A focused terminal in INSERT mode types <space> into the shell, so the
+# helix preset's <space> leader never reaches Rune from there.
+space_leader_note = ("""
+> If the window in focus is a terminal, it takes `<space>` before
+> Rune sees it: press `<esc>` to go back to NORMAL mode first.
+""" if mode == "helix" and key_for("searchfile").startswith("<space>") else "")
+
 searchfile_md = """\
 `searchfile` opens a fuzzy finder over every file in the workspace, so
 you can reach a file without knowing where it sits in the tree.
@@ -98,7 +127,7 @@ you can reach a file without knowing where it sits in the tree.
   `navigation.star`.
 
 Open it now: """ + keypress("searchfile") + """.
-"""
+""" + space_leader_note
 
 searchfile_picker_md = """\
 The finder is open. Narrow the list down, then take a file from it.
@@ -425,4 +454,4 @@ def run():
     teach_lsp_more()
 
 
-tutorial(id = "navigation", title = "Navigate code", version = "26", entry = run)
+tutorial(id = "navigation", title = "Navigate code", version = "27", entry = run)

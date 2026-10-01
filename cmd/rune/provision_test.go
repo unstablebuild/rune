@@ -243,24 +243,36 @@ func TestRemoteProvisioningInstallsGitPackage(t *testing.T) {
 // TestResolveRemoteEditorMode asserts the remote provisioning server resolves
 // the user's editor mode from its ~/.rune config so RUNE_EDITOR_MODE is
 // predeclared for package config.star scripts. exo resolves to its fallback,
-// and a missing config falls back to the modal default rather than an empty
-// (undefined) mode.
+// a missing config falls back to the vim default rather than an empty
+// (undefined) mode, and a config that still says "modal" reaches packages as
+// "vim".
 func TestResolveRemoteEditorMode(t *testing.T) {
 	t.Run("resolves exo to configured fallback", func(t *testing.T) {
 		dataDir := t.TempDir()
 		configPath := filepath.Join(dataDir, "config.yaml")
 		require.NoError(t, os.WriteFile(configPath, []byte(
 			"editor:\n  mode: exo\n  exo:\n    command: vim {file}\n"+
-				"    goto: \"<esc>:{line}<enter>\"\n    fallback: modal\n"), 0o644))
+				"    goto: \"<esc>:{line}<enter>\"\n    quit: \"<esc>:qa<enter>\"\n"+
+				"    fallback: helix\n"), 0o644))
 		setFlagForTest(t, flagConfigPath, configPath)
 
-		assert.Equal(t, "modal", resolveRemoteEditorMode())
+		assert.Equal(t, "helix", resolveRemoteEditorMode())
 	})
 
-	t.Run("missing config defaults to modal", func(t *testing.T) {
+	t.Run("missing config defaults to vim", func(t *testing.T) {
 		setFlagForTest(t, flagConfigPath, filepath.Join(t.TempDir(), "config.yaml"))
 
-		assert.Equal(t, "modal", resolveRemoteEditorMode())
+		assert.Equal(t, "vim", resolveRemoteEditorMode())
+	})
+
+	t.Run("resolves the deprecated modal mode to vim", func(t *testing.T) {
+		dataDir := t.TempDir()
+		configPath := filepath.Join(dataDir, "config.yaml")
+		require.NoError(t, os.WriteFile(configPath,
+			[]byte("editor:\n  mode: modal\n"), 0o644))
+		setFlagForTest(t, flagConfigPath, configPath)
+
+		assert.Equal(t, "vim", resolveRemoteEditorMode())
 	})
 
 	t.Run("resolves standard mode", func(t *testing.T) {

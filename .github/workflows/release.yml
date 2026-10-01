@@ -1,0 +1,105 @@
+name: Release
+
+# Pushing a v* tag stages the release as a draft, which neither users nor the
+# upgrader can see until it is published. This workflow attaches the Linux
+# artifacts; the macOS DMGs are signed and attached from a Mac with
+# `make rune-prod-dist-darwin-<arch>`, so the Developer ID key never leaves the
+# maintainer's keychain.
+on:
+  push:
+    tags: ['v*']
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # Created once before the uploads: GitHub allows several drafts with the
+  # same tag, so concurrent jobs creating it on demand could split the release.
+  draft:
+    name: Draft release
+    if: github.repository == 'unstablebuild/rune'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./cmd/rune/draft-release.sh
+
+  tarball:
+    name: .tar.gz (${{ matrix.arch }})
+    needs: draft
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # cmd/rune/Makefile stamps BUILD_DATE with `go run ./cmd/buildstamp`.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: docker/setup-buildx-action@v3
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: make rune-prod-dist-linux-${{ matrix.arch }}
+
+  deb:
+    name: .deb (${{ matrix.arch }})
+    needs: draft
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Set up QEMU
+        if: matrix.arch == 'arm64'
+        uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - run: make pkg-deb-${{ matrix.arch }}
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" target/pkg/*.deb --repo "$GITHUB_REPOSITORY" --clobber
+
+  status:
+    name: Release status
+    needs: [draft, tarball, deb]
+    if: ${{ !cancelled() && needs.draft.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # Only tokens with write access can see draft releases.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          {
+            echo '```'
+            RELEASE_TAG="$GITHUB_REF_NAME" RELEASE_REPO="$GITHUB_REPOSITORY" ./dist/release.sh status
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"

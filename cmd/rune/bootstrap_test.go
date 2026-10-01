@@ -20,16 +20,24 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/config"
 	sdkhandler "github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
+	"go.uber.org/mock/gomock"
+	"gopkg.in/yaml.v3"
 
 	"unstable.build/rune/internal/browser"
+	"unstable.build/rune/internal/browser/browsertest"
 	"unstable.build/rune/internal/ide"
+	"unstable.build/rune/internal/ide/keymeta"
+	"unstable.build/rune/internal/term/gui"
 )
 
 func TestTelemetryOptionToChoiceMapping(t *testing.T) {
@@ -57,10 +65,11 @@ func TestOptionToChoiceMapping(t *testing.T) {
 		option string
 		want   string
 	}{
-		{optVimYes, editorModal},
+		{optVimYes, editorVim},
 		{optStandard, editorStandard},
 		{optEmacs, editorEmacs},
-		{"unknown", editorModal}, // default fallback
+		{optHelix, editorHelix},
+		{"unknown", editorVim}, // default fallback
 	}
 	for _, tc := range cases {
 		t.Run(tc.option, func(t *testing.T) {
@@ -69,72 +78,173 @@ func TestOptionToChoiceMapping(t *testing.T) {
 	}
 }
 
-// TestRenderPreset pins that the vim-mode choice maps to the modal
+// TestRenderPreset pins that the vim choice maps to the vim
 // preset, the standard-editor choice maps to the standard preset
 // (which switches editor.mode to standard), the emacs choice maps to
 // the emacs preset, the deprecated modeless alias resolves to the
 // standard preset, and that an unknown choice is an error.
 func TestRenderPreset(t *testing.T) {
-	modal, err := renderPreset(editorModal, false)
+	vim, err := renderPreset(editorVim, keymeta.Super, false, gui.AltModifierNone)
 	require.NoError(t, err)
-	require.NotContains(t, modal, "mode: standard",
+	require.NotContains(t, vim, "mode: standard",
 		"vim mode must not switch the editor into standard")
-	require.Contains(t, modal, "enabled: false",
+	require.NotContains(t, vim, "modal editor preset",
+		"the preset written to the user config must not name the retired mode")
+	require.Contains(t, vim, "enabled: false",
 		"telemetry=false must render enabled: false")
-
-	std, err := renderPreset(editorStandard, true)
+	std, err := renderPreset(editorStandard, keymeta.Super, true, gui.AltModifierNone)
 	require.NoError(t, err)
 	require.Contains(t, std, "mode: standard",
 		"the standard choice must switch the editor into standard")
 	require.Contains(t, std, "enabled: true",
 		"telemetry=true must render enabled: true")
 
-	deprecated, err := renderPreset(editorModeless, true)
+	deprecated, err := renderPreset(editorModeless, keymeta.Super, true, gui.AltModifierNone)
 	require.NoError(t, err)
 	require.Equal(t, std, deprecated,
 		"the deprecated modeless alias must resolve to the standard preset")
 
-	ema, err := renderPreset(editorEmacs, false)
+	ema, err := renderPreset(editorEmacs, keymeta.Super, false, gui.AltModifierNone)
 	require.NoError(t, err)
 	require.Contains(t, ema, "enabled: false",
 		"telemetry=false must render enabled: false")
 	require.Contains(t, ema, "mode: emacs",
 		"the emacs choice must switch the editor into emacs")
-	require.Contains(t, ema, `"<meta-f>": "windowfocus right"`,
-		"emacs must use the PNBF direction layer for window focus")
-	require.Contains(t, ema, `"<ctrl-x>u": "undo prefix"`,
-		"emacs must expose GNU's C-x u undo alias")
-	for _, binding := range []string{
-		`"<meta-d>": "windownew down"`,
-		`"<meta-r>": "windownew right"`,
-		`"<meta-k>": windowclose`,
-		`"<shift-meta-k>": windowcloseall`,
-		`"<meta-m>": windowtogglemaximize`,
-		`"<meta-o>": fexplorer`,
-		`"<meta-left>": "windowresize decrease width"`,
+
+	hx, err := renderPreset(editorHelix, keymeta.Super, true, gui.AltModifierNone)
+	require.NoError(t, err)
+	require.Contains(t, hx, "mode: helix",
+		"the helix choice must switch the editor into helix")
+	require.Contains(t, hx, "enabled: true",
+		"telemetry=true must render enabled: true")
+	hxKeys := decodeKeyBindings(t, "helix preset", []byte(hx))
+	for key, cmd := range map[string]string{
+		"<space>f":  "searchfile",
+		"<space>e":  "fexplorer",
+		"<space>b":  "tabsearch",
+		"<space>/":  "searchtext",
+		"<ctrl-w>v": "windownew right",
 	} {
-		require.Contains(t, ema, binding,
-			"emacs layout bindings must remain reachable from terminals")
+		require.Equalf(t, cmd, hxKeys[key],
+			"helix must reach commands through its <space> and <ctrl-w> menus: %s", key)
+	}
+	require.NotContains(t, hxKeys, "<alt-d>", "helix keeps <alt> for its own grammar")
+	emaKeys := decodeKeyBindings(t, "emacs preset", []byte(ema))
+	require.Equal(t, "windowfocus right", emaKeys["<meta-f>"],
+		"emacs must use the PNBF direction layer for window focus")
+	require.Equal(t, "undo prefix", emaKeys["<ctrl-x>u"],
+		"emacs must expose GNU's C-x u undo alias")
+	emaLayout := map[string]string{
+		"<meta-d>":       "windownew down",
+		"<meta-r>":       "windownew right",
+		"<meta-k>":       "windowclose",
+		"<shift-meta-k>": "windowcloseall",
+		"<meta-m>":       "windowtogglemaximize",
+		"<meta-o>":       "fexplorer",
+	}
+	// Linux keeps resize off <meta> arrows, which GNOME and KDE take for
+	// window snapping.
+	if runtime.GOOS == "darwin" {
+		emaLayout["<meta-left>"] = "windowresize decrease width"
+	} else {
+		emaLayout["<ctrl-alt-meta-b>"] = "windowresize decrease width"
+	}
+	for key, cmd := range emaLayout {
+		require.Equalf(t, cmd, emaKeys[key],
+			"emacs layout bindings must remain reachable from terminals: %s", key)
 	}
 	// A focused terminal eats C-x, so the GNU lifecycle chords may only ever
 	// duplicate a <meta> binding, never be the sole way to reach a command.
 	for cx, meta := range map[string]string{
-		`"<ctrl-x>0": windowclose`:       `"<meta-k>": windowclose`,
-		`"<ctrl-x>1": windowcloseall`:    `"<shift-meta-k>": windowcloseall`,
-		`"<ctrl-x>2": "windownew down"`:  `"<meta-d>": "windownew down"`,
-		`"<ctrl-x>3": "windownew right"`: `"<meta-r>": "windownew right"`,
+		"<ctrl-x>0": "<meta-k>",
+		"<ctrl-x>1": "<shift-meta-k>",
+		"<ctrl-x>2": "<meta-d>",
+		"<ctrl-x>3": "<meta-r>",
 	} {
-		if strings.Contains(ema, cx) {
-			require.Contains(t, ema, meta,
+		if cmd, ok := emaKeys[cx]; ok {
+			require.Equalf(t, cmd, emaKeys[meta],
 				"%s must duplicate a <meta> binding, not replace it", cx)
 		}
 	}
-	require.NotContains(t, ema,
-		`"<meta-f>": "echo {prompt}jumptoast<space>locals.scm<space>`,
-		"the displaced function search binding must remain prompt-only")
 
-	_, err = renderPreset("bogus", true)
+	_, err = renderPreset("bogus", keymeta.Super, true, gui.AltModifierNone)
 	require.Error(t, err)
+}
+
+// TestRenderPresetMetaKey renders every editor with every <meta> meaning
+// the host offers it, and rejects the ones it does not.
+func TestRenderPresetMetaKey(t *testing.T) {
+	all := []keymeta.Meta{keymeta.Super, keymeta.Alt, keymeta.CtrlSuper, keymeta.AltSuper}
+	for _, editor := range []string{editorVim, editorHelix, editorStandard, editorEmacs} {
+		offered := keymeta.Options(runtime.GOOS, editor)
+		for _, meta := range all {
+			for _, telemetry := range []bool{true, false} {
+				name := fmt.Sprintf("%s/%s/%t", editor, meta, telemetry)
+				t.Run(name, func(t *testing.T) {
+					body, err := renderPreset(editor, meta, telemetry, gui.AltModifierNone)
+					if !slices.Contains(offered, meta) {
+						require.ErrorContains(t, err, "not offered")
+						return
+					}
+					require.NoError(t, err)
+					require.NotContains(t, body, "[[")
+					var got struct {
+						GUI struct {
+							MetaKey string `yaml:"meta_key"`
+						} `yaml:"gui"`
+						Telemetry struct {
+							Enabled bool `yaml:"enabled"`
+						} `yaml:"telemetry"`
+					}
+					require.NoError(t, yaml.Unmarshal([]byte(body), &got))
+					require.Equal(t, telemetry, got.Telemetry.Enabled)
+					if len(offered) > 1 {
+						require.Equal(t, meta.String(), got.GUI.MetaKey)
+					} else {
+						require.Empty(t, got.GUI.MetaKey,
+							"a host with a single option writes no meta_key")
+					}
+				})
+			}
+		}
+	}
+}
+
+// TestBootstrapAltModifierRoundTrip writes the preset for each Option key
+// choice and reads it back through the GUI config, which only macOS offers.
+func TestBootstrapAltModifierRoundTrip(t *testing.T) {
+	all := []gui.AltModifier{gui.AltModifierNone, gui.AltModifierLeft, gui.AltModifierRight}
+	for _, editor := range []string{editorVim, editorHelix, editorStandard, editorEmacs} {
+		for _, modifier := range all {
+			t.Run(editor+"/"+modifier.String(), func(t *testing.T) {
+				dir := t.TempDir()
+				b := &bootstrapHandler{
+					dataDir: dir, chosenEditor: editor, chosenAltModifier: modifier,
+				}
+				err := b.writePresetConfig()
+				if modifier != gui.AltModifierNone && runtime.GOOS != "darwin" {
+					require.ErrorContains(t, err, "not offered")
+					return
+				}
+				require.NoError(t, err)
+
+				cfg := mustLoadConfig(t, filepath.Join(dir, configFilename))
+				guiCfg, err := cfg.GetConfig("gui")
+				require.NoError(t, err)
+				got, err := guiCfg.GetString("alt_modifier")
+				if runtime.GOOS == "darwin" {
+					require.NoError(t, err)
+					require.Equal(t, modifier.String(), got)
+				} else {
+					require.ErrorIs(t, err, config.ErrNotFound,
+						"only macOS presets carry gui.alt_modifier")
+				}
+				ctrl := gomock.NewController(t)
+				require.Equal(t, modifier,
+					getGUIAltModifier(browsertest.NewMockBrowser(ctrl), guiCfg))
+			})
+		}
+	}
 }
 
 // TestGuardedPromptChainReopensOnUnadvancedClose proves that an Esc
@@ -301,35 +411,196 @@ func (f *fakeBootstrapPrompter) Prompt(message string, options []string, binding
 }
 
 func TestBootstrapPromptProgression(t *testing.T) {
+	for _, tc := range []struct {
+		goos   string
+		askAlt bool
+	}{
+		{"darwin", true},
+		{"windows", false},
+	} {
+		t.Run(tc.goos, func(t *testing.T) {
+			prompter := &fakeBootstrapPrompter{}
+			b := &bootstrapHandler{
+				prompter:     prompter,
+				publishEvent: func(term.Event) bool { return true },
+				goos:         tc.goos,
+			}
+
+			b.openWelcomePrompt()
+			require.Len(t, prompter.prompts, 1)
+			require.Equal(t, []string{optWelcomeGo}, prompter.prompts[0].options)
+
+			// Selecting welcome advances to Vim prompt.
+			prompter.prompts[0].handler.OnSelect(0, optWelcomeGo)
+			require.Len(t, prompter.prompts, 2)
+			require.Equal(t,
+				[]string{optStandard, optEmacs, optVimYes, optHelix},
+				prompter.prompts[1].options)
+
+			prompter.prompts[1].handler.OnSelect(0, optStandard)
+			require.Equal(t, editorStandard, b.chosenEditor)
+
+			if tc.askAlt {
+				require.Len(t, prompter.prompts, 3)
+				altPrompt := prompter.prompts[2]
+				require.Contains(t, altPrompt.message, "## Choose your Alt/Option (\u2325) key")
+				require.Equal(t, []string{optAltRight, optAltLeft, optAltNone}, altPrompt.options)
+				require.Equal(t, bootstrapAltModifierKeys, altPrompt.bindings)
+
+				altPrompt.handler.OnSelect(0, optAltLeft)
+				require.Equal(t, gui.AltModifierLeft, b.chosenAltModifier)
+				require.Len(t, prompter.prompts, 4)
+			} else {
+				require.Len(t, prompter.prompts, 3, "only macOS asks for the Option key")
+				require.Equal(t, gui.AltModifierNone, b.chosenAltModifier)
+			}
+
+			telPrompt := prompter.prompts[len(prompter.prompts)-1]
+			require.Contains(t, telPrompt.message, "## Help us pick what to build next")
+			require.Contains(t, telPrompt.message, "We never send file names, paths, file contents, terminal output, or anything you type.")
+			require.Contains(t, telPrompt.message, "any time in your config")
+			require.Contains(t, telPrompt.message, "Telemetry page in the docs")
+			require.NotContains(t, telPrompt.message, "[Telemetry](")
+			require.NotContains(t, telPrompt.message, "```json")
+			require.Equal(t, []string{optTelemetryYes, optTelemetryNo}, telPrompt.options)
+			require.Equal(t, bootstrapTelemetryKeys, telPrompt.bindings)
+		})
+	}
+}
+
+// TestBootstrapMetaPrompt pins that Linux asks what <meta> means between
+// the editor and telemetry prompts, offering exactly keymeta.Options.
+func TestBootstrapMetaPrompt(t *testing.T) {
+	superAlt := []string{" super ", " alt "}
+	superAltKeys := []term.KeyComb{{Ch: 's'}, {Ch: 'a'}}
+	emacs := []string{" super ", " ctrl+super ", " alt+super "}
+	emacsKeys := []term.KeyComb{{Ch: 's'}, {Ch: 'c'}, {Ch: 'a'}}
+	for _, tc := range []struct {
+		option   string
+		editor   string
+		labels   []string
+		keys     []term.KeyComb
+		pick     int
+		wantMeta keymeta.Meta
+	}{
+		{optVimYes, editorVim, superAlt, superAltKeys, 1, keymeta.Alt},
+		{optHelix, editorHelix, superAlt, superAltKeys, 0, keymeta.Super},
+		{optStandard, editorStandard, superAlt, superAltKeys, 1, keymeta.Alt},
+		{optEmacs, editorEmacs, emacs, emacsKeys, 1, keymeta.CtrlSuper},
+		{optEmacs, editorEmacs, emacs, emacsKeys, 2, keymeta.AltSuper},
+	} {
+		t.Run(tc.editor+tc.labels[tc.pick], func(t *testing.T) {
+			prompter := &fakeBootstrapPrompter{}
+			b := &bootstrapHandler{
+				prompter:     prompter,
+				publishEvent: func(term.Event) bool { return true },
+				goos:         "linux",
+			}
+			b.openVimPrompt()
+			prompter.prompts[0].handler.OnSelect(0, tc.option)
+			require.Equal(t, tc.editor, b.chosenEditor)
+			require.Len(t, prompter.prompts, 2)
+
+			meta := prompter.prompts[1]
+			require.Contains(t, meta.message, "`<meta>`")
+			require.Contains(t, meta.message, "gui.meta_key")
+			require.Equal(t, tc.labels, meta.options)
+			require.Equal(t, tc.keys, meta.bindings)
+
+			require.NoError(t, meta.handler.OnClose())
+			require.Len(t, prompter.prompts, 3, "dismissing the meta prompt reopens it")
+			require.Equal(t, tc.labels, prompter.prompts[2].options)
+
+			prompter.prompts[2].handler.OnSelect(tc.pick, tc.labels[tc.pick])
+			require.Equal(t, tc.wantMeta, b.chosenMeta)
+			require.Len(t, prompter.prompts, 4)
+			require.Equal(t, []string{optTelemetryYes, optTelemetryNo},
+				prompter.prompts[3].options)
+		})
+	}
+}
+
+// The GUI predates the config, so the choice must apply to the running input.
+func TestBootstrapAltModifierAppliesToRunningGUI(t *testing.T) {
+	var applied []gui.AltModifier
 	prompter := &fakeBootstrapPrompter{}
 	b := &bootstrapHandler{
-		prompter:     prompter,
-		publishEvent: func(term.Event) bool { return true },
+		prompter:       prompter,
+		setAltModifier: func(m gui.AltModifier) { applied = append(applied, m) },
 	}
+	b.openAltModifierPrompt()
+	prompter.prompts[0].handler.OnSelect(0, optAltRight)
 
-	b.openWelcomePrompt()
-	require.Len(t, prompter.prompts, 1)
-	require.Equal(t, []string{optWelcomeGo}, prompter.prompts[0].options)
+	require.Equal(t, []gui.AltModifier{gui.AltModifierRight}, applied,
+		"the chosen Alt key must reach the running GUI, not just the config")
+}
 
-	// Selecting welcome advances to Vim prompt.
-	prompter.prompts[0].handler.OnSelect(0, optWelcomeGo)
-	require.Len(t, prompter.prompts, 2)
-	require.Equal(t, []string{optStandard, optEmacs, optVimYes}, prompter.prompts[1].options)
+func TestBootstrapAltModifierPrompt(t *testing.T) {
+	for _, tc := range []struct {
+		option string
+		want   gui.AltModifier
+	}{
+		{optAltLeft, gui.AltModifierLeft},
+		{optAltRight, gui.AltModifierRight},
+		{optAltNone, gui.AltModifierNone},
+	} {
+		t.Run(tc.option, func(t *testing.T) {
+			prompter := &fakeBootstrapPrompter{}
+			b := &bootstrapHandler{prompter: prompter, chosenAltModifier: gui.AltModifierRight}
+			b.openAltModifierPrompt()
 
-	// Selecting an editor option in Vim prompt advances to Telemetry prompt.
-	prompter.prompts[1].handler.OnSelect(0, optStandard)
-	require.Equal(t, editorStandard, b.chosenEditor)
-	require.Len(t, prompter.prompts, 3)
+			require.Len(t, prompter.prompts, 1)
+			prompter.prompts[0].handler.OnSelect(0, tc.option)
+			require.Equal(t, tc.want, b.chosenAltModifier)
+			require.Len(t, prompter.prompts, 2)
+		})
+	}
+}
 
-	telPrompt := prompter.prompts[2]
-	require.Contains(t, telPrompt.message, "## Help us pick what to build next")
-	require.Contains(t, telPrompt.message, "We never send file names, paths, file contents, terminal output, or anything you type.")
-	require.Contains(t, telPrompt.message, "any time in your config")
-	require.Contains(t, telPrompt.message, "Telemetry page in the docs")
-	require.NotContains(t, telPrompt.message, "[Telemetry](")
-	require.NotContains(t, telPrompt.message, "```json")
-	require.Equal(t, []string{optTelemetryYes, optTelemetryNo}, telPrompt.options)
-	require.Equal(t, bootstrapTelemetryKeys, telPrompt.bindings)
+// TestBootstrapMetaPromptOptionsFollowTheTable couples the prompt to the
+// option table on every OS, so an option added there is offered here
+// with a key of its own.
+func TestBootstrapMetaPromptOptionsFollowTheTable(t *testing.T) {
+	for _, goos := range []string{"linux", "darwin"} {
+		for _, editor := range []string{editorVim, editorHelix, editorStandard, editorEmacs} {
+			b := &bootstrapHandler{goos: goos, chosenEditor: editor}
+			require.Equal(t, keymeta.Options(goos, editor), b.metaOptions())
+			seen := map[byte]bool{}
+			for _, m := range b.metaOptions() {
+				key := strings.TrimSpace(metaOptionLabel(m))[0]
+				require.Falsef(t, seen[key], "%s/%s: two options share key %c",
+					goos, editor, key)
+				seen[key] = true
+			}
+		}
+	}
+}
+
+// TestBootstrapMetaChoiceRoundTrip writes the preset for each option the
+// host offers and loads it back without a config error.
+func TestBootstrapMetaChoiceRoundTrip(t *testing.T) {
+	for _, editor := range []string{editorVim, editorHelix, editorStandard, editorEmacs} {
+		offered := keymeta.Options(runtime.GOOS, editor)
+		for _, meta := range offered {
+			t.Run(editor+meta.String(), func(t *testing.T) {
+				dir := t.TempDir()
+				b := &bootstrapHandler{
+					dataDir: dir, chosenEditor: editor, chosenMeta: meta,
+				}
+				require.NoError(t, b.writePresetConfig())
+				cfg := mustLoadConfig(t, filepath.Join(dir, configFilename))
+				guiCfg, err := cfg.GetConfig("gui")
+				require.NoError(t, err)
+				got, err := guiCfg.GetString("meta_key")
+				if len(offered) == 1 {
+					require.Error(t, err, "a host with a single option writes no meta_key")
+					return
+				}
+				require.NoError(t, err)
+				require.Equal(t, meta.String(), got)
+			})
+		}
+	}
 }
 
 func TestBootstrapTelemetryPersistenceRoundTrip(t *testing.T) {
@@ -348,7 +619,7 @@ func TestBootstrapTelemetryPersistenceRoundTrip(t *testing.T) {
 			prompter := &fakeBootstrapPrompter{}
 			b := &bootstrapHandler{
 				dataDir:      dir,
-				chosenEditor: editorModal,
+				chosenEditor: editorVim,
 				prompter:     prompter,
 				publishEvent: func(term.Event) bool { return true },
 			}

@@ -123,6 +123,7 @@ func startHeadlessLogging(
 	if err != nil && !errors.Is(err, config.ErrNotFound) {
 		return nil, fmt.Errorf("read log_path from config: %w", err)
 	}
+	logPath = os.ExpandEnv(logPath)
 	if logPath == "" {
 		log.SetOutput(extra)
 		slog.SetDefault(slog.New(slog.NewTextHandler(extra, nil)))

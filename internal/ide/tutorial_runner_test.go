@@ -405,16 +405,31 @@ func (e recordingEditor) Edit(
 	return eh, nil
 }
 
-// TestTutorialRunnerFocusedTileStillTypesIntoTheEditor asserts the
-// tile's focus never takes the keyboard: the editor beside it goes on
-// receiving what the user types, bindings included.
-func TestTutorialRunnerFocusedTileStillTypesIntoTheEditor(t *testing.T) {
-	t.Parallel()
-	var seen []term.KeyComb
-	b := newExForTesting(t, recordingEditor{TestEditor: texttest.NopEditor(), seen: &seen},
-		text.WithCommandKey(testCommandKey))
+// cursorEditor is a texttest.TestEditor whose handlers show a cursor
+// at pos, so a test can tell whose cursor the screen shows.
+type cursorEditor struct {
+	*texttest.TestEditor
+	pos term.Coordinates
+}
+
+func (e cursorEditor) Edit(
+	ctx context.Context,
+	resource workspaceapi.URI, buf *cell.Buffer, readOnly, recovered bool,
+) (text.Handler, error) {
+	h, err := e.TestEditor.Edit(ctx, resource, buf, readOnly, recovered)
+	if err != nil {
+		return nil, err
+	}
+	h.(*texttest.TestEditorHandler).CursorPos = e.pos
+	return h, nil
+}
+
+// newEditorRunner wires a runner around a workspace with one file
+// open in ed, and starts the lesson tut.
+func newEditorRunner(t *testing.T, ed text.Editor, tut idetutorial.Tutorial) (*tutorialRunner, *ex) {
+	t.Helper()
+	b := newExForTesting(t, ed, text.WithCommandKey(testCommandKey))
 	t.Cleanup(func() { b.Close() })
-	tut := &tutStub{}
 	r := &tutorialRunner{}
 	r.init(b.ex, map[string]idetutorial.Tutorial{"basics": tut}, testTileStyle(), 0,
 		b.ex.setRightInset, nil)
@@ -425,6 +440,18 @@ func TestTutorialRunnerFocusedTileStillTypesIntoTheEditor(t *testing.T) {
 	_, err = b.editFileURI(file, b.ex.invokeWindow(), false)
 	require.NoError(t, err)
 	startTutorial(t, r, "basics")
+	return r, b.ex
+}
+
+// TestTutorialRunnerFocusedTileStillTypesIntoTheEditor asserts the
+// tile's focus never takes the keyboard: the editor beside it goes on
+// receiving what the user types, bindings included.
+func TestTutorialRunnerFocusedTileStillTypesIntoTheEditor(t *testing.T) {
+	t.Parallel()
+	var seen []term.KeyComb
+	tut := &tutStub{}
+	r, e := newEditorRunner(t,
+		recordingEditor{TestEditor: texttest.NopEditor(), seen: &seen}, tut)
 	key := term.Event{Type: term.EventKey, Ch: 'x'}
 
 	_, _ = r.Handle(key)
@@ -437,7 +464,30 @@ func TestTutorialRunnerFocusedTileStillTypesIntoTheEditor(t *testing.T) {
 
 	_, _ = r.Handle(term.Event{Type: term.EventKey, Ch: 'w', Mod: term.ModCtrl})
 	assert.True(t, r.running(), "the tabclose binding closes the editor's tab, not the tile")
-	assert.Empty(t, b.ex.comp.Tabs())
+	assert.Empty(t, e.comp.Tabs())
+}
+
+// TestTutorialRunnerNeverTakesTheCursor asserts the screen goes on
+// showing the workspace's cursor while the tile holds focus: the tile
+// has nothing to type into, and every key reaches the workspace.
+func TestTutorialRunnerNeverTakesTheCursor(t *testing.T) {
+	t.Parallel()
+	tut := &tutStub{}
+	r, _ := newEditorRunner(t,
+		cursorEditor{TestEditor: texttest.NopEditor(), pos: term.Coordinates{X: 3, Y: 2}}, tut)
+	wantPos, wantStyle, show := r.Cursor()
+	require.True(t, show, "sanity: the editor shows its cursor")
+
+	clickRunner(r, findButton(t, drawRunner(t, r, 120, 30), "Skip"))
+	require.Equal(t, 1, tut.skipCount)
+	require.True(t, r.tileFocused())
+	for _, stage := range []string{"after a click on the tile", "after a key"} {
+		pos, style, show := r.Cursor()
+		assert.True(t, show, "the cursor is shown %s", stage)
+		assert.Equal(t, wantPos, pos, "at the editor's position %s", stage)
+		assert.Equal(t, wantStyle, style, "in the editor's style %s", stage)
+		_, _ = r.Handle(term.Event{Type: term.EventKey, Ch: 'j'})
+	}
 }
 
 func TestTutorialRunnerWindowCloseElsewhereKeepsTheLesson(t *testing.T) {

@@ -115,3 +115,49 @@ current value, so a theme can be as small as a couple of overrides.
 
 Once it is in your config, activate it with `guitheme mytheme` or restart
 with `default_theme` set to it.
+
+## Share your theme
+
+To share a theme, publish it as a [Rune package](../develop/packages.md)
+in a public GitHub repository. A theme-only package needs just two files at
+the repository root:
+
+```text
+.
+├── config.yaml
+└── README.md
+```
+
+Put your theme under `gui.themes` in `config.yaml`, using the same color
+names and values as in [Creating a theme](#creating-a-theme). For example:
+
+```yaml title="config.yaml"
+gui:
+  themes:
+    mytheme:
+      foreground: "#e0e0e0"
+      background: "#101010"
+      cursor: "#ff8800"
+      blue: "#3a78d6"
+```
+
+For a repository you can copy, see the
+[Redmond 95 theme](https://github.com/ernestrc/rune-theme-redmond95), which
+ships the `redmond95` palette as a package.
+
+Use `README.md` to show a screenshot, describe the palette, and tell
+readers how to install and activate it. You do not need an extension or a
+build step for a theme package. Add the `rune` and `theme` **GitHub repository
+topics** so we can automatically include your theme in the packages section
+of the Rune website. After pushing the repository, others can install it from
+the [Rune console](./console.md):
+
+```
+pkg install github.com/ernestrc/rune-theme-redmond95
+guitheme redmond95
+```
+
+Installing merges the theme into `gui.themes` without changing the user's
+default theme. They can select it with `guitheme` or set
+`gui.default_theme: redmond95` in their own config to use it at startup.
+See [Packages](../develop/packages.md) for installation and versioning details.

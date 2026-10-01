@@ -209,7 +209,6 @@ func (r *renderer) Draw(
 	screen *ebiten.Image, cells [][]term.Cell, images []term.Image,
 	drawCursor bool, cursorPos term.Coordinates,
 	cursorStyle term.CursorStyle,
-	offsetX, offsetY float64,
 ) {
 	cursor := cursorState{pos: cursorPos, style: cursorStyle, show: drawCursor}
 	full := r.computeDirtyRows(cells, cursor)
@@ -222,7 +221,7 @@ func (r *renderer) Draw(
 		r.repaintRows(cells)
 	}
 	screen.DrawImage(r.frame, &frameToScreenOptions)
-	r.drawImages(screen, cells, images, offsetX, offsetY)
+	r.drawImages(screen, cells, images)
 	// The cursor goes onto the screen rather than the frame so it stays
 	// above the image layer without being retained across frames.
 	if drawCursor {
@@ -238,16 +237,15 @@ func (r *renderer) Draw(
 // top is repainted, clipped to the pixels the placement covered.
 func (r *renderer) drawImages(
 	screen *ebiten.Image, cells [][]term.Cell, images []term.Image,
-	offsetX, offsetY float64,
 ) {
 	if len(images) == 0 && len(r.images.textures) == 0 {
 		return
 	}
-	belowBg := r.drawImageLayer(screen, images, term.ImageLayerBelowBackground, offsetX, offsetY)
+	belowBg := r.drawImageLayer(screen, images, term.ImageLayerBelowBackground)
 	r.repaintOver(screen, cells, belowBg, passRects)
-	belowText := r.drawImageLayer(screen, images, term.ImageLayerBelowText, offsetX, offsetY)
+	belowText := r.drawImageLayer(screen, images, term.ImageLayerBelowText)
 	r.repaintOver(screen, cells, append(belowBg, belowText...), passGlyphs, passGlyphsBackground)
-	r.drawImageLayer(screen, images, term.ImageLayerAboveText, offsetX, offsetY)
+	r.drawImageLayer(screen, images, term.ImageLayerAboveText)
 	r.images.evictUnused()
 }
 
@@ -255,14 +253,13 @@ func (r *renderer) drawImages(
 // returns the pixel rectangles they covered.
 func (r *renderer) drawImageLayer(
 	screen *ebiten.Image, images []term.Image, layer term.ImageLayer,
-	offsetX, offsetY float64,
 ) []image.Rectangle {
 	var rects []image.Rectangle
 	for _, img := range images {
 		if img.Layer != layer {
 			continue
 		}
-		if rect := r.images.drawOne(screen, img, r.fontManager, offsetX, offsetY); !rect.Empty() {
+		if rect := r.images.drawOne(screen, img, r.fontManager); !rect.Empty() {
 			rects = append(rects, rect)
 		}
 	}

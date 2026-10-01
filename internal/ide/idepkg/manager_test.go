@@ -3419,7 +3419,7 @@ else:
 		mode    string
 		wantMod string
 	}{
-		{"modal", "other"},
+		{"vim", "other"},
 		{"standard", "standard"},
 	}
 	for _, tc := range cases {
@@ -4641,7 +4641,7 @@ func TestInstallPackagePreservesShippedPresetComments(t *testing.T) {
 	t.Parallel()
 
 	preset, err := os.ReadFile(filepath.Join(
-		"..", "..", "..", "cmd", "rune", "preset_emacs.yaml"))
+		"..", "..", "..", "cmd", "rune", "preset_emacs_darwin.yaml"))
 	require.NoError(t, err)
 
 	configPath, merged := installConfigPkgOver(t, string(preset))

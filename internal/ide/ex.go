@@ -61,6 +61,7 @@ import (
 	"unstable.build/rune/internal/ide/ideshell"
 	"unstable.build/rune/internal/ide/ideshell/workspaceshell"
 	"unstable.build/rune/internal/ide/idetask"
+	"unstable.build/rune/internal/ide/keymeta"
 	"unstable.build/rune/internal/ide/plugin"
 	"unstable.build/rune/internal/ide/vctrl"
 	tterm "unstable.build/rune/internal/term"
@@ -115,9 +116,12 @@ type ex struct {
 	svc            vctrl.Service
 	// gitshowSeq keeps a second :gitshow popup for the same file from
 	// colliding with one the user has not closed yet.
-	gitshowSeq    int
-	wsExecutor    *workspaceshell.Executor
-	aliasExpander *idecmd.Expander
+	gitshowSeq int
+	// exitedTerminalSeq keeps the editors of failed terminal tabs with
+	// the same title from colliding.
+	exitedTerminalSeq int
+	wsExecutor        *workspaceshell.Executor
+	aliasExpander     *idecmd.Expander
 	// executor is a forwarding proxy: long-lived consumers (the
 	// CommandSubstResolver, plugin.New, the VTE) capture this value
 	// once and continue to route through whatever underlying
@@ -154,6 +158,12 @@ type ex struct {
 	reissueEvent             term.Event
 	cmd                      *command.Prompt
 	syncCommandPrompt        bool
+	// editorPrefix is the previous key if the editor consumed it even
+	// though it starts a sequence binding. A modal editor can open a
+	// pending command of its own with such a key, as Helix's g menu
+	// does, and the binding completes when the editor declines the next
+	// key.
+	editorPrefix term.KeyComb
 	// promptEditor backs both the command prompt's modal edit mode
 	// and the companion shell's input line. It is a required
 	// dependency (see newEx) so neither consumer has to guard nil.
@@ -177,10 +187,13 @@ type ex struct {
 	// editorModeModal records whether the editor backing this ex runs in
 	// modal mode. The cheatsheet uses it to gate modal-only key tips.
 	editorModeModal bool
-	// editorMode is the resolved editor mode (modal, standard, emacs, or
-	// exo). The cheatsheet uses it to describe the active editor; unlike
+	// editorMode is the resolved editor mode (vim, helix, standard, emacs,
+	// or exo). The cheatsheet uses it to describe the active editor; unlike
 	// editorModeModal it preserves the exo distinction.
 	editorMode string
+	// metaKey is what <meta> means in the configured bindings, which the
+	// key bindings view names in its header.
+	metaKey keymeta.Meta
 	// editorAutoSave records whether the editor flushes buffers
 	// automatically. The cheatsheet uses it to gate the manual write row.
 	editorAutoSave   bool
@@ -202,6 +215,7 @@ type ex struct {
 	fileExplorerHandler *fileExplorerHandler
 	sched               func(func()) bool
 	flusher             *flusher
+	pendingTabs         *pendingTabOpener
 	debugCommands       bool
 	commandObserver     commandObserver
 	consoleCfg          consoleConfig
@@ -249,6 +263,7 @@ func newEx(
 	commandPromptCfg commandPromptConfig,
 	editorModeModal bool,
 	editorMode string,
+	metaKey keymeta.Meta,
 	editorAutoSave bool,
 	consoleCfg consoleConfig,
 	opts ...text.Option,
@@ -269,6 +284,7 @@ func newEx(
 	e.commandPromptCfg = commandPromptCfg
 	e.editorModeModal = editorModeModal
 	e.editorMode = editorMode
+	e.metaKey = metaKey
 	e.editorAutoSave = editorAutoSave
 	e.consoleCfg = consoleCfg
 	return
@@ -334,11 +350,14 @@ func (e *ex) init(
 		return
 	}
 	e.editorObserver = newCommandRegisterObserver(&e.comp)
+	e.pendingTabs = newPendingTabOpener(e.bgCtx, &e.comp, e.notifications,
+		e.sched, extensionHandleWait)
+	e.editorObserver.onResourceOpener = e.pendingTabs.reopenAsync
 	if tm == nil {
 		tm = e.Browser()
 	}
-	e.tabAliases = newTabNameAliaser(tm)
-	e.tm = e.tabAliases
+	e.tabAliases = newTabNameAliaser(tm, e.sched)
+	e.tm = failedTerminalKeeper{tabNameAliaser: e.tabAliases, e: e}
 	e.comp.SubscribeWindow((*windowSubscriber)(e))
 	if initialVTECapacity != 0 {
 		e.initialReservoirCapacity = initialVTECapacity
@@ -2208,6 +2227,78 @@ func (e *ex) terminalnewtab(_ context.Context, args ...string) error {
 	return nil
 }
 
+// keepFailedTerminalTab replaces the terminal in the tab keyed by uri
+// with an editor on its output, drained of color, that shows the error
+// its process failed with, and reports whether it did. A terminal
+// outside a tab, or whose process exited cleanly, is left for the
+// caller to drop.
+func (e *ex) keepFailedTerminalTab(uri workspaceapi.URI) bool {
+	b := e.comp.Browser()
+	tab, ok := b.Tab(uri)
+	if !ok {
+		return false
+	}
+	av, ok := tab.Handler().(*asyncVTE)
+	if !ok {
+		return false
+	}
+	exitErr := av.ExitErr()
+	if exitErr == nil {
+		return false
+	}
+	edh, err := e.editExitedTerminal(av, exitErr)
+	if err != nil {
+		e.log(log.WarnLevel, "keep failed terminal tab: %v", err)
+		return false
+	}
+	if err := tab.SetHandler(edh, nil); err != nil {
+		e.log(log.WarnLevel, "close exited terminal: %v", err)
+	}
+	b.SetTabIconAttr(uri, exitedTerminalAttr)
+	return true
+}
+
+func (e *ex) editExitedTerminal(av *asyncVTE, exitErr error) (text.Handler, error) {
+	snap, err := av.Snapshot()
+	if err != nil {
+		return nil, fmt.Errorf("snapshot: %w", err)
+	}
+	cells := snap.Active().Cells
+	grayTerminalCells(cells, e.defAttr.Fg)
+	buf := cell.CellsToBuffer(cells)
+
+	base, err := workspaceapi.ParseURI(exitedTerminalBase)
+	if err != nil {
+		return nil, err
+	}
+	name := av.Title()
+	if name == "" {
+		name = "terminal"
+	}
+	e.exitedTerminalSeq++
+	uri, err := workspaceapi.ParseURI(fmt.Sprintf("%s?n=%d",
+		workspaceapi.Join(base, name).String(), e.exitedTerminalSeq))
+	if err != nil {
+		return nil, err
+	}
+	edh, err := e.ed.Edit(text.WithoutAutoCenter(context.Background()),
+		uri, buf, false, false)
+	if err != nil {
+		return nil, fmt.Errorf("open editor: %w", err)
+	}
+	edh.SetLocationList(textapi.LocationPriorityError, exitedTerminalLocationList,
+		exitedTerminalLocations(buf.Rows(), exitErr))
+	edh.Resize(av.width, av.height)
+	for edh.SeekOffset() < av.SeekOffset() && edh.SeekDown() {
+	}
+	cursor := av.CursorAtScroll()
+	// A cursor below a terminal scrolled back would scroll the editor
+	// away from the rows the user was reading.
+	cursor.Y = min(cursor.Y, edh.SeekOffset()+av.height-1)
+	edh.SetCursorAtScroll(cursor)
+	return edh, nil
+}
+
 func (e *ex) consolenewtab(_ context.Context, args ...string) error {
 	if e.companionConsole == nil {
 		workspaceURI, err := e.workspace.URI(".")
@@ -2567,6 +2658,7 @@ func (e *ex) handleEvent(ev term.Event) (
 	exit, handled bool,
 ) {
 	if ev.Type == term.EventMouse {
+		e.editorPrefix = term.KeyComb{}
 		_, handled = e.comp.Browser().Handle(ev)
 		return
 	}
@@ -2584,6 +2676,9 @@ func (e *ex) handleEvent(ev term.Event) (
 		_, handled = e.comp.Browser().Handle(ev)
 		return
 	}
+
+	editorPrefix := e.editorPrefix
+	e.editorPrefix = term.KeyComb{}
 
 	// If ex is configured with non character
 	// command mode trigger event, then this takes
@@ -2605,16 +2700,33 @@ func (e *ex) handleEvent(ev term.Event) (
 		// delegated to handler, otherwise it'll handle it and switch to insert mode.
 		_, handled = e.comp.Browser().Handle(ev)
 		if handled {
+			if e.sequencer.IsPrefix(keyComb) {
+				e.editorPrefix = keyComb
+			}
 			return
 		}
 	}
 
 	var seq thandler.Sequence
 	var match thandler.SequenceMatchResult
-	// err nil indicates that match is still valid as timer hasn't expired
-	// and it was not canceled yet or simply it hasn't even started and
-	// this is first event in sequence.
-	if e.ctxPartialReissue.Err() == nil {
+	switch {
+	case editorPrefix != (term.KeyComb{}):
+		// The editor declined keyComb after it consumed the prefix, so
+		// its pending command is over. A bare keyComb that misses must
+		// not start a sequence of its own either: the editor has
+		// declined it once, and re-issuing it on a timeout would land
+		// in the editor's reset state as a fresh command, as the second
+		// g of a gg that cannot move would open Helix's g menu.
+		seq = thandler.Sequence{First: editorPrefix, Last: keyComb}
+		if _, ok := e.config.CommandSequenceBindings[seq]; ok {
+			match = thandler.SequenceMatch
+		} else if keyComb.Mod != 0 {
+			seq, match = e.sequencer.Sequence(keyComb)
+		}
+	case e.ctxPartialReissue.Err() == nil:
+		// err nil indicates that match is still valid as timer hasn't
+		// expired and it was not canceled yet or simply it hasn't even
+		// started and this is first event in sequence.
 		seq, match = e.sequencer.Sequence(keyComb)
 	}
 
@@ -3340,6 +3452,14 @@ func (c companionTerminalHandler) ClearPrimaryBuffer() bool {
 	return c.vth.ClearPrimaryBuffer()
 }
 
+func (c companionTerminalHandler) ExitErr() error {
+	return c.vth.ExitErr()
+}
+
+func (c companionTerminalHandler) CursorAtScroll() term.Coordinates {
+	return c.vth.CursorAtScroll()
+}
+
 func (c companionTerminalHandler) Close() error {
 	return nil
 }
@@ -3391,7 +3511,8 @@ func (e *ex) cheatsheet(_ context.Context, _ ...string) error {
 // Markdown table and opens it in a centered floating window, mirroring
 // the cheatsheet view.
 func (e *ex) keybindings(_ context.Context, _ ...string) error {
-	md, err := renderKeyBindings(e.config, e.comp.Commands(), e.editorMode, runtime.GOOS)
+	md, err := renderKeyBindings(
+		e.config, e.comp.Commands(), e.editorMode, runtime.GOOS, e.metaKey)
 	if err != nil {
 		return err
 	}

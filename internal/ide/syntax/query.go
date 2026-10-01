@@ -99,7 +99,7 @@ func (t *Tree) runQuery(queryFile string, expectedCaptureNames []string) ([]Matc
 		var qerr *tree_sitter.QueryError
 		query, qerr = tree_sitter.NewQuery(t.parser.Language(), string(data))
 		if qerr != nil {
-			return nil, fmt.Errorf("compile query: %w", qerr)
+			return nil, fmt.Errorf("compile query: %w", *qerr)
 		}
 		defer query.Close()
 	}

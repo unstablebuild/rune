@@ -16,7 +16,7 @@
 
 // Package idehistory consolidates all persisted workspace session state
 // (open files, file→window mapping, tile layout, open terminal sessions,
-// open task sessions) behind a single Store.
+// open task sessions, extension tabs) behind a single Store.
 package idehistory
 
 import (
@@ -27,6 +27,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	log "github.com/sirupsen/logrus"
 	"github.com/unstablebuild/blue/logging"
@@ -60,26 +61,28 @@ const (
 
 // State is the unified workspace state persisted by Store.
 type State struct {
-	Name      string
-	Files     []File
-	Layout    tcomponent.TileLayout
-	HasLayout bool
-	Terminals []TerminalSession
-	Tasks     []TaskSession
+	Name       string
+	Files      []File
+	Layout     tcomponent.TileLayout
+	HasLayout  bool
+	Terminals  []TerminalSession
+	Tasks      []TaskSession
+	Extensions []ExtensionTab
 }
 
 // IsEmpty reports whether there's nothing worth restoring. A persisted
 // layout alone is not considered worth restoring: the IDE always saves
 // a layout on workspace close, so observing a layout with no
-// files/terminals/tasks is the common "empty workspace" case and
-// triggering restore on it produces an empty-but-visible window.
+// files/terminals/tasks/extension tabs is the common "empty workspace"
+// case and triggering restore on it produces an empty-but-visible window.
 //
 // The workspace name is likewise not content: it is applied whenever
 // the workspace opens, without going through restore.
 func (s State) IsEmpty() bool {
 	return len(s.Files) == 0 &&
 		len(s.Terminals) == 0 &&
-		len(s.Tasks) == 0
+		len(s.Tasks) == 0 &&
+		len(s.Extensions) == 0
 }
 
 // File describes a file that was open in the previous session.
@@ -114,6 +117,15 @@ type TaskSession struct {
 	WindowMinimizedAlignment component.Alignment
 }
 
+// ExtensionTab is a tab whose content an extension serves, shown in a tiled window.
+type ExtensionTab struct {
+	URI      workspaceapi.URI
+	Icon     rune
+	Name     string
+	WindowID uint64
+	Focus    bool
+}
+
 // Snapshotter supplies live workspace state when the Store needs to
 // persist a fresh snapshot at close/reload time.
 type Snapshotter interface {
@@ -122,6 +134,7 @@ type Snapshotter interface {
 	Name() string
 	Terminals() []TerminalSession
 	Tasks() []TaskSession
+	ExtensionTabs() []ExtensionTab
 	Layout() (tcomponent.TileLayout, bool)
 	FileWindowIDs() map[string]uint64
 }
@@ -230,6 +243,7 @@ func (s *Store) StoreWorkspaceStateForClose(
 		state.HasLayout = hasLayout
 		state.Terminals = snap.Terminals()
 		state.Tasks = snap.Tasks()
+		state.Extensions = snap.ExtensionTabs()
 		state.Name = snap.Name()
 	}
 	return s.StoreWorkspaceState(ctx, uri, state)
@@ -452,8 +466,9 @@ type workspaceStateDocument struct {
 	HasLayout    bool
 	// Terminals is only ever read: documents predating
 	// TerminalStatePartition stored the snapshots inline.
-	Terminals []terminalDoc `bson:",omitempty"`
-	Tasks     []taskDoc
+	Terminals  []terminalDoc `bson:",omitempty"`
+	Tasks      []taskDoc
+	Extensions []extensionTabDoc
 }
 
 type terminalStateDocument struct {
@@ -489,6 +504,14 @@ type taskDoc struct {
 	WindowID                 uint64
 	WindowMinimized          bool
 	WindowMinimizedAlignment component.Alignment
+}
+
+type extensionTabDoc struct {
+	URI      string
+	Icon     string
+	Name     string
+	WindowID uint64
+	Focus    bool
 }
 
 type lastSessionDocument struct {
@@ -564,6 +587,15 @@ func newWorkspaceStateDocument(
 			WindowMinimizedAlignment: t.WindowMinimizedAlignment,
 		})
 	}
+	for _, e := range state.Extensions {
+		doc.Extensions = append(doc.Extensions, extensionTabDoc{
+			URI:      e.URI.String(),
+			Icon:     string(e.Icon),
+			Name:     e.Name,
+			WindowID: e.WindowID,
+			Focus:    e.Focus,
+		})
+	}
 	return doc
 }
 
@@ -600,6 +632,23 @@ func (d workspaceStateDocument) toState() State {
 			WindowID:                 t.WindowID,
 			WindowMinimized:          t.WindowMinimized,
 			WindowMinimizedAlignment: t.WindowMinimizedAlignment,
+		})
+	}
+	for _, e := range d.Extensions {
+		uri, err := workspaceapi.ParseURI(e.URI)
+		if err != nil {
+			continue
+		}
+		var icon rune
+		if r, size := utf8.DecodeRuneInString(e.Icon); size > 0 {
+			icon = r
+		}
+		state.Extensions = append(state.Extensions, ExtensionTab{
+			URI:      uri,
+			Icon:     icon,
+			Name:     e.Name,
+			WindowID: e.WindowID,
+			Focus:    e.Focus,
 		})
 	}
 	return state

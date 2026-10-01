@@ -368,12 +368,13 @@ config = {
     "editor": {
         # Editor mode and exo settings are not configured here. The
         # bootstrap flow writes an editor preset with the user's choice
-        # ("modal", "standard", "emacs", or "exo" with a preset). Without an
-        # editor preset, Rune defaults to modal as configured below.
+        # ("vim", "helix", "standard", "emacs", or "exo" with a preset).
+        # Without an editor preset, Rune defaults to vim as configured
+        # below.
         # Enable or disable syntax-driven indentation.
         "autoindent": True,
         # Auto-pair quotes, brackets, and braces while editing. Explicitly off
-        # for modal mode by default; the standard override enables it.
+        # for vim mode by default; the standard override enables it.
         "auto_pair":  False,
         # Auto-save dirty buffers after a brief idle period. Off by default;
         # set to True to flush file tabs ~2s after the last edit.
@@ -402,7 +403,24 @@ config = {
         # large log files and other big blobs. Set to 0 to disable the
         # guard and always parse.
         "max_size_for_syntax": 1048576,
-        "modal": {
+        # Settings for the vim editor. Configs may also spell this section
+        # "modal", its name before editor.mode "modal" became "vim"; where
+        # both set a key, "vim" wins.
+        "vim": {
+            # Default text attributes.
+            "attr":        attr(fg = "default", bg = "default"),
+            "message_bar": {
+                # Base attributes of the message bar and the search prompt.
+                "attr":   attr(fg = "default", bg = "gray"),
+                # Layout of the superimposed message bar shown while
+                # searching. The Message component supports the same styling
+                # operators as status-bar components.
+                "layout": '░▒▓█ {{ .Message | fg "white" }} ',
+            },
+            # Search result attributes.
+            "search_attr": attr(fg = "grey", bg = "yellow"),
+        },
+        "helix": {
             # Default text attributes.
             "attr":        attr(fg = "default", bg = "default"),
             "message_bar": {
@@ -498,9 +516,10 @@ config = {
             "goto":    "<esc>:{line}<enter>{col}|",
             # Rune-native editor used to serve URIs the external editor
             # cannot meaningfully edit (memory:// pseudo-URIs such as
-            # the file explorer's tab). Valid values are "modal", "standard",
-            # or "emacs". "modeless" remains a deprecated alias for "standard".
-            "fallback": "modal",
+            # the file explorer's tab). Valid values are "vim", "helix",
+            # "standard", or "emacs". "modal" and "modeless" remain deprecated
+            # aliases for "vim" and "standard".
+            "fallback": "vim",
             # Experimental. When True, Rune overlays its own location-list
             # attributes (syntax highlights, LSP diagnostics, debugger variables)
             # on top of the external editor's output. Set to False to
@@ -729,8 +748,8 @@ config = {
             ],
         },
         # Key bindings are owned entirely by the editor preset written to
-        # the user config (preset_modal.yaml, preset_standard_*.yaml,
-        # preset_emacs.yaml). Set a value to "" there to unbind.
+        # the user config (cmd/rune/preset_<editor>_<os>.yaml). Set a value
+        # to "" there to unbind.
         "key_bindings": {},
         # Prompt colors.
         "element_attr":       attr(fg = "default", bg = "default", flags = ["dim"]),
@@ -958,7 +977,7 @@ if tui:
         "log_level": "info",
         "input_mode": ["esc", "mouse"],
         "editor": {
-            "modal": {
+            "vim": {
                 "attr":        attr(fg = "default", bg = "#1e1e1e"),
                 "message_bar": {"attr": attr(fg = "default", bg = "#1e1e1e")},
                 "search_attr": attr(fg = "default", bg = "#1e1e1e", flags = "reverse"),

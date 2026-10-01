@@ -37,7 +37,7 @@ place:
 
 ```python title="config.star"
 # `config` already holds Rune's defaults; mutate what you need.
-config["editor"]["mode"] = "modal"
+config["editor"]["mode"] = "vim"
 
 for key in ["<ctrl-h>", "<ctrl-l>"]:
     config["command"]["key_bindings"][key] = "tabnext"
@@ -57,9 +57,10 @@ nothing happens until you reload. There are two levels of reload.
 ### `:workspacereload`
 
 `:workspacereload` closes the focused workspace and opens it again. The open
-buffers, cursor positions and window layout are restored, but everything the
-workspace owns is rebuilt from a fresh read of your config file and the
-workspace's `.rune/config.yaml`. This is the fastest way to try out a change
+buffers, cursor positions, window layout and the extension tabs shown in it,
+such as agent chats, are restored, but everything the workspace owns is
+rebuilt from a fresh read of your config file and the workspace's
+`.rune/config.yaml`. This is the fastest way to try out a change
 and covers most of the configuration surface:
 
 - `editor.*`: mode, auto-save, tabspaces, comments, syntax size limits
@@ -103,21 +104,26 @@ picked up live. If a package changes anything else, Rune tells you to restart.
 
 ## Editor Modes
 
-Rune ships with three built-in editors and supports running any terminal
+Rune ships with four built-in editors and supports running any terminal
 editor as another option. Pick one with `editor.mode`:
 
 ```yaml tab
 editor:
-  mode: "emacs" # or "standard", "modal", or "exo"
+  mode: "emacs" # or "standard", "vim", "helix", or "exo"
 ```
 
 ```python tab
 "editor": {
-    "mode": "emacs", # or "standard", "modal", or "exo"
+    "mode": "emacs", # or "standard", "vim", "helix", or "exo"
 },
 ```
 
-The four supported configurations are:
+The older `"modal"` and `"modeless"` values still work as deprecated aliases
+for `"vim"` and `"standard"`, and the vim editor's settings section may still
+be spelled `editor.modal` instead of `editor.vim`. Switch to the new names when
+you next edit your config.
+
+The five supported configurations are:
 
 ### Vim
 
@@ -157,8 +163,8 @@ Broad strokes of what's supported:
   select-next-occurrence of word at cursor.
 - Copy and cut use the current line when no text is selected.
 - Search and replace via `<meta-f>` on macOS and `<ctrl-f>` on Linux. Open
-  replace directly with `<meta-r>`, or switch an open search to replace mode
-  with `<meta-r>`.
+  replace directly with `<meta-r>` on macOS or `<ctrl-r>` on Linux, which also
+  switch an open search to replace mode.
 - Folds: toggle one, toggle all, collapse/expand range.
 - Auto-pair for `()`, `[]`, `{}`, `"`, `'`.
 - Macros recorded on the unnamed register via `<ctrl-q>`.
@@ -184,6 +190,29 @@ The first-run Emacs choice installs command bindings in addition to selecting
 `editor.mode`. If you switch an existing custom config by hand, changing only
 the mode does not replace your `command.key_bindings` map.
 
+### Helix
+
+A [Helix](https://helix-editor.com)-style editor with an inverted modal
+grammar: a motion first selects the text you mean, then an operator acts on
+that selection. You press `w` then `d` to delete a word, not `dw`, and you
+always see what an operator is about to touch.
+
+Pick this if your muscle memory comes from Helix, or if you like modal editing
+but want the selection to be visible before you act on it.
+
+See the [Helix Editor cheatsheet](./learn/helix-editor.md) for the exact
+keystrokes and what is or isn't supported.
+
+Multiple selections work as in Helix: `C` copies a selection onto the next
+line, `s` selects every regex match, `,` drops back to one selection, and every
+motion, operator and insert-mode keystroke acts on all of them. See
+[Multiple selections](./learn/helix-editor.md#multiple-selections).
+
+The first-run Helix choice installs command bindings in addition to selecting
+`editor.mode`, including Helix's `<space>` leader menu and its `<ctrl-w>`
+window menu. If you switch an existing custom config by hand, changing only
+the mode does not replace your `command.key_bindings` map.
+
 ### Exoeditor
 
 Exoeditor mode (`editor.mode = "exo"`) runs a real terminal editor
@@ -197,7 +226,7 @@ For the list of what does and does not work inside `exo` mode (file
 watching, LSP, search integration, ...), see the
 [Exoeditor](./learn/exoeditor.md) guide.
 
-Exoeditor has three fallback choices, picked with `editor.exo.fallback`. The
+Exoeditor has four fallback choices, picked with `editor.exo.fallback`. The
 fallback is what Rune uses for buffers whose URI is not a real file path,
 anything that is not `file://` or `ssh://`. Today the single concrete example
 that ships with Rune is the file explorer
@@ -205,9 +234,12 @@ that ships with Rune is the file explorer
 make sense. Picking the right fallback keeps those buffers feeling like
 the editor you chose:
 
-- `editor.exo.fallback: "modal"` keeps those buffers modal. Use it when your
-  external editor is Vim or Neovim, so a keystroke like `j`/`k` keeps its vi
-  meaning across the whole UI.
+- `editor.exo.fallback: "vim"` keeps those buffers in the vim editor. Use it
+  when your external editor is Vim or Neovim, so a keystroke like `j`/`k` keeps
+  its vi meaning across the whole UI.
+- `editor.exo.fallback: "helix"` keeps those buffers on Helix's
+  selection-first grammar. Use it when your external editor is Helix, so a
+  keystroke like `w`/`e` keeps its Helix meaning across the whole UI.
 - `editor.exo.fallback: "standard"` keeps those buffers in the standard editor.
   Use it when your external editor is modeless (Nano, Micro, Kakoune, Emacs in its
   default bindings, ...), so a printable keystroke is always insertion, not a
@@ -296,6 +328,36 @@ For ready-to-copy `exo` configs (Vim, Neovim, Helix, Nano, and more), see the
 
   ```python tab
   config["gui"]["key_mapping"] = {"<capslock>": "<esc>"}
+  ```
+
+- `gui.meta_key`: the physical key or keys that `<meta>` stands for in Rune's
+  own key specs: `command.key_bindings`, `command.key`,
+  `command.history_key`, and the search and file explorer `*_key` settings.
+  The editors, terminals and extensions still receive the key you actually
+  pressed, so this is not a remap. The value is one of the following:
+
+  | Value | `<meta-x>` means | Offered for |
+  | --- | --- | --- |
+  | `<super>` (default) | Super+X (Command+X on macOS) | every editor |
+  | `<alt>` | Alt+X | Linux: vim, helix, standard |
+  | `<ctrl-super>` | Ctrl+Super+X | Linux: emacs |
+  | `<alt-super>` | Alt+Super+X | Linux: emacs |
+
+  macOS accepts only `<super>`. First-run setup on Linux asks for this value
+  because desktops often keep Super+digits, Super+L and Super+arrows for
+  themselves. A value the editor does not offer is reported as a config error,
+  and Rune falls back to `<super>`. If two bindings end up on the same chord
+  (for example `<meta-x>` and an explicit `<alt-x>` under `<alt>`), Rune
+  reports the clash and the spelling without `<meta>` wins. See
+  [Key combination syntax](./learn/key-syntax.md#what-meta-means).
+
+  ```yaml tab
+  gui:
+    meta_key: "<alt>"
+  ```
+
+  ```python tab
+  config["gui"]["meta_key"] = "<alt>"
   ```
 
 ## Telemetry

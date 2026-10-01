@@ -2098,6 +2098,7 @@ func (vi *viHandlerImpl) handleMetaNormal(ev term.Event) (quit, handled, done bo
 	vi.cursor.Select()
 
 	prevMode := vi.moveMode
+	count := vi.motionCount()
 	quit, handled = vi.handleNormal(ev)
 	isMoveSwitch := prevMode == moveNone && vi.moveMode != moveNone
 	after := vi.cursor.CursorAtScroll()
@@ -2120,9 +2121,9 @@ func (vi *viHandlerImpl) handleMetaNormal(ev term.Event) (quit, handled, done bo
 		switch ev.Ch {
 		case 'e', 'E':
 		case 'w', 'W':
-			vi.cursor.MoveLeft()
-			if before.Y < after.Y {
-				vi.cursor.MoveLeftEndWord()
+			// After f/t/F/T, w is the character to find, not a word motion.
+			if prevMode == moveNone {
+				vi.selectWordOperatorRange(before, after, count, ev.Ch == 'W')
 			}
 		case 'b', 'B':
 			if before.Y > after.Y {
@@ -2135,6 +2136,60 @@ func (vi *viHandlerImpl) handleMetaNormal(ev term.Event) (quit, handled, done bo
 		}
 	}
 	return
+}
+
+// selectWordOperatorRange selects what an operator acts on for count w/W
+// motions from before to after. As in Vim, the last word stops at the end of
+// the line it starts on instead of the next line's first word, and an end in
+// column 0 is pulled back onto the previous line, turning linewise when the
+// operator starts in the indent.
+func (vi *viHandlerImpl) selectWordOperatorRange(before, after term.Coordinates, count int, bigWord bool) {
+	move := vi.cursor.MoveRightStartWord
+	if bigWord {
+		move = vi.cursor.MoveRightStartWordGroup
+	}
+	vi.cursor.MoveToScroll(before)
+	for range count - 1 {
+		prev := vi.cursor.CursorAtScroll()
+		if !move() && vi.cursor.CursorAtScroll() == prev {
+			break
+		}
+	}
+	last := vi.cursor.CursorAtScroll()
+
+	buf := vi.less.Buffer()
+	if after.Y == last.Y {
+		vi.cursor.MoveToScroll(after)
+		vi.cursor.MoveLeft()
+		return
+	}
+	if cols := buf.Columns(last.Y); cols > 0 {
+		vi.cursor.MoveToScroll(term.Coordinates{Y: last.Y, X: cols - 1})
+		return
+	}
+
+	// The last word is the empty line last.Y, so the motion ends at column 0
+	// of the following line and is pulled back to exclude it.
+	indent := 0
+	for _, cell := range buf.Row(before.Y) {
+		if cell.Ch != ' ' && cell.Ch != '\t' {
+			break
+		}
+		indent++
+	}
+	end := term.Coordinates{Y: last.Y}
+	switch {
+	case before.X > indent:
+		vi.cursor.SelectRange(before, end)
+	case vi.mode() == deleteMode && vi.deleteInsert:
+		// A linewise change keeps one line to insert into, with its indent.
+		vi.cursor.SelectRange(term.Coordinates{Y: before.Y, X: indent}, end)
+	default:
+		vi.cursor.MoveToScroll(before)
+		vi.cursor.SelectLine()
+		for y := before.Y; y < last.Y && vi.cursor.MoveLineDown(); y++ {
+		}
+	}
 }
 
 func (vi *viHandlerImpl) handleMetaGo(ev term.Event) (quit, handled, done bool) {

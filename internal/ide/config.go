@@ -26,8 +26,10 @@ import (
 	"image/png"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"os"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -58,6 +60,7 @@ import (
 	"unstable.build/rune/internal/handler/searchbox"
 	"unstable.build/rune/internal/ide/idedebug"
 	"unstable.build/rune/internal/ide/idelsp"
+	"unstable.build/rune/internal/ide/keymeta"
 	"unstable.build/rune/internal/ide/plugin"
 	"unstable.build/rune/internal/ide/starlarkconfig"
 	"unstable.build/rune/internal/ide/syntax"
@@ -77,15 +80,21 @@ const (
 	inputAlt               = "alt"
 	inputMouse             = "mouse"
 	inputCurrent           = "current"
-	editorModeModal        = "modal"
+	editorModeVim          = "vim"
 	editorModeStandard     = "standard"
 	editorModeEmacs        = "emacs"
+	editorModeHelix        = "helix"
+	editorModeModal        = "modal"    // deprecated alias for editorModeVim
 	editorModeModeless     = "modeless" // deprecated alias for editorModeStandard
 	editorModeExo          = "exo"
-	editorFallbackModal    = "modal"
+	editorFallbackVim      = "vim"
 	editorFallbackStandard = "standard"
 	editorFallbackEmacs    = "emacs"
+	editorFallbackHelix    = "helix"
+	editorFallbackModal    = "modal"    // deprecated alias for editorFallbackVim
 	editorFallbackModeless = "modeless" // deprecated alias for editorFallbackStandard
+	editorSectionVim       = "vim"
+	editorSectionModal     = "modal" // deprecated alias for editorSectionVim
 	keyCommandAliases      = "aliases"
 	keyCommandKey          = "key"
 	keyCommandHistoryKey   = "history_key"
@@ -272,6 +281,8 @@ type ideConfig struct {
 	// May be nil during validation paths or in tests that don't need
 	// to actually run completer chains.
 	storage storageapi.Service
+	// goos overrides runtime.GOOS for the gui.meta_key options; see hostOS.
+	goos string
 }
 
 func overrideConfig(ideConfig, cfg map[string]any) {
@@ -652,11 +663,16 @@ func (c ideConfig) commandKeyMappings() map[handler.Sequence][][]string {
 	if !ok {
 		return make(map[handler.Sequence][][]string)
 	}
-	return parseCommandKeyMappings(cfg, c.errors)
+	return parseCommandKeyMappings(cfg, c.metaKey(), c.errors)
 }
 
+// parseCommandKeyMappings parses command.key_bindings, giving <meta> the
+// meaning of meta. When two spellings land on one chord only because of
+// meta, an error names both and the spelling written without <meta>
+// wins, or the lexically first one when both carry it. A binding to ""
+// only frees a chord, so any real binding beats it silently.
 func parseCommandKeyMappings(
-	cfg config.Config, errs map[string]error,
+	cfg config.Config, meta keymeta.Meta, errs map[string]error,
 ) map[handler.Sequence][][]string {
 	ret := make(map[handler.Sequence][][]string)
 	m, err := cfg.GetMap("key_bindings")
@@ -667,15 +683,24 @@ func parseCommandKeyMappings(
 		return ret
 	}
 
-	for k, v := range m {
-		seq, err := handler.ParseSequence(k)
+	type owner struct {
+		spec    string
+		written handler.Sequence
+	}
+	owners := make(map[handler.Sequence]owner)
+	keys := slices.Sorted(maps.Keys(m))
+	for _, k := range keys {
+		v := m[k]
+		written, err := handler.ParseSequence(k)
 		if err != nil {
-			seq.First, err = term.ParseKey(k)
+			written.First, err = term.ParseKey(k)
 			if err != nil {
 				errs["key_bindings."+k] = err
 				continue
 			}
 		}
+		seq := meta.ApplySequence(written)
+		var cmds [][]string
 		cmdsAndArgsSliceIfc, ok := v.([]any)
 		if ok {
 			var cmdsAndArgs [][]string
@@ -691,9 +716,10 @@ func parseCommandKeyMappings(
 				cmdsAndArgs = append(cmdsAndArgs,
 					strings.Split(strings.Trim(cmdAndArgs, " "), " "))
 			}
-			if len(cmdsAndArgs) != 0 {
-				ret[seq] = cmdsAndArgs
+			if len(cmdsAndArgs) == 0 {
+				continue
 			}
+			cmds = cmdsAndArgs
 		} else {
 			cmd, ok := v.(string)
 			if !ok {
@@ -702,25 +728,60 @@ func parseCommandKeyMappings(
 						"[]string but found unknown type")
 				continue
 			}
-			parts := strings.Split(strings.Trim(cmd, " "), " ")
-			ret[seq] = [][]string{parts}
+			cmds = [][]string{strings.Split(strings.Trim(cmd, " "), " ")}
 		}
+		prev, taken := owners[seq]
+		if !taken || (prev.written == seq && written == seq) {
+			owners[seq] = owner{spec: k, written: written}
+			ret[seq] = cmds
+			continue
+		}
+		switch prevUnbind, unbind := isUnbindCommand(ret[seq]), isUnbindCommand(cmds); {
+		case unbind:
+			continue
+		case prevUnbind:
+			owners[seq] = owner{spec: k, written: written}
+			ret[seq] = cmds
+			continue
+		}
+		winner, loser := prev.spec, k
+		if prev.written != seq && written == seq {
+			winner, loser = k, prev.spec
+			owners[seq] = owner{spec: k, written: written}
+			ret[seq] = cmds
+		}
+		errs["key_bindings."+loser] = fmt.Errorf(
+			"%s and %s are both %s with %s %s; %s wins",
+			prev.spec, k, sequenceSpec(seq), pathGUIMetaKey, meta, winner)
 	}
 
 	return ret
 }
 
+// isUnbindCommand reports whether cmds is the binding to "" that frees a
+// chord an extension claimed.
+func isUnbindCommand(cmds [][]string) bool {
+	return len(cmds) == 1 && len(cmds[0]) == 1 && cmds[0][0] == ""
+}
+
 // CommandKeyBindings inverts cfg's `command.key_bindings` into a map
 // from full command line ("quit", "echo hello") to the single chord
-// bound to it. Two-key sequences are omitted: a native menu accelerator
-// can only be a single chord. Printable chords win over named-key
-// aliases, then lexical order makes the choice stable.
+// bound to it, with <meta> read as `gui.meta_key` says. Two-key sequences
+// are omitted: a native menu accelerator can only be a single chord.
+// Printable chords win over named-key aliases, then lexical order makes
+// the choice stable.
 func CommandKeyBindings(cfg config.Config) map[string]term.KeyComb {
+	return commandKeyBindingsOn(cfg, "")
+}
+
+// commandKeyBindingsOn is CommandKeyBindings as resolved on goos; "" is
+// the host OS.
+func commandKeyBindingsOn(cfg config.Config, goos string) map[string]term.KeyComb {
 	cmdCfg, err := cfg.GetConfig("command")
 	if err != nil {
 		return nil
 	}
-	mappings := parseCommandKeyMappings(cmdCfg, map[string]error{})
+	mappings := parseCommandKeyMappings(cmdCfg, configMetaKey(cfg, goos), map[string]error{})
 
 	lookup := make(map[string]term.KeyComb)
 	for _, seq := range sortedCommandKeySequences(mappings) {
@@ -803,6 +864,7 @@ func (c ideConfig) commandKey() (ret term.KeyComb) {
 	default:
 		ret = defaultModalCommandKey
 	}
+	ret = c.metaKey().Apply(ret)
 	cfg, ok := c.command()
 	if !ok {
 		return
@@ -814,7 +876,7 @@ func (c ideConfig) commandKey() (ret term.KeyComb) {
 		}
 		return
 	}
-	key, err := term.ParseKey(cfgKey)
+	key, err := c.parseRuneKey(cfgKey)
 	if err != nil {
 		if err != config.ErrNotFound {
 			c.errors[fmt.Sprintf("command.%s", keyCommandKey)] = err
@@ -924,11 +986,11 @@ func (c ideConfig) consolePrompt() (ret string) {
 // switch: exo cannot host the in-memory prompt surface, so it follows
 // its configured fallback, leaving only resolved-modal as modal here.
 func (c ideConfig) consoleEditorModal() bool {
-	return c.pkgEditorMode() == editorModeModal
+	return modalEditorMode(c.pkgEditorMode())
 }
 
 func (c ideConfig) commandHistoryKey() (ret term.KeyComb) {
-	ret = text.DefaultConfig().CommandHistoryKey
+	ret = c.metaKey().Apply(text.DefaultConfig().CommandHistoryKey)
 	cfg, ok := c.command()
 	if !ok {
 		return
@@ -940,7 +1002,7 @@ func (c ideConfig) commandHistoryKey() (ret term.KeyComb) {
 		}
 		return
 	}
-	key, err := term.ParseKey(cfgKey)
+	key, err := c.parseRuneKey(cfgKey)
 	if err != nil {
 		c.errors[fmt.Sprintf("command.%s", keyCommandHistoryKey)] = err
 		return
@@ -2534,7 +2596,9 @@ func (c ideConfig) telemetryEnabled() bool {
 	return enabled
 }
 
-func (c ideConfig) modal() (config.Config, bool) {
+// vim returns the vim editor's settings. Loading folds the section's older
+// editor.modal spelling into it; see foldVimSection.
+func (c ideConfig) vim() (config.Config, bool) {
 	if c.cfg == nil {
 		return nil, false
 	}
@@ -2542,7 +2606,7 @@ func (c ideConfig) modal() (config.Config, bool) {
 	if !ok {
 		return nil, false
 	}
-	return c.getConfig(b, "modal")
+	return c.getConfig(b, editorSectionVim)
 }
 
 func (c ideConfig) standard() (config.Config, string, bool) {
@@ -2573,6 +2637,18 @@ func (c ideConfig) emacs() (config.Config, bool) {
 		return nil, false
 	}
 	return c.getConfig(b, "emacs")
+}
+
+// helix returns the `editor.helix` configuration block, if any.
+func (c ideConfig) helix() (config.Config, bool) {
+	if c.cfg == nil {
+		return nil, false
+	}
+	b, ok := c.editor()
+	if !ok {
+		return nil, false
+	}
+	return c.getConfig(b, "helix")
 }
 
 // exo returns the `editor.exo` configuration block, if any.
@@ -2639,9 +2715,9 @@ func (c ideConfig) exoQuit() string {
 
 // exoFallback returns the Rune-native fallback editor used by the
 // exofallback router for URIs that exo cannot serve (e.g.
-// memory://). Valid values are "modal", "standard", or "emacs"
-// ("modeless" is accepted as a deprecated alias for "standard");
-// defaults to "standard".
+// memory://). Valid values are "vim", "helix", "standard", or "emacs"
+// ("modal" and "modeless" are accepted as deprecated aliases for "vim"
+// and "standard"); defaults to "standard".
 func (c ideConfig) exoFallback() string {
 	cfg, ok := c.exo()
 	if !ok {
@@ -2661,20 +2737,31 @@ func (c ideConfig) exoFallback() string {
 }
 
 // normalizeEditorFallback resolves a raw editor.exo.fallback value to a
-// canonical fallback ("modal", "standard", or "emacs"), mapping the
-// deprecated "modeless" alias to "standard". ok is false for an
-// unrecognised value. This is the single place the deprecated alias is
-// understood so no other file needs to know about it.
+// canonical fallback ("vim", "helix", "standard", or "emacs"), mapping
+// the deprecated "modal" and "modeless" aliases to "vim" and "standard".
+// ok is false for an unrecognised value. This is the single place the
+// deprecated aliases are understood so no other file needs to know about
+// them.
 func normalizeEditorFallback(raw string) (canonical string, ok bool) {
 	switch raw {
-	case editorFallbackModal:
-		return editorFallbackModal, true
+	case editorFallbackModal, editorFallbackVim:
+		return editorFallbackVim, true
+	case editorFallbackHelix:
+		return editorFallbackHelix, true
 	case editorFallbackModeless, editorFallbackStandard:
 		return editorFallbackStandard, true
 	case editorFallbackEmacs:
 		return editorFallbackEmacs, true
 	}
 	return "", false
+}
+
+// modalEditorMode reports whether a resolved editor mode drives a modal
+// grammar. The console input line, the terminal keymap and the ex
+// command layer all key off this rather than off "vim" alone, so
+// helix gets the same treatment as vim.
+func modalEditorMode(mode string) bool {
+	return mode == editorModeVim || mode == editorModeHelix
 }
 
 // exoExperimentalHighlights reports whether Rune should overlay its
@@ -2698,7 +2785,7 @@ func (c ideConfig) exoExperimentalHighlights() bool {
 }
 
 func (c ideConfig) editorMode() (ret string) {
-	ret = "modal"
+	ret = editorModeVim
 	if c.cfg == nil {
 		return
 	}
@@ -2714,17 +2801,19 @@ func (c ideConfig) editorMode() (ret string) {
 		return
 	}
 	switch mode {
+	case editorModeModal, editorModeVim:
+		ret = editorModeVim
 	case editorModeModeless, editorModeStandard:
 		ret = editorModeStandard
-	case editorModeModal, editorModeEmacs, editorModeExo:
+	case editorModeHelix, editorModeEmacs, editorModeExo:
 		ret = mode
 	}
 	return
 }
 
 // EditorMode resolves the canonical editor mode from cfg. The deprecated
-// "modeless" mode maps to "standard", and a missing or unreadable editor.mode
-// defaults to "modal".
+// "modal" and "modeless" modes map to "vim" and "standard", and a missing,
+// unreadable or unknown editor.mode defaults to "vim".
 func EditorMode(cfg config.Config) string {
 	var raw map[string]any
 	if editor, err := cfg.GetMap("editor"); err == nil {
@@ -2747,7 +2836,7 @@ func TelemetryEnabled(cfg config.Config) bool {
 
 // pkgEditorMode returns the editor mode exposed to package config.star
 // scripts. exo substitutes the configured exo.fallback so packages get a
-// concrete modal/modeless mode instead of the meta value "exo".
+// concrete built-in editor mode instead of the meta value "exo".
 func (c ideConfig) pkgEditorMode() string {
 	mode := c.editorMode()
 	if mode == editorModeExo {
@@ -2803,49 +2892,94 @@ func (c ideConfig) editorAutoSave() bool {
 	return enabled
 }
 
-func (c ideConfig) modalResultAttr() (attr term.Attributes) {
+func (c ideConfig) vimResultAttr() (attr term.Attributes) {
 	attr = term.Attributes{Bg: term.ColorYellow, Fg: term.ColorBlack}
-	cfg, ok := c.modal()
+	cfg, ok := c.vim()
 	if !ok {
 		return
 	}
 	attr, err := config.GetAttributes(cfg, "search_attr")
 	if err != nil {
 		if err != config.ErrNotFound {
-			c.errors["editor.modal.search_attr"] = err
+			c.errors["editor.vim.search_attr"] = err
 		}
 	}
 	return attr
 }
 
-func (c ideConfig) modalAttr() (attr term.Attributes) {
-	cfg, ok := c.modal()
+func (c ideConfig) vimAttr() (attr term.Attributes) {
+	cfg, ok := c.vim()
 	if !ok {
 		return
 	}
 	attr, err := config.GetAttributes(cfg, "attr")
 	if err != nil {
 		if err != config.ErrNotFound {
-			c.errors["editor.modal.attr"] = err
+			c.errors["editor.vim.attr"] = err
 		}
 	}
 	return attr
 }
 
-func (c ideConfig) modalMessageBarLayout() handler.LessMessageLayout {
-	cfg, ok := c.modal()
+func (c ideConfig) vimMessageBarLayout() handler.LessMessageLayout {
+	cfg, ok := c.vim()
 	if !ok {
 		return handler.DefaultLessMessageLayout()
 	}
-	return c.messageBarLayout(cfg, "editor.modal")
+	return c.messageBarLayout(cfg, "editor.vim")
 }
 
-func (c ideConfig) modalMessageBarAttr() term.Attributes {
-	cfg, ok := c.modal()
+func (c ideConfig) vimMessageBarAttr() term.Attributes {
+	cfg, ok := c.vim()
 	if !ok {
 		return term.Attributes{}
 	}
-	return c.messageBarAttr(cfg, "editor.modal")
+	return c.messageBarAttr(cfg, "editor.vim")
+}
+
+func (c ideConfig) helixResultAttr() (attr term.Attributes) {
+	attr = term.Attributes{Bg: term.ColorYellow, Fg: term.ColorBlack}
+	cfg, ok := c.helix()
+	if !ok {
+		return
+	}
+	attr, err := config.GetAttributes(cfg, "search_attr")
+	if err != nil {
+		if err != config.ErrNotFound {
+			c.errors["editor.helix.search_attr"] = err
+		}
+	}
+	return attr
+}
+
+func (c ideConfig) helixAttr() (attr term.Attributes) {
+	cfg, ok := c.helix()
+	if !ok {
+		return
+	}
+	attr, err := config.GetAttributes(cfg, "attr")
+	if err != nil {
+		if err != config.ErrNotFound {
+			c.errors["editor.helix.attr"] = err
+		}
+	}
+	return attr
+}
+
+func (c ideConfig) helixMessageBarLayout() handler.LessMessageLayout {
+	cfg, ok := c.helix()
+	if !ok {
+		return handler.DefaultLessMessageLayout()
+	}
+	return c.messageBarLayout(cfg, "editor.helix")
+}
+
+func (c ideConfig) helixMessageBarAttr() term.Attributes {
+	cfg, ok := c.helix()
+	if !ok {
+		return term.Attributes{}
+	}
+	return c.messageBarAttr(cfg, "editor.helix")
 }
 
 func (c ideConfig) initialFolds() bool {
@@ -2995,7 +3129,7 @@ func (c ideConfig) fileExplorerEditKey() term.KeyComb {
 			"expected a single key combination, got %d", len(keys))
 		return def
 	}
-	return keys[0]
+	return c.metaKey().Apply(keys[0])
 }
 
 // fileExplorerMinWidth returns the width the explorer reports when
@@ -3330,10 +3464,11 @@ func (c ideConfig) standardAttr() (attr term.Attributes) {
 
 func (c ideConfig) standardSearchConfig(wm standard.SearchWindowManager) standard.SearchConfig {
 	standardAttr := c.standardAttr()
+	meta := c.metaKey()
 	ret := standard.SearchConfig{
 		WindowManager:    wm,
-		FindKey:          term.KeyComb{Mod: term.ModMeta, Ch: 'f'},
-		ReplaceKey:       term.KeyComb{Mod: term.ModMeta, Ch: 'r'},
+		FindKey:          meta.Apply(term.KeyComb{Mod: term.ModMeta, Ch: 'f'}),
+		ReplaceKey:       meta.Apply(term.KeyComb{Mod: term.ModMeta, Ch: 'r'}),
 		Attr:             standardAttr,
 		InputAttr:        standardAttr,
 		PlaceholderAttr:  standardAttr,
@@ -3370,7 +3505,7 @@ func (c ideConfig) standardSearchConfig(wm standard.SearchWindowManager) standar
 			}
 			continue
 		}
-		parsed, err := term.ParseKey(configured)
+		parsed, err := c.parseRuneKey(configured)
 		if err != nil {
 			c.errors[path+".search."+key] = err
 			continue
@@ -3711,6 +3846,7 @@ func (c ideConfig) wallpaper() (ret browser.Wallpaper) {
 		}
 		return c.wallpaperASCII(cfg, backgroundAttr)
 	}
+	cfgImage = os.ExpandEnv(cfgImage)
 
 	densityChars, err := cfg.GetString("wallpaper_density_characters")
 	if err != nil {
@@ -3822,7 +3958,7 @@ func (c ideConfig) logOutputPath() string {
 		}
 		return ""
 	}
-	return path
+	return os.ExpandEnv(path)
 }
 
 func (c ideConfig) logLevel() (log.Level, slog.Level) {
@@ -3956,7 +4092,7 @@ func (c extensionConfig) path() (string, bool) {
 }
 
 func (c extensionConfig) config() (config.Config, bool) {
-	cfg, err := c.cfg.GetConfig("config")
+	cfg, err := c.cfg.GetMap("config")
 	if err != nil {
 		if err != config.ErrNotFound {
 			errorID := fmt.Sprintf("extension.%s.config", c.id)
@@ -3964,7 +4100,7 @@ func (c extensionConfig) config() (config.Config, bool) {
 		}
 		return nil, false
 	}
-	return cfg, true
+	return config.MapConfig(cfg), true
 }
 
 func (c ideConfig) workspace() config.Config {
@@ -3983,9 +4119,10 @@ func (c ideConfig) workspaceWallpaperAttr() term.Attributes {
 		term.Attributes{})
 }
 
-// workspaceHome returns the configured home workspace path. It
-// defaults to "~" when unset; callers are responsible for expanding
-// the "~" shortcut against the user's home directory.
+// workspaceHome returns the configured home workspace path with
+// environment variables expanded. It defaults to "~" when unset;
+// callers are responsible for expanding the "~" shortcut against the
+// user's home directory.
 func (c ideConfig) workspaceHome() string {
 	ws := c.workspace()
 	home, err := ws.GetString("home")
@@ -3995,6 +4132,7 @@ func (c ideConfig) workspaceHome() string {
 		}
 		return "~"
 	}
+	home = os.ExpandEnv(home)
 	if home == "" {
 		return "~"
 	}
@@ -4188,7 +4326,7 @@ func (c ideConfig) terminalModal() (ret bool) {
 // editors default to modal terminals, modeless editors to modeless. exo
 // follows its configured fallback.
 func (c ideConfig) terminalModalDefault() bool {
-	return c.pkgEditorMode() == editorModeModal
+	return modalEditorMode(c.pkgEditorMode())
 }
 
 func (c ideConfig) terminalDebug() (ret bool) {
@@ -4279,7 +4417,7 @@ func (c ideConfig) terminalSearchConfig() vte.SearchConfig {
 		}
 		return ret
 	}
-	parsed, err := term.ParseKey(configured)
+	parsed, err := c.parseRuneKey(configured)
 	if err != nil {
 		c.errors["terminal.search.find_key"] = err
 		return ret
@@ -4451,14 +4589,104 @@ func decodeConfigFile(r io.Reader, filename string) (cfg map[string]any, err err
 		return nil, err
 	}
 	if isStarlarkConfigFilename(filename) {
-		return decodeStarlarkConfig(starlarkConfigSource{
+		cfg, err = decodeStarlarkConfig(starlarkConfigSource{
 			src:      src,
 			filename: filename,
 		})
+		if err != nil {
+			return nil, err
+		}
+		foldVimSection(cfg, nil)
+		return cfg, nil
 	}
 	cfg = make(map[string]any)
-	err = yaml.NewDecoder(bytes.NewReader(src)).Decode(&cfg)
-	return
+	if err := yaml.NewDecoder(bytes.NewReader(src)).Decode(&cfg); err != nil {
+		return nil, err
+	}
+	foldVimSection(cfg, nil)
+	return cfg, nil
+}
+
+// foldVimSection resolves the vim editor settings of a decoded config file,
+// which may spell the section editor.vim, editor.modal (its name before
+// editor.mode "modal" became "vim"), or both, into identical sections under
+// both names. That way the file overrides earlier files whichever spelling
+// each used, and later config.star scripts may mutate either. editor.vim
+// wins wherever both spellings set a key, and wholesale when it is not a
+// map, so the accessors report it.
+//
+// base is the tree a Starlark overlay mutated in place, or nil. The overlay
+// starts with base's section under both names, so only the keys it changed
+// under editor.vim count; otherwise the untouched copy would revert edits
+// made through editor.modal.
+func foldVimSection(cfg, base map[string]any) {
+	editor, ok := cfg["editor"].(map[string]any)
+	if !ok {
+		return
+	}
+	modalVal, hasModal := editor[editorSectionModal]
+	vimVal, hasVim := editor[editorSectionVim]
+	if !hasModal && !hasVim {
+		return
+	}
+	modal, modalIsMap := modalVal.(map[string]any)
+	vim, vimIsMap := vimVal.(map[string]any)
+	var folded any
+	switch {
+	case hasVim && !vimIsMap:
+		folded = vimVal
+	case !hasVim && !modalIsMap:
+		folded = modalVal
+	default:
+		var baseVim map[string]any
+		if baseEditor, ok := base["editor"].(map[string]any); ok {
+			baseVim, _ = baseEditor[editorSectionVim].(map[string]any)
+		}
+		merged := map[string]any{}
+		overlayChangedKeys(merged, modal, nil)
+		overlayChangedKeys(merged, vim, baseVim)
+		folded = merged
+	}
+	editor[editorSectionVim] = folded
+	editor[editorSectionModal] = copyConfigValue(folded)
+}
+
+// overlayChangedKeys deep-merges into dst every key of src whose value
+// differs from the same key in base.
+func overlayChangedKeys(dst, src, base map[string]any) {
+	for key, val := range src {
+		baseVal, inBase := base[key]
+		if inBase && reflect.DeepEqual(val, baseVal) {
+			continue
+		}
+		srcMap, srcOK := val.(map[string]any)
+		dstMap, dstOK := dst[key].(map[string]any)
+		if srcOK && dstOK {
+			baseMap, _ := baseVal.(map[string]any)
+			overlayChangedKeys(dstMap, srcMap, baseMap)
+			continue
+		}
+		dst[key] = copyConfigValue(val)
+	}
+}
+
+func copyConfigValue(val any) any {
+	switch t := val.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, v := range t {
+			out[k] = copyConfigValue(v)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, v := range t {
+			out[i] = copyConfigValue(v)
+		}
+		return out
+	default:
+		return val
+	}
 }
 
 // decodeOverlayConfigFile decodes a user override document and
@@ -4484,6 +4712,7 @@ func decodeOverlayConfigFile(
 			}
 			return nil, err
 		}
+		foldVimSection(overrides, base)
 		overrideConfig(base, overrides)
 		return base, nil
 	}
@@ -4491,6 +4720,7 @@ func decodeOverlayConfigFile(
 	if err := yaml.NewDecoder(bytes.NewReader(src)).Decode(&overrides); err != nil {
 		return nil, err
 	}
+	foldVimSection(overrides, nil)
 	overrideConfig(base, overrides)
 	return base, nil
 }
@@ -4569,14 +4799,19 @@ func loadConfig(
 
 func decodeDefaultConfig(d DefaultConfig) (map[string]any, error) {
 	src := []byte(d.src)
-	return decodeStarlarkConfig(starlarkConfigSource{
+	cfg, err := decodeStarlarkConfig(starlarkConfigSource{
 		src:      src,
 		filename: "rune.star",
 		params: map[string]any{
-			"mode": map[bool]string{true: editorModeModal, false: editorModeStandard}[d.modal],
+			"mode": map[bool]string{true: editorModeVim, false: editorModeStandard}[d.modal],
 			"tui":  d.tui,
 		},
 	})
+	if err != nil {
+		return nil, err
+	}
+	foldVimSection(cfg, nil)
+	return cfg, nil
 }
 
 func loadFileConfig(c *ideConfig, configPath string) (err error) {

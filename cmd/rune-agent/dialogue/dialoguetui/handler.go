@@ -387,7 +387,11 @@ func (s *dialogueHandler) Handle(ev term.Event) (exit, handled bool) {
 					return
 				}
 			}
-			if ev.Ch == ' ' {
+			// The space bar arrives as Key=KeySpace; Ch=' ' is also
+			// accepted for synthetic and legacy events. Require no
+			// modifier so combinations like ctrl-space and meta-space,
+			// which are bound to other actions, don't also toggle.
+			if ev.Mod == 0 && (ev.Key == term.KeySpace || ev.Ch == ' ') {
 				s.comp.PromptToggle()
 			}
 			// absorb all other keys

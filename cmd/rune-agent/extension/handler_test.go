@@ -34,12 +34,14 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
 	"github.com/unstablebuild/rune-go-sdk/api/semanticapi"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
+	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/handler/handlertest"
 	"github.com/unstablebuild/rune-go-sdk/term"
 
 	"unstable.build/rune/cmd/rune-agent/agent"
 	"unstable.build/rune/cmd/rune-agent/agent/skills"
 	"unstable.build/rune/cmd/rune-agent/configedit"
+	"unstable.build/rune/cmd/rune-agent/dialogue/dialoguemanager"
 	"unstable.build/rune/cmd/rune-agent/dialogue/dialoguetui"
 	"unstable.build/rune/cmd/rune-agent/llm/llmarg"
 	"unstable.build/rune/cmd/rune-agent/llm/llmtest"
@@ -162,6 +164,173 @@ func TestHandleChatTracksTabURIForActivity(t *testing.T) {
 	assert.Equal(t, wm.gotURI, v.(syncComponent).uri)
 }
 
+// A restored workspace reopens a chat tab through OpenResource, which must
+// return the dialogue the tab URI names, known by that very URI, and leave
+// the tab to the host: it shows the content where it keeps the tab.
+func TestOpenResourceResumesChat(t *testing.T) {
+	const dialogueID = "rolling-fox"
+	chatURI := func(model string) workspaceapi.URI {
+		uri, err := getModelUri(dialogueID, model)
+		require.NoError(t, err)
+		return uri
+	}
+	tests := []struct {
+		name      string
+		uri       string
+		stored    *dialoguemanager.Dialogue
+		wantErr   string
+		wantModel string
+	}{
+		{
+			name:    "other scheme",
+			uri:     "file:///rolling-fox",
+			wantErr: "is not an agent chat",
+		},
+		{
+			name:    "no dialogue id",
+			uri:     "rune-agent://test-model",
+			wantErr: "is not an agent chat",
+		},
+		{
+			name:      "dialogue that was never stored uses the default model",
+			uri:       chatURI("other-model").String(),
+			wantModel: "test-model",
+		},
+		{
+			name:      "stored model is resumed",
+			uri:       chatURI("test-model").String(),
+			stored:    &dialoguemanager.Dialogue{ID: dialogueID, Model: "other-model"},
+			wantModel: "other-model",
+		},
+		{
+			name:      "unavailable stored model falls back to the default",
+			uri:       chatURI("gone-model").String(),
+			stored:    &dialoguemanager.Dialogue{ID: dialogueID, Model: "gone-model"},
+			wantModel: "test-model",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+
+			store := newMemDialogueStore()
+			if tt.stored != nil {
+				require.NoError(t, store.Create(ctx, *tt.stored))
+			}
+			svc := llmtest.New([]llmapi.ModelEntry{
+				{Provider: "test", Name: "test-model"},
+				{Provider: "test", Name: "other-model"},
+			})
+			wm := &recordingWindowManager{}
+			fs := nopFileSystem{}
+			h := &aiEditorHandler{
+				ctx:            ctx,
+				llmSvc:         svc,
+				defaultModel:   "test-model",
+				dialogueStore:  store,
+				wm:             wm,
+				n:              stubNotifications{},
+				p:              term.NopInterrupter(),
+				config:         configedit.NopConfig(),
+				skillRegistry:  skills.NewRegistry(fs, dirURI(""), nil, nil),
+				toolRegistry:   agent.NewRegistry(),
+				agentsConfig:   agent.NewConfig([]agent.Definition{{ID: "default", AllowAny: true}}),
+				cwd:            dirURI(""),
+				fs:             fs,
+				memoryDataPath: t.TempDir(),
+			}
+			uri, err := workspaceapi.ParseURI(tt.uri)
+			require.NoError(t, err)
+
+			content, err := h.OpenResource(ctx, uri)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				assert.Nil(t, content)
+				return
+			}
+			require.NoError(t, err)
+			require.NotNil(t, content)
+			assert.Nil(t, wm.gotHandler, "the tab is the host's, not the extension's")
+			assert.Zero(t, wm.setContentCalls, "placement is the host's")
+			v, ok := h.openChats.Load(dialogueID)
+			require.True(t, ok)
+			assert.Equal(t, uri, v.(syncComponent).uri,
+				"the chat must go by the URI the host asked for, whatever the model")
+			a, ok := h.openChatAgents.Load(dialogueID)
+			require.True(t, ok)
+			assert.Equal(t, tt.wantModel, a.(*agent.Agent).Model())
+
+			_, err = h.OpenResource(ctx, uri)
+			require.ErrorContains(t, err, "is already open")
+
+			require.NoError(t, content.Close())
+			_, ok = h.openChats.Load(dialogueID)
+			assert.False(t, ok, "closing the content must end the chat")
+		})
+	}
+}
+
+// A chat's /compact runs through that chat's own agentshell, so the budget
+// set with /max_tokens in the chat must reach the summarize request.
+// Otherwise the summary falls back to the provider's default output cap
+// and a truncation error advising /max_tokens could never be acted on.
+func TestChatCompactUsesChatMaxOutputTokens(t *testing.T) {
+	const dialogueID = "rolling-fox"
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	store := newMemDialogueStore()
+	require.NoError(t, store.Create(ctx, dialoguemanager.Dialogue{
+		ID:    dialogueID,
+		Model: "test-model",
+		Messages: []llmapi.Message{
+			{Role: llmapi.RoleSystem, Content: "system"},
+			{Role: llmapi.RoleUser, Content: "question"},
+			{Role: llmapi.RoleAssistant, Content: "answer"},
+		},
+	}))
+	svc := llmtest.New(
+		[]llmapi.ModelEntry{{Provider: "test", Name: "test-model", ContextWindow: 128_000}},
+		llmtest.Response{Chunks: []string{"<summary>done</summary>"}},
+	)
+	fs := nopFileSystem{}
+	h := &aiEditorHandler{
+		ctx:            ctx,
+		llmSvc:         svc,
+		defaultModel:   "test-model",
+		dialogueStore:  store,
+		wm:             &recordingWindowManager{},
+		n:              stubNotifications{},
+		p:              term.NopInterrupter(),
+		config:         configedit.NopConfig(),
+		skillRegistry:  skills.NewRegistry(fs, dirURI(""), nil, nil),
+		toolRegistry:   agent.NewRegistry(),
+		agentsConfig:   agent.NewConfig([]agent.Definition{{ID: "default", AllowAny: true}}),
+		cwd:            dirURI(""),
+		fs:             fs,
+		memoryDataPath: t.TempDir(),
+	}
+	c, err := h.newChat(textapi.Command{Args: []string{dialogueID}}, workspaceapi.URI{})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, c.content.Close()) })
+
+	ag, ok := h.openChatAgents.Load(dialogueID)
+	require.True(t, ok)
+	ag.(*agent.Agent).SetMaxOutputTokens(50_000)
+
+	c.content.Resize(frameWidth, frameHeight)
+	keys, err := term.ParseKeys("/compact<space>test/test-model<enter>")
+	require.NoError(t, err)
+	for _, k := range keys {
+		c.content.Handle(term.Event{Type: term.EventKey, Mod: k.Mod, Key: k.Key, Ch: k.Ch})
+	}
+
+	require.Eventually(t, func() bool { return len(svc.Requests()) > 0 },
+		5*time.Second, 10*time.Millisecond, "/compact never reached the LLM")
+	assert.Equal(t, 50_000, svc.Requests()[0].Request.MaxOutputTokens)
+}
+
 // TestE2ECtrlCDismissesSelectionPrompt drives the chat tab handler
 // end-to-end through the public handlertest.RunHandlerSequence API:
 // the user types "hi" and presses Enter, the scripted LLM emits an
@@ -203,6 +372,80 @@ func TestE2ECtrlCDismissesSelectionPrompt(t *testing.T) {
 			// Ctrl-C through the wrapped chat handler must clear
 			// the prompt and return focus to the empty input box.
 			InputSequence: "<c-c>",
+			Expected: frame(
+				"hi",
+				blanks(), blanks(), blanks(), blanks(), blanks(), blanks(),
+				"   ┌───────────────────────────────┐    ",
+				"   │▐                              │    ",
+				"   └───────────────────────────────┘    ",
+			),
+		},
+	})
+}
+
+// TestE2EMultiSelectSpaceToggles drives a multiSelect ask_user_question
+// prompt through handlertest.RunHandlerSequence, whose <space> token
+// arrives as Key=KeySpace with Ch=0, the shape input backends deliver
+// it in. Enter with nothing checked must leave the prompt open (a nil
+// result would be reported to the agent as a dismissal), <space> must
+// tick the checkbox under the cursor, and Enter must then submit.
+func TestE2EMultiSelectSpaceToggles(t *testing.T) {
+	args := mustJSON(t, map[string]any{
+		"questions": []map[string]any{{
+			"question": "Pick some", "header": "Choice",
+			"options": []map[string]any{
+				{"label": "A", "description": ""},
+				{"label": "B", "description": ""},
+			},
+			"multiSelect": true,
+		}},
+	})
+	h := newPromptHandler(t, promptHandlerOpts{toolArgs: args})
+	unchecked := frame(
+		"hi",
+		"Pick some                       [Choice]",
+		blanks(),
+		">[ ] A",
+		"[ ] B",
+		"[ ] Other",
+		"      None of the above",
+		"   ┌───────────────────────────────┐    ",
+		"   │                               │    ",
+		"   └───────────────────────────────┘    ",
+	)
+	handlertest.RunHandlerSequence(t, h, frameWidth, frameHeight, []handlertest.SequenceTestCase{
+		{
+			// Submit the user message; the agent loop emits the
+			// tool call and the multiSelect prompt becomes visible.
+			InputSequence: "hi<enter>",
+			Expected:      unchecked,
+		},
+		{
+			// Enter with nothing checked is ignored: the prompt
+			// stays exactly as it was.
+			InputSequence: "<enter>",
+			Expected:      unchecked,
+		},
+		{
+			// Space ticks the box under the cursor.
+			InputSequence: "<space>",
+			Expected: frame(
+				"hi",
+				"Pick some                       [Choice]",
+				blanks(),
+				">[x] A",
+				"[ ] B",
+				"[ ] Other",
+				"      None of the above",
+				"   ┌───────────────────────────────┐    ",
+				"   │                               │    ",
+				"   └───────────────────────────────┘    ",
+			),
+		},
+		{
+			// Enter submits the checked option; the prompt is
+			// cleared and focus returns to the empty input box.
+			InputSequence: "<enter>",
 			Expected: frame(
 				"hi",
 				blanks(), blanks(), blanks(), blanks(), blanks(), blanks(),

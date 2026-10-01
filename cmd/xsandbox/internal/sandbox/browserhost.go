@@ -188,6 +188,19 @@ func (h *browserHost) DragDrop(pos term.Coordinates, paths []string) bool {
 
 func (h *browserHost) Close() error { return h.comp.Close() }
 
+// showResource shows content, what the extension's resource opener
+// returned for uri, as the tab of uri in the focused window, the way Rune
+// shows it in the place of a restored tab.
+func (h *browserHost) showResource(uri workspaceapi.URI, content browserapi.Handler) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if _, ok := h.comp.Tab(uri); ok {
+		return fmt.Errorf("tab %s is already open", uri)
+	}
+	tab := h.comp.NewTab(uri, 0, uri.Name(), content, nil)
+	return h.comp.Focus().SetContent(tab)
+}
+
 func (h *browserHost) Notify(
 	level browserapi.NotificationLevel, msg string, args ...any,
 ) (string, error) {

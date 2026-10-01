@@ -33,6 +33,7 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
 	"golang.org/x/oauth2"
 	"unstable.build/rune/auth"
@@ -465,6 +466,131 @@ func (h *oauthRedirectCompletionHook) Fire(entry *log.Entry) error {
 		<-h.release
 	}
 	return nil
+}
+
+// An explicit sign-in must get the user back in when the refresh token
+// an earlier session cached is dead. Background refreshes never ask the
+// user to sign in, so this is the only way out, and the token proxy
+// does not always say why a refresh failed.
+func TestClient_Login_ReplacesTokenThatNoLongerRefreshes(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		replies    []tokenReply
+		wantPrompt bool
+	}{
+		{
+			name: "refresh rejected without a reason",
+			replies: []tokenReply{{status: http.StatusForbidden, body: `{"Success":false,` +
+				`"Message":"upstream provider returned no id token","Data":""}`}},
+			wantPrompt: true,
+		},
+		{
+			name:       "refresh rejected as an invalid grant",
+			replies:    []tokenReply{{status: http.StatusBadRequest, body: `{"error":"invalid_grant"}`}},
+			wantPrompt: true,
+		},
+		{
+			// A signed-in user is not sent through the browser again.
+			name: "refresh accepted",
+		},
+	} {
+		newClient := func(t *testing.T) (*Client, *atomic.Int32) {
+			t.Helper()
+			srv := newFakeOAuthServer(t, fakeOAuthOptions{tokenReplies: tc.replies})
+			t.Cleanup(srv.Close)
+			store := storagestub.NewInMemoryService()
+			seedExpiredToken(t, store)
+			config := DefaultConfig()
+			config.HTTPEndpointAddress = srv.URL
+			var browserCalls atomic.Int32
+			config.OpenBrowser = func(*url.URL) error {
+				browserCalls.Add(1)
+				return nil
+			}
+			client := New(store, config, t.TempDir())
+			t.Cleanup(func() { _ = client.Close() })
+			return client, &browserCalls
+		}
+
+		t.Run("browser/"+tc.name, func(t *testing.T) {
+			client, browserCalls := newClient(t)
+			session := client.Login(t.Context())
+			select {
+			case u, ok := <-session.URL:
+				require.Equal(t, tc.wantPrompt, ok, "sign-in URL published")
+				if ok {
+					completeBrowserLogin(t, u)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("expected the URL channel to emit or close")
+			}
+			requireSignedInAgain(t, client, session.Done)
+			if !tc.wantPrompt {
+				assert.Equal(t, int32(0), browserCalls.Load())
+			}
+		})
+
+		t.Run("device/"+tc.name, func(t *testing.T) {
+			client, _ := newClient(t)
+			session := client.LoginWithDeviceCode(t.Context())
+			select {
+			case _, ok := <-session.Prompt:
+				require.Equal(t, tc.wantPrompt, ok, "sign-in code published")
+			case <-time.After(5 * time.Second):
+				t.Fatal("expected the prompt channel to emit or close")
+			}
+			requireSignedInAgain(t, client, session.Done)
+		})
+	}
+}
+
+// seedExpiredToken stores an expired token with a refresh token, the
+// way CachedTokenSource persists a session for the next one.
+func seedExpiredToken(t *testing.T, store storageapi.Service) {
+	t.Helper()
+	require.NoError(t, storageapi.WithPartition(store, "auth").Set(
+		t.Context(), "tokenv2", struct {
+			AccessToken  string    `json:"access_token"`
+			TokenType    string    `json:"token_type"`
+			RefreshToken string    `json:"refresh_token"`
+			Expiry       time.Time `json:"expiry"`
+		}{
+			AccessToken:  makeAccountJWT(t, auth.RPCUser{Email: "old@rune.test"}),
+			TokenType:    "Bearer",
+			RefreshToken: "dead-refresh-token",
+			Expiry:       time.Now().Add(-time.Hour),
+		}))
+}
+
+// completeBrowserLogin plays the browser: it follows the authorize URL
+// back to the loopback redirect with a code.
+func completeBrowserLogin(t *testing.T, authorizeURL *url.URL) {
+	t.Helper()
+	callbackURL, err := url.Parse(authorizeURL.Query().Get("redirect_uri"))
+	require.NoError(t, err)
+	q := callbackURL.Query()
+	q.Set("code", "fake-auth-code")
+	q.Set("state", authorizeURL.Query().Get("state"))
+	callbackURL.RawQuery = q.Encode()
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Get(callbackURL.String())
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+}
+
+// requireSignedInAgain checks the sign-in succeeded and replaced the
+// seeded token with the one the fake token endpoint issues.
+func requireSignedInAgain(t *testing.T, client *Client, done <-chan error) {
+	t.Helper()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("expected the sign-in to resolve")
+	}
+	tok := client.CachedTokenSource().Cached(t.Context())
+	require.NotNil(t, tok)
+	assert.True(t, tok.Valid())
+	assert.Equal(t, "fake-refresh-token", tok.RefreshToken)
 }
 
 // fakeTokenJSON is a successful token response whose access token

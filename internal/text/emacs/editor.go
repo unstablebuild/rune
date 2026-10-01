@@ -19,6 +19,7 @@ package emacs
 import (
 	"context"
 	"errors"
+	"slices"
 
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
@@ -74,7 +75,11 @@ func (e *editor) Edit(
 	if ok {
 		indentRune = r
 	}
-	handler := NewHandler(buf, file, indentRune, tabspaces, e.opts...)
+	opts := e.opts
+	if text.AutoCenterDisabled(ctx) {
+		opts = append(slices.Clip(opts), WithAutoCenter(false))
+	}
+	handler := NewHandler(buf, file, indentRune, tabspaces, opts...)
 	ret = handler
 	cursor := &handler.(*emacsHandler).cursor
 	if e.fileRegistry != nil {
@@ -163,6 +168,14 @@ func (c *editor) UnsubscribeCommand(cmd string) error {
 }
 
 func (c *editor) UnregisterREPLCommand(cmd string) error {
+	return errors.New("not supported")
+}
+
+func (e *editor) RegisterResourceOpener(string, textapi.ResourceOpenHandler) error {
+	return errors.New("not supported")
+}
+
+func (e *editor) UnregisterResourceOpener(string) error {
 	return errors.New("not supported")
 }
 

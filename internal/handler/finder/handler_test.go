@@ -35,6 +35,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
+	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/handler/handlertest"
 	"github.com/unstablebuild/rune-go-sdk/term"
@@ -325,6 +326,71 @@ func TestScanDoneWaitsForCommandOutputDrain(t *testing.T) {
 
 	assert.Equal(t, total, h.list.TotalCount(),
 		"every line written before the process exited must be in the list")
+}
+
+// TestOpenerChordRecallsHistory pins why a picker's history_key needs no
+// help from gui.meta_key: presets set it to the chord that opens the
+// picker, and that chord recalls the last query either way. When the
+// physical chord equals history_key the picker takes it. Otherwise, as
+// with history_key "<meta-p>" and gui.meta_key "<alt>", the picker
+// declines Alt+P, Rune's command layer runs the opener again, and the
+// open picker's Redispatch recalls the query.
+func TestOpenerChordRecallsHistory(t *testing.T) {
+	historyKey := term.KeyComb{Mod: term.ModMeta, Ch: 'p'}
+	for _, tc := range []struct {
+		name       string
+		chord      term.KeyComb
+		takes      bool
+		redispatch bool
+	}{
+		{name: "chord is history_key", chord: historyKey, takes: true},
+		{
+			name:       "chord is history_key under another meta_key",
+			chord:      term.KeyComb{Mod: term.ModAlt, Ch: 'p'},
+			redispatch: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := storagestub.NewInMemoryService()
+			newFinder := func() *fuzzyFinderHandler {
+				rh, err := NewWithListConfig(
+					context.Background(), Clients{
+						Storage:        store,
+						ResourceOpener: stubResourceOpener{},
+						WindowManager:  stubWindowManager{},
+						Interrupter:    term.NopInterrupter(),
+						Notifications:  stubNotifications{},
+					}, stubWindow(0),
+					historyKey, "history-doc", "", 8, search.ListConfig{
+						Algo:        search.FuzzyMatch,
+						Interrupter: term.NopInterrupter(),
+						SyncSearch:  true,
+					},
+					func(workspaceapi.FileSystem, context.Context) (iterator.Iterator[string], error) {
+						return iterator.FromSlice([]string{}), nil
+					},
+					func(workspaceapi.FileSystem, string) (workspaceapi.URI, term.Coordinates, bool) {
+						return workspaceapi.URI{}, term.Coordinates{}, false
+					},
+				)
+				require.NoError(t, err)
+				h := rh.(*fuzzyFinderHandler)
+				t.Cleanup(func() { _ = h.Close() })
+				waitForScanWithTimeout(t, h, 5*time.Second)
+				return h
+			}
+			newFinder().addSearchHistory("last query")
+
+			h := newFinder()
+			_, handled := h.Handle(term.Event{Type: term.EventKey, Mod: tc.chord.Mod, Ch: tc.chord.Ch})
+			require.Equal(t, tc.takes, handled)
+			if tc.redispatch {
+				require.Empty(t, h.list.Buffer().String())
+				require.NoError(t, h.Redispatch(context.Background(), textapi.Command{}))
+			}
+			assert.Equal(t, "last query", h.list.Buffer().String())
+		})
+	}
 }
 
 // instantExitExecutor writes its lines to the command's stdout and

@@ -161,7 +161,10 @@ func (m *pkgManager) installLatest(
 ) (sdkiterator.Iterator[string], error) {
 	pw := text.NewNotifyProgressWriter(m.n, m.interrupter,
 		fmt.Sprintf("install %s@%s", pkgID, version), m.scheduleNextTick)
-	if err := m.pkg.InstallPackageVersion(ctx, pkgID, version, pw); err != nil {
+	// A concurrent caller may have completed the install since LibDir
+	// reported the package missing.
+	err := m.pkg.InstallPackageVersion(ctx, pkgID, version, pw)
+	if err != nil && !errors.Is(err, idepkg.ErrAlreadyInstalled) {
 		return nil, fmt.Errorf("install latest version: %w", err)
 	}
 	return m.pkg.LibDir(ctx, pkgID)

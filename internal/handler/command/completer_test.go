@@ -39,6 +39,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"unstable.build/rune/internal/handler/search"
+	"unstable.build/rune/internal/text/cmdenv"
 	"unstable.build/rune/internal/workspace"
 	"unstable.build/rune/internal/workspace/walkdir"
 )
@@ -557,11 +558,12 @@ func TestFilePathCompleterEdgeCases(t *testing.T) {
 		},
 		{
 			name: "shell metachars survive single quoting",
-			args: []string{"edit", `'weird$name.txt'`},
+			args: []string{"edit", `'weird$$name.txt'`},
 			// The unquoted value is a partial filename; the parent
 			// is the workspace root, so the recursive listing must
-			// include it.
-			wantSubset: []string{"weird$name.txt"},
+			// include it, with "$" escaped so dispatch keeps it.
+			wantSubset: []string{"weird$$name.txt"},
+			wantNotIn:  []string{"weird$name.txt"},
 		},
 		{
 			name:       "shell glob char in quoted value",
@@ -683,6 +685,126 @@ func TestPathCompletersCompleteSameOriginURI(t *testing.T) {
 			assert.Contains(t, collectAll(t, it), tc.want)
 		})
 	}
+}
+
+// TestPathCompletersExpandLeadingEnv verifies that a leading $VAR is
+// resolved the way dispatch will expand it, because workspace readers
+// take "$" literally.
+func TestPathCompletersExpandLeadingEnv(t *testing.T) {
+	fix := newCompleterFixture(t)
+	t.Setenv("RUNE_TEST_COMPLETER_ROOT", fix.root)
+	const arg = "$RUNE_TEST_COMPLETER_ROOT/src/"
+
+	t.Run("files rewrite the argument to the expanded path", func(t *testing.T) {
+		it, newLastArg, err := FilePathCompleter(fix.reader).Complete(
+			t.Context(), []string{"edit", arg})
+		require.NoError(t, err)
+		assert.Equal(t, fix.root+"/src/", newLastArg)
+		assert.Contains(t, collectAll(t, it),
+			filepath.Join(fix.root, "src", "cmd", "file_00.go"))
+	})
+
+	t.Run("non-recursive directories keep the typed prefix", func(t *testing.T) {
+		it, newLastArg, err := NonRecursiveDirsCompleter(fix.reader).Complete(
+			t.Context(), []string{"workspaceopen", arg})
+		require.NoError(t, err)
+		assert.Empty(t, newLastArg)
+		assert.Contains(t, collectAll(t, it), "$RUNE_TEST_COMPLETER_ROOT/src/cmd/")
+	})
+
+	t.Run("escaped dollar is not expanded", func(t *testing.T) {
+		it, newLastArg, err := FilePathCompleter(fix.reader).Complete(
+			t.Context(), []string{"edit", "$$RUNE_TEST_COMPLETER_ROOT"})
+		require.NoError(t, err)
+		assert.Empty(t, newLastArg)
+		_ = it.Close()
+	})
+
+	t.Run("rewritten argument keeps a literal dollar escaped", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "r$oot")
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "src"), 0o755))
+		t.Setenv("RUNE_TEST_COMPLETER_DOLLAR_ROOT", dir)
+
+		it, newLastArg, err := FilePathCompleter(newFSReader(dir)).Complete(
+			t.Context(), []string{"edit", "$RUNE_TEST_COMPLETER_DOLLAR_ROOT/"})
+		require.NoError(t, err)
+		assert.Equal(t, strings.ReplaceAll(dir, "$", "$$")+"/", newLastArg)
+		_ = it.Close()
+	})
+}
+
+// TestPathCompletersEscapeDollar verifies that path candidates survive
+// command dispatch, which expands $VAR and reads "$$" as a literal "$":
+// accepting any candidate must dispatch a path that exists, so a "$" in
+// a name is emitted as "$$", and a typed "$$" resolves to that name.
+func TestPathCompletersEscapeDollar(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	for _, dir := range []string{
+		filepath.Join("a", "$x"),
+		filepath.Join("$ws", "$sub"),
+		"my $dir",
+	} {
+		require.NoError(t, os.MkdirAll(filepath.Join(root, dir), 0o700))
+	}
+	for _, file := range []string{
+		filepath.Join("a", "$x", "f"),
+		filepath.Join("a", "g.txt"),
+		filepath.Join("my $dir", "h"),
+	} {
+		require.NoError(t, os.WriteFile(filepath.Join(root, file), []byte("x"), 0o600))
+	}
+	reader := newFSReader(root)
+
+	tests := []struct {
+		name      string
+		completer Completer
+		arg       string
+		want      string
+	}{
+		{"files escape a dollar name", FilePathCompleter(reader), "", "a/$$x/f"},
+		{"files resolve an escaped argument", FilePathCompleter(reader), "a/$$x/", "a/$$x/f"},
+		{"files quote an escaped name", FilePathCompleter(reader), "", "'my $$dir/h'"},
+		{"directories escape a dollar name", DirsCompleter(reader), "", "a/$$x"},
+		{"non-recursive directories escape a dollar name",
+			NonRecursiveDirsCompleter(reader), "", "$$ws/"},
+		{"non-recursive directories escape a nested dollar name",
+			NonRecursiveDirsCompleter(reader), "a/", "a/$$x/"},
+		{"non-recursive directories resolve an escaped argument",
+			NonRecursiveDirsCompleter(reader), "$$ws/", "$$ws/$$sub/"},
+		{"non-recursive directories quote an escaped name",
+			NonRecursiveDirsCompleter(reader), "", "'my $$dir/'"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			it, newLastArg, err := tc.completer.Complete(
+				t.Context(), []string{"command", tc.arg})
+			require.NoError(t, err)
+			assert.Empty(t, newLastArg)
+			got := collectAll(t, it)
+			assert.Contains(t, got, tc.want)
+			for _, candidate := range got {
+				value := dispatchedValue(t, candidate)
+				_, err := os.Stat(filepath.Join(root, TrimPartialCandidateSuffix(value)))
+				assert.NoError(t, err,
+					"candidate %q dispatches %q, which does not exist", candidate, value)
+			}
+		})
+	}
+}
+
+// dispatchedValue returns the argument a command receives when the
+// completion candidate is accepted: the prompt unquotes it and dispatch
+// expands it.
+func dispatchedValue(t *testing.T, candidate string) string {
+	t.Helper()
+	parts := SplitCommandLine(candidate)
+	require.Len(t, parts, 1, "candidate %q must be a single argument", candidate)
+	value, err := cmdenv.Expand(t.Context(),
+		cmdenv.EscapeDoubleDollar(UnquoteToken(parts[0])), nil)
+	require.NoError(t, err)
+	return value
 }
 
 func TestNonRecursiveDirsCompleterUsesReaderRoot(t *testing.T) {

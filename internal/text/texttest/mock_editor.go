@@ -221,6 +221,14 @@ func (e *TestEditor) UnregisterREPLCommand(cmd string) error {
 	return nil
 }
 
+func (e *TestEditor) RegisterResourceOpener(string, textapi.ResourceOpenHandler) error {
+	return nil
+}
+
+func (e *TestEditor) UnregisterResourceOpener(string) error {
+	return text.ErrResourceOpenerNotRegistered
+}
+
 func (h *TestEditorHandler) LocationLists() []text.LocationSet {
 	return nil
 }

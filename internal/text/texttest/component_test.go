@@ -2283,6 +2283,262 @@ func TestComponentRegisterREPLCommand(t *testing.T) {
 	assert.Contains(t, err.Error(), "already registered")
 }
 
+type testResourceOpener struct{ name string }
+
+func (*testResourceOpener) OpenResource(
+	context.Context, workspaceapi.URI,
+) (browserapi.Handler, error) {
+	return browsertest.NewTestHandler(), nil
+}
+
+func TestComponentResourceOpeners(t *testing.T) {
+	first := &testResourceOpener{name: "first"}
+	second := &testResourceOpener{name: "second"}
+	tests := []struct {
+		name string
+		run  func(c *text.Component) error
+		// wantOpener is the opener of the fake scheme afterwards, nil
+		// meaning none.
+		wantOpener textapi.ResourceOpenHandler
+		wantErr    error
+		wantErrMsg string
+	}{
+		{
+			name: "register",
+			run: func(c *text.Component) error {
+				return c.RegisterResourceOpener("fake", first)
+			},
+			wantOpener: first,
+		},
+		{
+			name: "duplicate keeps the first",
+			run: func(c *text.Component) error {
+				require.NoError(t, c.RegisterResourceOpener("fake", first))
+				return c.RegisterResourceOpener("fake", second)
+			},
+			wantOpener: first,
+			wantErrMsg: "already registered",
+		},
+		{
+			name: "other schemes are independent",
+			run: func(c *text.Component) error {
+				return c.RegisterResourceOpener("other", first)
+			},
+		},
+		{
+			name: "unregister",
+			run: func(c *text.Component) error {
+				require.NoError(t, c.RegisterResourceOpener("fake", first))
+				return c.UnregisterResourceOpener("fake")
+			},
+		},
+		{
+			name: "unregister a missing scheme",
+			run: func(c *text.Component) error {
+				return c.UnregisterResourceOpener("fake")
+			},
+			wantErr: text.ErrResourceOpenerNotRegistered,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfgc := text.DefaultConfig()
+			cfgc.ScheduleNextTick = func(fn func()) bool { fn(); return true }
+			c, err := text.NewComponent(NopEditor(), &testLoader{}, cfgc)
+			require.NoError(t, err)
+
+			err = tt.run(c)
+			switch {
+			case tt.wantErr != nil:
+				require.ErrorIs(t, err, tt.wantErr)
+			case tt.wantErrMsg != "":
+				require.ErrorContains(t, err, tt.wantErrMsg)
+			default:
+				require.NoError(t, err)
+			}
+
+			got, ok := c.ResourceOpener("fake")
+			if tt.wantOpener == nil {
+				assert.False(t, ok)
+				return
+			}
+			require.True(t, ok)
+			assert.Same(t, tt.wantOpener, got)
+		})
+	}
+}
+
+// drainTicks runs the scheduled callbacks, including the ones they
+// schedule, until none is left.
+func drainTicks(ticks chan func()) {
+	for {
+		select {
+		case fn := <-ticks:
+			fn()
+		default:
+			return
+		}
+	}
+}
+
+// resizeRecordingHandler records the last size it was given.
+type resizeRecordingHandler struct {
+	*browsertest.TestHandler
+	width, height int
+}
+
+func (h *resizeRecordingHandler) Resize(width, height int) {
+	h.width, h.height = width, height
+	h.TestHandler.Resize(width, height)
+}
+
+func TestComponentPendingTabs(t *testing.T) {
+	const scheme = "fake"
+	uri, err := workspaceapi.ParseURI("fake://host/chat")
+	require.NoError(t, err)
+	other, err := workspaceapi.ParseURI("fake://host/other")
+	require.NoError(t, err)
+
+	// newComponent returns a component whose event loop the test drives
+	// through ticks, so the placeholder's spinner never races the test.
+	newComponent := func(t *testing.T) (*text.Component, chan func()) {
+		ticks := make(chan func(), 1024)
+		cfg := text.DefaultConfig()
+		cfg.ScheduleNextTick = func(fn func()) bool { ticks <- fn; return true }
+		c, _ := newTestComponentConfig(t, NopEditor(), cfg)
+		t.Cleanup(func() { _ = c.Close() })
+		return c, ticks
+	}
+	// contentOf renders tab into text, one line per row.
+	contentOf := func(t *testing.T, tab *browser.Tab) string {
+		const width, height = 48, 9
+		tab.Resize(width, height)
+		w := cell.NewBufferWriter(context.Background(), width, height)
+		tab.Draw(w)
+		var b strings.Builder
+		for _, row := range w.RawCells() {
+			for _, c := range row {
+				if c.Ch == 0 {
+					b.WriteRune(' ')
+				} else {
+					b.WriteRune(c.Ch)
+				}
+			}
+			b.WriteRune('\n')
+		}
+		return b.String()
+	}
+
+	t.Run("a placeholder waits in the tab bar", func(t *testing.T) {
+		c, _ := newComponent(t)
+		tab := c.PendingTabs().Open(uri, 'P', "chat")
+
+		_, bound := tab.Window()
+		assert.False(t, bound, "the placeholder must not take a window")
+		assert.True(t, c.PendingTabs().Contains(uri))
+		assert.Equal(t, []workspaceapi.URI{uri}, c.PendingTabs().URIs(scheme))
+		assert.Empty(t, c.PendingTabs().URIs("other"))
+		name, _, ok := c.Browser().TabName(uri)
+		require.True(t, ok)
+		assert.Equal(t, "chat", name)
+		assert.Equal(t, strings.Join([]string{
+			"                                                ",
+			"                                                ",
+			"                                                ",
+			"    Waiting for the owning extension to open    ",
+			"    fake://host/chat                            ",
+			"                                                ",
+			"                                                ",
+			"                                                ",
+			"                                                ",
+		}, "\n")+"\n", contentOf(t, tab), "the message must be centered")
+		assert.Same(t, tab, c.PendingTabs().Open(uri, 'Q', "again"),
+			"a second placeholder must not be created for an open URI")
+	})
+
+	t.Run("the opened content takes the placeholder's place", func(t *testing.T) {
+		c, ticks := newComponent(t)
+		tab := c.PendingTabs().Open(uri, 'P', "pending")
+		win, err := c.Focus()
+		require.NoError(t, err)
+		require.NoError(t, win.SetContent(tab))
+		c.Resize(80, 24)
+		drainTicks(ticks)
+		placeholder, ok := tab.Handler().(interface{ Dimensions() (int, int) })
+		require.True(t, ok)
+		wantWidth, wantHeight := placeholder.Dimensions()
+		require.Positive(t, wantWidth)
+		require.Positive(t, wantHeight)
+
+		h := &resizeRecordingHandler{TestHandler: browsertest.NewTestHandler()}
+		require.True(t, c.PendingTabs().Replace(uri, h))
+
+		assert.Same(t, h, tab.Handler())
+		assert.False(t, c.PendingTabs().Contains(uri))
+		assert.Empty(t, c.PendingTabs().URIs(scheme))
+		bound, ok := tab.Window()
+		require.True(t, ok)
+		assert.Equal(t, win.WindowID(), bound.WindowID())
+		name, _, ok := c.Browser().TabName(uri)
+		require.True(t, ok)
+		assert.Equal(t, "pending", name, "the tab keeps the name it was saved with")
+		assert.Equal(t, [2]int{wantWidth, wantHeight}, [2]int{h.width, h.height},
+			"the new content must be laid out like the placeholder was")
+		require.Eventually(t, func() bool {
+			drainTicks(ticks)
+			icon, _, _ := c.Browser().TabIcon(uri)
+			return icon == 'P'
+		}, 5*time.Second, 10*time.Millisecond,
+			"the spinner must stop on the saved icon")
+		got, err := c.Tab(uri, 'E', "chat", browsertest.NewTestHandler())
+		require.NoError(t, err)
+		assert.Same(t, tab, got, "the extension must get the tab the user kept")
+		assert.Same(t, h, tab.Handler())
+	})
+
+	t.Run("only a placeholder is replaced", func(t *testing.T) {
+		c, _ := newComponent(t)
+		first := browsertest.NewTestHandler()
+		tab, err := c.Tab(uri, 'E', "chat", first)
+		require.NoError(t, err)
+		second := browsertest.NewTestHandler()
+		var closed bool
+		second.CloseCallback = func() error { closed = true; return nil }
+		assert.False(t, c.PendingTabs().Replace(uri, second))
+		assert.Same(t, first, tab.(*browser.Tab).Handler())
+		assert.False(t, closed, "the caller owns a handler that was not installed")
+		assert.False(t, c.PendingTabs().Contains(uri))
+		assert.False(t, c.PendingTabs().Replace(other, second), "a closed or unknown tab")
+	})
+
+	t.Run("a failure is shown and the tab keeps waiting", func(t *testing.T) {
+		c, ticks := newComponent(t)
+		tab := c.PendingTabs().Open(uri, 'P', "chat")
+		c.PendingTabs().Open(other, 'P', "other")
+
+		require.True(t, c.PendingTabs().Fail(uri, errors.New("boom")))
+
+		content := contentOf(t, tab)
+		assert.Contains(t, content, "Could not open")
+		assert.Contains(t, content, "fake://host/chat")
+		assert.Contains(t, content, "boom")
+		assert.True(t, c.PendingTabs().Contains(uri))
+		assert.Equal(t, []workspaceapi.URI{uri, other}, c.PendingTabs().URIs(scheme))
+		require.Eventually(t, func() bool {
+			drainTicks(ticks)
+			icon, _, _ := c.Browser().TabIcon(uri)
+			return icon == 'P'
+		}, 5*time.Second, 10*time.Millisecond, "the spinner must stop")
+
+		h := browsertest.NewTestHandler()
+		require.True(t, c.PendingTabs().Replace(uri, h))
+		assert.Same(t, h, tab.Handler(), "a later open must still take the tab")
+		assert.False(t, c.PendingTabs().Fail(uri, errors.New("late")),
+			"an open tab must not be failed")
+		assert.False(t, c.PendingTabs().Fail(workspaceapi.URI{}, errors.New("none")))
+	})
+}
+
 type testREPLHandler struct{}
 
 func (*testREPLHandler) HandleCommand(

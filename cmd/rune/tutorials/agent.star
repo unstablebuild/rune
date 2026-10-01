@@ -18,9 +18,12 @@
 # agent.star — the Rune Agent tutorial.
 
 ck = command_key()
+mode = editor_mode()
 
-if editor_mode() == "modal":
-    shell_esc_step = "1. Press `<esc>` to enter modal mode.\n\n"
+# A focused console is in INSERT mode under a modal editor, so the
+# command key would be typed into the shell line instead.
+if mode == "vim" or mode == "helix":
+    shell_esc_step = "1. Press `<esc>` to go back to NORMAL mode.\n\n"
     shell_prompt_step_num = "2"
     shell_run_step_num = "3"
 else:
@@ -32,7 +35,8 @@ def keypress(cmd, *args):
     k = key_for(cmd, *args)
     if k:
         return "press `" + k + "`"
-    return "open the command prompt (`" + ck + "`) and run `" + cmd + "`"
+    return ("open the command prompt (`" + ck + "`) and run `" +
+            cmd + ((" " + " ".join(args)) if len(args) else "") + "`")
 
 cleanup_md = """\
 Let's start fresh. Clear the layout: """ + keypress("windowcloseall") + """.
@@ -91,7 +95,7 @@ help_md = """\
 You're almost done 🎉 A few tips worth remembering:
 
 - If you find yourself wondering what commands you typed on a previous session, press
-  `<meta-r>` to open the command prompt in history mode and search through your command history.
+  `""" + key("<meta-r>") + """` to open the command prompt in history mode and search through your command history.
 
 - If you need a hand, or want to learn about hacking on Rune, join us on
   Discord: https://discord.gg/quxhV7khwg 👾 hold `<meta>` and click the
@@ -226,4 +230,4 @@ def run():
     teach_agent()
     teach_help()
 
-tutorial(id = "agent", title = "Rune Agent", version = "12", entry = run)
+tutorial(id = "agent", title = "Rune Agent", version = "13", entry = run)

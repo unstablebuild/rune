@@ -6,8 +6,6 @@ on:
       - 'dist/**'
       - '.github/workflows/packages.yml'
   workflow_dispatch:
-  release:
-    types: [published]
 
 concurrency:
   group: packages-${{ github.workflow }}-${{ github.ref }}
@@ -24,10 +22,6 @@ jobs:
     name: .deb (${{ matrix.arch }})
     runs-on: ubuntu-24.04
     timeout-minutes: 60
-    # The release upload step needs write. Scoped to this job so the
-    # arch and srcinfo jobs keep the workflow's read-only default.
-    permissions:
-      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -46,14 +40,6 @@ jobs:
           name: rune-deb-${{ matrix.arch }}
           path: target/pkg/*.deb
           if-no-files-found: error
-      # The Actions artifact store expires and needs a GitHub login, so
-      # it cannot serve as the download channel. Attaching to the release
-      # is what makes the .deb installable.
-      - name: Attach to release
-        if: github.event_name == 'release'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ github.event.release.tag_name }}" target/pkg/*.deb --clobber
 
   arch:
     name: Arch package

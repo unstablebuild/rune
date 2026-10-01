@@ -438,12 +438,12 @@ func (s store) ensureIndexMode(ctx context.Context, bootstrap bool) (dialogueInd
 				}
 			}
 			return []storageapi.Update{
-					{FieldPath: []string{"Headers"}, Value: idx.Headers},
-					{FieldPath: []string{"Bootstrapped"}, Value: true},
-					{FieldPath: []string{"Version"}, Value: idx.Version + 1},
-				}, []storageapi.Precondition{
-					{FieldPath: []string{"Version"}, Value: idx.Version},
-				}
+				{FieldPath: []string{"Headers"}, Value: idx.Headers},
+				{FieldPath: []string{"Bootstrapped"}, Value: true},
+				{FieldPath: []string{"Version"}, Value: idx.Version + 1},
+			}, []storageapi.Precondition{
+				{FieldPath: []string{"Version"}, Value: idx.Version},
+			}
 		})
 	if err != nil {
 		return dialogueIndex{}, fmt.Errorf("document service bootstrap index: %w", err)
@@ -464,12 +464,12 @@ func (s store) updateIndex(ctx context.Context, fn func(dialogueIndex) dialogueI
 		func() ([]storageapi.Update, []storageapi.Precondition) {
 			idx = fn(idx)
 			return []storageapi.Update{
-					{FieldPath: []string{"Headers"}, Value: idx.Headers},
-					{FieldPath: []string{"Bootstrapped"}, Value: idx.Bootstrapped},
-					{FieldPath: []string{"Version"}, Value: idx.Version + 1},
-				}, []storageapi.Precondition{
-					{FieldPath: []string{"Version"}, Value: idx.Version},
-				}
+				{FieldPath: []string{"Headers"}, Value: idx.Headers},
+				{FieldPath: []string{"Bootstrapped"}, Value: idx.Bootstrapped},
+				{FieldPath: []string{"Version"}, Value: idx.Version + 1},
+			}, []storageapi.Precondition{
+				{FieldPath: []string{"Version"}, Value: idx.Version},
+			}
 		})
 }
 

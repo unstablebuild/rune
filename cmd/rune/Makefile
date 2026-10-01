@@ -14,6 +14,8 @@ RUNE_LINUX_RELEASE_TAR ?= rune-release-$(RUNE_LINUX_TARGET_OS)-$(RUNE_LINUX_TARG
 # emulation); other combinations must use the default Docker cross-compile
 # release targets.
 HOST_ARCH := $(shell uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
+# Match the user-local layout used by Rune's updater.
+PREFIX ?= $(HOME)/.local
 # DARWIN_AMD64_MIN_MACOS is the minimum macOS the Intel build supports. It
 # is threaded into the cgo toolchain (-mmacosx-version-min) and the app
 # bundle's LSMinimumSystemVersion (extra/osx/Info.amd64.plist) so the Intel
@@ -133,7 +135,7 @@ endif
 
 .PHONY: clean make-release release release-amd64 release-arm64 app-amd64 app-arm64 dmg dmg-amd64 dmg-notarize dmg-amd64-notarize release-all \
 	linux-cross-compile \
-	make-release-linux \
+	make-release-linux app-linux install-linux \
 	release-linux-amd64 release-linux-arm64 \
 	release-linux-amd64-native release-linux-arm64-native \
 	release-linux-amd64-cross release-linux-arm64-cross \
@@ -144,6 +146,7 @@ endif
 	prod-dist-linux-amd64 prod-dist-linux-arm64 prod-dist-darwin-amd64 prod-dist-darwin-arm64 \
 	prod-dist-linux-amd64-native prod-dist-linux-arm64-native \
 	prod-dist-linux-amd64-cross prod-dist-linux-arm64-cross \
+	prod-dist-homebrew \
 	staging-dist-linux-amd64 staging-dist-linux-arm64 staging-dist-darwin-amd64 staging-dist-darwin-arm64 \
 	staging-dist-linux-amd64-native staging-dist-linux-arm64-native \
 	staging-dist-linux-amd64-cross staging-dist-linux-arm64-cross \
@@ -345,13 +348,19 @@ app-delve:
 	@echo "Attach with: dlv attach \$$(pgrep -n rune)"
 endif
 
+app-linux: RUNE_LINUX_TARGET_ARCH = $(HOST_ARCH)
+app-linux: make-release-linux
+
+install-linux: RUNE_LINUX_TARGET_ARCH = $(HOST_ARCH)
+install-linux: app-linux
+	@sh "$(ROOT_DIR)/deploy/rune-linux/install.sh" "$(RUNE_LINUX_OUTPUT_DIR)/rune.app" "$(PREFIX)"
+
 linux-cross-compile:
 	@rm -rf $(RUNE_LINUX_OUTPUT_DIR)
 	@mkdir -p $(RUNE_LINUX_OUTPUT_DIR)
 	@cd $(ROOT_DIR) && docker buildx build --rm \
 		-f deploy/rune-linux/Dockerfile \
 		--platform $(RUNE_LINUX_TARGET_OS)/$(RUNE_LINUX_TARGET_ARCH) \
-		--build-arg GIT_SSH_KEY="$$GIT_SSH_KEY" \
 		--build-arg RUNE_BUILD_TAG="$(VERSION)" \
 		--build-arg RUNE_BUILD_COMMIT="$(COMMIT)" \
 		--build-arg RUNE_BUILD_DATE="$(strip $(BUILD_DATE))" \
@@ -541,47 +550,67 @@ check-release-tag:
 
 # prod-dist-*: build with the default prod endpoints
 # (api.rune.build / rpc.rune.build:443) and upload to
-# $(PROD_RELEASE_REPO).
+# $(PROD_RELEASE_REPO), then report which artifacts and distribution channels
+# the release still lacks. The report never publishes anything.
+PROD_RELEASE_STATUS = cd $(ROOT_DIR) && \
+	RELEASE_REPO=$(PROD_RELEASE_REPO) RELEASE_TAG=$$(git describe --tags) \
+	./dist/release.sh status
+
 prod-dist-linux-amd64:  RUNE_ENV := prod
 prod-dist-linux-amd64:  DIST_REPO := $(PROD_RELEASE_REPO)
 prod-dist-linux-amd64:  DIST_DOWNLOAD_HOST := $(PROD_DOWNLOAD_HOST)
 prod-dist-linux-amd64:  dist-linux-amd64
+	@$(PROD_RELEASE_STATUS)
 
 prod-dist-linux-arm64:  RUNE_ENV := prod
 prod-dist-linux-arm64:  DIST_REPO := $(PROD_RELEASE_REPO)
 prod-dist-linux-arm64:  DIST_DOWNLOAD_HOST := $(PROD_DOWNLOAD_HOST)
 prod-dist-linux-arm64:  dist-linux-arm64
+	@$(PROD_RELEASE_STATUS)
 
 prod-dist-linux-amd64-native:  RUNE_ENV := prod
 prod-dist-linux-amd64-native:  DIST_REPO := $(PROD_RELEASE_REPO)
 prod-dist-linux-amd64-native:  DIST_DOWNLOAD_HOST := $(PROD_DOWNLOAD_HOST)
 prod-dist-linux-amd64-native:  dist-linux-amd64-native
+	@$(PROD_RELEASE_STATUS)
 
 prod-dist-linux-arm64-native:  RUNE_ENV := prod
 prod-dist-linux-arm64-native:  DIST_REPO := $(PROD_RELEASE_REPO)
 prod-dist-linux-arm64-native:  DIST_DOWNLOAD_HOST := $(PROD_DOWNLOAD_HOST)
 prod-dist-linux-arm64-native:  dist-linux-arm64-native
+	@$(PROD_RELEASE_STATUS)
 
 # prod-dist-linux-*-cross are retained as aliases for the now-default cross build.
 prod-dist-linux-amd64-cross:  RUNE_ENV := prod
 prod-dist-linux-amd64-cross:  DIST_REPO := $(PROD_RELEASE_REPO)
 prod-dist-linux-amd64-cross:  DIST_DOWNLOAD_HOST := $(PROD_DOWNLOAD_HOST)
 prod-dist-linux-amd64-cross:  dist-linux-amd64
+	@$(PROD_RELEASE_STATUS)
 
 prod-dist-linux-arm64-cross:  RUNE_ENV := prod
 prod-dist-linux-arm64-cross:  DIST_REPO := $(PROD_RELEASE_REPO)
 prod-dist-linux-arm64-cross:  DIST_DOWNLOAD_HOST := $(PROD_DOWNLOAD_HOST)
 prod-dist-linux-arm64-cross:  dist-linux-arm64
+	@$(PROD_RELEASE_STATUS)
 
 prod-dist-darwin-amd64: RUNE_ENV := prod
 prod-dist-darwin-amd64: DIST_REPO := $(PROD_RELEASE_REPO)
 prod-dist-darwin-amd64: DIST_DOWNLOAD_HOST := $(PROD_DOWNLOAD_HOST)
 prod-dist-darwin-amd64: dist-darwin-amd64
+	@$(PROD_RELEASE_STATUS)
 
 prod-dist-darwin-arm64: RUNE_ENV := prod
 prod-dist-darwin-arm64: DIST_REPO := $(PROD_RELEASE_REPO)
 prod-dist-darwin-arm64: DIST_DOWNLOAD_HOST := $(PROD_DOWNLOAD_HOST)
 prod-dist-darwin-arm64: dist-darwin-arm64
+	@$(PROD_RELEASE_STATUS)
+
+# Publishes the Homebrew cask for the release tagged at HEAD. It pins all four
+# platform artifacts, so it fails until the prod dists report it READY.
+prod-dist-homebrew:
+	@cd $(ROOT_DIR) && ./cmd/rune/check-release-tag.sh && \
+		RELEASE_REPO=$(PROD_RELEASE_REPO) RELEASE_TAG=$$(git describe --tags) \
+		./dist/release.sh publish-homebrew
 
 # staging-dist-*: build with the staging ldflags
 # (api.unstable.build / rpc.unstable.build:443) and upload to

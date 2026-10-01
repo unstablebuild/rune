@@ -7,7 +7,6 @@ FROM --platform=$BUILDPLATFORM debian:buster-slim AS build
 
 ARG TARGETOS
 ARG TARGETARCH
-ARG GIT_SSH_KEY
 ARG RUNE_BUILD_TAG
 ARG RUNE_BUILD_COMMIT
 ARG RUNE_BUILD_DATE
@@ -21,14 +20,13 @@ ARG RUNE_ENV=prod
 # GO_VERSION pins the Go toolchain installed from the official tarball. buster
 # ships no usable system Go, and the tarball links only a low glibc so it runs
 # fine on buster. Keep in sync with go.mod's go directive.
-ARG GO_VERSION=1.26.0
+ARG GO_VERSION=1.27.1
 
 WORKDIR /src
 
 COPY . .
 
-ENV GOPRIVATE=github.com/unstablebuild,unstable.build/* \
-	CGO_ENABLED=1
+ENV CGO_ENABLED=1
 
 # buster is archived: point apt at archive.debian.org and disable the
 # Valid-Until check (buster's release files have expired) so the target-arch
@@ -36,7 +34,8 @@ ENV GOPRIVATE=github.com/unstablebuild,unstable.build/* \
 # the artifact's glibc floor to 2.28. buster-backports is included so a newer
 # git (>= 2.30) can be installed: buster's stock git 2.20 rejects the
 # `--end-of-options` separator that the Go module fetcher passes to git when
-# resolving GOPRIVATE modules, which aborts the build.
+# it falls back to fetching a module directly from its repository, which
+# aborts the build.
 RUN set -eux; \
 	printf '%s\n' \
 		'deb [check-valid-until=no] http://archive.debian.org/debian buster main' \
@@ -77,7 +76,6 @@ RUN set -eux; \
 		pkg-config \
 		bash \
 		make \
-		openssh-client \
 		ca-certificates \
 		curl \
 		file \
@@ -106,13 +104,6 @@ RUN set -eux; \
 	tar -C /usr/local -xzf /tmp/go.tgz; \
 	rm /tmp/go.tgz
 ENV PATH=/usr/local/go/bin:$PATH
-
-RUN git config --global url.ssh://git@github.com/.insteadOf https://github.com/
-RUN mkdir -p ~/.ssh && chmod 700 ~/.ssh && \
-	printf '%s\n' "$GIT_SSH_KEY" | tr -d '\r' > ~/.ssh/id_rsa && \
-	chmod 600 ~/.ssh/id_rsa
-RUN ssh-keyscan -t rsa git.unstable.build >> ~/.ssh/known_hosts
-RUN ssh-keyscan -t rsa github.com >> ~/.ssh/known_hosts
 
 # Select the cross-compiler toolchain and pkg-config path based on TARGETARCH.
 # Output layout mirrors Zed's convention:

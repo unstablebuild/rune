@@ -21,6 +21,7 @@ import (
 
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/handler"
+	"github.com/unstablebuild/rune-go-sdk/term"
 
 	"unstable.build/rune/internal/component/markdown"
 	mdhandler "unstable.build/rune/internal/handler/markdown"
@@ -31,6 +32,10 @@ import (
 // padding across both sides only when the content is horizontally
 // centered, so this is the total, not the per-side gutter.
 const screenPadHorizontal = 2
+
+// moreBelowArrow is nf-fa-arrow_down. The bundled Nerd Font draws
+// it one cell wide, which keeps centring it plain arithmetic.
+const moreBelowArrow = ''
 
 // openScreen builds the body r's screen draws inside the tile. It runs
 // on the run goroutine before the request becomes active, so nothing
@@ -52,14 +57,52 @@ func (t *Tutorial) openScreen(r *request, width int) {
 // newScreenContent builds the body of a wait_* screen: md behind a
 // less-like, mouse-scrollable viewer, padded off the tile frame and
 // anchored top-left so a step's first line is the one the user reads
-// first.
+// first. Copy taller than the tile gives up its bottom row to an arrow
+// pointing at the rest.
 func newScreenContent(md *markdown.Component) (*mdhandler.Handler, *handler.Span) {
 	viewer := mdhandler.New(md)
-	return viewer, handler.NewSpan(viewer, component.SpanConfig{
+	return viewer, handler.NewSpan(&moreBelow{Handler: viewer}, component.SpanConfig{
 		PadHorizontal: screenPadHorizontal,
 		ContentAlignment: component.AlignmentTop |
 			component.AlignmentHorizontallyCentered,
 	})
+}
+
+// moreBelow tells the reader a step's copy goes on below the tile. The
+// row it reserves stays reserved once the reader scrolls to the end,
+// so the copy does not shift under them; only the arrow goes away.
+type moreBelow struct {
+	*mdhandler.Handler
+	overflows     bool
+	width, height int
+}
+
+// Resize satisfies tui.Component.
+func (m *moreBelow) Resize(width, height int) {
+	m.width, m.height = width, height
+	m.overflows = height > 1 && m.textHeight() > height
+	if m.overflows {
+		height--
+	}
+	m.Handler.Resize(width, height)
+}
+
+// Draw satisfies tui.Component.
+func (m *moreBelow) Draw(w term.Writer) {
+	m.Handler.Draw(w)
+	if !m.overflows || m.SeekOffset()+m.height-1 >= m.textHeight() {
+		return
+	}
+	w.SetCell(term.Coordinates{X: (m.width - 1) / 2, Y: m.height - 1},
+		term.NewCell(moreBelowArrow, 1, term.Attributes{}))
+}
+
+// textHeight is how many rows the copy needs at the current width.
+// Every markdown block ends in a row of spacing, and the last one is
+// left out: it is blank, so the arrow's row can stand in for it rather
+// than point at nothing.
+func (m *moreBelow) textHeight() int {
+	return m.Handler.Height(m.width) - 1
 }
 
 // screenMarkdown heads body with title, as the tile has no title bar

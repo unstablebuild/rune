@@ -545,25 +545,20 @@ func TestListSymbolsIteratorClose(t *testing.T) {
 				closeWaitCh: closeWaitCh,
 			}
 
-			var done bool
-			var mu sync.Mutex
+			var done atomic.Bool
 
 			go func() {
 				if tt.delay > 0 {
 					time.Sleep(tt.delay)
 				}
+				done.Store(true)
 				close(closeWaitCh)
-				mu.Lock()
-				done = true
-				mu.Unlock()
 			}()
 
 			err := it.Close()
 			require.NoError(t, err)
 
-			mu.Lock()
-			assert.True(t, done, "Close() returned before closeWaitCh was closed")
-			mu.Unlock()
+			assert.True(t, done.Load(), "Close() returned before closeWaitCh was closed")
 		})
 	}
 }

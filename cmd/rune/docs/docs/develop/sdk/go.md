@@ -114,6 +114,36 @@ returns a typed client into the host:
 
 Every accessor is gated on the matching permission declared in `Metadata`.
 
+## Restore tabs across sessions
+
+When a workspace is reloaded or reopened, Rune restores the window layout and
+the files in it, but it cannot recreate the content of a tab your extension
+created with `WindowManager.Tab`. It shows a placeholder tab with the same
+URI, icon and name where the tab was, and asks your extension to open it
+again once you register a resource opener for the scheme of those tab URIs:
+
+```go
+if err := ws.RegisterResourceOpener("snippets", s); err != nil {
+	return fmt.Errorf("register resource opener: %w", err)
+}
+```
+
+`s` implements `textapi.ResourceOpenHandler`, whose `OpenResource`
+receives the tab URI and returns its content, a `browserapi.Handler`, the way
+`WindowManager.Tab` would have been given it. Rune shows the content in the
+placeholder's place, wherever the user keeps the tab by then, and closes it
+once the tab is closed; do not create the tab or install it into a window
+yourself. The URI remains the tab's identity, e.g. for
+`WindowManager.SetTabActivity`. A returned error is shown on the
+placeholder, which the user can close, and a later registration, e.g. after
+a restart, is asked again. Only tabs that were shown in a tiled window are
+restored.
+
+A resource opener is not a command: it never appears in the command prompt.
+If your extension restarts and registers the scheme again, the new
+registration replaces the old one. Rune versions that predate resource
+openers fail the registration with a `codes.Unimplemented` status.
+
 ## Run and debug it
 
 Build your binary, then start it in a workspace from the

@@ -19,6 +19,7 @@ package vi
 import (
 	"context"
 	"errors"
+	"slices"
 
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
@@ -69,7 +70,11 @@ func (e *viEditor) Edit(
 	if ok {
 		indentRune = r
 	}
-	root := NewWithIndent(buf, file, indentRune, tabspaces, e.opts...)
+	opts := e.opts
+	if text.AutoCenterDisabled(ctx) {
+		opts = append(slices.Clip(opts), WithAutoCenter(false))
+	}
+	root := NewWithIndent(buf, file, indentRune, tabspaces, opts...)
 	// publisher does not mutate cursor and it should never do so
 	cursor := root.cursor
 	scroll := root.less.Scroll()
@@ -150,6 +155,14 @@ func (c *viEditor) UnsubscribeCommand(cmd string) error {
 }
 
 func (c *viEditor) UnregisterREPLCommand(cmd string) error {
+	return errors.New("not supported")
+}
+
+func (e *viEditor) RegisterResourceOpener(string, textapi.ResourceOpenHandler) error {
+	return errors.New("not supported")
+}
+
+func (e *viEditor) UnregisterResourceOpener(string) error {
 	return errors.New("not supported")
 }
 

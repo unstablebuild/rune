@@ -60,8 +60,7 @@ type placement struct {
 // resolvePlacement computes img's pixel geometry within a dst of
 // bounds, reporting false when the placement paints nothing.
 func resolvePlacement(
-	img term.Image, m *font.Manager, offX, offY float64,
-	bounds image.Rectangle,
+	img term.Image, m *font.Manager, bounds image.Rectangle,
 ) (placement, bool) {
 	visible := img.Visible()
 	src := cropRect(img)
@@ -72,7 +71,7 @@ func resolvePlacement(
 	// starts at the origin.
 	src = src.Sub(img.Src.Bounds().Min)
 
-	area := cellRectToPixels(img.Bounds(), m, offX, offY)
+	area := cellRectToPixels(img.Bounds(), m)
 	if img.Fit == term.ImageFitContain {
 		area = containRect(src, area)
 	}
@@ -80,7 +79,7 @@ func resolvePlacement(
 	if area.Empty() {
 		return placement{}, false
 	}
-	clip := cellRectToPixels(visible, m, offX, offY).
+	clip := cellRectToPixels(visible, m).
 		Intersect(area).Intersect(bounds)
 	if clip.Empty() {
 		return placement{}, false
@@ -91,10 +90,9 @@ func resolvePlacement(
 // drawOne paints one placement and reports the pixel rectangle it
 // covered, which is empty when the placement painted nothing.
 func (l *imageLayer) drawOne(
-	dst *ebiten.Image, img term.Image,
-	m *font.Manager, offX, offY float64,
+	dst *ebiten.Image, img term.Image, m *font.Manager,
 ) image.Rectangle {
-	p, ok := resolvePlacement(img, m, offX, offY, dst.Bounds())
+	p, ok := resolvePlacement(img, m, dst.Bounds())
 	if !ok {
 		return image.Rectangle{}
 	}
@@ -203,14 +201,12 @@ func cropRect(img term.Image) image.Rectangle {
 // cellRectToPixels converts a right-exclusive cell rectangle to pixels.
 // It goes through the font manager rather than multiplying by the cell
 // size so that the cell overlap the glyph renderer applies is respected.
-func cellRectToPixels(
-	r image.Rectangle, m *font.Manager, offX, offY float64,
-) image.Rectangle {
+func cellRectToPixels(r image.Rectangle, m *font.Manager) image.Rectangle {
 	return image.Rect(
-		int(math.Round(m.PixelX(r.Min.X)+offX)),
-		int(math.Round(m.PixelY(r.Min.Y)+offY)),
-		int(math.Round(m.PixelX(r.Max.X)+offX)),
-		int(math.Round(m.PixelY(r.Max.Y)+offY)),
+		int(math.Round(m.PixelX(r.Min.X))),
+		int(math.Round(m.PixelY(r.Min.Y))),
+		int(math.Round(m.PixelX(r.Max.X))),
+		int(math.Round(m.PixelY(r.Max.Y))),
 	)
 }
 

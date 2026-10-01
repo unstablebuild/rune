@@ -17,6 +17,7 @@
 package extutil
 
 import (
+	"maps"
 	"reflect"
 	"testing"
 
@@ -24,14 +25,16 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/clipboard"
 	"unstable.build/rune/internal/text/emacs"
+	"unstable.build/rune/internal/text/helix"
 	"unstable.build/rune/internal/text/standard"
 	"unstable.build/rune/internal/text/vi"
 )
 
 func TestEditor(t *testing.T) {
-	modalType := reflect.TypeOf(vi.Editor())
+	vimType := reflect.TypeOf(vi.Editor())
 	standardType := reflect.TypeOf(standard.Editor())
 	emacsType := reflect.TypeOf(emacs.Editor())
+	helixType := reflect.TypeOf(helix.Editor())
 
 	tests := []struct {
 		name string
@@ -41,17 +44,22 @@ func TestEditor(t *testing.T) {
 		{
 			name: "no editor config",
 			cfg:  map[string]any{},
-			want: modalType,
+			want: vimType,
 		},
 		{
-			name: "editor config without mode defaults to modal",
+			name: "editor config without mode defaults to vim",
 			cfg:  map[string]any{"editor": map[string]any{}},
-			want: modalType,
+			want: vimType,
 		},
 		{
-			name: "modal",
+			name: "vim",
+			cfg:  map[string]any{"editor": map[string]any{"mode": "vim"}},
+			want: vimType,
+		},
+		{
+			name: "deprecated modal alias resolves to vim",
 			cfg:  map[string]any{"editor": map[string]any{"mode": "modal"}},
-			want: modalType,
+			want: vimType,
 		},
 		{
 			name: "standard",
@@ -69,17 +77,30 @@ func TestEditor(t *testing.T) {
 			want: emacsType,
 		},
 		{
+			name: "helix",
+			cfg:  map[string]any{"editor": map[string]any{"mode": "helix"}},
+			want: helixType,
+		},
+		{
 			name: "exo no fallback defaults to standard",
 			cfg:  map[string]any{"editor": map[string]any{"mode": "exo"}},
 			want: standardType,
 		},
 		{
-			name: "exo fallback modal",
+			name: "exo fallback vim",
+			cfg: map[string]any{"editor": map[string]any{
+				"mode": "exo",
+				"exo":  map[string]any{"fallback": "vim"},
+			}},
+			want: vimType,
+		},
+		{
+			name: "exo fallback deprecated modal resolves to vim",
 			cfg: map[string]any{"editor": map[string]any{
 				"mode": "exo",
 				"exo":  map[string]any{"fallback": "modal"},
 			}},
-			want: modalType,
+			want: vimType,
 		},
 		{
 			name: "exo fallback standard",
@@ -104,6 +125,14 @@ func TestEditor(t *testing.T) {
 				"exo":  map[string]any{"fallback": "emacs"},
 			}},
 			want: emacsType,
+		},
+		{
+			name: "exo fallback helix",
+			cfg: map[string]any{"editor": map[string]any{
+				"mode": "exo",
+				"exo":  map[string]any{"fallback": "helix"},
+			}},
+			want: helixType,
 		},
 		{
 			name: "exo unknown fallback defaults to standard",
@@ -131,14 +160,24 @@ func TestEditorModal(t *testing.T) {
 		want bool
 	}{
 		{"no editor config", map[string]any{}, true},
-		{"empty editor config defaults to modal", map[string]any{"editor": map[string]any{}}, true},
-		{"modal", map[string]any{"editor": map[string]any{"mode": "modal"}}, true},
+		{"empty editor config defaults to vim", map[string]any{"editor": map[string]any{}}, true},
+		{"vim", map[string]any{"editor": map[string]any{"mode": "vim"}}, true},
+		{"deprecated modal alias", map[string]any{"editor": map[string]any{"mode": "modal"}}, true},
 		{"standard", map[string]any{"editor": map[string]any{"mode": "standard"}}, false},
 		{"deprecated modeless alias", map[string]any{"editor": map[string]any{"mode": "modeless"}}, false},
 		{"emacs", map[string]any{"editor": map[string]any{"mode": "emacs"}}, false},
+		{"helix", map[string]any{"editor": map[string]any{"mode": "helix"}}, true},
 		{"exo no fallback defaults to standard", map[string]any{"editor": map[string]any{"mode": "exo"}}, false},
 		{
-			name: "exo fallback modal",
+			name: "exo fallback vim",
+			cfg: map[string]any{"editor": map[string]any{
+				"mode": "exo",
+				"exo":  map[string]any{"fallback": "vim"},
+			}},
+			want: true,
+		},
+		{
+			name: "exo fallback deprecated modal",
 			cfg: map[string]any{"editor": map[string]any{
 				"mode": "exo",
 				"exo":  map[string]any{"fallback": "modal"},
@@ -161,6 +200,14 @@ func TestEditorModal(t *testing.T) {
 			}},
 			want: false,
 		},
+		{
+			name: "exo fallback helix",
+			cfg: map[string]any{"editor": map[string]any{
+				"mode": "exo",
+				"exo":  map[string]any{"fallback": "helix"},
+			}},
+			want: true,
+		},
 	}
 
 	for _, tc := range tests {
@@ -168,6 +215,43 @@ func TestEditorModal(t *testing.T) {
 			modal, err := EditorModal(config.MapConfig(tc.cfg))
 			require.NoError(t, err)
 			require.Equal(t, tc.want, modal)
+		})
+	}
+}
+
+// TestWrap pins that each mode reads wrap from its own editor section, and
+// that the vim editor reads editor.vim before editor.modal, the section's
+// name before editor.mode "modal" became "vim".
+func TestWrap(t *testing.T) {
+	on := map[string]any{"wrap": true}
+	off := map[string]any{"wrap": false}
+	tests := []struct {
+		name     string
+		mode     any
+		sections map[string]any
+		want     bool
+	}{
+		{"unset mode reads the vim section", nil, map[string]any{"vim": on}, true},
+		{"vim reads the vim section", "vim", map[string]any{"vim": on}, true},
+		{"deprecated modal mode reads the vim section", "modal", map[string]any{"vim": on}, true},
+		{"vim reads the modal section", "vim", map[string]any{"modal": on}, true},
+		{"vim section wins over modal", "vim", map[string]any{"vim": off, "modal": on}, false},
+		{"vim section without wrap defers to modal", "vim",
+			map[string]any{"vim": map[string]any{}, "modal": on}, true},
+		{"standard reads its own section", "standard", map[string]any{"standard": on, "vim": off}, true},
+		{"helix reads its own section", "helix", map[string]any{"helix": on, "modal": off}, true},
+		{"a mode without a section does not wrap", "emacs", map[string]any{"vim": on}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			editor := map[string]any{}
+			maps.Copy(editor, tc.sections)
+			if tc.mode != nil {
+				editor["mode"] = tc.mode
+			}
+			wrap, err := Wrap(config.MapConfig(map[string]any{"editor": editor}))
+			require.NoError(t, err)
+			require.Equal(t, tc.want, wrap)
 		})
 	}
 }

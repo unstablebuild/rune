@@ -40,10 +40,13 @@ different modifiers:
 
 - `<alt>` is the Emacs Meta modifier. It is Option on macOS and Alt on Linux.
 - `<meta>` is Rune's window and workspace modifier. It is Command on macOS and
-  Super on Linux.
+  Super on Linux. On Linux, first-run setup lets you move it to `<ctrl-super>`
+  or `<alt-super>` if your desktop keeps Super chords for itself. Change it
+  later with [`gui.meta_key`](./key-syntax.md#what-meta-means). `<alt>` is not
+  offered, because Alt is already Emacs Meta.
 
 For example, Emacs `forward-word` is `<alt-f>`, while Rune window focus uses
-`<meta-b>` and `<meta-f>`. An Emacs control-plus-Meta command such as
+<KeyBinding command="windowfocus left" chord="<meta-b>" /> and <KeyBinding command="windowfocus right" chord="<meta-f>" />. An Emacs control-plus-Meta command such as
 `forward-sexp` is `<ctrl-alt-f>`.
 
 ## Editing-layer conventions
@@ -136,30 +139,29 @@ The most important defaults are:
 
 | Key | Action |
 | --- | --- |
-| `<meta-p>` `<meta-b>` `<meta-n>` `<meta-f>` | focus a neighboring window up, left, down, or right |
-| `<ctrl-x>o` | focus the other window, following GNU's other-window |
-| `<shift-meta-p>` `<shift-meta-b>` `<shift-meta-n>` `<shift-meta-f>` | move the current window up, left, down, or right |
-| `<meta-up>` `<meta-left>` `<meta-down>` `<meta-right>` | make the window taller, narrower, shorter, or wider |
-| `<meta-d>` | split below |
-| `<meta-r>` | split right |
-| `<meta-k>` | close the current window |
-| `<shift-meta-k>` | keep the current window and close every other window |
-| `<meta-m>` | expand or restore the current window |
-| `<ctrl-meta-h>` | make below the default split direction |
-| `<ctrl-meta-v>` | make right the default split direction |
-| `<ctrl-tab>` `<ctrl-shift-tab>` | next or previous tab |
-| `<meta-]>` `<meta-[>` | next or previous tab |
-| `<meta-w>` | close the current tab |
-| `<shift-meta-]>` `<shift-meta-[>` | move the current tab right or left |
-| `<meta-enter>` | open a terminal, or split when the current window already contains tabs or a terminal |
+| <KeyBinding command="windowfocus up" chord="<meta-p>" /> <KeyBinding command="windowfocus left" chord="<meta-b>" /> <KeyBinding command="windowfocus down" chord="<meta-n>" /> <KeyBinding command="windowfocus right" chord="<meta-f>" /> | focus a neighboring window up, left, down, or right |
+| <KeyBinding command="windowfocus other" chord="<ctrl-x>o" /> | focus the other window, following GNU's other-window |
+| <KeyBinding command="windowmove up" chord="<shift-meta-p>" /> <KeyBinding command="windowmove left" chord="<shift-meta-b>" /> <KeyBinding command="windowmove down" chord="<shift-meta-n>" /> <KeyBinding command="windowmove right" chord="<shift-meta-f>" /> | move the current window up, left, down, or right |
+| <KeyBinding command="windowresize increase height" /> / <KeyBinding command="windowresize decrease width" /> / <KeyBinding command="windowresize decrease height" /> / <KeyBinding command="windowresize increase width" /> | make the window taller, narrower, shorter, or wider |
+| <KeyBinding command="windownew down" chord="<meta-d>" /> | split below |
+| <KeyBinding command="windownew right" chord="<meta-r>" /> | split right |
+| <KeyBinding command="windowclose" chord="<meta-k>" /> | close the current window |
+| <KeyBinding command="windowcloseall" chord="<shift-meta-k>" /> | keep the current window and close every other window |
+| <KeyBinding command="windowtogglemaximize" chord="<meta-m>" /> | expand or restore the current window |
+| <KeyBinding command="windowdefaultsplit h" /> | make below the default split direction |
+| <KeyBinding command="windowdefaultsplit v" /> | make right the default split direction |
+| <KeyBinding command="tabnext" /> / <KeyBinding command="tabprevious" /> | next or previous tab |
+| <KeyBinding command="tabclose" chord="<meta-w>" /> | close the current tab |
+| <KeyBinding command="tabmove right" chord="<shift-meta-]>" /> <KeyBinding command="tabmove left" chord="<shift-meta-[>" /> | move the current tab right or left |
+| <KeyBinding command="terminalneworsplit" chord="<meta-enter>" /> | open a terminal, or split when the current window already contains tabs or a terminal |
 | ``<meta-`>`` | search workspaces |
-| `<meta-1>` through `<meta-9>` | focus workspace 1 through 9 |
-| `<shift-meta-1>` through `<shift-meta-9>` | swap the current workspace with an existing position 1 through 9 |
+| <KeyBinding command="workspacefocus 1" chord="<meta-1>" /> through <KeyBinding command="workspacefocus 9" chord="<meta-9>" /> | focus workspace 1 through 9 |
+| <KeyBinding command="workspacemove 1" chord="<shift-meta-1>" /> through <KeyBinding command="workspacemove 9" chord="<shift-meta-9>" /> | swap the current workspace with an existing position 1 through 9 |
 
-GNU's `<ctrl-x>0`, `<ctrl-x>1`, `<ctrl-x>2`, `<ctrl-x>3`, and `<ctrl-x>o` are
+GNU's <KeyBinding command="windowclose" chord="<ctrl-x>0" />, <KeyBinding command="windowcloseall" chord="<ctrl-x>1" />, <KeyBinding command="windownew down" chord="<ctrl-x>2" />, <KeyBinding command="windownew right" chord="<ctrl-x>3" />, and <KeyBinding command="windowfocus other" chord="<ctrl-x>o" /> are
 bound to the same window commands, but a focused terminal sends `<ctrl-x>` to
 the program running inside it, so the `<meta>` layer covers all of them too:
-the PNBF directions reach the same windows `<ctrl-x>o` toggles between. The
+the PNBF directions reach the same windows <KeyBinding command="windowfocus other" chord="<ctrl-x>o" /> toggles between. The
 `<meta>` spelling is the one that works from editors, terminals, explorers,
 and every other Rune surface, and it is what the cheatsheet and the command
 prompt advertise.
@@ -272,7 +274,7 @@ Mark and region commands use the most recently set mark:
 | `<alt-w>` | copy from mark to point |
 | `<ctrl-w>` | kill from mark to point |
 | `<ctrl-u><ctrl-space>` | jump to the most recent mark and pop it |
-| `<ctrl-x><ctrl-x>` | exchange point and the most recent mark |
+| <KeyBinding command="exchangepointandmark" chord="<ctrl-x><ctrl-x>" /> | exchange point and the most recent mark |
 | `<ctrl-g>` | quit a pending prompt or argument; otherwise clear selection, search, and marks |
 
 `<alt-w>` leaves point and the buffer unchanged, and a shift-selection counts
@@ -306,7 +308,7 @@ without it. These are Rune additions.
 | `<shift-tab>` | outdent selection or line |
 | `<backspace>` `<ctrl-h>` | delete backward |
 | `<delete>` `<ctrl-d>` | delete at point |
-| `<ctrl-/>` `<ctrl-_>` `<ctrl-x>u` | undo |
+| `<ctrl-/>` `<ctrl-_>` <KeyBinding command="undo prefix" chord="<ctrl-x>u" /> | undo |
 | `<ctrl-shift-/>` `<ctrl-alt-/>` `<ctrl-alt-_>` | redo |
 | `<ctrl-q>` | quoted insert: insert the literal form of the next character-producing key |
 
@@ -320,7 +322,7 @@ Undo follows the GNU one-undo-per-command rule: a command that performs
 several internal edits, such as `<alt-shift-6>`, `<alt-t>`, or a whole
 query-replace session, reverts in a single step. Consecutive typed
 characters group into one undo of up to twenty characters, and runs of
-`<backspace>` or `<ctrl-d>` group the same way. `<ctrl-x>u` is the two-key
+`<backspace>` or `<ctrl-d>` group the same way. <KeyBinding command="undo prefix" chord="<ctrl-x>u" /> is the two-key
 undo alias.
 
 To redo the GNU way, run any non-undo command, such as the `<ctrl-f>` point
@@ -414,7 +416,7 @@ numeric argument, `<ctrl-u>N<ctrl-y>` yanks the Nth most recent entry and
 Like GNU, `<alt-w>` and `<ctrl-w>` act on the mark-to-point region, and a
 shift-selection counts as an active region. `<alt-w>` leaves point where it
 was. `<ctrl-c>` is not copy: GNU reserves it as the major-mode prefix, and
-Rune places its own clipboard commands on `<meta-c>` and `<meta-v>` instead.
+Rune places its own clipboard commands on <KeyBinding command="clipboardcopy" chord="<meta-c>" /> and <KeyBinding command="clipboardpaste" chord="<meta-v>" /> instead.
 
 ### Words, paragraphs, and comments
 
@@ -456,7 +458,7 @@ terminal's scrollback instead of the buffer-local incremental search
 described above. See [Search](./search.md#search-a-terminals-scrollback)
 for how it behaves there. The emacs preset moves it off the default
 `<meta-f>` so terminal search shares the same muscle memory, which also
-frees `<meta-f>` for `windowfocus right`.
+frees <KeyBinding command="windowfocus right" chord="<meta-f>" /> for `windowfocus right`.
 
 ### Query replace
 
@@ -491,9 +493,9 @@ search and uses familiar GUI find-result keys afterward:
 
 | Key | Action |
 | --- | --- |
-| `<alt-s>o` | search text across the workspace, following GNU `occur` |
-| `<meta-g>` | next workspace-search result |
-| `<shift-meta-g>` | previous workspace-search result |
+| <KeyBinding command="searchtext" chord="<alt-s>o" /> | search text across the workspace, following GNU `occur` |
+| <KeyBinding command="jumptolocation next search" chord="<meta-g>" /> | next workspace-search result |
+| <KeyBinding command="jumptolocation prev search" chord="<shift-meta-g>" /> | previous workspace-search result |
 
 See the [Search](./search.md) tools for everything beyond the current
 buffer.
@@ -575,7 +577,7 @@ command name to fuzzy-filter all available commands, then press `<enter>` to
 run it. This is the Rune counterpart to `execute-extended-command`, with IDE,
 workspace, language, agent, and terminal commands in the same prompt.
 
-`<alt-shift-x>` toggles between the command list and the history, mirroring
+<KeyBinding command="history" chord="<alt-shift-x>" /> toggles between the command list and the history, mirroring
 GNU's `M-X` as the sibling of `M-x`.
 
 ## IDE commands
@@ -588,13 +590,13 @@ on `<meta>`, the host layer, which is Command on macOS and Super on Linux.
 
 | Key | Action |
 | --- | --- |
-| `<ctrl-x><ctrl-s>` | save the current buffer |
-| `<ctrl-x>s` | save all modified buffers |
-| `<ctrl-x><ctrl-f>` | search for a workspace file |
-| `<ctrl-x><ctrl-c>` | quit Rune |
+| <KeyBinding command="write" chord="<ctrl-x><ctrl-s>" /> | save the current buffer |
+| <KeyBinding command="writeall" chord="<ctrl-x>s" /> | save all modified buffers |
+| <KeyBinding command="searchfile" chord="<ctrl-x><ctrl-f>" /> | search for a workspace file |
+| <KeyBinding command="quit" chord="<ctrl-x><ctrl-c>" /> | quit Rune |
 
 The `<ctrl-x>` sequences are Rune command bindings, not an open-ended Emacs
-prefix map. A focused terminal consumes them, so `<meta-q>` also quits.
+prefix map. A focused terminal consumes them, so <KeyBinding command="quit" chord="<meta-q>" /> also quits.
 Quitting does not implicitly run save-all. Save first when you want to keep
 all modified buffers.
 
@@ -602,10 +604,10 @@ all modified buffers.
 
 | Key | Action |
 | --- | --- |
-| `<meta-o>` | toggle the workspace file explorer, following GNU Dired |
-| `<meta-j>` | jump to a function or method in the current file |
-| `<meta-s>` | jump to a type in the current file |
-| `<meta-x>` | jump to a variable in the current file |
+| <KeyBinding command="fexplorer" chord="<meta-o>" /> | toggle the workspace file explorer, following GNU Dired |
+| <KeyBinding command={'echo {prompt}jumptoast<space>locals.scm<space>local.definition.method' + String.fromCharCode(124) + 'local.definition.function<space>'} chord="<meta-j>" /> | jump to a function or method in the current file |
+| <KeyBinding command="echo {prompt}jumptoast<space>locals.scm<space>local.definition.type<space>" chord="<meta-s>" /> | jump to a type in the current file |
+| <KeyBinding command="echo {prompt}jumptoast<space>locals.scm<space>local.definition.var<space>" chord="<meta-x>" /> | jump to a variable in the current file |
 
 These sit on the host `<meta>` layer rather than `<ctrl-x>` because a focused
 terminal consumes every `<ctrl-x>` chord as input for the program running
@@ -617,35 +619,35 @@ jumps: `M-g i` (imenu) would be the natural home, but the editor owns the
 
 | Key | Action |
 | --- | --- |
-| `<alt-,>` | previous cursor-history location, following GNU xref back |
-| `<ctrl-alt-,>` | next cursor-history location, following GNU xref forward |
-| `<ctrl-x><ctrl-x>` | exchange point and mark |
+| <KeyBinding command="cursorhistory prev" chord="<alt-,>" /> | previous cursor-history location, following GNU xref back |
+| <KeyBinding command="cursorhistory next" chord="<ctrl-alt-,>" /> | next cursor-history location, following GNU xref forward |
+| <KeyBinding command="exchangepointandmark" chord="<ctrl-x><ctrl-x>" /> | exchange point and mark |
 
 ### Language intelligence and changes
 
 | Key | Action |
 | --- | --- |
-| `<alt-.>` | go to definition, following GNU xref |
-| `<alt-shift-/>` | find references, following GNU xref |
-| `<meta-i>` | go to implementation |
-| `<meta-h>` | show hover and type information |
-| `<ctrl-alt-\\>` | format the current buffer, using GNU's indent-region chord |
-| `<ctrl-alt-i>` | request language completion |
-| `<ctrl-alt-.>` | find a definition by name, following GNU xref apropos |
-| `<ctrl-shift-alt-/>` | find references by name |
-| `<shift-meta-i>` | find implementations by name |
-| `<shift-meta-h>` | show hover information by name |
-| `<meta-l>` `<shift-meta-l>` | next or previous diagnostic |
-| `<meta-e>` | open the diagnostics picker |
-| `<f5>` | previous Git change |
-| `<f6>` | next Git change |
-| `<f7>` `<f8>` `<f9>` | previous diagnostic, next diagnostic, diagnostics picker |
+| <KeyBinding command="lsp definition" /> | go to definition, following GNU xref |
+| <KeyBinding command="lsp references" /> | find references, following GNU xref |
+| <KeyBinding command="lsp implementation" /> | go to implementation |
+| <KeyBinding command="lsp hover" /> | show hover and type information |
+| <KeyBinding command="lsp format" /> | format the current buffer, using GNU's indent-region chord |
+| <KeyBinding command="lsp complete" /> | request language completion |
+| <KeyBinding command="echo {prompt}lsp<space>definition<space>" /> | find a definition by name, following GNU xref apropos |
+| <KeyBinding command="echo {prompt}lsp<space>references<space>" /> | find references by name |
+| <KeyBinding command="echo {prompt}lsp<space>implementation<space>" /> | find implementations by name |
+| <KeyBinding command="echo {prompt}lsp<space>hover<space>" /> | show hover information by name |
+| <KeyBinding command="lspnextdiagnostic" /> / <KeyBinding command="lspprevdiagnostic" /> | next or previous diagnostic |
+| <KeyBinding command="lsp diagnostics" /> | open the diagnostics picker |
+| <KeyBinding command="gitprevchange" /> | previous Git change |
+| <KeyBinding command="gitnextchange" /> | next Git change |
 
 Language commands depend on the language support available in the current
-workspace. The F-keys repeat the diagnostics commands, but a focused terminal
-sends bare F-keys to the program running inside it. `<f3>` and `<f4>` stay
-unbound at the command layer because the editor owns them as GNU's
-[keyboard-macro](#keyboard-macros) keys.
+workspace.
+<Platform when="darwin">The F-keys repeat the diagnostics and Git commands, but
+a focused terminal sends bare F-keys to the program running inside it.</Platform>
+`<f3>` and `<f4>` stay unbound at the command layer because the editor owns them
+as GNU's [keyboard-macro](#keyboard-macros) keys.
 
 Rune does not assign unrelated commands to GNU's `<ctrl-x>n`, `<ctrl-x>p`,
 `<ctrl-x>r`, `<ctrl-x>t`, or `<ctrl-x>e` families. This keeps those familiar
@@ -655,11 +657,11 @@ namespaces clear as Rune's built-in Emacs support grows.
 
 | Key | Action |
 | --- | --- |
-| `<meta-f2>` | toggle a bookmark at point |
-| `<shift-meta-f2>` | delete all bookmarks |
-| `<meta-f3>` | next bookmark |
-| `<shift-meta-f3>` | previous bookmark |
-| `<meta-f4>` | highlight bookmarks |
+| <KeyBinding command="locationtoggle bookmark" /> | toggle a bookmark at point |
+| <KeyBinding command="locationdeleteall bookmark" /> | delete all bookmarks |
+| <KeyBinding command="jumptolocation next bookmark" /> | next bookmark |
+| <KeyBinding command="jumptolocation previous bookmark" /> | previous bookmark |
+| <Platform when="darwin"><KeyBinding command="locationhighlight bookmark" /></Platform><Platform when="linux">unbound; run `locationhighlight bookmark`</Platform> | highlight bookmarks |
 
 Bookmarks stay on `<meta>` plus an F-key so a focused terminal cannot eat
 them. GNU's own `C-x r m`, `C-x r b`, and `C-x r l` are three-chord sequences.
@@ -673,13 +675,16 @@ the complete GNU Emacs command system. The main differences are:
   commands use the approximations described below. Rune's own editing
   features mostly use `<ctrl-shift>` combinations and modified arrow keys.
 - `<alt>` is Emacs Meta, while `<meta>` is reserved for Rune layouts.
-- Window focus uses `<meta>` plus PNBF. Adding `<shift>` moves window content,
-  while host-Meta arrows resize.
+- Window focus uses `<meta>` plus PNBF. Adding `<shift>` moves window content.
+  <Platform when="darwin">Host-Meta arrows resize.</Platform><Platform when="linux">Adding
+  `<ctrl-alt>` resizes, echoing GNU's C-M-p/b/n/f motions, and GNU's <KeyBinding command="windowresize increase height" chord="<ctrl-x>^" />,
+  <KeyBinding command="windowresize decrease width" chord="<ctrl-x>{" />, <KeyBinding command="windowresize increase width" chord="<ctrl-x>}" /> and <KeyBinding command="windowresize reset" chord="<ctrl-x>+" /> work too. Resize stays off `<meta>`
+  arrows, which Linux desktops take for window snapping.</Platform>
 - Window creation and lifecycle are reachable through GNU's `<ctrl-x>` number
   family and through direct host-Meta chords, because a focused terminal eats
   `<ctrl-x>`.
-- Xref navigation keeps GNU's `<alt-.>`, `<alt-shift-/>`, `<alt-,>`,
-  `<ctrl-alt-,>`, and `<ctrl-alt-.>` meanings. Rune-only language actions live
+- Xref navigation keeps GNU's <KeyBinding command="lsp definition" chord="<alt-.>" />, <KeyBinding command="lsp references" chord="<alt-shift-/>" />, <KeyBinding command="cursorhistory prev" chord="<alt-,>" />,
+  <KeyBinding command="cursorhistory next" chord="<ctrl-alt-,>" />, and <KeyBinding command="echo {prompt}lsp<space>definition<space>" chord="<ctrl-alt-.>" /> meanings. Rune-only language actions live
   on the separate `<meta>` host layer.
 - `<ctrl-c>`, `<ctrl-z>`, and `<ctrl-m>` keep their GNU meanings, so they are
   not copy, undo, and goto-matching-bracket. `<ctrl-c>` is unbound because

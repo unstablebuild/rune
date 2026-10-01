@@ -391,15 +391,55 @@ func TestGet(t *testing.T) {
 			release.Latest, &bufferProgressWriter{})
 		require.ErrorContains(t, err, "config.yaml")
 	})
-	t.Run("config without extensions errors", func(t *testing.T) {
+	t.Run("theme-only package installs", func(t *testing.T) {
 		base := t.TempDir()
+		cfg := "gui:\n  themes:\n    mytheme:\n      background: '#101010'\n"
 		initFixtureRepo(t, filepath.Join(base, "github.com", "owner", "repo"),
-			map[string]fixtureFile{"config.yaml": {content: "gui:\n  env: {}\n"}})
+			map[string]fixtureFile{
+				"config.yaml": {content: cfg},
+				"README.md":   {content: "# My theme\n"},
+			})
+		m := newFixtureManager(t, base)
+		pw := &bufferProgressWriter{}
+
+		_, err := m.Get(context.Background(), "github.com/owner/repo",
+			release.Latest, pw)
+		require.NoError(t, err)
+		assert.Equal(t, cfg, entryContent(t, pw.Bytes(), "config.yaml"))
+	})
+	t.Run("alias-only package installs", func(t *testing.T) {
+		base := t.TempDir()
+		cfg := "command:\n  aliases:\n    hello: echo hello\n"
+		initFixtureRepo(t, filepath.Join(base, "github.com", "owner", "repo"),
+			map[string]fixtureFile{"config.yaml": {content: cfg}})
+		m := newFixtureManager(t, base)
+		pw := &bufferProgressWriter{}
+
+		_, err := m.Get(context.Background(), "github.com/owner/repo",
+			release.Latest, pw)
+		require.NoError(t, err)
+		assert.Equal(t, cfg, entryContent(t, pw.Bytes(), "config.yaml"))
+	})
+	t.Run("other config overlay installs", func(t *testing.T) {
+		base := t.TempDir()
+		cfg := "gui:\n  env:\n    MY_TOOL: enabled\n"
+		initFixtureRepo(t, filepath.Join(base, "github.com", "owner", "repo"),
+			map[string]fixtureFile{"config.yaml": {content: cfg}})
 		m := newFixtureManager(t, base)
 
 		_, err := m.Get(context.Background(), "github.com/owner/repo",
 			release.Latest, &bufferProgressWriter{})
-		require.ErrorContains(t, err, "extensions")
+		require.NoError(t, err)
+	})
+	t.Run("empty config errors", func(t *testing.T) {
+		base := t.TempDir()
+		initFixtureRepo(t, filepath.Join(base, "github.com", "owner", "repo"),
+			map[string]fixtureFile{"config.yaml": {content: "{}\n"}})
+		m := newFixtureManager(t, base)
+
+		_, err := m.Get(context.Background(), "github.com/owner/repo",
+			release.Latest, &bufferProgressWriter{})
+		require.ErrorContains(t, err, "non-empty")
 	})
 	t.Run("non-source extension path errors", func(t *testing.T) {
 		base := t.TempDir()

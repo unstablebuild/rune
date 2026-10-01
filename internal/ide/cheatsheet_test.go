@@ -40,7 +40,7 @@ func cheatsheetTestConfig() text.Config {
 // TestCheatsheetResolvesBoundKeys verifies the key column holds the
 // user's resolved chords for bound commands.
 func TestCheatsheetResolvesBoundKeys(t *testing.T) {
-	md, err := renderCheatsheet(cheatsheetTestConfig(), true, "modal", false)
+	md, err := renderCheatsheet(cheatsheetTestConfig(), true, "vim", false)
 	require.NoError(t, err)
 
 	assert.Contains(t, md, "| `<meta-h>` | Focus the window in a direction")
@@ -54,7 +54,7 @@ func TestCheatsheetResolvesBoundKeys(t *testing.T) {
 // TestCheatsheetUnboundCommandsFallBack verifies commands with no bound
 // key render with the command-prompt sequence and still appear.
 func TestCheatsheetUnboundCommandsFallBack(t *testing.T) {
-	md, err := renderCheatsheet(cheatsheetTestConfig(), true, "modal", false)
+	md, err := renderCheatsheet(cheatsheetTestConfig(), true, "vim", false)
 	require.NoError(t, err)
 
 	assert.Contains(t, md, "| `: docs` | Open the documentation |")
@@ -66,7 +66,7 @@ func TestCheatsheetUnboundCommandsFallBack(t *testing.T) {
 // command with arguments renders the full command line in the key column,
 // not just the bare command name.
 func TestCheatsheetUnboundCommandFallbackKeepsArgs(t *testing.T) {
-	md, err := renderCheatsheet(cheatsheetTestConfig(), true, "modal", false)
+	md, err := renderCheatsheet(cheatsheetTestConfig(), true, "vim", false)
 	require.NoError(t, err)
 
 	assert.Contains(t, md, "| `: tutorial start basics` | Start the basics tutorial |")
@@ -78,7 +78,7 @@ func TestCheatsheetUnboundCommandFallbackKeepsArgs(t *testing.T) {
 func TestCheatsheetModalTips(t *testing.T) {
 	cfg := cheatsheetTestConfig()
 
-	modal, err := renderCheatsheet(cfg, true, "modal", false)
+	modal, err := renderCheatsheet(cfg, true, "vim", false)
 	require.NoError(t, err)
 	assert.Contains(t, modal, "`<ctrl-j>` / `<ctrl-k>`")
 	assert.NotContains(t, modal, "| `<up>` / `<down>` | Move through the results |")
@@ -94,11 +94,11 @@ func TestCheatsheetModalTips(t *testing.T) {
 func TestCheatsheetAutoSaveGatesWriteRow(t *testing.T) {
 	cfg := cheatsheetTestConfig()
 
-	off, err := renderCheatsheet(cfg, true, "modal", false)
+	off, err := renderCheatsheet(cfg, true, "vim", false)
 	require.NoError(t, err)
 	assert.Contains(t, off, "Flush file changes to disk")
 
-	on, err := renderCheatsheet(cfg, true, "modal", true)
+	on, err := renderCheatsheet(cfg, true, "vim", true)
 	require.NoError(t, err)
 	assert.NotContains(t, on, "Flush file changes to disk")
 }
@@ -108,7 +108,7 @@ func TestCheatsheetAutoSaveGatesWriteRow(t *testing.T) {
 func TestCheatsheetEditorSection(t *testing.T) {
 	cfg := cheatsheetTestConfig()
 
-	modal, err := renderCheatsheet(cfg, true, "modal", false)
+	modal, err := renderCheatsheet(cfg, true, "vim", false)
 	require.NoError(t, err)
 	assert.Contains(t, modal, "**vim** editor")
 	assert.Contains(t, modal, "https://docs.rune.build/learn/vim-editor")
@@ -129,7 +129,7 @@ func TestCheatsheetEditorSection(t *testing.T) {
 // TestCheatsheetWorkspacesPrecedeWindows asserts the Workspaces section is
 // rendered before the Windows section, reflecting the layout hierarchy.
 func TestCheatsheetWorkspacesPrecedeWindows(t *testing.T) {
-	md, err := renderCheatsheet(cheatsheetTestConfig(), true, "modal", false)
+	md, err := renderCheatsheet(cheatsheetTestConfig(), true, "vim", false)
 	require.NoError(t, err)
 
 	wsIdx := strings.Index(md, "## Workspaces")
@@ -142,7 +142,7 @@ func TestCheatsheetWorkspacesPrecedeWindows(t *testing.T) {
 // TestCheatsheetSearchSection asserts the Search section lists the
 // workspace search commands sourced from the docs search guide.
 func TestCheatsheetSearchSection(t *testing.T) {
-	md, err := renderCheatsheet(cheatsheetTestConfig(), true, "modal", false)
+	md, err := renderCheatsheet(cheatsheetTestConfig(), true, "vim", false)
 	require.NoError(t, err)
 
 	assert.Contains(t, md, "## Search")
@@ -161,7 +161,7 @@ func TestCheatsheetJumpToastRows(t *testing.T) {
 		{Ch: 'v', Mod: term.ModAlt}: {{"echo", "{prompt}jumptoast<space>locals.scm<space>local.definition.var<space>"}},
 		{Ch: 's', Mod: term.ModAlt}: {{"echo", "{prompt}jumptoast<space>locals.scm<space>local.definition.type<space>"}},
 	}
-	md, err := renderCheatsheet(cfg, true, "modal", false)
+	md, err := renderCheatsheet(cfg, true, "vim", false)
 	require.NoError(t, err)
 
 	assert.Contains(t, md, "| `<alt-f>` | Jump to a function or method in the current file |")
@@ -172,7 +172,7 @@ func TestCheatsheetJumpToastRows(t *testing.T) {
 // TestCheatsheetJumpToastFallback asserts the jumptoast rows fall back to
 // the command-prompt sequence when no binding is present.
 func TestCheatsheetJumpToastFallback(t *testing.T) {
-	md, err := renderCheatsheet(text.DefaultConfig(), true, "modal", false)
+	md, err := renderCheatsheet(text.DefaultConfig(), true, "vim", false)
 	require.NoError(t, err)
 
 	assert.Contains(t, md, "| `: jumptoast` | Jump to a function or method in the current file |")
@@ -229,7 +229,7 @@ func TestCheatsheetFirstWriterWins(t *testing.T) {
 		{Ch: 'n', Mod: term.ModMeta}: {{"windownew"}},
 		{Ch: 'm', Mod: term.ModMeta}: {{"windownew"}},
 	}
-	md, err := renderCheatsheet(cfg, true, "modal", false)
+	md, err := renderCheatsheet(cfg, true, "vim", false)
 	require.NoError(t, err)
 
 	count := strings.Count(md, "| Open a new window with the default split orientation |")

@@ -81,6 +81,9 @@ const (
 	commandQuery = "?"
 	commandChat  = "agent"
 
+	// chatScheme is the scheme of the chat tab URIs, rune-agent://<model>/<id>.
+	chatScheme = "rune-agent"
+
 	commandEffort        = "chateffort"
 	commandMaxTokens     = "chatmaxtokens"
 	commandSkill         = "chatskill"
@@ -1007,7 +1010,7 @@ func (h *aiEditorHandler) HandleCommand(
 // of the form rune-agent://<model>/<id>. It returns false for any other
 // scheme or a URI without a dialogue ID path segment.
 func dialogueIDFromURI(uri workspaceapi.URI) (string, bool) {
-	if uri.Scheme() != "rune-agent" {
+	if uri.Scheme() != chatScheme {
 		return "", false
 	}
 	id := strings.TrimPrefix(uri.Path(), "/")
@@ -1015,6 +1018,32 @@ func dialogueIDFromURI(uri workspaceapi.URI) (string, bool) {
 		return "", false
 	}
 	return id, true
+}
+
+// OpenResource satisfies textapi.ResourceOpenHandler. It returns the chat
+// uri identifies, resumed with the model the dialogue was stored with when
+// that model is still available and the default model otherwise. It fails
+// when the chat is already open.
+func (h *aiEditorHandler) OpenResource(
+	ctx context.Context, uri workspaceapi.URI,
+) (browserapi.Handler, error) {
+	id, ok := dialogueIDFromURI(uri)
+	if !ok {
+		return nil, fmt.Errorf("%s is not an agent chat", uri)
+	}
+	args := []string{id}
+	// The URI host is a lossy encoding of the model (see getModelUri), so
+	// the model comes from the stored dialogue instead.
+	if d, err := h.dialogueStore.Get(ctx, id); err == nil && d.Model != "" {
+		if _, err := llmarg.Resolve(h.ctx, h.llmSvc, d.Model); err == nil {
+			args = append(args, d.Model)
+		}
+	}
+	c, err := h.newChat(textapi.Command{Name: commandChat, Args: args}, uri)
+	if err != nil {
+		return nil, err
+	}
+	return c.content, nil
 }
 
 // routeChatCommand forwards a workspace command-prompt command (the
@@ -1202,10 +1231,38 @@ func (h *aiEditorHandler) newAgentShell() textapi.REPLHandler {
 }
 
 func (h *aiEditorHandler) handleChat(cmd textapi.Command) error {
+	c, err := h.newChat(cmd, workspaceapi.URI{})
+	if err != nil {
+		return err
+	}
+	tab, err := openChatTab(h.wm, c.uri, c.id, c.content)
+	if err != nil {
+		_ = c.content.Close()
+		return err
+	}
+	if err := h.wm.SetWindowContent(cmd.Window, tab); err != nil {
+		return fmt.Errorf("window set content: %v", err)
+	}
+	return nil
+}
+
+// chat is an open agent chat: its content, which owns the chat and ends it
+// when closed, and the identity it goes by as a tab.
+type chat struct {
+	content browserapi.Handler
+	id      string
+	uri     workspaceapi.URI
+}
+
+// newChat opens the chat cmd names, or a new one. The chat is known as uri,
+// or as the URI derived from the dialogue and its model when uri is zero.
+func (h *aiEditorHandler) newChat(
+	cmd textapi.Command, uri workspaceapi.URI,
+) (*chat, error) {
 	cmd.Args = filterAllFlag(cmd.Args)
 	if len(cmd.Args) > 0 {
 		if _, err := llmarg.Resolve(h.ctx, h.llmSvc, cmd.Args[0]); err == nil {
-			return errors.New("model must be passed as a second argument to a dialogue ID, " +
+			return nil, errors.New("model must be passed as a second argument to a dialogue ID, " +
 				"check command manual for more details")
 		}
 	}
@@ -1213,13 +1270,13 @@ func (h *aiEditorHandler) handleChat(cmd textapi.Command) error {
 	if len(cmd.Args) > 1 {
 		model = cmd.Args[1]
 		if _, err := llmarg.Resolve(h.ctx, h.llmSvc, model); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
 	backendService, chatEntry, err := h.modelService(h.ctx, model)
 	if err != nil {
-		return fmt.Errorf("new backend: %v", err)
+		return nil, fmt.Errorf("new backend: %v", err)
 	}
 
 	mu := new(sync.Mutex)
@@ -1228,11 +1285,11 @@ func (h *aiEditorHandler) handleChat(cmd textapi.Command) error {
 	d, err := h.getDialogue(ctx, h.dialogueStore, cmd)
 	if err != nil {
 		cancel()
-		return err
+		return nil, err
 	}
 	if _, loaded := h.openChats.LoadOrStore(d.ID, struct{}{}); loaded {
 		cancel()
-		return fmt.Errorf("agent chat %q is already open", d.ID)
+		return nil, fmt.Errorf("agent chat %q is already open", d.ID)
 	}
 	opened := false
 	defer func() {
@@ -1256,8 +1313,13 @@ func (h *aiEditorHandler) handleChat(cmd textapi.Command) error {
 	// the base tools for display (e.g. /tools); it carries no mutable state.
 	baseTools := h.tools()
 	cmdRegistry := agent.NewRegistry(baseTools...)
+	// The chat's /compact runs through cmdShell, so its summary budget must
+	// follow the chat's /max_tokens override. chatAgent is assigned below,
+	// before the chat can run any command.
+	var chatAgent *agent.Agent
 	cmdShellOpts := []agentshell.Option{
 		agentshell.WithMCPInfo(h.mcpManager),
+		agentshell.WithMaxTokens(func() int { return chatAgent.MaxOutputTokens() }, nil),
 	}
 	if h.auditStore != nil {
 		cmdShellOpts = append(cmdShellOpts, agentshell.WithAuditStore(h.auditStore))
@@ -1299,9 +1361,11 @@ func (h *aiEditorHandler) handleChat(cmd textapi.Command) error {
 		interrupter:   h.p,
 	})
 
-	uri, err := getModelUri(d.ID, model)
-	if err != nil {
-		return err
+	if uri == (workspaceapi.URI{}) {
+		uri, err = getModelUri(d.ID, model)
+		if err != nil {
+			return nil, err
+		}
 	}
 	comp = dialoguetui.NewComponent(h.cfg)
 	syncComp := syncComponent{mu: mu, comp: comp, h: h, uri: uri}
@@ -1376,7 +1440,7 @@ func (h *aiEditorHandler) handleChat(cmd textapi.Command) error {
 
 	h.openChats.Store(d.ID, syncComp)
 
-	chatAgent := agent.NewAgent(
+	chatAgent = agent.NewAgent(
 		backendService, chatRegistry, h.skillRegistry,
 		h.dialogueStore, memRecaller, agent.Config{
 			MaxToolOutputBytes:  h.maxToolOutputBytes,
@@ -1439,16 +1503,8 @@ func (h *aiEditorHandler) handleChat(cmd textapi.Command) error {
 		})
 		return nil
 	})
-	tab, err := openChatTab(h.wm, uri, d.ID, bhandler)
-	if err != nil {
-		return err
-	}
-
-	if err := h.wm.SetWindowContent(cmd.Window, tab); err != nil {
-		return fmt.Errorf("window set content: %v", err)
-	}
 	opened = true
-	return nil
+	return &chat{content: bhandler, id: d.ID, uri: uri}, nil
 }
 
 // openChatTab creates the rune-agent chat tab. The visible tab label is the

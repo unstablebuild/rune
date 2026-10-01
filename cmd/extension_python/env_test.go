@@ -18,6 +18,9 @@ package main
 
 import (
 	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 
@@ -360,3 +363,126 @@ var assertErr = &interpreterMissingError{}
 type interpreterMissingError struct{}
 
 func (*interpreterMissingError) Error() string { return "no interpreter" }
+
+func readUVStderr(t *testing.T, name string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("testdata", "uvstderr", name))
+	require.NoError(t, err)
+	return string(b)
+}
+
+// TestEnsureEnvironmentFailureReportsUVDiagnostic pins that a failed uv
+// step surfaces uv's own diagnosis instead of a bare exit status, so the
+// failure notification tells the user what to fix.
+func TestEnsureEnvironmentFailureReportsUVDiagnostic(t *testing.T) {
+	exitErr := errors.New("exit status 1")
+	cases := []struct {
+		name     string
+		stderr   string
+		want     []string
+		dontWant []string
+	}{
+		{
+			name:   "build failure names the missing build dependency",
+			stderr: readUVStderr(t, "build-failure.txt"),
+			want: []string{
+				"`uv pip install -r requirements.txt` failed",
+				"× Failed to build `psycopg2-binary==2.9.10`",
+				"╰─▶ Call to `setuptools.build_meta:__legacy__.build_wheel` failed (exit status: 1)",
+				"Error: pg_config executable not found.",
+				"hint: Build failures usually indicate a problem with the package or the build environment",
+			},
+			dontWant: []string{"SetuptoolsDeprecationWarning", "running egg_info", "Resolved 18 packages"},
+		},
+		{
+			name:   "resolution failure explains the conflict",
+			stderr: readUVStderr(t, "no-solution.txt"),
+			want: []string{
+				"× No solution found when resolving dependencies:",
+				"╰─▶ Because nonexistentpkg-zzz was not found in the package registry and you " +
+					"require nonexistentpkg-zzz==1.0, we can conclude that your requirements are unsatisfiable.",
+			},
+		},
+		{
+			name:   "top-level uv error",
+			stderr: "error: File not found: `requirements.txt`\n",
+			want:   []string{"error: File not found: `requirements.txt`"},
+		},
+		{
+			name:     "unrecognized output falls back to its last lines",
+			stderr:   "noise 1\nnoise 2\nnoise 3\nnoise 4\nnoise 5\nnoise 6\nsomething broke\n",
+			want:     []string{"something broke"},
+			dontWant: []string{"noise 1"},
+		},
+		{
+			name:   "no output keeps the exit status",
+			stderr: "",
+			want:   []string{"`uv pip install -r requirements.txt` failed: exit status 1"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fs := newFakeFS().addFile("requirements.txt")
+			ex := newFakeExecutor()
+			ex.respond("uv python find", scriptedCmd{})
+			ex.respond("uv venv --allow-existing", scriptedCmd{})
+			ex.respond("uv pip install -r requirements.txt",
+				scriptedCmd{stderr: tc.stderr, err: exitErr})
+			notify := newFakeNotifications()
+
+			err := ensureEnvironment(context.Background(), "uv", ex, notify, kindRequirements, fs, "", "")
+			require.Error(t, err)
+			require.ErrorIs(t, err, exitErr)
+			for _, w := range tc.want {
+				assert.Contains(t, err.Error(), w)
+			}
+			for _, w := range tc.dontWant {
+				assert.NotContains(t, err.Error(), w)
+			}
+		})
+	}
+}
+
+// TestEnsureEnvironmentFailureCompletesProgress pins that a failed setup
+// does not leave the progress notification stuck mid-step next to the
+// failure report.
+func TestEnsureEnvironmentFailureCompletesProgress(t *testing.T) {
+	fs := newFakeFS().addFile("requirements.txt")
+	ex := newFakeExecutor()
+	ex.respond("uv python find", scriptedCmd{})
+	ex.respond("uv venv --allow-existing", scriptedCmd{})
+	ex.respond("uv pip install -r requirements.txt", scriptedCmd{err: errors.New("exit status 1")})
+	notify := newFakeNotifications()
+
+	err := ensureEnvironment(context.Background(), "uv", ex, notify, kindRequirements, fs, "", "")
+	require.Error(t, err)
+
+	last := notify.lastProgress()
+	assert.Equal(t, last.total, last.progress, "progress must be completed on failure")
+	assert.Equal(t, "Python environment setup failed", last.message)
+	assertMonotonicProgress(t, notify)
+}
+
+func TestHeadTail(t *testing.T) {
+	cases := []struct {
+		name   string
+		writes []string
+		want   string
+	}{
+		{"fits", []string{"ab", "cd"}, "abcd"},
+		{"exactly head and tail", []string{"abcdef"}, "abcdef"},
+		{"drops the middle", []string{"abc", "defgh", "ij"}, "abc\n\nhij"},
+		{"single large write", []string{"abcdefghij"}, "abc\n\nhij"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := &headTail{limit: 3}
+			for _, w := range tc.writes {
+				n, err := b.Write([]byte(w))
+				require.NoError(t, err)
+				assert.Equal(t, len(w), n)
+			}
+			assert.Equal(t, tc.want, b.String())
+		})
+	}
+}

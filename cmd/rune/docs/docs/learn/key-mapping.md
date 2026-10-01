@@ -90,6 +90,25 @@ Two things to keep in mind:
   rewrites the `ctrl` bit on every key, so `<ctrl-c>` would become `<meta-c>`
   and you would lose the ability to interrupt a running command.
 
+## `gui.key_mapping` versus `gui.meta_key`
+
+To use Alt instead of Super for Rune's `<meta-…>` bindings, set
+[`gui.meta_key`](./key-syntax.md#what-meta-means) to `"<alt>"`. Do not remap
+the bare modifier with `"<alt>": "<meta>"`.
+
+The two settings differ in who sees the change:
+
+- A bare-modifier `gui.key_mapping` entry rewrites every key before anything
+  sees it. The editor never receives Alt again, so `<alt-left>`, readline's
+  `<alt-f>` and every other Alt binding are lost.
+- `gui.meta_key` changes only how Rune reads its own key specs. Every window
+  still receives Alt first, so editors, terminals, and input boxes keep their
+  Alt keys, and Rune's command fires only when the focused window declines the
+  key.
+
+`gui.key_mapping` runs first and always names physical keys; `gui.meta_key`
+never rewrites it.
+
 ## Physical keys you can remap
 
 Some physical keys do not normally produce a keystroke Rune can act on. They are

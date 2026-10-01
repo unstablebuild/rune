@@ -404,9 +404,8 @@ func TestHandlerMouseSelection(t *testing.T) {
 			want:   "hello",
 		},
 		{
-			desc:   "press and drag on same cell selects that cell",
+			desc:   "press and jitter on the same cell selects nothing",
 			events: []mev{left(0, helloRow), left(0, helloRow), rel(0, helloRow)},
-			want:   "h",
 		},
 		{
 			desc:   "press right, drag one cell left",
@@ -443,6 +442,10 @@ $ ▐
 				})
 			}
 			sel, ok := handler.Selection()
+			if tc.want == "" {
+				assert.False(t, ok, "unexpected selection %q", sel)
+				return
+			}
 			require.True(t, ok)
 			assert.Equal(t, tc.want, sel)
 		})

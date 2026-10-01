@@ -363,6 +363,54 @@ func (s *sandbox) invokeREPL(
 	return ctx.Err()
 }
 
+// ExpectResourceOpener satisfies spec.Host.
+func (s *sandbox) ExpectResourceOpener(scheme string, timeout time.Duration) error {
+	if err := s.ensureLaunched(); err != nil {
+		return err
+	}
+	start := time.Now()
+	_, err := s.editor.waitOpener(scheme, timeout, s.waitCtx.Done())
+	return s.finishExpectation("expect_resource_opener "+scheme, start, err)
+}
+
+// OpenResource satisfies spec.Host.
+func (s *sandbox) OpenResource(scheme, uri string, timeout time.Duration) error {
+	if err := s.ensureLaunched(); err != nil {
+		return err
+	}
+	start := time.Now()
+	err := s.openResource(scheme, uri, timeout)
+	return s.finishExpectation("open_resource "+uri, start, err)
+}
+
+func (s *sandbox) openResource(scheme, rawURI string, timeout time.Duration) error {
+	uri, err := workspaceapi.ParseURI(rawURI)
+	if err != nil {
+		return fmt.Errorf("parse uri: %w", err)
+	}
+	if uri.Scheme() != scheme {
+		return fmt.Errorf("uri %q does not have scheme %q", rawURI, scheme)
+	}
+	h, ok := s.editor.lookupOpener(scheme)
+	if !ok {
+		return fmt.Errorf("no resource opener for %q is registered (registered: %v)",
+			scheme, s.editor.openerSchemes())
+	}
+	ctx, cancel := context.WithTimeout(s.waitCtx, timeout)
+	defer cancel()
+	// Unlike a command dispatch, this waits for the extension without
+	// s.locker held, as Rune does: the opener runs off the event loop.
+	content, err := h.OpenResource(ctx, uri)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", rawURI, err)
+	}
+	if err := s.browser.showResource(uri, content); err != nil {
+		_ = content.Close()
+		return fmt.Errorf("show %s: %w", rawURI, err)
+	}
+	return nil
+}
+
 // PublishEvent satisfies spec.Host.
 func (s *sandbox) PublishEvent(evType, uri, content string) error {
 	if err := s.ensureLaunched(); err != nil {

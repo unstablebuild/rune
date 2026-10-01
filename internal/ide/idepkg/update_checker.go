@@ -216,7 +216,7 @@ func (uc *UpdateChecker) run(ctx context.Context) {
 
 	uc.cleanupStaleRecords(ctx, currentPkgIDs)
 
-	summary := formatUpdateSummary(updates)
+	summary := formatUpdateNotification(updates)
 	uc.m.scheduleNextTick(func() {
 		_, _ = uc.m.n.NotifyOnce(browserapi.LevelInfo, summary)
 	})
@@ -353,6 +353,18 @@ func formatUpdateSummary(updates []Update) string {
 	for _, u := range updates {
 		fmt.Fprintf(&b, "\n- %s %s → %s", u.Package, u.Current, u.Latest)
 	}
+	return b.String()
+}
+
+// formatUpdateNotification is formatUpdateSummary for notifications,
+// which render plain text rather than markdown.
+func formatUpdateNotification(updates []Update) string {
+	var b strings.Builder
+	b.WriteString("Updates available:")
+	for _, u := range updates {
+		fmt.Fprintf(&b, "\n- %s %s → %s", u.Package, u.Current, u.Latest)
+	}
+	b.WriteString("\n\nRun 'pkg update-all' in the console to update.")
 	return b.String()
 }
 

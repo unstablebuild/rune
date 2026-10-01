@@ -44,6 +44,7 @@ import (
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/extension"
 	"unstable.build/rune/internal/ide/ideauthorizer"
+	"unstable.build/rune/internal/procattr"
 	"unstable.build/rune/internal/workspace"
 	"unstable.build/rune/internal/workspace/processctx"
 )
@@ -313,7 +314,7 @@ func (m *workspaceRunner) makeCommand(
 		// `cargo run`, which exec the extension as a grandchild that
 		// SIGKILL cannot be forwarded to. Heading its own process
 		// group is what lets stopping the extension reach it.
-		SysProcAttr: &syscall.SysProcAttr{Setpgid: true},
+		SysProcAttr: procattr.NewGroup(),
 	}
 
 	// if local workspace, then do set dir in a best effort for
@@ -370,7 +371,7 @@ func (m *workspaceRunner) resolveEntrypoint(path string) (string, error) {
 			return "", err
 		}
 	}
-	return workspaceapi.ExpandPath(path, user.Current, func() (string, error) {
+	return workspaceapi.ExpandPath(os.ExpandEnv(path), user.Current, func() (string, error) {
 		return cwd, nil
 	})
 }
@@ -403,7 +404,7 @@ func (m *workspaceRunner) sourceEntrypointArgv(
 		// package dir so go run picks up all its files). Otherwise it
 		// is a plain command and passes through unchanged.
 		dir, err := workspaceapi.ExpandPath(
-			argv[0], user.Current,
+			os.ExpandEnv(argv[0]), user.Current,
 			func() (string, error) { return "", nil },
 		)
 		if err != nil {
@@ -421,7 +422,7 @@ func (m *workspaceRunner) sourceEntrypointArgv(
 	}
 
 	script, err := workspaceapi.ExpandPath(
-		argv[0], user.Current,
+		os.ExpandEnv(argv[0]), user.Current,
 		func() (string, error) { return "", nil },
 	)
 	if err != nil {
