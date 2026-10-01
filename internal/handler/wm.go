@@ -338,6 +338,19 @@ func (wm *WindowManager) Handle(ev term.Event) (exit bool, handled bool) {
 		
 		ebiten.SetCursorShape(wm.resizeCursorAt(mousePos))
 	}
+	
+	// Reset cursor when it goes outside of the focused window and no longer
+	// emits a `term.EventMouse`. This snippet will no longer be needed when
+	// mouse events are emitted for non-focused windows too.
+	mousePos := term.Coordinates{X: ev.MouseX, Y: ev.MouseY}
+	childAtMouse, ok := wm.comp.WindowAt(mousePos)
+	if !ok || childAtMouse.Closed() {
+		ebiten.SetCursorShape(ebiten.CursorShapeDefault)
+	}
+	maxX, maxY := contentBounds(childAtMouse, wm.config.Frame)
+	if mousePos.X > maxX+1 || mousePos.Y > maxY+1 {
+		//ebiten.SetCursorShape(ebiten.CursorShapeDefault)
+	}
 
 	var hexit bool
 	focused := target == wm.focus
@@ -855,7 +868,7 @@ func (wm *WindowManager) applyWindowDrag(mouse term.Coordinates) {
 // Return the ebiten CursorShape when the cursor is at the positions mentioned
 // in handleWindowFramePress. Currently handleWindowFramePress only handles
 // presses at positions 0, w-1, and h-1 -- a single cell. So this function
-// resets the cursor when it moves beyond that cell.
+// resets the cursor to CursorShapeDefault when it moves beyond that cell.
 func (wm *WindowManager) resizeCursorAt(mousePos term.Coordinates) ebiten.CursorShapeType {
 	childAtMouse, ok := wm.comp.WindowAt(mousePos)
 	if !ok || childAtMouse.Closed() {
@@ -866,13 +879,10 @@ func (wm *WindowManager) resizeCursorAt(mousePos term.Coordinates) ebiten.Cursor
 	maxX, maxY := contentBounds(childAtMouse, wm.config.Frame)
 	
 	if !childAtMouse.IsFloating() {
-		// Tiled windows currently resize from their right and bottom edges
-		// TODO handle left and top edges when implemented, and maybe support the
-		// 4-way moving arrow cursor `ebiten.CursorShapeMove`.
-		
-		// Note: We +2 and +3 instead of +0 and +1 as contentBounds returns w-2,h-2 for tiled windows.
-		right := mousePos.X == maxX+2 && mousePos.X < maxX+3
-		bottom := mousePos.Y == maxY+2 && mousePos.Y < maxY+3
+		// Tiled windows resize from their right and bottom edges.
+		// Note: We +2 instead of +0 as contentBounds returns w-3,h-3 for tiled windows.
+		right := mousePos.X >= maxX+2 && mousePos.X < maxX+3
+		bottom := mousePos.Y >= maxY+2 && mousePos.Y < maxY+3
 		switch {
 		case right && bottom:
 			return ebiten.CursorShapeNWSEResize
@@ -885,12 +895,19 @@ func (wm *WindowManager) resizeCursorAt(mousePos term.Coordinates) ebiten.Cursor
 		}
 	}
 	
-
-	// // Note: We +2 and +3 instead of +0 and +1 as above.
-	left := mousePos.X == 0 && mousePos.X < 1
-	right := mousePos.X == maxX+2 && mousePos.X < maxX+3
-	top := mousePos.Y == 0 && mousePos.Y < 1
-	bottom := mousePos.Y == maxY+2 && mousePos.Y < maxY+3
+	// Cursor for floating windows.
+	// handleWindowFramePress implements drag to resize for windows with bars like this:
+	// - dragging on the top side just move-drags the window,
+	// - dragging on top left corner resizes both ways,
+	// - dragging on top right corner resizes both ways,
+	// - dragging on the other sides happen the conventional way.
+	// This impacts the implementation here in that the cursor never changes to
+	// CursorShapeNSResize when hovering over the top bar.
+	// Note: We +2 instead of +0 as contentBounds returns w-3,h-3 for floatingwindows.
+	left := mousePos.X >= 0 && mousePos.X < 1
+	right := mousePos.X >= maxX+2 && mousePos.X < maxX+3
+	top := mousePos.Y >= 0 && mousePos.Y < 1
+	bottom := mousePos.Y >= maxY+2 && mousePos.Y < maxY+3
 	switch {
 	case (left && top) || (right && bottom):
 		return ebiten.CursorShapeNWSEResize
@@ -898,7 +915,7 @@ func (wm *WindowManager) resizeCursorAt(mousePos term.Coordinates) ebiten.Cursor
 		return ebiten.CursorShapeNESWResize
 	case left || right:
 		return ebiten.CursorShapeEWResize
-	case top || bottom:
+	case bottom:
 		return ebiten.CursorShapeNSResize
 	default:
 		return ebiten.CursorShapeDefault
