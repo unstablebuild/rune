@@ -347,10 +347,6 @@ func (wm *WindowManager) Handle(ev term.Event) (exit bool, handled bool) {
 	if !ok || childAtMouse.Closed() {
 		ebiten.SetCursorShape(ebiten.CursorShapeDefault)
 	}
-	maxX, maxY := contentBounds(childAtMouse, wm.config.Frame)
-	if mousePos.X > maxX+1 || mousePos.Y > maxY+1 {
-		//ebiten.SetCursorShape(ebiten.CursorShapeDefault)
-	}
 
 	var hexit bool
 	focused := target == wm.focus
