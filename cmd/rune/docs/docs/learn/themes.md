@@ -35,7 +35,7 @@ Themes live under the `gui` section of your config:
 - `gui.themes` is a catalog of named themes.
 - `gui.default_theme` picks which one is active at startup.
 
-The default configuration ships sixteen themes and starts on `romero`.
+# The default configuration ships seventeen themes and starts on `romero`.
 
 A theme decides what each color name looks like; it does not decide which
 parts of your code use which name. For per-capture control over code

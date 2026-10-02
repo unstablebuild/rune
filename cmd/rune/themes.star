@@ -149,4 +149,13 @@ GUI_THEMES = {
         "magenta": "#9c61ab", "cyan": "#f4436f", "white": "#ebdbb2",
         "cursor": "#5a87b1",
     },
+    "dracula": {
+        "foreground": "#f8f8f2", "background": "#282a36", "black": "#191a21",
+        "maroon": "#ff5555", "green": "#50fa7b", "olive": "#f1fa8c",
+        "navy": "#bd93f9", "purple": "#ff79c6", "teal": "#8be9fd",
+        "silver": "#f8f8f2", "gray": "#6272a4", "red": "#ff6e6e",
+        "lime": "#69ff94", "yellow": "#ffffa5", "blue": "#d6acff",
+        "magenta": "#ff92df", "cyan": "#a4ffff", "white": "#ffffff",
+        "cursor": "#f8f8f2",
+    },
 }
