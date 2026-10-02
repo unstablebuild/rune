@@ -156,8 +156,11 @@ type ex struct {
 	cancelPartialReissue     func()
 	ctxPartialReissue        context.Context
 	reissueEvent             term.Event
-	cmd                      *command.Prompt
-	syncCommandPrompt        bool
+	// reissueIntercepted marks a pending prefix that never reached the
+	// focused handler and so must be re-dispatched on a sequence miss.
+	reissueIntercepted bool
+	cmd                *command.Prompt
+	syncCommandPrompt  bool
 	// editorPrefix is the previous key if the editor consumed it even
 	// though it starts a sequence binding. A modal editor can open a
 	// pending command of its own with such a key, as Helix's g menu
@@ -2654,6 +2657,21 @@ func (e *ex) onFocusChange(inFocus bool) {
 	onFocusChangeHandler(handler, inFocus)
 }
 
+// focusedVTE reports whether the focused window hosts a terminal
+// emulator, which claims every modifier chord as pty input and so
+// must yield to command bindings.
+func (e *ex) focusedVTE() bool {
+	handler, _ := e.comp.Browser().Focus().Content()
+	if t, ok := handler.(*browser.Tab); ok {
+		handler = t.Handler()
+	}
+	switch handler.(type) {
+	case vtereservoir.VTE, companionTerminalHandler:
+		return true
+	}
+	return false
+}
+
 func (e *ex) handleEvent(ev term.Event) (
 	exit, handled bool,
 ) {
@@ -2692,7 +2710,13 @@ func (e *ex) handleEvent(ev term.Event) (
 
 	keyComb := ev.KeyComb()
 
-	if e.cancelPartialReissue == nil {
+	// The terminal would turn a bound chord like <c-s-v> into ^V, so
+	// modifier chords resolve bindings before it. Other handlers keep
+	// precedence: editors need them as real input (<m-left>, vi insert).
+	skipHandler := e.cancelPartialReissue == nil &&
+		keyComb.Mod&^term.ModShift != 0 &&
+		e.focusedVTE()
+	if e.cancelPartialReissue == nil && !skipHandler {
 		// allow handler to take precedence over key bindings (i.e. vi is in
 		// insert mode and some key bindings shouldn't apply)
 		// but only do it when the previous event didn't match (i.e. vi `ma`
@@ -2748,6 +2772,7 @@ func (e *ex) handleEvent(ev term.Event) (
 			// editor-first Handle above (see the cancelPartialReissue guard)
 			// and reaches the sequencer to complete the sequence.
 			e.reissueEvent = ev
+			e.reissueIntercepted = skipHandler
 			if keyComb.Mod != 0 {
 				// A modifier-bearing prefix (e.g. <ctrl-x>) is not ambiguous
 				// with plain typed input, so there is nothing to re-issue on
@@ -2783,14 +2808,14 @@ func (e *ex) handleEvent(ev term.Event) (
 	default:
 		if e.cancelPartialReissue != nil {
 			err := e.ctxPartialReissue.Err()
+			intercepted := e.reissueIntercepted
 			e.cancelPartialReissue()
 			e.cleanPartialReissueState()
-			// A bare-character prefix (e.g. vi's `d`) also has a standalone
-			// meaning, so when the second key does not complete a sequence
-			// re-dispatch the prefix right before this event. A
-			// modifier-bearing prefix (e.g. <ctrl-x>) has no standalone
-			// meaning and is simply dropped.
-			if err == nil && e.reissueEvent.KeyComb().Mod == 0 {
+			// On a miss the prefix re-dispatches only if it still owes the
+			// handler a standalone meaning: bare chars (vi `d`), or a chord
+			// that bypassed it (terminal <ctrl-x>) and would be lost. A
+			// modifier prefix the handler already declined is dropped.
+			if err == nil && (intercepted || e.reissueEvent.KeyComb().Mod == 0) {
 				e.log(log.TraceLevel, "no sequence match: re-dispatching previous event %q",
 					e.reissueEvent.KeyComb())
 				_, _ = e.comp.Browser().Handle(e.reissueEvent)
@@ -2801,6 +2826,11 @@ func (e *ex) handleEvent(ev term.Event) (
 			}
 		}
 		cmdsAndArgs, _ = e.comp.CommandKeyBinding(keyComb)
+		if len(cmdsAndArgs) == 0 && skipHandler {
+			// unbound: the chord still belongs to the terminal
+			_, handled = e.comp.Browser().Handle(ev)
+			return
+		}
 	}
 
 	// if match is a single "" command, then this is effectively unsetting
@@ -3206,6 +3236,7 @@ func (e *ex) Close() (ret error) {
 func (e *ex) cleanPartialReissueState() {
 	e.cancelPartialReissue = nil
 	e.ctxPartialReissue = context.Background()
+	e.reissueIntercepted = false
 }
 
 // stopTerminal releases the pty-resize worker. It is safe to call on a

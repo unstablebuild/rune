@@ -1931,6 +1931,299 @@ command:
 		"terminal did not receive pasted secret; screen was:\n%s", resultText)
 }
 
+// TestE2EClipboardPasteIntoTerminalCtrlShiftV is the same clipboard
+// paste scenario as TestE2EClipboardPasteIntoNoEchoTerminalRead but
+// through a <ctrl-shift-v> binding: the chord is inside the
+// ctrl/shift modifier range the terminal claims as input, so the
+// binding only fires if the emulator declines to consume it as pty
+// input. The key event carries the GUI's Raw payload (^V) — without
+// it the unhandled path returns early and the test would pass even
+// while swallowing the chord.
+func TestE2EClipboardPasteIntoTerminalCtrlShiftV(t *testing.T) {
+	dir := t.TempDir()
+	dataDir := t.TempDir()
+
+	script := filepath.Join(dir, "read-secret.sh")
+	require.NoError(t, os.WriteFile(script, []byte(`#!/bin/sh
+printf 'password: '
+stty -echo
+IFS= read -r secret
+stty echo
+printf '\nRESULT:%s\n' "$secret"
+# stay alive so the drop does not remove the terminal mid-assertion
+sleep 30
+`), 0o755))
+
+	configPath := filepath.Join(dataDir, "rune.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte(`
+clipboard: memory
+editor:
+  mode: modal
+command:
+  key: "<c-\\\\>"
+  key_bindings:
+    <c-s-v>: clipboardpaste
+`), 0o666))
+
+	mu := new(sync.Mutex)
+	scheduleNextTick, drainSchedule := newTestScheduler(t, mu)
+	i, err := New(dir, configPath, dataDir, pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir),
+		WithLocker(mu),
+		WithScheduleNextTick(scheduleNextTick),
+		WithPublishEvent(func(term.Event) bool { return true }),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = i.Close() })
+
+	root := i.Ready()
+	mu.Lock()
+	root.Resize(80, 24)
+	mu.Unlock()
+	drainSchedule()
+	i.WaitWorkspaces()
+
+	sendKeys := func(t *testing.T, seq string) {
+		t.Helper()
+		keys, err := term.ParseKeys(seq)
+		require.NoError(t, err)
+		for _, k := range keys {
+			mu.Lock()
+			root.Handle(term.Event{
+				Type: term.EventKey, Ch: k.Ch, Mod: k.Mod, Key: k.Key,
+			})
+			mu.Unlock()
+			i.WaitInflight()
+		}
+	}
+
+	snapshotTerminalText := func() (string, bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		ex := i.workspaceHandler.focusEx()
+		var text string
+		var ok bool
+		ex.comp.Browser().IterateWindows(func(win browser.Window) {
+			if ok {
+				return
+			}
+			content, err := win.Content()
+			if err != nil {
+				return
+			}
+			vte, isVTE := content.(vtereservoir.VTE)
+			if !isVTE {
+				return
+			}
+			snap, err := vte.Snapshot()
+			if err != nil {
+				return
+			}
+			text = term.CellsToString(snap.ActiveCells())
+			ok = true
+		})
+		return text, ok
+	}
+
+	sendKeys(t, "<c-\\\\>terminalnew<space>"+script+"<enter>")
+	var promptText string
+	require.Eventually(t, func() bool {
+		text, ok := snapshotTerminalText()
+		promptText = text
+		return ok && strings.Contains(text, "password:")
+	}, 10*time.Second, 50*time.Millisecond,
+		"terminal did not reach password prompt; screen was:\n%s", promptText)
+
+	require.NoError(t, i.workspaceHandler.clip.Copy(
+		clipboard.DefaultRegisterID,
+		clipboard.Data{Text: "s3cr3t"},
+	))
+
+	// what the GUI emits for ctrl+shift+v: shift folded into the
+	// glyph, Mod Ctrl, and ^V as the raw payload
+	mu.Lock()
+	root.Handle(term.Event{
+		Type: term.EventKey, Ch: 'V', Mod: term.ModCtrl, Raw: []byte{0x16},
+	})
+	mu.Unlock()
+	i.WaitInflight()
+	drainSchedule()
+	sendKeys(t, "<enter>")
+
+	var resultText string
+	require.Eventually(t, func() bool {
+		text, ok := snapshotTerminalText()
+		resultText = text
+		return ok && strings.Contains(text, "RESULT:s3cr3t")
+	}, 10*time.Second, 50*time.Millisecond,
+		"terminal did not receive pasted secret; screen was:\n%s", resultText)
+}
+
+// TestE2ETerminalBoundChordsDispatch pins bound-chord dispatch against
+// a focused terminal over a real pty running cat (which echoes control
+// bytes in caret notation).
+func TestE2ETerminalBoundChordsDispatch(t *testing.T) {
+	dir := t.TempDir()
+	dataDir := t.TempDir()
+
+	script := filepath.Join(dir, "ready-cat.sh")
+	require.NoError(t, os.WriteFile(script, []byte(`#!/bin/sh
+printf 'ready\n'
+cat
+`), 0o755))
+
+	configPath := filepath.Join(dataDir, "rune.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte(`
+editor:
+  mode: modal
+command:
+  key: "<c-\\\\>"
+  key_bindings:
+    "<c-x>h": terminalnew
+    "gf": terminalnew
+`), 0o666))
+
+	mu := new(sync.Mutex)
+	scheduleNextTick, drainSchedule := newTestScheduler(t, mu)
+	i, err := New(dir, configPath, dataDir, pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir),
+		WithLocker(mu),
+		WithScheduleNextTick(scheduleNextTick),
+		WithPublishEvent(func(term.Event) bool { return true }),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = i.Close() })
+
+	root := i.Ready()
+	mu.Lock()
+	root.Resize(80, 24)
+	mu.Unlock()
+	drainSchedule()
+	i.WaitWorkspaces()
+
+	sendKeys := func(seq string) {
+		t.Helper()
+		keys, err := term.ParseKeys(seq)
+		require.NoError(t, err)
+		for _, k := range keys {
+			ev := term.Event{Type: term.EventKey, Ch: k.Ch, Mod: k.Mod, Key: k.Key}
+			if ev.Key == term.KeySpace {
+				ev.Key, ev.Ch = 0, ' '
+			}
+			if ev.Ch != 0 && ev.Mod == 0 {
+				ev.Raw = []byte(string(ev.Ch))
+			}
+			mu.Lock()
+			root.Handle(ev)
+			mu.Unlock()
+			i.WaitInflight()
+		}
+	}
+
+	sendChord := func(ch rune, raw byte) {
+		t.Helper()
+		mu.Lock()
+		root.Handle(term.Event{
+			Type: term.EventKey, Ch: ch, Mod: term.ModCtrl, Raw: []byte{raw},
+		})
+		mu.Unlock()
+		i.WaitInflight()
+		drainSchedule()
+	}
+
+	snapshotTerminalText := func() (string, bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		ex := i.workspaceHandler.focusEx()
+		var text string
+		var ok bool
+		ex.comp.Browser().IterateWindows(func(win browser.Window) {
+			if ok {
+				return
+			}
+			content, err := win.Content()
+			if err != nil {
+				return
+			}
+			emulator, isVTE := content.(vtereservoir.VTE)
+			if !isVTE {
+				return
+			}
+			snap, err := emulator.Snapshot()
+			if err != nil {
+				return
+			}
+			text = term.CellsToString(snap.ActiveCells())
+			ok = true
+		})
+		return text, ok
+	}
+
+	focusedVTE := func() vtereservoir.VTE {
+		mu.Lock()
+		defer mu.Unlock()
+		content, err := i.workspaceHandler.focusEx().invokeWindow().Content()
+		if err != nil {
+			return nil
+		}
+		emulator, _ := content.(vtereservoir.VTE)
+		return emulator
+	}
+
+	sendKeys("<c-\\\\>terminalnew<space>" + script + "<enter>")
+	var first vtereservoir.VTE
+	require.Eventually(t, func() bool {
+		first = focusedVTE()
+		return first != nil
+	}, 10*time.Second, 50*time.Millisecond, "first terminal never opened")
+
+	var screen string
+	require.Eventually(t, func() bool {
+		text, ok := snapshotTerminalText()
+		screen = text
+		return ok && strings.Contains(text, "ready")
+	}, 10*time.Second, 50*time.Millisecond,
+		"cat never came up; screen was:\n%s", screen)
+
+	// typing gf must reach cat even though gf is a bound sequence
+	sendKeys("gf")
+	require.Eventually(t, func() bool {
+		text, ok := snapshotTerminalText()
+		screen = text
+		return ok && strings.Contains(text, "gf")
+	}, 10*time.Second, 50*time.Millisecond,
+		"typed text did not reach the shell; screen was:\n%s", screen)
+	require.Equal(t, first, focusedVTE(), "gf must not fire its binding while typing")
+
+	// an unbound modifier chord still reaches the shell
+	sendChord('a', 0x01)
+	require.Eventually(t, func() bool {
+		text, ok := snapshotTerminalText()
+		screen = text
+		return ok && strings.Contains(text, "^A")
+	}, 10*time.Second, 50*time.Millisecond,
+		"unbound ctrl chord did not reach the shell; screen was:\n%s", screen)
+	require.Equal(t, first, focusedVTE())
+
+	// a bound <c-x> prefix that misses re-issues both keys to the shell
+	sendChord('x', 0x18)
+	sendChord('e', 0x05)
+	require.Eventually(t, func() bool {
+		text, ok := snapshotTerminalText()
+		screen = text
+		return ok && strings.Contains(text, "^X") && strings.Contains(text, "^E")
+	}, 10*time.Second, 50*time.Millisecond,
+		"missed sequence prefix was not re-issued to the shell; screen was:\n%s", screen)
+	require.Equal(t, first, focusedVTE())
+
+	// completing <c-x>h dispatches terminalnew instead of reaching cat
+	sendChord('x', 0x18)
+	sendKeys("h")
+	require.Eventually(t, func() bool {
+		cur := focusedVTE()
+		return cur != nil && cur != first
+	}, 10*time.Second, 50*time.Millisecond,
+		"bound <c-x>h sequence did not dispatch")
+}
+
 // TestE2ETerminalSearchCopiesHighlightedMatch drives the terminal
 // scrollback search the way a reader does: <meta-f> over a live shell,
 // a query that lands on a match, <esc> to put the box away, and then

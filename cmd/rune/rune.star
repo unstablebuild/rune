@@ -936,10 +936,9 @@ config = {
 
 
 if tui:
+    # keep bare ctrl keys unbound: a focused terminal resolves them as
+    # commands before the pty sees them (^W, ^L, ^H, ^J, ^K are shell input)
     tui_cmd_bindings = {
-        "<c-w>":          "tabclose",
-        "<c-l>":          "tabnext",
-        "<c-h>":          "tabprevious",
         "<c-x><c-v>":     "clipboardpaste",
         "<c-x><c-c>":     "clipboardcopy",
         "<c-x><c-h>":     "windowfocus left",
@@ -949,8 +948,6 @@ if tui:
         "<c-x><c-w>":     "windowclose",
         "<c-x>h":         "windowdefaultsplit h",
         "<c-x>v":         "windowdefaultsplit v",
-        "<c-j>":          "lspnextdiagnostic",
-        "<c-k>":          "lspprevdiagnostic",
         "<c-x><c-f>":     "windowtogglemaximize",
         "<c-x><c-t>":     "lsp hover",
         "<c-x><c-e>":     "lsp references",
