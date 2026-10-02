@@ -1311,6 +1311,9 @@ func (m *mockWindowManager) SetWindowContent(_ browserapi.Window, _ browserapi.H
 	return nil
 }
 func (m *mockWindowManager) CloseWindow(_ browserapi.Window) error { return nil }
+func (m *mockWindowManager) SetTabName(_ workspaceapi.URI, _ string) error {
+	return nil
+}
 
 func (m *mockWindowManager) SetTabActivity(workspaceapi.URI, bool) error { return nil }
 

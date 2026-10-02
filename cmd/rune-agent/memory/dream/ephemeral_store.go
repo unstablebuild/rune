@@ -97,6 +97,18 @@ func (s *ephemeralStore) AppendMessages(
 	return nil
 }
 
+func (s *ephemeralStore) SetTitle(_ context.Context, id, title string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d, ok := s.data[id]
+	if !ok {
+		return storageapi.ErrNotFound
+	}
+	d.Title = title
+	s.data[id] = d
+	return nil
+}
+
 func (s *ephemeralStore) List(_ context.Context) (iterator.Iterator[dialoguemanager.DialogueHeader], error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

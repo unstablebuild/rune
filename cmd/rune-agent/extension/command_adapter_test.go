@@ -181,6 +181,8 @@ func TestCommandAdapterScopesToOpenChat(t *testing.T) {
 		{"fork", nil, "chats", []string{"fork", "rolling-fox"}},
 		{"export", nil, "chats", []string{"export", "rolling-fox"}},
 		{"export", []string{"--audit"}, "chats", []string{"export", "--audit", "rolling-fox"}},
+		{"rename", nil, "chats", []string{"rename", "rolling-fox"}},
+		{"rename", []string{"my", "title"}, "chats", []string{"rename", "rolling-fox", "my", "title"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name+strings.Join(tc.args, ""), func(t *testing.T) {

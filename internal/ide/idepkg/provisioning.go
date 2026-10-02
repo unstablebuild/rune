@@ -129,3 +129,4 @@ func (nopWindowManager) Tab(workspaceapi.URI, rune, string, browserapi.Handler) 
 func (nopWindowManager) SetWindowContent(browserapi.Window, browserapi.Handler) error { return nil }
 func (nopWindowManager) CloseWindow(browserapi.Window) error                          { return nil }
 func (nopWindowManager) SetTabActivity(workspaceapi.URI, bool) error                  { return nil }
+func (nopWindowManager) SetTabName(workspaceapi.URI, string) error                    { return nil }

@@ -1796,7 +1796,8 @@ func (m *fakeWM) Bar(browserapi.BarConfig, tui.Handler) error {
 	return errors.New("not implemented")
 }
 
-func (m *fakeWM) CloseWindow(browserapi.Window) error { return nil }
+func (m *fakeWM) CloseWindow(browserapi.Window) error       { return nil }
+func (m *fakeWM) SetTabName(workspaceapi.URI, string) error { return nil }
 
 func (m *fakeWM) SetTabActivity(workspaceapi.URI, bool) error { return nil }
 

@@ -139,3 +139,12 @@ func (s *interruptBrowser) SetTabActivity(
 	s.interruptDraw()
 	return res, err
 }
+
+// SetTabName satisfies browserrpc.BrowserServer
+func (s *interruptBrowser) SetTabName(
+	ctx context.Context, req *browserrpc.SetTabNameRequest,
+) (*browserrpc.SetTabNameResponse, error) {
+	res, err := s.browserServer.SetTabName(ctx, req)
+	s.interruptDraw()
+	return res, err
+}

@@ -120,6 +120,9 @@ func (m *fixtureWindowManager) SetWindowContent(_ browserapi.Window, _ browserap
 	return nil
 }
 func (m *fixtureWindowManager) CloseWindow(_ browserapi.Window) error { return nil }
+func (m *fixtureWindowManager) SetTabName(_ workspaceapi.URI, _ string) error {
+	return nil
+}
 
 func (m *fixtureWindowManager) SetTabActivity(workspaceapi.URI, bool) error { return nil }
 
