@@ -73,7 +73,7 @@ func (workspaceExtension) ExtendWorkspace(
 	registrations := []struct {
 		cmd textapi.CommandManual
 		key string
-		new func(context.Context, textapi.Command, finder.Clients, browserapi.Window, config.Config) (finder.RedispatchHandler, error)
+		new finder.NewFunc
 	}{
 		{cmd: cmdSearchFile, key: "file", new: newFileHandler},
 		{cmd: cmdSearchText, key: "line", new: newLineHandler},
@@ -90,11 +90,9 @@ func (workspaceExtension) ExtendWorkspace(
 	}
 
 	for _, reg := range registrations {
-		if err := w.RegisterCommand(reg.cmd, &splitCommandHandler{
-			clients: clients,
-			cfg:     commandConfig(c, reg.key),
-			new:     reg.new,
-		}); err != nil {
+		if err := w.RegisterCommand(reg.cmd, finder.NewSplitCommandHandler(
+			clients, commandConfig(c, reg.key), reg.new,
+		)); err != nil {
 			return fmt.Errorf("register command %q: %w", reg.cmd.Name, err)
 		}
 	}

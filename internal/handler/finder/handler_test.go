@@ -328,6 +328,91 @@ func TestScanDoneWaitsForCommandOutputDrain(t *testing.T) {
 		"every line written before the process exited must be in the list")
 }
 
+// TestOnSelectReplacesResourceOpen verifies that OnSelect bypasses the
+// getResource + resource opener path entirely.
+func TestOnSelectReplacesResourceOpen(t *testing.T) {
+	var got []string
+	clients := Clients{
+		WindowManager: stubWindowManager{},
+		Interrupter:   term.NopInterrupter(),
+		Notifications: stubNotifications{},
+	}
+	listCfg := search.ListConfig{
+		Algo:        search.FuzzyMatch,
+		Interrupter: term.NopInterrupter(),
+		SyncSearch:  true,
+	}
+	fallback := func(_ workspaceapi.FileSystem, _ context.Context) (
+		iterator.Iterator[string], error,
+	) {
+		return iterator.FromSlice([]string{
+			"chat-a:0:user: where is the bug",
+			"chat-b:3:assistant: fixed it",
+		}), nil
+	}
+	rh, err := NewWithListConfig(
+		context.Background(), clients, stubWindow(0),
+		term.KeyComb{}, "", "", 0, listCfg,
+		fallback, nil,
+		Options{OnSelect: func(item string) { got = append(got, item) }},
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = rh.Close() })
+	h := rh.(*fuzzyFinderHandler)
+
+	waitForScanWithTimeout(t, h, 5*time.Second)
+
+	_, handled := h.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
+	require.True(t, handled)
+	assert.Equal(t, []string{"chat-a:0:user: where is the bug"}, got)
+}
+
+// TestInitialQuerySeedsSearch verifies that Options.InitialQuery filters
+// the scan output from the start.
+func TestInitialQuerySeedsSearch(t *testing.T) {
+	var got []string
+	clients := Clients{
+		WindowManager: stubWindowManager{},
+		Interrupter:   term.NopInterrupter(),
+		Notifications: stubNotifications{},
+	}
+	listCfg := search.ListConfig{
+		Algo:        search.FuzzyMatch,
+		Interrupter: term.NopInterrupter(),
+		SyncSearch:  true,
+	}
+	fallback := func(_ workspaceapi.FileSystem, _ context.Context) (
+		iterator.Iterator[string], error,
+	) {
+		return iterator.FromSlice([]string{
+			"chat-a:0:user: where is the bug",
+			"chat-b:3:assistant: fixed it",
+		}), nil
+	}
+	rh, err := NewWithListConfig(
+		context.Background(), clients, stubWindow(0),
+		term.KeyComb{}, "", "", 0, listCfg,
+		fallback, nil,
+		Options{
+			InitialQuery: "fixed",
+			OnSelect:     func(item string) { got = append(got, item) },
+		},
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = rh.Close() })
+	h := rh.(*fuzzyFinderHandler)
+
+	waitForScanWithTimeout(t, h, 5*time.Second)
+
+	assert.Equal(t, "fixed", h.list.Buffer().String())
+	assert.Equal(t, 1, h.list.MatchCount(),
+		"seeded query must filter scanned lines")
+
+	_, handled := h.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
+	require.True(t, handled)
+	assert.Equal(t, []string{"chat-b:3:assistant: fixed it"}, got)
+}
+
 // TestOpenerChordRecallsHistory pins why a picker's history_key needs no
 // help from gui.meta_key: presets set it to the chord that opens the
 // picker, and that chord recalls the last query either way. When the

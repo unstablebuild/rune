@@ -112,6 +112,15 @@ everything it offers. The most useful subcommands:
 | `agent mcp` | Show MCP server status and tool stats. |
 | `agent config` | Show the current configuration. |
 
+## Finding past conversations
+
+`searchchats [<pattern>]` opens a finder that searches the contents of every
+saved conversation, not just its ID. Type to filter, pick a result line like
+`rolling-fox:12:user: why does the scan loop`, and press `<enter>` to open
+that chat. Results list the current workspace first, then sibling worktrees
+and unassociated conversations; pass `--all` to also search conversations
+from unrelated workspaces.
+
 ## Focused chat commands
 
 When you are focused on an open chat tab, use the Rune

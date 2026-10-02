@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-package extension
+package finder
 
 import (
 	"context"
@@ -24,19 +24,37 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
-	"unstable.build/rune/internal/handler/finder"
 )
 
-type splitCommandHandler struct {
+// NewFunc builds the RedispatchHandler hosted in a split window.
+type NewFunc func(
+	ctx context.Context, cmd textapi.Command, clients Clients,
+	invokeWindow browserapi.Window, cfg config.Config,
+) (RedispatchHandler, error)
+
+// SplitCommandHandler is a textapi.CommandHandler that hosts a
+// RedispatchHandler in a bottom split window. Repeated invocations while
+// the split is open are routed to the live handler's Redispatch.
+type SplitCommandHandler struct {
 	mu      sync.Mutex
-	clients finder.Clients
+	clients Clients
 	cfg     config.Config
-	new     func(context.Context, textapi.Command, finder.Clients, browserapi.Window, config.Config) (finder.RedispatchHandler, error)
-	handler finder.RedispatchHandler
+	new     NewFunc
+	handler RedispatchHandler
 	window  browserapi.Window
 }
 
-func (h *splitCommandHandler) HandleCommand(ctx context.Context, cmd textapi.Command) error {
+// NewSplitCommandHandler returns a SplitCommandHandler that builds finder
+// handlers with newFn.
+func NewSplitCommandHandler(
+	clients Clients, cfg config.Config, newFn NewFunc,
+) *SplitCommandHandler {
+	return &SplitCommandHandler{clients: clients, cfg: cfg, new: newFn}
+}
+
+// HandleCommand opens the finder split or redispatches to the one
+// already open.
+func (h *SplitCommandHandler) HandleCommand(ctx context.Context, cmd textapi.Command) error {
 	h.mu.Lock()
 	if h.window != nil {
 		handler := h.handler
@@ -68,7 +86,8 @@ func (h *splitCommandHandler) HandleCommand(ctx context.Context, cmd textapi.Com
 	return nil
 }
 
-func (h *splitCommandHandler) Complete(
+// Complete returns no completions: finder commands take free-form text.
+func (h *SplitCommandHandler) Complete(
 	ctx context.Context, cmd string, args []string,
 ) (iterator.Iterator[string], error) {
 	return iterator.FromSlice[string](nil), nil

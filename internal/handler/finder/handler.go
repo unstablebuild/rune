@@ -86,12 +86,34 @@ type RedispatchHandler interface {
 	Redispatch(context.Context, textapi.Command) error
 }
 
+// Options are optional behaviors for NewWithOptions; the zero value
+// preserves the default file-finder behavior.
+type Options struct {
+	// OnSelect replaces getResource + the resource opener for results that
+	// do not identify files, e.g. agent conversations.
+	OnSelect func(item string)
+	// InitialQuery seeds the search input before the data scan starts.
+	InitialQuery string
+}
+
 // New returns a tui handler that uses native extensionv2 workspace clients.
 func New(
 	ctx context.Context, clients Clients, invokeWindow browserapi.Window, cfg config.Config,
 	historyKey term.KeyComb, historyDocumentID string, command string,
 	fallback func(workspaceapi.FileSystem, context.Context) (iterator.Iterator[string], error),
 	getResource func(exec workspaceapi.FileSystem, line string) (workspaceapi.URI, term.Coordinates, bool),
+) (RedispatchHandler, error) {
+	return NewWithOptions(ctx, clients, invokeWindow, cfg, historyKey,
+		historyDocumentID, command, fallback, getResource, Options{})
+}
+
+// NewWithOptions is like New but accepts additional behavior overrides.
+func NewWithOptions(
+	ctx context.Context, clients Clients, invokeWindow browserapi.Window, cfg config.Config,
+	historyKey term.KeyComb, historyDocumentID string, command string,
+	fallback func(workspaceapi.FileSystem, context.Context) (iterator.Iterator[string], error),
+	getResource func(exec workspaceapi.FileSystem, line string) (workspaceapi.URI, term.Coordinates, bool),
+	opts Options,
 ) (RedispatchHandler, error) {
 	maxHistory, err := cfg.GetInt("history")
 	if err != nil {
@@ -104,9 +126,9 @@ func New(
 	}
 
 	listCfg := buildListConfig(cfg, clients.Interrupter)
-	return NewWithListConfig(ctx, clients, invokeWindow,
+	return newWithListConfig(ctx, clients, invokeWindow,
 		historyKey, historyDocumentID, command, maxHistory, listCfg,
-		fallback, getResource)
+		fallback, getResource, opts)
 }
 
 // NewWithListConfig is like New but accepts a pre-built
@@ -118,6 +140,24 @@ func NewWithListConfig(
 	maxHistory int, listCfg search.ListConfig,
 	fallback func(workspaceapi.FileSystem, context.Context) (iterator.Iterator[string], error),
 	getResource func(exec workspaceapi.FileSystem, line string) (workspaceapi.URI, term.Coordinates, bool),
+	opts ...Options,
+) (RedispatchHandler, error) {
+	var opt Options
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+	return newWithListConfig(ctx, clients, invokeWindow,
+		historyKey, historyDocumentID, command, maxHistory, listCfg,
+		fallback, getResource, opt)
+}
+
+func newWithListConfig(
+	ctx context.Context, clients Clients, invokeWindow browserapi.Window,
+	historyKey term.KeyComb, historyDocumentID string, command string,
+	maxHistory int, listCfg search.ListConfig,
+	fallback func(workspaceapi.FileSystem, context.Context) (iterator.Iterator[string], error),
+	getResource func(exec workspaceapi.FileSystem, line string) (workspaceapi.URI, term.Coordinates, bool),
+	opts Options,
 ) (RedispatchHandler, error) {
 	h := &fuzzyFinderHandler{
 		s:                    clients.Storage,
@@ -132,13 +172,14 @@ func NewWithListConfig(
 		invokeWindow:         invokeWindow,
 		historyKey:           historyKey,
 		getResource:          getResource,
+		onSelect:             opts.OnSelect,
 		cmdStr:               command,
 		useWorkspaceFallback: command == "",
 		workspaceFallback:    fallback,
 		waitChan:             make(chan error),
 		scanDone:             make(chan struct{}),
 	}
-	if h.f == nil || h.p == nil {
+	if (h.f == nil && h.onSelect == nil) || h.p == nil {
 		return nil, errors.New("extension is missing critical permissions")
 	}
 	if h.s != nil {
@@ -151,11 +192,18 @@ func NewWithListConfig(
 	h.ctx, h.cancelCtx = context.WithCancel(context.Background())
 
 	h.list.Init(listCfg)
+	if opts.InitialQuery != "" {
+		h.list.Buffer().WriteString(opts.InitialQuery)
+	}
 	ed, _ := standard.Editor(standard.WithWrap(true)).
 		Edit(h.ctx, workspaceapi.RandomURI("memory"), h.list.Buffer(), false, false)
 	h.listHandler = search.Handler(&h.list, ed, func(item string) {
 		searchQuery := h.list.Buffer().String()
-		h.openResource(searchQuery, item)
+		if h.onSelect != nil {
+			h.onSelect(item)
+		} else {
+			h.openResource(searchQuery, item)
+		}
 		h.addSearchHistory(searchQuery)
 	})
 
@@ -190,6 +238,7 @@ type fuzzyFinderHandler struct {
 	mu                   sync.Mutex
 	cmdStr               string
 	getResource          func(workspaceapi.FileSystem, string) (workspaceapi.URI, term.Coordinates, bool)
+	onSelect             func(item string)
 	workspaceFallback    func(workspaceapi.FileSystem, context.Context) (iterator.Iterator[string], error)
 	pid                  workspaceapi.Pid
 	ctx                  context.Context

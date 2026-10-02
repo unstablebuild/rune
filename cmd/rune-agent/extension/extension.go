@@ -133,6 +133,13 @@ var (
 				"focused agent chat.",
 			Synopsis: "[symbol]",
 		},
+		{
+			Name: commandSearchChats,
+			Summary: "Search the contents of past agent conversations and " +
+				"open the selected chat. Foreign workspaces are excluded " +
+				"unless --all is passed.",
+			Synopsis: "[<pattern>] [--all]",
+		},
 	}
 	events = []textapi.EventType{
 		textapi.EventTypeOpen, textapi.EventTypeFocus,

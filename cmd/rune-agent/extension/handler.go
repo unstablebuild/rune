@@ -30,7 +30,6 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -72,6 +71,7 @@ import (
 	"unstable.build/rune/internal/component/markdown"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/extension/extutil"
+	"unstable.build/rune/internal/handler/finder"
 	"unstable.build/rune/internal/ide/vctrl"
 	"unstable.build/rune/internal/text"
 
@@ -97,6 +97,7 @@ const (
 	commandExport        = "chatexport"
 	commandLog           = "chatlog"
 	commandAddSymbol     = "chataddsymbol"
+	commandSearchChats   = "searchchats"
 )
 
 // Floating windows opened by the agent are capped rather than sized to
@@ -353,6 +354,7 @@ func newCommandEventHandler(
 	ret = new(aiEditorHandler)
 	ret.ctx, ret.cancelCtx = context.WithCancel(context.Background())
 	ret.ed = ed
+	ret.textEd = ed
 	ret.config = cfg
 	ret.mcpManager = mcpManager
 	ret.baseTools = tools
@@ -748,6 +750,7 @@ type aiEditorHandler struct {
 	resources      map[string]string
 	clip           clipboard.Register
 	ed             cursorEditor
+	textEd         textapi.Editor
 	wm             browserapi.WindowManager
 	n              browserapi.Notifications
 	o              browserapi.ResourceOpener
@@ -779,8 +782,10 @@ type aiEditorHandler struct {
 	defaultEffort    llmapi.ReasoningEffort // global default applied to new chats/queries
 	defaultMaxTokens int                    // global default applied to new chats/queries
 
-	openChats      sync.Map
-	openChatAgents sync.Map
+	openChats       sync.Map
+	openChatAgents  sync.Map
+	searchChatsOnce sync.Once
+	searchChats     *finder.SplitCommandHandler
 	// lastCursor and lastChatID mirror the caret position and the chat
 	// that last had focus. Workspace commands run once the prompt owns
 	// the caret and from outside any chat tab, so both have to be read
@@ -1008,6 +1013,8 @@ func (h *aiEditorHandler) HandleCommand(
 		return h.routeChatCommand(cmd)
 	case commandAddSymbol:
 		return h.handleChatAddSymbol(cmd)
+	case commandSearchChats:
+		return h.handleSearchChats(ctx, cmd)
 	}
 
 	return nil
@@ -1694,75 +1701,13 @@ func (h *aiEditorHandler) getDialogue(
 func (h *aiEditorHandler) completeWithDialoguesIterator(ctx context.Context, showAll bool) (
 	iterator.Iterator[string], error,
 ) {
-	listIt, err := h.dialogueStore.List(ctx)
+	filtered, err := h.sortedDialogueHeaders(ctx, showAll)
 	if err != nil {
-		return nil, fmt.Errorf("dialogue store list: %w", err)
+		return nil, err
 	}
-
-	all, err := iterator.ToSlice(ctx, listIt)
-	if err != nil {
-		return nil, fmt.Errorf("dialogue store list collect: %w", err)
-	}
-
-	dialogueTier := func(d dialoguemanager.DialogueHeader) int {
-		ws, hasWS := d.Workspace()
-		if hasWS && ws.Equal(h.cwd) {
-			return 0
-		}
-		if hasWS && h.gitID.worktrees[ws.String()] != "" {
-			return 1
-		}
-		if !hasWS {
-			return 2
-		}
-		return 3
-	}
-	isForeign := func(d dialoguemanager.DialogueHeader) bool {
-		ws, hasWS := d.Workspace()
-		return hasWS && !ws.Equal(h.cwd) && h.gitID.worktrees[ws.String()] == ""
-	}
-
-	// Filter: drop empty IDs, sub-agents, and (unless showAll)
-	// foreign-workspace dialogues.
-	filtered := all[:0]
-	for _, d := range all {
-		if d.ID == "" || d.SubAgent {
-			continue
-		}
-		if !showAll && isForeign(d) {
-			continue
-		}
-		filtered = append(filtered, d)
-	}
-
-	// Current-workspace dialogues stay pinned above newer sibling worktree
-	// dialogues so completions prefer the user's active context.
-	sort.SliceStable(filtered, func(i, j int) bool {
-		ti, tj := dialogueTier(filtered[i]), dialogueTier(filtered[j])
-		if ti != tj {
-			return ti < tj
-		}
-		return filtered[i].UpdatedAt.After(filtered[j].UpdatedAt)
-	})
-
-	// Map to display strings.
 	out := make([]string, len(filtered))
 	for i, d := range filtered {
-		ws, hasWS := d.Workspace()
-		switch {
-		case !hasWS || ws.Equal(h.cwd):
-			// Legacy dialogues are tagged so the user can tell they
-			// have no workspace association.
-			if !hasWS {
-				out[i] = "<legacy>:" + d.ID
-			} else {
-				out[i] = d.ID
-			}
-		case h.gitID.worktrees[ws.String()] != "":
-			out[i] = h.gitID.worktrees[ws.String()] + ":" + d.ID
-		default:
-			out[i] = ws.String() + ":" + d.ID
-		}
+		out[i] = h.dialogueDisplayID(d)
 	}
 	return iterator.FromSlice(out), nil
 }
