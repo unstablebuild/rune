@@ -622,7 +622,7 @@ func newCommandEventHandler(
 
 	ret.compactModel = compactModelAlias
 
-	ret.clip = text.NewSystemClipboard()
+	ret.clip = text.NewAsyncSystemClipboard()
 
 	// Resolve the configured editor for composing messages. On error the
 	// compose editor stays nil and dialoguetui falls back to its inputbox.
