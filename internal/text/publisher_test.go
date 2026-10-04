@@ -64,12 +64,6 @@ func (nopPubHandler) Dimensions() (int, int)               { return 0, 0 }
 func (nopPubHandler) IsSearchMode() bool                   { return false }
 func (nopPubHandler) IsNormalMode() bool                   { return false }
 
-// TestPublishEditPanicsOnNilCursor enforces the new contract that
-// PublishEdit requires a non-nil cursor. Cursor-less editors must use
-// PublishExternalEdit instead. A previous version silently skipped
-// the scroll subscription on nil cursor, which only deferred the
-// nil-pointer dereference to the next user event via
-// cursorPublisher.Handle → RecordCursorChange.
 func TestPublishEditPanicsOnNilCursor(t *testing.T) {
 	var pub Publisher
 	pub.Init()
@@ -92,11 +86,6 @@ func (c *captureSub) Handle(ctx context.Context, ev textapi.Event) bool {
 	return false
 }
 
-// TestPublishExternalEditDispatchesOpenFocusAndEdit asserts that the
-// cursor-less publishing path still fires the Open/Focus events
-// downstream subscribers (LSP, indexers, tab manager) depend on, and
-// that buffer edits surface as EventTypeEdit. It does NOT subscribe
-// to scroll or cursor events because the external editor owns those.
 func TestPublishExternalEditDispatchesOpenFocusAndEdit(t *testing.T) {
 	var pub Publisher
 	pub.Init()
@@ -129,12 +118,6 @@ func TestPublishExternalEditDispatchesOpenFocusAndEdit(t *testing.T) {
 		"external publish must not subscribe to cursor")
 }
 
-// TestPublishExternalEditHandlerHandlesEventsWithoutPanic verifies the
-// returned handler is the raw root (no cursor wrapper) so events
-// dispatched to it do not crash on a missing *Cursor. This is the
-// invariant that was actually broken when exo used PublishEdit with
-// a nil cursor: even after Open/Focus dispatch, the very first user
-// keypress would hit cursorPublisher.Handle → RecordCursorChange.
 func TestPublishExternalEditHandlerHandlesEventsWithoutPanic(t *testing.T) {
 	var pub Publisher
 	pub.Init()

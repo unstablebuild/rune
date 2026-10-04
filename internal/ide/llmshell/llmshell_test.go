@@ -205,9 +205,6 @@ func (s *stubPromptOpener) Prompt(
 	return nil
 }
 
-// TestManualHasRequiredSubcommands verifies the public command tree
-// matches what the plan promised: `models providers <codex> <login|status>`
-// and `models local <list|download|delete>`.
 func TestManualHasRequiredSubcommands(t *testing.T) {
 	m := Manual()
 	assert.Equal(t, "models", m.Name)
@@ -240,9 +237,6 @@ func TestManualHasRequiredSubcommands(t *testing.T) {
 	assert.ElementsMatch(t, []string{"list", "download", "delete"}, local)
 }
 
-// TestHandleCommandUnknownSubcommandErrors verifies that the parent
-// dispatcher returns an error for unknown subcommands rather than
-// silently delegating.
 func TestHandleCommandUnknownSubcommandErrors(t *testing.T) {
 	h := newHandlerForTest(t)
 	_, err := h.HandleCommand(context.Background(),
@@ -252,8 +246,6 @@ func TestHandleCommandUnknownSubcommandErrors(t *testing.T) {
 	assert.Contains(t, err.Error(), "unknown command")
 }
 
-// TestHandleCommandNoArgsShowsUsage returns a help block instead of
-// an error when called with no arguments.
 func TestHandleCommandNoArgsShowsUsage(t *testing.T) {
 	h := newHandlerForTest(t)
 	it, err := h.HandleCommand(context.Background(),
@@ -266,7 +258,6 @@ func TestHandleCommandNoArgsShowsUsage(t *testing.T) {
 	require.NotNil(t, v)
 }
 
-// TestCompleteTopLevel returns the top-level subcommands.
 func TestCompleteTopLevel(t *testing.T) {
 	h := newHandlerForTest(t)
 	it, err := h.Complete(context.Background(), "models", nil)
@@ -276,8 +267,6 @@ func TestCompleteTopLevel(t *testing.T) {
 	assert.ElementsMatch(t, []string{"providers", "local", "alias", "help"}, names)
 }
 
-// TestCompleteFiltersByPrefix filters when a partial first arg is
-// supplied.
 func TestCompleteFiltersByPrefix(t *testing.T) {
 	h := newHandlerForTest(t)
 	it, err := h.Complete(context.Background(), "models", []string{"pr"})
@@ -287,8 +276,6 @@ func TestCompleteFiltersByPrefix(t *testing.T) {
 	assert.Equal(t, []string{"providers"}, names)
 }
 
-// TestNewPanicsOnNilRouter verifies New refuses to build with a nil
-// router.
 func TestNewPanicsOnNilRouter(t *testing.T) {
 	defer func() {
 		assert.NotNil(t, recover(), "expected panic for nil router")

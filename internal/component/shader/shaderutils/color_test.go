@@ -90,11 +90,6 @@ func TestInterpolateColor(t *testing.T) {
 	}
 }
 
-// TestInterpolateColorPreservesIdentityWhenColorAndTargetMatch ensures that
-// blending a color with itself returns the exact same Color value (e.g. a
-// named/palette index), not its RGB-converted equivalent. This matters for
-// terminals that render named/palette colors via their themed palette but
-// render literal RGB as TrueColor — converting would visibly shift the hue.
 func TestInterpolateColorPreservesIdentityWhenColorAndTargetMatch(t *testing.T) {
 	tsuite := []struct {
 		name   string
@@ -118,15 +113,6 @@ func TestInterpolateColorPreservesIdentityWhenColorAndTargetMatch(t *testing.T) 
 	}
 }
 
-// TestInterpolateColorWithUnresolvableDefault guards against a class of bugs
-// where blending a ColorDefault input with a target while passing
-// ColorDefault as resolveColorDefault would compute lerps over (-1,-1,-1)
-// (Color.RGB returns -1 for unresolved colors). The masking inside
-// NewRGBColor turns those into garbage pseudo-colors (e.g. 24 for low
-// factors, 255 for factor=0) producing visible "black cliffs" or flashes
-// at band edges. Instead, when the color cannot be resolved, blending
-// should be a no-op and the original ColorDefault must be preserved so the
-// terminal keeps rendering it as the user's default text color.
 func TestInterpolateColorWithUnresolvableDefault(t *testing.T) {
 	tsuite := []struct {
 		name   string

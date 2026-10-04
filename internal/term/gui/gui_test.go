@@ -571,12 +571,6 @@ func TestLayout(t *testing.T) {
 	})
 }
 
-// TestSetFontUnknownFamilyDoesNotPanic is a regression test for
-// RUNE-51. Attempting to switch to a font family that either does not
-// exist on the system or produces degenerate metrics must surface an
-// error through SetFont instead of crashing the process in
-// cell.NewBufferWriter, and must leave the GUI in a usable state so
-// subsequent draws still work.
 func TestSetFontUnknownFamilyDoesNotPanic(t *testing.T) {
 	mock := mockHandler{}
 	gui, _ := newTestGUI(t, &mock)
@@ -621,10 +615,6 @@ func TestCloseRestoresColorValues(t *testing.T) {
 	require.NoError(t, g.Close(), "Close must be idempotent")
 }
 
-// TestCellPixelSizeMatchesImagePlacement pins that the cell size the
-// kitty graphics protocol advertises is the pitch image placements are
-// scaled by, so a client sizing an image to N cells gets exactly N
-// cells, and that it follows font changes.
 func TestCellPixelSizeMatchesImagePlacement(t *testing.T) {
 	gui, _ := newTestGUI(t, &mockHandler{})
 
@@ -640,9 +630,6 @@ func TestCellPixelSizeMatchesImagePlacement(t *testing.T) {
 	assert.Greater(t, w2*h2, w*h, "a larger font means larger cells")
 }
 
-// TestDrawPaintsPicturesOnTheirCells asserts a picture lands on the
-// pixels the renderer paints its cells on, so the cells a floating
-// window writes over it hide all of it.
 func TestDrawPaintsPicturesOnTheirCells(t *testing.T) {
 	pic := term.Image{
 		Src: solidRGBA(4, 4, color.RGBA{G: 255, A: 255}), ID: term.NewImageID(),
@@ -790,9 +777,6 @@ func updateWhileHeld(t *testing.T, gui *GUI) bool {
 	}
 }
 
-// The render loop wakes on every vsync regardless of whether anything
-// happened. Taking the UI lock on a frame with nothing to do contends
-// with the extension RPC goroutines that need it, for no benefit.
 func TestUpdateSkipsUILockOnIdleFrame(t *testing.T) {
 	var mu sync.Mutex
 	gui := newLockedTestGUI(t, &mu)
@@ -803,8 +787,6 @@ func TestUpdateSkipsUILockOnIdleFrame(t *testing.T) {
 		"an idle tick must not wait on the UI lock")
 }
 
-// The skip must be an optimization, not a hole in the locking: a tick
-// with an event to route still mutates UI state and must serialize.
 func TestUpdateTakesUILockWhenEventPending(t *testing.T) {
 	var mu sync.Mutex
 	gui := newLockedTestGUI(t, &mu)
@@ -816,9 +798,6 @@ func TestUpdateTakesUILockWhenEventPending(t *testing.T) {
 	mu.Unlock()
 }
 
-// A drag in flight produces no pending events and owes no redraw, so the
-// drag probe is the only thing keeping its observer callbacks — which
-// reach into browser window state — under the UI lock.
 func TestUpdateTakesUILockWhileDragging(t *testing.T) {
 	t.Run("drag in progress", func(t *testing.T) {
 		var mu sync.Mutex

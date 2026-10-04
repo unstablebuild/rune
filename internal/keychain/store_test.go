@@ -93,8 +93,6 @@ func TestStoreFallsBackWhenKeyringFails(t *testing.T) {
 	}
 }
 
-// A keyring that failed once is not trusted with later writes, so a
-// token refreshed into the fallback is never split from the keyring's.
 func TestStoreStopsWritingKeyringAfterFailure(t *testing.T) {
 	kr := newFakeKeyring()
 	kr.setErr = errors.New("locked")
@@ -108,8 +106,6 @@ func TestStoreStopsWritingKeyringAfterFailure(t *testing.T) {
 	assert.Equal(t, "second", get(t, s, "tok"))
 }
 
-// The keyring copy can be stale when a later write went to the
-// fallback; the fallback copy must win.
 func TestStoreFallbackCopyShadowsKeyring(t *testing.T) {
 	kr := newFakeKeyring()
 	kr.items[Service+"|"+testScope+"/tok"] = `{"value":"stale"}`
@@ -142,8 +138,6 @@ func TestStoreGetMissing(t *testing.T) {
 	assert.ErrorIs(t, err, storageapi.ErrNotFound)
 }
 
-// When the fallback cannot say whether it holds a copy, the keyring's
-// may be stale, so it is not consulted.
 func TestStoreGetDoesNotReadKeyringWhenFallbackErrs(t *testing.T) {
 	kr := newFakeKeyring()
 	kr.items[Service+"|"+testScope+"/tok"] = `{"value":"maybe stale"}`
@@ -205,8 +199,6 @@ func TestStoreDelete(t *testing.T) {
 	}
 }
 
-// A keyring copy that survived a sign-out must not sign the user back
-// in.
 func TestStoreDeleteKeyringFailureIsNotReadBack(t *testing.T) {
 	kr := newFakeKeyring()
 	fallback := newFakeStorage()
@@ -221,7 +213,6 @@ func TestStoreDeleteKeyringFailureIsNotReadBack(t *testing.T) {
 	assert.ErrorIs(t, s.Get(t.Context(), "tok", &doc{}), storageapi.ErrNotFound)
 }
 
-// A caller that gives up has not shown the keyring to be broken.
 func TestStoreCancelledCallerDoesNotDisableKeyring(t *testing.T) {
 	kr := newFakeKeyring()
 	kr.setErr = context.Canceled

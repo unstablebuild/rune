@@ -213,8 +213,6 @@ func TestBuildSpecNestedSubmenu(t *testing.T) {
 	}
 }
 
-// TestActivateNestedTag asserts a command inside a submenu routes to
-// the activation callback by its tag, like any top-level command.
 func TestActivateNestedTag(t *testing.T) {
 	recent := Command{Title: "proj", Command: "workspaceopen", Args: []string{"/p"}}
 

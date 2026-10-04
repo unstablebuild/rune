@@ -60,9 +60,6 @@ func TestRouter_RemoveAlias(t *testing.T) {
 	require.ErrorIs(t, r.RemoveAlias(ctx, "default"), ErrAliasNotFound)
 }
 
-// TestRouter_Alias_UnsetReservedFallsBackToFlagship verifies that an
-// unset reserved alias resolves, via `default`, to the flagship of the
-// most-recently authenticated hosted provider.
 func TestRouter_Alias_UnsetReservedFallsBackToFlagship(t *testing.T) {
 	ctx := context.Background()
 	r := newTestRouter(t)
@@ -90,9 +87,6 @@ func TestRouter_Alias_UnsetReservedFallsBackToFlagship(t *testing.T) {
 	assert.Equal(t, anthropic.FlagshipModel(), got.Name)
 }
 
-// TestRouter_Alias_NoAuthFallsBackToFirstModel verifies that with no
-// authenticated provider, an unset reserved alias resolves to the first
-// catalog entry rather than failing.
 func TestRouter_Alias_NoAuthFallsBackToFirstModel(t *testing.T) {
 	ctx := context.Background()
 	r := newTestRouter(t)
@@ -107,9 +101,6 @@ func TestRouter_Alias_NoAuthFallsBackToFirstModel(t *testing.T) {
 	assert.NotEmpty(t, got.Name)
 }
 
-// TestRouter_Alias_UnknownBareNameStillUnresolved verifies that a bare
-// name that is neither a stored alias nor a reserved name is not treated
-// as an alias.
 func TestRouter_Alias_UnknownBareNameStillUnresolved(t *testing.T) {
 	ctx := context.Background()
 	r := newTestRouter(t)
@@ -117,9 +108,6 @@ func TestRouter_Alias_UnknownBareNameStillUnresolved(t *testing.T) {
 	assert.ErrorIs(t, err, llmapi.ErrModelNotFound)
 }
 
-// TestRouter_Alias_UnsetReservedDefersToDefault verifies that an unset
-// reserved alias resolves to whatever `default` resolves to, including a
-// `default` set to an explicit model.
 func TestRouter_Alias_UnsetReservedDefersToDefault(t *testing.T) {
 	ctx := context.Background()
 	r := newTestRouter(t)
@@ -133,8 +121,6 @@ func TestRouter_Alias_UnsetReservedDefersToDefault(t *testing.T) {
 	}
 }
 
-// TestRouter_Alias_SetReservedOverridesDefault verifies that a reserved
-// alias set to its own target does not defer to `default`.
 func TestRouter_Alias_SetReservedOverridesDefault(t *testing.T) {
 	ctx := context.Background()
 	r := newTestRouter(t)
@@ -147,9 +133,6 @@ func TestRouter_Alias_SetReservedOverridesDefault(t *testing.T) {
 	assert.Equal(t, anthropic.ClaudeOpus4Dot8, got.Name)
 }
 
-// TestRouter_Alias_ExplicitProviderBypassesAlias verifies a qualified
-// model entry never engages alias resolution even when its name matches
-// an alias.
 func TestRouter_Alias_ExplicitProviderBypassesAlias(t *testing.T) {
 	ctx := context.Background()
 	r := newTestRouter(t)

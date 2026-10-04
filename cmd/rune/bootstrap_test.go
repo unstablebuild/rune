@@ -78,11 +78,6 @@ func TestOptionToChoiceMapping(t *testing.T) {
 	}
 }
 
-// TestRenderPreset pins that the vim choice maps to the vim
-// preset, the standard-editor choice maps to the standard preset
-// (which switches editor.mode to standard), the emacs choice maps to
-// the emacs preset, the deprecated modeless alias resolves to the
-// standard preset, and that an unknown choice is an error.
 func TestRenderPreset(t *testing.T) {
 	vim, err := renderPreset(editorVim, keymeta.Super, false, gui.AltModifierNone)
 	require.NoError(t, err)
@@ -171,8 +166,6 @@ func TestRenderPreset(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestRenderPresetMetaKey renders every editor with every <meta> meaning
-// the host offers it, and rejects the ones it does not.
 func TestRenderPresetMetaKey(t *testing.T) {
 	all := []keymeta.Meta{keymeta.Super, keymeta.Alt, keymeta.CtrlSuper, keymeta.AltSuper}
 	for _, editor := range []string{editorVim, editorHelix, editorStandard, editorEmacs} {
@@ -210,8 +203,6 @@ func TestRenderPresetMetaKey(t *testing.T) {
 	}
 }
 
-// TestBootstrapAltModifierRoundTrip writes the preset for each Option key
-// choice and reads it back through the GUI config, which only macOS offers.
 func TestBootstrapAltModifierRoundTrip(t *testing.T) {
 	all := []gui.AltModifier{gui.AltModifierNone, gui.AltModifierLeft, gui.AltModifierRight}
 	for _, editor := range []string{editorVim, editorHelix, editorStandard, editorEmacs} {
@@ -247,10 +238,6 @@ func TestBootstrapAltModifierRoundTrip(t *testing.T) {
 	}
 }
 
-// TestGuardedPromptChainReopensOnUnadvancedClose proves that an Esc
-// (or any dismissal that does not call OnSelect) re-opens the same
-// prompt, while a normal OnSelect-then-Close sequence does not, and
-// neither does a close fired by the pre-config IDE's own teardown.
 func TestGuardedPromptChainReopensOnUnadvancedClose(t *testing.T) {
 	t.Run("esc reopens", func(t *testing.T) {
 		var reopened int
@@ -281,9 +268,6 @@ func TestGuardedPromptChainReopensOnUnadvancedClose(t *testing.T) {
 	})
 }
 
-// TestShouldSwallowBootstrapEvent enumerates the dangerous keys that
-// must not reach the pre-config IDE while the bootstrap flow is in
-// progress, plus a handful of events that must pass through untouched.
 func TestShouldSwallowBootstrapEvent(t *testing.T) {
 	cases := []struct {
 		name string
@@ -321,9 +305,6 @@ func TestShouldSwallowBootstrapEvent(t *testing.T) {
 	}
 }
 
-// TestBootstrapHandleQuit asserts Cmd+Q exits the app while the
-// bootstrap wizard is still up, and stops being special once the real
-// IDE has been swapped in.
 func TestBootstrapHandleQuit(t *testing.T) {
 	t.Run("quits while pre-config IDE is up", func(t *testing.T) {
 		inner := &recordingHandler{}
@@ -359,9 +340,6 @@ func keyEv(ch rune, mod term.Modifier) term.Event {
 	return term.Event{Type: term.EventKey, Ch: ch, Mod: mod}
 }
 
-// TestBootstrapFontSizeDelta covers the chords the welcome prompt tells
-// the user to press before any editor preset (and its <m-=> / <m-->
-// bindings) has been written to the user config.
 func TestBootstrapFontSizeDelta(t *testing.T) {
 	cases := []struct {
 		name string
@@ -468,8 +446,6 @@ func TestBootstrapPromptProgression(t *testing.T) {
 	}
 }
 
-// TestBootstrapMetaPrompt pins that Linux asks what <meta> means between
-// the editor and telemetry prompts, offering exactly keymeta.Options.
 func TestBootstrapMetaPrompt(t *testing.T) {
 	superAlt := []string{" super ", " alt "}
 	superAltKeys := []term.KeyComb{{Ch: 's'}, {Ch: 'a'}}
@@ -520,7 +496,6 @@ func TestBootstrapMetaPrompt(t *testing.T) {
 	}
 }
 
-// The GUI predates the config, so the choice must apply to the running input.
 func TestBootstrapAltModifierAppliesToRunningGUI(t *testing.T) {
 	var applied []gui.AltModifier
 	prompter := &fakeBootstrapPrompter{}
@@ -557,9 +532,6 @@ func TestBootstrapAltModifierPrompt(t *testing.T) {
 	}
 }
 
-// TestBootstrapMetaPromptOptionsFollowTheTable couples the prompt to the
-// option table on every OS, so an option added there is offered here
-// with a key of its own.
 func TestBootstrapMetaPromptOptionsFollowTheTable(t *testing.T) {
 	for _, goos := range []string{"linux", "darwin"} {
 		for _, editor := range []string{editorVim, editorHelix, editorStandard, editorEmacs} {
@@ -576,8 +548,6 @@ func TestBootstrapMetaPromptOptionsFollowTheTable(t *testing.T) {
 	}
 }
 
-// TestBootstrapMetaChoiceRoundTrip writes the preset for each option the
-// host offers and loads it back without a config error.
 func TestBootstrapMetaChoiceRoundTrip(t *testing.T) {
 	for _, editor := range []string{editorVim, editorHelix, editorStandard, editorEmacs} {
 		offered := keymeta.Options(runtime.GOOS, editor)

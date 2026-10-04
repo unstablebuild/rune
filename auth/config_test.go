@@ -80,9 +80,6 @@ func TestDefaultConfigSignupURL(t *testing.T) {
 	assert.Equal(t, staging, DefaultNativeConfig(api).SignupURL)
 }
 
-// TestDefaultNativeConfigPackageKeyring guards the contract that the
-// config served to Rune clients advertises the package-signing
-// keyring so clients can rotate trust anchors without a new binary.
 func TestDefaultNativeConfigPackageKeyring(t *testing.T) {
 	api, err := url.Parse("https://api.rune.build")
 	require.NoError(t, err)
@@ -93,12 +90,6 @@ func TestDefaultNativeConfigPackageKeyring(t *testing.T) {
 	assert.Empty(t, DefaultM2MConfig().PackageKeyringArmored)
 }
 
-// TestDefaultNativeConfigTokenURL guards against a regression where
-// DefaultNativeConfig advertised a TokenURL on the wrong host: the
-// returned TokenURL must be derived from the api URL passed in (the
-// public URL ox-api advertises via -A), not from the dev default
-// baked into the binary. Otherwise prod ox-api would tell clients to
-// redeem tokens at api.unstable.build, which 404s in production.
 func TestDefaultNativeConfigTokenURL(t *testing.T) {
 	cases := []struct {
 		name string
@@ -126,10 +117,6 @@ func TestDefaultNativeConfigTokenURL(t *testing.T) {
 	}
 }
 
-// TestDefaultNativeConfigDeviceAuthURL guards the wire contract that
-// lets rune --headless sign in by code: the served config carries the
-// device authorization endpoint, and a config from an older server
-// without it still validates so old and new binaries interoperate.
 func TestDefaultNativeConfigDeviceAuthURL(t *testing.T) {
 	api, err := url.Parse("https://api.rune.build")
 	require.NoError(t, err)
@@ -162,10 +149,6 @@ func TestDefaultNativeConfigDeviceAuthURL(t *testing.T) {
 	})
 }
 
-// TestDefaultNativeConfigHeadlessClientID guards the wire contract that
-// points rune --headless at the client the API server issues serve-only
-// tokens to: the server always names one, and a config from a server
-// that predates it still validates for the desktop client.
 func TestDefaultNativeConfigHeadlessClientID(t *testing.T) {
 	api, err := url.Parse("https://api.rune.build")
 	require.NoError(t, err)

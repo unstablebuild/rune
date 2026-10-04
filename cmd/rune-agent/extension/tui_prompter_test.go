@@ -33,9 +33,6 @@ func statusPhase(s syncComponent) string {
 	return s.comp.StatusBarState().Phase
 }
 
-// A pending prompt blocks the turn on the user, so the bar reports
-// ASKING for as long as one is open and hands the phase back to the
-// tool call that opened it once the user answers.
 func TestPromptReportsAskingPhase(t *testing.T) {
 	s := newStatusBarSyncComponent()
 	t.Cleanup(func() { _ = s.comp.Close() })

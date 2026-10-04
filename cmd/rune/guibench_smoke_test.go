@@ -21,10 +21,6 @@ import (
 	"time"
 )
 
-// TestGUIBenchSessionSmoke proves the production GUI bench harness can
-// build the configured IDE, settle startup, and render frames without
-// touching the network. It is the fast guard the scenario benchmarks
-// build on.
 func TestGUIBenchSessionSmoke(t *testing.T) {
 	if testing.Short() {
 		t.Skip("gui bench session smoke needs the full IDE stack")

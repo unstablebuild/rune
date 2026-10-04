@@ -31,9 +31,6 @@ import (
 	"unstable.build/rune/internal/workspace"
 )
 
-// TestLoadGitignoreExcludesProtectedHomeDirs asserts that LoadGitignore
-// excludes macOS app data under ~/Library while leaving personal folders
-// visible.
 func TestLoadGitignoreExcludesProtectedHomeDirs(t *testing.T) {
 	usr, err := user.Current()
 	require.NoError(t, err)

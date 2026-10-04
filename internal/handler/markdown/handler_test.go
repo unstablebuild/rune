@@ -319,11 +319,6 @@ func TestHandleNonMouseEvent(t *testing.T) {
 	assert.False(t, handled)
 }
 
-// TestHandleModifiedCharKeysFallThrough verifies that less-style single
-// character shortcuts (q, j, k, n, ...) only fire on a bare keypress.
-// When a Ctrl/Alt/Meta modifier is present the event must fall through
-// unhandled so the host can dispatch its bound command (e.g. <meta-n>
-// opening a new window) instead of being swallowed as a scroll.
 func TestHandleModifiedCharKeysFallThrough(t *testing.T) {
 	// Ctrl scrolling shortcuts (Ctrl-F/B/D/U/E/Y/N/P) are handled by the
 	// viewer itself, so they are excluded from the Ctrl fall-through
@@ -604,11 +599,6 @@ func newPagingHandler(t *testing.T, content string, width, height int, pos start
 	return h
 }
 
-// TestCtrlPageScrolling verifies the vim-style Ctrl paging shortcuts:
-// Ctrl-F/Ctrl-B page down/up, Ctrl-D/Ctrl-U half-page down/up, and
-// Ctrl-E/Ctrl-Y scroll a single line down/up. The table exercises each
-// key from the top, middle, and bottom of the document so that both the
-// active-scroll and the clamped-at-boundary paths are covered.
 func TestCtrlPageScrolling(t *testing.T) {
 	const width, height = 5, 3
 
@@ -674,9 +664,6 @@ func TestCtrlPageScrolling(t *testing.T) {
 	}
 }
 
-// TestCtrlPageScrollingBoundaryIdempotent verifies that repeatedly
-// pressing a scroll key at the boundary it moves toward never panics,
-// never moves past the boundary, and leaves the offset pinned.
 func TestCtrlPageScrollingBoundaryIdempotent(t *testing.T) {
 	const width, height = 5, 3
 
@@ -708,10 +695,6 @@ func TestCtrlPageScrollingBoundaryIdempotent(t *testing.T) {
 	}
 }
 
-// TestCtrlPageScrollingNonScrollableContent verifies that when the
-// document fits within (or is smaller than) the viewport, every scroll
-// key is still handled, never panics, and never moves the offset off
-// zero (there is nowhere to scroll).
 func TestCtrlPageScrollingNonScrollableContent(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -742,9 +725,6 @@ func TestCtrlPageScrollingNonScrollableContent(t *testing.T) {
 	}
 }
 
-// TestCtrlPageScrollingBeforeResize verifies scroll keys are safe on a
-// freshly constructed handler that has not been resized yet (height 0),
-// exercising the max(1, height) guard in scrollPage/scrollHalfPage.
 func TestCtrlPageScrollingBeforeResize(t *testing.T) {
 	for _, ch := range []rune{'f', 'b', 'd', 'u', 'e', 'y'} {
 		t.Run("ctrl-"+string(ch), func(t *testing.T) {
@@ -761,10 +741,6 @@ func TestCtrlPageScrollingBeforeResize(t *testing.T) {
 	}
 }
 
-// TestCtrlPageScrollingContentChange verifies that when the underlying
-// component is swapped via SetComponent while scrolled, the offset is
-// reset and subsequent scroll keys operate correctly on the new content
-// without panicking or reading a stale offset.
 func TestCtrlPageScrollingContentChange(t *testing.T) {
 	const width, height = 5, 3
 

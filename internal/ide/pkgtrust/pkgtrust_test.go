@@ -79,8 +79,6 @@ func TestVerifyEntries(t *testing.T) {
 	require.Error(t, VerifyEntries(dir, entries))
 }
 
-// TestKeyringFetchReplaces verifies the fetched ring fully replaces the
-// embedded one (rotation + revocation) and is gated by VerifyBundle.
 func TestKeyringFetchReplaces(t *testing.T) {
 	entity, err := openpgp.NewEntity("Rotated Publisher", "", "rotated@example.com", nil)
 	require.NoError(t, err)
@@ -99,8 +97,6 @@ func TestKeyringFetchReplaces(t *testing.T) {
 	require.False(t, store.IsTrustedFingerprint(embeddedFingerprint))
 }
 
-// TestKeyringFetchFailureKeepsEmbedded verifies a failed fetch leaves the
-// embedded ring active.
 func TestKeyringFetchFailureKeepsEmbedded(t *testing.T) {
 	store := NewStore(t.TempDir(), func() ([]byte, error) {
 		return nil, fmt.Errorf("network down")
@@ -110,8 +106,6 @@ func TestKeyringFetchFailureKeepsEmbedded(t *testing.T) {
 	require.True(t, store.IsTrustedFingerprint(embeddedFingerprint))
 }
 
-// TestKeyringFetchMalformedKeepsEmbedded verifies a malformed fetched
-// keyring is rejected and does not clobber the embedded ring.
 func TestKeyringFetchMalformedKeepsEmbedded(t *testing.T) {
 	store := NewStore(t.TempDir(), func() ([]byte, error) { return []byte("junk"), nil })
 	store.awaitFetch()

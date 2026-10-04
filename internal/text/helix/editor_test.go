@@ -30,9 +30,6 @@ import (
 	"unstable.build/rune/internal/text/texttest"
 )
 
-// TestEditorUnsupportedSurface pins the parts of text.Editor Helix
-// deliberately does not implement, so a caller gets an error instead of
-// silent no-ops.
 func TestEditorUnsupportedSurface(t *testing.T) {
 	uri, err := workspaceapi.ParseURI("file:///x")
 	require.NoError(t, err)
@@ -49,8 +46,6 @@ func TestEditorUnsupportedSurface(t *testing.T) {
 	assert.Error(t, err)
 }
 
-// TestEditorEventSubscription pins subscribe / unsubscribe on both the
-// editor and the publisher adapter the file commands use.
 func TestEditorEventSubscription(t *testing.T) {
 	ed := Editor()
 	sub := text.FuncEventHandler(
@@ -136,8 +131,6 @@ func TestEditorDispatchScroll(t *testing.T) {
 	assert.Equal(t, term.Coordinates{Y: 1}, at)
 }
 
-// TestEditorIsNotExternal pins that helix manages its buffer in process,
-// which is what the IDE checks before installing an external editor.
 func TestEditorIsNotExternal(t *testing.T) {
 	ed := Editor()
 	external, ok := ed.(interface{ IsExternal() bool })
@@ -145,8 +138,6 @@ func TestEditorIsNotExternal(t *testing.T) {
 	assert.False(t, external.IsExternal())
 }
 
-// TestEditorInstallsStatusBar pins that Edit composes the same chrome vi
-// does, so the shared status/aux/icons bars work for helix too.
 func TestEditorInstallsStatusBar(t *testing.T) {
 	tick := func(fn func()) bool { fn(); return true }
 	ed := Editor(

@@ -76,10 +76,6 @@ func (u *approvingUI) asked() []string {
 	return append([]string(nil), u.prompts...)
 }
 
-// TestInstallPackageOverSSH installs a package on the host of an ssh
-// workspace through the workspace's own connection: the install's
-// progress, notifications and questions reach this side, and a command
-// started afterwards runs the installed executable by bare name.
 func TestInstallPackageOverSSH(t *testing.T) {
 	SkipIfNoDocker(t)
 	EnsureImage(t)

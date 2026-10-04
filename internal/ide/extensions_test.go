@@ -314,16 +314,6 @@ func TestAfterPackageConfigMerge(t *testing.T) {
 	})
 }
 
-// TestPkgInstallStartsExtensionWithPackageEnv is the black-box regression for
-// the env-before-spawn contract. It drives the real `pkg install <pkg>` shell
-// command against a real package manager. The installed package's config.yaml
-// adds both a gui.env block and an extensions entry. The IDE's gui.env hook
-// (modeled on cmd/rune's guiEnvLiveApplyHook) applies the env via os.Setenv,
-// and the IDE then starts the newly-configured extension on the home runner —
-// a stubbed extension.Runner that records os.Getenv at the moment Run is
-// invoked, exactly where a real extension subprocess would snapshot its
-// environment. The recorded value must be the package's env, which only holds
-// if the env was applied before the extension was started.
 func TestPkgInstallStartsExtensionWithPackageEnv(t *testing.T) {
 	const (
 		envKey = "RUNE_TEST_PKG_EXT_ENV"
@@ -407,15 +397,6 @@ func TestPkgInstallStartsExtensionWithPackageEnv(t *testing.T) {
 			"inherits the package environment")
 }
 
-// TestPkgInstallRegistersTutorialLive is the black-box regression for the
-// install-time tutorial registration contract, mirroring
-// TestPkgInstallStartsExtensionWithPackageEnv for the extensions path. It
-// drives a real `pkg install <pkg>` through a real IDE against a real package
-// manager. The installed package's config.yaml adds a `tutorials:` entry whose
-// .star file ships on disk. Before this feature a freshly-installed tutorial
-// was invisible until restart because `tutorial start <name>` resolves only
-// from the live tutorialRunner.tutorials map; the install must now register it
-// live, so the tutorial is startable without a restart.
 func TestPkgInstallRegistersTutorialLive(t *testing.T) {
 	const (
 		pkgID    = "tutpkg"
@@ -489,10 +470,6 @@ func TestPkgInstallRegistersTutorialLive(t *testing.T) {
 		"installing a package with a tutorials entry must register the tutorial live")
 }
 
-// TestPkgInstallMultipleTutorialsPromptsOnce asserts that when a single install
-// adds more than one tutorial, every tutorial is registered live but the user
-// is prompted exactly once (for the first tutorial). Prompting per tutorial
-// would stack overlapping floating windows on top of each other.
 func TestPkgInstallMultipleTutorialsPromptsOnce(t *testing.T) {
 	const pkgID = "multitutpkg"
 	tutNames := []string{"alpha-intro", "beta-intro"}
@@ -566,10 +543,6 @@ func TestPkgInstallMultipleTutorialsPromptsOnce(t *testing.T) {
 		"installing multiple tutorials must open exactly one prompt, not one per tutorial")
 }
 
-// TestPkgInstallTutorialDoesNotPromptDuringActiveTutorial asserts that
-// installing a package that adds a tutorial does not interrupt a tutorial
-// the user is already running: the new tutorial is registered live, but
-// no "run it now?" prompt is opened over the active tutorial.
 func TestPkgInstallTutorialDoesNotPromptDuringActiveTutorial(t *testing.T) {
 	const (
 		pkgID   = "livetutpkg"

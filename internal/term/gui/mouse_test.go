@@ -500,9 +500,6 @@ func TestMouseWheelMultiplierEmitsMultipleLines(t *testing.T) {
 	}
 }
 
-// TestMouseWheelLineCounts exercises the accumulator's truncation and remainder
-// arithmetic across multipliers and deltas, including fractional multipliers and
-// sign reversals, where off-by-one and rounding faults would surface.
 func TestMouseWheelLineCounts(t *testing.T) {
 	suite := []struct {
 		description   string
@@ -538,9 +535,6 @@ func TestMouseWheelLineCounts(t *testing.T) {
 	}
 }
 
-// TestMouseWheelRemainderCarriesAcrossGestures verifies that the fractional
-// remainder accumulates across many frames and eventually crosses a line,
-// rather than being discarded each frame.
 func TestMouseWheelRemainderCarriesAcrossGestures(t *testing.T) {
 	mock, mouse := newTestMouse(t)
 	mouse.multiplier = 1
@@ -555,9 +549,6 @@ func TestMouseWheelRemainderCarriesAcrossGestures(t *testing.T) {
 	assert.InDelta(t, 0.5, mouse.accumY, 1e-9)
 }
 
-// TestMouseWheelSignReversalCancelsRemainder verifies that a positive remainder
-// is correctly cancelled by a subsequent negative delta within the same
-// accumulator, so direction changes do not produce phantom events.
 func TestMouseWheelSignReversalCancelsRemainder(t *testing.T) {
 	mock, mouse := newTestMouse(t)
 	mouse.multiplier = 1
@@ -571,9 +562,6 @@ func TestMouseWheelSignReversalCancelsRemainder(t *testing.T) {
 	assert.InDelta(t, 0.0, mouse.accumY, 1e-9)
 }
 
-// TestMouseWheelRemainderSurvivesNonWheelFrames verifies that an intervening
-// frame without wheel movement (e.g. a button press) does not reset the
-// accumulated scroll remainder.
 func TestMouseWheelRemainderSurvivesNonWheelFrames(t *testing.T) {
 	mock, mouse := newTestMouse(t)
 	mouse.multiplier = 1
@@ -598,8 +586,6 @@ func TestMouseWheelRemainderSurvivesNonWheelFrames(t *testing.T) {
 	assert.InDelta(t, 0.1, mouse.accumY, 1e-9)
 }
 
-// TestMouseWheelCoordinatesAreClamped verifies that emitted wheel events carry
-// the clamped cursor cell position, even when scrolling occurs off-window.
 func TestMouseWheelCoordinatesAreClamped(t *testing.T) {
 	mock, mouse := newTestMouse(t)
 	mouse.multiplier = 1
@@ -612,9 +598,6 @@ func TestMouseWheelCoordinatesAreClamped(t *testing.T) {
 	assert.Equal(t, 27, events[0].MouseY)
 }
 
-// TestMouseWheelDoesNotPanicOnPathologicalDeltas guards the wheelEvents slice
-// allocation against non-finite and absurdly large deltas, which would
-// otherwise overflow the line count and panic in makeslice.
 func TestMouseWheelDoesNotPanicOnPathologicalDeltas(t *testing.T) {
 	suite := []struct {
 		description string
@@ -644,8 +627,6 @@ func TestMouseWheelDoesNotPanicOnPathologicalDeltas(t *testing.T) {
 	}
 }
 
-// TestMouseWheelCapsLinesPerFrame verifies the per-frame line cap bounds the
-// slice allocation for very large but finite deltas.
 func TestMouseWheelCapsLinesPerFrame(t *testing.T) {
 	mock, mouse := newTestMouse(t)
 	mouse.multiplier = 1
@@ -658,9 +639,6 @@ func TestMouseWheelCapsLinesPerFrame(t *testing.T) {
 	}
 }
 
-// TestMouseWheelRecoversAfterNonFiniteDelta verifies that a NaN/Inf delta does
-// not permanently poison the accumulator: a subsequent finite gesture must
-// still produce events.
 func TestMouseWheelRecoversAfterNonFiniteDelta(t *testing.T) {
 	for _, bad := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
 		mock, mouse := newTestMouse(t)
@@ -677,16 +655,11 @@ func TestMouseWheelRecoversAfterNonFiniteDelta(t *testing.T) {
 	}
 }
 
-// TestNewMouseDefaultMultiplier documents the default scroll multiplier so a
-// change to the constant is a deliberate, test-visible decision.
 func TestNewMouseDefaultMultiplier(t *testing.T) {
 	_, mouse := newTestMouse(t)
 	assert.Equal(t, float64(defaultScrollMultiplier), mouse.multiplier)
 }
 
-// TestWithScrollMultiplierIgnoresNonPositive verifies the option guard: values
-// <= 0 are ignored so a zero or negative config never disables scrolling or
-// inverts it.
 func TestWithScrollMultiplierIgnoresNonPositive(t *testing.T) {
 	suite := []struct {
 		description string

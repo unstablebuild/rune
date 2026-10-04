@@ -63,11 +63,6 @@ func TestMemoryScheme(t *testing.T) {
 	})
 }
 
-// TestMemorySchemeCallsAfterClose guards against panics when scheme
-// calls race Close: the async workspace teardown closes the scheme in
-// a background goroutine while extensions or warm-up goroutines may
-// still be issuing calls against it. Post-close calls must surface an
-// error, not assign into the nil maps Close leaves behind.
 func TestMemorySchemeCallsAfterClose(t *testing.T) {
 	ctx := context.Background()
 	uri, err := workspaceapi.ParseURI("memory:///")
@@ -89,7 +84,6 @@ func TestMemorySchemeCallsAfterClose(t *testing.T) {
 		"Watch after Close must error instead of panicking on the nil watchpoint maps")
 }
 
-// TODO add to scheme suite
 func TestMemoryFile(t *testing.T) {
 	t.Run("Write overwrites data", func(t *testing.T) {
 		f := workspace.NewMemoryFile("bla", 1, 0, []byte("12345"), new(sync.Mutex))
@@ -118,11 +112,6 @@ func TestMemoryFile(t *testing.T) {
 	})
 }
 
-// memoryScheme.Close used to iterate each event bucket and close every
-// channel it found. Because Watch stores the same channel in one bucket per
-// subscribed event, a watcher registered for several events (as the IDE
-// registers Create/Write/Remove/Rename) would trigger "close of closed
-// channel" on the second bucket.
 func TestMemoryScheme_CloseDoesNotDoubleCloseMultiEventWatchers(t *testing.T) {
 	ctx := context.Background()
 	uri, err := workspaceapi.ParseURI("memory:///workspace")
@@ -142,12 +131,6 @@ func TestMemoryScheme_CloseDoesNotDoubleCloseMultiEventWatchers(t *testing.T) {
 	})
 }
 
-// TestMemorySchemeCloseWithBlockedWatchSend guards Close against an
-// in-flight watch event delivery: Create/Remove/Rename deliver events
-// synchronously after releasing the scheme lock, so a watcher that is
-// not consuming leaves the sender parked on the channel send. Close
-// must unblock and drain those senders before closing the watcher
-// channels — closing mid-send panics with "send on closed channel".
 func TestMemorySchemeCloseWithBlockedWatchSend(t *testing.T) {
 	ctx := context.Background()
 	uri, err := workspaceapi.ParseURI("memory:///workspace")

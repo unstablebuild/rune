@@ -135,13 +135,6 @@ func TestServerEdit(t *testing.T) {
 	})
 }
 
-// TestServerEditCellOutOfBoundsCoordinates exercises the wire surface
-// against malformed/out-of-buffer client coordinates. Wire-supplied
-// start/end positions land in safeEditor.Edit, whose contract
-// ("doesn't panic on out-of-bounds calls", cell/buffer.go:861) was
-// only honored for non-negative coordinates. Crash report 787830382
-// showed the same fragility on the mouse path; the RPC surface is
-// just as exposed because clients can send arbitrary int32 values.
 func TestServerEditCellOutOfBoundsCoordinates(t *testing.T) {
 	ctx := context.Background()
 	resource, err := workspaceapi.ParseURI("file:///bounds-check")

@@ -44,10 +44,6 @@ func newStatusBarSyncComponent() syncComponent {
 	}
 }
 
-// Reopening a conversation must fill the context gauge from the
-// replayed history; until the first completion reports usage the bar
-// would otherwise read empty, which is indistinguishable from a chat
-// that has not started yet.
 func TestSeedContextTokens(t *testing.T) {
 	entry := llmapi.ModelEntry{
 		Provider: "test", Name: "test-model", ContextWindow: 200_000,
@@ -108,8 +104,6 @@ func TestSeedContextTokensSkipped(t *testing.T) {
 	}
 }
 
-// A usage report from a live turn is authoritative; a late estimate
-// must not overwrite it.
 func TestSeedContextTokensDoesNotOverwriteReportedUsage(t *testing.T) {
 	entry := llmapi.ModelEntry{Provider: "test", Name: "test-model"}
 	svc := llmtest.New([]llmapi.ModelEntry{entry})
@@ -127,10 +121,6 @@ func TestSeedContextTokensDoesNotOverwriteReportedUsage(t *testing.T) {
 	assert.Equal(t, 77, s.comp.StatusBarState().ContextTokens)
 }
 
-// Context occupancy accumulates over a conversation, so starting a turn
-// must not blank it. Clearing it left the gauge reading 0 until the
-// first completion reported usage back, which is how a fresh chat
-// reads.
 func TestBeginTurnKeepsContextOccupancy(t *testing.T) {
 	s := newStatusBarSyncComponent()
 	t.Cleanup(func() { _ = s.comp.Close() })
@@ -154,8 +144,6 @@ func TestBeginTurnKeepsContextOccupancy(t *testing.T) {
 	assert.Equal(t, start, got.TurnStart)
 }
 
-// A chat tab's activity follows its turn, so the host can show which
-// chats are working while they are not focused.
 func TestTurnMarksChatTabActivity(t *testing.T) {
 	wm := &recordingWindowManager{}
 	s := newStatusBarSyncComponent()
@@ -173,8 +161,6 @@ func TestTurnMarksChatTabActivity(t *testing.T) {
 	}, wm.tabActivity())
 }
 
-// The indicator is best-effort: a host that cannot mark the tab must not
-// keep the turn from driving the status bar.
 func TestTurnSurvivesTabActivityErrors(t *testing.T) {
 	wm := &recordingWindowManager{activityErr: errors.New("unknown tab")}
 	s := newStatusBarSyncComponent()
@@ -191,7 +177,6 @@ func TestTurnSurvivesTabActivityErrors(t *testing.T) {
 	assert.Len(t, wm.tabActivity(), 2)
 }
 
-// Chats that are not tabs, such as queries, have no tab to mark.
 func TestTurnWithoutTabSkipsActivity(t *testing.T) {
 	wm := &recordingWindowManager{}
 	s := newStatusBarSyncComponent()
@@ -203,8 +188,6 @@ func TestTurnWithoutTabSkipsActivity(t *testing.T) {
 	assert.Empty(t, wm.tabActivity())
 }
 
-// An unset session effort must name the level the provider applies,
-// not leave the bar reading "default".
 func TestSyncStatusBarModelResolvesProviderDefaultEffort(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -260,10 +243,6 @@ func TestSyncStatusBarModelResolvesProviderDefaultEffort(t *testing.T) {
 	}
 }
 
-// /compact runs through the agentshell rather than the agent's event
-// stream, so it emits no EventCompacting. Declaring the phase on the
-// command result is the only thing that moves the bar off IDLE for the
-// duration of the summarisation call.
 func TestHandleCompactReportsCompactingPhase(t *testing.T) {
 	a := &commandAdapter{dialogueID: "d1"}
 	res, err := a.handleCompact(context.Background(), nil)
@@ -272,12 +251,6 @@ func TestHandleCompactReportsCompactingPhase(t *testing.T) {
 	assert.NotNil(t, res.Display)
 }
 
-// The three compaction paths must all reach the same status. Auto
-// compaction and the compact tool report it through the run loop's
-// events, so this drives a real agent whose model calls the compact
-// tool and samples the bar while the summarisation call is in flight.
-// Query sessions pass no onCompacted callback, so compaction must not
-// depend on one being set.
 func TestAgentToolCompactReportsCompactingPhase(t *testing.T) {
 	tests := []struct {
 		name        string

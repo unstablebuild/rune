@@ -49,10 +49,6 @@ func TestCommands(t *testing.T) {
 	})
 }
 
-// TestDebugCommandsSubscriptionGating asserts that the debugCommands
-// flag flips registration of `panic` and `crash`. We probe via
-// DispatchCommand rather than invoking the handlers themselves,
-// because the handlers intentionally crash the process.
 func TestDebugCommandsSubscriptionGating(t *testing.T) {
 	t.Run("disabled hides debug commands", func(t *testing.T) {
 		b := newExForTesting(t, texttest.NopEditor())
@@ -107,10 +103,6 @@ func countSubscribeErrors(t *testing.T, err error) int {
 	return strings.Count(err.Error(), "command already registered")
 }
 
-// TestHeapdumpWritesFileAtRequestedPath verifies that the :heapdump
-// debug command writes a non-empty heap dump to the path passed as
-// its first argument. Covers the explicit-path branch of
-// (*ex).heapdump.
 func TestHeapdumpWritesFileAtRequestedPath(t *testing.T) {
 	b := newExForTesting(t, texttest.NopEditor())
 	out := filepath.Join(t.TempDir(), "heap.dump")
@@ -124,9 +116,6 @@ func TestHeapdumpWritesFileAtRequestedPath(t *testing.T) {
 		"heap dump file should be non-empty")
 }
 
-// TestHeapdumpDefaultsToTempFile verifies that with no path argument
-// the command picks a unique temp file via os.CreateTemp and that
-// the file ends up on disk with content.
 func TestHeapdumpDefaultsToTempFile(t *testing.T) {
 	// Direct the default temp dir to a per-test location so we can
 	// scan for the new file without interfering with concurrent

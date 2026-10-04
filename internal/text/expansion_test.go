@@ -24,11 +24,6 @@ import (
 	"unstable.build/rune/internal/cell"
 )
 
-// TestWordAtCursor covers the identifier-boundary scanner used to
-// derive $WORD. The exit conditions (out-of-bounds, non-word cell)
-// must return the empty string rather than panic, since dispatched
-// commands invoke wordAtCursor opportunistically and a panic here
-// would tear down DispatchCommand.
 func TestWordAtCursor(t *testing.T) {
 	buf := cell.NewBuffer()
 	buf.WriteString("foo bar.baz\nhello_world  \n")
@@ -54,9 +49,6 @@ func TestWordAtCursor(t *testing.T) {
 	}
 }
 
-// TestWordAtCursorNilView guards the cell.View nil path. Tabs whose
-// browser handler is not a text.Handler (terminals, plugin floats)
-// must not feed a nil cell.View into the scanner.
 func TestWordAtCursorNilView(t *testing.T) {
 	assert.Equal(t, "", wordAtCursor(nil, term.Coordinates{}))
 }

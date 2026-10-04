@@ -106,12 +106,6 @@ func TestE2ERustAnalyzerLogFilterReachesProcess(t *testing.T) {
 	}, 5*time.Second, 20*time.Millisecond, "rust-analyzer did not write debug logs to stderr")
 }
 
-// TestE2E drives the `rust` command handler against a real rust-analyzer
-// serving a real Cargo project under testdata/e2e. Each subtest exercises
-// one command end to end: it opens a file, positions the cursor (or a
-// selection), runs the command through the real handler, and asserts the
-// server produced the expected edit. The suite skips when rust-analyzer is
-// not installed.
 func TestE2E(t *testing.T) {
 	t.Parallel()
 	raBin := findRustAnalyzer(t)
@@ -1337,19 +1331,6 @@ func dismissPicker(
 	}
 }
 
-// TestE2ESavedFileDiagnosticsPush reproduces the RUNE-332 user report
-// (observed in ~/src/alacritty): a semantic error in a *saved* file
-// produced no location-list markers at all. Markers are driven by
-// textDocument/publishDiagnostics pushes, so this test drives the
-// extension's real rustInitializeParams through a real rust-analyzer,
-// opens src/diagbin.rs (whose E0308 is committed on disk), saves it,
-// and requires the push pipeline to deliver the error twice over:
-//
-//   - source "rust-analyzer": native semantic diagnostics, restored by
-//     the pull-diagnostics bridge (rust-analyzer's push path never
-//     computes them once build scripts/proc macros are on);
-//   - source "rustc"/"clippy": checkOnSave flycheck output, proving
-//     the didSave -> cargo clippy -> publish path works end to end.
 func TestE2ESavedFileDiagnosticsPush(t *testing.T) {
 	t.Parallel()
 	raBin := findRustAnalyzer(t)
@@ -1419,10 +1400,6 @@ func requireClippy(t *testing.T) {
 	}
 }
 
-// TestE2E_ResolveSysroot drives the full extension bring-up against a
-// real rustc for a Cargo project, asserting the resolved toolchain
-// sysroot is carried into the language server's init params. It skips
-// when rustc is absent.
 func TestE2E_ResolveSysroot(t *testing.T) {
 	rustcPath := findRustc(t)
 
@@ -1443,7 +1420,6 @@ func TestE2E_ResolveSysroot(t *testing.T) {
 	assert.NotEmpty(t, opts["sysroot"], "a real rustc must yield a non-empty sysroot")
 }
 
-// TestE2E_RustHandlerShow runs `rust show` against a real rustup.
 func TestE2E_RustHandlerShow(t *testing.T) {
 	findRustup(t)
 	dir := t.TempDir()

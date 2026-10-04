@@ -125,14 +125,6 @@ func differentialConfig(transparent bool, scenarios []guiBenchScenario) guiBench
 	return cfg
 }
 
-// TestGUIDamageDifferential is the primary Phase 2 correctness harness.
-// For each scenario, at a representative resolution and in both the
-// opaque and transparent blend variants, it renders the identical
-// scripted workload twice on the same GPU in the same process: once
-// with row-damage tracking (production) and once forced to full-frame
-// repaint (reference). It asserts the two produce byte-identical frames
-// at every frame index, which is far stronger than a golden comparison
-// because it is free of GPU/driver variance.
 func TestGUIDamageDifferential(t *testing.T) {
 	if testing.Short() {
 		t.Skip("differential harness is not short-mode friendly")

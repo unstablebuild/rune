@@ -46,12 +46,6 @@ func (statNotExistReader) ReadDir(string) ([]os.DirEntry, error) {
 	return nil, os.ErrNotExist
 }
 
-// TestResolveRootDirTerminatesWhenNothingExists guards against the
-// resolution goroutine spinning forever when no ancestor of root
-// exists: filepath.Dir is a fixpoint at "/", so without a stop
-// condition the walk-up loop busy-loops (and leaks) once it reaches
-// the filesystem root — observed as a goleak failure when a scheme is
-// closed while a traversal is starting.
 func TestResolveRootDirTerminatesWhenNothingExists(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {

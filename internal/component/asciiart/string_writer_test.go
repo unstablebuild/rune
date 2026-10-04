@@ -220,8 +220,6 @@ func TestStringWriterResize(t *testing.T) {
 @@@@@@@#;ccc`}})
 }
 
-// placement fills its area with dots, places img and then writes after
-// on row 0, recording what DrawImage reported.
 type placement struct {
 	img           term.Image
 	after         string

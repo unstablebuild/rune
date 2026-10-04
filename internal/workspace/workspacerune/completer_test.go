@@ -106,9 +106,6 @@ func TestCompleterOffersPeers(t *testing.T) {
 	}
 }
 
-// TestCompleterOffersPeerDirectories covers completion past the
-// hostname: only the peer knows its filesystem, so the completions
-// come from a round-trip to it.
 func TestCompleterOffersPeerDirectories(t *testing.T) {
 	root := t.TempDir()
 	for _, dir := range []string{"code", "code/rune", "config", ".cache"} {

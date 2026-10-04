@@ -573,8 +573,6 @@ func TestApplyWorkspaceEdit(t *testing.T) {
 	assert.Equal(t, term.Coordinates{X: 8, Y: 10}, calls[0].end)
 }
 
-// TestE2ERename exercises the full rename pipeline against a
-// real gopls server: PrepareRename → inputbox → Rename → apply → didChange.
 func TestE2ERename(t *testing.T) {
 	t.Parallel()
 	goplsBin := findGopls(t)

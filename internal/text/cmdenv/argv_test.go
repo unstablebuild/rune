@@ -27,14 +27,6 @@ import (
 	"unstable.build/rune/internal/text/cmdenv"
 )
 
-// TestBuildPluginArgv covers the full matrix of plain-argv vs sh -c
-// dispatch decisions. Every row asserts the exact argv that
-// BuildPluginArgv hands to the downstream executor. The third
-// element of a wrapped form is the shell-quoted line; the test
-// additionally verifies that the line round-trips through
-// mvdan.cc/sh/v3/shell.Fields back to the original joined form,
-// which is what vte.Component.startCommand actually does before
-// calling Executor.StartCommand.
 func TestBuildPluginArgv(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -232,9 +224,6 @@ func TestBuildPluginArgv(t *testing.T) {
 	}
 }
 
-// TestIsPlainArgv covers the parser-based plain-argv detector
-// directly. The matrix focuses on the negative cases that drive
-// the sh -c branch in BuildPluginArgv, plus the obvious positives.
 func TestIsPlainArgv(t *testing.T) {
 	cases := []struct {
 		name string
@@ -317,8 +306,6 @@ func TestIsPlainArgv(t *testing.T) {
 	}
 }
 
-// TestBuildPluginArgvDoesNotMutateInput pins that BuildPluginArgv
-// must not aliase the caller's slice when it takes the plain path.
 func TestBuildPluginArgvDoesNotMutateInput(t *testing.T) {
 	in := []string{"echo", "hi"}
 	out := cmdenv.BuildPluginArgv(in)
@@ -338,8 +325,6 @@ func TestBuildPluginArgvDoesNotMutateInput(t *testing.T) {
 	assert.Equal(t, "-c", wrapped[1])
 }
 
-// TestBuildPluginArgvConcurrent exercises the detector and quoter
-// from many goroutines to flush out any package-level state bugs.
 func TestBuildPluginArgvConcurrent(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := 0; i < 64; i++ {

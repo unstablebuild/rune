@@ -387,9 +387,6 @@ func TestRawCellsInsertGraphemeCluster(t *testing.T) {
 	}, c.RawCells())
 }
 
-// TestRawCellsInsertModifierCluster verifies that a grapheme-cluster
-// continuation typed one rune per keystroke (skin-tone modifier,
-// variation selector, joiner) merges into the preceding cell.
 func TestRawCellsInsertModifierCluster(t *testing.T) {
 	t.Run("skin tone modifier", func(t *testing.T) {
 		var c rawCells
@@ -900,10 +897,6 @@ func BenchmarkBufferReadFrom10000(b *testing.B) {
 // 	benchmarkBufferReadFrom(b, 1000000)
 // }
 
-// TestReadFromSlabRows guards the exact-size slab row contract: rows
-// loaded via ReadFrom must not retain columnCap-sized backing arrays,
-// and a later edit to one row must copy it out of the slab instead of
-// clobbering its neighbours.
 func TestReadFromSlabRows(t *testing.T) {
 	t.Run("rows are exact size", func(t *testing.T) {
 		var c rawCells
@@ -951,10 +944,6 @@ func TestReadFromSlabRows(t *testing.T) {
 	})
 }
 
-// TestResetWithCapHonorsSmallCaps guards that explicitly requested
-// small capacities are not clamped up to the defaults: narrow bars
-// (auxbar, locbar) request 3-10 wide rows and must not pay for
-// 64-cell backing arrays per row.
 func TestResetWithCapHonorsSmallCaps(t *testing.T) {
 	var c rawCells
 	c.initWithCap(2, 3, ' ')
@@ -983,13 +972,6 @@ func TestResetCapacityHonorsSmallCaps(t *testing.T) {
 	assert.Equal(t, defColumnCap, cap(b.cells.cells[2]))
 }
 
-// TestRawCellsIsReadOnlyOutsidePerformanceMode pins that RawCells is a
-// pure query for buffers that were not initialized via InitPerformance.
-// Only the ring-buffer recycling paths (appendBlankRowsBounded,
-// resetRowRange, rotateRows) consume rowMeta.occupied, and those panic
-// outside performance mode, so resyncing the metadata on every read is
-// both wasted work and an unsynchronized write that turns two concurrent
-// readers into a data race.
 func TestRawCellsIsReadOnlyOutsidePerformanceMode(t *testing.T) {
 	b := NewBuffer()
 	b.InsertString(term.Coordinates{}, "hello\nworld")
@@ -1011,10 +993,6 @@ func TestRawCellsIsReadOnlyOutsidePerformanceMode(t *testing.T) {
 	assert.Equal(t, before, b.RawCells())
 }
 
-// TestRawCellsResyncsRowMetaInPerformanceMode pins the complementary
-// contract: RawCells hands out the live backing array, so a performance
-// buffer must still normalize the ring and refresh occupied before a
-// caller can mutate row lengths behind the recycler's back.
 func TestRawCellsResyncsRowMetaInPerformanceMode(t *testing.T) {
 	var b Buffer
 	b.InitPerformance(4, 8, ' ')
@@ -1031,11 +1009,6 @@ func TestRawCellsResyncsRowMetaInPerformanceMode(t *testing.T) {
 	}
 }
 
-// TestCellsToBufferPerformanceEnablesRingSemantics guards the second way
-// into performance mode: CellsToBufferPerformance builds rawCells through
-// resetWithCap rather than initWithCap, so the ring bookkeeping must be
-// enabled from the Buffer side or RawCells would hand out a rotated
-// matrix.
 func TestCellsToBufferPerformanceEnablesRingSemantics(t *testing.T) {
 	b := CellsToBufferPerformance([][]term.Cell{
 		{{Ch: 'a'}}, {{Ch: 'b'}}, {{Ch: 'c'}},

@@ -712,14 +712,6 @@ aaaaaa
 	})
 }
 
-// TestBashViModeEdgeCases checks that modal mode engages when the user's
-// bash runs readline in vi mode. The vte synchronizes with the shell by
-// sending ^A^G and waiting for the bell; without Rune's inputrc, bash's
-// vi-insert keymap self-inserts both bytes instead. Appending then needs an
-// end-of-line command, because readline clamps forward-char to the last
-// character under vi mode. bash starts as the login shell or as
-// terminal.shell, so the test covers how the inputrc reaches bash and not
-// only what it binds.
 func TestBashViModeEdgeCases(t *testing.T) {
 	bashPath, err := find.Executable("bash")
 	if err != nil {
@@ -780,11 +772,6 @@ func TestBashViModeEdgeCases(t *testing.T) {
 	}
 }
 
-// TestZshViModeEdgeCases checks that modal mode engages when the user's zsh
-// uses the vi keymap, whose viins self-inserts ^A and ^G and leaves the
-// delete key unbound, so ESC [ 3 ~ turns into vicmd's case swap. zsh starts
-// as the login shell or as terminal.shell, so the test covers how the
-// dotfiles reach zsh and not only what they bind.
 func TestZshViModeEdgeCases(t *testing.T) {
 	zshPath, err := find.Executable("zsh")
 	if err != nil {
@@ -827,10 +814,6 @@ func TestZshViModeEdgeCases(t *testing.T) {
 	}
 }
 
-// TestFishEdgeCases checks that modal mode engages under fish started as the
-// login shell or as terminal.shell. fish binds neither ^A nor ^G in insert
-// mode, so the vte's ^A^G handshake only rings the bell with the bindings
-// the file scheme passes through --init-command.
 func TestFishEdgeCases(t *testing.T) {
 	fishPath, err := find.Executable("fish")
 	if err != nil {
@@ -1710,10 +1693,6 @@ aaaaaaaooaaaa
 	}
 }
 
-// TestViRemoteMoveTo asserts that the append column is reached with an
-// end-of-line command: the vte homes the shell cursor with ^A and walks
-// right, but readline clamps forward-char to the last character while
-// the shell's line editor is in vi mode.
 func TestViRemoteMoveTo(t *testing.T) {
 	t.Parallel()
 	// the fake prompt "$ " occupies the first two columns

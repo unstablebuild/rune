@@ -36,9 +36,6 @@ import (
 	"unstable.build/rune/internal/workspace/workspacetest"
 )
 
-// TestMeshRoundTrip is the smoke test for the whole rune:// path: two
-// mesh nodes, a workspace served by one and opened by the other, over
-// real WireGuard. Everything else in this package builds on it.
 func TestMeshRoundTrip(t *testing.T) {
 	control := StartTestControl(t, true /* sameUser */)
 	peer := StartNode(t, control, "peer", "")
@@ -77,11 +74,6 @@ func TestMeshRoundTrip(t *testing.T) {
 	assert.Equal(t, "from the peer\n", string(buf[:n]))
 }
 
-// TestWorkspaceScheme runs the shared scheme conformance suites against
-// a workspace served by a second Rune mesh node. The suites are the
-// same ones the local file scheme and the SSH scheme must satisfy, so
-// passing them is what makes rune:// a first-class workspace rather
-// than a read-only view.
 func TestWorkspaceScheme(t *testing.T) {
 	SkipIfRace(t)
 
@@ -98,10 +90,6 @@ func TestWorkspaceScheme(t *testing.T) {
 	workspacetest.TestWorkspaceSchemeExecutor(t, newScheme)
 }
 
-// TestRejectsPeerOwnedByAnotherAccount is the security case behind the
-// whole scheme: sharing a network is not consent. A node belonging to
-// somebody else reaches the listener — the mesh routes to it — and must
-// still be refused before it can read a file or run a command.
 func TestRejectsPeerOwnedByAnotherAccount(t *testing.T) {
 	control := StartTestControl(t, false /* sameUser */)
 	peer := StartNode(t, control, "peer", "")
@@ -130,11 +118,6 @@ func TestRejectsPeerOwnedByAnotherAccount(t *testing.T) {
 		"a peer owned by another account must not read files: %v", err)
 }
 
-// TestRejectsTaggedPeer is the defence in depth behind serve-only
-// machines. The mesh policy keeps a tagged machine's packets from
-// reaching anything; if that policy were ever misapplied, the packets
-// arrive, and the caller still claims the right account, the workspace
-// server must refuse it anyway.
 func TestRejectsTaggedPeer(t *testing.T) {
 	control := StartTestControl(t, true /* sameUser */)
 	peer := StartNode(t, control, "peer", "")

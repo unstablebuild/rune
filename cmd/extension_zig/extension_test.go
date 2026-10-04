@@ -279,10 +279,6 @@ func TestZlsLogLevel(t *testing.T) {
 	assert.NotEmpty(t, notify.notifs)
 }
 
-// TestZlsInitializeCapabilities pins the two zls-specific requirements
-// (publishDiagnostics advertised, since zls only pushes diagnostics when
-// the client declares it) and keeps the advertised surface within what
-// zls 0.16 implements.
 func TestZlsInitializeCapabilities(t *testing.T) {
 	params, err := zlsInitializeParams(
 		"file:///ws", "ws", "zls", "", "", buildOnSaveOptions{})
@@ -318,10 +314,6 @@ func TestZigInitializeCommandLogsToStderr(t *testing.T) {
 		opts["command"])
 }
 
-// TestExtendWorkspaceNonZigRegistersButSkipsInit verifies the REPL
-// command is always registered (its cwd is the workspace root and is
-// independent of any project), while a workspace with no Zig project is
-// not eagerly initialized.
 func TestExtendWorkspaceNonZigRegistersButSkipsInit(t *testing.T) {
 	fs := newFakeFS()
 	lsp := &captureLSP{}
@@ -384,10 +376,6 @@ func TestExtendWorkspaceRegistersAndInitializes(t *testing.T) {
 	assert.Equal(t, "/data/bin/zig", opts["zig_exe_path"])
 }
 
-// TestExtendWorkspaceNestedDiscovery verifies that a workspace with no
-// root manifest is not initialized on startup, but opening a .zig file
-// under a nested project brings up a server rooted at that project. A
-// marker-less .zig open is ignored.
 func TestExtendWorkspaceNestedDiscovery(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "tools", "cli")
@@ -432,10 +420,6 @@ func TestExtendWorkspaceNestedDiscovery(t *testing.T) {
 	assert.Equal(t, "file://"+proj, params.WorkspaceFolders[0].URI)
 }
 
-// TestExtendWorkspaceWarnsMissingCheckStep drives the full bring-up on a
-// real directory whose build.zig has no "check" step and asserts the
-// build-on-save compensation hint fires; a build.zig with the step stays
-// quiet.
 func TestExtendWorkspaceWarnsMissingCheckStep(t *testing.T) {
 	buildZig := `const std = @import("std");
 pub fn build(b: *std.Build) void {
@@ -530,8 +514,6 @@ func TestZigHandlerFailureIncludesOutput(t *testing.T) {
 	assert.Contains(t, err.Error(), "expected type 'i32'")
 }
 
-// TestNewExtensionMetadata pins the extension identity and the
-// permission set the zig extension needs.
 func TestNewExtensionMetadata(t *testing.T) {
 	_, meta := NewExtension()
 	assert.Equal(t, "zig", meta.ExtensionID)
@@ -558,8 +540,6 @@ func TestZigActionRouterRejectsForeignCommand(t *testing.T) {
 	assert.Contains(t, err.Error(), "missing subcommand")
 }
 
-// Every subcommand the manual documents must be routable, and the
-// completion order must be deterministic.
 func TestZigActionRouterComplete(t *testing.T) {
 	manual, h := newTestZigActionRouter()
 	ctx := context.Background()

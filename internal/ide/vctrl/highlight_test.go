@@ -312,9 +312,6 @@ func TestHighlightSnippetsNoop(t *testing.T) {
 	})
 }
 
-// TestHighlightSnippetsParserError pins the degradation contract: a
-// snippet whose language has no grammar leaves the diff readable and
-// does not stop the snippets after it.
 func TestHighlightSnippetsParserError(t *testing.T) {
 	cells := highlightCells(" alpha", " beta")
 	parser := &stubParser{
@@ -355,8 +352,6 @@ func TestHighlightSnippetsPassesURI(t *testing.T) {
 		"snippets must be parsed as the file's language, not as a diff")
 }
 
-// TestHighlightSnippetsBudget pins the bound on the syntax pass: it runs
-// on the event loop, so a parse that never finishes has to be abandoned.
 func TestHighlightSnippetsBudget(t *testing.T) {
 	parser := &stubParser{locs: []textapi.Location{highlightAt(0, 0, 5, 0)}}
 	HighlightSnippets(t.Context(), highlightCells(" alpha"),

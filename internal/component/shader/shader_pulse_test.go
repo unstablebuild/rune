@@ -23,8 +23,6 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 )
 
-// TestPulseLeavesCycleBoundariesUntouched asserts that Pulse does not
-// mutate cells at cycle boundaries (frame=0, frame=PeriodFrames, ...).
 func TestPulseLeavesCycleBoundariesUntouched(t *testing.T) {
 	t.Parallel()
 	defaultAttr := term.Attributes{Fg: term.ColorWhite, Bg: term.ColorBlack}
@@ -46,8 +44,6 @@ func TestPulseLeavesCycleBoundariesUntouched(t *testing.T) {
 			"(frame == PeriodFrames)")
 }
 
-// TestPulsePeakBlendsTowardColor asserts that mid-cycle Pulse blends
-// Fg toward Color.
 func TestPulsePeakBlendsTowardColor(t *testing.T) {
 	t.Parallel()
 	defaultAttr := term.Attributes{Fg: term.ColorWhite, Bg: term.ColorBlack}
@@ -68,8 +64,6 @@ func TestPulsePeakBlendsTowardColor(t *testing.T) {
 		"at peak intensity Fg.R should move toward Color.R")
 }
 
-// TestPulseSkipsCellsOutsideAnimation asserts that a negative frame is
-// ignored and does not panic.
 func TestPulseSkipsCellsOutsideAnimation(t *testing.T) {
 	t.Parallel()
 	in := [][]term.Cell{{

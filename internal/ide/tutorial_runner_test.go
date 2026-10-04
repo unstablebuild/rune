@@ -243,11 +243,6 @@ func TestTutorialRunnerLaysTheTileOutBesideTheWorkspace(t *testing.T) {
 	assert.Equal(t, 1, tut.stopCount)
 }
 
-// TestTutorialRunnerSurvivesTheWindowCommandsItTeaches pins the reason
-// the tile lives outside the workspace: a lesson that asks the user to
-// clear or rearrange their layout must still be there afterwards. The
-// window commands act on the workspace's windows even while the tile
-// has focus: only Stop and `tutorial stop` end a lesson.
 func TestTutorialRunnerSurvivesTheWindowCommandsItTeaches(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -300,10 +295,6 @@ func TestTutorialRunnerSurvivesTheWindowCommandsItTeaches(t *testing.T) {
 	}
 }
 
-// TestTutorialRunnerAgentLessonStartsWithWindowCloseAll drives the
-// first step of the agent tutorial, which clears the layout, through
-// a real lesson: the milestone must resolve instead of ending the
-// lesson.
 func TestTutorialRunnerAgentLessonStartsWithWindowCloseAll(t *testing.T) {
 	t.Parallel()
 	tut := newStarlarkTutorial(t, `
@@ -363,10 +354,6 @@ func TestTutorialRunnerMouseFocusesAndBlursTheTile(t *testing.T) {
 	assert.Equal(t, term.MouseRelease, tut.events[3].Key)
 }
 
-// TestTutorialRunnerKeysAlwaysReachTheWorkspace pins that the lesson
-// never takes the keyboard: it is read with the mouse, so whatever the
-// user types goes on reaching the editor, a terminal or the command
-// prompt even while the tile is the pane in focus.
 func TestTutorialRunnerKeysAlwaysReachTheWorkspace(t *testing.T) {
 	t.Parallel()
 	tut := &tutStub{}
@@ -443,9 +430,6 @@ func newEditorRunner(t *testing.T, ed text.Editor, tut idetutorial.Tutorial) (*t
 	return r, b.ex
 }
 
-// TestTutorialRunnerFocusedTileStillTypesIntoTheEditor asserts the
-// tile's focus never takes the keyboard: the editor beside it goes on
-// receiving what the user types, bindings included.
 func TestTutorialRunnerFocusedTileStillTypesIntoTheEditor(t *testing.T) {
 	t.Parallel()
 	var seen []term.KeyComb
@@ -467,9 +451,6 @@ func TestTutorialRunnerFocusedTileStillTypesIntoTheEditor(t *testing.T) {
 	assert.Empty(t, e.comp.Tabs())
 }
 
-// TestTutorialRunnerNeverTakesTheCursor asserts the screen goes on
-// showing the workspace's cursor while the tile holds focus: the tile
-// has nothing to type into, and every key reaches the workspace.
 func TestTutorialRunnerNeverTakesTheCursor(t *testing.T) {
 	t.Parallel()
 	tut := &tutStub{}
@@ -522,9 +503,6 @@ func TestTutorialRunnerHidesTheTileOnANarrowScreen(t *testing.T) {
 	focusTile(t, r, tut)
 }
 
-// TestTutorialRunnerNeverOpensARefusedLesson covers a lesson written
-// for an older Rune: it reports itself finished at Reset, and the
-// runner must not leave a tile behind for it.
 func TestTutorialRunnerNeverOpensARefusedLesson(t *testing.T) {
 	t.Parallel()
 	var completed []string
@@ -538,11 +516,6 @@ func TestTutorialRunnerNeverOpensARefusedLesson(t *testing.T) {
 	assert.Empty(t, completed, "a refused lesson is not a completed one")
 }
 
-// TestTutorialRunnerIgnoresRuneOwnBuffers covers a lesson that waits
-// for the user to open a file from the explorer: the explorer's own
-// tree, and gitshow's diffs, publish open events of their own, and
-// resolving a step on one of those advances the lesson behind the
-// user's back.
 func TestTutorialRunnerIgnoresRuneOwnBuffers(t *testing.T) {
 	t.Parallel()
 	tut := &tutStub{}
@@ -604,9 +577,6 @@ func (r *attrRecorder) UnionAttributes(term.Coordinates, term.Attributes) {}
 func (r *attrRecorder) Context() context.Context                          { return context.Background() }
 func (r *attrRecorder) DrawImage(term.Image) bool                         { return false }
 
-// TestTutorialRunnerTileIsNeverDimmed asserts the lesson stays at full
-// brightness while the command prompt dims the workspace behind it:
-// that is the moment the user is reading it.
 func TestTutorialRunnerTileIsNeverDimmed(t *testing.T) {
 	t.Parallel()
 	tut := &tutStub{}
@@ -692,10 +662,6 @@ func TestTutorialRunnerFooterButtons(t *testing.T) {
 	})
 }
 
-// TestTutorialRunnerPromptTakesTheKeyboard asserts a step that asks a
-// question can be answered without the mouse: the keys a prompt walks
-// its options with reach the tile while one is up. Everything else,
-// and every key while a copy step is up, belongs to the workspace.
 func TestTutorialRunnerPromptTakesTheKeyboard(t *testing.T) {
 	t.Parallel()
 	answers := []term.Event{
@@ -755,8 +721,6 @@ func TestTutorialRunnerPromptTakesTheKeyboard(t *testing.T) {
 	})
 }
 
-// TestTutorialRunnerChoiceIsPickedWithTheKeyboard drives a real
-// lesson's choice step from the keyboard, end to end.
 func TestTutorialRunnerChoiceIsPickedWithTheKeyboard(t *testing.T) {
 	t.Parallel()
 	tut := newStarlarkTutorial(t, `
@@ -775,10 +739,6 @@ tutorial(entry=run)
 	assert.Equal(t, "picked Bravo", tut.ActiveText())
 }
 
-// TestTutorialRunnerKeepsAFinishedLessonOnScreen covers the end of a
-// lesson: the last milestone must not take the tile away, since the
-// user may still be working through what it just taught. Only Stop
-// closes it, and that is when the run counts as completed.
 func TestTutorialRunnerKeepsAFinishedLessonOnScreen(t *testing.T) {
 	t.Parallel()
 	var completed []string
@@ -926,10 +886,6 @@ func TestTutorialRunnerStop(t *testing.T) {
 	assert.Equal(t, "", r.activeName)
 }
 
-// TestTutorialRunnerRunningIsRaceFree pins that running() may be read
-// off the event loop: the package-install gate consults it from the
-// background syntax and LSP goroutines while the event loop starts and
-// stops tutorials.
 func TestTutorialRunnerRunningIsRaceFree(t *testing.T) {
 	t.Parallel()
 	r, _ := newTestRunner(t, map[string]idetutorial.Tutorial{"basics": &tutStub{}})
@@ -1027,9 +983,6 @@ func newStarlarkTutorial(t *testing.T, src string) *starlarktutorial.Tutorial {
 	return tut
 }
 
-// TestTutorialRunnerBasicsFlowEndToEnd drives a real starlark lesson
-// through the runner: every step ends on its milestone and the tile
-// comes down once the last one does.
 func TestTutorialRunnerBasicsFlowEndToEnd(t *testing.T) {
 	t.Parallel()
 	tut := newStarlarkTutorial(t, `
@@ -1068,8 +1021,6 @@ tutorial(entry=run)
 	assert.Equal(t, []string{"basics"}, completed)
 }
 
-// TestTutorialRunnerObserveCommandKeepsArmedOnError asserts a failed
-// dispatch keeps the step armed and the tile up.
 func TestTutorialRunnerObserveCommandKeepsArmedOnError(t *testing.T) {
 	t.Parallel()
 	tut := newStarlarkTutorial(t, `
@@ -1093,8 +1044,6 @@ tutorial(entry=run)
 	assert.False(t, r.running())
 }
 
-// TestTutorialRunnerPromptStepEndsOnTheTile asserts a confirm step is
-// answered on the tile, with the mouse.
 func TestTutorialRunnerPromptStepEndsOnTheTile(t *testing.T) {
 	t.Parallel()
 	tut := newStarlarkTutorial(t, `
@@ -1179,8 +1128,6 @@ func TestCommandObserverRegistryLateSubscribe(t *testing.T) {
 	assert.Len(t, reg.subscribers, 1)
 }
 
-// TestFuncCommandObserver asserts the callback adapter fires once per
-// dispatched command regardless of the command's name, args or outcome.
 func TestFuncCommandObserver(t *testing.T) {
 	t.Parallel()
 	reg := newCommandObserverRegistry()

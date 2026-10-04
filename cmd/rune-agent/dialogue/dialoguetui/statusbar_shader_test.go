@@ -26,8 +26,6 @@ import (
 	"unstable.build/rune/internal/component/shader/shaderloop"
 )
 
-// status_bar.shader accepts exactly the continuous catalog, plus an
-// empty name that leaves the bar unshaded.
 func TestValidStatusBarShader(t *testing.T) {
 	require.NotEmpty(t, StatusBarShaderNames())
 	for _, name := range StatusBarShaderNames() {
@@ -39,9 +37,6 @@ func TestValidStatusBarShader(t *testing.T) {
 	assert.True(t, ValidStatusBarShader(""), "an empty name disables the effect")
 }
 
-// The cadence knobs reach the effect rather than staying pinned to the
-// shipped constants. A zero knob keeps the shipped value, which is what
-// a config naming neither key leaves behind.
 func TestShadedBarHonoursConfiguredFPS(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -69,8 +64,6 @@ func TestShadedBarHonoursConfiguredFPS(t *testing.T) {
 	}
 }
 
-// The effect only runs while a turn does, and stopping it must put the
-// bar back exactly as it was.
 func TestShadedBarRunsOnlyWhileActive(t *testing.T) {
 	bar := shippedStatusBar(t)
 	bar.Resize(40, 1)
@@ -93,8 +86,6 @@ func TestShadedBarRunsOnlyWhileActive(t *testing.T) {
 	assert.Equal(t, plain.row(40), restored.row(40))
 }
 
-// A bar with no effect configured, or with no interrupter to drive one,
-// must draw straight through rather than allocating a shader.
 func TestShadedBarWithoutShaderDrawsRoot(t *testing.T) {
 	bar := shippedStatusBar(t)
 	s := &shadedBar{root: bar}

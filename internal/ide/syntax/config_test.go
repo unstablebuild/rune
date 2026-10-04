@@ -49,8 +49,6 @@ func TestCaptureNameAttributesUnknownCaptureReturnsZeroAttributes(t *testing.T) 
 	assert.Equal(t, term.Attributes{}, captureNameAttributes(nil, "unknown.capture"))
 }
 
-// nvim-treesitter style queries (zig, lua, c, and many others) refine base
-// captures with a suffix; without the fallback those tokens render unstyled.
 func TestCaptureNameAttributesFallsBackToBaseCapture(t *testing.T) {
 	attrs := DefaultConfig().CaptureNamesAttributes
 

@@ -104,10 +104,6 @@ func TestRoot_CtrlPOpensPalette(t *testing.T) {
 		"palette should show manual immediately; got:\n"+screen)
 }
 
-// TestRoot_CtrlCExits verifies that Ctrl-C signals the event loop to
-// terminate via the standard tui.Handler exit=true contract. Without
-// this, SSH clients have no clean way to end the session (the shop's
-// pages and palette don't natively bind Ctrl-C).
 func TestRoot_CtrlCExits(t *testing.T) {
 	r := NewRoot(nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	defer func() { _ = r.Close() }()
@@ -123,8 +119,6 @@ func TestRoot_CtrlCExits(t *testing.T) {
 	require.True(t, handled, "Ctrl-C should be reported as handled")
 }
 
-// TestRoot_CtrlCExitsFromPage verifies Ctrl-C also exits even when a
-// page is open (which normally swallows the 'q' key to close itself).
 func TestRoot_CtrlCExitsFromPage(t *testing.T) {
 	r := NewRoot(nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	defer func() { _ = r.Close() }()
@@ -140,12 +134,6 @@ func TestRoot_CtrlCExitsFromPage(t *testing.T) {
 	require.True(t, handled)
 }
 
-// TestRoot_WithInterrupterIsPluggedIn asserts that the caller-
-// supplied term.Interrupter reaches the command palette — which
-// uses it to request redraws from its async completion goroutines.
-// In RunScreen mode the process-global term.PublishEvent is a no-op,
-// so dropping the per-session interrupter would silently break
-// asynchronous redraws.
 func TestRoot_WithInterrupterIsPluggedIn(t *testing.T) {
 	var calls atomic.Int32
 	interrupter := term.FuncInterrupter(func(context.Context) error {
@@ -170,10 +158,6 @@ func TestRoot_WithInterrupterIsPluggedIn(t *testing.T) {
 		"Root.interrupter should route to the caller-supplied interrupter")
 }
 
-// TestRoot_PageHasNoHashPrefix verifies that markdown headers render
-// WITHOUT the "# " prefix once a page is shown. We set
-// markdown.Config.HeaderPrefix=false so the shop's landing pages look
-// like a proper document rather than raw markdown source.
 func TestRoot_PageHasNoHashPrefix(t *testing.T) {
 	r := NewRoot(nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	defer func() { _ = r.Close() }()
@@ -187,10 +171,6 @@ func TestRoot_PageHasNoHashPrefix(t *testing.T) {
 		"header prefix must be disabled; got:\n"+screen)
 }
 
-// TestRoot_WithScheduleNextTickPluggedIn asserts a caller-supplied
-// ScheduleNextTick reaches the markdown component used to render
-// pages. Otherwise the default synchronous scheduler applies (fine
-// for testing, but not what the SSH runner wants at runtime).
 func TestRoot_WithScheduleNextTickPluggedIn(t *testing.T) {
 	var calls atomic.Int32
 	schedule := func(fn func()) bool {
@@ -221,9 +201,6 @@ func TestRoot_WithScheduleNextTickPluggedIn(t *testing.T) {
 		"Root.scheduleNextTick should route to the caller-supplied function")
 }
 
-// TestRoot_PaletteShowsManualImmediately verifies the command palette
-// is configured with ShowManualAfter=0, so the manual side-panel is
-// visible on the first Draw without requiring the user to idle.
 func TestRoot_PaletteShowsManualImmediately(t *testing.T) {
 	r := NewRoot(nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	defer func() { _ = r.Close() }()

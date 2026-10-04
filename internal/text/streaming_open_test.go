@@ -22,17 +22,12 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// TestDefaultConfigStreamingOpenIsOff guards against accidentally
-// flipping the streaming-open default on. Production opt-in (e.g.
-// cmd/rune main) sets it explicitly via WithStreamingOpen so test
-// fixtures and embedders remain unsurprised by the async semantics.
 func TestDefaultConfigStreamingOpenIsOff(t *testing.T) {
 	cfg := DefaultConfig()
 	assert.False(t, cfg.StreamingOpen,
 		"DefaultConfig must keep streaming open disabled")
 }
 
-// TestWithStreamingOpenSetsFlag confirms the option sets the flag.
 func TestWithStreamingOpenSetsFlag(t *testing.T) {
 	cfg := DefaultConfig()
 	WithStreamingOpen(true)(&cfg)

@@ -24,9 +24,6 @@ import (
 	"github.com/zalando/go-keyring"
 )
 
-// TestMain keeps the tests off the developer's real keychain. With the
-// system keyring failing, tokens take the data-directory fallback,
-// which is the path a headless server without a keyring runs.
 func TestMain(m *testing.M) {
 	keyring.MockInitWithError(errors.New("keychain disabled in tests"))
 	os.Exit(m.Run())

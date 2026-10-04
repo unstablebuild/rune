@@ -195,9 +195,6 @@ func TestHandleCommand(t *testing.T) {
 	}
 }
 
-// TestHandleCommandReportsCheckProgress pins the console feedback the
-// user gets while the manifest fetch is in flight: without it the
-// command looks hung for the duration of the request.
 func TestHandleCommandReportsCheckProgress(t *testing.T) {
 	h := newHandler(t, http.StatusNotFound, nil, 0)
 	pw := &recordingProgressWriter{}
@@ -207,10 +204,6 @@ func TestHandleCommandReportsCheckProgress(t *testing.T) {
 	require.Equal(t, []string{"checking for updates"}, pw.snapshot())
 }
 
-// TestHandleCommandOSPackaged pins the behaviour of an OS-packaged
-// build: the command explains where updates come from and never
-// reaches the manifest endpoint. The endpoint is wired to fail, so a
-// missing short-circuit surfaces as an error rather than passing.
 func TestHandleCommandOSPackaged(t *testing.T) {
 	h := newHandlerOSPackaged(
 		t, http.StatusInternalServerError, nil, 0, true)
@@ -227,8 +220,6 @@ func TestHandleCommandOSPackaged(t *testing.T) {
 		"must not report check progress when no check runs")
 }
 
-// TestHandleCommandOSPackagedHelp keeps `upgrade help` useful in
-// OS-packaged builds.
 func TestHandleCommandOSPackagedHelp(t *testing.T) {
 	h := newHandlerOSPackaged(
 		t, http.StatusInternalServerError, nil, 0, true)
@@ -241,10 +232,6 @@ func TestHandleCommandOSPackagedHelp(t *testing.T) {
 	require.Equal(t, usageMarkdown(), got)
 }
 
-// TestHandleCommandUpgradeNowForwardsProgress covers the "Upgrade Now"
-// branch. The test binary is not part of a managed install, so the
-// upgrade is refused before any download — which is enough to prove
-// the branch reaches Manager.Upgrade with the console's writer.
 func TestHandleCommandUpgradeNowForwardsProgress(t *testing.T) {
 	h := newHandler(t, http.StatusOK, availableManifest(), 'y')
 	pw := &recordingProgressWriter{}

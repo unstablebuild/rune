@@ -257,14 +257,6 @@ func waitForZigReady(
 	t.Fatalf("timed out waiting for zls to become ready: stuck on probe %d", next)
 }
 
-// TestE2EZig drives the same request surface the Go, Python, and Rust
-// e2e suites cover, against a real zls, restricted to the requests zls
-// implements (no implementation, rangeFormatting, codeLens, or
-// call/type hierarchy). Because zls output (hover markdown, token
-// legend, code-action kinds) varies across releases, the cases assert
-// structural correctness — that the Manager routes the request and the
-// server answers about the expected symbol — rather than pinning exact
-// strings.
 func TestE2EZig(t *testing.T) {
 	t.Parallel()
 

@@ -83,10 +83,6 @@ func (l *captureLSP) waitForInit(t *testing.T, timeout time.Duration) {
 	}
 }
 
-// TestExtendWorkspaceNestedDiscovery verifies that a workspace with no
-// root go.mod is not initialized on startup, but opening a .go file under
-// a nested module brings up gopls rooted at that module. A marker-less
-// .go open is ignored.
 func TestExtendWorkspaceNestedDiscovery(t *testing.T) {
 	root := t.TempDir()
 	mod := filepath.Join(root, "services", "api")

@@ -56,8 +56,6 @@ func TestDefaultEffortFor(t *testing.T) {
 	}
 }
 
-// A reported default must be a level the model actually accepts, or
-// the status bar would advertise an effort the user cannot select.
 func TestDefaultEffortForIsSupported(t *testing.T) {
 	for model := range AvailableModels() {
 		def := DefaultEffortFor(model)

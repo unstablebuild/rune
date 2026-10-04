@@ -138,9 +138,6 @@ func TestChangeSetMapPos(t *testing.T) {
 	}
 }
 
-// TestRangeMapThroughAssoc pins Range::map's associativity: from is
-// carried after an insert at its position, to is carried before one,
-// and a point follows the inserted text.
 func TestRangeMapThroughAssoc(t *testing.T) {
 	insertAt := func(x int) changeSet { return changeSet{replacing(xy(x, 0), xy(x, 0), "++")} }
 	for _, tc := range []struct {
@@ -178,9 +175,6 @@ func TestRangeMapThroughAssoc(t *testing.T) {
 	}
 }
 
-// TestChangeRecorderCapturesEdits pins what the recorder sees for the
-// edit shapes the operators produce, including a grapheme cluster that
-// takes one cell for two runes.
 func TestChangeRecorderCapturesEdits(t *testing.T) {
 	buf := cell.NewBuffer()
 	buf.ReadFrom(strings.NewReader("hello\nworld"))
@@ -204,12 +198,6 @@ func TestChangeRecorderCapturesEdits(t *testing.T) {
 	assert.Len(t, rec.changes, 1, "take hands the recording over")
 }
 
-// TestChangeSetMapPosOracle checks the mapping against the buffer
-// itself: a unique sentinel is planted at a random position, random
-// edits are recorded, and mapPos of the original position must land on
-// wherever the sentinel ended up, as long as no edit deleted it. The
-// sentinel sits on the position, so an insert exactly there lands in
-// front of it: that is the after association.
 func TestChangeSetMapPosOracle(t *testing.T) {
 	const sentinel = '§'
 	rnd := rand.New(rand.NewSource(1))

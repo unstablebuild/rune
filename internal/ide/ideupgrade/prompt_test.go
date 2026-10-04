@@ -147,9 +147,6 @@ func TestPromptShowFallsBackToNotificationWithoutWM(t *testing.T) {
 	require.True(t, st.RemindAfter.IsZero())
 }
 
-// TestPromptChoiceBlocksUntilAnswered covers the console `upgrade`
-// path: the caller runs off the event loop and must block on the
-// user's answer, which is then persisted before it returns.
 func TestPromptChoiceBlocksUntilAnswered(t *testing.T) {
 	manifest := Manifest{Version: "v9.9.9", URL: "u", SHA256: "s"}
 	for _, tc := range []struct {
@@ -196,9 +193,6 @@ func TestPromptChoiceBlocksUntilAnswered(t *testing.T) {
 	}
 }
 
-// TestPromptChoiceWithoutWindowManager covers the headless case: with
-// nowhere to render the prompt there is no answer to wait for, so the
-// caller must not block.
 func TestPromptChoiceWithoutWindowManager(t *testing.T) {
 	mgr, err := newWithPlatformOps(Config{
 		CurrentVersion:   "v1",

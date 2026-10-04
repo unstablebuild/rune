@@ -415,10 +415,6 @@ func TestHandlerPromptMultiSelectSpaceToggles(t *testing.T) {
 	}
 }
 
-// TestHandlerPromptMultiSelectEnterOnOtherWithRequiresInput verifies that
-// pressing <enter> on a RequiresInput option ("Other") in a multi-select
-// prompt attributes the typed text to the option under the cursor, not to
-// whatever happens to be checked — with and without another box checked.
 func TestHandlerPromptMultiSelectEnterOnOtherWithRequiresInput(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -467,11 +463,6 @@ func TestHandlerPromptMultiSelectEnterOnOtherWithRequiresInput(t *testing.T) {
 	}
 }
 
-// TestHandlerPromptToggleRequiresNoModifier verifies that ctrl-space and
-// meta-space, which are bound to other actions, do not also toggle the
-// checkbox under the cursor. Meta arrives here as term.ModAlt: a bare
-// term.ModMeta event never reaches this code, since Handle's top-level
-// modifier switch drops it before dispatch.
 func TestHandlerPromptToggleRequiresNoModifier(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -685,10 +676,6 @@ func TestHandlerCommandIntercepted(t *testing.T) {
 	}
 }
 
-// TestHandlerCommandInjected verifies that sending a MessageEventCommand on
-// the tx channel runs the command exactly as if it had been typed in the
-// chat: HandleCommand is invoked with the given name/args and its Display
-// output is rendered.
 func TestHandlerCommandInjected(t *testing.T) {
 	interrupt := make(chan struct{}, 20)
 	gotName := make(chan string, 1)
@@ -1203,11 +1190,6 @@ func TestHandlerCommandUserMessageNoArgs(t *testing.T) {
 	assert.True(t, handled)
 }
 
-// TestHandlerCommandSideEffectInterrupts verifies that a /command which
-// returns a zero-value CommandResult{} (e.g. /fork, /history — commands
-// that open a floating window via wm.Floating and have no Display,
-// UserMessage, or Exit) still wakes the event loop via the interrupter.
-// Without this, the screen does not repaint until the next key event.
 func TestHandlerCommandSideEffectInterrupts(t *testing.T) {
 	interrupt := make(chan struct{}, 20)
 	called := make(chan struct{}, 1)
@@ -1247,9 +1229,6 @@ func TestHandlerCommandSideEffectInterrupts(t *testing.T) {
 	}
 }
 
-// TestHandlerPromptHintRestoredAfterSelect verifies that when a prompt
-// event arrives through the handler's tx channel, the receive-message hint
-// is hidden while the prompt is active, and restored after the user selects.
 func TestHandlerFreeFormPromptRendersQuestion(t *testing.T) {
 	h, tx, interrupt := newPromptHandler(t)
 	resultCh := make(chan []string, 1)
@@ -1277,9 +1256,6 @@ func TestHandlerFreeFormPromptRendersQuestion(t *testing.T) {
 	<-resultCh
 }
 
-// TestHandlerFreeFormPromptEnterSubmitsText verifies that typing text
-// and pressing Enter during a free-form prompt sends the text on the
-// result channel.
 func TestHandlerFreeFormPromptEnterSubmitsText(t *testing.T) {
 	h, tx, interrupt := newPromptHandler(t)
 	resultCh := make(chan []string, 1)
@@ -1303,8 +1279,6 @@ func TestHandlerFreeFormPromptEnterSubmitsText(t *testing.T) {
 	assert.Equal(t, []string{"Alice"}, vals)
 }
 
-// TestHandlerFreeFormPromptEscDismisses verifies that pressing Esc
-// during a free-form prompt sends nil on the result channel.
 func TestHandlerFreeFormPromptEscDismisses(t *testing.T) {
 	h, tx, interrupt := newPromptHandler(t)
 	resultCh := make(chan []string, 1)
@@ -1324,8 +1298,6 @@ func TestHandlerFreeFormPromptEscDismisses(t *testing.T) {
 	assert.Nil(t, vals)
 }
 
-// TestHandlerFreeFormPromptEmptyEnterIgnored verifies that pressing Enter
-// with no text typed does not submit or dismiss the prompt.
 func TestHandlerFreeFormPromptEmptyEnterIgnored(t *testing.T) {
 	h, tx, interrupt := newPromptHandler(t)
 	resultCh := make(chan []string, 1)
@@ -1351,8 +1323,6 @@ func TestHandlerFreeFormPromptEmptyEnterIgnored(t *testing.T) {
 	assert.Equal(t, []string{"Bob"}, vals)
 }
 
-// TestHandlerFreeFormPromptDismissEvent verifies that a
-// MessageEventPromptDismiss event correctly dismisses a free-form prompt.
 func TestHandlerFreeFormPromptDismissEvent(t *testing.T) {
 	h, tx, interrupt := newPromptHandler(t)
 	resultCh := make(chan []string, 1)
@@ -1398,9 +1368,6 @@ func searchStr(s, sub string) bool {
 	return false
 }
 
-// TestHandlerPromptCtrlCDismissesSelection verifies that Ctrl-C while a
-// selection prompt is active dismisses the prompt (sends nil on the
-// result channel) instead of being absorbed as a regular key.
 func TestHandlerPromptCtrlCDismissesSelection(t *testing.T) {
 	h, tx, interrupt := newPromptHandler(t)
 	resultCh := make(chan []string, 1)
@@ -1420,9 +1387,6 @@ func TestHandlerPromptCtrlCDismissesSelection(t *testing.T) {
 	assert.Nil(t, vals, "Ctrl-C should dismiss the prompt and send nil")
 }
 
-// TestHandlerPromptCtrlCDismissesRequiresInput verifies that Ctrl-C
-// dismisses the prompt while it is in the RequiresInput text-input mode,
-// rather than only being routed to the inputbox.
 func TestHandlerPromptCtrlCDismissesRequiresInput(t *testing.T) {
 	h, tx, interrupt := newPromptHandler(t)
 	resultCh := make(chan []string, 1)
@@ -1449,10 +1413,6 @@ func TestHandlerPromptCtrlCDismissesRequiresInput(t *testing.T) {
 	assert.Nil(t, vals, "Ctrl-C in input mode should dismiss the prompt")
 }
 
-// TestHandlerPromptEscIgnoredInRequiresInput verifies that pressing Esc
-// while typing feedback (RequiresInput text-input mode) neither dismisses
-// the prompt nor cancels back to the selection menu, so accidental Esc
-// presses do not discard the user's typed feedback.
 func TestHandlerPromptEscIgnoredInRequiresInput(t *testing.T) {
 	h, tx, interrupt := newPromptHandler(t)
 	resultCh := make(chan []string, 1)
@@ -1490,8 +1450,6 @@ func TestHandlerPromptEscIgnoredInRequiresInput(t *testing.T) {
 	}
 }
 
-// TestHandlerPromptCtrlCDismissesFreeForm verifies that Ctrl-C dismisses
-// a free-form (zero-option) prompt without submitting the typed text.
 func TestHandlerPromptCtrlCDismissesFreeForm(t *testing.T) {
 	h, tx, interrupt := newPromptHandler(t)
 	resultCh := make(chan []string, 1)
@@ -1745,9 +1703,6 @@ func (b *blockingIterator) Next(context.Context) (component.Responsive, bool) {
 func (b *blockingIterator) Err() error   { return nil }
 func (b *blockingIterator) Close() error { return nil }
 
-// A command that blocks on an LLM call runs off the turn loop, so
-// without a declared phase the status bar would read IDLE for the whole
-// call and the user would have no sign the editor was working.
 func TestHandlerCommandPhaseDrivesStatusBar(t *testing.T) {
 	it := &blockingIterator{
 		started: make(chan struct{}),
@@ -1790,8 +1745,6 @@ func TestHandlerCommandPhaseDrivesStatusBar(t *testing.T) {
 	assert.Empty(t, comp.StatusBarState().Phase)
 }
 
-// A command with no phase must leave the bar alone: most commands
-// return instantly and flipping the bar for them would only flicker.
 func TestHandlerCommandWithoutPhaseLeavesStatusBar(t *testing.T) {
 	mock := &mockCommandHandler{
 		handleFunc: func(context.Context, string, []string) (CommandResult, error) {

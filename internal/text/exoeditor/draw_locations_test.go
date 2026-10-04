@@ -187,9 +187,6 @@ func TestDrawLocations(t *testing.T) {
 	}
 }
 
-// TestDrawLocationsNilProbeIsNop guards against the natural racy case
-// where Draw fires before the first Handle/probe has populated the
-// cache.
 func TestDrawLocationsNilProbeIsNop(t *testing.T) {
 	t.Parallel()
 	w := &recordingWriter{}
@@ -200,10 +197,6 @@ func TestDrawLocationsNilProbeIsNop(t *testing.T) {
 	assert.Empty(t, w.calls)
 }
 
-// TestDrawLocationsExpandsTabs guards against the bug where a
-// location's raw rune column was painted as if it were a visual cell
-// column, so a highlight on a tab-indented line landed N cells too
-// far to the left.
 func TestDrawLocationsExpandsTabs(t *testing.T) {
 	t.Parallel()
 	probe := &vteprobe.Result{
@@ -233,12 +226,6 @@ func TestDrawLocationsExpandsTabs(t *testing.T) {
 	}, screenCoords(w.calls))
 }
 
-// TestEditorHandlerExperimentalHighlightsDisabled verifies the editor
-// handler's Draw does not call into the location overlay path when
-// the config flag is off: SetLocationList still updates the public
-// store (so observers see the same state as on non-exo editors), but
-// no UnionAttributes calls reach the writer beyond what the embedded
-// vte already produces.
 func TestEditorHandlerExperimentalHighlightsDisabled(t *testing.T) {
 	t.Parallel()
 	h := &editorHandler{

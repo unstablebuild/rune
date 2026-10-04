@@ -847,11 +847,6 @@ func TestDreamPipelineGitIntegration(t *testing.T) {
 	assert.Equal(t, int64(1), state.LastExtract)
 }
 
-// TestEnsureGitRepoIgnoresHookGitEnv guards runGitCmd against the
-// repo-location overrides git exports to hook subprocesses: with an
-// inherited GIT_DIR, `git init` re-initializes the hook's repository
-// (it once flipped a developer repo to bare) and the follow-up
-// add/commit land there instead of in the memory workspace.
 func TestEnsureGitRepoIgnoresHookGitEnv(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available on PATH")
@@ -886,10 +881,6 @@ func TestEnsureGitRepoIgnoresHookGitEnv(t *testing.T) {
 		"hook repo must not receive the memory-module commit")
 }
 
-// TestEnsureGitRepoIgnoresUserCommitSigning guards the memory module's
-// bootstrap commit against the user's commit.gpgsign: signing an
-// automated commit needs a key and may block on a pinentry prompt that
-// no one is there to answer.
 func TestEnsureGitRepoIgnoresUserCommitSigning(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available on PATH")

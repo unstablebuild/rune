@@ -55,10 +55,6 @@ func scrollList(offset int) func(*Component, framedScreen) {
 	return func(md *Component, _ framedScreen) { md.SeekTo(offset) }
 }
 
-// TestListDraw draws lists through the Component, the way a viewer
-// does. The Component places each block on the rows the previous ones
-// reserved, so the paragraph after a list lands in the wrong place if
-// the list measures itself differently from how it draws.
 func TestListDraw(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -393,9 +389,6 @@ func TestListDraw(t *testing.T) {
 	}
 }
 
-// TestListDimensions covers the size a list asks for when nothing
-// wraps it, which a floating viewer sizes itself to: every row it
-// draws, including the gaps of a loose list and its trailing blank row.
 func TestListDimensions(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -428,9 +421,6 @@ func TestListDimensions(t *testing.T) {
 	}
 }
 
-// TestListCopyAndLinks covers hit-testing a drawn list: copying it
-// gives back the text as drawn, and a click lands on the link drawn
-// under the pointer, not on the marker, the blank past it or a gap.
 func TestListCopyAndLinks(t *testing.T) {
 	type probe struct {
 		x, y int

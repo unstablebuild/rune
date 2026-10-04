@@ -36,18 +36,6 @@ import (
 	"unstable.build/rune/internal/workspace"
 )
 
-// TestScheduleNextTickDoesNotReacquireHostLock encodes the contract
-// every host event loop in this codebase already follows: when it
-// dispatches a UserFunc scheduled via cfg.scheduleNextTick, it does so
-// while already holding the IDE locker (see term/gui/gui.go's
-// (*GUI).Update — g.mu is locked at gui.go:241 and ev.UserFunc() runs
-// at gui.go:248 still under the lock).
-//
-// workspaceManagerHandler.init must therefore not wrap the host
-// scheduler with another h.mu.Lock(); doing so re-acquires the same
-// non-reentrant *sync.Mutex on the same goroutine and self-deadlocks
-// the event loop. This test reproduces exactly that scenario without
-// pulling a full IDE.
 func TestScheduleNextTickDoesNotReacquireHostLock(t *testing.T) {
 	t.Parallel()
 

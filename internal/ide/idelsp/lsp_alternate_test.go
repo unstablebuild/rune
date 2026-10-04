@@ -28,10 +28,6 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/iterator"
 )
 
-// TestParseAlternateCommands asserts the parsing contract for the
-// optional alternate_commands initialize option: absent yields nil,
-// a well-formed map yields the method->command mapping, and a
-// malformed value (wrong type) is an error.
 func TestParseAlternateCommands(t *testing.T) {
 	t.Parallel()
 
@@ -138,9 +134,6 @@ func TestParseLanguageEnv(t *testing.T) {
 	})
 }
 
-// TestChildName asserts that childName reduces a command string to
-// the base name of its executable, which is used as the diagnostics
-// source identity for a multi-server child.
 func TestChildName(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -174,11 +167,6 @@ func (p *multiBinPkgManager) LibDir(
 	return iterator.FromSlice(p.paths), nil
 }
 
-// TestFindBinaryDisambiguatesByCommand asserts that findBinary picks
-// the binary whose base name matches lang.command even when several
-// executables for the same language id share one lib dir. This is the
-// invariant multi-server children rely on to resolve ty vs ruff from
-// the same Python package directory.
 func TestFindBinaryDisambiguatesByCommand(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -202,9 +190,6 @@ func TestFindBinaryDisambiguatesByCommand(t *testing.T) {
 	assert.Equal(t, ruffPath, ruffBin)
 }
 
-// TestBuildChildRunsTheHostBinary covers a workspace on another
-// machine: its lib dir lists paths on that machine, which do not exist
-// here, and the server is still started from them.
 func TestBuildChildRunsTheHostBinary(t *testing.T) {
 	t.Parallel()
 	const hostPath = "/home/studio/.rune/pkg/go/1.24.0/bin/gopls"

@@ -234,10 +234,6 @@ func TestClient_GetModel(t *testing.T) {
 	assert.ErrorIs(t, err, llmapi.ErrModelNotFound)
 }
 
-// TestNewClient_BaseURLDisablesLiveCatalog pins that a custom runtime
-// endpoint (VPC endpoint or gateway) turns off the control-plane catalog
-// query: such endpoints only serve model invocation, so listing must come
-// from the static catalog.
 func TestNewClient_BaseURLDisablesLiveCatalog(t *testing.T) {
 	direct := NewClient("key", Config{Region: "us-east-1"})
 	assert.NotNil(t, direct.(*client).control)

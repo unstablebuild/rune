@@ -48,10 +48,6 @@ func newTestFileScheme(t *testing.T, root string) (workspace.Workspace, workspac
 	return cwd, uri
 }
 
-// TestLoadRemoteConfigAppliesGUIEnv asserts that once a package install
-// has merged a gui.env block into the remote ~/.rune config, loading that
-// config applies the vars to the process environment so the tools the -x
-// server spawns inherit them.
 func TestLoadRemoteConfigAppliesGUIEnv(t *testing.T) {
 	const (
 		envKey = "RUNE_TEST_REMOTE_GOROOT"
@@ -81,8 +77,6 @@ func TestLoadRemoteConfigAppliesGUIEnv(t *testing.T) {
 		"~/.rune/bin must be prepended to PATH")
 }
 
-// TestWorkspaceOverlayWinsOverHomeConfig asserts the workspace-root
-// .rune/config.yaml overlay is layered on top of the remote-home config.
 func TestWorkspaceOverlayWinsOverHomeConfig(t *testing.T) {
 	const envKey = "RUNE_TEST_OVERLAY_VAR"
 	require.NoError(t, os.Unsetenv(envKey))
@@ -108,12 +102,6 @@ func TestWorkspaceOverlayWinsOverHomeConfig(t *testing.T) {
 		"workspace-root .rune/config.yaml must override the home config")
 }
 
-// TestResolveRemoteEditorMode asserts a host's package manager resolves
-// the user's editor mode from its ~/.rune config so RUNE_EDITOR_MODE is
-// predeclared for package config.star scripts. exo resolves to its fallback,
-// a missing config falls back to the vim default rather than an empty
-// (undefined) mode, and a config that still says "modal" reaches packages as
-// "vim".
 func TestResolveRemoteEditorMode(t *testing.T) {
 	t.Run("resolves exo to configured fallback", func(t *testing.T) {
 		dataDir := t.TempDir()

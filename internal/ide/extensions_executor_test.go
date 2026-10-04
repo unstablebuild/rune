@@ -139,16 +139,6 @@ func TestExtensionsExecutorCloseClosesUnderlying(t *testing.T) {
 			"fileScheme are released")
 }
 
-// TestExtensionsExecutorTracksLaunchedPid verifies that PIDs of
-// extension binaries launched through extensionsExecutor are
-// recorded in the embedded tracking shell, so that the
-// "extensions process status" REPL command can list them.
-//
-// Before this behavior was centralized the extension PID was never
-// recorded anywhere: workspaceRunner.Run forwarded straight to the
-// passthrough extensionsExecutor and `process status / tree / audit`
-// only saw gRPC sub-children of extensions, never the extension
-// itself.
 func TestExtensionsExecutorTracksLaunchedPid(t *testing.T) {
 	t.Parallel()
 

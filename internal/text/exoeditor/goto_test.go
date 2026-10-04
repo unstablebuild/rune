@@ -51,8 +51,6 @@ func digitKeyCombs(n int) []term.KeyComb {
 	return out
 }
 
-// TestGotoTemplateRender table-drives the rendered output for the
-// goto templates we document in rune.star.
 func TestGotoTemplateRender(t *testing.T) {
 	cases := []struct {
 		name string
@@ -112,7 +110,6 @@ func TestGotoTemplateRender(t *testing.T) {
 	}
 }
 
-// TestGotoTemplateEmpty verifies the zero value renders to nothing.
 func TestGotoTemplateEmpty(t *testing.T) {
 	g, err := parseGotoTemplate("")
 	require.NoError(t, err)
@@ -122,10 +119,6 @@ func TestGotoTemplateEmpty(t *testing.T) {
 	assert.Empty(t, g.Render(-7, 99))
 }
 
-// TestGotoTemplateParseValid drives parseGotoTemplate over a wide set
-// of well-formed templates and asserts the resulting Render output
-// matches the expected canonical string form. This is the workhorse
-// table covering normal/edge-case parsing for non-failing inputs.
 func TestGotoTemplateParseValid(t *testing.T) {
 	cases := []struct {
 		name string
@@ -295,10 +288,6 @@ func TestGotoTemplateParseValid(t *testing.T) {
 	}
 }
 
-// TestGotoTemplateParseInvalid drives parseGotoTemplate over a set of
-// malformed inputs and asserts a parse error surfaces for each.
-// Errors must propagate to validateExo so the IDE falls back to
-// modal mode rather than silently shipping a broken goto.
 func TestGotoTemplateParseInvalid(t *testing.T) {
 	cases := []struct {
 		name string
@@ -330,11 +319,6 @@ func TestGotoTemplateParseInvalid(t *testing.T) {
 	}
 }
 
-// TestGotoTemplateRenderEmits1BasedDigits ensures Render emits one
-// KeyComb per digit, with Ch = the digit rune and no modifiers. This
-// guards against accidental Mod leakage from preceding literals into
-// the rendered digit segment (Render must always start a fresh
-// KeyComb for each digit).
 func TestGotoTemplateRenderEmits1BasedDigits(t *testing.T) {
 	// `<c-x>` parses to a single KeyComb{Mod: ModCtrl, Ch: 'x'};
 	// the digit segments must not inherit ModCtrl from it.
@@ -353,9 +337,6 @@ func TestGotoTemplateRenderEmits1BasedDigits(t *testing.T) {
 			"want: %v\n got: %v", wantDigits, keys[1:])
 }
 
-// TestGotoTemplateRenderResultIsIndependentBetweenCalls guards
-// against accidental shared-backing-array bugs in Render: two
-// successive Renders must not influence each other.
 func TestGotoTemplateRenderResultIsIndependentBetweenCalls(t *testing.T) {
 	g, err := parseGotoTemplate("{line}-{col}")
 	require.NoError(t, err)
@@ -374,8 +355,6 @@ func TestGotoTemplateRenderResultIsIndependentBetweenCalls(t *testing.T) {
 		"Render must not share backing storage between calls")
 }
 
-// TestSplitGotoTemplate exercises the segment-splitting helper
-// directly to make placeholder boundary handling explicit.
 func TestSplitGotoTemplate(t *testing.T) {
 	cases := []struct {
 		name string
@@ -468,11 +447,6 @@ func TestSplitGotoTemplate(t *testing.T) {
 	}
 }
 
-// TestGotoTemplateRoundTrip parses each documented template and
-// verifies that re-parsing the rendered string yields the same
-// KeyComb sequence (modulo placeholder substitution). This catches
-// regressions where Render emits a string that no longer matches
-// what ParseKeys accepts.
 func TestGotoTemplateRoundTrip(t *testing.T) {
 	templates := []string{
 		"<esc>:{line}<enter>{col}|",

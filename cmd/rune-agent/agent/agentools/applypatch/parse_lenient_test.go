@@ -24,11 +24,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestParseLenient verifies the parser tolerates common LLM mistakes:
-// missing delimiters, preamble text, and trailing commentary.
-//
-// Test inputs are built with strings.Join to avoid confusing the
-// apply_patch tool with lines that look like patch directives.
 func TestParseLenient(t *testing.T) {
 	join := strings.Join
 

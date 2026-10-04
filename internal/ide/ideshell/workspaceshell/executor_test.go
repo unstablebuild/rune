@@ -506,9 +506,6 @@ func TestHandleCommandUnknown(t *testing.T) {
 	assert.True(t, errors.Is(err, repl.ErrNotFound))
 }
 
-// TestRegisterProcessCommand asserts that
-// RegisterProcessCommand wires the executor as the handler for
-// the "process" REPL command in the registry.
 func TestRegisterProcessCommand(t *testing.T) {
 	exec := NewExecutor(newMockExecutor())
 	r := ideshell.NewRegistry()
@@ -1331,10 +1328,6 @@ func TestE2EProcessTreeWithRealExecutor(t *testing.T) {
 // the project's "table tests on top, fixtures on bottom"
 // convention.
 
-// TestEscapeMarkdownTableCell is the unit-level table for the
-// sanitizer. It must be a closed function over its input: no
-// matter what raw bytes we feed it, the output must contain
-// no raw CR/LF, no unescaped backticks, and no unescaped pipes.
 func TestEscapeMarkdownTableCell(t *testing.T) {
 	cases := []struct {
 		name string
@@ -1392,22 +1385,6 @@ func TestEscapeMarkdownTableCell(t *testing.T) {
 	}
 }
 
-// TestBuildProcessTableMarkdownSource_HeredocCorpus drives the
-// markdown source builder with realistic argvs taken from every
-// language we know spawns child processes with heredoc-style
-// inline scripts (bash, dash, zsh, python, perl, ruby, node,
-// php, sql, awk, sed, ssh, tar). Each case provides a single
-// `workspaceapi.Cmd`, which the test converts into a
-// `psEntry` via formatCmd — the same path the real
-// handleStatus / handleAudit code takes. The test asserts:
-//
-//   - the full markdown source matches a literal golden
-//   - the row count equals header rows + entries
-//   - no row contains a raw CR or LF
-//   - every backtick in the row is escaped
-//   - the row is wrapped by `| ` … ` |`
-//   - the COMMAND cell is wrapped by backticks that are NOT
-//     adjacent to any inner unescaped backtick
 func TestBuildProcessTableMarkdownSource_HeredocCorpus(t *testing.T) {
 	for _, tc := range heredocCorpus() {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1427,10 +1404,6 @@ func TestBuildProcessTableMarkdownSource_HeredocCorpus(t *testing.T) {
 	}
 }
 
-// TestBuildProcessTableMarkdownSource_Structural exercises the
-// shape of the table for cases that are not specific to a
-// language: empty table, multiple entries, PID ordering,
-// `lastErr` with newlines, and the original RUNE-181 repro.
 func TestBuildProcessTableMarkdownSource_Structural(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -1494,17 +1467,6 @@ func TestBuildProcessTableMarkdownSource_Structural(t *testing.T) {
 	}
 }
 
-// TestHandleStatusHeredocCorpus drives the full
-// handleStatus → markdown.New → comptest framebuffer pipeline
-// for the same argv corpus. It asserts that:
-//
-//   - the rendered text still shows the canonical column
-//     headers (canary that the row structure did not collapse)
-//   - the rendered text contains the sanitizer's single-line
-//     marker whenever the argv had a literal newline
-//   - the rendered text contains the executable basename
-//     (canary that the COMMAND cell carries something
-//     resembling the original command)
 func TestHandleStatusHeredocCorpus(t *testing.T) {
 	for _, tc := range heredocCorpus() {
 		t.Run(tc.name, func(t *testing.T) {

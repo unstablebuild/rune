@@ -59,9 +59,6 @@ func TestServedPackagesWaitForTheEditor(t *testing.T) {
 	assert.Equal(t, []string{"/pkg/go/bin/go"}, paths)
 }
 
-// TestHostPackageManagerInstallsPackage installs a package on a host with
-// no editor of its own: the package is activated, and the env it adds to
-// the user config is re-applied for the commands started afterwards.
 func TestHostPackageManagerInstallsPackage(t *testing.T) {
 	const pkgID = "github.com/unstablebuild/test-extension"
 	repoDir := t.TempDir()

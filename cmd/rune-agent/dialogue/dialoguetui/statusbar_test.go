@@ -50,8 +50,6 @@ func shippedStatusBar(t *testing.T) *StatusBar {
 	}, nil)
 }
 
-// Elements that do not name a foreground inherit the bar's, so a theme
-// can restyle the whole row from one key instead of every element.
 func TestStatusBarForegroundColorIsInherited(t *testing.T) {
 	layout, err := ParseStatusBarLayout(`{{ .Effort }}{{ .ShiftRight }}{{ .Model | fg "white" }}`)
 	require.NoError(t, err)
@@ -83,8 +81,6 @@ func TestStatusBarForegroundColorIsInherited(t *testing.T) {
 		"an element with its own fg keeps it")
 }
 
-// The shipped palette matches the editor's status bar: a gray row that
-// only the status pill and the gauges break out of.
 func TestStatusBarShippedPaletteMatchesEditorBar(t *testing.T) {
 	assert.Equal(t, term.ColorGray, DefaultStatusBarBackground)
 	assert.Equal(t, term.ColorSilver, DefaultStatusBarForeground)
@@ -196,8 +192,6 @@ func TestStatusBarIdleKeepsModelContextAndCache(t *testing.T) {
 	assert.Contains(t, got, "cache 50%")
 }
 
-// Idle is a state like any other, so the shipped palette animates it
-// rather than leaving the spinner cell blank.
 func TestStatusBarIdleSpinnerShowsAnIcon(t *testing.T) {
 	frames := DefaultStatuses[idleStatusText].Animation.Frames
 	require.NotEmpty(t, frames)
@@ -209,8 +203,6 @@ func TestStatusBarIdleSpinnerShowsAnIcon(t *testing.T) {
 	}
 }
 
-// A status the palette gives no animation still blanks the spinner
-// while idle, so the elements to its right do not jump.
 func TestStatusBarIdleSpinnerBlanksWithoutAnimation(t *testing.T) {
 	layout, err := ParseStatusBarLayout(`[{{ .Spinner }}]`)
 	require.NoError(t, err)
@@ -221,9 +213,6 @@ func TestStatusBarIdleSpinnerBlanksWithoutAnimation(t *testing.T) {
 	assert.Equal(t, "[ ]", render(t, bar, 3))
 }
 
-// The spinner shares the status pill, so an animation of its own
-// colours the icon without splitting the block in two: it overrides
-// only the attributes it names.
 func TestStatusBarAnimationAttrOverridesTheStatusForTheSpinnerOnly(t *testing.T) {
 	layout, err := ParseStatusBarLayout(`{{ .Spinner }}{{ .Status }}`)
 	require.NoError(t, err)
@@ -252,9 +241,6 @@ func TestStatusBarAnimationAttrOverridesTheStatusForTheSpinnerOnly(t *testing.T)
 	assert.Equal(t, term.ColorSilver, status.Bg)
 }
 
-// TestStatusBarShippedDefaultsAreLegible pins the shipped palette. An
-// element whose foreground matches the background it is drawn on is
-// invisible, which shipped as a bug once.
 func TestStatusBarShippedDefaultsAreLegible(t *testing.T) {
 	assert.NotEqual(t, defaultGaugeEmptyAttr.Bg, defaultGaugeEmptyAttr.Fg,
 		"the gauge label must be visible against its track")
@@ -288,12 +274,6 @@ func TestStatusBarShippedDefaultsAreLegible(t *testing.T) {
 	}
 }
 
-// The shipped layout fades the status pill into the bar with shade
-// glyphs, which only reads correctly when the shade run is inverted
-// against the bar background rather than the pill's own. The pill runs
-// from the very first cell: the spinner and the spaces around it are
-// part of it, and once shipped without the pill's background they left
-// unpainted cells at the left edge of the bar.
 func TestStatusBarShippedLayoutFadesStatusPill(t *testing.T) {
 	layout, err := ParseStatusBarLayout(DefaultStatusBarLayout)
 	require.NoError(t, err)
@@ -323,8 +303,6 @@ func TestStatusBarShippedLayoutFadesStatusPill(t *testing.T) {
 	}
 }
 
-// The status element matches the editor's status bar: bold, over
-// colours the palette picks by status rather than the layout.
 func TestStatusBarShippedStatusIsBold(t *testing.T) {
 	layout, err := ParseStatusBarLayout(DefaultStatusBarLayout)
 	require.NoError(t, err)
@@ -350,8 +328,6 @@ func TestStatusBarShippedStatusIsBold(t *testing.T) {
 	}, rec.cells[term.Coordinates{X: x}].Attributes())
 }
 
-// The status pill reports the phase through its colour, so a state the
-// palette covers must not keep the previous one's block.
 func TestStatusBarStatusAttributesFollowPhase(t *testing.T) {
 	bar := shippedStatusBar(t)
 	bar.SetState(func(s *StatusBarState) {
@@ -369,8 +345,6 @@ func TestStatusBarStatusAttributesFollowPhase(t *testing.T) {
 		rec.cells[term.Coordinates{X: x}].Bg)
 }
 
-// The conversation name reads as another label on the bar rather than
-// as a pill of its own, so it takes the same colours as the model.
 func TestStatusBarShippedLayoutMatchesConversationToModel(t *testing.T) {
 	layout, err := ParseStatusBarLayout(DefaultStatusBarLayout)
 	require.NoError(t, err)
@@ -403,16 +377,11 @@ func TestStatusBarShippedLayoutMatchesConversationToModel(t *testing.T) {
 		rec.cells[term.Coordinates{X: len([]rune(before))}].Bg)
 }
 
-// An element with no value must take its literals down with it, or an
-// unnamed conversation leaves a shade fading into nothing.
 func TestStatusBarEmptyConversationDropsItsPill(t *testing.T) {
 	bar := shippedStatusBar(t)
 	assert.NotContains(t, render(t, bar, 100), "░▒▓█")
 }
 
-// The model and the effort identify the conversation, so they hug the
-// status pill on the left the way the editor's filepath does, rather
-// than floating next to the gauges on the right.
 func TestStatusBarShippedLayoutAlignsModelLeft(t *testing.T) {
 	bar := shippedStatusBar(t)
 	bar.SetState(func(s *StatusBarState) {
@@ -433,8 +402,6 @@ func TestStatusBarShippedLayoutAlignsModelLeft(t *testing.T) {
 	assert.Less(t, effort, gauge, "the model group stays left of the gauges")
 }
 
-// The cache reads as a rate backed by the counts it came from, not as
-// a bar, and says nothing at all until there is a turn to report on.
 func TestStatusBarShippedLayoutReadsCacheAsAValue(t *testing.T) {
 	bar := shippedStatusBar(t)
 	assert.NotContains(t, render(t, bar, 100), "󰗂",
@@ -448,8 +415,6 @@ func TestStatusBarShippedLayoutReadsCacheAsAValue(t *testing.T) {
 	assert.Contains(t, render(t, bar, 100), "󰗂 88%")
 }
 
-// The palette is keyed by the phase, not by the rendered label, so a
-// task description does not cost the pill its colour.
 func TestStatusBarStatusAttributesIgnoreActiveForm(t *testing.T) {
 	bar := shippedStatusBar(t)
 	bar.SetState(func(s *StatusBarState) {
@@ -475,8 +440,6 @@ func TestStatusBarActiveFormOverridesPhase(t *testing.T) {
 	assert.Contains(t, render(t, bar, 60), "Running tests")
 }
 
-// A pending prompt blocks the turn, so it outranks a task description:
-// the description would otherwise read as work still moving.
 func TestStatusBarAskingOverridesActiveForm(t *testing.T) {
 	bar := newTestStatusBar(t)
 	bar.SetState(func(s *StatusBarState) {
@@ -488,11 +451,6 @@ func TestStatusBarAskingOverridesActiveForm(t *testing.T) {
 	assert.NotContains(t, row, "Running tests")
 }
 
-// Every status is padded to the widest one the palette knows, so the
-// elements to the right of the pill do not shuffle sideways each time
-// the turn moves to a phase with a shorter name. The padding all goes
-// on the right, so the gap between the spinner and the text is the
-// same for every status rather than growing with the name.
 func TestStatusBarPadsEveryStatusToOneWidth(t *testing.T) {
 	layout, err := ParseStatusBarLayout(`[{{ .Status }}]`)
 	require.NoError(t, err)
@@ -518,8 +476,6 @@ func TestStatusBarPadsEveryStatusToOneWidth(t *testing.T) {
 	}
 }
 
-// A description longer than any known status is not padded, and must
-// not be truncated to their width either.
 func TestStatusBarDoesNotPadOverlongStatus(t *testing.T) {
 	bar := newTestStatusBar(t)
 	bar.SetState(func(s *StatusBarState) {
@@ -528,8 +484,6 @@ func TestStatusBarDoesNotPadOverlongStatus(t *testing.T) {
 	assert.Contains(t, render(t, bar, 80), "Running a very long task description")
 }
 
-// The spinner is animated per status, so moving to another phase must
-// swap the animation rather than keep cycling the previous one.
 func TestStatusBarSpinnerAnimationIsPerStatus(t *testing.T) {
 	layout, err := ParseStatusBarLayout(`{{ .Spinner }}`)
 	require.NoError(t, err)
@@ -556,8 +510,6 @@ func TestStatusBarSpinnerAnimationIsPerStatus(t *testing.T) {
 		[]string{render(t, bar, 1), render(t, bar, 1)})
 }
 
-// A status with no animation of its own still has to spin, or the bar
-// would read as hung on any phase the palette does not cover.
 func TestStatusBarSpinnerAnimationDefault(t *testing.T) {
 	layout, err := ParseStatusBarLayout(`{{ .Spinner }}`)
 	require.NoError(t, err)
@@ -575,9 +527,6 @@ func TestStatusBarUnsetEffortRendersModelDefault(t *testing.T) {
 	assert.Contains(t, render(t, bar, 60), "default")
 }
 
-// Literal text around a gauge is padding the layout asked for, so it
-// has to survive; the gauge renders its own fixed-width field between
-// whatever the layout put on either side of it.
 func TestStatusBarGaugeKeepsSurroundingText(t *testing.T) {
 	layout, err := ParseStatusBarLayout(`|{{ .ContextGauge }}|`)
 	require.NoError(t, err)
@@ -591,9 +540,6 @@ func TestStatusBarGaugeKeepsSurroundingText(t *testing.T) {
 	assert.Equal(t, "| 50k/200k  |", render(t, bar, 13))
 }
 
-// A gauge's literals are styled by the pipe operators on the gauge
-// element, the same as any other element's. The gauge paints its own
-// track, so those attributes are all the layout gets to say about it.
 func TestStatusBarGaugeLiteralsTakeElementAttributes(t *testing.T) {
 	layout, err := ParseStatusBarLayout(`|{{ .ContextGauge | fg "aqua" }}|`)
 	require.NoError(t, err)
@@ -634,9 +580,6 @@ func TestStatusBarPaintsBackgroundAcrossRow(t *testing.T) {
 	}
 }
 
-// The GUI renders the bar half a cell lower, like the editor's status
-// bar, which it only does for cells carrying the offset flag. Missing
-// it on any cell tears the row.
 func TestStatusBarOffsetsWholeRowVertically(t *testing.T) {
 	bar := shippedStatusBar(t)
 	bar.Resize(40, 1)

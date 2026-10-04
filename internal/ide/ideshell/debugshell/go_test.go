@@ -220,11 +220,6 @@ func TestE2E_Launch(t *testing.T) {
 		"expected debuggee stdout in capture file, got %q", string(data))
 }
 
-// TestE2E_BreakpointOnEmptyLine reproduces the bug where
-// setting a breakpoint on a blank/non-executable line caused
-// the debuggee to terminate without ever stopping. The fix
-// normalises the breakpoint line client-side to the next
-// executable line so the breakpoint actually binds.
 func TestE2E_BreakpointOnEmptyLine(t *testing.T) {
 	t.Parallel()
 	dlvBin := findDlv(t)
@@ -296,12 +291,6 @@ func blankLineNear(t *testing.T, path string, start int) int {
 	return 0
 }
 
-// TestE2E_BreakpointOnClosingBrace verifies that asking for a
-// breakpoint on the closing-brace-only line of the *last*
-// function in a file fails fast: there is no statement at or
-// after that position so the prompt setBreakpointAt path must
-// surface an error to the user, rather than silently failing
-// to bind.
 func TestE2E_BreakpointOnClosingBrace(t *testing.T) {
 	t.Parallel()
 	dlvBin := findDlv(t)
@@ -344,12 +333,6 @@ func lastClosingBraceLine(t *testing.T, path string) int {
 	return 0
 }
 
-// TestE2E_BreakpointOnLiteralOnlyReturn regression-tests
-// RUNE-177: a `return false`-style line inside a function
-// body must be a valid breakpoint target even though
-// tree-sitter emits no identifier captures for it. Before
-// the fix, the prompt-side setBreakpointAt path failed with
-// "no statement at or after line N" on these lines.
 func TestE2E_BreakpointOnLiteralOnlyReturn(t *testing.T) {
 	t.Parallel()
 	dlvBin := findDlv(t)
@@ -1193,29 +1176,6 @@ func (h *e2eHarness) outputPath(t *testing.T) string {
 	return h.h.output.Path()
 }
 
-// TestE2E_OutputAppearsInIDEEditorBuffer reproduces the bug
-// where the editor pane that opens the per-session output
-// capture file remained empty even though OutputEvents were
-// streaming through the REPL.
-//
-// The bug had two compounding causes:
-//
-//  1. The sink file lived in os.TempDir() so the IDE's
-//     workspace-rooted file-system watcher never observed it,
-//     and ReloadTab was therefore never invoked.
-//  2. The sink wrote with fmt.Fprintf without an explicit
-//     fsync, so even a watcher pointed at the file would not
-//     observe a Write event in time.
-//
-// The fix is to (a) place the sink inside the workspace root
-// (so the existing IDE watcher fires) and (b) fsync after each
-// Append (so the Write event lands deterministically). This
-// test wires up a real text.Component (the production browser
-// + editor) and a real file-scheme Watch that mirrors the
-// IDE's dispatchFilesystemEvent: every Write event triggers
-// ReloadTab on the open output tab. It then drives a real
-// debug session that prints to stdout and asserts the IDE
-// buffer ends up containing that output.
 func TestE2E_OutputAppearsInIDEEditorBuffer(t *testing.T) {
 	t.Parallel()
 	dlvBin := findDlv(t)
@@ -1289,15 +1249,6 @@ func TestE2E_OutputAppearsInIDEEditorBuffer(t *testing.T) {
 	_, _ = h.run(ctx, subTerminate)
 }
 
-// TestE2E_StoppedLocationWithCursorAlreadyOnLine reproduces the
-// bug where the yellow "paused" marker (and the variables
-// overlay) never appeared when the user left the cursor on the
-// breakpoint line before starting the session.
-//
-// text.Handler.SetCursorAtScroll reports false when the cursor
-// did not move, which is exactly the "cursor already there"
-// case. openFrame treated that as a fatal error and returned
-// before installing the stopped location list.
 func TestE2E_StoppedLocationWithCursorAlreadyOnLine(t *testing.T) {
 	t.Parallel()
 	dlvBin := findDlv(t)
@@ -1785,25 +1736,6 @@ func (v compCellView) RawCells() ([][]term.Cell, error) {
 	return v.v.RawCells(), nil
 }
 
-// TestE2E_CtrlCDoesNotStopEventStream reproduces the bug where
-// pressing Ctrl-C during a debug session cancelled the
-// per-command context and silently stopped the session
-// iterator from delivering any further DAP events.
-//
-// Concretely: the user types `debugger initialize`, then
-// `debugger launch`, then Ctrl-C (which the REPL turns into a
-// `cmdCancel()` of the per-command ctx). The debug session
-// itself must keep running. When the user later runs `debugger
-// configured` and a breakpoint hits, the StoppedEvent must
-// reach the session iterator and the auto stack-trace must be
-// rendered into its output stream — exactly as it would have
-// been without the Ctrl-C.
-//
-// Before the fix the iterator's Next selected on ctx.Done(),
-// so the drain goroutine returned ok=false the moment ctx was
-// cancelled; every subsequent event was lost. After the fix
-// the iterator is decoupled from the caller's ctx and only
-// ends on session close.
 func TestE2E_CtrlCDoesNotStopEventStream(t *testing.T) {
 	t.Parallel()
 	dlvBin := findDlv(t)

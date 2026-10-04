@@ -41,28 +41,6 @@ import (
 	"unstable.build/rune/internal/ide/pkgshell"
 )
 
-// TestGitHubPkgExtensionEndToEnd installs complete, runnable extension
-// packages straight from git repositories served over smart-HTTP —
-// exactly what `pkg install github.com/<owner>/<repo>` does against
-// GitHub — and proves the full chain end to end per language:
-//
-//	clone → config verification → `requirements:` install (fake
-//	official packages delivering the host's real uv/go/cargo into
-//	<dataDir>/bin) → promote + config merge → live extension start →
-//	`uv run` / `go run` / `cargo run` → SDK handshake → live API call.
-//
-// Each fixture extension is wired to the real language SDK (module
-// replace / [tool.uv.sources] / path dependency, resolved from sibling
-// checkouts) and, once connected, writes a sentinel through an IDE API:
-// the Go and Python extensions store a document via the storage API and
-// the Rust extension creates a file via the workspace filesystem API
-// (the Rust SDK has no storage client yet). The test polls for the
-// sentinel to prove the extension came up alive.
-//
-// The test builds language toolchain environments from scratch, so it
-// is opt-in: set RUNE_GITHUB_PKG_E2E=1 and run with a generous timeout
-// (e.g. -timeout 30m). Language variants additionally skip when the
-// host toolchain or the SDK checkout is unavailable.
 func TestGitHubPkgExtensionEndToEnd(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping github package e2e in -short mode")

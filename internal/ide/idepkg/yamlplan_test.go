@@ -449,10 +449,6 @@ func normalizeYAML(t *testing.T, want map[string]any) map[string]any {
 	return normalizeIdePkgConfig(out).(map[string]any)
 }
 
-// TestVersionDependentByDecode asserts that diffing a real-version decode
-// against a sentinel-version decode marks exactly the leaves whose value
-// changed, mirroring the nesting, so .star overlays re-prompt on version
-// bumps identically to YAML (RUNE-225).
 func TestVersionDependentByDecode(t *testing.T) {
 	t.Parallel()
 

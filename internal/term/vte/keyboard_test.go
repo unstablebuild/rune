@@ -72,8 +72,6 @@ func chEv(ch rune, mod term.Modifier) term.Event {
 	return term.Event{Type: term.EventKey, Ch: ch, Mod: mod}
 }
 
-// TestKittyKeyboardFlags pins the flag stacks to kitty's
-// screen_{push,pop,set,report}_key_encoding_flags (kitty/screen.c).
 func TestKittyKeyboardFlags(t *testing.T) {
 	t.Parallel()
 	var overflow strings.Builder
@@ -148,9 +146,6 @@ func TestModifyOtherKeysQuery(t *testing.T) {
 	}
 }
 
-// TestKeyEncodingKitty pins the kitty encoding to the vectors of
-// kitty_tests/keys.py test_encode_key_event, as the terminal sees keys:
-// only presses, and shift already applied to the character typed.
 func TestKeyEncodingKitty(t *testing.T) {
 	t.Parallel()
 	const (
@@ -283,8 +278,6 @@ func TestKeyEncodingModifyOtherKeys(t *testing.T) {
 	}
 }
 
-// TestHandlerKeyboardProtocols types keys after the program selected an
-// encoding, so the parser's state must reach the input path.
 func TestHandlerKeyboardProtocols(t *testing.T) {
 	t.Parallel()
 	ctrlC := term.Event{Type: term.EventKey, Ch: 'c', Mod: term.ModCtrl, Raw: []byte{0x03}}
@@ -330,9 +323,6 @@ func TestHandlerKeyboardProtocols(t *testing.T) {
 	}
 }
 
-// TestHandlerCopyPassThrough pins cmd+c: a terminal selection is left to
-// Rune's clipboardcopy, and with nothing selected the key reaches a
-// program that can tell cmd apart, so that it copies its own selection.
 func TestHandlerCopyPassThrough(t *testing.T) {
 	t.Parallel()
 	cmdC := chEv('c', term.ModMeta)
@@ -371,10 +361,6 @@ func TestHandlerCopyPassThrough(t *testing.T) {
 	}
 }
 
-// TestHandlerBracketedPaste pins that a program in bracketed paste mode
-// gets the paste markers whether the paste came from the host terminal,
-// whose events carry them, or from Rune itself (clipboardpaste, drag and
-// drop), whose events carry none.
 func TestHandlerBracketedPaste(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

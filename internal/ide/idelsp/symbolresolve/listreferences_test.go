@@ -75,10 +75,6 @@ func TestListReferencesGoE2E(t *testing.T) {
 	}
 }
 
-// TestListReferencesGoImportFiltering pins the reference-query filtering rules
-// against the real fixtures: dot- and blank-imported packages must contribute
-// no qualified references, and a qualified type from a legitimately imported
-// package must pass the RequireImport check.
 func TestListReferencesGoImportFiltering(t *testing.T) {
 	t.Parallel()
 
@@ -100,9 +96,6 @@ func TestListReferencesGoImportFiltering(t *testing.T) {
 	assert.True(t, got["iterator.Iterator"], "qualified type from an imported package must be listed")
 }
 
-// TestListReferencesGoStreamsDuplicates documents that the engine streams one
-// entry per occurrence (the same qualified name appears across files), so
-// deduplication is the caller's responsibility (see completeReferencedSymbol).
 func TestListReferencesGoStreamsDuplicates(t *testing.T) {
 	t.Parallel()
 

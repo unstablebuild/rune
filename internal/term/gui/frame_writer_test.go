@@ -86,9 +86,6 @@ func TestFrameWriterDrawImage(t *testing.T) {
 	}
 }
 
-// TestFrameWriterClearDropsPlacements asserts placements live for a
-// single frame, so a picture that is no longer drawn disappears and
-// stops pinning its pixels.
 func TestFrameWriterClearDropsPlacements(t *testing.T) {
 	w := newFrameWriter(context.Background(), 10, 5)
 	src := image.NewRGBA(image.Rect(0, 0, 2, 2))
@@ -107,10 +104,6 @@ func TestFrameWriterClearDropsPlacements(t *testing.T) {
 	assert.Equal(t, term.ImageID(2), w.Images()[0].ID)
 }
 
-// TestFrameWriterComposite asserts the frame the renderer composites
-// from what was drawn through the term.Writer API: cells written after
-// a placement cover it, whatever they hold, and every cell reads back
-// exactly as written.
 func TestFrameWriterComposite(t *testing.T) {
 	const width, height = 12, 4
 	grid := image.Rect(0, 0, width, height)
@@ -458,9 +451,6 @@ func TestFrameWriterComposite(t *testing.T) {
 	}
 }
 
-// TestFrameWriterWindowsOverTerminalGraphics draws a terminal showing a
-// kitty graphics picture in a tiled window, and asserts the selection
-// stays under the picture while a floating window covers it.
 func TestFrameWriterWindowsOverTerminalGraphics(t *testing.T) {
 	const width, height = 24, 8
 	terminal, feed := newTerminal(t)
@@ -529,9 +519,6 @@ func TestFrameWriterWindowsOverTerminalGraphics(t *testing.T) {
 	})
 }
 
-// TestFrameWriterFloatingTerminalStacking follows issue #151: a floating
-// terminal showing a picture and a floating window opened after it stack
-// in the order the window manager raises them.
 func TestFrameWriterFloatingTerminalStacking(t *testing.T) {
 	const width, height = 28, 10
 	terminal, feed := newTerminal(t)

@@ -248,15 +248,6 @@ func zigFunctionLineRange(t *testing.T, path, name string) (int, int) {
 	return 0, 0
 }
 
-// TestE2E_Zig_Launch drives a real lldb-dap DAP adapter against a zig
-// binary through the debugshell command surface end to end, mirroring
-// TestE2E_Rust_Launch: the session reaches a breakpoint inside sum_to,
-// the top frame is sum_to at the breakpoint line in the launched
-// binary's source, the stopped and variables location lists are
-// installed (the latter scope-filtered via the zig tree-sitter
-// grammar), an expression evaluates in the stopped frame, and the
-// debuggee's output is captured. It self-skips when lldb-dap or zig is
-// not installed.
 func TestE2E_Zig_Launch(t *testing.T) {
 	t.Parallel()
 	lldbDapBin := findLldbDap(t)
@@ -343,10 +334,6 @@ func TestE2E_Zig_Launch(t *testing.T) {
 		"expected debuggee output in capture file, got %q", string(data))
 }
 
-// TestE2E_Zig_BreakpointOnEmptyLine mirrors the Go/Python/Rust tests:
-// setting a breakpoint on a blank, non-executable line must normalize
-// to the next executable line client-side so the breakpoint binds and
-// the debuggee stops rather than running to completion.
 func TestE2E_Zig_BreakpointOnEmptyLine(t *testing.T) {
 	t.Parallel()
 	lldbDapBin := findLldbDap(t)

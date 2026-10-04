@@ -357,11 +357,6 @@ func TestAsInt_Table(t *testing.T) {
 	}
 }
 
-// TestReadGGUFTypedValue_AllScalarTypes drains every scalar branch of
-// readGGUFTypedValue. The dispatch is the same one readGGUFContextLength
-// uses to skip past KVs it does not care about, so each branch is
-// reachable in production but only some are exercised by the
-// context-length tests above.
 func TestReadGGUFTypedValue_AllScalarTypes(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -473,10 +468,6 @@ func TestReadGGUFTypedValue_AllScalarTypes(t *testing.T) {
 	}
 }
 
-// TestReadGGUFTypedValue_ArrayOfScalars covers the (intentionally
-// silent) array-skip branch: the function must drain the array body and
-// return (nil, nil). Pairs with the existing array tests in
-// TestReadGGUFContextLength_Table.
 func TestReadGGUFTypedValue_ArrayOfScalars(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
@@ -497,11 +488,6 @@ func TestReadGGUFTypedValue_ArrayOfScalars(t *testing.T) {
 	}
 }
 
-// TestReadGGUFValue_TypeTagThenValue covers the readGGUFValue wrapper
-// (one-byte type tag followed by readGGUFTypedValue). The
-// context-length parser uses readGGUFValue, so this guards against a
-// regression in the wrapper while the typed-value table above guards
-// the dispatch.
 func TestReadGGUFValue_TypeTagThenValue(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer

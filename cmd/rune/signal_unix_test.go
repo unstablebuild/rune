@@ -28,8 +28,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// The runtime writes fatal crash dumps straight to fd 2, bypassing
-// os.Stderr, so the redirect must replace the descriptor itself.
 func TestRedirectStderrCapturesFD2(t *testing.T) {
 	saved, err := unix.Dup(unix.Stderr)
 	require.NoError(t, err)

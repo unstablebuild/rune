@@ -159,11 +159,6 @@ func TestMergeYAMLNodesPreservesComments(t *testing.T) {
 	assert.Contains(t, actual, "b: 2")
 }
 
-// TestApplyConfigDiff exhaustively pins applyConfigDiff's contract:
-// it adds new keys, recurses into mappings present on both sides, and —
-// unlike the append-only mergeYAMLNodes — overwrites any existing dst
-// value (scalar, sequence, or type-mismatched node) with src's value.
-// src is always the approved prompt diff, so overwriting is intentional.
 func TestApplyConfigDiff(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -372,9 +367,6 @@ func TestApplyConfigDiff(t *testing.T) {
 	}
 }
 
-// TestApplyConfigDiffNonMappingGuard verifies the top-level guard: when
-// either node is not a mapping, applyConfigDiff is a no-op rather than
-// panicking or producing malformed output.
 func TestApplyConfigDiffNonMappingGuard(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -410,9 +402,6 @@ func TestApplyConfigDiffNonMappingGuard(t *testing.T) {
 	}
 }
 
-// TestApplyConfigDiffClonesSrc verifies that appended and overwritten
-// values are deep-cloned from src: mutating src after the merge must not
-// affect dst (no shared node aliasing).
 func TestApplyConfigDiffClonesSrc(t *testing.T) {
 	t.Parallel()
 	dstDoc := mustParseYAML(t, "a: 1\n")
@@ -432,9 +421,6 @@ func TestApplyConfigDiffClonesSrc(t *testing.T) {
 		"dst must not alias src nodes")
 }
 
-// TestApplyConfigDiffPreservesUntouchedComments verifies comments on dst
-// keys that src does not touch survive the merge, while an overwritten
-// key takes src's value.
 func TestApplyConfigDiffPreservesUntouchedComments(t *testing.T) {
 	t.Parallel()
 	dst := "# top comment\nkeep: 1 # inline\nchange: old\n"
@@ -571,13 +557,6 @@ func stdRuneLookup(key string) (string, bool) {
 	return "", false
 }
 
-// TestExpandRuneVars exercises the shell-parsing partial expander
-// directly across a wide range of corner cases. The contract: known
-// variables (lookup ok) are substituted; every other reference and all
-// surrounding text is preserved byte-for-byte. These assertions also
-// pin down behavior for inputs that are not plain variable templates
-// (operators, quotes, command substitutions) so regressions in the
-// underlying parser are caught.
 func TestExpandRuneVars(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -670,11 +649,6 @@ func TestExpandRuneVars(t *testing.T) {
 	}
 }
 
-// TestExpandRuneVarsParamExpOperators documents that the splice replaces
-// the whole ${...} expansion with the looked-up value, so parameter
-// operators on a KNOWN variable are dropped. Config templates are not
-// expected to use these forms; the test pins the behavior so a future
-// change here is deliberate.
 func TestExpandRuneVarsParamExpOperators(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -696,8 +670,6 @@ func TestExpandRuneVarsParamExpOperators(t *testing.T) {
 	}
 }
 
-// TestExpandMapValues verifies expandRuneVars is threaded through nested
-// maps and slices, and that non-string scalars are left untouched.
 func TestExpandMapValues(t *testing.T) {
 	t.Parallel()
 	cfg := map[string]any{

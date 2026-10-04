@@ -45,11 +45,6 @@ func (r *tickRecorder) tick(fn func()) bool {
 	return true
 }
 
-// TestLocationHandlersCursorPathDoesNotBlockLoop reproduces the UI freeze
-// where invoking an lsp command at the cursor performed the LSP round trip
-// synchronously on the event loop. HandleCommand must return while the LSP
-// request is still in flight and the fetch must not run inside a scheduled
-// tick.
 func TestLocationHandlersCursorPathDoesNotBlockLoop(t *testing.T) {
 	t.Parallel()
 
@@ -248,9 +243,6 @@ func TestLocationHandlersCursorPathDoesNotBlockLoop(t *testing.T) {
 	}
 }
 
-// TestResolvedSymbolBlockingFetchRunsOffTicks asserts that after a symbol
-// argument resolves, the handler's LSP round trip runs on the resolver
-// goroutine rather than inside a scheduled tick on the event loop.
 func TestResolvedSymbolBlockingFetchRunsOffTicks(t *testing.T) {
 	t.Parallel()
 
@@ -313,10 +305,6 @@ func TestResolvedSymbolBlockingFetchRunsOffTicks(t *testing.T) {
 		"the LSP fetch must not run inside a scheduled tick")
 }
 
-// TestSymbolPickerSelectionDoesNotBlockLoop asserts that picking a match
-// from the multi-match symbol picker hands the blocking work off the event
-// loop: Picker.Handle (which runs on the loop) must return while onPick is
-// still executing.
 func TestSymbolPickerSelectionDoesNotBlockLoop(t *testing.T) {
 	t.Parallel()
 

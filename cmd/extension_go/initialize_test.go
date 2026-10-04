@@ -158,11 +158,6 @@ func TestResolveLogFile(t *testing.T) {
 	})
 }
 
-// TestReadGoplsDebugOptionsLogFileMissingParent reproduces the bug where
-// rune.star contains a logfile path whose parent directory does not
-// exist (and cannot be created): readGoplsDebugOptions must not pass
-// the unusable path through to gopls (gopls exits with status 2 when
-// it cannot create the file).
 func TestReadGoplsDebugOptionsLogFileMissingParent(t *testing.T) {
 	tmp := t.TempDir()
 	// Make tmp read-only so MkdirAll fails for any subdirectory.

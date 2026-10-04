@@ -780,12 +780,6 @@ func TestAgentRun_FSMutatorBatchRunsSequentially(t *testing.T) {
 	})
 }
 
-// TestAgentRun_DeleteThenAddSamePathSucceeds reproduces RUNE-AGENT-98:
-// when the LLM batches a delete and a recreate of the same path, the
-// recreate must not observe the file before the delete completes. The
-// "rm" tool sleeps then removes; the "add" tool mirrors
-// applypatch.applyAdd by failing if the path still exists. Dispatcher
-// serialization makes the add run only after rm finished.
 func TestAgentRun_DeleteThenAddSamePathSucceeds(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "foo.txt")
@@ -1506,10 +1500,6 @@ func TestParallelToolExecution(t *testing.T) {
 	})
 }
 
-// TestBuildToolCallMessages asserts that pre-computed tool results produce
-// tool-role messages carrying the tool name. Gemini rejects a
-// function_response with an empty name, so the result message must echo the
-// call's tool name, not only its ID.
 func TestBuildToolCallMessages(t *testing.T) {
 	msgs := buildToolCallMessages([]ToolCallResult{
 		{ToolName: "bash", Arguments: `{"command":"ls"}`, Content: "out"},
@@ -4244,10 +4234,6 @@ func TestAgentRunPersistsModelTextWithoutAttachments(t *testing.T) {
 	assert.Equal(t, "model text", persisted.MultiContent[0].Text)
 }
 
-// TestToolContextCarriesModelEntry verifies that the fully-qualified
-// ModelEntry (Provider set) is carried into a tool's context, so
-// sub-agents inheriting the model resolve to a single provider instead
-// of failing on an ambiguous bare name.
 func TestToolContextCarriesModelEntry(t *testing.T) {
 	var gotModel llmapi.ModelEntry
 	tool := &mockTool{
@@ -4671,18 +4657,6 @@ func TestAutoCompactUsesDefaultMaxOutputTokens(t *testing.T) {
 	assert.True(t, hasEventType(events, EventDone))
 }
 
-// TestAutoCompact_SkipsWhenNothingToCompact pins down the fix for the
-// "agent immediately auto-compacts on a fresh 'hello' and never makes
-// progress" bug observed with small-context local models (e.g. 8192-ctx
-// Qwen). On the very first iteration, the dialogue has only the system
-// prompt and the current user message. Even if usage is above the
-// auto-compact threshold, compacting cannot reduce the token count: the
-// system prompt and tool declarations are what dominate, and summarizing
-// a two-message conversation yields essentially the same text back. We
-// must therefore skip auto-compact when the conversation has no prior
-// assistant turn to summarize — otherwise we burn an LLM call, emit a
-// misleading "compacting" spinner, and (with tools present) can loop
-// indefinitely as every iteration re-enters the same branch.
 func TestAutoCompact_SkipsWhenNothingToCompact(t *testing.T) {
 	svc := &mockService{
 		// Only one real response slot: if the guard fires, we go
@@ -4712,16 +4686,6 @@ func TestAutoCompact_SkipsWhenNothingToCompact(t *testing.T) {
 		"agent should make exactly one LLM call (no wasted Summarize call)")
 }
 
-// TestAutoCompact_DoesNotLoopWhenCompactionCannotReduceUsage pins the
-// second half of the same bug. Even when prior conversation does exist,
-// if the resulting compacted dialogue still exceeds the auto-compact
-// threshold (e.g. because the system prompt + project-instructions +
-// tool schemas alone push past 85% of a small local context window), we
-// must not re-enter auto-compact on the very next iteration. Doing so
-// produces an infinite "compacting → compact again → compacting" loop
-// that never asks the model anything meaningful.
-//
-// The guarantee: at most one auto-compact per Run() invocation.
 func TestAutoCompact_DoesNotLoopWhenCompactionCannotReduceUsage(t *testing.T) {
 	svc := &mockService{
 		responses: []mockResponse{
@@ -4794,8 +4758,6 @@ func TestSummarizeEmptySummaryReturnsError(t *testing.T) {
 	}
 }
 
-// A truncated summary is rejected, and the error must name the limit that
-// was hit and only advise /max_tokens when the model accepts a larger one.
 func TestSummarizeTruncatedSummaryError(t *testing.T) {
 	sonnet := llmapi.ModelEntry{Provider: anthropic.LLMProvider, Name: anthropic.ClaudeSonnet4Dot5}
 	tests := []struct {
@@ -5474,10 +5436,6 @@ func TestAssistantMessageHasReplayableContent(t *testing.T) {
 	}
 }
 
-// TestToolOutputSanitizedForWire is the RUNE-179 regression. Tools may
-// return content with invalid UTF-8 bytes; those bytes must never
-// reach llmapi.Request.Messages, otherwise the proto-go marshaller
-// rejects the request and wedges the conversation.
 func TestToolOutputSanitizedForWire(t *testing.T) {
 	svc := &mockService{
 		responses: []mockResponse{

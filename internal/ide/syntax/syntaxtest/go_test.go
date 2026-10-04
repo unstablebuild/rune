@@ -308,13 +308,6 @@ func TestTreeFoldsIntegration(t *testing.T) {
 	})
 }
 
-// TestTreeFoldsOffEventLoopBufferRace exercises the production pattern
-// where auxBar.rebuildBar calls Tree.Folds from a background goroutine
-// while the host event loop mutates the underlying cell.Buffer (e.g.
-// from a file.reload-scheduled callback). getFolds and
-// treeSitterRangeToTerm must not read t.buf directly — they must use
-// the snapshots persisted by persistCells under t.mu — otherwise the
-// race detector flags the unsynchronized read against the host writer.
 func TestTreeFoldsOffEventLoopBufferRace(t *testing.T) {
 	pkgs := newInstalledPkgManager(t)
 	var wg sync.WaitGroup
@@ -1747,11 +1740,6 @@ func TestTreeStateIntegration(t *testing.T) {
 	})
 }
 
-// TestTreeIncrementalParseReleasesPreviousTree drives many incremental
-// parses in sequence: each reparse must delete the previous native tree
-// (a hard leak otherwise, since tree-sitter objects have no finalizer)
-// while the swapped-in tree stays fully usable. A use-after-free or
-// double-free in the swap crashes this test.
 func TestTreeIncrementalParseReleasesPreviousTree(t *testing.T) {
 	pkgs := newInstalledPkgManagerWithFiles(t,
 		"go/tree-sitter.so",

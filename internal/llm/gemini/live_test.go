@@ -30,11 +30,6 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
 )
 
-// TestLiveCreateCompletion exercises the native Gemini provider against the
-// real Gemini API. It serves as an executable example of the llmapi surface
-// backed by google.golang.org/genai. Enable by removing t.SkipNow() and
-// exporting GEMINI_TESTING_KEY. Content assertions are intentionally loose:
-// generation is non-deterministic.
 func TestLiveCreateCompletion(t *testing.T) {
 	t.SkipNow()
 
@@ -304,8 +299,6 @@ func TestLiveCreateCompletion(t *testing.T) {
 	})
 }
 
-// TestLiveCountTokens exercises the real Gemini CountTokens API. Enable by
-// removing t.SkipNow() and exporting GEMINI_TESTING_KEY.
 func TestLiveCountTokens(t *testing.T) {
 	t.SkipNow()
 

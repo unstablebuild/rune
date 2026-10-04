@@ -401,11 +401,6 @@ func TestOpen(t *testing.T) {
 	})
 }
 
-// TestHomeWorkspaceDoesNotStartExtensions is an end-to-end guard that a
-// configured extension is never started on the home/empty workspace. The home
-// workspace deliberately runs no extensions because they recursively walk the
-// workspace root for .gitignore files at startup, which is ruinously expensive
-// when the root is the user's home directory.
 func TestHomeWorkspaceDoesNotStartExtensions(t *testing.T) {
 	t.Parallel()
 
@@ -441,10 +436,6 @@ func TestHomeWorkspaceDoesNotStartExtensions(t *testing.T) {
 		"no extension may be started on the home workspace")
 }
 
-// TestTutorialsSeeTheConfiguredConfigPath asserts a tutorial's
-// config_path() reports the file this session actually loaded. The
-// data directory is a launch flag, so lesson copy that names the
-// config file has to follow it.
 func TestTutorialsSeeTheConfiguredConfigPath(t *testing.T) {
 	t.Parallel()
 
@@ -711,25 +702,6 @@ func deleteExtensionSentinel(t *testing.T, dataDir, extensionID string) {
 		Delete(context.Background(), "sentinel"))
 }
 
-// TestWonAliasIntegration is an end-to-end test that wires the IDE
-// through real configuration to verify the `won` alias from the user's
-// `~/.runedev/config.yaml`:
-//
-//	command:
-//	  aliases:
-//	    won:
-//	      command: workspaceopen
-//	      completer:
-//	        - '{history}'
-//	        - '{file}'
-//
-// The test goes through the real configuration loader, the real
-// command alias parser, the real workspace history (backed by
-// localstorage on a temp dir), and the real text.Component completion
-// path. After dispatching `:won <repoA>` once, querying the alias
-// completion again must surface "<repoA>" as the first match — proving
-// that `{history}` is wired correctly all the way from the YAML
-// completer chain through search.History.HistoryIterator.
 func TestWonAliasIntegration(t *testing.T) {
 	dataDir := t.TempDir()
 	repoA := t.TempDir()
@@ -839,12 +811,6 @@ command:
 			"got %q. full result: %v", got[0], got)
 }
 
-// TestWorkspaceOpenCompletionSurfacesHistory verifies that the built-in
-// `workspaceopen` completer surfaces previously opened workspaces from
-// command history (history first), in addition to directory completion.
-// This replaces the dropped `wopen` alias: opening a workspace via
-// `:workspaceopen <path>` records it in history, and completing
-// `workspaceopen` then offers that path back as the first match.
 func TestWorkspaceOpenCompletionSurfacesHistory(t *testing.T) {
 	dataDir := t.TempDir()
 	repoA := t.TempDir()
@@ -943,10 +909,6 @@ workspace:
 	assert.Contains(t, nestedGot, "projects/nested/")
 }
 
-// TestWorkspaceOpenCompletionSchemeCompleterIsExclusive verifies that
-// once a registered scheme is typed, only that scheme's completer
-// answers: history would otherwise offer workspaces the scheme can no
-// longer reach.
 func TestWorkspaceOpenCompletionSchemeCompleterIsExclusive(t *testing.T) {
 	dataDir := t.TempDir()
 	repoA := t.TempDir()
@@ -1035,9 +997,6 @@ command:
 	}
 }
 
-// TestWorkspaceOpenSchemeCompletionNeverFallsBackToHistory reproduces
-// the prompt listing past rune:// opens, which may name workspaces that
-// never existed, whenever the scheme completer had nothing to offer.
 func TestWorkspaceOpenSchemeCompletionNeverFallsBackToHistory(t *testing.T) {
 	dataDir := t.TempDir()
 	repo := t.TempDir()
@@ -1156,9 +1115,6 @@ command:
 	}
 }
 
-// TestRecentWorkspaceOpensReflectsPromptHistory asserts the exported
-// accessor lists prompt-driven workspaceopen paths most-recent-first
-// and de-duplicated, which backs the Open Recent menu.
 func TestRecentWorkspaceOpensReflectsPromptHistory(t *testing.T) {
 	dataDir := t.TempDir()
 	repoA := t.TempDir()
@@ -1215,10 +1171,6 @@ command:
 	assert.Equal(t, []string{repoA, repoB}, i.RecentWorkspaceOpens())
 }
 
-// TestWorkspaceOpenToleratesTrailingSeparator asserts that dispatching a
-// directory candidate straight from its partial (descended) form opens
-// the same workspace as the separator-free form, and that both forms
-// collapse into a single Open Recent entry.
 func TestWorkspaceOpenToleratesTrailingSeparator(t *testing.T) {
 	dataDir := t.TempDir()
 	repoA := t.TempDir()
@@ -1306,21 +1258,6 @@ command:
 	assert.Equal(t, []string{repoA, repoB}, i.RecentWorkspaceOpens())
 }
 
-// TestWorkspaceOpenCompletionDispatchesQuotedPath is an end-to-end guard
-// for the completion-quoting fix: completing workspaceopen on a directory
-// whose name contains characters the prompt tokenizer treats specially
-// (spaces and single/double quotes) must select a single, correctly
-// quoted entry that, on Enter, opens exactly one workspace at that literal
-// path rather than splitting the name into several args. Tabs are covered
-// at the tokenizer level in handler/command; they cannot form a workspace
-// URI (the path parser rejects control characters) so they are out of
-// scope here.
-//
-// The flow mirrors a real user: with HOME pointing at a directory that
-// holds a single adversarially named child, paste that home path, type a
-// trailing slash, press Tab to accept the sole completion, then Enter to
-// dispatch. syncCommandPrompt runs it on the test goroutine so no settling
-// races remain.
 func TestWorkspaceOpenCompletionDispatchesQuotedPath(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -1440,28 +1377,6 @@ func TestWorkspaceOpenCompletionDispatchesQuotedPath(t *testing.T) {
 	}
 }
 
-// TestE2EIssueImplementAliasChainOrdering reproduces the user-reported
-// `issue-implement` failure. The alias chains a nested alias (standing
-// in for `worktreenew`) followed by two `extensionready` steps:
-//
-//	issue-implement:
-//	  command:
-//	    - worktreelike $1
-//	    - extensionready dummy agent $1
-//	    - extensionready dummy chatskill issue-implement $1
-//
-// `worktreelike` is itself an alias whose body runs a single command
-// that records its execution (the stand-in for the real worktree
-// creation; we do not need a git worktree to exercise the ordering
-// bug). The three steps must run in submission order: the nested alias
-// first, then `agent`, then `chatskill`.
-//
-// The bug: ex.dispatchCommand dispatches each expanded alias step via
-// text.Component.DispatchCommand, which only resolves subscribed
-// commands — not alias names. So a step whose name is itself an alias
-// (`worktreelike`) is silently dropped: its body never runs. In the
-// real config that means the worktree workspace is never created and
-// the `extensionready` steps run against the wrong workspace.
 func TestE2EIssueImplementAliasChainOrdering(t *testing.T) {
 	dataDir := t.TempDir()
 	repo := t.TempDir()
@@ -1577,19 +1492,6 @@ command:
 			"instead of expanded")
 }
 
-// TestE2EExtensionReadyChainOrderingNoWorktree is the same scenario
-// without the leading nested alias, isolating the extensionready
-// ordering on a single workspace:
-//
-//	issue-implement:
-//	  command:
-//	    - extensionready dummy agent $1
-//	    - extensionready dummy chatskill issue-implement $1
-//
-// With no pending workspace reservation, both steps run against the
-// focused workspace. `chatskill` must dispatch after `agent` — the
-// per-extension extensionready queue must preserve submission order
-// even when both follow-up commands wait on the same extension.
 func TestE2EExtensionReadyChainOrderingNoWorktree(t *testing.T) {
 	dataDir := t.TempDir()
 	repo := t.TempDir()
@@ -1688,19 +1590,6 @@ command:
 			"extensionready queue must preserve submission order")
 }
 
-// TestE2EWorkspaceCloseThenQuit drives :workspaceclose through the real
-// IDE command prompt on a second, user-opened workspace that owns a
-// live subprocess, then quits via i.Close(). It guards the RUNE async-
-// close contract end-to-end on the real event loop:
-//
-//  1. :workspaceclose returns to the loop immediately (the count drops
-//     and the slot is freed) even though the scheme teardown runs in a
-//     background goroutine.
-//  2. The background teardown really closes the scheme, so the
-//     subprocess bound to the scheme ctx dies.
-//  3. Quitting afterwards (i.Close) returns cleanly and promptly — the
-//     scenario that previously froze the UI for seconds / deadlocked
-//     when the whole teardown ran inline on the event loop.
 func TestE2EWorkspaceCloseThenQuit(t *testing.T) {
 	homeDir := t.TempDir()
 	// The second workspace must be a child of the home workspace so
@@ -1839,13 +1728,6 @@ workspace:
 	}
 }
 
-// TestE2EDollarPaths reproduces GitHub #137 through the real IDE and
-// command prompt: a file or workspace directory whose name contains
-// "$" must resolve to itself. Before the fix "a/$x" resolved to its
-// parent "a/", so :edit read and wrote the wrong file and
-// :workspaceopen rooted the workspace at the parent directory. Typed
-// commands expand $VAR, so the literal "$" is typed with the
-// documented "$$" escape, and <tab> completion must insert it too.
 func TestE2EDollarPaths(t *testing.T) {
 	type dollarIDE struct {
 		sendKeys    func(string)
@@ -2143,11 +2025,6 @@ command:
 		"terminal did not receive pasted secret; screen was:\n%s", resultText)
 }
 
-// TestE2ETerminalSearchCopiesHighlightedMatch drives the terminal
-// scrollback search the way a reader does: <meta-f> over a live shell,
-// a query that lands on a match, <esc> to put the box away, and then
-// clipboardcopy, which must yield the match that is still highlighted
-// on screen.
 func TestE2ETerminalSearchCopiesHighlightedMatch(t *testing.T) {
 	dir := t.TempDir()
 	dataDir := t.TempDir()
@@ -2248,11 +2125,6 @@ command:
 		"clipboardcopy must copy the highlighted match; screen was:\n%s", screen)
 }
 
-// TestE2ETerminalSearchCopiesMatchWhileBoxStaysOpen pins the other half
-// of the same flow: pressing <meta-c> while the find box is still open
-// (no <esc> yet), with nothing selected inside the box itself, must copy
-// the highlighted match on the terminal — not the query text, and not
-// whatever used to be in the clipboard before the box opened.
 func TestE2ETerminalSearchCopiesMatchWhileBoxStaysOpen(t *testing.T) {
 	dir := t.TempDir()
 	dataDir := t.TempDir()
@@ -2381,12 +2253,6 @@ func stageTreeSitterGo(t *testing.T, dataDir string) {
 	}
 }
 
-// TestE2EWorkspaceSymbolDBIndexing exercises the workspace.symboldb
-// flag end-to-end, like production does through rune.star: opening a
-// workspace with the flag enabled wraps the syntax parser with the
-// persistent symbol database, indexes the workspace's Go files with
-// the real tree-sitter artifacts, and serves symbol queries from the
-// index.
 func TestE2EWorkspaceSymbolDBIndexing(t *testing.T) {
 	rawDir := t.TempDir()
 	dir, err := filepath.EvalSymlinks(rawDir)
@@ -2474,8 +2340,6 @@ func mustResolve(
 	return it
 }
 
-// TestWorkspaceSymbolDBDisabledByDefault pins that workspaces do not
-// pay for symbol indexing unless workspace.symboldb is enabled.
 func TestWorkspaceSymbolDBDisabledByDefault(t *testing.T) {
 	rawDir := t.TempDir()
 	dir, err := filepath.EvalSymlinks(rawDir)
@@ -2515,18 +2379,6 @@ clipboard: memory
 		"symbol database must not be built when workspace.symboldb is unset")
 }
 
-// TestE2EFileExplorerRefreshDoesNotClobberClipboard reproduces the bug
-// where switching git branches (which changes files under the workspace
-// root and fires FS-watcher events) clobbers the user's system clipboard
-// with the file explorer's directory listing.
-//
-// The explorer reuses the standard editor, whose copy-on-delete
-// subscriber (text.WithCopyDelete) copies any deleted buffer content to
-// the default register. When an FS event drives refreshTree ->
-// Component.Refresh -> rewriteBufferFromTree, the old tree text is
-// deleted from the shared cell.Buffer and was being copied into the
-// default register. A programmatic refresh must not touch the clipboard;
-// only a real user delete should.
 func TestE2EFileExplorerRefreshDoesNotClobberClipboard(t *testing.T) {
 	rawDir := t.TempDir()
 	dir, err := filepath.EvalSymlinks(rawDir)
@@ -2604,17 +2456,6 @@ command:
 			"got:\n%s", data.Text)
 }
 
-// TestE2EFileExplorerEnterOpensFileAfterReload reproduces the bug
-// where, after opening files and running :workspacereload, re-opening
-// the file explorer and pressing <enter> on a file does nothing.
-//
-// A reload discards the old ex and restores the previous session's
-// files into windows. The freshly re-opened explorer captures a
-// different window as its target, so opening an already-restored file
-// hit browser.Window.SetContent's ErrTabNotFree (the tab is already
-// rendered in its restored window). editFileURILocal swallowed that
-// error, so pressing <enter> silently did nothing. The fix focuses
-// the window that already owns the tab.
 func TestE2EFileExplorerEnterOpensFileAfterReload(t *testing.T) {
 	rawDir := t.TempDir()
 	dir, err := filepath.EvalSymlinks(rawDir)
@@ -2753,19 +2594,6 @@ workspace:
 			"focusedURI=%q", focusedURI())
 }
 
-// TestE2ECursorHistoryIntoFileExplorerIsSilent drives <ctrl-o>/<ctrl-i>
-// (cursorhistory prev/next) after visiting the file explorer and
-// reproduces the bug where the explorer's pseudo-resource
-// (memory:///fexplorer) leaked into the cursor history. Navigating
-// back onto it re-opened the pseudo-URI as a regular tab, which
-// re-registered the explorer's per-file commands ("command already
-// registered") and re-locked its swap file, surfacing an
-// "is already open by another process" recovery prompt.
-//
-// After the fix the pseudo-URI is never recorded, so ctrl-o/ctrl-i is
-// a silent no-op with respect to the explorer: no recovery prompt
-// (floating window) appears and focus never lands on
-// memory:///fexplorer.
 func TestE2ECursorHistoryIntoFileExplorerIsSilent(t *testing.T) {
 	rawDir := t.TempDir()
 	dir, err := filepath.EvalSymlinks(rawDir)
@@ -2980,23 +2808,6 @@ func (r testRunner) WaitReady(ctx context.Context, id string) error {
 	return nil
 }
 
-// TestIDEExoMisconfigurationFallsBackToDefault is an end-to-end
-// guard against exoeditor.New panics when the user's config selects
-// `editor.mode = "exo"` but does not supply both required fields
-// (`editor.exo.command` containing {file}, and `editor.exo.goto`).
-// validateExo rewrites the mode back to "vim" so the IDE boots
-// with the built-in vim editor; this test asserts that the
-// rewrite actually happens at the config layer so the workspace
-// handler never reaches exoeditor.New on a misconfigured input.
-//
-// Reproduces the panic chain that motivated this guard:
-//
-//	exoeditor.New: command is required
-//	exoeditor.New: invalid gotoTemplate: ...
-//
-// Either panic would crash the IDE on startup when a user
-// previously experimented with `editor.mode = "exo"` and removed
-// only part of the exo block.
 func TestIDEExoMisconfigurationFallsBackToDefault(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -3099,10 +2910,6 @@ func TestIDEExoMisconfigurationFallsBackToDefault(t *testing.T) {
 	}
 }
 
-// TestIDEExoWellFormedConfigDoesNotFallBack guards against an
-// over-eager validateExo that would rewrite legitimate exo
-// configurations back to "vim". This is the positive
-// counterexample to TestIDEExoMisconfigurationFallsBackToDefault.
 func TestIDEExoWellFormedConfigDoesNotFallBack(t *testing.T) {
 	configFile, _ := makeTestFiles(t)
 	const cfg = `editor:
@@ -3150,10 +2957,6 @@ def run():
 tutorial(entry=run)
 `
 
-// TestIDEStartingTutorialDispatchesOnReady verifies that
-// WithStartingTutorial schedules a `:tutorial start <name>` dispatch on
-// the event loop once the IDE is ready, and that an unknown name is a
-// no-op.
 func TestIDEStartingTutorialDispatchesOnReady(t *testing.T) {
 	cases := []struct {
 		name           string
@@ -3273,11 +3076,6 @@ func TestIDEStartingTutorialDispatchesOnReady(t *testing.T) {
 	}
 }
 
-// TestIDEOnboardingActiveGate verifies the authorizer onboarding gate
-// wired into the workspace handler: a session started with a starting
-// tutorial is onboarding for its whole lifetime — including before the
-// deferred tutorial dispatch, when extensions boot and ask to run
-// commands — and survives the gap between playlist tutorials.
 func TestIDEOnboardingActiveGate(t *testing.T) {
 	cases := []struct {
 		name         string
@@ -3330,9 +3128,6 @@ func TestIDEOnboardingActiveGate(t *testing.T) {
 	}
 }
 
-// TestIDESetRightInsetReachesTheHomeWorkspace pins that the column
-// reserved for a bar floating over the right edge is relayed to the
-// home workspace too, which is where a session starts.
 func TestIDESetRightInsetReachesTheHomeWorkspace(t *testing.T) {
 	configFile, _ := makeTestFiles(t)
 	dataDir := t.TempDir()
@@ -3365,10 +3160,6 @@ func TestIDESetRightInsetReachesTheHomeWorkspace(t *testing.T) {
 	assert.Equal(t, 160, wmWidth(), "and gets it back")
 }
 
-// TestIDETutorialTileSitsOutsideTheWorkspaces drives a lesson through
-// the whole IDE: the tile is not a window of any workspace, so the
-// window commands the workspace dispatches leave it alone, and the
-// reserved right column moves to the tile while a lesson runs.
 func TestIDETutorialTileSitsOutsideTheWorkspaces(t *testing.T) {
 	configFile, _ := makeTestFiles(t)
 	dataDir := t.TempDir()
@@ -3425,9 +3216,6 @@ tutorial(entry=run)
 	assert.Equal(t, 157, wmWidth(), "the workspaces get the column back")
 }
 
-// TestIDETutorialTileLinesUpWithTheWorkspaceWindows asserts the pane
-// covers exactly the rows the workspace's windows cover, tab bar and
-// workspaces bar excluded, so it reads as one of them.
 func TestIDETutorialTileLinesUpWithTheWorkspaceWindows(t *testing.T) {
 	configFile, _ := makeTestFiles(t)
 	dataDir := t.TempDir()
@@ -3614,11 +3402,6 @@ tutorial(entry=run)
 	})
 }
 
-// TestIDECloseCommandPrompt pins the public CloseCommandPrompt seam the
-// native menu bar uses before dispatching a command: it dismisses an
-// open prompt in the focused workspace and is a no-op when none is
-// open. Without it, a menu command that opens its own picker would sit
-// behind the always-on-top command prompt overlay.
 func TestIDECloseCommandPrompt(t *testing.T) {
 	configFile, _ := makeTestFiles(t)
 	dataDir := t.TempDir()
@@ -3669,18 +3452,6 @@ func TestIDECloseCommandPrompt(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-// TestCloseDoesNotCloseBorrowedStorage verifies that closing an IDE does
-// not propagate Close to the storage service it borrowed from the caller.
-//
-// The storage handle is owned by the embedder (cmd/rune's bootstrap handler
-// and main, which create it via localstorage.New and close it once at
-// shutdown). It is shared: the bootstrap flow builds a pre-config IDE and a
-// configured IDE over the same storage, and the configured IDE's LLM router
-// keeps reading aliases from it. If IDE.Close closes the borrowed storage,
-// closing the pre-config IDE during the bootstrap swap tears the storage
-// down underneath the live configured IDE, so the next read fails with
-// "firstmover: Partition on closed Service" (observed on fresh installs as
-// the rune-agent extension failing to start after :workspacereload).
 func TestCloseDoesNotCloseBorrowedStorage(t *testing.T) {
 	t.Parallel()
 	_, config := makeTestFiles(t)
@@ -3725,12 +3496,6 @@ func (s *closeCountingService) Close() error {
 	return s.Service.Close()
 }
 
-// TestSharedStorageSurvivesPreIDEClose reproduces the fresh-install bootstrap
-// swap: cmd/rune builds a pre-config IDE and a configured IDE over the same
-// borrowed storage, then closes the pre-config IDE. Closing the first IDE must
-// not tear down the storage that the second IDE still uses, otherwise the
-// configured IDE's next storage read fails with
-// "firstmover: Partition on closed Service".
 func TestSharedStorageSurvivesPreIDEClose(t *testing.T) {
 	t.Parallel()
 	_, config := makeTestFiles(t)
@@ -3771,8 +3536,6 @@ func TestSharedStorageSurvivesPreIDEClose(t *testing.T) {
 		"shared storage must stay partitionable after pre-config IDE.Close")
 }
 
-// TestIDEOpenDoesNotReadProtectedDirs asserts that opening the IDE on the
-// user's home never reads app data under ~/Library.
 func TestIDEOpenDoesNotReadProtectedDirs(t *testing.T) {
 	usr, err := user.Current()
 	require.NoError(t, err)
@@ -3957,10 +3720,6 @@ func (i protectedDirInfo) ModTime() time.Time { return time.Time{} }
 func (i protectedDirInfo) IsDir() bool        { return true }
 func (i protectedDirInfo) Sys() any           { return nil }
 
-// TestCommandPromptKeyBindingHintsIntegration renders the command
-// prompt with key hints resolved from the shipped modal preset
-// binding. The <alt-enter> echo prefill must surface as a right-aligned
-// hint on the windowconverttab row.
 func TestCommandPromptKeyBindingHintsIntegration(t *testing.T) {
 	const echoKey = "<alt-enter>"
 
@@ -4211,8 +3970,6 @@ var consoleSelModes = []struct {
 	modal bool
 }{{"modeless", false}, {"modal", true}}
 
-// TestConsoleMouseSelectionOutputEmptyPrompt: dragging over command
-// output with an empty prompt selects and highlights the text.
 func TestConsoleMouseSelectionOutputEmptyPrompt(t *testing.T) {
 	for _, tc := range consoleSelModes {
 		t.Run(tc.name, func(t *testing.T) {
@@ -4235,8 +3992,6 @@ func TestConsoleMouseSelectionOutputEmptyPrompt(t *testing.T) {
 	}
 }
 
-// TestConsoleMouseSelectionOutputWithWrappedInput: dragging over
-// output with a wrapped un-submitted command still selects it.
 func TestConsoleMouseSelectionOutputWithWrappedInput(t *testing.T) {
 	for _, tc := range consoleSelModes {
 		t.Run(tc.name, func(t *testing.T) {
@@ -4265,9 +4020,6 @@ func TestConsoleMouseSelectionOutputWithWrappedInput(t *testing.T) {
 	}
 }
 
-// TestConsoleMouseSelectionInputBandText: dragging over the prompt
-// band selects and highlights the dragged range. The editors differ
-// by one cell: standard is end-exclusive, vi includes the cursor cell.
 func TestConsoleMouseSelectionInputBandText(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -4306,8 +4058,6 @@ func TestConsoleMouseSelectionInputBandText(t *testing.T) {
 	}
 }
 
-// TestConsoleMouseSelectionOutputAfterInputBandClick: an input-band
-// click must not latch mouse routing away from the output band.
 func TestConsoleMouseSelectionOutputAfterInputBandClick(t *testing.T) {
 	for _, tc := range consoleSelModes {
 		t.Run(tc.name, func(t *testing.T) {

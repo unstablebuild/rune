@@ -110,10 +110,6 @@ func TestLangServerStartCancelsProcessWhenTransportSetupFails(t *testing.T) {
 		"a spawned process must be canceled when transport ownership cannot be established")
 }
 
-// TestLangServerCallDoesNotKillReader exercises the regression where a
-// short per-RPC deadline applied to the shared reader FD would tear
-// down the whole jsonrpc2 connection mid-flight, leaving every
-// subsequent Call returning ErrClientClosing.
 func TestLangServerCallDoesNotKillReader(t *testing.T) {
 	srv, fake, cleanup := newFakeLSPLangServer(t)
 	defer cleanup()
@@ -177,10 +173,6 @@ func TestLangServerCallDoesNotKillReader(t *testing.T) {
 	assert.Equal(t, "ok", followUp)
 }
 
-// TestLangServerCallWriteDeadlineDoesNotDeadlock locks in the
-// deadlineWriter behaviour: if the peer never drains the kernel write
-// buffer, a Write must still fail with the context deadline rather
-// than blocking forever.
 func TestLangServerCallWriteDeadlineDoesNotDeadlock(t *testing.T) {
 	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
 	require.NoError(t, err)
@@ -277,11 +269,6 @@ func (c *lateTimerContext) Err() error {
 	}
 }
 
-// TestLangServerWriteDeadlineDoesNotBreakConnection covers a write that
-// times out on the socket deadline before the context's timer fires. The
-// connection must attribute that to the call's deadline; treating it as
-// a broken writer closes the transport and restarts the server under a
-// caller that merely hit its own timeout.
 func TestLangServerWriteDeadlineDoesNotBreakConnection(t *testing.T) {
 	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
 	require.NoError(t, err)
@@ -526,13 +513,6 @@ func (f *fakeChildServer) initResult() semanticapi.InitializeResult {
 }
 func (f *fakeChildServer) isAlive() bool { return f.started }
 
-// TestMultiLangServerStartOwnership pins the lifecycle contract behind the
-// remote gopls crash: when one child fails to start, multiLangServer.start
-// closes the siblings it already brought up and returns the error, without
-// Closing the failed child (langServer.start already self-cleans). The
-// caller must therefore NOT Close a multiLangServer whose start failed —
-// doing so previously re-Closed a never-started child and nil-deref'd its
-// pipes.
 func TestMultiLangServerStartOwnership(t *testing.T) {
 	t.Parallel()
 
@@ -624,13 +604,6 @@ func (e *retainingExecutor) Close() error {
 	return nil
 }
 
-// TestLangServerStartKeepsFDForNonDupExecutor reproduces the remote gopls
-// "write unix : write: broken pipe" failure. langServer.start hands the LSP
-// end of a socketpair to StartCommand and then closed its own copy of that
-// fd, assuming the executor duped it (true for local os/exec, false for the
-// ssh scheme, which streams through the *os.File by reference). Closing it
-// early tears down the transport so the first initialize write breaks. The
-// server must keep the fd open until Close.
 func TestLangServerStartKeepsFDForNonDupExecutor(t *testing.T) {
 	t.Parallel()
 

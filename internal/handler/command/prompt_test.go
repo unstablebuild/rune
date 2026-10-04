@@ -912,11 +912,6 @@ func TestCommandHandlerDispatch(t *testing.T) {
 	}
 }
 
-// TestCommandHandlerPartialCompletionState pins the prompt state that a
-// partial candidate must leave behind. Accepting one may not append the
-// argument separator, commit the token into commandAndArgs, or advance
-// the completion mode, because any of those resets the next completion
-// back to the completer's root instead of descending.
 func TestCommandHandlerPartialCompletionState(t *testing.T) {
 	cfg := testDefaultConfig()
 	cfg.ShowManual = false
@@ -1073,12 +1068,6 @@ func feedKeys(t *testing.T, b *Prompt, sequence string) (quit, handled bool) {
 	return
 }
 
-// TestCommandPromptLineEditing covers the shell-style editing keys
-// (<c-w>, <c-h>, <c-backspace>, <a-backspace> and <c-u>) alongside
-// plain <backspace>, which they share a deletion primitive with. The
-// assertions pin all four pieces of prompt state at once because word
-// deletion can walk backwards across the argument boundary and unwind
-// the completion stack.
 func TestCommandPromptLineEditing(t *testing.T) {
 	tsuite := []struct {
 		desc string
@@ -1250,9 +1239,6 @@ func TestCommandPromptLineEditing(t *testing.T) {
 	}
 }
 
-// TestCommandPromptLineEditingDispatch asserts that a line repaired
-// with the editing keys dispatches the arguments the prompt displays,
-// i.e. that the buffer and the completion stack stay in agreement.
 func TestCommandPromptLineEditingDispatch(t *testing.T) {
 	tsuite := []struct {
 		desc     string
@@ -1297,9 +1283,6 @@ func TestCommandPromptLineEditingDispatch(t *testing.T) {
 	}
 }
 
-// TestCommandPromptLineEditingInEditMode pins that the editing keys
-// are only the prompt's own fallback: while the modal edit session is
-// active every one of them belongs to the spawned editor.
 func TestCommandPromptLineEditingInEditMode(t *testing.T) {
 	var seen []term.Event
 	cfg := testDefaultConfig()
@@ -1330,10 +1313,6 @@ func TestCommandPromptLineEditingInEditMode(t *testing.T) {
 	}, seen)
 }
 
-// TestCommandPromptWordDeleteKeepsHistoryEntries pins the one place
-// where word deletion deliberately diverges from <backspace>: while
-// scrolling history-backed argument suggestions, <backspace> removes
-// the focused entry from history, whereas <c-w> must only edit text.
 func TestCommandPromptWordDeleteKeepsHistoryEntries(t *testing.T) {
 	cfg := testDefaultConfig()
 	cfg.ShowManual = false
@@ -1370,16 +1349,6 @@ func TestCommandPromptWordDeleteKeepsHistoryEntries(t *testing.T) {
 	assert.Empty(t, b.history.Slice())
 }
 
-// TestCommandHandlerCancelsCompletionBeforeDispatch ensures that the
-// active completion's context is canceled before the dispatcher runs
-// when the user presses Enter. This prevents an in-flight completion
-// (e.g. a recursive walkdir traversal) from continuing to fight for
-// resources while the synchronous dispatcher does its work.
-//
-// The test runs in async mode (cfg.Sync = false) so that the
-// completer's iterator can stay in flight while the dispatcher runs;
-// in sync mode the iterator is always drained before the dispatcher
-// is invoked, which masks the regression.
 func TestCommandHandlerCancelsCompletionBeforeDispatch(t *testing.T) {
 	storage := storagestub.NewInMemoryService()
 	cfg := testDefaultConfig()
@@ -1435,10 +1404,6 @@ func TestCommandHandlerCancelsCompletionBeforeDispatch(t *testing.T) {
 		"completion context must be canceled before dispatcher runs")
 }
 
-// TestCommandHandlerIncArgsCompleteModeDoesNotDeadlock verifies that
-// Tab in command mode completes without hanging when the manual is
-// primed and the async completion goroutine is still in flight, even
-// when buildManualComponent ends up calling h.list.Wait().
 func TestCommandHandlerIncArgsCompleteModeDoesNotDeadlock(t *testing.T) {
 	storage := storagestub.NewInMemoryService()
 	cfg := testDefaultConfig()
@@ -1508,10 +1473,6 @@ func (d *delayedIter) Next(ctx context.Context) (string, bool) {
 func (d *delayedIter) Close() error { return nil }
 func (d *delayedIter) Err() error   { return d.ctx.Err() }
 
-// TestCommandHandlerPreviewCancelCallsBackIntoPrompt guards against a
-// self-deadlock where the preview-cancel callback synchronously re-enters
-// the Prompt (e.g. theme preview cancel triggers a GUI resize that calls
-// Prompt.Dimensions).
 func TestCommandHandlerPreviewCancelCallsBackIntoPrompt(t *testing.T) {
 	storage := storagestub.NewInMemoryService()
 	cfg := testDefaultConfig()
@@ -2546,8 +2507,6 @@ func (c *closeTrackingCompletionIterator) Close() error {
 	return nil
 }
 
-// A completer may return a non-nil iterator alongside an error; the
-// prompt must close it instead of dropping it.
 func TestCommandHandlerClosesCompletionIteratorOnError(t *testing.T) {
 	dispatchFn, cleanup := nopDispatch()
 	defer cleanup(t)
@@ -2615,11 +2574,6 @@ func TestCommandHandlerCancel(t *testing.T) {
 	})
 }
 
-// TestCommandHandlerHistoryCanonicalizesArguments asserts that the
-// partial marker never reaches history. Storing it would split one
-// workspace into two entries — the form recorded before the
-// partial-candidate convention existed and the form recorded after —
-// and force the user to work around the stale one.
 func TestCommandHandlerHistoryCanonicalizesArguments(t *testing.T) {
 	cfg := testDefaultConfig()
 	cfg.ShowManual = false
@@ -3312,10 +3266,6 @@ func keybindingTestConfig() Config {
 	return cfg
 }
 
-// TestCommandHandlerKeyBindingHintsDraw exercises the right-aligned key
-// hint overlay geometry across the horizontal-space corner cases: the
-// hint requires at least one blank cell after the row text and is
-// dropped entirely when the command plus gap plus label do not fit.
 func TestCommandHandlerKeyBindingHintsDraw(t *testing.T) {
 	tsuite := []struct {
 		desc      string
@@ -3519,8 +3469,6 @@ func hintFgAt(t *testing.T, w *term.StringWriter, width int, prefix string) term
 	return 0
 }
 
-// TestKeyBindingHintFocusColor draws the focused row's hint with the
-// focus color and other rows' hints with the default color.
 func TestKeyBindingHintFocusColor(t *testing.T) {
 	cfg := keybindingTestConfig()
 	cfg.KeyBindingHintAttr = term.Attributes{Fg: term.ColorGray}
@@ -3558,8 +3506,6 @@ func TestKeyBindingHintFocusColor(t *testing.T) {
 		"non-focused row hint must use the default color")
 }
 
-// TestKeyBindingHintHistoryMode draws no hints while the prompt shows
-// the command history list.
 func TestKeyBindingHintHistoryMode(t *testing.T) {
 	cfg := keybindingTestConfig()
 	called := false

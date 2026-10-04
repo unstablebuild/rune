@@ -182,14 +182,6 @@ func TestURI(t *testing.T) {
 	}
 }
 
-// TestConnectSchemeUsesRune asserts that the workspace-scheme bootstrap
-// looks for the `rune` binary on the remote — the same name that
-// `cmd/rune` accepts via its `--workspace-server / -x` flag (see
-// cmd/rune/main.go). A previous version of the code looked for an
-// obsolete binary called `six`, which made every real connection fail
-// with "six executable was not found on remote" even when authentication
-// succeeded. The bug went undetected because the docker e2e matrix
-// short-circuits via TestAuthDial and never reaches connectScheme.
 func TestConnectSchemeUsesRune(t *testing.T) {
 	rec := &recordingRemote{}
 
@@ -245,12 +237,6 @@ func TestConnectSchemeUsesRune(t *testing.T) {
 			"~/.local/bin PATH injection; saw %+v", rec.commands)
 }
 
-// TestConnectSchemeSkipPreflight asserts that when
-// sshConfig.skipPreflight is true, connectScheme does NOT issue the
-// `which rune` and `ls <path>` pre-flight probes. Each probe opens a
-// fresh SSH session channel, so skipping them is the user-visible
-// escape hatch on servers with a tight MaxSessions budget (manual
-// scenario workspace/workspacessh/manual_test/12_max_sessions_one.sh).
 func TestConnectSchemeSkipPreflight(t *testing.T) {
 	rec := &recordingRemote{}
 
@@ -356,10 +342,6 @@ func newRecordingTestScheme(rec *recordingRemote) (*scheme, workspaceapi.URI) {
 	return s, uri
 }
 
-// TestConnectSchemeRemoteDataDir asserts that WithRemoteDataDir threads an
-// explicit `--datadir ~/<name>` into the remote `rune -x` invocation so the
-// remote installs packages into a known location (~ expands on the remote
-// shell), placed right after `-x <path>`.
 func TestConnectSchemeRemoteDataDir(t *testing.T) {
 	rec := &recordingRemote{}
 	s, uri := newRecordingTestScheme(rec)
@@ -385,8 +367,6 @@ func TestConnectSchemeRemoteDataDir(t *testing.T) {
 		"--datadir must directly follow `-x <path>`; got %+v", cmd.Args)
 }
 
-// TestConnectSchemeNoRemoteDataDir asserts that when WithRemoteDataDir is
-// unset the remote invocation omits --datadir, leaving the remote default.
 func TestConnectSchemeNoRemoteDataDir(t *testing.T) {
 	rec := &recordingRemote{}
 	s, uri := newRecordingTestScheme(rec)
@@ -789,10 +769,6 @@ func newNopScheme(t *testing.T, workspaceURI workspaceapi.URI) *scheme {
 	return s.(*scheme)
 }
 
-// TestScanRemoteStderrNotifiesAndTails feeds a synthetic stderr stream with
-// interleaved warning, ready and plain lines and asserts that warnings
-// notify, before and after the server is ready, plain lines never notify
-// but land in the exit-error tail, and the scanner stops at EOF.
 func TestScanRemoteStderrNotifiesAndTails(t *testing.T) {
 	var shellRC, late strings.Builder
 	require.NoError(t, WriteWarning(&shellRC, "install shell dotfiles: disk full"))
@@ -840,10 +816,6 @@ func TestScanRemoteStderrNotifiesAndTails(t *testing.T) {
 	assert.NotContains(t, got, readySentinel, "ready must not leak into the tail")
 }
 
-// TestScanRemoteStderrClosesReadyOnServerReady asserts the ServerReady sentinel
-// line closes the readiness channel exactly once, is not surfaced as a
-// notification, and does not leak into the exit-error tail (it is a control
-// line, like progress).
 func TestScanRemoteStderrClosesReadyOnServerReady(t *testing.T) {
 	readyLine, err := encodeServerReady()
 	require.NoError(t, err)
@@ -884,11 +856,6 @@ func TestScanRemoteStderrClosesReadyOnServerReady(t *testing.T) {
 	assert.NotContains(t, got, "ready", "ready lines must not leak into the tail")
 }
 
-// TestConnectSchemeReturnsErrorWhenRemoteExitsBeforeServing asserts that if the
-// remote process ends before emitting the ServerReady sentinel, connectScheme
-// surfaces an error carrying the stderr tail instead of handing back a client
-// whose first RPC would block forever. This is the whole point of gating the
-// client on readiness.
 func TestConnectSchemeReturnsErrorWhenRemoteExitsBeforeServing(t *testing.T) {
 	rec := &failingServerRemote{stderr: "load config failed: disk full\n"}
 
@@ -967,15 +934,6 @@ func (e *failingServerExecutor) StartCommand(
 func (e *failingServerExecutor) Signal(workspaceapi.Pid, syscall.Signal) error { return nil }
 func (e *failingServerExecutor) Close() error                                  { return nil }
 
-// TestConnectSchemeUnblocksWhenAttemptContextCancelled is a regression test for
-// a shutdown deadlock: connectScheme must honor the per-attempt context
-// maintainConnection passes it. If the remote connects but never becomes
-// serving-ready (its startup stalls) and never exits, cancelling that context
-// (IDE shutdown / retry abort) must unblock connectScheme. Watching only the
-// scheme's own long-lived context here is not enough — that context is rooted
-// in context.Background() and is not cancelled by shutdown, so connectScheme
-// would hang forever, state() would never return, and Close's WaitGroup.Wait
-// would deadlock.
 func TestConnectSchemeUnblocksWhenAttemptContextCancelled(t *testing.T) {
 	rec := &hangingServerRemote{}
 
@@ -1087,9 +1045,6 @@ func (e *hangingServerExecutor) Close() error {
 	return nil
 }
 
-// TestConnectSchemeReleasesRemoteWhenStartFails asserts that an attempt
-// failing before the remote serves closes the remote and every pipe handed to
-// its command. maintainConnection retries, so a leak here repeats per attempt.
 func TestConnectSchemeReleasesRemoteWhenStartFails(t *testing.T) {
 	tsuite := []struct {
 		desc       string
@@ -1164,8 +1119,6 @@ func (e startFailingExecutor) StartCommand(
 func (startFailingExecutor) Signal(workspaceapi.Pid, syscall.Signal) error { return nil }
 func (startFailingExecutor) Close() error                                  { return nil }
 
-// TestStderrTailBounded asserts the tail retains only the most recent
-// stderrTailCap bytes so a chatty remote cannot grow it without bound.
 func TestStderrTailBounded(t *testing.T) {
 	tail := newStderrTail()
 	for range 10000 {

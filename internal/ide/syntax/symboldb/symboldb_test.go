@@ -131,13 +131,6 @@ func (n loopStateNotifications) UpdateNotificationProgress(
 	return nil
 }
 
-// TestScanNotificationsRunOnScheduledTicks asserts the indexer never
-// invokes Notifications directly: the production implementation reads
-// focus state and mutates UI components owned by the event loop, so
-// every report must be enqueued through the scheduler. A simulated
-// event-loop goroutine mutates the state the fake Notifications read;
-// a direct call from the scan or walk goroutine trips the race
-// detector.
 func TestScanNotificationsRunOnScheduledTicks(t *testing.T) {
 	e := newEnv(t)
 	uriA := e.writeFile(t, "a/a.go")
@@ -578,10 +571,6 @@ func TestInitialScanServesFromIndex(t *testing.T) {
 	assert.Zero(t, e.fake.totalListCalls())
 }
 
-// TestMissAfterScanReturnsNotFound asserts that once a full scan has
-// populated the index, a symbol with no database entry resolves to no
-// matches without falling back to the backing parser: the index is
-// authoritative, so true negatives are answered locally.
 func TestMissAfterScanReturnsNotFound(t *testing.T) {
 	e := newEnv(t)
 	uri := e.writeFile(t, "a.go")
@@ -595,9 +584,6 @@ func TestMissAfterScanReturnsNotFound(t *testing.T) {
 	assert.Zero(t, e.fake.totalResolveCalls())
 }
 
-// TestMissBeforeScanPassesThroughToBacking asserts that until the first
-// full scan completes the index is incomplete, so a miss falls back to
-// the backing parser rather than reporting a false negative.
 func TestMissBeforeScanPassesThroughToBacking(t *testing.T) {
 	e := newEnv(t)
 	uri := e.writeFile(t, "a.go")
@@ -654,11 +640,6 @@ func TestStaleServingWhileReindexInFlight(t *testing.T) {
 	require.NoError(t, p.Wait(context.Background()))
 }
 
-// TestCloseAbandonsDirtyQueue asserts Close does not drain the dirty
-// queue: it runs on the editor event loop during workspace close, so
-// the worker must abandon queued entries as soon as the lifecycle
-// context is canceled instead of processing each one against a
-// canceled context.
 func TestCloseAbandonsDirtyQueue(t *testing.T) {
 	e := newEnv(t)
 	uri := e.writeFile(t, "a.go")
@@ -696,9 +677,6 @@ func TestCloseAbandonsDirtyQueue(t *testing.T) {
 		"Close must abandon the dirty queue, not drain it")
 }
 
-// TestCloseDuringInitialScanJoinsWorkers asserts Close abandons the
-// scan's queued results without leaving its extraction and walk
-// goroutines behind: goleak (TestMain) flags any that outlive Close.
 func TestCloseDuringInitialScanJoinsWorkers(t *testing.T) {
 	e := newEnv(t)
 	uri := e.writeFile(t, "a.go")
@@ -769,10 +747,6 @@ func TestRemoveDropsContributions(t *testing.T) {
 	assert.Empty(t, listReferenced(t, p))
 }
 
-// TestConcurrentScanMergesSharedSymbols floods the scan workers with
-// files that all contribute locations to the same symbol names: every
-// contribution must survive the concurrent compare-and-swap merges on
-// the shared docs.
 func TestConcurrentScanMergesSharedSymbols(t *testing.T) {
 	e := newEnv(t)
 	const files = 32
@@ -805,11 +779,6 @@ func TestConcurrentScanMergesSharedSymbols(t *testing.T) {
 		listReferenced(t, p))
 }
 
-// TestRemovalTombstonesSymbolDoc asserts that dropping a symbol's last
-// contributing file empties the doc instead of deleting it — Delete
-// takes no preconditions, so it could race a concurrent location add —
-// and that the tombstone reads as a miss and is resurrected in place
-// when the file returns.
 func TestRemovalTombstonesSymbolDoc(t *testing.T) {
 	e := newEnv(t)
 	uri := e.writeFile(t, "a.go")
@@ -941,10 +910,6 @@ func TestSchemaVersionBumpRebuildsDerivedRecords(t *testing.T) {
 	assert.Zero(t, fake2.totalListCalls())
 }
 
-// A scan interrupted before the completion marker lands must not force
-// the next launch to redo finished work: file records stamped with the
-// current schema version are trusted, so a restart re-extracts only
-// what the previous run never reached.
 func TestInterruptedScanResumesIncrementally(t *testing.T) {
 	e := newEnv(t)
 	uri := e.writeFile(t, "a.go")
@@ -1090,11 +1055,6 @@ func (c *opCountingStorage) Delete(ctx context.Context, id string) error {
 	return c.Service.Delete(ctx, id)
 }
 
-// Re-stamping records from an older schema version must not rewrite
-// documents whose content is unchanged: on the production backend
-// every write is an fsync'd transaction, so a migration pass over a
-// large repository would otherwise take minutes redundantly rewriting
-// identical symbol docs and name markers.
 func TestMigrationRestampAvoidsRedundantWrites(t *testing.T) {
 	e := newEnv(t)
 	uri := e.writeFile(t, "a.go")
@@ -1141,10 +1101,6 @@ func TestMigrationRestampAvoidsRedundantWrites(t *testing.T) {
 		listReferenced(t, p2))
 }
 
-// Re-indexing a file only inserts symbol documents for names it did not
-// contribute before: a Create for a known name is a guaranteed
-// ErrAlreadyExists, and on the production backend that failed insert
-// still costs a bolt write transaction.
 func TestReindexSkipsCreateForKnownNames(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t)
@@ -1175,9 +1131,6 @@ func TestReindexSkipsCreateForKnownNames(t *testing.T) {
 		"only the name the file had never contributed is inserted")
 }
 
-// Every symbol a file contributes is written in one round trip when the
-// store supports batching: on the production backend that is one bolt
-// transaction per file instead of one per symbol.
 func TestBatchWritesSymbolsOfFileInOneRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t)
@@ -1202,9 +1155,6 @@ func TestBatchWritesSymbolsOfFileInOneRoundTrip(t *testing.T) {
 		listReferenced(t, p))
 }
 
-// A concurrent writer invalidates the version a batched update was
-// staged against. Only the rejected operations are re-read and retried;
-// the ones that landed must not be applied twice.
 func TestBatchRetriesOnlyStaleOperations(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t)
@@ -1243,9 +1193,6 @@ func TestBatchRetriesOnlyStaleOperations(t *testing.T) {
 		[]string{"mypkg.Gadget", "mypkg.Widget"}, listReferenced(t, p))
 }
 
-// A leader that predates the Batch RPC answers Unimplemented. The
-// indexer must fall back to per-operation writes rather than losing the
-// file's symbols.
 func TestBatchFallsBackWhenUnimplemented(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t)
@@ -1274,10 +1221,6 @@ func TestBatchFallsBackWhenUnimplemented(t *testing.T) {
 		[]string{"mypkg.Gadget", "mypkg.Widget"}, listReferenced(t, p))
 }
 
-// A symbol doc written before the Version counter existed stores no
-// Version field, and a 0-valued precondition would not match its
-// absence. The merge must stamp the counter through a nil precondition
-// so pre-CAS databases stay writable without a rebuild.
 func TestUpsertMergesIntoVersionlessDoc(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()
@@ -1367,12 +1310,6 @@ func (d *durabilityRecordingStorage) Delete(ctx context.Context, id string) erro
 	return d.Service.Delete(ctx, id)
 }
 
-// The initial scan bulk-loads rebuildable records, so its writes ask
-// the bolt backend to skip per-commit fsync; the completion marker is
-// written synced, after every relaxed write, so its durability implies
-// theirs. Event-driven updates apply the same rule per file: the
-// derived symbol and name records are relaxed and the file record that
-// vouches for them is the synced barrier.
 func TestScanRelaxesDurabilityUntilMarker(t *testing.T) {
 	e := newEnv(t)
 	rec := newDurabilityRecordingStorage(e.db)
@@ -1549,10 +1486,6 @@ func (c *countingListStorage) List(
 	return c.Service.List(ctx, filters)
 }
 
-// Command completion constructs the symbol iterator on the UI thread
-// and only pulls it from a background goroutine, so construction must
-// not perform the partition scan (a whole-partition decode on the
-// storage backend) or start the backing walk.
 func TestListReferencedSymbolsConstructionIsLazy(t *testing.T) {
 	e := newEnv(t)
 	lists := new(atomic.Int64)
@@ -1625,9 +1558,6 @@ func TestScanReportsProgressNotifications(t *testing.T) {
 	assert.Equal(t, int64(2), final.total)
 }
 
-// The scavenger reclaims the databases of workspaces that no longer
-// exist, so dropping one workspace must empty its partitions without
-// touching the databases of the workspaces that remain.
 func TestCleanupWorkspaceHook(t *testing.T) {
 	ctx := context.Background()
 	ideStorage := storagestub.NewInMemoryService()

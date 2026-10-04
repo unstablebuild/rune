@@ -35,18 +35,6 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-// TestRuneBinaryContract verifies the assumptions that connectScheme
-// makes about the local `rune` binary. The SSH workspace bootstrap
-// invokes `rune -x <path>` on the remote host (see connectScheme in
-// scheme.go) and expects the resulting process to speak workspacerpc
-// over its stdio. If a future change to cmd/rune/main.go (renamed
-// flag, dropped short-form, pflag library upgrade, protocol drift,
-// etc.) breaks any of those assumptions, this test catches it before
-// the broken contract reaches a real ssh dial.
-//
-// The test relies on `rune` being installed on $PATH. When it is not
-// (CI runners, machines that haven't run `make rune`) the test skips
-// rather than failing, mirroring the convention used by SkipIfNoDocker.
 func TestRuneBinaryContract(t *testing.T) {
 	runePath, err := exec.LookPath("rune")
 	if err != nil {

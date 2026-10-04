@@ -143,7 +143,6 @@ func parseModeFlags(
 	return fs, *guiFlag, *tuiFlag, *headlessFlag
 }
 
-// A misspelt entry in headlessFlags would reject a flag the node needs.
 func TestHeadlessFlagsAreRuneFlags(t *testing.T) {
 	for name := range headlessFlags {
 		if flag.CommandLine.Lookup(name) == nil {
@@ -152,10 +151,6 @@ func TestHeadlessFlagsAreRuneFlags(t *testing.T) {
 	}
 }
 
-// TestVersionStringUsesBuildStampLayout pins the ldflag -> --version
-// contract: a stamp in the exact form cmd/buildstamp emits must reach
-// the version line verbatim. Without a reader the linker prunes
-// debug.BuildDate and the -X in the Makefile becomes a silent no-op.
 func TestVersionStringUsesBuildStampLayout(t *testing.T) {
 	stamp := time.Date(2026, 9, 11, 13, 12, 48, 0, time.UTC).
 		Format(debug.BuildDateLayout)
@@ -193,9 +188,6 @@ func TestAppLaunchArgs(t *testing.T) {
 	}
 }
 
-// A data dir the dotfiles cannot be written to must not pass silently:
-// terminal modal mode then breaks in zsh and bash, and the user has to be
-// told why.
 func TestInstallShellRCUnwritableDataDir(t *testing.T) {
 	// A path below a regular file fails even as root.
 	dataDir := filepath.Join(t.TempDir(), "file")

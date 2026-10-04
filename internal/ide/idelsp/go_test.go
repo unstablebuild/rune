@@ -2746,10 +2746,6 @@ func copyDir(t *testing.T, src, dst string) {
 	}
 }
 
-// TestE2EOutOfRootHover asserts that a Hover at a location outside any
-// initialized root (e.g. a GOROOT file returned by Definition on a
-// stdlib symbol) falls back to the same-language server with the
-// broadest root instead of failing with ErrNoServer.
 func TestE2EOutOfRootHover(t *testing.T) {
 	t.Parallel()
 	goplsBin := findGopls(t)
@@ -2821,10 +2817,6 @@ func TestE2EOutOfRootHover(t *testing.T) {
 	assert.Contains(t, hover.Contents.Value, "Sprintf")
 }
 
-// TestWatchServerRestartsOnConnLoss locks in the fix that watchServer
-// listens on srv.conn.Done() in addition to the process watcher.
-// Closing the IDE-side jsonrpc2 conn while the gopls process is still
-// alive must trigger a SIGKILL of the orphan plus a fresh server.
 func TestWatchServerRestartsOnConnLoss(t *testing.T) {
 	t.Parallel()
 	goplsBin := findGopls(t)
@@ -2913,9 +2905,6 @@ func TestWatchServerRestartsOnConnLoss(t *testing.T) {
 		semanticapi.WorkspaceSymbolParams{Query: ""}, &raw)
 }
 
-// TestManagerCloseTerminatesGopls locks in the RUNE-180 contract that
-// Manager.Close propagates cancellation down to spawned language-server
-// processes (m.ctx → langServer.ctx → exec.CommandContext-bound child).
 func TestManagerCloseTerminatesGopls(t *testing.T) {
 	t.Parallel()
 	goplsBin := findGopls(t)

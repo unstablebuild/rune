@@ -445,12 +445,6 @@ func blockingIter(release <-chan struct{}) iterator.Iterator[string] {
 	)
 }
 
-// TestCompleteNeverBlocksCallingGoroutine guards against the prompt
-// freeze: Complete must return promptly even when the underlying
-// completer blocks producing its first element, regardless of whether
-// cmd resolves on $PATH. The emptiness probe and any fallback must be
-// deferred into the returned iterator (driven by Next off the event
-// loop), not performed on the calling goroutine.
 func TestCompleteNeverBlocksCallingGoroutine(t *testing.T) {
 	cases := []struct {
 		name string
@@ -493,9 +487,6 @@ func TestCompleteNeverBlocksCallingGoroutine(t *testing.T) {
 	}
 }
 
-// TestCompleteFallsBackWhenUnderlyingEmpty verifies the lazy fallback
-// still kicks in: when the underlying yields nothing, an executable's
-// argument completion falls through to file-based completion.
 func TestCompleteFallsBackWhenUnderlyingEmpty(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "alpha.txt"), nil, 0o600))
@@ -518,8 +509,6 @@ func TestCompleteFallsBackWhenUnderlyingEmpty(t *testing.T) {
 	assert.Contains(t, got, "alpha.txt")
 }
 
-// TestCompletePrefersUnderlyingOverFallback verifies that a non-empty
-// underlying result suppresses the fallback entirely.
 func TestCompletePrefersUnderlyingOverFallback(t *testing.T) {
 	mock := &mockHandler{
 		completeFn: func(
@@ -689,11 +678,6 @@ func TestPathCompletion(t *testing.T) {
 	assert.Empty(t, got2)
 }
 
-// TestForwardsResponsivesDirectly verifies that Responsives returned
-// by the underlying handler reach the outer iterator as the exact same
-// values (pointer equality), not flattened through text. Flattening
-// would force a fixed-width render and break markdown tables/other
-// Responsives that rely on resizing to the terminal width.
 func TestForwardsResponsivesDirectly(t *testing.T) {
 	want := []component.Responsive{
 		&markerResponsive{id: 1},
@@ -765,10 +749,6 @@ func (s *stubExecutor) StartCommand(
 func (s *stubExecutor) Signal(workspaceapi.Pid, syscall.Signal) error { return nil }
 func (s *stubExecutor) Close() error                                  { return nil }
 
-// TestExternalCommandRoutedThroughExecutor verifies that when an
-// Executor is supplied, an external command is dispatched through it
-// (running on the remote host) and that no local os.Stat on the
-// workspace path is attempted — the reported crash for SSH workspaces.
 func TestExternalCommandRoutedThroughExecutor(t *testing.T) {
 	// A path that does not exist locally, mimicking a remote (ssh)
 	// workspace whose directory only exists on the remote host. With
@@ -803,9 +783,6 @@ func TestExternalCommandRoutedThroughExecutor(t *testing.T) {
 	assert.Equal(t, "/nonexistent/remote/workspace", exec.commands[0].Dir)
 }
 
-// TestExternalCommandFallsBackToLocalWithoutExecutor guards the
-// executor-less path: without WithExecutor, external commands keep the
-// previous behavior of running via mvdan/sh's local exec handler.
 func TestExternalCommandFallsBackToLocalWithoutExecutor(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)

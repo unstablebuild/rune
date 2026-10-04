@@ -70,10 +70,6 @@ func (l recordingLoader) Load(
 	return l.testLoader.Load(file, buf, swapDir, readOnly)
 }
 
-// TestExternalEditorForcesReadOnly verifies that opening a file in a
-// Component backed by an external Editor forces readOnly=true
-// at both the editor.Edit and workspace.Load layer, regardless of what
-// the caller passed to OpenFileTab.
 func TestExternalEditorForcesReadOnly(t *testing.T) {
 	var loaderRO, editorRO bool
 	ed := externalEditor{TestEditor: NopEditor(), readOnlyObserved: &editorRO}
@@ -99,18 +95,6 @@ func TestExternalEditorForcesReadOnly(t *testing.T) {
 		"editor.Edit must receive readOnly=true under an external editor")
 }
 
-// TestExternalEditorDelegatesMarkdown locks in the fix for the bug
-// where `.md` files opened under an external editor (exo) were
-// rendered through the built-in markdown viewer instead of being
-// handed to the external editor. The root cause was that
-// Component.openFileTab conflated the exo mirror-buffer
-// read-only invariant with the user's view intent: hoisting
-// `readOnly = true` for any external editor then took the
-// loadView/loadMarkdown branch unconditionally. The fix keeps the
-// hoist but gates the view branch on the caller's original intent
-// AND `!c.ed.IsExternal()` so the external editor's Edit always
-// gets the file, for both :edit (readOnly=false) and :view
-// (readOnly=true).
 func TestExternalEditorDelegatesMarkdown(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -145,15 +129,6 @@ func TestExternalEditorDelegatesMarkdown(t *testing.T) {
 	}
 }
 
-// TestExternalEditorOpensMissingFile locks in the fix for the bug
-// where opening a non-existent file under an external editor (exo /
-// nvim) failed with "cannot open file that doesn't exist in
-// read-only". Component.openFileTab hoists readOnly=true for external
-// editors so the mirror buffer never fights the editor for an
-// existing file, but workspace.Load refuses to materialize a
-// read-only buffer for a path that does not exist yet. A new file
-// has no on-disk content to mirror, so the mirror must open writable
-// instead of surfacing the read-only error.
 func TestExternalEditorOpensMissingFile(t *testing.T) {
 	dir := t.TempDir()
 	wsURI, err := workspaceapi.ParseURI("file://" + dir)

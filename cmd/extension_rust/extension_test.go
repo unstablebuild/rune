@@ -161,9 +161,6 @@ func TestRustInitializeParams(t *testing.T) {
 	assert.False(t, hasSysroot)
 }
 
-// Cache priming defaults to one worker per physical core, which is the
-// burst that saturates the machine on a cold project and leaves the
-// editor's render loop without a core to run on.
 func TestRustInitializeParamsCapsWorkerThreads(t *testing.T) {
 	params, err := rustInitializeParams("file:///ws", "ra", "", "info", false)
 	require.NoError(t, err)
@@ -214,10 +211,6 @@ func TestReadMemoryUsage(t *testing.T) {
 	assert.NotEmpty(t, notify.notifs)
 }
 
-// TestRustInitializeOptionsExtras guards the initialization options we
-// forward to rust-analyzer beyond the baseline: import shaping so
-// organize-imports and auto-import assists produce idiomatic use trees,
-// assist.emitMustUse, autoimport completion, and lens suppression.
 func TestRustInitializeOptionsExtras(t *testing.T) {
 	params, err := rustInitializeParams("file:///ws", "ra", "", "info", false)
 	require.NoError(t, err)
@@ -240,11 +233,6 @@ func TestRustInitializeOptionsExtras(t *testing.T) {
 	assert.Equal(t, false, lens["enable"])
 }
 
-// TestRustInitializeCapabilities verifies the experimental capabilities we
-// advertise. snippetTextEdit must NOT be advertised: lspcmd.ApplyWorkspaceEdit
-// writes edits verbatim, so a snippet edit would leak literal $0/${1:_} tab
-// stops into the buffer. codeAction.resolveSupport must stay absent so
-// rust-analyzer resolves each assist's edit eagerly in the codeAction response.
 func TestRustInitializeCapabilities(t *testing.T) {
 	params, err := rustInitializeParams("file:///ws", "ra", "", "info", false)
 	require.NoError(t, err)
@@ -282,8 +270,6 @@ func TestRustInitializeCapabilities(t *testing.T) {
 			"computes native semantic diagnostics")
 }
 
-// With the experimental flag set, localDocs is advertised so external-docs
-// receives a {web, local} response; the always-on flags stay set.
 func TestRustInitializeCapabilitiesExperimental(t *testing.T) {
 	params, err := rustInitializeParams("file:///ws", "ra", "", "info", true)
 	require.NoError(t, err)
@@ -318,9 +304,6 @@ func TestRustInitializeCapabilitiesExperimental(t *testing.T) {
 	assert.Len(t, names, 4)
 }
 
-// rustInitializeCommandHasNoSpaces guards the idelsp command tokenizer,
-// which splits InitializeOptions.command on spaces. A bundled path with
-// no subcommand keeps the command a single argv element.
 func TestRustInitializeCommandHasNoSpaces(t *testing.T) {
 	params, err := rustInitializeParams(
 		"file:///ws", "/data/bin/rust-analyzer", "", "info", false)
@@ -366,10 +349,6 @@ func TestBootstrapRustupSkipsWhenInstalled(t *testing.T) {
 	assert.Empty(t, notify.progressMessages())
 }
 
-// TestExtendWorkspaceNonRustRegistersButSkipsInit verifies the REPL
-// command is always registered (its cwd is the workspace root and is
-// independent of any project), while a workspace with no Rust project is
-// not eagerly initialized.
 func TestExtendWorkspaceNonRustRegistersButSkipsInit(t *testing.T) {
 	fs := newFakeFS()
 	lsp := &captureLSP{}
@@ -390,10 +369,6 @@ func TestExtendWorkspaceNonRustRegistersButSkipsInit(t *testing.T) {
 	assert.Zero(t, count)
 }
 
-// TestExtendWorkspaceWithoutCargoHome verifies that when CARGO_HOME is
-// unset the extension does not fail: it skips the toolchain install (so
-// nothing lands in the wrong place), warns the user, and still brings up
-// rust-analyzer with no sysroot.
 func TestExtendWorkspaceWithoutCargoHome(t *testing.T) {
 	fs := newFakeFS().
 		addFile("Cargo.toml").
@@ -423,10 +398,6 @@ func TestExtendWorkspaceWithoutCargoHome(t *testing.T) {
 	assert.False(t, hasSysroot, "no sysroot without a managed toolchain")
 }
 
-// TestExtendWorkspaceNestedDiscovery verifies that a workspace with no
-// root Cargo.toml is not initialized on startup, but opening a .rs file
-// under a nested crate brings up a server rooted at that crate. A
-// marker-less .rs open is ignored.
 func TestExtendWorkspaceNestedDiscovery(t *testing.T) {
 	root := t.TempDir()
 	crate := filepath.Join(root, "crates", "foo")

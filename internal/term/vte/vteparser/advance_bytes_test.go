@@ -62,9 +62,6 @@ func TestAdvanceBytesSplitsOnControlBytes(t *testing.T) {
 	assert.Empty(t, h.singles)
 }
 
-// TestLoggingHandlerForwardsInputRun pins that the trace-logging
-// wrapper forwards batched runs; a no-op override would silently drop
-// bulk output whenever trace logging is enabled.
 func TestLoggingHandlerForwardsInputRun(t *testing.T) {
 	h := &captureHandler{}
 	wrapped := HandlerWithLogging("test", h)

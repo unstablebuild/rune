@@ -130,9 +130,6 @@ func openHostWorkspace(
 	return m, wh
 }
 
-// TestRemoteWorkspaceInstallsOnItsHost opens a workspace on another
-// machine and checks that its language tooling and its `pkg` command
-// manage that machine's packages, asking here before installing there.
 func TestRemoteWorkspaceInstallsOnItsHost(t *testing.T) {
 	host := listingHostPackageManager{newHostPackageManager("2")}
 	m, wh := openHostWorkspace(t, host)
@@ -173,9 +170,6 @@ func TestRemoteWorkspaceInstallsOnItsHost(t *testing.T) {
 	})
 }
 
-// TestRemoteWorkspaceAsksAboutItsHostsConfig installs a package that
-// replaces one of the settings of the user of the workspace's host: the
-// question is asked here, naming the host, and the answer applied there.
 func TestRemoteWorkspaceAsksAboutItsHostsConfig(t *testing.T) {
 	dataDir := t.TempDir()
 	uri, err := workspaceapi.CurrentUserHostURI(dataDir)

@@ -257,9 +257,6 @@ X   X Things  #  #
 	comptest.TestComponent(t, l, w, tests)
 }
 
-// TestTabsResetTabIcon verifies that SetTabIcon updates the icon and
-// ResetTabIcon restores it to either the icon supplied to Add or the
-// last default set via SetTabDefaultIcon.
 func TestTabsResetTabIcon(t *testing.T) {
 	l := NewTabs()
 	l.Add('A', "alpha")
@@ -282,11 +279,6 @@ func TestTabsResetTabIcon(t *testing.T) {
 	assert.Equal(t, '☆', l.TabIcon(1))
 }
 
-// TestTabsDrawFocusHighlightBorderless verifies that in borderless mode at
-// h>=2 (the production tab-bar config: TabBarHeight=2, frame=false), tab
-// labels render on y=1 and the focused-tab columns on y=0 get the focus
-// highlight rune. The non-focused tab columns (and the separator gap) on
-// y=0 stay blank.
 func TestTabsDrawFocusHighlightBorderless(t *testing.T) {
 	l := NewTabs()
 	l.SetBorder(false)
@@ -322,10 +314,6 @@ A alpha  B beta     `,
 	comptest.TestComponent(t, l, w, tests)
 }
 
-// TestTabsDrawFocusHighlightCharAttr verifies SetFocusFrameChar overrides
-// the highlight rune and that the focusFrame attr passed to SetAttr is
-// applied to the highlight cells (and only those — non-focused columns on
-// the highlight row stay unattributed).
 func TestTabsDrawFocusHighlightCharAttr(t *testing.T) {
 	l := NewTabs()
 	l.SetBorder(false)
@@ -366,9 +354,6 @@ func TestTabsDrawFocusHighlightCharAttr(t *testing.T) {
 	assert.Equal(t, 'B', cells[20+9].Ch)
 }
 
-// TestTabsDrawHighlightDisabled verifies that setting the focus-frame
-// rune to 0 disables the highlight overlay entirely (no character is
-// painted on the highlight row).
 func TestTabsDrawHighlightDisabled(t *testing.T) {
 	l := NewTabs()
 	l.SetBorder(false)
@@ -394,9 +379,6 @@ func TestTabsDrawHighlightDisabled(t *testing.T) {
 	}
 }
 
-// TestTabsDrawBottomHighlight verifies SetBottomHighlight(true) renders
-// the focus-frame highlight on the bottom row of the tab bar and keeps
-// labels anchored to y=0 in borderless mode (no y=1 push-down).
 func TestTabsDrawBottomHighlight(t *testing.T) {
 	l := NewTabs()
 	l.SetBorder(false)
@@ -471,9 +453,6 @@ func TestTabsDrawIconAttr(t *testing.T) {
 	assert.Equal(t, nonFocusAttr, cells[11].Attributes())
 }
 
-// TestTabsSetAttrIconAttrs verifies SetAttr's focus/non-focus icon attributes
-// are applied to tab icons that don't have a per-tab icon attr override, and
-// that per-tab overrides take precedence (via AttributesUnion semantics).
 func TestTabsSetAttrIconAttrs(t *testing.T) {
 	l := NewTabs()
 	l.SetBorder(false)
@@ -569,17 +548,6 @@ func setupOneTab(width, height int) *Tabs {
 	return l
 }
 
-// TestTabsDrawResize exercises the resize algorithm at a width wide enough
-// that the algorithm's individual cases — full-fit, fair-share with
-// give-back, leftover distributed leftmost-first, window pruning when even
-// min width doesn't fit, and tie-breaking shrink direction — each show up
-// in their own inline literal. Tab full widths chosen for clarity:
-//
-//	"A alpha"=7, "B beta"=6, "C gamma"=7, "D delta"=7,
-//	"E epsilon"=9, "F zeta"=6.
-//
-// Separator is 2 chars. Width 40 → innerW=38, budgetW=36; width 30 → 28
-// / 26; width 20 → 18 / 16. budgetW = innerW - tabBarRightPad.
 func TestTabsDrawResize(t *testing.T) {
 	l := NewTabs()
 	l.Resize(40, 4)
@@ -683,9 +651,6 @@ func TestTabsDrawResize(t *testing.T) {
 	comptest.TestComponent(t, l, w, tests)
 }
 
-// TestTabsTabRect checks that TabRect lands on the cells Draw actually
-// paints a tab's label into, across the frame and highlight modes that
-// move the label row and a layout that shrinks or hides tabs.
 func TestTabsTabRect(t *testing.T) {
 	type want struct {
 		x, y, width int
@@ -868,10 +833,6 @@ func TestTabsTabAt(t *testing.T) {
 	})
 }
 
-// TestTabsTabIconAt scans every cell around the bar and checks that
-// TabIconAt hits exactly the cells Draw paints an icon into, across the
-// frame and highlight modes that move the label row and layouts that
-// shrink, hide or blank tabs.
 func TestTabsTabIconAt(t *testing.T) {
 	const wide = '界'
 	type tabSpec struct {
@@ -1120,11 +1081,6 @@ func TestTabsTabIconAt(t *testing.T) {
 	})
 }
 
-// TestTabsDrawFocusLast regression-tests the case where the focused tab is
-// the rightmost tab in the list and the bar doesn't have enough room for
-// every tab at full width. The focused tab must keep its full label and
-// non-focused tabs must shrink to fit; visually the focused (rightmost)
-// tab should NOT be truncated while preceding non-focused tabs are.
 func TestTabsDrawFocusLast(t *testing.T) {
 	l := NewTabs()
 	l.SetBorder(false)
@@ -1164,11 +1120,6 @@ func TestTabsDrawFocusLast(t *testing.T) {
 	comptest.TestComponent(t, l, w, tests)
 }
 
-// TestTabsDrawRightPadding regression-tests that the tab bar always
-// reserves at least 2 blank cells at the right edge of the rendered
-// row, so the rightmost tab is never flush against the viewport edge.
-// The invariant holds in both the fast path (everything fits at full
-// width) and the resize path (truncation kicks in).
 func TestTabsDrawRightPadding(t *testing.T) {
 	t.Run("fast path borderless", func(t *testing.T) {
 		l := NewTabs()

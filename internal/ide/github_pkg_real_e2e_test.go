@@ -37,20 +37,6 @@ import (
 	"unstable.build/rune/internal/ide/pkgshell"
 )
 
-// TestGitHubPkgRealEndToEnd installs real, published Rune extension
-// packages over the network — against actual github.com, not an
-// httptest fixture — and proves version resolution and the full
-// install/run/command chain per language:
-//
-//	ls-remote (List = latest [+ tags]) → resolve the install version →
-//	clone → config verification → language requirement install (host
-//	uv/go delivered into <dataDir>/bin) → promote + config merge → live
-//	extension start via `uv run` / `go run` → SDK handshake → command
-//	registration → command dispatch → storage sentinel.
-//
-// It hits the network and needs the host toolchain, so it is opt-in:
-// set RUNE_GITHUB_PKG_REAL_E2E=1 and run with a generous timeout. Each
-// language variant additionally skips when its toolchain is missing.
 func TestGitHubPkgRealEndToEnd(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping real github package e2e in -short mode")

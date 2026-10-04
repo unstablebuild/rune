@@ -36,11 +36,6 @@ import (
 	"unstable.build/rune/internal/text/standard"
 )
 
-// TestGoREPLEndToEndEval drives the Go REPL handler against the real go
-// toolchain and a real gopls, asserting that each accepted line renders
-// the expected output once accumulated state is folded in. Steps run in
-// sequence on one shell so accumulation (imports, decls, vars) is
-// exercised across lines.
 func TestGoREPLEndToEndEval(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping toolchain+gopls e2e test in -short mode")
@@ -105,9 +100,6 @@ func TestGoREPLEndToEndEval(t *testing.T) {
 	}
 }
 
-// TestGoREPLEndToEndCompletion drives tab completion through the handler
-// against real gopls: member completion over a local package and import
-// path completion. All cases run on one warmed-up shell.
 func TestGoREPLEndToEndCompletion(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping toolchain+gopls e2e test in -short mode")
@@ -150,9 +142,6 @@ func TestGoREPLEndToEndCompletion(t *testing.T) {
 	})
 }
 
-// TestGoREPLEndToEndSignatureHelp drives signature help through the
-// handler against real gopls: typing "(" after a callable shows the
-// function signature as a transient hint above the prompt.
 func TestGoREPLEndToEndSignatureHelp(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping toolchain+gopls e2e test in -short mode")
@@ -182,11 +171,6 @@ type evalStep struct {
 	wantTail []string
 }
 
-// TestGoREPLEndToEndClearScreenResetsProgram is a regression test for
-// <c-l> clearing only the screen while the accumulated program kept the
-// prior declaration, so redeclaring the same variable failed with "no
-// new variables on left side of :=". After <c-l> the session must be
-// reset so the redeclaration compiles.
 func TestGoREPLEndToEndClearScreenResetsProgram(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping toolchain+gopls e2e test in -short mode")

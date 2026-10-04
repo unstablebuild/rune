@@ -294,8 +294,6 @@ func TestLastSessionRoundTrip(t *testing.T) {
 	}
 }
 
-// TestLastSessionSkipsUnparseableURI pins that a document written by a
-// future or corrupted version cannot break startup.
 func TestLastSessionSkipsUnparseableURI(t *testing.T) {
 	cs := newCountingStorage()
 	store := New(cs)
@@ -548,11 +546,6 @@ func TestTrackDropsSkippedURIEvents(t *testing.T) {
 		"skip-listed URI must not enter persisted state")
 }
 
-// TestTrackDropsURIsUnderSkippedPrefix covers pseudo-buffers that mint a
-// resource per invocation, such as the :gitshow diff popup. Their URIs
-// cannot be enumerated up front, so the skip entry names the namespace
-// and every resource under it must stay out of the persisted state —
-// otherwise a reload tries to reopen a buffer that was never a file.
 func TestTrackDropsURIsUnderSkippedPrefix(t *testing.T) {
 	store := New(newCountingStorage())
 	uri := mustURI(t, "memory:///explorer")
@@ -701,11 +694,6 @@ func rawDocs(t *testing.T, svc storageapi.Service) []map[string]any {
 	return docs
 }
 
-// TestTerminalSnapshotsLiveOutsideTheWorkspaceStatePartition pins the
-// storage shape ListWorkspaceURIs depends on: listing a partition
-// decodes every document in it to evaluate filters, so a multi-MB
-// terminal snapshot must never share the partition with the documents
-// the scavenger seeds from at startup.
 func TestTerminalSnapshotsLiveOutsideTheWorkspaceStatePartition(t *testing.T) {
 	cs := newCountingStorage()
 	store := New(cs)
@@ -741,10 +729,6 @@ func TestTerminalSnapshotsLiveOutsideTheWorkspaceStatePartition(t *testing.T) {
 	require.Len(t, got.Tasks, 1)
 }
 
-// TestLoadFallsBackToInlineTerminals covers documents written before
-// terminals moved to their own partition: the snapshots they carry
-// inline must still restore, and the next full store rewrites the
-// state in the new shape.
 func TestLoadFallsBackToInlineTerminals(t *testing.T) {
 	cs := newCountingStorage()
 	store := New(cs)
@@ -774,10 +758,6 @@ func TestLoadFallsBackToInlineTerminals(t *testing.T) {
 	assert.Equal(t, "inline", got.Terminals[0].Name)
 }
 
-// TestListWorkspaceURIsThroughACappedFollower reproduces the startup
-// failure on a datadir led by another process: a legacy document whose
-// inline snapshots exceed the gRPC frame cap must not abort the listing
-// the scavenger seeds from, since List, unlike Get, is not chunked.
 func TestListWorkspaceURIsThroughACappedFollower(t *testing.T) {
 	svc := cappedGRPCStorage(t)
 	store := New(svc)
@@ -882,8 +862,6 @@ func TestTrackerDoesNotSnapshotTerminalsOnEditorEvents(t *testing.T) {
 	assert.Equal(t, "from-close", got.Terminals[0].Name)
 }
 
-// A crash skips the close-time snapshot, so the extension tabs must ride
-// along with the per-editor-event writes.
 func TestTrackerPersistsExtensionTabsOnEditorEvents(t *testing.T) {
 	store := New(newCountingStorage())
 	uri := mustURI(t, "memory:///track-extension-tabs")

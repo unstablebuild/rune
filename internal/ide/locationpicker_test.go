@@ -242,13 +242,6 @@ func joinArgsForName(args []string) string {
 	return strings.Join(args, "_")
 }
 
-// TestLocationPickerDispatchesCursorToMatch reproduces the bug where
-// the gitgrep alias (and any :locationpicker invocation that emits
-// `path:line:col:matched-content` lines) opened the target file but
-// failed to position the editor cursor at the match. The preview pane
-// works because it reads the file via the FileSystem directly, but
-// pressing <enter> on the entry must also dispatch SetCursor to the
-// editor that ends up in the previously focused window.
 func TestLocationPickerDispatchesCursorToMatch(t *testing.T) {
 	clip := clipboard.NewInMemory()
 	e, fileScheme, tempDir := newExForTestingFileWorkspace(t, clip)

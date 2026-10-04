@@ -32,10 +32,6 @@ import (
 	"unstable.build/rune/internal/workspace/workspacetest"
 )
 
-// TestClipboardOSC52 drives OSC 52 through the full parser. A program
-// stores into and loads from the clipboard (c) and the primary selection
-// (p, and s, which Rune keeps in the same register); any other register,
-// malformed request or clipboard failure is dropped without a reply.
 func TestClipboardOSC52(t *testing.T) {
 	t.Parallel()
 	const (

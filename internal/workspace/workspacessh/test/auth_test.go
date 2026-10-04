@@ -36,8 +36,6 @@ import (
 	"unstable.build/rune/internal/workspace/workspacessh"
 )
 
-// TestAuthMatrix exercises the auth UX for each row in the plan's matrix.
-// Scenarios that need an interactive answer use a recordingUI.
 func TestAuthMatrix(t *testing.T) {
 	SkipIfNoDocker(t)
 	EnsureImage(t)
@@ -177,13 +175,6 @@ func TestAuthMatrix(t *testing.T) {
 	}
 }
 
-// TestAuthMatrixDefaultIdentityFile reproduces the scenario the user
-// reported: the server requires publickey auth, no `ssh.private_keys` is
-// configured in the workspace, but the canonical key is present at
-// `~/.ssh/id_ed25519`. We expect the dial to succeed via auto-discovery
-// and to never invoke the password prompt.
-//
-// This test mutates HOME and is therefore NOT parallel.
 func TestAuthMatrixDefaultIdentityFile(t *testing.T) {
 	SkipIfNoDocker(t)
 	EnsureImage(t)
@@ -353,12 +344,6 @@ func tryDial(
 //     negative test would need a server with non-default algorithm
 //     policy that we'd have to track separately.)
 
-// TestAuthMethodsChain pins the
-// "AuthenticationMethods publickey,password" two-factor flow. The
-// server requires BOTH a successful pubkey auth AND a successful
-// password auth in one connection. The client therefore must
-// supply a configured private key AND answer one password prompt;
-// dropping either link must surface as an auth failure.
 func TestAuthMethodsChain(t *testing.T) {
 	SkipIfNoDocker(t)
 	EnsureImage(t)
@@ -413,11 +398,6 @@ func TestAuthMethodsChain(t *testing.T) {
 	})
 }
 
-// TestKbdInteractiveAuth covers the keyboard-interactive (PAM)
-// path that the auth matrix never exercises end-to-end. The server
-// is configured to accept ONLY kbd-interactive; the client opts
-// into the kbd_interactive config knob and answers the PAM
-// password challenge through the prompt UI.
 func TestKbdInteractiveAuth(t *testing.T) {
 	SkipIfNoDocker(t)
 	EnsureImage(t)
@@ -460,14 +440,6 @@ func TestKbdInteractiveAuth(t *testing.T) {
 			"prompts is empty askKbd is skipping its challenge loop")
 }
 
-// TestMaxAuthTriesOne pins behavior when the server caps total
-// authentication attempts at 1. The Go ssh client offers every
-// signer returned by PublicKeysCallback within a single TCP
-// connection, so the server severs the connection after the wrong
-// key is offered first. newStdRemote therefore redials with a
-// fresh connection per configured key, which lets the right key
-// authenticate on its own connection and brings MaxAuthTries=1
-// hosts to a clean success.
 func TestMaxAuthTriesOne(t *testing.T) {
 	SkipIfNoDocker(t)
 	EnsureImage(t)
@@ -504,12 +476,6 @@ func TestMaxAuthTriesOne(t *testing.T) {
 			"configured keys authenticates; saw %v", ui.prompts)
 }
 
-// TestAllowUsersDeniesUser pins the case where a user exists on
-// the host but sshd's AllowUsers list excludes them. Different
-// from the existing "wrong username" matrix row — that user
-// doesn't exist at all. Here the user is real but rejected at the
-// sshd policy layer, which exercises a slightly different
-// USERAUTH_FAILURE shape.
 func TestAllowUsersDeniesUser(t *testing.T) {
 	SkipIfNoDocker(t)
 	EnsureImage(t)
@@ -537,10 +503,6 @@ func TestAllowUsersDeniesUser(t *testing.T) {
 			"connect time; we should not retry forever")
 }
 
-// TestServerBanner verifies the dial keeps working when the server
-// renders an SSH banner (RFC4252 §5.4) before the auth phase. The
-// Go ssh client consumes the banner internally; our std remote
-// must not surface it as a prompt or as garbage in any error.
 func TestServerBanner(t *testing.T) {
 	SkipIfNoDocker(t)
 	EnsureImage(t)
@@ -576,16 +538,6 @@ func TestServerBanner(t *testing.T) {
 		"banner text must not surface as a UI prompt; saw %v", ui.prompts)
 }
 
-// TestRuneBinaryMissingOnRemote pins the bootstrap error path when
-// the remote has no `rune` executable on $PATH. The connectScheme
-// call must surface a typed-message error containing "executable
-// was not found on remote" so isRetryableConnectError stops the
-// reconnect loop instead of hammering the server.
-//
-// Note: this is the only test in this file that goes through the
-// full scheme.New path (instead of TestAuthDial) because the gap
-// being covered is in the post-auth bootstrap, not the SSH
-// handshake.
 func TestRuneBinaryMissingOnRemote(t *testing.T) {
 	SkipIfNoDocker(t)
 	EnsureImage(t)
@@ -639,9 +591,6 @@ func TestRuneBinaryMissingOnRemote(t *testing.T) {
 		statErr)
 }
 
-// TestMultipleKeysFirstWrongSecondRight ensures gatherSigners
-// keeps trying configured keys after the first one is rejected.
-// The auth matrix wrong_key row only configures a single bad key.
 func TestMultipleKeysFirstWrongSecondRight(t *testing.T) {
 	SkipIfNoDocker(t)
 	EnsureImage(t)
@@ -672,10 +621,6 @@ func TestMultipleKeysFirstWrongSecondRight(t *testing.T) {
 		ui.prompts)
 }
 
-// TestPassphrasePromptCancelled pins the UX when a passphrase-
-// protected key is configured and the user cancels (or escapes)
-// the prompt. signerForKey must propagate the prompt error so the
-// dial fails cleanly instead of looping.
 func TestPassphrasePromptCancelled(t *testing.T) {
 	SkipIfNoDocker(t)
 	EnsureImage(t)

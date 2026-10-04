@@ -30,16 +30,6 @@ import (
 	"unstable.build/rune/internal/workspace/workspacessh"
 )
 
-// TestSchemeConstructorDoesNotDeadlockEventLoop is the regression test for
-// the deadlock the user observed: when workspacessh.New is invoked from
-// the IDE event-loop goroutine, the SSH dial may need to prompt the user
-// for a password, which must run on the same loop. If the constructor
-// blocks waiting for the dial, the loop never gets a chance to render
-// the prompt and we deadlock.
-//
-// The test pins the calling goroutine to a single thread that only
-// runs work posted via a `loop` channel; the constructor MUST return
-// before any prompt is rendered.
 func TestSchemeConstructorDoesNotDeadlockEventLoop(t *testing.T) {
 	SkipIfNoDocker(t)
 	EnsureImage(t)

@@ -29,9 +29,6 @@ import (
 	"unstable.build/rune/internal/ide/idetutorial"
 )
 
-// TestTutorialsForOlderRunesLoad asserts a tutorial written against a
-// DSL this Rune no longer has still parses. Failing here would fail
-// the whole config decode and take every other tutorial with it.
 func TestTutorialsForOlderRunesLoad(t *testing.T) {
 	t.Parallel()
 	sources := map[string]string{
@@ -73,9 +70,6 @@ tutorial(entry=run)
 	}
 }
 
-// TestSupportedTutorialsStillRun guards the retirement check against
-// false positives: a lesson that only names a retired word as its own
-// variable or keyword is not an old tutorial.
 func TestSupportedTutorialsStillRun(t *testing.T) {
 	t.Parallel()
 	src := `

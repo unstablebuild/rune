@@ -321,9 +321,6 @@ type myType struct {
 }
 `
 
-// TestSearchExcludesNoiseDirs verifies the workspace source-code walk skips
-// dependency/build/hidden directories (e.g. .venv, node_modules, target) so
-// their files never surface in symbol search results.
 func TestSearchExcludesNoiseDirs(t *testing.T) {
 	logrus.SetLevel(logrus.TraceLevel)
 	dir := t.TempDir()

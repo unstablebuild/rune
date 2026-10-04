@@ -158,9 +158,6 @@ func TestPkgManager_LibDir_NotAuthenticated(t *testing.T) {
 		"expected storageapi.ErrNotFound, got %v", err)
 }
 
-// TestPkgManager_HandlePkgInstall_NotAuthenticated verifies that the
-// interactive :pkginstall command suppresses ErrNotAuthenticated and
-// surfaces the raw auth error from the `pkg install` shell command.
 func TestPkgManager_HandlePkgInstall_NotAuthenticated(t *testing.T) {
 	t.Parallel()
 	pkgs := idepkgtest.MakePackages(release.Package{Name: "go"})
@@ -179,10 +176,6 @@ func TestPkgManager_HandlePkgInstall_NotAuthenticated(t *testing.T) {
 	require.ErrorIs(t, err, auth.ErrNotAuthenticated)
 }
 
-// TestPkgManager_HandlePkgInstall_Forbidden verifies that the
-// `pkg install` shell command translates a 403 from the cdnrelease
-// endpoint into the friendly ErrForbidden sentinel instead of
-// bubbling up the raw cdnrelease error.
 func TestPkgManager_HandlePkgInstall_Forbidden(t *testing.T) {
 	t.Parallel()
 	pkgs := idepkgtest.MakePackages(release.Package{Name: "go"})
@@ -204,10 +197,6 @@ func TestPkgManager_HandlePkgInstall_Forbidden(t *testing.T) {
 	require.ErrorIs(t, err, idepkg.ErrForbidden)
 }
 
-// TestPkgManager_CompletePkgInstall_Forbidden verifies that tab
-// completion against the releases endpoint surfaces the friendly
-// ErrForbidden sentinel to the completer framework when the server
-// returns 403.
 func TestPkgManager_CompletePkgInstall_Forbidden(t *testing.T) {
 	t.Parallel()
 	pkgs := idepkgtest.MakePackages(release.Package{Name: "go"})
@@ -227,10 +216,6 @@ func TestPkgManager_CompletePkgInstall_Forbidden(t *testing.T) {
 	require.ErrorIs(t, err, idepkg.ErrForbidden)
 }
 
-// TestPkgManager_HandlePkgInstall_Forbidden_Integration spins up a
-// real cdnrelease.Manager against an httptest.Server returning 403
-// so the end-to-end error type/status contract between blue and rune
-// is exercised, not just the in-process mock.
 func TestPkgManager_HandlePkgInstall_Forbidden_Integration(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -694,9 +679,6 @@ func (f *hostPackageManager) installedVersion(pkgID string) (release.Version, bo
 	return v, ok
 }
 
-// TestPkgManagerPromptsForHost drives the install prompt for a package
-// manager on another host: the prompt names the host and the answer
-// decides whether the install happens there, never locally.
 func TestPkgManagerPromptsForHost(t *testing.T) {
 	t.Parallel()
 	const prompt = `┌──────────────────────────────────────┐

@@ -1559,7 +1559,6 @@ func TestScrollToWindowCoordinates(t *testing.T) {
 	}
 }
 
-// test the cases that weren't tested above
 func TestWindowCoordinatesToScrollCoordinatesWrapLastLine(t *testing.T) {
 	suite := []struct {
 		yoffset int

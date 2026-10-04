@@ -26,8 +26,6 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 )
 
-// TestRootContains asserts the containment relation used to route a
-// file URI to the most-specific initialized root.
 func TestRootContains(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -51,9 +49,6 @@ func TestRootContains(t *testing.T) {
 	}
 }
 
-// TestServerForURILongestRoot asserts serverForURI returns the server
-// rooted at the most-specific (longest) root URI that contains the
-// file, so a nested project takes precedence over the workspace root.
 func TestServerForURILongestRoot(t *testing.T) {
 	t.Parallel()
 	uri := makeURI(t, "file:///workspace")
@@ -86,9 +81,6 @@ func TestServerForURILongestRoot(t *testing.T) {
 		"a language with no running server has no fallback")
 }
 
-// TestServerForURIBroadestFallback asserts out-of-root files route to
-// the same-language server with the broadest root: shortest rootURI,
-// with a lexicographic tie-break for equal lengths.
 func TestServerForURIBroadestFallback(t *testing.T) {
 	t.Parallel()
 	uri := makeURI(t, "file:///workspace")
@@ -118,9 +110,6 @@ func TestServerForURIBroadestFallback(t *testing.T) {
 		"the shortest root must win once available")
 }
 
-// TestSendPendingOpensOutOfWorkspaceFallback asserts a pending open
-// for a file outside the workspace root flushes to the first
-// same-language server, since no root can ever contain it.
 func TestSendPendingOpensOutOfWorkspaceFallback(t *testing.T) {
 	t.Parallel()
 	uri := makeURI(t, "file:///workspace")
@@ -149,8 +138,6 @@ func TestSendPendingOpensOutOfWorkspaceFallback(t *testing.T) {
 			"same-language server")
 }
 
-// TestInitializeRejectsRootOutsideWorkspace asserts Initialize refuses
-// to start a server rooted outside the manager's workspace root.
 func TestInitializeRejectsRootOutsideWorkspace(t *testing.T) {
 	t.Parallel()
 	uri := makeURI(t, "file:///workspace")
@@ -163,9 +150,6 @@ func TestInitializeRejectsRootOutsideWorkspace(t *testing.T) {
 	assert.Contains(t, err.Error(), "outside the workspace")
 }
 
-// TestSendPendingOpensRootScoped asserts pending opens are replayed
-// only to the server whose root contains them, so a workspace-root
-// server does not receive files that belong to a nested root.
 func TestSendPendingOpensRootScoped(t *testing.T) {
 	t.Parallel()
 	uri := makeURI(t, "file:///workspace")
@@ -204,9 +188,6 @@ func TestSendPendingOpensRootScoped(t *testing.T) {
 		"nested file must be consumed by the nested-root server")
 }
 
-// TestInstallRestartedIsRootScoped asserts that restarting a child in
-// one root's multiLangServer does not touch the children of another
-// root's server for the same language.
 func TestInstallRestartedIsRootScoped(t *testing.T) {
 	t.Parallel()
 	uri := makeURI(t, "file:///workspace")

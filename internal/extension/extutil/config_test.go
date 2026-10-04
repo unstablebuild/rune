@@ -219,9 +219,6 @@ func TestEditorModal(t *testing.T) {
 	}
 }
 
-// TestWrap pins that each mode reads wrap from its own editor section, and
-// that the vim editor reads editor.vim before editor.modal, the section's
-// name before editor.mode "modal" became "vim".
 func TestWrap(t *testing.T) {
 	on := map[string]any{"wrap": true}
 	off := map[string]any{"wrap": false}

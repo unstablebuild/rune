@@ -29,10 +29,6 @@ import (
 	"unstable.build/rune/internal/term/vte/vtescreen"
 )
 
-// TestAdvanceBytesEquivalence pins that the batched AdvanceBytes path
-// (printable runs delivered via InputRun) produces exactly the same
-// terminal state as the per-byte Advance path for the same stream,
-// regardless of how the stream is chunked.
 func TestAdvanceBytesEquivalence(t *testing.T) {
 	t.Parallel()
 	streams := []struct {
@@ -107,10 +103,6 @@ func TestAdvanceBytesEquivalence(t *testing.T) {
 	}
 }
 
-// TestASCIIRunLen exercises every offset at which the word-at-a-time
-// scan can meet a non-ASCII byte, including inside the first word,
-// exactly on a word boundary and in the byte-wise tail, so a build
-// where the eight-byte load behaves differently fails here.
 func TestASCIIRunLen(t *testing.T) {
 	t.Parallel()
 

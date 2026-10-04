@@ -2450,8 +2450,6 @@ func TestViWordMotionEmptyLines(t *testing.T) {
 	}
 }
 
-// cw changes to the end of the word like ce, keeping the whitespace after
-// the word. On a blank it falls back to the plain w motion.
 func TestViChangeWord(t *testing.T) {
 	col := func(x int) term.Coordinates {
 		return term.Coordinates{X: x}
@@ -4600,10 +4598,6 @@ func TestInsertModeTabUsesIndentServiceWhenAvailable(t *testing.T) {
 	})
 }
 
-// TestInsertModeTabAfterOInsertsFullIndentLevel reproduces RUNE-121: pressing
-// `o<tab>` in a 2-space indented file must add a full indent level rather
-// than a single space, and a second `<tab>` must add another level rather
-// than dedenting.
 func TestInsertModeTabAfterOInsertsFullIndentLevel(t *testing.T) {
 	t.Run("tab on line at target inserts full indent level", func(t *testing.T) {
 		buf := cell.NewBuffer()
@@ -5739,11 +5733,6 @@ func TestViCountChangeToLineVisualMode(t *testing.T) {
 	}
 }
 
-// TestViNormalModeArrowEdgeReturnsUnhandled verifies that, in normal
-// mode, arrow-key cursor moves report handled=false when the cursor is
-// already at the buffer edge and cannot move. Outer handlers rely on
-// this to fall through (e.g. the dialogue compose box recalling queued
-// messages on ArrowUp).
 func TestViNormalModeArrowEdgeReturnsUnhandled(t *testing.T) {
 	newVi := func(t *testing.T, content string) *viHandlerImpl {
 		t.Helper()
@@ -5793,8 +5782,6 @@ func TestViNormalModeArrowEdgeReturnsUnhandled(t *testing.T) {
 	})
 }
 
-// TestViJoin pins the normal-mode join commands: J joins with a single
-// space (dropping the next line's indent), gJ joins verbatim.
 func TestViJoin(t *testing.T) {
 	type joinCase struct {
 		name          string
@@ -6399,8 +6386,6 @@ func TestViJoin(t *testing.T) {
 	}
 }
 
-// TestViJoinUndoAndRepeat pins that a join is a single undo step and
-// that `.` replays it.
 func TestViJoinUndoAndRepeat(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -8341,10 +8326,6 @@ type callbackAdapter struct {
 	}
 }
 
-// TestGwFormatWrapParagraph mirrors a subset of TestGoFormatWrapParagraph
-// but for the `gw` operator, which performs the same paragraph reflow as
-// `gq` while restoring the cursor to its position from before the
-// operator was invoked.
 func TestGwFormatWrapParagraph(t *testing.T) {
 	type tc struct {
 		name        string
@@ -8617,9 +8598,6 @@ func TestGwFormatWrapParagraph(t *testing.T) {
 	}
 }
 
-// TestSearchOperatorMotion covers `/pattern<CR>` and `?pattern<CR>` as
-// operator-pending motions for d, y, c, >, <, gu, gU, g~. The gq
-// operator is exercised by TestGoFormatWrapParagraph above.
 func TestSearchOperatorMotion(t *testing.T) {
 	type tc struct {
 		name        string
@@ -9640,9 +9618,6 @@ func TestSearchOperatorMotion(t *testing.T) {
 	}
 }
 
-// TestMarkOperatorMotion covers `'{mark}` and “ `{mark} “ as
-// operator-pending motions for d, c, y, >, <, gu, gU, g~. The gq
-// operator is exercised by TestGoFormatWrapParagraph above.
 func TestMarkOperatorMotion(t *testing.T) {
 	type tc struct {
 		name        string
@@ -12383,9 +12358,6 @@ func TestGjGk(t *testing.T) {
 	})
 }
 
-// TestHandleMouseWindowCoordinates verifies vi accepts mouse events
-// in every mode (vim's mouse=a): drags enter visual mode and select,
-// an insert-mode click repositions the caret and stays in insert.
 func TestHandleMouseWindowCoordinates(t *testing.T) {
 	newVi := func() *Vi {
 		buf := cell.NewBuffer()

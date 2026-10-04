@@ -22,9 +22,6 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// TestLLMConfig_BedrockBlock pins the `models.bedrock.*` keys the loader
-// understands, so a rename in the config schema is caught here rather than
-// silently dropping the provider's settings.
 func TestLLMConfig_BedrockBlock(t *testing.T) {
 	c := ideConfig{cfg: map[string]any{
 		"models": map[string]any{

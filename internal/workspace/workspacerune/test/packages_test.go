@@ -100,8 +100,6 @@ func hostPackages(t *testing.T, scheme schemeapi.Scheme) idepkg.PackageManager {
 	return pkgrpc.NewClient(cc, clientUI{idepkgtest.NewNotifications(t)})
 }
 
-// TestInstallsOnPeer installs a package on the peer a workspace is
-// opened on, through the workspace's own connection.
 func TestInstallsOnPeer(t *testing.T) {
 	control := StartTestControl(t, true /* sameUser */)
 	peer := StartNode(t, control, "peer", "")
@@ -124,8 +122,6 @@ func TestInstallsOnPeer(t *testing.T) {
 	assert.Equal(t, []string{"/home/peer/.rune/pkg/go/1.24.0/bin/go"}, paths)
 }
 
-// TestPeerWithoutPackageManagement covers a peer running a Rune from
-// before packages could be installed on it.
 func TestPeerWithoutPackageManagement(t *testing.T) {
 	control := StartTestControl(t, true /* sameUser */)
 	peer := StartNode(t, control, "peer", "")
@@ -139,9 +135,6 @@ func TestPeerWithoutPackageManagement(t *testing.T) {
 	require.ErrorIs(t, err, pkgrpc.ErrUnsupported)
 }
 
-// TestRejectsPackagesFromAnotherAccount: installing on a machine runs
-// code there, so it is refused like any other request from a peer
-// owned by somebody else.
 func TestRejectsPackagesFromAnotherAccount(t *testing.T) {
 	control := StartTestControl(t, false /* sameUser */)
 	peer := StartNode(t, control, "peer", "")

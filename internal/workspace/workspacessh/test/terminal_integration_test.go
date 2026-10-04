@@ -39,27 +39,6 @@ import (
 	"unstable.build/rune/internal/workspace/workspacessh"
 )
 
-// TestIntegrationTerminalShell exercises the protocol contract used by
-// vte.Component when the user opens a terminal in an SSH workspace:
-// the IDE sends an empty Cmd.Path and empty Cmd.Args, and the remote
-// fileScheme is responsible for turning that into the user's login
-// shell on the *remote* host.
-//
-// Regression scenario: a remote host advertises a login shell at a
-// path that exists on a typical interactive shell's view of the
-// filesystem but not on disk in the way fork/exec needs (e.g.
-// $SHELL=/usr/bin/bash on a host that only ships /bin/bash). With
-// the buggy resolveLoginShell, the remote fileScheme would forward
-// the bogus path straight into exec.CommandContext and surface the
-// confusing error "fork/exec /usr/bin/bash: no such file or
-// directory" all the way back through the gRPC channel to the IDE.
-//
-// We reproduce that here by installing a tiny login-shell wrapper on
-// the container that exports SHELL=/usr/bin/bash before delegating
-// to /bin/sh, then chsh-ing the test user to use it. SSH then sets
-// SHELL=/usr/bin/bash for the runesvc process, exactly mirroring the
-// shape of the bug. The test passes only if the executor falls back
-// to a real shell on disk instead of forwarding the broken path.
 func TestIntegrationTerminalShell(t *testing.T) {
 	SkipIfNoDocker(t)
 	EnsureImage(t)
@@ -313,32 +292,6 @@ func chshUser(t *testing.T, id, user, shell string) {
 		strings.TrimSpace(string(out)))
 }
 
-// TestIntegrationTerminalSurvivesKeepaliveIdle is the end-to-end proof
-// for the too_many_pings GOAWAY storm that drops terminals over SSH.
-//
-// A terminal is an active server-streaming StartCommand RPC that stays
-// open for the life of the remote process while no data flows during
-// idle. The SSH-tunneled gRPC client pings every clientKeepalive.Time
-// (10s). With an open stream the server enforces its
-// EnforcementPolicy.MinTime: a bare grpc.NewServer() uses MinTime 5m,
-// so every 10s ping arrives "too soon" and earns a strike. After
-// maxPingStrikes (2) — on the 3rd offending ping, ~30-40s after the
-// stream opened — the server sends GOAWAY ENHANCE_YOUR_CALM /
-// too_many_pings and tears down the single HTTP/2 connection carried
-// over the SSH pipe. That kills the terminal stream (surfacing "context
-// canceled") and forces a reconnect that starts a new remote server.
-//
-// We open a long-lived remote process to hold the stream, keep it idle
-// well past the strike threshold, then assert two things that only hold
-// once NewSchemeServer's enforcement permits the client cadence:
-//   - the stream did not die early: the process watcher reports no exit
-//     before we cancel it ourselves;
-//   - no reconnect occurred: the remote server that runs our commands
-//     is the same process before and after the idle window.
-//
-// Before the fix this fails: the stream is torn down by GOAWAY around
-// 30-40s and maintainConnection re-dials. After the fix the ping
-// cadence is permitted and the stream survives.
 func TestIntegrationTerminalSurvivesKeepaliveIdle(t *testing.T) {
 	SkipIfNoDocker(t)
 	EnsureImage(t)

@@ -344,12 +344,6 @@ public class Rotor {
 	})
 }
 
-// TestUndoEmojiSequenceTypedRuneByRune types an emoji ZWJ sequence one
-// keystroke at a time and then undoes every step. Merging each
-// continuation (joiner and following emoji) as a coordinate-stable
-// replace of the base cell keeps the undo timeline valid: previously it
-// re-clustered the whole row, collapsed a column, and left an undo op
-// pointing past the shortened row, which panicked on the first undo.
 func TestUndoEmojiSequenceTypedRuneByRune(t *testing.T) {
 	cases := []struct {
 		name  string

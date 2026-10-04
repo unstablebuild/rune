@@ -49,8 +49,6 @@ func TestRole_StringPanicsOnUnknown(t *testing.T) {
 	})
 }
 
-// The API server reads an RPCUser token presented at a web endpoint as
-// a WebUser, so a serve-only token must still read as one there.
 func TestWebUserReadsServeOnlyRPCUser(t *testing.T) {
 	for _, serveOnly := range []bool{true, false} {
 		data, err := json.Marshal(RPCUser{ID: "auth0|abc", Role: RolePaid, ServeOnly: serveOnly})

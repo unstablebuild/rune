@@ -491,9 +491,6 @@ func TestIncrementalSearchSplitsMessageAndModeAcrossEditorChrome(t *testing.T) {
 	}
 }
 
-// TestTransientModesSplitMessageAndModeAcrossEditorChrome covers the remaining
-// transient states. M-% is not expressible as a handlertest input sequence, so
-// scenarios that need it seed the state through prelude events.
 func TestTransientModesSplitMessageAndModeAcrossEditorChrome(t *testing.T) {
 	tests := []struct {
 		name    string

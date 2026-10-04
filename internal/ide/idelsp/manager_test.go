@@ -33,12 +33,6 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 )
 
-// TestEventTypeClose_evictsFilesCache locks in the fix for RUNE-195:
-// Manager.files retained the full text of every URI ever opened in a
-// language-supported buffer because EventTypeClose only emitted
-// textDocument/didClose without touching m.files. The handler must
-// drop the cached entry so long-running sessions do not accumulate
-// one full file copy per URI.
 func TestEventTypeClose_evictsFilesCache(t *testing.T) {
 	t.Parallel()
 	workspaceURI := makeURI(t, "file:///workspace")
@@ -66,10 +60,6 @@ func TestEventTypeClose_evictsFilesCache(t *testing.T) {
 		"EventTypeClose must evict the cached file entry")
 }
 
-// Pending-open snapshots must be refreshed only from events that carry
-// the full buffer content. Replaying edit deltas would replicate the
-// editor's buffer semantics in the manager, and any divergence would
-// corrupt the didOpen base the server pins after initialization.
 func TestPendingOpenIgnoresEditsAndRefreshesOnFlush(t *testing.T) {
 	t.Parallel()
 	workspaceURI := makeURI(t, "file:///workspace")
@@ -118,12 +108,6 @@ func TestPendingOpenIgnoresEditsAndRefreshesOnFlush(t *testing.T) {
 	}), "flush for a file with no pending open must still surface the error")
 }
 
-// TestManagerConcurrentStateAccess drives the file/server/pendingOpens
-// accessors and Close concurrently to prove m.mu serialises every read
-// and write of the manager's maps. With NoInitializeServer the open/close
-// events stay in-process (no language server is spawned), so this is a
-// pure -race regression guard for the locking around m.files,
-// m.pendingOpens, and m.servers.
 func TestManagerConcurrentStateAccess(t *testing.T) {
 	t.Parallel()
 	workspaceURI := makeURI(t, "file:///workspace")
@@ -162,11 +146,6 @@ func TestManagerConcurrentStateAccess(t *testing.T) {
 	wg.Wait()
 }
 
-// TestManagerMaxRetriesPropagatesFromConfig locks in the fix for Bug B
-// in RUNE-132: Config.MaxRetries was read for default-filling but
-// never assigned to Manager.maxRetries, so retry.LimitStrategy
-// silently received zero and watchServer never restarted a crashed
-// language server.
 func TestManagerMaxRetriesPropagatesFromConfig(t *testing.T) {
 	uri := makeURI(t, "file:///workspace")
 
@@ -183,12 +162,6 @@ func TestManagerMaxRetriesPropagatesFromConfig(t *testing.T) {
 	})
 }
 
-// TestDidChangeWatchedFiles_invalidatesOnDelete locks in the fix for
-// RUNE-AGENT-72: a workspace/didChangeWatchedFiles batch that contains
-// a Deleted event must call Callback.InvalidateAllPending so subsequent
-// WaitFileProcessed calls block until gopls re-publishes diagnostics
-// for unrelated files in the same package. Non-deletion batches must
-// not trigger the invalidation.
 func TestDidChangeWatchedFiles_invalidatesOnDelete(t *testing.T) {
 	t.Parallel()
 	uri := makeURI(t, "file:///workspace")
@@ -260,13 +233,6 @@ func TestDidChangeWatchedFiles_invalidatesOnDelete(t *testing.T) {
 	})
 }
 
-// TestDidChangeWatchedFiles_marksOpenFilePending locks in the fix for
-// RUNE-AGENT-72 (round 2): when an apply_patch-style Changed event
-// arrives for a file that is also open in the editor, the manager
-// must still mark the URI as pending so a subsequent
-// WaitFileProcessed blocks until gopls re-publishes diagnostics.
-// Previously fileDidChangeOOB short-circuited for open files,
-// causing check_file_errors to return a stale pre-patch snapshot.
 func TestDidChangeWatchedFiles_marksOpenFilePending(t *testing.T) {
 	t.Parallel()
 	uri := makeURI(t, "file:///workspace")
@@ -321,9 +287,6 @@ func newTransientTestManager(
 	return m, srv
 }
 
-// TestTransientOpenForUnopenedFile asserts that a position request for
-// a file not tracked in m.files transiently opens it (didOpen) before
-// the call and closes it (didClose) after, without caching it.
 func TestTransientOpenForUnopenedFile(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
@@ -357,11 +320,6 @@ func TestTransientOpenForUnopenedFile(t *testing.T) {
 	assert.False(t, cached, "transient open must not cache the file in m.files")
 }
 
-// TestLocationRequestDecodesSingleLocation asserts that a location
-// request tolerates a server answering with a bare Location object
-// rather than an array — zls does this for single results, and the
-// LSP spec allows Location | Location[] | LocationLink[]. The decoded
-// single location must be returned without a stale decode error.
 func TestLocationRequestDecodesSingleLocation(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
@@ -384,9 +342,6 @@ func TestLocationRequestDecodesSingleLocation(t *testing.T) {
 	assert.Equal(t, uint32(7), res.Location.Range.Start.Character)
 }
 
-// TestNoTransientOpenForOpenFile asserts a file already open in the
-// editor (present in m.files) is queried directly, with no extra
-// didOpen/didClose.
 func TestNoTransientOpenForOpenFile(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
@@ -410,8 +365,6 @@ func TestNoTransientOpenForOpenFile(t *testing.T) {
 		"an already-open file must not trigger didOpen/didClose")
 }
 
-// TestTransientOpenReadErrorSurfaces asserts a missing file surfaces
-// the read error without sending any notification or call.
 func TestTransientOpenReadErrorSurfaces(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
@@ -427,8 +380,6 @@ func TestTransientOpenReadErrorSurfaces(t *testing.T) {
 		"a read error must fail before any didOpen or call")
 }
 
-// TestTransientOpenNoServerPreservesErrNoServer asserts routing errors
-// are returned unchanged when no server owns the file's language.
 func TestTransientOpenNoServerPreservesErrNoServer(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
@@ -442,8 +393,6 @@ func TestTransientOpenNoServerPreservesErrNoServer(t *testing.T) {
 	require.ErrorIs(t, err, ErrNoServer)
 }
 
-// TestTransientOpenWrapsDirectCallMethods asserts methods that call the
-// server directly (Hover) also transiently open the file.
 func TestTransientOpenWrapsDirectCallMethods(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
@@ -465,10 +414,6 @@ func TestTransientOpenWrapsDirectCallMethods(t *testing.T) {
 	}, srv.eventLog())
 }
 
-// TestTransientOpenWrapsDocumentSymbol asserts DocumentSymbol, a
-// document-scoped request, transiently opens a file that is not already
-// open so servers like ty (which reject requests on unopened documents)
-// can answer it.
 func TestTransientOpenWrapsDocumentSymbol(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
@@ -495,12 +440,6 @@ func TestTransientOpenWrapsDocumentSymbol(t *testing.T) {
 	assert.False(t, cached, "transient open must not cache the file in m.files")
 }
 
-// TestDiagnosticSettleTimeoutDoesNotFail asserts that a tracked file for
-// which the server never pushes publishDiagnostics does not make
-// Diagnostic fail with the caller's deadline. WaitFileProcessed would
-// otherwise block until the caller's context expires; the settle wait
-// must instead fall through to the pull request. This reproduces the
-// check_file_errors DeadlineExceeded seen with ty for unopened files.
 func TestDiagnosticSettleTimeoutDoesNotFail(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
@@ -547,12 +486,6 @@ func TestDiagnosticSettleTimeoutDoesNotFail(t *testing.T) {
 		"the pull request must still be issued after the settle wait")
 }
 
-// TestDiagnosticUnopenedFileSkipsSettleWait asserts that a file which
-// is not open in the editor does not pay the settle-wait timeout: the
-// pull runs immediately against a transient didOpen carrying fresh disk
-// content. Without this, ty (which never pushes publishDiagnostics for
-// untracked files) would make check_file_errors after apply_patch stall
-// for the whole diagnosticSettleTimeout on every edit.
 func TestDiagnosticUnopenedFileSkipsSettleWait(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
@@ -594,9 +527,6 @@ func TestDiagnosticUnopenedFileSkipsSettleWait(t *testing.T) {
 	}, srv.eventLog())
 }
 
-// TestDiagnosticPropagatesCancellation asserts that a genuinely
-// cancelled caller context aborts Diagnostic rather than proceeding to
-// the pull request.
 func TestDiagnosticPropagatesCancellation(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
@@ -626,8 +556,6 @@ func TestDiagnosticPropagatesCancellation(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled)
 }
 
-// TestAnyServerRunning verifies that AnyServerRunning reports true only
-// when at least one server in m.servers is alive.
 func TestAnyServerRunning(t *testing.T) {
 	t.Parallel()
 
@@ -739,13 +667,6 @@ func publishedDiagnostics(cb *testCallback) []publishedDiagnostic {
 	return append([]publishedDiagnostic(nil), cb.publishes...)
 }
 
-// TestPullDiagnosticsBridge_PublishesReport locks in RUNE-332:
-// rust-analyzer never computes native semantic diagnostics on the push
-// path when build scripts / proc macros are enabled, so a pull-capable
-// server's textDocument/diagnostic report must be republished through
-// the push pipeline. The publish carries a ":pull" server-name suffix
-// so it occupies its own slot in CallbackHandler.diagnostics and merges
-// with the server's own pushes instead of overwriting them.
 func TestPullDiagnosticsBridge_PublishesReport(t *testing.T) {
 	t.Parallel()
 	diag := semanticapi.Diagnostic{
@@ -785,10 +706,6 @@ func TestPullDiagnosticsBridge_PublishesReport(t *testing.T) {
 	assert.Equal(t, srv.key().rootURI, got.metadata.RootURI)
 }
 
-// TestPullDiagnosticsBridge_DebouncesEdits asserts that a burst of
-// edits collapses into a single pull: rust-analyzer recomputes the
-// whole crate per pull, so one request per keystroke would be
-// prohibitively expensive.
 func TestPullDiagnosticsBridge_DebouncesEdits(t *testing.T) {
 	t.Parallel()
 	srv := &fakeChild{
@@ -827,9 +744,6 @@ func TestPullDiagnosticsBridge_DebouncesEdits(t *testing.T) {
 		publishes[len(publishes)-1].params.Version)
 }
 
-// TestPullDiagnosticsBridge_SaveTriggersPull asserts didSave also
-// re-pulls, so a save that changes cross-file inference refreshes the
-// location list.
 func TestPullDiagnosticsBridge_SaveTriggersPull(t *testing.T) {
 	t.Parallel()
 	srv := &fakeChild{
@@ -854,9 +768,6 @@ func TestPullDiagnosticsBridge_SaveTriggersPull(t *testing.T) {
 	}, time.Second, 5*time.Millisecond)
 }
 
-// TestPullDiagnosticsBridge_Gates asserts the bridge stays dormant
-// unless both halves of the capability handshake are present, so
-// push-only backends (gopls, zls, ty) are unaffected.
 func TestPullDiagnosticsBridge_Gates(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -898,9 +809,6 @@ func TestPullDiagnosticsBridge_Gates(t *testing.T) {
 	}
 }
 
-// TestPullDiagnosticsBridge_UnchangedReportSkipsPublish asserts an
-// "unchanged" report carries no items and must not clear the location
-// list by publishing an empty set.
 func TestPullDiagnosticsBridge_UnchangedReportSkipsPublish(t *testing.T) {
 	t.Parallel()
 	srv := &fakeChild{
@@ -921,11 +829,6 @@ func TestPullDiagnosticsBridge_UnchangedReportSkipsPublish(t *testing.T) {
 		"an unchanged report must leave the cached diagnostics alone")
 }
 
-// TestPullDiagnosticsBridge_RefreshRePullsOpenFiles asserts that a
-// workspace/diagnostic/refresh request (which rust-analyzer sends when
-// flycheck finishes) re-pulls every open file owned by a pull-capable
-// server. The request arrives on the Manager's decorated callback,
-// which must both act on it and forward it to the configured callback.
 func TestPullDiagnosticsBridge_RefreshRePullsOpenFiles(t *testing.T) {
 	t.Parallel()
 	srv := &fakeChild{
@@ -952,9 +855,6 @@ func TestPullDiagnosticsBridge_RefreshRePullsOpenFiles(t *testing.T) {
 		"the decorator must forward the refresh to the configured callback")
 }
 
-// TestPullDiagnosticsBridge_CloseCancelsPending asserts a pending
-// debounce timer is dropped when the file closes, so a pull is never
-// issued for a document the server no longer tracks.
 func TestPullDiagnosticsBridge_CloseCancelsPending(t *testing.T) {
 	t.Parallel()
 	srv := &fakeChild{

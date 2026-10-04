@@ -263,11 +263,6 @@ func TestHeadlessLogin(t *testing.T) {
 	}
 }
 
-// TestHeadlessLoginReplacesFullAccessToken pins that a headless node
-// never runs with a full-access token. One left in its data directory
-// from before headless nodes were serve-only, or copied over from a
-// desktop install, is discarded, and the node signs in again by code
-// through the headless client.
 func TestHeadlessLoginReplacesFullAccessToken(t *testing.T) {
 	oauth := newHeadlessOAuthServer(t)
 	storage := storagestub.NewInMemoryService()
@@ -304,9 +299,6 @@ func TestHeadlessLoginReplacesFullAccessToken(t *testing.T) {
 		oauth.clientIDs(), "device authorization and token grant")
 }
 
-// TestHeadlessLoginReplacesRevokedToken pins that a headless node whose
-// sign-in was revoked, or has expired, signs in again by code at
-// startup instead of announcing an account it can no longer act for.
 func TestHeadlessLoginReplacesRevokedToken(t *testing.T) {
 	oauth := newHeadlessOAuthServer(t)
 	storage := storagestub.NewInMemoryService()

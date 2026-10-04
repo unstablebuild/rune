@@ -41,9 +41,6 @@ func (c *countingReaderAt) ReadAt(p []byte, off int64) (int, error) {
 	return n, err
 }
 
-// TestReadMetadataDoesNotReadWholeFile guards against font discovery
-// regressing to slurping every candidate file: system collections are
-// hundreds of megabytes and only their family names are needed.
 func TestReadMetadataDoesNotReadWholeFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "NotoColorEmoji.ttf")
 	require.NoError(t, os.WriteFile(path, builtinfont.EmojiTTF, 0o600))

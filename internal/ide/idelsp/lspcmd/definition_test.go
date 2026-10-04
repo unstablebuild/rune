@@ -200,10 +200,6 @@ func TestDefinitionHandler(t *testing.T) {
 	}
 }
 
-// TestDefinitionHandlerRemoteWorkspace reproduces the remote-workspace
-// navigation bug: on an ssh:// workspace the language server runs on the
-// remote host and returns file:// locations with remote-local paths.
-// Navigation must open the ssh:// URI, not a local file:// path.
 func TestDefinitionHandlerRemoteWorkspace(t *testing.T) {
 	rootURI, err := workspaceapi.ParseURI("ssh://host/home/user/src/rune")
 	require.NoError(t, err)

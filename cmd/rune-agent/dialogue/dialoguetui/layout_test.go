@@ -32,17 +32,6 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/tui"
 )
 
-// TestDialogueLayout drives the dialogue handler end to end and pins the
-// rendered frame for the messages/compose split. The compose box is bottom
-// anchored, is cfg.InputRowColumns wide out of component.MaxCols, grows
-// upwards as its content wraps, and is capped so the conversation never
-// disappears; the messages region takes whatever rows are left. Frames are
-// rendered with the cursor substituted in, so each one pins its placement too.
-//
-// Regenerate every frame after an intentional layout change with:
-//
-//	DIALOGUE_LAYOUT_GOLDEN=1 go test ./cmd/rune-agent/dialogue/dialoguetui \
-//	    -run TestDialogueLayout -v
 func TestDialogueLayout(t *testing.T) {
 	cases := []layoutCase{
 		{
@@ -439,11 +428,6 @@ func TestDialogueLayout(t *testing.T) {
 	}
 }
 
-// TestDialogueLayoutCursorFreshBeforeDraw covers the stale cursor bug: the
-// host requests the cursor before it requests the frame, so a compose box
-// that just grew must already report the new position without an
-// interleaved Draw. Golden frames cannot express this because they always
-// draw first.
 func TestDialogueLayoutCursorFreshBeforeDraw(t *testing.T) {
 	const width, height = 24, 10
 	h := newLayoutHandler(t, layoutCase{width: width, height: height})
@@ -471,9 +455,6 @@ func TestDialogueLayoutCursorFreshBeforeDraw(t *testing.T) {
 	assert.True(t, grew, "typing never wrapped the compose box")
 }
 
-// TestDialogueLayoutIdleDrawDoesNotResize pins the other half of the fix:
-// a frame that changes nothing must not re-resize the conversation, which
-// is what made every draw rebuild each message component.
 func TestDialogueLayoutIdleDrawDoesNotResize(t *testing.T) {
 	comp := NewComponent(ComponentConfig{})
 	comp.Resize(24, 10)
@@ -585,8 +566,6 @@ func (r *resizeCounter) Resize(int, int)  { r.resizes++ }
 func (r *resizeCounter) Draw(term.Writer) {}
 func (r *resizeCounter) Height(int) int   { return r.rows }
 
-// TestDialogueLayoutStatusBarRow pins the bottom row the status bar
-// claims, and the row every other region gives up for it.
 func TestDialogueLayoutStatusBarRow(t *testing.T) {
 	const width, height = 40, 12
 
@@ -625,10 +604,6 @@ func TestDialogueLayoutStatusBarRow(t *testing.T) {
 	}
 }
 
-// TestDialogueLayoutStatusBarYieldsToTranscript covers the vertical
-// starvation guard: the compose box gives up rows before the transcript
-// drops below minMessagesRows, and the bar gives up its row entirely
-// once the viewport cannot afford it.
 func TestDialogueLayoutStatusBarYieldsToTranscript(t *testing.T) {
 	for height := 1; height <= 12; height++ {
 		comp := NewComponent(ComponentConfig{

@@ -162,9 +162,6 @@ func TestAliasCompleteBareFormModelTargets(t *testing.T) {
 	assert.Contains(t, names, "openai/"+openai.GPT5Dot5)
 }
 
-// TestAliasDispatchThroughParentHandler verifies the `models alias`
-// subtree is reachable through the parent Handler's dispatch and
-// completion, guarding the wiring in llmshell.go.
 func TestAliasDispatchThroughParentHandler(t *testing.T) {
 	ctx := context.Background()
 	h := newHandlerForTest(t)

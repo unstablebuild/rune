@@ -34,11 +34,6 @@ import (
 	"go.uber.org/goleak"
 )
 
-// TestPartitionResolvesOnceWhileLeaderStable locks in the fix for
-// RUNE-226: a long-lived partitioned view must resolve (open) the
-// underlying partition chain once and reuse it across operations while
-// leadership is stable. Re-resolving per op is the fsync-bound
-// regression this guards against.
 func TestPartitionResolvesOnceWhileLeaderStable(t *testing.T) {
 	lockFile := makeTempLockFile(t)
 	cfg := testConfig()
@@ -62,8 +57,6 @@ func TestPartitionResolvesOnceWhileLeaderStable(t *testing.T) {
 		"cached partition handle must stay open across operations")
 }
 
-// The scavenger drops the partitions of workspaces that no longer exist
-// through this partitioned view, so Drop must reach the resolved target.
 func TestPartitionDropForwardsToTarget(t *testing.T) {
 	ctx := context.Background()
 	lockFile := makeTempLockFile(t)
@@ -83,9 +76,6 @@ func TestPartitionDropForwardsToTarget(t *testing.T) {
 	assert.ErrorIs(t, part.Get(ctx, "k", &got), storageapi.ErrNotFound)
 }
 
-// The symbol indexer writes a file's symbols in a single batch, so a
-// partitioned view must forward batches to the resolved target rather
-// than falling back to one transaction per symbol.
 func TestPartitionApplyBatchForwardsToTarget(t *testing.T) {
 	ctx := context.Background()
 	lockFile := makeTempLockFile(t)
@@ -113,10 +103,6 @@ func TestPartitionApplyBatchForwardsToTarget(t *testing.T) {
 	assert.Equal(t, "w", got.A)
 }
 
-// TestPartitionCacheInvalidatesOnLeadershipChange verifies that when
-// the active backend swaps (leadership transition), the cached
-// leader-side handle is closed exactly once and the new backend is
-// resolved.
 func TestPartitionCacheInvalidatesOnLeadershipChange(t *testing.T) {
 	lockFile := makeTempLockFile(t)
 	cfg := testConfig()
@@ -146,10 +132,6 @@ func TestPartitionCacheInvalidatesOnLeadershipChange(t *testing.T) {
 		"new active backend must be resolved after leadership change")
 }
 
-// TestPartitionCacheNeverClosesFollowerHandles verifies that handles
-// resolved while following are never closed by the cache: follower-side
-// handles are shallow client copies, so closing them would tear down a
-// shared connection (here, underflow the refcount tracker).
 func TestPartitionCacheNeverClosesFollowerHandles(t *testing.T) {
 	lockFile := makeTempLockFile(t)
 	cfg := testConfig()
@@ -184,9 +166,6 @@ func TestPartitionCacheNeverClosesFollowerHandles(t *testing.T) {
 		"follower-side cached handles must never be closed")
 }
 
-// TestPartitionCloseReleasesCachedHandles verifies that closing a
-// partitioned view releases its cached leader-side walked handles
-// exactly once.
 func TestPartitionCloseReleasesCachedHandles(t *testing.T) {
 	lockFile := makeTempLockFile(t)
 	cfg := testConfig()
@@ -357,14 +336,6 @@ func sanitize(chain []string) []string {
 	return out
 }
 
-// TestPartitionLifecycleAcrossClusterNoLeaks drives the full partition
-// lifecycle — open, op, close, reopen — across a 3-peer cluster
-// (1 leader + 2 followers) for both a single-level partition and a
-// nested partition, asserting correctness purely through the
-// storageapi.Service surface. It then asserts there are zero leaked
-// partition handles (no marker files left by the fake) and zero leaked
-// goroutines (goleak), i.e. the leader-side handle cache and every
-// peer's teardown release every opened partition handle exactly once.
 func TestPartitionLifecycleAcrossClusterNoLeaks(t *testing.T) {
 	// Capture goroutines that exist before this test starts (package
 	// init, other parallel tests) so goleak only flags firstmover's own

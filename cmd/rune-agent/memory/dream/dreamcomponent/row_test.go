@@ -28,8 +28,6 @@ import (
 	"unstable.build/rune/cmd/rune-agent/memory/dream"
 )
 
-// TestNew_Render covers every dream.ProgressType to lock down the
-// styled per-event row Responsive used by agentshell over the REPL RPC.
 func TestNew_Render(t *testing.T) {
 	const width = 40
 	const height = 1

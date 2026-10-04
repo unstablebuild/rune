@@ -939,9 +939,6 @@ func TestComponentOnTabsClick(t *testing.T) {
 	assert.Equal(t, 1, called)
 }
 
-// TestComponentOnTabIconClick drives clicks and drags on the tab bar
-// through the browser's own mouse routing, locating each tab's icon on
-// the drawn screen.
 func TestComponentOnTabIconClick(t *testing.T) {
 	const width, height = 30, 8
 	type fixture struct {
@@ -1203,10 +1200,6 @@ func TestFloatingPanicWallpaper(t *testing.T) {
 	})
 }
 
-// this happens if content swaps the content of its own
-// window before returning exit=true, in which case the underlying
-// handler.wm closes the window but we miss updating i.e. a Tab
-// and the Tab is never again accessible.
 func TestHandleExitAfterContentSetIssue(t *testing.T) {
 	cfg := browser.DefaultConfig()
 	c := browser.NewComponent(cfg)
@@ -1301,16 +1294,6 @@ func browserConfig() browser.Config {
 	return browser.Config{}
 }
 
-// TestComponentRestoreTileLayoutEmptyLayout reproduces the
-// "corrupted browser: cannot find focus window" panic raised from
-// browser.Component.focus after RestoreTileLayout is invoked with a
-// layout that does not yield any leaf with a non-zero WindowID.
-//
-// In production this surfaced when a user's session restored a
-// normalized empty layout: the underlying handler.WindowManager kept
-// a stale focus pointing at the pre-restore tile (now discarded), and
-// any subsequent call to e.comp.Focus() in the IDE event loop would
-// look up a Window ID missing from c.windows and panic.
 func TestComponentRestoreTileLayoutEmptyLayout(t *testing.T) {
 	c := browser.NewComponent(browserConfig())
 	c.Resize(40, 20)
@@ -1322,10 +1305,6 @@ func TestComponentRestoreTileLayoutEmptyLayout(t *testing.T) {
 	require.NotNil(t, c.Focus())
 }
 
-// TestComponentTabAutoCloseOnExit verifies that when a tab's inner
-// handler returns exit=true the tab is dropped from the browser's
-// tab list, not just from the focused window. Without this the tab
-// would persist as an orphan with a closed handler.
 func TestComponentTabAutoCloseOnExit(t *testing.T) {
 	c := browser.NewComponent(browserConfig())
 	c.Resize(40, 20)
@@ -1351,9 +1330,6 @@ func TestComponentTabAutoCloseOnExit(t *testing.T) {
 	assert.Empty(t, c.Tabs())
 }
 
-// TestComponentOnTabExit verifies that when a terminal is dropped by
-// URI as a free tab or as direct window content, without relying on
-// event routing.
 func TestComponentOnTabExit(t *testing.T) {
 	deadURI, err := workspaceapi.ParseURI("terminal:///dead")
 	require.NoError(t, err)

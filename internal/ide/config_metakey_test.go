@@ -114,8 +114,6 @@ func TestValidateConfigMetaKey(t *testing.T) {
 	})
 }
 
-// TestMetaKeyAppliesToRuneKeys pins that every key setting of Rune's own
-// reads <meta> as gui.meta_key says, including the code defaults.
 func TestMetaKeyAppliesToRuneKeys(t *testing.T) {
 	for _, tc := range []struct {
 		mode, spec string
@@ -253,9 +251,6 @@ func TestMetaKeyBindingCollisions(t *testing.T) {
 	}
 }
 
-// TestMetaKeyLeavesExtensionConfigAsWritten pins that gui.meta_key only
-// changes how Rune reads its own key specs: an extension receives its
-// config as the user wrote it, key settings included.
 func TestMetaKeyLeavesExtensionConfigAsWritten(t *testing.T) {
 	ext := map[string]any{
 		"fuzzy_search": map[string]any{
@@ -291,9 +286,6 @@ func TestCommandKeyBindingsApplyMetaKey(t *testing.T) {
 		"a meta key the host does not offer reads as Super")
 }
 
-// TestExMetaKeyAltReachesCommandLayer pins that under <alt>, Alt+F runs
-// a <meta-f> binding while a chord the editor handles, such as
-// <alt-left>, still reaches the editor first.
 func TestExMetaKeyAltReachesCommandLayer(t *testing.T) {
 	c := metaKeyTestConfig("linux", "standard", "<alt>", map[string]any{
 		"command": map[string]any{"key_bindings": map[string]any{

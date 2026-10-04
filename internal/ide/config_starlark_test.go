@@ -224,8 +224,6 @@ func TestDecodeConfigFileUsesFilenameExtension(t *testing.T) {
 //go:embed testdata/runerc_sample.star
 var starlarkSampleConfig string
 
-// TestStarlarkSampleEndToEnd loads a realistic rune.star-style config through decodeConfigFile
-// and asserts the resulting config is shaped as expected.
 func TestStarlarkSampleEndToEnd(t *testing.T) {
 	cfg, err := decodeConfigFile(strings.NewReader(starlarkSampleConfig), "rune.star")
 	require.NoError(t, err)
@@ -252,8 +250,6 @@ func TestStarlarkSampleEndToEnd(t *testing.T) {
 	}, aliases["worktreenew"])
 }
 
-// TestStarlarkConfigLoadsFromFile exercises loadFileConfig end-to-end
-// with a .star-suffixed path.
 func TestStarlarkConfigLoadsFromFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "rune.star")
@@ -295,8 +291,6 @@ config = {
 	assert.Equal(t, "modal", cfg["mode"])
 }
 
-// TestRuneStarFixture decodes the shipped cmd/rune/rune.star and checks it
-// branches correctly on the tui/mode params.
 func TestRuneStarFixture(t *testing.T) {
 	data := readRuneStar(t)
 
@@ -395,9 +389,6 @@ func assertStandardSearchMap(t *testing.T, search map[string]any, bg string) {
 	assert.Equal(t, map[string]any{"fg": "default", "bg": "blue"}, search["button_hover_attr"])
 }
 
-// TestRuneStarAsDefaultConfig wires the shipped rune.star Starlark config through
-// the full loadConfig path to ensure initConfig + validateConfig are happy
-// with the decoded tree.
 func TestRuneStarAsDefaultConfig(t *testing.T) {
 	data := readRuneStar(t)
 
@@ -453,9 +444,6 @@ func TestModalPresetUsesHomeRowResizeBindings(t *testing.T) {
 	}
 }
 
-// TestRuneStarModelsConfig verifies the shipped rune.star renders a
-// `models` block with the documented sub-keys. This locks the schema so
-// downstream loaders can rely on the keys being present.
 func TestRuneStarModelsConfig(t *testing.T) {
 	data := readRuneStar(t)
 
@@ -703,9 +691,6 @@ config["extensions"]["git"]["config"]["nested"]["override"] = "star"
 	assert.Equal(t, "star", override)
 }
 
-// TestHelixPresetLoads loads the shipped helix preset over rune.star, as a
-// first run does, and pins that its Helix typable command aliases and key
-// spellings reach the command layer without config errors.
 func TestHelixPresetLoads(t *testing.T) {
 	preset, err := os.ReadFile("../../cmd/rune/preset_helix_darwin.yaml")
 	require.NoError(t, err)
@@ -765,11 +750,6 @@ func TestLoadWorkspaceConfigYAML(t *testing.T) {
 	assert.Equal(t, "warn", c.cfg["log_level"])
 }
 
-// TestVimSettingsSectionSpellings pins that the vim editor's settings read
-// the same whether a config spells the section editor.vim or editor.modal,
-// its name before editor.mode "modal" became "vim", in YAML and in
-// Starlark. editor.vim wins where one file sets a key under both, and a
-// later file wins over an earlier one whichever spelling each used.
 func TestVimSettingsSectionSpellings(t *testing.T) {
 	type file struct{ name, src string }
 	red := term.Attributes{Fg: term.ColorRed, Bg: term.ColorBlue}
@@ -911,9 +891,6 @@ config["editor"]["modal"]["message_bar"] = {"attr": {"fg": "white", "bg": "navy"
 	}
 }
 
-// TestVimSettingsSectionMalformed pins that a vim editor section that is not
-// a map is reported under either spelling unless a well-formed editor.vim
-// overrides it.
 func TestVimSettingsSectionMalformed(t *testing.T) {
 	tests := []struct {
 		name, src string
@@ -1263,8 +1240,6 @@ func TestStandardPresetUsesPlatformApplicationBindings(t *testing.T) {
 	}
 }
 
-// TestStandardPresetUnbindsStaleModalChords guards against H-based modal
-// aliases surviving after standard mode re-homes layout onto IJKL.
 func TestStandardPresetUnbindsStaleModalChords(t *testing.T) {
 	runeStar := readRuneStar(t)
 
@@ -1337,16 +1312,6 @@ func TestStandardPresetUnbindsStaleModalChords(t *testing.T) {
 	}
 }
 
-// TestEmacsPresetKeepsCommandsOffEditorChords pins that the emacs preset
-// opens the command prompt with M-x (on <alt>, authentic Emacs Meta) and
-// uses GNU Emacs navigation keys where Rune has matching behavior, and homes
-// Rune-only commands on the <meta> (Cmd) window/workspace/tab layer. The emacs editor owns the single-modifier
-// control and alt chords (motion, kill, yank, mark, folds, M-x), so any host
-// command sharing one of those would be shadowed and unreachable — every base
-// <alt> command binding is therefore explicitly unbound. <meta> is free of
-// editor bindings, so frequent directional operations live there and remain
-// available when terminal programs intercept <c-x>. GNU-compatible file and
-// session commands can still use C-x, but layout management remains global.
 func TestEmacsPresetKeepsCommandsOffEditorChords(t *testing.T) {
 	runeStar := readRuneStar(t)
 
@@ -1602,10 +1567,6 @@ func requireEmacsEditorChordsFree(
 	}
 }
 
-// TestEmacsLinuxPresetKeepsCommandsOffEditorChords pins the Linux emacs
-// preset, where Rune's layer is <meta> (Super) and <alt> stays Emacs Meta.
-// A focused terminal passes <ctrl> chords to the shell, so the scrollback
-// find sits on <meta-s> rather than C-s.
 func TestEmacsLinuxPresetKeepsCommandsOffEditorChords(t *testing.T) {
 	base, err := decodeDefaultConfig(DefaultConfig{
 		src: string(readRuneStar(t)), modal: true, tui: false,
@@ -1642,11 +1603,6 @@ func TestEmacsLinuxPresetKeepsCommandsOffEditorChords(t *testing.T) {
 	requireEmacsEditorChordsFree(t, c.commandKeyMappings())
 }
 
-// TestValidateCommandPromptFallback pins the command.key guard for the
-// non-modal editors: a bare unmodified key cannot open the prompt (the
-// editor would swallow it), so validation rewrites it to <s-m-p>, which
-// stays clear of the emacs control chords. Modified keys, <c-space>, and
-// modal mode are left untouched.
 func TestValidateCommandPromptFallback(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

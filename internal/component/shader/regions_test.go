@@ -42,7 +42,6 @@ func rowString(row []term.Cell) string {
 	return string(out)
 }
 
-// Every region is shaded and cells outside all of them are untouched.
 func TestRegionsShadesEachRect(t *testing.T) {
 	t.Parallel()
 	cells := dotCells(10, 2)
@@ -57,8 +56,6 @@ func TestRegionsShadesEachRect(t *testing.T) {
 	assert.Equal(t, ".##...###.", rowString(cells[1]))
 }
 
-// The rectangles are resolved on every frame so the shaded cells follow
-// layout changes, and an empty set shades nothing.
 func TestRegionsReevaluatesEachFrame(t *testing.T) {
 	t.Parallel()
 	var calls int

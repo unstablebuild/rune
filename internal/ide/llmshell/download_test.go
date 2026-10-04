@@ -23,8 +23,6 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// TestHumanBytes verifies the size scaling helper used in download
-// summaries.
 func TestHumanBytes(t *testing.T) {
 	for _, tc := range []struct {
 		n    int64
@@ -41,9 +39,6 @@ func TestHumanBytes(t *testing.T) {
 	}
 }
 
-// TestScaleProgressBytes selects a unit that keeps the bar's
-// denominator above minTicks (~100) so the progress bar has at least
-// ~1% granularity.
 func TestScaleProgressBytes(t *testing.T) {
 	const minTicks = int64(100)
 	cases := []struct {
@@ -66,15 +61,11 @@ func TestScaleProgressBytes(t *testing.T) {
 	}
 }
 
-// TestScaleProgressBytesClampsOverflow keeps the downloaded portion
-// from exceeding total when a buggy source reports a larger count.
 func TestScaleProgressBytesClampsOverflow(t *testing.T) {
 	d, total, _ := scaleProgressBytes(2000, 1000)
 	assert.LessOrEqual(t, d, total)
 }
 
-// TestDownloadUsageIsValidMarkdown verifies the help block is not empty
-// and references the new command path.
 func TestDownloadUsageIsValidMarkdown(t *testing.T) {
 	assert.NotEmpty(t, downloadUsage)
 	assert.True(t, strings.Contains(downloadUsage, "models local download"))

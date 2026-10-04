@@ -382,9 +382,6 @@ func hostGOROOT(t *testing.T, dataDir string) string {
 	return cfg.Env.GOROOT
 }
 
-// TestInstallAsksTheClient changes a setting of the host's user that a
-// package wants to replace: the client's user is asked, and the host
-// applies their answer.
 func TestInstallAsksTheClient(t *testing.T) {
 	t.Parallel()
 	pkgs := idepkgtest.MakePackages()
@@ -441,9 +438,6 @@ func (u ownUI) Floating(browserapi.Floating, browserapi.FloatingConfig) (browser
 	return nil, errors.New("unexpected prompt")
 }
 
-// TestPeerInstallAsksThePeer serves the package manager of a node whose
-// own user has a UI, as a GUI node does: what a peer installs is asked
-// and notified to the peer.
 func TestPeerInstallAsksThePeer(t *testing.T) {
 	t.Parallel()
 	pkgs := idepkgtest.MakePackages()

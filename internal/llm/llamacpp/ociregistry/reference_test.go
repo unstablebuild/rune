@@ -109,9 +109,6 @@ func TestParseReference_DefaultHost(t *testing.T) {
 	}
 }
 
-// TestParseReference_HFDefault verifies that bare `owner/repo` input is
-// parsed against a huggingface.co default — the case the `download`
-// command relies on.
 func TestParseReference_HFDefault(t *testing.T) {
 	cases := []struct {
 		name  string

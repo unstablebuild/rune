@@ -55,9 +55,6 @@ func (p libDirPkgManager) LibDir(context.Context, string) (iterator.Iterator[str
 	return iterator.FromSlice(p.paths), nil
 }
 
-// TestFindBinaryRunsTheHostBinary covers a workspace on another
-// machine: its lib dir lists paths on that machine, which do not exist
-// here, and the adapter is still started from them.
 func TestFindBinaryRunsTheHostBinary(t *testing.T) {
 	t.Parallel()
 	const hostPath = "/home/studio/.rune/pkg/go/1.24.0/bin/dlv"
@@ -73,8 +70,6 @@ func TestFindBinaryRunsTheHostBinary(t *testing.T) {
 	assert.Equal(t, hostPath, got)
 }
 
-// TestSessionIDRequired verifies that every method returns
-// ErrSessionNotFound when called with an unknown session ID.
 func TestSessionIDRequired(t *testing.T) {
 	t.Parallel()
 	m := newTestManager(t)
@@ -91,9 +86,6 @@ func TestSessionIDRequired(t *testing.T) {
 	assert.ErrorIs(t, err, debugapi.ErrSessionNotFound)
 }
 
-// TestCreateSessionNoAdapter verifies CreateSession errors with
-// ErrNoAdapterConfigured when the requested langID is not in
-// Config.Adapters.
 func TestCreateSessionNoAdapter(t *testing.T) {
 	t.Parallel()
 	m := newTestManager(t)
@@ -105,10 +97,6 @@ func TestCreateSessionNoAdapter(t *testing.T) {
 		"expected ErrNoAdapterConfigured, got %v", err)
 }
 
-// TestManagerCloseTerminatesAdapterAndGoroutines locks in the RUNE-180
-// contract that Manager.Close cancels the manager ctx, cancels each
-// session ctx (so exec.CommandContext kills the adapter subprocess),
-// and waits for watchSession goroutines to exit.
 func TestManagerCloseTerminatesAdapterAndGoroutines(t *testing.T) {
 	t.Parallel()
 	m := newTestManager(t)
@@ -161,11 +149,6 @@ func TestManagerCloseTerminatesAdapterAndGoroutines(t *testing.T) {
 	}
 }
 
-// TestManagerConcurrentSessionAccess drives the session-map accessors
-// (sessionFor via the debugapi methods, removeSession, direct inserts)
-// and Close concurrently to prove m.mu serialises every read and write
-// of m.sessions. It is a -race regression guard: if any path touches
-// m.sessions without the lock, the detector fires.
 func TestManagerConcurrentSessionAccess(t *testing.T) {
 	t.Parallel()
 	m := newTestManager(t)
@@ -287,13 +270,6 @@ func startFakeDAPAdapter(
 	}
 }
 
-// TestCreateSessionDirectConnect locks in the connect:// adapter
-// command contract: instead of spawning an adapter process, the
-// manager dials an adapter that is already listening (the debugpy
-// attach-by-connect topology, where `python -m debugpy --listen`
-// spawns the adapter on the debuggee side). The nil executor and
-// pkgManager in the test manager prove no spawn or binary lookup
-// happens on this path.
 func TestCreateSessionDirectConnect(t *testing.T) {
 	t.Parallel()
 
@@ -355,10 +331,6 @@ func TestCreateSessionDirectConnect(t *testing.T) {
 	})
 }
 
-// TestCreateSessionConnect covers the one-shot attach-by-connect
-// entry point: the endpoint replaces only the adapter transport, so
-// the language's configured adapter ID and attach template still
-// apply even though the configured command spawns a process.
 func TestCreateSessionConnect(t *testing.T) {
 	t.Parallel()
 
@@ -428,9 +400,6 @@ func TestCreateSessionConnect(t *testing.T) {
 	})
 }
 
-// TestSubstituteAddr asserts that adapter argv placeholders expand
-// to the bound endpoint: {addr} to host:port and {host}/{port} to
-// the split components.
 func TestSubstituteAddr(t *testing.T) {
 	t.Parallel()
 	t.Run("addr placeholder", func(t *testing.T) {
@@ -554,11 +523,6 @@ func captureRequestArgs(
 	}
 }
 
-// TestLaunchArgs asserts that Launch builds the DAP launch payload
-// from the configured template (with placeholder substitution and
-// typed overlays). With no template, only the SDK-typed overlays are
-// sent; adapter-specific keys (e.g. Delve's mode/outputMode) come
-// from the language package's debugger config.
 func TestLaunchArgs(t *testing.T) {
 	t.Parallel()
 	launchReq := func(args debugapi.LaunchRequestArguments) func(*Manager, string) error {
@@ -670,10 +634,6 @@ func TestLaunchArgs(t *testing.T) {
 	})
 }
 
-// TestAttachArgs asserts that Attach builds the DAP attach payload
-// from the configured template. With no template, only the
-// SDK-typed overlays (processId/program) are sent; adapter-specific
-// keys (e.g. Delve's mode) come from the language package config.
 func TestAttachArgs(t *testing.T) {
 	t.Parallel()
 	attachReq := func(args debugapi.AttachRequestArguments) func(*Manager, string) error {

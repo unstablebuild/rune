@@ -24,10 +24,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestCompletedLessonAsksForStop asserts the last milestone does not
-// take the lesson away: the tile stays up on a closing screen that
-// tells the user to press Stop, so someone still practising the final
-// step keeps the copy in front of them.
 func TestCompletedLessonAsksForStop(t *testing.T) {
 	t.Parallel()
 	tut := newBackTutorial(t, backSrc)
@@ -44,8 +40,6 @@ func TestCompletedLessonAsksForStop(t *testing.T) {
 	assert.Contains(t, drawTutorial(t, tut), "Stop")
 }
 
-// TestCompletedLessonStillPagesBack asserts the reader can walk the
-// whole lesson from the closing screen and wrap back to it.
 func TestCompletedLessonStillPagesBack(t *testing.T) {
 	t.Parallel()
 	tut := newBackTutorial(t, backSrc)
@@ -68,9 +62,6 @@ func TestCompletedLessonStillPagesBack(t *testing.T) {
 	assert.Contains(t, drawTutorial(t, tut), "Stop")
 }
 
-// TestFailedLessonHasNoClosingScreen asserts a run that ended badly
-// leaves the tile empty: the host tears it down and the error is a
-// notification, not a screen.
 func TestFailedLessonHasNoClosingScreen(t *testing.T) {
 	t.Parallel()
 	const src = `
@@ -89,8 +80,6 @@ tutorial(entry=run)
 	assert.False(t, tut.Back(), "a lesson that ended badly has nothing to page")
 }
 
-// TestResetClearsTheClosingScreen asserts a second run starts on its
-// own first step rather than the previous run's closing screen.
 func TestResetClearsTheClosingScreen(t *testing.T) {
 	t.Parallel()
 	tut := newBackTutorial(t, backSrc)

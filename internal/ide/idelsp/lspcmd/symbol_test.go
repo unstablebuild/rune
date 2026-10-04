@@ -161,10 +161,6 @@ func TestNormalizeMethodName(t *testing.T) {
 	}
 }
 
-// TestCompleteReferencedSymbol verifies that completeReferencedSymbol streams
-// the names produced by Parser.ListReferencedSymbols and deduplicates them,
-// preserving first-seen order. The per-language query logic that produces the
-// underlying names is exercised by the symbolresolve engine tests.
 func TestCompleteReferencedSymbol(t *testing.T) {
 	t.Parallel()
 

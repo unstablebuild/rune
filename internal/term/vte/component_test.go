@@ -402,12 +402,6 @@ func TestIntegrationComponent(t *testing.T) {
 	}
 }
 
-// TestMouseDriverSelectionStartPinnedAcrossAutoScroll reproduces an upward
-// drag selection that auto-scrolls the buffer. The SDK keeps re-applying the
-// stored selection start on every drag tick via SetSelectionEnd; because
-// Select translates window coordinates by the current scroll offset, the start
-// anchor used to drift up with the content and drop the originally pressed
-// cell from the selection.
 func TestMouseDriverSelectionStartPinnedAcrossAutoScroll(t *testing.T) {
 	t.Parallel()
 	tm := mockTabManager{}
@@ -513,12 +507,6 @@ func (s *stalledExecutor) StartCommand(
 	return 0, ctx.Err()
 }
 
-// TestComponentSpawnTimeout pins the regression where a stalled
-// remote workspace transport blocked NewPty/StartCommand forever
-// during Component.Init, wedging the caller (the vtereservoir
-// warm-up and, transitively, the host event loop blocked in
-// Facility.Get). With SpawnTimeout set, Init must fail after the
-// bound instead of blocking indefinitely.
 func TestComponentSpawnTimeout(t *testing.T) {
 	t.Parallel()
 
@@ -591,13 +579,6 @@ func (e *recordingExecutor) snapshotCmd() workspaceapi.Cmd {
 	return e.cmd
 }
 
-// TestComponentCreatePtySetsTerminalEnv pins the contract that the vte
-// component injects a sane TERM/COLORTERM into every command it spawns.
-// Without it, an SSH-workspace runesvc inherits TERM="" or "dumb" from
-// its non-PTY SSH session; vim then falls back to its built-in "ansi"
-// terminfo, which has no Ss/Se entries, never emits DECSCUSR, and the
-// host renders CursorStyleDefault as a bar instead of the block vim
-// would otherwise request.
 func TestComponentCreatePtySetsTerminalEnv(t *testing.T) {
 	t.Parallel()
 
@@ -632,13 +613,6 @@ func TestComponentCreatePtySetsTerminalEnv(t *testing.T) {
 	}
 }
 
-// TestComponentAlternateScroll verifies AlternateScroll mirrors
-// PrimaryScroll for the alternate buffer: callers can reach the rendered
-// cells via Scroll.Buffer().RawCells() and the cursor via
-// CursorAtScreen, without any cloning. The inference layer
-// (term/vte/vteprobe) and exo's editorHandler rely on these two
-// accessors plus IsAltBuffer to read the rendered grid of whichever
-// screen the embedded program is drawing into.
 func TestComponentAlternateScroll(t *testing.T) {
 	t.Parallel()
 
@@ -697,24 +671,6 @@ func TestComponentAlternateScroll(t *testing.T) {
 	})
 }
 
-// TestComponentSnapshotIsConsistentUnderParserPressure regresses a
-// exo bug where the editorHandler refreshed its vteprobe from two
-// separate accessors (RawCells then CursorAtScreen). Each call locked
-// Component.mu independently, so the parser goroutine could advance
-// the grid between them and the resulting (cells, cursor) pair was
-// from two different parser-callback boundaries — vteprobe.Cursor.Infer
-// then confidently reported the wrong file line because its cursor
-// argument referred to a state the cells did not match. The race
-// detector did not see it: every read was properly synchronised, the
-// inconsistency was semantic, not concurrent unsynchronised access.
-//
-// The invariant exercised below holds at every parser-callback
-// boundary: immediately after Input, the row containing the cursor
-// has at least cursor.X populated cells (Input both writes a cell
-// and advances the cursor under one Lock). With a split snapshot
-// the cursor can be sampled after a later Input while the cells were
-// sampled before the row was rewritten, leaving cells[cursor.Y]
-// shorter than the cursor demands.
 func TestComponentSnapshotIsConsistentUnderParserPressure(t *testing.T) {
 	t.Parallel()
 
@@ -775,16 +731,6 @@ func TestComponentSnapshotIsConsistentUnderParserPressure(t *testing.T) {
 	writerWG.Wait()
 }
 
-// TestComponentDrawSnapshotIsConsistentUnderParserPressure regresses the
-// stale-overlay race at its source: exo paints the grid and probes a
-// snapshot, then overlays highlights using that probe. When the paint
-// and the snapshot came from two separate Component.mu acquisitions the
-// parser goroutine could advance the grid in between, so the overlay was
-// computed for a grid the paint had already scrolled past. DrawSnapshot
-// paints and snapshots under one acquire; the snapshot it returns must
-// therefore satisfy the same cells/cursor consistency invariant the
-// split path could violate: the row holding the cursor has at least
-// cursor.X populated cells.
 func TestComponentDrawSnapshotIsConsistentUnderParserPressure(t *testing.T) {
 	t.Parallel()
 
@@ -893,10 +839,6 @@ func assertDraw(t *testing.T, comp *Component, expected string) {
 	assert.Equal(t, expected, writer.String())
 }
 
-// TestComponentSelectionUnwrapsSoftWrappedLines pins that copying a
-// logical line the emulator broke across rows to fit the width yields
-// the original single line rather than one line per screen row, while
-// rows separated by a real newline keep theirs.
 func TestComponentSelectionUnwrapsSoftWrappedLines(t *testing.T) {
 	t.Parallel()
 
@@ -949,14 +891,6 @@ func TestComponentSelectionUnwrapsSoftWrappedLines(t *testing.T) {
 	}
 }
 
-// TestComponentWidenWhileScrolledUpKeepsContentVisible reproduces the
-// black, frozen screen from catting a large file, narrowing the terminal
-// (vertical splits), scrolling to the top, then widening it again.
-// Widening unwraps the history into far fewer rows, but the view scroll
-// kept its old, now out-of-bounds offset, so it converted to a negative
-// start row and drew nothing — and could not be scrolled up out of. The
-// offset must snap back to the top of history so the content stays
-// visible and scrolling still works.
 func TestComponentWidenWhileScrolledUpKeepsContentVisible(t *testing.T) {
 	t.Parallel()
 
@@ -1006,10 +940,6 @@ func TestComponentWidenWhileScrolledUpKeepsContentVisible(t *testing.T) {
 	assert.True(t, comp.ScrollDown(1), "must be able to scroll back down after widening")
 }
 
-// TestComponentReverseScreen pins DECSCNM (CSI ? 5 h): like kitty and
-// xterm, the whole screen is drawn in reverse video, including the cells
-// no program has written, and cells already in SGR 7 flip back to normal
-// video. vttest's "light background" pages rely on it.
 func TestComponentReverseScreen(t *testing.T) {
 	t.Parallel()
 
@@ -1165,13 +1095,6 @@ func (f expanderFunc) ExpandCommand(ctx context.Context, line string) (string, e
 	return f(ctx, line)
 }
 
-// TestComponentInitAsyncExpander pins the contract that, when a
-// CommandExpander is configured, NewComponent returns immediately
-// (without blocking the caller / event-loop goroutine) and the
-// expander runs in a background goroutine before the foreign
-// command is started. This is what lets `! echo $(sleep 10)` open
-// the floating window instantly while the $(...) resolution
-// continues in the background.
 func TestComponentInitAsyncExpander(t *testing.T) {
 	t.Parallel()
 
@@ -1224,10 +1147,6 @@ func TestComponentInitAsyncExpander(t *testing.T) {
 	_ = comp
 }
 
-// TestComponentInitAsyncExpanderErrorReachesWatcher pins that when
-// the expander returns an error, no foreign command is started and
-// the configured watcher fires with that error so plugin.Handler
-// can surface the failure in the floating window.
 func TestComponentInitAsyncExpanderErrorReachesWatcher(t *testing.T) {
 	t.Parallel()
 
@@ -1268,14 +1187,6 @@ func (e *recordingExecutor) SetPtySize(p workspaceapi.Pty, size workspaceapi.Pty
 	return nil
 }
 
-// TestComponentResizeAfterCloseSkipsSetPtySize reproduces the bug where a
-// closed Component still ioctl'd its master descriptor. Close releases the
-// master, but the window manager keeps resizing the handler until the tab
-// is removed (a paused idetask keeps its closed handler installed for the
-// whole pause), so every resize reached SetPtySize on a dead fd and the
-// workspace reported EBADF — or, once the number was recycled, ENOTTY on
-// an unrelated file. Since resizes moved off the event loop the failure
-// surfaced as an error toast per resize step.
 func TestComponentResizeAfterCloseSkipsSetPtySize(t *testing.T) {
 	t.Parallel()
 
@@ -1327,10 +1238,6 @@ func (e *closablePtyExecutor) NewPty(context.Context) (workspaceapi.Pty, error) 
 	return workspaceapi.Pty{Master: &e.master, Slave: &workspacetest.File{}}, nil
 }
 
-// TestComponentOnFocusChangeAfterClose reproduces the "failed to report
-// focus changed: write to pty: file already closed" toast shown when
-// closing a terminal whose program enabled focus reporting: the tab is
-// unfocused after its handler was already closed.
 func TestComponentOnFocusChangeAfterClose(t *testing.T) {
 	t.Parallel()
 
@@ -1366,12 +1273,6 @@ func (e *parkedStartExecutor) StartCommand(
 	return 1, nil
 }
 
-// TestComponentCloseWaitsForInflightStartCommand reproduces the data
-// race between Close and the async spawn goroutine: the executor reads
-// the slave descriptor while building the child (os/exec calls
-// File.Fd), and Close closed that same *os.File without serializing
-// against the hand-off. The race detector flagged it on CI as a
-// concurrent File.Fd / File.Close on the pty slave.
 func TestComponentCloseWaitsForInflightStartCommand(t *testing.T) {
 	t.Parallel()
 
@@ -1440,21 +1341,6 @@ func TestComponentCreatePtyDefersAsyncSpawnUntilInitialized(t *testing.T) {
 	}
 }
 
-// TestComponentRestoreFromSnapshotDrivesSetPtySize reproduces a bug where
-// a freshly-restored Component would keep its pre-restore width/height (e.g.
-// the warm-reservoir WidthHint or a stale workspace size propagated via
-// Facility.Resize) without driving that value into the pty via SetPtySize.
-// When the window manager subsequently called Resize with dimensions that
-// happened to match those stale values (a common case: snapshot was taken
-// at the same workspace size), Component.Resize early-returned and never
-// reached SetPtySize. The pty winsize stayed at the kernel default, the
-// shell wrote 1-column output into primBuf, and the user saw a vertical
-// "main\n?\n)\nblue\n…" cascade until they manually resized the tile.
-//
-// The fix unifies restore through the regular Resize path: after restoring
-// the cells, RestoreFromSnapshot drives the snapshot dimensions through
-// Component.Resize so SetPtySize is invoked exactly once via the same
-// well-tested code path used by the window manager.
 func TestComponentRestoreFromSnapshotDrivesSetPtySize(t *testing.T) {
 	t.Parallel()
 
@@ -1507,9 +1393,6 @@ func TestComponentRestoreFromSnapshotDrivesSetPtySize(t *testing.T) {
 		"follow-up Resize at the same size is a legitimate no-op")
 }
 
-// TestComponentResizeDrivesPixelSize pins that the pty learns the pixel
-// size graphics clients read from TIOCGWINSZ, and that a font change
-// re-issues the ioctl for the new pixel size without resizing buffers.
 func TestComponentResizeDrivesPixelSize(t *testing.T) {
 	t.Parallel()
 
@@ -1540,13 +1423,6 @@ func TestComponentResizeDrivesPixelSize(t *testing.T) {
 		"the buffers are not resized when only the pixel size changed")
 }
 
-// TestComponentRestoreFromSnapshotCursorWithScrollback reproduces a bug
-// where restoring a snapshot whose buffer has scrollback (rows > height)
-// placed the cursor too high. The snapshot stores the cursor in screen
-// coordinates (the contract vteprobe/exoeditor depend on), but Restore
-// re-projected it through ScrollToWindowCoordinates, subtracting
-// rows-height. CursorAtScreen is what DeviceStatus reports to zsh, so the
-// shell cleared/redrew from the wrong row.
 func TestComponentRestoreFromSnapshotCursorWithScrollback(t *testing.T) {
 	t.Parallel()
 
@@ -1591,8 +1467,6 @@ func (e *pidExecutor) StartCommand(
 	return e.startedPid, nil
 }
 
-// TestComponentPidExposesStartedProcess asserts that Pid returns the pid
-// of the started process, and 0 before any process is started.
 func TestComponentPidExposesStartedProcess(t *testing.T) {
 	t.Parallel()
 
@@ -1607,12 +1481,6 @@ func TestComponentPidExposesStartedProcess(t *testing.T) {
 	assert.Equal(t, workspaceapi.Pid(0), comp.Pid())
 }
 
-// TestComponentResizeIsSerialized pins that Component.Resize takes
-// Component.mu when mutating t.width/t.height. Other Component
-// accessors (CursorVisible, ScrollDown, drawSelection via Selection,
-// Snapshot) read t.width/t.height under t.mu, so writing them off-lock
-// from Resize races the IDE event-loop reads. The race detector trips
-// when Resize touches shared state without locking.
 func TestComponentResizeIsSerialized(t *testing.T) {
 	t.Parallel()
 
@@ -1652,12 +1520,6 @@ func TestComponentResizeIsSerialized(t *testing.T) {
 	<-done
 }
 
-// TestHandlerExitStatus pins how a terminal learns the way its process
-// ended. The pty hanging up and the executor reporting the exit status
-// race each other, and the host decides whether to keep a terminal's
-// tab from that status, so the terminal must not report its exit —
-// neither from Handle nor through OnTabExit — before the status is
-// final, and must not wait for it forever either.
 func TestHandlerExitStatus(t *testing.T) {
 	t.Parallel()
 	failure := errors.New("exit status 1")

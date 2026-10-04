@@ -48,8 +48,6 @@ func TestRustActionManualListsSubcommands(t *testing.T) {
 	}
 }
 
-// The experimental/* subcommands register only when the experimental flag
-// is set; the always-on assist and view commands register either way.
 func TestRustActionExperimentalGating(t *testing.T) {
 	experimentalOnly := []string{
 		"parent-module", "child-modules", "open-cargo-toml", "external-docs",
@@ -87,8 +85,6 @@ func TestRustActionExperimentalGating(t *testing.T) {
 	}
 }
 
-// memory-usage registers only when the debug.memory_usage flag is set,
-// independently of the experimental flag.
 func TestRustActionMemoryUsageGating(t *testing.T) {
 	registered := func(memoryUsage bool) (manual, handler bool) {
 		m, h := newRustActionHandler(&actionLSP{}, &fakeEditor{}, &fakeWM{},
@@ -131,8 +127,6 @@ func TestRustActionRouterUnknownSubcommand(t *testing.T) {
 	require.ErrorContains(t, err, "unknown rust subcommand")
 }
 
-// A known subcommand dispatches to its code-action handler, which
-// forwards the request to the LSP with the mapped kind.
 func TestRustActionRouterDispatchesToKind(t *testing.T) {
 	uri := newTestURI(t)
 	lsp := &actionLSP{}
@@ -155,9 +149,6 @@ func TestRustActionRouterCompletesSubcommands(t *testing.T) {
 	}
 }
 
-// A zero cursor snapshot is refreshed from the live editor before the
-// subcommand runs; a captured snapshot and a command without a
-// resource pass through untouched.
 func TestRustActionRouterRefreshesZeroCursor(t *testing.T) {
 	live := term.Coordinates{X: 4, Y: 270}
 	cases := []struct {

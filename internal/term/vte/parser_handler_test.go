@@ -885,10 +885,6 @@ func newInputParserHandlerPty(t *testing.T, alt bool) (*parserHandler, *workspac
 	return ph, mockPtyFile
 }
 
-// TestBellFocusChangeRace pins that Bell synchronizes with focus
-// changes: Bell runs on the parse goroutine while onFocusChange runs
-// under the component lock on the event-loop goroutine, so an unlocked
-// Bell races on inFocus/needsAttention (caught by -race).
 func TestBellFocusChangeRace(t *testing.T) {
 	ph := newInputParserHandler(t, false)
 
@@ -907,15 +903,6 @@ func TestBellFocusChangeRace(t *testing.T) {
 	<-done
 }
 
-// TestBellReleasesLockBeforeInvokingCallback pins that Bell releases
-// ph.sync.mu before invoking the configured bell callback (in
-// production, Config.scheduleBell -> ScheduleNextTick). Callers often
-// run ScheduleNextTick synchronously under their own lock to model a
-// single-threaded event loop (see exo_go_test.go's `schedule`). If
-// Bell still held ph.sync.mu while calling into that foreign lock,
-// any other parserHandler method invoked while the caller's lock is
-// held (e.g. Draw/SetTitle) would deadlock against it — exactly the
-// hang reproduced by TestExoSyntaxHighlightsOverlayScrolling.
 func TestBellReleasesLockBeforeInvokingCallback(t *testing.T) {
 	var extMu sync.Mutex
 	extMu.Lock()
@@ -987,11 +974,6 @@ func TestUnderlineColorAttribute(t *testing.T) {
 	assert.Equal(t, term.ColorDefault, cells[2].UnderlineColor(), "SGR 0 resets it")
 }
 
-// TestInputWideRuneSurvivesNextInput reproduces a wide (width-2) glyph
-// being clobbered when the following glyph was printed: the cursor
-// advanced by one column, landing on the wide glyph's second half, so the
-// next write overwrote it. Both screen buffers must keep the wide glyph
-// and place the next glyph after it.
 func TestInputWideRuneSurvivesNextInput(t *testing.T) {
 	for _, alt := range []bool{false, true} {
 		name := "primary"
@@ -1038,9 +1020,6 @@ func TestInputWideRuneSurvivesNextInput(t *testing.T) {
 	}
 }
 
-// TestInputWideRuneWrapsAtRightMargin asserts a double-width glyph that
-// cannot fit in the last column wraps to the next row whole rather than
-// straddling the margin.
 func TestInputWideRuneWrapsAtRightMargin(t *testing.T) {
 	p := newInputParserHandler(t, false)
 	p.Resize(5, 3)
@@ -1050,13 +1029,6 @@ func TestInputWideRuneWrapsAtRightMargin(t *testing.T) {
 	assertEqualBuf(t, p, "世 界  \n中    \n     ")
 }
 
-// TestInputWideRuneKeepsRowWithinWidth reproduces the primary buffer
-// growing one visual column past the terminal width: erase operations
-// (EL/ED) pad a row with width-1 cells, and a wide glyph printed over
-// one of them used to be overwritten in place, leaving the row summing
-// to width+1 columns. Scroll.MaxOffset then allowed a spurious one-cell
-// horizontal scroll of the vte view. A wide glyph must instead consume
-// the cell(s) whose columns it covers.
 func TestInputWideRuneKeepsRowWithinWidth(t *testing.T) {
 	// mirrors how Component.Init/Resize wire the live view scroll.
 	newViewScroll := func(p *parserHandler, width, height int) *component.Scroll {
@@ -1131,14 +1103,6 @@ func TestInputWideRuneKeepsRowWithinWidth(t *testing.T) {
 	})
 }
 
-// TestResizeShrinkKeepsRowsWithinWidth reproduces the vte view allowing
-// a spurious one-cell horizontal scroll after the terminal shrinks:
-// shrinkColumns/growColumns iterated rows with `y > 0` and only handed
-// the cursor row to wrapTopLines when the loop reached it, so with the
-// cursor sitting on row 0 (a fresh shell), that row was never re-wrapped
-// nor trimmed and kept its old width. Erase ops pad rows with width-1
-// cells to the full terminal width, so a plain ASCII prompt row was
-// enough to exceed the new width.
 func TestResizeShrinkKeepsRowsWithinWidth(t *testing.T) {
 	newViewScroll := func(p *parserHandler, width, height int) *component.Scroll {
 		s := new(component.Scroll)
@@ -1176,11 +1140,6 @@ func TestResizeShrinkKeepsRowsWithinWidth(t *testing.T) {
 	})
 }
 
-// TestInputClustersCombiningSequences asserts codepoints that continue a
-// grapheme cluster (ZWJ-joined emoji, skin-tone modifiers, variation
-// selectors, combining marks) merge into the preceding cell instead of
-// each consuming their own cell, while sequences that are genuinely
-// separate graphemes stay in separate cells.
 func TestInputClustersCombiningSequences(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -1243,8 +1202,6 @@ func TestInputClustersCombiningSequences(t *testing.T) {
 	}
 }
 
-// TestInputClustersCombiningSequencesInsertMode asserts the clustering
-// merge also holds when the terminal is in insert mode.
 func TestInputClustersCombiningSequencesInsertMode(t *testing.T) {
 	p := newInputParserHandler(t, false)
 	p.Resize(12, 2)
@@ -1258,11 +1215,6 @@ func TestInputClustersCombiningSequencesInsertMode(t *testing.T) {
 	assert.Equal(t, []rune{'\u200D', '\U0001F469'}, cells[0].CombiningRunes())
 }
 
-// TestInputClustersZWJFamilyThroughFullParser drives the byte-level parser
-// stack (utf8parser -> scanner -> driver -> Input) with the raw UTF-8 a
-// shell echoes for a ZWJ family emoji, guarding the live PTY decode path
-// rather than direct Input calls. Each codepoint arrives on its own
-// Input, so the cluster must still collapse into a single cell.
 func TestInputClustersZWJFamilyThroughFullParser(t *testing.T) {
 	p := newInputParserHandler(t, false)
 	p.Resize(20, 3)
@@ -1289,10 +1241,6 @@ func TestInputClustersZWJFamilyThroughFullParser(t *testing.T) {
 		cells[5].CombiningRunes())
 }
 
-// TestPrimaryScrollingRegion covers DECSTBM on the primary screen. The
-// discriminator for saving a scrolled-out line is the top margin, not
-// the size of the region: kitty adds to history only when the top
-// margin is zero (kitty screen.c:2408, :2427).
 func TestPrimaryScrollingRegion(t *testing.T) {
 	newScreen := func(t *testing.T) *parserHandler {
 		t.Helper()
@@ -1353,11 +1301,6 @@ func TestPrimaryScrollingRegion(t *testing.T) {
 	})
 }
 
-// TestIndexOutsideScrollingRegion covers a cursor outside a DECSTBM
-// region: only a cursor on a margin scrolls the region. Elsewhere a
-// linefeed moves down and stops at the last line, and a reverse index
-// moves up and stops at the first (kitty screen_index and
-// screen_reverse_index, screen.c:2404, :2435).
 func TestIndexOutsideScrollingRegion(t *testing.T) {
 	const screen = "aaaa\nbbbb\ncccc\ndddd\neeee"
 	tests := []struct {
@@ -1485,10 +1428,6 @@ func forEachScreen(t *testing.T, name string, fn func(t *testing.T, p *parserHan
 	}
 }
 
-// TestSetScrollingRegion covers DECSTBM itself: a region of fewer than
-// two rows is ignored, the bottom is clamped to the screen, and the
-// cursor is homed to the origin, which is the top margin only under
-// DECOM (kitty screen_set_margins, screen.c:1463; xterm CASE_DECSTBM).
 func TestSetScrollingRegion(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -1561,11 +1500,6 @@ func TestSetScrollingRegion(t *testing.T) {
 	}
 }
 
-// TestOriginMode covers DECOM (DECSET 6): absolute addressing is
-// relative to the top margin and confined to the region, while relative
-// motion, printing and reports never re-apply the offset (kitty
-// screen_cursor_position and report_device_status, screen.c:2478,
-// :2996).
 func TestOriginMode(t *testing.T) {
 	// The region is rows 3 to 5 of a 6-row screen.
 	const top, bottom = 2, 4
@@ -1674,9 +1608,6 @@ func TestOriginMode(t *testing.T) {
 	}
 }
 
-// TestCursorMotionWithinMargins covers CUU and CUD without DECOM: a
-// cursor inside the region stops at its margins and one outside stops
-// at the screen edge (DEC STD 070; xterm CursorUp and CursorDown).
 func TestCursorMotionWithinMargins(t *testing.T) {
 	// The region is rows 3 to 5 of a 6-row screen.
 	const top, bottom = 2, 4
@@ -1740,9 +1671,6 @@ func TestCursorMotionWithinMargins(t *testing.T) {
 	}
 }
 
-// TestResetsClearScrollingRegion covers the sequences that reset the
-// margins on both screens: DECCOLM and DECALN (xterm reset_margins
-// callers; kitty screen_alignment_display, screen.c:1487).
 func TestResetsClearScrollingRegion(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -1765,8 +1693,6 @@ func TestResetsClearScrollingRegion(t *testing.T) {
 	}
 }
 
-// TestDecalnFillsTheScreen pins that DECALN fills the screen and not
-// the scrollback, which lives in the same matrix on the primary screen.
 func TestDecalnFillsTheScreen(t *testing.T) {
 	p := newInputParserHandler(t, false)
 	p.Resize(4, 5)
@@ -1780,9 +1706,6 @@ func TestDecalnFillsTheScreen(t *testing.T) {
 		"the scrollback is untouched")
 }
 
-// TestEraseAboveKeepsScrollback covers ED 1 on the primary screen: it
-// erases from the top of the screen to the cursor, never the scrollback
-// above it.
 func TestEraseAboveKeepsScrollback(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -1831,11 +1754,6 @@ func TestEraseAboveKeepsScrollback(t *testing.T) {
 	}
 }
 
-// TestInsertDeleteLinesOnPrimaryScreen covers IL and DL on the primary
-// screen without a region. Both rotate the rows from the cursor to the
-// bottom of the screen; neither touches the scrollback or saves the
-// rows it pushes out (kitty screen_insert_lines and
-// screen_delete_lines, screen.c:1722, :1739).
 func TestInsertDeleteLinesOnPrimaryScreen(t *testing.T) {
 	tests := []struct {
 		name   string

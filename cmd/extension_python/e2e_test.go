@@ -199,10 +199,6 @@ func findUV(t *testing.T) {
 	}
 }
 
-// TestE2E_UV_ProjectSync drives the full extension bring-up against a
-// real uv in a fresh pyproject workspace and asserts the .venv is created
-// by the eager workspace-root sync and that the language server is
-// initialized exactly once rooted there.
 func TestE2E_UV_ProjectSync(t *testing.T) {
 	findUV(t)
 
@@ -229,8 +225,6 @@ dependencies = []
 	assert.Equal(t, "file://"+dir, params.RootURI)
 }
 
-// TestE2E_PyHandler_PythonList runs the `python list` REPL subcommand
-// against a real uv and asserts output is produced.
 func TestE2E_PyHandler_PythonList(t *testing.T) {
 	findUV(t)
 
@@ -255,8 +249,6 @@ func TestE2E_PyHandler_PythonList(t *testing.T) {
 	require.Len(t, out, 1)
 }
 
-// TestE2E_ResolvePyTool resolves a tool from <dataDir>/bin/<name> against
-// a real filesystem.
 func TestE2E_ResolvePyTool(t *testing.T) {
 	dataDir := t.TempDir()
 	binDir := filepath.Join(dataDir, "bin")

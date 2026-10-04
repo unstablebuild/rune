@@ -84,11 +84,6 @@ func editorHandlerWithCursor(t *testing.T, cursor term.Coordinates) *editorHandl
 	return h
 }
 
-// TestEditorHandlerLocationMessageBar exercises the exo message bar
-// in three scenarios: no probe (cursor unknown), cursor off any
-// location, and cursor on a location with a non-empty Message. It
-// asserts both LocationMessageAtCursor and the rendered frame so a
-// regression in either the lookup or the layout is caught.
 func TestEditorHandlerLocationMessageBar(t *testing.T) {
 	t.Parallel()
 
@@ -177,12 +172,6 @@ hello          `,
 	}
 }
 
-// TestEditorHandlerLocationMessageBarFirstNonEmptyWins covers the
-// precedence rule: when several locations cover the cursor, the
-// first location with a non-empty Message wins. The order is
-// determined by the LocationStore message bucket; we just assert one
-// of the configured non-empty messages is rendered and that empty
-// messages are skipped.
 func TestEditorHandlerLocationMessageBarFirstNonEmptyWins(t *testing.T) {
 	t.Parallel()
 	h := editorHandlerWithCursor(t, term.Coordinates{X: 0, Y: 0})
@@ -195,9 +184,6 @@ func TestEditorHandlerLocationMessageBarFirstNonEmptyWins(t *testing.T) {
 	assert.Equal(t, "winner", h.LocationMessageAtCursor())
 }
 
-// TestEditorHandlerLocationMessageBarNoLocations guards the no-list
-// path: LocationMessageAtCursor must return "" when no list has
-// been set, and the bar must stay collapsed.
 func TestEditorHandlerLocationMessageBarNoLocations(t *testing.T) {
 	t.Parallel()
 	h := editorHandlerWithCursor(t, term.Coordinates{})
@@ -209,8 +195,6 @@ func TestEditorHandlerLocationMessageBarNoLocations(t *testing.T) {
 	assert.Equal(t, 4, inner.lastHeight)
 }
 
-// TestBarHeightFor covers the wrapping + clamp logic that decides
-// how many rows the bar should claim.
 func TestBarHeightFor(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -245,10 +229,6 @@ func repeatRune(r rune, n int) string {
 	return string(runes)
 }
 
-// TestEditorHandlerLocationMessageBarWraps drives the messageBar at
-// width=5 with a message that needs two rows, and asserts the
-// bottom-most rows render the message wrapped while the inner is
-// resized to leave room for both.
 func TestEditorHandlerLocationMessageBarWraps(t *testing.T) {
 	t.Parallel()
 	h := &editorHandler{locations: text.NewLocationStore()}

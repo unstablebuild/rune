@@ -248,11 +248,6 @@ func TestClient_Login_AttemptsBrowserFlow(t *testing.T) {
 	}
 }
 
-// TestClient_Login_SecondAttemptAfterCancel reproduces the bug where
-// cancelling an in-flight Login leaves the OAuth goroutine blocked
-// inside blueauth.NewClientWithPorts holding the CachedTokenSource
-// lock, so a subsequent Login never reaches openBrowser and never
-// resolves.
 func TestClient_Login_SecondAttemptAfterCancel(t *testing.T) {
 	srv := fakeOAuthServer(t)
 	defer srv.Close()
@@ -309,14 +304,6 @@ func TestClient_Login_SecondAttemptAfterCancel(t *testing.T) {
 	}
 }
 
-// TestClient_Login_PublishesOAuthURL verifies that the LoginSession
-// surfaces the OAuth authorize URL — the same URL handed to the
-// browser — so the bootstrap UI can inline it in the wait prompt.
-// The URL channel is the only signal that drives the pre-swap login
-// flow's "click here" link; if a refactor breaks the ctx plumbing
-// that carries it from Login down into tokenSourceRefresh, the
-// channel silently never resolves and the user is stuck staring at
-// an empty prompt while the browser opens in the background.
 func TestClient_Login_PublishesOAuthURL(t *testing.T) {
 	srv := fakeOAuthServer(t)
 	defer srv.Close()
@@ -373,12 +360,6 @@ func TestClient_Login_PublishesOAuthURL(t *testing.T) {
 	assert.False(t, ok, "URL channel must be closed after Login completes")
 }
 
-// TestClient_Login_CompletesWhileBrowserOpenerBlocks reproduces the
-// Linux login deadlock: the underlying OAuth client only starts
-// reading the callback result after the visit-URL callback returns, so
-// an opener that blocks for the lifetime of the browser process wedges
-// the loopback redirect handler. The browser tab then spins forever on
-// the redirect and login never completes.
 func TestClient_Login_CompletesWhileBrowserOpenerBlocks(t *testing.T) {
 	// Hold the callback after it delivers the code but before net/http
 	// flushes the response, so token exchange wins the shutdown race.
@@ -469,10 +450,6 @@ func (h *oauthRedirectCompletionHook) Fire(entry *log.Entry) error {
 	return nil
 }
 
-// An explicit sign-in must get the user back in when the refresh token
-// an earlier session cached is dead. Background refreshes never ask the
-// user to sign in, so this is the only way out, and the token proxy
-// does not always say why a refresh failed.
 func TestClient_Login_ReplacesTokenThatNoLongerRefreshes(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -875,10 +852,6 @@ func TestParseAccountClaims(t *testing.T) {
 	assert.True(t, user.ServeOnly)
 }
 
-// A headless client must obtain and refresh every token through the
-// headless oauth2 client: the API server issues serve-only tokens to it
-// alone, and Auth0 only refreshes a token through the client that
-// obtained it.
 func TestClient_HeadlessUsesHeadlessClient(t *testing.T) {
 	t.Run("signs in by code through the headless client", func(t *testing.T) {
 		ids := &clientLog{}
@@ -934,10 +907,6 @@ func TestClient_HeadlessUsesHeadlessClient(t *testing.T) {
 	})
 }
 
-// A headless node that cannot reach the API server signs in with the
-// built-in production config, so it must name production's headless
-// client: a development one would be refused by the production tenant,
-// and the desktop one would be granted full access.
 func TestDefaultProdNativeConfigHeadlessClient(t *testing.T) {
 	api, err := url.Parse("https://api.rune.build")
 	require.NoError(t, err)
@@ -1148,11 +1117,6 @@ func TestNetworkMachineRemove(t *testing.T) {
 	}
 }
 
-// A sign-in that was revoked or has expired is only found out when its
-// refresh is refused, and nothing but the refusal tells the client to
-// sign itself out. The token proxy relays the provider's own error for
-// that; a refusal that gives no reason may be the server's fault, so it
-// leaves the sign-in in place.
 func TestClient_SignsOutWhenRefreshIsRefused(t *testing.T) {
 	for _, tc := range []struct {
 		name          string

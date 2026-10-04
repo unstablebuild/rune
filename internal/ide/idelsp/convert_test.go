@@ -24,10 +24,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestLSPCodeActionToSemanticGroup asserts that rust-analyzer's
-// codeActionGroup "group" field on a textDocument/codeAction response is
-// decoded and carried through to the SDK type, and that a response
-// without it (any non-rust-analyzer server) yields an empty group.
 func TestLSPCodeActionToSemanticGroup(t *testing.T) {
 	t.Parallel()
 

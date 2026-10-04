@@ -149,10 +149,6 @@ func TestSearchConversations_MatchesAcrossConversations(t *testing.T) {
 	assert.GreaterOrEqual(t, len(lines), 2)
 }
 
-// TestSearchConversations_MatchesInLargeSingleLineSession reproduces the bug
-// where session files whose JSON is serialized on a single line longer than
-// bufio.MaxScanTokenSize (64 KiB) were silently skipped by the underlying
-// bufio.Scanner, causing search_conversations to miss real matches.
 func TestSearchConversations_MatchesInLargeSingleLineSession(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

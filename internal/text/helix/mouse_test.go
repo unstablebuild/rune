@@ -25,8 +25,6 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 )
 
-// TestMouse pins click and drag, which is the only way into select mode
-// that does not go through v.
 func TestMouse(t *testing.T) {
 	click := func(x, y int) term.Event {
 		return term.Event{Type: term.EventMouse, Key: term.MouseLeft,
@@ -66,8 +64,6 @@ func TestMouse(t *testing.T) {
 	})
 }
 
-// TestMouseInInsertMode pins the click path that bypasses the selection
-// delegate.
 func TestMouseInInsertMode(t *testing.T) {
 	hx, buf, _ := newHelix(t, "one\ntwo", term.Coordinates{})
 	send(t, hx, key('i'))

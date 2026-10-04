@@ -369,9 +369,6 @@ func TestHelpCommandComplete(t *testing.T) {
 	assert.Equal(t, []string{"far", "foo"}, got)
 }
 
-// TestHelpCommandUsesFallback verifies that in a pure language REPL the
-// top-level `help` (no args) shows the language's own command reference
-// instead of listing the registry's `go`/`help` entries.
 func TestHelpCommandUsesFallback(t *testing.T) {
 	fallback := &mockCmdHandler{
 		helpFn: func(_ context.Context, args []string) (
@@ -396,9 +393,6 @@ func TestHelpCommandUsesFallback(t *testing.T) {
 	assert.NotContains(t, out[0], "Show available commands")
 }
 
-// TestHelpCommandFallbackWiredByNew verifies New wires the
-// DisableShellInterpreter handler as the help fallback, so `help`
-// surfaces the language REPL's reference in the assembled shell.
 func TestHelpCommandFallbackWiredByNew(t *testing.T) {
 	fallback := &mockCmdHandler{
 		helpFn: func(_ context.Context, _ []string) (
@@ -447,12 +441,6 @@ func (w *recordingProgressWriter) get() []progressSample {
 	return append([]progressSample(nil), w.samples...)
 }
 
-// TestShellHandlerForwardsProgressToRegisteredCommand verifies that a
-// repl.ProgressWriter passed to the shell handler reaches a command
-// registered via the registry. This mirrors the production flow the
-// editor uses when it dispatches `agent download ...` from the companion
-// shell REPL: repl.Handler -> sh.commandHandler -> CommandRegistry ->
-// registered CommandHandler.
 func TestShellHandlerForwardsProgressToRegisteredCommand(t *testing.T) {
 	shellHandler, r := New(
 		func(func()) bool { return false },
@@ -496,11 +484,6 @@ func TestShellHandlerForwardsProgressToRegisteredCommand(t *testing.T) {
 	assert.Equal(t, "B", last.units)
 }
 
-// TestDisableShellInterpreterBypassesSh verifies that with a
-// DisableShellInterpreter fallback the inner repl dispatches through the
-// CommandRegistry first and routes unmatched lines to the fallback
-// handler rather than parsing them with mvdan/sh or looking them up on
-// PATH.
 func TestDisableShellInterpreterBypassesSh(t *testing.T) {
 	var fallbackLines []string
 	fallback := &mockCmdHandler{
@@ -562,9 +545,6 @@ func TestDisableShellInterpreterBypassesSh(t *testing.T) {
 	require.Equal(t, []string{"x := 5"}, fallbackLines)
 }
 
-// TestDefaultShellInterpreterEnabled verifies the inverse: without the
-// flag the shell interpreter (sh) wraps the registry so shell syntax and
-// PATH fallback remain available.
 func TestDefaultShellInterpreterEnabled(t *testing.T) {
 	h, _ := New(
 		func(func()) bool { return false },
@@ -580,9 +560,6 @@ func TestDefaultShellInterpreterEnabled(t *testing.T) {
 		h.shim.underlying)
 }
 
-// TestRegistryFallbackForwardsSignatureHelp verifies registryFallback
-// routes signature-help requests to the hosted language REPL when it
-// implements SignatureHelper, and reports nothing otherwise.
 func TestRegistryFallbackForwardsSignatureHelp(t *testing.T) {
 	helper := &sigHelperCmd{label: "Println(a ...any)", ok: true}
 	f := &registryFallback{registry: NewRegistry(), fallback: helper}

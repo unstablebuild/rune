@@ -27,9 +27,6 @@ import (
 	"unstable.build/rune/internal/llm/ollama"
 )
 
-// TestIntegrationRegistry starts a real Ollama server (via
-// `ollama serve`) and verifies that the registry can discover
-// models from it.
 func TestIntegrationRegistry(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")

@@ -27,8 +27,6 @@ import (
 	"unstable.build/rune/internal/text"
 )
 
-// TestSelectionInvariantHolds is the single rule the whole grammar rests
-// on: normal mode always owns at least the cell under the caret.
 func TestSelectionInvariantHolds(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -64,8 +62,6 @@ func TestSelectionInvariantHolds(t *testing.T) {
 	}
 }
 
-// TestEmptyAndDegenerateBuffers walks every command over buffers that
-// have nothing, or almost nothing, to act on.
 func TestEmptyAndDegenerateBuffers(t *testing.T) {
 	contents := []string{"", "\n", "\n\n\n", "a", "\t", " "}
 	// One representative key from every dispatch arm.
@@ -125,8 +121,6 @@ func TestEmptyAndDegenerateBuffers(t *testing.T) {
 	}
 }
 
-// TestOutOfBoundsCaret drives commands from positions the IDE can hand
-// over after an out-of-band edit.
 func TestOutOfBoundsCaret(t *testing.T) {
 	positions := []term.Coordinates{
 		{X: -1, Y: -1}, {X: 1000, Y: 0}, {X: 0, Y: 1000},
@@ -148,8 +142,6 @@ func TestOutOfBoundsCaret(t *testing.T) {
 	}
 }
 
-// TestWideAndControlCharacters pins the motions over content the cell
-// grid stores in more than one column, or not at all.
 func TestWideAndControlCharacters(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -191,7 +183,6 @@ func TestWideAndControlCharacters(t *testing.T) {
 	})
 }
 
-// TestLargeCounts pins counts that overrun the buffer.
 func TestLargeCounts(t *testing.T) {
 	for _, evs := range [][]term.Event{
 		keys("999j"), keys("999k"), keys("999l"), keys("999h"),
@@ -234,8 +225,6 @@ func TestLargeCounts(t *testing.T) {
 	})
 }
 
-// TestNonKeyEvents pins the events the runtime delivers that are not
-// keystrokes.
 func TestNonKeyEvents(t *testing.T) {
 	for _, ev := range []term.Event{
 		{Type: term.EventResize},
@@ -261,8 +250,6 @@ func TestNonKeyEvents(t *testing.T) {
 	})
 }
 
-// TestScrollSubscriber pins the callbacks component.Scroll delivers when
-// folds open and close under the caret.
 func TestScrollSubscriber(t *testing.T) {
 	hx, _, _ := newHelix(t, strings.Repeat("line\n", 40), term.Coordinates{Y: 5})
 	impl := hx.handler.(*helixHandlerImpl)
@@ -279,8 +266,6 @@ func TestScrollSubscriber(t *testing.T) {
 		"the desired column is resynced after a fold change")
 }
 
-// TestModeTransitions pins the normal / select / insert cycle and the
-// status each mode reports through the public predicates.
 func TestModeTransitions(t *testing.T) {
 	t.Run("a fresh handler starts in normal mode", func(t *testing.T) {
 		hx, _, _ := newHelix(t, "abc", term.Coordinates{})
@@ -403,7 +388,6 @@ func TestModeTransitions(t *testing.T) {
 	}
 }
 
-// TestInsertModeKeys walks the insert-mode key table.
 func TestInsertModeKeys(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -650,7 +634,6 @@ func TestInsertModeKeys(t *testing.T) {
 	}
 }
 
-// TestBracketedPaste pins the paste burst protocol.
 func TestBracketedPaste(t *testing.T) {
 	burst := func(str string) []term.Event {
 		evs := []term.Event{{Type: term.EventPasteStart}}
@@ -689,9 +672,6 @@ func TestBracketedPaste(t *testing.T) {
 	})
 }
 
-// TestUnboundShellKeys pins the shell and command-line entries, which
-// belong to the IDE rather than the buffer, and the syntax-tree
-// selection commands that need a tree this handler does not own.
 func TestUnboundShellKeys(t *testing.T) {
 	for _, ev := range []term.Event{
 		key('|'), key('!'), key('$'), key(':'),
@@ -707,9 +687,6 @@ func TestUnboundShellKeys(t *testing.T) {
 	}
 }
 
-// TestUnboundSyntaxKeys covers the sibling and parent-node motions,
-// which need a syntax tree this handler does not own. They stay free
-// for the keymap layer instead of being approximated.
 func TestUnboundSyntaxKeys(t *testing.T) {
 	for _, ev := range []term.Event{
 		modKey(term.ModAlt, 'n'), modKey(term.ModAlt, 'p'),
@@ -725,9 +702,6 @@ func TestUnboundSyntaxKeys(t *testing.T) {
 	}
 }
 
-// TestUnboundLayerKeys covers the prefixes Helix reserves for the
-// window manager, the pickers and the shell, which belong to the IDE
-// rather than the buffer.
 func TestUnboundLayerKeys(t *testing.T) {
 	for _, ev := range []term.Event{
 		modKey(term.ModCtrl, 'w'), namedKey(term.KeySpace),
@@ -740,9 +714,6 @@ func TestUnboundLayerKeys(t *testing.T) {
 	}
 }
 
-// TestUnboundBracketKeys pins the [ and ] entries that need
-// diagnostics, VCS or a syntax tree. Only paragraphs and add_newline
-// are served here.
 func TestUnboundBracketKeys(t *testing.T) {
 	for _, prefix := range []rune{'[', ']'} {
 		for _, ch := range []rune{'d', 'D', 'g', 'G', 'f', 't', 'a', 'c', 'e', 'T', 'x'} {
@@ -755,8 +726,6 @@ func TestUnboundBracketKeys(t *testing.T) {
 	}
 }
 
-// TestUnboundNavigationKeys pins the goto-mode entries Helix reserves
-// for the language server and buffer list.
 func TestUnboundNavigationKeys(t *testing.T) {
 	for _, ch := range []rune{'d', 'D', 'y', 'r', 'i', 'a', 'm', 'n', 'p', 'f'} {
 		hx, _, _ := newHelix(t, "foo bar", term.Coordinates{})
@@ -767,7 +736,6 @@ func TestUnboundNavigationKeys(t *testing.T) {
 	}
 }
 
-// TestMacroBindings pins Q and q against a recorder/player double.
 func TestMacroBindings(t *testing.T) {
 	t.Run("Q toggles recording", func(t *testing.T) {
 		rec := new(fakeMacroRecorder)
@@ -830,7 +798,6 @@ func (p *fakeMacroPlayer) Play(id string, count int) error {
 	return nil
 }
 
-// TestSearchMode pins / and ? plus the n/N repeats.
 func TestSearchMode(t *testing.T) {
 	t.Run("/ opens the search prompt", func(t *testing.T) {
 		hx, _, _ := newHelix(t, "abc", term.Coordinates{})
@@ -920,9 +887,6 @@ func runMotionCases(t *testing.T, cases []motionCase) {
 	}
 }
 
-// TestSelectionInvariant pins Helix's core rule: a range is never empty.
-// Selection::ensure_invariants widens a collapsed range to one grapheme,
-// so every operator always has something to act on.
 func TestSelectionInvariant(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -944,8 +908,6 @@ func TestSelectionInvariant(t *testing.T) {
 	}
 }
 
-// TestEmptyBufferIsSafe pins that a zero-length buffer does not panic
-// and leaves every command a no-op.
 func TestEmptyBufferIsSafe(t *testing.T) {
 	for _, ev := range []term.Event{
 		key('w'), key('b'), key('e'), key('h'), key('j'), key('k'), key('l'),
@@ -966,8 +928,6 @@ func TestEmptyBufferIsSafe(t *testing.T) {
 	}
 }
 
-// TestCaretMotions pins h/j/k/l and the arrow keys: put_cursor with
-// Movement::Move collapses the range onto the landing cell.
 func TestCaretMotions(t *testing.T) {
 	runMotionCases(t, []motionCase{
 		{name: "l moves right", content: "hello", evs: keys("l"),
@@ -1012,9 +972,6 @@ func TestCaretMotions(t *testing.T) {
 	})
 }
 
-// TestWordMotions pins the word grammar from helix-core word_move: the
-// motion selects what it travels over, w stops before the word it
-// found, and repeats advance rather than standing still.
 func TestWordMotions(t *testing.T) {
 	runMotionCases(t, []motionCase{
 		{name: "w selects up to the next word", content: "foo bar baz", evs: keys("w"),
@@ -1126,8 +1083,6 @@ func TestWordMotions(t *testing.T) {
 	})
 }
 
-// TestFindCharMotions pins f/t/F/T. Helix offsets the search start for
-// till motions so a repeat makes progress.
 func TestFindCharMotions(t *testing.T) {
 	runMotionCases(t, []motionCase{
 		{name: "f selects through the match", content: "foo,bar",
@@ -1161,7 +1116,6 @@ func TestFindCharMotions(t *testing.T) {
 	})
 }
 
-// TestRepeatLastMotion pins A-. replaying the last f/t/F/T.
 func TestRepeatLastMotion(t *testing.T) {
 	hx, _, _ := newHelix(t, "a,b,c,d", term.Coordinates{})
 	send(t, hx, key('f'), key(','))
@@ -1178,8 +1132,6 @@ func TestRepeatLastMotion(t *testing.T) {
 	})
 }
 
-// TestSelectModeExtends pins v as Helix's sticky select mode: every
-// motion keeps the anchor until the mode is left.
 func TestSelectModeExtends(t *testing.T) {
 	t.Run("word motions accumulate", func(t *testing.T) {
 		hx, _, _ := newHelix(t, "foo bar baz", term.Coordinates{})
@@ -1309,7 +1261,6 @@ func TestSelectModeExtends(t *testing.T) {
 	})
 }
 
-// TestCollapseAndFlip pins ; A-; and A-:.
 func TestCollapseAndFlip(t *testing.T) {
 	t.Run("; collapses onto the caret", func(t *testing.T) {
 		hx, _, _ := newHelix(t, "foo bar", term.Coordinates{})
@@ -1345,7 +1296,6 @@ func TestCollapseAndFlip(t *testing.T) {
 	})
 }
 
-// TestLineSelection pins x, X and A-x.
 func TestLineSelection(t *testing.T) {
 	t.Run("x selects the line", func(t *testing.T) {
 		hx, _, _ := newHelix(t, "one\ntwo\nthree", term.Coordinates{})
@@ -1399,7 +1349,6 @@ func TestLineSelection(t *testing.T) {
 	})
 }
 
-// TestSelectAll pins %.
 func TestSelectAll(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -1418,7 +1367,6 @@ func TestSelectAll(t *testing.T) {
 	}
 }
 
-// TestGotoMode pins the g minor mode against Helix's goto commands.
 func TestGotoMode(t *testing.T) {
 	runMotionCases(t, []motionCase{
 		{name: "gg goes to the first line", content: "a\nb\nc", at: term.Coordinates{Y: 2},
@@ -1480,7 +1428,6 @@ func TestGotoMode(t *testing.T) {
 	})
 }
 
-// TestGotoLine pins G, which Helix makes a no-op without a count.
 func TestGotoLine(t *testing.T) {
 	t.Run("bare G does nothing", func(t *testing.T) {
 		hx, _, _ := newHelix(t, "a\nb\nc", term.Coordinates{})
@@ -1503,7 +1450,6 @@ func TestGotoLine(t *testing.T) {
 	})
 }
 
-// TestHomeEndPageKeys pins the named keys Helix binds in normal mode.
 func TestHomeEndPageKeys(t *testing.T) {
 	runMotionCases(t, []motionCase{
 		{name: "home goes to the line start", content: "hello", at: term.Coordinates{X: 3},
@@ -1527,7 +1473,6 @@ func TestHomeEndPageKeys(t *testing.T) {
 	})
 }
 
-// TestScrollCommands pins ctrl-b/f/u/d/e/y.
 func TestScrollCommands(t *testing.T) {
 	content := strings.Repeat("line\n", 200)
 	for _, tc := range []struct {
@@ -1577,7 +1522,6 @@ func abs(v int) int {
 	return v
 }
 
-// TestViewMode pins z and the sticky Z variant.
 func TestViewMode(t *testing.T) {
 	content := strings.Repeat("line\n", 200)
 
@@ -1669,7 +1613,6 @@ func TestViewMode(t *testing.T) {
 	})
 }
 
-// TestJumplist pins ctrl-s / ctrl-o / ctrl-i.
 func TestJumplist(t *testing.T) {
 	t.Run("ctrl-o returns to a saved selection", func(t *testing.T) {
 		hx, _, _ := newHelix(t, "a\nb\nc\nd\ne", term.Coordinates{})
@@ -1788,7 +1731,6 @@ func TestJumplist(t *testing.T) {
 	})
 }
 
-// TestBracketMode pins the [ and ] minor modes.
 func TestBracketMode(t *testing.T) {
 	t.Run("]p moves to the next paragraph", func(t *testing.T) {
 		hx, _, _ := newHelix(t, "a\n\nb\n\nc", term.Coordinates{})
@@ -1829,7 +1771,6 @@ func TestBracketMode(t *testing.T) {
 	})
 }
 
-// TestMatchMode pins mm and the mi/ma text objects.
 func TestMatchMode(t *testing.T) {
 	t.Run("mm jumps to the matching bracket", func(t *testing.T) {
 		hx, _, _ := newHelix(t, "(abc)", term.Coordinates{})
@@ -1902,7 +1843,6 @@ func TestMatchMode(t *testing.T) {
 	})
 }
 
-// TestSearch pins / ? n N and the search-selection commands.
 func TestSearch(t *testing.T) {
 	t.Run("forward search selects the match", func(t *testing.T) {
 		hx, _, _ := newHelix(t, "foo\nbar\nfoo", term.Coordinates{})
@@ -1981,8 +1921,6 @@ func TestSearch(t *testing.T) {
 	})
 }
 
-// TestExpandShrinkSelection pins A-o / A-i and their arrow aliases,
-// which need a syntax service and therefore stay unhandled here.
 func TestExpandShrinkSelection(t *testing.T) {
 	for _, ev := range []term.Event{
 		modKey(term.ModAlt, 'o'), modKey(term.ModAlt, 'i'),
@@ -2079,7 +2017,6 @@ func runOpCases(t *testing.T, cases []opCase) {
 
 func at(x, y int) *term.Coordinates { return &term.Coordinates{X: x, Y: y} }
 
-// TestDelete pins d and A-d.
 func TestDelete(t *testing.T) {
 	runOpCases(t, []opCase{
 		{name: "d removes the one-cell selection", content: "abc",
@@ -2131,7 +2068,6 @@ func TestDelete(t *testing.T) {
 	})
 }
 
-// TestChange pins c and A-c, which delete and then enter insert mode.
 func TestChange(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -2183,7 +2119,6 @@ func TestChange(t *testing.T) {
 	})
 }
 
-// TestYankAndPaste pins y, p, P and R.
 func TestYankAndPaste(t *testing.T) {
 	t.Run("y copies without deleting", func(t *testing.T) {
 		hx, buf, clip := newHelix(t, "foo bar", term.Coordinates{})
@@ -2269,7 +2204,6 @@ func TestYankAndPaste(t *testing.T) {
 	})
 }
 
-// TestReplaceChar pins r<char>, which rewrites every selected cell.
 func TestReplaceChar(t *testing.T) {
 	runOpCases(t, []opCase{
 		{name: "r replaces the cell under the caret", content: "abc",
@@ -2322,7 +2256,6 @@ func TestReplaceChar(t *testing.T) {
 	})
 }
 
-// TestCaseOperators pins ~, ` and A-`.
 func TestCaseOperators(t *testing.T) {
 	runOpCases(t, []opCase{
 		{name: "~ toggles a mixed selection", content: "aBc",
@@ -2340,7 +2273,6 @@ func TestCaseOperators(t *testing.T) {
 	})
 }
 
-// TestJoin pins J and A-J.
 func TestJoin(t *testing.T) {
 	runOpCases(t, []opCase{
 		{name: "J joins the next line", content: "one\ntwo",
@@ -2367,7 +2299,6 @@ func TestJoin(t *testing.T) {
 	})
 }
 
-// TestIndentOperators pins >, < and =.
 func TestIndentOperators(t *testing.T) {
 	runOpCases(t, []opCase{
 		{name: "> indents the line", content: "a\nb", evs: keys(">"), want: "  a\nb"},
@@ -2401,8 +2332,6 @@ func TestIndentOperators(t *testing.T) {
 
 // TestComments pins C-c.
 
-// TestTrimSelection pins _, which shrinks the selection past the
-// whitespace at either end.
 func TestTrimSelection(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -2472,7 +2401,6 @@ func TestComments(t *testing.T) {
 	})
 }
 
-// TestInsertEntry pins i, a, I, A, o and O.
 func TestInsertEntry(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -2518,7 +2446,6 @@ func TestInsertEntry(t *testing.T) {
 	}
 }
 
-// TestAddNewline pins [<space> and ]<space>, which do not move the caret.
 func TestAddNewline(t *testing.T) {
 	t.Run("]<space> adds a line below", func(t *testing.T) {
 		hx, buf, _ := newHelix(t, "a\nb", term.Coordinates{})
@@ -2543,7 +2470,6 @@ func TestAddNewline(t *testing.T) {
 	})
 }
 
-// TestSurround pins ms, mr and md.
 func TestSurround(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -2624,10 +2550,6 @@ func TestSurround(t *testing.T) {
 	})
 }
 
-// TestIncrement pins C-a and C-x, which hand the text under the
-// selection to the incrementors as it is: a cursor on one digit of a
-// number changes that digit alone, so the whole number has to be
-// selected for it to be counted as one.
 func TestIncrement(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -2692,7 +2614,6 @@ func TestIncrement(t *testing.T) {
 	})
 }
 
-// TestTextObjects pins the mi/ma pairs.
 func TestTextObjects(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -2807,7 +2728,6 @@ func TestTextObjects(t *testing.T) {
 	})
 }
 
-// TestRegisters pins the " prefix, including the black hole register.
 func TestRegisters(t *testing.T) {
 	t.Run("a named register round trips", func(t *testing.T) {
 		hx, buf, _ := newHelix(t, "foo bar", term.Coordinates{})

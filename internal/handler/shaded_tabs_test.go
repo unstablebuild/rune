@@ -45,8 +45,6 @@ func drawShadedTabs(s *ShadedTabs) []term.Cell {
 	return w.Cells()
 }
 
-// The effect only runs between the transitions, and stopping it must
-// put the bar back exactly as it was and stop the animation goroutine.
 func TestShadedTabsRunsOnlyWhileActive(t *testing.T) {
 	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
 	s := newTestShadedTabs(ShadedTabsConfig{
@@ -69,8 +67,6 @@ func TestShadedTabsRunsOnlyWhileActive(t *testing.T) {
 	assert.Equal(t, plain, drawShadedTabs(s))
 }
 
-// The effect paints an active tab's name but never its icon, whose
-// attributes are what set the focused tab apart.
 func TestShadedTabsLeavesIconsAlone(t *testing.T) {
 	// glsl effects keep a worker pool that is reused across frames and
 	// only reaped once the shader is garbage collected.
@@ -105,8 +101,6 @@ func TestShadedTabsLeavesIconsAlone(t *testing.T) {
 	require.True(t, painted, "the effect never painted the active tab's name")
 }
 
-// A bar with no effect configured, an unknown one or nothing to drive it
-// must draw straight through rather than allocating a shader.
 func TestShadedTabsWithoutShaderDrawsTabs(t *testing.T) {
 	active := func() []int { return []int{0} }
 	for _, tc := range []struct {
@@ -130,8 +124,6 @@ func TestShadedTabsWithoutShaderDrawsTabs(t *testing.T) {
 	}
 }
 
-// An interrupter installed after construction is the one the effect
-// runs on.
 func TestShadedTabsSetInterrupter(t *testing.T) {
 	s := newTestShadedTabs(ShadedTabsConfig{
 		Shader: "pulse",
@@ -143,8 +135,6 @@ func TestShadedTabsSetInterrupter(t *testing.T) {
 	require.True(t, s.SetRunning(false))
 }
 
-// The cadence knobs reach the effect rather than staying pinned to the
-// shipped constants, and a zero knob keeps the shipped value.
 func TestShadedTabsHonoursConfiguredFPS(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -170,8 +160,6 @@ func TestShadedTabsHonoursConfiguredFPS(t *testing.T) {
 	}
 }
 
-// Only the labels of the tabs Active names are shaded, past their icons,
-// resolved against the current layout on every call.
 func TestShadedTabsActiveRects(t *testing.T) {
 	active := []int{1}
 	s := newTestShadedTabs(ShadedTabsConfig{

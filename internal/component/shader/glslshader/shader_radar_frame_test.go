@@ -31,9 +31,6 @@ func TestRadarFrame(t *testing.T) {
 	))
 }
 
-// TestRadarFrameLeavesNonFrameCharsUntouched scans the sweep through a full
-// revolution against a grid of non-frame characters and verifies their
-// foreground is never modified.
 func TestRadarFrameLeavesNonFrameCharsUntouched(t *testing.T) {
 	fc := guiFrameCharset()
 	origFg := term.NewRGBColor(10, 20, 30)
@@ -62,8 +59,6 @@ func TestRadarFrameLeavesNonFrameCharsUntouched(t *testing.T) {
 	}
 }
 
-// TestRadarFramePeakIsFullColor verifies that at the wedge peak, a frame
-// cell along the leading angle is fully overridden to Color.
 func TestRadarFramePeakIsFullColor(t *testing.T) {
 	fc := guiFrameCharset()
 	target := term.NewRGBColor(255, 0, 0)
@@ -118,9 +113,6 @@ func TestRadarFramePeakIsFullColor(t *testing.T) {
 		"right-middle frame cell sits at the wedge peak and must be fully overridden")
 }
 
-// TestRadarFrameFadesAtEdges verifies that the wedge edge is dimmer than
-// the peak: a cell at the geometric center of the wedge is blended at
-// higher intensity than a cell near the angular edge.
 func TestRadarFrameFadesAtEdges(t *testing.T) {
 	fc := guiFrameCharset()
 	origFg := term.NewRGBColor(0, 0, 0)
@@ -188,8 +180,6 @@ func TestRadarFrameFadesAtEdges(t *testing.T) {
 		"the edge of the wedge must still be partially blended (not the original)")
 }
 
-// TestRadarFrameRotates verifies the wedge actually moves across frames:
-// the same frame cell receives different intensities at different times.
 func TestRadarFrameRotates(t *testing.T) {
 	fc := guiFrameCharset()
 	origFg := term.NewRGBColor(0, 0, 0)

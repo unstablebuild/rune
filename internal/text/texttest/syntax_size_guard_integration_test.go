@@ -33,14 +33,6 @@ import (
 	"unstable.build/rune/internal/workspace"
 )
 
-// TestSyntaxSizeGuardSkipsTreeForLargeBuffers reproduces the freeze
-// case: opening a multi-MB file (e.g. ~/.runedev/debug.log at 8 GB)
-// blocked the host event loop for seconds inside
-// tree_sitter.Parser.ParseWithOptions during tab open. The fix at
-// text.Component skips syntax-tree installation entirely when the
-// buffer exceeds Config.MaxSyntaxParseSize; this test asserts the
-// buffer's view is NOT a *syntax.Tree for a file above the limit,
-// while a file below the limit still installs the tree.
 func TestSyntaxSizeGuardSkipsTreeForLargeBuffers(t *testing.T) {
 	dir := t.TempDir()
 	wsURI, err := workspaceapi.ParseURI("file://" + dir)
@@ -91,12 +83,6 @@ func TestSyntaxSizeGuardSkipsTreeForLargeBuffers(t *testing.T) {
 		"buffers above MaxSyntaxParseSize must NOT have a syntax tree installed")
 }
 
-// TestSyntaxSizeGuardZeroDisablesGuard documents the contract that
-// Config.MaxSyntaxParseSize == 0 means no limit: even huge buffers
-// follow the regular code path and install a syntax tree. This is
-// what tests that do not opt in observe (DefaultConfig sets a real
-// limit; tests that override MaxSyntaxParseSize to 0 keep the
-// historical "always install" behaviour).
 func TestSyntaxSizeGuardZeroDisablesGuard(t *testing.T) {
 	dir := t.TempDir()
 	wsURI, err := workspaceapi.ParseURI("file://" + dir)

@@ -1243,8 +1243,6 @@ func runShellSequence(t *testing.T, h *Handler, sequence, expected string) {
 	assert.Equal(t, expected, w.String(), "input: %s", sequence)
 }
 
-// TestHandlerLoadHistoryReturnsNewestFirst covers the non-UI helper
-// that seeds the overlay from persisted storage.
 func TestHandlerLoadHistoryReturnsNewestFirst(t *testing.T) {
 	h := newTestHandler(t, []string{"oldest", "middle", "newest"})
 	assert.Equal(t,
@@ -1252,12 +1250,6 @@ func TestHandlerLoadHistoryReturnsNewestFirst(t *testing.T) {
 	)
 }
 
-// TestHandlerMouseSelection drives the public handler with mouse event
-// sequences and asserts the resulting Selection(). Gestures are built
-// against the rendered output so the cases stay robust to the repl's
-// bottom-aligned output band. Edge cases (negative coordinates,
-// out-of-bounds drags, empty/whitespace cells, beyond-EOL columns)
-// must not panic and must clamp to sensible selections.
 func TestHandlerMouseSelection(t *testing.T) {
 	for _, tc := range mouseSelectionCases() {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1281,8 +1273,6 @@ func TestHandlerMouseSelection(t *testing.T) {
 	}
 }
 
-// TestHandlerMouseSelectionRendersReverse verifies the selected span is
-// painted with AttrReverse and that nothing outside the span is.
 func TestHandlerMouseSelectionRendersReverse(t *testing.T) {
 	const w, h = mouseTestWidth, mouseTestHeight
 	hd, out := newMouseTestHandler(t, w, h, []string{"alpha bravo"})
@@ -1307,8 +1297,6 @@ func TestHandlerMouseSelectionRendersReverse(t *testing.T) {
 		"cell past selection should not carry AttrReverse")
 }
 
-// TestHandlerMouseWheelDoesNotSelect ensures wheel events never start a
-// selection (they scroll the inner repl instead).
 func TestHandlerMouseWheelDoesNotSelect(t *testing.T) {
 	hd, _ := newMouseTestHandler(t, mouseTestWidth, 6,
 		[]string{"l0", "l1", "l2", "l3", "l4", "l5", "l6", "l7"})
@@ -1656,8 +1644,6 @@ func renderText(t *testing.T, hd *Handler, w, h int) string {
 	return b.String()
 }
 
-// TestHandlerCtrlLClearsOutput verifies that <c-l> discards accumulated
-// command output while leaving the in-progress input line intact.
 func TestHandlerCtrlLClearsOutput(t *testing.T) {
 	const w, h = 30, 12
 	hd, _ := newMouseTestHandler(t, w, h, []string{"clearme-marker"})
@@ -1682,8 +1668,6 @@ func TestHandlerCtrlLClearsOutput(t *testing.T) {
 		"the prompt with the input line should still render")
 }
 
-// TestHandlerCtrlLPreservesHistory verifies that the inner repl rebuilt
-// on <c-l> reloads the persisted history so recall still works.
 func TestHandlerCtrlLPreservesHistory(t *testing.T) {
 	h := newTestHandler(t, []string{"oldest", "middle", "newest"})
 	h.Resize(testWidthH, testHeight)
@@ -1698,8 +1682,6 @@ func TestHandlerCtrlLPreservesHistory(t *testing.T) {
 	assert.Equal(t, "middle", h.editBuf.String())
 }
 
-// TestHandlerCtrlLRunsClearHook verifies that <c-l> runs the
-// Config.ClearHook so a host can reset state it mirrors on the screen.
 func TestHandlerCtrlLRunsClearHook(t *testing.T) {
 	var cleared int
 	h, _ := New(
@@ -1777,10 +1759,6 @@ func (it *blockingIter) Close() error {
 	return nil
 }
 
-// TestHandlerCtrlLIgnoredWhileCommandRunning verifies that <c-l> is a
-// no-op while a command's output iterator is still open: the output
-// stays put (the running command is not aborted), and once the command
-// finishes <c-l> clears as usual.
 func TestHandlerCtrlLIgnoredWhileCommandRunning(t *testing.T) {
 	const w, h = 30, 12
 	var mu sync.Mutex

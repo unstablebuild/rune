@@ -26,11 +26,6 @@ import (
 	"golang.org/x/image/font/sfnt"
 )
 
-// TestEmojiTTFEmbeddedAndColor proves the bundled color emoji asset
-// shipped, parses with the go-text font stack, and exposes 😀 as a PNG
-// color bitmap glyph. This is the foundation the color-emoji renderer
-// relies on; if the asset is missing or is not a bitmap-emoji font the
-// whole color path is unavailable.
 func TestEmojiTTFEmbeddedAndColor(t *testing.T) {
 	require.NotEmpty(t, EmojiTTF, "NotoColorEmoji.ttf must be embedded")
 
@@ -48,9 +43,6 @@ func TestEmojiTTFEmbeddedAndColor(t *testing.T) {
 	assert.NotEmpty(t, bm.Data)
 }
 
-// TestCJKTTCEmbedded proves the bundled Noto Sans CJK collection shipped
-// and parses with x/image/font/sfnt, the stack the font Manager actually
-// consumes, exposing the ten expected faces with Han coverage.
 func TestCJKTTCEmbedded(t *testing.T) {
 	require.NotEmpty(t, CJKTTC, "NotoSansCJK-Regular.ttc must be embedded")
 

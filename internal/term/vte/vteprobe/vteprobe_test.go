@@ -124,11 +124,6 @@ func cellLines(parts []string) [][]term.Cell {
 	return lines
 }
 
-// TestInferEmitsDebugLog verifies that every Infer call writes at least
-// one DebugLevel entry, so production operators can correlate
-// "the IDE statusbar showed line N" with "the probe inferred line N".
-// The deferred log in Infer is the contract we lock in here; the
-// internal alignment-detail entries are best-effort.
 func TestInferEmitsDebugLog(t *testing.T) {
 	content := "aaa\nbbb\nccc\n"
 	buf := makeBuffer([]string{"aaa", "bbb", "ccc"}, 8)
@@ -259,11 +254,6 @@ func TestInferFoldPlaceholder(t *testing.T) {
 	assert.True(t, got.Folded)
 }
 
-// TestInferCursorPastLastLine covers editors such as nano that let the
-// cursor rest on the blank virtual line one row below the last file
-// line. The cursor falls just outside the content band, but Infer must
-// still resolve it (to the line one past EOF) and return a populated
-// result instead of giving up with ErrUnknown.
 func TestInferCursorPastLastLine(t *testing.T) {
 	t.Parallel()
 
@@ -283,11 +273,6 @@ func TestInferCursorPastLastLine(t *testing.T) {
 		"last content row still maps to file line 3 (baz)")
 }
 
-// TestInferCursorOnBlankFileLineAtTop covers a viewport scrolled so the
-// first file line is a real blank line drawn under a styled title bar
-// (nano), with the cursor parked on it. The blank must be kept as
-// content — not peeled as a separator — so the cursor and the row
-// mapping resolve to the right file lines instead of shifting by one.
 func TestInferCursorOnBlankFileLineAtTop(t *testing.T) {
 	t.Parallel()
 
@@ -333,10 +318,6 @@ func TestInferContentChange(t *testing.T) {
 	assert.Equal(t, term.Coordinates{X: 2, Y: 1}, res2.CursorAtScroll)
 }
 
-// TestInferReadsNoDisk locks in that inference is driven entirely by the
-// caller-supplied lines (here derived from an in-memory cell.View via
-// LinesFromView) and never touches a filesystem: New takes no fs and
-// Infer takes no URI, so there is no disk path to read.
 func TestInferReadsNoDisk(t *testing.T) {
 	t.Parallel()
 
@@ -355,9 +336,6 @@ func TestInferReadsNoDisk(t *testing.T) {
 	assert.Equal(t, "foo\nbar\nbaz", term.CellsToString(got.FileLines))
 }
 
-// TestInferTooLargeUnknown verifies the maxFileBytes guard: content
-// larger than the configured bound yields ErrUnknown instead of an
-// alignment attempt.
 func TestInferTooLargeUnknown(t *testing.T) {
 	t.Parallel()
 
@@ -470,10 +448,6 @@ func TestInferSoftWrap(t *testing.T) {
 	assert.Equal(t, 1, got2.CursorAtScroll.Y)
 }
 
-// TestInferExposesBandsAndRows asserts the public Bands/Rows/Tabstop
-// fields agree with the rendered fixture so exo consumers can project
-// file coordinates back to screen coordinates without reaching into
-// vteprobe internals.
 func TestInferExposesBandsAndRows(t *testing.T) {
 	t.Parallel()
 
@@ -504,8 +478,6 @@ func TestInferExposesBandsAndRows(t *testing.T) {
 	}
 }
 
-// TestInferExposesWrappedRows asserts Rows reflects the wrap layout
-// detected for soft-wrapped long lines.
 func TestInferExposesWrappedRows(t *testing.T) {
 	t.Parallel()
 
@@ -534,11 +506,6 @@ func TestInferExposesWrappedRows(t *testing.T) {
 	assert.Equal(t, 0, got.Rows[2].WrapOffset)
 }
 
-// TestInferTabstopDefaultsToVim8 documents the exo-with-vim scenario:
-// a Go file rendered by vim with the default tabstop=8, no gutter,
-// and no chrome. The probe must pick tabstop 8 even though smaller
-// tabstops also appear in the hint list — at ts=4 the rendered tab
-// indentation no longer matches expandTabs(file).
 func TestInferTabstopDefaultsToVim8(t *testing.T) {
 	t.Parallel()
 

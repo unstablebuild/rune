@@ -27,7 +27,6 @@ import (
 
 func fwd(x0, y0, x1, y1 int) rng { return rng{anchor: xy(x0, y0), head: xy(x1, y1)} }
 
-// TestRangeBasics pins the accessors the rest of the model is built on.
 func TestRangeBasics(t *testing.T) {
 	buf := cell.NewBuffer()
 	buf.ReadFrom(strings.NewReader("abc\ndef"))
@@ -54,8 +53,6 @@ func TestRangeBasics(t *testing.T) {
 		"a range ending at a row start sits on the previous line ending")
 }
 
-// TestRangePutCursor pins Range::put_cursor, including the anchor shift
-// when an extension crosses over the anchor.
 func TestRangePutCursor(t *testing.T) {
 	buf := cell.NewBuffer()
 	buf.ReadFrom(strings.NewReader("abcdef"))
@@ -87,7 +84,6 @@ func TestRangePutCursor(t *testing.T) {
 	}
 }
 
-// TestRangeOverlapsAndMerge pins Range::overlaps and Range::merge.
 func TestRangeOverlapsAndMerge(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -129,9 +125,6 @@ func TestRangeOverlapsAndMerge(t *testing.T) {
 	}
 }
 
-// TestSelectionNormalize pins Selection::normalize: the result is
-// sorted, overlapping neighbours are merged, and the primary index
-// follows the range it was on through sorting and merging.
 func TestSelectionNormalize(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -166,7 +159,6 @@ func TestSelectionNormalize(t *testing.T) {
 	}
 }
 
-// TestSelectionEdits pins with, without and rotated.
 func TestSelectionEdits(t *testing.T) {
 	base := selection{ranges: []rng{fwd(0, 0, 1, 0), fwd(3, 0, 4, 0), fwd(6, 0, 7, 0)}, primary: 1}
 
@@ -222,8 +214,6 @@ func TestSelectionEdits(t *testing.T) {
 	})
 }
 
-// TestSelectionTransformAndMap pins that transform and mapThrough both
-// normalize their result.
 func TestSelectionTransformAndMap(t *testing.T) {
 	s := selection{ranges: []rng{fwd(0, 0, 2, 0), fwd(4, 0, 6, 0)}, primary: 1}
 
@@ -240,8 +230,6 @@ func TestSelectionTransformAndMap(t *testing.T) {
 	assert.Equal(t, s, s.mapThrough(nil))
 }
 
-// TestRangeTextAndFragments pins the text a range covers, across rows
-// and with a combining mark that shares a cell with its base.
 func TestRangeTextAndFragments(t *testing.T) {
 	buf := cell.NewBuffer()
 	buf.ReadFrom(strings.NewReader("ab\u0301c\ndef\n\nghi"))
@@ -267,8 +255,6 @@ func TestRangeTextAndFragments(t *testing.T) {
 	assert.Equal(t, []string{"a", "def", "g"}, s.fragments(buf))
 }
 
-// TestRangeLineRange pins Range::line_range: a range ending at a line
-// start does not touch that line.
 func TestRangeLineRange(t *testing.T) {
 	buf := cell.NewBuffer()
 	buf.ReadFrom(strings.NewReader("abc\ndef\nghi"))
@@ -293,8 +279,6 @@ func TestRangeLineRange(t *testing.T) {
 	}
 }
 
-// TestSelectionMergeAndSplit pins merged, mergedConsecutive and
-// splitOnNewline.
 func TestSelectionMergeAndSplit(t *testing.T) {
 	buf := cell.NewBuffer()
 	buf.ReadFrom(strings.NewReader("abc\ndef\n\nghi"))

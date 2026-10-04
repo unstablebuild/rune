@@ -32,9 +32,6 @@ func TestBurn_Suite(t *testing.T) {
 	shadertest.TestShader(t, sh)
 }
 
-// With PaintForeground the wave recolours text in place: no glyph is
-// swapped for a fire block, no particle rises, and blanks and glyphs
-// that render as background are never touched.
 func TestBurn_PaintForegroundOnlyRecolorsText(t *testing.T) {
 	params := shader.DefaultBurnParams()
 	params.PaintForeground = true
@@ -414,14 +411,6 @@ func burnGlyphCoords(cells [][]term.Cell, symbols []rune) []burnTestCoord {
 	return out
 }
 
-// TestBurn_ClearsRenderOffsetAttrsOnBurnedCells guards that the Burn
-// shader strips term.AttrVerticalRenderOffset/
-// AttrNegativeVerticalRenderOffset from cells whose glyph it actively
-// overwrites. The renderer applies these hints to whatever character
-// is in the cell, so leaving them in place when burn replaces a
-// chrome-row glyph with a fire symbol renders the new glyph shifted
-// by half a cell. Cells the burn hasn't crossed yet must keep their
-// original attrs.
 func TestBurn_ClearsRenderOffsetAttrsOnBurnedCells(t *testing.T) {
 	params := shader.DefaultBurnParams()
 	params.SmokeChance = 0
