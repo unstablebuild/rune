@@ -39,9 +39,9 @@ func TestIntegrationScheme(t *testing.T) {
 	SkipIfNoDocker(t)
 
 	control := StartHeadscale(t)
-	peerDataDir := StartInstance(t, control, "peer")
+	peer := StartInstance(t, control, "peer", control.AuthKey)
 
-	client := StartNode(t, control, "client")
+	client := StartNode(t, control, "client", control.AuthKey)
 	WaitPeer(t, client, "peer")
 
 	// The serving instance advertises its own data directory as the
@@ -52,7 +52,7 @@ func TestIntegrationScheme(t *testing.T) {
 		root, err := scheme.(workspace.InstallDataDirProvider).
 			InstallDataDir(t.Context())
 		require.NoError(t, err)
-		assert.Equal(t, peerDataDir, root)
+		assert.Equal(t, peer.DataDir, root)
 	})
 
 	newScheme := func(t *testing.T) schemeapi.Scheme {

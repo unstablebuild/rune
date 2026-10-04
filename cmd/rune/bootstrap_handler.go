@@ -64,7 +64,7 @@ type bootstrapHandler struct {
 	storage           storageapi.Service
 	configPath        string
 	workspace         string
-	zdotDir           string
+	shellRCDir        string
 	filenames         []string
 	launchCmd         []string
 	runner            ide.ExtensionsRunner
@@ -72,6 +72,7 @@ type bootstrapHandler struct {
 	mu                *sync.Mutex
 	publishEvent      func(term.Event) bool
 	cellPixelSize     func() (int, int)
+	setAltModifier    func(gui.AltModifier)
 	openBrowser       func(*url.URL) error
 	clip              clipboard.Register
 	installBackupDir  string
@@ -91,9 +92,10 @@ type bootstrapHandler struct {
 	lastResizeH       int
 	chosenEditor      string
 	chosenMeta        keymeta.Meta
+	chosenAltModifier gui.AltModifier
 	telemetryEnabled  bool
 	prompter          bootstrapPrompter
-	// goos overrides runtime.GOOS for the meta prompt; tests set it.
+	// goos overrides runtime.GOOS for the OS-specific prompts; tests set it.
 	goos          string
 	closingPreIDE bool
 	recent        *recentWorkspaces
@@ -107,12 +109,13 @@ type bootstrapHandler struct {
 }
 
 func newBootstrapHandler(
-	dataDir, configPath, workspace, zdotDir string,
+	dataDir, configPath, workspace, shellRCDir string,
 	filenames, launchCmd []string,
 	runner ide.ExtensionsRunner,
 	mu *sync.Mutex,
 	publishEvent func(term.Event) bool,
 	cellPixelSize func() (int, int),
+	setAltModifier func(gui.AltModifier),
 	openBrowser func(*url.URL) error,
 	clip clipboard.Register,
 	installBackupDir string,
@@ -124,7 +127,7 @@ func newBootstrapHandler(
 		storage:          newRuneStorage(dataDir),
 		configPath:       configPath,
 		workspace:        workspace,
-		zdotDir:          zdotDir,
+		shellRCDir:       shellRCDir,
 		filenames:        filenames,
 		launchCmd:        launchCmd,
 		runner:           runner,
@@ -132,6 +135,7 @@ func newBootstrapHandler(
 		mu:               mu,
 		publishEvent:     publishEvent,
 		cellPixelSize:    cellPixelSize,
+		setAltModifier:   setAltModifier,
 		openBrowser:      openBrowser,
 		clip:             clip,
 		installBackupDir: installBackupDir,
@@ -142,7 +146,7 @@ func newBootstrapHandler(
 
 	if isBootstrapped(dataDir) {
 		client, releaseManager := newAPIClient(bh.storage, installBackupDir, rootCfg)
-		bh.network = newNetwork(rootCfg, dataDir, newNetworkGate(client))
+		bh.network = newNetwork(rootCfg, dataDir, shellRCDir, newNetworkGate(client))
 		bh.network.startAutoJoin()
 		realIDE, err := bh.buildConfiguredIDE(client, releaseManager, false)
 		if err != nil {
@@ -193,7 +197,7 @@ func (b *bootstrapHandler) buildPreIDE() (*ide.IDE, error) {
 		ide.WithPublishEvent(b.publishEvent),
 		ide.WithScheduleNextTick(b.scheduleNextTick),
 		ide.WithCellPixelSize(b.cellPixelSize),
-		ide.WithZdotDir(b.zdotDir),
+		ide.WithShellRCDir(b.shellRCDir),
 		ide.WithTabsClickCallback(b.handleTabsClick),
 	}
 	preIDE, err := ide.New("", b.configPath, b.dataDir, b.trust, b.storage, opts...)
@@ -230,7 +234,7 @@ func (b *bootstrapHandler) buildConfiguredIDE(
 		ide.WithPublishEvent(b.publishEvent),
 		ide.WithScheduleNextTick(b.scheduleNextTick),
 		ide.WithCellPixelSize(b.cellPixelSize),
-		ide.WithZdotDir(b.zdotDir),
+		ide.WithShellRCDir(b.shellRCDir),
 		ide.WithScheme(docsScheme, newDocsSchemeFunc(b.configPath)),
 		ide.WithTabsClickCallback(b.handleTabsClick),
 		ide.WithPackageConfigMergeHook(b.guiEnvLiveApplyHook),
@@ -567,7 +571,7 @@ func (b *bootstrapHandler) performSwap() error {
 	client, releaseManager := newAPIClient(b.storage, b.installBackupDir, rootCfg)
 	// The network gates on the account, so it exists only from the
 	// moment the API client that vouches for it does.
-	b.network = newNetwork(b.rootCfg, b.dataDir, newNetworkGate(client))
+	b.network = newNetwork(b.rootCfg, b.dataDir, b.shellRCDir, newNetworkGate(client))
 	b.network.startAutoJoin()
 	realIDE, err := b.buildConfiguredIDE(client, releaseManager, true)
 	if err != nil {
@@ -797,7 +801,7 @@ func (b *bootstrapHandler) recordRecentOpen(command string, args ...string) {
 }
 
 func (b *bootstrapHandler) writePresetConfig() error {
-	body, err := renderPreset(b.chosenEditor, b.chosenMeta, b.telemetryEnabled)
+	body, err := renderPreset(b.chosenEditor, b.chosenMeta, b.telemetryEnabled, b.chosenAltModifier)
 	if err != nil {
 		return fmt.Errorf("render preset: %w", err)
 	}
@@ -896,6 +900,15 @@ var (
 	bootstrapTelemetryKeys = []term.KeyComb{
 		{Ch: 'y'}, {Ch: 'n'},
 	}
+	bootstrapAltModifierKeys = []term.KeyComb{
+		{Ch: 'r'}, {Ch: 'l'}, {Ch: 'n'},
+	}
+)
+
+const (
+	optAltLeft  = " left \u2325 "
+	optAltRight = " right \u2325 "
+	optAltNone  = " neither "
 )
 
 func (b *bootstrapHandler) openBootstrapFlow() {
@@ -967,6 +980,10 @@ func (b *bootstrapHandler) openVimPrompt() {
 					b.openMetaPrompt()
 					return
 				}
+				if b.hostOS() == "darwin" {
+					b.openAltModifierPrompt()
+					return
+				}
 				b.openTelemetryPrompt()
 			}),
 			guard.onClose(b.openVimPrompt),
@@ -974,18 +991,22 @@ func (b *bootstrapHandler) openVimPrompt() {
 	)
 }
 
+// hostOS is the OS the OS-specific prompts are asked for.
+func (b *bootstrapHandler) hostOS() string {
+	if b.goos != "" {
+		return b.goos
+	}
+	return runtime.GOOS
+}
+
 // metaOptions returns the meanings of <meta> the chosen editor is offered
 // on this OS.
 func (b *bootstrapHandler) metaOptions() []keymeta.Meta {
-	goos := b.goos
-	if goos == "" {
-		goos = runtime.GOOS
-	}
 	mode := b.chosenEditor
 	if mode == editorModeless {
 		mode = editorStandard
 	}
-	return keymeta.Options(goos, mode)
+	return keymeta.Options(b.hostOS(), mode)
 }
 
 // metaOptionLabel is the prompt label of m, such as " ctrl+super ". Its
@@ -1032,6 +1053,40 @@ func (b *bootstrapHandler) openMetaPrompt() {
 				b.openTelemetryPrompt()
 			}),
 			guard.onClose(b.openMetaPrompt),
+		),
+	)
+}
+
+func (b *bootstrapHandler) openAltModifierPrompt() {
+	msg := "## Choose your Alt/Option (\u2325) key\n\n" +
+		"Many keyboard layouts type characters such as `|`, `@` or `{` with " +
+		"\u2325 held. Rune can reserve one \u2325 key for typing those " +
+		"characters while the other keeps triggering Alt shortcuts. Pick " +
+		"**neither** to keep both as shortcuts. You can change this any time " +
+		"with `gui.alt_modifier` in your config.\n\n" +
+		"**Which \u2325 key should type layout characters?**"
+	guard := b.promptGuard()
+	b.prompt(
+		msg,
+		[]string{optAltRight, optAltLeft, optAltNone},
+		bootstrapAltModifierKeys,
+		sdkhandler.FuncPromptHandler(
+			guard.onSelect(func(_ int, option string) {
+				switch option {
+				case optAltLeft:
+					b.chosenAltModifier = gui.AltModifierLeft
+				case optAltRight:
+					b.chosenAltModifier = gui.AltModifierRight
+				default:
+					b.chosenAltModifier = gui.AltModifierNone
+				}
+				// The GUI predates this config, so tell it directly.
+				if b.setAltModifier != nil {
+					b.setAltModifier(b.chosenAltModifier)
+				}
+				b.openTelemetryPrompt()
+			}),
+			guard.onClose(b.openAltModifierPrompt),
 		),
 	)
 }

@@ -162,7 +162,8 @@ rune --headless
 A machine serves its workspaces only while `rune --headless` runs. To
 start it at boot and keep it up, install it as a service: the
 [Headless](./headless.md) guide has recipes for systemd, launchd, OpenRC,
-runit, and Docker.
+and runit. On a host with Docker there is nothing to install: the
+[`unstablebuild/rune` image](./headless.md#docker) is a ready-made node.
 :::
 
 It needs no display and no graphical libraries, so it runs on a minimal
@@ -194,6 +195,24 @@ the machine shows up in `network peers` on your other machines and
 A headless node serves the network and nothing else, so it needs
 `network.auto_join` left on: with it off there is no console to run
 `network up` in, and Rune says so and exits.
+
+### Headless machines only serve
+
+A headless machine accepts connections from your other machines and
+opens none of its own. Your laptop can open `rune://buildbox/...`, but
+nothing on `buildbox` can reach your laptop, another headless machine, or
+any machine on another account. A server is the machine most likely to be
+exposed, so taking it over gives an attacker no way into the rest of
+your network or your account: its sign-in can only ever renew into
+another serve-only one, and copying its disk yields a machine that is
+still serve-only.
+
+`network machines` marks these machines:
+
+| machine | state | last seen |
+| --- | --- | --- |
+| carbon (this machine) | online | 2026-03-01 12:04 |
+| buildbox (serve-only) | online | 2026-03-01 12:03 |
 
 ## Configuration
 

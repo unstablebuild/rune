@@ -98,8 +98,8 @@ config sets the same setting under both, `editor.vim` wins.
 
 When configuring Rune for the first time, we offer the ability to choose one of three
 presets. If you choose the vim preset, Rune extends the editor's `hjkl` directions to
-window management, tabs, diagnostics, and Git changes. The same layout bindings apply on
-macOS and Linux.
+window management. Some keys differ between macOS and Linux; the keys below follow the
+platform switch at the top of the page.
 
 `<meta>` is Command on macOS. On Linux, first-run setup asks whether it should be
 Super or Alt, and you can change it later with
@@ -113,82 +113,87 @@ diagram:
 
 | Action | Left / down / up / right |
 | --- | --- |
-| Focus a window | `<meta-h>` / `<meta-j>` / `<meta-k>` / `<meta-l>` |
-| Move a window | `<shift-meta-h>` / `<shift-meta-j>` / `<shift-meta-k>` / `<shift-meta-l>` |
-| Resize a window | `<alt-meta-h>` / `<alt-meta-j>` / `<alt-meta-k>` / `<alt-meta-l>` |
+| Focus a window | <KeyBinding command="windowfocus left" /> / <KeyBinding command="windowfocus down" /> / <KeyBinding command="windowfocus up" /> / <KeyBinding command="windowfocus right" /> |
+| Move a window | <KeyBinding command="windowmove left" /> / <KeyBinding command="windowmove down" /> / <KeyBinding command="windowmove up" /> / <KeyBinding command="windowmove right" /> |
+| Resize a window | <KeyBinding command="windowresize decrease width" /> / <KeyBinding command="windowresize decrease height" /> / <KeyBinding command="windowresize increase height" /> / <KeyBinding command="windowresize increase width" /> |
 
 The resize directions are narrower, shorter, taller, and wider.
-`<shift-meta-backspace>` resets a window to its default size, and
-`<shift-meta-+>` / `<shift-meta-->` maximise or minimise it in both
-dimensions.
+<KeyBinding command="windowresize reset" /> resets a window to its default size, and
+<KeyBinding command={['windowresize max width', 'windowresize max height']} /> /
+<KeyBinding command={['windowresize min width', 'windowresize min height']} /> maximise
+or minimise it in both dimensions.
 
-Common window actions use memorable `<meta>` and `<alt>` bindings:
-
-| Action | Key |
-| --- | --- |
-| New window | `<meta-n>` |
-| Split horizontally / vertically | `<ctrl-meta-h>` / `<ctrl-meta-v>` |
-| Maximise the focused window | `<shift-meta-f>` |
-| Open a terminal in place or in a new split | `<meta-enter>` |
-| Close the focused window / the others | `<meta-w>` / `<shift-meta-w>` |
-| Prefill `windowconverttab` in the command prompt | `<alt-enter>` |
-
-Tabs use the horizontal `h` / `l` pair. Add `<shift>` to reorder the current
-tab:
+Common window actions:
 
 | Action | Key |
 | --- | --- |
-| New / close tab | `<meta-t>` / `<alt-w>` |
-| Previous / next tab | `<alt-h>` / `<alt-l>` |
-| Move tab left / right | `<alt-shift-h>` / `<alt-shift-l>` |
-| Focus tab 1…9 | `<alt-1>` … `<alt-9>` |
-| Move the current tab to slot 1…9 | `<alt-shift-1>` … `<alt-shift-9>` |
-| Search open tabs | ``<alt-`>`` |
+| New window | <KeyBinding command="windownew" /> |
+| Split horizontally / vertically | <KeyBinding command="windowdefaultsplit h" /> / <KeyBinding command="windowdefaultsplit v" /> |
+| Maximise the focused window | <KeyBinding command="windowtogglemaximize" /> |
+| Open a terminal in place or in a new split | <KeyBinding command="terminalneworsplit" /> |
+| Close the focused window / the others | <KeyBinding command="windowclose" /> / <Platform when="darwin"><KeyBinding command="windowcloseall" /></Platform><Platform when="linux">unbound; run `windowcloseall`</Platform> |
+| Prefill `windowconverttab` in the command prompt | <KeyBinding command="echo {prompt}windowconverttab<space>" /> |
 
-The vertical `k` / `j` pair moves through diagnostics. Add `<shift>` to move
-through Git changes instead:
+Tabs step back and forth with one pair of keys. Add `<shift>` to reorder the
+current tab:
 
 | Action | Key |
 | --- | --- |
-| Previous / next diagnostic | `<alt-k>` / `<alt-j>` |
-| Previous / next Git change | `<alt-shift-k>` / `<alt-shift-j>` |
+| New / close tab | <Platform when="darwin"><KeyBinding command="tabnew" /></Platform><Platform when="linux">unbound; run `tabnew`</Platform> / <KeyBinding command="tabclose" /> |
+| Previous / next tab | <KeyBinding command="tabprevious" /> / <KeyBinding command="tabnext" /> |
+| Move tab left / right | <KeyBinding command="tabmove left" /> / <KeyBinding command="tabmove right" /> |
+| Focus tab 1…9 | <Platform when="darwin"><KeyBinding command="tabfocus 1" /> … <KeyBinding command="tabfocus 9" /></Platform><Platform when="linux">unbound; run `tabfocus 1` … `tabfocus 9`</Platform> |
+| Move the current tab to slot 1…9 | <Platform when="darwin"><KeyBinding command="tabmove 1" /> … <KeyBinding command="tabmove 9" /></Platform><Platform when="linux">unbound; run `tabmove 1` … `tabmove 9`</Platform> |
+| Search open tabs | <KeyBinding command="tabsearch" /> |
+
+Another pair steps through diagnostics. Add `<shift>` to step through Git
+changes instead:
+
+| Action | Key |
+| --- | --- |
+| Previous / next diagnostic | <KeyBinding command="lspprevdiagnostic" /> / <KeyBinding command="lspnextdiagnostic" /> |
+| Previous / next Git change | <KeyBinding command="gitprevchange" /> / <KeyBinding command="gitnextchange" /> |
 
 Workspaces stay on `<meta>`, with `<shift>` moving instead of focusing:
 
 | Action | Key |
 | --- | --- |
-| Focus workspace 1…9 | `<meta-1>` … `<meta-9>` |
-| Move the focused window to workspace 1…9 | `<shift-meta-1>` … `<shift-meta-9>` |
-| Search workspaces | ``<meta-`>`` |
-| Toggle the file explorer | `<shift-tab>` |
+| Focus workspace 1…9 | <KeyBinding command="workspacefocus 1" /> … <KeyBinding command="workspacefocus 9" /> |
+| Move the focused window to workspace 1…9 | <KeyBinding command="workspacemove 1" /> … <KeyBinding command="workspacemove 9" /> |
+| Search workspaces | <KeyBinding command="workspacesearch" /> |
+| Toggle the file explorer | <KeyBinding command="fexplorer" /> |
 
 See [Layout Management](./layout-management.md) for the complete layout system.
 
 ### Code intelligence
 
-Code intelligence lives on the `<alt>` layer, one letter per action. Adding
-`<shift>` prompts for a symbol name instead of acting on the symbol under the
-cursor.
+Code intelligence lives on the
+<Platform when="darwin">`<alt>`</Platform><Platform when="linux">`<meta>`</Platform>
+layer, one letter per action. Adding `<shift>` prompts for a symbol name instead
+of acting on the symbol under the cursor.
 
 | Action | Under the cursor | By name |
 | --- | --- | --- |
-| `lsp definition` | `<alt-d>` | `<alt-shift-d>` |
-| `lsp references` | `<alt-r>` | `<alt-shift-r>` |
-| `lsp implementation` | `<alt-i>` | `<alt-shift-i>` |
-| `lsp hover` | `<alt-t>` | `<alt-shift-t>` |
+| `lsp definition` | <KeyBinding command="lsp definition" /> | <KeyBinding command="echo {prompt}lsp<space>definition<space>" /> |
+| `lsp references` | <KeyBinding command="lsp references" /> | <KeyBinding command="echo {prompt}lsp<space>references<space>" /> |
+| `lsp implementation` | <KeyBinding command="lsp implementation" /> | <KeyBinding command="echo {prompt}lsp<space>implementation<space>" /> |
+| `lsp hover` | <KeyBinding command="lsp hover" /> | <KeyBinding command="echo {prompt}lsp<space>hover<space>" /> |
 
 The remaining language commands do not take a symbol argument:
 
 | Action | Key |
 | --- | --- |
-| `lsp format` (file, or selection) | `<alt-b>` |
-| `lsp diagnostics` (whole file) | `<alt-shift-e>` |
-| `lsp complete` | `<ctrl-space>` |
-| `lsp rename` | `<meta-f>` |
-| Step back / forward through cursor history | `<ctrl-o>` / `<ctrl-i>` |
+| `lsp format` (file, or selection) | <KeyBinding command="lsp format" /> |
+| `lsp diagnostics` (whole file) | <KeyBinding command="lsp diagnostics" /> |
+| `lsp complete` | <KeyBinding command="lsp complete" /> |
+| `lsp rename` | <Platform when="darwin"><KeyBinding command="lsp rename" /></Platform><Platform when="linux">unbound; run `lsp rename`</Platform> |
+| Step back / forward through cursor history | <KeyBinding command="cursorhistory prev" /> / <KeyBinding command="cursorhistory next" /> |
 
-`<alt-f>`, `<alt-v>`, and `<alt-s>` jump to a function, variable, or type
-within the current file by name, without a language server.
+<KeyBinding command="echo {prompt}jumptoast<space>locals.scm<space>local.definition.method|local.definition.function<space>" />,
+<KeyBinding command="echo {prompt}jumptoast<space>locals.scm<space>local.definition.var<space>" />, and
+<KeyBinding command="echo {prompt}jumptoast<space>locals.scm<space>local.definition.type<space>" />
+jump to a function, variable, or type within the current file by name, without
+a language server.
 
 ## Modes
 

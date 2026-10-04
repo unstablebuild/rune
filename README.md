@@ -52,39 +52,25 @@ To create a macOS application bundle:
 make rune-dmg
 ```
 
-See [prerequisites](https://docs.rune.build/#prerequisites) for more details.
+## headless
 
-## Makefile
-
-The Makefile has a few rules for common operations needed during development.
+Run Rune in headless mode to serve a workspace to all of your development machines,
+over the [Rune network](https://docs.rune.build/learn/network):
 
 ```bash
-make                 # build all binaries into bin/
-make debug           # build with the race detector and debug-only commands enabled
-make clean           # remove bin/ and target/
+docker run -d --name rune \
+  --hostname devpod \
+  -v /src/projects:/home/rune/projects \
+  unstablebuild/rune
 
-# individual binaries
-make rune            # the editor (bin/rune)
-make rune-agent      # the agent extension binary (bin/rune-agent)
-
-# testing and code quality
-make test            # run the test suite with the race detector
-make test-e2e        # also run the e2e suites (requires docker)
-make test-no-race    # run the test suite without the race detector
-make coverage        # generate a coverage report
-make lint            # run golangci-lint
-make format          # run go fmt
-make generate        # regenerate generated files (protobufs, mocks, docs)
-
-# license headers
-make license         # add the license header to files that are missing one
-make assert_license  # fail if any file is missing the canonical header
+$ docker logs -f rune  # prints the sign-in code
 ```
 
-The remaining targets (`dist`, `release`, `rune-dmg*`, `*-docker-*`,
-`*-notarize`, `*-dist*`) drive Unstable Build's internal
-release, packaging, and cloud deployment pipelines and are not expected to
-work outside that environment.
+`--hostname` is the name the node joins the network under, so from any of your machines
+`workspaceopen rune://devpod/home/rune/projects` opens the mounted projects.
+
+The [headless guide](https://docs.rune.build/learn/headless) covers running the node as a
+service under systemd, launchd, OpenRC, or runit, and adding toolchains to the Docker image.
 
 ## Contributing
 

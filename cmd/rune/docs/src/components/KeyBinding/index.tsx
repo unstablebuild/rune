@@ -29,16 +29,20 @@ function commandMatches(value: BindingValue, command: BindingValue): boolean {
 
 export interface KeyBindingProps {
   command: BindingValue;
+  // Renders only this chord, for text about one specific chord. The
+  // chord still renders as unbound when the preset moves it off command.
+  chord?: string;
 }
 
-export default function KeyBinding({command}: KeyBindingProps): React.ReactNode {
+export default function KeyBinding({command, chord}: KeyBindingProps): React.ReactNode {
   const {siteConfig} = useDocusaurusContext();
   const data = siteConfig.customFields?.keybindings as unknown as KeybindingData;
   const {preset, platform} = useEditorSelection();
   const presetData = data[preset][platform];
   const bindings = presetData.key_bindings;
   const keys = Object.entries(bindings)
-    .filter(([, value]) => commandMatches(value, command))
+    .filter(([key, value]) => (chord === undefined || key === chord) &&
+      commandMatches(value, command))
     .map(([key]) => key);
 
   if (keys.length === 0) {

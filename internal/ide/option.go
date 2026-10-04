@@ -163,6 +163,16 @@ func WithScheme(scheme string, fn schemeapi.SchemeFunc) Option {
 	}
 }
 
+// WithShellRCDir makes terminal shells in file workspaces load the dotfiles
+// in dir, as installed by workspace.InstallShellRC. The dotfiles bind the
+// keys that terminal modal mode sends to the shell; without this option,
+// shells load only the user's own dotfiles.
+func WithShellRCDir(dir string) Option {
+	return func(opts *options) {
+		opts.shellRCDir = dir
+	}
+}
+
 // WithConfigFilename defines the base filename of the IDE configuration
 // to be expected in a workspace's directory.
 func WithConfigFilename(filename string) Option {
@@ -279,15 +289,6 @@ func WithScheduleNextTick(scheduleFn func(func()) bool) Option {
 func WithCellPixelSize(cellPixelSize func() (width, height int)) Option {
 	return func(opts *options) {
 		opts.cellPixelSize = cellPixelSize
-	}
-}
-
-// WithZdotDir sets the starting zsh directory configuration file via env ZDOTDIR
-// when zsh is used as the default shell, or is passed via config (terminal.shell)
-// as "zsh", rather than with the proper flags (-i, --login, etc.).
-func WithZdotDir(dir string) Option {
-	return func(opts *options) {
-		opts.zdotDir = dir
 	}
 }
 
@@ -508,6 +509,7 @@ type options struct {
 	dispatchOnPreview    map[string]previewFunc
 	extensions           map[string]Extension
 	schemes              map[string]schemeapi.SchemeFunc
+	shellRCDir           string
 	workspaceConfig      string
 	defaultWallpaper     browser.Wallpaper
 	defaultConfig        string
@@ -536,7 +538,6 @@ type options struct {
 	openShaderFn           func(term.Attributes) shader.Shader
 	openShaderFPS          int
 	openShaderDuration     time.Duration
-	zdotDir                string
 	starlarkTutorials      map[string]string
 	tutorialPlaylist       []TutorialPlaylistItem
 	startingTutorial       string

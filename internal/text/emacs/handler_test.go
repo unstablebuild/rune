@@ -1253,6 +1253,28 @@ func TestEmacsMetaPunctuationSemantics(t *testing.T) {
 	})
 }
 
+// TestEmacsLeavesCtrlAltSuperToRune pins that the editor declines C-M- chords
+// with Super also held, so the Linux emacs preset's window resize on
+// <ctrl-alt-meta-p/b/n/f> is not taken as C-M-p/b/n/f.
+func TestEmacsLeavesCtrlAltSuperToRune(t *testing.T) {
+	uri, err := workspaceapi.ParseURI("memory:///resize.go")
+	require.NoError(t, err)
+	for _, ch := range []rune{'p', 'b', 'n', 'f'} {
+		t.Run(string(ch), func(t *testing.T) {
+			buf := cell.NewBuffer()
+			buf.ReadFrom(strings.NewReader("(a)\n(b)\n(c)"))
+			h := NewHandler(buf, uri, text.IndentRuneTab, 0)
+			h.Resize(80, 10)
+			at := term.Coordinates{Y: 1, X: 1}
+			require.True(t, h.SetCursorAtScroll(at))
+			_, handled := h.Handle(term.Event{Type: term.EventKey,
+				Mod: term.ModCtrl | term.ModAlt | term.ModMeta, Ch: ch})
+			assert.False(t, handled, "Ctrl+Alt+Super+%c belongs to Rune", ch)
+			assert.Equal(t, at, h.CursorAtScroll())
+		})
+	}
+}
+
 // TestEmacsGotoLine covers M-g g (go-to-line): the two-key Meta prefix opens an
 // echo-area prompt that reads a one-based line number and moves point there.
 func TestEmacsGotoLine(t *testing.T) {

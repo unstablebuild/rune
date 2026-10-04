@@ -280,7 +280,7 @@ func TestNetworkHandleNeedsLogin(t *testing.T) {
 		*network, *networkPrompter, *int,
 	) {
 		t.Helper()
-		net := newNetwork(config.NopConfig(), t.TempDir(), newNetworkGate(api))
+		net := newNetwork(config.NopConfig(), t.TempDir(), "", newNetworkGate(api))
 		t.Cleanup(func() { _ = net.Close() })
 		prompts := 0
 		return net, &networkPrompter{
@@ -332,7 +332,7 @@ func TestNetworkHandleNeedsLogin(t *testing.T) {
 func TestGatedNetworkMachineNames(t *testing.T) {
 	newGated := func(t *testing.T, api *stubNetworkAPI) (gatedNetwork, *int) {
 		t.Helper()
-		net := newNetwork(config.NopConfig(), t.TempDir(), newNetworkGate(api))
+		net := newNetwork(config.NopConfig(), t.TempDir(), "", newNetworkGate(api))
 		t.Cleanup(func() { _ = net.Close() })
 		prompts := 0
 		return gatedNetwork{n: net, prompter: &networkPrompter{
@@ -378,7 +378,7 @@ func TestGatedNetworkMachineNames(t *testing.T) {
 func TestNetworkNilDependenciesPanic(t *testing.T) {
 	assert.Panics(t, func() { newNetworkGate(nil) })
 	assert.Panics(t, func() {
-		newNetwork(config.NopConfig(), t.TempDir(), nil)
+		newNetwork(config.NopConfig(), t.TempDir(), "", nil)
 	})
 	assert.Panics(t, func() {
 		newNetworkPrompter(nil, func(func()) bool { return true })
@@ -404,7 +404,7 @@ func TestNewNetworkAlwaysAssembles(t *testing.T) {
 	}
 	for _, tcase := range tsuite {
 		t.Run(tcase.name, func(t *testing.T) {
-			net := newNetwork(config.MapConfig(tcase.cfg), t.TempDir(),
+			net := newNetwork(config.MapConfig(tcase.cfg), t.TempDir(), "",
 				newNetworkGate(&stubNetworkAPI{}))
 			t.Cleanup(func() { _ = net.Close() })
 			require.NotNil(t, net.node)

@@ -408,7 +408,7 @@ func TestRuneStarAsDefaultConfig(t *testing.T) {
 			modal: true,
 			tui:   false,
 		},
-		term.RingBell, term.ScheduleNextTick, ""))
+		term.RingBell, term.ScheduleNextTick))
 	assert.Equal(t, "vim", cfg.editorMode())
 	assert.False(t, cfg.editorAutoPair())
 	assert.False(t, cfg.editorAutoSave())
@@ -615,7 +615,7 @@ func TestLoadConfigStarUserOverlayPreservesEmbeddedRuneStar(t *testing.T) {
 			modal: true,
 			tui:   false,
 		},
-		term.RingBell, term.ScheduleNextTick, ""))
+		term.RingBell, term.ScheduleNextTick))
 
 	assert.Equal(t, "debug", cfg.cfg["log_level"])
 	// Defaults from cmd/rune/rune.star survive the top-level rebind.
@@ -714,7 +714,7 @@ func TestHelixPresetLoads(t *testing.T) {
 	var cfg ideConfig
 	require.NoError(t, loadConfig(&cfg, path, browser.NopWallpaper(),
 		DefaultConfig{src: string(readRuneStar(t)), modal: true},
-		term.RingBell, term.ScheduleNextTick, ""))
+		term.RingBell, term.ScheduleNextTick))
 
 	aliases, err := cfg.parseAliasCommands()
 	require.NoError(t, err)
@@ -872,7 +872,7 @@ config["editor"]["modal"]["message_bar"] = {"attr": {"fg": "white", "bg": "navy"
 		var cfg ideConfig
 		require.NoError(t, loadConfig(&cfg, userPath, browser.NopWallpaper(),
 			DefaultConfig{src: string(runeStar), modal: true},
-			term.RingBell, term.ScheduleNextTick, ""))
+			term.RingBell, term.ScheduleNextTick))
 		if ws.name == "" {
 			return cfg
 		}
@@ -932,7 +932,7 @@ func TestVimSettingsSectionMalformed(t *testing.T) {
 			var cfg ideConfig
 			require.NoError(t, loadConfig(&cfg, path, browser.NopWallpaper(),
 				DefaultConfig{src: string(runeStar), modal: true},
-				term.RingBell, term.ScheduleNextTick, ""))
+				term.RingBell, term.ScheduleNextTick))
 			cfg.vimAttr()
 			if tt.wantErr {
 				assert.Error(t, cfg.errors[editorSectionVim])

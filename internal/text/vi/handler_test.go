@@ -2266,7 +2266,7 @@ func TestViOperatorCounts(t *testing.T) {
 			name:        "2cw changes two words",
 			content:     "one two three four",
 			seq:         "2cw",
-			wantContent: "three four",
+			wantContent: " three four",
 			wantMode:    insertMode,
 		},
 		{
@@ -2450,6 +2450,79 @@ func TestViWordMotionEmptyLines(t *testing.T) {
 	}
 }
 
+// cw changes to the end of the word like ce, keeping the whitespace after
+// the word. On a blank it falls back to the plain w motion.
+func TestViChangeWord(t *testing.T) {
+	col := func(x int) term.Coordinates {
+		return term.Coordinates{X: x}
+	}
+	for _, tc := range []struct {
+		name        string
+		content     string
+		seq         string
+		wantScroll  term.Coordinates
+		wantContent string
+		wantMode    viMode
+	}{
+		{name: "cw keeps the space after the word", wantMode: insertMode, content: "one two", seq: "cw", wantContent: " two"},
+		{name: "cw mid-word keeps the space after the word", wantMode: insertMode, content: "one two", seq: "lcw", wantContent: "o two", wantScroll: col(1)},
+		{name: "cw at a word end changes that cell only", wantMode: insertMode, content: "one two", seq: "llcw", wantContent: "on two", wantScroll: col(2)},
+		{name: "cw at a word end does not reach the next line", wantMode: insertMode, content: "one\ntwo", seq: "llcw", wantContent: "on\ntwo", wantScroll: term.Coordinates{X: 2}},
+		{name: "cw at end of the last word in buffer changes that cell", wantMode: insertMode, content: "one", seq: "llcw", wantContent: "on", wantScroll: col(2)},
+		{name: "cw on a single-letter word keeps the space", wantMode: insertMode, content: "a b c", seq: "cw", wantContent: " b c"},
+		{name: "cw on a blank between words changes the blanks", wantMode: insertMode, content: "one  two", seq: "lllcw", wantContent: "onetwo", wantScroll: col(3)},
+		{name: "cw on blanks before line end keeps the line", wantMode: insertMode, content: "one  \ntwo", seq: "lllcw", wantContent: "one\ntwo", wantScroll: col(3)},
+		{name: "c2w changes through the second word end", wantMode: insertMode, content: "one two three four", seq: "c2w", wantContent: " three four"},
+		{name: "c2w counts a word end under the cursor", wantMode: insertMode, content: "one two three", seq: "llc2w", wantContent: "on three", wantScroll: col(2)},
+		{name: "cW keeps the space after the WORD", wantMode: insertMode, content: "one, two", seq: "cW", wantContent: " two"},
+		{name: "cW on a blank changes the blanks", wantMode: insertMode, content: "one  two", seq: "lllcW", wantContent: "onetwo", wantScroll: col(3)},
+
+		// Vim splits a word on the word-rune/punctuation boundary, so each
+		// punctuation run is its own word.
+		{name: "cw before a punctuation word stops before it", wantMode: insertMode, content: "a$b x", seq: "cw", wantContent: "$b x"},
+		{name: "c2w over a punctuation word keeps the next word", wantMode: insertMode, content: "a$b x", seq: "c2w", wantContent: "b x"},
+		{name: "c2w changes a word plus the following punctuation", wantMode: insertMode, content: "ab$ x", seq: "c2w", wantContent: " x"},
+		{name: "cw on a punctuation run changes the run", wantMode: insertMode, content: "a++b x", seq: "lcw", wantContent: "ab x", wantScroll: col(1)},
+		{name: "cW treats punctuation as part of the WORD", wantMode: insertMode, content: "a-b c", seq: "cW", wantContent: " c"},
+		{name: "cw keeps the underscore inside the word", wantMode: insertMode, content: "foo_bar x", seq: "cw", wantContent: " x"},
+
+		// Counted cw crossing empty lines lands on the word end, not the word
+		// start: an inserted X proves the exact range without relying on the
+		// empty-buffer default.
+		{name: "c2w crosses an empty line to the next word end", wantMode: insertMode, content: "one\n\ntwo", seq: "c2wX", wantContent: "X", wantScroll: col(1)},
+		{name: "cw keeps the tab after the word", wantMode: insertMode, content: "a\tb", seq: "cw", wantContent: "\tb"},
+		{name: "cw keeps a wide rune inside the word", wantMode: insertMode, content: "a字b x", seq: "cw", wantContent: " x"},
+		{name: "cw stops before a null cell", wantMode: insertMode, content: "a\x00b x", seq: "cw", wantContent: "\x00b x"},
+		{name: "c9w past the last word changes to the buffer end", wantMode: insertMode, content: "one two", seq: "c9wX", wantContent: "X", wantScroll: col(1)},
+
+		{name: "dw still consumes the space after the word", content: "one two", seq: "dw", wantContent: "two"},
+		{name: "yw still yanks the space after the word", content: "one two", seq: "yw", wantContent: "one two"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vi := setupVi(t, tc.content, 2)
+			vi.Resize(80, 8)
+			vi.Draw(term.NoopWriter{})
+
+			for _, eventChar := range tc.seq {
+				_, handled := vi.Handle(term.Event{Type: term.EventKey, Ch: eventChar})
+				require.True(t, handled, "event %q", eventChar)
+			}
+
+			wantContent := tc.wantContent
+			if wantContent == "" {
+				wantContent = tc.content
+			}
+			assert.Equal(t, wantContent, vi.less.Buffer().String())
+			assert.Equal(t, tc.wantScroll, vi.cursor.CursorAtScroll())
+			wantMode := tc.wantMode
+			if wantMode == 0 {
+				wantMode = normalMode
+			}
+			assert.Equal(t, wantMode, vi.mode())
+		})
+	}
+}
+
 func TestViCountedOperatorScenarios(t *testing.T) {
 	type testCase struct {
 		name           string
@@ -2488,12 +2561,12 @@ func TestViCountedOperatorScenarios(t *testing.T) {
 		{name: "2d2w multiplies operator and motion counts", content: "one two three four five", seq: "2d2w", wantContent: "five", wantScroll: coord(0, 0)},
 		{name: "2de deletes through second word end", content: "one two three", seq: "2de", wantContent: " three", wantScroll: coord(0, 0)},
 		{name: "d2e deletes through second word end", content: "one two three", seq: "d2e", wantContent: " three", wantScroll: coord(0, 0)},
-		{name: "2cw changes two words", content: "one two three four", seq: "2cw", wantContent: "three four", wantMode: insertMode, wantScroll: coord(0, 0)},
-		{name: "c2w changes two words", content: "one two three four", seq: "c2w", wantContent: "three four", wantMode: insertMode, wantScroll: coord(0, 0)},
-		{name: "2c2w changes four words", content: "one two three four five", seq: "2c2w", wantContent: "five", wantMode: insertMode, wantScroll: coord(0, 0)},
+		{name: "2cw changes two words", content: "one two three four", seq: "2cw", wantContent: " three four", wantMode: insertMode, wantScroll: coord(0, 0)},
+		{name: "c2w changes two words", content: "one two three four", seq: "c2w", wantContent: " three four", wantMode: insertMode, wantScroll: coord(0, 0)},
+		{name: "2c2w changes four words", content: "one two three four five", seq: "2c2w", wantContent: " five", wantMode: insertMode, wantScroll: coord(0, 0)},
 		{name: "wrap 2dw deletes two words", content: "one two three four", seq: "2dw", wrap: true, width: 5, wantContent: "three four", wantScroll: coord(0, 0)},
 		{name: "wrap d2w deletes two words", content: "one two three four", seq: "d2w", wrap: true, width: 5, wantContent: "three four", wantScroll: coord(0, 0)},
-		{name: "wrap 2cw changes two words", content: "one two three four", seq: "2cw", wrap: true, width: 5, wantContent: "three four", wantMode: insertMode, wantScroll: coord(0, 0)},
+		{name: "wrap 2cw changes two words", content: "one two three four", seq: "2cw", wrap: true, width: 5, wantContent: " three four", wantMode: insertMode, wantScroll: coord(0, 0)},
 
 		// Counted character-find motions in operator-pending mode.
 		{name: "d2fx deletes through second x", content: "ax bx cx", seq: "d2fx", wantContent: " cx", wantScroll: coord(0, 0)},
@@ -2513,7 +2586,7 @@ func TestViCountedOperatorScenarios(t *testing.T) {
 		{name: "d2w from indented word over empty line deletes linewise", content: "  one\n\ntwo", seq: "wd2w", wantContent: "two", wantScroll: coord(0, 0)},
 		{name: "d2w from line end over empty line joins lines", content: "one\n\ntwo", seq: "$d2w", wantContent: "on\ntwo", wantScroll: coord(1, 0)},
 		{name: "c2w over two empty lines keeps one line", content: "\n\nthree", seq: "c2wX", wantContent: "X\nthree", wantMode: insertMode, wantScroll: coord(1, 0)},
-		{name: "c2w from indented word over empty line keeps indent", content: "  one\n\ntwo", seq: "wc2wX", wantContent: "  X\ntwo", wantMode: insertMode, wantScroll: coord(3, 0)},
+		{name: "c2w from indented word over empty line keeps indent", content: "  one\n\ntwo", seq: "wc2wX", wantContent: "  X", wantMode: insertMode, wantScroll: coord(3, 0)},
 		{name: "y2w over two empty lines yanks linewise", content: "\n\nthree", seq: "y2w", wantClipboard: true, clipboardText: "\n\n", clipboardMode: text.LineSelection, wantScroll: coord(0, 0)},
 		{name: "y2w from line end over empty line yanks through newline", content: "one\n\ntwo", seq: "$y2w", wantClipboard: true, clipboardText: "e\n", clipboardMode: text.StandardSelection, wantScroll: coord(2, 0)},
 
@@ -2537,8 +2610,11 @@ func TestViCountedOperatorScenarios(t *testing.T) {
 		// Boundary and no-op operator paths.
 		{name: "2dw in empty buffer is a no-op", content: "", seq: "2dw", wantScroll: coord(0, 0), allowUnhandled: true},
 		{name: "2yy in empty buffer is a no-op", content: "", seq: "2yy", wantScroll: coord(0, 0)},
+		{name: "cw in empty buffer is a no-op", content: "", seq: "cw", wantScroll: coord(0, 0), allowUnhandled: true},
 		{name: "2dw from past last column does not edit", content: "one two", seq: "2dw", setup: pastLastColumn, wantScroll: coord(len("one two")-1, 0), allowUnhandled: true},
 		{name: "2dw from past last line does not edit", content: "one two", seq: "2dw", setup: pastLastLine, wantScroll: coord(0, 10), allowUnhandled: true},
+		{name: "cw from past last column clamps and changes the last cell", content: "one two", seq: "cw", setup: pastLastColumn, wantContent: "one tw", wantMode: insertMode, wantScroll: coord(len("one two")-1, 0), allowUnhandled: true},
+		{name: "cw from past last line does not edit", content: "one two", seq: "cw", setup: pastLastLine, wantScroll: coord(0, 10), allowUnhandled: true},
 	}
 
 	for _, tc := range cases {
@@ -3407,7 +3483,7 @@ diff_buf_adjust(win_
 			`                    
 /*                  
  * Check if the curr
- * ▐uffers.         
+ * ▐buffers.        
  */                 
   void              
 diff_buf_adjust(win_

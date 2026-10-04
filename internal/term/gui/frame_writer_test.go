@@ -738,15 +738,15 @@ func (s *frameScreen) Flush() error {
 			screen[y][x] = grapheme(c)
 		}
 	}
-	bounds := cellRectToPixels(image.Rect(0, 0, s.width, s.height), s.fonts, 0, 0)
+	bounds := cellRectToPixels(image.Rect(0, 0, s.width, s.height), s.fonts)
 	for _, img := range s.Images() {
-		p, ok := resolvePlacement(img, s.fonts, 0, 0, bounds)
+		p, ok := resolvePlacement(img, s.fonts, bounds)
 		if !ok {
 			continue
 		}
 		for y := range screen {
 			for x := range screen[y] {
-				px := cellRectToPixels(image.Rect(x, y, x+1, y+1), s.fonts, 0, 0)
+				px := cellRectToPixels(image.Rect(x, y, x+1, y+1), s.fonts)
 				center := px.Min.Add(px.Size().Div(2))
 				if !center.In(p.clip) {
 					continue

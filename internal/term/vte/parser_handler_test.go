@@ -17,9 +17,6 @@
 package vte
 
 import (
-	"bytes"
-	"encoding/base64"
-	"fmt"
 	"strconv"
 	"sync"
 	"testing"
@@ -500,36 +497,6 @@ func TestIntegrationParserHandler(t *testing.T) {
 			},
 		},
 		{
-			desc:      "unknown clipboard does nothing",
-			altBuffer: false,
-			sut: func(t *testing.T, p *parserHandler, tm *mockTabManager, pty *workspacetest.File) {
-				p.Resize(5, 5)
-
-				data := base64Data(t, "1234\n5678@hello")
-
-				p.ClipboardStore(1, data)
-				p.ClipboardLoad(1, "TERM")
-				require.Len(t, pty.Writes, 0)
-			},
-		},
-		{
-			desc:      "clipboard load/store",
-			altBuffer: false,
-			sut: func(t *testing.T, p *parserHandler, tm *mockTabManager, pty *workspacetest.File) {
-				p.Resize(5, 5)
-
-				data := base64Data(t, "1234\n5678@hello")
-
-				p.ClipboardStore(int('c'), data)
-
-				p.ClipboardLoad(int('p'), "TERM")
-				require.Len(t, pty.Writes, 0)
-
-				p.ClipboardLoad(int('c'), "TERM")
-				assertWriteToPty(t, pty, fmt.Sprintf("\x1b]52;c;%sTERM", data))
-			},
-		},
-		{
 			desc:      "sh ls usage of put tab",
 			altBuffer: false,
 			sut: func(t *testing.T, p *parserHandler, tm *mockTabManager, pty *workspacetest.File) {
@@ -856,15 +823,6 @@ func assertWriteToPty(t *testing.T, pty *workspacetest.File, data string) {
 	t.Helper()
 	require.Len(t, pty.Writes, 1)
 	assert.Equal(t, string(pty.Writes[0]), data)
-}
-
-func base64Data(t *testing.T, data string) []byte {
-	var buf bytes.Buffer
-	e := base64.NewEncoder(base64.StdEncoding, &buf)
-	_, err := e.Write([]byte(data))
-	require.NoError(t, err)
-	require.NoError(t, e.Close())
-	return buf.Bytes()
 }
 
 type mockTabManager struct {

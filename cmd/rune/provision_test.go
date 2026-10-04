@@ -83,8 +83,7 @@ func TestLoadRemoteConfigAppliesGUIEnvAfterInstall(t *testing.T) {
 	setFlagForTest(t, flagDataPath, dataDir)
 
 	cwd, uri := newTestFileScheme(t, t.TempDir())
-	cfg := loadRemoteConfigAndApplyEnv(cwd, uri)
-	require.NotNil(t, cfg)
+	loadRemoteConfigAndApplyEnv(cwd, uri)
 
 	assert.Equal(t, envVal, os.Getenv(envKey),
 		"gui.env from the remote config must be applied to the process env")

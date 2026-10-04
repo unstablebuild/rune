@@ -40,6 +40,7 @@ import (
 	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/tsnet"
+	"unstable.build/rune/auth"
 	"unstable.build/rune/internal/debug"
 )
 
@@ -496,15 +497,27 @@ func (n *Node) client() (*local.Client, error) {
 
 // Listen accepts mesh connections on the configured port.
 func (n *Node) Listen() (net.Listener, error) {
+	return n.ListenPort(n.cfg.Port)
+}
+
+// ListenPort accepts mesh connections on port. Like [Node.Listen], the
+// listener is only reachable from the mesh.
+func (n *Node) ListenPort(port int) (net.Listener, error) {
 	if _, err := n.client(); err != nil {
 		return nil, err
 	}
-	return n.srv.Listen("tcp", fmt.Sprintf(":%d", n.cfg.Port))
+	return n.srv.Listen("tcp", fmt.Sprintf(":%d", port))
 }
 
 // Dial opens a connection to host's workspace port. host is either a
 // peer name as reported by [Node.Peers] or a mesh IP address.
 func (n *Node) Dial(ctx context.Context, host string) (net.Conn, error) {
+	return n.DialPort(ctx, host, n.cfg.Port)
+}
+
+// DialPort opens a connection to port on host, which is named as for
+// [Node.Dial].
+func (n *Node) DialPort(ctx context.Context, host string, port int) (net.Conn, error) {
 	if _, err := n.client(); err != nil {
 		return nil, err
 	}
@@ -513,7 +526,7 @@ func (n *Node) Dial(ctx context.Context, host string) (net.Conn, error) {
 		return nil, err
 	}
 	return n.srv.Dial(ctx, "tcp",
-		net.JoinHostPort(addr.String(), fmt.Sprint(n.cfg.Port)))
+		net.JoinHostPort(addr.String(), fmt.Sprint(port)))
 }
 
 // resolve maps a peer name to a mesh address. Names are resolved
@@ -609,13 +622,31 @@ func (n *Node) status(ctx context.Context) (*ipnstate.Status, error) {
 	return st, nil
 }
 
-// selfLoginName is the account that owns the local node. It is empty
+// selfLoginName is the account the local node belongs to. It is empty
 // until the node has logged in.
 func selfLoginName(st *ipnstate.Status) string {
 	if st.Self == nil {
 		return ""
 	}
-	return st.User[st.Self.UserID].LoginName
+	var tags []string
+	if st.Self.Tags != nil {
+		tags = st.Self.Tags.AsSlice()
+	}
+	return accountOf(st.User[st.Self.UserID].LoginName, tags)
+}
+
+// accountOf is the account a machine reported as owned by login and
+// carrying tags belongs to. The coordination server files every tagged
+// machine under one placeholder owner, so a serve-only machine's
+// account is the one its serve tag names. A tagged machine without a
+// serve tag keeps the placeholder, which no account's login matches.
+func accountOf(login string, tags []string) string {
+	for _, tag := range tags {
+		if name, ok := strings.CutPrefix(tag, auth.ServeTagPrefix); ok && name != "" {
+			return name
+		}
+	}
+	return login
 }
 
 // selfMachineID is the id the coordination server knows the local node

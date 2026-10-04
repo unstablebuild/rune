@@ -53,3 +53,32 @@ func TestBarsFromContext(t *testing.T) {
 		assert.Equal(t, want, got)
 	})
 }
+
+func TestAutoCenterDisabled(t *testing.T) {
+	suite := []struct {
+		desc string
+		ctx  context.Context
+		want bool
+	}{
+		{desc: "plain context", ctx: context.Background()},
+		{
+			desc: "marked",
+			ctx:  WithoutAutoCenter(context.Background()),
+			want: true,
+		},
+		{
+			desc: "independent of bars",
+			ctx:  WithBars(WithoutAutoCenter(context.Background()), BarOptions{}),
+			want: true,
+		},
+		{
+			desc: "bars do not disable it",
+			ctx:  WithBars(context.Background(), BarOptions{}),
+		},
+	}
+	for _, tc := range suite {
+		t.Run(tc.desc, func(t *testing.T) {
+			assert.Equal(t, tc.want, AutoCenterDisabled(tc.ctx))
+		})
+	}
+}

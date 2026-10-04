@@ -193,7 +193,9 @@ command:
     "<ctrl-meta-->": "guifontsize decrease"
     "<meta-c>": "clipboardcopy"
     "<meta-v>": "clipboardpaste"
-    # Windows: hjkl focuses, <ctrl> moves.
+    # Windows: hjkl focuses, <ctrl> moves, <ctrl-shift> resizes. Resize
+    # stays off <shift-meta>, whose J and K are Helix's own A-J and A-K
+    # when <meta> is Alt. The default split takes Helix's s and v.
     "<meta-n>": "windownew"
     "<meta-h>": "windowfocus left"
     "<meta-j>": "windowfocus down"
@@ -203,9 +205,13 @@ command:
     "<ctrl-meta-j>": "windowmove down"
     "<ctrl-meta-k>": "windowmove up"
     "<ctrl-meta-l>": "windowmove right"
+    "<ctrl-shift-meta-h>": "windowresize decrease width"
+    "<ctrl-shift-meta-j>": "windowresize decrease height"
+    "<ctrl-shift-meta-k>": "windowresize increase height"
+    "<ctrl-shift-meta-l>": "windowresize increase width"
     "<meta-w>": "windowclose"
     "<shift-meta-f>": "windowtogglemaximize"
-    "<ctrl-shift-meta-h>": "windowdefaultsplit h"
+    "<ctrl-shift-meta-s>": "windowdefaultsplit h"
     "<ctrl-shift-meta-v>": "windowdefaultsplit v"
     "<ctrl-shift-meta-backspace>": "windowresize reset"
     "<ctrl-shift-meta-+>": ["windowresize max width", "windowresize max height"]

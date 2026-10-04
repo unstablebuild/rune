@@ -431,6 +431,20 @@ func (c *Component) SetTabIcon(uri workspaceapi.URI, icon rune) bool {
 	return false
 }
 
+// SetTabIconAttr layers attr over the focus-dependent icon attributes
+// of the tab with the given uri for as long as the tab is open; colors
+// left at term.ColorDefault keep the configured ones. It returns false
+// if there's no tab with the given uri.
+func (c *Component) SetTabIconAttr(uri workspaceapi.URI, attr term.Attributes) bool {
+	t, ok := c.Tab(uri)
+	if !ok {
+		return false
+	}
+	t.iconAttr = attr
+	c.dirtyTabs = true
+	return true
+}
+
 // ResetTabIcon resets the icon of the tab with the given uri to the
 // last icon set via SetTabDefaultIcon or, if none, the icon the tab
 // was created with (after any Config.TabOverrideIcon override).
@@ -847,7 +861,7 @@ func (c *Component) Draw(w term.Writer) {
 	if c.dirtyTabs {
 		c.tabs.ResetFocus()
 		for id, t := range c.buffers {
-			c.tabs.SetIconAttr(id, c.nonFocusTabIconAttr())
+			c.tabs.SetIconAttr(id, term.AttributesUnion(c.nonFocusTabIconAttr(), t.iconAttr))
 			if !t.free {
 				c.tabs.SetFocus(id)
 			}
@@ -864,7 +878,7 @@ func (c *Component) Draw(w term.Writer) {
 				if ok {
 					// reset tab override attributes
 					id := c.mustFindTabID(t)
-					c.tabs.SetIconAttr(id, c.focusTabIconAttr())
+					c.tabs.SetIconAttr(id, term.AttributesUnion(c.focusTabIconAttr(), t.iconAttr))
 					c.tabs.SetFocus(id)
 				}
 			}

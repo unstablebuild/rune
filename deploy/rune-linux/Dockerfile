@@ -187,19 +187,14 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 	echo "--- bundled libraries ---"; \
 	ls -la /out/rune.app/lib/ || true
 
-# Bundle .desktop file, icons, and zdot files into the app directory.
+# Bundle .desktop file and icons into the app directory.
 RUN set -eux; \
 	mkdir -p /out/rune.app/share/applications \
 		/out/rune.app/share/icons/hicolor/512x512/apps \
-		/out/rune.app/share/icons/hicolor/1024x1024/apps \
-		/out/rune.app/share/zdot; \
+		/out/rune.app/share/icons/hicolor/1024x1024/apps; \
 	cp /src/deploy/rune-linux/rune.desktop /out/rune.app/share/applications/rune.desktop; \
 	cp /src/extra/icon.iconset/icon_512x512.png /out/rune.app/share/icons/hicolor/512x512/apps/rune.png; \
-	cp /src/extra/icon.iconset/icon_512x512@2x.png /out/rune.app/share/icons/hicolor/1024x1024/apps/rune.png; \
-	cp /src/extra/osx/Rune.app/Contents/Resources/zdot/.zlogin /out/rune.app/share/zdot/; \
-	cp /src/extra/osx/Rune.app/Contents/Resources/zdot/.zprofile /out/rune.app/share/zdot/; \
-	cp /src/extra/osx/Rune.app/Contents/Resources/zdot/.zshenv /out/rune.app/share/zdot/; \
-	cp /src/extra/osx/Rune.app/Contents/Resources/zdot/.zshrc /out/rune.app/share/zdot/
+	cp /src/extra/icon.iconset/icon_512x512@2x.png /out/rune.app/share/icons/hicolor/1024x1024/apps/rune.png
 
 # Package the Linux bundle inside the Linux container so host-specific metadata
 # such as macOS xattrs cannot be written into the release archive. Use ustar for

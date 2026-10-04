@@ -32,7 +32,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 )
@@ -51,7 +50,7 @@ func newTestFileScheme(uri workspaceapi.URI) (*fileScheme, error) {
 	ret.lookupUser = func(username string) (*user.User, error) {
 		return &user.User{Username: username, HomeDir: fmt.Sprintf("/home/%s", username)}, nil
 	}
-	err := ret.init(config.NopConfig(), uri)
+	err := ret.init(uri)
 	if err != nil {
 		return nil, err
 	}
@@ -467,104 +466,21 @@ func TestStartCommand(t *testing.T) {
 				"Cmds produce a usable login shell")
 	})
 
-	t.Run("empty Cmd.Path with zsh exports ZDOTDIR from config", func(t *testing.T) {
-		// The fileScheme reads zdotdir from the workspace config
-		// at init time. That keeps the resolution local to the
-		// host that will actually run the shell — for SSH
-		// workspaces the remote rune sees its own config, so the
-		// IDE host's ZDOTDIR doesn't leak across the wire.
-		tmpDir, err := os.MkdirTemp("", "")
-		require.NoError(t, err)
+	// The terminal's shell is covered by the vte's e2e tests, since it
+	// needs a controlling terminal.
+	t.Run("a login shell without a controlling terminal loads no bindings", func(t *testing.T) {
+		for _, shell := range []string{"zsh", "bash", "fish"} {
+			t.Run(shell, func(t *testing.T) {
+				s, dir := newShellFileScheme(t, "/rune/shellrc")
+				t.Setenv("ZDOTDIR", "")
+				t.Setenv("INPUTRC", "")
 
-		uri, err := workspaceapi.ParseURI("file://" + tmpDir)
-		require.NoError(t, err)
-
-		// Bypass newTestFileScheme so we can pass a non-nop config.
-		s := new(fileScheme)
-		s.osStat = os.Stat
-		s.getUser = func() (*user.User, error) {
-			return &user.User{Username: "git", HomeDir: "/home/git"}, nil
+				got := runShellCommand(t, s, dir, shell,
+					"#!/bin/sh\nprintf '%s %s %s' \"${ZDOTDIR:-unset}\" \"${INPUTRC:-unset}\" \"$*\"\n",
+					workspaceapi.Cmd{SysProcAttr: &syscall.SysProcAttr{Setsid: true}})
+				assert.Equal(t, "unset unset --login -i", got)
+			})
 		}
-		s.lookupUser = func(name string) (*user.User, error) {
-			return &user.User{Username: name, HomeDir: "/home/" + name}, nil
-		}
-		require.NoError(t, s.init(
-			config.MapConfig(map[string]any{"zdotdir": "/zdot/dir"}),
-			uri,
-		))
-
-		// We can't rely on zsh being installed in CI, so we point
-		// SHELL at a script named "zsh" (so filepath.Base of the
-		// resolved shell is "zsh") that just trampolines into
-		// /bin/sh. The fileScheme only injects ZDOTDIR when the
-		// resolved binary's basename matches "zsh", which is what
-		// we want to verify here.
-		bin := filepath.Join(tmpDir, "zsh")
-		require.NoError(t, os.WriteFile(bin,
-			[]byte("#!/bin/sh\nexec /bin/sh \"$@\"\n"), 0o755))
-		t.Setenv("SHELL", bin)
-
-		var stdout bytes.Buffer
-		ch := make(chan error)
-		ctx := context.Background()
-
-		cmd := workspaceapi.Cmd{
-			Args:    []string{"-c", "echo ZDOTDIR=$ZDOTDIR"},
-			Watcher: workspaceapi.ChanProcessWatcher(ch),
-			Stdout:  &stdout,
-		}
-
-		_, err = s.StartCommand(ctx, cmd)
-		require.NoError(t, err)
-		require.NoError(t, <-ch)
-
-		assert.Equal(t, "ZDOTDIR=/zdot/dir\n", stdout.String(),
-			"fileScheme should export ZDOTDIR when the resolved "+
-				"shell is zsh and zdotdir is set in config")
-	})
-
-	t.Run("empty Cmd.Path without zsh leaves ZDOTDIR untouched", func(t *testing.T) {
-		tmpDir, err := os.MkdirTemp("", "")
-		require.NoError(t, err)
-
-		uri, err := workspaceapi.ParseURI("file://" + tmpDir)
-		require.NoError(t, err)
-
-		s := new(fileScheme)
-		s.osStat = os.Stat
-		s.getUser = func() (*user.User, error) {
-			return &user.User{Username: "git", HomeDir: "/home/git"}, nil
-		}
-		s.lookupUser = func(name string) (*user.User, error) {
-			return &user.User{Username: name, HomeDir: "/home/" + name}, nil
-		}
-		require.NoError(t, s.init(
-			config.MapConfig(map[string]any{"zdotdir": "/zdot/dir"}),
-			uri,
-		))
-
-		t.Setenv("SHELL", "/bin/sh")
-		// Make sure the parent's ZDOTDIR is unset so the test
-		// only sees what fileScheme adds (or doesn't add).
-		t.Setenv("ZDOTDIR", "")
-
-		var stdout bytes.Buffer
-		ch := make(chan error)
-		ctx := context.Background()
-
-		cmd := workspaceapi.Cmd{
-			Args:    []string{"-c", "echo ZDOTDIR=${ZDOTDIR:-unset}"},
-			Watcher: workspaceapi.ChanProcessWatcher(ch),
-			Stdout:  &stdout,
-		}
-
-		_, err = s.StartCommand(ctx, cmd)
-		require.NoError(t, err)
-		require.NoError(t, <-ch)
-
-		assert.Equal(t, "ZDOTDIR=unset\n", stdout.String(),
-			"non-zsh shells must not receive the configured ZDOTDIR; "+
-				"got %q", stdout.String())
 	})
 
 	// Reproduces the bug from RUNE-184: a Cmd.Path beginning with ~
@@ -596,7 +512,7 @@ func TestStartCommand(t *testing.T) {
 		s.lookupUser = func(name string) (*user.User, error) {
 			return &user.User{Username: name, HomeDir: fakeHome}, nil
 		}
-		require.NoError(t, s.init(config.NopConfig(), uri))
+		require.NoError(t, s.init(uri))
 
 		var stdout bytes.Buffer
 		ch := make(chan error)
@@ -982,6 +898,107 @@ func TestReadFileClosesFile(t *testing.T) {
 	}
 }
 
+func TestFileSchemeWithShellRC(t *testing.T) {
+	fishInit := []string{"-C", FishInitCommand}
+	for _, tc := range []struct {
+		name       string
+		shellRCDir string
+		cmd        workspaceapi.Cmd
+		want       workspaceapi.Cmd
+	}{
+		{
+			name: "zsh", shellRCDir: "/rune/shellrc",
+			cmd:  workspaceapi.Cmd{Path: "/bin/zsh", Args: []string{"-l"}},
+			want: workspaceapi.Cmd{Path: "/bin/zsh", Args: []string{"-l"}, Env: []string{"ZDOTDIR=/rune/shellrc"}},
+		},
+		{
+			name: "bash", shellRCDir: "/rune/shellrc",
+			cmd:  workspaceapi.Cmd{Path: "bash"},
+			want: workspaceapi.Cmd{Path: "bash", Env: []string{"INPUTRC=/rune/shellrc/inputrc"}},
+		},
+		{
+			name: "fish", shellRCDir: "/rune/shellrc",
+			cmd:  workspaceapi.Cmd{Path: "fish"},
+			want: workspaceapi.Cmd{Path: "fish", Args: fishInit},
+		},
+		{
+			name: "fish with args", shellRCDir: "/rune/shellrc",
+			cmd:  workspaceapi.Cmd{Path: "/usr/bin/fish", Args: []string{"--login", "-i"}},
+			want: workspaceapi.Cmd{Path: "/usr/bin/fish", Args: append(fishInit, "--login", "-i")},
+		},
+		{
+			// fish's bindings don't come from the directory
+			name: "fish without a directory",
+			cmd:  workspaceapi.Cmd{Path: "fish"},
+			want: workspaceapi.Cmd{Path: "fish", Args: fishInit},
+		},
+		{
+			name: "zsh without a directory",
+			cmd:  workspaceapi.Cmd{Path: "zsh"},
+			want: workspaceapi.Cmd{Path: "zsh"},
+		},
+		{
+			name: "bash without a directory",
+			cmd:  workspaceapi.Cmd{Path: "bash"},
+			want: workspaceapi.Cmd{Path: "bash"},
+		},
+		{
+			name: "another shell", shellRCDir: "/rune/shellrc",
+			cmd:  workspaceapi.Cmd{Path: "/bin/sh", Args: []string{"-i"}},
+			want: workspaceapi.Cmd{Path: "/bin/sh", Args: []string{"-i"}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &fileScheme{shellRCDir: tc.shellRCDir}
+			assert.Equal(t, tc.want, p.withShellRC(tc.cmd))
+		})
+	}
+}
+
+func TestInstallShellRC(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		prev string // directory a previous release left in the data dir
+	}{
+		{"fresh data dir", ""},
+		{"previous shellrc", "shellrc"},
+		// releases before bash shared the directory used zdot
+		{"previous zdot", "zdot"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dataDir := t.TempDir()
+			if tc.prev != "" {
+				prevDir := filepath.Join(dataDir, tc.prev)
+				require.NoError(t, os.Mkdir(prevDir, 0o755))
+				require.NoError(t, os.WriteFile(filepath.Join(prevDir, ".zshrc"), []byte("# stale\n"), 0o644))
+				require.NoError(t, os.WriteFile(filepath.Join(prevDir, ".zsh_history"), []byte("state"), 0o600))
+			}
+
+			dir, err := InstallShellRC(dataDir)
+			require.NoError(t, err)
+			assert.Equal(t, filepath.Join(dataDir, "shellrc"), dir)
+			assertShellRCWritten(t, dir)
+			if tc.prev != "" {
+				// zsh keeps state beside the dotfiles, such as the history
+				// macOS's /etc/zshrc puts in ZDOTDIR.
+				got, err := os.ReadFile(filepath.Join(dir, ".zsh_history"))
+				require.NoError(t, err)
+				assert.Equal(t, "state", string(got))
+			}
+		})
+	}
+
+	t.Run("unwritable data dir", func(t *testing.T) {
+		// No directory must reach the shells: see InstallShellRC. A path
+		// below a regular file fails even as root.
+		dataDir := filepath.Join(t.TempDir(), "file")
+		require.NoError(t, os.WriteFile(dataDir, nil, 0o644))
+		dir, err := InstallShellRC(dataDir)
+		assert.Error(t, err)
+		assert.Empty(t, dir)
+	})
+}
+
 // TestFileSchemeCloseDoesNotRaceStartCommand guards StartCommand's
 // fork/exec window against Close force-closing the scheme's tracked
 // files: os/exec reads each std file's fd during StartProcess, and
@@ -1097,4 +1114,62 @@ func TestFileSchemeStartCommandScrubsGitHookEnv(t *testing.T) {
 		"non-git environment must be preserved")
 	assert.Contains(t, env, "CALLER_VAR=explicit",
 		"caller-provided cmd.Env must still pass through")
+}
+
+// newShellFileScheme returns a fileScheme rooted at a temp dir whose terminal
+// shells load the dotfiles in shellRCDir.
+func newShellFileScheme(t *testing.T, shellRCDir string) (*fileScheme, string) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	uri, err := workspaceapi.ParseURI("file://" + tmpDir)
+	require.NoError(t, err)
+
+	s := new(fileScheme)
+	s.osStat = os.Stat
+	s.getUser = func() (*user.User, error) {
+		return &user.User{Username: "git", HomeDir: "/home/git"}, nil
+	}
+	s.lookupUser = func(name string) (*user.User, error) {
+		return &user.User{Username: name, HomeDir: "/home/" + name}, nil
+	}
+	s.shellRCDir = shellRCDir
+	require.NoError(t, s.init(uri))
+	return s, tmpDir
+}
+
+// assertShellRCWritten checks rcDir against the dotfiles in the source
+// tree, which are the ones the binary embeds.
+func assertShellRCWritten(t *testing.T, rcDir string) {
+	t.Helper()
+	entries, err := os.ReadDir("shellrc")
+	require.NoError(t, err)
+	require.NotEmpty(t, entries)
+	for _, e := range entries {
+		want, err := os.ReadFile(filepath.Join("shellrc", e.Name()))
+		require.NoError(t, err)
+		got, err := os.ReadFile(filepath.Join(rcDir, e.Name()))
+		require.NoError(t, err)
+		assert.Equal(t, string(want), string(got), e.Name())
+	}
+}
+
+// runShellCommand starts cmd through s with SHELL pointed at a script named
+// shellName, so the fileScheme's shell detection sees that basename, and
+// returns the script's stdout.
+func runShellCommand(
+	t *testing.T, s *fileScheme, dir, shellName, script string, cmd workspaceapi.Cmd,
+) string {
+	t.Helper()
+	bin := filepath.Join(dir, shellName)
+	require.NoError(t, os.WriteFile(bin, []byte(script), 0o755))
+	t.Setenv("SHELL", bin)
+
+	var stdout bytes.Buffer
+	ch := make(chan error)
+	cmd.Stdout = &stdout
+	cmd.Watcher = workspaceapi.ChanProcessWatcher(ch)
+	_, err := s.StartCommand(context.Background(), cmd)
+	require.NoError(t, err)
+	require.NoError(t, <-ch)
+	return stdout.String()
 }

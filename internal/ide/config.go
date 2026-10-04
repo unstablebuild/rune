@@ -273,7 +273,6 @@ type ideConfig struct {
 	ringBell         func()
 	scheduleNextTick func(func()) bool
 	cellPixelSize    func() (int, int)
-	zdotDir          string
 	// storage is the IDE-wide storage service. It's owned by the IDE
 	// and shared across workspaces; commandAliases consults it to
 	// resolve `{history}` placeholders in alias completer chains by
@@ -309,13 +308,12 @@ func overrideConfig(ideConfig, cfg map[string]any) {
 func initConfig(
 	c *ideConfig, cfg map[string]any, defaultWallpaper browser.Wallpaper,
 	ringBell func(), scheduleNextTick func(func()) bool,
-	zdotDir string, configPath string,
+	configPath string,
 ) {
 	c.cfg = cfg
 	c.configPath = configPath
 	c.ringBell = ringBell
 	c.scheduleNextTick = scheduleNextTick
-	c.zdotDir = zdotDir
 	c.defaultWallpaper = defaultWallpaper
 	c.errors = make(map[string]error)
 }
@@ -323,11 +321,11 @@ func initConfig(
 func initDefaultConfig(
 	c *ideConfig, defaultWallpaper browser.Wallpaper,
 	ringBell func(), scheduleNextTick func(func()) bool,
-	zdotDir, configPath string,
+	configPath string,
 ) {
 	cfg := make(map[string]any)
 	initConfig(c, cfg, defaultWallpaper, ringBell,
-		scheduleNextTick, zdotDir, configPath)
+		scheduleNextTick, configPath)
 }
 
 func (c ideConfig) command() (config.Config, bool) {
@@ -4729,11 +4727,10 @@ func reloadConfig(
 	configFilePath string, defaultWallpaper browser.Wallpaper,
 	defaultConfig DefaultConfig,
 	ringBell func(), scheduleNextTick func(func()) bool,
-	zdotDir string,
 ) (ret ideConfig, err error) {
 	err = loadConfig(&ret, configFilePath,
 		defaultWallpaper, defaultConfig, ringBell,
-		scheduleNextTick, zdotDir)
+		scheduleNextTick)
 	return
 }
 
@@ -4773,10 +4770,9 @@ func loadConfig(
 	defaultWallpaper browser.Wallpaper,
 	defaultConfig DefaultConfig,
 	ringBell func(), scheduleNextTick func(func()) bool,
-	zdotDir string,
 ) (err error) {
 	initDefaultConfig(c, defaultWallpaper, ringBell, scheduleNextTick,
-		zdotDir, configPath)
+		configPath)
 
 	cfg, err := decodeDefaultConfig(defaultConfig)
 	if err != nil {
@@ -4784,7 +4780,7 @@ func loadConfig(
 	}
 
 	initConfig(c, cfg, defaultWallpaper, ringBell,
-		scheduleNextTick, zdotDir, configPath)
+		scheduleNextTick, configPath)
 
 	if err := loadFileConfig(c, configPath); err != nil {
 		return err

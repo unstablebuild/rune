@@ -30,7 +30,7 @@ require (
 	github.com/google/go-dap v0.12.0
 	github.com/google/uuid v1.6.0
 	github.com/hajimehoshi/ebiten/v2 v2.7.4
-	github.com/junegunn/fzf v0.0.0-20201216124428-ab3937ee5a62
+	github.com/junegunn/fzf v0.73.1
 	github.com/modelcontextprotocol/go-sdk v1.4.1
 	github.com/openai/openai-go/v2 v2.7.1
 	github.com/pion/mediadevices v0.10.0
@@ -49,16 +49,17 @@ require (
 	github.com/unstablebuild/blue v1.85.0
 	github.com/unstablebuild/notify v0.10.4
 	github.com/unstablebuild/pty v1.3.1
-	github.com/unstablebuild/rune-go-sdk v0.7.0
+	github.com/unstablebuild/rune-go-sdk v0.7.1
 	github.com/unstablebuild/tcell/v3 v3.6.5
-	github.com/yuin/goldmark v1.7.1
+	github.com/yuin/goldmark v1.7.17
+	github.com/zalando/go-keyring v0.2.8
 	go.starlark.net v0.0.0-20260326113308-fadfc96def35
 	go.uber.org/goleak v1.3.0
 	go.uber.org/mock v0.4.0
 	go.uber.org/multierr v1.11.0
 	golang.org/x/crypto v0.56.0
 	golang.org/x/image v0.45.0
-	golang.org/x/mod v0.38.0
+	golang.org/x/mod v0.40.0
 	golang.org/x/net v0.58.0
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/sys v0.47.0
@@ -68,7 +69,7 @@ require (
 	google.golang.org/protobuf v1.36.11
 	gopkg.in/yaml.v3 v3.0.1
 	mvdan.cc/sh/v3 v3.12.0
-	oras.land/oras-go/v2 v2.6.1
+	oras.land/oras-go/v2 v2.6.2
 	tailscale.com v1.102.3
 )
 
@@ -112,6 +113,7 @@ require (
 	github.com/creachadair/msync v0.8.1 // indirect
 	github.com/creack/pty v1.1.24 // indirect
 	github.com/cyphar/filepath-securejoin v0.6.1 // indirect
+	github.com/danieljoos/wincred v1.2.3 // indirect
 	github.com/dblohm7/wingoes v0.0.0-20240119213807-a09d6be7affa // indirect
 	github.com/dgryski/go-metro v0.0.0-20180109044635-280f6062b5bc // indirect
 	github.com/digitalocean/go-smbios v0.0.0-20180907143718-390a4f403a8e // indirect
@@ -156,6 +158,7 @@ require (
 	github.com/jezek/xgb v1.1.1 // indirect
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/jsimonetti/rtnetlink v1.4.1 // indirect
+	github.com/junegunn/go-shellwords v0.0.0-20250127100254-2aa3b3277741 // indirect
 	github.com/kevinburke/ssh_config v1.4.0 // indirect
 	github.com/klauspost/compress v1.19.1 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
@@ -237,7 +240,7 @@ require (
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/term v0.45.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
-	golang.org/x/tools v0.48.0 // indirect
+	golang.org/x/tools v0.49.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
 	golang.zx2c4.com/wireguard/windows v0.5.3 // indirect
 	google.golang.org/api v0.278.0 // indirect

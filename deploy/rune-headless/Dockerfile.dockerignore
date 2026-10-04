@@ -1,0 +1,6 @@
+.git
+target
+bin
+dist/out
+**/node_modules
+cmd/rune/docs/build

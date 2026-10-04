@@ -37,6 +37,7 @@ type mouseDriver struct {
 	// with the content. Recording the offset lets SetSelectionEnd keep the
 	// anchor pinned to the originally pressed content cell.
 	selectionStartScrollY int
+	drag                  dragState
 	hookRawBytes          []byte
 	clipboard             clipboard.Register
 	// held is the button the program saw pressed; pressed guards it
@@ -49,10 +50,33 @@ type mouseDriver struct {
 	lastSeen bool
 }
 
+// dragState tracks a left-button gesture. For every held-button event,
+// including pointer jitter inside the pressed cell, the SDK calls
+// SetSelectionEnd and then auto-scrolls when the pointer is near the top
+// or bottom edge. A plain click (for example to focus the window) must
+// therefore neither highlight, scroll nor copy until the pointer leaves
+// the pressed cell.
+type dragState uint8
+
+const (
+	dragIdle dragState = iota
+	// dragPressed is a held left button still inside the pressed cell.
+	dragPressed
+	// dragSelecting is a held left button whose highlight follows the
+	// pointer.
+	dragSelecting
+)
+
 func (e *mouseDriver) OnAction(
 	ev term.Event, pos term.Coordinates, action mouse.Action,
 ) bool {
+	// The SDK reports held-button moves without an action, so any action
+	// ends the previous left-button gesture.
+	e.endDrag()
 	switch action {
+	case mouse.LeftClick:
+		e.drag = dragPressed
+		return false
 	case mouse.MiddleClick:
 		paste, _ := e.clipboard.Paste(clipboard.DefaultRegisterID)
 		e.hookRawBytes = []byte(paste.Text)
@@ -60,6 +84,16 @@ func (e *mouseDriver) OnAction(
 	default:
 		return false
 	}
+}
+
+// endDrag copies the highlight a drag produced. Copying runs the system
+// clipboard command and waits for it on the event loop, so it happens
+// once per gesture rather than on every drag tick.
+func (e *mouseDriver) endDrag() {
+	if e.drag == dragSelecting {
+		e.copySelectionToClipboard()
+	}
+	e.drag = dragIdle
 }
 
 type mouseAction uint8
@@ -249,13 +283,17 @@ func (e *mouseDriver) alternateScroll(ev term.Event) []byte {
 }
 
 func (e *mouseDriver) ScrollUp(n int) (ok bool) {
-	e.t.ScrollUp(n)
-	return
+	if e.drag == dragPressed {
+		return
+	}
+	return e.t.ScrollUp(n)
 }
 
 func (e *mouseDriver) ScrollDown(n int) (ok bool) {
-	e.t.ScrollDown(n)
-	return
+	if e.drag == dragPressed {
+		return
+	}
+	return e.t.ScrollDown(n)
 }
 
 func (e *mouseDriver) ClearSelection() {
@@ -282,12 +320,17 @@ func (e *mouseDriver) SetSelectionEnd(pos term.Coordinates) {
 	// produce from > to, and the buffer's internal sort then drops the
 	// press cell and the drag-end cell from the selection.
 	end := pos
+	if e.drag != dragSelecting {
+		if end == start {
+			return
+		}
+		e.drag = dragSelecting
+	}
 	if end.Y < start.Y || (end.Y == start.Y && end.X < start.X) {
 		start, end = end, start
 	}
 	e.t.Select(start)
 	e.t.SelectEnd(end)
-	e.copySelectionToClipboard()
 }
 
 func (e *mouseDriver) SelectWordAt(pos term.Coordinates) {
@@ -305,12 +348,17 @@ func (e *mouseDriver) Width() int {
 	return e.t.MaxWidth()
 }
 
+// Height bounds the SDK's bottom auto-scroll zone, which is compared with
+// window rows, so it must not count the scrollback.
 func (e *mouseDriver) Height() int {
-	return e.t.Height()
+	return e.t.screenHeight()
 }
 
 func (e *mouseDriver) copySelectionToClipboard() {
-	data, _ := e.t.Selection()
+	data, ok := e.t.Selection()
+	if !ok {
+		return
+	}
 	clipdata := clipboard.Data{Text: data}
 	err := e.clipboard.Copy(clipboard.DefaultRegisterID, clipdata)
 	if err != nil {

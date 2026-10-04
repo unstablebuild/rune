@@ -40,6 +40,12 @@ func NewSession(setsid, setctty bool) *syscall.SysProcAttr {
 	return &syscall.SysProcAttr{Setsid: setsid, Setctty: setctty}
 }
 
+// ControlsTerminal reports whether attr makes the process's stdin pty its
+// controlling terminal.
+func ControlsTerminal(attr *syscall.SysProcAttr) bool {
+	return attr != nil && attr.Setctty
+}
+
 // LeadsGroup reports whether attr starts the process as the leader of a new
 // process group. Callers opt into having the process's descendants terminated
 // with it by asking for a new group; joining an existing Pgid is someone

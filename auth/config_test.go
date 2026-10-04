@@ -161,3 +161,56 @@ func TestDefaultNativeConfigDeviceAuthURL(t *testing.T) {
 		assert.Empty(t, fetched.Endpoint.DeviceAuthURL)
 	})
 }
+
+// TestDefaultNativeConfigHeadlessClientID guards the wire contract that
+// points rune --headless at the client the API server issues serve-only
+// tokens to: the server always names one, and a config from a server
+// that predates it still validates for the desktop client.
+func TestDefaultNativeConfigHeadlessClientID(t *testing.T) {
+	api, err := url.Parse("https://api.rune.build")
+	require.NoError(t, err)
+
+	t.Run("round-trips through json", func(t *testing.T) {
+		cfg := DefaultNativeConfig(api)
+		cfg.HeadlessClientID = "headless-client"
+		data, err := json.Marshal(cfg)
+		require.NoError(t, err)
+		assert.Contains(t, string(data), `"headless_client_id":"headless-client"`)
+		var decoded Config
+		require.NoError(t, json.Unmarshal(data, &decoded))
+		assert.Equal(t, "headless-client", decoded.HeadlessClientID)
+		assert.Equal(t, cfg.ClientID, decoded.ClientID,
+			"the desktop client is unchanged")
+	})
+
+	t.Run("carries the build's headless client", func(t *testing.T) {
+		assert.NotEmpty(t, HeadlessClientID)
+		assert.NotEqual(t, ClientID, HeadlessClientID,
+			"a desktop sign-in must never be granted as serve-only")
+		assert.Equal(t, HeadlessClientID, DefaultNativeConfig(api).HeadlessClientID)
+	})
+
+	t.Run("is never served empty", func(t *testing.T) {
+		saved := HeadlessClientID
+		t.Cleanup(func() { HeadlessClientID = saved })
+		HeadlessClientID = ""
+		_, err := ServeNativeConfig(log.StandardLogger(), api)
+		assert.Error(t, err)
+	})
+
+	t.Run("fetch accepts a config without it", func(t *testing.T) {
+		cfg := DefaultNativeConfig(api)
+		cfg.HeadlessClientID = ""
+		srv := httptest.NewServer(http.HandlerFunc(
+			func(w http.ResponseWriter, _ *http.Request) {
+				require.NoError(t, json.NewEncoder(w).Encode(cfg))
+			}))
+		defer srv.Close()
+
+		srvURL, err := url.Parse(srv.URL)
+		require.NoError(t, err)
+		fetched, err := FetchConfig(srvURL)
+		require.NoError(t, err)
+		assert.Empty(t, fetched.HeadlessClientID)
+	})
+}

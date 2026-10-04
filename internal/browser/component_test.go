@@ -340,6 +340,121 @@ func TestWindowFocusTabIconCueFollowsFocus(t *testing.T) {
 	assert.Equal(t, expectedFocusTabAttr, cells[7].Attributes())
 }
 
+// TestSetTabIconAttr pins that a tab's icon attribute override is
+// layered over the focus-driven icon attributes the tab bar re-applies
+// on every redraw: it survives focus changes, colors it leaves unset
+// keep the configured ones, and it never leaks to other tabs.
+func TestSetTabIconAttr(t *testing.T) {
+	const offset = term.AttrNegativeVerticalRenderOffset
+	focusIconAttr := term.Attributes{Bg: term.ColorGreen, Attrs: term.AttrBold}
+	red := term.Attributes{Fg: term.ColorRed}
+
+	suite := []struct {
+		desc string
+		// override is set on tab a before the first draw, unless nil.
+		override *term.Attributes
+		// focusA moves focus from b's window to a's before drawing.
+		focusA  bool
+		wantA   term.Attributes
+		wantB   term.Attributes
+		unknown bool
+	}{
+		{
+			desc:  "no override",
+			wantA: term.Attributes{Attrs: offset},
+			wantB: term.Attributes{Bg: term.ColorGreen, Attrs: term.AttrBold | offset},
+		},
+		{
+			desc:     "override on an unfocused tab",
+			override: &red,
+			wantA:    term.Attributes{Fg: term.ColorRed, Attrs: offset},
+			wantB:    term.Attributes{Bg: term.ColorGreen, Attrs: term.AttrBold | offset},
+		},
+		{
+			desc:     "override survives the tab gaining focus",
+			override: &red,
+			focusA:   true,
+			wantA: term.Attributes{
+				Fg: term.ColorRed, Bg: term.ColorGreen, Attrs: term.AttrBold | offset,
+			},
+			wantB: term.Attributes{Attrs: offset},
+		},
+		{
+			desc:     "override colors replace the configured ones",
+			override: &term.Attributes{Bg: term.ColorBlue},
+			focusA:   true,
+			wantA:    term.Attributes{Bg: term.ColorBlue, Attrs: term.AttrBold | offset},
+			wantB:    term.Attributes{Attrs: offset},
+		},
+		{
+			desc:     "override flags add to the configured ones",
+			override: &term.Attributes{Attrs: term.AttrUnderline},
+			focusA:   true,
+			wantA: term.Attributes{
+				Bg: term.ColorGreen, Attrs: term.AttrBold | term.AttrUnderline | offset,
+			},
+			wantB: term.Attributes{Attrs: offset},
+		},
+		{
+			desc:     "unknown tab",
+			override: &red,
+			unknown:  true,
+			wantA:    term.Attributes{Attrs: offset},
+			wantB:    term.Attributes{Bg: term.ColorGreen, Attrs: term.AttrBold | offset},
+		},
+	}
+
+	for _, tc := range suite {
+		t.Run(tc.desc, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.Frame = false
+			cfg.FrameUnion = false
+			cfg.Dim = false
+			cfg.FocusTabIconAttr = focusIconAttr
+			b := NewComponent(cfg)
+
+			uriA, err := workspaceapi.ParseURI("file:///a")
+			require.NoError(t, err)
+			tabA := b.NewTab(uriA, 'A', "a", newTestHandler(), nil)
+			require.NoError(t, b.Focus().SetContent(tabA))
+			uriB, err := workspaceapi.ParseURI("file:///b")
+			require.NoError(t, err)
+			tabB := b.NewTab(uriB, 'B', "b", newTestHandler(), nil)
+			_, ok := b.Split(browserapi.OrientationRight, b.Focus(), tabB)
+			require.True(t, ok)
+
+			width, height := 20, 5
+			b.Resize(width, height)
+			draw := func() []term.Cell {
+				w := term.NewStringWriter(width, height)
+				b.Draw(w)
+				return w.Cells()
+			}
+			// A first draw settles the focus attributes the override
+			// must then be layered over.
+			draw()
+
+			if tc.override != nil {
+				target := uriA
+				if tc.unknown {
+					target, err = workspaceapi.ParseURI("file:///missing")
+					require.NoError(t, err)
+				}
+				assert.Equal(t, !tc.unknown, b.SetTabIconAttr(target, *tc.override))
+			}
+			if tc.focusA {
+				require.True(t, b.FocusLeft())
+			}
+
+			cells := draw()
+			require.Equal(t, 'A', cells[0].Ch)
+			assert.Equal(t, tc.wantA, cells[0].Attributes())
+			require.Equal(t, 'B', cells[5].Ch)
+			assert.Equal(t, tc.wantB, cells[5].Attributes())
+		})
+	}
+}
+
 // TestNewTabHonorsTabOverrideIcon verifies that when
 // Config.TabOverrideIcon is set, every tab icon rendered in the tab
 // bar uses that single rune regardless of the icon argument passed to

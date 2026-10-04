@@ -30,6 +30,11 @@ const withMeta = `gui:
 #   layout: ' {{ .Status | bg "red" }} '
 `
 
+const withAltModifier = `gui:
+  default_theme: romero
+  alt_modifier: "[[.AltModifier]]"
+`
+
 func TestRender(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -74,6 +79,28 @@ func TestRender(t *testing.T) {
 			name:    "unknown field",
 			body:    "x: [[.Nope]]\n",
 			wantErr: "render preset",
+		},
+		{
+			name: "alt modifier",
+			body: withAltModifier,
+			data: Data{AltModifier: "left"},
+			want: "gui:\n  default_theme: romero\n  alt_modifier: \"left\"\n" + footerFor("false"),
+		},
+		{
+			name: "no field reads as no alt modifier",
+			body: "gui:\n  default_theme: romero\n",
+			want: "gui:\n  default_theme: romero\n" + footerFor("false"),
+		},
+		{
+			name:    "no field cannot carry an alt modifier",
+			body:    "gui:\n  default_theme: romero\n",
+			data:    Data{AltModifier: "right"},
+			wantErr: "gui.alt_modifier is missing",
+		},
+		{
+			name:    "a hard-coded alt modifier must match",
+			body:    "gui:\n  alt_modifier: left\n",
+			wantErr: `gui.alt_modifier is "left", want ""`,
 		},
 		{
 			name:    "a body overriding telemetry",

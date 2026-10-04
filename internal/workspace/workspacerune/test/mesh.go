@@ -32,6 +32,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"tailscale.com/tstest/integration/testcontrol"
 	"unstable.build/rune/internal/runenet"
 	"unstable.build/rune/internal/workspace"
 	"unstable.build/rune/internal/workspace/workspacerune"
@@ -42,20 +43,37 @@ type ControlPlane struct {
 	// URL is the coordination server the instances register with.
 	URL string
 	// AuthKey pre-authorizes a node so no interactive login is needed.
+	// Empty for the in-process control plane, which needs none.
 	AuthKey string
+
+	// headscale is the docker container id of a Headscale control
+	// plane; testControl is the in-process one. Exactly one is set.
+	headscale   string
+	testControl *testcontrol.Server
 }
 
-// StartNode joins a mesh node to control under hostname and waits for
-// it to come online.
-func StartNode(t *testing.T, control ControlPlane, hostname string) *runenet.Node {
+// StartNode joins a mesh node to control under hostname, registering it
+// with authKey, and waits for it to come online.
+func StartNode(
+	t *testing.T, control ControlPlane, hostname, authKey string,
+) *runenet.Node {
+	t.Helper()
+	return startNodeIn(t, control, hostname, authKey, t.TempDir())
+}
+
+// startNodeIn is [StartNode] with the node's data directory chosen by
+// the caller, so a node can start from an identity already on disk.
+func startNodeIn(
+	t *testing.T, control ControlPlane, hostname, authKey, dir string,
+) *runenet.Node {
 	t.Helper()
 
 	node := runenet.New(runenet.Config{
 		Hostname:   hostname,
 		ControlURL: control.URL,
-		AuthKey:    control.AuthKey,
+		AuthKey:    authKey,
 		Port:       runenet.DefaultPort,
-		Dir:        t.TempDir(),
+		Dir:        dir,
 	})
 	t.Cleanup(func() { _ = node.Close() })
 

@@ -6,13 +6,14 @@ sidebar_position: 13
 
 A package is the unit Rune installs with `pkg install`: a config overlay
 that wires something into Rune, plus whatever that thing needs to run. It is
-the shared delivery format underneath both [extensions](./extensions.md),
-which communicate with Rune through the [SDK](./sdk/index.md), and
-[plugins](./plugins.md), which wrap command-line tools.
+the shared delivery format underneath [extensions](./extensions.md),
+which communicate with Rune through the [SDK](./sdk/index.md),
+[plugins](./plugins.md), which wrap command-line tools, and
+[themes](../learn/themes.md#share-your-theme).
 
 ## Distributing from a git repository
 
-You distribute your own extension by pushing it to a **public git
+You distribute your own package by pushing it to a **public git
 repository** and telling users to install it by its repository ID, which is
 the repository's host and path:
 
@@ -31,34 +32,36 @@ pkg install git.example.com/<owner>/<repo>
 ```
 
 Rune clones the repository, reads a `config.yaml` at its root as the
-[config overlay](#the-config-overlay), installs anything the overlay
-[requires](#requiring-other-packages), and runs your extension from source
-through the matching language toolchain. Because it runs from source, one
-repository serves every platform, and there is nothing to build or host. The
+[config overlay](#the-config-overlay), and installs anything the overlay
+[requires](#requiring-other-packages). An extension runs from source through
+the matching language toolchain; a theme-only package needs no toolchain. The
 repository must be public: Rune clones anonymously over HTTPS.
 
 ### What the repository must contain
 
-A git package is a normal repository with two things at its root:
+A git package is a normal repository with a `config.yaml` at its root. An
+extension package also needs its source files:
 
-1. A **`config.yaml`** overlay that declares at least one extension under
-   `extensions.<id>` (see [Registering an extension](#registering-an-extension)).
-   Every extension's `path` must point at something the runner can start: a Go
-   package directory, a `.py` file, or a `.rs` file (see
-   [source and package extensions](./extensions.md#source-and-package-extensions)).
-   Point `path` back into the checkout with
-   `$RUNE_DATADIR/lib/$RUNE_PKG_ID`, which resolves to your repository's files
-   on disk.
-2. The **extension's sources** and their project manifest, so the toolchain
-   can build and run them: `go.mod` (and `go.sum`) for Go, `pyproject.toml`
-   for Python, `Cargo.toml` for Rust.
+- A **non-empty `config.yaml`** overlay with the settings to merge into the
+  user's config. This can be a theme under `gui.themes` (see
+  [Share your theme](../learn/themes.md#share-your-theme)), aliases under
+  `command.aliases`, or any other Rune configuration. If it declares extensions,
+  see [Registering an extension](#registering-an-extension). Every extension's
+  `path` must point at something the runner can start: a Go package directory,
+  a `.py` file, or a `.rs` file (see
+  [source and package extensions](./extensions.md#source-and-package-extensions)).
+  Point `path` back into the checkout with
+  `$RUNE_DATADIR/lib/$RUNE_PKG_ID`, which resolves to your repository's files
+  on disk.
+- For extensions, their **sources** and project manifest, so the toolchain
+  can build and run them: `go.mod` (and `go.sum`) for Go, `pyproject.toml`
+  for Python, `Cargo.toml` for Rust. Config-only packages need no sources.
 
-A `requirements:` list naming the language package (`python`, `go`, or
-`rust`) belongs in the overlay so `pkg install` provisions the toolchain
-first. Rune verifies all of this while cloning and aborts the install with a
-descriptive error before writing anything if the `config.yaml` is missing,
-declares no extensions, or points an entrypoint at something the runner
-cannot start.
+For extensions, a `requirements:` list naming the language package (`python`,
+`go`, or `rust`) belongs in the overlay so `pkg install` provisions the
+toolchain first. Rune verifies the package while cloning and aborts the
+install if `config.yaml` is missing or empty,
+or points an extension entrypoint at something the runner cannot start.
 
 ### Example: a Go extension repository
 

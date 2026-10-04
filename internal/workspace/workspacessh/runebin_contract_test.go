@@ -75,6 +75,9 @@ func TestRuneBinaryContract(t *testing.T) {
 
 	// `rune -x <path>` — exact form constructed by connectScheme.
 	cmd := exec.CommandContext(ctx, runePath, "-x", workspaceDir)
+	// Without --datadir, rune -x installs into ~/.rune, which must be the
+	// test's and not the developer's.
+	cmd.Env = append(os.Environ(), "HOME="+t.TempDir())
 	cmd.Stdin = stdinR
 	cmd.Stdout = stdoutW
 	cmd.Stderr = &stderrWriter

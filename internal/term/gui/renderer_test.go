@@ -113,7 +113,7 @@ func benchmarkRendererContent(
 	for i := 0; i < b.N; i++ {
 		benchdraw.BeginFrame(b)
 		r.Draw(image, cells, nil, true, term.Coordinates{X: 1, Y: 5},
-			term.CursorStyleDefault, 0, 0)
+			term.CursorStyleDefault)
 		benchdraw.EndFrame(b)
 	}
 }

@@ -404,9 +404,8 @@ func TestHandlerMouseSelection(t *testing.T) {
 			want:   "hello",
 		},
 		{
-			desc:   "press and drag on same cell selects that cell",
+			desc:   "press and jitter on the same cell selects nothing",
 			events: []mev{left(0, helloRow), left(0, helloRow), rel(0, helloRow)},
-			want:   "h",
 		},
 		{
 			desc:   "press right, drag one cell left",
@@ -443,6 +442,10 @@ $ ▐
 				})
 			}
 			sel, ok := handler.Selection()
+			if tc.want == "" {
+				assert.False(t, ok, "unexpected selection %q", sel)
+				return
+			}
 			require.True(t, ok)
 			assert.Equal(t, tc.want, sel)
 		})
@@ -591,6 +594,12 @@ func testSequence(t *testing.T, cfg Config, timeout time.Duration, cases []vtete
 func testSequenceShell(t *testing.T, cfg Config, timeout time.Duration, shell string, cases []vtetest.Case) (
 	*Handler, chan struct{},
 ) {
+	return testSequenceCommand(t, cfg, timeout, []string{shell}, cases)
+}
+
+func testSequenceCommand(
+	t *testing.T, cfg Config, timeout time.Duration, commandAndArgs []string, cases []vtetest.Case,
+) (*Handler, chan struct{}) {
 	ctx := context.Background()
 	ctx, cancel := context.WithCancel(context.Background())
 	temp := os.TempDir()
@@ -598,13 +607,15 @@ func testSequenceShell(t *testing.T, cfg Config, timeout time.Duration, shell st
 	uri, err := workspaceapi.CurrentUserHostURI(temp)
 	require.NoError(t, err)
 
-	scheme, err := workspace.NewFileScheme(ctx, config.NopConfig(), uri)
+	shellRCDir, err := workspace.InstallShellRC(t.TempDir())
+	require.NoError(t, err)
+	scheme, err := workspace.NewFileSchemeFunc(shellRCDir)(ctx, config.NopConfig(), uri)
 	require.NoError(t, err)
 
 	ch := make(chan struct{}, 50 /* big enough for the max length sequence of events */)
 	cfg.WidthHint = 20
 	cfg.HeightHint = 10
-	cfg.CommandAndArgs = []string{shell}
+	cfg.CommandAndArgs = commandAndArgs
 	handler, err := NewHandler(chanEventPublisher{ch}, nopNotifications{},
 		scheme, scheme, nopTabManager{}, cfg)
 	require.NoError(t, err)

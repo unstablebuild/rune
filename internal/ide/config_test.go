@@ -464,7 +464,7 @@ func assertDefaultConfig(t *testing.T, cfg *ideConfig) {
 func TestConfigDefault(t *testing.T) {
 	ret := new(ideConfig)
 	initDefaultConfig(ret, browser.NopWallpaper(),
-		term.RingBell, term.ScheduleNextTick, "", "")
+		term.RingBell, term.ScheduleNextTick, "")
 	assertDefaultConfig(t, ret)
 }
 
@@ -1190,7 +1190,7 @@ func TestConfigSetting(t *testing.T) {
 
 	var cfg ideConfig
 	initConfig(&cfg, m, browser.NopWallpaper(),
-		term.RingBell, term.ScheduleNextTick, "", "")
+		term.RingBell, term.ScheduleNextTick, "")
 	cfg.storage = storagestub.NewInMemoryService()
 
 	assert.Equal(t, 4, cfg.editorTabspaces())
@@ -1674,7 +1674,7 @@ func TestLoadEmbededConfig(t *testing.T) {
 	var cfg ideConfig
 	err := loadConfig(&cfg, "nonExistent", browser.NopWallpaper(),
 		DefaultConfig{src: "config = {}"},
-		term.RingBell, term.ScheduleNextTick, "")
+		term.RingBell, term.ScheduleNextTick)
 	require.NoError(t, err)
 }
 
@@ -1749,7 +1749,7 @@ func TestShellMaxHistoryFromConfig(t *testing.T) {
 	var cfg ideConfig
 	err = loadConfig(&cfg, f.Name(), browser.NopWallpaper(),
 		DefaultConfig{src: "config = {}"},
-		term.RingBell, term.ScheduleNextTick, "")
+		term.RingBell, term.ScheduleNextTick)
 	require.NoError(t, err)
 	assert.Equal(t, 7, cfg.consoleMaxHistory())
 }
@@ -1770,7 +1770,7 @@ func TestShellModalStartInsertFromConfig(t *testing.T) {
 	var cfg ideConfig
 	err = loadConfig(&cfg, f.Name(), browser.NopWallpaper(),
 		DefaultConfig{src: "config = {}"},
-		term.RingBell, term.ScheduleNextTick, "")
+		term.RingBell, term.ScheduleNextTick)
 	require.NoError(t, err)
 	assert.False(t, cfg.consoleModalStartInsert())
 }
@@ -1791,7 +1791,7 @@ func TestShellModalStartInsertDefaultsTrue(t *testing.T) {
 	var cfg ideConfig
 	err = loadConfig(&cfg, f.Name(), browser.NopWallpaper(),
 		DefaultConfig{src: "config = {}"},
-		term.RingBell, term.ScheduleNextTick, "")
+		term.RingBell, term.ScheduleNextTick)
 	require.NoError(t, err)
 	assert.True(t, cfg.consoleModalStartInsert())
 }
@@ -1812,7 +1812,7 @@ func TestConsolePromptFromConfig(t *testing.T) {
 	var cfg ideConfig
 	err = loadConfig(&cfg, f.Name(), browser.NopWallpaper(),
 		DefaultConfig{src: "config = {}"},
-		term.RingBell, term.ScheduleNextTick, "")
+		term.RingBell, term.ScheduleNextTick)
 	require.NoError(t, err)
 	assert.Equal(t, "rune> ", cfg.consolePrompt())
 	assert.Equal(t, "rune> ", cfg.consoleCfg().prompt)
@@ -1834,7 +1834,7 @@ func TestConsolePromptDefaultsEmpty(t *testing.T) {
 	var cfg ideConfig
 	err = loadConfig(&cfg, f.Name(), browser.NopWallpaper(),
 		DefaultConfig{src: "config = {}"},
-		term.RingBell, term.ScheduleNextTick, "")
+		term.RingBell, term.ScheduleNextTick)
 	require.NoError(t, err)
 	assert.Empty(t, cfg.consolePrompt())
 }
@@ -1895,7 +1895,7 @@ command:
 	var cfg ideConfig
 	err = loadConfig(&cfg, f.Name(), browser.NopWallpaper(),
 		DefaultConfig{src: "config = {}"},
-		term.RingBell, term.ScheduleNextTick, "")
+		term.RingBell, term.ScheduleNextTick)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "alias cycle detected")
 	aliases, _ := cfg.parseAliasCommands()
@@ -1916,7 +1916,7 @@ editor:
 	var cfg ideConfig
 	err = loadConfig(&cfg, f.Name(), browser.NopWallpaper(),
 		DefaultConfig{src: "config = {}"},
-		term.RingBell, term.ScheduleNextTick, "")
+		term.RingBell, term.ScheduleNextTick)
 	require.NoError(t, err)
 	assert.Equal(t, 2, cfg.editorTabspaces())
 }
@@ -1935,7 +1935,7 @@ editor:
 	var cfg ideConfig
 	err = loadConfig(&cfg, f.Name(), browser.NopWallpaper(),
 		DefaultConfig{src: "config = {}"},
-		term.RingBell, term.ScheduleNextTick, "")
+		term.RingBell, term.ScheduleNextTick)
 	require.NoError(t, err)
 	assert.Equal(t, 2048, cfg.editorMaxSizeForSyntax())
 }
@@ -1969,7 +1969,7 @@ func TestEditorSwapDir(t *testing.T) {
 			var cfg ideConfig
 			err = loadConfig(&cfg, f.Name(), browser.NopWallpaper(),
 				DefaultConfig{src: "config = {}"},
-				term.RingBell, term.ScheduleNextTick, "")
+				term.RingBell, term.ScheduleNextTick)
 			require.NoError(t, err)
 
 			assert.Equal(t, tcase.want, cfg.editorSwapDir())
@@ -1998,7 +1998,7 @@ editor:
 	var cfg ideConfig
 	err = loadConfig(&cfg, f.Name(), browser.NopWallpaper(),
 		DefaultConfig{src: "config = {}"},
-		term.RingBell, term.ScheduleNextTick, "")
+		term.RingBell, term.ScheduleNextTick)
 	require.NoError(t, err)
 	assert.Equal(t, text.IndentConfig{
 		"yaml": text.IndentRuneSpace,

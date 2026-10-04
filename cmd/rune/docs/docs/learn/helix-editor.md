@@ -417,19 +417,19 @@ the gate these menus need.
 
 | Key | Action |
 | --- | --- |
-| `<space>f` | Open a file |
-| `<space>e` | Toggle the file explorer |
-| `<space>b` | Search open tabs |
-| `<space>j` | Pick a stop from the cursor history |
-| `<space>/` | Search the workspace |
-| `<space>k` | Hover |
-| `<space>r` | Rename the symbol |
-| `<space>h` | References to the symbol |
-| `<space>d` / `<space>D` | Diagnostics |
-| `<space>g` | Next Git change |
-| `<space>y` / `<space>p` | Copy to / paste from the system clipboard |
-| `<space>?` | Command history |
-| `<space>s` / `<space>t` / `<space>v` | Jump to a function / type / variable |
+| <KeyBinding command="searchfile" chord="<space>f" /> | Open a file |
+| <KeyBinding command="fexplorer" chord="<space>e" /> | Toggle the file explorer |
+| <KeyBinding command="tabsearch" chord="<space>b" /> | Search open tabs |
+| <KeyBinding command="cursorhistory jump" chord="<space>j" /> | Pick a stop from the cursor history |
+| <KeyBinding command="searchtext" chord="<space>/" /> | Search the workspace |
+| <KeyBinding command="lsp hover" chord="<space>k" /> | Hover |
+| <KeyBinding command="lsp rename" chord="<space>r" /> | Rename the symbol |
+| <KeyBinding command="lsp references" chord="<space>h" /> | References to the symbol |
+| <KeyBinding command="lsp diagnostics" chord="<space>d" /> / <KeyBinding command="lsp diagnostics" chord="<space>D" /> | Diagnostics |
+| <KeyBinding command="gitnextchange" chord="<space>g" /> | Next Git change |
+| <KeyBinding command="clipboardcopy" chord="<space>y" /> / <KeyBinding command="clipboardpaste" chord="<space>p" /> | Copy to / paste from the system clipboard |
+| <KeyBinding command="history" chord="<space>?" /> | Command history |
+| <KeyBinding command={'echo {prompt}jumptoast<space>locals.scm<space>local.definition.method' + String.fromCharCode(124) + 'local.definition.function<space>'} chord="<space>s" /> / <KeyBinding command="echo {prompt}jumptoast<space>locals.scm<space>local.definition.type<space>" chord="<space>t" /> / <KeyBinding command="echo {prompt}jumptoast<space>locals.scm<space>local.definition.var<space>" chord="<space>v" /> | Jump to a function / type / variable |
 
 ### Windows and tabs
 
@@ -438,17 +438,18 @@ Super or Alt, and you can change it later with
 [`gui.meta_key`](./key-syntax.md#what-meta-means). With Alt, Helix's own Alt keys
 such as `<alt-c>` still come first.
 
-The helix preset shares the vim preset's layout keys, which work from every
-surface, including a terminal in INSERT mode:
+The helix preset's layout keys work from every surface, including a terminal
+in INSERT mode:
 
 | Key | Action |
 | --- | --- |
-| `<meta-h>` `j` `k` `l` | Focus the window left / down / up / right |
-| `<shift-meta-h>` `j` `k` `l` | Move the window left / down / up / right |
-| `<meta-w>` / `<shift-meta-w>` | Close this window / close the others |
-| `<alt-h>` / `<alt-l>` | Focus the previous / next tab |
-| `<shift-alt-h>` / `<shift-alt-l>` | Move the tab left / right |
-| `<alt-w>` | Close the tab |
+| <KeyBinding command="windowfocus left" /> / <KeyBinding command="windowfocus down" /> / <KeyBinding command="windowfocus up" /> / <KeyBinding command="windowfocus right" /> | Focus the window left / down / up / right |
+| <KeyBinding command="windowmove left" /> / <KeyBinding command="windowmove down" /> / <KeyBinding command="windowmove up" /> / <KeyBinding command="windowmove right" /> | Move the window left / down / up / right |
+| <KeyBinding command="windowresize decrease width" /> / <KeyBinding command="windowresize decrease height" /> / <KeyBinding command="windowresize increase height" /> / <KeyBinding command="windowresize increase width" /> | Make the window narrower / shorter / taller / wider |
+| <KeyBinding command="windowclose" /> / <KeyBinding command="windowcloseall" /> | Close this window / close the others |
+| <KeyBinding command="tabprevious" /> / <KeyBinding command="tabnext" /> | Focus the previous / next tab |
+| <KeyBinding command="tabmove left" /> / <KeyBinding command="tabmove right" /> | Move the tab left / right |
+| <KeyBinding command="tabclose" /> | Close the tab |
 
 ### The `<ctrl-w>` window menu
 
@@ -458,11 +459,11 @@ the keys above there.
 
 | Key | Action |
 | --- | --- |
-| `<ctrl-w>h` `j` `k` `l` | Focus the window left / down / up / right |
-| `<ctrl-w>H` `J` `K` `L` | Move the window left / down / up / right |
-| `<ctrl-w>w` | Focus the other window |
-| `<ctrl-w>s` / `<ctrl-w>v` | Split horizontally / vertically |
-| `<ctrl-w>q` / `<ctrl-w>o` | Close this window / close the others |
+| <KeyBinding command="windowfocus left" chord="<ctrl-w>h" /> `j` `k` `l` | Focus the window left / down / up / right |
+| <KeyBinding command="windowmove left" chord="<ctrl-w>H" /> `J` `K` `L` | Move the window left / down / up / right |
+| <KeyBinding command="windowfocus other" chord="<ctrl-w>w" /> | Focus the other window |
+| <KeyBinding command="windownew down" chord="<ctrl-w>s" /> / <KeyBinding command="windownew right" chord="<ctrl-w>v" /> | Split horizontally / vertically |
+| <KeyBinding command="windowclose" chord="<ctrl-w>q" /> / <KeyBinding command="windowcloseall" chord="<ctrl-w>o" /> | Close this window / close the others |
 
 The second key also works with `<ctrl>` still held, and the arrows stand in
 for `h` `j` `k` `l`, as in Helix. Helix reaches the same menu through
@@ -486,7 +487,7 @@ the same job:
 | `:fmt` | Format the file |
 | `:rl` | Reload the file from disk |
 
-Rune has no per-split quit, so `:q` closes the window like `<ctrl-w>q` and
+Rune has no per-split quit, so `:q` closes the window like <KeyBinding command="windowclose" chord="<ctrl-w>q" /> and
 leaves the last one open. Quit with `:qa`. The long names are Rune's own
 commands, and `:quit` leaves Rune rather than closing a split.
 
@@ -512,7 +513,7 @@ drive the editor grammar itself.
   opens the global [command prompt](./command-prompt.md), so `:w`, `:q` and
   friends are Rune commands or the preset's
   [aliases](#typable-commands) for them.
-- **No pickers inside the editor.** `<space>f`, `<space>b` and the rest are
+- **No pickers inside the editor.** <KeyBinding command="searchfile" chord="<space>f" />, <KeyBinding command="tabsearch" chord="<space>b" /> and the rest are
   Rune commands bound by the preset, not editor-internal pickers.
 - **Extras.** `.` repeats the last insert, and `C-e` / `C-y` scroll by a
   line. Helix leaves those keys unbound.

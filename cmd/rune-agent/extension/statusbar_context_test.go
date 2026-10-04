@@ -276,7 +276,24 @@ func TestHandleCompactReportsCompactingPhase(t *testing.T) {
 // compaction and the compact tool report it through the run loop's
 // events, so this drives a real agent whose model calls the compact
 // tool and samples the bar while the summarisation call is in flight.
+// Query sessions pass no onCompacted callback, so compaction must not
+// depend on one being set.
 func TestAgentToolCompactReportsCompactingPhase(t *testing.T) {
+	tests := []struct {
+		name        string
+		onCompacted func(string)
+	}{
+		{name: "chat", onCompacted: func(string) {}},
+		{name: "query without onCompacted", onCompacted: nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			testAgentToolCompactReportsCompactingPhase(t, tc.onCompacted)
+		})
+	}
+}
+
+func testAgentToolCompactReportsCompactingPhase(t *testing.T, onCompacted func(string)) {
 	entry := llmapi.ModelEntry{
 		Provider: "test", Name: "test-model", ContextWindow: 128_000,
 	}
@@ -335,7 +352,7 @@ func TestAgentToolCompactReportsCompactingPhase(t *testing.T) {
 		defer close(done)
 		createAgentCompletions(ctx, cancel, tx, rx, ag, nopSpawner{},
 			nil, skills.NewRegistry(nopFileSystem{}, dirURI(""), nil, nil),
-			"d1", s, stubNotifications{}, func(string) {}, store)
+			"d1", s, stubNotifications{}, onCompacted, store)
 	}()
 
 	require.Eventually(t, func() bool { return svc.CallCount() >= 3 },

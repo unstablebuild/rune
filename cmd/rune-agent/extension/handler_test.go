@@ -1432,3 +1432,90 @@ func TestWarnPendingMCPServersReportsConnecting(t *testing.T) {
 		t.Fatal("expected a pending-MCP warning event")
 	}
 }
+
+// The browser runs on the workspace host, so its files belong in the data
+// directory of that host, which is not the extension's own data directory
+// on a remote workspace and need not be ~/.rune there either.
+func TestWebBrowserDirIsInWorkspaceHostDataDir(t *testing.T) {
+	tests := []struct {
+		name    string
+		root    string
+		err     error
+		want    string
+		wantErr string
+	}{
+		{
+			name: "local workspace",
+			root: "/Users/u/.rune",
+			want: "/Users/u/.rune/agent-browser",
+		},
+		{
+			name: "remote workspace server with its own data directory",
+			root: "/home/dev/.runedev",
+			want: "/home/dev/.runedev/agent-browser",
+		},
+		{
+			name:    "data directory not found",
+			err:     os.ErrNotExist,
+			wantErr: "resolve the data directory on the workspace host",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := webBrowserDir(context.Background(), fakeInstallRoot{root: tt.root, err: tt.err})
+
+			if tt.wantErr != "" {
+				assert.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestHandlerWebBrowser(t *testing.T) {
+	const dir = "/home/dev/.runedev/agent-browser"
+	tests := []struct {
+		name       string
+		browserDir string
+		lookupErr  error
+		want       bool
+	}{
+		{name: "installed", browserDir: dir, want: true},
+		{name: "not installed", browserDir: dir, lookupErr: errors.New("exit status 1")},
+		{name: "no data directory on the workspace host"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			exec := &lookupExec{stdout: "/opt/bin/agent-browser\n", err: tt.lookupErr}
+			fs := &dirRecordingFS{}
+			h := &aiEditorHandler{
+				ctx:        context.Background(),
+				executor:   exec,
+				fs:         fs,
+				browserDir: tt.browserDir,
+			}
+
+			tool := h.webBrowser("chat-1")
+
+			if tt.browserDir == "" {
+				assert.Empty(t, exec.commands(), "nothing to look up without a directory to run in")
+			}
+			if !tt.want {
+				assert.Nil(t, tool)
+				return
+			}
+			require.NotNil(t, tool)
+
+			result := tool.Execute(context.Background(), `{"command":["get","title"]}`)
+			require.False(t, result.IsError, result.Content)
+			cmds := exec.commands()
+			run := cmds[len(cmds)-1]
+			assert.Equal(t, "/opt/bin/agent-browser", run.Path)
+			assert.Equal(t, dir, run.Dir)
+			assert.Contains(t, run.Env, "AGENT_BROWSER_SOCKET_DIR="+dir+"/sockets")
+			assert.Equal(t, []string{dir}, fs.dirs)
+		})
+	}
+}

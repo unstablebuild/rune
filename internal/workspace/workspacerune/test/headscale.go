@@ -17,6 +17,7 @@
 package runetest
 
 import (
+	"bytes"
 	_ "embed"
 	"encoding/json"
 	"errors"
@@ -26,16 +27,19 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"text/template"
 	"time"
+
+	"unstable.build/rune/auth"
 )
 
 // headscaleImage is the coordination server Rune's network is designed
-// around. Pinned so a test failure means our code changed, not the
-// upstream image.
-const headscaleImage = "headscale/headscale:v0.26.1"
+// around. Pinned to the version the account server deploys, so a test
+// failure means our code changed, not the upstream image.
+const headscaleImage = "headscale/headscale:v0.29.3"
 
 //go:embed headscale.yaml.tmpl
 var headscaleConfigTemplate string
@@ -54,17 +58,35 @@ func SkipIfNoDocker(t *testing.T) {
 	}
 }
 
+// HeadscaleOption configures [StartHeadscale].
+type HeadscaleOption func(*headscaleOptions)
+
+type headscaleOptions struct {
+	policy string
+}
+
+// WithPolicy loads policy, a HuJSON ACL document, before any node
+// registers, so no node ever sees a netmap the policy would not grant.
+func WithPolicy(policy string) HeadscaleOption {
+	return func(o *headscaleOptions) { o.policy = policy }
+}
+
 // StartHeadscale runs a Headscale coordination server in docker and
-// returns a control plane with a pre-authorization key already minted,
-// so nodes join without an interactive login.
+// returns a control plane with one account and a pre-authorization key
+// for it already minted, so nodes join without an interactive login.
 //
 // Ports are published one-to-one rather than letting docker choose:
 // Headscale advertises its own listen and STUN ports to clients, so a
 // remapped port would hand nodes an address that does not exist on the
 // host.
-func StartHeadscale(t *testing.T) ControlPlane {
+func StartHeadscale(t *testing.T, opts ...HeadscaleOption) ControlPlane {
 	t.Helper()
 	EnsureHeadscaleImage(t)
+
+	var o headscaleOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
 
 	httpPort := freeTCPPort(t)
 	stunPort := freeUDPPort(t)
@@ -87,10 +109,12 @@ func StartHeadscale(t *testing.T) ControlPlane {
 		t.Fatalf("headscale did not become healthy on %s: %v", serverURL, err)
 	}
 
-	return ControlPlane{
-		URL:     serverURL,
-		AuthKey: headscaleAuthKey(t, id, "rune-e2e"),
+	control := ControlPlane{URL: serverURL, headscale: id}
+	if o.policy != "" {
+		control.SetPolicy(t, o.policy)
 	}
+	control.AuthKey = control.NewAccount(t, "rune-e2e").UserKey(t)
+	return control
 }
 
 // EnsureHeadscaleImage pulls the coordination server image if it is not
@@ -109,23 +133,42 @@ func EnsureHeadscaleImage(t *testing.T) {
 	}
 }
 
-// headscaleAuthKey creates a user and returns a reusable
-// pre-authorization key for it. Reusable because every node in a test
-// registers with the same key, which is also what makes them peers
-// owned by one account.
-func headscaleAuthKey(t *testing.T, id, user string) string {
+// Account is one Rune account on a Headscale control plane: a
+// Headscale user, exactly as the account server provisions it.
+type Account struct {
+	// Name is the Headscale user name, which is also the login name
+	// its user-owned machines report.
+	Name    string
+	id      int
+	control ControlPlane
+}
+
+// ServeTag is the tag that marks a machine as one of the account's
+// serve-only machines.
+func (a Account) ServeTag() string {
+	return auth.ServeTagPrefix + a.Name
+}
+
+// UserKey mints a reusable key that registers a machine owned by the
+// account. Reusable because a test registers several machines with it.
+func (a Account) UserKey(t *testing.T) string {
+	t.Helper()
+	return a.control.preAuthKey(t, a.id)
+}
+
+// ServeKey mints a reusable key that registers a serve-only machine of
+// the account: one carrying the account's [Account.ServeTag].
+func (a Account) ServeKey(t *testing.T) string {
+	t.Helper()
+	return a.control.preAuthKey(t, a.id, "--tags", a.ServeTag())
+}
+
+// NewAccount creates a Headscale user named name.
+func (c ControlPlane) NewAccount(t *testing.T, name string) Account {
 	t.Helper()
 
-	if out, err := exec.Command("docker", "exec", id,
-		"headscale", "users", "create", user).CombinedOutput(); err != nil {
-		t.Fatalf("headscale users create: %v: %s", err, string(out))
-	}
-
-	out, err := exec.Command("docker", "exec", id,
-		"headscale", "users", "list", "--output", "json").Output()
-	if err != nil {
-		t.Fatalf("headscale users list: %v: %s", err, exitStderr(err))
-	}
+	c.headscaleExec(t, "users", "create", name)
+	out := c.headscaleExec(t, "users", "list", "--output", "json")
 	var users []struct {
 		ID   int    `json:"id"`
 		Name string `json:"name"`
@@ -133,29 +176,131 @@ func headscaleAuthKey(t *testing.T, id, user string) string {
 	if err := json.Unmarshal(out, &users); err != nil {
 		t.Fatalf("parse headscale users: %v: %s", err, string(out))
 	}
-	userID := 0
 	for _, u := range users {
-		if u.Name == user {
-			userID = u.ID
+		if u.Name == name {
+			return Account{Name: name, id: u.ID, control: c}
 		}
 	}
-	if userID == 0 {
-		t.Fatalf("headscale user %q not found in %s", user, string(out))
-	}
+	t.Fatalf("headscale user %q not found in %s", name, string(out))
+	return Account{}
+}
 
-	key, err := exec.Command("docker", "exec", id,
-		"headscale", "preauthkeys", "create",
+func (c ControlPlane) preAuthKey(t *testing.T, userID int, extra ...string) string {
+	t.Helper()
+
+	args := append([]string{"preauthkeys", "create",
 		"--user", fmt.Sprint(userID),
-		"--reusable", "--expiration", "24h").Output()
-	if err != nil {
-		t.Fatalf("headscale preauthkeys create: %v: %s", err, exitStderr(err))
-	}
+		"--reusable", "--expiration", "24h"}, extra...)
+	key := c.headscaleExec(t, args...)
 	// The key is the last line; earlier lines are log output.
 	lines := strings.Fields(strings.TrimSpace(string(key)))
 	if len(lines) == 0 {
 		t.Fatalf("headscale returned an empty pre-auth key")
 	}
 	return lines[len(lines)-1]
+}
+
+// SetPolicy replaces the control plane's ACL policy and fails the test
+// unless Headscale reads back exactly what was written, so a test can
+// never run against a topology other than the one it declares.
+func (c ControlPlane) SetPolicy(t *testing.T, policy string) {
+	t.Helper()
+
+	// The image has no shell, so the file is copied in rather than
+	// piped through one.
+	src := filepath.Join(t.TempDir(), "policy.hujson")
+	if err := os.WriteFile(src, []byte(policy), 0o644); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+	if out, err := exec.Command("docker", "cp", src,
+		c.container(t)+":/tmp/policy.hujson").CombinedOutput(); err != nil {
+		t.Fatalf("copy policy into headscale: %v: %s", err, string(out))
+	}
+	c.headscaleExec(t, "policy", "set", "-f", "/tmp/policy.hujson")
+
+	got := c.headscaleExec(t, "policy", "get")
+	if !bytes.Equal(bytes.TrimSpace(got), bytes.TrimSpace([]byte(policy))) {
+		t.Fatalf("headscale policy readback differs from what was set:\n"+
+			"--- set\n%s\n--- got\n%s", policy, string(got))
+	}
+}
+
+// NodeInfo is the control plane's record of a registered machine.
+type NodeInfo struct {
+	ID       uint64
+	Hostname string
+	// User is the Headscale user the machine is filed under. Tagged
+	// machines are owned by their tags and filed under a shared
+	// pseudo-user.
+	User   string
+	Tags   []string
+	Expiry *time.Time
+	Addrs  []string
+}
+
+// Node returns the control plane's record of the machine registered as
+// hostname.
+func (c ControlPlane) Node(t *testing.T, hostname string) NodeInfo {
+	t.Helper()
+
+	out := c.headscaleExec(t, "nodes", "list", "--output", "json")
+	var nodes []struct {
+		ID        uint64   `json:"id"`
+		Name      string   `json:"name"`
+		GivenName string   `json:"given_name"`
+		Tags      []string `json:"tags"`
+		Addrs     []string `json:"ip_addresses"`
+		User      *struct {
+			Name string `json:"name"`
+		} `json:"user"`
+		Expiry *struct {
+			Seconds int64 `json:"seconds"`
+		} `json:"expiry"`
+	}
+	if err := json.Unmarshal(out, &nodes); err != nil {
+		t.Fatalf("parse headscale nodes: %v: %s", err, string(out))
+	}
+	for _, n := range nodes {
+		if n.GivenName != hostname && n.Name != hostname {
+			continue
+		}
+		info := NodeInfo{
+			ID:       n.ID,
+			Hostname: hostname,
+			Tags:     slices.Clone(n.Tags),
+			Addrs:    n.Addrs,
+		}
+		if n.User != nil {
+			info.User = n.User.Name
+		}
+		if n.Expiry != nil && n.Expiry.Seconds > 0 {
+			exp := time.Unix(n.Expiry.Seconds, 0)
+			info.Expiry = &exp
+		}
+		return info
+	}
+	t.Fatalf("headscale has no node %q: %s", hostname, string(out))
+	return NodeInfo{}
+}
+
+func (c ControlPlane) headscaleExec(t *testing.T, args ...string) []byte {
+	t.Helper()
+
+	out, err := exec.Command("docker",
+		append([]string{"exec", c.container(t), "headscale"}, args...)...).Output()
+	if err != nil {
+		t.Fatalf("headscale %s: %v: %s",
+			strings.Join(args, " "), err, exitStderr(err))
+	}
+	return out
+}
+
+func (c ControlPlane) container(t *testing.T) string {
+	t.Helper()
+	if c.headscale == "" {
+		t.Fatalf("control plane at %s is not a Headscale container", c.URL)
+	}
+	return c.headscale
 }
 
 func writeHeadscaleConfig(

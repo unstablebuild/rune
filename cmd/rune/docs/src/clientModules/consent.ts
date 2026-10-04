@@ -99,6 +99,7 @@ function applyAndPublish(c: RuneConsent): void {
     try {
       window.localStorage.removeItem('rune-theme');
       window.localStorage.removeItem('rune-editor-preset');
+      window.localStorage.removeItem('rune-platform');
     } catch {
       /* ignore */
     }

@@ -57,8 +57,8 @@ func (t *webFetchTool) Definition() llmapi.Tool {
 final URL, extraction method, and the extracted text.
 
 The content is automatically converted from HTML to readable text. Use
-this after web_search to read the full contents of a promising result,
-or to fetch documentation, READMEs, or API references by URL.`,
+this to read the full contents of a promising search result, or to
+fetch documentation, READMEs, or API references by URL.`,
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{

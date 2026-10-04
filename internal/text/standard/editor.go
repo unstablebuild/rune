@@ -19,6 +19,7 @@ package standard
 import (
 	"context"
 	"errors"
+	"slices"
 
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
@@ -74,7 +75,11 @@ func (e *editor) Edit(
 	if ok {
 		indentRune = r
 	}
-	root := NewHandler(buf, file, indentRune, tabspaces, e.opts...).(*standardHandler)
+	opts := e.opts
+	if text.AutoCenterDisabled(ctx) {
+		opts = append(slices.Clip(opts), WithAutoCenter(false))
+	}
+	root := NewHandler(buf, file, indentRune, tabspaces, opts...).(*standardHandler)
 	ret = root
 	cursor := &root.cursor
 	if e.fileRegistry != nil {

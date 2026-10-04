@@ -53,6 +53,9 @@ type network struct {
 	gated    bool
 	autoJoin bool
 	dataDir  string
+	// shellRCDir holds the dotfiles for peers' login shells; see
+	// workspace.NewFileSchemeFunc.
+	shellRCDir string
 
 	mu     sync.Mutex
 	server *runenet.WorkspaceServer
@@ -69,7 +72,7 @@ type network struct {
 // the user's mistake to surface, not a reason to run partially
 // constructed.
 func newNetwork(
-	rootCfg config.Config, dataDir string, gate *networkGate,
+	rootCfg config.Config, dataDir, shellRCDir string, gate *networkGate,
 ) *network {
 	if gate == nil {
 		panic("newNetwork: gate must not be nil")
@@ -80,9 +83,10 @@ func newNetwork(
 		cfg, _ = runenet.FromConfig(config.NopConfig(), dataDir)
 	}
 	ret := &network{
-		gate:     gate,
-		autoJoin: cfg.AutoJoin,
-		dataDir:  dataDir,
+		gate:       gate,
+		autoJoin:   cfg.AutoJoin,
+		dataDir:    dataDir,
+		shellRCDir: shellRCDir,
 		// A key configured out of band belongs to a debug build
 		// driving a coordination server of its own, which the paid
 		// mesh must not be mixed up with.
@@ -188,7 +192,7 @@ func (n *network) join(ctx context.Context) error {
 	if n.closed || n.server != nil {
 		return nil
 	}
-	server, err := serveNetworkWorkspaces(n.node, n.dataDir)
+	server, err := serveNetworkWorkspaces(n.node, n.dataDir, n.shellRCDir)
 	if err != nil {
 		return fmt.Errorf("could not serve workspaces on the network: %w", err)
 	}
@@ -223,7 +227,7 @@ func networkConfig(rootCfg config.Config, dataDir string) (runenet.Config, error
 // it is resolved to an absolute path here: the peer consumes it as a
 // path on this host, not relative to its own process.
 func serveNetworkWorkspaces(
-	node *runenet.Node, dataDir string,
+	node *runenet.Node, dataDir, shellRCDir string,
 ) (*runenet.WorkspaceServer, error) {
 	uri, err := workspaceapi.CurrentUserHostURI("/")
 	if err != nil {
@@ -233,7 +237,7 @@ func serveNetworkWorkspaces(
 	if err != nil {
 		return nil, fmt.Errorf("resolve data dir %s: %w", dataDir, err)
 	}
-	scheme, err := workspace.NewFileScheme(
+	scheme, err := workspace.NewFileSchemeFunc(shellRCDir)(
 		context.Background(), config.NopConfig(), uri)
 	if err != nil {
 		return nil, fmt.Errorf("root workspace scheme: %w", err)
@@ -425,9 +429,10 @@ func (g gatedNetwork) Machines(
 	ret := make([]networkshell.Machine, 0, len(machines))
 	for _, m := range machines {
 		ret = append(ret, networkshell.Machine{
-			Hostname: m.Hostname,
-			LastSeen: m.LastSeen,
-			Online:   m.Online,
+			Hostname:  m.Hostname,
+			LastSeen:  m.LastSeen,
+			Online:    m.Online,
+			ServeOnly: m.ServeOnly,
 		})
 	}
 	return ret, nil

@@ -725,6 +725,48 @@ func TestMouseDelegateSelectionEndPinnedAcrossScroll(t *testing.T) {
 	}
 }
 
+// TestMouseDelegateSelectionStableWhileStreaming asserts that while scrolled
+// up, a reply streaming in place below the viewport does not shift the rows
+// under the pointer: a drag started before the chunk arrives and released
+// at the same screen row afterwards copies the rows the user saw.
+func TestMouseDelegateSelectionStableWhileStreaming(t *testing.T) {
+	const (
+		width  = 30
+		height = 8
+	)
+	comp := NewComponent(ComponentConfig{})
+	for i := range 30 {
+		comp.AddSendMessage("message " + string(rune('A'+i)))
+	}
+	comp.AddReceiveMessageChunk("reply")
+	comp.Resize(width, height)
+
+	grid := drawGrid(comp, width, height)
+	d := newMouseDelegate(grid, &comp.messages)
+	redraw := func() {
+		grid.Clear()
+		comp.Draw(grid)
+	}
+
+	for gridRowOf(grid, "message V") < 0 || gridRowOf(grid, "message W") < 0 {
+		require.True(t, d.ScrollUp(1))
+		redraw()
+	}
+	startRow := gridRowOf(grid, "message V")
+	endRow := gridRowOf(grid, "message W")
+
+	d.SetSelectionStart(term.Coordinates{X: 0, Y: startRow})
+	comp.AddReceiveMessageChunk("\n\nmore\n\nrows")
+	redraw()
+	assert.Equal(t, endRow, gridRowOf(grid, "message W"),
+		"streamed content must not move the visible rows")
+	d.SetSelectionEnd(term.Coordinates{X: len("message W") - 1, Y: endRow})
+
+	text, ok := d.Selection()
+	require.True(t, ok)
+	assert.Equal(t, "message V\nmessage W", text)
+}
+
 // TestMouseDelegateSelectionNegativeCoords exercises drags whose pointer leaves
 // the window into negative coordinates, which the terminal reports while the
 // mouse is dragged above or to the left of the viewport. The selection must not

@@ -274,6 +274,51 @@ AAAAAAAAAAAAAAAAAAAA
 		assert.Equal(t, ev, actualRepublishedEvent)
 	})
 
+	// Mouse events are routed by position and reach the stream in
+	// pane-local coordinates, so a republished one lands in whatever
+	// window sits at those coordinates of the root instead.
+	t.Run("handle does not re-dispatch mouse event if handle response is handled=false", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		mock := browsertest.NewMockFloating(ctrl)
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+		var republished []term.Event
+
+		mouseEv := term.Event{Type: term.EventMouse, MouseX: 5, MouseY: 3}
+		keyEv := term.Event{Type: term.EventKey, Ch: 'a', Raw: []byte("a")}
+		client, closeFn := setupIntTest(t, mock, func() {
+			mock.EXPECT().Handle(gomock.Any()).Return(false, false).Times(2)
+			mock.EXPECT().Selection()
+			mock.EXPECT().Dimensions()
+			mock.EXPECT().Cursor().Times(2)
+			mock.EXPECT().Draw(gomock.Any())
+		}, func(ev term.Event) error {
+			if ev.Type != term.EventMouse && ev.Type != term.EventKey {
+				return nil
+			}
+			mu.Lock()
+			republished = append(republished, ev)
+			mu.Unlock()
+			if ev.Type == term.EventKey {
+				wg.Done()
+			}
+			return nil
+		})
+		defer closeFn()
+
+		// The stream is ordered, so once the key comes back the mouse
+		// response has been processed too.
+		wg.Add(1)
+		_, _ = client.Handle(mouseEv)
+		_, _ = client.Handle(keyEv)
+		wg.Wait()
+
+		mu.Lock()
+		defer mu.Unlock()
+		require.Len(t, republished, 1)
+		assert.Equal(t, term.EventKey, republished[0].Type)
+	})
+
 	t.Run("cursor returns nothing", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		mock := browsertest.NewMockFloating(ctrl)

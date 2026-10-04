@@ -113,6 +113,9 @@ type Machine struct {
 	LastSeen time.Time
 	// Online is whether the machine is on the network right now.
 	Online bool
+	// ServeOnly is whether the machine only serves the account's other
+	// machines and cannot open workspaces itself.
+	ServeOnly bool
 }
 
 // Config configures a Handler.
@@ -262,6 +265,9 @@ func machinesMarkdown(machines []Machine, self string) string {
 		name := m.Hostname
 		if name == self {
 			name += " (this machine)"
+		}
+		if m.ServeOnly {
+			name += " (serve-only)"
 		}
 		state, lastSeen := "offline", "never"
 		if m.Online {

@@ -49,6 +49,12 @@ type VTE interface {
 	Title() string
 	UsedAlternateBuffer() bool
 	ClearPrimaryBuffer() bool
+	// ExitErr returns the error the process exited with: nil while it
+	// runs, when it exited cleanly, or before it was spawned.
+	ExitErr() error
+	// CursorAtScroll returns the cursor's position in the rows
+	// Snapshot captures, scrollback included.
+	CursorAtScroll() term.Coordinates
 }
 
 // Pin the subset of VTE that *vte.Handler must satisfy directly so
@@ -61,6 +67,8 @@ var _ interface {
 	SetDefaultAttributes(term.Attributes)
 	Snapshot() (vte.Snapshot, error)
 	RestoreFromSnapshot(vte.Snapshot) error
+	ExitErr() error
+	CursorAtScroll() term.Coordinates
 } = (*vte.Handler)(nil)
 
 // Facility is a pool of vte instances.It only caches vte instances

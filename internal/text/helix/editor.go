@@ -19,6 +19,7 @@ package helix
 import (
 	"context"
 	"errors"
+	"slices"
 
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
@@ -71,7 +72,11 @@ func (e *helixEditor) Edit(
 	if ok {
 		indentRune = r
 	}
-	root := NewWithIndent(buf, file, indentRune, tabspaces, e.opts...)
+	opts := e.opts
+	if text.AutoCenterDisabled(ctx) {
+		opts = append(slices.Clip(opts), WithAutoCenter(false))
+	}
+	root := NewWithIndent(buf, file, indentRune, tabspaces, opts...)
 	// The publisher does not mutate the cursor and it should never do so.
 	cursor := root.cursor
 	scroll := root.less.Scroll()

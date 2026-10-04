@@ -19,10 +19,9 @@ editor:
   mode: "standard"
 ```
 
-The preset adapts application shortcuts to the operating system. Pick
-Standard (macOS) or Standard (Linux) in the selector at the top of the page;
-every key on this page follows that choice and uses Rune's
-[key syntax](./key-syntax.md).
+The preset adapts application shortcuts to the operating system. Pick macOS or
+Linux with the platform switch at the top of the page; every key on this page
+follows that choice and uses Rune's [key syntax](./key-syntax.md).
 
 <Platform when="darwin">
 
@@ -88,6 +87,18 @@ Adding `<meta>` to the `ijkl` cluster resizes the window instead:
 <KeyBinding command="windowresize decrease width" /> narrower,
 <KeyBinding command="windowresize decrease height" /> shorter, and
 <KeyBinding command="windowresize increase width" /> wider.
+
+</Platform>
+
+<Platform when="linux">
+
+Adding `<ctrl-shift>` to the `ijkl` cluster resizes the window instead:
+<KeyBinding command="windowresize increase height" /> makes it taller,
+<KeyBinding command="windowresize decrease width" /> narrower,
+<KeyBinding command="windowresize decrease height" /> shorter, and
+<KeyBinding command="windowresize increase width" /> wider. Resize avoids
+`<alt-meta>`, which becomes plain `<meta>` when `<meta>` is Alt, and `<meta>`
+arrows, which desktops take under Super and the editor takes under Alt.
 
 </Platform>
 
@@ -332,9 +343,9 @@ left, and Delete removes the word to the right. `<ctrl-k>` starts a
 
 | Action | Key |
 | --- | --- |
-| Copy | `<meta-c>` or `<ctrl-c>` |
+| Copy | <KeyBinding command="clipboardcopy" chord="<meta-c>" /> or `<ctrl-c>` |
 | Cut | `<meta-x>` or `<ctrl-x>` |
-| Paste | `<meta-v>` or `<ctrl-v>` |
+| Paste | <KeyBinding command="clipboardpaste" chord="<meta-v>" /> or `<ctrl-v>` |
 | Paste and reindent | `<shift-meta-v>` or `<ctrl-shift-v>` |
 | Paste from clipboard history | `<alt-meta-v>` |
 
@@ -659,7 +670,7 @@ one text run. It does not add auto-paired closers or rewrite indentation.
 | Action | Key |
 | --- | --- |
 | Open the command prompt | <CommandPromptKey /> |
-| Open Rune's configuration | <KeyBinding command="config" /> |
+| Open Rune's configuration | <Platform when="darwin"><KeyBinding command="config" /></Platform><Platform when="linux">unbound; run `config`</Platform> |
 
 See [Command Prompt](./command-prompt.md) for commands, aliases, completion,
 and custom bindings.
@@ -671,7 +682,8 @@ The standard editor does not currently implement:
 - Multi-cursor editing.
 - An Emacs `<ctrl-x>` prefix layer.
 - An editor-owned completion popup. Completion lives in language extensions;
-  the Standard preset invokes it with `<ctrl-space>` when available.
+  the Standard preset invokes it with
+  <KeyBinding command="lsp complete" chord="<ctrl-space>" /> when available.
 - A dedicated goto-line key. Use the [Command Prompt](./command-prompt.md).
 
 For complete Vim, Neovim, Helix, Emacs, or another editor's behavior, use

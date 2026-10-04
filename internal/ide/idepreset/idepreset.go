@@ -31,6 +31,9 @@ import (
 type Data struct {
 	Meta      keymeta.Meta
 	Telemetry bool
+	// AltModifier is the gui.alt_modifier spelling of the Option key reserved
+	// for layout characters, or empty when neither is.
+	AltModifier string
 }
 
 // footer ends every rendered preset. Its own delimiters match the body's.
@@ -45,7 +48,8 @@ telemetry:
 // use [[ ]] delimiters, since presets document the {{ }} layout templates
 // of the status bars verbatim. The result is decoded again and must
 // carry data's choices: gui.meta_key equal to data.Meta, or absent when
-// data.Meta is Super, and telemetry.enabled equal to data.Telemetry.
+// data.Meta is Super, gui.alt_modifier equal to data.AltModifier, or
+// absent when it is empty, and telemetry.enabled equal to data.Telemetry.
 func Render(body string, data Data) (string, error) {
 	tmpl, err := template.New("preset").
 		Delims("[[", "]]").
@@ -68,7 +72,8 @@ func Render(body string, data Data) (string, error) {
 func check(out string, data Data) error {
 	var got struct {
 		GUI struct {
-			MetaKey *string `yaml:"meta_key"`
+			MetaKey     *string `yaml:"meta_key"`
+			AltModifier *string `yaml:"alt_modifier"`
 		} `yaml:"gui"`
 		Telemetry struct {
 			Enabled *bool `yaml:"enabled"`
@@ -82,6 +87,11 @@ func check(out string, data Data) error {
 		return fmt.Errorf("gui.meta_key is missing, want %s", data.Meta)
 	case got.GUI.MetaKey != nil && *got.GUI.MetaKey != data.Meta.String():
 		return fmt.Errorf("gui.meta_key is %q, want %s", *got.GUI.MetaKey, data.Meta)
+	case got.GUI.AltModifier == nil && data.AltModifier != "":
+		return fmt.Errorf("gui.alt_modifier is missing, want %s", data.AltModifier)
+	case got.GUI.AltModifier != nil && *got.GUI.AltModifier != data.AltModifier:
+		return fmt.Errorf("gui.alt_modifier is %q, want %q",
+			*got.GUI.AltModifier, data.AltModifier)
 	case got.Telemetry.Enabled == nil || *got.Telemetry.Enabled != data.Telemetry:
 		return fmt.Errorf("telemetry.enabled is not %t", data.Telemetry)
 	}

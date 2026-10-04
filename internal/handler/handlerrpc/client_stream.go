@@ -36,6 +36,7 @@ import (
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
+	tcomponent "unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/debug"
 )
 
@@ -321,25 +322,6 @@ func (s *ClientStream[T]) Close() error {
 	return nil
 }
 
-const (
-	smtgWrongCopy = `
-
-          ___
-         /___/\_               
-        _\   \/_/\__           
-      __\       \/_/\          
-      \   __    __ \ \         
-     __\  \_\   \_\ \ \   __   
-    /_/\\   __   __  \ \_/_/\  
-    \_\/_\__\/\__\/\__\/_\_\/  
-       \_\/_/\       /_\_\/    
-          \_\/       \_\/      
-    
-
-Uh, Houston, we've had a problem
-`
-)
-
 var _ tui.Handler = (*ClientStream[handlerrpc.StreamMessage])(nil)
 
 type asyncState uint8
@@ -528,6 +510,12 @@ func (s *ClientStream[T]) receiveMessages() (ret error) {
 					s.log(log.ErrorLevel, "convert handle event back into model: %v", err)
 					continue
 				}
+				// Mouse events are routed by position and ev carries
+				// coordinates local to this handler, so the root would
+				// deliver it to whichever window sits there instead.
+				if ev.Type == term.EventMouse {
+					continue
+				}
 				ev.Raw = clientStreamRepublishKey
 				err = s.publisher(ev)
 				if err != nil {
@@ -569,7 +557,7 @@ func (s *ClientStream[T]) closeStream(err error) {
 }
 
 func (s *ClientStream[T]) drawError(w term.Writer) {
-	comp := component.NewStringWithConfig(smtgWrongCopy,
+	comp := component.NewStringWithConfig(tcomponent.ProblemArt,
 		component.StringConfig{Alignment: component.AlignmentCentered})
 	comp.Resize(s.width, s.height)
 	comp.Draw(w)

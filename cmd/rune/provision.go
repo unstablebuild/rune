@@ -45,21 +45,18 @@ import (
 // (now including any gui.env block merged by those installs, plus the
 // workspace-root .rune/config.yaml overlay) and applies gui.env and the
 // ~/.rune/bin PATH entry to this process so LSP/tool/debug children inherit a
-// working toolchain. It returns the loaded config for the file scheme to reuse.
+// working toolchain.
 //
 // Failure policy: provisioning failures must never abort the ssh connection.
-// Every fallible step warns and continues, and the returned config is always
-// usable (falling back to the default config on load errors).
-func provisionRemote(
-	scheme schemeapi.Scheme, uri workspaceapi.URI,
-) config.Config {
+// Every fallible step warns and continues.
+func provisionRemote(scheme schemeapi.Scheme, uri workspaceapi.URI) {
 	installRemotePackages(scheme)
 	// The post-install phase (config overlay fetch over SSH, gui.env, PATH)
 	// runs with no other progress source, so emit a finalizing checkpoint to
 	// keep the progress bar alive through it. The bar is closed by the local
 	// side only when the ServerReady sentinel arrives, not here.
 	emitFinalizing(os.Stderr)
-	return loadRemoteConfigAndApplyEnv(scheme, uri)
+	loadRemoteConfigAndApplyEnv(scheme, uri)
 }
 
 // installRemotePackages installs and activates every package in the --install
@@ -272,12 +269,9 @@ func (d *downloadProgressWriter) Progress(progress, total int64, _ string) {
 
 // loadRemoteConfigAndApplyEnv loads the remote ~/.rune config overlaid with
 // the workspace-root .rune/config.yaml, applies its gui.env block to this
-// process, and prepends ~/.rune/bin to PATH. It returns the loaded config so
-// the file scheme can reuse it (e.g. for zdotdir). On any error it warns and
-// returns a usable config so serving is never blocked.
-func loadRemoteConfigAndApplyEnv(
-	scheme schemeapi.Scheme, uri workspaceapi.URI,
-) config.Config {
+// process, and prepends ~/.rune/bin to PATH. On any error it warns and
+// continues so serving is never blocked.
+func loadRemoteConfigAndApplyEnv(scheme schemeapi.Scheme, uri workspaceapi.URI) {
 	cwd := workspace.NewSchemeWorkspace(uri, scheme,
 		func(fn func()) bool { fn(); return true })
 	rootCfg, err := ide.ConfigWithOverlays(
@@ -305,7 +299,6 @@ func loadRemoteConfigAndApplyEnv(
 	if err := setupRuneBinPATH(*flagDataPath); err != nil {
 		log.Warnf("provision: set ~/.rune/bin on PATH: %v", err)
 	}
-	return rootCfg
 }
 
 // resolveRemoteEditorMode resolves the user's editor mode from the remote

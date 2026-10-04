@@ -288,6 +288,24 @@ func getGUIKeyMapping(browser browser.Browser, cfg config.Config) map[term.KeyCo
 	return ret
 }
 
+// getGUIAltModifier reads 'gui.alt_modifier'; absent or invalid reserves none.
+func getGUIAltModifier(browser browser.Browser, cfg config.Config) gui.AltModifier {
+	value, err := cfg.GetString("alt_modifier")
+	if err != nil {
+		if err != config.ErrNotFound {
+			_, _ = browser.Notify(browserapi.LevelError,
+				"Could not load 'gui.alt_modifier' from config: %v", err)
+		}
+		return gui.AltModifierNone
+	}
+	modifier, err := gui.ParseAltModifier(value)
+	if err != nil {
+		_, _ = browser.Notify(browserapi.LevelError,
+			"Invalid 'gui.alt_modifier': %v", err)
+	}
+	return modifier
+}
+
 func getGUIEnvVars(cfg config.Config) (ret config.Config, err error) {
 	var env config.Config
 	ret = config.NopConfig()

@@ -12,8 +12,9 @@ primitive at a time, and along the way you will see why the preset
 keybindings are the way they are. The bindings below follow the editor preset
 selected at the top of the page.
 
-On macOS, `<meta>` is the Command key. On Linux it is the Super key. See the
-[key syntax](./key-syntax.md) reference for how modifiers are spelled.
+On macOS, `<meta>` is the Command key. On Linux, first-run setup asks which key
+it is, and [`gui.meta_key`](./key-syntax.md#what-meta-means) changes it later.
+See the [key syntax](./key-syntax.md) reference for how modifiers are spelled.
 
 ## The big idea
 
@@ -270,83 +271,37 @@ command:
 three windows side by side; `layout-laptop` leaves you with two. Run the
 one that fits the screen you are on, and the workspace snaps into shape.
 
-## Reference tables
+## Reference table
 
-These are the shipped preset assignments. Every layout binding lives in
-`command.key_bindings`, so you can remap it (see [Rebinding](#rebinding)). Run
-`cheatsheet` to see the bindings active in your configuration.
-
-### Vim
-
-| Command | Binding |
-| --- | --- |
-| `windowfocus left/right/down/up` | `<meta-h>` / `<meta-l>` / `<meta-j>` / `<meta-k>` |
-| `windowmove left/right/down/up` | `<shift-meta-h>` / `<shift-meta-l>` / `<shift-meta-j>` / `<shift-meta-k>` |
-| `windowresize` narrower/wider/shorter/taller | `<alt-meta-h>` / `<alt-meta-l>` / `<alt-meta-j>` / `<alt-meta-k>` |
-| `windowresize` max / min / reset | `<shift-meta-+>` / `<shift-meta-->` / `<shift-meta-backspace>` |
-| `windowtogglemaximize` | `<shift-meta-f>` |
-| `windowdefaultsplit h/v` | `<ctrl-meta-h>` / `<ctrl-meta-v>` |
-| `windownew` | `<meta-n>` |
-| `windowclose` / `windowcloseall` | `<meta-w>` / `<shift-meta-w>` |
-| `tabnew` | `<meta-t>` |
-| `tabnext` / `tabprevious` | `<alt-l>` / `<alt-h>` |
-| `tabfocus 1..9` | `<alt-1>` … `<alt-9>` |
-| `tabmove left/right` | `<alt-shift-h>` / `<alt-shift-l>` |
-| `tabmove 1..9` | `<alt-shift-1>` … `<alt-shift-9>` |
-| `tabsearch` | `` <alt-`> `` |
-| `tabclose` | `<alt-w>` |
-| `windowconverttab` | `<alt-enter>` |
-| `terminalneworsplit` | `<meta-enter>` |
-| `workspacefocus 1..9` | `<meta-1>` … `<meta-9>` |
-| `workspacemove 1..9` | `<shift-meta-1>` … `<shift-meta-9>` |
-| `workspacesearch` | `` <meta-`> `` |
-
-### Standard
+These are the shipped assignments of the preset and platform selected at the
+top of the page. Every layout binding lives in `command.key_bindings`, so you
+can remap it (see [Rebinding](#rebinding)). Run `cheatsheet` to see the
+bindings active in your configuration.
 
 | Command | Binding |
 | --- | --- |
-| `windowfocus left/right/down/up` | `<alt-j>` / `<alt-l>` / `<alt-k>` / `<alt-i>` |
-| `windowmove left/right/down/up` | `<alt-shift-j>` / `<alt-shift-l>` / `<alt-shift-k>` / `<alt-shift-i>` |
-| `windowresize` narrower/wider/shorter/taller | `<alt-meta-j>` / `<alt-meta-l>` / `<alt-meta-k>` / `<alt-meta-i>` |
-| `windowresize` max / min / reset | `<shift-meta-+>` / `<shift-meta-->` / `<shift-meta-backspace>` |
-| `windowtogglemaximize` | `<alt-m>` |
-| `windowdefaultsplit h/v` | `<alt-h>` / `<alt-v>` |
-| `windownew` | `<alt-n>` |
-| `windowclose` / `windowcloseall` | `<alt-q>` / `<alt-shift-q>` |
-| `windowconverttab` prompt | `<alt-shift-enter>` |
-| `tabnew` | `<meta-t>` |
-| `tabnext` / `tabprevious` | `<alt-]>` / `<alt-[>` |
-| `tabfocus 1..9` | `<alt-1>` … `<alt-9>` |
-| `tabmove left/right` | `<alt-shift-[>` / `<alt-shift-]>` |
-| `tabmove 1..9` | `<alt-shift-1>` … `<alt-shift-9>` |
-| `tabsearch` | `` <alt-`> `` |
-| `tabclose` | `<alt-w>` |
-| `terminalneworsplit` | `<alt-enter>` / `<meta-enter>` |
-| `workspacefocus 1..9` | `<meta-1>` … `<meta-9>` |
-| `workspacemove 1..9` | `<shift-meta-1>` … `<shift-meta-9>` |
-| `workspacesearch` | `` <meta-`> `` |
-
-### Emacs
-
-| Command | Binding |
-| --- | --- |
-| `windowfocus left/right/down/up` | `<meta-b>` / `<meta-f>` / `<meta-n>` / `<meta-p>` |
-| `windowfocus other` | `<ctrl-x>o` |
-| `windowmove left/right/down/up` | `<shift-meta-b>` / `<shift-meta-f>` / `<shift-meta-n>` / `<shift-meta-p>` |
-| `windowresize` narrower/wider/shorter/taller | `<meta-left>` / `<meta-right>` / `<meta-down>` / `<meta-up>` |
-| `windowresize` max / min / reset | `<shift-meta-+>` / `<shift-meta-->` / `<shift-meta-backspace>` |
-| `windowclose` / `windowcloseall` | `<meta-k>` / `<shift-meta-k>`; `<ctrl-x>0` / `<ctrl-x>1` |
-| `windownew down/right` | `<meta-d>` / `<meta-r>`; `<ctrl-x>2` / `<ctrl-x>3` |
-| `windowtogglemaximize` | `<meta-m>` |
-| `windowdefaultsplit h/v` | `<ctrl-meta-h>` / `<ctrl-meta-v>` |
-| `tabnext` / `tabprevious` | `<meta-]>` / `<meta-[>`; `<ctrl-tab>` / `<ctrl-shift-tab>` |
-| `tabmove left/right` | `<shift-meta-[>` / `<shift-meta-]>` |
-| `tabnew` | `<meta-t>` |
-| `tabclose` | `<meta-w>` |
-| `terminalneworsplit` | `<meta-enter>` |
-| `workspacefocus 1..9` | `<meta-1>` … `<meta-9>` |
-| `workspacemove 1..9` | `<shift-meta-1>` … `<shift-meta-9>` |
-| `workspacesearch` | `` <meta-`> `` |
+| `windowfocus` left / right / down / up | <KeyBinding command="windowfocus left" /> / <KeyBinding command="windowfocus right" /> / <KeyBinding command="windowfocus down" /> / <KeyBinding command="windowfocus up" /> |
+| `windowfocus other` | <KeyBinding command="windowfocus other" /> |
+| `windowmove` left / right / down / up | <KeyBinding command="windowmove left" /> / <KeyBinding command="windowmove right" /> / <KeyBinding command="windowmove down" /> / <KeyBinding command="windowmove up" /> |
+| `windowresize` narrower / wider / shorter / taller | <KeyBinding command="windowresize decrease width" /> / <KeyBinding command="windowresize increase width" /> / <KeyBinding command="windowresize decrease height" /> / <KeyBinding command="windowresize increase height" /> |
+| `windowresize` max / min / reset | <KeyBinding command={['windowresize max width', 'windowresize max height']} /> / <KeyBinding command={['windowresize min width', 'windowresize min height']} /> / <KeyBinding command="windowresize reset" /> |
+| `windowtogglemaximize` | <KeyBinding command="windowtogglemaximize" /> |
+| `windowdefaultsplit h` / `v` | <KeyBinding command="windowdefaultsplit h" /> / <KeyBinding command="windowdefaultsplit v" /> |
+| `windownew` | <KeyBinding command="windownew" /> |
+| `windownew down` / `right` | <KeyBinding command="windownew down" /> / <KeyBinding command="windownew right" /> |
+| `windowclose` / `windowcloseall` | <KeyBinding command="windowclose" /> / <KeyBinding command="windowcloseall" /> |
+| `windowconverttab` prompt | <KeyBinding command="echo {prompt}windowconverttab<space>" /> |
+| `tabnew` | <KeyBinding command="tabnew" /> |
+| `tabnext` / `tabprevious` | <KeyBinding command="tabnext" /> / <KeyBinding command="tabprevious" /> |
+| `tabfocus 1` … `9` | <KeyBinding command="tabfocus 1" /> / <KeyBinding command="tabfocus 9" /> |
+| `tabmove left` / `right` | <KeyBinding command="tabmove left" /> / <KeyBinding command="tabmove right" /> |
+| `tabmove 1` … `9` | <KeyBinding command="tabmove 1" /> / <KeyBinding command="tabmove 9" /> |
+| `tabsearch` | <KeyBinding command="tabsearch" /> |
+| `tabclose` | <KeyBinding command="tabclose" /> |
+| `terminalneworsplit` | <KeyBinding command="terminalneworsplit" /> |
+| `workspacefocus 1` … `9` | <KeyBinding command="workspacefocus 1" /> / <KeyBinding command="workspacefocus 9" /> |
+| `workspacemove 1` … `9` | <KeyBinding command="workspacemove 1" /> / <KeyBinding command="workspacemove 9" /> |
+| `workspacesearch` | <KeyBinding command="workspacesearch" /> |
 
 ## Rebinding
 

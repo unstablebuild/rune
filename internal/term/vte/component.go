@@ -76,6 +76,12 @@ type Component struct {
 	// minutes or hours away.
 	spawnErrored atomic.Bool
 	pid          atomic.Int64
+	// exitCh receives the exit status of the process, alongside any
+	// Config.Watcher. It holds the one value so the executor never
+	// blocks on a terminal that stopped waiting for it.
+	exitCh chan error
+	// exitErr is the status Run collected from exitCh. Guarded by mu.
+	exitErr error
 	// slaveClosed makes the parent-side slave close idempotent:
 	// startCommand closes it after a successful spawn and Close
 	// closes it on teardown paths where no spawn succeeded.
@@ -140,6 +146,7 @@ func (t *Component) Init(
 	t.version.Store(1)
 
 	t.ctx, t.cancelCtx = context.WithCancel(context.Background())
+	t.exitCh = make(chan error, 1)
 	err := t.createPty(cfg.CommandAndArgs)
 	if err != nil {
 		return err
@@ -198,9 +205,42 @@ func (t *Component) Run(publisher browser.EventPublisher) error {
 	t.mu.Unlock()
 	err := t.run(publisher)
 	if t.pid.Load() != 0 {
+		t.awaitExitStatus()
 		_ = t.cfg.ScheduleNextTick(func() { t.tm.OnTabExit(t.uri) })
 	}
 	return err
+}
+
+// exitStatusTimeout bounds how long a terminal whose pty closed waits
+// for its process' exit status, which a process that outlives its pty
+// does not report in time.
+const exitStatusTimeout = 2 * time.Second
+
+// awaitExitStatus collects the exit status after the pty closed: the
+// executor reports it independently, so it may still be in flight.
+func (t *Component) awaitExitStatus() {
+	timer := time.NewTimer(exitStatusTimeout)
+	defer timer.Stop()
+	select {
+	case err := <-t.exitCh:
+		t.mu.Lock()
+		t.exitErr = err
+		t.mu.Unlock()
+	case <-timer.C:
+		t.log(log.DebugLevel, "exit status did not arrive within %v", exitStatusTimeout)
+	case <-t.ctx.Done():
+	}
+}
+
+// ExitErr returns the error the process exited with. It is nil while
+// the process runs, when it exited cleanly, when its status did not
+// arrive shortly after the pty closed, or when the command never
+// started. It is final by the time the TabManager's OnTabExit is
+// called.
+func (t *Component) ExitErr() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.exitErr
 }
 
 // Title returns the Title of this Component.
@@ -448,6 +488,15 @@ func (t *Component) scrollY() int {
 	}
 
 	return t.scroll.Offset().Y
+}
+
+// screenHeight returns the number of rows the terminal window shows, the
+// range of window coordinates such as mouse positions. Unlike Height it
+// excludes the scrollback.
+func (t *Component) screenHeight() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.height
 }
 
 // MaxScrollOffset returns the current vertical scroll offset.
@@ -1050,7 +1099,10 @@ func (t *Component) startCommand(ctx context.Context, cmdAndArgsStr string) erro
 	t.log(log.DebugLevel, "creating pty with cmdAndArgs: %#v", cmdAndArgs)
 	cmd := workspaceapi.Cmd{
 		SysProcAttr: procattr.NewSession(true, true),
-		Watcher:     t.watcher,
+		Watcher:     workspaceapi.ChanProcessWatcher(t.exitCh),
+	}
+	if t.watcher != nil {
+		cmd.Watcher = workspaceapi.MultiProcessWatcher(t.watcher, cmd.Watcher)
 	}
 	cmd.Env = appendDefaultTerminalEnv(cmd.Env)
 	// When the user hasn't configured a CommandAndArgs, leave

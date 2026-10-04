@@ -23,9 +23,12 @@ import (
 
 	"unstable.build/rune/internal/ide/idepreset"
 	"unstable.build/rune/internal/ide/keymeta"
+	"unstable.build/rune/internal/term/gui"
 )
 
-func renderPreset(editor string, meta keymeta.Meta, telemetry bool) (string, error) {
+func renderPreset(
+	editor string, meta keymeta.Meta, telemetry bool, altModifier gui.AltModifier,
+) (string, error) {
 	var body, mode string
 	switch editor {
 	case editorVim:
@@ -43,5 +46,13 @@ func renderPreset(editor string, meta keymeta.Meta, telemetry bool) (string, err
 		return "", fmt.Errorf("meta key %s is not offered for %s on %s",
 			meta, mode, runtime.GOOS)
 	}
-	return idepreset.Render(body, idepreset.Data{Meta: meta, Telemetry: telemetry})
+	data := idepreset.Data{Meta: meta, Telemetry: telemetry}
+	switch {
+	case runtime.GOOS == "darwin":
+		data.AltModifier = altModifier.String()
+	case altModifier != gui.AltModifierNone:
+		return "", fmt.Errorf("alt modifier %s is not offered on %s",
+			altModifier, runtime.GOOS)
+	}
+	return idepreset.Render(body, data)
 }

@@ -161,7 +161,10 @@ func (m *pkgManager) installLatest(
 ) (sdkiterator.Iterator[string], error) {
 	pw := text.NewNotifyProgressWriter(m.n, m.interrupter,
 		fmt.Sprintf("install %s@%s", pkgID, version), m.scheduleNextTick)
-	if err := m.pkg.InstallPackageVersion(ctx, pkgID, version, pw); err != nil {
+	// A concurrent caller may have completed the install since LibDir
+	// reported the package missing.
+	err := m.pkg.InstallPackageVersion(ctx, pkgID, version, pw)
+	if err != nil && !errors.Is(err, idepkg.ErrAlreadyInstalled) {
 		return nil, fmt.Errorf("install latest version: %w", err)
 	}
 	return m.pkg.LibDir(ctx, pkgID)
@@ -305,11 +308,17 @@ func newPendingIterator(pkg *idepkg.Manager, pkgID string, gate *installGate) *p
 	return &pkgManagerIterator{pkg: pkg, pkgID: pkgID, gate: gate}
 }
 
-// await blocks until the install resolves, then lazily opens this
-// iterator's own LibDir so each waiter iterates independently.
-func (l *pkgManagerIterator) await() {
-	<-l.gate.done
+// await blocks until the install resolves or ctx is done, then lazily
+// opens this iterator's own LibDir so each waiter iterates
+// independently. A cancelled wait is sticky so Err reports it.
+func (l *pkgManagerIterator) await(ctx context.Context) {
 	if l.err != nil || l.it != nil {
+		return
+	}
+	select {
+	case <-l.gate.done:
+	case <-ctx.Done():
+		l.err = ctx.Err()
 		return
 	}
 	if l.gate.err != nil {
@@ -320,17 +329,21 @@ func (l *pkgManagerIterator) await() {
 }
 
 func (l *pkgManagerIterator) Next(ctx context.Context) (string, bool) {
-	l.await()
+	l.await(ctx)
 	if l.err != nil {
 		return "", false
 	}
 	return l.it.Next(ctx)
 }
 
+// Err reports only what Next has encountered. It never waits on the
+// install decision, so it returns nil before the first Next.
 func (l *pkgManagerIterator) Err() error {
-	l.await()
 	if l.err != nil {
 		return l.err
+	}
+	if l.it == nil {
+		return nil
 	}
 	return l.it.Err()
 }

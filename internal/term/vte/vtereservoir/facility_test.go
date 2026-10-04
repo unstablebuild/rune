@@ -798,6 +798,14 @@ func (v *testVte) ClearPrimaryBuffer() bool {
 	return true
 }
 
+func (v *testVte) ExitErr() error {
+	return nil
+}
+
+func (v *testVte) CursorAtScroll() term.Coordinates {
+	return term.Coordinates{}
+}
+
 // fakeRemoteScheme mirrors workspace.RemoteScheme for tests that
 // exercise Facility.watchRemoteScheme without spinning up a real
 // SSH transport. The disconnect channel is allocated once at
@@ -886,4 +894,6 @@ func (r *recordingVTE) URI() workspaceapi.URI                  { return workspac
 func (r *recordingVTE) Title() string                          { return "" }
 func (r *recordingVTE) UsedAlternateBuffer() bool              { return false }
 func (r *recordingVTE) ClearPrimaryBuffer() bool               { return true }
+func (r *recordingVTE) ExitErr() error                         { return nil }
+func (r *recordingVTE) CursorAtScroll() term.Coordinates       { return term.Coordinates{} }
 func (r *recordingVTE) Close() error                           { r.closed.Store(true); return nil }

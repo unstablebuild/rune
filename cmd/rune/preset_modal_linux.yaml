@@ -114,7 +114,8 @@ command:
     "<meta-->": "guifontsize decrease"
     "<meta-c>": "clipboardcopy"
     "<meta-v>": "clipboardpaste"
-    # Windows: hjkl focuses, <shift> moves.
+    # Windows: hjkl focuses, <shift> moves, <ctrl-shift> resizes. Resize
+    # stays off <alt-meta>, which folds onto <meta> when <meta> is Alt.
     "<meta-n>": "windownew"
     "<meta-h>": "windowfocus left"
     "<meta-j>": "windowfocus down"
@@ -124,6 +125,10 @@ command:
     "<shift-meta-j>": "windowmove down"
     "<shift-meta-k>": "windowmove up"
     "<shift-meta-l>": "windowmove right"
+    "<ctrl-shift-meta-h>": "windowresize decrease width"
+    "<ctrl-shift-meta-j>": "windowresize decrease height"
+    "<ctrl-shift-meta-k>": "windowresize increase height"
+    "<ctrl-shift-meta-l>": "windowresize increase width"
     "<meta-w>": "windowclose"
     "<shift-meta-f>": "windowtogglemaximize"
     "<ctrl-meta-h>": "windowdefaultsplit h"

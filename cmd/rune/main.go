@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -115,7 +116,6 @@ var (
 	flagReleaseCollection = flag.String("rune-release-collection",
 		apicfg.ReleaseCollection,
 		"Collection name for the release manager.")
-	flagZdotDir = flag.String("rune-zdotdir", "", "Initial ZDOTDIR directory when using default OS shell via $SHELL.")
 
 	flagWebsiteAddress = flag.String("rune-website-address", apiclient.DefaultWebsiteAddress,
 		"Base URL of the Rune website. Used to build the checkout URL "+
@@ -185,7 +185,6 @@ func cwdURI() workspaceapi.URI {
 func startWorkspaceServer() int {
 	var logger *slog.Logger
 
-	newScheme := workspace.NewFileScheme
 	// The log defaults to <default datadir>/server.log; when the datadir is
 	// overridden without an explicit --workspace-server-log, keep the log
 	// beside the rest of the server state. debug.StartPProfOnSignal writes the
@@ -262,24 +261,23 @@ func startWorkspaceServer() int {
 		return 2
 	}
 
-	// Install the local toolchain's packages, load the remote config, and
-	// apply gui.env before serving so extension-spawned tools resolve. A
-	// provisioning scheme reads/writes the remote filesystem; provisioning
-	// failures never abort the connection (they warn and continue).
-	provScheme, err := newScheme(context.Background(), config.NopConfig(), uri)
+	shellRCDir, err := installShellRC(*flagDataPath)
 	if err != nil {
-		log.Error(err)
-		return 3
+		reportRemoteShellRCErr(os.Stderr, err)
 	}
-	rootCfg := provisionRemote(provScheme, uri)
-	_ = provScheme.Close()
+	newScheme := workspace.NewFileSchemeFunc(shellRCDir)
 
-	scheme, err := newScheme(context.Background(), rootCfg, uri)
+	// Install the local toolchain's packages, load the remote config, and
+	// apply gui.env before serving so extension-spawned tools resolve.
+	// Provisioning failures never abort the connection (they warn and
+	// continue).
+	scheme, err := newScheme(context.Background(), config.NopConfig(), uri)
 	if err != nil {
 		log.Error(err)
 		return 3
 	}
 	defer scheme.Close()
+	provisionRemote(scheme, uri)
 
 	server := workspacerpc.NewServer(scheme,
 		workspacerpc.CommandAuthorizerFunc(
@@ -319,9 +317,6 @@ func main() {
 	if err := flag.CommandLine.MarkHidden("rune-release-collection"); err != nil {
 		panic(err)
 	}
-	if err := flag.CommandLine.MarkHidden("rune-zdotdir"); err != nil {
-		panic(err)
-	}
 	if err := flag.CommandLine.MarkHidden("rune-website-address"); err != nil {
 		panic(err)
 	}
@@ -337,7 +332,6 @@ func main() {
 
 	flag.Parse()
 
-	exec, _ := os.Executable()
 	// If no manual tui/gui flag was set, assume we were launched as a desktop
 	// app and inject the same defaults the platform launcher would normally pass.
 	if !*flagGUI && !*flagTUI && !*flagHeadless && *flagWorkspaceServer == "" {
@@ -345,19 +339,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "mkdir datadir %q: %s",
 				*flagDataPath, err)
 		}
-		// gracefully degrade; launch without zsh customization
-		// which looses ensuring modal vte works well with zsh
-		zdotDir := ""
-		if src, ok := bundleZdotDir(runtime.GOOS, exec); ok {
-			dst := filepath.Join(*flagDataPath, "zdot")
-			if err := installZdotDir(src, dst); err != nil {
-				fmt.Fprintf(os.Stderr,
-					"install zdot %q -> %q: %s", src, dst, err)
-			} else {
-				zdotDir = dst
-			}
-		}
-		defaults, ok := appLaunchArgs(runtime.GOOS, zdotDir)
+		defaults, ok := appLaunchArgs(runtime.GOOS)
 		if ok {
 			os.Args = append(os.Args[:1], append(defaults, os.Args[1:]...)...)
 
@@ -415,72 +397,13 @@ func main() {
 	os.Exit(4)
 }
 
-var zdotFiles = []string{".zshenv", ".zprofile", ".zshrc", ".zlogin"}
-
-func appLaunchArgs(goos, zdotDir string) ([]string, bool) {
-	var args []string
-	if zdotDir != "" {
-		args = append(args, "--rune-zdotdir="+zdotDir)
-	}
+func appLaunchArgs(goos string) ([]string, bool) {
 	switch goos {
 	case "darwin", "linux", "windows":
-		return append(args, "-G", "-w", ""), true
+		return []string{"-G", "-w", ""}, true
 	default:
 		return nil, false
 	}
-}
-
-func bundleZdotDir(goos, execPath string) (string, bool) {
-	switch goos {
-	case "darwin":
-		macosDir := filepath.Dir(execPath)
-		contentsDir := filepath.Dir(macosDir)
-		resourcesDir := filepath.Join(contentsDir, "Resources")
-		return filepath.Join(resourcesDir, "zdot"), true
-	case "linux":
-		appDir, ok := linuxAppDir(execPath)
-		if !ok {
-			return "", false
-		}
-		return filepath.Join(appDir, "share", "zdot"), true
-	default:
-		return "", false
-	}
-}
-
-func installZdotDir(srcDir, dstDir string) error {
-	if err := os.MkdirAll(dstDir, 0o755); err != nil {
-		return err
-	}
-	for _, name := range zdotFiles {
-		src := filepath.Join(srcDir, name)
-		data, err := os.ReadFile(src)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			return err
-		}
-		dst := filepath.Join(dstDir, name)
-		if err := os.WriteFile(dst, data, 0o644); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func linuxAppDir(execPath string) (string, bool) {
-	binDir := filepath.Dir(execPath)
-	if filepath.Base(binDir) != "bin" {
-		return "", false
-	}
-
-	appDir := filepath.Dir(binDir)
-	if filepath.Base(appDir) != "rune.app" {
-		return "", false
-	}
-
-	return appDir, true
 }
 
 // headlessFlags are the flags a headless node reads. Any other flag
@@ -582,9 +505,10 @@ func run() int {
 	}
 
 	ctx := context.Background()
+	shellRCDir, shellRCErr := installShellRC(*flagDataPath)
 
 	if *flagHeadless {
-		return runHeadless(ctx)
+		return runHeadless(ctx, shellRCDir, shellRCErr)
 	}
 
 	var mu sync.Mutex
@@ -611,9 +535,9 @@ func run() int {
 	trust := pkgtrust.NewStore(*flagDataPath, trustKeyringFetcher())
 
 	if *flagGUI {
-		return runGUI(filenames, runner, trust, &mu, pathDone)
+		return runGUI(filenames, runner, trust, &mu, pathDone, shellRCDir, shellRCErr)
 	} else if *flagTUI {
-		return runTUI(filenames, runner, trust, &mu)
+		return runTUI(filenames, runner, trust, &mu, shellRCDir, shellRCErr)
 	} else {
 		fmt.Fprintf(os.Stderr,
 			"one of --gui, --tui or --headless must be set if running on %s\n",
@@ -622,9 +546,37 @@ func run() int {
 	}
 }
 
+// installShellRC returns "" and an error for the user when the dotfiles
+// could not be written, which leaves login shells to the user's own
+// dotfiles.
+func installShellRC(dataDir string) (string, error) {
+	dir, err := workspace.InstallShellRC(dataDir)
+	if err != nil {
+		return "", fmt.Errorf("terminal modal mode may not work in zsh and "+
+			"bash: install shell dotfiles: %w", err)
+	}
+	return dir, nil
+}
+
+func reportShellRCErr(n browserapi.Notifications, err error) {
+	log.Warn(err)
+	_, _ = n.Notify(browserapi.LevelWarn, "%v", err)
+}
+
+// reportRemoteShellRCErr reports err to the user of a rune -x server,
+// whose local side shows failed provisioning records as notifications.
+func reportRemoteShellRCErr(stderr io.Writer, err error) {
+	log.Warn(err)
+	emitProvisionProgress(stderr, workspacessh.ProvisionProgress{
+		Package: "shell dotfiles",
+		Phase:   workspacessh.ProvisionPhaseFailed,
+		Detail:  err.Error(),
+	})
+}
+
 func runTUI(
 	filenames []string, runner ide.ExtensionsRunner, trust *pkgtrust.Store,
-	mu *sync.Mutex,
+	mu *sync.Mutex, shellRCDir string, shellRCErr error,
 ) int {
 	opts := []ide.Option{
 		ide.WithExtensionsRunner(runner),
@@ -645,7 +597,7 @@ func runTUI(
 		ide.WithScheduleNextTick(func(fn func()) bool {
 			return tui.PublishEvent(term.Event{Type: term.EventInterrupt, UserFunc: fn})
 		}),
-		ide.WithZdotDir(*flagZdotDir),
+		ide.WithShellRCDir(shellRCDir),
 		ide.WithScheme(docsScheme, newDocsSchemeFunc(*flagConfigPath)),
 		ide.WithStreamingOpen(true),
 	}
@@ -667,7 +619,7 @@ func runTUI(
 	client, releaseManager := newAPIClient(storage, os.TempDir(), rootCfg)
 	defer client.Close()
 
-	net := newNetwork(rootCfg, *flagDataPath, newNetworkGate(client))
+	net := newNetwork(rootCfg, *flagDataPath, shellRCDir, newNetworkGate(client))
 	net.startAutoJoin()
 	defer func() {
 		_ = net.Close()
@@ -686,6 +638,9 @@ func runTUI(
 	if err != nil {
 		fmt.Printf("%s", err)
 		return 1
+	}
+	if shellRCErr != nil {
+		reportShellRCErr(i.Browser(), shellRCErr)
 	}
 	if err := net.register(i, scheduleNextTick); err != nil {
 		log.Errorf("register network: %v", err)
@@ -736,7 +691,7 @@ func runTUI(
 
 func runGUI(
 	filenames []string, runner ide.ExtensionsRunner, trust *pkgtrust.Store,
-	mu *sync.Mutex, pathDone <-chan error,
+	mu *sync.Mutex, pathDone <-chan error, shellRCDir string, shellRCErr error,
 ) int {
 	setEnvForGUI(*flagDataPath)
 
@@ -782,6 +737,12 @@ func runGUI(
 		return g.CellPixelSize()
 	}
 
+	setAltModifier := func(modifier gui.AltModifier) {
+		if g := guiRef.Load(); g != nil {
+			g.SetAltModifier(modifier)
+		}
+	}
+
 	// We load config twice, but it's better than the race conditions caused
 	// by env var resolution order.
 	rootCfg, envErr := ide.Config(*flagConfigPath, runeDefaultConfig())
@@ -809,10 +770,10 @@ func runGUI(
 
 	root, err := newBootstrapHandler(
 		*flagDataPath, *flagConfigPath,
-		*flagWorkspace, *flagZdotDir, filenames,
-		launchCmd, runner, mu, publishEvent, cellPixelSize,
+		*flagWorkspace, shellRCDir, filenames,
+		launchCmd, runner, mu, publishEvent, cellPixelSize, setAltModifier,
 		func(u *url.URL) error { return extbrowser.Browse(u) },
-		text.NewSystemClipboard(), os.TempDir(), rootCfg, trust,
+		text.NewAsyncSystemClipboard(), os.TempDir(), rootCfg, trust,
 	)
 	if err != nil {
 		fmt.Printf("ide: %s", err)
@@ -836,6 +797,9 @@ func runGUI(
 
 	if envErr != nil {
 		_, _ = browser.Notify(browserapi.LevelError, "%s", envErr)
+	}
+	if shellRCErr != nil {
+		reportShellRCErr(browser, shellRCErr)
 	}
 
 	options := buildGUIOptions(browser, cfg, transparentWindow, mu, *flagFPS)
@@ -912,13 +876,13 @@ func buildGUIOptions(
 		gui.WithColumnWidthOffset(getGUIColumnWidthOffset(b, cfg)),
 		gui.WithLineHeightOffset(getGUILineHeightOffset(b, cfg)),
 		gui.WithScrollMultiplier(getGUIScrollMultiplier(b, cfg)),
-		gui.WithRenderOffset(0, 10),
 		gui.WithLigatures(getGUILigatures(b, cfg)),
 		gui.WithTransparentWindow(transparentWindow),
 		gui.WithBackgroundBlur(getGUIBackgroundBlur(b, cfg)),
 		gui.WithLocker(mu),
 		gui.WithPrintFPS(printFPS),
 		gui.WithKeyMapping(getGUIKeyMapping(b, cfg)),
+		gui.WithAltModifier(getGUIAltModifier(b, cfg)),
 		gui.WithCloseRequestEvent(quitEvent(appMenuKeyBindings(cfg))),
 	}
 }
@@ -978,6 +942,21 @@ func waitLoginShellPATH(pathDone <-chan error) error {
 func newAPIClient(
 	storage storageapi.Service, installBackupDir string, cfg config.Config,
 ) (*apiclient.Client, release.Manager) {
+	client := apiclient.New(storage,
+		apiClientConfig(installBackupDir, cfg), *flagDataPath)
+	// Release downloads are unauthenticated: the oauth transport
+	// fails client-side with auth.ErrNotAuthenticated when no token
+	// is cached, which would break package installs for logged-out
+	// users under the usage-based paywall.
+	httpClient := &http.Client{}
+	releaseManager := cdnrelease.NewManager(httpClient,
+		idepkg.ReleasesURL(*flagHTTPAddress, idepkg.HostArch()))
+	return client, releaseManager
+}
+
+// apiClientConfig is the production apiclient configuration from the
+// command-line flags and cfg.
+func apiClientConfig(installBackupDir string, cfg config.Config) apiclient.Config {
 	apicfg := apiclient.DefaultConfig()
 	apicfg.HTTPEndpointAddress = *flagHTTPAddress
 	apicfg.GRPCEndpointAddress = *flagGRPCAddress
@@ -988,15 +967,7 @@ func newAPIClient(
 	apicfg.TelemetryPeriod = telemetryPeriod
 	apicfg.InstallBackupDir = installBackupDir
 	apicfg.EditorMode = ide.EditorMode(cfg)
-	client := apiclient.New(storage, apicfg, *flagDataPath)
-	// Release downloads are unauthenticated: the oauth transport
-	// fails client-side with auth.ErrNotAuthenticated when no token
-	// is cached, which would break package installs for logged-out
-	// users under the usage-based paywall.
-	httpClient := &http.Client{}
-	releaseManager := cdnrelease.NewManager(httpClient,
-		idepkg.ReleasesURL(*flagHTTPAddress, idepkg.HostArch()))
-	return client, releaseManager
+	return apicfg
 }
 
 // trustKeyringFetcher builds the KeyringFetcher the process trust store uses

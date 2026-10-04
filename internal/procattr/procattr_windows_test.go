@@ -59,3 +59,8 @@ func TestLeadsGroup(t *testing.T) {
 func TestNewSessionIsNil(t *testing.T) {
 	assert.Nil(t, NewSession(true, true))
 }
+
+func TestControlsTerminal(t *testing.T) {
+	assert.False(t, ControlsTerminal(NewSession(true, true)))
+	assert.False(t, ControlsTerminal(NewGroup()))
+}

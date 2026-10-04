@@ -17,12 +17,12 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"os/user"
+	"path"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -71,62 +71,71 @@ func startLoginShellPATHResolve(dataDir string) <-chan error {
 
 func setRuneBinPATH(dataDir, base string) error {
 	binDir := filepath.Join(dataDir, "bin")
-	if err := os.Setenv("PATH", binDir+":"+base); err != nil {
+	if err := os.Setenv("PATH", prependPATH(runtime.GOOS, binDir, base)); err != nil {
 		return fmt.Errorf("set env PATH: %w", err)
 	}
 	return nil
 }
 
-func resolveLoginPath(timeout time.Duration, userShell func() (string, error)) (string, error) {
-	shell := os.Getenv("SHELL")
-	if shell == "" {
-		if s, err := userShell(); err == nil && s != "" {
-			shell = s
-		} else {
-			shell = "/bin/sh"
+// prependPATH puts dir first in the goos PATH list base, dropping entries that
+// name dir: the resolved login PATH is inherited from a process whose PATH
+// already starts with dir. Other entries are kept verbatim, including empty
+// ones (the current directory on POSIX) and Windows quoting, which protects
+// entries containing the separator.
+func prependPATH(goos, dir, base string) string {
+	windows := goos == "windows"
+	sep := ":"
+	if windows {
+		sep = ";"
+	}
+	entries := []string{dir}
+	for _, e := range splitPATH(base, windows) {
+		if !samePATHDir(e, dir, windows) {
+			entries = append(entries, e)
 		}
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	out, err := loginShellPATHCmd(ctx, shell).Output()
-	if err != nil {
-		if ctx.Err() != nil {
-			return "", fmt.Errorf("login shell PATH probe timed out after %s: %w", timeout, ctx.Err())
-		}
-		return "", fmt.Errorf("shell env probe: %w", err)
-	}
-
-	p := pathFromMarkerEnv(string(out))
-	if p == "" {
-		return "", fmt.Errorf("shell returned empty PATH")
-	}
-	return p, nil
+	return strings.Join(entries, sep)
 }
 
-// loginShellPATHCmd builds the command that dumps the login shell environment.
-//
-// The shell is invoked interactively (-i) and as a login shell (-l) so rc
-// files that mutate PATH are sourced. The probe cd's to $HOME first so
-// directory-scoped tools (direnv, asdf, mise, nvm) contribute to PATH, prints
-// a marker so banner chatter is ignored during parsing, dumps the env with
-// `/usr/bin/env -0` (NUL-delimited so values containing newlines cannot
-// corrupt parsing), and ends with `exit 0` as defense-in-depth against a shell
-// that would otherwise wedge on a non-zero/interactive exit. This mirrors
-// Zed's battle-tested login-shell environment probe.
-//
-// Interactive shells touch the controlling terminal on startup (zsh ZLE, job
-// control); detachFromTerminal runs the child in a new session with no
-// controlling terminal so those calls cannot raise SIGTTOU (which would stop
-// the shell and hang the probe) nor can the SIGINT raised by Ctrl-C reach it.
-// The context bounds the probe so it can never block startup indefinitely.
-func loginShellPATHCmd(ctx context.Context, shell string) *exec.Cmd {
-	script := `cd "$HOME" 2>/dev/null; printf '%s' ` + runeShellEnvMarker + `; /usr/bin/env -0; exit 0;`
-	cmd := exec.CommandContext(ctx, shell, "-i", "-l", "-c", script)
-	cmd.Stdin = nil
-	detachFromTerminal(cmd)
-	return cmd
+// splitPATH splits list like filepath.SplitList does for the given syntax, but
+// keeps Windows quotes so entries can be joined back unchanged.
+func splitPATH(list string, windows bool) []string {
+	if list == "" {
+		return nil
+	}
+	if !windows {
+		return strings.Split(list, ":")
+	}
+	var entries []string
+	start, quoted := 0, false
+	for i := range len(list) {
+		switch list[i] {
+		case '"':
+			quoted = !quoted
+		case ';':
+			if !quoted {
+				entries = append(entries, list[start:i])
+				start = i + 1
+			}
+		}
+	}
+	return append(entries, list[start:])
+}
+
+// samePATHDir reports whether the PATH entry names dir, comparing lexically
+// cleaned paths. Windows ignores quotes and case and accepts either slash.
+func samePATHDir(entry, dir string, windows bool) bool {
+	if entry == "" {
+		return false
+	}
+	if !windows {
+		return path.Clean(entry) == path.Clean(dir)
+	}
+	norm := func(p string) string {
+		p = strings.ReplaceAll(p, `"`, "")
+		return path.Clean(strings.ReplaceAll(p, `\`, "/"))
+	}
+	return strings.EqualFold(norm(entry), norm(dir))
 }
 
 func makePkgDirs(dataDir string) error {

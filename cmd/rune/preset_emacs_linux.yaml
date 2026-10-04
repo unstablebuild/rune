@@ -126,6 +126,11 @@ command:
     "<ctrl-x>2": "windownew down"        # split-window-below
     "<ctrl-x>3": "windownew right"       # split-window-right
     "<ctrl-x>o": "windowfocus other"     # other-window
+    "<ctrl-x>^": "windowresize increase height"  # enlarge-window
+    "<ctrl-x>-": "windowresize decrease height"  # shrink-window-if-larger-than-buffer
+    "<ctrl-x>{": "windowresize decrease width"   # shrink-window-horizontally
+    "<ctrl-x>}": "windowresize increase width"   # enlarge-window-horizontally
+    "<ctrl-x>+": "windowresize reset"            # balance-windows
     # <alt> and <ctrl> carry only what GNU Emacs itself defines (M-x, M-X,
     # M-., M-,, M-?, M-s o, C-M-., C-M-,, C-M-?, C-M-\, C-M-i and the C-x
     # chords). Everything Rune-only lives on <meta> (Super on Linux), which
@@ -142,6 +147,10 @@ command:
     "<ctrl-alt-\\\\>": "lsp format"
     "<ctrl-alt-i>": "lsp complete"
     # Windows: P/B/N/F follow Emacs's previous, backward, next and forward.
+    # <meta> focuses, <shift> moves and <ctrl-alt> resizes, echoing GNU's
+    # C-M-p/b/n/f motions. Resize stays off <meta> arrows, which desktops
+    # take under Super, and off <ctrl-shift-meta>, which folds onto
+    # <shift-meta> when <meta> is Ctrl+Super.
     "<meta-p>": "windowfocus up"
     "<meta-b>": "windowfocus left"
     "<meta-n>": "windowfocus down"
@@ -150,6 +159,10 @@ command:
     "<shift-meta-b>": "windowmove left"
     "<shift-meta-n>": "windowmove down"
     "<shift-meta-f>": "windowmove right"
+    "<ctrl-alt-meta-p>": "windowresize increase height"
+    "<ctrl-alt-meta-b>": "windowresize decrease width"
+    "<ctrl-alt-meta-n>": "windowresize decrease height"
+    "<ctrl-alt-meta-f>": "windowresize increase width"
     "<meta-d>": "windownew down"
     "<shift-meta-d>": "windowdefaultsplit h"
     "<meta-r>": "windownew right"
@@ -157,10 +170,6 @@ command:
     "<meta-k>": "windowclose"
     "<shift-meta-k>": "windowcloseall"
     "<meta-m>": "windowtogglemaximize"
-    "<meta-up>": "windowresize increase height"
-    "<meta-left>": "windowresize decrease width"
-    "<meta-down>": "windowresize decrease height"
-    "<meta-right>": "windowresize increase width"
     "<shift-meta-backspace>": "windowresize reset"
     "<shift-meta-+>": ["windowresize max width", "windowresize max height"]
     "<shift-meta-->": ["windowresize min width", "windowresize min height"]

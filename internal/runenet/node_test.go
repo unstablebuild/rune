@@ -35,6 +35,7 @@ import (
 	"tailscale.com/tstest/integration"
 	"tailscale.com/tstest/integration/testcontrol"
 	"tailscale.com/types/logger"
+	"tailscale.com/types/views"
 	"unstable.build/rune/internal/debug"
 )
 
@@ -368,6 +369,45 @@ func TestSelfMachineID(t *testing.T) {
 	assert.Equal(t, "42", selfMachineID(&ipnstate.Status{
 		Self: &ipnstate.PeerStatus{ID: tailcfg.StableNodeID("42")},
 	}))
+}
+
+// A serve-only machine is filed under the coordination server's tagged
+// pseudo-user, so the account it serves comes from its serve tag.
+func TestSelfLoginName(t *testing.T) {
+	users := map[tailcfg.UserID]tailcfg.UserProfile{
+		1:          {LoginName: "rune-a"},
+		2147455555: {LoginName: "tagged-devices"},
+	}
+	tags := func(tags ...string) *views.Slice[string] {
+		v := views.SliceOf(tags)
+		return &v
+	}
+	cases := []struct {
+		name string
+		self *ipnstate.PeerStatus
+		want string
+	}{
+		{"not logged in", nil, ""},
+		{"owned by an account",
+			&ipnstate.PeerStatus{UserID: 1}, "rune-a"},
+		{"serve-only machine of an account",
+			&ipnstate.PeerStatus{UserID: 2147455555, Tags: tags("tag:serve-rune-a")},
+			"rune-a"},
+		{"serve tag among others",
+			&ipnstate.PeerStatus{UserID: 2147455555, Tags: tags("tag:ci", "tag:serve-rune-a")},
+			"rune-a"},
+		{"tagged without a serve tag serves no account",
+			&ipnstate.PeerStatus{UserID: 2147455555, Tags: tags("tag:ci")},
+			"tagged-devices"},
+		{"empty serve tag serves no account",
+			&ipnstate.PeerStatus{UserID: 2147455555, Tags: tags("tag:serve-")},
+			"tagged-devices"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, selfLoginName(&ipnstate.Status{Self: tc.self, User: users}))
+		})
+	}
 }
 
 func TestStatusBeforeStart(t *testing.T) {

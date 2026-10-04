@@ -17,6 +17,9 @@
 package main
 
 import (
+	"bytes"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -25,7 +28,12 @@ import (
 	"time"
 
 	flag "github.com/spf13/pflag"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
+
 	"unstable.build/rune/internal/debug"
+	"unstable.build/rune/internal/workspace/workspacessh"
 )
 
 func TestCheckModeArgs(t *testing.T) {
@@ -163,68 +171,18 @@ func TestAppLaunchArgs(t *testing.T) {
 	tests := []struct {
 		name     string
 		goos     string
-		zdotDir  string
 		wantArgs []string
 		wantOK   bool
 	}{
-		{
-			name:    "darwin app with zdotdir",
-			goos:    "darwin",
-			zdotDir: filepath.Join("home", ".rune", "zdot"),
-			wantArgs: []string{
-				"--rune-zdotdir=" + filepath.Join("home", ".rune", "zdot"),
-				"-G", "-w", "",
-			},
-			wantOK: true,
-		},
-		{
-			name:    "darwin without zdotdir",
-			goos:    "darwin",
-			zdotDir: "",
-			wantArgs: []string{
-				"-G", "-w", "",
-			},
-			wantOK: true,
-		},
-		{
-			name:    "linux app with zdotdir",
-			goos:    "linux",
-			zdotDir: filepath.Join("home", ".rune", "zdot"),
-			wantArgs: []string{
-				"--rune-zdotdir=" + filepath.Join("home", ".rune", "zdot"),
-				"-G", "-w", "",
-			},
-			wantOK: true,
-		},
-		{
-			name:    "linux without zdotdir",
-			goos:    "linux",
-			zdotDir: "",
-			wantArgs: []string{
-				"-G", "-w", "",
-			},
-			wantOK: true,
-		},
-		{
-			name:    "windows without zdotdir",
-			goos:    "windows",
-			zdotDir: "",
-			wantArgs: []string{
-				"-G", "-w", "",
-			},
-			wantOK: true,
-		},
-		{
-			name:    "freebsd unsupported",
-			goos:    "freebsd",
-			zdotDir: "",
-			wantOK:  false,
-		},
+		{name: "darwin", goos: "darwin", wantArgs: []string{"-G", "-w", ""}, wantOK: true},
+		{name: "linux", goos: "linux", wantArgs: []string{"-G", "-w", ""}, wantOK: true},
+		{name: "windows", goos: "windows", wantArgs: []string{"-G", "-w", ""}, wantOK: true},
+		{name: "freebsd unsupported", goos: "freebsd", wantOK: false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotArgs, gotOK := appLaunchArgs(tt.goos, tt.zdotDir)
+			gotArgs, gotOK := appLaunchArgs(tt.goos)
 			if gotOK != tt.wantOK {
 				t.Fatalf("appLaunchArgs() ok = %v, want %v", gotOK, tt.wantOK)
 			}
@@ -235,179 +193,59 @@ func TestAppLaunchArgs(t *testing.T) {
 	}
 }
 
-func TestBundleZdotDir(t *testing.T) {
-	tests := []struct {
-		name     string
-		goos     string
-		execPath string
-		wantDir  string
-		wantOK   bool
-	}{
-		{
-			name:     "darwin app",
-			goos:     "darwin",
-			execPath: filepath.Join("Applications", "Rune.app", "Contents", "MacOS", "rune"),
-			wantDir:  filepath.Join("Applications", "Rune.app", "Contents", "Resources", "zdot"),
-			wantOK:   true,
-		},
-		{
-			name:     "darwin non-app still resolves to relative resources",
-			goos:     "darwin",
-			execPath: filepath.Join("usr", "local", "bin", "rune"),
-			wantDir:  filepath.Join("usr", "local", "Resources", "zdot"),
-			wantOK:   true,
-		},
-		{
-			name:     "linux freedesktop app",
-			goos:     "linux",
-			execPath: filepath.Join("opt", "Rune", "rune.app", "bin", "rune"),
-			wantDir:  filepath.Join("opt", "Rune", "rune.app", "share", "zdot"),
-			wantOK:   true,
-		},
-		{
-			name:     "linux non app",
-			goos:     "linux",
-			execPath: filepath.Join("usr", "local", "bin", "rune"),
-			wantOK:   false,
-		},
-		{
-			name:     "windows unsupported",
-			goos:     "windows",
-			execPath: filepath.Join("C:", "Program Files", "Rune", "rune.exe"),
-			wantOK:   false,
-		},
-	}
+// A data dir the dotfiles cannot be written to must not pass silently:
+// terminal modal mode then breaks in zsh and bash, and the user has to be
+// told why.
+func TestInstallShellRCUnwritableDataDir(t *testing.T) {
+	// A path below a regular file fails even as root.
+	dataDir := filepath.Join(t.TempDir(), "file")
+	require.NoError(t, os.WriteFile(dataDir, nil, 0o644))
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			gotDir, gotOK := bundleZdotDir(tt.goos, tt.execPath)
-			if gotOK != tt.wantOK {
-				t.Fatalf("bundleZdotDir() ok = %v, want %v", gotOK, tt.wantOK)
-			}
-			if gotDir != tt.wantDir {
-				t.Fatalf("bundleZdotDir() dir = %q, want %q", gotDir, tt.wantDir)
-			}
-		})
-	}
+	dir, err := installShellRC(dataDir)
+	assert.Empty(t, dir, "shells must not be pointed at a missing directory")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "terminal modal mode")
 }
 
-// TestInstallZdotDirDoesNotWriteToSource reproduces the
-// "Rune is damaged" Gatekeeper bug. Pointing ZDOTDIR inside the signed
-// bundle let zsh write .zcompdump (and similar) into a read-only sealed
-// directory, invalidating the code signature. installZdotDir mirrors the
-// dotfiles into a writable location so the bundle stays untouched.
-func TestInstallZdotDirDoesNotWriteToSource(t *testing.T) {
-	srcDir := t.TempDir()
-	dstDir := filepath.Join(t.TempDir(), "zdot")
+func TestReportShellRCErr(t *testing.T) {
+	err := errors.New("terminal modal mode may not work: disk full")
 
-	for _, name := range zdotFiles {
-		if err := os.WriteFile(filepath.Join(srcDir, name),
-			[]byte("# "+name), 0o644); err != nil {
-			t.Fatalf("seed %s: %v", name, err)
-		}
-	}
+	t.Run("notifies the local user", func(t *testing.T) {
+		n := &recordingNotifications{}
+		reportShellRCErr(n, err)
+		require.Len(t, n.notes, 1)
+		assert.Equal(t, browserapi.LevelWarn, n.notes[0].level)
+		assert.Contains(t, n.notes[0].msg, "disk full")
+	})
 
-	srcBefore, err := os.ReadDir(srcDir)
-	if err != nil {
-		t.Fatalf("read src: %v", err)
-	}
-
-	if err := installZdotDir(srcDir, dstDir); err != nil {
-		t.Fatalf("installZdotDir: %v", err)
-	}
-
-	srcAfter, err := os.ReadDir(srcDir)
-	if err != nil {
-		t.Fatalf("read src after: %v", err)
-	}
-	if len(srcAfter) != len(srcBefore) {
-		t.Fatalf("source directory mutated: before=%d after=%d",
-			len(srcBefore), len(srcAfter))
-	}
-
-	for _, name := range zdotFiles {
-		dst := filepath.Join(dstDir, name)
-		got, err := os.ReadFile(dst)
-		if err != nil {
-			t.Fatalf("read %s: %v", dst, err)
-		}
-		if want := "# " + name; string(got) != want {
-			t.Fatalf("dst %s = %q, want %q", name, got, want)
-		}
-	}
+	// rune -x has no UI of its own: the local side turns its provisioning
+	// stream into notifications.
+	t.Run("streams a failure to the local side of rune -x", func(t *testing.T) {
+		var stderr bytes.Buffer
+		reportRemoteShellRCErr(&stderr, err)
+		p, ok := workspacessh.ParseProvisionProgressLine(
+			bytes.TrimRight(stderr.Bytes(), "\n"))
+		require.True(t, ok, "not a provisioning line: %q", stderr.String())
+		assert.Equal(t, workspacessh.NotificationWarning, p.Level())
+		assert.Contains(t, p.Message(), "disk full")
+	})
 }
 
-func TestInstallZdotDirOverwrites(t *testing.T) {
-	srcDir := t.TempDir()
-	dstDir := filepath.Join(t.TempDir(), "zdot")
-
-	if err := os.MkdirAll(dstDir, 0o755); err != nil {
-		t.Fatalf("mkdir dst: %v", err)
-	}
-	stale := filepath.Join(dstDir, ".zshrc")
-	if err := os.WriteFile(stale, []byte("stale"), 0o644); err != nil {
-		t.Fatalf("seed stale: %v", err)
-	}
-	for _, name := range zdotFiles {
-		if err := os.WriteFile(filepath.Join(srcDir, name),
-			[]byte("fresh "+name), 0o644); err != nil {
-			t.Fatalf("seed %s: %v", name, err)
-		}
-	}
-
-	if err := installZdotDir(srcDir, dstDir); err != nil {
-		t.Fatalf("installZdotDir: %v", err)
-	}
-
-	got, err := os.ReadFile(stale)
-	if err != nil {
-		t.Fatalf("read .zshrc: %v", err)
-	}
-	if want := "fresh .zshrc"; string(got) != want {
-		t.Fatalf(".zshrc = %q, want %q (not overwritten)", got, want)
-	}
+type recordedNote struct {
+	level browserapi.NotificationLevel
+	msg   string
 }
 
-func TestInstallZdotDirCreatesMissingDest(t *testing.T) {
-	srcDir := t.TempDir()
-	dstDir := filepath.Join(t.TempDir(), "nested", "zdot")
-	if err := os.WriteFile(filepath.Join(srcDir, ".zshenv"),
-		[]byte("# zshenv"), 0o644); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-
-	if err := installZdotDir(srcDir, dstDir); err != nil {
-		t.Fatalf("installZdotDir: %v", err)
-	}
-
-	got, err := os.ReadFile(filepath.Join(dstDir, ".zshenv"))
-	if err != nil {
-		t.Fatalf("read .zshenv: %v", err)
-	}
-	if want := "# zshenv"; string(got) != want {
-		t.Fatalf(".zshenv = %q, want %q", got, want)
-	}
+type recordingNotifications struct {
+	browserapi.Notifications
+	notes []recordedNote
 }
 
-func TestInstallZdotDirSkipsMissingSourceFiles(t *testing.T) {
-	srcDir := t.TempDir()
-	dstDir := filepath.Join(t.TempDir(), "zdot")
-	if err := os.WriteFile(filepath.Join(srcDir, ".zshrc"),
-		[]byte("# zshrc only"), 0o644); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-
-	if err := installZdotDir(srcDir, dstDir); err != nil {
-		t.Fatalf("installZdotDir: %v", err)
-	}
-
-	entries, err := os.ReadDir(dstDir)
-	if err != nil {
-		t.Fatalf("read dst: %v", err)
-	}
-	if len(entries) != 1 || entries[0].Name() != ".zshrc" {
-		t.Fatalf("dst entries = %v, want only .zshrc", entries)
-	}
+func (r *recordingNotifications) Notify(
+	level browserapi.NotificationLevel, msg string, args ...any,
+) (string, error) {
+	r.notes = append(r.notes, recordedNote{level, fmt.Sprintf(msg, args...)})
+	return "", nil
 }
 
 func TestResolveDefaultConfigPathPrefersYAMLThenStar(t *testing.T) {

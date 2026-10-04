@@ -444,8 +444,13 @@ func (c *Component) relayout() {
 	c.completionRows = compH
 	msgH := height - barH - boxH - attachH - compH
 
+	// Content that grew or shrank in place and a changed messages area height
+	// only show up in MaxOffset once Resize refreshes the list's cached total
+	// height, so the scroll compensation for them has to happen here.
+	maxOff, scrolled := c.scrollState()
 	c.msgArea.Move(term.Coordinates{})
 	c.msgArea.Resize(width, msgH)
+	c.restoreScroll(maxOff, scrolled)
 	c.completionPos = term.Coordinates{X: boxX, Y: msgH}
 	if c.completion != nil {
 		c.completion.Resize(boxW, compH+c.completion.InputHeight())
@@ -745,7 +750,9 @@ func (c *Component) RemoveLastQueuedMessage() {
 	}
 	node := c.queuedNodes[len(c.queuedNodes)-1]
 	c.queuedNodes = c.queuedNodes[:len(c.queuedNodes)-1]
+	maxOff, scrolled := c.scrollState()
 	c.messages.Remove(node)
+	c.restoreScroll(maxOff, scrolled)
 }
 
 // PromoteFirstQueuedMessage converts the first (oldest) queued message
@@ -1447,16 +1454,18 @@ func (c *Component) scrollState() (maxOffset int, scrolledUp bool) {
 	return c.messages.MaxOffset(), c.messages.CanSeekUp()
 }
 
-// restoreScroll adjusts the scroll offset to keep the viewport stable
-// after content has been appended to the messages list. When the user
-// is scrolled up and new content increases MaxOffset, the offset is
-// incremented by the same delta so the viewport shows the same rows.
+// restoreScroll keeps the top visible row fixed while the user is scrolled
+// up, whether MaxOffset grew or shrank since oldMaxOffset was captured. When
+// the user was at the bottom the viewport keeps following the content. The
+// offset is clamped to the list's seekable range.
 func (c *Component) restoreScroll(oldMaxOffset int, wasScrolledUp bool) {
 	if !wasScrolledUp {
 		return
 	}
-	for range c.messages.MaxOffset() - oldMaxOffset {
-		c.messages.SeekUp()
+	delta := c.messages.MaxOffset() - oldMaxOffset
+	for ; delta > 0 && c.messages.SeekUp(); delta-- {
+	}
+	for ; delta < 0 && c.messages.SeekDown(); delta++ {
 	}
 }
 

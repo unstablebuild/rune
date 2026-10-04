@@ -609,7 +609,7 @@ func (i *IDE) init(
 		return fmt.Errorf("register ssh scheme: %w", err)
 	}
 	err = workspaceManager.RegisterScheme(workspace.FileScheme,
-		fileSchemeFunc(op.zdotDir))
+		workspace.NewFileSchemeFunc(op.shellRCDir))
 	if err != nil {
 		return fmt.Errorf("register file scheme: %w", err)
 	}
@@ -673,8 +673,7 @@ func (i *IDE) init(
 		i.publishEvent,
 		op.extensionRunner, trust, i.locker, op.extensions, func() (ideConfig, error) {
 			cfg, err := reloadConfig(cfgfilename,
-				op.defaultWallpaper, defaultCfg, op.bell, op.scheduleFn,
-				op.zdotDir)
+				op.defaultWallpaper, defaultCfg, op.bell, op.scheduleFn)
 			cfg.storage = i.ideConfig.storage
 			cfg.cellPixelSize = op.cellPixelSize
 			return cfg, err
@@ -794,7 +793,7 @@ func loadIDEConfig(cfgfilename string, op options) (ideConfig, error) {
 	var cfg ideConfig
 	err := loadConfig(&cfg, cfgfilename,
 		op.defaultWallpaper, newDefaultConfig(op), op.bell,
-		op.scheduleFn, op.zdotDir)
+		op.scheduleFn)
 	cfg.cellPixelSize = op.cellPixelSize
 	return cfg, err
 }
@@ -807,32 +806,4 @@ func (i *IDE) initRunning() {
 		i.root.runShader(i.options.initShaderFn(i.root.defAttr, i.ideConfig.windowFrameCharset()),
 			i.options.initShaderFPS, i.options.initShaderDuration)
 	}
-}
-
-func fileSchemeFunc(zdotDir string) schemeapi.SchemeFunc {
-	return func(
-		ctx context.Context, cfg config.Config, uri workspaceapi.URI,
-	) (schemeapi.Scheme, error) {
-		if zdotDir != "" {
-			cfg = configWithZdotDir(cfg, zdotDir)
-		}
-		return workspace.NewFileScheme(ctx, cfg, uri)
-	}
-}
-
-func configWithZdotDir(base config.Config, zdotDir string) config.Config {
-	if base != nil {
-		if existing, err := base.GetString("zdotdir"); err == nil && existing != "" {
-			return base
-		}
-	}
-	merged := map[string]any{"zdotdir": zdotDir}
-	if base != nil {
-		base.Iterate(func(k string, v any) {
-			if _, ok := merged[k]; !ok {
-				merged[k] = v
-			}
-		})
-	}
-	return config.MapConfig(merged)
 }

@@ -7,7 +7,7 @@
 # host.
 services:
   headscale:
-    image: headscale/headscale:v0.26.1
+    image: headscale/headscale:v0.29.3
     container_name: rune-headscale
     command: serve
     restart: unless-stopped

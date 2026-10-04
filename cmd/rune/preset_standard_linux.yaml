@@ -139,7 +139,9 @@ command:
     "<f3>": "jumptolocation next search"
     "<shift-f3>": "jumptolocation prev search"
     # IJKL points up, left, down, right. <meta> focuses a window, <shift>
-    # moves it.
+    # moves it and <ctrl-shift> resizes it. Resize stays off <alt-meta>,
+    # which folds onto <meta> when <meta> is Alt, and off <meta> arrows,
+    # which desktops take under Super and editors take under Alt.
     "<meta-i>": "windowfocus up"
     "<meta-j>": "windowfocus left"
     "<meta-k>": "windowfocus down"
@@ -148,6 +150,10 @@ command:
     "<shift-meta-j>": "windowmove left"
     "<shift-meta-k>": "windowmove down"
     "<shift-meta-l>": "windowmove right"
+    "<ctrl-shift-meta-i>": "windowresize increase height"
+    "<ctrl-shift-meta-j>": "windowresize decrease width"
+    "<ctrl-shift-meta-k>": "windowresize decrease height"
+    "<ctrl-shift-meta-l>": "windowresize increase width"
     "<meta-n>": "windownew"
     "<meta-q>": "windowclose"
     "<shift-meta-q>": "windowcloseall"

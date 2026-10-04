@@ -116,9 +116,12 @@ type ex struct {
 	svc            vctrl.Service
 	// gitshowSeq keeps a second :gitshow popup for the same file from
 	// colliding with one the user has not closed yet.
-	gitshowSeq    int
-	wsExecutor    *workspaceshell.Executor
-	aliasExpander *idecmd.Expander
+	gitshowSeq int
+	// exitedTerminalSeq keeps the editors of failed terminal tabs with
+	// the same title from colliding.
+	exitedTerminalSeq int
+	wsExecutor        *workspaceshell.Executor
+	aliasExpander     *idecmd.Expander
 	// executor is a forwarding proxy: long-lived consumers (the
 	// CommandSubstResolver, plugin.New, the VTE) capture this value
 	// once and continue to route through whatever underlying
@@ -353,8 +356,8 @@ func (e *ex) init(
 	if tm == nil {
 		tm = e.Browser()
 	}
-	e.tabAliases = newTabNameAliaser(tm)
-	e.tm = e.tabAliases
+	e.tabAliases = newTabNameAliaser(tm, e.sched)
+	e.tm = failedTerminalKeeper{tabNameAliaser: e.tabAliases, e: e}
 	e.comp.SubscribeWindow((*windowSubscriber)(e))
 	if initialVTECapacity != 0 {
 		e.initialReservoirCapacity = initialVTECapacity
@@ -2224,6 +2227,78 @@ func (e *ex) terminalnewtab(_ context.Context, args ...string) error {
 	return nil
 }
 
+// keepFailedTerminalTab replaces the terminal in the tab keyed by uri
+// with an editor on its output, drained of color, that shows the error
+// its process failed with, and reports whether it did. A terminal
+// outside a tab, or whose process exited cleanly, is left for the
+// caller to drop.
+func (e *ex) keepFailedTerminalTab(uri workspaceapi.URI) bool {
+	b := e.comp.Browser()
+	tab, ok := b.Tab(uri)
+	if !ok {
+		return false
+	}
+	av, ok := tab.Handler().(*asyncVTE)
+	if !ok {
+		return false
+	}
+	exitErr := av.ExitErr()
+	if exitErr == nil {
+		return false
+	}
+	edh, err := e.editExitedTerminal(av, exitErr)
+	if err != nil {
+		e.log(log.WarnLevel, "keep failed terminal tab: %v", err)
+		return false
+	}
+	if err := tab.SetHandler(edh, nil); err != nil {
+		e.log(log.WarnLevel, "close exited terminal: %v", err)
+	}
+	b.SetTabIconAttr(uri, exitedTerminalAttr)
+	return true
+}
+
+func (e *ex) editExitedTerminal(av *asyncVTE, exitErr error) (text.Handler, error) {
+	snap, err := av.Snapshot()
+	if err != nil {
+		return nil, fmt.Errorf("snapshot: %w", err)
+	}
+	cells := snap.Active().Cells
+	grayTerminalCells(cells, e.defAttr.Fg)
+	buf := cell.CellsToBuffer(cells)
+
+	base, err := workspaceapi.ParseURI(exitedTerminalBase)
+	if err != nil {
+		return nil, err
+	}
+	name := av.Title()
+	if name == "" {
+		name = "terminal"
+	}
+	e.exitedTerminalSeq++
+	uri, err := workspaceapi.ParseURI(fmt.Sprintf("%s?n=%d",
+		workspaceapi.Join(base, name).String(), e.exitedTerminalSeq))
+	if err != nil {
+		return nil, err
+	}
+	edh, err := e.ed.Edit(text.WithoutAutoCenter(context.Background()),
+		uri, buf, false, false)
+	if err != nil {
+		return nil, fmt.Errorf("open editor: %w", err)
+	}
+	edh.SetLocationList(textapi.LocationPriorityError, exitedTerminalLocationList,
+		exitedTerminalLocations(buf.Rows(), exitErr))
+	edh.Resize(av.width, av.height)
+	for edh.SeekOffset() < av.SeekOffset() && edh.SeekDown() {
+	}
+	cursor := av.CursorAtScroll()
+	// A cursor below a terminal scrolled back would scroll the editor
+	// away from the rows the user was reading.
+	cursor.Y = min(cursor.Y, edh.SeekOffset()+av.height-1)
+	edh.SetCursorAtScroll(cursor)
+	return edh, nil
+}
+
 func (e *ex) consolenewtab(_ context.Context, args ...string) error {
 	if e.companionConsole == nil {
 		workspaceURI, err := e.workspace.URI(".")
@@ -3375,6 +3450,14 @@ func (c companionTerminalHandler) UsedAlternateBuffer() bool {
 
 func (c companionTerminalHandler) ClearPrimaryBuffer() bool {
 	return c.vth.ClearPrimaryBuffer()
+}
+
+func (c companionTerminalHandler) ExitErr() error {
+	return c.vth.ExitErr()
+}
+
+func (c companionTerminalHandler) CursorAtScroll() term.Coordinates {
+	return c.vth.CursorAtScroll()
 }
 
 func (c companionTerminalHandler) Close() error {

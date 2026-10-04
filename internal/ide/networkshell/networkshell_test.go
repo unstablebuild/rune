@@ -211,10 +211,12 @@ func TestMachinesMarkdown(t *testing.T) {
 	got := machinesMarkdown([]Machine{
 		{Hostname: "laptop", Online: true, LastSeen: lastSeen},
 		{Hostname: "desktop"},
+		{Hostname: "builder", Online: true, LastSeen: lastSeen, ServeOnly: true},
 	}, "laptop")
 
 	assert.Contains(t, got, "| laptop (this machine) | online |")
 	assert.Contains(t, got, "| desktop | offline | never |")
+	assert.Contains(t, got, "| builder (serve-only) | online |")
 	assert.Contains(t, got, lastSeen.Local().Format("2006-01-02 15:04"))
 	assert.Contains(t, got, "network remove <machine>")
 }

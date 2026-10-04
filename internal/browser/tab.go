@@ -47,6 +47,9 @@ type Tab struct {
 	// active marks the tab as having work in progress. See
 	// Component.SetTabActivity.
 	active bool
+	// iconAttr is layered over the focus-dependent icon attributes.
+	// See Component.SetTabIconAttr.
+	iconAttr term.Attributes
 }
 
 // Resize satisfies tui.Component

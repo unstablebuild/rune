@@ -245,6 +245,365 @@ func TestComponentScrollPreservedOnAppend(t *testing.T) {
 	}
 }
 
+// TestComponentScrollPreservedOnInPlaceGrowth covers height changes that do
+// not go through a structural list mutation (content re-parsed in place, the
+// compose box resizing the messages area) as well as content shrinking. While
+// scrolled up, the top visible row must stay fixed; at the bottom, the
+// viewport follows.
+func TestComponentScrollPreservedOnInPlaceGrowth(t *testing.T) {
+	type testCase struct {
+		name                string
+		setup               func(*Component)
+		seekUpCount         int
+		mutate              func(*Component)
+		expectedAfterScroll string
+		expectedAfterMutate string
+	}
+
+	cases := []testCase{
+		{
+			name:        "streaming at bottom",
+			setup:       func(c *Component) { c.AddReceiveMessageChunk("a") },
+			seekUpCount: 0,
+			mutate:      func(c *Component) { c.AddReceiveMessageChunk("\n\nb\n\nc") },
+			expectedAfterScroll: "" +
+				"line6                \n" +
+				"line7                \n" +
+				"line8                \n" +
+				"line9                \n" +
+				"line10               \n" +
+				"a                    \n" +
+				"                     \n" +
+				" ┌──────────────┐    \n" +
+				" │              │    \n" +
+				" └──────────────┘    \n" +
+				"                     ",
+			expectedAfterMutate: "" +
+				"line10               \n" +
+				"a                    \n" +
+				"                     \n" +
+				"b                    \n" +
+				"                     \n" +
+				"c                    \n" +
+				"                     \n" +
+				" ┌──────────────┐    \n" +
+				" │              │    \n" +
+				" └──────────────┘    \n" +
+				"                     ",
+		},
+		{
+			name:        "streaming mid scroll",
+			setup:       func(c *Component) { c.AddReceiveMessageChunk("a") },
+			seekUpCount: 2,
+			mutate:      func(c *Component) { c.AddReceiveMessageChunk("\n\nb\n\nc") },
+			expectedAfterScroll: "" +
+				"line4                \n" +
+				"line5                \n" +
+				"line6                \n" +
+				"line7                \n" +
+				"line8                \n" +
+				"line9                \n" +
+				"line10               \n" +
+				" ┌──────────────┐    \n" +
+				" │              │    \n" +
+				" └──────────────┘    \n" +
+				"                     ",
+			expectedAfterMutate: "" +
+				"line4                \n" +
+				"line5                \n" +
+				"line6                \n" +
+				"line7                \n" +
+				"line8                \n" +
+				"line9                \n" +
+				"line10               \n" +
+				" ┌──────────────┐    \n" +
+				" │              │    \n" +
+				" └──────────────┘    \n" +
+				"                     ",
+		},
+		{
+			name:        "reasoning at bottom",
+			setup:       func(c *Component) { c.AddReasoningChunk("a") },
+			seekUpCount: 0,
+			mutate:      func(c *Component) { c.AddReasoningChunk("\n\nb\n\nc") },
+			expectedAfterScroll: "" +
+				"line7                \n" +
+				"line8                \n" +
+				"line9                \n" +
+				"line10               \n" +
+				"a                    \n" +
+				"                     \n" +
+				"ctrl-o to collapse   \n" +
+				" ┌──────────────┐    \n" +
+				" │              │    \n" +
+				" └──────────────┘    \n" +
+				"                     ",
+			expectedAfterMutate: "" +
+				"a                    \n" +
+				"                     \n" +
+				"b                    \n" +
+				"                     \n" +
+				"c                    \n" +
+				"                     \n" +
+				"ctrl-o to collapse   \n" +
+				" ┌──────────────┐    \n" +
+				" │              │    \n" +
+				" └──────────────┘    \n" +
+				"                     ",
+		},
+		{
+			name:        "reasoning mid scroll",
+			setup:       func(c *Component) { c.AddReasoningChunk("a") },
+			seekUpCount: 2,
+			mutate:      func(c *Component) { c.AddReasoningChunk("\n\nb\n\nc") },
+			expectedAfterScroll: "" +
+				"line5                \n" +
+				"line6                \n" +
+				"line7                \n" +
+				"line8                \n" +
+				"line9                \n" +
+				"line10               \n" +
+				"a                    \n" +
+				" ┌──────────────┐    \n" +
+				" │              │    \n" +
+				" └──────────────┘    \n" +
+				"                     ",
+			expectedAfterMutate: "" +
+				"line5                \n" +
+				"line6                \n" +
+				"line7                \n" +
+				"line8                \n" +
+				"line9                \n" +
+				"line10               \n" +
+				"a                    \n" +
+				" ┌──────────────┐    \n" +
+				" │              │    \n" +
+				" └──────────────┘    \n" +
+				"                     ",
+		},
+		{
+			name:        "tool call at bottom",
+			setup:       func(c *Component) { c.AddToolCall("t1", "bash", "{}", "run") },
+			seekUpCount: 0,
+			mutate: func(c *Component) {
+				c.CompleteToolCall("t1", "bash", "{}", "run", "out1\nout2\nout3", false)
+			},
+			expectedAfterScroll: "" +
+				"line5                \n" +
+				"line6                \n" +
+				"line7                \n" +
+				"line8                \n" +
+				"line9                \n" +
+				"line10               \n" +
+				"⚙ bash run           \n" +
+				" ┌──────────────┐    \n" +
+				" │              │    \n" +
+				" └──────────────┘    \n" +
+				"                     ",
+			expectedAfterMutate: "" +
+				"line8                \n" +
+				"line9                \n" +
+				"line10               \n" +
+				"✓ bash run           \n" +
+				"out1                 \n" +
+				"out2                 \n" +
+				"out3                 \n" +
+				" ┌──────────────┐    \n" +
+				" │              │    \n" +
+				" └──────────────┘    \n" +
+				"                     ",
+		},
+		{
+			name:        "tool call mid scroll",
+			setup:       func(c *Component) { c.AddToolCall("t1", "bash", "{}", "run") },
+			seekUpCount: 2,
+			mutate: func(c *Component) {
+				c.CompleteToolCall("t1", "bash", "{}", "run", "out1\nout2\nout3", false)
+			},
+			expectedAfterScroll: "" +
+				"line3                \n" +
+				"line4                \n" +
+				"line5                \n" +
+				"line6                \n" +
+				"line7                \n" +
+				"line8                \n" +
+				"line9                \n" +
+				" ┌──────────────┐    \n" +
+				" │              │    \n" +
+				" └──────────────┘    \n" +
+				"                     ",
+			expectedAfterMutate: "" +
+				"line3                \n" +
+				"line4                \n" +
+				"line5                \n" +
+				"line6                \n" +
+				"line7                \n" +
+				"line8                \n" +
+				"line9                \n" +
+				" ┌──────────────┐    \n" +
+				" │              │    \n" +
+				" └──────────────┘    \n" +
+				"                     ",
+		},
+		{
+			name: "shrink at bottom",
+			setup: func(c *Component) {
+				c.AddQueuedMessage("q1")
+				c.AddQueuedMessage("q2")
+			},
+			seekUpCount: 0,
+			mutate:      func(c *Component) { c.RemoveLastQueuedMessage() },
+			expectedAfterScroll: "" +
+				"line6                \n" +
+				"line7                \n" +
+				"line8                \n" +
+				"line9                \n" +
+				"line10               \n" +
+				"󰄝  q1                \n" +
+				"󰄝  q2                \n" +
+				" ┌──────────────┐    \n" +
+				" │              │    \n" +
+				" └──────────────┘    \n" +
+				"                     ",
+			expectedAfterMutate: "" +
+				"line5                \n" +
+				"line6                \n" +
+				"line7                \n" +
+				"line8                \n" +
+				"line9                \n" +
+				"line10               \n" +
+				"󰄝  q1                \n" +
+				" ┌──────────────┐    \n" +
+				" │              │    \n" +
+				" └──────────────┘    \n" +
+				"                     ",
+		},
+		{
+			name: "shrink mid scroll",
+			setup: func(c *Component) {
+				c.AddQueuedMessage("q1")
+				c.AddQueuedMessage("q2")
+			},
+			seekUpCount: 2,
+			mutate:      func(c *Component) { c.RemoveLastQueuedMessage() },
+			expectedAfterScroll: "" +
+				"line4                \n" +
+				"line5                \n" +
+				"line6                \n" +
+				"line7                \n" +
+				"line8                \n" +
+				"line9                \n" +
+				"line10               \n" +
+				" ┌──────────────┐    \n" +
+				" │              │    \n" +
+				" └──────────────┘    \n" +
+				"                     ",
+			expectedAfterMutate: "" +
+				"line4                \n" +
+				"line5                \n" +
+				"line6                \n" +
+				"line7                \n" +
+				"line8                \n" +
+				"line9                \n" +
+				"line10               \n" +
+				" ┌──────────────┐    \n" +
+				" │              │    \n" +
+				" └──────────────┘    \n" +
+				"                     ",
+		},
+		{
+			name:        "compose box growth at bottom",
+			setup:       func(*Component) {},
+			seekUpCount: 0,
+			mutate:      func(c *Component) { c.Input().SetText("x\ny\nz") },
+			expectedAfterScroll: "" +
+				"line4                \n" +
+				"line5                \n" +
+				"line6                \n" +
+				"line7                \n" +
+				"line8                \n" +
+				"line9                \n" +
+				"line10               \n" +
+				" ┌──────────────┐    \n" +
+				" │              │    \n" +
+				" └──────────────┘    \n" +
+				"                     ",
+			expectedAfterMutate: "" +
+				"line6                \n" +
+				"line7                \n" +
+				"line8                \n" +
+				"line9                \n" +
+				"line10               \n" +
+				" ┌──────────────┐    \n" +
+				" │x             │    \n" +
+				" │y             │    \n" +
+				" │z             │    \n" +
+				" └──────────────┘    \n" +
+				"                     ",
+		},
+		{
+			name:        "compose box growth mid scroll",
+			setup:       func(*Component) {},
+			seekUpCount: 2,
+			mutate:      func(c *Component) { c.Input().SetText("x\ny\nz") },
+			expectedAfterScroll: "" +
+				"line2                \n" +
+				"line3                \n" +
+				"line4                \n" +
+				"line5                \n" +
+				"line6                \n" +
+				"line7                \n" +
+				"line8                \n" +
+				" ┌──────────────┐    \n" +
+				" │              │    \n" +
+				" └──────────────┘    \n" +
+				"                     ",
+			expectedAfterMutate: "" +
+				"line2                \n" +
+				"line3                \n" +
+				"line4                \n" +
+				"line5                \n" +
+				"line6                \n" +
+				" ┌──────────────┐    \n" +
+				" │x             │    \n" +
+				" │y             │    \n" +
+				" │z             │    \n" +
+				" └──────────────┘    \n" +
+				"                     ",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			comp := NewComponent(ComponentConfig{})
+			comp.Resize(20, 10)
+			for i := range 10 {
+				comp.AddSendMessage(fmt.Sprintf("line%d", i+1))
+			}
+			tc.setup(comp)
+			w := term.NewStringWriter(21, 11)
+			// Settle the setup's own height change before scrolling, as a
+			// frame would have been drawn before the user could scroll.
+			comp.Draw(w)
+
+			comptest.TestComponent(t, comp, w, []comptest.TestCase{
+				{
+					Action: func() {
+						for range tc.seekUpCount {
+							assert.True(t, comp.SeekUp())
+						}
+					},
+					Expected: tc.expectedAfterScroll,
+				},
+				{
+					Action:   func() { tc.mutate(comp) },
+					Expected: tc.expectedAfterMutate,
+				},
+			})
+		})
+	}
+}
+
 func TestComponentQueuedMessagesRenderAndRemove(t *testing.T) {
 	comp := NewComponent(ComponentConfig{})
 	comp.Resize(20, 10)

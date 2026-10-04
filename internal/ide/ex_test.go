@@ -970,10 +970,10 @@ func testBrowserHandlerDraw(t *testing.T, constructor browserConstructor) {
 
 	handlertest.TestHandlerSequence(t, bh, 20, 10, cases)
 
-	var closed int
+	closed := make(chan struct{})
 	hx := browsertest.NewTestHandler()
 	hx.Ch = '$'
-	hx.CloseCallback = func() error { closed++; return nil }
+	hx.CloseCallback = func() error { close(closed); return nil }
 	require.NoError(t, focus.SetContent(hx))
 
 	cases = []handlertest.SequenceTestCase{
@@ -995,7 +995,12 @@ func testBrowserHandlerDraw(t *testing.T, constructor browserConstructor) {
 	require.NoError(t, win.Close())
 	require.NoError(t, focus.Close())
 
-	assert.Equal(t, 1, closed)
+	// Over RPC, closing a window only asks the remote content to close.
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("window content was not closed")
+	}
 
 	cases = []handlertest.SequenceTestCase{
 		// test CommandKeyBindings
@@ -1197,7 +1202,6 @@ IIII`},
 
 	assert.NoError(t, bh.(io.Closer).Close())
 	assert.NoError(t, b.Close())
-	assert.Equal(t, 1, closed)
 }
 
 func TestShellCommandOpensTab(t *testing.T) {
@@ -8588,6 +8592,14 @@ func (v *testVte) URI() workspaceapi.URI {
 
 func (v *testVte) Title() string {
 	return v.title
+}
+
+func (v *testVte) ExitErr() error {
+	return nil
+}
+
+func (v *testVte) CursorAtScroll() term.Coordinates {
+	return v.cursor
 }
 
 func newExForTestingTasks(t *testing.T) (testEx, *sync.Mutex, func()) {

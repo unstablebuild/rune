@@ -19,11 +19,14 @@ package gui
 import (
 	"context"
 	"image"
+	"image/color"
+	"math"
 	"sync"
 	"testing"
 	"time"
 
 	ebiten "github.com/hajimehoshi/ebiten/v2"
+	"github.com/hajimehoshi/ebiten/v2/benchdraw"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/term"
@@ -517,13 +520,41 @@ func TestCellPixelSizeMatchesImagePlacement(t *testing.T) {
 	w, h := gui.CellPixelSize()
 	require.Positive(t, w)
 	require.Positive(t, h)
-	cells := cellRectToPixels(image.Rect(0, 0, 3, 2), gui.fontManager, 0, 0)
+	cells := cellRectToPixels(image.Rect(0, 0, 3, 2), gui.fontManager)
 	assert.Equal(t, 3*w, cells.Dx())
 	assert.Equal(t, 2*h, cells.Dy())
 
 	require.NoError(t, gui.IncreaseFontSize())
 	w2, h2 := gui.CellPixelSize()
 	assert.Greater(t, w2*h2, w*h, "a larger font means larger cells")
+}
+
+// TestDrawPaintsPicturesOnTheirCells asserts a picture lands on the
+// pixels the renderer paints its cells on, so the cells a floating
+// window writes over it hide all of it.
+func TestDrawPaintsPicturesOnTheirCells(t *testing.T) {
+	pic := term.Image{
+		Src: solidRGBA(4, 4, color.RGBA{G: 255, A: 255}), ID: term.NewImageID(),
+		Pos: term.Coordinates{X: 2, Y: 3}, Width: 4, Height: 2,
+	}
+	gui, _ := newTestGUI(t, &mockHandler{
+		assertDraw:  func(w term.Writer) { require.True(t, w.DrawImage(pic)) },
+		assertEvent: func(term.Event) (bool, bool) { return false, true },
+	})
+	require.NoError(t, gui.Update())
+
+	r := gui.renderer
+	screen := ebiten.NewImage(r.frame.Bounds().Dx(), r.frame.Bounds().Dy())
+	t.Cleanup(screen.Deallocate)
+	benchdraw.BeginFrame(t)
+	defer benchdraw.EndFrame(t)
+	rects := r.drawImageLayer(screen, gui.writer.Images(), term.ImageLayerAboveText)
+
+	m := gui.fontManager
+	px := func(v float64) int { return int(math.Round(v)) }
+	require.Len(t, rects, 1)
+	assert.Equal(t, image.Rect(px(m.PixelX(2)), px(m.PixelY(3)), px(m.PixelX(6)), px(m.PixelY(5))),
+		rects[0], "the picture covers exactly its cells' pixels")
 }
 
 // stubWindowClosing installs a processWindowClosed that reports one

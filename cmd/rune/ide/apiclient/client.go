@@ -28,6 +28,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -46,6 +47,7 @@ import (
 	"google.golang.org/grpc/credentials/oauth"
 	"unstable.build/rune/auth"
 	"unstable.build/rune/internal/debug"
+	"unstable.build/rune/internal/keychain"
 )
 
 //go:embed callback_page.html
@@ -85,7 +87,9 @@ func New(
 	}
 	authStorage := storageapi.WithPartition(storage, "auth")
 	ret.storage = authStorage
-	ret.tokenSource = auth.NewCachedTokenSource(ret, authStorage)
+	tokenStorage := keychain.NewStore(
+		keychain.System(), keychainScope(dataDir), authStorage)
+	ret.tokenSource = auth.NewCachedTokenSource(ret, tokenStorage)
 	ret.ctx, ret.ctxCancel = context.WithCancel(context.Background())
 
 	if config.EnableTelemetry {
@@ -95,7 +99,7 @@ func New(
 			func(ctx context.Context, t *oauth2.Token) (oauth2.TokenSource, error) {
 				return ret.tokenSourceRefresh(ctx, t, true)
 			})
-		ret.telemetryTokenSource = auth.NewCachedTokenSource(refreshOnlySourcer, authStorage)
+		ret.telemetryTokenSource = auth.NewCachedTokenSource(refreshOnlySourcer, tokenStorage)
 		telemetryStorage := storageapi.WithPartition(storage, "telemetry")
 		ret.telemetry = newTelemetry(ret.telemetryTokenSource,
 			ret.httpEndpointURL, ret.config.TelemetryPeriod, debug.Tag,
@@ -104,6 +108,17 @@ func New(
 	}
 
 	return ret
+}
+
+// keychainScope names the data directory's items in the OS keychain.
+// Each data directory has its own sign-in, so two installations must
+// not share an item.
+func keychainScope(dataDir string) string {
+	abs, err := filepath.Abs(dataDir)
+	if err != nil {
+		return dataDir
+	}
+	return abs
 }
 
 // openBrowser launches the user's preferred browser and returns as soon
@@ -271,6 +286,12 @@ type DeviceLoginSession struct {
 var ErrDeviceLoginUnsupported = errors.New(
 	"the API server does not offer sign-in by code")
 
+// ErrHeadlessLoginUnsupported is returned to a headless client by an
+// API server that predates serve-only machines: its oauth2
+// configuration names no headless client.
+var ErrHeadlessLoginUnsupported = errors.New(
+	"the API server is too old to sign machines in as serve-only")
+
 // LoginWithDeviceCode authenticates the user using the oauth2 device
 // authorization grant: no browser is opened and no local listener is
 // bound, so it works on machines the operator only reaches through a
@@ -311,6 +332,18 @@ func (a *Client) signIn(ctx context.Context) error {
 		log.Warnf("login: discard cached token: %v", err)
 	}
 	_, err = a.tokenSource.TokenCtx(ctx)
+	return err
+}
+
+// CheckSignIn confirms the cached sign-in with the account server by
+// refreshing it once its access token has expired; an access token
+// that has not expired yet is trusted as is. It returns
+// auth.ErrNotAuthenticated when there is no sign-in, or when the server
+// refused the refresh because the sign-in was revoked or has expired,
+// in which case the sign-in has been discarded. Any other error leaves
+// it in place. It never starts an interactive sign-in.
+func (a *Client) CheckSignIn(ctx context.Context) error {
+	_, err := a.tokenSource.TokenCtx(ctx)
 	return err
 }
 
@@ -368,6 +401,9 @@ type Machine struct {
 	Hostname string    `json:"hostname"`
 	LastSeen time.Time `json:"last_seen"`
 	Online   bool      `json:"online"`
+	// ServeOnly is set for a serve-only machine, a `rune --headless`
+	// node, which accepts the account's connections and opens none.
+	ServeOnly bool `json:"serve_only,omitempty"`
 }
 
 // NetworkCredentials asks the API for the coordination server this
@@ -593,6 +629,7 @@ func defaultProdNativeConfig(api *url.URL) auth.Config {
 	conf.SignupURL = "https://rune.build/signup"
 	conf.MgmtTokenURL = "https://rune-prod.us.auth0.com/oauth/token"
 	conf.ClientID = "XHBpJIm3q6PYazpxZMAhcwxAuR5Ks9B7"
+	conf.HeadlessClientID = "QymS9kE6odh2900n3RcEpdV95JQd09Sr"
 	conf.Endpoint.AuthURL = "https://auth.rune.build/authorize"
 	conf.Endpoint.DeviceAuthURL = "https://auth.rune.build/oauth/device/code"
 	return conf
@@ -612,6 +649,12 @@ func (a *Client) tokenSourceRefresh(ctx context.Context, token *oauth2.Token, re
 	if err != nil {
 		log.Warnf("could not fetch oauth2 configuration, fallback to builtin: %v", err)
 		conf = defaultProdNativeConfig(a.httpEndpointURL)
+	}
+	if a.config.Headless {
+		if conf.HeadlessClientID == "" {
+			return nil, ErrHeadlessLoginUnsupported
+		}
+		conf.ClientID = conf.HeadlessClientID
 	}
 	log.Infof("acquiring new oauth2 token source: "+
 		"http=%v grpc=%v config_url=%v "+

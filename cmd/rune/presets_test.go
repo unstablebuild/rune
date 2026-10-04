@@ -364,6 +364,48 @@ func TestHelixPresetTypableCommandAliases(t *testing.T) {
 	}
 }
 
+// TestLinuxPresetsResizeDirectionally pins that every Linux preset binds
+// the four directional resizes, so no editor leaves them to typed commands.
+func TestLinuxPresetsResizeDirectionally(t *testing.T) {
+	for name := range linuxPresetModes {
+		bound := map[string]bool{}
+		for _, cmd := range presetKeyBindings(t, name) {
+			bound[cmd] = true
+		}
+		for _, cmd := range []string{
+			"windowresize increase height", "windowresize decrease width",
+			"windowresize decrease height", "windowresize increase width",
+		} {
+			if !bound[cmd] {
+				t.Errorf("%s does not bind %q", name, cmd)
+			}
+		}
+	}
+}
+
+// TestLinuxPresetsKeepBindingsApartUnderEveryMetaKey pins that no two
+// bindings of a Linux preset land on the same keys under any <meta> meaning
+// its editor is offered, since one of them would silently never run.
+func TestLinuxPresetsKeepBindingsApartUnderEveryMetaKey(t *testing.T) {
+	for name, mode := range linuxPresetModes {
+		bindings := presetKeyBindings(t, name)
+		for _, meta := range keymeta.Options("linux", mode) {
+			seen := map[handler.Sequence]string{}
+			for key, cmd := range bindings {
+				if cmd == "" {
+					continue
+				}
+				seq := meta.ApplySequence(parseBinding(t, key))
+				if other, ok := seen[seq]; ok && bindings[other] != cmd {
+					t.Errorf("%s with %s: %s and %s land on the same key",
+						name, meta, key, other)
+				}
+				seen[seq] = key
+			}
+		}
+	}
+}
+
 // parseBinding parses a command.key_bindings key the way the IDE does: as
 // a two-key sequence when possible, otherwise as a single chord.
 func parseBinding(t *testing.T, key string) handler.Sequence {
@@ -390,7 +432,8 @@ var emacsGNUChords = map[string]bool{
 
 // TestLinuxPresetsKeepRuneOffAlt pins that every Linux preset keeps its
 // Rune commands on the <meta> layer, so <alt> stays with the editors and
-// the terminal. A binding to "" only frees a chord an extension claimed.
+// the terminal. A binding to "" only frees a chord an extension claimed,
+// and a chord that also holds <meta> is still on Rune's layer.
 func TestLinuxPresetsKeepRuneOffAlt(t *testing.T) {
 	for _, name := range []string{
 		"preset_modal_linux.yaml", "preset_helix_linux.yaml",
@@ -401,7 +444,8 @@ func TestLinuxPresetsKeepRuneOffAlt(t *testing.T) {
 				continue
 			}
 			seq := parseBinding(t, key)
-			if (seq.First.Mod|seq.Last.Mod)&term.ModAlt == 0 {
+			mod := seq.First.Mod | seq.Last.Mod
+			if mod&term.ModAlt == 0 || mod&term.ModMeta != 0 {
 				continue
 			}
 			if name == "preset_emacs_linux.yaml" && emacsGNUChords[key] {

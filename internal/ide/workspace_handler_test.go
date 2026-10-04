@@ -58,6 +58,8 @@ import (
 	"unstable.build/rune/internal/browser/browsertest"
 	"unstable.build/rune/internal/cell"
 	tcomponent "unstable.build/rune/internal/component"
+	"unstable.build/rune/internal/component/asciiart"
+	"unstable.build/rune/internal/component/imageuri/imageuritest"
 	"unstable.build/rune/internal/component/notifications"
 	"unstable.build/rune/internal/component/shader"
 	"unstable.build/rune/internal/debug"
@@ -1494,6 +1496,333 @@ func assertExoDelegatesMarkdown(t *testing.T, fileName string, readOnly bool) {
 		"under editor.mode=exo, .md must delegate to the exo "+
 			"handler, not the built-in markdown viewer "+
 			"(readOnly=%v)", readOnly)
+}
+
+// Frames of a 42x22 IDE viewing an image file, named after the file the
+// tab shows.
+const (
+	viewImageLoadingPNG = `┌━━━━━━━━━━━━────────────────────────────┐
+│o sample.png                            │
+├────────────────────────────────────────┤
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                   ⠃                    │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+├────────────────────────────────────────┤
+│1 1  2 2                                │
+└─────━━━────────────────────────────────┘`
+	viewImageLoadingJPG = `┌━━━━━━━━━━━━────────────────────────────┐
+│o sample.jpg                            │
+├────────────────────────────────────────┤
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                   ⠃                    │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+├────────────────────────────────────────┤
+│1 1  2 2                                │
+└─────━━━────────────────────────────────┘`
+	viewImageLoadingGIF = `┌━━━━━━━━━━━━────────────────────────────┐
+│o sample.gif                            │
+├────────────────────────────────────────┤
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                   ⠃                    │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+├────────────────────────────────────────┤
+│1 1  2 2                                │
+└─────━━━────────────────────────────────┘`
+	viewImageLoadingWebP = `┌━━━━━━━━━━━━━───────────────────────────┐
+│o sample.webp                           │
+├────────────────────────────────────────┤
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                   ⠃                    │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+├────────────────────────────────────────┤
+│1 1  2 2                                │
+└─────━━━────────────────────────────────┘`
+	viewImagePNG = `┌━━━━━━━━━━━━────────────────────────────┐
+│o sample.png                            │
+├────────────────────────────────────────┤
+│@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ │
+│@@@@@@@@@#b#@@@@##b##@@@##bW#@@@@@@@@@@ │
+│@@@@@@@bbbbbb#@acccccb@#cccc;c@@@@@@@@@ │
+│@@@@@@@#cbbbb##cccccc#@c;;;;;#@@@@@@@@@ │
+│@@@@@@@@@@@@@8cc#@@@@W;;#@@@@@@@@@@@@@@ │
+│@@@@@@@#;ccccc##;;;;;;#@;;;;;#@@@@@@@@@ │
+│@@@@@@@ccccccW@c;;;;;;@$;::::;@@@@@@@@@ │
+│@@@@@@@@bc;;W@#;;;;;!@#:::::;@@@@@@@@@@ │
+│@@@@@@@@@@#W;;;@@@@W:::@@@@@@@@@@@@@@@@ │
+│@@@@@@@3;;;;;a@8:::::;@@:::++1@@@@@@@@@ │
+│@@@@@@@4;;;::#@$:::::W@@+++++3@@@@@@@@@ │
+│@@@@@@@@@W##@@@@@###@@@@@###@@@@@@@@@@@ │
+│@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ │
+│####:##a###9@c#+@+?W#=9#@@2#*####=@##@@ │
+│@###:++#:+#9@;#@#+#++3$==9*=:#**=@5@@@@ │
+│@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ │
+├────────────────────────────────────────┤
+│1 1  2 2                                │
+└─────━━━────────────────────────────────┘`
+	viewImageJPG = `┌━━━━━━━━━━━━────────────────────────────┐
+│o sample.jpg                            │
+├────────────────────────────────────────┤
+│@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ │
+│@@@@@@@###aW######b#######bW###@@@@@@@@ │
+│@@@@@@#cbbbbb##ccccccc##cccc;;#@@@@@@@@ │
+│@@@@@@##bbbcb##cccccc##c;;;;;##@@@@@@@@ │
+│@@@@@@@@@@@##9ccW####W+:##@#@@@@@@@@@@@ │
+│@@@@@@##:bcccc##;c;;;c##:+;;;##@@@@@@@@ │
+│@@@@@@#;cccccW#c;;;;;c#W;::::c#@@@@@@@@ │
+│@@@@@@##b;;;###;;;;;!@#:::::;##@@@@@@@@ │
+│@@@@@@@@@@@$c:;##@#W+::####@@@@@@@@@@@@ │
+│@@@@@@#3;;;;;a#$::::::##::++:2#@@@@@@@@ │
+│@@@@@@#4;;;::##$:::::$##+++++3#@@@@@@@@ │
+│@@@@@@@@@W##@@@@@###@@@@####@@@@@@@@@@@ │
+│@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ │
+│#W##:##b###9#;#+#+?##*9#@@1#=####+@#W@@ │
+│@###++:#:+#9#:#WW+#+=3$*+$**:#***#5@@@@ │
+│@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ │
+├────────────────────────────────────────┤
+│1 1  2 2                                │
+└─────━━━────────────────────────────────┘`
+	viewImageGIF = `┌━━━━━━━━━━━━────────────────────────────┐
+│o sample.gif                            │
+├────────────────────────────────────────┤
+│@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ │
+│@@@@@@@@@#b#@@@@@#b@@@@@@@b#@@@@@@@@@@@ │
+│@@@@@@@bbbbbb@@acccccb@@cccccc@@@@@@@@@ │
+│@@@@@@@@bbbbb@@cccccc@@cccc;;@@@@@@@@@@ │
+│@@@@@@@@@@@@@9cc#@@@@#:c@@@@@@@@@@@@@@@ │
+│@@@@@@@@;ccccc@@;ccc;;@@c;;;;@@@@@@@@@@ │
+│@@@@@@@ccccccW@c;;;;;;@W;::::;@@@@@@@@@ │
+│@@@@@@@@accc#@@;;;;;!@@:::::;@@@@@@@@@@ │
+│@@@@@@@@@@@W;;;@@@@W:::@@@@@@@@@@@@@@@@ │
+│@@@@@@@4;;;;;a@8::::::@@::::+2@@@@@@@@@ │
+│@@@@@@@4;;;::@@$:::::$@@+++++2@@@@@@@@@ │
+│@@@@@@@@@W@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ │
+│@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ │
+│####:#@a#@#9@;@+@+0#@=9@@@2@*@###=@@#@@ │
+│@@@@;+:@:+#8@;@@@+#++2$*=9*=:@**=@4@@@@ │
+│@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ │
+├────────────────────────────────────────┤
+│1 1  2 2                                │
+└─────━━━────────────────────────────────┘`
+	viewImageWebP = `┌━━━━━━━━━━━━━───────────────────────────┐
+│o sample.webp                           │
+├────────────────────────────────────────┤
+│@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ │
+│@@@@@@@@@#b#@@@@##b##@@@##bW#@@@@@@@@@@ │
+│@@@@@@@bbbbbb#@acccccb@#cccc;c@@@@@@@@@ │
+│@@@@@@@#cbbbb##cccccc#@c;;;;;#@@@@@@@@@ │
+│@@@@@@@@@@@@@8cc#@@@@W;;#@@@@@@@@@@@@@@ │
+│@@@@@@@#;ccccc##;;;;;;#@;;;;;#@@@@@@@@@ │
+│@@@@@@@ccccccW@c;;;;;;@$;::::;@@@@@@@@@ │
+│@@@@@@@@bc;;W@#;;;;;!@#:::::;@@@@@@@@@@ │
+│@@@@@@@@@@#W;;;@@@@W:::@@@@@@@@@@@@@@@@ │
+│@@@@@@@3;;;;;a@8:::::;@@:::++1@@@@@@@@@ │
+│@@@@@@@4;;;::#@$:::::W@@+++++3@@@@@@@@@ │
+│@@@@@@@@@W##@@@@@###@@@@@###@@@@@@@@@@@ │
+│@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ │
+│####:##a###9@c#+@+?W#=9#@@2#*####=@##@@ │
+│@###:++#:+#9@;#@#+#++3$==9*=:#**=@5@@@@ │
+│@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ │
+├────────────────────────────────────────┤
+│1 1  2 2                                │
+└─────━━━────────────────────────────────┘`
+	viewImageProblemPNG = `┌━━━━━━━━━━━━────────────────────────────┐
+│o sample.png                            │
+├────────────────────────────────────────┤
+│                                        │
+│                                        │
+│              ___                       │
+│             /___/\_                    │
+│            _\   \/_/\__                │
+│          __\       \/_/\               │
+│          \   __    __ \ \              │
+│         __\  \_\   \_\ \ \   __        │
+│        /_/\\   __   __  \ \_/_/\       │
+│        \_\/_\__\/\__\/\__\/_\_\/       │
+│           \_\/_/\       /_\_\/         │
+│              \_\/       \_\/           │
+│                                        │
+│                                        │
+│    Uh, Houston, we've had a problem    │
+│                                        │
+├────────────────────────────────────────┤
+│1 1  2 2                                │
+└─────━━━────────────────────────────────┘`
+)
+
+func TestViewImageIntegration(t *testing.T) {
+	const width, height = 42, 22
+	tests := []struct {
+		name string
+		// cmd opens the file, view when empty.
+		cmd  string
+		file string
+		data []byte
+		// images reports whether the terminal draws images, as ASCII art.
+		images  bool
+		loading string
+		loaded  string
+	}{
+		{
+			name: "png", file: "sample.png", data: imageuritest.SamplePNG,
+			images: true, loading: viewImageLoadingPNG, loaded: viewImagePNG,
+		},
+		{
+			name: "edit png", cmd: "edit", file: "sample.png",
+			data:   imageuritest.SamplePNG,
+			images: true, loading: viewImageLoadingPNG, loaded: viewImagePNG,
+		},
+		{
+			name: "edit webp", cmd: "edit", file: "sample.webp",
+			data:   imageuritest.SampleWebP,
+			images: true, loading: viewImageLoadingWebP, loaded: viewImageWebP,
+		},
+		{
+			name: "jpg", file: "sample.jpg", data: imageuritest.SampleJPEG,
+			images: true, loading: viewImageLoadingJPG, loaded: viewImageJPG,
+		},
+		{
+			name: "gif", file: "sample.gif", data: imageuritest.SampleGIF,
+			images: true, loading: viewImageLoadingGIF, loaded: viewImageGIF,
+		},
+		{
+			name: "webp", file: "sample.webp", data: imageuritest.SampleWebP,
+			images: true, loading: viewImageLoadingWebP, loaded: viewImageWebP,
+		},
+		{
+			name: "not an image", file: "sample.png",
+			data:   []byte("<html>not an image</html>"),
+			images: true, loading: viewImageLoadingPNG, loaded: viewImageProblemPNG,
+		},
+		{
+			name: "edit not an image", cmd: "edit", file: "sample.png",
+			data:   []byte("<html>not an image</html>"),
+			images: true, loading: viewImageLoadingPNG, loaded: viewImageProblemPNG,
+		},
+		{
+			name: "terminal without image support", file: "sample.png",
+			data:    imageuritest.SamplePNG,
+			loading: viewImageLoadingPNG, loaded: viewImageProblemPNG,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			interrupts := make(chan struct{}, 1)
+			newTestPublishOverride = func(term.Event) bool {
+				select {
+				case interrupts <- struct{}{}:
+				default:
+				}
+				return true
+			}
+			t.Cleanup(func() { newTestPublishOverride = nil })
+
+			dir, err := filepath.EvalSymlinks(t.TempDir())
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(
+				filepath.Join(dir, tt.file), tt.data, 0o644))
+
+			m := newTestWorkspaceManagerHandlerWithDir(t,
+				defaultConfigWithWrap(false), dir, nopShutdownShaderConfig())
+			t.Cleanup(func() { _ = m.Close() })
+			uri, err := workspaceapi.ParseURI("file://" + dir)
+			require.NoError(t, err)
+			require.NoError(t, m.addOrCreateWorkspace(uri))
+			m.quiesce()
+
+			h := newSafeHandler(m)
+			var w handlertest.Writer = term.NewStringWriter(width, height)
+			if tt.images {
+				w = asciiart.NewStringWriter(width, height, asciiart.DefaultConfig())
+			}
+			cmd := tt.cmd
+			if cmd == "" {
+				cmd = "view"
+			}
+			handlertest.RunHandlerSequenceWriter(t, w, h, width, height,
+				[]handlertest.SequenceTestCase{{
+					InputSequence: `<c-\\>` + cmd + `<space>` + tt.file + `<enter>`,
+					Expected:      tt.loading,
+				}})
+			awaitImageView(t, h, w, interrupts)
+			handlertest.RunHandlerSequenceWriter(t, w, h, width, height,
+				[]handlertest.SequenceTestCase{{Expected: tt.loaded}})
+		})
+	}
+}
+
+// awaitImageView redraws on every interrupt, as the host event loop
+// does, until the image view's loading animation is gone.
+func awaitImageView(
+	t *testing.T, h tui.Component, w handlertest.Writer, interrupts <-chan struct{},
+) {
+	frames, _ := component.ProgressAnimationFrames()
+	spinner := strings.Join(frames, "")
+	timeout := time.After(10 * time.Second)
+	for {
+		require.NoError(t, w.Clear(term.Attributes{}))
+		h.Draw(w)
+		require.NoError(t, w.Flush())
+		if !strings.ContainsAny(w.String(), spinner) {
+			return
+		}
+		select {
+		case <-interrupts:
+		case <-timeout:
+			t.Fatalf("image view never finished loading:\n%s", w.String())
+		}
+	}
 }
 
 func TestReadfileCrossWorkspaceIntegration(t *testing.T) {
@@ -8771,7 +9100,7 @@ func swapDirIDEConfig(t *testing.T, enabled bool) ideConfig {
 	var cfg ideConfig
 	require.NoError(t, loadConfig(&cfg, f.Name(), browser.NopWallpaper(),
 		DefaultConfig{src: "config = {}"},
-		term.RingBell, term.ScheduleNextTick, ""))
+		term.RingBell, term.ScheduleNextTick))
 	return cfg
 }
 

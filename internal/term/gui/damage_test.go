@@ -296,14 +296,14 @@ func TestDrawPartialRepaintAfterFull(t *testing.T) {
 	screen := ebiten.NewImage(r.frame.Bounds().Dx(), r.frame.Bounds().Dy())
 
 	benchdraw.BeginFrame(t)
-	r.Draw(screen, grid, nil, false, term.Coordinates{}, term.CursorStyleDefault, 0, 0)
+	r.Draw(screen, grid, nil, false, term.Coordinates{}, term.CursorStyleDefault)
 	benchdraw.EndFrame(t)
 	require.True(t, r.prevValid)
 
 	next := cloneGrid(grid)
 	next[5][2].Ch = 'y'
 	benchdraw.BeginFrame(t)
-	r.Draw(screen, next, nil, false, term.Coordinates{}, term.CursorStyleDefault, 0, 0)
+	r.Draw(screen, next, nil, false, term.Coordinates{}, term.CursorStyleDefault)
 	benchdraw.EndFrame(t)
 
 	// After the second Draw the snapshot matches the latest grid, so a
@@ -330,7 +330,7 @@ func TestDrawImageDoesNotDirtyRows(t *testing.T) {
 	img := term.Image{Src: pixels, ID: term.NewImageID(), Width: 2, Height: 2}
 
 	benchdraw.BeginFrame(t)
-	r.Draw(screen, grid, nil, false, term.Coordinates{}, term.CursorStyleDefault, 0, 0)
+	r.Draw(screen, grid, nil, false, term.Coordinates{}, term.CursorStyleDefault)
 	benchdraw.EndFrame(t)
 	require.True(t, r.prevValid)
 
@@ -338,7 +338,7 @@ func TestDrawImageDoesNotDirtyRows(t *testing.T) {
 		t.Helper()
 		benchdraw.BeginFrame(t)
 		r.Draw(screen, cloneGrid(grid), images, false,
-			term.Coordinates{}, term.CursorStyleDefault, 0, 0)
+			term.Coordinates{}, term.CursorStyleDefault)
 		benchdraw.EndFrame(t)
 		for y := range rows {
 			assert.Falsef(t, r.dirtyRows[y], "row %d clean %s", y, why)

@@ -23,10 +23,14 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/config"
+	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/browser"
 	tcomponent "unstable.build/rune/internal/component"
@@ -243,4 +247,69 @@ workspace:
 		"post-reload right leaf must reference a concrete window")
 	require.Equal(t, rightLeafAfter.WindowID, after.windowID,
 		"the restored terminal must live in the right leaf of the post-reload layout")
+}
+
+// TestFileSchemeShellRC pins that terminal shells in file workspaces load
+// Rune's dotfiles only when the host injects them, so an IDE built by a
+// test never writes into its data dir behind the test's back.
+func TestFileSchemeShellRC(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opts []Option
+		want string
+	}{
+		{"default", nil, "unset"},
+		{"WithShellRCDir", []Option{WithShellRCDir("/rune/shellrc")}, "/rune/shellrc"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			out := filepath.Join(dir, "out")
+			zsh := filepath.Join(dir, "zsh")
+			require.NoError(t, os.WriteFile(zsh, []byte(
+				"#!/bin/sh\nprintf '%s' \"${ZDOTDIR:-unset}\" > \""+out+"\"\n"), 0o755))
+			t.Setenv("SHELL", zsh)
+			t.Setenv("ZDOTDIR", "")
+			configPath := filepath.Join(dir, "rune.yaml")
+			require.NoError(t, os.WriteFile(configPath, []byte(
+				"editor:\n  mode: vim\nterminal:\n  initial_reservoir: 0\n"), 0o644))
+
+			i, err := New("", configPath, dir, pkgtrust.NewStore(dir, nil), newTestStorage(t, dir),
+				append([]Option{
+					WithPublishEvent(nopPublishEvent),
+					WithLocker(new(sync.Mutex)),
+					WithScheduleNextTick(func(fn func()) bool { fn(); return true }),
+				}, tc.opts...)...)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = i.Close() })
+
+			uri, err := workspaceapi.CurrentUserHostURI(dir)
+			require.NoError(t, err)
+			newScheme, err := i.workspaceManager.Scheme(uri)
+			require.NoError(t, err)
+			scheme, err := newScheme(t.Context(), config.NopConfig(), uri)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = scheme.Close() })
+			pty, err := scheme.NewPty(t.Context())
+			require.NoError(t, err)
+			t.Cleanup(func() {
+				_ = pty.Master.Close()
+				_ = pty.Slave.Close()
+			})
+
+			ch := make(chan error, 1)
+			_, err = scheme.StartCommand(t.Context(), workspaceapi.Cmd{
+				// the terminal's shell, started as the vte does
+				SysProcAttr: &syscall.SysProcAttr{Setsid: true, Setctty: true},
+				Stdin:       pty.Slave,
+				Stdout:      pty.Slave,
+				Stderr:      pty.Slave,
+				Watcher:     workspaceapi.ChanProcessWatcher(ch),
+			})
+			require.NoError(t, err)
+			require.NoError(t, <-ch)
+			got, err := os.ReadFile(out)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, string(got))
+		})
+	}
 }

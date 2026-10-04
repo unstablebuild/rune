@@ -49,10 +49,10 @@ func solidRGBA(w, h int, c color.RGBA) *image.RGBA {
 
 func TestCellRectToPixels(t *testing.T) {
 	m := testFontManager(t)
-	got := cellRectToPixels(image.Rect(1, 2, 4, 5), m, 3, 7)
+	got := cellRectToPixels(image.Rect(1, 2, 4, 5), m)
 	want := image.Rect(
-		int(m.PixelX(1))+3, int(m.PixelY(2))+7,
-		int(m.PixelX(4))+3, int(m.PixelY(5))+7,
+		int(m.PixelX(1)), int(m.PixelY(2)),
+		int(m.PixelX(4)), int(m.PixelY(5)),
 	)
 	// Rounding may differ by a pixel from truncation; compare loosely on
 	// each edge so the test tracks the font manager, not the rounding.
@@ -219,7 +219,7 @@ func drawFrame(
 	l *imageLayer, dst *ebiten.Image, m *font.Manager, images ...term.Image,
 ) {
 	for _, img := range images {
-		l.drawOne(dst, img, m, 0, 0)
+		l.drawOne(dst, img, m)
 	}
 	l.evictUnused()
 }
@@ -267,7 +267,7 @@ func TestImageLayerDrawSkipsInvisiblePlacements(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, ok := resolvePlacement(tt.img, m, 0, 0, dst.Bounds())
+			_, ok := resolvePlacement(tt.img, m, dst.Bounds())
 			assert.False(t, ok, "placement must resolve to nothing")
 
 			var l imageLayer
@@ -282,23 +282,22 @@ func TestImageLayerDrawSkipsInvisiblePlacements(t *testing.T) {
 
 // TestResolvePlacement asserts the pixel geometry a placement resolves
 // to: where the picture lands, which texels it samples, and how the
-// clip and the render offset narrow or move it.
+// clip and the pixel offset narrow or move it.
 func TestResolvePlacement(t *testing.T) {
 	m := testFontManager(t)
 	bounds := image.Rect(0, 0, 2000, 2000)
 	src := solidRGBA(8, 4, color.RGBA{A: 255})
 
-	cellRect := func(x0, y0, x1, y1 int, offX, offY float64) image.Rectangle {
-		return cellRectToPixels(image.Rect(x0, y0, x1, y1), m, offX, offY)
+	cellRect := func(x0, y0, x1, y1 int) image.Rectangle {
+		return cellRectToPixels(image.Rect(x0, y0, x1, y1), m)
 	}
 
 	tests := []struct {
-		name       string
-		img        term.Image
-		offX, offY float64
-		wantSrc    image.Rectangle
-		wantArea   image.Rectangle
-		wantClip   image.Rectangle
+		name     string
+		img      term.Image
+		wantSrc  image.Rectangle
+		wantArea image.Rectangle
+		wantClip image.Rectangle
 	}{
 		{
 			name: "fill covers the whole cell rectangle",
@@ -307,8 +306,8 @@ func TestResolvePlacement(t *testing.T) {
 				Width: 4, Height: 3,
 			},
 			wantSrc:  image.Rect(0, 0, 8, 4),
-			wantArea: cellRect(1, 1, 5, 4, 0, 0),
-			wantClip: cellRect(1, 1, 5, 4, 0, 0),
+			wantArea: cellRect(1, 1, 5, 4),
+			wantClip: cellRect(1, 1, 5, 4),
 		},
 		{
 			name: "crop selects a sub-rectangle of the texture",
@@ -317,20 +316,8 @@ func TestResolvePlacement(t *testing.T) {
 				Width: 4, Height: 3,
 			},
 			wantSrc:  image.Rect(2, 1, 6, 3),
-			wantArea: cellRect(0, 0, 4, 3, 0, 0),
-			wantClip: cellRect(0, 0, 4, 3, 0, 0),
-		},
-		{
-			name: "the render offset moves the placement",
-			img: term.Image{
-				Src: src, Pos: term.Coordinates{X: 2, Y: 1},
-				Width: 3, Height: 2,
-			},
-			offX:     30,
-			offY:     20,
-			wantSrc:  image.Rect(0, 0, 8, 4),
-			wantArea: cellRect(2, 1, 5, 3, 30, 20),
-			wantClip: cellRect(2, 1, 5, 3, 30, 20),
+			wantArea: cellRect(0, 0, 4, 3),
+			wantClip: cellRect(0, 0, 4, 3),
 		},
 		{
 			name: "the pixel offset shifts the raster inside its cells",
@@ -339,14 +326,14 @@ func TestResolvePlacement(t *testing.T) {
 				Offset: image.Pt(3, 5), Width: 4, Height: 3,
 			},
 			wantSrc:  image.Rect(0, 0, 8, 4),
-			wantArea: cellRect(1, 1, 5, 4, 0, 0).Add(image.Pt(3, 5)),
-			wantClip: cellRect(1, 1, 5, 4, 0, 0).Add(image.Pt(3, 5)).
-				Intersect(cellRect(1, 1, 5, 4, 0, 0)),
+			wantArea: cellRect(1, 1, 5, 4).Add(image.Pt(3, 5)),
+			wantClip: cellRect(1, 1, 5, 4).Add(image.Pt(3, 5)).
+				Intersect(cellRect(1, 1, 5, 4)),
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p, ok := resolvePlacement(tt.img, m, tt.offX, tt.offY, bounds)
+			p, ok := resolvePlacement(tt.img, m, bounds)
 			require.True(t, ok)
 			assert.Equal(t, tt.wantSrc, p.src, "src")
 			assert.Equal(t, tt.wantArea, p.area, "area")
@@ -368,11 +355,11 @@ func TestResolvePlacementClipNarrowsPainting(t *testing.T) {
 	}.Clipped(image.Rect(0, 0, 4, 2))
 	require.True(t, ok)
 
-	p, ok := resolvePlacement(img, m, 0, 0, bounds)
+	p, ok := resolvePlacement(img, m, bounds)
 	require.True(t, ok)
-	assert.Equal(t, cellRectToPixels(image.Rect(0, 0, 4, 4), m, 0, 0), p.area,
+	assert.Equal(t, cellRectToPixels(image.Rect(0, 0, 4, 4), m), p.area,
 		"scaling ignores the clip")
-	assert.Equal(t, cellRectToPixels(image.Rect(0, 0, 4, 2), m, 0, 0), p.clip,
+	assert.Equal(t, cellRectToPixels(image.Rect(0, 0, 4, 2), m), p.clip,
 		"painting is confined to the visible cells")
 	assert.Equal(t, image.Rect(0, 0, 8, 8), p.src, "the crop is unchanged")
 }
@@ -388,9 +375,9 @@ func TestResolvePlacementContainPreservesAspect(t *testing.T) {
 		// A square source in a wide cell rectangle must pillarbox.
 		Width: 10, Height: 2, Fit: term.ImageFitContain,
 	}
-	area := cellRectToPixels(image.Rect(0, 0, 10, 2), m, 0, 0)
+	area := cellRectToPixels(image.Rect(0, 0, 10, 2), m)
 
-	p, ok := resolvePlacement(img, m, 0, 0, bounds)
+	p, ok := resolvePlacement(img, m, bounds)
 	require.True(t, ok)
 	assert.Equal(t, p.area.Dx(), p.area.Dy(), "a square source stays square")
 	assert.Equal(t, area.Dy(), p.area.Dy(), "the short axis fills the rectangle")
@@ -438,15 +425,15 @@ func TestDrawImageLayerPartitions(t *testing.T) {
 	benchdraw.BeginFrame(t)
 	defer benchdraw.EndFrame(t)
 
-	rects := r.drawImageLayer(screen, images, term.ImageLayerBelowText, 0, 0)
+	rects := r.drawImageLayer(screen, images, term.ImageLayerBelowText)
 	require.Len(t, rects, 1, "only the below-text placement is painted")
-	assert.Equal(t, cellRectToPixels(below.Bounds(), r.fontManager, 0, 0), rects[0])
+	assert.Equal(t, cellRectToPixels(below.Bounds(), r.fontManager), rects[0])
 
-	rects = r.drawImageLayer(screen, images, term.ImageLayerAboveText, 0, 0)
+	rects = r.drawImageLayer(screen, images, term.ImageLayerAboveText)
 	require.Len(t, rects, 1)
-	assert.Equal(t, cellRectToPixels(above.Bounds(), r.fontManager, 0, 0), rects[0])
+	assert.Equal(t, cellRectToPixels(above.Bounds(), r.fontManager), rects[0])
 
-	assert.Empty(t, r.drawImageLayer(screen, images, term.ImageLayerBelowBackground, 0, 0))
+	assert.Empty(t, r.drawImageLayer(screen, images, term.ImageLayerBelowBackground))
 	assert.Len(t, r.images.textures, 2, "each placement uploaded its own picture")
 }
 
@@ -457,15 +444,15 @@ func TestRowsCovering(t *testing.T) {
 	r, _, rows := newTestRenderer(t, 16, 10)
 	m := r.fontManager
 
-	first, last := r.rowsCovering(cellRectToPixels(image.Rect(0, 3, 2, 5), m, 0, 0), rows)
+	first, last := r.rowsCovering(cellRectToPixels(image.Rect(0, 3, 2, 5), m), rows)
 	assert.Equal(t, 2, first, "the row above can paint into the placement")
 	assert.Equal(t, 5, last, "and so can the row below")
 
-	first, last = r.rowsCovering(cellRectToPixels(image.Rect(0, 0, 2, 1), m, 0, 0), rows)
+	first, last = r.rowsCovering(cellRectToPixels(image.Rect(0, 0, 2, 1), m), rows)
 	assert.Equal(t, 0, first, "clamped to the first row")
 	assert.Equal(t, 1, last)
 
-	first, last = r.rowsCovering(cellRectToPixels(image.Rect(0, rows-1, 2, rows), m, 0, 0), rows)
+	first, last = r.rowsCovering(cellRectToPixels(image.Rect(0, rows-1, 2, rows), m), rows)
 	assert.Equal(t, rows-2, first)
 	assert.Equal(t, rows-1, last, "clamped to the last row")
 }
