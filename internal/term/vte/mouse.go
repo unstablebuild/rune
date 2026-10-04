@@ -364,6 +364,15 @@ func (e *mouseDriver) SetSelectionEnd(pos term.Coordinates) {
 	// range spans the lowest to the highest touched edge, which sorts a
 	// leftward drag the same way.
 	endLo, endHi := e.selectionEdges(pos)
+	// A cell-granular event covers its whole cell, so one that reports
+	// the pressed cell again touched no new edge: without a fraction
+	// there is no motion inside a cell to report, and the gesture stays
+	// in dragPressed until the reported cell changes, as it did when
+	// selection endpoints were cell-granular.
+	if !e.pointerFracSet && e.drag != dragSelecting &&
+		endLo == start && endHi == startHi {
+		return
+	}
 	from, _ := term.CoordinatesSort(start, endLo)
 	_, to := term.CoordinatesSort(startHi, endHi)
 	if from == to {

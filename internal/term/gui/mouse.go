@@ -99,7 +99,7 @@ func (m *mouse) processMouse() []term.Event {
 	// Wheel events are accumulated and emitted as discrete line events,
 	// preserving the fractional remainder for the next frame.
 	if wheelY != 0 {
-		return m.wheelEvents(pos, wheelY, ctx)
+		return m.wheelEvents(ctx, pos, wheelY)
 	}
 
 	ev := term.Event{Type: term.EventMouse, MouseX: pos.X, MouseY: pos.Y, Context: ctx}
@@ -137,7 +137,7 @@ func (m *mouse) processMouse() []term.Event {
 // wheel event per whole line crossed. The remainder below one line is retained
 // for the next frame so high-resolution devices scroll smoothly instead of
 // jumping a full line per frame.
-func (m *mouse) wheelEvents(pos term.Coordinates, wheelY float64, ctx context.Context) []term.Event {
+func (m *mouse) wheelEvents(ctx context.Context, pos term.Coordinates, wheelY float64) []term.Event {
 	// A non-finite delta would poison the accumulator permanently (NaN
 	// propagates, Inf overflows the line count). Drop it and recover the
 	// accumulator if a prior frame already poisoned it.
@@ -224,13 +224,10 @@ func (m *mouse) calculateCoordinates() (ret term.Coordinates) {
 // pixel position is clamped to the window so a pointer past an edge reads
 // as the edge cell's far side.
 func (m *mouse) subCellFraction(pos term.Coordinates) tterm.SubCellFraction {
-	pitchX := m.fontManager.PixelX(1)
-	pitchY := m.fontManager.PixelY(1)
-	px := min(max(float64(m.state.x), 0), pitchX*float64(m.width)-1)
-	py := min(max(float64(m.state.y), 0), pitchY*float64(m.height)-1)
+	pitch := m.fontManager.PixelX(1)
+	px := min(max(float64(m.state.x), 0), pitch*float64(m.width)-1)
 	return tterm.SubCellFraction{
-		X: (px - m.fontManager.PixelX(pos.X)) / pitchX,
-		Y: (py - m.fontManager.PixelY(pos.Y)) / pitchY,
+		X: (px - m.fontManager.PixelX(pos.X)) / pitch,
 	}
 }
 

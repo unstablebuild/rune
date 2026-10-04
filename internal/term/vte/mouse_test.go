@@ -369,12 +369,36 @@ func TestMouseDriverSelectionCopy(t *testing.T) {
 			want:  "ell",
 		},
 		{
-			// Cell-granular events can still cover a single cell: the
-			// pressed cell alone is already a non-empty range.
-			desc:  "cell-granular drag within a cell selects it",
+			// A cell-granular report of the pressed cell carries no
+			// motion: the gesture stays a click and nothing is
+			// highlighted or copied.
+			desc:  "cell-granular repeat inside the pressed cell selects nothing",
 			press: step{pos: press, plain: true},
-			drag:  []step{{pos: press, plain: true}},
+			drag:  []step{{pos: press, plain: true}, {pos: press, plain: true}},
+		},
+		{
+			// Once the reported cell changes the gesture selects as
+			// before, and returning to the pressed cell re-covers it.
+			desc:  "cell-granular drag back to the pressed cell keeps it",
+			press: step{pos: press, plain: true},
+			drag:  []step{{pos: term.Coordinates{X: 3}, plain: true}, {pos: press, plain: true}},
 			want:  "e",
+		},
+		{
+			// The right half of the last column snaps to a boundary one
+			// cell past the row's end; the buffer clamps that anchor to
+			// the row's cells, so a downward drag covers nothing on the
+			// pressed row.
+			desc:  "drag down from the last column's right edge",
+			press: step{pos: term.Coordinates{X: 15}, frac: .7},
+			drag:  []step{{pos: term.Coordinates{X: 2, Y: 1}, frac: .4}},
+			want:  "\nfo",
+		},
+		{
+			desc:  "drag left from the last column's right edge",
+			press: step{pos: term.Coordinates{X: 15}, frac: .7},
+			drag:  []step{{pos: term.Coordinates{X: 10}, frac: .4}},
+			want:  "d     ",
 		},
 	}
 
@@ -513,6 +537,15 @@ func TestMouseDriverGestures(t *testing.T) {
 	}
 	left := func(x, y int, frac float64) step { return ev(term.MouseLeft, x, y, frac) }
 	release := func(x, y int) step { return ev(term.MouseRelease, x, y, 0) }
+	// plain builds an event with no sub-cell payload, as a producer that
+	// cannot attach a Context sends them (e.g. mouse input over RPC).
+	plain := func(key term.Key, x, y int) step {
+		return func(_ *testing.T, e env) {
+			event := mouseEv(key, x, y)
+			e.drv.trackSubCell(event)
+			e.mouse.Handle(event)
+		}
+	}
 	// esc mirrors Handler.handleInput, which clears the highlight on Esc
 	// without going through the driver.
 	esc := func(_ *testing.T, e env) { e.comp.Unselect() }
@@ -536,6 +569,17 @@ func TestMouseDriverGestures(t *testing.T) {
 			desc:  "click with jitter in the top rows neither scrolls nor copies",
 			steps: []step{left(1, 1, .1), left(1, 1, .1), left(1, 1, .1), release(1, 1)},
 			want:  sentinel,
+		},
+		{
+			// A held cell-granular button repeats inside the pressed
+			// cell without any pointer motion; the gesture must stay a
+			// click on that path too.
+			desc: "cell-granular click jitter in the top rows neither scrolls nor copies",
+			steps: []step{
+				plain(term.MouseLeft, 1, 1), plain(term.MouseLeft, 1, 1),
+				plain(term.MouseLeft, 1, 1), plain(term.MouseRelease, 1, 1),
+			},
+			want: sentinel,
 		},
 		{
 			desc:       "drag in the top rows auto-scrolls",

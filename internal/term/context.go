@@ -48,13 +48,15 @@ func PayloadFromContext(ctx context.Context) ([]byte, bool) {
 }
 
 // SubCellFraction is a pointer's fractional position inside the cell that
-// Event.MouseX/MouseY report, in [0,1) on each axis. The cell fields alone
-// lose where inside the cell the pointer is, which consumers that model
-// positions as cell boundaries (e.g. drag selection) need to snap to the
-// nearer edge. The fraction is cell-translation invariant, so it stays
-// valid as the event's coordinates are shifted into component-local space.
+// Event.MouseX/MouseY report. The cell fields alone lose where inside the
+// cell the pointer is, which consumers that model positions as cell
+// boundaries (e.g. drag selection) need to snap to the nearer edge. The
+// fraction is cell-translation invariant, so it stays valid as the event's
+// coordinates are shifted into component-local space.
 type SubCellFraction struct {
-	X, Y float64
+	// X is the offset from the cell's left edge, in [0,1). The vertical
+	// axis has no consumer: selection granularity is whole rows.
+	X float64
 }
 
 // ContextWithSubCellFraction returns a Context that holds f.
