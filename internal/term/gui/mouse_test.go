@@ -25,6 +25,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	tterm "unstable.build/rune/internal/term"
 	"unstable.build/rune/internal/term/gui/font"
 )
 
@@ -376,11 +377,31 @@ func TestMouseEvents(t *testing.T) {
 					assert.Empty(t, events, i)
 				} else {
 					require.Len(t, events, 1, i)
+					// Every event carries the pointer's position inside
+					// the reported cell so consumers can snap to cell
+					// edges; the payload is checked separately from the
+					// cell coordinates.
+					frac, ok := tterm.SubCellFractionFromContext(events[0].Context)
+					require.True(t, ok, i)
+					assert.InDelta(t, expectedFracX(t, test.cursorPosition[i], mouse), frac.X, 1e-9, i)
+					events[0].Context = nil
 					assert.Equal(t, expectedEvent, events[0], i)
 				}
 			}
 		})
 	}
+}
+
+// expectedFracX recomputes the in-cell fraction processMouse should attach
+// for a cursor pixel: the pointer's distance from the reported cell's left
+// edge over the cell pitch, with the same window clamp the event position
+// gets.
+func expectedFracX(t *testing.T, cursor image.Point, m *mouse) float64 {
+	t.Helper()
+	pitch := m.fontManager.PixelX(1)
+	px := min(max(float64(cursor.X), 0), pitch*float64(m.width)-1)
+	cell := m.clampedCoordinates().X
+	return (px - m.fontManager.PixelX(cell)) / pitch
 }
 
 func TestProcessMouseClampsToResizedBounds(t *testing.T) {
@@ -418,6 +439,33 @@ func TestCalculateCoordinatesNegativePixelsStayNegative(t *testing.T) {
 	got := mouse.calculateCoordinates()
 	assert.Negative(t, got.X, "clamping is the caller's responsibility, not calculateCoordinates")
 	assert.Negative(t, got.Y)
+}
+
+func TestSubCellFractionReportsPositionInsideCell(t *testing.T) {
+	_, mouse := newTestMouse(t)
+	pitch := mouse.fontManager.PixelX(1)
+
+	suite := []struct {
+		description string
+		x           float64
+		wantX       float64
+	}{
+		{"cell's left edge", pitch * 3, 0},
+		{"cell's midpoint", pitch*3 + pitch/2, .5},
+		{"just before the next cell", pitch*4 - 1, (pitch - 1) / pitch},
+		{"past the window's right edge", pitch * float64(mouse.width) * 2, (pitch - 1) / pitch},
+		{"past the window's left edge", -pitch * 2, 0},
+	}
+	for _, test := range suite {
+		t.Run(test.description, func(t *testing.T) {
+			mouse.state.x = int(test.x)
+			pos := mouse.clampedCoordinates()
+			frac := mouse.subCellFraction(pos)
+			// state.x is a whole pixel, so the fraction can sit a
+			// pixel off the ideal position.
+			assert.InDelta(t, test.wantX, frac.X, 1.0/pitch)
+		})
+	}
 }
 
 func TestResizeUpdatesClampBounds(t *testing.T) {

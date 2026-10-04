@@ -17,6 +17,7 @@
 package vte
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -26,6 +27,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/clipboard"
 	"github.com/unstablebuild/rune-go-sdk/mouse"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	tterm "unstable.build/rune/internal/term"
 	"unstable.build/rune/internal/term/vte/vteparser"
 )
 
@@ -42,6 +44,17 @@ func newMouseHarness(t *testing.T, modes ...vteparser.PrivateMode) *mouseDriver 
 
 func mouseEv(key term.Key, x, y int) term.Event {
 	return term.Event{Type: term.EventMouse, Key: key, MouseX: x, MouseY: y}
+}
+
+// fracEv attaches a sub-cell position to the event's Context, as the gui
+// frontend does, so the selection endpoints can snap to the nearer cell
+// edge. fracX is the pointer's position inside the cell: below 0.5 snaps
+// to the left edge, otherwise to the right.
+func fracEv(key term.Key, x, y int, fracX float64) term.Event {
+	ev := mouseEv(key, x, y)
+	ev.Context = tterm.ContextWithSubCellFraction(context.Background(),
+		tterm.SubCellFraction{X: fracX})
+	return ev
 }
 
 type mouseStep struct {
@@ -245,44 +258,123 @@ func TestMouseDriverSelectionCopy(t *testing.T) {
 	const sentinel = "previously-copied"
 	press := term.Coordinates{X: 1}
 
+	// Each step is a cell coordinate plus the pointer's sub-cell X
+	// position. Selection anchors and endpoints snap to the nearer cell
+	// edge, so the fraction decides which edge a coordinate means.
+	type step struct {
+		pos   term.Coordinates
+		frac  float64
+		plain bool // no sub-cell payload, as a frontend that attaches none
+	}
 	cases := []struct {
-		desc string
-		drag []term.Coordinates
-		want string // expected highlight, empty for none
+		desc  string
+		press step
+		drag  []step
+		want  string // expected highlight, empty for none
 	}{
 		{
-			desc: "click without movement",
+			desc:  "click without movement",
+			press: step{pos: press},
 		},
 		{
-			desc: "jitter inside the pressed cell",
-			drag: []term.Coordinates{press, press, press},
+			desc:  "jitter inside the pressed cell's half",
+			press: step{pos: press},
+			drag:  []step{{pos: press, frac: .1}, {pos: press, frac: .3}, {pos: press, frac: .2}},
 		},
 		{
-			desc: "drag right",
-			drag: []term.Coordinates{press, {X: 4}},
-			want: "ello",
+			desc:  "jitter across the midpoint selects then clears",
+			press: step{pos: press},
+			drag:  []step{{pos: press, frac: .1}, {pos: press, frac: .8}, {pos: press, frac: .1}},
+		},
+		{
+			desc:  "drag right within the pressed cell",
+			press: step{pos: press, frac: .2},
+			drag:  []step{{pos: press, frac: .7}},
+			want:  "e",
+		},
+		{
+			desc:  "drag left within the pressed cell",
+			press: step{pos: press, frac: .8},
+			drag:  []step{{pos: press, frac: .3}},
+			want:  "e",
+		},
+		{
+			desc:  "drag right into the next cell's right half",
+			press: step{pos: term.Coordinates{X: 2}, frac: .9},
+			drag:  []step{{pos: term.Coordinates{X: 3}, frac: .6}},
+			want:  "l",
+		},
+		{
+			// Crossing into a cell is not enough: the range stays empty
+			// until the pointer passes its midpoint.
+			desc:  "drag right into the next cell's left half",
+			press: step{pos: term.Coordinates{X: 2}, frac: .9},
+			drag:  []step{{pos: term.Coordinates{X: 3}, frac: .3}},
+		},
+		{
+			desc:  "drag left into the previous cell's left half",
+			press: step{pos: term.Coordinates{X: 2}, frac: .1},
+			drag:  []step{{pos: term.Coordinates{X: 1}, frac: .4}},
+			want:  "e",
+		},
+		{
+			desc:  "drag right",
+			press: step{pos: press},
+			drag:  []step{{pos: press, frac: .2}, {pos: term.Coordinates{X: 4}, frac: .7}},
+			want:  "ello",
 		},
 		{
 			// Every tick after the first extends a highlight that already
 			// exists, which a single jump to the final cell never does.
-			desc: "drag right one cell at a time",
-			drag: []term.Coordinates{{X: 2}, {X: 3}, {X: 4}, {X: 5}},
+			desc:  "drag right one cell at a time",
+			press: step{pos: press},
+			drag: []step{
+				{pos: term.Coordinates{X: 2}, frac: .6},
+				{pos: term.Coordinates{X: 3}, frac: .6},
+				{pos: term.Coordinates{X: 4}, frac: .6},
+				{pos: term.Coordinates{X: 5}, frac: .6},
+			},
 			want: "ello ",
 		},
 		{
-			desc: "drag left",
-			drag: []term.Coordinates{{X: 0}},
-			want: "he",
+			desc:  "drag left",
+			press: step{pos: press, frac: .7},
+			drag:  []step{{pos: term.Coordinates{X: 0}, frac: .4}},
+			want:  "he",
 		},
 		{
-			desc: "drag to the next row",
-			drag: []term.Coordinates{{X: 1, Y: 1}},
-			want: "ello world     \nfo",
+			desc:  "drag to the next row",
+			press: step{pos: press, frac: .2},
+			drag:  []step{{pos: term.Coordinates{X: 1, Y: 1}, frac: .9}},
+			want:  "ello world     \nfo",
 		},
 		{
-			desc: "drag away and back keeps the pressed cell",
-			drag: []term.Coordinates{{X: 3}, press},
-			want: "e",
+			desc:  "drag away and back keeps the pressed cell",
+			press: step{pos: press},
+			drag:  []step{{pos: term.Coordinates{X: 3}, frac: .6}, {pos: press, frac: .8}},
+			want:  "e",
+		},
+		{
+			desc:  "drag back onto the anchor edge clears the highlight",
+			press: step{pos: press},
+			drag:  []step{{pos: term.Coordinates{X: 3}, frac: .6}, {pos: press, frac: .3}},
+		},
+		{
+			// A producer that attaches no sub-cell payload keeps
+			// inclusive-cell selection: the pressed cell and the cell
+			// under the pointer are both covered.
+			desc:  "events without a fraction keep inclusive cells",
+			press: step{pos: press, plain: true},
+			drag:  []step{{pos: term.Coordinates{X: 3}, plain: true}},
+			want:  "ell",
+		},
+		{
+			// Cell-granular events can still cover a single cell: the
+			// pressed cell alone is already a non-empty range.
+			desc:  "cell-granular drag within a cell selects it",
+			press: step{pos: press, plain: true},
+			drag:  []step{{pos: press, plain: true}},
+			want:  "e",
 		},
 	}
 
@@ -302,12 +394,21 @@ func TestMouseDriverSelectionCopy(t *testing.T) {
 				clipboard.DefaultRegisterID, clipboard.Data{Text: sentinel}))
 			driver := &mouseDriver{t: comp, clipboard: clip}
 
-			// Mirror mouse.Mouse.handleLeftClickSelect: the press clears and
-			// anchors, then every held-button event calls SetSelectionEnd.
+			// Mirror Handler.handleInput plus mouse.Mouse: the sub-cell
+			// payload is captured for every event, then the press clears
+			// and anchors and every held-button event calls SetSelectionEnd.
+			track := func(s step) term.Event {
+				if s.plain {
+					return mouseEv(term.MouseLeft, s.pos.X, s.pos.Y)
+				}
+				return fracEv(term.MouseLeft, s.pos.X, s.pos.Y, s.frac)
+			}
 			driver.ClearSelection()
-			driver.SetSelectionStart(press)
-			for _, pos := range tc.drag {
-				driver.SetSelectionEnd(pos)
+			driver.trackSubCell(track(tc.press))
+			driver.SetSelectionStart(tc.press.pos)
+			for _, s := range tc.drag {
+				driver.trackSubCell(track(s))
+				driver.SetSelectionEnd(s.pos)
 			}
 			if tc.want != "" {
 				highlighted, highlightedOK := comp.Selection()
@@ -397,20 +498,28 @@ func TestMouseDriverGestures(t *testing.T) {
 		comp  *Component
 		clip  clipboard.Register
 		mouse *mouse.Mouse
+		drv   *mouseDriver
 	}
 	type step func(*testing.T, env)
-	ev := func(key term.Key, x, y int) step {
-		return func(_ *testing.T, e env) { e.mouse.Handle(mouseEv(key, x, y)) }
+	// Events carry the pointer's sub-cell position like the gui
+	// frontend's, and trackSubCell mirrors how Handler.handleInput
+	// captures it before the SDK dispatches.
+	ev := func(key term.Key, x, y int, frac float64) step {
+		return func(_ *testing.T, e env) {
+			event := fracEv(key, x, y, frac)
+			e.drv.trackSubCell(event)
+			e.mouse.Handle(event)
+		}
 	}
-	left := func(x, y int) step { return ev(term.MouseLeft, x, y) }
-	release := func(x, y int) step { return ev(term.MouseRelease, x, y) }
+	left := func(x, y int, frac float64) step { return ev(term.MouseLeft, x, y, frac) }
+	release := func(x, y int) step { return ev(term.MouseRelease, x, y, 0) }
 	// esc mirrors Handler.handleInput, which clears the highlight on Esc
 	// without going through the driver.
 	esc := func(_ *testing.T, e env) { e.comp.Unselect() }
 	copyElsewhere := func(t *testing.T, e env) {
 		require.NoError(t, e.clip.Copy(clipboard.DefaultRegisterID, clipboard.Data{Text: elsewhere}))
 	}
-	drag := []step{left(1, wordRow), left(4, wordRow), release(4, wordRow)}
+	drag := []step{left(1, wordRow, .2), left(4, wordRow, .7), release(4, wordRow)}
 
 	cases := []struct {
 		desc       string
@@ -425,36 +534,36 @@ func TestMouseDriverGestures(t *testing.T) {
 		},
 		{
 			desc:  "click with jitter in the top rows neither scrolls nor copies",
-			steps: []step{left(1, 1), left(1, 1), left(1, 1), release(1, 1)},
+			steps: []step{left(1, 1, .1), left(1, 1, .1), left(1, 1, .1), release(1, 1)},
 			want:  sentinel,
 		},
 		{
 			desc:       "drag in the top rows auto-scrolls",
-			steps:      []step{left(1, 2), left(1, 1)},
+			steps:      []step{left(1, 2, .5), left(1, 1, .5)},
 			want:       sentinel,
 			wantScroll: 1,
 		},
 		{
 			desc:       "wheel after an unreleased click scrolls",
-			steps:      []step{left(1, wordRow), ev(term.MouseWheelUp, 1, wordRow)},
+			steps:      []step{left(1, wordRow, .5), ev(term.MouseWheelUp, 1, wordRow, .5)},
 			want:       sentinel,
 			wantScroll: 1,
 		},
 		{
 			desc: "right click after a finished drag keeps a later copy",
 			steps: append(drag[:len(drag):len(drag)], esc, copyElsewhere,
-				ev(term.MouseRight, 8, otherRow), release(8, otherRow)),
+				ev(term.MouseRight, 8, otherRow, 0), release(8, otherRow)),
 			want: elsewhere,
 		},
 		{
 			desc: "middle click after a finished drag keeps a later copy",
 			steps: append(drag[:len(drag):len(drag)], copyElsewhere,
-				ev(term.MouseMiddle, 8, otherRow), release(8, otherRow)),
+				ev(term.MouseMiddle, 8, otherRow, 0), release(8, otherRow)),
 			want: elsewhere,
 		},
 		{
 			desc:  "Esc during a drag leaves nothing to copy",
-			steps: []step{left(1, wordRow), left(4, wordRow), esc, release(4, wordRow)},
+			steps: []step{left(1, wordRow, .2), left(4, wordRow, .7), esc, release(4, wordRow)},
 			want:  sentinel,
 		},
 	}
@@ -472,7 +581,8 @@ func TestMouseDriverGestures(t *testing.T) {
 
 			clip := clipboard.NewInMemory()
 			require.NoError(t, clip.Copy(clipboard.DefaultRegisterID, clipboard.Data{Text: sentinel}))
-			e := env{comp: comp, clip: clip, mouse: mouse.New(&mouseDriver{t: comp, clipboard: clip})}
+			drv := &mouseDriver{t: comp, clipboard: clip}
+			e := env{comp: comp, clip: clip, mouse: mouse.New(drv), drv: drv}
 			for _, s := range tc.steps {
 				s(t, e)
 			}
@@ -539,8 +649,10 @@ func TestMouseDriverDragScrollsDown(t *testing.T) {
 	t.Parallel()
 
 	const scrollBack = 10
-	// At scrollBack, window row 4 shows r16.
-	press := mouseEv(term.MouseLeft, 1, 4)
+	// At scrollBack, window row 4 shows r16. The fractions snap each
+	// endpoint to the cell edges the gesture intends: the press anchors at
+	// column 1's left edge and the drag ends past each cell's midpoint.
+	press := fracEv(term.MouseLeft, 1, 4, .2)
 
 	cases := []struct {
 		desc       string
@@ -551,16 +663,16 @@ func TestMouseDriverDragScrollsDown(t *testing.T) {
 		{
 			desc: "drag into the bottom rows",
 			drag: []term.Event{
-				mouseEv(term.MouseLeft, 1, 5),
-				mouseEv(term.MouseLeft, 1, 6),
-				mouseEv(term.MouseLeft, 1, 7),
+				fracEv(term.MouseLeft, 1, 5, .6),
+				fracEv(term.MouseLeft, 1, 6, .6),
+				fracEv(term.MouseLeft, 1, 7, .6),
 			},
 			want:       "16       \nr17       \nr18       \nr19       \nr20       \nr2",
 			wantScroll: scrollBack - 3,
 		},
 		{
 			desc:       "drag above the bottom rows",
-			drag:       []term.Event{mouseEv(term.MouseLeft, 3, 4)},
+			drag:       []term.Event{fracEv(term.MouseLeft, 3, 4, .6)},
 			want:       "16 ",
 			wantScroll: scrollBack,
 		},
@@ -582,12 +694,17 @@ func TestMouseDriverDragScrollsDown(t *testing.T) {
 			require.Equal(t, scrollBack, comp.scrollY())
 
 			clip := clipboard.NewInMemory()
-			m := mouse.New(&mouseDriver{t: comp, clipboard: clip})
-			m.Handle(press)
-			for _, ev := range tc.drag {
+			drv := &mouseDriver{t: comp, clipboard: clip}
+			m := mouse.New(drv)
+			handle := func(ev term.Event) {
+				drv.trackSubCell(ev)
 				m.Handle(ev)
 			}
-			m.Handle(mouseEv(term.MouseRelease, 1, 7))
+			handle(press)
+			for _, ev := range tc.drag {
+				handle(ev)
+			}
+			handle(mouseEv(term.MouseRelease, 1, 7))
 
 			assert.Equal(t, tc.wantScroll, comp.scrollY())
 			pasted, err := clip.Paste(clipboard.DefaultRegisterID)
@@ -675,10 +792,18 @@ func TestMouseDriverDragScrollsTowardSelection(t *testing.T) {
 			require.True(t, comp.ScrollUp(scrollBack))
 
 			clip := clipboard.NewInMemory()
-			m := mouse.New(&mouseDriver{t: comp, clipboard: clip})
-			m.Handle(mouseEv(term.MouseLeft, 1, tc.press))
+			drv := &mouseDriver{t: comp, clipboard: clip}
+			m := mouse.New(drv)
+			handle := func(ev term.Event) {
+				drv.trackSubCell(ev)
+				m.Handle(ev)
+			}
+			// The press anchors at column 1's left edge and the drag stays
+			// past each cell's midpoint, so the gesture keeps meaning
+			// "from column 1 through column 2".
+			handle(fracEv(term.MouseLeft, 1, tc.press, .2))
 			for _, y := range tc.drag {
-				m.Handle(mouseEv(term.MouseLeft, 2, y))
+				handle(fracEv(term.MouseLeft, 2, y, .6))
 			}
 
 			assert.Equal(t, tc.wantScroll, comp.scrollY())
