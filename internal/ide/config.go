@@ -53,7 +53,6 @@ import (
 	"unstable.build/rune/internal/component/notifications"
 	"unstable.build/rune/internal/component/shader/shaderloop"
 	tconfig "unstable.build/rune/internal/config"
-	"unstable.build/rune/internal/extension/extutil"
 	"unstable.build/rune/internal/handler"
 	"unstable.build/rune/internal/handler/command"
 	"unstable.build/rune/internal/handler/search"
@@ -273,6 +272,7 @@ type ideConfig struct {
 	ringBell         func()
 	scheduleNextTick func(func()) bool
 	cellPixelSize    func() (int, int)
+	clip             clipboard.Register
 	// storage is the IDE-wide storage service. It's owned by the IDE
 	// and shared across workspaces; commandAliases consults it to
 	// resolve `{history}` placeholders in alias completer chains by
@@ -3420,12 +3420,18 @@ func (c ideConfig) auxiliaryBarLines() (bool, bool) {
 }
 
 func (c ideConfig) clipboard() clipboard.Register {
-	cfg := config.MapConfig(c.cfg)
-	ret, err := extutil.Clipboard(cfg)
-	if err != nil {
-		if err != config.ErrNotFound {
-			c.errors["clipboard"] = err
+	var ret clipboard.Register
+	mode, err := config.MapConfig(c.cfg).GetString("clipboard")
+	switch {
+	case err == config.ErrNotFound || (err == nil && mode == "memory"):
+		ret = clipboard.NewInMemory()
+	case err == nil && mode == "system":
+		ret = c.clip
+	default:
+		if err == nil {
+			err = fmt.Errorf("unknown clipboard %q", mode)
 		}
+		c.errors["clipboard"] = err
 		ret = clipboard.NewInMemory()
 	}
 	return registerhistory.NewClipboard(registerset.New(ret))

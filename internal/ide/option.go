@@ -32,6 +32,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"github.com/unstablebuild/rune-go-sdk/clipboard"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
@@ -295,6 +296,15 @@ func WithCellPixelSize(cellPixelSize func() (width, height int)) Option {
 	}
 }
 
+// WithClipboard sets the clipboard that every workspace, terminal and editor
+// shares when the clipboard config is "system", so a copy anywhere is what a
+// paste anywhere sees. Without it, they share an in-memory clipboard.
+func WithClipboard(clip clipboard.Register) Option {
+	return func(opts *options) {
+		opts.clip = clip
+	}
+}
+
 // WithInitShader configures the IDE to initialize with the
 // given Shader animation.
 func WithInitShader(
@@ -519,6 +529,7 @@ type options struct {
 	bell                 func()
 	scheduleFn           func(func()) bool
 	cellPixelSize        func() (int, int)
+	clip                 clipboard.Register
 	afterFunc            func(time.Duration, func()) *time.Timer
 	debugCommands        bool
 	streamingOpen        bool
@@ -579,6 +590,7 @@ func defaultOptions() options {
 		workspacesBarFrame: true,
 		workspacesIcon:     '1',
 		releaseManager:     docrelease.NewManager(document.NewInMemoryService()),
+		clip:               clipboard.NewInMemory(),
 	}
 }
 

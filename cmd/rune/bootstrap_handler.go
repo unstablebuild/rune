@@ -199,6 +199,7 @@ func (b *bootstrapHandler) buildPreIDE() (*ide.IDE, error) {
 		ide.WithCellPixelSize(b.cellPixelSize),
 		ide.WithShellRCDir(b.shellRCDir),
 		ide.WithTabsClickCallback(b.handleTabsClick),
+		ide.WithClipboard(b.clip),
 	}
 	preIDE, err := ide.New("", b.configPath, b.dataDir, b.trust, b.storage, opts...)
 	if err != nil {
@@ -221,6 +222,7 @@ func (b *bootstrapHandler) buildConfiguredIDE(
 		ide.WithStreamingOpen(true),
 		ide.WithLocker(b.mu),
 		ide.WithConfigFilename(workspaceConfigFilename),
+		ide.WithClipboard(b.clip),
 		ide.WithDefaultWallpaper(makeThemedWallpaper(b.wallpaperTheme)),
 		ide.WithTabBarOffset(13),
 		ide.WithRightInset(b.quickMenuCells()),

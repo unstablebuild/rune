@@ -598,6 +598,7 @@ func runTUI(
 		ide.WithShellRCDir(shellRCDir),
 		ide.WithScheme(docsScheme, newDocsSchemeFunc(*flagConfigPath)),
 		ide.WithStreamingOpen(true),
+		ide.WithClipboard(text.NewAsyncSystemClipboard()),
 	}
 	opts = append(opts, embeddedTutorialOptions()...)
 	if debug.DebugBuild == "true" {

@@ -436,6 +436,38 @@ func TestHomeWorkspaceDoesNotStartExtensions(t *testing.T) {
 		"no extension may be started on the home workspace")
 }
 
+func TestSystemClipboardSharedAcrossConfigs(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "rune.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte(
+		"clipboard: system\n"+
+			"workspace:\n  home: "+dir+"\n"), 0o644))
+
+	sys := clipboard.NewInMemory()
+	i, err := New("", configPath, dir, pkgtrust.NewStore(dir, nil), newTestStorage(t, dir),
+		WithPublishEvent(nopPublishEvent),
+		WithClipboard(sys),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = i.Close() })
+
+	reloaded, err := i.workspaceHandler.reloadConfig()
+	require.NoError(t, err)
+
+	for desc, clip := range map[string]clipboard.Register{
+		"startup config":  i.ideConfig.clipboard(),
+		"reloaded config": reloaded.clipboard(),
+		"terminal config": reloaded.terminalConfig().Clipboard,
+	} {
+		require.NoError(t, clip.Copy(clipboard.DefaultRegisterID, clipboard.Data{Text: desc}))
+		got, err := sys.Paste(clipboard.DefaultRegisterID)
+		require.NoError(t, err)
+		assert.Equal(t, desc, got.Text, "%s must write to the IDE's system clipboard", desc)
+	}
+}
+
 func TestTutorialsSeeTheConfiguredConfigPath(t *testing.T) {
 	t.Parallel()
 

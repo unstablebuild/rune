@@ -17,6 +17,7 @@
 package text
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -68,6 +69,13 @@ func (r *gatedRegister) copied() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]string(nil), r.texts...)
+}
+
+func TestAsyncClipboardReportsOpenError(t *testing.T) {
+	clip := newAsyncSystemClipboard(nil, errors.New("unsupported platform"))
+
+	err := clip.Copy(clipboard.DefaultRegisterID, clipboard.Data{Text: "x"})
+	require.ErrorContains(t, err, "unsupported platform")
 }
 
 func TestAsyncClipboardCopyNeverBlocksOnOSWrite(t *testing.T) {
