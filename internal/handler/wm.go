@@ -318,7 +318,7 @@ func (wm *WindowManager) Handle(ev term.Event) (exit bool, handled bool) {
 		if wm.config.CursorShapeHandler != nil {
 			wm.config.CursorShapeHandler.ChangeCursorShape(
 				term.Coordinates{X: ev.MouseX, Y: ev.MouseY},
-				minPos, maxPos, target.IsFloating())
+				minPos, maxPos, childAtMouse.IsFloating())
 		}
 		
 		// Clamp the mouse coordinates.
