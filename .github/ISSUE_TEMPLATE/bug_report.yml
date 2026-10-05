@@ -91,9 +91,11 @@ body:
     attributes:
       label: Logs, crash report, or screenshots
       description: >
-        Relevant lines from `~/.rune/debug.log`, any crash report path
-        printed as `saved crash report file://...`, and screenshots or a
-        recording for visual bugs. Redact anything sensitive.
+        Relevant lines from the debug log (`~/.local/share/rune/debug.log`
+        by default, `~/.rune/debug.log` on an existing install), any crash
+        report path printed as `saved crash report file://...`, and
+        screenshots or a recording for visual bugs. Redact anything
+        sensitive.
       render: shell
 
   - type: textarea
@@ -101,7 +103,8 @@ body:
     attributes:
       label: Relevant configuration
       description: >
-        Any non-default parts of `~/.rune/config.yaml` (or `config.star`),
+        Any non-default parts of `~/.config/rune/config.yaml` (or
+        `config.star`; `~/.rune/config.yaml` on an existing install),
         installed extensions, or agent provider setup involved.
       render: yaml
 

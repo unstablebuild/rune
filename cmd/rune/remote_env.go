@@ -58,7 +58,7 @@ func applyConfigEnv(host *hostenv.Host, rootCfg config.Config) {
 }
 
 // resolveRemoteEditorMode resolves the user's editor mode from the remote
-// ~/.rune config so it can be exposed to package config.star scripts as
+// resolved config so it can be exposed to package config.star scripts as
 // RUNE_EDITOR_MODE during install. It reads only the base config, not the
 // workspace-root overlay: editor.mode is a user/home setting. On any load
 // error it warns and returns the default (via ide.PkgEditorMode), so the

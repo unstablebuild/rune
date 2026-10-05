@@ -18,11 +18,16 @@ workspace.
 .SH OPTIONS
 .TP
 .BR \-c ", " \-\-config " " \fIfile\fR
-Use \fIfile\fR to configure Rune. Defaults to \fBconfig.yaml\fR inside
-the data directory.
+Use \fIfile\fR to configure Rune. Defaults to
+\fB$XDG_CONFIG_HOME/rune/config.yaml\fR (\fB~/.config/rune/config.yaml\fR
+when unset), or \fB~/.rune/config.yaml\fR on an install that already has
+it. When \fB\-d\fR is given, the default is \fBconfig.yaml\fR inside the
+chosen data directory.
 .TP
 .BR \-d ", " \-\-datadir " " \fIdir\fR
-Set the data directory. Defaults to \fB~/.rune\fR.
+Set the data directory. Defaults to \fB$XDG_DATA_HOME/rune\fR
+(\fB~/.local/share/rune\fR when unset), or \fB~/.rune\fR on an install
+that already has it.
 .TP
 .BR \-f ", " \-\-fps
 Render the frame rate in GUI mode.
@@ -44,9 +49,13 @@ Set the initial workspace to open, in the format
 .IR [scheme:][//[userinfo@]host][/]path .
 .SH FILES
 .TP
-.I ~/.rune
-Default data directory holding configuration, state and installed
-extensions.
+.I ~/.local/share/rune
+Default data directory holding state and installed extensions
+(\fB~/.rune\fR on an install that already has it).
+.TP
+.I ~/.config/rune
+Default configuration directory holding \fBconfig.yaml\fR or
+\fBconfig.star\fR.
 .SH SEE ALSO
 Full documentation is available at
 .UR https://docs.rune.build
