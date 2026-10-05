@@ -6,9 +6,13 @@ sidebar_position: 2
 
 ## Where the config lives
 
-Your personal Rune config lives at `~/.rune/config.yaml` or `~/.rune/config.star`: one
-file, in one of two formats. You never have to create it by hand: the first time you open
-Rune, the bootstrap writes `~/.rune/config.yaml` with a preset of your choosing for you.
+Your personal Rune config lives at `~/.config/rune/config.yaml` or
+`~/.config/rune/config.star` (`$XDG_CONFIG_HOME/rune/` when
+`XDG_CONFIG_HOME` is set): one file, in one of two formats. An existing
+`~/.rune` install keeps its config there instead, and `-c` or `-d` always
+overrides the resolution. You never have to create it by hand: the first
+time you open Rune, the bootstrap writes `config.yaml` with a preset of
+your choosing for you.
 
 A workspace can also define its own `.rune/config.yaml` at the repository
 root, which is layered on top of your personal config, when you open that workspace.
@@ -429,7 +433,7 @@ available:
   value may reference other variables, such as `$HOME`, and `$RUNE_DATADIR`
   names the Rune data directory of the machine that applies it. Each machine
   applies the config stored on it, so in a remote workspace the variables come
-  from `~/.rune/config.yaml` on the remote machine. The remote machine never
+  from the resolved Rune config on the remote machine. The remote machine never
   applies the `gui.env` of a project's `.rune/config.yaml`, for security reasons.
 
   `PATH` extends the existing `PATH` instead of replacing it: the directories

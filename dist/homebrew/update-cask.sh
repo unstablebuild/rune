@@ -65,6 +65,8 @@ cask "$token" do
 
     zap trash: [
       "~/.rune",
+      "~/.config/rune",
+      "~/.local/share/rune",
       "~/Library/Caches/rune",
       "~/Library/Preferences/dev.rune.plist",
     ]
@@ -77,6 +79,8 @@ cask "$token" do
     zap trash: [
       "~/.cache/rune",
       "~/.rune",
+      "~/.config/rune",
+      "~/.local/share/rune",
     ]
   end
 
