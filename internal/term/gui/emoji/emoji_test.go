@@ -35,10 +35,6 @@ func newTestFace(t *testing.T) *Face {
 	return f
 }
 
-// TestHasDistinguishesColorEmoji asserts Has is the single source of
-// truth for "this rune is a color emoji we can render": true for color
-// emoji present in the font, false for ordinary text the monochrome
-// path must keep handling.
 func TestHasDistinguishesColorEmoji(t *testing.T) {
 	f := newTestFace(t)
 
@@ -54,11 +50,6 @@ func TestHasDistinguishesColorEmoji(t *testing.T) {
 	}
 }
 
-// TestHasComposesMultiRuneClusters asserts a full grapheme cluster —
-// skin-tone modifier, ZWJ sequence, or emoji variation selector — is
-// recognized as a single color emoji, since the terminal delivers the
-// whole cluster in one cell (Ch + Combining). Rendering only the base
-// rune would drop the modifier and mangle the emoji.
 func TestHasComposesMultiRuneClusters(t *testing.T) {
 	f := newTestFace(t)
 
@@ -73,11 +64,6 @@ func TestHasComposesMultiRuneClusters(t *testing.T) {
 	}
 }
 
-// TestHasRejectsTextClustersWithCombining asserts clusters whose grapheme
-// width is 1 stay on the monochrome path even though the font would
-// happily return a color bitmap for the base rune. Keycap sequences are
-// width 1 (the grid reserves one cell) and, together with the bare heart
-// and digits, must not be colorized or ordinary text regresses.
 func TestHasRejectsTextClustersWithCombining(t *testing.T) {
 	f := newTestFace(t)
 
@@ -90,10 +76,6 @@ func TestHasRejectsTextClustersWithCombining(t *testing.T) {
 	}
 }
 
-// TestHasRejectsClusterFontCannotLigate asserts a ZWJ sequence the font
-// has no single glyph for stays on the monochrome path: shaping yields
-// one color bitmap per component, and drawing only the first would
-// render a different emoji than the one typed.
 func TestHasRejectsClusterFontCannotLigate(t *testing.T) {
 	f := newTestFace(t)
 
@@ -121,12 +103,6 @@ func systemEmojiFace(t *testing.T) *Face {
 	return nil
 }
 
-// TestHasAcceptsClusterWhenFontKeepsIgnorableGlyph asserts an
-// emoji-presented cluster is recognized even when the font shapes the
-// variation selector into a separate blank glyph rather than consuming
-// it. Apple Color Emoji does exactly that, so demanding a single shaped
-// glyph pushed every variation-selected emoji down the monochrome path
-// on macOS.
 func TestHasAcceptsClusterWhenFontKeepsIgnorableGlyph(t *testing.T) {
 	f := systemEmojiFace(t)
 
@@ -139,9 +115,6 @@ func TestHasAcceptsClusterWhenFontKeepsIgnorableGlyph(t *testing.T) {
 	}
 }
 
-// TestGlyphProducesColorRGBA asserts Glyph returns a decoded,
-// downscaled, premultiplied RGBA that is actually multi-color — the
-// exact property the monochrome mask path fails to preserve.
 func TestGlyphProducesColorRGBA(t *testing.T) {
 	f := newTestFace(t)
 
@@ -176,9 +149,6 @@ func TestGlyphProducesColorRGBA(t *testing.T) {
 	assert.Positive(t, chroma, "glyph must be multi-color, not grayscale")
 }
 
-// TestGlyphComposesClusterBitmap asserts the composed glyph for a ZWJ
-// family sequence differs from the base rune's glyph, proving the shaper
-// resolves the whole cluster rather than falling back to the first rune.
 func TestGlyphComposesClusterBitmap(t *testing.T) {
 	f := newTestFace(t)
 	const cellW, cellH = 24, 24
@@ -195,9 +165,6 @@ func TestGlyphComposesClusterBitmap(t *testing.T) {
 		"composed family glyph must differ from the base man glyph")
 }
 
-// TestGlyphUnknownRune asserts a rune with no color glyph reports
-// absence rather than returning a bogus image, so the renderer can fall
-// back to the monochrome path.
 func TestGlyphUnknownRune(t *testing.T) {
 	f := newTestFace(t)
 	img, ok := f.Glyph([]rune{'A'}, 12, 24)
@@ -205,9 +172,6 @@ func TestGlyphUnknownRune(t *testing.T) {
 	assert.Nil(t, img)
 }
 
-// TestNewFaceRejectsCorruptFont asserts a non-font byte slice fails
-// cleanly at construction so the renderer disables the color path
-// instead of panicking later.
 func TestNewFaceRejectsCorruptFont(t *testing.T) {
 	f, err := NewFace([]byte("not a font"))
 	assert.Error(t, err)
@@ -218,9 +182,6 @@ func TestNewFaceRejectsCorruptFont(t *testing.T) {
 	assert.Nil(t, f)
 }
 
-// TestGlyphResultIsCopy asserts consecutive Glyph calls do not alias one
-// shared scratch buffer, since the atlas layer keeps the returned pixels
-// while packing later glyphs.
 func TestGlyphResultIsCopy(t *testing.T) {
 	f := newTestFace(t)
 	a, ok := f.Glyph([]rune{'😀'}, 12, 24)
@@ -244,9 +205,6 @@ func writeBundledFont(t *testing.T) string {
 	return path
 }
 
-// TestNewFaceFromFileLoadsColorFont asserts the file/collection path
-// parses a bundled color-emoji font and produces a Face that recognizes
-// color emoji, proving the color-bitmap selection accepts a usable face.
 func TestNewFaceFromFileLoadsColorFont(t *testing.T) {
 	f, err := NewFaceFromFile(writeBundledFont(t))
 	require.NoError(t, err)
@@ -260,16 +218,12 @@ func TestNewFaceFromFileLoadsColorFont(t *testing.T) {
 	require.NotNil(t, img)
 }
 
-// TestNewFaceFromFileMissing asserts a missing path fails cleanly so the
-// resolver can move on to the next candidate or the bundled fallback.
 func TestNewFaceFromFileMissing(t *testing.T) {
 	f, err := NewFaceFromFile(filepath.Join(t.TempDir(), "does-not-exist.ttf"))
 	assert.Error(t, err)
 	assert.Nil(t, f)
 }
 
-// TestNewFaceFromFileRejectsNonFont asserts a non-font file fails cleanly
-// rather than yielding a Face that cannot render color emoji.
 func TestNewFaceFromFileRejectsNonFont(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "notafont.ttf")
 	require.NoError(t, os.WriteFile(path, []byte("not a font"), 0o600))

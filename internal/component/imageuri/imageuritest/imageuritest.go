@@ -15,7 +15,8 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 // Package imageuritest provides a real 194x179 picture, encoded in every
-// format imageuri decodes, for tests that display images.
+// format imageuri decodes, for tests that display images, and two
+// translucent overlays for tests that draw images over a status bar.
 //
 // SampleWebP is lossless, so it decodes to the same pixels as SamplePNG.
 // SampleJPEG and SampleGIF are lossy and quantized respectively, so they
@@ -43,3 +44,17 @@ var SampleGIF []byte
 //
 //go:embed testdata/sample.webp
 var SampleWebP []byte
+
+// StatusBarLeftPNG is a 543x181 HUD overlay to draw over the left end of
+// a status bar: an emblem in its left quarter trailing a thin band to
+// its right edge. Most of its pixels are fully transparent and nearly
+// all of the rest translucent.
+//
+//go:embed testdata/statusbar_left.png
+var StatusBarLeftPNG []byte
+
+// StatusBarRightPNG is a 543x181 HUD overlay to draw over the right end
+// of a status bar, shaped like StatusBarLeftPNG.
+//
+//go:embed testdata/statusbar_right.png
+var StatusBarRightPNG []byte

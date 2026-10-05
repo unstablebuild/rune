@@ -23,13 +23,6 @@ import (
 	"testing"
 )
 
-// TestLoginShellPATHCmdDetachesFromTerminal is a regression for two terminal
-// interactions: the Ctrl-C quitting breakage and the SIGTTOU stop that froze
-// the GUI. The interactive login shell spawned to resolve PATH must not
-// inherit Rune's terminal and must run in a new session (Setsid) with no
-// controlling terminal, so its startup tcsetpgrp/tcsetattr calls cannot raise
-// SIGTTOU (which would STOP it in state T and block the probe forever) and
-// terminal-generated signals (the SIGINT raised by Ctrl-C) never reach it.
 func TestLoginShellPATHCmdDetachesFromTerminal(t *testing.T) {
 	cmd := loginShellPATHCmd(context.Background(), "/bin/sh")
 

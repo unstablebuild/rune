@@ -257,10 +257,6 @@ func TestTileFooterButtons(t *testing.T) {
 	}
 }
 
-// TestTileMiddleButtonNamesWhatItDoes asserts the middle button reads
-// Skip on the step the lesson is on and Next on a screen the user
-// paged back to, where skipping would mean skipping a step they are
-// not even looking at.
 func TestTileMiddleButtonNamesWhatItDoes(t *testing.T) {
 	t.Parallel()
 	tut := &fakeTutorial{}

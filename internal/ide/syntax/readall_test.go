@@ -111,9 +111,6 @@ func TestLineStartsRecycledBuffer(t *testing.T) {
 	require.Equal(t, []int{0}, starts)
 }
 
-// TestFileScratchTrim guards against one pathological file permanently
-// pinning its size in a long-lived session or worker: oversized scratch
-// buffers must be dropped after use while normal ones stay recycled.
 func TestFileScratchTrim(t *testing.T) {
 	t.Parallel()
 

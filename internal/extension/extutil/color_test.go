@@ -126,9 +126,6 @@ func TestGetColorRGB(t *testing.T) {
 	}
 }
 
-// Resolving a color must not change what any other color in this
-// process resolves to, since the palette is shared with everything
-// else the extension draws.
 func TestGetColorRGBLeavesThePaletteAlone(t *testing.T) {
 	before := term.ColorGreen.Hex()
 	_, err := GetColorRGB(config.MapConfig(map[string]any{

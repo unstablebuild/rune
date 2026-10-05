@@ -291,9 +291,6 @@ type scrollSelectCase struct {
 	wantActive bool
 }
 
-// TestMouseDelegateSelectionStartPinnedAcrossAutoScroll asserts that the
-// selection start stays pinned to the originally pressed content row while
-// the message list scrolls under it from any source.
 func TestMouseDelegateSelectionStartPinnedAcrossAutoScroll(t *testing.T) {
 	const (
 		defWidth  = 30
@@ -485,12 +482,6 @@ func gridRowOf(g *tterm.SelectionWriter, want string) int {
 	return -1
 }
 
-// TestMouseDelegateSelectionCopiesOffscreenContent asserts that copying a
-// selection returns the full selected text even when the selection's start or
-// end rows have scrolled off the visible viewport. The grid backing the
-// on-screen highlight only holds the visible viewport, so Selection must
-// render the entire list into a private full-height grid to extract the
-// off-screen rows.
 func TestMouseDelegateSelectionCopiesOffscreenContent(t *testing.T) {
 	manyMessages := func(prefix string, n int) func(*Component) {
 		return func(c *Component) {
@@ -645,10 +636,6 @@ func TestMouseDelegateClearAndReselect(t *testing.T) {
 	assert.Equal(t, "Hello", text)
 }
 
-// TestMouseDelegateSelectionEndPinnedAcrossScroll asserts that once a selection
-// end is set, scrolling the list (without moving the pointer) keeps both
-// endpoints anchored to their content rows. The end must not follow the scroll
-// offset; the copied text must stay identical across the scroll.
 func TestMouseDelegateSelectionEndPinnedAcrossScroll(t *testing.T) {
 	const (
 		width  = 30
@@ -725,10 +712,6 @@ func TestMouseDelegateSelectionEndPinnedAcrossScroll(t *testing.T) {
 	}
 }
 
-// TestMouseDelegateSelectionStableWhileStreaming asserts that while scrolled
-// up, a reply streaming in place below the viewport does not shift the rows
-// under the pointer: a drag started before the chunk arrives and released
-// at the same screen row afterwards copies the rows the user saw.
 func TestMouseDelegateSelectionStableWhileStreaming(t *testing.T) {
 	const (
 		width  = 30
@@ -767,11 +750,6 @@ func TestMouseDelegateSelectionStableWhileStreaming(t *testing.T) {
 	assert.Equal(t, "message V\nmessage W", text)
 }
 
-// TestMouseDelegateSelectionNegativeCoords exercises drags whose pointer leaves
-// the window into negative coordinates, which the terminal reports while the
-// mouse is dragged above or to the left of the viewport. The selection must not
-// panic and must resolve to sensible content. Events are driven through the
-// real mouse.Mouse so the drag/auto-scroll path matches production.
 func TestMouseDelegateSelectionNegativeCoords(t *testing.T) {
 	const (
 		width  = 30

@@ -48,12 +48,6 @@ func TestDefaultConfiguration(t *testing.T) {
 	assert.Greater(t, maxFollowFailures, 1)
 }
 
-// TestMethodRetryBudgetOutlastsCoup pins that a call which races the
-// death of the leader can wait out the whole election. The follower
-// only starts the coup after TimeToCoup of failed dials and then has
-// to bind its own listener, so a retry budget of exactly TimeToCoup
-// leaves nothing for that startup and surfaces the transport error to
-// the caller.
 func TestMethodRetryBudgetOutlastsCoup(t *testing.T) {
 	for name, cfg := range map[string]Config{
 		"default": DefaultConfig(),
@@ -376,16 +370,6 @@ func TestCustomRetryableErrors(t *testing.T) {
 	}
 }
 
-// TestSetSucceedsWhenBackendIsSlowerThanMethodRetryCadence guards
-// against the regression where firstmover wrapped every storage call
-// in context.WithTimeout(ctx, MethodRetryCadence), so a backend that
-// took longer than the cadence to write produced a chain of
-// DeadlineExceeded retries against itself and ultimately failed —
-// even when the caller passed context.Background(). The expected
-// behavior is: the caller's deadline governs how long an attempt
-// may take; firstmover only re-attempts on actual transport errors
-// (Unavailable, leader CloseError, connection reset, …), not on a
-// timeout that was caused by the backend simply being slow.
 func TestSetSucceedsWhenBackendIsSlowerThanMethodRetryCadence(t *testing.T) {
 	lockFile := makeTempLockFile(t)
 	cfg := testConfig() // MethodRetryCadence = 20ms
@@ -409,11 +393,6 @@ func TestSetSucceedsWhenBackendIsSlowerThanMethodRetryCadence(t *testing.T) {
 	assert.Equal(t, "ok", out.A)
 }
 
-// TestPartitionDoesNotSpawnPeerGoroutines guards that Partition
-// returns a thin wrapper rather than spawning a fresh firstmover
-// peer per partition. Per-partition peers would each open their own
-// unix-socket lockfile, run their own leadOrFollow goroutine, and
-// subscribe over gRPC; the wrapper instead routes through the root.
 func TestPartitionDoesNotSpawnPeerGoroutines(t *testing.T) {
 	lockFile := makeTempLockFile(t)
 	cfg := testConfig()
@@ -447,12 +426,6 @@ func TestPartitionDoesNotSpawnPeerGoroutines(t *testing.T) {
 	assert.Error(t, err)
 }
 
-// TestOpenStorageFactoryInvokedOnlyByLeader guards the leader-only
-// storage invariant: a peer that does not win the unix-socket lock
-// must never invoke its StorageFactory, because backends like bbolt
-// hold exclusive OS-level resources that only the leader is allowed
-// to acquire. Deriving a partition must not re-invoke the factory
-// either; the wrapper routes through the root's existing backend.
 func TestOpenStorageFactoryInvokedOnlyByLeader(t *testing.T) {
 	lockFile := makeTempLockFile(t)
 	cfg := testConfig()
@@ -483,10 +456,6 @@ func TestOpenStorageFactoryInvokedOnlyByLeader(t *testing.T) {
 		"follower must not invoke the storage factory")
 }
 
-// TestPartitionRoutesThroughRootLeader verifies that a partition
-// wrapper on a follower reads values that the leader wrote via its
-// own partition wrapper, exercising the gRPC wire path's partition
-// chain handling.
 func TestPartitionRoutesThroughRootLeader(t *testing.T) {
 	lockFile := makeTempLockFile(t)
 	cfg := testConfig()
@@ -509,9 +478,6 @@ func TestPartitionRoutesThroughRootLeader(t *testing.T) {
 	assert.Equal(t, "via-leader", got.A)
 }
 
-// TestServiceTakesOverStaleLock covers a leader that died without cleaning up
-// (the socket file is left behind with nobody listening) and a data directory
-// that does not exist yet: either way the next process must become leader.
 func TestServiceTakesOverStaleLock(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -543,9 +509,6 @@ func TestServiceTakesOverStaleLock(t *testing.T) {
 	}
 }
 
-// TestFollowerRecreatesRemovedLockDir covers the lock directory disappearing
-// while a follower is connected (e.g. a tmp reaper): when the leader goes away
-// the follower must recreate the directory and lead instead of giving up.
 func TestFollowerRecreatesRemovedLockDir(t *testing.T) {
 	lockDir := filepath.Join(makeShortTempDir(t), "lock")
 	lockFile := filepath.Join(lockDir, "db.lock")
@@ -580,9 +543,6 @@ func TestPartitionWorksAfterLeaderFailoverWithoutGoodbye(t *testing.T) {
 	testPartitionWorksAfterLeaderFailover(t)
 }
 
-// TestPartitionWorksAfterLeaderFailover verifies that values written
-// to a partition on the original leader remain readable from the
-// same partition name after the follower takes leadership.
 func TestPartitionWorksAfterLeaderFailover(t *testing.T) {
 	testPartitionWorksAfterLeaderFailover(t)
 }
@@ -621,9 +581,6 @@ func testPartitionWorksAfterLeaderFailover(t *testing.T) {
 		"partition data must survive leader failover")
 }
 
-// TestPartitionNestingIsolation verifies that nested partitions are
-// keyed by their full path: root.Partition("a").Partition("b") must
-// not collide with root.Partition("b").
 func TestPartitionNestingIsolation(t *testing.T) {
 	lockFile := makeTempLockFile(t)
 	cfg := testConfig()
@@ -647,12 +604,6 @@ func TestPartitionNestingIsolation(t *testing.T) {
 	assert.Equal(t, "sibling", got.A)
 }
 
-// TestPartitionListIteratorSurvivesLeaderLoss exercises the leader-
-// loss-during-iterator hazard: a partition List on the leader returns
-// an iterator backed by the leader's local store; if leadership flips
-// before the caller drains, reads and the final Close must not panic
-// or wedge, and the walked partition refs must not leak past the
-// leader's own backend teardown.
 func TestPartitionListIteratorSurvivesLeaderLoss(t *testing.T) {
 	lockFile := makeTempLockFile(t)
 	cfg := testConfig()
@@ -741,11 +692,6 @@ func (t *trackedPartition) Partition(name string) (storageapi.Service, error) {
 	return t.parent.Partition(name)
 }
 
-// TestOpenStorageReopenedOnCoup guards that a peer promoted to
-// leader after the previous leader exits invokes its StorageFactory
-// again. Backends like bbolt re-acquire the OS flock here, so a
-// missing reopen would either deadlock the new leader or leave it
-// without backing storage.
 func TestOpenStorageReopenedOnCoup(t *testing.T) {
 	lockFile := makeTempLockFile(t)
 	cfg := testConfig()

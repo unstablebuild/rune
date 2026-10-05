@@ -719,10 +719,6 @@ func testViHandleSize(t *testing.T, width, height int) {
 	}
 }
 
-// TestNormalCtrlScrollDispatch covers
-// https://github.com/unstablebuild/rune/issues/60: Vi.Handle used to
-// intercept 'u' in normal mode regardless of the modifier, so <c-u> was
-// swallowed as undo and never reached the half-page-up handler.
 func TestNormalCtrlScrollDispatch(t *testing.T) {
 	const fileContent = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk"
 
@@ -790,9 +786,6 @@ func TestNormalCtrlScrollDispatch(t *testing.T) {
 	})
 }
 
-// TestNormalCtrlDotDoesNotRepeat guards the same modifier-blind dispatch
-// for '.': only an unmodified '.' repeats the last change, so <c-.> stays
-// available to outer keybindings.
 func TestNormalCtrlDotDoesNotRepeat(t *testing.T) {
 	buf := cell.NewBuffer()
 	buf.ReadFrom(strings.NewReader("alpha\nbravo\ncharlie"))
@@ -1432,11 +1425,6 @@ func TestLastChangeMark(t *testing.T) {
 	}
 }
 
-// TestVisualMarks verifies that vi records the `<` and `>` visual
-// marks whenever it leaves a visual mode (operator, <esc>, or
-// motion-driven exit), and that the corresponding `'<` / `'>` /
-// “ `< “ / “ `> “ keybindings can jump back to those positions —
-// matching Vim's :help visual-marks.
 func TestVisualMarks(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -1528,10 +1516,6 @@ func TestVisualMarks(t *testing.T) {
 	}
 }
 
-// TestVisualMarksJump verifies that visual marks can be used as
-// targets for cursor-level navigation. Keybinding-level dispatch is
-// covered in keybindings_test.go; this exercises the underlying
-// MoveToNextLocation API that the keybindings invoke.
 func TestVisualMarksJump(t *testing.T) {
 	tests := []struct {
 		name       string

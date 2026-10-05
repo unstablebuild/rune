@@ -1351,10 +1351,6 @@ func TestFallbackIntegrationReferences(t *testing.T) {
 	}
 }
 
-// TestFallbackIntegrationNoGrammar pins what every fallback entry
-// point does when tree-sitter cannot serve the file at all: it must
-// report an error so Manager keeps the original no-server error
-// instead of answering "no symbols".
 func TestFallbackIntegrationNoGrammar(t *testing.T) {
 	fb, root := integrationFallback(t)
 
@@ -1390,9 +1386,6 @@ func TestFallbackIntegrationNoGrammar(t *testing.T) {
 	}
 }
 
-// TestFallbackIntegrationUnindexedWorkspaceSymbol pins that a parser
-// without a symbol index answers the zero-server contract rather than
-// scanning the workspace per request.
 func TestFallbackIntegrationUnindexedWorkspaceSymbol(t *testing.T) {
 	fb, _ := integrationFallback(t)
 	syms, err := fb.workspaceSymbol(
@@ -1403,10 +1396,6 @@ func TestFallbackIntegrationUnindexedWorkspaceSymbol(t *testing.T) {
 	assert.Empty(t, syms)
 }
 
-// TestManagerIntegrationDocumentSymbol drives the production Manager
-// path with a real grammar: a language with no server configuration
-// must be answered by the fallback, while a language with neither
-// server nor grammar keeps the original error.
 func TestManagerIntegrationDocumentSymbol(t *testing.T) {
 	parser, root := integrationWorkspace(t)
 	uri, err := workspaceapi.ParseURI("file://" + root)

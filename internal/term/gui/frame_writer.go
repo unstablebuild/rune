@@ -23,6 +23,7 @@ import (
 
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/cell"
+	"unstable.build/rune/internal/term/gui/font"
 )
 
 var _ term.Writer = (*frameWriter)(nil)
@@ -51,6 +52,8 @@ type frameWriter struct {
 	*cell.BufferWriter
 	width, height int
 	images        []term.Image
+	// fonts tells which cells an offset placement lands on.
+	fonts *font.Manager
 
 	// pending are the placements whose cells are still marked, in draw
 	// order. They move to images, cut to the cells nothing was written
@@ -79,13 +82,14 @@ func markedArea(r image.Rectangle) image.Rectangle {
 	return r
 }
 
-func newFrameWriter(ctx context.Context, width, height int) *frameWriter {
+func newFrameWriter(ctx context.Context, width, height int, fonts *font.Manager) *frameWriter {
 	// A row's visible runs are separated by at least one covered cell.
 	maxRuns := (width + 1) / 2
 	return &frameWriter{
 		BufferWriter: cell.NewBufferWriter(ctx, width, height),
 		width:        width,
 		height:       height,
+		fonts:        fonts,
 		marks:        make([]imageMark, width*height),
 		open:         make([]image.Rectangle, 0, maxRuns),
 		next:         make([]image.Rectangle, 0, maxRuns),
@@ -106,13 +110,14 @@ func (w *frameWriter) Clear(attr term.Attributes) error {
 
 // DrawImage satisfies term.Writer.
 func (w *frameWriter) DrawImage(img term.Image) bool {
-	img, ok := img.Clipped(image.Rect(0, 0, w.width, w.height))
+	screen := image.Rect(0, 0, w.width, w.height)
+	img, ok := img.Clipped(coveredCells(img, w.fonts).Intersect(screen))
 	if !ok {
 		return true
 	}
 	idx := int32(len(w.pending))
 	cells := w.BufferWriter.RawCells()
-	m := markedArea(img.Visible())
+	m := markedArea(coveredCells(img, w.fonts))
 	for y := m.Min.Y; y < m.Max.Y; y++ {
 		row, marks := w.rowMarks(cells, y, m.Min.X, m.Max.X)
 		for x := range row {
@@ -170,7 +175,7 @@ func (w *frameWriter) resolve() {
 // columns match, so a placement with a window over it splits into a
 // handful of rectangles rather than one per row.
 func (w *frameWriter) appendUncovered(cells [][]term.Cell, img term.Image, i int32) {
-	r := img.Visible()
+	r := coveredCells(img, w.fonts)
 	m := markedArea(r)
 	open := w.open[:0]
 	for y := r.Min.Y; y < r.Max.Y; y++ {

@@ -90,10 +90,6 @@ func unchanged(cases ...opSelCase) []opSelCase {
 	return cases
 }
 
-// TestDocIndex pins the mapping between regex byte offsets and cells:
-// one cell is one grapheme, whatever its width or byte length, a line
-// ending is one byte, and anything outside the document clamps onto
-// it.
 func TestDocIndex(t *testing.T) {
 	type pair struct {
 		pos term.Coordinates
@@ -179,8 +175,6 @@ func TestDocIndex(t *testing.T) {
 	})
 }
 
-// TestCompilePattern pins the flags the prompt compiles with: smart
-// case and multi-line anchors.
 func TestCompilePattern(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -217,8 +211,6 @@ func TestCompilePattern(t *testing.T) {
 	}
 }
 
-// TestHasContextAssertion pins which patterns need to see the text
-// around a range.
 func TestHasContextAssertion(t *testing.T) {
 	cases := []struct {
 		pattern string
@@ -236,10 +228,6 @@ func TestHasContextAssertion(t *testing.T) {
 	}
 }
 
-// TestMatcherSpans pins the search over one range: a pattern without
-// an anchor runs on the range's text alone, one with an anchor sees
-// the character on either side so ^, $ and \b mean what they do in
-// Helix's bounded search.
 func TestMatcherSpans(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -292,7 +280,6 @@ func TestMatcherSpans(t *testing.T) {
 	}
 }
 
-// TestSelectOnMatches pins selection::select_on_matches over a set.
 func TestSelectOnMatches(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -350,7 +337,6 @@ func TestSelectOnMatches(t *testing.T) {
 	}
 }
 
-// TestSplitOnMatches pins selection::split_on_matches over a set.
 func TestSplitOnMatches(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -398,7 +384,6 @@ func TestSplitOnMatches(t *testing.T) {
 	}
 }
 
-// TestKeepOrRemoveMatches pins selection::keep_or_remove_matches.
 func TestKeepOrRemoveMatches(t *testing.T) {
 	perLine := selection{ranges: []rng{fwd(0, 0, 3, 0), fwd(0, 1, 3, 1), fwd(0, 2, 3, 2)}, primary: 2}
 	cases := []struct {
@@ -447,7 +432,6 @@ func TestKeepOrRemoveMatches(t *testing.T) {
 	}
 }
 
-// TestSelectRegex pins s, the select_regex prompt, from the keyboard.
 func TestSelectRegex(t *testing.T) {
 	esc := esc()
 	runOpSelCases(t, unchanged(
@@ -539,7 +523,6 @@ func TestSelectRegex(t *testing.T) {
 	})
 }
 
-// TestSplitRegex pins S, the split_selection prompt, from the keyboard.
 func TestSplitRegex(t *testing.T) {
 	esc := esc()
 	runOpSelCases(t, unchanged(
@@ -588,8 +571,6 @@ func TestSplitRegex(t *testing.T) {
 	})
 }
 
-// TestKeepRemoveRegex pins K and A-K, the keep and remove prompts,
-// from the keyboard.
 func TestKeepRemoveRegex(t *testing.T) {
 	perLine := cat(keys("%"), altKeys("s"))
 	runOpSelCases(t, unchanged(
@@ -633,8 +614,6 @@ func TestKeepRemoveRegex(t *testing.T) {
 	))
 }
 
-// TestRegexPrompt pins the prompt itself: its labels, live preview,
-// what esc, backspace and enter do, and the history in the / register.
 func TestRegexPrompt(t *testing.T) {
 	type promptCase struct {
 		name         string
@@ -755,9 +734,6 @@ func TestRegexPrompt(t *testing.T) {
 	})
 }
 
-// TestRegexSearch pins /, ?, n and N over the / register: the scan
-// starts past the primary, wraps around the document, and the hit
-// replaces the primary or joins the set in select mode.
 func TestRegexSearch(t *testing.T) {
 	esc := esc()
 	runOpSelCases(t, unchanged(
@@ -918,7 +894,6 @@ func TestRegexSearch(t *testing.T) {
 	})
 }
 
-// TestSearchHighlight pins the highlight of every match of the / register.
 func TestSearchHighlight(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -978,10 +953,6 @@ type searchStep struct {
 	wantAt term.Coordinates
 }
 
-// TestSearchDraw pins what the search commands put on screen. The
-// search attribute is configured with a background, which the writer
-// renders as ░, so a frame shows every lit match; the default,
-// reverse, would not tell one apart.
 func TestSearchDraw(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -1356,8 +1327,6 @@ func TestSearchDraw(t *testing.T) {
 	}
 }
 
-// TestSearchSelection pins * and A-*, which build the / register from
-// every range.
 func TestSearchSelection(t *testing.T) {
 	esc := esc()
 	cases := []struct {
@@ -1466,7 +1435,6 @@ func TestSearchSelection(t *testing.T) {
 	})
 }
 
-// TestVisualColumn pins the column the scroll draws a position on.
 func TestVisualColumn(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -1496,8 +1464,6 @@ func TestVisualColumn(t *testing.T) {
 	}
 }
 
-// TestAlignSelections pins &, which pads the ranges of every row onto
-// the same visual columns.
 func TestAlignSelections(t *testing.T) {
 	runOpSelCases(t, []opSelCase{
 		{name: "one column on two rows", content: "a b\naaa b", sel: selOf(1, fwd(2, 0, 3, 0), fwd(4, 1, 5, 1)),
@@ -1546,8 +1512,6 @@ func TestAlignSelections(t *testing.T) {
 	})
 }
 
-// TestRotateSelectionContents pins A-( and A-), which move the text
-// under the ranges around.
 func TestRotateSelectionContents(t *testing.T) {
 	three := selOf(0, fwd(0, 0, 1, 0), fwd(2, 0, 3, 0), fwd(4, 0, 5, 0))
 	runOpSelCases(t, []opSelCase{
@@ -1600,10 +1564,6 @@ func TestRotateSelectionContents(t *testing.T) {
 	})
 }
 
-// TestDocCache pins that the document index and the match list are
-// reused between edits and dropped by anything that changes the text:
-// an edit the handler makes, one made behind its back, a new pattern,
-// and a reload that never told the buffer's subscribers.
 func TestDocCache(t *testing.T) {
 	matchesOf := func(hx *Helix) [][]int { return impl(hx).docs.matches }
 
@@ -1699,7 +1659,6 @@ func TestDocCache(t *testing.T) {
 	})
 }
 
-// TestMatchLookup pins the binary searches over the match list.
 func TestMatchLookup(t *testing.T) {
 	all := [][]int{{0, 2}, {3, 3}, {5, 8}, {10, 11}}
 	cases := []struct {

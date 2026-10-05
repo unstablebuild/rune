@@ -37,9 +37,6 @@ import (
 	"golang.org/x/oauth2"
 )
 
-// TestCloseFlushesFinalUsage verifies that closing telemetry posts the
-// counts accumulated since the last periodic flush, so the final window
-// of usage is not lost on shutdown.
 func TestCloseFlushesFinalUsage(t *testing.T) {
 	backupDir := t.TempDir()
 	usage := make(chan telemetryUsagePayload, 4)
@@ -82,9 +79,6 @@ func TestCloseFlushesFinalUsage(t *testing.T) {
 	}
 }
 
-// TestCloseFlushesWithNoEvents verifies Close still posts a final usage
-// event when no editor events were recorded (e.g. the user opened no
-// files), so a session is not dropped just because its counters are zero.
 func TestCloseFlushesWithNoEvents(t *testing.T) {
 	backupDir := t.TempDir()
 	usage := make(chan telemetryUsagePayload, 4)
@@ -120,9 +114,6 @@ func TestCloseFlushesWithNoEvents(t *testing.T) {
 	}
 }
 
-// TestCloseFlushBoundedWhenOffline verifies Close returns within a small
-// multiple of the flush timeout even when the server never responds, so
-// an offline user is not blocked on shutdown.
 func TestCloseFlushBoundedWhenOffline(t *testing.T) {
 	backupDir := t.TempDir()
 	block := make(chan struct{})
@@ -151,9 +142,6 @@ func TestCloseFlushBoundedWhenOffline(t *testing.T) {
 	}
 }
 
-// TestRecordWatchedFilesChangeFlushed verifies agent-driven
-// workspace/didChangeWatchedFiles calls are reported as a usage counter and
-// that the posted count is cleared afterwards.
 func TestRecordWatchedFilesChangeFlushed(t *testing.T) {
 	usage := make(chan telemetryUsagePayload, 4)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -188,16 +176,12 @@ func TestRecordWatchedFilesChangeFlushed(t *testing.T) {
 	}
 }
 
-// TestRecordWatchedFilesChangeDisabled verifies the counter is a safe no-op
-// when telemetry is disabled, so the hook can be wired unconditionally.
 func TestRecordWatchedFilesChangeDisabled(t *testing.T) {
 	client := &Client{}
 	assert.False(t, client.TelemetryEnabled())
 	assert.NotPanics(t, func() { client.RecordWatchedFilesChange(3) })
 }
 
-// TestRecordCommandFlushed verifies dispatched editor commands are reported
-// as a usage counter and that the posted count is cleared afterwards.
 func TestRecordCommandFlushed(t *testing.T) {
 	usage := make(chan telemetryUsagePayload, 4)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -232,17 +216,12 @@ func TestRecordCommandFlushed(t *testing.T) {
 	}
 }
 
-// TestRecordCommandDisabled verifies the counter is a safe no-op when
-// telemetry is disabled, so the hook can be wired unconditionally.
 func TestRecordCommandDisabled(t *testing.T) {
 	client := &Client{}
 	assert.False(t, client.TelemetryEnabled())
 	assert.NotPanics(t, client.RecordCommand)
 }
 
-// TestOpenedLanguagesFlushed verifies opened files are aggregated per language
-// id, including languages Rune has no explicit mapping for, and that the
-// posted counts are cleared afterwards.
 func TestOpenedLanguagesFlushed(t *testing.T) {
 	usage := make(chan telemetryUsagePayload, 4)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -287,8 +266,6 @@ func TestOpenedLanguagesFlushed(t *testing.T) {
 	}
 }
 
-// TestLanguageIDSanitized verifies only plausible language ids reach the
-// payload, so no path-derived data leaks through the extension fallback.
 func TestLanguageIDSanitized(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -311,9 +288,6 @@ func TestLanguageIDSanitized(t *testing.T) {
 	}
 }
 
-// TestOpenedLanguagesCardinalityCapped verifies a session opening files with
-// many distinct extensions cannot grow the payload without bound, and that
-// opens past the cap are dropped rather than misreported as unknown.
 func TestOpenedLanguagesCardinalityCapped(t *testing.T) {
 	u, err := url.Parse("http://127.0.0.1:0")
 	require.NoError(t, err)
@@ -333,8 +307,6 @@ func TestOpenedLanguagesCardinalityCapped(t *testing.T) {
 	assert.NotContains(t, got, unknownLanguage, "dropped opens must not pollute the unknown bucket")
 }
 
-// TestOpenedLanguagesOmittedWhenEmpty verifies a session that opened no files
-// does not report an empty language map.
 func TestOpenedLanguagesOmittedWhenEmpty(t *testing.T) {
 	u, err := url.Parse("http://127.0.0.1:0")
 	require.NoError(t, err)
@@ -391,9 +363,6 @@ func TestTelemetrySystemPayloadEditorMode(t *testing.T) {
 	assert.Equal(t, "exo", p.EditorMode)
 }
 
-// TestTelemetrySystemPayloadInstallID exercises the two-location install ID
-// through the real telemetry post path, asserting the InstallID and Tampered
-// fields the server receives for every persistence scenario.
 func TestTelemetrySystemPayloadInstallID(t *testing.T) {
 	t.Run("both present and equal", func(t *testing.T) {
 		dir, tempPath := testInstallIDBackup(t)

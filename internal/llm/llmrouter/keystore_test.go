@@ -54,10 +54,6 @@ func TestKeyStore_AddSecondKeyKeepsActive(t *testing.T) {
 	assert.Equal(t, "k1", active, "adding a second key must not change the active key")
 }
 
-// TestKeyStore_RegionTravelsWithKey pins that a key's region is stored,
-// returned with the active key, follows re-adds, and dies with the key.
-// Bedrock keys only work in the region they were minted in, so the region
-// must live in storage next to the key rather than in config.
 func TestKeyStore_RegionTravelsWithKey(t *testing.T) {
 	ctx := context.Background()
 	s := newKeyStore(storagestub.NewInMemoryService())
@@ -84,9 +80,6 @@ func TestKeyStore_RegionTravelsWithKey(t *testing.T) {
 	assert.Empty(t, regions)
 }
 
-// TestKeyStore_RegionlessProvidersStayRegionless pins that the shared
-// keystore does not grow region entries for providers whose keys are
-// global.
 func TestKeyStore_RegionlessProvidersStayRegionless(t *testing.T) {
 	ctx := context.Background()
 	s := newKeyStore(storagestub.NewInMemoryService())
@@ -163,11 +156,6 @@ func TestKeyStore_NilStoragePanics(t *testing.T) {
 		func() { newKeyStore(nil) })
 }
 
-// TestKeyStore_MutateLegacyDocWithoutVersion guards a doc written by an
-// earlier build that never set a Version field. The bson marshaler omits
-// the zero value, so the field is absent on disk and a Version-equality
-// precondition can never match it, which previously made every mutate
-// retry fail with ErrPreconditionFailed. mutate must upgrade such a doc.
 func TestKeyStore_MutateLegacyDocWithoutVersion(t *testing.T) {
 	ctx := context.Background()
 	svc := storagestub.NewInMemoryService()
@@ -191,10 +179,6 @@ func TestKeyStore_MutateLegacyDocWithoutVersion(t *testing.T) {
 	require.NoError(t, s.use(ctx, ProviderGemini, "home"))
 }
 
-// TestKeyStore_VersionPreconditionIsInt64 guards the CAS type contract:
-// the backing store decodes the stored Version as int64 and compares
-// precondition values with Go's type-strict ==. An int-typed precondition
-// must not match the stored int64 value, while an int64 one must.
 func TestKeyStore_VersionPreconditionIsInt64(t *testing.T) {
 	ctx := context.Background()
 	svc := storagestub.NewInMemoryService()

@@ -27,8 +27,6 @@ import (
 	"github.com/zalando/go-keyring"
 )
 
-// The go-keyring mock swaps a package-level provider and is not safe
-// for concurrent use, so this test must not run in parallel.
 func TestSystemRoundTrip(t *testing.T) {
 	keyring.MockInit()
 	t.Cleanup(func() { keyring.MockInitWithError(errors.New("unset")) })

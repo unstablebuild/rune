@@ -52,10 +52,6 @@ func newTestShaderRunner(loading, open loadingShaderConfig) *shaderRunner {
 	return r
 }
 
-// TestShaderRunnerLoadingNoOpWithoutConfig verifies that
-// startLoading and stopLoading are silent no-ops when no
-// loading shader is configured, so callers can issue them
-// unconditionally without disturbing the active shader.
 func TestShaderRunnerLoadingNoOpWithoutConfig(t *testing.T) {
 	r := newTestShaderRunner(loadingShaderConfig{}, loadingShaderConfig{})
 	initial := r.shader
@@ -71,9 +67,6 @@ func TestShaderRunnerLoadingNoOpWithoutConfig(t *testing.T) {
 		"stopLoading must not swap the shader when no loading config is set")
 }
 
-// TestShaderRunnerStartLoadingRestarts verifies that a second
-// startLoading cancels and replaces the previous loading
-// animation, rather than stacking or being ignored.
 func TestShaderRunnerStartLoadingRestarts(t *testing.T) {
 	loading := loadingShaderConfig{shader: fakeLoadingShader(), fps: 30}
 	r := newTestShaderRunner(loading, loadingShaderConfig{})
@@ -90,8 +83,6 @@ func TestShaderRunnerStartLoadingRestarts(t *testing.T) {
 		"second startLoading must replace the previous loading shader")
 }
 
-// TestShaderRunnerStopLoadingFiresOpenShader verifies that
-// stopLoading swaps in the open shader when configured.
 func TestShaderRunnerStopLoadingFiresOpenShader(t *testing.T) {
 	loading := loadingShaderConfig{shader: fakeLoadingShader(), fps: 30}
 	open := loadingShaderConfig{shader: fakeLoadingShader(), fps: 30}
@@ -105,10 +96,6 @@ func TestShaderRunnerStopLoadingFiresOpenShader(t *testing.T) {
 		"stopLoading must swap in the open shader")
 }
 
-// TestShaderRunnerStopLoadingFallsBackToCancelWithoutOpen
-// verifies that stopLoading cancels the active shader when no
-// open shader is configured so the loading animation does not
-// stay on screen forever.
 func TestShaderRunnerStopLoadingFallsBackToCancelWithoutOpen(t *testing.T) {
 	loading := loadingShaderConfig{shader: fakeLoadingShader(), fps: 30}
 	r := newTestShaderRunner(loading, loadingShaderConfig{})
@@ -121,11 +108,6 @@ func TestShaderRunnerStopLoadingFallsBackToCancelWithoutOpen(t *testing.T) {
 		"stopLoading without an open shader must cancel the active one")
 }
 
-// TestShaderRunnerStartLoadingUsesConfiguredDuration verifies that the
-// loading shader's containing shader.Component is sized using the
-// duration configured on loadingShaderConfig, so callers can decouple
-// the visual fade length from the host-component lifetime instead of
-// being bound to a hard-coded shaderRunner constant.
 func TestShaderRunnerStartLoadingUsesConfiguredDuration(t *testing.T) {
 	const (
 		fps    = 30
@@ -144,9 +126,6 @@ func TestShaderRunnerStartLoadingUsesConfiguredDuration(t *testing.T) {
 		"startLoading must use the configured duration")
 }
 
-// TestShaderRunnerStopLoadingUsesConfiguredOpenDuration verifies that
-// the open shader's containing shader.Component is sized using the
-// duration configured on openShaderConfig.
 func TestShaderRunnerStopLoadingUsesConfiguredOpenDuration(t *testing.T) {
 	const (
 		fps    = 30
@@ -167,8 +146,6 @@ func TestShaderRunnerStopLoadingUsesConfiguredOpenDuration(t *testing.T) {
 		"stopLoading must use the configured open-shader duration")
 }
 
-// TestBuildNamedShaderRegistersEveryListedName asserts that every name
-// returned by namedShaderNames resolves through buildNamedShader.
 func TestBuildNamedShaderRegistersEveryListedName(t *testing.T) {
 	defAttr := term.Attributes{}
 	fc := component.FrameCharSetDefault()

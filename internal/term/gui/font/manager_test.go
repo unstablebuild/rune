@@ -63,9 +63,6 @@ func TestPixelAndCellCalculation(t *testing.T) {
 	})
 }
 
-// TestSetOffsetXYMixup is a regression test for RUNE-51. Manager.SetOffset
-// previously forwarded the y argument to setOffsetX, silently corrupting the
-// horizontal offset whenever SetOffset was called.
 func TestSetOffsetXYMixup(t *testing.T) {
 	m, err := NewManager(0, 0)
 	require.NoError(t, err)
@@ -114,10 +111,6 @@ func TestCellWidthOffsetPreservesLineHeightOffset(t *testing.T) {
 	assert.Equal(t, 7.0, fixedToFloat64(m.offset.Y))
 }
 
-// TestSetOffsetInvalidMetricsRollsBack is a regression test for RUNE-51.
-// When the new offset produces degenerate glyph metrics (charSize.X <= 0),
-// SetOffset must return an error and restore the previous offset by
-// reloading the font normally, leaving the manager in a consistent state.
 func TestSetOffsetInvalidMetricsRollsBack(t *testing.T) {
 	m, err := NewManager(0, 0)
 	require.NoError(t, err)
@@ -150,10 +143,6 @@ func TestSetOffsetInvalidMetricsRollsBack(t *testing.T) {
 	})
 }
 
-// TestSetFontByFamilyNameRestoresOnError is a regression test for
-// RUNE-51. When loading a font by name fails (e.g. an unknown family),
-// the manager must restore the previously configured font by running
-// the normal load path, not leave itself in a half-initialized state.
 func TestSetFontByFamilyNameRestoresOnError(t *testing.T) {
 	m, err := NewManager(0, 0)
 	require.NoError(t, err)
@@ -180,11 +169,6 @@ func setTestCharSize(m *Manager, x, y float64) {
 	m.charSize.Y = y
 }
 
-// TestSymbolFallbackResolvesGapGlyphs verifies that glyphs Claude Code
-// emits which are absent from the builtin user font, the braille font,
-// and the Meslo fallback (e.g. ⏺ ⏸ ※ ⑂) are still resolved by the
-// embedded Symbola symbol fallback, so they never render as tofu
-// regardless of the user-selected font.
 func TestSymbolFallbackResolvesGapGlyphs(t *testing.T) {
 	m, err := NewManager(0, 0)
 	require.NoError(t, err)
@@ -203,9 +187,6 @@ func TestSymbolFallbackResolvesGapGlyphs(t *testing.T) {
 	}
 }
 
-// TestCJKFallbackResolvesGlyphs verifies Han, Kana, Hangul and fullwidth
-// punctuation resolve through the chain instead of rasterizing .notdef,
-// which the atlas drops as an empty glyph and renders as tofu.
 func TestCJKFallbackResolvesGlyphs(t *testing.T) {
 	m, err := NewManager(0, 0)
 	require.NoError(t, err)
@@ -228,9 +209,6 @@ func TestCJKFallbackResolvesGlyphs(t *testing.T) {
 	}
 }
 
-// TestCJKIdeographAdvanceMatchesTwoCells guards the ic_width scaling: an
-// ideograph must advance exactly the two columns the cell model reserves
-// for it, otherwise glyphs overlap or leave a gap in the next cell.
 func TestCJKIdeographAdvanceMatchesTwoCells(t *testing.T) {
 	for _, size := range []float64{10, 14, 20} {
 		t.Run(fmt.Sprintf("size=%v", size), func(t *testing.T) {

@@ -27,12 +27,6 @@ import (
 	"unstable.build/rune/internal/handler/handlertest"
 )
 
-// TestMakeManualComponentHeightAccountsForWrapping verifies that the
-// responsive height reported for a markdown manual reflects how the
-// content wraps at the given width. A long Description paragraph wraps
-// onto several rows at a narrow width; if the reported height ignored
-// wrapping, the split-height math would allocate too little space and
-// the description would be truncated on screen.
 func TestMakeManualComponentHeightAccountsForWrapping(t *testing.T) {
 	cfg := testDefaultConfig()
 	cfg.NoMarkdown = false
@@ -81,12 +75,6 @@ func wrappedManualHeight(t *testing.T, man Manual, width int) int {
 	return md.Height(width)
 }
 
-// TestManualDoesNotOverlapCommandList reproduces a layout bug where the
-// search list overdrew the manual region. The manual is rebuilt on
-// input changes through Handle, which does not go through Resize, so
-// the list could keep a resized height computed against a shorter
-// manual and draw its rows on top of the separator and Usage section
-// once the manual grew (e.g. a command with several subcommands).
 func TestManualDoesNotOverlapCommandList(t *testing.T) {
 	cfg := testDefaultConfig()
 	cfg.ShowManual = true

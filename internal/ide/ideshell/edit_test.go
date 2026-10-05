@@ -359,9 +359,6 @@ func TestEditorSubmitDispatchesAndClears(t *testing.T) {
 	assert.Equal(t, "", h.editBuf.String())
 }
 
-// TestModalEnterSubmitsAndClears is a regression for the "must leave
-// modal mode to submit" bug: a bare <enter> must submit even while a
-// modal editor is in insert mode.
 func TestModalEnterSubmitsAndClears(t *testing.T) {
 	var dispatched []string
 	h, registry := New(
@@ -383,9 +380,6 @@ func TestModalEnterSubmitsAndClears(t *testing.T) {
 		"modal insert-mode enter must submit and clear")
 }
 
-// TestShiftEnterInsertsNewlineNotSubmit verifies the shell owns
-// <shift-enter>: it forwards a plain <enter> to the editor (newline
-// insertion) instead of submitting the line.
 func TestShiftEnterInsertsNewlineNotSubmit(t *testing.T) {
 	var dispatched []string
 	var seen []term.Event
@@ -428,10 +422,6 @@ func (realModelessEditor) Edit(buf *cell.Buffer) command.EditHandler {
 		text.IndentRuneTab, 4, standard.WithCommandBar(false))
 }
 
-// TestShiftEnterInsertsLiteralNewline reproduces the bug where
-// <shift-enter> inserted a placeholder glyph instead of a real newline:
-// driving "a", <shift-enter>, "b" through the shell must leave the
-// editor buffer holding exactly "a\nb".
 func TestShiftEnterInsertsLiteralNewline(t *testing.T) {
 	h, _ := New(
 		func(func()) bool { return false },
@@ -473,9 +463,6 @@ var (
 	ctrlK     = term.Event{Type: term.EventKey, Ch: 'k', Mod: term.ModCtrl}
 )
 
-// TestArrowUpCyclesHistoryIntoEditor verifies that <up> recalls
-// successively older history entries into the editor buffer even though
-// the editor consumes arrow keys as cursor motion.
 func TestArrowUpCyclesHistoryIntoEditor(t *testing.T) {
 	h := newTestHandler(t, []string{"oldest", "middle", "newest"})
 	h.Resize(testWidthH, testHeight)
@@ -488,8 +475,6 @@ func TestArrowUpCyclesHistoryIntoEditor(t *testing.T) {
 	assert.Equal(t, "oldest", h.editBuf.String())
 }
 
-// TestArrowDownCyclesHistoryIntoEditor verifies that <down> walks back
-// toward the most recent entry after <up> has moved into history.
 func TestArrowDownCyclesHistoryIntoEditor(t *testing.T) {
 	h := newTestHandler(t, []string{"oldest", "middle", "newest"})
 	h.Resize(testWidthH, testHeight)
@@ -502,8 +487,6 @@ func TestArrowDownCyclesHistoryIntoEditor(t *testing.T) {
 	assert.Equal(t, "newest", h.editBuf.String())
 }
 
-// TestCtrlKCtrlJCycleHistory verifies the vi-style <c-k>/<c-j> aliases
-// move up/down through history identically to the arrow keys.
 func TestCtrlKCtrlJCycleHistory(t *testing.T) {
 	h := newTestHandler(t, []string{"oldest", "middle", "newest"})
 	h.Resize(testWidthH, testHeight)
@@ -516,10 +499,6 @@ func TestCtrlKCtrlJCycleHistory(t *testing.T) {
 	assert.Equal(t, "newest", h.editBuf.String())
 }
 
-// TestEditingDuringHistoryCycleKeepsPosition verifies that editing a
-// recalled line and pressing <up> again walks to the entry above it —
-// matching how a real shell treats an edited history line as an
-// in-place modification rather than resetting to the newest entry.
 func TestEditingDuringHistoryCycleKeepsPosition(t *testing.T) {
 	h := newTestHandler(t, []string{"oldest", "middle", "newest"})
 	h.Resize(testWidthH, testHeight)
@@ -537,9 +516,6 @@ func TestEditingDuringHistoryCycleKeepsPosition(t *testing.T) {
 	assert.Equal(t, "oldest", h.editBuf.String())
 }
 
-// TestHistoryDownRestoresLiveEdit verifies that after typing a fresh
-// line and pressing <up>, pressing <down> back past the newest entry
-// restores the in-progress line the user was typing.
 func TestHistoryDownRestoresLiveEdit(t *testing.T) {
 	h := newTestHandler(t, []string{"newest"})
 	h.Resize(testWidthH, testHeight)
@@ -630,13 +606,6 @@ func (s *cursorStubHandler) Handle(term.Event) (bool, bool)          { return fa
 
 var _ command.EditHandler = (*cursorStubHandler)(nil)
 
-// TestCursorVisualHonorsBufferLineForMultilineInput reproduces the bug
-// where a multi-line input line (produced by <shift-enter>) placed the
-// caret on the wrong row: the visual cursor ignored the editor's buffer
-// line and folded every column onto the first row through the prompt's
-// hanging indent. The prompt is "> " (2 cols) and the width is 30, so
-// only buffer line 0 carries the prompt offset and continuation lines
-// start at column 0.
 func TestCursorVisualHonorsBufferLineForMultilineInput(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -690,9 +659,6 @@ func TestCursorVisualHonorsBufferLineForMultilineInput(t *testing.T) {
 	}
 }
 
-// TestCursorVisualClampsLineBeyondBuffer guards against a panic when the
-// editor reports a cursor line past the buffer's last row: editBuf.Columns
-// would index out of range, so the row accumulation must clamp to Rows().
 func TestCursorVisualClampsLineBeyondBuffer(t *testing.T) {
 	h := newTestHandlerFull(t, nil, 100, nil)
 	// Cursor reports line 5 while the buffer only has one row ("hi").
@@ -707,11 +673,6 @@ func TestCursorVisualClampsLineBeyondBuffer(t *testing.T) {
 	})
 }
 
-// TestArrowKeysMoveWithinMultilineItemBeforeCyclingHistory reproduces
-// the bug where recalling a multi-line history entry trapped the cursor:
-// the shell swallowed <up>/<down> for history cycling instead of letting
-// the editor move the cursor between the entry's lines. Cursor motion
-// must stay inside the buffer until a vertical edge is reached.
 func TestArrowKeysMoveWithinMultilineItemBeforeCyclingHistory(t *testing.T) {
 	editor := &multilineStubEditor{}
 	h := newTestHandlerFull(t, []string{"old", "a\nb\nc"}, 100, nil)
@@ -738,10 +699,6 @@ func TestArrowKeysMoveWithinMultilineItemBeforeCyclingHistory(t *testing.T) {
 	assert.Equal(t, "old", h.editBuf.String())
 }
 
-// TestArrowDownMovesWithinMultilineItemBeforeCyclingHistory is the
-// downward counterpart: once the cursor has moved up inside a recalled
-// multi-line entry, <down> walks back down its rows and only cycles to
-// a newer history entry when the cursor reaches the bottom row.
 func TestArrowDownMovesWithinMultilineItemBeforeCyclingHistory(t *testing.T) {
 	editor := &multilineStubEditor{}
 	h := newTestHandlerFull(t, []string{"a\nb\nc", "newest"}, 100, nil)
@@ -791,10 +748,6 @@ func TestCtrlROpensReverseHistorySearch(t *testing.T) {
 	h.cancelSearch()
 }
 
-// TestCtrlRNeverReachesEditor guards the VTE-like contract: the shell
-// wrapper owns <c-r> and must intercept it for reverse-history search
-// before the editor — which in vi insert mode would otherwise consume
-// it to insert a register — ever sees it.
 func TestCtrlRNeverReachesEditor(t *testing.T) {
 	var seen []term.Event
 	h := newEditTestHandler(t, stubEditor{seen: &seen})
@@ -836,10 +789,6 @@ func TestTabTriggersCompletion(t *testing.T) {
 	h.cancelSearch()
 }
 
-// TestTabNeverReachesEditor guards the VTE-like contract: the shell
-// wrapper owns <tab> and must intercept it for completion before the
-// editor — which would otherwise consume it to insert indentation —
-// ever sees it.
 func TestTabNeverReachesEditor(t *testing.T) {
 	var seen []term.Event
 	h, registry := New(
@@ -945,9 +894,6 @@ func TestCtrlCCancelsRunningCommandBeforeEditor(t *testing.T) {
 	}
 }
 
-// TestAcceptHistoryMatchReplacesEditorBuffer verifies that choosing a
-// reverse-history result writes the chosen command into the editor
-// buffer (the editor owns the input line), not the inner inputbox.
 func TestAcceptHistoryMatchReplacesEditorBuffer(t *testing.T) {
 	h := newTestHandler(t, []string{"deploy --prod"})
 	h.Resize(testWidthH, testHeight)
@@ -964,9 +910,6 @@ func TestAcceptHistoryMatchReplacesEditorBuffer(t *testing.T) {
 	assert.Equal(t, "deploy --prod", h.editBuf.String())
 }
 
-// TestAcceptCompletionCandidateReplacesEditorBuffer verifies that
-// accepting a tab-completion candidate rewrites the editor buffer with
-// the completed command rather than mutating the inner inputbox.
 func TestAcceptCompletionCandidateReplacesEditorBuffer(t *testing.T) {
 	h := newTestHandlerFull(t, nil, 100, func(r *CommandRegistry) {
 		r.Register("foobar", "foobar", stubCmd{})
@@ -1059,9 +1002,6 @@ func newPromptEditorHandler(t *testing.T, items []string) *Handler {
 // over four rows at testWidthH (30/30/30/12).
 var longHistoryItem = strings.Repeat("0123456789", 10)
 
-// TestInputBandMouseMapsToBufferCoordinates reproduces RUNE-315:
-// forwarding raw screen coordinates let the editor re-interpret them
-// through its own unwrapped, horizontally scrolled geometry.
 func TestInputBandMouseMapsToBufferCoordinates(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -1126,8 +1066,6 @@ func TestInputBandMouseMapsToBufferCoordinates(t *testing.T) {
 	}
 }
 
-// TestInputBandMouseOnSecondLogicalLine verifies the visual->buffer
-// mapping walks logical lines: only line 0 carries the prompt prefix.
 func TestInputBandMouseOnSecondLogicalLine(t *testing.T) {
 	h := newPromptEditorHandler(t, []string{"unused"})
 
@@ -1143,9 +1081,6 @@ func TestInputBandMouseOnSecondLogicalLine(t *testing.T) {
 	assert.Equal(t, term.Coordinates{X: 2, Y: 1}, h.editHandler.CursorAtScroll())
 }
 
-// TestInputBandMouseDragSelectsAcrossWrappedRows verifies an
-// input-band drag selects across wrapped rows and highlights exactly
-// the selected cells, excluding the caret cell.
 func TestInputBandMouseDragSelectsAcrossWrappedRows(t *testing.T) {
 	h := newPromptEditorHandler(t, []string{longHistoryItem})
 	h.Handle(arrowUp)
@@ -1181,9 +1116,6 @@ func TestInputBandMouseDragSelectsAcrossWrappedRows(t *testing.T) {
 	assert.False(t, reversed(6, 9), "cells past the selection must not be highlighted")
 }
 
-// TestInputBandLeftwardSelectionExcludesAnchorCell reproduces the
-// overlay painting the vi-style inclusive range for a modeless
-// editor: a one-char leftward selection also highlighted the anchor.
 func TestInputBandLeftwardSelectionExcludesAnchorCell(t *testing.T) {
 	h := newPromptEditorHandler(t, []string{longHistoryItem})
 	h.Handle(arrowUp)
@@ -1211,10 +1143,6 @@ func TestInputBandLeftwardSelectionExcludesAnchorCell(t *testing.T) {
 	assert.False(t, reversed(9, 11), "cells before the selection must not be highlighted")
 }
 
-// TestInputBandDoubleClickSelectsWholeWord double-clicks near the end
-// of a recalled command that is wider than the editor viewport. The
-// word spans the whole line, so anchoring at its start scrolls the
-// editor horizontally mid-selection.
 func TestInputBandDoubleClickSelectsWholeWord(t *testing.T) {
 	for _, tt := range []struct {
 		name  string

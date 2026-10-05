@@ -22,6 +22,7 @@ import (
 	"image/color"
 	"math"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -365,6 +366,116 @@ func TestUpdate(t *testing.T) {
 	})
 }
 
+func TestPublishEventSchedulesUserFunc(t *testing.T) {
+	t.Run("a tick the loop never picked up runs on Close", func(t *testing.T) {
+		var mu sync.Mutex
+		gui := newLockedTestGUI(t, &mu)
+		var runs int
+		var locked bool
+		require.True(t, gui.PublishEvent(term.Event{Type: term.EventInterrupt, UserFunc: func() {
+			runs++
+			locked = !mu.TryLock()
+			if !locked {
+				mu.Unlock()
+			}
+		}}))
+		require.NoError(t, gui.Close())
+		assert.Equal(t, 1, runs)
+		assert.True(t, locked, "a tick runs under the UI lock")
+		require.NoError(t, gui.Close())
+		assert.Equal(t, 1, runs)
+	})
+
+	t.Run("a tick queued behind the exiting event runs on Close", func(t *testing.T) {
+		var handled int
+		gui, _ := newTestGUI(t, &mockHandler{
+			assertDraw: func(term.Writer) {},
+			assertEvent: func(term.Event) (bool, bool) {
+				handled++
+				return true, true
+			},
+		})
+		var runs int
+		require.True(t, gui.PublishEvent(term.Event{Type: term.EventKey, Ch: 'q', Raw: []byte("q")}))
+		require.True(t, gui.PublishEvent(term.Event{
+			Type: term.EventInterrupt, UserFunc: func() { runs++ },
+		}))
+		require.ErrorIs(t, gui.Update(), ErrHandlerExited)
+		require.Zero(t, runs)
+		require.NoError(t, gui.Close())
+		assert.Equal(t, 1, runs)
+		assert.Equal(t, 1, handled, "Close must not redeliver the exiting event")
+	})
+
+	t.Run("Close rejects events", func(t *testing.T) {
+		var runs int
+		tests := []struct {
+			name string
+			ev   term.Event
+		}{
+			{name: "user func", ev: term.Event{
+				Type: term.EventInterrupt, UserFunc: func() { runs++ },
+			}},
+			{name: "key", ev: term.Event{Type: term.EventKey, Ch: 'a', Raw: []byte("a")}},
+		}
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				gui, _ := newTestGUI(t, &mockHandler{assertDraw: func(term.Writer) {}})
+				require.NoError(t, gui.Close())
+				assert.False(t, gui.PublishEvent(tc.ev))
+			})
+		}
+		assert.Zero(t, runs)
+	})
+
+	t.Run("a tick run on Close cannot schedule another", func(t *testing.T) {
+		gui, _ := newTestGUI(t, &mockHandler{assertDraw: func(term.Writer) {}})
+		rescheduled, ran := true, false
+		require.True(t, gui.PublishEvent(term.Event{Type: term.EventInterrupt, UserFunc: func() {
+			rescheduled = gui.PublishEvent(term.Event{
+				Type: term.EventInterrupt, UserFunc: func() { ran = true },
+			})
+		}}))
+		require.NoError(t, gui.Close())
+		assert.False(t, rescheduled)
+		assert.False(t, ran)
+	})
+
+	t.Run("publishers racing Close", func(t *testing.T) {
+		gui, _ := newTestGUI(t, &mockHandler{assertDraw: func(term.Writer) {}})
+		const publishers, ticks = 8, 100
+		var runs [publishers][ticks]atomic.Int32
+		var accepted [publishers][ticks]bool
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		for p := range publishers {
+			wg.Add(1)
+			go debug.CapturePanicReport(func() {
+				defer wg.Done()
+				<-start
+				for i := range ticks {
+					accepted[p][i] = gui.PublishEvent(term.Event{
+						Type: term.EventInterrupt, UserFunc: func() { runs[p][i].Add(1) },
+					})
+				}
+			})
+		}
+		close(start)
+		require.NoError(t, gui.Close())
+		wg.Wait()
+		for p := range publishers {
+			for i := range ticks {
+				want := int32(0)
+				if accepted[p][i] {
+					want = 1
+				}
+				require.Equal(t, want, runs[p][i].Load(),
+					"publisher %d tick %d accepted=%v", p, i, accepted[p][i])
+			}
+		}
+	})
+}
+
 func TestSetForceFullRepaint(t *testing.T) {
 	mock := mockHandler{
 		assertDraw:  func(term.Writer) {},
@@ -460,12 +571,6 @@ func TestLayout(t *testing.T) {
 	})
 }
 
-// TestSetFontUnknownFamilyDoesNotPanic is a regression test for
-// RUNE-51. Attempting to switch to a font family that either does not
-// exist on the system or produces degenerate metrics must surface an
-// error through SetFont instead of crashing the process in
-// cell.NewBufferWriter, and must leave the GUI in a usable state so
-// subsequent draws still work.
 func TestSetFontUnknownFamilyDoesNotPanic(t *testing.T) {
 	mock := mockHandler{}
 	gui, _ := newTestGUI(t, &mock)
@@ -510,10 +615,6 @@ func TestCloseRestoresColorValues(t *testing.T) {
 	require.NoError(t, g.Close(), "Close must be idempotent")
 }
 
-// TestCellPixelSizeMatchesImagePlacement pins that the cell size the
-// kitty graphics protocol advertises is the pitch image placements are
-// scaled by, so a client sizing an image to N cells gets exactly N
-// cells, and that it follows font changes.
 func TestCellPixelSizeMatchesImagePlacement(t *testing.T) {
 	gui, _ := newTestGUI(t, &mockHandler{})
 
@@ -529,9 +630,6 @@ func TestCellPixelSizeMatchesImagePlacement(t *testing.T) {
 	assert.Greater(t, w2*h2, w*h, "a larger font means larger cells")
 }
 
-// TestDrawPaintsPicturesOnTheirCells asserts a picture lands on the
-// pixels the renderer paints its cells on, so the cells a floating
-// window writes over it hide all of it.
 func TestDrawPaintsPicturesOnTheirCells(t *testing.T) {
 	pic := term.Image{
 		Src: solidRGBA(4, 4, color.RGBA{G: 255, A: 255}), ID: term.NewImageID(),
@@ -679,9 +777,6 @@ func updateWhileHeld(t *testing.T, gui *GUI) bool {
 	}
 }
 
-// The render loop wakes on every vsync regardless of whether anything
-// happened. Taking the UI lock on a frame with nothing to do contends
-// with the extension RPC goroutines that need it, for no benefit.
 func TestUpdateSkipsUILockOnIdleFrame(t *testing.T) {
 	var mu sync.Mutex
 	gui := newLockedTestGUI(t, &mu)
@@ -692,8 +787,6 @@ func TestUpdateSkipsUILockOnIdleFrame(t *testing.T) {
 		"an idle tick must not wait on the UI lock")
 }
 
-// The skip must be an optimization, not a hole in the locking: a tick
-// with an event to route still mutates UI state and must serialize.
 func TestUpdateTakesUILockWhenEventPending(t *testing.T) {
 	var mu sync.Mutex
 	gui := newLockedTestGUI(t, &mu)
@@ -705,9 +798,6 @@ func TestUpdateTakesUILockWhenEventPending(t *testing.T) {
 	mu.Unlock()
 }
 
-// A drag in flight produces no pending events and owes no redraw, so the
-// drag probe is the only thing keeping its observer callbacks — which
-// reach into browser window state — under the UI lock.
 func TestUpdateTakesUILockWhileDragging(t *testing.T) {
 	t.Run("drag in progress", func(t *testing.T) {
 		var mu sync.Mutex

@@ -88,10 +88,6 @@ func (b *blockingStringIter) Close() error {
 	return nil
 }
 
-// TestCompleteDoesNotDrainIterator asserts that the shim returns from
-// Complete without draining the candidate iterator, even when that
-// iterator blocks indefinitely. A synchronous drain on the event loop
-// would freeze the prompt.
 func TestCompleteDoesNotDrainIterator(t *testing.T) {
 	blk := &blockingStringIter{
 		first: "alpha", started: make(chan struct{}), closed: make(chan struct{}),
@@ -124,8 +120,6 @@ func TestCompleteDoesNotDrainIterator(t *testing.T) {
 	assert.Same(t, iterator.Iterator[string](blk), captured.iter)
 }
 
-// TestOpenCompletionStreamsIncrementally feeds several candidates
-// through the overlay and asserts they all land in the list.
 func TestOpenCompletionStreamsIncrementally(t *testing.T) {
 	h := newTestHandlerFull(t, nil, 100, func(r *CommandRegistry) {
 		r.Register("g", "", iterCmd{iter: func() iterator.Iterator[string] {
@@ -144,9 +138,6 @@ func TestOpenCompletionStreamsIncrementally(t *testing.T) {
 	assert.Equal(t, 3, h.list.MatchCount())
 }
 
-// TestOpenCompletionCancelMidStreamClosesIterator cancels the overlay
-// while the feeder is blocked on a slow iterator and asserts the
-// goroutine exits and the iterator is closed (no leak).
 func TestOpenCompletionCancelMidStreamClosesIterator(t *testing.T) {
 	blk := &blockingStringIter{
 		first: "alpha", started: make(chan struct{}), closed: make(chan struct{}),
@@ -176,9 +167,6 @@ func TestOpenCompletionCancelMidStreamClosesIterator(t *testing.T) {
 	}
 }
 
-// TestOpenCompletionSingleMatchAutoAccepts asserts a stream that yields
-// exactly one candidate fills the editor line inline and closes the
-// overlay, preserving the pre-streaming single-completion UX.
 func TestOpenCompletionSingleMatchAutoAccepts(t *testing.T) {
 	h := newTestHandlerFull(t, nil, 100, func(r *CommandRegistry) {
 		r.Register("g", "", iterCmd{iter: func() iterator.Iterator[string] {
@@ -196,8 +184,6 @@ func TestOpenCompletionSingleMatchAutoAccepts(t *testing.T) {
 	assert.Equal(t, "g alpha", h.editBuf.String())
 }
 
-// TestOpenCompletionZeroMatchClosesOverlay asserts an empty stream
-// closes the overlay and leaves the editor line unchanged.
 func TestOpenCompletionZeroMatchClosesOverlay(t *testing.T) {
 	h := newTestHandlerFull(t, nil, 100, func(r *CommandRegistry) {
 		r.Register("g", "", iterCmd{iter: func() iterator.Iterator[string] {
@@ -244,10 +230,6 @@ func (s *slowScanIter) Close() error {
 	return nil
 }
 
-// TestTabOnSlowScanDoesNotFreeze reproduces the debugger-launch freeze:
-// pressing <tab> while the program completer is still scanning must
-// return promptly (overlay opens, prompt stays responsive) rather than
-// blocking the event loop until the scan settles.
 func TestTabOnSlowScanDoesNotFreeze(t *testing.T) {
 	scan := newSlowScanIter()
 	h := newTestHandlerFull(t, nil, 100, func(r *CommandRegistry) {
@@ -287,10 +269,6 @@ func TestTabOnSlowScanDoesNotFreeze(t *testing.T) {
 	assert.False(t, h.searching)
 }
 
-// TestCompletion_ArrowKeyNavigationPreservedOnAccept asserts that navigating
-// completion candidates with arrow keys preserves the selection upon
-// acceptance (via Enter or Tab) rather than resetting back to the first
-// candidate.
 func TestCompletion_ArrowKeyNavigationPreservedOnAccept(t *testing.T) {
 	tests := []struct {
 		name     string

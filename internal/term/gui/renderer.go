@@ -259,11 +259,32 @@ func (r *renderer) drawImageLayer(
 		if img.Layer != layer {
 			continue
 		}
-		if rect := r.images.drawOne(screen, img, r.fontManager); !rect.Empty() {
+		if rect := r.images.drawOne(screen, img, r.fontManager, r.imageShift(img)); !rect.Empty() {
 			rects = append(rects, rect)
 		}
 	}
 	return rects
+}
+
+// imageShift returns how many pixels down img is moved, which is as far
+// as renderRow moves the cells on its first row that carry the vertical
+// render offset it asks for: half a cell down, or up but not past the top
+// of the screen, and down when it asks for both.
+func (r *renderer) imageShift(img term.Image) int {
+	switch {
+	case img.VerticalRenderOffset:
+		return int(r.halfCell())
+	case img.NegativeVerticalRenderOffset:
+		top := max(0, int(math.Round(r.fontManager.PixelY(img.Pos.Y)))+img.Offset.Y)
+		return -min(int(r.halfCell())+1, top)
+	default:
+		return 0
+	}
+}
+
+// halfCell is how many pixels vertical-offset cells are moved by.
+func (r *renderer) halfCell() float64 {
+	return math.Floor(r.font.CellSize.Y/2) - 2
 }
 
 // repaintOver redraws the given passes of the rows each rect covers,
@@ -526,7 +547,7 @@ func (r *renderer) renderRow(
 	row := cells[viewY]
 	pixelY := r.fontManager.PixelY(viewY)
 	textPixelY := pixelY + r.font.OffsetY
-	halfCell := math.Floor(r.font.CellSize.Y/2) - 2
+	halfCell := r.halfCell()
 
 	var useFace imagefont.Face
 	useFace = r.font.Regular

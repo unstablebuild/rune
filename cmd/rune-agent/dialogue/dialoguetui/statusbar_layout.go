@@ -163,13 +163,13 @@ func ParseStatusBarLayout(layoutStr string) (
 			}
 
 		case *parse.ActionNode:
-			fieldName, attrs, err := template.ParseAction(n)
+			act, err := template.ParseAction(n)
 			if err != nil {
 				return nil, err
 			}
 
 			var compType StatusBarComponentType
-			switch fieldName {
+			switch act.Field {
 			case "Spinner":
 				compType = StatusBarSpinner
 				tmpl += "%s"
@@ -227,12 +227,12 @@ func ParseStatusBarLayout(layoutStr string) (
 				continue
 			default:
 				return nil, fmt.Errorf(
-					"unknown status bar component: %q", fieldName)
+					"unknown status bar component: %q", act.Field)
 			}
 			ret = append(ret, StatusBarComponent{
 				Type:       compType,
 				Template:   tmpl,
-				Attributes: attrs,
+				Attributes: act.Attributes,
 			})
 			tmpl = ""
 

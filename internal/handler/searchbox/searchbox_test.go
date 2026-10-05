@@ -515,9 +515,6 @@ func TestFloatingButtonPointerAndIdempotentClose(t *testing.T) {
 	assert.False(t, box.Active())
 }
 
-// TestFloatingCtrlCActsLikeEscape pins that ctrl-c dismisses the box the
-// same way <esc> does, since it is the terminal's own cancel gesture and
-// reads as "close this" rather than as a request to edit the query.
 func TestFloatingCtrlCActsLikeEscape(t *testing.T) {
 	wm := &testWindowManager{closeContent: true}
 	box, ctrl := newReplaceBox(t, wm)
@@ -603,8 +600,6 @@ func TestBoxOpenErrorReportsAndStaysClosed(t *testing.T) {
 	assert.Zero(t, ctrl.begun)
 }
 
-// TestFindOnlyControllerHidesReplaceAffordances pins that hosts which cannot
-// replace, such as terminals, get a query-only box.
 func TestFindOnlyControllerHidesReplaceAffordances(t *testing.T) {
 	wm := new(testWindowManager)
 	cfg := testConfig()
@@ -632,10 +627,6 @@ func TestFindOnlyControllerHidesReplaceAffordances(t *testing.T) {
 		handlertest.DrawHandler(f, width, 4))
 }
 
-// TestFloatingPaddingTopZeroSitsFlush pins that PaddingTop: 0 drops the
-// box's leading blank row, so a host presenting it flush against an
-// edge, such as a terminal overlay, does not need to crop anything
-// itself.
 func TestFloatingPaddingTopZeroSitsFlush(t *testing.T) {
 	cfg := testConfig()
 	cfg.PaddingTop = 0
@@ -669,9 +660,6 @@ func openMode(t *testing.T, box *searchbox.Box, mode searchbox.Mode) {
 	require.NotNil(t, box.Floating())
 }
 
-// TestFloatingReportsHostSelection pins that a selection made in the
-// content behind the box stays copyable: window managers report the
-// focused window's selection, and the box has the focus.
 func TestFloatingReportsHostSelection(t *testing.T) {
 	cfg := testConfig()
 	cfg.WindowManager = new(testWindowManager)
@@ -703,13 +691,6 @@ func TestFloatingReportsHostSelection(t *testing.T) {
 	assert.Equal(t, "query", selected)
 }
 
-// TestFloatingCopyShortcutFallsThroughWithNoOwnSelection pins that
-// cmd-c typed while the box is open, but with nothing selected inside
-// it, is not swallowed by the query input's own
-// empty-selection-copies-the-line fallback. The host must get a chance
-// to act on it instead, e.g. to copy the selection made on its own
-// content after the box opened. ctrl-c is not covered here: it always
-// exits the box, like <esc> (see TestFloatingCtrlCActsLikeEscape).
 func TestFloatingCopyShortcutFallsThroughWithNoOwnSelection(t *testing.T) {
 	cfg := testConfig()
 	cfg.WindowManager = new(testWindowManager)

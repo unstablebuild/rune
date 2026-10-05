@@ -398,9 +398,6 @@ func TestFallbackZigReferencesGolden(t *testing.T) {
 	})
 }
 
-// TestFallbackZigDocumentSymbolOutline property-checks the outline of
-// a real file: every symbol name must spell the source text under its
-// selection range, and every child must be contained in its parent.
 func TestFallbackZigDocumentSymbolOutline(t *testing.T) {
 	m, corpus, _ := fallbackE2E(t)
 	const rel = "lib/std/ascii.zig"
@@ -465,10 +462,6 @@ func positionBefore(a, b semanticapi.Position) bool {
 	return a.Character < b.Character
 }
 
-// TestFallbackZigCorpusSweep property-checks the fallback across a
-// deterministic slice of the corpus: every request must succeed, a
-// definition must resolve to itself, and every resolved location must
-// cover source text spelling the queried identifier.
 func TestFallbackZigCorpusSweep(t *testing.T) {
 	m, corpus, parser := fallbackE2E(t)
 	files := sweepFiles(t, corpus)

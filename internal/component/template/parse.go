@@ -29,7 +29,7 @@ import (
 // such that ParseAction can parse.ActionNodes into a set of named components
 // and their attributes.
 func AllowedFuncs() map[string]any {
-	return map[string]any{
+	funcs := map[string]any{
 		"fg":            func(string) string { return "" },
 		"bg":            func(string) string { return "" },
 		"bold":          func() string { return "" },
@@ -40,38 +40,71 @@ func AllowedFuncs() map[string]any {
 		"italic":        func() string { return "" },
 		"strikethrough": func() string { return "" },
 	}
+	for name := range imageDirectives {
+		funcs[name] = func(any) string { return "" }
+	}
+	return funcs
+}
+
+// Action is a layout element parsed by ParseAction.
+type Action struct {
+	// Field names the element.
+	Field string
+	// Attributes style the element's text.
+	Attributes term.Attributes
+	// Image holds the directives of an ImageField element, with every
+	// directive left out set to its default. It is the zero value for
+	// every other field.
+	Image Image
 }
 
 // ParseAction can be used alongside the standard library's template/parse
-// to parse nodes into a set of string components with attributes after calling parse.Parse.
-func ParseAction(n *parse.ActionNode) (string, term.Attributes, error) {
+// to parse nodes into a set of string components with attributes after
+// calling parse.Parse. Image directives are only accepted on ImageField,
+// which requires src.
+func ParseAction(n *parse.ActionNode) (Action, error) {
 	if n.Pipe == nil || len(n.Pipe.Cmds) == 0 {
-		return "", term.Attributes{}, fmt.Errorf("empty pipeline at position %d", n.Pos)
+		return Action{}, fmt.Errorf("empty pipeline at position %d", n.Pos)
 	}
 
 	// first command must be the field reference: {{ .Status }}
 	first := n.Pipe.Cmds[0]
 	if len(first.Args) != 1 {
-		return "", term.Attributes{}, fmt.Errorf("invalid field reference")
+		return Action{}, fmt.Errorf("invalid field reference")
 	}
 
 	field, ok := first.Args[0].(*parse.FieldNode)
 	if !ok || len(field.Ident) != 1 {
-		return "", term.Attributes{}, fmt.Errorf("unsupported field expression")
+		return Action{}, fmt.Errorf("unsupported field expression")
 	}
 
-	fieldName := field.Ident[0]
+	act := Action{Field: field.Ident[0]}
+	var img *imageBuilder
+	if act.Field == ImageField {
+		img = newImageBuilder()
+	}
 
 	// remaining commands are attribute filters: {{ .Status | attr "bold" "red" }}
-	var attrs term.Attributes
+	attrs := &act.Attributes
 	for _, cmd := range n.Pipe.Cmds[1:] {
 		if len(cmd.Args) == 0 {
-			return "", term.Attributes{}, fmt.Errorf("empty function call in pipeline")
+			return Action{}, fmt.Errorf("empty function call in pipeline")
 		}
 
 		ident, ok := cmd.Args[0].(*parse.IdentifierNode)
 		if !ok {
-			return "", term.Attributes{}, fmt.Errorf("expected identifier in pipeline")
+			return Action{}, fmt.Errorf("expected identifier in pipeline")
+		}
+
+		if _, ok := imageDirectives[ident.Ident]; ok {
+			if img == nil {
+				return Action{}, fmt.Errorf("%s only applies to .%s, not .%s",
+					ident.Ident, ImageField, act.Field)
+			}
+			if err := img.apply(ident.Ident, cmd.Args[1:]); err != nil {
+				return Action{}, err
+			}
+			continue
 		}
 
 		switch ident.Ident {
@@ -79,31 +112,31 @@ func ParseAction(n *parse.ActionNode) (string, term.Attributes, error) {
 			for _, arg := range cmd.Args[1:] {
 				s, ok := arg.(*parse.StringNode)
 				if !ok {
-					return "", term.Attributes{}, fmt.Errorf("fg arguments must be a string")
+					return Action{}, fmt.Errorf("fg arguments must be a string")
 				}
 				var err error
 				attrs.Bg, err = getColor(s.Text)
 				if err != nil {
-					return "", term.Attributes{}, err
+					return Action{}, err
 				}
 			}
 			if len(cmd.Args[1:]) == 0 {
-				return "", term.Attributes{}, errors.New("bg requires a color argument")
+				return Action{}, errors.New("bg requires a color argument")
 			}
 		case "fg":
 			for _, arg := range cmd.Args[1:] {
 				s, ok := arg.(*parse.StringNode)
 				if !ok {
-					return "", term.Attributes{}, fmt.Errorf("bg arguments must be a string")
+					return Action{}, fmt.Errorf("bg arguments must be a string")
 				}
 				var err error
 				attrs.Fg, err = getColor(s.Text)
 				if err != nil {
-					return "", term.Attributes{}, err
+					return Action{}, err
 				}
 			}
 			if len(cmd.Args[1:]) == 0 {
-				return "", term.Attributes{}, errors.New("fg requires a color argument")
+				return Action{}, errors.New("fg requires a color argument")
 			}
 		case "bold":
 			attrs.Attrs |= term.AttrBold
@@ -120,10 +153,16 @@ func ParseAction(n *parse.ActionNode) (string, term.Attributes, error) {
 		case "strikethrough":
 			attrs.Attrs |= term.AttrStrikeThrough
 		default:
-			return "", term.Attributes{}, fmt.Errorf("unsupported pipeline command %q", ident.Ident)
+			return Action{}, fmt.Errorf("unsupported pipeline command %q", ident.Ident)
 		}
 	}
-	return fieldName, attrs, nil
+	if img != nil {
+		var err error
+		if act.Image, err = img.build(); err != nil {
+			return Action{}, err
+		}
+	}
+	return act, nil
 }
 
 func getColor(name string) (term.Color, error) {

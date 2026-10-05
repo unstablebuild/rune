@@ -26,9 +26,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestBatchAccumulatesRects asserts many rectangles accumulate into a
-// single vertex/index buffer with correctly offset indices and per-quad
-// colors, and flush as one DrawTriangles call.
 func TestBatchAccumulatesRects(t *testing.T) {
 	Init()
 	var b Batch
@@ -63,7 +60,6 @@ func TestBatchAccumulatesRects(t *testing.T) {
 	assert.True(t, b.Empty(), "flush resets the batch")
 }
 
-// TestBatchFlushEmptyNoOp asserts flushing an empty batch does nothing.
 func TestBatchFlushEmptyNoOp(t *testing.T) {
 	Init()
 	var b Batch

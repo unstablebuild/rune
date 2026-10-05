@@ -31,7 +31,6 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
-	tcomponent "unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/debug"
 )
 
@@ -43,6 +42,7 @@ type Component struct {
 	name        string
 	fetch       func(context.Context) (image.Image, error)
 	interrupter term.Interrupter
+	style       Style
 	id          term.ImageID
 
 	ctx    context.Context
@@ -58,22 +58,36 @@ type Component struct {
 	version uint64
 }
 
+// Style controls how a Component places its image and what it draws
+// when it cannot.
+type Style struct {
+	// Fit selects how the image is scaled into the component's cells.
+	Fit term.ImageFit
+	// Layer selects where the image is composited relative to the
+	// cells it covers.
+	Layer term.ImageLayer
+	// ProblemArt is drawn centered when the image cannot be loaded or
+	// the writer cannot draw images. An empty ProblemArt draws nothing.
+	// Like the loading animation, it only writes the cells it occupies,
+	// so the component can overlay other content.
+	ProblemArt string
+}
+
 // New returns a component that displays the image at uri. Cached bytes
 // younger than ttl are reused across instances. storage is used as-is
 // (the caller owns partitioning and its lifetime). interrupter is
 // signalled whenever the displayed state changes, including every frame
-// of the loading animation.
+// of the loading animation. style selects how the image is placed.
 //
-// It fails on an unparsable URI, an unsupported scheme, or ttl < 0.
-// The image is fetched on the first Draw with a non-empty size, and the
-// progress animation is drawn centered until the fetch settles. If the
-// image cannot be loaded, or the writer cannot draw images,
-// component.ProblemArt is drawn centered instead. The fetch is not
-// retried, and an expired image stays on screen until the component is
-// recreated.
+// It fails when ValidateURI rejects uri, or when ttl < 0. The image is
+// fetched on the first Draw with a non-empty size, and the progress
+// animation is drawn centered until the fetch settles. If the image
+// cannot be loaded, or the writer cannot draw images, style.ProblemArt
+// is drawn centered instead. The fetch is not retried, and an expired
+// image stays on screen until the component is recreated.
 func New(
 	uri string, ttl time.Duration, storage storageapi.Service,
-	interrupter term.Interrupter,
+	interrupter term.Interrupter, style Style,
 ) (*Component, error) {
 	if ttl < 0 {
 		return nil, fmt.Errorf("imageuri: negative ttl %s", ttl)
@@ -86,7 +100,15 @@ func New(
 	fetch := func(ctx context.Context) (image.Image, error) {
 		return p.image(ctx, u)
 	}
-	return newComponent(u.Redacted(), fetch, interrupter), nil
+	return newComponent(u.Redacted(), fetch, interrupter, style), nil
+}
+
+// ValidateURI returns the error New would fail with for uri: it must
+// parse, and be either a file URI with a path or an http or https URI
+// with a host.
+func ValidateURI(uri string) error {
+	_, err := parseURI(uri)
+	return err
 }
 
 // FileSystem is the subset of workspaceapi.FileSystem that
@@ -102,7 +124,7 @@ type FileSystem interface {
 // Close does not interrupt a read that is already in progress, but its
 // result is discarded. Drawing follows the same rules as New.
 func NewFromFileSystem(
-	fs FileSystem, path string, interrupter term.Interrupter,
+	fs FileSystem, path string, interrupter term.Interrupter, style Style,
 ) *Component {
 	fetch := func(context.Context) (image.Image, error) {
 		f, err := fs.OpenFile(path, os.O_RDONLY, 0)
@@ -116,18 +138,19 @@ func NewFromFileSystem(
 		}
 		return decode(data)
 	}
-	return newComponent(path, fetch, interrupter)
+	return newComponent(path, fetch, interrupter, style)
 }
 
 func newComponent(
 	name string, fetch func(context.Context) (image.Image, error),
-	interrupter term.Interrupter,
+	interrupter term.Interrupter, style Style,
 ) *Component {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Component{
 		name:        name,
 		fetch:       fetch,
 		interrupter: interrupter,
+		style:       style,
 		id:          term.NewImageID(),
 		ctx:         ctx,
 		cancel:      cancel,
@@ -180,8 +203,8 @@ func (c *Component) Draw(w term.Writer) {
 			Version: version,
 			Width:   c.width,
 			Height:  c.height,
-			Fit:     term.ImageFitContain,
-			Layer:   term.ImageLayerAboveText,
+			Fit:     c.style.Fit,
+			Layer:   c.style.Layer,
 		}) {
 			c.drawProblem(w)
 		}
@@ -204,19 +227,32 @@ func (c *Component) Close() error {
 }
 
 func (c *Component) drawProblem(w term.Writer) {
-	art := component.NewStringWithConfig(tcomponent.ProblemArt,
-		component.StringConfig{Alignment: component.AlignmentCentered})
+	art := centered(c.style.ProblemArt)
 	art.Resize(c.width, c.height)
 	art.Draw(w)
 }
 
 func (c *Component) startLoad() {
 	frames, sequence := component.ProgressAnimationFrames()
-	anim := component.NewAnimation(c.interrupter, frames, sequence, 0)
+	comps := make([]component.WithAttributes, len(frames))
+	for i, frame := range frames {
+		comps[i] = centered(frame)
+	}
+	anim := new(component.Animation)
+	anim.InitWithComponents(context.Background(), c.interrupter, comps, sequence, 0)
 	anim.Resize(c.width, c.height)
 	c.anim = anim
 	go debug.CapturePanicReport(func() {
 		c.load(anim)
+	})
+}
+
+// centered leaves the cells around str untouched, unlike a centered
+// component.String, which fills its whole rectangle.
+func centered(str string) *component.Span {
+	return component.NewSpan(component.NewString(str), component.SpanConfig{
+		PadAutoFloating:  true,
+		ContentAlignment: component.AlignmentCentered,
 	})
 }
 

@@ -39,10 +39,6 @@ func TestShine(t *testing.T) {
 	})
 }
 
-// TestShineSweep renders the entire sweep of the shine effect over a filled
-// rectangle, one frame of animation per test case. Cells whose foreground was
-// touched by the shine band render as '#' (via term.StringWriter.ForegroundCh);
-// untouched cells render as the original 'x'.
 func TestShineSweep(t *testing.T) {
 	const (
 		w     = 11
@@ -184,10 +180,6 @@ xxxxxxxxxxx`,
 	}
 }
 
-// TestShineDirections runs the shine sweep at the same frame index against
-// each Direction, demonstrating the band's orientation. The grid below is
-// the matrix the shader sees (11 cols x 5 rows). Untouched cells render as
-// 'x'; touched cells as '#'.
 func TestShineDirections(t *testing.T) {
 	const (
 		w     = 11
@@ -309,8 +301,6 @@ xxxxxxxxxxx
 	}
 }
 
-// Intensity scales the blend towards Color at the band's centre: zero
-// keeps the stock full strength, and a fraction stops partway.
 func TestShineIntensity(t *testing.T) {
 	black := term.NewRGBColor(0, 0, 0)
 	shade := func(intensity float) int32 {

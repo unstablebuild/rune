@@ -55,8 +55,6 @@ func newProvidersHandlerForTest(t *testing.T) (
 	return h, wm, notifs, prompt
 }
 
-// TestProvidersNilDependencyPanics verifies New refuses to build a
-// handler against a nil dependency.
 func TestProvidersNilDependencyPanics(t *testing.T) {
 	defer func() {
 		assert.NotNil(t, recover(), "expected panic for nil storage")
@@ -86,8 +84,6 @@ func renderedOnce(
 	return got[0]
 }
 
-// TestProvidersNoArgsShowsHelp renders the providers help page instead of
-// erroring when invoked without a provider.
 func TestProvidersNoArgsShowsHelp(t *testing.T) {
 	h, _, _, _ := newProvidersHandlerForTest(t)
 	it, err := h.HandleCommand(context.Background(),
@@ -95,8 +91,6 @@ func TestProvidersNoArgsShowsHelp(t *testing.T) {
 	renderedOnce(t, it, err)
 }
 
-// TestProvidersUnknownProviderShowsHelp renders guidance for an unknown
-// provider rather than returning a bare error.
 func TestProvidersUnknownProviderShowsHelp(t *testing.T) {
 	h, _, _, _ := newProvidersHandlerForTest(t)
 	it, err := h.HandleCommand(context.Background(),
@@ -104,8 +98,6 @@ func TestProvidersUnknownProviderShowsHelp(t *testing.T) {
 	renderedOnce(t, it, err)
 }
 
-// TestProvidersCodexNoArgsShowsHelp renders codex help when no codex
-// subcommand is given.
 func TestProvidersCodexNoArgsShowsHelp(t *testing.T) {
 	h, _, _, _ := newProvidersHandlerForTest(t)
 	it, err := h.HandleCommand(context.Background(),
@@ -113,8 +105,6 @@ func TestProvidersCodexNoArgsShowsHelp(t *testing.T) {
 	renderedOnce(t, it, err)
 }
 
-// TestProvidersClaudeNoArgsShowsHelp renders claude help when no claude
-// subcommand is given.
 func TestProvidersClaudeNoArgsShowsHelp(t *testing.T) {
 	h, _, _, _ := newProvidersHandlerForTest(t)
 	it, err := h.HandleCommand(context.Background(),
@@ -122,8 +112,6 @@ func TestProvidersClaudeNoArgsShowsHelp(t *testing.T) {
 	renderedOnce(t, it, err)
 }
 
-// TestProvidersClaudeStatusDispatches renders claude status (not
-// authenticated) without error.
 func TestProvidersClaudeStatusDispatches(t *testing.T) {
 	h, _, _, _ := newProvidersHandlerForTest(t)
 	it, err := h.HandleCommand(context.Background(),
@@ -131,8 +119,6 @@ func TestProvidersClaudeStatusDispatches(t *testing.T) {
 	renderedOnce(t, it, err)
 }
 
-// TestFormatClaudeStatusUsageCreditNote verifies the authenticated status
-// surfaces the Agent-SDK usage-credit guidance.
 func TestFormatClaudeStatusUsageCreditNote(t *testing.T) {
 	out := formatClaudeStatus(claude.AuthStatus{
 		Authenticated: true,
@@ -144,8 +130,6 @@ func TestFormatClaudeStatusUsageCreditNote(t *testing.T) {
 	assert.Contains(t, out, "Settings > Usage")
 }
 
-// TestProvidersHostedNoArgsShowsHelp renders provider help when no hosted
-// subcommand is given.
 func TestProvidersHostedNoArgsShowsHelp(t *testing.T) {
 	h, _, _, _ := newProvidersHandlerForTest(t)
 	it, err := h.HandleCommand(context.Background(),
@@ -153,8 +137,6 @@ func TestProvidersHostedNoArgsShowsHelp(t *testing.T) {
 	renderedOnce(t, it, err)
 }
 
-// TestProvidersHostedUnknownSubcommandShowsHelp renders guidance for an
-// unknown hosted subcommand instead of returning a bare error.
 func TestProvidersHostedUnknownSubcommandShowsHelp(t *testing.T) {
 	h, _, _, _ := newProvidersHandlerForTest(t)
 	it, err := h.HandleCommand(context.Background(),
@@ -162,7 +144,6 @@ func TestProvidersHostedUnknownSubcommandShowsHelp(t *testing.T) {
 	renderedOnce(t, it, err)
 }
 
-// TestProvidersHostedStatusEmpty reports no stored keys.
 func TestProvidersHostedStatusEmpty(t *testing.T) {
 	h, _, _, _ := newProvidersHandlerForTest(t)
 	it, err := h.HandleCommand(context.Background(),
@@ -173,7 +154,6 @@ func TestProvidersHostedStatusEmpty(t *testing.T) {
 	require.Len(t, got, 1)
 }
 
-// TestProvidersHostedUseAndRemove drives use/remove against stored keys.
 func TestProvidersHostedUseAndRemove(t *testing.T) {
 	ctx := context.Background()
 	h, _, _, _ := newProvidersHandlerForTest(t)
@@ -199,7 +179,6 @@ func TestProvidersHostedUseAndRemove(t *testing.T) {
 	require.NoError(t, err, "use without a name renders help, not an error")
 }
 
-// TestProvidersComplete verifies the three completion levels.
 func TestProvidersComplete(t *testing.T) {
 	ctx := context.Background()
 	h, _, _, _ := newProvidersHandlerForTest(t)
@@ -244,8 +223,6 @@ func TestProvidersComplete(t *testing.T) {
 	assert.Empty(t, names, "add does not complete from stored names")
 }
 
-// TestProviderAddNoNameShowsHelp renders the add help when no key name is
-// supplied, instead of returning a bare error.
 func TestProviderAddNoNameShowsHelp(t *testing.T) {
 	h, wm, _, _ := newProvidersHandlerForTest(t)
 	it, err := h.HandleCommand(context.Background(),
@@ -254,9 +231,6 @@ func TestProviderAddNoNameShowsHelp(t *testing.T) {
 	assert.Nil(t, wm.lastFloating, "no prompt should open without a key name")
 }
 
-// TestHostedProviderHelpIsRich asserts the openai help page explains the
-// command, gives a usage line, documents each subcommand with its own
-// synopsis, and includes a worked example block.
 func TestHostedProviderHelpIsRich(t *testing.T) {
 	man, ok := providerManual(llmrouter.ProviderOpenAI)
 	require.True(t, ok)
@@ -282,8 +256,6 @@ func submitKey(t *testing.T, fl browserapi.Floating, key string) {
 	fl.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
 }
 
-// TestProviderAddVerifySuccessStores exercises the redacted prompt happy
-// path: a key that verifies is stored and a success notification fires.
 func TestProviderAddVerifySuccessStores(t *testing.T) {
 	ctx := context.Background()
 	h, wm, notifs, _ := newProvidersHandlerForTest(t)
@@ -303,10 +275,6 @@ func TestProviderAddVerifySuccessStores(t *testing.T) {
 	assert.Equal(t, browserapi.LevelSuccess, notifs.notes[len(notifs.notes)-1].level)
 }
 
-// TestProviderAddBedrockRequiresRegion pins that the bedrock add flow
-// refuses to open the key prompt until a region is supplied: keys are
-// region-scoped, and storing one without its region reproduces the
-// wrong-region 403 the region argument exists to prevent.
 func TestProviderAddBedrockRequiresRegion(t *testing.T) {
 	ctx := context.Background()
 	h, wm, _, _ := newProvidersHandlerForTest(t)
@@ -323,8 +291,6 @@ func TestProviderAddBedrockRequiresRegion(t *testing.T) {
 	assert.False(t, verifyCalled)
 }
 
-// TestProviderAddBedrockStoresRegionWithKey exercises the happy path:
-// the region rides through verification and lands in the keystore.
 func TestProviderAddBedrockStoresRegionWithKey(t *testing.T) {
 	ctx := context.Background()
 	h, wm, _, _ := newProvidersHandlerForTest(t)
@@ -347,9 +313,6 @@ func TestProviderAddBedrockStoresRegionWithKey(t *testing.T) {
 	assert.Equal(t, "eu-west-1", regions["work"])
 }
 
-// TestProviderAddTrimsWhitespace asserts a key pasted with surrounding
-// whitespace is trimmed before it is verified and stored, so the
-// Authorization header never carries stray spaces or newlines.
 func TestProviderAddTrimsWhitespace(t *testing.T) {
 	ctx := context.Background()
 	h, wm, _, _ := newProvidersHandlerForTest(t)
@@ -372,8 +335,6 @@ func TestProviderAddTrimsWhitespace(t *testing.T) {
 	assert.Equal(t, "sk-secret", active, "stored key must be trimmed")
 }
 
-// TestProviderAddWhitespaceOnlyKeyAborts asserts a whitespace-only paste
-// is treated as empty: nothing is verified or stored.
 func TestProviderAddWhitespaceOnlyKeyAborts(t *testing.T) {
 	ctx := context.Background()
 	h, wm, _, _ := newProvidersHandlerForTest(t)
@@ -413,9 +374,6 @@ func drainDone(
 	return done
 }
 
-// TestProviderAddIteratorBlocksUntilStore proves the command's output
-// iterator stays open until the asynchronous key prompt resolves: it does
-// not complete at dispatch, only after the key is submitted and stored.
 func TestProviderAddIteratorBlocksUntilStore(t *testing.T) {
 	ctx := context.Background()
 	h, wm, _, _ := newProvidersHandlerForTest(t)
@@ -446,9 +404,6 @@ func TestProviderAddIteratorBlocksUntilStore(t *testing.T) {
 	assert.Equal(t, "sk-secret", active)
 }
 
-// TestProviderAddIteratorUnblocksOnContextCancel proves a closed shell tab
-// (cancelled context) releases the still-open completion iterator instead
-// of leaking the draining goroutine.
 func TestProviderAddIteratorUnblocksOnContextCancel(t *testing.T) {
 	h, wm, _, _ := newProvidersHandlerForTest(t)
 	h.verify = func(context.Context, string, string, string) error { return nil }
@@ -477,8 +432,6 @@ func TestProviderAddIteratorUnblocksOnContextCancel(t *testing.T) {
 	}
 }
 
-// TestProviderAddIteratorCloseIsIdempotent proves Close releases a
-// still-pending iterator and is safe to call more than once.
 func TestProviderAddIteratorCloseIsIdempotent(t *testing.T) {
 	h, wm, _, _ := newProvidersHandlerForTest(t)
 	h.verify = func(context.Context, string, string, string) error { return nil }
@@ -495,9 +448,6 @@ func TestProviderAddIteratorCloseIsIdempotent(t *testing.T) {
 	assert.False(t, ok, "Next must report completion after Close")
 }
 
-// TestProviderAddVerifyFailOpensConfirm exercises the failure path: a key
-// that fails verification opens a yes/no prompt through the shared
-// PromptOpener; selecting "yes" stores it.
 func TestProviderAddVerifyFailOpensConfirm(t *testing.T) {
 	ctx := context.Background()
 	h, wm, _, prompt := newProvidersHandlerForTest(t)
@@ -532,8 +482,6 @@ func TestProviderAddVerifyFailOpensConfirm(t *testing.T) {
 	assert.Equal(t, "sk-bad", active)
 }
 
-// TestProviderAddVerifyFailConfirmNo declines the confirmation and asserts
-// the key is not stored.
 func TestProviderAddVerifyFailConfirmNo(t *testing.T) {
 	ctx := context.Background()
 	h, wm, _, prompt := newProvidersHandlerForTest(t)

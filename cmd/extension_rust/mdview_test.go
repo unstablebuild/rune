@@ -71,8 +71,6 @@ func TestFencedCode(t *testing.T) {
 	}
 }
 
-// The viewer keeps the rendered source and floats itself so the command
-// layer never has to reach into the markdown stack.
 func TestShowMarkdownFloatsSource(t *testing.T) {
 	wm := &fakeWM{}
 	require.NoError(t, showMarkdown(wm, nil, nil, "# Title\n\nbody"))
@@ -83,9 +81,6 @@ func TestShowMarkdownFloatsSource(t *testing.T) {
 	assert.Equal(t, "# Title\n\nbody", view.source)
 }
 
-// A rust-fenced view must hand its code block to the parser for
-// highlighting; the deferred highlight pass lands through the view's
-// tick, so a recording parser observes the request.
 func TestShowMarkdownHighlightsFencedCode(t *testing.T) {
 	wm := &fakeWM{}
 	parser := &recordingParser{}
@@ -110,9 +105,6 @@ func (p *spanParser) Highlight(
 	}}), nil
 }
 
-// The extension has no event loop: after the deferred highlight pass
-// lands, the view must interrupt the IDE so the repaint is not deferred
-// to the next key press or mouse move.
 func TestShowMarkdownInterruptsAfterHighlight(t *testing.T) {
 	wm := &fakeWM{}
 	parser := &spanParser{}

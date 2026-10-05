@@ -30,9 +30,6 @@ func key(k term.Key) term.Event { return term.Event{Type: term.EventKey, Key: k}
 
 func ch(r rune) term.Event { return term.Event{Type: term.EventKey, Ch: r} }
 
-// TestEnvPromptKeys drives the prompt the way the window manager does:
-// events until one reports exit, then Close. Selecting an option and
-// dismissing both reach the channel, so only the first send is kept.
 func TestEnvPromptKeys(t *testing.T) {
 	root := langext.Root{Dir: "/repo", URI: "file:///repo"}
 	cases := []struct {

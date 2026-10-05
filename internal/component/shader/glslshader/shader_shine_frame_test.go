@@ -46,11 +46,6 @@ func TestShineFrame(t *testing.T) {
 	))
 }
 
-// TestShineFrameOnlyAffectsFrameChars renders the entire sweep of the shine
-// effect over a single rectangular frame, one frame of animation per test
-// case. Cells whose foreground was touched by the shine band render as '#'
-// (via term.StringWriter.ForegroundCh); untouched frame characters and the
-// inner 'a' render as themselves.
 func TestShineFrameOnlyAffectsFrameChars(t *testing.T) {
 	fc := guiFrameCharset()
 
@@ -240,11 +235,6 @@ func TestShineFrameNoMatchingChars(t *testing.T) {
 	}
 }
 
-// TestShineFrameDirections runs the frame shine sweep at the same frame
-// against each Direction. The matrix is a single rectangular frame; the
-// shine only applies to the frame characters and otherwise leaves the
-// inner cells untouched. Untouched cells render as the original frame
-// glyph (or blanks); touched cells render as '#'.
 func TestShineFrameDirections(t *testing.T) {
 	fc := guiFrameCharset()
 

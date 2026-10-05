@@ -684,18 +684,6 @@ func TestResolveLoginShell(t *testing.T) {
 	})
 }
 
-// TestFileSchemeRecursiveWatchIgnoresPreexistingFiles pins the Watch
-// contract: a watch reports changes made after it was established,
-// never an inventory of what was already there.
-//
-// Linux's inotify backend has no recursive watch, so the notify
-// library walks the tree to install one watch per directory and
-// reports every entry it discovers as a Create. Those synthetic
-// events are indistinguishable from real ones downstream: the IDE
-// reloaded every open tab (with a "changed on disk" notification)
-// after a workspace reload, and the symbol indexer re-walked files
-// that had not changed. macOS's FSEvents watches recursively and
-// emits nothing, which is why this only ever bit on Linux.
 func TestFileSchemeRecursiveWatchIgnoresPreexistingFiles(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "sub"), 0o755))
@@ -785,10 +773,6 @@ func TestFileSchemeCloseClosesTrackedFiles(t *testing.T) {
 	assert.NoError(t, f2.Close())
 }
 
-// TestFileSchemeFdReuseDoesNotAliasFiles models the OS recycling a
-// descriptor number: a stale wrapper whose number has since been
-// re-registered by a successor must neither unwrap to the successor's
-// file nor delete the successor's registration when closed.
 func TestFileSchemeFdReuseDoesNotAliasFiles(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "")
 	require.NoError(t, err)
@@ -999,18 +983,6 @@ func TestInstallShellRC(t *testing.T) {
 	})
 }
 
-// TestFileSchemeCloseDoesNotRaceStartCommand guards StartCommand's
-// fork/exec window against Close force-closing the scheme's tracked
-// files: os/exec reads each std file's fd during StartProcess, and
-// closing the *os.File concurrently is a data race on the fd state
-// (and can hand the child a recycled descriptor). This mirrors the
-// IDE teardown closing a workspace while a VTE warm-up is mid
-// StartCommand.
-//
-// The race only fires when Close's teardown lands inside the
-// unwrap-to-fork window, so the pair runs repeatedly from a common
-// barrier to cover the interleavings deterministically enough for
-// the race detector.
 func TestFileSchemeCloseDoesNotRaceStartCommand(t *testing.T) {
 	dir := t.TempDir()
 	uri, err := makeLocalURI(dir)
@@ -1061,13 +1033,6 @@ func TestFileSchemeCloseDoesNotRaceStartCommand(t *testing.T) {
 	}
 }
 
-// TestFileSchemeStartCommandScrubsGitHookEnv guards the executor's
-// base environment against git's per-repository overrides: rune (or
-// its test suite) launched from a git hook inherits GIT_DIR and
-// friends, and forwarding them to workspace commands points every
-// git invocation (vctrl status/diff, console git, git grep) at the
-// hook's repository instead of the workspace. Caller-provided
-// cmd.Env is appended after the base and must still pass through.
 func TestFileSchemeStartCommandScrubsGitHookEnv(t *testing.T) {
 	dir := t.TempDir()
 	uri, err := makeLocalURI(dir)

@@ -26,15 +26,6 @@ import (
 	"unstable.build/rune/internal/component"
 )
 
-// TestMouseDelegateSelectWordAtInvertedScrollAboveBuffer reproduces
-// crash report 787830382: "runtime error: index out of range [-3]".
-// vte terminals run with Scroll.InvertOffset=true, which makes
-// WindowToScrollCoordinates legitimately return a negative Y for
-// window positions that sit above the bottom-anchored buffer content
-// (tall window, sparse buffer). The mouse delegate must treat those
-// out-of-buffer positions as "nothing to select" rather than handing
-// the negative coordinate to Scroll.WordAt, which would panic indexing
-// rawCells.cells[-3].
 func TestMouseDelegateSelectWordAtInvertedScrollAboveBuffer(t *testing.T) {
 	scroll := component.NewScroll(cell.NewBuffer())
 	scroll.InvertOffset = true
@@ -55,11 +46,6 @@ func TestMouseDelegateSelectWordAtInvertedScrollAboveBuffer(t *testing.T) {
 		"clicks above the buffer must not start a selection")
 }
 
-// TestScrollWordAtOutOfBounds locks in the documented "empty string if
-// token at the given position is not a word" contract for inputs that
-// fall outside the buffer. This is a defense-in-depth guard: every
-// other call site that routes window coordinates through
-// WindowToScrollCoordinates and into WordAt is protected here.
 func TestScrollWordAtOutOfBounds(t *testing.T) {
 	scroll := component.NewScroll(cell.NewBuffer())
 	_, _ = scroll.Buffer().ReadFrom(strings.NewReader("hello world\n"))
@@ -84,10 +70,6 @@ func TestScrollWordAtOutOfBounds(t *testing.T) {
 	}
 }
 
-// TestMouseDelegateSelectWordAtWiderThanWindow double-clicks a word
-// longer than the viewport, so anchoring the selection at the word
-// start scrolls the window horizontally. The selection end must still
-// land on the word end rather than follow the shifted offset.
 func TestMouseDelegateSelectWordAtWiderThanWindow(t *testing.T) {
 	const content = "aa bbbbbbbbbbbbbbbbbb"
 	tests := []struct {

@@ -36,9 +36,6 @@ import (
 	"golang.org/x/oauth2"
 )
 
-// A sourcer returning ErrUnavailable is an expected condition (e.g. the
-// telemetry refresh-only sourcer while logged out); it must not be
-// logged at error level even though getToken wraps the error.
 func TestTokenUnavailableNotLoggedAsError(t *testing.T) {
 	hook := logtest.NewGlobal()
 	defer hook.Reset()
@@ -57,9 +54,6 @@ func TestTokenUnavailableNotLoggedAsError(t *testing.T) {
 	}
 }
 
-// The access token is a bearer credential, so it must never reach the
-// log, which a headless node also tees to stdout and its service
-// manager's journal.
 func TestInvalidTokenFromSourceDoesNotLogSecrets(t *testing.T) {
 	hook := logtest.NewGlobal()
 	defer hook.Reset()
@@ -301,10 +295,6 @@ func TestCachedTokenToken(t *testing.T) {
 	})
 }
 
-// TestCachedTokenConcurrentAccess reproduces the data race where the
-// oauth2 reuse token source mutates the cached *oauth2.Token in place
-// (as oauth2.reuseTokenSource.Token does on refresh) while another
-// goroutine reads the same token via Token/Cached and calls Valid.
 func TestCachedTokenConcurrentAccess(t *testing.T) {
 	svc := storagestub.NewInMemoryService()
 	mutating := &mutatingSource{token: &oauth2.Token{
@@ -379,10 +369,6 @@ func (m *mutatingSource) Token() (*oauth2.Token, error) {
 	return &tok, nil
 }
 
-// TestConcurrentTokenAndPurge drives Token() and Purge() concurrently,
-// mirroring how CachedTokenSource is shared as gRPC PerRPCCredentials
-// (Token per RPC) while a logout calls Purge. It exercises the cancel
-// bookkeeping shared by both paths under the race detector.
 func TestConcurrentTokenAndPurge(t *testing.T) {
 	svc := storagestub.NewInMemoryService()
 	sourcer, _ := goodSourcer()
@@ -425,9 +411,6 @@ func TestConcurrentTokenAndPurge(t *testing.T) {
 	wg.Wait()
 }
 
-// A serve-only sign-in must still read as one after the token is
-// persisted and loaded back, whether the claims came from the token
-// endpoint's JSON or from a token this package built.
 func TestStoredTokenKeepsServeOnly(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -520,9 +503,6 @@ func TestCachedTokenCached(t *testing.T) {
 	})
 }
 
-// TestGetTokenDoesNotBlockPurge asserts that logout (Purge) returns
-// promptly while an interactive login is in flight, instead of freezing
-// behind it.
 func TestGetTokenDoesNotBlockPurge(t *testing.T) {
 	sourcer := newBlockingSourcer()
 	source := NewCachedTokenSource(sourcer, storagestub.NewInMemoryService())
@@ -549,9 +529,6 @@ func TestGetTokenDoesNotBlockPurge(t *testing.T) {
 	<-done
 }
 
-// TestPurgeCancelsInFlightLogin asserts that logout cancels an in-flight
-// login and that the cancelled login does not resurrect the cleared
-// token.
 func TestPurgeCancelsInFlightLogin(t *testing.T) {
 	sourcer := newBlockingSourcer()
 	source := NewCachedTokenSource(sourcer, storagestub.NewInMemoryService())
@@ -576,9 +553,6 @@ func TestPurgeCancelsInFlightLogin(t *testing.T) {
 	assert.Nil(t, source.Cached(context.Background()))
 }
 
-// TestLoginRespectsContextCancellation asserts that cancelling the ctx
-// passed to TokenCtx (e.g. a shell ctrl-c on the login command) aborts
-// the in-flight browser flow.
 func TestLoginRespectsContextCancellation(t *testing.T) {
 	sourcer := newBlockingSourcer()
 	source := NewCachedTokenSource(sourcer, storagestub.NewInMemoryService())
@@ -621,9 +595,6 @@ func TestStorageCancellationReleasesCacheLock(t *testing.T) {
 	}
 }
 
-// TestSecondLoginSupersedesFirst asserts that cancelling the first
-// login's ctx (as the caller does when a new login starts) aborts the
-// in-flight first login and lets a second login proceed to completion.
 func TestSecondLoginSupersedesFirst(t *testing.T) {
 	sourcer := newBlockingSourcer()
 	source := NewCachedTokenSource(sourcer, storagestub.NewInMemoryService())

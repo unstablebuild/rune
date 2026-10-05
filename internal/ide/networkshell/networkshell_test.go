@@ -203,9 +203,6 @@ func TestStatusMarkdown(t *testing.T) {
 	})
 }
 
-// The list is what a user reads before deciding which machine to
-// remove, so it has to say which one they are on and which ones are
-// still reachable.
 func TestMachinesMarkdown(t *testing.T) {
 	lastSeen := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
 	got := machinesMarkdown([]Machine{

@@ -44,6 +44,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/cell"
+	tcomponent "unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/component/imageuri"
 	"unstable.build/rune/internal/component/markdown"
 	"unstable.build/rune/internal/debug"
@@ -1752,7 +1753,8 @@ func (c *Component) loadImage(
 		return nil, time.Time{}, err
 	}
 	comp := imageuri.NewFromFileSystem(
-		c.workspace, uri.Path(), browser.EventPublisherInterrupter(c))
+		c.workspace, uri.Path(), browser.EventPublisherInterrupter(c),
+		imageuri.Style{Fit: term.ImageFitContain, ProblemArt: tcomponent.ProblemArt})
 	return comp, info.ModTime(), nil
 }
 

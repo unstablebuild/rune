@@ -60,6 +60,22 @@ type WorkspaceServer struct {
 	rpcServer  *tworkspacerpc.Server
 }
 
+// ServeOption configures ServeWorkspace.
+type ServeOption func(*serveOptions)
+
+type serveOptions struct {
+	register []func(grpc.ServiceRegistrar)
+}
+
+// WithServices registers more services next to the workspace's own,
+// behind the same authorization. The host's package manager is served
+// this way.
+func WithServices(register func(grpc.ServiceRegistrar)) ServeOption {
+	return func(o *serveOptions) {
+		o.register = append(o.register, register)
+	}
+}
+
 // ServeWorkspace starts serving scheme to mesh peers on the node's
 // workspace port. Only machines owned by the same account as this node
 // are allowed to issue requests; see [Node.WhoIs].
@@ -69,8 +85,12 @@ type WorkspaceServer struct {
 // toolchains under the peer's actual install root rather than guessing
 // it from its own datadir. It must be an absolute path on this host.
 func ServeWorkspace(
-	node *Node, scheme schemeapi.Scheme, dataDir string,
+	node *Node, scheme schemeapi.Scheme, dataDir string, opts ...ServeOption,
 ) (*WorkspaceServer, error) {
+	var o serveOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
 	lis, err := node.Listen()
 	if err != nil {
 		return nil, fmt.Errorf("listen on network: %w", err)
@@ -89,6 +109,9 @@ func ServeWorkspace(
 	workspacerpc.RegisterExecutorServer(grpcServer, rpcServer)
 	workspacerpc.RegisterTerminalServer(grpcServer, rpcServer)
 	runenetpb.RegisterPeerInfoServer(grpcServer, peerInfoServer{dataDir: dataDir})
+	for _, register := range o.register {
+		register(grpcServer)
+	}
 
 	go debug.CapturePanicReport(func() {
 		if err := grpcServer.Serve(lis); err != nil {

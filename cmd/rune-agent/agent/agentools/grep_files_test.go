@@ -229,9 +229,6 @@ func TestGrepFiles_summary(t *testing.T) {
 	}
 }
 
-// TestGrepFiles_skipsBinaryFiles verifies that binary files are not
-// reported even when their bytes happen to contain the search pattern.
-// Regression for RUNE-179.
 func TestGrepFiles_skipsBinaryFiles(t *testing.T) {
 	dir := t.TempDir()
 	// Binary blob: has a NUL in the first 8 KiB and includes the

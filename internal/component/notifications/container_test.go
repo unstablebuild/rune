@@ -480,10 +480,6 @@ XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX`,
 	comptest.TestComponent(t, c, w, tests)
 }
 
-// TestRightInsetKeepsNotificationsOutOfReservedColumn pins that
-// Config.RightInset shifts notifications left by the reserved width.
-// The inner component still receives the full width, so a native
-// element floating over the reserved column is no longer overdrawn.
 func TestRightInsetKeepsNotificationsOutOfReservedColumn(t *testing.T) {
 	inner := &component.TestComponent{Ch: 'X'}
 
@@ -516,8 +512,6 @@ XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX`,
 	comptest.TestComponent(t, c, w, tests)
 }
 
-// TestRightInsetWiderThanWindow falls back to the full width rather
-// than anchoring off-screen when the reserved column leaves no room.
 func TestRightInsetWiderThanWindow(t *testing.T) {
 	c := New(&component.TestComponent{Ch: 'X'}, Config{
 		AutoClose:  1 * time.Hour,

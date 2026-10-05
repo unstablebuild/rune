@@ -58,11 +58,12 @@ type placement struct {
 }
 
 // resolvePlacement computes img's pixel geometry within a dst of
-// bounds, reporting false when the placement paints nothing.
+// bounds, moved down by shift pixels along with the cells it covers,
+// reporting false when the placement paints nothing.
 func resolvePlacement(
-	img term.Image, m *font.Manager, bounds image.Rectangle,
+	img term.Image, m *font.Manager, bounds image.Rectangle, shift int,
 ) (placement, bool) {
-	visible := img.Visible()
+	visible := coveredCells(img, m)
 	src := cropRect(img)
 	if visible.Empty() || src.Empty() {
 		return placement{}, false
@@ -75,11 +76,12 @@ func resolvePlacement(
 	if img.Fit == term.ImageFitContain {
 		area = containRect(src, area)
 	}
-	area = area.Add(img.Offset)
+	down := image.Pt(0, shift)
+	area = area.Add(img.Offset).Add(img.RasterOffset).Add(down)
 	if area.Empty() {
 		return placement{}, false
 	}
-	clip := cellRectToPixels(visible, m).
+	clip := cellRectToPixels(visible, m).Add(down).
 		Intersect(area).Intersect(bounds)
 	if clip.Empty() {
 		return placement{}, false
@@ -87,12 +89,39 @@ func resolvePlacement(
 	return placement{src: src, area: area, clip: clip}, true
 }
 
+// coveredCells returns the cells img covers. Those of an offset placement
+// are the cells its raster lands on, which only the cell size tells.
+func coveredCells(img term.Image, m *font.Manager) image.Rectangle {
+	if img.Offset == (image.Point{}) {
+		return img.Visible()
+	}
+	landed := pixelsToCellRect(cellRectToPixels(img.Bounds(), m).Add(img.Offset), m)
+	if img.Clip.Empty() {
+		return landed
+	}
+	return landed.Intersect(img.Clip)
+}
+
+// pixelsToCellRect returns the smallest cell rectangle whose pixels cover
+// r. Cells span whole pixels, so their edges need no rounding.
+func pixelsToCellRect(r image.Rectangle, m *font.Manager) image.Rectangle {
+	if r.Empty() {
+		return image.Rectangle{}
+	}
+	w, h := m.PixelX(1), m.PixelY(1)
+	return image.Rect(
+		int(math.Floor(float64(r.Min.X)/w)), int(math.Floor(float64(r.Min.Y)/h)),
+		int(math.Ceil(float64(r.Max.X)/w)), int(math.Ceil(float64(r.Max.Y)/h)),
+	)
+}
+
 // drawOne paints one placement and reports the pixel rectangle it
-// covered, which is empty when the placement painted nothing.
+// covered, which is empty when the placement painted nothing. shift
+// moves it down as resolvePlacement does.
 func (l *imageLayer) drawOne(
-	dst *ebiten.Image, img term.Image, m *font.Manager,
+	dst *ebiten.Image, img term.Image, m *font.Manager, shift int,
 ) image.Rectangle {
-	p, ok := resolvePlacement(img, m, dst.Bounds())
+	p, ok := resolvePlacement(img, m, dst.Bounds(), shift)
 	if !ok {
 		return image.Rectangle{}
 	}

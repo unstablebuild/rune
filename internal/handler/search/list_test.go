@@ -349,13 +349,6 @@ func streamBatch(t *testing.T, l *List, items ...string) {
 	l.Wait()
 }
 
-// TestPushOuterCancelDoesNotUnblockDrainEarly guards the Push/DrainList
-// barrier: waitPushCtx must complete only after the consumer goroutine
-// has flushed its buffered elements, even when the ctx passed to Push is
-// canceled right after the last send (as the finder's readCommand does
-// via its deferred cancelScan). If waitPushCtx were derived from the
-// caller's ctx, the outer cancel would unblock a subsequent Push before
-// the flush, and buffered elements would be observed late.
 func TestPushOuterCancelDoesNotUnblockDrainEarly(t *testing.T) {
 	const total = 50
 	for iter := 0; iter < 100; iter++ {
@@ -386,8 +379,6 @@ func focusIdx(t *testing.T, l *List) int {
 	return m.Index()
 }
 
-// TestListFocusPreservedDuringAsyncStreaming reproduces the bug where a
-// streaming re-sort snapped the user's selection back to the first row.
 func TestListFocusPreservedDuringAsyncStreaming(t *testing.T) {
 	l := NewList(ListConfig{Interrupter: term.NopInterrupter()})
 	defer l.Close()
@@ -422,8 +413,6 @@ func TestListFocusPreservedDuringAsyncStreaming(t *testing.T) {
 	assert.Equal(t, 6, l.MatchCount())
 }
 
-// TestListAutoFocusTopBeforeUserNavigation preserves the existing behavior:
-// until the user navigates, the best match is auto-focused as results re-rank.
 func TestListAutoFocusTopBeforeUserNavigation(t *testing.T) {
 	l := NewList(ListConfig{Interrupter: term.NopInterrupter()})
 	defer l.Close()
@@ -445,8 +434,6 @@ func TestListAutoFocusTopBeforeUserNavigation(t *testing.T) {
 	assert.Equal(t, "zzz", string(m.Data()))
 }
 
-// TestListFocusResetsAfterQueryChange verifies that rebuilding the result set
-// re-enables auto-focus-top after the user had taken control.
 func TestListFocusResetsAfterQueryChange(t *testing.T) {
 	l := NewList(ListConfig{Interrupter: term.NopInterrupter()})
 	defer l.Close()
@@ -565,8 +552,6 @@ func TestListDrawBottomSearchBar(t *testing.T) {
 	testListDrawBottomSearchBar(t, newSimpleList)
 }
 
-// TestListDrawWideRunes pins that rows holding multi-byte or wide
-// glyphs render as text rather than as one cell per UTF-8 byte.
 func TestListDrawWideRunes(t *testing.T) {
 	l, _ := newSimpleList(ListConfig{})
 	defer l.Close()
@@ -585,9 +570,6 @@ func TestListDrawWideRunes(t *testing.T) {
 	assert.Contains(t, out, "\U000F0295 charlie")
 }
 
-// TestListDrawCombiningMarks pins that the ASCII fast path inside
-// grapheme rendering never splits a base character from a following
-// combining mark into two cells.
 func TestListDrawCombiningMarks(t *testing.T) {
 	const width = 20
 	l, _ := newSimpleList(ListConfig{})

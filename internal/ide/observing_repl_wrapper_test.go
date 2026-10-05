@@ -95,11 +95,6 @@ func (o *recordingArgsObserver) observeCommand(
 	o.calls++
 }
 
-// TestObservingREPLHandlerReportsShellCommand verifies that a successful
-// companion-console submission is reported to the observer as the "console"
-// command with the REPL command name prepended to its arguments, that the
-// report is deferred until the output iterator completes, and that the
-// command is forwarded unchanged.
 func TestObservingREPLHandlerReportsShellCommand(t *testing.T) {
 	t.Parallel()
 
@@ -131,9 +126,6 @@ func TestObservingREPLHandlerReportsShellCommand(t *testing.T) {
 		stub.lastCmd, "the wrapper must forward the command unchanged")
 }
 
-// TestObservingREPLHandlerObservesOnceOnCloseAfterDrain verifies the
-// success report fires exactly once even when the iterator is both drained
-// and closed.
 func TestObservingREPLHandlerObservesOnceOnCloseAfterDrain(t *testing.T) {
 	t.Parallel()
 
@@ -157,9 +149,6 @@ func TestObservingREPLHandlerObservesOnceOnCloseAfterDrain(t *testing.T) {
 		"observation must fire exactly once across drain and Close")
 }
 
-// TestObservingREPLHandlerForwardsError verifies that the underlying
-// handler's error is both forwarded to the caller and reported to the
-// observer so the tutorial keeps the wait_command step armed.
 func TestObservingREPLHandlerForwardsError(t *testing.T) {
 	t.Parallel()
 
@@ -187,8 +176,6 @@ func TestObservingREPLHandlerForwardsError(t *testing.T) {
 	assert.ErrorIs(t, obs.err, wantErr)
 }
 
-// TestObservingREPLHandlerForwardsCompleteAndHelp verifies the
-// non-observed methods pass straight through to the underlying handler.
 func TestObservingREPLHandlerForwardsCompleteAndHelp(t *testing.T) {
 	t.Parallel()
 
@@ -207,12 +194,6 @@ func TestObservingREPLHandlerForwardsCompleteAndHelp(t *testing.T) {
 	assert.Equal(t, []string{"install"}, stub.lastHelpArgs)
 }
 
-// TestObservingREPLHandlerObservesOnSchedulerNotCaller is a regression
-// test for a data race: the companion-shell REPL runs HandleCommand and
-// the returned iterator's drain on a transient shell goroutine, off the
-// event loop, while the observer mutates event-loop-owned state. The
-// wrapper must marshal the observer callback through its scheduler rather
-// than invoking it on the calling (worker) goroutine. Run under -race.
 func TestObservingREPLHandlerObservesOnSchedulerNotCaller(t *testing.T) {
 	t.Parallel()
 

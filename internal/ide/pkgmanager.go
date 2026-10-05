@@ -38,6 +38,7 @@ import (
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/ide/gitpkg"
 	"unstable.build/rune/internal/ide/idepkg"
+	"unstable.build/rune/internal/ide/idepkg/pkgrpc"
 	"unstable.build/rune/internal/ide/multipkg"
 	"unstable.build/rune/internal/ide/pkgtrust"
 	"unstable.build/rune/internal/text"
@@ -45,23 +46,54 @@ import (
 
 const installStorageKey = "autoInstallPrompt"
 
+// pkgManager resolves package lib dirs through pm and, when a package
+// is missing, asks the user in this UI before installing it through pm.
+// host names the machine pm installs on; it is empty for this machine.
 type pkgManager struct {
-	pkg              *idepkg.Manager
+	pm               idepkg.PackageManager
+	host             string
 	n                browserapi.Notifications
 	wh               *workspaceManagerHandler
 	storage          storageapi.Service
 	scheduleNextTick func(func()) bool
 	interrupter      term.Interrupter
 	pending          sync.Map // map[string]*installGate
-	uc               *idepkg.UpdateChecker
 	autoInstall      bool
+}
+
+// newPkgManager takes ownership of storage, which must be the
+// idepkg.StoragePartition partition so every host shares the
+// "Yes, Always" answer.
+func newPkgManager(
+	pm idepkg.PackageManager, host string,
+	n browserapi.Notifications, storage storageapi.Service,
+	wh *workspaceManagerHandler, scheduleNextTick func(func()) bool,
+	interrupter term.Interrupter, autoInstall bool,
+) *pkgManager {
+	return &pkgManager{
+		pm:               pm,
+		host:             host,
+		n:                n,
+		wh:               wh,
+		storage:          storage,
+		scheduleNextTick: scheduleNextTick,
+		interrupter:      interrupter,
+		autoInstall:      autoInstall,
+	}
+}
+
+// localPkgManager manages the packages of the machine Rune runs on.
+type localPkgManager struct {
+	*pkgManager
+	pkg *idepkg.Manager
+	uc  *idepkg.UpdateChecker
 }
 
 type installStorageValue struct {
 	Value bool // true => always install without prompting
 }
 
-func (m *pkgManager) init(
+func (m *localPkgManager) init(
 	n browserapi.Notifications, rm release.Manager,
 	wm browserapi.WindowManager,
 	rootStorage storageapi.Service, scheme schemeapi.Scheme,
@@ -104,20 +136,28 @@ func (m *pkgManager) init(
 		opts...,
 	)
 	m.uc = idepkg.NewUpdateChecker(m.pkg)
-	m.scheduleNextTick = scheduleNextTick
-	m.n = n
-	m.interrupter = interrupter
-	m.wh = wh
-	m.storage = storage
-	m.autoInstall = autoInstall
+	m.pkgManager = newPkgManager(m.pkg, "", n, storage, wh,
+		scheduleNextTick, interrupter, autoInstall)
 	m.uc.Start(context.Background())
+}
+
+func (m *localPkgManager) Close() error {
+	ret := m.uc.Close()
+	if err := m.pkgManager.Close(); err != nil {
+		ret = multierror.Append(ret, err)
+	}
+	return ret
 }
 
 // LibDir installs package via prompt if not installed yet
 func (m *pkgManager) LibDir(ctx context.Context, pkgID string) (
 	sdkiterator.Iterator[string], error,
 ) {
-	it, err := m.pkg.LibDir(ctx, pkgID)
+	it, err := m.pm.LibDir(ctx, pkgID)
+	if errors.Is(err, pkgrpc.ErrUnsupported) {
+		m.notifyUnsupported()
+		return nil, storageapi.ErrNotFound
+	}
 	if err == nil || !errors.Is(err, idepkg.ErrNotInstalled) {
 		return it, err
 	}
@@ -137,7 +177,7 @@ func (m *pkgManager) LibDir(ctx context.Context, pkgID string) (
 	}
 
 	if gate, ok := m.pending.Load(pkgID); ok {
-		return newPendingIterator(m.pkg, pkgID, gate.(*installGate)), nil
+		return newPendingIterator(m.pm, pkgID, gate.(*installGate)), nil
 	}
 
 	// Onboarding stands in for the operator opt-in so the install
@@ -156,6 +196,12 @@ func (m *pkgManager) LibDir(ctx context.Context, pkgID string) (
 	return m.openInstallPrompt(pkgID, version)
 }
 
+// notifyUnsupported tells the user that the host runs a Rune too old
+// to install packages on.
+func (m *pkgManager) notifyUnsupported() {
+	_, _ = m.n.NotifyOnce(browserapi.LevelWarn, "%s", pkgrpc.UpdateHostMessage(m.host))
+}
+
 func (m *pkgManager) installLatest(
 	ctx context.Context, pkgID string, version release.Version,
 ) (sdkiterator.Iterator[string], error) {
@@ -163,17 +209,17 @@ func (m *pkgManager) installLatest(
 		fmt.Sprintf("install %s@%s", pkgID, version), m.scheduleNextTick)
 	// A concurrent caller may have completed the install since LibDir
 	// reported the package missing.
-	err := m.pkg.InstallPackageVersion(ctx, pkgID, version, pw)
+	err := m.pm.InstallPackageVersion(ctx, pkgID, version, pw)
 	if err != nil && !errors.Is(err, idepkg.ErrAlreadyInstalled) {
 		return nil, fmt.Errorf("install latest version: %w", err)
 	}
-	return m.pkg.LibDir(ctx, pkgID)
+	return m.pm.LibDir(ctx, pkgID)
 }
 
 func (m *pkgManager) getLatestVersion(
 	ctx context.Context, pack string,
 ) (release.Version, error) {
-	version, err := m.pkg.LatestVersion(ctx, pack)
+	version, err := m.pm.LatestVersion(ctx, pack)
 	if err != nil {
 		if errors.Is(err, idepkg.ErrPackageNotFound) {
 			return "", storageapi.ErrNotFound
@@ -202,6 +248,9 @@ func (m *pkgManager) openInstallPrompt(pkgID string, version release.Version) (
 	)
 
 	msg := fmt.Sprintf("Do you want to install package **%q**?", pkgID)
+	if m.host != "" {
+		msg = fmt.Sprintf("Do you want to install package **%q** on **%s**?", pkgID, m.host)
+	}
 
 	ctx := context.Background()
 	gate := newInstallGate(func() { m.pending.Delete(pkgID) })
@@ -219,7 +268,7 @@ func (m *pkgManager) openInstallPrompt(pkgID string, version release.Version) (
 						pw := text.NewNotifyProgressWriter(m.n, m.interrupter,
 							fmt.Sprintf("install %s@%s", pkgID, version), m.scheduleNextTick)
 						gate.install(func() error {
-							return m.pkg.InstallPackageVersion(ctx, pkgID, version, pw)
+							return m.pm.InstallPackageVersion(ctx, pkgID, version, pw)
 						})
 					case no:
 						gate.cancel()
@@ -235,17 +284,11 @@ func (m *pkgManager) openInstallPrompt(pkgID string, version release.Version) (
 	})
 
 	m.pending.Store(pkgID, gate)
-	return newPendingIterator(m.pkg, pkgID, gate), nil
+	return newPendingIterator(m.pm, pkgID, gate), nil
 }
 
 func (m *pkgManager) Close() error {
-	ret := m.uc.Close()
-	if m.storage != nil {
-		if err := m.storage.Close(); err != nil {
-			ret = multierror.Append(ret, err)
-		}
-	}
-	return ret
+	return m.storage.Close()
 }
 
 // installGate is a one-shot readiness signal shared by every LibDir
@@ -297,15 +340,17 @@ func (g *installGate) cancel() {
 
 type pkgManagerIterator struct {
 	gate  *installGate
-	pkg   *idepkg.Manager
+	pm    idepkg.PackageManager
 	pkgID string
 
 	it  iterator.Iterator[string]
 	err error
 }
 
-func newPendingIterator(pkg *idepkg.Manager, pkgID string, gate *installGate) *pkgManagerIterator {
-	return &pkgManagerIterator{pkg: pkg, pkgID: pkgID, gate: gate}
+func newPendingIterator(
+	pm idepkg.PackageManager, pkgID string, gate *installGate,
+) *pkgManagerIterator {
+	return &pkgManagerIterator{pm: pm, pkgID: pkgID, gate: gate}
 }
 
 // await blocks until the install resolves or ctx is done, then lazily
@@ -325,7 +370,7 @@ func (l *pkgManagerIterator) await(ctx context.Context) {
 		l.err = l.gate.err
 		return
 	}
-	l.it, l.err = l.pkg.LibDir(context.Background(), l.pkgID)
+	l.it, l.err = l.pm.LibDir(context.Background(), l.pkgID)
 }
 
 func (l *pkgManagerIterator) Next(ctx context.Context) (string, bool) {

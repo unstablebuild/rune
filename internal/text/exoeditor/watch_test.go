@@ -102,13 +102,6 @@ func newFileSchemeWorkspace(t *testing.T, dir string) (workspace.Workspace, sche
 	return ws, scheme
 }
 
-// TestStartWatcherFallsBackToParentDirForMissingFile reproduces the
-// bug where opening a brand-new file under the external editor failed
-// with "watch <path>: notify: lstat <path>: no such file or
-// directory" because the notify backend lstats the watched path at
-// registration time. The watcher must instead watch the parent
-// directory, stay active, suppress the warning, and still fire a
-// reload once the file is created.
 func TestStartWatcherFallsBackToParentDirForMissingFile(t *testing.T) {
 	dir := t.TempDir()
 	ws, _ := newFileSchemeWorkspace(t, dir)
@@ -171,12 +164,6 @@ func (w *gatedWatchWorkspace) Watch(
 	return w.Workspace.Watch(path, c, events...)
 }
 
-// TestStartWatcherDoesNotBlockOnSlowWatch reproduces the freeze where
-// startWatcher armed the watch synchronously on the GUI event loop: on
-// Linux notify has no native recursive watcher and falls back to a
-// synchronous walk of the whole workspace, so opening an editor on a
-// large monorepo blocked the loop until the walk finished. startWatcher
-// must return promptly and arm the watch in the background.
 func TestStartWatcherDoesNotBlockOnSlowWatch(t *testing.T) {
 	dir := t.TempDir()
 	ws, _ := newFileSchemeWorkspace(t, dir)
@@ -222,9 +209,6 @@ func TestStartWatcherDoesNotBlockOnSlowWatch(t *testing.T) {
 		"writing the watched file must trigger a reload once the watch arms")
 }
 
-// TestStartWatcherSurfacesWatchError confirms a watch that fails to arm
-// surfaces a single warn notification and leaves the watch inactive,
-// from the background goroutine rather than synchronously.
 func TestStartWatcherSurfacesWatchError(t *testing.T) {
 	dir := t.TempDir()
 	ws, _ := newFileSchemeWorkspace(t, dir)
@@ -254,10 +238,6 @@ func TestStartWatcherSurfacesWatchError(t *testing.T) {
 	assert.False(t, h.watchActive.Load(), "a failed watch must not be marked active")
 }
 
-// TestStartWatcherDirModeIgnoresSiblingFiles confirms the parent-dir
-// fallback filters events down to the resource: writes to sibling
-// files in the same directory must not trigger a reload of the open
-// file.
 func TestStartWatcherDirModeIgnoresSiblingFiles(t *testing.T) {
 	dir := t.TempDir()
 	ws, _ := newFileSchemeWorkspace(t, dir)
@@ -292,11 +272,6 @@ func TestStartWatcherDirModeIgnoresSiblingFiles(t *testing.T) {
 		"writes to sibling files must not reload the open file")
 }
 
-// TestStartWatcherDirectModeReloadsResourceURI covers the existing-file
-// path: the notify backend reports the symlink-resolved path
-// (/private/tmp/... for /tmp/...), so reloading the raw event URI would
-// miss the tab keyed by the original resource URI and surface
-// "cannot reload this content". The reload must target the resource.
 func TestStartWatcherDirectModeReloadsResourceURI(t *testing.T) {
 	dir := t.TempDir()
 	ws, _ := newFileSchemeWorkspace(t, dir)

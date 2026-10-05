@@ -287,10 +287,6 @@ func TestSearchMultiAddsQueryWithoutExtraWalk(t *testing.T) {
 		"adding a third query must not walk extra files")
 }
 
-// TestSearchMultiRuneColumns asserts that when a multi-byte rune precedes a
-// captured symbol on the same line, the reported column is the rune column,
-// not the raw byte column. The field "bar" follows "å" (2 bytes, 1 rune), so
-// its rune column (22) is one less than its byte column (23).
 func TestSearchMultiRuneColumns(t *testing.T) {
 	uri, err := workspaceapi.ParseURI("memory:///")
 	require.NoError(t, err)
@@ -326,8 +322,6 @@ func TestSearchMultiRuneColumns(t *testing.T) {
 	assert.Equal(t, 15, aField.From.X, "leading field column")
 }
 
-// TestSearchMultiClosesEveryFile asserts the read path closes every file it
-// opens, so repeated SearchMulti passes do not leak file descriptors.
 func TestSearchMultiClosesEveryFile(t *testing.T) {
 	const files = 6
 	searcher, fs := setupMultiSearcher(t, files)
@@ -345,11 +339,6 @@ func TestSearchMultiClosesEveryFile(t *testing.T) {
 		"every opened file must be closed: opened=%d closed=%d", open, closed)
 }
 
-// TestSearchMultiNoGoroutineLeak asserts that once a SearchMulti stream is
-// drained the worker goroutines exit, which is what runs their deferred
-// teardown (closing each language's tree-sitter parser, compiled queries and
-// dlopen handle). A stuck worker would both leak goroutines and skip that
-// native cleanup.
 func TestSearchMultiNoGoroutineLeak(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
@@ -365,12 +354,6 @@ func TestSearchMultiNoGoroutineLeak(t *testing.T) {
 	}
 }
 
-// TestSearchMultiSkipsFilteredDirs asserts SearchMulti prunes the same
-// noise/dependency directories the single-query Search path prunes. A Go
-// file under node_modules (a built-in exclude) must never be opened or
-// parsed; without the gitignore/hidden-dir filter the one-pass walk would
-// descend into ignored trees and tree-sitter-parse arbitrarily large files,
-// freezing symbol resolution.
 func TestSearchMultiSkipsFilteredDirs(t *testing.T) {
 	uri, err := workspaceapi.ParseURI("memory:///")
 	require.NoError(t, err)
@@ -396,9 +379,6 @@ func TestSearchMultiSkipsFilteredDirs(t *testing.T) {
 	assert.Len(t, results, 2, "node_modules file must not contribute results")
 }
 
-// TestQuerySessionScratchDoesNotAliasResults guards the recycled read
-// buffer in querySession: results emitted for one file must remain intact
-// after the session reads another file into the same buffer.
 func TestQuerySessionScratchDoesNotAliasResults(t *testing.T) {
 	uri, err := workspaceapi.ParseURI("memory:///")
 	require.NoError(t, err)

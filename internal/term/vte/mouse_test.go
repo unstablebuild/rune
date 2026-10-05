@@ -63,9 +63,6 @@ type mouseStep struct {
 	tracking bool
 }
 
-// TestMouseDriverReport pins the encodings to kitty's
-// encode_mouse_event_impl and the per-mode filter to its
-// send_mouse_event (kitty/mouse.c:73-121, :1672-1673).
 func TestMouseDriverReport(t *testing.T) {
 	t.Parallel()
 	const (
@@ -181,10 +178,6 @@ func TestMouseDriverReport(t *testing.T) {
 	}
 }
 
-// TestMouseDriverReportIgnoresPixelMode keeps SGR cell coordinates when
-// a program also asks for SGR-pixels (1016): mouse events carry no
-// pixel position, and DECRQM reports 1016 as unrecognized so programs
-// such as terminal-browser fall back to cells.
 func TestMouseDriverReportIgnoresPixelMode(t *testing.T) {
 	t.Parallel()
 	d := newMouseHarness(t,
@@ -197,9 +190,6 @@ func TestMouseDriverReportIgnoresPixelMode(t *testing.T) {
 	assert.Equal(t, "\x1b[<0;10;10M", string(raw))
 }
 
-// TestMouseDriverAlternateScroll pins DECSET 1007: without mouse
-// tracking the wheel over the alternate screen, which has no
-// scrollback, becomes cursor keys (kitty keys.c:363 fake_scroll).
 func TestMouseDriverAlternateScroll(t *testing.T) {
 	t.Parallel()
 	alt := vteparser.PrivateModeSwapScreenAndSetRestoreCursor
@@ -248,10 +238,6 @@ func (c *recordingClipboard) Copy(registerID string, data clipboard.Data) error 
 	return c.Register.Copy(registerID, data)
 }
 
-// TestMouseDriverSelectionCopy pins when a terminal highlight replaces the
-// clipboard. A click, or pointer jitter that stays inside the pressed cell,
-// must not highlight or copy anything; a drag that reaches another cell
-// highlights and copies as before.
 func TestMouseDriverSelectionCopy(t *testing.T) {
 	t.Parallel()
 
@@ -460,8 +446,6 @@ func TestMouseDriverSelectionCopy(t *testing.T) {
 	}
 }
 
-// TestMouseDriverWordAndLineSelectionCopy pins that double- and
-// triple-click selection still copy.
 func TestMouseDriverWordAndLineSelectionCopy(t *testing.T) {
 	t.Parallel()
 
@@ -504,10 +488,6 @@ func TestMouseDriverWordAndLineSelectionCopy(t *testing.T) {
 	}
 }
 
-// TestMouseDriverGestures drives the driver through mouse.Mouse, as
-// Handler does, so the SDK's edge auto-scroll and the actions that
-// separate one gesture from the next are exercised with it. The buffer
-// has scrollback so that auto-scroll in the top rows has an effect.
 func TestMouseDriverGestures(t *testing.T) {
 	t.Parallel()
 
@@ -639,9 +619,6 @@ func TestMouseDriverGestures(t *testing.T) {
 	}
 }
 
-// TestHandlerMouseTrackingKeepsScrollback asserts that a drag through the
-// top rows belongs to a program tracking the mouse on the primary screen
-// (fzf --height): it neither scrolls the scrollback nor highlights.
 func TestHandlerMouseTrackingKeepsScrollback(t *testing.T) {
 	t.Parallel()
 
@@ -685,10 +662,6 @@ func TestHandlerMouseTrackingKeepsScrollback(t *testing.T) {
 	}
 }
 
-// TestMouseDriverDragScrollsDown drags through a scrolled-back terminal
-// with more history than fits on screen. The SDK's bottom auto-scroll zone
-// is the last rows of the pane, so a drag into it must reveal the next
-// lines and extend the highlight over them.
 func TestMouseDriverDragScrollsDown(t *testing.T) {
 	t.Parallel()
 
@@ -758,10 +731,6 @@ func TestMouseDriverDragScrollsDown(t *testing.T) {
 	}
 }
 
-// TestMouseDriverDragScrollsTowardSelection pins that a drag through a
-// scrolled-back terminal only auto-scrolls toward the edge the selection
-// grows to, which relies on ScrollUp and ScrollDown reporting whether the
-// view moved.
 func TestMouseDriverDragScrollsTowardSelection(t *testing.T) {
 	t.Parallel()
 

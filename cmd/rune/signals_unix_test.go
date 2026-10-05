@@ -33,8 +33,6 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 )
 
-// A terminate-class signal must route to the quit event so the GUI
-// exits through the deferred-close chain that kills extensions.
 func TestWatchGUISignalsPublishesQuit(t *testing.T) {
 	published := make(chan term.Event, 1)
 	quit := term.Event{Type: term.EventKey, Mod: term.ModMeta, Ch: 'q'}
@@ -53,10 +51,6 @@ func TestWatchGUISignalsPublishesQuit(t *testing.T) {
 	}
 }
 
-// SIGTSTP must be caught and dropped, not SIG_IGN'd: ignore
-// dispositions survive execve and would disable Ctrl+Z inside
-// integrated-terminal child processes. If it were neither caught nor
-// ignored, this kill would stop the test process.
 func TestWatchGUISignalsDropsTSTP(t *testing.T) {
 	published := make(chan term.Event, 1)
 	stop := watchGUISignals(func(ev term.Event) bool {

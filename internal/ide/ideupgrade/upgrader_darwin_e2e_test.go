@@ -36,13 +36,6 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
 )
 
-// TestDarwinE2E_HappyPath builds a real DMG with hdiutil from a
-// synthetic Rune.app and runs a full upgrade against a temp install
-// root using a real darwinPlatformOps (with Gatekeeper assess
-// disabled — that step requires a notarized bundle).
-//
-// Set RUNE_E2E_NOTARIZED=1 on a CI runner that has a notarized DMG to
-// also exercise the spctl assert.
 func TestDarwinE2E_HappyPath(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping darwin e2e in short mode")

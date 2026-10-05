@@ -74,14 +74,14 @@ func TestCompleterOffersPeers(t *testing.T) {
 		want []string
 	}{
 		{
-			name: "offers every peer once the scheme is typed",
+			name: "offers connected peers once the scheme is typed",
 			args: []string{"workspaceopen", "rune://"},
-			want: []string{"rune://laptop/", "rune://lab-box/", "rune://workstation/"},
+			want: []string{"rune://laptop/", "rune://workstation/"},
 		},
 		{
 			name: "filters by the typed peer prefix",
 			args: []string{"workspaceopen", "rune://la"},
-			want: []string{"rune://laptop/", "rune://lab-box/"},
+			want: []string{"rune://laptop/"},
 		},
 		{
 			name: "stays out of plain path completion",
@@ -106,9 +106,6 @@ func TestCompleterOffersPeers(t *testing.T) {
 	}
 }
 
-// TestCompleterOffersPeerDirectories covers completion past the
-// hostname: only the peer knows its filesystem, so the completions
-// come from a round-trip to it.
 func TestCompleterOffersPeerDirectories(t *testing.T) {
 	root := t.TempDir()
 	for _, dir := range []string{"code", "code/rune", "config", ".cache"} {

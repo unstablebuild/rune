@@ -213,12 +213,6 @@ func gitDiffU0(t *testing.T, patch string) FileDiff {
 	return gitFileDiff(d)
 }
 
-// TestUnifiedHunksGitBody covers the git CLI service, whose hunks differ
-// from the in-memory differ's in two ways: a modification's body carries
-// both sides, and a removal's new-side start names the line it followed.
-// Reading every body line as a deletion turned the new side into a
-// phantom "-+new" line, and taking the removal's start literally spliced
-// it above the line it came after.
 func TestUnifiedHunksGitBody(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -284,8 +278,6 @@ func TestUnifiedHunksGitBody(t *testing.T) {
 	}
 }
 
-// TestUnifiedSection follows the enclosing function git reports for a
-// hunk from the service's hunk through to the rendered "@@" header.
 func TestUnifiedSection(t *testing.T) {
 	const current = "func main() {\n\tprintln(1)\n}\n"
 	hunks := UnifiedHunks(FileDiff{Hunks: []Hunk{{
@@ -484,9 +476,6 @@ func TestUnifiedSnippetsEmpty(t *testing.T) {
 	assert.Len(t, snippets, 2, "only the first hunk's two sides")
 }
 
-// TestUnifiedSnippetsHighlight pins the whole overlay path: the rows and
-// the gutter offset must line up, so every content cell of a hunk gets
-// the syntax foreground while the diff tints and the gutter survive.
 func TestUnifiedSnippetsHighlight(t *testing.T) {
 	uri, err := workspaceapi.ParseURI("file:///repo/main.go")
 	require.NoError(t, err)

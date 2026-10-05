@@ -183,8 +183,6 @@ func TestFetchPprofLinks(t *testing.T) {
 	}
 }
 
-// TestFetchLayoutTable verifies that HTML tables used for layout (no <thead>,
-// no <th>) are rendered as plain text without pipe-table syntax.
 func TestFetchLayoutTable(t *testing.T) {
 	const layoutHTML = `<html><body>
 <table>
@@ -216,9 +214,6 @@ func TestFetchLayoutTable(t *testing.T) {
 	assert.Contains(t, rendered, "508 points by km")
 }
 
-// TestFetchMixedTables verifies that a page with both a data table
-// (has <thead>) and a layout table (no <thead>/<th>) renders the data
-// table as a pipe table and the layout table as plain text.
 func TestFetchMixedTables(t *testing.T) {
 	const mixedHTML = `<html><body>
 <table>
@@ -258,9 +253,6 @@ func TestFetchMixedTables(t *testing.T) {
 	assert.Contains(t, rendered, "content")
 }
 
-// TestRenderQueryConsistency verifies that for every rendered row containing
-// non-space text, SpanAt at that position also returns non-empty content.
-// This catches Y-offset discrepancies between Draw and SpanAt.
 func TestRenderQueryConsistency(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/debug/pprof/", func(w http.ResponseWriter, r *http.Request) {

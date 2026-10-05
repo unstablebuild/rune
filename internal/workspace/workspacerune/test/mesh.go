@@ -140,8 +140,11 @@ func SkipIfRace(t *testing.T) {
 // ServeWorkspaces exposes node's filesystem to its peers exactly as a
 // running Rune instance does: rooted at "/", so a rune:// URI can name
 // any path the user could open locally. It returns the data directory
-// the instance advertises to peers as its install root.
-func ServeWorkspaces(t *testing.T, node *runenet.Node) string {
+// the instance advertises to peers as its install root. opts add the
+// services a running instance serves next to the workspace.
+func ServeWorkspaces(
+	t *testing.T, node *runenet.Node, opts ...runenet.ServeOption,
+) string {
 	t.Helper()
 
 	uri, err := workspaceapi.CurrentUserHostURI("/")
@@ -151,7 +154,7 @@ func ServeWorkspaces(t *testing.T, node *runenet.Node) string {
 	require.NoError(t, err)
 
 	dataDir := t.TempDir()
-	server, err := runenet.ServeWorkspace(node, scheme, dataDir)
+	server, err := runenet.ServeWorkspace(node, scheme, dataDir, opts...)
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		_ = server.Close()

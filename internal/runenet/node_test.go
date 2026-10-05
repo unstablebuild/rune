@@ -100,10 +100,6 @@ func TestStartCredentials(t *testing.T) {
 	})
 }
 
-// Node keys expire on purpose: re-registering is what re-checks the
-// account and the machines its plan covers, so a backend waiting for
-// a login must mint fresh credentials rather than wait for a browser
-// login the mesh never asks a Rune user for.
 func TestNeedsReauth(t *testing.T) {
 	assert.True(t, needsReauth(&ipnstate.Status{
 		BackendState: ipn.NeedsLogin.String()}))
@@ -135,9 +131,6 @@ func TestReauthenticate(t *testing.T) {
 	})
 }
 
-// A machine removed while it slept wakes up on a netmap the
-// coordination server has already forgotten, so Rejoin must re-mint
-// without waiting for the backend to admit it is logged out.
 func TestRejoin(t *testing.T) {
 	t.Run("is a no-op without a credentials source", func(t *testing.T) {
 		node := New(Config{
@@ -234,11 +227,6 @@ func requireJoined(t *testing.T, node *Node, controlURL string) {
 	assert.Equal(t, controlURL, prefs.ControlURL)
 }
 
-// A machine that has never registered is still logging in with the
-// key its start minted when Up checks on it, and it reports NeedsLogin
-// the whole time. Minting another key for it cancels that login and
-// leaves the machine with none. `network up` starts the node before it
-// waits for it, so that order must hold up too.
 func TestUpFirstJoin(t *testing.T) {
 	cases := []struct {
 		name string
@@ -270,9 +258,6 @@ func TestUpFirstJoin(t *testing.T) {
 	}
 }
 
-// A logged-out machine has lost its node key and the preferences that
-// pointed it at the coordination server, so re-registering has to hand
-// both back and start the login itself.
 func TestUpAfterLogout(t *testing.T) {
 	controlURL := startTestControl(t)
 	creds := &countingCredentials{controlURL: controlURL}
@@ -287,9 +272,6 @@ func TestUpAfterLogout(t *testing.T) {
 	assert.Equal(t, int32(1), creds.calls.Load())
 }
 
-// `network up` can run while the handler for the move into NeedsLogin
-// is re-registering the machine. Whichever goes second must not cancel
-// the login the first started.
 func TestConcurrentUpAfterLogout(t *testing.T) {
 	controlURL := startTestControl(t)
 	creds := &countingCredentials{controlURL: controlURL}
@@ -335,9 +317,6 @@ func logOut(t *testing.T, node *Node, creds *countingCredentials) {
 	creds.calls.Store(0)
 }
 
-// Only the move into NeedsLogin is news. The bus repeats the current
-// state every time the watch is re-established, and a machine that is
-// logged out stays logged out.
 func TestEnteredNeedsLogin(t *testing.T) {
 	cases := []struct {
 		name string
@@ -360,9 +339,6 @@ func TestEnteredNeedsLogin(t *testing.T) {
 	}
 }
 
-// The machine list the account server returns is keyed by this id, so
-// it is what tells this machine whether it is still one of the
-// account's. A node that has not registered has none.
 func TestSelfMachineID(t *testing.T) {
 	assert.Equal(t, "", selfMachineID(nil))
 	assert.Equal(t, "", selfMachineID(&ipnstate.Status{}))
@@ -371,8 +347,6 @@ func TestSelfMachineID(t *testing.T) {
 	}))
 }
 
-// A serve-only machine is filed under the coordination server's tagged
-// pseudo-user, so the account it serves comes from its serve tag.
 func TestSelfLoginName(t *testing.T) {
 	users := map[tailcfg.UserID]tailcfg.UserProfile{
 		1:          {LoginName: "rune-a"},

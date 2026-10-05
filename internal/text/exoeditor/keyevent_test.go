@@ -24,12 +24,6 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 )
 
-// TestKeyCombToEvent table-tests every term.Key value and every
-// supported rune+modifier combination exo injects into the embedded
-// vte. The expected byte sequences track what a real vt100/xterm
-// would emit (mirroring term/gui/input.go) so synthetic
-// SetCursorAtScroll input is indistinguishable from a physical key
-// press inside the external editor.
 func TestKeyCombToEvent(t *testing.T) {
 	cases := []struct {
 		name string
@@ -186,12 +180,6 @@ func renderKeyComb(k term.KeyComb) string {
 	return fmt.Sprintf("KeyComb{Mod:%d, Ch:%q}", k.Mod, k.Ch)
 }
 
-// TestKeyCombToEventCoversAllKeys is a backstop guard: it iterates
-// every documented term.Key (KeyF1..KeyF12, arrows, navigation, edit
-// keys, Tab/Enter/Esc/Backspace/Space) and asserts keyCombToEvent
-// returns a non-empty Raw for the zero-modifier case. A new Key
-// constant added to the SDK without a corresponding branch in
-// keyCombToEvent must surface here, not silently no-op in production.
 func TestKeyCombToEventCoversAllKeys(t *testing.T) {
 	allKeys := []struct {
 		name string
@@ -223,10 +211,6 @@ func TestKeyCombToEventCoversAllKeys(t *testing.T) {
 	}
 }
 
-// TestKeyCombToEventCoversCtrlAlpha asserts every Ctrl+letter folds
-// to the canonical C0 byte. The exo goto-template injector relies
-// on this for editors whose goto sequence uses Ctrl+<letter>
-// (e.g. micro's <c-l>).
 func TestKeyCombToEventCoversCtrlAlpha(t *testing.T) {
 	for r := 'a'; r <= 'z'; r++ {
 		t.Run(fmt.Sprintf("Ctrl+%c", r), func(t *testing.T) {

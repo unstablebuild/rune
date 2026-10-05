@@ -179,9 +179,6 @@ func TestGraphicsFileMedium(t *testing.T) {
 	})
 }
 
-// TestGraphicsMediumReadOutsideLock pins that a transmission is read
-// without the terminal lock: drawing waits on that lock, and the
-// workspace filesystem may be remote.
 func TestGraphicsMediumReadOutsideLock(t *testing.T) {
 	fs, dir := localFS(t)
 	probe := &lockProbeFS{FileSystem: fs}
@@ -204,9 +201,6 @@ func TestGraphicsMediumReadOutsideLock(t *testing.T) {
 	assert.Zero(t, probe.locked, "the filesystem was used under the terminal lock")
 }
 
-// TestGraphicsMediumRealPath checks realPath against
-// filepath.EvalSymlinks: a link naming a directory on the way is
-// resolved too, and ".." applies to where a link led.
 func TestGraphicsMediumRealPath(t *testing.T) {
 	fs, dir := localFS(t)
 	target := filepath.Join(dir, "target")
@@ -259,10 +253,6 @@ func TestGraphicsTempFileMedium(t *testing.T) {
 	assert.NoFileExists(t, tmp, "a marked file in a temp dir is deleted")
 }
 
-// TestGraphicsTempFileLocation pins which t=t files are deleted. The
-// workspace filesystem may be remote, so this process's TMPDIR says
-// nothing about it: only /tmp, /dev/shm and the temp dir configured for
-// the workspace count.
 func TestGraphicsTempFileLocation(t *testing.T) {
 	t.Setenv("TMPDIR", "/local/tmp")
 	tests := []struct {

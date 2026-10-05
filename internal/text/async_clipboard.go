@@ -20,17 +20,28 @@ import (
 	"sync/atomic"
 
 	"github.com/unstablebuild/rune-go-sdk/clipboard"
+	"github.com/unstablebuild/rune-go-sdk/clipboard/sysclip"
 	"unstable.build/rune/internal/debug"
 )
 
-// NewAsyncSystemClipboard returns the system clipboard wrapped so that Copy
-// never blocks the caller on the OS write: the backend shells out once per
-// call (wl-copy on Wayland), which stalls the event loop when copies arrive
-// faster than the subprocess round trip — see #170. Only the default
-// register reaches the OS, so only it is queued; a burst costs at most two
-// OS writes, the one in flight and the newest queued payload.
+// NewAsyncSystemClipboard returns the system clipboard with a Copy that does
+// not wait for the OS write, which can stall the caller for as long as the
+// platform's clipboard utility takes (see #170). Copy reports only a clipboard
+// that could not be opened; a failed write is lost. Create one per process and
+// share it: a Paste through another instance can miss a Copy that has not
+// reached the OS yet.
 func NewAsyncSystemClipboard() clipboard.Register {
-	return newAsyncRegister(NewSystemClipboard())
+	return newAsyncSystemClipboard(sysclip.NewRegister())
+}
+
+func newAsyncSystemClipboard(sys clipboard.Register, err error) clipboard.Register {
+	ret := newSystemClipboard(sys, err)
+	if err != nil {
+		// Copy never reaches the OS, so it cannot block, and staying
+		// synchronous hands the open error to every caller.
+		return ret
+	}
+	return newAsyncRegister(ret)
 }
 
 // asyncRegister adds asynchronous, last-copy-wins Copy semantics to another

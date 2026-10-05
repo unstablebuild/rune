@@ -375,9 +375,6 @@ func TestExtensionsREPLLogsUsage(t *testing.T) {
 	assert.Contains(t, err.Error(), "--tail expects")
 }
 
-// TestExtensionsREPLLogsTailFileRemoved exercises the only path that
-// can produce "No logs captured yet.": the log file was deleted
-// externally between Run and the `logs --tail` invocation.
 func TestExtensionsREPLLogsTailFileRemoved(t *testing.T) {
 	t.Parallel()
 

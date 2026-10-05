@@ -258,14 +258,6 @@ func TestStdRemoteAuthCallbacks(t *testing.T) {
 	})
 }
 
-// TestStdRemoteMultiKeyRetry pins the per-connection retry that lets a
-// dial recover after a wrong key is offered first against a server
-// that caps MaxAuthTries to 1. The Go ssh client offers every signer
-// returned by PublicKeysCallback within the same TCP connection, so
-// the only way to survive MaxAuthTries=1 is to redial with the next
-// key after a rejection. If newStdRemote ever drops that loop, the
-// first wrong key burns the budget and the right key never gets a
-// chance — exactly the failure mode the manual scenario 05 covers.
 func TestStdRemoteMultiKeyRetry(t *testing.T) {
 	rightPath, rightPub := generateClientKey(t)
 	wrongPath, _ := generateClientKey(t)
@@ -295,11 +287,6 @@ func TestStdRemoteMultiKeyRetry(t *testing.T) {
 		"per-key retry must not prompt the user; saw %v", ui.prompts)
 }
 
-// TestDefaultIdentityFiles confirms that when ssh.private_keys is empty
-// we fall back to canonical ~/.ssh/id_* keys discovered on disk. This is
-// the exact scenario where a user expects pubkey auth to "just work"
-// against a host that requires it (and where the previous static-auth
-// path silently fell back to repeated password prompts).
 func TestDefaultIdentityFiles(t *testing.T) {
 	t.Run("auto-discovers keys from ~/.ssh when private_keys is empty", func(t *testing.T) {
 		home := t.TempDir()
@@ -353,10 +340,6 @@ func TestDefaultIdentityFiles(t *testing.T) {
 	})
 }
 
-// TestPasswordRetryNotifiesOnFailure confirms that when the password
-// callback is re-invoked because the previous password was rejected the
-// user is notified, so they understand why the prompt keeps reappearing
-// instead of seeing a silent retry loop.
 func TestPasswordRetryNotifiesOnFailure(t *testing.T) {
 	srvCfg := &ssh.ServerConfig{
 		PasswordCallback: func(_ ssh.ConnMetadata, password []byte) (*ssh.Permissions, error) {
@@ -397,15 +380,6 @@ type recordingUI struct {
 	choiceCancel bool  // when true PromptChoice returns context.Canceled
 	notifs       []string
 	levels       []NotificationLevel
-	progress     []progressUpdate
-}
-
-// progressUpdate records one UpdateNotificationProgress call.
-type progressUpdate struct {
-	id       string
-	message  string
-	progress int
-	total    int
 }
 
 func (u *recordingUI) PromptSecret(_ context.Context, label string) (string, error) {
@@ -447,27 +421,11 @@ func (u *recordingUI) PromptChoice(_ context.Context, label string, _ []string) 
 	return u.choice, nil
 }
 
-func (u *recordingUI) Notify(level NotificationLevel, msg string) string {
+func (u *recordingUI) Notify(level NotificationLevel, msg string) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	u.notifs = append(u.notifs, msg)
 	u.levels = append(u.levels, level)
-	return "noti-" + msg
-}
-
-func (u *recordingUI) UpdateNotificationProgress(id, message string, progress, total int) {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	u.progress = append(u.progress, progressUpdate{
-		id: id, message: message, progress: progress, total: total,
-	})
-}
-
-// progressUpdates returns a copy of the recorded progress updates.
-func (u *recordingUI) progressUpdates() []progressUpdate {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	return slices.Clone(u.progress)
 }
 
 // notifications returns a copy of the recorded (level, message) notifications.

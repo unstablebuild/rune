@@ -150,10 +150,6 @@ func bufferCellLinesForTest(cells [][]term.Cell) []string {
 	return strings.Split(term.CellsToString(cells), "\n")
 }
 
-// TestBufferCellsFollowsBufferNotDisk proves the file cells the probe
-// sees come from the in-memory cell.Buffer mirror, never from disk.
-// Mutating the on-disk file without touching h.buf must not change the
-// cells; editing h.buf must.
 func TestBufferCellsFollowsBufferNotDisk(t *testing.T) {
 	t.Parallel()
 
@@ -181,9 +177,6 @@ func TestBufferCellsFollowsBufferNotDisk(t *testing.T) {
 	assert.Equal(t, []string{"foo", "BAR", "baz"}, bufferCellLinesForTest(h.bufferCells()))
 }
 
-// TestBufferCellsSnapshotStableBetweenEdits verifies repeated reads
-// return the same snapshot while the buffer is unchanged, and a fresh
-// snapshot once it is edited.
 func TestBufferCellsSnapshotStableBetweenEdits(t *testing.T) {
 	t.Parallel()
 
@@ -238,13 +231,6 @@ func TestBufferCellsReuseRetiredProbeSnapshot(t *testing.T) {
 		"currently published probe cells must not be overwritten")
 }
 
-// TestRefreshProbeFollowsBufferAcrossDiskMutation drives the real
-// refreshProbe path: a probe against a rendered grid maps the cursor
-// using the buffer mirror, a disk mutation that leaves the buffer
-// untouched does not change the cached result, and once the buffer is
-// reloaded the cached probe follows the buffer without any extra
-// interrupt. The last leg is the regression guard for the stale-screen
-// race where saving did not refresh the overlay until the next keypress.
 func TestRefreshProbeFollowsBufferAcrossDiskMutation(t *testing.T) {
 	t.Parallel()
 
@@ -287,9 +273,6 @@ func TestRefreshProbeFollowsBufferAcrossDiskMutation(t *testing.T) {
 		"reload must refresh the cached probe without an extra interrupt")
 }
 
-// TestRefreshProbeKeepsLastResultOnSnapshotError verifies a failed
-// component snapshot leaves the previously cached probe untouched, so a
-// transient redraw mid-clear does not flicker the overlay off.
 func TestRefreshProbeKeepsLastResultOnSnapshotError(t *testing.T) {
 	t.Parallel()
 
@@ -326,13 +309,6 @@ func highlightedRows(calls []writerCall) []int {
 	return rows
 }
 
-// TestDrawOverlayFollowsScrolledGrid is the regression guard for the
-// stale-overlay bug: the editor painted the live terminal grid but
-// overlaid highlights from a probe computed against an earlier grid, so
-// after the embedded editor scrolled, a highlight landed on the screen
-// row the file line used to occupy. Draw now paints and snapshots under
-// one component lock (DrawSnapshot) and aligns the overlay to that exact
-// snapshot, so the highlight must move with the grid.
 func TestDrawOverlayFollowsScrolledGrid(t *testing.T) {
 	t.Parallel()
 
@@ -421,9 +397,6 @@ func BenchmarkSnapshotBufferCells(b *testing.B) {
 	}
 }
 
-// TestSnapshotFileCellsMatchesViewSplit pins the line shape the probe
-// receives: copying cells straight from the buffer rows must preserve the
-// previous logical line shape, including trailing newline behavior.
 func TestSnapshotFileCellsMatchesViewSplit(t *testing.T) {
 	t.Parallel()
 

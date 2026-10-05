@@ -53,15 +53,6 @@ type UI interface {
 	// index, or context.Canceled if dismissed.
 	PromptChoice(ctx context.Context, message string, options []string) (int, error)
 
-	// Notify shows a non-blocking notification and returns its id, which can
-	// be passed to UpdateNotificationProgress to drive a live progress bar on
-	// the same notification. The id is empty when no notification surface is
-	// available.
-	Notify(level NotificationLevel, msg string) string
-
-	// UpdateNotificationProgress updates the progress bar and (optionally) the
-	// message of the notification created by Notify. An empty message keeps the
-	// previous one. total must be greater than zero and progress must not
-	// exceed it; the notification closes once progress equals total.
-	UpdateNotificationProgress(id, message string, progress, total int)
+	// Notify shows a non-blocking notification.
+	Notify(level NotificationLevel, msg string)
 }

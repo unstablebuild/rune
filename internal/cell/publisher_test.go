@@ -52,11 +52,6 @@ func (panicEditor) Edit(
 	panic("out of bounds")
 }
 
-// TestPublisherBalancesSubscribersOnEditPanic asserts that a panicking
-// Edit still closes the OnWillEdit/OnDidEdit pairing. Editor.Edit is
-// documented to panic on an out-of-bounds range, and workspace.file
-// tracks in-flight edits on a WaitGroup that Close waits on, so leaking
-// the pairing wedges shutdown instead of letting the crash surface.
 func TestPublisherBalancesSubscribersOnEditPanic(t *testing.T) {
 	sub := new(countingSubscriber)
 	p := newPublisher(panicEditor{})
@@ -71,8 +66,6 @@ func TestPublisherBalancesSubscribersOnEditPanic(t *testing.T) {
 		"every OnWillEdit must be closed by an OnDidEdit, even when Edit panics")
 }
 
-// TestPublisherNotifiesSubscribersOnceOnSuccess guards the panic-safety
-// bookkeeping against double-notifying the happy path.
 func TestPublisherNotifiesSubscribersOnceOnSuccess(t *testing.T) {
 	sub := new(countingSubscriber)
 	cells := new(rawCells)
@@ -86,10 +79,6 @@ func TestPublisherNotifiesSubscribersOnceOnSuccess(t *testing.T) {
 	assert.Equal(t, 1, sub.did)
 }
 
-// TestBufferBalancesSubscribersOnOutOfBoundsPanic drives the same
-// guarantee through a real Buffer and the out-of-bounds delete that
-// rawCells actually panics on, which is how a wedged editor left
-// workspace.file waiting on an edit that never completed.
 func TestBufferBalancesSubscribersOnOutOfBoundsPanic(t *testing.T) {
 	b := NewBuffer()
 	b.Init()

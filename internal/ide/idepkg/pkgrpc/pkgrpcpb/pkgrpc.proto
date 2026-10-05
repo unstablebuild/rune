@@ -1,0 +1,183 @@
+// Copyright (C) 2017-2026 The Rune Authors
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or (at
+// your option) any later version.
+//
+// This program is distributed in the hope that it will be useful, but
+// WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+// General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+syntax = "proto3";
+option go_package = "/pkgrpcpb";
+
+package pkgrpc;
+
+import "google/protobuf/timestamp.proto";
+
+message Empty {
+}
+
+message PackageRef {
+	string package = 1;
+}
+
+message PackageVersion {
+	string package = 1;
+	string version = 2;
+}
+
+message Filters {
+	map<string, string> filters = 1;
+}
+
+message PackageFilters {
+	string package = 1;
+	map<string, string> filters = 2;
+}
+
+message DeleteVersionRequest {
+	string package = 1;
+	string version = 2;
+	bool force = 3;
+}
+
+message Paths {
+	repeated string paths = 1;
+}
+
+message Version {
+	string version = 1;
+}
+
+message InUse {
+	string version = 1;
+	bool in_use = 2;
+}
+
+message Package {
+	string name = 1;
+	string latest = 2;
+	string notes = 3;
+	map<string, string> metadata = 4;
+	google.protobuf.Timestamp created_at = 5;
+}
+
+message Bundle {
+	string package = 1;
+	string version = 2;
+	string notes = 3;
+	map<string, string> metadata = 4;
+	google.protobuf.Timestamp created_at = 5;
+}
+
+message Progress {
+	int64 progress = 1;
+	int64 total = 2;
+	string units = 3;
+}
+
+// Notice is a notification the host's package manager emitted while it
+// served the call, for the client to show in its own UI.
+message Notice {
+	// level is a browserapi.NotificationLevel.
+	uint32 level = 1;
+	string message = 2;
+	bool once = 3;
+}
+
+// Prompt asks the client's user to approve a change to the host's user
+// config.
+message Prompt {
+	uint64 id = 1;
+	// message is markdown.
+	string message = 2;
+	// options[0] approves the change; every other option denies it.
+	repeated PromptOption options = 3;
+	// max_width bounds the width of the prompt in cells; 0 sizes it to
+	// the message.
+	uint32 max_width = 4;
+}
+
+message PromptOption {
+	string label = 1;
+	// key is the character that picks the option, if any.
+	string key = 2;
+}
+
+message Answer {
+	// prompt is the id of the Prompt answered.
+	uint64 prompt = 1;
+	bool approved = 2;
+}
+
+// ChangeRequest is what a client sends on Install and Use: the package
+// first, then an answer to every prompt the host sends.
+message ChangeRequest {
+	oneof request {
+		PackageVersion package = 1;
+		Answer answer = 2;
+	}
+}
+
+// ChangeEvent is what the host sends on Install and Use.
+message ChangeEvent {
+	oneof event {
+		Progress progress = 1;
+		Notice notice = 2;
+		// done is sent once the install or use succeeded. The prompts
+		// sent until then can still be answered: the host applies the
+		// answers and ends the stream when none is left.
+		Empty done = 3;
+		Prompt prompt = 4;
+	}
+}
+
+// PackageError is attached to error statuses so the client can restore
+// the idepkg sentinel the host's package manager returned.
+message PackageError {
+	enum Kind {
+		UNKNOWN = 0;
+		NOT_INSTALLED = 1;
+		PACKAGE_NOT_FOUND = 2;
+		VERSION_NOT_FOUND = 3;
+		ALREADY_INSTALLED = 4;
+		VERSION_IN_USE = 5;
+		SERVER_UNAVAILABLE = 6;
+		ARTIFACT_MISSING = 7;
+		FORBIDDEN = 8;
+		NO_RELEASES = 9;
+		NOT_AUTHENTICATED = 10;
+	}
+	Kind kind = 1;
+}
+
+// PackageManager manages the packages of the host serving it. Server
+// streams that can fail before producing results send response headers
+// once the request is accepted, so a client can tell a rejected request
+// from an empty result without waiting for the first message.
+//
+// Install and Use may change the host's user config. The host asks the
+// client's user before replacing any of that user's settings, never
+// anyone on the host: the host's own user may not be there to answer.
+service PackageManager {
+	rpc LibDir(PackageRef) returns (stream Paths);
+	rpc LatestVersion(PackageRef) returns (Version);
+	rpc DescribePackage(PackageRef) returns (Package);
+	rpc DescribeRelease(PackageVersion) returns (Bundle);
+	rpc ListPackages(Filters) returns (stream Package);
+	rpc ListPackageVersions(PackageFilters) returns (stream Bundle);
+	rpc ListInstalledPackages(Empty) returns (stream PackageRef);
+	rpc ListInstalledPackageVersions(PackageRef) returns (stream Version);
+	rpc Install(stream ChangeRequest) returns (stream ChangeEvent);
+	rpc Use(stream ChangeRequest) returns (stream ChangeEvent);
+	rpc DeletePackage(PackageRef) returns (Empty);
+	rpc DeletePackageVersion(DeleteVersionRequest) returns (Empty);
+	rpc VersionInUse(PackageRef) returns (InUse);
+}

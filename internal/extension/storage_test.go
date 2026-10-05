@@ -82,11 +82,6 @@ type storedDoc struct {
 	Value string
 }
 
-// TestStorageResourcesSharesOneServiceAcrossWorkspaces guards the
-// invariant that every workspace serves one process-wide storage
-// service. Constructing a service per registration silently demotes all
-// but the first workspace to a firstmover follower of its own process,
-// which doubles the encode/decode work on every extension storage call.
 func TestStorageResourcesSharesOneServiceAcrossWorkspaces(t *testing.T) {
 	t.Parallel()
 

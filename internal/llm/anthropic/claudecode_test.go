@@ -29,8 +29,6 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-// TestXXHash64MatchesReferenceSeedZero cross-checks the inline xxHash64 against
-// the in-tree cespare/xxhash (seed 0) so the algorithm is provably correct.
 func TestXXHash64MatchesReferenceSeedZero(t *testing.T) {
 	inputs := [][]byte{
 		nil,

@@ -37,8 +37,6 @@ func cheatsheetTestConfig() text.Config {
 	return cfg
 }
 
-// TestCheatsheetResolvesBoundKeys verifies the key column holds the
-// user's resolved chords for bound commands.
 func TestCheatsheetResolvesBoundKeys(t *testing.T) {
 	md, err := renderCheatsheet(cheatsheetTestConfig(), true, "vim", false)
 	require.NoError(t, err)
@@ -51,8 +49,6 @@ func TestCheatsheetResolvesBoundKeys(t *testing.T) {
 		"the license template comment must not render into the output")
 }
 
-// TestCheatsheetUnboundCommandsFallBack verifies commands with no bound
-// key render with the command-prompt sequence and still appear.
 func TestCheatsheetUnboundCommandsFallBack(t *testing.T) {
 	md, err := renderCheatsheet(cheatsheetTestConfig(), true, "vim", false)
 	require.NoError(t, err)
@@ -62,9 +58,6 @@ func TestCheatsheetUnboundCommandsFallBack(t *testing.T) {
 	assert.Contains(t, md, "| `: edit` | Open a file for editing |")
 }
 
-// TestCheatsheetUnboundCommandFallbackKeepsArgs verifies that an unbound
-// command with arguments renders the full command line in the key column,
-// not just the bare command name.
 func TestCheatsheetUnboundCommandFallbackKeepsArgs(t *testing.T) {
 	md, err := renderCheatsheet(cheatsheetTestConfig(), true, "vim", false)
 	require.NoError(t, err)
@@ -73,8 +66,6 @@ func TestCheatsheetUnboundCommandFallbackKeepsArgs(t *testing.T) {
 	assert.NotContains(t, md, "| `: tutorial` | Start the basics tutorial |")
 }
 
-// TestCheatsheetModalTips verifies the prompt-navigation rows switch on
-// editor mode: modal shows the vi-style chords, standard shows arrows.
 func TestCheatsheetModalTips(t *testing.T) {
 	cfg := cheatsheetTestConfig()
 
@@ -89,8 +80,6 @@ func TestCheatsheetModalTips(t *testing.T) {
 	assert.Contains(t, standard, "| `<up>` / `<down>` | Move through the results |")
 }
 
-// TestCheatsheetAutoSaveGatesWriteRow verifies the manual write row is
-// shown only when auto-save is off.
 func TestCheatsheetAutoSaveGatesWriteRow(t *testing.T) {
 	cfg := cheatsheetTestConfig()
 
@@ -103,8 +92,6 @@ func TestCheatsheetAutoSaveGatesWriteRow(t *testing.T) {
 	assert.NotContains(t, on, "Flush file changes to disk")
 }
 
-// TestCheatsheetEditorSection verifies the Editor section names the active
-// editor and links to its docs guide, mentioning exo only in exo mode.
 func TestCheatsheetEditorSection(t *testing.T) {
 	cfg := cheatsheetTestConfig()
 
@@ -126,8 +113,6 @@ func TestCheatsheetEditorSection(t *testing.T) {
 	assert.Contains(t, exo, "https://docs.rune.build/learn/exoeditor")
 }
 
-// TestCheatsheetWorkspacesPrecedeWindows asserts the Workspaces section is
-// rendered before the Windows section, reflecting the layout hierarchy.
 func TestCheatsheetWorkspacesPrecedeWindows(t *testing.T) {
 	md, err := renderCheatsheet(cheatsheetTestConfig(), true, "vim", false)
 	require.NoError(t, err)
@@ -139,8 +124,6 @@ func TestCheatsheetWorkspacesPrecedeWindows(t *testing.T) {
 	assert.Less(t, wsIdx, winIdx, "Workspaces section must come before Windows")
 }
 
-// TestCheatsheetSearchSection asserts the Search section lists the
-// workspace search commands sourced from the docs search guide.
 func TestCheatsheetSearchSection(t *testing.T) {
 	md, err := renderCheatsheet(cheatsheetTestConfig(), true, "vim", false)
 	require.NoError(t, err)
@@ -151,9 +134,6 @@ func TestCheatsheetSearchSection(t *testing.T) {
 	assert.Contains(t, md, "Jump to a function or method in the current file")
 }
 
-// TestCheatsheetJumpToastRows asserts the three jumptoast rows resolve to
-// the user's `echo {prompt}jumptoast ...` prefill bindings by matching the
-// per-kind capture, since the command name alone is unbound.
 func TestCheatsheetJumpToastRows(t *testing.T) {
 	cfg := text.DefaultConfig()
 	cfg.CommandKeyBindings = map[term.KeyComb][][]string{
@@ -169,8 +149,6 @@ func TestCheatsheetJumpToastRows(t *testing.T) {
 	assert.Contains(t, md, "| `<alt-s>` | Jump to a type in the current file |")
 }
 
-// TestCheatsheetJumpToastFallback asserts the jumptoast rows fall back to
-// the command-prompt sequence when no binding is present.
 func TestCheatsheetJumpToastFallback(t *testing.T) {
 	md, err := renderCheatsheet(text.DefaultConfig(), true, "vim", false)
 	require.NoError(t, err)
@@ -178,8 +156,6 @@ func TestCheatsheetJumpToastFallback(t *testing.T) {
 	assert.Contains(t, md, "| `: jumptoast` | Jump to a function or method in the current file |")
 }
 
-// TestOpenCheatsheetLink verifies http(s) links open in the browser and are
-// reported handled, while other schemes are left to the default handler.
 func TestOpenCheatsheetLink(t *testing.T) {
 	prev := browseURL
 	t.Cleanup(func() { browseURL = prev })
@@ -209,8 +185,6 @@ func TestOpenCheatsheetLink(t *testing.T) {
 	assert.Empty(t, opened, "non-http links must not open a browser")
 }
 
-// TestOpenCheatsheetLinkToleratesError verifies a browser failure is
-// swallowed and the link is still reported handled.
 func TestOpenCheatsheetLinkToleratesError(t *testing.T) {
 	prev := browseURL
 	t.Cleanup(func() { browseURL = prev })
@@ -220,9 +194,6 @@ func TestOpenCheatsheetLinkToleratesError(t *testing.T) {
 	assert.True(t, openCheatsheetLink(u))
 }
 
-// TestCheatsheetFirstWriterWins verifies that when a command is bound to
-// multiple chords the cheatsheet keeps a single deterministic key and
-// the template executes without error.
 func TestCheatsheetFirstWriterWins(t *testing.T) {
 	cfg := text.DefaultConfig()
 	cfg.CommandKeyBindings = map[term.KeyComb][][]string{

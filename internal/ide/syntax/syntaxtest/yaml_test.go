@@ -130,9 +130,6 @@ func TestYAMLEnterUsesSpaceIndentIntegration(t *testing.T) {
 	assert.NotContains(t, actual, "\t")
 }
 
-// TestYAMLShiftRightUsesSpaceIndentIntegration verifies that vi `>>` on a
-// YAML file uses space indentation, not a tab, matching the configured
-// indent material for the yaml language.
 func TestYAMLShiftRightUsesSpaceIndentIntegration(t *testing.T) {
 	pkgs := newInstalledYAMLPkgManager(t)
 
@@ -168,8 +165,6 @@ func TestYAMLShiftRightUsesSpaceIndentIntegration(t *testing.T) {
 	assert.Contains(t, actual, "    child:")
 }
 
-// TestYAMLVisualShiftRightUsesSpaceIndentIntegration verifies that visual-mode
-// `>` on a YAML selection uses space indentation.
 func TestYAMLVisualShiftRightUsesSpaceIndentIntegration(t *testing.T) {
 	pkgs := newInstalledYAMLPkgManager(t)
 

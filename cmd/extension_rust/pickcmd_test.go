@@ -65,9 +65,6 @@ func pickEntryAt(name string, line uint32) pickEntry {
 	}
 }
 
-// The picker's deferred highlight pass must wake the IDE event loop;
-// without an interrupt the preview highlights render only on the next
-// input event.
 func TestPickerViewTickInterrupts(t *testing.T) {
 	ir := &recordingInterrupter{}
 	v := &pickerView{ch: make(chan int, 1), interrupt: ir}
@@ -139,8 +136,6 @@ func TestListPickCmdSelectionJumps(t *testing.T) {
 	assert.Equal(t, 7, editor.lastCursor(h).Y, "the cursor lands on the entry's line")
 }
 
-// Dismissing the picker without a choice unblocks the command instead of
-// leaving its goroutine waiting on a selection that never arrives.
 func TestListPickCmdCancelUnblocks(t *testing.T) {
 	cmd, wm, _, opener, _ := newTestPickCmd([]pickEntry{
 		pickEntryAt("main.rs", 1),
@@ -162,10 +157,6 @@ func TestListPickCmdCancelUnblocks(t *testing.T) {
 	assert.Empty(t, opener.openedURIs(), "cancelling opens nothing")
 }
 
-// The jump must land in the window that was focused when the command
-// was invoked, not in the picker's floating window: in production the
-// float holds the focus while it is up, so resolving the target window
-// after the selection replaces the picker window with the opened file.
 func TestListPickCmdJumpTargetsInvokeWindow(t *testing.T) {
 	entries := []pickEntry{
 		pickEntryAt("main.rs", 1),
@@ -232,10 +223,6 @@ func (l *requestLSP) ExecuteRequest(
 	return l.result, nil
 }
 
-// rust-analyzer reports each crate's path as a file:// URL of the crate
-// root directory (older servers send a plain path). The producer must
-// not mangle the URL and should point at the crate manifest when it
-// exists, so the picker previews and opens a real file.
 func TestDependenciesPickResolvesCratePaths(t *testing.T) {
 	tests := []struct {
 		name    string

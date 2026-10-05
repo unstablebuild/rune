@@ -39,21 +39,6 @@ import (
 	"unstable.build/rune/internal/text"
 )
 
-// TestE2EExoUserQuitAutoClosesTab boots a real IDE through ide.New
-// with a working exo section, opens a file, types `:q<enter>` into
-// the embedded editor and asserts that the tab is removed
-// automatically once the editor process exits.
-//
-// The auto-close chain in production is: vim exits -> vte's
-// comp.Run returns -> Handler publishes a term.EventNone via the
-// host EventPublisher -> the host event loop calls root.Handle with
-// that event -> WindowManager routes it to the focused Tab ->
-// vte.Handler.Handle returns exit=true (because e.exit is set) ->
-// Tab.Handle calls Component.RemoveTab(self), which drops the tab
-// from c.buffers and tears the window down. This test stands in for
-// the host event loop by intercepting the publish via
-// WithPublishEvent and re-dispatching the event through root.Handle
-// under the IDE locker.
 func TestE2EExoUserQuitAutoClosesTab(t *testing.T) {
 	bin, err := exec.LookPath("nvim")
 	if err != nil {
@@ -241,20 +226,6 @@ command:
 		}})
 }
 
-// TestE2ETerminalExitDropsUnfocusedTerminal is the counterpart to the
-// test above for a terminal that is not in focus. The chain documented
-// there — publish term.EventNone, dispatch through root.Handle, let the
-// WindowManager route it to the focused handler — can only ever reach
-// whatever holds focus, so an unfocused terminal whose child exited
-// stayed on screen until the user happened to focus it. The push
-// through browser.TabManager.OnTabExit has to reach the browser with no
-// event routing at all.
-//
-// The terminal is opened as plain window content rather than as a tab
-// because that is what :terminalnew installs, and the assertion spans
-// every hop the notification takes (vte.Component.Run -> tabNameAliaser
-// resolving the pty URI to the tab key -> workspaceTabManager ->
-// browser.Component); each hop is otherwise only covered against a stub.
 func TestE2ETerminalExitDropsUnfocusedTerminal(t *testing.T) {
 	dir := t.TempDir()
 	dataDir := t.TempDir()

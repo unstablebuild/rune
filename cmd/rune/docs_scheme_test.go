@@ -57,11 +57,6 @@ func TestDocsSchemePrefill(t *testing.T) {
 	assert.NotEmpty(t, data, "embedded intro.md should not be empty")
 }
 
-// TestDocsSchemeAllFilesNonEmpty exercises every embedded markdown file via
-// the docs scheme and asserts that the in-memory copy carries the same bytes
-// as the source embed at the same relative path. The scheme preserves the
-// embedded directory layout (e.g. /develop/sdk.md), so opening by relative
-// path must round-trip the embed contents.
 func TestDocsSchemeAllFilesNonEmpty(t *testing.T) {
 	cfgPath := newTestConfigPath(t)
 	uri, err := workspaceapi.ParseURI("docs:///")
@@ -88,12 +83,6 @@ func TestDocsSchemeAllFilesNonEmpty(t *testing.T) {
 	}
 }
 
-// TestDocsSchemeReadDirOpenRoundTrip is a regression test for the editor
-// completion / open path: every entry returned by ReadDir of the workspace
-// root must either be a directory or be openable by name with non-empty
-// content. Before memoryScheme respected directories, nested files (e.g.
-// "develop/sdk.md") surfaced at the root by basename, but the basename did
-// not resolve to a real URI and the editor opened an empty buffer.
 func TestDocsSchemeReadDirOpenRoundTrip(t *testing.T) {
 	cfgPath := newTestConfigPath(t)
 	uri, err := workspaceapi.ParseURI("docs:///")
@@ -130,10 +119,6 @@ func TestDocsSchemeReadDirOpenRoundTrip(t *testing.T) {
 	assert.Truef(t, rootNames["AGENTS.md"], "ReadDir(/) must list AGENTS.md, got %v", rootNames)
 }
 
-// TestDocsSchemeNestedDirsAreBrowsable asserts that the docs scheme exposes
-// the embedded nested layout (develop/, learn/) as real directories, and that
-// descending into those directories yields the markdown files stored under
-// them.
 func TestDocsSchemeNestedDirsAreBrowsable(t *testing.T) {
 	cfgPath := newTestConfigPath(t)
 	uri, err := workspaceapi.ParseURI("docs:///")
@@ -251,10 +236,6 @@ func TestDocsSchemeConfigYAML(t *testing.T) {
 	}
 }
 
-// TestDocsSchemeConfigYAMLNotRouted guards against configRoutedScheme
-// forwarding the docs workspace config to the host file scheme. The
-// docs /.rune/config.yaml is purely virtual and must never be confused
-// with the user's real host config.
 func TestDocsSchemeConfigYAMLNotRouted(t *testing.T) {
 	cfgPath := newTestConfigPath(t)
 	uri, err := workspaceapi.ParseURI("docs:///")
@@ -315,11 +296,6 @@ func TestDocsSchemeRoutesConfigPathToFileScheme(t *testing.T) {
 	assert.Error(t, err, "non-config host paths must not be routed to the file scheme")
 }
 
-// TestDocsSchemeNewFileRoutesConfigPath guards against an RPC
-// regression: the workspace server reconstitutes file handles on every
-// Read/Write/Close via NewFile(fd, name), so the outer Scheme must
-// route by filename or fds opened against the file scheme surface as
-// "invalid file descriptor".
 func TestDocsSchemeNewFileRoutesConfigPath(t *testing.T) {
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "config.yaml")

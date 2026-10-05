@@ -144,10 +144,6 @@ func (d *copyingDispatcher) Hook(
 	})
 }
 
-// TestScannerCSIParamsPerDispatch pins that each CSI dispatch observes
-// exactly its own parameters. Params storage is reused across
-// dispatches, so a stale entry left over from a longer preceding
-// sequence would surface here.
 func TestScannerCSIParamsPerDispatch(t *testing.T) {
 	var d copyingDispatcher
 	scanner := NewScanner(&d)

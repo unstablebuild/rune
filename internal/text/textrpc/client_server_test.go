@@ -1090,15 +1090,6 @@ func TestClientServerIntegration(t *testing.T) {
 	})
 }
 
-// TestClientServer_ShellProgressE2E wires up the full chain the editor
-// uses when it dispatches a shell command to an out-of-process
-// extension's REPL handler:
-//
-//	sh.commandHandler -> <registry> -> replCommandClientStream.HandleCommand
-//	  -> gRPC -> replCommandServerStream -> testREPLHandler.handleFn
-//
-// It asserts that Progress updates emitted by the extension-side handler
-// flow all the way back to the caller-supplied ProgressWriter.
 func TestClientServer_ShellProgressE2E(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
@@ -1582,9 +1573,6 @@ func drawn(h tui.Handler, width, height int) string {
 	return b.String()
 }
 
-// TestResourceOpenerClientServer covers an extension's resource opener,
-// registered through the SDK client, as the editor sees it, and the
-// content it returns, served over its own stream.
 func TestResourceOpenerClientServer(t *testing.T) {
 	const scheme = "fake"
 	uri, err := workspaceapi.ParseURI("fake://host/chat")

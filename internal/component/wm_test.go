@@ -117,15 +117,6 @@ func buildSplitRootLayout(
 	return
 }
 
-// TestSplitRoot is a table-driven regression suite for
-// WindowManager.SplitRoot. It covers every supported Alignment
-// (left, right, top, bottom) across three starting layouts:
-//
-//   - a single-tile root,
-//   - an asymmetric split-horizontal-then-split-vertical layout,
-//   - an asymmetric split-vertical-then-split-horizontal layout,
-//
-// and asserts the final terminal rendering as a literal string.
 func TestSplitRoot(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -1968,10 +1959,6 @@ func TestComponentTileAt(t *testing.T) {
 	}
 }
 
-// TestComponentTileAtNeverReturnsOverlays sweeps every cell of a layout
-// carrying both a float and a minimized strip, asserting the two
-// invariants TileAt exists for: it never resolves to an overlay, and
-// wherever it does resolve the tile actually contains the position.
 func TestComponentTileAtNeverReturnsOverlays(t *testing.T) {
 	wm, root := NewWindowManager(&component.TestComponent{Ch: '1'},
 		testWindowManagerConfig())
@@ -2294,11 +2281,6 @@ func testWindowManagerConfig() WindowManagerConfig {
 	return ret
 }
 
-// TestWindowManagerIterateCloseDuringIteration guards Iterate's contract
-// that op may close the visited floating window. closeFloatingWindow's
-// slices.Delete shifts and zeroes the backing array of wm.float, and a
-// naive for-range would either read a nil tail slot or skip the
-// shifted-down neighbor.
 func TestWindowManagerIterateCloseDuringIteration(t *testing.T) {
 	h := component.TestComponent{Ch: 'A'}
 	wm, _ := NewWindowManager(&h, testWindowManagerConfig())
@@ -2323,11 +2305,6 @@ func TestWindowManagerIterateCloseDuringIteration(t *testing.T) {
 	assert.Equal(t, 0, wm.SizeFloating())
 }
 
-// TestWindowManagerIterateCloseTilesDuringIteration covers closing tiles
-// from inside Iterate, as CloseOtherWindows does. Closing a sibling
-// mutates the parent's children slice that Iterate ranges over, so
-// without a snapshot some siblings were shifted past and never visited,
-// leaking open tiles that the caller intended to close.
 func TestWindowManagerIterateCloseTilesDuringIteration(t *testing.T) {
 	h := component.TestComponent{Ch: 'A'}
 	wm, keep := NewWindowManager(&h, testWindowManagerConfig())
@@ -2362,9 +2339,6 @@ func TestWindowManagerIterateCloseTilesDuringIteration(t *testing.T) {
 	assert.NotPanics(t, func() { _ = keep.Position() })
 }
 
-// TestWindowBarDraw covers window bar rendering: floating windows get
-// the solid bar plus the close icon, tiles keep the plain top frame,
-// and NoBar floats keep the plain frame.
 func TestWindowBarDraw(t *testing.T) {
 	newFloating := func() component.Floating {
 		return component.StaticFloating(&component.TestComponent{Ch: 'B'}, 2, 2)
@@ -2424,9 +2398,6 @@ func TestWindowBarDraw(t *testing.T) {
 	}
 }
 
-// TestWindowBarSetFrameCharSet pins the bar override through frame
-// charset swaps (as the handler does on focus changes): the bar chars
-// must survive SetFrameCharSet on both the manager and the window.
 func TestWindowBarSetFrameCharSet(t *testing.T) {
 	cfg := DefaultWindowManagerConfig()
 	cfg.NoMaxSize = true
@@ -2457,10 +2428,6 @@ func TestWindowBarSetFrameCharSet(t *testing.T) {
 	})
 }
 
-// TestWindowBarTitleDraw covers title rendering on the window bar:
-// titles come from FloatingConfig.Title, are centered after the close
-// icon, truncated to the available bar cells, and dropped entirely on
-// bar-less windows.
 func TestWindowBarTitleDraw(t *testing.T) {
 	newFloating := func() component.Floating {
 		return component.StaticFloating(&component.TestComponent{Ch: 'B'}, 10, 2)
@@ -2552,10 +2519,6 @@ func (r *cellRecorder) SetCell(pos term.Coordinates, c term.Cell) {
 	r.Writer.SetCell(pos, c)
 }
 
-// TestWindowBarAttrs pins the bar continuity attributes: the close
-// icon and title cells use the frame foreground as their background,
-// with the configured icon foreground and the frame background as the
-// title foreground.
 func TestWindowBarAttrs(t *testing.T) {
 	cfg := DefaultWindowManagerConfig()
 	cfg.NoMaxSize = true
@@ -2588,9 +2551,6 @@ func TestWindowBarAttrs(t *testing.T) {
 		"title background is the bar foreground")
 }
 
-// TestWindowManagerToggleMaximize covers maximize/restore geometry,
-// tracking window manager resizes while maximized, and that moves or
-// resizes drop the maximized state.
 func TestWindowManagerToggleMaximize(t *testing.T) {
 	cfg := DefaultWindowManagerConfig()
 	cfg.NoMaxSize = true
@@ -2639,9 +2599,6 @@ func TestWindowManagerToggleMaximize(t *testing.T) {
 	assert.False(t, wm.ToggleMaximize(win))
 }
 
-// TestWindowManagerMoveWindow covers MoveWindow positioning, clamping
-// to full visibility, WindowAt lookups after a move, and layout
-// round-trips through RestoreTileLayout.
 func TestWindowManagerMoveWindow(t *testing.T) {
 	cfg := DefaultWindowManagerConfig()
 	cfg.NoMaxSize = true
@@ -2694,9 +2651,6 @@ func TestWindowManagerMoveWindow(t *testing.T) {
 	assert.Equal(t, term.Coordinates{X: 5, Y: 3}, restoredWin.Position())
 }
 
-// TestFloatingLayoutBarRoundTrip covers that NoBar and Title persist
-// through TileLayout/RestoreTileLayout so restored floats keep their
-// bar configuration without re-deriving it from content.
 func TestFloatingLayoutBarRoundTrip(t *testing.T) {
 	cfg := DefaultWindowManagerConfig()
 	cfg.NoMaxSize = true
@@ -2734,10 +2688,6 @@ func TestFloatingLayoutBarRoundTrip(t *testing.T) {
 	assert.Empty(t, restoredNoBar.Title())
 }
 
-// TestFloatingWindowUserResizeShrinks asserts that a user-set size
-// resizes a floating window below its content's desired size — the
-// regression that made edge drags on content-sized floats no-ops —
-// and that a zero size resets back to the content-driven size.
 func TestFloatingWindowUserResizeShrinks(t *testing.T) {
 	for _, noMaxSize := range []bool{false, true} {
 		t.Run(fmt.Sprintf("NoMaxSize=%v", noMaxSize), func(t *testing.T) {
@@ -2768,9 +2718,6 @@ func TestFloatingWindowUserResizeShrinks(t *testing.T) {
 	}
 }
 
-// TestForegroundFloating asserts that ForegroundFloating moves a floating
-// window to the top of the z-order (drawn last) and is idempotent when the
-// window is already on top, and a no-op for tiled windows.
 func TestForegroundFloating(t *testing.T) {
 	cfg := DefaultWindowManagerConfig()
 	cfg.NoMaxSize = true

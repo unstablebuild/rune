@@ -213,6 +213,8 @@ shows what it does. Do not pepper code with narrative comments.
 - Docstrings and export API doc comments **must** explain the
   contract and clarify edge cases. Don't explain how it works or what
   calls it.
+- Do not add doc comments to `func Test*` functions. The test name and
+  body should make the asserted behavior clear on their own.
 
 ## Bug-fix policy
 

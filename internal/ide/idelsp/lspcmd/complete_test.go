@@ -44,8 +44,6 @@ func testItems(labels ...string) []semanticapi.CompletionItem {
 
 var noIcons map[semanticapi.CompletionItemKind]string
 
-// TestDefaultIcons verifies that defaultIcons returns
-// exactly 25 entries covering all CompletionItemKind values.
 func TestDefaultIcons(t *testing.T) {
 	icons := defaultIcons()
 	assert.Len(t, icons, 25)
@@ -83,7 +81,6 @@ func TestDefaultIcons(t *testing.T) {
 	}
 }
 
-// TestFormatLabel verifies icon+label formatting.
 func TestFormatLabel(t *testing.T) {
 	icons := map[semanticapi.CompletionItemKind]string{
 		semanticapi.CompletionItemKindFunction: "F",
@@ -118,9 +115,6 @@ func TestFormatLabel(t *testing.T) {
 	}
 }
 
-// TestCompletionHandlerRender verifies that text
-// content is rendered correctly and remains stable
-// across key navigation events.
 func TestCompletionHandlerRender(t *testing.T) {
 	ch := newCompletionHandler([]string{"alpha", "beta"})
 	w, h := ch.Dimensions()
@@ -538,8 +532,6 @@ func TestCompletionHandlerApplyItemError(t *testing.T) {
 	assert.True(t, handled, "should still be handled on error")
 }
 
-// TestCompletionHandlerBackgroundDrain verifies that the
-// drain goroutine populates the list without any Handle call.
 func TestCompletionHandlerBackgroundDrain(t *testing.T) {
 	labelCh := make(chan string, 3)
 	labelCh <- "alpha"
@@ -567,8 +559,6 @@ func TestCompletionHandlerBackgroundDrain(t *testing.T) {
 	assert.True(t, w >= utf8.RuneCountInString("gamma")+2)
 }
 
-// TestCompletionHandlerApplyItemAsync verifies that
-// applyItem works after channel-delivered labels.
 func TestCompletionHandlerApplyItemAsync(t *testing.T) {
 	var editText string
 	editor := &mockEditor{
@@ -619,9 +609,6 @@ func TestCompletionHandlerApplyItemAsync(t *testing.T) {
 	assert.Equal(t, "myFunc()", editText)
 }
 
-// TestCompleteHandlerCommandAsync verifies that
-// HandleCommand creates the floating, starts goroutines,
-// and delivers completion items.
 func TestCompleteHandlerCommandAsync(t *testing.T) {
 	items := testItems("alpha", "beta")
 	lsp := &mockLSP{
@@ -654,8 +641,6 @@ func TestCompleteHandlerCommandAsync(t *testing.T) {
 	require.NoError(t, gotFloating.Close())
 }
 
-// TestCompletionHandlerClose verifies that Close cancels
-// the fetch context and waits for the goroutine.
 func TestCompletionHandlerClose(t *testing.T) {
 	fetchCtx, fetchCancel := context.WithCancel(context.Background())
 	fetchDone, fetchDoneCancel := context.WithCancel(context.Background())

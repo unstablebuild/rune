@@ -17,6 +17,7 @@
 package agent
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -313,6 +314,8 @@ type executedToolCall struct {
 // "text content blocks must be non-empty", so the replayed content must
 // always carry at least this marker.
 const emptyToolResultPlaceholder = "(tool produced no output)"
+
+const checkFileErrorsToolName = "check_file_errors"
 
 // nonEmptyToolResult guarantees a tool-role message never carries empty
 // content. A tool that writes nothing to stdout/stderr (e.g. `touch`)
@@ -1072,6 +1075,7 @@ func (a *Agent) run(
 					ToolStartTime: time.Now(),
 				})
 			}
+			lastFileCheck := a.lastFileChecks(infos)
 
 			// 2. Fan out: launch all tool executions in parallel,
 			// unless a tool in the batch needs deterministic order, in
@@ -1272,7 +1276,9 @@ func (a *Agent) run(
 				}
 			}
 
-			toolMsgs, assistantMsg = a.injectAutoDiagnostics(ctx, ch, messages, newMessages, assistantMsg, toolMsgs, diagCandidates, maxOutput, log)
+			toolMsgs, assistantMsg = a.injectAutoDiagnostics(
+				ctx, ch, messages, newMessages, assistantMsg, toolMsgs,
+				diagCandidates, lastFileCheck, maxOutput, log)
 
 			toolCallDuration := time.Since(toolsStart)
 			usage.Add(completionUsage, len(infos), inferenceDuration, toolCallDuration)
@@ -1445,6 +1451,42 @@ func assistantMessageHasReplayableContent(msg llmapi.Message) bool {
 		})
 }
 
+// lastFileChecks returns, per cleaned absolute path, the batch index of the
+// last check_file_errors call on that file. Calls whose arguments do not
+// resolve to a path are not recorded. Index order equals execution order
+// because a batch containing apply_patch runs serially.
+func (a *Agent) lastFileChecks(infos []toolCallInfo) map[string]int {
+	var lastCheck map[string]int
+	for i := range infos {
+		if !infos[i].found || infos[i].call.Function.Name != checkFileErrorsToolName {
+			continue
+		}
+		var args struct {
+			Path     string `json:"path"`
+			FilePath string `json:"file_path"`
+		}
+		if err := json.Unmarshal([]byte(infos[i].call.Function.Arguments), &args); err != nil {
+			continue
+		}
+		p := cmp.Or(args.Path, args.FilePath)
+		if p == "" {
+			continue
+		}
+		expanded, err := workspaceapi.ExpandPathWithURI(p, a.config.Workspace)
+		if err != nil {
+			continue
+		}
+		if lastCheck == nil {
+			lastCheck = map[string]int{}
+		}
+		lastCheck[filepath.Clean(expanded)] = i
+	}
+	return lastCheck
+}
+
+// injectAutoDiagnostics appends a synthetic check_file_errors call for each
+// candidate apply_patch, unless lastFileCheck shows the model itself checked
+// the touched file later in the same batch.
 func (a *Agent) injectAutoDiagnostics(
 	ctx context.Context,
 	ch chan<- Event,
@@ -1453,6 +1495,7 @@ func (a *Agent) injectAutoDiagnostics(
 	assistantMsg llmapi.Message,
 	toolMsgs []llmapi.Message,
 	diagCandidates []executedToolCall,
+	lastFileCheck map[string]int,
 	maxOutput int,
 	log *slog.Logger,
 ) ([]llmapi.Message, llmapi.Message) {
@@ -1460,7 +1503,7 @@ func (a *Agent) injectAutoDiagnostics(
 		return toolMsgs, assistantMsg
 	}
 
-	diagTool, ok := a.registry.Get("check_file_errors", a.provider())
+	diagTool, ok := a.registry.Get(checkFileErrorsToolName, a.provider())
 	if !ok {
 		return toolMsgs, assistantMsg
 	}
@@ -1468,6 +1511,12 @@ func (a *Agent) injectAutoDiagnostics(
 	assistantIdx := len(messages) - 1
 	for _, cand := range diagCandidates {
 		filePath := cand.result.TouchedFiles[0]
+
+		if i, ok := lastFileCheck[filepath.Clean(filePath)]; ok && i > cand.index {
+			log.Debug("auto-diagnostics: skipping, file checked later in the batch",
+				"file", filePath)
+			continue
+		}
 
 		// Resolve the language id so the disable set can be keyed by it.
 		// If the language cannot be determined we skip auto-injection
@@ -1492,7 +1541,7 @@ func (a *Agent) injectAutoDiagnostics(
 			ID:   syntheticID,
 			Type: llmapi.ToolTypeFunction,
 			Function: llmapi.FunctionCall{
-				Name:      "check_file_errors",
+				Name:      checkFileErrorsToolName,
 				Arguments: diagArgs,
 			},
 		}
@@ -1511,7 +1560,7 @@ func (a *Agent) injectAutoDiagnostics(
 			syntheticItem, err := json.Marshal(map[string]any{
 				"type":      "function_call",
 				"call_id":   syntheticID,
-				"name":      "check_file_errors",
+				"name":      checkFileErrorsToolName,
 				"arguments": diagArgs,
 			})
 			if err == nil {
@@ -1526,7 +1575,7 @@ func (a *Agent) injectAutoDiagnostics(
 		emit(ctx, ch, Event{
 			Type:          EventToolCall,
 			ToolCallID:    syntheticID,
-			ToolName:      "check_file_errors",
+			ToolName:      checkFileErrorsToolName,
 			ToolArgs:      diagArgs,
 			ToolSummary:   diagSummary,
 			ToolStartTime: time.Now(),
@@ -1558,7 +1607,7 @@ func (a *Agent) injectAutoDiagnostics(
 		emit(ctx, ch, Event{
 			Type:         EventToolResult,
 			ToolCallID:   syntheticID,
-			ToolName:     "check_file_errors",
+			ToolName:     checkFileErrorsToolName,
 			ToolOutput:   diagResult.Content,
 			ToolSummary:  diagSummary,
 			IsError:      diagResult.IsError,
@@ -1568,7 +1617,7 @@ func (a *Agent) injectAutoDiagnostics(
 		toolMsgs = append(toolMsgs, llmapi.Message{
 			Role:       llmapi.RoleTool,
 			Content:    diagResult.Content,
-			Name:       "check_file_errors",
+			Name:       checkFileErrorsToolName,
 			ToolCallID: syntheticID,
 		})
 	}

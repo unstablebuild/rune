@@ -49,11 +49,6 @@ type handleEditor struct {
 
 func (e *handleEditor) Editor(workspaceapi.URI) (textapi.Handler, error) { return e.h, nil }
 
-// openLocation must set the opener's handler as the window content. The
-// production browser stream only short-circuits on its own opener
-// tokens; the editor's handle is symbolic, and streaming it as content
-// panics the extension on the IDE's first Resize callback (seen live as
-// a dead rust extension after every picker jump).
 func TestOpenLocationSetsOpenerHandlerAsContent(t *testing.T) {
 	opened := &stubResource{}
 	editorHandle := &stubResource{}

@@ -25,11 +25,6 @@ import (
 	"unstable.build/rune/internal/handler/command"
 )
 
-// TestPkgEditorMode asserts the exported helper the remote provisioning server
-// uses to resolve RUNE_EDITOR_MODE from a config.Config applies the same
-// normalization the editor uses: exo resolves to its fallback, the deprecated
-// modal and modeless map to vim and standard, and a missing/unset editor.mode
-// defaults to vim.
 func TestPkgEditorMode(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -143,9 +138,6 @@ func TestEditorMode(t *testing.T) {
 	}
 }
 
-// TestNewPromptEditorExo asserts that the in-memory prompt editor, which
-// exo cannot host, follows the configured exo.fallback rather than
-// hardwiring vi. The default fallback is standard.
 func TestNewPromptEditorExo(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -184,9 +176,6 @@ func TestNewPromptEditorExo(t *testing.T) {
 	}
 }
 
-// TestNewPromptEditorMode asserts that each built-in editor mode picks
-// its own in-memory prompt editor, so the command prompt and console
-// input line keep the grammar the user configured.
 func TestNewPromptEditorMode(t *testing.T) {
 	for _, tc := range []struct {
 		mode string
@@ -215,8 +204,6 @@ func TestNewPromptEditorMode(t *testing.T) {
 	}
 }
 
-// TestExoModeAndAccessors covers editorMode/exoCommand/exoGoto on a
-// hand-crafted config map.
 func TestExoModeAndAccessors(t *testing.T) {
 	cfg := &ideConfig{
 		cfg: map[string]any{
@@ -235,9 +222,6 @@ func TestExoModeAndAccessors(t *testing.T) {
 	assert.Equal(t, "<esc>:{line}<enter>", cfg.exoGoto())
 }
 
-// TestPkgEditorModeSubstitutesExoFallback verifies the value forwarded to
-// package config.star scripts: exo mode is rewritten to the configured
-// exo.fallback so packages always see a concrete built-in editor mode.
 func TestPkgEditorModeSubstitutesExoFallback(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -274,8 +258,6 @@ func TestPkgEditorModeSubstitutesExoFallback(t *testing.T) {
 	}
 }
 
-// TestPkgEditorModePassesNonExoThrough verifies built-in modes are forwarded
-// to packages in their canonical spelling, never as a deprecated alias.
 func TestPkgEditorModePassesNonExoThrough(t *testing.T) {
 	for _, tc := range []struct {
 		mode string
@@ -300,9 +282,6 @@ func TestPkgEditorModePassesNonExoThrough(t *testing.T) {
 	}
 }
 
-// TestValidateExoFallsBackOnMissingFile verifies that a exo mode
-// with an invalid (no {file}) command is rewritten back to "vim" so
-// the IDE still boots.
 func TestValidateExoFallsBackOnMissingFile(t *testing.T) {
 	cfg := map[string]any{
 		"editor": map[string]any{
@@ -321,9 +300,6 @@ func TestValidateExoFallsBackOnMissingFile(t *testing.T) {
 		"the rewrite must use the canonical spelling")
 }
 
-// TestValidateExoFallsBackOnInvalidGoto verifies that an unparseable
-// goto rewrites editor.mode back to "vim". exo relies on goto to
-// position the cursor, so a bad value is a hard misconfiguration.
 func TestValidateExoFallsBackOnInvalidGoto(t *testing.T) {
 	cfg := map[string]any{
 		"editor": map[string]any{
@@ -340,10 +316,6 @@ func TestValidateExoFallsBackOnInvalidGoto(t *testing.T) {
 	assert.Equal(t, "vim", ic.editorMode())
 }
 
-// TestValidateExoFallsBackOnMissingGoto verifies that an unset goto
-// rewrites editor.mode back to "vim" for the same reason as an
-// invalid goto: exo requires both editor.exo.command and
-// editor.exo.goto.
 func TestValidateExoFallsBackOnMissingGoto(t *testing.T) {
 	cfg := map[string]any{
 		"editor": map[string]any{
@@ -392,8 +364,6 @@ func TestValidateExoFallsBackOnInvalidQuit(t *testing.T) {
 	assert.Equal(t, "vim", ic.editorMode())
 }
 
-// TestValidateExoAcceptsKnownTemplates table-tests the bundled sample
-// goto templates parse without errors.
 func TestValidateExoAcceptsKnownTemplates(t *testing.T) {
 	templates := []string{
 		"<esc>:{line}<enter>{col}|",
@@ -408,8 +378,6 @@ func TestValidateExoAcceptsKnownTemplates(t *testing.T) {
 	}
 }
 
-// TestExoFallbackDefaults asserts the accessor returns "standard"
-// when no fallback key is set (the documented default).
 func TestExoFallbackDefaults(t *testing.T) {
 	cfg := ideConfig{
 		cfg: map[string]any{
@@ -426,9 +394,6 @@ func TestExoFallbackDefaults(t *testing.T) {
 	assert.Equal(t, "standard", cfg.exoFallback())
 }
 
-// TestExoFallbackExplicitValues asserts every built-in editor round-trips
-// through the accessor, and the deprecated "modal" and "modeless" aliases
-// normalize to "vim" and "standard".
 func TestExoFallbackExplicitValues(t *testing.T) {
 	for _, tc := range []struct {
 		fallback string
@@ -460,9 +425,6 @@ func TestExoFallbackExplicitValues(t *testing.T) {
 	}
 }
 
-// TestValidateExoFallbackAcceptsEveryBuiltIn asserts validation keeps each
-// canonical fallback and deprecated alias as written, so it never rewrites a
-// working config.
 func TestValidateExoFallbackAcceptsEveryBuiltIn(t *testing.T) {
 	for _, fallback := range []string{
 		"vim", "modal", "helix", "standard", "modeless", "emacs",
@@ -486,8 +448,6 @@ func TestValidateExoFallbackAcceptsEveryBuiltIn(t *testing.T) {
 	}
 }
 
-// TestValidateExoFallbackInvalidValueRewrites verifies an unknown
-// fallback string is rewritten to "standard" so the IDE still boots.
 func TestValidateExoFallbackInvalidValueRewrites(t *testing.T) {
 	cfg := map[string]any{
 		"editor": map[string]any{
@@ -512,9 +472,6 @@ func TestValidateExoFallbackInvalidValueRewrites(t *testing.T) {
 	assert.Equal(t, "exo", ic.editorMode())
 }
 
-// TestExoExperimentalHighlights table-tests the accessor: defaults to
-// true when unset, round-trips explicit true/false, and falls back to
-// true while recording an error when the value is the wrong type.
 func TestExoExperimentalHighlights(t *testing.T) {
 	t.Parallel()
 

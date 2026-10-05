@@ -23,10 +23,6 @@ import (
 	"unstable.build/rune/internal/cell"
 )
 
-// TestMakeSymbolItemEndOfBufferRow reproduces a crash where a tree-sitter
-// range end point maps to a coordinate one row past the last buffer row
-// (the end-of-buffer sentinel from ConvertRunePosToCoordinates). In that
-// case buf.Columns(from.Y) used to index out of range and panic.
 func TestMakeSymbolItemEndOfBufferRow(t *testing.T) {
 	buf := new(cell.Buffer)
 	buf.Init()

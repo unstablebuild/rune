@@ -146,10 +146,6 @@ func TestGaugeZeroWidth(t *testing.T) {
 	assert.Empty(t, rec.cells)
 }
 
-// The ramp is laid across the whole field, not across the part the
-// gauge reaches, so a cell keeps its colour as the gauge grows. Cells
-// between two stops blend them, so a wide gauge reads as a ramp rather
-// than as a few blocks.
 func TestGaugeFillRampsBetweenItsStops(t *testing.T) {
 	const width = 6
 	stops := []term.Attributes{
@@ -182,8 +178,6 @@ func TestGaugeFillRampsBetweenItsStops(t *testing.T) {
 	}
 }
 
-// The brackets come out of the field the layout budgeted rather than
-// widening it, so a capped gauge still measures its configured width.
 func TestGaugeCapsTakeCellsFromTheField(t *testing.T) {
 	capAttr := term.Attributes{Fg: term.ColorYellow, Bg: term.ColorGray}
 	g := &gauge{

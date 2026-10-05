@@ -26,16 +26,10 @@ import (
 	"unstable.build/rune/internal/ide/upgradeshell"
 )
 
-// TestRegisterUpgradeCommandWithoutManager covers the configuration
-// where no manifest URL is available: the manager is nil and there is
-// nothing to register, which must not be an error.
 func TestRegisterUpgradeCommandWithoutManager(t *testing.T) {
 	require.NoError(t, registerUpgradeCommand(nil, nil))
 }
 
-// TestUpgradeAliasTargetsConsoleCommand pins the command-prompt entry
-// point for the console `upgrade` command: `:upgrade` must keep
-// working now that the ex-command is gone.
 func TestUpgradeAliasTargetsConsoleCommand(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.star")
 	require.NoError(t, os.WriteFile(path, nil, 0o644))

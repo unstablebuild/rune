@@ -38,28 +38,6 @@ import (
 	"unstable.build/rune/internal/term/vte/vtereservoir"
 )
 
-// TestE2EWorkspaceReloadRestoresLayoutAndTerminalOutput drives the
-// full real IDE — real config, real file scheme, real vte handler —
-// through the same flow that surfaced the original
-// :workspacereload DeadlineExceeded bug, and asserts that the
-// post-reload IDE preserves both the workspace layout and the
-// captured terminal output.
-//
-// Flow:
-//  1. cwd workspace points to a temp dir on disk; auto_restore is on
-//     so the reload skips the restore-prompt.
-//  2. Open a test file (left window).
-//  3. windownew right creates a fresh empty window on the right.
-//  4. terminalnew opens a real vte.Handler in that right window
-//     running a script that prints `abc` and stays alive, since a
-//     terminal whose process exits is closed.
-//  5. After the terminal output settles, the test snapshots the
-//     layout topology and the textual content of the terminal cells.
-//  6. :workspacereload is dispatched the same way a user would
-//     dispatch it — through the command prompt.
-//  7. After the workspace re-installs, the layout must be the same
-//     vertical split, the right window must still hold a vte
-//     handler, and its snapshot must still contain "abc".
 func TestE2EWorkspaceReloadRestoresLayoutAndTerminalOutput(t *testing.T) {
 	dir := t.TempDir()
 	dataDir := t.TempDir()
@@ -249,9 +227,6 @@ workspace:
 		"the restored terminal must live in the right leaf of the post-reload layout")
 }
 
-// TestFileSchemeShellRC pins that terminal shells in file workspaces load
-// Rune's dotfiles only when the host injects them, so an IDE built by a
-// test never writes into its data dir behind the test's back.
 func TestFileSchemeShellRC(t *testing.T) {
 	for _, tc := range []struct {
 		name string

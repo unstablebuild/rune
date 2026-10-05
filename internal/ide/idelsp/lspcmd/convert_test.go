@@ -74,11 +74,6 @@ func pos(line, char uint32) semanticapi.Position {
 	return semanticapi.Position{Line: line, Character: char}
 }
 
-// TestLspToURI_RebasesOntoWorkspaceScheme reproduces the remote-workspace
-// navigation bug: LSP servers run on the workspace host and return
-// file:// URIs with host-local paths, so converting them back must
-// restore the workspace's scheme and authority or the IDE tries to open
-// the remote path on the local machine.
 func TestLspToURI_RebasesOntoWorkspaceScheme(t *testing.T) {
 	t.Parallel()
 
@@ -323,8 +318,6 @@ func TestEditsChangeText(t *testing.T) {
 	}
 }
 
-// A no-op edit set must produce the text already in the buffer, so
-// applying it and simulating it have to agree.
 func TestEditsChangeTextMatchesApplyEdits(t *testing.T) {
 	t.Parallel()
 

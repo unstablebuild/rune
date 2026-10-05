@@ -143,7 +143,6 @@ func parseModeFlags(
 	return fs, *guiFlag, *tuiFlag, *headlessFlag
 }
 
-// A misspelt entry in headlessFlags would reject a flag the node needs.
 func TestHeadlessFlagsAreRuneFlags(t *testing.T) {
 	for name := range headlessFlags {
 		if flag.CommandLine.Lookup(name) == nil {
@@ -152,10 +151,6 @@ func TestHeadlessFlagsAreRuneFlags(t *testing.T) {
 	}
 }
 
-// TestVersionStringUsesBuildStampLayout pins the ldflag -> --version
-// contract: a stamp in the exact form cmd/buildstamp emits must reach
-// the version line verbatim. Without a reader the linker prunes
-// debug.BuildDate and the -X in the Makefile becomes a silent no-op.
 func TestVersionStringUsesBuildStampLayout(t *testing.T) {
 	stamp := time.Date(2026, 9, 11, 13, 12, 48, 0, time.UTC).
 		Format(debug.BuildDateLayout)
@@ -193,9 +188,6 @@ func TestAppLaunchArgs(t *testing.T) {
 	}
 }
 
-// A data dir the dotfiles cannot be written to must not pass silently:
-// terminal modal mode then breaks in zsh and bash, and the user has to be
-// told why.
 func TestInstallShellRCUnwritableDataDir(t *testing.T) {
 	// A path below a regular file fails even as root.
 	dataDir := filepath.Join(t.TempDir(), "file")
@@ -218,16 +210,14 @@ func TestReportShellRCErr(t *testing.T) {
 		assert.Contains(t, n.notes[0].msg, "disk full")
 	})
 
-	// rune -x has no UI of its own: the local side turns its provisioning
-	// stream into notifications.
-	t.Run("streams a failure to the local side of rune -x", func(t *testing.T) {
+	// rune -x has no UI of its own: the local side shows its warnings.
+	t.Run("warns the local side of rune -x", func(t *testing.T) {
 		var stderr bytes.Buffer
 		reportRemoteShellRCErr(&stderr, err)
-		p, ok := workspacessh.ParseProvisionProgressLine(
+		msg, ok := workspacessh.ParseWarningLine(
 			bytes.TrimRight(stderr.Bytes(), "\n"))
-		require.True(t, ok, "not a provisioning line: %q", stderr.String())
-		assert.Equal(t, workspacessh.NotificationWarning, p.Level())
-		assert.Contains(t, p.Message(), "disk full")
+		require.True(t, ok, "not a warning line: %q", stderr.String())
+		assert.Contains(t, msg, "disk full")
 	})
 }
 

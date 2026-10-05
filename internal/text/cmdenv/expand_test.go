@@ -112,9 +112,6 @@ func TestExpandBodyPreservesShellConstructs(t *testing.T) {
 	}
 }
 
-// TestExpandStrictAdversarial covers Expand's strict-mode behavior
-// (no command substitution allowed) across edge inputs that have
-// historically caused issues in shell tooling.
 func TestExpandStrictAdversarial(t *testing.T) {
 	ctx := context.Background()
 	src := Source(func(name string) (string, bool) {
@@ -134,9 +131,6 @@ func TestExpandStrictAdversarial(t *testing.T) {
 	}
 }
 
-// TestExpandPermissiveAdversarial covers Expand under
-// WithCommandSubstitution: $(...) and backticks must be preserved
-// verbatim while $VAR/${VAR}/arithmetic still expand.
 func TestExpandPermissiveAdversarial(t *testing.T) {
 	ctx := WithCommandSubstitution(context.Background())
 	src := Source(func(name string) (string, bool) {
@@ -156,10 +150,6 @@ func TestExpandPermissiveAdversarial(t *testing.T) {
 	}
 }
 
-// TestExpandConcurrent ensures Expand is safe under -race for the
-// common case where the same input/source are reused from multiple
-// goroutines. Expand has no shared mutable state; this guards against
-// regressions.
 func TestExpandConcurrent(t *testing.T) {
 	ctx := WithCommandSubstitution(context.Background())
 	src := Source(func(name string) (string, bool) {
@@ -191,10 +181,6 @@ func TestExpandConcurrent(t *testing.T) {
 	wg.Wait()
 }
 
-// TestExpandBodyAdversarial covers ExpandBody with the full surface
-// of Rune-style $NAME / ${NAME} / $N substitutions, escape handling,
-// and tricky values from env (whitespace, quotes, NUL, non-utf8,
-// newlines). $(...) and backticks must always pass through verbatim.
 func TestExpandBodyAdversarial(t *testing.T) {
 	ctx := context.Background()
 	src := Source(func(name string) (string, bool) {
@@ -209,8 +195,6 @@ func TestExpandBodyAdversarial(t *testing.T) {
 	}
 }
 
-// TestExpandBodyNilSource ensures ExpandBody is safe when the env
-// source is nil — every $NAME must pass through as a literal.
 func TestExpandBodyNilSource(t *testing.T) {
 	got := ExpandBody(context.Background(), "$X ${Y} $1 $$ literal", nil)
 	assert.Equal(t, "$X ${Y} $1 $ literal", got)
@@ -231,14 +215,6 @@ func TestExpandBodyPreservesParameterExpansionWithChainVar(t *testing.T) {
 			"to the chain value would lose the suffix-strip")
 }
 
-// TestQuoteRoundTripsThroughShellFields asserts that values quoted
-// via cmdenv.Quote round-trip through shell.Fields back to a single
-// argv element with the original bytes — i.e. Quote produces
-// something the shell tokenizer (the layer that actually unwraps
-// quoting) recovers.
-//
-// NUL bytes are intentionally excluded: shell.Fields drops them
-// during single-quoted parse. See TestQuoteNULBytesAreStripped.
 func TestQuoteRoundTripsThroughShellFields(t *testing.T) {
 	cases := []string{
 		"",
@@ -263,10 +239,6 @@ func TestQuoteRoundTripsThroughShellFields(t *testing.T) {
 	}
 }
 
-// TestQuoteNULBytesAreStripped pins the known limitation that
-// shell.Fields drops NUL bytes inside the single-quoted form Quote
-// produces for them. If shell.Fields ever stops stripping, this
-// test will start failing and we can drop the carve-out above.
 func TestQuoteNULBytesAreStripped(t *testing.T) {
 	fields, err := shell.Fields(
 		Quote("a\x00b"), func(string) string { return "" })
@@ -277,9 +249,6 @@ func TestQuoteNULBytesAreStripped(t *testing.T) {
 			"adjust if mvdan/sh fixes this")
 }
 
-// TestQuoteANSICForms pins the textual `$'...'` ANSI-C rendering
-// Quote emits for control bytes, newlines, tabs, and non-utf8 — and
-// asserts shell.Fields decodes those back to the original bytes.
 func TestQuoteANSICForms(t *testing.T) {
 	cases := []struct {
 		in, quoted string
@@ -301,16 +270,12 @@ func TestQuoteANSICForms(t *testing.T) {
 	}
 }
 
-// TestQuoteNonUTF8 documents Quote's behavior on non-utf8 bytes:
-// the bash quoter emits a $'...' form using \xNN escapes.
 func TestQuoteNonUTF8(t *testing.T) {
 	in := "a\xffb"
 	got := Quote(in)
 	assert.Equal(t, `$'a\xffb'`, got)
 }
 
-// TestEscapeDoubleDollar covers every documented mapping plus the
-// adjacent cases that are easy to break.
 func TestEscapeDoubleDollar(t *testing.T) {
 	cases := []struct {
 		in, want string
@@ -334,10 +299,6 @@ func TestEscapeDoubleDollar(t *testing.T) {
 	}
 }
 
-// TestQuoteForShellFields covers the round-trip with mvdan
-// shell.Fields for a wide set of values including operators that
-// must be quoted, env references that must NOT be quoted, and bytes
-// (NUL, non-utf8) that the helper passes through.
 func TestQuoteForShellFields(t *testing.T) {
 	cases := []struct {
 		name, in, want string
@@ -366,7 +327,6 @@ func TestQuoteForShellFields(t *testing.T) {
 	}
 }
 
-// TestQuoteArgsForShellFields covers nil/empty/length behavior.
 func TestQuoteArgsForShellFields(t *testing.T) {
 	assert.Equal(t, []string{}, QuoteArgsForShellFields(nil))
 	assert.Equal(t, []string{}, QuoteArgsForShellFields([]string{}))

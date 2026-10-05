@@ -107,10 +107,6 @@ func TestHandlerCloseIsIdempotent(t *testing.T) {
 	assert.True(t, h.atEOF(), "Close should leave handler at EOF")
 }
 
-// TestHandlerMissingFileReadsEmpty documents that a failed open is
-// indistinguishable from an empty file at the streamload layer: the
-// placeholder renders empty and the parallel workspace load owns
-// error reporting (see text.Component.openFileTabStreaming).
 func TestHandlerMissingFileReadsEmpty(t *testing.T) {
 	dir := t.TempDir()
 	r := newFSReader(dir)
@@ -160,10 +156,6 @@ func (r *blockingReader) OpenFile(
 	return r.fsReader.OpenFile(p, flag, perm)
 }
 
-// TestHandlerNewDoesNotBlockOnOpen pins the event-loop-freeze fix:
-// New must return while the (asynchronously started) OpenFile RPC is
-// still blocked, and Handle/Draw stay non-blocking (paging is gated)
-// until the deferred open completes.
 func TestHandlerNewDoesNotBlockOnOpen(t *testing.T) {
 	dir := t.TempDir()
 	uri := writeLines(t, dir, "a.txt", 5)
@@ -185,10 +177,6 @@ func TestHandlerNewDoesNotBlockOnOpen(t *testing.T) {
 	assert.False(t, h.atEOF())
 }
 
-// TestHandlerUsableBeforeOpenCompletes asserts that a freshly built
-// handler renders an empty frame and survives Resize/Handle (which
-// must not reach the still-opening file), and that the first prime
-// after the open completes reveals the first page.
 func TestHandlerUsableBeforeOpenCompletes(t *testing.T) {
 	const (
 		width  = 10
@@ -226,10 +214,6 @@ func TestHandlerUsableBeforeOpenCompletes(t *testing.T) {
 		}})
 }
 
-// TestHandlerLifecycle drives the streaming handler through its
-// public surface — initial render, lazy paging on scroll, EOF — and
-// asserts the full rendered framebuffer at each step. The sequences
-// share a single 10-line file so every golden frame is unambiguous.
 func TestHandlerLifecycle(t *testing.T) {
 	const (
 		width  = 10
@@ -393,11 +377,6 @@ func TestHandlerLifecycle(t *testing.T) {
 	}
 }
 
-// TestHandlerLifecyclePagingAcrossLazyReads is a single test case
-// that exercises a sequence of paging events on the same handler
-// instance. It documents that the handler keeps growing its buffer
-// as the user scrolls, reads stop at EOF, and a subsequent k after
-// hitting EOF reveals the previously-loaded last rows.
 func TestHandlerLifecyclePagingAcrossLazyReads(t *testing.T) {
 	const (
 		width  = 10
@@ -448,15 +427,6 @@ func TestHandlerLifecyclePagingAcrossLazyReads(t *testing.T) {
 	assert.True(t, h.atEOF(), "handler should be at EOF after paging to end")
 }
 
-// TestHandlerSingleGoroutineContract documents the invariant that
-// Handle and Close must run on the same goroutine. The test itself
-// does just that, so it passes (no race) and exists to catch a
-// future refactor that, e.g., starts driving Handle from one
-// goroutine and Close from another. Such a change would race on
-// pageReader's eof/file/scan fields and would be caught by the
-// race detector here only when the change is paired with an
-// honest concurrent-access reproduction; the comment is the
-// primary record. See pageReader's doc comment for the rationale.
 func TestHandlerSingleGoroutineContract(t *testing.T) {
 	dir := t.TempDir()
 	uri := writeLines(t, dir, "a.txt", 8)

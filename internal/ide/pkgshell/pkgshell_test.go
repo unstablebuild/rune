@@ -27,17 +27,20 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	blueiterator "github.com/unstablebuild/blue/iterator"
 	"github.com/unstablebuild/blue/release"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/handler/repl"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/internal/ide/idepkg"
 	"unstable.build/rune/internal/ide/idepkg/idepkgtest"
+	"unstable.build/rune/internal/ide/idepkg/pkgrpc"
 )
 
 type recordingProgressWriter struct {
@@ -73,10 +76,7 @@ func newHandlerForTest(t *testing.T) (*Handler, *idepkgtest.Notifications) {
 	)
 	rm := idepkgtest.NewReleaseManager(pkgs, bundles)
 	n := idepkgtest.NewNotifications(t)
-	mgr := newManager(t, n, rm)
-	uc := idepkg.NewUpdateChecker(mgr)
-	t.Cleanup(func() { _ = uc.Close() })
-	return New(Config{Manager: mgr, UpdateChecker: uc}), n
+	return New(Config{Manager: newManager(t, n, rm)}), n
 }
 
 var syncTick = func(fn func()) bool { fn(); return true }
@@ -403,6 +403,112 @@ func TestNewPanicsOnNilManager(t *testing.T) {
 		assert.NotNil(t, recover(), "expected panic for nil manager")
 	}()
 	_ = New(Config{Manager: nil})
+}
+
+// hostPackageManager stands in for a package manager on another host. It
+// implements only what the tested subcommands call; any other method
+// panics on the nil embedded interface.
+type hostPackageManager struct {
+	idepkg.PackageManager
+	mu        sync.Mutex
+	latest    release.Version
+	inUse     map[string]release.Version
+	installed []string
+}
+
+func (f *hostPackageManager) LatestVersion(context.Context, string) (release.Version, error) {
+	return f.latest, nil
+}
+
+func (f *hostPackageManager) InstallPackageVersion(
+	_ context.Context, pkgID string, version release.Version, pw repl.ProgressWriter,
+) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	pw.Progress(1, 1, "B")
+	f.inUse[pkgID] = version
+	f.installed = append(f.installed, pkgID)
+	return nil
+}
+
+func (f *hostPackageManager) PackageVersionInUse(
+	_ context.Context, pkgID string,
+) (release.Version, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	v, ok := f.inUse[pkgID]
+	return v, ok, nil
+}
+
+func (f *hostPackageManager) ListInstalledPackages(
+	context.Context,
+) (blueiterator.Iterator[string], error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return blueiterator.FromSlice(append([]string(nil), f.installed...)), nil
+}
+
+func (f *hostPackageManager) DescribePackage(
+	_ context.Context, pkgID string,
+) (release.Package, error) {
+	return release.Package{Name: pkgID, Latest: f.latest}, nil
+}
+
+func TestHandlerUsesAnyPackageManager(t *testing.T) {
+	t.Parallel()
+	pm := &hostPackageManager{latest: "2", inUse: map[string]release.Version{}}
+	h := New(Config{Manager: pm})
+	ctx := context.Background()
+
+	tests := []struct {
+		args []string
+		want string
+	}{
+		{args: []string{"install", "go", "1"}, want: "Installed go@1"},
+		{args: []string{"current", "go"}, want: "Version 1 of package go is in use"},
+		{args: []string{"update-check"}, want: "go: 1 → 2"},
+		{args: []string{"install", "go"}, want: "Installed go@2"},
+		{args: []string{"update-check"}, want: "All packages are up to date."},
+	}
+	for _, tc := range tests {
+		pw := &recordingProgressWriter{}
+		it, err := h.HandleCommand(ctx, repl.Command{Name: CommandName, Args: tc.args}, pw)
+		require.NoError(t, err, tc.args)
+		out, err := iterator.ToSlice(ctx, it)
+		require.NoError(t, err, tc.args)
+		require.Len(t, out, 1, tc.args)
+		assert.Contains(t, renderText(t, out[0]), tc.want, tc.args)
+	}
+}
+
+// oldHost runs a Rune that does not serve package management.
+type oldHost struct {
+	idepkg.PackageManager
+}
+
+func (oldHost) LatestVersion(context.Context, string) (release.Version, error) {
+	return "", pkgrpc.ErrUnsupported
+}
+
+func TestHandlerOnOldHost(t *testing.T) {
+	t.Parallel()
+	h := New(Config{Manager: oldHost{}, Host: "studio"})
+	_, err := h.HandleCommand(context.Background(),
+		repl.Command{Name: CommandName, Args: []string{"install", "go"}},
+		&recordingProgressWriter{})
+	require.EqualError(t, err, "Update Rune on studio to install packages there.")
+}
+
+func renderText(t *testing.T, c component.Responsive) string {
+	t.Helper()
+	const width = 80
+	height := c.Height(width)
+	w := term.NewStringWriter(width, height)
+	require.NoError(t, w.Clear(term.Attributes{}))
+	c.Resize(width, height)
+	c.Draw(w)
+	require.NoError(t, w.Flush())
+	return w.String()
 }
 
 func TestDescribeMarkdown(t *testing.T) {

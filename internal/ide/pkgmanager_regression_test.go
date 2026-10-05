@@ -47,13 +47,6 @@ func TestPackageManagerLibDirMissingPackageReturnsStorageNotFound(t *testing.T) 
 	require.ErrorIs(t, err, storageapi.ErrNotFound)
 }
 
-// TestPackageManagerInstallPromptDoesNotBlockEventLoop is a regression
-// test: selecting "Yes" on the auto-install prompt used to run the
-// synchronous InstallPackageVersion download directly inside the prompt
-// handler, which executes on the event loop and froze the UI until the
-// package finished installing. The install must run off the event loop
-// so dispatching the selection key returns promptly while the download
-// is still in flight.
 func TestPackageManagerInstallPromptDoesNotBlockEventLoop(t *testing.T) {
 	t.Parallel()
 
@@ -98,11 +91,6 @@ func TestPackageManagerInstallPromptDoesNotBlockEventLoop(t *testing.T) {
 	require.NoError(t, m.Close())
 }
 
-// TestPackageManagerPendingInstallHonorsContextCancellation is a
-// regression test: an iterator handed out while the install prompt was
-// unanswered blocked Next and Err on the install decision regardless of
-// the caller's context. The symbol indexer's scan workers parked there,
-// and Parser.Close, which cancels them and waits, hung IDE shutdown.
 func TestPackageManagerPendingInstallHonorsContextCancellation(t *testing.T) {
 	t.Parallel()
 
@@ -134,10 +122,6 @@ func TestPackageManagerPendingInstallHonorsContextCancellation(t *testing.T) {
 	}
 }
 
-// TestPackageManagerPendingInstallErrDoesNotBlock is a regression test:
-// Err on an iterator handed out while the install prompt was unanswered
-// waited for the install decision with no way to cancel, though no
-// error had been encountered yet.
 func TestPackageManagerPendingInstallErrDoesNotBlock(t *testing.T) {
 	t.Parallel()
 

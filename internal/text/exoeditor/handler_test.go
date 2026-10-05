@@ -104,9 +104,6 @@ func TestPickLocationEmptyListReturnsFalse(t *testing.T) {
 	assert.False(t, ok)
 }
 
-// TestMoveToLocationReturnsFalseForUnknownList guards the public
-// MoveTo{Next,Prev}Location contract for IDs that were never set via
-// SetLocationList.
 func TestMoveToLocationReturnsFalseForUnknownList(t *testing.T) {
 	t.Parallel()
 	h := &editorHandler{locations: text.NewLocationStore()}
@@ -326,9 +323,6 @@ func (e *recordingSignalExecutor) sentSignals() []syscall.Signal {
 	return append([]syscall.Signal(nil), e.signals...)
 }
 
-// TestCloseDefersQuitUntilReady asserts that closing before the first
-// probe stashes the quit sequence and flushes it once the editor is
-// ready, rather than dropping it.
 func TestCloseDefersQuitUntilReady(t *testing.T) {
 	quit, err := term.ParseKeys("<esc>:qa!<enter>")
 	require.NoError(t, err)
@@ -363,8 +357,6 @@ func TestCloseDefersQuitUntilReady(t *testing.T) {
 		"the deferred quit sequence must reach the editor once it is ready")
 }
 
-// TestCloseReadyDispatchesQuitImmediately asserts that Close dispatches
-// the quit synchronously when the editor is already probed.
 func TestCloseReadyDispatchesQuitImmediately(t *testing.T) {
 	quit, err := term.ParseKeys("<esc>:qa!<enter>")
 	require.NoError(t, err)
@@ -388,8 +380,6 @@ func TestCloseReadyDispatchesQuitImmediately(t *testing.T) {
 		"a ready editor receives the quit synchronously from Close")
 }
 
-// TestCloseTimeoutWarnsAndCloses asserts that the graceful-quit timeout
-// surfaces a Warn and still tears down the pty.
 func TestCloseTimeoutWarnsAndCloses(t *testing.T) {
 	hr := newGotoReadinessHarness(t, readinessTpl)
 	hr.h.procDone = make(chan error) // never delivers, forcing the timeout

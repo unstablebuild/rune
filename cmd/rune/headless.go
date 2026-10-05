@@ -30,6 +30,8 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/unstablebuild/blue/logging"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
+	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"unstable.build/rune/auth"
 	"unstable.build/rune/cmd/rune/ide/apiclient"
 	"unstable.build/rune/internal/ide"
@@ -100,6 +102,13 @@ func runHeadless(ctx context.Context, shellRCDir string, shellRCErr error) int {
 		_ = net.Close()
 	}()
 
+	closePackages, err := serveHeadlessPackages(ctx, net, storage, shellRCDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s\n", err)
+		return 1
+	}
+	defer closePackages()
+
 	if err := net.join(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "could not join the network: %s\n", err)
 		return 1
@@ -114,6 +123,44 @@ func runHeadless(ctx context.Context, shellRCDir string, shellRCErr error) int {
 
 	waitForShutdownSignal(ctx)
 	return 0
+}
+
+// serveHeadlessPackages has peers install packages on this machine
+// through a manager of its own: there is no editor to own them. The
+// user config's gui.env is applied now and after every install that
+// changes it, so commands peers start see the installed toolchains.
+func serveHeadlessPackages(
+	ctx context.Context, net *network, rootStorage storageapi.Service,
+	shellRCDir string,
+) (func(), error) {
+	uri, err := workspaceapi.CurrentUserHostURI("/")
+	if err != nil {
+		return nil, fmt.Errorf("root workspace URI: %w", err)
+	}
+	scheme, err := workspace.NewFileSchemeFunc(shellRCDir)(
+		ctx, config.NopConfig(), uri)
+	if err != nil {
+		return nil, fmt.Errorf("root workspace scheme: %w", err)
+	}
+	applyUserConfigEnv()
+	pkgs, pkgStorage := newHostPackageManager(
+		rootStorage, newRemoteReleaseManager(), scheme, applyUserConfigEnv)
+	net.packages.set(pkgs)
+	return func() {
+		_ = pkgStorage.Close()
+		_ = scheme.Close()
+	}, nil
+}
+
+func applyUserConfigEnv() {
+	cfg, err := ide.Config(*flagConfigPath, runeDefaultConfig())
+	if err != nil {
+		log.Warnf("load config to apply gui.env: %v", err)
+		if cfg == nil {
+			return
+		}
+	}
+	applyConfigEnv(cfg)
 }
 
 // startHeadlessLogging points the editor log at its configured file and

@@ -49,10 +49,6 @@ import (
 	"unstable.build/rune/internal/workspace/workspacetest"
 )
 
-// A task command that needs shell interpretation must be handed to the
-// workspace's shell rather than field-split on the editor host: on an
-// ssh workspace a locally expanded "~" resolves to the editor host's
-// home, which does not exist on the remote.
 func TestRunTaskDefersShellExpansionToWorkspace(t *testing.T) {
 	wm := newFakeBrowser()
 	exec := newFakeScheme()
@@ -909,10 +905,6 @@ func TestManager(t *testing.T) {
 	})
 }
 
-// TestTaskHandlerAccessRace exercises the Task render/handler accessors
-// concurrently with the donech goroutine that swaps t.handler on run
-// completion. Under -race it reproduces the data race between
-// Task.Dimensions/Draw reads and doSetError writes of t.handler.
 func TestTaskHandlerAccessRace(t *testing.T) {
 	wm := newFakeBrowser()
 	exec := newFakeScheme()
@@ -1555,10 +1547,6 @@ func runAndSettle(t *testing.T, m *Manager, task Task) {
 	settleRun(t, m, task.Name)
 }
 
-// TestManagerReplaceTaskEdgeCases probes ReplaceTask, the most fragile
-// surface: it tears down and re-arms a watcher in place while preserving
-// the window. These cases hunt for lost state, leaked watches, and
-// mishandled error/race paths.
 func TestManagerReplaceTaskEdgeCases(t *testing.T) {
 	t.Run("replace nonexistent task is an error", func(t *testing.T) {
 		m := newTestManager(newFakeBrowser(), newFakeScheme())
@@ -1744,10 +1732,6 @@ func TestManagerReplaceTaskEdgeCases(t *testing.T) {
 	})
 }
 
-// TestRunTaskDoesNotBlockOnSlowWatch reproduces the Linux freeze where
-// RunTask blocked on a synchronous Watch (notify's recursive inotify
-// fallback walks the whole tree before returning). RunTask must return
-// promptly and arm the watch in the background once it completes.
 func TestRunTaskDoesNotBlockOnSlowWatch(t *testing.T) {
 	wm := newFakeBrowser()
 	exec := newFakeScheme()
@@ -1779,8 +1763,6 @@ func TestRunTaskDoesNotBlockOnSlowWatch(t *testing.T) {
 		"task must retrigger once the watch arms")
 }
 
-// TestReplaceTaskDoesNotBlockOnSlowWatch is the ReplaceTask analogue of
-// TestRunTaskDoesNotBlockOnSlowWatch.
 func TestReplaceTaskDoesNotBlockOnSlowWatch(t *testing.T) {
 	wm := newFakeBrowser()
 	exec := newFakeScheme()
@@ -1814,15 +1796,6 @@ func TestReplaceTaskDoesNotBlockOnSlowWatch(t *testing.T) {
 		"task must retrigger once the replaced watch arms")
 }
 
-// TestRunTaskDoesNotBlockOnSlowSpawn reproduces the remote-workspace
-// freeze where RunTask — called on the host event loop when restoring
-// a workspace session — blocked on the plugin's synchronous terminal
-// spawn: plugin.New → vte.NewHandler → scheme.NewPty is a transport
-// RPC that stalls for as long as the transport is slow or wedged.
-// Unlike the other Manager tests this uses the real default plugin
-// builder, so the full spawn path is exercised end to end. RunTask
-// must return promptly and install the live handler once the spawn
-// settles in the background.
 func TestRunTaskDoesNotBlockOnSlowSpawn(t *testing.T) {
 	wm := newFakeBrowser()
 	exec := newFakeScheme()
@@ -1853,10 +1826,6 @@ func TestRunTaskDoesNotBlockOnSlowSpawn(t *testing.T) {
 	require.NoError(t, m.StopTask("task"))
 }
 
-// TestStopTaskDuringFailingSpawnDoesNotPanic reproduces the crash
-// where a task stopped while its plugin build was still in flight
-// closed the partially-initialized handler that plugin.New used to
-// return alongside its error, dereferencing the handler's nil vte.
 func TestStopTaskDuringFailingSpawnDoesNotPanic(t *testing.T) {
 	wm := newFakeBrowser()
 	exec := newFakeScheme()
@@ -1880,9 +1849,6 @@ func TestStopTaskDuringFailingSpawnDoesNotPanic(t *testing.T) {
 	task.WaitInflight()
 }
 
-// TestManagerLoopDetection probes the build -> file-change -> rebuild
-// loop detector at its boundaries and against interacting state
-// transitions (pause, restart, replace).
 func TestManagerLoopDetection(t *testing.T) {
 	t.Run("exactly threshold reruns halts", func(t *testing.T) {
 		wm := newFakeBrowser()
@@ -2006,8 +1972,6 @@ func triggerRerunInfo(t *testing.T, m *Manager, exec *fakeScheme, name string, e
 		func(info TaskInfo) bool { return !info.Running })
 }
 
-// TestManagerEventHandling exercises event-type and filter-matching
-// behavior that the default Create-on-file event could not reach.
 func TestManagerEventHandling(t *testing.T) {
 	eventTypes := []struct {
 		name string
@@ -2104,8 +2068,6 @@ func TestManagerEventHandling(t *testing.T) {
 	})
 }
 
-// TestManagerLifecycleEdgeCases probes construction validation, idempotent
-// teardown, and the pause/restart interactions around a watched task.
 func TestManagerLifecycleEdgeCases(t *testing.T) {
 	t.Run("RunTask with empty command panics", func(t *testing.T) {
 		m := newTestManager(newFakeBrowser(), newFakeScheme())

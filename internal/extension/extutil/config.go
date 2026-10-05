@@ -195,7 +195,7 @@ func Clipboard(cfg config.Config) (clipboard.Register, error) {
 	case "memory":
 		return clipboard.NewInMemory(), nil
 	case "system":
-		return text.NewAsyncSystemClipboard(), nil
+		return text.NewSystemClipboard(), nil
 	default:
 		return nil, errors.New("unknown clipboard")
 	}

@@ -53,36 +53,6 @@ func TestSkipPreflightWrongTypeErrors(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestProvisionPackagesDefaultsTrue(t *testing.T) {
-	cfg, err := fromConfig(config.MapConfig(map[string]any{}))
-	require.NoError(t, err)
-	assert.True(t, cfg.provisionPackages,
-		"remote package provisioning must be on by default")
-}
-
-func TestProvisionPackagesExplicitFalse(t *testing.T) {
-	cfg, err := fromConfig(config.MapConfig(map[string]any{
-		"provision_packages": false,
-	}))
-	require.NoError(t, err)
-	assert.False(t, cfg.provisionPackages)
-}
-
-func TestProvisionPackagesExplicitTrue(t *testing.T) {
-	cfg, err := fromConfig(config.MapConfig(map[string]any{
-		"provision_packages": true,
-	}))
-	require.NoError(t, err)
-	assert.True(t, cfg.provisionPackages)
-}
-
-func TestProvisionPackagesWrongTypeErrors(t *testing.T) {
-	_, err := fromConfig(config.MapConfig(map[string]any{
-		"provision_packages": "yes",
-	}))
-	require.Error(t, err)
-}
-
 func TestStrictHostKeyCheckingDefaultsTrue(t *testing.T) {
 	cfg, err := fromConfig(config.MapConfig(map[string]any{}))
 	require.NoError(t, err)

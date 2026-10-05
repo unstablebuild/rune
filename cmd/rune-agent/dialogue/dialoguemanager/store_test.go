@@ -793,8 +793,6 @@ func TestStoreRoundTripsReasoningBlocks(t *testing.T) {
 	assert.Equal(t, appended.ReasoningBlocks, reloaded.Messages[2].ReasoningBlocks)
 }
 
-// TestStoreSharedInstanceConcurrentUpserts verifies that many goroutines
-// concurrently writing through the *same* Store instance work correctly.
 func TestStoreSharedInstanceConcurrentUpserts(t *testing.T) {
 	ctx := context.Background()
 	backend := storagestub.NewInMemoryService()

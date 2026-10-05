@@ -176,19 +176,6 @@ func setupPythonManagerNoOpen(
 	return mgr, mainURI, string(mainContent)
 }
 
-// TestE2EPython exercises the same LSP API surface as the Go e2e suite
-// against a real ty + ruff multi-server. Each case asserts the exact
-// response so a routing or protocol regression fails loudly. The
-// positions below are 0-based LSP coordinates into testdata/py/main.py:
-//
-//	line 17: import os
-//	line 20: class Greeter:
-//	line 23: def __init__(self, name: str) -> None:
-//	line 26: def greet(self) -> str:
-//	line 31: def add(a: int, b: int) -> int:
-//	line 33: return a+b
-//	line 38: g = Greeter("World")
-//	line 39: result = add(1, 2)
 func TestE2EPython(t *testing.T) {
 	t.Parallel()
 
@@ -676,10 +663,6 @@ func TestE2EPython(t *testing.T) {
 	}
 }
 
-// TestE2EPythonMergedDiagnostics asserts that diagnostics from ruff
-// (the alternate child) reach the callback for the opened file. ty
-// publishes an empty diagnostic set for this fixture, so the merged
-// result is exactly ruff's F401 unused-import on `import os`.
 func TestE2EPythonMergedDiagnostics(t *testing.T) {
 	t.Parallel()
 
@@ -725,12 +708,6 @@ func TestE2EPythonMergedDiagnostics(t *testing.T) {
 	}, got.Range)
 }
 
-// TestE2EPythonDefinitionUnopenedFile reproduces the ty regression:
-// ty rejects textDocument/definition for a document it does not track,
-// which is exactly what happens when a symbol is resolved by name and
-// the target file was never opened in the editor. The Manager must
-// transiently didOpen the file around the request. Without the fix
-// this errors; with it, ty resolves the definition of `add`.
 func TestE2EPythonDefinitionUnopenedFile(t *testing.T) {
 	t.Parallel()
 
@@ -770,13 +747,6 @@ func TestE2EPythonDefinitionUnopenedFile(t *testing.T) {
 		"transient open must not cache the unopened file in m.files")
 }
 
-// TestE2EPythonUnopenedDocumentRequests reproduces the ty regression for
-// every document- and position-scoped request that ty rejects unless the
-// document was previously opened. Each of these is reachable from agent
-// tools or `lsp` subcommands with a name-resolved target file that was
-// never opened in the editor, so the Manager must transiently didOpen the
-// file around the request. Without the fix these error with
-// "Document ... is not open in the session"; with it they succeed.
 func TestE2EPythonUnopenedDocumentRequests(t *testing.T) {
 	t.Parallel()
 
@@ -852,13 +822,6 @@ func TestE2EPythonUnopenedDocumentRequests(t *testing.T) {
 		"transient opens must not cache the unopened file in m.files")
 }
 
-// TestE2EPythonPullDiagnosticsUnopenedFile exercises the host path
-// behind the agent's check_file_errors tool: a pull
-// textDocument/diagnostic for a file that was never opened in the
-// editor. The report must merge every child server's findings — ty's
-// type errors and ruff's lint findings — not just the default child's,
-// since routing the pull to ty alone silently drops all lint
-// diagnostics.
 func TestE2EPythonPullDiagnosticsUnopenedFile(t *testing.T) {
 	t.Parallel()
 
@@ -920,14 +883,6 @@ func (c *configArrayCallback) Configuration(
 	return out, nil
 }
 
-// TestE2EPythonWorkspaceDiagnosticMode exercises B1 end-to-end against
-// real ty: with diagnosticMode=workspace in ty's initialization
-// options, a workspace/diagnostic pull must return diagnostics for a
-// file that was never opened in the editor. This also covers two
-// serialization fixes on the request path: WorkspaceDiagnosticParams
-// must always emit previousResultIds (ty rejects a missing/null value),
-// and the jsonrpc2 reply to ty's workspace/configuration request must
-// carry an explicit result member (ty otherwise stalls the pull).
 func TestE2EPythonWorkspaceDiagnosticMode(t *testing.T) {
 	t.Parallel()
 

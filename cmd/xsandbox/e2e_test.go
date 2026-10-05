@@ -225,11 +225,6 @@ func TestE2EUsageErrors(t *testing.T) {
 	assert.Contains(t, stderr, "read spec")
 }
 
-// TestE2ESampleExtensionMatchingSpec compiles a self-contained SDK
-// extension with the local Go toolchain, runs it against a full
-// sandbox, and asserts the sandbox captures exactly what the program
-// does: config read, file read, command registrations/invocations,
-// editor-event subscription, and the resulting notifications.
 func TestE2ESampleExtensionMatchingSpec(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test in short mode")
@@ -264,10 +259,6 @@ func TestE2ESampleExtensionMatchingSpec(t *testing.T) {
 	assert.Contains(t, report.Methods, "text.Editor/SubscribeREPLCommand")
 }
 
-// TestE2ESampleExtensionSpecDiff runs the same compiled extension
-// against a spec that deliberately diverges from its behavior, and
-// asserts the sandbox fails loudly with the observed vs. expected
-// difference rather than passing.
 func TestE2ESampleExtensionSpecDiff(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test in short mode")
@@ -287,14 +278,6 @@ func TestE2ESampleExtensionSpecDiff(t *testing.T) {
 	assert.Contains(t, stderr, "sample_diff.star")
 }
 
-// TestE2ESampleExtensionFullAPI invokes the sample extension's "api"
-// command, which exhaustively touches every method of every interface
-// reachable through extensionapi.Workspace. The whole per-method
-// surface is asserted by the spec itself (testdata/sample_api.star,
-// which expect_rpc's all 143 methods), so this test verifies the spec
-// passes end to end and that the recorded surface is at least that
-// large — the DSL is the source of truth for which methods are
-// covered.
 func TestE2ESampleExtensionFullAPI(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test in short mode")
@@ -324,11 +307,6 @@ func TestE2ESampleExtensionFullAPI(t *testing.T) {
 		"expected the sample to record the whole per-method API surface")
 }
 
-// TestE2ESampleExtensionWindowHandlers invokes the "wm" command, which
-// installs tui.Handlers through the window manager (Split, Tab, Bar).
-// These are handler-carrying bidi streams; the test asserts the
-// sandbox records each stream and the command completes without
-// hanging on the installed handlers.
 func TestE2ESampleExtensionWindowHandlers(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test in short mode")
@@ -358,12 +336,6 @@ func TestE2ESampleExtensionWindowHandlers(t *testing.T) {
 	}
 }
 
-// TestE2ESampleExtensionRender invokes the "counter" command, which
-// splits a panel whose handler renders "count=N" and increments N on
-// <space>. The spec renders the installed handler to a string and
-// sends it key events, asserting the rendered output reflects the
-// handler's state before and after input — the sandbox now drives a
-// real headless browser instead of a no-op stub.
 func TestE2ESampleExtensionRender(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test in short mode")
@@ -388,11 +360,6 @@ func TestE2ESampleExtensionRender(t *testing.T) {
 	}
 }
 
-// TestE2EColorPaletteRender runs the color palette extension's own
-// spec, which opens the palette, renders the installed handler, and
-// sends <c-d> to toggle dim mode — asserting the rendered color grid
-// gains the dim "D" prefix. It proves render and send_key work against
-// a real third-party extension binary.
 func TestE2EColorPaletteRender(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test in short mode")
@@ -417,10 +384,6 @@ func TestE2EColorPaletteRender(t *testing.T) {
 	}
 }
 
-// TestE2ESampleExtensionFullAPIDiff expects a WindowManager/Floating
-// RPC that the "api" command never makes (floating windows need a live
-// browser), proving the sandbox reports missing coverage instead of
-// passing.
 func TestE2ESampleExtensionFullAPIDiff(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test in short mode")

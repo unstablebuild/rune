@@ -71,26 +71,6 @@ type IDE struct {
 	storage          storageapi.Service
 }
 
-// provisionManifest builds the encoded package-provisioning manifest passed
-// to a remote `rune -x` server so it mirrors the local toolchain. It returns
-// an empty string (skip provisioning) when the package manager is not yet
-// initialized or has no in-use packages.
-func (i *IDE) provisionManifest() string {
-	if i.workspaceHandler == nil {
-		return ""
-	}
-	pm := i.workspaceHandler.pkgmanager
-	if pm == nil || pm.pkg == nil {
-		return ""
-	}
-	entries, err := idepkg.BuildProvisionManifest(context.Background(), pm.pkg)
-	if err != nil {
-		log.Warnf("build remote provision manifest: %v", err)
-		return ""
-	}
-	return idepkg.EncodeProvisionManifest(entries)
-}
-
 // EventPublisher is a function that publishes the given event back
 // into the event loop. It should be safe for concurrent use.
 type EventPublisher func(term.Event) bool
@@ -154,7 +134,7 @@ func ConfigWithOverlays(
 
 // DefaultConfigTree decodes def into the raw config map the editor uses as the
 // predeclared `config` base when reading a package's .star config during a
-// merge. Headless callers (the remote provisioning manager) pass the result to
+// merge. Headless callers (a host's package manager) pass the result to
 // idepkg.NewProvisioningManager so a .star-based gui.env merge resolves against
 // the same tree the editor would.
 func DefaultConfigTree(def DefaultConfig) (map[string]any, error) {
@@ -168,8 +148,8 @@ func DefaultConfigTree(def DefaultConfig) (map[string]any, error) {
 // "standard", and a missing or unreadable editor.mode defaults to "vim". A nil
 // cfg yields "vim".
 //
-// The remote `rune -x` provisioning server has no editor UI, so it calls this
-// to thread the user's mode into idepkg.NewProvisioningManager; without it, a
+// A host's package manager has no editor UI, so it calls this to thread the
+// user's mode into idepkg.NewProvisioningManager; without it, a
 // package's config.star that reads RUNE_EDITOR_MODE fails to decode with
 // "undefined: RUNE_EDITOR_MODE".
 func PkgEditorMode(cfg config.Config) string {
@@ -478,6 +458,13 @@ func (i *IDE) SetReleaseManager(m release.Manager) {
 	i.workspaceHandler.setReleaseManager(m)
 }
 
+// PackageManager manages this machine's packages for other machines to
+// install through. Unlike the editor's own lookups, a missing package
+// is reported as not installed rather than offered for install.
+func (i *IDE) PackageManager() idepkg.PackageManager {
+	return i.workspaceHandler.pkgmanager.pkg
+}
+
 // Notifications returns an cross-workspace, goroutine-safe implementation
 // of browserapi.Notifications.
 func (i *IDE) Notifications() browserapi.Notifications {
@@ -602,7 +589,6 @@ func (i *IDE) init(
 	err := workspaceManager.RegisterScheme(
 		workspacessh.Scheme,
 		workspacessh.New(newWorkspaceWindowManagerUI(i),
-			workspacessh.WithProvisionManifest(i.provisionManifest),
 			workspacessh.WithRemoteDataDir(filepath.Base(dataDir))),
 	)
 	if err != nil {
@@ -676,6 +662,7 @@ func (i *IDE) init(
 				op.defaultWallpaper, defaultCfg, op.bell, op.scheduleFn)
 			cfg.storage = i.ideConfig.storage
 			cfg.cellPixelSize = op.cellPixelSize
+			cfg.clip = op.clip
 			return cfg, err
 		}, op.workspaceConfig, op.tabBarOffset,
 		op.rightInset, op.tabBarHeight, op.workspacesIcon, op.workspacesBarHeight,
@@ -795,6 +782,7 @@ func loadIDEConfig(cfgfilename string, op options) (ideConfig, error) {
 		op.defaultWallpaper, newDefaultConfig(op), op.bell,
 		op.scheduleFn)
 	cfg.cellPixelSize = op.cellPixelSize
+	cfg.clip = op.clip
 	return cfg, err
 }
 

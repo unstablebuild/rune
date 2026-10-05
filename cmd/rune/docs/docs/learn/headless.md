@@ -70,10 +70,18 @@ and prints a code to sign in again.
 
 **Give it a `PATH`.** A service manager starts Rune without your login
 shell, so `PATH` is whatever the service definition sets, not what your
-`.zshrc` exports. Toolchains that a `rune://` workspace should find on
-this machine, such as `go`, `node`, `cargo`, `mise`, or Homebrew, must be
-on it. Every recipe sets `PATH` explicitly; extend it to match the host.
-Rune adds `~/.rune/bin`, where the packages it installs live, on its own.
+`.zshrc` exports. Tools that a `rune://` workspace should find on this
+machine and that Rune does not install, such as `node`, `mise`, or
+Homebrew, must be on it. Every recipe sets `PATH` explicitly; extend it
+to match the host. Rune adds `~/.rune/bin`, where the packages it
+installs live, on its own.
+
+Language packages need no setup. When a workspace you open on this
+machine needs one it does not have, Rune asks you in your own window and
+installs it here (see [Installing packages on another
+machine](./network.md#installing-packages-on-another-machine)). The
+environment a package sets up, such as `GOROOT`, applies to the
+terminals and tools started after the install, with no restart.
 
 **Leave `network.auto_join` on.** It is the default. A headless node has
 no console to run `network up` in, so with it off Rune says so and exits.
@@ -335,15 +343,16 @@ container can be recreated, or upgraded to a new image, without signing
 in again. And a mounted project directory must be readable and writable
 by uid 1000, which is what `rune` is inside the image.
 
-**Adding toolchains.** The image carries Rune and a shell, not your
-toolchains, and a `rune://` workspace uses what the container has: its
-terminals, language servers, and tasks run inside it. Build your own
-image on top of it with the tools your projects need:
+**Adding tools.** A `rune://` workspace uses what the container has: its
+terminals, language servers, and tasks run inside it. Language packages
+install on demand, as on any other machine, and are kept in the
+`rune-data` volume. For the system tools your projects need beyond
+them, build your own image on top of it:
 
 ```dockerfile
 FROM unstablebuild/rune
 USER root
-RUN apk add --no-cache git go gopls
+RUN apk add --no-cache git make
 USER rune
 ```
 

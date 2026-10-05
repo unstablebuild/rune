@@ -799,13 +799,6 @@ func (f rootJoinFS) URI(path string) (workspaceapi.URI, error) {
 	return workspaceapi.ParseURI("file://" + path)
 }
 
-// TestHandler_LaunchResolvesRelativeProgram asserts that a relative
-// program path is resolved to an absolute path against the workspace
-// root before being sent to the adapter. debugpy derives the
-// debuggee cwd from the program's directory and then re-resolves a
-// still-relative program against it, producing a doubled path such
-// as `<root>/src/src/init.py`. Sending an absolute program prevents
-// that second resolution.
 func TestHandler_LaunchResolvesRelativeProgram(t *testing.T) {
 	root := t.TempDir()
 	uri, err := workspaceapi.ParseURI("file://" + root)
@@ -959,13 +952,6 @@ func TestHandler_LaunchThenConfigured(t *testing.T) {
 	require.Equal(t, 1, dbg.configDoneCalls)
 }
 
-// TestHandler_LaunchBlocksUntilInitializedEvent verifies that
-// the iterator returned by `debugger launch` stays open after
-// emitting its static lines so the prompt remains visibly
-// busy while the adapter is bringing the debuggee up. The
-// iterator must complete only once a *dap.InitializedEvent
-// has been delivered (the same event that prints "Debuggee
-// initialized." through the session iterator).
 func TestHandler_LaunchBlocksUntilInitializedEvent(t *testing.T) {
 	h, dbg, _ := newTestHandler(t)
 	ctx := context.Background()
@@ -1011,10 +997,6 @@ func TestHandler_LaunchBlocksUntilInitializedEvent(t *testing.T) {
 	}
 }
 
-// TestHandler_LaunchIteratorReturnsOnContextCancel verifies
-// that cancelling the caller's context releases the launch
-// iterator promptly when the adapter is slow, so Ctrl-C
-// returns control to the prompt.
 func TestHandler_LaunchIteratorReturnsOnContextCancel(t *testing.T) {
 	h, dbg, _ := newTestHandler(t)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1051,9 +1033,6 @@ func TestHandler_LaunchIteratorReturnsOnContextCancel(t *testing.T) {
 	}
 }
 
-// TestHandler_AttachBlocksUntilInitializedEvent mirrors the
-// launch test for the attach path so both subcommands keep
-// the prompt busy until the adapter signals initialization.
 func TestHandler_AttachBlocksUntilInitializedEvent(t *testing.T) {
 	h, dbg, _ := newTestHandler(t)
 	ctx := context.Background()
@@ -1126,10 +1105,6 @@ func TestHandler_Attach(t *testing.T) {
 // capability.
 type debuggerOnly struct{ debugapi.Debugger }
 
-// TestHandler_AttachConnectEndpoint covers the one-shot
-// `debugger attach <langID> connect://host:port [program]` form,
-// which creates the session and sends attach in a single gesture so
-// the endpoint never has to be written into the workspace config.
 func TestHandler_AttachConnectEndpoint(t *testing.T) {
 	ctx := context.Background()
 
@@ -1533,9 +1508,6 @@ func TestHandler_HandleCommand_UnknownSub(t *testing.T) {
 	require.ErrorIs(t, err, ErrUnknownSubcommand)
 }
 
-// TestHandler_CompleteInitializeAdapters verifies that
-// `debugger initialize <prefix>` is completed against the
-// adapter language IDs configured on the debugshell.
 func TestHandler_CompleteInitializeAdapters(t *testing.T) {
 	h := New(newFakeDebugger(), nil, nil, passThroughParser{}, passThroughFS{}, Config{
 		Debugger: idedebug.Config{
@@ -1563,9 +1535,6 @@ func TestHandler_CompleteInitializeAdapters(t *testing.T) {
 	assert.Empty(t, collectStrings(ctx, it))
 }
 
-// TestHandler_CompleteInitializeFallback exercises the path
-// where no adapters are configured: no adapter completion is
-// provided.
 func TestHandler_CompleteInitializeFallback(t *testing.T) {
 	h, _, _ := newTestHandler(t)
 	ctx := context.Background()
@@ -1574,9 +1543,6 @@ func TestHandler_CompleteInitializeFallback(t *testing.T) {
 	assert.Empty(t, collectStrings(ctx, it))
 }
 
-// TestHandler_Evaluate verifies that `debugger evaluate <expr>`
-// forwards the expression to debugapi.Debugger.Evaluate using
-// the top frame and renders the result.
 func TestHandler_Evaluate(t *testing.T) {
 	h, dbg, _ := newTestHandler(t)
 	ctx := context.Background()
@@ -1604,8 +1570,6 @@ func TestHandler_Evaluate(t *testing.T) {
 		"FrameId should match top frame from fakeDebugger")
 }
 
-// TestHandler_Evaluate_RequiresArgs ensures an empty expression
-// is rejected with a usage error.
 func TestHandler_Evaluate_RequiresArgs(t *testing.T) {
 	h, dbg, _ := newTestHandler(t)
 	ctx := context.Background()
@@ -1617,13 +1581,6 @@ func TestHandler_Evaluate_RequiresArgs(t *testing.T) {
 	assert.Contains(t, err.Error(), "usage")
 }
 
-// TestHandler_VariablesEvaluateUseStoppedFrame is the
-// regression test for RUNE-173. With many runtime/GC goroutines
-// in the DAP `Threads` response, picking `threads[0]` for
-// `variables`/`evaluate` returns runtime locals instead of the
-// user's locals. The handler must instead target the goroutine
-// from the most recent StoppedEvent and the frame index
-// currently selected by `debugger jump`.
 func TestHandler_VariablesEvaluateUseStoppedFrame(t *testing.T) {
 	dbg := newFakeDebugger()
 	br := newFakeBrowser()
@@ -1734,12 +1691,6 @@ func TestHandler_VariablesEvaluateUseStoppedFrame(t *testing.T) {
 		"evaluate must follow `debugger jump` to the new frame")
 }
 
-// TestHandler_ClearLocationsOnTerminate verifies that every
-// location list installed during the active session is reset
-// (SetLocationList with an empty slice) when the session
-// terminates via OnClose. Otherwise stale stopped/variables/
-// breakpoint markers would persist in the editor across
-// independent debug sessions.
 func TestHandler_ClearLocationsOnTerminate(t *testing.T) {
 	dbg := newFakeDebugger()
 	br := newFakeBrowser()
@@ -1781,12 +1732,6 @@ func TestHandler_ClearLocationsOnTerminate(t *testing.T) {
 		"stopped location was not cleared on terminate")
 }
 
-// TestHandler_LaunchPersistsOutputEventsToSink reproduces the
-// reported bug where DAP OutputEvents fired by the debuggee
-// after launch never reached the per-session log file. The
-// sink must be installed before Launch returns and every
-// subsequent OutputEvent must land on disk so the user can
-// inspect the captured output afterwards.
 func TestHandler_LaunchPersistsOutputEventsToSink(t *testing.T) {
 	h, dbg, _ := newTestHandler(t)
 	ctx := context.Background()
@@ -1824,22 +1769,6 @@ func TestHandler_LaunchPersistsOutputEventsToSink(t *testing.T) {
 		"stderr OutputEvent must land on disk, got %q", got)
 }
 
-// TestHandler_OutputAfterReinitializePersistsToCurrentSink
-// reproduces the reported bug where, after a previous session
-// has ended (OnClose fired), a fresh `initialize → launch`
-// cycle does not produce a new sink and OutputEvents either
-// land in a stale file or are lost. Each launch must capture
-// to a sink whose file path is reported in the launch
-// response, and OutputEvents fired during that session must
-// land on that file.
-// TestHandler_OutputEventBeforeLaunchIsLost reproduces the
-// case where the adapter sends OutputEvents (e.g. delve's
-// "[console] Type 'dlv help' ...") before cmdLaunch has had
-// a chance to install the sink. Today these events are
-// silently dropped because h.output is nil when OnEvent
-// fires. After the fix, every OutputEvent received during a
-// session must end up on the sink — including those that
-// arrive between CreateSession and Launch.
 func TestHandler_OutputEventBeforeLaunchIsLost(t *testing.T) {
 	h, dbg, _ := newTestHandler(t)
 	ctx := context.Background()
@@ -1933,13 +1862,6 @@ func TestHandler_HandleCommand_NotFound(t *testing.T) {
 	require.ErrorIs(t, err, repl.ErrNotFound)
 }
 
-// TestHandler_ClearBreakpointsOnTerminate verifies that the
-// in-memory breakpoint and stop-frame state held by Handler
-// is dropped when a session terminates. Otherwise the next
-// `debugger initialize` + `configured` cycle silently
-// re-submits breakpoints from the previous run, causing the
-// debuggee to stop at locations the user thought they had
-// cleared.
 func TestHandler_ClearBreakpointsOnTerminate(t *testing.T) {
 	h, dbg, _ := newTestHandler(t)
 	initSession(t, h, dbg, "go")
@@ -2075,10 +1997,6 @@ func TestHandler_New_NilScheduleNextTick(t *testing.T) {
 	})
 }
 
-// TestHandler_TerminateUnsupportedFallsBackToDisconnect verifies
-// that when the DAP server does not implement the Terminate RPC,
-// the shell falls back to Disconnect, clears local session state,
-// and allows a subsequent `debugger initialize` to succeed.
 func TestHandler_TerminateUnsupportedFallsBackToDisconnect(t *testing.T) {
 	h, dbg, _ := newTestHandler(t)
 	ctx := context.Background()
@@ -2103,9 +2021,6 @@ func TestHandler_TerminateUnsupportedFallsBackToDisconnect(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// TestHandler_TerminateAndDisconnectFailStillResets ensures that
-// even if both Terminate and Disconnect fail, the user can still
-// recover by initializing a new session.
 func TestHandler_TerminateAndDisconnectFailStillResets(t *testing.T) {
 	h, dbg, _ := newTestHandler(t)
 	ctx := context.Background()
@@ -2128,11 +2043,6 @@ func TestHandler_TerminateAndDisconnectFailStillResets(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// TestHandler_TerminateSuccessClearsSession ensures that a
-// successful DAP terminate clears local session state so a
-// subsequent `debugger initialize` is not rejected with
-// errSessionActive. The adapter may not fire OnClose (e.g. the
-// debuggee already exited), so terminate itself must reset.
 func TestHandler_TerminateSuccessClearsSession(t *testing.T) {
 	h, dbg, _ := newTestHandler(t)
 	ctx := context.Background()
@@ -2153,8 +2063,6 @@ func TestHandler_TerminateSuccessClearsSession(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// TestSessionIterator_EventsAndClose exercises the event
-// streaming iterator returned from cmdInitialize.
 func TestSessionIterator_EventsAndClose(t *testing.T) {
 	h, dbg, _ := newTestHandler(t)
 	ctx := context.Background()
@@ -2187,11 +2095,6 @@ func TestSessionIterator_EventsAndClose(t *testing.T) {
 	require.False(t, ok)
 }
 
-// TestSessionIterator_SuppressesConsoleOutputEvents asserts
-// that OutputEvents in the `console` category (used by Delve
-// for adapter chatter such as the "Type 'dlv help' ..." banner)
-// are not surfaced as transcript entries. Stdout/stderr output
-// must still come through unchanged.
 func TestSessionIterator_SuppressesConsoleOutputEvents(t *testing.T) {
 	h, dbg, _ := newTestHandler(t)
 	ctx := context.Background()
@@ -2240,10 +2143,6 @@ func TestSessionIterator_SuppressesConsoleOutputEvents(t *testing.T) {
 	}
 }
 
-// TestHandler_StoppedEventEmitsStackTrace asserts that hitting
-// a breakpoint pushes a markdown stack-trace entry into the
-// session iterator automatically — saving the user from having
-// to type `debugger stack-trace` after every stop.
 func TestHandler_StoppedEventEmitsStackTrace(t *testing.T) {
 	dbg := newFakeDebugger()
 	br := newFakeBrowser()
@@ -2297,15 +2196,6 @@ func TestHandler_StoppedEventEmitsStackTrace(t *testing.T) {
 	assert.Contains(t, body, "main.main")
 }
 
-// TestSessionIterator_SurvivesContextCancel asserts that the
-// long-lived session iterator returned from `debugger
-// initialize` keeps streaming events after the caller's context
-// is cancelled. The REPL cancels the per-command context on
-// Ctrl-C; if the iterator honored that cancellation, no DAP
-// event would ever be rendered after the user typed Ctrl-C
-// once, even though the debug session is still alive. Only an
-// explicit `debugger terminate` (or a session-side close) must
-// end the iterator.
 func TestSessionIterator_SurvivesContextCancel(t *testing.T) {
 	h, dbg, _ := newTestHandler(t)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -2364,12 +2254,6 @@ func TestSessionIterator_SurvivesContextCancel(t *testing.T) {
 	require.False(t, ok)
 }
 
-// TestFormatStackTraceIncludesInstructionPointer asserts that
-// `stack-trace` rendering surfaces each frame's
-// InstructionPointerReference. The IP is the canonical
-// `memref` argument users feed to `debugger disassemble`, so
-// the rendered transcript must show it explicitly. The
-// disassemble help text refers users to the `ip:` line.
 func TestFormatStackTraceIncludesInstructionPointer(t *testing.T) {
 	frames := []dap.StackFrame{
 		{
@@ -2393,11 +2277,6 @@ func TestFormatStackTraceIncludesInstructionPointer(t *testing.T) {
 		"frames without IP must not render an empty ip line")
 }
 
-// TestPromptHandler_NoArgs_OpensShell verifies that invoking
-// ":debugger" with no arguments calls the WithOpenShell callback
-// with "debugger" as a single arg, so the editor command opens
-// (or focuses) the companion shell tab and submits "debugger" on
-// its prompt.
 func TestPromptHandler_NoArgs_OpensShell(t *testing.T) {
 	h, _, _ := newTestHandler(t)
 	var gotArgs []string
@@ -2417,9 +2296,6 @@ func TestPromptHandler_NoArgs_OpensShell(t *testing.T) {
 	assert.Equal(t, []string{CommandName}, gotArgs)
 }
 
-// TestPromptHandler_NoArgs_NoCallback ensures that when no
-// WithOpenShell callback is wired, the legacy usage error is
-// preserved so callers that do not opt in keep their behaviour.
 func TestPromptHandler_NoArgs_NoCallback(t *testing.T) {
 	h, _, _ := newTestHandler(t)
 	ph := NewPromptHandler(h)

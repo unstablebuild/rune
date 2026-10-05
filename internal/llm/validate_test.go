@@ -23,16 +23,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestValidateConfig_DefaultAccepted is the pin against which we
-// check that rune.star's shipped defaults never make the router or
-// the IDE config loader unhappy.
 func TestValidateConfig_DefaultAccepted(t *testing.T) {
 	require.NoError(t, ValidateConfig(DefaultConfig()))
 }
 
-// TestValidateConfig_RejectsInvalid covers the cases that would
-// otherwise surface as opaque errors from llmrouter.New or the
-// provider clients.
 func TestValidateConfig_RejectsInvalid(t *testing.T) {
 	tests := []struct {
 		name string

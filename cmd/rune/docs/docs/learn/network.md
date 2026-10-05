@@ -130,8 +130,8 @@ workspaceopen rune://carbon/src/project
 The parts of the URL are:
 
 - `carbon` is the machine's name on the network, as shown by
-  `network peers`. Typing `rune://` at the `workspaceopen` prompt
-  completes it for you.
+  `network peers`. You rarely need to look it up: see
+  [Completing machines and directories](#completing-machines-and-directories).
 - `/src/project` is the directory to open on that machine. Any path you
   could open locally there works. Leave it out (`rune://carbon/`) to open
   that machine's home directory.
@@ -140,12 +140,56 @@ A `rune://` URL takes no user name: machines authenticate by their own
 identity, not by an account on the other end, so `rune://user@carbon/`
 is rejected.
 
-Offline machines are listed and completed too. Opening one waits and
+Offline machines are listed by `network peers`, and you can still type
+one out by hand. Opening it waits and
 connects as soon as it comes back, which is also what happens when a
 machine sleeps or changes networks mid-session: Rune reconnects on its
 own and the workspace carries on. Two failures are final rather than
 retried, because retrying cannot fix them: a machine that is not on the
 network at all, and one that belongs to a different account.
+
+### Completing machines and directories
+
+Typing `rune://` at the `workspaceopen` prompt lists the machines that
+are online right now, so jumping to another machine is a pick from the
+list:
+
+```
+workspaceopen rune://
+```
+
+Pick a machine and completion moves on to its directories, which Rune
+asks that machine for as you type, one level at a time.
+
+Once you have typed `rune://`, the list only ever shows what the network
+reports. Unlike other `workspaceopen` completion, it does not offer
+workspaces you opened before, since those machines may be offline now or
+the paths may never have existed. An empty list after `rune://` means no
+other machine is online. Check `network status` on this machine and
+`network peers` for the state of the others.
+
+### Installing packages on another machine
+
+Language servers, debuggers, and build tools run on the machine that
+holds the code, so a `rune://` workspace uses the packages installed on
+that machine. When it needs one the machine does not have yet, Rune asks
+you in your own window, naming the machine:
+
+> Do you want to install package **"go"** on **carbon**?
+
+**Yes** installs it on `carbon`, built for that machine's operating
+system and architecture, and shows the download progress in your
+window. In a `rune://` workspace, `pkg install` and the other `pkg`
+commands act on that machine too, so running `pkg install go` from the
+workspace's [console](./console.md) sets it up ahead of time.
+If a package would replace a setting in that machine's Rune
+configuration, such as a `GOROOT` you set there, Rune asks you in your
+window before changing it, never whoever is at that machine.
+
+A machine that runs the editor keeps these packages with its own: a
+package you install on it from your laptop is also there for the editor
+on that machine. If the machine runs a version of Rune that cannot
+install packages, Rune asks you to update Rune there.
 
 ## Running a machine without the editor
 
@@ -278,7 +322,6 @@ once open. They differ in what they need from you:
 | Reachability | the host must be reachable over SSH, so a NAT or firewall in front of it needs a forwarded port | neither machine needs to be reachable from outside; Rune traverses the NATs between them |
 | Credentials | your SSH keys and `known_hosts` | your Rune account, nothing to manage |
 | The other end runs | a workspace server that Rune starts over SSH | the Rune instance already running there |
-| Toolchains | Rune mirrors your local language packages onto the host | the machine's own Rune install and packages |
 
 Use `ssh://` for machines that are not yours, or that do not run Rune.
 Use `rune://` for your own machines.
@@ -303,6 +346,10 @@ keeps working locally but is off the network. If that was a mistake, run
 **A machine is missing from `network peers`.** Check that Rune is
 running on it, that `network status` there reports state `Running`, and
 that both machines are signed into the same account.
+
+**Completion after `rune://` is empty.** No other machine is online, or
+this machine is not on the network. Run `network status` to check this
+machine and `network peers` to see the state of the others.
 
 **`network status` prints an authorization URL.** The machine is waiting
 to be authorized. Open the URL in a browser and it finishes joining.

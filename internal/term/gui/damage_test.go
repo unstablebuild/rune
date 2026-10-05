@@ -76,8 +76,6 @@ func TestRowsEqual(t *testing.T) {
 	assert.False(t, rowsEqual(a, a[:1]), "different lengths are unequal")
 }
 
-// TestComputeDirtyRowsFirstPaintIsFull asserts the first paint after
-// construction (or any invalidation) repaints the whole frame.
 func TestComputeDirtyRowsFirstPaintIsFull(t *testing.T) {
 	r, cols, rows := newTestRenderer(t, 10, 6)
 	grid := filledGrid(rows, cols, 'x')
@@ -85,9 +83,6 @@ func TestComputeDirtyRowsFirstPaintIsFull(t *testing.T) {
 	assert.True(t, full, "first paint must be a full repaint")
 }
 
-// TestComputeDirtyRowsSingleCellChange asserts that changing one cell
-// dirties only that row and its immediate neighbours (the vertical
-// render-offset guard band).
 func TestComputeDirtyRowsSingleCellChange(t *testing.T) {
 	r, cols, rows := newTestRenderer(t, 12, 8)
 	grid := filledGrid(rows, cols, 'x')
@@ -104,9 +99,6 @@ func TestComputeDirtyRowsSingleCellChange(t *testing.T) {
 	}
 }
 
-// TestComputeDirtyRowsCursorMove asserts that moving the cursor between
-// two rows dirties both the old and new cursor rows even though the
-// underlying cells are unchanged.
 func TestComputeDirtyRowsCursorMove(t *testing.T) {
 	r, cols, rows := newTestRenderer(t, 12, 10)
 	grid := filledGrid(rows, cols, 'x')
@@ -124,8 +116,6 @@ func TestComputeDirtyRowsCursorMove(t *testing.T) {
 	}
 }
 
-// TestComputeDirtyRowsDimensionChangeIsFull asserts a change in grid
-// height or a row's width forces a full repaint.
 func TestComputeDirtyRowsDimensionChangeIsFull(t *testing.T) {
 	r, cols, rows := newTestRenderer(t, 10, 6)
 	grid := filledGrid(rows, cols, 'x')
@@ -140,8 +130,6 @@ func TestComputeDirtyRowsDimensionChangeIsFull(t *testing.T) {
 	assert.True(t, r.computeDirtyRows(wider, cursorState{}), "row width change is full")
 }
 
-// TestComputeDirtyRowsNoChange asserts an identical grid with no cursor
-// dirties no rows at all.
 func TestComputeDirtyRowsNoChange(t *testing.T) {
 	r, cols, rows := newTestRenderer(t, 10, 6)
 	grid := filledGrid(rows, cols, 'x')
@@ -154,9 +142,6 @@ func TestComputeDirtyRowsNoChange(t *testing.T) {
 	}
 }
 
-// TestComputeDirtyRowsVerticalOffsetNeighbours asserts that a change in
-// a row carrying a vertical render offset repaints the neighbour it
-// paints into.
 func TestComputeDirtyRowsVerticalOffsetNeighbours(t *testing.T) {
 	r, cols, rows := newTestRenderer(t, 12, 8)
 	grid := filledGrid(rows, cols, 'x')
@@ -171,11 +156,6 @@ func TestComputeDirtyRowsVerticalOffsetNeighbours(t *testing.T) {
 	assert.True(t, r.dirtyRows[5], "row below the offset row repaints")
 }
 
-// TestComputeDirtyRowsNeighbourRepaintSpillsUp asserts that an
-// unchanged row carrying a negative vertical render offset, repainted
-// only because its neighbour changed, dirties the row above it: its
-// cells paint half a cell up into that row's strip, and without a
-// clear the spill re-composites there on every repaint.
 func TestComputeDirtyRowsNeighbourRepaintSpillsUp(t *testing.T) {
 	r, cols, rows := newTestRenderer(t, 12, 8)
 	grid := filledGrid(rows, cols, 'x')
@@ -194,9 +174,6 @@ func TestComputeDirtyRowsNeighbourRepaintSpillsUp(t *testing.T) {
 	assert.False(t, r.dirtyRows[2], "no spill beyond the offset row's reach")
 }
 
-// TestComputeDirtyRowsNeighbourRepaintSpillsDown mirrors the spill-up
-// case for the positive vertical render offset, which paints half a
-// cell down into the row below.
 func TestComputeDirtyRowsNeighbourRepaintSpillsDown(t *testing.T) {
 	r, cols, rows := newTestRenderer(t, 12, 8)
 	grid := filledGrid(rows, cols, 'x')
@@ -215,9 +192,6 @@ func TestComputeDirtyRowsNeighbourRepaintSpillsDown(t *testing.T) {
 	assert.False(t, r.dirtyRows[6], "no spill beyond the offset row's reach")
 }
 
-// TestComputeDirtyRowsOffsetSpillCascades asserts the spill closure
-// iterates: a spill-target row that itself carries an offset spills
-// onward into its own neighbour.
 func TestComputeDirtyRowsOffsetSpillCascades(t *testing.T) {
 	r, cols, rows := newTestRenderer(t, 12, 8)
 	grid := filledGrid(rows, cols, 'x')
@@ -237,12 +211,6 @@ func TestComputeDirtyRowsOffsetSpillCascades(t *testing.T) {
 	assert.False(t, r.dirtyRows[1], "cascade stops at a row without offsets")
 }
 
-// TestComputeDirtyRowsRepaintedRowReceivesSpillFromAbove asserts that
-// when a row is repainted, a clean row above it whose offset cells
-// paint down into it is repainted too: clearing the strip erases the
-// spilled glyph halves, so without a repaint of the source row its
-// glyphs are left cut in half (e.g. the editor status bar above a
-// periodically updating bottom bar).
 func TestComputeDirtyRowsRepaintedRowReceivesSpillFromAbove(t *testing.T) {
 	r, cols, rows := newTestRenderer(t, 12, 8)
 	grid := filledGrid(rows, cols, 'x')
@@ -263,9 +231,6 @@ func TestComputeDirtyRowsRepaintedRowReceivesSpillFromAbove(t *testing.T) {
 	assert.False(t, r.dirtyRows[2], "no repaint beyond the spill source")
 }
 
-// TestComputeDirtyRowsRepaintedRowReceivesSpillFromBelow mirrors the
-// spill-from-above case: a clean row below a repainted row whose offset
-// cells paint up into it must be repainted too.
 func TestComputeDirtyRowsRepaintedRowReceivesSpillFromBelow(t *testing.T) {
 	r, cols, rows := newTestRenderer(t, 12, 8)
 	grid := filledGrid(rows, cols, 'x')
@@ -286,10 +251,6 @@ func TestComputeDirtyRowsRepaintedRowReceivesSpillFromBelow(t *testing.T) {
 	assert.False(t, r.dirtyRows[6], "no repaint beyond the spill source")
 }
 
-// TestDrawPartialRepaintAfterFull drives the renderer through the real
-// Draw path (headless via benchdraw semantics is not needed here since
-// DrawTriangles/DrawImage only enqueue) and asserts the counters
-// reflect a full repaint followed by a scoped partial repaint.
 func TestDrawPartialRepaintAfterFull(t *testing.T) {
 	r, cols, rows := newTestRenderer(t, 16, 10)
 	grid := filledGrid(rows, cols, 'x')
@@ -316,10 +277,6 @@ func TestDrawPartialRepaintAfterFull(t *testing.T) {
 	}
 }
 
-// TestDrawImageDoesNotDirtyRows asserts the image layer composites over
-// the cell frame rather than through it: placing, changing and removing
-// a picture never repaints a row, so an animated image costs an upload
-// and a draw call instead of a full-frame repaint.
 func TestDrawImageDoesNotDirtyRows(t *testing.T) {
 	r, cols, rows := newTestRenderer(t, 16, 10)
 	grid := filledGrid(rows, cols, 'x')

@@ -198,10 +198,6 @@ func TestCodeActionNoActionNotifiesHint(t *testing.T) {
 	assert.Equal(t, []string{"no rewrite here"}, notify.messages())
 }
 
-// A handler bound to a broad kind offers every action through the
-// picker and runs nothing until the user confirms, even when only one
-// action applies, because the command name does not say which of the
-// family it would be.
 func TestCodeActionConfirmsThroughPicker(t *testing.T) {
 	t.Parallel()
 
@@ -274,9 +270,6 @@ func TestCodeActionConfirmsThroughPicker(t *testing.T) {
 	}
 }
 
-// An empty kind requests every kind (nil Only) and keeps every returned
-// action regardless of kind, which is how a "list everything" subcommand
-// browses the full menu.
 func TestCodeActionListRequestsAllKinds(t *testing.T) {
 	t.Parallel()
 
@@ -306,9 +299,6 @@ func TestCodeActionListRequestsAllKinds(t *testing.T) {
 	require.Error(t, <-done)
 }
 
-// A handler bound to a kind that names exactly one operation runs a sole
-// result straight away: the picker would only echo the subcommand the
-// user just typed. More than one result still needs a choice.
 func TestCodeActionAppliesLoneAction(t *testing.T) {
 	t.Parallel()
 
@@ -363,8 +353,6 @@ func TestCodeActionAppliesLoneAction(t *testing.T) {
 	})
 }
 
-// A one-line action would otherwise float a box barely wider than its
-// title, which reads as a rendering glitch rather than a menu.
 func TestCodeActionPickerHasMinimumSize(t *testing.T) {
 	t.Parallel()
 
@@ -386,10 +374,6 @@ func TestCodeActionPickerHasMinimumSize(t *testing.T) {
 	assert.Equal(t, maxPickerHeight, h, "the height cap still applies")
 }
 
-// zls answers source.organizeImports with a full rewrite of the import
-// block on every invocation, even when the imports are already sorted.
-// A confirmed action that produces the text already in the buffer must
-// not edit it.
 func TestCodeActionSkipsNoopWorkspaceEdit(t *testing.T) {
 	t.Parallel()
 

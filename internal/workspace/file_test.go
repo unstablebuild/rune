@@ -1655,8 +1655,6 @@ func TestFileMissingLastCopySwap(t *testing.T) {
 	assert.Equal(t, want, string(actual))
 }
 
-// TestFileFlushConcurrentRejected verifies that a second Flush
-// invoked while the first is in flight returns ErrFlushInProgress.
 func TestFileFlushConcurrentRejected(t *testing.T) {
 	buf, fileObj := newIntegrationTestCase(t, true)
 	f, err := openFile(fileObj.Name(), buf, "", false)
@@ -1681,9 +1679,6 @@ func TestFileFlushConcurrentRejected(t *testing.T) {
 	f.mu.Unlock()
 }
 
-// TestFileFlushCtxCancel verifies that cancelling ctx after Flush
-// is started delivers context.Canceled on the result channel even
-// if the underlying work completes successfully.
 func TestFileFlushCtxCancel(t *testing.T) {
 	buf, fileObj := newIntegrationTestCase(t, true)
 	f, err := openFile(fileObj.Name(), buf, "", false)
@@ -1700,9 +1695,6 @@ func TestFileFlushCtxCancel(t *testing.T) {
 	assert.ErrorIs(t, res, context.Canceled)
 }
 
-// TestFileFlushAsyncReturnsImmediately verifies that the (chan, err)
-// pair is returned promptly. This is the freeze-regression guard: a
-// slow scheme must not block the caller of Flush.
 func TestFileFlushAsyncReturnsImmediately(t *testing.T) {
 	buf, fileObj := newIntegrationTestCase(t, true)
 	f, err := openFile(fileObj.Name(), buf, "", false)
@@ -1721,8 +1713,6 @@ func TestFileFlushAsyncReturnsImmediately(t *testing.T) {
 	require.NoError(t, res)
 }
 
-// TestFileReloadAsync verifies that Reload follows the same async
-// contract as Flush.
 func TestFileReloadAsync(t *testing.T) {
 	buf, fileObj := newIntegrationTestCase(t, true)
 	f, err := openFile(fileObj.Name(), buf, "", false)
@@ -1736,14 +1726,6 @@ func TestFileReloadAsync(t *testing.T) {
 	require.NoError(t, res)
 }
 
-// TestFileFlushPublishesLastFlushBeforeRename verifies that by the
-// time the underlying scheme observes the Rename call (which triggers
-// the FS Write event), f.LastFlush() already returns the post-rename
-// mtime. Otherwise an FS-watcher goroutine that wakes up during the
-// rename can see lastFlush at its pre-flush value while Stat already
-// reports the new mtime — falsely concluding the file changed
-// externally and showing the "Discard your changes / Discard external
-// changes" prompt for our own write.
 func TestFileFlushPublishesLastFlushBeforeRename(t *testing.T) {
 	buf, fileObj := newIntegrationTestCase(t, true)
 	workspaceURI, err := makeLocalURI(filepath.Dir(fileObj.Name()))
@@ -1927,10 +1909,6 @@ func (s *readCountingScheme) OpenFile(
 	return readCountingFile{File: file, read: &s.read}, nil
 }
 
-// TestFileFlushReadsSavedFileOncePerSave pins the I/O cost of verifying that
-// the reopened file is still ours. Re-staging the swap already reads the file,
-// so a second verification pass would double the transfer of every save on a
-// remote workspace.
 func TestFileFlushReadsSavedFileOncePerSave(t *testing.T) {
 	buf, fileObj := newIntegrationTestCase(t, true)
 	workspaceURI, err := makeLocalURI(filepath.Dir(fileObj.Name()))
@@ -1970,14 +1948,6 @@ func (s *statHookScheme) Stat(path string) (os.FileInfo, error) {
 	return s.Scheme.Stat(path)
 }
 
-// TestFileFlushNewFilePublishesLastFlushAfterTouch verifies that when
-// flush creates a brand-new file on disk (the O_CREATE|O_EXCL touch),
-// lastFlush is published with the touched file's mtime before the
-// flush proceeds to stage and rename the swap. Otherwise the FS
-// watcher can dispatch the touch's Create event during the rest of
-// the flush, observe a zero lastFlush with a dirty buffer, and show
-// the "file was just created on disk / discard your changes" prompt
-// for our own write.
 func TestFileFlushNewFilePublishesLastFlushAfterTouch(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "newfile.txt")
@@ -2029,13 +1999,6 @@ func TestFileFlushNewFilePublishesLastFlushAfterTouch(t *testing.T) {
 			"covers the Create event", observed, touchMtime)
 }
 
-// TestFileReloadBufferMutationOnEventLoop guards the invariant
-// that file.reload's cell.Buffer mutations and the lastFlush
-// update run on the host event loop, not on the async worker
-// goroutine. Buffer subscribers (notably text.editorFlusherCloser)
-// touch UI-owned state from OnDidEdit; if reload mutates the
-// buffer from a background goroutine those callbacks race with
-// the event loop.
 func TestFileReloadBufferMutationOnEventLoop(t *testing.T) {
 	buf, fileObj := newIntegrationTestCase(t, true)
 	workspaceURI, err := makeLocalURI(filepath.Dir(fileObj.Name()))
@@ -2128,11 +2091,6 @@ func (s *reloadGIDSubscriber) OnDidEdit(
 	s.onEdit()
 }
 
-// TestFileCloseDoesNotWaitForInFlightReload guards the host
-// event-loop close path: Close must not block waiting on a Reload
-// worker that is itself parked on the host loop via scheduleNextTick.
-// Production hit this when a filesystem rename event reached
-// RemoveTab from ide/events.go handleFSChange.
 func TestFileCloseDoesNotWaitForInFlightReload(t *testing.T) {
 	buf, fileObj := newIntegrationTestCase(t, true)
 	workspaceURI, err := makeLocalURI(filepath.Dir(fileObj.Name()))
@@ -2181,20 +2139,6 @@ func TestFileCloseDoesNotWaitForInFlightReload(t *testing.T) {
 	}
 }
 
-// TestFileCloseReloadOrdering exercises the Close/Reload ownership
-// handoff across the interleavings of the two operations. reload
-// closes and reopens f.orig/f.swap and rewrites f.fileName via
-// initFiles while Close tears the same fields down, so ownership
-// must be handed off, never shared: Close returns immediately while
-// the worker owns the descriptors (its I/O can be remote and slow or
-// wedged, and Close may run on the event loop) and the worker
-// inherits the teardown; when Close wins instead, the worker must
-// refuse the swap and leave the torn-down state alone.
-//
-// Every case ends with the same postconditions: the teardown ran
-// exactly once (swap file removed, extra Close reports the file
-// gone), no copy-swap catch-up survives, and reload contents only
-// reach the buffer when the reload completed before the close.
 func TestFileCloseReloadOrdering(t *testing.T) {
 	tests := []fileCloseReloadCase{
 		{
@@ -2319,10 +2263,6 @@ func (s *openFileHookScheme) OpenFile(
 	return s.Scheme.OpenFile(name, flag, perm)
 }
 
-// TestFileCloseWaitsForInFlightFlush guards the complementary
-// invariant to TestFileCloseDoesNotWaitForInFlightReload: tearing
-// down f.orig / f.swap mid-rename would leave the on-disk file
-// half-rewritten, so Close must wait for an in-flight flush.
 func TestFileCloseWaitsForInFlightFlush(t *testing.T) {
 	buf, fileObj := newIntegrationTestCase(t, true)
 	workspaceURI, err := makeLocalURI(filepath.Dir(fileObj.Name()))
@@ -2380,10 +2320,6 @@ func TestFileCloseWaitsForInFlightFlush(t *testing.T) {
 	}
 }
 
-// TestFileFlushRejectedDuringInFlightReload guards the shared
-// startAsync gate: while a Reload is in flight (f.flushing=true),
-// any concurrent Flush/ForceFlush/Reload must short-circuit with
-// ErrFlushInProgress instead of racing the worker.
 func TestFileFlushRejectedDuringInFlightReload(t *testing.T) {
 	buf, fileObj := newIntegrationTestCase(t, true)
 	f, err := openFile(fileObj.Name(), buf, "", false)
@@ -2411,12 +2347,6 @@ func TestFileFlushRejectedDuringInFlightReload(t *testing.T) {
 	f.mu.Unlock()
 }
 
-// TestFileEditsDuringFlushReachDiskViaCatchUp guards the
-// suppressCopySwap=false branch of startAsync: edits that land
-// while Flush owns the swap file must be captured by pendingEdits
-// and re-staged via the post-work runCopySwap pass so they reach
-// the next swap file. Without this catch-up an edit racing with
-// the rename would be silently dropped.
 func TestFileEditsDuringFlushReachDiskViaCatchUp(t *testing.T) {
 	buf, fileObj := newIntegrationTestCase(t, true)
 	workspaceURI, err := makeLocalURI(filepath.Dir(fileObj.Name()))
@@ -2485,14 +2415,6 @@ func TestFileEditsDuringFlushReachDiskViaCatchUp(t *testing.T) {
 			"the post-flush catch-up copy-swap pass")
 }
 
-// TestFileEditsDuringReloadAreDiscarded guards the
-// suppressCopySwap=true branch of startAsync and reload's
-// f.reloading short-circuit: edits arriving during a reload must
-// be dropped (reload is overwriting the buffer from disk, so any
-// intervening user edit is by definition stale), and the
-// pendingEdits-driven catch-up must NOT run because reload
-// destroys the swap file rather than coordinating writes against
-// it.
 func TestFileEditsDuringReloadAreDiscarded(t *testing.T) {
 	buf, fileObj := newIntegrationTestCase(t, true)
 	workspaceURI, err := makeLocalURI(filepath.Dir(fileObj.Name()))
@@ -2566,24 +2488,6 @@ func TestFileEditsDuringReloadAreDiscarded(t *testing.T) {
 			"discarding any concurrent edits")
 }
 
-// TestFileFlushReloadStress exercises the startAsync gate under
-// real concurrency: many goroutines race Flush, ForceFlush and
-// Reload against a single file. Edits are deliberately not driven
-// concurrently because cell.Buffer expects a single writer (the
-// host event loop) and the file's worker reads the buffer from a
-// background goroutine; racing edits with flush would surface a
-// real but orthogonal cell.Buffer access pattern bug, not the
-// startAsync gate we are exercising here. Failure modes the
-// -race detector should catch include:
-//   - simultaneous Flush+Reload mutating swap/orig without the
-//     flushing gate;
-//   - reload short-circuiting copy-swap work that flush expected
-//     to drain via f.wg.Wait.
-//
-// The test asserts no panics, no data races (under -race), and
-// that every concurrent attempt either succeeds or fails with the
-// flushing-gate sentinel ErrFlushInProgress — never an unexpected
-// error.
 func TestFileFlushReloadStress(t *testing.T) {
 	if testing.Short() {
 		t.Skip("stress test skipped in -short mode")

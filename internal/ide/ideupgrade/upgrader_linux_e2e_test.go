@@ -139,16 +139,6 @@ func TestLinuxE2E_HappyPath(t *testing.T) {
 	require.Equal(t, filepath.Join(installRoot, "rune.app", "bin", "rune"), target)
 }
 
-// TestLinuxE2E_RealReleaseTarballLayout drives the full Linux upgrade
-// through the production linuxPlatformOps against a tarball whose single
-// top-level directory is rune.app/ — the exact layout shipped by
-// `tar --format=ustar -czf rune.app` in cmd/rune/Makefile.
-//
-// It is the highest-fidelity regression for the broken auto-upgrade
-// that buried the binary at rune.app/rune.app/bin/rune, dangling the CLI
-// symlink and the XDG .desktop Exec= path so KDE/GNOME could not find
-// the executable. TestLinuxE2E_HappyPath did not catch it because its
-// tarball used a flat (bin/rune) layout.
 func TestLinuxE2E_RealReleaseTarballLayout(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping linux e2e in short mode")

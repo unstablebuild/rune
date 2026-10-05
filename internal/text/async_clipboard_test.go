@@ -17,6 +17,7 @@
 package text
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -70,11 +71,13 @@ func (r *gatedRegister) copied() []string {
 	return append([]string(nil), r.texts...)
 }
 
-// TestAsyncClipboardCopyNeverBlocksOnOSWrite reproduces the hang from holding
-// `.` to repeat a Vim dw: every repeated delete re-copied the deleted word
-// and each copy shelled out a fresh wl-copy on the event loop goroutine.
-// Copies must return while an OS write is in flight, and the burst must cost
-// one in-flight write plus one write for the newest payload.
+func TestAsyncClipboardReportsOpenError(t *testing.T) {
+	clip := newAsyncSystemClipboard(nil, errors.New("unsupported platform"))
+
+	err := clip.Copy(clipboard.DefaultRegisterID, clipboard.Data{Text: "x"})
+	require.ErrorContains(t, err, "unsupported platform")
+}
+
 func TestAsyncClipboardCopyNeverBlocksOnOSWrite(t *testing.T) {
 	sys := &gatedRegister{
 		Register: clipboard.NewInMemory(),
@@ -116,9 +119,6 @@ func TestAsyncClipboardCopyNeverBlocksOnOSWrite(t *testing.T) {
 		"a copy that arrives after the burst settles must still write through")
 }
 
-// TestAsyncClipboardForwardsNamedRegistersSynchronously checks the wrapper's
-// contract that only the default register is queued: named registers are
-// in-memory writes and must reach the wrapped clipboard before Copy returns.
 func TestAsyncClipboardForwardsNamedRegistersSynchronously(t *testing.T) {
 	sys := &gatedRegister{Register: clipboard.NewInMemory()}
 	clip := newAsyncRegister(sys)
@@ -135,10 +135,6 @@ func TestAsyncClipboardForwardsNamedRegistersSynchronously(t *testing.T) {
 	require.Equal(t, []string{"named", "os"}, sys.copied())
 }
 
-// TestAsyncClipboardPasteReadsNewestCopyWhileWriteInFlight covers the copy
-// worker racing the event loop: while a write is queued or in flight the OS
-// clipboard is not authoritative, so Paste must answer with the newest copy
-// instead of reading stale OS content.
 func TestAsyncClipboardPasteReadsNewestCopyWhileWriteInFlight(t *testing.T) {
 	sys := &gatedRegister{
 		Register: clipboard.NewInMemory(),

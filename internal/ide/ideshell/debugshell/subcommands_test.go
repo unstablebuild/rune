@@ -35,11 +35,6 @@ import (
 	"unstable.build/rune/internal/workspace"
 )
 
-// TestNextStatementLine_LiteralOnlyStatements pins down the bug
-// fix from RUNE-177: tree-sitter Go statement nodes whose
-// operands are only keywords or literals (e.g. `return false`,
-// bare `break`, `fallthrough`) must register as breakpoint
-// targets even though they contain no identifier captures.
 func TestNextStatementLine_LiteralOnlyStatements(t *testing.T) {
 	t.Parallel()
 	grammar := unitGrammarDir(t)
@@ -179,11 +174,6 @@ func F() bool {
 	}
 }
 
-// TestNextStatementLine_ClosingBraceStillErrors keeps the
-// existing behaviour from TestE2E_BreakpointOnClosingBrace at
-// the unit level: when the cursor is on the closing brace of
-// the last function in the file, there is no statement at or
-// after it, so nextStatementLine must return an error.
 func TestNextStatementLine_ClosingBraceStillErrors(t *testing.T) {
 	t.Parallel()
 	grammar := unitGrammarDir(t)

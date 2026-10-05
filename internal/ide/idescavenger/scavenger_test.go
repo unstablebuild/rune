@@ -255,9 +255,6 @@ func (f *seedFixture) newCleaner(t *testing.T) *idescavenger.Cleaner {
 	return cleaner
 }
 
-// The seed listing decodes every document in the dataset it recovers
-// from, so it must run once per dataset, from the background pass, and
-// never on the goroutine that starts the Cleaner.
 func TestStartSeedsOncePerDataset(t *testing.T) {
 	gone := uri(t, "/tmp/gone")
 	f := newSeedFixture(gone)
@@ -285,9 +282,6 @@ func TestStartSeedsOncePerDataset(t *testing.T) {
 		"a later launch on the same dataset must not list again")
 }
 
-// A seed listing that fails, as it does while another process leads the
-// storage, must be retried with the pass and must not be recorded as
-// done until it succeeds.
 func TestStartRetriesAFailedSeed(t *testing.T) {
 	gone := uri(t, "/tmp/gone")
 	f := newSeedFixture(gone)
@@ -307,10 +301,6 @@ func TestStartRetriesAFailedSeed(t *testing.T) {
 		"only a successful seed marks the dataset as seeded")
 }
 
-// Start runs its pass while the IDE is still starting up, before the
-// event loop accepts work, so the open workspaces can be unknowable for
-// the first attempts. The pass must be retried until they are known:
-// giving up leaves the session with no reclamation at all.
 func TestStartRetriesUntilOpenWorkspacesAreKnown(t *testing.T) {
 	var mu sync.Mutex
 	var calls int
@@ -356,8 +346,6 @@ func TestStartRetriesUntilOpenWorkspacesAreKnown(t *testing.T) {
 		"the pass must survive OpenWorkspaces failing while the IDE starts")
 }
 
-// Close must stop a Start whose pass keeps failing, so a shutdown does
-// not leave a retry loop running against closed storage.
 func TestCloseStopsStartRetries(t *testing.T) {
 	var mu sync.Mutex
 	var calls int
@@ -395,7 +383,6 @@ func TestCloseStopsStartRetries(t *testing.T) {
 		"retries must stop once the Cleaner is closed")
 }
 
-// The default Stat must recognize a workspace that really is gone.
 func TestRunOnceWithRealFilesystem(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()

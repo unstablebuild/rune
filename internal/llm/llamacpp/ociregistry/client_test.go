@@ -514,10 +514,6 @@ func TestClient_StaticBearer(t *testing.T) {
 	}
 }
 
-// TestClient_FetchManifest_NotGGUF_MapsToSentinel checks that a 400
-// response from the registry (what Hugging Face returns when a repo
-// exists but is not compatible with the llama.cpp OCI endpoint) is
-// translated into ErrNotGGUFRepo.
 func TestClient_FetchManifest_NotGGUF_MapsToSentinel(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -544,11 +540,6 @@ func TestClient_FetchManifest_NotGGUF_MapsToSentinel(t *testing.T) {
 	}
 }
 
-// TestClient_FetchManifest_400_ShardedGGUF verifies that Hugging Face's
-// 400 response for a sharded (multi-file) GGUF repository is mapped to
-// the ErrShardedGGUF sentinel with actionable guidance, rather than
-// surfacing HF's raw "Ollama does not support this yet" message (which
-// confused users since Rune does not use Ollama).
 func TestClient_FetchManifest_400_ShardedGGUF(t *testing.T) {
 	const hfMsg = "The specified repository contains sharded GGUF. " +
 		"Ollama does not support this yet."
@@ -585,8 +576,6 @@ func TestClient_FetchManifest_400_ShardedGGUF(t *testing.T) {
 	}
 }
 
-// TestClient_FetchManifest_404_MapsToNotFound checks that a 404 response
-// is translated to our ErrNotFound sentinel.
 func TestClient_FetchManifest_404_MapsToNotFound(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -611,13 +600,6 @@ func TestClient_FetchManifest_404_MapsToNotFound(t *testing.T) {
 	}
 }
 
-// TestClient_Pull_ReportsCumulativeProgressAcrossLayers verifies that
-// Pull's progress callback reports bytes accumulated across the entire
-// manifest (not just the current layer). Without this, a partially
-// completed interrupted pull followed by a resume produces a progress
-// bar that jumps to 100% immediately as each previously-cached small
-// layer fast-paths to completion, masking the fact that the bar's total
-// was the tiny trailing layer all along.
 func TestClient_Pull_ReportsCumulativeProgressAcrossLayers(t *testing.T) {
 	big := bytes.Repeat([]byte("M"), 4096)
 	tpl := []byte("tpl")
@@ -689,10 +671,6 @@ func TestClient_Pull_ReportsCumulativeProgressAcrossLayers(t *testing.T) {
 	}
 }
 
-// TestClient_Pull_CumulativeWithSomeLayersCached mirrors the ctrl-c
-// retry scenario: the big weight blob is already on disk, so it
-// fast-paths through DownloadBlob. Progress must still end at the
-// manifest-wide total, not at the remaining small-layer total.
 func TestClient_Pull_CumulativeWithSomeLayersCached(t *testing.T) {
 	big := bytes.Repeat([]byte("M"), 4096)
 	tpl := []byte("tpl")

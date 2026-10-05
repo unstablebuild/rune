@@ -79,11 +79,6 @@ func (externalEditorStub) UnsubscribeEvents(text.EventHandler) (bool, error) {
 	return false, nil
 }
 
-// TestSubscribeAllEventsSkipsAutoSaveForExternalEditor exercises the
-// wiring guard in subscribeAllEvents: when the workspace's editor is
-// externally managed, the autoSaver must not be constructed even when
-// editor.auto_save is true. Otherwise exo-driven external saves race
-// the autoSaver and surface noisy ErrStaleData warnings.
 func TestSubscribeAllEventsSkipsAutoSaveForExternalEditor(t *testing.T) {
 	prev := autoSaverFactory
 	t.Cleanup(func() { autoSaverFactory = prev })

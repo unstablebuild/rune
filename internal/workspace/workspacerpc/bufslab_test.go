@@ -26,11 +26,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// pacing: true pretends the purge pacer is already armed, so put never
-// schedules an async GC-driven purge. Structural tests use it to keep
-// pool contents deterministic; aging is exercised by calling purge
-// directly, and the real pacer end to end in
-// TestBufSlabIdleBuffersEventuallyFreed.
 func TestBufSlabBestFitReuse(t *testing.T) {
 	t.Parallel()
 	s := &bufSlab{pacing: true}

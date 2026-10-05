@@ -68,9 +68,11 @@ $ docker logs -f rune  # prints the sign-in code
 
 `--hostname` is the name the node joins the network under, so from any of your machines
 `workspaceopen rune://devpod/home/rune/projects` opens the mounted projects.
+Language packages install on demand: when a workspace on the node needs one it lacks,
+Rune asks you on your machine and installs it on the node.
 
 The [headless guide](https://docs.rune.build/learn/headless) covers running the node as a
-service under systemd, launchd, OpenRC, or runit, and adding toolchains to the Docker image.
+service under systemd, launchd, OpenRC, or runit, and adding system tools to the Docker image.
 
 ## Contributing
 

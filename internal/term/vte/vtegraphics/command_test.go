@@ -119,10 +119,6 @@ func TestParse(t *testing.T) {
 	}
 }
 
-// TestReadMedium pins which commands ReadMedium reads and that Handle
-// loads what was read. A read happens only once the checks kitty makes
-// before its own have passed (kitty graphics.c handle_add_command,
-// load_image_data), so a rejected transmission leaves its file alone.
 func TestReadMedium(t *testing.T) {
 	rgb := []byte{1, 2, 3}
 	tests := []struct {

@@ -57,6 +57,7 @@ import (
 	"unstable.build/rune/internal/extension/extensionv2"
 	"unstable.build/rune/internal/ide"
 	"unstable.build/rune/internal/ide/idepkg"
+	"unstable.build/rune/internal/ide/idepkg/pkgrpc"
 	"unstable.build/rune/internal/ide/pkgtrust"
 	"unstable.build/rune/internal/llm/llmrpc"
 	"unstable.build/rune/internal/rpc"
@@ -104,9 +105,6 @@ var (
 	// marked hidden
 	flagWorkspaceServer = flag.StringP("workspace-server", "x", "",
 		"Run a workspace server from standard input and output")
-	flagWorkspaceServerInstall = flag.String("install", "",
-		"CSV manifest of `id@version` packages the workspace server should "+
-			"install into its ~/.rune to mirror the local toolchain")
 	flagHTTPAddress = flag.String("rune-http-address", apicfg.HTTPEndpointAddress,
 		"Rune HTTP API endpoint host/port pair")
 	flagGRPCAddress = flag.String("rune-grpc-address", apicfg.GRPCEndpointAddress,
@@ -267,17 +265,25 @@ func startWorkspaceServer() int {
 	}
 	newScheme := workspace.NewFileSchemeFunc(shellRCDir)
 
-	// Install the local toolchain's packages, load the remote config, and
-	// apply gui.env before serving so extension-spawned tools resolve.
-	// Provisioning failures never abort the connection (they warn and
-	// continue).
 	scheme, err := newScheme(context.Background(), config.NopConfig(), uri)
 	if err != nil {
 		log.Error(err)
 		return 3
 	}
 	defer scheme.Close()
-	provisionRemote(scheme, uri)
+	// Apply gui.env before serving so the tools the client starts here
+	// see the packages installed on this host.
+	loadRemoteConfigAndApplyEnv(scheme, uri)
+
+	// The client installs the packages its workspace needs on this host
+	// through this manager, served next to the workspace.
+	pkgs, pkgStorage := newHostPackageManager(newRuneStorage(*flagDataPath),
+		newRemoteReleaseManager(), scheme,
+		func() { loadRemoteConfigAndApplyEnv(scheme, uri) })
+	defer func() {
+		_ = pkgStorage.Close()
+	}()
+	pkgrpc.NewServer(pkgs).Register(grpcServer)
 
 	server := workspacerpc.NewServer(scheme,
 		workspacerpc.CommandAuthorizerFunc(
@@ -309,9 +315,6 @@ func main() {
 		panic(err)
 	}
 	if err := flag.CommandLine.MarkHidden("workspace-server-log"); err != nil {
-		panic(err)
-	}
-	if err := flag.CommandLine.MarkHidden("install"); err != nil {
 		panic(err)
 	}
 	if err := flag.CommandLine.MarkHidden("rune-release-collection"); err != nil {
@@ -563,15 +566,10 @@ func reportShellRCErr(n browserapi.Notifications, err error) {
 	_, _ = n.Notify(browserapi.LevelWarn, "%v", err)
 }
 
-// reportRemoteShellRCErr reports err to the user of a rune -x server,
-// whose local side shows failed provisioning records as notifications.
+// reportRemoteShellRCErr reports err to the user of a rune -x server.
 func reportRemoteShellRCErr(stderr io.Writer, err error) {
 	log.Warn(err)
-	emitProvisionProgress(stderr, workspacessh.ProvisionProgress{
-		Package: "shell dotfiles",
-		Phase:   workspacessh.ProvisionPhaseFailed,
-		Detail:  err.Error(),
-	})
+	_ = workspacessh.WriteWarning(stderr, err.Error())
 }
 
 func runTUI(
@@ -600,6 +598,7 @@ func runTUI(
 		ide.WithShellRCDir(shellRCDir),
 		ide.WithScheme(docsScheme, newDocsSchemeFunc(*flagConfigPath)),
 		ide.WithStreamingOpen(true),
+		ide.WithClipboard(text.NewAsyncSystemClipboard()),
 	}
 	opts = append(opts, embeddedTutorialOptions()...)
 	if debug.DebugBuild == "true" {
@@ -822,8 +821,8 @@ func runGUI(
 		log.Errorf("gui: %v", err)
 		return 1
 	}
-	defer func() { _ = g.Close() }()
 	defer func() { _ = root.Close() }()
+	defer func() { _ = g.Close() }()
 	guiRef.Store(g)
 	root.attachGUI(g, transparentWindow)
 	defer watchGUISignals(publishEvent,

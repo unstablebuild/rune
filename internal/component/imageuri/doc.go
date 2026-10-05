@@ -23,5 +23,5 @@
 // the entry is younger than its TTL. An expired entry is still served
 // when refreshing it fails. A progress animation is drawn while the image
 // loads. When the image cannot be loaded, or the writer cannot draw
-// images, component.ProblemArt is drawn centered instead.
+// images, the caller's problem art is drawn centered instead.
 package imageuri

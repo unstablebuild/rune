@@ -85,9 +85,6 @@ func (f *fakeWindow) SetFrameAttr(term.Attributes) (term.Attributes, bool) {
 
 var _ browser.Window = (*fakeWindow)(nil)
 
-// TestDynamicVirtualTranslatesByOffset asserts that the window's
-// position is combined with the supplied offset to locate the
-// shaded sub-rectangle.
 func TestDynamicVirtualTranslatesByOffset(t *testing.T) {
 	t.Parallel()
 
@@ -110,8 +107,6 @@ func TestDynamicVirtualTranslatesByOffset(t *testing.T) {
 	assert.Equal(t, '.', cells[4][4].Ch, "outside region should be untouched")
 }
 
-// TestDynamicVirtualClosedWindowIsNoOp asserts that the inner
-// shader is not invoked when the window has been closed.
 func TestDynamicVirtualClosedWindowIsNoOp(t *testing.T) {
 	t.Parallel()
 	win := &fakeWindow{pos: term.Coordinates{}, w: 2, h: 2, closed: true}
@@ -127,8 +122,6 @@ func TestDynamicVirtualClosedWindowIsNoOp(t *testing.T) {
 	}
 }
 
-// TestDynamicVirtualZeroDimsIsNoOp asserts that the inner shader is
-// skipped while the window has not yet been laid out.
 func TestDynamicVirtualZeroDimsIsNoOp(t *testing.T) {
 	t.Parallel()
 	win := &fakeWindow{}
@@ -144,8 +137,6 @@ func TestDynamicVirtualZeroDimsIsNoOp(t *testing.T) {
 	}
 }
 
-// TestDynamicVirtualClampsToMatrix asserts that an over-sized
-// rectangle is truncated to the underlying matrix dimensions.
 func TestDynamicVirtualClampsToMatrix(t *testing.T) {
 	t.Parallel()
 	win := &fakeWindow{pos: term.Coordinates{X: 1, Y: 1}, w: 10, h: 10}

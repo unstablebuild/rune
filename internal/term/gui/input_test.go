@@ -1032,10 +1032,6 @@ func TestInputMultiFrame(t *testing.T) {
 	}
 }
 
-// TestInputSourceOwnership covers the ownership rule that ties a key action to
-// the text the platform translated from it: whatever Rune turns into a
-// terminal event owns exactly the code points carrying its own source, and
-// nothing else.
 func TestInputSourceOwnership(t *testing.T) {
 	metaL := press(ebiten.KeyL, ebiten.KeyModSuper)
 	altA := press(ebiten.KeyA, ebiten.KeyModAlt)
@@ -1525,12 +1521,6 @@ func TestInputKeyMapping(t *testing.T) {
 	}
 }
 
-// TestInputForwardsEmojiSequenceRunes asserts that committed text is forwarded
-// rune for rune, including the zero-width joiner that composes a family emoji.
-// The emoji picker delivers a ZWJ sequence as a standalone commit; the runtime
-// must emit a key event for every rune so the buffer can coalesce them into one
-// grapheme cluster. Dropping the joiner here (as the upstream ebiten IsPrint
-// filter used to) would split the emoji.
 func TestInputForwardsEmojiSequenceRunes(t *testing.T) {
 	mock, input := newTestInput(t)
 	family := []rune{'\U0001F468', '\u200d', '\U0001F469', '\u200d', '\U0001F467'}
@@ -1548,10 +1538,6 @@ func TestInputForwardsEmojiSequenceRunes(t *testing.T) {
 	}
 }
 
-// TestResolveCharKeyStripsShift asserts that Shift selects the shifted rune and
-// leaves the modifier set for every combination of the remaining modifiers. A
-// terminal chord names the character the layout produced, so reporting Shift
-// alongside an already-shifted rune would encode the same intent twice.
 func TestResolveCharKeyStripsShift(t *testing.T) {
 	cases := []struct {
 		name string

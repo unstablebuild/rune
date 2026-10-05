@@ -116,12 +116,6 @@ func (r *recordingRegister) Copy(registerID string, data clipboard.Data) error {
 	return r.Register.Copy(registerID, data)
 }
 
-// TestSystemClipboardOnlyDefaultRegisterReachesOS reproduces the bug where
-// typing in the modal compose editor leaked to the OS clipboard: the vi
-// editor writes the typed run to its "." register on insert-mode exit, and
-// the system clipboard forwarded every register to the OS. Only the default
-// register represents the single OS clipboard; all other registers must stay
-// in the in-memory shadow.
 func TestSystemClipboardOnlyDefaultRegisterReachesOS(t *testing.T) {
 	sys := &recordingRegister{Register: clipboard.NewInMemory()}
 	clip := newSystemClipboard(sys, nil)

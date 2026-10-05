@@ -79,11 +79,6 @@ func newStreamingComponent(
 	return c, wsURI
 }
 
-// TestStreamingOpenReplacesHandlerAfterLoad verifies that an
-// OpenFileTab against a streaming-enabled component returns
-// immediately and, after WaitStreamingLoads, the tab's handler has
-// been swapped to the real editor handler that satisfies
-// text.Handler.
 func TestStreamingOpenReplacesHandlerAfterLoad(t *testing.T) {
 	c, wsURI := newStreamingComponent(t)
 
@@ -106,12 +101,6 @@ func TestStreamingOpenReplacesHandlerAfterLoad(t *testing.T) {
 	assert.NotNil(t, ed)
 }
 
-// TestStreamingOpenReadOnlyMissingFileErrors verifies that opening a
-// missing file with readOnly=true through the streaming path surfaces
-// the missing-file error (no empty-buffer fallback). The open runs
-// asynchronously on the load worker, so the error arrives as a
-// notification and the placeholder tab is removed instead of the
-// error returning from OpenFileTab.
 func TestStreamingOpenReadOnlyMissingFileErrors(t *testing.T) {
 	c, wsURI, sched, noti := newStreamingComponentWithScheduler(t)
 
@@ -137,11 +126,6 @@ func TestStreamingOpenReadOnlyMissingFileErrors(t *testing.T) {
 	assert.Contains(t, msgs[len(msgs)-1], "nope.txt")
 }
 
-// TestStreamingOpenCreatesEmptyBufferForMissingFile verifies that
-// opening a non-existent file with readOnly=false through the
-// streaming path creates an empty buffer (matching the legacy sync
-// path's "new file" behaviour) and that flushing materializes the
-// file on disk. Regression test for RUNE-207.
 func TestStreamingOpenCreatesEmptyBufferForMissingFile(t *testing.T) {
 	c, wsURI, sched, _ := newStreamingComponentWithScheduler(t)
 
@@ -169,13 +153,6 @@ func TestStreamingOpenCreatesEmptyBufferForMissingFile(t *testing.T) {
 		"file should not exist yet before flush, got: %v", statErr)
 }
 
-// TestStreamingOpenSurfacesPermissionError verifies that an
-// unreadable file (chmod 0000) opened through the streaming path
-// surfaces the permission error rather than blocking the UI on a
-// synchronous fallback that would also fail. The streaming pre-read
-// already uses O_RDONLY, so no read-only demotion can rescue the
-// open; the only safe answer is to report the error. The open runs
-// asynchronously, so the error surfaces as a notification.
 func TestStreamingOpenSurfacesPermissionError(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root bypasses file permission checks")
@@ -210,12 +187,6 @@ func TestStreamingOpenSurfacesPermissionError(t *testing.T) {
 		"expected a permission-denied notification, got: %v", noti.snapshot())
 }
 
-// TestSyncOpenCreatesEmptyBufferForMissingFile is the sync-path
-// counterpart to TestStreamingOpenCreatesEmptyBufferForMissingFile:
-// it pins the legacy "new file" contract the streaming fix delegates
-// to. With StreamingOpen=false, opening a non-existent path with
-// readOnly=false must succeed, expose a text.Handler, and leave the
-// file un-materialized on disk until first flush.
 func TestSyncOpenCreatesEmptyBufferForMissingFile(t *testing.T) {
 	dir := t.TempDir()
 	wsURI, err := workspaceapi.ParseURI("file://" + dir)
@@ -251,10 +222,6 @@ func TestSyncOpenCreatesEmptyBufferForMissingFile(t *testing.T) {
 		"file should not exist yet before flush, got: %v", statErr)
 }
 
-// TestStreamingOpenDisabledFallsBackToSync confirms the gate works:
-// when StreamingOpen is false, OpenFileTab routes through the legacy
-// synchronous path and the tab's handler is a text.Handler immediately
-// (no swap goroutine, no need to wait).
 func TestStreamingOpenDisabledFallsBackToSync(t *testing.T) {
 	dir := t.TempDir()
 	wsURI, err := workspaceapi.ParseURI("file://" + dir)
@@ -395,12 +362,6 @@ func newStreamingComponentWithScheduler(
 	return c, wsURI, sched, noti
 }
 
-// TestStreamingOpenSilentWhenTabClosedDuringLoad reproduces a bug
-// where opening a large file via the streaming path and then closing
-// the streaming tab before the background load completes still
-// surfaced a notification when the swap callback eventually fired.
-// The expected behaviour: once the user closed the tab, the load's
-// outcome must not produce any user-visible notification.
 func TestStreamingOpenSilentWhenTabClosedDuringLoad(t *testing.T) {
 	c, wsURI, sched, noti := newStreamingComponentWithScheduler(t)
 
@@ -434,12 +395,6 @@ func TestStreamingOpenSilentWhenTabClosedDuringLoad(t *testing.T) {
 		"no notifications should fire after the streaming tab was closed")
 }
 
-// TestStreamingOpenIgnoresErrorAfterTabClose covers the failure
-// branch of the same scenario: even when the background load fails,
-// the failure must not produce a notification once the user has
-// abandoned the streaming tab. We force an error by removing the
-// file's parent directory between OpenFileTab and the swap callback
-// so any swap-time follow-up that touches the workspace fails.
 func TestStreamingOpenIgnoresErrorAfterTabClose(t *testing.T) {
 	dir := t.TempDir()
 	wsURI, err := workspaceapi.ParseURI("file://" + dir)
@@ -527,12 +482,6 @@ func (w *failingLoadWorkspace) Recover(
 	return nil, w.err()
 }
 
-// TestStreamingOpenStaleRecoverShowsAreYouSurePrompt covers Bug A:
-// when the user answers the recovery prompt with "Recover" and the
-// background load returns workspaceapi.ErrStaleData (the swap file's
-// mtime is newer than the on-disk file), the streaming path must
-// surface the are-you-sure prompt — matching the synchronous path's
-// behaviour — instead of a generic "open ...:" notification.
 func TestStreamingOpenStaleRecoverShowsAreYouSurePrompt(t *testing.T) {
 	dir := t.TempDir()
 	wsURI, err := workspaceapi.ParseURI("file://" + dir)
@@ -608,13 +557,6 @@ func TestStreamingOpenStaleRecoverShowsAreYouSurePrompt(t *testing.T) {
 	}
 }
 
-// TestStreamingOpenPreservesCursorSetDuringLoad is a regression test
-// for RUNE-202: while the background workspace.Load runs, callers
-// that type-assert the tab's handler to text.Handler and call
-// SetCursorAtScroll (session restore, ex commands, idecursor jumps)
-// must succeed and have their cursor applied to the real editor
-// handler once the swap completes — instead of silently failing the
-// type assertion for the whole async-load window.
 func TestStreamingOpenPreservesCursorSetDuringLoad(t *testing.T) {
 	c, wsURI, sched, _ := newStreamingComponentWithScheduler(t)
 
@@ -658,11 +600,6 @@ func TestStreamingOpenPreservesCursorSetDuringLoad(t *testing.T) {
 		"cursor set during the streaming-load window must land on the real handler after swap")
 }
 
-// TestStreamingOpenAppliesLocationListAndAttributesDuringLoad
-// verifies that the deferred wrapper queues additional mutating
-// text.Handler calls (SetLocationList, SetDefaultAttributes,
-// SetWrap, ShowCommandBar) during the async-load window and replays
-// them once the real editor handler is installed.
 func TestStreamingOpenAppliesMutationsDuringLoad(t *testing.T) {
 	c, wsURI, sched, _ := newStreamingComponentWithScheduler(t)
 
@@ -751,13 +688,6 @@ func (s *goroutineTrackingScheduler) drainAll() {
 	}
 }
 
-// TestStreamingOpenBuildsEditorOnScheduler asserts that the editor
-// construction half of the streaming-open path runs on the host
-// scheduler goroutine, not on the background load worker. Editor
-// construction synchronously publishes Open/Focus events to
-// subscribers that read event-loop-owned state (window manager,
-// history tracker, ...), so running it on the worker races with
-// concurrent event-loop work.
 func TestStreamingOpenBuildsEditorOnScheduler(t *testing.T) {
 	dir := t.TempDir()
 	wsURI, err := workspaceapi.ParseURI("file://" + dir)
@@ -832,13 +762,6 @@ func (w *blockingOpenWorkspace) OpenFile(
 	return w.Workspace.OpenFile(p, flag, perm)
 }
 
-// TestStreamingOpenDoesNotBlockOnFileOpen pins the event-loop-freeze
-// fix: OpenFileTab must return while the streaming pre-read's
-// OpenFile is still blocked (previously streamload.New ran the open
-// synchronously on the event loop, hanging the UI when the remote
-// workspace was unresponsive). Against the old code this test hangs
-// in OpenFileTab. After releasing the open, the load completes and
-// the tab swaps to the real editor handler.
 func TestStreamingOpenDoesNotBlockOnFileOpen(t *testing.T) {
 	dir := t.TempDir()
 	wsURI, err := workspaceapi.ParseURI("file://" + dir)

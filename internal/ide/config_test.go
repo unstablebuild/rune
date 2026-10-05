@@ -30,6 +30,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/blue/iterator"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/clipboard"
@@ -805,9 +806,6 @@ func TestAuthorizerAutoAuthorize(t *testing.T) {
 	}
 }
 
-// TestTerminalModalDefaultFromEditorMode asserts that when terminal.modal
-// is not set its default follows editor.mode: modal editors default to
-// modal terminals, modeless to modeless, and exo follows its fallback.
 func TestTerminalModalDefaultFromEditorMode(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -855,10 +853,6 @@ func TestTerminalModalDefaultFromEditorMode(t *testing.T) {
 	assert.False(t, cfg.terminalModal())
 }
 
-// TestEditorModeNormalizesDeprecatedAliases pins that editorMode()
-// resolves the deprecated "modeless" and "modal" aliases to "standard"
-// and "vim", while the canonical modes pass through and an unknown mode
-// falls back to vim.
 func TestEditorModeNormalizesDeprecatedAliases(t *testing.T) {
 	for _, tc := range []struct {
 		mode string
@@ -883,9 +877,6 @@ func TestEditorModeNormalizesDeprecatedAliases(t *testing.T) {
 	}
 }
 
-// TestHelixIsAModalEditorMode pins that helix travels the same gating
-// paths as vi: it is a legal editor.exo.fallback, and the console input
-// line and the terminal keymap default to modal for it.
 func TestHelixIsAModalEditorMode(t *testing.T) {
 	t.Parallel()
 
@@ -934,11 +925,6 @@ func TestHelixIsAModalEditorMode(t *testing.T) {
 	})
 }
 
-// TestDebuggerConfigsTemplates asserts that debuggerConfigs reads the
-// optional launch/attach argument templates under debugger.<lang>,
-// leaves them nil when absent (so the adapter falls back to its
-// built-in defaults), and records a parse error for a non-string
-// template value.
 func TestDebuggerConfigsTemplates(t *testing.T) {
 	t.Parallel()
 
@@ -1013,11 +999,6 @@ func TestDebuggerConfigsTemplates(t *testing.T) {
 	})
 }
 
-// TestDebuggerConfigsConnectCommand asserts that a connect:// adapter
-// command is validated at config load: the remainder must be a
-// host:port endpoint and the command must carry no extra arguments,
-// so a typo surfaces as a config error instead of a dial failure at
-// session creation.
 func TestDebuggerConfigsConnectCommand(t *testing.T) {
 	t.Parallel()
 
@@ -1056,9 +1037,6 @@ func TestDebuggerConfigsConnectCommand(t *testing.T) {
 	})
 }
 
-// TestHighlightTabCharEmptyDisables asserts that an explicitly empty
-// focus_tab_highlight_char value disables the highlight (returns 0)
-// while an absent key falls back to the browser default.
 func TestHighlightTabCharEmptyDisables(t *testing.T) {
 	def := browser.DefaultConfig().FocusTabHighlightChar
 
@@ -1091,9 +1069,6 @@ func TestHighlightTabCharEmptyDisables(t *testing.T) {
 	assert.Equal(t, '▁', cfg.workspaceHighlightTabChar())
 }
 
-// TestTabOverrideIcon asserts browser.tab_override_icon parses
-// correctly: absent → 0 (no override), empty → 0, non-empty → first
-// rune.
 func TestTabOverrideIcon(t *testing.T) {
 	// key absent → 0
 	cfg := &ideConfig{cfg: map[string]any{
@@ -1116,8 +1091,6 @@ func TestTabOverrideIcon(t *testing.T) {
 	assert.Equal(t, '●', cfg.tabOverrideIcon())
 }
 
-// TestWorkspaceHome asserts workspace.home parses correctly: absent →
-// "~", empty → "~", non-empty → the configured path.
 func TestWorkspaceHome(t *testing.T) {
 	// key absent → default "~"
 	cfg := &ideConfig{cfg: map[string]any{
@@ -1390,9 +1363,18 @@ func TestConfigSetting(t *testing.T) {
 	statusBar := cfg.statusBarEnabled()
 	assert.True(t, statusBar)
 
-	statusBarCfg := cfg.statusBarConfig(workspaceapi.URI{}, nil, nil)
+	statusBarCfg := cfg.statusBarConfig(workspaceapi.URI{}, nil, nil, nil)
 	assert.NotNil(t, statusBarCfg.ScheduleNextTick)
 	statusBarCfg.ScheduleNextTick = nil
+	// Images are cached in a partition of their own.
+	require.NotNil(t, statusBarCfg.Storage)
+	require.NoError(t, statusBarCfg.Storage.Set(context.Background(), "image", map[string]any{"a": 1}))
+	images, err := cfg.storage.Partition("status_bar_images")
+	require.NoError(t, err)
+	var doc map[string]any
+	require.NoError(t, images.Get(context.Background(), "image", &doc))
+	assert.ErrorIs(t, cfg.storage.Get(context.Background(), "image", &doc), storageapi.ErrNotFound)
+	statusBarCfg.Storage = nil
 	assert.Equal(t, text.StatusBarConfig{
 		BackgroundColor: term.ColorMaroon,
 		Layout: []text.StatusBarComponent{
@@ -1839,9 +1821,6 @@ func TestConsolePromptDefaultsEmpty(t *testing.T) {
 	assert.Empty(t, cfg.consolePrompt())
 }
 
-// TestShellEditorModalFromEditorMode asserts consoleCfg().modal mirrors the
-// editor backing the console prompt: modal is modal, modeless is not, and
-// exo follows its configured fallback.
 func TestShellEditorModalFromEditorMode(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -2006,9 +1985,6 @@ editor:
 	}, cfg.editorIndents())
 }
 
-// TestCommandKeyBindingLookup asserts that commandKeyBindingLookup
-// inverts the configured key bindings: each command line resolves to
-// its key and multi-command sequences map every line to the same key.
 func TestCommandKeyBindingLookup(t *testing.T) {
 	t.Parallel()
 	c := ideConfig{
@@ -2063,10 +2039,6 @@ func TestCommandKeyBindingLookupPrefersPrintableAlias(t *testing.T) {
 	assert.Empty(t, c.errors)
 }
 
-// TestCommandKeyBindingLookupPrefersSingleChord pins that a command bound
-// to both a single chord and a two-key sequence advertises the chord. A
-// focused terminal consumes prefix chords such as C-x as PTY input, so
-// surfacing the sequence would advertise a key the user cannot press.
 func TestCommandKeyBindingLookupPrefersSingleChord(t *testing.T) {
 	t.Parallel()
 	c := ideConfig{
@@ -2282,9 +2254,6 @@ func TestValidateQuickMenuAcceptsValidConfig(t *testing.T) {
 	assert.NoError(t, validateQuickMenu(map[string]any{"gui": map[string]any{}}))
 }
 
-// TestFileExplorerMinWidthConfig pins the default the handler falls
-// back to when editor.file_explorer is absent, so an unconfigured
-// install still gets a visible explorer on an empty workspace.
 func TestFileExplorerMinWidthConfig(t *testing.T) {
 	t.Parallel()
 	bare := ideConfig{cfg: map[string]any{}, errors: map[string]error{}}
@@ -2298,9 +2267,6 @@ func TestFileExplorerMinWidthConfig(t *testing.T) {
 	assert.Empty(t, set.errors)
 }
 
-// TestFileExplorerReadOnlyConfigDefaults pins the defaults for the
-// read-only knobs, so an install that never touches the block still
-// gets an editable explorer with a named way into and out of it.
 func TestFileExplorerReadOnlyConfigDefaults(t *testing.T) {
 	t.Parallel()
 	c := ideConfig{cfg: map[string]any{}, errors: map[string]error{}}
@@ -2314,8 +2280,6 @@ func TestFileExplorerReadOnlyConfigDefaults(t *testing.T) {
 	assert.Empty(t, c.errors)
 }
 
-// TestFileExplorerReadOnlyConfigOverrides verifies every read-only
-// knob is reachable from editor.file_explorer.
 func TestFileExplorerReadOnlyConfigOverrides(t *testing.T) {
 	t.Parallel()
 	c := ideConfig{cfg: map[string]any{"editor": map[string]any{
@@ -2336,9 +2300,6 @@ func TestFileExplorerReadOnlyConfigOverrides(t *testing.T) {
 	assert.Empty(t, c.errors)
 }
 
-// TestFileExplorerEditKeyInvalid records the error and keeps the
-// default rather than leaving the explorer with no way out of
-// read-only.
 func TestFileExplorerEditKeyInvalid(t *testing.T) {
 	t.Parallel()
 	for _, spec := range []string{"<nope>", "ab"} {

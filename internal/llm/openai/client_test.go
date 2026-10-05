@@ -36,11 +36,6 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
 )
 
-// NOTE: this serves as an example of how to use the llm API backed by openai.
-// Only enable when changes to the API or client are made
-// or when upgrading the sdk dependency.
-// Note that some of the content asserts might fail, as without
-// `seed` and `system_fingerprint` funcionality, the output is never deterministic.
 func TestCreateCompletion(t *testing.T) {
 	t.SkipNow()
 
@@ -350,9 +345,6 @@ func TestCreateCompletion(t *testing.T) {
 	})
 }
 
-// TestResponsesAPI exercises the /v1/responses streaming path forced via
-// ForceResponsesAPI. Enable by removing t.SkipNow() and setting
-// OPENAI_TESTING_KEY.
 func TestResponsesAPI(t *testing.T) {
 	t.SkipNow()
 
@@ -879,11 +871,6 @@ func TestResponsesMaxOutputTokens(t *testing.T) {
 	})
 }
 
-// TestResponsesIncludesEncryptedReasoningContent verifies that, for any
-// reasoning model on the Responses API, the client sets
-// include=[reasoning.encrypted_content] so reasoning items can be threaded
-// back across turns. This is required for stateless (store=false) callers and
-// harmless otherwise — see https://platform.openai.com/docs/guides/reasoning.
 func TestResponsesIncludesEncryptedReasoningContent(t *testing.T) {
 	body := captureResponsesRequestBody(t, Config{
 		ForceResponsesAPI: true,
@@ -893,9 +880,6 @@ func TestResponsesIncludesEncryptedReasoningContent(t *testing.T) {
 	require.Equal(t, []any{"reasoning.encrypted_content"}, body["include"])
 }
 
-// TestResponsesSessionHeadersFromPromptCacheKey verifies that any caller
-// supplying a PromptCacheKey gets correlation headers usable by the Codex
-// backend (and ignored by OpenAI hosted).
 func TestResponsesSessionHeadersFromPromptCacheKey(t *testing.T) {
 	captured := captureResponsesRequest(t, Config{
 		ForceResponsesAPI: true,
@@ -907,8 +891,6 @@ func TestResponsesSessionHeadersFromPromptCacheKey(t *testing.T) {
 	assert.Equal(t, "thread-abc", captured.Header.Get("x-client-request-id"))
 }
 
-// TestResponsesStorefalseAndDisabledParallel verifies the generic stateless
-// knobs, used by the Codex caller (and any other ZDR / store=false consumer).
 func TestResponsesStorefalseAndDisabledParallel(t *testing.T) {
 	storeFalse := false
 	body := captureResponsesRequestBody(t, Config{
@@ -926,9 +908,6 @@ func TestResponsesStorefalseAndDisabledParallel(t *testing.T) {
 	assert.Equal(t, "install-1", metadata["x-codex-installation-id"])
 }
 
-// TestEffortWarningProvenance pins the rule that only an explicit per-request
-// effort produces a warning; the workspace config value is a standing
-// preference and is dropped silently on models that cannot honor it.
 func TestEffortWarningProvenance(t *testing.T) {
 	// GPT-5.4-pro accepts medium/high/xhigh only, so "low" is unsupported.
 	model := llmapi.ModelEntry{Name: GPT5Dot4Pro, ContextWindow: 200000}
@@ -980,11 +959,6 @@ func captureCompletionEvents(
 	return events
 }
 
-// TestForceResponsesAPIRouting is the regression guard for the original 400
-// (function tools + reasoning_effort require /v1/responses). With
-// ForceResponsesAPI enabled, a tool + reasoning-effort request must hit
-// /responses; with it disabled, it stays on /chat/completions so the
-// Gemini/custom/Ollama compatible providers keep working.
 func TestForceResponsesAPIRouting(t *testing.T) {
 	req := llmapi.Request{
 		Messages:        []llmapi.Message{{Role: llmapi.RoleUser, Content: "hi"}},
@@ -1011,13 +985,6 @@ func TestForceResponsesAPIRouting(t *testing.T) {
 	})
 }
 
-// TestResponsesReasoningRoundTrip verifies that reasoning items emitted by
-// the Responses API stream are captured into Message.ProviderItems with their
-// encrypted_content intact, and that they are threaded back verbatim as input
-// items on the next request. Per OpenAI's reasoning guide, this is required
-// for stateless callers (store=false / ZDR) and recommended for any caller
-// that does function calling with a reasoning model and is not relying on
-// previous_response_id.
 func TestResponsesReasoningRoundTrip(t *testing.T) {
 	reasoningItem := `{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"plan"}],"encrypted_content":"ENC_BLOB","status":"completed"}`
 	functionCallItem := `{"type":"function_call","id":"fc_item_1","call_id":"call_1","name":"skill","arguments":"{\"name\":\"explore\",\"args\":\"\"}","status":"completed"}`
@@ -1105,13 +1072,6 @@ func TestResponsesReasoningRoundTrip(t *testing.T) {
 	assert.Equal(t, "ok", fnOut["output"])
 }
 
-// TestResponsesAutoDiagProviderItemsRoundTrip locks in the contract that
-// when auto-diagnostics injects a synthetic `function_call` ProviderItem
-// alongside a synthetic ToolCall, the Responses converter emits both the
-// original and the synthetic function_call items in order, followed by
-// both function_call_output items. Without the synthetic ProviderItem,
-// the Responses/Codex backend rejects the request with
-// 400 "No tool call found for function call output ...".
 func TestResponsesAutoDiagProviderItemsRoundTrip(t *testing.T) {
 	originalCallID := "call_orig"
 	syntheticCallID := "auto-diag-" + originalCallID
@@ -1197,9 +1157,6 @@ func TestResponsesAutoDiagProviderItemsRoundTrip(t *testing.T) {
 	assert.Equal(t, "no errors", syntheticOut["output"])
 }
 
-// TestMessageProviderItemsJSONRoundTrip ensures opaque provider items survive
-// persistence (they are stored alongside the assistant message in the
-// dialogue history).
 func TestMessageProviderItemsJSONRoundTrip(t *testing.T) {
 	original := llmapi.Message{
 		Role:          llmapi.RoleAssistant,

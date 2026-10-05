@@ -34,12 +34,6 @@ type miniDoc struct {
 	V string
 }
 
-// TestNewMultiProcessSafeOnBolt asserts that two localstorage.New
-// instances pointing at the same directory cooperate via firstmover
-// leader election rather than racing for the bolt OS flock. Before
-// the leader-only-storage refactor, the second instance silently
-// fell back to an in-memory stub when bolt.Open timed out, so
-// follower reads returned ErrNotFound instead of leader writes.
 func TestNewMultiProcessSafeOnBolt(t *testing.T) {
 	dir := t.TempDir()
 	m := docbson.Marshaler()

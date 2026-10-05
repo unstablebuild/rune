@@ -28,15 +28,6 @@ import (
 	"unstable.build/rune/internal/text/cmdenv"
 )
 
-// TestDispatchCommandExpansion is a table-driven battle-test of the
-// dispatch-time expansion machinery in text.Component: alias-target
-// tokenisation + per-token cmdenv.Expand, dispatched-arg expansion,
-// and the focused-editor context capture that feeds both.
-//
-// The harness builds a fresh Component per case, optionally opens
-// and focuses a file, registers a "sink" command that captures its
-// argv, then dispatches either the alias or a direct command and
-// checks the captured argv (or the error surfaced by Dispatch).
 func TestDispatchCommandExpansion(t *testing.T) {
 	type spec struct {
 		// name is the sub-test name.

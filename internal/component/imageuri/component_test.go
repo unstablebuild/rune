@@ -38,7 +38,9 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/component/comptest"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"github.com/unstablebuild/rune-go-sdk/tui"
 	"go.uber.org/goleak"
+	tcomponent "unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/component/asciiart"
 	"unstable.build/rune/internal/component/imageuri"
 	"unstable.build/rune/internal/component/imageuri/imageuritest"
@@ -96,6 +98,19 @@ const samplePNG24x6 = `
                                         
                                         `
 
+// samplePNGFill40x10 is the sample picture stretched over a 40x10 area.
+const samplePNGFill40x10 = `
+@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+@@@@@@@#bbbbbb@@cccccc##cccccc#@@@@@@@@@
+@@@@@@@@#bbc$@@cccccb#@a;;;;;#@@@@@@@@@@
+@@@@@@@#;ccccc#@c;;;;;$@#;;;;;@@@@@@@@@@
+@@@@@@@#;cc;;#@b;;;;;1##:::::;@@@@@@@@@@
+@@@@@@@@#;:;;;:@#3+::::@@#::+@@@@@@@@@@@
+@@@@@@@#;;;::;@@::::::#@:+++++#@@@@@@@@@
+@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+@##@:#@##@@:##W+9##=@##=@@=@@=+###+#W#@@
+@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@`
+
 const problemArt32x16 = `
                                 
                                 
@@ -139,7 +154,12 @@ func TestComponentDraw(t *testing.T) {
 		// images reports whether the writer can draw images, which it
 		// encodes as ASCII art.
 		images bool
-		steps  []step
+		// style defaults to viewerStyle.
+		style *imageuri.Style
+		// under is drawn beneath the component, as a parent overlaying
+		// the component on its own content would.
+		under string
+		steps []step
 		// wantFetches counts http requests and file system opens.
 		wantFetches int32
 	}
@@ -197,6 +217,19 @@ func TestComponentDraw(t *testing.T) {
   ⠆    
        
        `},
+			},
+			wantFetches: 1,
+		},
+		{
+			name:   "animates over the content around the animation",
+			source: "http", path: "pending.png",
+			width: 7, height: 1,
+			under: "abcdefg",
+			steps: []step{
+				{do: resize(7, 1), expected: `
+abc⠃efg`},
+				{do: awaitRequest, expected: `
+abc⠅efg`},
 			},
 			wantFetches: 1,
 		},
@@ -267,6 +300,52 @@ func TestComponentDraw(t *testing.T) {
 			},
 			wantFetches: 1,
 		},
+		{
+			name:   "draws the caller's problem art",
+			source: "http", path: "missing.png",
+			width: 5, height: 3, images: true,
+			style: &imageuri.Style{ProblemArt: "✗"},
+			steps: []step{
+				{do: seq(resize(5, 3), settle), expected: `
+     
+  ✗  
+     `},
+			},
+			wantFetches: 1,
+		},
+		{
+			name:   "draws the problem art over the content around it",
+			source: "http", path: "missing.png",
+			width: 5, height: 1, images: true,
+			style: &imageuri.Style{ProblemArt: "✗"},
+			under: "abcde",
+			steps: []step{
+				{do: seq(resize(5, 1), settle), expected: `
+ab✗de`},
+			},
+			wantFetches: 1,
+		},
+		{
+			name:   "draws nothing for an empty problem art",
+			source: "fs", path: "missing.png",
+			width: 5, height: 1,
+			style: &imageuri.Style{},
+			steps: []step{
+				{do: seq(resize(5, 1), settle), expected: `
+     `},
+			},
+			wantFetches: 1,
+		},
+		{
+			name:   "stretches the image to fill its cells",
+			source: "fs", path: "sample.png",
+			width: 40, height: 10, images: true,
+			style: &imageuri.Style{Fit: term.ImageFitFill},
+			steps: []step{
+				{do: seq(resize(40, 10), settle), expected: samplePNGFill40x10},
+			},
+			wantFetches: 1,
+		},
 	}
 	for _, source := range []string{"http", "file", "fs"} {
 		for _, s := range samples {
@@ -288,7 +367,17 @@ func TestComponentDraw(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			f := newFixture(t, tt.source, tt.path, tt.width, tt.height, tt.images)
+			style := viewerStyle
+			if tt.style != nil {
+				style = *tt.style
+			}
+			f := newFixture(t, tt.source, tt.path, tt.width, tt.height, tt.images, style)
+			var c tui.Component = f.c
+			if tt.under != "" {
+				under := component.NewString(tt.under)
+				under.Resize(tt.width, tt.height)
+				c = overlay{under: under, c: f.c}
+			}
 			cases := make([]comptest.TestCase, len(tt.steps))
 			for i, s := range tt.steps {
 				cases[i] = comptest.TestCase{Expected: s.expected, Action: func() {
@@ -297,7 +386,7 @@ func TestComponentDraw(t *testing.T) {
 					}
 				}}
 			}
-			comptest.TestComponent(t, f.c, f.w, cases)
+			comptest.TestComponent(t, c, f.w, cases)
 			assert.Equal(t, tt.wantFetches, f.fetches.Load())
 			assert.Equal(t, f.opened.Load(), f.closes.Load(),
 				"every opened file is closed")
@@ -363,7 +452,7 @@ func TestCloseCancelsTheRequest(t *testing.T) {
 	defer srv.Close()
 
 	c, err := imageuri.New(srv.URL+"/image.png", time.Hour,
-		storagestub.NewInMemoryService(), make(interrupts, 1))
+		storagestub.NewInMemoryService(), make(interrupts, 1), viewerStyle)
 	require.NoError(t, err)
 	c.Resize(3, 1)
 	c.Draw(term.NewStringWriter(3, 1))
@@ -393,19 +482,30 @@ func TestNew(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			c, err := imageuri.New(tt.uri, tt.ttl,
-				storagestub.NewInMemoryService(), make(interrupts, 1))
+				storagestub.NewInMemoryService(), make(interrupts, 1), viewerStyle)
+			uriErr := imageuri.ValidateURI(tt.uri)
 			if tt.wantErr != "" {
 				require.ErrorContains(t, err, tt.wantErr)
 				assert.Nil(t, c)
+				if tt.ttl >= 0 {
+					assert.ErrorContains(t, uriErr, tt.wantErr,
+						"ValidateURI rejects what New rejects for the URI")
+				}
 				return
 			}
 			require.NoError(t, err)
+			assert.NoError(t, uriErr)
 			require.NoError(t, c.Close())
 		})
 	}
 }
 
 const testTimeout = 5 * time.Second
+
+// viewerStyle is how the file viewer places images.
+var viewerStyle = imageuri.Style{
+	Fit: term.ImageFitContain, ProblemArt: tcomponent.ProblemArt,
+}
 
 var spinnerFrames, _ = component.ProgressAnimationFrames()
 
@@ -427,6 +527,7 @@ type fixture struct {
 
 func newFixture(
 	t *testing.T, source, path string, width, height int, images bool,
+	style imageuri.Style,
 ) *fixture {
 	f := &fixture{t: t, irq: make(interrupts, 1), arrived: make(chan struct{}, 1)}
 
@@ -459,13 +560,13 @@ func newFixture(
 
 	switch source {
 	case "fs":
-		f.c = imageuri.NewFromFileSystem(dirFS{f: f, dir: dir}, path, f.irq)
+		f.c = imageuri.NewFromFileSystem(dirFS{f: f, dir: dir}, path, f.irq, style)
 	default:
 		uri := srv.URL + "/" + path
 		if source == "file" {
 			uri = (&url.URL{Scheme: "file", Path: filepath.ToSlash(filepath.Join(dir, path))}).String()
 		}
-		c, err := imageuri.New(uri, time.Hour, storagestub.NewInMemoryService(), f.irq)
+		c, err := imageuri.New(uri, time.Hour, storagestub.NewInMemoryService(), f.irq, style)
 		require.NoError(t, err)
 		f.c = c
 	}
@@ -486,7 +587,7 @@ func newCachedFixture(
 	t *testing.T, uri string, ttl time.Duration, storage storageapi.Service,
 ) *fixture {
 	f := &fixture{t: t, irq: make(interrupts, 1)}
-	c, err := imageuri.New(uri, ttl, storage, f.irq)
+	c, err := imageuri.New(uri, ttl, storage, f.irq, viewerStyle)
 	require.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, c.Close()) })
 	f.c = c
@@ -553,6 +654,19 @@ func (i interrupts) Interrupt(context.Context) error {
 	default:
 	}
 	return nil
+}
+
+// overlay draws c over under. Only c is resized.
+type overlay struct {
+	under component.String
+	c     *imageuri.Component
+}
+
+func (o overlay) Resize(width, height int) { o.c.Resize(width, height) }
+
+func (o overlay) Draw(w term.Writer) {
+	o.under.Draw(w)
+	o.c.Draw(w)
 }
 
 // dirFS is an imageuri.FileSystem over dir that counts opens and closes

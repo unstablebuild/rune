@@ -32,6 +32,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"github.com/unstablebuild/rune-go-sdk/clipboard"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
@@ -181,13 +182,16 @@ func WithConfigFilename(filename string) Option {
 	}
 }
 
-// WithWorkspaceOpenCompleter adds a completer to the `workspaceopen`
-// command prompt, after the built-in history and directory completers.
-// Schemes registered with [WithScheme] use it to offer the workspaces
-// they can reach, which the built-in completers cannot enumerate.
-func WithWorkspaceOpenCompleter(c command.Completer) Option {
+// WithWorkspaceOpenCompleter makes c the sole `workspaceopen`
+// completer for arguments starting with "<scheme>://": history and
+// local directories would offer workspaces the scheme can no longer
+// reach. Registering the same scheme twice keeps the last completer.
+func WithWorkspaceOpenCompleter(scheme string, c command.Completer) Option {
 	return func(opts *options) {
-		opts.workspaceOpenCompleters = append(opts.workspaceOpenCompleters, c)
+		if opts.workspaceOpenCompleters == nil {
+			opts.workspaceOpenCompleters = make(map[string]command.Completer)
+		}
+		opts.workspaceOpenCompleters[scheme] = c
 	}
 }
 
@@ -274,8 +278,8 @@ func WithBell(bell func()) Option {
 	}
 }
 
-// WithScheduleNextTick sets the default mechanism to schedule a user functio to run before
-// the next event loop tick.
+// WithScheduleNextTick sets how the IDE runs a function on the event loop.
+// scheduleFn returns true only if the function will run exactly once.
 func WithScheduleNextTick(scheduleFn func(func()) bool) Option {
 	return func(opts *options) {
 		opts.scheduleFn = scheduleFn
@@ -289,6 +293,15 @@ func WithScheduleNextTick(scheduleFn func(func()) bool) Option {
 func WithCellPixelSize(cellPixelSize func() (width, height int)) Option {
 	return func(opts *options) {
 		opts.cellPixelSize = cellPixelSize
+	}
+}
+
+// WithClipboard sets the clipboard that every workspace, terminal and editor
+// shares when the clipboard config is "system", so a copy anywhere is what a
+// paste anywhere sees. Without it, they share an in-memory clipboard.
+func WithClipboard(clip clipboard.Register) Option {
+	return func(opts *options) {
+		opts.clip = clip
 	}
 }
 
@@ -516,12 +529,13 @@ type options struct {
 	bell                 func()
 	scheduleFn           func(func()) bool
 	cellPixelSize        func() (int, int)
+	clip                 clipboard.Register
 	afterFunc            func(time.Duration, func()) *time.Timer
 	debugCommands        bool
 	streamingOpen        bool
 	disableSessionReopen bool
 
-	workspaceOpenCompleters []command.Completer
+	workspaceOpenCompleters map[string]command.Completer
 
 	defaultConfigModeModal bool
 	defaultConfigTUI       bool
@@ -576,6 +590,7 @@ func defaultOptions() options {
 		workspacesBarFrame: true,
 		workspacesIcon:     '1',
 		releaseManager:     docrelease.NewManager(document.NewInMemoryService()),
+		clip:               clipboard.NewInMemory(),
 	}
 }
 

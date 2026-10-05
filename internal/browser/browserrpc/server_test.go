@@ -255,11 +255,6 @@ func TestServerSetContent(t *testing.T) {
 	/* tested via ex integration tests */
 }
 
-// Publish reaches a deliberately lock-free sink: eventRouter.newPublisher
-// (an atomic load) into gui.PublishEvent (an atomic store or a buffered
-// channel send, plus the concurrent-safe ebiten.ScheduleFrame). Taking the
-// UI lock to get there only queued extension redraws behind the render
-// loop, which holds that lock for its entire tick.
 func TestServerPublishDoesNotWaitOnUILock(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
@@ -329,9 +324,6 @@ func (l *resizeOnUnlockLocker) Unlock() {
 	l.Mutex.Unlock()
 }
 
-// TestStreamHandlerResizeDuringStreamSetup covers a tab whose window sizes
-// it while the stream serving that tab is still being set up. The size has
-// to reach the far end either way, or the tab renders blank.
 func TestStreamHandlerResizeDuringStreamSetup(t *testing.T) {
 	rec := &resizeRecorder{TestHandler: browsertest.NewTestHandler()}
 	lock := new(resizeOnUnlockLocker)

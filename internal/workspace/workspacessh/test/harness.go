@@ -77,13 +77,6 @@ type SSHDScenario struct {
 	// CGO/GUI libraries.
 	InstallRuneBinary bool
 
-	// RemoteHomeConfig, when non-empty, is written to the ssh user's
-	// ~/.rune/config.yaml after the container is up. It stands in for the
-	// remote-home config a real `rune -x` server reads (including any
-	// gui.env block a package install would have merged), so provisioning
-	// tests can seed a sentinel and assert the server applied it.
-	RemoteHomeConfig string
-
 	// ServeDelay, when non-empty, is written to the ssh user's
 	// ~/.rune/serve_delay as a Go duration string. The runesvc stand-in
 	// sleeps that long before it starts serving (and before it emits the
@@ -204,31 +197,10 @@ func StartContainer(t *testing.T, scenario SSHDScenario) *Container {
 	if scenario.InstallRuneBinary {
 		installUserLocalRune(t, id)
 	}
-	if scenario.RemoteHomeConfig != "" {
-		writeRemoteHomeConfig(t, id, scenario.RemoteHomeConfig)
-	}
 	if scenario.ServeDelay != "" {
 		writeServeDelay(t, id, scenario.ServeDelay)
 	}
 	return &Container{ID: id, HostPort: addr}
-}
-
-// writeRemoteHomeConfig writes contents to the ssh user's
-// ~/.rune/config.yaml inside the container. The home directory is resolved
-// from /etc/passwd because the linuxserver/openssh-server image homes its
-// user at /config, not /home/<user>.
-func writeRemoteHomeConfig(t *testing.T, id, contents string) {
-	t.Helper()
-	script := `home="$(getent passwd test | cut -d: -f6)" &&
-mkdir -p "$home/.rune" &&
-cat > "$home/.rune/config.yaml" <<'RUNE_EOF'
-` + contents + `
-RUNE_EOF
-chown -R test "$home/.rune"`
-	out, err := exec.Command("docker", "exec", id, "sh", "-c", script).CombinedOutput()
-	if err != nil {
-		t.Fatalf("write remote home config: %v: %s", err, out)
-	}
 }
 
 // writeServeDelay writes a Go duration string to the ssh user's

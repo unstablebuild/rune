@@ -86,9 +86,6 @@ var linuxPresetModes = map[string]string{
 	"preset_emacs_linux.yaml":    "emacs",
 }
 
-// TestLinuxPresetsRenderEveryMetaKey renders each Linux preset with every
-// <meta> meaning its editor is offered, whatever the host OS, so the
-// files cannot drift from the prompt's option table.
 func TestLinuxPresetsRenderEveryMetaKey(t *testing.T) {
 	for name, mode := range linuxPresetModes {
 		raw, err := os.ReadFile(name)
@@ -111,9 +108,6 @@ func TestLinuxPresetsRenderEveryMetaKey(t *testing.T) {
 	}
 }
 
-// TestPresetKeyBindingsParse pins that every shipped binding survives the
-// same parse the IDE performs, so a preset cannot ship a key spelling the
-// command layer silently drops.
 func TestPresetKeyBindingsParse(t *testing.T) {
 	for _, name := range presetFiles {
 		raw, err := os.ReadFile(name)
@@ -172,11 +166,6 @@ func decodeKeyBindings(t *testing.T, name string, raw []byte) map[string]string 
 	return out
 }
 
-// TestPresetsSpellPackageKeysLikeThePackage pins that a preset overriding a
-// chord the fuzzy_search package binds spells it exactly as the package
-// does. Package installs merge key bindings by their raw spelling, so a
-// different spelling of the same chord lands next to the preset's and
-// which one runs is left to map order.
 func TestPresetsSpellPackageKeysLikeThePackage(t *testing.T) {
 	src, err := os.ReadFile("../extension_fuzzy_search/config.star")
 	if err != nil {
@@ -216,9 +205,6 @@ func TestPresetsSpellPackageKeysLikeThePackage(t *testing.T) {
 	}
 }
 
-// TestPresetsBindBothCursorHistoryDirections pins that a preset which binds
-// a step back through the cursor history also binds the step forward, so
-// the way back out of a jump is never a typed command.
 func TestPresetsBindBothCursorHistoryDirections(t *testing.T) {
 	for _, name := range presetFiles {
 		bound := map[string]bool{}
@@ -235,12 +221,6 @@ func TestPresetsBindBothCursorHistoryDirections(t *testing.T) {
 // command.
 var layoutCommand = regexp.MustCompile(`^(echo \{prompt\})?(window|tab)`)
 
-// TestHelixPresetSharesVimLayoutChords pins that the macOS helix preset
-// binds every layout chord the macOS vim preset binds, so both editors
-// share one set of Runic layout keys and one tutorial copy. Helix's own
-// <ctrl-w> window menu stays as a backup for muscle memory, since a
-// focused terminal swallows it. The Linux presets diverge on purpose: see
-// TestLinuxPresetsSurviveAltAsMeta.
 func TestHelixPresetSharesVimLayoutChords(t *testing.T) {
 	// Chords Helix already binds by default, so the helix preset leaves them
 	// to the editor.
@@ -282,13 +262,6 @@ func TestHelixPresetSharesVimLayoutChords(t *testing.T) {
 	}
 }
 
-// TestHelixPresetKeepsHelixSpellings pins the Helix key spellings the helix
-// presets keep as backups for muscle memory on every OS: the window menu,
-// also with <ctrl> still held or with arrows, as Helix accepts it, and the
-// workspace diagnostics picker, which Rune's diagnostics list already
-// covers. The jumplist keys reach the cursor history once the editor's
-// own jumplist declines them, so both directions stay bound, and <space>j
-// opens the history picker as it opens Helix's jumplist picker.
 func TestHelixPresetKeepsHelixSpellings(t *testing.T) {
 	for _, name := range []string{"preset_helix_darwin.yaml", "preset_helix_linux.yaml"} {
 		helix := presetKeyBindings(t, name)
@@ -322,9 +295,6 @@ func TestHelixPresetKeepsHelixSpellings(t *testing.T) {
 	}
 }
 
-// TestHelixPresetTypableCommandAliases pins the Helix typable command names
-// the helix preset aliases to their Rune counterparts. Rune has no per-split
-// quit, so :q and :wq close the window, as <ctrl-w>q does.
 func TestHelixPresetTypableCommandAliases(t *testing.T) {
 	openFile := map[string]any{"command": "edit", "completer": "files"}
 	want := map[string]any{
@@ -364,8 +334,6 @@ func TestHelixPresetTypableCommandAliases(t *testing.T) {
 	}
 }
 
-// TestLinuxPresetsResizeDirectionally pins that every Linux preset binds
-// the four directional resizes, so no editor leaves them to typed commands.
 func TestLinuxPresetsResizeDirectionally(t *testing.T) {
 	for name := range linuxPresetModes {
 		bound := map[string]bool{}
@@ -383,9 +351,6 @@ func TestLinuxPresetsResizeDirectionally(t *testing.T) {
 	}
 }
 
-// TestLinuxPresetsKeepBindingsApartUnderEveryMetaKey pins that no two
-// bindings of a Linux preset land on the same keys under any <meta> meaning
-// its editor is offered, since one of them would silently never run.
 func TestLinuxPresetsKeepBindingsApartUnderEveryMetaKey(t *testing.T) {
 	for name, mode := range linuxPresetModes {
 		bindings := presetKeyBindings(t, name)
@@ -430,10 +395,6 @@ var emacsGNUChords = map[string]bool{
 	"<ctrl-alt-i>": true,
 }
 
-// TestLinuxPresetsKeepRuneOffAlt pins that every Linux preset keeps its
-// Rune commands on the <meta> layer, so <alt> stays with the editors and
-// the terminal. A binding to "" only frees a chord an extension claimed,
-// and a chord that also holds <meta> is still on Rune's layer.
 func TestLinuxPresetsKeepRuneOffAlt(t *testing.T) {
 	for _, name := range []string{
 		"preset_modal_linux.yaml", "preset_helix_linux.yaml",

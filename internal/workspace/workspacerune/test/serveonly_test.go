@@ -77,20 +77,6 @@ func startMeshNode(t *testing.T, control ControlPlane, hostname, key string) mes
 	}
 }
 
-// TestServeOnlyTopology pins what a serve-only machine — the shape a
-// `rune --headless` node registers as — may and may not do, against a
-// real Headscale running the policy the account server renders and
-// real mesh nodes from two accounts:
-//
-//	a-user1, a-user2  account a, user-owned
-//	a-serve1          account a, serve-only, a separate Rune process serving workspaces
-//	a-serve2          account a, serve-only
-//	b-user            account b, user-owned
-//	b-serve           account b, serve-only
-//
-// Every blocked connection is checked at the packet level, on the
-// workspace port and on an unrelated one, so the guarantee is the
-// network's and not an application's refusal.
 func TestServeOnlyTopology(t *testing.T) {
 	SkipIfNoDocker(t)
 

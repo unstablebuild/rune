@@ -26,16 +26,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestDarwinAppBundlesPinMinimumOSVersion guards against shipping a
-// macOS app bundle whose minimum OS version is left to the build SDK
-// default. When the arm64 build was missing -mmacosx-version-min and
-// the bundle plist omitted LSMinimumSystemVersion, the linker recorded
-// the build host's SDK (e.g. macOS 26) as the floor, so the DMG would
-// not launch on supported releases. Both per-arch plists must declare
-// LSMinimumSystemVersion equal to their Makefile deployment-target
-// floor. This runs on every platform (it only reads checked-in files),
-// so Linux CI catches a regression too; the artifact/binary minos
-// checks live in the macOS-only dist gate.
 func TestDarwinAppBundlesPinMinimumOSVersion(t *testing.T) {
 	repoRoot := repoRootDir(t)
 	makefile := readFileString(t, filepath.Join(repoRoot, "cmd", "rune", "Makefile"))

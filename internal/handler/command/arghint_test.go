@@ -119,11 +119,6 @@ var argHintTestCommands = []Manual{
 	{Name: "quit", Summary: "Quit."},
 }
 
-// TestCommandHandlerArgHintDraw pins the shadow argument placeholder:
-// it is drawn at the cursor once an argument slot is pending, is
-// replaced by the typed text on the first keystroke, advances to the
-// next slot on the separator space, and is absent for commands whose
-// synopsis does not describe the pending argument.
 func TestCommandHandlerArgHintDraw(t *testing.T) {
 	tsuite := []struct {
 		desc         string

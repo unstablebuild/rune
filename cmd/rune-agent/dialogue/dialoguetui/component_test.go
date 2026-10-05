@@ -245,11 +245,6 @@ func TestComponentScrollPreservedOnAppend(t *testing.T) {
 	}
 }
 
-// TestComponentScrollPreservedOnInPlaceGrowth covers height changes that do
-// not go through a structural list mutation (content re-parsed in place, the
-// compose box resizing the messages area) as well as content shrinking. While
-// scrolled up, the top visible row must stay fixed; at the bottom, the
-// viewport follows.
 func TestComponentScrollPreservedOnInPlaceGrowth(t *testing.T) {
 	type testCase struct {
 		name                string
@@ -1131,9 +1126,6 @@ func TestComponentReasoningChunks(t *testing.T) {
 	comptest.TestComponent(t, comp, w, tests)
 }
 
-// TestComponentReasoningMarkdown verifies reasoning text is rendered as
-// markdown: bold markers are stripped once closed rather than shown
-// literally.
 func TestComponentReasoningMarkdown(t *testing.T) {
 	comp := NewComponent(ComponentConfig{})
 	comp.Resize(20, 10)
@@ -1238,8 +1230,6 @@ func TestComponentReasoningThenText(t *testing.T) {
 	comptest.TestComponent(t, comp, w, tests)
 }
 
-// TestComponentReasoningToolCallReasoning exercises the full agent loop
-// pattern for reasoning models: reasoning → tool calls → more reasoning → text.
 func TestComponentReasoningToolCallReasoning(t *testing.T) {
 	comp := NewComponent(ComponentConfig{})
 	comp.Resize(20, 10)
@@ -1859,9 +1849,6 @@ func TestComponentErrorMessage(t *testing.T) {
 	comptest.TestComponent(t, comp, w, tests)
 }
 
-// TestComponentToolCallOrderings exercises every combination of tool calls,
-// child agent tool calls, standard messages, completion orderings, and
-// message breaks to verify the final rendering is correct in each case.
 func TestComponentToolCallOrderings(t *testing.T) {
 	const (
 		W = 30
@@ -4147,10 +4134,6 @@ func TestComponentBreakCompletesRunningChildTools(t *testing.T) {
 	comptest.TestComponent(t, comp, w, tests)
 }
 
-// TestComponentBreakCancelsRunningTool verifies a tool call whose
-// result never arrives (cancellation stops the event loop before the
-// result is delivered) renders as canceled rather than successful.
-// Regression for RUNE-305.
 func TestComponentBreakCancelsRunningTool(t *testing.T) {
 	comp := NewComponent(ComponentConfig{})
 	comp.Resize(30, 6)
@@ -4223,30 +4206,6 @@ func TestComponentNewToolWhileCollapsed(t *testing.T) {
 	comptest.TestComponent(t, comp, w, tests)
 }
 
-// TestComponentMessageSpacing verifies the vertical spacing between
-// different message types when ReceiveMessageBottomPad and
-// SendMessageBottomPad are configured (matching the real extension).
-//
-// The expected layout (30 wide, 20 tall) shows one spacer row between
-// each element — no double-padding at any boundary:
-//
-//	Row  0: "What files exist?"        (user message)
-//	Row  1: (spacer — SendMessageBottomPad)
-//	Row  2: "Let me check."            (assistant text)
-//	Row  3: (spacer — ReceiveMessageBottomPad, from tool call break)
-//	Row  4: (spacer — ReceiveMessageBottomPad, from AddReceiveMessageBreak)
-//	Row  5: "✓ list_dir"               (completed tool call)
-//	Row  6: "main.go"                  (tool result)
-//	Row  7: "Found main.go."           (assistant text, second chunk)
-//	Row  8: (spacer — ReceiveMessageBottomPad, from break)
-//	Row  9: (spacer — ReceiveMessageBottomPad, from AddReceiveMessageBreak)
-//	Row 10: "How about tests?"         (user message)
-//	Row 11: (spacer — SendMessageBottomPad)
-//	Row 12: "Sure."                    (assistant text)
-//
-// TestComponentMessageSpacing verifies the vertical spacing between
-// different message types when ReceiveMessageBottomPad and
-// SendMessageBottomPad are configured (matching the real extension).
 func TestComponentMessageSpacing(t *testing.T) {
 	const (
 		width  = 30
@@ -4334,9 +4293,6 @@ func TestSendMessageBackgroundDoesNotLeakIntoPadding(t *testing.T) {
 	assert.NotEqual(t, bg, cell(0, 1).Bg, "spacer row should not have send-message bg")
 }
 
-// TestComponentHintRestoredAfterPromptSelect verifies that when a prompt is
-// shown during an active agent turn, the receive-message hint is saved, hidden,
-// and then automatically restored when the user selects an option.
 func TestComponentTaskActiveFormSuppressesVisibleProgress(t *testing.T) {
 	comp := NewComponent(ComponentConfig{})
 

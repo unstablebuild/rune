@@ -24,12 +24,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestEncodeResponseAlwaysHasResultOrError locks in the JSON-RPC 2.0
-// invariant that a successful response carries a "result" member even
-// when the value is null. A nil or empty Result must not drop the
-// member; servers such as ty reject a reply with neither "result" nor
-// "error" and then stall any request that depends on it (observed with
-// workspace/configuration blocking workspace/diagnostic).
 func TestEncodeResponseAlwaysHasResultOrError(t *testing.T) {
 	t.Parallel()
 
@@ -65,9 +59,6 @@ func TestEncodeResponseAlwaysHasResultOrError(t *testing.T) {
 	}
 }
 
-// TestEncodeResponseErrorOmitsResult verifies that when an error is
-// present the result member is not synthesized, so an error response
-// stays well-formed.
 func TestEncodeResponseErrorOmitsResult(t *testing.T) {
 	t.Parallel()
 

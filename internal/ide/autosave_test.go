@@ -31,10 +31,6 @@ import (
 	"unstable.build/rune/internal/workspace"
 )
 
-// TestAutoSaver exercises the debounced flush behaviour of autoSaver.
-// The table is keyed by the inputs feed into Handle and the configured
-// flusher/notification behaviour, asserting on the URIs that ended up
-// being flushed and any notifications emitted.
 func TestAutoSaver(t *testing.T) {
 	uriA := mustURI(t, "memory:///tmp/a")
 	uriB := mustURI(t, "memory:///tmp/b")

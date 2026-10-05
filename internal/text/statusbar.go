@@ -17,14 +17,17 @@
 package text
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/ernestrc/go-multierror"
 	log "github.com/sirupsen/logrus"
 	"github.com/unstablebuild/blue/iterator"
 	"github.com/unstablebuild/blue/logging"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/component"
@@ -48,6 +51,8 @@ type StatusBarComponent struct {
 	Type       StatusBarComponentType
 	Template   string
 	Attributes term.Attributes
+	// Image is set for StatusBarImage components only.
+	Image template.Image
 }
 
 const (
@@ -79,6 +84,9 @@ const (
 	StatusBarCoordinatesCursorY
 	// StatusBarTotalLines is the total lines in the file.
 	StatusBarTotalLines
+	// StatusBarImage is an image drawn over the bar. Its Template
+	// surrounds the cells it reserves.
+	StatusBarImage
 )
 
 // StatusBarConfig holds configuration for the status bar created
@@ -92,6 +100,14 @@ type StatusBarConfig struct {
 	BackgroundColor term.Color
 	ErrorColor      term.Color
 	GitService      vctrl.Service
+	// Storage caches the images the layout downloads. It is required
+	// when Layout has a StatusBarImage component, and is used as-is: the
+	// caller owns its partitioning and lifetime.
+	Storage storageapi.Service
+	// Interrupter is signalled whenever an image of the layout changes
+	// what it draws. It is required when Layout has a StatusBarImage
+	// component.
+	Interrupter term.Interrupter
 }
 
 // WithStatusBar wraps the given editor with an git bar. The given buffer,
@@ -174,14 +190,18 @@ type StatusBar struct {
 	dirty       bool
 	vhandler    handler.Virtual[Handler]
 
-	lastFlush                  int
-	hidden                     bool
-	prevCursor                 term.Coordinates
-	prevOffset                 term.Coordinates
-	width                      int
-	height                     int
-	barLeft                    component.Virtual[component.Floating]
-	barRight                   component.Virtual[component.Floating]
+	lastFlush     int
+	hidden        bool
+	prevCursor    term.Coordinates
+	prevOffset    term.Coordinates
+	width         int
+	height        int
+	barLeft       component.Virtual[component.Floating]
+	barRight      component.Virtual[component.Floating]
+	barLeftItems  []component.Floating
+	barRightItems []component.Floating
+	// images are in the order they are drawn: by z_index, then layout.
+	images                     []*statusBarImage
 	status                     *component.FloatingReference
 	statusTemplate             StatusBarComponent
 	relpath                    *component.FloatingReference
@@ -239,6 +259,11 @@ func (b *StatusBar) Close() (ret error) {
 	}
 	b.cancelAll()
 	b.closed = true
+	for _, img := range b.images {
+		if err := img.Close(); err != nil {
+			ret = multierror.Append(ret, err)
+		}
+	}
 	ok, err := b.pub.UnsubscribeEvents((*statusBarSubscriber)(b))
 	if err != nil {
 		ret = multierror.Append(ret, err)
@@ -290,7 +315,8 @@ func (b *StatusBar) Cursor() (term.Coordinates, term.CursorStyle, bool) {
 // Draw satisfies tui.Component.
 func (b *StatusBar) Draw(w term.Writer) {
 	b.vhandler.Draw(w)
-	if b.config.BackgroundColor != term.ColorDefault && b.barRight.Height() != 0 {
+	shifted := b.barRight.Height() != 0
+	if b.config.BackgroundColor != term.ColorDefault && shifted {
 		attrs := term.Attributes{Bg: b.config.BackgroundColor}
 		for x := range b.width {
 			w.UnionAttributes(term.Coordinates{Y: b.height - 1, X: x}, attrs)
@@ -298,7 +324,16 @@ func (b *StatusBar) Draw(w term.Writer) {
 	}
 	b.barLeft.Draw(w)
 	b.barRight.Draw(w)
-	if b.barRight.Height() != 0 {
+	// Images go over the bar's text, which would cover them if it were
+	// drawn after them. They may be placed partly outside the editor and
+	// its bar, where they are cut off unless they overflow.
+	if len(b.images) > 0 {
+		iw := term.BoundsCheckWriter(b.width, b.height, w)
+		for _, img := range b.images {
+			img.drawImage(iw, shifted)
+		}
+	}
+	if shifted {
 		attrs := term.Attributes{Attrs: term.AttrVerticalRenderOffset}
 		for x := range b.width {
 			w.UnionAttributes(term.Coordinates{Y: b.height - 1, X: x}, attrs)
@@ -583,10 +618,34 @@ func (b *StatusBar) doRebuildBar() int {
 	offset.X = b.width - barRightWidth
 	b.barRight.Move(offset)
 	b.barRight.Resize(barRightWidth, barHeight)
+	b.layoutImages(barLeftWidth, barRightWidth, barHeight)
 
 	messageWidth := max(0, b.width-barLeftWidth-barRightWidth)
 	offset.X = barLeftWidth + messageWidth/2
 	return barHeight
+}
+
+// layoutImages places every image from where its element is laid out,
+// which follows how component.Inline lays out the bar's elements: left
+// to right, each cut to the width left.
+func (b *StatusBar) layoutImages(barLeftWidth, barRightWidth, barHeight int) {
+	rows := b.height
+	if barHeight == 0 {
+		rows = 0
+	}
+	place := func(items []component.Floating, x, width int) {
+		for _, item := range items {
+			if img, ok := item.(*statusBarImage); ok {
+				img.place(x, b.width, rows)
+			}
+			w, _ := item.Dimensions()
+			w = min(w, width)
+			x += w
+			width -= w
+		}
+	}
+	place(b.barLeftItems, 0, barLeftWidth)
+	place(b.barRightItems, b.width-barRightWidth, barRightWidth)
 }
 
 func (b *StatusBar) log(level log.Level, msg string, args ...any) {
@@ -709,6 +768,15 @@ func (b *StatusBar) initLayout(cfg StatusBarConfig) {
 		case StatusBarTotalLines:
 			toappend = b.totalLines
 			b.totalLinesTemplate = comp
+		case StatusBarImage:
+			img, err := newStatusBarImage(comp, cfg.BackgroundColor, cfg.Storage,
+				cfg.Interrupter)
+			if err != nil {
+				b.log(log.WarnLevel, "status bar image: %v", err)
+				continue
+			}
+			b.images = append(b.images, img)
+			toappend = img
 		}
 		if right {
 			barRight = append(barRight, toappend)
@@ -719,6 +787,10 @@ func (b *StatusBar) initLayout(cfg StatusBarConfig) {
 
 	b.barLeft.C = component.Inline(barLeft, component.AlignmentLeft)
 	b.barRight.C = component.Inline(barRight, component.AlignmentRight)
+	b.barLeftItems, b.barRightItems = barLeft, barRight
+	slices.SortStableFunc(b.images, func(a, c *statusBarImage) int {
+		return cmp.Compare(a.spec.ZIndex, c.spec.ZIndex)
+	})
 }
 
 func calculateGitStats(diff vctrl.FileDiff) (added, deleted int) {

@@ -99,13 +99,6 @@ var appMenuPresetFiles = []string{
 var appMenuTestModels = []string{"anthropic/claude"}
 var appMenuTestTutorials = []string{"agent", "basics", "navigation"}
 
-// TestAppMenusShippedPresetsBindCommands asserts that every shipped
-// editor preset binds each exit-capable menu command to a single chord
-// (menu activation replays the chord, and the exit signal is only
-// observable on the handler event path; other commands fall back to a
-// direct dispatch), and that no native accelerator shadows a preset
-// chord: AppKit intercepts menu key equivalents before they reach the
-// window, so a collision would make the preset binding unreachable.
 func TestAppMenusShippedPresetsBindCommands(t *testing.T) {
 	exitCommands := map[string]bool{
 		"quit": true, "forcequit!": true, "writequit": true, "writeforcequit!": true,
@@ -152,12 +145,6 @@ func TestAppMenusShippedPresetsBindCommands(t *testing.T) {
 	}
 }
 
-// TestAppMenusItemInvariants pins the structural rules of the menu
-// spec: titles and commands are non-empty, and prompt-prefill items use
-// the presets' `echo {prompt}...<space>` macro shape with an ellipsis
-// in the title signalling that further input is required. A macro may
-// instead end with a URI scheme prefix, which leaves the caret against
-// a partial argument for the command's completer to extend.
 func TestAppMenusItemInvariants(t *testing.T) {
 	titles := map[string]bool{}
 	for _, menu := range testAppMenus(
@@ -189,10 +176,6 @@ func TestAppMenusItemInvariants(t *testing.T) {
 	}
 }
 
-// TestAppMenusPanelCommands pins which menu items collect their path
-// argument through the native open panel: they must be direct commands
-// covered by the panel table, render with an ellipsis, and the table
-// must not carry stale entries no menu item can reach.
 func TestAppMenusPanelCommands(t *testing.T) {
 	byTitle := map[string]appmenu.Command{}
 	for _, cmd := range menuCommands(testAppMenus(
@@ -237,10 +220,6 @@ func TestAppMenusPanelCommands(t *testing.T) {
 		"panel table entries must all be reachable from the menu bar")
 }
 
-// TestGoMenuCursorHistoryOpensPicker asserts the Go ▸ Cursor History
-// item opens the prompt prefilled with the `cursorhistory jump` macro.
-// A bare `cursorhistory` dispatch fails with "missing cursorhistory
-// subcommand", so the item must carry the interactive subcommand.
 func TestGoMenuCursorHistoryOpensPicker(t *testing.T) {
 	byTitle := map[string]appmenu.Command{}
 	for _, cmd := range menuCommands(testAppMenus(
@@ -255,9 +234,6 @@ func TestGoMenuCursorHistoryOpensPicker(t *testing.T) {
 		cursorHistory.Args)
 }
 
-// TestFindMenuLSPPrefills asserts the Find menu exposes the LSP query
-// commands as prompt-prefills, so the prompt opens pre-typed and the
-// user confirms in place, matching the other Find entries.
 func TestFindMenuLSPPrefills(t *testing.T) {
 	byTitle := map[string]appmenu.Command{}
 	for _, cmd := range menuCommands(testAppMenus(
@@ -360,9 +336,6 @@ func TestAppMenusTutorialActions(t *testing.T) {
 	}, byTitle["Stop Tutorial"])
 }
 
-// TestAppMenuCheckForUpdatesOpensConsole pins the Help ▸ Check for
-// Updates entry to the console `upgrade` command: the ex-command it
-// used to dispatch no longer exists.
 func TestAppMenuCheckForUpdatesOpensConsole(t *testing.T) {
 	help := menuByTitle(t,
 		testAppMenus(map[string]term.KeyComb{}, nil,
@@ -393,9 +366,6 @@ func TestAppMenuDirectChoicesAvailableFromHomeWorkspace(t *testing.T) {
 	})
 }
 
-// TestAppMenuKeyBindingsBootstrapFallback asserts the quit accelerator
-// survives the bootstrap wizard, where no editor preset has been
-// written yet and the config binds nothing.
 func TestAppMenuKeyBindingsBootstrapFallback(t *testing.T) {
 	bindings := appMenuKeyBindings(config.MapConfig(map[string]any{}))
 	assert.Equal(t, bootstrapQuitChord, bindings["quit"])
@@ -406,8 +376,6 @@ func TestAppMenuKeyBindingsBootstrapFallback(t *testing.T) {
 	}, quitEvent(bindings))
 }
 
-// TestQuitEventFollowsConfiguredBinding asserts a window close request
-// is routed to the user's own quit chord rather than a hardcoded one.
 func TestQuitEventFollowsConfiguredBinding(t *testing.T) {
 	bindings := appMenuKeyBindings(config.MapConfig(map[string]any{
 		"command": map[string]any{
@@ -466,9 +434,6 @@ func TestAppMenusDeriveAccelerators(t *testing.T) {
 	}, titles)
 }
 
-// TestAppMenusNetwork pins the Network menu to the console `network`
-// subcommand surface so a subcommand rename cannot silently leave a
-// dead menu item behind.
 func TestAppMenusNetwork(t *testing.T) {
 	menus := testAppMenus(nil, nil, appMenuTestModels, appMenuTestTutorials)
 	menu := menuByTitle(t, menus, "Network")
@@ -501,9 +466,6 @@ func TestAppMenusNetwork(t *testing.T) {
 	}, menu.Items)
 }
 
-// TestActivateAppMenuCommandPublishesChord asserts menu activation
-// replays the bound chord as a key event so it flows through the whole
-// handler chain, rather than dispatching the command out of band.
 func TestActivateAppMenuCommandPublishesChord(t *testing.T) {
 	var published []term.Event
 	b := &bootstrapHandler{publishEvent: func(ev term.Event) bool {
@@ -524,9 +486,6 @@ func TestActivateAppMenuCommandPublishesChord(t *testing.T) {
 	}, published[0])
 }
 
-// TestActivateAppMenuCommandWithoutBinding asserts an unbound command
-// falls back to a main-thread dispatch instead of publishing a key
-// event for the zero chord.
 func TestActivateAppMenuCommandWithoutBinding(t *testing.T) {
 	var published []term.Event
 	b := &bootstrapHandler{publishEvent: func(ev term.Event) bool {
@@ -560,10 +519,6 @@ func stubOpenPanel(t *testing.T) *panelStub {
 	return stub
 }
 
-// TestActivateAppMenuCommandShowsOpenPanel asserts panel-table commands
-// open the native panel instead of replaying the bound chord, and that
-// a selection publishes a single dispatch interrupt while a cancel
-// publishes nothing.
 func TestActivateAppMenuCommandShowsOpenPanel(t *testing.T) {
 	stub := stubOpenPanel(t)
 	var published []term.Event
@@ -601,9 +556,6 @@ func TestActivateAppMenuCommandShowsOpenPanel(t *testing.T) {
 	assert.Len(t, published, 1, "cancel must publish nothing")
 }
 
-// TestActivateAppMenuCommandPanelDuringBootstrap asserts the panel is
-// not shown while the wizard is still writing the configuration; the
-// item degrades to the "not available during setup" notification.
 func TestActivateAppMenuCommandPanelDuringBootstrap(t *testing.T) {
 	stub := stubOpenPanel(t)
 	var published []term.Event
@@ -623,9 +575,6 @@ func TestActivateAppMenuCommandPanelDuringBootstrap(t *testing.T) {
 	require.NotNil(t, published[0].UserFunc)
 }
 
-// TestActivateAppMenuCommandRecentDispatchesDirectly asserts an Open
-// Recent item — a workspaceopen carrying an explicit path — dispatches
-// to the IDE instead of opening the panel to ask for a path.
 func TestActivateAppMenuCommandRecentDispatchesDirectly(t *testing.T) {
 	stub := stubOpenPanel(t)
 	var published []term.Event
@@ -649,9 +598,6 @@ func TestActivateAppMenuCommandRecentDispatchesDirectly(t *testing.T) {
 	require.NotNil(t, published[0].UserFunc)
 }
 
-// TestAppMenusOpenRecentSubmenu asserts the File menu carries an Open
-// Recent submenu whose entries dispatch workspaceopen with the recorded
-// path, and that an empty history renders a single disabled placeholder.
 func TestAppMenusOpenRecentSubmenu(t *testing.T) {
 	find := func(menus []appmenu.Menu) appmenu.Submenu {
 		for _, menu := range menus {
@@ -695,8 +641,6 @@ func TestAppMenusOpenRecentSubmenu(t *testing.T) {
 	assert.Empty(t, placeholder.Command)
 }
 
-// TestRecordRecentOpen asserts only workspaceopen feeds the recent list
-// and that recording republishes the menu so it reflects the new entry.
 func TestRecordRecentOpen(t *testing.T) {
 	storage := newRuneStorage(t.TempDir())
 	t.Cleanup(func() { _ = storage.Close() })
@@ -720,9 +664,6 @@ func TestRecordRecentOpen(t *testing.T) {
 	require.NotNil(t, published[0].UserFunc)
 }
 
-// TestMergedRecentWorkspacesPrefersMenuOpens asserts menu-open history
-// leads the merged Open Recent list and duplicates collapse across the
-// two sources.
 func TestMergedRecentWorkspacesPrefersMenuOpens(t *testing.T) {
 	storage := newRuneStorage(t.TempDir())
 	t.Cleanup(func() { _ = storage.Close() })
@@ -737,9 +678,6 @@ func TestMergedRecentWorkspacesPrefersMenuOpens(t *testing.T) {
 	assert.Equal(t, "beta", entries[0].label)
 }
 
-// TestQuickMenuAppMenuItem covers the View menu's Quick Menu entry: it
-// appears only when a quick menu can actually be shown, carries the
-// toggle command, and its checkmark follows the bar's visibility.
 func TestQuickMenuAppMenuItem(t *testing.T) {
 	find := func(menus []appmenu.Menu) (appmenu.Command, bool) {
 		for _, cmd := range menuCommands(menus) {

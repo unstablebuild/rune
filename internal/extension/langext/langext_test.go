@@ -274,9 +274,6 @@ func TestInitializerOpenTriggersOneInitRoot(t *testing.T) {
 	assert.Equal(t, int32(1), calls.Load())
 }
 
-// TestInitializerChangeTriggersInitRoot covers the core fix: an
-// out-of-band write (agent apply_patch) surfaces as EventTypeChange with
-// no preceding editor open, and must still bring up the nested root.
 func TestInitializerChangeTriggersInitRoot(t *testing.T) {
 	const ws = "/ws"
 	mfs := newMemFS(ws)
@@ -297,8 +294,6 @@ func TestInitializerChangeTriggersInitRoot(t *testing.T) {
 	assert.Equal(t, "svc", got.RelPath)
 }
 
-// TestInitializerCreateTriggersInitRoot covers a newly-created .py under a
-// nested project bringing the root up without an open.
 func TestInitializerCreateTriggersInitRoot(t *testing.T) {
 	const ws = "/ws"
 	mfs := newMemFS(ws)
@@ -319,10 +314,6 @@ func TestInitializerCreateTriggersInitRoot(t *testing.T) {
 	assert.Equal(t, "svc", got.RelPath)
 }
 
-// TestInitializerClaimedRootSkipsWalk asserts that once a root is
-// initialized, a later change under it walks no filesystem and does not
-// re-run InitRoot. Steady-state editing inside an active project must be
-// O(1).
 func TestInitializerClaimedRootSkipsWalk(t *testing.T) {
 	const ws = "/ws"
 	mfs := newMemFS(ws)
@@ -351,10 +342,6 @@ func TestInitializerClaimedRootSkipsWalk(t *testing.T) {
 		"a change under an initialized root must not walk the filesystem")
 }
 
-// TestInitializerNegativeCacheBoundsWalks asserts a source file with no
-// enclosing marker is walked once per distinct parent dir, not once per
-// event, so a storm of writes to marker-less files cannot trigger mass
-// walks.
 func TestInitializerNegativeCacheBoundsWalks(t *testing.T) {
 	const ws = "/ws"
 	mfs := newMemFS(ws) // no markers anywhere
@@ -382,12 +369,6 @@ func TestInitializerNegativeCacheBoundsWalks(t *testing.T) {
 	assert.Equal(t, int32(0), calls.Load())
 }
 
-// TestInitializerScaffoldAfterChangeNeedsNoReload covers the exact
-// pitfall the negative cache must not create: a source file is written in
-// a marker-less dir (cached unresolved via change), the user then
-// scaffolds a project there, and discovery must succeed from the ensuing
-// create events alone — no editor open, no workspace reload. Only later
-// changes are cache-gated; creates always re-walk.
 func TestInitializerScaffoldAfterChangeNeedsNoReload(t *testing.T) {
 	const ws = "/ws"
 	mfs := newMemFS(ws) // no markers yet
@@ -415,9 +396,6 @@ func TestInitializerScaffoldAfterChangeNeedsNoReload(t *testing.T) {
 	assert.Equal(t, "svc", got.RelPath)
 }
 
-// TestInitializerCreateAlwaysRewalks asserts a create in a change-cached
-// dir re-walks (rather than trusting the negative cache), so the cache
-// can never wedge discovery for a project that materializes there.
 func TestInitializerCreateAlwaysRewalks(t *testing.T) {
 	const ws = "/ws"
 	mfs := newMemFS(ws)
@@ -443,8 +421,6 @@ func TestInitializerCreateAlwaysRewalks(t *testing.T) {
 	assert.Equal(t, "svc", got.RelPath)
 }
 
-// TestInitializerOpenAlwaysRewalks asserts an open in a change-cached dir
-// re-walks, so simply opening a file heals a stale negative-cache entry.
 func TestInitializerOpenAlwaysRewalks(t *testing.T) {
 	const ws = "/ws"
 	mfs := newMemFS(ws)
@@ -469,9 +445,6 @@ func TestInitializerOpenAlwaysRewalks(t *testing.T) {
 	assert.Equal(t, "svc", got.RelPath)
 }
 
-// TestInitializerStormBound asserts that a flood of changes across a few
-// roots runs InitRoot at most once per distinct root, and that Handle
-// returns promptly (never blocks on bring-up).
 func TestInitializerStormBound(t *testing.T) {
 	const ws = "/ws"
 	mfs := newMemFS(ws)
@@ -511,9 +484,6 @@ func TestInitializerStormBound(t *testing.T) {
 		"InitRoot must run at most once per distinct root")
 }
 
-// TestInitializerKillSwitchOpenOnly asserts that with WatchEvents limited
-// to Open, a change triggers nothing (the pathological-monorepo escape
-// hatch).
 func TestInitializerKillSwitchOpenOnly(t *testing.T) {
 	const ws = "/ws"
 	mfs := newMemFS(ws)
@@ -535,8 +505,6 @@ func TestInitializerKillSwitchOpenOnly(t *testing.T) {
 	assert.Equal(t, int32(0), calls.Load())
 }
 
-// TestInitializerMixedOpenChangeDedupe asserts that a racing Open and
-// Change for the same new root bring it up exactly once.
 func TestInitializerMixedOpenChangeDedupe(t *testing.T) {
 	const ws = "/ws"
 	mfs := newMemFS(ws)
@@ -572,12 +540,6 @@ func TestInitializerMixedOpenChangeDedupe(t *testing.T) {
 	assert.Equal(t, int32(1), calls.Load())
 }
 
-// TestInitializerAsyncSurvivesEventContextCancel reproduces the bug where
-// the background bring-up was tied to the editor's per-event dispatch
-// context: that context is canceled as soon as Handle returns, which
-// killed the in-flight uv/LSP bring-up with "context canceled". The async
-// work must instead run under the long-lived workspace context, so the
-// context InitRoot observes stays live after Handle returns.
 func TestInitializerAsyncSurvivesEventContextCancel(t *testing.T) {
 	const ws = "/ws"
 	mfs := newMemFS(ws)

@@ -39,6 +39,7 @@ import (
 //   - CursorLine: cursor line
 //   - TotalLines: total number of lines in the file
 //   - Language: language parser status indicator
+//   - Image: an image drawn over the bar; see template.Image
 //
 // Each component can have custom attributes via a pipe operator "|".
 //
@@ -50,6 +51,48 @@ import (
 //   - underline: set the text style as underline
 //   - reverse: reverse the text foreground and background
 //   - dim: dim the foreground color
+//
+// Image is centered on the cell right after its leading text, which is
+// its first reserved cell, or the next element's first cell when it
+// reserves none. A side with an even number of cells is placed half a
+// cell left of, or above, that cell's center. Whatever falls outside the
+// editor and its bar is cut off, unless the image overflows. Image also
+// takes the following, of which only src is required:
+//   - src <uri>: the file, http or https URI of the image.
+//   - width <cells|"N%">: image width in cells, or as a percentage of the
+//     bar's width. Defaults to 2.
+//   - height <rows>: rows the image covers. Defaults to 1.
+//   - reserve <cells>: cells the element takes up in the bar. Defaults
+//     to the width in cells, or 0 for a percentage.
+//   - x_offset <cells|"N%">: moves the image right, or left when
+//     negative, in cells or as a percentage of the bar's width.
+//     Defaults to 0.
+//   - y_offset <rows>: moves the image down, or up when negative.
+//     Defaults to 0.
+//   - x_pixel_offset <pixels>: moves the image further right, or left
+//     when negative, by device pixels, to align it to the pixel.
+//     Defaults to 0.
+//   - y_pixel_offset <pixels>: moves the image further down, or up
+//     when negative, by device pixels. Defaults to 0.
+//   - fit <"contain"|"fill">: keep the image's aspect ratio, or stretch
+//     it over its cells. Defaults to contain.
+//   - z_index <n>: stacks the image as in the kitty graphics protocol: 0
+//     or more over the text, negative under the text but over the
+//     backgrounds, and under -1073741824 (template.ZIndexBackground) under
+//     the backgrounds too, showing only where they are the default. The
+//     higher z_index is on top where images overlap, and the later image
+//     in the layout when they tie. It ranges over 32-bit integers and
+//     defaults to 0.
+//   - overflow: lets the image extend over the windows, frames and bars
+//     around the editor, up to the edges of the screen. Floating windows
+//     still cover it. The alt text is still cut off at the editor and its
+//     bar.
+//   - alt <text>: drawn centered over the image's cells when the image
+//     cannot be shown, replacing only the cells it occupies, over the
+//     text whatever the z_index. Pixel offsets do not move it. Defaults to
+//     template.DefaultImageAlt.
+//   - ttl <duration>: how long a downloaded image is reused. Defaults to
+//     24h.
 func ParseStatusBarLayout(layoutStr string) (
 	ret []StatusBarComponent, err error,
 ) {
@@ -97,13 +140,13 @@ func ParseStatusBarLayout(layoutStr string) (
 			}
 
 		case *parse.ActionNode:
-			fieldName, attrs, err := template.ParseAction(n)
+			act, err := template.ParseAction(n)
 			if err != nil {
 				return nil, err
 			}
 
 			var compType StatusBarComponentType
-			switch fieldName {
+			switch act.Field {
 			case "Status":
 				compType = StatusBarStatus
 				tmpl += "%s"
@@ -140,6 +183,9 @@ func ParseStatusBarLayout(layoutStr string) (
 			case "TotalLines":
 				compType = StatusBarTotalLines
 				tmpl += "%d"
+			case template.ImageField:
+				compType = StatusBarImage
+				tmpl += "%s"
 			case "ShiftRight":
 				shiftRight = true
 				ret = append(ret, StatusBarComponent{
@@ -147,13 +193,14 @@ func ParseStatusBarLayout(layoutStr string) (
 				})
 				continue
 			default:
-				err = fmt.Errorf("unknown status bar component: %q", fieldName)
+				err = fmt.Errorf("unknown status bar component: %q", act.Field)
 				return nil, err
 			}
 			ret = append(ret, StatusBarComponent{
 				Type:       compType,
 				Template:   tmpl,
-				Attributes: attrs,
+				Attributes: act.Attributes,
+				Image:      act.Image,
 			})
 			tmpl = ""
 

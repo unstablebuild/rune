@@ -24,9 +24,6 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 )
 
-// TestCommandPromptSeparatorCharsetDefaults ensures the four stitch
-// glyphs fall back to the single-line T-junction defaults when the
-// user config does not override command.separator_charset.
 func TestCommandPromptSeparatorCharsetDefaults(t *testing.T) {
 	c := newAnimConfig(t, `config = {}`)
 	got := c.commandPromptSeparatorCharset()
@@ -47,16 +44,12 @@ func hintConfig(bindings map[string]any, extra map[string]any) ideConfig {
 	}
 }
 
-// TestCommandKeyBindingHintColorDefault returns gray when the config
-// omits command.key_binding_hint_color and records no error.
 func TestCommandKeyBindingHintColorDefault(t *testing.T) {
 	c := newAnimConfig(t, `config = {}`)
 	assert.Equal(t, term.ColorGray, c.commandKeyBindingHintColor())
 	assert.Empty(t, c.errors)
 }
 
-// TestCommandKeyBindingHintColorNamedAndHex parses both named colors
-// and hex values through the standard term color path.
 func TestCommandKeyBindingHintColorNamedAndHex(t *testing.T) {
 	named := newAnimConfig(t, `
 config = {"command": {"key_binding_hint_color": "silver"}}
@@ -71,8 +64,6 @@ config = {"command": {"key_binding_hint_color": "#8a8a8a"}}
 	assert.Empty(t, hex.errors)
 }
 
-// TestCommandKeyBindingHintColorWrongType keeps the gray default and
-// records the error so a typo never breaks the prompt.
 func TestCommandKeyBindingHintColorWrongType(t *testing.T) {
 	c := newAnimConfig(t, `
 config = {"command": {"key_binding_hint_color": ["nope"]}}
@@ -81,16 +72,12 @@ config = {"command": {"key_binding_hint_color": ["nope"]}}
 	require.Contains(t, c.errors, "command.key_binding_hint_color")
 }
 
-// TestCommandKeyBindingHintFocusColorDefault returns silver when the
-// config omits command.key_binding_hint_focus_color.
 func TestCommandKeyBindingHintFocusColorDefault(t *testing.T) {
 	c := newAnimConfig(t, `config = {}`)
 	assert.Equal(t, term.ColorSilver, c.commandKeyBindingHintFocusColor())
 	assert.Empty(t, c.errors)
 }
 
-// TestCommandKeyBindingHintFocusColorNamedAndHex parses both named
-// colors and hex values through the standard term color path.
 func TestCommandKeyBindingHintFocusColorNamedAndHex(t *testing.T) {
 	named := newAnimConfig(t, `
 config = {"command": {"key_binding_hint_focus_color": "gray"}}
@@ -105,8 +92,6 @@ config = {"command": {"key_binding_hint_focus_color": "#c0c0c0"}}
 	assert.Empty(t, hex.errors)
 }
 
-// TestCommandKeyBindingHintFocusColorWrongType keeps the silver default
-// and records the error so a typo never breaks the prompt.
 func TestCommandKeyBindingHintFocusColorWrongType(t *testing.T) {
 	c := newAnimConfig(t, `
 config = {"command": {"key_binding_hint_focus_color": ["nope"]}}
@@ -115,8 +100,6 @@ config = {"command": {"key_binding_hint_focus_color": ["nope"]}}
 	require.Contains(t, c.errors, "command.key_binding_hint_focus_color")
 }
 
-// TestCommandKeyBindingHintLookupDirect resolves a full command line —
-// top-level or subcommand — to its long-form key.
 func TestCommandKeyBindingHintLookupDirect(t *testing.T) {
 	c := hintConfig(map[string]any{
 		"<m-n>":   "windownew",
@@ -142,9 +125,6 @@ func TestCommandKeyBindingHintLookupPrefersPrintableAlias(t *testing.T) {
 	assert.Empty(t, c.errors)
 }
 
-// TestCommandKeyBindingHintLookupEchoTopLevel maps an
-// `echo {prompt}<cmd><space>` prefill to a hint on the top-level
-// command word, but not to multi-word command lines.
 func TestCommandKeyBindingHintLookupEchoTopLevel(t *testing.T) {
 	c := hintConfig(map[string]any{
 		"<m-t>": "echo {prompt}edit<space>",
@@ -155,9 +135,6 @@ func TestCommandKeyBindingHintLookupEchoTopLevel(t *testing.T) {
 	assert.Empty(t, c.errors)
 }
 
-// TestCommandKeyBindingHintLookupDirectWinsOverEcho keeps the direct
-// binding when both a direct and an echo-prefill target the same line,
-// and does not create a top-level entry from a multi-word echo body.
 func TestCommandKeyBindingHintLookupDirectWinsOverEcho(t *testing.T) {
 	c := hintConfig(map[string]any{
 		"<a-t>":   "lsp hover",
@@ -170,8 +147,6 @@ func TestCommandKeyBindingHintLookupDirectWinsOverEcho(t *testing.T) {
 	assert.Empty(t, c.errors)
 }
 
-// TestEchoPromptSingleCommand covers the exact `{prompt}<cmd><space>`
-// shape recognition and its rejections.
 func TestEchoPromptSingleCommand(t *testing.T) {
 	cases := []struct {
 		name string
@@ -195,9 +170,6 @@ func TestEchoPromptSingleCommand(t *testing.T) {
 	}
 }
 
-// TestCommandPromptSeparatorCharsetOverrides verifies that each key
-// under command.separator_charset overlays only its rune and the
-// remaining glyphs keep their defaults.
 func TestCommandPromptSeparatorCharsetOverrides(t *testing.T) {
 	c := newAnimConfig(t, `
 config = {
@@ -219,8 +191,6 @@ config = {
 	assert.Empty(t, c.errors)
 }
 
-// TestCommandPromptSeparatorCharsetPartialOverride keeps unspecified
-// glyphs at their defaults so users can change only the corners.
 func TestCommandPromptSeparatorCharsetPartialOverride(t *testing.T) {
 	c := newAnimConfig(t, `
 config = {
@@ -241,9 +211,6 @@ config = {
 	assert.Empty(t, c.errors)
 }
 
-// TestCommandPromptSeparatorCharsetWrongType records an error under
-// the offending key and keeps the default glyph so a typo never
-// silently breaks the separator.
 func TestCommandPromptSeparatorCharsetWrongType(t *testing.T) {
 	c := newAnimConfig(t, `
 config = {
@@ -261,9 +228,6 @@ config = {
 	require.Contains(t, c.errors, "command.separator_charset.left")
 }
 
-// TestCommandPromptCfgComposes verifies that commandPromptCfg
-// surfaces both the shader-enable flag and the separator glyphs in a
-// single struct.
 func TestCommandPromptCfgComposes(t *testing.T) {
 	c := newAnimConfig(t, `
 config = {

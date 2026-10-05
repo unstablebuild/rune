@@ -24,9 +24,6 @@ import (
 	"github.com/zalando/go-keyring"
 )
 
-// TestMain keeps the tests, which build the production API client, off
-// the developer's real keychain. With the system keyring failing,
-// tokens take the data-directory fallback.
 func TestMain(m *testing.M) {
 	keyring.MockInitWithError(errors.New("keychain disabled in tests"))
 	os.Exit(m.Run())
