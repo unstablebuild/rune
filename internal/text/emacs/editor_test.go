@@ -414,10 +414,6 @@ func (v mockIndentView) IndentationAt(line int) (int, bool) {
 	return indent, ok
 }
 
-// TestEditorBarOptions pins the bar selection :gitshow depends on: a
-// caller can drop the aux and icons bars for one Edit while keeping the
-// status bar, and can redirect the status bar at a namespace the
-// editor's own configuration cannot resolve.
 func TestEditorBarOptions(t *testing.T) {
 	tick := func(fn func()) bool { fn(); return true }
 	base, err := workspaceapi.ParseURI("memory:///gitshow")

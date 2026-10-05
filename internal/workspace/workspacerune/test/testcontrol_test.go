@@ -30,18 +30,16 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"unstable.build/rune/auth"
 	"unstable.build/rune/internal/workspace"
 	"unstable.build/rune/internal/workspace/workspacerune"
 	"unstable.build/rune/internal/workspace/workspacetest"
 )
 
-// TestMeshRoundTrip is the smoke test for the whole rune:// path: two
-// mesh nodes, a workspace served by one and opened by the other, over
-// real WireGuard. Everything else in this package builds on it.
 func TestMeshRoundTrip(t *testing.T) {
 	control := StartTestControl(t, true /* sameUser */)
-	peer := StartNode(t, control, "peer")
-	client := StartNode(t, control, "client")
+	peer := StartNode(t, control, "peer", "")
+	client := StartNode(t, control, "client", "")
 	peerDataDir := ServeWorkspaces(t, peer)
 	WaitPeer(t, client, "peer")
 
@@ -76,17 +74,12 @@ func TestMeshRoundTrip(t *testing.T) {
 	assert.Equal(t, "from the peer\n", string(buf[:n]))
 }
 
-// TestWorkspaceScheme runs the shared scheme conformance suites against
-// a workspace served by a second Rune mesh node. The suites are the
-// same ones the local file scheme and the SSH scheme must satisfy, so
-// passing them is what makes rune:// a first-class workspace rather
-// than a read-only view.
 func TestWorkspaceScheme(t *testing.T) {
 	SkipIfRace(t)
 
 	control := StartTestControl(t, true /* sameUser */)
-	peer := StartNode(t, control, "peer")
-	client := StartNode(t, control, "client")
+	peer := StartNode(t, control, "peer", "")
+	client := StartNode(t, control, "client", "")
 	ServeWorkspaces(t, peer)
 	WaitPeer(t, client, "peer")
 
@@ -97,14 +90,10 @@ func TestWorkspaceScheme(t *testing.T) {
 	workspacetest.TestWorkspaceSchemeExecutor(t, newScheme)
 }
 
-// TestRejectsPeerOwnedByAnotherAccount is the security case behind the
-// whole scheme: sharing a network is not consent. A node belonging to
-// somebody else reaches the listener — the mesh routes to it — and must
-// still be refused before it can read a file or run a command.
 func TestRejectsPeerOwnedByAnotherAccount(t *testing.T) {
 	control := StartTestControl(t, false /* sameUser */)
-	peer := StartNode(t, control, "peer")
-	client := StartNode(t, control, "client")
+	peer := StartNode(t, control, "peer", "")
+	client := StartNode(t, control, "client", "")
 	ServeWorkspaces(t, peer)
 	WaitPeer(t, client, "peer")
 
@@ -127,6 +116,29 @@ func TestRejectsPeerOwnedByAnotherAccount(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, codes.PermissionDenied, status.Code(rootErr(err)),
 		"a peer owned by another account must not read files: %v", err)
+}
+
+func TestRejectsTaggedPeer(t *testing.T) {
+	control := StartTestControl(t, true /* sameUser */)
+	peer := StartNode(t, control, "peer", "")
+	client := StartNode(t, control, "client", "")
+	ServeWorkspaces(t, peer)
+	WaitPeer(t, client, "peer")
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "secret.txt"), []byte("private\n"), 0o600))
+	scheme := OpenWorkspace(t, client, "peer", dir)
+	defer scheme.Close()
+	_, err := scheme.ReadDir(".")
+	require.NoError(t, err, "an untagged machine of the account is admitted")
+
+	control.SetNodeTags(t, client, peer, auth.ServeTagPrefix+"someone")
+
+	_, err = scheme.ReadDir(".")
+	require.Error(t, err)
+	assert.Equal(t, codes.PermissionDenied, status.Code(rootErr(err)),
+		"a tagged machine must not read files: %v", err)
 }
 
 // rootErr unwraps to the innermost error so a gRPC status wrapped by

@@ -1039,9 +1039,10 @@ func (t *checkFileErrorsTool) Definition() llmapi.Tool {
 Returns issues sorted by severity (errors first), each formatted as
 "path:line:severity:message [source]".
 
-Use after applying patches or making changes to verify the file still
-compiles and passes lint checks. Returns "no errors or warnings" when
-the file is clean.`,
+Diagnostics already run automatically after every successful single-file
+apply_patch. Use this tool for files changed by other means (bash,
+multi-file patches) or to re-check a file. Returns "no errors or warnings"
+when the file is clean.`,
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{

@@ -53,8 +53,6 @@ func newFuzzySearchTutorial(t *testing.T) (*Tutorial, *fakeNotis) {
 	return tut, notis
 }
 
-// TestFuzzySearchTutorialRegisters asserts the shipped tutorial parses
-// and registers under the id the config.star tutorials entry expects.
 func TestFuzzySearchTutorialRegisters(t *testing.T) {
 	t.Parallel()
 	tut, _ := newFuzzySearchTutorial(t)
@@ -62,10 +60,6 @@ func TestFuzzySearchTutorialRegisters(t *testing.T) {
 	require.Equal(t, "Fuzzy Search", tut.title)
 }
 
-// TestFuzzySearchTutorialFlow drives the shipped tutorial through its
-// full step sequence: the search commands resolve via the command
-// observer and the live search step via the open event, while every
-// key falls through to the focused finder.
 func TestFuzzySearchTutorialFlow(t *testing.T) {
 	t.Parallel()
 	tut, notis := newFuzzySearchTutorial(t)

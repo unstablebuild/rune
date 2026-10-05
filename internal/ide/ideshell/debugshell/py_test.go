@@ -294,17 +294,6 @@ func pyFirstStmtLine(t *testing.T, path string) int {
 	return 0
 }
 
-// TestE2E_Python_Launch drives a real debugpy DAP adapter through
-// the debugshell command surface end to end. It mirrors
-// TestE2E_Launch (the Go counterpart): the full session lifecycle
-// (initialize → launch → set-breakpoint → configured → stopped →
-// continue → terminate), the stopped and variables location lists,
-// expression evaluation, the prompt jump-backward, and the captured
-// program output. The launch template mirrors the packaged config, so
-// the payoff is that the uvx adapter command and the shim-routed
-// `python` launch key are what reach the adapter on the wire — and the
-// debuggee provably runs on the project venv interpreter. It self-skips
-// when uv/uvx or the Python grammar is not installed.
 func TestE2E_Python_Launch(t *testing.T) {
 	t.Parallel()
 	tmpDir := setupBuggyPy(t)
@@ -535,10 +524,6 @@ func pyFunctionLineRange(t *testing.T, path, name string) (int, int) {
 	return 0, 0
 }
 
-// TestE2E_Python_BreakpointOnEmptyLine mirrors the Go test: setting a
-// breakpoint on a blank, non-executable line must normalize to the
-// next executable line client-side so the breakpoint actually binds
-// and the debuggee stops, rather than running to completion.
 func TestE2E_Python_BreakpointOnEmptyLine(t *testing.T) {
 	t.Parallel()
 	tmpDir := setupBuggyPy(t)
@@ -588,11 +573,6 @@ func TestE2E_Python_BreakpointOnEmptyLine(t *testing.T) {
 	_, _ = h.run(ctx, subTerminate)
 }
 
-// TestE2E_Python_BreakpointOnTrailingComment mirrors the Go
-// closing-brace test: asking for a breakpoint on the trailing
-// comment-only line at end-of-file has no statement at or after it,
-// so the prompt setBreakpointAt path must surface a "no statement"
-// error rather than silently failing to bind.
 func TestE2E_Python_BreakpointOnTrailingComment(t *testing.T) {
 	t.Parallel()
 	tmpDir := setupBuggyPy(t)
@@ -618,10 +598,6 @@ func TestE2E_Python_BreakpointOnTrailingComment(t *testing.T) {
 		"expected parser-driven failure, got %v", err)
 }
 
-// TestE2E_Python_BreakpointOnLiteralOnlyReturn mirrors the Go
-// RUNE-177 regression: a `return False`-style line must be a valid
-// breakpoint target even though tree-sitter emits no identifier
-// captures for it, and the breakpoint must bind on the line itself.
 func TestE2E_Python_BreakpointOnLiteralOnlyReturn(t *testing.T) {
 	t.Parallel()
 	tmpDir := setupBuggyPy(t)
@@ -647,17 +623,6 @@ func TestE2E_Python_BreakpointOnLiteralOnlyReturn(t *testing.T) {
 		"breakpoint should sit on the literal-only return line")
 }
 
-// TestE2E_Python_AttachConnect is the Python attach counterpart to the
-// Go TestE2E_Attach. debugpy attach-by-connect inverts the adapter
-// topology: the debuggee runs under `python -m debugpy --listen
-// host:port`, which spawns the adapter on the debuggee side, and the
-// client must dial that adapter directly instead of spawning its own
-// (a freshly spawned adapter parses but never dials the attach
-// template's connect:{host,port}, so the spawn model hangs forever
-// waiting for a debug server that is wired to the other adapter).
-// `debugger attach python connect://host:port <program>` drives that
-// topology in one gesture on top of the normal packaged adapter
-// config: no config editing and no separate initialize.
 func TestE2E_Python_AttachConnect(t *testing.T) {
 	t.Parallel()
 	uvBin := findUVTool(t, "uv")
@@ -729,12 +694,6 @@ func TestE2E_Python_AttachConnect(t *testing.T) {
 	_, _ = h.run(ctx, subTerminate)
 }
 
-// TestE2E_Python_CtrlCDoesNotStopEventStream mirrors the Go test:
-// cancelling the per-command context that drains `debugger
-// initialize` (what the REPL does on Ctrl-C) must not stop the
-// session iterator from delivering later DAP events. After the
-// cancel, a breakpoint hit must still push new items into the
-// iterator's drain loop.
 func TestE2E_Python_CtrlCDoesNotStopEventStream(t *testing.T) {
 	t.Parallel()
 	tmpDir := setupBuggyPy(t)
@@ -810,11 +769,6 @@ func TestE2E_Python_CtrlCDoesNotStopEventStream(t *testing.T) {
 	_ = doneDrain
 }
 
-// TestE2E_Python_OutputAppearsInIDEEditorBuffer mirrors the Go test:
-// it drives a real debug session through the full IDE wiring (real
-// text.Component + file-scheme reload) and asserts that the per-session
-// output capture file — and the IDE editor buffer the user opens on it
-// — both reflect the debuggee's stdout.
 func TestE2E_Python_OutputAppearsInIDEEditorBuffer(t *testing.T) {
 	t.Parallel()
 	tmpDir := setupBuggyPy(t)

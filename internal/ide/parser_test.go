@@ -21,10 +21,6 @@ import (
 	"testing"
 )
 
-// TestLazyParserConcurrentInit reproduces the data race where markdown code
-// blocks each spawn a goroutine that calls Highlight, all racing to lazily
-// construct the shared parser. parser() must construct exactly one instance
-// and return the same value to every caller under -race.
 func TestLazyParserConcurrentInit(t *testing.T) {
 	lp := &lazyParser{root: &workspaceManagerHandler{}}
 

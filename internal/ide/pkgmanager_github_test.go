@@ -97,10 +97,7 @@ func TestPkgManagerGitHubInstallFacade(t *testing.T) {
 	m := newTestWorkspaceManagerHandlerForPkgManager(t, rm, false, 0, ghURL)
 	defer m.Close()
 
-	h := pkgshell.New(pkgshell.Config{
-		Manager:       m.pkgmanager.pkg,
-		UpdateChecker: m.pkgmanager.uc,
-	})
+	h := pkgshell.New(pkgshell.Config{Manager: m.pkgmanager.pkg})
 	ctx := context.Background()
 
 	// install resolves HEAD as the latest version, clones, and installs
@@ -111,10 +108,10 @@ func TestPkgManagerGitHubInstallFacade(t *testing.T) {
 	}, repl.NopProgressWriter())
 	require.NoError(t, err)
 
-	version, ok := m.pkgmanager.pkg.PackageVersionInUse(ghID)
+	version, ok := pkgVersionInUse(t, m.pkgmanager.pkg, ghID)
 	require.True(t, ok)
 	assert.Equal(t, release.Version(sha[:12]), version)
-	_, ok = m.pkgmanager.pkg.PackageVersionInUse("six")
+	_, ok = pkgVersionInUse(t, m.pkgmanager.pkg, "six")
 	assert.True(t, ok, "requirement must be installed from the official distribution")
 
 	it, err := m.pkgmanager.LibDir(ctx, ghID)
@@ -135,7 +132,7 @@ func TestPkgManagerGitHubInstallFacade(t *testing.T) {
 	sha2 := gitFixtureCommit(t, repoDir, map[string]string{
 		"main.py": "print('v2')\n",
 	})
-	updates, err := m.pkgmanager.uc.CheckForUpdates(ctx)
+	updates, err := idepkg.CheckForUpdates(ctx, m.pkgmanager.pkg)
 	require.NoError(t, err)
 	require.Len(t, updates, 1)
 	assert.Equal(t, idepkg.Update{
@@ -150,6 +147,6 @@ func TestPkgManagerGitHubInstallFacade(t *testing.T) {
 		Args: []string{"remove", ghID},
 	}, repl.NopProgressWriter())
 	require.NoError(t, err)
-	_, ok = m.pkgmanager.pkg.PackageVersionInUse(ghID)
+	_, ok = pkgVersionInUse(t, m.pkgmanager.pkg, ghID)
 	assert.False(t, ok)
 }

@@ -19,10 +19,13 @@ package extension
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"os"
+	"path"
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -255,6 +258,64 @@ func (nopFileSystem) Remove(string) error                   { return nil }
 func (nopFileSystem) Stat(string) (os.FileInfo, error)      { return nil, os.ErrNotExist }
 func (nopFileSystem) ReadDir(string) ([]os.DirEntry, error) { return nil, nil }
 func (nopFileSystem) MkdirAll(string, os.FileMode) error    { return nil }
+
+// dirRecordingFS records the directories it is asked to create.
+type dirRecordingFS struct {
+	nopFileSystem
+
+	mu   sync.Mutex
+	dirs []string
+}
+
+func (f *dirRecordingFS) MkdirAll(path string, _ os.FileMode) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.dirs = append(f.dirs, path)
+	return nil
+}
+
+// lookupExec answers every command with stdout and err, and records the
+// commands it was given.
+type lookupExec struct {
+	stdout string
+	err    error
+
+	mu   sync.Mutex
+	cmds []workspaceapi.Cmd
+}
+
+func (e *lookupExec) Start(_ context.Context, cmd workspaceapi.Cmd) (workspaceapi.Pid, error) {
+	e.mu.Lock()
+	e.cmds = append(e.cmds, cmd)
+	e.mu.Unlock()
+	_, _ = io.WriteString(cmd.Stdout, e.stdout)
+	cmd.Watcher.WatchProcess() <- e.err
+	return 1, nil
+}
+
+func (e *lookupExec) Signal(workspaceapi.Pid, syscall.Signal) error { return nil }
+func (e *lookupExec) Close() error                                  { return nil }
+
+func (e *lookupExec) commands() []workspaceapi.Cmd {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return slices.Clone(e.cmds)
+}
+
+// fakeInstallRoot resolves paths under the data directory of a workspace
+// host, as extensionapi.Workspace does with the install root the IDE
+// resolved on that host.
+type fakeInstallRoot struct {
+	root string
+	err  error
+}
+
+func (r fakeInstallRoot) FindInstalledResource(_ context.Context, relpath string) (string, error) {
+	if r.err != nil {
+		return "", r.err
+	}
+	return path.Join(r.root, relpath), nil
+}
 
 func dirURI(dir string) workspaceapi.URI {
 	u, _ := workspaceapi.ParseURI("file://" + dir)

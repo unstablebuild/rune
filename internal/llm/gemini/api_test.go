@@ -75,10 +75,6 @@ func TestToolResponsePartNonJSON(t *testing.T) {
 	assert.Equal(t, "plain text", part.FunctionResponse.Response["output"])
 }
 
-// TestThoughtSignatureRoundTrip verifies the Gemini per-call thought_signature
-// survives capture onto ToolCall.ProviderFields, JSON persistence of the
-// assistant message, and replay onto the functionCall part. Gemini 3+ rejects
-// a replayed functionCall part that is missing its thought_signature.
 func TestThoughtSignatureRoundTrip(t *testing.T) {
 	sig := []byte{0x01, 0x02, 0x03, 0xff}
 
@@ -108,10 +104,6 @@ func TestThoughtSignatureEmpty(t *testing.T) {
 	assert.Nil(t, thoughtSignature(tc))
 }
 
-// TestAssistantPartsMissingSignatureFallback verifies that a first functionCall
-// part with no captured signature (legacy/imported history) is replayed with
-// the documented validator-skip sentinel so Gemini 3+ does not 400, while
-// subsequent parallel calls carry no signature.
 func TestAssistantPartsMissingSignatureFallback(t *testing.T) {
 	msg := llmapi.Message{Role: llmapi.RoleAssistant, ToolCalls: []llmapi.ToolCall{
 		{ID: "call_1", Function: llmapi.FunctionCall{Name: "agent"}},
@@ -123,8 +115,6 @@ func TestAssistantPartsMissingSignatureFallback(t *testing.T) {
 	assert.Nil(t, parts[1].ThoughtSignature)
 }
 
-// TestAssistantPartsRealSignaturePreferred verifies a captured signature is
-// replayed verbatim rather than replaced by the fallback sentinel.
 func TestAssistantPartsRealSignaturePreferred(t *testing.T) {
 	tc := llmapi.ToolCall{ID: "call_1", Function: llmapi.FunctionCall{Name: "agent"}}
 	setThoughtSignature(&tc, []byte("realsig"))

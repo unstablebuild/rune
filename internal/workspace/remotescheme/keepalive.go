@@ -26,7 +26,7 @@ import (
 // silently dead transport. [ServerEnforcement] must permit this cadence
 // or the server sends GOAWAY too_many_pings and kills the connection
 // (dropping terminals, invalidating cached pty fds, and forcing a
-// reconnect that re-runs remote provisioning).
+// reconnect).
 var ClientKeepalive = keepalive.ClientParameters{
 	Time:                10 * time.Second,
 	Timeout:             5 * time.Second,

@@ -251,9 +251,6 @@ func TestSearchFloatingUsesStandardInputEditing(t *testing.T) {
 	})
 }
 
-// TestSearchFloatingInputFollowsOwnerKeymap pins that the find input
-// edits with its owner's keymap rather than the host's: under the Linux
-// keymap <meta-left> belongs to Rune's command layer, not line start.
 func TestSearchFloatingInputFollowsOwnerKeymap(t *testing.T) {
 	h := newSearchSequenceHarness(t, "one Xone", searchbox.ModeFind,
 		WithKeymap(KeymapLinux))
@@ -264,9 +261,6 @@ func TestSearchFloatingInputFollowsOwnerKeymap(t *testing.T) {
 	})
 }
 
-// TestSearchEscThenTypeReplacesMatch pins that the match selection left
-// behind when the search widget is dismissed behaves like any other
-// selection: typing replaces the selected occurrence.
 func TestSearchEscThenTypeReplacesMatch(t *testing.T) {
 	h := newSearchSequenceHarness(t, "one two one", searchbox.ModeFind)
 	h.Resize(48, 5)
@@ -561,9 +555,6 @@ func TestFindOpenFailureFallsBackAndReplaceCleansUp(t *testing.T) {
 	}
 }
 
-// TestSearchFloatingReportsEditorSelection pins that the match left
-// selected in the document stays copyable while the find window holds the
-// focus, since window managers report the focused window's selection.
 func TestSearchFloatingReportsEditorSelection(t *testing.T) {
 	wm := new(searchTestWindowManager)
 	buf := cell.NewBuffer()

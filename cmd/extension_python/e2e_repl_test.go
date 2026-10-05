@@ -29,10 +29,6 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/iterator"
 )
 
-// TestE2E_Scenarios_REPL brings up each scenario, then drives the
-// `python` REPL handler against the synced environment and asserts the
-// exposed commands work consistently regardless of how the environment
-// was expressed. The handler is the same one ExtendWorkspace registers.
 func TestE2E_Scenarios_REPL(t *testing.T) {
 	findUV(t)
 

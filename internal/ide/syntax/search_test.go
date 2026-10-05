@@ -92,11 +92,6 @@ func (r *recordingProgress) snapshot() []progressEvent {
 	return append([]progressEvent(nil), r.events...)
 }
 
-// TestAggregateProgressMonotonicAcrossSpecs feeds the aggregator the exact
-// per-phase reports three specs emit — each restarting at step 0 against a
-// fixed total of 4 — and asserts the forwarded stream is monotonic, never
-// exceeds the total, grows the denominator per spec, and passes messages
-// through unchanged.
 func TestAggregateProgressMonotonicAcrossSpecs(t *testing.T) {
 	sink := &recordingProgress{}
 	agg := newAggregateProgress(sink)
@@ -143,11 +138,6 @@ func assertMonotonic(t *testing.T, got []progressEvent) {
 	}
 }
 
-// TestAggregateProgressMisbehavingReports exercises the aggregator against
-// specs that report nonsensical progress — out-of-range steps, negative
-// values, varying or zero totals, and stalled or repeated steps. The forwarded
-// stream must stay monotonic and within bounds in every case so a buggy query
-// can never break UpdateNotificationProgress.
 func TestAggregateProgressMisbehavingReports(t *testing.T) {
 	tests := []struct {
 		name string
@@ -234,9 +224,6 @@ func TestAggregateProgressMisbehavingReports(t *testing.T) {
 	}
 }
 
-// TestAggregateProgressMessagePassthrough confirms the aggregator only
-// renormalizes step and total: the message and found count are forwarded
-// verbatim even when the step values are nonsensical.
 func TestAggregateProgressMessagePassthrough(t *testing.T) {
 	sink := &recordingProgress{}
 	agg := newAggregateProgress(sink)
@@ -258,10 +245,6 @@ func TestAggregateProgressMessagePassthrough(t *testing.T) {
 	assertMonotonic(t, got)
 }
 
-// TestAggregateProgressConcurrentReports drives the aggregator from many
-// goroutines to prove the mutex keeps every forwarded event individually
-// valid (step within bounds) under the race detector, since Report may be
-// invoked concurrently in principle.
 func TestAggregateProgressConcurrentReports(t *testing.T) {
 	sink := &recordingProgress{}
 	agg := newAggregateProgress(sink)
@@ -647,11 +630,6 @@ func newTestIterator(bufSize int) *chanIterator[syntaxapi.Result] {
 	}
 }
 
-// The producer goroutines behind the streaming iterators derive their
-// context from context.Background. If a consumer's context is
-// canceled and the iterator is abandoned without Close, the producer
-// must still be canceled or it blocks forever on its unbuffered
-// results channel, pinning tree-sitter natives.
 func TestIteratorNextCancelsProducerOnConsumerCtxDone(t *testing.T) {
 	canceledCtx := func() context.Context {
 		ctx, cancel := context.WithCancel(context.Background())

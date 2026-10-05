@@ -586,9 +586,6 @@ func TestServerReadRejectsNegativeSize(t *testing.T) {
 	}
 }
 
-// A scheme call that blocks (e.g. a slow remote Stat) must not prevent
-// unrelated requests from being served: schemes are goroutine safe and
-// the server must not serialize calls into them.
 func TestServerDoesNotSerializeSchemeCalls(t *testing.T) {
 	ctx := context.Background()
 	ctrl := gomock.NewController(t)

@@ -149,9 +149,6 @@ func e2eFeed(t *testing.T, h e2eLockedHandler, seq string) (exit bool) {
 	return exit
 }
 
-// TestE2EQuit drives a real IDE end to end and pins that the quit
-// chord is always escapable, including while a tutorial tile is up,
-// and that a tutorial finishing on its own never exits the IDE.
 func TestE2EQuit(t *testing.T) {
 	t.Parallel()
 

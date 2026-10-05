@@ -62,10 +62,6 @@ func newEmojiTestRenderer(t *testing.T) *renderer {
 	return newRenderer(w, h, 1, m, 1, 1, false, term.Attributes{}, term.Attributes{})
 }
 
-// TestRendererRoutesEmojiToColorPath asserts a cell holding a color
-// emoji is rasterized through the color face (Glyph queried for that
-// rune) while an adjacent ASCII cell is not, proving the renderer routes
-// emoji to the color path and leaves ordinary text on the mask path.
 func TestRendererRoutesEmojiToColorPath(t *testing.T) {
 	r := newEmojiTestRenderer(t)
 	spy := &spyEmojiFace{present: map[string]bool{"😀": true}}
@@ -85,10 +81,6 @@ func TestRendererRoutesEmojiToColorPath(t *testing.T) {
 	assert.NotContains(t, spy.glyphCalls, "A", "ASCII must not reach the color path")
 }
 
-// TestRendererRoutesClusterToColorPath asserts a cell holding a
-// multi-rune emoji (base rune + combining runes) routes the whole
-// cluster to the color path, so composed emoji reach the shaper rather
-// than only their base rune.
 func TestRendererRoutesClusterToColorPath(t *testing.T) {
 	r := newEmojiTestRenderer(t)
 	family := "👨\u200d👩\u200d👧"
@@ -110,9 +102,6 @@ func TestRendererRoutesClusterToColorPath(t *testing.T) {
 		"the base rune alone must not be routed")
 }
 
-// TestRendererNilEmojiFaceFallsBack asserts that with no color face the
-// renderer draws every cell — emoji included — without panicking, i.e.
-// the color path degrades cleanly to the monochrome mask path.
 func TestRendererNilEmojiFaceFallsBack(t *testing.T) {
 	r := newEmojiTestRenderer(t)
 	r.emojiFace = nil

@@ -33,11 +33,6 @@ import (
 	"unstable.build/rune/internal/workspace"
 )
 
-// TestResolveRustModuleE2E drives the public ResolveSymbol API end to end
-// against a real on-disk Rust crate served by a real FileScheme and parsed
-// by a real tree-sitter parser, so the whole pipeline (language detection,
-// reference queries, definition queries, FileScheme I/O) is exercised
-// exactly as it runs in production.
 func TestResolveRustModuleE2E(t *testing.T) {
 	root := rustModuleWorkspace(t)
 	parser := newFileSchemeParser(t, root)

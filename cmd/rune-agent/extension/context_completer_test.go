@@ -162,10 +162,6 @@ func TestContextCompleterCandidatesRebaseHomePath(t *testing.T) {
 	assert.Contains(t, got, symPrefix+"pkg.DesktopNotes")
 }
 
-// TestContextCompleterSkipsHiddenEntries covers both walk roots: inside
-// the workspace the gitignore matcher may already hide dot entries, but
-// outside it there is no gitignore to fall back on, so hidden trees like
-// ~/.cache leaked into the completion band.
 func TestContextCompleterSkipsHiddenEntries(t *testing.T) {
 	root := t.TempDir()
 	home := t.TempDir()

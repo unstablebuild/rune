@@ -44,6 +44,8 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/cell"
+	tcomponent "unstable.build/rune/internal/component"
+	"unstable.build/rune/internal/component/imageuri"
 	"unstable.build/rune/internal/component/markdown"
 	"unstable.build/rune/internal/debug"
 	thandler "unstable.build/rune/internal/handler"
@@ -503,7 +505,8 @@ func (c *Component) openFileTab(
 		readOnly = c.fileExists(file)
 	}
 
-	if userRequestedView && !c.ed.IsExternal() {
+	// An image has no text to edit, so editing one views it too.
+	if (userRequestedView || isImageFile(file)) && !c.ed.IsExternal() {
 		viewHandler, viewCloser, viewOK, viewErr := c.loadView(file)
 		if viewErr != nil {
 			return nil, viewErr
@@ -1689,6 +1692,16 @@ func (c *Component) loadView(file workspaceapi.URI) (
 	bool,
 	error,
 ) {
+	if isImageFile(file) {
+		imageComponent, modTime, err := c.loadImage(file)
+		if err != nil {
+			return nil, nil, false, err
+		}
+		imageHandler := &imageViewHandler{comp: imageComponent}
+		closer := newImageFlusherCloser(c, file, imageHandler, modTime)
+		return imageHandler, closer, true, nil
+	}
+
 	lang, _ := languages.LanguageForFile(filepath.Base(file.Path()))
 	if lang != "markdown" {
 		return nil, nil, false, nil
@@ -1727,6 +1740,22 @@ func (c *Component) loadMarkdown(
 		return nil, time.Time{}, fmt.Errorf("new markdown component: %w", err)
 	}
 	return component, info.ModTime(), nil
+}
+
+// loadImage only stats the file. The returned component reads it through
+// the workspace when first drawn, which keeps remote reads off the event
+// loop.
+func (c *Component) loadImage(
+	uri workspaceapi.URI,
+) (*imageuri.Component, time.Time, error) {
+	info, err := c.workspace.Stat(uri.Path())
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	comp := imageuri.NewFromFileSystem(
+		c.workspace, uri.Path(), browser.EventPublisherInterrupter(c),
+		imageuri.Style{Fit: term.ImageFitContain, ProblemArt: tcomponent.ProblemArt})
+	return comp, info.ModTime(), nil
 }
 
 func (c *Component) newMarkdownHandler(component *markdown.Component) *hmarkdown.Handler {

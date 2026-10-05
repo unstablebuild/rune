@@ -169,9 +169,6 @@ func TestParseAttachmentPartV1(t *testing.T) {
 	}
 }
 
-// TestAttachmentContentPartsV1Roundtrip pins the full write/read path used
-// in production: attachmentContentParts renders canonical v1 parts, and
-// replayedAttachments reconstructs the same chips from them.
 func TestAttachmentContentPartsV1Roundtrip(t *testing.T) {
 	root := t.TempDir()
 	require.NoError(t, os.WriteFile(
@@ -208,9 +205,6 @@ func TestAttachmentContentPartsV1Roundtrip(t *testing.T) {
 	assert.Equal(t, sent, replayedAttachments(msg))
 }
 
-// TestAttachmentContentPartsV1Failures pins the status:error shape for a
-// file that cannot be read and an image that cannot be encoded, including
-// that a failed image part carries no ContentPartTypeImageURL part.
 func TestAttachmentContentPartsV1Failures(t *testing.T) {
 	root := t.TempDir()
 	h := &aiEditorHandler{

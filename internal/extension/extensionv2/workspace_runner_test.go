@@ -197,22 +197,6 @@ func TestWorkspaceRunnerStartCommandPreservesCallerEnv(t *testing.T) {
 	assert.Equal(t, []string{"--login", "-i"}, exec.cmd.Args)
 }
 
-// TestWorkspaceRunnerStartCommandDoesNotDoubleResolveDir reproduces the
-// SSH terminal-open bug where workspaceRunner.StartCommand pre-resolved
-// cmd.Dir from m.workspace by calling ExpandPathWithURI(uri.Path(),
-// uri). For an ssh URI like ssh://test@host/~/src/blue ExpandPath sees
-// path="/~/src/blue", treats the leading "/~/" as a home-relative
-// prefix, and joins it under user.HomeDir = uri.Path() = "/~/src/blue".
-// The result is "/~/src/blue/src/blue" — a path that doesn't exist
-// anywhere, so the remote fileScheme's child fork chdirs into nothing
-// and surfaces "fork/exec /usr/bin/bash: no such file or directory"
-// (Go reports child-side chdir failures through the same path as the
-// exec failure).
-//
-// The fix is to stop synthesizing cmd.Dir from m.workspace at all: the
-// host-side fileScheme already defaults Dir to its own resolved
-// workspace path when cmd.Dir is empty, so this layer's contribution
-// is at best redundant and at worst path-doubles when ~ is involved.
 func TestWorkspaceRunnerStartCommandDoesNotDoubleResolveDir(t *testing.T) {
 	t.Parallel()
 
@@ -330,13 +314,6 @@ func TestWorkspaceRunnerRunCarriesExtensionID(t *testing.T) {
 	assert.Equal(t, 1, states[0].StartCount)
 }
 
-// TestWorkspaceRunnerRunSSHWorkspaceUsesExtExecutor locks in the
-// contract that extensions launched via Run() on a remote (ssh://)
-// workspace are routed through the *local* extExecutor, never the
-// remote workspace executor. Extensions are user-owned local
-// binaries; routing them through the SSH gRPC stream surfaces as
-// "start command: lost connection to remote" under load and ignores
-// the IDE host's filesystem entirely.
 func TestWorkspaceRunnerRunSSHWorkspaceUsesExtExecutor(t *testing.T) {
 	t.Parallel()
 
@@ -375,15 +352,6 @@ func TestWorkspaceRunnerRunSSHWorkspaceUsesExtExecutor(t *testing.T) {
 			"extensions can chdir into a path that exists on the IDE host")
 }
 
-// TestWorkspaceRunnerRunSourceEntrypoint locks in the source-entrypoint
-// launch contract: an extension path ending in .py, .go, or .rs is
-// rewritten to run under the toolchain of the corresponding language
-// package (python/uv, go, rust/cargo), resolved from the data dir's
-// shared bin. The script path is expanded on the IDE host since it is
-// no longer Cmd.Path (which the local fileScheme would expand). A
-// missing toolchain (package not installed, or removed after the
-// extension was) must fail with an actionable error instead of an
-// opaque exec failure. Non-source paths must pass through unchanged.
 func TestWorkspaceRunnerRunSourceEntrypoint(t *testing.T) {
 	t.Parallel()
 
@@ -581,9 +549,6 @@ func TestWorkspaceRunnerRunSourceEntrypoint(t *testing.T) {
 	}
 }
 
-// TestWorkspaceRunnerExpandsEnvInEntrypoint verifies that the runner
-// expands env vars in extensions.<id>.path itself, because workspace
-// path resolution treats "$" literally.
 func TestWorkspaceRunnerExpandsEnvInEntrypoint(t *testing.T) {
 	goPkgDir := t.TempDir()
 	require.NoError(t, os.WriteFile(
@@ -688,12 +653,6 @@ func TestWorkspaceRunnerPythonEntrypointResolvesPackageSymlink(t *testing.T) {
 	}, cmd.Args)
 }
 
-// TestWorkspaceRunnerStartCommandRoutesToWorkspaceExecutor pins down
-// the other half of the dual-executor split: ad-hoc StartCommand
-// calls (used by vte.Component to open terminals, by plugins to
-// shell out, etc.) must go to the workspace's executor — even when
-// a separate extExecutor is configured. That's the only way pty
-// fds and remote-file stdio reach the host where they live.
 func TestWorkspaceRunnerStartCommandRoutesToWorkspaceExecutor(t *testing.T) {
 	t.Parallel()
 
@@ -875,12 +834,6 @@ func TestWorkspaceRunnerStartExtensionWaitsForProtocolReady(t *testing.T) {
 	assert.Nil(t, states[0].LastErr)
 }
 
-// TestWorkspaceRunnerRunsExtensionInItsOwnProcessGroup pins the
-// arrangement that lets stopping an extension reach the program itself:
-// source entrypoints run behind `go run`, `uv run` or `cargo run`, which
-// exec the extension as a grandchild that SIGKILL cannot be forwarded
-// to. Without a group of its own, only the intermediary is terminated
-// and the extension is left orphaned.
 func TestWorkspaceRunnerRunsExtensionInItsOwnProcessGroup(t *testing.T) {
 	t.Parallel()
 

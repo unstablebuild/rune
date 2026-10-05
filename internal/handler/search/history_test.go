@@ -114,12 +114,6 @@ func TestHistoryIterator(t *testing.T) {
 	assert.Equal(t, []string{"gamma", "beta", "alpha"}, got)
 }
 
-// TestHistoryAddDeduplicates verifies that re-adding an entry moves it
-// to the front (MRU) instead of producing a duplicate. This is the
-// canonical semantics for command history — repeating `:won /repo/A`
-// should not bloat the persisted document with the same line over and
-// over, and consumers (the alias `{history}` completer, the prompt's
-// implicit fallback) shouldn't have to dedupe at read time.
 func TestHistoryAddDeduplicates(t *testing.T) {
 	store := storagestub.NewInMemoryService()
 	history := NewHistory(store, "id-dedup", 8)

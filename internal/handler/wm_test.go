@@ -18,6 +18,9 @@ package handler
 
 import (
 	"context"
+	"image"
+	"image/color"
+	"image/draw"
 	"math"
 	"testing"
 	"time"
@@ -31,6 +34,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/internal/cell"
 	"unstable.build/rune/internal/component"
+	"unstable.build/rune/internal/component/asciiart"
 	"unstable.build/rune/internal/handler/handlertest"
 )
 
@@ -107,6 +111,237 @@ func TestWindowManagerDimmedWriter(t *testing.T) {
 		assert.Equal(t, term.NewRGBColor(lum, lum, lum), rec.cell.Fg)
 	})
 }
+
+// overflowHandler fills its window with its letter and draws img, or a
+// '?' at img.Pos when the writer cannot draw images.
+type overflowHandler struct {
+	*handler.TestHandler
+	img term.Image
+}
+
+func newOverflowHandler(ch rune, img term.Image) *overflowHandler {
+	h := handler.NewTestHandler()
+	h.Ch = ch
+	return &overflowHandler{TestHandler: h, img: img}
+}
+
+func (h *overflowHandler) Draw(w term.Writer) {
+	h.TestHandler.Draw(w)
+	if h.img.Src != nil && !w.DrawImage(h.img) {
+		w.SetCell(h.img.Pos, term.NewCell('?', 1, term.Attributes{}))
+	}
+}
+
+func TestWindowManagerOverflowingImages(t *testing.T) {
+	gray := func(y uint8) image.Image {
+		img := image.NewNRGBA(image.Rect(0, 0, 4, 4))
+		draw.Draw(img, img.Rect, image.NewUniform(color.Gray{Y: y}), image.Point{}, draw.Src)
+		return img
+	}
+	a, b := gray(128), gray(200)
+	place := func(src image.Image, x, y, width, height int) term.Image {
+		return term.Image{
+			Src: src, Pos: term.Coordinates{X: x, Y: y}, Width: width, Height: height,
+			Fit: term.ImageFitFill, Overflow: true,
+		}
+	}
+	inPlace := func(img term.Image) term.Image {
+		img.Overflow = false
+		return img
+	}
+	type floating struct {
+		offset term.Coordinates
+		img    term.Image
+	}
+
+	tests := []struct {
+		name string
+		// beside splits the windows side by side rather than stacking them.
+		beside bool
+		frame  bool
+		// a and b are drawn by the first and the second window.
+		a, b term.Image
+		// floating is drawn by a 4x2 floating window when set.
+		floating *floating
+		// dim draws the second window dimmed.
+		dim bool
+		// noImages draws with a writer that cannot draw images.
+		noImages bool
+		expected string
+	}{
+		{
+			name: "an image that does not overflow is cut off at its window",
+			a:    inPlace(place(a, 2, 1, 4, 4)),
+			expected: `
+AAAAAAAAAAAA
+AAaaaaAAAAAA
+AAaaaaAAAAAA
+BBBBBBBBBBBB
+BBBBBBBBBBBB
+BBBBBBBBBBBB`,
+		},
+		{
+			name: "an image overflows over the window below",
+			a:    place(a, 2, 1, 4, 4),
+			expected: `
+AAAAAAAAAAAA
+AAaaaaAAAAAA
+AAaaaaAAAAAA
+BBaaaaBBBBBB
+BBaaaaBBBBBB
+BBBBBBBBBBBB`,
+		},
+		{
+			name:   "an image overflows over the window to the right",
+			beside: true,
+			a:      place(a, 4, 1, 4, 2),
+			expected: `
+AAAAAABBBBBB
+AAAAaaaaBBBB
+AAAAaaaaBBBB
+AAAAAABBBBBB
+AAAAAABBBBBB
+AAAAAABBBBBB`,
+		},
+		{
+			name: "an image overflows over the window above",
+			b:    place(a, 2, -2, 4, 3),
+			expected: `
+AAAAAAAAAAAA
+AAaaaaAAAAAA
+AAaaaaAAAAAA
+BBaaaaBBBBBB
+BBBBBBBBBBBB
+BBBBBBBBBBBB`,
+		},
+		{
+			name: "an image is cut off at the edges of the window manager",
+			a:    place(a, -4, -4, 20, 20),
+			expected: `
+aaaaaaaaaaaa
+aaaaaaaaaaaa
+aaaaaaaaaaaa
+aaaaaaaaaaaa
+aaaaaaaaaaaa
+aaaaaaaaaaaa`,
+		},
+		{
+			name: "the image of the later window is on top",
+			a:    place(a, 2, 1, 4, 4),
+			b:    place(b, 4, -2, 4, 3),
+			expected: `
+AAAAAAAAAAAA
+AAaa6666AAAA
+AAaa6666AAAA
+BBaa6666BBBB
+BBaaaaBBBBBB
+BBBBBBBBBBBB`,
+		},
+		{
+			name:  "an image overflows over the frames around its window",
+			frame: true,
+			a:     place(a, 1, 1, 4, 4),
+			expected: `
+┌──────────┐
+│AAAAAAAAAA│
+└─aaaa─────┘
+┌─aaaa─────┐
+│BaaaaBBBBB│
+└─aaaa─────┘`,
+		},
+		{
+			name:     "a floating window covers an image that overflows a tile",
+			a:        place(a, 2, 1, 4, 4),
+			floating: &floating{offset: term.Coordinates{X: 3, Y: 3}},
+			expected: `
+AAAAAAAAAAAA
+AAaaaaAAAAAA
+AAaaaaAAAAAA
+BBaFFFFBBBBB
+BBaFFFFBBBBB
+BBBBBBBBBBBB`,
+		},
+		{
+			name: "an image overflows a floating window over the tiles",
+			floating: &floating{
+				offset: term.Coordinates{X: 3, Y: 3},
+				img:    place(b, -1, -2, 3, 2),
+			},
+			expected: `
+AAAAAAAAAAAA
+AA666AAAAAAA
+AA666AAAAAAA
+BBBFFFFBBBBB
+BBBFFFFBBBBB
+BBBBBBBBBBBB`,
+		},
+		{
+			name: "an image overflows over a dimmed window",
+			a:    place(a, 2, 1, 4, 4),
+			dim:  true,
+			expected: `
+AAAAAAAAAAAA
+AAaaaaAAAAAA
+AAaaaaAAAAAA
+BBaaaaBBBBBB
+BBaaaaBBBBBB
+BBBBBBBBBBBB`,
+		},
+		{
+			name: "an image of a dimmed window overflows",
+			b:    place(a, 2, -2, 4, 3),
+			dim:  true,
+			expected: `
+AAAAAAAAAAAA
+AAaaaaAAAAAA
+AAaaaaAAAAAA
+BBaaaaBBBBBB
+BBBBBBBBBBBB
+BBBBBBBBBBBB`,
+		},
+		{
+			name:     "a writer that cannot draw images reports it for an overflowing image",
+			a:        place(a, 2, 1, 4, 4),
+			noImages: true,
+			expected: `
+AAAAAAAAAAAA
+AA?AAAAAAAAA
+AAAAAAAAAAAA
+BBBBBBBBBBBB
+BBBBBBBBBBBB
+BBBBBBBBBBBB`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			const width, height = 12, 6
+			var w comptest.StringerWriter = asciiart.NewStringWriter(width, height, asciiart.DefaultConfig())
+			if tt.noImages {
+				w = term.NewStringWriter(width, height)
+			}
+			_, wm := prepareTest(width, height, tt.frame, newOverflowHandler('A', tt.a))
+			split := wm.SplitHorizontal
+			if tt.beside {
+				split = wm.SplitVertical
+			}
+			_, ok := split(wm.Focus(), newOverflowHandler('B', tt.b))
+			require.True(t, ok)
+			if tt.floating != nil {
+				wm.FloatingWindow(
+					handler.StaticFloating(newOverflowHandler('F', tt.floating.img), 4, 2),
+					component.FloatingConfig{Offset: tt.floating.offset},
+				)
+			}
+			wm.SetDim(tt.dim)
+			wm.SetFocus(wm.Focus())
+			comptest.TestComponent(t, wm, w, []comptest.TestCase{
+				{Expected: tt.expected},
+				{Expected: tt.expected},
+			})
+		})
+	}
+}
+
 func TestWindowManagerSetFocusNoFrame(t *testing.T) {
 	testWindowManagerSetFocus(t, false)
 }
@@ -128,7 +363,6 @@ func testWindowManagerSetFocus(t *testing.T, frame bool) {
 	assert.True(t, ok)
 }
 
-// TestHandler signals that it's handling event by incrementing it's fill rune
 func TestWindowManagerHandle(t *testing.T) {
 	t.Run("passes correct mouse position", func(t *testing.T) {
 		handler := handler.NewTestHandler()
@@ -407,8 +641,6 @@ func TestWindowManagerSetFocusContent(t *testing.T) {
 	handlertest.TestHandler(t, wm, cases, writer)
 }
 
-// TestWindowManagerMouseDrag exercises WindowManager.Handle mouse
-// routing across drag-capture, focus-switch, and non-drag paths.
 func TestWindowManagerMouseDrag(t *testing.T) {
 	cases := []dragCase{
 		{
@@ -716,11 +948,6 @@ func TestWindowManagerMouseDrag(t *testing.T) {
 	}
 }
 
-// TestWindowManagerMouseDragSurvivesPinnedWindowClose reproduces a nil
-// pointer dereference: a MouseLeft press pins the pressed window as the
-// drag target, that window is then closed (e.g. programmatically by a
-// runner), and a follow-up drag event re-routes to the now-removed
-// window. Calling Position on a removed tile dereferenced a nil tree.
 func TestWindowManagerMouseDragSurvivesPinnedWindowClose(t *testing.T) {
 	width, height := 24, 8
 	lh := handler.NewTestHandler()
@@ -743,9 +970,6 @@ func TestWindowManagerMouseDragSurvivesPinnedWindowClose(t *testing.T) {
 	})
 }
 
-// TestWindowManagerMouseUnderFocusedFloat pins that a focused floating
-// window keeps the wheel and pointer motion from reaching the tiles it
-// floats over, which would move content out from under it.
 func TestWindowManagerMouseUnderFocusedFloat(t *testing.T) {
 	lh := handler.NewTestHandler()
 	rh := handler.NewTestHandler()
@@ -772,9 +996,6 @@ func TestWindowManagerMouseUnderFocusedFloat(t *testing.T) {
 	assert.Equal(t, []string{"F"}, seen)
 }
 
-// TestWindowManagerMouseExitFromUnfocusedWindow pins that a tile asking
-// to exit on a wheel event it received without focus is closed, and
-// that focus stays on the tile the user was working in.
 func TestWindowManagerMouseExitFromUnfocusedWindow(t *testing.T) {
 	lh := handler.NewTestHandler()
 	rh := handler.NewTestHandler()
@@ -946,11 +1167,6 @@ func TestWindowManagerCloseFloatingSkipsMinimizedFloatingFocus(t *testing.T) {
 	assert.True(t, ok)
 }
 
-// TestWindowManagerCloseSkipsClosedPrevFocus exercises the case where, after
-// successive window closes, prevFocus points to a window that is no longer
-// alive. Close must not select such a stale window as the next focus, or
-// WindowManager.Focus() will return a closed Window and downstream
-// browser.Component.findWindow will fail to resolve it.
 func TestWindowManagerCloseSkipsClosedPrevFocus(t *testing.T) {
 	cfg := DefaultWindowManagerConfig()
 	wm := NewWindowManager(handler.NewTestHandler(), cfg)
@@ -980,13 +1196,6 @@ func TestWindowManagerCloseSkipsClosedPrevFocus(t *testing.T) {
 		"focus should point to a live window, not a closed one")
 }
 
-// TestWindowManagerRestoreTileLayoutResetsPrevFocus ensures that a layout
-// restore does not leave prevFocus pointing at a closed window. Before this
-// fix, SetFocus stored the stale pre-restore focus into prevFocus; once the
-// user closed the new focus, Close.prevFocus fallback path restored the
-// stale window, causing WindowManager.Focus() to return a closed Window and
-// downstream browser.Component.findWindow to panic with
-// "corrupted browser: cannot find focus window".
 func TestWindowManagerRestoreTileLayoutResetsPrevFocus(t *testing.T) {
 	cfg := DefaultWindowManagerConfig()
 	wm := NewWindowManager(handler.NewTestHandler(), cfg)
@@ -1026,12 +1235,6 @@ func TestWindowManagerRestoreTileLayoutResetsPrevFocus(t *testing.T) {
 		"WindowManager.Focus() must resolve to a window that is still in the tree")
 }
 
-// TestWindowManagerRestoreTileLayoutEmptyLayout exercises the case where
-// RestoreTileLayout is invoked with an empty layout (a leaf layout
-// with WindowID == 0). Without a fallback, the old pre-restore
-// wm.focus would survive and point at a now-discarded node,
-// causing Iterate to skip it and downstream callers (such as
-// browser.Component.focus) to panic with "cannot find focus window".
 func TestWindowManagerRestoreTileLayoutEmptyLayout(t *testing.T) {
 	cfg := DefaultWindowManagerConfig()
 	wm := NewWindowManager(handler.NewTestHandler(), cfg)
@@ -2259,8 +2462,6 @@ func TestFloatingBarDragLifecycle(t *testing.T) {
 	}
 }
 
-// TestFloatingBarMinimizedFloat pins that a minimized float's strip is
-// inert: it starts no drag, so no bar interaction is ever reported.
 func TestFloatingBarMinimizedFloat(t *testing.T) {
 	bar := &testFloatingBar{}
 	wm, float := prepareFloatingBarTest(t, bar)
@@ -2320,10 +2521,6 @@ func (b *closingFloatingBar) OnBarDragCancel(Window) {
 	}
 }
 
-// TestFloatingBarCancelMayCloseWindows pins that the cancel hook is
-// allowed to change the layout: Handle resolves the window under the
-// cursor before the hook runs, and reusing that resolution afterwards
-// dereferences a detached tile.
 func TestFloatingBarCancelMayCloseWindows(t *testing.T) {
 	bar := &closingFloatingBar{}
 	cfg := DefaultWindowManagerConfig()
@@ -2351,8 +2548,6 @@ func TestFloatingBarCancelMayCloseWindows(t *testing.T) {
 	assert.Equal(t, 1, wm.SizeTiles())
 }
 
-// TestFloatingBarNilIsInert guards the nil FloatingBar default: the
-// drag machinery must not dereference the hook.
 func TestFloatingBarNilIsInert(t *testing.T) {
 	wm, _, _, _, floatWin := prepareWindowBarTest(t)
 	require.Nil(t, wm.config.FloatingBar)
@@ -2364,8 +2559,6 @@ func TestFloatingBarNilIsInert(t *testing.T) {
 	assert.False(t, floatWin.Closed())
 }
 
-// TestNopFloatingBarHandler pins the embeddable default so partial
-// implementors inherit inert, non-consuming behaviour.
 func TestNopFloatingBarHandler(t *testing.T) {
 	var nop NopFloatingBarHandler
 	assert.False(t, nop.OnBarClose(Window{}),
@@ -2376,9 +2569,6 @@ func TestNopFloatingBarHandler(t *testing.T) {
 	nop.OnBarDragCancel(Window{})
 }
 
-// TestFloatingBarDragReportsPositionAfterMove pins that OnBarDrag is
-// dispatched after the window has been repositioned, so a handler can
-// measure the float against the cursor it was given.
 func TestFloatingBarDragReportsPositionAfterMove(t *testing.T) {
 	bar := &testFloatingBar{}
 	wm, float := prepareFloatingBarTest(t, bar)
@@ -2452,9 +2642,6 @@ func TestWindowEdgeResizeDrag(t *testing.T) {
 	})
 }
 
-// TestWindowBarCornerResizeDrag covers the diagonal resize drags
-// started from the bar's corner cells: both dimensions change and the
-// opposite edges stay pinned.
 func TestWindowBarCornerResizeDrag(t *testing.T) {
 	t.Run("top-right corner grows both dimensions", func(t *testing.T) {
 		wm, _, _, _, floatWin := prepareWindowBarTest(t)
@@ -2500,8 +2687,6 @@ func TestWindowBarCornerResizeDrag(t *testing.T) {
 	})
 }
 
-// TestWindowBarDoubleClickMaximize covers the bar double click
-// toggling a float between maximized and its previous geometry.
 func TestWindowBarDoubleClickMaximize(t *testing.T) {
 	click := func(wm *WindowManager, x, y int) {
 		wm.Handle(mouseEv(term.MouseLeft, x, y))
@@ -2573,9 +2758,6 @@ func TestTileEdgeResizeDrag(t *testing.T) {
 	})
 }
 
-// TestWindowBarScrollBarPrecedence pins that pressing the scroll bar
-// thumb on a window's right edge starts a scroll drag rather than an
-// edge resize.
 func TestWindowBarScrollBarPrecedence(t *testing.T) {
 	buf := cell.NewBuffer()
 	buf.WriteString("a\nb\nc\nd\ne\nf\n")

@@ -780,12 +780,6 @@ func TestAgentRun_FSMutatorBatchRunsSequentially(t *testing.T) {
 	})
 }
 
-// TestAgentRun_DeleteThenAddSamePathSucceeds reproduces RUNE-AGENT-98:
-// when the LLM batches a delete and a recreate of the same path, the
-// recreate must not observe the file before the delete completes. The
-// "rm" tool sleeps then removes; the "add" tool mirrors
-// applypatch.applyAdd by failing if the path still exists. Dispatcher
-// serialization makes the add run only after rm finished.
 func TestAgentRun_DeleteThenAddSamePathSucceeds(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "foo.txt")
@@ -1506,10 +1500,6 @@ func TestParallelToolExecution(t *testing.T) {
 	})
 }
 
-// TestBuildToolCallMessages asserts that pre-computed tool results produce
-// tool-role messages carrying the tool name. Gemini rejects a
-// function_response with an empty name, so the result message must echo the
-// call's tool name, not only its ID.
 func TestBuildToolCallMessages(t *testing.T) {
 	msgs := buildToolCallMessages([]ToolCallResult{
 		{ToolName: "bash", Arguments: `{"command":"ls"}`, Content: "out"},
@@ -1951,6 +1941,123 @@ func TestAutoDiagnostics(t *testing.T) {
 			assert.JSONEq(t, string(origFnCall),
 				string(assistantMsg.ProviderItems[1]))
 		})
+}
+
+func TestAutoDiagnosticsSkipsFileCheckedLaterInBatch(t *testing.T) {
+	call := func(id, name, args string) llmapi.ToolCall {
+		return llmapi.ToolCall{
+			ID:       id,
+			Type:     llmapi.ToolTypeFunction,
+			Function: llmapi.FunctionCall{Name: name, Arguments: args},
+		}
+	}
+	patch := func(id string) llmapi.ToolCall { return call(id, "apply_patch", `{"patch":"p"}`) }
+	check := func(id, args string) llmapi.ToolCall { return call(id, "check_file_errors", args) }
+
+	tests := []struct {
+		name          string
+		calls         []llmapi.ToolCall
+		wantDiagExecs int32
+		wantAutoDiag  []string
+	}{
+		{
+			name: "session repro",
+			calls: []llmapi.ToolCall{
+				patch("p1"),
+				patch("p2"),
+				call("b1", "bash", `{"command":"go build ./..."}`),
+				check("k1", `{"path":"/workspace/main.go"}`),
+				check("k2", `{"path":"main.go"}`),
+				check("k3", `{"file_path":"./main.go"}`),
+			},
+			wantDiagExecs: 3,
+		},
+		{
+			name:          "relative file_path checked after patch",
+			calls:         []llmapi.ToolCall{patch("p1"), check("k1", `{"file_path":"./main.go"}`)},
+			wantDiagExecs: 1,
+		},
+		{
+			name:          "check before patch",
+			calls:         []llmapi.ToolCall{check("k1", `{"path":"main.go"}`), patch("p1")},
+			wantDiagExecs: 2,
+			wantAutoDiag:  []string{"auto-diag-p1"},
+		},
+		{
+			name: "patch between checks",
+			calls: []llmapi.ToolCall{
+				check("k1", `{"path":"main.go"}`),
+				patch("p1"),
+				check("k2", `{"path":"main.go"}`),
+			},
+			wantDiagExecs: 2,
+		},
+		{
+			name:          "different file checked",
+			calls:         []llmapi.ToolCall{patch("p1"), check("k1", `{"path":"other.go"}`)},
+			wantDiagExecs: 2,
+			wantAutoDiag:  []string{"auto-diag-p1"},
+		},
+		{
+			name:          "unparsable args",
+			calls:         []llmapi.ToolCall{patch("p1"), check("k1", `{bad`), check("k2", `{bad`)},
+			wantDiagExecs: 3,
+			wantAutoDiag:  []string{"auto-diag-p1"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := &mockService{
+				responses: []mockResponse{toolCallsResponse(tt.calls...), stopResponse("done")},
+			}
+			patchTool := &mockTool{
+				name:       "apply_patch",
+				needsOrder: true,
+				result: ToolResult{
+					Content:      "applied 1/1 operations successfully",
+					TouchedFiles: []string{"/workspace/main.go"},
+				},
+			}
+			bashTool := &mockTool{name: "bash", needsOrder: true, result: ToolResult{Content: "ok"}}
+			diagTool := &mockTool{
+				name:   "check_file_errors",
+				result: ToolResult{Content: "no errors or warnings"},
+			}
+			ag := NewAgent(svc, NewRegistry(patchTool, bashTool, diagTool), noSkills(), newMockStore(), NoMemory(),
+				Config{SystemPrompt: "test", Workspace: dirURI("/workspace")})
+
+			events := collectEvents(t, ag.Run(context.Background(), "d", "go"))
+			require.True(t, hasEventType(events, EventDone))
+
+			assert.Equal(t, tt.wantDiagExecs, diagTool.execCount.Load())
+
+			var autoDiag []string
+			for _, ev := range eventsByType(events, EventToolResult) {
+				if strings.HasPrefix(ev.ToolCallID, "auto-diag-") {
+					autoDiag = append(autoDiag, ev.ToolCallID)
+				}
+			}
+			assert.ElementsMatch(t, tt.wantAutoDiag, autoDiag)
+
+			require.Equal(t, 2, svc.getCallCount())
+			toolMsgs := map[string][]llmapi.Message{}
+			for _, msg := range svc.requests[1].Messages {
+				if msg.Role == llmapi.RoleTool {
+					toolMsgs[msg.ToolCallID] = append(toolMsgs[msg.ToolCallID], msg)
+				}
+			}
+			for _, c := range tt.calls {
+				assert.Len(t, toolMsgs[c.ID], 1, "tool messages for %s", c.ID)
+			}
+			var gotAutoMsgs []string
+			for id := range toolMsgs {
+				if strings.HasPrefix(id, "auto-diag-") {
+					gotAutoMsgs = append(gotAutoMsgs, id)
+				}
+			}
+			assert.ElementsMatch(t, tt.wantAutoDiag, gotAutoMsgs)
+		})
+	}
 }
 
 func TestChannelIterator(t *testing.T) {
@@ -3884,6 +3991,14 @@ func toolCallResponse(toolName, args, callID string) mockResponse {
 	}
 }
 
+func toolCallsResponse(calls ...llmapi.ToolCall) mockResponse {
+	return mockResponse{
+		chunks:       []string{""},
+		finishReason: llmapi.FinishReasonToolCall,
+		toolCalls:    calls,
+	}
+}
+
 func TestStreamReset(t *testing.T) {
 	t.Run("agent resets builders and emits EventDone on EventStreamReset", func(t *testing.T) {
 		// Simulate a stream that delivers partial text, then resets (mid-stream
@@ -4119,10 +4234,6 @@ func TestAgentRunPersistsModelTextWithoutAttachments(t *testing.T) {
 	assert.Equal(t, "model text", persisted.MultiContent[0].Text)
 }
 
-// TestToolContextCarriesModelEntry verifies that the fully-qualified
-// ModelEntry (Provider set) is carried into a tool's context, so
-// sub-agents inheriting the model resolve to a single provider instead
-// of failing on an ambiguous bare name.
 func TestToolContextCarriesModelEntry(t *testing.T) {
 	var gotModel llmapi.ModelEntry
 	tool := &mockTool{
@@ -4546,18 +4657,6 @@ func TestAutoCompactUsesDefaultMaxOutputTokens(t *testing.T) {
 	assert.True(t, hasEventType(events, EventDone))
 }
 
-// TestAutoCompact_SkipsWhenNothingToCompact pins down the fix for the
-// "agent immediately auto-compacts on a fresh 'hello' and never makes
-// progress" bug observed with small-context local models (e.g. 8192-ctx
-// Qwen). On the very first iteration, the dialogue has only the system
-// prompt and the current user message. Even if usage is above the
-// auto-compact threshold, compacting cannot reduce the token count: the
-// system prompt and tool declarations are what dominate, and summarizing
-// a two-message conversation yields essentially the same text back. We
-// must therefore skip auto-compact when the conversation has no prior
-// assistant turn to summarize — otherwise we burn an LLM call, emit a
-// misleading "compacting" spinner, and (with tools present) can loop
-// indefinitely as every iteration re-enters the same branch.
 func TestAutoCompact_SkipsWhenNothingToCompact(t *testing.T) {
 	svc := &mockService{
 		// Only one real response slot: if the guard fires, we go
@@ -4587,16 +4686,6 @@ func TestAutoCompact_SkipsWhenNothingToCompact(t *testing.T) {
 		"agent should make exactly one LLM call (no wasted Summarize call)")
 }
 
-// TestAutoCompact_DoesNotLoopWhenCompactionCannotReduceUsage pins the
-// second half of the same bug. Even when prior conversation does exist,
-// if the resulting compacted dialogue still exceeds the auto-compact
-// threshold (e.g. because the system prompt + project-instructions +
-// tool schemas alone push past 85% of a small local context window), we
-// must not re-enter auto-compact on the very next iteration. Doing so
-// produces an infinite "compacting → compact again → compacting" loop
-// that never asks the model anything meaningful.
-//
-// The guarantee: at most one auto-compact per Run() invocation.
 func TestAutoCompact_DoesNotLoopWhenCompactionCannotReduceUsage(t *testing.T) {
 	svc := &mockService{
 		responses: []mockResponse{
@@ -4669,8 +4758,6 @@ func TestSummarizeEmptySummaryReturnsError(t *testing.T) {
 	}
 }
 
-// A truncated summary is rejected, and the error must name the limit that
-// was hit and only advise /max_tokens when the model accepts a larger one.
 func TestSummarizeTruncatedSummaryError(t *testing.T) {
 	sonnet := llmapi.ModelEntry{Provider: anthropic.LLMProvider, Name: anthropic.ClaudeSonnet4Dot5}
 	tests := []struct {
@@ -5349,10 +5436,6 @@ func TestAssistantMessageHasReplayableContent(t *testing.T) {
 	}
 }
 
-// TestToolOutputSanitizedForWire is the RUNE-179 regression. Tools may
-// return content with invalid UTF-8 bytes; those bytes must never
-// reach llmapi.Request.Messages, otherwise the proto-go marshaller
-// rejects the request and wedges the conversation.
 func TestToolOutputSanitizedForWire(t *testing.T) {
 	svc := &mockService{
 		responses: []mockResponse{

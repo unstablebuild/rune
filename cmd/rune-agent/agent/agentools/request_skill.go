@@ -50,11 +50,11 @@ func (t *requestSkillTool) Definition() llmapi.Tool {
 		Function: llmapi.FunctionDefinition{
 			Name: "request_skill",
 			Description: `Request a skill or capability that is not currently available.
-Use this when you need a tool that is not in your tool list (e.g.
-web_search, a language-specific linter, a deployment tool). The user
-is shown what you need and can install the skill out of band, then
-confirm. If the user confirms, newly installed skills will be available
-on the next turn.
+Use this when you need a tool that is not in your tool list (e.g. a
+language-specific linter, a deployment tool). The user is shown what
+you need and can install the skill out of band, then confirm. If the
+user confirms, newly installed skills will be available on the next
+turn.
 
 Do NOT use this for skills that are already available — use the skill
 tool instead.`,
@@ -63,7 +63,7 @@ tool instead.`,
 				"properties": map[string]any{
 					"skill": map[string]any{
 						"type":        "string",
-						"description": "Short name for the skill being requested (e.g. \"web_search\", \"deploy\").",
+						"description": "Short name for the skill being requested (e.g. \"golangci-lint\", \"deploy\").",
 					},
 					"description": map[string]any{
 						"type":        "string",

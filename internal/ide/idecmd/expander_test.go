@@ -30,15 +30,6 @@ import (
 	"unstable.build/rune/internal/text/cmdenv"
 )
 
-// TestExpanderTableDriven exercises Expander.Expand across the full
-// surface of alias resolution: non-alias passthrough, positional
-// args, `!` / `!!` shell-step bodies, chain captures, injection
-// attempts, non-utf8 bytes, very large args, and tricky edge cases.
-//
-// Each case constructs a fresh Expander backed by an in-memory
-// alias map and a stub env source, runs Expand, drains the
-// iterator, and asserts the resulting argv sequence. Iterator
-// errors surface as iterErr; synchronous errors as expandErr.
 func TestExpanderTableDriven(t *testing.T) {
 	for _, tc := range expanderCases() {
 		t.Run(tc.name, func(t *testing.T) {
@@ -69,9 +60,6 @@ func TestExpanderTableDriven(t *testing.T) {
 	}
 }
 
-// TestExpanderNonAliasPreservesURIAndCursor pins that the leaf
-// passthrough yields the input command with only Args mutated;
-// the URI, Resource, Window, and Cursor fields propagate untouched.
 func TestExpanderNonAliasPreservesURIAndCursor(t *testing.T) {
 	exp := newExpander(nil, nil)
 	cmd := textapi.Command{
@@ -87,10 +75,6 @@ func TestExpanderNonAliasPreservesURIAndCursor(t *testing.T) {
 	assert.Equal(t, []string{"file.go"}, got[0].Args)
 }
 
-// TestExpanderChainCaptureFlowsAcrossSteps verifies the iterator
-// re-reads the chain on each Next call so a capture written between
-// dispatch calls is visible to the next step's expansion. This is
-// the contract that makes `!!` capture-and-reuse work.
 func TestExpanderChainCaptureFlowsAcrossSteps(t *testing.T) {
 	aliases := map[string]text.CommandAlias{
 		"chain": {Commands: []string{
@@ -122,16 +106,6 @@ func TestExpanderChainCaptureFlowsAcrossSteps(t *testing.T) {
 	require.NoError(t, it.Close())
 }
 
-// TestExpanderInjectionAttemptsRequirePermissiveCtx pins two
-// boundary behaviors:
-//
-//   - With a strict (default) ctx, an alias arg containing
-//     `$(rm -rf /)` is rejected at expansion. The user cannot
-//     smuggle shell command-substitution into a leaf alias by
-//     accident.
-//   - With WithCommandSubstitution(ctx) (the path `!`/`!!` user
-//     dispatch takes), `$(...)` survives into the yielded body
-//     verbatim. The downstream shell decides what to do with it.
 func TestExpanderInjectionAttemptsRequirePermissiveCtx(t *testing.T) {
 	aliases := map[string]text.CommandAlias{
 		"run": {Commands: []string{"!! safe $1"}},
@@ -164,8 +138,6 @@ func TestExpanderInjectionAttemptsRequirePermissiveCtx(t *testing.T) {
 	})
 }
 
-// TestExpanderLargeInputArg ensures a 100 KB arg passes through
-// without truncation or panic.
 func TestExpanderLargeInputArg(t *testing.T) {
 	exp := newExpander(nil, nil)
 	big := strings.Repeat("x", 100*1024)
@@ -178,11 +150,6 @@ func TestExpanderLargeInputArg(t *testing.T) {
 	assert.Equal(t, big, got[0].Args[0])
 }
 
-// TestExpanderCloseIsIdempotent documents that Close can be called
-// any number of times and always returns nil. The current iterator
-// implementation does NOT stop yields after Close; this test pins
-// that actual behavior so a future change that enforces a stronger
-// contract surfaces here.
 func TestExpanderCloseIsIdempotent(t *testing.T) {
 	aliases := map[string]text.CommandAlias{
 		"three": {Commands: []string{"a", "b", "c"}},

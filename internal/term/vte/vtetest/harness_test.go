@@ -63,10 +63,6 @@ func (h *slowEchoHandler) Cursor() (term.Coordinates, term.CursorStyle, bool) {
 	return term.Coordinates{}, term.CursorStyleDefault, false
 }
 
-// TestHandleTestCaseConvergesOnLateEcho pins the settle contract: a
-// response arriving after the quiescence timeout must still be
-// observed, otherwise every vte integration test is one scheduling
-// hiccup away from asserting on a half-drawn screen.
 func TestHandleTestCaseConvergesOnLateEcho(t *testing.T) {
 	const (
 		drawTimeout   = 10 * time.Millisecond

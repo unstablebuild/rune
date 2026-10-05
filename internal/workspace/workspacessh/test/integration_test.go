@@ -41,16 +41,6 @@ import (
 	"unstable.build/rune/internal/workspace/workspacetest"
 )
 
-// TestIntegrationScheme exercises the full schemeapi.Scheme contract
-// (Open / Read / Stat / Remove / Rename / ...) over both the std (Go
-// crypto/ssh) and proc (forked openssh) remotes against a real
-// container.
-//
-// The suite issues many ssh connections in quick succession against a
-// single shared container, so the harness raises MaxStartups well past
-// the linuxserver/openssh-server default via ExtraSSHDConfig. See also
-// TestConnectSchemeEndToEnd (connect_test.go) for connectScheme
-// coverage and TestAuthMatrix for SSH auth UX coverage.
 func TestIntegrationScheme(t *testing.T) {
 	SkipIfNoDocker(t)
 	EnsureImage(t)
@@ -283,9 +273,7 @@ func (errorUI) PromptChoice(context.Context, string, []string) (int, error) {
 	return -1, fmt.Errorf("unexpected prompt: choice")
 }
 
-func (errorUI) Notify(workspacessh.NotificationLevel, string) string { return "" }
-
-func (errorUI) UpdateNotificationProgress(string, string, int, int) {}
+func (errorUI) Notify(workspacessh.NotificationLevel, string) {}
 
 // safeName returns a shell-safe version of name suitable for substitution
 // into a path the bootstrap may quote naively.

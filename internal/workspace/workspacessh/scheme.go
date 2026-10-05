@@ -67,25 +67,13 @@ var ErrSSHConnectionClosed = errors.New("ssh connection closed unexpectedly")
 // Option customizes the ssh scheme constructed by New.
 type Option func(*scheme)
 
-// WithProvisionManifest supplies a callback that returns an encoded
-// package-provisioning manifest (see cmd/rune provisionManifest). When it
-// returns a non-empty string, the remote `rune -x` server is asked to mirror
-// the local toolchain via a `--install <manifest>` flag. The callback is
-// invoked once per connection so the manifest reflects the current local
-// install state.
-func WithProvisionManifest(fn func() string) Option {
-	return func(s *scheme) {
-		s.provisionFn = fn
-	}
-}
-
 // WithRemoteDataDir forces the remote `rune -x` server to use ~/<name> as
 // its data directory via an explicit `--datadir` flag, instead of relying
 // on the remote's default ($HOME/.rune). name is a bare directory name
 // (e.g. ".rune" or ".runedev"), taken from the local IDE's data-directory
-// basename so the local client and the remote server provision into the
-// same well-known location by construction. Empty name leaves the remote
-// default untouched.
+// basename so the local client and the remote server install packages
+// into the same well-known location by construction. Empty name leaves
+// the remote default untouched.
 func WithRemoteDataDir(name string) Option {
 	return func(s *scheme) {
 		s.remoteDataDir = name
@@ -116,6 +104,7 @@ type remote interface {
 }
 
 var _ workspace.RemoteScheme = (*scheme)(nil)
+var _ workspace.PackageHost = (*scheme)(nil)
 
 type scheme struct {
 	cfg      sshConfig
@@ -130,7 +119,6 @@ type scheme struct {
 	ctx             context.Context
 	cancelCtx       func()
 	ui              UI
-	provisionFn     func() string
 	passCache       *passwordCache
 	hostKeyPin      *sessionHostKeyPin
 	remoteDataDir   string
@@ -394,20 +382,8 @@ func (s *scheme) connectScheme(
 		dataDirArgs = []string{"--datadir", "~/" + s.remoteDataDir}
 	}
 
-	var installArgs []string
-	if s.cfg.provisionPackages && s.provisionFn != nil {
-		if manifest := s.provisionFn(); manifest != "" {
-			// manifest is a single validated shell-safe token
-			// (cmd/rune enforces the [A-Za-z0-9._@,%+~/-] class), so it
-			// needs no quoting even though the remote shell reparses the
-			// whole command.
-			installArgs = []string{"--install", manifest}
-		}
-	}
-
 	cmdStr := remoteWorkspaceServerBin
 	args := append([]string{"-x", sshPath}, dataDirArgs...)
-	args = append(args, installArgs...)
 	args = append(args, extraArgs...)
 	if s.cfg.shell != "" {
 		args = append([]string{"-c", cmdStr}, args...)
@@ -434,13 +410,12 @@ func (s *scheme) connectScheme(
 		return nil, fmt.Errorf("could not create command: %s", err)
 	}
 
-	// During remote provisioning (before StartSchemeServer runs) stderr is the
-	// only live back-channel: stdout is the gRPC pipe and does not serve yet.
-	// Read it line by line so structured progress lines surface as browser
-	// notifications immediately, while plain lines accumulate in a bounded tail
-	// for the exit-error path below. This goroutine owns stderrRead, so the
-	// exit path must read the tail instead of the pipe to avoid two readers
-	// fighting over it.
+	// Until StartSchemeServer runs, stderr is the only live back-channel:
+	// stdout is the gRPC pipe and does not serve yet. Read it line by line
+	// so the remote's warnings surface as notifications immediately, while
+	// plain lines accumulate in a bounded tail for the exit-error path
+	// below. This goroutine owns stderrRead, so the exit path must read the
+	// tail instead of the pipe to avoid two readers fighting over it.
 	tail := newStderrTail()
 	stderrDone := make(chan struct{})
 	ready := make(chan struct{})
@@ -466,16 +441,15 @@ func (s *scheme) connectScheme(
 		return nil, err
 	}
 
-	// The remote runs a provisioning phase (mirror toolchain, install
-	// packages, load config, apply env) before StartSchemeServer begins
-	// serving on stdout. Returning a client now would let the first RPC block
-	// in gRPC waitOnHeader for the whole provisioning duration — or forever if
-	// provisioning stalls. Block until the remote signals it is about to serve
-	// (ServerReady on stderr), or fail early if it exits, this connection
-	// attempt is cancelled (retry abort / remote-scheme shutdown), or the
-	// scheme is torn down first. This runs in the build/maintainConnection
-	// goroutine, so the event loop is never blocked; on failure
-	// maintainConnection retries.
+	// The remote loads its config and applies its env before
+	// StartSchemeServer begins serving on stdout. Returning a client now
+	// would let the first RPC block in gRPC waitOnHeader for that whole
+	// phase — or forever if it stalls. Block until the remote signals it is
+	// about to serve (ServerReady on stderr), or fail early if it exits,
+	// this connection attempt is cancelled (retry abort / remote-scheme
+	// shutdown), or the scheme is torn down first. This runs in the
+	// build/maintainConnection goroutine, so the event loop is never
+	// blocked; on failure maintainConnection retries.
 	//
 	// ctx is the per-attempt context maintainConnection derives from the
 	// remoteScheme lifetime; it MUST be honored here so IDE shutdown (which
@@ -539,35 +513,38 @@ func (s *scheme) connectScheme(
 		}
 	})
 
-	return workspacerpc.NewClient(s.ctx, conn), nil
+	return connScheme{Scheme: workspacerpc.NewClient(s.ctx, conn), conn: conn}, nil
 }
 
+// connScheme exposes the gRPC connection the workspace client runs
+// on, so the host's other services are reached over the same pipe.
+// The client owns the connection.
+type connScheme struct {
+	schemeapi.Scheme
+	conn *grpc.ClientConn
+}
+
+func (c connScheme) Conn() grpc.ClientConnInterface { return c.conn }
+
 // scanRemoteStderr reads the remote server's stderr line by line until EOF.
-// Structured provisioning progress lines drive a single live progress
-// notification (index/total → progress bar); the ServerReady line closes ready
-// exactly once to unblock connectScheme; every other line is appended to tail,
-// which the exit-error path reads to build the human-readable failure message.
-// Progress and ready lines are control lines and never leak into the tail.
+// Warning lines notify the user; the ServerReady line closes ready exactly
+// once to unblock connectScheme; every other line is appended to tail, which
+// the exit-error path reads to build the human-readable failure message.
+// Warning and ready lines are control lines and never leak into the tail.
 func (s *scheme) scanRemoteStderr(r io.Reader, tail *stderrTail, ready chan struct{}) {
 	scanner := bufio.NewScanner(r)
 	// Allow long remote stderr lines (default is 64 KiB, but a stack trace or
 	// long path can exceed that). Cap growth to keep memory bounded.
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	var progress provisionProgressNotifier
 	var readyClosed bool
 	for scanner.Scan() {
 		line := scanner.Bytes()
-		if p, ok := ParseProvisionProgressLine(line); ok {
-			progress.report(s.ui, p)
+		if msg, ok := ParseWarningLine(line); ok {
+			s.ui.Notify(NotificationWarning, msg)
 			continue
 		}
 		if parseServerReadyLine(line) {
 			if !readyClosed {
-				// Serving-ready is the single close point for the provisioning
-				// bar: it spans connecting → serving, so the bar stays open
-				// through the silent post-install finalize phase and closes
-				// exactly when the remote is about to serve.
-				progress.finish(s.ui)
 				close(ready)
 				readyClosed = true
 			}
@@ -575,100 +552,6 @@ func (s *scheme) scanRemoteStderr(r io.Reader, tail *stderrTail, ready chan stru
 		}
 		tail.append(line)
 	}
-}
-
-// provisionProgressBarTotal is the synthetic denominator for the provisioning
-// progress bar. The bar tracks the whole connecting → serving wait on a single
-// fractional scale, so it needs a fixed total independent of the package count.
-const provisionProgressBarTotal = 100
-
-// Fraction boundaries on the [0, provisionProgressBarTotal] scale. The package
-// install/download work occupies [0, packageRegionEnd]; the post-install
-// config/env finalize phase advances to finalizeFraction. The bar only reaches
-// provisionProgressBarTotal when serving-ready closes it, so it never
-// disappears mid-provision.
-const (
-	packageRegionEnd = 90
-	finalizeFraction = 95
-)
-
-// provisionProgressNotifier maps the stream of ProvisionProgress lines onto a
-// single live progress notification whose bar advances monotonically across the
-// entire provisioning lifecycle (installing → downloading → activating per
-// package → finalizing → serving). The bar is held strictly below the synthetic
-// total until finish (serving-ready) closes it, so it stays visible through the
-// otherwise-silent finalize phase instead of vanishing when installs complete.
-// A failed package is additionally surfaced as its own warning notification so
-// it is not lost inside the info-level progress bar.
-type provisionProgressNotifier struct {
-	id       string
-	started  bool
-	progress int
-}
-
-func (n *provisionProgressNotifier) report(ui UI, p ProvisionProgress) {
-	if p.Phase == ProvisionPhaseFailed {
-		ui.Notify(NotificationWarning, p.Message())
-	}
-	if !n.started {
-		n.id = ui.Notify(NotificationInfo, p.Message())
-		n.started = true
-	}
-	n.advance(ui, p.Message(), n.fractionFor(p))
-}
-
-// fractionFor maps a progress line to a point on the [0, provisionProgressBarTotal]
-// scale. Missing sub-progress (Of == 0) or a missing package count is handled by
-// holding the package's base fraction, so old-shape lines and malformed lines
-// still render a sensible bar.
-func (n *provisionProgressNotifier) fractionFor(p ProvisionProgress) int {
-	switch p.Phase {
-	case ProvisionPhaseFinalizing:
-		return finalizeFraction
-	case ProvisionPhaseDone:
-		return packageRegionEnd
-	}
-	if p.Total <= 0 || p.Index <= 0 {
-		return 0
-	}
-	slice := float64(packageRegionEnd) / float64(p.Total)
-	base := float64(p.Index-1) * slice
-	switch p.Phase {
-	case ProvisionPhaseActivating, ProvisionPhaseFailed:
-		return int(base + slice)
-	case ProvisionPhaseDownloading:
-		if p.Of > 0 {
-			base += slice * float64(p.Done) / float64(p.Of)
-		}
-		return int(base)
-	default: // installing and unknown phases hold the package base fraction
-		return int(base)
-	}
-}
-
-// advance clamps value into a monotonic, strictly-below-total range and pushes
-// it to the notification. Holding below provisionProgressBarTotal keeps the bar
-// open until finish closes it at serving-ready.
-func (n *provisionProgressNotifier) advance(ui UI, message string, value int) {
-	if value < n.progress {
-		value = n.progress
-	}
-	if value >= provisionProgressBarTotal {
-		value = provisionProgressBarTotal - 1
-	}
-	n.progress = value
-	ui.UpdateNotificationProgress(n.id, message, value, provisionProgressBarTotal)
-}
-
-// finish completes and closes the progress bar. It is a no-op when no
-// provisioning line ever opened the bar (e.g. a launch with no --install
-// manifest), so a plain serving-ready launch does not synthesize a bar.
-func (n *provisionProgressNotifier) finish(ui UI) {
-	if !n.started {
-		return
-	}
-	ui.UpdateNotificationProgress(n.id, "Workspace ready",
-		provisionProgressBarTotal, provisionProgressBarTotal)
 }
 
 // stderrTailCap bounds the human-readable stderr the local side retains, so a
@@ -802,6 +685,12 @@ func (s *scheme) OnDisconnect() <-chan struct{} {
 
 func (s *scheme) WaitConnected(ctx context.Context) error {
 	return s.Scheme.(workspace.RemoteScheme).WaitConnected(ctx)
+}
+
+// HostConn reaches the host's other services over the workspace
+// connection, following its reconnects.
+func (s *scheme) HostConn() (grpc.ClientConnInterface, bool) {
+	return s.Scheme.(workspace.PackageHost).HostConn()
 }
 
 func (s *scheme) expandPath(path string) (string, error) {

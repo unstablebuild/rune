@@ -93,11 +93,6 @@ func TestBWWriterSetCell(t *testing.T) {
 	}
 }
 
-// TestBWWriterResolvesDefaultForeground pins that a ColorDefault
-// foreground is resolved to the constructor's defaultFg before
-// grayscaling in SetCell (every cell has a concrete fg), while a
-// ColorDefault foreground in a union overlay stays a no-op so it does
-// not repaint cells the caller meant to leave alone.
 func TestBWWriterResolvesDefaultForeground(t *testing.T) {
 	tan := term.NewRGBColor(210, 180, 140)
 
@@ -131,9 +126,6 @@ func TestBWWriterResolvesDefaultForeground(t *testing.T) {
 	})
 }
 
-// TestBWWriterUnionAttributes guards against syntax-highlight color
-// leaking through: highlighters overlay token colors via
-// UnionAttributes, so those colors must be grayscaled too.
 func TestBWWriterUnionAttributes(t *testing.T) {
 	red := term.NewRGBColor(255, 0, 0)
 	blue := term.NewRGBColor(0, 0, 255)

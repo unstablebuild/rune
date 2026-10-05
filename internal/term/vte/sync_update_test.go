@@ -50,11 +50,6 @@ var syncEquivalenceStreams = []struct {
 	{"full frame", strings.Repeat("\x1b[1;1H\x1b[38;5;9mrow\x1b[0m\r\n", 12)},
 }
 
-// TestSyncUpdateReplayMatchesUnwrapped pins that replaying a stream
-// through the synchronized-update buffer produces exactly the state the
-// same bytes produce without the BSU/ESU markers, at every chunking.
-// Chunk sizes straddle the 8-byte marker length so a marker split across
-// AdvanceBytes calls is covered at every internal offset.
 func TestSyncUpdateReplayMatchesUnwrapped(t *testing.T) {
 	t.Parallel()
 	chunkings := []int{1, 2, 3, 5, 7, 8, 9, 13, 1 << 20}
@@ -76,8 +71,6 @@ func TestSyncUpdateReplayMatchesUnwrapped(t *testing.T) {
 	}
 }
 
-// TestSyncUpdateReplayMatchesPerByte pins the batched synchronized
-// replay against the per-byte Advance path, which never batches.
 func TestSyncUpdateReplayMatchesPerByte(t *testing.T) {
 	t.Parallel()
 
@@ -98,9 +91,6 @@ func TestSyncUpdateReplayMatchesPerByte(t *testing.T) {
 	}
 }
 
-// TestSyncUpdateMarkerSplitAtEveryOffset feeds the trailing ESU marker
-// split at every byte boundary, so a bulk terminator scan that forgets
-// the partial-match tail carried between batches fails here.
 func TestSyncUpdateMarkerSplitAtEveryOffset(t *testing.T) {
 	t.Parallel()
 	const body = "\x1b[33mpayload\x1b[0m body text"
@@ -142,9 +132,6 @@ func TestSyncUpdateMarkerSplitAtEveryOffset(t *testing.T) {
 	}
 }
 
-// TestSyncUpdateNestedBSUExtendsRegion pins that a BSU inside a
-// synchronized region keeps buffering rather than terminating it, and
-// that the whole region still replays once.
 func TestSyncUpdateNestedBSUExtendsRegion(t *testing.T) {
 	t.Parallel()
 	stream := "\x1b[?2026habc\x1b[?2026hdef\x1b[?2026lghi"
@@ -161,10 +148,6 @@ func TestSyncUpdateNestedBSUExtendsRegion(t *testing.T) {
 	}
 }
 
-// TestSyncUpdateOpenRegionBuffersUntilExpiry pins the two ways an
-// unterminated region ends: while the timeout is pending every byte is
-// buffered, and once it expires the parser stops buffering and resumes
-// dispatching immediately.
 func TestSyncUpdateOpenRegionBuffersUntilExpiry(t *testing.T) {
 	t.Parallel()
 	const body = "unterminated region body"
@@ -187,9 +170,6 @@ func TestSyncUpdateOpenRegionBuffersUntilExpiry(t *testing.T) {
 		"an expired region must stop buffering, not absorb new bytes")
 }
 
-// TestSyncUpdateOverflowFlushesRegion pins that a region the emitter
-// never closes is flushed once it fills the synchronized-update buffer,
-// so a stuck emitter cannot freeze the screen indefinitely.
 func TestSyncUpdateOverflowFlushesRegion(t *testing.T) {
 	t.Parallel()
 	// syncBufferSize is 2 MiB; overshoot it so the overflow guard fires.

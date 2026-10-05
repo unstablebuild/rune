@@ -38,8 +38,6 @@ func TestPrepareRuneBinaryOutputRemovesStaleDirectory(t *testing.T) {
 	require.ErrorIs(t, err, os.ErrNotExist)
 }
 
-// TestContainerHelper boots two scenarios in parallel and confirms each
-// reports a distinct host port.
 func TestContainerHelper(t *testing.T) {
 	SkipIfNoDocker(t)
 	EnsureImage(t)

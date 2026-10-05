@@ -27,6 +27,7 @@ import (
 	"math/rand"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -405,6 +406,11 @@ func newCommandEventHandler(
 
 	ret.skillRegistry = skillRegistry
 	ret.plansDir = filepath.Join(w.DataDir(ctx), "plans")
+	if dir, err := webBrowserDir(ctx, w); err != nil {
+		slog.Warn("web_browser tool unavailable", "error", err)
+	} else {
+		ret.browserDir = dir
+	}
 	ret.memoryPath = memoryPath
 	ret.cwd = cwd
 	ret.fs = fs
@@ -750,6 +756,7 @@ type aiEditorHandler struct {
 	config         configedit.Config
 	skillRegistry  *skills.SkillRegistry
 	plansDir       string
+	browserDir     string
 	memoryDataPath string
 	exec           workspaceapi.Executor
 	lsp            semanticapi.LSP
@@ -1410,7 +1417,7 @@ func (h *aiEditorHandler) newChat(
 	taskStore := taskstore.New()
 	progressUpdater := &tuiProgressUpdater{tx: tx}
 	taskTools := agentools.NewTaskTools(taskStore, progressUpdater)
-	allTools := make([]agent.Tool, 0, len(baseTools)+len(sessionTools)+len(taskTools)+4)
+	allTools := make([]agent.Tool, 0, len(baseTools)+len(sessionTools)+len(taskTools)+5)
 	allTools = append(allTools, baseTools...)
 	allTools = append(allTools, sessionTools...)
 	allTools = append(allTools, askUser)
@@ -1418,6 +1425,10 @@ func (h *aiEditorHandler) newChat(
 	allTools = append(allTools, exitPlan)
 	allTools = append(allTools, skillTool) // overrides nil-spawner skill tool from baseTools
 	allTools = append(allTools, taskTools...)
+	webBrowser := h.webBrowser(d.ID)
+	if webBrowser != nil {
+		allTools = append(allTools, webBrowser)
+	}
 	chatRegistry := agent.NewRegistry(allTools...)
 	chatRegistry.AddOverrides(h.toolRegistry.Overrides())
 	chatRegistry.RegisterOverrides("openai",
@@ -1489,6 +1500,9 @@ func (h *aiEditorHandler) newChat(
 	bhandler := browserapi.FuncHandler(handler, func() error {
 		cancel()
 		_ = comp.Close()
+		if webBrowser != nil {
+			webBrowser.Close()
+		}
 		h.unsubscribeTools(d.ID)
 		h.openChatAgents.Delete(d.ID)
 		h.openChatTx.Delete(d.ID)
@@ -1521,6 +1535,39 @@ func openChatTab(
 		return nil, fmt.Errorf("create tab: %v", err)
 	}
 	return tab, nil
+}
+
+// webBrowser returns the web_browser tool for the chat dialogueID, or nil
+// when the workspace host cannot run agent-browser. It looks agent-browser
+// up on every call so installing it takes effect in the next chat.
+func (h *aiEditorHandler) webBrowser(dialogueID string) *agentools.WebBrowser {
+	if h.browserDir == "" {
+		return nil
+	}
+	bin, err := agentools.LookupAgentBrowser(h.ctx, h.executor)
+	if err != nil {
+		slog.Debug("web_browser tool unavailable", "error", err)
+		return nil
+	}
+	return agentools.NewWebBrowser(h.executor, h.fs, bin, h.browserDir, dialogueID)
+}
+
+// installRoot resolves paths under the data directory of the workspace
+// host, which the IDE resolves for extensions (extensionapi.Workspace).
+type installRoot interface {
+	FindInstalledResource(ctx context.Context, relpath string) (string, error)
+}
+
+// webBrowserDir returns the directory for web_browser's files on the
+// workspace host, where agent-browser runs: the extension's own data
+// directory is a path on the IDE host, which is not the workspace host
+// for a remote workspace.
+func webBrowserDir(ctx context.Context, root installRoot) (string, error) {
+	dataDir, err := root.FindInstalledResource(ctx, ".")
+	if err != nil {
+		return "", fmt.Errorf("resolve the data directory on the workspace host: %w", err)
+	}
+	return path.Join(dataDir, "agent-browser"), nil
 }
 
 func getModelUri(id, model string) (workspaceapi.URI, error) {
@@ -2438,7 +2485,9 @@ func createAgentCompletions(
 					setPhase(phaseCompacting)
 				case agent.EventCompacted:
 					setPhase(phaseSending)
-					onCompacted(id)
+					if onCompacted != nil {
+						onCompacted(id)
+					}
 					if ev.ArchivedDialogueID != "" {
 						select {
 						case tx <- dialoguetui.MessageEvent{

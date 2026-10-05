@@ -314,11 +314,6 @@ func TestScrollUp(t *testing.T) {
 	})
 }
 
-// TestScrollUpRecycledRowFill pins the content of the row a scroll
-// recycles: it must carry the fill character, unit width and the cursor
-// background in effect at the time of the scroll. A blank-row template
-// that is not invalidated when the background, the fill character or the
-// width changes regresses exactly here.
 func TestScrollUpRecycledRowFill(t *testing.T) {
 	red := term.NewRGBColor(200, 10, 10)
 	blue := term.NewRGBColor(10, 10, 200)

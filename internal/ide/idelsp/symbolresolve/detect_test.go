@@ -105,10 +105,6 @@ func TestDetectSpecs(t *testing.T) {
 	}
 }
 
-// TestDetectSpecsHonorsContextFilter verifies DetectSpecs respects a
-// walkdir.Filter installed on the context: source files that live only
-// inside excluded dependency/build directories (.venv, target) must not
-// trigger language detection, while real source under src/ still does.
 func TestDetectSpecsHonorsContextFilter(t *testing.T) {
 	t.Parallel()
 

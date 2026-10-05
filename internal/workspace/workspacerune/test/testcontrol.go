@@ -17,13 +17,18 @@
 package runetest
 
 import (
+	"context"
 	"net/http/httptest"
+	"slices"
 	"testing"
+	"time"
 
 	"tailscale.com/net/netns"
+	"tailscale.com/tailcfg"
 	"tailscale.com/tstest/integration"
 	"tailscale.com/tstest/integration/testcontrol"
 	"tailscale.com/types/logger"
+	"unstable.build/rune/internal/runenet"
 )
 
 // StartTestControl runs an in-process coordination server plus a local
@@ -52,5 +57,50 @@ func StartTestControl(t *testing.T, sameUser bool) ControlPlane {
 	server.Start()
 	t.Cleanup(server.Close)
 
-	return ControlPlane{URL: server.URL}
+	return ControlPlane{URL: server.URL, testControl: control}
+}
+
+// SetNodeTags retags node on the in-process control plane and waits
+// until observer's netmap carries the new tags. The node keeps its
+// owning account, which is the shape of a policy that was misapplied:
+// a tagged machine whose packets still reach this one.
+func (c ControlPlane) SetNodeTags(
+	t *testing.T, node, observer *runenet.Node, tags ...string,
+) {
+	t.Helper()
+	if c.testControl == nil {
+		t.Fatalf("control plane at %s is not in-process", c.URL)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), nodeJoinTimeout)
+	defer cancel()
+	st, err := node.Status(ctx)
+	if err != nil || st.MachineID == "" || len(st.Addrs) == 0 {
+		t.Fatalf("node %q has not registered: %+v: %v", st.Hostname, st, err)
+	}
+	var target *tailcfg.Node
+	for _, n := range c.testControl.AllNodes() {
+		if string(n.StableID) == st.MachineID {
+			target = n
+		}
+	}
+	if target == nil {
+		t.Fatalf("control plane has no node %s", st.MachineID)
+	}
+	target.Tags = tags
+	c.testControl.UpdateNode(target)
+
+	addr := st.Addrs[0].String()
+	for {
+		caller, err := observer.WhoIs(ctx, addr)
+		if err == nil && slices.Equal(caller.Tags, tags) {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("observer never saw %s tagged %v (last: %+v, %v)",
+				addr, tags, caller, err)
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
 }

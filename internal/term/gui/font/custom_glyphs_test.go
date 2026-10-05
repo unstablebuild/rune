@@ -25,11 +25,6 @@ import (
 	"golang.org/x/image/math/fixed"
 )
 
-// TestCustomGlyphRendersToCPUMask guards that custom-rendered runes
-// (box drawing, blocks, shades, braille) rasterize into a CPU image and
-// never a GPU-backed *ebiten.Image. Returning an ebiten image forced a
-// ReadPixels round-trip during glyph rasterization, which stalls the
-// pipeline per cache miss and panics under a headless graphics driver.
 func TestCustomGlyphRendersToCPUMask(t *testing.T) {
 	m, err := NewManager(0, 0)
 	assert.NoError(t, err)

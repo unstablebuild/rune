@@ -56,6 +56,7 @@ uv.lock
 # or symlink of the private repo.
 /deploy/*
 !/deploy/rune-linux/
+!/deploy/rune-headless/
 !/deploy/rune-agent/
 !/deploy/fuzzy-search/
 

@@ -384,13 +384,6 @@ func TestCallbackHandler_PublishDiagnostics(t *testing.T) {
 	}
 }
 
-// TestCallbackHandler_PublishDiagnostics_BySource asserts that
-// diagnostics published by distinct servers for the same URI
-// accumulate (rather than overwrite) in the central cache and are
-// merged into a single "lsp-diagnostics" location list. This is the
-// multi-server (e.g. ty + ruff) payoff: each backend's set stays
-// independently overridable, but they coexist in one list so
-// next/prev-diagnostic navigation treats them uniformly.
 func TestCallbackHandler_PublishDiagnostics_BySource(t *testing.T) {
 	t.Parallel()
 	uri, err := workspaceapi.ParseURI("file:///tmp/main.py")
@@ -481,12 +474,6 @@ func TestCallbackHandler_PublishDiagnostics_BySource(t *testing.T) {
 	assert.Equal(t, []textapi.Location{wantRuffLoc}, mergedAfterClear)
 }
 
-// TestCallbackHandler_PublishDiagnostics_PushAndPullCoexist locks in
-// the cache side of RUNE-332: the pull bridge republishes under a
-// ":pull" server name so rust-analyzer's flycheck pushes (server name
-// "rust") and the bridged pull reports occupy distinct slots and merge
-// into one location list, instead of one clearing the other on every
-// update.
 func TestCallbackHandler_PublishDiagnostics_PushAndPullCoexist(t *testing.T) {
 	t.Parallel()
 	uri, err := workspaceapi.ParseURI("file:///tmp/main.rs")
@@ -550,11 +537,6 @@ func TestCallbackHandler_PublishDiagnostics_PushAndPullCoexist(t *testing.T) {
 	assert.Equal(t, pullDiag, got["file:///tmp/main.rs"][0])
 }
 
-// TestCallbackHandler_PublishDiagnostics_FileNotOpen asserts that
-// diagnostics published for a file with no open editor tab are cached
-// silently: LSP servers routinely publish workspace-wide diagnostics
-// for files that are not open, so a missing handler is expected and
-// must not spam the log with warnings.
 func TestCallbackHandler_PublishDiagnostics_FileNotOpen(t *testing.T) {
 	t.Parallel()
 	diag := semanticapi.Diagnostic{
@@ -1363,10 +1345,6 @@ func TestCallbackHandler_Progress(t *testing.T) {
 	}
 }
 
-// TestCallbackHandler_ProgressIgnoredAfterCreate covers the sequence a
-// server actually sends: workDoneProgress/create pre-registers the
-// token, so a suppressed begin must drop it or the later report/end
-// would update a notification that was never created.
 func TestCallbackHandler_ProgressIgnoredAfterCreate(t *testing.T) {
 	t.Parallel()
 	notif := &mockNotifications{}
@@ -2142,8 +2120,6 @@ func TestCallbackHandler_RegisterUnregister(
 	))
 }
 
-// Refresh requests are no-ops on the handler: the Manager's callback
-// decorator intercepts the ones that need server interaction.
 func TestCallbackHandler_RefreshNoOps(
 	t *testing.T,
 ) {

@@ -76,12 +76,6 @@ func (h *drawCounterHandler) Cursor() (term.Coordinates, term.CursorStyle, bool)
 }
 func (h *drawCounterHandler) Selection() (string, bool) { return "", false }
 
-// TestWriterInterrupterPublishesMultipleInterrupts verifies that the
-// per-session writerInterrupter can trigger more than one redraw when
-// used against tui.RunWriter with that SAME writer instance. This is
-// the contract sshshop relies on for shaders and any other background
-// animations: multiple interrupt ticks must schedule multiple redraws
-// without waiting for any keypress.
 func TestWriterInterrupterPublishesMultipleInterrupts(t *testing.T) {
 	s := newFakeScreen(20, 8)
 

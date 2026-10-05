@@ -26,22 +26,14 @@ import (
 	"unstable.build/rune/internal/workspace/workspacetest"
 )
 
-// TestIntegrationScheme is the full-stack end-to-end test for the
-// rune:// scheme: a Headscale coordination server in docker, a second
-// Rune instance in its own process joined to it, and the shared
-// workspace scheme conformance suites driven across the network from
-// this process.
-//
-// It is the same shape as the deployed system — the only thing the
-// tests substitute is where the two instances happen to run.
 func TestIntegrationScheme(t *testing.T) {
 	SkipIfRace(t)
 	SkipIfNoDocker(t)
 
 	control := StartHeadscale(t)
-	peerDataDir := StartInstance(t, control, "peer")
+	peer := StartInstance(t, control, "peer", control.AuthKey)
 
-	client := StartNode(t, control, "client")
+	client := StartNode(t, control, "client", control.AuthKey)
 	WaitPeer(t, client, "peer")
 
 	// The serving instance advertises its own data directory as the
@@ -52,7 +44,7 @@ func TestIntegrationScheme(t *testing.T) {
 		root, err := scheme.(workspace.InstallDataDirProvider).
 			InstallDataDir(t.Context())
 		require.NoError(t, err)
-		assert.Equal(t, peerDataDir, root)
+		assert.Equal(t, peer.DataDir, root)
 	})
 
 	newScheme := func(t *testing.T) schemeapi.Scheme {

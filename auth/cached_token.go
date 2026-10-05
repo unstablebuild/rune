@@ -29,7 +29,6 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/unstablebuild/blue/logging"
 	"github.com/unstablebuild/blue/logging/trace"
-	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
 	"golang.org/x/oauth2"
 )
 
@@ -38,10 +37,19 @@ const (
 	tokenDocumentID       = "tokenv2"
 )
 
+// TokenStorage persists the token a CachedTokenSource acquires so it
+// outlives the session. A storageapi.Service satisfies it. Get must
+// fail when no token is stored.
+type TokenStorage interface {
+	Get(ctx context.Context, ID string, doc any) error
+	Set(ctx context.Context, ID string, doc any) error
+	Delete(ctx context.Context, ID string) error
+}
+
 // NewCachedTokenSource allocates storage for a new CachedTokenSource
 // and initializes it with sourcer and storage.
 func NewCachedTokenSource(
-	sourcer TokenSourcer, storage storageapi.Service,
+	sourcer TokenSourcer, storage TokenStorage,
 ) *CachedTokenSource {
 	ret := &CachedTokenSource{sourcer: sourcer, storage: storage}
 	noop := func() {}
@@ -53,7 +61,7 @@ func NewCachedTokenSource(
 // tokens in a document.Service to persist across sessions.
 type CachedTokenSource struct {
 	sourcer TokenSourcer
-	storage storageapi.Service
+	storage TokenStorage
 
 	mu    sync.RWMutex
 	token *oauth2.Token
@@ -275,7 +283,8 @@ func (l *CachedTokenSource) getToken(
 	}
 
 	if !l.token.Valid() {
-		log.Errorf("token returned by source is not valid: %s", l.token.AccessToken)
+		log.Errorf("token returned by source is not valid: expiry %s",
+			l.token.Expiry.Format(time.RFC3339))
 	}
 
 	return l.token, ctx.Err()
@@ -324,6 +333,7 @@ func newStoredToken(t *oauth2.Token) (ret storedToken) {
 	ret.Extra.ID, _ = extra["ID"].(string)
 	ret.Extra.Role, _ = extra["Role"].(Role)
 	ret.Extra.Account, _ = extra["Account"].(string)
+	ret.Extra.ServeOnly, _ = extra["serve_only"].(bool)
 	return ret
 }
 
@@ -345,6 +355,9 @@ func (t storedToken) oauth2() *oauth2.Token {
 	extra["ID"] = t.Extra.ID
 	extra["Role"] = t.Extra.Role
 	extra["Account"] = t.Extra.Account
+	if t.Extra.ServeOnly {
+		extra["serve_only"] = true
+	}
 	ret = ret.WithExtra(all)
 	return ret
 }

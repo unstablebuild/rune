@@ -43,8 +43,6 @@ func protoRows(n int) []*termrpc.CellRow {
 	return rows
 }
 
-// Anything an interrupted command streams afterwards must not land in
-// the command that follows it.
 func TestREPLCommandClientStreamHandleCancelLifecycle(t *testing.T) {
 	stream := newWaitableREPLServerStream()
 	c := newREPLCommandClientStream(context.Background(), stream, true, true)
@@ -153,8 +151,6 @@ func (s *waitableREPLServerStream) RecvMsg(msg any) error {
 	return nil
 }
 
-// See TestCommandClientStreamCompleteCancelLifecycle: the REPL stream
-// must abandon completions the same way.
 func TestREPLCommandClientStreamCompleteCancelLifecycle(t *testing.T) {
 	cases := []struct {
 		name           string

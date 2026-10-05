@@ -55,6 +55,7 @@ var ErrConnectionClosed = errors.New("network connection closed unexpectedly")
 
 var _ workspace.RemoteScheme = (*scheme)(nil)
 var _ workspace.InstallDataDirProvider = (*scheme)(nil)
+var _ workspace.PackageHost = (*scheme)(nil)
 
 // Dialer opens a connection to a peer's workspace server. It is
 // satisfied by [runenet.Node].
@@ -263,6 +264,12 @@ func (s *scheme) WaitConnected(ctx context.Context) error {
 	return s.Scheme.(workspace.RemoteScheme).WaitConnected(ctx)
 }
 
+// HostConn reaches the peer's other services over the workspace
+// connection, following its reconnects.
+func (s *scheme) HostConn() (grpc.ClientConnInterface, bool) {
+	return s.Scheme.(workspace.PackageHost).HostConn()
+}
+
 // installRootTimeout bounds the PeerInfo round-trip so resolving the
 // install root against a peer that is asleep or gone fails over to the
 // caller's fallback instead of stalling extension startup.
@@ -314,6 +321,8 @@ type connScheme struct {
 	schemeapi.Scheme
 	conn *grpc.ClientConn
 }
+
+func (c *connScheme) Conn() grpc.ClientConnInterface { return c.conn }
 
 func (c *connScheme) Close() (ret error) {
 	if err := c.Scheme.Close(); err != nil {

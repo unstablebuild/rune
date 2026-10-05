@@ -249,10 +249,6 @@ func TestExecutorTransportRoundTrip(t *testing.T) {
 	assert.Contains(t, res.Content, "DECLARED=visible")
 }
 
-// Starting a server requires StartCommand authorization, which blocks on
-// a user prompt. That wait must not be charged against the MCP handshake
-// deadline, or a workspace's servers silently fail to connect whenever
-// the user takes a few seconds to approve.
 func TestExecutorTransportAuthorizationWaitDoesNotConsumeConnectDeadline(t *testing.T) {
 	restore := connectTimeout
 	connectTimeout = 250 * time.Millisecond
@@ -344,9 +340,6 @@ func TestDeliberateCloseDoesNotReportServerExit(t *testing.T) {
 		"asking the server to shut down is not an unexpected exit")
 }
 
-// A server that dies during the handshake (e.g. missing credentials)
-// must fail the connect immediately with its stderr as the cause, not
-// hold the connect open until the deadline and report a bare timeout.
 func TestServerDeathDuringConnectFailsFastWithStderr(t *testing.T) {
 	restore := connectTimeout
 	connectTimeout = 10 * time.Second

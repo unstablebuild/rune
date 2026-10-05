@@ -35,12 +35,6 @@ import (
 	"unstable.build/rune/internal/localstorage/boltdoc"
 )
 
-// TestConcurrentServicesShareDBLifecycle reproduces the multi-workspace
-// crash where each workspace opens its own boltdoc.Service against the
-// same on-disk path (the extension storage server is constructed per
-// workspace). The underlying *bolt.DB is shared process-wide, so closing
-// one Service must not pull the database out from under the others;
-// otherwise the survivors fail with "database not open".
 func TestConcurrentServicesShareDBLifecycle(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "rune.db")
@@ -62,12 +56,6 @@ func TestConcurrentServicesShareDBLifecycle(t *testing.T) {
 	assert.Equal(t, "b", got.Name)
 }
 
-// TestStoreImplementsDocumentService runs the blue/doctest contract suite
-// against the bolt-backed storageapi.Service. The suite covers Create,
-// Set, Update with preconditions, Get, Delete, List with filters, Drop,
-// and partition isolation. We adapt the storageapi.Service back to a
-// document.Service so doctest can drive it directly. BSON is the
-// production marshaler for local storage.
 func TestStoreImplementsDocumentService(t *testing.T) {
 	doctest.TestDocumentService(t, func(t *testing.T) document.Service {
 		dir := t.TempDir()
@@ -78,9 +66,6 @@ func TestStoreImplementsDocumentService(t *testing.T) {
 	})
 }
 
-// The scavenger reclaims disk by dropping the partitions of workspaces
-// that no longer exist, so a bolt-backed partition must be droppable and
-// must leave its siblings and sub-partitions alone.
 func TestPartitionDrop(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -114,9 +99,6 @@ func TestPartitionDrop(t *testing.T) {
 	require.NoError(t, dropped.Get(ctx, "doc", &got))
 }
 
-// The symbol indexer writes every symbol of a file in one batch, which
-// is a single bolt transaction — and a single fsync — only if batching
-// survives the whole local chain down to the bolt store.
 func TestPartitionApplyBatch(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -165,12 +147,6 @@ func TestPartitionApplyBatch(t *testing.T) {
 	assert.Equal(t, 2, got.Version)
 }
 
-// TestConsistentUpdate verifies that two goroutines racing to bump a
-// Version field via storageapi.ConsistentUpdate both succeed, with the
-// final Version reflecting both increments. This is the central
-// motivation for the schemedoc → bolt migration: bolt's RW transaction
-// makes read-modify-write atomic, whereas schemedoc could lose updates
-// under contention.
 func TestConsistentUpdate(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -211,9 +187,6 @@ func TestConsistentUpdate(t *testing.T) {
 	assert.Equal(t, int64(3), got.Version, "both increments should have been applied")
 }
 
-// TestPartitionIsolation confirms that Partition returns a sibling Store
-// rooted at a different bucket; records written under the partition are
-// invisible to the root collection and vice-versa.
 func TestPartitionIsolation(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()

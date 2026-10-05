@@ -122,7 +122,10 @@ func (h *Handler) handleCurrent(
 		return nil, errors.New("package name is missing")
 	}
 	pkgID := args[0]
-	version, ok := h.mgr.PackageVersionInUse(pkgID)
+	version, ok, err := h.mgr.PackageVersionInUse(ctx, pkgID)
+	if err != nil {
+		return nil, err
+	}
 	if !ok {
 		return nil, fmt.Errorf(
 			"no version of package %s is currently in use", pkgID)
@@ -210,7 +213,11 @@ func (h *Handler) handleUpdateAll(
 			defer wg.Done()
 			pkgID := packages[i]
 			results[i].pkg = pkgID
-			inUse, ok := h.mgr.PackageVersionInUse(pkgID)
+			inUse, ok, err := h.mgr.PackageVersionInUse(ctx, pkgID)
+			if err != nil {
+				results[i].err = err
+				return
+			}
 			if !ok {
 				results[i].err = fmt.Errorf(
 					"no version of package %s is currently in use", pkgID)
@@ -254,7 +261,7 @@ func (h *Handler) handleUpdateAll(
 func (h *Handler) handleUpdateCheck(
 	ctx context.Context,
 ) (iterator.Iterator[component.Responsive], error) {
-	updates, err := h.uc.CheckForUpdates(ctx)
+	updates, err := idepkg.CheckForUpdates(ctx, h.mgr)
 	if err != nil {
 		return nil, err
 	}

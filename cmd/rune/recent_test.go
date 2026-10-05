@@ -113,8 +113,6 @@ func TestNormalizeWorkspacePath(t *testing.T) {
 	}
 }
 
-// TestRecentWorkspacesRoundTrip asserts recorded paths persist and read
-// back newest-first and de-duplicated.
 func TestRecentWorkspacesRoundTrip(t *testing.T) {
 	storage := newRuneStorage(t.TempDir())
 	t.Cleanup(func() { _ = storage.Close() })

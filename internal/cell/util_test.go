@@ -288,10 +288,6 @@ func BenchmarkCellToBuffer10000(b *testing.B) {
 	benchmarkCellToBuffer(b, 10000)
 }
 
-// TestByteCountsMatchesCellConverters guards that the compact
-// ByteCounts snapshot produces identical conversions to the full
-// cell-based converters, including multi-byte and grapheme-cluster
-// content where Cell.Bytes spans several codepoints.
 func TestByteCountsMatchesCellConverters(t *testing.T) {
 	buf := NewBuffer()
 	_, err := buf.ReadFrom(strings.NewReader(

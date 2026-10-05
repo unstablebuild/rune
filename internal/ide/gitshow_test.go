@@ -169,9 +169,6 @@ func TestGitShowErrors(t *testing.T) {
 	})
 }
 
-// TestGitShowOpensAtNearestHunk drives the popup the way a user would:
-// the cursor sits next to the second change, the window opens on that
-// hunk, the editor's own keys move inside it, and <c-w> closes it.
 func TestGitShowOpensAtNearestHunk(t *testing.T) {
 	const current = "one\ntwo\nthree\nfour\nfive\nsix\nseven\n" +
 		"eight\nnine\nten\neleven\nTWELVE\n"
@@ -225,11 +222,6 @@ func gitshowFrame(t *testing.T, e testEx, width, height int) string {
 	return w.String()
 }
 
-// TestGitShowPopupURI pins the pseudo-buffer contract: the popup
-// publishes an EventTypeOpen that nothing retracts, since
-// EventTypeClose is only dispatched on the text.Component path it
-// bypasses. Before the fix a reload tried to reopen the recorded
-// resource as a file and failed with "scheme not registered".
 func TestGitShowPopupURI(t *testing.T) {
 	e, _ := gitshowFixture(t, "one\ntwo\n", vctrl.NopService())
 	base := gitshowBaseURI()
@@ -254,10 +246,6 @@ func TestGitShowPopupURI(t *testing.T) {
 		"the disambiguator must stay out of the reported path")
 }
 
-// TestGitShowPopupWidth pins the cap on the popup: a diff's ideal width
-// is its single longest line, so one stray long line must not stretch
-// the window across the whole screen, while a narrow diff must still
-// get a window that fits it rather than the cap.
 func TestGitShowPopupWidth(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -293,9 +281,6 @@ func TestGitShowPopupWidth(t *testing.T) {
 	}
 }
 
-// TestGitShowStatusBarService pins what the popup's status bar reports:
-// the diff the user is reading, whatever resource it asks about, and the
-// branch of the real file behind it.
 func TestGitShowStatusBarService(t *testing.T) {
 	file, err := workspaceapi.ParseURI("file:///repo/hello.go")
 	require.NoError(t, err)
@@ -352,9 +337,6 @@ func TestGitShowLabel(t *testing.T) {
 	}
 }
 
-// TestGitShowReadFailure covers the file disappearing between the diff
-// and the read: the popup renders the new side from disk, so there is
-// nothing to show.
 func TestGitShowReadFailure(t *testing.T) {
 	e, uri := gitshowFixture(t, "one\ntwo\n", vctrl.NopService())
 	e.svc = gitshowStubService{

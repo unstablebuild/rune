@@ -22,9 +22,6 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// Gemini 3 always needs a thinking config, so Rune sends a concrete
-// level when the caller asks for none; that level is the default the
-// user is actually running under.
 func TestDefaultEffortFor(t *testing.T) {
 	for model := range AvailableModels() {
 		want := ""
@@ -35,8 +32,6 @@ func TestDefaultEffortFor(t *testing.T) {
 	}
 }
 
-// The reported default must match what NormalizeEffort actually sends
-// for an unset effort.
 func TestDefaultEffortForMatchesNormalize(t *testing.T) {
 	for model := range AvailableModels() {
 		normalized, _ := NormalizeEffort(model, "")

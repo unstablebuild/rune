@@ -27,10 +27,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestStartPProfHTTPRandomPortServesHeap binds the pprof server to a
-// random localhost port and verifies that the heap endpoint responds
-// to a real HTTP request. This is the contract relied on by both the
-// SIGUSR1 trigger and the in-IDE :pprof debug command.
 func TestStartPProfHTTPRandomPortServesHeap(t *testing.T) {
 	addr, err := StartPProfHTTP("127.0.0.1:0")
 	require.NoError(t, err)
@@ -51,8 +47,6 @@ func TestStartPProfHTTPRandomPortServesHeap(t *testing.T) {
 		string(body[:min(64, len(body))]))
 }
 
-// TestStartPProfHTTPBindError verifies that an invalid bind address
-// surfaces a real error rather than panicking or silently logging.
 func TestStartPProfHTTPBindError(t *testing.T) {
 	_, err := StartPProfHTTP("not-a-valid-addr")
 	require.Error(t, err)

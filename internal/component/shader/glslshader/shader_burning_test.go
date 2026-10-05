@@ -102,11 +102,6 @@ func BenchmarkBurning(b *testing.B) {
 	shadertest.BenchmarkShader(b, sh, width, height, writer.RawCells())
 }
 
-// TestBurningWallpaperPresenceGuard reproduces the bug where the boot
-// shader kept occluding the screen after a prompt opened on top of it.
-// The shader must render while its wallpaper marker is still behind it,
-// and must cancel (leaving the live cells untouched) the moment the
-// marker disappears or the matrix is reshaped.
 func TestBurningWallpaperPresenceGuard(t *testing.T) {
 	t.Parallel()
 
@@ -226,11 +221,6 @@ func TestBurningWallpaperPresenceGuard(t *testing.T) {
 	}
 }
 
-// TestBurningRealWallpaperPromptCancels is the end-to-end regression for
-// the reported bug: on the real centered logo wallpaper, opening the
-// command prompt (centered, full command list, so several rows tall)
-// must cancel the boot shader. The marker is captured near the screen
-// center precisely so a corner of the wallpaper is not what gets probed.
 func TestBurningRealWallpaperPromptCancels(t *testing.T) {
 	t.Parallel()
 
@@ -277,10 +267,6 @@ func TestBurningRealWallpaperPromptCancels(t *testing.T) {
 	}
 }
 
-// TestBurningShadeInputSurface drives Shade across the extreme edges of
-// its input surface: empty/nil/1x1 matrices, ragged rows, frame-range
-// extremes, repeated grow/shrink/grow resizes, and the HideLogo variant
-// that has no wallpaper contract. None of these may panic.
 func TestBurningShadeInputSurface(t *testing.T) {
 	t.Parallel()
 

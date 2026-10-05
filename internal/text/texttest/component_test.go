@@ -3093,11 +3093,6 @@ func TestReload(t *testing.T) {
 	})
 }
 
-// TestDirtyStateAfterFlush covers what an observer sees once a save settles.
-// The filesystem watcher asks whether a file has unflushed changes at exactly
-// that moment to decide between reloading it and prompting about a conflict,
-// so a tab that claims to be clean while the buffer differs from disk sends it
-// down the wrong branch and silently discards the user's work.
 func TestDirtyStateAfterFlush(t *testing.T) {
 	resource1, err := workspaceapi.ParseURI("file:///a")
 	require.NoError(t, err)
@@ -3218,12 +3213,6 @@ func TestDirtyStateAfterFlush(t *testing.T) {
 	})
 }
 
-// TestCloseWithSavesInFlight covers a workspace tearing down while saves are
-// still running. Close must not wait on the closer's goroutines (the workspace
-// layer already holds Close until a flush's bytes are on disk, and a reload's
-// worker parks on the very event loop Close runs on), and those goroutines
-// must not outlive the workspace's result: the only thing they wait on
-// besides it is the previous save, which always hands over.
 func TestCloseWithSavesInFlight(t *testing.T) {
 	resource1, err := workspaceapi.ParseURI("file:///a")
 	require.NoError(t, err)
@@ -3283,12 +3272,6 @@ func TestCloseWithSavesInFlight(t *testing.T) {
 	}
 }
 
-// TestReloadClampsStaleCursor guards the editorFlusherCloser reload seam: when a
-// reload replaces the buffer with a shorter file, a caret left on a now-missing
-// row must be pulled back into bounds before any row-indexed buffer access runs.
-// It drives the real production path — text.Component + the standard editor +
-// c.Reload — rather than mutating the buffer directly, so the efc.OnDidEdit
-// reload guard (gated by the reloading flag) is exercised end to end.
 func TestReloadClampsStaleCursor(t *testing.T) {
 	resource, err := workspaceapi.ParseURI("file:///robust.go")
 	require.NoError(t, err)

@@ -57,8 +57,6 @@ func (it *closeTrackingIterator) Next(ctx context.Context) (string, bool) { retu
 func (it *closeTrackingIterator) Err() error                              { return it.err }
 func (it *closeTrackingIterator) Close() error                            { it.closed = true; return nil }
 
-// The workspace-API scan iterator owns walkdir traversal goroutines;
-// every doScanDataViaWorkspaceAPI return path must close it.
 func TestDoScanDataViaWorkspaceAPIClosesIterator(t *testing.T) {
 	newHandler := func(stub *closeTrackingIterator) *fuzzyFinderHandler {
 		return &fuzzyFinderHandler{
@@ -93,14 +91,6 @@ func TestDoScanDataViaWorkspaceAPIClosesIterator(t *testing.T) {
 	})
 }
 
-// TestNativeBackend_GitignoreFiltersResults exercises the native fuzzy-search
-// backend end-to-end. It builds the handler with a real workspace.FileScheme
-// rooted at testdata/, where .gitignore declares "*.TEST". The test asserts
-// that:
-//
-//   - sample.text shows up in the rendered list
-//   - sample.TEST does not (it is filtered by the gitignore matcher plumbed
-//     through Clients.IgnoreMatcher → walkdir.WithContextFilter)
 func TestNativeBackend_GitignoreFiltersResults(t *testing.T) {
 	testdata, err := filepath.Abs("testdata")
 	require.NoError(t, err)
@@ -232,14 +222,6 @@ func (r *resizableHandler) Cursor() (term.Coordinates, term.CursorStyle, bool) {
 }
 func (r *resizableHandler) Selection() (string, bool) { return r.h.Selection() }
 
-// TestCloseDoesNotCloseSharedStorage verifies that closing a finder handler
-// does not propagate Close to the storage service it borrowed via
-// Clients.Storage. The storage handle is shared host-wide (it is the
-// IDE-wide partition wrapping a single firstmover gRPC connection); closing
-// it from inside the finder tears down the connection for every other
-// consumer (notably command.Prompt history loads and any subsequent finder
-// invocation), which manifests as
-// "rpc error: code = Canceled desc = grpc: the client connection is closing".
 func TestCloseDoesNotCloseSharedStorage(t *testing.T) {
 	store := &closeCountingService{Service: storagestub.NewInMemoryService()}
 
@@ -293,12 +275,6 @@ func (s *closeCountingService) Close() error {
 	return s.Service.Close()
 }
 
-// TestScanDoneWaitsForCommandOutputDrain guards the ScanWaiter
-// contract: a closed ScanDone must mean readCommand has forwarded
-// every line of the command's output to the list consumer. The
-// executor stub signals process exit immediately after writing, so
-// if the exit outruns the reader's drain, DrainList swaps the list
-// consumer away and the buffered tail is silently dropped.
 func TestScanDoneWaitsForCommandOutputDrain(t *testing.T) {
 	const total = 200
 	clients := Clients{
@@ -328,13 +304,6 @@ func TestScanDoneWaitsForCommandOutputDrain(t *testing.T) {
 		"every line written before the process exited must be in the list")
 }
 
-// TestOpenerChordRecallsHistory pins why a picker's history_key needs no
-// help from gui.meta_key: presets set it to the chord that opens the
-// picker, and that chord recalls the last query either way. When the
-// physical chord equals history_key the picker takes it. Otherwise, as
-// with history_key "<meta-p>" and gui.meta_key "<alt>", the picker
-// declines Alt+P, Rune's command layer runs the opener again, and the
-// open picker's Redispatch recalls the query.
 func TestOpenerChordRecallsHistory(t *testing.T) {
 	historyKey := term.KeyComb{Mod: term.ModMeta, Ch: 'p'}
 	for _, tc := range []struct {

@@ -28,6 +28,12 @@ const (
 	slab32Size int = 2048       // 8KB * 32 = 256KB
 )
 
+func init() {
+	// fzf matches without case or word-boundary awareness until a scheme is
+	// picked; history ranks results the way search always has.
+	fzf.Init("history")
+}
+
 // Match represents a search match.
 type Match struct {
 	idx    int

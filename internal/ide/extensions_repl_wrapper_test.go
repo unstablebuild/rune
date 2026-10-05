@@ -68,12 +68,6 @@ func (s *stubExtensionsREPLHandler) Help(
 
 var _ textapi.REPLHandler = (*stubExtensionsREPLHandler)(nil)
 
-// TestExtensionsREPLWithProcessRoutesProcessSubcommand verifies that
-// "extensions process status" is dispatched to the embedded
-// workspaceshell.Executor that tracks extension binaries, not to the
-// underlying extensions handler. The wrapper rewrites Name="process"
-// so the executor accepts it after we drop the
-// "extensions-process" alias.
 func TestExtensionsREPLWithProcessRoutesProcessSubcommand(t *testing.T) {
 	t.Parallel()
 
@@ -108,10 +102,6 @@ func TestExtensionsREPLWithProcessRoutesProcessSubcommand(t *testing.T) {
 			"the underlying extensions handler")
 }
 
-// TestExtensionsREPLWithProcessForwardsOtherSubcommands verifies
-// that subcommands other than "process" still reach the underlying
-// textapi REPL handler unchanged, so "extensions status" continues to
-// route to the workspaceRunner handler.
 func TestExtensionsREPLWithProcessForwardsOtherSubcommands(t *testing.T) {
 	t.Parallel()
 
@@ -133,10 +123,6 @@ func TestExtensionsREPLWithProcessForwardsOtherSubcommands(t *testing.T) {
 			"extensions handler unchanged")
 }
 
-// TestExtensionsREPLWithProcessCompletesProcessPids verifies that
-// argument completion under "extensions process info <pid>" is
-// delegated to the executor so PID completion still works the same
-// way it did under the old top-level "extensions-process" command.
 func TestExtensionsREPLWithProcessCompletesProcessPids(t *testing.T) {
 	t.Parallel()
 
@@ -168,11 +154,6 @@ func TestExtensionsREPLWithProcessCompletesProcessPids(t *testing.T) {
 			"to the underlying extensions handler")
 }
 
-// TestExtensionsREPLWithProcessCompletesProcessSubcommandName
-// verifies that "extensions <tab>" surfaces "process" as a
-// completion candidate alongside whatever the underlying extensions
-// handler reports, so users can discover the nested command via tab
-// completion.
 func TestExtensionsREPLWithProcessCompletesProcessSubcommandName(t *testing.T) {
 	t.Parallel()
 
@@ -198,9 +179,6 @@ func TestExtensionsREPLWithProcessCompletesProcessSubcommandName(t *testing.T) {
 			"extensions handler's own subcommands")
 }
 
-// TestExtensionsREPLWithProcessHelpRoutesProcess verifies that
-// "help extensions process" surfaces help text from the tracker
-// executor rather than the underlying extensions handler.
 func TestExtensionsREPLWithProcessHelpRoutesProcess(t *testing.T) {
 	t.Parallel()
 

@@ -52,9 +52,6 @@ func withoutTutorialCall(t *testing.T, src string) string {
 	return out
 }
 
-// TestBasicsTutorialParses asserts that the embedded basics.star
-// tutorial parses through starlarktutorial.New, registers a
-// callable entry, and reports the expected id/title/version.
 func TestBasicsTutorialParses(t *testing.T) {
 	t.Parallel()
 
@@ -83,9 +80,6 @@ func TestBasicsTutorialParses(t *testing.T) {
 	assert.Equal(t, "73", tut.Version())
 }
 
-// TestBasicsTutorialWorkspaceOpenCopyByOS asserts the welcome window's
-// workspace-open step teaches the native macOS File ▸ Open Project…
-// flow on darwin and keeps the command-prompt steps on other systems.
 func TestBasicsTutorialWorkspaceOpenCopyByOS(t *testing.T) {
 	t.Parallel()
 
@@ -136,10 +130,6 @@ func TestBasicsTutorialWorkspaceOpenCopyByOS(t *testing.T) {
 	}
 }
 
-// TestBasicsTutorialNamesTheConfiguredConfigPath asserts the lesson
-// points at the config file the running Rune actually reads. `rune -d`
-// moves that file, so a hardcoded ~/.rune path would send users to a
-// file their session never loads.
 func TestBasicsTutorialNamesTheConfiguredConfigPath(t *testing.T) {
 	t.Parallel()
 
@@ -172,9 +162,6 @@ func TestBasicsTutorialNamesTheConfiguredConfigPath(t *testing.T) {
 	assert.True(t, named, "no step named the configured config file")
 }
 
-// TestBasicsTutorialCompleterKeysByMode asserts the completion-list
-// phrasing names each preset's own list bindings rather than a single
-// hardcoded arrow-key spelling.
 func TestBasicsTutorialCompleterKeysByMode(t *testing.T) {
 	t.Parallel()
 
@@ -235,9 +222,6 @@ tutorial(entry=run)
 	}
 }
 
-// TestBasicsTutorialConfigSearchByPreset asserts the config step teaches
-// each preset's own in-buffer search keys. Search is not a command, so
-// key_for cannot resolve it and the copy must branch on mode and OS.
 func TestBasicsTutorialConfigSearchByPreset(t *testing.T) {
 	t.Parallel()
 
@@ -315,10 +299,6 @@ tutorial(entry=run)
 	}
 }
 
-// TestBasicsTutorialWarnsAboutTheSwallowedShiftTab asserts the
-// file-explorer step tells modal users why their binding does nothing
-// from a terminal, and that presets without a NORMAL mode never carry
-// the warning.
 func TestBasicsTutorialWarnsAboutTheSwallowedShiftTab(t *testing.T) {
 	t.Parallel()
 
@@ -373,9 +353,6 @@ func (s trimmedScreen) String() string {
 	return strings.Trim(strings.Join(rows, "\n"), "\n")
 }
 
-// TestBasicsTutorialRunAProgram renders the step that teaches running
-// a one-shot program. The prompt commands are spelled the way the user
-// types them: the command key first, then `!`.
 func TestBasicsTutorialRunAProgram(t *testing.T) {
 	t.Parallel()
 
@@ -663,11 +640,6 @@ func TestBasicsTutorialHasNoHardcodedCommandKeys(t *testing.T) {
 	}
 }
 
-// TestBasicsTutorialHelixKeysMatchPreset pins the keys the basics
-// tutorial spells out literally against the presets that bind them: the
-// HJKL layout chords shared by the vim and helix lessons, and Helix's
-// <space>e leader key, which key_for cannot name because <shift-tab> also
-// runs fexplorer.
 func TestBasicsTutorialHelixKeysMatchPreset(t *testing.T) {
 	t.Parallel()
 
@@ -762,9 +734,6 @@ tutorial(entry=run)
 	}
 }
 
-// TestBasicsTutorialModalSurfacesNote asserts the split-direction step,
-// which arms while a terminal is focused, first tells users of a modal
-// editor how to leave INSERT mode, and names the mode they picked.
 func TestBasicsTutorialModalSurfacesNote(t *testing.T) {
 	t.Parallel()
 
@@ -919,10 +888,6 @@ func TestBasicsTutorialResolvesEmacsLayoutBindings(t *testing.T) {
 	}
 }
 
-// TestBasicsTutorialLayoutKeysPlayable asserts that the step showing
-// the "Your current layout keys" table lets the user actually try the
-// bindings it lists: they must reach the IDE while the step stays up,
-// otherwise the table is just something to read past.
 func TestBasicsTutorialLayoutKeysPlayable(t *testing.T) {
 	t.Parallel()
 
@@ -980,10 +945,6 @@ func TestBasicsTutorialLayoutKeysPlayable(t *testing.T) {
 	}
 }
 
-// TestBasicsTutorialDirectionalHintNamesKey asserts that both halves
-// of a two-direction lesson name the chords they are waiting for:
-// direction-qualified commands have no binding under their bare name,
-// so the copy must resolve the exact invocation.
 func TestBasicsTutorialDirectionalHintNamesKey(t *testing.T) {
 	t.Parallel()
 
@@ -1299,10 +1260,6 @@ func TestAgentTutorialInstallAndHelpFlow(t *testing.T) {
 		"reaching a milestone must not raise a notification")
 }
 
-// TestAgentTutorialLeavesInsertModeFirst asserts the step that opens
-// the agent from a focused console tells users of a modal editor to
-// leave INSERT mode before the command key, and numbers the steps
-// after it accordingly.
 func TestAgentTutorialLeavesInsertModeFirst(t *testing.T) {
 	t.Parallel()
 
@@ -1361,11 +1318,6 @@ func TestTutorialPackageInstallOwnership(t *testing.T) {
 	assert.Contains(t, agentTutorial, "pkg install rune-agent")
 }
 
-// TestTutorialsThatNeedAWorkspaceRefuseTheHomeWorkspace asserts the
-// lessons whose steps only work inside a project workspace bail out
-// with an error instead of arming a step the user cannot complete.
-// On the home workspace commands like `agent` are answered by Rune's
-// "open a workspace first" fallback, so the step would never resolve.
 func TestTutorialsThatNeedAWorkspaceRefuseTheHomeWorkspace(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -1403,11 +1355,6 @@ func TestTutorialsThatNeedAWorkspaceRefuseTheHomeWorkspace(t *testing.T) {
 	}
 }
 
-// TestNavigationTutorialFlow drives the embedded navigation tutorial
-// through its full step sequence and pins the ordering the tutorial
-// teaches: definition-under-cursor comes before definition-by-name, the
-// cursor history is walked back then forward as two distinct steps, and
-// the `lsp` verbs step comes last.
 func TestNavigationTutorialFlow(t *testing.T) {
 	t.Parallel()
 
@@ -1531,11 +1478,6 @@ func TestNavigationTutorialFlow(t *testing.T) {
 		"reaching a milestone must not raise a notification")
 }
 
-// TestNavigationTutorialPrefillKeysMatchPresets pins the chords the
-// tutorial hardcodes against the presets that bind them. They cannot
-// come from key_for because they are prompt-prefill macros, and the
-// jumptoast copy went stale once already when the emacs preset moved
-// that binding off <ctrl-x>j.
 func TestNavigationTutorialPrefillKeysMatchPresets(t *testing.T) {
 	t.Parallel()
 
@@ -1642,8 +1584,6 @@ tutorial(entry=run)
 	}
 }
 
-// TestTutorialsSpellMetaKey pins that the tutorials spell Rune's <meta>
-// chords on the keys gui.meta_key puts <meta> on.
 func TestTutorialsSpellMetaKey(t *testing.T) {
 	t.Parallel()
 
@@ -1801,9 +1741,6 @@ tutorial(entry=run)
 	}
 }
 
-// TestNavigationTutorialWarnsAboutTheSwallowedSpaceLeader asserts the
-// file-finder step tells helix users why the <space> leader does nothing
-// from a terminal, and that no other binding carries the warning.
 func TestNavigationTutorialWarnsAboutTheSwallowedSpaceLeader(t *testing.T) {
 	t.Parallel()
 
@@ -1855,10 +1792,6 @@ tutorial(entry=run)
 	}
 }
 
-// TestNavigationTutorialUnboundCommandsKeepTheirArguments asserts the
-// prompt fallback for an unbound command names the whole command line.
-// A user may unbind any `cursorhistory` subcommand, and a fallback that
-// dropped the argument would send the user to run a different command.
 func TestNavigationTutorialUnboundCommandsKeepTheirArguments(t *testing.T) {
 	t.Parallel()
 
@@ -1894,11 +1827,6 @@ tutorial(entry=run)
 	assert.NotContains(t, text, "run `cursorhistory`.")
 }
 
-// TestNavigationTutorialInstallsFuzzySearchFirst asserts that when the
-// fuzzy-search extension is missing, the tutorial walks the user
-// through installing it from the console before reaching the finder
-// steps. Without this, the first `searchfile` would trigger Rune's own
-// install prompt while the tutorial assumed a finder was already open.
 func TestNavigationTutorialInstallsFuzzySearchFirst(t *testing.T) {
 	t.Parallel()
 
@@ -1994,9 +1922,6 @@ func (n *capturingNotis) successes() []string {
 	return out
 }
 
-// TestNavigationTutorialParses asserts that the embedded navigation.star
-// tutorial parses through starlarktutorial.New, registers a callable
-// entry, and reports the expected id/title/version.
 func TestNavigationTutorialParses(t *testing.T) {
 	t.Parallel()
 
@@ -2064,9 +1989,6 @@ func TestEmbeddedTutorialPlaylist(t *testing.T) {
 	assert.NotEmpty(t, embeddedTutorialOptions())
 }
 
-// TestShippedTutorialsParseInEveryMode asserts every embedded tutorial
-// parses under each editor mode editor_mode() can report, so a branch
-// only one mode reaches cannot ship broken.
 func TestShippedTutorialsParseInEveryMode(t *testing.T) {
 	t.Parallel()
 
@@ -2095,10 +2017,6 @@ func TestShippedTutorialsParseInEveryMode(t *testing.T) {
 	}
 }
 
-// TestShippedWaitCommandsCarryTheirLesson guards the shape of a
-// lesson: a step's screen stays up until its milestone is met and
-// there is no separate copy screen, so a wait_command without text
-// would leave the user with nothing but a generated one-liner.
 func TestShippedWaitCommandsCarryTheirLesson(t *testing.T) {
 	t.Parallel()
 

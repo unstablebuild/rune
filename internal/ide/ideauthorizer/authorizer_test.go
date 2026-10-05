@@ -408,10 +408,6 @@ func TestAuthorizerVerifiedPublisherAutoAuthorizes(t *testing.T) {
 	assert.Zero(t, opener.calls)
 }
 
-// TestAuthorizerVerifiedPublisherAloneStillPromptsCommands verifies that a
-// verified publisher does not by itself auto-authorize commands: the
-// operator must also enable AutoAuthorizeCommands for silent command
-// execution.
 func TestAuthorizerVerifiedPublisherAloneStillPromptsCommands(t *testing.T) {
 	t.Parallel()
 
@@ -433,11 +429,6 @@ func TestAuthorizerVerifiedPublisherAloneStillPromptsCommands(t *testing.T) {
 	assert.Equal(t, 1, opener.calls)
 }
 
-// TestAuthorizerOnboardingCommandAutoAuthorize verifies that while
-// first-run onboarding is active, commands from verified-publisher
-// extensions are granted without prompting even when the operator has not
-// enabled AutoAuthorizeCommands. The bypass never applies to plugins or
-// unverified extensions, and it stops as soon as onboarding ends.
 func TestAuthorizerOnboardingCommandAutoAuthorize(t *testing.T) {
 	t.Parallel()
 
@@ -1156,9 +1147,6 @@ func TestPluginPermissionCommandStorageKeysNormalizeShellWrappedCommand(t *testi
 	assert.Equal(t, keysA, keysB)
 }
 
-// Compound shell scripts are broken into a key per effective command so
-// that approving "Yes, All" broadens independently. Each approved inner
-// command is a subset of the compound script's key set.
 func TestPluginPermissionCommandStorageKeysDecomposeCompoundScript(t *testing.T) {
 	t.Parallel()
 
@@ -1180,7 +1168,6 @@ func TestPluginPermissionCommandStorageKeysDecomposeCompoundScript(t *testing.T)
 	assert.Contains(t, compound, grepOnly[0])
 }
 
-// Pipelines are likewise decomposed into per-command keys.
 func TestPluginPermissionCommandStorageKeysDecomposePipelineScript(t *testing.T) {
 	t.Parallel()
 
@@ -1201,8 +1188,6 @@ func TestPluginPermissionCommandStorageKeysDecomposePipelineScript(t *testing.T)
 	assert.Contains(t, pipeline, grepOnly[0])
 }
 
-// Opaque scripts that reference variable expansion can't be decomposed;
-// they fall back to a single exact-match key.
 func TestPluginPermissionCommandStorageKeysOpaqueScriptFallsBackToExactMatch(t *testing.T) {
 	t.Parallel()
 
@@ -1224,11 +1209,6 @@ func TestPluginPermissionCommandStorageKeysOpaqueScriptFallsBackToExactMatch(t *
 	assert.NotEqual(t, keysA, keysB)
 }
 
-// Complex shell scripts that mix no-fork builtins (cd), command
-// substitution, redirects, and pipelines are decomposed into a key per
-// effective command rather than falling back to a single exact-match
-// key. Each decomposed inner command is a subset of the full script's
-// key set.
 func TestPluginPermissionCommandStorageKeysDecomposeCmdSubstScript(t *testing.T) {
 	t.Parallel()
 
@@ -1350,10 +1330,6 @@ func expectedScopeLabels(commands []string) []string {
 	return labels
 }
 
-// End-to-end: once "Yes, All" is chosen for the complex regression
-// command, subsequent invocations of find, gofmt, and head run silently
-// because the approval scope was broadened to each effective command
-// rather than to the full opaque script.
 func TestAuthorizerAuthorizeStartCommandComplexBashScriptDecomposes(t *testing.T) {
 	t.Parallel()
 
@@ -1471,9 +1447,6 @@ func newTestAuthorizerCoreWithNotifications(
 	return a
 }
 
-// TestAuthorizerDecisionChangeFiresOnRuntimeDecision verifies that a
-// registered decision-change observer runs whenever a runtime permission
-// decision is made, so a server-scoped auth cache can invalidate itself.
 func TestAuthorizerDecisionChangeFiresOnRuntimeDecision(t *testing.T) {
 	t.Parallel()
 
@@ -1490,10 +1463,6 @@ func TestAuthorizerDecisionChangeFiresOnRuntimeDecision(t *testing.T) {
 	assert.Equal(t, 1, changed, "a runtime permission decision invalidates the cache")
 }
 
-// TestAuthorizerDecisionChangeNotifiesAllObservers verifies that
-// multiple registered observers (e.g. one cache per gRPC server) are all
-// invoked on a decision change; a later registration must not clobber an
-// earlier one and leave its cache holding stale authorizations.
 func TestAuthorizerDecisionChangeNotifiesAllObservers(t *testing.T) {
 	t.Parallel()
 
@@ -1593,9 +1562,6 @@ $M -src $D/vteserver_unit_test.go -dst $D/vteserver_e2e_test.go -names TestAttac
 /Users/ernestrc/.rune/bin/goimports -w $D/*_test.go
 go vet ./$D/ && go vet -tags e2e ./$D/ && echo vet-ok; sed -n '17p' $D/test/persistence_test.go`
 
-// Regression: a script whose programs can't be determined is approved by exact
-// match. The prompt must say so, instead of repeating the script as the approval
-// scope and claiming that Always covers any argument combination.
 func TestAuthorizerAuthorizeOpaqueScriptPromptsForExactApproval(t *testing.T) {
 	t.Parallel()
 
@@ -1940,9 +1906,6 @@ func TestAuthorizerAuthorizeStartCommandPersistedDecisionNormalizesPlainShellWra
 	assert.Equal(t, 2, opener.calls)
 }
 
-// Approving "Yes, All" for "echo foo; grep bar file.txt" persists
-// approvals for echo and grep. A subsequent script that reuses both
-// commands runs silently.
 func TestAuthorizerAuthorizeStartCommandPersistedDecisionBroadensSequenceShellScripts(t *testing.T) {
 	t.Parallel()
 
@@ -1966,8 +1929,6 @@ func TestAuthorizerAuthorizeStartCommandPersistedDecisionBroadensSequenceShellSc
 	assert.Equal(t, 1, opener.calls)
 }
 
-// Approving a compound script broadens independently for each effective
-// command; running any of them later runs silently.
 func TestAuthorizerAuthorizeStartCommandPersistedDecisionBroadensCompoundShellScripts(t *testing.T) {
 	t.Parallel()
 
@@ -2000,7 +1961,6 @@ func TestAuthorizerAuthorizeStartCommandPersistedDecisionBroadensCompoundShellSc
 	assert.Equal(t, 1, opener.calls)
 }
 
-// Commands not present in the effective-command set still prompt.
 func TestAuthorizerAuthorizeStartCommandPersistedDecisionDoesNotBroadenBeyondEffectiveSet(t *testing.T) {
 	t.Parallel()
 
@@ -2023,8 +1983,6 @@ func TestAuthorizerAuthorizeStartCommandPersistedDecisionDoesNotBroadenBeyondEff
 	assert.Equal(t, 2, opener.calls)
 }
 
-// With only a partial pre-seeded approval, the compound script still
-// prompts and the remaining commands are persisted.
 func TestAuthorizerAuthorizeStartCommandPartialApprovalStillPrompts(t *testing.T) {
 	t.Parallel()
 
@@ -2064,8 +2022,6 @@ func TestAuthorizerAuthorizeStartCommandPartialApprovalStillPrompts(t *testing.T
 	assert.Equal(t, 1, opener.calls)
 }
 
-// Unparseable scripts fall back to exact-match, preserving prior
-// behavior for scripts that cannot be safely decomposed.
 func TestAuthorizerAuthorizeStartCommandOpaqueScriptFallsBackToExactMatch(t *testing.T) {
 	t.Parallel()
 
@@ -2211,16 +2167,6 @@ func (p *blockingPromptOpener) promptCalls() int {
 	return p.calls
 }
 
-// TestAuthorizerCoalescesConcurrentPrompts reproduces RUNE-97: when
-// multiple concurrent Authorize calls for the same identity+permission
-// arrive while the user is deciding, they must not each open their own
-// prompt. The browser's Component.Prompt deduplicates by message, so
-// only the first concurrent caller's PromptHandler is actually attached
-// to the floating prompt; the rest would be silently dropped and their
-// blocking `<-result` would never resolve.
-//
-// The fix coalesces concurrent Authorize calls for the same onceKey on a
-// single pendingPrompt, so one user click unblocks every caller.
 func TestAuthorizerCoalescesConcurrentPrompts(t *testing.T) {
 	t.Parallel()
 

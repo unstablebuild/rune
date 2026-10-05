@@ -54,10 +54,6 @@ func TestDeleteClipboard(t *testing.T) {
 	assert.Equal(t, clipboard.Data{Text: content, Metadata: LineSelection}, data)
 }
 
-// TestDeleteClipboardReloadDoesNotCopy guards against a disk reload
-// clobbering the user's clipboard. A reload replaces the whole buffer
-// via ReloadContents, which must not reach the copy-on-delete usage
-// subscriber the way a user delete does.
 func TestDeleteClipboardReloadDoesNotCopy(t *testing.T) {
 	buf := cell.NewBuffer()
 	clip := clipboard.NewInMemory()

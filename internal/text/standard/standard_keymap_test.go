@@ -51,9 +51,6 @@ func newStandardKeymapHandler(
 	return h, buf, clip
 }
 
-// TestStandardKeymapMotion pins the standard editor's word/line motions
-// on ctrl-arrows and ctrl-home/end, replacing the old emacs single-key
-// motions.
 func TestStandardKeymapMotion(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -124,8 +121,6 @@ func TestStandardKeymapSelectAll(t *testing.T) {
 	}
 }
 
-// TestStandardKeymapSelectLine pins cmd-l selecting the current line,
-// matching Zed's editor::SelectLine.
 func TestStandardKeymapSelectLine(t *testing.T) {
 	h, _, _ := newStandardKeymapHandler(t, "hello\nworld", term.Coordinates{})
 	_, handled := h.Handle(term.Event{Type: term.EventKey, Mod: term.ModMeta, Ch: 'l'})
@@ -134,8 +129,6 @@ func TestStandardKeymapSelectLine(t *testing.T) {
 	assert.True(t, ok, "cmd-l must select the line")
 }
 
-// TestStandardKeymapRecenter pins ctrl-l recentering the view on the
-// cursor (Zed's editor::ScrollCursorCenter) instead of selecting a line.
 func TestStandardKeymapRecenter(t *testing.T) {
 	content := strings.Repeat("line\n", 60)
 	h, _, _ := newStandardKeymapHandler(t, content, term.Coordinates{Y: 40})
@@ -145,7 +138,6 @@ func TestStandardKeymapRecenter(t *testing.T) {
 	assert.False(t, ok, "ctrl-l must not create a selection")
 }
 
-// TestStandardKeymapClipboard pins ctrl-c copy, ctrl-x cut, ctrl-v paste.
 func TestStandardKeymapClipboard(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -275,8 +267,6 @@ func TestStandardKeymapSelectNextOccurrence(t *testing.T) {
 	}
 }
 
-// TestStandardKeymapDeletion pins ctrl/alt-backspace and ctrl/alt-delete word
-// delete, and ctrl-shift-k line delete.
 func TestStandardKeymapDeletion(t *testing.T) {
 	t.Run("ctrl-backspace deletes word to the left", func(t *testing.T) {
 		h, buf, _ := newStandardKeymapHandler(t, "foo bar", term.Coordinates{X: 7})
@@ -346,11 +336,6 @@ func TestStandardKeymapDeletion(t *testing.T) {
 	})
 }
 
-// TestStandardKeymapTypingReplacesSelection pins the TextEdit/Sublime
-// convention: typing or pasting with an active selection replaces the
-// selected text instead of only deleting it and swallowing the input.
-// Deletion keys remove the selection without inserting, and tab keeps
-// its indent semantics instead of replacing.
 func TestStandardKeymapTypingReplacesSelection(t *testing.T) {
 	const word = "<s-right><s-right><s-right>"
 	paste := func(s string) *string { return &s }
@@ -579,8 +564,6 @@ func TestStandardKeymapTypingReplacesSelection(t *testing.T) {
 	}
 }
 
-// TestStandardKeymapLineInsert pins ctrl-enter (below) and
-// ctrl-shift-enter (above) line insertion.
 func TestStandardKeymapLineInsert(t *testing.T) {
 	t.Run("ctrl-enter inserts line below", func(t *testing.T) {
 		h, buf, _ := newStandardKeymapHandler(t, "a\nb", term.Coordinates{})
@@ -597,7 +580,6 @@ func TestStandardKeymapLineInsert(t *testing.T) {
 	})
 }
 
-// TestStandardKeymapConflate pins ctrl-shift-j joining lines.
 func TestStandardKeymapConflate(t *testing.T) {
 	h, buf, _ := newStandardKeymapHandler(t, "one\ntwo", term.Coordinates{})
 	_, handled := h.Handle(term.Event{Type: term.EventKey, Mod: term.ModCtrl, Ch: 'J'})
@@ -605,9 +587,6 @@ func TestStandardKeymapConflate(t *testing.T) {
 	assert.Equal(t, "onetwo", buf.String())
 }
 
-// TestStandardKeymapDropsEmacsBindings asserts the dropped emacs
-// single-key motions no longer perform their emacs actions in the
-// standard editor.
 func TestStandardKeymapDropsEmacsBindings(t *testing.T) {
 	t.Run("ctrl-e no longer moves to end of line", func(t *testing.T) {
 		h, _, _ := newStandardKeymapHandler(t, "hello", term.Coordinates{})
@@ -631,8 +610,6 @@ func TestStandardKeymapDropsEmacsBindings(t *testing.T) {
 	})
 }
 
-// TestStandardKeymapParagraphMotion pins ctrl-up/down paragraph motion,
-// matching Zed's editor::MoveToStartOfParagraph / MoveToEndOfParagraph.
 func TestStandardKeymapParagraphMotion(t *testing.T) {
 	const content = "a\nb\n\nc\nd\n\ne"
 	t.Run("ctrl-down moves to next paragraph", func(t *testing.T) {
@@ -650,8 +627,6 @@ func TestStandardKeymapParagraphMotion(t *testing.T) {
 	})
 }
 
-// TestStandardKeymapParagraphSelection pins ctrl-shift-up/down extending a
-// selection by paragraph, matching Zed's SelectToStart/EndOfParagraph.
 func TestStandardKeymapParagraphSelection(t *testing.T) {
 	const content = "a\nb\n\nc\nd\n\ne"
 	t.Run("ctrl-shift-down selects to next paragraph", func(t *testing.T) {
@@ -677,8 +652,6 @@ func TestStandardKeymapParagraphSelection(t *testing.T) {
 	})
 }
 
-// TestStandardKeymapTranspose pins ctrl-t transposing the two characters
-// around the caret, matching Zed's editor::Transpose.
 func TestStandardKeymapTranspose(t *testing.T) {
 	h, buf, _ := newStandardKeymapHandler(t, "abcd", term.Coordinates{X: 2})
 	_, handled := h.Handle(term.Event{Type: term.EventKey, Mod: term.ModCtrl, Ch: 't'})
@@ -687,9 +660,6 @@ func TestStandardKeymapTranspose(t *testing.T) {
 	assert.Equal(t, term.Coordinates{X: 3}, h.CursorAtScroll())
 }
 
-// TestStandardKeymapSelectionUndoRedo pins cmd-u / cmd-shift-u undoing and
-// redoing selection changes, matching Zed's editor::UndoSelection /
-// RedoSelection.
 func TestStandardKeymapSelectionUndoRedo(t *testing.T) {
 	h, _, _ := newStandardKeymapHandler(t, "hello world\nsecond line", term.Coordinates{})
 
@@ -709,8 +679,6 @@ func TestStandardKeymapSelectionUndoRedo(t *testing.T) {
 	assert.True(t, ok, "cmd-shift-u must redo the selection")
 }
 
-// TestStandardKeymapSelectPrevious pins ctrl-cmd-d selecting the previous
-// occurrence of the word at the cursor, matching Zed's editor::SelectPrevious.
 func TestStandardKeymapSelectPrevious(t *testing.T) {
 	h, _, _ := newStandardKeymapHandler(t, "foo bar foo baz", term.Coordinates{X: 9})
 	_, handled := h.Handle(term.Event{Type: term.EventKey, Mod: term.ModCtrl | term.ModMeta, Ch: 'd'})
@@ -721,8 +689,6 @@ func TestStandardKeymapSelectPrevious(t *testing.T) {
 	assert.Equal(t, term.Coordinates{X: 3}, h.CursorAtScroll())
 }
 
-// TestStandardKeymapToggleSoftWrap pins alt-z toggling soft wrap, matching
-// Zed's editor::ToggleSoftWrap.
 func TestStandardKeymapToggleSoftWrap(t *testing.T) {
 	uri, err := workspaceapi.ParseURI("test:///")
 	require.NoError(t, err)
@@ -744,9 +710,6 @@ func TestStandardKeymapToggleSoftWrap(t *testing.T) {
 	assert.False(t, sh.less.Scroll().Wrap, "alt-z must toggle soft wrap off")
 }
 
-// TestStandardKeymapDeleteToBeginningOfLine pins cmd-backspace deleting from
-// the caret to the start of the line, matching Zed's
-// editor::DeleteToBeginningOfLine.
 func TestStandardKeymapDeleteToBeginningOfLine(t *testing.T) {
 	h, buf, _ := newStandardKeymapHandler(t, "hello world", term.Coordinates{X: 6})
 	_, handled := h.Handle(term.Event{Type: term.EventKey, Mod: term.ModMeta, Key: term.KeyBackspace})
@@ -755,10 +718,6 @@ func TestStandardKeymapDeleteToBeginningOfLine(t *testing.T) {
 	assert.Equal(t, term.Coordinates{}, h.CursorAtScroll())
 }
 
-// TestStandardKeymapSyntaxNodeSelect pins ctrl-shift-right/left to
-// expand/shrink the syntactic selection (Zed's SelectLarger/SmallerSyntaxNode)
-// rather than word-select. Without a syntax service in the harness the ops are
-// no-ops, so we assert the cursor does not move by word.
 func TestStandardKeymapSyntaxNodeSelect(t *testing.T) {
 	t.Run("ctrl-shift-right does not word-select", func(t *testing.T) {
 		h, _, _ := newStandardKeymapHandler(t, "foo bar", term.Coordinates{})
@@ -781,9 +740,6 @@ func TestStandardKeymapSyntaxNodeSelect(t *testing.T) {
 	})
 }
 
-// TestStandardKeymapWordSelect pins alt-shift-left/right (and alt-shift-b/f)
-// extending a selection by word, matching Zed's SelectToPreviousWordStart /
-// SelectToNextWordEnd.
 func TestStandardKeymapWordSelect(t *testing.T) {
 	t.Run("alt-shift-right selects to next word end", func(t *testing.T) {
 		h, _, _ := newStandardKeymapHandler(t, "foo bar", term.Coordinates{})
@@ -832,8 +788,6 @@ func TestStandardKeymapWordSelect(t *testing.T) {
 	})
 }
 
-// TestStandardKeymapLineDocSelect pins cmd-shift-left/right/up/down and
-// shift-home/shift-end extending a selection to line and document bounds.
 func TestStandardKeymapLineDocSelect(t *testing.T) {
 	t.Run("cmd-shift-right selects to end of line", func(t *testing.T) {
 		h, _, _ := newStandardKeymapHandler(t, "hello world\nsecond", term.Coordinates{})
@@ -923,8 +877,6 @@ func TestStandardKeymapLineDocSelect(t *testing.T) {
 	})
 }
 
-// TestStandardKeymapCutToEndOfLine pins ctrl-k cutting from the caret to the
-// end of the line into the clipboard, matching Zed's editor::CutToEndOfLine.
 func TestStandardKeymapCutToEndOfLine(t *testing.T) {
 	t.Run("ctrl-k cuts to end of line", func(t *testing.T) {
 		h, buf, clip := newStandardKeymapHandler(t, "hello world", term.Coordinates{X: 6})
@@ -944,8 +896,6 @@ func TestStandardKeymapCutToEndOfLine(t *testing.T) {
 	})
 }
 
-// TestStandardKeymapDeleteToEndOfLine pins cmd-delete deleting from the caret
-// to the end of the line, matching Zed's editor::DeleteToEndOfLine.
 func TestStandardKeymapDeleteToEndOfLine(t *testing.T) {
 	h, buf, _ := newStandardKeymapHandler(t, "hello world", term.Coordinates{X: 5})
 	_, handled := h.Handle(term.Event{Type: term.EventKey, Mod: term.ModMeta, Key: term.KeyDelete})
@@ -953,9 +903,6 @@ func TestStandardKeymapDeleteToEndOfLine(t *testing.T) {
 	assert.Equal(t, "hello", buf.String())
 }
 
-// TestStandardKeymapLinuxLeavesMetaToRune pins that the Linux keymap handles
-// no <meta> chord, so every one reaches Rune's command layer whichever
-// physical key the user picked as <meta>.
 func TestStandardKeymapLinuxLeavesMetaToRune(t *testing.T) {
 	for _, keys := range []string{
 		"<meta-a>", "<meta-c>", "<meta-v>", "<meta-x>", "<meta-z>",
@@ -983,8 +930,6 @@ func TestStandardKeymapLinuxLeavesMetaToRune(t *testing.T) {
 	}
 }
 
-// TestStandardKeymapLinuxCtrlLayer pins the Linux chords that differ from
-// their macOS <ctrl> twins.
 func TestStandardKeymapLinuxCtrlLayer(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

@@ -46,7 +46,6 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/syntaxapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/component"
-	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/handler/repl"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"gopkg.in/yaml.v3"
@@ -419,7 +418,7 @@ func (m *Manager) InstallPackageVersion(
 	mu.Lock() // block calls to iterator
 	m.iterators.Unlock()
 
-	return m.download(pkgID, version, tarfile, pw, key)
+	return m.download(ctx, pkgID, version, tarfile, pw, key)
 }
 
 // DeletePackageVersion deletes a package version from local storage. This method is idempotent.
@@ -587,7 +586,7 @@ func (m *Manager) ProcessInstalledSettings(ctx context.Context) (ret error) {
 		}
 		dir := makePackageVersionDirname(m.dataDir, pkv.Package, pkv.Version)
 		configFile := pkgConfigFile(dir)
-		err = m.processConfig(pkv.Package, pkv.Version, configFile)
+		err = m.processConfig(ctx, pkv.Package, pkv.Version, configFile)
 		if err != nil {
 			ret = errors.Join(ret, fmt.Errorf("process %s: %w", configFile, err))
 		}
@@ -656,7 +655,7 @@ func (m *Manager) UsePackageVersion(
 	pkgVersionDirname := makePackageVersionDirname(m.dataDir, pkgID, version)
 
 	configFile := pkgConfigFile(pkgVersionDirname)
-	err = m.processConfig(pkgID, version, configFile)
+	err = m.processConfig(ctx, pkgID, version, configFile)
 	if err != nil {
 		return err
 	}
@@ -668,20 +667,22 @@ func (m *Manager) UsePackageVersion(
 // never contacts the release server, so it is safe on offline/remote hosts and
 // always reflects the local source of truth. It returns false when the package
 // has no in-use version installed locally.
-func (m *Manager) PackageVersionInUse(pkgID string) (release.Version, bool) {
-	if validatePkgPath(pkgID) != nil {
-		return "", false
+func (m *Manager) PackageVersionInUse(
+	_ context.Context, pkgID string,
+) (release.Version, bool, error) {
+	if err := validatePkgPath(pkgID); err != nil {
+		return "", false, fmt.Errorf("package id: %w", err)
 	}
 	libDir := makePackageLibDirname(m.dataDir, pkgID)
 	target, err := os.Readlink(libDir)
 	if err != nil {
-		return "", false
+		return "", false, nil
 	}
 	version := filepath.Base(target)
 	if version == "" || version == "." || version == string(filepath.Separator) {
-		return "", false
+		return "", false, nil
 	}
-	return release.Version(version), true
+	return release.Version(version), true, nil
 }
 
 func (m *Manager) isPackageVersionInUse(
@@ -716,10 +717,10 @@ func newPkgVersionValue(pkgID string, version release.Version) pkgVersionValue {
 }
 
 func (m *Manager) download(
-	pkgID string, version release.Version, tarfile *os.File,
+	ctx context.Context, pkgID string, version release.Version, tarfile *os.File,
 	pw repl.ProgressWriter, key string,
 ) error {
-	err := m.runDownload(pkgID, version, tarfile, pw, key)
+	err := m.runDownload(ctx, pkgID, version, tarfile, pw, key)
 	if err != nil {
 		m.abortDownload(err, pkgID, version)
 		return err
@@ -731,12 +732,12 @@ func (m *Manager) download(
 // runDownload performs the fetch, extract, link and config steps for a
 // single package version, returning the first error encountered. It owns
 // the on-disk cleanup of partial state so download can keep the
-// completion bookkeeping in one place.
+// completion bookkeeping in one place. Cancelling ctx does not abort it.
 func (m *Manager) runDownload(
-	pkgID string, version release.Version, tarfile *os.File,
+	ctx context.Context, pkgID string, version release.Version, tarfile *os.File,
 	pw repl.ProgressWriter, key string,
 ) error {
-	ctx := context.Background()
+	ctx = context.WithoutCancel(ctx)
 	defer m.cleanupFile(tarfile)
 
 	if err := makePkgDirs(m.dataDir); err != nil {
@@ -826,7 +827,7 @@ func (m *Manager) runDownload(
 		return fmt.Errorf("update storage field: %w", err)
 	}
 
-	if err := m.processInstalledConfig(pkgID, version, configFile); err != nil {
+	if err := m.processInstalledConfig(ctx, pkgID, version, configFile); err != nil {
 		return fmt.Errorf("process configuration for %s version %s: %w",
 			pkgID, version, err)
 	}
@@ -869,7 +870,11 @@ func (m *Manager) installRequirements(
 		if req == pkgID {
 			continue
 		}
-		if _, installed := m.PackageVersionInUse(req); installed {
+		_, installed, err := m.PackageVersionInUse(ctx, req)
+		if err != nil {
+			return fmt.Errorf("requirement %s in use: %w", req, err)
+		}
+		if installed {
 			continue
 		}
 		reqVersion, err := m.LatestVersion(ctx, req)
@@ -970,117 +975,60 @@ func (m *Manager) linkLibCopyBin(
 }
 
 func (m *Manager) promptConfigChange(
-	pkgID string, pkgVersion release.Version, configYAML []byte,
-	userDoc, pkgDoc *yaml.Node,
-) error {
+	ui UI, pkgID string, pkgVersion release.Version, configYAML []byte,
+	pkgDoc *yaml.Node,
+) {
 	message := fmt.Sprintf(
 		"Extension %s (version %s) wants to **update** your configuration "+
 			"with the following settings:\n\n```yaml\n%s\n```\n\nDo you want to allow this?",
 		pkgID, pkgVersion, string(configYAML))
-	return m.promptConfigMerge(
-		pkgID, pkgVersion, message,
-		[]string{"    Allow    ", "    Deny    "},
-		[]term.KeyComb{{Ch: 'a'}, {Ch: 'd'}}, userDoc, pkgDoc,
-	)
+	ui.PromptConfig(ConfigPrompt{
+		Message: message,
+		Options: []PromptOption{{Label: "Allow", Key: 'a'}, {Label: "Deny", Key: 'd'}},
+	}, func(approved bool) {
+		if !approved {
+			return
+		}
+		var result ConfigMergeResult
+		userDoc, err := m.userConfigDocument()
+		if err == nil {
+			result, err = m.applyConfigMerge(pkgID, pkgVersion, userDoc, pkgDoc)
+		}
+		if err != nil {
+			_, _ = ui.Notify(browserapi.LevelError, "apply configuration: %s", err)
+			return
+		}
+		m.notifyConfigApplied(ui, browserapi.LevelSuccess, pkgID, result)
+	})
 }
 
 func (m *Manager) promptExtensionPathChange(
-	pkgID string, pkgVersion release.Version, userDoc *yaml.Node,
-	change extensionPathChange,
-) error {
+	ui UI, pkgID string, change extensionPathChange,
+) {
 	message := fmt.Sprintf(
 		"Package **%s** wants to install extension **%s** at:\n\n`%s`\n\n"+
 			"An extension with the same ID is already registered at:\n\n`%s`\n\n"+
 			"Do you want to replace it?",
 		pkgID, change.extensionID, change.installedPath, change.currentPath)
-	return m.promptConfigMergeWithResult(
-		pkgID, pkgVersion, message,
-		[]string{"    Yes    ", "    No    "},
-		[]term.KeyComb{{Ch: 'y'}, {Ch: 'n'}}, userDoc, change.pkgDoc,
-		false,
-		80,
-		func(_ ConfigMergeResult) {
-			_, _ = m.n.Notify(browserapi.LevelSuccess,
-				"updated %s extension path. Restart the program to load the changes.", pkgID)
-		},
-	)
-}
-
-func (m *Manager) promptConfigMerge(
-	pkgID string, pkgVersion release.Version, message string,
-	options []string, bindings []term.KeyComb, userDoc, pkgDoc *yaml.Node,
-) error {
-	return m.promptConfigMergeWithResult(
-		pkgID, pkgVersion, message, options, bindings, userDoc, pkgDoc,
-		true,
-		0,
-		func(result ConfigMergeResult) {
-			m.notifyConfigApplied(browserapi.LevelSuccess, pkgID, result)
-		},
-	)
-}
-
-func (m *Manager) promptConfigMergeWithResult(
-	pkgID string, pkgVersion release.Version, message string,
-	options []string, bindings []term.KeyComb, userDoc, pkgDoc *yaml.Node,
-	runAfterMerge bool,
-	maxWidth int,
-	onApplied func(ConfigMergeResult),
-) error {
-	newMessage := markdownOrFallback(m.parser, m.scheduleNextTick)
-	if maxWidth > 0 {
-		newMessage = boundedFloatingMessage(newMessage, maxWidth)
-	}
-
-	prompt := handler.NewPrompt(handler.PromptConfig{
-		HighlightAttr: term.Attributes{
-			Attrs: term.AttrBold,
-			Bg:    term.ColorRed,
-		},
-		OptionAttr: term.Attributes{
-			Attrs: term.AttrBold,
-			Bg:    term.ColorGray,
-		},
-		OptionBindings: bindings,
-		PromptConfig: component.PromptConfig{
-			Message:    message,
-			Options:    options,
-			NewMessage: newMessage,
-		},
-		PromptHandler: handler.FuncPromptHandler(func(idx int, _ string) {
-			allowed := idx == 0
-			if !allowed {
-				return
-			}
-			var result ConfigMergeResult
-			var err error
-			if runAfterMerge {
-				result, err = m.applyConfigMerge(pkgID, pkgVersion, userDoc, pkgDoc)
-			} else {
-				err = m.writeConfigMerge(userDoc, pkgDoc)
-			}
-			if err != nil {
-				_, _ = m.n.Notify(browserapi.LevelError, "apply configuration: %s", err)
-				return
-			}
-			onApplied(result)
-		}, func() error { return nil }),
-	})
-
-	ok := m.scheduleNextTick(func() {
-		_, err := m.wm.Floating(prompt, browserapi.FloatingConfig{
-			Alignment: component.AlignmentCentered,
-		})
-		if err != nil {
-			_, _ = m.n.Notify(browserapi.LevelError, "show config prompt: %s", err)
+	ui.PromptConfig(ConfigPrompt{
+		Message:  message,
+		Options:  []PromptOption{{Label: "Yes", Key: 'y'}, {Label: "No", Key: 'n'}},
+		MaxWidth: 80,
+	}, func(approved bool) {
+		if !approved {
+			return
 		}
+		userDoc, err := m.userConfigDocument()
+		if err == nil {
+			err = m.writeConfigMerge(userDoc, change.pkgDoc)
+		}
+		if err != nil {
+			_, _ = ui.Notify(browserapi.LevelError, "apply configuration: %s", err)
+			return
+		}
+		_, _ = ui.Notify(browserapi.LevelSuccess,
+			"updated %s extension path. Restart the program to load the changes.", pkgID)
 	})
-	if !ok {
-		m.log(log.ErrorLevel, "idepkg config prompt: could not schedule")
-		return nil
-	}
-
-	return nil
 }
 
 func boundedFloatingMessage(
@@ -1202,31 +1150,35 @@ func (m *Manager) runAfterConfigMerge(
 // hook live-applied changes, no further action is requested from the user;
 // otherwise it keeps the restart-oriented wording.
 func (m *Manager) notifyConfigApplied(
-	level browserapi.NotificationLevel, pkgID string, result ConfigMergeResult,
+	ui UI, level browserapi.NotificationLevel, pkgID string, result ConfigMergeResult,
 ) {
 	if result.LiveApplied {
-		_, _ = m.n.Notify(level, "applied %s configuration updates. ", pkgID)
+		_, _ = ui.Notify(level, "applied %s configuration updates. ", pkgID)
 		return
 	}
-	_, _ = m.n.Notify(level, "applied %s configuration updates. "+
+	_, _ = ui.Notify(level, "applied %s configuration updates. "+
 		"Restart the program to load the changes.", pkgID)
 }
 
 func (m *Manager) processConfig(
-	pkgID string, pkgVersion release.Version, pkgConfigFile string,
+	ctx context.Context, pkgID string, pkgVersion release.Version, pkgConfigFile string,
 ) error {
-	return m.processConfigFile(pkgID, pkgVersion, pkgConfigFile, false)
+	return m.processConfigFile(ctx, pkgID, pkgVersion, pkgConfigFile, false)
 }
 
 func (m *Manager) processInstalledConfig(
-	pkgID string, pkgVersion release.Version, pkgConfigFile string,
+	ctx context.Context, pkgID string, pkgVersion release.Version, pkgConfigFile string,
 ) error {
-	return m.processConfigFile(pkgID, pkgVersion, pkgConfigFile, true)
+	return m.processConfigFile(ctx, pkgID, pkgVersion, pkgConfigFile, true)
 }
 
+// processConfigFile merges a package's config into the user config.
+// Changes that would replace the user's settings are asked about
+// through the UI of ctx, and applied when the user approves them, which
+// can be after this returns.
 func (m *Manager) processConfigFile(
-	pkgID string, pkgVersion release.Version, pkgConfigFile string,
-	promptExtensionPaths bool,
+	ctx context.Context, pkgID string, pkgVersion release.Version,
+	pkgConfigFile string, promptExtensionPaths bool,
 ) error {
 	_, err := os.Stat(pkgConfigFile)
 	if err != nil && !os.IsNotExist(err) {
@@ -1241,7 +1193,7 @@ func (m *Manager) processConfigFile(
 	}
 	// A fresh datadir has no user config yet. Seed an empty one so the
 	// package's env/settings still merge; otherwise a first install (e.g. a
-	// remote `rune -x` provisioning into a brand-new ~/.rune) never gets
+	// remote host installing into a brand-new ~/.rune) never gets
 	// GOROOT and the toolchain fails with "cannot find GOROOT directory".
 	if _, statErr := os.Stat(m.configPath); os.IsNotExist(statErr) {
 		if err := os.MkdirAll(filepath.Dir(m.configPath), 0o777); err != nil {
@@ -1270,30 +1222,20 @@ func (m *Manager) processConfigFile(
 		return err
 	}
 
+	ui := m.ui(ctx)
 	if plan.autoApplyDoc != nil {
 		result, err := m.applyConfigMerge(pkgID, pkgVersion, plan.userDoc, plan.autoApplyDoc)
 		if err != nil {
 			return fmt.Errorf("auto-apply config change: %w", err)
 		}
-		m.notifyConfigApplied(browserapi.LevelInfo, pkgID, result)
+		m.notifyConfigApplied(ui, browserapi.LevelInfo, pkgID, result)
 	}
 	for _, change := range plan.pathChanges {
-		if err := m.promptExtensionPathChange(
-			pkgID, pkgVersion, plan.userDoc, change,
-		); err != nil {
-			return fmt.Errorf("prompt extension path change: %w", err)
-		}
+		m.promptExtensionPathChange(ui, pkgID, change)
 	}
-
 	if plan.prompt {
-		err = m.promptConfigChange(
-			pkgID, pkgVersion, plan.missingYAML, plan.userDoc, plan.pkgDoc,
-		)
-		if err != nil {
-			return fmt.Errorf("prompt config change: %w", err)
-		}
+		m.promptConfigChange(ui, pkgID, pkgVersion, plan.missingYAML, plan.pkgDoc)
 	}
-
 	return nil
 }
 

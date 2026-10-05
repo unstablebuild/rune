@@ -60,8 +60,6 @@ func TestRunRequiresPluginEnvironment(t *testing.T) {
 	assert.ErrorIs(t, err, ErrNotInRune)
 }
 
-// The agentbench runner evaluates `git diff`, so a headless run must
-// never write into the workspace it is pointed at.
 func TestRunLeavesWorkspaceUnmodified(t *testing.T) {
 	t.Setenv("RUNE_SOCKET", "")
 	t.Setenv("RUNE_DATADIR", "")

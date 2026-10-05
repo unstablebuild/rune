@@ -38,31 +38,6 @@ import (
 	"unstable.build/rune/internal/localstorage"
 )
 
-// TestIntegrationIDEWorkspaceReloadOverSSH reproduces the user-visible
-// bug where `:workspacereload` against an SSH-backed workspace leaves
-// every subsequent scheme operation (open file, open pty, stat, ...)
-// returning "context canceled".
-//
-// Original root cause: commandReloadWorkspace used to close the
-// workspaceHandler via a "keep scheme" path that called
-// hm.cancelCtx() — the pending workspace's cancel func. That cancel
-// propagated through newRemoteScheme's WithCancel into the
-// remoteScheme.ctx that drives every gRPC call. addWorkspace then
-// ran again, but workspace.Manager.AddWorkspace returned the *same*
-// managerWorkspace from its cache, so the freshly-installed
-// workspaceHandler wrapped the *original* remoteScheme — now with
-// a permanently-canceled context.
-//
-// Post RUNE-180 fix: commandReloadWorkspace now routes through
-// closeWorkspace, which calls closeAndRemove. The scheme is closed
-// and dropped from workspace.Manager's cache, so addWorkspace builds
-// a fresh remoteScheme on reopen and this test exercises the
-// close+open cycle end-to-end.
-//
-// The test boots an IDE pointed at ssh://test@<container>/tmp/<dir>,
-// waits for the cwd workspace install, then issues
-// `:workspacereload<enter>` through the handler and asserts that
-// post-reload Open on the same workspace still works.
 func TestIntegrationIDEWorkspaceReloadOverSSH(t *testing.T) {
 	SkipIfNoDocker(t)
 	EnsureImage(t)

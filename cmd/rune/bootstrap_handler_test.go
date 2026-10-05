@@ -111,10 +111,6 @@ func TestBootstrapHandlerDelegates(t *testing.T) {
 	require.True(t, handled)
 }
 
-// TestBootstrapHandlerSwapInner verifies that swapping the inner
-// handler causes Handle to forward events to the new inner. We cannot
-// build a real *ide.IDE in a unit test so we exercise the post-swap
-// state directly.
 func TestBootstrapHandlerSwapInner(t *testing.T) {
 	a := &fakeHandler{}
 	b := &fakeHandler{}
@@ -130,11 +126,6 @@ func TestBootstrapHandlerSwapInner(t *testing.T) {
 	require.Equal(t, 2, b.handleCalls)
 }
 
-// TestBootstrapHandlerResizesAfterSwap reproduces a panic where the
-// configured IDE's first Draw rendered against a zero-width buffer
-// because gui.Update only invokes Resize on layout change, not on every
-// tick. The handler must remember the last Resize dimensions and apply
-// them to the new inner immediately after the swap.
 func TestBootstrapHandlerResizesAfterSwap(t *testing.T) {
 	pre := &fakeHandler{}
 	post := &fakeHandler{}
@@ -156,11 +147,6 @@ func TestBootstrapHandlerResizesAfterSwap(t *testing.T) {
 	require.Equal(t, 40, post.lastResizeH)
 }
 
-// TestAttachGUIInstallsQuickMenu reproduces a bug where the native quick
-// menu only appeared after the first window resize: installing replays
-// the last frame, which stayed zero because SetFrame was only ever
-// reached from Resize. Attaching the GUI must publish the install, and
-// the install must reposition the bar itself.
 func TestAttachGUIInstallsQuickMenu(t *testing.T) {
 	var published []term.Event
 	bh := &bootstrapHandler{
@@ -187,9 +173,6 @@ func TestQuickMenuCellsWithoutButtons(t *testing.T) {
 		"an empty quick menu must not reserve a grid column")
 }
 
-// TestQuickMenuToggleCollapsesReservedColumn pins that hiding the bar
-// gives its reserved column back and clears the native buttons, and
-// that showing it restores both.
 func TestQuickMenuToggleCollapsesReservedColumn(t *testing.T) {
 	if !glassbar.Supported() {
 		t.Skip("no native quick menu on this platform")
@@ -215,9 +198,6 @@ func TestQuickMenuToggleCollapsesReservedColumn(t *testing.T) {
 	require.Equal(t, quickMenuColumnCells, b.quickMenuCells())
 }
 
-// TestQuickMenuUnavailableWithoutButtons keeps the toggle inert when
-// the user configured no buttons, so it can never reserve a column for
-// a bar that has nothing to show.
 func TestQuickMenuUnavailableWithoutButtons(t *testing.T) {
 	b := &bootstrapHandler{publishEvent: func(term.Event) bool { return true }}
 	require.False(t, b.quickMenuAvailable())
@@ -227,9 +207,6 @@ func TestQuickMenuUnavailableWithoutButtons(t *testing.T) {
 	require.Zero(t, b.quickMenuCells())
 }
 
-// TestLoadQuickMenuKeepsValidButtons pins that one malformed entry does
-// not cost the user the whole bar: config validation neutralises the bad
-// entry and still hands back a usable tree, so the valid buttons load.
 func TestLoadQuickMenuKeepsValidButtons(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.star")
 	require.NoError(t, os.WriteFile(path, []byte(
@@ -245,12 +222,6 @@ func TestLoadQuickMenuKeepsValidButtons(t *testing.T) {
 		Title: "New Terminal", Command: []string{"terminalnew"}}}, b.quickMenu)
 }
 
-// TestApplyInitialThemeAttrHoldsEventLoopLock pins that the theme seed
-// runs as an event-loop iteration. ide.New starts the cwd workspace
-// build on a background goroutine that reads the same shader-runner
-// state SetDefaultAttributes writes (via abortPendingBuild ->
-// stopLoading), so seeding the attributes off the loop lock is a data
-// race.
 func TestApplyInitialThemeAttrHoldsEventLoopLock(t *testing.T) {
 	b := newConfiguredBootstrapForEnvTest(t, configFilename,
 		"editor:\n  mode: modal\n", t.TempDir())

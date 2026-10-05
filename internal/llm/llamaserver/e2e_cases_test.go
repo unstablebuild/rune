@@ -32,9 +32,6 @@ import (
 	"unstable.build/rune/internal/llm/llamaserver"
 )
 
-// TestE2E_CreateCompletion_Basic drives a short single-turn request and
-// asserts the event stream shape: text deltas concatenate into the final
-// message, usage is populated, and a single EventStreamDone closes it.
 func TestE2E_CreateCompletion_Basic(t *testing.T) {
 	svc, model := e2eService(t, llamaserver.Config{})
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -62,9 +59,6 @@ func TestE2E_CreateCompletion_Basic(t *testing.T) {
 	}
 }
 
-// TestE2E_CreateCompletion_Length caps generation server-side via the
-// --predict flag (Config.MaxOutputTokens) and asserts the length finish
-// reason. This pins the config→flag mapping for output caps.
 func TestE2E_CreateCompletion_Length(t *testing.T) {
 	svc, model := e2eService(t, llamaserver.Config{MaxOutputTokens: 4})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -82,9 +76,6 @@ func TestE2E_CreateCompletion_Length(t *testing.T) {
 	assert.Equal(t, llmapi.FinishReasonLength, done.FinishReason)
 }
 
-// TestE2E_CreateCompletion_Tools exercises the tool-calling path end to
-// end: the model must emit a structured tool call the OpenAI-compatible
-// client surfaces as EventToolCallDone with parseable JSON arguments.
 func TestE2E_CreateCompletion_Tools(t *testing.T) {
 	svc, model := e2eService(t, llamaserver.Config{})
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -132,10 +123,6 @@ func TestE2E_CreateCompletion_Tools(t *testing.T) {
 		"tool arguments should carry the requested city")
 }
 
-// TestE2E_ToolResult_RoundTrip feeds a tool result back and asserts the
-// model produces a natural-language answer that incorporates it. This
-// verifies the assistant/tool message rendering the OpenAI-compatible
-// path relies on.
 func TestE2E_ToolResult_RoundTrip(t *testing.T) {
 	svc, model := e2eService(t, llamaserver.Config{})
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -176,7 +163,6 @@ func TestE2E_ToolResult_RoundTrip(t *testing.T) {
 		"assistant should incorporate the tool result")
 }
 
-// TestE2E_CountTokens returns a positive offline estimate.
 func TestE2E_CountTokens(t *testing.T) {
 	svc, model := e2eService(t, llamaserver.Config{})
 	n, err := svc.CountTokens(model, []llmapi.Message{
@@ -186,8 +172,6 @@ func TestE2E_CountTokens(t *testing.T) {
 	assert.Positive(t, n)
 }
 
-// TestE2E_ContextCancellation cancels mid-stream and asserts the iterator
-// drains cleanly without wedging the pool.
 func TestE2E_ContextCancellation(t *testing.T) {
 	svc, model := e2eService(t, llamaserver.Config{})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -227,10 +211,6 @@ func TestE2E_ContextCancellation(t *testing.T) {
 	assert.NotEmpty(t, text)
 }
 
-// TestE2E_ServerReuse_AcrossRequests proves the pool reuses a single
-// running llama-server across sequential requests: two completions on the
-// same model must not restart the process (verified indirectly by both
-// succeeding quickly under a single StartupTimeout budget).
 func TestE2E_ServerReuse_AcrossRequests(t *testing.T) {
 	svc, model := e2eService(t, llamaserver.Config{})
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
@@ -250,9 +230,6 @@ func TestE2E_ServerReuse_AcrossRequests(t *testing.T) {
 	}
 }
 
-// TestE2E_ServerNotInstalled asserts the exact user-facing install message
-// when llama-server cannot be resolved — the "not installed" state lives
-// in the locator, not a nil backend.
 func TestE2E_ServerNotInstalled(t *testing.T) {
 	if !e2eEnabled() {
 		t.Skip("llamaserver e2e: opt in with RUNE_LLAMASERVER_E2E=1")
@@ -272,9 +249,6 @@ func TestE2E_ServerNotInstalled(t *testing.T) {
 	assert.Contains(t, err.Error(), "models.local.server_bin_path")
 }
 
-// TestE2E_ResponseFormat_JSONObject asks for a JSON object and asserts the
-// model honours the ResponseFormat, exercising the OpenAI-compatible
-// response_format passthrough to llama-server.
 func TestE2E_ResponseFormat_JSONObject(t *testing.T) {
 	svc, model := e2eService(t, llamaserver.Config{})
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -293,11 +267,6 @@ func TestE2E_ResponseFormat_JSONObject(t *testing.T) {
 	assertJSONObject(t, text)
 }
 
-// TestE2E_ModelLoadFailure_FastAndClear points the real llama-server at a
-// corrupt GGUF so the process starts and then exits early with a genuine
-// load error. It asserts we surface that failure fast (well under the
-// deliberately long startup timeout) and with a meaningful message, rather
-// than after a multi-minute health-poll timeout.
 func TestE2E_ModelLoadFailure_FastAndClear(t *testing.T) {
 	if !e2eEnabled() {
 		t.Skip("llamaserver e2e: set RUNE_LLAMASERVER_E2E=1 to run")

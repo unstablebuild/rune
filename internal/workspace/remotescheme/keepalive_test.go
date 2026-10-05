@@ -23,14 +23,6 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// TestKeepaliveContract pins the invariant that ties a tunneled gRPC
-// client's ping cadence to the server's enforcement policy. If a future
-// edit lowers ClientKeepalive.Time below ServerEnforcement.MinTime, or
-// flips PermitWithoutStream off, the server would answer the client's
-// keepalive pings with GOAWAY too_many_pings and tear down the single
-// HTTP/2 connection carried over the tunnel — dropping terminals,
-// invalidating cached pty fds, and forcing a reconnect that re-runs
-// remote provisioning.
 func TestKeepaliveContract(t *testing.T) {
 	assert.LessOrEqual(t, ServerEnforcement.MinTime, ClientKeepalive.Time,
 		"server MinTime must permit the client ping interval, else "+

@@ -26,9 +26,6 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 )
 
-// TestService_Acquire_FailsFastOnEarlyExit asserts that a model whose process
-// crashes during load surfaces the failure well before the startup timeout,
-// via a single error notification that leads with the salient llama.cpp line.
 func TestService_Acquire_FailsFastOnEarlyExit(t *testing.T) {
 	exec := &fakeExecutor{
 		exitBeforeReady: true,
@@ -63,9 +60,6 @@ func TestService_Acquire_FailsFastOnEarlyExit(t *testing.T) {
 	assert.NotContains(t, notis.levels(), browserapi.LevelSuccess)
 }
 
-// TestService_Acquire_EarlyExit_NoDoubleNotify asserts that only one error
-// notification is emitted even though both the early-exit and startup-timeout
-// paths could fire.
 func TestService_Acquire_EarlyExit_NoDoubleNotify(t *testing.T) {
 	exec := &fakeExecutor{
 		exitBeforeReady: true,

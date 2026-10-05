@@ -50,6 +50,11 @@ func NewSession(setsid, setctty bool) *syscall.SysProcAttr {
 	return nil
 }
 
+// ControlsTerminal reports false: Windows has no controlling terminals.
+func ControlsTerminal(attr *syscall.SysProcAttr) bool {
+	return false
+}
+
 // LeadsGroup reports whether attr starts the process as the root of a new
 // process group. Callers opt into having the process's descendants terminated
 // with it by asking for a new group, even though KillGroup does not depend on

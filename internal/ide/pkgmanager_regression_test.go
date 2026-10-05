@@ -26,6 +26,7 @@ import (
 	"github.com/unstablebuild/blue/release"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/ide/idepkg/idepkgtest"
 )
 
@@ -46,13 +47,6 @@ func TestPackageManagerLibDirMissingPackageReturnsStorageNotFound(t *testing.T) 
 	require.ErrorIs(t, err, storageapi.ErrNotFound)
 }
 
-// TestPackageManagerInstallPromptDoesNotBlockEventLoop is a regression
-// test: selecting "Yes" on the auto-install prompt used to run the
-// synchronous InstallPackageVersion download directly inside the prompt
-// handler, which executes on the event loop and froze the UI until the
-// package finished installing. The install must run off the event loop
-// so dispatching the selection key returns promptly while the download
-// is still in flight.
 func TestPackageManagerInstallPromptDoesNotBlockEventLoop(t *testing.T) {
 	t.Parallel()
 
@@ -95,4 +89,63 @@ func TestPackageManagerInstallPromptDoesNotBlockEventLoop(t *testing.T) {
 	require.NotEmpty(t, slice)
 
 	require.NoError(t, m.Close())
+}
+
+func TestPackageManagerPendingInstallHonorsContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	rm := idepkgtest.NewReleaseManager(
+		idepkgtest.MakePackages(release.Package{Name: "go", Latest: "1"}),
+		idepkgtest.MakeBundles([]release.Bundle{{Package: "go", Version: "1"}}),
+	)
+	m := newTestWorkspaceManagerHandlerForPkgManager(t, rm, false, 0)
+	defer func() {
+		require.NoError(t, m.Close())
+	}()
+
+	it, err := m.pkgmanager.LibDir(context.Background(), "go")
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go debug.CapturePanicReport(func() {
+		_, err := iterator.ToSlice(ctx, it)
+		done <- err
+	})
+	cancel()
+
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(5 * time.Second):
+		t.Fatal("pending install iterator ignored context cancellation")
+	}
+}
+
+func TestPackageManagerPendingInstallErrDoesNotBlock(t *testing.T) {
+	t.Parallel()
+
+	rm := idepkgtest.NewReleaseManager(
+		idepkgtest.MakePackages(release.Package{Name: "go", Latest: "1"}),
+		idepkgtest.MakeBundles([]release.Bundle{{Package: "go", Version: "1"}}),
+	)
+	m := newTestWorkspaceManagerHandlerForPkgManager(t, rm, false, 0)
+	defer func() {
+		require.NoError(t, m.Close())
+	}()
+
+	it, err := m.pkgmanager.LibDir(context.Background(), "go")
+	require.NoError(t, err)
+
+	done := make(chan error, 1)
+	go debug.CapturePanicReport(func() {
+		done <- it.Err()
+	})
+
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Err blocked on the pending install decision")
+	}
 }

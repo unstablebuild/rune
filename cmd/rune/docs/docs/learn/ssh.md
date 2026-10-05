@@ -131,7 +131,6 @@ config = {
 | `strict_host_key_checking` | bool | `true` | When on, an unknown or changed host key prompts you before it is trusted, then records the accepted key to `known_hosts`. Set to `false` to record new or changed keys automatically without a prompt (still safer than `insecure`, which skips verification). |
 | `insecure` | bool | `false` | Skip host-key verification. Convenient for throwaway hosts, but it removes protection against a spoofed remote, so leave it off for anything you care about. |
 | `kbd_interactive` | bool | `false` | Enable keyboard-interactive (PAM-style) authentication for hosts that require it. |
-| `provision_packages` | bool | `true` | Mirror the language toolchains you use locally onto the remote when connecting. Set to `false` to skip provisioning, for example when the remote already has its toolchains managed. See [Language toolchains on the remote host](#language-toolchains-on-the-remote-host). |
 | `command` | string | *(none)* | Delegate the connection to your system `ssh` binary instead of Rune's built-in client. Useful when you rely on ProxyJump, an SSH agent, or other options from your `~/.ssh/config`. Use `%h` for the host and `%p` for the port, for example `ssh -W %h:%p bastion`. |
 
 ### Using your system SSH configuration
@@ -195,51 +194,49 @@ config = {
 ### Language toolchains on the remote host
 
 Language intelligence runs where your code runs. When you open a remote
-workspace, the language servers and build tools (for example `gopls`, `ty`,
-`rust-analyzer`, `cargo`, `uv`) execute on the **remote host**, not on your
-local machine, so they need to be available on the remote. Rune handles this
-for you.
+workspace, the language servers, debuggers, and build tools (for example
+`gopls`, `ty`, `rust-analyzer`, `cargo`, `uv`) execute on the **remote host**,
+not on your local machine, so they need to be installed there. Rune installs
+them when they are first needed.
 
-When you open a remote workspace, Rune provisions the remote automatically. It
-mirrors the language packages you already use locally onto the remote host,
-installing them into the remote account's own Rune data directory and putting
-their tools on the path the workspace uses. In practice this means a machine
-that has never run Rune before comes up with the same Go, Python, and Rust
-support you have locally, without a manual setup step. Provisioning runs each
-time you connect, so a host stays in sync as you add or update packages on your
-machine, and it only mirrors the versions you actually use.
+When a remote workspace needs a language package the remote host does not have
+yet, for example the first time you open a Go file there, Rune asks you in your
+local window whether to install it on that host. The prompt names the host, so
+you always know where the package goes:
 
-While the remote is being provisioned, Rune shows its progress as it installs
-each package. A large toolchain can take a moment on the first connection;
-later connections reuse what is already installed and start quickly. If a
-package cannot be installed on the remote, Rune reports it and still opens the
-workspace, so a single missing toolchain never blocks your session.
+> Do you want to install package **"go"** on **studio**?
 
-If you manage the remote's toolchains yourself, or you would rather not install
-anything on connect, turn provisioning off with `provision_packages: false` in
-your local `workspace.ssh` config. Rune then leaves the remote untouched and
-resolves tools from your config overrides and the remote's `$PATH` instead.
+It offers the same **Yes**, **Yes, Always**, and **No** choices as a local
+install (see [Installing a language package](../languages/supported.md#installing-a-language-package)),
+and `updates.auto_install` applies to remote hosts too. Rune installs the
+package into the remote account's own Rune data directory, built for the
+remote's operating system and architecture, shows the download progress in
+your window, and starts the language server as soon as the install finishes.
+Packages stay installed on the host, so later connections start right away.
+If a package would replace a setting in the remote's Rune configuration, such
+as a `GOROOT` you set there, Rune asks you in your local window before
+changing it.
 
-```yaml tab
-workspace:
-  ssh:
-    provision_packages: false
+Opening a file can prompt twice: once for your local machine, which renders
+the language's syntax highlighting, and once for the remote host, which runs
+its language server. Each prompt says where it installs.
+
+To set up a host ahead of time, run `pkg install` from the
+[console](./console.md) of a remote workspace. In a remote workspace every
+`pkg` command, such as `pkg list` or `pkg delete`, acts on the remote host:
+
+```
+pkg install go
 ```
 
-```python tab
-config = {
-    "workspace": {
-        "ssh": {
-            "provision_packages": False,
-        },
-    },
-}
-```
+If the remote runs a version of Rune that cannot install packages, Rune asks
+you to update Rune on that host and uses the tools on the remote's `$PATH`
+in the meantime.
 
-Rune then resolves each tool by looking, in order, at:
+Rune resolves each tool by looking, in order, at:
 
 1. an explicit override in your config (such as `extensions.go.config.lsp_path`),
-2. the packages Rune provisioned on the remote and other well-known install
+2. the packages installed on the remote and other well-known install
    locations for that toolchain, and
 3. the command name on the remote host's `$PATH`.
 
@@ -247,7 +244,7 @@ This means most remotes just work. When you would rather manage a toolchain
 yourself, or a tool lives somewhere non-standard, install it on the remote or
 point Rune at it with the matching config key, ideally from the remote
 [`.rune/config.yaml`](#per-workspace-config-on-the-remote-host) so the setting
-travels with the project. An explicit override always wins over the provisioned
+travels with the project. An explicit override always wins over the installed
 package, so you stay in control:
 
 | Extension | Override key | Points at |
@@ -283,10 +280,11 @@ Rune can't verify the host against it and won't rewrite it. It prompts you to
 **trust once** and connect for this session only; fix the file to record the
 host permanently.
 
-**Language features do not work on a remote workspace.** Rune provisions the
-language packages you use locally onto the remote when you connect, and reports
-any package it could not install. If a language still does not work, the tool
-may live somewhere non-standard on the host, or you may be managing it yourself
-outside Rune. Install the toolchain on the remote, or set the matching override
-key from the remote `.rune/config.yaml`. See
+**Language features do not work on a remote workspace.** If you answered **No**
+when Rune offered to install the language package on the remote, run
+`pkg install <language>` from the console of that workspace. If a language
+still does not work, the tool may live somewhere non-standard on the host, or
+you may be managing it yourself outside Rune. Install the toolchain on the
+remote, or set the matching override key from the remote `.rune/config.yaml`.
+See
 [Language toolchains on the remote host](#language-toolchains-on-the-remote-host).

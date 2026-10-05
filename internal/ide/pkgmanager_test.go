@@ -158,9 +158,6 @@ func TestPkgManager_LibDir_NotAuthenticated(t *testing.T) {
 		"expected storageapi.ErrNotFound, got %v", err)
 }
 
-// TestPkgManager_HandlePkgInstall_NotAuthenticated verifies that the
-// interactive :pkginstall command suppresses ErrNotAuthenticated and
-// surfaces the raw auth error from the `pkg install` shell command.
 func TestPkgManager_HandlePkgInstall_NotAuthenticated(t *testing.T) {
 	t.Parallel()
 	pkgs := idepkgtest.MakePackages(release.Package{Name: "go"})
@@ -171,10 +168,7 @@ func TestPkgManager_HandlePkgInstall_NotAuthenticated(t *testing.T) {
 	m := newTestWorkspaceManagerHandlerForPkgManager(t, rm, false, 0)
 	defer m.Close()
 
-	h := pkgshell.New(pkgshell.Config{
-		Manager:       m.pkgmanager.pkg,
-		UpdateChecker: m.pkgmanager.uc,
-	})
+	h := pkgshell.New(pkgshell.Config{Manager: m.pkgmanager.pkg})
 	_, err := h.HandleCommand(context.Background(), repl.Command{
 		Name: pkgshell.CommandName,
 		Args: []string{"install", "go"},
@@ -182,10 +176,6 @@ func TestPkgManager_HandlePkgInstall_NotAuthenticated(t *testing.T) {
 	require.ErrorIs(t, err, auth.ErrNotAuthenticated)
 }
 
-// TestPkgManager_HandlePkgInstall_Forbidden verifies that the
-// `pkg install` shell command translates a 403 from the cdnrelease
-// endpoint into the friendly ErrForbidden sentinel instead of
-// bubbling up the raw cdnrelease error.
 func TestPkgManager_HandlePkgInstall_Forbidden(t *testing.T) {
 	t.Parallel()
 	pkgs := idepkgtest.MakePackages(release.Package{Name: "go"})
@@ -199,10 +189,7 @@ func TestPkgManager_HandlePkgInstall_Forbidden(t *testing.T) {
 	m := newTestWorkspaceManagerHandlerForPkgManager(t, rm, false, 0)
 	defer m.Close()
 
-	h := pkgshell.New(pkgshell.Config{
-		Manager:       m.pkgmanager.pkg,
-		UpdateChecker: m.pkgmanager.uc,
-	})
+	h := pkgshell.New(pkgshell.Config{Manager: m.pkgmanager.pkg})
 	_, err := h.HandleCommand(context.Background(), repl.Command{
 		Name: pkgshell.CommandName,
 		Args: []string{"install", "go"},
@@ -210,10 +197,6 @@ func TestPkgManager_HandlePkgInstall_Forbidden(t *testing.T) {
 	require.ErrorIs(t, err, idepkg.ErrForbidden)
 }
 
-// TestPkgManager_CompletePkgInstall_Forbidden verifies that tab
-// completion against the releases endpoint surfaces the friendly
-// ErrForbidden sentinel to the completer framework when the server
-// returns 403.
 func TestPkgManager_CompletePkgInstall_Forbidden(t *testing.T) {
 	t.Parallel()
 	pkgs := idepkgtest.MakePackages(release.Package{Name: "go"})
@@ -227,19 +210,12 @@ func TestPkgManager_CompletePkgInstall_Forbidden(t *testing.T) {
 	m := newTestWorkspaceManagerHandlerForPkgManager(t, rm, false, 0)
 	defer m.Close()
 
-	h := pkgshell.New(pkgshell.Config{
-		Manager:       m.pkgmanager.pkg,
-		UpdateChecker: m.pkgmanager.uc,
-	})
+	h := pkgshell.New(pkgshell.Config{Manager: m.pkgmanager.pkg})
 	_, err := h.Complete(context.Background(), pkgshell.CommandName,
 		[]string{"install", ""})
 	require.ErrorIs(t, err, idepkg.ErrForbidden)
 }
 
-// TestPkgManager_HandlePkgInstall_Forbidden_Integration spins up a
-// real cdnrelease.Manager against an httptest.Server returning 403
-// so the end-to-end error type/status contract between blue and rune
-// is exercised, not just the in-process mock.
 func TestPkgManager_HandlePkgInstall_Forbidden_Integration(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -251,10 +227,7 @@ func TestPkgManager_HandlePkgInstall_Forbidden_Integration(t *testing.T) {
 	m := newTestWorkspaceManagerHandlerForPkgManager(t, rm, false, 0)
 	defer m.Close()
 
-	h := pkgshell.New(pkgshell.Config{
-		Manager:       m.pkgmanager.pkg,
-		UpdateChecker: m.pkgmanager.uc,
-	})
+	h := pkgshell.New(pkgshell.Config{Manager: m.pkgmanager.pkg})
 	_, err := h.HandleCommand(context.Background(), repl.Command{
 		Name: pkgshell.CommandName,
 		Args: []string{"install", "go"},
@@ -620,10 +593,7 @@ func TestSetReleaseManager(t *testing.T) {
 	m := newTestWorkspaceManagerHandlerForPkgManager(t, rm, false, 0)
 
 	// Before the second release manager is set, there are no packages.
-	h0 := pkgshell.New(pkgshell.Config{
-		Manager:       m.pkgmanager.pkg,
-		UpdateChecker: m.pkgmanager.uc,
-	})
+	h0 := pkgshell.New(pkgshell.Config{Manager: m.pkgmanager.pkg})
 	it0, err := h0.Complete(context.Background(), pkgshell.CommandName,
 		[]string{"install", ""})
 	require.NoError(t, err)
@@ -639,10 +609,7 @@ func TestSetReleaseManager(t *testing.T) {
 
 	// After re-setting the release manager, the new packages are
 	// reachable through a freshly constructed pkg shell.
-	h := pkgshell.New(pkgshell.Config{
-		Manager:       m.pkgmanager.pkg,
-		UpdateChecker: m.pkgmanager.uc,
-	})
+	h := pkgshell.New(pkgshell.Config{Manager: m.pkgmanager.pkg})
 	it, err := h.Complete(context.Background(), pkgshell.CommandName,
 		[]string{"install", ""})
 	require.NoError(t, err)
@@ -651,6 +618,144 @@ func TestSetReleaseManager(t *testing.T) {
 	require.Equal(t, []string{"go"}, names)
 
 	require.NoError(t, m.Close())
+}
+
+func pkgVersionInUse(
+	t testing.TB, pm idepkg.PackageManager, pkgID string,
+) (release.Version, bool) {
+	t.Helper()
+	version, ok, err := pm.PackageVersionInUse(context.Background(), pkgID)
+	require.NoError(t, err)
+	return version, ok
+}
+
+// hostPackageManager stands in for the package manager of another host.
+// It implements only what pkgManager may call; any other method panics
+// on the nil embedded interface.
+type hostPackageManager struct {
+	idepkg.PackageManager
+	mu        sync.Mutex
+	latest    release.Version
+	installed map[string]release.Version
+}
+
+func newHostPackageManager(latest release.Version) *hostPackageManager {
+	return &hostPackageManager{latest: latest, installed: map[string]release.Version{}}
+}
+
+func (f *hostPackageManager) LibDir(
+	_ context.Context, pkgID string,
+) (iterator.Iterator[string], error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	version, ok := f.installed[pkgID]
+	if !ok {
+		return nil, idepkg.ErrNotInstalled
+	}
+	return iterator.FromSlice([]string{
+		"/home/studio/.rune/pkg/" + pkgID + "/" + string(version) + "/bin/" + pkgID,
+	}), nil
+}
+
+func (f *hostPackageManager) LatestVersion(
+	context.Context, string,
+) (release.Version, error) {
+	return f.latest, nil
+}
+
+func (f *hostPackageManager) InstallPackageVersion(
+	_ context.Context, pkgID string, version release.Version, pw repl.ProgressWriter,
+) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.installed[pkgID] = version
+	return nil
+}
+
+func (f *hostPackageManager) installedVersion(pkgID string) (release.Version, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	v, ok := f.installed[pkgID]
+	return v, ok
+}
+
+func TestPkgManagerPromptsForHost(t *testing.T) {
+	t.Parallel()
+	const prompt = `┌──────────────────────────────────────┐
+│                                      │
+├──────────────────────────────────────┤
+█●██████████████████████████████████████
+│                                      │
+│  Do you want to install package      │
+│  "go" on studio?                     │
+│                                      │
+│                                      │
+│                                      │
+│Yes           Yes, Always          No │
+└──────────────────────────────────────┘
+├──────────────────────────────────────┤
+│1                                     │
+└━─────────────────────────────────────┘`
+	const closed = `┌──────────────────────────────────────┐
+│                                      │
+├──────────────────────────────────────┤
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+│          workspaceWallpaper          │
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+├──────────────────────────────────────┤
+│1                                     │
+└━─────────────────────────────────────┘`
+	tests := []struct {
+		name    string
+		input   string
+		want    []string
+		wantErr error
+	}{
+		{name: "yes installs on the host", input: "Y",
+			want: []string{"/home/studio/.rune/pkg/go/2/bin/go"}},
+		{name: "no installs nothing", input: "N", wantErr: storageapi.ErrNotFound},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rm := idepkgtest.NewReleaseManager(idepkgtest.MakePackages(), idepkgtest.MakeBundles())
+			m := newTestWorkspaceManagerHandlerForPkgManager(t, rm, false, 0)
+			defer func() { require.NoError(t, m.Close()) }()
+
+			host := newHostPackageManager("2")
+			pm := newPkgManager(host, "studio", m.notifications.current(),
+				storageapi.WithPartition(m.ideStorage, idepkg.StoragePartition),
+				m.workspaceManagerHandler, m.scheduleNextTick,
+				term.NopInterrupter(), false)
+			defer func() { require.NoError(t, pm.Close()) }()
+
+			it, err := pm.LibDir(context.Background(), "go")
+			require.NoError(t, err)
+
+			handlertest.RunHandlerSequence(t, m, 40, 15, []handlertest.SequenceTestCase{
+				{InputSequence: "", Expected: prompt},
+				{InputSequence: tc.input, Expected: closed},
+			})
+
+			paths, err := iterator.ToSlice(context.Background(), it)
+			if tc.wantErr != nil {
+				require.ErrorIs(t, err, tc.wantErr)
+				_, ok := host.installedVersion("go")
+				assert.False(t, ok)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, tc.want, paths)
+			}
+			_, local := pkgVersionInUse(t, m.pkgmanager.pkg, "go")
+			assert.False(t, local, "a host install must not touch the local manager")
+		})
+	}
 }
 
 func newTestWorkspaceManagerHandlerForPkgManager(

@@ -23,7 +23,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -273,11 +272,9 @@ func (m *Manager) findBinary(
 	}
 
 	for _, file := range paths {
-		candidate := filepath.Base(file)
-		if candidate != cfg.command {
-			continue
-		}
-		if _, err := os.Stat(file); err == nil {
+		// The path is on the workspace host, which need not be this
+		// machine, so it is handed to the executor as listed.
+		if filepath.Base(file) == cfg.command {
 			return file, nil
 		}
 	}

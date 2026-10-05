@@ -117,9 +117,6 @@ func TestCompactConversationModelSelection(t *testing.T) {
 	}
 }
 
-// The manual /compact path resolves its own model (the `compact` alias by
-// default), so the session budget set through /max_tokens - which is only
-// validated against the chat model - must still be clamped here.
 func TestCompactConversationMaxOutputTokens(t *testing.T) {
 	compactModel := llmapi.ModelEntry{
 		Provider:      anthropic.LLMProvider,

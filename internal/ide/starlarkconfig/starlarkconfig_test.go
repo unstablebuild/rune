@@ -867,9 +867,6 @@ func TestAtomicSwap(t *testing.T) {
 
 // -- writeConfigAssignment (internal) -----------------------------------------
 
-// writeConfigAssignment is the inner helper that WriteConfigFileAtomic
-// delegates to. Covering it directly lets us exercise every write-error
-// branch without a racy/flaky filesystem setup.
 func TestWriteConfigAssignment(t *testing.T) {
 	t.Parallel()
 

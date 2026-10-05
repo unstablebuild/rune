@@ -1495,17 +1495,17 @@ func (s *Storage) Visible(v View, runs []PlaceholderRun) []term.Image {
 			}
 			items = append(items, drawItem{
 				img: term.Image{
-					Src:     img.pix,
-					ID:      img.termID,
-					Version: img.version,
-					Crop:    ref.src,
-					Pos:     term.Coordinates{X: col, Y: row},
-					Offset:  image.Pt(ref.cellX, ref.cellY),
-					Width:   ref.effCols,
-					Height:  ref.effRows,
-					Fit:     term.ImageFitFill,
-					Layer:   layerForZ(ref.Z),
-					Clip:    clip,
+					Src:          img.pix,
+					ID:           img.termID,
+					Version:      img.version,
+					Crop:         ref.src,
+					Pos:          term.Coordinates{X: col, Y: row},
+					RasterOffset: image.Pt(ref.cellX, ref.cellY),
+					Width:        ref.effCols,
+					Height:       ref.effRows,
+					Fit:          term.ImageFitFill,
+					Layer:        layerForZ(ref.Z),
+					Clip:         clip,
 				},
 				z: ref.Z, image: img.internalID, ref: ref.internalID,
 			})

@@ -49,9 +49,6 @@ func TestKeyBindings(t *testing.T) {
 	}
 }
 
-// TestKeyBindingsLeaveEditorGotoAndBracketKeys pins that no binding
-// shadows a goto or bracket command the editor implements: the editor
-// sees the second key first, so such a binding could never fire.
 func TestKeyBindingsLeaveEditorGotoAndBracketKeys(t *testing.T) {
 	for seq := range KeyBindings() {
 		keys := seq.String()

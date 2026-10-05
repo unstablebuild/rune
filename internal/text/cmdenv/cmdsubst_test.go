@@ -151,10 +151,6 @@ func TestNewCommandSubstResolver(t *testing.T) {
 	}
 }
 
-// TestCommandSubstRecordedDispatches uses a recordingExecutor (no
-// real fork/exec) so we can assert exactly what argv the resolver
-// hands the executor for each $(...) span, including how $VAR is
-// expanded inside the body by interp.Runner.
 func TestCommandSubstRecordedDispatches(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -216,17 +212,6 @@ func TestCommandSubstRecordedDispatches(t *testing.T) {
 	}
 }
 
-// TestCommandSubstRecursesIntoSubstitutedOutput documents the
-// resolver's actual behavior: stdout containing `$(...)` IS re-
-// parsed and the new spans are resolved on subsequent passes. The
-// test bounds the recursion by having the executor return
-// non-CmdSubst output on the second call so the loop terminates.
-//
-// This is a deliberate design choice: the resolver runs one pass
-// of `Walk → resolve innermost → splice → reparse` per iteration so
-// nested `$(...)` produced by a previous substitution is honored.
-// Callers concerned about untrusted output triggering further shell
-// execution must sanitize stdout before splicing.
 func TestCommandSubstRecursesIntoSubstitutedOutput(t *testing.T) {
 	rec := &recursiveExecutor{
 		responses: []string{
@@ -241,11 +226,6 @@ func TestCommandSubstRecursesIntoSubstitutedOutput(t *testing.T) {
 	assert.Equal(t, [][]string{{"first"}, {"second"}}, rec.argvSnapshot())
 }
 
-// TestCommandSubstNonUTF8OutputFailsReparse documents that the
-// resolver re-parses the spliced line; if a substitution's stdout
-// contains non-utf8 bytes the next pass surfaces a parse error.
-// Callers that want to retain non-utf8 output must sanitize before
-// the line reaches the resolver.
 func TestCommandSubstNonUTF8OutputFailsReparse(t *testing.T) {
 	rec := &recordingExecutor{
 		stdout: []byte("a\xffb"),
@@ -256,8 +236,6 @@ func TestCommandSubstNonUTF8OutputFailsReparse(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalid UTF-8")
 }
 
-// TestCommandSubstHandlesNULBytesInOutput verifies a NUL in stdout
-// propagates into the result string.
 func TestCommandSubstHandlesNULBytesInOutput(t *testing.T) {
 	rec := &recordingExecutor{
 		stdout: []byte("a\x00b"),
@@ -268,8 +246,6 @@ func TestCommandSubstHandlesNULBytesInOutput(t *testing.T) {
 	assert.Equal(t, "echo a\x00b", got)
 }
 
-// TestCommandSubstStripsOnlyTrailingNewlines pins POSIX behavior:
-// trailing \n is stripped, interior newlines preserved.
 func TestCommandSubstStripsOnlyTrailingNewlines(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -295,9 +271,6 @@ func TestCommandSubstStripsOnlyTrailingNewlines(t *testing.T) {
 	}
 }
 
-// TestCommandSubstContextCancellation asserts that cancelling ctx
-// while an inner subst is in flight propagates an error from
-// ExpandCommand.
 func TestCommandSubstContextCancellation(t *testing.T) {
 	rec := &recordingExecutor{
 		blockUntilCancel: true,
@@ -312,9 +285,6 @@ func TestCommandSubstContextCancellation(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestCommandSubstConcurrent runs ExpandCommand from many goroutines
-// to catch data races. The resolver is documented as safe to share
-// once configured.
 func TestCommandSubstConcurrent(t *testing.T) {
 	const goroutines = 16
 	const iterations = 50

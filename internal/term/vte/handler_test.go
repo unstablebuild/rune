@@ -56,22 +56,6 @@ func init() {
 	}
 }
 
-// TestMain isolates HOME for the entire package's child processes so
-// vim invocations in integration tests (e.g. TestHandlerIntegration)
-// write their .viminfo and .viminf[a-z].tmp lock files into a
-// throwaway directory. A real $HOME left over from prior crashes can
-// already carry the full a-z spinner of viminf*.tmp files, which
-// triggers E929 (too many viminfo temp files) and prevents the
-// editor banner from appearing at all — the test then fails on a
-// golden screen mismatch rather than a vim error.
-//
-// PS1 is pinned here for the same reason, once, for the whole
-// process: tests run t.Parallel(), and per-test os.Setenv("PS1", ...)
-// plus a t.Cleanup restore races against sibling tests spawning their
-// own shell — a cleanup can zero PS1 between another test's Setenv
-// and its shell fork, so that shell starts with no prompt at all.
-// Setting it once before any test forks a shell removes the shared
-// mutable write entirely rather than trying to sequence it per test.
 func TestMain(m *testing.M) {
 	tmp, err := os.MkdirTemp("", "vte-home")
 	if err != nil {
@@ -252,12 +236,6 @@ func TestIsNormalPtyExit(t *testing.T) {
 	}
 }
 
-// TestHandlerPublishesEventOnPtyExit pins the auto-close behaviour
-// browser.Tab.Handle relies on: when the underlying pty child dies
-// (e.g. the user types :q in an embedded vim, or exit in a shell),
-// the host event loop must receive at least one event so it routes a
-// Handle call to the tab. Without the wake-up the dead vte sits
-// black until the user presses another key.
 func TestHandlerPublishesEventOnPtyExit(t *testing.T) {
 	t.Parallel()
 
@@ -370,11 +348,6 @@ func (p *exitWakePublisher) SawEventNone() bool {
 	return p.sawNone
 }
 
-// TestHandlerMouseSelection drives press/drag/release sequences over
-// the vte handler and asserts the resulting Selection() contents. The
-// leftward and same-cell cases pin the user-reported bug where the
-// first (leftmost) cell of a leftward drag was excluded from the
-// selection.
 func TestHandlerMouseSelection(t *testing.T) {
 	t.Parallel()
 
@@ -594,6 +567,12 @@ func testSequence(t *testing.T, cfg Config, timeout time.Duration, cases []vtete
 func testSequenceShell(t *testing.T, cfg Config, timeout time.Duration, shell string, cases []vtetest.Case) (
 	*Handler, chan struct{},
 ) {
+	return testSequenceCommand(t, cfg, timeout, []string{shell}, cases)
+}
+
+func testSequenceCommand(
+	t *testing.T, cfg Config, timeout time.Duration, commandAndArgs []string, cases []vtetest.Case,
+) (*Handler, chan struct{}) {
 	ctx := context.Background()
 	ctx, cancel := context.WithCancel(context.Background())
 	temp := os.TempDir()
@@ -601,13 +580,15 @@ func testSequenceShell(t *testing.T, cfg Config, timeout time.Duration, shell st
 	uri, err := workspaceapi.CurrentUserHostURI(temp)
 	require.NoError(t, err)
 
-	scheme, err := workspace.NewFileScheme(ctx, config.NopConfig(), uri)
+	shellRCDir, err := workspace.InstallShellRC(t.TempDir())
+	require.NoError(t, err)
+	scheme, err := workspace.NewFileSchemeFunc(shellRCDir)(ctx, config.NopConfig(), uri)
 	require.NoError(t, err)
 
 	ch := make(chan struct{}, 50 /* big enough for the max length sequence of events */)
 	cfg.WidthHint = 20
 	cfg.HeightHint = 10
-	cfg.CommandAndArgs = []string{shell}
+	cfg.CommandAndArgs = commandAndArgs
 	handler, err := NewHandler(chanEventPublisher{ch}, nopNotifications{},
 		scheme, scheme, nopTabManager{}, cfg)
 	require.NoError(t, err)
@@ -858,13 +839,6 @@ func BenchmarkHandlerHandlePrintableKey(b *testing.B) {
 	}
 }
 
-// TestHandlerHandleReturnsHandledWithoutPtyEcho pins the regression
-// where a slow pty round-trip (e.g. an SSH workspace pty whose output
-// arrives via workspacerpc) caused vte.Handler.Handle to return
-// handled=false even though the keypress had already been written to
-// the pty. The IDE sequencer would then treat the unhandled key as a
-// candidate for sequence matching ("g" is a prefix of "gg"/"gf") and
-// re-issue it on timeout, surfacing duplicated input ("g" -> "gg").
 func TestHandlerHandleReturnsHandledWithoutPtyEcho(t *testing.T) {
 	t.Parallel()
 
@@ -955,11 +929,6 @@ func TestHandlerPasteEndWritesBufferedInput(t *testing.T) {
 	assert.Equal(t, [][]byte{[]byte("secret\r")}, master.Writes)
 }
 
-// TestHandlerPublishesPtyOutputInterrupt pins that a keystroke whose
-// echo drives the embedded program to flush produces at least one
-// EventInterrupt so the GUI repaints. Pacing was removed in favour of
-// publishing directly and letting the event loop fold repaints per
-// tick, so the contract is delivery, not coalescing.
 func TestHandlerPublishesPtyOutputInterrupt(t *testing.T) {
 	t.Parallel()
 	cases := []vtetest.Case{
@@ -999,12 +968,6 @@ func drain(ch chan struct{}) {
 	}
 }
 
-// TestHandlerCtrlCInterruptsForegroundProgram pins the regression where
-// pressing ctrl-c on a foreground program running in the primary buffer
-// (e.g. a blocking `sleep`) failed to interrupt it. The handler must
-// write the raw ETX byte (0x03) to the pty so the kernel line
-// discipline delivers SIGINT to the foreground process group, returning
-// control to the shell prompt.
 func TestHandlerCtrlCInterruptsForegroundProgram(t *testing.T) {
 	t.Parallel()
 	cases := []vtetest.Case{

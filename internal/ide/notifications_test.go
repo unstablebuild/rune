@@ -76,13 +76,6 @@ func TestNotifyAcrossWorkspaces(t *testing.T) {
 	})
 }
 
-// TestSetWorkspaceRequiresAttentionRace reproduces the data race
-// observed when many VTE run goroutines deliver notifications
-// concurrently: notis.Notify -> setTabAttr ->
-// setWorkspaceRequiresAttention mutates the shared tab/layout tree via
-// Resize off the event loop. The fix marshals that mutation through
-// scheduleNextTick; run under -race, this test fails before the fix
-// and passes after.
 func TestSetWorkspaceRequiresAttentionRace(t *testing.T) {
 	homeURI, err := workspaceapi.ParseURI("memory:///home")
 	require.NoError(t, err)
@@ -139,10 +132,6 @@ func TestSetWorkspaceRequiresAttentionRace(t *testing.T) {
 	assert.Equal(t, attr, h.workspaces[1].attentionAttr)
 }
 
-// TestNotificationsInheritRightInset pins the plumbing that keeps
-// notifications clear of the column reserved for the native quick menu.
-// Without it the container right-aligns against the full window width
-// and overdraws the buttons floating there.
 func TestNotificationsInheritRightInset(t *testing.T) {
 	const rightInset = 5
 
@@ -250,11 +239,6 @@ func TestNotifyOnce(t *testing.T) {
 	})
 }
 
-// TestUpdateProgressRoutesToOriginWorkspace reproduces a hang where a
-// background progress notification created in workspace A never
-// receives its terminal (progress==total) update after focus moves to
-// workspace B. notisRouter tags each id with the origin workspace URI
-// hash so the update reaches A's container regardless of focus.
 func TestUpdateProgressRoutesToOriginWorkspace(t *testing.T) {
 	uriA, err := workspaceapi.ParseURI("file:///a")
 	require.NoError(t, err)
@@ -319,11 +303,6 @@ func TestUpdateProgressRoutesToOriginWorkspace(t *testing.T) {
 	})
 }
 
-// TestURIHashRoundTrip exercises the id encoding against a battery of
-// adversarial workspace URIs and notification ids. Notification messages
-// are open-ended, so the encoding must round-trip any id and never panic
-// or misroute, even when the id embeds the separator, is empty, or holds
-// unusual bytes.
 func TestURIHashRoundTrip(t *testing.T) {
 	uris := []string{
 		"file:///a",
@@ -364,10 +343,6 @@ func TestURIHashRoundTrip(t *testing.T) {
 	}
 }
 
-// TestUpdateProgressRoutesAdversarialMessages drives the full router
-// round trip with messages whose container-hashed ids or contents could
-// trip the encoding, asserting the terminal update always reaches and
-// closes the origin notification after focus moves, without panicking.
 func TestUpdateProgressRoutesAdversarialMessages(t *testing.T) {
 	uriA, err := workspaceapi.ParseURI("file:///a")
 	require.NoError(t, err)

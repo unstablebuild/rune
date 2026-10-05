@@ -279,7 +279,6 @@ func waitNextActive(t *testing.T, tut *Tutorial, wantKind string, d time.Duratio
 	}
 }
 
-// TestEntryRequired asserts that tutorial() requires entry=.
 func TestEntryRequired(t *testing.T) {
 	t.Parallel()
 	_, err := New(
@@ -295,8 +294,6 @@ func TestEntryRequired(t *testing.T) {
 	assert.Contains(t, err.Error(), "entry")
 }
 
-// TestEntryMustBeCallable asserts that tutorial() rejects a non-
-// function entry.
 func TestEntryMustBeCallable(t *testing.T) {
 	t.Parallel()
 	_, err := New(
@@ -312,8 +309,6 @@ func TestEntryMustBeCallable(t *testing.T) {
 	assert.Contains(t, err.Error(), "entry must be a function")
 }
 
-// TestEntryMustTakeZeroArgs asserts that tutorial() rejects an entry
-// that declares parameters.
 func TestEntryMustTakeZeroArgs(t *testing.T) {
 	t.Parallel()
 	_, err := New(
@@ -329,8 +324,6 @@ func TestEntryMustTakeZeroArgs(t *testing.T) {
 	assert.Contains(t, err.Error(), "zero")
 }
 
-// TestDuplicateTutorialRejected asserts that calling tutorial() twice
-// fails at parse time.
 func TestDuplicateTutorialRejected(t *testing.T) {
 	t.Parallel()
 	_, err := New(
@@ -350,7 +343,6 @@ func TestDuplicateTutorialRejected(t *testing.T) {
 	assert.Contains(t, err.Error(), "already called")
 }
 
-// TestEmptySourceRejected asserts that New rejects an empty source.
 func TestEmptySourceRejected(t *testing.T) {
 	t.Parallel()
 	_, err := New(
@@ -366,8 +358,6 @@ func TestEmptySourceRejected(t *testing.T) {
 	assert.Contains(t, err.Error(), "empty source")
 }
 
-// TestEntryRunsToCompletion asserts that an entry built only from
-// non-blocking builtins finishes cleanly without manual key input.
 func TestEntryRunsToCompletion(t *testing.T) {
 	t.Parallel()
 	src := `
@@ -383,8 +373,6 @@ tutorial(entry=run)
 	assert.Equal(t, 2, notis.len())
 }
 
-// TestNotifyIsNonBlocking asserts that notify() returns immediately
-// and that the next request is the one after it.
 func TestNotifyIsNonBlocking(t *testing.T) {
 	t.Parallel()
 	src := `
@@ -402,8 +390,6 @@ tutorial(entry=run)
 		"notify must fire eagerly even while wait_command is active")
 }
 
-// TestNotifyLevelConstants asserts that the `success` constant maps
-// to browserapi.LevelSuccess.
 func TestNotifyLevelConstants(t *testing.T) {
 	t.Parallel()
 	src := `
@@ -418,8 +404,6 @@ tutorial(entry=run)
 	assert.Equal(t, browserapi.LevelSuccess, notis.captured[0].level)
 }
 
-// TestWaitCommandObserveResolvesResult asserts that ObserveCommand
-// returns a command_result with the typed name and args.
 func TestWaitCommandObserveResolvesResult(t *testing.T) {
 	t.Parallel()
 	src := `
@@ -439,8 +423,6 @@ tutorial(entry=run)
 		notis.renderedCalls())
 }
 
-// TestWaitCommandObserveErrorStaysArmed asserts that a dispatch error
-// keeps the request active and does not surface as a notification.
 func TestWaitCommandObserveErrorStaysArmed(t *testing.T) {
 	t.Parallel()
 	src := `
@@ -471,8 +453,6 @@ tutorial(entry=run)
 			"then runs the next builtin")
 }
 
-// TestWaitCommandResolvesViaAlias asserts that typed="e"
-// resolved="edit" matches wait_command(command="edit").
 func TestWaitCommandResolvesViaAlias(t *testing.T) {
 	t.Parallel()
 	src := `
@@ -490,9 +470,6 @@ tutorial(entry=run)
 		"alias dispatch must reach wait_command via resolved name")
 }
 
-// TestWaitEventNeverResolvesFromKeys asserts that a wait_event step
-// never resolves and never swallows keystrokes: every key falls
-// through to the IDE root while the step stays armed.
 func TestWaitEventNeverResolvesFromKeys(t *testing.T) {
 	t.Parallel()
 	src := `
@@ -518,9 +495,6 @@ tutorial(entry=run)
 	assert.Equal(t, "wait_event", activeKindFor(tut))
 }
 
-// TestWaitEventResolvesOnMatchingEvent asserts that ObserveEvent
-// resolves a wait_event step only when the observed event-type name
-// matches the armed name; a non-matching event keeps it armed.
 func TestWaitEventResolvesOnMatchingEvent(t *testing.T) {
 	t.Parallel()
 	src := `
@@ -545,9 +519,6 @@ tutorial(entry=run)
 		"the matching event must resolve wait_event and resume the script")
 }
 
-// TestWaitEventURIFilter asserts that the optional uri kwarg narrows a
-// wait_event step to events whose URI contains it, so a step can await
-// a write to one specific file rather than any buffer flush.
 func TestWaitEventURIFilter(t *testing.T) {
 	t.Parallel()
 	src := `
@@ -572,9 +543,6 @@ tutorial(entry=run)
 		"a URI containing the filter must resolve wait_event")
 }
 
-// TestWaitEventWithoutURIFilterMatchesAnyURI asserts that omitting the
-// uri kwarg keeps the historical behaviour of matching on event type
-// alone.
 func TestWaitEventWithoutURIFilterMatchesAnyURI(t *testing.T) {
 	t.Parallel()
 	src := `
@@ -593,8 +561,6 @@ tutorial(entry=run)
 		"an empty filter must match any URI")
 }
 
-// TestConfirmYesReturnsTrue asserts that confirm returns True when
-// the user picks Yes (the highlighted option at index 0).
 func TestConfirmYesReturnsTrue(t *testing.T) {
 	t.Parallel()
 	src := `
@@ -615,8 +581,6 @@ tutorial(entry=run)
 		"confirm Yes must take the True branch, got %v", notis.renderedCalls())
 }
 
-// TestConfirmNoReturnsFalse asserts that confirm returns False on
-// the user picking the No option (index 1).
 func TestConfirmNoReturnsFalse(t *testing.T) {
 	t.Parallel()
 	src := `
@@ -637,8 +601,6 @@ tutorial(entry=run)
 		"confirm No must take the False branch")
 }
 
-// TestConfirmDismissReturnsFalse asserts that closing the prompt
-// without selecting (Esc) yields False (== dismissed).
 func TestConfirmDismissReturnsFalse(t *testing.T) {
 	t.Parallel()
 	src := `
@@ -658,8 +620,6 @@ tutorial(entry=run)
 		"confirm dismissal must take the False branch")
 }
 
-// TestChoiceDrawsPromptInBody asserts that choice() renders the
-// message and each option label into the tile body.
 func TestChoiceDrawsPromptInBody(t *testing.T) {
 	t.Parallel()
 	src := `
@@ -682,10 +642,6 @@ tutorial(entry=run)
 	tut.Stop()
 }
 
-// TestChoiceOptionsFollowTheMessage asserts the buttons sit right
-// under the copy that asks the question rather than at the foot of
-// the tile, where a tall pane would strand them far from what they
-// answer.
 func TestChoiceOptionsFollowTheMessage(t *testing.T) {
 	t.Parallel()
 	src := `
@@ -710,10 +666,6 @@ tutorial(entry=run)
 	tut.Stop()
 }
 
-// TestPromptActiveOnlyForTheLiveQuestion asserts the host is told to
-// hand the keyboard over for a question the run is blocked on, and
-// for nothing else: not for copy, and not for a screen the user paged
-// back to.
 func TestPromptActiveOnlyForTheLiveQuestion(t *testing.T) {
 	t.Parallel()
 	src := `
@@ -738,9 +690,6 @@ tutorial(entry=run)
 	tut.Stop()
 }
 
-// TestChoiceOptionsPaddedButValueUnpadded asserts that prompt option
-// labels render with surrounding space padding while the selected
-// value reported to the script stays the original unpadded label.
 func TestChoiceOptionsPaddedButValueUnpadded(t *testing.T) {
 	t.Parallel()
 	src := `
@@ -765,11 +714,6 @@ tutorial(entry=run)
 		notis.renderedCalls())
 }
 
-// TestPromptUsesConfiguredStyling asserts that confirm/choice prompts
-// pick up the host's PromptStyle: the highlighted option is
-// drawn with the configured HighlightAttr background, matching the
-// IDE's browser-driven prompts instead of the SDK's reverse-video
-// default.
 func TestPromptUsesConfiguredStyling(t *testing.T) {
 	t.Parallel()
 	notis := &fakeNotis{}
@@ -817,10 +761,6 @@ tutorial(entry=run)
 	tut.Stop()
 }
 
-// TestPromptOptionsNeverTouch asserts a choice keeps its buttons apart
-// however tight the tile is. The prompt spreads whatever width is left
-// after the buttons over the gaps between them, so labels padded wider
-// than the tile can hold take those gaps with them.
 func TestPromptOptionsNeverTouch(t *testing.T) {
 	t.Parallel()
 	style := idetutorial.PromptStyle{
@@ -880,8 +820,6 @@ tutorial(entry=run)
 	}
 }
 
-// TestChoiceOnSelectResolvesResult asserts that selecting an option
-// the choice_result attributes.
 func TestChoiceOnSelectResolvesResult(t *testing.T) {
 	t.Parallel()
 	src := `
@@ -901,8 +839,6 @@ tutorial(entry=run)
 		notis.renderedCalls())
 }
 
-// TestChoiceEscWithoutSelectIsDismissal asserts that Esc
-// alone yields selected=False, index=-1, value="".
 func TestChoiceEscWithoutSelectIsDismissal(t *testing.T) {
 	t.Parallel()
 	src := `
@@ -922,9 +858,6 @@ tutorial(entry=run)
 		notis.renderedCalls())
 }
 
-// TestChoiceEscAfterEnterIsNoOp asserts that delivering Esc after
-// Enter has already finalised the request is a safe no-op: the
-// first selection wins via sync.Once on r.deliver.
 func TestChoiceEscAfterEnterIsNoOp(t *testing.T) {
 	t.Parallel()
 	src := `
@@ -947,8 +880,6 @@ tutorial(entry=run)
 		"the initial Enter selection must win the delivery")
 }
 
-// TestChoiceBranchesInStarlark asserts that a choice result drives a
-// real if/elif branch in Starlark.
 func TestChoiceBranchesInStarlark(t *testing.T) {
 	t.Parallel()
 	src := `
@@ -971,8 +902,6 @@ tutorial(entry=run)
 	tut.Stop()
 }
 
-// TestCancelOnDismissShortCircuits asserts that cancel_on_dismiss
-// ends the entry on a dismissed choice.
 func TestCancelOnDismissShortCircuits(t *testing.T) {
 	t.Parallel()
 	src := `
@@ -991,8 +920,6 @@ tutorial(entry=run)
 		"cancel_on_dismiss must exit before the next notify runs")
 }
 
-// TestCancelOnDismissPassesThroughOnSelect asserts that cancel_on_dismiss
-// returns the result unchanged on a real selection.
 func TestCancelOnDismissPassesThroughOnSelect(t *testing.T) {
 	t.Parallel()
 	src := `
@@ -1010,8 +937,6 @@ tutorial(entry=run)
 		"selected result must pass through cancel_on_dismiss")
 }
 
-// TestExitTerminatesTutorialCleanly asserts that exit() ends the
-// entry without surfacing an error notification.
 func TestExitTerminatesTutorialCleanly(t *testing.T) {
 	t.Parallel()
 	src := `
@@ -1034,8 +959,6 @@ tutorial(entry=run)
 	}
 }
 
-// TestExitFromNestedHelper asserts that exit() called from a helper
-// terminates the whole tutorial.
 func TestExitFromNestedHelper(t *testing.T) {
 	t.Parallel()
 	src := `
@@ -1054,8 +977,6 @@ tutorial(entry=run)
 		"exit() must propagate out of nested calls")
 }
 
-// TestStopCancelsBlockedBuiltin asserts that Stop() unblocks a
-// builtin that is waiting on user input.
 func TestStopCancelsBlockedBuiltin(t *testing.T) {
 	t.Parallel()
 	src := `
@@ -1083,8 +1004,6 @@ tutorial(entry=run)
 		"Stop() must skip the rest of the entry")
 }
 
-// TestResetRestartsThread asserts that Reset() can be called twice
-// and the entry runs from the start each time.
 func TestResetRestartsThread(t *testing.T) {
 	t.Parallel()
 	src := `
@@ -1103,8 +1022,6 @@ tutorial(entry=run)
 		"Reset() must re-run the entry from the beginning")
 }
 
-// TestStarlarkFailSurfacedAsNotification asserts that fail() in the
-// entry surfaces as an error notification and the tutorial exits.
 func TestStarlarkFailSurfacedAsNotification(t *testing.T) {
 	t.Parallel()
 	src := `
@@ -1129,8 +1046,6 @@ tutorial(entry=run)
 		notis.renderedCalls())
 }
 
-// TestStarlarkRuntimeErrorSurfaced asserts that a runtime error
-// (e.g. indexing None) is reported as an error notification.
 func TestStarlarkRuntimeErrorSurfaced(t *testing.T) {
 	t.Parallel()
 	src := `
@@ -1154,8 +1069,6 @@ tutorial(entry=run)
 		"runtime error must surface as LevelError notification")
 }
 
-// TestCommandKeyBuiltin asserts that command_key() returns the
-// configured prompt key.
 func TestCommandKeyBuiltin(t *testing.T) {
 	t.Parallel()
 	src := `
@@ -1172,8 +1085,6 @@ tutorial(entry=run)
 		notis.renderedCalls())
 }
 
-// TestPrettyKeySpec asserts the display-only rename rewrites <shift-;>
-// to ":" and passes everything else through unchanged.
 func TestPrettyKeySpec(t *testing.T) {
 	t.Parallel()
 	assert.Equal(t, ":", PrettyKeySpec("<shift-;>"))
@@ -1205,8 +1116,6 @@ func newTutorialWith(
 	return tut, notis
 }
 
-// TestEditorModeBuiltin asserts that editor_mode() returns the
-// injected mode string.
 func TestEditorModeBuiltin(t *testing.T) {
 	t.Parallel()
 	src := `
@@ -1222,7 +1131,6 @@ tutorial(entry=run)
 		notis.renderedCalls())
 }
 
-// TestOSBuiltin asserts that os() returns the injected host OS string.
 func TestOSBuiltin(t *testing.T) {
 	t.Parallel()
 	src := `
@@ -1251,8 +1159,6 @@ tutorial(entry=run)
 		notis.renderedCalls())
 }
 
-// TestKeyForBuiltin asserts that key_for() returns the bound key,
-// resolves the bare-command fallback, and yields "" when unbound.
 func TestKeyForBuiltin(t *testing.T) {
 	t.Parallel()
 	lookup := func(cmd string, args []string) string {
@@ -1286,8 +1192,6 @@ tutorial(entry=run)
 		notis.renderedCalls())
 }
 
-// TestKeyForBuiltinNilLookup asserts that key_for() returns "" when no
-// lookup func is wired.
 func TestKeyForBuiltinNilLookup(t *testing.T) {
 	t.Parallel()
 	src := `
@@ -1326,8 +1230,6 @@ func newTutorialWorkspace(
 	return tut, notis
 }
 
-// TestWorkspaceOpenBuiltin asserts that workspace_open() returns the
-// wired closure's value and returns True when no closure is wired.
 func TestWorkspaceOpenBuiltin(t *testing.T) {
 	t.Parallel()
 	src := `
@@ -1357,9 +1259,6 @@ tutorial(entry=run)
 	}
 }
 
-// TestConfigPathBuiltin asserts config_path() reports the file the
-// host wired, which follows the data directory, and is empty when no
-// host wired one.
 func TestConfigPathBuiltin(t *testing.T) {
 	t.Parallel()
 	src := `
@@ -1426,9 +1325,6 @@ func newTutorialLSP(
 	return tut, notis
 }
 
-// TestLSPServerRunningBuiltin asserts that is_lsp_server_running()
-// returns the wired closure's value and returns True when no closure is
-// wired.
 func TestLSPServerRunningBuiltin(t *testing.T) {
 	t.Parallel()
 	src := `
@@ -1458,14 +1354,6 @@ tutorial(entry=run)
 	}
 }
 
-// TestStopUnblocksWhileFinalizingOnTUI is a regression test for a
-// deadlock: a tutorial that finishes with a runtime error surfaces the
-// error via runOnTUI, which blocks on the host event loop. If the host
-// event loop concurrently calls Stop (e.g. a command observer tears the
-// tutorial down), Stop waits for the run goroutine to exit while the run
-// goroutine's runOnTUI waits for the event loop to drain the queued
-// notification — a cycle. Stop must return without waiting for a tick
-// that the wedged loop can never deliver.
 func TestStopUnblocksWhileFinalizingOnTUI(t *testing.T) {
 	t.Parallel()
 
@@ -1516,9 +1404,6 @@ func TestStopUnblocksWhileFinalizingOnTUI(t *testing.T) {
 	}
 }
 
-// TestWaitCommandHintExpandsCmdToken asserts that <cmd> in the step's
-// copy expands to the configured key, and that a failed dispatch
-// leaves that copy exactly as the user was reading it.
 func TestWaitCommandHintExpandsCmdToken(t *testing.T) {
 	t.Parallel()
 	src := `
@@ -1559,9 +1444,6 @@ tutorial(entry=run)
 	tut.Stop()
 }
 
-// TestScreenDrawsTitleAsHeading asserts that a step's title heads its
-// copy in the tile body, since the tile has no title bar, and that
-// markdown headers render without the leading `#` markup glyphs.
 func TestScreenDrawsTitleAsHeading(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -1614,8 +1496,6 @@ func gridRow(g *gridWriter, needle string) int {
 	return -1
 }
 
-// TestStarlarkControlFlow asserts that the entry can use for, if,
-// and helper functions to drive a sequence of builtins.
 func TestStarlarkControlFlow(t *testing.T) {
 	t.Parallel()
 	src := `
@@ -1641,8 +1521,6 @@ tutorial(entry=run)
 	assert.Equal(t, "even-2", notis.captured[2].rendered())
 }
 
-// TestLoadIsRejected asserts that load() is not allowed in tutorial
-// scripts.
 func TestLoadIsRejected(t *testing.T) {
 	t.Parallel()
 	_, err := New(
@@ -1658,8 +1536,6 @@ func TestLoadIsRejected(t *testing.T) {
 	assert.Contains(t, err.Error(), "load()")
 }
 
-// TestEveryBlockingKindRoundTrips asserts that each blocking builtin
-// can be invoked and resolved through its own milestone.
 func TestEveryBlockingKindRoundTrips(t *testing.T) {
 	t.Parallel()
 	src := `
@@ -1692,10 +1568,6 @@ tutorial(entry=run)
 	assert.True(t, notis.containsSubstring("got b ~/p"), "%v", notis.renderedCalls())
 }
 
-// TestWaitScreensNeverExitOrResolveFromKeys asserts that a wait_*
-// step is only ever ended by its milestone: none of the keys that used
-// to dismiss a copy screen resolve it, and none report exit, which
-// would close the tile.
 func TestWaitScreensNeverExitOrResolveFromKeys(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -1732,9 +1604,6 @@ func TestWaitScreensNeverExitOrResolveFromKeys(t *testing.T) {
 	}
 }
 
-// TestScrollableFollowsTheActiveScreen asserts the tutorial scrolls
-// like any other browser tile: a long wait_* screen seeks through its
-// viewer, while a prompt screen has nothing to scroll.
 func TestScrollableFollowsTheActiveScreen(t *testing.T) {
 	t.Parallel()
 	long := strings.Repeat(`line\n\n`, 40)
@@ -1762,12 +1631,6 @@ tutorial(entry=run)
 	assert.False(t, tut.SeekDown())
 }
 
-// TestPromptRendersOnTutorialLayer asserts that the confirm/choice
-// prompt is drawn by the tutorial itself, not by the IDE host.
-// Drawing the tutorial alone into a buffer must paint the prompt's
-// message and options — that is what makes the prompt survive a
-// workspace switch without the IDE host needing any per-tutorial
-// prompter integration.
 func TestPromptRendersOnTutorialLayer(t *testing.T) {
 	t.Parallel()
 	src := `

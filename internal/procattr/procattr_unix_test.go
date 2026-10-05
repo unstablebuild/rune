@@ -31,6 +31,23 @@ func TestNewSessionWithNothingRequestedIsNil(t *testing.T) {
 	assert.Nil(t, NewSession(false, false))
 }
 
+func TestControlsTerminal(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		attr *syscall.SysProcAttr
+		want bool
+	}{
+		{"nil", nil, false},
+		{"new session only", NewSession(true, false), false},
+		{"new session on its pty", NewSession(true, true), true},
+		{"NewGroup", NewGroup(), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, ControlsTerminal(tc.attr))
+		})
+	}
+}
+
 func TestLeadsGroup(t *testing.T) {
 	for _, tc := range []struct {
 		name string

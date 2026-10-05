@@ -32,6 +32,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term/termrpc"
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	grpc "google.golang.org/grpc"
+	tcomponent "unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/debug"
 )
 
@@ -234,7 +235,7 @@ func (s *SyncClientStream[T]) Draw(w term.Writer) {
 	if s.closed.Load() {
 		width := int(s.width.Load())
 		height := int(s.height.Load())
-		comp := component.NewStringWithConfig(smtgWrongCopy,
+		comp := component.NewStringWithConfig(tcomponent.ProblemArt,
 			component.StringConfig{Alignment: component.AlignmentCentered})
 		comp.Resize(width, height)
 		draw := handlerrpc.NewDrawResponse(w.Context(), comp, width, height, true)

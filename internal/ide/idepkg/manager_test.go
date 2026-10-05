@@ -27,6 +27,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -456,10 +457,6 @@ func TestLatestVersion(t *testing.T) {
 	})
 }
 
-// TestTranslateReleaseErrors verifies that the wrapper methods
-// translate *cdnrelease.StatusError responses into friendly
-// sentinel-wrapped errors that callers can match with errors.Is.
-// Other (non-StatusError) errors must pass through unchanged.
 func TestTranslateReleaseErrors(t *testing.T) {
 	t.Parallel()
 
@@ -768,7 +765,7 @@ func TestPackageVersionInUse(t *testing.T) {
 		err := m.InstallPackageVersion(context.Background(), "go", "1", repl.NopProgressWriter())
 		require.NoError(t, err)
 
-		actual, ok := m.PackageVersionInUse("go")
+		actual, ok := versionInUse(t, m, "go")
 		require.True(t, ok)
 		assert.Equal(t, release.Version("1"), actual)
 	})
@@ -788,7 +785,7 @@ func TestPackageVersionInUse(t *testing.T) {
 		err = m.InstallPackageVersion(context.Background(), "go", "2", repl.NopProgressWriter())
 		require.NoError(t, err)
 
-		actual, ok := m.PackageVersionInUse("go")
+		actual, ok := versionInUse(t, m, "go")
 		require.True(t, ok)
 		assert.Equal(t, release.Version("2"), actual)
 	})
@@ -811,7 +808,7 @@ func TestPackageVersionInUse(t *testing.T) {
 		err = m.UsePackageVersion(context.Background(), "go", "1")
 		require.NoError(t, err)
 
-		actual, ok := m.PackageVersionInUse("go")
+		actual, ok := versionInUse(t, m, "go")
 		require.True(t, ok)
 		assert.Equal(t, release.Version("1"), actual)
 	})
@@ -822,7 +819,7 @@ func TestPackageVersionInUse(t *testing.T) {
 		versions := idepkgtest.MakeBundles([]release.Bundle{{Package: "go", Version: "1"}})
 		m, _, _, _ := newTestManager(t, pkgs, versions)
 
-		_, ok := m.PackageVersionInUse("go")
+		_, ok := versionInUse(t, m, "go")
 		require.False(t, ok)
 	})
 }
@@ -1113,12 +1110,6 @@ func listFiles(t *testing.T, bindir string) []string {
 
 var syncTick = func(fn func()) bool { fn(); return true }
 
-// TestVerifyExtensionEntrypoint pins verified-publisher resolution against the
-// shapes packages actually have on disk. Extensions are launched through the
-// path their package config declares — in practice the datadir bin copy — so
-// every install path that legitimately reaches a signed executable must return
-// the signing fingerprint, and every path whose bytes no longer match the
-// signed manifest must not.
 func TestVerifyExtensionEntrypoint(t *testing.T) {
 	t.Parallel()
 
@@ -1287,6 +1278,13 @@ func newTestManager(
 		idepkgtest.TrustStore(),
 		fileScheme, temp, configPath, wm, syncTick, term.NopInterrupter())
 	return manager, n, m, temp
+}
+
+func versionInUse(t testing.TB, m PackageManager, pkgID string) (release.Version, bool) {
+	t.Helper()
+	version, ok, err := m.PackageVersionInUse(context.Background(), pkgID)
+	require.NoError(t, err)
+	return version, ok
 }
 
 type mockWindowManager struct {
@@ -1695,11 +1693,6 @@ func TestInstallPackageVersionConfigCrossFormat(t *testing.T) {
 	}
 }
 
-// TestInstallPackageVersionConfigEmptyUserConfig verifies that a package
-// overlay can still merge into a user config file whose body is empty or
-// only contains comments. Without this, installing any package against a
-// freshly created (or fully commented-out) user config.star failed with
-// "load user config: starlark: expected top-level \"config\" dict".
 func TestInstallPackageVersionConfigEmptyUserConfig(t *testing.T) {
 	t.Parallel()
 
@@ -1898,11 +1891,6 @@ func TestProcessInstalledSettingsDoesNotPromptForExtensionPath(t *testing.T) {
 	assert.NotEqual(t, filepath.Join(datadir, "bin", "testpkg"), fmt.Sprint(extension["path"]))
 }
 
-// TestInstallPackageVersionConfigMissingUserConfig asserts that when the user
-// config file does not exist, installing a package still merges the package's
-// env block by creating the config file. Without this, a fresh datadir (e.g. a
-// remote `rune -x` provisioned into ~/.rune on first use) never gets GOROOT and
-// the go toolchain fails with "cannot find GOROOT directory".
 func TestInstallPackageVersionConfigMissingUserConfig(t *testing.T) {
 	t.Parallel()
 
@@ -1925,10 +1913,6 @@ func TestInstallPackageVersionConfigMissingUserConfig(t *testing.T) {
 	assert.Equal(t, filepath.Join(datadir, "pkg", "configpkg", "1", "go"), env["GOROOT"])
 }
 
-// TestProcessConfigSequentialDistinctPackages pins the fix for the first-open
-// bug where config.yaml was missing until a reload: provisioning installs each
-// package sequentially, and every package's env key must accumulate into the
-// same fresh user config rather than clobbering earlier merges.
 func TestProcessConfigSequentialDistinctPackages(t *testing.T) {
 	t.Parallel()
 
@@ -1946,7 +1930,7 @@ func TestProcessConfigSequentialDistinctPackages(t *testing.T) {
 		cfgFile := pkgConfigFile(dir)
 		content := fmt.Sprintf("env:\n  KEY_%d: value_%d\n", i, i)
 		require.NoError(t, os.WriteFile(cfgFile, []byte(content), 0o644))
-		require.NoError(t, m.processConfig(
+		require.NoError(t, m.processConfig(context.Background(),
 			fmt.Sprintf("p%d", i), release.Version("1"), cfgFile))
 	}
 
@@ -2076,6 +2060,75 @@ func TestInstallConfigPromptDeny(t *testing.T) {
 		assert.Equal(t, "added", fmt.Sprint(settings["newkey"]),
 			"brand-new key is auto-applied even when the conflict prompt is denied")
 	})
+}
+
+// promptingUI records what an install asks and notifies through it.
+type promptingUI struct {
+	*idepkgtest.Notifications
+	mu      sync.Mutex
+	prompts []ConfigPrompt
+	answers []func(bool)
+}
+
+func (u *promptingUI) PromptConfig(p ConfigPrompt, answer func(bool)) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.prompts = append(u.prompts, p)
+	u.answers = append(u.answers, answer)
+}
+
+func notificationMessages(n *idepkgtest.Notifications) []string {
+	var msgs []string
+	for _, noti := range n.Active() {
+		msgs = append(msgs, noti.Msg)
+	}
+	sort.Strings(msgs)
+	return msgs
+}
+
+func TestInstallAsksTheUIOfItsContext(t *testing.T) {
+	t.Parallel()
+	pkgs := idepkgtest.MakePackages()
+	versions := idepkgtest.MakeBundles([]release.Bundle{
+		{Package: "configpkg", Version: "2"},
+	})
+	m, n, _, datadir := newTestManager(t, pkgs, versions)
+	m.wm = &mockWindowManager{
+		floatingFn: func(browserapi.Floating, browserapi.FloatingConfig) (browserapi.Window, error) {
+			t.Error("the prompt must reach the user the install is for")
+			return &mockWindow{}, nil
+		},
+	}
+	configPath := filepath.Join(datadir, "config.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte("env:\n  GOROOT: /custom/go\n"), 0o644))
+	ui := &promptingUI{Notifications: idepkgtest.NewNotifications(t)}
+
+	err := m.InstallPackageVersion(WithUI(context.Background(), ui), "configpkg", "2",
+		repl.NopProgressWriter())
+	require.NoError(t, err)
+
+	require.Len(t, ui.prompts, 1)
+	assert.Contains(t, ui.prompts[0].Message, "GOROOT")
+	assert.Equal(t, []PromptOption{{Label: "Allow", Key: 'a'}, {Label: "Deny", Key: 'd'}},
+		ui.prompts[0].Options)
+	assert.Equal(t, []string{
+		"applied configpkg configuration updates. Restart the program to load the changes.",
+	}, notificationMessages(ui.Notifications), "the new settings are applied without asking")
+
+	// Another merge lands before the user answers; approving must not
+	// write back the config the prompt was planned against.
+	cfg, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(configPath, append(cfg, "other: kept\n"...), 0o644))
+	ui.answers[0](true)
+
+	merged := readUserConfigMap(t, configPath)
+	assert.Equal(t, filepath.Join(datadir, "pkg", "configpkg", "2", "go"),
+		merged["env"].(map[string]any)["GOROOT"])
+	assert.Equal(t, "added", fmt.Sprint(merged["settings"].(map[string]any)["newkey"]))
+	assert.Equal(t, "kept", merged["other"])
+	assert.Len(t, notificationMessages(ui.Notifications), 2)
+	assert.Empty(t, n.Active(), "nothing is shown to the Manager's own user")
 }
 
 func TestInstallConfigPreservesUserValues(t *testing.T) {
@@ -2809,9 +2862,6 @@ func TestInstallAtomicOperations(t *testing.T) {
 	})
 }
 
-// TestProcessConfigAutoApply covers the auto-apply path: purely-new overlay
-// keys are written to disk without prompting, while keys that override an
-// existing user value still prompt for confirmation.
 func TestProcessConfigAutoApply(t *testing.T) {
 	t.Parallel()
 
@@ -2843,7 +2893,7 @@ func TestProcessConfigAutoApply(t *testing.T) {
 		require.NoError(t, os.WriteFile(pkgConfig, []byte(
 			"settings:\n  theme: dark\n  indent: 4\n"), 0o644))
 
-		require.NoError(t, m.processConfig("vpkg", release.Version("1"), pkgConfig))
+		require.NoError(t, m.processConfig(context.Background(), "vpkg", release.Version("1"), pkgConfig))
 		n.RequireNoErrorNotification()
 		assert.True(t, hasInfoNotification(n),
 			"auto-apply must surface an info notification")
@@ -2898,7 +2948,7 @@ func TestProcessConfigAutoApply(t *testing.T) {
 		assert.Contains(t, string(promptYAML), "GOROOT",
 			"prompt covers only the conflicting key")
 
-		require.NoError(t, m.processConfig("vpkg", release.Version("2"), pkgConfig))
+		require.NoError(t, m.processConfig(context.Background(), "vpkg", release.Version("2"), pkgConfig))
 		n.RequireNoErrorNotification()
 		assert.True(t, prompted, "conflicting key must prompt")
 
@@ -2938,7 +2988,7 @@ func TestProcessConfigAutoApply(t *testing.T) {
 			"env:\n  GOROOT: $RUNE_DATADIR/pkg/$RUNE_PKG_ID/$RUNE_PKG_VERSION/go\n"+
 				"  NEW: added\n"), 0o644))
 
-		require.NoError(t, m.processConfig("vpkg", release.Version("2"), pkgConfig))
+		require.NoError(t, m.processConfig(context.Background(), "vpkg", release.Version("2"), pkgConfig))
 		n.RequireNoErrorNotification()
 		assert.Equal(t, 1, promptCount, "conflicting key prompts")
 		assert.True(t, hasInfoNotification(n),
@@ -2972,7 +3022,7 @@ func TestProcessConfigAutoApply(t *testing.T) {
 		require.NoError(t, os.WriteFile(pkgConfig, []byte(
 			"settings:\n  theme: dark\n"), 0o644))
 
-		require.NoError(t, m.processConfig("vpkg", release.Version("1"), pkgConfig))
+		require.NoError(t, m.processConfig(context.Background(), "vpkg", release.Version("1"), pkgConfig))
 		n.RequireNoErrorNotification()
 		assert.False(t, hasInfoNotification(n),
 			"no notification when nothing changed")
@@ -3014,11 +3064,6 @@ func TestProcessConfigSkipsPromptWhenAlreadyMerged(t *testing.T) {
 	})
 }
 
-// TestProcessConfigRepromptsOnVersionDependentChange is a regression test
-// for RUNE-225: when a package config scalar's raw template depends on
-// $RUNE_PKG_VERSION, the resolved value changes across versions. Rune must
-// re-prompt and persist the new value when it differs from what is stored,
-// while leaving user-customized static scalars untouched (RUNE-187).
 func TestProcessConfigRepromptsOnVersionDependentChange(t *testing.T) {
 	t.Parallel()
 
@@ -3050,7 +3095,7 @@ func TestProcessConfigRepromptsOnVersionDependentChange(t *testing.T) {
 		}
 
 		// v1: new key auto-applies without a prompt and the value is written.
-		require.NoError(t, m.processConfig("vpkg", release.Version("1"), pkgConfig))
+		require.NoError(t, m.processConfig(context.Background(), "vpkg", release.Version("1"), pkgConfig))
 		assert.Equal(t, 0, promptCount, "first install auto-applies the new key without prompting")
 
 		v1Want := filepath.Join(datadir, "pkg", "vpkg", "1", "go")
@@ -3060,7 +3105,7 @@ func TestProcessConfigRepromptsOnVersionDependentChange(t *testing.T) {
 		assert.Equal(t, v1Want, fmt.Sprint(env["GOROOT"]))
 
 		// v2: same template, different resolved value -> must re-prompt and update.
-		require.NoError(t, m.processConfig("vpkg", release.Version("2"), pkgConfig))
+		require.NoError(t, m.processConfig(context.Background(), "vpkg", release.Version("2"), pkgConfig))
 		assert.Equal(t, 1, promptCount, "version bump re-prompts the version-dependent key")
 
 		v2Want := filepath.Join(datadir, "pkg", "vpkg", "2", "go")
@@ -3096,11 +3141,11 @@ func TestProcessConfigRepromptsOnVersionDependentChange(t *testing.T) {
 			},
 		}
 
-		require.NoError(t, m.processConfig("vpkg", release.Version("1"), pkgConfig))
+		require.NoError(t, m.processConfig(context.Background(), "vpkg", release.Version("1"), pkgConfig))
 		assert.Equal(t, 0, promptCount, "first install auto-applies the new key without prompting")
 
 		// Same version again: resolved value matches disk, no re-prompt.
-		require.NoError(t, m.processConfig("vpkg", release.Version("1"), pkgConfig))
+		require.NoError(t, m.processConfig(context.Background(), "vpkg", release.Version("1"), pkgConfig))
 		assert.Equal(t, 0, promptCount, "unchanged version-dependent value must not re-prompt")
 	})
 
@@ -3133,7 +3178,7 @@ func TestProcessConfigRepromptsOnVersionDependentChange(t *testing.T) {
 			},
 		}
 
-		require.NoError(t, m.processConfig("vpkg", release.Version("1"), pkgConfig))
+		require.NoError(t, m.processConfig(context.Background(), "vpkg", release.Version("1"), pkgConfig))
 		assert.Equal(t, 0, promptCount, "static differing scalar must not re-prompt (RUNE-187)")
 
 		cfg := readUserConfigMap(t, m.configPath)
@@ -3143,12 +3188,6 @@ func TestProcessConfigRepromptsOnVersionDependentChange(t *testing.T) {
 	})
 }
 
-// TestInstallPackageVersionNonUTF8PAXXattr is a regression test for
-// RUNE-174: previously, tar.Header values returned by untar were persisted
-// verbatim into the TOML-backed package store, so a tarball carrying a PAX
-// xattr with non-UTF-8 bytes (such as macOS's "com.apple.provenance"
-// containing 0xad) made storage.Update fail with
-// "invalid UTF-8 byte: 0xad", aborting the install.
 func TestInstallPackageVersionNonUTF8PAXXattr(t *testing.T) {
 	t.Parallel()
 	pkgID := "paxpkg"
@@ -3402,9 +3441,6 @@ func (s *orderingStorage) Update(
 	return err
 }
 
-// TestEditorModeParamExposed verifies that RUNE_EDITOR_MODE reaches package
-// config.star scripts via idePkgStarlarkParams. RUNE-137 needs this to drive
-// the extension_fuzzy_search mode-aware key bindings.
 func TestEditorModeParamExposed(t *testing.T) {
 	t.Parallel()
 
@@ -3435,10 +3471,6 @@ else:
 	}
 }
 
-// TestPkgConfigFilePrefersYAML and TestPkgConfigFileFallsBackToStar lock in
-// the shared discovery used by download/untar/UsePackageVersion/
-// ProcessInstalledSettings: config.yaml wins when both formats are present,
-// config.star is picked up when only it ships.
 func TestPkgConfigFilePrefersYAML(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -3454,11 +3486,6 @@ func TestPkgConfigFileFallsBackToStar(t *testing.T) {
 	assert.Equal(t, filepath.Join(dir, "config.star"), pkgConfigFile(dir))
 }
 
-// TestPkgConfigFileNestedWrapperDir locks in discovery for tarballs that
-// nest everything under a single top-level wrapper directory (the Linux
-// rune-agent bundle tars `rune-agent/...` rather than `.`, so config.yaml
-// lands at <dir>/rune-agent/config.yaml). Without descending one level the
-// extension's shipped config is silently never merged.
 func TestPkgConfigFileNestedWrapperDir(t *testing.T) {
 	t.Parallel()
 	t.Run("yaml under single wrapper dir", func(t *testing.T) {
@@ -3492,11 +3519,6 @@ func TestPkgConfigFileNestedWrapperDir(t *testing.T) {
 	})
 }
 
-// TestLoadUserConfigStarEmptyOrCommentsOnly verifies that a user-side
-// config.star that is empty or contains only comments loads as an empty
-// configuration instead of failing with "expected top-level config dict".
-// Without this, installing a package against a fresh/commented user config
-// would surface a confusing "load user config" error to the user.
 func TestLoadUserConfigStarEmptyOrCommentsOnly(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -3528,11 +3550,6 @@ func fileInode(t *testing.T, path string) uint64 {
 	return uint64(st.Ino)
 }
 
-// TestCopyExecutablesAtomicSwap verifies that upgrading an installed
-// executable replaces the directory entry with a fresh inode rather
-// than truncating the existing one in place. Rewriting the inode of a
-// running, unsigned extension binary causes macOS Gatekeeper/AMFI to
-// kill it.
 func TestCopyExecutablesAtomicSwap(t *testing.T) {
 	srcDir := t.TempDir()
 	dstDir := t.TempDir()
@@ -3587,12 +3604,6 @@ type mergeStep struct {
 	wantNotContains []string
 }
 
-// TestConfigMergeIntegration is the black-box contract for extension config
-// updates. It drives the real production path (processConfig ->
-// planConfigChange -> auto-accepted prompt -> buildMergedConfig -> atomic
-// write) for both .star and .yaml user configs, asserting only inputs and
-// final on-disk + decoded outputs. It is the primary guard for RUNE-225:
-// .star updates must preserve user comments, helpers, and custom logic.
 func TestConfigMergeIntegration(t *testing.T) {
 	t.Parallel()
 
@@ -4121,7 +4132,7 @@ func TestConfigMergeIntegration(t *testing.T) {
 				pkgConfig := filepath.Join(pkgDir, tc.configName)
 				require.NoError(t, os.WriteFile(pkgConfig, []byte(step.pkgConfig), 0o644))
 
-				require.NoError(t, m.processConfig("mpkg", release.Version(step.version), pkgConfig),
+				require.NoError(t, m.processConfig(context.Background(), "mpkg", release.Version(step.version), pkgConfig),
 					"step %d", i)
 				n.RequireNoErrorNotification()
 
@@ -4183,13 +4194,13 @@ func TestConfigMergeIntegration(t *testing.T) {
 		src := "config = {\"env\": {\"GOROOT\": RUNE_DATADIR + \"/pkg/\" + RUNE_PKG_ID + \"/\" + RUNE_PKG_VERSION + \"/go\"}}\n"
 		require.NoError(t, os.WriteFile(pkgConfig, []byte(src), 0o644))
 
-		require.NoError(t, m.processConfig("vpkg", release.Version("1"), pkgConfig))
+		require.NoError(t, m.processConfig(context.Background(), "vpkg", release.Version("1"), pkgConfig))
 		assert.Equal(t, 0, promptCount, "first install auto-applies the new key without prompting")
 		cfg := readUserConfigMap(t, m.configPath)
 		env := cfg["env"].(map[string]any)
 		assert.Equal(t, filepath.Join(datadir, "pkg", "vpkg", "1", "go"), fmt.Sprint(env["GOROOT"]))
 
-		require.NoError(t, m.processConfig("vpkg", release.Version("2"), pkgConfig))
+		require.NoError(t, m.processConfig(context.Background(), "vpkg", release.Version("2"), pkgConfig))
 		assert.Equal(t, 1, promptCount, "version bump re-prompts the version-dependent key")
 		cfg = readUserConfigMap(t, m.configPath)
 		env = cfg["env"].(map[string]any)
@@ -4225,8 +4236,8 @@ func TestConfigMergeIntegration(t *testing.T) {
 		src := "config = {\"env\": {\"GOROOT\": RUNE_DATADIR + \"/pkg/\" + RUNE_PKG_ID + \"/\" + RUNE_PKG_VERSION + \"/go\"}}\n"
 		require.NoError(t, os.WriteFile(pkgConfig, []byte(src), 0o644))
 
-		require.NoError(t, m.processConfig("vpkg", release.Version("1"), pkgConfig))
-		require.NoError(t, m.processConfig("vpkg", release.Version("1"), pkgConfig))
+		require.NoError(t, m.processConfig(context.Background(), "vpkg", release.Version("1"), pkgConfig))
+		require.NoError(t, m.processConfig(context.Background(), "vpkg", release.Version("1"), pkgConfig))
 		assert.Equal(t, 0, promptCount, "unchanged version-dependent value must not re-prompt")
 	})
 }
@@ -4254,7 +4265,7 @@ func TestAfterConfigMergeHook(t *testing.T) {
 		require.NoError(t, os.WriteFile(pkgConfig, []byte(
 			"gui:\n  env:\n    FOO: bar\n"), 0o644))
 
-		require.NoError(t, m.processConfig("vpkg", release.Version("1"), pkgConfig))
+		require.NoError(t, m.processConfig(context.Background(), "vpkg", release.Version("1"), pkgConfig))
 		n.RequireNoErrorNotification()
 
 		require.Len(t, events, 1)
@@ -4278,7 +4289,7 @@ func TestAfterConfigMergeHook(t *testing.T) {
 		pkgConfig := filepath.Join(t.TempDir(), "config.yaml")
 		require.NoError(t, os.WriteFile(pkgConfig, []byte(
 			"gui:\n  env:\n    FOO: bar\n"), 0o644))
-		require.NoError(t, m.processConfig("vpkg", release.Version("1"), pkgConfig))
+		require.NoError(t, m.processConfig(context.Background(), "vpkg", release.Version("1"), pkgConfig))
 
 		require.True(t, hasNotificationContaining(n, "applied vpkg configuration updates"))
 		assert.False(t, hasNotificationContaining(n, "Restart the program"))
@@ -4297,7 +4308,7 @@ func TestAfterConfigMergeHook(t *testing.T) {
 		pkgConfig := filepath.Join(t.TempDir(), "config.yaml")
 		require.NoError(t, os.WriteFile(pkgConfig, []byte(
 			"settings:\n  theme: dark\n"), 0o644))
-		require.NoError(t, m.processConfig("vpkg", release.Version("1"), pkgConfig))
+		require.NoError(t, m.processConfig(context.Background(), "vpkg", release.Version("1"), pkgConfig))
 
 		require.True(t, hasNotificationContaining(n, "Restart the program"))
 	})
@@ -4315,7 +4326,7 @@ func TestAfterConfigMergeHook(t *testing.T) {
 		pkgConfig := filepath.Join(t.TempDir(), "config.yaml")
 		require.NoError(t, os.WriteFile(pkgConfig, []byte(
 			"gui:\n  env:\n    FOO: bar\n"), 0o644))
-		err := m.processConfig("vpkg", release.Version("1"), pkgConfig)
+		err := m.processConfig(context.Background(), "vpkg", release.Version("1"), pkgConfig)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "boom")
 	})
@@ -4353,7 +4364,7 @@ func TestAfterConfigMergeHook(t *testing.T) {
 			pkgConfig := filepath.Join(t.TempDir(), "config.yaml")
 			require.NoError(t, os.WriteFile(pkgConfig, []byte(
 				"env:\n  GOROOT: $RUNE_DATADIR/pkg/$RUNE_PKG_ID/$RUNE_PKG_VERSION/go\n"), 0o644))
-			require.NoError(t, m.processConfig("vpkg", release.Version("2"), pkgConfig))
+			require.NoError(t, m.processConfig(context.Background(), "vpkg", release.Version("2"), pkgConfig))
 			n.RequireNoErrorNotification()
 			return calls
 		}
@@ -4411,11 +4422,6 @@ func installVerifyPackages(t *testing.T) (*Manager, string) {
 	return manager, dataDir
 }
 
-// TestVerifyExtensionEntrypointAfterUpgrade pins that the shared bin copy is
-// vouched for by the version the lib symlink records — the same install step
-// writes both — not by whichever installed record happens to list first.
-// After an upgrade the superseded version stays on disk, and its stale
-// manifest hash must not veto the copy the newer version produced.
 func TestVerifyExtensionEntrypointAfterUpgrade(t *testing.T) {
 	t.Parallel()
 	manager, _, rm, dataDir := newTestManager(t,
@@ -4478,12 +4484,6 @@ func pkgTarballScript(t *testing.T, entrypoint, prefix, script string) []byte {
 	return buf.Bytes()
 }
 
-// TestInstallPackagePreservesUserConfigComments pins that merging a
-// package overlay into a YAML user config rewrites only the keys the
-// package adds. The merge used to round-trip the decoded config map,
-// which stripped every comment and re-sorted keys alphabetically, so a
-// freshly bootstrapped preset config lost all of its documentation the
-// first time an extension installed.
 func TestInstallPackagePreservesUserConfigComments(t *testing.T) {
 	t.Parallel()
 
@@ -4634,9 +4634,6 @@ func TestInstallPackagePreservesUserConfigComments(t *testing.T) {
 	}
 }
 
-// TestInstallPackagePreservesShippedPresetComments runs the merge over
-// the emacs preset bootstrap writes into a fresh datadir, which is where
-// the comment loss was reported.
 func TestInstallPackagePreservesShippedPresetComments(t *testing.T) {
 	t.Parallel()
 
@@ -4798,9 +4795,6 @@ func TestInstallPackagePreservesStarConfigComments(t *testing.T) {
 	}
 }
 
-// TestUpgradePackagePreservesUserConfigComments covers the prompt path:
-// a version-dependent key the user approved is overwritten in place
-// without disturbing the rest of the file.
 func TestUpgradePackagePreservesUserConfigComments(t *testing.T) {
 	t.Parallel()
 

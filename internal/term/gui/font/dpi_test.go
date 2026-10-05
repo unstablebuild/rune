@@ -22,9 +22,6 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// TestDeviceScaleNoMonitor reproduces the startup crash where
-// ebiten.Monitor() returns nil before the window is associated with a
-// monitor. Previously this panicked with a nil pointer dereference.
 func TestDeviceScaleNoMonitor(t *testing.T) {
 	orig := monitorScaleFactor
 	t.Cleanup(func() { monitorScaleFactor = orig })

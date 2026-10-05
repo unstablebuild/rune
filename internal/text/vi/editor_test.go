@@ -100,10 +100,6 @@ func TestEditorDispatchScroll(t *testing.T) {
 	assert.Equal(t, term.Coordinates{X: -1}, at)
 }
 
-// TestEditorBarOptions pins the bar selection :gitshow depends on: the
-// caller can drop the aux and icons bars for one Edit while keeping the
-// status bar, and can redirect the status bar's git lookups at a
-// resource the editor's own configuration cannot resolve.
 func TestEditorBarOptions(t *testing.T) {
 	tick := func(fn func()) bool { fn(); return true }
 	newEditor := func() text.Editor {
@@ -349,11 +345,6 @@ func TestEditorRegistersIndentCommand(t *testing.T) {
 	assert.NotContains(t, wr.sub[cwd.String()], text.CommandReindent)
 }
 
-// TestEditorAppliesDefaultConfig ensures Editor seeds viConfig with
-// defaultviHandlerImplConfig values so that downstream consumers (e.g.
-// vctrlcmd.SubscribeGitCommands) receive non-nil dependencies such as
-// notifications. Regression test for a nil pointer dereference in the
-// :gitlink command path when no WithNotifications option was passed.
 func TestEditorAppliesDefaultConfig(t *testing.T) {
 	ed := Editor().(*viEditor)
 	require.NotNil(t, ed.config.notifications,

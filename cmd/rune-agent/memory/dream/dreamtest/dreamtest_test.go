@@ -121,11 +121,6 @@ func TestDream_E2E_SingleDialogueWithToolCall(t *testing.T) {
 		"new-dialogue events should report Total>0 via ProgressWriter")
 }
 
-// TestDream_E2E_LifecycleFrames captures the dream lifecycle across
-// multiple draws: while dream is mid-run the component shows the
-// working glyph, then flips to ✓ once the matching finish event lands.
-// The transition is driven by a redraw key (<c-l>) after the first
-// command has completed.
 func TestDream_E2E_LifecycleFrames(t *testing.T) {
 	t.Parallel()
 	opts := fixtureOpts{
@@ -187,10 +182,6 @@ func TestDream_E2E_LifecycleFrames(t *testing.T) {
 	})
 }
 
-// TestDream_E2E_InProgress freezes the pipeline inside the first LLM
-// call so the component must render the still-running glyph for the
-// active conversation entry. Then the LLM is released and the next
-// RunHandlerSequence case asserts the completed frame.
 func TestDream_E2E_InProgress(t *testing.T) {
 	t.Parallel()
 
@@ -255,13 +246,6 @@ func TestDream_E2E_InProgress(t *testing.T) {
 	})
 }
 
-// TestDream_E2E_ViaShellInterp reproduces the live IDE shell flow: the
-// REPL CommandHandler is sh.New(registry) and the agentshell-style
-// dream command is registered as the "agent" parent command. The user
-// types `agent dream<enter>` and we assert the in-place component
-// renders its lifecycle frames. This guards against regressions where
-// the sh-aware shell middleware drains our iterator differently from
-// the REPL's own dispatch.
 func TestDream_E2E_ViaShellInterp(t *testing.T) {
 	t.Parallel()
 	f := newShellFixture(t, fixtureOpts{

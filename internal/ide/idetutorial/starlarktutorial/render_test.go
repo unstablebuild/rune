@@ -87,9 +87,6 @@ func (g *attrGridWriter) rowAttrs(y int) []term.Attributes {
 	return out
 }
 
-// TestFloatingWindowContentPadding asserts that a screen body is
-// anchored at the top, gutted by one column on each side, and reflows
-// inside what is left, so no glyph ever touches the tile's frame.
 func TestFloatingWindowContentPadding(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -197,9 +194,6 @@ func TestFloatingWindowContentHandlerSequence(t *testing.T) {
 	handlertest.RunHandlerSequence(t, content, 12, 5, sequence)
 }
 
-// TestScreenMoreBelowArrow asserts a step taller than the tile gives
-// its bottom row to an arrow centred in the tile, and a step that fits
-// keeps every row for its copy.
 func TestScreenMoreBelowArrow(t *testing.T) {
 	t.Parallel()
 	arrow := string(moreBelowArrow)
@@ -272,10 +266,6 @@ func TestScreenMoreBelowArrow(t *testing.T) {
 	}
 }
 
-// TestWaitCommandHintRendersInBody asserts that the wait_command hint
-// renders its markdown body into the tile body. The prefix line
-// ("Waiting for you …") must be present and the configured command
-// key must be expanded in place of the `<cmd>` token.
 func TestWaitCommandHintRendersInBody(t *testing.T) {
 	t.Parallel()
 	src := `
@@ -315,9 +305,6 @@ func gridText(g *attrGridWriter) string {
 	return b.String()
 }
 
-// TestWaitCommandHintIncludesManual asserts that when a command
-// manual lookup is provided, the wait_command hint window also
-// renders the command's usage and summary as markdown.
 func TestWaitCommandHintIncludesManual(t *testing.T) {
 	t.Parallel()
 	man := command.Manual{
@@ -366,9 +353,6 @@ tutorial(entry=run)
 		"hint must include the manual's summary")
 }
 
-// TestWaitCommandHintIncludesBoundKey asserts that when the awaited
-// command has a key binding, the default hint tells the user they can
-// press that key to run it.
 func TestWaitCommandHintIncludesBoundKey(t *testing.T) {
 	t.Parallel()
 	keyFor := func(cmd string, args []string) string {
@@ -408,12 +392,6 @@ tutorial(entry=run)
 		"hint must mention the command's bound key")
 }
 
-// TestWaitCommandArgsSuppressBoundKey is a regression test for the
-// `! git log` lesson: `!` alone is bound to the companion terminal,
-// so offering that key as a way to "run it" sends the user somewhere
-// the step is not asking for. An argument-qualified awaited command
-// resolves the key for that exact invocation, and still matches on
-// the command name alone.
 func TestWaitCommandArgsSuppressBoundKey(t *testing.T) {
 	t.Parallel()
 	keyFor := func(cmd string, args []string) string {
@@ -472,9 +450,6 @@ func TestWaitCommandArgsIncludeExactBoundKey(t *testing.T) {
 	assert.Contains(t, hint, "<meta-r>")
 }
 
-// TestWaitCommandTextRendersAsWritten asserts a step that declares its
-// own copy gets exactly that copy: nothing generated is added around
-// it, so the author owns what the user reads.
 func TestWaitCommandTextRendersAsWritten(t *testing.T) {
 	t.Parallel()
 	keyFor := func(string, []string) string { return "<meta-r>" }
@@ -487,12 +462,6 @@ func TestWaitCommandTextRendersAsWritten(t *testing.T) {
 		buildWaitCommandHint(r, ":", lookup, keyFor))
 }
 
-// TestWaitCommandTextReplacesManualUpFront is a regression test for a
-// lesson that asks for two directions of the same command in a row:
-// once the first was dispatched, the second step fell back to the
-// generic "try the <command> command" hint plus its manual, which
-// cannot say which direction is still due. A step's own text must
-// show before any failed dispatch.
 func TestWaitCommandTextReplacesManualUpFront(t *testing.T) {
 	t.Parallel()
 	lookup := func(name string) (command.Manual, bool) {
@@ -533,8 +502,6 @@ tutorial(entry=run)
 		"the generic manual must not stand in for the step's instruction")
 }
 
-// TestWaitShellHintShowsStepText asserts a console step shows its own
-// instruction when it has one, and names the command to run otherwise.
 func TestWaitShellHintShowsStepText(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

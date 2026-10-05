@@ -74,13 +74,13 @@ func ParseBarLayout(layoutStr string) (
 			}
 
 		case *parse.ActionNode:
-			fieldName, attrs, err := template.ParseAction(n)
+			act, err := template.ParseAction(n)
 			if err != nil {
 				return nil, err
 			}
 
 			var compType BarComponentType
-			switch fieldName {
+			switch act.Field {
 			case "Command":
 				compType = BarCommand
 				tmpl += "%s"
@@ -108,13 +108,13 @@ func ParseBarLayout(layoutStr string) (
 				})
 				continue
 			default:
-				err = fmt.Errorf("unknown status bar component: %q", fieldName)
+				err = fmt.Errorf("unknown status bar component: %q", act.Field)
 				return nil, err
 			}
 			ret = append(ret, BarComponent{
 				Type:       compType,
 				Template:   tmpl,
-				Attributes: attrs,
+				Attributes: act.Attributes,
 			})
 			tmpl = ""
 

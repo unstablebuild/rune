@@ -31,8 +31,6 @@ func TestPulseFrame(t *testing.T) {
 	))
 }
 
-// TestPulseFrameOnlyAffectsFrameChars verifies the pulse leaves every
-// non-frame cell untouched while uniformly blending all frame cells.
 func TestPulseFrameOnlyAffectsFrameChars(t *testing.T) {
 	fc := guiFrameCharset()
 	origFg := term.NewRGBColor(10, 20, 30)
@@ -91,8 +89,6 @@ func TestPulseFrameOnlyAffectsFrameChars(t *testing.T) {
 	}
 }
 
-// TestPulseFrameMinIntensityClampsTrough verifies MinIntensity keeps the
-// pulse blended even at the bottom of the cycle.
 func TestPulseFrameMinIntensityClampsTrough(t *testing.T) {
 	fc := guiFrameCharset()
 	origFg := term.NewRGBColor(10, 20, 30)

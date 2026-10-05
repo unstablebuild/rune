@@ -3254,7 +3254,12 @@ func (vi *viHandlerImpl) handleDelete(ev term.Event) (quit, handled bool) {
 	}
 
 	var done bool
-	quit, handled, done = vi.handleMetaNormal(ev)
+	if vi.selectChangeWord(ev) {
+		handled = true
+		done = true
+	} else {
+		quit, handled, done = vi.handleMetaNormal(ev)
+	}
 	if !done {
 		return
 	}
@@ -3267,6 +3272,42 @@ func (vi *viHandlerImpl) handleDelete(ev term.Event) (quit, handled bool) {
 		vi.setNormalMode()
 	}
 	return
+}
+
+// selectChangeWord selects the range a `cw`/`cW` operator acts on and reports
+// whether the event is such a motion. The range runs from the cursor to the
+// end of the count-th Vim word end: a word end under the cursor counts as the
+// first end, so `cw` there covers just the cell under it. Blank and missing
+// cells return false so the caller falls back to the plain `w` motion.
+func (vi *viHandlerImpl) selectChangeWord(ev term.Event) bool {
+	if !vi.deleteInsert || vi.moveMode != moveNone || ev.Mod != 0 ||
+		(ev.Ch != 'w' && ev.Ch != 'W') {
+		return false
+	}
+	cell, ok := vi.cursor.Cell()
+	if !ok || text.IsWordObjectBlank(cell.Ch) {
+		return false
+	}
+	bigWord := ev.Ch == 'W'
+	before := vi.cursorAtScroll()
+	vi.cursor.Select()
+	count := vi.motionCount()
+	if vi.cursor.AtWordObjectEnd(bigWord) {
+		count--
+	}
+	for i := 0; i < count; i++ {
+		prev := vi.cursor.CursorAtScroll()
+		if !vi.cursor.MoveRightWordObjectEnd(bigWord) &&
+			vi.cursor.CursorAtScroll() == prev {
+			break
+		}
+	}
+	if vi.cursor.CursorAtScroll() == before {
+		// The cursor never moved, so the anchor selection is empty while
+		// Vim still changes the word-end cell under it.
+		vi.cursor.SelectRange(before, term.Coordinates{Y: before.Y, X: before.X + 1})
+	}
+	return true
 }
 
 func (vi *viHandlerImpl) handleGo(ev term.Event) (quit, handled bool) {

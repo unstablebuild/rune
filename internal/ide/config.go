@@ -53,7 +53,6 @@ import (
 	"unstable.build/rune/internal/component/notifications"
 	"unstable.build/rune/internal/component/shader/shaderloop"
 	tconfig "unstable.build/rune/internal/config"
-	"unstable.build/rune/internal/extension/extutil"
 	"unstable.build/rune/internal/handler"
 	"unstable.build/rune/internal/handler/command"
 	"unstable.build/rune/internal/handler/search"
@@ -273,7 +272,7 @@ type ideConfig struct {
 	ringBell         func()
 	scheduleNextTick func(func()) bool
 	cellPixelSize    func() (int, int)
-	zdotDir          string
+	clip             clipboard.Register
 	// storage is the IDE-wide storage service. It's owned by the IDE
 	// and shared across workspaces; commandAliases consults it to
 	// resolve `{history}` placeholders in alias completer chains by
@@ -312,13 +311,12 @@ func overrideConfig(ideConfig, cfg map[string]any) {
 func initConfig(
 	c *ideConfig, cfg map[string]any, defaultWallpaper browser.Wallpaper,
 	ringBell func(), scheduleNextTick func(func()) bool,
-	zdotDir string, configPath string,
+	configPath string,
 ) {
 	c.cfg = cfg
 	c.configPath = configPath
 	c.ringBell = ringBell
 	c.scheduleNextTick = scheduleNextTick
-	c.zdotDir = zdotDir
 	c.defaultWallpaper = defaultWallpaper
 	c.errors = make(map[string]error)
 }
@@ -326,11 +324,11 @@ func initConfig(
 func initDefaultConfig(
 	c *ideConfig, defaultWallpaper browser.Wallpaper,
 	ringBell func(), scheduleNextTick func(func()) bool,
-	zdotDir, configPath string,
+	configPath string,
 ) {
 	cfg := make(map[string]any)
 	initConfig(c, cfg, defaultWallpaper, ringBell,
-		scheduleNextTick, zdotDir, configPath)
+		scheduleNextTick, configPath)
 }
 
 func (c ideConfig) command() (config.Config, bool) {
@@ -3268,17 +3266,26 @@ func (c ideConfig) iconsBarConfig(pub text.EventPublisher) text.IconsBarConfig {
 
 func (c ideConfig) statusBarConfig(
 	cwd workspaceapi.URI, pub text.EventPublisher, svc vctrl.Service,
+	interrupter term.Interrupter,
 ) text.StatusBarConfig {
-	return text.StatusBarConfig{
+	ret := text.StatusBarConfig{
 		Workspace:        cwd,
 		ScheduleNextTick: c.scheduleNextTick,
 		Publisher:        pub,
+		Interrupter:      interrupter,
 		BackgroundColor:  c.statusBarAttr("background_attr", term.Attributes{}).Bg,
 		ErrorColor:       c.statusBarAttr("foreground_error_attr", term.Attributes{}).Fg,
 		GitService:       svc,
 		Layout:           c.statusBarLayout(),
 	}
+	if c.storage != nil {
+		ret.Storage = storageapi.WithPartition(c.storage, statusBarImagesPartition)
+	}
+	return ret
 }
+
+// statusBarImagesPartition caches the images status bar layouts download.
+const statusBarImagesPartition = "status_bar_images"
 
 func (c ideConfig) auxiliaryBarFolds() bool {
 	cfg, ok := c.auxiliaryBar()
@@ -3437,12 +3444,18 @@ func (c ideConfig) auxiliaryBarLines() (bool, bool) {
 }
 
 func (c ideConfig) clipboard() clipboard.Register {
-	cfg := config.MapConfig(c.cfg)
-	ret, err := extutil.Clipboard(cfg)
-	if err != nil {
-		if err != config.ErrNotFound {
-			c.errors["clipboard"] = err
+	var ret clipboard.Register
+	mode, err := config.MapConfig(c.cfg).GetString("clipboard")
+	switch {
+	case err == config.ErrNotFound || (err == nil && mode == "memory"):
+		ret = clipboard.NewInMemory()
+	case err == nil && mode == "system":
+		ret = c.clip
+	default:
+		if err == nil {
+			err = fmt.Errorf("unknown clipboard %q", mode)
 		}
+		c.errors["clipboard"] = err
 		ret = clipboard.NewInMemory()
 	}
 	return registerhistory.NewClipboard(registerset.New(ret))
@@ -4744,11 +4757,10 @@ func reloadConfig(
 	configFilePath string, defaultWallpaper browser.Wallpaper,
 	defaultConfig DefaultConfig,
 	ringBell func(), scheduleNextTick func(func()) bool,
-	zdotDir string,
 ) (ret ideConfig, err error) {
 	err = loadConfig(&ret, configFilePath,
 		defaultWallpaper, defaultConfig, ringBell,
-		scheduleNextTick, zdotDir)
+		scheduleNextTick)
 	return
 }
 
@@ -4788,10 +4800,9 @@ func loadConfig(
 	defaultWallpaper browser.Wallpaper,
 	defaultConfig DefaultConfig,
 	ringBell func(), scheduleNextTick func(func()) bool,
-	zdotDir string,
 ) (err error) {
 	initDefaultConfig(c, defaultWallpaper, ringBell, scheduleNextTick,
-		zdotDir, configPath)
+		configPath)
 
 	cfg, err := decodeDefaultConfig(defaultConfig)
 	if err != nil {
@@ -4799,7 +4810,7 @@ func loadConfig(
 	}
 
 	initConfig(c, cfg, defaultWallpaper, ringBell,
-		scheduleNextTick, zdotDir, configPath)
+		scheduleNextTick, configPath)
 
 	if err := loadFileConfig(c, configPath); err != nil {
 		return err

@@ -145,10 +145,6 @@ func TestSanitizeMCPInputSchema_NonMap(t *testing.T) {
 	assert.Equal(t, in, out)
 }
 
-// TestToolAdapterDefinition_SanitizesArrayMissingItems exercises the
-// integration point: an MCP tool whose InputSchema has an array property
-// without `items` must be patched by Definition() so it does not break
-// OpenAI's strict function-schema validator.
 func TestToolAdapterDefinition_SanitizesArrayMissingItems(t *testing.T) {
 	mcpTool := &gomcp.Tool{
 		Name:        "syntax_query",

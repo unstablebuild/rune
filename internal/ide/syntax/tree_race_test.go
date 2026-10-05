@@ -51,13 +51,6 @@ func (notifyReadsState) UpdateNotificationProgress(string, string, int64, int64)
 	return nil
 }
 
-// TestNotifyNotAvailRunsOnEventLoop drives Tree.notifyNotAvail from a
-// goroutine that simulates the syntax tree download worker, while a
-// "mutator" running on the simulated event-loop goroutine repeatedly
-// writes to the same state that Notify reads. If notifyNotAvail
-// invokes Notify on the caller goroutine instead of routing through
-// ScheduleNextTick, the race detector flags the unsynchronized
-// read/write.
 func TestNotifyNotAvailRunsOnEventLoop(t *testing.T) {
 	const iterations = 200
 

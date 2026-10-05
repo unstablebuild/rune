@@ -54,10 +54,6 @@ func TestWorkspaceBasename(t *testing.T) {
 	}
 }
 
-// TestWorkspaceManagerHandlerEnvSource asserts the handler exposes
-// the workspace-scoped variables for every scheme. Commands run
-// in the workspace's executor, so the variables must resolve whether
-// the workspace is local, remote, or in-memory.
 func TestWorkspaceManagerHandlerEnvSource(t *testing.T) {
 	t.Run("memory test workspace exposes every workspace var", func(t *testing.T) {
 		// The IDE test harness installs workspaces with the

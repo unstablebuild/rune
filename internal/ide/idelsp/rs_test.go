@@ -214,14 +214,6 @@ func waitForRustReady(
 	t.Fatal("timed out waiting for rust-analyzer to become ready")
 }
 
-// TestE2ERust drives the same request surface the Go and Python e2e
-// suites cover, against a real rust-analyzer. Because rust-analyzer
-// output (hover markdown, semantic-token legend, code-action kinds)
-// varies across toolchain versions, the cases assert structural
-// correctness — that the Manager routes the request and the server
-// answers about the expected symbol — rather than pinning exact strings,
-// which keeps the suite stable across rust-analyzer releases while still
-// validating that the LSP init params and routing are correct.
 func TestE2ERust(t *testing.T) {
 	t.Parallel()
 
@@ -496,14 +488,6 @@ func withPullDiagnosticsCapability(
 	return params
 }
 
-// TestRustE2E_PullDiagnosticsPublish is the RUNE-332 regression guard.
-// rust-analyzer builds >= 2026-05-11 never compute native semantic
-// diagnostics on the push path when build scripts and proc macros are
-// enabled, so native semantic diagnostics never reach the location
-// list. The error below is appended to the open buffer but never
-// written to disk: that isolates the assertion from clippy flycheck,
-// which compiles the on-disk crate and would otherwise report the same
-// error, so a pass here can only come from the pull bridge.
 func TestRustE2E_PullDiagnosticsPublish(t *testing.T) {
 	// Deliberately not parallel: TestE2ERust already drives a
 	// rust-analyzer against the same fixture, and two concurrent

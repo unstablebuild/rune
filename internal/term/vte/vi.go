@@ -631,6 +631,17 @@ func (v *viHandler) remoteMoveTo(target term.Coordinates) (actual int) {
 	// it's assumed that prompt is at valid start of row
 	start := v.comp.cursorAtScroll()
 
+	// lastPromptLine's end is right exclusive, so it is the position a
+	// new character is appended at. moveRight cannot reach it when the
+	// shell's line editor is in vi mode: readline clamps forward-char to
+	// the last character and rings the bell instead of moving, which
+	// would land the insert one column too early.
+	if _, lineEnd := v.lastPromptLine(); target == lineEnd && target != start {
+		v.remote.moveEndOfLine()
+		actual = target.X
+		return
+	}
+
 	if start.Y == target.Y {
 		// use current cursor x position, to take $ or other
 		// shell prefixes into consideration

@@ -80,9 +80,6 @@ const (
 	scrollUp             // raw offset increases toward older messages
 )
 
-// TestHandlerDragSelectionScrolling asserts that a held left-button drag
-// keeps selecting and edge-auto-scrolls instead of letting the input box
-// steal focus when the pointer crosses the messages/input boundary.
 func TestHandlerDragSelectionScrolling(t *testing.T) {
 	const (
 		width  = 120
@@ -281,11 +278,6 @@ func TestHandlerDragSelectionScrolling(t *testing.T) {
 	}
 }
 
-// TestHandlerDragSelectionNegativeCoords drives a left-button drag whose
-// pointer leaves the window into negative coordinates, as the terminal reports
-// while the mouse is dragged above or left of the viewport. Routed through the
-// full dialogueHandler.Handle path, it must not panic and must keep a sensible
-// messages selection that includes content scrolled in from above.
 func TestHandlerDragSelectionNegativeCoords(t *testing.T) {
 	const (
 		width  = 40
@@ -348,29 +340,6 @@ func clickDrag(x1, y1, x2, y2 int) []term.Event {
 	}
 }
 
-// TestHandlerMouseSelection exercises mouse selection through the full
-// dialogueHandler.Handle path, which adjusts screen coordinates by
-// MessagesPosition(). The bug under test: viewport-relative coordinates
-// are forwarded to mdhandler.Handler methods that expect element-relative
-// coordinates, causing selection to land on the wrong line when there
-// are list elements above the markdown element.
-//
-// Layout for all tests (width=60, height=20, ParagraphSpacing=0):
-//
-//	Messages area: rows 0-16 (17 rows), bottom-aligned.
-//	Input box:     rows 17-19 (3 rows).
-//
-// With AlignmentBottom and content shorter than the messages area,
-// elements start at Y=0. Each send message is 1 row. Despite
-// ParagraphSpacing=0, each markdown paragraph occupies 2 rows
-// (1 content + 1 blank), except that the trailing blank is also
-// present after the last paragraph.
-//
-// 5-paragraph layout (no sends): Y=0 alpha, Y=2 bravo, Y=4 charlie,
-// Y=6 delta, Y=8 echo (blank rows at Y=1,3,5,7,9).
-//
-// With N sends, the markdown element shifts down by N rows.
-// Example with 2 sends: Y=0 sent_one, Y=1 sent_two, Y=2 alpha, …
 func TestHandlerMouseSelection(t *testing.T) {
 	const (
 		width  = 60
@@ -710,16 +679,6 @@ func TestHandlerMouseSelection(t *testing.T) {
 	}
 }
 
-// TestHandlerMouseSelectionScrolled exercises mouse selection when the
-// markdown element is partly scrolled off the top of the viewport.
-//
-// Layout: width=60, height=10 (messages area = 7 rows after input).
-// A long markdown (15 paragraphs, ParagraphSpacing=0) = 30 rows total.
-// With bottom-aligned list and no scrolling, the bottom of the
-// markdown is visible and the top is off-screen.
-//
-// The backward walk in contentOffset must handle the case where the
-// element starts at a negative viewport Y (scrolled off the top).
 func TestHandlerMouseSelectionScrolled(t *testing.T) {
 	const (
 		width  = 60
@@ -892,11 +851,6 @@ func highlightedRows(sw *term.StringWriter, width, height int) map[int]string {
 	return rows
 }
 
-// TestHandlerMouseSelectionHighlightPinnedAcrossScroll asserts that after a
-// selection is made, scrolling the messages list (without moving the pointer)
-// keeps the highlight on the selected content. The highlight must track the
-// content rows, not stay fixed to the viewport rows it occupied at selection
-// time.
 func TestHandlerMouseSelectionHighlightPinnedAcrossScroll(t *testing.T) {
 	const (
 		width  = 40
@@ -971,10 +925,6 @@ func TestHandlerMouseSelectionHighlightPinnedAcrossScroll(t *testing.T) {
 		"highlight must stay on the selected content after scrolling")
 }
 
-// TestHandlerMouseSelectionFullConfigScrolled exercises mouse selection
-// with the full production config AND a scrolled conversation loaded from
-// storage. This is the case that breaks when grid coordinates don't
-// account for the messages offset correctly.
 func TestHandlerMouseSelectionFullConfigScrolled(t *testing.T) {
 	const (
 		width  = 120
@@ -1140,32 +1090,6 @@ func TestHandlerMouseSelectionFullConfigScrolled(t *testing.T) {
 
 }
 
-// TestHandlerMouseSelectionFullConfig exercises mouse selection with
-// the full production ComponentConfig (MessagesRowConfig with
-// PadHorizontal=-80, PadVertical=2, AlignmentCentered, plus
-// PadVertical=1 on sends/receives).
-//
-// This means:
-//   - MessagesPosition() = {X:20, Y:1} (centered padding)
-//   - Handler subtracts this before passing to the mouse delegate
-//   - Event coordinates must be in handler-relative (screen) space
-//
-// Rendered layout (width=120, height=30):
-//
-//	Screen Y=1, X=20: "sent one"
-//	Screen Y=3, X=20: "sent two"
-//	Screen Y=5, X=20: "alpha"
-//	Screen Y=7, X=20: "bravo"
-//	Screen Y=9, X=20: "charlie"
-//
-// TestHandlerInputBoxSelection verifies that Selection() returns the
-// compose editor's selected text when the input has an active
-// selection, and that focus transitions between the input and messages
-// area correctly clear the other area's selection.
-//
-// Layout: width=60, height=20. Messages area: rows 0-16 (17 rows).
-// Input box: rows 17-19 (3 rows). With ParagraphSpacing=0, "alpha"
-// renders at Y=0.
 func TestHandlerInputBoxSelection(t *testing.T) {
 	const (
 		width  = 60

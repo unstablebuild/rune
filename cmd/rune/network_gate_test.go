@@ -174,8 +174,6 @@ func TestNetworkGateCredentials(t *testing.T) {
 	})
 }
 
-// The user names machines, the account server works in ids, so the
-// gate is what turns one into the other.
 func TestNetworkGateRemove(t *testing.T) {
 	t.Run("removes the machine with that name", func(t *testing.T) {
 		api := &stubNetworkAPI{
@@ -240,9 +238,6 @@ func TestNetworkPromptFor(t *testing.T) {
 	assert.False(t, ok)
 }
 
-// The account's machine list is keyed by the coordination server's
-// durable id, so that is what says whether this machine is still one
-// of the account's.
 func TestMachineRemoved(t *testing.T) {
 	machines := []apiclient.Machine{
 		{ID: "1", Hostname: "laptop"},
@@ -271,16 +266,12 @@ func TestMachineRemoved(t *testing.T) {
 	}
 }
 
-// A logout is either a node key that reached its lifetime, which is
-// re-minted silently, or a machine the account removed, which the user
-// has to be told about. Only the account's machine list tells them
-// apart, so an unreachable account server claims neither.
 func TestNetworkHandleNeedsLogin(t *testing.T) {
 	setup := func(t *testing.T, api *stubNetworkAPI) (
 		*network, *networkPrompter, *int,
 	) {
 		t.Helper()
-		net := newNetwork(config.NopConfig(), t.TempDir(), newNetworkGate(api))
+		net := newNetwork(config.NopConfig(), t.TempDir(), "", newNetworkGate(api))
 		t.Cleanup(func() { _ = net.Close() })
 		prompts := 0
 		return net, &networkPrompter{
@@ -326,13 +317,10 @@ func TestNetworkHandleNeedsLogin(t *testing.T) {
 	})
 }
 
-// `network remove` completes machine names, which runs on a keystroke.
-// Machines prompts a signed-out user to sign in; MachineNames must not,
-// or pressing Tab would open a modal mid-keystroke.
 func TestGatedNetworkMachineNames(t *testing.T) {
 	newGated := func(t *testing.T, api *stubNetworkAPI) (gatedNetwork, *int) {
 		t.Helper()
-		net := newNetwork(config.NopConfig(), t.TempDir(), newNetworkGate(api))
+		net := newNetwork(config.NopConfig(), t.TempDir(), "", newNetworkGate(api))
 		t.Cleanup(func() { _ = net.Close() })
 		prompts := 0
 		return gatedNetwork{n: net, prompter: &networkPrompter{
@@ -372,13 +360,10 @@ func TestGatedNetworkMachineNames(t *testing.T) {
 	})
 }
 
-// The gate, prompter, and network take only mandatory dependencies. A
-// nil is a wiring bug that must crash at construction, never a state
-// the code quietly tolerates.
 func TestNetworkNilDependenciesPanic(t *testing.T) {
 	assert.Panics(t, func() { newNetworkGate(nil) })
 	assert.Panics(t, func() {
-		newNetwork(config.NopConfig(), t.TempDir(), nil)
+		newNetwork(config.NopConfig(), t.TempDir(), "", nil)
 	})
 	assert.Panics(t, func() {
 		newNetworkPrompter(nil, func(func()) bool { return true })
@@ -386,9 +371,6 @@ func TestNetworkNilDependenciesPanic(t *testing.T) {
 	assert.Panics(t, func() { newNetworkPrompter(&ide.IDE{}, nil) })
 }
 
-// The stack is fully assembled whatever the configuration says —
-// auto_join only decides whether boot joins — so `network up` can
-// join later without restarting Rune.
 func TestNewNetworkAlwaysAssembles(t *testing.T) {
 	tsuite := []struct {
 		name string
@@ -404,7 +386,7 @@ func TestNewNetworkAlwaysAssembles(t *testing.T) {
 	}
 	for _, tcase := range tsuite {
 		t.Run(tcase.name, func(t *testing.T) {
-			net := newNetwork(config.MapConfig(tcase.cfg), t.TempDir(),
+			net := newNetwork(config.MapConfig(tcase.cfg), t.TempDir(), "",
 				newNetworkGate(&stubNetworkAPI{}))
 			t.Cleanup(func() { _ = net.Close() })
 			require.NotNil(t, net.node)

@@ -31,20 +31,6 @@ import (
 	"unstable.build/rune/internal/workspace/workspacessh"
 )
 
-// TestConnectSchemeEndToEnd exercises the full SSH workspace bootstrap
-// against a real container running a `rune` binary on $PATH. This is
-// the test that, when the bootstrap looked for an obsolete `six`
-// binary, would have surfaced the bug the rest of the matrix missed
-// because TestAuthDial short-circuits before whichCommand runs.
-//
-// It also proves connectScheme waits for the remote to be serving-ready
-// before handing back a usable client: the runesvc stand-in is told to sleep
-// before it starts serving (and before it emits the ServerReady sentinel), so
-// the first RPC — which blocks on the background connect attempt via
-// remoteScheme.state — must not resolve until the pre-serving delay has
-// elapsed, yet must then succeed. Without readiness gating the client would be
-// returned immediately and that first RPC would block indefinitely against a
-// stdout that carries no gRPC server yet.
 func TestConnectSchemeEndToEnd(t *testing.T) {
 	SkipIfNoDocker(t)
 	EnsureImage(t)
@@ -95,16 +81,6 @@ func TestConnectSchemeEndToEnd(t *testing.T) {
 		elapsed, serveDelay)
 }
 
-// TestConnectSchemeMultiKeyRedialBootstrap exercises the full
-// scheme bootstrap (auth + whichCommand + Stat) on a server that
-// caps MaxAuthTries to 1, with [wrong, right] keys configured.
-// The pure-auth TestMaxAuthTriesOne stops the moment auth
-// succeeds and never invokes the post-auth bootstrap, so it
-// can't catch a regression where the per-key redial leaves the
-// scheme in a state that breaks subsequent remote operations
-// (e.g. dropped client config, cached failure, missing remote
-// binary install in scenario scripts). This test guards that
-// bigger surface.
 func TestConnectSchemeMultiKeyRedialBootstrap(t *testing.T) {
 	SkipIfNoDocker(t)
 	EnsureImage(t)
@@ -152,13 +128,6 @@ func TestConnectSchemeMultiKeyRedialBootstrap(t *testing.T) {
 	assert.NotNil(t, fi)
 }
 
-// TestConnectSchemeUserLocalBin exercises the supported install
-// location: install.sh symlinks the binary to ~/.local/bin/rune, a
-// directory that is NOT on PATH in non-interactive SSH exec sessions
-// (sshd runs a non-login shell, skipping the profile files where
-// distributions add ~/.local/bin). The bootstrap must still find the
-// binary via connectScheme's PATH injection — both in the `which`
-// preflight and in the workspace-server launch itself.
 func TestConnectSchemeUserLocalBin(t *testing.T) {
 	SkipIfNoDocker(t)
 	EnsureImage(t)

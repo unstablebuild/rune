@@ -132,24 +132,17 @@ func mustURI(t *testing.T, raw string) workspaceapi.URI {
 	return uri
 }
 
-// TestNewPanicsOnNilFallback verifies the constructor refuses a
-// nil fallback. (exo-side missing arguments panic inside exoeditor.New
-// and are exercised by text/exoeditor's own tests.)
 func TestNewPanicsOnNilFallback(t *testing.T) {
 	assert.Panics(t, func() {
 		_ = newWithEditors(&stubEditor{}, nil)
 	})
 }
 
-// TestIsExternalAlwaysTrue asserts the router always reports
-// IsExternal()==true regardless of its children.
 func TestIsExternalAlwaysTrue(t *testing.T) {
 	r := newWithEditors(&stubEditor{}, &stubEditor{})
 	assert.True(t, r.IsExternal())
 }
 
-// TestEditRouting drives Edit on a variety of URIs and asserts the
-// router dispatched to the right child.
 func TestEditRouting(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -176,8 +169,6 @@ func TestEditRouting(t *testing.T) {
 	}
 }
 
-// TestEditErrorNotCached verifies a failed Edit does not record a
-// route so a subsequent Editor() lookup re-dispatches by scheme.
 func TestEditErrorNotCached(t *testing.T) {
 	exoEd := &stubEditor{name: "exo", editErr: errors.New("boom")}
 	fallback := &stubEditor{name: "fallback"}
@@ -193,9 +184,6 @@ func TestEditErrorNotCached(t *testing.T) {
 	assert.Empty(t, fallback.editorURIs)
 }
 
-// TestEditorLookupUsesRecordedRoute proves a successful Edit makes
-// subsequent Editor() lookups hit the same child even if accepts()
-// would have picked differently.
 func TestEditorLookupUsesRecordedRoute(t *testing.T) {
 	exoEd := &stubEditor{name: "exo"}
 	fallback := &stubEditor{name: "fallback"}
@@ -211,8 +199,6 @@ func TestEditorLookupUsesRecordedRoute(t *testing.T) {
 	assert.Equal(t, []string{"memory:///fexplorer"}, fallback.editorURIs)
 }
 
-// TestEditorLookupUnseenURIUsesScheme verifies the accepts() rule
-// applies when no Edit has been called for the URI yet.
 func TestEditorLookupUnseenURIUsesScheme(t *testing.T) {
 	exoEd := &stubEditor{name: "exo"}
 	fallback := &stubEditor{name: "fallback"}
@@ -227,10 +213,6 @@ func TestEditorLookupUnseenURIUsesScheme(t *testing.T) {
 	assert.Equal(t, []string{"memory:///never-edited"}, fallback.editorURIs)
 }
 
-// TestSubscribeAndUnsubscribeForwardToExo verifies SubscribeEvents
-// and UnsubscribeEvents forward only to the exo child. The fallback
-// only serves IDE-owned pseudo-URIs (memory://) whose events the IDE
-// does not react to.
 func TestSubscribeAndUnsubscribeForwardToExo(t *testing.T) {
 	exoEd := &stubEditor{unsubResult: true}
 	fallback := &stubEditor{unsubResult: true}
@@ -249,9 +231,6 @@ func TestSubscribeAndUnsubscribeForwardToExo(t *testing.T) {
 	assert.Equal(t, 0, fallback.unsubCalls)
 }
 
-// TestCommandAndREPLForwardToFallback proves command, REPL and resource
-// opener register/unregister calls hit only the fallback (exo returns
-// "not supported" for these by design).
 func TestCommandAndREPLForwardToFallback(t *testing.T) {
 	exoEd := &stubEditor{}
 	fallback := &stubEditor{}

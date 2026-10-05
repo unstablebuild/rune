@@ -44,8 +44,6 @@ import (
 	"unstable.build/rune/internal/workspace/walkdir"
 )
 
-// TestFilePathCompleterSkipsProtectedTraversal asserts that recursive
-// completion skips app data under ~/Library without hiding personal folders.
 func TestFilePathCompleterSkipsProtectedTraversal(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("macOS protected-directory policy")
@@ -687,9 +685,6 @@ func TestPathCompletersCompleteSameOriginURI(t *testing.T) {
 	}
 }
 
-// TestPathCompletersExpandLeadingEnv verifies that a leading $VAR is
-// resolved the way dispatch will expand it, because workspace readers
-// take "$" literally.
 func TestPathCompletersExpandLeadingEnv(t *testing.T) {
 	fix := newCompleterFixture(t)
 	t.Setenv("RUNE_TEST_COMPLETER_ROOT", fix.root)
@@ -733,10 +728,6 @@ func TestPathCompletersExpandLeadingEnv(t *testing.T) {
 	})
 }
 
-// TestPathCompletersEscapeDollar verifies that path candidates survive
-// command dispatch, which expands $VAR and reads "$$" as a literal "$":
-// accepting any candidate must dispatch a path that exists, so a "$" in
-// a name is emitted as "$$", and a typed "$$" resolves to that name.
 func TestPathCompletersEscapeDollar(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -855,10 +846,6 @@ func TestNonRecursiveDirsCompleterUsesReaderRoot(t *testing.T) {
 	}
 }
 
-// TestNonRecursiveDirsCompleterMarksCandidatesPartial verifies that every
-// directory candidate carries the partial marker inside its quoting, so
-// accepting one descends into the directory instead of terminating the
-// argument.
 func TestNonRecursiveDirsCompleterMarksCandidatesPartial(t *testing.T) {
 	t.Parallel()
 	fix := newCompleterFixture(t)
@@ -955,9 +942,6 @@ func TestDirsCompleterFiltersHidden(t *testing.T) {
 	}
 }
 
-// TestDirsCompleterQuotesPathsWithSpaces verifies that completion entries
-// containing a space are wrapped in single quotes so the prompt keeps
-// them as a single argument instead of splitting on the space.
 func TestDirsCompleterQuotesPathsWithSpaces(t *testing.T) {
 	t.Parallel()
 	fix := newCompleterFixture(t)
@@ -980,15 +964,6 @@ func TestDirsCompleterQuotesPathsWithSpaces(t *testing.T) {
 	assert.Equal(t, "with space", UnquoteToken(parts[0]))
 }
 
-// TestDirsCompleterQuotesAdversarialNames verifies that directory names
-// containing characters the command-prompt tokenizer treats specially —
-// tabs, single quotes, double quotes, backslashes, and combinations —
-// are emitted in a form that round-trips through the prompt: each entry
-// must split into exactly one token (SplitCommandLine) whose UnquoteToken
-// value is the original relative path. This is the end-to-end guarantee
-// behind quoting completer output: a single quote in the path must not
-// break tokenisation, and the prompt must unquote it back to the literal
-// path before dispatch.
 func TestDirsCompleterQuotesAdversarialNames(t *testing.T) {
 	t.Parallel()
 
@@ -1036,12 +1011,6 @@ func TestDirsCompleterQuotesAdversarialNames(t *testing.T) {
 	}
 }
 
-// TestDirsCompleterSkipsHiddenDirsTraversal asserts that the
-// DirsCompleter does not descend into hidden directories. Walking
-// into them is wasteful (the entries would be filtered from the
-// output anyway) and on real workspaces it triggers expensive
-// recursion through directories like .git or .hg that contain
-// thousands of files and starve the rest of the system.
 func TestDirsCompleterSkipsHiddenDirsTraversal(t *testing.T) {
 	t.Parallel()
 	fix := newCompleterFixture(t)
@@ -1109,9 +1078,6 @@ func (r *trackingReader) snapshot() []string {
 	return out
 }
 
-// TestFilePathCompleterRejectsUnsupported verifies that pathological
-// inputs that the unquoter cannot represent (e.g. embedded null byte)
-// surface as a clean error instead of panicking.
 func TestFilePathCompleterRejectsUnsupported(t *testing.T) {
 	t.Parallel()
 	fix := newCompleterFixture(t)
@@ -1257,10 +1223,6 @@ func TestMultiCompleter(t *testing.T) {
 	}
 }
 
-// TestMultiCompleterPanicsOnNilChild documents that a nil entry in a
-// completer chain is treated as a programmer error: configuration that
-// emits no factories should drop the alias, not silently produce a
-// chain with a missing slot.
 func TestMultiCompleterPanicsOnNilChild(t *testing.T) {
 	c := MultiCompleter(sliceCompleter("ok"), nil)
 	assert.PanicsWithValue(t,
@@ -1284,10 +1246,6 @@ func TestMultiCompleterContextCancellation(t *testing.T) {
 	require.NoError(t, it.Close())
 }
 
-// TestMultiCompleterNewLastArgFromAnyChild documents that newLastArg
-// is propagated from whichever child returns one — not just the first.
-// This is what allows e.g. `{file}` (typically a later child) to expand
-// `~` even when an earlier `{history}` child returned no expansion.
 func TestMultiCompleterNewLastArgFromAnyChild(t *testing.T) {
 	withLast := func(values []string, last string) Completer {
 		return FuncCompleter(func(
@@ -1390,9 +1348,6 @@ func TestTrimPartialCandidateSuffix(t *testing.T) {
 	}
 }
 
-// TestPartialCompleterMarksEveryCandidate covers the wrapper the
-// workspaceopen completer uses to replay history entries, which are
-// stored canonically and therefore arrive without the marker.
 func TestPartialCompleterMarksEveryCandidate(t *testing.T) {
 	t.Parallel()
 
@@ -1510,9 +1465,6 @@ func blockingCompleter() Completer {
 	})
 }
 
-// TestMultiCompleterDoesNotBuffer verifies that MultiCompleter returns
-// its iterator to the caller without first draining any child iterator.
-// A buffered implementation would block here on the first child's Next.
 func TestMultiCompleterDoesNotBuffer(t *testing.T) {
 	first := blockingCompleter()
 	second := sliceCompleter("after")
@@ -1543,10 +1495,6 @@ func TestMultiCompleterDoesNotBuffer(t *testing.T) {
 	}
 }
 
-// TestMultiCompleterStreamsFirstValue verifies that the first value from
-// a child iterator can be observed via Next() before the child has
-// finished producing all of its values. A buffered implementation would
-// hold the value back until the entire child stream completed.
 func TestMultiCompleterStreamsFirstValue(t *testing.T) {
 	hold := make(chan struct{})
 	closed := make(chan struct{})
@@ -1637,11 +1585,6 @@ func streamingChild(values []string, gate <-chan struct{}, done <-chan struct{})
 	})
 }
 
-// TestMultiCompleterStreamingNoBuffering exercises the strongest
-// invariant: each value produced by the underlying child iterator must
-// be observable by the caller via Next BEFORE the next value is
-// produced. A buffered implementation would block the caller's Next
-// until many values have accumulated.
 func TestMultiCompleterStreamingNoBuffering(t *testing.T) {
 	gate := make(chan struct{})
 	done := make(chan struct{})
@@ -1682,26 +1625,6 @@ func TestMultiCompleterStreamingNoBuffering(t *testing.T) {
 	}
 }
 
-// TestMultiCompleterAliasIntegration exercises the real-world wiring
-// behind the `won` alias from the user's config:
-//
-//	aliases:
-//	  won:
-//	    command: workspaceopen
-//	    completer:
-//	      - '{history}'
-//	      - '{file}'
-//
-// The chain composes a HistoryCompleter (backed by a real search.History
-// over storagestub) with a real FilePathCompleter (backed by a real
-// workspace.NewFileScheme over a temp dir). It asserts:
-//
-//  1. previously-run "won …" entries are surfaced first (with the
-//     command-prefix stripped), so reissuing a past invocation just
-//     requires picking from the list;
-//  2. file-system results follow the history entries;
-//  3. the file completer's `~` expansion is preserved as newLastArg
-//     even though it is not the first child in the chain.
 func TestMultiCompleterAliasIntegration(t *testing.T) {
 	dir, err := os.MkdirTemp("", "won-alias-int-*")
 	require.NoError(t, err)

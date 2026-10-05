@@ -199,9 +199,6 @@ func TestGoREPLClassifyIncomplete(t *testing.T) {
 	}
 }
 
-// TestGoREPLClassifyGarbage covers genuinely broken input that can never
-// be completed by appending more lines. classify must return a real error
-// (not errIncomplete) so the REPL surfaces it instead of buffering forever.
 func TestGoREPLClassifyGarbage(t *testing.T) {
 	t.Parallel()
 	garbage := []string{
@@ -227,8 +224,6 @@ func TestGoREPLClassifyGarbage(t *testing.T) {
 	}
 }
 
-// TestGoREPLGarbageSurfacesError drives the full session: garbage input
-// must return an error rather than silently buffering.
 func TestGoREPLGarbageSurfacesError(t *testing.T) {
 	t.Parallel()
 	r := newScriptedRunner()
@@ -448,8 +443,6 @@ func TestGoREPLMultiLine(t *testing.T) {
 	}
 }
 
-// TestGoREPLBufferThenBuiltinResets verifies a `:`-command issued while a
-// multi-line snippet is buffering discards the partial input.
 func TestGoREPLBufferThenBuiltinResets(t *testing.T) {
 	t.Parallel()
 	r := newScriptedRunner()
@@ -625,10 +618,6 @@ func TestGoREPLPrintEmptySession(t *testing.T) {
 		[]string{"package main", "", "func main() {", "}", ""}, out)
 }
 
-// TestGoREPLImportRendersBlankWhenUnused asserts that an imported but
-// unreferenced package renders as a blank import so go run never trips
-// the "imported and not used" error, and switches to a normal import
-// once the package is referenced.
 func TestGoREPLImportRendersBlankWhenUnused(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -751,8 +740,6 @@ func assignProgram(stmt string, names ...string) string {
 	return s.renderProgramSource(printStmt(names), true)
 }
 
-// TestGoREPLNonCallExpressionPrints asserts a non-call expression is
-// printed through the variadic printer on the first and only run.
 func TestGoREPLNonCallExpressionPrints(t *testing.T) {
 	t.Parallel()
 	r := newScriptedRunner().reply(0, "2", nil)
@@ -766,10 +753,6 @@ func TestGoREPLNonCallExpressionPrints(t *testing.T) {
 	require.Equal(t, printedProgram(nil, nil, "1 + 1"), r.lastProgram())
 }
 
-// TestGoREPLCallPrintsThroughPrinter asserts a call is wrapped in the
-// variadic printer in a single run so its results are shown. A
-// multi-valued call (e.g. fmt.Println) spreads into the printer and is
-// formatted as a tuple by the printer body.
 func TestGoREPLCallPrintsThroughPrinter(t *testing.T) {
 	t.Parallel()
 	r := newScriptedRunner().reply(0, "hello\n(6, <nil>)", nil)
@@ -783,9 +766,6 @@ func TestGoREPLCallPrintsThroughPrinter(t *testing.T) {
 	require.Equal(t, printedProgram(nil, nil, `fmt.Println("hello")`), r.lastProgram())
 }
 
-// TestGoREPLVoidCallFallsBackToStatement asserts a void call (no value to
-// hand the printer) fails the printer form, then re-runs as a bare
-// statement so its side effects still execute.
 func TestGoREPLVoidCallFallsBackToStatement(t *testing.T) {
 	t.Parallel()
 	r := newScriptedRunner().
@@ -804,9 +784,6 @@ func TestGoREPLVoidCallFallsBackToStatement(t *testing.T) {
 		"fallback runs the call as a bare statement")
 }
 
-// TestGoREPLRenderGolden pins the exact program render emits for a
-// printed expression: fmt is imported, the variadic printer is declared,
-// and the expression is handed to it.
 func TestGoREPLRenderGolden(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(newScriptedRunner())
@@ -823,9 +800,6 @@ func TestGoREPLRenderGolden(t *testing.T) {
 	require.Equal(t, want, got)
 }
 
-// TestGoREPLCallSurfacesPrinterErrorWhenBothFail asserts that when both
-// the printer form and the bare-statement fallback fail, the
-// printer-form error (the primary attempt) is surfaced.
 func TestGoREPLCallSurfacesPrinterErrorWhenBothFail(t *testing.T) {
 	t.Parallel()
 	r := newScriptedRunner().
@@ -1537,9 +1511,6 @@ func newTestREPLHandler(t *testing.T) (*drainHandler, *tickScheduler) {
 	return h, sched
 }
 
-// TestDrainHandlerDrainsBeforeHandle proves the wrapper applies
-// scheduled (async command) callbacks before delegating an event, so
-// output produced off the event loop is visible on the next interaction.
 func TestDrainHandlerDrainsBeforeHandle(t *testing.T) {
 	t.Parallel()
 	h, sched := newTestREPLHandler(t)
@@ -1551,9 +1522,6 @@ func TestDrainHandlerDrainsBeforeHandle(t *testing.T) {
 	require.True(t, drained, "Handle must drain scheduled callbacks first")
 }
 
-// TestDrainHandlerForwardsMouse proves mouse events (e.g. wheel scroll,
-// which the ideshell handler supports) are forwarded to the embedded
-// handler rather than swallowed by the wrapper.
 func TestDrainHandlerForwardsMouse(t *testing.T) {
 	t.Parallel()
 	h, _ := newTestREPLHandler(t)
@@ -1664,9 +1632,6 @@ func (r *goRunRunner) run(ctx context.Context, program string) (string, error) {
 	return strings.TrimRight(stdout.String(), "\n"), nil
 }
 
-// TestGoREPLEvalEndToEnd runs rendered programs through the real go
-// toolchain to prove the basic REPL surface works: scalars, value and
-// side-effecting calls, void calls, and unused imports.
 func TestGoREPLEvalEndToEnd(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping toolchain test in -short mode")
@@ -1717,8 +1682,6 @@ func TestGoSessionHelp(t *testing.T) {
 	require.Equal(t, replHelp(), collect(t, it))
 }
 
-// TestCommandEditorAdapter proves the text.Editor -> command.Editor
-// bridge returns a working command.EditHandler bound to the buffer.
 func TestCommandEditorAdapter(t *testing.T) {
 	t.Parallel()
 	ed := commandEditor{te: standard.Editor()}
@@ -1800,10 +1763,6 @@ func (m *fakeWM) CloseWindow(browserapi.Window) error { return nil }
 
 func (m *fakeWM) SetTabActivity(workspaceapi.URI, bool) error { return nil }
 
-// TestNewREPLSubcommandOpensShell drives the repl subcommand end to end
-// against a fake window manager and asserts it installs an ideshell
-// handler whose `go` REPL command is registered and dispatches Go
-// fragments through the session.
 func TestNewREPLSubcommandOpensShell(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -1827,13 +1786,6 @@ func TestNewREPLSubcommandOpensShell(t *testing.T) {
 	require.Same(t, prev, wm.tabHandler, "repl tab is single-instance")
 }
 
-// TestREPLShellConfigPersistsHistory is a regression test for reverse
-// search (<c-r>) showing nothing: the Go REPL must wire storage so
-// submitted commands persist and become searchable.
-// TestREPLShellConfigWiresClearHook verifies that <c-l> (the shell's
-// screen clear, surfaced as Config.ClearHook) resets the accumulated
-// session so a redeclared variable does not collide with a definition
-// that scrolled off-screen.
 func TestREPLShellConfigWiresClearHook(t *testing.T) {
 	t.Parallel()
 	sub := &replSubcommand{}

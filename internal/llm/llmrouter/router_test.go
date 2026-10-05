@@ -35,9 +35,6 @@ import (
 	"unstable.build/rune/internal/llm/gemini"
 )
 
-// TestMain neutralises the ambient AWS environment so the live Bedrock
-// catalog never reaches the network from these tests, regardless of the
-// developer's AWS configuration.
 func TestMain(m *testing.M) {
 	absent := filepath.Join(os.TempDir(), "rune-llmrouter-absent-aws-config")
 	for k, v := range map[string]string{
@@ -86,14 +83,11 @@ func newTestRouterWithLocal(t *testing.T) (*Router, *fakeLocalService) {
 	return r, local
 }
 
-// TestNew_ConstructsLocalRegistry verifies the router exposes the
-// llama.cpp registry it owns.
 func TestNew_ConstructsLocalRegistry(t *testing.T) {
 	r := newTestRouter(t)
 	require.NotNil(t, r.LocalRegistry())
 }
 
-// TestRouter_UnknownProvider rejects models with an unknown provider.
 func TestRouter_UnknownProvider(t *testing.T) {
 	r := newTestRouter(t)
 	_, err := r.CreateCompletion(context.Background(),
@@ -105,8 +99,6 @@ func TestRouter_UnknownProvider(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestRouter_CustomDisabledWithoutURL returns an error when the
-// custom provider is referenced but not configured.
 func TestRouter_CustomDisabledWithoutURL(t *testing.T) {
 	r := newTestRouter(t)
 	_, err := r.CreateCompletion(context.Background(),
@@ -115,8 +107,6 @@ func TestRouter_CustomDisabledWithoutURL(t *testing.T) {
 	assert.Contains(t, err.Error(), "custom provider not configured")
 }
 
-// TestRouter_CustomCatalogSurfacesEntries lists user-configured custom
-// models in Models() and routes them via the custom client.
 func TestRouter_CustomCatalogSurfacesEntries(t *testing.T) {
 	cfg := llm.DefaultConfig()
 	cfg.Custom = llm.CustomConfig{
@@ -136,11 +126,6 @@ func TestRouter_CustomCatalogSurfacesEntries(t *testing.T) {
 	assert.Equal(t, ProviderCustom, got.Provider)
 }
 
-// TestRouter_StaticCatalog includes the OpenAI/Anthropic/Codex model
-// lists, plus Gemini's static fallback catalog. Gemini is queried live
-// but falls back to its static catalog when the listing is unavailable
-// (here, the test router's loopback endpoint), so the provider always
-// contributes models.
 func TestRouter_StaticCatalog(t *testing.T) {
 	r := newTestRouter(t)
 	seen := map[string]bool{}
@@ -164,9 +149,6 @@ func TestRouter_StaticCatalog(t *testing.T) {
 	assert.True(t, hasProvider(ProviderGemini), "no gemini models")
 }
 
-// TestRouter_Models_IncludesBedrock verifies the Bedrock catalog is part of
-// the aggregate listing. Bedrock is queried live but degrades to its static
-// catalog, so the provider always contributes models.
 func TestRouter_Models_IncludesBedrock(t *testing.T) {
 	r := newTestRouter(t)
 	ctx := context.Background()
@@ -186,9 +168,6 @@ func TestRouter_Models_IncludesBedrock(t *testing.T) {
 	assert.True(t, hasBedrock, "bedrock static catalog should be present without a key")
 }
 
-// TestRouter_ResolveBedrock_EmptyKeyUsesCredentialChain verifies Bedrock is
-// the one hosted provider where a missing key is not an error: the client is
-// built anyway so it can authenticate with ambient AWS credentials.
 func TestRouter_ResolveBedrock_EmptyKeyUsesCredentialChain(t *testing.T) {
 	ctx := context.Background()
 	cfg := llm.DefaultConfig()
@@ -205,8 +184,6 @@ func TestRouter_ResolveBedrock_EmptyKeyUsesCredentialChain(t *testing.T) {
 	assert.True(t, cached, "the chain-authenticated client is cached under the empty key")
 }
 
-// TestRouter_ResolveBedrock_StoredKeyGetsOwnClient verifies adding a key
-// produces a distinct client from the credential-chain one.
 func TestRouter_ResolveBedrock_StoredKeyGetsOwnClient(t *testing.T) {
 	ctx := context.Background()
 	r := newTestRouter(t)
@@ -232,10 +209,6 @@ func TestRouter_Resolve_Bedrock(t *testing.T) {
 	assert.NotNil(t, svc)
 }
 
-// TestRouter_BuildHostedClient_BedrockVerifiesRegionalFlagship pins that
-// key verification probes the inference profile serving the key's region:
-// a European key checked against the US profile would fail with a
-// model-access error even when the key is valid.
 func TestRouter_BuildHostedClient_BedrockVerifiesRegionalFlagship(t *testing.T) {
 	r := newTestRouter(t)
 
@@ -250,9 +223,6 @@ func TestRouter_BuildHostedClient_BedrockVerifiesRegionalFlagship(t *testing.T) 
 	assert.Equal(t, bedrock.VerificationModelForRegion("eu-west-1"), model.Name)
 }
 
-// TestRouter_ResolveBedrock_RegionChangeGetsOwnClient pins that re-adding
-// the same key value under a different region cannot serve a stale client
-// from the cache.
 func TestRouter_ResolveBedrock_RegionChangeGetsOwnClient(t *testing.T) {
 	ctx := context.Background()
 	r := newTestRouter(t)
@@ -267,11 +237,6 @@ func TestRouter_ResolveBedrock_RegionChangeGetsOwnClient(t *testing.T) {
 	assert.NotSame(t, usSvc, euSvc)
 }
 
-// TestRouter_Models_GeminiErrorDoesNotTruncate verifies that a failing
-// live Gemini list (the test router points Gemini at a loopback
-// endpoint) does not drop the other providers from r.Models(). Gemini is
-// aggregated last so any error it surfaces through Err cannot truncate
-// the providers ahead of it.
 func TestRouter_Models_GeminiErrorDoesNotTruncate(t *testing.T) {
 	r := newTestRouter(t)
 	ctx := context.Background()
@@ -291,10 +256,6 @@ func TestRouter_Models_GeminiErrorDoesNotTruncate(t *testing.T) {
 	assert.True(t, providers[ProviderCodex], "codex dropped")
 }
 
-// TestRouter_Models_GeminiStaticWithoutKey verifies the router still
-// surfaces Gemini's static catalog when no key is configured — the
-// bootstrap case, where listing models live is impossible because it
-// requires a working key.
 func TestRouter_Models_GeminiStaticWithoutKey(t *testing.T) {
 	cfg := llm.DefaultConfig()
 	cfg.Gemini.APIKey = ""
@@ -473,8 +434,6 @@ func TestRouter_VerifyProviderKey_AuthError(t *testing.T) {
 	assert.ErrorIs(t, err, authErr)
 }
 
-// TestRouter_Resolve_Gemini verifies the Gemini provider resolves to a
-// native gemini client, cached per resolved key.
 func TestRouter_Resolve_Gemini(t *testing.T) {
 	r := newTestRouter(t)
 	ctx := context.Background()
@@ -536,9 +495,6 @@ func localModel(name string, ctxWindow int) llmapi.ModelEntry {
 	}
 }
 
-// TestRouterResolveLocal_DelegatesToBackend verifies that ProviderLocal
-// dispatches are forwarded to the injected backend regardless of the model
-// identity — the per-model pool now lives inside the backend.
 func TestRouterResolveLocal_DelegatesToBackend(t *testing.T) {
 	r, local := newTestRouterWithLocal(t)
 
@@ -551,8 +507,6 @@ func TestRouterResolveLocal_DelegatesToBackend(t *testing.T) {
 	assert.Equal(t, int32(11), local.dispatches.Load())
 }
 
-// TestRouterClose_ClosesLocalBackend asserts the local backend is Closed
-// exactly once when the router is torn down.
 func TestRouterClose_ClosesLocalBackend(t *testing.T) {
 	r, local := newTestRouterWithLocal(t)
 
@@ -562,8 +516,6 @@ func TestRouterClose_ClosesLocalBackend(t *testing.T) {
 	assert.Equal(t, int32(1), local.closes.Load())
 }
 
-// TestRouterClose_Idempotent ensures a second Close does not double-close
-// the backend.
 func TestRouterClose_Idempotent(t *testing.T) {
 	r, local := newTestRouterWithLocal(t)
 
@@ -572,8 +524,6 @@ func TestRouterClose_Idempotent(t *testing.T) {
 	assert.Equal(t, int32(1), local.closes.Load())
 }
 
-// TestRouterResolveLocal_RejectsAfterClose ensures the router refuses to
-// dispatch to the local backend after Close.
 func TestRouterResolveLocal_RejectsAfterClose(t *testing.T) {
 	r, _ := newTestRouterWithLocal(t)
 	require.NoError(t, r.Close())
@@ -585,10 +535,6 @@ func TestRouterResolveLocal_RejectsAfterClose(t *testing.T) {
 	require.ErrorIs(t, err, ErrRouterClosed)
 }
 
-// TestRouterConcurrentDispatch drives CreateCompletion, CountTokens, and
-// Close from many goroutines at once to prove the Router serialises access
-// to the closed flag and the local backend. Run under -race, it fails if
-// the closed flag is touched without holding r.mu.
 func TestRouterConcurrentDispatch(t *testing.T) {
 	r, _ := newTestRouterWithLocal(t)
 

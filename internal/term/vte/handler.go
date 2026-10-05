@@ -42,6 +42,12 @@ import (
 
 var _ tui.Handler = (*Handler)(nil)
 
+// The markers a program in bracketed paste mode expects around a paste.
+const (
+	bracketedPasteStart = "\x1b[200~"
+	bracketedPasteEnd   = "\x1b[201~"
+)
+
 // isNormalPtyExit reports whether the pty read loop ended because the
 // child process exited rather than because something went wrong. Linux
 // fails the master read with EIO once the last slave descriptor closes,
@@ -336,10 +342,12 @@ func (e *Handler) Handle(ev term.Event) (exit, handled bool) {
 					return
 				}
 				msg := "You pressed <esc>, which would enable modal (vi) mode, " +
-					"but it cannot be enabled because the shell's " +
-					"audible bell is currently unavailable. " +
-					"Ensure that the shell's audible bell is configured and " +
-					"working correctly. You can test it in your terminal with `printf '\\a'`."
+					"but the shell did not ring the bell that enables it. " +
+					"Rune sets this up for zsh, bash and fish when they are " +
+					"the terminal's shell, taken from terminal.shell in your config or else $SHELL. " +
+					"To use another of them, set terminal.shell to it and open a new " +
+					"terminal rather than starting it from this one. Otherwise, check " +
+					"that your shell config does not turn off the bell or rebind ctrl-g."
 				e.log(log.WarnLevel, "%s: %v", msg, err)
 				if _, err := e.notifications.NotifyOnce(browserapi.LevelWarn, "%s", msg); err != nil {
 					e.log(log.ErrorLevel, "notify: %v", err)
@@ -349,12 +357,12 @@ func (e *Handler) Handle(ev term.Event) (exit, handled bool) {
 		}
 	}
 
-	if ev.Mod&^term.ModCtrlShift != 0 {
+	enc := e.comp.keyboard.encoding()
+	if ev.Mod&^term.ModCtrlShift != 0 && !e.copyPassesThrough(ev, enc) {
 		return
 	}
 
 	var raw []byte
-	enc := e.comp.keyboard.encoding()
 	if !e.bracketedPaste && ev.Type == term.EventKey && ev.Mod == 0 && ev.Ch != 0 &&
 		!enc.reportsAllKeys() {
 		raw = ev.Raw
@@ -390,6 +398,20 @@ func (e *Handler) Handle(ev term.Event) (exit, handled bool) {
 		e.log(log.TraceLevel, "written cltr-c to pty: %q", raw)
 	}
 	return
+}
+
+// copyPassesThrough reports whether ev is cmd+c with nothing selected to
+// copy, which then goes to a program that enabled the kitty keyboard
+// protocol so that it can copy a selection of its own, such as the page
+// selection of terminal-browser. A program on a legacy encoding cannot
+// tell cmd apart, so the key stays with Rune's clipboardcopy binding.
+func (e *Handler) copyPassesThrough(ev term.Event, enc keyEncoding) bool {
+	if ev.Type != term.EventKey || ev.Mod != term.ModMeta || ev.Ch != 'c' ||
+		enc.kitty == 0 || e.searchOpen() || e.searchViewing() {
+		return false
+	}
+	_, selected := e.comp.Selection()
+	return !selected
 }
 
 // OnFocusChange allows clients to report whether this vte.Handler is on focus or not.
@@ -517,7 +539,7 @@ func (e *Handler) handleInput(ev term.Event, enc keyEncoding) (handled bool, raw
 			" programBracketedMode : %v", isStart, programBracketedMode)
 		if isStart {
 			if programBracketedMode {
-				raw = append(raw, ev.Raw...)
+				raw = []byte(bracketedPasteStart)
 			} else {
 				// handle bracketed paste when we receive EventPasteEnd
 				handled = true
@@ -532,9 +554,8 @@ func (e *Handler) handleInput(ev term.Event, enc keyEncoding) (handled bool, raw
 			// impossible for the pasted text to control the shell's behavior in any way
 			raw = bytes.ReplaceAll(raw, []byte("\x1b"), nil)
 			raw = bytes.ReplaceAll(raw, []byte("\x03"), nil)
-			// start of paste sequence was written upon term.EventPasteStart
-			// so append term.EventPasteEnd or end of paste sequence.
-			raw = append(raw, ev.Raw...)
+			// the start marker was written upon term.EventPasteStart
+			raw = append(raw, bracketedPasteEnd...)
 		} else {
 			raw = e.bracketedPasteBuf.Bytes()
 			// replace line breaks with a single carriage, to reproduce

@@ -54,11 +54,6 @@ def run():
 tutorial(entry=run)
 `
 
-// TestAgentOnboardingInstallGateReArmsOnWrongCommand drives the agent
-// onboarding flow: the install gate must ignore an unrelated shell
-// submission, advance on the correct "pkg install rune-agent"
-// submission, branch on the provider choice, and complete the
-// credentials gate.
 func TestAgentOnboardingInstallGateReArmsOnWrongCommand(t *testing.T) {
 	t.Parallel()
 	tut, notis := newTutorial(t, agentOnboardingSrc)
@@ -98,9 +93,6 @@ func TestAgentOnboardingInstallGateReArmsOnWrongCommand(t *testing.T) {
 	assert.True(t, notis.containsSubstring("Rune Agent is ready."))
 }
 
-// TestAgentOnboardingSkipProviderExits asserts that choosing Skip at
-// the provider prompt short-circuits credential setup with an info
-// notification.
 func TestAgentOnboardingSkipProviderExits(t *testing.T) {
 	t.Parallel()
 	tut, notis := newTutorial(t, agentOnboardingSrc)
@@ -123,8 +115,6 @@ func TestAgentOnboardingSkipProviderExits(t *testing.T) {
 		notis.renderedCalls())
 }
 
-// TestAgentOnboardingDismissedProviderExits asserts that dismissing the
-// provider prompt (Esc, selected=False) also short-circuits setup.
 func TestAgentOnboardingDismissedProviderExits(t *testing.T) {
 	t.Parallel()
 	tut, notis := newTutorial(t, agentOnboardingSrc)
@@ -143,9 +133,6 @@ func TestAgentOnboardingDismissedProviderExits(t *testing.T) {
 		notis.renderedCalls())
 }
 
-// TestWaitShellRequiresArgs asserts that wait_shell is exclusively for
-// commands run inside the console: calling it without args is a runtime
-// error (opening the console is wait_command(command="console")).
 func TestWaitShellRequiresArgs(t *testing.T) {
 	t.Parallel()
 	src := `
@@ -169,8 +156,6 @@ tutorial(entry=run)
 	assert.False(t, notis.containsSubstring("should not reach here"))
 }
 
-// TestWaitShellIgnoresNonShellObservations asserts that a wait_shell
-// step does not resolve on a regular (non-shell) command dispatch.
 func TestWaitShellIgnoresNonShellObservations(t *testing.T) {
 	t.Parallel()
 	src := `
@@ -194,10 +179,6 @@ tutorial(entry=run)
 	assert.True(t, notis.containsSubstring("installed"))
 }
 
-// TestWaitShellTokenContainmentReArms asserts that a shell submission
-// missing an expected token keeps the step armed, and that a later
-// submission containing every token (plus extras) resolves it. The
-// resolved command_result carries the full observed args.
 func TestWaitShellTokenContainmentReArms(t *testing.T) {
 	t.Parallel()
 	src := `
@@ -223,10 +204,6 @@ tutorial(entry=run)
 		notis.renderedCalls())
 }
 
-// TestWaitShellErrorStaysArmedWithUnchangedCopy asserts that a
-// dispatch error keeps the step armed and leaves the step's copy
-// exactly as the user was reading it: a screen that rewrites itself
-// mid-step moves the instructions out from under them.
 func TestWaitShellErrorStaysArmedWithUnchangedCopy(t *testing.T) {
 	t.Parallel()
 	src := `

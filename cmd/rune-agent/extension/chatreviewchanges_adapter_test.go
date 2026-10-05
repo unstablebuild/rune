@@ -307,8 +307,6 @@ func TestCommandAdapterReviewChangesEditAddsCommentsAttachment(t *testing.T) {
 	assert.Contains(t, got.Content, "*** Update File: foo.go")
 }
 
-// Reopening /diff must reuse the same attachment identity so the strip
-// never accumulates duplicates.
 func TestCommandAdapterReviewChangesReopenKeepsOneAttachmentIdentity(t *testing.T) {
 	a, wm, _, attached := newReviewAdapter(t, patchedConversation(t))
 
@@ -414,8 +412,6 @@ func TestCommandAdapterReviewChangesFloatingFailureClosesEditor(t *testing.T) {
 	assert.Empty(t, *attached)
 }
 
-// The comments attachment reaches the model as inline text under an
-// explicit heading; file attachments keep their existing behaviour.
 func TestAttachmentPartsInlineVirtualAttachment(t *testing.T) {
 	h := &aiEditorHandler{}
 

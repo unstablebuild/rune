@@ -17,9 +17,11 @@
 package auth
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestRole_String(t *testing.T) {
@@ -45,4 +47,14 @@ func TestRole_StringPanicsOnUnknown(t *testing.T) {
 	assert.Panics(t, func() {
 		_ = Role(99).String()
 	})
+}
+
+func TestWebUserReadsServeOnlyRPCUser(t *testing.T) {
+	for _, serveOnly := range []bool{true, false} {
+		data, err := json.Marshal(RPCUser{ID: "auth0|abc", Role: RolePaid, ServeOnly: serveOnly})
+		require.NoError(t, err)
+		var web WebUser
+		require.NoError(t, json.Unmarshal(data, &web))
+		assert.Equal(t, serveOnly, web.ServeOnly)
+	}
 }

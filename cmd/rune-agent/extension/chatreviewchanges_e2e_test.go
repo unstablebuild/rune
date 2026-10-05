@@ -117,9 +117,6 @@ func goReview(t *testing.T) changesReview {
 	return review
 }
 
-// End to end over a real tree-sitter grammar: the `const` keyword must
-// be highlighted on both the removed and the added line, and each line
-// must keep the diff tint that identifies it as changed.
 func TestReviewBufferHighlightsBothDiffSidesE2E(t *testing.T) {
 	p := realParser(t, "go")
 	review := goReview(t)
@@ -150,8 +147,6 @@ func TestReviewBufferHighlightsBothDiffSidesE2E(t *testing.T) {
 	}
 }
 
-// The gutter column is never handed to the parser and never picks up a
-// syntax foreground, so the add/remove signal survives highlighting.
 func TestReviewBufferGutterUnhighlightedE2E(t *testing.T) {
 	p := realParser(t, "go")
 	review := goReview(t)
@@ -172,8 +167,6 @@ func TestReviewBufferGutterUnhighlightedE2E(t *testing.T) {
 	}
 }
 
-// Highlighting must not touch the diff scaffolding: headers stay bold
-// and uncolored even though they sit between highlighted source lines.
 func TestReviewBufferHeadersUnhighlightedE2E(t *testing.T) {
 	p := realParser(t, "go")
 	review := goReview(t)
@@ -189,7 +182,6 @@ func TestReviewBufferHeadersUnhighlightedE2E(t *testing.T) {
 	}
 }
 
-// Added files carry their whole body, so every line is highlighted.
 func TestReviewBufferHighlightsAddedFileE2E(t *testing.T) {
 	p := realParser(t, "go")
 	review, err := reviewChanges([]llmapi.Message{
@@ -211,8 +203,6 @@ func TestReviewBufferHighlightsAddedFileE2E(t *testing.T) {
 	assert.Equal(t, term.GetColor("darkgreen"), c.Bg)
 }
 
-// One review can span several languages; each file section is parsed
-// with the grammar its extension selects.
 func TestReviewBufferHighlightsMultipleLanguagesE2E(t *testing.T) {
 	p := realParser(t, "go", "rust")
 	review, err := reviewChanges([]llmapi.Message{
@@ -241,8 +231,6 @@ func TestReviewBufferHighlightsMultipleLanguagesE2E(t *testing.T) {
 		"rust `fn` keyword")
 }
 
-// A language with no installed grammar renders unhighlighted rather
-// than failing the command.
 func TestReviewBufferUnknownLanguageE2E(t *testing.T) {
 	p := realParser(t, "go")
 	review, err := reviewChanges([]llmapi.Message{
@@ -261,9 +249,6 @@ func TestReviewBufferUnknownLanguageE2E(t *testing.T) {
 	assert.Equal(t, term.GetColor("darkgreen"), c.Bg)
 }
 
-// Highlighting is additive: the rendered text is byte-for-byte what the
-// unhighlighted review produces, so the comments attachment is
-// unaffected.
 func TestReviewBufferHighlightingPreservesTextE2E(t *testing.T) {
 	p := realParser(t, "go")
 	review := goReview(t)
@@ -273,7 +258,6 @@ func TestReviewBufferHighlightingPreservesTextE2E(t *testing.T) {
 		reviewBuffer(t.Context(), review, p).String())
 }
 
-// The whole command path, with a real parser, opens a highlighted diff.
 func TestCommandAdapterReviewChangesHighlightsE2E(t *testing.T) {
 	p := realParser(t, "go")
 	a, wm, _, _ := newReviewAdapter(t, []llmapi.Message{
@@ -300,8 +284,6 @@ func TestCommandAdapterReviewChangesHighlightsE2E(t *testing.T) {
 	assert.True(t, tinted, "highlighted cells must keep the diff tint")
 }
 
-// Context pulled in from the workspace is real source, so it is
-// highlighted like the rest of the hunk while staying untinted.
 func TestReviewBufferHighlightsExpandedContextE2E(t *testing.T) {
 	p := realParser(t, "go")
 	const file = "package main\n" +

@@ -275,13 +275,6 @@ func (e *deferRecordingEditor) Edit(
 	return start, end, ""
 }
 
-// TestDeferHandlerEditBeforeSwapReachesRealHandler reproduces the
-// dropped-edit bug behind gopls go.mod vuln upgrades not landing: a
-// server-driven workspace/applyEdit force-opens the closed file during
-// its async streaming load, so the edit is applied through the
-// deferHandler before Swap. Edits issued pre-Swap must be queued and
-// replayed on the real handler; today CellEditor returns a no-op editor
-// and they are silently dropped.
 func TestDeferHandlerEditBeforeSwapReachesRealHandler(t *testing.T) {
 	sh := newDeferStreamload(t)
 	d := newDeferHandler(sh)
@@ -303,9 +296,6 @@ func TestDeferHandlerEditBeforeSwapReachesRealHandler(t *testing.T) {
 		"pre-Swap edit must be replayed on the real handler, not dropped")
 }
 
-// TestDeferHandlerEditReplayedBeforeCursor pins the replay order:
-// queued edits mutate the buffer before the cursor is restored, so the
-// cursor lands on the post-edit content.
 func TestDeferHandlerEditReplayedBeforeCursor(t *testing.T) {
 	sh := newDeferStreamload(t)
 	d := newDeferHandler(sh)

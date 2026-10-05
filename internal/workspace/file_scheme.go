@@ -17,13 +17,16 @@
 package workspace
 
 import (
+	"bytes"
 	"context"
+	"embed"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"os/user"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -63,17 +66,69 @@ var (
 // resize worker matches on the text to drop the resize silently.
 var ErrInvalidMasterPtyFd = errors.New("invalid master pty fd")
 
+// embeddedShellRC holds the zsh dotfiles and bash inputrc that bind the
+// keys the vte sends to the shell (see vte.ptyWriter.triggerBell and
+// vte.viHandler.remoteMoveTo). They ship in the binary because the
+// executor's host may have no app bundle to read them from: dev builds,
+// `rune -x` servers, and launches that skip the desktop defaults.
+//
+//go:embed all:shellrc
+var embeddedShellRC embed.FS
+
+// InstallShellRC writes the embedded dotfiles into dataDir/shellrc and
+// returns that directory for NewFileSchemeFunc. On error it returns "":
+// zsh reads no startup files from a ZDOTDIR that lacks them, and readline
+// does not fall back to ~/.inputrc when INPUTRC names a missing file, so
+// exporting a partly written directory would drop the user's own
+// configuration.
+func InstallShellRC(dataDir string) (string, error) {
+	dir := filepath.Join(dataDir, "shellrc")
+	// zsh keeps state beside the dotfiles, such as the history macOS's
+	// /etc/zshrc puts in ZDOTDIR, so carry over the directory releases
+	// used before bash shared it. The rename fails harmlessly once zdot
+	// is gone or dir is populated.
+	_ = os.Rename(filepath.Join(dataDir, "zdot"), dir)
+	if err := writeShellRCFiles(dir); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+// FishInitCommand binds ^A/^E/^G in fish so the vte's bell handshake
+// (see vte.ptyWriter.triggerBell) and its end-of-line moves (see
+// vte.viHandler.remoteMoveTo) work: fish binds none of them in insert
+// mode and has no beep widget, so ^G prints BEL itself.
+const FishInitCommand = `bind \ca beginning-of-line; bind \ce end-of-line; ` +
+	`bind \cg 'printf \a'; bind -M insert \ca beginning-of-line; ` +
+	`bind -M insert \ce end-of-line; bind -M insert \cg 'printf \a'`
+
 // NewFileScheme returns a Scheme that manages resources
-// on the local file system.
+// on the local file system. Terminal shells it starts load only the user's
+// own dotfiles; see NewFileSchemeFunc.
 func NewFileScheme(
-	ctx context.Context, cfg config.Config, workspace workspaceapi.URI,
+	_ context.Context, _ config.Config, workspace workspaceapi.URI,
 ) (schemeapi.Scheme, error) {
+	return newFileScheme(workspace, "")
+}
+
+// NewFileSchemeFunc returns a SchemeFunc for file schemes whose terminal
+// shells also load the dotfiles in shellRCDir, as returned by
+// InstallShellRC. An empty shellRCDir behaves like NewFileScheme.
+func NewFileSchemeFunc(shellRCDir string) schemeapi.SchemeFunc {
+	return func(
+		_ context.Context, _ config.Config, workspace workspaceapi.URI,
+	) (schemeapi.Scheme, error) {
+		return newFileScheme(workspace, shellRCDir)
+	}
+}
+
+func newFileScheme(workspace workspaceapi.URI, shellRCDir string) (schemeapi.Scheme, error) {
 	ret := new(fileScheme)
 	ret.getUser = user.Current
 	ret.osStat = os.Stat
 	ret.lookupUser = user.Lookup
-	err := ret.init(cfg, workspace)
-	if err != nil {
+	ret.shellRCDir = shellRCDir
+	if err := ret.init(workspace); err != nil {
 		return nil, err
 	}
 	return ret, nil
@@ -115,15 +170,7 @@ type fileScheme struct {
 	ctx        context.Context
 	cancelCtx  func()
 	cmds       sync.Map // map[workspaceapi.Pid]struct{}
-
-	// zdotDir, when non-empty, is exported as ZDOTDIR to the shell
-	// processes started via the empty-cmd-Path protocol contract (see
-	// StartCommand). Resolved from the scheme's config at init time so
-	// it always reflects the executor's host: for SSH workspaces the
-	// remote `rune -x` server reads its own config, so the local IDE's
-	// zdotdir (which points at a host-specific path) doesn't leak into
-	// the remote shell's environment.
-	zdotDir string
+	shellRCDir string   // see NewFileSchemeFunc
 
 	watchpoints    sync.Map
 	nextWatchPoint atomic.Int64
@@ -151,7 +198,7 @@ type fileScheme struct {
 }
 
 func (p *fileScheme) init(
-	cfg config.Config, workspace workspaceapi.URI,
+	workspace workspaceapi.URI,
 ) error {
 	if workspace.Host() != "" || workspace.User() != "" || workspace.Scheme() != FileScheme {
 		return errors.New("invalid file URI")
@@ -172,12 +219,6 @@ func (p *fileScheme) init(
 	}
 	if p.execMu == nil {
 		p.execMu = new(sync.RWMutex)
-	}
-	if cfg != nil {
-		// zdotdir is optional; ErrNotFound just means "not configured".
-		if z, err := cfg.GetString("zdotdir"); err == nil {
-			p.zdotDir = z
-		}
 	}
 	return nil
 }
@@ -386,9 +427,12 @@ func (p *fileScheme) StartCommand(ctx context.Context, cmd workspaceapi.Cmd) (
 		if len(cmd.Args) == 0 {
 			cmd.Args = []string{"--login", "-i"}
 		}
-		if filepath.Base(cmd.Path) == "zsh" && p.zdotDir != "" {
-			cmd.Env = append(cmd.Env, fmt.Sprintf("ZDOTDIR=%s", p.zdotDir))
-		}
+	}
+	// Only the terminal's shell, which the vte starts on a controlling
+	// terminal, is driven by the vte; the shells that run tasks and
+	// tools must not load Rune's bindings.
+	if procattr.ControlsTerminal(cmd.SysProcAttr) {
+		cmd = p.withShellRC(cmd)
 	}
 	// Unlike file paths, the executable comes from configuration such as
 	// an extension entrypoint of "$RUNE_DATADIR/bin/x", and is expanded
@@ -495,6 +539,26 @@ func (p *fileScheme) StartCommand(ctx context.Context, cmd workspaceapi.Cmd) (
 	return pid, nil
 }
 
+// withShellRC binds the keys that the vte sends to a zsh, bash or fish cmd,
+// whether the shell came from $SHELL or terminal.shell.
+func (p *fileScheme) withShellRC(cmd workspaceapi.Cmd) workspaceapi.Cmd {
+	switch filepath.Base(cmd.Path) {
+	case "zsh":
+		if p.shellRCDir != "" {
+			cmd.Env = append(cmd.Env, "ZDOTDIR="+p.shellRCDir)
+		}
+	case "bash":
+		if p.shellRCDir != "" {
+			cmd.Env = append(cmd.Env, "INPUTRC="+filepath.Join(p.shellRCDir, "inputrc"))
+		}
+	case "fish":
+		// ahead of the configured args, where a script operand would take
+		// every argument after it as its own
+		cmd.Args = append([]string{"-C", FishInitCommand}, cmd.Args...)
+	}
+	return cmd
+}
+
 func (p *fileScheme) Chroot(path string) (schemeapi.Scheme, error) {
 	uri, err := p.URI(path)
 	if err != nil {
@@ -506,8 +570,8 @@ func (p *fileScheme) Chroot(path string) (schemeapi.Scheme, error) {
 	child.lookupUser = p.lookupUser
 	child.files = p.files
 	child.execMu = p.execMu
-	child.zdotDir = p.zdotDir
-	if err := child.init(config.NopConfig(), uri); err != nil {
+	child.shellRCDir = p.shellRCDir
+	if err := child.init(uri); err != nil {
 		return nil, err
 	}
 	return child, nil
@@ -849,6 +913,54 @@ func resolveLoginShell() string {
 		}
 	}
 	return fallback
+}
+
+// writeShellRCFiles updates dir in place rather than recreating it,
+// because zsh keeps state such as its history beside the dotfiles.
+func writeShellRCFiles(dir string) error {
+	entries, err := embeddedShellRC.ReadDir("shellrc")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	for _, e := range entries {
+		data, err := embeddedShellRC.ReadFile(path.Join("shellrc", e.Name()))
+		if err != nil {
+			return err
+		}
+		name := filepath.Join(dir, e.Name())
+		if got, err := os.ReadFile(name); err == nil && bytes.Equal(got, data) {
+			continue
+		}
+		if err := writeFileAtomic(name, data); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// writeFileAtomic writes aside and renames, so a shell starting
+// concurrently never reads a partial file.
+func writeFileAtomic(name string, data []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(name), "."+filepath.Base(name)+"-*.tmp")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name()) //nolint:errcheck
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Chmod(0o644); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), name)
 }
 
 // isExecutableFile reports whether path refers to a regular,

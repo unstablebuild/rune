@@ -136,10 +136,10 @@ func (u *workspaceWindowManagerUI) PromptChoice(
 	return completion.wait(ctx)
 }
 
-func (u *workspaceWindowManagerUI) Notify(level workspacessh.NotificationLevel, msg string) string {
+func (u *workspaceWindowManagerUI) Notify(level workspacessh.NotificationLevel, msg string) {
 	notifications := u.ide.Notifications()
 	if notifications == nil {
-		return ""
+		return
 	}
 	apiLevel := browserapi.LevelInfo
 	switch level {
@@ -151,29 +151,9 @@ func (u *workspaceWindowManagerUI) Notify(level workspacessh.NotificationLevel, 
 	// SSH auth callbacks (Password, KeyboardInteractive, gatherSigners)
 	// run on the workspace-build goroutine; hop onto the event loop so
 	// notis.inFocus reads workspaceManagerHandler.focus on the same
-	// goroutine that mutates it. Capture the returned id so the caller can
-	// drive a live progress bar via UpdateNotificationProgress.
-	idCh := make(chan string, 1)
-	scheduled := u.ide.scheduleFn(func() {
-		id, _ := notifications.Notify(apiLevel, "%s", msg)
-		idCh <- id
-	})
-	if !scheduled {
-		return ""
-	}
-	return <-idCh
-}
-
-func (u *workspaceWindowManagerUI) UpdateNotificationProgress(
-	id, message string, progress, total int,
-) {
-	notifications := u.ide.Notifications()
-	if notifications == nil || id == "" {
-		return
-	}
+	// goroutine that mutates it.
 	u.ide.scheduleFn(func() {
-		_ = notifications.UpdateNotificationProgress(
-			id, message, int64(progress), int64(total))
+		_, _ = notifications.Notify(apiLevel, "%s", msg)
 	})
 }
 

@@ -592,13 +592,11 @@ func (wm *WindowManager) Draw(w term.Writer) {
 	}
 
 	focusWin := wm.focus.Window
-	dimWriter := wm.dimmedWriter(w)
-	wm.comp.Iterate(func(win component.Window) {
+	wm.comp.DrawWindows(w, func(win component.Window, w term.Writer) term.Writer {
 		if win == focusWin {
-			wm.comp.DrawWindow(win, w)
-		} else {
-			wm.comp.DrawWindow(win, dimWriter)
+			return w
 		}
+		return wm.dimmedWriter(w)
 	})
 }
 

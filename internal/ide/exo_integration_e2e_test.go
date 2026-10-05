@@ -36,25 +36,6 @@ import (
 	"unstable.build/rune/internal/text"
 )
 
-// TestExoVimEndToEnd drives the full ide → exo → vte → vim pipeline:
-// it boots an ide pointed at a real file scheme workspace, configures
-// editor.mode = "exo" with vim, opens a real file from disk, types
-// content via the embedded vte, and asserts the file was modified on
-// disk after vim's `:wq` writes and quits.
-//
-// Reproduces the regression where exo pre-tokenised the configured
-// argv via shell.Fields, then vte.Component.createPty joined and
-// shell.Fields-tokenised it again, causing
-//
-//	edit: exo: new vte handler: expand shell arguments: 1:18: ( is not a valid word
-//
-// when the configured command contained punctuation such as
-// `vim "+call cursor({line}, {col})" {file}`.
-//
-// Also acts as the end-to-end guard for the exo noise-suppression
-// invariant that autoSaver must not be wired under an external editor
-// (otherwise external saves race the saver and spam ErrStaleData
-// warnings).
 func TestExoVimEndToEnd(t *testing.T) {
 	vimBin, err := exec.LookPath("vim")
 	if err != nil {
@@ -197,8 +178,6 @@ func TestExoVimEndToEnd(t *testing.T) {
 			"exo session, even after the external editor saves")
 }
 
-// TestExoVimSwapfileGracefulClose asserts that closing a exo tab
-// hosting vim leaves no .swp file behind.
 func TestExoVimSwapfileGracefulClose(t *testing.T) {
 	if _, err := exec.LookPath("vim"); err != nil {
 		t.Skip("vim binary not available")
@@ -294,21 +273,6 @@ func TestExoVimSwapfileGracefulClose(t *testing.T) {
 			"before the PTY is torn down")
 }
 
-// TestExoVimSetCursorAtScroll guards the SetCursorAtScroll wiring in
-// exo end-to-end against vim. The fix it locks in: exo's
-// SetCursorAtScroll synthesises term.Event from the rendered goto
-// KeyComb sequence, and vte's input path falls back to ev.Raw for
-// ordinary keys (digits, ':', '|', '<enter>', '<esc>'). Without raw
-// bytes populated the entire goto sequence is silently dropped, the
-// cursor stays at (1,1), and an `i<marker><esc>:wq` prepends the
-// marker to line 1 instead of the requested position.
-//
-// The test prepares a known multi-line file, asks exo to place the
-// cursor at (line=3, col=2), inserts a marker, writes, and asserts
-// the on-disk content matches the expectation for that exact
-// position. Any regression in cursor injection makes the marker
-// appear on the wrong line/column and the assertion fails with the
-// actual placement.
 func TestExoVimSetCursorAtScroll(t *testing.T) {
 	if _, err := exec.LookPath("vim"); err != nil {
 		t.Skip("vim binary not available")

@@ -65,15 +65,6 @@ func compositeAlpha(b ebiten.Blend, srcA, dstA float64) float64 {
 	return blendOperation(b.BlendOperationAlpha, srcFactor*srcA, dstFactor*dstA)
 }
 
-// TestNormalGlyphBlendAccumulatesAlpha guards against the frame's alpha
-// channel under-accumulating at partially-covered (anti-aliased) glyph
-// edges. Window opacity leaves the frame's own background translucent
-// (dstA = bgOpacity < 1), so a glyph edge pixel's resulting alpha must
-// follow standard source-over (srcA + (1-srcA)*dstA). Resolving the
-// blend's alpha operation to Max instead of Add under-reports alpha at
-// every partial-coverage pixel, letting far more of the desktop show
-// through the fringe than the glyph's own coverage: the fringe reads as
-// a bright, washed-out halo around otherwise correctly-colored glyphs.
 func TestNormalGlyphBlendAccumulatesAlpha(t *testing.T) {
 	for _, tc := range []struct {
 		name      string

@@ -58,6 +58,8 @@ import (
 	"unstable.build/rune/internal/browser/browsertest"
 	"unstable.build/rune/internal/cell"
 	tcomponent "unstable.build/rune/internal/component"
+	"unstable.build/rune/internal/component/asciiart"
+	"unstable.build/rune/internal/component/imageuri/imageuritest"
 	"unstable.build/rune/internal/component/notifications"
 	"unstable.build/rune/internal/component/shader"
 	"unstable.build/rune/internal/debug"
@@ -148,30 +150,6 @@ func TestFileCommandRegistryIntegration(t *testing.T) {
 	require.NoError(t, m.Close())
 }
 
-// TestFileExplorerEnterDelegatesIntegration exercises the real
-// :fexplorer integration path with both real text.Editor
-// implementations (vi-style modal and modeless). Regression
-// coverage for RUNE-138: when the file explorer's inner editor
-// reports IsSearchMode() == true, pressing <Enter> must delegate
-// to the inner editor (committing the search) rather than be
-// captured by the outer fileExplorerHandler as expand-or-open.
-//
-// The IsSearchMode() signal must propagate from the leaf editor
-// handler (vi.Vi or modeless.editorHandler) up through every
-// wrapper that text.Editor.Edit installs — text.Publisher's
-// cursorPublisher, fold/location/indent/comment/git command
-// wrappers, status/aux/icons bars — and reach
-// fileExplorerHandler.ed.IsSearchMode(). Because text.Handler
-// declares IsSearchMode(), this propagation happens through
-// interface embedding on each wrapper.
-//
-// vi has a key-driven inline search ('/'), so for modal we drive
-// the bug repro end-to-end: '/findme<Enter>' must finish the
-// search and not toggle the tree. modeless does not have a
-// key-driven inline search (text search in modeless is surfaced
-// through a separate fuzzy_search extension command), so we
-// instead pin down what <Enter> means there: a newline while the
-// explorer is editable, and expand-or-open while it is locked.
 func TestFileExplorerEnterDelegatesIntegration(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -317,9 +295,6 @@ func TestFileExplorerEnterDelegatesIntegration(t *testing.T) {
 	}
 }
 
-// TestFileExplorerReactsToFilesystemChangesIntegration verifies that reopening
-// the cached explorer refreshes its tree from disk after a file is created while
-// the explorer is closed.
 func TestFileExplorerReactsToFilesystemChangesIntegration(t *testing.T) {
 	// Resolve symlinks so the workspace URI matches the canonical
 	// path emitted by the FS watcher. On macOS t.TempDir() returns
@@ -419,20 +394,6 @@ func TestFileExplorerReactsToFilesystemChangesIntegration(t *testing.T) {
 		}})
 }
 
-// TestGitlinkIntegration exercises the :gitlink command end-to-end
-// against a real on-disk git repository, using the same editor wiring
-// production uses (newBuiltinModal/ModelessEditor →
-// vctrlcmd.SubscribeGitCommands). It is a regression guard for a nil
-// pointer dereference at vctrlcmd/remote_web_link.go:195: vi.Editor
-// did not seed its viConfig with defaults, so the notifications
-// interface forwarded into copyRemoteURL was nil and Notify panicked
-// the moment :gitlink completed successfully.
-//
-// The test asserts that:
-//   - :gitlink does not panic;
-//   - the resulting URL is copied to the clipboard;
-//   - a success notification is rendered on screen with the URL of
-//     the file currently open at the cursor position.
 func TestGitlinkIntegration(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git binary not available")
@@ -544,18 +505,6 @@ func setupGitlinkRepo(t *testing.T) (dir, commit, relFile string) {
 	return
 }
 
-// TestCommandPromptEditModeWrappedCursor exercises the integration
-// between the modal command prompt's responsive (wrapping) renderer
-// and its embedded vi editor (which has wrap=false). When the user
-// fills the prompt past one visual row, opens edit mode via
-// <shift-esc>, and navigates with hjkl, the cursor must follow the
-// VISUAL wrapped position — not stay glued to row 0 of the editor's
-// flat buffer view.
-//
-// At width=60 the prompt clamps to its 50-wide minWidth dimension,
-// minus the 2-cell frame, minus animationWidth=3 = 45 cells of
-// visible input per visual row. 134 ones therefore render as three
-// visual rows of 45/45/44 cells.
 func TestCommandPromptEditModeWrappedCursor(t *testing.T) {
 	dir, err := os.MkdirTemp("", "")
 	require.NoError(t, err)
@@ -926,9 +875,6 @@ func newActivityTestManager(t *testing.T, cfg ideConfig) (*testWorkspaceManagerH
 	return nil, 0
 }
 
-// The workspace bar runs its active-tab effect while any workspace has a
-// tab an extension marked active, whether or not it is focused, and
-// stops once the last such tab is gone.
 func TestWorkspaceBarShadesActiveWorkspaces(t *testing.T) {
 	m, slot := newActivityTestManager(t, defaultConfigWithWrap(false))
 	chat, err := workspaceapi.ParseURI("rune-agent://model/rolling-fox")
@@ -958,9 +904,6 @@ func TestWorkspaceBarShadesActiveWorkspaces(t *testing.T) {
 	require.NoError(t, m.Close())
 }
 
-// A pending notification takes precedence over the active-tab effect:
-// the effect would wash out or repaint the notification colour. Focusing
-// the workspace clears the notification and restores the effect.
 func TestWorkspaceBarNotificationOverridesActivity(t *testing.T) {
 	m, slot := newActivityTestManager(t, defaultConfigWithWrap(false))
 	chat, err := workspaceapi.ParseURI("rune-agent://model/rolling-fox")
@@ -1000,9 +943,6 @@ func TestWorkspaceBarNotificationOverridesActivity(t *testing.T) {
 	require.NoError(t, m.Close())
 }
 
-// Content and workspace tabs are animated separately: the workspace bar
-// follows animations.active_workspace_tab alone, and still sees the
-// activity of content tabs whose own animation is disabled.
 func TestWorkspaceBarActiveTabAnimationConfig(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -1361,10 +1301,6 @@ func TestEditFileURIRedirectsToWorkspaceWithOpenFile(t *testing.T) {
 	assert.True(t, ok)
 }
 
-// TestOpenPrevSessionFilesSkipsNonTextHandler is a regression test for
-// the crash where restoring a previous session containing a markdown
-// tab (whose handler is *handlermarkdown.Handler, not a text.Handler)
-// panicked in openPrevSessionFiles via an unchecked type assertion.
 func TestOpenPrevSessionFilesSkipsNonTextHandler(t *testing.T) {
 	tmp := t.TempDir()
 	mdPath := filepath.Join(tmp, "README.md")
@@ -1494,6 +1430,333 @@ func assertExoDelegatesMarkdown(t *testing.T, fileName string, readOnly bool) {
 		"under editor.mode=exo, .md must delegate to the exo "+
 			"handler, not the built-in markdown viewer "+
 			"(readOnly=%v)", readOnly)
+}
+
+// Frames of a 42x22 IDE viewing an image file, named after the file the
+// tab shows.
+const (
+	viewImageLoadingPNG = `┌━━━━━━━━━━━━────────────────────────────┐
+│o sample.png                            │
+├────────────────────────────────────────┤
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                   ⠃                    │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+├────────────────────────────────────────┤
+│1 1  2 2                                │
+└─────━━━────────────────────────────────┘`
+	viewImageLoadingJPG = `┌━━━━━━━━━━━━────────────────────────────┐
+│o sample.jpg                            │
+├────────────────────────────────────────┤
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                   ⠃                    │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+├────────────────────────────────────────┤
+│1 1  2 2                                │
+└─────━━━────────────────────────────────┘`
+	viewImageLoadingGIF = `┌━━━━━━━━━━━━────────────────────────────┐
+│o sample.gif                            │
+├────────────────────────────────────────┤
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                   ⠃                    │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+├────────────────────────────────────────┤
+│1 1  2 2                                │
+└─────━━━────────────────────────────────┘`
+	viewImageLoadingWebP = `┌━━━━━━━━━━━━━───────────────────────────┐
+│o sample.webp                           │
+├────────────────────────────────────────┤
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                   ⠃                    │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+├────────────────────────────────────────┤
+│1 1  2 2                                │
+└─────━━━────────────────────────────────┘`
+	viewImagePNG = `┌━━━━━━━━━━━━────────────────────────────┐
+│o sample.png                            │
+├────────────────────────────────────────┤
+│@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ │
+│@@@@@@@@@#b#@@@@##b##@@@##bW#@@@@@@@@@@ │
+│@@@@@@@bbbbbb#@acccccb@#cccc;c@@@@@@@@@ │
+│@@@@@@@#cbbbb##cccccc#@c;;;;;#@@@@@@@@@ │
+│@@@@@@@@@@@@@8cc#@@@@W;;#@@@@@@@@@@@@@@ │
+│@@@@@@@#;ccccc##;;;;;;#@;;;;;#@@@@@@@@@ │
+│@@@@@@@ccccccW@c;;;;;;@$;::::;@@@@@@@@@ │
+│@@@@@@@@bc;;W@#;;;;;!@#:::::;@@@@@@@@@@ │
+│@@@@@@@@@@#W;;;@@@@W:::@@@@@@@@@@@@@@@@ │
+│@@@@@@@3;;;;;a@8:::::;@@:::++1@@@@@@@@@ │
+│@@@@@@@4;;;::#@$:::::W@@+++++3@@@@@@@@@ │
+│@@@@@@@@@W##@@@@@###@@@@@###@@@@@@@@@@@ │
+│@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ │
+│####:##a###9@c#+@+?W#=9#@@2#*####=@##@@ │
+│@###:++#:+#9@;#@#+#++3$==9*=:#**=@5@@@@ │
+│@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ │
+├────────────────────────────────────────┤
+│1 1  2 2                                │
+└─────━━━────────────────────────────────┘`
+	viewImageJPG = `┌━━━━━━━━━━━━────────────────────────────┐
+│o sample.jpg                            │
+├────────────────────────────────────────┤
+│@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ │
+│@@@@@@@###aW######b#######bW###@@@@@@@@ │
+│@@@@@@#cbbbbb##ccccccc##cccc;;#@@@@@@@@ │
+│@@@@@@##bbbcb##cccccc##c;;;;;##@@@@@@@@ │
+│@@@@@@@@@@@##9ccW####W+:##@#@@@@@@@@@@@ │
+│@@@@@@##:bcccc##;c;;;c##:+;;;##@@@@@@@@ │
+│@@@@@@#;cccccW#c;;;;;c#W;::::c#@@@@@@@@ │
+│@@@@@@##b;;;###;;;;;!@#:::::;##@@@@@@@@ │
+│@@@@@@@@@@@$c:;##@#W+::####@@@@@@@@@@@@ │
+│@@@@@@#3;;;;;a#$::::::##::++:2#@@@@@@@@ │
+│@@@@@@#4;;;::##$:::::$##+++++3#@@@@@@@@ │
+│@@@@@@@@@W##@@@@@###@@@@####@@@@@@@@@@@ │
+│@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ │
+│#W##:##b###9#;#+#+?##*9#@@1#=####+@#W@@ │
+│@###++:#:+#9#:#WW+#+=3$*+$**:#***#5@@@@ │
+│@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ │
+├────────────────────────────────────────┤
+│1 1  2 2                                │
+└─────━━━────────────────────────────────┘`
+	viewImageGIF = `┌━━━━━━━━━━━━────────────────────────────┐
+│o sample.gif                            │
+├────────────────────────────────────────┤
+│@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ │
+│@@@@@@@@@#b#@@@@@#b@@@@@@@b#@@@@@@@@@@@ │
+│@@@@@@@bbbbbb@@acccccb@@cccccc@@@@@@@@@ │
+│@@@@@@@@bbbbb@@cccccc@@cccc;;@@@@@@@@@@ │
+│@@@@@@@@@@@@@9cc#@@@@#:c@@@@@@@@@@@@@@@ │
+│@@@@@@@@;ccccc@@;ccc;;@@c;;;;@@@@@@@@@@ │
+│@@@@@@@ccccccW@c;;;;;;@W;::::;@@@@@@@@@ │
+│@@@@@@@@accc#@@;;;;;!@@:::::;@@@@@@@@@@ │
+│@@@@@@@@@@@W;;;@@@@W:::@@@@@@@@@@@@@@@@ │
+│@@@@@@@4;;;;;a@8::::::@@::::+2@@@@@@@@@ │
+│@@@@@@@4;;;::@@$:::::$@@+++++2@@@@@@@@@ │
+│@@@@@@@@@W@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ │
+│@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ │
+│####:#@a#@#9@;@+@+0#@=9@@@2@*@###=@@#@@ │
+│@@@@;+:@:+#8@;@@@+#++2$*=9*=:@**=@4@@@@ │
+│@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ │
+├────────────────────────────────────────┤
+│1 1  2 2                                │
+└─────━━━────────────────────────────────┘`
+	viewImageWebP = `┌━━━━━━━━━━━━━───────────────────────────┐
+│o sample.webp                           │
+├────────────────────────────────────────┤
+│@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ │
+│@@@@@@@@@#b#@@@@##b##@@@##bW#@@@@@@@@@@ │
+│@@@@@@@bbbbbb#@acccccb@#cccc;c@@@@@@@@@ │
+│@@@@@@@#cbbbb##cccccc#@c;;;;;#@@@@@@@@@ │
+│@@@@@@@@@@@@@8cc#@@@@W;;#@@@@@@@@@@@@@@ │
+│@@@@@@@#;ccccc##;;;;;;#@;;;;;#@@@@@@@@@ │
+│@@@@@@@ccccccW@c;;;;;;@$;::::;@@@@@@@@@ │
+│@@@@@@@@bc;;W@#;;;;;!@#:::::;@@@@@@@@@@ │
+│@@@@@@@@@@#W;;;@@@@W:::@@@@@@@@@@@@@@@@ │
+│@@@@@@@3;;;;;a@8:::::;@@:::++1@@@@@@@@@ │
+│@@@@@@@4;;;::#@$:::::W@@+++++3@@@@@@@@@ │
+│@@@@@@@@@W##@@@@@###@@@@@###@@@@@@@@@@@ │
+│@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ │
+│####:##a###9@c#+@+?W#=9#@@2#*####=@##@@ │
+│@###:++#:+#9@;#@#+#++3$==9*=:#**=@5@@@@ │
+│@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ │
+├────────────────────────────────────────┤
+│1 1  2 2                                │
+└─────━━━────────────────────────────────┘`
+	viewImageProblemPNG = `┌━━━━━━━━━━━━────────────────────────────┐
+│o sample.png                            │
+├────────────────────────────────────────┤
+│                                        │
+│                                        │
+│              ___                       │
+│             /___/\_                    │
+│            _\   \/_/\__                │
+│          __\       \/_/\               │
+│          \   __    __ \ \              │
+│         __\  \_\   \_\ \ \   __        │
+│        /_/\\   __   __  \ \_/_/\       │
+│        \_\/_\__\/\__\/\__\/_\_\/       │
+│           \_\/_/\       /_\_\/         │
+│              \_\/       \_\/           │
+│                                        │
+│                                        │
+│    Uh, Houston, we've had a problem    │
+│                                        │
+├────────────────────────────────────────┤
+│1 1  2 2                                │
+└─────━━━────────────────────────────────┘`
+)
+
+func TestViewImageIntegration(t *testing.T) {
+	const width, height = 42, 22
+	tests := []struct {
+		name string
+		// cmd opens the file, view when empty.
+		cmd  string
+		file string
+		data []byte
+		// images reports whether the terminal draws images, as ASCII art.
+		images  bool
+		loading string
+		loaded  string
+	}{
+		{
+			name: "png", file: "sample.png", data: imageuritest.SamplePNG,
+			images: true, loading: viewImageLoadingPNG, loaded: viewImagePNG,
+		},
+		{
+			name: "edit png", cmd: "edit", file: "sample.png",
+			data:   imageuritest.SamplePNG,
+			images: true, loading: viewImageLoadingPNG, loaded: viewImagePNG,
+		},
+		{
+			name: "edit webp", cmd: "edit", file: "sample.webp",
+			data:   imageuritest.SampleWebP,
+			images: true, loading: viewImageLoadingWebP, loaded: viewImageWebP,
+		},
+		{
+			name: "jpg", file: "sample.jpg", data: imageuritest.SampleJPEG,
+			images: true, loading: viewImageLoadingJPG, loaded: viewImageJPG,
+		},
+		{
+			name: "gif", file: "sample.gif", data: imageuritest.SampleGIF,
+			images: true, loading: viewImageLoadingGIF, loaded: viewImageGIF,
+		},
+		{
+			name: "webp", file: "sample.webp", data: imageuritest.SampleWebP,
+			images: true, loading: viewImageLoadingWebP, loaded: viewImageWebP,
+		},
+		{
+			name: "not an image", file: "sample.png",
+			data:   []byte("<html>not an image</html>"),
+			images: true, loading: viewImageLoadingPNG, loaded: viewImageProblemPNG,
+		},
+		{
+			name: "edit not an image", cmd: "edit", file: "sample.png",
+			data:   []byte("<html>not an image</html>"),
+			images: true, loading: viewImageLoadingPNG, loaded: viewImageProblemPNG,
+		},
+		{
+			name: "terminal without image support", file: "sample.png",
+			data:    imageuritest.SamplePNG,
+			loading: viewImageLoadingPNG, loaded: viewImageProblemPNG,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			interrupts := make(chan struct{}, 1)
+			newTestPublishOverride = func(term.Event) bool {
+				select {
+				case interrupts <- struct{}{}:
+				default:
+				}
+				return true
+			}
+			t.Cleanup(func() { newTestPublishOverride = nil })
+
+			dir, err := filepath.EvalSymlinks(t.TempDir())
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(
+				filepath.Join(dir, tt.file), tt.data, 0o644))
+
+			m := newTestWorkspaceManagerHandlerWithDir(t,
+				defaultConfigWithWrap(false), dir, nopShutdownShaderConfig())
+			t.Cleanup(func() { _ = m.Close() })
+			uri, err := workspaceapi.ParseURI("file://" + dir)
+			require.NoError(t, err)
+			require.NoError(t, m.addOrCreateWorkspace(uri))
+			m.quiesce()
+
+			h := newSafeHandler(m)
+			var w handlertest.Writer = term.NewStringWriter(width, height)
+			if tt.images {
+				w = asciiart.NewStringWriter(width, height, asciiart.DefaultConfig())
+			}
+			cmd := tt.cmd
+			if cmd == "" {
+				cmd = "view"
+			}
+			handlertest.RunHandlerSequenceWriter(t, w, h, width, height,
+				[]handlertest.SequenceTestCase{{
+					InputSequence: `<c-\\>` + cmd + `<space>` + tt.file + `<enter>`,
+					Expected:      tt.loading,
+				}})
+			awaitImageView(t, h, w, interrupts)
+			handlertest.RunHandlerSequenceWriter(t, w, h, width, height,
+				[]handlertest.SequenceTestCase{{Expected: tt.loaded}})
+		})
+	}
+}
+
+// awaitImageView redraws on every interrupt, as the host event loop
+// does, until the image view's loading animation is gone.
+func awaitImageView(
+	t *testing.T, h tui.Component, w handlertest.Writer, interrupts <-chan struct{},
+) {
+	frames, _ := component.ProgressAnimationFrames()
+	spinner := strings.Join(frames, "")
+	timeout := time.After(10 * time.Second)
+	for {
+		require.NoError(t, w.Clear(term.Attributes{}))
+		h.Draw(w)
+		require.NoError(t, w.Flush())
+		if !strings.ContainsAny(w.String(), spinner) {
+			return
+		}
+		select {
+		case <-interrupts:
+		case <-timeout:
+			t.Fatalf("image view never finished loading:\n%s", w.String())
+		}
+	}
 }
 
 func TestReadfileCrossWorkspaceIntegration(t *testing.T) {
@@ -4766,21 +5029,6 @@ func TestComponentOnTabsClickIntegration(t *testing.T) {
 	require.NoError(t, m.Close())
 }
 
-// TestWorkspaceBarTabClickIntegration is a black-box regression suite
-// for the bottom workspace bar's mouse routing. Each case builds a
-// (possibly sparse) workspace layout via the manager's internal
-// helpers, dispatches a single term.EventMouse/MouseLeft event at
-// chosen bar coordinates, and asserts the resulting screen with
-// handlertest.RunHandlerSequence. Verification is purely from the
-// rendered Draw output, never via private fields.
-//
-// The bar config sets focus_tab_attr to {bg: blue} so the focused tab's
-// name cells render as the writer's BackgroundCh ('·'). That makes
-// which slot gained focus directly observable in the expected string.
-//
-// Bar layout in numbers mode renders one bar tab per visible workspace
-// as "<icon> <name>" with a two-space separator. With single-digit
-// names each tab spans 5 columns (icon + space + name + separator).
 func TestWorkspaceBarTabClickIntegration(t *testing.T) {
 	const (
 		width  = 30
@@ -5096,10 +5344,6 @@ func TestWorkspaceManagerCreateWorkspace(t *testing.T) {
 	}
 }
 
-// TestWorkspaceManagerCreateWorkspaceQuotedPath guards the fix for RUNE-120:
-// the modal command prompt must respect bash-style quoting/escaping so that
-// directory paths containing spaces survive `:` dispatch unchanged. Each case
-// drives a separate fresh manager so the variants can be asserted independently.
 func TestWorkspaceManagerCreateWorkspaceQuotedPath(t *testing.T) {
 	parent := t.TempDir()
 	// The escape variant exercises raw backslash space escapes which only
@@ -5736,11 +5980,6 @@ func newWriterForAttrTesting(width, height int) *term.StringWriter {
 	return writer
 }
 
-// TestCloseWorkspaceRemovesClosedWorkspaceFromManager guards against a
-// regression where closing a workspace via the IDE left the workspace
-// rooted in workspace.Manager. Each closed workspace would keep its scheme
-// (and the file/watcher state owned by the scheme) alive forever, which
-// caused steady memory growth on workspace open/close cycles.
 func TestCloseWorkspaceRemovesClosedWorkspaceFromManager(t *testing.T) {
 	dir, err := os.MkdirTemp("", "")
 	require.NoError(t, err)
@@ -5775,10 +6014,6 @@ func TestCloseWorkspaceRemovesClosedWorkspaceFromManager(t *testing.T) {
 		"closing a workspace must remove it from workspace.Manager so its scheme can be GC'd")
 }
 
-// TestCloseWorkspaceClosesScheme guards the RUNE-180 invariant that
-// :workspaceclose closes the underlying scheme, killing subprocesses
-// whose lifetime is bound to the scheme ctx (via bluectx.First in
-// fileScheme.StartCommand).
 func TestCloseWorkspaceClosesScheme(t *testing.T) {
 	dir := t.TempDir()
 
@@ -5826,11 +6061,6 @@ func TestCloseWorkspaceClosesScheme(t *testing.T) {
 	}
 }
 
-// TestReloadWorkspaceClosesAndReopensScheme guards the RUNE-180
-// invariant that :workspacereload is a real close+open: the old scheme
-// (and any subprocesses it owns) is torn down, and a fresh scheme is
-// installed under the same URI. The pre-fix path kept the scheme alive
-// across reload, leaking LSP/DAP children.
 func TestReloadWorkspaceClosesAndReopensScheme(t *testing.T) {
 	dir := t.TempDir()
 
@@ -5926,13 +6156,6 @@ func (b *blockingCloser) Close() error {
 	return nil
 }
 
-// TestCloseWorkspaceReturnsBeforeTeardown guards the async-close
-// contract: commandCloseWorkspace must return on the event loop (slot
-// cleared, count decremented, manager detached) while the expensive
-// teardown is still running in a background goroutine. It also hammers
-// the detached workspace with scheme calls that overlap the teardown
-// (including scheme.Close) so the race detector can catch
-// close-vs-in-flight-call hazards.
 func TestCloseWorkspaceReturnsBeforeTeardown(t *testing.T) {
 	dir := t.TempDir()
 
@@ -6034,10 +6257,6 @@ func TestCloseWorkspaceReturnsBeforeTeardown(t *testing.T) {
 			"scheme call panicked during teardown")
 }
 
-// TestReloadWaitsForCloseBeforeReopen guards the RUNE-180 real
-// close+open invariant under the async close: :workspacereload must
-// reserve the pending slot immediately, but only create the fresh
-// scheme once the previous instance has fully torn down.
 func TestReloadWaitsForCloseBeforeReopen(t *testing.T) {
 	dir := t.TempDir()
 
@@ -6094,10 +6313,6 @@ func TestReloadWaitsForCloseBeforeReopen(t *testing.T) {
 		"reload must install a fresh workspace.Workspace")
 }
 
-// TestOpenSameURIWhileClosingIsDeferred asserts that opening a URI
-// whose previous instance is still tearing down defers the build until
-// the close finishes, installs exactly one instance, and dedupes
-// concurrent opens through the pending reservation.
 func TestOpenSameURIWhileClosingIsDeferred(t *testing.T) {
 	dir := t.TempDir()
 	m := newTestWorkspaceManagerHandlerWithDir(t,
@@ -6144,10 +6359,6 @@ func TestOpenSameURIWhileClosingIsDeferred(t *testing.T) {
 	require.Equal(t, 1, count)
 }
 
-// TestManagerCloseWaitsForBackgroundCloses asserts that shutting the
-// handler down while a background workspace teardown is in flight
-// blocks until that teardown completes, so shared resources are not
-// freed under it.
 func TestManagerCloseWaitsForBackgroundCloses(t *testing.T) {
 	dir := t.TempDir()
 	m := newTestWorkspaceManagerHandlerWithDir(t,
@@ -6184,9 +6395,6 @@ func TestManagerCloseWaitsForBackgroundCloses(t *testing.T) {
 	require.True(t, blocker.completed.Load())
 }
 
-// TestCloseGatedReloadCancelsQueuedReopen asserts that closing the
-// pending (gated) workspace of an in-flight reload makes the gated
-// waiter clean up its reservation without installing anything.
 func TestCloseGatedReloadCancelsQueuedReopen(t *testing.T) {
 	dir := t.TempDir()
 	m := newTestWorkspaceManagerHandlerWithDir(t,
@@ -6224,11 +6432,6 @@ func TestCloseGatedReloadCancelsQueuedReopen(t *testing.T) {
 		"a canceled gated reload must not install a workspace")
 }
 
-// TestGatedReopenAbortsWhenSchedulerRejects covers the shutdown race
-// where the host loop stops accepting ticks while a gated reopen is
-// queued behind an in-flight close: the waiter must abort its pending
-// reservation (releasing pendingWG) instead of leaking it, or Close's
-// pendingWG.Wait would deadlock.
 func TestGatedReopenAbortsWhenSchedulerRejects(t *testing.T) {
 	dir := t.TempDir()
 	m := newTestWorkspaceManagerHandlerWithDir(t,
@@ -6623,18 +6826,6 @@ func (s *blockingPtyScheme) Close() error {
 	return s.Scheme.Close()
 }
 
-// TestReloadWithWedgedVTEWarmupDoesNotDeadlock reproduces the live
-// :workspacereload deadlock: a VTE warm-up goroutine wedged in a
-// scheme call that only the scheme teardown can abort, while
-// closeWorkspace's on-loop ex.Close fenced on WaitForPendingInit —
-// before the teardown that would abort the call. The event loop froze
-// forever.
-//
-// Teardown never waits for warm-ups before closing the scheme: the
-// close is what aborts the wedged call, and the background teardown
-// drains the goroutine only after that. The test asserts the reload
-// returns promptly and that the teardown un-wedges the warm-up on
-// its own — no external release.
 func TestReloadWithWedgedVTEWarmupDoesNotDeadlock(t *testing.T) {
 	dir := t.TempDir()
 	m := newTestWorkspaceManagerHandlerWithDir(t,
@@ -6748,13 +6939,6 @@ func (s *brokenClosePtyScheme) Close() error {
 	return s.Scheme.Close()
 }
 
-// TestBackgroundCloseCompletesWithUnabortableWarmup asserts that the
-// background workspace teardown never waits on VTE warm-up
-// goroutines: they are self-disposing (Facility.initCap closes any
-// late VTE against a closed pool), so joining them only converts a
-// self-limiting goroutine into a permanent hang of the closing gate
-// and closeWG.Wait when a broken transport's scheme close cannot
-// abort the wedged call.
 func TestBackgroundCloseCompletesWithUnabortableWarmup(t *testing.T) {
 	dir := t.TempDir()
 	m := newTestWorkspaceManagerHandlerWithDir(t,
@@ -6879,13 +7063,6 @@ func (p *trackedPartition) Close() error {
 	return p.Service.Close()
 }
 
-// TestCloseWorkspaceClosesExtensionPermissionsPartition guards the
-// RUNE-189 invariant that every storageapi.Service Partition opened
-// while a workspace is installing (e.g. the "extension-permissions"
-// partition allocated inside buildExtensions) is closed when the
-// workspace is closed. Each unclosed Partition on a firstmover-backed
-// storage leaks a follower goroutine, a leadOrFollow goroutine, a
-// monitorLeader goroutine, and a gRPC client subscription.
 func TestCloseWorkspaceClosesExtensionPermissionsPartition(t *testing.T) {
 	dir := t.TempDir()
 
@@ -6990,11 +7167,6 @@ func TestBuildExtensionsFailureClosesOwnedResources(t *testing.T) {
 		"failed builds must close every resource allocated before the error")
 }
 
-// TestWorkspaceReadyCommand exercises the `workspaceready` event-loop
-// primitive that defers a command until the most-recently-issued
-// pending workspace finishes installing. This is what makes the
-// `worktreenew` alias's `workspacerename $1` step run on the new
-// workspace rather than on the previously focused one.
 func TestWorkspaceReadyCommand(t *testing.T) {
 	t.Run("dispatches inline when nothing is pending", func(t *testing.T) {
 		dir := t.TempDir()
@@ -8020,10 +8192,6 @@ func (r *recordingOpener) snapshot() []string {
 	return slices.Clone(r.opened)
 }
 
-// TestRestoreExtensionTabs covers the tiled windows that show a tab an
-// extension can reopen: across a reload, the host shows a placeholder in
-// the window that took the original one's place, and asks the resource
-// opener of the tab's scheme to open the tab again once it registers.
 func TestRestoreExtensionTabs(t *testing.T) {
 	const tabURI = "fake://host/chat"
 	uri, err := workspaceapi.ParseURI(tabURI)
@@ -8534,11 +8702,6 @@ func TestRestoreExtensionTabs(t *testing.T) {
 	})
 }
 
-// TestWorkspaceNewResolvesRelativeAgainstHome guards that `workspaceopen`
-// resolves a bare relative path against the home workspace root rather
-// than the process working directory. On macOS the latter is the app
-// bundle (e.g. /Applications/Rune.app), so a relative path such as
-// "src/blue" must not be anchored there.
 func TestWorkspaceNewResolvesRelativeAgainstHome(t *testing.T) {
 	dir := t.TempDir()
 	m := newTestWorkspaceManagerHandlerWithDir(t,
@@ -8771,15 +8934,10 @@ func swapDirIDEConfig(t *testing.T, enabled bool) ideConfig {
 	var cfg ideConfig
 	require.NoError(t, loadConfig(&cfg, f.Name(), browser.NopWallpaper(),
 		DefaultConfig{src: "config = {}"},
-		term.RingBell, term.ScheduleNextTick, ""))
+		term.RingBell, term.ScheduleNextTick))
 	return cfg
 }
 
-// TestSwapDirectory pins the swap directory to the host that owns the
-// file: an editor rooted in a remote workspace still opens local
-// files, and the remote data directory it resolved does not exist on
-// the IDE host. Writing there failed outright under /home on macOS,
-// where autofs rejects the mkdir with ENOTSUP.
 func TestSwapDirectory(t *testing.T) {
 	tests := []struct {
 		name string
@@ -8844,10 +9002,6 @@ func TestSwapDirectory(t *testing.T) {
 	})
 }
 
-// TestWorkspaceRootURI pins the fix for the remote gopls failure
-// "root uri is not contained in the workspace root": the manager root must
-// be resolved through the workspace host (expanding a literal ~) so it
-// matches the RootURI language extensions derive from fs.URI(".").
 func TestWorkspaceRootURI(t *testing.T) {
 	mustURI := func(t *testing.T, s string) workspaceapi.URI {
 		u, err := workspaceapi.ParseURI(s)
@@ -8939,9 +9093,6 @@ func floatingWindows(m *testWorkspaceManagerHandler) int {
 	return n
 }
 
-// TestWorkspaceManagerPersistsLastSession pins that the persisted
-// last-session document tracks every mutation of the installed set, so
-// a crash at any point still leaves an accurate snapshot behind.
 func TestWorkspaceManagerPersistsLastSession(t *testing.T) {
 	dataDir := t.TempDir()
 	uriA := mustURI(t, "memory:///session/a")
@@ -8981,8 +9132,6 @@ func TestWorkspaceManagerPersistsLastSession(t *testing.T) {
 	require.NoError(t, m.Close())
 }
 
-// TestWorkspaceManagerReopensLastSession covers the startup offer to
-// reopen the workspaces the previous session left open.
 func TestWorkspaceManagerReopensLastSession(t *testing.T) {
 	uriA := mustURI(t, "memory:///reopen/a")
 	uriB := mustURI(t, "memory:///reopen/b")
@@ -9116,9 +9265,6 @@ func TestWorkspaceManagerReopensLastSession(t *testing.T) {
 	})
 }
 
-// TestWorkspaceManagerRestoresWorkspaceName pins that a name set with
-// workspacerename is persisted as soon as it is set and comes back when
-// the workspace is opened again.
 func TestWorkspaceManagerRestoresWorkspaceName(t *testing.T) {
 	dataDir := t.TempDir()
 	uri := mustURI(t, "memory:///named/workspace")
@@ -9181,9 +9327,6 @@ func keyEvent(k term.KeyComb) term.Event {
 	return ev
 }
 
-// TestCommandBindingOptsEditorKeyBindings pins that each modal editor
-// brings the sequences of its own grammar, and that they beat a config
-// binding on the same keys.
 func TestCommandBindingOptsEditorKeyBindings(t *testing.T) {
 	seq := func(keys string) thandler.Sequence {
 		s, err := thandler.ParseSequence(keys)

@@ -81,10 +81,6 @@ func TestWriteIdempotent(t *testing.T) {
 	assert.Equal(t, string(first), string(second))
 }
 
-// TestWriteReplacesSymlink covers migration of existing installs
-// where uv's interpreter symlinks occupy python/bin: the shim must
-// replace the link with a regular file without writing through it into
-// the managed interpreter.
 func TestWriteReplacesSymlink(t *testing.T) {
 	dataDir := t.TempDir()
 	binDir := Dir(dataDir)

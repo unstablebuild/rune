@@ -26,6 +26,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"google.golang.org/grpc"
 )
 
 var _ SchemeManager = (*Manager)(nil)
@@ -293,4 +294,10 @@ func (w managerWorkspace) WaitConnected(ctx context.Context) error {
 		return rs.WaitConnected(ctx)
 	}
 	return nil
+}
+
+// HostConn forwards [PackageHost.HostConn] when the wrapped workspace
+// supports it.
+func (w managerWorkspace) HostConn() (grpc.ClientConnInterface, bool) {
+	return hostConn(w.Workspace)
 }

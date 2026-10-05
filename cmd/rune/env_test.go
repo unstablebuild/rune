@@ -40,19 +40,6 @@ import (
 	"unstable.build/rune/internal/ide/starlarkconfig"
 )
 
-// TestGUIEnvLiveApplyHookAppliesNewlyMergedVar is the black-box regression for
-// the install-time GOROOT bug: when a package install merges a brand-new
-// gui.env block into the user config, guiEnvLiveApplyHook must apply it to the
-// live process environment so the freshly-started extension (and the gopls it
-// launches) inherit it. The bug was that the hook read gui.env from
-// IDE.Config() — the in-memory config snapshot captured when the IDE was
-// constructed — which predates the merge and therefore never contains the new
-// var, so os.Setenv was never called and gopls came up with GOROOT unset.
-//
-// The test builds a real configured IDE from a config without the var, then
-// performs the on-disk merge the package manager would (writing the var into
-// the config file) and drives the real hook with a real merge event. The live
-// environment must reflect the merged var.
 func TestGUIEnvLiveApplyHookAppliesNewlyMergedVar(t *testing.T) {
 	const (
 		envKey = "RUNE_TEST_LIVE_APPLY_GOROOT"
@@ -83,10 +70,6 @@ func TestGUIEnvLiveApplyHookAppliesNewlyMergedVar(t *testing.T) {
 			"environment so extensions started after the merge (and gopls) inherit it")
 }
 
-// TestGUIEnvLiveApplyHookAppliesVarPresentAtStartup is a control: when the var
-// is already in the config the IDE loaded, the hook applies it. This guards
-// against a fix that simply hard-codes values and pins the contract that the
-// hook reflects the persisted gui.env.
 func TestGUIEnvLiveApplyHookAppliesVarPresentAtStartup(t *testing.T) {
 	const (
 		envKey = "RUNE_TEST_LIVE_APPLY_STARTUP"
@@ -105,13 +88,6 @@ func TestGUIEnvLiveApplyHookAppliesVarPresentAtStartup(t *testing.T) {
 	assert.Equal(t, envVal, os.Getenv(envKey))
 }
 
-// TestGUIEnvLiveApplyHookStarlarkOverlayConfig is the black-box regression for
-// the `key "terminal" not in dict` bug: a Starlark user config that mutates a
-// nested key of the default tree (config["terminal"]["initial_reservoir"] = 2)
-// broke the gui.env reload after a package install merged its env block. The
-// hook reloaded the config through ide.Config without the rune.star baseline,
-// so the overlay subscript hit an empty `config` dict and the whole gui.env
-// live-apply failed. The reload must use the same baseline the IDE uses.
 func TestGUIEnvLiveApplyHookStarlarkOverlayConfig(t *testing.T) {
 	const (
 		envKey = "RUNE_TEST_LIVE_APPLY_STAR_OVERLAY"
@@ -224,9 +200,6 @@ func TestResolveLoginPath(t *testing.T) {
 	}
 }
 
-// TestResolveLoginPathParsesMarkerEnv asserts the resolver locates PATH after
-// the env marker even when the shell prints pre-marker chatter that itself
-// looks like KEY=VALUE env output.
 func TestResolveLoginPathParsesMarkerEnv(t *testing.T) {
 	t.Setenv("SHELL", fakeLoginShell(t, "/login/bin:/usr/bin",
 		"some banner", "PATH=/decoy/should/not/win", "HOME=/decoy"))
@@ -236,9 +209,6 @@ func TestResolveLoginPathParsesMarkerEnv(t *testing.T) {
 	assert.Equal(t, "/login/bin:/usr/bin", got)
 }
 
-// TestResolveLoginPathTimesOut reproduces the GUI freeze: a shell that hangs
-// (and ignores SIGTERM) must not block the resolver forever. With a short
-// injected timeout the resolver returns an error instead of hanging.
 func TestResolveLoginPathTimesOut(t *testing.T) {
 	hanging := fakeShell(t, "trap '' TERM\nwhile true; do sleep 1; done\n")
 	t.Setenv("SHELL", hanging)
@@ -253,8 +223,6 @@ func TestResolveLoginPathTimesOut(t *testing.T) {
 	}
 }
 
-// TestResolveLoginPathFallsBackShell asserts that when $SHELL is empty the
-// resolver consults userShell() rather than silently using /bin/sh.
 func TestResolveLoginPathFallsBackShell(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("login-shell resolution is POSIX-only")
@@ -271,9 +239,6 @@ func pathList(entries ...string) string {
 	return strings.Join(entries, string(os.PathListSeparator))
 }
 
-// TestPrependPATH runs POSIX and Windows PATH syntax on every host. Beyond the
-// expected result, each case asserts that prepending again is a no-op: the
-// login shell hands back a PATH that already starts with dir.
 func TestPrependPATH(t *testing.T) {
 	const (
 		unixDir = "/rune/bin"
@@ -387,8 +352,6 @@ func FuzzPrependPATH(f *testing.F) {
 	})
 }
 
-// TestSetupManagedBinPathPrependsBinDirOnce asserts that setupManagedBinPath
-// creates the managed dirs and prepends the bin dir to PATH exactly once.
 func TestSetupManagedBinPathPrependsBinDirOnce(t *testing.T) {
 	dataDir := t.TempDir()
 	t.Setenv("PATH", pathList("/usr/bin", "/usr/local/bin"))
@@ -410,10 +373,6 @@ func TestSetupManagedBinPathPrependsBinDirOnce(t *testing.T) {
 	}
 }
 
-// TestStartLoginPathResolveObservesResolvedPATH asserts that, after the
-// background resolve is joined, PATH is the managed bin dir followed by the
-// resolved login PATH and a gui.env value expanding $PATH observes it.
-// Regression for the gui.env PATH startup race.
 func TestStartLoginPathResolveObservesResolvedPATH(t *testing.T) {
 	dataDir := t.TempDir()
 	t.Setenv("RUNE_DATADIR", dataDir)
@@ -448,8 +407,6 @@ func TestStartLoginPathResolveObservesResolvedPATH(t *testing.T) {
 	}
 }
 
-// TestStartLoginPathResolvePropagatesError asserts that a resolution
-// failure is delivered on the channel rather than swallowed.
 func TestStartLoginPathResolvePropagatesError(t *testing.T) {
 	dataDir := t.TempDir()
 	t.Setenv("SHELL", fakeLoginShell(t, "" /* empty PATH output */))
@@ -459,10 +416,6 @@ func TestStartLoginPathResolvePropagatesError(t *testing.T) {
 	}
 }
 
-// TestStartLoginPathResolveKeepsBinDirOnce reproduces the bin dir appearing
-// twice in PATH: the login shell inherits Rune's PATH, which already carries
-// the bin dir, and hands it back (as macOS path_helper and the Windows
-// resolver do).
 func TestStartLoginPathResolveKeepsBinDirOnce(t *testing.T) {
 	dataDir := t.TempDir()
 	t.Setenv("SHELL", fakeShell(t, "printf '%s' "+shellQuote(runeShellEnvMarker)+
@@ -514,9 +467,6 @@ func TestApplyGUIEnvVarsWithLookup(t *testing.T) {
 	t.Cleanup(func() { _ = os.Unsetenv("OUT") })
 }
 
-// TestApplyShellPATHAndGUIEnvWithPATHWaits asserts that when gui.env defines
-// PATH, the resolve result is consumed before gui.env is applied so the value
-// expands against the resolved login PATH.
 func TestApplyShellPATHAndGUIEnvWithPATHWaits(t *testing.T) {
 	t.Setenv("PATH", "/resolved/bin")
 	cfg := config.MapConfig(map[string]any{
@@ -569,7 +519,7 @@ func newConfiguredBootstrapForEnvTest(
 	require.NoError(t, err)
 
 	b, err := newBootstrapHandler(
-		dataDir, configPath, "" /* workspace */, "" /* zdotDir */, nil, /* filenames */
+		dataDir, configPath, "" /* workspace */, "" /* shellRCDir */, nil, /* filenames */
 		nil /* launchCmd */, ide.FuncExtensionsRunner(testE2EExtensionsRunner),
 		mu, publishEvent, nil /* cellPixelSize */, nil, /* setAltModifier */
 		func(*url.URL) error { return nil }, clipboard.NewInMemory(),

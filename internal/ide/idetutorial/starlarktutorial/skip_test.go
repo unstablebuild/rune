@@ -24,10 +24,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestSkipResolvesEveryScreenKind pins the value a skipped step hands
-// back to the script for each blocking builtin. wait_command and
-// wait_shell report the action they asked for; every other kind
-// resolves with its own dismissal.
 func TestSkipResolvesEveryScreenKind(t *testing.T) {
 	t.Parallel()
 
@@ -97,8 +93,6 @@ def run():
 	}
 }
 
-// TestSkipOnAnIdleTutorialIsANoOp asserts Skip is safe to call when
-// no step is armed: the tile's Skip button is always clickable.
 func TestSkipOnAnIdleTutorialIsANoOp(t *testing.T) {
 	t.Parallel()
 	tut, _ := newTutorial(t, `
@@ -113,8 +107,6 @@ tutorial(entry=run)
 	assert.NotPanics(t, func() { tut.Skip() })
 }
 
-// TestSkipWalksAWholeLesson asserts that skipping every step in turn
-// drains a multi-step lesson to a normal completion.
 func TestSkipWalksAWholeLesson(t *testing.T) {
 	t.Parallel()
 	tut, notis := newTutorial(t, `
@@ -140,10 +132,6 @@ tutorial(entry=run)
 		"lesson never reached its final notify: %q", notis.renderedCalls())
 }
 
-// TestSkipWarnsWhenItMayStrandTheLesson asserts that skipping a
-// wait_command whose spec names no arguments tells the user the rest
-// of the lesson may misbehave, because the live path would have
-// resolved with whatever the user typed.
 func TestSkipWarnsWhenItMayStrandTheLesson(t *testing.T) {
 	t.Parallel()
 	tut, notis := newTutorial(t, `
@@ -159,9 +147,6 @@ tutorial(entry=run)
 		"want a stranded-skip notification, got %q", notis.renderedCalls())
 }
 
-// TestSkipDoesNotWarnWhenTheSpecNamesItsArguments asserts the
-// stranded-skip notification is reserved for the one case that can
-// actually strand a lesson.
 func TestSkipDoesNotWarnWhenTheSpecNamesItsArguments(t *testing.T) {
 	t.Parallel()
 	tut, notis := newTutorial(t, `
@@ -179,9 +164,6 @@ tutorial(entry=run)
 		"a fully specified wait_command must not warn: %q", notis.renderedCalls())
 }
 
-// TestSkipReportsTheRunEnding asserts Skip tells its caller when the
-// skipped step was the last one. Without it the host cannot tear the
-// tile down until some unrelated event arrives.
 func TestSkipReportsTheRunEnding(t *testing.T) {
 	t.Parallel()
 	tut, _ := newTutorial(t, `

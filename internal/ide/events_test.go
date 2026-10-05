@@ -617,24 +617,6 @@ func TestMarkdownViewReload(t *testing.T) {
 	}
 }
 
-// TestHandleFSChange_NoPromptForSecondWriteDuringReload guards
-// against a spurious "Discard your changes" prompt that fired when
-// an external tool (e.g. `git rebase`) wrote to a clean, open file
-// multiple times in quick succession.
-//
-// The first Write kicks off an async reload. The reload's
-// buffer-mutation tick (workspace/file.go scheduleNextTick) raises
-// OnDidEdit on text.editorFlusherCloser, which used to call
-// setDirtyFileAttr unconditionally — flipping the tab to "dirty"
-// even though the buffer was being rewritten from disk, not edited
-// by the user. A second Write arriving before
-// editorFlusherCloser.dispatchFlush ran (it's queued via the host
-// scheduler) saw IsDirty=true in handleFSChange and routed to
-// openFileChangedPrompt instead of just triggering another reload.
-//
-// With the fix, OnDidEdit short-circuits while the reload is in
-// flight, so the second Write observes IsDirty=false and no prompt
-// is opened.
 func TestHandleFSChange_NoPromptForSecondWriteDuringReload(t *testing.T) {
 	var mu sync.Mutex
 	ignores := vctrl.NopMatcher(false)
@@ -909,15 +891,6 @@ func (s *pausedReopenScheme) OpenFile(path string, flag int, mode os.FileMode) (
 	return s.Scheme.OpenFile(path, flag, mode)
 }
 
-// TestHandleFSChange_NoPromptForWriteBurstDuringReload covers the conflict
-// prompt that opened on a clean tab when an external tool rewrote the file
-// several times in quick succession (an agent applying a patch and then
-// formatting it, git replaying commits). The second Write arrived while the
-// first reload was still reopening the file; its own reload attempt was
-// refused with ErrFlushInProgress, and the refusal cleared the reloading
-// flag the first reload still relied on. That reload's buffer replacement
-// then marked the tab dirty, so a third Write found a "dirty" tab and asked
-// the user which changes to discard.
 func TestHandleFSChange_NoPromptForWriteBurstDuringReload(t *testing.T) {
 	var mu sync.Mutex
 	ignores := vctrl.NopMatcher(false)
@@ -976,11 +949,6 @@ func writeFileNewer(t *testing.T, file workspaceapi.URI, content string) {
 	require.NoError(t, os.Chtimes(file.Path(), bumped, bumped))
 }
 
-// TestHandleFSChange_RefusedApplyDoesNotRequeueForever covers the host
-// scheduler refusing the tick that applies a save's result: the tab then
-// keeps reporting that save as pending, and a watcher check that parks
-// behind it would otherwise fire, find the same closed channel, park
-// again, and keep the flusher busy on every frame.
 func TestHandleFSChange_RefusedApplyDoesNotRequeueForever(t *testing.T) {
 	var mu sync.Mutex
 	var refuse atomic.Bool

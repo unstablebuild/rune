@@ -114,10 +114,6 @@ func TestTabsOnClick(t *testing.T) {
 	})
 }
 
-// TestTabsOnIconClick drives mouse gestures through Handle, redrawing
-// after each one like the event loop does, and checks that only a press
-// and release that stay on one icon click it, and that the tab under the
-// icon never takes focus.
 func TestTabsOnIconClick(t *testing.T) {
 	const width, height = 30, 2
 	const (

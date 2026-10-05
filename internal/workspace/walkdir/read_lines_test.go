@@ -305,12 +305,6 @@ func TestReadLinesClosesOpenedFiles(t *testing.T) {
 	}
 }
 
-// A raised scan-buffer cap must not size every read to the cap: over
-// the workspace RPC the read size the scanner passes becomes the
-// server-side buffer allocation, so scanning thousands of small files
-// with a 64 MiB cap had the file server allocating 64 MiB per read
-// (~2 GiB retained by its buffer pool, 39% of all editor allocations).
-// The scanner must start small and grow only for lines that need it.
 func TestReadLinesGrowsScanBufferOnDemand(t *testing.T) {
 	longLine := strings.Repeat("x", 3*bufio.MaxScanTokenSize)
 	fs := &readSizeRecordingReader{

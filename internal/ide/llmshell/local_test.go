@@ -27,8 +27,6 @@ import (
 	"unstable.build/rune/internal/llm/llamacpp"
 )
 
-// TestLocalNilRegistryPanics verifies New refuses to build a Handler
-// when the local registry dependency is nil.
 func TestLocalNilRegistryPanics(t *testing.T) {
 	defer func() {
 		assert.NotNil(t, recover(), "expected panic for nil local registry")
@@ -36,7 +34,6 @@ func TestLocalNilRegistryPanics(t *testing.T) {
 	_ = New(Config{Service: newRouterForTest(t), LocalRegistry: nil, Storage: stubStorageForTest(t)})
 }
 
-// TestLocalNoArgsUsage requires a subcommand under local.
 func TestLocalNoArgsUsage(t *testing.T) {
 	reg := newTestRegistry(t)
 	h := newLocalHandler(reg)
@@ -46,7 +43,6 @@ func TestLocalNoArgsUsage(t *testing.T) {
 	assert.Contains(t, err.Error(), "usage")
 }
 
-// TestLocalUnknownSubcommand rejects unknown subcommands.
 func TestLocalUnknownSubcommand(t *testing.T) {
 	reg := newTestRegistry(t)
 	h := newLocalHandler(reg)
@@ -56,7 +52,6 @@ func TestLocalUnknownSubcommand(t *testing.T) {
 	assert.Contains(t, err.Error(), "unknown local subcommand")
 }
 
-// TestLocalListEmptyCache returns a placeholder when the cache is empty.
 func TestLocalListEmptyCache(t *testing.T) {
 	reg := newTestRegistry(t)
 	h := newLocalHandler(reg)
@@ -68,8 +63,6 @@ func TestLocalListEmptyCache(t *testing.T) {
 	require.NotNil(t, v)
 }
 
-// TestLocalDeleteUnknownReferenceErrors surfaces a clean ErrNotExist
-// when the reference is not in the cache.
 func TestLocalDeleteUnknownReferenceErrors(t *testing.T) {
 	reg := newTestRegistry(t)
 	h := newLocalHandler(reg)
@@ -80,8 +73,6 @@ func TestLocalDeleteUnknownReferenceErrors(t *testing.T) {
 	assert.Contains(t, err.Error(), "not present in the local cache")
 }
 
-// TestLocalCompleteTopLevelSubs returns the three subcommands at top
-// level.
 func TestLocalCompleteTopLevelSubs(t *testing.T) {
 	reg := newTestRegistry(t)
 	h := newLocalHandler(reg)
@@ -92,8 +83,6 @@ func TestLocalCompleteTopLevelSubs(t *testing.T) {
 	assert.ElementsMatch(t, []string{"list", "download", "delete"}, names)
 }
 
-// TestLocalCompleteDeleteEmptyCache returns no completions when the
-// cache is empty.
 func TestLocalCompleteDeleteEmptyCache(t *testing.T) {
 	reg := newTestRegistry(t)
 	h := newLocalHandler(reg)

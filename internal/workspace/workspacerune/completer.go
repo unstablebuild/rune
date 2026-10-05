@@ -53,12 +53,11 @@ type Mesh interface {
 }
 
 // Completer completes rune:// workspace URIs: first with the machines
-// currently in the mesh, so opening a workspace elsewhere is a pick
-// rather than a hostname the user has to remember, then with the
-// directories of the chosen machine, which only that machine can
-// enumerate. Offline peers are offered too: connecting is what wakes
-// them up in the user's mind, and the reconnect loop handles a peer
-// that is not up yet.
+// currently connected to the mesh, so opening a workspace elsewhere is
+// a pick rather than a hostname the user has to remember, then with
+// the directories of the chosen machine, which only that machine can
+// enumerate. Offline peers are left out: they cannot serve the
+// workspace being opened.
 //
 // It panics if mesh is nil: completion is wired from the same node the
 // scheme dials through, so a missing one is a programming error.
@@ -130,7 +129,7 @@ func matchingPeers(
 	}
 	ret := make([]string, 0, len(found))
 	for _, p := range found {
-		if !strings.HasPrefix(p.Hostname, typed) {
+		if !p.Online || !strings.HasPrefix(p.Hostname, typed) {
 			continue
 		}
 		ret = append(ret, prefix+p.Hostname+"/")

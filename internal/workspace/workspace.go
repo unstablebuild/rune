@@ -25,6 +25,7 @@ import (
 
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"google.golang.org/grpc"
 	"unstable.build/rune/internal/cell"
 )
 
@@ -47,6 +48,15 @@ type RemoteScheme interface {
 // InstallDataDirProvider reports the workspace host's Rune data directory.
 type InstallDataDirProvider interface {
 	InstallDataDir(ctx context.Context) (string, error)
+}
+
+// PackageHost is implemented by a workspace on another machine whose
+// connection can carry services other than the workspace's own, such
+// as the host's package manager.
+type PackageHost interface {
+	// HostConn returns the connection to the workspace host. ok is
+	// false when the workspace has none, e.g. it is on this machine.
+	HostConn() (cc grpc.ClientConnInterface, ok bool)
 }
 
 // Loader abstracts the ability to load resource data into a working buffer

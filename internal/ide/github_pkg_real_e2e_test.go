@@ -37,20 +37,6 @@ import (
 	"unstable.build/rune/internal/ide/pkgshell"
 )
 
-// TestGitHubPkgRealEndToEnd installs real, published Rune extension
-// packages over the network — against actual github.com, not an
-// httptest fixture — and proves version resolution and the full
-// install/run/command chain per language:
-//
-//	ls-remote (List = latest [+ tags]) → resolve the install version →
-//	clone → config verification → language requirement install (host
-//	uv/go delivered into <dataDir>/bin) → promote + config merge → live
-//	extension start via `uv run` / `go run` → SDK handshake → command
-//	registration → command dispatch → storage sentinel.
-//
-// It hits the network and needs the host toolchain, so it is opt-in:
-// set RUNE_GITHUB_PKG_REAL_E2E=1 and run with a generous timeout. Each
-// language variant additionally skips when its toolchain is missing.
 func TestGitHubPkgRealEndToEnd(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping real github package e2e in -short mode")
@@ -136,10 +122,7 @@ func runRealGitHubPkgE2E(t *testing.T, f realGitHubFixture) {
 			"an untagged repository lists only latest")
 	}
 
-	h := pkgshell.New(pkgshell.Config{
-		Manager:       m.pkgmanager.pkg,
-		UpdateChecker: m.pkgmanager.uc,
-	})
+	h := pkgshell.New(pkgshell.Config{Manager: m.pkgmanager.pkg})
 
 	installArgs := []string{"install", f.pkgID}
 	if f.installTag != "" {
@@ -151,7 +134,7 @@ func runRealGitHubPkgE2E(t *testing.T, f realGitHubFixture) {
 	}, repl.NopProgressWriter())
 	require.NoError(t, err)
 
-	version, ok := m.pkgmanager.pkg.PackageVersionInUse(f.pkgID)
+	version, ok := pkgVersionInUse(t, m.pkgmanager.pkg, f.pkgID)
 	require.True(t, ok, "package must be installed")
 	if f.installTag != "" {
 		assert.Equal(t, release.Version(f.installTag), version,
@@ -159,7 +142,7 @@ func runRealGitHubPkgE2E(t *testing.T, f realGitHubFixture) {
 
 		// The default branch has moved past the pinned tag, so an
 		// update to the current HEAD short sha must be reported.
-		updates, err := m.pkgmanager.uc.CheckForUpdates(ctx)
+		updates, err := idepkg.CheckForUpdates(ctx, m.pkgmanager.pkg)
 		require.NoError(t, err)
 		var pkgUpdate *idepkg.Update
 		for i := range updates {

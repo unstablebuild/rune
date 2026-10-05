@@ -700,9 +700,6 @@ func TestReadFile_lineTruncation(t *testing.T) {
 	})
 }
 
-// TestReadFile_binaryFileReturnsStub verifies that read_file refuses to
-// inline binary content and returns a metadata stub instead. Regression
-// for RUNE-179.
 func TestReadFile_binaryFileReturnsStub(t *testing.T) {
 	dir := t.TempDir()
 	// ELF-ish blob with a NUL in the first 8 KiB.
@@ -722,9 +719,6 @@ func TestReadFile_binaryFileReturnsStub(t *testing.T) {
 	assert.Contains(t, result.Content, "xxd")
 }
 
-// TestReadFile_textWithStrayBytesSanitised verifies that text files
-// with a stray invalid UTF-8 byte (e.g. a latin-1 log line) are passed
-// through with U+FFFD replacement and a trailing marker.
 func TestReadFile_textWithStrayBytesSanitised(t *testing.T) {
 	dir := t.TempDir()
 	// One latin-1 byte (0xff) inside an otherwise ASCII log line.
@@ -742,8 +736,6 @@ func TestReadFile_textWithStrayBytesSanitised(t *testing.T) {
 	assert.Contains(t, result.Content, "(1 invalid UTF-8 byte replaced with U+FFFD)")
 }
 
-// TestReadFile_validUTF8PassesThroughVerbatim verifies that a normal
-// UTF-8 source file is returned without a sanitisation marker.
 func TestReadFile_validUTF8PassesThroughVerbatim(t *testing.T) {
 	dir := t.TempDir()
 	data := []byte("héllo · 世界\nL2 ascii\n")
@@ -1197,9 +1189,6 @@ func TestBash_definition_does_not_expose_timeout_parameter(t *testing.T) {
 	assert.NotContains(t, props, "timeout")
 }
 
-// TestBash_truncation_snaps_to_rune_boundary verifies that the 100 KiB
-// cap in bash.go does not slice through a multi-byte UTF-8 rune and
-// emit invalid UTF-8 to the model. Regression for RUNE-179.
 func TestBash_truncation_snaps_to_rune_boundary(t *testing.T) {
 	dir := setupWorkspace(t)
 	// Build a payload that places a multi-byte rune across the
@@ -1496,10 +1485,6 @@ func (f *blockingFS) OpenFile(path string, flag int, mode os.FileMode) (workspac
 	return f.localFS.OpenFile(path, flag, mode)
 }
 
-// TestSearchTools_explicitFilePath verifies that naming a single file
-// searches only that file. walkdir.ListFiles promotes a file path to
-// its nearest parent directory, which silently searched the whole
-// surrounding tree. Regression for RUNE-305.
 func TestSearchTools_explicitFilePath(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "target.txt"),
@@ -1538,9 +1523,6 @@ func TestSearchTools_explicitFilePath(t *testing.T) {
 	}
 }
 
-// TestSearchContent_skipsBinaryFiles covers search_content's documented
-// binary exclusion: the pattern is on a clean line before the first NUL
-// byte, so the line scanner alone would still report the file.
 func TestSearchContent_skipsBinaryFiles(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "bin.dat"),
@@ -1556,8 +1538,6 @@ func TestSearchContent_skipsBinaryFiles(t *testing.T) {
 	assert.NotContains(t, result.Content, "bin.dat")
 }
 
-// TestSearchTools_canceledContext verifies a canceled search reports an
-// error instead of rendering as a successful (possibly empty) result.
 func TestSearchTools_canceledContext(t *testing.T) {
 	dir := setupWorkspace(t)
 	tests := []struct {
@@ -1591,8 +1571,6 @@ func TestSearchTools_canceledContext(t *testing.T) {
 	}
 }
 
-// TestSearchContent_cancelDuringSearch verifies that matches collected
-// before a cancellation are not returned as a successful result.
 func TestSearchContent_cancelDuringSearch(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "match.txt"),

@@ -36,10 +36,6 @@ func TestDefaultConfigPkgManagerReturnsNotFound(t *testing.T) {
 	require.ErrorIs(t, err, storageapi.ErrNotFound)
 }
 
-// TestGetSwapDir checks that the editor resolves a file's swap
-// directory through Config.SwapDirectory, on the host that owns the
-// file, and falls back to the sibling layout when the resolver has no
-// directory for that host.
 func TestGetSwapDir(t *testing.T) {
 	t.Parallel()
 
@@ -83,8 +79,6 @@ func TestGetSwapDir(t *testing.T) {
 	}
 }
 
-// TestGetSwapDirWithoutResolver covers the zero Config: without a
-// resolver every swap stays next to its file.
 func TestGetSwapDirWithoutResolver(t *testing.T) {
 	t.Parallel()
 

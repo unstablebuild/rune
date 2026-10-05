@@ -24,6 +24,7 @@ import (
 
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"google.golang.org/grpc"
 	"unstable.build/rune/internal/cell"
 )
 
@@ -64,6 +65,19 @@ func (w *schemeWorkspace) InstallDataDir(ctx context.Context) (string, error) {
 		return p.InstallDataDir(ctx)
 	}
 	return "", errors.ErrUnsupported
+}
+
+// HostConn forwards [PackageHost.HostConn] when the embedded scheme
+// supports it.
+func (w *schemeWorkspace) HostConn() (grpc.ClientConnInterface, bool) {
+	return hostConn(w.Scheme)
+}
+
+func hostConn(v any) (grpc.ClientConnInterface, bool) {
+	if p, ok := v.(PackageHost); ok {
+		return p.HostConn()
+	}
+	return nil, false
 }
 
 // NewSchemeWorkspace wraps a schemeapi.Scheme and implements a workspace.Loader,

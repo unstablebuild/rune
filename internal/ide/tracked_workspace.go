@@ -21,6 +21,7 @@ import (
 	"syscall"
 
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"google.golang.org/grpc"
 	"unstable.build/rune/internal/ide/ideshell/workspaceshell"
 	"unstable.build/rune/internal/workspace"
 )
@@ -53,6 +54,15 @@ func (w *trackedWorkspace) WaitConnected(ctx context.Context) error {
 		return rs.WaitConnected(ctx)
 	}
 	return nil
+}
+
+// HostConn forwards [workspace.PackageHost.HostConn] when the embedded
+// Workspace supports it.
+func (w *trackedWorkspace) HostConn() (grpc.ClientConnInterface, bool) {
+	if p, ok := w.Workspace.(workspace.PackageHost); ok {
+		return p.HostConn()
+	}
+	return nil, false
 }
 
 func (w *trackedWorkspace) StartCommand(

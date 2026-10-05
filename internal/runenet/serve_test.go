@@ -38,24 +38,39 @@ func TestPeerAuthorizer(t *testing.T) {
 	self := func(context.Context) (string, error) { return "ernie@example.com", nil }
 
 	t.Run("admits a machine owned by the same account", func(t *testing.T) {
-		a := NewPeerAuthorizer(func(context.Context, string) (string, error) {
-			return "ernie@example.com", nil
+		a := NewPeerAuthorizer(func(context.Context, string) (Caller, error) {
+			return Caller{Login: "ernie@example.com"}, nil
 		}, self)
 		require.NoError(t, a.Authorize(peerCtx("100.64.0.2")))
 	})
 
 	t.Run("rejects a machine owned by another account", func(t *testing.T) {
-		a := NewPeerAuthorizer(func(context.Context, string) (string, error) {
-			return "mallory@example.com", nil
+		a := NewPeerAuthorizer(func(context.Context, string) (Caller, error) {
+			return Caller{Login: "mallory@example.com"}, nil
 		}, self)
 		err := a.Authorize(peerCtx("100.64.0.3"))
 		require.Error(t, err)
 		assert.Equal(t, codes.PermissionDenied, status.Code(err))
 	})
 
+	// Tagged machines never open connections under the mesh policy;
+	// if one gets a packet through anyway, the claimed account is not
+	// enough to let it in.
+	t.Run("rejects a tagged machine claiming the same account", func(t *testing.T) {
+		a := NewPeerAuthorizer(func(context.Context, string) (Caller, error) {
+			return Caller{
+				Login: "ernie@example.com",
+				Tags:  []string{"tag:serve-ernie@example.com"},
+			}, nil
+		}, self)
+		err := a.Authorize(peerCtx("100.64.0.6"))
+		require.Error(t, err)
+		assert.Equal(t, codes.PermissionDenied, status.Code(err))
+	})
+
 	t.Run("rejects an unidentifiable caller", func(t *testing.T) {
-		a := NewPeerAuthorizer(func(context.Context, string) (string, error) {
-			return "", errors.New("peer not found")
+		a := NewPeerAuthorizer(func(context.Context, string) (Caller, error) {
+			return Caller{}, errors.New("peer not found")
 		}, self)
 		err := a.Authorize(peerCtx("100.64.0.4"))
 		require.Error(t, err)
@@ -63,8 +78,8 @@ func TestPeerAuthorizer(t *testing.T) {
 	})
 
 	t.Run("rejects a request with no peer address", func(t *testing.T) {
-		a := NewPeerAuthorizer(func(context.Context, string) (string, error) {
-			return "ernie@example.com", nil
+		a := NewPeerAuthorizer(func(context.Context, string) (Caller, error) {
+			return Caller{Login: "ernie@example.com"}, nil
 		}, self)
 		err := a.Authorize(context.Background())
 		require.Error(t, err)
@@ -72,8 +87,8 @@ func TestPeerAuthorizer(t *testing.T) {
 	})
 
 	t.Run("rejects while the local identity is unknown", func(t *testing.T) {
-		a := NewPeerAuthorizer(func(context.Context, string) (string, error) {
-			return "ernie@example.com", nil
+		a := NewPeerAuthorizer(func(context.Context, string) (Caller, error) {
+			return Caller{Login: "ernie@example.com"}, nil
 		}, func(context.Context) (string, error) {
 			return "", errors.New("not logged in yet")
 		})

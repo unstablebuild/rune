@@ -41,8 +41,6 @@ import (
 	"unstable.build/rune/cmd/rune-agent/dialogue/dialoguemanager"
 )
 
-// Regression for RUNE-AGENT-95: agentshell.handleDream used to build
-// dream.Deps without DataPath, panicking on every `/agent dream`.
 func TestAgentShell_DreamCommand_NoPanic(t *testing.T) {
 	t.Parallel()
 

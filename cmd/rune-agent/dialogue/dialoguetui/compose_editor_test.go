@@ -105,11 +105,6 @@ func TestComposeEditorHeightGrowsWithWrap(t *testing.T) {
 		"a line longer than width must wrap and grow the box")
 }
 
-// TestComposeEditorResizeResetsScrollAfterWrap reproduces the bug where
-// the compose editor stays scrolled down by one row after a typed line
-// wraps and the box grows. The editor scrolls to keep the cursor visible
-// while still one row tall, but a later Resize to the taller height does
-// not re-clamp the scroll offset, hiding the first visual line.
 func TestComposeEditorResizeResetsScrollAfterWrap(t *testing.T) {
 	ed := standard.Editor(
 		standard.WithClipboard(clipboard.NewInMemory()),
@@ -145,10 +140,6 @@ func TestComposeEditorResizeResetsScrollAfterWrap(t *testing.T) {
 		"re-clamping the offset must not move the cursor in the buffer")
 }
 
-// TestComposeEditorResizeKeepsScrollWhenContentOverflows ensures the
-// resize re-clamp does not force the box to the top when the content is
-// taller than the viewport: the offset must stay only as far down as
-// needed to keep the cursor visible.
 func TestComposeEditorResizeKeepsScrollWhenContentOverflows(t *testing.T) {
 	ed := standard.Editor(
 		standard.WithClipboard(clipboard.NewInMemory()),
@@ -181,11 +172,6 @@ func TestComposeEditorResizeKeepsScrollWhenContentOverflows(t *testing.T) {
 		"resize must not move the cursor in the buffer")
 }
 
-// TestComposeEditorHeightCappedLeavesMessagesVisible reproduces the bug
-// where a long compose buffer grew the input box to the full viewport,
-// collapsing the messages row to zero so conversation rows bled through
-// the input frame. The box height must be capped to keep messages
-// visible; the editor scrolls its content internally.
 func TestComposeEditorHeightCappedLeavesMessagesVisible(t *testing.T) {
 	const width, height = 80, 30
 	ed := standard.Editor(
@@ -431,10 +417,6 @@ func TestComposeEditorModalStartNormalByDefault(t *testing.T) {
 		"text inserts after entering insert mode")
 }
 
-// TestComposeEditorSelectionSurvivesUnfocused reproduces issue #1: the
-// editor bakes its selection as AttrReverse cells, and Draw must not
-// strip them when the messages area (not the input) is focused. The
-// selection highlight must remain visible regardless of mouse hover.
 func TestComposeEditorSelectionSurvivesUnfocused(t *testing.T) {
 	const width, height = 40, 12
 	ed := standard.Editor(standard.WithClipboard(clipboard.NewInMemory()))
@@ -472,10 +454,6 @@ func TestComposeEditorSelectionSurvivesUnfocused(t *testing.T) {
 		"editor selection must keep its AttrReverse cells when the input is not focused")
 }
 
-// TestComposeEditorArrowUpNavigatesBeforeHistory verifies that ArrowUp
-// is delegated to the editor first: within a multi-line buffer it moves
-// the cursor between lines, and history recall only takes over once the
-// editor leaves the event unhandled at the top edge.
 func TestComposeEditorArrowUpNavigatesBeforeHistory(t *testing.T) {
 	ed := standard.Editor(standard.WithClipboard(clipboard.NewInMemory()))
 	comp := NewComponent(ComponentConfig{Editor: ed})
@@ -513,10 +491,6 @@ func TestComposeEditorArrowUpNavigatesBeforeHistory(t *testing.T) {
 		"ArrowUp at the top edge must recall the previous history entry")
 }
 
-// TestComposeEditorModalArrowUpRecallsQueuedMessage verifies that, with a
-// modal (vi) compose editor, ArrowUp on an empty buffer recalls a queued
-// message. The vi handler reports the edge ArrowUp as unhandled so the
-// dialogue's recall fallback runs.
 func TestComposeEditorModalArrowUpRecallsQueuedMessage(t *testing.T) {
 	ed := vi.Editor(vi.WithClipboard(clipboard.NewInMemory()))
 	comp := NewComponent(ComponentConfig{Editor: ed, EditorModal: true})

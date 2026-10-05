@@ -70,12 +70,6 @@ func TestPickLiveModel(t *testing.T) {
 	assert.False(t, ok, "no thinking-capable model means the suite cannot run")
 }
 
-// TestLiveCreateCompletion exercises the Bedrock provider against the real
-// ConverseStream API. It serves as an executable example of the llmapi
-// surface backed by Bedrock. It is skipped unless BEDROCK_TESTING_REGION is
-// exported; set BEDROCK_TESTING_KEY too to exercise the API-key path rather
-// than the AWS credential chain. Content assertions are intentionally
-// loose: generation is non-deterministic.
 func TestLiveCreateCompletion(t *testing.T) {
 	region := os.Getenv("BEDROCK_TESTING_REGION")
 	if region == "" {

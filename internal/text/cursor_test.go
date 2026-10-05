@@ -1164,11 +1164,6 @@ func TestCursorReindent(t *testing.T) {
 	})
 }
 
-// TestCursorReindentHonorsTabspacesArgument verifies that when Reindent
-// is invoked with an explicit tabspaces argument, the cursor uses that
-// width rather than the scroll's configured tabspaces. This guards
-// against misindenting files whose indent width differs from the
-// editor's configured tabspaces.
 func TestCursorReindentHonorsTabspacesArgument(t *testing.T) {
 	// Scroll tabspaces configured to 4 but caller passes 2-space indent.
 	c := setupCursorContent(t, 20, 10, "a", false)
@@ -1181,8 +1176,6 @@ func TestCursorReindentHonorsTabspacesArgument(t *testing.T) {
 	assert.Equal(t, term.Coordinates{X: 2}, c.CursorAtScroll())
 }
 
-// TestCursorShiftLineRightHonorsTabspacesArgument verifies the explicit
-// indent width is honored by the shift/dedent path as well.
 func TestCursorShiftLineRightHonorsTabspacesArgument(t *testing.T) {
 	c := setupCursorContent(t, 20, 10, "a", false)
 	c.scroll.SetTabspaces(4)
@@ -1329,10 +1322,6 @@ func drawScroll(t *testing.T, c *Cursor, width, height int) string {
 	return w.String()
 }
 
-// TestCursorCenter covers Cursor.Center, which is what vim's zz maps to: the
-// cursor's line moves to the middle row of the view. Around the end of the
-// buffer the view keeps scrolling and leaves the rows below the last line
-// empty, so that every line can reach the middle row.
 func TestCursorCenter(t *testing.T) {
 	// sampleSnippet is 32 lines, so with a 10 row view the middle row is 5
 	// and the last line the view can show at its bottom is 22.
@@ -1489,10 +1478,6 @@ func TestCursorCenter(t *testing.T) {
 	}
 }
 
-// TestCursorCenterContract pins the outcome of Cursor.Center for every
-// combination of view height and cursor line: the view always ends up half a
-// view above the cursor's line, clamped at the first line, and the cursor
-// never leaves the view.
 func TestCursorCenterContract(t *testing.T) {
 	const rows = 32
 	for _, height := range []int{1, 2, 3, 4, 5, 9, 10, 17, 31, 32, 33, 64} {
@@ -1515,8 +1500,6 @@ func TestCursorCenterContract(t *testing.T) {
 	}
 }
 
-// TestCursorCenterPastEndOfContent covers the cases where centering has to
-// scroll the view beyond the last line of the buffer.
 func TestCursorCenterPastEndOfContent(t *testing.T) {
 	const (
 		width  = 4
@@ -3872,12 +3855,6 @@ func TestCursorInsertLongStream(t *testing.T) {
 	}
 }
 
-// TestCursorInsertMultiRuneEmoji types multi-rune emoji one rune per
-// keystroke, exactly as the vi/modeless insert path does (Cursor.Insert
-// per key event), and asserts each grapheme cluster lands in a single
-// cell with the continuation runes stored as combining. A skin-tone
-// modifier or emoji variation selector that is left in its own cell
-// renders as a broken box beside the base emoji.
 func TestCursorInsertMultiRuneEmoji(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -3903,11 +3880,6 @@ func TestCursorInsertMultiRuneEmoji(t *testing.T) {
 	}
 }
 
-// TestCursorInsertMultiRuneEmojiInLine types multi-rune emoji one rune at
-// a time between surrounding text, reproducing the reported editor bug
-// where a ZWJ family (or skin-tone) sequence typed into a comment line
-// fragmented into one cell per rune instead of coalescing into a single
-// grapheme-cluster cell.
 func TestCursorInsertMultiRuneEmojiInLine(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -4885,15 +4857,6 @@ func TestCursorShiftSelection(t *testing.T) {
 	assert.Equal(t, " blabla\nbleble", c.scroll.Buffer().String())
 }
 
-// TestCursorShiftLineRightTable covers Cursor.ShiftLineRight across both
-// indent materials, tabspaces widths, starting cursor positions and
-// pre-existing indentation.
-//
-// wantCursor is the cursor in scroll.Buffer window coordinates after the
-// shift. Note that when indent material is a tab and the column the cursor
-// lands on is itself a tab, the window coordinate snaps to the right edge of
-// that tab cell (tabspaces-1 columns past its left edge) — that is the
-// existing Scroll coordinate semantics for tabs.
 func TestCursorShiftLineRightTable(t *testing.T) {
 	tsuite := []struct {
 		name       string
@@ -5006,8 +4969,6 @@ func TestCursorShiftLineRightTable(t *testing.T) {
 	}
 }
 
-// TestCursorShiftLineLeftTable covers Cursor.ShiftLineLeft across indent
-// materials, tabspaces widths and mixed leading whitespace shapes.
 func TestCursorShiftLineLeftTable(t *testing.T) {
 	tsuite := []struct {
 		name       string
@@ -5133,9 +5094,6 @@ func TestCursorShiftLineLeftTable(t *testing.T) {
 	}
 }
 
-// TestCursorShiftSelectionRightTable covers Cursor.ShiftSelectionRight across
-// indent materials, tabspaces widths and selection modes (line and block),
-// spanning multiple rows including empty rows.
 func TestCursorShiftSelectionRightTable(t *testing.T) {
 	tsuite := []struct {
 		name       string
@@ -5249,9 +5207,6 @@ func TestCursorShiftSelectionRightTable(t *testing.T) {
 	}
 }
 
-// TestCursorShiftSelectionLeftTable covers Cursor.ShiftSelectionLeft across
-// indent materials, with mixed leading whitespace, asserting both the bool
-// return and the resulting buffer.
 func TestCursorShiftSelectionLeftTable(t *testing.T) {
 	tsuite := []struct {
 		name        string
@@ -5374,8 +5329,6 @@ func TestCursorShiftSelectionLeftTable(t *testing.T) {
 	}
 }
 
-// TestCursorShiftLineRoundTripTable ensures shift-right followed by shift-left
-// restores the original buffer for both indent materials.
 func TestCursorShiftLineRoundTripTable(t *testing.T) {
 	tsuite := []struct {
 		name       string
@@ -6913,10 +6866,6 @@ func setupCursor(t *testing.T, width, height int, wrap bool) *Cursor {
 	return setupCursorContent(t, width, height, sampleSnippet, wrap)
 }
 
-// TestCursorSelectionUnwrapsSoftWrappedRows covers the terminal's vi
-// mode, where the cursor reads the emulator's grid: rows the emulator
-// broke apart to fit the width carry cell.WrapMarker and must be
-// yanked back as the single logical line they were printed as.
 func TestCursorSelectionUnwrapsSoftWrappedRows(t *testing.T) {
 	cases := []struct {
 		desc string
@@ -7533,11 +7482,6 @@ func (m *mockIndentService) IndentationAt(line int) (int, bool) {
 	return m.returnIndentationAt, true
 }
 
-// TestWrapSelectedParagraphBlockSelection exercises Cursor.WrapSelectedParagraph
-// with a visual-block selection across many edge cases. Vim treats gq on a
-// <C-v> selection as a linewise reflow over every line covered by the block,
-// regardless of per-column block bounds, so all of these cases drive the
-// machinery via SelectBlock and assert the linewise reflow result.
 func TestWrapSelectedParagraphBlockSelection(t *testing.T) {
 	t.Parallel()
 
@@ -7833,9 +7777,6 @@ func inlineSchedule(fn func()) bool {
 	return true
 }
 
-// TestDeleteHorizontalSpace exercises DeleteHorizontalSpace (Emacs M-\), which
-// removes the run of spaces and tabs surrounding point on the current line and
-// leaves point where the run began.
 func TestDeleteHorizontalSpace(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -8021,8 +7962,6 @@ func TestCursorSelectionUndoRedo(t *testing.T) {
 	})
 }
 
-// TestCursorSelectionRange verifies the half-open range hosts paint
-// matches the native highlight for both selection semantics.
 func TestCursorSelectionRange(t *testing.T) {
 	tests := []struct {
 		name           string

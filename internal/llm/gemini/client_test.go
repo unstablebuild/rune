@@ -126,11 +126,6 @@ func TestCreateCompletionParallelToolCallIDs(t *testing.T) {
 	assert.NotEqual(t, ids[0], ids[1])
 }
 
-// TestCreateCompletionThoughtSignatureOnSiblingPart reproduces RUNE-AGENT
-// Gemini 3+ 400 "Function call is missing a thought_signature": when streaming,
-// the model may deliver the signature on an empty-text part that precedes the
-// functionCall part rather than on the functionCall part itself. The captured
-// tool call must still carry the signature so it can be replayed.
 func TestCreateCompletionThoughtSignatureOnSiblingPart(t *testing.T) {
 	// "c2ln" base64-decodes to the bytes for "sig".
 	chunks := []string{
@@ -156,9 +151,6 @@ func TestCreateCompletionThoughtSignatureOnSiblingPart(t *testing.T) {
 	assert.Equal(t, []byte("sig"), thoughtSignature(done.Message.ToolCalls[0]))
 }
 
-// TestCreateCompletionParallelToolCallSignature verifies that for parallel
-// function calls only the first carries the signature (Gemini only attaches it
-// to the first functionCall part), matching the documented replay contract.
 func TestCreateCompletionParallelToolCallSignature(t *testing.T) {
 	chunks := []string{
 		`{"candidates":[{"content":{"role":"model","parts":[` +
@@ -186,10 +178,6 @@ func TestCreateCompletionParallelToolCallSignature(t *testing.T) {
 	assert.Nil(t, thoughtSignature(done.Message.ToolCalls[1]))
 }
 
-// TestCreateCompletionParallelToolCallsAcrossChunks mirrors the real Gemini 3
-// streaming shape observed in sub-agent sessions: several parallel function
-// calls arrive in separate SSE chunks, with the thought_signature attached only
-// to the first call's chunk. The first persisted tool call must carry it.
 func TestCreateCompletionParallelToolCallsAcrossChunks(t *testing.T) {
 	chunks := []string{
 		`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"search_symbols","args":{"q":"a"}},"thoughtSignature":"c2ln"}]}}]}`,
@@ -220,11 +208,6 @@ func TestCreateCompletionParallelToolCallsAcrossChunks(t *testing.T) {
 	}
 }
 
-// TestCreateCompletionEmptyCompletionSurfacesError reproduces the silent
-// sub-agent termination: Gemini returns a STOP with no text, reasoning, or
-// tool calls (an empty completion). This must surface as a stream error so the
-// agent loop does not silently end with an empty, non-error result that the
-// parent cannot act on.
 func TestCreateCompletionEmptyCompletionSurfacesError(t *testing.T) {
 	chunks := []string{
 		`{"candidates":[{"content":{"role":"model","parts":[]},"finishReason":"STOP"}],` +
@@ -291,10 +274,6 @@ func capturingSSEServer(t *testing.T, chunks []string) (*string, Config) {
 	return &lastBody, Config{BaseURL: srv.URL}
 }
 
-// TestCreateCompletionAlwaysSendsThinkingConfigForGemini3 verifies that a
-// Gemini 3 request always carries a thinkingConfig even when no reasoning
-// effort is requested, so the model returns thought signatures (required for
-// function calling). Gemini 2.x omits it when no effort is set.
 func TestCreateCompletionAlwaysSendsThinkingConfigForGemini3(t *testing.T) {
 	doneChunk := `{"candidates":[{"content":{"role":"model","parts":[{"text":"hi"}]},"finishReason":"STOP"}]}`
 
@@ -319,10 +298,6 @@ func TestCreateCompletionAlwaysSendsThinkingConfigForGemini3(t *testing.T) {
 	})
 }
 
-// TestCreateCompletionEffortWarningProvenance pins the rule that only an
-// explicit per-request effort produces a warning; the workspace config value
-// is a standing preference and is dropped silently on models that cannot
-// honor it.
 func TestCreateCompletionEffortWarningProvenance(t *testing.T) {
 	doneChunk := `{"candidates":[{"content":{"role":"model","parts":[{"text":"hi"}]},"finishReason":"STOP"}]}`
 	model := llmapi.ModelEntry{Name: Gemini_2_5_Flash, Provider: LLMProvider}
@@ -457,10 +432,6 @@ func TestModels(t *testing.T) {
 	assert.Equal(t, 1048576, names["gemini-2.5-pro"])
 }
 
-// TestModelsFallsBackOnError verifies that when the live listing fails
-// (e.g. an invalid key), Models serves the static catalog so callers
-// still see models, while Err surfaces the underlying error so the user
-// can diagnose and fix the cause.
 func TestModelsFallsBackOnError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -489,9 +460,6 @@ func TestModelsFallsBackOnError(t *testing.T) {
 	assert.Contains(t, it.Err().Error(), "PERMISSION_DENIED")
 }
 
-// TestModelsFallsBackOnMissingClient verifies the static catalog is
-// served when the client could not be constructed at all (e.g. empty
-// key), the bootstrap case where no working key exists yet.
 func TestModelsFallsBackOnMissingClient(t *testing.T) {
 	svc := NewClient("", Config{})
 	it := svc.Models()
@@ -521,8 +489,6 @@ func TestGetModel(t *testing.T) {
 	assert.ErrorIs(t, err, llmapi.ErrModelNotFound)
 }
 
-// TestGetModelFallsBackToStatic verifies GetModel resolves a known model
-// from the static catalog when the live query is unavailable (no key).
 func TestGetModelFallsBackToStatic(t *testing.T) {
 	svc := NewClient("", Config{})
 

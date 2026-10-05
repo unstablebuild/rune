@@ -65,14 +65,6 @@ func compositeAlpha(b ebiten.Blend, srcA, dstA float64) float64 {
 	return blendOperation(b.BlendOperationAlpha, srcFactor*srcA, dstFactor*dstA)
 }
 
-// TestDefaultDrawTrianglesOptionsAccumulateAlpha guards against the
-// frame's alpha channel under-accumulating when a translucent rect
-// (background fill or underline stroke) draws over the frame's own
-// translucent background. Window opacity leaves that background alpha
-// below 1 (dstA = bgOpacity), so compositing must follow standard
-// source-over (srcA + (1-srcA)*dstA); resolving the alpha operation to
-// Max instead under-reports alpha there, letting more of the desktop
-// show through than the rect's own alpha intends.
 func TestDefaultDrawTrianglesOptionsAccumulateAlpha(t *testing.T) {
 	for _, tc := range []struct {
 		name      string

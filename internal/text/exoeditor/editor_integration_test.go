@@ -30,10 +30,6 @@ import (
 	"unstable.build/rune/internal/term/vte"
 )
 
-// TestEditorTimeoutHangsUpLiveVimCleanly asserts that when the editor
-// ignores the quit sequence, the graceful-quit timeout escalates to a
-// SIGHUP that lets vim remove its .swp and finalize ~/.viminfo before
-// the pty is torn down, leaving no .swp or .viminfo*.tmp behind.
 func TestEditorTimeoutHangsUpLiveVimCleanly(t *testing.T) {
 	if _, err := exec.LookPath("vim"); err != nil {
 		t.Skip("vim binary not available")

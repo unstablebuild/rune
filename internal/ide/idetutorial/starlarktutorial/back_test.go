@@ -37,10 +37,6 @@ def run():
 tutorial(entry=run)
 `
 
-// TestBackPagesThroughCopyAlreadyRead asserts the Back button shows
-// earlier steps without rewinding the lesson: the live step stays
-// armed underneath and reaching its milestone brings the tile back to
-// it.
 func TestBackPagesThroughCopyAlreadyRead(t *testing.T) {
 	t.Parallel()
 	tut := newBackTutorial(t, backSrc)
@@ -72,9 +68,6 @@ func TestBackPagesThroughCopyAlreadyRead(t *testing.T) {
 	assert.True(t, tut.Completed())
 }
 
-// TestForwardWalksBackTowardsTheLiveStep asserts the reader can come
-// back the way they went: forward through the copy they paged past,
-// landing on the live step rather than on a read-only copy of it.
 func TestForwardWalksBackTowardsTheLiveStep(t *testing.T) {
 	t.Parallel()
 	tut := newBackTutorial(t, backSrc)
@@ -107,8 +100,6 @@ func TestForwardWalksBackTowardsTheLiveStep(t *testing.T) {
 	assert.True(t, tut.Completed())
 }
 
-// TestForwardReturnsToTheClosingScreen asserts a finished lesson pages
-// forward the same way, with its closing screen as the newest one.
 func TestForwardReturnsToTheClosingScreen(t *testing.T) {
 	t.Parallel()
 	tut := newBackTutorial(t, backSrc)
@@ -129,9 +120,6 @@ func TestForwardReturnsToTheClosingScreen(t *testing.T) {
 	assert.False(t, tut.ViewingPast())
 }
 
-// TestBackSnapsToTheLiveStep asserts a lesson that moves on while the
-// user reads an earlier screen brings the tile forward with it, and
-// that Skip does the same.
 func TestBackSnapsToTheLiveStep(t *testing.T) {
 	t.Parallel()
 	t.Run("a new step", func(t *testing.T) {

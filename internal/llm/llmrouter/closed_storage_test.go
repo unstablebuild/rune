@@ -39,12 +39,6 @@ func (closedRootStorage) Get(context.Context, string, any) error {
 	return errors.New("firstmover: Partition on closed Service")
 }
 
-// TestGetModel_PropagatesClosedStorageError reproduces the rune-agent start
-// failure surfaced by `extensions info rune-agent`. The agent resolves its
-// default model during ExtendWorkspace via the host LLM router's GetModel,
-// which reads the alias doc from the host's main storage. If that storage is
-// closed, GetModel must surface "Partition on closed Service" — which the SDK
-// turns into a fatal extension exit, recorded as the extension's Last error.
 func TestGetModel_PropagatesClosedStorageError(t *testing.T) {
 	cfg := llm.DefaultConfig()
 	cfg.Gemini.APIKey = "test-key"

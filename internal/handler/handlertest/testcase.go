@@ -42,6 +42,16 @@ type SingleTestCase struct {
 	Expected string
 }
 
+// Writer is a term.Writer whose frame can be compared as a string, such
+// as *term.StringWriter.
+type Writer interface {
+	term.Writer
+	fmt.Stringer
+	Flush() error
+	Clear(term.Attributes) error
+	SetCursor(term.Coordinates)
+}
+
 // TestHandlerIsolated is a helper function that drives
 // a set of SequenceTestCase and its results in an isolated fashion:
 // fn will be called on every test case.
@@ -162,7 +172,7 @@ func RunHandlerIsolated(
 // RunHandlerSequenceWriter is a helper function that runs a set of test cases
 // against the given handler in sequence.
 func RunHandlerSequenceWriter(
-	t *testing.T, writer *term.StringWriter, handler tui.Handler, width, height int,
+	t *testing.T, writer Writer, handler tui.Handler, width, height int,
 	cases []SequenceTestCase,
 ) {
 	handler.Resize(width, height)
@@ -183,7 +193,7 @@ func RunHandlerSequence(
 }
 
 func runTestCase(
-	t *testing.T, i int, w *term.StringWriter,
+	t *testing.T, i int, w Writer,
 	h tui.Handler, tcase SequenceTestCase,
 ) {
 	err := w.Clear(term.Attributes{Fg: 0, Bg: 0})

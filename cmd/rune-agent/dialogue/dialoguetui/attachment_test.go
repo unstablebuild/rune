@@ -190,8 +190,6 @@ func TestHandlerClickRemovesAttachment(t *testing.T) {
 	assert.False(t, ok)
 }
 
-// TestHandlerClickOnAttachmentNameKeepsIt pins that only the remove
-// affordance drops an attachment, so clicking the label is safe.
 func TestHandlerClickOnAttachmentNameKeepsIt(t *testing.T) {
 	h, comp, _ := newAttachmentHandler(t)
 	paste(t, h, writeTempFile(t, "shot.png"))
@@ -245,9 +243,6 @@ func TestHandlerSubmitCarriesAttachments(t *testing.T) {
 	assert.Empty(t, comp.Attachments())
 }
 
-// A virtual attachment carries inline content instead of a file path.
-// The strip renders "<icon> <name>", so a name with a leading space
-// yields the two-column gap the changes-review label is specified with.
 func TestUpsertVirtualAttachmentRenders(t *testing.T) {
 	h, comp, _ := newAttachmentHandler(t)
 
@@ -266,8 +261,6 @@ func TestUpsertVirtualAttachmentRenders(t *testing.T) {
 	assert.Contains(t, w.String(), "\uf4d2  changes review")
 }
 
-// Reopening the diff must refresh the pending attachment in place rather
-// than stack a second tab.
 func TestUpsertVirtualAttachmentReplacesSameID(t *testing.T) {
 	h, comp, _ := newAttachmentHandler(t)
 
@@ -287,8 +280,6 @@ func TestUpsertVirtualAttachmentReplacesSameID(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(w.String(), "changes review"))
 }
 
-// Distinct identities, and file attachments (which carry none), still
-// accumulate.
 func TestUpsertAttachmentKeepsDistinctEntries(t *testing.T) {
 	_, comp, _ := newAttachmentHandler(t)
 	path := writeTempFile(t, "shot.png")
@@ -303,8 +294,6 @@ func TestUpsertAttachmentKeepsDistinctEntries(t *testing.T) {
 	assert.Equal(t, "x", comp.Attachments()[2].Content)
 }
 
-// The strip is cleared on submit, so the comments attachment travels with
-// exactly one message.
 func TestVirtualAttachmentClearedOnSubmit(t *testing.T) {
 	h, comp, rx := newAttachmentHandler(t)
 	comp.UpsertAttachment(Attachment{
@@ -324,7 +313,6 @@ func TestVirtualAttachmentClearedOnSubmit(t *testing.T) {
 	assert.Empty(t, comp.Attachments())
 }
 
-// Clicking a virtual attachment removes it like any other.
 func TestClickRemovesVirtualAttachment(t *testing.T) {
 	h, comp, _ := newAttachmentHandler(t)
 	comp.UpsertAttachment(Attachment{

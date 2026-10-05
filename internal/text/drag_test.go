@@ -24,11 +24,6 @@ import (
 	"unstable.build/rune/internal/browser"
 )
 
-// TestComponentForwardsDragToBrowser guards the host drag-and-drop
-// wiring: hosts receive a browser.Browser whose concrete type is
-// *text.Component, which holds its browser.Component in a named field
-// rather than embedding it. Without explicit forwarding the drag methods
-// resolve to nothing and drops silently go nowhere.
 func TestComponentForwardsDragToBrowser(t *testing.T) {
 	c := new(Component)
 	c.comp.Init(browser.DefaultConfig())

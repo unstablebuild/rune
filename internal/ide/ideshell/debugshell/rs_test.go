@@ -257,15 +257,6 @@ func rsFirstStmtLine(t *testing.T, path string) int {
 	return 0
 }
 
-// TestE2E_Rust_Launch drives a real lldb-dap DAP adapter through the
-// debugshell command surface end to end, mirroring TestE2E_Launch (Go)
-// and TestE2E_Python_Launch. The payoff is verifying that the lldb-dap
-// launch template and the `--connection listen://{addr}` transport
-// declared in configuration are what reach the adapter on the wire: the
-// session reaches a breakpoint inside sum_to, the top frame is sum_to at
-// the breakpoint line in the launched binary's source, and the
-// debuggee's stdout is captured. It self-skips when lldb-dap, cargo, or
-// the Rust grammar is not installed.
 func TestE2E_Rust_Launch(t *testing.T) {
 	t.Parallel()
 	lldbDapBin := findLldbDap(t)
@@ -315,10 +306,6 @@ func TestE2E_Rust_Launch(t *testing.T) {
 		"expected debuggee stdout in capture file, got %q", string(data))
 }
 
-// TestE2E_Rust_BreakpointOnEmptyLine mirrors the Go/Python tests:
-// setting a breakpoint on a blank, non-executable line must normalize to
-// the next executable line client-side so the breakpoint binds and the
-// debuggee stops rather than running to completion.
 func TestE2E_Rust_BreakpointOnEmptyLine(t *testing.T) {
 	t.Parallel()
 	lldbDapBin := findLldbDap(t)

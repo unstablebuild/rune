@@ -46,17 +46,6 @@ import (
 	"unstable.build/rune/internal/workspace"
 )
 
-// TestIDECheckFileErrorsWaitsForOpenFileResync exercises the full
-// editor + workspace + LSP integration for the apply_patch /
-// check_file_errors race against a real gopls.
-//
-// A Go file is opened through the real editor, an external tool then
-// rewrites it on disk and the filesystem watcher fires. gopls ignores
-// the watched-file change for the still-open buffer and only
-// re-typechecks after the IDE's reconcile/reload sends a strictly
-// newer versioned didChange. A diagnostics pull issued in the gap
-// must block for that resync rather than release on a stale
-// pre-change push and return the stale clean snapshot.
 func TestIDECheckFileErrorsWaitsForOpenFileResync(t *testing.T) {
 	goplsBin := findGoplsForIDE(t)
 

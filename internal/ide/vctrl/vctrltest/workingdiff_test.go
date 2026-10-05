@@ -30,9 +30,6 @@ import (
 	"unstable.build/rune/internal/ide/vctrl/testgit"
 )
 
-// TestCmdWorkingDiff exercises WorkingDiff against real repositories.
-// Every case builds its own repository so the git invocation, its
-// output and the parse are all covered end to end.
 func TestCmdWorkingDiff(t *testing.T) {
 	tests := []struct {
 		name string

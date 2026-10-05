@@ -34,11 +34,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestRunUpgradeLinux_ReportsExtractProgress covers the silent gap
-// between "download complete" and "install complete": extracting a
-// release tarball takes long enough on a spinning disk that the user
-// needs to see it happen. The archive is deliberately incompressible
-// so gzip streams it in many chunks, producing several samples.
 func TestRunUpgradeLinux_ReportsExtractProgress(t *testing.T) {
 	root := t.TempDir()
 	cache := t.TempDir()
@@ -211,19 +206,6 @@ func writeReleaseTarGz(t *testing.T, path string, files map[string]string) {
 	require.NoError(t, os.WriteFile(path, buf.Bytes(), 0o644))
 }
 
-// TestRunUpgradeLinux_RealTarballTopDir is the high-fidelity
-// regression test for the broken Linux auto-upgrade. It builds a real
-// .tar.gz whose single top-level directory is `rune.app/` — exactly
-// what `tar ... rune.app` ships (cmd/rune/Makefile) — and drives the
-// production runUpgradeLinux end to end through real extraction,
-// rename, and symlink operations.
-//
-// The earlier fake-based test could not catch the bug because the fake
-// ExtractTarGz wrote archiveLayout keys verbatim, never reproducing the
-// tarball's top-level wrapper. With a real archive, a naive swap of the
-// staging dir produces `<install>/rune.app/rune.app/bin/rune` — one
-// level too deep — leaving the CLI symlink and the XDG .desktop Exec=
-// path dangling so launchers (KDE/GNOME) cannot find the executable.
 func TestRunUpgradeLinux_RealTarballTopDir(t *testing.T) {
 	root := t.TempDir()
 	cache := t.TempDir()
@@ -290,12 +272,6 @@ func TestRunUpgradeLinux_RealTarballTopDir(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// TestRunUpgradeLinux_StagedDirNameMismatch covers the case where the
-// running binary was launched from a leftover backup directory (e.g.
-// after a double upgrade without restarting), so detection reports an
-// appName like "rune.app.bak-v1.0.3" that does not match the tarball's
-// "rune.app" top-level dir. unwrapStagedApp must still locate the
-// extracted bundle by its bin/ layout rather than by matching appName.
 func TestRunUpgradeLinux_StagedDirNameMismatch(t *testing.T) {
 	root := t.TempDir()
 	cache := t.TempDir()

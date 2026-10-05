@@ -116,4 +116,10 @@ type Config struct {
 	// in production it is left nil and the client falls back to
 	// launching the user's preferred browser.
 	OpenBrowser func(*url.URL) error
+	// Headless signs in and refreshes through the API's headless
+	// oauth2 client, which only ever yields serve-only tokens. A server
+	// that predates it fails sign-in and refresh with
+	// ErrHeadlessLoginUnsupported rather than falling back to the
+	// desktop client.
+	Headless bool
 }

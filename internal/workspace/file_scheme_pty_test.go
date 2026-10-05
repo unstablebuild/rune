@@ -25,8 +25,6 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 )
 
-// A stale Close(fd, oldName) RPC must not be able to reach a pty that
-// happened to inherit the recycled descriptor number.
 func TestFileSchemeNewFileStaleNamePreservesPty(t *testing.T) {
 	tmpDir := t.TempDir()
 	uri, err := makeLocalURI(tmpDir)
@@ -85,13 +83,6 @@ func TestFileSchemeNewFileNameGate(t *testing.T) {
 	require.Nil(t, s.NewFile(f.Fd(), tmpDir+"/other.txt"))
 }
 
-// A resize can race terminal teardown: the async pty-resize worker may
-// dequeue a SetPtySize that was queued while the terminal was alive
-// only after Close has released the master. The scheme must report
-// that as ErrInvalidMasterPtyFd — the same condition the workspacerpc
-// server reports for a remote workspace — so the ide worker can drop
-// it silently instead of raising an EBADF error toast, or worse,
-// ioctl'ing whichever file has recycled the descriptor number.
 func TestFileSchemeSetPtySizeClosedMaster(t *testing.T) {
 	tmpDir := t.TempDir()
 	uri, err := makeLocalURI(tmpDir)

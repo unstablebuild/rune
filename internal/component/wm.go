@@ -71,9 +71,29 @@ type WindowManager struct {
 
 // Draw satisfies tui.Component
 func (wm *WindowManager) Draw(w term.Writer) {
+	wm.DrawWindows(w, nil)
+}
+
+// DrawWindows draws every window like Draw, each through the writer
+// style returns for it unless style is nil. Images that overflow a tile
+// are drawn once every tile is, so that no tile covers them, and before
+// the floating windows, which do.
+func (wm *WindowManager) DrawWindows(
+	w term.Writer, style func(win Window, w term.Writer) term.Writer,
+) {
+	tiles := &overflowDeferWriter{Writer: w}
 	wm.Iterate(func(win Window) {
-		wm.DrawWindow(win, w)
+		var target term.Writer = tiles
+		if win.IsFloating() {
+			tiles.flush()
+			target = w
+		}
+		if style != nil {
+			target = style(win, target)
+		}
+		wm.DrawWindow(win, target)
 	})
+	tiles.flush()
 }
 
 // FloatingWindows return a slice of all the open floating windows.
