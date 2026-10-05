@@ -40,6 +40,7 @@ import (
 	"unstable.build/rune/internal/component/shader"
 	"unstable.build/rune/internal/extension"
 	"unstable.build/rune/internal/extension/extensionv2"
+	"unstable.build/rune/internal/handler"
 	"unstable.build/rune/internal/handler/command"
 	"unstable.build/rune/internal/ide/ideauthorizer"
 	"unstable.build/rune/internal/ide/idepkg"
@@ -186,6 +187,16 @@ func WithWorkspaceOpenCompleter(c command.Completer) Option {
 func WithDefaultWallpaper(wallpaper browser.Wallpaper) Option {
 	return func(opts *options) {
 		opts.defaultWallpaper = wallpaper
+	}
+}
+
+// WithCursorShapeHandler returns an Option that defines the cursorShapeHandler
+// implementation that is passed to handler.WindowManagerConfig.
+// GUI Window Managers set this option, TUI ones don't.
+// See handler.WindowManager for more info.
+func WithCursorShapeHandler(handler handler.CursorShapeHandler) Option {
+	return func(opts *options) {
+		opts.cursorShapeHandler = handler
 	}
 }
 
@@ -510,6 +521,7 @@ type options struct {
 	schemes              map[string]schemeapi.SchemeFunc
 	workspaceConfig      string
 	defaultWallpaper     browser.Wallpaper
+	cursorShapeHandler   handler.CursorShapeHandler
 	defaultConfig        string
 	bell                 func()
 	scheduleFn           func(func()) bool

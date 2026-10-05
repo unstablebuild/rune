@@ -547,6 +547,10 @@ func (i *IDE) init(
 	i.storage = storage
 	i.ideConfig.storage = storageapi.WithPartition(i.storage, "ide")
 
+	// Pass the cursorShapeHandler from ide.options, to be set in
+	// workspaceManagerHandler.textOpts and ultimately passed to WindowManagerConfig.
+	i.ideConfig.cSH = op.cursorShapeHandler
+
 	var logger *slog.Logger
 	if logPath := i.ideConfig.logOutputPath(); logPath != "" {
 		f, err := workspace.OpenFile(logPath,
@@ -676,6 +680,7 @@ func (i *IDE) init(
 				op.defaultWallpaper, defaultCfg, op.bell, op.scheduleFn,
 				op.zdotDir)
 			cfg.storage = i.ideConfig.storage
+			cfg.cSH = i.ideConfig.cSH // Set cSH (cursorShapeHandler) here too
 			cfg.cellPixelSize = op.cellPixelSize
 			return cfg, err
 		}, op.workspaceConfig, op.tabBarOffset,

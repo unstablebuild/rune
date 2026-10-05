@@ -21,7 +21,6 @@ import (
 	"time"
 
 	compapi "github.com/unstablebuild/rune-go-sdk/component"
-	ebiten "github.com/hajimehoshi/ebiten/v2"
 	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
@@ -42,8 +41,8 @@ type WindowManagerConfig struct {
 	// FloatingBar receives the interactions produced by floating
 	// window bars. It may be nil.
 	FloatingBar FloatingBarHandler
-	// MouseShape changes when hovering over resize handles.
-	MouseShape MouseShapeHandler
+	// CursorShapeHandler changes the cursor shape when hovering over resize handles.
+	CursorShapeHandler CursorShapeHandler
 }
 
 // FloatingBarHandler groups the interactions produced by a floating
@@ -80,9 +79,11 @@ func (NopFloatingBarHandler) OnBarDrop(Window, term.Coordinates) bool { return f
 // OnBarDragCancel satisfies FloatingBarHandler.
 func (NopFloatingBarHandler) OnBarDragCancel(Window) {}
 
-// MouseShapeHandler changes the mouse shape at certain coordinates
-type MouseShapeHandler interface {
-	ChangeCursorAt(pos term.Coordinates)
+// CursorShapeHandler changes the cursorshape at certain coordinates
+type CursorShapeHandler interface {
+	ChangeCursorShape(
+		unclampedCursorPos term.Coordinates, minPos term.Coordinates,
+		maxPos term.Coordinates, isFloating bool)
 }
 
 // winDragMode is a bitmask describing an in-progress window drag
@@ -302,9 +303,8 @@ func (wm *WindowManager) Handle(ev term.Event) (exit bool, handled bool) {
 		// re-routed to the press window must land inside its content.
 		maxX, maxY := contentBounds(childAtMouse, wm.config.Frame)
 		
-		// Pass the unclamped Mouse coordinates to `ChangeCursorAt`, as clamping the coords
+		// Pass the unclamped Mouse coordinates to ChangeMouseShape, as clamping the coords
 		// would cause the cursor to change 1 cell before the border, not on the border.
-		unclampedMousePos := term.Coordinates{X: ev.MouseX, Y: ev.MouseY}
 		minPos := term.Coordinates{X: 1, Y: 1}
 		maxPos := term.Coordinates{X: maxX-1, Y: maxY-1}
 		// A frame occupies 2 cells all around the window
@@ -315,10 +315,11 @@ func (wm *WindowManager) Handle(ev term.Event) (exit bool, handled bool) {
 			maxPos.X += 2
 			maxPos.Y += 2
 		}
-		ChangeCursorAt(unclampedMousePos, minPos, maxPos, target.IsFloating())
-		//if wm.config.MouseShape != nil {
-		//	wm.config.MouseShape.ChangeCursorAt({ev.MouseX, ev.MouseY}, target.IsFloating())
-		//}
+		if wm.config.CursorShapeHandler != nil {
+			wm.config.CursorShapeHandler.ChangeCursorShape(
+				term.Coordinates{X: ev.MouseX, Y: ev.MouseY},
+				minPos, maxPos, target.IsFloating())
+		}
 		
 		// Clamp the mouse coordinates.
 		// Upper-bound clamp is required for drag capture: events
@@ -877,60 +878,6 @@ func (wm *WindowManager) applyWindowDrag(mouse term.Coordinates) {
 	// relayout so Width/Height reflect the new size immediately.
 	// MoveWindow is a no-op for tiles, which relayout on draw.
 	wm.comp.MoveWindow(win, term.Coordinates{X: newX, Y: newY})
-}
-
-// Sets the ebiten.CursorShape when the cursor is at the positions mentioned
-// in handleWindowFramePress. Currently handleWindowFramePress only handles
-// presses at positions 0, w-1, and h-1 -- a single cell.
-// Args:
-// - `pos` is the transformed `ev.MouseX`, `ev.MouseY` changed in
-//   `wm.Handle(term.Event)`. It positions the mouse relative to the window's
-//   top left, accounts for the window frame, and clamps the mouse to the bounds
-//   of the window.
-// - `isFloating` indicates whether the window under the cursor is floating.
-func ChangeCursorAt(pos term.Coordinates, minPos term.Coordinates, maxPos term.Coordinates, isFloating bool) {
-	minX, minY := minPos.X, minPos.Y
-	maxX, maxY := maxPos.X, maxPos.Y
-	if !isFloating {
-		// Tiled windows resize from their right and bottom edges.
-		right := pos.X >= maxX && pos.X < maxX+1
-		bottom := pos.Y >= maxY && pos.Y < maxY+1
-		switch {
-		case right && bottom:
-			ebiten.SetCursorShape(ebiten.CursorShapeNWSEResize)
-		case right:
-			ebiten.SetCursorShape(ebiten.CursorShapeEWResize)
-		case bottom:
-			ebiten.SetCursorShape(ebiten.CursorShapeNSResize)
-		default:
-			ebiten.SetCursorShape(ebiten.CursorShapeDefault)
-		}
-	} else {
-		// Cursor for floating windows.
-		// handleWindowFramePress implements drag to resize for windows with bars like this:
-		// - dragging on the top side just move-drags the window,
-		// - dragging on top left corner resizes both ways,
-		// - dragging on top right corner resizes both ways,
-		// - dragging on the other sides happen the conventional way.
-		// This impacts the implementation here in that the cursor never changes to
-		// CursorShapeNSResize when hovering over the top bar.
-		left := pos.X >= minX && pos.X < minX+1
-		right := pos.X >= maxX && pos.X < maxX+1
-		top := pos.Y >= minY && pos.Y < minY+1
-		bottom := pos.Y >= maxY && pos.Y < maxY+1
-		switch {
-		case (left && top) || (right && bottom):
-			ebiten.SetCursorShape(ebiten.CursorShapeNWSEResize)
-		case (right && top) || (left && bottom):
-			ebiten.SetCursorShape(ebiten.CursorShapeNESWResize)
-		case left || right:
-			ebiten.SetCursorShape(ebiten.CursorShapeEWResize)
-		case bottom:
-			ebiten.SetCursorShape(ebiten.CursorShapeNSResize)
-		default:
-			ebiten.SetCursorShape(ebiten.CursorShapeDefault)
-		}
-	}
 }
 
 // handleWindowFramePress detects presses on a floating window's bar
