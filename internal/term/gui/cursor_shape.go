@@ -40,8 +40,8 @@ func (CursorShapeHandler) ChangeCursorShape(
 	
 	if !isFloating {
 		// Tiled windows resize from their right and bottom edges.
-		right := pos.X >= maxX && pos.X < maxX+1
-		bottom := pos.Y >= maxY && pos.Y < maxY+1
+		right := pos.X == maxX
+		bottom := pos.Y == maxY
 		switch {
 		case right && bottom:
 			ebiten.SetCursorShape(ebiten.CursorShapeNWSEResize)
@@ -61,10 +61,10 @@ func (CursorShapeHandler) ChangeCursorShape(
 		// - dragging on the other sides happen the conventional way.
 		// This impacts the implementation here in that the cursor never changes to
 		// CursorShapeNSResize when hovering over the top bar.
-		left := pos.X >= minX && pos.X < minX+1
-		right := pos.X >= maxX && pos.X < maxX+1
-		top := pos.Y >= minY && pos.Y < minY+1
-		bottom := pos.Y >= maxY && pos.Y < maxY+1
+		left := pos.X == minX
+		right := pos.X == maxX
+		top := pos.Y == minY
+		bottom := pos.Y == maxY
 		switch {
 		case (left && top) || (right && bottom):
 			ebiten.SetCursorShape(ebiten.CursorShapeNWSEResize)
