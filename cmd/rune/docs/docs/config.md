@@ -6,12 +6,14 @@ sidebar_position: 2
 
 ## Where the config lives
 
-Your personal Rune config lives at `~/.rune/config.yaml` or
-`~/.rune/config.star`: one file, in one of two formats. You never have to
-create it by hand: the first time you open Rune, the bootstrap offers
-**standard**, **emacs**, and **vim** key bindings and writes
-`~/.rune/config.yaml` for you. The choice is not permanent: change
-[`editor.mode`](#editor-modes) later to switch editors.
+Your personal Rune config lives at `~/.config/rune/config.yaml` or
+`~/.config/rune/config.star` (`$XDG_CONFIG_HOME/rune/` when
+`XDG_CONFIG_HOME` is set): one file, in one of two formats. An existing
+`~/.rune` install keeps its config there instead, and `-c` or `-d` always
+overrides the resolution. You never have to create it by hand: the first
+time you open Rune, the bootstrap offers **standard**, **emacs**, and
+**vim** key bindings and writes `config.yaml` for you. The choice is not
+permanent: change [`editor.mode`](#editor-modes) later to switch editors.
 
 A workspace can also carry its own `.rune/config.yaml` at the repository
 root, which is layered on top of your personal config for that project.

@@ -5,7 +5,7 @@
 # available keys.
 
 # Path to the debug log. This property is not reloaded on reloadWorkspace.
-#log_path: ~/.rune/debug.log
+#log_path: $RUNE_DATADIR/debug.log
 
 #gui:
 #  # Pick a theme by name. See the `guitheme` command for the full list of commands.

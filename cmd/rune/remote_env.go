@@ -42,11 +42,11 @@ func newRemoteReleaseManager(gitOpts ...gitpkg.Option) release.Manager {
 	return multipkg.New(gitpkg.New(gitOpts...), official)
 }
 
-// loadRemoteConfigAndApplyEnv loads the remote ~/.rune config overlaid with
-// the workspace-root .rune/config.yaml, applies its gui.env block to this
-// process, and prepends ~/.rune/bin to PATH, so the tools the `rune -x`
-// server spawns see the packages installed on this host. On any error it
-// warns and continues so serving is never blocked.
+// loadRemoteConfigAndApplyEnv loads the remote's resolved config overlaid
+// with the workspace-root .rune/config.yaml, applies its gui.env block to
+// this process, and prepends <datadir>/bin to PATH, so the tools the
+// `rune -x` server spawns see the packages installed on this host. On any
+// error it warns and continues so serving is never blocked.
 func loadRemoteConfigAndApplyEnv(scheme schemeapi.Scheme, uri workspaceapi.URI) {
 	cwd := workspace.NewSchemeWorkspace(uri, scheme,
 		func(fn func()) bool { fn(); return true })
@@ -64,7 +64,7 @@ func loadRemoteConfigAndApplyEnv(scheme schemeapi.Scheme, uri workspaceapi.URI) 
 }
 
 // applyConfigEnv applies rootCfg's gui.env block to this process and
-// prepends ~/.rune/bin to PATH. Failures are logged.
+// prepends <datadir>/bin to PATH. Failures are logged.
 func applyConfigEnv(rootCfg config.Config) {
 	guiCfg, ok, err := getGUIConfig(rootCfg)
 	if err != nil {
@@ -78,12 +78,12 @@ func applyConfigEnv(rootCfg config.Config) {
 	}
 
 	if err := setupRuneBinPATH(*flagDataPath); err != nil {
-		log.Warnf("set ~/.rune/bin on PATH: %v", err)
+		log.Warnf("set <datadir>/bin on PATH: %v", err)
 	}
 }
 
 // resolveRemoteEditorMode resolves the user's editor mode from the remote
-// ~/.rune config so it can be exposed to package config.star scripts as
+// resolved config so it can be exposed to package config.star scripts as
 // RUNE_EDITOR_MODE during install. It reads only the base config, not the
 // workspace-root overlay: editor.mode is a user/home setting. On any load
 // error it warns and returns the default (via ide.PkgEditorMode), so the

@@ -159,24 +159,25 @@ workflow Rune Agent uses.
 
 Claude Code discovers skills from `.claude/skills/` in your project and
 `~/.claude/skills/` in your home directory. The installed package exposes
-a stable, unversioned path at `~/.rune/lib/rune-agent/`, so copy (or
+a stable, unversioned path at
+`~/.local/share/rune/lib/rune-agent/`, so copy (or
 symlink) the `code-*` skills from there into one of Claude Code's
 directories:
 
 ```bash
 # Per project, for everyone who clones the repo:
-cp -R ~/.rune/lib/rune-agent/skills/code-* .claude/skills/
+cp -R ~/.local/share/rune/lib/rune-agent/skills/code-* .claude/skills/
 
 # Or globally, for all your projects:
-cp -R ~/.rune/lib/rune-agent/skills/code-* ~/.claude/skills/
+cp -R ~/.local/share/rune/lib/rune-agent/skills/code-* ~/.claude/skills/
 ```
 
-`~/.rune/lib/rune-agent/` always points at the installed version, so this
-works without hardcoding a version number. A symlink (`ln -s`) instead of
-a copy keeps the skills updated as you upgrade the package. The `code-*`
-pattern picks up exactly the six skills above; the directory also holds
-Rune Agent's own `explore` and `plan` sub-agents, which Claude Code does
-not use.
+`~/.local/share/rune/lib/rune-agent/` always points at the installed
+version, so this works without hardcoding a version number. A symlink
+(`ln -s`) instead of a copy keeps the skills updated as you upgrade the
+package. The `code-*` pattern picks up exactly the six skills above; the
+directory also holds Rune Agent's own `explore` and `plan` sub-agents,
+which Claude Code does not use.
 
 Once the files are in place, Claude Code picks the skills up
 automatically and invokes them when a task calls for code navigation,

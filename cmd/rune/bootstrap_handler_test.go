@@ -80,6 +80,46 @@ func (f *fakeHandler) Handle(ev term.Event) (exit, handled bool) {
 	return f.handleExit, f.handleHandled
 }
 
+func TestIsBootstrappedFollowsConfigPath(t *testing.T) {
+	dataDir := t.TempDir()
+	cfgDir := t.TempDir()
+	cfgPath := filepath.Join(cfgDir, "config.yaml")
+
+	require.False(t, isBootstrapped(cfgPath),
+		"a missing resolved config must bootstrap")
+
+	require.NoError(t, os.WriteFile(cfgPath, []byte("{}\n"), 0o644))
+	require.True(t, isBootstrapped(cfgPath),
+		"the resolved config living outside the data dir must count")
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dataDir, configStarFilename), []byte("config = {}\n"), 0o644))
+	starPath := filepath.Join(cfgDir, configStarFilename)
+	require.False(t, isBootstrapped(starPath),
+		"a config in the data dir does not count when the resolved path points elsewhere")
+}
+
+func TestWritePresetConfigUsesResolvedConfigPath(t *testing.T) {
+	dataDir := t.TempDir()
+	cfgDir := t.TempDir()
+	cfgPath := filepath.Join(cfgDir, "rune", configFilename)
+	b := &bootstrapHandler{
+		dataDir:      dataDir,
+		configPath:   cfgPath,
+		chosenEditor: editorVim,
+	}
+
+	require.NoError(t, b.writePresetConfig())
+	_, err := os.Stat(cfgPath)
+	require.NoError(t, err, "preset must land at the resolved config path")
+	_, err = os.Stat(filepath.Join(dataDir, configFilename))
+	require.ErrorIs(t, err, os.ErrNotExist,
+		"the data dir must not shadow the resolved config path")
+
+	require.True(t, isBootstrapped(cfgPath),
+		"a fresh install must not re-bootstrap on the next launch")
+}
+
 func TestBootstrapHandlerDelegates(t *testing.T) {
 	inner := &fakeHandler{
 		cursorCoord:   term.Coordinates{X: 3, Y: 4},

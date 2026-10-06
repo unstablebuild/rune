@@ -65,7 +65,7 @@ def attr(fg = None, bg = None, flags = None, flag = None):
 
 config = {
     # Logging file path. This property is not reloaded on reloadWorkspace.
-    "log_path":  "~/.rune/debug.log",
+    "log_path":  "$RUNE_DATADIR/debug.log",
     # Log level. This property is not reloaded on reloadWorkspace.
     "log_level": "info",
     # Whether to use the system clipboard or Rune's in-memory clipboard.
@@ -1009,7 +1009,7 @@ if tui:
 
     config = merge(config, {
         "default_attr": attr(fg = "default", bg = "#1e1e1e"),
-            "log_path":  "~/.rune/debug.log",
+            "log_path":  "$RUNE_DATADIR/debug.log",
         "log_level": "info",
         "input_mode": ["esc", "mouse"],
         "editor": {

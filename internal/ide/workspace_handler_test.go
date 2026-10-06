@@ -8855,6 +8855,11 @@ func TestInstallRoot(t *testing.T) {
 		require.NoError(t, err)
 		return u
 	}
+	xdgDataDir := func(t *testing.T) string {
+		home, err := os.UserHomeDir()
+		require.NoError(t, err)
+		return filepath.Join(home, ".local", "share", "rune")
+	}
 	tests := []struct {
 		name         string
 		localDataDir string
@@ -8900,6 +8905,21 @@ func TestInstallRoot(t *testing.T) {
 			want: "/home/remote/.rune",
 		},
 		{
+			// The default XDG data dir lives under the local home, so the
+			// remote guess keeps the whole path relative to the remote home,
+			// not just the basename.
+			name:         "remote install root mirrors the home-relative path",
+			localDataDir: xdgDataDir(t),
+			uri:          "ssh://host/home/remote/src/proj",
+			fn: func(path string) (workspaceapi.URI, error) {
+				require.Equal(t, "~/.local/share/rune", path,
+					"remote install root must mirror the home-relative data dir")
+				return workspaceapi.ParseURI(
+					"ssh://host/home/remote/.local/share/rune")
+			},
+			want: "/home/remote/.local/share/rune",
+		},
+		{
 			// A client run with --datadir ~/.runedev forces the remote to
 			// provision under ~/.runedev (via WithRemoteDataDir), so the
 			// install root must mirror the local basename on the remote host.
@@ -8912,6 +8932,18 @@ func TestInstallRoot(t *testing.T) {
 				return workspaceapi.ParseURI("ssh://host/home/remote/.runedev")
 			},
 			want: "/home/remote/.runedev",
+		},
+		{
+			// A data dir outside the local home cannot be mirrored under
+			// the remote home; the basename keeps the old ~/<base> guess.
+			name:         "data dir outside home falls back to the basename",
+			localDataDir: "/var/lib/runedata",
+			uri:          "ssh://host/home/remote/src/proj",
+			fn: func(path string) (workspaceapi.URI, error) {
+				require.Equal(t, "~/runedata", path)
+				return workspaceapi.ParseURI("ssh://host/home/remote/runedata")
+			},
+			want: "/home/remote/runedata",
 		},
 		{
 			name:         "expansion error falls back to local data dir",

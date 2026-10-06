@@ -2510,14 +2510,30 @@ func installDataDir(ws workspace.Workspace, uri workspaceapi.URI, localDataDir s
 		log.Warnf("resolve install root advertised by workspace host %s: %v; "+
 			"falling back to ~/%s", uri.Host(), err, filepath.Base(localDataDir))
 	}
-	base := filepath.Base(localDataDir)
-	remote, err := ws.URI("~/" + base)
+	rel := remoteDataDirGuess(localDataDir)
+	remote, err := ws.URI("~/" + rel)
 	if err != nil {
 		log.Warnf("resolve install root ~/%s on workspace host: %v; "+
-			"falling back to local data dir %s", base, err, localDataDir)
+			"falling back to local data dir %s", rel, err, localDataDir)
 		return localDataDir
 	}
 	return remote.Path()
+}
+
+// remoteDataDirGuess expresses localDataDir relative to the local home
+// so a remote rune server provisions under the same path below its own
+// home (~/.local/share/rune, ~/.runedev). A data dir outside the local
+// home falls back to the basename, preserving the old ~/<base> guess.
+func remoteDataDirGuess(localDataDir string) string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Base(localDataDir)
+	}
+	rel, err := filepath.Rel(home, localDataDir)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return filepath.Base(localDataDir)
+	}
+	return filepath.ToSlash(rel)
 }
 
 func workspaceRootURI(cwd workspace.Workspace, raw workspaceapi.URI) (workspaceapi.URI, error) {

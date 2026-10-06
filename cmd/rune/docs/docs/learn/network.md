@@ -308,8 +308,8 @@ Rune refuses any whose owning account is not yours, so sharing a network
 is never enough to read a machine's files or run commands on it.
 
 A machine's network identity is stored in your Rune data directory,
-under `~/.rune/runenet`. `network down` leaves the network but keeps that
-identity, so `network up` rejoins without a new sign-in.
+under `~/.local/share/rune/runenet`. `network down` leaves the network
+but keeps that identity, so `network up` rejoins without a new sign-in.
 
 ## `rune://` and `ssh://`
 

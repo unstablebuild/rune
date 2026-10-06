@@ -270,7 +270,8 @@ additively.
 ## The on-disk package format
 
 Whichever way a package is delivered, Rune installs it into the same layout
-under the user's data directory (`$RUNE_DATADIR`, by default `~/.rune`). You
+under the user's data directory (`$RUNE_DATADIR`, by default
+`~/.local/share/rune`, or `~/.rune` on an install that already has it). You
 do not assemble this by hand for a git package (Rune builds it from your
 clone), but understanding it explains where `$RUNE_DATADIR/lib/$RUNE_PKG_ID`
 points and how bundled executables reach the `PATH`. In the trees below,
@@ -292,7 +293,7 @@ content:
 
 Installing it, or cloning a git repository, produces this layout:
 
-```text title="~/.rune/"
+```text title="$RUNE_DATADIR/"
 .
 ├── bin/                            # package executables, copied here by base name
 │   ├── <tool>                      #   (this directory is always first on PATH)
@@ -303,11 +304,14 @@ Installing it, or cloning a git repository, produces this layout:
 │           ├── bin/
 │           ├── lib/
 │           └── config.yaml
-├── lib/
-│   └── <pkg> -> pkg/<pkg>/<version>/   # symlink to the in-use version
-│                                       #   ($RUNE_DATADIR/lib/$RUNE_PKG_ID)
-└── config.yaml                     # user config, with the overlay merged in
+└── lib/
+    └── <pkg> -> pkg/<pkg>/<version>/   # symlink to the in-use version
+                                        #   ($RUNE_DATADIR/lib/$RUNE_PKG_ID)
 ```
+
+The `config.yaml` overlays a package ships are merged into your personal
+config, which lives outside the data directory under `~/.config/rune/` (or
+`~/.rune/` on an existing install).
 
 Three kinds of content, three destinations:
 

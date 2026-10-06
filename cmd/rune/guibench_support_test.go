@@ -205,6 +205,7 @@ func newGUIBenchSession(tb testing.TB, cfg guiBenchConfig) *guiBenchSession {
 	s.cleanups = append(s.cleanups, srv.Close)
 
 	s.dataDir = tb.TempDir()
+	tb.Setenv("RUNE_DATADIR", s.dataDir)
 	s.workDir = tb.TempDir()
 	for rel, content := range cfg.workspaceFiles {
 		path := filepath.Join(s.workDir, filepath.FromSlash(rel))

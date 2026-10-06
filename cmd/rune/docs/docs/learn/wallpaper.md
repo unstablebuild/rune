@@ -9,8 +9,9 @@ replace the built-in Rune logo with ASCII or Unicode text that Rune renders
 directly, or give Rune a PNG image to convert into colored text cells.
 
 Wallpaper settings live under `workspace`, so you can set one globally in
-`~/.rune/config.yaml` or `~/.rune/config.star`. A project can also provide its
-own wallpaper in `.rune/config.yaml` at the workspace root.
+`~/.config/rune/config.yaml` or `~/.config/rune/config.star`. A project
+can also provide its own wallpaper in `.rune/config.yaml` at the
+workspace root.
 
 Here, Rune converts a transparent Python logo into colored text cells. The
 source image stays recognizable, while the empty area around the logo blends

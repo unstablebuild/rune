@@ -52,10 +52,12 @@ Network node buildbox is Running
   address: 100.64.0.7
 ```
 
-Once the account and node lines appear, press `Ctrl-C`. The sign-in and
-the machine's network identity are now cached in `~/.rune`, so the
-service never asks again. Nothing needs to reach the node: it only polls
-out, so this works over SSH, in a container, or under a service manager.
+Once the account and node lines appear, press `<ctrl-c>`. The sign-in
+and the machine's network identity are now cached in its data directory
+(`~/.local/share/rune` by default, or `~/.rune` on an install that
+already has it), so the service never asks again. Nothing needs to
+reach the node: it only polls out, so this works over SSH, in a
+container, or under a service manager.
 You can skip the foreground run and let the service do it on its first
 start instead: the code shows up in its log, and the node joins once you
 have entered it.
@@ -73,8 +75,8 @@ shell, so `PATH` is whatever the service definition sets, not what your
 `.zshrc` exports. Tools that a `rune://` workspace should find on this
 machine and that Rune does not install, such as `node`, `mise`, or
 Homebrew, must be on it. Every recipe sets `PATH` explicitly; extend it
-to match the host. Rune adds `~/.rune/bin`, where the packages it
-installs live, on its own.
+to match the host. Rune adds `~/.local/share/rune/bin`, where the
+packages it installs live, on its own.
 
 Language packages need no setup. When a workspace you open on this
 machine needs one it does not have, Rune asks you in your own window and
@@ -100,7 +102,7 @@ config["network"] = {
 ```
 
 That goes in the host's own [Rune config](../config.md), at
-`~/.rune/config.yaml` or `~/.rune/config.star`.
+`~/.config/rune/config.yaml` or `~/.config/rune/config.star`.
 
 ## systemd, as a user service
 
@@ -338,10 +340,11 @@ Three things matter here. `--hostname` is the name the machine joins
 the network under; without it the node is named after the container's
 ID, which changes whenever the container is recreated. The `rune-data`
 volume holds the sign-in, the network identity, and the node's
-[config](../config.md) (`/home/rune/.rune/config.yaml`), so the
-container can be recreated, or upgraded to a new image, without signing
-in again. And a mounted project directory must be readable and writable
-by uid 1000, which is what `rune` is inside the image.
+[config](../config.md) when one is written to
+`/home/rune/.rune/config.yaml`, so the container can be recreated, or
+upgraded to a new image, without signing in again. And a mounted
+project directory must be readable and writable by uid 1000, which is
+what `rune` is inside the image.
 
 **Adding tools.** A `rune://` workspace uses what the container has: its
 terminals, language servers, and tasks run inside it. Language packages
@@ -364,9 +367,9 @@ prebuilt binaries linked against glibc both work in it.
 
 **Logs.** Everything goes to standard output, so `journalctl`, the
 launchd log file, or `docker logs` is the place to look. Rune writes the
-same log to `log_path` as well, `~/.rune/debug.log` by default. Set
-`log_path: ""` in the host's config to keep only the service manager's
-copy.
+same log to `log_path` as well, `~/.local/share/rune/debug.log` by
+default. Set `log_path: ""` in the host's config to keep only the
+service manager's copy.
 
 **Stopping.** The node exits cleanly on `SIGTERM`, which is what every
 service manager above sends on stop.
@@ -403,12 +406,14 @@ Run `logout` in its console and quit, then `docker start rune` and enter
 the code from `docker logs -f rune`.
 
 **Starting over.** Everything the node has accumulated lives in its data
-directory, `~/.rune` unless the service passes `-d`: the sign-in, the
-machine's network identity, the config, the log, and the packages Rune
-installed. Stop the service and remove the directory to wipe all of it:
+directory, `~/.local/share/rune` unless the service passes `-d`, or
+`~/.rune` on an install that already has it: the sign-in, the machine's
+network identity, the log, and the packages Rune installed. The config
+lives separately under `~/.config/rune`. Stop the service and remove
+both directories to wipe all of it:
 
 ```bash
-rm -rf ~/.rune
+rm -rf ~/.local/share/rune ~/.config/rune
 ```
 
 For Docker, remove the `rune-data` volume instead. The next start signs
@@ -420,8 +425,8 @@ the old one stays in `network machines` as offline until you
 
 ## Troubleshooting
 
-**`network.auto_join is off in ~/.rune/config.yaml`.** Set it to `true`
-in the host's config; a headless node has no other way to join.
+**`network.auto_join is off in ~/.config/rune/config.yaml`.** Set it to
+`true` in the host's config; a headless node has no other way to join.
 
 **`could not join the network` right after boot.** The machine was not
 online yet. The recipes restart the node on failure, so it joins on the

@@ -144,7 +144,7 @@ func newBootstrapHandler(
 	bh.loadQuickMenu()
 	bh.rootCfg = rootCfg
 
-	if isBootstrapped(dataDir) {
+	if isBootstrapped(configPath) {
 		client, releaseManager := newAPIClient(bh.storage, installBackupDir, rootCfg)
 		bh.network = newNetwork(rootCfg, dataDir, shellRCDir, newNetworkGate(client))
 		bh.network.startAutoJoin()
@@ -170,14 +170,13 @@ func newBootstrapHandler(
 	return bh, nil
 }
 
-func isBootstrapped(dataDir string) bool {
-	if _, err := os.Stat(filepath.Join(dataDir, configFilename)); err == nil {
-		return true
-	}
-	if _, err := os.Stat(filepath.Join(dataDir, configStarFilename)); err == nil {
-		return true
-	}
-	return false
+// isBootstrapped reports whether the resolved config file exists. The
+// config may live outside the data directory (an explicit -c, or the
+// XDG config home), so checking the data directory would re-run
+// bootstrap on every launch.
+func isBootstrapped(configPath string) bool {
+	_, err := os.Stat(configPath)
+	return err == nil
 }
 
 func (b *bootstrapHandler) buildPreIDE() (*ide.IDE, error) {
@@ -602,7 +601,6 @@ func (b *bootstrapHandler) performSwap() error {
 		return fmt.Errorf("write bootstrap preset: %w", err)
 	}
 
-	b.configPath = filepath.Join(b.dataDir, configFilename)
 	b.loadQuickMenu()
 
 	b.mu.Unlock()
@@ -849,9 +847,13 @@ func (b *bootstrapHandler) writePresetConfig() error {
 	if err != nil {
 		return fmt.Errorf("render preset: %w", err)
 	}
-	path := filepath.Join(b.dataDir, configFilename)
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		return fmt.Errorf("write preset config %q: %w", path, err)
+	// The resolved config path may live in the XDG config directory,
+	// which does not exist until something writes into it.
+	if err := os.MkdirAll(filepath.Dir(b.configPath), 0o777); err != nil {
+		return fmt.Errorf("mkdir config dir for %q: %w", b.configPath, err)
+	}
+	if err := os.WriteFile(b.configPath, []byte(body), 0o644); err != nil {
+		return fmt.Errorf("write preset config %q: %w", b.configPath, err)
 	}
 	return nil
 }

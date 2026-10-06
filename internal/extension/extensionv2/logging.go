@@ -33,7 +33,7 @@ var _ io.Writer = (*logCollector)(nil)
 
 // logCollector parses an extension's stderr stream into structured
 // log records. Lines that parse as JSON are forwarded to logrus and
-// end up homogenized in ~/.rune/debug.log; the same record is also
+// end up homogenized in $RUNE_DATADIR/debug.log; the same record is also
 // written to a per-extension log file in human-readable text form so
 // that file remains the full record of the extension's stderr.
 // Lines that do not parse as JSON are written verbatim to the same

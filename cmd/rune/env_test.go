@@ -484,7 +484,7 @@ func TestApplyShellPATHAndGUIEnvWithPATHWaits(t *testing.T) {
 // newConfiguredBootstrapForEnvTest builds a real, already-bootstrapped
 // bootstrapHandler against the given on-disk config, written to dataDir as
 // filename (config.yaml or config.star, selecting the decoder). A config file
-// in dataDir makes isBootstrapped true, so newBootstrapHandler builds the real
+// at configPath makes isBootstrapped true, so newBootstrapHandler builds the real
 // configured IDE (with the production packageConfigMergeHook wired via
 // WithPackageConfigMergeHook) instead of opening the OAuth bootstrap flow. The
 // apiclient is pointed at a 404 server so construction never touches the
@@ -501,6 +501,7 @@ func newConfiguredBootstrapForEnvTest(
 	t.Cleanup(srv.Close)
 
 	dataDir := t.TempDir()
+	t.Setenv("RUNE_DATADIR", dataDir)
 	configPath := filepath.Join(dataDir, filename)
 	require.NoError(t, os.WriteFile(configPath, []byte(configBody), 0o644))
 

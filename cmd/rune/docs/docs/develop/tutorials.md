@@ -161,7 +161,7 @@ A Rune extension package can ship its own `config.star` (or
 `config.yaml`) at the top of its bundle. When the user installs the
 extension, Rune shows them the diff your config makes against their
 resolved config, asks for permission, and on allow merges your
-additions into `~/.rune/config.yaml`. Subsequent IDE starts pick the
+additions into your config file. Subsequent IDE starts pick the
 merged config up like any other user config.
 
 This is the mechanism extensions use to "register" a tutorial: drop

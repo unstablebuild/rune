@@ -164,9 +164,7 @@ func pathFromMarkerEnv(out string) string {
 	return ""
 }
 
-func setEnvForGUI(dataPath string) {
-	os.Setenv("RUNE_DATADIR", dataPath)
-
+func setEnvForGUI() {
 	// set vte vars
 	os.Setenv("TERM", "xterm-256color")
 	os.Setenv("COLORTERM", "truecolor")

@@ -238,42 +238,206 @@ func (r *recordingNotifications) Notify(
 	return "", nil
 }
 
-func TestResolveDefaultConfigPathPrefersYAMLThenStar(t *testing.T) {
+func TestConfigPathForDirPrefersYAMLThenStar(t *testing.T) {
 	dataDir := t.TempDir()
 	yamlPath := filepath.Join(dataDir, "config.yaml")
 	starPath := filepath.Join(dataDir, "config.star")
 
-	got := resolveDefaultConfigPath(dataDir)
+	got := configPathForDir(dataDir)
 	if got != yamlPath {
-		t.Fatalf("resolveDefaultConfigPath() = %q, want %q when neither exists",
+		t.Fatalf("configPathForDir() = %q, want %q when neither exists",
 			got, yamlPath)
 	}
 
 	if err := os.WriteFile(starPath, []byte("config = {}\n"), 0o644); err != nil {
 		t.Fatalf("write star: %v", err)
 	}
-	got = resolveDefaultConfigPath(dataDir)
+	got = configPathForDir(dataDir)
 	if got != starPath {
-		t.Fatalf("resolveDefaultConfigPath() = %q, want %q when only .star exists",
+		t.Fatalf("configPathForDir() = %q, want %q when only .star exists",
 			got, starPath)
 	}
 
 	if err := os.WriteFile(yamlPath, []byte("{}\n"), 0o644); err != nil {
 		t.Fatalf("write yaml: %v", err)
 	}
-	got = resolveDefaultConfigPath(dataDir)
+	got = configPathForDir(dataDir)
 	if got != yamlPath {
-		t.Fatalf("resolveDefaultConfigPath() = %q, want %q when both exist",
+		t.Fatalf("configPathForDir() = %q, want %q when both exist",
 			got, yamlPath)
 	}
 }
 
-func TestResolveDefaultConfigPathUsesDatadirDefaultLocation(t *testing.T) {
+func TestConfigPathForDirUsesDatadirDefaultLocation(t *testing.T) {
 	dataDir := filepath.Join("home", ".rune")
-	got := resolveDefaultConfigPath(dataDir)
+	got := configPathForDir(dataDir)
 	want := filepath.Join(dataDir, "config.yaml")
 	if got != want {
-		t.Fatalf("resolveDefaultConfigPath() = %q, want %q", got, want)
+		t.Fatalf("configPathForDir() = %q, want %q", got, want)
+	}
+}
+
+func TestResolveDefaultDataPath(t *testing.T) {
+	xdgData := filepath.Join(t.TempDir(), "xdgdata")
+	tests := []struct {
+		name        string
+		legacyDir   bool
+		xdgDataHome string
+		want        func(home string) string
+	}{
+		{
+			name:        "legacy ~/.rune wins over XDG",
+			legacyDir:   true,
+			xdgDataHome: xdgData,
+			want:        func(home string) string { return filepath.Join(home, ".rune") },
+		},
+		{
+			name:        "XDG_DATA_HOME used without a legacy dir",
+			xdgDataHome: xdgData,
+			want:        func(string) string { return filepath.Join(xdgData, "rune") },
+		},
+		{
+			name: "default XDG data home without a legacy dir",
+			want: func(home string) string {
+				return filepath.Join(home, ".local", "share", "rune")
+			},
+		},
+		{
+			name:        "relative XDG_DATA_HOME is ignored",
+			xdgDataHome: "relative/xdg",
+			want: func(home string) string {
+				return filepath.Join(home, ".local", "share", "rune")
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("XDG_DATA_HOME", tc.xdgDataHome)
+			if tc.legacyDir {
+				require.NoError(t,
+					os.MkdirAll(filepath.Join(home, ".rune"), 0o755))
+			}
+			require.Equal(t, tc.want(home), resolveDefaultDataPath(home))
+		})
+	}
+}
+
+func TestResolveConfigPath(t *testing.T) {
+	xdgConfig := filepath.Join(t.TempDir(), "xdgcfg")
+	tests := []struct {
+		name          string
+		configFlag    string
+		configChanged bool
+		dataChanged   bool
+		setup         func(t *testing.T, home, dataDir string)
+		xdgConfigHome string
+		want          func(home, dataDir string) string
+	}{
+		{
+			name:          "-c wins over every other source",
+			configFlag:    filepath.Join("somewhere", "mine.yaml"),
+			configChanged: true,
+			setup: func(t *testing.T, home, dataDir string) {
+				require.NoError(t, os.MkdirAll(filepath.Join(home, ".rune"), 0o755))
+				require.NoError(t, os.WriteFile(
+					filepath.Join(home, ".rune", "config.yaml"), []byte("{}\n"), 0o644))
+			},
+			want: func(_, _ string) string {
+				return filepath.Join("somewhere", "mine.yaml")
+			},
+		},
+		{
+			name:        "explicit -d pins the config beside the data dir",
+			dataChanged: true,
+			want: func(_, dataDir string) string {
+				return filepath.Join(dataDir, "config.yaml")
+			},
+		},
+		{
+			name:        "explicit -d prefers an existing config.star",
+			dataChanged: true,
+			setup: func(t *testing.T, _, dataDir string) {
+				require.NoError(t, os.WriteFile(
+					filepath.Join(dataDir, "config.star"), []byte("config = {}\n"), 0o644))
+			},
+			want: func(_, dataDir string) string {
+				return filepath.Join(dataDir, "config.star")
+			},
+		},
+		{
+			name: "legacy ~/.rune/config.yaml wins over XDG without -d",
+			setup: func(t *testing.T, home, _ string) {
+				require.NoError(t, os.MkdirAll(filepath.Join(home, ".rune"), 0o755))
+				require.NoError(t, os.WriteFile(
+					filepath.Join(home, ".rune", "config.yaml"), []byte("{}\n"), 0o644))
+			},
+			xdgConfigHome: xdgConfig,
+			want: func(home, _ string) string {
+				return filepath.Join(home, ".rune", "config.yaml")
+			},
+		},
+		{
+			name: "legacy ~/.rune/config.star is found without -d",
+			setup: func(t *testing.T, home, _ string) {
+				require.NoError(t, os.MkdirAll(filepath.Join(home, ".rune"), 0o755))
+				require.NoError(t, os.WriteFile(
+					filepath.Join(home, ".rune", "config.star"), []byte("config = {}\n"), 0o644))
+			},
+			want: func(home, _ string) string {
+				return filepath.Join(home, ".rune", "config.star")
+			},
+		},
+		{
+			name: "legacy dir without a config falls to the XDG path",
+			setup: func(t *testing.T, home, _ string) {
+				require.NoError(t, os.MkdirAll(filepath.Join(home, ".rune"), 0o755))
+			},
+			xdgConfigHome: xdgConfig,
+			want: func(string, string) string {
+				return filepath.Join(xdgConfig, "rune", "config.yaml")
+			},
+		},
+		{
+			name:          "XDG_CONFIG_HOME used without a legacy config",
+			xdgConfigHome: xdgConfig,
+			want: func(string, string) string {
+				return filepath.Join(xdgConfig, "rune", "config.yaml")
+			},
+		},
+		{
+			name:          "XDG config.star preferred over a missing yaml",
+			xdgConfigHome: xdgConfig,
+			setup: func(t *testing.T, _, _ string) {
+				require.NoError(t, os.MkdirAll(
+					filepath.Join(xdgConfig, "rune"), 0o755))
+				require.NoError(t, os.WriteFile(
+					filepath.Join(xdgConfig, "rune", "config.star"),
+					[]byte("config = {}\n"), 0o644))
+			},
+			want: func(string, string) string {
+				return filepath.Join(xdgConfig, "rune", "config.star")
+			},
+		},
+		{
+			name: "default config home without a legacy config or XDG",
+			want: func(home, _ string) string {
+				return filepath.Join(home, ".config", "rune", "config.yaml")
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			dataDir := t.TempDir()
+			t.Setenv("XDG_CONFIG_HOME", tc.xdgConfigHome)
+			if tc.setup != nil {
+				tc.setup(t, home, dataDir)
+			}
+			got := resolveConfigPath(
+				tc.configFlag, tc.configChanged, dataDir, tc.dataChanged, home)
+			require.Equal(t, tc.want(home, dataDir), got)
+		})
 	}
 }
 
@@ -282,14 +446,19 @@ func TestDataPathDefaultsUseOSPaths(t *testing.T) {
 	if err != nil {
 		t.Skipf("no home directory: %v", err)
 	}
+	// A legacy install keeps ~/.rune; a fresh one lands under XDG data home.
+	dataDir := filepath.Join(home, ".local", "share", "rune")
+	if _, err := os.Stat(filepath.Join(home, ".rune")); err == nil {
+		dataDir = filepath.Join(home, ".rune")
+	}
 	for _, tc := range []struct {
 		name string
 		got  string
 		want string
 	}{
-		{"datadir", defaultDataPath, filepath.Join(home, ".rune")},
+		{"datadir", defaultDataPath, dataDir},
 		{"workspace server log", flag.Lookup("workspace-server-log").DefValue,
-			filepath.Join(home, ".rune", "server.log")},
+			filepath.Join(dataDir, "server.log")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.got != tc.want {

@@ -22,7 +22,7 @@ extensions:
       # with the `models alias` rune shell command.
       skills:
         - .rune/skills
-        - ~/.rune/skills
+        - $RUNE_DATADIR/skills
         - .agents/skills
         - ~/.agents/skills
       background_attr:

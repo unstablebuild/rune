@@ -17,7 +17,7 @@ toolchain from the editor.
 
 There is no setup. The Zig extension locates `zls` and `zig` on the
 workspace host automatically, checking the bundled install first and
-falling back to well-known locations (`~/.rune/bin`,
+falling back to well-known locations (the data dir's `bin`,
 `/opt/homebrew/bin`, `/usr/local/bin`) and your shell's PATH.
 
 If you want to use your own binaries, point Rune at them in

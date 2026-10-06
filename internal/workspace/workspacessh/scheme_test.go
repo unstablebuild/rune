@@ -367,6 +367,26 @@ func TestConnectSchemeRemoteDataDir(t *testing.T) {
 		"--datadir must directly follow `-x <path>`; got %+v", cmd.Args)
 }
 
+func TestConnectSchemeRemoteDataDirHomeRelative(t *testing.T) {
+	rec := &recordingRemote{}
+	s, uri := newRecordingTestScheme(rec)
+	s.remoteDataDir = ".local/share/rune"
+	defer s.cancelCtx()
+
+	scheme, err := s.connectScheme(context.Background(), uri, func(error) {})
+	require.NoError(t, err)
+	if scheme != nil {
+		_ = scheme.Close()
+	}
+
+	cmd := findRuneServerCmd(t, rec)
+	ddIdx := slices.Index(cmd.Args, "--datadir")
+	require.GreaterOrEqual(t, ddIdx, 0, "must add --datadir; got %+v", cmd.Args)
+	require.Less(t, ddIdx+1, len(cmd.Args), "--datadir must be followed by a value")
+	assert.Equal(t, "~/.local/share/rune", cmd.Args[ddIdx+1],
+		"--datadir value must be ~/<home-relative path>; got %+v", cmd.Args)
+}
+
 func TestConnectSchemeNoRemoteDataDir(t *testing.T) {
 	rec := &recordingRemote{}
 	s, uri := newRecordingTestScheme(rec)

@@ -279,7 +279,8 @@ blocks calls into capabilities an extension never requested.
 ### Going deeper with logs
 
 Beyond `extensions logs`, Rune folds extension diagnostics into its main log
-at `~/.rune/debug.log`. Raising `log_level` in your [config](../config.md)
+at `$RUNE_DATADIR/debug.log` (`~/.local/share/rune/debug.log` by default).
+Raising `log_level` in your [config](../config.md)
 makes both Rune and the extensions it launches more verbose, which is useful
 when a startup failure is not obvious from the captured output alone. See
 the general [Troubleshooting](../troubleshoot.md) guide for more on Rune's

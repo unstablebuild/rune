@@ -131,11 +131,10 @@ func init() {
 		home = "."
 	}
 
-	defaultConfigPath = resolveDefaultConfigPath(defaultDataPath)
+	defaultDataPath = resolveDefaultDataPath(home)
+	defaultConfigPath = resolveConfigPath("", false, "", false, home)
 	flagConfigPath = flag.StringP("config", "c", defaultConfigPath,
 		"Use this file for configuring rune")
-
-	defaultDataPath = filepath.Join(home, ".rune")
 	flagDataPath = flag.StringP("datadir", "d", defaultDataPath,
 		"Set temporary data directory")
 
@@ -156,16 +155,72 @@ func versionString(tag, commit, buildDate string) string {
 	return fmt.Sprintf("%s (HEAD is %s, built %s)", tag, commit, buildDate)
 }
 
-func resolveDefaultConfigPath(dataDir string) string {
-	yamlPath := filepath.Join(dataDir, configFilename)
-	starPath := filepath.Join(dataDir, configStarFilename)
+// resolveDefaultDataPath picks the data directory when -d is not
+// given: an existing ~/.rune install keeps using it, otherwise the
+// data directory follows the XDG base directory convention.
+func resolveDefaultDataPath(homeDir string) string {
+	legacy := filepath.Join(homeDir, ".rune")
+	if _, err := os.Stat(legacy); err == nil {
+		return legacy
+	}
+	return filepath.Join(xdgDataHome(homeDir), "rune")
+}
+
+// resolveConfigPath picks the config file: an explicit -c wins, an
+// explicit -d keeps the config beside the data directory, an existing
+// ~/.rune config keeps working for legacy installs, and otherwise the
+// config lives under the XDG config directory.
+func resolveConfigPath(
+	configPath string, configChanged bool,
+	dataDir string, dataChanged bool, homeDir string,
+) string {
+	if configChanged {
+		return configPath
+	}
+	if dataChanged {
+		return configPathForDir(dataDir)
+	}
+	if p, ok := existingConfigPath(filepath.Join(homeDir, ".rune")); ok {
+		return p
+	}
+	return configPathForDir(filepath.Join(xdgConfigHome(homeDir), "rune"))
+}
+
+// configPathForDir returns the config file inside dir, preferring the
+// YAML file when both formats exist.
+func configPathForDir(dir string) string {
+	if p, ok := existingConfigPath(dir); ok {
+		return p
+	}
+	return filepath.Join(dir, configFilename)
+}
+
+func existingConfigPath(dir string) (string, bool) {
+	yamlPath := filepath.Join(dir, configFilename)
 	if _, err := os.Stat(yamlPath); err == nil {
-		return yamlPath
+		return yamlPath, true
 	}
+	starPath := filepath.Join(dir, configStarFilename)
 	if _, err := os.Stat(starPath); err == nil {
-		return starPath
+		return starPath, true
 	}
-	return yamlPath
+	return "", false
+}
+
+// xdgDataHome and xdgConfigHome resolve the XDG base directories,
+// ignoring environment values that are not absolute paths.
+func xdgDataHome(homeDir string) string {
+	if dir := os.Getenv("XDG_DATA_HOME"); filepath.IsAbs(dir) {
+		return dir
+	}
+	return filepath.Join(homeDir, ".local", "share")
+}
+
+func xdgConfigHome(homeDir string) string {
+	if dir := os.Getenv("XDG_CONFIG_HOME"); filepath.IsAbs(dir) {
+		return dir
+	}
+	return filepath.Join(homeDir, ".config")
 }
 
 func cwdURI() workspaceapi.URI {
@@ -371,10 +426,19 @@ func main() {
 			os.Exit(1)
 		}
 	}
-	defaultConfigPath = resolveDefaultConfigPath(*flagDataPath)
+	// The default config path resolves only what an unset -c would use:
+	// an explicit -d pins it beside the data dir, a legacy ~/.rune config
+	// keeps winning, and the rest lands under the XDG config dir.
+	dataChanged := flag.Lookup("datadir").Changed
+	defaultConfigPath = resolveConfigPath("", false, *flagDataPath, dataChanged, home)
 	if !flag.Lookup("config").Changed {
 		*flagConfigPath = defaultConfigPath
 	}
+
+	// Config and child processes expand $RUNE_DATADIR (log_path,
+	// package entrypoints, skills dirs), so the resolved data dir is
+	// exported before dispatching to any mode, not just the GUI.
+	os.Setenv("RUNE_DATADIR", *flagDataPath)
 
 	// Set up the crash report directory under the data path so reports
 	// are stored durably rather than in the OS temp dir.
@@ -692,7 +756,7 @@ func runGUI(
 	filenames []string, runner ide.ExtensionsRunner, trust *pkgtrust.Store,
 	mu *sync.Mutex, pathDone <-chan error, shellRCDir string, shellRCErr error,
 ) int {
-	setEnvForGUI(*flagDataPath)
+	setEnvForGUI()
 
 	// Capture the launch command for guiwindownew. Visit iterates
 	// only over flags that were explicitly set (including

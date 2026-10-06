@@ -1207,7 +1207,7 @@ func (m *Manager) processConfigFile(
 	}
 	// A fresh datadir has no user config yet. Seed an empty one so the
 	// package's env/settings still merge; otherwise a first install (e.g. a
-	// remote host installing into a brand-new ~/.rune) never gets
+	// remote host installing into a brand-new data dir) never gets
 	// GOROOT and the toolchain fails with "cannot find GOROOT directory".
 	if _, statErr := os.Stat(m.configPath); os.IsNotExist(statErr) {
 		if err := os.MkdirAll(filepath.Dir(m.configPath), 0o777); err != nil {
