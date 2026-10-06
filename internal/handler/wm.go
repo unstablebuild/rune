@@ -295,6 +295,17 @@ func (wm *WindowManager) Handle(ev term.Event) (exit bool, handled bool) {
 		}
 
 		if wm.config.Frame {
+			if wm.config.CursorShapeHandler != nil {
+				// To ensure cursor shape changes at the same locations where dragging
+				// will resize the window, the same coords used in handleWindowFramePress
+				// are used here in ChangeMouseShape(_, minPos, maxPos, _)
+				wm.config.CursorShapeHandler.ChangeCursorShape(
+					term.Coordinates{X: ev.MouseX, Y: ev.MouseY},
+					term.Coordinates{X: 0, Y: 0},
+					term.Coordinates{X: childAtMouse.Width()-1, Y: childAtMouse.Height()-1},
+					childAtMouse.IsFloating(),
+					)
+			}
 			ev.MouseY--
 			ev.MouseX--
 		}
@@ -302,28 +313,6 @@ func (wm *WindowManager) Handle(ev term.Event) (exit bool, handled bool) {
 		// Upper-bound clamp is required for drag capture: events
 		// re-routed to the press window must land inside its content.
 		maxX, maxY := contentBounds(childAtMouse, wm.config.Frame)
-		
-		// Pass the unclamped Mouse coordinates to ChangeMouseShape, as clamping the coords
-		// would cause the cursor to change 1 cell before the border, not on the border.
-		minPos := term.Coordinates{X: 1, Y: 1}
-		maxPos := term.Coordinates{X: maxX-1, Y: maxY-1}
-		// A frame occupies 2 cells all around the window
-		// The cursor shape needs to ignore that frame
-		if wm.config.Frame {
-			minPos.X -= 2
-			minPos.Y -= 2
-			maxPos.X += 2
-			maxPos.Y += 2
-		}
-		if wm.config.CursorShapeHandler != nil {
-			wm.config.CursorShapeHandler.ChangeCursorShape(
-				term.Coordinates{X: ev.MouseX, Y: ev.MouseY},
-				minPos, maxPos, childAtMouse.IsFloating())
-		}
-		
-		// Clamp the mouse coordinates.
-		// Upper-bound clamp is required for drag capture: events
-		// re-routed to the press window must land inside its content.
 		if ev.MouseX < 0 {
 			ev.MouseX = 0
 		} else if ev.MouseX > maxX {
@@ -366,7 +355,7 @@ func (wm *WindowManager) Handle(ev term.Event) (exit bool, handled bool) {
 			wm.prevMouseLeftChild = childAtMouse
 		}
 	}
-	
+
 	var hexit bool
 	focused := target == wm.focus
 	size := wm.comp.SizeTiles()

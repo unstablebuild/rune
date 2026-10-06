@@ -206,11 +206,11 @@ func WithDefaultWallpaper(wallpaper browser.Wallpaper) Option {
 
 // WithCursorShapeHandler returns an Option that defines the cursorShapeHandler
 // implementation that is passed to handler.WindowManagerConfig.
-// GUI Window Managers set this option, TUI ones don't.
+// Setting the cursorShapeHandler to nil means the cursor shape will not change.
 // See handler.WindowManager for more info.
-func WithCursorShapeHandler(handler handler.CursorShapeHandler) Option {
+func WithCursorShapeHandler(h handler.CursorShapeHandler) Option {
 	return func(opts *options) {
-		opts.cursorShapeHandler = handler
+		opts.cursorShapeHandler = h
 	}
 }
 

@@ -26,14 +26,9 @@ import (
 type CursorShapeHandler struct{}
 
 // ChangeCursorShape sets the ebiten.CursorShape when the cursor is at the
-// positions mentioned in handleWindowFramePress. Currently
-// handleWindowFramePress only handles presses at positions 0, w-1, and h-1
-// -- a single cell.
+// positions mentioned in handleWindowFramePress.
 // Args:
-// - `pos` is the transformed `ev.MouseX`, `ev.MouseY` changed in
-//   `wm.Handle(term.Event)`. It positions the mouse relative to the window's
-//   top left, and accounts for the window frame. It is unclamped, meaning
-//   it is the mouse coordinates that are not clamped to window bounds.
+// - `pos` is the mouse coordinates relative to the window's top left.
 // - `minPos` is the top left of the box where cursor changes.
 // - `maxPos` is the bottom right of the box where cursor changes.
 // - `isFloating` indicates whether the window under the cursor is floating.

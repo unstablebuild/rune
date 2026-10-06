@@ -282,9 +282,8 @@ type ideConfig struct {
 	storage storageapi.Service
 	// goos overrides runtime.GOOS for the gui.meta_key options; see hostOS.
 	goos string
-	// cSH is passed along to workspaceManagerHandler.textOpts, which sets it in
-	// WindowManagerConfig. it may be nil.
-	cSH handler.CursorShapeHandler
+	// cursorShapeHandler is an optional config passed along to WindowManager.
+	cursorShapeHandler handler.CursorShapeHandler
 }
 
 func overrideConfig(ideConfig, cfg map[string]any) {
@@ -2257,15 +2256,9 @@ func (c ideConfig) windowScrollBarHoverChar() (ch rune) {
 	return
 }
 
-// cursorShapeHandler retrieves the handler set in IDE.init. It may be nil.
-// This needs to be in ideConfig so that workspaceManagerHandler.textOpts can
-// pass it to text.WithWindowManagerConfig through ideConfig.windowManagerConfig.
-// - A TUI Rune instance does not configure CursorShapeHandler, so it's nil and
-//   the cursor shape will not change in handler.WindowManager.
-// - A GUI Rune instance configures the IDE option with an implementation of
-//   cursorShapeHandler, so the cursor shape changes according to that implementation.
-func (c ideConfig) cursorShapeHandler() handler.CursorShapeHandler {
-	return c.cSH
+// getCursorShapeHandler retrieves the handler set in the config.
+func (c ideConfig) getCursorShapeHandler() handler.CursorShapeHandler {
+	return c.cursorShapeHandler
 }
 
 func (c ideConfig) windowNoMaxSize() (ret bool) {
@@ -2496,7 +2489,7 @@ func (c ideConfig) windowManagerConfig() handler.WindowManagerConfig {
 		FocusFrameAttr:     c.windowFocusFrameAttr(),
 		FocusFrameCharSet:  c.windowFocusFrameCharset(),
 		ScrollBarHoverChar: c.windowScrollBarHoverChar(),
-		CursorShapeHandler: c.cursorShapeHandler(),
+		CursorShapeHandler: c.getCursorShapeHandler(),
 		WindowManagerConfig: tcomponent.WindowManagerConfig{
 			NoMaxSize:        c.windowNoMaxSize(),
 			Frame:            c.frame(),

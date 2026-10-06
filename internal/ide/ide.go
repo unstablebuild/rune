@@ -536,7 +536,7 @@ func (i *IDE) init(
 
 	// Pass the cursorShapeHandler from ide.options, to be set in
 	// workspaceManagerHandler.textOpts and ultimately passed to WindowManagerConfig.
-	i.ideConfig.cSH = op.cursorShapeHandler
+	i.ideConfig.cursorShapeHandler = op.cursorShapeHandler
 
 	var logger *slog.Logger
 	if logPath := i.ideConfig.logOutputPath(); logPath != "" {
@@ -665,7 +665,7 @@ func (i *IDE) init(
 			cfg, err := reloadConfig(cfgfilename,
 				op.defaultWallpaper, defaultCfg, op.bell, op.scheduleFn)
 			cfg.storage = i.ideConfig.storage
-			cfg.cSH = i.ideConfig.cSH // Set cSH (cursorShapeHandler) here too
+			cfg.cursorShapeHandler = i.ideConfig.cursorShapeHandler // Set cursorShapeHandler here too
 			cfg.cellPixelSize = op.cellPixelSize
 			cfg.clip = op.clip
 			return cfg, err
