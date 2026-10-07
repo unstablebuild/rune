@@ -131,6 +131,29 @@ If you want Rune to update itself instead, use the
 [install command](#install). To remove it, run `sudo pacman -R rune-ide`.
 
 </TabItem>
+<TabItem value="other-linux" label="Other Linux">
+
+On Fedora, RHEL, openSUSE, Void, and other glibc distributions, the command
+above installs the prebuilt release. To build it from source instead,
+install `make` and the
+[build dependencies for your distribution](./develop/building.md#linux), then:
+
+```bash
+git clone https://github.com/unstablebuild/rune.git
+cd rune
+git checkout "$(git tag --list 'v*' --sort=-v:refname | grep -v -- - | head -n 1)"
+GOTOOLCHAIN=auto make rune-install-linux
+```
+
+The `git checkout` line selects the latest release, skipping prereleases.
+`GOTOOLCHAIN=auto` lets Go download the version Rune needs when your
+distribution's Go is older. Fedora's Go does not do this by default.
+
+This installs Rune in `~/.local/rune.app`, links `~/.local/bin/rune`, and
+adds Rune to your desktop's applications. Add `~/.local/bin` to your `PATH`
+if it is not there already. Rune keeps this install up to date itself.
+
+</TabItem>
 </Tabs>
 
 ## Your first steps

@@ -291,8 +291,9 @@ when the `cgo` build constraint is off. Unset `CGO_ENABLED` or set it to `1`.
 
 **`go: go.mod requires go >= 1.x`**
 
-Your Go is older than the module. Leave `GOTOOLCHAIN` at its default `auto`
-so Go fetches the pinned toolchain, or install a newer Go. On musl systems
+Your Go is older than the module. Set `GOTOOLCHAIN=auto` so Go fetches the
+pinned toolchain, or install a newer Go. `auto` is upstream Go's default, but
+some distributions, Fedora among them, change it to `local`. On musl systems
 such as Alpine the download does not help; install a new enough Go package
 instead.
 
