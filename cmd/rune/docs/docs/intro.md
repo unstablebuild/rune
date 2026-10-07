@@ -72,6 +72,26 @@ run `brew uninstall rune`, or add `--zap` to delete your user data and
 settings too.
 
 </TabItem>
+<TabItem value="debian" label="Debian and Ubuntu">
+
+Download the `.deb` for your architecture (`amd64` or `arm64`) from the
+[latest release](https://github.com/unstablebuild/rune/releases/latest), then
+install it from the download directory:
+
+```bash
+sudo apt install ./rune_*.deb
+```
+
+`apt` pulls in the OpenGL and X11 libraries Rune's GUI needs.
+Rune does not update itself when installed from a package: install the
+newer `.deb` the same way to update. If you want automatic updates, use the
+[install command](#install) instead. To remove it, run `sudo apt remove rune`.
+
+The package needs Debian 12 or Ubuntu 22.04 or newer. On older releases, use
+the [install command](#install) instead: its build runs on Debian 10 and
+Ubuntu 20.04.
+
+</TabItem>
 </Tabs>
 
 ## Your first steps
