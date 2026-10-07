@@ -542,6 +542,10 @@ Choose examples by semantics, not syntax:
 - [Zig](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/symbolresolve/zig.go#L27-L64)
   demonstrates `@import` aliases, field expressions, and methods declared in
   container types.
+- [TypeScript](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/symbolresolve/typescript.go#L26-L101)
+  demonstrates one language served by several specs (TypeScript, TSX, and
+  JavaScript), namespace and `require` imports, and re-exports from `index.*`
+  files.
 
 Add focused fixtures while writing the spec. Test imports with and without
 aliases, two symbols with the same name, nested modules, private declarations,
@@ -555,8 +559,9 @@ parser, the packaged syntax queries, and the real resolver specification. The
 [Go](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/symbolresolve/go_test.go),
 [Python](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/symbolresolve/py_test.go),
 [Rust](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/symbolresolve/rs_test.go),
+[Zig](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/symbolresolve/zig_test.go),
 and
-[Zig](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/symbolresolve/zig_test.go)
+[TypeScript](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/symbolresolve/ts_test.go)
 suites show the required structure. A passing language-server test does not
 replace this suite because Rune's indexer resolves these names independently of
 the language server.
