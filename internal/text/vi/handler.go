@@ -2009,6 +2009,7 @@ func (vi *viHandlerImpl) handleVisual(ev term.Event) (quit, handled bool) {
 }
 
 func (vi *viHandlerImpl) handleMoveToCharacter(mode moveMode, ev term.Event) (exit, handled bool) {
+	prevMode := vi.currMode
 	switch ev.Mod {
 	case 0:
 		switch ev.Type {
@@ -2042,6 +2043,10 @@ func (vi *viHandlerImpl) handleMoveToCharacter(mode moveMode, ev term.Event) (ex
 				vi.moveChar = ev.Ch
 			}
 			vi.setNormalMode()
+			switch prevMode {
+			case visualMode, visualLineMode, visualBlockMode:
+				vi.setMode(prevMode)
+			}
 			handled = true
 		default:
 			vi.setMode(vi.mode())

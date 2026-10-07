@@ -3147,6 +3147,46 @@ func TestVisualMoveToChar(t *testing.T) {
 	assert.Equal(t, "abc", selection)
 }
 
+func TestVisualMoveToCharKeepsVisualMode(t *testing.T) {
+	tests := []struct {
+		name string
+		keys string
+		mode viMode
+	}{
+		{"visual", "vf,", visualMode},
+		{"visual line", "Vf,", visualLineMode},
+		{"visual block", "Vf,", visualBlockMode},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			vi := setupVi(t, `ab,de`, 0, WithWrap(false))
+			vi.Resize(10, 20)
+			vi.Draw(term.NoopWriter{})
+
+			if tt.mode == visualBlockMode {
+				vi.Handle(term.Event{Type: term.EventKey, Ch: 'v', Mod: term.ModCtrl})
+				tt.keys = "f,"
+			}
+			for _, eventChar := range tt.keys {
+				vi.Handle(term.Event{Type: term.EventKey, Ch: eventChar})
+			}
+			assert.Equal(t, tt.mode, vi.currMode)
+		})
+	}
+}
+
+func TestVisualMoveToCharThenDelete(t *testing.T) {
+	vi := setupVi(t, `ab,de`, 0, WithWrap(false))
+	vi.Resize(10, 20)
+	vi.Draw(term.NoopWriter{})
+
+	for _, eventChar := range "vf,x" {
+		vi.Handle(term.Event{Type: term.EventKey, Ch: eventChar})
+	}
+	assert.Equal(t, "de", vi.less.Buffer().String())
+	assert.Equal(t, normalMode, vi.currMode)
+}
+
 func handleViEvents(vi *viHandlerImpl, events []term.Event) {
 	for _, ev := range events {
 		vi.Handle(ev)
