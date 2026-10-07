@@ -6,6 +6,8 @@ description: Install and set up Rune, the fast, keyboard-driven IDE for power us
 ---
 
 import Head from '@docusaurus/Head';
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
 import Install from '@site/src/components/Install';
 
 <Head>
@@ -48,6 +50,29 @@ Rune runs on macOS and Linux. Find your platform below for the specifics.
 ## Install
 
 <Install />
+
+### Other ways to install
+
+:::info[Coming to your package manager]
+We are working to get Rune into Homebrew, the AUR, and the repositories of
+other distributions. Until then, use one of the methods below.
+:::
+
+<Tabs groupId="install-method">
+<TabItem value="homebrew" label="Homebrew" default>
+
+On macOS and Linux:
+
+```bash
+brew install unstablebuild/tap/rune
+```
+
+Rune updates itself, so you don't need `brew upgrade` for it. To remove it,
+run `brew uninstall rune`, or add `--zap` to delete your user data and
+settings too.
+
+</TabItem>
+</Tabs>
 
 ## Your first steps
 

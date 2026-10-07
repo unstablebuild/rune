@@ -56,8 +56,7 @@ cask "$token" do
          x86_64_linux: "$(field "$linux_amd64" sha256)"
 
   on_macos do
-    url "https://github.com/$release_repo/releases/download/v#{version}/Rune-v#{version}-darwin-#{arch}.dmg",
-        verified: "github.com/$release_repo/"
+    url "https://github.com/$release_repo/releases/download/v#{version}/Rune-v#{version}-darwin-#{arch}.dmg"
 
     depends_on macos: :ventura
 
@@ -71,8 +70,7 @@ cask "$token" do
     ]
   end
   on_linux do
-    url "https://github.com/$release_repo/releases/download/v#{version}/rune-v#{version}-linux-#{arch}.tar.gz",
-        verified: "github.com/$release_repo/"
+    url "https://github.com/$release_repo/releases/download/v#{version}/rune-v#{version}-linux-#{arch}.tar.gz"
 
     binary "rune.app/bin/rune"
 
