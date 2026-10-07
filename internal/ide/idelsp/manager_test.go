@@ -320,6 +320,60 @@ func TestTransientOpenForUnopenedFile(t *testing.T) {
 	assert.False(t, cached, "transient open must not cache the file in m.files")
 }
 
+func TestTypeScriptDialectsShareServerWithPerFileLanguageID(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		file      string
+		transient bool
+		wantDocID string
+	}{
+		{"index.ts", false, "typescript"},
+		{"App.tsx", false, "typescriptreact"},
+		{"index.js", false, "javascript"},
+		{"App.jsx", false, "javascriptreact"},
+		{"lib.mts", true, "typescript"},
+		{"Widget.tsx", true, "typescriptreact"},
+		{"lib.cjs", true, "javascript"},
+		{"Widget.jsx", true, "javascriptreact"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.file, func(t *testing.T) {
+			t.Parallel()
+			tmpDir := t.TempDir()
+			filePath := filepath.Join(tmpDir, tt.file)
+			require.NoError(t, os.WriteFile(filePath, []byte("export {}\n"), 0o644))
+			fileURI := "file://" + filePath
+			rootURI := "file://" + tmpDir
+
+			m := New(makeURI(t, rootURI), newTestScheme(), nil, nil, nil, nil,
+				Config{NoInitializeServer: true})
+			t.Cleanup(func() { _ = m.Close() })
+			srv := &fakeChild{childName: "typescript", rootURI: rootURI}
+			m.mu.Lock()
+			m.servers[serverKey{languageID: "typescript", rootURI: rootURI}] = srv
+			m.mu.Unlock()
+
+			if tt.transient {
+				_, err := m.Hover(context.Background(), semanticapi.HoverParams{
+					TextDocument: semanticapi.TextDocumentIdentifier{URI: fileURI},
+				})
+				require.NoError(t, err)
+			} else {
+				require.NoError(t, m.handle(textapi.Event{
+					Type:    textapi.EventTypeOpen,
+					URI:     makeURI(t, fileURI),
+					Content: "export {}\n",
+				}))
+			}
+
+			opens := srv.didOpens()
+			require.Len(t, opens, 1)
+			assert.Equal(t, fileURI, opens[0].TextDocument.URI)
+			assert.Equal(t, tt.wantDocID, opens[0].TextDocument.LanguageID)
+		})
+	}
+}
+
 func TestLocationRequestDecodesSingleLocation(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
