@@ -53,10 +53,10 @@ REPO_ROOT := $(patsubst %/,%,$(dir $(abspath $(firstword $(MAKEFILE_LIST)))))
 BUILD_START := $(shell date +%s)
 BUILD_DATE := $(shell out=$$(cd $(REPO_ROOT) && $(GO) run ./cmd/buildstamp) && printf '%s' "$$out")
 BUILD_DATE_LDFLAG = $(if $(strip $(BUILD_DATE)),,$(error buildstamp produced no build date; refusing to build a binary with an empty debug.BuildDate))-X unstable.build/rune/internal/debug.BuildDate=$(strip $(BUILD_DATE))
-# dist/arch/PKGBUILD and dist/debian/debian/rules re-declare this set
-# because makepkg and dpkg-buildpackage drive the compiler themselves and
-# never call these rules. A flag added or renamed here has to be mirrored
-# in both, or packaged builds quietly ship without it.
+# dist/debian/debian/rules re-declares this set because
+# dpkg-buildpackage drives the compiler itself and never calls these
+# rules. A flag added or renamed here has to be mirrored there, or the
+# .deb quietly ships without it.
 COMMON_LDFLAGS=-X unstable.build/rune/internal/debug.Tag=$$(git describe --tags) -X unstable.build/rune/internal/debug.Commit=$$(git rev-parse --short HEAD) $(BUILD_DATE_LDFLAG) $(DEBUG_LDFLAGS)
 GOFLAGS=$(RACE_FLAG) -ldflags="$(COMMON_LDFLAGS) $(DARWIN_EXTLDFLAGS) -X unstable.build/rune/internal/debug.Package=six"
 RUNE_GOFLAGS=$(RACE_FLAG) -tags=ebitensinglethread -ldflags="$(COMMON_LDFLAGS) $(DARWIN_EXTLDFLAGS) -X unstable.build/rune/internal/debug.Package=rune"
@@ -168,7 +168,7 @@ RELEASE_FILES=$(wildcard release/*)
 	manual-ssh-test \
 	dist-tar-with-src dist-dmg-with-src dist-min-macos dist-min-linux \
 	pkg-deb pkg-deb-amd64 pkg-deb-arm64 pkg-deb-docker \
-	pkg-arch pkg-arch-srcinfo pkg-clean \
+	pkg-clean \
 	$(filter internal/workspace/workspacessh/manual_test/%.sh,$(MAKECMDGOALS))
 
 # bluectl config matrix. Each leaf config pins BOTH auth.project-id and
@@ -694,14 +694,12 @@ runectl-staging-dist-darwin-arm64: clean
 notary-credentials:
 	xcrun notarytool store-credentials "$(NOTARY_PROFILE)" --team-id "YYZRWD888J"
 
-# Distribution packages (dist/). Both build inside Docker so no
-# Debian/Arch host is required; artifacts land in dist/out/.
+# Distribution packages (dist/). The .deb builds inside Docker so no
+# Debian host is required; artifacts land in $(PKG_OUT).
 #
 #   make pkg-deb            .deb for the host arch
 #   make pkg-deb-amd64      .deb for linux/amd64
 #   make pkg-deb-arm64      .deb for linux/arm64
-#   make pkg-arch           Arch package from dist/arch/PKGBUILD
-#   make pkg-arch-srcinfo   regenerate .SRCINFO only (fast)
 #
 # The version is resolved here rather than in the container: the build
 # context excludes .git, and a git worktree's .git is a file pointing
@@ -709,10 +707,6 @@ notary-credentials:
 PKG_OUT ?= $(TARGET)/pkg
 PKG_GO_VERSION ?= 1.27.1
 DEB_BASE_IMAGE ?= debian:bookworm
-# archlinux is published for amd64 only. Emulating it is not viable:
-# the Go toolchain segfaults under qemu-user, so the full Arch build
-# needs an x86_64 builder (a native host or CI).
-PKG_ARCH_PLATFORM ?= linux/amd64
 PKG_HOST_ARCH := $(shell uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
 PKG_TAG := $(shell git describe --tags --match 'v*')
 PKG_COMMIT := $(shell git rev-parse --short HEAD)
@@ -739,30 +733,6 @@ pkg-deb-docker:
 		--output type=local,dest=$(PKG_OUT) \
 		.
 	@ls -1 $(PKG_OUT)/*.deb
-
-pkg-arch:
-	@mkdir -p $(PKG_OUT)
-	@echo "Building Arch package from dist/arch/PKGBUILD ($(PKG_TAG)) ..."
-	@docker buildx build --rm \
-		-f dist/arch/Dockerfile \
-		--platform $(PKG_ARCH_PLATFORM) \
-		--build-arg RUNE_TAG=$(PKG_TAG) \
-		--build-arg RUNE_COMMIT=$(PKG_COMMIT) \
-		--target artifact \
-		--output type=local,dest=$(PKG_OUT) \
-		.
-	@ls -1 $(PKG_OUT)/*.pkg.tar.zst
-
-# Regenerates dist/arch/.SRCINFO in place; the AUR requires it to match
-# PKGBUILD on every push.
-pkg-arch-srcinfo:
-	@docker buildx build --rm \
-		-f dist/arch/Dockerfile \
-		--platform $(PKG_ARCH_PLATFORM) \
-		--target srcinfo-artifact \
-		--output type=local,dest=dist/arch \
-		.
-	@echo "Wrote dist/arch/.SRCINFO"
 
 pkg-clean:
 	@rm -rf $(PKG_OUT)

@@ -62,10 +62,10 @@ RACE_FLAG=$(if $(filter true,$(RUNE_DEBUG_BUILD)),-race)
 # build date.
 BUILD_DATE := $(shell out=$$(cd $(ROOT_DIR) && $(GO) run ./cmd/buildstamp) && printf '%s' "$$out")
 BUILD_DATE_LDFLAG = $(if $(strip $(BUILD_DATE)),,$(error buildstamp produced no build date; refusing to build a binary with an empty debug.BuildDate))-X unstable.build/rune/internal/debug.BuildDate=$(strip $(BUILD_DATE))
-# dist/arch/PKGBUILD and dist/debian/debian/rules re-declare this set
-# because makepkg and dpkg-buildpackage drive the compiler themselves and
-# never call these rules. A flag added or renamed here has to be mirrored
-# in both, or packaged builds quietly ship without it.
+# dist/debian/debian/rules re-declares this set because
+# dpkg-buildpackage drives the compiler itself and never calls these
+# rules. A flag added or renamed here has to be mirrored there, or the
+# .deb quietly ships without it.
 COMMON_LDFLAGS=-X unstable.build/rune/internal/debug.Tag=$$(git describe --tags) -X unstable.build/rune/internal/debug.Commit=$$(git rev-parse --short HEAD) $(BUILD_DATE_LDFLAG) $(DEBUG_LDFLAGS)
 GOFLAGS=$(RACE_FLAG) -ldflags="$(COMMON_LDFLAGS) -X unstable.build/rune/internal/debug.Package=six"
 

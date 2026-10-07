@@ -54,8 +54,8 @@ Rune runs on macOS and Linux. Find your platform below for the specifics.
 ### Other ways to install
 
 :::info[Coming to your package manager]
-We are working to get Rune into Homebrew, the AUR, and the repositories of
-other distributions. Until then, use one of the methods below.
+We are working to get Rune into Homebrew and the repositories of other
+distributions. Until then, use one of the methods below.
 :::
 
 <Tabs groupId="install-method">
@@ -90,6 +90,45 @@ newer `.deb` the same way to update. If you want automatic updates, use the
 The package needs Debian 12 or Ubuntu 22.04 or newer. On older releases, use
 the [install command](#install) instead: its build runs on Debian 10 and
 Ubuntu 20.04.
+
+</TabItem>
+<TabItem value="arch" label="Arch Linux">
+
+Rune is in the AUR as [`rune-ide`](https://aur.archlinux.org/packages/rune-ide).
+With an AUR helper such as `yay`:
+
+```bash
+yay -S rune-ide
+```
+
+Without one, build it with `makepkg`:
+
+```bash
+sudo pacman -S --needed base-devel git
+git clone https://aur.archlinux.org/rune-ide.git
+cd rune-ide
+makepkg -si
+```
+
+Rune does not update itself when installed from a package: update it with
+`yay`, or with `git pull` and `makepkg -si`. If you want automatic updates,
+use the [install command](#install) instead. To remove it, run
+`sudo pacman -R rune-ide`.
+
+</TabItem>
+<TabItem value="omarchy" label="Omarchy">
+
+Omarchy is Arch Linux and ships the `yay` AUR helper, so Rune installs from
+the AUR:
+
+```bash
+yay -S rune-ide
+```
+
+Rune then appears in the app launcher. Hyprland runs it through XWayland,
+which Omarchy already includes. `yay` updates it with the rest of your system.
+If you want Rune to update itself instead, use the
+[install command](#install). To remove it, run `sudo pacman -R rune-ide`.
 
 </TabItem>
 </Tabs>
