@@ -24,26 +24,6 @@ import (
 	"unstable.build/rune/internal/component"
 )
 
-// ObjectUnderCursor indicates what is under the cursor.
-// Neighbors are cells next to objects.
-type ObjectUnderCursor uint8
-
-const (
-	// None is a special value only used for an empty CursorShapeMessage.
-	None ObjectUnderCursor = 0
-	Link ObjectUnderCursor = 1 << iota
-	LinkNeighbor
-	ScrollBar
-	ScrollBarNeighbor
-	ResizeBorder
-	ResizeBorderNeighbor
-)
-
-type CursorShapeMessage struct {
-	object ObjectUnderCursor
-	cursorShape ebiten.CursorShapeType
-}
-
 // Arbiter exposes an interface for graphical components to send messages to it.
 type Arbiter interface {
 	SendToArbiter(CursorShapeMessage)
@@ -70,6 +50,28 @@ func GetCursorShapeArbiter() *CursorShapeArbiter {
 	return &cursorShapeArbiterInstance
 }
 
+type CursorShapeMessage struct {
+	object ObjectUnderCursor
+	cursorShape ebiten.CursorShapeType
+}
+
+// ObjectUnderCursor indicates what is under the cursor.
+// Neighbors are cells next to objects.
+type ObjectUnderCursor uint8
+
+const (
+	// None is a special value only used for a new and empty CursorShapeMessage.
+	None ObjectUnderCursor = 0
+	Link ObjectUnderCursor = 1 << iota
+	LinkNeighbor
+	ScrollBar
+	ScrollBarNeighbor
+	ResizeBorder
+	ResizeBorderNeighbor
+	// Empty is a cell that has no object, and is not even a neighbor.
+	Empty
+)
+
 // SendToArbiter is used by multiple graphical components to defer the decision
 // of which cursor shape to set to the Arbiter.
 func (a CursorShapeArbiter) SendToArbiter(msg CursorShapeMessage) {
@@ -77,8 +79,12 @@ func (a CursorShapeArbiter) SendToArbiter(msg CursorShapeMessage) {
 }
 
 // arbitrate tells Arbtier to review all messages and decide which cursor shape
-// to set. It assumes that all CursorShapeMessages were sent when the cursor
+// to set. Sending a message with an Empty ObjectUnderCursor 
+// Arbiter always decides to set a ebiten.CursorShapeDefault when it receives an Empty object.
+// It assumes that all CursorShapeMessages were sent when the cursor
 // was at the same position, over the same cell.
+// It also assumes that when the cursor hovers over an empty cell, only one
+// Empty message is sent and not more. Otherwise it would have more switch-cases.
 func (a CursorShapeArbiter) arbitrate() {
 	winningMsg := CursorShapeMessage{}
 	for {
@@ -89,6 +95,16 @@ func (a CursorShapeArbiter) arbitrate() {
 			case None:
 				// There is no winningMsg yet, so the incoming msg auto wins
 				winningMsg = msg
+				
+			case Empty:
+				// Empty Object truly has nothing in its cell, not even a neighbor.
+				// So there is no contest, it wins.
+				// Arbiter always decides to set a ebiten.CursorShapeDefault when it receives an Empty object
+				winningMsg = CursorShapeMessage{msg.object, ebiten.CursorShapeDefault}
+				// and drops all other messages.
+				for _ = range a.cursorShapeChan {
+				}
+				return
 				
 			case ResizeBorderNeighbor:
 				// Cursor is over a ResizeBorder neighbour
@@ -161,7 +177,9 @@ func (ResizeBorderHandler) OnMouseover(mousePos term.Coordinates, win component.
 			GetCursorShapeArbiter().SendToArbiter(
 				CursorShapeMessage{ResizeBorderNeighbor, ebiten.CursorShapeDefault})
 		default:
-			// At all other cells, take no action
+			// All other cells "have Empty objects", these are treated differently by the Arbiter.
+			GetCursorShapeArbiter().SendToArbiter(
+				CursorShapeMessage{Empty, ebiten.CursorShapeDefault})
 		}
 	} else {
 		// Cursor for floating windows.
@@ -195,7 +213,9 @@ func (ResizeBorderHandler) OnMouseover(mousePos term.Coordinates, win component.
 			GetCursorShapeArbiter().SendToArbiter(
 				CursorShapeMessage{ResizeBorderNeighbor, ebiten.CursorShapeDefault})
 		default:
-			// At all other cells, take no action
+			// All other cells "have Empty objects", these are treated differently by the Arbiter.
+			GetCursorShapeArbiter().SendToArbiter(
+				CursorShapeMessage{Empty, ebiten.CursorShapeDefault})
 		}
 	}
 }
