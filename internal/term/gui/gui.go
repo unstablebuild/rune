@@ -489,8 +489,8 @@ func (g *GUI) Update() error {
 				return ErrHandlerExited
 			}
 		}
-		g.cursorShapeArbiter.arbitrate()
 	}
+	g.cursorShapeArbiter.arbitrate()
 	g.prevTickKey = keyEvents == 1
 	// A lone keystroke on an echoing handler misses its own frame by
 	// microseconds: the echo arrives right after this loop. Waiting is

@@ -29,6 +29,8 @@ import (
 type ObjectUnderCursor uint8
 
 const (
+	// None is a special value only used for an empty CursorShapeMessage.
+	None ObjectUnderCursor = 0
 	Link ObjectUnderCursor = 1 << iota
 	LinkNeighbor
 	ScrollBar
@@ -75,40 +77,48 @@ func (a CursorShapeArbiter) SendToArbiter(msg CursorShapeMessage) {
 }
 
 // arbitrate tells Arbtier to review all messages and decide which cursor shape
-// to set.
+// to set. It assumes that all CursorShapeMessages were sent when the cursor
+// was at the same position, over the same cell.
 func (a CursorShapeArbiter) arbitrate() {
 	winningMsg := CursorShapeMessage{}
 	for {
 		select {
 		case msg := <-a.cursorShapeChan:
-			switch msg.object {
-			case Link:
-				switch winningMsg.object {
-				case ResizeBorderNeighbor:
+			// Compare previously winningMsg to incoming msg
+			switch winningMsg.object {
+			case None:
+				// There is no winningMsg yet, so the incoming msg auto wins
+				winningMsg = msg
+				
+			case ResizeBorderNeighbor:
+				// Cursor is over a ResizeBorder neighbour
+				switch msg.object {
+				case Link:
+					// Cursor is also over a Link
 					// Link's cursor shape wins
 					winningMsg = msg
 				default:
+					// In all other cases, ResizeBorderNeighbor's cursor shape wins
 					break
 				}
 			case LinkNeighbor:
-				switch winningMsg.object {
+				// Cursor is over a Link neighbor
+				switch msg.object {
 				case ResizeBorder:
+					// Cursor is also over a ResizeBorder
 					// ResizeBorder's cursor shape wins
 					winningMsg = msg
 				default:
-					break
-				}
-			case ResizeBorderNeighbor:
-				switch winningMsg.object {
-				case Link:
-					// Link's cursor shape wins
-					winningMsg = msg
-				default:
+					// In all other cases, LinkNeighbor's cursor shape wins
 					break
 				}
 			}
-		case <-a.cursorShapeChan:
-			ebiten.SetCursorShape(winningMsg.cursorShape)
+			
+		default:
+			// If winningMsg is one of the received messages, set the cursor shape
+			if winningMsg.object != None {
+				ebiten.SetCursorShape(winningMsg.cursorShape)
+			}
 			return
 		}
 	}
@@ -134,6 +144,8 @@ func (ResizeBorderHandler) OnMouseover(mousePos term.Coordinates, win component.
 		// Tiled windows resize from their right and bottom edges.
 		right := mousePos.X == maxX
 		bottom := mousePos.Y == maxY
+		rightNeighbors := (mousePos.X == maxX-1 || mousePos.X == maxX+1) && !bottom
+		bottomNeighbors := (mousePos.Y == maxY-1 || mousePos.Y == maxY+1) && !right
 		switch {
 		case right && bottom:
 			ebiten.SetCursorShape(ebiten.CursorShapeNWSEResize)
@@ -141,13 +153,15 @@ func (ResizeBorderHandler) OnMouseover(mousePos term.Coordinates, win component.
 			ebiten.SetCursorShape(ebiten.CursorShapeEWResize)
 		case bottom:
 			ebiten.SetCursorShape(ebiten.CursorShapeNSResize)
-		default:
+		case rightNeighbors || bottomNeighbors :
 			// Here the cursor is at a ResizeBorderNeighbor cell.
 			// ResizeBorderHandler wants to reset the cursor shape to default, but the
 			// cursor could be over another graphical component, so it defers to the
 			// CursorShapeArbiter.
 			GetCursorShapeArbiter().SendToArbiter(
 				CursorShapeMessage{ResizeBorderNeighbor, ebiten.CursorShapeDefault})
+		default:
+			// At all other cells, take no action
 		}
 	} else {
 		// Cursor for floating windows.
@@ -162,6 +176,10 @@ func (ResizeBorderHandler) OnMouseover(mousePos term.Coordinates, win component.
 		right := mousePos.X == maxX
 		top := mousePos.Y == minY
 		bottom := mousePos.Y == maxY
+		leftNeighbors := (mousePos.X == minX-1 || mousePos.X == minX+1) && !top && !bottom
+		rightNeighbors := (mousePos.X == maxX-1 || mousePos.X == maxX+1) && !top && !bottom
+		topNeighbors := (mousePos.Y == minY-1 || mousePos.Y == minY+1) && !left && !right
+		bottomNeighbors := (mousePos.Y == maxY-1 || mousePos.Y == maxY+1) && !left && !right
 		switch {
 		case (left && top) || (right && bottom):
 			ebiten.SetCursorShape(ebiten.CursorShapeNWSEResize)
@@ -171,11 +189,13 @@ func (ResizeBorderHandler) OnMouseover(mousePos term.Coordinates, win component.
 			ebiten.SetCursorShape(ebiten.CursorShapeEWResize)
 		case bottom || (!win.HasWindowBar() && top):
 			ebiten.SetCursorShape(ebiten.CursorShapeNSResize)
-		default:
+		case leftNeighbors || rightNeighbors || topNeighbors || bottomNeighbors:
 			// Here the cursor is at a ResizeBorderNeighbor cell.
 			// Same as before, defer to the CursorShapeArbiter.
 			GetCursorShapeArbiter().SendToArbiter(
 				CursorShapeMessage{ResizeBorderNeighbor, ebiten.CursorShapeDefault})
+		default:
+			// At all other cells, take no action
 		}
 	}
 }
