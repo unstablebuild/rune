@@ -42,23 +42,14 @@ your platform below for the specifics.
   newer versions are fine. musl-based distributions such as Alpine are not
   supported.
 - **Graphics:** a graphical environment (X11, or Wayland via XWayland) with
-  the system OpenGL and X11 libraries installed and an OpenGL-capable driver.
-  On a minimal or headless install you may need to add your distribution's
-  OpenGL (Mesa) and X11 client library packages. Most desktop installs
-  already include them. This applies to the windowed editor only: `rune
-  --tui` and `rune --headless` load no graphical library and run on a
-  machine that has none.
+  an OpenGL-capable driver. Only Rune's GUI needs one: `rune --headless`
+  loads no graphical library and runs on a machine that has none.
 
 ## Install
 
 <Install />
 
 ### Other ways to install
-
-:::info[Coming to your package manager]
-We are working to get Rune into Homebrew and the repositories of other
-distributions. Until then, use one of the methods below.
-:::
 
 <Tabs groupId="install-method">
 <TabItem value="homebrew" label="Homebrew" default>

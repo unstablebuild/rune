@@ -23,8 +23,8 @@ two ways:
 The published cross build runs on any Linux distribution with glibc 2.28
 or newer, which covers Debian 10+, Ubuntu 20.04+, Fedora 33+, and
 RHEL / Rocky / AlmaLinux 8+. An X11 and OpenGL capable environment is
-required for the GUI only; `rune --tui` and `rune --headless` load no
-graphical library and run on a server that has none installed.
+required for the GUI only; `rune --headless` loads no graphical library
+and runs on a server that has none installed.
 
 ## Supported targets
 
@@ -182,5 +182,4 @@ transitive dependencies in `rune.app/lib/`. glibc core libraries
 
 X11, OpenGL, and Wayland client libraries are not bundled either: Rune
 loads them with `dlopen` when it opens a window, so the host provides
-them, and a host that has none can still run `rune --tui` and
-`rune --headless`.
+them, and a host that has none can still run `rune --headless`.

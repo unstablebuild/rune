@@ -28,7 +28,7 @@ then through a first change to the editor's source.
   or `-devel` packages.
 - **A graphical session**, to run the windowed editor. Rune renders through
   OpenGL on X11, so a Wayland desktop needs XWayland (present by default on
-  GNOME, KDE, and Sway). `rune --tui` and `rune --headless` need none.
+  GNOME, KDE, and Sway). `rune --headless` needs none.
 
 ## macOS
 
@@ -145,8 +145,8 @@ sudo xbps-install -y \
 The build itself does not need a display, so a container or CI runner can
 compile Rune with the packages above and nothing else. Only the windowed
 editor needs a display at runtime: Rune loads the X11 and OpenGL client
-libraries with `dlopen` when it opens a window, so `rune --tui` and
-`rune --headless` run on a machine with none of them installed.
+libraries with `dlopen` when it opens a window, so `rune --headless` runs
+on a machine with none of them installed.
 
 Parts of the test suite do drive the GUI. Rune's own Linux CI runs them
 under `xvfb-run`, and you can do the same:
