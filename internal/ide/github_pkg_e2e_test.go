@@ -277,7 +277,7 @@ func toolWrapperTarball(t *testing.T, name, hostBinary string) []byte {
 	gzw := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gzw)
 	require.NoError(t, tw.WriteHeader(&tar.Header{
-		Name: name,
+		Name: "bin/" + name,
 		Mode: 0o755,
 		Size: int64(len(script)),
 	}))

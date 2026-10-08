@@ -29,6 +29,7 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -1934,7 +1935,7 @@ func untar(dst string, r io.Reader, onProgress func()) ([]executableEntry, pkgtr
 
 		target := filepath.Join(dst, filepath.Clean(hdr.Name))
 		entry := pkgtrust.Entry{Path: filepath.ToSlash(hdr.Name), Mode: hdr.FileInfo().Mode()}
-		if isExecutable(hdr.FileInfo()) && !isHidden(hdr.Name) {
+		if isExecutable(hdr.FileInfo()) && isPackageBin(hdr.Name) {
 			executables = append(executables, executableEntry{
 				Name: hdr.Name,
 				Mode: hdr.Mode,
@@ -1981,6 +1982,11 @@ func untar(dst string, r io.Reader, onProgress func()) ([]executableEntry, pkgtr
 func copyExecutables(files []executableEntry, dirname, targetdirname string) error {
 	var ret error
 	for _, executable := range files {
+		// Install records written by older releases list executables
+		// found anywhere in the package.
+		if !isPackageBin(executable.Name) {
+			continue
+		}
 		name := filepath.Clean(executable.Name)
 		orig := filepath.Join(dirname, name)
 		origfile, err := os.OpenFile(orig, os.O_RDONLY, 0)
@@ -2026,8 +2032,9 @@ func swapExecutable(orig *os.File, targetdirname, name string, mode int64) error
 	return nil
 }
 
-func isHidden(file string) bool {
-	return strings.HasPrefix(filepath.Base(file), ".")
+func isPackageBin(name string) bool {
+	dir, file := path.Split(path.Clean(name))
+	return dir == "bin/" && !strings.HasPrefix(file, ".")
 }
 
 func removeExecutables(files []executableEntry, targetdirname string) error {
