@@ -25,7 +25,9 @@ Rune is a fast, keyboard-driven IDE for power users. The Unix way, finished as a
 
 ## Prerequisites
 
-Rune runs on macOS and Linux. Find your platform below for the specifics.
+Rune runs on macOS and Linux, with
+[Windows coming soon](https://github.com/unstablebuild/rune/issues/68). Find
+your platform below for the specifics.
 
 ### macOS
 
