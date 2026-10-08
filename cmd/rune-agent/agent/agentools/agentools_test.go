@@ -19,9 +19,13 @@ package agentools
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/binary"
 	"fmt"
+	"hash/crc32"
 	"image"
 	"image/color"
+	"image/gif"
 	"image/jpeg"
 	"image/png"
 	"os"
@@ -561,21 +565,22 @@ func TestReadFile_image(t *testing.T) {
 		assert.Contains(t, result.Content, "too large")
 	})
 
-	t.Run("dimensions too large", func(t *testing.T) {
+	t.Run("dimensions too large are downscaled", func(t *testing.T) {
 		dir := t.TempDir()
-		img := image.NewRGBA(image.Rect(0, 0, 3000, 1000))
+		img := image.NewRGBA(image.Rect(0, 0, 3024, 1964))
 		var buf bytes.Buffer
 		require.NoError(t, png.Encode(&buf, img))
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "tall.png"), buf.Bytes(), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "retina.png"), buf.Bytes(), 0o644))
 
 		tool := newReadFile(localFS{}, dirURI(dir), NewFileTracker(), 0)
-		result := tool.Execute(context.Background(), `{"path":"tall.png"}`)
+		result := tool.Execute(context.Background(), `{"path":"retina.png"}`)
 
-		assert.True(t, result.IsError)
-		assert.Nil(t, result.MultiContent)
-		assert.Contains(t, result.Content, "3000x1000")
-		assert.Contains(t, result.Content, "2000px")
-		assert.Contains(t, result.Content, "Resize")
+		require.False(t, result.IsError, result.Content)
+		require.Len(t, result.MultiContent, 2)
+		cfg, format := decodeDataURIConfig(t, result.MultiContent[1].ImageURL)
+		assert.Equal(t, "png", format)
+		assert.Equal(t, 2000, cfg.Width)
+		assert.Equal(t, 1299, cfg.Height)
 	})
 
 	t.Run("within dimension limit", func(t *testing.T) {
@@ -591,21 +596,6 @@ func TestReadFile_image(t *testing.T) {
 		assert.False(t, result.IsError)
 		require.Len(t, result.MultiContent, 2)
 		assert.Equal(t, llmapi.ContentPartTypeImageURL, result.MultiContent[1].Type)
-	})
-
-	t.Run("jpeg over dimension limit", func(t *testing.T) {
-		dir := t.TempDir()
-		img := image.NewRGBA(image.Rect(0, 0, 4000, 500))
-		var buf bytes.Buffer
-		require.NoError(t, jpeg.Encode(&buf, img, nil))
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "wide.jpg"), buf.Bytes(), 0o644))
-
-		tool := newReadFile(localFS{}, dirURI(dir), NewFileTracker(), 0)
-		result := tool.Execute(context.Background(), `{"path":"wide.jpg"}`)
-
-		assert.True(t, result.IsError)
-		assert.Contains(t, result.Content, "4000x500")
-		assert.Contains(t, result.Content, "2000px")
 	})
 
 	t.Run("image ignores offset and limit", func(t *testing.T) {
@@ -631,6 +621,144 @@ func TestReadFile_image(t *testing.T) {
 		assert.Nil(t, result.MultiContent)
 		assert.Contains(t, result.Content, "L1: hello world")
 	})
+}
+
+func decodeDataURIConfig(t *testing.T, uri string) (image.Config, string) {
+	t.Helper()
+	_, b64, ok := strings.Cut(uri, ";base64,")
+	require.True(t, ok, "not a base64 data URI: %.40s", uri)
+	data, err := base64.StdEncoding.DecodeString(b64)
+	require.NoError(t, err)
+	cfg, format, err := image.DecodeConfig(bytes.NewReader(data))
+	require.NoError(t, err)
+	return cfg, format
+}
+
+// pngHeader returns a PNG signature and IHDR chunk declaring w x h, which
+// is all image.DecodeConfig needs to report dimensions.
+func pngHeader(w, h uint32) []byte {
+	var ihdr bytes.Buffer
+	ihdr.WriteString("IHDR")
+	_ = binary.Write(&ihdr, binary.BigEndian, w)
+	_ = binary.Write(&ihdr, binary.BigEndian, h)
+	ihdr.Write([]byte{8, 6, 0, 0, 0})
+	var out bytes.Buffer
+	out.WriteString("\x89PNG\r\n\x1a\n")
+	_ = binary.Write(&out, binary.BigEndian, uint32(ihdr.Len()-4))
+	out.Write(ihdr.Bytes())
+	_ = binary.Write(&out, binary.BigEndian, crc32.ChecksumIEEE(ihdr.Bytes()))
+	return out.Bytes()
+}
+
+func TestEncodeImageDataURI(t *testing.T) {
+	encode := func(t *testing.T, format string, w, h int) []byte {
+		t.Helper()
+		img := image.NewRGBA(image.Rect(0, 0, w, h))
+		var buf bytes.Buffer
+		switch format {
+		case "png":
+			require.NoError(t, png.Encode(&buf, img))
+		case "jpeg":
+			require.NoError(t, jpeg.Encode(&buf, img, nil))
+		case "gif":
+			require.NoError(t, gif.Encode(&buf, img, nil))
+		}
+		return buf.Bytes()
+	}
+
+	tests := []struct {
+		name       string
+		path       string
+		mime       string
+		data       func(t *testing.T) []byte
+		wantMIME   string
+		wantFormat string
+		wantW      int
+		wantH      int
+		wantErr    string
+	}{
+		{
+			name:       "retina png screenshot",
+			path:       "shot.png",
+			mime:       "image/png",
+			data:       func(t *testing.T) []byte { return encode(t, "png", 3024, 1510) },
+			wantMIME:   "image/png",
+			wantFormat: "png",
+			wantW:      2000,
+			wantH:      999,
+		},
+		{
+			name:       "tall png",
+			path:       "tall.png",
+			mime:       "image/png",
+			data:       func(t *testing.T) []byte { return encode(t, "png", 1000, 3000) },
+			wantMIME:   "image/png",
+			wantFormat: "png",
+			wantW:      667,
+			wantH:      2000,
+		},
+		{
+			name:       "wide jpeg stays jpeg",
+			path:       "wide.jpg",
+			mime:       "image/jpeg",
+			data:       func(t *testing.T) []byte { return encode(t, "jpeg", 4000, 500) },
+			wantMIME:   "image/jpeg",
+			wantFormat: "jpeg",
+			wantW:      2000,
+			wantH:      250,
+		},
+		{
+			name:       "gif is re-encoded as png",
+			path:       "anim.gif",
+			mime:       "image/gif",
+			data:       func(t *testing.T) []byte { return encode(t, "gif", 2500, 100) },
+			wantMIME:   "image/png",
+			wantFormat: "png",
+			wantW:      2000,
+			wantH:      80,
+		},
+		{
+			name:       "at limit is untouched",
+			path:       "cap.png",
+			mime:       "image/png",
+			data:       func(t *testing.T) []byte { return encode(t, "png", 2000, 2000) },
+			wantMIME:   "image/png",
+			wantFormat: "png",
+			wantW:      2000,
+			wantH:      2000,
+		},
+		{
+			name:    "too many pixels to decode",
+			path:    "bomb.png",
+			mime:    "image/png",
+			data:    func(*testing.T) []byte { return pngHeader(100_000, 100_000) },
+			wantErr: "100000x100000",
+		},
+		{
+			name:    "too many bytes",
+			path:    "big.png",
+			mime:    "image/png",
+			data:    func(*testing.T) []byte { return make([]byte, maxImageBytes+1) },
+			wantErr: "too large",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data := tt.data(t)
+			uri, err := EncodeImageDataURI(tt.path, data, tt.mime)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.True(t, strings.HasPrefix(uri, "data:"+tt.wantMIME+";base64,"), "%.40s", uri)
+			cfg, format := decodeDataURIConfig(t, uri)
+			assert.Equal(t, tt.wantFormat, format)
+			assert.Equal(t, tt.wantW, cfg.Width)
+			assert.Equal(t, tt.wantH, cfg.Height)
+		})
+	}
 }
 
 func TestReadFile_imagePathWithSpaces(t *testing.T) {
