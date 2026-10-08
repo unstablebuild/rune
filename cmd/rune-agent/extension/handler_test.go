@@ -19,12 +19,14 @@ package extension
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -1436,7 +1438,11 @@ func TestExtensionDialogue_LinkClick_CopiesToClipboard(t *testing.T) {
 		clip: clip,
 		n:    noti,
 	}
-	ret.cfg.OnLinkClick = newLinkClickHandler(ret.clip, ret.n)
+	// The dialogue holds its lock while it calls OnLinkClick.
+	mu := new(sync.Mutex)
+	mu.Lock()
+	defer mu.Unlock()
+	ret.cfg.OnLinkClick = newLinkClickHandler(mu, ret.clip, ret.n)
 
 	// Valid https URL
 	u, err := url.Parse("https://example.com/repo")
@@ -1481,9 +1487,154 @@ func TestExtensionDialogue_LinkClick_CopiesToClipboard(t *testing.T) {
 		clip: failClip,
 		n:    noti,
 	}
-	retFail.cfg.OnLinkClick = newLinkClickHandler(retFail.clip, retFail.n)
+	retFail.cfg.OnLinkClick = newLinkClickHandler(mu, retFail.clip, retFail.n)
 	handled = retFail.cfg.OnLinkClick(u)
 	assert.True(t, handled)
 	assert.Equal(t, browserapi.LevelError, noti.lastLevel)
 	assert.Contains(t, noti.lastMsg, "copy URL to clipboard: %v")
+}
+
+// dialogueLock is a dialogue's sync.Locker. It counts the misuse a
+// sync.Mutex would make a fatal error instead, so a test can report it.
+type dialogueLock struct {
+	mu         sync.Mutex
+	held       atomic.Bool
+	badUnlocks atomic.Int32
+}
+
+func (l *dialogueLock) Lock() {
+	l.mu.Lock()
+	l.held.Store(true)
+}
+
+func (l *dialogueLock) Unlock() {
+	if !l.held.Swap(false) {
+		l.badUnlocks.Add(1)
+		return
+	}
+	l.mu.Unlock()
+}
+
+// linkClickIO is a clipboard and notifications that record each call,
+// marking the ones made while lock was held.
+type linkClickIO struct {
+	stubNotifications
+	clipboard.Register
+	lock    *dialogueLock
+	copyErr error
+	panics  bool
+	calls   []string
+}
+
+func (r *linkClickIO) Copy(registerID string, data clipboard.Data) error {
+	r.record("copy " + data.Text)
+	if r.panics {
+		panic("clipboard utility crashed")
+	}
+	if r.copyErr != nil {
+		return r.copyErr
+	}
+	return r.Register.Copy(registerID, data)
+}
+
+func (r *linkClickIO) Notify(
+	_ browserapi.NotificationLevel, format string, args ...any,
+) (string, error) {
+	r.record(fmt.Sprintf(format, args...))
+	return "", nil
+}
+
+func (r *linkClickIO) record(call string) {
+	if r.lock.held.Load() {
+		call += " (locked)"
+	}
+	r.calls = append(r.calls, call)
+}
+
+func TestDialogueLinkClickLock(t *testing.T) {
+	const (
+		width  = 40
+		height = 10
+		link   = "https://example.com/rune"
+	)
+	tests := []struct {
+		name      string
+		link      string
+		copyErr   error
+		panics    bool
+		wantCalls []string
+	}{
+		{
+			name:      "copy runs unlocked",
+			link:      link,
+			wantCalls: []string{"copy " + link, "copied URL " + link + " to clipboard"},
+		},
+		{
+			name:      "failed copy notifies unlocked",
+			link:      link,
+			copyErr:   errors.New("clipboard unavailable"),
+			wantCalls: []string{"copy " + link, "copy URL to clipboard: clipboard unavailable"},
+		},
+		{
+			name:      "panicking copy hands the lock back",
+			link:      link,
+			panics:    true,
+			wantCalls: []string{"copy " + link},
+		},
+		{
+			name: "declined link does no I/O",
+			link: "#section",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lock := &dialogueLock{}
+			io := &linkClickIO{
+				Register: clipboard.NewInMemory(),
+				lock:     lock,
+				copyErr:  tt.copyErr,
+				panics:   tt.panics,
+			}
+			h := &aiEditorHandler{clip: io, n: io}
+			comp := h.newDialogueComponent(lock)
+			dh, tx, _ := dialoguetui.Handler(context.Background(), lock, comp, term.NopInterrupter())
+			defer close(tx)
+			dh.Resize(width, height)
+			comp.AddSendMessageMarkdown("[Rune](" + tt.link + ")")
+			w := term.NewStringWriter(width, height)
+			dh.Draw(w)
+			pos, ok := cellOf(w, width, "Rune")
+			require.True(t, ok, "link drawn")
+
+			click := func() {
+				dh.Handle(term.Event{
+					Type: term.EventMouse, Key: term.MouseLeft, MouseX: pos.X, MouseY: pos.Y,
+				})
+			}
+			if tt.panics {
+				assert.Panics(t, click)
+			} else {
+				click()
+			}
+
+			assert.Equal(t, tt.wantCalls, io.calls)
+			assert.Zero(t, lock.badUnlocks.Load(), "unlocked while not held")
+			assert.False(t, lock.held.Load(), "dialogue still holds its lock")
+		})
+	}
+}
+
+// cellOf returns the screen cell where text starts in w.
+func cellOf(w *term.StringWriter, width int, text string) (term.Coordinates, bool) {
+	cells, want := w.Cells(), []rune(text)
+	for i := range cells {
+		n := 0
+		for n < len(want) && i+n < len(cells) && cells[i+n].Ch == want[n] {
+			n++
+		}
+		if n == len(want) {
+			return term.Coordinates{X: i % width, Y: i / width}, true
+		}
+	}
+	return term.Coordinates{}, false
 }

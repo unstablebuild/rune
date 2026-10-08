@@ -66,7 +66,13 @@ func (d *mouseDelegate) OnAction(ev term.Event, pos term.Coordinates, action mou
 	if err != nil {
 		return false
 	}
-	return d.comp.cfg.OnLinkClick(parsed)
+	if !d.comp.cfg.OnLinkClick(parsed) {
+		return false
+	}
+	// A handled press skips selection handling, which is what clears the
+	// previous selection and anchors a drag continuing from this press.
+	d.SetSelectionStart(pos)
+	return true
 }
 
 func (d *mouseDelegate) ScrollUp(n int) (ok bool) {

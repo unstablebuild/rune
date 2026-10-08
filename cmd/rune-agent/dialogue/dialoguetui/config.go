@@ -54,7 +54,7 @@ type ComponentConfig struct {
 	// messages and control their alignment.
 	QueuedMessageSpanConfig component.SpanConfig
 	// QueuedMessagePrefix is the prefix shown before each queued message.
-	// Defaults to "󰑝 " when empty.
+	// Defaults to "󰄝 " when empty.
 	QueuedMessagePrefix string
 
 	// ReceiveMessageStringConfig determines the StringConfig of the received
@@ -141,13 +141,13 @@ type ComponentConfig struct {
 	// icon (?) in the collapsed tool view. Defaults to aqua.
 	CollapsedPromptAttr term.Attributes
 	// CollapsedMemoryAttr determines the attributes for the memory
-	// icon (󰭛) in the collapsed tool view. Defaults to purple.
+	// icon (󰍛) in the collapsed tool view. Defaults to purple.
 	CollapsedMemoryAttr term.Attributes
 	// CollapsedResultAttr determines the attributes for the sub-agent
-	// result icon (󲾹) in the collapsed tool view. Defaults to green.
+	// result icon (󰮹) in the collapsed tool view. Defaults to green.
 	CollapsedResultAttr term.Attributes
 	// CollapsedResultErrorAttr determines the attributes for the sub-agent
-	// error result icon (󵑑) in the collapsed tool view. Defaults to red.
+	// error result icon (󱑑) in the collapsed tool view. Defaults to red.
 	CollapsedResultErrorAttr term.Attributes
 	// MemoryIDStringConfig determines the StringConfig for the memory
 	// ID text displayed in both expanded and collapsed views.

@@ -1546,46 +1546,16 @@ func (c *Component) LinkAt(pos term.Coordinates) *markdown.LinkInfo {
 	if pos.X < 0 || pos.X >= width || pos.Y < 0 || pos.Y >= height {
 		return nil
 	}
-	c.refreshMessagesLayout()
-	for node, ok := c.messages.Front(); ok; node, ok = node.Next() {
-		resp, ok := node.Value().(component.Responsive)
-		if !ok {
-			continue
+	// eachTranscriptMarkdown reports origins in content coordinates.
+	pos.Y += c.messages.MaxOffset() - c.messages.Offset()
+	var link *markdown.LinkInfo
+	c.eachTranscriptMarkdown(func(md *markdown.Component, origin term.Coordinates) {
+		local := term.CoordinatesDiff(pos, origin)
+		if info := md.LinkAt(local.X, local.Y); link == nil && info != nil && info.URL != "" {
+			link = info
 		}
-		top := node.Position().Y
-		bottom := top + resp.Height(width)
-		if pos.Y < top || pos.Y >= bottom {
-			continue
-		}
-		md, spanOffset := extractMarkdown(node.Value())
-		if md == nil {
-			continue
-		}
-		relX := pos.X - (node.Position().X + spanOffset.X)
-		relY := pos.Y - (node.Position().Y + spanOffset.Y)
-		if link := md.LinkAt(relX, relY); link != nil && link.URL != "" {
-			return link
-		}
-	}
-	return nil
-}
-
-func extractMarkdown(c any) (*markdown.Component, term.Coordinates) {
-	var offset term.Coordinates
-	for c != nil {
-		switch v := c.(type) {
-		case *component.Span:
-			offset = term.CoordinatesSum(offset, v.ContentOffset())
-			c = v.Content()
-		case *mdhandler.Handler:
-			return v.Component(), offset
-		case *markdown.Component:
-			return v, offset
-		default:
-			return nil, term.Coordinates{}
-		}
-	}
-	return nil, term.Coordinates{}
+	})
+	return link
 }
 
 // scrollState captures the current scroll position for later restoration.
