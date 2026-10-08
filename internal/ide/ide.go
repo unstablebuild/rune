@@ -534,7 +534,7 @@ func (i *IDE) init(
 	i.storage = storage
 	i.ideConfig.storage = storageapi.WithPartition(i.storage, "ide")
 
-	// Pass the cursorShapeHandler from ide.options, to be set in
+	// Pass the resizeBorderHandler from ide.options, to be set in
 	// workspaceManagerHandler.textOpts and ultimately passed to WindowManagerConfig.
 	i.ideConfig.resizeBorderHandler = op.resizeBorderHandler
 

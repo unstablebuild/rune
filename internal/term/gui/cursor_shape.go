@@ -50,6 +50,7 @@ func GetCursorShapeArbiter() *CursorShapeArbiter {
 	return &cursorShapeArbiterInstance
 }
 
+// CursorShapeMessage defines a message that is sent to the CursorShapeArbiter.
 type CursorShapeMessage struct {
 	object ObjectUnderCursor
 	cursorShape ebiten.CursorShapeType
@@ -63,11 +64,17 @@ type ObjectUnderCursor uint8
 const (
 	// None is a special value only used for a new and empty CursorShapeMessage.
 	None ObjectUnderCursor = 0
+	// Link represents a link
 	Link ObjectUnderCursor = 1 << iota
+	// LinkNeighbor is a cell neighboring a link
 	LinkNeighbor
+	// ScrollBar represents a scroll bar
 	ScrollBar
+	// ScrollBarNeighbor is a cell neighboring a scroll bar
 	ScrollBarNeighbor
+	// ResizeBorder represents a resize border
 	ResizeBorder
+	// ResizeBorderNeighbor is a cell neighboring a resize border
 	ResizeBorderNeighbor
 	// Empty is a cell that has no object, and is not even a neighbor.
 	Empty
@@ -141,6 +148,8 @@ func (a CursorShapeArbiter) arbitrate() {
 	}
 }
 
+// ResizeBorderHandler This is the implementation, the interface lives in handler.
+// TODO implement this in handler instead
 type ResizeBorderHandler struct {}
 
 // OnMouseover sets the ebiten.CursorShape when the cursor is at the positions
