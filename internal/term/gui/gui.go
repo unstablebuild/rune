@@ -490,6 +490,8 @@ func (g *GUI) Update() error {
 			}
 		}
 	}
+	// Arbitrate cursor shape after accumulating all active graphical components'
+	// messages.
 	g.cursorShapeArbiter.arbitrate()
 	g.prevTickKey = keyEvents == 1
 	// A lone keystroke on an echoing handler misses its own frame by

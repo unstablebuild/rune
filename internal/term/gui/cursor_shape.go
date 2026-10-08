@@ -55,8 +55,9 @@ type CursorShapeMessage struct {
 	cursorShape ebiten.CursorShapeType
 }
 
-// ObjectUnderCursor indicates what is under the cursor.
-// Neighbors are cells next to objects.
+// ObjectUnderCursor indicates what a graphical component believes is under
+// the cursor; it may have false beliefs, meaning there may be other objects
+// under the cursor that it doesn't know about. Neighbors are cells next to objects.
 type ObjectUnderCursor uint8
 
 const (
@@ -79,12 +80,8 @@ func (a CursorShapeArbiter) SendToArbiter(msg CursorShapeMessage) {
 }
 
 // arbitrate tells Arbtier to review all messages and decide which cursor shape
-// to set. Sending a message with an Empty ObjectUnderCursor 
-// Arbiter always decides to set a ebiten.CursorShapeDefault when it receives an Empty object.
-// It assumes that all CursorShapeMessages were sent when the cursor
+// to set. It assumes that all CursorShapeMessages were sent when the cursor
 // was at the same position, over the same cell.
-// It also assumes that when the cursor hovers over an empty cell, only one
-// Empty message is sent and not more. Otherwise it would have more switch-cases.
 func (a CursorShapeArbiter) arbitrate() {
 	winningMsg := CursorShapeMessage{}
 	for {
@@ -97,41 +94,45 @@ func (a CursorShapeArbiter) arbitrate() {
 				winningMsg = msg
 				
 			case Empty:
-				// Empty Object truly has nothing in its cell, not even a neighbor.
-				// So there is no contest, it wins.
-				// Arbiter always decides to set a ebiten.CursorShapeDefault when it receives an Empty object
-				winningMsg = CursorShapeMessage{msg.object, ebiten.CursorShapeDefault}
-				// and drops all other messages.
-				for _ = range a.cursorShapeChan {
+				// A graphical component sends an Empty object when it believes there is
+				// truly nothing in its cell, not even a neighbor. However, it may not
+				// know about other components, and those components may have objects or
+				// neighbors at that cell. If there are any, they win.
+				switch msg.object {
+				case Empty:
+					break
+				default:
+					// If other components have objects or neighbors at that cell, they win.
+					winningMsg = msg
 				}
-				return
 				
 			case ResizeBorderNeighbor:
-				// Cursor is over a ResizeBorder neighbour
+				// Cursor is over a ResizeBorderNeighbor
 				switch msg.object {
 				case Link:
 					// Cursor is also over a Link
-					// Link's cursor shape wins
+					// Link's wins
 					winningMsg = msg
 				default:
-					// In all other cases, ResizeBorderNeighbor's cursor shape wins
+					// In all other cases, ResizeBorderNeighbor wins
 					break
 				}
 			case LinkNeighbor:
-				// Cursor is over a Link neighbor
+				// Cursor is over a LinkNeighbor
 				switch msg.object {
 				case ResizeBorder:
 					// Cursor is also over a ResizeBorder
-					// ResizeBorder's cursor shape wins
+					// ResizeBorder wins
 					winningMsg = msg
 				default:
-					// In all other cases, LinkNeighbor's cursor shape wins
+					// In all other cases, LinkNeighbor wins
 					break
 				}
 			}
 			
 		default:
-			// If winningMsg is one of the received messages, set the cursor shape
+			// If winningMsg is not brand new, meaning it is one of the received messages,
+			// set the winning cursor shape. If there are no messages received, do nothing.
 			if winningMsg.object != None {
 				ebiten.SetCursorShape(winningMsg.cursorShape)
 			}
@@ -179,7 +180,7 @@ func (ResizeBorderHandler) OnMouseover(mousePos term.Coordinates, win component.
 		default:
 			// All other cells "have Empty objects", these are treated differently by the Arbiter.
 			GetCursorShapeArbiter().SendToArbiter(
-				CursorShapeMessage{Empty, ebiten.CursorShapeDefault})
+				CursorShapeMessage{Empty, ebiten.CursorShapeNotAllowed})
 		}
 	} else {
 		// Cursor for floating windows.
@@ -215,7 +216,7 @@ func (ResizeBorderHandler) OnMouseover(mousePos term.Coordinates, win component.
 		default:
 			// All other cells "have Empty objects", these are treated differently by the Arbiter.
 			GetCursorShapeArbiter().SendToArbiter(
-				CursorShapeMessage{Empty, ebiten.CursorShapeDefault})
+				CursorShapeMessage{Empty, ebiten.CursorShapeNotAllowed})
 		}
 	}
 }
