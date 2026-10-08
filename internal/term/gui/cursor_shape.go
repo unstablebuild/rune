@@ -17,31 +17,123 @@
 package gui
 
 import (
+	"sync"
+	
 	ebiten "github.com/hajimehoshi/ebiten/v2"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"unstable.build/rune/internal/component"
 )
 
-// CursorShapeHandler is the interface defined in handler/wm.go.
-// The implementation lives here in gui package.
-type CursorShapeHandler struct{}
+// ObjectUnderCursor indicates what is under the cursor.
+// Neighbors are cells next to objects.
+type ObjectUnderCursor uint8
 
-// ChangeCursorShape sets the ebiten.CursorShape when the cursor is at the
-// positions mentioned in handleWindowFramePress.
-// Args:
-// - `pos` is the mouse coordinates relative to the window's top left.
-// - `minPos` is the top left of the box where cursor changes.
-// - `maxPos` is the bottom right of the box where cursor changes.
-// - `isFloating` indicates whether the window under the cursor is floating.
-func (CursorShapeHandler) ChangeCursorShape(
-	pos term.Coordinates, minPos term.Coordinates,
-	maxPos term.Coordinates, isFloating bool) {
-	minX, minY := minPos.X, minPos.Y
-	maxX, maxY := maxPos.X, maxPos.Y
+const (
+	Link ObjectUnderCursor = 1 << iota
+	LinkNeighbor
+	ScrollBar
+	ScrollBarNeighbor
+	ResizeBorder
+	ResizeBorderNeighbor
+)
+
+type CursorShapeMessage struct {
+	object ObjectUnderCursor
+	cursorShape ebiten.CursorShapeType
+}
+
+// Arbiter exposes an interface for graphical components to send messages to it.
+type Arbiter interface {
+	SendToArbiter(CursorShapeMessage)
+	arbitrate()
+}
+
+// CursorShapeArbiter is an Arbiter singleton. cursorShapeChan is shared across
+// callers of SendToArbiter, but is hidden from them.
+type CursorShapeArbiter struct {
+	cursorShapeChan chan CursorShapeMessage
+}
+
+var (
+	cursorShapeOnce sync.Once
+	cursorShapeArbiterInstance CursorShapeArbiter
+)
+
+// GetCursorShapeArbiter returns the same instance to the graphical components.
+func GetCursorShapeArbiter() *CursorShapeArbiter {
+	cursorShapeOnce.Do(func () {
+		// Channel size is arbitrarily large
+		cursorShapeArbiterInstance = CursorShapeArbiter{make(chan(CursorShapeMessage), 100)}
+	})
+	return &cursorShapeArbiterInstance
+}
+
+// SendToArbiter is used by multiple graphical components to defer the decision
+// of which cursor shape to set to the Arbiter.
+func (a CursorShapeArbiter) SendToArbiter(msg CursorShapeMessage) {
+	a.cursorShapeChan <- msg
+}
+
+// arbitrate tells Arbtier to review all messages and decide which cursor shape
+// to set.
+func (a CursorShapeArbiter) arbitrate() {
+	winningMsg := CursorShapeMessage{}
+	for {
+		select {
+		case msg := <-a.cursorShapeChan:
+			switch msg.object {
+			case Link:
+				switch winningMsg.object {
+				case ResizeBorderNeighbor:
+					// Link's cursor shape wins
+					winningMsg = msg
+				default:
+					break
+				}
+			case LinkNeighbor:
+				switch winningMsg.object {
+				case ResizeBorder:
+					// ResizeBorder's cursor shape wins
+					winningMsg = msg
+				default:
+					break
+				}
+			case ResizeBorderNeighbor:
+				switch winningMsg.object {
+				case Link:
+					// Link's cursor shape wins
+					winningMsg = msg
+				default:
+					break
+				}
+			}
+		case <-a.cursorShapeChan:
+			ebiten.SetCursorShape(winningMsg.cursorShape)
+			return
+		}
+	}
+}
+
+type ResizeBorderHandler struct {}
+
+// OnMouseover sets the ebiten.CursorShape when the cursor is at the positions
+// mentioned in handler.handleWindowFramePress. This means it also inherits
+// handler.handleWindowFramePress's conditional checks.
+// mousePos is the mouse coordinates relative to the window's top left.
+// win is the Window component used to determine where the resize borders are,
+// if any.
+func (ResizeBorderHandler) OnMouseover(mousePos term.Coordinates, win component.Window) {
+	// Minimized windows cannot be resized.
+	if _, minimized := win.IsMinimized(); minimized {
+		return
+	}
+	minX, minY := 0, 0
+	maxX, maxY := win.Width()-1, win.Height()-1
 	
-	if !isFloating {
+	if !win.IsFloating() {
 		// Tiled windows resize from their right and bottom edges.
-		right := pos.X == maxX
-		bottom := pos.Y == maxY
+		right := mousePos.X == maxX
+		bottom := mousePos.Y == maxY
 		switch {
 		case right && bottom:
 			ebiten.SetCursorShape(ebiten.CursorShapeNWSEResize)
@@ -50,7 +142,12 @@ func (CursorShapeHandler) ChangeCursorShape(
 		case bottom:
 			ebiten.SetCursorShape(ebiten.CursorShapeNSResize)
 		default:
-			ebiten.SetCursorShape(ebiten.CursorShapeDefault)
+			// Here the cursor is at a ResizeBorderNeighbor cell.
+			// ResizeBorderHandler wants to reset the cursor shape to default, but the
+			// cursor could be over another graphical component, so it defers to the
+			// CursorShapeArbiter.
+			GetCursorShapeArbiter().SendToArbiter(
+				CursorShapeMessage{ResizeBorderNeighbor, ebiten.CursorShapeDefault})
 		}
 	} else {
 		// Cursor for floating windows.
@@ -61,10 +158,10 @@ func (CursorShapeHandler) ChangeCursorShape(
 		// - dragging on the other sides happen the conventional way.
 		// This impacts the implementation here in that the cursor never changes to
 		// CursorShapeNSResize when hovering over the top bar.
-		left := pos.X == minX
-		right := pos.X == maxX
-		top := pos.Y == minY
-		bottom := pos.Y == maxY
+		left := mousePos.X == minX
+		right := mousePos.X == maxX
+		top := mousePos.Y == minY
+		bottom := mousePos.Y == maxY
 		switch {
 		case (left && top) || (right && bottom):
 			ebiten.SetCursorShape(ebiten.CursorShapeNWSEResize)
@@ -72,10 +169,13 @@ func (CursorShapeHandler) ChangeCursorShape(
 			ebiten.SetCursorShape(ebiten.CursorShapeNESWResize)
 		case left || right:
 			ebiten.SetCursorShape(ebiten.CursorShapeEWResize)
-		case bottom:
+		case bottom || (!win.HasWindowBar() && top):
 			ebiten.SetCursorShape(ebiten.CursorShapeNSResize)
 		default:
-			ebiten.SetCursorShape(ebiten.CursorShapeDefault)
+			// Here the cursor is at a ResizeBorderNeighbor cell.
+			// Same as before, defer to the CursorShapeArbiter.
+			GetCursorShapeArbiter().SendToArbiter(
+				CursorShapeMessage{ResizeBorderNeighbor, ebiten.CursorShapeDefault})
 		}
 	}
 }

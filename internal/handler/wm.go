@@ -41,8 +41,7 @@ type WindowManagerConfig struct {
 	// FloatingBar receives the interactions produced by floating
 	// window bars. It may be nil.
 	FloatingBar FloatingBarHandler
-	// CursorShapeHandler changes the cursor shape when hovering over resize handles.
-	CursorShapeHandler CursorShapeHandler
+	ResizeBorder ResizeBorderHandler
 }
 
 // FloatingBarHandler groups the interactions produced by a floating
@@ -79,11 +78,9 @@ func (NopFloatingBarHandler) OnBarDrop(Window, term.Coordinates) bool { return f
 // OnBarDragCancel satisfies FloatingBarHandler.
 func (NopFloatingBarHandler) OnBarDragCancel(Window) {}
 
-// CursorShapeHandler changes the cursorshape at certain coordinates
-type CursorShapeHandler interface {
-	ChangeCursorShape(
-		unclampedCursorPos term.Coordinates, minPos term.Coordinates,
-		maxPos term.Coordinates, isFloating bool)
+// ResizeBorderHandler encapsulates behaviour along the resize border.
+type ResizeBorderHandler interface {
+	OnMouseover(mousePos term.Coordinates, win component.Window)
 }
 
 // winDragMode is a bitmask describing an in-progress window drag
@@ -295,15 +292,10 @@ func (wm *WindowManager) Handle(ev term.Event) (exit bool, handled bool) {
 		}
 
 		if wm.config.Frame {
-			if wm.config.CursorShapeHandler != nil {
-				// To ensure cursor shape changes at the same locations where dragging
-				// will resize the window, the same coords used in handleWindowFramePress
-				// are used here in ChangeMouseShape(_, minPos, maxPos, _)
-				wm.config.CursorShapeHandler.ChangeCursorShape(
+			if wm.config.ResizeBorder != nil {
+				wm.config.ResizeBorder.OnMouseover(
 					term.Coordinates{X: ev.MouseX, Y: ev.MouseY},
-					term.Coordinates{X: 0, Y: 0},
-					term.Coordinates{X: childAtMouse.Width()-1, Y: childAtMouse.Height()-1},
-					childAtMouse.IsFloating(),
+					childAtMouse,
 					)
 			}
 			ev.MouseY--

@@ -204,13 +204,13 @@ func WithDefaultWallpaper(wallpaper browser.Wallpaper) Option {
 	}
 }
 
-// WithCursorShapeHandler returns an Option that defines the cursorShapeHandler
+// WithResizeBorderHandler returns an Option that defines the resizeBorderHandler
 // implementation that is passed to handler.WindowManagerConfig.
-// Setting the cursorShapeHandler to nil means the cursor shape will not change.
+// Setting the resizeBorderHandler to nil means the cursor shape will not change.
 // See handler.WindowManager for more info.
-func WithCursorShapeHandler(h handler.CursorShapeHandler) Option {
+func WithResizeBorderHandler(h handler.ResizeBorderHandler) Option {
 	return func(opts *options) {
-		opts.cursorShapeHandler = h
+		opts.resizeBorderHandler = h
 	}
 }
 
@@ -536,7 +536,7 @@ type options struct {
 	shellRCDir           string
 	workspaceConfig      string
 	defaultWallpaper     browser.Wallpaper
-	cursorShapeHandler   handler.CursorShapeHandler
+	resizeBorderHandler  handler.ResizeBorderHandler
 	defaultConfig        string
 	bell                 func()
 	scheduleFn           func(func()) bool
