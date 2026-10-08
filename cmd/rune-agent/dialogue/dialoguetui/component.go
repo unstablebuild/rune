@@ -1534,6 +1534,30 @@ func (c *Component) alignVisibleAnchorTop(anchor component.ListNode, offset int)
 	}
 }
 
+// LinkAt queries for a markdown link at the messages-relative coordinate pos.
+// It searches visible message nodes in c.messages, unwrapping any outer spans
+// or handlers to find the underlying markdown component, and returns the
+// LinkInfo if a link is found.
+func (c *Component) LinkAt(pos term.Coordinates) *markdown.LinkInfo {
+	width, height := c.messages.SizeWidth(), c.messages.SizeHeight()
+	if width <= 0 || height <= 0 {
+		return nil
+	}
+	if pos.X < 0 || pos.X >= width || pos.Y < 0 || pos.Y >= height {
+		return nil
+	}
+	// eachTranscriptMarkdown reports origins in content coordinates.
+	pos.Y += c.messages.MaxOffset() - c.messages.Offset()
+	var link *markdown.LinkInfo
+	c.eachTranscriptMarkdown(func(md *markdown.Component, origin term.Coordinates) {
+		local := term.CoordinatesDiff(pos, origin)
+		if info := md.LinkAt(local.X, local.Y); link == nil && info != nil && info.URL != "" {
+			link = info
+		}
+	})
+	return link
+}
+
 // scrollState captures the current scroll position for later restoration.
 func (c *Component) scrollState() (maxOffset int, scrolledUp bool) {
 	return c.messages.MaxOffset(), c.messages.CanSeekUp()

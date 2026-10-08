@@ -720,6 +720,51 @@ func newCommandEventHandler(
 	return ret, nil
 }
 
+func newLinkClickHandler(
+	mu sync.Locker,
+	clip clipboard.Register,
+	noti browserapi.Notifications,
+) func(*url.URL) bool {
+	return func(link *url.URL) bool {
+		if link.Scheme != "http" && link.Scheme != "https" {
+			return false
+		}
+		// The dialogue calls this holding mu, which its stream consumer needs
+		// too, and the clipboard may shell out while notifying runs hooks.
+		// Relock in a defer so a panic still hands mu back to the dialogue's
+		// deferred Unlock.
+		mu.Unlock()
+		defer mu.Lock()
+		linkstr := link.String()
+		meta := clipboard.Data{Text: linkstr}
+		err := clip.Copy(clipboard.DefaultRegisterID, meta)
+		if err != nil {
+			if noti != nil {
+				_, _ = noti.Notify(
+					browserapi.LevelError,
+					"copy URL to clipboard: %v", err,
+				)
+			}
+		} else {
+			if noti != nil {
+				_, _ = noti.Notify(
+					browserapi.LevelSuccess,
+					"copied URL %s to clipboard", linkstr,
+				)
+			}
+		}
+		return true
+	}
+}
+
+// dialogueConfig returns the config for a dialogue whose handler is given
+// mu, which the dialogue holds while it calls OnLinkClick.
+func (h *aiEditorHandler) dialogueConfig(mu sync.Locker) dialoguetui.ComponentConfig {
+	cfg := h.cfg
+	cfg.OnLinkClick = newLinkClickHandler(mu, h.clip, h.n)
+	return cfg
+}
+
 type aiEditorHandler struct {
 	exit                atomic.Uint32
 	llmSvc              llmapi.Service
@@ -1208,8 +1253,8 @@ func (h *aiEditorHandler) Close() error {
 // newDialogueComponent builds the transient dialogue used by the `?`
 // query popup. The popup sizes itself to its content and has no model
 // switching of its own, so it renders without a status bar.
-func (h *aiEditorHandler) newDialogueComponent() *dialoguetui.Component {
-	cfg := h.cfg
+func (h *aiEditorHandler) newDialogueComponent(mu sync.Locker) *dialoguetui.Component {
+	cfg := h.dialogueConfig(mu)
 	cfg.StatusBar.Enabled = false
 	return dialoguetui.NewComponent(cfg)
 }
@@ -1375,7 +1420,7 @@ func (h *aiEditorHandler) newChat(
 			return nil, err
 		}
 	}
-	comp = dialoguetui.NewComponent(h.cfg)
+	comp = dialoguetui.NewComponent(h.dialogueConfig(mu))
 	syncComp := syncComponent{mu: mu, comp: comp, h: h, uri: uri}
 
 	// Replay dialogue history.
@@ -1581,7 +1626,7 @@ func getModelUri(id, model string) (workspaceapi.URI, error) {
 
 func (h *aiEditorHandler) handleQuery(cmd textapi.Command) error {
 	mu := new(sync.Mutex)
-	comp := h.newDialogueComponent()
+	comp := h.newDialogueComponent(mu)
 	queryID := strconv.Itoa(rand.Int())
 	ctx, cancel := context.WithCancel(h.ctx)
 	dhandler, tx, rx := dialoguetui.Handler(ctx, mu, comp, h.p)

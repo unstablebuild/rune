@@ -17,6 +17,7 @@
 package dialoguetui
 
 import (
+	"net/url"
 	"time"
 
 	"github.com/unstablebuild/rune-go-sdk/clipboard"
@@ -232,6 +233,11 @@ type ComponentConfig struct {
 	// StatusBar configures the dialogue's bottom status row. A
 	// zero value leaves the bar disabled and the layout unchanged.
 	StatusBar StatusBarConfig
+
+	// OnLinkClick is called when a markdown link is clicked in the messages area.
+	// Returning true marks the click as handled and suppresses text selection.
+	// A nil callback ignores clicks.
+	OnLinkClick func(*url.URL) bool
 }
 
 // DefaultMarkdownConfig returns the markdown config the transcript uses
