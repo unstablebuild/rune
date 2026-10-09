@@ -20,8 +20,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"path"
+	"strings"
+	"sync"
 
+	log "github.com/sirupsen/logrus"
+	"github.com/unstablebuild/blue/logging"
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"google.golang.org/grpc"
@@ -36,6 +42,9 @@ type schemeWorkspace struct {
 	// reload's buffer mutations run on the host event loop. See
 	// workspace.file for details.
 	scheduleNextTick func(func()) bool
+
+	caseOnce      sync.Once
+	caseSensitive bool
 }
 
 // OnDisconnect forwards [RemoteScheme.OnDisconnect] when the embedded scheme
@@ -78,6 +87,86 @@ func hostConn(v any) (grpc.ClientConnInterface, bool) {
 		return p.HostConn()
 	}
 	return nil, false
+}
+
+// PathCaseSensitive defers to the scheme when it knows the answer;
+// otherwise it probes the host through the scheme on the first call, so
+// a remote host answers for its own filesystem.
+func (w *schemeWorkspace) PathCaseSensitive() bool {
+	w.caseOnce.Do(func() {
+		if s, ok := w.Scheme.(interface{ PathCaseSensitive() bool }); ok {
+			w.caseSensitive = s.PathCaseSensitive()
+			return
+		}
+		w.caseSensitive = ProbePathCaseSensitive(w.Scheme, w.Scheme.Root())
+	})
+	return w.caseSensitive
+}
+
+// ProbePathCaseSensitive reports whether fsys tells apart names in dir
+// that differ only in letter case. It probes an entry of dir, so the
+// answer is for the filesystem holding dir's contents even when dir is
+// a mount point, and falls back to dir's own name when dir has no
+// entry with a letter. It answers true when it cannot tell.
+func ProbePathCaseSensitive(fsys schemeapi.FileSystem, dir string) bool {
+	entries, err := fsys.ReadDir(dir)
+	if err != nil {
+		logProbe("read dir %q: %v", dir, err)
+		return true
+	}
+	parent, name := dir, ""
+	for _, e := range entries {
+		if swapASCIICase(e.Name()) != e.Name() {
+			name = e.Name()
+			break
+		}
+	}
+	if name == "" {
+		parent, name = path.Dir(dir), path.Base(dir)
+		if swapASCIICase(name) == name {
+			return true
+		}
+		if entries, err = fsys.ReadDir(parent); err != nil {
+			logProbe("read dir %q: %v", parent, err)
+			return true
+		}
+	}
+	swapped := swapASCIICase(name)
+	if _, err := fsys.Stat(path.Join(parent, swapped)); err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			logProbe("stat %q: %v", path.Join(parent, swapped), err)
+		}
+		return true
+	}
+	// A case-sensitive filesystem may really hold the swapped name.
+	for _, e := range entries {
+		if e.Name() == swapped {
+			return true
+		}
+	}
+	return false
+}
+
+// swapASCIICase leaves other letters alone because filesystems disagree
+// on how to fold them.
+func swapASCIICase(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case 'a' <= r && r <= 'z':
+			return r - 'a' + 'A'
+		case 'A' <= r && r <= 'Z':
+			return r - 'A' + 'a'
+		}
+		return r
+	}, s)
+}
+
+func logProbe(msg string, args ...any) {
+	if !log.IsLevelEnabled(log.DebugLevel) {
+		return
+	}
+	log.WithField(logging.KeyClass, "workspace.ProbePathCaseSensitive").
+		Debugf(msg, args...)
 }
 
 // NewSchemeWorkspace wraps a schemeapi.Scheme and implements a workspace.Loader,

@@ -36,6 +36,11 @@ type Workspace interface {
 	Loader
 	schemeapi.Scheme
 	InstallDataDirProvider
+	// PathCaseSensitive reports whether two paths that differ only in
+	// letter case name different files on the workspace host. It is
+	// true when the host cannot tell, so callers keep comparing paths
+	// exactly. The answer is fixed for the workspace's lifetime.
+	PathCaseSensitive() bool
 }
 
 // RemoteScheme is implemented by schemes whose underlying transport
