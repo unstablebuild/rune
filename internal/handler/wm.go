@@ -260,7 +260,7 @@ func (wm *WindowManager) Handle(ev term.Event) (exit bool, handled bool) {
 		// The behaviour of setting the cursor shape is hidden inside OnMouseover
 		// instead of directly sending a message to CursorShapeArbiter like this:
 		// ```
-		// GetCursorShapeArbiter().SendToArbiter(
+		// CursorShapeArbiter().SendToArbiter(
 		// 	CursorShapeMessage{Empty, ebiten.CursorShapeDefault})
 		// ```
 		// because these methods are in the GUI package which the term handler is
@@ -1009,7 +1009,7 @@ func (wm *WindowManager) handleScrollBarMouse(
 		wm.prevMouseScrollBarOffset = barPos - ev.MouseY
 		wm.prevMouseScrollBarDrag = true
 		wm.prevMouseLeftChild = win
-		//GetCursorShapeArbiter().SendToArbiter(CursorShapeMessage{})
+		//CursorShapeArbiter().SendToArbiter(CursorShapeMessage{})
 		return false, false
 	}
 

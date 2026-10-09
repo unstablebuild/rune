@@ -41,8 +41,8 @@ var (
 	cursorShapeArbiterInstance cursorShapeArbiter
 )
 
-// GetCursorShapeArbiter returns the same instance to the graphical components.
-func GetCursorShapeArbiter() *cursorShapeArbiter {
+// CursorShapeArbiter returns the same instance to the graphical components.
+func CursorShapeArbiter() *cursorShapeArbiter {
 	cursorShapeOnce.Do(func () {
 		// Channel size is arbitrarily large
 		cursorShapeArbiterInstance = cursorShapeArbiter{make(chan(CursorShapeMessage), 100)}
@@ -179,7 +179,7 @@ type ResizeBorderHandler struct {}
 func (ResizeBorderHandler) OnMouseover(mousePos term.Coordinates, win component.Window, ok bool) {
 	// If there is no window, reset the cursor to default.
 	if !ok {
-		GetCursorShapeArbiter().SendToArbiter(
+		CursorShapeArbiter().SendToArbiter(
 			CursorShapeMessage{NotInWindow, ebiten.CursorShapeDefault})
 		return
 	}
@@ -209,11 +209,11 @@ func (ResizeBorderHandler) OnMouseover(mousePos term.Coordinates, win component.
 			// ResizeBorderHandler wants to reset the cursor shape to default, but the
 			// cursor could be over another graphical component, so it defers to the
 			// cursorShapeArbiter.
-			GetCursorShapeArbiter().SendToArbiter(
+			CursorShapeArbiter().SendToArbiter(
 				CursorShapeMessage{ResizeBorderNeighbor, ebiten.CursorShapeDefault})
 		default:
 			// All other cells "have Empty objects", these are treated differently by the Arbiter.
-			//GetCursorShapeArbiter().SendToArbiter(
+			//CursorShapeArbiter().SendToArbiter(
 				//CursorShapeMessage{Empty, ebiten.CursorShapeNotAllowed})
 		}
 	} else {
@@ -245,11 +245,11 @@ func (ResizeBorderHandler) OnMouseover(mousePos term.Coordinates, win component.
 		case leftNeighbors || rightNeighbors || topNeighbors || bottomNeighbors:
 			// Here the cursor is at a ResizeBorderNeighbor cell.
 			// Same as before, defer to the cursorShapeArbiter.
-			GetCursorShapeArbiter().SendToArbiter(
+			CursorShapeArbiter().SendToArbiter(
 				CursorShapeMessage{ResizeBorderNeighbor, ebiten.CursorShapeDefault})
 		default:
 			// All other cells "have Empty objects", these are treated differently by the Arbiter.
-			//GetCursorShapeArbiter().SendToArbiter(
+			//CursorShapeArbiter().SendToArbiter(
 				//CursorShapeMessage{Empty, ebiten.CursorShapeNotAllowed})
 		}
 	}

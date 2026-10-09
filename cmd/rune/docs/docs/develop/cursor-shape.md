@@ -6,7 +6,7 @@ The gui package works as a whole to display the appropriate mouse cursor shape w
 CursorShapeArbiter knows the graphical layout at an abstract level, more precisely, it knows of the graphical components that send messages to it. It has an idea of what component is under the cursor (it calls these ObjectUnderCursors), as well as whether the cursor is currently right next to a component (also ObjectUnderCursor, but where ComponentA would be an object, it calls the neighboring cell a ComponentANeighbor).
 The Neighbor notation is used to deconflict cursor shapes: a graphical component that sets a cursor shape when a cursor hovers over it would probably reset the cursor shape when the mouse moves away from it, onto the Neighbor cell. Two neighboring components are where conflicts arise: when the mouse moves from one component to another, the first component would want to reset the cursor shape, while the second component would want to set a certain cursor shape. Arbitration is needed when the cursor shapes are different; without it, one of the shapes would be displayed instead of the other depending on external factors such as function evaluation order or code execution order.
 
-No one owns CursorShapeArbiter, it is a singleton that gets instantiated on first GetCursorShapeArbiter and returns the same instance on every subsequent call by any component.
+No one owns CursorShapeArbiter, it is a singleton that gets instantiated on the first call to CursorShapeArbiter() and returns the same instance on every subsequent call by any component.
 
 The currently known cursor shape conflicts happen at:
 

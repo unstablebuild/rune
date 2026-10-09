@@ -439,10 +439,10 @@ func (l *linkScanner) point(over bool) {
 	}
 	l.pointing = over
 	if over {
-		GetCursorShapeArbiter().SendToArbiter(CursorShapeMessage{Link, ebiten.CursorShapePointer})
+		CursorShapeArbiter().SendToArbiter(CursorShapeMessage{Link, ebiten.CursorShapePointer})
 		return
 	}
-	GetCursorShapeArbiter().SendToArbiter(CursorShapeMessage{LinkNeighbor, ebiten.CursorShapeDefault})
+	CursorShapeArbiter().SendToArbiter(CursorShapeMessage{LinkNeighbor, ebiten.CursorShapeDefault})
 }
 
 // armed reports whether links are being offered, which is only while the
