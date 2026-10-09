@@ -424,9 +424,7 @@ func (l *linkScanner) setMeta(held bool) bool {
 	return true
 }
 
-// pointAt offers the link cursor while the mouse rests on a link. The
-// GUI is the only owner of the window's cursor shape, so nothing else
-// has to arbitrate with it.
+// pointAt offers the link cursor while the mouse rests on a link.
 func (l *linkScanner) pointAt(pos term.Coordinates, cells [][]term.Cell) {
 	l.scan(cells)
 	_, over := l.at(pos.X, pos.Y)
@@ -442,7 +440,7 @@ func (l *linkScanner) point(over bool) {
 		CursorShapeArbiter().SendToArbiter(CursorShapeMessage{Link, ebiten.CursorShapePointer})
 		return
 	}
-	CursorShapeArbiter().SendToArbiter(CursorShapeMessage{LinkNeighbor, ebiten.CursorShapeDefault})
+	CursorShapeArbiter().SendToArbiter(CursorShapeMessage{Empty, ebiten.CursorShapeNotAllowed})
 }
 
 // armed reports whether links are being offered, which is only while the

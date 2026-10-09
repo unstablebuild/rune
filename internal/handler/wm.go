@@ -254,26 +254,27 @@ func (wm *WindowManager) Handle(ev term.Event) (exit bool, handled bool) {
 			}
 		}
 		
-		// The call to ResizeBorderHandler.OnMouseOver here handles the case where
-		// the above code did not set childAtMouse, and ok is false. The intent is
-		// to reset the cursor to default shape before the control flow here exits.
-		// The behaviour of setting the cursor shape is hidden inside OnMouseover
-		// instead of directly sending a message to CursorShapeArbiter like this:
-		// ```
-		// CursorShapeArbiter().SendToArbiter(
-		// 	CursorShapeMessage{Empty, ebiten.CursorShapeDefault})
-		// ```
-		// because these methods are in the GUI package which the term handler is
-		// not supposed to import.
-		if wm.config.ResizeBorder != nil {
-			wm.config.ResizeBorder.OnMouseover(
-				term.Coordinates{},
-				childAtMouse,
-				ok,
-				)
-		}
-		
 		if !ok {
+			// The call to ResizeBorderHandler.OnMouseover here handles the case where
+			// the above code did not set childAtMouse, and ok is false. This happens
+			// when the cursor is over an area that is not a Window. The intent is
+			// to reset the cursor to default shape before the control flow here exits.
+			// The behaviour of setting the cursor shape is hidden inside OnMouseover
+			// when ok is false instead of directly sending a message to
+			// CursorShapeArbiter like this:
+			// ```
+			// CursorShapeArbiter().SendToArbiter(
+			// 	CursorShapeMessage{Empty, ebiten.CursorShapeDefault})
+			// ```
+			// because these methods are in the GUI package which the term handler is
+			// not supposed to import.
+			if wm.config.ResizeBorder != nil {
+				wm.config.ResizeBorder.OnMouseover(
+					term.Coordinates{},
+					childAtMouse,
+					ok,
+					)
+			}
 			return
 		}
 		offset := childAtMouse.Position()
@@ -1009,6 +1010,7 @@ func (wm *WindowManager) handleScrollBarMouse(
 		wm.prevMouseScrollBarOffset = barPos - ev.MouseY
 		wm.prevMouseScrollBarDrag = true
 		wm.prevMouseLeftChild = win
+		// TODO resolve https://github.com/unstablebuild/rune/pull/163#discussion_r4182531314
 		//CursorShapeArbiter().SendToArbiter(CursorShapeMessage{})
 		return false, false
 	}
