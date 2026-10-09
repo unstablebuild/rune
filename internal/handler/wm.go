@@ -80,7 +80,7 @@ func (NopFloatingBarHandler) OnBarDragCancel(Window) {}
 
 // ResizeBorderHandler encapsulates behaviour along the resize border.
 type ResizeBorderHandler interface {
-	OnMouseover(mousePos term.Coordinates, win component.Window)
+	OnMouseover(mousePos term.Coordinates, win component.Window, ok bool)
 }
 
 // winDragMode is a bitmask describing an in-progress window drag
@@ -253,6 +253,26 @@ func (wm *WindowManager) Handle(ev term.Event) (exit bool, handled bool) {
 				endDragAfter = true
 			}
 		}
+		
+		// The call to ResizeBorderHandler.OnMouseOver here handles the case where
+		// the above code did not set childAtMouse, and ok is false. The intent is
+		// to reset the cursor to default shape before the control flow here exits.
+		// The behaviour of setting the cursor shape is hidden inside OnMouseover
+		// instead of directly sending a message to CursorShapeArbiter like this:
+		// ```
+		// GetCursorShapeArbiter().SendToArbiter(
+		// 	CursorShapeMessage{Empty, ebiten.CursorShapeDefault})
+		// ```
+		// because these methods are in the GUI package which the term handler is
+		// not supposed to import.
+		if wm.config.ResizeBorder != nil {
+			wm.config.ResizeBorder.OnMouseover(
+				term.Coordinates{},
+				childAtMouse,
+				ok,
+				)
+		}
+		
 		if !ok {
 			return
 		}
@@ -296,6 +316,7 @@ func (wm *WindowManager) Handle(ev term.Event) (exit bool, handled bool) {
 				wm.config.ResizeBorder.OnMouseover(
 					term.Coordinates{X: ev.MouseX, Y: ev.MouseY},
 					childAtMouse,
+					ok,
 					)
 			}
 			ev.MouseY--
@@ -988,6 +1009,7 @@ func (wm *WindowManager) handleScrollBarMouse(
 		wm.prevMouseScrollBarOffset = barPos - ev.MouseY
 		wm.prevMouseScrollBarDrag = true
 		wm.prevMouseLeftChild = win
+		//GetCursorShapeArbiter().SendToArbiter(CursorShapeMessage{})
 		return false, false
 	}
 

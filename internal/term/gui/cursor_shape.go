@@ -30,27 +30,27 @@ type Arbiter interface {
 	arbitrate()
 }
 
-// CursorShapeArbiter is an Arbiter singleton. cursorShapeChan is shared across
+// cursorShapeArbiter is an Arbiter singleton. cursorShapeChan is shared across
 // callers of SendToArbiter, but is hidden from them.
-type CursorShapeArbiter struct {
+type cursorShapeArbiter struct {
 	cursorShapeChan chan CursorShapeMessage
 }
 
 var (
 	cursorShapeOnce sync.Once
-	cursorShapeArbiterInstance CursorShapeArbiter
+	cursorShapeArbiterInstance cursorShapeArbiter
 )
 
 // GetCursorShapeArbiter returns the same instance to the graphical components.
-func GetCursorShapeArbiter() *CursorShapeArbiter {
+func GetCursorShapeArbiter() *cursorShapeArbiter {
 	cursorShapeOnce.Do(func () {
 		// Channel size is arbitrarily large
-		cursorShapeArbiterInstance = CursorShapeArbiter{make(chan(CursorShapeMessage), 100)}
+		cursorShapeArbiterInstance = cursorShapeArbiter{make(chan(CursorShapeMessage), 100)}
 	})
 	return &cursorShapeArbiterInstance
 }
 
-// CursorShapeMessage defines a message that is sent to the CursorShapeArbiter.
+// CursorShapeMessage defines a message that is sent to the cursorShapeArbiter.
 type CursorShapeMessage struct {
 	object ObjectUnderCursor
 	cursorShape ebiten.CursorShapeType
@@ -65,7 +65,7 @@ const (
 	// None is a special value only used for a new and empty CursorShapeMessage.
 	None ObjectUnderCursor = 0
 	// Link represents a link
-	Link ObjectUnderCursor = 1 << iota
+	Link ObjectUnderCursor = 1 + iota
 	// LinkNeighbor is a cell neighboring a link
 	LinkNeighbor
 	// ScrollBar represents a scroll bar
@@ -78,18 +78,23 @@ const (
 	ResizeBorderNeighbor
 	// Empty is a cell that has no object, and is not even a neighbor.
 	Empty
+	// NotInWindow is a value used when the cursor is outside a window.
+	NotInWindow
 )
 
 // SendToArbiter is used by multiple graphical components to defer the decision
 // of which cursor shape to set to the Arbiter.
-func (a CursorShapeArbiter) SendToArbiter(msg CursorShapeMessage) {
+func (a cursorShapeArbiter) SendToArbiter(msg CursorShapeMessage) {
 	a.cursorShapeChan <- msg
 }
 
 // arbitrate tells Arbtier to review all messages and decide which cursor shape
 // to set. It assumes that all CursorShapeMessages were sent when the cursor
 // was at the same position, over the same cell.
-func (a CursorShapeArbiter) arbitrate() {
+// If any graphical component tells the Arbiter that the cursor is not in a
+// window, there shouldn't be any contest here because there are no objects
+// outside windows. In practice NotInWindow wins every time.
+func (a cursorShapeArbiter) arbitrate() {
 	winningMsg := CursorShapeMessage{}
 	for {
 		select {
@@ -98,6 +103,12 @@ func (a CursorShapeArbiter) arbitrate() {
 			switch winningMsg.object {
 			case None:
 				// There is no winningMsg yet, so the incoming msg auto wins
+				winningMsg = msg
+				
+			case NotInWindow:
+				// A graphical component sends an NotInWindow object when the mouse goes
+				// goes outside a window. There is no contest here because there are no
+				// objects outside windows, or at least the arbitrator assumes so.
 				winningMsg = msg
 				
 			case Empty:
@@ -120,6 +131,8 @@ func (a CursorShapeArbiter) arbitrate() {
 					// Cursor is also over a Link
 					// Link's wins
 					winningMsg = msg
+				case NotInWindow:
+					winningMsg = msg
 				default:
 					// In all other cases, ResizeBorderNeighbor wins
 					break
@@ -130,6 +143,8 @@ func (a CursorShapeArbiter) arbitrate() {
 				case ResizeBorder:
 					// Cursor is also over a ResizeBorder
 					// ResizeBorder wins
+					winningMsg = msg
+				case NotInWindow:
 					winningMsg = msg
 				default:
 					// In all other cases, LinkNeighbor wins
@@ -155,10 +170,20 @@ type ResizeBorderHandler struct {}
 // OnMouseover sets the ebiten.CursorShape when the cursor is at the positions
 // mentioned in handler.handleWindowFramePress. This means it also inherits
 // handler.handleWindowFramePress's conditional checks.
+// If there is no window, reset the cursor to default.
 // mousePos is the mouse coordinates relative to the window's top left.
 // win is the Window component used to determine where the resize borders are,
 // if any.
-func (ResizeBorderHandler) OnMouseover(mousePos term.Coordinates, win component.Window) {
+// ok indicates whether there is a window under the cursor;
+// win would be undefined if not.
+func (ResizeBorderHandler) OnMouseover(mousePos term.Coordinates, win component.Window, ok bool) {
+	// If there is no window, reset the cursor to default.
+	if !ok {
+		GetCursorShapeArbiter().SendToArbiter(
+			CursorShapeMessage{NotInWindow, ebiten.CursorShapeDefault})
+		return
+	}
+	
 	// Minimized windows cannot be resized.
 	if _, minimized := win.IsMinimized(); minimized {
 		return
@@ -183,13 +208,13 @@ func (ResizeBorderHandler) OnMouseover(mousePos term.Coordinates, win component.
 			// Here the cursor is at a ResizeBorderNeighbor cell.
 			// ResizeBorderHandler wants to reset the cursor shape to default, but the
 			// cursor could be over another graphical component, so it defers to the
-			// CursorShapeArbiter.
+			// cursorShapeArbiter.
 			GetCursorShapeArbiter().SendToArbiter(
 				CursorShapeMessage{ResizeBorderNeighbor, ebiten.CursorShapeDefault})
 		default:
 			// All other cells "have Empty objects", these are treated differently by the Arbiter.
-			GetCursorShapeArbiter().SendToArbiter(
-				CursorShapeMessage{Empty, ebiten.CursorShapeNotAllowed})
+			//GetCursorShapeArbiter().SendToArbiter(
+				//CursorShapeMessage{Empty, ebiten.CursorShapeNotAllowed})
 		}
 	} else {
 		// Cursor for floating windows.
@@ -219,13 +244,13 @@ func (ResizeBorderHandler) OnMouseover(mousePos term.Coordinates, win component.
 			ebiten.SetCursorShape(ebiten.CursorShapeNSResize)
 		case leftNeighbors || rightNeighbors || topNeighbors || bottomNeighbors:
 			// Here the cursor is at a ResizeBorderNeighbor cell.
-			// Same as before, defer to the CursorShapeArbiter.
+			// Same as before, defer to the cursorShapeArbiter.
 			GetCursorShapeArbiter().SendToArbiter(
 				CursorShapeMessage{ResizeBorderNeighbor, ebiten.CursorShapeDefault})
 		default:
 			// All other cells "have Empty objects", these are treated differently by the Arbiter.
-			GetCursorShapeArbiter().SendToArbiter(
-				CursorShapeMessage{Empty, ebiten.CursorShapeNotAllowed})
+			//GetCursorShapeArbiter().SendToArbiter(
+				//CursorShapeMessage{Empty, ebiten.CursorShapeNotAllowed})
 		}
 	}
 }

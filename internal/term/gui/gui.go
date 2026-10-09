@@ -137,8 +137,6 @@ type GUI struct {
 	processWindowClosed func() []term.Event
 	closingHandled      bool
 	closeOnce           sync.Once
-	
-	cursorShapeArbiter *CursorShapeArbiter
 }
 
 // New allocates storage for a new GUI and initializes it with the given
@@ -167,7 +165,6 @@ func New(handler tui.Handler, options ...Option) (*GUI, error) {
 		startPositionY:   0,
 		defaultWidth:     defaultWidth,
 		defaultHeight:    defaultHeight,
-		cursorShapeArbiter: GetCursorShapeArbiter(),
 	}
 	ret.input = newInput(ret.fontManager)
 	ret.mouse = newMouse(ret.fontManager)
@@ -492,7 +489,7 @@ func (g *GUI) Update() error {
 	}
 	// Arbitrate cursor shape after accumulating all active graphical components'
 	// messages.
-	g.cursorShapeArbiter.arbitrate()
+	GetCursorShapeArbiter().arbitrate()
 	g.prevTickKey = keyEvents == 1
 	// A lone keystroke on an echoing handler misses its own frame by
 	// microseconds: the echo arrives right after this loop. Waiting is
