@@ -28,6 +28,7 @@ import (
 	"log/slog"
 	"maps"
 	"net"
+	"net/url"
 	"os"
 	"reflect"
 	"regexp"
@@ -274,6 +275,9 @@ type ideConfig struct {
 	scheduleNextTick func(func()) bool
 	cellPixelSize    func() (int, int)
 	clip             clipboard.Register
+	// systemOpenURL opens a URL in the system browser for the "system"
+	// meta_open_url. Nil when the IDE was given none.
+	systemOpenURL func(*url.URL) error
 	// storage is the IDE-wide storage service. It's owned by the IDE
 	// and shared across workspaces; commandAliases consults it to
 	// resolve `{history}` placeholders in alias completer chains by
@@ -3445,6 +3449,37 @@ func (c ideConfig) clipboard() clipboard.Register {
 		ret = clipboard.NewInMemory()
 	}
 	return registerhistory.NewClipboard(registerset.New(ret))
+}
+
+// metaOpenURLConfig is how a clicked URL is opened.
+type metaOpenURLConfig struct {
+	// command is the Rune command, in alias body syntax, that opens an
+	// http(s) URL bound to $URL. Empty selects clipboard or system.
+	command string
+	// clipboard copies an http(s) URL to the clipboard.
+	clipboard bool
+	// system opens a URL in the system browser. It may be nil.
+	system func(*url.URL) error
+}
+
+const keyMetaOpenURL = "meta_open_url"
+
+func (c ideConfig) metaOpenURL() metaOpenURLConfig {
+	ret := metaOpenURLConfig{system: c.systemOpenURL}
+	v, err := config.MapConfig(c.cfg).GetString(keyMetaOpenURL)
+	switch {
+	case err == config.ErrNotFound || (err == nil && v == "system"):
+	case err == nil && v == "clipboard":
+		ret.clipboard = true
+	case err == nil && strings.TrimSpace(v) != "":
+		ret.command = v
+	default:
+		if err == nil {
+			err = errors.New(`must be "system", "clipboard" or a command`)
+		}
+		c.errors[keyMetaOpenURL] = err
+	}
+	return ret
 }
 
 func (c ideConfig) standardResultAttr() (attr term.Attributes) {

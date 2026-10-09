@@ -748,6 +748,7 @@ func (h *workspaceManagerHandler) init(
 		cfg.metaKey(),
 		cfg.editorAutoSave(),
 		cfg.consoleCfg(),
+		cfg.metaOpenURL(),
 		globalOpts...)
 	if err != nil {
 		return fmt.Errorf("new ex: %w", err)
@@ -1920,6 +1921,7 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 		cfg.metaKey(),
 		cfg.editorAutoSave(),
 		cfg.consoleCfg(),
+		cfg.metaOpenURL(),
 		textOpts...)
 	if err != nil {
 		if symbolDBCloser != nil {
@@ -2013,7 +2015,7 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 	if noticeCfg, ok := newNoticeConfig(cfg, h.ideStorage, uri); ok {
 		built.notice = idenotice.New(
 			cwd, apibrowser, wsParser, h.scheduleNextTick,
-			noticeLinkCopier(h.clip, apibrowser), noticeCfg)
+			ex.onLinkClick, noticeCfg)
 	}
 	return built, nil
 }
@@ -2383,8 +2385,8 @@ func (h *workspaceManagerHandler) buildExtensions(
 			WithOpenShell(ex.consolenewtab)); err != nil {
 		log.Errorf("subscribe debugger command prompt: %v", err)
 	}
-	cmdcfg := lspCommandsConfig(uri, cfg, notifications,
-		h.events.newInterrupter(uri), parser, callbacks)
+	cmdcfg := lspCommandsConfig(uri, cfg, h.events.newInterrupter(uri),
+		parser, callbacks, ex.onLinkClick)
 	apiHandler, err := lspcmd.AllHandler(
 		lspifc, apieditor, apibrowser, apibrowser, apibrowser,
 		ex.workspace, parser, cmdcfg)
@@ -4141,9 +4143,10 @@ func (f *workspaceTabManager) SetTabActivity(
 }
 
 func lspCommandsConfig(
-	uri workspaceapi.URI, cfg ideConfig, notifications browserapi.Notifications,
+	uri workspaceapi.URI, cfg ideConfig,
 	interrupter term.Interrupter, parser syntaxapi.Parser,
 	diagnosticsSource lspcmd.DiagnosticsSource,
+	onLinkClick func(*url.URL) bool,
 ) lspcmd.Config {
 	cmdcfg := lspcmd.DefaultConfig()
 	cmdcfg.RootURI = uri
@@ -4160,22 +4163,7 @@ func lspCommandsConfig(
 	cmdcfg.Hover.MarkdownConfig.Parser = parser
 	cmdcfg.Hover.MarkdownConfig.ScheduleNextTick = cfg.scheduleNextTick
 	cmdcfg.Hover.MarkdownHandlerOptions = []handlermarkdown.Option{
-		handlermarkdown.WithOnLinkClick(func(link *url.URL) bool {
-			if link.Scheme != "http" && link.Scheme != "https" {
-				return false
-			}
-			linkstr := link.String()
-			meta := clipboard.Data{Text: linkstr}
-			err := cfg.clipboard().Copy(clipboard.DefaultRegisterID, meta)
-			if err != nil {
-				_, _ = notifications.Notify(browserapi.LevelError,
-					"copy URL to clipboard: %v", err)
-			} else {
-				_, _ = notifications.Notify(browserapi.LevelSuccess,
-					"copied URL %s to clipboard", linkstr)
-			}
-			return true
-		}),
+		handlermarkdown.WithOnLinkClick(onLinkClick),
 	}
 	return cmdcfg
 }

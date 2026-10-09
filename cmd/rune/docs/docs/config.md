@@ -70,6 +70,7 @@ and covers most of the configuration surface:
 - `extensions`: every extension process is stopped and started again
 - `debugger.*` adapters and language-server settings
 - `workspace.symbol_db` and extension auto-authorize settings
+- `meta_open_url`
 
 Only the focused workspace is reloaded; other workspace tabs keep running with
 the configuration they were opened with.
@@ -390,8 +391,40 @@ For ready-to-copy `exo` configs (Vim, Neovim, Helix, Nano, and more), see the
   ```python tab
   config["gui"]["env"] = {
       "EDITOR": "vim",
-      "PATH": "$HOME/.local/bin:$PATH",
+    "PATH": "$HOME/.local/bin:$PATH",
   }
+  ```
+
+## Links
+
+- `meta_open_url`: how an `http://` or `https://` link opens when you click it
+  in a markdown tab, a hover, a workspace notice or the cheatsheet, or click
+  it with `<meta>` held in the GUI. It takes one of:
+
+  - `"system"`, the default: open the link in your system browser.
+  - `"clipboard"`: copy the link to the clipboard.
+  - a Rune command, written like an [alias](./learn/aliases.md) body, that runs
+    with `$URL` set to the link.
+
+  A link is untrusted input, so a command receives it in a form that cannot
+  run anything. `$URL` always expands to a single argument. In `$URL`,
+  characters a URL may not contain, as well as `'` and `$`, are
+  percent-encoded, which leaves the link pointing at the same page. Inside a
+  `!` or `!!` command, `$URL` is read as plain text whether you write it
+  unquoted, in double quotes or in single quotes, and Rune refuses to run the
+  command rather than let a link change it. A command that passes `$URL` on to
+  a second shell, such as `sh -c`, `eval` or `ssh`, must quote it again there,
+  since characters like `&` and `;` can appear in links.
+
+  Clicking a link with another scheme with `<meta>` held in the GUI opens it
+  in the system browser.
+
+  ```yaml tab
+  meta_open_url: "browser $URL" # or "clipboard", or "! open $URL"
+  ```
+
+  ```python tab
+  config["meta_open_url"] = "browser $URL" # or "clipboard", or "! open $URL"
   ```
 
 ## Telemetry

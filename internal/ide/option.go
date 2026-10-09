@@ -19,6 +19,7 @@ package ide
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -314,6 +315,17 @@ func WithClipboard(clip clipboard.Register) Option {
 	}
 }
 
+// WithSystemURLOpener sets how a clicked URL opens in the system browser,
+// which is how every URL opens when the meta_open_url config is "system"
+// and how URLs other than http(s) always open. It is called on the event
+// loop, which it holds until it returns. Without it such URLs fail to
+// open.
+func WithSystemURLOpener(open func(*url.URL) error) Option {
+	return func(opts *options) {
+		opts.systemOpenURL = open
+	}
+}
+
 // WithInitShader configures the IDE to initialize with the
 // given Shader animation.
 func WithInitShader(
@@ -540,6 +552,7 @@ type options struct {
 	scheduleFn           func(func()) bool
 	cellPixelSize        func() (int, int)
 	clip                 clipboard.Register
+	systemOpenURL        func(*url.URL) error
 	afterFunc            func(time.Duration, func()) *time.Timer
 	debugCommands        bool
 	streamingOpen        bool

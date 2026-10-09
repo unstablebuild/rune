@@ -205,6 +205,7 @@ func (b *bootstrapHandler) buildPreIDE() (*ide.IDE, error) {
 		ide.WithHostDataDir(b.dataDir),
 		ide.WithTabsClickCallback(b.handleTabsClick),
 		ide.WithClipboard(b.clip),
+		ide.WithSystemURLOpener(b.openBrowser),
 	}
 	preIDE, err := ide.New("", b.configPath, b.dataDir, b.trust, b.storage, opts...)
 	if err != nil {
@@ -228,6 +229,7 @@ func (b *bootstrapHandler) buildConfiguredIDE(
 		ide.WithLocker(b.mu),
 		ide.WithConfigFilename(workspaceConfigFilename),
 		ide.WithClipboard(b.clip),
+		ide.WithSystemURLOpener(b.openBrowser),
 		ide.WithDefaultWallpaper(makeThemedWallpaper(b.wallpaperTheme)),
 		ide.WithTabBarOffset(13),
 		ide.WithRightInset(b.quickMenuCells()),
@@ -385,8 +387,8 @@ func (b *bootstrapHandler) dragObserver(ev gui.DragEvent) {
 }
 
 // linkObserver opens a URL the user meta-clicked in the rendered frame.
-// Workspace files open in the editor; anything else goes to the system
-// browser.
+// Workspace files open in the editor; anything else opens as the
+// meta_open_url config says.
 func (b *bootstrapHandler) linkObserver(u *url.URL) {
 	if u.Scheme == "file" {
 		uri, err := workspaceapi.ParseURI(u.String())
@@ -399,7 +401,7 @@ func (b *bootstrapHandler) linkObserver(u *url.URL) {
 		}
 		return
 	}
-	if err := b.openBrowser(u); err != nil {
+	if err := b.currentIDE().OpenURL(u); err != nil {
 		b.notifyError("open link", err)
 	}
 }

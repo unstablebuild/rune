@@ -17,12 +17,8 @@
 package ide
 
 import (
-	"net/url"
-
-	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
-	"github.com/unstablebuild/rune-go-sdk/clipboard"
 	"unstable.build/rune/internal/ide/idenotice"
 )
 
@@ -40,28 +36,4 @@ func newNoticeConfig(
 		Storage:      storageapi.WithPartition(storage, "notice"),
 		WorkspaceURI: uri,
 	}, true
-}
-
-// noticeLinkCopier mirrors the markdown link handling used by
-// text.Component and the Hover handler: http(s) links are copied to
-// the system clipboard and surface as a notification, anything else
-// falls back to the markdown handler's default (in-page anchor
-// scrolling).
-func noticeLinkCopier(
-	clip clipboard.Register, n browserapi.Notifications,
-) func(*url.URL) bool {
-	return func(link *url.URL) bool {
-		if link.Scheme != "http" && link.Scheme != "https" {
-			return false
-		}
-		linkstr := link.String()
-		if err := clip.Copy(clipboard.DefaultRegisterID, clipboard.Data{Text: linkstr}); err != nil {
-			_, _ = n.Notify(browserapi.LevelError,
-				"copy URL to clipboard: %v", err)
-			return true
-		}
-		_, _ = n.Notify(browserapi.LevelSuccess,
-			"copied URL %s to clipboard", linkstr)
-		return true
-	}
 }

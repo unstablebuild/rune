@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/url"
 	"os"
 	"os/user"
 	"path"
@@ -364,6 +365,12 @@ func (i *IDE) DispatchCommand(cmd string, args ...string) error {
 	return i.workspaceHandler.focusEx().dispatchCommand(cmd, args...)
 }
 
+// OpenURL opens a URL the user clicked as the focused workspace's
+// meta_open_url config says. It must run on the event loop.
+func (i *IDE) OpenURL(u *url.URL) error {
+	return i.workspaceHandler.focusEx().openURL(u)
+}
+
 // Models returns the models available through the IDE's host-side LLM
 // service. The service belongs to the IDE rather than any workspace, so it is
 // available while the home workspace is focused.
@@ -663,6 +670,7 @@ func (i *IDE) init(
 			cfg.storage = i.ideConfig.storage
 			cfg.cellPixelSize = op.cellPixelSize
 			cfg.clip = op.clip
+			cfg.systemOpenURL = op.systemOpenURL
 			return cfg, err
 		}, op.workspaceConfig, op.tabBarOffset,
 		op.rightInset, op.tabBarHeight, op.workspacesIcon, op.workspacesBarHeight,
@@ -783,6 +791,7 @@ func loadIDEConfig(cfgfilename string, op options) (ideConfig, error) {
 		op.scheduleFn)
 	cfg.cellPixelSize = op.cellPixelSize
 	cfg.clip = op.clip
+	cfg.systemOpenURL = op.systemOpenURL
 	return cfg, err
 }
 

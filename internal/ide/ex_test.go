@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/url"
 	"os/user"
 	"runtime"
 
@@ -54,6 +55,7 @@ import (
 	sdkiterator "github.com/unstablebuild/rune-go-sdk/iterator"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
+	"mvdan.cc/sh/v3/shell"
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/browser/browsertest"
 	"unstable.build/rune/internal/cell"
@@ -6318,6 +6320,221 @@ func TestExecutePluginShellInterpretsOperators(t *testing.T) {
 			assert.Equal(t, tc.wantArgv, got)
 		})
 	}
+}
+
+func TestOpenURL(t *testing.T) {
+	t.Setenv("RUNE_TEST_SECRET", "leaked")
+	const raw = "https://example.com/p?a=1&b=$(touch%20x)&c=$RUNE_TEST_SECRET;d"
+	const inert = "https://example.com/p?a=1&b=%24(touch%20x)&c=%24RUNE_TEST_SECRET;d"
+	link, err := url.Parse(raw)
+	require.NoError(t, err)
+	require.Equal(t, raw, link.String())
+	mailto := &url.URL{Scheme: "mailto", Opaque: "a@example.com"}
+
+	cases := []struct {
+		name       string
+		command    string
+		clipboard  bool
+		noSystem   bool
+		open       *url.URL
+		wantSystem []string
+		wantSink   [][]string
+		wantClip   string
+		wantErr    string
+	}{
+		{name: "system", open: link, wantSystem: []string{raw}},
+		{name: "clipboard", clipboard: true, open: link, wantClip: raw},
+		{
+			name:       "clipboard leaves other schemes to the system browser",
+			clipboard:  true,
+			open:       mailto,
+			wantSystem: []string{"mailto:a@example.com"},
+		},
+		{
+			name:     "command gets the shell-inert URL as one argument",
+			command:  "sink $URL",
+			open:     link,
+			wantSink: [][]string{{inert}},
+		},
+		{
+			name:     "nested alias gets the shell-inert URL",
+			command:  "outer $URL",
+			open:     link,
+			wantSink: [][]string{{inert}},
+		},
+		{
+			name:       "other schemes open in the system browser",
+			command:    "sink $URL",
+			open:       mailto,
+			wantSystem: []string{"mailto:a@example.com"},
+		},
+		{name: "no system browser", noSystem: true, open: link, wantErr: "no system browser"},
+		{name: "unknown command", command: "nosuchcommand $URL", open: link, wantErr: keyMetaOpenURL},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := newExForAliasRun(t, map[string]text.CommandAlias{
+				"outer": {Commands: []string{"sink $1"}},
+			})
+			defer b.Close()
+			var sink [][]string
+			require.NoError(t, b.comp.SubscribeCommand(
+				textapi.CommandManual{Name: "sink"},
+				text.FuncCommandHandler(func(_ context.Context, cmd textapi.Command) error {
+					sink = append(sink, cmd.Args)
+					return nil
+				}, nil)))
+			var system []string
+			b.ex.metaOpenURL = metaOpenURLConfig{
+				command: tc.command, clipboard: tc.clipboard,
+			}
+			if !tc.noSystem {
+				b.ex.metaOpenURL.system = func(u *url.URL) error {
+					system = append(system, u.String())
+					return nil
+				}
+			}
+
+			err := b.ex.openURL(tc.open)
+			b.drainAliasRuns()
+
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Equal(t, tc.wantSystem, system)
+			assert.Equal(t, tc.wantSink, sink)
+			clip, err := b.ex.clip.Paste(clipboard.DefaultRegisterID)
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantClip, clip.Text)
+		})
+	}
+}
+
+func TestOpenURLPluginCommandQuotesURL(t *testing.T) {
+	const raw = "https://example.com/?a=1&b=$(id)&c='x'`id`"
+	const inert = "https://example.com/?a=1&b=%24(id)&c=%27x%27%60id%60"
+	link, err := url.Parse(raw)
+	require.NoError(t, err)
+	require.Equal(t, raw, link.String())
+	for _, tc := range []struct {
+		command string
+		want    []string
+	}{
+		{command: "! open $URL", want: []string{"open", inert}},
+		{command: `! open "$URL"`, want: []string{"open", inert}},
+		{command: `! open '$URL'`, want: []string{"open", inert}},
+		{command: `! open "<$URL>"`, want: []string{"open", "<" + inert + ">"}},
+		{command: `! open --url='$URL'`, want: []string{"open", "--url=" + inert}},
+	} {
+		t.Run(tc.command, func(t *testing.T) {
+			b := newExForAliasRun(t, nil)
+			defer b.Close()
+			b.Resize(100, 100)
+			var got []string
+			b.ex.newPluginHandler = func(_ int, args ...string) (pluginHandler, error) {
+				got = append([]string(nil), args...)
+				return newTestVte(), nil
+			}
+			b.ex.metaOpenURL = metaOpenURLConfig{command: tc.command}
+
+			require.NoError(t, b.ex.openURL(link))
+			b.ex.waitAsyncVTELoads()
+			b.flushScheduled()
+
+			require.Len(t, got, 3)
+			require.Equal(t, []string{"sh", "-c"}, got[:2])
+			line, err := shell.Fields(got[2], nil)
+			require.NoError(t, err)
+			require.Len(t, line, 1)
+			argv, err := shell.Fields(line[0], nil)
+			require.NoError(t, err, "the URL must reach the shell as data: %s", line[0])
+			assert.Equal(t, tc.want, argv)
+		})
+	}
+}
+
+func TestShellInertURL(t *testing.T) {
+	parse := func(raw string) *url.URL {
+		u, err := url.Parse(raw)
+		require.NoError(t, err)
+		return u
+	}
+	for _, tc := range []struct {
+		name string
+		in   *url.URL
+		want string
+	}{
+		{name: "plain",
+			in:   &url.URL{Scheme: "https", Host: "example.com", Path: "/a/b", RawQuery: "x=1&y=2", Fragment: "f"},
+			want: "https://example.com/a/b?x=1&y=2#f"},
+		{name: "reserved characters stay",
+			in:   parse("https://example.com/wiki/A_(b)?a=1;b=*!,+:@"),
+			want: "https://example.com/wiki/A_(b)?a=1;b=*!,+:@"},
+		{name: "existing escapes stay",
+			in:   &url.URL{Scheme: "https", Host: "example.com", RawQuery: "q=%41%20b"},
+			want: "https://example.com?q=%41%20b"},
+		{name: "shell quoting characters are escaped",
+			in:   &url.URL{Scheme: "https", Host: "example.com", RawQuery: "a=$(id)&b='x'&c=\"y\"&d=`id`&e=\\"},
+			want: "https://example.com?a=%24(id)&b=%27x%27&c=%22y%22&d=%60id%60&e=%5C"},
+		{name: "characters URIs do not allow are escaped",
+			in:   &url.URL{Scheme: "http", Host: "example.com", RawQuery: "a b\t<>{}|^é"},
+			want: "http://example.com?a%20b%09%3C%3E%7B%7D%7C%5E%C3%A9"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, shellInertURL(tc.in))
+		})
+	}
+}
+
+func TestOpenURLQueuesBehindInFlightDispatch(t *testing.T) {
+	b := newExForAliasRun(t, map[string]text.CommandAlias{
+		"queuing": {Commands: []string{"!! CAPTURED=x", "sink first"}},
+	})
+	defer b.Close()
+	var steps []string
+	subscribeStepRecorder(t, b, "sink", &steps)
+	b.ex.metaOpenURL = metaOpenURLConfig{command: "sink $URL"}
+
+	require.NoError(t, b.ex.dispatchCommand("queuing"))
+	require.NoError(t, b.ex.openURL(&url.URL{Scheme: "https", Host: "example.com"}))
+	b.drainAliasRuns()
+
+	assert.Equal(t, []string{"first", "https://example.com"}, steps,
+		"a URL opened while a dispatch is in flight must not overtake it")
+}
+
+func TestOnLinkClick(t *testing.T) {
+	b := newExForAliasRun(t, nil)
+	defer b.Close()
+	notes := &pluginWaitNotifications{inner: b.ex.notifications}
+	b.ex.notifications = notes
+	var opened []string
+	var openErr error
+	b.ex.metaOpenURL = metaOpenURLConfig{system: func(u *url.URL) error {
+		opened = append(opened, u.String())
+		return openErr
+	}}
+	parse := func(raw string) *url.URL {
+		u, err := url.Parse(raw)
+		require.NoError(t, err)
+		return u
+	}
+
+	assert.True(t, b.ex.onLinkClick(parse("http://example.com")))
+	assert.True(t, b.ex.config.OnLinkClick(parse("https://example.com/md")),
+		"markdown tabs must open links the same way")
+	for _, raw := range []string{"#anchor", "mailto:a@example.com", "file:///tmp/x"} {
+		assert.False(t, b.ex.onLinkClick(parse(raw)),
+			"%s must fall through to the markdown handler", raw)
+	}
+	assert.Equal(t, []string{"http://example.com", "https://example.com/md"}, opened)
+	assert.Empty(t, notes.errorMessages())
+
+	openErr = errors.New("boom")
+	assert.True(t, b.ex.onLinkClick(parse("https://example.com/%24")))
+	assert.Equal(t, []string{"open https://example.com/%24: boom"}, notes.errorMessages())
 }
 
 func TestSwitchToTab(t *testing.T) {

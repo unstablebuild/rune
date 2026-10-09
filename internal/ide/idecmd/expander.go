@@ -104,6 +104,16 @@ func (e *Expander) Expand(
 		return nil, err
 	}
 	cmd.Args = expandedArgs
+	return e.ExpandAlias(ctx, cmd, alias)
+}
+
+// ExpandAlias is Expand for alias, which need not be registered under
+// cmd.Name. cmd.Args are bound to $1..$9 verbatim: they must already be
+// expanded, as the args of a step that invokes another alias are.
+// Expanding them again would substitute variables found in their values.
+func (e *Expander) ExpandAlias(
+	ctx context.Context, cmd textapi.Command, alias text.CommandAlias,
+) (iterator.Iterator[textapi.Command], error) {
 	// Pre-scan every target to (a) reject $N references with N >
 	// len(args) before we start dispatching anything, and (b) compute
 	// which positional args are consumed so they can be stripped from

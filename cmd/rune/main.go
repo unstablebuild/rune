@@ -613,6 +613,7 @@ func runTUI(
 		ide.WithScheme(docsScheme, newDocsSchemeFunc(*flagConfigPath)),
 		ide.WithStreamingOpen(true),
 		ide.WithClipboard(text.NewAsyncSystemClipboard()),
+		ide.WithSystemURLOpener(func(u *url.URL) error { return extbrowser.Browse(u) }),
 	}
 	opts = append(opts, embeddedTutorialOptions()...)
 	if debug.DebugBuild == "true" {

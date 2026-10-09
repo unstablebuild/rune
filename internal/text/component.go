@@ -21,7 +21,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -37,7 +36,6 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
-	"github.com/unstablebuild/rune-go-sdk/clipboard"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
@@ -1781,22 +1779,7 @@ func (c *Component) loadImage(
 }
 
 func (c *Component) newMarkdownHandler(component *markdown.Component) *hmarkdown.Handler {
-	return hmarkdown.New(component, hmarkdown.WithOnLinkClick(func(link *url.URL) bool {
-		if link.Scheme != "http" && link.Scheme != "https" {
-			return false
-		}
-		linkstr := link.String()
-		meta := clipboard.Data{Text: linkstr}
-		err := c.config.Clipboard.Copy(clipboard.DefaultRegisterID, meta)
-		if err != nil {
-			_, _ = c.config.Notifications.Notify(browserapi.LevelError,
-				"copy URL to clipboard: %v", err)
-		} else {
-			_, _ = c.config.Notifications.Notify(browserapi.LevelSuccess,
-				"copied URL %s to clipboard", linkstr)
-		}
-		return true
-	}))
+	return hmarkdown.New(component, hmarkdown.WithOnLinkClick(c.config.OnLinkClick))
 }
 
 var loadingSpinnerFrames = []rune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")

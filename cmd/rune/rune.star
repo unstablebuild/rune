@@ -70,6 +70,10 @@ config = {
     "log_level": "info",
     # Whether to use the system clipboard or Rune's in-memory clipboard.
     "clipboard": "system",
+    # How an http(s) link opens when clicked: "system" opens the system
+    # browser, "clipboard" copies it, and any other value is a Rune command
+    # run with $URL set to the link, e.g. "! open $URL" or "browser $URL".
+    "meta_open_url": "system",
     # LSP configuration.
     "lsp": {
         # Icons used by the auxiliary bar when LSP diagnostics are displayed.
