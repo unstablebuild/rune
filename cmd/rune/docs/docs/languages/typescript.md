@@ -52,7 +52,9 @@ TypeScript 7 server, with TypeScript 7 semantics. TypeScript 7 removed
 `tsconfig.json` options that older releases accept, such as `baseUrl`,
 `target` ES5 and `moduleResolution` node. When the project's
 `node_modules` holds an older `typescript`, Rune warns once, and
-[`ts check`](#the-console-ts-command) names each removed option.
+[`ts check`](#the-console-ts-command) names each removed option. The
+removed options also show as diagnostics on `tsconfig.json` while it is
+open.
 `ts version` shows both versions when they differ.
 
 ### Dependencies

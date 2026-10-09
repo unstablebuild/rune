@@ -56,6 +56,23 @@ func URIUnderPrefix(uri, prefix workspaceapi.URI) bool {
 	return uri.Path() == base || strings.HasPrefix(uri.Path(), base+"/")
 }
 
+// URIKey returns a key that is equal for two URIs naming the same
+// document. The path of a file URI folds case when caseSensitive is
+// false, as reported by Workspace.PathCaseSensitive; any other URI is
+// keyed exactly, since case may matter to the scheme serving it.
+func URIKey(uri workspaceapi.URI, caseSensitive bool) string {
+	if caseSensitive || uri.Scheme() != FileScheme {
+		return uri.String()
+	}
+	return strings.ToLower(uri.String())
+}
+
+// SameDocument reports whether a and b name the same document under the
+// rules of URIKey.
+func SameDocument(a, b workspaceapi.URI, caseSensitive bool) bool {
+	return URIKey(a, caseSensitive) == URIKey(b, caseSensitive)
+}
+
 // DefaultSwapFile returns the swap entry a file gets inside swapDir,
 // on the same host as the file. swapDir must name a directory on that
 // host: see SwapDirectory.

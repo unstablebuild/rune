@@ -1302,6 +1302,90 @@ func TestEditFileURIRedirectsToWorkspaceWithOpenFile(t *testing.T) {
 	assert.True(t, ok)
 }
 
+// caseRuleWorkspace fixes the case rule of a workspace so tests do not
+// depend on the host filesystem.
+type caseRuleWorkspace struct {
+	workspace.Workspace
+	caseSensitive bool
+}
+
+func (w caseRuleWorkspace) PathCaseSensitive() bool { return w.caseSensitive }
+
+func TestEditFileURIRedirectsToWorkspaceWithFileOpenUnderOtherCase(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		caseSensitive bool
+		wantRedirect  bool
+	}{
+		{"case-sensitive host", true, false},
+		{"case-insensitive host", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tmp1 := t.TempDir()
+			tmp2 := t.TempDir()
+			sharedDir := t.TempDir()
+			sharedPath := filepath.Join(sharedDir, "Shared.txt")
+			require.NoError(t, os.WriteFile(sharedPath, []byte("shared"), 0o666))
+
+			cfg := defaultConfigWithWrap(false)
+			mu, sched, drain := buildTestSchedulerForCfg(t, &cfg)
+			manager := workspace.NewManagerWithWorkspaceFunc(config.NopConfig(), sched,
+				func(
+					uri workspaceapi.URI, scheme schemeapi.Scheme, tick func(func()) bool,
+				) workspace.Workspace {
+					return caseRuleWorkspace{
+						Workspace:     workspace.NewSchemeWorkspace(uri, scheme, tick),
+						caseSensitive: tc.caseSensitive,
+					}
+				})
+			require.NoError(t, manager.RegisterScheme(workspace.MemoryScheme,
+				workspace.NewMemoryScheme))
+			require.NoError(t, manager.RegisterScheme(workspace.FileScheme,
+				workspace.NewFileScheme))
+			homeURI, err := workspaceapi.ParseURI("memory://" + tmp1)
+			require.NoError(t, err)
+			m := newTestWorkspaceManagerHandlerWithManagerMu(t, manager, mu, drain,
+				&homeURI, cfg, FuncExtensionsRunner(testRunnerFn), nil, tmp1, nil,
+				nopShutdownShaderConfig())
+			defer func() {
+				require.NoError(t, m.Close())
+			}()
+
+			uri2, err := workspaceapi.ParseURI("file://" + tmp2)
+			require.NoError(t, err)
+			require.NoError(t, m.addOrCreateWorkspace(uri2))
+			m.quiesce()
+
+			sharedURI, err := workspaceapi.ParseURI("file://" + sharedPath)
+			require.NoError(t, err)
+			otherCaseURI, err := workspaceapi.ParseURI(
+				"file://" + filepath.Join(sharedDir, "shared.txt"))
+			require.NoError(t, err)
+
+			openTab, err := m.workspaces[1].ex.editFileURI(
+				sharedURI, m.workspaces[1].ex.invokeWindow(), false)
+			require.NoError(t, err)
+			m.workspaces[1].ex.Wait()
+
+			require.True(t, m.switchToWorkspace(0))
+			redirectedTab, _ := m.workspaces[0].ex.editFileURI(
+				otherCaseURI, m.workspaces[0].ex.invokeWindow(), false)
+			m.workspaces[0].ex.Wait()
+			m.workspaces[1].ex.Wait()
+
+			assert.Len(t, m.workspaces[1].ex.comp.Tabs(), 1)
+			if tc.wantRedirect {
+				assert.Equal(t, 1, m.focus)
+				assert.Same(t, openTab, redirectedTab)
+				assert.Empty(t, m.workspaces[0].ex.comp.Tabs())
+			} else {
+				assert.Equal(t, 0, m.focus)
+				assert.NotSame(t, openTab, redirectedTab)
+			}
+		})
+	}
+}
+
 func TestOpenPrevSessionFilesSkipsNonTextHandler(t *testing.T) {
 	tmp := t.TempDir()
 	mdPath := filepath.Join(tmp, "README.md")

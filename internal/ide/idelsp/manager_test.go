@@ -502,7 +502,7 @@ func TestDiagnosticSettleTimeoutDoesNotFail(t *testing.T) {
 	fileURI := "file://" + filePath
 	rootURI := "file://" + tmpDir
 
-	cb := NewCallbackHandler(nil, nil, nil, nil, nil, rootURI,
+	cb := NewCallbackHandler(nil, nil, nil, nil, caseFS{}, rootURI,
 		CallbackHandlerConfig{ScheduleNextTick: func(func()) bool { return true }})
 	uri := makeURI(t, rootURI)
 	m := New(uri, newTestScheme(), nil, nil, nil, nil,
@@ -548,7 +548,7 @@ func TestDiagnosticUnopenedFileSkipsSettleWait(t *testing.T) {
 	fileURI := "file://" + filePath
 	rootURI := "file://" + tmpDir
 
-	cb := NewCallbackHandler(nil, nil, nil, nil, nil, rootURI,
+	cb := NewCallbackHandler(nil, nil, nil, nil, caseFS{}, rootURI,
 		CallbackHandlerConfig{ScheduleNextTick: func(func()) bool { return true }})
 	uri := makeURI(t, rootURI)
 	m := New(uri, newTestScheme(), nil, nil, nil, nil,
@@ -589,7 +589,7 @@ func TestDiagnosticPropagatesCancellation(t *testing.T) {
 	fileURI := "file://" + filePath
 	rootURI := "file://" + tmpDir
 
-	cb := NewCallbackHandler(nil, nil, nil, nil, nil, rootURI,
+	cb := NewCallbackHandler(nil, nil, nil, nil, caseFS{}, rootURI,
 		CallbackHandlerConfig{ScheduleNextTick: func(func()) bool { return true }})
 	uri := makeURI(t, rootURI)
 	m := New(uri, newTestScheme(), nil, nil, nil, nil,

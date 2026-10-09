@@ -28,10 +28,21 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/semanticapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
+	"unstable.build/rune/internal/workspace"
 )
+
+// caseFS is a FileSystem for tests that only need its case rule; the
+// zero value is case-sensitive.
+type caseFS struct {
+	schemeapi.FileSystem
+	insensitive bool
+}
+
+func (f caseFS) PathCaseSensitive() bool { return !f.insensitive }
 
 type stubPkgManager struct {
 	bin string
@@ -255,6 +266,10 @@ func newTestScheme() *localScheme {
 }
 
 // schemeapi.FileSystem methods
+
+func (s *localScheme) PathCaseSensitive() bool {
+	return workspace.ProbePathCaseSensitive(s, os.TempDir())
+}
 
 func (s *localScheme) Create(filename string) (workspaceapi.File, error) {
 	return os.Create(filename)

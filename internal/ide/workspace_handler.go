@@ -1046,8 +1046,9 @@ func (h *workspaceManagerHandler) openFileTarget(file workspaceapi.URI) (*openFi
 		if wh == nil {
 			continue
 		}
+		caseSensitive := wh.workspace.PathCaseSensitive()
 		for _, tab := range wh.ex.comp.Tabs() {
-			if tab.URI().Equal(file) {
+			if tab.URI().Equal(file) || workspace.SameDocument(tab.URI(), file, caseSensitive) {
 				return &openFileTarget{workspaceIdx: i, workspace: wh, tab: tab}, true
 			}
 		}
