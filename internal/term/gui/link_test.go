@@ -397,6 +397,74 @@ func TestRowScannerScanRow(t *testing.T) {
 			},
 		},
 
+		// Markdown links.
+		{
+			description: "a markdown link ends at its closing paren",
+			row:         cellRow("[docs](https://rune.build/docs)"),
+			expected: []linkSpan{
+				{y: 3, x0: 7, x1: 30, url: "https://rune.build/docs"},
+			},
+		},
+		{
+			description: "a markdown link whose text is its url",
+			row:         cellRow("[https://a.com](https://a.com)"),
+			expected: []linkSpan{
+				{y: 3, x0: 1, x1: 14, url: "https://a.com"},
+				{y: 3, x0: 16, x1: 29, url: "https://a.com"},
+			},
+		},
+		{
+			description: "a markdown image nested in a markdown link",
+			row: cellRow("[![Discord](https://img.shields.io/discord/1068976834382925865)]" +
+				"(https://discord.gg/ZjZadyC7PK)"),
+			expected: []linkSpan{
+				{
+					y: 3, x0: 12, x1: 62,
+					url: "https://img.shields.io/discord/1068976834382925865",
+				},
+				{y: 3, x0: 65, x1: 94, url: "https://discord.gg/ZjZadyC7PK"},
+			},
+		},
+		{
+			description: "adjacent markdown links",
+			row:         cellRow("[a](https://a.com)[b](https://b.com)"),
+			expected: []linkSpan{
+				{y: 3, x0: 4, x1: 17, url: "https://a.com"},
+				{y: 3, x0: 22, x1: 35, url: "https://b.com"},
+			},
+		},
+		{
+			description: "a reference-style markdown link",
+			row:         cellRow("[https://a.com][1]"),
+			expected: []linkSpan{
+				{y: 3, x0: 1, x1: 14, url: "https://a.com"},
+			},
+		},
+		{
+			description: "a markdown link to a url with balanced parens",
+			row:         cellRow("[Go](https://en.wikipedia.org/wiki/Go_(language))"),
+			expected: []linkSpan{
+				{
+					y: 3, x0: 5, x1: 48,
+					url: "https://en.wikipedia.org/wiki/Go_(language)",
+				},
+			},
+		},
+		{
+			description: "a markdown link to a url with nested brackets",
+			row:         cellRow("[x](https://a.com/(x[y]))"),
+			expected: []linkSpan{
+				{y: 3, x0: 4, x1: 24, url: "https://a.com/(x[y])"},
+			},
+		},
+		{
+			description: "a markdown link ending a sentence",
+			row:         cellRow("see [a](https://a.com)."),
+			expected: []linkSpan{
+				{y: 3, x0: 8, x1: 21, url: "https://a.com"},
+			},
+		},
+
 		// Unicode.
 		{
 			description: "a narrow non-ascii host is kept whole",
@@ -602,21 +670,12 @@ func TestTrimURL(t *testing.T) {
 		{"", ""},
 		{".", ""},
 		{"....,,;;::!!??", ""},
-		{")", ""},
-		{"]", ""},
-		{"}", ""},
+		{")", ")"},
 		{"()", "()"},
-		{"[]", "[]"},
-		{"{}", "{}"},
-		{"(", "("},
 		{"a.", "a"},
 		{"a", "a"},
-		{"a)", "a"},
-		{"(a)", "(a)"},
-		{"(a))", "(a)"},
-		{"((a)", "((a)"},
-		{"a).", "a"},
-		{"a(", "a("},
+		{"(a).", "(a)"},
+		{"a.b.", "a.b"},
 	}
 	for _, tc := range suite {
 		t.Run(tc.raw, func(t *testing.T) {
@@ -724,6 +783,7 @@ func FuzzRowScannerScan(f *testing.F) {
 	f.Add("https://cafe\u0301.fr", 9)
 	f.Add("https://a.com/👨\u200d👧\u200d👦", 6)
 	f.Add("\u0301\u0301\u0301https://a.com\ufe0f", 3)
+	f.Add("[![a](https://a.com/(x)y)](https://b.com/[z])", 9)
 
 	f.Fuzz(func(t *testing.T, text string, width int) {
 		width = min(max(width, 1), 256)
@@ -911,6 +971,36 @@ func TestRowScannerJoinsURLWrappedAcrossRows(t *testing.T) {
 			expected: []linkSpan{
 				{y: 0, x0: 0, x1: 21, url: "https://rune.build?aabb"},
 				{y: 1, x0: 0, x1: 2, url: "https://rune.build?aabb"},
+			},
+		},
+		{
+			description: "a paren opened before the wrap is closed after it",
+			rows: []string{
+				"[Go](https://en.wikipedia.org/wiki/Go_(",
+				"language)) rest",
+			},
+			wrapped: []int{0},
+			expected: []linkSpan{
+				{
+					y: 0, x0: 5, x1: 39,
+					url: "https://en.wikipedia.org/wiki/Go_(language)",
+				},
+				{
+					y: 1, x0: 0, x1: 9,
+					url: "https://en.wikipedia.org/wiki/Go_(language)",
+				},
+			},
+		},
+		{
+			description: "a markdown link closed on the continuation row",
+			rows: []string{
+				"[![ci](https://rune.build?aaaa",
+				"bbbb)](#ci)",
+			},
+			wrapped: []int{0},
+			expected: []linkSpan{
+				{y: 0, x0: 7, x1: 30, url: "https://rune.build?aaaabbbb"},
+				{y: 1, x0: 0, x1: 4, url: "https://rune.build?aaaabbbb"},
 			},
 		},
 	}
