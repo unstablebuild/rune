@@ -168,7 +168,7 @@ func New(handler tui.Handler, options ...Option) (*GUI, error) {
 		defaultHeight:    defaultHeight,
 	}
 	ret.input = newInput(ret.fontManager)
-	ret.mouse = newMouse(ret.fontManager)
+	ret.mouse = newMouse(ret.fontManager, ret.scheduleFrame)
 	ret.drag = newDragPoller(ret.mouse)
 	ret.links = newLinkScanner()
 	ret.ctx = context.Background()
@@ -248,6 +248,7 @@ func (g *GUI) Close() error {
 		}
 		g.runAcceptedUserFuncs()
 		g.cancelCtx()
+		g.mouse.stopRepeatTimer()
 		if g.renderer != nil {
 			g.renderer.deallocate()
 			g.renderer = nil
