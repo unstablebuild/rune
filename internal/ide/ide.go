@@ -541,6 +541,10 @@ func (i *IDE) init(
 	i.storage = storage
 	i.ideConfig.storage = storageapi.WithPartition(i.storage, "ide")
 
+	// Pass the resizeBorderHandler from ide.options, to be set in
+	// workspaceManagerHandler.textOpts and ultimately passed to WindowManagerConfig.
+	i.ideConfig.resizeBorderHandler = op.resizeBorderHandler
+
 	var logger *slog.Logger
 	if logPath := i.ideConfig.logOutputPath(); logPath != "" {
 		f, err := workspace.OpenFile(logPath,
@@ -668,6 +672,7 @@ func (i *IDE) init(
 			cfg, err := reloadConfig(cfgfilename,
 				op.defaultWallpaper, defaultCfg, op.bell, op.scheduleFn)
 			cfg.storage = i.ideConfig.storage
+			cfg.resizeBorderHandler = i.ideConfig.resizeBorderHandler // Set resizeBorderHandler here too
 			cfg.cellPixelSize = op.cellPixelSize
 			cfg.clip = op.clip
 			cfg.systemOpenURL = op.systemOpenURL

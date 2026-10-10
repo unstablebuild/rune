@@ -1772,3 +1772,24 @@ func BenchmarkRowScannerScanWrapped(b *testing.B) {
 		})
 	}
 }
+
+func TestLinkScannerRestoresPointerAfterExternalCursorReset(t *testing.T) {
+	l, shapes := recordingScanner()
+	cells := linkGrid("see https://example.com")
+
+	// Move onto a link - pointer cursor is set
+	l.pointAt(term.Coordinates{X: 6}, cells)
+	require.Equal(t, []ebiten.CursorShapeType{ebiten.CursorShapePointer}, *shapes)
+
+	// Simulate external cursor reset (arbiter/window manager setting
+	// CursorShapeDefault on every mouse event, as described in the PR review)
+	l.setShape(ebiten.CursorShapeDefault)
+
+	// Move within the same link - pointer cursor MUST be restored
+	l.pointAt(term.Coordinates{X: 8}, cells)
+	assert.Equal(t, []ebiten.CursorShapeType{
+		ebiten.CursorShapePointer,  // initial pointer
+		ebiten.CursorShapeDefault,  // external reset
+		ebiten.CursorShapePointer,  // restored - THIS IS THE REGRESSION FIX
+	}, *shapes)
+}

@@ -41,6 +41,7 @@ type WindowManagerConfig struct {
 	// FloatingBar receives the interactions produced by floating
 	// window bars. It may be nil.
 	FloatingBar FloatingBarHandler
+	ResizeBorder ResizeBorderHandler
 }
 
 // FloatingBarHandler groups the interactions produced by a floating
@@ -76,6 +77,11 @@ func (NopFloatingBarHandler) OnBarDrop(Window, term.Coordinates) bool { return f
 
 // OnBarDragCancel satisfies FloatingBarHandler.
 func (NopFloatingBarHandler) OnBarDragCancel(Window) {}
+
+// ResizeBorderHandler encapsulates behaviour along the resize border.
+type ResizeBorderHandler interface {
+	OnMouseover(mousePos term.Coordinates, win component.Window, ok bool)
+}
 
 // winDragMode is a bitmask describing an in-progress window drag
 // started from a floating window's bar or a window's frame edge.
@@ -247,7 +253,23 @@ func (wm *WindowManager) Handle(ev term.Event) (exit bool, handled bool) {
 				endDragAfter = true
 			}
 		}
+		
 		if !ok {
+			// The call to ResizeBorderHandler.OnMouseover here handles the case where
+			// the above code did not set childAtMouse, and ok is false. This happens
+			// when the cursor is over an area that is not a Window. The intent is
+			// to reset the cursor to default shape before the control flow here exits.
+			// The behaviour of setting the cursor shape is hidden inside OnMouseover
+			// when ok is false instead of directly sending a message to
+			// CursorShapeArbiter, because its methods are in the GUI package which
+			// the term handler is not supposed to import.
+			if wm.config.ResizeBorder != nil {
+				wm.config.ResizeBorder.OnMouseover(
+					term.Coordinates{},
+					childAtMouse,
+					ok,
+					)
+			}
 			return
 		}
 		offset := childAtMouse.Position()
@@ -286,6 +308,13 @@ func (wm *WindowManager) Handle(ev term.Event) (exit bool, handled bool) {
 		}
 
 		if wm.config.Frame {
+			if wm.config.ResizeBorder != nil {
+				wm.config.ResizeBorder.OnMouseover(
+					term.Coordinates{X: ev.MouseX, Y: ev.MouseY},
+					childAtMouse,
+					ok,
+					)
+			}
 			ev.MouseY--
 			ev.MouseX--
 		}
@@ -976,6 +1005,8 @@ func (wm *WindowManager) handleScrollBarMouse(
 		wm.prevMouseScrollBarOffset = barPos - ev.MouseY
 		wm.prevMouseScrollBarDrag = true
 		wm.prevMouseLeftChild = win
+		// TODO resolve https://github.com/unstablebuild/rune/pull/163#discussion_r4182531314
+		//CursorShapeArbiter().SendToArbiter(CursorShapeMessage{})
 		return false, false
 	}
 

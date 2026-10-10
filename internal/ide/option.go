@@ -42,6 +42,7 @@ import (
 	"unstable.build/rune/internal/component/shader"
 	"unstable.build/rune/internal/extension"
 	"unstable.build/rune/internal/extension/extensionv2"
+	"unstable.build/rune/internal/handler"
 	"unstable.build/rune/internal/handler/command"
 	"unstable.build/rune/internal/ide/ideauthorizer"
 	"unstable.build/rune/internal/ide/idepkg"
@@ -210,6 +211,16 @@ func WithWorkspaceOpenCompleter(scheme string, c command.Completer) Option {
 func WithDefaultWallpaper(wallpaper browser.Wallpaper) Option {
 	return func(opts *options) {
 		opts.defaultWallpaper = wallpaper
+	}
+}
+
+// WithResizeBorderHandler returns an Option that defines the resizeBorderHandler
+// implementation that is passed to handler.WindowManagerConfig.
+// Setting the resizeBorderHandler to nil means the cursor shape will not change.
+// See handler.WindowManager for more info.
+func WithResizeBorderHandler(h handler.ResizeBorderHandler) Option {
+	return func(opts *options) {
+		opts.resizeBorderHandler = h
 	}
 }
 
@@ -547,6 +558,7 @@ type options struct {
 	hostDataDir          string
 	workspaceConfig      string
 	defaultWallpaper     browser.Wallpaper
+	resizeBorderHandler  handler.ResizeBorderHandler
 	defaultConfig        string
 	bell                 func()
 	scheduleFn           func(func()) bool
