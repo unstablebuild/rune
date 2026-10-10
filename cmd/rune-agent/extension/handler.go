@@ -1477,7 +1477,7 @@ func (h *aiEditorHandler) newChat(
 	}
 	adapter.agent = chatAgent
 	syncComp.setStatusBarState(func(s *dialoguetui.StatusBarState) {
-		s.Conversation = d.ID
+		s.Conversation = d.DisplayName()
 	})
 	adapter.syncStatusBarModel()
 	// Token counting walks the whole replayed history, so keep it off
@@ -1521,19 +1521,32 @@ func (h *aiEditorHandler) newChat(
 	return &chat{content: bhandler, id: d.ID, uri: uri, name: d.DisplayName()}, nil
 }
 
-// retitleOpenChat relabels an open dialogue's chat tab after a rename.
+// retitleOpenChat relabels an open dialogue's chat tab and status bar
+// after a rename. A rename also retitles the dialogue's archived
+// copies, so any of their open chats are relabeled with it.
 func (h *aiEditorHandler) retitleOpenChat(ctx context.Context, id string) {
-	v, ok := h.openChatURI.Load(id)
-	if !ok {
-		return
-	}
-	d, err := h.dialogueStore.Get(ctx, id)
-	if err != nil {
-		return
-	}
-	if err := h.wm.SetTabName(v.(workspaceapi.URI), d.DisplayName()); err != nil {
-		slog.Error("retitle open chat tab", "id", id, "error", err)
-	}
+	h.openChatURI.Range(func(k, v any) bool {
+		oid, ok := k.(string)
+		if !ok || (oid != id && !dialoguemanager.IsArchivedOf(oid, id)) {
+			return true
+		}
+		d, err := h.dialogueStore.Get(ctx, oid)
+		if err != nil {
+			return true
+		}
+		name := d.DisplayName()
+		if err := h.wm.SetTabName(v.(workspaceapi.URI), name); err != nil {
+			slog.Error("retitle open chat tab", "id", oid, "error", err)
+		}
+		if sc, ok := h.openChats.Load(oid); ok {
+			if comp, ok := sc.(syncComponent); ok {
+				comp.setStatusBarState(func(st *dialoguetui.StatusBarState) {
+					st.Conversation = name
+				})
+			}
+		}
+		return true
+	})
 }
 
 // openChatTab creates the rune-agent chat tab: the URI is the tab's

@@ -138,6 +138,82 @@ func TestRetitleOpenChatUsesOpenTabURI(t *testing.T) {
 	assert.Equal(t, "new title", wm.Renames()[0].name)
 }
 
+func TestRetitleOpenChatRetitlesArchivedTabs(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	const dialogueID = "test-fox"
+	svc := llmtest.New([]llmapi.ModelEntry{{Provider: "test", Name: "test-model"}})
+	wm := &recordingWindowManager{}
+	fs := nopFileSystem{}
+	store := newMemDialogueStore()
+	require.NoError(t, store.Create(ctx, dialoguemanager.Dialogue{
+		ID: dialogueID, Model: "test-model", Title: "Old Name",
+	}))
+	require.NoError(t, store.Create(ctx, dialoguemanager.Dialogue{
+		ID: dialogueID + "-archived", Model: "test-model", Title: "Old Name-archived",
+	}))
+	h := &aiEditorHandler{
+		ctx:            ctx,
+		llmSvc:         svc,
+		defaultModel:   "test-model",
+		dialogueStore:  store,
+		wm:             wm,
+		n:              stubNotifications{},
+		p:              term.NopInterrupter(),
+		config:         configedit.NopConfig(),
+		skillRegistry:  skills.NewRegistry(fs, dirURI(""), nil, nil),
+		toolRegistry:   agent.NewRegistry(),
+		agentsConfig:   agent.NewConfig([]agent.Definition{{ID: "default", AllowAny: true}}),
+		cwd:            dirURI(""),
+		fs:             fs,
+		memoryDataPath: t.TempDir(),
+		cfg: dialoguetui.ComponentConfig{
+			StatusBar: dialoguetui.StatusBarConfig{Enabled: true},
+		},
+	}
+
+	require.NoError(t, h.handleChat(textapi.Command{Args: []string{dialogueID}}))
+	liveHandler := wm.gotHandler
+	require.NoError(t, h.handleChat(textapi.Command{Args: []string{dialogueID + "-archived"}}))
+	archivedHandler := wm.gotHandler
+	t.Cleanup(func() {
+		if liveHandler != nil {
+			require.NoError(t, liveHandler.Close())
+		}
+		if archivedHandler != nil {
+			require.NoError(t, archivedHandler.Close())
+		}
+	})
+
+	conversation := func(id string) string {
+		v, ok := h.openChats.Load(id)
+		require.True(t, ok, "chat %s must be open", id)
+		return v.(syncComponent).comp.StatusBarState().Conversation
+	}
+	assert.Equal(t, "Old Name", conversation(dialogueID),
+		"status bar must show the title, not the bare ID")
+	assert.Equal(t, "Old Name-archived", conversation(dialogueID+"-archived"))
+
+	require.NoError(t, store.SetTitle(ctx, dialogueID, "My Chat"))
+	h.retitleOpenChat(ctx, dialogueID)
+
+	renames := wm.Renames()
+	require.Len(t, renames, 2,
+		"the live tab and the open archived tab must both be relabeled")
+	byURI := map[string]string{}
+	for _, r := range renames {
+		byURI[r.uri.String()] = r.name
+	}
+	assert.Equal(t, "My Chat", byURI["rune-agent://test-model/"+dialogueID])
+	assert.Equal(t, "My Chat-archived",
+		byURI["rune-agent://test-model/"+dialogueID+"-archived"])
+	assert.Equal(t, "My Chat", conversation(dialogueID),
+		"status bar must follow the rename")
+	assert.Equal(t, "My Chat-archived", conversation(dialogueID+"-archived"),
+		"an open archive's status bar must follow the rename")
+}
+
 func TestChatRenameCommandRetitlesOpenTab(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)

@@ -106,6 +106,12 @@ func (s *ephemeralStore) SetTitle(_ context.Context, id, title string) error {
 	}
 	d.Title = title
 	s.data[id] = d
+	for aid, a := range s.data {
+		if dialoguemanager.IsArchivedOf(aid, id) {
+			a.Title = dialoguemanager.ArchivedTitle(title)
+			s.data[aid] = a
+		}
+	}
 	return nil
 }
 
@@ -124,6 +130,7 @@ func (s *ephemeralStore) ArchiveAndReplace(_ context.Context, p dialoguemanager.
 	defer s.mu.Unlock()
 	archived := p.Dialogue
 	archived.ID = p.ArchivedDialogueID
+	archived.Title = dialoguemanager.ArchivedTitle(archived.Title)
 	s.data[p.ArchivedDialogueID] = archived
 	replaced := p.Dialogue
 	replaced.Messages = p.Messages

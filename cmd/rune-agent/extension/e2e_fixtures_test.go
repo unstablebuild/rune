@@ -215,6 +215,12 @@ func (s *memDialogueStore) SetTitle(_ context.Context, id, title string) error {
 	}
 	d.Title = title
 	s.dialogues[id] = d
+	for aid, a := range s.dialogues {
+		if dialoguemanager.IsArchivedOf(aid, id) {
+			a.Title = dialoguemanager.ArchivedTitle(title)
+			s.dialogues[aid] = a
+		}
+	}
 	return nil
 }
 

@@ -1251,3 +1251,106 @@ func TestParseNamedID(t *testing.T) {
 		assert.Equal(t, tc.want, ParseNamedID(tc.in), "input %q", tc.in)
 	}
 }
+
+func TestArchivedTitle(t *testing.T) {
+	assert.Equal(t, "", ArchivedTitle(""))
+	assert.Equal(t, "workspace scan-archived", ArchivedTitle("workspace scan"))
+}
+
+func TestIsArchivedOf(t *testing.T) {
+	for _, tc := range []struct {
+		id, base string
+		want     bool
+	}{
+		{"d1-archived", "d1", true},
+		{"d1-archived-2", "d1", true},
+		{"d1-archived-12", "d1", true},
+		{"d1", "d1", false},
+		{"d1-archive", "d1", false},
+		{"d1-archived-x", "d1", false},
+		{"d1-archived-", "d1", false},
+		{"d10", "d1", false},
+		{"other", "d1", false},
+		{"d1-archived", "d1-archived", false},
+	} {
+		assert.Equal(t, tc.want, IsArchivedOf(tc.id, tc.base), "id %q base %q", tc.id, tc.base)
+	}
+}
+
+func TestStoreSetTitlePropagatesToArchived(t *testing.T) {
+	ctx := context.Background()
+	s := newTempStore(t, storagestub.NewInMemoryService())
+
+	require.NoError(t, s.Create(ctx, Dialogue{
+		ID:       "d1",
+		Messages: []llmapi.Message{{Role: llmapi.RoleUser, Content: "hello"}},
+	}))
+	require.NoError(t, s.Create(ctx, Dialogue{
+		ID:    "unrelated",
+		Title: "keep me",
+	}))
+
+	archive := func(archivedID string) {
+		t.Helper()
+		live, err := s.Get(ctx, "d1")
+		require.NoError(t, err)
+		require.NoError(t, s.ArchiveAndReplace(ctx, ArchiveAndReplaceParams{
+			Dialogue:           live,
+			ArchivedDialogueID: archivedID,
+			Messages:           []llmapi.Message{{Role: llmapi.RoleUser, Content: "summary"}},
+		}))
+	}
+	archive("d1-archived")
+	archive("d1-archived-2")
+
+	require.NoError(t, s.SetTitle(ctx, "d1", "workspace scan"))
+
+	for _, id := range []string{"d1-archived", "d1-archived-2"} {
+		a, err := s.Get(ctx, id)
+		require.NoError(t, err)
+		assert.Equal(t, "workspace scan-archived", a.Title, "archived record %q", id)
+	}
+
+	it, err := s.List(ctx)
+	require.NoError(t, err)
+	headers, err := iterator.ToSlice(ctx, it)
+	require.NoError(t, err)
+	byID := make(map[string]DialogueHeader, len(headers))
+	for _, h := range headers {
+		byID[h.ID] = h
+	}
+	assert.Equal(t, "workspace scan", byID["d1"].Title)
+	assert.Equal(t, "workspace scan-archived", byID["d1-archived"].Title)
+	assert.Equal(t, "workspace scan-archived", byID["d1-archived-2"].Title)
+	assert.Equal(t, "keep me", byID["unrelated"].Title)
+
+	require.NoError(t, s.SetTitle(ctx, "d1", ""))
+	for _, id := range []string{"d1-archived", "d1-archived-2"} {
+		a, err := s.Get(ctx, id)
+		require.NoError(t, err)
+		assert.Empty(t, a.Title, "clearing must clear archived record %q", id)
+	}
+}
+
+func TestStoreArchiveAfterRenameTitlesArchive(t *testing.T) {
+	ctx := context.Background()
+	s := newTempStore(t, storagestub.NewInMemoryService())
+
+	require.NoError(t, s.Create(ctx, Dialogue{
+		ID:       "d1",
+		Messages: []llmapi.Message{{Role: llmapi.RoleUser, Content: "hello"}},
+	}))
+	require.NoError(t, s.SetTitle(ctx, "d1", "workspace scan"))
+
+	live, err := s.Get(ctx, "d1")
+	require.NoError(t, err)
+	require.NoError(t, s.ArchiveAndReplace(ctx, ArchiveAndReplaceParams{
+		Dialogue:           live,
+		ArchivedDialogueID: "d1-archived",
+		Messages:           []llmapi.Message{{Role: llmapi.RoleUser, Content: "summary"}},
+	}))
+
+	a, err := s.Get(ctx, "d1-archived")
+	require.NoError(t, err)
+	assert.Equal(t, "workspace scan-archived", a.Title)
+}
