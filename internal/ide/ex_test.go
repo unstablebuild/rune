@@ -1350,6 +1350,7 @@ func TestHomeFallbackPromptDoesNotInstall(t *testing.T) {
 		"agent", "?",
 		"chateffort", "chatmaxtokens", "chatskill", "chatmodel",
 		"chatclear", "chatcompact", "chatfork", "chatexport", "chatlog",
+		"chatrename",
 		"searchfile", "searchtext", "searchast",
 	}
 	for _, command := range commands {

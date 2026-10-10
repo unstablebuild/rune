@@ -261,7 +261,7 @@ func (m visibleWorkspaceManager) AddWorkspace(
 func (m visibleWorkspaceManager) Workspace(
 	file workspaceapi.URI,
 ) (workspace.Workspace, bool, error) {
-	target, ok := m.parent.workspaceForFile(file)
+	target, ok := m.parent.openFileTarget(file)
 	if !ok || target == nil || target.workspace == nil || target.workspace.ex == nil {
 		return nil, false, nil
 	}

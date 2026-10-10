@@ -295,6 +295,7 @@ func appMenus(
 				sep,
 				cmd("Compact", "chatcompact"),
 				cmd("Fork", "chatfork"),
+				cmd("Rename", "chatrename"),
 				cmd("Clear", "chatclear"),
 				prefill("Invoke Skill…", "chatskill"),
 				cmd("Export", "chatexport"),

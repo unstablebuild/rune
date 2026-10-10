@@ -76,7 +76,7 @@ func TestCompleteChatAddSymbolUsesReferencedSymbols(t *testing.T) {
 
 func TestOpenChatTabUsesDialogueIDAsLabel(t *testing.T) {
 	const dialogueID = "rolling-fox"
-	uri, err := getModelUri(dialogueID, "gpt-5")
+	uri, err := dialoguemanager.TabURI(dialogueID, "gpt-5")
 	require.NoError(t, err)
 	require.True(t, strings.HasPrefix(uri.String(), "rune-agent://"),
 		"precondition: URI must use the rune-agent scheme")
@@ -90,6 +90,179 @@ func TestOpenChatTabUsesDialogueIDAsLabel(t *testing.T) {
 	assert.False(t, strings.HasPrefix(wm.gotName, "rune-agent://"),
 		"tab label must not be the internal rune-agent:// URI")
 	assert.Equal(t, uri, wm.gotURI, "URI must still be passed unchanged as tab identity")
+}
+
+func TestRetitleOpenChatUsesOpenTabURI(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	const dialogueID = "RUNE-256"
+	svc := llmtest.New([]llmapi.ModelEntry{{Provider: "test", Name: "test-model"}})
+	wm := &recordingWindowManager{}
+	fs := nopFileSystem{}
+	store := newMemDialogueStore()
+	// The stored model differs from the one used to open the chat: the
+	// retitle must not rebuild the tab URI from d.Model.
+	require.NoError(t, store.Create(ctx, dialoguemanager.Dialogue{
+		ID: dialogueID, Model: "stored-model",
+	}))
+	h := &aiEditorHandler{
+		ctx:            ctx,
+		llmSvc:         svc,
+		defaultModel:   "test-model",
+		dialogueStore:  store,
+		wm:             wm,
+		n:              stubNotifications{},
+		p:              term.NopInterrupter(),
+		config:         configedit.NopConfig(),
+		skillRegistry:  skills.NewRegistry(fs, dirURI(""), nil, nil),
+		toolRegistry:   agent.NewRegistry(),
+		agentsConfig:   agent.NewConfig([]agent.Definition{{ID: "default", AllowAny: true}}),
+		cwd:            dirURI(""),
+		fs:             fs,
+		memoryDataPath: t.TempDir(),
+	}
+
+	require.NoError(t, h.handleChat(textapi.Command{Args: []string{dialogueID}}))
+	t.Cleanup(func() {
+		if wm.gotHandler != nil {
+			require.NoError(t, wm.gotHandler.Close())
+		}
+	})
+	require.NoError(t, store.SetTitle(ctx, dialogueID, "new title"))
+
+	h.retitleOpenChat(ctx, dialogueID)
+
+	require.Len(t, wm.Renames(), 1, "the open chat tab must be relabeled")
+	assert.Equal(t, "rune-agent://test-model/"+dialogueID,
+		wm.Renames()[0].uri.String(),
+		"the URI of the open tab, not one rebuilt from the stored model")
+	assert.Equal(t, "new title", wm.Renames()[0].name)
+}
+
+func TestRetitleOpenChatRetitlesArchivedTabs(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	const dialogueID = "test-fox"
+	svc := llmtest.New([]llmapi.ModelEntry{{Provider: "test", Name: "test-model"}})
+	wm := &recordingWindowManager{}
+	fs := nopFileSystem{}
+	store := newMemDialogueStore()
+	require.NoError(t, store.Create(ctx, dialoguemanager.Dialogue{
+		ID: dialogueID, Model: "test-model", Title: "Old Name",
+	}))
+	require.NoError(t, store.Create(ctx, dialoguemanager.Dialogue{
+		ID: dialogueID + "-archived", Model: "test-model", Title: "Old Name-archived",
+	}))
+	h := &aiEditorHandler{
+		ctx:            ctx,
+		llmSvc:         svc,
+		defaultModel:   "test-model",
+		dialogueStore:  store,
+		wm:             wm,
+		n:              stubNotifications{},
+		p:              term.NopInterrupter(),
+		config:         configedit.NopConfig(),
+		skillRegistry:  skills.NewRegistry(fs, dirURI(""), nil, nil),
+		toolRegistry:   agent.NewRegistry(),
+		agentsConfig:   agent.NewConfig([]agent.Definition{{ID: "default", AllowAny: true}}),
+		cwd:            dirURI(""),
+		fs:             fs,
+		memoryDataPath: t.TempDir(),
+		cfg: dialoguetui.ComponentConfig{
+			StatusBar: dialoguetui.StatusBarConfig{Enabled: true},
+		},
+	}
+
+	require.NoError(t, h.handleChat(textapi.Command{Args: []string{dialogueID}}))
+	liveHandler := wm.gotHandler
+	require.NoError(t, h.handleChat(textapi.Command{Args: []string{dialogueID + "-archived"}}))
+	archivedHandler := wm.gotHandler
+	t.Cleanup(func() {
+		if liveHandler != nil {
+			require.NoError(t, liveHandler.Close())
+		}
+		if archivedHandler != nil {
+			require.NoError(t, archivedHandler.Close())
+		}
+	})
+
+	conversation := func(id string) string {
+		v, ok := h.openChats.Load(id)
+		require.True(t, ok, "chat %s must be open", id)
+		return v.(syncComponent).comp.StatusBarState().Conversation
+	}
+	assert.Equal(t, "Old Name", conversation(dialogueID),
+		"status bar must show the title, not the bare ID")
+	assert.Equal(t, "Old Name-archived", conversation(dialogueID+"-archived"))
+
+	require.NoError(t, store.SetTitle(ctx, dialogueID, "My Chat"))
+	h.retitleOpenChat(ctx, dialogueID)
+
+	renames := wm.Renames()
+	require.Len(t, renames, 2,
+		"the live tab and the open archived tab must both be relabeled")
+	byURI := map[string]string{}
+	for _, r := range renames {
+		byURI[r.uri.String()] = r.name
+	}
+	assert.Equal(t, "My Chat", byURI["rune-agent://test-model/"+dialogueID])
+	assert.Equal(t, "My Chat-archived",
+		byURI["rune-agent://test-model/"+dialogueID+"-archived"])
+	assert.Equal(t, "My Chat", conversation(dialogueID),
+		"status bar must follow the rename")
+	assert.Equal(t, "My Chat-archived", conversation(dialogueID+"-archived"),
+		"an open archive's status bar must follow the rename")
+}
+
+func TestChatRenameCommandRetitlesOpenTab(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	const dialogueID = "RUNE-256"
+	svc := llmtest.New([]llmapi.ModelEntry{{Provider: "test", Name: "test-model"}})
+	wm := &recordingWindowManager{}
+	fs := nopFileSystem{}
+	store := newMemDialogueStore()
+	require.NoError(t, store.Create(ctx, dialoguemanager.Dialogue{
+		ID: dialogueID, Model: "test-model",
+	}))
+	h := &aiEditorHandler{
+		ctx:            ctx,
+		llmSvc:         svc,
+		defaultModel:   "test-model",
+		dialogueStore:  store,
+		wm:             wm,
+		p:              term.FuncInterrupter(func(context.Context) error { return nil }),
+		n:              stubNotifications{},
+		config:         configedit.NopConfig(),
+		skillRegistry:  skills.NewRegistry(fs, dirURI(""), nil, nil),
+		toolRegistry:   agent.NewRegistry(),
+		agentsConfig:   agent.NewConfig([]agent.Definition{{ID: "default", AllowAny: true}}),
+		cwd:            dirURI(""),
+		fs:             fs,
+		memoryDataPath: t.TempDir(),
+	}
+
+	require.NoError(t, h.handleChat(textapi.Command{Args: []string{dialogueID}}))
+	t.Cleanup(func() {
+		if wm.gotHandler != nil {
+			require.NoError(t, wm.gotHandler.Close())
+		}
+	})
+
+	require.NoError(t, h.HandleCommand(ctx, textapi.Command{
+		Name: commandRename,
+		Args: []string{"workspace", "scan", "loop", "fix"},
+		URI:  wm.gotURI,
+	}))
+
+	require.Eventually(t, func() bool {
+		renames := wm.Renames()
+		return len(renames) == 1 && renames[0].name == "workspace scan loop fix"
+	}, 2*time.Second, 10*time.Millisecond, "chatrename must relabel the open tab")
+	assert.Equal(t, wm.gotURI, wm.Renames()[0].uri)
 }
 
 func TestHandleChatRejectsAlreadyOpenDialogue(t *testing.T) {

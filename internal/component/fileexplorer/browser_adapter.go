@@ -210,6 +210,12 @@ func (a *browserAdapter) Tab(
 	return a.b.Tab(uri, icon, name, h)
 }
 
+func (a *browserAdapter) SetTabName(
+	uri workspaceapi.URI, name string,
+) error {
+	return a.b.SetTabName(uri, name, term.Attributes{})
+}
+
 func (a *browserAdapter) SetWindowContent(
 	w browserapi.Window, h browserapi.Handler,
 ) error {

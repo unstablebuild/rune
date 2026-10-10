@@ -1116,3 +1116,239 @@ func TestStoreCreateWithEmptyMessages(t *testing.T) {
 	require.Len(t, all, 1)
 	assert.Equal(t, 0, all[0].MessageCount)
 }
+
+func TestStoreSetTitle(t *testing.T) {
+	ctx := context.Background()
+	s := newTempStore(t, storagestub.NewInMemoryService())
+
+	require.NoError(t, s.Create(ctx, Dialogue{
+		ID: "d1",
+		Messages: []llmapi.Message{
+			{Role: llmapi.RoleUser, Content: "hello"},
+		},
+	}))
+
+	d, err := s.Get(ctx, "d1")
+	require.NoError(t, err)
+	assert.Empty(t, d.Title)
+
+	require.NoError(t, s.SetTitle(ctx, "d1", "fix the flaky test"))
+
+	d, err = s.Get(ctx, "d1")
+	require.NoError(t, err)
+	assert.Equal(t, "fix the flaky test", d.Title)
+	assert.Len(t, d.Messages, 1, "rename must not disturb messages")
+
+	it, err := s.List(ctx)
+	require.NoError(t, err)
+	headers, err := iterator.ToSlice(ctx, it)
+	require.NoError(t, err)
+	require.Len(t, headers, 1)
+	assert.Equal(t, "fix the flaky test", headers[0].Title)
+
+	require.NoError(t, s.SetTitle(ctx, "d1", "second name"))
+	d, err = s.Get(ctx, "d1")
+	require.NoError(t, err)
+	assert.Equal(t, "second name", d.Title)
+
+	require.NoError(t, s.SetTitle(ctx, "d1", ""))
+	d, err = s.Get(ctx, "d1")
+	require.NoError(t, err)
+	assert.Empty(t, d.Title, "clearing the title returns to the unnamed state")
+}
+
+func TestStoreSetTitleNonExistent(t *testing.T) {
+	ctx := context.Background()
+	s := newTempStore(t, storagestub.NewInMemoryService())
+
+	assert.Error(t, s.SetTitle(ctx, "ghost", "name"))
+
+	it, err := s.List(ctx)
+	require.NoError(t, err)
+	headers, err := iterator.ToSlice(ctx, it)
+	require.NoError(t, err)
+	assert.Empty(t, headers, "a failed rename must not create index entries")
+}
+
+func TestStoreSetTitleSurvivesAppendMessages(t *testing.T) {
+	ctx := context.Background()
+	s := newTempStore(t, storagestub.NewInMemoryService())
+
+	require.NoError(t, s.Create(ctx, Dialogue{ID: "d1"}))
+	require.NoError(t, s.SetTitle(ctx, "d1", "named"))
+
+	require.NoError(t, s.AppendMessages(ctx, Dialogue{ID: "d1"}, []llmapi.Message{
+		{Role: llmapi.RoleUser, Content: "after rename"},
+	}, llmapi.DialogueUsage{}))
+
+	d, err := s.Get(ctx, "d1")
+	require.NoError(t, err)
+	assert.Equal(t, "named", d.Title, "append must not clobber the title")
+
+	it, err := s.List(ctx)
+	require.NoError(t, err)
+	headers, err := iterator.ToSlice(ctx, it)
+	require.NoError(t, err)
+	require.Len(t, headers, 1)
+	assert.Equal(t, "named", headers[0].Title)
+	assert.Equal(t, 1, headers[0].MessageCount)
+}
+
+func TestStoreSetTitleConcurrentAppendMessages(t *testing.T) {
+	ctx := context.Background()
+	s := newTempStore(t, storagestub.NewInMemoryService())
+
+	require.NoError(t, s.Create(ctx, Dialogue{ID: "d1", Messages: []llmapi.Message{
+		{Role: llmapi.RoleUser, Content: "seed"},
+	}}))
+
+	var wg sync.WaitGroup
+	for i := range 20 {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			_ = s.SetTitle(ctx, "d1", fmt.Sprintf("name-%d", i))
+		}()
+		go func() {
+			defer wg.Done()
+			_ = s.AppendMessages(ctx, Dialogue{ID: "d1"}, []llmapi.Message{
+				{Role: llmapi.RoleUser, Content: fmt.Sprintf("msg-%d", i)},
+			}, llmapi.DialogueUsage{})
+		}()
+	}
+	wg.Wait()
+
+	d, err := s.Get(ctx, "d1")
+	require.NoError(t, err)
+	assert.NotEmpty(t, d.Title, "a rename must not be lost")
+	assert.Greater(t, d.MessageCount, 1, "appends must not be lost")
+
+	it, err := s.List(ctx)
+	require.NoError(t, err)
+	headers, err := iterator.ToSlice(ctx, it)
+	require.NoError(t, err)
+	require.Len(t, headers, 1)
+	assert.Regexp(t, `^name-\d+$`, headers[0].Title,
+		"the index must hold a title committed by one of the renames")
+}
+
+func TestDialogueHeaderNamedID(t *testing.T) {
+	assert.Equal(t, "rolling-fox", DialogueHeader{ID: "rolling-fox"}.NamedID())
+	assert.Equal(t, "fix the flaky test (rolling-fox)",
+		DialogueHeader{ID: "rolling-fox", Title: "fix the flaky test"}.NamedID())
+}
+
+func TestParseNamedID(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"rolling-fox", "rolling-fox"},
+		{"fix the flaky test (rolling-fox)", "rolling-fox"},
+		{"fix (auth) bug (rolling-fox)", "rolling-fox"},
+		{"no close (paren", "no close (paren"},
+		{"trailing (paren", "trailing (paren"},
+	} {
+		assert.Equal(t, tc.want, ParseNamedID(tc.in), "input %q", tc.in)
+	}
+}
+
+func TestArchivedTitle(t *testing.T) {
+	assert.Equal(t, "", ArchivedTitle(""))
+	assert.Equal(t, "workspace scan-archived", ArchivedTitle("workspace scan"))
+}
+
+func TestIsArchivedOf(t *testing.T) {
+	for _, tc := range []struct {
+		id, base string
+		want     bool
+	}{
+		{"d1-archived", "d1", true},
+		{"d1-archived-2", "d1", true},
+		{"d1-archived-12", "d1", true},
+		{"d1", "d1", false},
+		{"d1-archive", "d1", false},
+		{"d1-archived-x", "d1", false},
+		{"d1-archived-", "d1", false},
+		{"d10", "d1", false},
+		{"other", "d1", false},
+		{"d1-archived", "d1-archived", false},
+	} {
+		assert.Equal(t, tc.want, IsArchivedOf(tc.id, tc.base), "id %q base %q", tc.id, tc.base)
+	}
+}
+
+func TestStoreSetTitlePropagatesToArchived(t *testing.T) {
+	ctx := context.Background()
+	s := newTempStore(t, storagestub.NewInMemoryService())
+
+	require.NoError(t, s.Create(ctx, Dialogue{
+		ID:       "d1",
+		Messages: []llmapi.Message{{Role: llmapi.RoleUser, Content: "hello"}},
+	}))
+	require.NoError(t, s.Create(ctx, Dialogue{
+		ID:    "unrelated",
+		Title: "keep me",
+	}))
+
+	archive := func(archivedID string) {
+		t.Helper()
+		live, err := s.Get(ctx, "d1")
+		require.NoError(t, err)
+		require.NoError(t, s.ArchiveAndReplace(ctx, ArchiveAndReplaceParams{
+			Dialogue:           live,
+			ArchivedDialogueID: archivedID,
+			Messages:           []llmapi.Message{{Role: llmapi.RoleUser, Content: "summary"}},
+		}))
+	}
+	archive("d1-archived")
+	archive("d1-archived-2")
+
+	require.NoError(t, s.SetTitle(ctx, "d1", "workspace scan"))
+
+	for _, id := range []string{"d1-archived", "d1-archived-2"} {
+		a, err := s.Get(ctx, id)
+		require.NoError(t, err)
+		assert.Equal(t, "workspace scan-archived", a.Title, "archived record %q", id)
+	}
+
+	it, err := s.List(ctx)
+	require.NoError(t, err)
+	headers, err := iterator.ToSlice(ctx, it)
+	require.NoError(t, err)
+	byID := make(map[string]DialogueHeader, len(headers))
+	for _, h := range headers {
+		byID[h.ID] = h
+	}
+	assert.Equal(t, "workspace scan", byID["d1"].Title)
+	assert.Equal(t, "workspace scan-archived", byID["d1-archived"].Title)
+	assert.Equal(t, "workspace scan-archived", byID["d1-archived-2"].Title)
+	assert.Equal(t, "keep me", byID["unrelated"].Title)
+
+	require.NoError(t, s.SetTitle(ctx, "d1", ""))
+	for _, id := range []string{"d1-archived", "d1-archived-2"} {
+		a, err := s.Get(ctx, id)
+		require.NoError(t, err)
+		assert.Empty(t, a.Title, "clearing must clear archived record %q", id)
+	}
+}
+
+func TestStoreArchiveAfterRenameTitlesArchive(t *testing.T) {
+	ctx := context.Background()
+	s := newTempStore(t, storagestub.NewInMemoryService())
+
+	require.NoError(t, s.Create(ctx, Dialogue{
+		ID:       "d1",
+		Messages: []llmapi.Message{{Role: llmapi.RoleUser, Content: "hello"}},
+	}))
+	require.NoError(t, s.SetTitle(ctx, "d1", "workspace scan"))
+
+	live, err := s.Get(ctx, "d1")
+	require.NoError(t, err)
+	require.NoError(t, s.ArchiveAndReplace(ctx, ArchiveAndReplaceParams{
+		Dialogue:           live,
+		ArchivedDialogueID: "d1-archived",
+		Messages:           []llmapi.Message{{Role: llmapi.RoleUser, Content: "summary"}},
+	}))
+
+	a, err := s.Get(ctx, "d1-archived")
+	require.NoError(t, err)
+	assert.Equal(t, "workspace scan-archived", a.Title)
+}

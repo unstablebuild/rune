@@ -60,3 +60,4 @@ uv.lock
 
 # distribution packaging build outputs (dist/README.md)
 dist/out/
+tmp-seed/
