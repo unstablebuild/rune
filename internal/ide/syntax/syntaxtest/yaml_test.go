@@ -27,6 +27,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/ide/syntax"
+	"unstable.build/rune/internal/ide/syntax/treesitter"
 	"unstable.build/rune/internal/text"
 	"unstable.build/rune/internal/text/texttest"
 	"unstable.build/rune/internal/text/vi"
@@ -77,9 +78,10 @@ func newYAMLTestCase(
 	tcfg := text.DefaultConfig()
 	// Share scfg's mutex-serializing scheduler; see newTestCase in
 	// go_test.go for why an independent inline scheduler races with
-	// syntax.Tree's async parser init on the shared cell.Buffer.
+	// treesitter.Tree's async parser init on the shared cell.Buffer.
 	tcfg.ScheduleNextTick = scfg.ScheduleNextTick
 	tcfg.Syntax = scfg
+	tcfg.SyntaxTree = treesitter.New
 	tcfg.PkgManager = pkgs
 	tcfg.EventPublisher = func(ev term.Event) bool {
 		interrupt(context.Background())

@@ -28,9 +28,12 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/cell"
 	"unstable.build/rune/internal/component"
+	"unstable.build/rune/internal/ide/syntax/treesitter"
 	"unstable.build/rune/internal/text"
 	"unstable.build/rune/internal/text/registerset"
 )
+
+var _ foldsService = (*treesitter.Tree)(nil)
 
 // newHelix builds a real Helix handler over content with an in-memory
 // clipboard, positions the caret, and returns the handler plus the

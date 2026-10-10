@@ -763,6 +763,8 @@ func PermissionActionText(permission extensionapi.Permission) string {
 		return "communicate with DAP servers"
 	case extensionapi.PermissionLLM:
 		return "use your configured LLM providers"
+	case extensionapi.PermissionPackages:
+		return "find and install Rune packages"
 	default:
 		return fmt.Sprintf("access permission %s", permission)
 	}

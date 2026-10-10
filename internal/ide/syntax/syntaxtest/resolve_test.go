@@ -32,6 +32,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/iterator"
 	"unstable.build/rune/internal/ide/syntax"
 	"unstable.build/rune/internal/ide/syntax/grammarfixture"
+	"unstable.build/rune/internal/ide/syntax/treesitter"
 	"unstable.build/rune/internal/workspace"
 )
 
@@ -104,7 +105,7 @@ func newResolveParser(t *testing.T, files map[string]string) syntaxapi.Parser {
 	for name, content := range files {
 		createFile(t, scheme, name, content)
 	}
-	return syntax.NewParser(scheme, langPkgManager{wd: wd}, uri)
+	return treesitter.NewParser(scheme, langPkgManager{wd: wd}, uri)
 }
 
 // recordingPkgManager wraps a PkgManager and records every language for
@@ -151,7 +152,7 @@ func newRecordingResolveParser(
 		createFile(t, scheme, name, content)
 	}
 	pkg := &recordingPkgManager{inner: langPkgManager{wd: wd}}
-	return syntax.NewParser(scheme, pkg, uri), pkg
+	return treesitter.NewParser(scheme, pkg, uri), pkg
 }
 
 func resolveAll(t *testing.T, parser syntaxapi.Parser, name string) ([]syntaxapi.Match, error) {

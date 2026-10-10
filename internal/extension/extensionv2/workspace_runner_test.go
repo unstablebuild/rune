@@ -182,7 +182,9 @@ func TestWorkspaceRunnerStartCommandPreservesCallerEnv(t *testing.T) {
 	assert.Contains(t, exec.cmd.Env, "ZDOTDIR=/Applications/Rune.app/Contents/Resources/zdot")
 	assert.Contains(t, exec.cmd.Env, "FOO=bar")
 	assert.Contains(t, exec.cmd.Env, "RUNE_SOCKET=/tmp/ext.sock")
-	assert.Contains(t, exec.cmd.Env, "RUNE_DATADIR=/tmp/ext-data")
+	assert.Contains(t, exec.cmd.Env, "RUNE_DATADIR=/tmp/ext-install",
+		"ad-hoc commands run on the workspace host and see its data dir")
+	assert.NotContains(t, exec.cmd.Env, "RUNE_DATADIR=/tmp/ext-data")
 	assert.Contains(t, exec.cmd.Env, "RUNE_INSTALLDIR=/tmp/ext-install",
 		"install dir is carried separately from the local data dir")
 	// cmd.Dir is left untouched: the host-side fileScheme defaults
@@ -257,7 +259,7 @@ func TestWorkspaceRunnerStartCommandMarksTokenPlugin(t *testing.T) {
 	)
 
 	env, err := runner.commandEnvs(context.Background(), "/bin/zsh",
-		[]string{"--login", "-i"})
+		[]string{"--login", "-i"}, "/tmp/ext-install")
 	require.NoError(t, err)
 
 	var token string
@@ -304,6 +306,8 @@ func TestWorkspaceRunnerRunCarriesExtensionID(t *testing.T) {
 	extensionID, ok := processctx.ExtensionIDFromContext(exec.ctx)
 	require.True(t, ok)
 	assert.Equal(t, "test-extension", extensionID)
+	assert.Contains(t, exec.cmd.Env, "RUNE_DATADIR=/tmp/ext-data",
+		"extensions run next to the IDE and see its data dir")
 
 	states := runner.listExtensions()
 	require.Len(t, states, 1)
@@ -595,6 +599,75 @@ func TestWorkspaceRunnerExpandsEnvInEntrypoint(t *testing.T) {
 			require.NoError(t, runner.Run("src-ext", tt.cmdAndArgs, config.NopConfig()))
 			assert.Equal(t, []string{"-C", goPkgDir, "run", ".", "--flag"},
 				exec.snapshotCmd().Args)
+		})
+	}
+}
+
+// recordingTrustVerifier records the entrypoints it is asked to verify.
+type recordingTrustVerifier struct {
+	mu    sync.Mutex
+	paths []string
+}
+
+func (v *recordingTrustVerifier) VerifyExtensionEntrypoint(path string) (string, bool) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.paths = append(v.paths, path)
+	return "", false
+}
+
+func TestWorkspaceRunnerExpandsDataDirInEntrypoint(t *testing.T) {
+	// The process environment names another data directory; the runner's
+	// own is the one its extensions are installed in.
+	t.Setenv("RUNE_DATADIR", "/elsewhere")
+	keys, err := auth.GenerateKeys()
+	require.NoError(t, err)
+	uri, err := workspaceapi.ParseURI("file:///tmp")
+	require.NoError(t, err)
+	dataDir := t.TempDir()
+	pkgDir := filepath.Join(dataDir, "lib", "pkg")
+	require.NoError(t, os.MkdirAll(pkgDir, 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(pkgDir, "go.mod"), []byte("module ext\n"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(dataDir, "bin"), 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dataDir, "bin", "go"), []byte("#!/bin/sh\n"), 0o755))
+
+	for _, tt := range []struct {
+		name       string
+		cmdAndArgs string
+		wantPath   string
+		wantArgs   []string
+		wantVerify string
+	}{
+		{
+			name:       "binary",
+			cmdAndArgs: "$RUNE_DATADIR/lib/pkg/ext --flag",
+			wantPath:   filepath.Join(pkgDir, "ext"),
+			wantArgs:   []string{"--flag"},
+			wantVerify: filepath.Join(pkgDir, "ext"),
+		},
+		{
+			name:       "package directory",
+			cmdAndArgs: "$RUNE_DATADIR/lib/pkg",
+			wantPath:   filepath.Join(dataDir, "bin", "go"),
+			wantArgs:   []string{"-C", pkgDir, "run", "."},
+			wantVerify: pkgDir,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			exec := &recordingExecutor{}
+			verifier := &recordingTrustVerifier{}
+			runner := newWorkspaceRunner(
+				exec, exec, nil, verifier, uri,
+				"/tmp/ext.sock", dataDir, "/tmp/ext-install",
+				[]byte("cert"), keys,
+			)
+			require.NoError(t, runner.Run("ext", tt.cmdAndArgs, config.NopConfig()))
+			cmd := exec.snapshotCmd()
+			assert.Equal(t, tt.wantPath, cmd.Path)
+			assert.Equal(t, tt.wantArgs, cmd.Args)
+			assert.Equal(t, []string{tt.wantVerify}, verifier.paths)
 		})
 	}
 }

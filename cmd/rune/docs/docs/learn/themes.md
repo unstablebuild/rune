@@ -113,8 +113,9 @@ gui:
 You do not have to set every color. Any name you leave out keeps its
 current value, so a theme can be as small as a couple of overrides.
 
-Once it is in your config, activate it with `guitheme mytheme` or restart
-with `default_theme` set to it.
+Rune loads the themes in your config at startup. After adding one, restart
+Rune or open a new window with `guiwindownew`, then activate it with
+`guitheme mytheme`, or set `default_theme` to it to use it at startup.
 
 ## Share your theme
 
@@ -157,7 +158,8 @@ pkg install github.com/ernestrc/rune-theme-redmond95
 guitheme redmond95
 ```
 
-Installing merges the theme into `gui.themes` without changing the user's
-default theme. They can select it with `guitheme` or set
+Installing merges the theme into `gui.themes` and makes it available to
+`guitheme` immediately, with no restart. It does not change the active theme
+or `gui.default_theme`. Users can select it with `guitheme` or set
 `gui.default_theme: redmond95` in their own config to use it at startup.
 See [Packages](../develop/packages.md) for installation and versioning details.

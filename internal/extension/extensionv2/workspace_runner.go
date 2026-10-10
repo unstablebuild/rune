@@ -43,8 +43,9 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/extension"
+	"unstable.build/rune/internal/ide/hostenv"
 	"unstable.build/rune/internal/ide/ideauthorizer"
-	"unstable.build/rune/internal/procattr"
+	"unstable.build/rune/internal/ide/procattr"
 	"unstable.build/rune/internal/workspace"
 	"unstable.build/rune/internal/workspace/processctx"
 )
@@ -184,7 +185,9 @@ func (m *workspaceRunner) init(
 func (m *workspaceRunner) StartCommand(ctx context.Context, cmd workspaceapi.Cmd) (
 	workspaceapi.Pid, error,
 ) {
-	env, err := m.commandEnvs(ctx, cmd.Path, cmd.Args)
+	// Ad-hoc commands run on the workspace host, whose data directory is
+	// the install root rather than the IDE's.
+	env, err := m.commandEnvs(ctx, cmd.Path, cmd.Args, m.installDir)
 	if err != nil {
 		return 0, err
 	}
@@ -293,6 +296,12 @@ func (m *workspaceRunner) makeCommand(
 	waitCh := make(chan error)
 	// allow args to be passed to extensions
 	argv := strings.Split(path, " ")
+	// The extension runs against m.dataDir, so that is where the
+	// $RUNE_DATADIR in its configured entrypoint points, whatever the
+	// process environment says.
+	for i, arg := range argv {
+		argv[i] = hostenv.ExpandDataDir(arg, m.dataDir)
+	}
 	verifiedPublisher := ""
 	if len(argv) > 0 {
 		if entrypoint, expandErr := m.resolveEntrypoint(argv[0]); expandErr == nil {
@@ -329,7 +338,7 @@ func (m *workspaceRunner) makeCommand(
 		}
 	}
 
-	ret.Env, err = m.commandEnvs(ctx, ret.Path, ret.Args)
+	ret.Env, err = m.commandEnvs(ctx, ret.Path, ret.Args, m.dataDir)
 	if err != nil {
 		return workspaceapi.Cmd{}, err
 	}
@@ -525,13 +534,18 @@ func findFileUp(dir, name string) (string, bool) {
 	}
 }
 
-func (m *workspaceRunner) commandEnvs(ctx context.Context, path string, args []string) ([]string, error) {
+// commandEnvs returns the environment that authorizes a command to call
+// back into Rune. dataDir is the Rune data directory of the host the
+// command runs on.
+func (m *workspaceRunner) commandEnvs(
+	ctx context.Context, path string, args []string, dataDir string,
+) ([]string, error) {
 	// TODO expire token manually when program finishes
 	const tokenExpiresIn = 24 * 365 * time.Hour
 
 	env := []string{makeLogLevelEnv(log.GetLevel())}
 	env = append(env, fmt.Sprintf("%s=%s", m.cfg.socketEnv, m.socket))
-	env = append(env, fmt.Sprintf("%s=%s", m.cfg.dataDirEnv, m.dataDir))
+	env = append(env, fmt.Sprintf("%s=%s", m.cfg.dataDirEnv, dataDir))
 	env = append(env, fmt.Sprintf("%s=%s", m.cfg.installDirEnv, m.installDir))
 	cert := base64.StdEncoding.EncodeToString(m.tlsCert)
 	env = append(env, fmt.Sprintf("%s=%s", m.cfg.authCertEnv, cert))

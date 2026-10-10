@@ -293,6 +293,59 @@ func TestStartCommand(t *testing.T) {
 		assert.Equal(t, "ok", stdout.String())
 	})
 
+	t.Run("RUNE_DATADIR is expanded to the host data dir", func(t *testing.T) {
+		for _, tc := range []struct {
+			name             string
+			schemeDataDir    string
+			processDataDir   string
+			wantDataDirIsEnv bool
+		}{
+			{name: "scheme data dir", schemeDataDir: "set", processDataDir: "/elsewhere"},
+			{name: "process data dir", processDataDir: "set", wantDataDirIsEnv: true},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				dataDir := t.TempDir()
+				require.NoError(t, os.Mkdir(filepath.Join(dataDir, "bin"), 0o755))
+				require.NoError(t, os.WriteFile(filepath.Join(dataDir, "bin", "show"), []byte(
+					"#!/bin/sh\nprintf '%s\\n' \"$@\" \"FOO=$FOO\" \"BAR=$BAR\"\n"), 0o755))
+				t.Setenv("HOME", "/home/me")
+				processDataDir := tc.processDataDir
+				if processDataDir == "set" {
+					processDataDir = dataDir
+				}
+				t.Setenv("RUNE_DATADIR", processDataDir)
+
+				s, err := newTestFileScheme(dirURI(t, t.TempDir()))
+				require.NoError(t, err)
+				defer s.Close()
+				if tc.schemeDataDir == "set" {
+					s.dataDir = dataDir
+				}
+
+				args := []string{"$RUNE_DATADIR/x", "${RUNE_DATADIR}", "$HOME", "$1", `\$RUNE_DATADIR`}
+				env := []string{"FOO=$RUNE_DATADIR/foo", "BAR=$HOME"}
+				var stdout bytes.Buffer
+				ch := make(chan error)
+				_, err = s.StartCommand(context.Background(), workspaceapi.Cmd{
+					Path:    "$RUNE_DATADIR/bin/show",
+					Args:    args,
+					Env:     env,
+					Watcher: workspaceapi.ChanProcessWatcher(ch),
+					Stdout:  &stdout,
+				})
+				require.NoError(t, err)
+				require.NoError(t, <-ch)
+
+				assert.Equal(t, strings.Join([]string{
+					dataDir + "/x", dataDir, "$HOME", "$1", `\$RUNE_DATADIR`,
+					"FOO=" + dataDir + "/foo", "BAR=$HOME",
+				}, "\n")+"\n", stdout.String())
+				assert.Equal(t, "$RUNE_DATADIR/x", args[0], "the caller's args are not edited")
+				assert.Equal(t, "FOO=$RUNE_DATADIR/foo", env[0], "the caller's env is not edited")
+			})
+		}
+	})
+
 	t.Run("omitting Cmd.Dir makes command run on workspace dir", func(t *testing.T) {
 		tmpDir, err := os.MkdirTemp("", "")
 		require.NoError(t, err)
@@ -883,7 +936,10 @@ func TestReadFileClosesFile(t *testing.T) {
 }
 
 func TestFileSchemeWithShellRC(t *testing.T) {
-	fishInit := []string{"-C", FishInitCommand}
+	fishInit := []string{"-C", "test -r '/rune/shellrc/env.fish'; and source '/rune/shellrc/env.fish'; " + fishBindings}
+	inputrc := []string{"INPUTRC=/rune/shellrc/inputrc"}
+	profile := []string{"--init-file", "/rune/shellrc/bash_profile"}
+	rcfile := []string{"--rcfile", "/rune/shellrc/bashrc"}
 	for _, tc := range []struct {
 		name       string
 		shellRCDir string
@@ -896,9 +952,59 @@ func TestFileSchemeWithShellRC(t *testing.T) {
 			want: workspaceapi.Cmd{Path: "/bin/zsh", Args: []string{"-l"}, Env: []string{"ZDOTDIR=/rune/shellrc"}},
 		},
 		{
-			name: "bash", shellRCDir: "/rune/shellrc",
+			name: "bash without args", shellRCDir: "/rune/shellrc",
 			cmd:  workspaceapi.Cmd{Path: "bash"},
-			want: workspaceapi.Cmd{Path: "bash", Env: []string{"INPUTRC=/rune/shellrc/inputrc"}},
+			want: workspaceapi.Cmd{Path: "bash", Args: rcfile, Env: inputrc},
+		},
+		{
+			name: "bash default login shell", shellRCDir: "/rune/shellrc",
+			cmd:  workspaceapi.Cmd{Path: "/bin/bash", Args: []string{"--login", "-i"}},
+			want: workspaceapi.Cmd{Path: "/bin/bash", Args: append(profile, "-i"), Env: inputrc},
+		},
+		{
+			name: "bash -l", shellRCDir: "/rune/shellrc",
+			cmd:  workspaceapi.Cmd{Path: "bash", Args: []string{"-l"}},
+			want: workspaceapi.Cmd{Path: "bash", Args: profile, Env: inputrc},
+		},
+		{
+			name: "bash -il", shellRCDir: "/rune/shellrc",
+			cmd:  workspaceapi.Cmd{Path: "bash", Args: []string{"-il"}},
+			want: workspaceapi.Cmd{Path: "bash", Args: append(profile, "-i"), Env: inputrc},
+		},
+		{
+			name: "bash -i", shellRCDir: "/rune/shellrc",
+			cmd:  workspaceapi.Cmd{Path: "bash", Args: []string{"-i"}},
+			want: workspaceapi.Cmd{Path: "bash", Args: append(rcfile, "-i"), Env: inputrc},
+		},
+		{
+			name: "bash options and their values are kept", shellRCDir: "/rune/shellrc",
+			cmd:  workspaceapi.Cmd{Path: "bash", Args: []string{"-o", "vi", "--login", "+O", "extglob"}},
+			want: workspaceapi.Cmd{Path: "bash", Args: append(profile, "-o", "vi", "+O", "extglob"), Env: inputrc},
+		},
+		{
+			name: "bash --norc", shellRCDir: "/rune/shellrc",
+			cmd:  workspaceapi.Cmd{Path: "bash", Args: []string{"--norc", "-i"}},
+			want: workspaceapi.Cmd{Path: "bash", Args: []string{"--norc", "-i"}, Env: inputrc},
+		},
+		{
+			name: "bash --rcfile", shellRCDir: "/rune/shellrc",
+			cmd:  workspaceapi.Cmd{Path: "bash", Args: []string{"--rcfile", "x", "-i"}},
+			want: workspaceapi.Cmd{Path: "bash", Args: []string{"--rcfile", "x", "-i"}, Env: inputrc},
+		},
+		{
+			name: "bash --noprofile", shellRCDir: "/rune/shellrc",
+			cmd:  workspaceapi.Cmd{Path: "bash", Args: []string{"--login", "--noprofile", "-i"}},
+			want: workspaceapi.Cmd{Path: "bash", Args: []string{"--login", "--noprofile", "-i"}, Env: inputrc},
+		},
+		{
+			name: "bash command", shellRCDir: "/rune/shellrc",
+			cmd:  workspaceapi.Cmd{Path: "bash", Args: []string{"-lc", "make"}},
+			want: workspaceapi.Cmd{Path: "bash", Args: []string{"-lc", "make"}, Env: inputrc},
+		},
+		{
+			name: "bash script", shellRCDir: "/rune/shellrc",
+			cmd:  workspaceapi.Cmd{Path: "bash", Args: []string{"-l", "script.sh"}},
+			want: workspaceapi.Cmd{Path: "bash", Args: []string{"-l", "script.sh"}, Env: inputrc},
 		},
 		{
 			name: "fish", shellRCDir: "/rune/shellrc",
@@ -914,7 +1020,7 @@ func TestFileSchemeWithShellRC(t *testing.T) {
 			// fish's bindings don't come from the directory
 			name: "fish without a directory",
 			cmd:  workspaceapi.Cmd{Path: "fish"},
-			want: workspaceapi.Cmd{Path: "fish", Args: fishInit},
+			want: workspaceapi.Cmd{Path: "fish", Args: []string{"-C", fishBindings}},
 		},
 		{
 			name: "zsh without a directory",
@@ -923,8 +1029,8 @@ func TestFileSchemeWithShellRC(t *testing.T) {
 		},
 		{
 			name: "bash without a directory",
-			cmd:  workspaceapi.Cmd{Path: "bash"},
-			want: workspaceapi.Cmd{Path: "bash"},
+			cmd:  workspaceapi.Cmd{Path: "bash", Args: []string{"--login", "-i"}},
+			want: workspaceapi.Cmd{Path: "bash", Args: []string{"--login", "-i"}},
 		},
 		{
 			name: "another shell", shellRCDir: "/rune/shellrc",

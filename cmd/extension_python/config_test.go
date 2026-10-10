@@ -24,70 +24,60 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 )
 
-func TestApplyPyConfig(t *testing.T) {
-	defCommand := "ty server"
-	defAlternates := map[string]string{
-		"textDocument/formatting":      "ruff server",
-		"textDocument/rangeFormatting": "ruff server",
+func TestReadPyOverrides(t *testing.T) {
+	tests := []struct {
+		name           string
+		cfg            config.Config
+		wantCommand    string
+		wantAlternates map[string]string
+		wantWarning    bool
+	}{
+		{name: "nil config overrides nothing"},
+		{name: "empty config overrides nothing", cfg: config.JSONFromMap(map[string]any{})},
+		{
+			name:        "command override",
+			cfg:         config.JSONFromMap(map[string]any{"command": "pyright-langserver --stdio"}),
+			wantCommand: "pyright-langserver --stdio",
+		},
+		{
+			name: "command and alternates override",
+			cfg: config.JSONFromMap(map[string]any{
+				"command": "pyright-langserver --stdio",
+				"alternate_commands": map[string]any{
+					"textDocument/formatting": "ruff server",
+				},
+			}),
+			wantCommand:    "pyright-langserver --stdio",
+			wantAlternates: map[string]string{"textDocument/formatting": "ruff server"},
+		},
+		{
+			name: "alternates override",
+			cfg: config.JSONFromMap(map[string]any{
+				"alternate_commands": map[string]any{
+					"textDocument/formatting": "black server",
+				},
+			}),
+			wantAlternates: map[string]string{"textDocument/formatting": "black server"},
+		},
+		{
+			name: "invalid alternate value warns and overrides nothing",
+			cfg: config.JSONFromMap(map[string]any{
+				"alternate_commands": map[string]any{
+					"textDocument/formatting": 42,
+				},
+			}),
+			wantWarning: true,
+		},
 	}
-
-	t.Run("nil config keeps defaults", func(t *testing.T) {
-		cmd, alt := applyPyConfig(nil, newFakeNotifications(), defCommand, defAlternates)
-		assert.Equal(t, defCommand, cmd)
-		assert.Equal(t, defAlternates, alt)
-	})
-
-	t.Run("empty config keeps defaults", func(t *testing.T) {
-		cfg := config.JSONFromMap(map[string]any{})
-		cmd, alt := applyPyConfig(cfg, newFakeNotifications(), defCommand, defAlternates)
-		assert.Equal(t, defCommand, cmd)
-		assert.Equal(t, defAlternates, alt)
-	})
-
-	t.Run("command override drops default alternates", func(t *testing.T) {
-		cfg := config.JSONFromMap(map[string]any{
-			"command": "pyright-langserver --stdio",
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			notify := newFakeNotifications()
+			cmd, alt := readPyOverrides(tc.cfg, notify)
+			assert.Equal(t, tc.wantCommand, cmd)
+			assert.Equal(t, tc.wantAlternates, alt)
+			assert.Equal(t, tc.wantWarning, len(notify.notifs) > 0)
 		})
-		cmd, alt := applyPyConfig(cfg, newFakeNotifications(), defCommand, defAlternates)
-		assert.Equal(t, "pyright-langserver --stdio", cmd)
-		assert.Nil(t, alt)
-	})
-
-	t.Run("command override keeps supplied alternates", func(t *testing.T) {
-		cfg := config.JSONFromMap(map[string]any{
-			"command": "pyright-langserver --stdio",
-			"alternate_commands": map[string]any{
-				"textDocument/formatting": "ruff server",
-			},
-		})
-		cmd, alt := applyPyConfig(cfg, newFakeNotifications(), defCommand, defAlternates)
-		assert.Equal(t, "pyright-langserver --stdio", cmd)
-		assert.Equal(t, map[string]string{"textDocument/formatting": "ruff server"}, alt)
-	})
-
-	t.Run("alternates override without command keeps default command", func(t *testing.T) {
-		cfg := config.JSONFromMap(map[string]any{
-			"alternate_commands": map[string]any{
-				"textDocument/formatting": "black server",
-			},
-		})
-		cmd, alt := applyPyConfig(cfg, newFakeNotifications(), defCommand, defAlternates)
-		assert.Equal(t, defCommand, cmd)
-		assert.Equal(t, map[string]string{"textDocument/formatting": "black server"}, alt)
-	})
-
-	t.Run("invalid alternate value warns and keeps defaults", func(t *testing.T) {
-		cfg := config.JSONFromMap(map[string]any{
-			"alternate_commands": map[string]any{
-				"textDocument/formatting": 42,
-			},
-		})
-		notify := newFakeNotifications()
-		cmd, alt := applyPyConfig(cfg, notify, defCommand, defAlternates)
-		assert.Equal(t, defCommand, cmd)
-		assert.Equal(t, defAlternates, alt)
-		assert.NotEmpty(t, notify.notifs)
-	})
+	}
 }
 
 func TestPyLogLevel(t *testing.T) {

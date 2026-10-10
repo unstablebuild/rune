@@ -22,7 +22,7 @@ import (
 
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"google.golang.org/grpc"
-	"unstable.build/rune/internal/ide/ideshell/workspaceshell"
+	"unstable.build/rune/internal/ide/console/ideconsole/workspaceshell"
 	"unstable.build/rune/internal/workspace"
 )
 

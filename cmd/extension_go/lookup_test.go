@@ -35,7 +35,10 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
+	"github.com/unstablebuild/rune-go-sdk/api/pkgapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"unstable.build/rune/internal/extension/langext"
+	"unstable.build/rune/internal/extension/langext/langexttest"
 )
 
 // fakeFileInfo satisfies os.FileInfo for paths scripted into fakeFS.
@@ -117,38 +120,6 @@ func (f *fakeFS) ReadDir(_ string) ([]os.DirEntry, error) {
 	return nil, errors.New("not supported")
 }
 
-// fakeInstaller mirrors extensionapi.Workspace.FindInstalledExecutable
-// against a fakeFS: it resolves <root>/bin/<name> and reports the path
-// only when it exists as a regular file.
-type fakeInstaller struct {
-	fs   *fakeFS
-	root string
-}
-
-func (i fakeInstaller) FindInstalledExecutable(
-	_ context.Context, name string,
-) (string, error) {
-	p := path.Join(i.root, "bin", name)
-	info, err := i.fs.Stat(p)
-	if err != nil {
-		return "", err
-	}
-	if info == nil || info.IsDir() {
-		return "", os.ErrNotExist
-	}
-	return p, nil
-}
-
-// nopInstaller resolves nothing; resolvers must fall through to their
-// other candidates.
-type nopInstaller struct{}
-
-func (nopInstaller) FindInstalledExecutable(
-	context.Context, string,
-) (string, error) {
-	return "", os.ErrNotExist
-}
-
 // scriptedCmd records expected exit code, stdout payload, and a tag
 // recorded into log for assertions.
 type scriptedCmd struct {
@@ -222,20 +193,18 @@ func (e *fakeExecutor) Close() error { return nil }
 const shellProbe = "sh -lc command -v gopls"
 
 func TestResolveGoplsBinary(t *testing.T) {
-	t.Run("DataDir/bin/gopls wins over well-known and shell", func(t *testing.T) {
-		fs := newFakeFS().
-			addFile("/Users/u/.rune/bin/gopls").
-			addFile("/usr/local/go/bin/gopls")
+	t.Run("packaged gopls wins over well-known and shell", func(t *testing.T) {
+		fs := newFakeFS().addFile("/usr/local/go/bin/gopls")
 		ex := newFakeExecutor()
 		got, err := resolveGoplsBinary(
-			context.Background(), fs, ex, fakeInstaller{fs: fs, root: "/Users/u/.rune"})
+			context.Background(), fs, ex, "/Users/u/.rune/lib/go/bin/gopls")
 		require.NoError(t, err)
-		assert.Equal(t, "/Users/u/.rune/bin/gopls", got)
+		assert.Equal(t, "/Users/u/.rune/lib/go/bin/gopls", got)
 		assert.Empty(t, ex.calls,
-			"no executor probes should run when DataDir/bin/gopls exists")
+			"no executor probes should run when the package ships gopls")
 	})
 
-	t.Run("DataDir miss falls through to well-known with tilde", func(t *testing.T) {
+	t.Run("no packaged gopls falls through to well-known with tilde", func(t *testing.T) {
 		// Regression for RUNE-164: tilde well-known paths must
 		// resolve via fs.Stat without any prior $HOME probe.
 		fs := newFakeFS().
@@ -243,7 +212,7 @@ func TestResolveGoplsBinary(t *testing.T) {
 			addFile("/Users/u/go/bin/gopls")
 		ex := newFakeExecutor()
 		got, err := resolveGoplsBinary(
-			context.Background(), fs, ex, fakeInstaller{fs: fs, root: "/Users/u/.rune"})
+			context.Background(), fs, ex, "")
 		require.NoError(t, err)
 		assert.Equal(t, "/Users/u/go/bin/gopls", got)
 		assert.Empty(t, ex.calls,
@@ -254,7 +223,7 @@ func TestResolveGoplsBinary(t *testing.T) {
 		fs := newFakeFS().addFile("/opt/homebrew/bin/gopls")
 		ex := newFakeExecutor()
 		got, err := resolveGoplsBinary(
-			context.Background(), fs, ex, fakeInstaller{fs: fs, root: ""})
+			context.Background(), fs, ex, "")
 		require.NoError(t, err)
 		assert.Equal(t, "/opt/homebrew/bin/gopls", got)
 		assert.Empty(t, ex.calls)
@@ -265,7 +234,7 @@ func TestResolveGoplsBinary(t *testing.T) {
 		ex := newFakeExecutor().
 			respond(shellProbe, scriptedCmd{err: errors.New("not found")})
 		_, err := resolveGoplsBinary(
-			context.Background(), fs, ex, fakeInstaller{fs: fs, root: ""})
+			context.Background(), fs, ex, "")
 		require.Error(t, err)
 	})
 
@@ -274,7 +243,7 @@ func TestResolveGoplsBinary(t *testing.T) {
 		ex := newFakeExecutor().
 			respond(shellProbe, scriptedCmd{stdout: "/opt/gopls\n"})
 		got, err := resolveGoplsBinary(
-			context.Background(), fs, ex, fakeInstaller{fs: fs, root: ""})
+			context.Background(), fs, ex, "")
 		require.NoError(t, err)
 		assert.Equal(t, "/opt/gopls", got)
 	})
@@ -284,7 +253,7 @@ func TestResolveGoplsBinary(t *testing.T) {
 		ex := newFakeExecutor().
 			respond(shellProbe, scriptedCmd{stdout: "gopls\n"})
 		_, err := resolveGoplsBinary(
-			context.Background(), fs, ex, fakeInstaller{fs: fs, root: ""})
+			context.Background(), fs, ex, "")
 		require.Error(t, err)
 	})
 
@@ -293,9 +262,86 @@ func TestResolveGoplsBinary(t *testing.T) {
 		ex := newFakeExecutor().
 			respond(shellProbe, scriptedCmd{err: errors.New("not found")})
 		_, err := resolveGoplsBinary(
-			context.Background(), fs, ex, fakeInstaller{fs: fs, root: "/Users/u/.rune"})
+			context.Background(), fs, ex, "")
 		require.Error(t, err)
 	})
+}
+
+func TestResolveGoplsForRootLooksUpPackageOnlyWithoutOverride(t *testing.T) {
+	const wellKnown = "/usr/local/go/bin/gopls"
+	tests := []struct {
+		name     string
+		cfg      config.Config
+		inst     *langexttest.Installer
+		want     string
+		lookups  int
+		warnings []string
+	}{
+		{
+			name: "lsp_path override",
+			cfg:  config.JSONFromMap(map[string]any{"lsp_path": "/opt/gopls"}),
+			inst: &langexttest.Installer{Files: []string{"/lib/go/bin/gopls"}},
+			want: "/opt/gopls",
+		},
+		{
+			name:    "packaged gopls",
+			inst:    &langexttest.Installer{Files: []string{"/lib/go/bin/gopls"}},
+			want:    "/lib/go/bin/gopls",
+			lookups: 1,
+		},
+		{
+			name:    "package not installed falls back quietly",
+			inst:    &langexttest.Installer{Err: fmt.Errorf("go: %w", pkgapi.ErrNotInstalled)},
+			want:    wellKnown,
+			lookups: 1,
+		},
+		{
+			name:    "package without gopls warns and falls back",
+			inst:    &langexttest.Installer{Files: []string{"/lib/go/bin/go"}},
+			want:    wellKnown,
+			lookups: 1,
+			warnings: []string{"Could not find gopls in the go package: " +
+				"go/bin/gopls: langext: tool not shipped by package. " +
+				"Looking for one on the host instead."},
+		},
+		{
+			name:    "failed lookup warns and falls back",
+			inst:    &langexttest.Installer{Err: errors.New("rpc error: code = PermissionDenied")},
+			want:    wellKnown,
+			lookups: 1,
+			warnings: []string{"Could not find gopls in the go package: " +
+				"rpc error: code = PermissionDenied. " +
+				"Looking for one on the host instead."},
+		},
+		{
+			name: "failed lookup uses the install root quietly",
+			inst: &langexttest.Installer{
+				Err:         errors.New("unknown service pkg.Packages"),
+				Provisioned: map[string]string{"gopls": "/home/me/.rune/bin/gopls"},
+			},
+			want:    "/home/me/.rune/bin/gopls",
+			lookups: 1,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tools := langext.NewInitializer(t.Context(), nil, nil, tc.inst, langext.ProjectConfig{
+				LanguageID: "go", Tools: []string{"gopls"},
+			}).Tools()
+			fs := newFakeFS().addFile(wellKnown)
+			ex := newFakeExecutor().respond(shellProbe, scriptedCmd{err: errors.New("not found")})
+			notify := &mockNotifications{}
+
+			got := resolveGoplsForRoot(t.Context(), fs, ex, tools, tc.cfg, notify, "file")
+			assert.Equal(t, tc.want, got)
+			assert.Equal(t, tc.lookups, tc.inst.Lookups())
+			var warnings []string
+			for _, m := range notify.getMessages() {
+				warnings = append(warnings, m.Message)
+			}
+			assert.Equal(t, tc.warnings, warnings)
+		})
+	}
 }
 
 func TestHasGoProjectFiles(t *testing.T) {

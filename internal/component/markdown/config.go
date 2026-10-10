@@ -39,6 +39,22 @@ type Config struct {
 	// Code styles
 	CodeBlock  term.Attributes
 	InlineCode term.Attributes
+	// CodeBlockPadding insets code within the code block background. The
+	// horizontal padding is dropped when it would leave no column for code.
+	CodeBlockPadding Padding
+	// CodeBlockCopy, when true, draws CodeBlockCopyIcon in the top-right
+	// corner of each code block's padding to mark it as copyable. It needs
+	// CodeBlockPadding.Top >= 1 and Right >= the icon's width, and is not
+	// drawn otherwise. The component only draws it: hosts that enable it
+	// must resolve clicks against Component.CodeBlockCopyTargets and do
+	// the copying.
+	CodeBlockCopy     bool
+	CodeBlockCopyIcon rune
+	// CodeBlockCopyIconAttr styles CodeBlockCopyIcon, and
+	// CodeBlockCopyIconHoverAttr styles it while hovered. Both take the
+	// CodeBlock background when it sets one.
+	CodeBlockCopyIconAttr      term.Attributes
+	CodeBlockCopyIconHoverAttr term.Attributes
 	// Parser, when set, enables syntax highlighting inside fenced code blocks.
 	Parser syntaxapi.Parser
 	// ScheduleNextTick schedules a function to run on the next event-loop
@@ -73,6 +89,11 @@ type Config struct {
 	// Search highlight styles
 	SearchMatch   term.Attributes // non-current search matches
 	SearchCurrent term.Attributes // current search match
+}
+
+// Padding is the number of blank cells on each side of a block.
+type Padding struct {
+	Top, Right, Bottom, Left int
 }
 
 // TableCharSet defines the characters used to draw table borders.
@@ -137,6 +158,10 @@ func DefaultConfig() Config {
 
 		CodeBlock:  codeblock,
 		InlineCode: codeblock,
+
+		CodeBlockCopyIcon:          '', // nf-fa-copy
+		CodeBlockCopyIconAttr:      def,
+		CodeBlockCopyIconHoverAttr: term.Attributes{Fg: term.ColorBlue},
 
 		Link:    cyanUnderline,
 		LinkURL: cyan,

@@ -17,12 +17,14 @@
 package gui
 
 import (
+	"context"
 	"image"
 	"image/draw"
 	"math"
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"unstable.build/rune/internal/cell"
 	"unstable.build/rune/internal/term/gui/font"
 )
 
@@ -63,7 +65,7 @@ type placement struct {
 func resolvePlacement(
 	img term.Image, m *font.Manager, bounds image.Rectangle, shift int,
 ) (placement, bool) {
-	visible := coveredCells(img, m)
+	visible := pixelSize(m).Covered(img)
 	src := cropRect(img)
 	if visible.Empty() || src.Empty() {
 		return placement{}, false
@@ -89,30 +91,16 @@ func resolvePlacement(
 	return placement{src: src, area: area, clip: clip}, true
 }
 
-// coveredCells returns the cells img covers. Those of an offset placement
-// are the cells its raster lands on, which only the cell size tells.
-func coveredCells(img term.Image, m *font.Manager) image.Rectangle {
-	if img.Offset == (image.Point{}) {
-		return img.Visible()
-	}
-	landed := pixelsToCellRect(cellRectToPixels(img.Bounds(), m).Add(img.Offset), m)
-	if img.Clip.Empty() {
-		return landed
-	}
-	return landed.Intersect(img.Clip)
+// pixelSize is the size of the font manager's cell, which is what the
+// frame's writer places images moved by pixels with, so that they land
+// on the cells the renderer paints them on.
+func pixelSize(m *font.Manager) cell.PixelSize {
+	return cell.PixelSize{Width: m.PixelX(1), Height: m.PixelY(1)}
 }
 
-// pixelsToCellRect returns the smallest cell rectangle whose pixels cover
-// r. Cells span whole pixels, so their edges need no rounding.
-func pixelsToCellRect(r image.Rectangle, m *font.Manager) image.Rectangle {
-	if r.Empty() {
-		return image.Rectangle{}
-	}
-	w, h := m.PixelX(1), m.PixelY(1)
-	return image.Rect(
-		int(math.Floor(float64(r.Min.X)/w)), int(math.Floor(float64(r.Min.Y)/h)),
-		int(math.Ceil(float64(r.Max.X)/w)), int(math.Ceil(float64(r.Max.Y)/h)),
-	)
+// frameContext returns ctx for the writer a frame is drawn into.
+func frameContext(ctx context.Context, m *font.Manager) context.Context {
+	return cell.ContextWithPixelSize(ctx, pixelSize(m))
 }
 
 // drawOne paints one placement and reports the pixel rectangle it
@@ -227,16 +215,10 @@ func cropRect(img term.Image) image.Rectangle {
 	return img.Crop.Intersect(b)
 }
 
-// cellRectToPixels converts a right-exclusive cell rectangle to pixels.
-// It goes through the font manager rather than multiplying by the cell
-// size so that the cell overlap the glyph renderer applies is respected.
+// cellRectToPixels converts a right-exclusive cell rectangle to pixels,
+// with the overlap the glyph renderer applies to cells.
 func cellRectToPixels(r image.Rectangle, m *font.Manager) image.Rectangle {
-	return image.Rect(
-		int(math.Round(m.PixelX(r.Min.X))),
-		int(math.Round(m.PixelY(r.Min.Y))),
-		int(math.Round(m.PixelX(r.Max.X))),
-		int(math.Round(m.PixelY(r.Max.Y))),
-	)
+	return pixelSize(m).Pixels(r)
 }
 
 // containRect scales src uniformly to the largest rectangle that fits

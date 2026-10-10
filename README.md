@@ -52,6 +52,11 @@ To create a macOS application bundle:
 make rune-dmg
 ```
 
+To compile all executables in `./bin`:
+```bash
+make -j16
+```
+
 ## headless
 
 Run Rune in headless mode to serve a workspace to all of your development machines,

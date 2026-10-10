@@ -37,7 +37,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/component/notifications"
-	"unstable.build/rune/internal/ide/pkgtrust"
+	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
 	"unstable.build/rune/internal/localstorage"
 	"unstable.build/rune/internal/workspace"
 )
@@ -99,7 +99,7 @@ func TestSetWorkspaceRequiresAttentionRace(t *testing.T) {
 		component.FrameCharSetDefault())
 
 	h := new(workspaceManagerHandler)
-	h.tutorialsInstalled = func([]string) (bool, error) { return false, nil }
+	h.tutorialsInstalled = func([]string) ([]string, error) { return nil, nil }
 	err = h.init(nil, homeURI, manager,
 		notificationsConfig(), cfg, storage, dir,
 		func(term.Event) bool { return true },
@@ -157,7 +157,7 @@ func TestNotificationsInheritRightInset(t *testing.T) {
 		component.FrameCharSetDefault())
 
 	h := new(workspaceManagerHandler)
-	h.tutorialsInstalled = func([]string) (bool, error) { return false, nil }
+	h.tutorialsInstalled = func([]string) ([]string, error) { return nil, nil }
 	require.NoError(t, h.init(nil, homeURI, manager,
 		notificationsConfig(), cfg, storage, dir,
 		func(term.Event) bool { return true },

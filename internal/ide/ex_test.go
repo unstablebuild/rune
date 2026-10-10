@@ -63,8 +63,8 @@ import (
 	thandler "unstable.build/rune/internal/handler"
 	"unstable.build/rune/internal/handler/command"
 	"unstable.build/rune/internal/handler/handlertest"
+	"unstable.build/rune/internal/ide/console/ideconsole"
 	"unstable.build/rune/internal/ide/idehistory"
-	"unstable.build/rune/internal/ide/ideshell"
 	"unstable.build/rune/internal/ide/plugin"
 	"unstable.build/rune/internal/term/vte"
 	"unstable.build/rune/internal/term/vte/vtereservoir"
@@ -1195,7 +1195,7 @@ func TestShellCommandOpensTab(t *testing.T) {
 
 	tabs := b.comp.Tabs()
 	require.Len(t, tabs, 1)
-	_, ok := tabs[0].Handler().(*ideshell.Handler)
+	_, ok := tabs[0].Handler().(*ideconsole.Handler)
 	assert.True(t, ok)
 	assert.Equal(t, text.DefaultConfig().Icons.Shell, b.config.Icons.Shell)
 	assert.Equal(t, "console://"+workspaceURI.Path(), tabs[0].URI().String())
@@ -1471,10 +1471,10 @@ func TestDebuggerCommandOpensShellWithDebugger(t *testing.T) {
 	require.NotEmpty(t, doc.Items)
 	assert.Equal(t, "debugger", doc.Items[len(doc.Items)-1])
 
-	// The console tab must be the companion ideshell handler.
+	// The console tab must be the companion ideconsole handler.
 	tabs := b.comp.Tabs()
 	require.Len(t, tabs, 1)
-	_, ok := tabs[0].Handler().(*ideshell.Handler)
+	_, ok := tabs[0].Handler().(*ideconsole.Handler)
 	assert.True(t, ok)
 
 	// Second call reuses the existing companion console tab and
@@ -1549,7 +1549,7 @@ func TestShellCommandPersistsHistory(t *testing.T) {
 	require.NoError(t, b2.consolenewtab(context.Background()))
 	tabs := b2.comp.Tabs()
 	require.Len(t, tabs, 1)
-	_, ok := tabs[0].Handler().(*ideshell.Handler)
+	_, ok := tabs[0].Handler().(*ideconsole.Handler)
 	assert.True(t, ok)
 
 	require.NoError(t, svc.Get(

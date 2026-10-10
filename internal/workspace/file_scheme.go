@@ -28,6 +28,7 @@ import (
 	"os/user"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -45,8 +46,9 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"unstable.build/rune/internal/debug"
-	"unstable.build/rune/internal/gitenv"
-	"unstable.build/rune/internal/procattr"
+	"unstable.build/rune/internal/ide/hostenv"
+	"unstable.build/rune/internal/ide/procattr"
+	"unstable.build/rune/internal/ide/vctrl/gitenv"
 )
 
 const (
@@ -94,39 +96,59 @@ func InstallShellRC(dataDir string) (string, error) {
 	return dir, nil
 }
 
-// FishInitCommand binds ^A/^E/^G in fish so the vte's bell handshake
+// fishBindings binds ^A/^E/^G in fish so the vte's bell handshake
 // (see vte.ptyWriter.triggerBell) and its end-of-line moves (see
 // vte.viHandler.remoteMoveTo) work: fish binds none of them in insert
 // mode and has no beep widget, so ^G prints BEL itself.
-const FishInitCommand = `bind \ca beginning-of-line; bind \ce end-of-line; ` +
+const fishBindings = `bind \ca beginning-of-line; bind \ce end-of-line; ` +
 	`bind \cg 'printf \a'; bind -M insert \ca beginning-of-line; ` +
 	`bind -M insert \ce end-of-line; bind -M insert \cg 'printf \a'`
 
+// fishInitCommand is what fish runs after its own startup files: Rune's
+// environment from shellRCDir, if any, and the bindings.
+func fishInitCommand(shellRCDir string) string {
+	if shellRCDir == "" {
+		return fishBindings
+	}
+	env := fishQuote(filepath.Join(shellRCDir, hostenv.FishFragment))
+	return "test -r " + env + "; and source " + env + "; " + fishBindings
+}
+
+func fishQuote(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	return "'" + strings.ReplaceAll(s, "'", `\'`) + "'"
+}
+
 // NewFileScheme returns a Scheme that manages resources
 // on the local file system. Terminal shells it starts load only the user's
-// own dotfiles; see NewFileSchemeFunc.
+// own dotfiles, and $RUNE_DATADIR in the commands it starts names the
+// process's RUNE_DATADIR; see NewFileSchemeFunc.
 func NewFileScheme(
 	_ context.Context, _ config.Config, workspace workspaceapi.URI,
 ) (schemeapi.Scheme, error) {
-	return newFileScheme(workspace, "")
+	return newFileScheme(workspace, "", "")
 }
 
 // NewFileSchemeFunc returns a SchemeFunc for file schemes whose terminal
 // shells also load the dotfiles in shellRCDir, as returned by
-// InstallShellRC. An empty shellRCDir behaves like NewFileScheme.
-func NewFileSchemeFunc(shellRCDir string) schemeapi.SchemeFunc {
+// InstallShellRC, and that expand $RUNE_DATADIR in the path, arguments
+// and environment of the commands they start to dataDir, the Rune data
+// directory of this host. An empty shellRCDir loads no Rune dotfiles; an
+// empty dataDir expands $RUNE_DATADIR from the process environment.
+func NewFileSchemeFunc(dataDir, shellRCDir string) schemeapi.SchemeFunc {
 	return func(
 		_ context.Context, _ config.Config, workspace workspaceapi.URI,
 	) (schemeapi.Scheme, error) {
-		return newFileScheme(workspace, shellRCDir)
+		return newFileScheme(workspace, dataDir, shellRCDir)
 	}
 }
 
-func newFileScheme(workspace workspaceapi.URI, shellRCDir string) (schemeapi.Scheme, error) {
+func newFileScheme(workspace workspaceapi.URI, dataDir, shellRCDir string) (schemeapi.Scheme, error) {
 	ret := new(fileScheme)
 	ret.getUser = user.Current
 	ret.osStat = os.Stat
 	ret.lookupUser = user.Lookup
+	ret.dataDir = dataDir
 	ret.shellRCDir = shellRCDir
 	if err := ret.init(workspace); err != nil {
 		return nil, err
@@ -170,6 +192,7 @@ type fileScheme struct {
 	ctx        context.Context
 	cancelCtx  func()
 	cmds       sync.Map // map[workspaceapi.Pid]struct{}
+	dataDir    string   // see NewFileSchemeFunc
 	shellRCDir string   // see NewFileSchemeFunc
 
 	watchpoints    sync.Map
@@ -437,12 +460,23 @@ func (p *fileScheme) StartCommand(ctx context.Context, cmd workspaceapi.Cmd) (
 	// Unlike file paths, the executable comes from configuration such as
 	// an extension entrypoint of "$RUNE_DATADIR/bin/x", and is expanded
 	// here so an SSH workspace resolves it against the remote environment.
+	dataDir := p.hostDataDir()
 	cmd.Path, err = workspaceapi.ExpandPath(
-		os.ExpandEnv(cmd.Path), p.getUserOrLookup,
+		os.Expand(cmd.Path, func(name string) string {
+			if name == hostenv.DataDirVar {
+				return dataDir
+			}
+			return os.Getenv(name)
+		}), p.getUserOrLookup,
 		func() (string, error) { return "", nil })
 	if err != nil {
 		return 0, fmt.Errorf("expand cmd.Path: %w", err)
 	}
+	// $RUNE_DATADIR names the data directory of the host that runs the
+	// command, which only this host knows; other variables in arguments
+	// are left for the program, which may be a shell, to expand.
+	cmd.Args = expandDataDirArgs(cmd.Args, dataDir)
+	cmd.Env = expandDataDirEnv(cmd.Env, dataDir)
 	path := cmd.Path
 	if filepath.Base(cmd.Path) == cmd.Path {
 		path, err = find.Executable(cmd.Path)
@@ -539,6 +573,34 @@ func (p *fileScheme) StartCommand(ctx context.Context, cmd workspaceapi.Cmd) (
 	return pid, nil
 }
 
+func (p *fileScheme) hostDataDir() string {
+	if p.dataDir != "" {
+		return p.dataDir
+	}
+	return os.Getenv(hostenv.DataDirVar)
+}
+
+// expandDataDirArgs copies rather than edits args, which the caller owns.
+func expandDataDirArgs(args []string, dataDir string) []string {
+	out := slices.Clone(args)
+	for i, arg := range out {
+		out[i] = hostenv.ExpandDataDir(arg, dataDir)
+	}
+	return out
+}
+
+// expandDataDirEnv expands only the values of the KEY=value entries in env,
+// copying rather than editing env, which the caller owns.
+func expandDataDirEnv(env []string, dataDir string) []string {
+	out := slices.Clone(env)
+	for i, kv := range out {
+		if k, v, ok := strings.Cut(kv, "="); ok {
+			out[i] = k + "=" + hostenv.ExpandDataDir(v, dataDir)
+		}
+	}
+	return out
+}
+
 // withShellRC binds the keys that the vte sends to a zsh, bash or fish cmd,
 // whether the shell came from $SHELL or terminal.shell.
 func (p *fileScheme) withShellRC(cmd workspaceapi.Cmd) workspaceapi.Cmd {
@@ -550,13 +612,64 @@ func (p *fileScheme) withShellRC(cmd workspaceapi.Cmd) workspaceapi.Cmd {
 	case "bash":
 		if p.shellRCDir != "" {
 			cmd.Env = append(cmd.Env, "INPUTRC="+filepath.Join(p.shellRCDir, "inputrc"))
+			cmd.Args = bashShellRCArgs(cmd.Args, p.shellRCDir)
 		}
 	case "fish":
 		// ahead of the configured args, where a script operand would take
 		// every argument after it as its own
-		cmd.Args = append([]string{"-C", FishInitCommand}, cmd.Args...)
+		cmd.Args = append([]string{"-C", fishInitCommand(p.shellRCDir)}, cmd.Args...)
 	}
 	return cmd
+}
+
+// bashShellRCArgs makes an interactive bash read the startup file in
+// shellRCDir, which reads the user's own and then applies Rune's
+// environment. bash takes a startup file only when it is not a login
+// shell, so a login shell becomes an interactive one whose startup file,
+// bash_profile, does what --login would. Arguments that pick startup files
+// or give bash a command or script to run are left alone.
+func bashShellRCArgs(args []string, shellRCDir string) []string {
+	login := false
+	rest := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--login":
+			login = true
+		case arg == "--norc", arg == "--noprofile", arg == "--rcfile",
+			arg == "--init-file", arg == "--":
+			return args
+		case arg == "-o", arg == "+o", arg == "-O", arg == "+O":
+			// the option name is the next argument
+			rest = append(rest, arg)
+			if i+1 < len(args) {
+				i++
+				rest = append(rest, args[i])
+			}
+		case strings.HasPrefix(arg, "--") || strings.HasPrefix(arg, "+"):
+			rest = append(rest, arg)
+		case strings.HasPrefix(arg, "-") && len(arg) > 1:
+			if strings.ContainsRune(arg, 'c') {
+				return args
+			}
+			if flags := strings.ReplaceAll(arg, "l", ""); flags != arg {
+				login = true
+				if flags == "-" {
+					continue
+				}
+				arg = flags
+			}
+			rest = append(rest, arg)
+		default:
+			// a script operand, or "-" which ends the options
+			return args
+		}
+	}
+	// bash reads long options only ahead of single-character ones
+	if login {
+		return append([]string{"--init-file", filepath.Join(shellRCDir, "bash_profile")}, rest...)
+	}
+	return append([]string{"--rcfile", filepath.Join(shellRCDir, "bashrc")}, rest...)
 }
 
 func (p *fileScheme) Chroot(path string) (schemeapi.Scheme, error) {
@@ -570,6 +683,7 @@ func (p *fileScheme) Chroot(path string) (schemeapi.Scheme, error) {
 	child.lookupUser = p.lookupUser
 	child.files = p.files
 	child.execMu = p.execMu
+	child.dataDir = p.dataDir
 	child.shellRCDir = p.shellRCDir
 	if err := child.init(uri); err != nil {
 		return nil, err

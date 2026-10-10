@@ -25,15 +25,16 @@ import (
 
 func newMouseDelegate(
 	grid *tterm.SelectionWriter,
-	list *component.ResponsiveList,
+	comp *Component,
 ) *mouseDelegate {
-	return &mouseDelegate{grid: grid, list: list}
+	return &mouseDelegate{grid: grid, comp: comp, list: &comp.messages}
 }
 
 var _ mouse.Delegate = (*mouseDelegate)(nil)
 
 type mouseDelegate struct {
 	grid   *tterm.SelectionWriter
+	comp   *Component
 	list   *component.ResponsiveList
 	offset term.Coordinates // messages-area offset within the grid, updated each Draw
 	// sel holds both selection endpoints in content coordinates: each Y is a
@@ -151,6 +152,7 @@ func (d *mouseDelegate) renderFullGrid() (start, end term.Coordinates, ok bool) 
 	d.list.Resize(width, total)
 	d.list.SeekStart()
 	d.list.Draw(&d.fullGrid)
+	d.comp.eraseCodeCopyIcons(&d.fullGrid)
 
 	d.list.Resize(width, savedHeight)
 	d.restoreOffset(savedOffset)

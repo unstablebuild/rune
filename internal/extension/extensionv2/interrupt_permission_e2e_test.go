@@ -47,7 +47,7 @@ import (
 	"unstable.build/rune/internal/browser/browsertest"
 	"unstable.build/rune/internal/extension"
 	"unstable.build/rune/internal/ide/ideauthorizer"
-	"unstable.build/rune/internal/ide/pkgtrust"
+	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
 	"unstable.build/rune/internal/text/texttest"
 	"unstable.build/rune/internal/workspace"
 )
@@ -225,13 +225,6 @@ func waitForSocket(path string, timeout time.Duration) error {
 		time.Sleep(25 * time.Millisecond)
 	}
 	return fmt.Errorf("socket %s did not appear within %s", path, timeout)
-}
-
-// calls returns how many times Prompt was invoked on this opener.
-func (p *e2ePromptOpener) calls() int {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return len(p.messages)
 }
 
 // publishingE2EBrowser is an e2eBrowser whose PublishEvent forwards to

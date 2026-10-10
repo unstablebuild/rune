@@ -19,6 +19,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -52,7 +53,7 @@ func newFakeNotifications() *fakeNotifications {
 func (n *fakeNotifications) Notify(_ browserapi.NotificationLevel, msg string, args ...any) (string, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	n.notifs = append(n.notifs, msg)
+	n.notifs = append(n.notifs, fmt.Sprintf(msg, args...))
 	return n.openID, nil
 }
 

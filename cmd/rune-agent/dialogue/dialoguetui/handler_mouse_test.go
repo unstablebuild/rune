@@ -18,6 +18,7 @@ package dialoguetui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -25,9 +26,11 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/clipboard"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"github.com/unstablebuild/rune-go-sdk/term/graphemecluster"
 	"unstable.build/rune/internal/component/markdown"
 	"unstable.build/rune/internal/text/standard"
 )
@@ -373,6 +376,12 @@ func TestHandlerMouseSelection(t *testing.T) {
 		},
 	}
 
+	// The default transcript config with the code block copy icon enabled.
+	codeCopy := ComponentConfig{
+		Clipboard:     clipboard.NewInMemory(),
+		Notifications: &recordingNotifications{},
+	}
+
 	suite := []struct {
 		desc    string
 		cfg     ComponentConfig
@@ -652,6 +661,16 @@ func TestHandlerMouseSelection(t *testing.T) {
 			wantSel: "sent one",
 			wantOK:  true,
 		},
+		{
+			desc: "code-copy: selection across a code block skips the copy icon",
+			cfg:  codeCopy,
+			setup: func(c *Component) {
+				c.AddReceiveMessage("Run:\n\n```sh\nls\n```\n\nDone.")
+			},
+			events:  clickDrag(0, 0, width-1, 9),
+			wantSel: "Run:\n\n\nls\n\n\nDone.",
+			wantOK:  true,
+		},
 	}
 
 	for _, tc := range suite {
@@ -674,6 +693,202 @@ func TestHandlerMouseSelection(t *testing.T) {
 			assert.Equal(t, tc.wantOK, ok, "Selection() ok mismatch")
 			if tc.wantOK {
 				assert.Equal(t, tc.wantSel, sel, "Selection() text mismatch")
+			}
+		})
+	}
+}
+
+type recordedNotification struct {
+	level browserapi.NotificationLevel
+	msg   string
+}
+
+type recordingNotifications struct {
+	notes []recordedNotification
+}
+
+func (r *recordingNotifications) Notify(
+	level browserapi.NotificationLevel, msg string, args ...any,
+) (string, error) {
+	r.notes = append(r.notes, recordedNotification{level, fmt.Sprintf(msg, args...)})
+	return "", nil
+}
+
+func (r *recordingNotifications) NotifyOnce(
+	level browserapi.NotificationLevel, msg string, args ...any,
+) (string, error) {
+	return r.Notify(level, msg, args...)
+}
+
+func (r *recordingNotifications) UpdateNotificationProgress(string, string, int64, int64) error {
+	return nil
+}
+
+type failingClipboard struct{ clipboard.Register }
+
+func (failingClipboard) Copy(string, clipboard.Data) error {
+	return errors.New("clipboard unavailable")
+}
+
+func TestHandlerCodeCopy(t *testing.T) {
+	const (
+		width  = 40
+		height = 20
+		source = "make dist TARGET_LANG=just TARGET_OS=linux TARGET_ARCH=arm64"
+		reply  = "Run:\n\n```sh\n" + source + "\n```\n\nThen publish."
+	)
+	md := DefaultMarkdownConfig()
+	iconWidth := graphemecluster.StringWidth(string(md.CodeBlockCopyIcon))
+	idle := md.CodeBlockCopyIconAttr
+	idle.Bg = md.CodeBlock.Bg
+	hover := term.Attributes{Fg: term.ColorBlue, Bg: md.CodeBlock.Bg}
+	copied := []recordedNotification{{browserapi.LevelSuccess, "copied to clipboard"}}
+	click := func(x, y int) term.Event { return mouseEv(x, y, term.MouseLeft) }
+	// Key 0 is a bare motion event, which only the GUI backend emits.
+	motion := func(x, y int) term.Event { return mouseEv(x, y, 0) }
+
+	tests := []struct {
+		name string
+		clip clipboard.Register
+		// fillers are received after the icon is located, scrolling it out
+		// of view.
+		fillers int
+		// events builds the input from where the icon was first drawn.
+		events      func(icon term.Coordinates) []term.Event
+		wantHandled bool // for the last event
+		wantCopied  string
+		wantNotes   []recordedNotification
+		// wantIcon is how the icon is drawn after the events, nil when it
+		// is not on screen.
+		wantIcon *term.Attributes
+	}{
+		{
+			name:        "click copies the unwrapped source",
+			clip:        clipboard.NewInMemory(),
+			events:      func(i term.Coordinates) []term.Event { return []term.Event{click(i.X, i.Y)} },
+			wantHandled: true,
+			wantCopied:  source,
+			wantNotes:   copied,
+			wantIcon:    &idle,
+		},
+		{
+			name: "click on the icon's last cell copies",
+			clip: clipboard.NewInMemory(),
+			events: func(i term.Coordinates) []term.Event {
+				return []term.Event{click(i.X+iconWidth-1, i.Y)}
+			},
+			wantHandled: true,
+			wantCopied:  source,
+			wantNotes:   copied,
+			wantIcon:    &idle,
+		},
+		{
+			name:        "click beside the icon copies nothing",
+			clip:        clipboard.NewInMemory(),
+			events:      func(i term.Coordinates) []term.Event { return []term.Event{click(i.X-1, i.Y)} },
+			wantHandled: true,
+			wantIcon:    &idle,
+		},
+		{
+			name:        "failed copy does not notify",
+			clip:        failingClipboard{clipboard.NewInMemory()},
+			events:      func(i term.Coordinates) []term.Event { return []term.Event{click(i.X, i.Y)} },
+			wantHandled: true,
+			wantIcon:    &idle,
+		},
+		{
+			name: "hover turns the icon blue",
+			clip: clipboard.NewInMemory(),
+			events: func(i term.Coordinates) []term.Event {
+				return []term.Event{motion(i.X+iconWidth-1, i.Y)}
+			},
+			wantHandled: true,
+			wantIcon:    &hover,
+		},
+		{
+			name: "moving off the icon clears the hover",
+			clip: clipboard.NewInMemory(),
+			events: func(i term.Coordinates) []term.Event {
+				return []term.Event{motion(i.X, i.Y), motion(i.X-1, i.Y)}
+			},
+			wantHandled: true,
+			wantIcon:    &idle,
+		},
+		{
+			name: "moving beside the icon draws nothing new",
+			clip: clipboard.NewInMemory(),
+			events: func(i term.Coordinates) []term.Event {
+				return []term.Event{motion(i.X-1, i.Y)}
+			},
+			wantIcon: &idle,
+		},
+		{
+			name:   "no icon without a clipboard",
+			events: func(term.Coordinates) []term.Event { return nil },
+		},
+		{
+			name:        "icon scrolled out of view copies nothing",
+			clip:        clipboard.NewInMemory(),
+			fillers:     20,
+			events:      func(i term.Coordinates) []term.Event { return []term.Event{click(i.X, i.Y)} },
+			wantHandled: true,
+		},
+		{
+			name:    "icon scrolled back into view copies",
+			clip:    clipboard.NewInMemory(),
+			fillers: 20,
+			events: func(i term.Coordinates) []term.Event {
+				var evs []term.Event
+				for range 40 {
+					evs = append(evs, mouseEv(1, 1, term.MouseWheelUp))
+				}
+				return append(evs, click(i.X, i.Y))
+			},
+			wantHandled: true,
+			wantCopied:  source,
+			wantNotes:   copied,
+			wantIcon:    &idle,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			notes := &recordingNotifications{}
+			comp := NewComponent(ComponentConfig{Clipboard: tt.clip, Notifications: notes})
+			h, tx, _ := Handler(context.Background(), new(sync.Mutex), comp,
+				term.NopInterrupter())
+			defer close(tx)
+			h.Resize(width, height)
+			drawnIcon := func() (term.Coordinates, *term.Attributes) {
+				w := term.NewStringWriter(width, height)
+				h.Draw(w)
+				for i, c := range w.Cells() {
+					if c.Ch == md.CodeBlockCopyIcon {
+						attr := c.Attributes()
+						return term.Coordinates{X: i % width, Y: i / width}, &attr
+					}
+				}
+				return term.Coordinates{}, nil
+			}
+
+			comp.AddReceiveMessage(reply)
+			icon, attr := drawnIcon()
+			require.Equal(t, tt.clip != nil, attr != nil, "icon drawn")
+			for range tt.fillers {
+				comp.AddReceiveMessage("filler")
+			}
+			drawnIcon()
+			var handled bool
+			for _, ev := range tt.events(icon) {
+				_, handled = h.Handle(ev)
+			}
+
+			assert.Equal(t, tt.wantHandled, handled, "last event handled")
+			_, attr = drawnIcon()
+			assert.Equal(t, tt.wantIcon, attr)
+			assert.Equal(t, tt.wantNotes, notes.notes)
+			if tt.clip != nil {
+				data, _ := tt.clip.Paste(clipboard.DefaultRegisterID)
+				assert.Equal(t, tt.wantCopied, data.Text)
 			}
 		})
 	}

@@ -1670,11 +1670,27 @@ func TestTutorialFilesDecoded(t *testing.T) {
 		},
 		errors: map[string]error{},
 	}
-	got := cfg.tutorialFiles()
+	got := cfg.tutorialFiles("/data")
 	require.Equal(t, 2, len(got))
 	assert.Equal(t, "/etc/x.star", got["basics"])
 	assert.Equal(t, "/etc/y.star", got["advanced"])
 	assert.Empty(t, cfg.errors)
+}
+
+func TestTutorialFilesExpandDataDir(t *testing.T) {
+	cfg := ideConfig{
+		cfg: map[string]any{
+			"tutorials": map[string]any{
+				"pkg":   "$RUNE_DATADIR/pkg/fuzzy_search/1/fuzzy_search.star",
+				"other": "$HOME/x.star",
+			},
+		},
+		errors: map[string]error{},
+	}
+	assert.Equal(t, map[string]string{
+		"pkg":   "/data/pkg/fuzzy_search/1/fuzzy_search.star",
+		"other": "$HOME/x.star",
+	}, cfg.tutorialFiles("/data"))
 }
 
 func TestTutorialFilesMissingReturnsNil(t *testing.T) {
@@ -1682,7 +1698,7 @@ func TestTutorialFilesMissingReturnsNil(t *testing.T) {
 		cfg:    map[string]any{},
 		errors: map[string]error{},
 	}
-	assert.Nil(t, cfg.tutorialFiles())
+	assert.Nil(t, cfg.tutorialFiles("/data"))
 	assert.Empty(t, cfg.errors)
 }
 
@@ -1693,7 +1709,7 @@ func TestTutorialFilesWrongRootTypeRecordsError(t *testing.T) {
 		},
 		errors: map[string]error{},
 	}
-	assert.Nil(t, cfg.tutorialFiles())
+	assert.Nil(t, cfg.tutorialFiles("/data"))
 	require.NotNil(t, cfg.errors["tutorials"])
 	assert.Contains(t, cfg.errors["tutorials"].Error(), "invalid type")
 }
@@ -1708,7 +1724,7 @@ func TestTutorialFilesEntryWrongTypeRecordsError(t *testing.T) {
 		},
 		errors: map[string]error{},
 	}
-	got := cfg.tutorialFiles()
+	got := cfg.tutorialFiles("/data")
 	assert.Equal(t, map[string]string{"good": "/etc/ok.star"}, got)
 	require.NotNil(t, cfg.errors["tutorials.bad"])
 	assert.Contains(t, cfg.errors["tutorials.bad"].Error(),

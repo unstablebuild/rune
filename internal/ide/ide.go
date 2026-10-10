@@ -50,7 +50,7 @@ import (
 	"unstable.build/rune/internal/handler/command"
 	"unstable.build/rune/internal/ide/idenag"
 	"unstable.build/rune/internal/ide/idepkg"
-	"unstable.build/rune/internal/ide/pkgtrust"
+	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
 	"unstable.build/rune/internal/text"
 	"unstable.build/rune/internal/workspace"
 	"unstable.build/rune/internal/workspace/workspacessh"
@@ -599,7 +599,7 @@ func (i *IDE) init(
 		return fmt.Errorf("register ssh scheme: %w", err)
 	}
 	err = workspaceManager.RegisterScheme(workspace.FileScheme,
-		workspace.NewFileSchemeFunc(op.shellRCDir))
+		workspace.NewFileSchemeFunc(op.hostDataDir, op.shellRCDir))
 	if err != nil {
 		return fmt.Errorf("register file scheme: %w", err)
 	}

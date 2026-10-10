@@ -31,11 +31,14 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/internal/cell"
 	"unstable.build/rune/internal/handler/handlertest"
+	"unstable.build/rune/internal/ide/syntax/treesitter"
 	"unstable.build/rune/internal/text"
 	"unstable.build/rune/internal/text/registerhistory"
 	"unstable.build/rune/internal/text/registerset"
 	"unstable.build/rune/internal/text/texttest"
 )
+
+var _ foldsService = (*treesitter.Tree)(nil)
 
 type testSelectionService struct {
 	view   cell.View

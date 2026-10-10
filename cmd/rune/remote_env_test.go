@@ -26,6 +26,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"unstable.build/rune/internal/ide/hostenv"
 	"unstable.build/rune/internal/workspace"
 )
 
@@ -55,6 +56,8 @@ func TestLoadRemoteConfigAppliesGUIEnv(t *testing.T) {
 	)
 	require.NoError(t, os.Unsetenv(envKey))
 	t.Cleanup(func() { _ = os.Unsetenv(envKey) })
+	t.Setenv("PATH", os.Getenv("PATH"))
+	t.Setenv("RUNE_DATADIR", os.Getenv("RUNE_DATADIR"))
 
 	dataDir := t.TempDir()
 	configPath := filepath.Join(dataDir, "config.yaml")
@@ -67,7 +70,7 @@ func TestLoadRemoteConfigAppliesGUIEnv(t *testing.T) {
 	setFlagForTest(t, flagDataPath, dataDir)
 
 	cwd, uri := newTestFileScheme(t, t.TempDir())
-	loadRemoteConfigAndApplyEnv(cwd, uri)
+	loadRemoteConfigAndApplyEnv(hostenv.New(dataDir, ""), cwd, uri)
 
 	assert.Equal(t, envVal, os.Getenv(envKey),
 		"gui.env from the remote config must be applied to the process env")
@@ -81,6 +84,8 @@ func TestWorkspaceOverlayWinsOverHomeConfig(t *testing.T) {
 	const envKey = "RUNE_TEST_OVERLAY_VAR"
 	require.NoError(t, os.Unsetenv(envKey))
 	t.Cleanup(func() { _ = os.Unsetenv(envKey) })
+	t.Setenv("PATH", os.Getenv("PATH"))
+	t.Setenv("RUNE_DATADIR", os.Getenv("RUNE_DATADIR"))
 
 	dataDir := t.TempDir()
 	configPath := filepath.Join(dataDir, "config.yaml")
@@ -96,7 +101,7 @@ func TestWorkspaceOverlayWinsOverHomeConfig(t *testing.T) {
 		[]byte("gui:\n  env:\n    "+envKey+": workspace\n"), 0o644))
 
 	cwd, uri := newTestFileScheme(t, wsRoot)
-	loadRemoteConfigAndApplyEnv(cwd, uri)
+	loadRemoteConfigAndApplyEnv(hostenv.New(dataDir, ""), cwd, uri)
 
 	assert.Equal(t, "workspace", os.Getenv(envKey),
 		"workspace-root .rune/config.yaml must override the home config")

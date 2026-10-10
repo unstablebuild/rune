@@ -150,9 +150,11 @@ described under [the on-disk package format](#the-on-disk-package-format).
 :::info[The shared binary directory is always on PATH]
 The overlay does not need a `PATH` entry for a bundled executable. Rune
 places its shared binary directory first on the `PATH` at startup, so a
-bundled binary is reachable as soon as it is installed. Only set `gui.env`
-in the overlay when a tool needs extra environment variables of its own, not
-to expose the binary.
+bundled binary is reachable as soon as it is installed. That holds in Rune's
+terminals too: they put the directory back in front after the shell's startup
+files run, even when one of them resets `PATH`. Only set `gui.env` in the
+overlay when a tool needs extra environment variables of its own, not to
+expose the binary.
 :::
 
 ## The config overlay
@@ -169,14 +171,23 @@ present, `config.yaml` wins.
 ### Referencing the install location
 
 If a value in the overlay must point back into the installed package, use
-these variables. They expand to the install location when the configuration
-is applied:
+these variables:
 
 | Variable | Expands to |
 | --- | --- |
-| `$RUNE_DATADIR` | The user's Rune data directory. |
+| `$RUNE_DATADIR` | The Rune data directory on the machine that uses the value. |
 | `$RUNE_PKG_ID` | The package's name. |
 | `$RUNE_PKG_VERSION` | The installed version. |
+
+`$RUNE_PKG_ID` and `$RUNE_PKG_VERSION` are expanded when the package is
+installed. `$RUNE_DATADIR` is kept as written in the user's config and
+resolved on the machine that uses the value, when it starts a command or
+applies an environment. One config therefore serves local, `ssh://` and
+`rune://` workspaces: in a remote workspace, an extension entrypoint, a
+debugger command or a `gui.env` value names the data directory on the remote
+machine, where the package is installed. A config written by an earlier
+version of Rune may hold the expanded path instead; the next install or update
+of the package writes `$RUNE_DATADIR` back without asking.
 
 A package's own files are reachable at `$RUNE_DATADIR/lib/$RUNE_PKG_ID`,
 which resolves to the version currently in use: the cloned repository for a

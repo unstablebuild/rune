@@ -19,12 +19,17 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"github.com/unstablebuild/tcell/v3"
 	"unstable.build/rune/internal/ide"
+	"unstable.build/rune/internal/ide/starlarkconfig"
+	"unstable.build/rune/internal/term/gui"
 	"unstable.build/rune/internal/term/gui/glassbar"
 )
 
@@ -245,5 +250,113 @@ func TestApplyInitialThemeAttrHoldsEventLoopLock(t *testing.T) {
 	case <-done:
 	case <-time.After(10 * time.Second):
 		t.Fatal("applyInitialThemeAttr did not complete after the lock was released")
+	}
+}
+
+func TestGUIThemesLiveApplyHook(t *testing.T) {
+	const (
+		envKey    = "RUNE_TEST_LIVE_APPLY_THEMES_ENV"
+		envVal    = "/from/theme/package"
+		themeDiff = "gui:\n  themes:\n    livetest:\n" +
+			"      foreground: '#112233'\n      background: '#445566'\n"
+	)
+	livetest := map[string]any{"foreground": "#112233", "background": "#445566"}
+	writeYAML := func(gui string) func(t *testing.T, path string) {
+		return func(t *testing.T, path string) {
+			require.NoError(t, os.WriteFile(path, []byte("editor:\n  mode: modal\n"+gui), 0o644))
+		}
+	}
+
+	tests := []struct {
+		name        string
+		filename    string
+		initial     string
+		writeMerged func(t *testing.T, path string)
+		diff        string
+		withoutGUI  bool
+		wantPaths   [][]string
+	}{
+		{
+			name:        "yaml config",
+			filename:    configFilename,
+			initial:     "editor:\n  mode: modal\n",
+			writeMerged: writeYAML(themeDiff),
+			diff:        themeDiff,
+			wantPaths:   [][]string{{"gui", "themes"}},
+		},
+		{
+			name:     "starlark config",
+			filename: configStarFilename,
+			initial:  "config[\"terminal\"][\"initial_reservoir\"] = 2\n",
+			writeMerged: func(t *testing.T, path string) {
+				require.NoError(t, starlarkconfig.WriteManagedConfigFileAtomic(path, map[string]any{
+					"gui": map[string]any{"themes": map[string]any{"livetest": livetest}},
+				}))
+			},
+			diff:      themeDiff,
+			wantPaths: [][]string{{"gui", "themes"}},
+		},
+		{
+			name:        "no GUI attached",
+			filename:    configFilename,
+			initial:     "editor:\n  mode: modal\n",
+			writeMerged: writeYAML(themeDiff),
+			diff:        themeDiff,
+			withoutGUI:  true,
+		},
+		{
+			name:     "env and themes",
+			filename: configFilename,
+			initial:  "editor:\n  mode: modal\n",
+			writeMerged: writeYAML("gui:\n  env:\n    " + envKey + ": " + envVal + "\n" +
+				"  themes:\n    livetest:\n      foreground: '#112233'\n      background: '#445566'\n"),
+			diff: "gui:\n  env:\n    " + envKey + ": " + envVal + "\n" +
+				"  themes:\n    livetest:\n      foreground: '#112233'\n      background: '#445566'\n",
+			wantPaths: [][]string{{"gui", "env"}, {"gui", "themes"}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(envKey, "")
+			original := tcell.GetColorValues()
+			t.Cleanup(func() { tcell.SetColorValues(original) })
+
+			b := newConfiguredBootstrapForEnvTest(t, tt.filename, tt.initial, t.TempDir())
+			var startupThemes []string
+			if !tt.withoutGUI {
+				guiCfg, ok, err := getGUIConfig(b.config())
+				require.NoError(t, err)
+				require.True(t, ok)
+				g, err := gui.New(b, gui.WithColorThemes("",
+					getGUIColorThemes(b.browser(), guiCfg)))
+				require.NoError(t, err)
+				t.Cleanup(func() { _ = g.Close() })
+				b.attachGUI(g, false)
+				startupThemes = g.Themes()
+				require.NotEmpty(t, startupThemes, "the built-in themes are available at startup")
+			}
+			tt.writeMerged(t, b.configPath)
+
+			result, err := b.packageConfigMergeHook(mergeEvent(t, tt.diff))
+			require.NoError(t, err)
+			assert.ElementsMatch(t, tt.wantPaths, result.LivePaths)
+			if tt.withoutGUI {
+				return
+			}
+
+			require.Eventually(t, func() bool {
+				b.mu.Lock()
+				defer b.mu.Unlock()
+				return slices.Contains(b.g.Themes(), "livetest")
+			}, 10*time.Second, 10*time.Millisecond,
+				"a theme merged by a package install must be available without a restart")
+			b.mu.Lock()
+			defer b.mu.Unlock()
+			assert.Subset(t, b.g.Themes(), startupThemes,
+				"the reloaded set keeps the themes available at startup")
+			assert.Empty(t, b.g.Theme(), "installing a theme must not switch the active one")
+			_, err = b.g.SetTheme("livetest")
+			require.NoError(t, err)
+		})
 	}
 }

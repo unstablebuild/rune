@@ -57,6 +57,7 @@ import (
 	"unstable.build/rune/internal/handler/command"
 	"unstable.build/rune/internal/handler/search"
 	"unstable.build/rune/internal/handler/searchbox"
+	"unstable.build/rune/internal/ide/hostenv"
 	"unstable.build/rune/internal/ide/idedebug"
 	"unstable.build/rune/internal/ide/idelsp"
 	"unstable.build/rune/internal/ide/keymeta"
@@ -4081,7 +4082,9 @@ func (c ideConfig) extensions() map[string]extensionConfig {
 	return ret
 }
 
-func (c ideConfig) tutorialFiles() map[string]string {
+// tutorialFiles returns the tutorial source paths, which the IDE reads from
+// its own host, with $RUNE_DATADIR resolved against dataDir.
+func (c ideConfig) tutorialFiles(dataDir string) map[string]string {
 	raw, ok := c.cfg["tutorials"]
 	if !ok {
 		return nil
@@ -4099,7 +4102,7 @@ func (c ideConfig) tutorialFiles() map[string]string {
 				"expected string path")
 			continue
 		}
-		ret[name] = p
+		ret[name] = hostenv.ExpandDataDir(p, dataDir)
 	}
 	return ret
 }

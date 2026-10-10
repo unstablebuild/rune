@@ -52,6 +52,7 @@ type raCallback struct {
 type serverStatus struct {
 	Health    string `json:"health"`
 	Quiescent bool   `json:"quiescent"`
+	Message   string `json:"message"`
 }
 
 func (c *raCallback) ShowMessage(_ context.Context, _ semanticapi.ShowMessageParams) error {

@@ -101,6 +101,11 @@ func (e *rustEnvE2E) capturedEdits() []semanticapi.ApplyWorkspaceEditParams {
 	return append([]semanticapi.ApplyWorkspaceEditParams{}, e.cb.appliedEdits...)
 }
 
+// raStartups bounds concurrent rust-analyzer startups. Every parallel
+// subtest indexes the std sysroot from scratch, and an unbounded burst
+// on a loaded e2e run starves them all past the quiescence deadline.
+var raStartups = make(chan struct{}, 4)
+
 // initRustAnalyzer creates an idelsp.Manager, initializes rust-analyzer
 // with the extension's rustInitializeParams, opens the given files, and
 // waits for the server to finish loading. It captures workspace/applyEdit
@@ -117,9 +122,16 @@ func initRustAnalyzer(t *testing.T, raBin string, openFiles []string) *rustEnvE2
 	scheme := newLocalScheme(dir)
 
 	ready := make(chan struct{})
-	var once sync.Once
+	var (
+		once     sync.Once
+		statusMu sync.Mutex
+		last     *serverStatus
+	)
 	cb := &raCallback{
 		onServerStatus: func(s serverStatus) {
+			statusMu.Lock()
+			last = &s
+			statusMu.Unlock()
 			if s.Quiescent && s.Health == "ok" {
 				once.Do(func() { close(ready) })
 			}
@@ -128,10 +140,14 @@ func initRustAnalyzer(t *testing.T, raBin string, openFiles []string) *rustEnvE2
 	cfg := idelsp.Config{MaxRetries: 1, Callback: cb, WorkDoneProgress: true}
 
 	mgr := idelsp.New(uri, scheme, scheme, &stubPkgManager{bin: raBin}, nil, nil, cfg)
+	t.Cleanup(func() { require.NoError(t, mgr.Close()) })
 
 	ctx := context.Background()
 	params, err := rustInitializeParams(rootURI, raBin, sysrootFor(ctx), "info", true)
 	require.NoError(t, err)
+
+	raStartups <- struct{}{}
+	defer func() { <-raStartups }()
 
 	_, err = mgr.Initialize(ctx, params)
 	require.NoError(t, err)
@@ -158,9 +174,10 @@ func initRustAnalyzer(t *testing.T, raBin string, openFiles []string) *rustEnvE2
 	select {
 	case <-ready:
 	case <-time.After(120 * time.Second):
-		t.Fatal("rust-analyzer did not become quiescent")
+		statusMu.Lock()
+		defer statusMu.Unlock()
+		t.Fatalf("rust-analyzer did not become quiescent; last status: %+v", last)
 	}
-	t.Cleanup(func() { require.NoError(t, mgr.Close()) })
 
 	env.simulateEditorEvents()
 	return env

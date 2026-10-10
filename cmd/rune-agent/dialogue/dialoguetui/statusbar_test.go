@@ -412,7 +412,7 @@ func TestStatusBarShippedLayoutReadsCacheAsAValue(t *testing.T) {
 			TokensSent: 4_200_000, TokensCached: 3_700_000,
 		}
 	})
-	assert.Contains(t, render(t, bar, 100), "󰗂 88%")
+	assert.Contains(t, render(t, bar, 100), "󰗂  88%")
 }
 
 func TestStatusBarStatusAttributesIgnoreActiveForm(t *testing.T) {

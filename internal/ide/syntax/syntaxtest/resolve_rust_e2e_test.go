@@ -29,7 +29,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/syntaxapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 
-	"unstable.build/rune/internal/ide/syntax"
+	"unstable.build/rune/internal/ide/syntax/treesitter"
 	"unstable.build/rune/internal/workspace"
 )
 
@@ -146,7 +146,7 @@ func newFileSchemeParser(t *testing.T, root string) syntaxapi.Parser {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = scheme.Close() })
 
-	return syntax.NewParser(scheme, langPkgManager{wd: wd}, uri)
+	return treesitter.NewParser(scheme, langPkgManager{wd: wd}, uri)
 }
 
 func matchURIs(matches []syntaxapi.Match) []string {

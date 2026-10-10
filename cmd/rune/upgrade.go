@@ -28,8 +28,8 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/ide"
+	"unstable.build/rune/internal/ide/console/upgradeconsole"
 	"unstable.build/rune/internal/ide/ideupgrade"
-	"unstable.build/rune/internal/ide/upgradeshell"
 )
 
 // upgradeConfig captures the values read from the "upgrade" stanza of
@@ -131,12 +131,12 @@ func registerUpgradeCommand(i *ide.IDE, mgr *ideupgrade.Manager) error {
 	}
 	// Still registered in OS-packaged builds: the command explains
 	// where updates come from, which beats an unknown-command error.
-	h := upgradeshell.New(upgradeshell.Config{
+	h := upgradeconsole.New(upgradeconsole.Config{
 		Manager:    mgr,
 		OSPackaged: debug.OSPackaged == "true",
 	})
-	if err := i.RegisterREPLCommand(upgradeshell.Manual(), h); err != nil {
-		return fmt.Errorf("register '%s': %w", upgradeshell.CommandName, err)
+	if err := i.RegisterREPLCommand(upgradeconsole.Manual(), h); err != nil {
+		return fmt.Errorf("register '%s': %w", upgradeconsole.CommandName, err)
 	}
 	return nil
 }

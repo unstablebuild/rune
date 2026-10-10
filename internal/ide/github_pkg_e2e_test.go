@@ -37,8 +37,8 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/handler/repl"
 	"unstable.build/rune/internal/extension/extensionv2"
+	"unstable.build/rune/internal/ide/console/pkgconsole"
 	"unstable.build/rune/internal/ide/idepkg/idepkgtest"
-	"unstable.build/rune/internal/ide/pkgshell"
 )
 
 func TestGitHubPkgExtensionEndToEnd(t *testing.T) {
@@ -237,9 +237,9 @@ func runGitHubPkgE2E(t *testing.T, f ghE2EFixture) {
 	require.NoError(t, m.addWorkspace(wsURI, true, false, -1))
 	m.quiesce()
 
-	h := pkgshell.New(pkgshell.Config{Manager: m.pkgmanager.pkg})
+	h := pkgconsole.New(pkgconsole.Config{Manager: m.pkgmanager.pkg})
 	_, err = h.HandleCommand(context.Background(), repl.Command{
-		Name: pkgshell.CommandName,
+		Name: pkgconsole.CommandName,
 		Args: []string{"install", f.pkgID()},
 	}, repl.NopProgressWriter())
 	require.NoError(t, err)

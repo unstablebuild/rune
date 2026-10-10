@@ -261,9 +261,13 @@ func (c *Component) Init(cfg ComponentConfig) {
 		cfg.InputRowColumns = 10
 	}
 	if cfg.MarkdownConfig == nil {
-		d := markdown.DefaultConfig()
-		d.HeaderPrefix = false
-		cfg.MarkdownConfig = new(d)
+		cfg.MarkdownConfig = DefaultMarkdownConfig()
+	}
+	if cfg.Clipboard != nil {
+		// Copy so enabling the icon does not leak into the caller's config.
+		md := *cfg.MarkdownConfig
+		md.CodeBlockCopy = true
+		cfg.MarkdownConfig = &md
 	}
 	if cfg.ReasoningMarkdownConfig == nil {
 		cfg.ReasoningMarkdownConfig = reasoningMarkdownConfig(
@@ -667,6 +671,79 @@ func (c *Component) HoverSentAttachment(pos term.Coordinates) (changed bool) {
 		}
 	}
 	return
+}
+
+// codeCopyAt returns the source of the code block whose copy icon covers
+// pos, in messages content coordinates.
+func (c *Component) codeCopyAt(pos term.Coordinates) (code string, found bool) {
+	c.eachTranscriptMarkdown(func(md *markdown.Component, origin term.Coordinates) {
+		local := term.CoordinatesDiff(pos, origin)
+		for _, t := range md.CodeBlockCopyTargets() {
+			if !found && t.Contains(local) {
+				code, found = t.Code, true
+			}
+		}
+	})
+	return code, found
+}
+
+// hoverCodeCopy highlights the copy icon at pos, in messages content
+// coordinates, clearing any other, and reports whether rendering changed.
+func (c *Component) hoverCodeCopy(pos term.Coordinates) (changed bool) {
+	c.eachTranscriptMarkdown(func(md *markdown.Component, origin term.Coordinates) {
+		if md.HoverCodeBlockCopy(term.CoordinatesDiff(pos, origin)) {
+			changed = true
+		}
+	})
+	return changed
+}
+
+// eraseCodeCopyIcons blanks the copy icons in w, a render of the whole
+// messages list in content coordinates, so text selected across a code
+// block does not pick them up.
+func (c *Component) eraseCodeCopyIcons(w term.Writer) {
+	c.eachTranscriptMarkdown(func(md *markdown.Component, origin term.Coordinates) {
+		for _, t := range md.CodeBlockCopyTargets() {
+			pos := term.CoordinatesSum(origin, t.Pos)
+			for x := range t.Width {
+				w.SetCell(term.Coordinates{X: pos.X + x, Y: pos.Y}, term.Cell{})
+			}
+		}
+	})
+}
+
+// eachTranscriptMarkdown calls fn with every markdown component in the
+// messages list and its origin in content coordinates: rows of the whole
+// conversation, independent of the scroll offset. Node positions are not
+// used because the list only refreshes them for the nodes it draws.
+func (c *Component) eachTranscriptMarkdown(
+	fn func(md *markdown.Component, origin term.Coordinates),
+) {
+	width := c.messages.SizeWidth()
+	y := 0
+	for node, ok := c.messages.Front(); ok; node, ok = node.Next() {
+		v := node.Value()
+		if md, offset, ok := transcriptMarkdown(v); ok {
+			fn(md, term.Coordinates{X: offset.X, Y: y + offset.Y})
+		}
+		y += v.(component.Responsive).Height(width)
+	}
+}
+
+// transcriptMarkdown unwraps a messages list entry into the markdown
+// component it renders and that component's offset within the entry.
+func transcriptMarkdown(v tui.Component) (*markdown.Component, term.Coordinates, bool) {
+	span, ok := v.(*component.Span)
+	if !ok {
+		return nil, term.Coordinates{}, false
+	}
+	switch content := span.Content().(type) {
+	case *markdown.Component:
+		return content, span.ContentOffset(), true
+	case *mdhandler.Handler:
+		return content.Component(), span.ContentOffset(), true
+	}
+	return nil, term.Coordinates{}, false
 }
 
 // InputSubmit submits the contents of the input buffer as a send message,

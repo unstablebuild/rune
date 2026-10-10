@@ -175,6 +175,15 @@ func WithShellRCDir(dir string) Option {
 	}
 }
 
+// WithHostDataDir sets the Rune data directory of this host, which
+// $RUNE_DATADIR names in the commands file workspaces start. Without this
+// option it is the process's RUNE_DATADIR.
+func WithHostDataDir(dir string) Option {
+	return func(opts *options) {
+		opts.hostDataDir = dir
+	}
+}
+
 // WithConfigFilename defines the base filename of the IDE configuration
 // to be expected in a workspace's directory.
 func WithConfigFilename(filename string) Option {
@@ -534,6 +543,7 @@ type options struct {
 	extensions           map[string]Extension
 	schemes              map[string]schemeapi.SchemeFunc
 	shellRCDir           string
+	hostDataDir          string
 	workspaceConfig      string
 	defaultWallpaper     browser.Wallpaper
 	resizeBorderHandler  handler.ResizeBorderHandler

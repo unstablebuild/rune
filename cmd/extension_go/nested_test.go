@@ -28,6 +28,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/semanticapi"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
+	"unstable.build/rune/internal/extension/langext/langexttest"
 )
 
 // captureLSP records the InitializeParams it received and otherwise
@@ -105,7 +106,7 @@ func TestExtendWorkspaceNestedDiscovery(t *testing.T) {
 	registered := false
 	err := ext.extendWorkspaceWith(context.Background(),
 		scheme, scheme, &mockNotifications{}, lsp, editor,
-		nil, nil, nil, nil, nopInstaller{}, nil,
+		nil, nil, nil, nil, &langexttest.Installer{}, nil,
 		func(textapi.CommandManual, textapi.CommandHandler) error {
 			registered = true
 			return nil

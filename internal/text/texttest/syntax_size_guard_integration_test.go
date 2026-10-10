@@ -25,9 +25,15 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/blue/iterator"
+	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
+	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"github.com/unstablebuild/rune-go-sdk/term"
+	"unstable.build/rune/internal/cell"
 	"unstable.build/rune/internal/ide/syntax"
+	"unstable.build/rune/internal/ide/syntax/treesitter"
 	"unstable.build/rune/internal/text"
 	"unstable.build/rune/internal/text/texttest"
 	"unstable.build/rune/internal/workspace"
@@ -49,6 +55,7 @@ func TestSyntaxSizeGuardSkipsTreeForLargeBuffers(t *testing.T) {
 	cfg := text.DefaultConfig()
 	cfg.ScheduleNextTick = inlineSchedule
 	cfg.MaxSyntaxParseSize = threshold
+	cfg.SyntaxTree = treesitter.New
 	c, err := text.NewComponent(texttest.NopEditor(), ws, cfg)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = c.Close() })
@@ -63,7 +70,7 @@ func TestSyntaxSizeGuardSkipsTreeForLargeBuffers(t *testing.T) {
 	require.NoError(t, err)
 	smallEd, err := c.Editor(smallURI)
 	require.NoError(t, err)
-	_, smallHasTree := smallEd.CellView().(*syntax.Tree)
+	_, smallHasTree := smallEd.CellView().(*treesitter.Tree)
 	assert.True(t, smallHasTree,
 		"buffers below MaxSyntaxParseSize must have a syntax tree installed")
 
@@ -78,7 +85,7 @@ func TestSyntaxSizeGuardSkipsTreeForLargeBuffers(t *testing.T) {
 	require.NoError(t, err)
 	largeEd, err := c.Editor(largeURI)
 	require.NoError(t, err)
-	_, largeHasTree := largeEd.CellView().(*syntax.Tree)
+	_, largeHasTree := largeEd.CellView().(*treesitter.Tree)
 	assert.False(t, largeHasTree,
 		"buffers above MaxSyntaxParseSize must NOT have a syntax tree installed")
 }
@@ -98,6 +105,7 @@ func TestSyntaxSizeGuardZeroDisablesGuard(t *testing.T) {
 	cfg := text.DefaultConfig()
 	cfg.ScheduleNextTick = inlineSchedule
 	cfg.MaxSyntaxParseSize = 0
+	cfg.SyntaxTree = treesitter.New
 	c, err := text.NewComponent(texttest.NopEditor(), ws, cfg)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = c.Close() })
@@ -112,7 +120,126 @@ func TestSyntaxSizeGuardZeroDisablesGuard(t *testing.T) {
 	require.NoError(t, err)
 	ed, err := c.Editor(fileURI)
 	require.NoError(t, err)
-	_, hasTree := ed.CellView().(*syntax.Tree)
+	_, hasTree := ed.CellView().(*treesitter.Tree)
 	assert.True(t, hasTree,
 		"MaxSyntaxParseSize=0 must behave as no limit")
+}
+
+const fakeSyntaxTreeCommand = "faketreecmd"
+
+type fakeSyntaxTree struct {
+	workspace.FlusherCloser
+	uri        workspaceapi.URI
+	config     syntax.Config
+	dispatched []workspaceapi.URI
+	closed     bool
+}
+
+func (f *fakeSyntaxTree) Commands(syntax.Handler) ([]textapi.CommandManual, syntax.CommandHandler) {
+	return []textapi.CommandManual{{Name: fakeSyntaxTreeCommand}}, f
+}
+
+func (f *fakeSyntaxTree) HandleCommand(_ context.Context, cmd textapi.Command) error {
+	f.dispatched = append(f.dispatched, cmd.URI)
+	return nil
+}
+
+func (f *fakeSyntaxTree) Complete(context.Context, textapi.Command) (
+	iterator.Iterator[string], string, error,
+) {
+	return iterator.Empty[string](), "", nil
+}
+
+func (f *fakeSyntaxTree) Close() error {
+	f.closed = true
+	return f.FlusherCloser.Close()
+}
+
+func TestSyntaxTreeHook(t *testing.T) {
+	const maxParseSize = 1024
+	small := "hello\n"
+	large := strings.Repeat("x", maxParseSize*4) + "\n"
+
+	tests := []struct {
+		name     string
+		hook     bool
+		content  string
+		wantTree bool
+	}{
+		{name: "nil hook installs no tree", content: small},
+		{name: "hook installs the tree of every tab", hook: true, content: small, wantTree: true},
+		{name: "hook is skipped above MaxSyntaxParseSize", hook: true, content: large},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			wsURI, err := workspaceapi.ParseURI("file://" + dir)
+			require.NoError(t, err)
+			scheme, err := workspace.NewFileScheme(
+				context.Background(), config.NopConfig(), wsURI)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = scheme.Close() })
+			ws := workspace.NewSchemeWorkspace(wsURI, scheme, inlineSchedule)
+
+			cfg := text.DefaultConfig()
+			cfg.ScheduleNextTick = inlineSchedule
+			cfg.MaxSyntaxParseSize = maxParseSize
+			cfg.Syntax.StrictErrors = true
+			cfg.Syntax.CaptureNamesAttributes = map[string]term.Attributes{
+				"keyword": {Fg: term.ColorGreen},
+			}
+			var trees []*fakeSyntaxTree
+			if tt.hook {
+				cfg.SyntaxTree = func(
+					_ context.Context, _ browserapi.Notifications, _ term.Interrupter,
+					_ syntax.PkgManager, _ syntax.LocationSetter,
+					uri workspaceapi.URI, _ *cell.Buffer, fc workspace.FlusherCloser,
+					_ syntax.Opener, config syntax.Config,
+				) syntax.Tree {
+					tree := &fakeSyntaxTree{FlusherCloser: fc, uri: uri, config: config}
+					trees = append(trees, tree)
+					return tree
+				}
+			}
+			c, err := text.NewComponent(texttest.NopEditor(), ws, cfg)
+			require.NoError(t, err)
+
+			var uris []workspaceapi.URI
+			for _, name := range []string{"a.go", "b.go"} {
+				path := filepath.Join(dir, name)
+				require.NoError(t, os.WriteFile(path, []byte(tt.content), 0o644))
+				uri, err := workspaceapi.ParseURI("file://" + path)
+				require.NoError(t, err)
+				_, err = c.OpenFileTab(uri, false)
+				require.NoError(t, err)
+				uris = append(uris, uri)
+			}
+
+			for _, uri := range uris {
+				handled, err := c.DispatchCommand(context.Background(), textapi.Command{
+					Name:   fakeSyntaxTreeCommand,
+					Window: c.Browser().Focus(),
+					URI:    uri,
+				})
+				require.NoError(t, err)
+				assert.Equal(t, tt.wantTree, handled)
+			}
+
+			require.NoError(t, c.Close())
+
+			if !tt.wantTree {
+				assert.Empty(t, trees)
+				return
+			}
+			require.Len(t, trees, len(uris))
+			for i, tree := range trees {
+				assert.Equal(t, uris[i], tree.uri)
+				assert.True(t, tree.config.StrictErrors)
+				assert.Equal(t, cfg.Syntax.CaptureNamesAttributes, tree.config.CaptureNamesAttributes)
+				assert.Equal(t, []workspaceapi.URI{uris[i]}, tree.dispatched,
+					"a tree's commands must serve only its own tab")
+				assert.True(t, tree.closed, "the tree must replace the tab's FlusherCloser")
+			}
+		})
+	}
 }

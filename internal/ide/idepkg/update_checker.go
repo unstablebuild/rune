@@ -400,7 +400,7 @@ func (uc *UpdateChecker) showUpdatePrompt(ctx context.Context, updates []Update)
 		OptionBindings: []term.KeyComb{{Ch: 'u'}, {Ch: 'r'}, {Ch: 's'}},
 		PromptConfig: component.PromptConfig{
 			Message:    message,
-			Options:    []string{"   Upgrade All   ", "   Remind Later", "   Skip   "},
+			Options:    []string{"   Upgrade All   ", "   Remind Later   ", "   Skip   "},
 			NewMessage: markdownOrFallback(uc.m.parser, uc.m.scheduleNextTick),
 		},
 		PromptHandler: handler.FuncPromptHandler(func(idx int, _ string) {

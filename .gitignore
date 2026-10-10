@@ -57,8 +57,6 @@ uv.lock
 /deploy/*
 !/deploy/rune-linux/
 !/deploy/rune-headless/
-!/deploy/rune-agent/
-!/deploy/fuzzy-search/
 
 # distribution packaging build outputs (dist/README.md)
 dist/out/

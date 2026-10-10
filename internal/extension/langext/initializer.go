@@ -36,6 +36,7 @@ type Initializer struct {
 	baseCtx context.Context
 	fs      workspaceapi.FileSystem
 	editor  textapi.Editor
+	inst    Installer
 	cfg     ProjectConfig
 
 	mu           sync.Mutex
@@ -49,17 +50,20 @@ type Initializer struct {
 }
 
 // NewInitializer returns an Initializer for cfg that discovers roots
-// under the editor's workspace via fs and brings them up through
-// cfg.InitRoot. baseCtx must outlive the workspace session: event-driven
-// bring-up runs under it rather than the per-event dispatch context,
-// which the editor cancels as soon as Handle returns.
+// under the editor's workspace via fs, resolves cfg.Tools through inst
+// and brings the roots up through cfg.InitRoot. baseCtx must outlive the
+// workspace session: event-driven bring-up runs under it rather than the
+// per-event dispatch context, which the editor cancels as soon as Handle
+// returns.
 func NewInitializer(
-	baseCtx context.Context, fs workspaceapi.FileSystem, editor textapi.Editor, cfg ProjectConfig,
+	baseCtx context.Context, fs workspaceapi.FileSystem, editor textapi.Editor,
+	inst Installer, cfg ProjectConfig,
 ) *Initializer {
 	return &Initializer{
 		baseCtx:      baseCtx,
 		fs:           fs,
 		editor:       editor,
+		inst:         inst,
 		cfg:          cfg,
 		initialized:  make(map[string]Root),
 		initializing: make(map[string]struct{}),
@@ -222,6 +226,12 @@ func (i *Initializer) Reinitialize(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
+// Tools returns a lookup of cfg.Tools like the one bring-up gets, for
+// work outside a project root such as a console command.
+func (i *Initializer) Tools() *Tools {
+	return &Tools{inst: i.inst, pkgID: i.cfg.LanguageID, names: i.cfg.Tools}
+}
+
 // initializeAsync claims root and, if newly claimed, spawns the bring-up
 // goroutine so the editor's event delivery is never blocked.
 func (i *Initializer) initializeAsync(ctx context.Context, root Root) {
@@ -256,7 +266,7 @@ func (i *Initializer) claim(root Root) bool {
 // a later open can retry rather than wedging the language for the
 // session.
 func (i *Initializer) run(ctx context.Context, root Root) error {
-	err := i.cfg.InitRoot(ctx, root)
+	err := i.cfg.InitRoot(ctx, root, i.Tools())
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	delete(i.initializing, root.Dir)

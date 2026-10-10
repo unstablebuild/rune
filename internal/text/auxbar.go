@@ -34,7 +34,6 @@ import (
 	"unstable.build/rune/internal/cell"
 	"unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/debug"
-	"unstable.build/rune/internal/ide/syntax"
 	"unstable.build/rune/internal/ide/vctrl"
 )
 
@@ -833,8 +832,6 @@ func (b *auxBar) log(level log.Level, msg string, args ...any) {
 	}
 	log.WithField(logging.KeyClass, "text.auxBar").Logf(level, msg, args...)
 }
-
-var _ foldsService = (*syntax.Tree)(nil)
 
 type foldsService interface {
 	Folds() (iterator.Iterator[term.Range], bool)

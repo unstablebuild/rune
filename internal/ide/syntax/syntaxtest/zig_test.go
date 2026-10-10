@@ -31,6 +31,7 @@ import (
 	"unstable.build/rune/internal/cell"
 	"unstable.build/rune/internal/handler/handlertest"
 	"unstable.build/rune/internal/ide/syntax"
+	"unstable.build/rune/internal/ide/syntax/treesitter"
 	"unstable.build/rune/internal/text"
 )
 
@@ -387,21 +388,21 @@ func newZigEditFile(
 	return newEditFileName(t, mu, comp, content, strconv.Itoa(n)+".zig")
 }
 
-func newZigTree(t *testing.T, content string) (*syntax.Tree, func()) {
+func newZigTree(t *testing.T, content string) (*treesitter.Tree, func()) {
 	_, _, tree, cleanup := newZigTreeFull(t, newInstalledZigPkgManager(t), content)
 	return tree, cleanup
 }
 
 func newZigTreeWithPkgManager(
 	t *testing.T, pkgs syntax.PkgManager, content string,
-) (*syntax.Tree, func()) {
+) (*treesitter.Tree, func()) {
 	_, _, tree, cleanup := newZigTreeFull(t, pkgs, content)
 	return tree, cleanup
 }
 
 func newZigTreeFull(
 	t *testing.T, pkgs syntax.PkgManager, content string,
-) (*cell.Buffer, *text.Component, *syntax.Tree, func()) {
+) (*cell.Buffer, *text.Component, *treesitter.Tree, func()) {
 	var wg sync.WaitGroup
 	ready := func(context.Context) error { wg.Done(); return nil }
 	const width, height = 30, 15
@@ -415,7 +416,7 @@ func newZigTreeFull(
 
 	cref, ok := h.(*text.StatusBar)
 	require.True(t, ok)
-	tree, ok := cref.Buffer().View().(*syntax.Tree)
+	tree, ok := cref.Buffer().View().(*treesitter.Tree)
 	require.True(t, ok)
 
 	return cref.Buffer(), comp, tree, cleanup

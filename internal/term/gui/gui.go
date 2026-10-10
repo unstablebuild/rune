@@ -33,6 +33,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"github.com/unstablebuild/tcell/v3"
+	"unstable.build/rune/internal/cell"
 	"unstable.build/rune/internal/term/gui/drawrect"
 	"unstable.build/rune/internal/term/gui/font"
 )
@@ -70,7 +71,7 @@ type GUI struct {
 	fontManager       *font.Manager
 	updateChan        chan term.Event
 	handler           tui.Handler
-	writer            *frameWriter
+	writer            *cell.BufferWriter
 	mouse             *mouse
 	input             *input
 	drag              *dragPoller
@@ -671,6 +672,24 @@ func (g *GUI) SetTheme(name string) (Theme, error) {
 	return theme, nil
 }
 
+// SetColorThemes replaces the set of themes available to SetTheme and Themes.
+// If the active theme is in themes, it is re-applied so a redefinition takes
+// effect, and its definition is returned with true. Otherwise it returns
+// false and the current colors are left alone: an active theme missing from
+// themes keeps rendering until the next SetTheme.
+// Like SetTheme, it must be called on the GUI loop.
+func (g *GUI) SetColorThemes(themes map[string]Theme) (Theme, bool) {
+	g.colorThemes = themes
+	if g.theme == "" {
+		return Theme{}, false
+	}
+	if _, ok := themes[g.theme]; !ok {
+		return Theme{}, false
+	}
+	theme, err := g.SetTheme(g.theme)
+	return theme, err == nil
+}
+
 // Theme returns the current theme. An empty string
 // indicates that no theme is set, so the default color scheme,
 // is used.
@@ -729,7 +748,7 @@ func (g *GUI) LastPosition() (x, y int) {
 }
 
 func (g *GUI) drawHandler(ctx context.Context) {
-	g.writer.SetContext(ctx)
+	g.writer.SetContext(frameContext(ctx, g.fontManager))
 	_ = g.writer.Clear(g.defaultAttr)
 	g.handler.Draw(g.writer)
 	g.cursor.pos, g.cursor.style, g.cursor.show = g.handler.Cursor()
@@ -753,7 +772,7 @@ func (g *GUI) resize(width, height int, deviceScale float64) {
 	g.mouse.resize(cellsWidth, cellsHeight)
 	g.cellPixelSize.Store(uint64(math.Round(g.fontManager.PixelX(1)))<<32 |
 		uint64(math.Round(g.fontManager.PixelY(1))))
-	g.writer = newFrameWriter(g.ctx, cellsWidth, cellsHeight, g.fontManager)
+	g.writer = cell.NewBufferWriter(g.ctx, cellsWidth, cellsHeight)
 	if g.renderer != nil {
 		g.renderer.deallocate()
 	}
@@ -803,6 +822,7 @@ func (g *GUI) log(level log.Level, msg string, args ...any) {
 func (g *GUI) resetTheme() {
 	tcell.SetColorValues(g.originalColorValues)
 
+	g.theme = ""
 	g.defaultAttr.Fg = term.FromTcellColor(tcell.ColorWhite)
 	g.defaultAttr.Bg = term.FromTcellColor(tcell.ColorBlack)
 	g.cursorAttributes = term.Attributes{Bg: term.FromTcellColor(tcell.ColorRed)}

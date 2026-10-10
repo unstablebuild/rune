@@ -118,7 +118,9 @@ func TestInstallPackageOverSSH(t *testing.T) {
 		for _, noti := range ui.Active() {
 			notices = append(notices, noti.Msg)
 		}
-		assert.Equal(c, []string{"applied rune-tool configuration updates"}, notices)
+		assert.Equal(c, []string{
+			"applied rune-tool configuration updates. All changes are in effect now: gui.env.",
+		}, notices)
 	}, 10*time.Second, 10*time.Millisecond, "the host applies the approved change")
 
 	it, err := pm.LibDir(ctx, pkg)

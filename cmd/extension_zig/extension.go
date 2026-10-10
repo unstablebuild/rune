@@ -60,6 +60,7 @@ func NewExtension() (extensionapi.WorkspaceExtension, extensionapi.Metadata) {
 			extensionapi.PermissionNotifications,
 			extensionapi.PermissionExecute,
 			extensionapi.PermissionFileSystem,
+			extensionapi.PermissionPackages,
 		),
 	}
 	return ext, meta
@@ -92,7 +93,7 @@ func (e *zigExtension) extendWorkspaceWith(
 	lsp semanticapi.LSP,
 	editor textapi.Editor,
 	wm browserapi.WindowManager,
-	inst installer,
+	inst langext.Installer,
 	cfg config.Config,
 	registerREPL func(textapi.CommandManual, textapi.REPLHandler) error,
 	registerCommand func(textapi.CommandManual, textapi.CommandHandler) error,
@@ -102,12 +103,13 @@ func (e *zigExtension) extendWorkspaceWith(
 		return fmt.Errorf("resolve cwd uri: %w", err)
 	}
 
-	init := langext.NewInitializer(ctx, fs, editor, langext.ProjectConfig{
+	init := langext.NewInitializer(ctx, fs, editor, inst, langext.ProjectConfig{
 		LanguageID: "zig",
 		Markers:    zigMarkers,
 		FileMatch:  isZigFile,
-		InitRoot: func(ctx context.Context, root langext.Root) error {
-			return initializeZigRoot(ctx, fs, exec, notify, lsp, inst, cfg, root)
+		Tools:      []string{"zls", "zig"},
+		InitRoot: func(ctx context.Context, root langext.Root, tools *langext.Tools) error {
+			return initializeZigRoot(ctx, fs, exec, notify, lsp, tools, cfg, root)
 		},
 	})
 	if err := init.Start(); err != nil {
@@ -122,7 +124,7 @@ func (e *zigExtension) extendWorkspaceWith(
 		return init.Reinitialize(ctx)
 	}
 	resolveBin := func(ctx context.Context) string {
-		return resolveZig(ctx, cfg, notify, fs, exec, inst)
+		return resolveZig(ctx, cfg, notify, fs, exec, init.Tools())
 	}
 	manual, handler := newZigHandler(exec, notify, cwd.Path(), resolveBin, reload)
 	if err := registerREPL(manual, handler); err != nil {
@@ -162,12 +164,12 @@ func initializeZigRoot(
 	exec workspaceapi.Executor,
 	notify browserapi.Notifications,
 	lsp semanticapi.LSP,
-	inst installer,
+	tools *langext.Tools,
 	cfg config.Config,
 	root langext.Root,
 ) error {
-	command := resolveZls(ctx, cfg, notify, fs, exec, inst)
-	zigBin := resolveZig(ctx, cfg, notify, fs, exec, inst)
+	command := resolveZls(ctx, cfg, notify, fs, exec, tools)
+	zigBin := resolveZig(ctx, cfg, notify, fs, exec, tools)
 	bos := readBuildOnSave(cfg, notify)
 	warnMissingCheckStep(fs, notify, root, bos)
 

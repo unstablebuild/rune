@@ -49,6 +49,8 @@ REPO_ROOT := $(patsubst %/,%,$(dir $(abspath $(firstword $(MAKEFILE_LIST)))))
 # non-build targets like `clean` are unaffected; an inline $$(...)
 # substitution could not enforce this because its non-zero exit would not
 # fail the surrounding go build.
+# Taken before buildstamp runs so the Finished line counts the whole invocation.
+BUILD_START := $(shell date +%s)
 BUILD_DATE := $(shell out=$$(cd $(REPO_ROOT) && $(GO) run ./cmd/buildstamp) && printf '%s' "$$out")
 BUILD_DATE_LDFLAG = $(if $(strip $(BUILD_DATE)),,$(error buildstamp produced no build date; refusing to build a binary with an empty debug.BuildDate))-X unstable.build/rune/internal/debug.BuildDate=$(strip $(BUILD_DATE))
 # dist/arch/PKGBUILD and dist/debian/debian/rules re-declare this set
@@ -56,9 +58,40 @@ BUILD_DATE_LDFLAG = $(if $(strip $(BUILD_DATE)),,$(error buildstamp produced no 
 # never call these rules. A flag added or renamed here has to be mirrored
 # in both, or packaged builds quietly ship without it.
 COMMON_LDFLAGS=-X unstable.build/rune/internal/debug.Tag=$$(git describe --tags) -X unstable.build/rune/internal/debug.Commit=$$(git rev-parse --short HEAD) $(BUILD_DATE_LDFLAG) $(DEBUG_LDFLAGS)
-GOFLAGS=$(RACE_FLAG) -ldflags="$(COMMON_LDFLAGS) -X unstable.build/rune/internal/debug.Package=six"
-RUNE_GOFLAGS=$(RACE_FLAG) -tags=ebitensinglethread -ldflags="$(COMMON_LDFLAGS) -X unstable.build/rune/internal/debug.Package=rune"
+GOFLAGS=$(RACE_FLAG) -ldflags="$(COMMON_LDFLAGS) $(DARWIN_EXTLDFLAGS) -X unstable.build/rune/internal/debug.Package=six"
+RUNE_GOFLAGS=$(RACE_FLAG) -tags=ebitensinglethread -ldflags="$(COMMON_LDFLAGS) $(DARWIN_EXTLDFLAGS) -X unstable.build/rune/internal/debug.Package=rune"
 UNAME := $(shell uname)
+# go build links -lobjc once per package with Objective-C files, and the Xcode 15+
+# linker warns about every repeat. Older linkers reject the flag that silences the
+# warning, so it is only passed when the host linker accepts it.
+DARWIN_EXTLDFLAGS := $(if $(filter Darwin,$(UNAME)),$(shell printf 'int main(void){return 0;}' \
+	| $${CC:-clang} -x c - -o /dev/null -Wl,-no_warn_duplicate_libraries >/dev/null 2>&1 \
+	&& printf '%s' -extldflags=-Wl,-no_warn_duplicate_libraries))
+# Build output follows cargo rather than echoing go build command lines, which buried
+# compiler errors. Labels are bold and colored only when their stream is a terminal
+# and NO_COLOR is unset, so logs and CI output stay plain text.
+# status prints verb $(2) right-aligned in SGR color $(1), then message $(3) and, when
+# given, the duration $(4) in green; the shell expands $(3) and $(4) inside double quotes.
+# fail prints error $(1) and, when given, help $(2) to stderr and fails the recipe.
+comma:=,
+status=if [ -t 1 ] && [ -z "$${NO_COLOR-}" ]; then v='\033[1;$(1)m%12s\033[0m' d='\033[32m%s\033[0m'; \
+	else v='%12s' d='%s'; fi; printf "$$v %s$(if $(4), $$d)\n" '$(2)' "$(3)" $(if $(4),"$(4)")
+fail=if [ -t 2 ] && [ -z "$${NO_COLOR-}" ]; then e='\033[1;31merror\033[0m' h='\033[1;36mhelp\033[0m'; \
+	else e=error h=help; fi; printf "$$e: %s\n" '$(1)' >&2; \
+	$(if $(2),printf "$$h: %s\n" '$(2)' >&2;) exit 1
+# compile builds $@ by running command $(1) from its cmd directory. Its Compiling line
+# prints once the build ends, since it carries the build's duration, followed by the
+# compiler output, which is held so that make -j jobs do not interleave it. $(2) notes
+# how the binary is built; $(3) extends the error and $(4) is the help printed when the
+# build fails.
+compile=t=$$(date +%s); out=$$(cd $(patsubst $(BIN)/%,cmd/%,$@) && $(1) 2>&1); rc=$$?; \
+	t=$$(( $$(date +%s) - t ))s; \
+	$(call status,31,Compiling,$(notdir $@) (./cmd/$(notdir $@)$(if $(2),$(comma) $(2))),$$t); \
+	if [ -n "$$out" ]; then printf '%s\n' "$$out" >&2; fi; \
+	if [ $$rc -ne 0 ]; then $(call fail,could not compile `$(notdir $@)`$(3),$(4)); fi
+finished=s=$$(( $$(date +%s) - $(BUILD_START) )); \
+	if [ $$s -ge 60 ]; then t=$$(printf '%dm %02ds' $$((s / 60)) $$((s % 60))); else t=$${s}s; fi; \
+	$(call status,32,Finished,$(1) into $(BIN)/ in,$$t)
 VERSION=$(shell git describe --tags)
 COMMIT=$(shell git rev-parse --short HEAD)
 CODESIGN_IDENTITY ?= Developer ID Application: Unstable Build, LLC. (YYZRWD888J)
@@ -71,8 +104,17 @@ EXECSRC=$(wildcard cmd/**/*.go) $(wildcard cmd/**/**/*.go)
 EXECMAIN=$(wildcard cmd/*/main.go)
 EXECDIRS=$(sort $(dir $(EXECMAIN)))
 EXECS=$(patsubst cmd/%/,$(BIN)/%,$(EXECDIRS))
-SPECIAL_EXECS=$(BIN)/rune $(BIN)/rune-agent
-GENERIC_EXECS=$(filter-out $(SPECIAL_EXECS),$(EXECS))
+SPECIAL_EXECS=$(BIN)/rune
+# Language extensions and rune-agent ship as cgo-free binaries so one build runs on
+# every supported glibc and macOS release. rtc links C libraries to capture audio and
+# video, so it is exempt.
+CGO_EXECS=$(BIN)/extension_rtc
+NOCGO_EXECS=$(filter-out $(CGO_EXECS),$(filter $(BIN)/extension_% $(BIN)/rune-agent,$(EXECS)))
+NOCGO_ENABLED=$(if $(RACE_FLAG),1,0)
+NOCGO_NOTE=$(if $(RACE_FLAG),,cgo off)
+NOCGO_ERROR=$(if $(RACE_FLAG),, without cgo)
+NOCGO_HELP=$(if $(RACE_FLAG),,add it to CGO_EXECS in the Makefile if it needs C libraries)
+GENERIC_EXECS=$(filter-out $(SPECIAL_EXECS) $(NOCGO_EXECS),$(EXECS))
 EXEC_PKGS=$(patsubst $(BIN)/%,./cmd/%,$(EXECS))
 RELEASE_EXEC_PKGS=$(EXEC_PKGS)
 GOMOCKS=$(wildcard **/**/*_gomock.go) $(wildcard **/*_gomock.go)
@@ -84,29 +126,22 @@ RELEASE_FILES=$(wildcard release/*)
 	rune-linux-cross-compile rune-app-amd64 rune-app-arm64 \
 	rune-staging-app-arm64 \
 	rune-dmg rune-dmg-amd64 rune-dmg-notarize rune-dmg-amd64-notarize rune-release-all \
-	rune-agent-pkg rune-agent-sign rune-agent-notarize \
+	rune-agent-pkg \
 	rune-agent-prod-dist rune-agent-staging-dist \
-	rune-agent-prod-dist-notarized rune-agent-staging-dist-notarized \
-	rune-agent-linux-cross-compile \
 	rune-agent-release-linux-amd64 rune-agent-release-linux-arm64 \
-	rune-agent-release-linux-amd64-cross rune-agent-release-linux-arm64-cross \
 	rune-agent-prod-dist-linux-amd64 rune-agent-staging-dist-linux-amd64 \
 	rune-agent-prod-dist-linux-arm64 rune-agent-staging-dist-linux-arm64 \
-	rune-agent-prod-dist-linux-amd64-cross rune-agent-staging-dist-linux-amd64-cross \
-	rune-agent-prod-dist-linux-arm64-cross rune-agent-staging-dist-linux-arm64-cross \
 	rune-agent-prod-dist-darwin-amd64 rune-agent-staging-dist-darwin-amd64 \
 	rune-agent-prod-dist-darwin-arm64 rune-agent-staging-dist-darwin-arm64 \
+	rune-agent-prod-dist-all rune-agent-staging-dist-all \
 	fuzzy-search fuzzy-search-pkg \
 	fuzzy-search-prod-dist fuzzy-search-staging-dist \
-	fuzzy-search-linux-cross-compile \
 	fuzzy-search-release-linux-amd64 fuzzy-search-release-linux-arm64 \
-	fuzzy-search-release-linux-amd64-cross fuzzy-search-release-linux-arm64-cross \
 	fuzzy-search-prod-dist-linux-amd64 fuzzy-search-staging-dist-linux-amd64 \
 	fuzzy-search-prod-dist-linux-arm64 fuzzy-search-staging-dist-linux-arm64 \
-	fuzzy-search-prod-dist-linux-amd64-cross fuzzy-search-staging-dist-linux-amd64-cross \
-	fuzzy-search-prod-dist-linux-arm64-cross fuzzy-search-staging-dist-linux-arm64-cross \
 	fuzzy-search-prod-dist-darwin-amd64 fuzzy-search-staging-dist-darwin-amd64 \
 	fuzzy-search-prod-dist-darwin-arm64 fuzzy-search-staging-dist-darwin-arm64 \
+	fuzzy-search-prod-dist-all fuzzy-search-staging-dist-all \
 	runectl-pkg runectl-sign runectl-notarize \
 	runectl-prod-dist runectl-staging-dist \
 	runectl-prod-dist-notarized runectl-staging-dist-notarized \
@@ -158,17 +193,18 @@ GIT_HOOKS := $(shell git rev-parse --git-path hooks 2>/dev/null)
 default: CGO_ENABLED=CGO_ENABLED=1
 default: GOPRIVATE=github.com/unstablebuild,unstable.build/*
 default: $(if $(GIT_HOOKS),$(GIT_HOOKS)/pre-commit) $(EXECS)
+	@$(call finished,build)
 
 debug: RUNE_DEBUG_BUILD := true
 debug: CGO_ENABLED=CGO_ENABLED=1
 debug: GOPRIVATE=github.com/unstablebuild,unstable.build/*
 debug: $(EXECS)
+	@$(call finished,debug build)
 
 rune: CGO_ENABLED=CGO_ENABLED=1
 rune: GOPRIVATE=github.com/unstablebuild,unstable.build/*
 rune: $(BIN)/rune
 
-rune-agent: CGO_ENABLED=CGO_ENABLED=1
 rune-agent: GOPRIVATE=github.com/unstablebuild,unstable.build/*
 rune-agent: $(BIN)/rune-agent
 
@@ -281,13 +317,14 @@ $(BIN):
 	@mkdir $(BIN)
 
 $(BIN)/rune: $(EXECSRC) $(LIBSRC) $(BIN)
-	@cd cmd/rune && $(CGO_ENABLED) $(GO) build $(RUNE_GOFLAGS) -o ../../$@
-
-$(BIN)/rune-agent: $(EXECSRC) $(LIBSRC) $(BIN)
-	@cd cmd/rune-agent && $(CGO_ENABLED) $(GO) build $(GOFLAGS) -o ../../$@
+	@$(call compile,$(CGO_ENABLED) $(GO) build $(RUNE_GOFLAGS) -o ../../$@)
 
 $(GENERIC_EXECS): $(EXECSRC) $(LIBSRC) $(BIN)
-	cd $(patsubst bin/%,cmd/%,$@) && $(CGO_ENABLED) $(GO) build $(GOFLAGS) -o ../../$@
+	@$(call compile,$(CGO_ENABLED) $(GO) build $(GOFLAGS) -o ../../$@)
+
+# The race detector of debug builds requires cgo on Linux.
+$(NOCGO_EXECS): $(EXECSRC) $(LIBSRC) $(BIN)
+	@$(call compile,CGO_ENABLED=$(NOCGO_ENABLED) $(GO) build $(GOFLAGS) -o ../../$@,$(NOCGO_NOTE),$(NOCGO_ERROR),$(NOCGO_HELP))
 
 $(BIN)/runectl: $(BIN)
 	@GOBIN="`pwd`/$(BIN)" $(GO) install github.com/unstablebuild/rune-go-sdk/cmd/runectl
@@ -518,38 +555,17 @@ runectl: $(BIN)/runectl
 rune-agent-pkg:
 	@$(MAKE) -C cmd/rune-agent pkg
 
-rune-agent-sign:
-	@$(MAKE) -C cmd/rune-agent sign
-
-rune-agent-notarize:
-	@$(MAKE) -C cmd/rune-agent notarize
-
 rune-agent-prod-dist: clean
 	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,prod,$(BLUECTL_HOST_OS)-$(BLUECTL_HOST_ARCH)) $(MAKE) -C cmd/rune-agent dist
 
 rune-agent-staging-dist: clean
 	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,staging,$(BLUECTL_HOST_OS)-$(BLUECTL_HOST_ARCH)) $(MAKE) -C cmd/rune-agent dist
 
-rune-agent-prod-dist-notarized: clean
-	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,prod,$(BLUECTL_HOST_OS)-$(BLUECTL_HOST_ARCH)) $(MAKE) -C cmd/rune-agent dist-notarized
-
-rune-agent-staging-dist-notarized: clean
-	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,staging,$(BLUECTL_HOST_OS)-$(BLUECTL_HOST_ARCH)) $(MAKE) -C cmd/rune-agent dist-notarized
-
-rune-agent-linux-cross-compile:
-	@$(MAKE) -C cmd/rune-agent linux-cross-compile
-
 rune-agent-release-linux-amd64:
 	@$(MAKE) -C cmd/rune-agent release-linux-amd64
 
 rune-agent-release-linux-arm64:
 	@$(MAKE) -C cmd/rune-agent release-linux-arm64
-
-rune-agent-release-linux-amd64-cross:
-	@$(MAKE) -C cmd/rune-agent release-linux-amd64-cross
-
-rune-agent-release-linux-arm64-cross:
-	@$(MAKE) -C cmd/rune-agent release-linux-arm64-cross
 
 rune-agent-prod-dist-linux-amd64: clean
 	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,prod,linux-amd64) $(MAKE) -C cmd/rune-agent dist-linux-amd64
@@ -563,18 +579,6 @@ rune-agent-prod-dist-linux-arm64: clean
 rune-agent-staging-dist-linux-arm64: clean
 	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,staging,linux-arm64) $(MAKE) -C cmd/rune-agent dist-linux-arm64
 
-rune-agent-prod-dist-linux-amd64-cross: clean
-	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,prod,linux-amd64) $(MAKE) -C cmd/rune-agent dist-linux-amd64-cross
-
-rune-agent-staging-dist-linux-amd64-cross: clean
-	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,staging,linux-amd64) $(MAKE) -C cmd/rune-agent dist-linux-amd64-cross
-
-rune-agent-prod-dist-linux-arm64-cross: clean
-	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,prod,linux-arm64) $(MAKE) -C cmd/rune-agent dist-linux-arm64-cross
-
-rune-agent-staging-dist-linux-arm64-cross: clean
-	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,staging,linux-arm64) $(MAKE) -C cmd/rune-agent dist-linux-arm64-cross
-
 rune-agent-prod-dist-darwin-amd64: clean
 	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,prod,darwin-amd64) $(MAKE) -C cmd/rune-agent dist-darwin-amd64
 
@@ -587,7 +591,15 @@ rune-agent-prod-dist-darwin-arm64: clean
 rune-agent-staging-dist-darwin-arm64: clean
 	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,staging,darwin-arm64) $(MAKE) -C cmd/rune-agent dist-darwin-arm64
 
-fuzzy-search: CGO_ENABLED=CGO_ENABLED=1
+# Each target cleans first, so they run as separate makes one after another: as
+# prerequisites they would share a single clean and run at once under -j.
+rune-agent-prod-dist-all rune-agent-staging-dist-all \
+fuzzy-search-prod-dist-all fuzzy-search-staging-dist-all:
+	@$(MAKE) $(@:%-all=%)-linux-amd64
+	@$(MAKE) $(@:%-all=%)-linux-arm64
+	@$(MAKE) $(@:%-all=%)-darwin-amd64
+	@$(MAKE) $(@:%-all=%)-darwin-arm64
+
 fuzzy-search: $(BIN)/extension_fuzzy_search
 
 fuzzy-search-pkg:
@@ -599,20 +611,11 @@ fuzzy-search-prod-dist: clean
 fuzzy-search-staging-dist: clean
 	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,staging,$(BLUECTL_HOST_OS)-$(BLUECTL_HOST_ARCH)) $(MAKE) -C cmd/extension_fuzzy_search dist
 
-fuzzy-search-linux-cross-compile:
-	@$(MAKE) -C cmd/extension_fuzzy_search linux-cross-compile
-
 fuzzy-search-release-linux-amd64:
 	@$(MAKE) -C cmd/extension_fuzzy_search release-linux-amd64
 
 fuzzy-search-release-linux-arm64:
 	@$(MAKE) -C cmd/extension_fuzzy_search release-linux-arm64
-
-fuzzy-search-release-linux-amd64-cross:
-	@$(MAKE) -C cmd/extension_fuzzy_search release-linux-amd64-cross
-
-fuzzy-search-release-linux-arm64-cross:
-	@$(MAKE) -C cmd/extension_fuzzy_search release-linux-arm64-cross
 
 fuzzy-search-prod-dist-linux-amd64: clean
 	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,prod,linux-amd64) $(MAKE) -C cmd/extension_fuzzy_search dist-linux-amd64
@@ -625,18 +628,6 @@ fuzzy-search-prod-dist-linux-arm64: clean
 
 fuzzy-search-staging-dist-linux-arm64: clean
 	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,staging,linux-arm64) $(MAKE) -C cmd/extension_fuzzy_search dist-linux-arm64
-
-fuzzy-search-prod-dist-linux-amd64-cross: clean
-	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,prod,linux-amd64) $(MAKE) -C cmd/extension_fuzzy_search dist-linux-amd64-cross
-
-fuzzy-search-staging-dist-linux-amd64-cross: clean
-	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,staging,linux-amd64) $(MAKE) -C cmd/extension_fuzzy_search dist-linux-amd64-cross
-
-fuzzy-search-prod-dist-linux-arm64-cross: clean
-	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,prod,linux-arm64) $(MAKE) -C cmd/extension_fuzzy_search dist-linux-arm64-cross
-
-fuzzy-search-staging-dist-linux-arm64-cross: clean
-	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,staging,linux-arm64) $(MAKE) -C cmd/extension_fuzzy_search dist-linux-arm64-cross
 
 fuzzy-search-prod-dist-darwin-amd64: clean
 	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,prod,darwin-amd64) $(MAKE) -C cmd/extension_fuzzy_search dist-darwin-amd64

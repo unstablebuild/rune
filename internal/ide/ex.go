@@ -57,9 +57,9 @@ import (
 	thandler "unstable.build/rune/internal/handler"
 	"unstable.build/rune/internal/handler/command"
 	hmarkdown "unstable.build/rune/internal/handler/markdown"
+	"unstable.build/rune/internal/ide/console/ideconsole"
+	"unstable.build/rune/internal/ide/console/ideconsole/workspaceshell"
 	"unstable.build/rune/internal/ide/idecmd"
-	"unstable.build/rune/internal/ide/ideshell"
-	"unstable.build/rune/internal/ide/ideshell/workspaceshell"
 	"unstable.build/rune/internal/ide/idetask"
 	"unstable.build/rune/internal/ide/keymeta"
 	"unstable.build/rune/internal/ide/plugin"
@@ -207,7 +207,7 @@ type ex struct {
 
 	companionTerminal    vtereservoir.VTE
 	companionTerminalWin browser.Window
-	companionConsole     *ideshell.Handler
+	companionConsole     *ideconsole.Handler
 	companionConsoleURI  workspaceapi.URI
 
 	fileExplorerWin     browser.Window
@@ -1371,7 +1371,7 @@ func (e *ex) reloadfile(_ context.Context, args ...string) error {
 	}
 	// :reloadfile is fire-and-forget: the reload runs on a
 	// background goroutine and a reparse is scheduled back onto
-	// the host event loop via syntax.Tree.wrapReparse. Awaiting
+	// the host event loop via treesitter.Tree.wrapReparse. Awaiting
 	// the result synchronously here would deadlock that reparse
 	// against the host mutex.
 	return e.flusher.reloadAsync(t.URI(), t, nil)
@@ -2305,7 +2305,7 @@ func (e *ex) consolenewtab(_ context.Context, args ...string) error {
 		if err != nil {
 			return fmt.Errorf("workspace uri: %w", err)
 		}
-		consoleCfg := ideshell.Config{
+		consoleCfg := ideconsole.Config{
 			Storage:           e.storage,
 			HistoryDocumentID: shellHistoryDocumentID,
 			MaxHistory:        e.config.ShellMaxHistory,
@@ -2315,7 +2315,7 @@ func (e *ex) consolenewtab(_ context.Context, args ...string) error {
 			ModalStartInsert:  e.consoleCfg.modalStartInsert,
 			Prompt:            e.consoleCfg.prompt,
 		}
-		h, registry := ideshell.New(
+		h, registry := ideconsole.New(
 			e.emulatorConfig.ScheduleNextTick, e, e.promptEditor,
 			consoleCfg,
 		)

@@ -52,7 +52,7 @@ const (
 // EditSession does NOT know how to commit the edited buffer back to
 // the host's state — that is intentionally host-specific (the
 // command Prompt replays it through its own paste pipeline; an
-// ideshell host would instead replace the inner inputbox's text).
+// ideconsole host would instead replace the inner inputbox's text).
 // Hosts inspect Handle's EditDone return and perform that commit
 // themselves before/after calling End.
 type EditSession struct {

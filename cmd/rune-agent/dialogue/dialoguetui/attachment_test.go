@@ -247,7 +247,7 @@ func TestUpsertVirtualAttachmentRenders(t *testing.T) {
 	h, comp, _ := newAttachmentHandler(t)
 
 	comp.UpsertAttachment(Attachment{
-		ID: "chatreviewchanges", Name: " changes review", Icon: '\uf4d2',
+		ID: "chatreviewchanges", Name: "changes review", Icon: '\uf4d2',
 		Content: "+added\n",
 	})
 
@@ -265,10 +265,10 @@ func TestUpsertVirtualAttachmentReplacesSameID(t *testing.T) {
 	h, comp, _ := newAttachmentHandler(t)
 
 	comp.UpsertAttachment(Attachment{
-		ID: "chatreviewchanges", Name: " changes review", Icon: '\uf4d2', Content: "first",
+		ID: "chatreviewchanges", Name: "changes review", Icon: '\uf4d2', Content: "first",
 	})
 	comp.UpsertAttachment(Attachment{
-		ID: "chatreviewchanges", Name: " changes review", Icon: '\uf4d2', Content: "second",
+		ID: "chatreviewchanges", Name: "changes review", Icon: '\uf4d2', Content: "second",
 	})
 
 	require.Len(t, comp.Attachments(), 1)
@@ -297,7 +297,7 @@ func TestUpsertAttachmentKeepsDistinctEntries(t *testing.T) {
 func TestVirtualAttachmentClearedOnSubmit(t *testing.T) {
 	h, comp, rx := newAttachmentHandler(t)
 	comp.UpsertAttachment(Attachment{
-		ID: "chatreviewchanges", Name: " changes review", Icon: '\uf4d2', Content: "+added\n",
+		ID: "chatreviewchanges", Name: "changes review", Icon: '\uf4d2', Content: "+added\n",
 	})
 
 	typeText(h, "look")
@@ -316,7 +316,7 @@ func TestVirtualAttachmentClearedOnSubmit(t *testing.T) {
 func TestClickRemovesVirtualAttachment(t *testing.T) {
 	h, comp, _ := newAttachmentHandler(t)
 	comp.UpsertAttachment(Attachment{
-		ID: "chatreviewchanges", Name: " changes review", Icon: '\uf4d2',
+		ID: "chatreviewchanges", Name: "changes review", Icon: '\uf4d2',
 	})
 
 	w := term.NewStringWriter(40, 12)

@@ -34,6 +34,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/ide/syntax"
+	"unstable.build/rune/internal/ide/syntax/treesitter"
 	"unstable.build/rune/internal/term/vte"
 	"unstable.build/rune/internal/text"
 	"unstable.build/rune/internal/text/exoeditor"
@@ -228,6 +229,7 @@ func newExoGoTestComponent(
 	tcfg := text.DefaultConfig()
 	tcfg.ScheduleNextTick = schedule
 	tcfg.Syntax = syntaxCfg
+	tcfg.SyntaxTree = treesitter.New
 	tcfg.PkgManager = pkgs
 	tcfg.EventPublisher = func(term.Event) bool { return true }
 

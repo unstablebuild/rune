@@ -17,6 +17,7 @@
 package browser
 
 import (
+	"image"
 	"sync/atomic"
 
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
@@ -190,31 +191,31 @@ func veilCells(
 
 // writeCenteredLabel writes label on the middle row of the target rect,
 // keeping each cell's background so the veil tint underneath shows
-// through.
+// through. It returns the cells it wrote, empty when the label does not
+// fit.
 func writeCenteredLabel(
 	cells [][]term.Cell, pos term.Coordinates,
 	width, height int, label string, attr term.Attributes,
-) {
+) image.Rectangle {
 	runes := []rune(label)
 	if len(runes) == 0 || len(runes) > width {
-		return
+		return image.Rectangle{}
 	}
 	y := pos.Y + height/2
 	if y < 0 || y >= len(cells) {
-		return
+		return image.Rectangle{}
 	}
 	attr.Attrs |= term.AttrBold
 	row := cells[y]
 	start := pos.X + (width-len(runes))/2
-	for i, r := range runes {
-		x := start + i
-		if x < 0 || x >= len(row) {
-			continue
-		}
+	span := image.Rect(start, y, start+len(runes), y+1).
+		Intersect(image.Rect(0, y, len(row), y+1))
+	for x := span.Min.X; x < span.Max.X; x++ {
 		cellAttr := attr
 		cellAttr.Bg = row[x].Bg
-		row[x] = term.NewCell(r, 1, cellAttr)
+		row[x] = term.NewCell(runes[x-start], 1, cellAttr)
 	}
+	return span
 }
 
 func forEachCell(

@@ -63,6 +63,7 @@ func NewExtension() (extensionapi.WorkspaceExtension, extensionapi.Metadata) {
 			extensionapi.PermissionBrowserResourceOpener,
 			extensionapi.PermissionSyntaxTree,
 			extensionapi.PermissionStorage,
+			extensionapi.PermissionPackages,
 		),
 	}
 	return ext, meta
@@ -107,7 +108,7 @@ func (e *goExtension) extendWorkspaceWith(
 	parser syntaxapi.Parser,
 	interrupter term.Interrupter,
 	storage storageapi.Service,
-	inst installer,
+	inst langext.Installer,
 	cfg config.Config,
 	registerCommand func(textapi.CommandManual, textapi.CommandHandler) error,
 ) error {
@@ -129,12 +130,13 @@ func (e *goExtension) extendWorkspaceWith(
 		return fmt.Errorf("register command: %w", err)
 	}
 
-	init := langext.NewInitializer(ctx, fs, editor, langext.ProjectConfig{
+	init := langext.NewInitializer(ctx, fs, editor, inst, langext.ProjectConfig{
 		LanguageID: "go",
 		Markers:    goMarkers,
 		FileMatch:  isGoFile,
-		InitRoot: func(ctx context.Context, root langext.Root) error {
-			return initializeGoRoot(ctx, fs, exec, notify, lsp, inst, scheme, cfg, root)
+		Tools:      []string{"gopls"},
+		InitRoot: func(ctx context.Context, root langext.Root, tools *langext.Tools) error {
+			return initializeGoRoot(ctx, fs, exec, notify, lsp, tools, scheme, cfg, root)
 		},
 	})
 	if err := init.Start(); err != nil {
@@ -162,13 +164,13 @@ func initializeGoRoot(
 	exec workspaceapi.Executor,
 	notify browserapi.Notifications,
 	lsp semanticapi.LSP,
-	inst installer,
+	tools *langext.Tools,
 	scheme string,
 	cfg config.Config,
 	root langext.Root,
 ) error {
 	dbg := readGoplsDebugOptions(cfg)
-	goplsBin := resolveGoplsForRoot(ctx, fs, exec, inst, cfg, notify, scheme)
+	goplsBin := resolveGoplsForRoot(ctx, fs, exec, tools, cfg, notify, scheme)
 	params, err := goplsInitializeParams(root.URI, dbg, goplsBin)
 	if err != nil {
 		return fmt.Errorf("build init params: %w", err)

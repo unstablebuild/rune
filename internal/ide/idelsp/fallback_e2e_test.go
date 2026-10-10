@@ -37,7 +37,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
 
-	"unstable.build/rune/internal/ide/syntax"
+	"unstable.build/rune/internal/ide/syntax/treesitter"
 	"unstable.build/rune/internal/ide/vctrl/testgit"
 	"unstable.build/rune/internal/workspace"
 )
@@ -101,7 +101,7 @@ func fallbackE2E(t *testing.T) (*Manager, string, syntaxapi.Parser) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = scheme.Close() })
 
-	parser := syntax.NewParser(
+	parser := treesitter.NewParser(
 		scheme, zigPkgManager{so: so, locals: locals}, uri,
 	)
 	m := New(uri, newTestScheme(), nil, nil, nil, nil, Config{

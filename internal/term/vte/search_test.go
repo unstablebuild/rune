@@ -650,7 +650,11 @@ func TestHandlerSearchOverlayHidesContentUnderneath(t *testing.T) {
 	_, err := handler.comp.pty.Master.Write(
 		[]byte("yes " + strings.Repeat("x", 70) + " | head -40\n"))
 	require.NoError(t, err)
-	waitForScrollback(t, handler, strings.Repeat("x", 70))
+	// The echoed command line also contains the needle, so wait for the
+	// output lines themselves rather than the first occurrence.
+	require.Eventually(t, func() bool {
+		return strings.Count(scrollbackContent(handler), strings.Repeat("x", 70)) >= 40
+	}, 5*time.Second, 10*time.Millisecond)
 
 	_, handled := handler.Handle(term.Event{Type: term.EventKey, Mod: term.ModMeta, Ch: 'f'})
 	require.True(t, handled)

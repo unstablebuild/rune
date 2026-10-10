@@ -570,6 +570,9 @@ func (e *Handler) handleInput(ev term.Event, enc keyEncoding) (handled bool, raw
 	}
 
 	if ev.Type == term.EventMouse {
+		// Selection endpoints snap to cell edges, which needs the
+		// pointer's sub-cell position; it only exists on the event.
+		e.mouseDriver.trackSubCell(ev)
 		if raw, tracking := e.mouseDriver.report(ev); tracking {
 			e.log(log.TraceLevel, "input: mouse report: raw=%q", raw)
 			return len(raw) == 0, raw

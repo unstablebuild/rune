@@ -33,8 +33,8 @@ import (
 	"google.golang.org/grpc"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/ide"
+	"unstable.build/rune/internal/ide/console/networkconsole"
 	"unstable.build/rune/internal/ide/idepkg/pkgrpc"
-	"unstable.build/rune/internal/ide/networkshell"
 	"unstable.build/rune/internal/runenet"
 	"unstable.build/rune/internal/workspace"
 	"unstable.build/rune/internal/workspace/workspacerune"
@@ -244,7 +244,7 @@ func serveNetworkWorkspaces(
 	if err != nil {
 		return nil, fmt.Errorf("resolve data dir %s: %w", dataDir, err)
 	}
-	scheme, err := workspace.NewFileSchemeFunc(shellRCDir)(
+	scheme, err := workspace.NewFileSchemeFunc(dataDir, shellRCDir)(
 		context.Background(), config.NopConfig(), uri)
 	if err != nil {
 		return nil, fmt.Errorf("root workspace scheme: %w", err)
@@ -285,11 +285,11 @@ func (n *network) register(
 	}
 	// The mesh round-trips run off the editor's event loop, which is
 	// why `network` is a console command rather than an ex-command.
-	h := networkshell.New(networkshell.Config{
+	h := networkconsole.New(networkconsole.Config{
 		Network: gatedNetwork{n: n, prompter: prompter},
 	})
-	if err := i.RegisterREPLCommand(networkshell.Manual(), h); err != nil {
-		return fmt.Errorf("register '%s': %w", networkshell.CommandName, err)
+	if err := i.RegisterREPLCommand(networkconsole.Manual(), h); err != nil {
+		return fmt.Errorf("register '%s': %w", networkconsole.CommandName, err)
 	}
 	return nil
 }
@@ -430,15 +430,15 @@ func (g gatedNetwork) Down(ctx context.Context) error {
 // not there to be asked, and removing it is how the user makes room.
 func (g gatedNetwork) Machines(
 	ctx context.Context,
-) ([]networkshell.Machine, error) {
+) ([]networkconsole.Machine, error) {
 	machines, err := g.n.gate.machines(ctx)
 	if err != nil {
 		g.prompter.prompt(err)
 		return nil, err
 	}
-	ret := make([]networkshell.Machine, 0, len(machines))
+	ret := make([]networkconsole.Machine, 0, len(machines))
 	for _, m := range machines {
-		ret = append(ret, networkshell.Machine{
+		ret = append(ret, networkconsole.Machine{
 			Hostname:  m.Hostname,
 			LastSeen:  m.LastSeen,
 			Online:    m.Online,

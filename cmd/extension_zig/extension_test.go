@@ -19,6 +19,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -29,10 +31,12 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/api/extensionapi"
+	"github.com/unstablebuild/rune-go-sdk/api/pkgapi"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/handler/repl"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
 	"unstable.build/rune/internal/extension/langext"
+	"unstable.build/rune/internal/extension/langext/langexttest"
 	"unstable.build/rune/internal/ide/idelsp/lspcmd"
 )
 
@@ -84,44 +88,73 @@ func TestReadLspPath(t *testing.T) {
 	})
 }
 
+// zigTools is the lookup bring-up gets for a zig package shipping files.
+func zigTools(t *testing.T, inst *langexttest.Installer) *langext.Tools {
+	return langext.NewInitializer(t.Context(), nil, nil, inst, langext.ProjectConfig{
+		LanguageID: "zig", Tools: []string{"zls", "zig"},
+	}).Tools()
+}
+
 func TestResolveZls(t *testing.T) {
 	ctx := context.Background()
-	t.Run("lsp_path override wins", func(t *testing.T) {
+	packaged := []string{"/data/bin/zls"}
+	notInstalled := &langexttest.Installer{Err: fmt.Errorf("zig: %w", pkgapi.ErrNotInstalled)}
+	t.Run("lsp_path override wins without a lookup", func(t *testing.T) {
 		cfg := newStubConfig(map[string]string{"lsp_path": "/opt/zls/zls"})
-		fs := newFakeFS().addFile("/data/bin/zls")
-		got := resolveZls(ctx, cfg, newFakeNotifications(), fs,
-			newFakeExecutor(), fakeInstaller{fs: fs, root: "/data"})
+		inst := &langexttest.Installer{Files: packaged}
+		got := resolveZls(ctx, cfg, newFakeNotifications(), newFakeFS(),
+			newFakeExecutor(), zigTools(t, inst))
 		assert.Equal(t, "/opt/zls/zls", got)
+		assert.Zero(t, inst.Lookups())
 	})
 
-	t.Run("defaults to provisioned binary", func(t *testing.T) {
-		fs := newFakeFS().addFile("/data/bin/zls")
+	t.Run("defaults to packaged binary", func(t *testing.T) {
+		fs := newFakeFS().addFile("/opt/homebrew/bin/zls")
 		got := resolveZls(ctx, nil, newFakeNotifications(), fs,
-			newFakeExecutor(), fakeInstaller{fs: fs, root: "/data"})
+			newFakeExecutor(), zigTools(t, &langexttest.Installer{Files: packaged}))
 		assert.Equal(t, "/data/bin/zls", got)
 	})
 
 	t.Run("falls back to well-known path", func(t *testing.T) {
 		fs := newFakeFS().addFile("/opt/homebrew/bin/zls")
-		got := resolveZls(ctx, nil, newFakeNotifications(), fs,
-			newFakeExecutor(), fakeInstaller{fs: fs, root: "/data"})
+		notify := newFakeNotifications()
+		got := resolveZls(ctx, nil, notify, fs, newFakeExecutor(), zigTools(t, notInstalled))
 		assert.Equal(t, "/opt/homebrew/bin/zls", got)
+		assert.Empty(t, notify.notifMessages(), "Rune has already explained the missing package")
+	})
+
+	t.Run("package without zls warns and falls back", func(t *testing.T) {
+		fs := newFakeFS().addFile("/opt/homebrew/bin/zls")
+		notify := newFakeNotifications()
+		inst := &langexttest.Installer{Files: []string{"/data/bin/zig"}}
+		got := resolveZls(ctx, nil, notify, fs, newFakeExecutor(), zigTools(t, inst))
+		assert.Equal(t, "/opt/homebrew/bin/zls", got)
+		assert.Equal(t, []string{"Could not find zls in the zig package: " +
+			"zig/bin/zls: langext: tool not shipped by package. " +
+			"Looking for one on the host instead."}, notify.notifMessages())
+	})
+
+	t.Run("failed lookup warns and falls back", func(t *testing.T) {
+		fs := newFakeFS().addFile("/opt/homebrew/bin/zls")
+		notify := newFakeNotifications()
+		inst := &langexttest.Installer{Err: errors.New("rpc error: code = PermissionDenied")}
+		got := resolveZls(ctx, nil, notify, fs, newFakeExecutor(), zigTools(t, inst))
+		assert.Equal(t, "/opt/homebrew/bin/zls", got)
+		assert.Equal(t, []string{"Could not find zls in the zig package: " +
+			"rpc error: code = PermissionDenied. " +
+			"Looking for one on the host instead."}, notify.notifMessages())
 	})
 
 	t.Run("falls back to shell lookup", func(t *testing.T) {
-		fs := newFakeFS()
 		ex := newFakeExecutor().respond(
 			"sh -lc command -v zls", scriptedCmd{stdout: "/usr/bin/zls\n"})
-		got := resolveZls(ctx, nil, newFakeNotifications(), fs,
-			ex, fakeInstaller{fs: fs, root: "/data"})
+		got := resolveZls(ctx, nil, newFakeNotifications(), newFakeFS(), ex, zigTools(t, notInstalled))
 		assert.Equal(t, "/usr/bin/zls", got)
 	})
 
 	t.Run("missing everywhere warns and resolves empty", func(t *testing.T) {
-		fs := newFakeFS()
 		notify := newFakeNotifications()
-		got := resolveZls(ctx, nil, notify, fs,
-			newFakeExecutor(), fakeInstaller{fs: fs, root: "/data"})
+		got := resolveZls(ctx, nil, notify, newFakeFS(), newFakeExecutor(), zigTools(t, notInstalled))
 		assert.Empty(t, got)
 		assert.True(t, notify.hasMessage("could not locate the zls executable"))
 	})
@@ -129,21 +162,36 @@ func TestResolveZls(t *testing.T) {
 
 func TestResolveZig(t *testing.T) {
 	ctx := context.Background()
-	t.Run("zig_path override wins", func(t *testing.T) {
+	packaged := []string{"/data/bin/zig"}
+	notInstalled := &langexttest.Installer{Err: fmt.Errorf("zig: %w", pkgapi.ErrNotInstalled)}
+	t.Run("zig_path override wins without a lookup", func(t *testing.T) {
 		cfg := newStubConfig(map[string]string{"zig_path": "/opt/zig/zig"})
-		fs := newFakeFS().addFile("/data/bin/zig")
-		got := resolveZig(ctx, cfg, newFakeNotifications(), fs,
-			newFakeExecutor(), fakeInstaller{fs: fs, root: "/data"})
+		inst := &langexttest.Installer{Files: packaged}
+		got := resolveZig(ctx, cfg, newFakeNotifications(), newFakeFS(),
+			newFakeExecutor(), zigTools(t, inst))
 		assert.Equal(t, "/opt/zig/zig", got)
+		assert.Zero(t, inst.Lookups())
+	})
+
+	t.Run("defaults to packaged binary", func(t *testing.T) {
+		got := resolveZig(ctx, nil, newFakeNotifications(), newFakeFS(),
+			newFakeExecutor(), zigTools(t, &langexttest.Installer{Files: packaged}))
+		assert.Equal(t, "/data/bin/zig", got)
 	})
 
 	t.Run("missing everywhere resolves empty without warning", func(t *testing.T) {
-		fs := newFakeFS()
 		notify := newFakeNotifications()
-		got := resolveZig(ctx, nil, notify, fs,
-			newFakeExecutor(), fakeInstaller{fs: fs, root: "/data"})
+		got := resolveZig(ctx, nil, notify, newFakeFS(), newFakeExecutor(), zigTools(t, notInstalled))
 		assert.Empty(t, got)
 		assert.Empty(t, notify.notifMessages())
+	})
+
+	t.Run("package without zig warns", func(t *testing.T) {
+		notify := newFakeNotifications()
+		inst := &langexttest.Installer{Files: []string{"/data/bin/zls"}}
+		got := resolveZig(ctx, nil, notify, newFakeFS(), newFakeExecutor(), zigTools(t, inst))
+		assert.Empty(t, got)
+		assert.True(t, notify.hasMessage("Could not find zig in the zig package"))
 	})
 }
 
@@ -321,7 +369,7 @@ func TestExtendWorkspaceNonZigRegistersButSkipsInit(t *testing.T) {
 	registered := false
 	err := ext.extendWorkspaceWith(context.Background(),
 		fs, newFakeExecutor(), newFakeNotifications(), lsp, &fakeEditor{},
-		&fakeWM{}, fakeInstaller{fs: fs, root: "/data"}, nil,
+		&fakeWM{}, &langexttest.Installer{}, nil,
 		func(textapi.CommandManual, textapi.REPLHandler) error {
 			registered = true
 			return nil
@@ -334,10 +382,7 @@ func TestExtendWorkspaceNonZigRegistersButSkipsInit(t *testing.T) {
 }
 
 func TestExtendWorkspaceRegistersAndInitializes(t *testing.T) {
-	fs := newFakeFS().
-		addFile("build.zig").
-		addFile("/data/bin/zls").
-		addFile("/data/bin/zig")
+	fs := newFakeFS().addFile("build.zig")
 	lsp := &captureLSP{}
 
 	var manuals []textapi.CommandManual
@@ -345,7 +390,7 @@ func TestExtendWorkspaceRegistersAndInitializes(t *testing.T) {
 	ext := &zigExtension{}
 	err := ext.extendWorkspaceWith(context.Background(),
 		fs, newFakeExecutor(), newFakeNotifications(), lsp, &fakeEditor{},
-		&fakeWM{}, fakeInstaller{fs: fs, root: "/data"}, nil,
+		&fakeWM{}, &langexttest.Installer{Files: []string{"/data/bin/zls", "/data/bin/zig"}}, nil,
 		func(m textapi.CommandManual, _ textapi.REPLHandler) error {
 			manuals = append(manuals, m)
 			return nil
@@ -397,7 +442,7 @@ func TestExtendWorkspaceNestedDiscovery(t *testing.T) {
 
 	err := ext.extendWorkspaceWith(context.Background(),
 		fs, newFakeExecutor(), newFakeNotifications(), lsp, editor,
-		&fakeWM{}, fakeInstaller{fs: fs, root: "/data"}, nil,
+		&fakeWM{}, &langexttest.Installer{}, nil,
 		func(textapi.CommandManual, textapi.REPLHandler) error { return nil },
 		func(textapi.CommandManual, textapi.CommandHandler) error { return nil })
 	require.NoError(t, err)
@@ -429,7 +474,7 @@ pub fn build(b: *std.Build) void {
 	t.Run("without check step", func(t *testing.T) {
 		dir := t.TempDir()
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "build.zig"), []byte(buildZig), 0o644))
-		env := runZigExtensionOnDir(t, dir, t.TempDir(), nil)
+		env := runZigExtensionOnDir(t, dir, nil)
 		assert.True(t, env.notify.hasMessage("build-on-save"),
 			"expected the check-step hint; got %v", env.notify.notifMessages())
 	})
@@ -437,7 +482,7 @@ pub fn build(b: *std.Build) void {
 		dir := t.TempDir()
 		withCheck := buildZig + `// const check = b.step("check", "typecheck");` + "\n"
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "build.zig"), []byte(withCheck), 0o644))
-		env := runZigExtensionOnDir(t, dir, t.TempDir(), nil)
+		env := runZigExtensionOnDir(t, dir, nil)
 		assert.False(t, env.notify.hasMessage("build-on-save"))
 	})
 }

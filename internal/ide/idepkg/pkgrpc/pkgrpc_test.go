@@ -392,15 +392,17 @@ func TestInstallAsksTheClient(t *testing.T) {
 	pm, dataDir := newHost(t, pkgs, bundles)
 	c, events := serve(t, pm)
 	ctx := context.Background()
-	applied := func(level browserapi.NotificationLevel) string {
-		return fmt.Sprintf("notify %d applied configpkg configuration updates. "+
-			"Restart the program to load the changes.", level)
+	saved := func(level browserapi.NotificationLevel, keys string) string {
+		return fmt.Sprintf("notify %d saved configpkg configuration updates to your config. "+
+			"None are in effect yet; restart the program to load: %s.", level, keys)
 	}
-	v1GOROOT := filepath.Join(dataDir, "pkg", "configpkg", "1", "go")
-	v2GOROOT := filepath.Join(dataDir, "pkg", "configpkg", "2", "go")
+	const v1GOROOT = "$RUNE_DATADIR/pkg/configpkg/1/go"
+	const v2GOROOT = "$RUNE_DATADIR/pkg/configpkg/2/go"
 
 	require.NoError(t, c.InstallPackageVersion(ctx, "configpkg", "1", nil))
-	assert.Equal(t, []string{applied(browserapi.LevelInfo)}, events.recorded(),
+	assert.Equal(t, []string{
+		saved(browserapi.LevelInfo, "env.GOROOT, settings.indent, settings.theme"),
+	}, events.recorded(),
 		"settings the user does not have are applied without asking")
 	assert.Equal(t, v1GOROOT, hostGOROOT(t, dataDir))
 
@@ -411,7 +413,7 @@ func TestInstallAsksTheClient(t *testing.T) {
 		p.Options)
 	assert.Equal(t, v1GOROOT, hostGOROOT(t, dataDir), "nothing changes before the user answers")
 	events.answer(t, 0, true)
-	events.await(t, applied(browserapi.LevelSuccess))
+	events.await(t, saved(browserapi.LevelSuccess, "env.GOROOT"))
 	assert.Equal(t, v2GOROOT, hostGOROOT(t, dataDir))
 
 	require.NoError(t, c.UsePackageVersion(ctx, "configpkg", "1"))
@@ -456,9 +458,9 @@ func TestPeerInstallAsksThePeer(t *testing.T) {
 	require.NoError(t, c.InstallPackageVersion(context.Background(), "configpkg", "2", nil))
 	events.prompt(t, 0)
 	events.answer(t, 0, true)
-	events.await(t, fmt.Sprintf("notify %d applied configpkg configuration updates. "+
-		"Restart the program to load the changes.", browserapi.LevelSuccess))
-	assert.Equal(t, filepath.Join(dataDir, "pkg", "configpkg", "2", "go"), hostGOROOT(t, dataDir))
+	events.await(t, fmt.Sprintf("notify %d saved configpkg configuration updates to your config. "+
+		"None are in effect yet; restart the program to load: env.GOROOT.", browserapi.LevelSuccess))
+	assert.Equal(t, "$RUNE_DATADIR/pkg/configpkg/2/go", hostGOROOT(t, dataDir))
 	assert.Empty(t, own.Active(), "nothing is notified to the node's own user")
 }
 

@@ -34,7 +34,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/internal/ide"
-	"unstable.build/rune/internal/ide/pkgtrust"
+	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
 	"unstable.build/rune/internal/localstorage"
 )
 
@@ -63,8 +63,11 @@ func TestIntegrationIDEWorkspaceReloadOverSSH(t *testing.T) {
 	// workspace.ssh wires the stdlib remote against the container.
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "rune.yaml")
+	// The container's home is /config, not the SSH scheme's assumed
+	// /home/test; keep swap files in the writable workspace for this test.
 	cfgYAML := fmt.Sprintf(`editor:
   mode: modal
+  swap_dir: false
 command:
   key: ":"
 workspace:

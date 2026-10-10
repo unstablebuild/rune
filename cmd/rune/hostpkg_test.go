@@ -31,8 +31,8 @@ import (
 	"github.com/unstablebuild/blue/release"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"unstable.build/rune/internal/ide/gitpkg"
 	"unstable.build/rune/internal/ide/idepkg"
+	"unstable.build/rune/internal/ide/idepkg/gitpkg"
 )
 
 type goPackages struct {

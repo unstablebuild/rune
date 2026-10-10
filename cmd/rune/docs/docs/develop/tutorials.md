@@ -168,8 +168,8 @@ This is the mechanism extensions use to "register" a tutorial: drop
 the tutorial file inside the package and add a `tutorials` entry to
 the package's bundled config. Use the package-version environment
 variables (`RUNE_DATADIR`, `RUNE_PKG_ID`, `RUNE_PKG_VERSION`) to
-point at the file from inside the package layout; they expand to
-the install location at apply time:
+point at the file from inside the package layout; together they
+resolve to the file's install location:
 
 ```python title="config.star"
 # Ship this file inside your extension bundle.

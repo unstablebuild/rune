@@ -47,6 +47,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi/docmarshal/docbson"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/clipboard"
@@ -69,8 +70,8 @@ import (
 	handlermarkdown "unstable.build/rune/internal/handler/markdown"
 	"unstable.build/rune/internal/ide/ideauthorizer"
 	"unstable.build/rune/internal/ide/idehistory"
+	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
 	"unstable.build/rune/internal/ide/idetask"
-	"unstable.build/rune/internal/ide/pkgtrust"
 	"unstable.build/rune/internal/ide/vctrl/testgit"
 	"unstable.build/rune/internal/localstorage"
 	"unstable.build/rune/internal/term/vte/vtereservoir"
@@ -1759,6 +1760,72 @@ func awaitImageView(
 	}
 }
 
+func TestViewImageUnderCommandPromptShader(t *testing.T) {
+	const width, height = 42, 22
+	interrupts := make(chan struct{}, 1)
+	newTestPublishOverride = func(term.Event) bool {
+		select {
+		case interrupts <- struct{}{}:
+		default:
+		}
+		return true
+	}
+	t.Cleanup(func() { newTestPublishOverride = nil })
+
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "sample.png"), imageuritest.SamplePNG, 0o644))
+
+	m := newTestWorkspaceManagerHandlerWithDir(t,
+		defaultConfigWithWrap(false), dir, nopShutdownShaderConfig())
+	t.Cleanup(func() { _ = m.Close() })
+	uri, err := workspaceapi.ParseURI("file://" + dir)
+	require.NoError(t, err)
+	require.NoError(t, m.addOrCreateWorkspace(uri))
+	m.quiesce()
+
+	h := newSafeHandler(m)
+	w := asciiart.NewStringWriter(width, height, asciiart.DefaultConfig())
+	handlertest.RunHandlerSequenceWriter(t, w, h, width, height,
+		[]handlertest.SequenceTestCase{{
+			InputSequence: `<c-\\>view<space>sample.png<enter>`,
+			Expected:      viewImageLoadingPNG,
+		}})
+	awaitImageView(t, h, w, interrupts)
+
+	wh, ok := m.focusHandler().(*workspaceHandler)
+	require.True(t, ok)
+	wh.ex.commandPromptCfg.shader.enabled = true
+	handlertest.RunHandlerSequenceWriter(t, w, h, width, height,
+		[]handlertest.SequenceTestCase{{
+			InputSequence: `<c-\\>`,
+			Expected: `┌━━━━━━━━━━━━────────────────────────────┐
+│o sample.png                            │
+├────────────────────────────────────────┤
+│@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ │
+│@@@@@@@@@#b#@@@@##b##@@@##bW#@@@@@@@@@@ │
+│@@@@@@@bbbbbb#@acccccb@#cccc;c@@@@@@@@@ │
+│@@@@@@@#cbbbb##cccccc#@c;;;;;#@@@@@@@@@ │
+│@@@@@@@@@@@@@8cc#@@@@W;;#@@@@@@@@@@@@@@ │
+┌────────────────────────────────────────┐
+│ ▐                                      │
+│ !                                      │
+│ !!                                     │
+│ addBlaBla                              │
+│ cheatsheet                             │
+│ clipboardcopy                          │
+│ clipboardpaste                         │
+│ console                                │
+│ cursorhistory                          │
+│ debugger                               │
+├────────────────────────────────────────┤
+│1 1  2 2                                │
+└─────━━━────────────────────────────────┘`,
+		}})
+	require.NotNil(t, wh.ex.promptShader, "the prompt must draw through its shader")
+}
+
 func TestReadfileCrossWorkspaceIntegration(t *testing.T) {
 	tmp1 := t.TempDir()
 	tmp2 := t.TempDir()
@@ -2184,7 +2251,7 @@ func TestWorkspaceConfig(t *testing.T) {
 			nopShutdownShaderConfig(), loadingShaderConfig{}, openShaderConfig{},
 			component.FrameCharSetDefault())
 		storage := localstorage.New(context.Background(), dir, docbson.Marshaler())
-		m.tutorialsInstalled = func([]string) (bool, error) { return false, nil }
+		m.tutorialsInstalled = func([]string) ([]string, error) { return nil, nil }
 		err = m.workspaceManagerHandler.init(&uri, homeURI, manager,
 			notificationsConfig(), cfg, storage, dir,
 			func(term.Event) bool {
@@ -5535,7 +5602,7 @@ func newTestWorkspaceManagerHandlerWithManagerMu(
 	if publish == nil {
 		publish = func(term.Event) bool { return true }
 	}
-	m.tutorialsInstalled = func([]string) (bool, error) { return false, nil }
+	m.tutorialsInstalled = func([]string) ([]string, error) { return nil, nil }
 	for _, fn := range prepare {
 		fn(m.workspaceManagerHandler)
 	}
@@ -9000,6 +9067,21 @@ func TestSwapDirectory(t *testing.T) {
 		require.NoError(t, err)
 		assert.Nil(t, h.swapDirectory(swapDirIDEConfig(t, false), ws, uri))
 	})
+}
+
+func TestTextOptsInstallSyntaxTrees(t *testing.T) {
+	var cfg ideConfig
+	initDefaultConfig(&cfg, browser.NopWallpaper(), term.RingBell, term.ScheduleNextTick, "")
+	cfg.storage = storagestub.NewInMemoryService()
+	uri, err := workspaceapi.ParseURI("file:///Users/x/src/proj")
+	require.NoError(t, err)
+
+	textCfg := text.DefaultConfig()
+	for _, opt := range (&workspaceManagerHandler{}).textOpts(cfg, nil, uri, nil) {
+		opt(&textCfg)
+	}
+	assert.NotNil(t, textCfg.SyntaxTree,
+		"without a syntax tree hook, file tabs lose highlights, folds and indents")
 }
 
 func TestWorkspaceRootURI(t *testing.T) {

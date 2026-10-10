@@ -61,7 +61,7 @@ func TestE2EZlsLoggingConfigReachesProcess(t *testing.T) {
 			"log_level": "debug",
 		},
 	})
-	err = initializeZigRoot(t.Context(), scheme, scheme, newFakeNotifications(), mgr, nil, cfg,
+	err = initializeZigRoot(t.Context(), scheme, scheme, newFakeNotifications(), mgr, &langext.Tools{}, cfg,
 		langext.Root{Dir: dir, URI: rootURI})
 	require.NoError(t, err)
 

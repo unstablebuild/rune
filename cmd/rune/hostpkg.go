@@ -30,7 +30,7 @@ import (
 	"google.golang.org/grpc/status"
 	"unstable.build/rune/internal/ide"
 	"unstable.build/rune/internal/ide/idepkg"
-	"unstable.build/rune/internal/ide/pkgtrust"
+	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
 )
 
 // newHostPackageManager builds the manager a host with no editor of
@@ -54,7 +54,7 @@ func newHostPackageManager(
 				return idepkg.ConfigMergeResult{}, nil
 			}
 			applyEnv()
-			return idepkg.ConfigMergeResult{LiveApplied: true}, nil
+			return idepkg.ConfigMergeResult{LivePaths: [][]string{{"gui", "env"}}}, nil
 		}))
 	if err := mgr.Reconcile(context.Background()); err != nil {
 		log.Warnf("packages: clean up incomplete installs: %v", err)

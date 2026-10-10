@@ -38,6 +38,7 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"unstable.build/rune/internal/ide/hostenv"
 	"unstable.build/rune/internal/workspace"
 	"unstable.build/rune/internal/workspace/workspacerpc"
 	"unstable.build/rune/internal/workspace/workspacessh"
@@ -60,7 +61,19 @@ func main() {
 		fmt.Fprintln(os.Stderr, "runesvc: parse uri:", err)
 		os.Exit(3)
 	}
-	scheme, err := workspace.NewFileScheme(
+	if *dataDir == "" {
+		*dataDir = defaultDataDir()
+	}
+	// Set up the host environment the way `rune -x` does, so terminals
+	// started here exercise the real shell rc and gui.env mechanism.
+	shellRCDir, err := workspace.InstallShellRC(*dataDir)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "runesvc: install shell rc:", err)
+	}
+	if err := hostenv.New(*dataDir, shellRCDir).Apply(guiEnv(*dataDir)); err != nil {
+		fmt.Fprintln(os.Stderr, "runesvc: apply host environment:", err)
+	}
+	scheme, err := workspace.NewFileSchemeFunc(*dataDir, shellRCDir)(
 		context.Background(), config.NopConfig(), uri)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "runesvc: new file scheme:", err)
@@ -80,7 +93,7 @@ func main() {
 	sleepServeDelay(*dataDir)
 
 	grpcServer := workspacessh.NewSchemeServer()
-	if err := servePackages(grpcServer, *dataDir); err != nil {
+	if err := servePackages(grpcServer, filepath.Join(*dataDir, "bin")); err != nil {
 		fmt.Fprintln(os.Stderr, "runesvc: serve packages:", err)
 		os.Exit(6)
 	}
@@ -97,9 +110,6 @@ func main() {
 // connectScheme launch. A missing or malformed file is a no-op.
 func sleepServeDelay(dataDir string) {
 	if dataDir == "" {
-		dataDir = defaultDataDir()
-	}
-	if dataDir == "" {
 		return
 	}
 	data, err := os.ReadFile(filepath.Join(dataDir, "serve_delay"))
@@ -113,6 +123,22 @@ func sleepServeDelay(dataDir string) {
 	}
 	fmt.Fprintf(os.Stderr, "runesvc: delaying serve by %s\n", d)
 	time.Sleep(d)
+}
+
+// guiEnv stands in for the gui.env block `rune -x` reads from the user
+// config: KEY=VALUE lines in the data directory's gui_env file, if present.
+func guiEnv(dataDir string) config.Config {
+	env := map[string]any{}
+	data, err := os.ReadFile(filepath.Join(dataDir, "gui_env"))
+	if err != nil {
+		return config.MapConfig(env)
+	}
+	for line := range strings.Lines(string(data)) {
+		if k, v, ok := strings.Cut(strings.TrimRight(line, "\n"), "="); ok {
+			env[k] = v
+		}
+	}
+	return config.MapConfig(env)
 }
 
 func defaultDataDir() string {

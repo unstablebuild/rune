@@ -65,11 +65,11 @@ import (
 	"unstable.build/rune/internal/extension/extensionv2"
 	"unstable.build/rune/internal/handler/command"
 	"unstable.build/rune/internal/handler/handlertest"
+	"unstable.build/rune/internal/ide/console/pkgconsole"
 	"unstable.build/rune/internal/ide/ideauthorizer"
 	"unstable.build/rune/internal/ide/idepkg/idepkgtest"
+	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
 	"unstable.build/rune/internal/ide/idetutorial"
-	"unstable.build/rune/internal/ide/pkgshell"
-	"unstable.build/rune/internal/ide/pkgtrust"
 	"unstable.build/rune/internal/ide/syntax/grammarfixture"
 	"unstable.build/rune/internal/ide/syntax/symboldb"
 	"unstable.build/rune/internal/ide/vctrl"
@@ -553,10 +553,10 @@ func TestSignedPackageTrustIntegration(t *testing.T) {
 	drainSchedule()
 	i.WaitWorkspaces()
 
-	packages := pkgshell.New(pkgshell.Config{Manager: i.workspaceHandler.pkgmanager.pkg})
+	packages := pkgconsole.New(pkgconsole.Config{Manager: i.workspaceHandler.pkgmanager.pkg})
 	install := func(pkgID string) error {
 		_, err := packages.HandleCommand(context.Background(), repl.Command{
-			Name: pkgshell.CommandName,
+			Name: pkgconsole.CommandName,
 			Args: []string{"install", pkgID},
 		}, repl.NopProgressWriter())
 		return err

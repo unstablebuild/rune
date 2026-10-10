@@ -80,7 +80,9 @@ Everything that belongs to the process or to the GUI window is built once at
 startup and needs a restart:
 
 - all `gui.*` settings: fonts, themes, ligatures, opacity, blur,
-  scroll multiplier, key mapping, quick menu, `gui.env`
+  scroll multiplier, key mapping, quick menu, `gui.env`. Themes and
+  `gui.env` variables added by a package install are available right away
+  (see below).
 - `log.output_path` and `log.level`
 - `models.*` (the LLM router), `notifications.*`, `telemetry.*`
 - `animations.*`, `workspace.home`, clipboard and macro settings
@@ -99,8 +101,9 @@ fonts, themes and window settings. Everything else in the restart list is
 per-process too, so the new window picks those up as well.
 
 Installing a package is the one case where config is applied without a reload:
-`gui.env` variables, newly added extensions and newly added tutorials are
-picked up live. If a package changes anything else, Rune tells you to restart.
+`gui.env` variables, `gui.themes`, newly added extensions and newly added
+tutorials take effect live. When the install finishes, the notification lists
+which keys are in effect now and which need a restart.
 
 ## Editor Modes
 
@@ -358,6 +361,37 @@ For ready-to-copy `exo` configs (Vim, Neovim, Helix, Nano, and more), see the
 
   ```python tab
   config["gui"]["meta_key"] = "<alt>"
+  ```
+
+- `gui.env`: environment variables Rune sets for itself and everything it
+  starts: terminals, extensions, language servers, debuggers and tasks. A
+  value may reference other variables, such as `$HOME`, and `$RUNE_DATADIR`
+  names the Rune data directory of the machine that applies it. Each machine
+  applies the config stored on it, so in a remote workspace the variables come
+  from `~/.rune/config.yaml` on the remote machine.
+
+  `PATH` extends the existing `PATH` instead of replacing it: the directories
+  listed before `$PATH` go in front of it and the ones after it go at the end.
+  Rune's shared binary directory, `$RUNE_DATADIR/bin`, always comes first.
+
+  Terminals running bash, zsh or fish apply `gui.env` again after the shell's
+  startup files, so it wins over them: a variable set in both has the
+  `gui.env` value, and Rune's `PATH` entries come first even when a startup
+  file such as `/etc/profile` resets `PATH`. The rest of the `PATH` that your
+  startup files built follows.
+
+  ```yaml tab
+  gui:
+    env:
+      EDITOR: vim
+      PATH: '$HOME/.local/bin:$PATH'
+  ```
+
+  ```python tab
+  config["gui"]["env"] = {
+      "EDITOR": "vim",
+      "PATH": "$HOME/.local/bin:$PATH",
+  }
   ```
 
 ## Telemetry

@@ -32,7 +32,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/iterator"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/handler/handlertest"
-	"unstable.build/rune/internal/ide/ideshell"
+	"unstable.build/rune/internal/ide/console/ideconsole"
 	"unstable.build/rune/internal/text/standard"
 )
 
@@ -197,11 +197,11 @@ const (
 )
 
 // replRig drives a fully wired Go REPL handler: a real go-toolchain
-// runner, a real gopls behind semanticapi.LSP, and the ideshell handler,
+// runner, a real gopls behind semanticapi.LSP, and the ideconsole handler,
 // rooted at a throwaway copy of testdata/replmod.
 type replRig struct {
 	t     *testing.T
-	shell *ideshell.Handler
+	shell *ideconsole.Handler
 	drain *drainHandler
 	sched *tickScheduler
 	sess  *goSession
@@ -233,7 +233,7 @@ func newREPLRig(t *testing.T) *replRig {
 	ti := &nopInterrupter{}
 	sched := newTickScheduler(ti)
 	cfg := (&replSubcommand{}).shellConfig(session, workspaceapi.URI{}, false)
-	shell, registry := ideshell.New(
+	shell, registry := ideconsole.New(
 		sched.schedule,
 		ti,
 		commandEditor{te: standard.Editor()},

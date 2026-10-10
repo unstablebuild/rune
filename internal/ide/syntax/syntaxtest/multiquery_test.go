@@ -35,6 +35,7 @@ import (
 	"unstable.build/rune/internal/ide/idelsp/symbolresolve"
 	"unstable.build/rune/internal/ide/syntax"
 	"unstable.build/rune/internal/ide/syntax/grammarfixture"
+	"unstable.build/rune/internal/ide/syntax/treesitter"
 	"unstable.build/rune/internal/workspace"
 )
 
@@ -150,7 +151,7 @@ func setupMultiSearcher(t *testing.T, files int) (
 	}
 
 	fs := &countingFS{FileSystem: scheme}
-	parser := syntax.NewParser(fs, goPkgManager(t), uri)
+	parser := treesitter.NewParser(fs, goPkgManager(t), uri)
 	return parser, fs
 }
 
@@ -297,7 +298,7 @@ func TestSearchMultiRuneColumns(t *testing.T) {
 	src := "package pkg\ntype T struct{ å int; bar int }\n"
 	createFile(t, scheme, "fields.go", src)
 
-	parser := syntax.NewParser(scheme, goPkgManager(t), uri)
+	parser := treesitter.NewParser(scheme, goPkgManager(t), uri)
 	results := collectMulti(t, parser, []symbolresolve.MultiQuery{
 		{ID: 0, Query: `(field_declaration name: (field_identifier) @f)`, Captures: []string{"f"}},
 	})
@@ -366,7 +367,7 @@ func TestSearchMultiSkipsFilteredDirs(t *testing.T) {
 	createFile(t, scheme, "node_modules/dep.go", multiQueryFile)
 
 	fs := &countingFS{FileSystem: scheme}
-	searcher := syntax.NewParser(fs, goPkgManager(t), uri)
+	searcher := treesitter.NewParser(fs, goPkgManager(t), uri)
 
 	results := collectMulti(t, searcher, []symbolresolve.MultiQuery{
 		{ID: 0, Query: funcQuery, Captures: []string{"fn"}},
@@ -404,7 +405,7 @@ func betaFuncWithMuchLongerName() string {
 type betaTypeWithMuchLongerName struct{}
 `)
 
-	parser := syntax.NewParser(scheme, goPkgManager(t), uri)
+	parser := treesitter.NewParser(scheme, goPkgManager(t), uri)
 	session := parser.NewQuerySession()
 	t.Cleanup(func() { _ = session.Close() })
 
@@ -446,7 +447,7 @@ func BenchmarkQuerySessionQueryMulti(b *testing.B) {
 	file := createFile(b, scheme, "big.go", src.String())
 	b.Logf("file size: %d bytes", src.Len())
 
-	parser := syntax.NewParser(scheme, goPkgManager(b), uri)
+	parser := treesitter.NewParser(scheme, goPkgManager(b), uri)
 	session := parser.NewQuerySession()
 	b.Cleanup(func() { _ = session.Close() })
 

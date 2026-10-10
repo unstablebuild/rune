@@ -39,7 +39,7 @@ import (
 const tutorialPlaylistPromptDelay = 3 * time.Second
 
 func buildTutorials(i *IDE) map[string]idetutorial.Tutorial {
-	files := i.ideConfig.tutorialFiles()
+	files := i.ideConfig.tutorialFiles(i.workspaceHandler.sixDir)
 	embedded := i.options.starlarkTutorials
 	i.tutorialsConfig = newTutorialsConfig(i)
 	if len(files) == 0 && len(embedded) == 0 {
@@ -78,18 +78,19 @@ func buildTutorials(i *IDE) map[string]idetutorial.Tutorial {
 // tutorial, then schedules their registration into the live runner onto the
 // event loop. Every built tutorial is registered, but only the first one
 // prompts "run it now?": prompting per tutorial would stack overlapping
-// floating windows. The first return reports whether at least one tutorial was
-// built so the merge result records a live-apply; the error aggregates every
-// read/build failure so idepkg can notify in one place.
-func (i *IDE) onTutorialsInstalled(names []string) (bool, error) {
+// floating windows. It returns the names that were built and scheduled for
+// registration; names already registered or missing from the reloaded config
+// are left out, so the merge result reports them as needing a restart. The
+// error aggregates every read/build failure so idepkg can notify in one place.
+func (i *IDE) onTutorialsInstalled(names []string) ([]string, error) {
 	if len(names) == 0 {
-		return false, nil
+		return nil, nil
 	}
 	cfg, err := i.workspaceHandler.reloadConfig()
 	if err != nil {
-		return false, fmt.Errorf("reload config for installed tutorials: %w", err)
+		return nil, fmt.Errorf("reload config for installed tutorials: %w", err)
 	}
-	files := cfg.tutorialFiles()
+	files := cfg.tutorialFiles(i.workspaceHandler.sixDir)
 
 	type built struct {
 		name string
@@ -120,7 +121,7 @@ func (i *IDE) onTutorialsInstalled(names []string) (bool, error) {
 		ready = append(ready, built{name: name, t: t})
 	}
 	if len(ready) == 0 {
-		return false, errs
+		return nil, errs
 	}
 
 	i.options.scheduleFn(func() {
@@ -139,7 +140,11 @@ func (i *IDE) onTutorialsInstalled(names []string) (bool, error) {
 			}
 		}
 	})
-	return true, errs
+	registered := make([]string, 0, len(ready))
+	for _, b := range ready {
+		registered = append(registered, b.name)
+	}
+	return registered, errs
 }
 
 // notifyTutorialNotRegistered tells the user a freshly-installed tutorial could

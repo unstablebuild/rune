@@ -40,7 +40,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/internal/cell"
-	"unstable.build/rune/internal/ide/ideshell"
+	"unstable.build/rune/internal/ide/console/ideconsole"
 	"unstable.build/rune/internal/text/standard"
 )
 
@@ -1496,11 +1496,11 @@ func newTestREPLHandler(t *testing.T) (*drainHandler, *tickScheduler) {
 	t.Helper()
 	ti := &nopInterrupter{}
 	sched := newTickScheduler(ti)
-	shell, _ := ideshell.New(
+	shell, _ := ideconsole.New(
 		sched.schedule,
 		ti,
 		commandEditor{te: standard.Editor()},
-		ideshell.Config{
+		ideconsole.Config{
 			DisableShellInterpreter: newTestSession(newScriptedRunner()),
 			Prompt:                  "go> ",
 		},
@@ -1672,7 +1672,7 @@ func TestGoREPLEvalEndToEnd(t *testing.T) {
 	}
 }
 
-// --- ideshell wiring --------------------------------------------------
+// --- ideconsole wiring --------------------------------------------------
 
 func TestGoSessionHelp(t *testing.T) {
 	t.Parallel()
@@ -1813,7 +1813,7 @@ func TestREPLShellConfigPersistsHistory(t *testing.T) {
 	require.NotEmpty(t, cfg.HistoryDocumentID,
 		"a history document id is required to persist commands")
 
-	shell, _ := ideshell.New(
+	shell, _ := ideconsole.New(
 		func(func()) bool { return false }, &nopInterrupter{},
 		commandEditor{te: standard.Editor()}, cfg,
 	)

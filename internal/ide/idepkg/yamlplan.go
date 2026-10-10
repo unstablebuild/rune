@@ -23,6 +23,7 @@ import (
 
 	"github.com/unstablebuild/blue/release"
 	"gopkg.in/yaml.v3"
+	"unstable.build/rune/internal/ide/hostenv"
 )
 
 type configChangePlan struct {
@@ -52,23 +53,21 @@ func planConfigChange(
 	pkgID string, pkgVersion release.Version,
 	dataDir, editorMode string, promptExtensionPaths bool,
 ) (configChangePlan, error) {
+	// RUNE_DATADIR is not expanded here: it names the data directory of the
+	// host that uses the value, which is not necessarily this one.
 	runeVarMapping := func(key string) (string, bool) {
 		switch key {
-		case "RUNE_DATADIR":
-			return dataDir, true
 		case "RUNE_PKG_ID":
 			return pkgID, true
 		case "RUNE_PKG_VERSION":
 			return string(pkgVersion), true
 		}
-		// Leave $key literal in the merged config so it is expanded
-		// later at Rune startup against the resolved environment.
 		return "", false
 	}
 
 	pkgOverlayCfg, err := loadIdePkgConfigOverlay(
 		pkgConfigFile, pkgConfigData, map[string]any{},
-		pkgID, pkgVersion, dataDir, editorMode,
+		pkgID, pkgVersion, editorMode,
 	)
 	if err != nil {
 		return configChangePlan{}, fmt.Errorf("decode package config: %w", err)
@@ -82,7 +81,7 @@ func planConfigChange(
 
 	versionDependent, err := versionDependentOverlayKeys(
 		pkgConfigFile, pkgConfigData, pkgOverlayCfg,
-		pkgID, dataDir, editorMode,
+		pkgID, editorMode,
 	)
 	if err != nil {
 		return configChangePlan{}, err
@@ -96,7 +95,9 @@ func planConfigChange(
 		}
 	}
 
-	newCfg, conflictCfg := idePkgConfigDiff(userCfg, pkgOverlayCfg, versionDependent, nil)
+	newCfg, conflictCfg := idePkgConfigDiff(
+		userCfg, pkgOverlayCfg, versionDependent, dataDir, nil,
+	)
 	if newCfg == nil && conflictCfg == nil && len(pathChanges) == 0 {
 		return configChangePlan{}, nil
 	}
@@ -147,7 +148,7 @@ func extractExtensionPathChanges(
 			continue
 		}
 		installedPath, ok := pkgExtension["path"].(string)
-		if !ok || !pathWithinDir(installedPath, dataDir) {
+		if !ok || !pathWithinDir(hostenv.ExpandDataDir(installedPath, dataDir), dataDir) {
 			continue
 		}
 		userExtension, ok := userExtensions[id].(map[string]any)
@@ -179,9 +180,8 @@ func extractExtensionPathChanges(
 }
 
 func equivalentExtensionPath(currentPath, installedPath, dataDir string) bool {
-	currentPath = expandRuneVars(currentPath, func(name string) (string, bool) {
-		return dataDir, name == "RUNE_DATADIR"
-	})
+	currentPath = hostenv.ExpandDataDir(currentPath, dataDir)
+	installedPath = hostenv.ExpandDataDir(installedPath, dataDir)
 	return filepath.Clean(currentPath) == filepath.Clean(installedPath)
 }
 

@@ -59,7 +59,6 @@ func NewRegistry(fs workspaceapi.FileSystem, cwd workspaceapi.URI, dirs []string
 		}
 		r.dirs = append(r.dirs, abs)
 		for _, s := range r.loadDir(abs) {
-			r.warnDescription(s)
 			if existing, exists := r.byName[s.Name]; !exists {
 				r.byName[s.Name] = s
 			} else {
@@ -134,7 +133,6 @@ func (r *SkillRegistry) AddDir(dir string) ([]Skill, error) {
 	loaded := r.loadDir(abs)
 	var added []Skill
 	for _, s := range loaded {
-		r.warnDescription(s)
 		if existing, exists := r.byName[s.Name]; !exists {
 			r.byName[s.Name] = s
 			added = append(added, s)
@@ -181,7 +179,6 @@ func (r *SkillRegistry) Reload() {
 	r.byName = make(map[string]Skill, len(r.byName))
 	for _, abs := range r.dirs {
 		for _, s := range r.loadDir(abs) {
-			r.warnDescription(s)
 			if existing, exists := r.byName[s.Name]; !exists {
 				r.byName[s.Name] = s
 			} else {
@@ -201,13 +198,6 @@ func (r *SkillRegistry) resolve(dir string) string {
 		return dir
 	}
 	return expanded
-}
-
-func (r *SkillRegistry) warnDescription(s Skill) {
-	if len(s.Description) > 1024 {
-		r.notify("skill %q: description exceeds 1024 characters (%d)",
-			s.Name, len(s.Description))
-	}
 }
 
 func (r *SkillRegistry) registerBuiltins() {

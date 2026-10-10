@@ -35,6 +35,7 @@ import (
 	"unstable.build/rune/auth"
 	"unstable.build/rune/cmd/rune/ide/apiclient"
 	"unstable.build/rune/internal/ide"
+	"unstable.build/rune/internal/ide/hostenv"
 	"unstable.build/rune/internal/runenet"
 	"unstable.build/rune/internal/workspace"
 )
@@ -53,7 +54,9 @@ type headlessClient interface {
 // operator would otherwise read out of the editor — the sign-in code, the
 // account, the node's mesh status — goes to stdout, and the editor log
 // is teed there too so the process is usable under a service manager.
-func runHeadless(ctx context.Context, shellRCDir string, shellRCErr error) int {
+func runHeadless(
+	ctx context.Context, host *hostenv.Host, shellRCDir string, shellRCErr error,
+) int {
 	rootCfg, err := ide.Config(*flagConfigPath, runeDefaultConfig())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "load config: %s\n", err)
@@ -102,7 +105,7 @@ func runHeadless(ctx context.Context, shellRCDir string, shellRCErr error) int {
 		_ = net.Close()
 	}()
 
-	closePackages, err := serveHeadlessPackages(ctx, net, storage, shellRCDir)
+	closePackages, err := serveHeadlessPackages(ctx, net, storage, host, shellRCDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s\n", err)
 		return 1
@@ -131,20 +134,21 @@ func runHeadless(ctx context.Context, shellRCDir string, shellRCErr error) int {
 // changes it, so commands peers start see the installed toolchains.
 func serveHeadlessPackages(
 	ctx context.Context, net *network, rootStorage storageapi.Service,
-	shellRCDir string,
+	host *hostenv.Host, shellRCDir string,
 ) (func(), error) {
 	uri, err := workspaceapi.CurrentUserHostURI("/")
 	if err != nil {
 		return nil, fmt.Errorf("root workspace URI: %w", err)
 	}
-	scheme, err := workspace.NewFileSchemeFunc(shellRCDir)(
+	scheme, err := workspace.NewFileSchemeFunc(*flagDataPath, shellRCDir)(
 		ctx, config.NopConfig(), uri)
 	if err != nil {
 		return nil, fmt.Errorf("root workspace scheme: %w", err)
 	}
-	applyUserConfigEnv()
+	applyEnv := func() { applyUserConfigEnv(host) }
+	applyEnv()
 	pkgs, pkgStorage := newHostPackageManager(
-		rootStorage, newRemoteReleaseManager(), scheme, applyUserConfigEnv)
+		rootStorage, newRemoteReleaseManager(), scheme, applyEnv)
 	net.packages.set(pkgs)
 	return func() {
 		_ = pkgStorage.Close()
@@ -152,7 +156,7 @@ func serveHeadlessPackages(
 	}, nil
 }
 
-func applyUserConfigEnv() {
+func applyUserConfigEnv(host *hostenv.Host) {
 	cfg, err := ide.Config(*flagConfigPath, runeDefaultConfig())
 	if err != nil {
 		log.Warnf("load config to apply gui.env: %v", err)
@@ -160,7 +164,7 @@ func applyUserConfigEnv() {
 			return
 		}
 	}
-	applyConfigEnv(cfg)
+	applyConfigEnv(host, cfg)
 }
 
 // startHeadlessLogging points the editor log at its configured file and

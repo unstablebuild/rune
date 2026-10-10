@@ -460,7 +460,7 @@ release-linux-amd64-cross: release-linux-amd64
 release-linux-arm64-cross: release-linux-arm64
 
 # RUNE_IMAGE is the Docker Hub repository of the headless node image built
-# from deploy/rune-headless/Dockerfile, a musl build of Rune on Alpine.
+# from deploy/rune-headless/Dockerfile, a glibc build of Rune on Debian.
 RUNE_IMAGE ?= unstablebuild/rune
 RUNE_IMAGE_PLATFORMS ?= linux/amd64,linux/arm64
 RUNE_IMAGE_BUILD = cd $(ROOT_DIR) && docker buildx build --rm \

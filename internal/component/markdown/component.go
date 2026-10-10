@@ -303,6 +303,67 @@ func (c *Component) SpanAt(x, y int) (text, url string, ok bool) {
 	return
 }
 
+// CodeBlockCopyTarget is the copy icon drawn under a code block when
+// Config.CodeBlockCopy is true.
+type CodeBlockCopyTarget struct {
+	// Pos is the viewport position of the icon's leftmost cell.
+	Pos term.Coordinates
+	// Width is the number of cells the icon covers.
+	Width int
+	// Code is the block's source without its trailing newline.
+	Code string
+}
+
+// Contains reports whether pos falls on the icon.
+func (t CodeBlockCopyTarget) Contains(pos term.Coordinates) bool {
+	return pos.Y == t.Pos.Y && pos.X >= t.Pos.X && pos.X < t.Pos.X+t.Width
+}
+
+// CodeBlockCopyTargets returns the copy icon of every code block in
+// document order. Positions are viewport coordinates, so icons scrolled
+// out of view fall outside the viewport. It returns nil when
+// Config.CodeBlockCopy is false or the component has no width.
+func (c *Component) CodeBlockCopyTargets() []CodeBlockCopyTarget {
+	var targets []CodeBlockCopyTarget
+	c.eachCopyTarget(func(_ *codeBlock, t CodeBlockCopyTarget) {
+		targets = append(targets, t)
+	})
+	return targets
+}
+
+// HoverCodeBlockCopy highlights the copy icon under pos, in viewport
+// coordinates, and clears any other highlight. A pos outside every icon
+// clears them all. It reports whether the rendering changed.
+func (c *Component) HoverCodeBlockCopy(pos term.Coordinates) (changed bool) {
+	c.eachCopyTarget(func(cb *codeBlock, t CodeBlockCopyTarget) {
+		if hovered := t.Contains(pos); hovered != cb.copyHovered {
+			cb.copyHovered = hovered
+			changed = true
+		}
+	})
+	return changed
+}
+
+func (c *Component) eachCopyTarget(fn func(*codeBlock, CodeBlockCopyTarget)) {
+	// Heights are only computed once the component has a width.
+	if len(c.blockHeights) != len(c.blocks) {
+		return
+	}
+	y := -c.offset
+	for i, blk := range c.blocks {
+		if cb, ok := blk.(*codeBlock); ok {
+			if x, width, ok := cb.copyIcon(); ok {
+				fn(cb, CodeBlockCopyTarget{
+					Pos:   term.Coordinates{X: x, Y: y},
+					Width: width,
+					Code:  cb.code,
+				})
+			}
+		}
+		y += c.blockHeights[i]
+	}
+}
+
 // SeekToAnchor scrolls to the header with the given
 // anchor slug. Returns true if the anchor was found
 // and scrolling occurred.

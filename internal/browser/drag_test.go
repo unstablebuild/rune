@@ -18,6 +18,7 @@ package browser
 
 import (
 	"context"
+	"image"
 	"strings"
 	"testing"
 	"time"
@@ -27,6 +28,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"unstable.build/rune/internal/component/asciiart"
 )
 
 type dropRecorder struct {
@@ -208,6 +210,60 @@ func TestComponentDragVeilAnimates(t *testing.T) {
 
 	b.DragCancel()
 	assert.Nil(t, b.drag.cancel, "leaving the drag must stop the animation")
+}
+
+type pictureHandler struct {
+	nopHandler
+	pic           image.Image
+	id            term.ImageID
+	width, height int
+}
+
+func (h *pictureHandler) Resize(width, height int) {
+	h.width, h.height = width, height
+}
+
+func (h *pictureHandler) Draw(w term.Writer) {
+	w.DrawImage(term.Image{
+		Src: h.pic, ID: h.id, Width: h.width, Height: h.height,
+		Fit: term.ImageFitFill,
+	})
+}
+
+func TestComponentDragVeilKeepsImages(t *testing.T) {
+	const width, height = 40, 6
+	b := NewComponent(dragConfig())
+	white := image.NewRGBA(image.Rect(0, 0, 2, 2))
+	for i := range white.Pix {
+		white.Pix[i] = 0xff
+	}
+	uri, err := workspaceapi.ParseURI("file:///a.png")
+	require.NoError(t, err)
+	h := &pictureHandler{pic: white, id: term.NewImageID()}
+	win := b.Focus()
+	require.NoError(t, win.SetContent(b.NewTab(uri, 'A', "a.png", h, nil)))
+	b.Resize(width, height)
+
+	w := asciiart.NewStringWriter(width, height, asciiart.DefaultConfig())
+	draw := func() string {
+		require.NoError(t, w.Clear(term.Attributes{}))
+		b.Draw(w)
+		require.NoError(t, w.Flush())
+		return w.String()
+	}
+	picture := strings.Repeat("@", width)
+	assert.Equal(t, strings.Join([]string{
+		"A a.png                                 ",
+		picture, picture, picture, picture, picture,
+	}, "\n"), draw())
+
+	require.True(t, b.DragHover(windowCenter(b, win)))
+	assert.Equal(t, strings.Join([]string{
+		"A a.png                                 ",
+		picture, picture,
+		"@@@@@@@@@@@@Drop files here@@@@@@@@@@@@@",
+		picture, picture,
+	}, "\n"), draw(), "the veil must keep the picture and label it")
 }
 
 func drawString(b *Component, width, height int) string {

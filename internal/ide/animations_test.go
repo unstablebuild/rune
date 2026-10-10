@@ -28,7 +28,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/component/shader"
 	"unstable.build/rune/internal/component/shader/shaderloop"
-	"unstable.build/rune/internal/ide/pkgtrust"
+	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
 )
 
 func newAnimConfig(t *testing.T, src string) ideConfig {

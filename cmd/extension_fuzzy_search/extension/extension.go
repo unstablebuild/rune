@@ -34,6 +34,8 @@ func NewExtension() (extensionapi.WorkspaceExtension, extensionapi.Metadata) {
 	perms := append([]extensionapi.Permission{
 		extensionapi.PermissionCommands,
 		extensionapi.PermissionConfig,
+		extensionapi.PermissionSyntaxTree,
+		extensionapi.PermissionPackages,
 	}, finder.Permissions()...)
 	return workspaceExtension{}, extensionapi.Metadata{
 		DeveloperID:      "Unstable Build",
@@ -68,7 +70,8 @@ func (workspaceExtension) ExtendWorkspace(
 		Executor:       w.Executor(ctx),
 		IgnoreMatcher:  matcher,
 	}
-	dataDir := w.DataDir(ctx)
+	pkgs := w.Packages(ctx)
+	parser := w.Parser(ctx)
 
 	registrations := []struct {
 		cmd textapi.CommandManual
@@ -84,7 +87,7 @@ func (workspaceExtension) ExtendWorkspace(
 				ctx context.Context, cmd textapi.Command,
 				clients finder.Clients, invokeWindow browserapi.Window, c config.Config,
 			) (finder.RedispatchHandler, error) {
-				return newSyntaxHandler(ctx, cmd, clients, invokeWindow, c, dataDir)
+				return newSyntaxHandler(ctx, cmd, clients, invokeWindow, c, pkgs, parser)
 			},
 		},
 	}

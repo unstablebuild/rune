@@ -18,20 +18,25 @@ package markdown
 
 import (
 	"context"
+	"strings"
 
 	"github.com/unstablebuild/rune-go-sdk/api/syntaxapi"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/ide/idelsp/languages"
 )
 
 type codeBlock struct {
 	cells  [][]term.Cell
+	code   string // source without the trailing newline
 	cfg    *Config
 	w      int // width from last Height call
 	cancel context.CancelFunc
+	// copyHovered draws the copy icon with CodeBlockCopyIconHoverAttr.
+	copyHovered bool
 }
 
 var _ block = (*codeBlock)(nil)
@@ -50,7 +55,7 @@ func newCodeBlock(language, code string, cfg *Config) *codeBlock {
 		}
 	}
 
-	cb := &codeBlock{cells: cells, cfg: cfg}
+	cb := &codeBlock{cells: cells, code: strings.TrimSuffix(code, "\n"), cfg: cfg}
 
 	if cfg.Parser == nil || language == "" {
 		return cb
@@ -135,11 +140,22 @@ func (c *codeBlock) Height(width int) int {
 	if width <= 0 {
 		return 0
 	}
+	p := c.padding(width)
 	lines := 0
 	for _, row := range c.cells {
-		lines += len(splitRow(row, width))
+		lines += len(splitRow(row, width-p.Left-p.Right))
 	}
-	return lines + 1
+	return p.Top + lines + p.Bottom + 1
+}
+
+// padding returns the configured padding for a block of the given width,
+// without horizontal padding when it would leave no column for code.
+func (c *codeBlock) padding(width int) Padding {
+	p := c.cfg.CodeBlockPadding
+	if width-p.Left-p.Right < 1 {
+		p.Left, p.Right = 0, 0
+	}
+	return p
 }
 
 func (c *codeBlock) Resize(width, _ int) {
@@ -150,6 +166,8 @@ func (c *codeBlock) Draw(w term.Writer) {
 	if c.w <= 0 {
 		return
 	}
+	p := c.padding(c.w)
+	codeWidth := c.w - p.Left - p.Right
 
 	if c.cfg.CodeBlock.Bg != term.ColorDefault {
 		bgAttr := term.Attributes{Bg: c.cfg.CodeBlock.Bg}
@@ -160,25 +178,53 @@ func (c *codeBlock) Draw(w term.Writer) {
 		}
 	}
 
-	drawY := 0
+	drawY := p.Top
 	for _, row := range c.cells {
-		for _, line := range splitRow(row, c.w) {
+		for _, line := range splitRow(row, codeWidth) {
 			x := 0
 			for _, cell := range line {
 				width := max(1, int(cell.Width))
-				if x+width > c.w {
+				if x+width > codeWidth {
 					break
 				}
-				w.SetCell(term.Coordinates{X: x, Y: drawY}, cell)
+				w.SetCell(term.Coordinates{X: p.Left + x, Y: drawY}, cell)
 				x += width
 			}
 			drawY++
 		}
 	}
+
+	if x, _, ok := c.copyIcon(); ok {
+		attr := c.cfg.CodeBlockCopyIconAttr
+		if c.copyHovered {
+			attr = c.cfg.CodeBlockCopyIconHoverAttr
+		}
+		if c.cfg.CodeBlock.Bg != term.ColorDefault {
+			attr.Bg = c.cfg.CodeBlock.Bg
+		}
+		component.WriteText(w, x, 0, c.w,
+			string(c.cfg.CodeBlockCopyIcon), attr)
+	}
+}
+
+// copyIcon returns the column and width of the copy icon, which sits on
+// the block's first row where the right padding starts. ok is false when
+// the icon is disabled or the padding has no room for it.
+func (c *codeBlock) copyIcon() (x, width int, ok bool) {
+	if !c.cfg.CodeBlockCopy {
+		return 0, 0, false
+	}
+	p := c.padding(c.w)
+	width = textWidth(string(c.cfg.CodeBlockCopyIcon))
+	if p.Top < 1 || p.Right < width {
+		return 0, 0, false
+	}
+	return c.w - p.Right, width, true
 }
 
 func (c *codeBlock) Dimensions() (width, height int) {
-	return c.maxLineWidth(), len(c.cells) + 1
+	p := c.cfg.CodeBlockPadding
+	return p.Left + c.maxLineWidth() + p.Right, p.Top + len(c.cells) + p.Bottom + 1
 }
 
 func (c *codeBlock) SpanAt(x, y int) (text, url string, ok bool) {
@@ -243,13 +289,16 @@ func splitRow(row []term.Cell, width int) [][]term.Cell {
 }
 
 func (c *codeBlock) cellAt(x, y int) ([]term.Cell, term.Cell, bool) {
-	if x < 0 || x >= c.w || y < 0 {
+	p := c.padding(c.w)
+	codeWidth := c.w - p.Left - p.Right
+	x, y = x-p.Left, y-p.Top
+	if x < 0 || x >= codeWidth || y < 0 {
 		return nil, term.Cell{}, false
 	}
 
 	rowY := 0
 	for _, row := range c.cells {
-		lines := splitRow(row, c.w)
+		lines := splitRow(row, codeWidth)
 		if y < rowY+len(lines) {
 			col := 0
 			for _, cell := range lines[y-rowY] {

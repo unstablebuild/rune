@@ -34,6 +34,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/iterator"
 	"unstable.build/rune/internal/ide/syntax"
 	"unstable.build/rune/internal/ide/syntax/grammarfixture"
+	"unstable.build/rune/internal/ide/syntax/treesitter"
 	"unstable.build/rune/internal/localstorage/boltdoc"
 	"unstable.build/rune/internal/workspace"
 )
@@ -118,7 +119,7 @@ func setupE2E(t *testing.T, testdata, fixtures string) *e2eEnv {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = scheme.Close() })
 
-	backing := syntax.NewParser(scheme, pkgManagerFor(t, fixtures), rootURI)
+	backing := treesitter.NewParser(scheme, pkgManagerFor(t, fixtures), rootURI)
 	p, err := New(backing, scheme, rootURI, storagestub.NewInMemoryService(),
 		&recordingNotifications{}, syncTick)
 	require.NoError(t, err)
@@ -533,7 +534,7 @@ func BenchmarkInitialScan(b *testing.B) {
 	for _, files := range []int{64, 256} {
 		b.Run(fmt.Sprintf("files=%d", files), func(b *testing.B) {
 			rootURI, scheme := benchWorkspace(b, files)
-			backing := syntax.NewParser(scheme, pkgManagerFor(b, goFixtures), rootURI)
+			backing := treesitter.NewParser(scheme, pkgManagerFor(b, goFixtures), rootURI)
 
 			b.Run("db=stub", func(b *testing.B) {
 				b.ResetTimer()

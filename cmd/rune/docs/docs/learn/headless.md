@@ -69,12 +69,15 @@ or a data directory copied from a desktop install, says so, discards it,
 and prints a code to sign in again.
 
 **Give it a `PATH`.** A service manager starts Rune without your login
-shell, so `PATH` is whatever the service definition sets, not what your
-`.zshrc` exports. Tools that a `rune://` workspace should find on this
-machine and that Rune does not install, such as `node`, `mise`, or
-Homebrew, must be on it. Every recipe sets `PATH` explicitly; extend it
-to match the host. Rune adds `~/.rune/bin`, where the packages it
-installs live, on its own.
+shell, so on startup Rune asks your login shell for the `PATH` your
+startup files set up, such as `.profile` or `.zshrc`, and keeps the
+directories the service definition adds as well. Tools that a `rune://`
+workspace should find on this machine, that Rune does not install and
+that your startup files do not add, such as `node`, `mise`, or Homebrew,
+must be on the service's `PATH`. Every recipe sets `PATH` explicitly;
+extend it to match the host. Rune puts `~/.rune/bin`, where the packages
+it installs live, first on its own, and terminals keep it first even when
+a startup file such as `/etc/profile` resets `PATH`.
 
 Language packages need no setup. When a workspace you open on this
 machine needs one it does not have, Rune asks you in your own window and
@@ -352,14 +355,13 @@ them, build your own image on top of it:
 ```dockerfile
 FROM unstablebuild/rune
 USER root
-RUN apk add --no-cache git make
+RUN apt-get update && apt-get install -y --no-install-recommends git make
 USER rune
 ```
 
 Build it with `docker build -t rune-node .` and run `rune-node` in place
-of `unstablebuild/rune` above. The image is Alpine, so take tools from
-`apk` or build them from source: prebuilt binaries linked against glibc
-do not run in it.
+of `unstablebuild/rune` above. The image is Debian, so `apt-get` and
+prebuilt binaries linked against glibc both work in it.
 
 ## Operating the node
 
@@ -434,9 +436,12 @@ cached sign-in no longer works: sign in again as described above. `the
 free Rune plan includes 2 machines` means the account is full: free a
 slot with `network remove` from another machine, or upgrade.
 
-**Tools are missing in a `rune://` terminal.** The service's `PATH` does
-not include them. Add their directories to the `PATH` in the service
-definition and restart it.
+**Tools are missing in a `rune://` terminal.** A terminal is a login
+shell: it builds `PATH` from your startup files, then puts the tools Rune
+installs and the `PATH` entries from [`gui.env`](../config.md#gui) in the
+host's config in front. A tool that is still missing is in neither place. Add its
+directory in your shell's startup files, or to `gui.env.PATH` in
+`~/.rune/config.yaml` on the host and restart the service.
 
 **`enter the code` in the log.** No account is signed in on the host.
 Open the page named in the log in any browser, enter the code, and the

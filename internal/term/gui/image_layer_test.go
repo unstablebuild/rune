@@ -26,6 +26,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"unstable.build/rune/internal/cell"
 	"unstable.build/rune/internal/term/gui/font"
 )
 
@@ -494,7 +495,7 @@ func TestDrawImageLayerVerticalRenderOffset(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			w := newFrameWriter(t.Context(), cols, rows, r.fontManager)
+			w := cell.NewBufferWriter(frameContext(t.Context(), r.fontManager), cols, rows)
 			w.DrawImage(term.Image{
 				Src: src, ID: term.NewImageID(),
 				Pos: term.Coordinates{X: 2, Y: tt.y}, Width: 4, Height: tt.height,
@@ -646,7 +647,7 @@ func TestDrawImageLayerOffset(t *testing.T) {
 			if cells.Empty() {
 				cells = box
 			}
-			w := newFrameWriter(t.Context(), cols, rows, m)
+			w := cell.NewBufferWriter(frameContext(t.Context(), m), cols, rows)
 			require.True(t, w.DrawImage(term.Image{
 				Src: src, ID: term.NewImageID(),
 				Pos:   term.Coordinates{X: cells.Min.X, Y: cells.Min.Y},

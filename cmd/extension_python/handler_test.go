@@ -370,7 +370,7 @@ func TestPyHandlerEnvPolicySubcommands(t *testing.T) {
 		_, handler := newTestPyHandler(t, dir, ex)
 		handler.syncEnv = func(ctx context.Context, root langext.Root) error {
 			return setupManagedEnvironment(ctx, fs, ex, newFakeNotifications(),
-				fakeInstaller{fs: fs, root: dataDir}, config.NopConfig(), dataDir, root)
+				pyTools(t, notInstalled), config.NopConfig(), dataDir, root)
 		}
 
 		_, err := handler.HandleCommand(ctx,

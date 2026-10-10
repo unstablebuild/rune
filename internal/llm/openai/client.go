@@ -125,7 +125,10 @@ func NewClient(token string, config Config) llmapi.Service {
 func NewClientWithHTTP(token string, config Config, httpClient *http.Client) llmapi.Service {
 	tools := openAIToolsFromModel(config.Tools)
 
-	opts := []option.RequestOption{option.WithAPIKey(token)}
+	opts := []option.RequestOption{
+		option.WithAPIKey(token),
+		option.WithMiddleware(sseDataOnlyMiddleware),
+	}
 	if httpClient != nil {
 		opts = append(opts, option.WithHTTPClient(httpClient))
 	}

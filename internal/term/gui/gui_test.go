@@ -20,7 +20,9 @@ import (
 	"context"
 	"image"
 	"image/color"
+	"maps"
 	"math"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -613,6 +615,116 @@ func TestCloseRestoresColorValues(t *testing.T) {
 	assert.Equal(t, original, tcell.GetColorValues())
 	assert.Nil(t, g.renderer)
 	require.NoError(t, g.Close(), "Close must be idempotent")
+}
+
+func TestSetThemeResetClearsActiveTheme(t *testing.T) {
+	original := tcell.GetColorValues()
+	t.Cleanup(func() { tcell.SetColorValues(original) })
+
+	theme := Theme{
+		Foreground: tcell.ColorWhite,
+		Background: tcell.ColorBlack,
+		Cursor:     tcell.ColorRed,
+		Colors: map[tcell.Color]tcell.Color{
+			tcell.ColorRed: tcell.NewHexColor(0x123456),
+		},
+	}
+	g, err := New(&mockHandler{}, WithColorThemes("a", map[string]Theme{"a": theme}))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = g.Close() })
+	require.Equal(t, "a", g.Theme())
+
+	_, err = g.SetTheme("")
+	require.NoError(t, err)
+	assert.Empty(t, g.Theme())
+	assert.Equal(t, original, tcell.GetColorValues())
+}
+
+func TestSetColorThemes(t *testing.T) {
+	newTheme := func(fg, bg tcell.Color, red int32) Theme {
+		return Theme{
+			Foreground: fg,
+			Background: bg,
+			Cursor:     tcell.ColorRed,
+			Colors:     map[tcell.Color]tcell.Color{tcell.ColorRed: tcell.NewHexColor(red)},
+		}
+	}
+	a := newTheme(tcell.ColorWhite, tcell.ColorBlack, 0x123456)
+	aRedefined := newTheme(tcell.ColorYellow, tcell.ColorBlue, 0x654321)
+	b := newTheme(tcell.ColorGreen, tcell.ColorNavy, 0xabcdef)
+
+	tests := []struct {
+		name          string
+		initial       string
+		themes        map[string]Theme
+		wantReapplied bool
+		wantTheme     string
+		// wantRendered is the theme whose colors must be in effect after
+		// the call; nil means the default colors.
+		wantRendered *Theme
+	}{
+		{
+			name:          "new theme added",
+			initial:       "a",
+			themes:        map[string]Theme{"a": a, "b": b},
+			wantReapplied: true,
+			wantTheme:     "a",
+			wantRendered:  &a,
+		},
+		{
+			name:          "active theme redefined",
+			initial:       "a",
+			themes:        map[string]Theme{"a": aRedefined},
+			wantReapplied: true,
+			wantTheme:     "a",
+			wantRendered:  &aRedefined,
+		},
+		{
+			name:         "active theme absent from new set",
+			initial:      "a",
+			themes:       map[string]Theme{"b": b},
+			wantTheme:    "a",
+			wantRendered: &a,
+		},
+		{
+			name:    "no theme active",
+			initial: "",
+			themes:  map[string]Theme{"a": a, "b": b},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			original := tcell.GetColorValues()
+			t.Cleanup(func() { tcell.SetColorValues(original) })
+
+			g, err := New(&mockHandler{}, WithColorThemes(tt.initial, map[string]Theme{"a": a}))
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = g.Close() })
+
+			got, reapplied := g.SetColorThemes(tt.themes)
+			assert.Equal(t, tt.wantReapplied, reapplied)
+			assert.Equal(t, tt.wantTheme, g.Theme())
+			if tt.wantReapplied {
+				assert.Equal(t, tt.themes[tt.wantTheme], got)
+			}
+
+			wantFg, wantBg, wantRed := tcell.ColorWhite, tcell.ColorBlack, original[tcell.ColorRed]
+			if tt.wantRendered != nil {
+				wantFg, wantBg = tt.wantRendered.Foreground, tt.wantRendered.Background
+				wantRed = tt.wantRendered.Colors[tcell.ColorRed].Hex()
+			}
+			assert.Equal(t, term.FromTcellColor(wantFg), g.defaultAttr.Fg)
+			assert.Equal(t, term.FromTcellColor(wantBg), g.defaultAttr.Bg)
+			assert.Equal(t, wantRed, tcell.GetColorValues()[tcell.ColorRed])
+
+			assert.ElementsMatch(t, slices.Collect(maps.Keys(tt.themes)), g.Themes())
+			for name, theme := range tt.themes {
+				applied, err := g.SetTheme(name)
+				require.NoError(t, err)
+				assert.Equal(t, theme, applied)
+			}
+		})
+	}
 }
 
 func TestCellPixelSizeMatchesImagePlacement(t *testing.T) {

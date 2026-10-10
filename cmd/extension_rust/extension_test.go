@@ -19,6 +19,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -28,9 +30,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
+	"github.com/unstablebuild/rune-go-sdk/api/pkgapi"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/handler/repl"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
+	"unstable.build/rune/internal/extension/langext"
+	"unstable.build/rune/internal/extension/langext/langexttest"
 )
 
 func TestDetectRustProject(t *testing.T) {
@@ -94,35 +99,66 @@ func TestReadLspPath(t *testing.T) {
 }
 
 func TestResolveRustAnalyzer(t *testing.T) {
-	t.Run("lsp_path override wins", func(t *testing.T) {
-		cfg := newStubConfig(map[string]string{"lsp_path": "/opt/ra"})
-		fs := newFakeFS().addFile("/data/bin/rust-analyzer")
-		got := resolveRustAnalyzer(context.Background(), cfg,
-			newFakeNotifications(), fakeInstaller{fs: fs, root: "/data"})
-		assert.Equal(t, "/opt/ra", got)
-	})
-
-	t.Run("defaults to provisioned binary", func(t *testing.T) {
-		fs := newFakeFS().addFile("/data/bin/rust-analyzer")
-		got := resolveRustAnalyzer(context.Background(), nil,
-			newFakeNotifications(), fakeInstaller{fs: fs, root: "/data"})
-		assert.Equal(t, "/data/bin/rust-analyzer", got)
-	})
-
-	t.Run("empty lsp_path uses provisioned binary", func(t *testing.T) {
-		cfg := newStubConfig(map[string]string{"lsp_path": ""})
-		fs := newFakeFS().addFile("/data/bin/rust-analyzer")
-		got := resolveRustAnalyzer(context.Background(), cfg,
-			newFakeNotifications(), fakeInstaller{fs: fs, root: "/data"})
-		assert.Equal(t, "/data/bin/rust-analyzer", got)
-	})
-
-	t.Run("missing provisioned binary resolves empty", func(t *testing.T) {
-		fs := newFakeFS()
-		got := resolveRustAnalyzer(context.Background(), nil,
-			newFakeNotifications(), fakeInstaller{fs: fs, root: "/data"})
-		assert.Empty(t, got)
-	})
+	lookupErr := errors.New("rpc error: code = PermissionDenied")
+	tests := []struct {
+		name     string
+		cfg      map[string]string
+		inst     *langexttest.Installer
+		want     string
+		wantErr  error
+		lookups  int
+		warnings []string
+	}{
+		{
+			name: "lsp_path override wins without a lookup", cfg: map[string]string{"lsp_path": "/opt/ra"},
+			inst: &langexttest.Installer{Files: []string{"/data/bin/rust-analyzer"}}, want: "/opt/ra",
+		},
+		{
+			name: "defaults to packaged binary",
+			inst: &langexttest.Installer{Files: []string{"/data/bin/rust-analyzer"}},
+			want: "/data/bin/rust-analyzer", lookups: 1,
+		},
+		{
+			name: "empty lsp_path uses packaged binary", cfg: map[string]string{"lsp_path": ""},
+			inst: &langexttest.Installer{Files: []string{"/data/bin/rust-analyzer"}},
+			want: "/data/bin/rust-analyzer", lookups: 1,
+		},
+		{
+			name:    "package not installed fails quietly",
+			inst:    &langexttest.Installer{Err: fmt.Errorf("rust: %w", pkgapi.ErrNotInstalled)},
+			wantErr: pkgapi.ErrNotInstalled, lookups: 1,
+		},
+		{
+			name:    "package without rust-analyzer warns",
+			inst:    &langexttest.Installer{Files: []string{"/data/bin/rustup-init"}},
+			wantErr: langext.ErrNotShipped, lookups: 1,
+			warnings: []string{"Could not find rust-analyzer in the rust package: " +
+				"rust/bin/rust-analyzer: langext: tool not shipped by package. " +
+				"Set extensions.rust.config.lsp_path to use another one."},
+		},
+		{
+			name:    "failed lookup warns",
+			inst:    &langexttest.Installer{Err: lookupErr},
+			wantErr: lookupErr, lookups: 1,
+			warnings: []string{"Could not find rust-analyzer in the rust package: " +
+				"rpc error: code = PermissionDenied. " +
+				"Set extensions.rust.config.lsp_path to use another one."},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var cfg config.Config
+			if tc.cfg != nil {
+				cfg = newStubConfig(tc.cfg)
+			}
+			notify := newFakeNotifications()
+			got, err := resolveRustAnalyzer(t.Context(), cfg, notify, rustTools(t, tc.inst))
+			assert.Equal(t, tc.want, got)
+			assert.ErrorIs(t, err, tc.wantErr)
+			assert.Equal(t, tc.lookups, tc.inst.Lookups())
+			assert.ElementsMatch(t, tc.warnings, notify.notifMessages())
+		})
+	}
 }
 
 func TestResolveSysroot(t *testing.T) {
@@ -313,17 +349,25 @@ func TestRustInitializeCommandHasNoSpaces(t *testing.T) {
 	assert.NotContains(t, opts["command"], " ")
 }
 
+// rustTools is the lookup bring-up gets for a rust package shipping files.
+func rustTools(t *testing.T, inst *langexttest.Installer) *langext.Tools {
+	return langext.NewInitializer(t.Context(), nil, nil, inst, langext.ProjectConfig{
+		LanguageID: "rust", Tools: []string{"rust-analyzer", "rustup-init"},
+	}).Tools()
+}
+
 func TestBootstrapRustupInstallsWhenAbsent(t *testing.T) {
 	ctx := context.Background()
 	fs := newFakeFS()
 	ex := newFakeExecutor()
 	notify := newFakeNotifications()
+	inst := &langexttest.Installer{Files: []string{"/data/bin/rustup-init"}}
 
 	require.NoError(t, bootstrapRustup(
-		ctx, "rustup-init", ex, notify, fs, "/rustup", "/ws"))
+		ctx, rustTools(t, inst), ex, notify, fs, "/rustup", "/ws"))
 
 	calls := ex.callsSnapshot()
-	assert.Contains(t, calls, "rustup-init -y --no-modify-path "+
+	assert.Contains(t, calls, "/data/bin/rustup-init -y --no-modify-path "+
 		"--default-toolchain stable --profile minimal -c rust-src,clippy,rustfmt")
 
 	msgs := notify.progressMessages()
@@ -338,15 +382,45 @@ func TestBootstrapRustupSkipsWhenInstalled(t *testing.T) {
 		fakeDirEntry{name: "stable-x86_64", dir: true})
 	ex := newFakeExecutor()
 	notify := newFakeNotifications()
+	inst := &langexttest.Installer{Files: []string{"/data/bin/rustup-init"}}
 
 	require.NoError(t, bootstrapRustup(
-		ctx, "rustup-init", ex, notify, fs, "/rustup", "/ws"))
+		ctx, rustTools(t, inst), ex, notify, fs, "/rustup", "/ws"))
 
-	calls := ex.callsSnapshot()
-	for _, c := range calls {
-		assert.NotContains(t, c, "rustup-init")
-	}
+	assert.Empty(t, ex.callsSnapshot())
 	assert.Empty(t, notify.progressMessages())
+	assert.Zero(t, inst.Lookups(), "an installed toolchain needs no rust package")
+}
+
+func TestBootstrapRustupFailsWithoutPackagedInstaller(t *testing.T) {
+	tests := []struct {
+		name    string
+		inst    *langexttest.Installer
+		wantErr error
+	}{
+		{
+			name:    "package not installed",
+			inst:    &langexttest.Installer{Err: fmt.Errorf("rust: %w", pkgapi.ErrNotInstalled)},
+			wantErr: pkgapi.ErrNotInstalled,
+		},
+		{
+			name:    "package without rustup-init",
+			inst:    &langexttest.Installer{Files: []string{"/data/bin/rust-analyzer"}},
+			wantErr: langext.ErrNotShipped,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ex := newFakeExecutor()
+			notify := newFakeNotifications()
+
+			err := bootstrapRustup(context.Background(), rustTools(t, tc.inst), ex, notify,
+				newFakeFS(), "/rustup", "/ws")
+			assert.ErrorIs(t, err, tc.wantErr)
+			assert.Empty(t, ex.callsSnapshot())
+			assert.Empty(t, notify.progressMessages(), "nothing was started")
+		})
+	}
 }
 
 func TestExtendWorkspaceNonRustRegistersButSkipsInit(t *testing.T) {
@@ -356,7 +430,7 @@ func TestExtendWorkspaceNonRustRegistersButSkipsInit(t *testing.T) {
 	registered := false
 	err := ext.extendWorkspaceWith(context.Background(),
 		fs, newFakeExecutor(), newFakeNotifications(), lsp, &fakeEditor{},
-		&fakeWM{}, nil, nil, nil, fakeInstaller{fs: fs, root: "/data"},
+		&fakeWM{}, nil, nil, nil, &langexttest.Installer{},
 		"/rustup", "/cargo", nil,
 		func(textapi.CommandManual, textapi.REPLHandler) error {
 			registered = true
@@ -370,9 +444,7 @@ func TestExtendWorkspaceNonRustRegistersButSkipsInit(t *testing.T) {
 }
 
 func TestExtendWorkspaceWithoutCargoHome(t *testing.T) {
-	fs := newFakeFS().
-		addFile("Cargo.toml").
-		addFile("/data/bin/rust-analyzer")
+	fs := newFakeFS().addFile("Cargo.toml")
 	ex := newFakeExecutor()
 	notify := newFakeNotifications()
 	lsp := &captureLSP{}
@@ -380,7 +452,7 @@ func TestExtendWorkspaceWithoutCargoHome(t *testing.T) {
 	ext := &rustExtension{}
 	err := ext.extendWorkspaceWith(context.Background(),
 		fs, ex, notify, lsp, &fakeEditor{}, &fakeWM{}, nil, nil, nil,
-		fakeInstaller{fs: fs, root: "/data"}, "/rustup", "", nil,
+		&langexttest.Installer{Files: []string{"/data/bin/rust-analyzer"}}, "/rustup", "", nil,
 		func(textapi.CommandManual, textapi.REPLHandler) error { return nil },
 		func(textapi.CommandManual, textapi.CommandHandler) error { return nil })
 	require.NoError(t, err)
@@ -418,7 +490,8 @@ func TestExtendWorkspaceNestedDiscovery(t *testing.T) {
 
 	err := ext.extendWorkspaceWith(context.Background(),
 		fs, ex, newFakeNotifications(), lsp, editor,
-		&fakeWM{}, nil, nil, nil, fakeInstaller{fs: fs, root: "/data"},
+		&fakeWM{}, nil, nil, nil,
+		&langexttest.Installer{Files: []string{"/data/bin/rust-analyzer"}},
 		"/rustup", "/cargo", nil,
 		func(textapi.CommandManual, textapi.REPLHandler) error { return nil },
 		func(textapi.CommandManual, textapi.CommandHandler) error { return nil })
@@ -443,7 +516,6 @@ func TestExtendWorkspaceNestedDiscovery(t *testing.T) {
 func TestExtendWorkspaceRegistersAndInitializes(t *testing.T) {
 	fs := newFakeFS().
 		addFile("Cargo.toml").
-		addFile("/data/bin/rust-analyzer").
 		addReadDir("/rustup/toolchains",
 			fakeDirEntry{name: "stable-x86_64", dir: true})
 	ex := newFakeExecutor().respond(
@@ -456,7 +528,7 @@ func TestExtendWorkspaceRegistersAndInitializes(t *testing.T) {
 	ext := &rustExtension{}
 	err := ext.extendWorkspaceWith(context.Background(),
 		fs, ex, notify, lsp, &fakeEditor{}, &fakeWM{},
-		nil, nil, nil, fakeInstaller{fs: fs, root: "/data"}, "/rustup", "/cargo", nil,
+		nil, nil, nil, &langexttest.Installer{Files: []string{"/data/bin/rust-analyzer"}}, "/rustup", "/cargo", nil,
 		func(m textapi.CommandManual, _ textapi.REPLHandler) error {
 			manuals = append(manuals, m)
 			return nil

@@ -848,7 +848,7 @@ func (f testFoldsService) Folds() (iterator.Iterator[term.Range], bool) {
 
 var _ = (foldsService)(blockingFoldsService{})
 
-// blockingFoldsService simulates a syntax.Tree whose parser is not yet
+// blockingFoldsService simulates a treesitter.Tree whose parser is not yet
 // ready: Folds/FoldsFrom return iterators whose Next blocks until the
 // context is cancelled (mirroring the waitingReady channel never
 // closing).

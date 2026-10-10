@@ -54,11 +54,17 @@ type ProjectConfig struct {
 	// cheaply before any filesystem walk.
 	FileMatch func(uri workspaceapi.URI) bool
 
+	// Tools names the executables InitRoot needs from the language's
+	// Rune package, the one named LanguageID (e.g. "ty", "ruff"), found
+	// under the package's bin/ on the workspace host. See Tools.Find.
+	Tools []string
+
 	// InitRoot performs the language-specific bring-up for a discovered
 	// project root: environment setup plus building and calling
-	// lsp.Initialize with the nested root URI. It runs in a background
-	// goroutine; Initializer guarantees exactly one call per root.
-	InitRoot func(ctx context.Context, root Root) error
+	// lsp.Initialize with the nested root URI. tools finds the entries of
+	// Tools; each call gets its own. It runs in a background goroutine;
+	// Initializer guarantees exactly one call per root.
+	InitRoot func(ctx context.Context, root Root, tools *Tools) error
 
 	// WatchEvents lists the editor event types that drive discovery,
 	// defaulting to {EventTypeOpen} when empty. Include EventTypeChange

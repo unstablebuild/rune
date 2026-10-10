@@ -31,7 +31,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
-	"unstable.build/rune/internal/ide/pkgtrust"
+	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
 	"unstable.build/rune/internal/localstorage"
 	"unstable.build/rune/internal/workspace"
 )
@@ -71,7 +71,7 @@ func TestScheduleNextTickDoesNotReacquireHostLock(t *testing.T) {
 		component.FrameCharSetDefault())
 
 	h := new(workspaceManagerHandler)
-	h.tutorialsInstalled = func([]string) (bool, error) { return false, nil }
+	h.tutorialsInstalled = func([]string) ([]string, error) { return nil, nil }
 	err = h.init(nil, homeURI, manager,
 		notificationsConfig(), cfg, storage, dir,
 		func(term.Event) bool { return true },

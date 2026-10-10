@@ -94,7 +94,7 @@ func TestPkgConfigRequirements(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			got, err := pkgConfigRequirements(
-				tt.filename, []byte(tt.data), "pkg", "1", "/data", "modal",
+				tt.filename, []byte(tt.data), "pkg", "1", "modal",
 			)
 			if tt.wantErr {
 				require.Error(t, err)

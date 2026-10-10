@@ -94,8 +94,8 @@ func TestE2ERustAnalyzerLogFilterReachesProcess(t *testing.T) {
 			"log_level": "rust_analyzer=debug",
 		},
 	})
-	err = initializeRustRoot(t.Context(), scheme, scheme, newFakeNotifications(), mgr, nil,
-		"", "", "", cfg, false, langext.Root{Dir: dir, URI: rootURI})
+	err = initializeRustRoot(t.Context(), scheme, scheme, newFakeNotifications(), mgr, &langext.Tools{},
+		"", "", cfg, false, langext.Root{Dir: dir, URI: rootURI})
 	require.NoError(t, err)
 
 	started, ok := scheme.startedProcess(raBin)
@@ -1411,7 +1411,7 @@ func TestE2E_ResolveSysroot(t *testing.T) {
 	// the directory holding the real rustc discovered on PATH.
 	cargoHome := filepath.Dir(filepath.Dir(rustcPath))
 
-	env := runRustExtensionOnDir(t, dir, "", cargoHome, t.TempDir())
+	env := runRustExtensionOnDir(t, dir, "", cargoHome)
 
 	params, count := env.lsp.captured()
 	require.Equal(t, 1, count, "the workspace-root crate must initialize exactly once")

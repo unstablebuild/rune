@@ -27,6 +27,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"unstable.build/rune/internal/debug"
+	"unstable.build/rune/internal/extension/langext"
 )
 
 // detectRustProject reports whether the workspace root looks like a Rust
@@ -66,15 +67,15 @@ func toolchainInstalled(fs workspaceapi.FileSystem, rustupHome string) bool {
 }
 
 // bootstrapRustup installs the stable toolchain and required components
-// when none is present. It runs the bundled rustup-init once, which also
-// populates $CARGO_HOME/bin with the rustup/cargo proxies later commands
-// resolve. The shipped binary is the installer, not the manager, so it
-// cannot be invoked as `rustup toolchain install`. Best-effort: on
-// failure the caller still brings up rust-analyzer against any existing
-// toolchain.
+// when none is present. It runs the rustup-init the rust package ships
+// once, which also populates $CARGO_HOME/bin with the rustup/cargo
+// proxies later commands resolve. The shipped binary is the installer,
+// not the manager, so it cannot be invoked as `rustup toolchain install`.
+// Best-effort: on failure the caller still brings up rust-analyzer
+// against any existing toolchain.
 func bootstrapRustup(
 	ctx context.Context,
-	rustupInitBin string,
+	tools *langext.Tools,
 	exec workspaceapi.Executor,
 	notify browserapi.Notifications,
 	fs workspaceapi.FileSystem,
@@ -83,12 +84,16 @@ func bootstrapRustup(
 	if toolchainInstalled(fs, rustupHome) {
 		return nil
 	}
+	rustupInit, err := tools.Find(ctx, "rustup-init")
+	if err != nil {
+		return fmt.Errorf("find rustup-init: %w", err)
+	}
 
 	notifID, _ := notify.Notify(browserapi.LevelInfo, "Preparing Rust toolchain")
 
 	total := int64(2)
 	_ = notify.UpdateNotificationProgress(notifID, "Installing Rust toolchain", 1, total)
-	if err := runRustupInit(ctx, rustupInitBin, exec, dir,
+	if err := runRustupInit(ctx, rustupInit, exec, dir,
 		"-y", "--no-modify-path",
 		"--default-toolchain", "stable",
 		"--profile", "minimal",

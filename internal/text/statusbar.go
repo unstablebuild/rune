@@ -678,8 +678,6 @@ func (b *statusBarSubscriber) OnDidEdit(
 	(*StatusBar)(b).rebuildBarEdit()
 }
 
-var _ syntaxService = (*syntax.Tree)(nil)
-
 type syntaxService interface {
 	State() iterator.Iterator[syntax.State]
 }

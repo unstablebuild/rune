@@ -25,11 +25,18 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/clipboard"
 	"github.com/unstablebuild/rune-go-sdk/mouse"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	tterm "unstable.build/rune/internal/term"
 )
 
 type mouseDriver struct {
-	t              *Component
-	selectionStart term.Coordinates
+	t *Component
+	// selectionStart and selectionStartHi bound the span of cell edges the
+	// press touched. X values are cell-boundary indices, not cells, so the
+	// pressed cell's right edge is one past its column. They differ only
+	// for cell-granular events, where the whole pressed cell counts as
+	// touched; Y stays a window row on both.
+	selectionStart   term.Coordinates
+	selectionStartHi term.Coordinates
 	// selectionStartScrollY is the buffer scroll offset captured when
 	// selectionStart was anchored. Select/SelectEnd translate window
 	// coordinates by the *current* scroll offset, so an upward drag that
@@ -37,9 +44,16 @@ type mouseDriver struct {
 	// with the content. Recording the offset lets SetSelectionEnd keep the
 	// anchor pinned to the originally pressed content cell.
 	selectionStartScrollY int
-	drag                  dragState
-	hookRawBytes          []byte
-	clipboard             clipboard.Register
+	// pointerFrac is the pointer's fractional position inside the cell
+	// reported by the last event, when the producer attached one. The cell
+	// coordinate alone cannot say which of the cell's two edges the
+	// pointer is nearer, which is what snapping the selection endpoints to
+	// boundaries needs.
+	pointerFrac    tterm.SubCellFraction
+	pointerFracSet bool
+	drag           dragState
+	hookRawBytes   []byte
+	clipboard      clipboard.Register
 	// held is the button the program saw pressed; pressed guards it
 	// because the GUI repeats a held button's event on every move.
 	held    int
@@ -54,13 +68,14 @@ type mouseDriver struct {
 // including pointer jitter inside the pressed cell, the SDK calls
 // SetSelectionEnd and then auto-scrolls when the pointer is near the top
 // or bottom edge. A plain click (for example to focus the window) must
-// therefore neither highlight, scroll nor copy until the pointer leaves
-// the pressed cell.
+// therefore neither highlight, scroll nor copy until the pointer crosses
+// a cell edge.
 type dragState uint8
 
 const (
 	dragIdle dragState = iota
-	// dragPressed is a held left button still inside the pressed cell.
+	// dragPressed is a held left button whose covered range is still
+	// empty.
 	dragPressed
 	// dragSelecting is a held left button whose highlight follows the
 	// pointer.
@@ -299,11 +314,36 @@ func (e *mouseDriver) ScrollDown(n int) (ok bool) {
 func (e *mouseDriver) ClearSelection() {
 	e.t.Unselect()
 	e.selectionStart = term.Coordinates{}
+	e.selectionStartHi = term.Coordinates{}
 	e.selectionStartScrollY = 0
 }
 
+// trackSubCell captures the pointer's position inside the reported cell
+// from the event's Context so the selection endpoints can snap to cell
+// edges. Producers that attach no term.SubCellFraction, like events
+// arriving over RPC where Context cannot cross the wire, keep
+// cell-granular selection.
+func (e *mouseDriver) trackSubCell(ev term.Event) {
+	e.pointerFrac, e.pointerFracSet = tterm.SubCellFractionFromContext(ev.Context)
+}
+
+// selectionEdges returns the cell edges pos touches, as boundary indices
+// where a cell's right edge is one past its column. With a sub-cell
+// fraction the pointer is a point and snaps to the nearer edge; without
+// one pos stands for its whole cell, so both edges count and
+// cell-granular producers keep inclusive-cell selections.
+func (e *mouseDriver) selectionEdges(pos term.Coordinates) (lo, hi term.Coordinates) {
+	if !e.pointerFracSet {
+		return pos, term.Coordinates{X: pos.X + 1, Y: pos.Y}
+	}
+	if e.pointerFrac.X >= 0.5 {
+		pos.X++
+	}
+	return pos, pos
+}
+
 func (e *mouseDriver) SetSelectionStart(pos term.Coordinates) {
-	e.selectionStart = pos
+	e.selectionStart, e.selectionStartHi = e.selectionEdges(pos)
 	e.selectionStartScrollY = e.t.scrollY()
 }
 
@@ -313,24 +353,42 @@ func (e *mouseDriver) SetSelectionEnd(pos term.Coordinates) {
 	// Shift the stored start into the current window coordinate system by the
 	// scroll delta so it maps back to the same content cell as the buffer
 	// scrolls (scrollY grows as the view scrolls up toward older rows).
-	start := e.selectionStart
-	start.Y += e.t.scrollY() - e.selectionStartScrollY
+	dy := e.t.scrollY() - e.selectionStartScrollY
+	start, startHi := e.selectionStart, e.selectionStartHi
+	start.Y += dy
+	startHi.Y += dy
 	// Select/SelectEnd assume reading order: from is the top-left and
 	// to is one past the bottom-right. A leftward drag would otherwise
 	// produce from > to, and the buffer's internal sort then drops the
-	// press cell and the drag-end cell from the selection.
-	end := pos
-	if e.drag != dragSelecting {
-		if end == start {
-			return
+	// press cell and the drag-end cell from the selection. The covered
+	// range spans the lowest to the highest touched edge, which sorts a
+	// leftward drag the same way.
+	endLo, endHi := e.selectionEdges(pos)
+	// A cell-granular event covers its whole cell, so one that reports
+	// the pressed cell again touched no new edge: without a fraction
+	// there is no motion inside a cell to report, and the gesture stays
+	// in dragPressed until the reported cell changes, as it did when
+	// selection endpoints were cell-granular.
+	if !e.pointerFracSet && e.drag != dragSelecting &&
+		endLo == start && endHi == startHi {
+		return
+	}
+	from, _ := term.CoordinatesSort(start, endLo)
+	_, to := term.CoordinatesSort(startHi, endHi)
+	if from == to {
+		if e.drag == dragSelecting {
+			// The pointer is back on the anchor edge; the covered range
+			// is empty, and copying it would clobber the clipboard
+			// with "".
+			e.t.Unselect()
 		}
-		e.drag = dragSelecting
+		return
 	}
-	if end.Y < start.Y || (end.Y == start.Y && end.X < start.X) {
-		start, end = end, start
-	}
-	e.t.Select(start)
-	e.t.SelectEnd(end)
+	e.drag = dragSelecting
+	// The covered cells lie strictly between the two edges, so the
+	// inclusive end cell sits one short of the end edge.
+	e.t.Select(from)
+	e.t.SelectEnd(term.Coordinates{X: to.X - 1, Y: to.Y})
 }
 
 func (e *mouseDriver) SelectWordAt(pos term.Coordinates) {

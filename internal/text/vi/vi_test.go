@@ -33,10 +33,13 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/cell"
 	"unstable.build/rune/internal/handler/handlertest"
+	"unstable.build/rune/internal/ide/syntax/treesitter"
 	"unstable.build/rune/internal/text"
 	"unstable.build/rune/internal/text/registerset"
 	"unstable.build/rune/internal/text/texttest"
 )
+
+var _ foldsService = (*treesitter.Tree)(nil)
 
 var uri workspaceapi.URI
 

@@ -203,11 +203,12 @@ func (c *Component) buildEditorHandler(
 		handler.SetLocationList(textapi.LocationPriorityInfo, "syntax", ll)
 	})
 
-	var tree *syntax.Tree
-	if c.config.MaxSyntaxParseSize == 0 || buf.Size() <= c.config.MaxSyntaxParseSize {
+	var tree syntax.Tree
+	if c.config.SyntaxTree != nil &&
+		(c.config.MaxSyntaxParseSize == 0 || buf.Size() <= c.config.MaxSyntaxParseSize) {
 		// install tree in Buffer first so editor can use its
 		// capabilities while initializing
-		tree = syntax.WithTree(c.ctx, c.config, interrupter,
+		tree = c.config.SyntaxTree(c.ctx, c.config, interrupter,
 			c.config.PkgManager, locs, file, buf, fc, c.workspace, c.config.Syntax)
 		fc = tree
 	}
@@ -220,7 +221,7 @@ func (c *Component) buildEditorHandler(
 	var commands []textapi.CommandManual
 	if tree != nil {
 		var cmdHandler syntax.CommandHandler
-		commands, cmdHandler = syntax.Commands(handler, tree)
+		commands, cmdHandler = tree.Commands(handler)
 		for _, cmd := range commands {
 			err := c.fileRegistry.SubscribeCommandForFile(file, cmd, cmdHandler)
 			if err != nil {

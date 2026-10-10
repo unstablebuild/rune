@@ -358,7 +358,7 @@ func TestE2EGoplsLoggingConfigReachesProcess(t *testing.T) {
 			"rpc_trace": true,
 		},
 	})
-	err = initializeGoRoot(t.Context(), scheme, scheme, nil, mgr, nil, "file", cfg,
+	err = initializeGoRoot(t.Context(), scheme, scheme, nil, mgr, &langext.Tools{}, "file", cfg,
 		langext.Root{Dir: dir, URI: rootURI})
 	require.NoError(t, err)
 

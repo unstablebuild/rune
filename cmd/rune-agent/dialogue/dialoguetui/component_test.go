@@ -1749,8 +1749,8 @@ func TestComponentMarkdownCodeBlock(t *testing.T) {
 			Action: func() {
 				comp.AddReceiveMessage("```\nfoo\n```")
 			},
-			Expected: "foo                  \n" +
-				"                     \n" +
+			Expected: "                     \n" +
+				"  foo                \n" +
 				"                     \n" +
 				"                     \n" +
 				"                     \n" +

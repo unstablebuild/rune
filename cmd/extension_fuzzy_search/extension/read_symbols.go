@@ -17,350 +17,240 @@
 package extension
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
+	"path"
 	"runtime"
-	"sync"
+	"slices"
+	"strings"
 
-	"github.com/ernestrc/go-multierror"
 	log "github.com/sirupsen/logrus"
-	sitter "github.com/tree-sitter/go-tree-sitter"
 	"github.com/unstablebuild/blue/iterator"
+	"github.com/unstablebuild/rune-go-sdk/api/pkgapi"
+	"github.com/unstablebuild/rune-go-sdk/api/syntaxapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	sdkiterator "github.com/unstablebuild/rune-go-sdk/iterator"
 	"github.com/unstablebuild/rune-go-sdk/term"
-	"unstable.build/rune/internal/cell"
-	"unstable.build/rune/internal/debug"
-	"unstable.build/rune/internal/extension"
 	"unstable.build/rune/internal/ide/idelsp/languages"
+	"unstable.build/rune/internal/workspace/walkdir"
 )
 
-var (
-	defaultWorkers  = runtime.NumCPU()
-	errInvalidQuery = errors.New("invalid query for language")
-)
-
-type match struct {
-	CaptureName string
-	LineString  string
-}
-
+// readSymbols streams a "file:line: text" entry for every capture in
+// captureNames that the query matches across the workspace, where text
+// runs from the capture to the end of its line. Exactly one of libQueryFile
+// and query is set: libQueryFile names a query file that each language
+// package ships, so every language is searched with its own copy, while
+// query is run as is against every language. Languages whose package is not
+// installed, does not ship libQueryFile, or rejects the query are skipped.
 func readSymbols(
-	ctx context.Context, w workspaceapi.FileSystem,
-	dataDir string, uri workspaceapi.URI, paths iterator.Iterator[string],
-	queryFile string, query string,
-) (iterator.Iterator[match], error) {
-	files := make(chan string)
-	results := make(chan match)
-	closeWaitCh := make(chan struct{})
-	ctx, cancel := context.WithCancel(ctx)
-
-	var wg sync.WaitGroup
-	wg.Add(defaultWorkers)
-	errors := make([]error, defaultWorkers)
-	validErrors := make([]map[string]*expectedError, defaultWorkers)
-	for i := range defaultWorkers {
-		validErrors[i] = make(map[string]*expectedError)
-		go debug.CapturePanicReport(func() {
-			defer wg.Done()
-			readSymbolsWorker(ctx, w, dataDir, uri, queryFile, results, files, &errors[i],
-				validErrors[i], query)
-		})
+	ctx context.Context, fs workspaceapi.FileSystem, pkgs pkgapi.Manager,
+	parser syntaxapi.Parser, libQueryFile, query string, captureNames []string,
+) (iterator.Iterator[string], error) {
+	langs, err := workspaceLanguages(ctx, fs)
+	if err != nil {
+		return nil, err
 	}
-
-	it := &listSymbolsIterator{ctx: ctx, ch: results}
-	it.cancel = cancel
-	it.closeWaitCh = closeWaitCh
-
-	var itErr error
-	go debug.CapturePanicReport(func() {
-		defer close(closeWaitCh)
-		defer close(results)
-		defer paths.Close()
-
-	loop:
-		for {
-			file, ok := paths.Next(ctx)
-			if !ok {
-				break
-			}
-			select {
-			case files <- file:
-			case <-ctx.Done():
-				break loop
-			}
-		}
-		if err := paths.Err(); err != nil {
-			itErr = err
-		}
-		close(files)
-		wg.Wait()
-
-		it.mu.Lock()
-		defer it.mu.Unlock()
-
-		it.err = itErr
-		for _, err := range errors {
-			if err != nil {
-				it.err = multierror.Append(it.err, err)
-			}
-		}
-		missingLanguage, invalidQuery := mergeValidErrorsMap(validErrors)
-		if len(missingLanguage) != 0 {
-			log.Debugf("Missing language parser for the following file extensions: %#v",
-				missingLanguage)
-		}
-		if len(invalidQuery) != 0 {
-			log.Debugf("Invalid query for the following file extensions: %#v",
-				invalidQuery)
-		}
-	})
-	return it, nil
+	root, err := fs.URI(".")
+	if err != nil {
+		return nil, err
+	}
+	return &symbolIterator{
+		fs:           fs,
+		root:         root,
+		pkgs:         pkgs,
+		parser:       parser,
+		libQueryFile: libQueryFile,
+		query:        query,
+		captureNames: captureNames,
+		langs:        langs,
+		lines:        lineCache{fs: fs},
+	}, nil
 }
 
-func mergeValidErrorsMap(m []map[string]*expectedError) (
-	missingLanguage map[string]int,
-	invalidQuery map[string]int,
-) {
-	missingLanguage = make(map[string]int)
-	invalidQuery = make(map[string]int)
-	for _, mm := range m {
-		for k, v := range mm {
-			if v.missingLanguage != 0 {
-				if _, ok := missingLanguage[k]; !ok {
-					missingLanguage[k] = 0
-				}
-				missingLanguage[k] += v.missingLanguage
-			}
-			if v.invalidQuery != 0 {
-				if _, ok := invalidQuery[k]; !ok {
-					invalidQuery[k] = 0
-				}
-				invalidQuery[k] += v.invalidQuery
-			}
-		}
-	}
-	return
-}
-
-func readFileSymbols(
-	ctx context.Context,
-	parser *parser,
-	w workspaceapi.FileSystem,
-	filename string, results chan match,
-) (retErr error) {
-	file, err := w.OpenFile(filename, os.O_RDONLY, 0)
+// workspaceLanguages lists the languages of the workspace's files in the
+// order the walk first meets them.
+func workspaceLanguages(ctx context.Context, fs workspaceapi.FileSystem) ([]string, error) {
+	files, err := walkdir.ListFiles(ctx, fs, ".")
 	if err != nil {
-		return fmt.Errorf("open file: %v", err)
+		return nil, err
 	}
-	defer func() {
-		if cerr := file.Close(); cerr != nil {
-			retErr = multierror.Append(retErr, fmt.Errorf("close file: %v", cerr))
-		}
-	}()
-
-	r := bufio.NewReader(file)
-	data, err := io.ReadAll(r)
-	if err != nil {
-		return err
-	}
-
-	buf := new(cell.Buffer)
-	buf.Init()
-	_, _ = buf.ReadFrom(bytes.NewReader(data))
-
-	tree := parser.parser.Parse(data, nil)
-	if tree == nil {
-		return errors.New("failed to parse data")
-	}
-	defer tree.Close()
-
-	cur := sitter.NewQueryCursor()
-	defer cur.Close()
-
-	root := tree.RootNode()
-	captureNames := parser.query.CaptureNames()
-	content := []byte(buf.String())
-	matches := cur.Matches(parser.query, root, content)
+	defer func() { _ = files.Close() }()
+	var langs []string
 	for {
-		m, ok := matches.Next()
+		file, ok := files.Next(ctx)
 		if !ok {
-			break
+			return langs, files.Err()
 		}
-		for _, cap := range m.Captures {
-			name := captureNames[cap.Index]
-			rng := cap.Node.Range()
-			from, to, err := convertRangeToCoordinates(buf.RawCells(), rng)
-			if err != nil {
-				log.Tracef("convert query: %v", err)
-				continue
-			}
-			if int(cap.Index) >= len(captureNames) {
-				log.Tracef("index %d does not belong capture names %v",
-					cap.Index, captureNames)
-				continue
-			}
-			result, err := makeSymbolItem(from, to, filename, buf, name)
-			if err != nil {
-				retErr = multierror.Append(retErr, err)
-				continue
-			}
-			select {
-			case results <- result:
-			case <-ctx.Done():
-				return retErr
-			}
+		lang, err := languages.LanguageForFile(file)
+		if err == nil && !slices.Contains(langs, lang) {
+			langs = append(langs, lang)
 		}
 	}
-
-	return retErr
 }
 
-func convertRangeToCoordinates(cells [][]term.Cell, n sitter.Range) (
-	from, to term.Coordinates, err error,
-) {
-	start, end := n.StartPoint, n.EndPoint
-	from, ok := cell.ConvertRunePosToCoordinates(cells, int(start.Row), int(start.Column))
-	if !ok {
-		err = fmt.Errorf("convert points: failed to convert sitter 'start point "+
-			" to term 'from' coordinates: point: %v", start)
-		return
-	}
-	to, ok = cell.ConvertRunePosToCoordinates(cells, int(end.Row), int(end.Column))
-	if !ok {
-		err = fmt.Errorf("convert points: failed to convert sitter 'end' point "+
-			" to term 'to' coordinates: point: %v", end)
-		return
-	}
-	return
+// symbolIterator searches one language at a time: Search takes a single
+// query, and a query file differs from one language package to the next.
+type symbolIterator struct {
+	fs           workspaceapi.FileSystem
+	root         workspaceapi.URI
+	pkgs         pkgapi.Manager
+	parser       syntaxapi.Parser
+	libQueryFile string
+	query        string
+	captureNames []string
+	langs        []string
+	lang         string
+	results      sdkiterator.Iterator[syntaxapi.Result]
+	lines        lineCache
+	err          error
 }
 
-func makeSymbolItem(
-	from, to term.Coordinates, filename string, buf *cell.Buffer,
-	captureName string,
-) (match, error) {
-	// ConvertRunePosToCoordinates clamps a row past the last line to the
-	// end-of-buffer sentinel Y == buf.Rows(); guard against it so
-	// buf.Columns does not index out of range.
-	if rows := buf.Rows(); rows > 0 && from.Y >= rows {
-		from.Y = rows - 1
-	}
-	to.Y = from.Y
-	to.X = buf.Columns(from.Y)
-	cells, _, _ := buf.Select(from, to)
-	textToDisplay := term.CellsToString(cells)
-	lineStr := fmt.Sprintf("%s:%d: %s", filename, from.Y+1, textToDisplay)
-	return match{CaptureName: captureName, LineString: lineStr}, nil
-}
-
-func readSymbolsWorker(
-	ctx context.Context, w workspaceapi.FileSystem, dataDir string,
-	uri workspaceapi.URI, queryFile string, results chan match, files chan string,
-	err *error, expectedErrors map[string]*expectedError,
-	query string,
-) {
-	pkg := extension.NewPkgManager(dataDir, uri, w)
-	parsers := make(map[string]*parser)
+func (s *symbolIterator) Next(ctx context.Context) (string, bool) {
 	for {
-		select {
-		case <-ctx.Done():
-			return
-		case path, ok := <-files:
-			if !ok {
-				return
+		if s.results == nil {
+			if len(s.langs) == 0 || ctx.Err() != nil {
+				return "", false
 			}
-			langID, lerr := languages.LanguageForFile(path)
-			if lerr != nil {
-				continue
-			}
-			parser, ok := parsers[langID]
-			if !ok {
-				var err error
-				parser, err = newParser(ctx, langID, pkg, queryFile, query)
-				if err != nil {
-					if errors.Is(err, extension.ErrNotInstalled) {
-						ext := filepath.Ext(path)
-						if _, ok := expectedErrors[ext]; !ok {
-							expectedErrors[ext] = &expectedError{}
-						}
-						expectedErrors[ext].missingLanguage++
-					} else if errors.Is(err, errInvalidQuery) {
-						ext := filepath.Ext(path)
-						if _, ok := expectedErrors[ext]; !ok {
-							expectedErrors[ext] = &expectedError{}
-						}
-						expectedErrors[ext].invalidQuery++
-					} else {
-						log.Errorf("new parser for language %q: %v", langID, err)
-					}
-					continue
-				}
-				defer parser.Close()
-				parsers[langID] = parser
-			}
+			s.lang, s.langs = s.langs[0], s.langs[1:]
+			s.results = s.search(ctx)
+			continue
+		}
+		r, ok := s.results.Next(ctx)
+		if !ok {
+			s.closeResults(ctx)
+			continue
+		}
+		name := workspaceapi.RelPath(s.root, r.File)
+		line, err := s.lines.line(name, r.From.Y)
+		if err != nil {
+			s.err = errors.Join(s.err, err)
+			continue
+		}
+		return symbolLine(name, line, r.From), true
+	}
+}
 
-			readErr := readFileSymbols(ctx, parser, w, path, results)
-			if readErr != nil {
-				*err = multierror.Append(*err, readErr)
-			}
+func (s *symbolIterator) search(ctx context.Context) sdkiterator.Iterator[syntaxapi.Result] {
+	query := s.query
+	if s.libQueryFile != "" {
+		var ok bool
+		var err error
+		query, ok, err = libQuery(ctx, s.pkgs, s.fs, s.lang, s.libQueryFile)
+		switch {
+		case errors.Is(err, pkgapi.ErrNotInstalled):
+			return nil
+		case err != nil:
+			log.Warnf("searchast: read %s from the %s package: %v", s.libQueryFile, s.lang, err)
+			return nil
+		case !ok:
+			log.Debugf("searchast: the %s package does not ship %s", s.lang, s.libQueryFile)
+			return nil
+		}
+	}
+	it, err := s.parser.Search(query, s.captureNames, s.lang)
+	if err != nil {
+		log.Warnf("searchast: search %s files: %v", s.lang, err)
+		return nil
+	}
+	return it
+}
+
+// closeResults logs rather than reports a language's search error, since a
+// query that suits one language is commonly invalid for the others.
+func (s *symbolIterator) closeResults(ctx context.Context) {
+	if err := s.results.Err(); err != nil && ctx.Err() == nil {
+		log.Warnf("searchast: search %s files: %v", s.lang, err)
+	}
+	_ = s.results.Close()
+	s.results = nil
+}
+
+func (s *symbolIterator) Err() error {
+	return s.err
+}
+
+func (s *symbolIterator) Close() error {
+	if s.results == nil {
+		return nil
+	}
+	return s.results.Close()
+}
+
+// libQuery reads the query file name from lang's package. ok is false when
+// the package does not ship it.
+func libQuery(
+	ctx context.Context, pkgs pkgapi.Manager, fs workspaceapi.FileSystem, lang, name string,
+) (query string, ok bool, err error) {
+	files, err := pkgs.LibDir(ctx, lang)
+	if err != nil {
+		return "", false, err
+	}
+	defer func() { _ = files.Close() }()
+	for {
+		file, more := files.Next(ctx)
+		if !more {
+			return "", false, files.Err()
+		}
+		if path.Base(file) == name {
+			data, err := readFile(fs, file)
+			return string(data), err == nil, err
 		}
 	}
 }
 
-type listSymbolsIterator struct {
-	mu          sync.Mutex
-	err         error
-	ctx         context.Context
-	ch          chan match
-	cancel      func()
-	closeWaitCh chan struct{}
+func symbolLine(name, line string, from term.Coordinates) string {
+	runes := []rune(line)
+	text := string(runes[min(from.X, len(runes)):])
+	return fmt.Sprintf("%s:%d: %s", name, from.Y+1, text)
 }
 
-func (l *listSymbolsIterator) Next(ctx context.Context) (match, bool) {
-	select {
-	case <-ctx.Done():
-		l.mu.Lock()
-		defer l.mu.Unlock()
-		l.err = multierror.Append(l.err, ctx.Err())
-		return match{}, false
-	case <-l.ctx.Done():
-		l.mu.Lock()
-		defer l.mu.Unlock()
-		l.err = multierror.Append(l.err, l.ctx.Err())
-		return match{}, false
-	case path, ok := <-l.ch:
-		return path, ok
+var lineCacheSize = 2 * runtime.NumCPU()
+
+// lineCache holds the lines of the files whose captures were formatted
+// last. The IDE streams each file's captures together, interleaving only
+// the files its workers parse at once, so a few files serve nearly every
+// lookup without holding the workspace in memory.
+type lineCache struct {
+	fs    workspaceapi.FileSystem
+	files []fileLines // least recently used first
+}
+
+type fileLines struct {
+	name  string
+	lines []string
+}
+
+// line returns line y of the named file, or "" past its end.
+func (c *lineCache) line(name string, y int) (string, error) {
+	var f fileLines
+	if i := slices.IndexFunc(c.files, func(f fileLines) bool { return f.name == name }); i >= 0 {
+		f = c.files[i]
+		c.files = slices.Delete(c.files, i, i+1)
+	} else {
+		data, err := readFile(c.fs, name)
+		if err != nil {
+			return "", err
+		}
+		f = fileLines{name: name, lines: strings.Split(string(data), "\n")}
+		if len(c.files) >= lineCacheSize {
+			c.files = slices.Delete(c.files, 0, 1)
+		}
 	}
-}
-
-func (l *listSymbolsIterator) Err() error {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	if l.err == nil {
-		return l.ctx.Err()
+	c.files = append(c.files, f)
+	if y >= len(f.lines) {
+		return "", nil
 	}
-	// avoid data races onto l.err which is an instance of
-	// *multierr.Error by creating a new multierr.Error
-	err := multierror.Append(nil, l.err)
-	if l.ctx.Err() == nil {
-		return err
+	return strings.TrimSuffix(f.lines[y], "\r"), nil
+}
+
+func readFile(fs workspaceapi.FileSystem, name string) (data []byte, err error) {
+	file, err := fs.OpenFile(name, os.O_RDONLY, 0)
+	if err != nil {
+		return nil, err
 	}
-	return multierror.Append(err, l.ctx.Err())
-}
-
-func (l *listSymbolsIterator) Close() error {
-	l.cancel()
-	<-l.closeWaitCh
-	return nil
-}
-
-type expectedError struct {
-	missingLanguage int
-	invalidQuery    int
+	defer func() { err = errors.Join(err, file.Close()) }()
+	return io.ReadAll(file)
 }

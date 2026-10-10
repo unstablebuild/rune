@@ -22,7 +22,7 @@ import (
 	"sync"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
-	"unstable.build/rune/internal/ide/pkgtrust"
+	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
 )
 
 // testEntity is the lazily generated PGP entity that signs every tarball the

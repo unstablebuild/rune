@@ -41,7 +41,7 @@ import (
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/cell"
 	"unstable.build/rune/internal/handler/command"
-	"unstable.build/rune/internal/ide/ideshell"
+	"unstable.build/rune/internal/ide/console/ideconsole"
 	"unstable.build/rune/internal/text"
 	"unstable.build/rune/internal/text/standard"
 )
@@ -64,7 +64,7 @@ type Root struct {
 	pageWin   browser.Window
 	shellTab  *browser.Tab
 	shell     tui.Handler
-	shellHelp *ideshell.CommandRegistry
+	shellHelp *ideconsole.CommandRegistry
 
 	fileExplorerWin browser.Window
 	fileExplorer    browserapi.Handler

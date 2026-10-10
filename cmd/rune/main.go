@@ -56,9 +56,10 @@ import (
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/extension/extensionv2"
 	"unstable.build/rune/internal/ide"
+	"unstable.build/rune/internal/ide/hostenv"
 	"unstable.build/rune/internal/ide/idepkg"
 	"unstable.build/rune/internal/ide/idepkg/pkgrpc"
-	"unstable.build/rune/internal/ide/pkgtrust"
+	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
 	"unstable.build/rune/internal/llm/llmrpc"
 	"unstable.build/rune/internal/rpc"
 	"unstable.build/rune/internal/term/gui"
@@ -180,7 +181,7 @@ func cwdURI() workspaceapi.URI {
 	return uri
 }
 
-func startWorkspaceServer() int {
+func startWorkspaceServer(host *hostenv.Host, shellRCDir string, shellRCErr error) int {
 	var logger *slog.Logger
 
 	// The log defaults to <default datadir>/server.log; when the datadir is
@@ -259,11 +260,10 @@ func startWorkspaceServer() int {
 		return 2
 	}
 
-	shellRCDir, err := installShellRC(*flagDataPath)
-	if err != nil {
-		reportRemoteShellRCErr(os.Stderr, err)
+	if shellRCErr != nil {
+		reportRemoteShellRCErr(os.Stderr, shellRCErr)
 	}
-	newScheme := workspace.NewFileSchemeFunc(shellRCDir)
+	newScheme := workspace.NewFileSchemeFunc(*flagDataPath, shellRCDir)
 
 	scheme, err := newScheme(context.Background(), config.NopConfig(), uri)
 	if err != nil {
@@ -273,13 +273,13 @@ func startWorkspaceServer() int {
 	defer scheme.Close()
 	// Apply gui.env before serving so the tools the client starts here
 	// see the packages installed on this host.
-	loadRemoteConfigAndApplyEnv(scheme, uri)
+	loadRemoteConfigAndApplyEnv(host, scheme, uri)
 
 	// The client installs the packages its workspace needs on this host
 	// through this manager, served next to the workspace.
 	pkgs, pkgStorage := newHostPackageManager(newRuneStorage(*flagDataPath),
 		newRemoteReleaseManager(), scheme,
-		func() { loadRemoteConfigAndApplyEnv(scheme, uri) })
+		func() { loadRemoteConfigAndApplyEnv(host, scheme, uri) })
 	defer func() {
 		_ = pkgStorage.Close()
 	}()
@@ -478,16 +478,24 @@ func run() int {
 		return 1
 	}
 
-	if err := setupRuneBinPATH(*flagDataPath); err != nil {
+	shellRCDir, shellRCErr := installShellRC(*flagDataPath)
+	// The TUI runs inside the user's own shell session and applies no
+	// gui.env, so it leaves the terminal fragments to the hosts that do.
+	hostShellRCDir := shellRCDir
+	if *flagTUI {
+		hostShellRCDir = ""
+	}
+	host := hostenv.New(*flagDataPath, hostShellRCDir)
+	if err := host.Apply(nil); err != nil {
 		log.Errorf("installed executables will not be available: "+
 			"set the PATH env variable: %v", err)
 	}
 
-	// TUI and headless inherit the parent-shell PATH the user already
-	// exported, so they skip the login SHELL PATH resolve.
+	// The TUI inherits the parent-shell PATH the user already exported, so
+	// it skips the login SHELL PATH resolve.
 	var pathDone <-chan error
-	if !*flagTUI && !*flagHeadless {
-		pathDone = startLoginShellPATHResolve(*flagDataPath)
+	if !*flagTUI {
+		pathDone = startLoginShellPATHResolve(host)
 	} else {
 		ch := make(chan error)
 		pathDone = ch
@@ -503,15 +511,20 @@ func run() int {
 			log.Errorf("could not resolve login shell PATH; tools on "+
 				"it (e.g. homebrew, mise) may be unavailable: %v", err)
 		}
-		code := startWorkspaceServer()
+		code := startWorkspaceServer(host, shellRCDir, shellRCErr)
 		return code
 	}
 
 	ctx := context.Background()
-	shellRCDir, shellRCErr := installShellRC(*flagDataPath)
 
 	if *flagHeadless {
-		return runHeadless(ctx, shellRCDir, shellRCErr)
+		go debug.CapturePanicReport(func() {
+			if err := <-pathDone; err != nil {
+				log.Warnf("could not resolve login shell PATH; tools on "+
+					"it may be unavailable: %v", err)
+			}
+		})
+		return runHeadless(ctx, host, shellRCDir, shellRCErr)
 	}
 
 	var mu sync.Mutex
@@ -538,7 +551,7 @@ func run() int {
 	trust := pkgtrust.NewStore(*flagDataPath, trustKeyringFetcher())
 
 	if *flagGUI {
-		return runGUI(filenames, runner, trust, &mu, pathDone, shellRCDir, shellRCErr)
+		return runGUI(filenames, runner, trust, &mu, pathDone, host, shellRCDir, shellRCErr)
 	} else if *flagTUI {
 		return runTUI(filenames, runner, trust, &mu, shellRCDir, shellRCErr)
 	} else {
@@ -596,6 +609,7 @@ func runTUI(
 			return tui.PublishEvent(term.Event{Type: term.EventInterrupt, UserFunc: fn})
 		}),
 		ide.WithShellRCDir(shellRCDir),
+		ide.WithHostDataDir(*flagDataPath),
 		ide.WithScheme(docsScheme, newDocsSchemeFunc(*flagConfigPath)),
 		ide.WithStreamingOpen(true),
 		ide.WithClipboard(text.NewAsyncSystemClipboard()),
@@ -690,9 +704,10 @@ func runTUI(
 
 func runGUI(
 	filenames []string, runner ide.ExtensionsRunner, trust *pkgtrust.Store,
-	mu *sync.Mutex, pathDone <-chan error, shellRCDir string, shellRCErr error,
+	mu *sync.Mutex, pathDone <-chan error, host *hostenv.Host,
+	shellRCDir string, shellRCErr error,
 ) int {
-	setEnvForGUI(*flagDataPath)
+	setEnvForGUI()
 
 	// Capture the launch command for guiwindownew. Visit iterates
 	// only over flags that were explicitly set (including
@@ -763,13 +778,13 @@ func runGUI(
 	// $PATH, so we must wait for the login-shell PATH resolve first; when it
 	// does not, we still wait, because we run LSP servers or other tools
 	// which might need PATH to be set
-	if err := applyShellPATHAndGUIEnv(guiCfg, pathDone); err != nil {
+	if err := applyShellPATHAndGUIEnv(host, guiCfg, pathDone); err != nil {
 		envErr = multierr.Append(envErr, err)
 	}
 
 	root, err := newBootstrapHandler(
 		*flagDataPath, *flagConfigPath,
-		*flagWorkspace, shellRCDir, filenames,
+		*flagWorkspace, shellRCDir, host, filenames,
 		launchCmd, runner, mu, publishEvent, cellPixelSize, setAltModifier,
 		func(u *url.URL) error { return extbrowser.Browse(u) },
 		text.NewAsyncSystemClipboard(), os.TempDir(), rootCfg, trust,
@@ -886,19 +901,12 @@ func buildGUIOptions(
 	}
 }
 
-// applyShellPATHAndGUIEnv applies the login-shell PATH resolution and gui.env.
-//
-// When gui.env defines its own PATH, the value may expand $PATH and therefore
-// depends on the resolved login PATH; in that case we block on pathDone so the
-// gui.env baseline is captured after the resolved PATH lands, keeping expansion
-// race-free. On resolution timeout or error Rune continues with the inherited
-// PATH and notifies the user.
-//
-// When gui.env does not define PATH, blocking would needlessly delay startup,
-// so we apply gui.env immediately and let the background resolve apply the
-// resolved login PATH via os.Setenv whenever it completes.
+// applyShellPATHAndGUIEnv waits for the login-shell PATH resolution and then
+// applies gui.env to host. gui.env.PATH may expand $PATH, which is the
+// resolved login PATH once it lands. On resolution timeout or error Rune
+// continues with the inherited PATH and notifies the user.
 func applyShellPATHAndGUIEnv(
-	cfg config.Config, pathDone <-chan error,
+	host *hostenv.Host, cfg config.Config, pathDone <-chan error,
 ) (ret error) {
 	env, err := getGUIEnvVars(cfg)
 	if err != nil {
@@ -910,15 +918,14 @@ func applyShellPATHAndGUIEnv(
 	// when trying to find "go" in their PATH.
 	ret = waitLoginShellPATH(pathDone)
 
-	if err := applyGUIEnvVars(env); err != nil {
+	if err := host.Apply(env); err != nil {
 		ret = multierr.Append(ret, fmt.Errorf("apply gui.env: %v", err))
 	}
 	return ret
 }
 
 // waitLoginShellPATH blocks until the background login-shell PATH resolution
-// completes, applying the resolved PATH via os.Setenv on success and notifying
-// the user on error or timeout.
+// completes and reports an error for the user on failure or timeout.
 func waitLoginShellPATH(pathDone <-chan error) error {
 	select {
 	case err := <-pathDone:

@@ -18,6 +18,8 @@ package langext
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -32,10 +34,12 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/pkgapi"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"unstable.build/rune/internal/extension/langext/langexttest"
 	"unstable.build/rune/internal/workspace/walkdir"
 )
 
@@ -258,7 +262,7 @@ func TestInitializerOpenTriggersOneInitRoot(t *testing.T) {
 	})
 
 	ed := &fakeEditor{}
-	i := NewInitializer(context.Background(), mfs, ed, cfg)
+	i := NewInitializer(context.Background(), mfs, ed, &langexttest.Installer{}, cfg)
 	require.NoError(t, i.Start())
 	require.Equal(t, []textapi.EventType{
 		textapi.EventTypeOpen, textapi.EventTypeChange, textapi.EventTypeCreate,
@@ -286,7 +290,7 @@ func TestInitializerChangeTriggersInitRoot(t *testing.T) {
 	})
 
 	ed := &fakeEditor{}
-	i := NewInitializer(context.Background(), mfs, ed, cfg)
+	i := NewInitializer(context.Background(), mfs, ed, &langexttest.Installer{}, cfg)
 	require.NoError(t, i.Start())
 
 	ed.fire(t, changeEvent("/ws/svc/main.py"))
@@ -306,7 +310,7 @@ func TestInitializerCreateTriggersInitRoot(t *testing.T) {
 	})
 
 	ed := &fakeEditor{}
-	i := NewInitializer(context.Background(), mfs, ed, cfg)
+	i := NewInitializer(context.Background(), mfs, ed, &langexttest.Installer{}, cfg)
 	require.NoError(t, i.Start())
 
 	ed.fire(t, createEvent("/ws/svc/new.py"))
@@ -328,7 +332,7 @@ func TestInitializerClaimedRootSkipsWalk(t *testing.T) {
 	})
 
 	ed := &fakeEditor{}
-	i := NewInitializer(context.Background(), mfs, ed, cfg)
+	i := NewInitializer(context.Background(), mfs, ed, &langexttest.Installer{}, cfg)
 	require.NoError(t, i.Start())
 
 	ed.fire(t, changeEvent("/ws/svc/main.py"))
@@ -353,7 +357,7 @@ func TestInitializerNegativeCacheBoundsWalks(t *testing.T) {
 	})
 
 	ed := &fakeEditor{}
-	i := NewInitializer(context.Background(), mfs, ed, cfg)
+	i := NewInitializer(context.Background(), mfs, ed, &langexttest.Installer{}, cfg)
 	require.NoError(t, i.Start())
 
 	ed.fire(t, changeEvent("/ws/stray/a.py"))
@@ -380,7 +384,7 @@ func TestInitializerScaffoldAfterChangeNeedsNoReload(t *testing.T) {
 	})
 
 	ed := &fakeEditor{}
-	i := NewInitializer(context.Background(), mfs, ed, cfg)
+	i := NewInitializer(context.Background(), mfs, ed, &langexttest.Installer{}, cfg)
 	require.NoError(t, i.Start())
 
 	// A change with no enclosing marker caches svc as unresolved.
@@ -407,7 +411,7 @@ func TestInitializerCreateAlwaysRewalks(t *testing.T) {
 	})
 
 	ed := &fakeEditor{}
-	i := NewInitializer(context.Background(), mfs, ed, cfg)
+	i := NewInitializer(context.Background(), mfs, ed, &langexttest.Installer{}, cfg)
 	require.NoError(t, i.Start())
 
 	ed.fire(t, changeEvent("/ws/svc/main.py")) // caches svc unresolved
@@ -432,7 +436,7 @@ func TestInitializerOpenAlwaysRewalks(t *testing.T) {
 	})
 
 	ed := &fakeEditor{}
-	i := NewInitializer(context.Background(), mfs, ed, cfg)
+	i := NewInitializer(context.Background(), mfs, ed, &langexttest.Installer{}, cfg)
 	require.NoError(t, i.Start())
 
 	ed.fire(t, changeEvent("/ws/svc/main.py")) // caches svc unresolved
@@ -461,7 +465,7 @@ func TestInitializerStormBound(t *testing.T) {
 	})
 
 	ed := &fakeEditor{}
-	i := NewInitializer(context.Background(), mfs, ed, cfg)
+	i := NewInitializer(context.Background(), mfs, ed, &langexttest.Installer{}, cfg)
 	require.NoError(t, i.Start())
 
 	dirs := []string{"a", "b", "c"}
@@ -497,7 +501,7 @@ func TestInitializerKillSwitchOpenOnly(t *testing.T) {
 	cfg.WatchEvents = []textapi.EventType{textapi.EventTypeOpen}
 
 	ed := &fakeEditor{}
-	i := NewInitializer(context.Background(), mfs, ed, cfg)
+	i := NewInitializer(context.Background(), mfs, ed, &langexttest.Installer{}, cfg)
 	require.NoError(t, i.Start())
 	require.Equal(t, []textapi.EventType{textapi.EventTypeOpen}, ed.subscribedTo)
 
@@ -521,7 +525,7 @@ func TestInitializerMixedOpenChangeDedupe(t *testing.T) {
 	})
 
 	ed := &fakeEditor{}
-	i := NewInitializer(context.Background(), mfs, ed, cfg)
+	i := NewInitializer(context.Background(), mfs, ed, &langexttest.Installer{}, cfg)
 	require.NoError(t, i.Start())
 
 	var wg sync.WaitGroup
@@ -554,7 +558,7 @@ func TestInitializerAsyncSurvivesEventContextCancel(t *testing.T) {
 	})
 
 	ed := &fakeEditor{}
-	i := NewInitializer(context.Background(), mfs, ed, cfg)
+	i := NewInitializer(context.Background(), mfs, ed, &langexttest.Installer{}, cfg)
 	require.NoError(t, i.Start())
 
 	// Deliver the open with a context that is canceled the instant Handle
@@ -588,7 +592,7 @@ func TestInitializerConcurrentOpensDedupe(t *testing.T) {
 	})
 
 	ed := &fakeEditor{}
-	i := NewInitializer(context.Background(), mfs, ed, cfg)
+	i := NewInitializer(context.Background(), mfs, ed, &langexttest.Installer{}, cfg)
 	require.NoError(t, i.Start())
 
 	var wg sync.WaitGroup
@@ -617,7 +621,7 @@ func TestInitializerIgnoresNonMatchingFiles(t *testing.T) {
 	})
 
 	ed := &fakeEditor{}
-	i := NewInitializer(context.Background(), mfs, ed, cfg)
+	i := NewInitializer(context.Background(), mfs, ed, &langexttest.Installer{}, cfg)
 	require.NoError(t, i.Start())
 
 	ed.fire(t, openEvent("/ws/svc/README.md"))
@@ -635,7 +639,7 @@ func TestInitializerNoMarkerDoesNotInitialize(t *testing.T) {
 	})
 
 	ed := &fakeEditor{}
-	i := NewInitializer(context.Background(), mfs, ed, cfg)
+	i := NewInitializer(context.Background(), mfs, ed, &langexttest.Installer{}, cfg)
 	require.NoError(t, i.Start())
 
 	ed.fire(t, openEvent("/ws/svc/stray.py"))
@@ -656,7 +660,7 @@ func TestInitializeAtDedupedAgainstLaterEvents(t *testing.T) {
 	})
 
 	ed := &fakeEditor{}
-	i := NewInitializer(context.Background(), mfs, ed, cfg)
+	i := NewInitializer(context.Background(), mfs, ed, &langexttest.Installer{}, cfg)
 	require.NoError(t, i.Start())
 
 	root := rootForDir(mfs, ws, ws)
@@ -684,7 +688,7 @@ func TestInitializeAtRetriesAfterFailure(t *testing.T) {
 	})
 
 	ed := &fakeEditor{}
-	i := NewInitializer(context.Background(), mfs, ed, cfg)
+	i := NewInitializer(context.Background(), mfs, ed, &langexttest.Installer{}, cfg)
 	require.NoError(t, i.Start())
 
 	root := rootForDir(mfs, ws, ws)
@@ -706,14 +710,14 @@ func TestReinitializeRerunsAllKnownRoots(t *testing.T) {
 		FileMatch: func(uri workspaceapi.URI) bool {
 			return strings.HasSuffix(uri.Path(), ".rs")
 		},
-		InitRoot: func(_ context.Context, _ Root) error {
+		InitRoot: func(context.Context, Root, *Tools) error {
 			calls.Add(1)
 			return nil
 		},
 	}
 
 	ed := &fakeEditor{}
-	i := NewInitializer(context.Background(), mfs, ed, cfg)
+	i := NewInitializer(context.Background(), mfs, ed, &langexttest.Installer{}, cfg)
 	require.NoError(t, i.Start())
 
 	require.NoError(t, i.InitializeAt(context.Background(), rootForDir(mfs, ws, "/ws/a")))
@@ -739,7 +743,7 @@ func TestReinitializeNoOpWhenNothingInitialized(t *testing.T) {
 	})
 
 	ed := &fakeEditor{}
-	i := NewInitializer(context.Background(), mfs, ed, cfg)
+	i := NewInitializer(context.Background(), mfs, ed, &langexttest.Installer{}, cfg)
 	require.NoError(t, i.Start())
 
 	require.NoError(t, i.Reinitialize(context.Background()))
@@ -762,7 +766,7 @@ func TestReinitializeSkipsRootStillInitializing(t *testing.T) {
 	})
 
 	ed := &fakeEditor{}
-	i := NewInitializer(context.Background(), mfs, ed, cfg)
+	i := NewInitializer(context.Background(), mfs, ed, &langexttest.Installer{}, cfg)
 	require.NoError(t, i.Start())
 
 	// Drive an open that starts a bring-up and blocks it in InitRoot.
@@ -787,7 +791,9 @@ func pyConfig(initRoot func(context.Context, Root) error) ProjectConfig {
 		WatchEvents: []textapi.EventType{
 			textapi.EventTypeOpen, textapi.EventTypeChange, textapi.EventTypeCreate,
 		},
-		InitRoot: initRoot,
+		InitRoot: func(ctx context.Context, root Root, _ *Tools) error {
+			return initRoot(ctx, root)
+		},
 	}
 }
 
@@ -963,3 +969,170 @@ type memDirEntry struct{ memFileInfo }
 
 func (e memDirEntry) Type() os.FileMode          { return e.Mode() }
 func (e memDirEntry) Info() (os.FileInfo, error) { return e.memFileInfo, nil }
+
+func TestToolsFind(t *testing.T) {
+	const lib = "/home/me/.rune/lib/python"
+	provisioned := map[string]string{"ty": "/home/me/.rune/bin/ty"}
+	lookupErr := errors.New("unknown service pkg.Packages")
+	probeErr := errors.New("stat: host unreachable")
+	tests := []struct {
+		name  string
+		tools []string
+		inst  *langexttest.Installer
+		want  map[string]string
+		// missing is what Find reports for every tool absent from want.
+		missing []error
+	}{
+		{
+			name:  "from the package's bin",
+			tools: []string{"ty", "ruff"},
+			inst: &langexttest.Installer{Files: []string{
+				lib + "/bin/extension_python", lib + "/bin/ruff",
+				lib + "/bin/ty", lib + "/lib/highlights.scm",
+			}},
+			want: map[string]string{"ty": lib + "/bin/ty", "ruff": lib + "/bin/ruff"},
+		},
+		{
+			name:  "only executables under bin",
+			tools: []string{"ty"},
+			inst: &langexttest.Installer{Files: []string{
+				lib + "/share/ty", lib + "/bin/ty",
+			}},
+			want: map[string]string{"ty": lib + "/bin/ty"},
+		},
+		{
+			name:    "a tool the package lacks is not shipped",
+			tools:   []string{"ty", "ruff"},
+			inst:    &langexttest.Installer{Files: []string{lib + "/bin/ty"}},
+			want:    map[string]string{"ty": lib + "/bin/ty"},
+			missing: []error{ErrNotShipped},
+		},
+		{
+			name:  "not installed",
+			tools: []string{"ty"},
+			inst: &langexttest.Installer{
+				Err:         fmt.Errorf("python: %w", pkgapi.ErrNotInstalled),
+				Provisioned: provisioned,
+			},
+			want:    map[string]string{},
+			missing: []error{pkgapi.ErrNotInstalled},
+		},
+		{
+			name:  "a failed lookup probes the install root",
+			tools: []string{"ty", "ruff"},
+			inst: &langexttest.Installer{
+				Err:         lookupErr,
+				Provisioned: provisioned,
+			},
+			want:    map[string]string{"ty": "/home/me/.rune/bin/ty"},
+			missing: []error{lookupErr},
+		},
+		{
+			name:    "a failed lookup and probe report both",
+			tools:   []string{"ty"},
+			inst:    &langexttest.Installer{Err: lookupErr, ProbeErr: probeErr},
+			want:    map[string]string{},
+			missing: []error{lookupErr, probeErr},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			const ws = "/ws"
+			mfs := newMemFS(ws)
+			find := func(t *testing.T, tools *Tools) map[string]string {
+				got := make(map[string]string, len(tc.tools))
+				for _, name := range tc.tools {
+					p, err := tools.Find(context.Background(), name)
+					if _, ok := tc.want[name]; ok {
+						require.NoError(t, err, name)
+						got[name] = p
+						continue
+					}
+					for _, want := range tc.missing {
+						assert.ErrorIs(t, err, want, name)
+					}
+					assert.Empty(t, p, name)
+				}
+				return got
+			}
+			var got map[string]string
+			cfg := pyConfig(nil)
+			cfg.Tools = tc.tools
+			cfg.InitRoot = func(_ context.Context, _ Root, tools *Tools) error {
+				got = find(t, tools)
+				return nil
+			}
+			i := NewInitializer(context.Background(), mfs, &fakeEditor{}, tc.inst, cfg)
+
+			require.NoError(t, i.InitializeAt(context.Background(), rootForDir(mfs, ws, ws)))
+			assert.Equal(t, tc.want, got)
+			assert.Equal(t, tc.want, find(t, i.Tools()))
+		})
+	}
+}
+
+func TestToolsLookUpOnFirstFindOnly(t *testing.T) {
+	const ws = "/ws"
+	tests := []struct {
+		name  string
+		finds []string
+		want  int
+	}{
+		{name: "a bring-up that finds nothing looks nothing up", finds: nil, want: 0},
+		{name: "one lookup serves every find", finds: []string{"ty", "ruff", "ty"}, want: 1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mfs := newMemFS(ws)
+			inst := &langexttest.Installer{Files: []string{"/lib/python/bin/ty"}}
+			cfg := pyConfig(nil)
+			cfg.Tools = []string{"ty", "ruff"}
+			cfg.InitRoot = func(ctx context.Context, _ Root, tools *Tools) error {
+				for _, name := range tc.finds {
+					_, _ = tools.Find(ctx, name)
+				}
+				return nil
+			}
+			i := NewInitializer(context.Background(), mfs, &fakeEditor{}, inst, cfg)
+
+			require.NoError(t, i.InitializeAt(context.Background(), rootForDir(mfs, ws, ws)))
+			assert.Equal(t, tc.want, inst.Lookups())
+
+			require.NoError(t, i.Reinitialize(context.Background()))
+			assert.Equal(t, 2*tc.want, inst.Lookups(),
+				"a later bring-up sees packages installed since")
+		})
+	}
+}
+
+func TestToolsFindRetriesAfterCancelledLookup(t *testing.T) {
+	inst := &langexttest.Installer{Files: []string{"/lib/python/bin/ty"}}
+	tools := &Tools{inst: inst, pkgID: "python", names: []string{"ty"}}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, _ = tools.Find(cancelled, "ty")
+	assert.Equal(t, 1, inst.Lookups())
+
+	p, err := tools.Find(context.Background(), "ty")
+	require.NoError(t, err)
+	assert.Equal(t, "/lib/python/bin/ty", p)
+	assert.Equal(t, 2, inst.Lookups(), "a lookup cut short is not reused")
+
+	_, _ = tools.Find(context.Background(), "ty")
+	assert.Equal(t, 2, inst.Lookups())
+}
+
+func TestResolveToolsStopsListingOnceAllFound(t *testing.T) {
+	files := []string{"/lib/go/bin/go", "/lib/go/bin/gopls"}
+	for n := range 1000 {
+		files = append(files, fmt.Sprintf("/lib/go/go/src/pkg%d/file.go", n))
+	}
+	inst := &langexttest.Installer{Files: files}
+
+	got, err := resolveTools(context.Background(), inst, "go", []string{"gopls", "go"})
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"go": "/lib/go/bin/go", "gopls": "/lib/go/bin/gopls"}, got)
+	assert.Equal(t, 2, inst.Listed())
+	assert.Equal(t, 1, inst.Closed())
+}

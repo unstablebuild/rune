@@ -170,7 +170,7 @@ func TestMouseDelegateSelection(t *testing.T) {
 			comp.Resize(width, height)
 
 			grid := drawGrid(comp, width, height)
-			d := newMouseDelegate(grid, &comp.messages)
+			d := newMouseDelegate(grid, comp)
 			m := mouse.New(d)
 
 			keys, err := term.ParseKeys(tc.input)
@@ -200,7 +200,7 @@ func TestMouseDelegateSelectWordAt(t *testing.T) {
 	comp.Resize(30, 10)
 
 	grid := drawGrid(comp, 30, 10)
-	d := newMouseDelegate(grid, &comp.messages)
+	d := newMouseDelegate(grid, comp)
 
 	// SelectWordAt on X=2 selects the word "Hello".
 	d.SelectWordAt(term.Coordinates{X: 2, Y: 0})
@@ -216,7 +216,7 @@ func TestMouseDelegateSelectLine(t *testing.T) {
 	comp.Resize(30, 10)
 
 	grid := drawGrid(comp, 30, 10)
-	d := newMouseDelegate(grid, &comp.messages)
+	d := newMouseDelegate(grid, comp)
 
 	// SelectLine on row 0 selects the full line content.
 	d.SelectLine(0)
@@ -240,7 +240,7 @@ func TestMouseDelegateScrollN(t *testing.T) {
 	comp.Resize(width, height)
 
 	grid := drawGrid(comp, width, height)
-	d := newMouseDelegate(grid, &comp.messages)
+	d := newMouseDelegate(grid, comp)
 
 	// Scroll to the top so we can measure downward scrolls.
 	for d.ScrollUp(1) {
@@ -423,7 +423,7 @@ func TestMouseDelegateSelectionStartPinnedAcrossAutoScroll(t *testing.T) {
 			comp.Resize(width, height)
 
 			grid := drawGrid(comp, width, height)
-			d := newMouseDelegate(grid, &comp.messages)
+			d := newMouseDelegate(grid, comp)
 
 			redraw := func() {
 				grid.Clear()
@@ -563,7 +563,7 @@ func TestMouseDelegateSelectionCopiesOffscreenContent(t *testing.T) {
 			comp.Resize(tc.width, tc.height)
 
 			grid := drawGrid(comp, tc.width, tc.height)
-			d := newMouseDelegate(grid, &comp.messages)
+			d := newMouseDelegate(grid, comp)
 
 			redraw := func() {
 				grid.Clear()
@@ -612,7 +612,7 @@ func TestMouseDelegateClearAndReselect(t *testing.T) {
 	comp.Resize(30, 10)
 
 	grid := drawGrid(comp, 30, 10)
-	d := newMouseDelegate(grid, &comp.messages)
+	d := newMouseDelegate(grid, comp)
 
 	// Select, then clear, then re-select.
 	d.SetSelectionStart(term.Coordinates{X: 0, Y: 0})
@@ -662,7 +662,7 @@ func TestMouseDelegateSelectionEndPinnedAcrossScroll(t *testing.T) {
 			comp.Resize(width, height)
 
 			grid := drawGrid(comp, width, height)
-			d := newMouseDelegate(grid, &comp.messages)
+			d := newMouseDelegate(grid, comp)
 
 			redraw := func() {
 				grid.Clear()
@@ -725,7 +725,7 @@ func TestMouseDelegateSelectionStableWhileStreaming(t *testing.T) {
 	comp.Resize(width, height)
 
 	grid := drawGrid(comp, width, height)
-	d := newMouseDelegate(grid, &comp.messages)
+	d := newMouseDelegate(grid, comp)
 	redraw := func() {
 		grid.Clear()
 		comp.Draw(grid)
@@ -808,7 +808,7 @@ func TestMouseDelegateSelectionNegativeCoords(t *testing.T) {
 			comp.Resize(width, height)
 
 			grid := drawGrid(comp, width, height)
-			d := newMouseDelegate(grid, &comp.messages)
+			d := newMouseDelegate(grid, comp)
 			m := mouse.New(d)
 
 			redraw := func() {

@@ -27,6 +27,7 @@ import (
 	"github.com/unstablebuild/blue/iterator"
 	"github.com/unstablebuild/blue/release"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
+	"github.com/unstablebuild/rune-go-sdk/api/pkgapi"
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
 	"github.com/unstablebuild/rune-go-sdk/api/syntaxapi"
@@ -36,11 +37,12 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/auth"
 	"unstable.build/rune/internal/debug"
-	"unstable.build/rune/internal/ide/gitpkg"
+	"unstable.build/rune/internal/ide/idelsp"
 	"unstable.build/rune/internal/ide/idepkg"
+	"unstable.build/rune/internal/ide/idepkg/gitpkg"
+	"unstable.build/rune/internal/ide/idepkg/multipkg"
 	"unstable.build/rune/internal/ide/idepkg/pkgrpc"
-	"unstable.build/rune/internal/ide/multipkg"
-	"unstable.build/rune/internal/ide/pkgtrust"
+	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
 	"unstable.build/rune/internal/text"
 )
 
@@ -49,23 +51,29 @@ const installStorageKey = "autoInstallPrompt"
 // pkgManager resolves package lib dirs through pm and, when a package
 // is missing, asks the user in this UI before installing it through pm.
 // host names the machine pm installs on; it is empty for this machine.
+// local is this machine's manager when pm is another machine's, and
+// nil otherwise.
 type pkgManager struct {
 	pm               idepkg.PackageManager
 	host             string
+	local            idepkg.PackageManager
 	n                browserapi.Notifications
 	wh               *workspaceManagerHandler
 	storage          storageapi.Service
 	scheduleNextTick func(func()) bool
 	interrupter      term.Interrupter
 	pending          sync.Map // map[string]*installGate
-	autoInstall      bool
+	// declined holds the packages the user said no to, so the tooling
+	// that retries a lookup does not ask about them again.
+	declined    sync.Map // map[string]struct{}
+	autoInstall bool
 }
 
 // newPkgManager takes ownership of storage, which must be the
 // idepkg.StoragePartition partition so every host shares the
 // "Yes, Always" answer.
 func newPkgManager(
-	pm idepkg.PackageManager, host string,
+	pm idepkg.PackageManager, host string, local idepkg.PackageManager,
 	n browserapi.Notifications, storage storageapi.Service,
 	wh *workspaceManagerHandler, scheduleNextTick func(func()) bool,
 	interrupter term.Interrupter, autoInstall bool,
@@ -73,6 +81,7 @@ func newPkgManager(
 	return &pkgManager{
 		pm:               pm,
 		host:             host,
+		local:            local,
 		n:                n,
 		wh:               wh,
 		storage:          storage,
@@ -136,7 +145,7 @@ func (m *localPkgManager) init(
 		opts...,
 	)
 	m.uc = idepkg.NewUpdateChecker(m.pkg)
-	m.pkgManager = newPkgManager(m.pkg, "", n, storage, wh,
+	m.pkgManager = newPkgManager(m.pkg, "", nil, n, storage, wh,
 		scheduleNextTick, interrupter, autoInstall)
 	m.uc.Start(context.Background())
 }
@@ -149,7 +158,9 @@ func (m *localPkgManager) Close() error {
 	return ret
 }
 
-// LibDir installs package via prompt if not installed yet
+// LibDir installs package via prompt if not installed yet. Once the
+// user declines a package it reports storageapi.ErrNotFound without
+// asking again.
 func (m *pkgManager) LibDir(ctx context.Context, pkgID string) (
 	sdkiterator.Iterator[string], error,
 ) {
@@ -161,6 +172,9 @@ func (m *pkgManager) LibDir(ctx context.Context, pkgID string) (
 	if err == nil || !errors.Is(err, idepkg.ErrNotInstalled) {
 		return it, err
 	}
+	if _, ok := m.declined.Load(pkgID); ok {
+		return nil, storageapi.ErrNotFound
+	}
 
 	version, err := m.getLatestVersion(ctx, pkgID)
 	if err != nil {
@@ -171,6 +185,7 @@ func (m *pkgManager) LibDir(ctx context.Context, pkgID string) (
 			return nil, storageapi.ErrNotFound
 		}
 		if errors.Is(err, storageapi.ErrNotFound) || errors.Is(err, document.ErrNotFound) {
+			m.notifyUnavailable(ctx, pkgID)
 			return nil, storageapi.ErrNotFound
 		}
 		return nil, fmt.Errorf("get latest version: %w", err)
@@ -200,6 +215,22 @@ func (m *pkgManager) LibDir(ctx context.Context, pkgID string) (
 // to install packages on.
 func (m *pkgManager) notifyUnsupported() {
 	_, _ = m.n.NotifyOnce(browserapi.LevelWarn, "%s", pkgrpc.UpdateHostMessage(m.host))
+}
+
+// notifyUnavailable tells the user that a package they rely on here
+// cannot be installed on the host. A package not installed here is not
+// one they expect, so its absence there falls back to PATH silently.
+func (m *pkgManager) notifyUnavailable(ctx context.Context, pkgID string) {
+	if m.local == nil {
+		return
+	}
+	_, inUse, err := m.local.PackageVersionInUse(ctx, pkgID)
+	if err != nil || !inUse {
+		return
+	}
+	_, _ = m.n.NotifyOnce(browserapi.LevelWarn,
+		"The %s package is not available for %s's platform. "+
+			"Install its tools on %s's PATH to use them there.", pkgID, m.host, m.host)
 }
 
 func (m *pkgManager) installLatest(
@@ -253,7 +284,12 @@ func (m *pkgManager) openInstallPrompt(pkgID string, version release.Version) (
 	}
 
 	ctx := context.Background()
-	gate := newInstallGate(func() { m.pending.Delete(pkgID) })
+	gate := newInstallGate(func(declined bool) {
+		if declined {
+			m.declined.Store(pkgID, struct{}{})
+		}
+		m.pending.Delete(pkgID)
+	})
 
 	m.scheduleNextTick(func() {
 		m.wh.focusEx().comp.Prompt(msg, []string{yes, yesAlways, no},
@@ -305,19 +341,19 @@ type installGate struct {
 	once      sync.Once
 	done      chan struct{}
 	err       error
-	onResolve func()
+	onResolve func(declined bool)
 }
 
 // newInstallGate builds a gate whose onResolve runs exactly once, after
 // the outcome is known, so callers can release per-package bookkeeping
 // without duplicating it across resolution paths.
-func newInstallGate(onResolve func()) *installGate {
+func newInstallGate(onResolve func(declined bool)) *installGate {
 	return &installGate{done: make(chan struct{}), onResolve: onResolve}
 }
 
-func (g *installGate) resolve(err error) {
+func (g *installGate) resolve(err error, declined bool) {
 	g.err = err
-	g.onResolve()
+	g.onResolve(declined)
 	close(g.done)
 }
 
@@ -327,7 +363,7 @@ func (g *installGate) resolve(err error) {
 func (g *installGate) install(run func() error) {
 	g.once.Do(func() {
 		go debug.CapturePanicReport(func() {
-			g.resolve(run())
+			g.resolve(run(), false)
 		})
 	})
 }
@@ -335,7 +371,7 @@ func (g *installGate) install(run func() error) {
 // cancel resolves the gate as declined, unless an install already
 // claimed it.
 func (g *installGate) cancel() {
-	g.once.Do(func() { g.resolve(storageapi.ErrNotFound) })
+	g.once.Do(func() { g.resolve(storageapi.ErrNotFound, true) })
 }
 
 type pkgManagerIterator struct {
@@ -401,4 +437,43 @@ func (l *pkgManagerIterator) Close() error {
 		return nil
 	}
 	return l.it.Close()
+}
+
+// extensionPackages serves the packages of a workspace's host to its
+// extensions. pkgManager.LibDir reports every way a lookup ends without
+// the package, each of which it already told the user about, as
+// storageapi.ErrNotFound; extensions see pkgapi.ErrNotInstalled.
+type extensionPackages struct {
+	pkgs idelsp.PkgManager
+}
+
+var _ pkgapi.Manager = extensionPackages{}
+
+func (p extensionPackages) LibDir(
+	ctx context.Context, pkgID string,
+) (sdkiterator.Iterator[string], error) {
+	it, err := p.pkgs.LibDir(ctx, pkgID)
+	if err != nil {
+		return nil, notInstalled(pkgID, err)
+	}
+	return notInstalledIterator{Iterator: it, pkgID: pkgID}, nil
+}
+
+type notInstalledIterator struct {
+	sdkiterator.Iterator[string]
+	pkgID string
+}
+
+func (it notInstalledIterator) Err() error {
+	if err := it.Iterator.Err(); err != nil {
+		return notInstalled(it.pkgID, err)
+	}
+	return nil
+}
+
+func notInstalled(pkgID string, err error) error {
+	if errors.Is(err, storageapi.ErrNotFound) {
+		return fmt.Errorf("%s: %w", pkgID, pkgapi.ErrNotInstalled)
+	}
+	return err
 }

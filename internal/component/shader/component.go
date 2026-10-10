@@ -93,6 +93,11 @@ func (c *Component) Draw(w term.Writer) {
 			w.SetCell(term.Coordinates{Y: y, X: x}, cell)
 		}
 	}
+	// Placements are cut to the cells still showing them, so they go
+	// over the shaded cells the way they went over the root's.
+	for _, img := range c.buf.Images() {
+		w.DrawImage(img)
+	}
 }
 
 // Resize satisfies tui.Component.

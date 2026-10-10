@@ -23,6 +23,8 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
+	"github.com/unstablebuild/rune-go-sdk/clipboard"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
 	"github.com/unstablebuild/rune-go-sdk/mouse"
@@ -132,7 +134,7 @@ func Handler(
 	for _, o := range opts {
 		o(sh)
 	}
-	sh.mouseDelegate = newMouseDelegate(&sh.grid, &c.messages)
+	sh.mouseDelegate = newMouseDelegate(&sh.grid, c)
 	mouse := mouse.New(sh.mouseDelegate)
 	sh.mouse = mouse
 	go debug.CapturePanicReport(sh.consumeIncoming)
@@ -287,8 +289,10 @@ func (s *dialogueHandler) Handle(ev term.Event) (exit, handled bool) {
 		if s.inputFocused {
 			s.inputFocused = false
 		}
-		if exit, handled := s.handleAttachmentChip(ev, dragging); handled {
-			return exit, true
+		chipExit, chipHandled := s.handleAttachmentChip(ev, dragging)
+		// Both run on bare motion so each can clear its own hover.
+		if codeHandled := s.handleCodeCopy(ev, dragging); chipHandled || codeHandled {
+			return chipExit, true
 		}
 		if ev.Key == term.MouseLeft {
 			s.messagesDragging = true
@@ -538,6 +542,46 @@ func (s *dialogueHandler) Handle(ev term.Event) (exit, handled bool) {
 	}
 
 	return
+}
+
+// handleCodeCopy resolves a mouse event over the messages area against
+// the copy icons under transcript code blocks. As with attachment chips,
+// bare motion drives the hover highlight and a left click copies.
+func (s *dialogueHandler) handleCodeCopy(ev term.Event, dragging bool) (handled bool) {
+	clip := s.comp.cfg.Clipboard
+	if clip == nil || dragging {
+		return false
+	}
+	offset := s.comp.MessagesPosition()
+	win := term.Coordinates{X: ev.MouseX - offset.X, Y: ev.MouseY - offset.Y}
+	// Content above or below the viewport is not on screen to be clicked.
+	pos := term.Coordinates{X: -1, Y: -1}
+	if win.X >= 0 && win.Y >= 0 && win.Y < s.comp.messages.SizeHeight() {
+		pos = s.mouseDelegate.toContent(win)
+	}
+	switch ev.Key {
+	case 0:
+		return s.comp.hoverCodeCopy(pos)
+	case term.MouseLeft:
+		code, ok := s.comp.codeCopyAt(pos)
+		if !ok {
+			return false
+		}
+		// The system clipboard may shell out and notifying is an RPC to the
+		// host; do not stall streaming on either.
+		notes := s.comp.cfg.Notifications
+		s.mu.Unlock()
+		err := clip.Copy(clipboard.DefaultRegisterID, clipboard.Data{Text: code})
+		if err == nil {
+			_, _ = notes.Notify(browserapi.LevelSuccess, "copied to clipboard")
+		}
+		s.mu.Lock()
+		if err != nil {
+			slog.Error("copy code block", "struct", "dialogue.handler", "error", err)
+		}
+		return true
+	}
+	return false
 }
 
 func (s *dialogueHandler) Selection() (string, bool) {

@@ -186,12 +186,13 @@ All of these are empty when nothing is focused or when the focused tab is not a 
 | `$WORKSPACE_HASH` | A short, stable hex digest of the workspace's URI. Two workspaces sharing a basename (for example a local repo and a remote checkout of the same project) produce distinct hashes so derived paths do not collide. |
 | `$WORKSPACE_URI` | Full URI of the focused workspace. |
 | `$WORKSPACE_PATH` | Path portion of `$WORKSPACE_URI`. |
+| `$RUNE_DATADIR` | The Rune data directory (by default `~/.rune`) on the machine that hosts the focused workspace, which is the remote machine for a remote workspace. |
 
 Every workspace variable resolves for every supported workspace type. Commands dispatched through an alias run inside the workspace's own filesystem, whether that workspace is local or remote over SSH, so the workspace URI is a meaningful identifier in all cases. A `worktreenew` alias keyed on `$RUNE_DATADIR/worktrees/$WORKSPACE-$WORKSPACE_HASH/$1` does the right thing whether you triggered it from a local repo or from a workspace mounted over SSH.
 
 ### Environment fallback
 
-Any `$VAR` that Rune does not recognise falls through to the process environment, so `$HOME`, `$SHELL`, `$RUNE_DATADIR`, and any other exported variable resolve as expected.
+Any `$VAR` that Rune does not recognise falls through to the process environment, so `$HOME`, `$SHELL`, and any other exported variable resolve as expected.
 
 ### Escaping
 

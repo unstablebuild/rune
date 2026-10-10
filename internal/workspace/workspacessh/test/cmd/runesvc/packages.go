@@ -40,8 +40,8 @@ const installSteps = 4
 // packages stands in for the package manager `rune -x` serves, which
 // cannot be built here: it links tree-sitter, and this binary is built
 // without CGO. Installing a package writes an executable named after it
-// into the data directory's bin directory, which is on PATH from
-// startup as `rune -x` puts it there.
+// into the data directory's bin directory, which the host environment
+// puts on PATH at startup.
 type packages struct {
 	pkgrpcpb.UnimplementedPackageManagerServer
 	binDir string
@@ -50,15 +50,8 @@ type packages struct {
 	installed map[string]string
 }
 
-func servePackages(grpcServer *grpc.Server, dataDir string) error {
-	if dataDir == "" {
-		dataDir = defaultDataDir()
-	}
-	binDir := filepath.Join(dataDir, "bin")
+func servePackages(grpcServer *grpc.Server, binDir string) error {
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
-		return err
-	}
-	if err := os.Setenv("PATH", binDir+":"+os.Getenv("PATH")); err != nil {
 		return err
 	}
 	pkgrpcpb.RegisterPackageManagerServer(grpcServer,
@@ -143,8 +136,9 @@ func (p *packages) Install(
 	}
 	return stream.Send(&pkgrpcpb.ChangeEvent{
 		Event: &pkgrpcpb.ChangeEvent_Notice{Notice: &pkgrpcpb.Notice{
-			Level:   uint32(browserapi.LevelSuccess),
-			Message: fmt.Sprintf("applied %s configuration updates", id),
+			Level: uint32(browserapi.LevelSuccess),
+			Message: fmt.Sprintf("applied %s configuration updates. "+
+				"All changes are in effect now: gui.env.", id),
 		}},
 	})
 }

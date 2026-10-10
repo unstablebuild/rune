@@ -67,7 +67,7 @@ func EditorEvents() []textapi.EventType {
 
 // Backing is the parser the index wraps: the full editor parser surface
 // for query delegation plus a factory for the batched query sessions
-// the indexer runs extraction through. syntax.Parser satisfies it.
+// the indexer runs extraction through. treesitter.Parser satisfies it.
 type Backing interface {
 	syntaxapi.Parser
 	// NewQuerySession returns a per-goroutine batched file querier.

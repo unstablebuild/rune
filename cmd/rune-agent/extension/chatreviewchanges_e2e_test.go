@@ -31,8 +31,8 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/iterator"
 	"github.com/unstablebuild/rune-go-sdk/term"
 
-	"unstable.build/rune/internal/ide/syntax"
 	"unstable.build/rune/internal/ide/syntax/grammarfixture"
+	"unstable.build/rune/internal/ide/syntax/treesitter"
 )
 
 // grammarPkgManager serves the prebuilt tree-sitter grammars checked in
@@ -50,7 +50,7 @@ func (p grammarPkgManager) LibDir(
 	}
 	files := []string{grammarfixture.Parser(dir)}
 	for _, e := range entries {
-		if e.IsDir() || e.Name() == syntax.ParserFilename {
+		if e.IsDir() || e.Name() == treesitter.ParserFilename {
 			continue
 		}
 		files = append(files, filepath.Join(dir, e.Name()))
@@ -74,7 +74,7 @@ func realParser(t *testing.T, languages ...string) syntaxapi.Parser {
 	require.NoError(t, err)
 	// Highlight never reads the workspace: it parses the content it is
 	// handed, so no file system is needed.
-	return syntax.NewParser(nil, grammarPkgManager{root: root}, wuri)
+	return treesitter.NewParser(nil, grammarPkgManager{root: root}, wuri)
 }
 
 // cellAt returns the cell at (x, y) of buf rendered by reviewBuffer.

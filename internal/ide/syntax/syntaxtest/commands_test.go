@@ -34,6 +34,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/component/comptest"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/ide/syntax/grammarfixture"
+	"unstable.build/rune/internal/ide/syntax/treesitter"
 	"unstable.build/rune/internal/text"
 	"unstable.build/rune/internal/text/vi"
 	"unstable.build/rune/internal/workspace"
@@ -249,6 +250,7 @@ func newTestComponentWithFile(
 	cfg.PkgManager = pkg
 	cfg.NoMaxSize = false
 	cfg.Syntax.ScheduleNextTick = scheduleNextTick
+	cfg.SyntaxTree = treesitter.New
 	uri, err := workspaceapi.CurrentUserHostURI(dir)
 	require.NoError(t, err)
 	scheme, err := workspace.NewFileScheme(context.Background(), config.NopConfig(), uri)

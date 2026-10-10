@@ -17,10 +17,12 @@
 package gui
 
 import (
+	"context"
 	"math"
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	tterm "unstable.build/rune/internal/term"
 	"unstable.build/rune/internal/term/gui/font"
 )
 
@@ -90,14 +92,17 @@ func (m *mouse) processMouse() []term.Event {
 	}
 
 	pos := m.clampedCoordinates()
+	// The cell coordinate alone loses where inside the cell the pointer
+	// is; carry it so consumers can snap positions to the nearer cell edge.
+	ctx := tterm.ContextWithSubCellFraction(context.Background(), m.subCellFraction(pos))
 
 	// Wheel events are accumulated and emitted as discrete line events,
 	// preserving the fractional remainder for the next frame.
 	if wheelY != 0 {
-		return m.wheelEvents(pos, wheelY)
+		return m.wheelEvents(ctx, pos, wheelY)
 	}
 
-	ev := term.Event{Type: term.EventMouse, MouseX: pos.X, MouseY: pos.Y}
+	ev := term.Event{Type: term.EventMouse, MouseX: pos.X, MouseY: pos.Y, Context: ctx}
 
 	if m.state.left {
 		ev.Key = term.MouseLeft
@@ -132,7 +137,7 @@ func (m *mouse) processMouse() []term.Event {
 // wheel event per whole line crossed. The remainder below one line is retained
 // for the next frame so high-resolution devices scroll smoothly instead of
 // jumping a full line per frame.
-func (m *mouse) wheelEvents(pos term.Coordinates, wheelY float64) []term.Event {
+func (m *mouse) wheelEvents(ctx context.Context, pos term.Coordinates, wheelY float64) []term.Event {
 	// A non-finite delta would poison the accumulator permanently (NaN
 	// propagates, Inf overflows the line count). Drop it and recover the
 	// accumulator if a prior frame already poisoned it.
@@ -174,10 +179,11 @@ func (m *mouse) wheelEvents(pos term.Coordinates, wheelY float64) []term.Event {
 	events := make([]term.Event, lines)
 	for i := range events {
 		events[i] = term.Event{
-			Type:   term.EventMouse,
-			Key:    key,
-			MouseX: pos.X,
-			MouseY: pos.Y,
+			Type:    term.EventMouse,
+			Key:     key,
+			MouseX:  pos.X,
+			MouseY:  pos.Y,
+			Context: ctx,
 		}
 	}
 	return events
@@ -212,6 +218,17 @@ func (m *mouse) clamp(pos term.Coordinates) term.Coordinates {
 
 func (m *mouse) calculateCoordinates() (ret term.Coordinates) {
 	return m.cellAt(float64(m.state.x), float64(m.state.y))
+}
+
+// subCellFraction reports where inside pos's cell the pointer sits. The
+// pixel position is clamped to the window so a pointer past an edge reads
+// as the edge cell's far side.
+func (m *mouse) subCellFraction(pos term.Coordinates) tterm.SubCellFraction {
+	pitch := m.fontManager.PixelX(1)
+	px := min(max(float64(m.state.x), 0), pitch*float64(m.width)-1)
+	return tterm.SubCellFraction{
+		X: (px - m.fontManager.PixelX(pos.X)) / pitch,
+	}
 }
 
 // cellAt converts a pixel position to unclamped cell coordinates.

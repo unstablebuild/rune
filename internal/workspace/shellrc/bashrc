@@ -1,0 +1,11 @@
+# Rune starts interactive bash shells with this file as their --rcfile in
+# place of ~/.bashrc: it reads ~/.bashrc and then applies Rune's
+# environment, which wins over it.
+__rune_shellrc=${BASH_SOURCE[0]%/*}
+if [ -r ~/.bashrc ]; then
+	. ~/.bashrc
+fi
+if [ -r "$__rune_shellrc/env.sh" ]; then
+	. "$__rune_shellrc/env.sh"
+fi
+unset __rune_shellrc

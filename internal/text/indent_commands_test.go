@@ -28,6 +28,15 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/cell"
+	"unstable.build/rune/internal/ide/syntax/treesitter"
+)
+
+var (
+	_ foldsService     = (*treesitter.Tree)(nil)
+	_ indentService    = (*treesitter.Tree)(nil)
+	_ selectionService = (*treesitter.Tree)(nil)
+	_ commentService   = (*treesitter.Tree)(nil)
+	_ syntaxService    = (*treesitter.Tree)(nil)
 )
 
 func TestSubscribeIndentCommands(t *testing.T) {
