@@ -19,12 +19,17 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"github.com/unstablebuild/tcell/v3"
 	"unstable.build/rune/internal/ide"
+	"unstable.build/rune/internal/ide/starlarkconfig"
+	"unstable.build/rune/internal/term/gui"
 	"unstable.build/rune/internal/term/gui/glassbar"
 )
 
@@ -111,10 +116,6 @@ func TestBootstrapHandlerDelegates(t *testing.T) {
 	require.True(t, handled)
 }
 
-// TestBootstrapHandlerSwapInner verifies that swapping the inner
-// handler causes Handle to forward events to the new inner. We cannot
-// build a real *ide.IDE in a unit test so we exercise the post-swap
-// state directly.
 func TestBootstrapHandlerSwapInner(t *testing.T) {
 	a := &fakeHandler{}
 	b := &fakeHandler{}
@@ -130,11 +131,6 @@ func TestBootstrapHandlerSwapInner(t *testing.T) {
 	require.Equal(t, 2, b.handleCalls)
 }
 
-// TestBootstrapHandlerResizesAfterSwap reproduces a panic where the
-// configured IDE's first Draw rendered against a zero-width buffer
-// because gui.Update only invokes Resize on layout change, not on every
-// tick. The handler must remember the last Resize dimensions and apply
-// them to the new inner immediately after the swap.
 func TestBootstrapHandlerResizesAfterSwap(t *testing.T) {
 	pre := &fakeHandler{}
 	post := &fakeHandler{}
@@ -156,11 +152,6 @@ func TestBootstrapHandlerResizesAfterSwap(t *testing.T) {
 	require.Equal(t, 40, post.lastResizeH)
 }
 
-// TestAttachGUIInstallsQuickMenu reproduces a bug where the native quick
-// menu only appeared after the first window resize: installing replays
-// the last frame, which stayed zero because SetFrame was only ever
-// reached from Resize. Attaching the GUI must publish the install, and
-// the install must reposition the bar itself.
 func TestAttachGUIInstallsQuickMenu(t *testing.T) {
 	var published []term.Event
 	bh := &bootstrapHandler{
@@ -187,9 +178,6 @@ func TestQuickMenuCellsWithoutButtons(t *testing.T) {
 		"an empty quick menu must not reserve a grid column")
 }
 
-// TestQuickMenuToggleCollapsesReservedColumn pins that hiding the bar
-// gives its reserved column back and clears the native buttons, and
-// that showing it restores both.
 func TestQuickMenuToggleCollapsesReservedColumn(t *testing.T) {
 	if !glassbar.Supported() {
 		t.Skip("no native quick menu on this platform")
@@ -215,9 +203,6 @@ func TestQuickMenuToggleCollapsesReservedColumn(t *testing.T) {
 	require.Equal(t, quickMenuColumnCells, b.quickMenuCells())
 }
 
-// TestQuickMenuUnavailableWithoutButtons keeps the toggle inert when
-// the user configured no buttons, so it can never reserve a column for
-// a bar that has nothing to show.
 func TestQuickMenuUnavailableWithoutButtons(t *testing.T) {
 	b := &bootstrapHandler{publishEvent: func(term.Event) bool { return true }}
 	require.False(t, b.quickMenuAvailable())
@@ -227,9 +212,6 @@ func TestQuickMenuUnavailableWithoutButtons(t *testing.T) {
 	require.Zero(t, b.quickMenuCells())
 }
 
-// TestLoadQuickMenuKeepsValidButtons pins that one malformed entry does
-// not cost the user the whole bar: config validation neutralises the bad
-// entry and still hands back a usable tree, so the valid buttons load.
 func TestLoadQuickMenuKeepsValidButtons(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.star")
 	require.NoError(t, os.WriteFile(path, []byte(
@@ -245,12 +227,6 @@ func TestLoadQuickMenuKeepsValidButtons(t *testing.T) {
 		Title: "New Terminal", Command: []string{"terminalnew"}}}, b.quickMenu)
 }
 
-// TestApplyInitialThemeAttrHoldsEventLoopLock pins that the theme seed
-// runs as an event-loop iteration. ide.New starts the cwd workspace
-// build on a background goroutine that reads the same shader-runner
-// state SetDefaultAttributes writes (via abortPendingBuild ->
-// stopLoading), so seeding the attributes off the loop lock is a data
-// race.
 func TestApplyInitialThemeAttrHoldsEventLoopLock(t *testing.T) {
 	b := newConfiguredBootstrapForEnvTest(t, configFilename,
 		"editor:\n  mode: modal\n", t.TempDir())
@@ -274,5 +250,113 @@ func TestApplyInitialThemeAttrHoldsEventLoopLock(t *testing.T) {
 	case <-done:
 	case <-time.After(10 * time.Second):
 		t.Fatal("applyInitialThemeAttr did not complete after the lock was released")
+	}
+}
+
+func TestGUIThemesLiveApplyHook(t *testing.T) {
+	const (
+		envKey    = "RUNE_TEST_LIVE_APPLY_THEMES_ENV"
+		envVal    = "/from/theme/package"
+		themeDiff = "gui:\n  themes:\n    livetest:\n" +
+			"      foreground: '#112233'\n      background: '#445566'\n"
+	)
+	livetest := map[string]any{"foreground": "#112233", "background": "#445566"}
+	writeYAML := func(gui string) func(t *testing.T, path string) {
+		return func(t *testing.T, path string) {
+			require.NoError(t, os.WriteFile(path, []byte("editor:\n  mode: modal\n"+gui), 0o644))
+		}
+	}
+
+	tests := []struct {
+		name        string
+		filename    string
+		initial     string
+		writeMerged func(t *testing.T, path string)
+		diff        string
+		withoutGUI  bool
+		wantPaths   [][]string
+	}{
+		{
+			name:        "yaml config",
+			filename:    configFilename,
+			initial:     "editor:\n  mode: modal\n",
+			writeMerged: writeYAML(themeDiff),
+			diff:        themeDiff,
+			wantPaths:   [][]string{{"gui", "themes"}},
+		},
+		{
+			name:     "starlark config",
+			filename: configStarFilename,
+			initial:  "config[\"terminal\"][\"initial_reservoir\"] = 2\n",
+			writeMerged: func(t *testing.T, path string) {
+				require.NoError(t, starlarkconfig.WriteManagedConfigFileAtomic(path, map[string]any{
+					"gui": map[string]any{"themes": map[string]any{"livetest": livetest}},
+				}))
+			},
+			diff:      themeDiff,
+			wantPaths: [][]string{{"gui", "themes"}},
+		},
+		{
+			name:        "no GUI attached",
+			filename:    configFilename,
+			initial:     "editor:\n  mode: modal\n",
+			writeMerged: writeYAML(themeDiff),
+			diff:        themeDiff,
+			withoutGUI:  true,
+		},
+		{
+			name:     "env and themes",
+			filename: configFilename,
+			initial:  "editor:\n  mode: modal\n",
+			writeMerged: writeYAML("gui:\n  env:\n    " + envKey + ": " + envVal + "\n" +
+				"  themes:\n    livetest:\n      foreground: '#112233'\n      background: '#445566'\n"),
+			diff: "gui:\n  env:\n    " + envKey + ": " + envVal + "\n" +
+				"  themes:\n    livetest:\n      foreground: '#112233'\n      background: '#445566'\n",
+			wantPaths: [][]string{{"gui", "env"}, {"gui", "themes"}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(envKey, "")
+			original := tcell.GetColorValues()
+			t.Cleanup(func() { tcell.SetColorValues(original) })
+
+			b := newConfiguredBootstrapForEnvTest(t, tt.filename, tt.initial, t.TempDir())
+			var startupThemes []string
+			if !tt.withoutGUI {
+				guiCfg, ok, err := getGUIConfig(b.config())
+				require.NoError(t, err)
+				require.True(t, ok)
+				g, err := gui.New(b, gui.WithColorThemes("",
+					getGUIColorThemes(b.browser(), guiCfg)))
+				require.NoError(t, err)
+				t.Cleanup(func() { _ = g.Close() })
+				b.attachGUI(g, false)
+				startupThemes = g.Themes()
+				require.NotEmpty(t, startupThemes, "the built-in themes are available at startup")
+			}
+			tt.writeMerged(t, b.configPath)
+
+			result, err := b.packageConfigMergeHook(mergeEvent(t, tt.diff))
+			require.NoError(t, err)
+			assert.ElementsMatch(t, tt.wantPaths, result.LivePaths)
+			if tt.withoutGUI {
+				return
+			}
+
+			require.Eventually(t, func() bool {
+				b.mu.Lock()
+				defer b.mu.Unlock()
+				return slices.Contains(b.g.Themes(), "livetest")
+			}, 10*time.Second, 10*time.Millisecond,
+				"a theme merged by a package install must be available without a restart")
+			b.mu.Lock()
+			defer b.mu.Unlock()
+			assert.Subset(t, b.g.Themes(), startupThemes,
+				"the reloaded set keeps the themes available at startup")
+			assert.Empty(t, b.g.Theme(), "installing a theme must not switch the active one")
+			_, err = b.g.SetTheme("livetest")
+			require.NoError(t, err)
+		})
 	}
 }

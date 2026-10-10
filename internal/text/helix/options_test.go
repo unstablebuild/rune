@@ -30,7 +30,6 @@ import (
 	"unstable.build/rune/internal/text"
 )
 
-// TestOptions pins that every option reaches the config it configures.
 func TestOptions(t *testing.T) {
 	cwd, err := workspaceapi.ParseURI("file:///tmp")
 	require.NoError(t, err)
@@ -116,8 +115,6 @@ func TestOptions(t *testing.T) {
 	}
 }
 
-// TestNopHelpers pins the inert defaults so a handler built without an
-// IDE around it never dereferences nil.
 func TestNopHelpers(t *testing.T) {
 	var bar nopBar
 	bar.SetStatus("x", term.Attributes{})
@@ -131,7 +128,6 @@ func TestNopHelpers(t *testing.T) {
 	require.NoError(t, noti.UpdateNotificationProgress("id", "msg", 1, 2))
 }
 
-// TestConfiguredBehaviour drives the options that change how keys act.
 func TestConfiguredBehaviour(t *testing.T) {
 	t.Run("auto pair closes brackets", func(t *testing.T) {
 		hx, buf, _ := newHelix(t, "", term.Coordinates{}, WithAutoPair(true))

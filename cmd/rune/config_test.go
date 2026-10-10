@@ -32,13 +32,6 @@ import (
 	"unstable.build/rune/internal/term/gui"
 )
 
-// TestIDEConfigOverlaySubscriptResolvesDefaultTree is a regression test for
-// ide.Config decoding user configs against a bare `config = {}` default
-// instead of the full rune.star tree. An overlay-style user config that
-// mutates a nested default key (config["terminal"]["initial_reservoir"] = 2)
-// used to fail with `key "terminal" not in dict` on the gui.env load paths.
-// Requiring the DefaultConfig argument keeps every ide.Config caller on the
-// same baseline the running IDE uses.
 func TestIDEConfigOverlaySubscriptResolvesDefaultTree(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.star")
@@ -55,9 +48,6 @@ func TestIDEConfigOverlaySubscriptResolvesDefaultTree(t *testing.T) {
 	assert.Equal(t, 2, got)
 }
 
-// TestTelemetryEnabledFromUserConfig covers the opt-out path newAPIClient
-// depends on: telemetry ships enabled, and a user config that sets
-// telemetry.enabled to false turns it off.
 func TestTelemetryEnabledFromUserConfig(t *testing.T) {
 	dir := t.TempDir()
 	assert.True(t, ide.TelemetryEnabled(mustLoadConfig(t,
@@ -76,10 +66,6 @@ func mustLoadConfig(t *testing.T, path string) config.Config {
 	return cfg
 }
 
-// TestDefaultQuickMenuButtons guards the quick menu shipped in rune.star
-// against an entry that validation rejects, which would silently drop a
-// button at runtime. It compares parsed buttons against raw entries
-// rather than pinning the list, so editing the menu does not fail here.
 func TestDefaultQuickMenuButtons(t *testing.T) {
 	cfg, err := ide.Config(filepath.Join(t.TempDir(), "config.star"),
 		runeDefaultConfig())
@@ -191,8 +177,6 @@ func TestGetGUIAltModifier(t *testing.T) {
 	})
 }
 
-// TestGetGUIAltModifierUnconfigured asserts the contract through the real
-// config loader: a user config that never set the key reserves neither.
 func TestGetGUIAltModifierUnconfigured(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")

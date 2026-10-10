@@ -34,7 +34,6 @@ import (
 	"unstable.build/rune/internal/cell"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/handler"
-	"unstable.build/rune/internal/ide/syntax"
 	"unstable.build/rune/internal/text"
 	"unstable.build/rune/internal/text/registerhistory"
 	"unstable.build/rune/internal/text/registerset"
@@ -1598,8 +1597,6 @@ func (h *emacsHandler) log(level log.Level, msg string, args ...any) {
 	}
 	log.WithField(logging.KeyClass, "emacs.handler").Logf(level, msg, args...)
 }
-
-var _ foldsService = (*syntax.Tree)(nil)
 
 type foldsService interface {
 	FoldsFrom(pos term.Coordinates) (iterator.Iterator[term.Range], bool)

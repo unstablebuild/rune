@@ -17,12 +17,14 @@
 package gui
 
 import (
+	"context"
 	"image"
 	"image/draw"
 	"math"
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"unstable.build/rune/internal/cell"
 	"unstable.build/rune/internal/term/gui/font"
 )
 
@@ -58,11 +60,12 @@ type placement struct {
 }
 
 // resolvePlacement computes img's pixel geometry within a dst of
-// bounds, reporting false when the placement paints nothing.
+// bounds, moved down by shift pixels along with the cells it covers,
+// reporting false when the placement paints nothing.
 func resolvePlacement(
-	img term.Image, m *font.Manager, bounds image.Rectangle,
+	img term.Image, m *font.Manager, bounds image.Rectangle, shift int,
 ) (placement, bool) {
-	visible := img.Visible()
+	visible := pixelSize(m).Covered(img)
 	src := cropRect(img)
 	if visible.Empty() || src.Empty() {
 		return placement{}, false
@@ -75,11 +78,12 @@ func resolvePlacement(
 	if img.Fit == term.ImageFitContain {
 		area = containRect(src, area)
 	}
-	area = area.Add(img.Offset)
+	down := image.Pt(0, shift)
+	area = area.Add(img.Offset).Add(img.RasterOffset).Add(down)
 	if area.Empty() {
 		return placement{}, false
 	}
-	clip := cellRectToPixels(visible, m).
+	clip := cellRectToPixels(visible, m).Add(down).
 		Intersect(area).Intersect(bounds)
 	if clip.Empty() {
 		return placement{}, false
@@ -87,12 +91,25 @@ func resolvePlacement(
 	return placement{src: src, area: area, clip: clip}, true
 }
 
+// pixelSize is the size of the font manager's cell, which is what the
+// frame's writer places images moved by pixels with, so that they land
+// on the cells the renderer paints them on.
+func pixelSize(m *font.Manager) cell.PixelSize {
+	return cell.PixelSize{Width: m.PixelX(1), Height: m.PixelY(1)}
+}
+
+// frameContext returns ctx for the writer a frame is drawn into.
+func frameContext(ctx context.Context, m *font.Manager) context.Context {
+	return cell.ContextWithPixelSize(ctx, pixelSize(m))
+}
+
 // drawOne paints one placement and reports the pixel rectangle it
-// covered, which is empty when the placement painted nothing.
+// covered, which is empty when the placement painted nothing. shift
+// moves it down as resolvePlacement does.
 func (l *imageLayer) drawOne(
-	dst *ebiten.Image, img term.Image, m *font.Manager,
+	dst *ebiten.Image, img term.Image, m *font.Manager, shift int,
 ) image.Rectangle {
-	p, ok := resolvePlacement(img, m, dst.Bounds())
+	p, ok := resolvePlacement(img, m, dst.Bounds(), shift)
 	if !ok {
 		return image.Rectangle{}
 	}
@@ -198,16 +215,10 @@ func cropRect(img term.Image) image.Rectangle {
 	return img.Crop.Intersect(b)
 }
 
-// cellRectToPixels converts a right-exclusive cell rectangle to pixels.
-// It goes through the font manager rather than multiplying by the cell
-// size so that the cell overlap the glyph renderer applies is respected.
+// cellRectToPixels converts a right-exclusive cell rectangle to pixels,
+// with the overlap the glyph renderer applies to cells.
 func cellRectToPixels(r image.Rectangle, m *font.Manager) image.Rectangle {
-	return image.Rect(
-		int(math.Round(m.PixelX(r.Min.X))),
-		int(math.Round(m.PixelY(r.Min.Y))),
-		int(math.Round(m.PixelX(r.Max.X))),
-		int(math.Round(m.PixelY(r.Max.Y))),
-	)
+	return pixelSize(m).Pixels(r)
 }
 
 // containRect scales src uniformly to the largest rectangle that fits

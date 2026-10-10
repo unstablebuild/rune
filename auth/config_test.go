@@ -80,9 +80,6 @@ func TestDefaultConfigSignupURL(t *testing.T) {
 	assert.Equal(t, staging, DefaultNativeConfig(api).SignupURL)
 }
 
-// TestDefaultNativeConfigPackageKeyring guards the contract that the
-// config served to Rune clients advertises the package-signing
-// keyring so clients can rotate trust anchors without a new binary.
 func TestDefaultNativeConfigPackageKeyring(t *testing.T) {
 	api, err := url.Parse("https://api.rune.build")
 	require.NoError(t, err)
@@ -93,12 +90,6 @@ func TestDefaultNativeConfigPackageKeyring(t *testing.T) {
 	assert.Empty(t, DefaultM2MConfig().PackageKeyringArmored)
 }
 
-// TestDefaultNativeConfigTokenURL guards against a regression where
-// DefaultNativeConfig advertised a TokenURL on the wrong host: the
-// returned TokenURL must be derived from the api URL passed in (the
-// public URL ox-api advertises via -A), not from the dev default
-// baked into the binary. Otherwise prod ox-api would tell clients to
-// redeem tokens at api.unstable.build, which 404s in production.
 func TestDefaultNativeConfigTokenURL(t *testing.T) {
 	cases := []struct {
 		name string
@@ -126,10 +117,6 @@ func TestDefaultNativeConfigTokenURL(t *testing.T) {
 	}
 }
 
-// TestDefaultNativeConfigDeviceAuthURL guards the wire contract that
-// lets rune --headless sign in by code: the served config carries the
-// device authorization endpoint, and a config from an older server
-// without it still validates so old and new binaries interoperate.
 func TestDefaultNativeConfigDeviceAuthURL(t *testing.T) {
 	api, err := url.Parse("https://api.rune.build")
 	require.NoError(t, err)
@@ -159,5 +146,54 @@ func TestDefaultNativeConfigDeviceAuthURL(t *testing.T) {
 		fetched, err := FetchConfig(srvURL)
 		require.NoError(t, err)
 		assert.Empty(t, fetched.Endpoint.DeviceAuthURL)
+	})
+}
+
+func TestDefaultNativeConfigHeadlessClientID(t *testing.T) {
+	api, err := url.Parse("https://api.rune.build")
+	require.NoError(t, err)
+
+	t.Run("round-trips through json", func(t *testing.T) {
+		cfg := DefaultNativeConfig(api)
+		cfg.HeadlessClientID = "headless-client"
+		data, err := json.Marshal(cfg)
+		require.NoError(t, err)
+		assert.Contains(t, string(data), `"headless_client_id":"headless-client"`)
+		var decoded Config
+		require.NoError(t, json.Unmarshal(data, &decoded))
+		assert.Equal(t, "headless-client", decoded.HeadlessClientID)
+		assert.Equal(t, cfg.ClientID, decoded.ClientID,
+			"the desktop client is unchanged")
+	})
+
+	t.Run("carries the build's headless client", func(t *testing.T) {
+		assert.NotEmpty(t, HeadlessClientID)
+		assert.NotEqual(t, ClientID, HeadlessClientID,
+			"a desktop sign-in must never be granted as serve-only")
+		assert.Equal(t, HeadlessClientID, DefaultNativeConfig(api).HeadlessClientID)
+	})
+
+	t.Run("is never served empty", func(t *testing.T) {
+		saved := HeadlessClientID
+		t.Cleanup(func() { HeadlessClientID = saved })
+		HeadlessClientID = ""
+		_, err := ServeNativeConfig(log.StandardLogger(), api)
+		assert.Error(t, err)
+	})
+
+	t.Run("fetch accepts a config without it", func(t *testing.T) {
+		cfg := DefaultNativeConfig(api)
+		cfg.HeadlessClientID = ""
+		srv := httptest.NewServer(http.HandlerFunc(
+			func(w http.ResponseWriter, _ *http.Request) {
+				require.NoError(t, json.NewEncoder(w).Encode(cfg))
+			}))
+		defer srv.Close()
+
+		srvURL, err := url.Parse(srv.URL)
+		require.NoError(t, err)
+		fetched, err := FetchConfig(srvURL)
+		require.NoError(t, err)
+		assert.Empty(t, fetched.HeadlessClientID)
 	})
 }

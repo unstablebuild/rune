@@ -410,10 +410,6 @@ func TestLoadGitignore(t *testing.T) {
 	})
 }
 
-// TestHiddenBaseMatcher exercises the standalone Matcher returned
-// by HiddenBaseMatcher. The matcher must accept any path whose
-// basename starts with a dot and reject every other path,
-// regardless of whether the path has intermediate components.
 func TestHiddenBaseMatcher(t *testing.T) {
 	m := HiddenBaseMatcher()
 

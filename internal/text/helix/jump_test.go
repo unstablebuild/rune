@@ -25,9 +25,6 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 )
 
-// TestGotoWord pins goto_word's candidate set and label order. Helix
-// walks outward from the caret, so the word the caret sits on is never
-// offered a label, and only runs of at least two word characters are.
 func TestGotoWord(t *testing.T) {
 	const two = "alpha beta\ngamma delta"
 	runMotionCases(t, []motionCase{
@@ -73,8 +70,6 @@ func TestGotoWord(t *testing.T) {
 	})
 }
 
-// TestGotoWordAbortsRestoreNormalMode pins that a cancelled goto_word
-// hands the next key back to the normal-mode table instead of eating it.
 func TestGotoWordAbortsRestoreNormalMode(t *testing.T) {
 	hx, _, _ := newHelix(t, "alpha beta", term.Coordinates{})
 	send(t, hx, append(keys("gw"), namedKey(term.KeyEsc))...)
@@ -83,9 +78,6 @@ func TestGotoWordAbortsRestoreNormalMode(t *testing.T) {
 	assert.Equal(t, term.Coordinates{X: 4}, hx.CursorAtScroll())
 }
 
-// TestGotoWordLabelsAreDrawn pins that the two label characters overwrite
-// the start of each candidate, which is the only thing that makes the
-// jump addressable.
 func TestGotoWordLabelsAreDrawn(t *testing.T) {
 	hx, _, _ := newHelix(t, "alpha beta\ngamma delta", term.Coordinates{})
 	hx.ShowCommandBar(false)

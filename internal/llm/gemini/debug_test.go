@@ -28,8 +28,6 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
 )
 
-// TestDebugTransportPreservesBody verifies the debug round-tripper logs but
-// leaves the request/response bodies intact for the caller.
 func TestDebugTransportPreservesBody(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -50,8 +48,6 @@ func TestDebugTransportPreservesBody(t *testing.T) {
 	assert.Equal(t, `{"out":2}`, string(got))
 }
 
-// TestDebugHTTPStreamsEndToEnd verifies enabling DebugHTTP does not break the
-// streaming completion path (the response body must not be drained eagerly).
 func TestDebugHTTPStreamsEndToEnd(t *testing.T) {
 	chunks := []string{
 		`{"candidates":[{"content":{"role":"model","parts":[{"text":"hi"}]},"finishReason":"STOP"}]}`,

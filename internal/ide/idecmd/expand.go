@@ -52,8 +52,11 @@ func expandTarget(
 			}
 			return "", false
 		})
-		expanded := cmdenv.ExpandBody(
+		expanded, err := cmdenv.ExpandBody(
 			cmdenv.WithCommandSubstitution(ctx), rest, envOSFallback)
+		if err != nil {
+			return nil, nil, err
+		}
 		return []string{head, expanded}, referenced, nil
 	}
 	tokens := command.SplitCommandLine(target)

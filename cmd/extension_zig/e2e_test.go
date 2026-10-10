@@ -61,7 +61,7 @@ func TestE2EZlsLoggingConfigReachesProcess(t *testing.T) {
 			"log_level": "debug",
 		},
 	})
-	err = initializeZigRoot(t.Context(), scheme, scheme, newFakeNotifications(), mgr, nil, cfg,
+	err = initializeZigRoot(t.Context(), scheme, scheme, newFakeNotifications(), mgr, &langext.Tools{}, cfg,
 		langext.Root{Dir: dir, URI: rootURI})
 	require.NoError(t, err)
 
@@ -73,11 +73,6 @@ func TestE2EZlsLoggingConfigReachesProcess(t *testing.T) {
 	}, 5*time.Second, 20*time.Millisecond, "zls did not write debug logs to stderr")
 }
 
-// TestE2E_ZlsBringUp drives the extension's zlsInitializeParams against
-// a real zls serving the testdata project: hover answers about the
-// fixture symbol and definition resolves across files, proving the
-// initialization options (command, zig_exe_path) and the workspace
-// folder registration reach the server intact.
 func TestE2E_ZlsBringUp(t *testing.T) {
 	t.Parallel()
 	zlsBin := findZlsBin(t)
@@ -170,12 +165,6 @@ func TestE2E_ZlsBringUp(t *testing.T) {
 			"publishDiagnostics capability reached zls")
 }
 
-// TestE2E_BuildOnSaveDiagnostics proves the build-on-save pipeline end
-// to end: the fixture's build.zig declares a "check" step (so zls
-// auto-enables build-on-save without any explicit config), and a saved
-// type error at a cross-file call site — invisible to ast-check, which
-// has no cross-file semantics — comes back as a pushed diagnostic
-// produced by the real `zig build` check run.
 func TestE2E_BuildOnSaveDiagnostics(t *testing.T) {
 	t.Parallel()
 	zlsBin := findZlsBin(t)
@@ -390,9 +379,6 @@ func selectPickerTitle(t *testing.T, picker lspcmd.CodeActionPicker, wantTitle s
 	picker.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
 }
 
-// TestE2E_ZigCodeActions drives the registered `zig` command tree
-// against a real zls: routing, kind filtering, the picker, and edit
-// application are all exercised end to end.
 func TestE2E_ZigCodeActions(t *testing.T) {
 	t.Parallel()
 
@@ -648,7 +634,6 @@ func textOffset(text string, line, char int) int {
 	return min(off+char, len(text))
 }
 
-// TestE2E_ZigHandlerVersion runs `zig version` against a real zig.
 func TestE2E_ZigHandlerVersion(t *testing.T) {
 	zigBin := findZigBin(t)
 	dir := t.TempDir()

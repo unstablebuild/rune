@@ -25,12 +25,6 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term/graphemecluster"
 )
 
-// TestMayExtendClusterNeverRejectsAContinuation sweeps every assignable
-// codepoint against a set of bases chosen to activate each stateful
-// UAX #29 rule. mayExtendCluster gates the full segmentation probe in
-// mergeContinuation, so a false negative would silently split a
-// grapheme cluster across two cells; a false positive only costs the
-// probe it was meant to avoid.
 func TestMayExtendClusterNeverRejectsAContinuation(t *testing.T) {
 	t.Parallel()
 
@@ -79,9 +73,6 @@ func TestMayExtendClusterNeverRejectsAContinuation(t *testing.T) {
 	}
 }
 
-// TestMergeContinuationClusters pins the end-to-end behaviour the filter
-// protects: a cluster typed one codepoint at a time must land in a
-// single cell.
 func TestMergeContinuationClusters(t *testing.T) {
 	t.Parallel()
 

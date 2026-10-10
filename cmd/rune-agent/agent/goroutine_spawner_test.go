@@ -435,12 +435,6 @@ func TestGoroutineSpawner_Run_streams_events(t *testing.T) {
 	assert.True(t, hasDone, "should stream EventDone")
 }
 
-// TestGoroutineSpawner_Run_no_tool_deadline verifies that tool
-// executions inside a spawned sub-agent run without any artificial
-// deadline. This is the fix for RUNE-AGENT-70: a tool call that
-// blocks on user input (e.g. bash waiting for an ideauthorizer
-// permission prompt) must not be aborted by a rune-agent-imposed
-// sub-agent timeout. The caller's cancellation must still propagate.
 func TestGoroutineSpawner_Run_no_tool_deadline(t *testing.T) {
 	cfg := NewConfig([]Definition{
 		{
@@ -494,10 +488,6 @@ func TestGoroutineSpawner_Run_no_tool_deadline(t *testing.T) {
 		"sub-agent tool context must not carry a rune-agent-imposed deadline")
 }
 
-// TestGoroutineSpawner_Run_caller_cancel_propagates verifies that
-// cancelling the caller context still terminates the sub-agent run.
-// Removing the sub-agent timeout must not break cancellation — only
-// explicit caller/session cancellation ends the run.
 func TestGoroutineSpawner_Run_caller_cancel_propagates(t *testing.T) {
 	cfg := NewConfig([]Definition{
 		{
@@ -762,11 +752,6 @@ You are a planner.`
 	})
 }
 
-// TestGoroutineSpawner_Run_seeds_initial_messages verifies that
-// RunRequest.InitialMessages are pre-pended to the child dialogue after
-// the child agent's own system prompt and before the current sub-agent
-// Message is appended by Agent.Run. This is the seeding mechanism used
-// by skills that opt into parent-dialogue context sharing.
 func TestGoroutineSpawner_Run_seeds_initial_messages(t *testing.T) {
 	cfg := NewConfig([]Definition{
 		{ID: "agent", Name: "Agent", Model: "test-model", AllowAny: true},

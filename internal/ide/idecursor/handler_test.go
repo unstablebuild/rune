@@ -187,13 +187,6 @@ func TestWithHistoryToleratesAlreadyExistsOnCreate(t *testing.T) {
 	assert.Equal(t, ws.String(), doc.WorkspaceURI)
 }
 
-// TestHandleSkipsSkipListedURI reproduces the ctrl-i/o file-explorer
-// bug: the file explorer's pseudo-resource (memory:///fexplorer) must
-// never enter the cursor history. Recording it would let a later
-// prev/next navigation call opener.Open on the pseudo-URI, which
-// re-registers the explorer's per-file commands ("command already
-// registered") and re-opens the swap-locked buffer ("file is already
-// open by another process").
 func TestHandleSkipsSkipListedURI(t *testing.T) {
 	ws, err := workspaceapi.ParseURI("file:///workspace")
 	require.NoError(t, err)
@@ -226,10 +219,6 @@ func TestHandleSkipsSkipListedURI(t *testing.T) {
 	}
 }
 
-// TestHandleSkipsURIsUnderSkippedPrefix covers pseudo-buffers that mint a
-// resource per invocation, such as the :gitshow diff popup: the skip
-// entry names the namespace because the individual URIs cannot be
-// enumerated up front.
 func TestHandleSkipsURIsUnderSkippedPrefix(t *testing.T) {
 	ws, err := workspaceapi.ParseURI("file:///workspace")
 	require.NoError(t, err)

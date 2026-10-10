@@ -2009,6 +2009,7 @@ func (vi *viHandlerImpl) handleVisual(ev term.Event) (quit, handled bool) {
 }
 
 func (vi *viHandlerImpl) handleMoveToCharacter(mode moveMode, ev term.Event) (exit, handled bool) {
+	prevMode := vi.currMode
 	switch ev.Mod {
 	case 0:
 		switch ev.Type {
@@ -2042,6 +2043,10 @@ func (vi *viHandlerImpl) handleMoveToCharacter(mode moveMode, ev term.Event) (ex
 				vi.moveChar = ev.Ch
 			}
 			vi.setNormalMode()
+			switch prevMode {
+			case visualMode, visualLineMode, visualBlockMode:
+				vi.setMode(prevMode)
+			}
 			handled = true
 		default:
 			vi.setMode(vi.mode())
@@ -2126,8 +2131,14 @@ func (vi *viHandlerImpl) handleMetaNormal(ev term.Event) (quit, handled, done bo
 				vi.selectWordOperatorRange(before, after, count, ev.Ch == 'W')
 			}
 		case 'b', 'B':
-			if before.Y > after.Y {
-				vi.cursor.MoveLeftStartWord()
+			// After f/t/F/T, b is the character to find, not a word motion.
+			if prevMode == moveNone {
+				if before.Y > after.Y {
+					vi.cursor.MoveLeftStartWord()
+					after = vi.cursor.CursorAtScroll()
+				}
+				// b is exclusive, so the character under the cursor survives.
+				vi.cursor.SelectRange(after, before)
 			}
 		default:
 			if before.Y != after.Y {
@@ -3254,7 +3265,12 @@ func (vi *viHandlerImpl) handleDelete(ev term.Event) (quit, handled bool) {
 	}
 
 	var done bool
-	quit, handled, done = vi.handleMetaNormal(ev)
+	if vi.selectChangeWord(ev) {
+		handled = true
+		done = true
+	} else {
+		quit, handled, done = vi.handleMetaNormal(ev)
+	}
 	if !done {
 		return
 	}
@@ -3267,6 +3283,42 @@ func (vi *viHandlerImpl) handleDelete(ev term.Event) (quit, handled bool) {
 		vi.setNormalMode()
 	}
 	return
+}
+
+// selectChangeWord selects the range a `cw`/`cW` operator acts on and reports
+// whether the event is such a motion. The range runs from the cursor to the
+// end of the count-th Vim word end: a word end under the cursor counts as the
+// first end, so `cw` there covers just the cell under it. Blank and missing
+// cells return false so the caller falls back to the plain `w` motion.
+func (vi *viHandlerImpl) selectChangeWord(ev term.Event) bool {
+	if !vi.deleteInsert || vi.moveMode != moveNone || ev.Mod != 0 ||
+		(ev.Ch != 'w' && ev.Ch != 'W') {
+		return false
+	}
+	cell, ok := vi.cursor.Cell()
+	if !ok || text.IsWordObjectBlank(cell.Ch) {
+		return false
+	}
+	bigWord := ev.Ch == 'W'
+	before := vi.cursorAtScroll()
+	vi.cursor.Select()
+	count := vi.motionCount()
+	if vi.cursor.AtWordObjectEnd(bigWord) {
+		count--
+	}
+	for i := 0; i < count; i++ {
+		prev := vi.cursor.CursorAtScroll()
+		if !vi.cursor.MoveRightWordObjectEnd(bigWord) &&
+			vi.cursor.CursorAtScroll() == prev {
+			break
+		}
+	}
+	if vi.cursor.CursorAtScroll() == before {
+		// The cursor never moved, so the anchor selection is empty while
+		// Vim still changes the word-end cell under it.
+		vi.cursor.SelectRange(before, term.Coordinates{Y: before.Y, X: before.X + 1})
+	}
+	return true
 }
 
 func (vi *viHandlerImpl) handleGo(ev term.Event) (quit, handled bool) {

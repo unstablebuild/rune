@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -30,6 +31,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/blue/iterator"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/clipboard"
@@ -464,7 +466,7 @@ func assertDefaultConfig(t *testing.T, cfg *ideConfig) {
 func TestConfigDefault(t *testing.T) {
 	ret := new(ideConfig)
 	initDefaultConfig(ret, browser.NopWallpaper(),
-		term.RingBell, term.ScheduleNextTick, "", "")
+		term.RingBell, term.ScheduleNextTick, "")
 	assertDefaultConfig(t, ret)
 }
 
@@ -805,9 +807,6 @@ func TestAuthorizerAutoAuthorize(t *testing.T) {
 	}
 }
 
-// TestTerminalModalDefaultFromEditorMode asserts that when terminal.modal
-// is not set its default follows editor.mode: modal editors default to
-// modal terminals, modeless to modeless, and exo follows its fallback.
 func TestTerminalModalDefaultFromEditorMode(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -855,10 +854,6 @@ func TestTerminalModalDefaultFromEditorMode(t *testing.T) {
 	assert.False(t, cfg.terminalModal())
 }
 
-// TestEditorModeNormalizesDeprecatedAliases pins that editorMode()
-// resolves the deprecated "modeless" and "modal" aliases to "standard"
-// and "vim", while the canonical modes pass through and an unknown mode
-// falls back to vim.
 func TestEditorModeNormalizesDeprecatedAliases(t *testing.T) {
 	for _, tc := range []struct {
 		mode string
@@ -883,9 +878,6 @@ func TestEditorModeNormalizesDeprecatedAliases(t *testing.T) {
 	}
 }
 
-// TestHelixIsAModalEditorMode pins that helix travels the same gating
-// paths as vi: it is a legal editor.exo.fallback, and the console input
-// line and the terminal keymap default to modal for it.
 func TestHelixIsAModalEditorMode(t *testing.T) {
 	t.Parallel()
 
@@ -934,11 +926,6 @@ func TestHelixIsAModalEditorMode(t *testing.T) {
 	})
 }
 
-// TestDebuggerConfigsTemplates asserts that debuggerConfigs reads the
-// optional launch/attach argument templates under debugger.<lang>,
-// leaves them nil when absent (so the adapter falls back to its
-// built-in defaults), and records a parse error for a non-string
-// template value.
 func TestDebuggerConfigsTemplates(t *testing.T) {
 	t.Parallel()
 
@@ -1013,11 +1000,6 @@ func TestDebuggerConfigsTemplates(t *testing.T) {
 	})
 }
 
-// TestDebuggerConfigsConnectCommand asserts that a connect:// adapter
-// command is validated at config load: the remainder must be a
-// host:port endpoint and the command must carry no extra arguments,
-// so a typo surfaces as a config error instead of a dial failure at
-// session creation.
 func TestDebuggerConfigsConnectCommand(t *testing.T) {
 	t.Parallel()
 
@@ -1056,9 +1038,6 @@ func TestDebuggerConfigsConnectCommand(t *testing.T) {
 	})
 }
 
-// TestHighlightTabCharEmptyDisables asserts that an explicitly empty
-// focus_tab_highlight_char value disables the highlight (returns 0)
-// while an absent key falls back to the browser default.
 func TestHighlightTabCharEmptyDisables(t *testing.T) {
 	def := browser.DefaultConfig().FocusTabHighlightChar
 
@@ -1091,9 +1070,6 @@ func TestHighlightTabCharEmptyDisables(t *testing.T) {
 	assert.Equal(t, '▁', cfg.workspaceHighlightTabChar())
 }
 
-// TestTabOverrideIcon asserts browser.tab_override_icon parses
-// correctly: absent → 0 (no override), empty → 0, non-empty → first
-// rune.
 func TestTabOverrideIcon(t *testing.T) {
 	// key absent → 0
 	cfg := &ideConfig{cfg: map[string]any{
@@ -1116,8 +1092,6 @@ func TestTabOverrideIcon(t *testing.T) {
 	assert.Equal(t, '●', cfg.tabOverrideIcon())
 }
 
-// TestWorkspaceHome asserts workspace.home parses correctly: absent →
-// "~", empty → "~", non-empty → the configured path.
 func TestWorkspaceHome(t *testing.T) {
 	// key absent → default "~"
 	cfg := &ideConfig{cfg: map[string]any{
@@ -1190,7 +1164,7 @@ func TestConfigSetting(t *testing.T) {
 
 	var cfg ideConfig
 	initConfig(&cfg, m, browser.NopWallpaper(),
-		term.RingBell, term.ScheduleNextTick, "", "")
+		term.RingBell, term.ScheduleNextTick, "")
 	cfg.storage = storagestub.NewInMemoryService()
 
 	assert.Equal(t, 4, cfg.editorTabspaces())
@@ -1390,9 +1364,18 @@ func TestConfigSetting(t *testing.T) {
 	statusBar := cfg.statusBarEnabled()
 	assert.True(t, statusBar)
 
-	statusBarCfg := cfg.statusBarConfig(workspaceapi.URI{}, nil, nil)
+	statusBarCfg := cfg.statusBarConfig(workspaceapi.URI{}, nil, nil, nil)
 	assert.NotNil(t, statusBarCfg.ScheduleNextTick)
 	statusBarCfg.ScheduleNextTick = nil
+	// Images are cached in a partition of their own.
+	require.NotNil(t, statusBarCfg.Storage)
+	require.NoError(t, statusBarCfg.Storage.Set(context.Background(), "image", map[string]any{"a": 1}))
+	images, err := cfg.storage.Partition("status_bar_images")
+	require.NoError(t, err)
+	var doc map[string]any
+	require.NoError(t, images.Get(context.Background(), "image", &doc))
+	assert.ErrorIs(t, cfg.storage.Get(context.Background(), "image", &doc), storageapi.ErrNotFound)
+	statusBarCfg.Storage = nil
 	assert.Equal(t, text.StatusBarConfig{
 		BackgroundColor: term.ColorMaroon,
 		Layout: []text.StatusBarComponent{
@@ -1674,7 +1657,7 @@ func TestLoadEmbededConfig(t *testing.T) {
 	var cfg ideConfig
 	err := loadConfig(&cfg, "nonExistent", browser.NopWallpaper(),
 		DefaultConfig{src: "config = {}"},
-		term.RingBell, term.ScheduleNextTick, "")
+		term.RingBell, term.ScheduleNextTick)
 	require.NoError(t, err)
 }
 
@@ -1688,11 +1671,27 @@ func TestTutorialFilesDecoded(t *testing.T) {
 		},
 		errors: map[string]error{},
 	}
-	got := cfg.tutorialFiles()
+	got := cfg.tutorialFiles("/data")
 	require.Equal(t, 2, len(got))
 	assert.Equal(t, "/etc/x.star", got["basics"])
 	assert.Equal(t, "/etc/y.star", got["advanced"])
 	assert.Empty(t, cfg.errors)
+}
+
+func TestTutorialFilesExpandDataDir(t *testing.T) {
+	cfg := ideConfig{
+		cfg: map[string]any{
+			"tutorials": map[string]any{
+				"pkg":   "$RUNE_DATADIR/pkg/fuzzy_search/1/fuzzy_search.star",
+				"other": "$HOME/x.star",
+			},
+		},
+		errors: map[string]error{},
+	}
+	assert.Equal(t, map[string]string{
+		"pkg":   "/data/pkg/fuzzy_search/1/fuzzy_search.star",
+		"other": "$HOME/x.star",
+	}, cfg.tutorialFiles("/data"))
 }
 
 func TestTutorialFilesMissingReturnsNil(t *testing.T) {
@@ -1700,7 +1699,7 @@ func TestTutorialFilesMissingReturnsNil(t *testing.T) {
 		cfg:    map[string]any{},
 		errors: map[string]error{},
 	}
-	assert.Nil(t, cfg.tutorialFiles())
+	assert.Nil(t, cfg.tutorialFiles("/data"))
 	assert.Empty(t, cfg.errors)
 }
 
@@ -1711,7 +1710,7 @@ func TestTutorialFilesWrongRootTypeRecordsError(t *testing.T) {
 		},
 		errors: map[string]error{},
 	}
-	assert.Nil(t, cfg.tutorialFiles())
+	assert.Nil(t, cfg.tutorialFiles("/data"))
 	require.NotNil(t, cfg.errors["tutorials"])
 	assert.Contains(t, cfg.errors["tutorials"].Error(), "invalid type")
 }
@@ -1726,7 +1725,7 @@ func TestTutorialFilesEntryWrongTypeRecordsError(t *testing.T) {
 		},
 		errors: map[string]error{},
 	}
-	got := cfg.tutorialFiles()
+	got := cfg.tutorialFiles("/data")
 	assert.Equal(t, map[string]string{"good": "/etc/ok.star"}, got)
 	require.NotNil(t, cfg.errors["tutorials.bad"])
 	assert.Contains(t, cfg.errors["tutorials.bad"].Error(),
@@ -1749,7 +1748,7 @@ func TestShellMaxHistoryFromConfig(t *testing.T) {
 	var cfg ideConfig
 	err = loadConfig(&cfg, f.Name(), browser.NopWallpaper(),
 		DefaultConfig{src: "config = {}"},
-		term.RingBell, term.ScheduleNextTick, "")
+		term.RingBell, term.ScheduleNextTick)
 	require.NoError(t, err)
 	assert.Equal(t, 7, cfg.consoleMaxHistory())
 }
@@ -1770,7 +1769,7 @@ func TestShellModalStartInsertFromConfig(t *testing.T) {
 	var cfg ideConfig
 	err = loadConfig(&cfg, f.Name(), browser.NopWallpaper(),
 		DefaultConfig{src: "config = {}"},
-		term.RingBell, term.ScheduleNextTick, "")
+		term.RingBell, term.ScheduleNextTick)
 	require.NoError(t, err)
 	assert.False(t, cfg.consoleModalStartInsert())
 }
@@ -1791,7 +1790,7 @@ func TestShellModalStartInsertDefaultsTrue(t *testing.T) {
 	var cfg ideConfig
 	err = loadConfig(&cfg, f.Name(), browser.NopWallpaper(),
 		DefaultConfig{src: "config = {}"},
-		term.RingBell, term.ScheduleNextTick, "")
+		term.RingBell, term.ScheduleNextTick)
 	require.NoError(t, err)
 	assert.True(t, cfg.consoleModalStartInsert())
 }
@@ -1812,7 +1811,7 @@ func TestConsolePromptFromConfig(t *testing.T) {
 	var cfg ideConfig
 	err = loadConfig(&cfg, f.Name(), browser.NopWallpaper(),
 		DefaultConfig{src: "config = {}"},
-		term.RingBell, term.ScheduleNextTick, "")
+		term.RingBell, term.ScheduleNextTick)
 	require.NoError(t, err)
 	assert.Equal(t, "rune> ", cfg.consolePrompt())
 	assert.Equal(t, "rune> ", cfg.consoleCfg().prompt)
@@ -1834,14 +1833,11 @@ func TestConsolePromptDefaultsEmpty(t *testing.T) {
 	var cfg ideConfig
 	err = loadConfig(&cfg, f.Name(), browser.NopWallpaper(),
 		DefaultConfig{src: "config = {}"},
-		term.RingBell, term.ScheduleNextTick, "")
+		term.RingBell, term.ScheduleNextTick)
 	require.NoError(t, err)
 	assert.Empty(t, cfg.consolePrompt())
 }
 
-// TestShellEditorModalFromEditorMode asserts consoleCfg().modal mirrors the
-// editor backing the console prompt: modal is modal, modeless is not, and
-// exo follows its configured fallback.
 func TestShellEditorModalFromEditorMode(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -1895,7 +1891,7 @@ command:
 	var cfg ideConfig
 	err = loadConfig(&cfg, f.Name(), browser.NopWallpaper(),
 		DefaultConfig{src: "config = {}"},
-		term.RingBell, term.ScheduleNextTick, "")
+		term.RingBell, term.ScheduleNextTick)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "alias cycle detected")
 	aliases, _ := cfg.parseAliasCommands()
@@ -1916,7 +1912,7 @@ editor:
 	var cfg ideConfig
 	err = loadConfig(&cfg, f.Name(), browser.NopWallpaper(),
 		DefaultConfig{src: "config = {}"},
-		term.RingBell, term.ScheduleNextTick, "")
+		term.RingBell, term.ScheduleNextTick)
 	require.NoError(t, err)
 	assert.Equal(t, 2, cfg.editorTabspaces())
 }
@@ -1935,7 +1931,7 @@ editor:
 	var cfg ideConfig
 	err = loadConfig(&cfg, f.Name(), browser.NopWallpaper(),
 		DefaultConfig{src: "config = {}"},
-		term.RingBell, term.ScheduleNextTick, "")
+		term.RingBell, term.ScheduleNextTick)
 	require.NoError(t, err)
 	assert.Equal(t, 2048, cfg.editorMaxSizeForSyntax())
 }
@@ -1969,7 +1965,7 @@ func TestEditorSwapDir(t *testing.T) {
 			var cfg ideConfig
 			err = loadConfig(&cfg, f.Name(), browser.NopWallpaper(),
 				DefaultConfig{src: "config = {}"},
-				term.RingBell, term.ScheduleNextTick, "")
+				term.RingBell, term.ScheduleNextTick)
 			require.NoError(t, err)
 
 			assert.Equal(t, tcase.want, cfg.editorSwapDir())
@@ -1998,7 +1994,7 @@ editor:
 	var cfg ideConfig
 	err = loadConfig(&cfg, f.Name(), browser.NopWallpaper(),
 		DefaultConfig{src: "config = {}"},
-		term.RingBell, term.ScheduleNextTick, "")
+		term.RingBell, term.ScheduleNextTick)
 	require.NoError(t, err)
 	assert.Equal(t, text.IndentConfig{
 		"yaml": text.IndentRuneSpace,
@@ -2006,9 +2002,6 @@ editor:
 	}, cfg.editorIndents())
 }
 
-// TestCommandKeyBindingLookup asserts that commandKeyBindingLookup
-// inverts the configured key bindings: each command line resolves to
-// its key and multi-command sequences map every line to the same key.
 func TestCommandKeyBindingLookup(t *testing.T) {
 	t.Parallel()
 	c := ideConfig{
@@ -2063,10 +2056,6 @@ func TestCommandKeyBindingLookupPrefersPrintableAlias(t *testing.T) {
 	assert.Empty(t, c.errors)
 }
 
-// TestCommandKeyBindingLookupPrefersSingleChord pins that a command bound
-// to both a single chord and a two-key sequence advertises the chord. A
-// focused terminal consumes prefix chords such as C-x as PTY input, so
-// surfacing the sequence would advertise a key the user cannot press.
 func TestCommandKeyBindingLookupPrefersSingleChord(t *testing.T) {
 	t.Parallel()
 	c := ideConfig{
@@ -2282,9 +2271,6 @@ func TestValidateQuickMenuAcceptsValidConfig(t *testing.T) {
 	assert.NoError(t, validateQuickMenu(map[string]any{"gui": map[string]any{}}))
 }
 
-// TestFileExplorerMinWidthConfig pins the default the handler falls
-// back to when editor.file_explorer is absent, so an unconfigured
-// install still gets a visible explorer on an empty workspace.
 func TestFileExplorerMinWidthConfig(t *testing.T) {
 	t.Parallel()
 	bare := ideConfig{cfg: map[string]any{}, errors: map[string]error{}}
@@ -2298,9 +2284,6 @@ func TestFileExplorerMinWidthConfig(t *testing.T) {
 	assert.Empty(t, set.errors)
 }
 
-// TestFileExplorerReadOnlyConfigDefaults pins the defaults for the
-// read-only knobs, so an install that never touches the block still
-// gets an editable explorer with a named way into and out of it.
 func TestFileExplorerReadOnlyConfigDefaults(t *testing.T) {
 	t.Parallel()
 	c := ideConfig{cfg: map[string]any{}, errors: map[string]error{}}
@@ -2314,8 +2297,6 @@ func TestFileExplorerReadOnlyConfigDefaults(t *testing.T) {
 	assert.Empty(t, c.errors)
 }
 
-// TestFileExplorerReadOnlyConfigOverrides verifies every read-only
-// knob is reachable from editor.file_explorer.
 func TestFileExplorerReadOnlyConfigOverrides(t *testing.T) {
 	t.Parallel()
 	c := ideConfig{cfg: map[string]any{"editor": map[string]any{
@@ -2336,9 +2317,6 @@ func TestFileExplorerReadOnlyConfigOverrides(t *testing.T) {
 	assert.Empty(t, c.errors)
 }
 
-// TestFileExplorerEditKeyInvalid records the error and keeps the
-// default rather than leaving the explorer with no way out of
-// read-only.
 func TestFileExplorerEditKeyInvalid(t *testing.T) {
 	t.Parallel()
 	for _, spec := range []string{"<nope>", "ab"} {
@@ -2349,5 +2327,51 @@ func TestFileExplorerEditKeyInvalid(t *testing.T) {
 		assert.Equal(t, term.KeyComb{Key: term.KeyEsc, Mod: term.ModShift},
 			c.fileExplorerEditKey())
 		assert.Contains(t, c.errors, "editor.file_explorer.edit_key")
+	}
+}
+
+func TestMetaOpenURLConfig(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name          string
+		cfg           map[string]any
+		wantCommand   string
+		wantClipboard bool
+		wantErr       bool
+	}{
+		{name: "unset", cfg: map[string]any{}},
+		{name: "system", cfg: map[string]any{"meta_open_url": "system"}},
+		{
+			name:          "clipboard",
+			cfg:           map[string]any{"meta_open_url": "clipboard"},
+			wantClipboard: true,
+		},
+		{
+			name:        "command",
+			cfg:         map[string]any{"meta_open_url": "browser $URL"},
+			wantCommand: "browser $URL",
+		},
+		{name: "blank", cfg: map[string]any{"meta_open_url": "  "}, wantErr: true},
+		{name: "not a string", cfg: map[string]any{"meta_open_url": 1}, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var opened bool
+			c := ideConfig{cfg: tc.cfg, errors: map[string]error{},
+				systemOpenURL: func(*url.URL) error { opened = true; return nil }}
+
+			got := c.metaOpenURL()
+
+			assert.Equal(t, tc.wantCommand, got.command)
+			assert.Equal(t, tc.wantClipboard, got.clipboard)
+			require.NotNil(t, got.system)
+			require.NoError(t, got.system(&url.URL{}))
+			assert.True(t, opened, "the system opener must be the IDE's")
+			if tc.wantErr {
+				assert.Contains(t, c.errors, "meta_open_url")
+			} else {
+				assert.Empty(t, c.errors)
+			}
+		})
 	}
 }

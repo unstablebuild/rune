@@ -76,8 +76,6 @@ func TestPluginHandlerTitle(t *testing.T) {
 	})
 }
 
-// TestWithoutBarCommand covers that the option drops the command from
-// the plugin's own bar while the status and elapsed components stay.
 func TestWithoutBarCommand(t *testing.T) {
 	cfg := defaultConfig()
 	WithoutBarCommand()(&cfg)
@@ -217,10 +215,6 @@ func TestPluginHandler(t *testing.T) {
 	}
 }
 
-// TestNewReturnsNilHandlerOnError pins the contract that a failed
-// build hands back no handler: callers close successful builds they
-// abandon, and closing a partially-initialized handler would
-// dereference its nil vte.
 func TestNewReturnsNilHandlerOnError(t *testing.T) {
 	t.Parallel()
 

@@ -23,9 +23,6 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// TestProtectedMatcherHomeAware asserts that the matcher rejects the
-// configured roots and their descendants but not prefix-sharing siblings
-// or same-named folders elsewhere in the tree.
 func TestProtectedMatcherHomeAware(t *testing.T) {
 	t.Parallel()
 	home := filepath.Join("/Users", "tester")
@@ -57,8 +54,6 @@ func TestProtectedMatcherHomeAware(t *testing.T) {
 	}
 }
 
-// TestProtectedDirMatcherNoRoots asserts that the matcher never matches
-// when no protected roots apply.
 func TestProtectedDirMatcherNoRoots(t *testing.T) {
 	t.Parallel()
 	m := protectedMatcher{base: "/work", roots: nil}

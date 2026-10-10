@@ -36,9 +36,6 @@ func (m *unionMember) Handle(ev term.Event) (bool, bool) {
 	return false, true
 }
 
-// TestFrameUnionCaptureDrags routes gestures through a 10x8 union: T is
-// a two-row top member that captures drags, M the main handler on rows
-// 2-6 and B a one-row bottom member on row 7, neither capturing.
 func TestFrameUnionCaptureDrags(t *testing.T) {
 	wheel := func(x, y int) mouseEvent {
 		return mouseEvent{key: term.MouseWheelDown, x: x, y: y}

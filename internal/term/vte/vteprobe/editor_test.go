@@ -64,24 +64,6 @@ type coords struct {
 	Y int `json:"y"`
 }
 
-// TestInferEditorCaptures discovers every (sample, editor) pair under
-// testdata/samples/<sample>/<editor>/ that has a want.json next to a
-// screen.ansi capture and exercises vteprobe end-to-end with the
-// same code path live callers use:
-//
-//	vte.Replay(screen) -> cell.Buffer
-//	Cursor.Infer(buf, cursor) -> Result
-//
-// To add a new fixture (for reproducing a bug or expanding coverage):
-//
-//   - put the file under testdata/samples/<name>/sample.txt;
-//   - run testdata/capture.sh <name> <editor>;
-//   - edit the generated want.json to declare the expected (line, col)
-//     and minimum confidence.
-//
-// The new case activates on the next test run. Pairs with a sample
-// directory but no want.json are skipped with a clear message so
-// authoring a new fixture does not turn the suite red.
 func TestInferEditorCaptures(t *testing.T) {
 	t.Parallel()
 

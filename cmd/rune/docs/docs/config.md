@@ -70,6 +70,7 @@ and covers most of the configuration surface:
 - `extensions`: every extension process is stopped and started again
 - `debugger.*` adapters and language-server settings
 - `workspace.symbol_db` and extension auto-authorize settings
+- `meta_open_url`
 
 Only the focused workspace is reloaded; other workspace tabs keep running with
 the configuration they were opened with.
@@ -80,7 +81,9 @@ Everything that belongs to the process or to the GUI window is built once at
 startup and needs a restart:
 
 - all `gui.*` settings: fonts, themes, ligatures, opacity, blur,
-  scroll multiplier, key mapping, quick menu, `gui.env`
+  scroll multiplier, key mapping, quick menu, `gui.env`. Themes and
+  `gui.env` variables added by a package install are available right away
+  (see below).
 - `log.output_path` and `log.level`
 - `models.*` (the LLM router), `notifications.*`, `telemetry.*`
 - `animations.*`, `workspace.home`, clipboard and macro settings
@@ -99,8 +102,9 @@ fonts, themes and window settings. Everything else in the restart list is
 per-process too, so the new window picks those up as well.
 
 Installing a package is the one case where config is applied without a reload:
-`gui.env` variables, newly added extensions and newly added tutorials are
-picked up live. If a package changes anything else, Rune tells you to restart.
+`gui.env` variables, `gui.themes`, newly added extensions and newly added
+tutorials take effect live. When the install finishes, the notification lists
+which keys are in effect now and which need a restart.
 
 ## Editor Modes
 
@@ -358,6 +362,69 @@ For ready-to-copy `exo` configs (Vim, Neovim, Helix, Nano, and more), see the
 
   ```python tab
   config["gui"]["meta_key"] = "<alt>"
+  ```
+
+- `gui.env`: environment variables Rune sets for itself and everything it
+  starts: terminals, extensions, language servers, debuggers and tasks. A
+  value may reference other variables, such as `$HOME`, and `$RUNE_DATADIR`
+  names the Rune data directory of the machine that applies it. Each machine
+  applies the config stored on it, so in a remote workspace the variables come
+  from `~/.rune/config.yaml` on the remote machine.
+
+  `PATH` extends the existing `PATH` instead of replacing it: the directories
+  listed before `$PATH` go in front of it and the ones after it go at the end.
+  Rune's shared binary directory, `$RUNE_DATADIR/bin`, always comes first.
+
+  Terminals running bash, zsh or fish apply `gui.env` again after the shell's
+  startup files, so it wins over them: a variable set in both has the
+  `gui.env` value, and Rune's `PATH` entries come first even when a startup
+  file such as `/etc/profile` resets `PATH`. The rest of the `PATH` that your
+  startup files built follows.
+
+  ```yaml tab
+  gui:
+    env:
+      EDITOR: vim
+      PATH: '$HOME/.local/bin:$PATH'
+  ```
+
+  ```python tab
+  config["gui"]["env"] = {
+      "EDITOR": "vim",
+    "PATH": "$HOME/.local/bin:$PATH",
+  }
+  ```
+
+## Links
+
+- `meta_open_url`: how an `http://` or `https://` link opens when you click it
+  in a markdown tab, a hover, a workspace notice or the cheatsheet, or click
+  it with `<meta>` held in the GUI. It takes one of:
+
+  - `"system"`, the default: open the link in your system browser.
+  - `"clipboard"`: copy the link to the clipboard.
+  - a Rune command, written like an [alias](./learn/aliases.md) body, that runs
+    with `$URL` set to the link.
+
+  A link is untrusted input, so a command receives it in a form that cannot
+  run anything. `$URL` always expands to a single argument. In `$URL`,
+  characters a URL may not contain, as well as `'` and `$`, are
+  percent-encoded, which leaves the link pointing at the same page. Inside a
+  `!` or `!!` command, `$URL` is read as plain text whether you write it
+  unquoted, in double quotes or in single quotes, and Rune refuses to run the
+  command rather than let a link change it. A command that passes `$URL` on to
+  a second shell, such as `sh -c`, `eval` or `ssh`, must quote it again there,
+  since characters like `&` and `;` can appear in links.
+
+  Clicking a link with another scheme with `<meta>` held in the GUI opens it
+  in the system browser.
+
+  ```yaml tab
+  meta_open_url: "browser $URL" # or "clipboard", or "! open $URL"
+  ```
+
+  ```python tab
+  config["meta_open_url"] = "browser $URL" # or "clipboard", or "! open $URL"
   ```
 
 ## Telemetry

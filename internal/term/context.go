@@ -29,6 +29,9 @@ type ctxKey int
 // PayloadFromContext instead of using this key directly.
 var pKey ctxKey
 
+// scKey is the key for SubCellFraction values in Contexts.
+var scKey ctxKey = 1
+
 // ContextWithPayload returns a new Context that holds locker.
 //
 // Deprecated: use term.Event.Context to pass a context.
@@ -42,4 +45,30 @@ func ContextWithPayload(ctx context.Context, payload []byte) context.Context {
 func PayloadFromContext(ctx context.Context) ([]byte, bool) {
 	locker, ok := ctx.Value(pKey).([]byte)
 	return locker, ok
+}
+
+// SubCellFraction is a pointer's fractional position inside the cell that
+// Event.MouseX/MouseY report. The cell fields alone lose where inside the
+// cell the pointer is, which consumers that model positions as cell
+// boundaries (e.g. drag selection) need to snap to the nearer edge. The
+// fraction is cell-translation invariant, so it stays valid as the event's
+// coordinates are shifted into component-local space.
+type SubCellFraction struct {
+	// X is the offset from the cell's left edge, in [0,1). The vertical
+	// axis has no consumer: selection granularity is whole rows.
+	X float64
+}
+
+// ContextWithSubCellFraction returns a Context that holds f.
+func ContextWithSubCellFraction(ctx context.Context, f SubCellFraction) context.Context {
+	return context.WithValue(ctx, scKey, f)
+}
+
+// SubCellFractionFromContext returns the fraction stored in ctx, if any.
+func SubCellFractionFromContext(ctx context.Context) (SubCellFraction, bool) {
+	if ctx == nil {
+		return SubCellFraction{}, false
+	}
+	f, ok := ctx.Value(scKey).(SubCellFraction)
+	return f, ok
 }

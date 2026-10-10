@@ -26,6 +26,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -247,11 +248,6 @@ func TestClient_Login_AttemptsBrowserFlow(t *testing.T) {
 	}
 }
 
-// TestClient_Login_SecondAttemptAfterCancel reproduces the bug where
-// cancelling an in-flight Login leaves the OAuth goroutine blocked
-// inside blueauth.NewClientWithPorts holding the CachedTokenSource
-// lock, so a subsequent Login never reaches openBrowser and never
-// resolves.
 func TestClient_Login_SecondAttemptAfterCancel(t *testing.T) {
 	srv := fakeOAuthServer(t)
 	defer srv.Close()
@@ -308,14 +304,6 @@ func TestClient_Login_SecondAttemptAfterCancel(t *testing.T) {
 	}
 }
 
-// TestClient_Login_PublishesOAuthURL verifies that the LoginSession
-// surfaces the OAuth authorize URL — the same URL handed to the
-// browser — so the bootstrap UI can inline it in the wait prompt.
-// The URL channel is the only signal that drives the pre-swap login
-// flow's "click here" link; if a refactor breaks the ctx plumbing
-// that carries it from Login down into tokenSourceRefresh, the
-// channel silently never resolves and the user is stuck staring at
-// an empty prompt while the browser opens in the background.
 func TestClient_Login_PublishesOAuthURL(t *testing.T) {
 	srv := fakeOAuthServer(t)
 	defer srv.Close()
@@ -372,12 +360,6 @@ func TestClient_Login_PublishesOAuthURL(t *testing.T) {
 	assert.False(t, ok, "URL channel must be closed after Login completes")
 }
 
-// TestClient_Login_CompletesWhileBrowserOpenerBlocks reproduces the
-// Linux login deadlock: the underlying OAuth client only starts
-// reading the callback result after the visit-URL callback returns, so
-// an opener that blocks for the lifetime of the browser process wedges
-// the loopback redirect handler. The browser tab then spins forever on
-// the redirect and login never completes.
 func TestClient_Login_CompletesWhileBrowserOpenerBlocks(t *testing.T) {
 	// Hold the callback after it delivers the code but before net/http
 	// flushes the response, so token exchange wins the shutdown race.
@@ -468,10 +450,6 @@ func (h *oauthRedirectCompletionHook) Fire(entry *log.Entry) error {
 	return nil
 }
 
-// An explicit sign-in must get the user back in when the refresh token
-// an earlier session cached is dead. Background refreshes never ask the
-// user to sign in, so this is the only way out, and the token proxy
-// does not always say why a refresh failed.
 func TestClient_Login_ReplacesTokenThatNoLongerRefreshes(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -617,6 +595,29 @@ type fakeOAuthOptions struct {
 	// tokenReplies are served in order by the token endpoint; once they
 	// run out every request succeeds with fakeTokenJSON.
 	tokenReplies []tokenReply
+	// headlessClientID is advertised as the config's HeadlessClientID.
+	headlessClientID string
+	// clientIDs, when set, records the client of every device
+	// authorization and token request instead of asserting the
+	// desktop one.
+	clientIDs *clientLog
+}
+
+type clientLog struct {
+	mu  sync.Mutex
+	ids []string
+}
+
+func (l *clientLog) add(id string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.ids = append(l.ids, id)
+}
+
+func (l *clientLog) all() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.ids...)
 }
 
 // completingOAuthServer serves an oauth2 config pointing back at itself
@@ -633,9 +634,10 @@ func newFakeOAuthServer(t *testing.T, opts fakeOAuthOptions) *httptest.Server {
 	mux.HandleFunc(auth.ServeConfigPath, func(w http.ResponseWriter, _ *http.Request) {
 		u, _ := base.Load().(string)
 		cfg := auth.Config{
-			APIURL:    u + "/api/v2/",
-			JWKSURL:   u + "/.well-known/jwks.json",
-			SignupURL: u + "/signup",
+			APIURL:           u + "/api/v2/",
+			JWKSURL:          u + "/.well-known/jwks.json",
+			SignupURL:        u + "/signup",
+			HeadlessClientID: opts.headlessClientID,
 			Config: oauth2.Config{
 				// An empty ClientSecret selects the PKCE flow.
 				ClientID: "test-client-id",
@@ -655,7 +657,11 @@ func newFakeOAuthServer(t *testing.T, opts fakeOAuthOptions) *httptest.Server {
 	})
 	mux.HandleFunc("/oauth/device/code", func(w http.ResponseWriter, r *http.Request) {
 		require.NoError(t, r.ParseForm())
-		assert.Equal(t, "test-client-id", r.Form.Get("client_id"))
+		if opts.clientIDs != nil {
+			opts.clientIDs.add(r.Form.Get("client_id"))
+		} else {
+			assert.Equal(t, "test-client-id", r.Form.Get("client_id"))
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"device_code":"fake-device-code",` +
 			`"user_code":"ABCD-EFGH",` +
@@ -664,7 +670,11 @@ func newFakeOAuthServer(t *testing.T, opts fakeOAuthOptions) *httptest.Server {
 			`"https://auth.rune.test/activate?user_code=ABCD-EFGH",` +
 			`"expires_in":900,"interval":1}`))
 	})
-	mux.HandleFunc(auth.ServeTokenPath, func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc(auth.ServeTokenPath, func(w http.ResponseWriter, r *http.Request) {
+		if opts.clientIDs != nil {
+			require.NoError(t, r.ParseForm())
+			opts.clientIDs.add(r.Form.Get("client_id"))
+		}
 		w.Header().Set("Content-Type", "application/json")
 		n := int(tokenCalls.Add(1)) - 1
 		if n < len(opts.tokenReplies) {
@@ -825,11 +835,12 @@ func TestClient_LoginWithDeviceCode_CancelWhilePolling(t *testing.T) {
 func TestParseAccountClaims(t *testing.T) {
 	planEnds := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	token := makeAccountJWT(t, auth.RPCUser{
-		ID:       "auth0|abc",
-		Email:    "user@example.com",
-		Role:     auth.RolePaid,
-		Account:  "acc-1",
-		PlanEnds: planEnds,
+		ID:        "auth0|abc",
+		Email:     "user@example.com",
+		Role:      auth.RolePaid,
+		Account:   "acc-1",
+		PlanEnds:  planEnds,
+		ServeOnly: true,
 	})
 
 	user, err := parseAccountClaims(token)
@@ -838,6 +849,85 @@ func TestParseAccountClaims(t *testing.T) {
 	assert.Equal(t, auth.RolePaid, user.Role)
 	assert.Equal(t, "acc-1", user.Account)
 	assert.True(t, planEnds.Equal(user.PlanEnds))
+	assert.True(t, user.ServeOnly)
+}
+
+func TestClient_HeadlessUsesHeadlessClient(t *testing.T) {
+	t.Run("signs in by code through the headless client", func(t *testing.T) {
+		ids := &clientLog{}
+		srv := newFakeOAuthServer(t, fakeOAuthOptions{
+			headlessClientID: "test-headless-client", clientIDs: ids,
+		})
+		defer srv.Close()
+		client := newHeadlessTestClient(t, srv.URL, storagestub.NewInMemoryService())
+
+		session := client.LoginWithDeviceCode(t.Context())
+		select {
+		case err := <-session.Done:
+			require.NoError(t, err)
+		case <-time.After(10 * time.Second):
+			t.Fatal("expected Done to resolve")
+		}
+		got := ids.all()
+		require.NotEmpty(t, got)
+		for _, id := range got {
+			assert.Equal(t, "test-headless-client", id)
+		}
+	})
+
+	t.Run("refreshes through the headless client", func(t *testing.T) {
+		ids := &clientLog{}
+		srv := newFakeOAuthServer(t, fakeOAuthOptions{
+			headlessClientID: "test-headless-client", clientIDs: ids,
+		})
+		defer srv.Close()
+		storage := storagestub.NewInMemoryService()
+		seedExpiredToken(t, storage)
+		client := newHeadlessTestClient(t, srv.URL, storage)
+
+		_, err := client.CachedTokenSource().TokenCtx(t.Context())
+		require.NoError(t, err)
+		assert.Equal(t, []string{"test-headless-client"}, ids.all())
+	})
+
+	t.Run("a server that predates headless clients cannot sign it in", func(t *testing.T) {
+		ids := &clientLog{}
+		srv := newFakeOAuthServer(t, fakeOAuthOptions{clientIDs: ids})
+		defer srv.Close()
+		client := newHeadlessTestClient(t, srv.URL, storagestub.NewInMemoryService())
+
+		session := client.LoginWithDeviceCode(t.Context())
+		select {
+		case err := <-session.Done:
+			assert.ErrorIs(t, err, ErrHeadlessLoginUnsupported)
+		case <-time.After(10 * time.Second):
+			t.Fatal("expected Done to resolve")
+		}
+		assert.Empty(t, ids.all(), "nothing may reach the desktop client")
+	})
+}
+
+func TestDefaultProdNativeConfigHeadlessClient(t *testing.T) {
+	api, err := url.Parse("https://api.rune.build")
+	require.NoError(t, err)
+	conf := defaultProdNativeConfig(api)
+
+	assert.Equal(t, "QymS9kE6odh2900n3RcEpdV95JQd09Sr", conf.HeadlessClientID)
+	assert.NotEqual(t, conf.ClientID, conf.HeadlessClientID)
+	assert.NotEqual(t, auth.HeadlessClientID, conf.HeadlessClientID,
+		"the production config must not name the development tenant's client")
+}
+
+func newHeadlessTestClient(
+	t *testing.T, endpoint string, storage storageapi.Service,
+) *Client {
+	t.Helper()
+	config := DefaultConfig()
+	config.HTTPEndpointAddress = endpoint
+	config.Headless = true
+	client := New(storage, config, t.TempDir())
+	t.Cleanup(func() { _ = client.Close() })
+	return client
 }
 
 func TestParseAccountClaimsRejectsMalformedToken(t *testing.T) {
@@ -965,7 +1055,9 @@ func TestNetworkMachines(t *testing.T) {
 			gotPath, gotMethod = r.URL.Path, r.Method
 			_, _ = w.Write([]byte(`{"machines":[` +
 				`{"id":"1","hostname":"laptop","last_seen":"2026-03-01T12:00:00Z",` +
-				`"online":true}]}`))
+				`"online":true},` +
+				`{"id":"2","hostname":"builder","last_seen":"2026-03-01T12:00:00Z",` +
+				`"online":true,"serve_only":true}]}`))
 		}))
 	defer srv.Close()
 
@@ -979,6 +1071,7 @@ func TestNetworkMachines(t *testing.T) {
 	assert.Equal(t, http.MethodGet, gotMethod)
 	assert.Equal(t, []Machine{
 		{ID: "1", Hostname: "laptop", LastSeen: lastSeen, Online: true},
+		{ID: "2", Hostname: "builder", LastSeen: lastSeen, Online: true, ServeOnly: true},
 	}, machines)
 }
 
@@ -1020,6 +1113,47 @@ func TestNetworkMachineRemove(t *testing.T) {
 				return
 			}
 			assert.True(t, errors.Is(err, tcase.wantErr), "got %v", err)
+		})
+	}
+}
+
+func TestClient_SignsOutWhenRefreshIsRefused(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		reply         tokenReply
+		wantSignedOut bool
+	}{
+		{
+			name: "refused as an invalid grant",
+			reply: tokenReply{status: http.StatusForbidden, body: `{"error":"invalid_grant",` +
+				`"error_description":"Unknown or invalid refresh token."}`},
+			wantSignedOut: true,
+		},
+		{
+			name: "refused without a reason",
+			reply: tokenReply{status: http.StatusForbidden, body: `{"Success":false,` +
+				`"Message":"upstream provider returned no id token","Data":""}`},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := newFakeOAuthServer(t, fakeOAuthOptions{
+				tokenReplies: []tokenReply{tc.reply}})
+			t.Cleanup(srv.Close)
+			store := storagestub.NewInMemoryService()
+			seedExpiredToken(t, store)
+			config := DefaultConfig()
+			config.HTTPEndpointAddress = srv.URL
+			client := New(store, config, t.TempDir())
+			t.Cleanup(func() { _ = client.Close() })
+
+			_, err := client.NetworkMachines(t.Context())
+			require.Error(t, err)
+			assert.Equal(t, tc.wantSignedOut,
+				errors.Is(err, auth.ErrNotAuthenticated), "got %v", err)
+
+			_, signedIn, err := client.AccountStatus(t.Context())
+			require.NoError(t, err)
+			assert.Equal(t, !tc.wantSignedOut, signedIn)
 		})
 	}
 }

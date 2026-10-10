@@ -175,8 +175,6 @@ func (f *fakeChild) didOpens() []semanticapi.DidOpenTextDocumentParams {
 	return append([]semanticapi.DidOpenTextDocumentParams(nil), f.opens...)
 }
 
-// TestServerConformance asserts that both backend implementations
-// satisfy the server interface (which embeds io.Closer).
 func TestServerConformance(t *testing.T) {
 	t.Parallel()
 	var _ server = (*langServer)(nil)
@@ -192,9 +190,6 @@ func newTestMultiServer(def, alt *fakeChild, routes map[string]int) *multiLangSe
 	}
 }
 
-// TestMultiServerRouting asserts that requests (call) dispatch to the
-// routed child and fall back to the default child for unrouted
-// methods, while notifications are always fanned out to every child.
 func TestMultiServerRouting(t *testing.T) {
 	t.Parallel()
 
@@ -244,8 +239,6 @@ func TestMultiServerRouting(t *testing.T) {
 	})
 }
 
-// TestMultiServerLifecycle asserts that start, stop, and Close fan
-// out to every child and that isAlive reflects any live child.
 func TestMultiServerLifecycle(t *testing.T) {
 	t.Parallel()
 	def := &fakeChild{childName: "ty"}
@@ -267,8 +260,6 @@ func TestMultiServerLifecycle(t *testing.T) {
 	assert.True(t, alt.closed)
 }
 
-// TestMultiServerReplaceChild asserts that replaceChild swaps a child
-// by interface identity, leaving the others untouched.
 func TestMultiServerReplaceChild(t *testing.T) {
 	t.Parallel()
 	def := &fakeChild{childName: "ty"}
@@ -285,10 +276,6 @@ func TestMultiServerReplaceChild(t *testing.T) {
 	assert.Empty(t, alt.callMethods())
 }
 
-// TestMultiServerPullDiagnosticsMerges asserts that pullDiagnostics
-// fans out to every child and concatenates their reports, so a single
-// pull returns findings from all backends (ty type errors and ruff
-// lint) rather than only the default child's.
 func TestMultiServerPullDiagnosticsMerges(t *testing.T) {
 	t.Parallel()
 
@@ -317,9 +304,6 @@ func TestMultiServerPullDiagnosticsMerges(t *testing.T) {
 	assert.Len(t, report.Items, 2)
 }
 
-// TestMultiServerPullDiagnosticsSkipsFailingChild asserts that a child
-// which errors on the pull (e.g. one that does not support it) is
-// skipped while the other child's findings are still returned.
 func TestMultiServerPullDiagnosticsSkipsFailingChild(t *testing.T) {
 	t.Parallel()
 
@@ -337,8 +321,6 @@ func TestMultiServerPullDiagnosticsSkipsFailingChild(t *testing.T) {
 	assert.Equal(t, "F401", report.Items[0].Code)
 }
 
-// TestMultiServerPullDiagnosticsAllFail asserts that when every child
-// fails the joined error is returned rather than an empty report.
 func TestMultiServerPullDiagnosticsAllFail(t *testing.T) {
 	t.Parallel()
 

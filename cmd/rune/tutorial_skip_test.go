@@ -131,10 +131,6 @@ func newShippedTutorial(
 	return tut
 }
 
-// TestShippedTutorialsSurviveSkippingEveryStep drives every shipped
-// lesson with nothing but the tile's Skip button. A lesson that
-// indexes a response the skip path cannot produce would raise a
-// Starlark error instead of completing.
 func TestShippedTutorialsSurviveSkippingEveryStep(t *testing.T) {
 	t.Parallel()
 	for name, src := range shippedTutorials() {
@@ -154,10 +150,6 @@ func TestShippedTutorialsSurviveSkippingEveryStep(t *testing.T) {
 	}
 }
 
-// TestShippedTutorialsSkipDoesNotStrandTheLesson asserts no shipped
-// lesson depends on an argument the user would have typed: every
-// wait_command a skip could strand must either name its arguments or
-// guard the read.
 func TestShippedTutorialsSkipDoesNotStrandTheLesson(t *testing.T) {
 	t.Parallel()
 	for name, src := range shippedTutorials() {
@@ -176,9 +168,6 @@ func TestShippedTutorialsSkipDoesNotStrandTheLesson(t *testing.T) {
 	}
 }
 
-// TestShippedTutorialsSkipWalksTheWholeLesson asserts a fully skipped
-// lesson still walks its whole body: the last step a lesson arms has
-// to show up.
 func TestShippedTutorialsSkipWalksTheWholeLesson(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

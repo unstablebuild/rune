@@ -19,6 +19,7 @@ import (
 	schemeapi "github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	workspaceapi "github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	gomock "go.uber.org/mock/gomock"
+	grpc "google.golang.org/grpc"
 	cell "unstable.build/rune/internal/cell"
 	workspace "unstable.build/rune/internal/workspace"
 )
@@ -224,6 +225,20 @@ func (m *MockWorkspace) OpenFile(filename string, flag int, perm fs.FileMode) (w
 func (mr *MockWorkspaceMockRecorder) OpenFile(filename, flag, perm any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "OpenFile", reflect.TypeOf((*MockWorkspace)(nil).OpenFile), filename, flag, perm)
+}
+
+// PathCaseSensitive mocks base method.
+func (m *MockWorkspace) PathCaseSensitive() bool {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "PathCaseSensitive")
+	ret0, _ := ret[0].(bool)
+	return ret0
+}
+
+// PathCaseSensitive indicates an expected call of PathCaseSensitive.
+func (mr *MockWorkspaceMockRecorder) PathCaseSensitive() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "PathCaseSensitive", reflect.TypeOf((*MockWorkspace)(nil).PathCaseSensitive))
 }
 
 // ReadDir mocks base method.
@@ -536,6 +551,44 @@ func (m *MockInstallDataDirProvider) InstallDataDir(ctx context.Context) (string
 func (mr *MockInstallDataDirProviderMockRecorder) InstallDataDir(ctx any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "InstallDataDir", reflect.TypeOf((*MockInstallDataDirProvider)(nil).InstallDataDir), ctx)
+}
+
+// MockPackageHost is a mock of PackageHost interface.
+type MockPackageHost struct {
+	ctrl     *gomock.Controller
+	recorder *MockPackageHostMockRecorder
+}
+
+// MockPackageHostMockRecorder is the mock recorder for MockPackageHost.
+type MockPackageHostMockRecorder struct {
+	mock *MockPackageHost
+}
+
+// NewMockPackageHost creates a new mock instance.
+func NewMockPackageHost(ctrl *gomock.Controller) *MockPackageHost {
+	mock := &MockPackageHost{ctrl: ctrl}
+	mock.recorder = &MockPackageHostMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockPackageHost) EXPECT() *MockPackageHostMockRecorder {
+	return m.recorder
+}
+
+// HostConn mocks base method.
+func (m *MockPackageHost) HostConn() (grpc.ClientConnInterface, bool) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "HostConn")
+	ret0, _ := ret[0].(grpc.ClientConnInterface)
+	ret1, _ := ret[1].(bool)
+	return ret0, ret1
+}
+
+// HostConn indicates an expected call of HostConn.
+func (mr *MockPackageHostMockRecorder) HostConn() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "HostConn", reflect.TypeOf((*MockPackageHost)(nil).HostConn))
 }
 
 // MockLoader is a mock of Loader interface.

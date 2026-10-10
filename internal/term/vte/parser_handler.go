@@ -110,6 +110,11 @@ type parserHandler struct {
 	glyphBuf []vtescreen.Glyph
 
 	graphics graphicsState
+
+	// historyScrolled, when set, is called with sync.mu held after the
+	// primary screen scrolled count rows up into history, which moves
+	// every row above the bottom margin up by count.
+	historyScrolled func(count int)
 }
 
 // use a common api for alternate and primary buffers
@@ -1014,12 +1019,14 @@ func (t *parserHandler) ResetState() {
 	fs := t.fs
 	tempDir := t.tempDir
 	keyboard := t.keyboard
+	historyScrolled := t.historyScrolled
 	*t = parserHandler{}
 	t.init(mu, pty, tm, clipboard, bell, uri,
 		needsAttentionAttr, useTitleAsTabname, maxScrollLength, minWidth,
 		cellPixelSize, fs, tempDir)
 	t.keyboard = keyboard
 	t.keyboard.reset()
+	t.historyScrolled = historyScrolled
 
 	// resize
 	t.sync.altBuf.Resize(width, height)
@@ -1374,7 +1381,7 @@ func (t *parserHandler) ClipboardStore(register int, data []byte) {
 	switch register {
 	case int('c'):
 		err = t.clipboard.Copy(clipboard.DefaultRegisterID, clipData)
-	case int('p') | int('s'):
+	case int('p'), int('s'):
 		err = t.clipboard.Copy(selectionRegisterID, clipData)
 	default:
 		t.log(log.WarnLevel, "unknown register ID upon ClipboardStore: %c", rune(register))
@@ -1391,7 +1398,7 @@ func (t *parserHandler) ClipboardLoad(register int, terminator string) {
 	switch register {
 	case int('c'):
 		data, err = t.clipboard.Paste(clipboard.DefaultRegisterID)
-	case int('p') | int('s'):
+	case int('p'), int('s'):
 		data, err = t.clipboard.Paste(selectionRegisterID)
 	default:
 		t.log(log.WarnLevel, "unknown register ID upon ClipboardLoad: %c", rune(register))
@@ -1400,7 +1407,6 @@ func (t *parserHandler) ClipboardLoad(register int, terminator string) {
 	if err != nil {
 		t.log(log.ErrorLevel, "load data from clipboard "+
 			"for ClipboardLoad: %v", err)
-		t.sync.mu.Unlock()
 		return
 	}
 
@@ -1656,6 +1662,9 @@ func (t *parserHandler) scrollUp(count int) bool {
 		buf.ScrollDown(r-(t.height-bottom)-count, r, count)
 	}
 	t.graphicsScrolled(count)
+	if t.historyScrolled != nil {
+		t.historyScrolled(count)
+	}
 	return true
 }
 

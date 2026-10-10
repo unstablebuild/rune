@@ -163,10 +163,6 @@ hello world. Leremei
 	comptest.TestComponent(t, b, w, tests)
 }
 
-// TestLessDrawConfiguredMessageLayout exercises the message bar across the
-// layout configuration space and the message/search input surface. Each step
-// applies a message before feeding its input sequence, so the table also
-// covers clearing and re-setting the message mid-sequence.
 func TestLessDrawConfiguredMessageLayout(t *testing.T) {
 	type step struct {
 		message  string
@@ -571,8 +567,6 @@ func TestLessDrawConfiguredMessageLayout(t *testing.T) {
 	}
 }
 
-// TestLessMessageLayoutAttributes covers the styling half of the layout, which
-// the rendered strings cannot express.
 func TestLessMessageLayoutAttributes(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -1171,12 +1165,6 @@ func setup(t *testing.T, less *Less, width, height int) (*Less, *term.StringWrit
 	return less, term.NewStringWriter(width, height)
 }
 
-// TestLessNavigationKeys exercises the arrow, ctrl-p/ctrl-n,
-// ctrl-b/ctrl-f, and pgup/pgdn bindings against the rendered
-// framebuffer. The fixture is a 12-line file of 2-character line
-// labels (00..11) so each rendered row is unambiguous and the
-// viewport (4x4 with the command bar disabled) shows exactly four
-// content rows.
 func TestLessNavigationKeys(t *testing.T) {
 	const (
 		width  = 4
@@ -1268,9 +1256,6 @@ func TestLessNavigationKeys(t *testing.T) {
 	handlertest.RunHandlerSequence(t, less, width, height, cases)
 }
 
-// TestLessPromptMode pins SetPromptMode: the label is drawn but is not
-// part of the input, backspace cannot eat into it, and the mode is left
-// the way SetNormalMode and SetSearchMode expect to find it.
 func TestLessPromptMode(t *testing.T) {
 	type step struct {
 		ev       term.Event

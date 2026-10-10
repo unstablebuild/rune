@@ -26,10 +26,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"unstable.build/rune/internal/cell"
 	"unstable.build/rune/internal/term/gui/font"
 )
 
-func testFontManager(t *testing.T) *font.Manager {
+func testFontManager(t testing.TB) *font.Manager {
 	t.Helper()
 	m, err := font.NewManager(0, 0)
 	require.NoError(t, err)
@@ -138,9 +139,6 @@ func TestCropRect(t *testing.T) {
 	}
 }
 
-// TestImageLayerTextureReuse asserts pixel identity is (ID, Version):
-// re-placing the same picture reuses the upload, and bumping Version
-// replaces it.
 func TestImageLayerTextureReuse(t *testing.T) {
 	benchdraw.BeginFrame(t)
 	defer benchdraw.EndFrame(t)
@@ -178,9 +176,6 @@ func TestImageLayerTextureRejectsEmptySource(t *testing.T) {
 	assert.Empty(t, l.textures)
 }
 
-// TestImageLayerEvictsUnplacedPictures asserts a picture that stops
-// being placed releases its texture on the next frame, so retained
-// pixels do not outlive the content that drew them.
 func TestImageLayerEvictsUnplacedPictures(t *testing.T) {
 	m := testFontManager(t)
 	dst := ebiten.NewImage(200, 200)
@@ -219,13 +214,11 @@ func drawFrame(
 	l *imageLayer, dst *ebiten.Image, m *font.Manager, images ...term.Image,
 ) {
 	for _, img := range images {
-		l.drawOne(dst, img, m)
+		l.drawOne(dst, img, m, 0)
 	}
 	l.evictUnused()
 }
 
-// TestImageLayerDrawSkipsInvisiblePlacements asserts placements that
-// cover nothing never reach the GPU, so they cost no upload.
 func TestImageLayerDrawSkipsInvisiblePlacements(t *testing.T) {
 	m := testFontManager(t)
 	dst := ebiten.NewImage(200, 200)
@@ -267,7 +260,7 @@ func TestImageLayerDrawSkipsInvisiblePlacements(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, ok := resolvePlacement(tt.img, m, dst.Bounds())
+			_, ok := resolvePlacement(tt.img, m, dst.Bounds(), 0)
 			assert.False(t, ok, "placement must resolve to nothing")
 
 			var l imageLayer
@@ -280,9 +273,6 @@ func TestImageLayerDrawSkipsInvisiblePlacements(t *testing.T) {
 	}
 }
 
-// TestResolvePlacement asserts the pixel geometry a placement resolves
-// to: where the picture lands, which texels it samples, and how the
-// clip and the pixel offset narrow or move it.
 func TestResolvePlacement(t *testing.T) {
 	m := testFontManager(t)
 	bounds := image.Rect(0, 0, 2000, 2000)
@@ -295,6 +285,7 @@ func TestResolvePlacement(t *testing.T) {
 	tests := []struct {
 		name     string
 		img      term.Image
+		shift    int
 		wantSrc  image.Rectangle
 		wantArea image.Rectangle
 		wantClip image.Rectangle
@@ -323,17 +314,28 @@ func TestResolvePlacement(t *testing.T) {
 			name: "the pixel offset shifts the raster inside its cells",
 			img: term.Image{
 				Src: src, Pos: term.Coordinates{X: 1, Y: 1},
-				Offset: image.Pt(3, 5), Width: 4, Height: 3,
+				RasterOffset: image.Pt(3, 5), Width: 4, Height: 3,
 			},
 			wantSrc:  image.Rect(0, 0, 8, 4),
 			wantArea: cellRect(1, 1, 5, 4).Add(image.Pt(3, 5)),
 			wantClip: cellRect(1, 1, 5, 4).Add(image.Pt(3, 5)).
 				Intersect(cellRect(1, 1, 5, 4)),
 		},
+		{
+			name: "the shift moves the raster along with its cells",
+			img: term.Image{
+				Src: src, Pos: term.Coordinates{X: 1, Y: 1},
+				Width: 4, Height: 3,
+			},
+			shift:    7,
+			wantSrc:  image.Rect(0, 0, 8, 4),
+			wantArea: cellRect(1, 1, 5, 4).Add(image.Pt(0, 7)),
+			wantClip: cellRect(1, 1, 5, 4).Add(image.Pt(0, 7)),
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p, ok := resolvePlacement(tt.img, m, bounds)
+			p, ok := resolvePlacement(tt.img, m, bounds, tt.shift)
 			require.True(t, ok)
 			assert.Equal(t, tt.wantSrc, p.src, "src")
 			assert.Equal(t, tt.wantArea, p.area, "area")
@@ -342,10 +344,6 @@ func TestResolvePlacement(t *testing.T) {
 	}
 }
 
-// TestResolvePlacementClipNarrowsPainting asserts a clipped placement
-// still scales as if unclipped and only narrows what is painted. That
-// is what lets a scrolled pane hide part of a picture without the
-// caller re-cropping it.
 func TestResolvePlacementClipNarrowsPainting(t *testing.T) {
 	m := testFontManager(t)
 	bounds := image.Rect(0, 0, 2000, 2000)
@@ -355,7 +353,7 @@ func TestResolvePlacementClipNarrowsPainting(t *testing.T) {
 	}.Clipped(image.Rect(0, 0, 4, 2))
 	require.True(t, ok)
 
-	p, ok := resolvePlacement(img, m, bounds)
+	p, ok := resolvePlacement(img, m, bounds, 0)
 	require.True(t, ok)
 	assert.Equal(t, cellRectToPixels(image.Rect(0, 0, 4, 4), m), p.area,
 		"scaling ignores the clip")
@@ -364,8 +362,6 @@ func TestResolvePlacementClipNarrowsPainting(t *testing.T) {
 	assert.Equal(t, image.Rect(0, 0, 8, 8), p.src, "the crop is unchanged")
 }
 
-// TestResolvePlacementContainPreservesAspect asserts ImageFitContain
-// scales uniformly and centres the result in the cell rectangle.
 func TestResolvePlacementContainPreservesAspect(t *testing.T) {
 	m := testFontManager(t)
 	bounds := image.Rect(0, 0, 2000, 2000)
@@ -377,7 +373,7 @@ func TestResolvePlacementContainPreservesAspect(t *testing.T) {
 	}
 	area := cellRectToPixels(image.Rect(0, 0, 10, 2), m)
 
-	p, ok := resolvePlacement(img, m, bounds)
+	p, ok := resolvePlacement(img, m, bounds, 0)
 	require.True(t, ok)
 	assert.Equal(t, p.area.Dx(), p.area.Dy(), "a square source stays square")
 	assert.Equal(t, area.Dy(), p.area.Dy(), "the short axis fills the rectangle")
@@ -387,8 +383,6 @@ func TestResolvePlacementContainPreservesAspect(t *testing.T) {
 		"the fitted rectangle is centred horizontally")
 }
 
-// TestImageLayerDeallocateReleasesTextures asserts a resize, which
-// rebuilds the renderer, does not leak the retained uploads.
 func TestImageLayerDeallocateReleasesTextures(t *testing.T) {
 	benchdraw.BeginFrame(t)
 	var l imageLayer
@@ -403,9 +397,6 @@ func TestImageLayerDeallocateReleasesTextures(t *testing.T) {
 	assert.Nil(t, l.scratch)
 }
 
-// TestDrawImageLayerPartitions asserts each layer paints only its own
-// placements and reports the pixels they covered, which is what the
-// renderer repaints the cell geometry over.
 func TestDrawImageLayerPartitions(t *testing.T) {
 	r, _, _ := newTestRenderer(t, 16, 10)
 	screen := ebiten.NewImage(r.frame.Bounds().Dx(), r.frame.Bounds().Dy())
@@ -437,9 +428,6 @@ func TestDrawImageLayerPartitions(t *testing.T) {
 	assert.Len(t, r.images.textures, 2, "each placement uploaded its own picture")
 }
 
-// TestRowsCovering asserts the rows repainted over a placement include
-// the neighbours of the rows it covers, because vertical-offset cells
-// paint outside their own strip.
 func TestRowsCovering(t *testing.T) {
 	r, _, rows := newTestRenderer(t, 16, 10)
 	m := r.fontManager
@@ -455,4 +443,225 @@ func TestRowsCovering(t *testing.T) {
 	first, last = r.rowsCovering(cellRectToPixels(image.Rect(0, rows-1, 2, rows), m), rows)
 	assert.Equal(t, rows-2, first)
 	assert.Equal(t, rows-1, last, "clamped to the last row")
+}
+
+func TestDrawImageLayerVerticalRenderOffset(t *testing.T) {
+	r, cols, rows := newTestRenderer(t, 16, 10)
+	half := int(r.halfCell())
+	require.Positive(t, half)
+	// up is how far a cell shifted up moves, unless it is on the top row,
+	// which does not move.
+	up := -half - 1
+	screen := ebiten.NewImage(r.frame.Bounds().Dx(), r.frame.Bounds().Dy())
+	t.Cleanup(screen.Deallocate)
+	src := solidRGBA(4, 4, color.RGBA{R: 255, A: 255})
+	// bar is shifted down, as a status bar with a window under it is, and
+	// tabs and the top row are shifted up, as a tab bar is.
+	bar, tabs := rows-3, 2
+	tests := []struct {
+		name string
+		// y and height are the rows the placement covers.
+		y, height    int
+		down, upward bool
+		// over are the cells written over the placement.
+		over []term.Coordinates
+		want int
+	}{
+		{name: "on the bar", y: bar, height: 1, down: true, want: half},
+		{name: "over the bar and the rows around it", y: bar - 1, height: 3, down: true, want: half},
+		{name: "above the bar", y: bar - 3, height: 2, down: true, want: half},
+		{name: "below the bar", y: bar + 1, height: 2, down: true, want: half},
+		{name: "past the bottom of the frame", y: bar, height: 6, down: true, want: half},
+		{
+			name: "cut into pieces", y: bar - 1, height: 3, down: true,
+			over: []term.Coordinates{{X: 2, Y: bar + 1}, {X: 3, Y: bar}, {X: 4, Y: bar - 1}},
+			want: half,
+		},
+		{name: "on the bar without the offset", y: bar, height: 1},
+		{name: "over the bar and the rows around it without the offset", y: bar - 1, height: 3},
+		{name: "on the tabs", y: tabs, height: 1, upward: true, want: up},
+		{name: "over the tabs and the rows around them", y: tabs - 1, height: 3, upward: true, want: up},
+		{name: "below the tabs", y: tabs + 2, height: 2, upward: true, want: up},
+		{
+			name: "cut into pieces over the tabs", y: tabs - 1, height: 3, upward: true,
+			over: []term.Coordinates{{X: 2, Y: tabs + 1}, {X: 3, Y: tabs}, {X: 4, Y: tabs - 1}},
+			want: up,
+		},
+		{name: "on the top row, whose cells do not move up", y: 0, height: 1, upward: true},
+		{name: "from the top row", y: 0, height: 3, upward: true},
+		{name: "from above the frame", y: -1, height: 3, upward: true},
+		{name: "past the bottom of the frame moved up", y: rows - 2, height: 4, upward: true, want: up},
+		{name: "moved down when asked both ways, as a cell is", y: tabs, height: 1, down: true, upward: true, want: half},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := cell.NewBufferWriter(frameContext(t.Context(), r.fontManager), cols, rows)
+			w.DrawImage(term.Image{
+				Src: src, ID: term.NewImageID(),
+				Pos: term.Coordinates{X: 2, Y: tt.y}, Width: 4, Height: tt.height,
+				VerticalRenderOffset: tt.down, NegativeVerticalRenderOffset: tt.upward,
+			})
+			for _, pos := range tt.over {
+				w.SetCell(pos, term.NewCell('x', 1, term.Attributes{}))
+			}
+			for x := range cols {
+				w.UnionAttributes(term.Coordinates{X: x, Y: bar},
+					term.Attributes{Attrs: term.AttrVerticalRenderOffset})
+				for _, y := range []int{0, tabs} {
+					w.UnionAttributes(term.Coordinates{X: x, Y: y},
+						term.Attributes{Attrs: term.AttrNegativeVerticalRenderOffset})
+				}
+			}
+			images := w.Images()
+			if len(tt.over) > 0 {
+				require.Greater(t, len(images), 1, "the cells cut the placement")
+			}
+			var want []image.Rectangle
+			for _, piece := range images {
+				want = append(want, cellRectToPixels(piece.Visible(), r.fontManager).
+					Add(image.Pt(0, tt.want)).Intersect(screen.Bounds()))
+			}
+
+			benchdraw.BeginFrame(t)
+			defer benchdraw.EndFrame(t)
+			assert.Equal(t, want, r.drawImageLayer(screen, images, term.ImageLayerAboveText))
+		})
+	}
+}
+
+func TestDrawImageLayerOffset(t *testing.T) {
+	r, cols, rows := newTestRenderer(t, 16, 10)
+	m := r.fontManager
+	// The test font's cells span whole pixels, so their edges are exact.
+	cw, ch := int(m.PixelX(1)), int(m.PixelY(1))
+	require.Equal(t, m.PixelX(1), float64(cw))
+	require.Equal(t, m.PixelY(1), float64(ch))
+	half := int(r.halfCell())
+	screen := ebiten.NewImage(r.frame.Bounds().Dx(), r.frame.Bounds().Dy())
+	t.Cleanup(screen.Deallocate)
+	px := func(c image.Rectangle) image.Rectangle {
+		return image.Rect(c.Min.X*cw, c.Min.Y*ch, c.Max.X*cw, c.Max.Y*ch)
+	}
+	grid := px(image.Rect(0, 0, cols, rows))
+	src := solidRGBA(4, 4, color.RGBA{R: 255, A: 255})
+	box := image.Rect(4, 3, 8, 5)
+	clip := image.Rect(0, 0, cols, 5)
+	tests := []struct {
+		name string
+		// cells are the cells the placement is drawn on, box when empty.
+		cells    image.Rectangle
+		offset   image.Point
+		down, up bool
+		clip     image.Rectangle
+		// over are the cells written over the placement.
+		over []term.Coordinates
+		// want are the pixels painted, piece by piece.
+		want []image.Rectangle
+	}{
+		{
+			name:   "right by a few pixels",
+			offset: image.Pt(3, 0),
+			want:   []image.Rectangle{px(box).Add(image.Pt(3, 0))},
+		},
+		{
+			name:   "left and up by a few pixels",
+			offset: image.Pt(-5, -7),
+			want:   []image.Rectangle{px(box).Add(image.Pt(-5, -7))},
+		},
+		{
+			name:   "by several cells and a few pixels",
+			offset: image.Pt(3*cw+2, -2*ch),
+			want:   []image.Rectangle{px(box).Add(image.Pt(3*cw+2, -2*ch))},
+		},
+		{
+			name:   "onto the screen from cells outside it",
+			cells:  image.Rect(-10, 3, -6, 5),
+			offset: image.Pt(14*cw+1, 0),
+			want:   []image.Rectangle{px(image.Rect(-10, 3, -6, 5)).Add(image.Pt(14*cw+1, 0))},
+		},
+		{
+			name:   "off the screen",
+			offset: image.Pt((cols-4)*cw, 0),
+		},
+		{
+			name:   "past the bottom of the screen",
+			offset: image.Pt(0, (rows-4)*ch+5),
+			want:   []image.Rectangle{px(box).Add(image.Pt(0, (rows-4)*ch+5)).Intersect(grid)},
+		},
+		{
+			name:   "confined to its clip on the cells it lands on",
+			offset: image.Pt(0, ch+ch/2),
+			clip:   clip,
+			want:   []image.Rectangle{px(box).Add(image.Pt(0, ch+ch/2)).Intersect(px(clip))},
+		},
+		{
+			name:   "dropped when it lands outside its clip",
+			offset: image.Pt(0, 3*ch),
+			clip:   clip,
+		},
+		{
+			name:   "kept when its cells are outside its clip but it lands inside",
+			cells:  image.Rect(4, 7, 8, 9),
+			offset: image.Pt(0, -4*ch),
+			clip:   clip,
+			want:   []image.Rectangle{px(box)},
+		},
+		{
+			name:   "cut by a cell written over a cell it lands on",
+			offset: image.Pt(2*cw, 0),
+			over:   []term.Coordinates{{X: 9, Y: 3}},
+			want:   []image.Rectangle{px(image.Rect(6, 3, 9, 4)), px(image.Rect(6, 4, 10, 5))},
+		},
+		{
+			name:   "cut by a written cell it reaches a pixel into",
+			offset: image.Pt(2*cw+1, 0),
+			over:   []term.Coordinates{{X: 10, Y: 4}},
+			want: []image.Rectangle{
+				image.Rect(6*cw+1, 3*ch, 10*cw+1, 4*ch),
+				image.Rect(6*cw+1, 4*ch, 10*cw, 5*ch),
+			},
+		},
+		{
+			name:   "not cut by a cell written over a cell it moved off",
+			offset: image.Pt(2*cw, 0),
+			over:   []term.Coordinates{{X: 4, Y: 3}},
+			want:   []image.Rectangle{px(box).Add(image.Pt(2*cw, 0))},
+		},
+		{
+			name:   "and moved down with the shifted cells",
+			offset: image.Pt(3, -ch),
+			down:   true,
+			want:   []image.Rectangle{px(box).Add(image.Pt(3, -ch+half))},
+		},
+		{
+			name:   "and moved up with the shifted cells as far as the top of the screen",
+			cells:  image.Rect(4, 1, 8, 3),
+			offset: image.Pt(0, 3-ch),
+			up:     true,
+			want:   []image.Rectangle{px(image.Rect(4, 0, 8, 2))},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cells := tt.cells
+			if cells.Empty() {
+				cells = box
+			}
+			w := cell.NewBufferWriter(frameContext(t.Context(), m), cols, rows)
+			require.True(t, w.DrawImage(term.Image{
+				Src: src, ID: term.NewImageID(),
+				Pos:   term.Coordinates{X: cells.Min.X, Y: cells.Min.Y},
+				Width: cells.Dx(), Height: cells.Dy(), Fit: term.ImageFitFill,
+				Clip: tt.clip, Offset: tt.offset,
+				VerticalRenderOffset: tt.down, NegativeVerticalRenderOffset: tt.up,
+			}))
+			for _, pos := range tt.over {
+				w.SetCell(pos, term.NewCell('x', 1, term.Attributes{}))
+			}
+
+			benchdraw.BeginFrame(t)
+			defer benchdraw.EndFrame(t)
+			assert.Equal(t, tt.want, r.drawImageLayer(screen, w.Images(), term.ImageLayerAboveText))
+		})
+	}
 }

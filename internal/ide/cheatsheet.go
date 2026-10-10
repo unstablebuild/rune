@@ -19,12 +19,9 @@ package ide
 import (
 	_ "embed"
 	"fmt"
-	"net/url"
 	"strings"
 	"text/template"
 
-	sensiblebrowser "github.com/ernestrc/sensible/browser"
-	log "github.com/sirupsen/logrus"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/ide/idetutorial/starlarktutorial"
 	"unstable.build/rune/internal/text"
@@ -117,21 +114,4 @@ func commandKeyLookup(bindings map[term.KeyComb][][]string) map[string]string {
 		}
 	}
 	return lookup
-}
-
-// browseURL opens a URL in the system browser. It is a package var so
-// tests can stub it instead of launching a real browser.
-var browseURL = sensiblebrowser.Browse
-
-// openCheatsheetLink opens http(s) links from the cheatsheet in the
-// system browser. Other schemes (such as in-document anchors) are left
-// to the markdown handler's default handling.
-func openCheatsheetLink(link *url.URL) bool {
-	if link.Scheme != "http" && link.Scheme != "https" {
-		return false
-	}
-	if err := browseURL(link); err != nil {
-		log.WithError(err).Warnf("cheatsheet: open url %q", link.String())
-	}
-	return true
 }

@@ -23,7 +23,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -735,7 +734,7 @@ func (m *Manager) withEnsuredOpen(
 		semanticapi.DidOpenTextDocumentParams{
 			TextDocument: semanticapi.TextDocumentItem{
 				URI:        uri,
-				LanguageID: lang.id,
+				LanguageID: lang.documentID,
 				Version:    firstFileVersion,
 				Text:       content,
 			},
@@ -774,6 +773,10 @@ func (m *Manager) ensureFile(
 		}
 		return f, nil
 	}
+	lang, err := languageForFile(uri)
+	if err != nil {
+		return nil, err
+	}
 	if content == "" {
 		read, err := m.readFileContent(uri.Path())
 		if err != nil {
@@ -784,7 +787,7 @@ func (m *Manager) ensureFile(
 		// editor trims last EOL but LSP servers expect it
 		content += "\n"
 	}
-	f = newFile(uri, content, key.languageID, key)
+	f = newFile(uri, content, lang.documentID, key)
 	m.mu.Lock()
 	m.files[uriStr] = f
 	m.mu.Unlock()
@@ -1023,11 +1026,9 @@ func (m *Manager) findBinary(
 	}
 
 	for _, file := range paths {
-		candidate := filepath.Base(file)
-		if candidate != lang.command {
-			continue
-		}
-		if _, err := os.Stat(file); err == nil {
+		// The path is on the workspace host, which need not be this
+		// machine, so it is handed to the executor as listed.
+		if filepath.Base(file) == lang.command {
 			return file, nil
 		}
 	}
@@ -1147,7 +1148,7 @@ func (m *Manager) reopenFiles(
 			semanticapi.DidOpenTextDocumentParams{
 				TextDocument: semanticapi.TextDocumentItem{
 					URI:        f.docID.URI,
-					LanguageID: key.languageID,
+					LanguageID: f.languageID,
 					Version:    f.version,
 					Text:       f.content,
 				},

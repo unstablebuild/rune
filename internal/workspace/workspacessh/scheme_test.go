@@ -182,14 +182,6 @@ func TestURI(t *testing.T) {
 	}
 }
 
-// TestConnectSchemeUsesRune asserts that the workspace-scheme bootstrap
-// looks for the `rune` binary on the remote — the same name that
-// `cmd/rune` accepts via its `--workspace-server / -x` flag (see
-// cmd/rune/main.go). A previous version of the code looked for an
-// obsolete binary called `six`, which made every real connection fail
-// with "six executable was not found on remote" even when authentication
-// succeeded. The bug went undetected because the docker e2e matrix
-// short-circuits via TestAuthDial and never reaches connectScheme.
 func TestConnectSchemeUsesRune(t *testing.T) {
 	rec := &recordingRemote{}
 
@@ -245,12 +237,6 @@ func TestConnectSchemeUsesRune(t *testing.T) {
 			"~/.local/bin PATH injection; saw %+v", rec.commands)
 }
 
-// TestConnectSchemeSkipPreflight asserts that when
-// sshConfig.skipPreflight is true, connectScheme does NOT issue the
-// `which rune` and `ls <path>` pre-flight probes. Each probe opens a
-// fresh SSH session channel, so skipping them is the user-visible
-// escape hatch on servers with a tight MaxSessions budget (manual
-// scenario workspace/workspacessh/manual_test/12_max_sessions_one.sh).
 func TestConnectSchemeSkipPreflight(t *testing.T) {
 	rec := &recordingRemote{}
 
@@ -340,12 +326,10 @@ func findRuneServerCmd(t *testing.T, rec *recordingRemote) workspaceapi.Cmd {
 	return workspaceapi.Cmd{}
 }
 
-func newProvisionTestScheme(rec *recordingRemote, provisionFn func() string) (*scheme, workspaceapi.URI) {
+func newRecordingTestScheme(rec *recordingRemote) (*scheme, workspaceapi.URI) {
 	s := new(scheme)
 	s.ctx, s.cancelCtx = context.WithCancel(context.Background())
 	s.cfg.skipPreflight = true
-	s.cfg.provisionPackages = true
-	s.provisionFn = provisionFn
 	s.remoteFn = func(context.Context, sshConfig, workspaceapi.URI) (remote, error) {
 		return rec, nil
 	}
@@ -358,45 +342,9 @@ func newProvisionTestScheme(rec *recordingRemote, provisionFn func() string) (*s
 	return s, uri
 }
 
-// TestConnectSchemeProvisionManifest asserts that a non-empty provisioning
-// manifest is threaded into the remote `rune -x` invocation as
-// `--install <manifest>`, immediately after `-x <path>` and as a single
-// unquoted token.
-func TestConnectSchemeProvisionManifest(t *testing.T) {
-	rec := &recordingRemote{}
-	manifest := "rune-go@1.2.3,rune-python@4.5.6"
-	s, uri := newProvisionTestScheme(rec, func() string { return manifest })
-	defer s.cancelCtx()
-
-	scheme, err := s.connectScheme(context.Background(), uri, func(error) {})
-	require.NoError(t, err)
-	if scheme != nil {
-		_ = scheme.Close()
-	}
-
-	cmd := findRuneServerCmd(t, rec)
-	require.Contains(t, cmd.Args, "--install",
-		"non-empty manifest must add --install; got %+v", cmd.Args)
-	idx := slices.Index(cmd.Args, "--install")
-	require.Less(t, idx+1, len(cmd.Args), "--install must be followed by a value")
-	assert.Equal(t, manifest, cmd.Args[idx+1],
-		"manifest must be a single unquoted token")
-
-	// --install must come right after `-x <path>`.
-	xIdx := slices.Index(cmd.Args, "-x")
-	require.GreaterOrEqual(t, xIdx, 0)
-	assert.Equal(t, xIdx+2, idx,
-		"--install must directly follow `-x <path>`; got %+v", cmd.Args)
-}
-
-// TestConnectSchemeRemoteDataDir asserts that WithRemoteDataDir threads an
-// explicit `--datadir ~/<name>` into the remote `rune -x` invocation so the
-// remote provisions into a known location (~ expands on the remote shell),
-// placed right after `-x <path>` and before any `--install` manifest.
 func TestConnectSchemeRemoteDataDir(t *testing.T) {
 	rec := &recordingRemote{}
-	manifest := "rune-go@1.2.3"
-	s, uri := newProvisionTestScheme(rec, func() string { return manifest })
+	s, uri := newRecordingTestScheme(rec)
 	s.remoteDataDir = ".runedev"
 	defer s.cancelCtx()
 
@@ -417,18 +365,11 @@ func TestConnectSchemeRemoteDataDir(t *testing.T) {
 	require.GreaterOrEqual(t, xIdx, 0)
 	assert.Equal(t, xIdx+2, ddIdx,
 		"--datadir must directly follow `-x <path>`; got %+v", cmd.Args)
-
-	instIdx := slices.Index(cmd.Args, "--install")
-	require.GreaterOrEqual(t, instIdx, 0)
-	assert.Greater(t, instIdx, ddIdx,
-		"--install must come after --datadir; got %+v", cmd.Args)
 }
 
-// TestConnectSchemeNoRemoteDataDir asserts that when WithRemoteDataDir is
-// unset the remote invocation omits --datadir, leaving the remote default.
 func TestConnectSchemeNoRemoteDataDir(t *testing.T) {
 	rec := &recordingRemote{}
-	s, uri := newProvisionTestScheme(rec, func() string { return "" })
+	s, uri := newRecordingTestScheme(rec)
 	defer s.cancelCtx()
 
 	scheme, err := s.connectScheme(context.Background(), uri, func(error) {})
@@ -440,54 +381,6 @@ func TestConnectSchemeNoRemoteDataDir(t *testing.T) {
 	cmd := findRuneServerCmd(t, rec)
 	assert.NotContains(t, cmd.Args, "--datadir",
 		"empty remote data dir must omit --datadir; got %+v", cmd.Args)
-}
-
-// TestConnectSchemeNoProvisionManifest asserts that no --install flag is
-// added when the provision function is nil or returns an empty manifest.
-func TestConnectSchemeNoProvisionManifest(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		fn   func() string
-	}{
-		{"nil", nil},
-		{"empty", func() string { return "" }},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			rec := &recordingRemote{}
-			s, uri := newProvisionTestScheme(rec, tc.fn)
-			defer s.cancelCtx()
-
-			scheme, err := s.connectScheme(context.Background(), uri, func(error) {})
-			require.NoError(t, err)
-			if scheme != nil {
-				_ = scheme.Close()
-			}
-
-			cmd := findRuneServerCmd(t, rec)
-			assert.NotContains(t, cmd.Args, "--install",
-				"empty manifest must omit --install; got %+v", cmd.Args)
-		})
-	}
-}
-
-// TestConnectSchemeProvisionPackagesDisabled asserts that when
-// workspace.ssh.provision_packages is false, no --install flag is threaded
-// into the remote invocation even if the manifest is non-empty.
-func TestConnectSchemeProvisionPackagesDisabled(t *testing.T) {
-	rec := &recordingRemote{}
-	s, uri := newProvisionTestScheme(rec, func() string { return "rune-go@1.2.3" })
-	s.cfg.provisionPackages = false
-	defer s.cancelCtx()
-
-	scheme, err := s.connectScheme(context.Background(), uri, func(error) {})
-	require.NoError(t, err)
-	if scheme != nil {
-		_ = scheme.Close()
-	}
-
-	cmd := findRuneServerCmd(t, rec)
-	assert.NotContains(t, cmd.Args, "--install",
-		"provision_packages=false must omit --install; got %+v", cmd.Args)
 }
 
 func TestParseWorkspaceURIHomeDir(t *testing.T) {
@@ -838,9 +731,7 @@ func (errorUI) PromptChoice(context.Context, string, []string) (int, error) {
 	return -1, fmt.Errorf("unexpected prompt: choice")
 }
 
-func (errorUI) Notify(NotificationLevel, string) string { return "" }
-
-func (errorUI) UpdateNotificationProgress(string, string, int, int) {}
+func (errorUI) Notify(NotificationLevel, string) {}
 
 func newTestScheme(
 	cfg config.Config, workspaceURI workspaceapi.URI,
@@ -878,41 +769,18 @@ func newNopScheme(t *testing.T, workspaceURI workspaceapi.URI) *scheme {
 	return s.(*scheme)
 }
 
-// TestScanRemoteStderrNotifiesAndTails feeds a synthetic stderr stream with
-// interleaved JSON progress and plain lines and asserts that progress lines
-// drive a single live progress notification (with a failed package also raised
-// as its own warning), the bar is NOT closed by the done line, is closed only
-// when the ServerReady line arrives, plain lines never notify but land in the
-// exit-error tail, and the scanner stops at EOF.
 func TestScanRemoteStderrNotifiesAndTails(t *testing.T) {
-	installing, err := EncodeProvisionProgress(ProvisionProgress{
-		Index: 1, Total: 2, Package: "pkg-a", Version: "1.0.0",
-		Phase: ProvisionPhaseInstalling,
-	})
-	require.NoError(t, err)
-	failed, err := EncodeProvisionProgress(ProvisionProgress{
-		Index: 2, Total: 2, Package: "pkg-b", Version: "2.0.0",
-		Phase: ProvisionPhaseFailed,
-	})
-	require.NoError(t, err)
-	done, err := EncodeProvisionProgress(ProvisionProgress{
-		Index: 2, Total: 2, Phase: ProvisionPhaseDone,
-	})
-	require.NoError(t, err)
-	finalizing, err := EncodeProvisionProgress(ProvisionProgress{
-		Phase: ProvisionPhaseFinalizing,
-	})
-	require.NoError(t, err)
+	var shellRC, late strings.Builder
+	require.NoError(t, WriteWarning(&shellRC, "install shell dotfiles: disk full"))
+	require.NoError(t, WriteWarning(&late, "late warning"))
 	readyLine, err := encodeServerReady()
 	require.NoError(t, err)
 
 	stream := "starting remote server\n" +
-		installing +
+		shellRC.String() +
 		"warning: something noisy\n" +
-		failed +
-		done +
-		finalizing +
 		readyLine +
+		late.String() +
 		"remote server exiting\n"
 
 	ui := &recordingUI{}
@@ -931,109 +799,23 @@ func TestScanRemoteStderrNotifiesAndTails(t *testing.T) {
 		t.Fatal("scanRemoteStderr did not stop at EOF")
 	}
 
-	// Notify is called once to open the progress notification (info) and once
-	// for the failed package (warning). The done/finalizing/ready updates flow
-	// through the progress bar, not a new Notify.
 	levels, msgs := ui.notifications()
 	assert.Equal(t, []string{
-		"Installing toolchain (1/2): pkg-a@1.0.0",
-		"Failed to install pkg-b@2.0.0",
-	}, msgs, "Notify opens the progress bar and raises the failure warning")
+		"install shell dotfiles: disk full",
+		"late warning",
+	}, msgs)
 	assert.Equal(t, []NotificationLevel{
-		NotificationInfo, NotificationWarning,
+		NotificationWarning, NotificationWarning,
 	}, levels)
-
-	// The bar advances monotonically on a synthetic /100 scale, stays strictly
-	// below total for every provisioning line (including done and finalizing),
-	// and completes only when the ServerReady line closes it.
-	progress := ui.progressUpdates()
-	require.Len(t, progress, 5)
-	wantID := "noti-Installing toolchain (1/2): pkg-a@1.0.0"
-	for _, u := range progress {
-		assert.Equal(t, wantID, u.id)
-		assert.Equal(t, provisionProgressBarTotal, u.total)
-	}
-	assert.Equal(t, "Installing toolchain (1/2): pkg-a@1.0.0", progress[0].message)
-	assert.Equal(t, 0, progress[0].progress)
-	assert.Equal(t, "Failed to install pkg-b@2.0.0", progress[1].message)
-	assert.Equal(t, packageRegionEnd, progress[1].progress)
-	assert.Equal(t, "Installed 2/2 toolchain packages", progress[2].message)
-	assert.Equal(t, packageRegionEnd, progress[2].progress,
-		"the done line must not close the bar")
-	assert.Equal(t, "Finalizing workspace…", progress[3].message)
-	assert.Equal(t, finalizeFraction, progress[3].progress)
-	assert.Equal(t, "Workspace ready", progress[4].message)
-	assert.Equal(t, provisionProgressBarTotal, progress[4].progress,
-		"only ServerReady closes the bar")
 
 	got := tail.String()
 	assert.Contains(t, got, "starting remote server")
 	assert.Contains(t, got, "warning: something noisy")
 	assert.Contains(t, got, "remote server exiting")
-	assert.NotContains(t, got, "provision", "progress lines must not leak into the tail")
+	assert.NotContains(t, got, "disk full", "warnings must not leak into the tail")
+	assert.NotContains(t, got, readySentinel, "ready must not leak into the tail")
 }
 
-// TestProvisionProgressNotifierMonotonicAcrossLifecycle drives the notifier
-// directly through a full two-package lifecycle (installing → downloading →
-// activating per package → finalizing → serving) and asserts the bar advances
-// monotonically, holds strictly below total until finish, and reaches total
-// only when finish (serving-ready) closes it.
-func TestProvisionProgressNotifierMonotonicAcrossLifecycle(t *testing.T) {
-	ui := &recordingUI{}
-	var n provisionProgressNotifier
-
-	lines := []ProvisionProgress{
-		{Index: 1, Total: 2, Package: "pkg-a", Version: "1.0.0", Phase: ProvisionPhaseInstalling},
-		{Index: 1, Total: 2, Package: "pkg-a", Version: "1.0.0", Phase: ProvisionPhaseDownloading, Done: 5, Of: 10, Units: "KiB"},
-		{Index: 1, Total: 2, Package: "pkg-a", Version: "1.0.0", Phase: ProvisionPhaseActivating},
-		{Index: 2, Total: 2, Package: "pkg-b", Version: "2.0.0", Phase: ProvisionPhaseInstalling},
-		{Index: 2, Total: 2, Package: "pkg-b", Version: "2.0.0", Phase: ProvisionPhaseDownloading, Done: 8, Of: 10, Units: "KiB"},
-		{Index: 2, Total: 2, Package: "pkg-b", Version: "2.0.0", Phase: ProvisionPhaseActivating},
-		{Phase: ProvisionPhaseFinalizing},
-	}
-	for _, p := range lines {
-		n.report(ui, p)
-	}
-	n.finish(ui)
-
-	updates := ui.progressUpdates()
-	require.Len(t, updates, len(lines)+1)
-
-	prev := -1
-	for i, u := range updates {
-		assert.GreaterOrEqual(t, u.progress, prev,
-			"progress must be monotonically non-decreasing at step %d", i)
-		prev = u.progress
-		assert.Equal(t, provisionProgressBarTotal, u.total)
-		if i < len(updates)-1 {
-			assert.Less(t, u.progress, provisionProgressBarTotal,
-				"the bar must stay below total until finish at step %d", i)
-		}
-	}
-	last := updates[len(updates)-1]
-	assert.Equal(t, provisionProgressBarTotal, last.progress,
-		"finish completes the bar")
-	assert.Equal(t, "Workspace ready", last.message)
-}
-
-// TestProvisionProgressNotifierFinishNoopWithoutBar asserts that finish is a
-// no-op when no provisioning line ever opened the bar (a launch with no
-// --install manifest), so a plain serving-ready launch does not synthesize a
-// spurious progress notification.
-func TestProvisionProgressNotifierFinishNoopWithoutBar(t *testing.T) {
-	ui := &recordingUI{}
-	var n provisionProgressNotifier
-	n.finish(ui)
-	assert.Empty(t, ui.progressUpdates(), "finish must not open a bar")
-	levels, msgs := ui.notifications()
-	assert.Empty(t, msgs)
-	assert.Empty(t, levels)
-}
-
-// TestScanRemoteStderrClosesReadyOnServerReady asserts the ServerReady sentinel
-// line closes the readiness channel exactly once, is not surfaced as a
-// notification, and does not leak into the exit-error tail (it is a control
-// line, like progress).
 func TestScanRemoteStderrClosesReadyOnServerReady(t *testing.T) {
 	readyLine, err := encodeServerReady()
 	require.NoError(t, err)
@@ -1074,13 +856,8 @@ func TestScanRemoteStderrClosesReadyOnServerReady(t *testing.T) {
 	assert.NotContains(t, got, "ready", "ready lines must not leak into the tail")
 }
 
-// TestConnectSchemeReturnsErrorWhenRemoteExitsBeforeServing asserts that if the
-// remote process ends before emitting the ServerReady sentinel, connectScheme
-// surfaces an error carrying the stderr tail instead of handing back a client
-// whose first RPC would block forever. This is the whole point of gating the
-// client on readiness.
 func TestConnectSchemeReturnsErrorWhenRemoteExitsBeforeServing(t *testing.T) {
-	rec := &failingServerRemote{stderr: "provisioning failed: disk full\n"}
+	rec := &failingServerRemote{stderr: "load config failed: disk full\n"}
 
 	s := new(scheme)
 	s.ctx, s.cancelCtx = context.WithCancel(context.Background())
@@ -1114,13 +891,13 @@ func TestConnectSchemeReturnsErrorWhenRemoteExitsBeforeServing(t *testing.T) {
 
 	require.Error(t, connErr, "connectScheme must fail when the remote exits before serving")
 	assert.Nil(t, scheme, "no client must be returned when readiness never arrives")
-	assert.Contains(t, connErr.Error(), "provisioning failed: disk full",
+	assert.Contains(t, connErr.Error(), "load config failed: disk full",
 		"the error must carry the remote stderr tail")
 }
 
 // failingServerRemote is a remote whose workspace-server command (-x) writes a
 // line to stderr and then exits WITHOUT emitting the ServerReady sentinel,
-// standing in for a remote that dies during provisioning.
+// standing in for a remote that dies before serving.
 type failingServerRemote struct {
 	stderr string
 }
@@ -1157,15 +934,6 @@ func (e *failingServerExecutor) StartCommand(
 func (e *failingServerExecutor) Signal(workspaceapi.Pid, syscall.Signal) error { return nil }
 func (e *failingServerExecutor) Close() error                                  { return nil }
 
-// TestConnectSchemeUnblocksWhenAttemptContextCancelled is a regression test for
-// a shutdown deadlock: connectScheme must honor the per-attempt context
-// maintainConnection passes it. If the remote connects but never becomes
-// serving-ready (provisioning stalls) and never exits, cancelling that context
-// (IDE shutdown / retry abort) must unblock connectScheme. Watching only the
-// scheme's own long-lived context here is not enough — that context is rooted
-// in context.Background() and is not cancelled by shutdown, so connectScheme
-// would hang forever, state() would never return, and Close's WaitGroup.Wait
-// would deadlock.
 func TestConnectSchemeUnblocksWhenAttemptContextCancelled(t *testing.T) {
 	rec := &hangingServerRemote{}
 
@@ -1221,7 +989,7 @@ func TestConnectSchemeUnblocksWhenAttemptContextCancelled(t *testing.T) {
 
 // hangingServerRemote is a remote whose workspace-server command (-x) connects
 // (writes some stderr) but neither emits the ServerReady sentinel nor exits,
-// standing in for a remote stuck in provisioning. Its command blocks until
+// standing in for a remote stuck before serving. Its command blocks until
 // release is called or the command context is cancelled.
 type hangingServerRemote struct {
 	execs []*hangingServerExecutor
@@ -1255,7 +1023,7 @@ func (e *hangingServerExecutor) StartCommand(
 	ctx context.Context, cmd workspaceapi.Cmd,
 ) (workspaceapi.Pid, error) {
 	if cmd.Stderr != nil {
-		_, _ = io.WriteString(cmd.Stderr, "provisioning toolchain...\n")
+		_, _ = io.WriteString(cmd.Stderr, "loading config...\n")
 	}
 	go debug.CapturePanicReport(func() {
 		// Block without emitting ServerReady or exiting until released or the
@@ -1277,9 +1045,6 @@ func (e *hangingServerExecutor) Close() error {
 	return nil
 }
 
-// TestConnectSchemeReleasesRemoteWhenStartFails asserts that an attempt
-// failing before the remote serves closes the remote and every pipe handed to
-// its command. maintainConnection retries, so a leak here repeats per attempt.
 func TestConnectSchemeReleasesRemoteWhenStartFails(t *testing.T) {
 	tsuite := []struct {
 		desc       string
@@ -1354,8 +1119,6 @@ func (e startFailingExecutor) StartCommand(
 func (startFailingExecutor) Signal(workspaceapi.Pid, syscall.Signal) error { return nil }
 func (startFailingExecutor) Close() error                                  { return nil }
 
-// TestStderrTailBounded asserts the tail retains only the most recent
-// stderrTailCap bytes so a chatty remote cannot grow it without bound.
 func TestStderrTailBounded(t *testing.T) {
 	tail := newStderrTail()
 	for range 10000 {

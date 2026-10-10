@@ -24,7 +24,7 @@ import (
 	"runtime"
 	"testing"
 
-	"unstable.build/rune/internal/ide/syntax"
+	"unstable.build/rune/internal/ide/syntax/treesitter"
 )
 
 // ParserPath returns the tree-sitter parser fixture in langDir built for
@@ -32,7 +32,7 @@ import (
 //
 // The darwin fixture is a universal binary at the root of langDir; the
 // Linux ones live in a GOOS_GOARCH subdirectory. The parser is always
-// named syntax.ParserFilename because the production loader matches on
+// named treesitter.ParserFilename because the production loader matches on
 // that base name.
 func ParserPath(t testing.TB, langDir string) string {
 	t.Helper()
@@ -48,10 +48,10 @@ func ParserPath(t testing.TB, langDir string) string {
 // testing.TB, such as a PkgManager implementation.
 func Parser(langDir string) string {
 	if runtime.GOOS == "darwin" {
-		return filepath.Join(langDir, syntax.ParserFilename)
+		return filepath.Join(langDir, treesitter.ParserFilename)
 	}
 	return filepath.Join(
-		langDir, runtime.GOOS+"_"+runtime.GOARCH, syntax.ParserFilename)
+		langDir, runtime.GOOS+"_"+runtime.GOARCH, treesitter.ParserFilename)
 }
 
 // LibDir returns the file list a syntax.PkgManager must expose for
@@ -60,8 +60,8 @@ func LibDir(t testing.TB, langDir string) []string {
 	t.Helper()
 	files := []string{ParserPath(t, langDir)}
 	for _, q := range []string{
-		syntax.LocalsFilename, syntax.HighlightsFilename,
-		syntax.IndentsFilename, syntax.FoldsFilename,
+		treesitter.LocalsFilename, treesitter.HighlightsFilename,
+		treesitter.IndentsFilename, treesitter.FoldsFilename,
 	} {
 		p := filepath.Join(langDir, q)
 		if _, err := os.Stat(p); err == nil {

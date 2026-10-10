@@ -18,10 +18,12 @@ package text
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"unstable.build/rune/internal/component/template"
 )
 
 func TestStatusBarLayout(t *testing.T) {
@@ -280,6 +282,46 @@ func TestStatusBarLayout(t *testing.T) {
 					Attributes: term.Attributes{Fg: term.ColorDefault},
 				},
 			},
+		},
+		{
+			name:  "image with its literals and directives",
+			input: `{{ .Image | src "file:///tmp/logo.png" | width 3 | z_index -1 | bg "navy" }} {{ .Status }}`,
+			wantComps: []StatusBarComponent{
+				{
+					Type:       StatusBarImage,
+					Template:   "%s ",
+					Attributes: term.Attributes{Bg: term.ColorNavy},
+					Image: template.Image{
+						URI:     "file:///tmp/logo.png",
+						Width:   template.Length{N: 3},
+						Height:  1,
+						Reserve: 3,
+						Fit:     term.ImageFitContain,
+						ZIndex:  -1,
+						Alt:     template.DefaultImageAlt,
+						TTL:     24 * time.Hour,
+					},
+				},
+				{Type: StatusBarStatus, Template: "%s"},
+			},
+		},
+		{
+			name:       "image without src",
+			input:      `{{ .Image | width 3 }}`,
+			wantErr:    true,
+			wantErrSub: ".Image requires src",
+		},
+		{
+			name:       "image directive on another component",
+			input:      `{{ .Filepath | src "file:///tmp/logo.png" }}`,
+			wantErr:    true,
+			wantErrSub: "src only applies to .Image, not .Filepath",
+		},
+		{
+			name:       "image layer is not a directive",
+			input:      `{{ .Image | src "file:///tmp/logo.png" | layer "below" }}`,
+			wantErr:    true,
+			wantErrSub: `function "layer" not defined`,
 		},
 		// Error cases
 		{

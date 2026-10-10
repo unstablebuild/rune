@@ -32,6 +32,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/iterator"
 	"unstable.build/rune/internal/ide/syntax"
 	"unstable.build/rune/internal/ide/syntax/grammarfixture"
+	"unstable.build/rune/internal/ide/syntax/treesitter"
 	"unstable.build/rune/internal/workspace"
 )
 
@@ -104,7 +105,7 @@ func newResolveParser(t *testing.T, files map[string]string) syntaxapi.Parser {
 	for name, content := range files {
 		createFile(t, scheme, name, content)
 	}
-	return syntax.NewParser(scheme, langPkgManager{wd: wd}, uri)
+	return treesitter.NewParser(scheme, langPkgManager{wd: wd}, uri)
 }
 
 // recordingPkgManager wraps a PkgManager and records every language for
@@ -151,7 +152,7 @@ func newRecordingResolveParser(
 		createFile(t, scheme, name, content)
 	}
 	pkg := &recordingPkgManager{inner: langPkgManager{wd: wd}}
-	return syntax.NewParser(scheme, pkg, uri), pkg
+	return treesitter.NewParser(scheme, pkg, uri), pkg
 }
 
 func resolveAll(t *testing.T, parser syntaxapi.Parser, name string) ([]syntaxapi.Match, error) {
@@ -176,11 +177,6 @@ func (r *recordingProgress) Report(_ string, _ int, step, total int64) {
 	r.events = append(r.events, progressEvent{step: step, total: total})
 }
 
-// TestParserResolveSymbolProgressMonotonic resolves an unresolvable name in a
-// mixed-language workspace so symbolresolve.Resolve runs every detected spec.
-// The aggregated progress forwarded to the caller must be monotonic — step and
-// total never decrease and step never exceeds total — even though each spec
-// restarts its own per-phase reporting.
 func TestParserResolveSymbolProgressMonotonic(t *testing.T) {
 	parser := newResolveParser(t, map[string]string{
 		"geometry/area.go": goGeometryDef,
@@ -272,11 +268,6 @@ func TestParserResolveSymbolLanguageDetection(t *testing.T) {
 	})
 }
 
-// TestParserResolveSymbolScopesDefinitionWalk reproduces the
-// definitions-phase hang: resolving an unresolvable method against a
-// non-Go spec (no package clause) must scope the workspace walk to the
-// spec's own language and never load grammars for unrelated languages
-// present in the workspace.
 func TestParserResolveSymbolScopesDefinitionWalk(t *testing.T) {
 	parser, pkg := newRecordingResolveParser(t, map[string]string{
 		"shapes.py":   pyShapesDef,
@@ -296,9 +287,6 @@ func TestParserResolveSymbolScopesDefinitionWalk(t *testing.T) {
 		"definitions phase must not load grammars for unrelated languages")
 }
 
-// TestParserResolveSymbolMethod resolves a pkg.Type.Method name through
-// the real spec engine and asserts it lands on the method declaration
-// without loading grammars for unrelated languages in the workspace.
 func TestParserResolveSymbolMethod(t *testing.T) {
 	parser, pkg := newRecordingResolveParser(t, map[string]string{
 		"geometry/area.go": goGeometryDef,

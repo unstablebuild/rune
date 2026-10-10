@@ -31,11 +31,14 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/internal/cell"
 	"unstable.build/rune/internal/handler/handlertest"
+	"unstable.build/rune/internal/ide/syntax/treesitter"
 	"unstable.build/rune/internal/text"
 	"unstable.build/rune/internal/text/registerhistory"
 	"unstable.build/rune/internal/text/registerset"
 	"unstable.build/rune/internal/text/texttest"
 )
+
+var _ foldsService = (*treesitter.Tree)(nil)
 
 type testSelectionService struct {
 	view   cell.View
@@ -957,9 +960,6 @@ func runSublimeSuite(t *testing.T, keymap Keymap, suite []sublimeCase) {
 	}
 }
 
-// TestSublimeKeyBindingsLinux replays the Sublime Text for Linux shortcuts:
-// editing lives on <ctrl>, with <ctrl-k> as the chord prefix, because every
-// <meta> chord belongs to Rune's command layer.
 func TestSublimeKeyBindingsLinux(t *testing.T) {
 	spAll := sublimeSnippetPlus
 	runSublimeSuite(t, KeymapLinux, []sublimeCase{
@@ -1426,10 +1426,6 @@ func (v testIndentView) IndentationAt(line int) (int, bool) {
 	return target, ok
 }
 
-// TestStandardTabAtTargetInsertsFullIndentLevel reproduces RUNE-121 for the
-// standard handler: when the line is already at the syntax target indent, a
-// <tab> keypress must add a full indent level rather than a single space, and
-// a second <tab> must add another level rather than dedenting.
 func TestStandardTabAtTargetInsertsFullIndentLevel(t *testing.T) {
 	uri, err := workspaceapi.ParseURI("memory:///indent.yaml")
 	require.NoError(t, err)
@@ -1455,10 +1451,6 @@ func TestStandardTabAtTargetInsertsFullIndentLevel(t *testing.T) {
 	assert.Equal(t, term.Coordinates{X: 6, Y: 0}, h.CursorAtScroll())
 }
 
-// TestStandardShiftTabFallsThroughWhenNoDedent verifies that <shift-tab>
-// is reported as unhandled when there is no indentation to remove, so the
-// event can fall through to outer command keybindings (e.g. the file
-// explorer toggle) instead of being silently swallowed.
 func TestStandardShiftTabFallsThroughWhenNoDedent(t *testing.T) {
 	uri, err := workspaceapi.ParseURI("memory:///dedent.txt")
 	require.NoError(t, err)
@@ -1476,8 +1468,6 @@ func TestStandardShiftTabFallsThroughWhenNoDedent(t *testing.T) {
 	assert.Equal(t, "hello", buf.String())
 }
 
-// TestStandardShiftTabDedentsWhenIndented verifies that <shift-tab> still
-// dedents an indented line and reports the event as handled.
 func TestStandardShiftTabDedentsWhenIndented(t *testing.T) {
 	uri, err := workspaceapi.ParseURI("memory:///dedent.txt")
 	require.NoError(t, err)
@@ -2362,10 +2352,6 @@ func newRobustnessHandler(
 	return h, buf, clip
 }
 
-// TestStandardRobustnessDegenerateBuffers drives every input sequence against
-// degenerate buffers (empty, blank-only, single char, whitespace, no trailing
-// newline) with the cursor at the origin. Nothing may panic and the cursor must
-// stay in bounds.
 func TestStandardRobustnessDegenerateBuffers(t *testing.T) {
 	contents := []struct {
 		name    string
@@ -2393,8 +2379,6 @@ func TestStandardRobustnessDegenerateBuffers(t *testing.T) {
 	}
 }
 
-// TestStandardRobustnessBoundaryPositions moves the cursor to a boundary
-// (start of file, end of file, end of a line) and then drives every sequence.
 func TestStandardRobustnessBoundaryPositions(t *testing.T) {
 	const content = "first line\n\nthird line has more\nx\n"
 	boundaries := []struct {
@@ -2421,9 +2405,6 @@ func TestStandardRobustnessBoundaryPositions(t *testing.T) {
 	}
 }
 
-// TestStandardRobustnessNullCells exercises the handler over buffers containing
-// sparse/null cells (\x00), which arise from performance/VTE buffers. The
-// cursor must report no cell on a null and every op must stay in bounds.
 func TestStandardRobustnessNullCells(t *testing.T) {
 	contents := []struct {
 		name    string
@@ -2446,9 +2427,6 @@ func TestStandardRobustnessNullCells(t *testing.T) {
 	}
 }
 
-// TestStandardRobustnessExternalEdit drives every sequence after an out-of-band
-// edit through CellEditor().Edit mutates the buffer under the cursor: deleting
-// the cursor's line, replacing a range, or inserting above.
 func TestStandardRobustnessExternalEdit(t *testing.T) {
 	edits := []struct {
 		name     string
@@ -2476,9 +2454,6 @@ func TestStandardRobustnessExternalEdit(t *testing.T) {
 	}
 }
 
-// TestStandardRobustnessZeroDimensions drives every sequence before Resize has
-// given the handler a viewport, and after a Resize to a zero dimension. These
-// paths must not panic.
 func TestStandardRobustnessZeroDimensions(t *testing.T) {
 	dims := []struct {
 		name          string
@@ -2502,9 +2477,6 @@ func TestStandardRobustnessZeroDimensions(t *testing.T) {
 	}
 }
 
-// TestStandardRobustnessRepeatedOps repeats each single-key sequence many times
-// to drive the cursor and buffer well past content bounds; the handler must not
-// panic or leave the cursor out of bounds regardless of repetition.
 func TestStandardRobustnessRepeatedOps(t *testing.T) {
 	for _, seq := range robustnessSequences {
 		t.Run(seq.name, func(t *testing.T) {
@@ -2517,9 +2489,6 @@ func TestStandardRobustnessRepeatedOps(t *testing.T) {
 	}
 }
 
-// TestStandardSetCursorAtScrollClampsOutOfBounds pins that the public
-// SetCursorAtScroll clamps a request past the buffer into valid bounds rather
-// than leaving the cursor stranded.
 func TestStandardSetCursorAtScrollClampsOutOfBounds(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -2546,9 +2515,6 @@ func TestStandardSetCursorAtScrollClampsOutOfBounds(t *testing.T) {
 	}
 }
 
-// TestStandardNullCellEditing pins that placing the cursor on a sparse/null
-// cell and editing there is safe and well-defined: the cell reads back as the
-// null rune and a delete removes it without panicking.
 func TestStandardNullCellEditing(t *testing.T) {
 	h, buf, _ := newRobustnessHandler(t, "ab\x00\x00", 20, 10)
 	sh := h.(*standardHandler)
@@ -2571,9 +2537,6 @@ func TestStandardNullCellEditing(t *testing.T) {
 	assert.Equal(t, "ab\x00", buf.String())
 }
 
-// TestHandleMouseWindowCoordinates verifies mouse events are
-// interpreted in window coordinates: positions follow the horizontal
-// scroll offset and resolve past the viewport edge with wrap off.
 func TestHandleMouseWindowCoordinates(t *testing.T) {
 	uri, err := workspaceapi.ParseURI("test:///")
 	require.NoError(t, err)

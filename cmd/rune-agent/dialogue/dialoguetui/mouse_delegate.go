@@ -17,6 +17,8 @@
 package dialoguetui
 
 import (
+	"net/url"
+
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/mouse"
 	"github.com/unstablebuild/rune-go-sdk/term"
@@ -25,15 +27,16 @@ import (
 
 func newMouseDelegate(
 	grid *tterm.SelectionWriter,
-	list *component.ResponsiveList,
+	comp *Component,
 ) *mouseDelegate {
-	return &mouseDelegate{grid: grid, list: list}
+	return &mouseDelegate{grid: grid, comp: comp, list: &comp.messages}
 }
 
 var _ mouse.Delegate = (*mouseDelegate)(nil)
 
 type mouseDelegate struct {
 	grid   *tterm.SelectionWriter
+	comp   *Component
 	list   *component.ResponsiveList
 	offset term.Coordinates // messages-area offset within the grid, updated each Draw
 	// sel holds both selection endpoints in content coordinates: each Y is a
@@ -52,7 +55,24 @@ type mouseDelegate struct {
 }
 
 func (d *mouseDelegate) OnAction(ev term.Event, pos term.Coordinates, action mouse.Action) bool {
-	return false
+	if action != mouse.LeftClick || d.comp == nil || d.comp.cfg.OnLinkClick == nil {
+		return false
+	}
+	link := d.comp.LinkAt(pos)
+	if link == nil || link.URL == "" {
+		return false
+	}
+	parsed, err := url.Parse(link.URL)
+	if err != nil {
+		return false
+	}
+	if !d.comp.cfg.OnLinkClick(parsed) {
+		return false
+	}
+	// A handled press skips selection handling, which is what clears the
+	// previous selection and anchors a drag continuing from this press.
+	d.SetSelectionStart(pos)
+	return true
 }
 
 func (d *mouseDelegate) ScrollUp(n int) (ok bool) {
@@ -151,6 +171,7 @@ func (d *mouseDelegate) renderFullGrid() (start, end term.Coordinates, ok bool) 
 	d.list.Resize(width, total)
 	d.list.SeekStart()
 	d.list.Draw(&d.fullGrid)
+	d.comp.eraseCodeCopyIcons(&d.fullGrid)
 
 	d.list.Resize(width, savedHeight)
 	d.restoreOffset(savedOffset)

@@ -34,6 +34,7 @@ import (
 	"unstable.build/rune/internal/ide/idelsp/symbolresolve"
 	"unstable.build/rune/internal/ide/syntax"
 	"unstable.build/rune/internal/ide/syntax/grammarfixture"
+	"unstable.build/rune/internal/ide/syntax/treesitter"
 	"unstable.build/rune/internal/workspace"
 )
 
@@ -561,7 +562,7 @@ func setupPythonEnvAt(t *testing.T, testdata string) *resolveEnv {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = scheme.Close() })
 
-	parser := syntax.NewParser(scheme, pythonPkgManager(t), uri)
+	parser := treesitter.NewParser(scheme, pythonPkgManager(t), uri)
 	return &resolveEnv{
 		root: root, parser: parser,
 		qc: symbolresolve.NewQualifierContext(scheme, uri),

@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"net/url"
 	"path/filepath"
 	"time"
 
@@ -84,6 +85,12 @@ type Config struct {
 	// reported by cell.Buffer.Size) above which a file's tab
 	// installs no syntax tree.
 	MaxSyntaxParseSize int
+	// SyntaxTree installs the syntax tree of every file tab whose buffer
+	// is within MaxSyntaxParseSize. When nil, file tabs get no syntax
+	// tree, and with it no highlights, folds, syntax indents or syntax
+	// commands. It is injected rather than linked so that editors which
+	// never parse files build without the parser's cgo dependencies.
+	SyntaxTree syntax.NewTreeFunc
 	// SwapDirectory reports the directory holding file's swap entry,
 	// named after the full path of the file it backs. It is asked per
 	// file because one editor opens files on many hosts, and a
@@ -95,6 +102,10 @@ type Config struct {
 	Clipboard     clipboard.Register
 	OpenRouter    OpenRouter
 	Comments      CommentConfig
+	// OnLinkClick handles a link clicked in a markdown tab and reports
+	// whether it did. Links it declines, or every link when it is nil,
+	// only scroll to the in-document anchors they name.
+	OnLinkClick func(*url.URL) bool
 	// StreamingOpen enables the async streaming file-open path.
 	// When true, OpenFileTab returns a lightweight read-only
 	// streaming handler immediately and runs workspace.Load on a
@@ -440,9 +451,9 @@ func WithTabspaces(tabspaces int) Option {
 }
 
 // WithSyntaxConfig returns an Option that sets syntax configuration.
-func WithSyntaxConfig(syntax syntax.Config) Option {
+func WithSyntaxConfig(config syntax.Config) Option {
 	return func(cfg *Config) {
-		cfg.Syntax = syntax
+		cfg.Syntax = config
 	}
 }
 
@@ -453,6 +464,14 @@ func WithSyntaxConfig(syntax syntax.Config) Option {
 func WithMaxSyntaxParseSize(size int) Option {
 	return func(cfg *Config) {
 		cfg.MaxSyntaxParseSize = size
+	}
+}
+
+// WithSyntaxTree returns an Option that sets the function installing the
+// syntax tree of each file tab. See Config.SyntaxTree.
+func WithSyntaxTree(fn syntax.NewTreeFunc) Option {
+	return func(cfg *Config) {
+		cfg.SyntaxTree = fn
 	}
 }
 
@@ -787,6 +806,13 @@ func WithEventPublisher(f func(term.Event) bool) Option {
 func WithOpenRouter(r OpenRouter) Option {
 	return func(cfg *Config) {
 		cfg.OpenRouter = r
+	}
+}
+
+// WithOnLinkClick sets Config.OnLinkClick.
+func WithOnLinkClick(fn func(*url.URL) bool) Option {
+	return func(cfg *Config) {
+		cfg.OnLinkClick = fn
 	}
 }
 

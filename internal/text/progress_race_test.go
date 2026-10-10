@@ -93,11 +93,6 @@ func (f *focusNotifications) UpdateNotificationProgress(
 	return nil
 }
 
-// TestSchedNotifyProgressWriterAvoidsRace exercises the cluster-1
-// race: progress samples must hop onto the event-loop goroutine that
-// owns the focus field. Without the scheduling, -race flags the
-// concurrent access between Notify (called from the writer goroutine)
-// and the loop runner's mutation of focus.
 func TestSchedNotifyProgressWriterAvoidsRace(t *testing.T) {
 	t.Parallel()
 

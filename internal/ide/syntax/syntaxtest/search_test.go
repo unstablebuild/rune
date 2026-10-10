@@ -33,8 +33,8 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
-	"unstable.build/rune/internal/ide/syntax"
 	"unstable.build/rune/internal/ide/syntax/grammarfixture"
+	"unstable.build/rune/internal/ide/syntax/treesitter"
 	"unstable.build/rune/internal/workspace"
 )
 
@@ -46,7 +46,7 @@ func TestParserHighlights(t *testing.T) {
 	require.NoError(t, err)
 
 	pkgs := newInstalledPkgManager(t)
-	parser := syntax.NewParser(nil /* fs not needed for highlights */, pkgs, wuri)
+	parser := treesitter.NewParser(nil /* fs not needed for highlights */, pkgs, wuri)
 	uri, err := workspaceapi.ParseURI("memory:///file.go")
 	require.NoError(t, err)
 
@@ -304,7 +304,7 @@ func setupSearcherForTests(t *testing.T, filesAvail ...string) (
 	uri1 = createFile(t, scheme, "a.go", searchFileContent)
 	uri2 = createFile(t, scheme, "b.go", searchFileContent)
 	uri3 = createFile(t, scheme, "c.go", searchFileContent)
-	searcher = syntax.NewParser(scheme, pkgs, uri)
+	searcher = treesitter.NewParser(scheme, pkgs, uri)
 	return
 }
 
@@ -321,9 +321,6 @@ type myType struct {
 }
 `
 
-// TestSearchExcludesNoiseDirs verifies the workspace source-code walk skips
-// dependency/build/hidden directories (e.g. .venv, node_modules, target) so
-// their files never surface in symbol search results.
 func TestSearchExcludesNoiseDirs(t *testing.T) {
 	logrus.SetLevel(logrus.TraceLevel)
 	dir := t.TempDir()
@@ -355,7 +352,7 @@ func TestSearchExcludesNoiseDirs(t *testing.T) {
 	scheme, err := workspace.NewFileScheme(context.Background(), config.NopConfig(), uri)
 	require.NoError(t, err)
 
-	searcher := syntax.NewParser(scheme, pkgs, uri)
+	searcher := treesitter.NewParser(scheme, pkgs, uri)
 	it, err := searcher.Search(string(locals), []string{"local.definition.function"})
 	require.NoError(t, err)
 	funcs, err := iterator.ToSlice(context.Background(), it)

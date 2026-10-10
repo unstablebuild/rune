@@ -65,10 +65,6 @@ func TestBufferEditRequest(t *testing.T) {
 	}
 }
 
-// TestRowsToBufferRowsAreExactSize guards against rowsToBuffer
-// materializing a height x maxWidth rectangle: one long line among
-// many short ones must not make every row retain a maxWidth-sized
-// backing array for the lifetime of the buffer.
 func TestRowsToBufferRowsAreExactSize(t *testing.T) {
 	content := strings.Repeat("x", 4096) + "\na\nbb\n\nccc"
 	buf := cell.NewBuffer()

@@ -78,11 +78,6 @@ func TestAlignByContent(t *testing.T) {
 	assert.Equal(t, 4, a.tabstop)
 }
 
-// TestAlignWithWrapAmbiguousAnchor reproduces the soft-wrap regression
-// where the visible band starts on an ambiguous row (a lone "}") that
-// prefix-matches many file lines. Anchoring on that single row picked
-// the wrong file line; voting over every candidate start line recovers
-// the correct anchor even though long lines wrap across multiple rows.
 func TestAlignWithWrapAmbiguousAnchor(t *testing.T) {
 	t.Parallel()
 
@@ -117,13 +112,6 @@ func TestAlignWithWrapAmbiguousAnchor(t *testing.T) {
 		"should anchor on line 6, not the ambiguous lines 3 or 9")
 }
 
-// TestAlignTailViewNotAnchoredPastEOF reproduces the regression where a
-// view scrolled near end-of-file anchored on the very last line. With a
-// lone "}" at the top of the band, the 1:1 scorer mapped the rest of the
-// band past EOF and skipped those rows, so anchoring on the final line
-// scored a vacuous 1.0 from its single in-bounds row and beat the
-// correct wrap alignment. Real content predicted past EOF must count as
-// a mismatch (only blank/"~" filler is neutral).
 func TestAlignTailViewNotAnchoredPastEOF(t *testing.T) {
 	t.Parallel()
 

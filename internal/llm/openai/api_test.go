@@ -146,12 +146,6 @@ func newTypedSchema() typedSchema {
 	}
 }
 
-// TestOpenAIToolsFromModel_ParameterShapes exercises the chat-completions
-// tool conversion path. It is the regression test for RUNE-186: when
-// rune-agent obtains llmapi.Service over gRPC, tool parameter schemas
-// arrive as json.RawMessage (or []byte), and the prior switch silently
-// dropped them, leaving the model with no schema and producing empty
-// tool-call arguments.
 func TestOpenAIToolsFromModel_ParameterShapes(t *testing.T) {
 	mapParams := map[string]any{
 		"type":                 "object",
@@ -203,8 +197,6 @@ func TestOpenAIToolsFromModel_ParameterShapes(t *testing.T) {
 	}
 }
 
-// TestResponsesToolsFromModel_ParameterShapes mirrors the chat path test
-// for the Responses API (codex / gpt-5*) conversion.
 func TestResponsesToolsFromModel_ParameterShapes(t *testing.T) {
 	mapParams := map[string]any{
 		"type":                 "object",

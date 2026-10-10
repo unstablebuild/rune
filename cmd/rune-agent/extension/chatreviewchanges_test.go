@@ -735,7 +735,6 @@ func TestReviewChanges(t *testing.T) {
 	}
 }
 
-// A review is only worth opening when something reached the workspace.
 func TestReviewChangesNoAppliedChanges(t *testing.T) {
 	tests := []reviewCase{
 		{name: "empty conversation", wantErr: errNoAppliedChanges},
@@ -794,11 +793,6 @@ func TestReviewChangesNoAppliedChanges(t *testing.T) {
 	}
 }
 
-// This is the production path that previously had no regression test:
-// the real apply_patch tool mutates a git worktree, git restores the
-// file out of band, and the review reads that restored file through
-// workspaceSource. Feeding reviewChanges a hand-built map does not
-// exercise path expansion, URI handling, or workspace FileSystem I/O.
 func TestReviewChangesOmitsApplyPatchRevertedByGitCheckout(t *testing.T) {
 	before, patch := bluectxRemovalFixture()
 	dir, path, fs, cwd, applyTool := newGitPatchWorkspace(t, before)
@@ -849,11 +843,6 @@ func TestCommandAdapterOmitsApplyPatchRevertedByGitCheckout(t *testing.T) {
 	assert.Empty(t, wm.floatings)
 }
 
-// The real failure had a later apply_patch restore what an earlier one
-// removed. Looking at each call independently kept the restoration as a
-// large positive diff even though the conversation's net change was
-// zero. The final checkout is deliberately out of band, matching the
-// user's workflow and ensuring the review is corroborated against disk.
 func TestReviewChangesNetsInverseApplyPatchesAfterGitCheckout(t *testing.T) {
 	before, removePatch := bluectxRemovalFixture()
 	dir, path, fs, cwd, applyTool := newGitPatchWorkspace(t, before)
@@ -1051,12 +1040,6 @@ func newGitPatchWorkspace(
 	return "", "", nil, workspaceapi.URI{}, nil
 }
 
-// git exports GIT_DIR and GIT_INDEX_FILE to hook subprocesses without
-// GIT_WORK_TREE, and those override cmd.Dir. When the commit comes from
-// a linked worktree, GIT_DIR is that worktree's admin directory, so a
-// fixture inheriting it runs `git init` against a repository git sees
-// as having no work tree: it writes core.bare=true into the *shared*
-// config and every worktree on the machine stops working.
 func TestGitPatchWorkspaceIgnoresHookGitEnv(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available on PATH")
@@ -1198,8 +1181,6 @@ func bluectxRestoreDocPatch() string {
 	return b.String()
 }
 
-// The invocation header is emphasised so call boundaries stay visible
-// while scrolling a long review; its diff lines keep their own styling.
 func TestReviewBufferBoldsInvocationHeaders(t *testing.T) {
 	review, err := reviewChanges([]llmapi.Message{
 		assistant(patchCall(t, "c1", updatePatch)),
@@ -1227,8 +1208,6 @@ func TestReviewBufferBoldsInvocationHeaders(t *testing.T) {
 	assert.Zero(t, plain.Attrs&term.AttrBold)
 }
 
-// review_context_lines is user input, so every shape a config can hold
-// has to resolve to a width expansion can slice with.
 func TestResolveReviewContextLines(t *testing.T) {
 	tests := []struct {
 		name string
@@ -1265,8 +1244,6 @@ func TestResolveReviewContextLines(t *testing.T) {
 	}
 }
 
-// review_context_lines reaches expansion as a plain width. Zero turns
-// expansion off, and a negative width must not index past the anchor.
 func TestWorkspaceViewContextWidth(t *testing.T) {
 	lines := []applypatch.Line{
 		{Kind: applypatch.LineRemove, Content: "old"},

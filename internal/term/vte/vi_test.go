@@ -21,7 +21,7 @@ package vte
 import (
 	"context"
 	"os"
-	"path"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -274,7 +274,18 @@ $ ▐
                     
                     
                     `},
-			{"echo \"<k0llvk0yG0lllllpjla\"", // multiline paste
+			{"echo \"<k0llvk0yG0lllllp", // multiline paste lands on its last character
+				`$ echo bla          
+bla                 
+$ echo "$ echo blabl
+▐                   
+                    
+                    
+                    
+                    
+                    
+                    `},
+			{"la\"",
 				`$ echo bla          
 bla                 
 $ echo "$ echo blabl
@@ -606,26 +617,16 @@ $ ech▐              `},
 }
 
 func TestZshEdgeCases(t *testing.T) {
-	t.Parallel()
 	// only run this if zsh is present in system running test harness
 	zshPath, err := find.Executable("zsh")
 	if err != nil {
 		t.SkipNow()
 	}
 
-	tempDir, err := os.MkdirTemp("", "")
-	require.NoError(t, err)
-
-	f, err := os.Create(path.Join(tempDir, ".zshrc"))
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		_ = f.Close()
-		_ = os.Remove(f.Name())
-	})
-
-	_, err = f.Write([]byte(`
-bindkey '^a' beginning-of-line
-bindkey '^g' beep
+	// zsh started as terminal.shell loads Rune's dotfiles, which source
+	// the ones in $HOME
+	home := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(home, ".zshrc"), []byte(`
 setopt COMBINING_CHARS
 PS1='$ '
 autoload -U compinit && compinit -u
@@ -636,10 +637,8 @@ zstyle ':completion:*' menu select
 xfoo() { :; }
 _xfoo() { compadd -- alpha bravo charlie delta }
 compdef _xfoo xfoo
-`))
-	require.NoError(t, err)
-
-	os.Setenv("ZDOTDIR", tempDir)
+`), 0o644))
+	t.Setenv("HOME", home)
 
 	t.Run("insert mode edit wrap-around", func(t *testing.T) {
 		cases := []vtetest.Case{
@@ -659,6 +658,59 @@ aaaaaaaaaaaaaaaa▐
 		cfg.Modal = true
 		testSequenceShell(t, cfg, defaultWaitForIdleVte, zshPath, cases)
 	})
+
+	// Once the wrapped line scrolls the screen, or there is scrollback above
+	// the prompt, the vi cursor must keep inserting where the user is typing
+	// instead of drifting to another row.
+	for _, tc := range []struct {
+		name string
+		vtetest.Case
+	}{
+		{"insert mid-line on the bottom row wraps and scrolls", vtetest.Case{
+			InputSequence: "seq 30>echo aa bb cc dd<02WaXXXX",
+			Expected: `23                  
+24                  
+25                  
+26                  
+27                  
+28                  
+29                  
+30                  
+$ echo aa bXXXX▐ cc 
+dd                  `}},
+		{"insert at end of line on the bottom row wraps and scrolls", vtetest.Case{
+			InputSequence: "seq 30>echo<0Cecho aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			Expected: `23                  
+24                  
+25                  
+26                  
+27                  
+28                  
+29                  
+30                  
+$ echo aaaaaaaaaaaaa
+aaaaaaaaaaaaaaaaa▐  `}},
+		// '$' clears the screen, which leaves the prompt on the top row
+		// with scrollback above it
+		{"insert at end of line with scrollback above the prompt wraps", vtetest.Case{
+			InputSequence: "seq 30>$echo<0Cecho aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			Expected: `$ echo aaaaaaaaaaaaa
+aaaaaaaaaaaaaaaaa▐  
+                    
+                    
+                    
+                    
+                    
+                    
+                    
+                    `}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.Modal = true
+			testSequenceShell(t, cfg, defaultWaitForIdleVte, zshPath, []vtetest.Case{tc.Case})
+		})
+	}
 
 	// RUNE-193: tab-completion below the prompt confused lastPromptLine
 	// so that subsequent vi edits on the real prompt row rang the bell
@@ -722,6 +774,158 @@ aaaaaa
 		cfg.Modal = true
 		testSequenceShell(t, cfg, defaultWaitForIdleVte, zshPath, cases)
 	})
+}
+
+func TestBashViModeEdgeCases(t *testing.T) {
+	bashPath, err := find.Executable("bash")
+	if err != nil {
+		t.Skip("bash not found in PATH")
+	}
+	for _, rc := range []struct {
+		name    string
+		bashrc  string
+		inputrc string
+	}{
+		{name: "set -o vi in bashrc", bashrc: "set -o vi\n"},
+		{name: "editing-mode vi in inputrc", inputrc: "set editing-mode vi\n"},
+	} {
+		for _, sh := range []struct {
+			name           string
+			loginShell     string
+			commandAndArgs []string
+		}{
+			{"SHELL", bashPath, nil},
+			// SHELL is not bash so that only terminal.shell can start it
+			{"terminal.shell", "/bin/sh", []string{bashPath}},
+		} {
+			t.Run(rc.name+"/"+sh.name, func(t *testing.T) {
+				home := t.TempDir()
+				require.NoError(t, os.WriteFile(filepath.Join(home, ".bash_profile"),
+					[]byte(". ~/.bashrc\n"), 0o644))
+				require.NoError(t, os.WriteFile(filepath.Join(home, ".bashrc"),
+					[]byte(rc.bashrc+"PS1='$ '\n"), 0o644))
+				if rc.inputrc != "" {
+					require.NoError(t, os.WriteFile(filepath.Join(home, ".inputrc"),
+						[]byte(rc.inputrc), 0o644))
+				}
+				t.Setenv("HOME", home)
+				t.Setenv("SHELL", sh.loginShell)
+				// an inherited INPUTRC would mask a missing export
+				t.Setenv("INPUTRC", "")
+				// bash 3.2 as shipped on macOS prints a zsh-migration banner on
+				// every interactive startup, which would scroll the screen away.
+				t.Setenv("BASH_SILENCE_DEPRECATION_WARNING", "1")
+
+				cases := []vtetest.Case{
+					{"echo blaaa<0Cecho hi", `$ echo hi▐          
+                    
+                    
+                    
+                    
+                    
+                    
+                    
+                    
+                    `},
+				}
+				cfg := DefaultConfig()
+				cfg.Modal = true
+				testSequenceCommand(t, cfg, defaultWaitForIdleVte, sh.commandAndArgs, cases)
+			})
+		}
+	}
+}
+
+func TestZshViModeEdgeCases(t *testing.T) {
+	zshPath, err := find.Executable("zsh")
+	if err != nil {
+		t.Skip("zsh not found in PATH")
+	}
+	for _, sh := range []struct {
+		name           string
+		loginShell     string
+		commandAndArgs []string
+	}{
+		{"SHELL", zshPath, nil},
+		// SHELL is not zsh so that only terminal.shell can start it
+		{"terminal.shell", "/bin/sh", []string{zshPath}},
+	} {
+		t.Run(sh.name, func(t *testing.T) {
+			home := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(home, ".zshrc"),
+				[]byte("bindkey -v\nPS1='$ '\n"), 0o644))
+			t.Setenv("HOME", home)
+			t.Setenv("SHELL", sh.loginShell)
+			// an inherited ZDOTDIR would mask a missing export
+			t.Setenv("ZDOTDIR", "")
+
+			cases := []vtetest.Case{
+				{"echo blaaa<0Cecho hi", `$ echo hi▐          
+                    
+                    
+                    
+                    
+                    
+                    
+                    
+                    
+                    `},
+			}
+			cfg := DefaultConfig()
+			cfg.Modal = true
+			testSequenceCommand(t, cfg, defaultWaitForIdleVte, sh.commandAndArgs, cases)
+		})
+	}
+}
+
+func TestFishEdgeCases(t *testing.T) {
+	fishPath, err := find.Executable("fish")
+	if err != nil {
+		t.SkipNow()
+	}
+	for _, keys := range []struct{ name, configFish string }{
+		{"default key bindings", ""},
+		{"vi key bindings", "fish_vi_key_bindings\n"},
+	} {
+		for _, sh := range []struct {
+			name           string
+			loginShell     string
+			commandAndArgs []string
+		}{
+			{"SHELL", fishPath, nil},
+			// SHELL is not fish so that only terminal.shell can start it
+			{"terminal.shell", "/bin/sh", []string{fishPath}},
+		} {
+			t.Run(keys.name+"/"+sh.name, func(t *testing.T) {
+				home := t.TempDir()
+				configDir := filepath.Join(home, ".config")
+				require.NoError(t, os.MkdirAll(filepath.Join(configDir, "fish"), 0o755))
+				require.NoError(t, os.WriteFile(filepath.Join(configDir, "fish", "config.fish"),
+					[]byte("set -g fish_greeting\nfunction fish_prompt; printf '$ '; end\n"+
+						"function fish_mode_prompt; end\n"+keys.configFish), 0o644))
+				t.Setenv("HOME", home)
+				t.Setenv("XDG_CONFIG_HOME", configDir)
+				t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+				t.Setenv("SHELL", sh.loginShell)
+
+				cases := []vtetest.Case{
+					{"echo blaaa<0Cecho hi", `$ echo hi▐          
+                    
+                    
+                    
+                    
+                    
+                    
+                    
+                    
+                    `},
+				}
+				cfg := DefaultConfig()
+				cfg.Modal = true
+				testSequenceCommand(t, cfg, defaultWaitForIdleVte, sh.commandAndArgs, cases)
+			})
+		}
+	}
 }
 
 func TestViEditUnit(t *testing.T) {
@@ -864,7 +1068,7 @@ func TestViEditUnit(t *testing.T) {
 			actualBellsRung++
 		}
 		vi.doInit(comp, cfg)
-		vi.remote = newTestRemote(comp.scroll, comp.cursor)
+		vi.remote = newTestRemote(comp.scroll, 18, comp.cursor)
 		vi.Resize(18, 18)
 
 		// Mimic what vte.Component.RestoreFromSnapshot does: rewrite
@@ -874,7 +1078,7 @@ func TestViEditUnit(t *testing.T) {
 		comp.scroll.Buffer().ResetCells(term.StringToCells("$ restored "))
 		comp.cursor = term.Coordinates{X: 11}
 		vi.setCursorAtScroll(comp.cursor)
-		vi.remote = newTestRemote(comp.scroll, comp.cursor)
+		vi.remote = newTestRemote(comp.scroll, 18, comp.cursor)
 
 		from, to, old := vi.Edit(context.Background(),
 			comp.cursor, comp.cursor, "X")
@@ -1422,7 +1626,7 @@ $ ECHO AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 `,
 			expectedRingBell: false,
 			expectedFrom:     term.Coordinates{Y: 4, X: 2},
-			expectedTo:       term.Coordinates{Y: 17, X: 0},
+			expectedTo:       term.Coordinates{Y: 19, X: 0},
 			expectedOld:      "echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 			expectedContent: `
 ~/src/blue master
@@ -1533,7 +1737,7 @@ aaaaaaaooaaaa
 				actualBellsRung++
 			}
 			vi.doInit(comp, cfg)
-			vi.remote = newTestRemote(comp.scroll, test.promptStart)
+			vi.remote = newTestRemote(comp.scroll, 18, test.promptStart)
 			vi.Resize(18, 18)
 
 			ctx := context.Background()
@@ -1549,6 +1753,50 @@ aaaaaaaooaaaa
 				expectedBellsRung = 1
 			}
 			assert.Equal(t, expectedBellsRung, actualBellsRung, "bells rung")
+		})
+	}
+}
+
+func TestViRemoteMoveTo(t *testing.T) {
+	t.Parallel()
+	// the fake prompt "$ " occupies the first two columns
+	const promptEnd = 2
+
+	for _, tc := range []struct {
+		name    string
+		content string
+		target  term.Coordinates
+		want    []string
+		wantX   int
+	}{
+		{
+			name:    "append past last character asks for end of line",
+			content: "$ e", target: term.Coordinates{X: 3},
+			want: []string{"moveEndOfLine"}, wantX: 3,
+		},
+		{
+			name:    "column inside the line still walks right",
+			content: "$ echo", target: term.Coordinates{X: 4},
+			want: []string{"moveRight", "moveRight"}, wantX: 4,
+		},
+		{
+			name:    "append column already under the cursor moves nothing",
+			content: "$ ", target: term.Coordinates{X: promptEnd},
+			want: nil, wantX: promptEnd,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			comp := newTestParentComponent(tc.content, term.Coordinates{X: promptEnd})
+			var v viHandler
+			v.doInit(comp, DefaultConfig())
+			v.width = 20
+			scroll, _ := comp.PrimaryScroll()
+			remote := newTestRemote(scroll, 20, term.Coordinates{X: promptEnd})
+			v.remote = remote
+
+			assert.Equal(t, tc.wantX, v.remoteMoveTo(tc.target))
+			assert.Equal(t, tc.want, remote.calls)
 		})
 	}
 }
@@ -1611,17 +1859,22 @@ func (nopLocker) Unlock() {
 
 type testRemote struct {
 	cursor             *text.Cursor
+	width              int
 	keyArrowUpCalled   int
 	keyArrowDownCalled int
 	formFeedCalled     int
 	lineFeedCalled     int
 	ops                []func()
 	ctx                context.Context
+	calls              []string
 }
 
-func newTestRemote(scroll *component.Scroll, cursorPosition term.Coordinates) *testRemote {
+func newTestRemote(
+	scroll *component.Scroll, width int, cursorPosition term.Coordinates,
+) *testRemote {
 	ret := new(testRemote)
 	ret.cursor = new(text.Cursor)
+	ret.width = width
 	ret.cursor.InitPerformance(scroll)
 	// needed to ensure that remote edits bypass Edit checks
 	ret.ctx = vtescreen.NewContext(context.Background())
@@ -1630,7 +1883,26 @@ func newTestRemote(scroll *component.Scroll, cursorPosition term.Coordinates) *t
 }
 
 func (r *testRemote) moveStartOfLine() {
+	r.calls = append(r.calls, "moveStartOfLine")
 	r.cursor.MoveStartLine()
+}
+
+func (r *testRemote) moveEndOfLine() {
+	r.calls = append(r.calls, "moveEndOfLine")
+	r.ops = append(r.ops, func() {
+		// The shell's end-of-line reaches the end of its whole line
+		// buffer, which the vte renders as a run of full-width rows.
+		for {
+			r.cursor.MoveEndLine()
+			if r.width <= 0 || r.cursor.CursorAtScroll().X < r.width {
+				return
+			}
+			if !r.cursor.MoveDown() {
+				return
+			}
+			r.cursor.MoveStartLine()
+		}
+	})
 }
 
 func (r *testRemote) keyArrowUp() {
@@ -1662,12 +1934,14 @@ func (r *testRemote) formFeed() {
 }
 
 func (r *testRemote) moveLeft() {
+	r.calls = append(r.calls, "moveLeft")
 	r.ops = append(r.ops, func() {
 		r.cursor.MoveLeft()
 	})
 }
 
 func (r *testRemote) moveRight() {
+	r.calls = append(r.calls, "moveRight")
 	r.ops = append(r.ops, func() {
 		r.cursor.MoveRight()
 	})
@@ -1686,6 +1960,7 @@ func (r *testRemote) wrapLine() {
 }
 
 func (r *testRemote) cursorCRLF() {
+	r.calls = append(r.calls, "cursorCRLF")
 	r.ops = append(r.ops, func() {
 		r.cursor.MoveDown()
 		r.cursor.MoveStartLine()

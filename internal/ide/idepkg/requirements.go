@@ -34,12 +34,11 @@ const requirementsKey = "requirements"
 // non-empty strings.
 func pkgConfigRequirements(
 	filename string, data []byte,
-	pkgID string, pkgVersion release.Version,
-	dataDir, editorMode string,
+	pkgID string, pkgVersion release.Version, editorMode string,
 ) ([]string, error) {
 	cfg, err := loadIdePkgConfigOverlay(
 		filename, data, map[string]any{},
-		pkgID, pkgVersion, dataDir, editorMode,
+		pkgID, pkgVersion, editorMode,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("decode package config: %w", err)

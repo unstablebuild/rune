@@ -25,7 +25,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/handler/repl"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
-	"unstable.build/rune/internal/ide/ideshell/workspaceshell"
+	"unstable.build/rune/internal/ide/console/ideconsole/workspaceshell"
 )
 
 // extensionsProcessSubcommand is the sub-name under "extensions" that
@@ -55,7 +55,7 @@ const extensionsREPLCommandName = "extensions"
 // — because the tracker is an IDE-side concern: it is constructed
 // alongside the local fileScheme that backs extension processes, and
 // it backs the IDE shell's "process" UI. Pushing it into extensionv2
-// would couple the extension runner to ideshell/workspaceshell.
+// would couple the extension runner to ideconsole/workspaceshell.
 type extensionsREPLWithProcess struct {
 	underlying textapi.REPLHandler
 	proc       *workspaceshell.Executor

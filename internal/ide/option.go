@@ -19,6 +19,7 @@ package ide
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -32,6 +33,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"github.com/unstablebuild/rune-go-sdk/clipboard"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
@@ -163,6 +165,25 @@ func WithScheme(scheme string, fn schemeapi.SchemeFunc) Option {
 	}
 }
 
+// WithShellRCDir makes terminal shells in file workspaces load the dotfiles
+// in dir, as installed by workspace.InstallShellRC. The dotfiles bind the
+// keys that terminal modal mode sends to the shell; without this option,
+// shells load only the user's own dotfiles.
+func WithShellRCDir(dir string) Option {
+	return func(opts *options) {
+		opts.shellRCDir = dir
+	}
+}
+
+// WithHostDataDir sets the Rune data directory of this host, which
+// $RUNE_DATADIR names in the commands file workspaces start. Without this
+// option it is the process's RUNE_DATADIR.
+func WithHostDataDir(dir string) Option {
+	return func(opts *options) {
+		opts.hostDataDir = dir
+	}
+}
+
 // WithConfigFilename defines the base filename of the IDE configuration
 // to be expected in a workspace's directory.
 func WithConfigFilename(filename string) Option {
@@ -171,13 +192,16 @@ func WithConfigFilename(filename string) Option {
 	}
 }
 
-// WithWorkspaceOpenCompleter adds a completer to the `workspaceopen`
-// command prompt, after the built-in history and directory completers.
-// Schemes registered with [WithScheme] use it to offer the workspaces
-// they can reach, which the built-in completers cannot enumerate.
-func WithWorkspaceOpenCompleter(c command.Completer) Option {
+// WithWorkspaceOpenCompleter makes c the sole `workspaceopen`
+// completer for arguments starting with "<scheme>://": history and
+// local directories would offer workspaces the scheme can no longer
+// reach. Registering the same scheme twice keeps the last completer.
+func WithWorkspaceOpenCompleter(scheme string, c command.Completer) Option {
 	return func(opts *options) {
-		opts.workspaceOpenCompleters = append(opts.workspaceOpenCompleters, c)
+		if opts.workspaceOpenCompleters == nil {
+			opts.workspaceOpenCompleters = make(map[string]command.Completer)
+		}
+		opts.workspaceOpenCompleters[scheme] = c
 	}
 }
 
@@ -264,8 +288,8 @@ func WithBell(bell func()) Option {
 	}
 }
 
-// WithScheduleNextTick sets the default mechanism to schedule a user functio to run before
-// the next event loop tick.
+// WithScheduleNextTick sets how the IDE runs a function on the event loop.
+// scheduleFn returns true only if the function will run exactly once.
 func WithScheduleNextTick(scheduleFn func(func()) bool) Option {
 	return func(opts *options) {
 		opts.scheduleFn = scheduleFn
@@ -282,12 +306,23 @@ func WithCellPixelSize(cellPixelSize func() (width, height int)) Option {
 	}
 }
 
-// WithZdotDir sets the starting zsh directory configuration file via env ZDOTDIR
-// when zsh is used as the default shell, or is passed via config (terminal.shell)
-// as "zsh", rather than with the proper flags (-i, --login, etc.).
-func WithZdotDir(dir string) Option {
+// WithClipboard sets the clipboard that every workspace, terminal and editor
+// shares when the clipboard config is "system", so a copy anywhere is what a
+// paste anywhere sees. Without it, they share an in-memory clipboard.
+func WithClipboard(clip clipboard.Register) Option {
 	return func(opts *options) {
-		opts.zdotDir = dir
+		opts.clip = clip
+	}
+}
+
+// WithSystemURLOpener sets how a clicked URL opens in the system browser,
+// which is how every URL opens when the meta_open_url config is "system"
+// and how URLs other than http(s) always open. It is called on the event
+// loop, which it holds until it returns. Without it such URLs fail to
+// open.
+func WithSystemURLOpener(open func(*url.URL) error) Option {
+	return func(opts *options) {
+		opts.systemOpenURL = open
 	}
 }
 
@@ -508,18 +543,22 @@ type options struct {
 	dispatchOnPreview    map[string]previewFunc
 	extensions           map[string]Extension
 	schemes              map[string]schemeapi.SchemeFunc
+	shellRCDir           string
+	hostDataDir          string
 	workspaceConfig      string
 	defaultWallpaper     browser.Wallpaper
 	defaultConfig        string
 	bell                 func()
 	scheduleFn           func(func()) bool
 	cellPixelSize        func() (int, int)
+	clip                 clipboard.Register
+	systemOpenURL        func(*url.URL) error
 	afterFunc            func(time.Duration, func()) *time.Timer
 	debugCommands        bool
 	streamingOpen        bool
 	disableSessionReopen bool
 
-	workspaceOpenCompleters []command.Completer
+	workspaceOpenCompleters map[string]command.Completer
 
 	defaultConfigModeModal bool
 	defaultConfigTUI       bool
@@ -536,7 +575,6 @@ type options struct {
 	openShaderFn           func(term.Attributes) shader.Shader
 	openShaderFPS          int
 	openShaderDuration     time.Duration
-	zdotDir                string
 	starlarkTutorials      map[string]string
 	tutorialPlaylist       []TutorialPlaylistItem
 	startingTutorial       string
@@ -575,6 +613,7 @@ func defaultOptions() options {
 		workspacesBarFrame: true,
 		workspacesIcon:     '1',
 		releaseManager:     docrelease.NewManager(document.NewInMemoryService()),
+		clip:               clipboard.NewInMemory(),
 	}
 }
 

@@ -53,13 +53,6 @@ func readTestdataFile(t *testing.T, name string) []byte {
 	return b
 }
 
-// TestHostKeyMatchingKnownHosts pins the std remote against a real
-// container with Insecure=false and a known_hosts file that records
-// the container's actual ed25519 host key. The dial must succeed
-// and produce no auth prompts.
-//
-// Coverage gap addressed: TestAuthMatrix always uses Insecure=true,
-// so the host-key callback path is never exercised end-to-end.
 func TestHostKeyMatchingKnownHosts(t *testing.T) {
 	SkipIfNoDocker(t)
 	EnsureImage(t)
@@ -88,12 +81,6 @@ func TestHostKeyMatchingKnownHosts(t *testing.T) {
 		"matching-known_hosts dial must not prompt the user; saw %v", ui.prompts)
 }
 
-// TestHostKeyMismatchSurfacesErrHostKeyMismatch dials with
-// Insecure=false and a known_hosts file whose recorded key does not
-// match what the server presents. With strict host key checking and a
-// UI that declines the change, the dial must fail with a typed
-// ErrHostKeyMismatch and never fall through to a credential prompt —
-// because that scenario typically indicates a man-in-the-middle attack.
 func TestHostKeyMismatchSurfacesErrHostKeyMismatch(t *testing.T) {
 	SkipIfNoDocker(t)
 	EnsureImage(t)
@@ -136,13 +123,6 @@ func TestHostKeyMismatchSurfacesErrHostKeyMismatch(t *testing.T) {
 	}
 }
 
-// TestHostKeyChangedBetweenDials reproduces the "host has been
-// rebuilt and got a new key" scenario. We dial once with a
-// known_hosts file pinning the original ed25519 host key, succeed,
-// then regenerate the key on the container and dial again with the
-// SAME known_hosts file. With strict host key checking and a UI that
-// declines the change, the second dial must fail with
-// ErrHostKeyMismatch.
 func TestHostKeyChangedBetweenDials(t *testing.T) {
 	SkipIfNoDocker(t)
 	EnsureImage(t)
@@ -204,10 +184,6 @@ func knownHostsHasKey(t *testing.T, path, hostport string, key []byte) bool {
 	return false
 }
 
-// TestHostKeyUnknownTrustRecordsAndConnects dials a real container with
-// an empty known_hosts file and Insecure=false. With strict host key
-// checking and an accepting UI, the dial must prompt once, trust the
-// key, connect, and leave the container's key recorded in known_hosts.
 func TestHostKeyUnknownTrustRecordsAndConnects(t *testing.T) {
 	SkipIfNoDocker(t)
 	EnsureImage(t)
@@ -248,10 +224,6 @@ func TestHostKeyUnknownTrustRecordsAndConnects(t *testing.T) {
 		"trusting an unknown host must persist its key to known_hosts")
 }
 
-// TestHostKeyRotatedTrustOverridesAndReconnects reproduces the ticket:
-// pin the original host key, dial OK, rotate the server's host keys,
-// then dial again with an accepting UI. The dial must prompt, replace
-// the stale entry, connect, and leave known_hosts pinning a new key.
 func TestHostKeyRotatedTrustOverridesAndReconnects(t *testing.T) {
 	SkipIfNoDocker(t)
 	EnsureImage(t)
@@ -300,9 +272,6 @@ func TestHostKeyRotatedTrustOverridesAndReconnects(t *testing.T) {
 		"trusting the rotated key must update known_hosts to the new key")
 }
 
-// TestHostKeyRotatedCancelLeavesFileUnchanged confirms the cancel path is
-// unchanged: rotating the key and cancelling the prompt surfaces
-// ErrHostKeyMismatch and does not rewrite known_hosts.
 func TestHostKeyRotatedCancelLeavesFileUnchanged(t *testing.T) {
 	SkipIfNoDocker(t)
 	EnsureImage(t)
@@ -344,9 +313,6 @@ func TestHostKeyRotatedCancelLeavesFileUnchanged(t *testing.T) {
 		"cancelled prompt must not modify known_hosts")
 }
 
-// TestHostKeyRotatedTrustOnceConnectsWithoutRewriting confirms the
-// "trust once" path: rotating the key and choosing trust-once connects
-// for this session but leaves the stale known_hosts entry untouched.
 func TestHostKeyRotatedTrustOnceConnectsWithoutRewriting(t *testing.T) {
 	SkipIfNoDocker(t)
 	EnsureImage(t)
@@ -410,7 +376,6 @@ func TestHostKeyTrustOnceReconnectReusesSessionPin(t *testing.T) {
 		"known_hosts":              khPath,
 		"strict_host_key_checking": true,
 		"timeout":                  "20s",
-		"provision_packages":       false,
 	})
 
 	ui := &recordingUI{choices: []int{1}}
@@ -464,9 +429,6 @@ func promptCount(ui *recordingUI) int {
 	return len(ui.prompts)
 }
 
-// TestHostKeyUnparsableTrustOnceConnects confirms that when known_hosts
-// exists but can't be parsed, Rune prompts to trust the key for this
-// session only and connects without rewriting the malformed file.
 func TestHostKeyUnparsableTrustOnceConnects(t *testing.T) {
 	SkipIfNoDocker(t)
 	EnsureImage(t)

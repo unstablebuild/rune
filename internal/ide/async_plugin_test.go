@@ -188,11 +188,6 @@ func TestAsyncPlugin(t *testing.T) {
 	})
 }
 
-// TestExecutePluginDoesNotBlockOnSlowSpawn reproduces the freeze
-// where `:! cmd` blocked the host event loop on the plugin's
-// synchronous terminal spawn (plugin.New -> vte.NewHandler ->
-// NewPty). executePlugin must return promptly with the floating
-// window open, and install the real handler once the spawn settles.
 func TestExecutePluginDoesNotBlockOnSlowSpawn(t *testing.T) {
 	b := newExForTesting(t, texttest.NopEditor())
 	defer b.Close()

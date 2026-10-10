@@ -18,13 +18,15 @@ package idepkg
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
-	"mvdan.cc/sh/v3/syntax"
+	"unstable.build/rune/internal/ide/hostenv"
 )
 
 // loadOrCreateUserConfig reads a YAML file at path into a yaml.Node document.
@@ -213,44 +215,48 @@ func addedTutorialNames(doc *yaml.Node) []string {
 	return names
 }
 
-// expandRuneVars expands only the variables for which lookup returns
-// ok; every other $VAR / ${VAR} reference is left verbatim in the
-// result. It parses s as a single shell word with mvdan/sh so brace
-// forms (${VAR}) are handled faithfully, and copies any source span it
-// does not replace unchanged. If parsing fails (these are config
-// templates, not arbitrary shell), s is returned unchanged.
-func expandRuneVars(s string, lookup func(name string) (string, bool)) string {
-	word, err := syntax.NewParser().Document(strings.NewReader(s))
-	if err != nil || word == nil {
-		return s
+// summarizeConfigDiff splits the leaf key paths of an applied config diff
+// into those covered by a prefix in live (inEffect) and the rest (pending).
+// A scalar, a sequence or an empty mapping is a leaf. Each reported key is
+// the leaf path truncated to its first two segments and joined with ".", e.g.
+// gui.themes.redmond95.foreground reports as "gui.themes"; both lists are
+// deduplicated and sorted. Live paths that cover no diff leaf are ignored.
+func summarizeConfigDiff(doc *yaml.Node, live [][]string) (inEffect, pending []string) {
+	root := doc
+	if root != nil && root.Kind == yaml.DocumentNode && len(root.Content) > 0 {
+		root = root.Content[0]
 	}
-	var b strings.Builder
-	pos := 0
-	syntax.Walk(word, func(node syntax.Node) bool {
-		pe, ok := node.(*syntax.ParamExp)
-		if !ok || pe.Param == nil {
-			return true
+	if root == nil || root.Kind != yaml.MappingNode {
+		return nil, nil
+	}
+
+	inEffectSet := make(map[string]struct{})
+	pendingSet := make(map[string]struct{})
+	var walk func(node *yaml.Node, path []string)
+	walk = func(node *yaml.Node, path []string) {
+		if node.Kind == yaml.MappingNode && len(node.Content) > 0 {
+			for i := 0; i+1 < len(node.Content); i += 2 {
+				walk(node.Content[i+1], append(slices.Clip(path), node.Content[i].Value))
+			}
+			return
 		}
-		val, ok := lookup(pe.Param.Value)
-		if !ok {
-			return true
+		key := strings.Join(path[:min(len(path), 2)], ".")
+		if slices.ContainsFunc(live, func(prefix []string) bool {
+			return len(prefix) <= len(path) && slices.Equal(path[:len(prefix)], prefix)
+		}) {
+			inEffectSet[key] = struct{}{}
+		} else {
+			pendingSet[key] = struct{}{}
 		}
-		start := int(pe.Pos().Offset())
-		end := int(pe.End().Offset())
-		if start < pos || end > len(s) {
-			return true
-		}
-		b.WriteString(s[pos:start])
-		b.WriteString(val)
-		pos = end
-		return true
-	})
-	b.WriteString(s[pos:])
-	return b.String()
+	}
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		walk(root.Content[i+1], []string{root.Content[i].Value})
+	}
+	return slices.Sorted(maps.Keys(inEffectSet)), slices.Sorted(maps.Keys(pendingSet))
 }
 
 // expandNodeValues walks all scalar nodes in the tree and applies
-// expandRuneVars with the given lookup function. Only string-tagged
+// hostenv.ExpandVars with the given lookup function. Only string-tagged
 // scalars are expanded (int, float, bool, null are skipped). Variables
 // the lookup does not recognize are left literal so they can be
 // expanded later at Rune startup.
@@ -265,11 +271,11 @@ func expandNodeValues(n *yaml.Node, lookup func(string) (string, bool)) {
 		case "!!int", "!!float", "!!bool", "!!null":
 			return
 		}
-		n.Value = expandRuneVars(n.Value, lookup)
+		n.Value = hostenv.ExpandVars(n.Value, lookup)
 	}
 }
 
-// expandMapValues walks cfg in place, applying expandRuneVars to every
+// expandMapValues walks cfg in place, applying hostenv.ExpandVars to every
 // string value using the given lookup function. Nested maps and slices
 // are traversed recursively; non-string scalars are left untouched.
 // Variables the lookup does not recognize are left literal.
@@ -282,7 +288,7 @@ func expandMapValues(cfg map[string]any, lookup func(string) (string, bool)) {
 func expandAnyValue(v any, lookup func(string) (string, bool)) any {
 	switch t := v.(type) {
 	case string:
-		return expandRuneVars(t, lookup)
+		return hostenv.ExpandVars(t, lookup)
 	case map[string]any:
 		expandMapValues(t, lookup)
 		return t

@@ -34,6 +34,7 @@ var triggerBellRetryStrategy = retry.CombinedStrategy(
 
 type remote interface {
 	moveStartOfLine()
+	moveEndOfLine()
 	keyArrowUp()
 	keyArrowDown()
 	deleteChar()
@@ -106,6 +107,14 @@ func (p *ptyWriter) moveRight() {
 func (p *ptyWriter) moveStartOfLine() {
 	// ctrl-a
 	p.writeToPty([]byte{0x01})
+}
+
+func (p *ptyWriter) moveEndOfLine() {
+	// ctrl-e. Walking right with forward-char cannot reach the append
+	// position when the shell's line editor is in vi mode: readline
+	// clamps forward-char to the last character (rl_forward_char's lend
+	// is rl_end-1 under vi_mode) and rings the bell instead of moving.
+	p.writeToPty([]byte{0x05})
 }
 
 func (p *ptyWriter) linefeed() {
@@ -227,6 +236,11 @@ func (p loggingRemote) moveRight() {
 func (p loggingRemote) moveStartOfLine() {
 	p.log("moveStartOfLine")
 	p.r.moveStartOfLine()
+}
+
+func (p loggingRemote) moveEndOfLine() {
+	p.log("moveEndOfLine")
+	p.r.moveEndOfLine()
 }
 
 func (p loggingRemote) linefeed() {

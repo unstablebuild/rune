@@ -39,6 +39,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/handler/repl"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
 	"unstable.build/rune/internal/extension/langext"
+	"unstable.build/rune/internal/extension/langext/langexttest"
 	"unstable.build/rune/internal/ide/idelsp"
 	"unstable.build/rune/internal/workspace"
 )
@@ -129,15 +130,6 @@ func (e *successfulExecutor) Start(
 func (*successfulExecutor) Signal(workspaceapi.Pid, syscall.Signal) error { return nil }
 func (*successfulExecutor) Close() error                                  { return nil }
 
-type e2eInstaller map[string]string
-
-func (i e2eInstaller) FindInstalledExecutable(_ context.Context, name string) (string, error) {
-	if path := i[name]; path != "" {
-		return path, nil
-	}
-	return "", os.ErrNotExist
-}
-
 func TestE2EPythonLoggingConfigReachesServers(t *testing.T) {
 	tyBin := findVersionedTool(t, "ty", "0.0.51")
 	ruffBin := findVersionedTool(t, "ruff", "0.15.18")
@@ -156,12 +148,12 @@ func TestE2EPythonLoggingConfigReachesServers(t *testing.T) {
 	cfg := config.JSONFromMap(map[string]any{
 		"debug": map[string]any{"log_level": "debug"},
 	})
-	installer := e2eInstaller{"ty": tyBin, "ruff": ruffBin, "uv": "uv"}
+	tools := pyTools(t, &langexttest.Installer{Files: []string{tyBin, ruffBin}})
 	root := langext.Root{Dir: dir, URI: rootURI}
 	setting := newEnvSetting(storagestub.NewInMemoryService())
 	require.NoError(t, setting.set(t.Context(), root, true))
 	err = initializeProjectRoot(t.Context(), scheme, &successfulExecutor{}, newFakeNotifications(),
-		mgr, installer, cfg, "", setting, nil, root)
+		mgr, tools, cfg, "", setting, nil, root)
 	require.NoError(t, err)
 
 	ty, ok := scheme.startedProcess(tyBin)
@@ -199,10 +191,6 @@ func findUV(t *testing.T) {
 	}
 }
 
-// TestE2E_UV_ProjectSync drives the full extension bring-up against a
-// real uv in a fresh pyproject workspace and asserts the .venv is created
-// by the eager workspace-root sync and that the language server is
-// initialized exactly once rooted there.
 func TestE2E_UV_ProjectSync(t *testing.T) {
 	findUV(t)
 
@@ -229,8 +217,6 @@ dependencies = []
 	assert.Equal(t, "file://"+dir, params.RootURI)
 }
 
-// TestE2E_PyHandler_PythonList runs the `python list` REPL subcommand
-// against a real uv and asserts output is produced.
 func TestE2E_PyHandler_PythonList(t *testing.T) {
 	findUV(t)
 
@@ -253,25 +239,4 @@ func TestE2E_PyHandler_PythonList(t *testing.T) {
 	out, err := iterator.ToSlice(context.Background(), it)
 	require.NoError(t, err)
 	require.Len(t, out, 1)
-}
-
-// TestE2E_ResolvePyTool resolves a tool from <dataDir>/bin/<name> against
-// a real filesystem.
-func TestE2E_ResolvePyTool(t *testing.T) {
-	dataDir := t.TempDir()
-	binDir := filepath.Join(dataDir, "bin")
-	require.NoError(t, os.MkdirAll(binDir, 0o755))
-
-	for _, name := range []string{"uv", "ty", "ruff"} {
-		bin := filepath.Join(binDir, name)
-		require.NoError(t, os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755))
-
-		got := resolvePyTool(context.Background(), realFS{root: dataDir}, realExecutor{},
-			fakeInstaller{fs: realFS{root: dataDir}, root: dataDir}, name)
-		assert.Equal(t, bin, got)
-	}
-
-	missing := resolvePyTool(context.Background(), realFS{root: dataDir}, realExecutor{},
-		fakeInstaller{fs: realFS{root: dataDir}, root: dataDir}, "absent")
-	assert.Empty(t, missing)
 }

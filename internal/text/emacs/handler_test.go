@@ -32,10 +32,13 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/internal/cell"
 	"unstable.build/rune/internal/handler/handlertest"
+	"unstable.build/rune/internal/ide/syntax/treesitter"
 	"unstable.build/rune/internal/text"
 	"unstable.build/rune/internal/text/registerhistory"
 	"unstable.build/rune/internal/text/registerset"
 )
+
+var _ foldsService = (*treesitter.Tree)(nil)
 
 type testSelectionService struct {
 	view   cell.View
@@ -982,8 +985,6 @@ func TestSetMarkUsesSharedLocationList(t *testing.T) {
 	assert.Equal(t, term.Coordinates{Y: 2}, markLocations()[1].From)
 }
 
-// TestEmacsMetaWordEditing covers the authentic M- word-motion, word-kill and
-// word-case commands that live on the <alt> (Meta) layer.
 func TestEmacsMetaWordEditing(t *testing.T) {
 	uri, err := workspaceapi.ParseURI("memory:///words.go")
 	require.NoError(t, err)
@@ -1030,9 +1031,6 @@ func TestEmacsMetaWordEditing(t *testing.T) {
 	}
 }
 
-// TestEmacsKeymapAdditions covers the Emacs parity chords added for RUNE-274:
-// M-m back-to-indentation, M-^ delete-indentation, M-\ delete-horizontal-space,
-// C-o open-line, C-j newline-and-indent, and C-M-f/C-M-b bracket sexp motion.
 func TestEmacsKeymapAdditions(t *testing.T) {
 	uri, err := workspaceapi.ParseURI("memory:///keymap.go")
 	require.NoError(t, err)
@@ -1223,10 +1221,6 @@ func TestEmacsKeymapAdditions(t *testing.T) {
 	}
 }
 
-// TestEmacsMetaPunctuationSemantics pins the Emacs-correct meaning of the
-// meta punctuation chords after RUNE-274: M-< / M-> are begin/end-of-buffer
-// (Alt+Shift+comma/period), while the unshifted M-, / M-. are left unbound in
-// the editor so the command layer owns xref-style navigation.
 func TestEmacsMetaPunctuationSemantics(t *testing.T) {
 	uri, err := workspaceapi.ParseURI("memory:///meta.go")
 	require.NoError(t, err)
@@ -1253,9 +1247,6 @@ func TestEmacsMetaPunctuationSemantics(t *testing.T) {
 	})
 }
 
-// TestEmacsLeavesCtrlAltSuperToRune pins that the editor declines C-M- chords
-// with Super also held, so the Linux emacs preset's window resize on
-// <ctrl-alt-meta-p/b/n/f> is not taken as C-M-p/b/n/f.
 func TestEmacsLeavesCtrlAltSuperToRune(t *testing.T) {
 	uri, err := workspaceapi.ParseURI("memory:///resize.go")
 	require.NoError(t, err)
@@ -1275,8 +1266,6 @@ func TestEmacsLeavesCtrlAltSuperToRune(t *testing.T) {
 	}
 }
 
-// TestEmacsGotoLine covers M-g g (go-to-line): the two-key Meta prefix opens an
-// echo-area prompt that reads a one-based line number and moves point there.
 func TestEmacsGotoLine(t *testing.T) {
 	content := "l1\nl2\nl3\nl4\nl5"
 
@@ -1333,9 +1322,6 @@ func TestEmacsGotoLine(t *testing.T) {
 	})
 }
 
-// TestEmacsIncrementalSearch covers C-s / C-r incremental search: typing
-// refines the match live, C-s / C-r cycle through matches, Enter accepts at the
-// current match, and C-g aborts back to the origin.
 func TestEmacsIncrementalSearch(t *testing.T) {
 	feed := func(t *testing.T, h text.Handler, keys string) {
 		t.Helper()
@@ -1418,9 +1404,6 @@ func TestEmacsIncrementalSearch(t *testing.T) {
 	})
 }
 
-// TestEmacsQueryReplace covers M-% query-replace: the two-stage prompt reads
-// the search and replacement strings, then the interactive loop applies y / n /
-// ! / . / q decisions per match.
 func TestEmacsQueryReplace(t *testing.T) {
 	feed := func(t *testing.T, h text.Handler, keys string) {
 		t.Helper()
@@ -1506,8 +1489,6 @@ func TestEmacsQueryReplace(t *testing.T) {
 	})
 }
 
-// TestEmacsKeyboardQuit verifies C-g (keyboard-quit) clears the active
-// selection, the search highlight and any pending C-SPC mark.
 func TestEmacsKeyboardQuit(t *testing.T) {
 	uri, err := workspaceapi.ParseURI("memory:///quit.go")
 	require.NoError(t, err)
@@ -1621,9 +1602,6 @@ func TestEmacsTransientModesUpdateStatusBar(t *testing.T) {
 	}
 }
 
-// The status slot is owned by the status bar layout: emacs must not push the
-// echo-area or editor attributes into it, otherwise the layout's configured
-// colors are permanently replaced on the first transient mode.
 func TestEmacsTransientModeStatusKeepsLayoutAttributes(t *testing.T) {
 	h, _ := newEmacsHandler(t, "alpha beta",
 		WithBarAttr(term.Attributes{Fg: term.ColorBlack, Bg: term.ColorWhite}),
@@ -1807,10 +1785,6 @@ func (v testIndentView) IndentationAt(line int) (int, bool) {
 	return target, ok
 }
 
-// TestEmacsTabAtTargetInsertsFullIndentLevel reproduces RUNE-121 for the
-// emacs handler: when the line is already at the syntax target indent, a
-// <tab> keypress must add a full indent level rather than a single space, and
-// a second <tab> must add another level rather than dedenting.
 func TestEmacsTabAtTargetInsertsFullIndentLevel(t *testing.T) {
 	uri, err := workspaceapi.ParseURI("memory:///indent.yaml")
 	require.NoError(t, err)
@@ -1836,10 +1810,6 @@ func TestEmacsTabAtTargetInsertsFullIndentLevel(t *testing.T) {
 	assert.Equal(t, term.Coordinates{X: 6, Y: 0}, h.CursorAtScroll())
 }
 
-// TestEmacsShiftTabFallsThroughWhenNoDedent verifies that <shift-tab>
-// is reported as unhandled when there is no indentation to remove, so the
-// event can fall through to outer command keybindings (e.g. the file
-// explorer toggle) instead of being silently swallowed.
 func TestEmacsShiftTabFallsThroughWhenNoDedent(t *testing.T) {
 	uri, err := workspaceapi.ParseURI("memory:///dedent.txt")
 	require.NoError(t, err)
@@ -1857,8 +1827,6 @@ func TestEmacsShiftTabFallsThroughWhenNoDedent(t *testing.T) {
 	assert.Equal(t, "hello", buf.String())
 }
 
-// TestEmacsShiftTabDedentsWhenIndented verifies that <shift-tab> still
-// dedents an indented line and reports the event as handled.
 func TestEmacsShiftTabDedentsWhenIndented(t *testing.T) {
 	uri, err := workspaceapi.ParseURI("memory:///dedent.txt")
 	require.NoError(t, err)
@@ -1952,10 +1920,6 @@ func emacsMarks(h text.Handler) []textapi.Location {
 	return nil
 }
 
-// TestEmacsMotionEdgeCases exercises every cursor-motion binding at the
-// boundaries of the buffer: first/last line, first/last column, empty
-// buffer and single-character buffer. A motion that cannot move must be
-// a safe no-op and leave the cursor where it was.
 func TestEmacsMotionEdgeCases(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -2031,9 +1995,6 @@ func TestEmacsMotionEdgeCases(t *testing.T) {
 	}
 }
 
-// TestEmacsEditingEdgeCases exercises insertion, deletion, backspace and
-// the kill commands at buffer boundaries and on an empty buffer. Deletes
-// and backspaces that have nothing to remove must be safe no-ops.
 func TestEmacsEditingEdgeCases(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -2113,11 +2074,6 @@ func TestEmacsEditingEdgeCases(t *testing.T) {
 	}
 }
 
-// TestEmacsCursorRobustnessAfterExternalEdit drives external buffer
-// mutations (as if another writer changed the file underneath the
-// cursor) and then continues interacting with the handler. The cursor
-// must stay within bounds and subsequent keys must not panic. This is
-// the emacs analogue of vi's stale-cursor coverage.
 func TestEmacsCursorRobustnessAfterExternalEdit(t *testing.T) {
 	edit := func(h text.Handler, from, to term.Coordinates, str string) {
 		h.CellEditor().Edit(context.Background(), from, to, str)
@@ -2221,9 +2177,6 @@ func TestEmacsCursorRobustnessAfterExternalEdit(t *testing.T) {
 	})
 }
 
-// TestEmacsNullCellHandling exercises buffers that contain NUL (\x00)
-// cells, which are treated as blank characters. Navigation, editing and
-// kill commands must handle them without panicking.
 func TestEmacsNullCellHandling(t *testing.T) {
 	t.Run("arrow-right traverses null cells", func(t *testing.T) {
 		h, _ := newEmacsHandler(t, "a\x00b")
@@ -2281,9 +2234,6 @@ func TestEmacsNullCellHandling(t *testing.T) {
 	})
 }
 
-// TestEmacsWideRuneHandling exercises buffers containing wide (CJK) and
-// multi-byte (emoji) runes. Motion, insertion, deletion and word
-// commands must treat them as single logical cells and never panic.
 func TestEmacsWideRuneHandling(t *testing.T) {
 	t.Run("arrow-right advances one cell per wide rune", func(t *testing.T) {
 		h, _ := newEmacsHandler(t, "世界")
@@ -2344,9 +2294,6 @@ func TestEmacsWideRuneHandling(t *testing.T) {
 	})
 }
 
-// TestEmacsSelectionEdgeCases covers shift-selection lifecycle: growing,
-// shrinking, replacing with edits, and clearing via a plain motion, Esc
-// or C-g. It also confirms selection cannot grow past the buffer end.
 func TestEmacsSelectionEdgeCases(t *testing.T) {
 	shiftRight := key2(term.KeyArrowRight, term.ModShift)
 	shiftLeft := key2(term.KeyArrowLeft, term.ModShift)
@@ -2495,10 +2442,6 @@ func allEmacsBindings() []term.Event {
 	return evs
 }
 
-// TestEmacsNoOpSafety drives every binding against pathological buffer
-// and cursor states. No binding may panic, and the handler must remain
-// interactive (a subsequent insertion still works) afterwards. This is
-// the emacs equivalent of vi's out-of-bounds and stale-state coverage.
 func TestEmacsNoOpSafety(t *testing.T) {
 	fixtures := []struct {
 		name    string
@@ -2552,10 +2495,6 @@ func TestEmacsNoOpSafety(t *testing.T) {
 	}
 }
 
-// TestEmacsResizeRobustness verifies that the scroll cursor position is
-// preserved across window resizes, including collapsing to a 1x1 window
-// and a deferred set through a zero-sized window. Mirrors the modal
-// handler's resize-robustness coverage.
 func TestEmacsResizeRobustness(t *testing.T) {
 	t.Run("cursor survives shrink and grow", func(t *testing.T) {
 		h, _ := newEmacsHandler(t, "a\nb\nc\nd\ne")
@@ -2607,10 +2546,6 @@ func TestEmacsResizeRobustness(t *testing.T) {
 	})
 }
 
-// TestEmacsMarkRobustness covers the C-SPC mark ring: setting marks,
-// clearing them with C-g, and their interaction with external buffer
-// mutations. Marks that become stale after an external delete must not
-// crash a subsequent kill-region.
 func TestEmacsMarkRobustness(t *testing.T) {
 	t.Run("C-g clears a pending mark", func(t *testing.T) {
 		h, _ := newEmacsHandler(t, "abcde")
@@ -2680,9 +2615,6 @@ func newEmacsHandlerWithHistory(t *testing.T, content string) (text.Handler, *ce
 	return h, buf, reg
 }
 
-// TestEmacsKillRingEdgeCases exercises the yank / kill-ring commands at
-// their edges: yanking with an empty clipboard, yank-pop without a prior
-// yank, and copy/kill followed by yank.
 func TestEmacsKillRingEdgeCases(t *testing.T) {
 	t.Run("C-y with empty clipboard is a safe no-op", func(t *testing.T) {
 		h, buf, _ := newEmacsHandlerWithHistory(t, "abc")
@@ -2758,10 +2690,6 @@ func TestEmacsKillRingEdgeCases(t *testing.T) {
 	})
 }
 
-// TestEmacsSexpMotionEdgeCases exercises the bracket-based forward and
-// backward sexp motions (C-M-f / C-M-b) over nested, mismatched,
-// unbalanced and multi-line brackets. A motion that cannot find a
-// matching bracket must be a no-op.
 func TestEmacsSexpMotionEdgeCases(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -2799,10 +2727,6 @@ func TestEmacsSexpMotionEdgeCases(t *testing.T) {
 	}
 }
 
-// TestEmacsStructuralMotion covers the bracket-based structural motion chords
-// added for RUNE-274: C-M-a / C-M-e (enclosing block bounds), C-M-u
-// (backward-up-list) and C-M-d (down-list). These are bracket approximations,
-// not true defun/list navigation.
 func TestEmacsStructuralMotion(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -2838,8 +2762,6 @@ func TestEmacsStructuralMotion(t *testing.T) {
 	}
 }
 
-// TestEmacsKillSexp covers C-M-k (kill-sexp): it deletes the balanced bracket
-// expression following point and is a safe no-op when none follows.
 func TestEmacsKillSexp(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -2871,11 +2793,6 @@ func TestEmacsKillSexp(t *testing.T) {
 	}
 }
 
-// TestEmacsLineManipulationEdgeCases covers move-line, duplicate-line and
-// jump-to-matching-bracket at buffer boundaries and on degenerate input.
-// Move-line depends on the configured clipboard, so its cases use a
-// history-aware clipboard (as the editor does in practice) and multi-line
-// content with a trailing newline where a swap is expected.
 func TestEmacsLineManipulationEdgeCases(t *testing.T) {
 	t.Run("move line up at the top is a no-op", func(t *testing.T) {
 		h, buf, _ := newEmacsHandlerWithHistory(t, "a\nb\nc")
@@ -2972,10 +2889,6 @@ func killRingText(clip clipboard.Register) string {
 	return data.Text
 }
 
-// TestEmacsWordMotion pins the GNU forward-word/backward-word semantics of
-// M-f, M-b and the Meta arrow aliases: words are letter/digit runs,
-// punctuation and underscores separate words, motion crosses line breaks,
-// and when no word remains point moves to the buffer end (or start).
 func TestEmacsWordMotion(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -3028,11 +2941,6 @@ func TestEmacsWordMotion(t *testing.T) {
 	}
 }
 
-// TestEmacsTransposeWords pins GNU transpose-words (M-t) via the
-// transpose-subr boundary rules: the word at or after point is interchanged
-// with the word before it, the separator is preserved verbatim, point lands
-// after the moved pair, and the command is a no-op when there is no word
-// before point.
 func TestEmacsTransposeWords(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -3085,10 +2993,6 @@ func TestEmacsTransposeWords(t *testing.T) {
 	})
 }
 
-// TestEmacsWordKills pins kill-word (M-d / M-Delete) and backward-kill-word
-// (M-DEL): the killed range is the exact word-motion span, the removed text
-// lands on the kill ring, and boundary cases are safe no-ops that leave the
-// kill ring untouched.
 func TestEmacsWordKills(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -3136,11 +3040,6 @@ func TestEmacsWordKills(t *testing.T) {
 	}
 }
 
-// TestEmacsCaseCommands pins upcase-word (M-u), downcase-word (M-l) and
-// capitalize-word (M-c): they operate from point to the end of the current
-// or next word (partial words when point is inside one), leave point there,
-// and capitalization upcases the first word constituent even when the
-// region starts with whitespace.
 func TestEmacsCaseCommands(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -3196,10 +3095,6 @@ func TestEmacsCaseCommands(t *testing.T) {
 	})
 }
 
-// TestEmacsKillLine pins GNU kill-line (C-k): from point to end of line,
-// the line break itself when point is at end of line, the whole line when
-// it is empty, and nothing at the very end of the buffer. Killed text —
-// including the bare newline — lands on the kill ring.
 func TestEmacsKillLine(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -3239,10 +3134,6 @@ func TestEmacsKillLine(t *testing.T) {
 	}
 }
 
-// TestEmacsKillRingAccumulation pins the GNU kill-accumulation contract:
-// consecutive kills merge into one kill-ring entry (forward kills append,
-// backward kills prepend), any intervening command breaks the chain, and
-// C-y re-inserts the accumulated text literally with point after it.
 func TestEmacsKillRingAccumulation(t *testing.T) {
 	t.Run("C-k C-k kills text then newline", func(t *testing.T) {
 		h, buf, clip := newEmacsHandlerWithClipboard(t, "abc\ndef")
@@ -3362,11 +3253,6 @@ func TestEmacsKillRingAccumulation(t *testing.T) {
 	})
 }
 
-// TestEmacsTransposeChars pins GNU transpose-chars (C-t): the characters
-// around point are swapped and point advances; at end of line the two
-// trailing characters are swapped instead; at a line boundary the swap
-// crosses the line break, dragging a character between lines. At the very
-// start of the buffer there is nothing to transpose.
 func TestEmacsTransposeChars(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -3416,10 +3302,6 @@ func TestEmacsTransposeChars(t *testing.T) {
 	})
 }
 
-// TestEmacsDeleteIndentation pins GNU delete-indentation (M-^): the current
-// line is joined onto the previous one, whitespace at the join collapses to
-// exactly one space — none at the start or end of the joined line or
-// against a bracket — and point is left at the join.
 func TestEmacsDeleteIndentation(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -3471,9 +3353,6 @@ func TestEmacsDeleteIndentation(t *testing.T) {
 	})
 }
 
-// TestEmacsJustOneSpace pins just-one-space (M-SPC): the whitespace run
-// around point collapses to a single space with point after it; when there
-// is no whitespace a space is still inserted.
 func TestEmacsJustOneSpace(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -3505,10 +3384,6 @@ func TestEmacsJustOneSpace(t *testing.T) {
 	}
 }
 
-// TestEmacsParagraphMotion pins M-{ / M-} (backward/forward-paragraph):
-// forward motion lands on the blank line after the current paragraph (or
-// the last line), backward motion on the blank line before it (or the
-// first line), always at column zero.
 func TestEmacsParagraphMotion(t *testing.T) {
 	const content = "p1a\np1b\n\np2a\np2b\n\np3"
 
@@ -3567,11 +3442,6 @@ func pageTestContent(lines int) string {
 	return sb.String()
 }
 
-// TestEmacsPageMotion pins the paging and recentering commands: C-v / M-v
-// scroll a full window and pull point along so it stays visible (the GNU
-// scroll contract), PgDn / PgUp move point a window's worth of lines, C-l
-// recenters the view around point, and C-M-Up / C-M-Down scroll one line
-// keeping point in place while it remains visible.
 func TestEmacsPageMotion(t *testing.T) {
 	const height = 10
 	newPaged := func(t *testing.T) text.Handler {
@@ -3702,10 +3572,6 @@ func feedKeys(t *testing.T, h text.Handler, keys string) {
 	}
 }
 
-// TestEmacsIsearchEdgeCases extends the incremental-search coverage with the
-// GNU behaviors around wrapping, direction changes, query editing and exit
-// keys. Forward search always leaves point at the match end, backward
-// search at the match start.
 func TestEmacsIsearchEdgeCases(t *testing.T) {
 	t.Run("repeat C-s wraps past the last match", func(t *testing.T) {
 		h, _ := newEmacsHandler(t, "foo x foo")
@@ -3862,9 +3728,6 @@ func TestEmacsIsearchEdgeCases(t *testing.T) {
 	})
 }
 
-// TestEmacsQueryReplaceEdgeCases extends the M-% coverage: every decision
-// key, prompt editing, replacements that grow, shrink or vanish, adjacent
-// and multiline matches, and the exact point position after the loop.
 func TestEmacsQueryReplaceEdgeCases(t *testing.T) {
 	// M-% is Alt+Shift+5, which reaches the handler as ModAlt with '%'.
 	const start = "<alt-shift-5>"
@@ -4008,8 +3871,6 @@ func TestEmacsQueryReplaceEdgeCases(t *testing.T) {
 	})
 }
 
-// TestEmacsGotoLineEdgeCases extends the M-g coverage: the GNU M-g M-g
-// chord, malformed input, whitespace trimming and prompt editing.
 func TestEmacsGotoLineEdgeCases(t *testing.T) {
 	const content = "l1\nl2\nl3\nl4\nl5"
 
@@ -4040,9 +3901,6 @@ func TestEmacsGotoLineEdgeCases(t *testing.T) {
 	}
 }
 
-// TestEmacsMinibufferKeys pins the echo-area prompt input handling: typed
-// keys go to the prompt (never the buffer), modified chords are ignored,
-// and Esc cancels like C-g.
 func TestEmacsMinibufferKeys(t *testing.T) {
 	const content = "l1\nl2\nl3"
 
@@ -4072,8 +3930,6 @@ func TestEmacsMinibufferKeys(t *testing.T) {
 	})
 }
 
-// TestEmacsPrefixAbort pins the M-g prefix contract: a key that does not
-// complete the prefix is swallowed without side effects, and C-g aborts.
 func TestEmacsPrefixAbort(t *testing.T) {
 	cases := []struct {
 		name string
@@ -4097,10 +3953,6 @@ func TestEmacsPrefixAbort(t *testing.T) {
 	}
 }
 
-// TestEmacsRegionCommands pins the C-SPC / C-w / M-w mark-and-region
-// workflow: kill-region kills mark-to-point onto the kill ring and pops the
-// mark, kill-ring-save copies without editing or moving point, and both are
-// no-ops without a mark.
 func TestEmacsRegionCommands(t *testing.T) {
 	setMark := key2(term.KeySpace, term.ModCtrl)
 
@@ -4257,9 +4109,6 @@ func TestEmacsRegionCommands(t *testing.T) {
 	})
 }
 
-// TestEmacsYankCommands pins C-y (yank) and its interaction with M-w and
-// M-y: yank inserts the clipboard text literally at point and leaves point
-// after it, replaces an active selection, and yank-pop only follows a yank.
 func TestEmacsYankCommands(t *testing.T) {
 	copyData := func(clip clipboard.Register, text_ string, meta any) {
 		_ = clip.Copy(clipboard.DefaultRegisterID, clipboard.Data{Text: text_, Metadata: meta})
@@ -4351,9 +4200,6 @@ func TestEmacsYankCommands(t *testing.T) {
 	})
 }
 
-// TestEmacsLineInsertCommands pins the newline family: C-o (open-line keeps
-// point), C-j / RET (plain newline), C-Enter / C-S-Enter (insert a fresh
-// line below/above), and RET over a selection.
 func TestEmacsLineInsertCommands(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -4412,9 +4258,6 @@ func TestEmacsLineInsertCommands(t *testing.T) {
 	})
 }
 
-// TestEmacsCommentToggle pins M-; (comment-dwim) with a configured line
-// comment: commenting, uncommenting, indentation preservation, and the
-// no-comment-config no-op.
 func TestEmacsCommentToggle(t *testing.T) {
 	// Uncommenting requires the comment-coverage view on top of the
 	// configured comment spec, mirroring how the editor wires syntax
@@ -4473,9 +4316,6 @@ func TestEmacsCommentToggle(t *testing.T) {
 	})
 }
 
-// TestEmacsFillParagraph pins M-q (fill-paragraph) against the configured
-// ruler: long lines wrap at word boundaries, short lines of the same
-// paragraph are rejoined, and other paragraphs are untouched.
 func TestEmacsFillParagraph(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -4510,9 +4350,6 @@ func TestEmacsFillParagraph(t *testing.T) {
 	})
 }
 
-// TestEmacsUndoInputSurface verifies that edits across the character and key
-// input surface can be undone with either GNU binding and redone after several
-// intervening non-undo commands.
 func TestEmacsUndoInputSurface(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -4594,8 +4431,6 @@ func TestEmacsUndoInputSurface(t *testing.T) {
 	}
 }
 
-// TestEmacsUndoTimelines covers transitions among ordinary undo, GNU-style
-// redo, explicit undo-redo, fresh edits, and non-command runtime events.
 func TestEmacsUndoTimelines(t *testing.T) {
 	t.Run("ordinary undo and redo timelines", func(t *testing.T) {
 		tests := []struct {
@@ -4768,9 +4603,6 @@ func TestEmacsUndoTimelines(t *testing.T) {
 	})
 }
 
-// TestEmacsUndoStateMachineBreakers drives commands that are consumed by
-// transient states instead of the normal keymap. Each completed command must
-// still end an undo sequence so the next ordinary undo redoes the prior edit.
 func TestEmacsUndoStateMachineBreakers(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -4950,8 +4782,6 @@ func TestEmacsUndoAfterNewEdit(t *testing.T) {
 	}
 }
 
-// TestEmacsUndoGrouping verifies that each user command creates the expected
-// undo checkpoints even when it performs multiple buffer edits internally.
 func TestEmacsUndoGrouping(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -5043,11 +4873,6 @@ func TestEmacsUndoGrouping(t *testing.T) {
 	}
 }
 
-// TestEmacsSentenceMotion pins M-a (backward-sentence) and M-e
-// (forward-sentence) with the stock GNU rules: a sentence ends at [.?!]
-// plus closing characters followed by end-of-line, a tab or two spaces
-// (sentence-end-double-space is on by default), and sentence motion never
-// crosses a paragraph except when there is nothing left in the current one.
 func TestEmacsSentenceMotion(t *testing.T) {
 	const three = "One.  Two three.  Four."
 	const abbrev = "Mr. Smith stayed.  He left."
@@ -5113,8 +4938,6 @@ func TestEmacsSentenceMotion(t *testing.T) {
 	}
 }
 
-// TestEmacsKillSentence pins M-k (kill-sentence): kill from point to the
-// end of the sentence, saving to the kill ring like every other kill.
 func TestEmacsKillSentence(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -5193,9 +5016,6 @@ func TestEmacsKillSentence(t *testing.T) {
 	})
 }
 
-// TestEmacsZapToChar pins M-z: read one character and kill from point
-// through and including its next occurrence, saving to the kill ring;
-// a failed search leaves the buffer untouched.
 func TestEmacsZapToChar(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -5293,10 +5113,6 @@ func TestEmacsZapToChar(t *testing.T) {
 	})
 }
 
-// TestEmacsUniversalArgument pins the GNU prefix-argument machinery: C-u
-// multiplies by four, digits build a number (plain, M- or C- flavored),
-// C-- / M-- / C-u - negate, C-u after digits terminates collection, and
-// the following command runs with that count.
 func TestEmacsUniversalArgument(t *testing.T) {
 	const abc20 = "abcdefghijklmnopqrst"
 	a70 := strings.Repeat("a", 70)
@@ -5444,9 +5260,6 @@ func TestEmacsUniversalArgument(t *testing.T) {
 	})
 }
 
-// TestEmacsUniversalArgumentKills pins the GNU argument semantics of the
-// kill commands: counted kills form a single kill-ring entry and a single
-// undo group, and C-k's argument counts whole lines.
 func TestEmacsUniversalArgumentKills(t *testing.T) {
 	t.Run("C-u 2 M-d kills two words as one entry", func(t *testing.T) {
 		h, buf, clip := newEmacsHandlerWithClipboard(t, "one two three")
@@ -5564,10 +5377,6 @@ func TestEmacsUniversalArgumentKills(t *testing.T) {
 	})
 }
 
-// TestEmacsUniversalArgumentSpecials pins the commands whose GNU argument
-// semantics are not plain repetition: C-SPC pops the mark ring, C-y takes
-// a kill-ring index, the case commands work backward, and the scroll
-// commands take lines.
 func TestEmacsUniversalArgumentSpecials(t *testing.T) {
 	t.Run("C-u C-SPC pops the mark and jumps", func(t *testing.T) {
 		h, _ := newEmacsHandler(t, "abcdefgh")
@@ -5718,8 +5527,6 @@ func TestEmacsUniversalArgumentSpecials(t *testing.T) {
 	})
 }
 
-// TestEmacsUndoAmalgamation verifies the checkpoints formed by self-insert and
-// same-direction delete runs across aliases and character widths.
 func TestEmacsUndoAmalgamation(t *testing.T) {
 	wideRun := make([]term.Event, 25)
 	wideDeletes := make([]term.Event, 25)
@@ -5772,9 +5579,6 @@ func TestEmacsUndoAmalgamation(t *testing.T) {
 	}
 }
 
-// TestEmacsMacroKeys pins GNU's kmacro keys: <f3> starts recording through
-// the injected recorder, <f4> ends it and thereafter replays, and both are
-// safe no-ops when no recorder or player is wired.
 func TestEmacsMacroKeys(t *testing.T) {
 	t.Run("F3 without a recorder is a no-op", func(t *testing.T) {
 		h, buf := newEmacsHandler(t, "ab")
@@ -5873,9 +5677,6 @@ func TestEmacsMacroKeys(t *testing.T) {
 	})
 }
 
-// TestEmacsPasteEvents pins the bracketed-paste path: buffered characters
-// insert atomically on paste end, a paste replaces an active selection, and
-// stray paste events are safe.
 func TestEmacsPasteEvents(t *testing.T) {
 	paste := func(h text.Handler, s string) {
 		h.Handle(term.Event{Type: term.EventPasteStart})
@@ -5934,9 +5735,6 @@ func TestEmacsPasteEvents(t *testing.T) {
 	})
 }
 
-// TestEmacsBracketCommands pins the C-S-M block selection: the selection
-// wraps the enclosing bracket pair, survives the keystroke and leaves point
-// on the closing delimiter.
 func TestEmacsBracketCommands(t *testing.T) {
 	blocks := []struct {
 		name    string
@@ -5992,9 +5790,6 @@ func TestEmacsBracketCommands(t *testing.T) {
 	})
 }
 
-// TestEmacsTabSelection pins Tab / Shift-Tab over a multi-line selection:
-// every selected line shifts by one indent unit and the selection is
-// consumed.
 func TestEmacsTabSelection(t *testing.T) {
 	t.Run("Tab indents every selected line", func(t *testing.T) {
 		h, buf := newEmacsHandler(t, "ab\ncd")
@@ -6049,9 +5844,6 @@ func asciiControlChords() []struct {
 	return out
 }
 
-// TestEmacsQuotedInsertControlCodes pins C-q over the whole ASCII control
-// chord space: every C-<char> from C-@ through C-_ and every C-<letter> must
-// insert the matching control code rather than run its command.
 func TestEmacsQuotedInsertControlCodes(t *testing.T) {
 	for _, tc := range asciiControlChords() {
 		t.Run(tc.name, func(t *testing.T) {
@@ -6064,8 +5856,6 @@ func TestEmacsQuotedInsertControlCodes(t *testing.T) {
 	}
 }
 
-// TestEmacsQuotedInsertKeySpace pins which keys C-q can quote, which named
-// keys map onto a literal character, and which have no literal form at all.
 func TestEmacsQuotedInsertKeySpace(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -6113,9 +5903,6 @@ func TestEmacsQuotedInsertKeySpace(t *testing.T) {
 	}
 }
 
-// TestEmacsQuotedInsertContexts drives C-q against pathological buffer and
-// cursor states: null cells, wide runes, tabs, line and buffer boundaries,
-// active selections and out-of-bounds carets.
 func TestEmacsQuotedInsertContexts(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -6200,9 +5987,6 @@ func TestEmacsQuotedInsertContexts(t *testing.T) {
 	}
 }
 
-// TestEmacsQuotedInsertCount pins the GNU numeric-argument contract:
-// C-u N C-q <key> inserts the quoted character N times, and a zero or
-// negative argument inserts nothing while still consuming the quoted key.
 func TestEmacsQuotedInsertCount(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -6236,9 +6020,6 @@ func TestEmacsQuotedInsertCount(t *testing.T) {
 	}
 }
 
-// TestEmacsQuotedInsertState pins the one-key lifetime of C-q: it consumes
-// exactly the next key, reverts to the normal keymap afterwards, and reverts
-// its whole insertion in a single undo.
 func TestEmacsQuotedInsertState(t *testing.T) {
 	t.Run("consumes exactly one key", func(t *testing.T) {
 		h, buf := newEmacsHandler(t, "")
@@ -6297,9 +6078,6 @@ func TestEmacsQuotedInsertState(t *testing.T) {
 	})
 }
 
-// TestEmacsMarkDefun pins C-M-h (mark-defun) across the bracket kinds and
-// the pathological buffer states: it marks the innermost enclosing block,
-// leaves point at its end, and sets a mark the region commands can use.
 func TestEmacsMarkDefun(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -6385,9 +6163,6 @@ func TestEmacsMarkDefun(t *testing.T) {
 	})
 }
 
-// TestEmacsAsciiControlFolding pins C-m and C-i as the ASCII synonyms of RET
-// and TAB: the GUI delivers them as Control chords while a terminal delivers
-// the bare key, and both must behave identically in every context.
 func TestEmacsAsciiControlFolding(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -6484,12 +6259,6 @@ func TestEmacsAsciiControlFolding(t *testing.T) {
 	})
 }
 
-// TestEmacsCtrlShiftNormalization pins the two shapes a C-S-<letter> chord
-// arrives in: the GUI reports ModCtrlShift while other input paths report
-// ModCtrl carrying the shifted glyph. Both must reach the same binding, so
-// the two shapes are compared against each other rather than against a
-// fixed outcome; that keeps the assertion meaningful for bindings whose
-// effect needs language services the test harness does not provide.
 func TestEmacsCtrlShiftNormalization(t *testing.T) {
 	type outcome struct {
 		handled bool
@@ -6597,9 +6366,6 @@ func TestEmacsCtrlShiftNormalization(t *testing.T) {
 	})
 }
 
-// TestEmacsRegionSources pins how M-w and C-w decide what the region is:
-// an explicit C-SPC mark, a shift-selection, or neither. Both directions
-// and the pathological buffers are covered.
 func TestEmacsRegionSources(t *testing.T) {
 	// markThen sets a mark at the caret then applies the motions.
 	markThen := func(motions ...term.Event) func(t *testing.T, h text.Handler) {
@@ -6756,9 +6522,6 @@ func TestEmacsRegionSources(t *testing.T) {
 	})
 }
 
-// TestHandleMouseWindowCoordinates verifies mouse events are
-// interpreted in window coordinates: positions follow the horizontal
-// scroll offset and resolve past the viewport edge with wrap off.
 func TestHandleMouseWindowCoordinates(t *testing.T) {
 	uri, err := workspaceapi.ParseURI("test:///")
 	require.NoError(t, err)

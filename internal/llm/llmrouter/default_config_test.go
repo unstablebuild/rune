@@ -24,10 +24,6 @@ import (
 	"unstable.build/rune/internal/llm"
 )
 
-// TestNew_AcceptsDefaultConfig pins the contract that
-// llm.DefaultConfig() must never cause llmrouter.New to fail.
-// rune.star ships these defaults; any provider catalog that
-// can't be constructed from them is a bug worth catching early.
 func TestNew_AcceptsDefaultConfig(t *testing.T) {
 	r, err := New(llm.DefaultConfig(), t.TempDir(), storagestub.NewInMemoryService(),
 		&fakeLocalService{})

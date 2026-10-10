@@ -33,7 +33,7 @@ import (
 	sdkiterator "github.com/unstablebuild/rune-go-sdk/iterator"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/extension/extensionv2/peerprocess"
-	"unstable.build/rune/internal/ide/pkgtrust"
+	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
 	"unstable.build/rune/internal/text"
 	"unstable.build/rune/internal/text/texttest"
 )
@@ -300,10 +300,6 @@ func TestAuthorizerRevokeREPLResurrectsNeverDecision(t *testing.T) {
 	assert.Equal(t, 1, prompter.calls)
 }
 
-// Two persisted command-scoped decisions for the same plugin and
-// permission but different commands must produce distinct list entries
-// and distinct IDs so that `authorizer revoke <id>` targets exactly one
-// of them.
 func TestAuthorizerListAndRevokeREPLDistinguishCommandScopedDecisions(t *testing.T) {
 	t.Parallel()
 

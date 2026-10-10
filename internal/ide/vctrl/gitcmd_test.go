@@ -25,9 +25,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestGitFileDiff pins the translation between git's hunk numbering and
-// this package's: both Service implementations feed the same consumers,
-// so a removal has to name the new-side line it sat at either way.
 func TestGitFileDiff(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

@@ -68,8 +68,6 @@ func indentService(indents map[int]int) func(*testing.T, *Helix, *cell.Buffer) {
 
 const grid3 = "abc\ndef\nghi"
 
-// TestDeleteOverAllRanges pins d and A-d: delete_selection_impl over
-// every range, with the registers written once for the whole set.
 func TestDeleteOverAllRanges(t *testing.T) {
 	runOpSelCases(t, []opSelCase{
 		{name: "three ranges on one row", content: "abcdef",
@@ -160,7 +158,6 @@ func TestDeleteOverAllRanges(t *testing.T) {
 	})
 }
 
-// TestChangeOverAllRanges pins c and A-c.
 func TestChangeOverAllRanges(t *testing.T) {
 	runOpSelCases(t, []opSelCase{
 		{name: "c on one row leaves a cursor in every gap", content: "abcdef",
@@ -221,8 +218,6 @@ func TestChangeOverAllRanges(t *testing.T) {
 	})
 }
 
-// TestYankOverAllRanges pins y: yank_impl stores one fragment per
-// range, joined by newlines for anyone reading the plain text.
 func TestYankOverAllRanges(t *testing.T) {
 	runOpSelCases(t, []opSelCase{
 		{name: "y fills the chosen, unnamed and last-yank registers", content: grid, at: xy(1, 0),
@@ -288,9 +283,6 @@ func TestYankOverAllRanges(t *testing.T) {
 	})
 }
 
-// TestPasteOverAllRanges pins p and P: paste_impl puts the i-th register
-// value next to the i-th range, the last value serving every range
-// beyond that.
 func TestPasteOverAllRanges(t *testing.T) {
 	runOpSelCases(t, []opSelCase{
 		{name: "a plain register goes after every range", content: grid, at: xy(1, 0), seed: "X", evs: keys("Cp"),
@@ -386,7 +378,6 @@ func TestPasteOverAllRanges(t *testing.T) {
 	})
 }
 
-// TestReplaceWithRegisterOverAllRanges pins R.
 func TestReplaceWithRegisterOverAllRanges(t *testing.T) {
 	runOpSelCases(t, []opSelCase{
 		{name: "fragments pair up with the ranges", content: grid, at: xy(1, 0),
@@ -428,7 +419,6 @@ func TestReplaceWithRegisterOverAllRanges(t *testing.T) {
 	})
 }
 
-// TestReplaceCharOverAllRanges pins r{char}.
 func TestReplaceCharOverAllRanges(t *testing.T) {
 	runOpSelCases(t, []opSelCase{
 		{name: "every cell of every range", content: "abcdef",
@@ -469,7 +459,6 @@ func TestReplaceCharOverAllRanges(t *testing.T) {
 	})
 }
 
-// TestCaseOverAllRanges pins ~, ` and A-`.
 func TestCaseOverAllRanges(t *testing.T) {
 	runOpSelCases(t, []opSelCase{
 		{name: "~ flips every letter", content: "aB\ncD",
@@ -512,9 +501,6 @@ func TestCaseOverAllRanges(t *testing.T) {
 	})
 }
 
-// TestJoinOverAllRanges pins J and A-J: join_selections_impl, which
-// joins every line a range touches with the next, carries the ranges
-// through the joins, and for A-J selects the separators it inserted.
 func TestJoinOverAllRanges(t *testing.T) {
 	commentSpec := func(t *testing.T, hx *Helix, _ *cell.Buffer) {
 		hx.cursor.SetCommentSpec(text.CommentSpec{Line: []string{"//", "///"}})
@@ -602,10 +588,6 @@ func TestJoinOverAllRanges(t *testing.T) {
 	})
 }
 
-// TestIndentOverAllRanges pins >, < and =: every line any range touches
-// is shifted once however many ranges share it, blank lines are left
-// alone, and the ranges are carried through the inserted or removed
-// indentation.
 func TestIndentOverAllRanges(t *testing.T) {
 	tabs := func(_ *testing.T, hx *Helix, _ *cell.Buffer) {
 		impl(hx).config.indentRune = text.IndentRuneTab
@@ -682,9 +664,6 @@ func TestIndentOverAllRanges(t *testing.T) {
 	})
 }
 
-// TestCommentOverAllRanges pins C-c: toggle_line_comments over every
-// line any range touches, commenting them all when one is not
-// commented and uncommenting them all otherwise.
 func TestCommentOverAllRanges(t *testing.T) {
 	spec := text.CommentSpec{Line: []string{"//"}}
 	withComments := func(_ *testing.T, hx *Helix, buf *cell.Buffer) {
@@ -725,9 +704,6 @@ func TestCommentOverAllRanges(t *testing.T) {
 	})
 }
 
-// TestOpenLineOverAllRanges pins o and O: open, which puts a line
-// after (or before) the line every range's cursor sits on, with the
-// indentation of that line, and leaves one cursor on each new line.
 func TestOpenLineOverAllRanges(t *testing.T) {
 	runOpSelCases(t, []opSelCase{
 		{name: "o under every range", content: "a\nb\nc",
@@ -789,9 +765,6 @@ func TestOpenLineOverAllRanges(t *testing.T) {
 	})
 }
 
-// TestAddNewlineOverAllRanges pins ]<space> and [<space>:
-// add_newline_below/above, one line ending per range after (before)
-// the lines it touches, without moving the ranges off their text.
 func TestAddNewlineOverAllRanges(t *testing.T) {
 	below := cat(keys("]"), space())
 	above := cat(keys("["), space())
@@ -833,10 +806,6 @@ func TestAddNewlineOverAllRanges(t *testing.T) {
 	})
 }
 
-// TestSurroundOverAllRanges pins ms, mr and md: surround_add wraps
-// every range, surround_replace and surround_delete act on the pair
-// around every range's cursor and refuse the whole command when one
-// range has no pair or two share one.
 func TestSurroundOverAllRanges(t *testing.T) {
 	runOpSelCases(t, []opSelCase{
 		{name: "ms wraps every range and selects the pairs", content: "ab\ncd",
@@ -934,9 +903,6 @@ func TestSurroundOverAllRanges(t *testing.T) {
 	})
 }
 
-// TestIncrementOverAllRanges pins C-a and C-x: increment_impl over
-// every range, each handing the text it covers to the incrementors,
-// with the # register turning the amount into a sequence.
 func TestIncrementOverAllRanges(t *testing.T) {
 	inc := []term.Event{ctrl('a')}
 	dec := []term.Event{ctrl('x')}
@@ -1026,8 +992,6 @@ func TestIncrementOverAllRanges(t *testing.T) {
 	})
 }
 
-// TestIncrementText pins the incrementors with Helix's own fixtures
-// from helix-core/src/increment.
 func TestIncrementText(t *testing.T) {
 	for _, tc := range []struct {
 		in     string
@@ -1104,10 +1068,6 @@ func TestIncrementText(t *testing.T) {
 	})
 }
 
-// TestUndoRedoOverAllRanges pins u, U, A-u and A-U across every
-// operator: undo brings back the text and the whole selection set the
-// operator started from, redo the set it left behind, and a count
-// walks several revisions at once.
 func TestUndoRedoOverAllRanges(t *testing.T) {
 	two := selOf(1, fwd(1, 0, 2, 0), fwd(1, 1, 2, 1))
 	for _, tc := range []struct {
@@ -1237,10 +1197,6 @@ func TestUndoRedoOverAllRanges(t *testing.T) {
 	})
 }
 
-// TestRegisterData pins registerData, registerFragments and
-// registerValues: one fragment per range on the way in, the joined
-// text for anyone reading the register as plain text, and one value
-// per range on the way out however the register was written.
 func TestRegisterData(t *testing.T) {
 	t.Run("registerData", func(t *testing.T) {
 		for _, tc := range []struct {
@@ -1356,10 +1312,6 @@ func TestRegisterData(t *testing.T) {
 	})
 }
 
-// TestOperatorsWithSharedScroll pins that the operators carry the
-// selection set through their edits when the handler is built on an
-// existing scroll rather than a buffer of its own, since the change
-// recorder has to sit on whichever buffer the scroll shows.
 func TestOperatorsWithSharedScroll(t *testing.T) {
 	newShared := func(t *testing.T, content string) (*Helix, *cell.Buffer) {
 		t.Helper()
@@ -1403,11 +1355,6 @@ func TestOperatorsWithSharedScroll(t *testing.T) {
 	}
 }
 
-// TestSetSelectionClamps pins what setSelection makes of a set no
-// command would build: coordinates outside the document land on its
-// nearest position, an empty set falls back to the cursor, the
-// primary index is kept in range, and points widen onto the character
-// after them outside insert mode.
 func TestSetSelectionClamps(t *testing.T) {
 	for _, tc := range []struct {
 		name        string

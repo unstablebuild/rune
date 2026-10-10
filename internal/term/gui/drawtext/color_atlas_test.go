@@ -49,9 +49,6 @@ func (s *fakeColorSource) Glyph(cluster []rune, cellW, cellH int) (*image.RGBA, 
 	return img, true
 }
 
-// TestColorAtlasCachesGlyph asserts the color atlas packs a glyph once
-// and reuses the same page/rect on repeated lookups, so steady-state
-// rendering neither repacks nor re-rasterizes.
 func TestColorAtlasCachesGlyph(t *testing.T) {
 	src := &fakeColorSource{present: map[string]bool{"😀": true}}
 	a := newColorAtlas()
@@ -71,8 +68,6 @@ func TestColorAtlasCachesGlyph(t *testing.T) {
 	assert.Equal(t, 2, src.calls, "size change is a new key")
 }
 
-// TestColorAtlasAbsentGlyphCachedEmpty asserts a rune with no color
-// bitmap is cached as empty and never re-queried.
 func TestColorAtlasAbsentGlyphCachedEmpty(t *testing.T) {
 	src := &fakeColorSource{present: map[string]bool{}}
 	a := newColorAtlas()
@@ -85,10 +80,6 @@ func TestColorAtlasAbsentGlyphCachedEmpty(t *testing.T) {
 	assert.Equal(t, 1, src.calls, "absent result is cached")
 }
 
-// TestDrawColorGlyphIdentityColor asserts DrawColorGlyph emits exactly
-// one quad (4 vertices / 6 indices) with identity per-vertex color, so
-// the emoji bitmap is drawn untinted, and positions the quad at the cell
-// box (centered when the bitmap is smaller than the cell).
 func TestDrawColorGlyphIdentityColor(t *testing.T) {
 	src := &fakeColorSource{present: map[string]bool{"😀": true}}
 	d := New()
@@ -117,9 +108,6 @@ func TestDrawColorGlyphIdentityColor(t *testing.T) {
 	assert.Empty(t, d.indices, "flush closes the run")
 }
 
-// TestDrawColorGlyphBatchesRun asserts consecutive color glyphs on one
-// page accumulate into a single open run, mirroring the mask path so a
-// row of emoji issues one DrawTriangles.
 func TestDrawColorGlyphBatchesRun(t *testing.T) {
 	src := &fakeColorSource{present: map[string]bool{"😀": true, "🚀": true}}
 	d := New()
@@ -134,9 +122,6 @@ func TestDrawColorGlyphBatchesRun(t *testing.T) {
 	benchdraw.EndFrame(t)
 }
 
-// TestDrawColorGlyphSeparatesFromMask asserts switching between the mask
-// path and the color path flushes the open run, since the two draw from
-// different source textures and cannot share a DrawTriangles.
 func TestDrawColorGlyphSeparatesFromMask(t *testing.T) {
 	m, err := font.NewManager(0, 0)
 	require.NoError(t, err)
@@ -167,8 +152,6 @@ func TestDrawColorGlyphSeparatesFromMask(t *testing.T) {
 	benchdraw.EndFrame(t)
 }
 
-// TestDrawColorGlyphEmptyAddsNoQuad asserts an absent color glyph buffers
-// no quad, so the renderer can fall through to the monochrome path.
 func TestDrawColorGlyphEmptyAddsNoQuad(t *testing.T) {
 	src := &fakeColorSource{present: map[string]bool{}}
 	d := New()

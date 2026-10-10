@@ -23,39 +23,21 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/config"
+	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/browser"
 	tcomponent "unstable.build/rune/internal/component"
-	"unstable.build/rune/internal/ide/pkgtrust"
+	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
 	"unstable.build/rune/internal/term/vte/vtereservoir"
 )
 
-// TestE2EWorkspaceReloadRestoresLayoutAndTerminalOutput drives the
-// full real IDE — real config, real file scheme, real vte handler —
-// through the same flow that surfaced the original
-// :workspacereload DeadlineExceeded bug, and asserts that the
-// post-reload IDE preserves both the workspace layout and the
-// captured terminal output.
-//
-// Flow:
-//  1. cwd workspace points to a temp dir on disk; auto_restore is on
-//     so the reload skips the restore-prompt.
-//  2. Open a test file (left window).
-//  3. windownew right creates a fresh empty window on the right.
-//  4. terminalnew opens a real vte.Handler in that right window
-//     running a script that prints `abc` and stays alive, since a
-//     terminal whose process exits is closed.
-//  5. After the terminal output settles, the test snapshots the
-//     layout topology and the textual content of the terminal cells.
-//  6. :workspacereload is dispatched the same way a user would
-//     dispatch it — through the command prompt.
-//  7. After the workspace re-installs, the layout must be the same
-//     vertical split, the right window must still hold a vte
-//     handler, and its snapshot must still contain "abc".
 func TestE2EWorkspaceReloadRestoresLayoutAndTerminalOutput(t *testing.T) {
 	dir := t.TempDir()
 	dataDir := t.TempDir()
@@ -243,4 +225,66 @@ workspace:
 		"post-reload right leaf must reference a concrete window")
 	require.Equal(t, rightLeafAfter.WindowID, after.windowID,
 		"the restored terminal must live in the right leaf of the post-reload layout")
+}
+
+func TestFileSchemeShellRC(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opts []Option
+		want string
+	}{
+		{"default", nil, "unset"},
+		{"WithShellRCDir", []Option{WithShellRCDir("/rune/shellrc")}, "/rune/shellrc"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			out := filepath.Join(dir, "out")
+			zsh := filepath.Join(dir, "zsh")
+			require.NoError(t, os.WriteFile(zsh, []byte(
+				"#!/bin/sh\nprintf '%s' \"${ZDOTDIR:-unset}\" > \""+out+"\"\n"), 0o755))
+			t.Setenv("SHELL", zsh)
+			t.Setenv("ZDOTDIR", "")
+			configPath := filepath.Join(dir, "rune.yaml")
+			require.NoError(t, os.WriteFile(configPath, []byte(
+				"editor:\n  mode: vim\nterminal:\n  initial_reservoir: 0\n"), 0o644))
+
+			i, err := New("", configPath, dir, pkgtrust.NewStore(dir, nil), newTestStorage(t, dir),
+				append([]Option{
+					WithPublishEvent(nopPublishEvent),
+					WithLocker(new(sync.Mutex)),
+					WithScheduleNextTick(func(fn func()) bool { fn(); return true }),
+				}, tc.opts...)...)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = i.Close() })
+
+			uri, err := workspaceapi.CurrentUserHostURI(dir)
+			require.NoError(t, err)
+			newScheme, err := i.workspaceManager.Scheme(uri)
+			require.NoError(t, err)
+			scheme, err := newScheme(t.Context(), config.NopConfig(), uri)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = scheme.Close() })
+			pty, err := scheme.NewPty(t.Context())
+			require.NoError(t, err)
+			t.Cleanup(func() {
+				_ = pty.Master.Close()
+				_ = pty.Slave.Close()
+			})
+
+			ch := make(chan error, 1)
+			_, err = scheme.StartCommand(t.Context(), workspaceapi.Cmd{
+				// the terminal's shell, started as the vte does
+				SysProcAttr: &syscall.SysProcAttr{Setsid: true, Setctty: true},
+				Stdin:       pty.Slave,
+				Stdout:      pty.Slave,
+				Stderr:      pty.Slave,
+				Watcher:     workspaceapi.ChanProcessWatcher(ch),
+			})
+			require.NoError(t, err)
+			require.NoError(t, <-ch)
+			got, err := os.ReadFile(out)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, string(got))
+		})
+	}
 }

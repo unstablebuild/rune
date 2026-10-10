@@ -133,9 +133,6 @@ func TestMaxOutputTokensOverridesConfig(t *testing.T) {
 	assert.Equal(t, int64(8192), captured.MaxTokens)
 }
 
-// TestEffortWarningProvenance pins the rule that only an explicit per-request
-// effort produces a warning; the workspace config value is a standing
-// preference and is dropped silently on models that cannot honor it.
 func TestEffortWarningProvenance(t *testing.T) {
 	// Claude 3 models do not support the effort parameter at all.
 	model := llmapi.ModelEntry{Name: "claude-3-5-haiku-20241022"}

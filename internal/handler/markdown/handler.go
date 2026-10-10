@@ -98,6 +98,11 @@ func (h *Handler) SetComponent(comp *markdown.Component) {
 	}
 }
 
+// Component returns the markdown component the handler renders.
+func (h *Handler) Component() *markdown.Component {
+	return h.comp
+}
+
 // Close cancels any in-flight syntax highlighting goroutines
 // owned by the underlying component.
 func (h *Handler) Close() error {

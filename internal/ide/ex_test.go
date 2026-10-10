@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/url"
 	"os/user"
 	"runtime"
 
@@ -54,6 +55,7 @@ import (
 	sdkiterator "github.com/unstablebuild/rune-go-sdk/iterator"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
+	"mvdan.cc/sh/v3/shell"
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/browser/browsertest"
 	"unstable.build/rune/internal/cell"
@@ -63,8 +65,8 @@ import (
 	thandler "unstable.build/rune/internal/handler"
 	"unstable.build/rune/internal/handler/command"
 	"unstable.build/rune/internal/handler/handlertest"
+	"unstable.build/rune/internal/ide/console/ideconsole"
 	"unstable.build/rune/internal/ide/idehistory"
-	"unstable.build/rune/internal/ide/ideshell"
 	"unstable.build/rune/internal/ide/plugin"
 	"unstable.build/rune/internal/term/vte"
 	"unstable.build/rune/internal/term/vte/vtereservoir"
@@ -175,6 +177,10 @@ func (w *testLoader) Signal(workspaceapi.Pid, syscall.Signal) error {
 
 func (w *testLoader) InstallDataDir(context.Context) (string, error) {
 	return "", errors.ErrUnsupported
+}
+
+func (w *testLoader) PathCaseSensitive() bool {
+	return true
 }
 
 func (w *testLoader) Load(
@@ -334,10 +340,6 @@ func TestComponentOpenEditorIntegration(t *testing.T) {
 	assert.NoError(t, b.Close())
 }
 
-// TestHandlerInFocusNonTextTabReturnsURI guards command routing for tabs
-// whose handler is not a text.Handler (e.g. rune-agent chat tabs). The
-// focused tab's URI must still be returned so command-prompt commands can
-// resolve the focused resource; only the inner text.Handler is absent.
 func TestHandlerInFocusNonTextTabReturnsURI(t *testing.T) {
 	b := newExForTesting(t, texttest.NopEditor(),
 		text.WithCommandKey(testCommandKey),
@@ -435,12 +437,6 @@ func TestFileExplorerOpenFile(t *testing.T) {
 	t.Fatalf("expected alpha.go to be opened in a tab")
 }
 
-// TestFileExplorerToggleTwice reproduces the bug where toggling the
-// file explorer off and on again returns a "command already
-// registered" error. Each :fexplorer invocation that opens the
-// explorer calls the real editor's Edit on the same URI, which
-// subscribes file-level commands (fold/location/git). The second
-// call must NOT re-register those commands for the same URI.
 func TestFileExplorerToggleTwice(t *testing.T) {
 	uri, err := workspaceapi.ParseURI("memory:///")
 	require.NoError(t, err)
@@ -481,13 +477,6 @@ func TestFileExplorerToggleTwice(t *testing.T) {
 	require.NotNil(t, b.fileExplorerWin)
 }
 
-// TestFileExplorerOpenFileThenToggle exercises the realistic
-// production path: user opens fexplorer, opens a file from it (which
-// registers fold/location/git for that file's URI on the shared vi
-// editor's registry), closes the explorer, then reopens. Before the
-// caching fix, reopen re-invoked e.ed.Edit("memory:///fexplorer",
-// ...) which re-subscribed per-file commands and failed with
-// "command already registered".
 func TestFileExplorerOpenFileThenToggle(t *testing.T) {
 	uri, err := workspaceapi.ParseURI("memory:///")
 	require.NoError(t, err)
@@ -527,17 +516,6 @@ func TestFileExplorerOpenFileThenToggle(t *testing.T) {
 	require.NotNil(t, b.fileExplorerWin)
 }
 
-// TestFileExplorerToggleViaTabKey reproduces the user's exact
-// reproduction: with <tab> bound to :fexplorer, pressing <tab>
-// repeatedly to open and close the explorer must never fail with
-// "command already registered". This exercises the full event
-// routing path: the KeyTab event is dispatched to the focused
-// window's handler, propagates back to ex.handleEvent, and only
-// then falls through to the command-key-binding dispatcher that
-// runs :fexplorer. This path differs from calling fexplorer
-// directly because when the explorer is focused, <tab> is first
-// delivered to the file explorer handler (and hence to the vi
-// editor chain) before reaching the :fexplorer binding.
 func TestFileExplorerToggleViaTabKey(t *testing.T) {
 	uri, err := workspaceapi.ParseURI("memory:///")
 	require.NoError(t, err)
@@ -587,18 +565,6 @@ func TestFileExplorerToggleViaTabKey(t *testing.T) {
 	require.Empty(t, wsReg.errors(), "no errors after 4th <tab>")
 }
 
-// TestFileExplorerRestoredAsTabNotDuplicated exercises the bug
-// surfaced by the user's real-world setup: a previous session
-// persisted memory:///fexplorer as an open file. On startup, the
-// workspace handler restores it as a tab via editFileURI, which
-// ends up calling vi.Editor.Edit on memory:///fexplorer and
-// subscribing per-file commands. When the user then presses <tab>
-// to open the explorer, ex.initFileExplorer calls Edit a second
-// time on the same URI, which fails with "command already
-// registered".
-//
-// With the fix, the file explorer URI is filtered out of session
-// history and restore, so the second Edit call never happens.
 func TestFileExplorerRestoredAsTabNotDuplicated(t *testing.T) {
 	uri, err := workspaceapi.ParseURI("memory:///")
 	require.NoError(t, err)
@@ -636,9 +602,6 @@ func TestFileExplorerRestoredAsTabNotDuplicated(t *testing.T) {
 	require.NotNil(t, b.fileExplorerWin)
 }
 
-// TestFileExplorerTabCloseClosesWindow verifies that :tabclose on the
-// focused file explorer window tears down the whole window (like
-// toggling it off) instead of swapping in a free tab / wallpaper.
 func TestFileExplorerTabCloseClosesWindow(t *testing.T) {
 	uri, err := workspaceapi.ParseURI("memory:///")
 	require.NoError(t, err)
@@ -662,9 +625,6 @@ func TestFileExplorerTabCloseClosesWindow(t *testing.T) {
 	require.Equal(t, prev, b.invokeWindow(), "focus should return to the previous target")
 }
 
-// TestFileExplorerTabSwitchNoOp verifies that :tabnext, :tabprevious
-// and :tabfocus are silent no-ops while the file explorer window is
-// focused, so its raw content can never be swapped for a free tab.
 func TestFileExplorerTabSwitchNoOp(t *testing.T) {
 	uri, err := workspaceapi.ParseURI("memory:///")
 	require.NoError(t, err)
@@ -699,9 +659,6 @@ func TestFileExplorerTabSwitchNoOp(t *testing.T) {
 	require.NotNil(t, b.fileExplorerWin, "explorer window should still be open")
 }
 
-// TestTabSwitchUnaffectedByExplorerGuard is a regression guard that the
-// new fexplorer special-casing in the tab commands does not break
-// normal tab switching in an unrelated window.
 func TestTabSwitchUnaffectedByExplorerGuard(t *testing.T) {
 	b := newExForTesting(t, texttest.NopEditor())
 	defer b.Close()
@@ -970,10 +927,10 @@ func testBrowserHandlerDraw(t *testing.T, constructor browserConstructor) {
 
 	handlertest.TestHandlerSequence(t, bh, 20, 10, cases)
 
-	var closed int
+	closed := make(chan struct{})
 	hx := browsertest.NewTestHandler()
 	hx.Ch = '$'
-	hx.CloseCallback = func() error { closed++; return nil }
+	hx.CloseCallback = func() error { close(closed); return nil }
 	require.NoError(t, focus.SetContent(hx))
 
 	cases = []handlertest.SequenceTestCase{
@@ -995,7 +952,12 @@ func testBrowserHandlerDraw(t *testing.T, constructor browserConstructor) {
 	require.NoError(t, win.Close())
 	require.NoError(t, focus.Close())
 
-	assert.Equal(t, 1, closed)
+	// Over RPC, closing a window only asks the remote content to close.
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("window content was not closed")
+	}
 
 	cases = []handlertest.SequenceTestCase{
 		// test CommandKeyBindings
@@ -1197,7 +1159,6 @@ IIII`},
 
 	assert.NoError(t, bh.(io.Closer).Close())
 	assert.NoError(t, b.Close())
-	assert.Equal(t, 1, closed)
 }
 
 func TestShellCommandOpensTab(t *testing.T) {
@@ -1240,7 +1201,7 @@ func TestShellCommandOpensTab(t *testing.T) {
 
 	tabs := b.comp.Tabs()
 	require.Len(t, tabs, 1)
-	_, ok := tabs[0].Handler().(*ideshell.Handler)
+	_, ok := tabs[0].Handler().(*ideconsole.Handler)
 	assert.True(t, ok)
 	assert.Equal(t, text.DefaultConfig().Icons.Shell, b.config.Icons.Shell)
 	assert.Equal(t, "console://"+workspaceURI.Path(), tabs[0].URI().String())
@@ -1306,9 +1267,6 @@ func TestShellCommandComplete(t *testing.T) {
 	}
 }
 
-// TestShowFallbackPromptInstallsExtension verifies that the ex command
-// fallback for an unhandled command opens a Yes/No prompt and, on Yes,
-// opens the companion shell submitting `pkg install rune-agent`.
 func TestShowFallbackPromptInstallsExtension(t *testing.T) {
 	for _, command := range []string{"agent", "?"} {
 		t.Run(command, func(t *testing.T) {
@@ -1348,8 +1306,6 @@ func TestShowFallbackPromptInstallsExtension(t *testing.T) {
 	}
 }
 
-// TestShowFallbackPromptInstallsFuzzySearch verifies that the fuzzy-search
-// commands fall back to a prompt that installs the fuzzy-search extension.
 func TestShowFallbackPromptInstallsFuzzySearch(t *testing.T) {
 	for _, command := range []string{"searchfile", "searchtext", "searchast"} {
 		t.Run(command, func(t *testing.T) {
@@ -1389,11 +1345,6 @@ func TestShowFallbackPromptInstallsFuzzySearch(t *testing.T) {
 	}
 }
 
-// TestHomeFallbackPromptDoesNotInstall verifies that on the home/empty
-// workspace the rune-agent and fuzzy-search command fallbacks do not offer to
-// install an extension. The home workspace deliberately starts no extensions,
-// so the user is told to open a workspace instead of opening an install
-// prompt.
 func TestHomeFallbackPromptDoesNotInstall(t *testing.T) {
 	commands := []string{
 		"agent", "?",
@@ -1430,8 +1381,6 @@ func TestHomeFallbackPromptDoesNotInstall(t *testing.T) {
 	}
 }
 
-// TestShowFallbackPromptNoDoesNothing verifies that selecting No on the
-// install prompt closes the prompt without opening the companion console.
 func TestShowFallbackPromptNoDoesNothing(t *testing.T) {
 	workspaceURI, err := workspaceapi.ParseURI("file:///tmp/fallback-no")
 	require.NoError(t, err)
@@ -1458,10 +1407,6 @@ func TestShowFallbackPromptNoDoesNothing(t *testing.T) {
 	assert.Nil(t, b.ex.companionConsole)
 }
 
-// TestShellCommandPastesArgument verifies that arguments passed to the
-// `console` ex command are submitted to the console prompt as a single
-// command line, both when the console tab is created on first use and
-// when the existing companion console tab is reused.
 func TestShellCommandPastesArgument(t *testing.T) {
 	workspaceURI, err := workspaceapi.ParseURI("file:///tmp/shell-paste")
 	require.NoError(t, err)
@@ -1507,14 +1452,6 @@ func TestShellCommandPastesArgument(t *testing.T) {
 	assert.Equal(t, prev, len(doc.Items))
 }
 
-// TestDebuggerCommandOpensShellWithDebugger verifies that running
-// `:debugger` with no arguments behaves like `console debugger`:
-// the companion console tab is opened (or focused) and the literal
-// command "debugger" is submitted on its prompt. The integration
-// is wired in workspace_handler.go via
-// debugshell.PromptHandler.WithOpenShell(ex.consolenewtab), so
-// driving consolenewtab directly with "debugger" exercises the same
-// code path that the prompt handler will invoke.
 func TestDebuggerCommandOpensShellWithDebugger(t *testing.T) {
 	workspaceURI, err := workspaceapi.ParseURI("file:///tmp/debugger-noargs")
 	require.NoError(t, err)
@@ -1541,10 +1478,10 @@ func TestDebuggerCommandOpensShellWithDebugger(t *testing.T) {
 	require.NotEmpty(t, doc.Items)
 	assert.Equal(t, "debugger", doc.Items[len(doc.Items)-1])
 
-	// The console tab must be the companion ideshell handler.
+	// The console tab must be the companion ideconsole handler.
 	tabs := b.comp.Tabs()
 	require.Len(t, tabs, 1)
-	_, ok := tabs[0].Handler().(*ideshell.Handler)
+	_, ok := tabs[0].Handler().(*ideconsole.Handler)
 	assert.True(t, ok)
 
 	// Second call reuses the existing companion console tab and
@@ -1556,10 +1493,6 @@ func TestDebuggerCommandOpensShellWithDebugger(t *testing.T) {
 	assert.Equal(t, "debugger", doc.Items[len(doc.Items)-1])
 }
 
-// TestShellCommandPersistsHistory verifies that commands entered into
-// the IDE shell are persisted to the shared storageapi.Service via the
-// shellHistoryDocumentID, and that a second ex booted on the same
-// storage observes the previously persisted entries.
 func TestShellCommandPersistsHistory(t *testing.T) {
 	workspaceURI, err := workspaceapi.ParseURI("file://" + t.TempDir())
 	require.NoError(t, err)
@@ -1623,7 +1556,7 @@ func TestShellCommandPersistsHistory(t *testing.T) {
 	require.NoError(t, b2.consolenewtab(context.Background()))
 	tabs := b2.comp.Tabs()
 	require.Len(t, tabs, 1)
-	_, ok := tabs[0].Handler().(*ideshell.Handler)
+	_, ok := tabs[0].Handler().(*ideconsole.Handler)
 	assert.True(t, ok)
 
 	require.NoError(t, svc.Get(
@@ -2277,13 +2210,6 @@ func newExSequencerHarness(
 	return exSequencerHarness{ex: b, fired: fired, editorSaw: editorSaw, recMu: &recMu}
 }
 
-// TestExSequencerModifierVsBarePrefix drives the ex event pipeline with
-// hand-built events to cover the full matrix of first-key/second-key
-// combinations a sequence prefix can encounter. A bare-character prefix
-// (e.g. vi's `d`) remains subject to the re-issue timeout because it can
-// also be typed as literal input; a modifier-bearing prefix (e.g.
-// <ctrl-x>) waits indefinitely for its second key and is dropped, never
-// re-issued, when the second key does not complete a sequence.
 func TestExSequencerModifierVsBarePrefix(t *testing.T) {
 	const timeout = 20 * time.Millisecond
 	// well past timeout+reissuePadding so a stale bare prefix would
@@ -2386,10 +2312,6 @@ func TestExSequencerModifierVsBarePrefix(t *testing.T) {
 	}
 }
 
-// TestExSequenceCompletesEditorPrefix covers a sequence whose first key
-// the editor consumes as the start of a pending command of its own, as
-// Helix's g, [ and ] menus do: the sequence fires when the editor
-// declines the second key.
 func TestExSequenceCompletesEditorPrefix(t *testing.T) {
 	const timeout = 20 * time.Millisecond
 	const longGap = 80 * time.Millisecond
@@ -2491,10 +2413,6 @@ func TestExSequenceCompletesEditorPrefix(t *testing.T) {
 	}
 }
 
-// TestExHelixSequencesAfterEditorMenus drives the real helix editor: its
-// g and ] menus consume the first key, so the sequence must fire from the
-// declined second key, and a key those menus decline must not be
-// re-issued later as a fresh menu.
 func TestExHelixSequencesAfterEditorMenus(t *testing.T) {
 	const timeout = 20 * time.Millisecond
 	sequences := map[thandler.Sequence][][]string{
@@ -2594,9 +2512,6 @@ func TestExStandardNavigationPrecedesLayoutBindings(t *testing.T) {
 	require.Equal(t, []string{"layoutfocus"}, h.firedCommands())
 }
 
-// TestExStandardLinuxMetaReachesCommandLayer pins that on Linux the standard
-// editor claims no <meta> chord, so a preset binding on one fires even while
-// the editor has focus.
 func TestExStandardLinuxMetaReachesCommandLayer(t *testing.T) {
 	metaLeft := term.KeyComb{Key: term.KeyArrowLeft, Mod: term.ModMeta}
 	metaL := term.KeyComb{Ch: 'l', Mod: term.ModMeta}
@@ -3104,8 +3019,6 @@ func TestExTabcloseDirtyTabNoKeepsTabOpen(t *testing.T) {
 	assert.Equal(t, 0, b.comp.Browser().FloatingWindows())
 }
 
-// TestExTabIconClick clicks and drags on the icons of the rendered tab
-// bar: A one shows in the only window and B two is not shown anywhere.
 func TestExTabIconClick(t *testing.T) {
 	const width, height = 30, 8
 	// The frame puts the icons on row 1: A at column 1, B at column 8.
@@ -3762,10 +3675,6 @@ func (w *blockingResizeWorkspace) waitEntered(t *testing.T) [2]int {
 	}
 }
 
-// TestExResizeDoesNotBlockOnPtyResize reproduces the IDE freeze where a
-// window resize fanned out to every live VTE and each
-// vte.Component.Resize called SetPtySize inline on the event loop, so a
-// single stalled transport RPC hung the whole UI.
 func TestExResizeDoesNotBlockOnPtyResize(t *testing.T) {
 	assertResizeReturns := func(t *testing.T, b testEx) {
 		t.Helper()
@@ -3824,9 +3733,6 @@ func (remoteURILoader) URI(string) (workspaceapi.URI, error) {
 	return workspaceapi.ParseURI("ssh://host/remote")
 }
 
-// TestExGraphicsTempDir pins that only a local workspace lends the
-// terminal this process's temp dir, where a t=t graphics transmission
-// may be deleted: a remote machine's TMPDIR is unknown.
 func TestExGraphicsTempDir(t *testing.T) {
 	local := newExForTestingVTECapacity(t, &testLoader{}, 0)
 	defer local.Close()
@@ -4114,10 +4020,6 @@ func TestFloatingPromptClosePrefersFloatingFocus(t *testing.T) {
 	assert.False(t, focus.IsFloating())
 }
 
-// TestWindowCloseAllClosesFloatingWindows asserts that `windowcloseall`
-// clears floating windows too, including when one of them holds focus:
-// `!` program output opens as a focused floating window, so a
-// "clear the layout" step that left it on screen would be useless.
 func TestWindowCloseAllClosesFloatingWindows(t *testing.T) {
 	b := newExForTesting(t, texttest.NopEditor(), text.WithCommandKey(testCommandKey))
 	defer b.Close()
@@ -4282,10 +4184,6 @@ func TestCommandPromptUsesSharedStoragePartition(t *testing.T) {
 	assert.Equal(t, int32(0), store.partitionCloseCount.Load())
 }
 
-// TestCommandPromptHasNoWindowBar pins that the command prompt keeps
-// its plain hand-drawn frame with the window bar feature enabled by
-// default: the bar override applies only to floating windows of framed
-// window managers, and the prompt overlay browser runs frameless.
 func TestCommandPromptHasNoWindowBar(t *testing.T) {
 	b := newExForTesting(t, texttest.NopEditor(), text.WithCommandKey(testCommandKey))
 	defer b.Close()
@@ -4307,9 +4205,6 @@ func TestCommandPromptHasNoWindowBar(t *testing.T) {
 	require.NoError(t, b.ex.cmdWin.Close())
 }
 
-// TestCommandPromptShaderGating verifies that the prompt shader is
-// created only when commandPromptCfg.shader.enabled is set, and is
-// torn down whenever the prompt closes.
 func TestCommandPromptShaderGating(t *testing.T) {
 	t.Run("disabled", func(t *testing.T) {
 		b := newExForTesting(t, texttest.NopEditor(),
@@ -4339,10 +4234,6 @@ func TestCommandPromptShaderGating(t *testing.T) {
 	})
 }
 
-// TestReplacingActivePromptClosesPreviousWindow pins that opening a
-// second command prompt while the first is still active retires the old
-// floating window (and its prompt) instead of orphaning it, without the
-// old close callback clobbering the freshly installed prompt.
 func TestReplacingActivePromptClosesPreviousWindow(t *testing.T) {
 	b := newExForTesting(t, texttest.NopEditor(), text.WithCommandKey(testCommandKey))
 	defer b.Close()
@@ -4381,9 +4272,6 @@ func TestReplacingActivePromptClosesPreviousWindow(t *testing.T) {
 		"stale old-window close must not clear the new window")
 }
 
-// TestReplacingActivePromptStopsOldShader verifies that replacing an
-// active shader-backed prompt tears down the old shader and installs a
-// fresh one for the new prompt, leaving exactly one live shader.
 func TestReplacingActivePromptStopsOldShader(t *testing.T) {
 	b := newExForTesting(t, texttest.NopEditor(), text.WithCommandKey(testCommandKey))
 	defer b.Close()
@@ -4406,10 +4294,6 @@ func TestReplacingActivePromptStopsOldShader(t *testing.T) {
 		"closing the current prompt must clear its shader")
 }
 
-// TestReplacingActivePromptFromDispatch reproduces the reentrant ordering
-// risk: the replacement prompt is opened from within command dispatch
-// while the old prompt is still installed. The old window must still be
-// retired and the new prompt must remain the active one.
 func TestReplacingActivePromptFromDispatch(t *testing.T) {
 	b := newExForTesting(t, texttest.NopEditor(), text.WithCommandKey(testCommandKey))
 	defer b.Close()
@@ -4432,11 +4316,6 @@ func TestReplacingActivePromptFromDispatch(t *testing.T) {
 	assert.Same(t, newCmd, b.ex.cmd, "the new prompt must remain active")
 }
 
-// TestCloseCommandPrompt pins that closeCommandPrompt dismisses an open
-// prompt — clearing e.cmd and marking its window closed — and is a
-// no-op returning nil when no prompt is open. Menu-driven dispatch
-// relies on this to reveal a command's own picker instead of leaving it
-// behind the always-on-top prompt overlay.
 func TestCloseCommandPrompt(t *testing.T) {
 	b := newExForTesting(t, texttest.NopEditor(), text.WithCommandKey(testCommandKey))
 	defer b.Close()
@@ -4459,11 +4338,6 @@ func TestCloseCommandPrompt(t *testing.T) {
 	require.NoError(t, b.ex.closeCommandPrompt())
 }
 
-// TestCommandPromptClickOutsideDismisses pins that a mouse press
-// outside the floating command prompt's screen rect dismisses it, like
-// every other modal overlay in the IDE, while the click itself is
-// swallowed. A press inside, a drag that starts inside and releases
-// outside, and wheel events outside must not dismiss the prompt.
 func TestCommandPromptClickOutsideDismisses(t *testing.T) {
 	newPrompt := func(t *testing.T) (b testEx, pos term.Coordinates, width, height int) {
 		b = newExForTesting(t, texttest.NopEditor(), text.WithCommandKey(testCommandKey))
@@ -4525,12 +4399,6 @@ func TestCommandPromptClickOutsideDismisses(t *testing.T) {
 	})
 }
 
-// TestEchoPromptTogglesOpenPrompt pins that a bare trailing `{prompt}`
-// toggles: it opens the prompt when none is active and closes an
-// already-open one instead of replacing it, so a quick-menu button
-// bound to `echo {prompt}` can both open and dismiss the prompt.
-// Prefill bindings such as `echo {prompt}edit<space>` are not a
-// toggle and must keep installing a fresh prompt.
 func TestEchoPromptTogglesOpenPrompt(t *testing.T) {
 	b := newExForTesting(t, texttest.NopEditor(), text.WithCommandKey(testCommandKey))
 	defer b.Close()
@@ -4738,17 +4606,6 @@ func TestCommandPluginWait(t *testing.T) {
 	})
 }
 
-// TestCommandPluginWaitDirectIsAsync pins the contract that a top-level
-// (non-alias) `!!` command does NOT block the caller. executePluginWait
-// only runs synchronously when the dispatch ctx is inside an alias chain
-// (so a capturing step's vars land before the next step expands); a
-// direct `:!! sleep 10` must hand off to a background goroutine and
-// return immediately.
-//
-// Regression: withAliasChain previously wrapped every dispatch ctx with
-// an alias chain, which made idealias.IsContext(ctx) report true for
-// non-alias commands too and forced executePluginWait into the
-// blocking branch.
 func TestCommandPluginWaitDirectIsAsync(t *testing.T) {
 	opts := []text.Option{
 		text.WithCommandOverlayConfig(testCommandOverlayConfig()),
@@ -4769,15 +4626,6 @@ func TestCommandPluginWaitDirectIsAsync(t *testing.T) {
 		"direct !! must dispatch to a goroutine and return immediately")
 }
 
-// TestCommandPluginWaitInflightNotification pins the UX contract that a
-// `!!` command surfaces a progress-anchored Info notification while it
-// runs, closes it (progress == total) on completion, and then posts a
-// terminal success or error notification.
-//
-// The notification stays open for the duration of the run because the
-// runtime keeps progress notifications visible until progress == total
-// is observed. Without this anchor, slow commands give the user no
-// feedback that anything is happening.
 func TestCommandPluginWaitInflightNotification(t *testing.T) {
 	opts := []text.Option{
 		text.WithCommandOverlayConfig(testCommandOverlayConfig()),
@@ -5034,9 +4882,6 @@ func TestIntegrationEphemeralTerminal(t *testing.T) {
 	handlertest.TestHandlerSequence(t, b, 40, 10, cases)
 }
 
-// TestWindowMouseResizeIntegration asserts that dragging a floating
-// window's bar and edges through the full ex stack (browser frame
-// union included) moves and resizes the window.
 func TestWindowMouseResizeIntegration(t *testing.T) {
 	newFloatEx := func(t *testing.T) testEx {
 		opts := []text.Option{
@@ -5517,8 +5362,6 @@ func TestTerminalSaveAndResume(t *testing.T) {
 	require.Equal(t, 2, session.SeekOffset())
 }
 
-// TestTerminalResumeFindsSessionsSavedBeforeThePartitionMove covers
-// sessions written when they shared the workspace-state partition.
 func TestTerminalResumeFindsSessionsSavedBeforeThePartitionMove(t *testing.T) {
 	b := newExForTesting(t, texttest.NopEditor())
 	defer b.Close()
@@ -6400,21 +6243,6 @@ func TestTerminalOnFocus(t *testing.T) {
 	})
 }
 
-// TestExecutePluginShellInterpretsOperators is a regression test for
-// the bug where `! echo "$(...)" | tee /tmp/out` passed the `|` as a
-// literal argv element instead of having the downstream shell pipe
-// the output. The fix routes any `!` invocation whose args contain
-// shell operators (or that has 2+ args, where re-tokenisation cannot
-// be made lossless without a shell) through `sh -c <quoted-line>` so
-// the surrounding pipes/redirects/&&/||/$() are interpreted by the
-// shell rather than concatenated as argv.
-//
-// The third element passed to newPluginHandler is the line wrapped by
-// cmdenv.Quote because vte.Component.startCommand re-tokenises the
-// joined argv via shell.Fields; without bash-quoting the line would
-// fragment back into argv pieces and the shell would never see the
-// pipe as an operator. After shell.Fields runs over the joined
-// `sh -c <quoted-line>`, the third arg arrives at sh -c intact.
 func TestExecutePluginShellInterpretsOperators(t *testing.T) {
 	bgctx := context.Background()
 	cases := []struct {
@@ -6493,6 +6321,221 @@ func TestExecutePluginShellInterpretsOperators(t *testing.T) {
 			assert.Equal(t, tc.wantArgv, got)
 		})
 	}
+}
+
+func TestOpenURL(t *testing.T) {
+	t.Setenv("RUNE_TEST_SECRET", "leaked")
+	const raw = "https://example.com/p?a=1&b=$(touch%20x)&c=$RUNE_TEST_SECRET;d"
+	const inert = "https://example.com/p?a=1&b=%24(touch%20x)&c=%24RUNE_TEST_SECRET;d"
+	link, err := url.Parse(raw)
+	require.NoError(t, err)
+	require.Equal(t, raw, link.String())
+	mailto := &url.URL{Scheme: "mailto", Opaque: "a@example.com"}
+
+	cases := []struct {
+		name       string
+		command    string
+		clipboard  bool
+		noSystem   bool
+		open       *url.URL
+		wantSystem []string
+		wantSink   [][]string
+		wantClip   string
+		wantErr    string
+	}{
+		{name: "system", open: link, wantSystem: []string{raw}},
+		{name: "clipboard", clipboard: true, open: link, wantClip: raw},
+		{
+			name:       "clipboard leaves other schemes to the system browser",
+			clipboard:  true,
+			open:       mailto,
+			wantSystem: []string{"mailto:a@example.com"},
+		},
+		{
+			name:     "command gets the shell-inert URL as one argument",
+			command:  "sink $URL",
+			open:     link,
+			wantSink: [][]string{{inert}},
+		},
+		{
+			name:     "nested alias gets the shell-inert URL",
+			command:  "outer $URL",
+			open:     link,
+			wantSink: [][]string{{inert}},
+		},
+		{
+			name:       "other schemes open in the system browser",
+			command:    "sink $URL",
+			open:       mailto,
+			wantSystem: []string{"mailto:a@example.com"},
+		},
+		{name: "no system browser", noSystem: true, open: link, wantErr: "no system browser"},
+		{name: "unknown command", command: "nosuchcommand $URL", open: link, wantErr: keyMetaOpenURL},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := newExForAliasRun(t, map[string]text.CommandAlias{
+				"outer": {Commands: []string{"sink $1"}},
+			})
+			defer b.Close()
+			var sink [][]string
+			require.NoError(t, b.comp.SubscribeCommand(
+				textapi.CommandManual{Name: "sink"},
+				text.FuncCommandHandler(func(_ context.Context, cmd textapi.Command) error {
+					sink = append(sink, cmd.Args)
+					return nil
+				}, nil)))
+			var system []string
+			b.ex.metaOpenURL = metaOpenURLConfig{
+				command: tc.command, clipboard: tc.clipboard,
+			}
+			if !tc.noSystem {
+				b.ex.metaOpenURL.system = func(u *url.URL) error {
+					system = append(system, u.String())
+					return nil
+				}
+			}
+
+			err := b.ex.openURL(tc.open)
+			b.drainAliasRuns()
+
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Equal(t, tc.wantSystem, system)
+			assert.Equal(t, tc.wantSink, sink)
+			clip, err := b.ex.clip.Paste(clipboard.DefaultRegisterID)
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantClip, clip.Text)
+		})
+	}
+}
+
+func TestOpenURLPluginCommandQuotesURL(t *testing.T) {
+	const raw = "https://example.com/?a=1&b=$(id)&c='x'`id`"
+	const inert = "https://example.com/?a=1&b=%24(id)&c=%27x%27%60id%60"
+	link, err := url.Parse(raw)
+	require.NoError(t, err)
+	require.Equal(t, raw, link.String())
+	for _, tc := range []struct {
+		command string
+		want    []string
+	}{
+		{command: "! open $URL", want: []string{"open", inert}},
+		{command: `! open "$URL"`, want: []string{"open", inert}},
+		{command: `! open '$URL'`, want: []string{"open", inert}},
+		{command: `! open "<$URL>"`, want: []string{"open", "<" + inert + ">"}},
+		{command: `! open --url='$URL'`, want: []string{"open", "--url=" + inert}},
+	} {
+		t.Run(tc.command, func(t *testing.T) {
+			b := newExForAliasRun(t, nil)
+			defer b.Close()
+			b.Resize(100, 100)
+			var got []string
+			b.ex.newPluginHandler = func(_ int, args ...string) (pluginHandler, error) {
+				got = append([]string(nil), args...)
+				return newTestVte(), nil
+			}
+			b.ex.metaOpenURL = metaOpenURLConfig{command: tc.command}
+
+			require.NoError(t, b.ex.openURL(link))
+			b.ex.waitAsyncVTELoads()
+			b.flushScheduled()
+
+			require.Len(t, got, 3)
+			require.Equal(t, []string{"sh", "-c"}, got[:2])
+			line, err := shell.Fields(got[2], nil)
+			require.NoError(t, err)
+			require.Len(t, line, 1)
+			argv, err := shell.Fields(line[0], nil)
+			require.NoError(t, err, "the URL must reach the shell as data: %s", line[0])
+			assert.Equal(t, tc.want, argv)
+		})
+	}
+}
+
+func TestShellInertURL(t *testing.T) {
+	parse := func(raw string) *url.URL {
+		u, err := url.Parse(raw)
+		require.NoError(t, err)
+		return u
+	}
+	for _, tc := range []struct {
+		name string
+		in   *url.URL
+		want string
+	}{
+		{name: "plain",
+			in:   &url.URL{Scheme: "https", Host: "example.com", Path: "/a/b", RawQuery: "x=1&y=2", Fragment: "f"},
+			want: "https://example.com/a/b?x=1&y=2#f"},
+		{name: "reserved characters stay",
+			in:   parse("https://example.com/wiki/A_(b)?a=1;b=*!,+:@"),
+			want: "https://example.com/wiki/A_(b)?a=1;b=*!,+:@"},
+		{name: "existing escapes stay",
+			in:   &url.URL{Scheme: "https", Host: "example.com", RawQuery: "q=%41%20b"},
+			want: "https://example.com?q=%41%20b"},
+		{name: "shell quoting characters are escaped",
+			in:   &url.URL{Scheme: "https", Host: "example.com", RawQuery: "a=$(id)&b='x'&c=\"y\"&d=`id`&e=\\"},
+			want: "https://example.com?a=%24(id)&b=%27x%27&c=%22y%22&d=%60id%60&e=%5C"},
+		{name: "characters URIs do not allow are escaped",
+			in:   &url.URL{Scheme: "http", Host: "example.com", RawQuery: "a b\t<>{}|^é"},
+			want: "http://example.com?a%20b%09%3C%3E%7B%7D%7C%5E%C3%A9"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, shellInertURL(tc.in))
+		})
+	}
+}
+
+func TestOpenURLQueuesBehindInFlightDispatch(t *testing.T) {
+	b := newExForAliasRun(t, map[string]text.CommandAlias{
+		"queuing": {Commands: []string{"!! CAPTURED=x", "sink first"}},
+	})
+	defer b.Close()
+	var steps []string
+	subscribeStepRecorder(t, b, "sink", &steps)
+	b.ex.metaOpenURL = metaOpenURLConfig{command: "sink $URL"}
+
+	require.NoError(t, b.ex.dispatchCommand("queuing"))
+	require.NoError(t, b.ex.openURL(&url.URL{Scheme: "https", Host: "example.com"}))
+	b.drainAliasRuns()
+
+	assert.Equal(t, []string{"first", "https://example.com"}, steps,
+		"a URL opened while a dispatch is in flight must not overtake it")
+}
+
+func TestOnLinkClick(t *testing.T) {
+	b := newExForAliasRun(t, nil)
+	defer b.Close()
+	notes := &pluginWaitNotifications{inner: b.ex.notifications}
+	b.ex.notifications = notes
+	var opened []string
+	var openErr error
+	b.ex.metaOpenURL = metaOpenURLConfig{system: func(u *url.URL) error {
+		opened = append(opened, u.String())
+		return openErr
+	}}
+	parse := func(raw string) *url.URL {
+		u, err := url.Parse(raw)
+		require.NoError(t, err)
+		return u
+	}
+
+	assert.True(t, b.ex.onLinkClick(parse("http://example.com")))
+	assert.True(t, b.ex.config.OnLinkClick(parse("https://example.com/md")),
+		"markdown tabs must open links the same way")
+	for _, raw := range []string{"#anchor", "mailto:a@example.com", "file:///tmp/x"} {
+		assert.False(t, b.ex.onLinkClick(parse(raw)),
+			"%s must fall through to the markdown handler", raw)
+	}
+	assert.Equal(t, []string{"http://example.com", "https://example.com/md"}, opened)
+	assert.Empty(t, notes.errorMessages())
+
+	openErr = errors.New("boom")
+	assert.True(t, b.ex.onLinkClick(parse("https://example.com/%24")))
+	assert.Equal(t, []string{"open https://example.com/%24: boom"}, notes.errorMessages())
 }
 
 func TestSwitchToTab(t *testing.T) {
@@ -7389,11 +7432,6 @@ func TestEcho(t *testing.T) {
 	})
 }
 
-// TestExEchoMultipleArgs covers the per-argv-element parsing of the
-// `echo` ex command: each argument is parsed independently with
-// parseEchoKeys, and resulting key sequences are concatenated. Used
-// to be a join-with-space + parse, which spuriously injected a literal
-// <space> key between logically independent argv elements.
 func TestExEchoMultipleArgs(t *testing.T) {
 	var published []term.Event
 	publishEvent := func(ev term.Event) bool {
@@ -7416,15 +7454,6 @@ func TestExEchoMultipleArgs(t *testing.T) {
 	assert.Equal(t, term.KeyEnter, published[1].Key)
 }
 
-// TestSearchAstAliasesFromRuneStar is the RUNE-123 regression covering
-// the actual `searchfunc` / `searchvar` / `searchtype` aliases shipped
-// in cmd/rune/rune.star. Their bodies use both echo's `<…>` key syntax
-// and the `|` separator inside the searchast query — all of which the
-// previous shell-style Layer 1 tokenizer would split incorrectly,
-// causing the recursive `echo` dispatch to fail with an
-// `invalid syntax` error notification. With the layered tokenizer
-// each alias body survives unchanged as a single argv element, and
-// parseEchoKeys accepts it.
 func TestSearchAstAliasesFromRuneStar(t *testing.T) {
 	// Source of truth: cmd/rune/rune.star. Keep these in sync with
 	// the strings declared there.
@@ -7459,11 +7488,6 @@ func TestSearchAstAliasesFromRuneStar(t *testing.T) {
 	}
 }
 
-// TestDispatchAliasCycle covers the runtime alias-recursion guard in
-// ex.dispatchExpanded. The config-load validator (text.ValidateCommandAliases)
-// only catches cycles whose whole target equals an alias name, so a
-// cyclic step that carries arguments slips past it and must be stopped
-// at dispatch time instead of recursing until the stack overflows.
 func TestDispatchAliasCycle(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -7535,17 +7559,6 @@ func envSourceForURI(uri workspaceapi.URI) cmdenv.Source {
 	}
 }
 
-// TestPluginWaitAssignmentCapturesIntoAliasChain verifies the
-// alias-variable-capture feature introduced for RUNE-178: a `!!`
-// step whose body assigns variables (e.g. `VAR=value`) publishes
-// those values into the surrounding alias chain so subsequent steps
-// in the same alias dispatch can reference them via $VAR.
-//
-// The capture is performed by mvdan.cc/sh/v3/interp inside
-// runShellLineViaInterp; the chain env scope is plumbed through
-// text.Component.DispatchCommand. Together they let aliases like
-// worktreeopen feed `git worktree list`'s output into a subsequent
-// `workspaceopen $WORKTREE` step.
 func TestPluginWaitAssignmentCapturesIntoAliasChain(t *testing.T) {
 	t.Run("literal assignment is visible to next step", func(t *testing.T) {
 		captured := newExForCapturingCommand(t, []string{
@@ -7683,11 +7696,6 @@ func (w *realExecLoader) StartCommand(
 	return 0, nil
 }
 
-// TestWorktreeRemoveAliasResolvesFromInsideWorktree is the RUNE-178
-// regression: invoking worktreeremove from inside a worktree used to
-// resolve a slug from the focused workspace, so the rebuilt path
-// never matched git's worktree registry. Handing git the bare
-// basename works from parent and from any sibling worktree.
 func TestWorktreeRemoveAliasResolvesFromInsideWorktree(t *testing.T) {
 	const (
 		fixedAliasBody = `!! git worktree remove $1`
@@ -8237,10 +8245,6 @@ func TestCopyLocation(t *testing.T) {
 	}
 }
 
-// TestClipboardCommandsPerEditor pins :clipboardcopy and :clipboardpaste
-// against every built-in editor. Each editor must expose its active
-// selection through tui.Handler.Selection and accept bracketed paste
-// events, otherwise the commands silently report "nothing to copy".
 func TestClipboardCommandsPerEditor(t *testing.T) {
 	key := func(k term.Key, mod term.Modifier) term.Event {
 		return term.Event{Type: term.EventKey, Key: k, Mod: mod}

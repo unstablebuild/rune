@@ -18,6 +18,8 @@ package langext
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -32,10 +34,12 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/pkgapi"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"unstable.build/rune/internal/extension/langext/langexttest"
 	"unstable.build/rune/internal/workspace/walkdir"
 )
 
@@ -44,11 +48,12 @@ func TestFindProjectRoot(t *testing.T) {
 	markers := []string{"pyproject.toml", ".venv"}
 
 	cases := []struct {
-		name    string
-		paths   []string // file/dir markers present, relative to ws
-		file    string   // opened file, absolute
-		wantRel string
-		wantOK  bool
+		name      string
+		paths     []string // file/dir markers present, relative to ws
+		file      string   // opened file, absolute
+		outermost bool
+		wantRel   string
+		wantOK    bool
 	}{
 		{
 			name:    "nearest root wins over ancestor",
@@ -92,6 +97,37 @@ func TestFindProjectRoot(t *testing.T) {
 			wantRel: "",
 			wantOK:  false,
 		},
+		{
+			name:      "outermost ancestor wins over the nearest root",
+			paths:     []string{"pyproject.toml", "deploy/worker/pyproject.toml"},
+			file:      "/ws/deploy/worker/app/main.py",
+			outermost: true,
+			wantRel:   "",
+			wantOK:    true,
+		},
+		{
+			name:      "outermost walks past unmarked directories",
+			paths:     []string{"deploy/pyproject.toml", "deploy/worker/app/pyproject.toml"},
+			file:      "/ws/deploy/worker/app/main.py",
+			outermost: true,
+			wantRel:   "deploy",
+			wantOK:    true,
+		},
+		{
+			name:      "outermost with a single marker finds it",
+			paths:     []string{"deploy/worker/pyproject.toml"},
+			file:      "/ws/deploy/worker/main.py",
+			outermost: true,
+			wantRel:   "deploy/worker",
+			wantOK:    true,
+		},
+		{
+			name:      "outermost without a marker yields not found",
+			paths:     []string{"deploy/worker/app/main.py"},
+			file:      "/ws/deploy/worker/app/main.py",
+			outermost: true,
+			wantOK:    false,
+		},
 	}
 
 	for _, tc := range cases {
@@ -109,7 +145,11 @@ func TestFindProjectRoot(t *testing.T) {
 			fileURI, err := workspaceapi.ParseURI("file://" + tc.file)
 			require.NoError(t, err)
 
-			root, ok := FindProjectRoot(mfs, wsURI, fileURI, markers)
+			find := FindProjectRoot
+			if tc.outermost {
+				find = FindOutermostProjectRoot
+			}
+			root, ok := find(mfs, wsURI, fileURI, markers)
 			assert.Equal(t, tc.wantOK, ok)
 			if !tc.wantOK {
 				return
@@ -258,7 +298,7 @@ func TestInitializerOpenTriggersOneInitRoot(t *testing.T) {
 	})
 
 	ed := &fakeEditor{}
-	i := NewInitializer(context.Background(), mfs, ed, cfg)
+	i := NewInitializer(context.Background(), mfs, ed, &langexttest.Installer{}, cfg)
 	require.NoError(t, i.Start())
 	require.Equal(t, []textapi.EventType{
 		textapi.EventTypeOpen, textapi.EventTypeChange, textapi.EventTypeCreate,
@@ -274,9 +314,32 @@ func TestInitializerOpenTriggersOneInitRoot(t *testing.T) {
 	assert.Equal(t, int32(1), calls.Load())
 }
 
-// TestInitializerChangeTriggersInitRoot covers the core fix: an
-// out-of-band write (agent apply_patch) surfaces as EventTypeChange with
-// no preceding editor open, and must still bring up the nested root.
+func TestInitializerOutermostSharesMonorepoRoot(t *testing.T) {
+	const ws = "/ws"
+	mfs := newMemFS(ws)
+	mfs.addFile("/ws/mono/pyproject.toml")
+	mfs.addFile("/ws/mono/packages/a/pyproject.toml")
+	mfs.addFile("/ws/mono/packages/b/pyproject.toml")
+
+	roots := make(chan Root, 4)
+	cfg := pyConfig(func(_ context.Context, r Root) error {
+		roots <- r
+		return nil
+	})
+	cfg.Outermost = true
+
+	ed := &fakeEditor{}
+	i := NewInitializer(context.Background(), mfs, ed, &langexttest.Installer{}, cfg)
+	require.NoError(t, i.Start())
+
+	ed.fire(t, openEvent("/ws/mono/packages/b/src/use.py"))
+	got := <-roots
+	assert.Equal(t, "mono", got.RelPath)
+
+	ed.fire(t, openEvent("/ws/mono/packages/a/src/lib.py"))
+	assertNoMoreRoots(t, roots)
+}
+
 func TestInitializerChangeTriggersInitRoot(t *testing.T) {
 	const ws = "/ws"
 	mfs := newMemFS(ws)
@@ -289,7 +352,7 @@ func TestInitializerChangeTriggersInitRoot(t *testing.T) {
 	})
 
 	ed := &fakeEditor{}
-	i := NewInitializer(context.Background(), mfs, ed, cfg)
+	i := NewInitializer(context.Background(), mfs, ed, &langexttest.Installer{}, cfg)
 	require.NoError(t, i.Start())
 
 	ed.fire(t, changeEvent("/ws/svc/main.py"))
@@ -297,8 +360,6 @@ func TestInitializerChangeTriggersInitRoot(t *testing.T) {
 	assert.Equal(t, "svc", got.RelPath)
 }
 
-// TestInitializerCreateTriggersInitRoot covers a newly-created .py under a
-// nested project bringing the root up without an open.
 func TestInitializerCreateTriggersInitRoot(t *testing.T) {
 	const ws = "/ws"
 	mfs := newMemFS(ws)
@@ -311,7 +372,7 @@ func TestInitializerCreateTriggersInitRoot(t *testing.T) {
 	})
 
 	ed := &fakeEditor{}
-	i := NewInitializer(context.Background(), mfs, ed, cfg)
+	i := NewInitializer(context.Background(), mfs, ed, &langexttest.Installer{}, cfg)
 	require.NoError(t, i.Start())
 
 	ed.fire(t, createEvent("/ws/svc/new.py"))
@@ -319,10 +380,6 @@ func TestInitializerCreateTriggersInitRoot(t *testing.T) {
 	assert.Equal(t, "svc", got.RelPath)
 }
 
-// TestInitializerClaimedRootSkipsWalk asserts that once a root is
-// initialized, a later change under it walks no filesystem and does not
-// re-run InitRoot. Steady-state editing inside an active project must be
-// O(1).
 func TestInitializerClaimedRootSkipsWalk(t *testing.T) {
 	const ws = "/ws"
 	mfs := newMemFS(ws)
@@ -337,7 +394,7 @@ func TestInitializerClaimedRootSkipsWalk(t *testing.T) {
 	})
 
 	ed := &fakeEditor{}
-	i := NewInitializer(context.Background(), mfs, ed, cfg)
+	i := NewInitializer(context.Background(), mfs, ed, &langexttest.Installer{}, cfg)
 	require.NoError(t, i.Start())
 
 	ed.fire(t, changeEvent("/ws/svc/main.py"))
@@ -351,10 +408,6 @@ func TestInitializerClaimedRootSkipsWalk(t *testing.T) {
 		"a change under an initialized root must not walk the filesystem")
 }
 
-// TestInitializerNegativeCacheBoundsWalks asserts a source file with no
-// enclosing marker is walked once per distinct parent dir, not once per
-// event, so a storm of writes to marker-less files cannot trigger mass
-// walks.
 func TestInitializerNegativeCacheBoundsWalks(t *testing.T) {
 	const ws = "/ws"
 	mfs := newMemFS(ws) // no markers anywhere
@@ -366,7 +419,7 @@ func TestInitializerNegativeCacheBoundsWalks(t *testing.T) {
 	})
 
 	ed := &fakeEditor{}
-	i := NewInitializer(context.Background(), mfs, ed, cfg)
+	i := NewInitializer(context.Background(), mfs, ed, &langexttest.Installer{}, cfg)
 	require.NoError(t, i.Start())
 
 	ed.fire(t, changeEvent("/ws/stray/a.py"))
@@ -382,12 +435,6 @@ func TestInitializerNegativeCacheBoundsWalks(t *testing.T) {
 	assert.Equal(t, int32(0), calls.Load())
 }
 
-// TestInitializerScaffoldAfterChangeNeedsNoReload covers the exact
-// pitfall the negative cache must not create: a source file is written in
-// a marker-less dir (cached unresolved via change), the user then
-// scaffolds a project there, and discovery must succeed from the ensuing
-// create events alone — no editor open, no workspace reload. Only later
-// changes are cache-gated; creates always re-walk.
 func TestInitializerScaffoldAfterChangeNeedsNoReload(t *testing.T) {
 	const ws = "/ws"
 	mfs := newMemFS(ws) // no markers yet
@@ -399,7 +446,7 @@ func TestInitializerScaffoldAfterChangeNeedsNoReload(t *testing.T) {
 	})
 
 	ed := &fakeEditor{}
-	i := NewInitializer(context.Background(), mfs, ed, cfg)
+	i := NewInitializer(context.Background(), mfs, ed, &langexttest.Installer{}, cfg)
 	require.NoError(t, i.Start())
 
 	// A change with no enclosing marker caches svc as unresolved.
@@ -415,9 +462,6 @@ func TestInitializerScaffoldAfterChangeNeedsNoReload(t *testing.T) {
 	assert.Equal(t, "svc", got.RelPath)
 }
 
-// TestInitializerCreateAlwaysRewalks asserts a create in a change-cached
-// dir re-walks (rather than trusting the negative cache), so the cache
-// can never wedge discovery for a project that materializes there.
 func TestInitializerCreateAlwaysRewalks(t *testing.T) {
 	const ws = "/ws"
 	mfs := newMemFS(ws)
@@ -429,7 +473,7 @@ func TestInitializerCreateAlwaysRewalks(t *testing.T) {
 	})
 
 	ed := &fakeEditor{}
-	i := NewInitializer(context.Background(), mfs, ed, cfg)
+	i := NewInitializer(context.Background(), mfs, ed, &langexttest.Installer{}, cfg)
 	require.NoError(t, i.Start())
 
 	ed.fire(t, changeEvent("/ws/svc/main.py")) // caches svc unresolved
@@ -443,8 +487,6 @@ func TestInitializerCreateAlwaysRewalks(t *testing.T) {
 	assert.Equal(t, "svc", got.RelPath)
 }
 
-// TestInitializerOpenAlwaysRewalks asserts an open in a change-cached dir
-// re-walks, so simply opening a file heals a stale negative-cache entry.
 func TestInitializerOpenAlwaysRewalks(t *testing.T) {
 	const ws = "/ws"
 	mfs := newMemFS(ws)
@@ -456,7 +498,7 @@ func TestInitializerOpenAlwaysRewalks(t *testing.T) {
 	})
 
 	ed := &fakeEditor{}
-	i := NewInitializer(context.Background(), mfs, ed, cfg)
+	i := NewInitializer(context.Background(), mfs, ed, &langexttest.Installer{}, cfg)
 	require.NoError(t, i.Start())
 
 	ed.fire(t, changeEvent("/ws/svc/main.py")) // caches svc unresolved
@@ -469,9 +511,6 @@ func TestInitializerOpenAlwaysRewalks(t *testing.T) {
 	assert.Equal(t, "svc", got.RelPath)
 }
 
-// TestInitializerStormBound asserts that a flood of changes across a few
-// roots runs InitRoot at most once per distinct root, and that Handle
-// returns promptly (never blocks on bring-up).
 func TestInitializerStormBound(t *testing.T) {
 	const ws = "/ws"
 	mfs := newMemFS(ws)
@@ -488,7 +527,7 @@ func TestInitializerStormBound(t *testing.T) {
 	})
 
 	ed := &fakeEditor{}
-	i := NewInitializer(context.Background(), mfs, ed, cfg)
+	i := NewInitializer(context.Background(), mfs, ed, &langexttest.Installer{}, cfg)
 	require.NoError(t, i.Start())
 
 	dirs := []string{"a", "b", "c"}
@@ -511,9 +550,6 @@ func TestInitializerStormBound(t *testing.T) {
 		"InitRoot must run at most once per distinct root")
 }
 
-// TestInitializerKillSwitchOpenOnly asserts that with WatchEvents limited
-// to Open, a change triggers nothing (the pathological-monorepo escape
-// hatch).
 func TestInitializerKillSwitchOpenOnly(t *testing.T) {
 	const ws = "/ws"
 	mfs := newMemFS(ws)
@@ -527,7 +563,7 @@ func TestInitializerKillSwitchOpenOnly(t *testing.T) {
 	cfg.WatchEvents = []textapi.EventType{textapi.EventTypeOpen}
 
 	ed := &fakeEditor{}
-	i := NewInitializer(context.Background(), mfs, ed, cfg)
+	i := NewInitializer(context.Background(), mfs, ed, &langexttest.Installer{}, cfg)
 	require.NoError(t, i.Start())
 	require.Equal(t, []textapi.EventType{textapi.EventTypeOpen}, ed.subscribedTo)
 
@@ -535,8 +571,6 @@ func TestInitializerKillSwitchOpenOnly(t *testing.T) {
 	assert.Equal(t, int32(0), calls.Load())
 }
 
-// TestInitializerMixedOpenChangeDedupe asserts that a racing Open and
-// Change for the same new root bring it up exactly once.
 func TestInitializerMixedOpenChangeDedupe(t *testing.T) {
 	const ws = "/ws"
 	mfs := newMemFS(ws)
@@ -553,7 +587,7 @@ func TestInitializerMixedOpenChangeDedupe(t *testing.T) {
 	})
 
 	ed := &fakeEditor{}
-	i := NewInitializer(context.Background(), mfs, ed, cfg)
+	i := NewInitializer(context.Background(), mfs, ed, &langexttest.Installer{}, cfg)
 	require.NoError(t, i.Start())
 
 	var wg sync.WaitGroup
@@ -572,12 +606,6 @@ func TestInitializerMixedOpenChangeDedupe(t *testing.T) {
 	assert.Equal(t, int32(1), calls.Load())
 }
 
-// TestInitializerAsyncSurvivesEventContextCancel reproduces the bug where
-// the background bring-up was tied to the editor's per-event dispatch
-// context: that context is canceled as soon as Handle returns, which
-// killed the in-flight uv/LSP bring-up with "context canceled". The async
-// work must instead run under the long-lived workspace context, so the
-// context InitRoot observes stays live after Handle returns.
 func TestInitializerAsyncSurvivesEventContextCancel(t *testing.T) {
 	const ws = "/ws"
 	mfs := newMemFS(ws)
@@ -592,7 +620,7 @@ func TestInitializerAsyncSurvivesEventContextCancel(t *testing.T) {
 	})
 
 	ed := &fakeEditor{}
-	i := NewInitializer(context.Background(), mfs, ed, cfg)
+	i := NewInitializer(context.Background(), mfs, ed, &langexttest.Installer{}, cfg)
 	require.NoError(t, i.Start())
 
 	// Deliver the open with a context that is canceled the instant Handle
@@ -626,7 +654,7 @@ func TestInitializerConcurrentOpensDedupe(t *testing.T) {
 	})
 
 	ed := &fakeEditor{}
-	i := NewInitializer(context.Background(), mfs, ed, cfg)
+	i := NewInitializer(context.Background(), mfs, ed, &langexttest.Installer{}, cfg)
 	require.NoError(t, i.Start())
 
 	var wg sync.WaitGroup
@@ -655,7 +683,7 @@ func TestInitializerIgnoresNonMatchingFiles(t *testing.T) {
 	})
 
 	ed := &fakeEditor{}
-	i := NewInitializer(context.Background(), mfs, ed, cfg)
+	i := NewInitializer(context.Background(), mfs, ed, &langexttest.Installer{}, cfg)
 	require.NoError(t, i.Start())
 
 	ed.fire(t, openEvent("/ws/svc/README.md"))
@@ -673,7 +701,7 @@ func TestInitializerNoMarkerDoesNotInitialize(t *testing.T) {
 	})
 
 	ed := &fakeEditor{}
-	i := NewInitializer(context.Background(), mfs, ed, cfg)
+	i := NewInitializer(context.Background(), mfs, ed, &langexttest.Installer{}, cfg)
 	require.NoError(t, i.Start())
 
 	ed.fire(t, openEvent("/ws/svc/stray.py"))
@@ -694,7 +722,7 @@ func TestInitializeAtDedupedAgainstLaterEvents(t *testing.T) {
 	})
 
 	ed := &fakeEditor{}
-	i := NewInitializer(context.Background(), mfs, ed, cfg)
+	i := NewInitializer(context.Background(), mfs, ed, &langexttest.Installer{}, cfg)
 	require.NoError(t, i.Start())
 
 	root := rootForDir(mfs, ws, ws)
@@ -722,7 +750,7 @@ func TestInitializeAtRetriesAfterFailure(t *testing.T) {
 	})
 
 	ed := &fakeEditor{}
-	i := NewInitializer(context.Background(), mfs, ed, cfg)
+	i := NewInitializer(context.Background(), mfs, ed, &langexttest.Installer{}, cfg)
 	require.NoError(t, i.Start())
 
 	root := rootForDir(mfs, ws, ws)
@@ -744,14 +772,14 @@ func TestReinitializeRerunsAllKnownRoots(t *testing.T) {
 		FileMatch: func(uri workspaceapi.URI) bool {
 			return strings.HasSuffix(uri.Path(), ".rs")
 		},
-		InitRoot: func(_ context.Context, _ Root) error {
+		InitRoot: func(context.Context, Root, *Tools) error {
 			calls.Add(1)
 			return nil
 		},
 	}
 
 	ed := &fakeEditor{}
-	i := NewInitializer(context.Background(), mfs, ed, cfg)
+	i := NewInitializer(context.Background(), mfs, ed, &langexttest.Installer{}, cfg)
 	require.NoError(t, i.Start())
 
 	require.NoError(t, i.InitializeAt(context.Background(), rootForDir(mfs, ws, "/ws/a")))
@@ -777,7 +805,7 @@ func TestReinitializeNoOpWhenNothingInitialized(t *testing.T) {
 	})
 
 	ed := &fakeEditor{}
-	i := NewInitializer(context.Background(), mfs, ed, cfg)
+	i := NewInitializer(context.Background(), mfs, ed, &langexttest.Installer{}, cfg)
 	require.NoError(t, i.Start())
 
 	require.NoError(t, i.Reinitialize(context.Background()))
@@ -800,7 +828,7 @@ func TestReinitializeSkipsRootStillInitializing(t *testing.T) {
 	})
 
 	ed := &fakeEditor{}
-	i := NewInitializer(context.Background(), mfs, ed, cfg)
+	i := NewInitializer(context.Background(), mfs, ed, &langexttest.Installer{}, cfg)
 	require.NoError(t, i.Start())
 
 	// Drive an open that starts a bring-up and blocks it in InitRoot.
@@ -825,7 +853,9 @@ func pyConfig(initRoot func(context.Context, Root) error) ProjectConfig {
 		WatchEvents: []textapi.EventType{
 			textapi.EventTypeOpen, textapi.EventTypeChange, textapi.EventTypeCreate,
 		},
-		InitRoot: initRoot,
+		InitRoot: func(ctx context.Context, root Root, _ *Tools) error {
+			return initRoot(ctx, root)
+		},
 	}
 }
 
@@ -1001,3 +1031,170 @@ type memDirEntry struct{ memFileInfo }
 
 func (e memDirEntry) Type() os.FileMode          { return e.Mode() }
 func (e memDirEntry) Info() (os.FileInfo, error) { return e.memFileInfo, nil }
+
+func TestToolsFind(t *testing.T) {
+	const lib = "/home/me/.rune/lib/python"
+	provisioned := map[string]string{"ty": "/home/me/.rune/bin/ty"}
+	lookupErr := errors.New("unknown service pkg.Packages")
+	probeErr := errors.New("stat: host unreachable")
+	tests := []struct {
+		name  string
+		tools []string
+		inst  *langexttest.Installer
+		want  map[string]string
+		// missing is what Find reports for every tool absent from want.
+		missing []error
+	}{
+		{
+			name:  "from the package's bin",
+			tools: []string{"ty", "ruff"},
+			inst: &langexttest.Installer{Files: []string{
+				lib + "/bin/extension_python", lib + "/bin/ruff",
+				lib + "/bin/ty", lib + "/lib/highlights.scm",
+			}},
+			want: map[string]string{"ty": lib + "/bin/ty", "ruff": lib + "/bin/ruff"},
+		},
+		{
+			name:  "only executables under bin",
+			tools: []string{"ty"},
+			inst: &langexttest.Installer{Files: []string{
+				lib + "/share/ty", lib + "/bin/ty",
+			}},
+			want: map[string]string{"ty": lib + "/bin/ty"},
+		},
+		{
+			name:    "a tool the package lacks is not shipped",
+			tools:   []string{"ty", "ruff"},
+			inst:    &langexttest.Installer{Files: []string{lib + "/bin/ty"}},
+			want:    map[string]string{"ty": lib + "/bin/ty"},
+			missing: []error{ErrNotShipped},
+		},
+		{
+			name:  "not installed",
+			tools: []string{"ty"},
+			inst: &langexttest.Installer{
+				Err:         fmt.Errorf("python: %w", pkgapi.ErrNotInstalled),
+				Provisioned: provisioned,
+			},
+			want:    map[string]string{},
+			missing: []error{pkgapi.ErrNotInstalled},
+		},
+		{
+			name:  "a failed lookup probes the install root",
+			tools: []string{"ty", "ruff"},
+			inst: &langexttest.Installer{
+				Err:         lookupErr,
+				Provisioned: provisioned,
+			},
+			want:    map[string]string{"ty": "/home/me/.rune/bin/ty"},
+			missing: []error{lookupErr},
+		},
+		{
+			name:    "a failed lookup and probe report both",
+			tools:   []string{"ty"},
+			inst:    &langexttest.Installer{Err: lookupErr, ProbeErr: probeErr},
+			want:    map[string]string{},
+			missing: []error{lookupErr, probeErr},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			const ws = "/ws"
+			mfs := newMemFS(ws)
+			find := func(t *testing.T, tools *Tools) map[string]string {
+				got := make(map[string]string, len(tc.tools))
+				for _, name := range tc.tools {
+					p, err := tools.Find(context.Background(), name)
+					if _, ok := tc.want[name]; ok {
+						require.NoError(t, err, name)
+						got[name] = p
+						continue
+					}
+					for _, want := range tc.missing {
+						assert.ErrorIs(t, err, want, name)
+					}
+					assert.Empty(t, p, name)
+				}
+				return got
+			}
+			var got map[string]string
+			cfg := pyConfig(nil)
+			cfg.Tools = tc.tools
+			cfg.InitRoot = func(_ context.Context, _ Root, tools *Tools) error {
+				got = find(t, tools)
+				return nil
+			}
+			i := NewInitializer(context.Background(), mfs, &fakeEditor{}, tc.inst, cfg)
+
+			require.NoError(t, i.InitializeAt(context.Background(), rootForDir(mfs, ws, ws)))
+			assert.Equal(t, tc.want, got)
+			assert.Equal(t, tc.want, find(t, i.Tools()))
+		})
+	}
+}
+
+func TestToolsLookUpOnFirstFindOnly(t *testing.T) {
+	const ws = "/ws"
+	tests := []struct {
+		name  string
+		finds []string
+		want  int
+	}{
+		{name: "a bring-up that finds nothing looks nothing up", finds: nil, want: 0},
+		{name: "one lookup serves every find", finds: []string{"ty", "ruff", "ty"}, want: 1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mfs := newMemFS(ws)
+			inst := &langexttest.Installer{Files: []string{"/lib/python/bin/ty"}}
+			cfg := pyConfig(nil)
+			cfg.Tools = []string{"ty", "ruff"}
+			cfg.InitRoot = func(ctx context.Context, _ Root, tools *Tools) error {
+				for _, name := range tc.finds {
+					_, _ = tools.Find(ctx, name)
+				}
+				return nil
+			}
+			i := NewInitializer(context.Background(), mfs, &fakeEditor{}, inst, cfg)
+
+			require.NoError(t, i.InitializeAt(context.Background(), rootForDir(mfs, ws, ws)))
+			assert.Equal(t, tc.want, inst.Lookups())
+
+			require.NoError(t, i.Reinitialize(context.Background()))
+			assert.Equal(t, 2*tc.want, inst.Lookups(),
+				"a later bring-up sees packages installed since")
+		})
+	}
+}
+
+func TestToolsFindRetriesAfterCancelledLookup(t *testing.T) {
+	inst := &langexttest.Installer{Files: []string{"/lib/python/bin/ty"}}
+	tools := &Tools{inst: inst, pkgID: "python", names: []string{"ty"}}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, _ = tools.Find(cancelled, "ty")
+	assert.Equal(t, 1, inst.Lookups())
+
+	p, err := tools.Find(context.Background(), "ty")
+	require.NoError(t, err)
+	assert.Equal(t, "/lib/python/bin/ty", p)
+	assert.Equal(t, 2, inst.Lookups(), "a lookup cut short is not reused")
+
+	_, _ = tools.Find(context.Background(), "ty")
+	assert.Equal(t, 2, inst.Lookups())
+}
+
+func TestResolveToolsStopsListingOnceAllFound(t *testing.T) {
+	files := []string{"/lib/go/bin/go", "/lib/go/bin/gopls"}
+	for n := range 1000 {
+		files = append(files, fmt.Sprintf("/lib/go/go/src/pkg%d/file.go", n))
+	}
+	inst := &langexttest.Installer{Files: files}
+
+	got, err := resolveTools(context.Background(), inst, "go", []string{"gopls", "go"})
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"go": "/lib/go/bin/go", "gopls": "/lib/go/bin/gopls"}, got)
+	assert.Equal(t, 2, inst.Listed())
+	assert.Equal(t, 1, inst.Closed())
+}

@@ -42,6 +42,7 @@ import (
 	"unstable.build/rune/internal/handler/handlertest"
 	"unstable.build/rune/internal/ide/syntax"
 	"unstable.build/rune/internal/ide/syntax/grammarfixture"
+	"unstable.build/rune/internal/ide/syntax/treesitter"
 	"unstable.build/rune/internal/text"
 	"unstable.build/rune/internal/text/texttest"
 	"unstable.build/rune/internal/text/vi"
@@ -128,7 +129,7 @@ func TestTreeFoldsIntegration(t *testing.T) {
 		tmu.Unlock()
 
 		cref, ok := h.(*text.StatusBar)
-		tree, ok := cref.Buffer().View().(*syntax.Tree)
+		tree, ok := cref.Buffer().View().(*treesitter.Tree)
 		require.True(t, ok)
 
 		it, ok := tree.Folds()
@@ -187,7 +188,7 @@ func TestTreeFoldsIntegration(t *testing.T) {
 		tmu.Unlock()
 
 		cref, ok := h.(*text.StatusBar)
-		tree, ok := cref.Buffer().View().(*syntax.Tree)
+		tree, ok := cref.Buffer().View().(*treesitter.Tree)
 		require.True(t, ok)
 
 		it, ok := tree.Folds()
@@ -246,7 +247,7 @@ func TestTreeFoldsIntegration(t *testing.T) {
 		_, h := newEditFileName(t, tmu, comp, "abc", strconv.Itoa(int(rand.Int())))
 
 		cref, ok := h.(*text.StatusBar)
-		tree, ok := cref.Buffer().View().(*syntax.Tree)
+		tree, ok := cref.Buffer().View().(*treesitter.Tree)
 		require.True(t, ok)
 
 		it, ok := tree.Folds()
@@ -308,13 +309,6 @@ func TestTreeFoldsIntegration(t *testing.T) {
 	})
 }
 
-// TestTreeFoldsOffEventLoopBufferRace exercises the production pattern
-// where auxBar.rebuildBar calls Tree.Folds from a background goroutine
-// while the host event loop mutates the underlying cell.Buffer (e.g.
-// from a file.reload-scheduled callback). getFolds and
-// treeSitterRangeToTerm must not read t.buf directly — they must use
-// the snapshots persisted by persistCells under t.mu — otherwise the
-// race detector flags the unsynchronized read against the host writer.
 func TestTreeFoldsOffEventLoopBufferRace(t *testing.T) {
 	pkgs := newInstalledPkgManager(t)
 	var wg sync.WaitGroup
@@ -333,7 +327,7 @@ func TestTreeFoldsOffEventLoopBufferRace(t *testing.T) {
 	wg.Wait()
 
 	cref := h.(*text.StatusBar)
-	tree := cref.Buffer().View().(*syntax.Tree)
+	tree := cref.Buffer().View().(*treesitter.Tree)
 	buf := cref.Buffer()
 	defer func() { require.NoError(t, tree.Close()) }()
 
@@ -881,7 +875,7 @@ func TestTreeHighlightsMissingHighlightsFile(t *testing.T) {
 	mu.Unlock()
 	cref, ok := h.(*text.StatusBar)
 	require.True(t, ok)
-	tree, ok := cref.Buffer().View().(*syntax.Tree)
+	tree, ok := cref.Buffer().View().(*treesitter.Tree)
 	require.True(t, ok)
 
 	require.NoError(t, tree.Close())
@@ -1560,7 +1554,7 @@ func TestTreeStateIntegration(t *testing.T) {
 		tmu.Unlock()
 
 		cref, ok := h.(*text.StatusBar)
-		tree, ok := cref.Buffer().View().(*syntax.Tree)
+		tree, ok := cref.Buffer().View().(*treesitter.Tree)
 		require.True(t, ok)
 
 		it := tree.State()
@@ -1618,7 +1612,7 @@ func TestTreeStateIntegration(t *testing.T) {
 		_, h := newEditFileName(t, tmu, comp, "abc", strconv.Itoa(int(rand.Int())))
 
 		cref, ok := h.(*text.StatusBar)
-		tree, ok := cref.Buffer().View().(*syntax.Tree)
+		tree, ok := cref.Buffer().View().(*treesitter.Tree)
 		require.True(t, ok)
 
 		it := tree.State()
@@ -1747,11 +1741,6 @@ func TestTreeStateIntegration(t *testing.T) {
 	})
 }
 
-// TestTreeIncrementalParseReleasesPreviousTree drives many incremental
-// parses in sequence: each reparse must delete the previous native tree
-// (a hard leak otherwise, since tree-sitter objects have no finalizer)
-// while the swapped-in tree stays fully usable. A use-after-free or
-// double-free in the swap crashes this test.
 func TestTreeIncrementalParseReleasesPreviousTree(t *testing.T) {
 	pkgs := newInstalledPkgManagerWithFiles(t,
 		"go/tree-sitter.so",
@@ -1876,7 +1865,7 @@ type bufferEdit struct {
 }
 
 func assertHighlightsEqualFullReparse(
-	t *testing.T, handler text.Handler, tree *syntax.Tree, edit int,
+	t *testing.T, handler text.Handler, tree *treesitter.Tree, edit int,
 ) {
 	t.Helper()
 	incremental := syntaxLocations(handler.LocationLists())
@@ -1908,7 +1897,7 @@ func firstHighlightDiff(full, incremental []textapi.Location) string {
 	return ""
 }
 
-func forceFullHighlights(t *testing.T, handler text.Handler, tree *syntax.Tree) []textapi.Location {
+func forceFullHighlights(t *testing.T, handler text.Handler, tree *treesitter.Tree) []textapi.Location {
 	t.Helper()
 	ch, err := tree.Flush(context.Background())
 	require.NoError(t, err)
@@ -2023,7 +2012,7 @@ func TestTreeQueryIntegration(t *testing.T) {
 		it, err := tree.Query(f.Name(), "local.reference")
 		require.NoError(t, err)
 
-		expected := []syntax.Match{
+		expected := []treesitter.Match{
 			{
 				CaptureName: "local.reference",
 				LineString:  "package main",
@@ -2047,7 +2036,7 @@ func TestTreeQueryIntegration(t *testing.T) {
 		it, err := tree.Query("locals.scm", "local.definition.namespace")
 		require.NoError(t, err)
 
-		expected := []syntax.Match{
+		expected := []treesitter.Match{
 			{
 				CaptureName: "local.definition.namespace",
 				LineString:  "package main",
@@ -2174,7 +2163,7 @@ func resolveFixture(t testing.TB, wd, file string) string {
 	if filepath.IsAbs(file) {
 		return file
 	}
-	if filepath.Base(file) == syntax.ParserFilename {
+	if filepath.Base(file) == treesitter.ParserFilename {
 		return grammarfixture.ParserPath(t, filepath.Join(wd, filepath.Dir(file)))
 	}
 	return filepath.Join(wd, file)
@@ -2275,7 +2264,7 @@ func newTestCase(
 	w := workspace.NewSchemeWorkspace(uri, scheme, inlineSchedule)
 	tcfg := text.DefaultConfig()
 	// Share cfg's mutex-serializing scheduler: text.Component's async
-	// flush dispatch and syntax.Tree's async parser init both call
+	// flush dispatch and treesitter.Tree's async parser init both call
 	// ScheduleNextTick from their own goroutines, and both touch the
 	// same cell.Buffer/rawCells. Two independent inline schedulers let
 	// those calls run concurrently and race on rawCells' row-meta
@@ -2283,6 +2272,7 @@ func newTestCase(
 	// so the test must mirror that with a single shared mutex.
 	tcfg.ScheduleNextTick = cfg.ScheduleNextTick
 	tcfg.Syntax = cfg
+	tcfg.SyntaxTree = treesitter.New
 	tcfg.PkgManager = pkgs
 	tcfg.EventPublisher = func(ev term.Event) bool {
 		interrupt(context.Background())
@@ -2329,28 +2319,28 @@ func (n nopNotifications) UpdateNotificationProgress(
 	return nil
 }
 
-func newTree(t testing.TB) (*syntax.Tree, func()) {
+func newTree(t testing.TB) (*treesitter.Tree, func()) {
 	pkgs := newInstalledPkgManager(t)
 	_, _, tree, cleanup := newTreeWithPkgManager(t, pkgs)
 	return tree, cleanup
 }
 
 func newTreeWithPkgManager(t testing.TB, pkgs syntax.PkgManager) (
-	*cell.Buffer, *text.Component, *syntax.Tree, func(),
+	*cell.Buffer, *text.Component, *treesitter.Tree, func(),
 ) {
 	return newTreeWithPkgManagerContent(t, pkgs, fileContent)
 }
 
 func newTreeWithPkgManagerContent(
 	t testing.TB, pkgs syntax.PkgManager, content string,
-) (*cell.Buffer, *text.Component, *syntax.Tree, func()) {
+) (*cell.Buffer, *text.Component, *treesitter.Tree, func()) {
 	buffer, _, tree, comp, cleanup := newTreeWithPkgManagerContentHandler(t, pkgs, content)
 	return buffer, comp, tree, cleanup
 }
 
 func newTreeWithPkgManagerContentHandler(
 	t testing.TB, pkgs syntax.PkgManager, content string,
-) (*cell.Buffer, text.Handler, *syntax.Tree, *text.Component, func()) {
+) (*cell.Buffer, text.Handler, *treesitter.Tree, *text.Component, func()) {
 	var wg sync.WaitGroup
 	ready := func(context.Context) error {
 		wg.Done()
@@ -2367,7 +2357,7 @@ func newTreeWithPkgManagerContentHandler(
 	cref, ok := h.(*text.StatusBar)
 	require.True(t, ok)
 
-	tree, ok := cref.Buffer().View().(*syntax.Tree)
+	tree, ok := cref.Buffer().View().(*treesitter.Tree)
 	require.True(t, ok)
 
 	return cref.Buffer(), h, tree, comp, cleanup

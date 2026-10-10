@@ -62,10 +62,10 @@ RACE_FLAG=$(if $(filter true,$(RUNE_DEBUG_BUILD)),-race)
 # build date.
 BUILD_DATE := $(shell out=$$(cd $(ROOT_DIR) && $(GO) run ./cmd/buildstamp) && printf '%s' "$$out")
 BUILD_DATE_LDFLAG = $(if $(strip $(BUILD_DATE)),,$(error buildstamp produced no build date; refusing to build a binary with an empty debug.BuildDate))-X unstable.build/rune/internal/debug.BuildDate=$(strip $(BUILD_DATE))
-# dist/arch/PKGBUILD and dist/debian/debian/rules re-declare this set
-# because makepkg and dpkg-buildpackage drive the compiler themselves and
-# never call these rules. A flag added or renamed here has to be mirrored
-# in both, or packaged builds quietly ship without it.
+# dist/debian/debian/rules re-declares this set because
+# dpkg-buildpackage drives the compiler itself and never calls these
+# rules. A flag added or renamed here has to be mirrored there, or the
+# .deb quietly ships without it.
 COMMON_LDFLAGS=-X unstable.build/rune/internal/debug.Tag=$$(git describe --tags) -X unstable.build/rune/internal/debug.Commit=$$(git rev-parse --short HEAD) $(BUILD_DATE_LDFLAG) $(DEBUG_LDFLAGS)
 GOFLAGS=$(RACE_FLAG) -ldflags="$(COMMON_LDFLAGS) -X unstable.build/rune/internal/debug.Package=six"
 
@@ -139,6 +139,7 @@ endif
 	release-linux-amd64 release-linux-arm64 \
 	release-linux-amd64-native release-linux-arm64-native \
 	release-linux-amd64-cross release-linux-arm64-cross \
+	docker-build docker-build-staging docker-push \
 	check-release-tag \
 	dist-linux-amd64 dist-linux-arm64 dist-darwin-arm64 dist-darwin-amd64 \
 	dist-linux-amd64-native dist-linux-arm64-native \
@@ -375,7 +376,6 @@ linux-cross-compile:
 #   rune.app/lib/*.so.*            (transitive NEEDED libs, rpath=$ORIGIN/../lib)
 #   rune.app/share/applications/rune.desktop
 #   rune.app/share/icons/hicolor/{512x512,1024x1024}/apps/rune.png
-#   rune.app/share/zdot/.z*
 # The bundling loop intentionally skips the glibc core, the C++ runtime
 # (libstdc++/libgcc_s/libgomp), the OpenGL/GLX/EGL loader, and the X11/XCB
 # client libs: those must come from the host. They are all forward-compatible,
@@ -431,15 +431,10 @@ make-release-linux:
 	rm -f "$$LIB/.queue" "$$LIB/.next"
 	@mkdir -p $(RUNE_LINUX_OUTPUT_DIR)/rune.app/share/applications \
 		$(RUNE_LINUX_OUTPUT_DIR)/rune.app/share/icons/hicolor/512x512/apps \
-		$(RUNE_LINUX_OUTPUT_DIR)/rune.app/share/icons/hicolor/1024x1024/apps \
-		$(RUNE_LINUX_OUTPUT_DIR)/rune.app/share/zdot
+		$(RUNE_LINUX_OUTPUT_DIR)/rune.app/share/icons/hicolor/1024x1024/apps
 	@cp $(ROOT_DIR)/deploy/rune-linux/rune.desktop $(RUNE_LINUX_OUTPUT_DIR)/rune.app/share/applications/rune.desktop
 	@cp $(ROOT_DIR)/extra/icon.iconset/icon_512x512.png $(RUNE_LINUX_OUTPUT_DIR)/rune.app/share/icons/hicolor/512x512/apps/rune.png
 	@cp $(ROOT_DIR)/extra/icon.iconset/icon_512x512@2x.png $(RUNE_LINUX_OUTPUT_DIR)/rune.app/share/icons/hicolor/1024x1024/apps/rune.png
-	@cp $(ROOT_DIR)/extra/osx/Rune.app/Contents/Resources/zdot/.zlogin $(RUNE_LINUX_OUTPUT_DIR)/rune.app/share/zdot/
-	@cp $(ROOT_DIR)/extra/osx/Rune.app/Contents/Resources/zdot/.zprofile $(RUNE_LINUX_OUTPUT_DIR)/rune.app/share/zdot/
-	@cp $(ROOT_DIR)/extra/osx/Rune.app/Contents/Resources/zdot/.zshenv $(RUNE_LINUX_OUTPUT_DIR)/rune.app/share/zdot/
-	@cp $(ROOT_DIR)/extra/osx/Rune.app/Contents/Resources/zdot/.zshrc $(RUNE_LINUX_OUTPUT_DIR)/rune.app/share/zdot/
 	@cp $(ROOT_DIR)/extra/osx/Rune.app/Contents/Resources/LICENSES $(RUNE_LINUX_OUTPUT_DIR)/rune.app/share/LICENSES
 	@cd $(RUNE_LINUX_OUTPUT_DIR) && tar --format=ustar -czf $(RUNE_LINUX_RELEASE_TAR) rune.app
 
@@ -463,6 +458,41 @@ release-linux-arm64-native:
 # release-linux-*-cross are retained as aliases for the now-default cross build.
 release-linux-amd64-cross: release-linux-amd64
 release-linux-arm64-cross: release-linux-arm64
+
+# RUNE_IMAGE is the Docker Hub repository of the headless node image built
+# from deploy/rune-headless/Dockerfile, a glibc build of Rune on Debian.
+RUNE_IMAGE ?= unstablebuild/rune
+RUNE_IMAGE_PLATFORMS ?= linux/amd64,linux/arm64
+RUNE_IMAGE_BUILD = cd $(ROOT_DIR) && docker buildx build --rm \
+	-f deploy/rune-headless/Dockerfile \
+	--build-arg RUNE_BUILD_TAG="$(VERSION)" \
+	--build-arg RUNE_BUILD_COMMIT="$(COMMIT)" \
+	--build-arg RUNE_BUILD_DATE="$(strip $(BUILD_DATE))"
+
+# docker-build loads the image for the host arch into the local image
+# store, to try it before publishing.
+docker-build:
+	@$(RUNE_IMAGE_BUILD) --platform linux/$(HOST_ARCH) --load \
+		-t $(RUNE_IMAGE):$(VERSION) .
+
+# docker-build-staging is docker-build pointed at the staging endpoints,
+# tagged under RUNE_STAGING_IMAGE so it cannot be mistaken for a release.
+RUNE_STAGING_IMAGE ?= unstablebuild/rune-staging
+docker-build-staging:
+	@$(RUNE_IMAGE_BUILD) --platform linux/$(HOST_ARCH) --load \
+		--build-arg RUNE_EXTRA_LDFLAGS="$(STAGING_LDFLAGS)" \
+		-t $(RUNE_STAGING_IMAGE):$(VERSION) .
+
+# docker-push publishes the release tagged at HEAD for every platform in
+# RUNE_IMAGE_PLATFORMS under its tag. Only a stable release also moves
+# latest: Docker Hub repoints latest at whatever was pushed last, so a
+# prerelease (v1.3.0-beta.1, any tag with a "-") must not touch it. Pushing
+# more than one platform needs a buildx builder that supports it, such as
+# one created with `docker buildx create --use`.
+docker-push: check-release-tag
+	@$(RUNE_IMAGE_BUILD) --platform $(RUNE_IMAGE_PLATFORMS) --push \
+		-t $(RUNE_IMAGE):$(VERSION) \
+		$(if $(findstring -,$(VERSION)),,-t $(RUNE_IMAGE):latest) .
 
 # dist-* are the underlying upload rules. They build the artifact via
 # their prerequisite (release-linux-* cross build or DMG-notarize) and

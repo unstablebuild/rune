@@ -98,10 +98,6 @@ func TestDragPollerDropWhileHovering(t *testing.T) {
 	assert.Equal(t, host.paths, (*events)[2].Paths)
 }
 
-// TestDragPollerDropsWhereFilesWereReleased pins the position source of a
-// drop. The mouse cursor does not follow a file drag, so it still points
-// at whatever was clicked last; only the host's drag position says where
-// the files were released.
 func TestDragPollerDropsWhereFilesWereReleased(t *testing.T) {
 	host, d, events := newTestDragPoller(t)
 	d.mouse.state.x, d.mouse.state.y = 10, 10
@@ -121,9 +117,6 @@ func TestDragPollerDropsWhereFilesWereReleased(t *testing.T) {
 	assert.NotEqual(t, d.mouse.cellAt(10, 10), drop.Pos)
 }
 
-// TestDragPollerDropFallsBackToCursor covers hosts that report dropped
-// paths without ever reporting a drag position: the cursor is then the
-// only hint of where the files landed.
 func TestDragPollerDropFallsBackToCursor(t *testing.T) {
 	host, d, events := newTestDragPoller(t)
 	d.mouse.state.x, d.mouse.state.y = 300, 200
@@ -147,8 +140,6 @@ func TestDragPollerClampsToWindow(t *testing.T) {
 	assert.Equal(t, term.Coordinates{X: d.mouse.width - 1, Y: d.mouse.height - 1}, pos)
 }
 
-// TestDragPollerDefaultObserverIsNop pins the no-nil-deps invariant: a
-// poller without a host-installed observer still polls safely.
 func TestDragPollerDefaultObserverIsNop(t *testing.T) {
 	_, m := newTestMouse(t)
 	d := newDragPoller(m)
@@ -199,11 +190,6 @@ func windowCenterPixel(
 		int(f.PixelY(off.Y + pos.Y + win.Height()/2))
 }
 
-// TestDragDropTargetsWindowUnderCursor is the end-to-end guard for
-// dropping files on a split browser: the drop belongs to the window the
-// files were released over, not to the window that happens to hold the
-// focus. Dragging is not a click, so requiring the user to focus a
-// window before dropping on it would defeat the feature.
 func TestDragDropTargetsWindowUnderCursor(t *testing.T) {
 	host, d, _ := newTestDragPoller(t)
 
@@ -261,11 +247,6 @@ func drawBrowser(b *browser.Component, width, height int) string {
 	return w.String()
 }
 
-// idle is what lets the render loop skip a whole tick without taking the
-// UI lock, so it must never report true for a frame on which poll would
-// notify an observer that mutates UI state. A new branch in poll that
-// idle does not account for has to fail here. idle is allowed to be
-// conservative in the other direction.
 func TestDragPollerIdleImpliesPollIsNoOp(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -297,9 +278,6 @@ func TestDragPollerIdleImpliesPollIsNoOp(t *testing.T) {
 	}
 }
 
-// The render loop probes idle before deciding whether to take the UI
-// lock, then polls under it. Probing reads per-tick host state, so it
-// must leave the transition for poll to report.
 func TestDragPollerIdleDoesNotConsumeTransition(t *testing.T) {
 	host, d, events := newTestDragPoller(t)
 	host.dragging = true

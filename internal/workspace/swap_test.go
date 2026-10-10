@@ -105,10 +105,6 @@ func TestSwapFileName(t *testing.T) {
 	})
 }
 
-// TestSwapFileNameTruncation covers paths that cannot fit in a
-// directory entry: the name must stay within NAME_MAX, stay valid
-// UTF-8, be deterministic, and still distinguish paths that share the
-// truncated part.
 func TestSwapFileNameTruncation(t *testing.T) {
 	long := "/" + strings.Repeat("ñ", 200) + "/deeply/nested/main.go"
 	_, swapPath := swapFileName("/swap", long)
@@ -161,8 +157,6 @@ func TestSwapDirectory(t *testing.T) {
 		})
 	}
 } // TestFlushWritesThroughWhenRenameFails covers a swap directory on
-// another volume, where the rename that publishes the swap onto the
-// original cannot work.
 func TestFlushWritesThroughWhenRenameFails(t *testing.T) {
 	dir, swapDir := t.TempDir(), t.TempDir()
 	target := filepath.Join(dir, "main.go")
@@ -210,9 +204,6 @@ func TestFlushWritesThroughWhenRenameFails(t *testing.T) {
 	assert.Equal(t, "reedited original\n", string(saved))
 }
 
-// TestFlushWritesThroughSymlinkTarget checks that the write-through
-// save follows the symlink instead of replacing it, the same way the
-// rename path resolves origTarget through Readlink.
 func TestFlushWritesThroughSymlinkTarget(t *testing.T) {
 	dir, swapDir := t.TempDir(), t.TempDir()
 	target := filepath.Join(dir, "target.go")
@@ -238,9 +229,6 @@ func TestFlushWritesThroughSymlinkTarget(t *testing.T) {
 	assert.Equal(t, "edited original\n", string(saved))
 }
 
-// TestSharedSwapDirectoryIsCreated covers a configured swap directory
-// that does not exist yet: the O_EXCL open of the entry has no
-// MkdirAll of its own.
 func TestSharedSwapDirectoryIsCreated(t *testing.T) {
 	dir := t.TempDir()
 	swapDir := filepath.Join(t.TempDir(), "rune", "swap")
@@ -259,9 +247,6 @@ func TestSharedSwapDirectoryIsCreated(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-// TestSharedSwapCrashRecoveryRoundTrip guards the agreement between
-// the entry Load opens and the one the recovery prompts recompute
-// from the file URI alone, which is what makes a crash recoverable.
 func TestSharedSwapCrashRecoveryRoundTrip(t *testing.T) {
 	dir, swapDir := t.TempDir(), t.TempDir()
 	target := filepath.Join(dir, "main.go")
@@ -315,10 +300,6 @@ func TestSharedSwapCrashRecoveryRoundTrip(t *testing.T) {
 	require.NoError(t, reopened.Close())
 }
 
-// TestSharedSwapDetectsSameFileAcrossWorkspaces covers the upside of
-// naming entries after the absolute path: two workspace roots that
-// reach the same file now collide on one entry, so the second open is
-// reported as already open instead of silently getting its own swap.
 func TestSharedSwapDetectsSameFileAcrossWorkspaces(t *testing.T) {
 	root := t.TempDir()
 	nested := filepath.Join(root, "nested")

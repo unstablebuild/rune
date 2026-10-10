@@ -18,7 +18,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -64,6 +63,7 @@ func NewExtension() (extensionapi.WorkspaceExtension, extensionapi.Metadata) {
 			extensionapi.PermissionFileSystem,
 			extensionapi.PermissionSyntaxTree,
 			extensionapi.PermissionDebugger,
+			extensionapi.PermissionPackages,
 		),
 	}
 	return ext, meta
@@ -104,7 +104,7 @@ func (e *rustExtension) extendWorkspaceWith(
 	opener browserapi.ResourceOpener,
 	parser syntaxapi.Parser,
 	interrupt term.Interrupter,
-	inst installer,
+	inst langext.Installer,
 	rustupHome, cargoHome string,
 	cfg config.Config,
 	registerREPL func(textapi.CommandManual, textapi.REPLHandler) error,
@@ -114,18 +114,18 @@ func (e *rustExtension) extendWorkspaceWith(
 	if err != nil {
 		return fmt.Errorf("resolve cwd uri: %w", err)
 	}
-	rustupInitBin := resolveRustupInit(ctx, inst)
 
 	experimental := readExperimental(cfg, notify)
 	memoryUsage := readMemoryUsage(cfg, notify)
 
-	init := langext.NewInitializer(ctx, fs, editor, langext.ProjectConfig{
+	init := langext.NewInitializer(ctx, fs, editor, inst, langext.ProjectConfig{
 		LanguageID: "rust",
 		Markers:    rustMarkers,
 		FileMatch:  isRustFile,
-		InitRoot: func(ctx context.Context, root langext.Root) error {
+		Tools:      []string{"rust-analyzer", "rustup-init"},
+		InitRoot: func(ctx context.Context, root langext.Root, tools *langext.Tools) error {
 			return initializeRustRoot(ctx,
-				fs, exec, notify, lsp, inst, rustupHome, cargoHome, rustupInitBin,
+				fs, exec, notify, lsp, tools, rustupHome, cargoHome,
 				cfg, experimental, root)
 		},
 	})
@@ -181,8 +181,8 @@ func initializeRustRoot(
 	exec workspaceapi.Executor,
 	notify browserapi.Notifications,
 	lsp semanticapi.LSP,
-	inst installer,
-	rustupHome, cargoHome, rustupInitBin string,
+	tools *langext.Tools,
+	rustupHome, cargoHome string,
 	cfg config.Config,
 	experimental bool,
 	root langext.Root,
@@ -198,7 +198,7 @@ func initializeRustRoot(
 		slog.Warn("rust toolchain setup skipped: CARGO_HOME not set", "root", root.Dir)
 	} else {
 		if err := bootstrapRustup(
-			ctx, rustupInitBin, exec, notify, fs, rustupHome, root.Dir,
+			ctx, tools, exec, notify, fs, rustupHome, root.Dir,
 		); err != nil {
 			_, _ = notify.Notify(browserapi.LevelWarn,
 				"Rust toolchain setup failed, continuing without a managed toolchain: %v", err)
@@ -207,7 +207,10 @@ func initializeRustRoot(
 		sysroot = resolveSysroot(ctx, exec, resolveRustcProxy(cargoHome))
 	}
 
-	command := resolveRustAnalyzer(ctx, cfg, notify, inst)
+	command, err := resolveRustAnalyzer(ctx, cfg, notify, tools)
+	if err != nil {
+		return fmt.Errorf("find rust-analyzer: %w", err)
+	}
 	params, err := rustInitializeParams(
 		root.URI, command, sysroot, rustLogFilter(cfg, notify), experimental)
 	if err != nil {
@@ -245,17 +248,6 @@ func rustLogFilter(cfg config.Config, notify browserapi.Notifications) string {
 
 func isRustFile(uri workspaceapi.URI) bool {
 	return strings.HasSuffix(uri.Path(), ".rs")
-}
-
-func resolveRustupInit(ctx context.Context, inst installer) string {
-	bin, err := inst.FindInstalledExecutable(ctx, "rustup-init")
-	if err == nil {
-		return bin
-	}
-	if !errors.Is(err, os.ErrNotExist) {
-		slog.Warn("probe provisioned rustup-init failed", "error", err)
-	}
-	return ""
 }
 
 func resolveRustupProxy(cargoHome string) string {

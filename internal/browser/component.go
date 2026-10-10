@@ -2311,7 +2311,7 @@ func (c *Component) drawDragVeil(w term.Writer) bool {
 
 	cells := c.drag.buf.RawCells()
 	veilCells(cells, pos, width, height, c.config.DropTargetAttr, skip)
-	writeCenteredLabel(cells, pos, width, height, label,
+	labelSpan := writeCenteredLabel(cells, pos, width, height, label,
 		c.config.DropTargetLabelAttr)
 	shader.Virtual(shader.Pulse(shader.PulseParams{
 		Color:        c.config.DropTargetAttr.Fg,
@@ -2324,6 +2324,16 @@ func (c *Component) drawDragVeil(w term.Writer) bool {
 		for x, cl := range row {
 			w.SetCell(term.Coordinates{X: x, Y: y}, cl)
 		}
+	}
+	for _, img := range c.drag.buf.Images() {
+		w.DrawImage(img)
+	}
+	// The label was written into the cells after the placements were
+	// read, so it goes over any picture the target shows by being
+	// written after them here too.
+	for x := labelSpan.Min.X; x < labelSpan.Max.X; x++ {
+		pos := term.Coordinates{X: x, Y: labelSpan.Min.Y}
+		w.SetCell(pos, cells[pos.Y][pos.X])
 	}
 	return true
 }

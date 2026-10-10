@@ -24,6 +24,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -36,10 +37,16 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/pkgapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/extension"
+	"unstable.build/rune/internal/extension/langext"
+	"unstable.build/rune/internal/ide/ideauthorizer"
 	"unstable.build/rune/internal/text/texttest"
 )
 
@@ -119,7 +126,7 @@ func TestRunnerSharesOneCertAcrossWorkspaces(t *testing.T) {
 		require.NoError(t, err)
 		runner, err := newTestWorkspaceExtensionsRunner(t, r, uri)
 		require.NoError(t, err)
-		env, err := runner.(wrapCloser).commandEnvs(context.Background(), "ext", nil)
+		env, err := runner.(wrapCloser).commandEnvs(context.Background(), "ext", nil, "")
 		require.NoError(t, err)
 		certs = append(certs, envValue(env, "RUNE_CERT"))
 	}
@@ -157,7 +164,7 @@ func TestRunnerInsecureTransportSkipsCertGeneration(t *testing.T) {
 	require.NoError(t, err)
 	runner, err := newTestWorkspaceExtensionsRunner(t, r, uri)
 	require.NoError(t, err)
-	env, err := runner.(wrapCloser).commandEnvs(context.Background(), "ext", nil)
+	env, err := runner.(wrapCloser).commandEnvs(context.Background(), "ext", nil, "")
 	require.NoError(t, err)
 	assert.Empty(t, envValue(env, "RUNE_CERT"))
 }
@@ -285,4 +292,60 @@ func TestRunnerSocketPath(t *testing.T) {
 			"fallback basename should be prefixed with %q to namespace it; "+
 				"got %q", debug.Package, filepath.Base(got))
 	})
+}
+
+func TestExtensionPackagesPermission(t *testing.T) {
+	const ty = "/home/me/.rune/lib/python/bin/ty"
+	tests := []struct {
+		name     string
+		answer   string
+		pkgs     stubPackages
+		want     string
+		wantErr  error
+		wantCode codes.Code
+	}{
+		{
+			name:   "granted",
+			answer: ideauthorizer.PromptOptionYes,
+			pkgs:   stubPackages{paths: []string{"/home/me/.rune/lib/python/bin/python", ty}},
+			want:   ty,
+		},
+		{
+			name:     "denied",
+			answer:   ideauthorizer.PromptOptionNo,
+			pkgs:     stubPackages{paths: []string{ty}},
+			wantCode: codes.PermissionDenied,
+		},
+		{
+			name:    "not installed",
+			answer:  ideauthorizer.PromptOptionYes,
+			pkgs:    stubPackages{err: fmt.Errorf("python: %w", pkgapi.ErrNotInstalled)},
+			wantErr: pkgapi.ErrNotInstalled,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+			prompt := newE2EPromptOpener(tc.answer)
+			ws := dialExtensionWorkspace(t, extension.PackagesResources(tc.pkgs), prompt)
+			tools := langext.NewInitializer(ctx, nil, nil, ws, langext.ProjectConfig{
+				LanguageID: "python", Tools: []string{"ty"},
+			}).Tools()
+
+			got, err := tools.Find(ctx, "ty")
+
+			assert.Equal(t, tc.want, got)
+			assert.Contains(t, prompt.message(t, 1), "find and install Rune packages")
+			switch {
+			case tc.wantCode != codes.OK:
+				assert.Equal(t, tc.wantCode, status.Code(err), err)
+				assert.NotErrorIs(t, err, pkgapi.ErrNotInstalled,
+					"a denied lookup is not a declined install")
+			case tc.wantErr != nil:
+				assert.ErrorIs(t, err, tc.wantErr)
+			default:
+				assert.NoError(t, err)
+			}
+		})
+	}
 }

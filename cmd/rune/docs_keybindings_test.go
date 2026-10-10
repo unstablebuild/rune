@@ -113,8 +113,6 @@ func shippedDocsKeybindings(t *testing.T) docsKeybindings {
 	return out
 }
 
-// TestDocsKeybindingsDataIsFresh pins the key bindings the docs site
-// renders to the shipped presets.
 func TestDocsKeybindingsDataIsFresh(t *testing.T) {
 	raw, err := os.ReadFile(docsKeybindingsData)
 	if err != nil {
@@ -397,12 +395,6 @@ func (d docsKeybindings) binds(preset, platform, command string) bool {
 	return false
 }
 
-// TestDocsKeyBindingsResolve checks every <KeyBinding> in the docs
-// against the presets it renders for. On an editor guide, the reader
-// cannot switch away from the guide's preset, so the command must be
-// bound on every platform the spot renders for; elsewhere, some preset
-// must bind it, and the rest render "not bound". A pinned chord must run
-// the command on every preset and platform it renders for.
 func TestDocsKeyBindingsResolve(t *testing.T) {
 	data := shippedDocsKeybindings(t)
 	for _, page := range loadDocsPages(t) {
@@ -442,10 +434,6 @@ func TestDocsKeyBindingsResolve(t *testing.T) {
 	}
 }
 
-// TestDocsEditorGuidesDoNotHardcodePresetChords makes the editor guides
-// spell a preset chord as <KeyBinding command=... chord=...>, so that
-// TestDocsKeyBindingsResolve fails when the preset moves the chord to
-// another command, instead of the guide drifting.
 func TestDocsEditorGuidesDoNotHardcodePresetChords(t *testing.T) {
 	data := shippedDocsKeybindings(t)
 	used := make([]bool, len(docsLiteralChords))

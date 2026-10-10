@@ -23,19 +23,13 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"unstable.build/rune/internal/ide"
-	"unstable.build/rune/internal/ide/upgradeshell"
+	"unstable.build/rune/internal/ide/console/upgradeconsole"
 )
 
-// TestRegisterUpgradeCommandWithoutManager covers the configuration
-// where no manifest URL is available: the manager is nil and there is
-// nothing to register, which must not be an error.
 func TestRegisterUpgradeCommandWithoutManager(t *testing.T) {
 	require.NoError(t, registerUpgradeCommand(nil, nil))
 }
 
-// TestUpgradeAliasTargetsConsoleCommand pins the command-prompt entry
-// point for the console `upgrade` command: `:upgrade` must keep
-// working now that the ex-command is gone.
 func TestUpgradeAliasTargetsConsoleCommand(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.star")
 	require.NoError(t, os.WriteFile(path, nil, 0o644))
@@ -46,7 +40,7 @@ func TestUpgradeAliasTargetsConsoleCommand(t *testing.T) {
 	require.NoError(t, err)
 	aliases, err := command.GetConfig("aliases")
 	require.NoError(t, err)
-	got, err := aliases.GetString(upgradeshell.CommandName)
+	got, err := aliases.GetString(upgradeconsole.CommandName)
 	require.NoError(t, err)
-	require.Equal(t, "console "+upgradeshell.CommandName, got)
+	require.Equal(t, "console "+upgradeconsole.CommandName, got)
 }

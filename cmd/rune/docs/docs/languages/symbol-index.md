@@ -123,6 +123,7 @@ The segments are separated with dots:
 | Python | `_impl.Widget`, `mypkg._impl.Widget`, `mypkg.Widget` for a re-export |
 | Rust | `geometry.Shape`, `geometry.Shape.area` |
 | Zig | `geometry.Shape`, `geometry.Shape.area` |
+| TypeScript and JavaScript | `geometry.Shape`, `geometry.Shape.area`, `utils.slugify` for a re-export from `utils/index.ts` |
 
 The qualifier is what makes the lookup efficient and avoids confusing unrelated
 symbols that share a short name. Direct editor lookup therefore requires at
@@ -149,7 +150,8 @@ name.
 Opening a workspace starts a background scan. Rune walks non-ignored source
 files for languages that have a registered symbol-resolution specification.
 Hidden directories and paths excluded by Git ignore rules are skipped. Rune
-currently has specifications for Go, Python, Rust, and Zig.
+currently has specifications for Go, Python, Rust, Zig, TypeScript, and
+JavaScript.
 
 Each eligible file goes through one Tree-sitter parse. Rune runs several queries
 against that syntax tree as one batch:

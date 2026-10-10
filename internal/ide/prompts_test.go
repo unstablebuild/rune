@@ -27,11 +27,6 @@ import (
 	"unstable.build/rune/internal/text/texttest"
 )
 
-// TestPromptOnCloseNoReopenDuringShutdown asserts that a non-modal
-// file-change / are-you-sure prompt does not re-open a replacement prompt
-// when its OnClose fires during a programmatic Close(). The re-entrancy
-// was the wedge behind the shutdown freeze: Close() ran the window OnClose
-// hooks which re-opened prompts on a browser mid-teardown.
 func TestPromptOnCloseNoReopenDuringShutdown(t *testing.T) {
 	uri, err := workspaceapi.ParseURI("file:///dirty.go")
 	require.NoError(t, err)

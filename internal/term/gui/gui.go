@@ -33,6 +33,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"github.com/unstablebuild/tcell/v3"
+	"unstable.build/rune/internal/cell"
 	"unstable.build/rune/internal/term/gui/drawrect"
 	"unstable.build/rune/internal/term/gui/font"
 )
@@ -49,7 +50,8 @@ const (
 	defaultWidth, defaultHeight = 800, 600
 	// echoPollInterval is the sleep slice while awaiting a
 	// post-keystroke interrupt.
-	echoPollInterval = 50 * time.Microsecond
+	echoPollInterval        = 50 * time.Microsecond
+	publishClosed    uint64 = 1 << 63
 )
 
 // echoWaitBudget bounds the once-per-tick wait for the focused
@@ -69,7 +71,7 @@ type GUI struct {
 	fontManager       *font.Manager
 	updateChan        chan term.Event
 	handler           tui.Handler
-	writer            *frameWriter
+	writer            *cell.BufferWriter
 	mouse             *mouse
 	input             *input
 	drag              *dragPoller
@@ -127,6 +129,9 @@ type GUI struct {
 
 	interruptPending atomic.Bool
 	started          atomic.Bool
+	// publish is publishClosed plus the count of in-flight enqueues.
+	publish  atomic.Uint64
+	enqueued chan struct{}
 	// processWindowClosed turns a pending window close request into
 	// events for the handler. WithCloseRequestEvent installs it; it
 	// defaults to a no-op, leaving ebiten's default behavior in place.
@@ -151,6 +156,7 @@ func New(handler tui.Handler, options ...Option) (*GUI, error) {
 		mu:               new(sync.Mutex),
 		handler:          handler,
 		updateChan:       make(chan term.Event, 4096),
+		enqueued:         make(chan struct{}),
 		bgOpacity:        1,
 		fgOpacity:        1,
 		fontManager:      fontManager,
@@ -233,10 +239,14 @@ func (g *GUI) Run(title string) error {
 	return ebiten.RunGameWithOptions(g, &gameOpts)
 }
 
-// Close releases GUI-owned resources and restores process-global color state.
-// It is safe to call more than once.
+// Close runs the UserFuncs of accepted events and rejects new ones. It is
+// idempotent and must not run concurrently with Update.
 func (g *GUI) Close() error {
 	g.closeOnce.Do(func() {
+		if g.publish.Or(publishClosed) != 0 {
+			<-g.enqueued
+		}
+		g.runAcceptedUserFuncs()
 		g.cancelCtx()
 		if g.renderer != nil {
 			g.renderer.deallocate()
@@ -245,6 +255,21 @@ func (g *GUI) Close() error {
 		tcell.SetColorValues(g.originalColorValues)
 	})
 	return nil
+}
+
+func (g *GUI) runAcceptedUserFuncs() {
+	for len(g.updateChan) > 0 {
+		g.pendingEvents = append(g.pendingEvents, <-g.updateChan)
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, ev := range g.pendingEvents {
+		if ev.Type == term.EventInterrupt && ev.UserFunc != nil {
+			ev.UserFunc()
+		}
+	}
+	clear(g.pendingEvents)
+	g.pendingEvents = g.pendingEvents[:0]
 }
 
 // x11WMClass is the ICCCM WM_CLASS instance/class reported by the window.
@@ -299,25 +324,42 @@ func (g *GUI) SetForceFullRepaint(force bool) {
 	g.needsRender = true
 }
 
-// PublishEvent enqueues ev for the next frame and wakes the run loop.
-// A client interrupt (a bare EventInterrupt that only asks for a
-// redraw of asynchronously refreshed content) is collapsed onto an
-// atomic flag instead of the channel so bursts of them cost no channel
-// traffic; Update folds it into a single repaint. All other events,
-// including interrupts carrying a Raw payload or UserFunc, keep their
-// ordered delivery through the channel.
+// PublishEvent returns true only if ev's UserFunc will run exactly once.
 func (g *GUI) PublishEvent(ev term.Event) bool {
 	if ev.Type == term.EventInterrupt && ev.Raw == nil && ev.UserFunc == nil {
 		g.interruptPending.Store(true)
 		g.scheduleFrame()
 		return true
 	}
+	if !g.beginEnqueue() {
+		return false
+	}
 	select {
 	case g.updateChan <- ev:
+		g.endEnqueue()
 		g.scheduleFrame()
 		return true
 	default:
+		g.endEnqueue()
 		return false
+	}
+}
+
+func (g *GUI) beginEnqueue() bool {
+	for {
+		v := g.publish.Load()
+		if v&publishClosed != 0 {
+			return false
+		}
+		if g.publish.CompareAndSwap(v, v+1) {
+			return true
+		}
+	}
+}
+
+func (g *GUI) endEnqueue() {
+	if g.publish.Add(^uint64(0)) == publishClosed {
+		close(g.enqueued)
 	}
 }
 
@@ -398,7 +440,7 @@ func (g *GUI) Update() error {
 
 	keyEvents := 0
 	sawInterrupt := interruptPending
-	for _, ev := range g.pendingEvents {
+	for i, ev := range g.pendingEvents {
 		switch ev.Type {
 		case term.EventInterrupt:
 			sawInterrupt = true
@@ -439,6 +481,9 @@ func (g *GUI) Update() error {
 				if ebiten.IsFocused() {
 					g.lastPositionX, g.lastPositionY = ebiten.WindowPosition()
 				}
+				n := copy(g.pendingEvents, g.pendingEvents[i+1:])
+				clear(g.pendingEvents[n:])
+				g.pendingEvents = g.pendingEvents[:n]
 				return ErrHandlerExited
 			}
 		}
@@ -624,6 +669,24 @@ func (g *GUI) SetTheme(name string) (Theme, error) {
 	return theme, nil
 }
 
+// SetColorThemes replaces the set of themes available to SetTheme and Themes.
+// If the active theme is in themes, it is re-applied so a redefinition takes
+// effect, and its definition is returned with true. Otherwise it returns
+// false and the current colors are left alone: an active theme missing from
+// themes keeps rendering until the next SetTheme.
+// Like SetTheme, it must be called on the GUI loop.
+func (g *GUI) SetColorThemes(themes map[string]Theme) (Theme, bool) {
+	g.colorThemes = themes
+	if g.theme == "" {
+		return Theme{}, false
+	}
+	if _, ok := themes[g.theme]; !ok {
+		return Theme{}, false
+	}
+	theme, err := g.SetTheme(g.theme)
+	return theme, err == nil
+}
+
 // Theme returns the current theme. An empty string
 // indicates that no theme is set, so the default color scheme,
 // is used.
@@ -682,7 +745,7 @@ func (g *GUI) LastPosition() (x, y int) {
 }
 
 func (g *GUI) drawHandler(ctx context.Context) {
-	g.writer.SetContext(ctx)
+	g.writer.SetContext(frameContext(ctx, g.fontManager))
 	_ = g.writer.Clear(g.defaultAttr)
 	g.handler.Draw(g.writer)
 	g.cursor.pos, g.cursor.style, g.cursor.show = g.handler.Cursor()
@@ -706,7 +769,7 @@ func (g *GUI) resize(width, height int, deviceScale float64) {
 	g.mouse.resize(cellsWidth, cellsHeight)
 	g.cellPixelSize.Store(uint64(math.Round(g.fontManager.PixelX(1)))<<32 |
 		uint64(math.Round(g.fontManager.PixelY(1))))
-	g.writer = newFrameWriter(g.ctx, cellsWidth, cellsHeight)
+	g.writer = cell.NewBufferWriter(g.ctx, cellsWidth, cellsHeight)
 	if g.renderer != nil {
 		g.renderer.deallocate()
 	}
@@ -756,6 +819,7 @@ func (g *GUI) log(level log.Level, msg string, args ...any) {
 func (g *GUI) resetTheme() {
 	tcell.SetColorValues(g.originalColorValues)
 
+	g.theme = ""
 	g.defaultAttr.Fg = term.FromTcellColor(tcell.ColorWhite)
 	g.defaultAttr.Bg = term.FromTcellColor(tcell.ColorBlack)
 	g.cursorAttributes = term.Attributes{Bg: term.FromTcellColor(tcell.ColorRed)}

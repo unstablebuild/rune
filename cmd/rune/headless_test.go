@@ -19,10 +19,15 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -30,6 +35,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
+	"golang.org/x/oauth2"
 	"unstable.build/rune/auth"
 	"unstable.build/rune/cmd/rune/ide/apiclient"
 	"unstable.build/rune/internal/debug"
@@ -47,16 +55,30 @@ type stubHeadlessClient struct {
 	loginOK        bool
 	loginStatusErr error
 	calls          int
+	logouts        int
+	logoutErr      error
+	checkErr       error
+	checks         int
 }
 
 func (s *stubHeadlessClient) AccountStatus(
 	context.Context,
 ) (auth.RPCUser, bool, error) {
 	s.calls++
-	if s.calls == 1 {
+	if s.calls == 1 && s.logouts == 0 {
 		return s.user, s.signedIn, s.statusErr
 	}
 	return s.loginUser, s.loginOK, s.loginStatusErr
+}
+
+func (s *stubHeadlessClient) Logout(context.Context) error {
+	s.logouts++
+	return s.logoutErr
+}
+
+func (s *stubHeadlessClient) CheckSignIn(context.Context) error {
+	s.checks++
+	return s.checkErr
 }
 
 func (s *stubHeadlessClient) LoginWithDeviceCode(
@@ -81,26 +103,96 @@ func TestHeadlessLogin(t *testing.T) {
 	}
 
 	for _, tc := range []struct {
-		name     string
-		client   *stubHeadlessClient
-		wantErr  string
-		contains []string
-		absent   []string
+		name        string
+		client      *stubHeadlessClient
+		wantErr     string
+		contains    []string
+		absent      []string
+		wantLogouts int
 	}{
 		{
 			name: "already signed in skips the code prompt",
 			client: &stubHeadlessClient{
-				user:     auth.RPCUser{Email: "a@rune.test", Role: auth.RolePaid},
+				user: auth.RPCUser{
+					Email: "a@rune.test", Role: auth.RolePaid, ServeOnly: true,
+				},
 				signedIn: true,
 			},
 			contains: []string{"Signed in as a@rune.test (Rune Pro)"},
 			absent:   []string{"enter the code"},
 		},
 		{
-			name: "signed out prints the code and verification page",
+			name: "a revoked sign-in is replaced",
+			client: &stubHeadlessClient{
+				user:      auth.RPCUser{Email: "a@rune.test", ServeOnly: true},
+				signedIn:  true,
+				checkErr:  auth.ErrNotAuthenticated,
+				prompt:    prompt,
+				loginUser: auth.RPCUser{Email: "a@rune.test", ServeOnly: true},
+				loginOK:   true,
+			},
+			contains: []string{
+				"revoked or has expired",
+				"enter the code ABCD-EFGH",
+				"Signed in as a@rune.test (Rune)",
+			},
+		},
+		{
+			// The sign-in may well be fine: only the server can say,
+			// so it is not thrown away for a server that cannot answer.
+			name: "a sign-in that cannot be checked is an error",
+			client: &stubHeadlessClient{
+				user:     auth.RPCUser{Email: "a@rune.test", ServeOnly: true},
+				signedIn: true,
+				checkErr: errors.New("connection refused"),
+				prompt:   prompt,
+			},
+			wantErr: "connection refused",
+			absent:  []string{"enter the code", "Signed in"},
+		},
+		{
+			name: "a full-access sign-in is discarded and replaced",
+			client: &stubHeadlessClient{
+				user:      auth.RPCUser{Email: "a@rune.test", Role: auth.RolePaid},
+				signedIn:  true,
+				prompt:    prompt,
+				loginUser: auth.RPCUser{Email: "a@rune.test", ServeOnly: true},
+				loginOK:   true,
+			},
+			contains: []string{
+				"full account access",
+				"enter the code ABCD-EFGH",
+				"Signed in as a@rune.test (Rune)",
+			},
+			wantLogouts: 1,
+		},
+		{
+			name: "a full-access sign-in that cannot be discarded is an error",
+			client: &stubHeadlessClient{
+				user:      auth.RPCUser{Email: "a@rune.test"},
+				signedIn:  true,
+				logoutErr: errors.New("keychain locked"),
+			},
+			wantErr:     "keychain locked",
+			absent:      []string{"enter the code", "Signed in"},
+			wantLogouts: 1,
+		},
+		{
+			name: "a login that yields full access is refused and discarded",
 			client: &stubHeadlessClient{
 				prompt:    prompt,
 				loginUser: auth.RPCUser{Email: "b@rune.test"},
+				loginOK:   true,
+			},
+			wantErr:     "serve-only",
+			absent:      []string{"Signed in"},
+			wantLogouts: 1,
+		},
+		{
+			name: "signed out prints the code and verification page",
+			client: &stubHeadlessClient{
+				prompt:    prompt,
+				loginUser: auth.RPCUser{Email: "b@rune.test", ServeOnly: true},
 				loginOK:   true,
 			},
 			contains: []string{
@@ -166,8 +258,164 @@ func TestHeadlessLogin(t *testing.T) {
 			for _, absent := range tc.absent {
 				assert.NotContains(t, out.String(), absent)
 			}
+			assert.Equal(t, tc.wantLogouts, tc.client.logouts)
 		})
 	}
+}
+
+func TestHeadlessLoginReplacesFullAccessToken(t *testing.T) {
+	oauth := newHeadlessOAuthServer(t)
+	storage := storagestub.NewInMemoryService()
+	// Field names, not json tags, are what the stub storage matches on.
+	require.NoError(t, storageapi.WithPartition(storage, "auth").Set(
+		t.Context(), "tokenv2", struct {
+			AccessToken  string
+			TokenType    string
+			RefreshToken string
+			Expiry       time.Time
+		}{
+			AccessToken:  accountJWT(t, auth.RPCUser{Email: "desk@rune.test"}),
+			TokenType:    "Bearer",
+			RefreshToken: "desktop-refresh-token",
+			Expiry:       time.Now().Add(time.Hour),
+		}))
+
+	cfg := apiclient.DefaultConfig()
+	cfg.HTTPEndpointAddress = oauth.URL
+	cfg.Headless = true
+	client := apiclient.New(storage, cfg, t.TempDir())
+	defer client.Close()
+
+	var out bytes.Buffer
+	require.NoError(t, headlessLogin(t.Context(), client, &out))
+	assert.Contains(t, out.String(), "full account access")
+	assert.Contains(t, out.String(), "enter the code ABCD-EFGH")
+
+	user, ok, err := client.AccountStatus(t.Context())
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.True(t, user.ServeOnly)
+	assert.Equal(t, []string{"test-headless-client", "test-headless-client"},
+		oauth.clientIDs(), "device authorization and token grant")
+}
+
+func TestHeadlessLoginReplacesRevokedToken(t *testing.T) {
+	oauth := newHeadlessOAuthServer(t)
+	storage := storagestub.NewInMemoryService()
+	require.NoError(t, storageapi.WithPartition(storage, "auth").Set(
+		t.Context(), "tokenv2", struct {
+			AccessToken  string
+			TokenType    string
+			RefreshToken string
+			Expiry       time.Time
+		}{
+			AccessToken: accountJWT(t, auth.RPCUser{
+				Email: "node@rune.test", ServeOnly: true}),
+			TokenType:    "Bearer",
+			RefreshToken: revokedRefreshToken,
+			Expiry:       time.Now().Add(-time.Hour),
+		}))
+
+	cfg := apiclient.DefaultConfig()
+	cfg.HTTPEndpointAddress = oauth.URL
+	cfg.Headless = true
+	client := apiclient.New(storage, cfg, t.TempDir())
+	defer client.Close()
+
+	var out bytes.Buffer
+	require.NoError(t, headlessLogin(t.Context(), client, &out))
+	assert.Contains(t, out.String(), "revoked or has expired")
+	assert.Contains(t, out.String(), "enter the code ABCD-EFGH")
+
+	tok := client.CachedTokenSource().Cached(t.Context())
+	require.NotNil(t, tok)
+	assert.True(t, tok.Valid())
+	assert.Equal(t, "headless-refresh-token", tok.RefreshToken)
+}
+
+type headlessOAuthServer struct {
+	*httptest.Server
+	mu  sync.Mutex
+	ids []string
+}
+
+func (s *headlessOAuthServer) clientIDs() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.ids...)
+}
+
+// revokedRefreshToken is refused by newHeadlessOAuthServer.
+const revokedRefreshToken = "revoked-refresh-token"
+
+// newHeadlessOAuthServer stands in for the API server's oauth2 surface:
+// it advertises a headless client and, like the API server, marks only
+// the tokens obtained through it serve-only. It refuses
+// revokedRefreshToken with the provider error the API server relays.
+func newHeadlessOAuthServer(t *testing.T) *headlessOAuthServer {
+	t.Helper()
+	s := &headlessOAuthServer{}
+	record := func(r *http.Request) string {
+		require.NoError(t, r.ParseForm())
+		id := r.Form.Get("client_id")
+		s.mu.Lock()
+		s.ids = append(s.ids, id)
+		s.mu.Unlock()
+		return id
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc(auth.ServeConfigPath, func(w http.ResponseWriter, _ *http.Request) {
+		require.NoError(t, json.NewEncoder(w).Encode(auth.Config{
+			HeadlessClientID: "test-headless-client",
+			Config: oauth2.Config{
+				ClientID: "test-client-id",
+				Endpoint: oauth2.Endpoint{
+					AuthStyle:     oauth2.AuthStyleInParams,
+					AuthURL:       s.URL + "/authorize",
+					DeviceAuthURL: s.URL + "/oauth/device/code",
+					TokenURL:      s.URL + auth.ServeTokenPath,
+				},
+			},
+		}))
+	})
+	mux.HandleFunc("/oauth/device/code", func(w http.ResponseWriter, r *http.Request) {
+		record(r)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"device_code":"dc","user_code":"ABCD-EFGH",` +
+			`"verification_uri":"https://auth.rune.test/activate",` +
+			`"expires_in":900,"interval":1}`))
+	})
+	mux.HandleFunc(auth.ServeTokenPath, func(w http.ResponseWriter, r *http.Request) {
+		user := auth.RPCUser{
+			Email: "node@rune.test", ServeOnly: record(r) == "test-headless-client",
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if r.Form.Get("refresh_token") == revokedRefreshToken {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"error":"invalid_grant",` +
+				`"error_description":"Unknown or invalid refresh token."}`))
+			return
+		}
+		require.NoError(t, json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  accountJWT(t, user),
+			"token_type":    "Bearer",
+			"expires_in":    3600,
+			"refresh_token": "headless-refresh-token",
+		}))
+	})
+	s.Server = httptest.NewServer(mux)
+	t.Cleanup(s.Close)
+	return s
+}
+
+// accountJWT is an unsigned access token carrying user the way the API
+// server's tokens carry the account.
+func accountJWT(t *testing.T, user auth.RPCUser) string {
+	t.Helper()
+	payload, err := json.Marshal(map[string]any{"extra": user})
+	require.NoError(t, err)
+	return base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`)) + "." +
+		base64.RawURLEncoding.EncodeToString(payload) + ".sig"
 }
 
 func TestStartHeadlessLogging(t *testing.T) {

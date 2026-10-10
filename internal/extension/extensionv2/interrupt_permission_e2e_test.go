@@ -47,25 +47,11 @@ import (
 	"unstable.build/rune/internal/browser/browsertest"
 	"unstable.build/rune/internal/extension"
 	"unstable.build/rune/internal/ide/ideauthorizer"
-	"unstable.build/rune/internal/ide/pkgtrust"
+	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
 	"unstable.build/rune/internal/text/texttest"
 	"unstable.build/rune/internal/workspace"
 )
 
-// TestExtensionInterruptPermissionE2E covers the baseline sequential
-// flow for RUNE-97: after a user approves the interrupt permission,
-// subsequent Interrupter.Interrupt(ctx) calls must propagate an
-// EventInterrupt to the host's event publisher.
-//
-// The test wires an in-process gRPC server using extensionv2.Runner with
-// a real ideauthorizer.Authorizer, signs a bearer token against the
-// runner's keys, and uses extensionapi.NewWorkspace to act as the
-// extension. The extension calls Interrupt three times; the first call
-// triggers a permission prompt that the test auto-approves with "Yes".
-// All three calls must result in three events delivered to publishEvent.
-// TestExtensionInterruptPermissionConcurrentE2E covers the actual bug
-// that triggered RUNE-97: concurrent Interrupts while the prompt is
-// still open.
 func TestExtensionInterruptPermissionE2E(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -241,13 +227,6 @@ func waitForSocket(path string, timeout time.Duration) error {
 	return fmt.Errorf("socket %s did not appear within %s", path, timeout)
 }
 
-// calls returns how many times Prompt was invoked on this opener.
-func (p *e2ePromptOpener) calls() int {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return len(p.messages)
-}
-
 // publishingE2EBrowser is an e2eBrowser whose PublishEvent forwards to
 // the given publishEvent closure. Production's ex.Browser() (a
 // *text.Component) wires its PublishEvent method to the configured
@@ -264,21 +243,6 @@ func (b publishingE2EBrowser) PublishEvent(ev term.Event) error {
 	return nil
 }
 
-// TestExtensionInterruptPermissionConcurrentE2E reproduces RUNE-97 under
-// a realistic production-like flow:
-//
-//   - scheduleNextTick defers UserFunc execution to a serialized
-//     goroutine (mimicking the GUI event loop).
-//   - promptOpener only records the prompt; a single later "user click"
-//     fires the stored PromptHandler.OnSelect exactly once (mimicking a
-//     single floating prompt deduped by message in browser.Component).
-//
-// Production behaves this way because each concurrent extension RPC that
-// hits the authorizer calls PromptPermission with the same message, and
-// browser.Component.Prompt deduplicates by message: only the first call
-// installs a handler; later calls drop theirs. When user approves, only
-// the first RPC unblocks; the rest stay forever blocked on their result
-// channel. The extension's animation goroutine is then stuck.
 func TestExtensionInterruptPermissionConcurrentE2E(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)

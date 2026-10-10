@@ -419,12 +419,6 @@ func TestAuxBarDrawFolds(t *testing.T) {
 	mu.Unlock()
 }
 
-// A code action applies its edits under the command's context, which is
-// cancelled as soon as the command returns. rebuildBar clears the bar
-// and repopulates it from a goroutine that gives up when that context
-// is done, so the gutter keeps its line numbers and loses folds and git
-// signs until something else triggers a rebuild -- in practice the next
-// flush.
 func TestAuxBarEditContextCancelledKeepsFolds(t *testing.T) {
 	const foldGlyph = "\uf44b"
 
@@ -854,7 +848,7 @@ func (f testFoldsService) Folds() (iterator.Iterator[term.Range], bool) {
 
 var _ = (foldsService)(blockingFoldsService{})
 
-// blockingFoldsService simulates a syntax.Tree whose parser is not yet
+// blockingFoldsService simulates a treesitter.Tree whose parser is not yet
 // ready: Folds/FoldsFrom return iterators whose Next blocks until the
 // context is cancelled (mirroring the waitingReady channel never
 // closing).

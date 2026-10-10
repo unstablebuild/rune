@@ -166,13 +166,6 @@ type terminalOpener func(*testing.T, *terminalExitHarness) workspaceapi.URI
 // terminalExit delivers one of the notifications of a terminal exit.
 type terminalExit func(*testing.T, *terminalExitHarness)
 
-// TestTerminalTabExit pins that a terminal tab whose process failed
-// stays open, as an editor on its output showing the error, instead of
-// disappearing with it, while
-// a clean exit, or a failure outside a tab, still drops the terminal.
-// A dead terminal is noticed twice — the vte reports its pty closed,
-// and it reports exit to the next event routed to it — in either
-// order, and only the first may decide.
 func TestTerminalTabExit(t *testing.T) {
 	const width, height = 40, 14
 	failure := errors.New("exit status 2")
@@ -613,10 +606,6 @@ func TestTerminalTabExit(t *testing.T) {
 	}
 }
 
-// TestExitedTerminalView pins that a failed terminal tab's editor
-// opens on the rows the terminal showed, with the cursor where the
-// terminal left it, in every built-in editor configured as the IDE
-// configures them: centering the cursor whenever it is placed.
 func TestExitedTerminalView(t *testing.T) {
 	const width, height = 40, 14
 	lines := func(n int) []string {
@@ -700,9 +689,6 @@ func TestExitedTerminalView(t *testing.T) {
 	}
 }
 
-// TestGrayTerminalCells pins that a dead terminal's output is drained
-// of color the way the gray shader drains it: to the luminance gray of
-// each color, with a default foreground taking the theme's.
 func TestGrayTerminalCells(t *testing.T) {
 	gray := func(l int32) term.Color { return term.NewRGBColor(l, l, l) }
 	defaultFg := term.NewRGBColor(200, 100, 50)

@@ -206,7 +206,7 @@ func handleFSChange(
 // startReloadAndNotify kicks off an async reload via ex.flusher and
 // emits a user-facing notification once the underlying reparse has
 // settled. The reparse that gates the reload result is scheduled
-// onto the host event loop (see syntax.Tree.wrapReparse) so the
+// onto the host event loop (see treesitter.Tree.wrapReparse) so the
 // awaiter must run off the host goroutine; ex.flusher schedules the
 // final callback back onto the host scheduler, where the
 // notification is safe to emit.

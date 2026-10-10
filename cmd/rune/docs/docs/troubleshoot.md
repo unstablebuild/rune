@@ -105,20 +105,20 @@ Rune; `gui.key_mapping` is the only way to give them an effect. See
 
 Rune links its GPU renderer at build time, but it loads the X11 and OpenGL
 client libraries only when it actually opens a window. A machine with no
-graphical libraries installed at all can still run:
+graphical libraries installed at all can still run Rune as a network node
+with no editor, see Network:
 
 ```bash
-rune --tui        # the editor in the terminal
-rune --headless   # a network node with no editor, see Network
+rune --headless
 ```
 
-If either of those fails with `error while loading shared libraries`, the
-binary is an older release that still linked `libX11` eagerly; upgrade it.
+If that fails with `error while loading shared libraries`, the binary is an
+older release that still linked `libX11` eagerly; upgrade it.
 
 `rune --gui` is the one mode that does need a display: it reports
 `X11: Failed to load libX11` or `The DISPLAY environment variable is
 missing` when there is none. Install your distribution's Mesa and X11
-client library packages, or use `--tui` instead.
+client library packages.
 
 ## The command prompt will not open in an external editor
 

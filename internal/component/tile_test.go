@@ -341,15 +341,6 @@ func assertLayoutShape(
 	}
 }
 
-// TestTileAtNoGapWithFixedTailChild reproduces crash report 823596052:
-// "could not find tile at {X:215 Y:46}". Mouse coordinate lookup panicked
-// at component/tile.go:622 because TileNode.tileAt iterates children and
-// expects them to fully tile the parent. When the last child of a
-// vertical split is fixed-width and (width - fixedWidth) is odd, the
-// non-fixed children share an even integer width and the leftover
-// "spare" column gets assigned to a fixed-size child via
-// useSpareIdx, which discards it. The result is a one-column gap at the
-// right edge that produces no tile match.
 func TestTileAtNoGapWithFixedTailChild(t *testing.T) {
 	tree, m := NewTileTree(&component.TestComponent{Ch: 'A'})
 	w1 := tree.SplitVertical(m, &component.TestComponent{Ch: 'B'})
@@ -368,9 +359,6 @@ func TestTileAtNoGapWithFixedTailChild(t *testing.T) {
 	}
 }
 
-// TestTileAtNoGapWithFixedTailChildHorizontal mirrors the bug for
-// horizontal splits: when the last child has a fixed height and
-// (height - fixedHeight) is odd, the rightmost spare row is lost.
 func TestTileAtNoGapWithFixedTailChildHorizontal(t *testing.T) {
 	tree, m := NewTileTree(&component.TestComponent{Ch: 'A'})
 	w1 := tree.SplitHorizontal(m, &component.TestComponent{Ch: 'B'})
@@ -520,12 +508,6 @@ func resizeTree(main int) tileStep {
 	}
 }
 
-// TestTileFixedSizes covers tiles that pick a size and keep it, such
-// as the file explorer, next to each other and to flexible tiles. A
-// fixed tile keeps its size across its siblings being fixed, reset,
-// split and closed, and only yields when no flexible tile would be
-// left to absorb the rest. Each scenario starts from a single 'E'
-// tile, 20 cells along the main axis, and is drawn after every step.
 func TestTileFixedSizes(t *testing.T) {
 	type step struct {
 		do   tileStep

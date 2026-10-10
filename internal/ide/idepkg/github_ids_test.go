@@ -82,7 +82,7 @@ func TestInstallGitHubID(t *testing.T) {
 		require.NoError(t, err)
 		n.RequireNoErrorNotification()
 
-		version, ok := m.PackageVersionInUse(ghPkgID)
+		version, ok := versionInUse(t, m, ghPkgID)
 		require.True(t, ok)
 		assert.Equal(t, release.Version("abc123def456"), version)
 
@@ -130,9 +130,9 @@ func TestInstallGitHubID(t *testing.T) {
 		require.NoError(t, err)
 		n.RequireNoErrorNotification()
 
-		_, ok := m.PackageVersionInUse(depID)
+		_, ok := versionInUse(t, m, depID)
 		assert.True(t, ok, "requirement must be installed")
-		_, ok = m.PackageVersionInUse(ghPkgID)
+		_, ok = versionInUse(t, m, ghPkgID)
 		assert.True(t, ok, "github package must be installed")
 	})
 	t.Run("delete package cleans up nested dirs", func(t *testing.T) {
@@ -150,7 +150,7 @@ func TestInstallGitHubID(t *testing.T) {
 
 		require.NoError(t, m.DeletePackage(context.Background(), ghPkgID))
 
-		_, ok := m.PackageVersionInUse(ghPkgID)
+		_, ok := versionInUse(t, m, ghPkgID)
 		assert.False(t, ok)
 		_, err = os.Stat(filepath.Join(temp, "pkg", "github.com", "foo", "bar"))
 		assert.True(t, os.IsNotExist(err), "pkg dir must be removed")

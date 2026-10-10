@@ -21,24 +21,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
+	"github.com/unstablebuild/rune-go-sdk/api/pkgapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"unstable.build/rune/internal/extension/langext"
 )
 
 const zigResolutionTimeout = 5 * time.Second
-
-// installer resolves executables the host provisioned alongside this
-// extension on the workspace host. It is satisfied by
-// *extensionapi.Workspace.
-type installer interface {
-	FindInstalledExecutable(ctx context.Context, name string) (string, error)
-}
 
 var wellKnownZlsPaths = []string{
 	"~/.rune/bin/zls",
@@ -87,22 +80,23 @@ func readPathKey(
 }
 
 // resolveZls returns the zls language server path. A configured lsp_path
-// overrides discovery; otherwise the host is probed: the provisioned
-// binary first, then well-known install locations, then a login-shell
-// `command -v` lookup. A miss warns and returns "" so the caller
-// surfaces the initialization error.
+// overrides discovery; otherwise the zls the zig package ships is used,
+// and failing that the host is probed: well-known install locations, then
+// a login-shell `command -v` lookup. A miss warns and returns "" so the
+// caller surfaces the initialization error.
 func resolveZls(
 	ctx context.Context,
 	cfg config.Config,
 	notify browserapi.Notifications,
 	fs workspaceapi.FileSystem,
 	exec workspaceapi.Executor,
-	inst installer,
+	tools *langext.Tools,
 ) string {
 	if p, ok := readLspPath(cfg, notify); ok {
 		return p
 	}
-	bin, err := resolveBinary(ctx, fs, exec, inst, "zls", wellKnownZlsPaths)
+	packaged := findPackaged(ctx, tools, notify, "zls")
+	bin, err := resolveBinary(ctx, fs, exec, packaged, "zls", wellKnownZlsPaths)
 	if err == nil {
 		return bin
 	}
@@ -116,45 +110,55 @@ func resolveZls(
 }
 
 // resolveZig returns the zig compiler path forwarded to zls as
-// zig_exe_path. A configured zig_path overrides discovery. An empty
-// result is acceptable: zls then falls back to its own PATH lookup.
+// zig_exe_path. A configured zig_path overrides the zig the package
+// ships, which overrides discovery. An empty result is acceptable: zls
+// then falls back to its own PATH lookup.
 func resolveZig(
 	ctx context.Context,
 	cfg config.Config,
 	notify browserapi.Notifications,
 	fs workspaceapi.FileSystem,
 	exec workspaceapi.Executor,
-	inst installer,
+	tools *langext.Tools,
 ) string {
 	if p, ok := readZigPath(cfg, notify); ok {
 		return p
 	}
-	bin, err := resolveBinary(ctx, fs, exec, inst, "zig", wellKnownZigPaths)
+	packaged := findPackaged(ctx, tools, notify, "zig")
+	bin, err := resolveBinary(ctx, fs, exec, packaged, "zig", wellKnownZigPaths)
 	if err != nil {
 		return ""
 	}
 	return bin
 }
 
-// resolveBinary probes for name on the workspace host: the provisioned
-// install first, then the well-known locations, then a shell lookup.
+// findPackaged returns the name the zig package ships, or "" so the
+// caller probes the host. A package that ended up not installed has
+// already been explained to the user; any other miss is worth a warning.
+func findPackaged(
+	ctx context.Context, tools *langext.Tools, notify browserapi.Notifications, name string,
+) string {
+	packaged, err := tools.Find(ctx, name)
+	if err != nil && !errors.Is(err, pkgapi.ErrNotInstalled) && notify != nil {
+		_, _ = notify.NotifyOnce(browserapi.LevelWarn,
+			"Could not find %s in the zig package: %v. Looking for one on the host instead.",
+			name, err)
+	}
+	return packaged
+}
+
+// resolveBinary prefers packaged and otherwise probes for name on the
+// workspace host: the well-known locations, then a shell lookup.
 func resolveBinary(
 	ctx context.Context,
 	fs workspaceapi.FileSystem,
 	exec workspaceapi.Executor,
-	inst installer,
+	packaged string,
 	name string,
 	wellKnown []string,
 ) (string, error) {
-	// A miss (os.ErrNotExist) or a probe failure both fall through to the
-	// well-known and shell candidates below, which is the whole point of
-	// this resolver having fallbacks.
-	if inst != nil {
-		if bin, err := inst.FindInstalledExecutable(ctx, name); err == nil {
-			return bin, nil
-		} else if !errors.Is(err, os.ErrNotExist) {
-			slog.Debug("probe provisioned binary failed", "name", name, "error", err)
-		}
+	if packaged != "" {
+		return packaged, nil
 	}
 
 	if bin, ok := probeWellKnown(fs, wellKnown); ok {

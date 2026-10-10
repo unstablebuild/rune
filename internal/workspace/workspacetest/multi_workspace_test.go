@@ -146,15 +146,6 @@ func (m *mockManager) RemoveWorkspace(workspaceapi.URI) (workspace.Workspace, bo
 	panic("should not be called")
 }
 
-// TestMultiForwardsRemoteScheme guards against the regression
-// where workspace.Multi only exposes the embedded Workspace's
-// promoted method set, hiding OnDisconnect on schemes that
-// satisfy workspace.RemoteScheme. The VTE reservoir performs a
-// terminal.(workspace.RemoteScheme) assertion on the workspace
-// it receives; if Multi (which wraps every workspace handed to
-// newEx) does not surface OnDisconnect, no disconnect watcher
-// is ever installed and the pool keeps handing out VTEs bound
-// to the dead SSH transport.
 func TestMultiForwardsRemoteScheme(t *testing.T) {
 	ctx := context.Background()
 	uri := parseURI(t, "memory:///")
@@ -179,12 +170,6 @@ func TestMultiForwardsRemoteScheme(t *testing.T) {
 			"workspace's disconnect channel")
 }
 
-// TestMultiExtraneousReleasesWorkspaceOnFileClose pins the
-// RUNE-196 regression: workspaces created on demand by
-// multi.loadExtraneous must be released from the Manager when the
-// per-file FlusherCloser closes, otherwise long sessions
-// accumulate one ad-hoc workspace (and its scheme, watchers,
-// executor, vte reservoir, ...) per out-of-workspace open.
 func TestMultiExtraneousReleasesWorkspaceOnFileClose(t *testing.T) {
 	ctx := context.Background()
 

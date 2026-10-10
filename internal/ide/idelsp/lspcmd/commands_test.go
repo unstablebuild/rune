@@ -572,15 +572,6 @@ func TestE2ECommands(t *testing.T) {
 	})
 }
 
-// TestE2EDocumentSymbolNormalization verifies that every method symbol
-// returned by textDocument/documentSymbol (which gopls renders as
-// "(*Type).Method") can be resolved via workspace/symbol after
-// normalizeMethodName strips the pointer-receiver syntax.
-//
-// This is critical because the document-symbol fallback feeds the
-// completer, and the completed name is later sent to workspace/symbol
-// for resolution. If the normalization is wrong, the user picks a
-// completion that can't be resolved.
 func TestE2EDocumentSymbolNormalization(t *testing.T) {
 	t.Parallel()
 	goplsBin := findGopls(t)
@@ -689,12 +680,6 @@ func collectRawDocSymbolNames(names *[]string, syms []semanticapi.DocumentSymbol
 	}
 }
 
-// TestE2ECompleteNormalization exercises the full completion → resolve
-// round-trip through a real gopls instance. It calls CompleteDocumentSymbol
-// for files that contain both pointer- and value-receiver methods, and
-// verifies that every returned method name:
-//  1. Is normalized (no "(*Type).Method" or "(Type).Method" syntax).
-//  2. Can be resolved back via resolveSymbol / workspace/symbol.
 func TestE2ECompleteNormalization(t *testing.T) {
 	t.Parallel()
 	goplsBin := findGopls(t)

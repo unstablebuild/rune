@@ -122,9 +122,6 @@ func TestStatusBarConfigReadsEveryKey(t *testing.T) {
 	}, got.Layout)
 }
 
-// A layout the parser rejects must not cost the user their bar: the
-// built-in default layout takes over and the rest of the block still
-// applies.
 func TestStatusBarConfigInvalidLayoutFallsBack(t *testing.T) {
 	got := statusBarConfig(config.MapConfig(map[string]any{
 		"status_bar": map[string]any{
@@ -145,9 +142,6 @@ func TestStatusBarConfigDisabled(t *testing.T) {
 	assert.False(t, got.Enabled)
 }
 
-// The shipped config.yaml must parse with the same reader the extension
-// uses at startup, so a typo in the block is caught here rather than at
-// the user's first chat.
 func TestShippedStatusBarConfigParses(t *testing.T) {
 	data, err := os.ReadFile(agentYAMLPath)
 	require.NoError(t, err)
@@ -184,8 +178,6 @@ func TestShippedStatusBarConfigParses(t *testing.T) {
 	assert.Empty(t, got.Shader, "the shipped bar is not animated")
 }
 
-// An effect the bar cannot build must not be accepted, or the config
-// would look applied while the bar stayed still.
 func TestStatusBarConfigRejectsUnknownShader(t *testing.T) {
 	got := statusBarConfig(config.MapConfig(map[string]any{
 		"status_bar": map[string]any{"shader": "nonsense"},
@@ -193,8 +185,6 @@ func TestStatusBarConfigRejectsUnknownShader(t *testing.T) {
 	assert.Empty(t, got.Shader)
 }
 
-// The cadence knobs are optional and fall back to the bar's own
-// defaults, which is what a zero value means downstream.
 func TestStatusBarConfigShaderCadence(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -226,10 +216,6 @@ func TestStatusBarConfigShaderCadence(t *testing.T) {
 	}
 }
 
-// The gauge blends between its stops in this process, so a stop has to
-// carry the hex the host draws it with. Left as a palette colour, the
-// blend would run between the W3C defaults and meet the themed cells
-// beside it at a visible seam.
 func TestStatusBarConfigResolvesGaugeRampAgainstTheme(t *testing.T) {
 	got := statusBarConfig(config.MapConfig(map[string]any{
 		"status_bar": map[string]any{
@@ -254,10 +240,6 @@ func TestStatusBarConfigResolvesGaugeRampAgainstTheme(t *testing.T) {
 	}, got.ContextGaugeFill)
 }
 
-// A config with no status_bar block at all still has to blend the
-// built-in ramp through the theme. Resolving only the stops the block
-// named left the shipped ramp running between the W3C colours, which
-// is what most users see.
 func TestStatusBarConfigResolvesBuiltInRampAgainstTheme(t *testing.T) {
 	got := statusBarConfig(config.MapConfig(map[string]any{}),
 		config.MapConfig(map[string]any{

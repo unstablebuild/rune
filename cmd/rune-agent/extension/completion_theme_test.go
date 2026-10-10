@@ -133,10 +133,6 @@ func loadPromptTheme(t *testing.T) promptTheme {
 	}
 }
 
-// TestCompletionThemeDefaultsMatchCommandPrompt pins the '#' completion
-// overlay defaults to the command prompt styling shipped in rune.star. The
-// Go library fallbacks differ from the shipped config, so deriving the
-// defaults from them silently desynchronizes the two overlays.
 func TestCompletionThemeDefaultsMatchCommandPrompt(t *testing.T) {
 	want := loadPromptTheme(t)
 
@@ -145,10 +141,6 @@ func TestCompletionThemeDefaultsMatchCommandPrompt(t *testing.T) {
 	assert.Equal(t, want.element, defaultComponentCfg.CompletionElementAttr)
 }
 
-// TestShippedAgentConfigMatchesCommandPrompt covers the bundled
-// config.yaml, which the packaging step copies next to the binary. Because
-// it sets the completion keys explicitly it overrides defaultComponentCfg
-// at runtime, so it has to track rune.star independently.
 func TestShippedAgentConfigMatchesCommandPrompt(t *testing.T) {
 	want := loadPromptTheme(t)
 

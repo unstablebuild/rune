@@ -674,9 +674,6 @@ func TestCellsToBufferPerformance(t *testing.T) {
 	})
 }
 
-// TestASCIIChars pins the hand-written constant that delete slices to
-// report a removed single-cell ASCII rune without allocating; a typo in
-// it would silently corrupt that removed text.
 func TestASCIIChars(t *testing.T) {
 	require.Len(t, asciiChars, utf8.RuneSelf)
 	for c := range utf8.RuneSelf {

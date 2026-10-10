@@ -261,9 +261,13 @@ func (c *Component) Init(cfg ComponentConfig) {
 		cfg.InputRowColumns = 10
 	}
 	if cfg.MarkdownConfig == nil {
-		d := markdown.DefaultConfig()
-		d.HeaderPrefix = false
-		cfg.MarkdownConfig = new(d)
+		cfg.MarkdownConfig = DefaultMarkdownConfig()
+	}
+	if cfg.Clipboard != nil {
+		// Copy so enabling the icon does not leak into the caller's config.
+		md := *cfg.MarkdownConfig
+		md.CodeBlockCopy = true
+		cfg.MarkdownConfig = &md
 	}
 	if cfg.ReasoningMarkdownConfig == nil {
 		cfg.ReasoningMarkdownConfig = reasoningMarkdownConfig(
@@ -444,8 +448,13 @@ func (c *Component) relayout() {
 	c.completionRows = compH
 	msgH := height - barH - boxH - attachH - compH
 
+	// Content that grew or shrank in place and a changed messages area height
+	// only show up in MaxOffset once Resize refreshes the list's cached total
+	// height, so the scroll compensation for them has to happen here.
+	maxOff, scrolled := c.scrollState()
 	c.msgArea.Move(term.Coordinates{})
 	c.msgArea.Resize(width, msgH)
+	c.restoreScroll(maxOff, scrolled)
 	c.completionPos = term.Coordinates{X: boxX, Y: msgH}
 	if c.completion != nil {
 		c.completion.Resize(boxW, compH+c.completion.InputHeight())
@@ -664,6 +673,87 @@ func (c *Component) HoverSentAttachment(pos term.Coordinates) (changed bool) {
 	return
 }
 
+// codeCopyAt returns the source of the code block whose copy icon covers
+// pos, in messages content coordinates.
+func (c *Component) codeCopyAt(pos term.Coordinates) (code string, found bool) {
+	c.eachTranscriptMarkdown(func(md *markdown.Component, origin term.Coordinates) {
+		local := term.CoordinatesDiff(pos, origin)
+		for _, t := range md.CodeBlockCopyTargets() {
+			if !found && t.Contains(local) {
+				code, found = t.Code, true
+			}
+		}
+	})
+	return code, found
+}
+
+// hoverCodeCopy highlights the copy icon at pos, in messages content
+// coordinates, clearing any other, and reports whether rendering changed.
+func (c *Component) hoverCodeCopy(pos term.Coordinates) (changed bool) {
+	c.eachTranscriptMarkdown(func(md *markdown.Component, origin term.Coordinates) {
+		if md.HoverCodeBlockCopy(term.CoordinatesDiff(pos, origin)) {
+			changed = true
+		}
+	})
+	return changed
+}
+
+// markCodeCopied shows the copied icon in place of the copy icon at pos,
+// in messages content coordinates.
+func (c *Component) markCodeCopied(pos term.Coordinates) {
+	c.eachTranscriptMarkdown(func(md *markdown.Component, origin term.Coordinates) {
+		md.MarkCodeBlockCopied(term.CoordinatesDiff(pos, origin))
+	})
+}
+
+// eraseCodeCopyIcons blanks the copy icons in w, a render of the whole
+// messages list in content coordinates, so text selected across a code
+// block does not pick them up.
+func (c *Component) eraseCodeCopyIcons(w term.Writer) {
+	c.eachTranscriptMarkdown(func(md *markdown.Component, origin term.Coordinates) {
+		for _, t := range md.CodeBlockCopyTargets() {
+			pos := term.CoordinatesSum(origin, t.Pos)
+			for x := range t.Width {
+				w.SetCell(term.Coordinates{X: pos.X + x, Y: pos.Y}, term.Cell{})
+			}
+		}
+	})
+}
+
+// eachTranscriptMarkdown calls fn with every markdown component in the
+// messages list and its origin in content coordinates: rows of the whole
+// conversation, independent of the scroll offset. Node positions are not
+// used because the list only refreshes them for the nodes it draws.
+func (c *Component) eachTranscriptMarkdown(
+	fn func(md *markdown.Component, origin term.Coordinates),
+) {
+	width := c.messages.SizeWidth()
+	y := 0
+	for node, ok := c.messages.Front(); ok; node, ok = node.Next() {
+		v := node.Value()
+		if md, offset, ok := transcriptMarkdown(v); ok {
+			fn(md, term.Coordinates{X: offset.X, Y: y + offset.Y})
+		}
+		y += v.(component.Responsive).Height(width)
+	}
+}
+
+// transcriptMarkdown unwraps a messages list entry into the markdown
+// component it renders and that component's offset within the entry.
+func transcriptMarkdown(v tui.Component) (*markdown.Component, term.Coordinates, bool) {
+	span, ok := v.(*component.Span)
+	if !ok {
+		return nil, term.Coordinates{}, false
+	}
+	switch content := span.Content().(type) {
+	case *markdown.Component:
+		return content, span.ContentOffset(), true
+	case *mdhandler.Handler:
+		return content.Component(), span.ContentOffset(), true
+	}
+	return nil, term.Coordinates{}, false
+}
+
 // InputSubmit submits the contents of the input buffer as a send message,
 // and returns it for delivery or returns false if there's no text
 // in the input buffer. There is no need to call AddSendMessage
@@ -745,7 +835,9 @@ func (c *Component) RemoveLastQueuedMessage() {
 	}
 	node := c.queuedNodes[len(c.queuedNodes)-1]
 	c.queuedNodes = c.queuedNodes[:len(c.queuedNodes)-1]
+	maxOff, scrolled := c.scrollState()
 	c.messages.Remove(node)
+	c.restoreScroll(maxOff, scrolled)
 }
 
 // PromoteFirstQueuedMessage converts the first (oldest) queued message
@@ -1442,21 +1534,47 @@ func (c *Component) alignVisibleAnchorTop(anchor component.ListNode, offset int)
 	}
 }
 
+// LinkAt queries for a markdown link at the messages-relative coordinate pos.
+// It searches visible message nodes in c.messages, unwrapping any outer spans
+// or handlers to find the underlying markdown component, and returns the
+// LinkInfo if a link is found.
+func (c *Component) LinkAt(pos term.Coordinates) *markdown.LinkInfo {
+	width, height := c.messages.SizeWidth(), c.messages.SizeHeight()
+	if width <= 0 || height <= 0 {
+		return nil
+	}
+	if pos.X < 0 || pos.X >= width || pos.Y < 0 || pos.Y >= height {
+		return nil
+	}
+	// eachTranscriptMarkdown reports origins in content coordinates.
+	pos.Y += c.messages.MaxOffset() - c.messages.Offset()
+	var link *markdown.LinkInfo
+	c.eachTranscriptMarkdown(func(md *markdown.Component, origin term.Coordinates) {
+		local := term.CoordinatesDiff(pos, origin)
+		if info := md.LinkAt(local.X, local.Y); link == nil && info != nil && info.URL != "" {
+			link = info
+		}
+	})
+	return link
+}
+
 // scrollState captures the current scroll position for later restoration.
 func (c *Component) scrollState() (maxOffset int, scrolledUp bool) {
 	return c.messages.MaxOffset(), c.messages.CanSeekUp()
 }
 
-// restoreScroll adjusts the scroll offset to keep the viewport stable
-// after content has been appended to the messages list. When the user
-// is scrolled up and new content increases MaxOffset, the offset is
-// incremented by the same delta so the viewport shows the same rows.
+// restoreScroll keeps the top visible row fixed while the user is scrolled
+// up, whether MaxOffset grew or shrank since oldMaxOffset was captured. When
+// the user was at the bottom the viewport keeps following the content. The
+// offset is clamped to the list's seekable range.
 func (c *Component) restoreScroll(oldMaxOffset int, wasScrolledUp bool) {
 	if !wasScrolledUp {
 		return
 	}
-	for range c.messages.MaxOffset() - oldMaxOffset {
-		c.messages.SeekUp()
+	delta := c.messages.MaxOffset() - oldMaxOffset
+	for ; delta > 0 && c.messages.SeekUp(); delta-- {
+	}
+	for ; delta < 0 && c.messages.SeekDown(); delta++ {
 	}
 }
 

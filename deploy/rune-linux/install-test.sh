@@ -32,11 +32,10 @@ export PATH="$work/tools:$PATH"
 
 bundle="$work/source/rune.app"
 prefix="$work/install space/.local"
-mkdir -p "$bundle/bin" "$bundle/lib" "$bundle/share/applications" "$bundle/share/zdot"
+mkdir -p "$bundle/bin" "$bundle/lib" "$bundle/share/applications"
 printf '#!/bin/sh\nprintf "stub rune\\n"\n' > "$bundle/bin/rune"
 chmod +x "$bundle/bin/rune"
 cp "$root/deploy/rune-linux/rune.desktop" "$bundle/share/applications/"
-printf 'dotfile\n' > "$bundle/share/zdot/.zshrc"
 for size in 512x512 1024x1024; do
     mkdir -p "$bundle/share/icons/hicolor/$size/apps"
     printf 'icon\n' > "$bundle/share/icons/hicolor/$size/apps/rune.png"
@@ -46,7 +45,6 @@ printf 'library\n' > "$bundle/lib/stale.so"
 sh "$root/deploy/rune-linux/install.sh" "$bundle" "$prefix"
 test "$("$prefix/bin/rune")" = 'stub rune'
 test "$(readlink "$prefix/bin/rune")" = "$prefix/rune.app/bin/rune"
-cmp "$bundle/share/zdot/.zshrc" "$prefix/rune.app/share/zdot/.zshrc"
 grep -Fx "Exec=\"$prefix/rune.app/bin/rune\" %F" "$prefix/share/applications/rune.desktop"
 for size in 512x512 1024x1024; do
     cmp "$bundle/share/icons/hicolor/$size/apps/rune.png" "$prefix/share/icons/hicolor/$size/apps/rune.png"

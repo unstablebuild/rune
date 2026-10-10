@@ -28,6 +28,7 @@ import (
 	"log/slog"
 	"maps"
 	"net"
+	"net/url"
 	"os"
 	"reflect"
 	"regexp"
@@ -53,11 +54,11 @@ import (
 	"unstable.build/rune/internal/component/notifications"
 	"unstable.build/rune/internal/component/shader/shaderloop"
 	tconfig "unstable.build/rune/internal/config"
-	"unstable.build/rune/internal/extension/extutil"
 	"unstable.build/rune/internal/handler"
 	"unstable.build/rune/internal/handler/command"
 	"unstable.build/rune/internal/handler/search"
 	"unstable.build/rune/internal/handler/searchbox"
+	"unstable.build/rune/internal/ide/hostenv"
 	"unstable.build/rune/internal/ide/idedebug"
 	"unstable.build/rune/internal/ide/idelsp"
 	"unstable.build/rune/internal/ide/keymeta"
@@ -273,7 +274,10 @@ type ideConfig struct {
 	ringBell         func()
 	scheduleNextTick func(func()) bool
 	cellPixelSize    func() (int, int)
-	zdotDir          string
+	clip             clipboard.Register
+	// systemOpenURL opens a URL in the system browser for the "system"
+	// meta_open_url. Nil when the IDE was given none.
+	systemOpenURL func(*url.URL) error
 	// storage is the IDE-wide storage service. It's owned by the IDE
 	// and shared across workspaces; commandAliases consults it to
 	// resolve `{history}` placeholders in alias completer chains by
@@ -309,13 +313,12 @@ func overrideConfig(ideConfig, cfg map[string]any) {
 func initConfig(
 	c *ideConfig, cfg map[string]any, defaultWallpaper browser.Wallpaper,
 	ringBell func(), scheduleNextTick func(func()) bool,
-	zdotDir string, configPath string,
+	configPath string,
 ) {
 	c.cfg = cfg
 	c.configPath = configPath
 	c.ringBell = ringBell
 	c.scheduleNextTick = scheduleNextTick
-	c.zdotDir = zdotDir
 	c.defaultWallpaper = defaultWallpaper
 	c.errors = make(map[string]error)
 }
@@ -323,11 +326,11 @@ func initConfig(
 func initDefaultConfig(
 	c *ideConfig, defaultWallpaper browser.Wallpaper,
 	ringBell func(), scheduleNextTick func(func()) bool,
-	zdotDir, configPath string,
+	configPath string,
 ) {
 	cfg := make(map[string]any)
 	initConfig(c, cfg, defaultWallpaper, ringBell,
-		scheduleNextTick, zdotDir, configPath)
+		scheduleNextTick, configPath)
 }
 
 func (c ideConfig) command() (config.Config, bool) {
@@ -3253,17 +3256,26 @@ func (c ideConfig) iconsBarConfig(pub text.EventPublisher) text.IconsBarConfig {
 
 func (c ideConfig) statusBarConfig(
 	cwd workspaceapi.URI, pub text.EventPublisher, svc vctrl.Service,
+	interrupter term.Interrupter,
 ) text.StatusBarConfig {
-	return text.StatusBarConfig{
+	ret := text.StatusBarConfig{
 		Workspace:        cwd,
 		ScheduleNextTick: c.scheduleNextTick,
 		Publisher:        pub,
+		Interrupter:      interrupter,
 		BackgroundColor:  c.statusBarAttr("background_attr", term.Attributes{}).Bg,
 		ErrorColor:       c.statusBarAttr("foreground_error_attr", term.Attributes{}).Fg,
 		GitService:       svc,
 		Layout:           c.statusBarLayout(),
 	}
+	if c.storage != nil {
+		ret.Storage = storageapi.WithPartition(c.storage, statusBarImagesPartition)
+	}
+	return ret
 }
+
+// statusBarImagesPartition caches the images status bar layouts download.
+const statusBarImagesPartition = "status_bar_images"
 
 func (c ideConfig) auxiliaryBarFolds() bool {
 	cfg, ok := c.auxiliaryBar()
@@ -3422,15 +3434,52 @@ func (c ideConfig) auxiliaryBarLines() (bool, bool) {
 }
 
 func (c ideConfig) clipboard() clipboard.Register {
-	cfg := config.MapConfig(c.cfg)
-	ret, err := extutil.Clipboard(cfg)
-	if err != nil {
-		if err != config.ErrNotFound {
-			c.errors["clipboard"] = err
+	var ret clipboard.Register
+	mode, err := config.MapConfig(c.cfg).GetString("clipboard")
+	switch {
+	case err == config.ErrNotFound || (err == nil && mode == "memory"):
+		ret = clipboard.NewInMemory()
+	case err == nil && mode == "system":
+		ret = c.clip
+	default:
+		if err == nil {
+			err = fmt.Errorf("unknown clipboard %q", mode)
 		}
+		c.errors["clipboard"] = err
 		ret = clipboard.NewInMemory()
 	}
 	return registerhistory.NewClipboard(registerset.New(ret))
+}
+
+// metaOpenURLConfig is how a clicked URL is opened.
+type metaOpenURLConfig struct {
+	// command is the Rune command, in alias body syntax, that opens an
+	// http(s) URL bound to $URL. Empty selects clipboard or system.
+	command string
+	// clipboard copies an http(s) URL to the clipboard.
+	clipboard bool
+	// system opens a URL in the system browser. It may be nil.
+	system func(*url.URL) error
+}
+
+const keyMetaOpenURL = "meta_open_url"
+
+func (c ideConfig) metaOpenURL() metaOpenURLConfig {
+	ret := metaOpenURLConfig{system: c.systemOpenURL}
+	v, err := config.MapConfig(c.cfg).GetString(keyMetaOpenURL)
+	switch {
+	case err == config.ErrNotFound || (err == nil && v == "system"):
+	case err == nil && v == "clipboard":
+		ret.clipboard = true
+	case err == nil && strings.TrimSpace(v) != "":
+		ret.command = v
+	default:
+		if err == nil {
+			err = errors.New(`must be "system", "clipboard" or a command`)
+		}
+		c.errors[keyMetaOpenURL] = err
+	}
+	return ret
 }
 
 func (c ideConfig) standardResultAttr() (attr term.Attributes) {
@@ -4060,7 +4109,9 @@ func (c ideConfig) extensions() map[string]extensionConfig {
 	return ret
 }
 
-func (c ideConfig) tutorialFiles() map[string]string {
+// tutorialFiles returns the tutorial source paths, which the IDE reads from
+// its own host, with $RUNE_DATADIR resolved against dataDir.
+func (c ideConfig) tutorialFiles(dataDir string) map[string]string {
 	raw, ok := c.cfg["tutorials"]
 	if !ok {
 		return nil
@@ -4078,7 +4129,7 @@ func (c ideConfig) tutorialFiles() map[string]string {
 				"expected string path")
 			continue
 		}
-		ret[name] = p
+		ret[name] = hostenv.ExpandDataDir(p, dataDir)
 	}
 	return ret
 }
@@ -4729,11 +4780,10 @@ func reloadConfig(
 	configFilePath string, defaultWallpaper browser.Wallpaper,
 	defaultConfig DefaultConfig,
 	ringBell func(), scheduleNextTick func(func()) bool,
-	zdotDir string,
 ) (ret ideConfig, err error) {
 	err = loadConfig(&ret, configFilePath,
 		defaultWallpaper, defaultConfig, ringBell,
-		scheduleNextTick, zdotDir)
+		scheduleNextTick)
 	return
 }
 
@@ -4773,10 +4823,9 @@ func loadConfig(
 	defaultWallpaper browser.Wallpaper,
 	defaultConfig DefaultConfig,
 	ringBell func(), scheduleNextTick func(func()) bool,
-	zdotDir string,
 ) (err error) {
 	initDefaultConfig(c, defaultWallpaper, ringBell, scheduleNextTick,
-		zdotDir, configPath)
+		configPath)
 
 	cfg, err := decodeDefaultConfig(defaultConfig)
 	if err != nil {
@@ -4784,7 +4833,7 @@ func loadConfig(
 	}
 
 	initConfig(c, cfg, defaultWallpaper, ringBell,
-		scheduleNextTick, zdotDir, configPath)
+		scheduleNextTick, configPath)
 
 	if err := loadFileConfig(c, configPath); err != nil {
 		return err

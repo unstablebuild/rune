@@ -30,9 +30,12 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/unstablebuild/blue/logging"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
+	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"unstable.build/rune/auth"
 	"unstable.build/rune/cmd/rune/ide/apiclient"
 	"unstable.build/rune/internal/ide"
+	"unstable.build/rune/internal/ide/hostenv"
 	"unstable.build/rune/internal/runenet"
 	"unstable.build/rune/internal/workspace"
 )
@@ -42,6 +45,8 @@ import (
 type headlessClient interface {
 	LoginWithDeviceCode(ctx context.Context) apiclient.DeviceLoginSession
 	AccountStatus(ctx context.Context) (auth.RPCUser, bool, error)
+	CheckSignIn(ctx context.Context) error
+	Logout(ctx context.Context) error
 }
 
 // runHeadless serves this machine's workspaces on the Rune network with
@@ -49,7 +54,9 @@ type headlessClient interface {
 // operator would otherwise read out of the editor — the sign-in code, the
 // account, the node's mesh status — goes to stdout, and the editor log
 // is teed there too so the process is usable under a service manager.
-func runHeadless(ctx context.Context) int {
+func runHeadless(
+	ctx context.Context, host *hostenv.Host, shellRCDir string, shellRCErr error,
+) int {
 	rootCfg, err := ide.Config(*flagConfigPath, runeDefaultConfig())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "load config: %s\n", err)
@@ -62,6 +69,10 @@ func runHeadless(ctx context.Context) int {
 		return 1
 	}
 	defer closeLog()
+	// No UI to notify: the log is teed to the operator's stdout.
+	if shellRCErr != nil {
+		log.Warn(shellRCErr)
+	}
 
 	netCfg, err := networkConfig(rootCfg, *flagDataPath)
 	if err != nil {
@@ -79,7 +90,9 @@ func runHeadless(ctx context.Context) int {
 	}
 
 	storage := newRuneStorage(*flagDataPath)
-	client, _ := newAPIClient(storage, os.TempDir(), rootCfg)
+	apicfg := apiClientConfig(os.TempDir(), rootCfg)
+	apicfg.Headless = true
+	client := apiclient.New(storage, apicfg, *flagDataPath)
 	defer client.Close()
 
 	if err := headlessLogin(ctx, client, os.Stdout); err != nil {
@@ -87,10 +100,17 @@ func runHeadless(ctx context.Context) int {
 		return 1
 	}
 
-	net := newNetwork(rootCfg, *flagDataPath, newNetworkGate(client))
+	net := newNetwork(rootCfg, *flagDataPath, shellRCDir, newNetworkGate(client))
 	defer func() {
 		_ = net.Close()
 	}()
+
+	closePackages, err := serveHeadlessPackages(ctx, net, storage, host, shellRCDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s\n", err)
+		return 1
+	}
+	defer closePackages()
 
 	if err := net.join(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "could not join the network: %s\n", err)
@@ -106,6 +126,45 @@ func runHeadless(ctx context.Context) int {
 
 	waitForShutdownSignal(ctx)
 	return 0
+}
+
+// serveHeadlessPackages has peers install packages on this machine
+// through a manager of its own: there is no editor to own them. The
+// user config's gui.env is applied now and after every install that
+// changes it, so commands peers start see the installed toolchains.
+func serveHeadlessPackages(
+	ctx context.Context, net *network, rootStorage storageapi.Service,
+	host *hostenv.Host, shellRCDir string,
+) (func(), error) {
+	uri, err := workspaceapi.CurrentUserHostURI("/")
+	if err != nil {
+		return nil, fmt.Errorf("root workspace URI: %w", err)
+	}
+	scheme, err := workspace.NewFileSchemeFunc(*flagDataPath, shellRCDir)(
+		ctx, config.NopConfig(), uri)
+	if err != nil {
+		return nil, fmt.Errorf("root workspace scheme: %w", err)
+	}
+	applyEnv := func() { applyUserConfigEnv(host) }
+	applyEnv()
+	pkgs, pkgStorage := newHostPackageManager(
+		rootStorage, newRemoteReleaseManager(), scheme, applyEnv)
+	net.packages.set(pkgs)
+	return func() {
+		_ = pkgStorage.Close()
+		_ = scheme.Close()
+	}, nil
+}
+
+func applyUserConfigEnv(host *hostenv.Host) {
+	cfg, err := ide.Config(*flagConfigPath, runeDefaultConfig())
+	if err != nil {
+		log.Warnf("load config to apply gui.env: %v", err)
+		if cfg == nil {
+			return
+		}
+	}
+	applyConfigEnv(host, cfg)
 }
 
 // startHeadlessLogging points the editor log at its configured file and
@@ -155,15 +214,40 @@ func headlessLogLevel(rootCfg config.Config) log.Level {
 	return level
 }
 
-// headlessLogin signs the machine in when it is not already, printing
-// the sign-in code to out and blocking until the operator enters it in
-// a browser on whatever machine they are sitting at.
+// headlessLogin signs the machine in as a serve-only machine when it is
+// not already, printing the sign-in code to out and blocking until the
+// operator enters it in a browser on whatever machine they are sitting
+// at. A sign-in with full account access is never kept: whoever took
+// the machine would hold the account.
 func headlessLogin(
 	ctx context.Context, client headlessClient, out io.Writer,
 ) error {
 	user, ok, err := client.AccountStatus(ctx)
 	if err != nil {
 		return err
+	}
+	// Left over from before headless nodes were serve-only, or in a
+	// data directory copied from a desktop install.
+	if ok && !user.ServeOnly {
+		fmt.Fprint(out, "This machine holds a sign-in with full account "+
+			"access; signing it in again to serve only.\n\n")
+		if err := client.Logout(ctx); err != nil {
+			return fmt.Errorf("discard full-access sign-in: %w", err)
+		}
+		ok = false
+	}
+	// The cached copy cannot tell whether the sign-in has been revoked
+	// or has expired since it was stored; only the server can, and only
+	// when asked to refresh it.
+	if ok {
+		switch err := client.CheckSignIn(ctx); {
+		case errors.Is(err, auth.ErrNotAuthenticated):
+			fmt.Fprint(out, "This machine's sign-in was revoked or has "+
+				"expired; signing it in again.\n\n")
+			ok = false
+		case err != nil:
+			return fmt.Errorf("check sign-in: %w", err)
+		}
 	}
 	if ok {
 		fmt.Fprint(out, formatHeadlessAccount(user))
@@ -195,6 +279,12 @@ func headlessLogin(
 	}
 	if !ok {
 		return errors.New("login completed but no account token was stored")
+	}
+	if !user.ServeOnly {
+		_ = client.Logout(ctx)
+		return errors.New("the API server did not issue a serve-only " +
+			"sign-in, so this machine cannot run headless; the sign-in " +
+			"was discarded")
 	}
 	fmt.Fprint(out, formatHeadlessAccount(user))
 	return nil

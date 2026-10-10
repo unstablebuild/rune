@@ -144,16 +144,10 @@ var _ schemeapi.Terminal = stubTerminal{}
 var _ schemeapi.Executor = stubExecutor{}
 var _ browser.TabManager = stubTabManager{}
 
-// TestEditorIsExternal verifies the exo editor reports
-// IsExternal()==true.
 func TestEditorIsExternal(t *testing.T) {
 	assert.True(t, newTestEditor().IsExternal())
 }
 
-// TestNewPanicsOnMissingArgument exercises every required-argument
-// panic path so a misconfigured call site fails at construction
-// rather than at first Edit. Each case clones the valid-argument set
-// from goodArgs() and zeroes one dependency.
 func TestNewPanicsOnMissingArgument(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -178,10 +172,6 @@ func TestNewPanicsOnMissingArgument(t *testing.T) {
 	}
 }
 
-// TestNewPanicsOnInvalidGotoTemplate verifies that a malformed goto
-// template causes a constructor panic instead of a silent fallback.
-// validateExo rewrites invalid templates back to modal mode before
-// reaching New; a panic here indicates the IDE skipped validation.
 func TestNewPanicsOnInvalidGotoTemplate(t *testing.T) {
 	a := goodArgs()
 	a.gotoTemplate = "<bogus-key>"
@@ -240,10 +230,6 @@ func (a newArgs) call() *Editor {
 		nil, nil, nil)
 }
 
-// TestPublisherFuncSurfaceClosedError verifies the PublisherFunc
-// adapter returns a non-nil error when the underlying
-// `func(term.Event) bool` reports the publisher is closed. The
-// embedded vte uses this signal to drop events instead of looping.
 func TestPublisherFuncSurfaceClosedError(t *testing.T) {
 	closed := PublisherFunc(func(term.Event) bool { return false })
 	open := PublisherFunc(func(term.Event) bool { return true })
@@ -251,8 +237,6 @@ func TestPublisherFuncSurfaceClosedError(t *testing.T) {
 	assert.NoError(t, open.PublishEvent(term.Event{}))
 }
 
-// TestSubstituteCommand verifies the {file}/{line}/{col} placeholders
-// are replaced in the argv template before shell tokenisation.
 func TestSubstituteCommand(t *testing.T) {
 	got := substituteCommand("vim +call cursor({line}, {col}) {file}",
 		"/tmp/x.go", 10, 4)
@@ -272,12 +256,6 @@ func (r *recordingReloader) Reload(uri workspaceapi.URI) error {
 	return r.err
 }
 
-// TestScheduleReloadRoutesThroughReloaderOnUIGoroutine verifies that
-// the FS-watcher-driven reload is handed off to the Reloader, and that
-// the hand-off goes through scheduleNextTick — the watcher goroutine
-// must not call Reloader directly because Reload touches UI-owned tab
-// state (open-tab map, FlusherCloser swap state, cell.Buffer
-// subscribers).
 func TestScheduleReloadRoutesThroughReloaderOnUIGoroutine(t *testing.T) {
 	rel := &recordingReloader{}
 	var scheduled []func()

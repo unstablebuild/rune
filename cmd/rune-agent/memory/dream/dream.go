@@ -45,7 +45,7 @@ import (
 	"unstable.build/rune/cmd/rune-agent/configedit"
 	"unstable.build/rune/cmd/rune-agent/dialogue/dialoguemanager"
 	"unstable.build/rune/internal/debug"
-	"unstable.build/rune/internal/gitenv"
+	"unstable.build/rune/internal/ide/vctrl/gitenv"
 )
 
 // ProgressType describes the kind of progress being reported.

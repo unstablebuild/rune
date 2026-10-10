@@ -37,32 +37,10 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/handler/repl"
 	"unstable.build/rune/internal/extension/extensionv2"
+	"unstable.build/rune/internal/ide/console/pkgconsole"
 	"unstable.build/rune/internal/ide/idepkg/idepkgtest"
-	"unstable.build/rune/internal/ide/pkgshell"
 )
 
-// TestGitHubPkgExtensionEndToEnd installs complete, runnable extension
-// packages straight from git repositories served over smart-HTTP —
-// exactly what `pkg install github.com/<owner>/<repo>` does against
-// GitHub — and proves the full chain end to end per language:
-//
-//	clone → config verification → `requirements:` install (fake
-//	official packages delivering the host's real uv/go/cargo into
-//	<dataDir>/bin) → promote + config merge → live extension start →
-//	`uv run` / `go run` / `cargo run` → SDK handshake → live API call.
-//
-// Each fixture extension is wired to the real language SDK (module
-// replace / [tool.uv.sources] / path dependency, resolved from sibling
-// checkouts) and, once connected, writes a sentinel through an IDE API:
-// the Go and Python extensions store a document via the storage API and
-// the Rust extension creates a file via the workspace filesystem API
-// (the Rust SDK has no storage client yet). The test polls for the
-// sentinel to prove the extension came up alive.
-//
-// The test builds language toolchain environments from scratch, so it
-// is opt-in: set RUNE_GITHUB_PKG_E2E=1 and run with a generous timeout
-// (e.g. -timeout 30m). Language variants additionally skip when the
-// host toolchain or the SDK checkout is unavailable.
 func TestGitHubPkgExtensionEndToEnd(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping github package e2e in -short mode")
@@ -259,12 +237,9 @@ func runGitHubPkgE2E(t *testing.T, f ghE2EFixture) {
 	require.NoError(t, m.addWorkspace(wsURI, true, false, -1))
 	m.quiesce()
 
-	h := pkgshell.New(pkgshell.Config{
-		Manager:       m.pkgmanager.pkg,
-		UpdateChecker: m.pkgmanager.uc,
-	})
+	h := pkgconsole.New(pkgconsole.Config{Manager: m.pkgmanager.pkg})
 	_, err = h.HandleCommand(context.Background(), repl.Command{
-		Name: pkgshell.CommandName,
+		Name: pkgconsole.CommandName,
 		Args: []string{"install", f.pkgID()},
 	}, repl.NopProgressWriter())
 	require.NoError(t, err)
@@ -273,10 +248,10 @@ func runGitHubPkgE2E(t *testing.T, f ghE2EFixture) {
 	_, err = os.Stat(filepath.Join(dataDir, "bin", f.toolBinaryName()))
 	require.NoError(t, err, "requirement install must deliver %s into bin/",
 		f.toolBinaryName())
-	_, reqOK := m.pkgmanager.pkg.PackageVersionInUse(f.requirement)
+	_, reqOK := pkgVersionInUse(t, m.pkgmanager.pkg, f.requirement)
 	require.True(t, reqOK, "requirement package %s must be installed", f.requirement)
 
-	version, ok := m.pkgmanager.pkg.PackageVersionInUse(f.pkgID())
+	version, ok := pkgVersionInUse(t, m.pkgmanager.pkg, f.pkgID())
 	require.True(t, ok, "github package must be installed")
 	require.Len(t, string(version), 12, "version must be the short commit sha")
 
@@ -302,7 +277,7 @@ func toolWrapperTarball(t *testing.T, name, hostBinary string) []byte {
 	gzw := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gzw)
 	require.NoError(t, tw.WriteHeader(&tar.Header{
-		Name: name,
+		Name: "bin/" + name,
 		Mode: 0o755,
 		Size: int64(len(script)),
 	}))

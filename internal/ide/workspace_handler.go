@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net"
 	"net/url"
 	"os"
 	"os/user"
@@ -63,6 +64,11 @@ import (
 	"unstable.build/rune/internal/handler/command"
 	handlermarkdown "unstable.build/rune/internal/handler/markdown"
 	"unstable.build/rune/internal/handler/search"
+	"unstable.build/rune/internal/ide/console/ideconsole/debugshell"
+	"unstable.build/rune/internal/ide/console/ideconsole/workspaceshell"
+	"unstable.build/rune/internal/ide/console/llmconsole"
+	"unstable.build/rune/internal/ide/console/pkgconsole"
+	"unstable.build/rune/internal/ide/hostenv"
 	"unstable.build/rune/internal/ide/ideauthorizer"
 	"unstable.build/rune/internal/ide/idecursor"
 	"unstable.build/rune/internal/ide/idedebug"
@@ -72,14 +78,11 @@ import (
 	"unstable.build/rune/internal/ide/idemacro"
 	"unstable.build/rune/internal/ide/idenotice"
 	"unstable.build/rune/internal/ide/idepkg"
+	"unstable.build/rune/internal/ide/idepkg/pkgrpc"
+	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
 	"unstable.build/rune/internal/ide/idescavenger"
-	"unstable.build/rune/internal/ide/ideshell/debugshell"
-	"unstable.build/rune/internal/ide/ideshell/workspaceshell"
-	"unstable.build/rune/internal/ide/llmshell"
-	"unstable.build/rune/internal/ide/pkgshell"
-	"unstable.build/rune/internal/ide/pkgtrust"
-	"unstable.build/rune/internal/ide/syntax"
 	"unstable.build/rune/internal/ide/syntax/symboldb"
+	"unstable.build/rune/internal/ide/syntax/treesitter"
 	"unstable.build/rune/internal/ide/vctrl"
 	"unstable.build/rune/internal/ide/vctrl/gogit"
 	"unstable.build/rune/internal/llm/llamaserver"
@@ -118,7 +121,7 @@ var _ text.EventPublisher = (*workspaceManagerHandler)(nil)
 
 type workspaceManagerHandler struct {
 	mu         sync.Locker
-	pkgmanager *pkgManager
+	pkgmanager *localPkgManager
 	// gitRemoteURL, when non-nil, overrides how git package IDs map to
 	// git remote URLs. Production leaves it nil (clone from the host in
 	// the id); tests point it at a local fixture git server.
@@ -170,52 +173,18 @@ type workspaceManagerHandler struct {
 	frame                   bool
 	streamingOpen           bool
 	reloadConfig            func() (ideConfig, error)
-
-	// startupWorkspace records whether a workspace was requested at
-	// launch (non-empty cwd). It lets the IDE decide on Ready whether
-	// the user is intentionally landing on the home workspace, before
-	// the async cwd workspace install has completed.
-	startupWorkspace bool
-
-	// lastSession is the set of workspaces that were open when the
-	// previous session ended. It is loaded once, before the current
-	// session starts overwriting the persisted document, and consumed
-	// by the one-shot maybeReopenLastSession.
-	lastSession   idehistory.Session
-	reopenPending bool
-
-	// sessionReopenDisabled suppresses the reopen prompt entirely. It
-	// is set for instances spawned as secondary OS windows, which share
-	// the storage of the instance that spawned them and must not reopen
-	// its workspaces.
-	sessionReopenDisabled bool
-
-	packageConfigMergeHook func(idepkg.ConfigMergeEvent) (idepkg.ConfigMergeResult, error)
-
-	watchedFilesChangeHook func(int)
-
-	// tutorialsInstalled is a required dependency wired by the IDE at
-	// construction; afterPackageConfigMerge calls it unconditionally and a nil
-	// value is a construction bug that must panic, not be guarded.
-	tutorialsInstalled func(names []string) (bool, error)
-
-	// onboardingActive is wired by the IDE at construction and reports
-	// whether the bootstrap-started first-run tutorial flow is currently
-	// active; extension authorizers use it to grant verified-publisher
-	// commands without prompting while the tutorial overlay would bury
-	// the prompt. Nil (in tests) means never active.
-	onboardingActive func() bool
-
-	commandObserver *commandObserverRegistry
-
-	// commandHistory exposes the command prompt's persisted history so
-	// the built-in workspaceopen completer can surface previously opened
-	// workspaces alongside directory completion.
-	commandHistory command.HistoryAccessor
-
-	// workspaceOpenCompleters are scheme-provided completers appended to
-	// the built-in workspaceopen completion. See WithWorkspaceOpenCompleter.
-	workspaceOpenCompleters []command.Completer
+	startupWorkspace        bool
+	lastSession             idehistory.Session
+	reopenPending           bool
+	sessionReopenDisabled   bool
+	startupPrompts          []func()
+	packageConfigMergeHook  func(idepkg.ConfigMergeEvent) (idepkg.ConfigMergeResult, error)
+	watchedFilesChangeHook  func(int)
+	tutorialsInstalled      func(names []string) ([]string, error)
+	onboardingActive        func() bool
+	commandObserver         *commandObserverRegistry
+	commandHistory          command.HistoryAccessor
+	workspaceOpenCompleters map[string]command.Completer
 
 	union               handler.FrameUnion
 	bar                 handler.Tabs
@@ -231,6 +200,7 @@ type workspaceManagerHandler struct {
 	homeWorkspace       workspace.Workspace
 	empty               *ex
 	homeRunner          extension.Runner
+	homeInstallDir      string
 	homeLSPManager      *idelsp.Manager
 	homeDAPManager      *idedebug.Manager
 	openPrevFiles       []idehistory.File
@@ -243,8 +213,6 @@ type workspaceManagerHandler struct {
 	closing             map[string]chan struct{}
 	closeWG             sync.WaitGroup
 
-	// Fields, not constants, so tests can shorten the extensionready
-	// readiness and command-registration timeouts.
 	extReadyWait   time.Duration
 	extCommandWait time.Duration
 	extHandleWait  time.Duration
@@ -351,7 +319,7 @@ func (h *workspaceManagerHandler) newBuiltinModalEditor(
 ) text.Editor {
 	auxBarConfig := cfg.auxiliaryBarConfig(h, svc)
 	iconsBarConfig := cfg.iconsBarConfig(h)
-	statusBarConfig := cfg.statusBarConfig(cwd, h, svc)
+	statusBarConfig := cfg.statusBarConfig(cwd, h, svc, h.events.newInterrupter(cwd))
 	viOpts := append([]vi.Option{},
 		vi.WithResAttr(cfg.vimResultAttr()),
 		vi.WithBarAttr(cfg.vimMessageBarAttr()),
@@ -384,7 +352,7 @@ func (h *workspaceManagerHandler) newBuiltinHelixEditor(
 ) text.Editor {
 	auxBarConfig := cfg.auxiliaryBarConfig(h, svc)
 	iconsBarConfig := cfg.iconsBarConfig(h)
-	statusBarConfig := cfg.statusBarConfig(cwd, h, svc)
+	statusBarConfig := cfg.statusBarConfig(cwd, h, svc, h.events.newInterrupter(cwd))
 	return helix.Editor(
 		helix.WithResAttr(cfg.helixResultAttr()),
 		helix.WithBarAttr(cfg.helixMessageBarAttr()),
@@ -416,7 +384,7 @@ func (h *workspaceManagerHandler) newBuiltinStandardEditor(
 ) text.Editor {
 	auxBarConfig := cfg.auxiliaryBarConfig(h, svc)
 	iconsBarConfig := cfg.iconsBarConfig(h)
-	statusBarConfig := cfg.statusBarConfig(cwd, h, svc)
+	statusBarConfig := cfg.statusBarConfig(cwd, h, svc, h.events.newInterrupter(cwd))
 	return standard.Editor(
 		standard.WithCommandBar(true),
 		standard.WithSearchConfig(cfg.standardSearchConfig(
@@ -448,7 +416,7 @@ func (h *workspaceManagerHandler) newBuiltinEmacsEditor(
 ) text.Editor {
 	auxBarConfig := cfg.auxiliaryBarConfig(h, svc)
 	iconsBarConfig := cfg.iconsBarConfig(h)
-	statusBarConfig := cfg.statusBarConfig(cwd, h, svc)
+	statusBarConfig := cfg.statusBarConfig(cwd, h, svc, h.events.newInterrupter(cwd))
 	return emacs.Editor(
 		emacs.WithCommandBar(true),
 		emacs.WithResAttr(cfg.emacsResultAttr()),
@@ -757,7 +725,7 @@ func (h *workspaceManagerHandler) init(
 
 	// don't install a fs watcher for the home workspace,
 	// to prevent unecessary resource consumption
-	homeParser := syntax.NewParser(h.homeWorkspace, h.pkgmanager, h.homeURI)
+	homeParser := treesitter.NewParser(h.homeWorkspace, h.pkgmanager, h.homeURI)
 	globalOpts := h.textOpts(cfg, homeParser, h.homeURI, h.homeWorkspace)
 	tm := new(workspaceTabManager)
 	tm.parent = h
@@ -780,6 +748,7 @@ func (h *workspaceManagerHandler) init(
 		cfg.metaKey(),
 		cfg.editorAutoSave(),
 		cfg.consoleCfg(),
+		cfg.metaOpenURL(),
 		globalOpts...)
 	if err != nil {
 		return fmt.Errorf("new ex: %w", err)
@@ -803,8 +772,10 @@ func (h *workspaceManagerHandler) init(
 		log.Errorf("build home workspace extensions executor: %v", err)
 		return nil
 	}
-	runner, lspManager, dapManager, _, err := h.buildExtensions(
-		cfg, homeDirUri, trackedCwd, h.empty, extExec, homeParser, false)
+	h.homeInstallDir = installDataDir(trackedCwd, homeDirUri, h.sixDir)
+	runner, lspManager, dapManager, _, _, err := h.buildExtensions(
+		cfg, homeDirUri, trackedCwd, h.empty, extExec, homeParser, false,
+		h.homeInstallDir)
 	if err != nil {
 		_, _ = h.notifications.current().Notify(browserapi.LevelError,
 			"Error building channel for extensions and plugins: %v", err)
@@ -881,6 +852,7 @@ func (h *workspaceManagerHandler) init(
 	defer h.mu.Unlock()
 
 	if cwd == nil {
+		h.releaseStartupPrompts()
 		h.focusProxy.Target = h.focusHandler()
 		h.initTabs(cfg, workspacesBarHeight,
 			workspacesBarOffset, workspacesBarFrame)
@@ -1008,6 +980,12 @@ func (h *workspaceManagerHandler) envSource(name string) (string, bool) {
 		return uri.String(), true
 	case "WORKSPACE_PATH":
 		return uri.Path(), true
+	case hostenv.DataDirVar:
+		dir := h.homeInstallDir
+		if handler := h.workspaces[h.focus]; handler != nil {
+			dir = handler.installDir
+		}
+		return dir, dir != ""
 	}
 	return "", false
 }
@@ -1069,8 +1047,9 @@ func (h *workspaceManagerHandler) openFileTarget(file workspaceapi.URI) (*openFi
 		if wh == nil {
 			continue
 		}
+		caseSensitive := wh.workspace.PathCaseSensitive()
 		for _, tab := range wh.ex.comp.Tabs() {
-			if tab.URI().Equal(file) {
+			if tab.URI().Equal(file) || workspace.SameDocument(tab.URI(), file, caseSensitive) {
 				return &openFileTarget{workspaceIdx: i, workspace: wh, tab: tab}, true
 			}
 		}
@@ -1408,14 +1387,14 @@ func startUserExtension(
 	return nil
 }
 
-func (h *workspaceManagerHandler) startInstalledExtensions(ids []string) bool {
+func (h *workspaceManagerHandler) startInstalledExtensions(ids []string) []string {
 	if len(ids) == 0 {
-		return false
+		return nil
 	}
 	cfg, err := h.reloadConfig()
 	if err != nil {
 		log.Errorf("failed to reload config to start installed extensions: %v", err)
-		return false
+		return nil
 	}
 	userExtensions := cfg.extensions()
 
@@ -1432,7 +1411,7 @@ func (h *workspaceManagerHandler) startInstalledExtensions(ids []string) bool {
 		}
 	}
 	if len(toStart) == 0 {
-		return false
+		return nil
 	}
 
 	h.mu.Lock()
@@ -1465,22 +1444,13 @@ func (h *workspaceManagerHandler) startInstalledExtensions(ids []string) bool {
 		}
 	}
 	wg.Wait()
-	return true
+	started := make([]string, 0, len(toStart))
+	for _, a := range toStart {
+		started = append(started, a.id)
+	}
+	return started
 }
 
-// afterPackageConfigMerge is the post-merge hook wired into the package
-// manager. It starts any extension added under the `extensions:` config key so
-// the package's tools work without a restart, and composes the externally
-// supplied gui.env hook so both live-apply paths run. The gui.env hook runs
-// first because it applies the package's environment via os.Setenv, and the
-// extension processes spawned by startInstalledExtensions inherit os.Environ()
-// at fork time; starting them first would deny them those variables. Extension
-// start failures are logged (as in initExtensions), so the returned error is
-// the stored hook's, and LiveApplied is OR'd across both paths. Any tutorial
-// added under the `tutorials:` config key is live-registered (and the user
-// prompted) through tutorialsInstalled so a freshly-installed tutorial is
-// runnable without a restart; its error is joined onto the returned error so
-// idepkg can notify in one place.
 func (h *workspaceManagerHandler) afterPackageConfigMerge(
 	event idepkg.ConfigMergeEvent,
 ) (idepkg.ConfigMergeResult, error) {
@@ -1490,12 +1460,15 @@ func (h *workspaceManagerHandler) afterPackageConfigMerge(
 		result, err = h.packageConfigMergeHook(event)
 	}
 
-	startedExtension := h.startInstalledExtensions(event.AddedExtensionIDs())
-	result.LiveApplied = result.LiveApplied || startedExtension
+	for _, id := range h.startInstalledExtensions(event.AddedExtensionIDs()) {
+		result.LivePaths = append(result.LivePaths, []string{"extensions", id})
+	}
 
 	if names := event.AddedTutorialNames(); len(names) > 0 {
 		registered, tutErr := h.tutorialsInstalled(names)
-		result.LiveApplied = result.LiveApplied || registered
+		for _, name := range registered {
+			result.LivePaths = append(result.LivePaths, []string{"tutorials", name})
+		}
 		err = errors.Join(err, tutErr)
 	}
 	return result, err
@@ -1550,6 +1523,7 @@ func (h *workspaceManagerHandler) textOpts(
 		text.WithPackageManager(h.pkgmanager),
 		text.WithSyntaxConfig(cfg.syntaxConfig()),
 		text.WithMaxSyntaxParseSize(cfg.editorMaxSizeForSyntax()),
+		text.WithSyntaxTree(treesitter.New),
 		text.WithSwapDirectory(h.swapDirectory(cfg, ws, uri)),
 		text.WithMarkdownConfig(markdownConfig),
 		text.WithClipboard(h.clip),
@@ -1715,6 +1689,7 @@ func (h *workspaceManagerHandler) abortPendingBuild(
 	h.mu.Lock()
 	h.beginPendingWorkspaceTeardown(pending)
 	h.shaderRunner.stopLoading()
+	h.releaseStartupPrompts()
 	h.mu.Unlock()
 	if built != nil {
 		h.discardBuiltWorkspace(built)
@@ -1866,6 +1841,7 @@ type builtWorkspace struct {
 	notice              *idenotice.Crier
 	lspManager          *idelsp.Manager
 	dapManager          *idedebug.Manager
+	hostPackages        *pkgManager
 	promptStorage       storageapi.Service
 }
 
@@ -1894,7 +1870,7 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 		}
 	}
 
-	parser := syntax.NewParser(cwd, h.pkgmanager, uri)
+	parser := treesitter.NewParser(cwd, h.pkgmanager, uri)
 	var wsParser syntaxapi.Parser = parser
 	var symbolDB *symboldb.Parser
 	var symbolDBCloser io.Closer
@@ -1945,6 +1921,7 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 		cfg.metaKey(),
 		cfg.editorAutoSave(),
 		cfg.consoleCfg(),
+		cfg.metaOpenURL(),
 		textOpts...)
 	if err != nil {
 		if symbolDBCloser != nil {
@@ -1983,6 +1960,7 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 		uri:                 uri,
 		ex:                  ex,
 		cwd:                 cwd,
+		installDir:          installDataDir(cwd, uri, h.sixDir),
 	}
 	tm.workspace = wh
 
@@ -2001,8 +1979,8 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 			uri.String(), err)
 		return nil, fmt.Errorf("new extensions executor: %w", err)
 	}
-	runner, lspManager, dapManager, promptStorage, err := h.buildExtensions(
-		cfg, uri, trackedCwd, ex, extExec, wsParser, symbolDB != nil)
+	runner, lspManager, dapManager, hostPkgs, promptStorage, err := h.buildExtensions(
+		cfg, uri, trackedCwd, ex, extExec, wsParser, symbolDB != nil, wh.installDir)
 	if err != nil {
 		_, _ = h.notifications.current().Notify(browserapi.LevelError,
 			"Error building channel for extensions and plugins: %v", err)
@@ -2017,6 +1995,7 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 		wh.Extensions.Store(runner)
 		wh.lspManager = lspManager
 		wh.dapManager = dapManager
+		wh.hostPackages = hostPkgs
 		wh.promptStorage = promptStorage
 	}
 
@@ -2030,12 +2009,13 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 		symbolDBCloser:      symbolDBCloser,
 		lspManager:          lspManager,
 		dapManager:          dapManager,
+		hostPackages:        hostPkgs,
 		promptStorage:       promptStorage,
 	}
 	if noticeCfg, ok := newNoticeConfig(cfg, h.ideStorage, uri); ok {
 		built.notice = idenotice.New(
 			cwd, apibrowser, wsParser, h.scheduleNextTick,
-			noticeLinkCopier(h.clip, apibrowser), noticeCfg)
+			ex.onLinkClick, noticeCfg)
 	}
 	return built, nil
 }
@@ -2054,6 +2034,7 @@ func (h *workspaceManagerHandler) installPendingWorkspace(
 	// One-shot: only the first install of the session consumes the
 	// previous session's snapshot.
 	defer h.maybeReopenLastSession()
+	defer h.releaseStartupPrompts()
 
 	if pending.canceled.Load() {
 		h.beginPendingWorkspaceTeardown(pending)
@@ -2232,6 +2213,9 @@ func (h *workspaceManagerHandler) discardBuiltWorkspace(built *builtWorkspace) {
 	if built.dapManager != nil {
 		_ = built.dapManager.Close()
 	}
+	if built.hostPackages != nil {
+		_ = built.hostPackages.Close()
+	}
 	if built.promptStorage != nil {
 		_ = built.promptStorage.Close()
 	}
@@ -2256,13 +2240,16 @@ func lspConfig(cfg ideConfig) config.Config {
 	return config.MapConfig(ret)
 }
 
+// buildExtensions wires the extensions, language servers and debuggers of
+// the workspace at uri. installDir is the Rune data directory of the
+// workspace's host, as resolved by installDataDir.
 func (h *workspaceManagerHandler) buildExtensions(
 	cfg ideConfig, uri workspaceapi.URI,
 	cwd workspace.Workspace, ex *ex, extExecutor *extensionsExecutor,
-	parser syntaxapi.Parser, indexedSymbols bool,
+	parser syntaxapi.Parser, indexedSymbols bool, installDir string,
 ) (
 	_ extension.Runner, _ *idelsp.Manager, _ *idedebug.Manager,
-	_ storageapi.Service, retErr error,
+	_ *pkgManager, _ storageapi.Service, retErr error,
 ) {
 	notifications := h.notifications.new(uri, ex.container)
 	ed := ex.Editor()
@@ -2273,6 +2260,20 @@ func (h *workspaceManagerHandler) buildExtensions(
 			_ = promptStorage.Close()
 		}
 	}()
+	// Language servers and debuggers run on the workspace host, so the
+	// packages they need are installed there.
+	var pkgs idelsp.PkgManager = h.pkgmanager
+	pkgshellCfg := pkgconsole.Config{Manager: h.pkgmanager.pkg}
+	hostPkgs := h.hostPackageManager(cfg, uri, cwd, notifications)
+	if hostPkgs != nil {
+		pkgs = hostPkgs
+		pkgshellCfg = pkgconsole.Config{Manager: hostPkgs.pm, Host: hostPkgs.host}
+		defer func() {
+			if retErr != nil {
+				_ = hostPkgs.Close()
+			}
+		}()
+	}
 	cmdAuthorizer, err := ideauthorizer.NewAuthorizer(
 		ed, promptOpener, promptStorage, cfg.scheduleNextTick, notifications,
 		h.trust, ideauthorizer.Config{
@@ -2282,7 +2283,7 @@ func (h *workspaceManagerHandler) buildExtensions(
 			OnboardingActive:               h.onboardingActive,
 		})
 	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("new command authorizer: %w", err)
+		return nil, nil, nil, nil, nil, fmt.Errorf("new command authorizer: %w", err)
 	}
 	res := extension.BrowserResources(ex.Browser(), h.events.newPublisher(uri))
 	res = extension.MergeResourceMap(res,
@@ -2308,7 +2309,7 @@ func (h *workspaceManagerHandler) buildExtensions(
 	// report (see workspaceRootURI).
 	rootURI, err := workspaceRootURI(cwd, uri)
 	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("resolve workspace root: %w", err)
+		return nil, nil, nil, nil, nil, fmt.Errorf("resolve workspace root: %w", err)
 	}
 	callbacks := idelsp.NewCallbackHandler(notifications, apibrowser, ex.Browser(),
 		apieditor, cwd, rootURI.String(), lspCallbackCfg)
@@ -2322,7 +2323,7 @@ func (h *workspaceManagerHandler) buildExtensions(
 		IndexedSymbols:     indexedSymbols,
 	}
 	lsp := idelsp.New(rootURI, cwd,
-		cwd, h.pkgmanager, notifications,
+		cwd, pkgs, notifications,
 		ex.Browser(), lspConfig)
 	var lspifc semanticapi.LSP = lsp
 	if h.watchedFilesChangeHook != nil {
@@ -2333,9 +2334,12 @@ func (h *workspaceManagerHandler) buildExtensions(
 	}
 	dapCfg := idedebug.Config{
 		MaxRetries: 5,
-		Adapters:   cfg.debuggerConfigs(),
+		// Adapters run on the workspace host and their launch arguments
+		// go straight to them, so no command executor expands
+		// $RUNE_DATADIR in them on the way.
+		Adapters: expandAdapterDataDir(cfg.debuggerConfigs(), installDir),
 	}
-	dap := idedebug.New(rootURI, cwd, h.pkgmanager, dapCfg)
+	dap := idedebug.New(rootURI, cwd, pkgs, dapCfg)
 	defer func() {
 		if retErr == nil {
 			return
@@ -2381,13 +2385,13 @@ func (h *workspaceManagerHandler) buildExtensions(
 			WithOpenShell(ex.consolenewtab)); err != nil {
 		log.Errorf("subscribe debugger command prompt: %v", err)
 	}
-	cmdcfg := lspCommandsConfig(uri, cfg, notifications,
-		h.events.newInterrupter(uri), parser, callbacks)
+	cmdcfg := lspCommandsConfig(uri, cfg, h.events.newInterrupter(uri),
+		parser, callbacks, ex.onLinkClick)
 	apiHandler, err := lspcmd.AllHandler(
 		lspifc, apieditor, apibrowser, apibrowser, apibrowser,
 		ex.workspace, parser, cmdcfg)
 	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("new lsp command handler: %v", err)
+		return nil, nil, nil, nil, nil, fmt.Errorf("new lsp command handler: %v", err)
 	}
 	handler := text.FuncCommandHandler(apiHandler.HandleCommand,
 		func(ctx context.Context, cmd textapi.Command) (iterator.Iterator[string], string, error) {
@@ -2401,10 +2405,12 @@ func (h *workspaceManagerHandler) buildExtensions(
 	res = extension.MergeResourceMap(res, extension.SemanticResources(lspifc))
 	res = extension.MergeResourceMap(res, extension.DebugResources(dap))
 	res = extension.MergeResourceMap(res, extension.LLMResources(h.llmRouter))
+	res = extension.MergeResourceMap(res,
+		extension.PackagesResources(extensionPackages{pkgs: pkgs}))
 
-	// Register the top-level `models` REPL command. The llmshell
+	// Register the top-level `models` REPL command. The llmconsole
 	// reads the local llama.cpp registry directly off the router.
-	llmHandler := llmshell.New(llmshell.Config{
+	llmHandler := llmconsole.New(llmconsole.Config{
 		Service:          h.llmRouter,
 		LocalRegistry:    h.llmRouter.LocalRegistry(),
 		Storage:          h.storage,
@@ -2414,27 +2420,20 @@ func (h *workspaceManagerHandler) buildExtensions(
 		ScheduleNextTick: cfg.scheduleNextTick,
 		PromptOpener:     &ex.comp,
 	})
-	if err := ex.editorObserver.RegisterREPLCommand(llmshell.Manual(), llmHandler); err != nil {
+	if err := ex.editorObserver.RegisterREPLCommand(llmconsole.Manual(), llmHandler); err != nil {
 		log.Errorf("register llm repl command: %v", err)
 	}
 
 	// Register the top-level `pkg` REPL command for package management.
-	pkgHandler := pkgshell.New(pkgshell.Config{
-		Manager:       h.pkgmanager.pkg,
-		UpdateChecker: h.pkgmanager.uc,
-	})
-	if err := ex.editorObserver.RegisterREPLCommand(pkgshell.Manual(), pkgHandler); err != nil {
+	pkgHandler := pkgconsole.New(pkgshellCfg)
+	if err := ex.editorObserver.RegisterREPLCommand(pkgconsole.Manual(), pkgHandler); err != nil {
 		log.Errorf("register pkg repl command: %v", err)
 	}
 
 	dataDir := h.sixDir
 	if err := os.MkdirAll(dataDir, 0777); err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("mkdir %s: %v", dataDir, err)
+		return nil, nil, nil, nil, nil, fmt.Errorf("mkdir %s: %v", dataDir, err)
 	}
-	// installDir is where the IDE provisions per-extension toolchains on the
-	// workspace host. Extensions resolve provisioned binaries under it via
-	// FindInstalledExecutable.
-	installDir := installDataDir(cwd, uri, dataDir)
 	browser := ex.Browser()
 	grantor := newExtensionPromptGrantor(promptOpener, promptStorage,
 		cfg.scheduleNextTick, h.trust)
@@ -2442,9 +2441,51 @@ func (h *workspaceManagerHandler) buildExtensions(
 		h.pkgmanager.pkg, dataDir, installDir, browser, cwd, extExecutor, grantor,
 		ed, promptOpener, promptStorage, cfg.scheduleNextTick)
 	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("new workspace extensions runner: %v", err)
+		return nil, nil, nil, nil, nil, fmt.Errorf("new workspace extensions runner: %v", err)
 	}
-	return runner, lsp, dap, promptStorage, nil
+	return runner, lsp, dap, hostPkgs, promptStorage, nil
+}
+
+// hostPackageManager is the package manager of the machine a workspace
+// on another machine is on, or nil for a workspace on this one.
+func (h *workspaceManagerHandler) hostPackageManager(
+	cfg ideConfig, uri workspaceapi.URI, cwd workspace.Workspace,
+	n browserapi.Notifications,
+) *pkgManager {
+	host, ok := cwd.(workspace.PackageHost)
+	if !ok {
+		return nil
+	}
+	cc, ok := host.HostConn()
+	if !ok {
+		return nil
+	}
+	name := packageHostName(uri)
+	ui := hostPackageUI{Notifications: n, host: name, local: h.pkgmanager.pkg}
+	return newPkgManager(pkgrpc.NewClient(cc, ui), name, h.pkgmanager.pkg, n,
+		storageapi.WithPartition(h.ideStorage, idepkg.StoragePartition),
+		h, cfg.scheduleNextTick, h, cfg.updatesAutoInstall())
+}
+
+// hostPackageUI asks the user here about the changes the packages they
+// install on host make to their config there.
+type hostPackageUI struct {
+	browserapi.Notifications
+	host  string
+	local *idepkg.Manager
+}
+
+func (u hostPackageUI) PromptConfig(p idepkg.ConfigPrompt, answer func(approved bool)) {
+	p.Message = fmt.Sprintf("On **%s**:\n\n%s", u.host, p.Message)
+	u.local.PromptConfig(p, answer)
+}
+
+// packageHostName names the machine uri is on to the user.
+func packageHostName(uri workspaceapi.URI) string {
+	if host, _, err := net.SplitHostPort(uri.Host()); err == nil {
+		return host
+	}
+	return uri.Host()
 }
 
 // swapDirectory resolves where a file the editor for ws opens keeps
@@ -2475,6 +2516,34 @@ func (h *workspaceManagerHandler) swapDirectory(
 			return ""
 		}
 	}
+}
+
+// expandAdapterDataDir returns adapters with $RUNE_DATADIR in their
+// commands and launch and attach arguments expanded to installDir.
+func expandAdapterDataDir(
+	adapters map[string]idedebug.AdapterConfig, installDir string,
+) map[string]idedebug.AdapterConfig {
+	expandArgs := func(args map[string]string) map[string]string {
+		if args == nil {
+			return nil
+		}
+		out := make(map[string]string, len(args))
+		for k, v := range args {
+			out[k] = hostenv.ExpandDataDir(v, installDir)
+		}
+		return out
+	}
+	for id, a := range adapters {
+		command := make([]string, len(a.Command))
+		for i, arg := range a.Command {
+			command[i] = hostenv.ExpandDataDir(arg, installDir)
+		}
+		a.Command = command
+		a.LaunchArgs = expandArgs(a.LaunchArgs)
+		a.AttachArgs = expandArgs(a.AttachArgs)
+		adapters[id] = a
+	}
+	return adapters
 }
 
 func installDataDir(ws workspace.Workspace, uri workspaceapi.URI, localDataDir string) string {
@@ -3172,7 +3241,10 @@ type workspaceHandler struct {
 	historyCloser       io.Closer
 	lspManager          *idelsp.Manager
 	dapManager          *idedebug.Manager
+	hostPackages        *pkgManager
 	promptStorage       storageapi.Service
+	// installDir is the Rune data directory of the workspace's host.
+	installDir string
 }
 
 func (hm *workspaceHandler) Close() error {
@@ -3208,6 +3280,11 @@ func (hm *workspaceHandler) Close() error {
 		}
 		if hm.dapManager != nil {
 			if err := hm.dapManager.Close(); err != nil {
+				ret = multierror.Append(ret, err)
+			}
+		}
+		if hm.hostPackages != nil {
+			if err := hm.hostPackages.Close(); err != nil {
 				ret = multierror.Append(ret, err)
 			}
 		}
@@ -3445,6 +3522,36 @@ func (h *workspaceManagerHandler) subscribeInternalCommands(
 	return ret
 }
 
+// withoutHistoryFallback yields a single blank candidate when it ends
+// without yielding anything, because the command prompt fills an empty
+// completion with past arguments, and past scheme URIs may name
+// workspaces that are unreachable or never existed. A listing error is
+// logged and treated as empty so it cannot trigger the fallback either.
+func withoutHistoryFallback(it iterator.Iterator[string]) iterator.Iterator[string] {
+	var yielded, done bool
+	return iterator.FromFunc(func(ctx context.Context) (string, bool, error) {
+		if done {
+			return "", false, nil
+		}
+		v, ok := it.Next(ctx)
+		if ok {
+			yielded = true
+			return v, true, nil
+		}
+		done = true
+		if err := it.Err(); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return "", false, err
+			}
+			log.Warnf("complete workspaces: %v", err)
+		}
+		if yielded {
+			return "", false, nil
+		}
+		return "", true, nil
+	}, it.Close)
+}
+
 func (h *workspaceManagerHandler) completeCommand(
 	ctx context.Context, cmd textapi.Command,
 ) (iterator.Iterator[string], string, error) {
@@ -3461,11 +3568,23 @@ func (h *workspaceManagerHandler) completeCommand(
 		// argument is a directory, and picking one must not stop the user
 		// from descending further.
 		argv := append([]string{cmd.Name}, cmd.Args...)
-		completers := append([]command.Completer{
+		if len(cmd.Args) > 0 {
+			last := cmd.Args[len(cmd.Args)-1]
+			if scheme, _, ok := strings.Cut(last, "://"); ok {
+				if c, ok := h.workspaceOpenCompleters[scheme]; ok {
+					it, newLast, err := c.Complete(ctx, argv)
+					if err != nil {
+						log.Warnf("complete %s workspaces: %v", scheme, err)
+						return withoutHistoryFallback(iterator.Empty[string]()), "", nil
+					}
+					return withoutHistoryFallback(it), newLast, nil
+				}
+			}
+		}
+		return command.MultiCompleter(
 			command.PartialCompleter(command.HistoryCompleter(h.commandHistory)),
 			command.NonRecursiveDirsCompleter(h.empty.workspace),
-		}, h.workspaceOpenCompleters...)
-		return command.MultiCompleter(completers...).Complete(ctx, argv)
+		).Complete(ctx, argv)
 	case cmdMoveWorkspace:
 		if len(cmd.Args) <= 1 {
 			options := []string{"left", "right", "1", "2",
@@ -3868,7 +3987,7 @@ func (h *workspaceManagerHandler) waitClosing() {
 func (h *workspaceManagerHandler) setReleaseManager(releaseManager release.Manager) {
 	notifications := h.notifications.current()
 	if h.pkgmanager == nil {
-		h.pkgmanager = new(pkgManager)
+		h.pkgmanager = new(localPkgManager)
 		defer func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
@@ -3876,7 +3995,8 @@ func (h *workspaceManagerHandler) setReleaseManager(releaseManager release.Manag
 				_, _ = notifications.Notify(browserapi.LevelError,
 					"package manager: clean up: %v", err)
 			}
-			err := h.pkgmanager.pkg.ProcessInstalledSettings(ctx)
+			err := h.pkgmanager.pkg.ProcessInstalledSettings(idepkg.WithUI(ctx,
+				startupUI{Notifications: notifications, h: h}))
 			if err != nil {
 				_, _ = notifications.Notify(browserapi.LevelError,
 					"package manager: process installed settings: %v", err)
@@ -3900,6 +4020,31 @@ func (h *workspaceManagerHandler) setReleaseManager(releaseManager release.Manag
 		h, h, h.scheduleNextTick, parser,
 		editorMode, autoInstall, h.afterPackageConfigMerge, h.gitRemoteURL,
 		h.trust)
+}
+
+// startupUI is the idepkg.UI of the package manager while the editor
+// starts. A prompt shown before the workspace the editor launched with
+// is installed opens on the home screen, which that workspace then
+// covers, so it holds prompts until releaseStartupPrompts.
+type startupUI struct {
+	browserapi.Notifications
+	h *workspaceManagerHandler
+}
+
+func (u startupUI) PromptConfig(p idepkg.ConfigPrompt, answer func(approved bool)) {
+	u.h.startupPrompts = append(u.h.startupPrompts, func() {
+		u.h.pkgmanager.pkg.PromptConfig(p, answer)
+	})
+}
+
+// releaseStartupPrompts shows the prompts startupUI held on the screen in
+// focus, once; later calls show nothing.
+func (h *workspaceManagerHandler) releaseStartupPrompts() {
+	prompts := h.startupPrompts
+	h.startupPrompts = nil
+	for _, prompt := range prompts {
+		prompt()
+	}
 }
 
 func (h *workspaceManagerHandler) openURI(file workspaceapi.URI, focus bool) error {
@@ -3998,9 +4143,10 @@ func (f *workspaceTabManager) SetTabActivity(
 }
 
 func lspCommandsConfig(
-	uri workspaceapi.URI, cfg ideConfig, notifications browserapi.Notifications,
+	uri workspaceapi.URI, cfg ideConfig,
 	interrupter term.Interrupter, parser syntaxapi.Parser,
 	diagnosticsSource lspcmd.DiagnosticsSource,
+	onLinkClick func(*url.URL) bool,
 ) lspcmd.Config {
 	cmdcfg := lspcmd.DefaultConfig()
 	cmdcfg.RootURI = uri
@@ -4017,22 +4163,7 @@ func lspCommandsConfig(
 	cmdcfg.Hover.MarkdownConfig.Parser = parser
 	cmdcfg.Hover.MarkdownConfig.ScheduleNextTick = cfg.scheduleNextTick
 	cmdcfg.Hover.MarkdownHandlerOptions = []handlermarkdown.Option{
-		handlermarkdown.WithOnLinkClick(func(link *url.URL) bool {
-			if link.Scheme != "http" && link.Scheme != "https" {
-				return false
-			}
-			linkstr := link.String()
-			meta := clipboard.Data{Text: linkstr}
-			err := cfg.clipboard().Copy(clipboard.DefaultRegisterID, meta)
-			if err != nil {
-				_, _ = notifications.Notify(browserapi.LevelError,
-					"copy URL to clipboard: %v", err)
-			} else {
-				_, _ = notifications.Notify(browserapi.LevelSuccess,
-					"copied URL %s to clipboard", linkstr)
-			}
-			return true
-		}),
+		handlermarkdown.WithOnLinkClick(onLinkClick),
 	}
 	return cmdcfg
 }

@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	iofs "io/fs"
 	"os"
@@ -42,6 +43,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/iterator"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
+	"unstable.build/rune/internal/extension/langext/langexttest"
 )
 
 // assertErr is a sentinel error scripted into the fake executor to
@@ -114,27 +116,6 @@ func newFakeFS() *fakeFS {
 func (f *fakeFS) addFile(p string) *fakeFS { f.files[p] = true; return f }
 func (f *fakeFS) addDir(p string) *fakeFS  { f.dirs[p] = true; return f }
 
-// fakeInstaller mirrors extensionapi.Workspace.FindInstalledExecutable
-// against any FileSystem: it resolves <root>/bin/<name> and reports the
-// path only when it exists as a regular file.
-type fakeInstaller struct {
-	fs   workspaceapi.FileSystem
-	root string
-}
-
-func (i fakeInstaller) FindInstalledExecutable(
-	_ context.Context, name string,
-) (string, error) {
-	p := i.root + "/bin/" + name
-	info, err := i.fs.Stat(p)
-	if err != nil {
-		return "", err
-	}
-	if info == nil || info.IsDir() {
-		return "", os.ErrNotExist
-	}
-	return p, nil
-}
 func (f *fakeFS) addEntry(name string, dir bool) *fakeFS {
 	f.entries = append(f.entries, fakeDirEntry{name: name, dir: dir})
 	return f
@@ -534,10 +515,10 @@ func newFakeNotifications() *fakeNotifications {
 	return &fakeNotifications{openID: "notif-1"}
 }
 
-func (n *fakeNotifications) Notify(_ browserapi.NotificationLevel, msg string, _ ...any) (string, error) {
+func (n *fakeNotifications) Notify(_ browserapi.NotificationLevel, msg string, args ...any) (string, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	n.notifs = append(n.notifs, msg)
+	n.notifs = append(n.notifs, fmt.Sprintf(msg, args...))
 	return n.openID, nil
 }
 
@@ -711,7 +692,7 @@ type rustEnv struct {
 // rooted there with a fake LSP and Notifications, and returns the
 // resulting environment for assertions. rustupHome/dataDir are passed
 // through so e2e tests can exercise the toolchain path.
-func runRustExtensionOnDir(t *testing.T, dir, rustupHome, cargoHome, dataDir string) rustEnv {
+func runRustExtensionOnDir(t *testing.T, dir, rustupHome, cargoHome string) rustEnv {
 	t.Helper()
 	lsp := &captureLSP{}
 	notify := newFakeNotifications()
@@ -729,7 +710,7 @@ func runRustExtensionOnDir(t *testing.T, dir, rustupHome, cargoHome, dataDir str
 		nil,
 		nil,
 		nil,
-		fakeInstaller{fs: realFS{root: dir}, root: dataDir},
+		&langexttest.Installer{Files: []string{findRustAnalyzer(t)}},
 		rustupHome, cargoHome, nil,
 		func(m textapi.CommandManual, _ textapi.REPLHandler) error {
 			env.manuals = append(env.manuals, m)

@@ -1,0 +1,20 @@
+# Rune starts bash login shells with this file as their --init-file: bash
+# reads no login startup files then, so this reads them like --login
+# would and then applies Rune's environment, which wins over them.
+__rune_shellrc=${BASH_SOURCE[0]%/*}
+# Before the user's files, so an EXIT trap of theirs takes precedence.
+trap '[ -r ~/.bash_logout ] && . ~/.bash_logout' EXIT
+if [ -r /etc/profile ]; then
+	. /etc/profile
+fi
+if [ -r ~/.bash_profile ]; then
+	. ~/.bash_profile
+elif [ -r ~/.bash_login ]; then
+	. ~/.bash_login
+elif [ -r ~/.profile ]; then
+	. ~/.profile
+fi
+if [ -r "$__rune_shellrc/env.sh" ]; then
+	. "$__rune_shellrc/env.sh"
+fi
+unset __rune_shellrc

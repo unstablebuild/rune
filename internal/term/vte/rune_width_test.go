@@ -22,9 +22,6 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term/graphemecluster"
 )
 
-// TestRuneWidthMatchesGraphemeCluster pins the memoized table to the
-// reference implementation it replaces, including the codepoints above
-// widthTableLimit that still fall through to it.
 func TestRuneWidthMatchesGraphemeCluster(t *testing.T) {
 	t.Parallel()
 

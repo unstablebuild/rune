@@ -57,13 +57,13 @@ func ParseLessMessageLayout(layout string) (LessMessageLayout, error) {
 		case *parse.TextNode:
 			ret.Template += string(n.Text)
 		case *parse.ActionNode:
-			field, attrs, err := componenttemplate.ParseAction(n)
+			act, err := componenttemplate.ParseAction(n)
 			if err != nil {
 				return LessMessageLayout{}, err
 			}
-			if field != "Message" {
+			if act.Field != "Message" {
 				return LessMessageLayout{}, fmt.Errorf(
-					"unknown less message bar component: %q", field)
+					"unknown less message bar component: %q", act.Field)
 			}
 			if found {
 				return LessMessageLayout{}, errors.New(
@@ -71,7 +71,7 @@ func ParseLessMessageLayout(layout string) (LessMessageLayout, error) {
 			}
 			found = true
 			ret.Template += "%s"
-			ret.Attributes = attrs
+			ret.Attributes = act.Attributes
 		default:
 			return LessMessageLayout{}, fmt.Errorf(
 				"unsupported node type %T at position %d", n, node.Position())

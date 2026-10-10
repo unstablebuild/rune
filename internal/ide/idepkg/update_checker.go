@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ernestrc/logd-go/logging"
 	log "github.com/sirupsen/logrus"
 	"github.com/unstablebuild/blue/release"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
@@ -66,13 +67,16 @@ func (uc *UpdateChecker) Close() error {
 	return nil
 }
 
-// CheckForUpdates compares installed package versions against the registry
-// and returns available updates.
-func (uc *UpdateChecker) CheckForUpdates(ctx context.Context) ([]Update, error) {
-	it, err := uc.m.ListInstalledPackages(ctx)
+// CheckForUpdates compares the in-use version of every package installed
+// through pm against the registry and returns the available updates.
+// Packages with no in-use version are skipped. It fails with
+// auth.ErrNotAuthenticated when the registry requires a login.
+func CheckForUpdates(ctx context.Context, pm PackageManager) ([]Update, error) {
+	it, err := pm.ListInstalledPackages(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list installed packages: %w", err)
 	}
+	defer it.Close()
 
 	seen := make(map[string]struct{})
 	var updates []Update
@@ -90,13 +94,14 @@ func (uc *UpdateChecker) CheckForUpdates(ctx context.Context) ([]Update, error) 
 		}
 		seen[pkgID] = struct{}{}
 
-		u, err := uc.checkPackage(ctx, pkgID)
+		u, err := checkPackage(ctx, pm, pkgID)
 		if err != nil {
 			if errors.Is(err, auth.ErrNotAuthenticated) {
 				// Skip the entire run silently; the user has not logged in.
 				return nil, err
 			}
-			uc.m.log(log.WarnLevel, "update check for %s: %v", pkgID, err)
+			log.WithField(logging.KeyClass, "idepkg.CheckForUpdates").
+				Warnf("update check for %s: %v", pkgID, err)
 			continue
 		}
 		if u != nil {
@@ -110,35 +115,16 @@ func (uc *UpdateChecker) CheckForUpdates(ctx context.Context) ([]Update, error) 
 	return updates, nil
 }
 
-func (uc *UpdateChecker) checkPackage(ctx context.Context, pkgID string) (*Update, error) {
-	vit, err := uc.m.ListInstalledPackageVersions(ctx, pkgID)
+func checkPackage(ctx context.Context, pm PackageManager, pkgID string) (*Update, error) {
+	current, ok, err := pm.PackageVersionInUse(ctx, pkgID)
 	if err != nil {
-		return nil, fmt.Errorf("list versions: %w", err)
+		return nil, fmt.Errorf("version in use: %w", err)
 	}
-
-	var current release.Version
-	for {
-		v, ok := vit.Next(ctx)
-		if !ok {
-			break
-		}
-		_, _, inUse, err := uc.m.isPackageVersionInUse(pkgID, v)
-		if err != nil {
-			continue
-		}
-		if inUse {
-			current = v
-			break
-		}
-	}
-	if err := vit.Err(); err != nil {
-		return nil, fmt.Errorf("versions iterator: %w", err)
-	}
-	if current == "" {
+	if !ok {
 		return nil, nil
 	}
 
-	pkg, err := uc.m.DescribePackage(ctx, pkgID)
+	pkg, err := pm.DescribePackage(ctx, pkgID)
 	if err != nil {
 		return nil, fmt.Errorf("describe package: %w", err)
 	}
@@ -191,7 +177,7 @@ func (uc *UpdateChecker) run(ctx context.Context) {
 		return
 	}
 
-	updates, err := uc.CheckForUpdates(ctx)
+	updates, err := CheckForUpdates(ctx, uc.m)
 	if err != nil {
 		if errors.Is(err, auth.ErrNotAuthenticated) {
 			// Update check is opportunistic; skip silently when not authenticated.
@@ -414,7 +400,7 @@ func (uc *UpdateChecker) showUpdatePrompt(ctx context.Context, updates []Update)
 		OptionBindings: []term.KeyComb{{Ch: 'u'}, {Ch: 'r'}, {Ch: 's'}},
 		PromptConfig: component.PromptConfig{
 			Message:    message,
-			Options:    []string{"   Upgrade All   ", "   Remind Later", "   Skip   "},
+			Options:    []string{"   Upgrade All   ", "   Remind Later   ", "   Skip   "},
 			NewMessage: markdownOrFallback(uc.m.parser, uc.m.scheduleNextTick),
 		},
 		PromptHandler: handler.FuncPromptHandler(func(idx int, _ string) {

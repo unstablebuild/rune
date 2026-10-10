@@ -1,0 +1,25 @@
+{
+  "lockfileVersion": 2,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "mono",
+    },
+    "packages/a": {
+      "name": "@mono/a",
+      "version": "1.0.0",
+    },
+    "packages/b": {
+      "name": "@mono/b",
+      "version": "1.0.0",
+      "dependencies": {
+        "@mono/a": "workspace:*",
+      },
+    },
+  },
+  "packages": {
+    "@mono/a": ["@mono/a@workspace:packages/a"],
+
+    "@mono/b": ["@mono/b@workspace:packages/b"],
+  }
+}

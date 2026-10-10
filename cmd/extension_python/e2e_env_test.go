@@ -36,10 +36,6 @@ import (
 	"unstable.build/rune/cmd/extension_python/pyshim"
 )
 
-// TestE2E_OptOutLeavesEnvironmentAlone covers a project the user has
-// opted out of: bring-up must not create a .venv or install a managed
-// interpreter, the language server must still come up, and the uv
-// passthrough subcommands must refuse until `python enable`.
 func TestE2E_OptOutLeavesEnvironmentAlone(t *testing.T) {
 	findUV(t)
 	ctx := context.Background()
@@ -65,9 +61,6 @@ func TestE2E_OptOutLeavesEnvironmentAlone(t *testing.T) {
 	require.ErrorContains(t, err, "python enable")
 }
 
-// TestE2E_EnableCreatesEnvironment covers flipping an opted-out project
-// back on from the console: `python enable` syncs the environment right
-// away and tells the user to reload for the server to see it.
 func TestE2E_EnableCreatesEnvironment(t *testing.T) {
 	findUV(t)
 	ctx := context.Background()
@@ -105,12 +98,6 @@ func mustReadFile(t *testing.T, path string) string {
 	return string(data)
 }
 
-// TestE2E_Scenarios_EnvAndLSP runs the extension against each testdata
-// scenario, then runs the scenario's main.py through the synced
-// environment. Every scenario declares the same dependency expressed
-// differently, so all must produce identical stdout — proving the
-// extension works around each environment shape. It also asserts the
-// fake LSP received exactly one Initialize with langID=python.
 func TestE2E_Scenarios_EnvAndLSP(t *testing.T) {
 	findUV(t)
 
@@ -177,12 +164,6 @@ func assertShimResolvesVenv(t *testing.T, env scenarioEnv) {
 		"shim must resolve the project venv, not another interpreter")
 }
 
-// TestE2E_NestedProjectDiscovery covers a workspace with no root Python
-// project but a nested one at services/edge-worker. The
-// extension must not initialize a language server on startup; only after
-// a nested .py is opened should it initialize exactly once, rooted at the
-// nested project. Opening a .py with no enclosing marker must not
-// initialize.
 func TestE2E_NestedProjectDiscovery(t *testing.T) {
 	findUV(t)
 

@@ -53,8 +53,6 @@ func newMaxTokensAdapter(t *testing.T, model llmapi.ModelEntry) *commandAdapter 
 	return &commandAdapter{agent: ag}
 }
 
-// /max_tokens above the bound model's documented ceiling is rejected and
-// leaves the agent override unchanged; a value at/under the ceiling sets it.
 func TestCommandAdapterMaxTokensValidatesAgainstModel(t *testing.T) {
 	model := llmapi.ModelEntry{
 		Provider: anthropic.LLMProvider, Name: anthropic.ClaudeFable5, ContextWindow: 1_000_000,
@@ -105,9 +103,6 @@ func TestCommandAdapterMaxTokensValidatesCurrentGeminiFlashModels(t *testing.T) 
 	}
 }
 
-// A chat agent carries no injected effort default, so /effort with no
-// argument must report that the model default applies rather than claiming
-// a level the user never set.
 func TestCommandAdapterEffortReportsModelDefault(t *testing.T) {
 	model := llmapi.ModelEntry{
 		Provider: anthropic.LLMProvider, Name: anthropic.ClaudeFable5, ContextWindow: 1_000_000,
@@ -166,9 +161,6 @@ func newCaptureAdapter(h repl.CommandHandler) *commandAdapter {
 	}
 }
 
-// Chat commands act on the open chat only: each must dispatch the
-// equivalent shell subcommand with the adapter's own dialogue id and no
-// caller-supplied positional id.
 func TestCommandAdapterScopesToOpenChat(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -222,8 +214,6 @@ func TestCommandAdapterCompactScopesToOpenChat(t *testing.T) {
 	require.Error(t, err)
 }
 
-// Any positional dialogue id is rejected; chat commands no longer
-// target other dialogues.
 func TestCommandAdapterRejectsPositionalID(t *testing.T) {
 	for _, name := range []string{
 		"clear", "history", "export", "log", "fork", "reviewchanges",
@@ -237,10 +227,6 @@ func TestCommandAdapterRejectsPositionalID(t *testing.T) {
 	}
 }
 
-// Bare names must not appear in model-argument completions: two providers
-// can ship the same Name (e.g. openai/gpt-5.5 vs codex/gpt-5.5),
-// and a bare candidate would silently dispatch to whichever provider
-// Models() iterates first.
 func TestCommandAdapterModelArgumentCompleters(t *testing.T) {
 	svc := llmtest.New([]llmapi.ModelEntry{
 		{Provider: "openai", Name: "gpt-5.5"},
@@ -281,8 +267,6 @@ func (s *aliasResolvingService) GetModel(
 	return s.Service.GetModel(context.Background(), model)
 }
 
-// /model with no args must show the resolved provider/model, not the
-// bare alias the session was created with (e.g. "default").
 func TestCommandAdapterModelResolvesAliasLabel(t *testing.T) {
 	target := llmapi.ModelEntry{Provider: "openai", Name: "gpt-5.5"}
 	svc := &aliasResolvingService{
@@ -294,10 +278,6 @@ func TestCommandAdapterModelResolvesAliasLabel(t *testing.T) {
 	assert.Equal(t, "openai/gpt-5.5", a.resolvedModelLabel(context.Background()))
 }
 
-// Slash-command preloads ship the skill body as a separate system
-// message, which the model reliably misses. formatSkillMessage must
-// include an inline cue telling the model to invoke the skill tool so
-// the body actually gets attended to.
 func TestFormatSkillMessageIncludesSkillToolHint(t *testing.T) {
 	skill := skills.Skill{Name: "perplexity-search"}
 
@@ -318,9 +298,6 @@ func TestFormatSkillMessageIncludesSkillToolHint(t *testing.T) {
 	assert.Contains(t, hint, "skill")
 }
 
-// parseStoredCommandMessage must continue to recover the slash-command
-// name and args from history even when the message carries the new
-// command-hint envelope.
 func TestParseStoredCommandMessageRoundTripsWithHint(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -357,7 +334,6 @@ func TestParseStoredCommandMessageRoundTripsWithHint(t *testing.T) {
 	}
 }
 
-// Same hazard as TestCommandAdapterModelCompleter, for :chat / :query.
 func TestHandlerModelCompleter(t *testing.T) {
 	svc := llmtest.New([]llmapi.ModelEntry{
 		{Provider: "openai", Name: "gpt-5.5"},

@@ -29,15 +29,10 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/syntaxapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 
-	"unstable.build/rune/internal/ide/syntax"
+	"unstable.build/rune/internal/ide/syntax/treesitter"
 	"unstable.build/rune/internal/workspace"
 )
 
-// TestResolveRustModuleE2E drives the public ResolveSymbol API end to end
-// against a real on-disk Rust crate served by a real FileScheme and parsed
-// by a real tree-sitter parser, so the whole pipeline (language detection,
-// reference queries, definition queries, FileScheme I/O) is exercised
-// exactly as it runs in production.
 func TestResolveRustModuleE2E(t *testing.T) {
 	root := rustModuleWorkspace(t)
 	parser := newFileSchemeParser(t, root)
@@ -151,7 +146,7 @@ func newFileSchemeParser(t *testing.T, root string) syntaxapi.Parser {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = scheme.Close() })
 
-	return syntax.NewParser(scheme, langPkgManager{wd: wd}, uri)
+	return treesitter.NewParser(scheme, langPkgManager{wd: wd}, uri)
 }
 
 func matchURIs(matches []syntaxapi.Match) []string {

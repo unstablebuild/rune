@@ -63,6 +63,12 @@ extension surface, or a behavior change to Rune Agent — please open a
 discussion or issue first. Large PRs without prior agreement on the
 approach are unlikely to be merged as-is, even if the code is correct.
 
+Always add unit tests with your fixes and new features, and add integration tests when the
+change crosses one or several package boundaries. Also, always test your changes manually
+to confirm they do what you intended. Tests can encode our assumptions about how the
+system around Rune behaves, and the only way to catch a wrong assumption is to run Rune
+and try it.
+
 ## Development
 
 ```bash
@@ -122,6 +128,13 @@ non-canonical header, force-apply the canonical one:
 
 ```bash
 bluectl license -f LICENSE_HEADER <new files>
+```
+
+[`bluectl`](https://github.com/unstablebuild/blue) is a tool we use for
+various workflows. Install it with:
+
+```bash
+go install github.com/unstablebuild/blue/cmd/bluectl@latest
 ```
 
 ## Commit messages

@@ -270,9 +270,6 @@ func TestGraphicsScrollsWithText(t *testing.T) {
 	assert.Empty(t, h.visible(2), "3J clears history placements")
 }
 
-// TestGraphicsClearFollowsTextUnderMargins pins that ED 2, which pushes
-// the whole primary screen into history regardless of DECSTBM, moves
-// every placement with the text and not only those inside the region.
 func TestGraphicsClearFollowsTextUnderMargins(t *testing.T) {
 	h := newGraphicsHarness(t, testCell)
 	h.transmit("1", 10, 20)
@@ -290,11 +287,6 @@ func TestGraphicsClearFollowsTextUnderMargins(t *testing.T) {
 		"both placements went into history with their rows")
 }
 
-// TestGraphicsInsertDeleteLinesLeavePlacements pins kitty's behaviour:
-// IL and DL move text without moving image references, they only drop
-// the cell images of the rows they touch (kitty screen.c:1722-1739,
-// :2898, :2942). Cell images are rescanned from the placeholder cells
-// on every draw here, so nothing has to be dropped.
 func TestGraphicsInsertDeleteLinesLeavePlacements(t *testing.T) {
 	for _, alt := range []string{"", "\x1b[?1049h\x1b[H"} {
 		name := "primary"
@@ -319,9 +311,6 @@ func TestGraphicsInsertDeleteLinesLeavePlacements(t *testing.T) {
 	}
 }
 
-// TestGraphicsPrimaryScrollingRegion covers margins on the primary
-// screen: only placements entirely inside the region move, and they are
-// clipped to it (kitty screen.c:429-439).
 func TestGraphicsPrimaryScrollingRegion(t *testing.T) {
 	h := newGraphicsHarness(t, testCell)
 	h.transmit("1", 10, 20)
@@ -397,10 +386,6 @@ func TestGraphicsResizeFollowsContent(t *testing.T) {
 	assert.Equal(t, []term.Coordinates{{X: 0, Y: 2}}, positions(h.visible(0)))
 }
 
-// TestGraphicsResizeRewrap covers a column change, which kitty ignores
-// altogether (kitty graphics.c:2400-2423). A rewrap moves each logical
-// line by a different number of rows, so the placement above the
-// rewrapped line must stay put while the one below it follows.
 func TestGraphicsResizeRewrap(t *testing.T) {
 	h := newGraphicsHarness(t, testCell)
 	h.ph.Resize(20, 6)

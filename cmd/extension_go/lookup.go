@@ -21,24 +21,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
+	"github.com/unstablebuild/rune-go-sdk/api/pkgapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"unstable.build/rune/internal/extension/langext"
 )
 
 const goplsResolutionTimeout = 5 * time.Second
-
-// installer resolves executables the host provisioned alongside this
-// extension on the workspace host. It is satisfied by
-// *extensionapi.Workspace.
-type installer interface {
-	FindInstalledExecutable(ctx context.Context, name string) (string, error)
-}
 
 var wellKnownGoplsPaths = []string{
 	"~/go/bin/gopls",
@@ -59,13 +52,14 @@ func hasGoProjectFiles(_ context.Context, fs workspaceapi.FileSystem) bool {
 // resolveGoplsForRoot locates the gopls binary for a Go project root. The
 // caller only invokes it once a module has been discovered, so it no
 // longer gates on hasGoProjectFiles: an lsp_path override wins, otherwise
-// the host is probed and a failure warns. gopls probes are host-global,
-// so the result is correct for every root on the same host.
+// the packaged gopls, otherwise the host is probed and a failure warns.
+// gopls probes are host-global, so the result is correct for every root
+// on the same host.
 func resolveGoplsForRoot(
 	ctx context.Context,
 	fs workspaceapi.FileSystem,
 	exec workspaceapi.Executor,
-	inst installer,
+	tools *langext.Tools,
 	cfg config.Config,
 	notify browserapi.Notifications,
 	scheme string,
@@ -73,7 +67,12 @@ func resolveGoplsForRoot(
 	if lspPath, ok := readGoplsLspPath(cfg, notify); ok {
 		return lspPath
 	}
-	bin, err := resolveGoplsBinary(ctx, fs, exec, inst)
+	packaged, err := tools.Find(ctx, "gopls")
+	if err != nil && !errors.Is(err, pkgapi.ErrNotInstalled) && notify != nil {
+		_, _ = notify.NotifyOnce(browserapi.LevelWarn,
+			"Could not find gopls in the go package: %v. Looking for one on the host instead.", err)
+	}
+	bin, err := resolveGoplsBinary(ctx, fs, exec, packaged)
 	if err == nil {
 		return bin
 	}
@@ -90,19 +89,16 @@ func resolveGoplsForRoot(
 	return ""
 }
 
+// resolveGoplsBinary prefers packaged, the gopls the go package ships,
+// and otherwise looks for one already on the host.
 func resolveGoplsBinary(
 	ctx context.Context,
 	fs workspaceapi.FileSystem,
 	exec workspaceapi.Executor,
-	inst installer,
+	packaged string,
 ) (string, error) {
-	// A miss (os.ErrNotExist) or a probe failure both fall through to the
-	// well-known and shell candidates below, which is the whole point of
-	// this resolver having fallbacks.
-	if bin, err := inst.FindInstalledExecutable(ctx, "gopls"); err == nil {
-		return bin, nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		slog.Debug("probe provisioned gopls failed", "error", err)
+	if packaged != "" {
+		return packaged, nil
 	}
 
 	if bin, ok := probeWellKnown(fs); ok {

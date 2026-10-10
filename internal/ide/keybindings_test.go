@@ -29,10 +29,6 @@ import (
 	"unstable.build/rune/internal/text"
 )
 
-// TestKeyBindingsRender drives rendering through representative and
-// adversarial binding configurations. Every case also verifies the
-// structural integrity of the rendered lists, so any content that would
-// split an entry across lines or leak a pipe table fails here.
 func TestKeyBindingsRender(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -427,9 +423,6 @@ func TestKeyBindingsRender(t *testing.T) {
 	}
 }
 
-// TestKeyBindingsSectionsOrdered verifies language intelligence renders
-// first, whitelisted categories in between, and Other last, with each
-// section carrying its explanatory copy.
 func TestKeyBindingsSectionsOrdered(t *testing.T) {
 	cfg := text.DefaultConfig()
 	cfg.CommandKeyBindings = map[term.KeyComb][][]string{
@@ -456,10 +449,6 @@ func TestKeyBindingsSectionsOrdered(t *testing.T) {
 	assert.NotContains(t, md, "## Tabs", "empty sections must be omitted")
 }
 
-// TestKeyBindingsCodeNavigationSection verifies the code navigation
-// whitelist claims its bindings, including multi-token entries such as
-// "lsp diagnostics" that out-rank the broader lsp prefix, and renders
-// right after language intelligence.
 func TestKeyBindingsCodeNavigationSection(t *testing.T) {
 	cfg := text.DefaultConfig()
 	cfg.CommandKeyBindings = map[term.KeyComb][][]string{
@@ -506,8 +495,6 @@ func TestKeyBindingsCodeNavigationSection(t *testing.T) {
 	}
 }
 
-// TestKeyBindingsEditorModeIntro verifies the intro links to the docs
-// page for the configured editor mode.
 func TestKeyBindingsEditorModeIntro(t *testing.T) {
 	cfg := text.DefaultConfig()
 	cfg.CommandKeyBindings = nil
@@ -531,8 +518,6 @@ func TestKeyBindingsEditorModeIntro(t *testing.T) {
 	}
 }
 
-// TestKeyBindingsMetaKeyHint verifies the top-of-document hint names the
-// physical key that produces <meta> chords on the user's platform.
 func TestKeyBindingsMetaKeyHint(t *testing.T) {
 	cfg := text.DefaultConfig()
 	cfg.CommandKeyBindings = nil
@@ -558,8 +543,6 @@ func TestKeyBindingsMetaKeyHint(t *testing.T) {
 	}
 }
 
-// TestKeyBindingsMetaLayerHint pins that the header says where Rune's
-// <meta> keys are listed once gui.meta_key moves them.
 func TestKeyBindingsMetaLayerHint(t *testing.T) {
 	cfg := text.DefaultConfig()
 	cfg.CommandKeyBindings = nil
@@ -586,9 +569,6 @@ func TestKeyBindingsMetaLayerHint(t *testing.T) {
 	}
 }
 
-// TestKeyBindingsMacrosSection verifies the bespoke macros section
-// documents recording and playback for the configured editor mode and
-// is omitted for exo, whose editor owns in-buffer keystrokes.
 func TestKeyBindingsMacrosSection(t *testing.T) {
 	cfg := text.DefaultConfig()
 	cfg.CommandKeyBindings = nil
@@ -633,8 +613,6 @@ func TestKeyBindingsMacrosSection(t *testing.T) {
 	})
 }
 
-// TestKeyBindingsEmptyConfig verifies the fallback message renders when
-// no bindings are configured and the title still leads the output.
 func TestKeyBindingsEmptyConfig(t *testing.T) {
 	cfg := text.DefaultConfig()
 	cfg.CommandKeyBindings = nil
@@ -648,9 +626,6 @@ func TestKeyBindingsEmptyConfig(t *testing.T) {
 	assert.Contains(t, md, "No key bindings configured.")
 }
 
-// TestKeyBindingsDeterministic verifies identical input yields identical
-// output regardless of map iteration order, including compressed
-// families and sequence bindings.
 func TestKeyBindingsDeterministic(t *testing.T) {
 	cfg := text.DefaultConfig()
 	cfg.CommandKeyBindings = digitFamilyBindings()

@@ -9,13 +9,16 @@ while Rune runs on it. On a build box or a server nobody sits at, that
 means `rune --headless`, and the way to keep it running is to hand it to
 the machine's service manager: it starts at boot, restarts if it fails,
 and its output lands in the system log. This page is a recipe per
-service manager. Read [Running a machine without the
+service manager, and a ready-made [Docker image](#docker) for hosts that
+run containers. Read [Running a machine without the
 editor](./network.md#running-a-machine-without-the-editor) first if you
 have not.
 
 ## Before you install the service
 
-Every recipe below assumes the same setup.
+Every recipe below assumes the same setup. The exception is
+[Docker](#docker): the image installs Rune and its user itself, so skip
+ahead.
 
 **Install Rune on the host.** The one-line installer puts the binary at
 `~/.local/bin/rune` on both Linux and macOS:
@@ -57,12 +60,31 @@ You can skip the foreground run and let the service do it on its first
 start instead: the code shows up in its log, and the node joins once you
 have entered it.
 
+The sign-in is a serve-only one: the node can serve your other machines
+but not reach them (see [Headless machines only
+serve](./network.md#headless-machines-only-serve)). A sign-in with full
+account access is never kept. A node that finds one in its data
+directory, from a node set up before headless machines were serve-only
+or a data directory copied from a desktop install, says so, discards it,
+and prints a code to sign in again.
+
 **Give it a `PATH`.** A service manager starts Rune without your login
-shell, so `PATH` is whatever the service definition sets, not what your
-`.zshrc` exports. Toolchains that a `rune://` workspace should find on
-this machine, such as `go`, `node`, `cargo`, `mise`, or Homebrew, must be
-on it. Every recipe sets `PATH` explicitly; extend it to match the host.
-Rune adds `~/.rune/bin`, where the packages it installs live, on its own.
+shell, so on startup Rune asks your login shell for the `PATH` your
+startup files set up, such as `.profile` or `.zshrc`, and keeps the
+directories the service definition adds as well. Tools that a `rune://`
+workspace should find on this machine, that Rune does not install and
+that your startup files do not add, such as `node`, `mise`, or Homebrew,
+must be on the service's `PATH`. Every recipe sets `PATH` explicitly;
+extend it to match the host. Rune puts `~/.rune/bin`, where the packages
+it installs live, first on its own, and terminals keep it first even when
+a startup file such as `/etc/profile` resets `PATH`.
+
+Language packages need no setup. When a workspace you open on this
+machine needs one it does not have, Rune asks you in your own window and
+installs it here (see [Installing packages on another
+machine](./network.md#installing-packages-on-another-machine)). The
+environment a package sets up, such as `GOROOT`, applies to the
+terminals and tools started after the install, with no restart.
 
 **Leave `network.auto_join` on.** It is the default. A headless node has
 no console to run `network up` in, so with it off Rune says so and exits.
@@ -285,50 +307,61 @@ on most other runit setups.
 ## Docker
 
 A container makes a fine node: the network is userspace WireGuard, so it
-needs no capabilities, no published ports, and no host networking. The
-image installs Rune for an unprivileged user and runs the node as that
-user:
-
-```dockerfile
-FROM debian:bookworm-slim
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl git \
-    && rm -rf /var/lib/apt/lists/*
-RUN useradd --create-home --uid 1000 alice
-USER alice
-WORKDIR /home/alice
-RUN curl -fsSL https://rune.build/install.sh | sh \
-    && mkdir /home/alice/.rune \
-    && printf 'network:\n  hostname: buildbox\n' > /home/alice/.rune/config.yaml
-ENV PATH=/home/alice/.local/bin:$PATH
-CMD ["rune", "--headless"]
-```
-
-Build the image and start the service; the first run prints the sign-in
-code to the container log:
+needs no capabilities, no published ports, and no host networking. Rune
+publishes an image that runs `rune --headless` as an unprivileged user,
+`rune`, for both amd64 and arm64:
 
 ```bash
-docker build -t rune-node .
 docker run -d --name rune --restart unless-stopped \
-  -v rune-data:/home/alice/.rune \
-  -v /srv/projects:/home/alice/projects \
-  rune-node
+  --hostname buildbox \
+  -v rune-data:/home/rune/.rune \
+  -v /srv/projects:/home/rune/projects \
+  unstablebuild/rune
 docker logs -f rune
 ```
 
-Enter the code from the log in a browser and wait for the `Network node`
-line.
+The first start has no account signed in, so the log shows a code and
+the page to enter it on:
 
-Three things matter here. `network.hostname` in the baked-in config is
-the name the machine joins under; without it the node is named after
-whatever hostname the container has, which changes whenever the
-container is recreated. The `rune-data` volume holds the config, the
-sign-in, and the network identity, so the container can be recreated
-without a new login; the image creates that directory as `alice` so a
-new volume is hers rather than root's. And a mounted project directory
-must be readable and writable by uid 1000, which is what `alice` is
-inside the image. Add the toolchains your projects need to the image; a
-`rune://` workspace uses what the container has.
+```
+To sign this machine in, open
+
+    https://auth.rune.build/activate
+
+in any browser and enter the code ABCD-EFGH (expires 14:32).
+```
+
+Open the page on any machine, enter the code, and wait for the account
+and `Network node` lines to follow it in the log. Then press `Ctrl-C` to
+stop following the log; the node keeps running. From your laptop,
+`workspaceopen rune://buildbox/home/rune/projects/app` opens a project
+in it.
+
+Three things matter here. `--hostname` is the name the machine joins
+the network under; without it the node is named after the container's
+ID, which changes whenever the container is recreated. The `rune-data`
+volume holds the sign-in, the network identity, and the node's
+[config](../config.md) (`/home/rune/.rune/config.yaml`), so the
+container can be recreated, or upgraded to a new image, without signing
+in again. And a mounted project directory must be readable and writable
+by uid 1000, which is what `rune` is inside the image.
+
+**Adding tools.** A `rune://` workspace uses what the container has: its
+terminals, language servers, and tasks run inside it. Language packages
+install on demand, as on any other machine, and are kept in the
+`rune-data` volume. For the system tools your projects need beyond
+them, build your own image on top of it:
+
+```dockerfile
+FROM unstablebuild/rune
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends git make
+USER rune
+```
+
+Build it with `docker build -t rune-node .` and run `rune-node` in place
+of `unstablebuild/rune` above. The image is Debian, so `apt-get` and
+prebuilt binaries linked against glibc both work in it.
 
 ## Operating the node
 
@@ -343,8 +376,10 @@ service manager above sends on stop.
 
 **Upgrading.** A headless node has no upgrade prompt and does not
 upgrade itself. Run the installer again on the host, then restart the
-service; for Docker, rebuild the image. `rune --version` shows what is
-installed.
+service. For Docker, `docker pull unstablebuild/rune` (and rebuild any
+image of your own on top of it), then remove the container and run it
+again; the volume carries the sign-in over. `rune --version` shows what
+is installed.
 
 **A removed machine.** If the machine was unregistered with
 `network remove` from another machine on your account, restart the
@@ -353,8 +388,22 @@ service to register it again, which takes a slot back.
 **Signing in again.** The cached sign-in renews itself, so this is rare:
 it is needed after the account's access was revoked, or to move the
 machine to another account. Stop the service, run `rune --tui` on the
-host, and in the [console](./console.md) run `logout` and then `login`,
-which prints the URL to open. Quit and start the service again.
+host, and in the [console](./console.md) run `logout`. Quit, then run
+`rune --headless` in the foreground and enter the code it prints, as in
+[Before you install the service](#before-you-install-the-service).
+Start the service again. Signing in with `login` from `rune --tui`
+instead gives the host full account access, which a headless node
+discards on its next start.
+
+For Docker, stop the container and run the editor on the same volume:
+
+```bash
+docker stop rune
+docker run -it --rm -v rune-data:/home/rune/.rune unstablebuild/rune --tui
+```
+
+Run `logout` in its console and quit, then `docker start rune` and enter
+the code from `docker logs -f rune`.
 
 **Starting over.** Everything the node has accumulated lives in its data
 directory, `~/.rune` unless the service passes `-d`: the sign-in, the
@@ -367,7 +416,8 @@ rm -rf ~/.rune
 
 For Docker, remove the `rune-data` volume instead. The next start signs
 in from scratch, as in [Before you install the
-service](#before-you-install-the-service), and joins as a new machine:
+service](#before-you-install-the-service) or [Docker](#docker), and
+joins as a new machine:
 the old one stays in `network machines` as offline until you
 `network remove` it, and on a free plan holds its slot until then.
 
@@ -386,9 +436,12 @@ cached sign-in no longer works: sign in again as described above. `the
 free Rune plan includes 2 machines` means the account is full: free a
 slot with `network remove` from another machine, or upgrade.
 
-**Tools are missing in a `rune://` terminal.** The service's `PATH` does
-not include them. Add their directories to the `PATH` in the service
-definition and restart it.
+**Tools are missing in a `rune://` terminal.** A terminal is a login
+shell: it builds `PATH` from your startup files, then puts the tools Rune
+installs and the `PATH` entries from [`gui.env`](../config.md#gui) in the
+host's config in front. A tool that is still missing is in neither place. Add its
+directory in your shell's startup files, or to `gui.env.PATH` in
+`~/.rune/config.yaml` on the host and restart the service.
 
 **`enter the code` in the log.** No account is signed in on the host.
 Open the page named in the log in any browser, enter the code, and the
@@ -396,6 +449,16 @@ node joins once the sign-in completes. A code expires after a few
 minutes; if it has, restart the service for a fresh one.
 
 **`the API server does not offer sign-in by code`.** The node is talking
-to a Rune API server too old to sign machines in by code. Sign in on the
-host with `rune --tui` and the console's `login` instead, then start the
-service.
+to a Rune API server too old to sign machines in by code, and a headless
+node has no other way to sign in. Point it at a current API server.
+
+**`the API server is too old to sign machines in as serve-only`** or
+**`did not issue a serve-only sign-in`.** The node is talking to a Rune
+API server older than serve-only machines. A headless node never runs
+with full account access, so it cannot start until it is pointed at a
+current API server.
+
+**`This machine holds a sign-in with full account access`.** The data
+directory came from a desktop install or from before headless machines
+were serve-only. The node has discarded that sign-in; enter the code it
+prints next.

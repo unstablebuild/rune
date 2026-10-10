@@ -32,9 +32,6 @@ import (
 	"unstable.build/rune/internal/term/gui/font"
 )
 
-// TestAtlasPacksManyGlyphsIntoFewPages verifies the shelf packer keeps a
-// realistic ASCII working set on a single page and caches each distinct
-// glyph once so repeated lookups neither re-pack nor grow the cache.
 func TestAtlasPacksManyGlyphsIntoFewPages(t *testing.T) {
 	m, err := font.NewManager(0, 0)
 	require.NoError(t, err)
@@ -78,11 +75,6 @@ func TestDrawerDeallocateReleasesAtlasStorage(t *testing.T) {
 	assert.NotPanics(t, d.Deallocate)
 }
 
-// TestDrawerBatchesGlyphRun asserts a run of non-empty glyphs on the
-// same page and blend accumulates into one open run (four vertices per
-// glyph, no intermediate flush). flushRun issues exactly one
-// DrawTriangles per non-empty run by construction, so a single open run
-// is a single draw.
 func TestDrawerBatchesGlyphRun(t *testing.T) {
 	m, err := font.NewManager(0, 0)
 	require.NoError(t, err)
@@ -114,8 +106,6 @@ func TestDrawerBatchesGlyphRun(t *testing.T) {
 	assert.Empty(t, d.indices, "flush closes the run")
 }
 
-// TestDrawerSeparatesBlendModes asserts switching blend mode between
-// glyphs flushes the open run so each blend is its own DrawTriangles.
 func TestDrawerSeparatesBlendModes(t *testing.T) {
 	m, err := font.NewManager(0, 0)
 	require.NoError(t, err)
@@ -139,8 +129,6 @@ func TestDrawerSeparatesBlendModes(t *testing.T) {
 	benchdraw.EndFrame(t)
 }
 
-// TestAtlasEmptyGlyphAddsNoQuad asserts a zero-size glyph (space) is
-// cached as empty and contributes no draw.
 func TestAtlasEmptyGlyphAddsNoQuad(t *testing.T) {
 	m, err := font.NewManager(0, 0)
 	require.NoError(t, err)
@@ -156,15 +144,6 @@ func TestAtlasEmptyGlyphAddsNoQuad(t *testing.T) {
 	benchdraw.EndFrame(t)
 }
 
-// TestAtlasRasterizesTightlyPackedMask is a pixel-fidelity guard for the
-// bytes uploaded to a page. rasterizeMask must return a tightly packed
-// (Stride == 4*w) 4*w*h run that matches an independent rasterization of
-// the same glyph. A regression where the mask was uploaded from a
-// SubImage of an over-sized scratch used the parent's larger stride, so
-// WritePixels — which reads the slice as one packed run — misaligned
-// every row and scattered narrow glyphs into dots. Page pixels cannot be
-// read back under the headless test driver, so this asserts on the
-// pre-upload bytes rather than a GPU round-trip.
 func TestAtlasRasterizesTightlyPackedMask(t *testing.T) {
 	m, err := font.NewManager(0, 0)
 	require.NoError(t, err)

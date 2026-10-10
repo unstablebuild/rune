@@ -70,6 +70,10 @@ config = {
     "log_level": "info",
     # Whether to use the system clipboard or Rune's in-memory clipboard.
     "clipboard": "system",
+    # How an http(s) link opens when clicked: "system" opens the system
+    # browser, "clipboard" copies it, and any other value is a Rune command
+    # run with $URL set to the link, e.g. "! open $URL" or "browser $URL".
+    "meta_open_url": "system",
     # LSP configuration.
     "lsp": {
         # Icons used by the auxiliary bar when LSP diagnostics are displayed.
@@ -578,9 +582,45 @@ config = {
             "enabled": True,
             # Layout of the status bar. Available components include:
             # Status, Filepath, GitShortRef, GitDiffAdd, GitDiffDel,
-            # ShiftRight, CursorColumn, CursorLine, TotalLines, and Language.
+            # ShiftRight, CursorColumn, CursorLine, TotalLines, Language,
+            # and Image.
             # Pipe operators support bg, fg, bold, italic, underline,
             # reverse, and dim.
+            #
+            # Image draws a picture centered on the cell where it sits in
+            # the bar (an even side lands half a cell left or up), cut off
+            # outside the editor and its bar unless it overflows. It
+            # requires src, a file:// or http(s):// URI, and takes:
+            #   width           cells, or a percentage of the bar such as
+            #                   "100%" (2)
+            #   height          rows (1)
+            #   reserve         cells it takes up in the bar (the width in
+            #                   cells, or 0 for a percentage)
+            #   x_offset        cells to move it right, negative for left, or
+            #                   a percentage of the bar such as "50%" (0)
+            #   y_offset        rows to move it down, negative for up (0)
+            #   x_pixel_offset  device pixels to move it further right,
+            #                   negative for left, to align it to the pixel (0)
+            #   y_pixel_offset  device pixels to move it further down,
+            #                   negative for up (0)
+            #   fit             "contain" keeps the aspect ratio, "fill"
+            #                   stretches
+            #   z_index         stacking, as in kitty (0): 0 or more over the
+            #                   text, negative under it, under -1073741824
+            #                   also under the backgrounds; the higher one is
+            #                   on top where images overlap, the later one in
+            #                   the layout on ties
+            #   overflow        extends it over the windows, frames and bars
+            #                   around the editor; floating windows still
+            #                   cover it
+            #   alt             drawn over the text when the image can't be
+            #                   shown ("" for nothing); pixel offsets don't
+            #                   move it
+            #   ttl             how long a download is reused ("24h")
+            # A badge nudged 3 pixels up:
+            #   {{ .Image | src "file:///path/to/logo.png" | width 2 | x_offset 1 | y_pixel_offset -3 }}
+            # A HUD, first in the layout:
+            #   {{ .Image | src "https://example.com/hud.png" | width "100%" | x_offset "50%" | fit "fill" | z_index -1 | alt "" }}
             "layout": ' {{ .Status | bg "red" | fg "white" | bold }} █▓▒░  {{ .Filepath | fg "white" }}  {{ .GitShortRef | fg "white" }}   {{ .GitDiffAdd | fg "green" }}   {{ .GitDiffDel | fg "red" }} {{ .ShiftRight }} {{ .CursorColumn | fg "white" }}:{{ .CursorLine | fg "white" }}  {{ .TotalLines | fg "white" }} lines  ░▒▓█ {{ .Language | bold | fg "white" | bg "red"}} ',
             # Default background attributes when the layout does not override
             # them explicitly.

@@ -44,10 +44,11 @@ import (
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/ide"
+	"unstable.build/rune/internal/ide/hostenv"
 	"unstable.build/rune/internal/ide/idepkg"
+	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
 	"unstable.build/rune/internal/ide/ideupgrade"
 	"unstable.build/rune/internal/ide/keymeta"
-	"unstable.build/rune/internal/ide/pkgtrust"
 	"unstable.build/rune/internal/term/gui"
 	"unstable.build/rune/internal/term/gui/appmenu"
 	"unstable.build/rune/internal/term/gui/glassbar"
@@ -64,7 +65,8 @@ type bootstrapHandler struct {
 	storage           storageapi.Service
 	configPath        string
 	workspace         string
-	zdotDir           string
+	shellRCDir        string
+	host              *hostenv.Host
 	filenames         []string
 	launchCmd         []string
 	runner            ide.ExtensionsRunner
@@ -109,7 +111,8 @@ type bootstrapHandler struct {
 }
 
 func newBootstrapHandler(
-	dataDir, configPath, workspace, zdotDir string,
+	dataDir, configPath, workspace, shellRCDir string,
+	host *hostenv.Host,
 	filenames, launchCmd []string,
 	runner ide.ExtensionsRunner,
 	mu *sync.Mutex,
@@ -127,7 +130,8 @@ func newBootstrapHandler(
 		storage:          newRuneStorage(dataDir),
 		configPath:       configPath,
 		workspace:        workspace,
-		zdotDir:          zdotDir,
+		shellRCDir:       shellRCDir,
+		host:             host,
 		filenames:        filenames,
 		launchCmd:        launchCmd,
 		runner:           runner,
@@ -146,7 +150,7 @@ func newBootstrapHandler(
 
 	if isBootstrapped(dataDir) {
 		client, releaseManager := newAPIClient(bh.storage, installBackupDir, rootCfg)
-		bh.network = newNetwork(rootCfg, dataDir, newNetworkGate(client))
+		bh.network = newNetwork(rootCfg, dataDir, shellRCDir, newNetworkGate(client))
 		bh.network.startAutoJoin()
 		realIDE, err := bh.buildConfiguredIDE(client, releaseManager, false)
 		if err != nil {
@@ -197,8 +201,11 @@ func (b *bootstrapHandler) buildPreIDE() (*ide.IDE, error) {
 		ide.WithPublishEvent(b.publishEvent),
 		ide.WithScheduleNextTick(b.scheduleNextTick),
 		ide.WithCellPixelSize(b.cellPixelSize),
-		ide.WithZdotDir(b.zdotDir),
+		ide.WithShellRCDir(b.shellRCDir),
+		ide.WithHostDataDir(b.dataDir),
 		ide.WithTabsClickCallback(b.handleTabsClick),
+		ide.WithClipboard(b.clip),
+		ide.WithSystemURLOpener(b.openBrowser),
 	}
 	preIDE, err := ide.New("", b.configPath, b.dataDir, b.trust, b.storage, opts...)
 	if err != nil {
@@ -221,6 +228,8 @@ func (b *bootstrapHandler) buildConfiguredIDE(
 		ide.WithStreamingOpen(true),
 		ide.WithLocker(b.mu),
 		ide.WithConfigFilename(workspaceConfigFilename),
+		ide.WithClipboard(b.clip),
+		ide.WithSystemURLOpener(b.openBrowser),
 		ide.WithDefaultWallpaper(makeThemedWallpaper(b.wallpaperTheme)),
 		ide.WithTabBarOffset(13),
 		ide.WithRightInset(b.quickMenuCells()),
@@ -234,10 +243,11 @@ func (b *bootstrapHandler) buildConfiguredIDE(
 		ide.WithPublishEvent(b.publishEvent),
 		ide.WithScheduleNextTick(b.scheduleNextTick),
 		ide.WithCellPixelSize(b.cellPixelSize),
-		ide.WithZdotDir(b.zdotDir),
+		ide.WithShellRCDir(b.shellRCDir),
+		ide.WithHostDataDir(b.dataDir),
 		ide.WithScheme(docsScheme, newDocsSchemeFunc(b.configPath)),
 		ide.WithTabsClickCallback(b.handleTabsClick),
-		ide.WithPackageConfigMergeHook(b.guiEnvLiveApplyHook),
+		ide.WithPackageConfigMergeHook(b.packageConfigMergeHook),
 		ide.WithDispatchOnPreview(cmdSetTheme,
 			func(cmd string, args ...string) (component.Responsive, func(), bool) {
 				if cmd != cmdSetTheme || b.g == nil {
@@ -377,8 +387,8 @@ func (b *bootstrapHandler) dragObserver(ev gui.DragEvent) {
 }
 
 // linkObserver opens a URL the user meta-clicked in the rendered frame.
-// Workspace files open in the editor; anything else goes to the system
-// browser.
+// Workspace files open in the editor; anything else opens as the
+// meta_open_url config says.
 func (b *bootstrapHandler) linkObserver(u *url.URL) {
 	if u.Scheme == "file" {
 		uri, err := workspaceapi.ParseURI(u.String())
@@ -391,7 +401,7 @@ func (b *bootstrapHandler) linkObserver(u *url.URL) {
 		}
 		return
 	}
-	if err := b.openBrowser(u); err != nil {
+	if err := b.currentIDE().OpenURL(u); err != nil {
 		b.notifyError("open link", err)
 	}
 }
@@ -440,10 +450,52 @@ func (b *bootstrapHandler) guiEnvLiveApplyHook(
 	}
 	if env, err := getGUIEnvVars(guiCfg); err != nil {
 		return idepkg.ConfigMergeResult{}, fmt.Errorf("decode gui.env: %w", err)
-	} else if err := applyGUIEnvVars(env); err != nil {
+	} else if err := b.host.Apply(env); err != nil {
 		return idepkg.ConfigMergeResult{}, fmt.Errorf("apply gui.env: %w", err)
 	}
-	return idepkg.ConfigMergeResult{LiveApplied: true}, nil
+	return idepkg.ConfigMergeResult{LivePaths: [][]string{{"gui", "env"}}}, nil
+}
+
+func (b *bootstrapHandler) guiThemesLiveApplyHook(
+	event idepkg.ConfigMergeEvent,
+) (idepkg.ConfigMergeResult, error) {
+	if !event.TouchesPath("gui", "themes") || b.g == nil {
+		return idepkg.ConfigMergeResult{}, nil
+	}
+	rootCfg, err := ide.Config(b.configPath, runeDefaultConfig())
+	if err != nil {
+		return idepkg.ConfigMergeResult{}, fmt.Errorf("reload config for gui.themes: %w", err)
+	}
+	guiCfg, ok, err := getGUIConfig(rootCfg)
+	if err != nil {
+		return idepkg.ConfigMergeResult{}, fmt.Errorf("load gui config: %w", err)
+	}
+	if !ok {
+		return idepkg.ConfigMergeResult{}, nil
+	}
+	scheduled := b.scheduleNextTick(func() {
+		themes := getGUIColorThemes(b.browser(), guiCfg)
+		if theme, reapplied := b.g.SetColorThemes(themes); reapplied {
+			b.currentIDE().SetDefaultAttributes(term.Attributes{
+				Fg: term.FromTcellColor(theme.Foreground),
+				Bg: term.FromTcellColor(theme.Background),
+			})
+		}
+	})
+	if !scheduled {
+		return idepkg.ConfigMergeResult{}, nil
+	}
+	return idepkg.ConfigMergeResult{LivePaths: [][]string{{"gui", "themes"}}}, nil
+}
+
+func (b *bootstrapHandler) packageConfigMergeHook(event idepkg.ConfigMergeEvent) (
+	idepkg.ConfigMergeResult, error,
+) {
+	env, envErr := b.guiEnvLiveApplyHook(event)
+	themes, themesErr := b.guiThemesLiveApplyHook(event)
+	return idepkg.ConfigMergeResult{
+		LivePaths: append(env.LivePaths, themes.LivePaths...),
+	}, errors.Join(envErr, themesErr)
 }
 
 func (b *bootstrapHandler) setupConfiguredIDE(
@@ -571,7 +623,7 @@ func (b *bootstrapHandler) performSwap() error {
 	client, releaseManager := newAPIClient(b.storage, b.installBackupDir, rootCfg)
 	// The network gates on the account, so it exists only from the
 	// moment the API client that vouches for it does.
-	b.network = newNetwork(b.rootCfg, b.dataDir, newNetworkGate(client))
+	b.network = newNetwork(b.rootCfg, b.dataDir, b.shellRCDir, newNetworkGate(client))
 	b.network.startAutoJoin()
 	realIDE, err := b.buildConfiguredIDE(client, releaseManager, true)
 	if err != nil {

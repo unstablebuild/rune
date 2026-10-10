@@ -138,9 +138,6 @@ func assertSelectionInvariants(t *testing.T, hx *Helix) {
 		"the caret sits on the primary's cursor")
 }
 
-// TestCopySelectionOnLine pins copy_selection_on_line: C and A-C copy
-// each range onto the next or previous line on the same columns, skip
-// lines too short to hold it, and hand the primary to the last copy.
 func TestCopySelectionOnLine(t *testing.T) {
 	const grid = "abc\ndef\nghi"
 	runSelCases(t, []selCase{
@@ -175,8 +172,6 @@ func TestCopySelectionOnLine(t *testing.T) {
 	})
 }
 
-// TestSelectionSetCommands pins the commands that only rearrange the
-// set: keep and remove primary, rotate, merge, split on newline.
 func TestSelectionSetCommands(t *testing.T) {
 	const grid = "abc\ndef\nghi"
 	runSelCases(t, []selCase{
@@ -222,8 +217,6 @@ func TestSelectionSetCommands(t *testing.T) {
 	})
 }
 
-// TestSelectionShapeCommandsOverAllRanges pins ;, A-;, A-:, x, X, A-x
-// and _ acting on every range at once.
 func TestSelectionShapeCommandsOverAllRanges(t *testing.T) {
 	const grid = "abc\ndef\nghi\njkl"
 	esc := namedKey(term.KeyEsc)
@@ -260,9 +253,6 @@ func TestSelectionShapeCommandsOverAllRanges(t *testing.T) {
 	})
 }
 
-// TestMotionsOverAllRanges pins that every motion moves every range,
-// with its own remembered column for vertical moves, and that ranges
-// pushed onto each other merge.
 func TestMotionsOverAllRanges(t *testing.T) {
 	const grid = "abc\ndef\nghi"
 	runSelCases(t, []selCase{
@@ -317,8 +307,6 @@ func TestMotionsOverAllRanges(t *testing.T) {
 	})
 }
 
-// TestSearchOverSelectionSet pins search_impl: n replaces the primary
-// in normal mode and pushes a new range in select mode.
 func TestSearchOverSelectionSet(t *testing.T) {
 	t.Run("n replaces the primary", func(t *testing.T) {
 		hx, _, _ := newHelix(t, "foo bar foo\nfoo bar foo", term.Coordinates{})
@@ -349,8 +337,6 @@ func TestSearchOverSelectionSet(t *testing.T) {
 	})
 }
 
-// TestSelectionCountMessage pins the count the message bar shows while
-// more than one range exists, in the format of Helix's status line.
 func TestSelectionCountMessage(t *testing.T) {
 	hx, _, _ := newHelix(t, "abc\ndef\nghi", term.Coordinates{})
 	hx.Resize(20, 5)
@@ -369,10 +355,6 @@ func TestSelectionCountMessage(t *testing.T) {
 	assert.NotContains(t, draw(), "sels")
 }
 
-// TestSelectionSetFollowsOutOfBandEdits pins that an edit the handler
-// did not make, such as one the IDE applies between two keys, carries
-// every range along with the text, the way Helix maps a view's
-// selection through a transaction.
 func TestSelectionSetFollowsOutOfBandEdits(t *testing.T) {
 	hx, buf, _ := newHelix(t, "abcdef\nabcdef", term.Coordinates{X: 3})
 	send(t, hx, keys("C")...)
@@ -386,7 +368,6 @@ func TestSelectionSetFollowsOutOfBandEdits(t *testing.T) {
 	assert.Equal(t, "XXabcdef\ncdef", buf.String())
 }
 
-// TestSecondaryCaretIsDim pins the drawn attribute of a ghost caret.
 func TestSecondaryCaretIsDim(t *testing.T) {
 	hx, _, _ := newHelix(t, "abc\ndef", term.Coordinates{})
 	hx.Resize(10, 3)
@@ -487,9 +468,6 @@ func selOf(primary int, ranges ...rng) *selection {
 	return &selection{ranges: ranges, primary: primary}
 }
 
-// TestOperatorsOverAllRanges pins the editing operators acting on every
-// range: same-row ranges exercise the column shift of the mapping and
-// cross-row ranges the row shift.
 func TestOperatorsOverAllRanges(t *testing.T) {
 	const grid = "abc\ndef"
 	ctrl := func(ch rune) term.Event { return modKey(term.ModCtrl, ch) }
@@ -595,8 +573,6 @@ func TestOperatorsOverAllRanges(t *testing.T) {
 	})
 }
 
-// TestRegisterFragments pins what a yank or delete over several ranges
-// stores, and how a register written elsewhere reads back.
 func TestRegisterFragments(t *testing.T) {
 	t.Run("y stores one fragment per range and the joined text", func(t *testing.T) {
 		hx, _, clip := newHelix(t, "abc\ndef", term.Coordinates{X: 1})
@@ -654,9 +630,6 @@ func TestRegisterFragments(t *testing.T) {
 	})
 }
 
-// TestUndoRestoresSelectionSet pins that undo and redo bring back the
-// selection set stored with the revision, as Helix's history does,
-// rather than a single caret.
 func TestUndoRestoresSelectionSet(t *testing.T) {
 	esc := namedKey(term.KeyEsc)
 	t.Run("undo restores the set before a delete and redo the one after", func(t *testing.T) {
@@ -724,11 +697,6 @@ func TestUndoRestoresSelectionSet(t *testing.T) {
 	})
 }
 
-// TestInsertModeOverAllRanges pins insert mode with several ranges:
-// every entry places a cursor per range the way insert_mode,
-// append_mode and insert_with_indent do, every key edits at all of
-// them, and the ranges ride along the way Range::map and the
-// auto-pair hook carry them in Helix.
 func TestInsertModeOverAllRanges(t *testing.T) {
 	const grid = "abc\ndef"
 	esc := []term.Event{namedKey(term.KeyEsc)}
@@ -857,10 +825,6 @@ func snapshotCursor(hx *Helix) cursorState {
 	return s
 }
 
-// TestSelectionSetMirrorsCursor pins the Phase 1 contract: after any
-// event the selection set is the one range the cursor shows, and
-// installing that range again changes nothing, so the set can be
-// rebuilt from the cursor and pushed back without drift.
 func TestSelectionSetMirrorsCursor(t *testing.T) {
 	click := func(x, y int) term.Event {
 		return term.Event{Type: term.EventMouse, Key: term.MouseLeft, MouseX: x, MouseY: y}
@@ -939,8 +903,6 @@ func TestSelectionSetMirrorsCursor(t *testing.T) {
 	}
 }
 
-// TestInstallRangeShapes pins the shapes installRange builds for the
-// cursor and that readRange reads each of them back unchanged.
 func TestInstallRangeShapes(t *testing.T) {
 	const content = "abc\ndef\n\nghi"
 	for _, tc := range []struct {
@@ -999,10 +961,6 @@ func TestInstallRangeShapes(t *testing.T) {
 	})
 }
 
-// TestPinnedSelectionIsReboundAfterTheEvent pins that a text object,
-// which the cursor holds as an explicit range, is an ordinary
-// anchor/head pair by the time the next key arrives, so it can be
-// flipped and extended like any other selection.
 func TestPinnedSelectionIsReboundAfterTheEvent(t *testing.T) {
 	hx, _, _ := newHelix(t, "foo bar baz", term.Coordinates{X: 5})
 	send(t, hx, keys("miw")...)
@@ -1019,10 +977,6 @@ func TestPinnedSelectionIsReboundAfterTheEvent(t *testing.T) {
 	assert.Equal(t, "bar baz", sel(t, hx), "extended from the object's anchor")
 }
 
-// TestSecondaryRangesAreDrawn pins the location lists that show the
-// non-primary ranges: the covered cells per row, and the cell each
-// range's cursor sits on dimmed, with nothing left behind once the set
-// collapses to one range.
 func TestSecondaryRangesAreDrawn(t *testing.T) {
 	hx, _, _ := newHelix(t, "abc\ndef\nghi", term.Coordinates{})
 	h := impl(hx)

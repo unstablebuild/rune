@@ -47,10 +47,10 @@ import (
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/extension"
 	"unstable.build/rune/internal/extension/extensionv2"
+	"unstable.build/rune/internal/ide/console/pkgconsole"
 	"unstable.build/rune/internal/ide/ideauthorizer"
 	"unstable.build/rune/internal/ide/idepkg"
 	"unstable.build/rune/internal/ide/idepkg/idepkgtest"
-	"unstable.build/rune/internal/ide/pkgshell"
 	"unstable.build/rune/internal/localstorage"
 	"unstable.build/rune/internal/text"
 	"unstable.build/rune/internal/workspace"
@@ -75,8 +75,9 @@ func TestStartInstalledExtensions(t *testing.T) {
 		h.workspaces[0] = ws
 		h.workspaceCount = 1
 
-		started := h.startInstalledExtensions([]string{"rune-agent"})
-		assert.True(t, started)
+		started := h.startInstalledExtensions([]string{"rune-agent", "other-ext"})
+		assert.Equal(t, []string{"rune-agent"}, started,
+			"only ids present in the merged config are reported")
 
 		assert.Empty(t, home.runCalls(),
 			"home runner must not start user extensions")
@@ -98,7 +99,7 @@ func TestStartInstalledExtensions(t *testing.T) {
 		}
 
 		started := h.startInstalledExtensions([]string{"other-ext"})
-		assert.False(t, started)
+		assert.Empty(t, started)
 		assert.Empty(t, home.runCalls())
 	})
 
@@ -113,7 +114,7 @@ func TestStartInstalledExtensions(t *testing.T) {
 				return ideConfig{}, nil
 			},
 		}
-		assert.False(t, h.startInstalledExtensions(nil))
+		assert.Empty(t, h.startInstalledExtensions(nil))
 		assert.Empty(t, home.runCalls())
 	})
 
@@ -133,7 +134,7 @@ func TestStartInstalledExtensions(t *testing.T) {
 		h.workspaces[0] = ws
 		h.workspaceCount = 1
 		started := h.startInstalledExtensions([]string{"rune-agent"})
-		assert.True(t, started)
+		assert.Equal(t, []string{"rune-agent"}, started)
 		assert.Len(t, wsRunner.runCalls(), 1)
 	})
 }
@@ -189,13 +190,13 @@ func TestAfterPackageConfigMerge(t *testing.T) {
 		var hookCalls int
 		h, wsRunner := newHandler(t, func(idepkg.ConfigMergeEvent) (idepkg.ConfigMergeResult, error) {
 			hookCalls++
-			return idepkg.ConfigMergeResult{LiveApplied: true}, nil
+			return idepkg.ConfigMergeResult{LivePaths: [][]string{{"gui", "env"}}}, nil
 		})
 		event := idepkg.ConfigMergeEvent{Diff: mustYAMLDoc(t, "gui:\n  env:\n    FOO: bar\n")}
 
 		result, err := h.afterPackageConfigMerge(event)
 		require.NoError(t, err)
-		assert.True(t, result.LiveApplied)
+		assert.ElementsMatch(t, [][]string{{"gui", "env"}}, result.LivePaths)
 		assert.Equal(t, 1, hookCalls)
 		assert.Empty(t, wsRunner.runCalls())
 	})
@@ -213,7 +214,7 @@ func TestAfterPackageConfigMerge(t *testing.T) {
 
 		result, err := h.afterPackageConfigMerge(event)
 		require.NoError(t, err)
-		assert.True(t, result.LiveApplied)
+		assert.ElementsMatch(t, [][]string{{"extensions", "rune-agent"}}, result.LivePaths)
 		assert.Equal(t, 1, hookCalls)
 		require.Len(t, wsRunner.runCalls(), 1)
 		assert.Equal(t, "rune-agent", wsRunner.runCalls()[0].id)
@@ -222,7 +223,7 @@ func TestAfterPackageConfigMerge(t *testing.T) {
 	t.Run("both env and extensions live-apply", func(t *testing.T) {
 		t.Parallel()
 		h, wsRunner := newHandler(t, func(idepkg.ConfigMergeEvent) (idepkg.ConfigMergeResult, error) {
-			return idepkg.ConfigMergeResult{LiveApplied: true}, nil
+			return idepkg.ConfigMergeResult{LivePaths: [][]string{{"gui", "env"}}}, nil
 		})
 		event := idepkg.ConfigMergeEvent{
 			Diff: mustYAMLDoc(t,
@@ -230,7 +231,8 @@ func TestAfterPackageConfigMerge(t *testing.T) {
 		}
 		result, err := h.afterPackageConfigMerge(event)
 		require.NoError(t, err)
-		assert.True(t, result.LiveApplied)
+		assert.ElementsMatch(t, [][]string{{"gui", "env"}, {"extensions", "rune-agent"}},
+			result.LivePaths)
 		require.Len(t, wsRunner.runCalls(), 1)
 	})
 
@@ -245,8 +247,8 @@ func TestAfterPackageConfigMerge(t *testing.T) {
 		result, err := h.afterPackageConfigMerge(event)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "boom")
-		// extension start still flips LiveApplied even when the gui.env hook errors.
-		assert.True(t, result.LiveApplied)
+		assert.ElementsMatch(t, [][]string{{"extensions", "rune-agent"}}, result.LivePaths,
+			"the extension still starts when the stored hook errors")
 	})
 
 	t.Run("nil stored hook still starts extension", func(t *testing.T) {
@@ -257,7 +259,7 @@ func TestAfterPackageConfigMerge(t *testing.T) {
 		}
 		result, err := h.afterPackageConfigMerge(event)
 		require.NoError(t, err)
-		assert.True(t, result.LiveApplied)
+		assert.ElementsMatch(t, [][]string{{"extensions", "rune-agent"}}, result.LivePaths)
 		require.Len(t, wsRunner.runCalls(), 1)
 	})
 
@@ -269,27 +271,28 @@ func TestAfterPackageConfigMerge(t *testing.T) {
 			return idepkg.ConfigMergeResult{}, nil
 		})
 		var gotNames []string
-		h.tutorialsInstalled = func(names []string) (bool, error) {
+		h.tutorialsInstalled = func(names []string) ([]string, error) {
 			gotNames = names
-			return true, nil
+			return []string{"go-intro"}, nil
 		}
 		event := idepkg.ConfigMergeEvent{
-			Diff: mustYAMLDoc(t, "tutorials:\n  go-intro: go-intro.star\n"),
+			Diff: mustYAMLDoc(t, "tutorials:\n  go-intro: go-intro.star\n  loaded: loaded.star\n"),
 		}
 		result, err := h.afterPackageConfigMerge(event)
 		require.NoError(t, err)
-		assert.True(t, result.LiveApplied)
+		assert.ElementsMatch(t, [][]string{{"tutorials", "go-intro"}}, result.LivePaths,
+			"only the tutorials made live are reported")
 		assert.Equal(t, 1, hookCalls)
-		assert.Equal(t, []string{"go-intro"}, gotNames)
+		assert.Equal(t, []string{"go-intro", "loaded"}, gotNames)
 	})
 
 	t.Run("no tutorials added does not invoke tutorialsInstalled", func(t *testing.T) {
 		t.Parallel()
 		h, _ := newHandler(t, nil)
 		var called bool
-		h.tutorialsInstalled = func([]string) (bool, error) {
+		h.tutorialsInstalled = func([]string) ([]string, error) {
 			called = true
-			return true, nil
+			return nil, nil
 		}
 		event := idepkg.ConfigMergeEvent{
 			Diff: mustYAMLDoc(t, "extensions:\n  rune-agent:\n    path: rune-agent-bin\n"),
@@ -302,8 +305,8 @@ func TestAfterPackageConfigMerge(t *testing.T) {
 	t.Run("tutorialsInstalled error is joined onto returned error", func(t *testing.T) {
 		t.Parallel()
 		h, _ := newHandler(t, nil)
-		h.tutorialsInstalled = func([]string) (bool, error) {
-			return false, errors.New("tutorial boom")
+		h.tutorialsInstalled = func([]string) ([]string, error) {
+			return nil, errors.New("tutorial boom")
 		}
 		event := idepkg.ConfigMergeEvent{
 			Diff: mustYAMLDoc(t, "tutorials:\n  go-intro: go-intro.star\n"),
@@ -314,16 +317,6 @@ func TestAfterPackageConfigMerge(t *testing.T) {
 	})
 }
 
-// TestPkgInstallStartsExtensionWithPackageEnv is the black-box regression for
-// the env-before-spawn contract. It drives the real `pkg install <pkg>` shell
-// command against a real package manager. The installed package's config.yaml
-// adds both a gui.env block and an extensions entry. The IDE's gui.env hook
-// (modeled on cmd/rune's guiEnvLiveApplyHook) applies the env via os.Setenv,
-// and the IDE then starts the newly-configured extension on the home runner —
-// a stubbed extension.Runner that records os.Getenv at the moment Run is
-// invoked, exactly where a real extension subprocess would snapshot its
-// environment. The recorded value must be the package's env, which only holds
-// if the env was applied before the extension was started.
 func TestPkgInstallStartsExtensionWithPackageEnv(t *testing.T) {
 	const (
 		envKey = "RUNE_TEST_PKG_EXT_ENV"
@@ -360,7 +353,7 @@ func TestPkgInstallStartsExtensionWithPackageEnv(t *testing.T) {
 		if err := os.Setenv(envKey, envVal); err != nil {
 			return idepkg.ConfigMergeResult{}, err
 		}
-		return idepkg.ConfigMergeResult{LiveApplied: true}, nil
+		return idepkg.ConfigMergeResult{LivePaths: [][]string{{"gui", "env"}}}, nil
 	}
 
 	m := newPkgInstallExtHandler(t, configPath, rm,
@@ -374,12 +367,9 @@ func TestPkgInstallStartsExtensionWithPackageEnv(t *testing.T) {
 	require.NoError(t, m.addWorkspace(wsURI, true, false, -1))
 	m.quiesce()
 
-	h := pkgshell.New(pkgshell.Config{
-		Manager:       m.pkgmanager.pkg,
-		UpdateChecker: m.pkgmanager.uc,
-	})
+	h := pkgconsole.New(pkgconsole.Config{Manager: m.pkgmanager.pkg})
 	_, err = h.HandleCommand(context.Background(), repl.Command{
-		Name: pkgshell.CommandName,
+		Name: pkgconsole.CommandName,
 		Args: []string{"install", pkgID},
 	}, repl.NopProgressWriter())
 	require.NoError(t, err)
@@ -410,15 +400,6 @@ func TestPkgInstallStartsExtensionWithPackageEnv(t *testing.T) {
 			"inherits the package environment")
 }
 
-// TestPkgInstallRegistersTutorialLive is the black-box regression for the
-// install-time tutorial registration contract, mirroring
-// TestPkgInstallStartsExtensionWithPackageEnv for the extensions path. It
-// drives a real `pkg install <pkg>` through a real IDE against a real package
-// manager. The installed package's config.yaml adds a `tutorials:` entry whose
-// .star file ships on disk. Before this feature a freshly-installed tutorial
-// was invisible until restart because `tutorial start <name>` resolves only
-// from the live tutorialRunner.tutorials map; the install must now register it
-// live, so the tutorial is startable without a restart.
 func TestPkgInstallRegistersTutorialLive(t *testing.T) {
 	const (
 		pkgID    = "tutpkg"
@@ -472,17 +453,22 @@ func TestPkgInstallRegistersTutorialLive(t *testing.T) {
 	require.False(t, tutorialRegistered(i, mu, tutName),
 		"tutorial must not be registered before install")
 
-	h := pkgshell.New(pkgshell.Config{
-		Manager:       i.workspaceHandler.pkgmanager.pkg,
-		UpdateChecker: i.workspaceHandler.pkgmanager.uc,
-	})
+	ui := recordingPkgUI{Notifications: idepkgtest.NewNotifications(t), t: t}
+	h := pkgconsole.New(pkgconsole.Config{Manager: i.workspaceHandler.pkgmanager.pkg})
 	mu.Lock()
-	_, err = h.HandleCommand(context.Background(), repl.Command{
-		Name: pkgshell.CommandName,
+	_, err = h.HandleCommand(idepkg.WithUI(context.Background(), ui), repl.Command{
+		Name: pkgconsole.CommandName,
 		Args: []string{"install", pkgID},
 	}, repl.NopProgressWriter())
 	mu.Unlock()
 	require.NoError(t, err)
+	var notices []string
+	for _, n := range ui.Active() {
+		notices = append(notices, n.Msg)
+	}
+	assert.Equal(t, []string{
+		"applied tutpkg configuration updates. All changes are in effect now: tutorials.go-intro.",
+	}, notices)
 
 	merged, err := os.ReadFile(configPath)
 	require.NoError(t, err)
@@ -495,10 +481,16 @@ func TestPkgInstallRegistersTutorialLive(t *testing.T) {
 		"installing a package with a tutorials entry must register the tutorial live")
 }
 
-// TestPkgInstallMultipleTutorialsPromptsOnce asserts that when a single install
-// adds more than one tutorial, every tutorial is registered live but the user
-// is prompted exactly once (for the first tutorial). Prompting per tutorial
-// would stack overlapping floating windows on top of each other.
+// recordingPkgUI records the notices of the package installs made for it.
+type recordingPkgUI struct {
+	*idepkgtest.Notifications
+	t *testing.T
+}
+
+func (u recordingPkgUI) PromptConfig(idepkg.ConfigPrompt, func(bool)) {
+	u.t.Error("the install must not prompt")
+}
+
 func TestPkgInstallMultipleTutorialsPromptsOnce(t *testing.T) {
 	const pkgID = "multitutpkg"
 	tutNames := []string{"alpha-intro", "beta-intro"}
@@ -553,13 +545,10 @@ func TestPkgInstallMultipleTutorialsPromptsOnce(t *testing.T) {
 	require.Equal(t, 0, countFloatingWindows(i, mu),
 		"no prompt should be open before install")
 
-	h := pkgshell.New(pkgshell.Config{
-		Manager:       i.workspaceHandler.pkgmanager.pkg,
-		UpdateChecker: i.workspaceHandler.pkgmanager.uc,
-	})
+	h := pkgconsole.New(pkgconsole.Config{Manager: i.workspaceHandler.pkgmanager.pkg})
 	mu.Lock()
 	_, err = h.HandleCommand(context.Background(), repl.Command{
-		Name: pkgshell.CommandName,
+		Name: pkgconsole.CommandName,
 		Args: []string{"install", pkgID},
 	}, repl.NopProgressWriter())
 	mu.Unlock()
@@ -575,10 +564,6 @@ func TestPkgInstallMultipleTutorialsPromptsOnce(t *testing.T) {
 		"installing multiple tutorials must open exactly one prompt, not one per tutorial")
 }
 
-// TestPkgInstallTutorialDoesNotPromptDuringActiveTutorial asserts that
-// installing a package that adds a tutorial does not interrupt a tutorial
-// the user is already running: the new tutorial is registered live, but
-// no "run it now?" prompt is opened over the active tutorial.
 func TestPkgInstallTutorialDoesNotPromptDuringActiveTutorial(t *testing.T) {
 	const (
 		pkgID   = "livetutpkg"
@@ -634,13 +619,10 @@ func TestPkgInstallTutorialDoesNotPromptDuringActiveTutorial(t *testing.T) {
 	}, 10*time.Second, 20*time.Millisecond,
 		"the basics tutorial should be running before install")
 
-	h := pkgshell.New(pkgshell.Config{
-		Manager:       i.workspaceHandler.pkgmanager.pkg,
-		UpdateChecker: i.workspaceHandler.pkgmanager.uc,
-	})
+	h := pkgconsole.New(pkgconsole.Config{Manager: i.workspaceHandler.pkgmanager.pkg})
 	mu.Lock()
 	_, err = h.HandleCommand(context.Background(), repl.Command{
-		Name: pkgshell.CommandName,
+		Name: pkgconsole.CommandName,
 		Args: []string{"install", pkgID},
 	}, repl.NopProgressWriter())
 	mu.Unlock()
@@ -844,7 +826,7 @@ func newPkgInstallExtHandler(
 	m := new(testWorkspaceManagerHandler)
 	m.workspaceManagerHandler = new(workspaceManagerHandler)
 	m.packageConfigMergeHook = mergeHook
-	m.tutorialsInstalled = func([]string) (bool, error) { return false, nil }
+	m.tutorialsInstalled = func([]string) ([]string, error) { return nil, nil }
 	if len(gitRemoteURL) > 0 {
 		m.gitRemoteURL = gitRemoteURL[0]
 	}

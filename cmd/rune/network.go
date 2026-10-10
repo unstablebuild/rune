@@ -30,9 +30,11 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"google.golang.org/grpc"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/ide"
-	"unstable.build/rune/internal/ide/networkshell"
+	"unstable.build/rune/internal/ide/console/networkconsole"
+	"unstable.build/rune/internal/ide/idepkg/pkgrpc"
 	"unstable.build/rune/internal/runenet"
 	"unstable.build/rune/internal/workspace"
 	"unstable.build/rune/internal/workspace/workspacerune"
@@ -53,6 +55,11 @@ type network struct {
 	gated    bool
 	autoJoin bool
 	dataDir  string
+	// shellRCDir holds the dotfiles for peers' login shells; see
+	// workspace.NewFileSchemeFunc.
+	shellRCDir string
+	// packages is this machine's package manager as served to peers.
+	packages servedPackages
 
 	mu     sync.Mutex
 	server *runenet.WorkspaceServer
@@ -69,7 +76,7 @@ type network struct {
 // the user's mistake to surface, not a reason to run partially
 // constructed.
 func newNetwork(
-	rootCfg config.Config, dataDir string, gate *networkGate,
+	rootCfg config.Config, dataDir, shellRCDir string, gate *networkGate,
 ) *network {
 	if gate == nil {
 		panic("newNetwork: gate must not be nil")
@@ -80,9 +87,10 @@ func newNetwork(
 		cfg, _ = runenet.FromConfig(config.NopConfig(), dataDir)
 	}
 	ret := &network{
-		gate:     gate,
-		autoJoin: cfg.AutoJoin,
-		dataDir:  dataDir,
+		gate:       gate,
+		autoJoin:   cfg.AutoJoin,
+		dataDir:    dataDir,
+		shellRCDir: shellRCDir,
 		// A key configured out of band belongs to a debug build
 		// driving a coordination server of its own, which the paid
 		// mesh must not be mixed up with.
@@ -188,7 +196,10 @@ func (n *network) join(ctx context.Context) error {
 	if n.closed || n.server != nil {
 		return nil
 	}
-	server, err := serveNetworkWorkspaces(n.node, n.dataDir)
+	server, err := serveNetworkWorkspaces(n.node, n.dataDir, n.shellRCDir,
+		runenet.WithServices(func(r grpc.ServiceRegistrar) {
+			pkgrpc.NewServer(&n.packages).Register(r)
+		}))
 	if err != nil {
 		return fmt.Errorf("could not serve workspaces on the network: %w", err)
 	}
@@ -223,7 +234,7 @@ func networkConfig(rootCfg config.Config, dataDir string) (runenet.Config, error
 // it is resolved to an absolute path here: the peer consumes it as a
 // path on this host, not relative to its own process.
 func serveNetworkWorkspaces(
-	node *runenet.Node, dataDir string,
+	node *runenet.Node, dataDir, shellRCDir string, opts ...runenet.ServeOption,
 ) (*runenet.WorkspaceServer, error) {
 	uri, err := workspaceapi.CurrentUserHostURI("/")
 	if err != nil {
@@ -233,12 +244,12 @@ func serveNetworkWorkspaces(
 	if err != nil {
 		return nil, fmt.Errorf("resolve data dir %s: %w", dataDir, err)
 	}
-	scheme, err := workspace.NewFileScheme(
+	scheme, err := workspace.NewFileSchemeFunc(dataDir, shellRCDir)(
 		context.Background(), config.NopConfig(), uri)
 	if err != nil {
 		return nil, fmt.Errorf("root workspace scheme: %w", err)
 	}
-	server, err := runenet.ServeWorkspace(node, scheme, dataDir)
+	server, err := runenet.ServeWorkspace(node, scheme, dataDir, opts...)
 	if err != nil {
 		_ = scheme.Close()
 		return nil, err
@@ -252,17 +263,20 @@ func serveNetworkWorkspaces(
 // open a modal — so unlike the scheme it needs no IDE and is wired at
 // IDE construction.
 func (n *network) completerOption() ide.Option {
-	return ide.WithWorkspaceOpenCompleter(workspacerune.Completer(gatedMesh{n}))
+	return ide.WithWorkspaceOpenCompleter(
+		workspacerune.Scheme, workspacerune.Completer(gatedMesh{n}))
 }
 
 // register wires the network into a live IDE: the rune:// workspace
-// scheme and the `network` console command. Both prompt the user to
-// sign in or upgrade when the plan does not cover the network, which
-// is why they are registered here rather than at IDE construction —
-// the prompter cannot exist before the IDE does.
+// scheme, the `network` console command and the IDE's package manager,
+// which peers install through. The first two prompt the user to sign
+// in or upgrade when the plan does not cover the network, which is why
+// they are registered here rather than at IDE construction — the
+// prompter cannot exist before the IDE does.
 func (n *network) register(
 	i *ide.IDE, scheduleNextTick func(func()) bool,
 ) error {
+	n.packages.set(i.PackageManager())
 	prompter := newNetworkPrompter(i, scheduleNextTick)
 	n.setPrompter(prompter)
 	if err := i.RegisterScheme(
@@ -271,11 +285,11 @@ func (n *network) register(
 	}
 	// The mesh round-trips run off the editor's event loop, which is
 	// why `network` is a console command rather than an ex-command.
-	h := networkshell.New(networkshell.Config{
+	h := networkconsole.New(networkconsole.Config{
 		Network: gatedNetwork{n: n, prompter: prompter},
 	})
-	if err := i.RegisterREPLCommand(networkshell.Manual(), h); err != nil {
-		return fmt.Errorf("register '%s': %w", networkshell.CommandName, err)
+	if err := i.RegisterREPLCommand(networkconsole.Manual(), h); err != nil {
+		return fmt.Errorf("register '%s': %w", networkconsole.CommandName, err)
 	}
 	return nil
 }
@@ -416,18 +430,19 @@ func (g gatedNetwork) Down(ctx context.Context) error {
 // not there to be asked, and removing it is how the user makes room.
 func (g gatedNetwork) Machines(
 	ctx context.Context,
-) ([]networkshell.Machine, error) {
+) ([]networkconsole.Machine, error) {
 	machines, err := g.n.gate.machines(ctx)
 	if err != nil {
 		g.prompter.prompt(err)
 		return nil, err
 	}
-	ret := make([]networkshell.Machine, 0, len(machines))
+	ret := make([]networkconsole.Machine, 0, len(machines))
 	for _, m := range machines {
-		ret = append(ret, networkshell.Machine{
-			Hostname: m.Hostname,
-			LastSeen: m.LastSeen,
-			Online:   m.Online,
+		ret = append(ret, networkconsole.Machine{
+			Hostname:  m.Hostname,
+			LastSeen:  m.LastSeen,
+			Online:    m.Online,
+			ServeOnly: m.ServeOnly,
 		})
 	}
 	return ret, nil

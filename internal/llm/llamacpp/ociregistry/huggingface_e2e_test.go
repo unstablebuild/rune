@@ -155,9 +155,6 @@ func TestHuggingFace_RangeReadVerifiesGGUFMagic(t *testing.T) {
 	t.Logf("verified %s on %d-byte blob", ggufMagic, model.Size)
 }
 
-// TestHuggingFace_FullPull is gated on OCIREGISTRY_E2E_FULL_PULL because it
-// downloads the entire ~800 MiB weight blob. Use it to exercise the pull
-// loop, digest verification, and resume logic against the real CDN.
 func TestHuggingFace_FullPull(t *testing.T) {
 	skipIfE2EDisabled(t)
 	if os.Getenv("OCIREGISTRY_E2E_FULL_PULL") == "" {

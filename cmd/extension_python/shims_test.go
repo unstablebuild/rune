@@ -47,7 +47,7 @@ func initRootHarness(t *testing.T, dataDir string, cfg config.Config) *fakeExecu
 	require.NoError(t, setting.set(context.Background(), root, true))
 	err := initializeProjectRoot(context.Background(), fs, ex,
 		newFakeNotifications(), &captureLSP{},
-		fakeInstaller{fs: fs, root: dataDir}, cfg, dataDir, setting, nil, root)
+		pyTools(t, notInstalled), cfg, dataDir, setting, nil, root)
 	require.NoError(t, err)
 	return ex
 }

@@ -1091,7 +1091,52 @@ func (c *Cursor) IsEndWord() bool {
 	return word != "" && end == pos
 }
 
-func isWordObjectBlank(r rune) bool {
+// AtWordObjectEnd reports whether the cell under the cursor is the last cell
+// of a word as MoveRightWordObjectEnd defines words: the next cell is a blank,
+// has a different wordClass, sits on another line, or does not exist. Blank
+// and missing cells are never word ends.
+func (c *Cursor) AtWordObjectEnd(bigWord bool) bool {
+	return c.wordObjectEndAt(c.cursorAtScroll(), bigWord)
+}
+
+// MoveRightWordObjectEnd moves the cursor right to the end of the current or
+// next word, where a word is a maximal run of cells with the same wordClass:
+// word runes (isWordObjectRune) and other punctuation are separate words,
+// except under bigWord where every non-blank run is a single word. Blank runs
+// and empty lines are never word ends, so they are skipped. Returns false and
+// leaves the cursor in place when no word end exists to the right.
+func (c *Cursor) MoveRightWordObjectEnd(bigWord bool) bool {
+	next, ok := c.nextCellPosition(c.cursorAtScroll())
+	for i := 0; i < budgetFindWord && ok; i++ {
+		if c.wordObjectEndAt(next, bigWord) {
+			_, ok = c.MoveToScroll(next)
+			return ok
+		}
+		next, ok = c.nextCellPosition(next)
+	}
+	return false
+}
+
+func (c *Cursor) wordObjectEndAt(pos term.Coordinates, bigWord bool) bool {
+	cell, ok := c.cellAtScrollCoordinates(pos)
+	if !ok {
+		return false
+	}
+	class := c.wordClass(cell.Ch, bigWord)
+	if class == 0 {
+		return false
+	}
+	next, ok := c.nextCellPosition(pos)
+	if !ok || next.Y != pos.Y {
+		return true
+	}
+	nextCell, ok := c.cellAtScrollCoordinates(next)
+	return !ok || c.wordClass(nextCell.Ch, bigWord) != class
+}
+
+// IsWordObjectBlank reports whether r is blank for word-object motions:
+// a space, a tab, or the \x00 rune of an empty cell that was never written.
+func IsWordObjectBlank(r rune) bool {
 	return r == '\x00' || r == ' ' || r == '\t'
 }
 
@@ -1271,7 +1316,7 @@ func validSelectionRange(rng term.Range) bool {
 }
 
 func (c *Cursor) wordClass(r rune, group bool) int {
-	if isWordObjectBlank(r) {
+	if IsWordObjectBlank(r) {
 		return 0
 	}
 	if group {
@@ -1284,20 +1329,20 @@ func (c *Cursor) wordClass(r rune, group bool) int {
 }
 
 func (c *Cursor) wordObjectStart(pos term.Coordinates, allowPrevFallback bool) (term.Coordinates, bool) {
-	if cell, ok := c.cellAtScrollCoordinates(pos); ok && !isWordObjectBlank(cell.Ch) {
+	if cell, ok := c.cellAtScrollCoordinates(pos); ok && !IsWordObjectBlank(cell.Ch) {
 		return pos, true
 	}
 
 	if allowPrevFallback {
 		for next, ok := c.firstCellInOrAfter(pos); ok && next.Y == pos.Y; next, ok = c.nextCellPosition(next) {
 			cell, ok := c.cellAtScrollCoordinates(next)
-			if ok && !isWordObjectBlank(cell.Ch) {
+			if ok && !IsWordObjectBlank(cell.Ch) {
 				return next, true
 			}
 		}
 		for prev, ok := c.lastCellInOrBefore(pos); ok && prev.Y == pos.Y; prev, ok = c.previousCellPosition(prev) {
 			cell, ok := c.cellAtScrollCoordinates(prev)
-			if ok && !isWordObjectBlank(cell.Ch) {
+			if ok && !IsWordObjectBlank(cell.Ch) {
 				return prev, true
 			}
 		}
@@ -1306,7 +1351,7 @@ func (c *Cursor) wordObjectStart(pos term.Coordinates, allowPrevFallback bool) (
 
 	for next, ok := c.firstCellInOrAfter(pos); ok; next, ok = c.nextCellPosition(next) {
 		cell, ok := c.cellAtScrollCoordinates(next)
-		if ok && !isWordObjectBlank(cell.Ch) {
+		if ok && !IsWordObjectBlank(cell.Ch) {
 			return next, true
 		}
 	}
@@ -1322,7 +1367,7 @@ func (c *Cursor) wordObjectBounds(
 	}
 
 	cell, ok := c.cellAtScrollCoordinates(pos)
-	if !ok || isWordObjectBlank(cell.Ch) {
+	if !ok || IsWordObjectBlank(cell.Ch) {
 		return term.Coordinates{}, term.Coordinates{}, false
 	}
 
@@ -1349,7 +1394,7 @@ func (c *Cursor) wordObjectBounds(
 		right := endCoord
 		for right.X < c.view().Columns(pos.Y) {
 			rightCell, ok := c.cellAtScrollCoordinates(right)
-			if !ok || !isWordObjectBlank(rightCell.Ch) {
+			if !ok || !IsWordObjectBlank(rightCell.Ch) {
 				break
 			}
 			right.X++
@@ -1360,7 +1405,7 @@ func (c *Cursor) wordObjectBounds(
 			for startCoord.X > 0 {
 				left := term.Coordinates{Y: startCoord.Y, X: startCoord.X - 1}
 				leftCell, ok := c.cellAtScrollCoordinates(left)
-				if !ok || !isWordObjectBlank(leftCell.Ch) {
+				if !ok || !IsWordObjectBlank(leftCell.Ch) {
 					break
 				}
 				startCoord = left

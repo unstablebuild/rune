@@ -25,10 +25,6 @@ import (
 	"unstable.build/rune/internal/ide/starlarkconfig"
 )
 
-// TestBundledConfigStar locks in the mode/tui-aware fuzzy-search package
-// config shipped at cmd/extension_fuzzy_search/config.star. RUNE-137 moved
-// the search* aliases and bindings out of cmd/rune/rune.star and into this
-// file, so the host now relies on it for every search command.
 func TestBundledConfigStar(t *testing.T) {
 	t.Parallel()
 

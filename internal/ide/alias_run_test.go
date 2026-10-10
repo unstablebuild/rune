@@ -58,9 +58,6 @@ func newExForAliasRun(
 		text.WithCommandAliases(aliases))
 }
 
-// TestAliasPluginWaitDoesNotBlockEventLoop is the RUNE-345 regression: a
-// `!!` alias step used to run the shell inline on the host event loop,
-// so `:worktreeremove` froze the UI for as long as git took.
 func TestAliasPluginWaitDoesNotBlockEventLoop(t *testing.T) {
 	b := newExForAliasRun(t, map[string]text.CommandAlias{
 		"slowalias": {Commands: []string{"!! sleep 10", "edit wi.go"}},
@@ -80,8 +77,6 @@ func TestAliasPluginWaitDoesNotBlockEventLoop(t *testing.T) {
 		"the event loop must keep handling keys while the !! step runs")
 }
 
-// TestAliasPluginWaitStillOrdersChain pins the guarantee that the old
-// inline run bought: step N+1 resolves the vars step N captured.
 func TestAliasPluginWaitStillOrdersChain(t *testing.T) {
 	b := newExForTestingWithWorkspace(t, &realExecLoader{testLoader: testLoader{}},
 		texttest.NopEditor(), vte.DefaultConfig(),
@@ -106,8 +101,6 @@ func TestAliasPluginWaitStillOrdersChain(t *testing.T) {
 		"the step after a !! must expand against that step's captures")
 }
 
-// TestAliasStepErrorAbortsChainAsync pins first-failing-step abort
-// semantics for a failure that arrives from off-loop.
 func TestAliasStepErrorAbortsChainAsync(t *testing.T) {
 	b := newExForAliasRun(t, map[string]text.CommandAlias{
 		"failing": {Commands: []string{"!! exit 1", "sink after"}},
@@ -130,8 +123,24 @@ func TestAliasStepErrorAbortsChainAsync(t *testing.T) {
 		"the notification must name the step that failed")
 }
 
-// TestAliasDispatchQueuesFollowingCommands pins that freeing the loop
-// does not reorder commands.
+func TestNestedAliasDoesNotReexpandArgs(t *testing.T) {
+	t.Setenv("RUNE_TEST_SECRET", "leaked")
+	b := newExForAliasRun(t, map[string]text.CommandAlias{
+		"outer": {Commands: []string{"inner $1"}},
+		"inner": {Commands: []string{"sink $1"}},
+	})
+	defer b.Close()
+
+	var steps []string
+	subscribeStepRecorder(t, b, "sink", &steps)
+
+	require.NoError(t, b.ex.dispatchCommand("outer", "$$RUNE_TEST_SECRET"))
+	b.drainAliasRuns()
+
+	assert.Equal(t, []string{"$RUNE_TEST_SECRET"}, steps,
+		"a value a step passes to a nested alias must not be expanded again")
+}
+
 func TestAliasDispatchQueuesFollowingCommands(t *testing.T) {
 	b := newExForAliasRun(t, map[string]text.CommandAlias{
 		"queuing": {Commands: []string{"!! CAPTURED=x", "sink first"}},
@@ -149,8 +158,6 @@ func TestAliasDispatchQueuesFollowingCommands(t *testing.T) {
 		"a command dispatched after an alias must not overtake it")
 }
 
-// TestNestedAliasPluginWaitPropagatesCompletion covers a nested alias
-// whose step completes off-loop.
 func TestNestedAliasPluginWaitPropagatesCompletion(t *testing.T) {
 	b := newExForAliasRun(t, map[string]text.CommandAlias{
 		"outer": {Commands: []string{"inner", "sink outer-done"}},
@@ -168,8 +175,6 @@ func TestNestedAliasPluginWaitPropagatesCompletion(t *testing.T) {
 		"the outer alias must wait for the nested one to finish")
 }
 
-// TestAliasRunCancelledOnClose proves a parked run does not fire
-// callbacks into a closed ex.
 func TestAliasRunCancelledOnClose(t *testing.T) {
 	b := newExForAliasRun(t, map[string]text.CommandAlias{
 		"slowalias": {Commands: []string{"!! sleep 10", "sink ran"}},
@@ -253,9 +258,6 @@ func (claimThenReportHandler) Complete(
 	return nil, "", nil
 }
 
-// TestAliasStepClaimedWithErrorAbortsChain pins that a dispatch error
-// wins over a claimed waiter. Nothing will report on a waiter whose
-// handler failed, so parking on it would wedge the dispatcher.
 func TestAliasStepClaimedWithErrorAbortsChain(t *testing.T) {
 	b := newExForAliasRun(t, map[string]text.CommandAlias{
 		"failing": {Commands: []string{"claimfail", "sink after"}},
@@ -274,9 +276,6 @@ func TestAliasStepClaimedWithErrorAbortsChain(t *testing.T) {
 	assert.Empty(t, steps, "a failed step must abort the rest of the chain")
 }
 
-// TestAliasStepWaiterTimeoutReleasesDispatch pins that a step whose
-// handler claims its waiter and never reports cannot hold the dispatch
-// slot forever.
 func TestAliasStepWaiterTimeoutReleasesDispatch(t *testing.T) {
 	b := newExForAliasRun(t, map[string]text.CommandAlias{
 		"wedged": {Commands: []string{"claimsilent", "sink after"}},
@@ -306,9 +305,6 @@ func TestAliasStepWaiterTimeoutReleasesDispatch(t *testing.T) {
 	assert.Contains(t, errs[0], "claimsilent: ")
 }
 
-// TestNestedAliasNotBoundByOneStepBudget pins that the step timeout
-// applies per leaf step: an outer alias parked on a nested alias must
-// wait for the whole sub-chain, even when that outlasts one budget.
 func TestNestedAliasNotBoundByOneStepBudget(t *testing.T) {
 	b := newExForAliasRun(t, map[string]text.CommandAlias{
 		"outer": {Commands: []string{"inner", "sink outer-done"}},
@@ -334,8 +330,6 @@ func TestNestedAliasNotBoundByOneStepBudget(t *testing.T) {
 		"a nested alias must not be reported as a timed-out step")
 }
 
-// TestAliasWaiterCompletesAfterWholeChain pins the Waiter contract for a
-// deferred dispatch: the result arrives once, after the whole chain.
 func TestAliasWaiterCompletesAfterWholeChain(t *testing.T) {
 	b := newExForAliasRun(t, map[string]text.CommandAlias{
 		"chained": {Commands: []string{"!! CAPTURED=x", "sink chain"}},

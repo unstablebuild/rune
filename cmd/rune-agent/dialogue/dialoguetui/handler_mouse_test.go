@@ -18,6 +18,7 @@ package dialoguetui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -28,6 +29,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/clipboard"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"github.com/unstablebuild/rune-go-sdk/term/graphemecluster"
 	"unstable.build/rune/internal/component/markdown"
 	"unstable.build/rune/internal/text/standard"
 )
@@ -80,9 +82,6 @@ const (
 	scrollUp             // raw offset increases toward older messages
 )
 
-// TestHandlerDragSelectionScrolling asserts that a held left-button drag
-// keeps selecting and edge-auto-scrolls instead of letting the input box
-// steal focus when the pointer crosses the messages/input boundary.
 func TestHandlerDragSelectionScrolling(t *testing.T) {
 	const (
 		width  = 120
@@ -281,11 +280,6 @@ func TestHandlerDragSelectionScrolling(t *testing.T) {
 	}
 }
 
-// TestHandlerDragSelectionNegativeCoords drives a left-button drag whose
-// pointer leaves the window into negative coordinates, as the terminal reports
-// while the mouse is dragged above or left of the viewport. Routed through the
-// full dialogueHandler.Handle path, it must not panic and must keep a sensible
-// messages selection that includes content scrolled in from above.
 func TestHandlerDragSelectionNegativeCoords(t *testing.T) {
 	const (
 		width  = 40
@@ -348,29 +342,6 @@ func clickDrag(x1, y1, x2, y2 int) []term.Event {
 	}
 }
 
-// TestHandlerMouseSelection exercises mouse selection through the full
-// dialogueHandler.Handle path, which adjusts screen coordinates by
-// MessagesPosition(). The bug under test: viewport-relative coordinates
-// are forwarded to mdhandler.Handler methods that expect element-relative
-// coordinates, causing selection to land on the wrong line when there
-// are list elements above the markdown element.
-//
-// Layout for all tests (width=60, height=20, ParagraphSpacing=0):
-//
-//	Messages area: rows 0-16 (17 rows), bottom-aligned.
-//	Input box:     rows 17-19 (3 rows).
-//
-// With AlignmentBottom and content shorter than the messages area,
-// elements start at Y=0. Each send message is 1 row. Despite
-// ParagraphSpacing=0, each markdown paragraph occupies 2 rows
-// (1 content + 1 blank), except that the trailing blank is also
-// present after the last paragraph.
-//
-// 5-paragraph layout (no sends): Y=0 alpha, Y=2 bravo, Y=4 charlie,
-// Y=6 delta, Y=8 echo (blank rows at Y=1,3,5,7,9).
-//
-// With N sends, the markdown element shifts down by N rows.
-// Example with 2 sends: Y=0 sent_one, Y=1 sent_two, Y=2 alpha, …
 func TestHandlerMouseSelection(t *testing.T) {
 	const (
 		width  = 60
@@ -403,6 +374,9 @@ func TestHandlerMouseSelection(t *testing.T) {
 			ContentAlignment: component.AlignmentLeft,
 		},
 	}
+
+	// The default transcript config with the code block copy icon enabled.
+	codeCopy := ComponentConfig{Clipboard: clipboard.NewInMemory()}
 
 	suite := []struct {
 		desc    string
@@ -683,6 +657,16 @@ func TestHandlerMouseSelection(t *testing.T) {
 			wantSel: "sent one",
 			wantOK:  true,
 		},
+		{
+			desc: "code-copy: selection across a code block skips the copy icon",
+			cfg:  codeCopy,
+			setup: func(c *Component) {
+				c.AddReceiveMessage("Run:\n\n```sh\nls\n```\n\nDone.")
+			},
+			events:  clickDrag(0, 0, width-1, 9),
+			wantSel: "Run:\n\n\nls\n\n\nDone.",
+			wantOK:  true,
+		},
 	}
 
 	for _, tc := range suite {
@@ -710,16 +694,200 @@ func TestHandlerMouseSelection(t *testing.T) {
 	}
 }
 
-// TestHandlerMouseSelectionScrolled exercises mouse selection when the
-// markdown element is partly scrolled off the top of the viewport.
-//
-// Layout: width=60, height=10 (messages area = 7 rows after input).
-// A long markdown (15 paragraphs, ParagraphSpacing=0) = 30 rows total.
-// With bottom-aligned list and no scrolling, the bottom of the
-// markdown is visible and the top is off-screen.
-//
-// The backward walk in contentOffset must handle the case where the
-// element starts at a negative viewport Y (scrolled off the top).
+type failingClipboard struct{ clipboard.Register }
+
+func (failingClipboard) Copy(string, clipboard.Data) error {
+	return errors.New("clipboard unavailable")
+}
+
+func TestHandlerCodeCopy(t *testing.T) {
+	const (
+		width  = 40
+		height = 20
+		source = "make dist TARGET_LANG=just TARGET_OS=linux TARGET_ARCH=arm64"
+		reply  = "Run:\n\n```sh\n" + source + "\n```\n\nThen publish."
+	)
+	md := DefaultMarkdownConfig()
+	iconWidth := graphemecluster.StringWidth(string(md.CodeBlockCopyIcon))
+	type drawnIcon struct {
+		ch   rune
+		attr term.Attributes
+	}
+	idleAttr := md.CodeBlockCopyIconAttr
+	idleAttr.Bg = md.CodeBlock.Bg
+	idle := &drawnIcon{md.CodeBlockCopyIcon, idleAttr}
+	hover := &drawnIcon{
+		md.CodeBlockCopyIcon, term.Attributes{Fg: term.ColorBlue, Bg: md.CodeBlock.Bg},
+	}
+	copied := &drawnIcon{
+		md.CodeBlockCopiedIcon, term.Attributes{Fg: term.ColorGreen, Bg: md.CodeBlock.Bg},
+	}
+	click := func(x, y int) term.Event { return mouseEv(x, y, term.MouseLeft) }
+	// Key 0 is a bare motion event, which only the GUI backend emits.
+	motion := func(x, y int) term.Event { return mouseEv(x, y, 0) }
+
+	tests := []struct {
+		name string
+		clip clipboard.Register
+		// fillers are received after the icon is located, scrolling it out
+		// of view.
+		fillers int
+		// events builds the input from where the icon was first drawn.
+		events      func(icon term.Coordinates) []term.Event
+		wantHandled bool // for the last event
+		wantCopied  string
+		// wantIcon is how the icon is drawn after the events, nil when it
+		// is not on screen.
+		wantIcon *drawnIcon
+	}{
+		{
+			name:        "click copies the unwrapped source and shows a check",
+			clip:        clipboard.NewInMemory(),
+			events:      func(i term.Coordinates) []term.Event { return []term.Event{click(i.X, i.Y)} },
+			wantHandled: true,
+			wantCopied:  source,
+			wantIcon:    copied,
+		},
+		{
+			name: "click on the icon's last cell copies",
+			clip: clipboard.NewInMemory(),
+			events: func(i term.Coordinates) []term.Event {
+				return []term.Event{click(i.X+iconWidth-1, i.Y)}
+			},
+			wantHandled: true,
+			wantCopied:  source,
+			wantIcon:    copied,
+		},
+		{
+			name: "hovering the check keeps it",
+			clip: clipboard.NewInMemory(),
+			events: func(i term.Coordinates) []term.Event {
+				return []term.Event{motion(i.X, i.Y), click(i.X, i.Y), motion(i.X+1, i.Y)}
+			},
+			wantCopied: source,
+			wantIcon:   copied,
+		},
+		{
+			name: "moving off the check restores the copy icon",
+			clip: clipboard.NewInMemory(),
+			events: func(i term.Coordinates) []term.Event {
+				return []term.Event{motion(i.X, i.Y), click(i.X, i.Y), motion(i.X-1, i.Y)}
+			},
+			wantHandled: true,
+			wantCopied:  source,
+			wantIcon:    idle,
+		},
+		{
+			name:        "click beside the icon copies nothing",
+			clip:        clipboard.NewInMemory(),
+			events:      func(i term.Coordinates) []term.Event { return []term.Event{click(i.X-1, i.Y)} },
+			wantHandled: true,
+			wantIcon:    idle,
+		},
+		{
+			name: "failed copy keeps the copy icon",
+			clip: failingClipboard{clipboard.NewInMemory()},
+			events: func(i term.Coordinates) []term.Event {
+				return []term.Event{motion(i.X, i.Y), click(i.X, i.Y)}
+			},
+			wantHandled: true,
+			wantIcon:    hover,
+		},
+		{
+			name: "hover turns the icon blue",
+			clip: clipboard.NewInMemory(),
+			events: func(i term.Coordinates) []term.Event {
+				return []term.Event{motion(i.X+iconWidth-1, i.Y)}
+			},
+			wantHandled: true,
+			wantIcon:    hover,
+		},
+		{
+			name: "moving off the icon clears the hover",
+			clip: clipboard.NewInMemory(),
+			events: func(i term.Coordinates) []term.Event {
+				return []term.Event{motion(i.X, i.Y), motion(i.X-1, i.Y)}
+			},
+			wantHandled: true,
+			wantIcon:    idle,
+		},
+		{
+			name: "moving beside the icon draws nothing new",
+			clip: clipboard.NewInMemory(),
+			events: func(i term.Coordinates) []term.Event {
+				return []term.Event{motion(i.X-1, i.Y)}
+			},
+			wantIcon: idle,
+		},
+		{
+			name:   "no icon without a clipboard",
+			events: func(term.Coordinates) []term.Event { return nil },
+		},
+		{
+			name:        "icon scrolled out of view copies nothing",
+			clip:        clipboard.NewInMemory(),
+			fillers:     20,
+			events:      func(i term.Coordinates) []term.Event { return []term.Event{click(i.X, i.Y)} },
+			wantHandled: true,
+		},
+		{
+			name:    "icon scrolled back into view copies",
+			clip:    clipboard.NewInMemory(),
+			fillers: 20,
+			events: func(i term.Coordinates) []term.Event {
+				var evs []term.Event
+				for range 40 {
+					evs = append(evs, mouseEv(1, 1, term.MouseWheelUp))
+				}
+				return append(evs, click(i.X, i.Y))
+			},
+			wantHandled: true,
+			wantCopied:  source,
+			wantIcon:    copied,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			comp := NewComponent(ComponentConfig{Clipboard: tt.clip})
+			h, tx, _ := Handler(context.Background(), new(sync.Mutex), comp,
+				term.NopInterrupter())
+			defer close(tx)
+			h.Resize(width, height)
+			draw := func() (term.Coordinates, *drawnIcon) {
+				w := term.NewStringWriter(width, height)
+				h.Draw(w)
+				for i, c := range w.Cells() {
+					if c.Ch == md.CodeBlockCopyIcon || c.Ch == md.CodeBlockCopiedIcon {
+						return term.Coordinates{X: i % width, Y: i / width},
+							&drawnIcon{c.Ch, c.Attributes()}
+					}
+				}
+				return term.Coordinates{}, nil
+			}
+
+			comp.AddReceiveMessage(reply)
+			icon, drawn := draw()
+			require.Equal(t, tt.clip != nil, drawn != nil, "icon drawn")
+			for range tt.fillers {
+				comp.AddReceiveMessage("filler")
+			}
+			draw()
+			var handled bool
+			for _, ev := range tt.events(icon) {
+				_, handled = h.Handle(ev)
+			}
+
+			assert.Equal(t, tt.wantHandled, handled, "last event handled")
+			_, drawn = draw()
+			assert.Equal(t, tt.wantIcon, drawn)
+			if tt.clip != nil {
+				data, _ := tt.clip.Paste(clipboard.DefaultRegisterID)
+				assert.Equal(t, tt.wantCopied, data.Text)
+			}
+		})
+	}
+}
+
 func TestHandlerMouseSelectionScrolled(t *testing.T) {
 	const (
 		width  = 60
@@ -892,11 +1060,6 @@ func highlightedRows(sw *term.StringWriter, width, height int) map[int]string {
 	return rows
 }
 
-// TestHandlerMouseSelectionHighlightPinnedAcrossScroll asserts that after a
-// selection is made, scrolling the messages list (without moving the pointer)
-// keeps the highlight on the selected content. The highlight must track the
-// content rows, not stay fixed to the viewport rows it occupied at selection
-// time.
 func TestHandlerMouseSelectionHighlightPinnedAcrossScroll(t *testing.T) {
 	const (
 		width  = 40
@@ -971,10 +1134,6 @@ func TestHandlerMouseSelectionHighlightPinnedAcrossScroll(t *testing.T) {
 		"highlight must stay on the selected content after scrolling")
 }
 
-// TestHandlerMouseSelectionFullConfigScrolled exercises mouse selection
-// with the full production config AND a scrolled conversation loaded from
-// storage. This is the case that breaks when grid coordinates don't
-// account for the messages offset correctly.
 func TestHandlerMouseSelectionFullConfigScrolled(t *testing.T) {
 	const (
 		width  = 120
@@ -1140,32 +1299,6 @@ func TestHandlerMouseSelectionFullConfigScrolled(t *testing.T) {
 
 }
 
-// TestHandlerMouseSelectionFullConfig exercises mouse selection with
-// the full production ComponentConfig (MessagesRowConfig with
-// PadHorizontal=-80, PadVertical=2, AlignmentCentered, plus
-// PadVertical=1 on sends/receives).
-//
-// This means:
-//   - MessagesPosition() = {X:20, Y:1} (centered padding)
-//   - Handler subtracts this before passing to the mouse delegate
-//   - Event coordinates must be in handler-relative (screen) space
-//
-// Rendered layout (width=120, height=30):
-//
-//	Screen Y=1, X=20: "sent one"
-//	Screen Y=3, X=20: "sent two"
-//	Screen Y=5, X=20: "alpha"
-//	Screen Y=7, X=20: "bravo"
-//	Screen Y=9, X=20: "charlie"
-//
-// TestHandlerInputBoxSelection verifies that Selection() returns the
-// compose editor's selected text when the input has an active
-// selection, and that focus transitions between the input and messages
-// area correctly clear the other area's selection.
-//
-// Layout: width=60, height=20. Messages area: rows 0-16 (17 rows).
-// Input box: rows 17-19 (3 rows). With ParagraphSpacing=0, "alpha"
-// renders at Y=0.
 func TestHandlerInputBoxSelection(t *testing.T) {
 	const (
 		width  = 60

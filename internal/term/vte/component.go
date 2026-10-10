@@ -37,7 +37,7 @@ import (
 	"unstable.build/rune/internal/cell"
 	"unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/debug"
-	"unstable.build/rune/internal/procattr"
+	"unstable.build/rune/internal/ide/procattr"
 	"unstable.build/rune/internal/term/vte/vteparser"
 	"unstable.build/rune/internal/text"
 )

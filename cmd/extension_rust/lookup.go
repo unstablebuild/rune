@@ -21,24 +21,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
+	"github.com/unstablebuild/rune-go-sdk/api/pkgapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"unstable.build/rune/internal/extension/langext"
 )
 
 const rustResolutionTimeout = 5 * time.Second
-
-// installer resolves executables the host provisioned alongside this
-// extension on the workspace host. It is satisfied by
-// *extensionapi.Workspace.
-type installer interface {
-	FindInstalledExecutable(ctx context.Context, name string) (string, error)
-}
 
 // readLspPath reads the optional extensions.rust.config.lsp_path
 // override. A missing key is not an error; a non-string value warns and
@@ -106,28 +99,24 @@ func readMemoryUsage(cfg config.Config, notify browserapi.Notifications) bool {
 }
 
 // resolveRustAnalyzer returns the rust-analyzer language server path. A
-// configured lsp_path overrides the bundled binary, which the package
-// ships under the install root's bin/ on the workspace host. Resolution
-// goes through the installer so file:// and ssh:// workspaces both find
-// the provisioned binary; a miss returns "" and the caller surfaces the
-// initialization error.
+// configured lsp_path overrides the binary the rust package ships. There
+// is no host fallback: a package that ended up not installed has already
+// been explained to the user, so that bring-up fails quietly; any other
+// miss is reported.
 func resolveRustAnalyzer(
-	ctx context.Context,
-	cfg config.Config,
-	notify browserapi.Notifications,
-	inst installer,
-) string {
+	ctx context.Context, cfg config.Config, notify browserapi.Notifications,
+	tools *langext.Tools,
+) (string, error) {
 	if p, ok := readLspPath(cfg, notify); ok {
-		return p
+		return p, nil
 	}
-	bin, err := inst.FindInstalledExecutable(ctx, "rust-analyzer")
-	if err == nil {
-		return bin
+	bin, err := tools.Find(ctx, "rust-analyzer")
+	if err != nil && !errors.Is(err, pkgapi.ErrNotInstalled) && notify != nil {
+		_, _ = notify.NotifyOnce(browserapi.LevelWarn,
+			"Could not find rust-analyzer in the rust package: %v. "+
+				"Set extensions.rust.config.lsp_path to use another one.", err)
 	}
-	if !errors.Is(err, os.ErrNotExist) {
-		slog.Warn("probe provisioned rust-analyzer failed", "error", err)
-	}
-	return ""
+	return bin, err
 }
 
 // resolveSysroot returns the active toolchain sysroot via

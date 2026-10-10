@@ -54,17 +54,31 @@ type ProjectConfig struct {
 	// cheaply before any filesystem walk.
 	FileMatch func(uri workspaceapi.URI) bool
 
+	// Tools names the executables InitRoot needs from the language's
+	// Rune package, the one named LanguageID (e.g. "ty", "ruff"), found
+	// under the package's bin/ on the workspace host. See Tools.Find.
+	Tools []string
+
 	// InitRoot performs the language-specific bring-up for a discovered
 	// project root: environment setup plus building and calling
-	// lsp.Initialize with the nested root URI. It runs in a background
-	// goroutine; Initializer guarantees exactly one call per root.
-	InitRoot func(ctx context.Context, root Root) error
+	// lsp.Initialize with the nested root URI. tools finds the entries of
+	// Tools; each call gets its own. It runs in a background goroutine;
+	// Initializer guarantees exactly one call per root.
+	InitRoot func(ctx context.Context, root Root, tools *Tools) error
 
 	// WatchEvents lists the editor event types that drive discovery,
 	// defaulting to {EventTypeOpen} when empty. Include EventTypeChange
 	// and EventTypeCreate for a language whose files are written
 	// out-of-band, so nested projects come up without an editor buffer.
 	WatchEvents []textapi.EventType
+
+	// Outermost roots a file at the outermost directory between it and
+	// the workspace root that carries a marker, instead of the nearest.
+	// Set it for a server that loads every project config under its
+	// root by itself and must see a monorepo's packages together, for
+	// example to find references across them; each package then shares
+	// its monorepo's server rather than getting its own.
+	Outermost bool
 }
 
 // Root describes a discovered project root.
@@ -90,6 +104,23 @@ func FindProjectRoot(
 	fs workspaceapi.FileSystem, workspaceRootURI workspaceapi.URI, fileURI workspaceapi.URI,
 	markers []string,
 ) (Root, bool) {
+	return findProjectRoot(fs, workspaceRootURI, fileURI, markers, false)
+}
+
+// FindOutermostProjectRoot is FindProjectRoot for a ProjectConfig with
+// Outermost set: of the directories between fileURI and the workspace
+// root that carry a marker, it returns the outermost one.
+func FindOutermostProjectRoot(
+	fs workspaceapi.FileSystem, workspaceRootURI workspaceapi.URI, fileURI workspaceapi.URI,
+	markers []string,
+) (Root, bool) {
+	return findProjectRoot(fs, workspaceRootURI, fileURI, markers, true)
+}
+
+func findProjectRoot(
+	fs workspaceapi.FileSystem, workspaceRootURI workspaceapi.URI, fileURI workspaceapi.URI,
+	markers []string, outermost bool,
+) (Root, bool) {
 	wsDir := filepath.Clean(workspaceRootURI.Path())
 	file := filepath.Clean(fileURI.Path())
 
@@ -100,14 +131,22 @@ func FindProjectRoot(
 
 	// The Rel check above guarantees file is within wsDir, so the walk
 	// always terminates at wsDir.
+	found := ""
 	for dir := filepath.Dir(file); ; dir = filepath.Dir(dir) {
 		if dirHasMarker(fs, dir, markers) {
-			return rootForDir(fs, wsDir, dir), true
+			found = dir
+			if !outermost {
+				break
+			}
 		}
 		if dir == wsDir {
-			return Root{}, false
+			break
 		}
 	}
+	if found == "" {
+		return Root{}, false
+	}
+	return rootForDir(fs, wsDir, found), true
 }
 
 // dirHasMarker reports whether dir contains any of the marker files or

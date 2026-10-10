@@ -46,13 +46,11 @@ func newComp(
 	return c, buf, mfs
 }
 
-// TestNewRequiresBuffer ensures a nil buffer is rejected.
 func TestNewRequiresBuffer(t *testing.T) {
 	_, err := New(nil, &mockFS{}, rootURI(), Config{})
 	require.Error(t, err)
 }
 
-// TestRenderEmptyDirectory verifies initial render of an empty dir.
 func TestRenderEmptyDirectory(t *testing.T) {
 	c, buf, _ := newComp(t, map[string][]mockEntry{"/project": {}}, Config{})
 	w, h := c.Dimensions()
@@ -61,7 +59,6 @@ func TestRenderEmptyDirectory(t *testing.T) {
 	assert.Equal(t, "", buf.String())
 }
 
-// TestRenderFlatDirectory verifies initial render of a flat dir.
 func TestRenderFlatDirectory(t *testing.T) {
 	c, buf, _ := newComp(t, map[string][]mockEntry{
 		"/project": {
@@ -73,7 +70,6 @@ func TestRenderFlatDirectory(t *testing.T) {
 	_ = c
 }
 
-// TestDrawClipping ensures Draw honors width/height.
 func TestDrawClipping(t *testing.T) {
 	c, _, _ := newComp(t, map[string][]mockEntry{
 		"/project": {
@@ -91,7 +87,6 @@ func TestDrawClipping(t *testing.T) {
 	}})
 }
 
-// TestDrawLargerThanContent pads remaining rows with blanks.
 func TestDrawLargerThanContent(t *testing.T) {
 	c, _, _ := newComp(t, map[string][]mockEntry{
 		"/project": {{name: "a.go"}},
@@ -112,7 +107,6 @@ func TestDrawLargerThanContent(t *testing.T) {
 	}})
 }
 
-// TestNodeAt returns the URI at the requested row.
 func TestNodeAt(t *testing.T) {
 	c, _, _ := newComp(t, map[string][]mockEntry{
 		"/project": {
@@ -137,7 +131,6 @@ func TestNodeAt(t *testing.T) {
 	assert.False(t, ok)
 }
 
-// TestExpandNodeAtFile returns the file URI, leaves buffer intact.
 func TestExpandNodeAtFile(t *testing.T) {
 	c, buf, _ := newComp(t, map[string][]mockEntry{
 		"/project": {{name: "main.go"}},
@@ -149,7 +142,6 @@ func TestExpandNodeAtFile(t *testing.T) {
 	assert.Equal(t, before, buf.String())
 }
 
-// TestExpandNodeAtDirectory toggles directory expansion.
 func TestExpandNodeAtDirectory(t *testing.T) {
 	c, buf, _ := newComp(t, map[string][]mockEntry{
 		"/project":     {{name: "src", isDir: true}},
@@ -164,7 +156,6 @@ func TestExpandNodeAtDirectory(t *testing.T) {
 	assert.Equal(t, " src/", buf.String())
 }
 
-// TestExpandLevel expands directories at the same depth.
 func TestExpandLevel(t *testing.T) {
 	c, buf, _ := newComp(t, map[string][]mockEntry{
 		"/project": {
@@ -179,7 +170,6 @@ func TestExpandLevel(t *testing.T) {
 	assert.Equal(t, " a/\n│    a1.go\n b/\n│    b1.go\n c.go", buf.String())
 }
 
-// TestCollapseLevel collapses every dir at a given depth.
 func TestCollapseLevel(t *testing.T) {
 	c, buf, _ := newComp(t, map[string][]mockEntry{
 		"/project": {
@@ -194,7 +184,6 @@ func TestCollapseLevel(t *testing.T) {
 	assert.Equal(t, " a/\n b/", buf.String())
 }
 
-// TestCollapseAll collapses every directory.
 func TestCollapseAll(t *testing.T) {
 	c, buf, _ := newComp(t, map[string][]mockEntry{
 		"/project":     {{name: "src", isDir: true}},
@@ -205,7 +194,6 @@ func TestCollapseAll(t *testing.T) {
 	assert.Equal(t, " src/", buf.String())
 }
 
-// TestSorting: directories before files, each sorted alphabetically.
 func TestSorting(t *testing.T) {
 	_, buf, _ := newComp(t, map[string][]mockEntry{
 		"/project": {
@@ -220,7 +208,6 @@ func TestSorting(t *testing.T) {
 	assert.Equal(t, " b/\n m/\n a.go\n z.go", buf.String())
 }
 
-// TestCustomIcons renders per-extension icons.
 func TestCustomIcons(t *testing.T) {
 	c, buf, _ := newComp(t, map[string][]mockEntry{
 		"/project": {
@@ -238,7 +225,6 @@ func TestCustomIcons(t *testing.T) {
 	_ = c
 }
 
-// TestCustomIndentRune honors Config.IndentRune.
 func TestCustomIndentRune(t *testing.T) {
 	c, buf, _ := newComp(t, map[string][]mockEntry{
 		"/project":     {{name: "src", isDir: true}},
@@ -248,11 +234,6 @@ func TestCustomIndentRune(t *testing.T) {
 	assert.Contains(t, buf.String(), "┃")
 }
 
-// TestIndentAttrDefaultsToGray renders a nested tree and asserts the
-// leading indent rune of a deep row carries the gray foreground
-// attribute by default — this is the visual guide users see behind
-// file names and it must be configurable but render by default in a
-// muted color that recedes from the content.
 func TestIndentAttrDefaultsToGray(t *testing.T) {
 	c, buf, _ := newComp(t, map[string][]mockEntry{
 		"/project":     {{name: "src", isDir: true}},
@@ -267,8 +248,6 @@ func TestIndentAttrDefaultsToGray(t *testing.T) {
 	require.Equal(t, term.ColorGray, rows[1][0].Fg)
 }
 
-// TestIndentAttrHonorsConfig verifies that an explicit IndentAttr
-// overrides the default gray foreground.
 func TestIndentAttrHonorsConfig(t *testing.T) {
 	c, buf, _ := newComp(t, map[string][]mockEntry{
 		"/project":     {{name: "src", isDir: true}},
@@ -281,10 +260,6 @@ func TestIndentAttrHonorsConfig(t *testing.T) {
 	require.Equal(t, term.ColorRed, rows[1][0].Fg)
 }
 
-// TestIconAttrDefaultsToGray renders a nested tree and asserts that
-// the per-row icon glyph carries the gray foreground attribute by
-// default — the icons should recede visually behind file names just
-// like the indent guides.
 func TestIconAttrDefaultsToGray(t *testing.T) {
 	c, buf, _ := newComp(t, map[string][]mockEntry{
 		"/project":     {{name: "src", isDir: true}},
@@ -303,8 +278,6 @@ func TestIconAttrDefaultsToGray(t *testing.T) {
 	require.Equal(t, term.ColorGray, rows[1][4].Fg)
 }
 
-// TestIconAttrHonorsConfig verifies that an explicit IconAttr
-// overrides the default gray foreground.
 func TestIconAttrHonorsConfig(t *testing.T) {
 	c, buf, _ := newComp(t, map[string][]mockEntry{
 		"/project":     {{name: "src", isDir: true}},
@@ -317,8 +290,6 @@ func TestIconAttrHonorsConfig(t *testing.T) {
 	require.Equal(t, term.ColorRed, rows[1][4].Fg)
 }
 
-// TestOpenDirectoryIcon verifies that expanded directories render with
-// Icons.OpenDirectory while collapsed directories keep Icons.Directory.
 func TestOpenDirectoryIcon(t *testing.T) {
 	c, buf, _ := newComp(t, map[string][]mockEntry{
 		"/project":     {{name: "src", isDir: true}},
@@ -338,12 +309,6 @@ func TestOpenDirectoryIcon(t *testing.T) {
 	require.Equal(t, "\uf4d3 src/", buf.String())
 }
 
-// TestCustomIndentWidthMatchesEditorTabs renders nested entries with
-// IndentWidth=4 (the default editor tabspaces) so that each depth
-// level lines up with a 4-cell tab. Both the renderer AND the parser
-// must agree on the width: round-tripping the buffer through
-// DryFlush must report no operations even though the rendered prefix
-// changed shape from "│ " to "│   ".
 func TestCustomIndentWidthMatchesEditorTabs(t *testing.T) {
 	c, buf, _ := newComp(t, map[string][]mockEntry{
 		"/project":     {{name: "src", isDir: true}},
@@ -358,12 +323,6 @@ func TestCustomIndentWidthMatchesEditorTabs(t *testing.T) {
 	require.Empty(t, cs.Conflicts)
 }
 
-// TestInitialRenderIsNotUndoable guards against vi's `u` erasing the
-// whole tree: if the initial rewriteBufferFromTree bumped the buffer
-// version above 0, an undo would snap the buffer back to empty,
-// which a subsequent Flush would interpret as "delete everything".
-// The Component must pin version 0 after the first render so undo
-// fails at the tree and never wipes it.
 func TestInitialRenderIsNotUndoable(t *testing.T) {
 	_, buf, _ := newComp(t, map[string][]mockEntry{
 		"/project": {
@@ -381,13 +340,6 @@ func TestInitialRenderIsNotUndoable(t *testing.T) {
 		"undo must not mutate the buffer when there is nothing to undo")
 }
 
-// TestExpandNodeAtReturnsBaseURIForRenamedFile guards against the
-// file explorer trying to open a not-yet-flushed URI when the user
-// renamed a file and then hit <enter> on it. The returned URI must
-// point to the file's actual on-disk location (from baseTree) so
-// the host can open it successfully. Without this, the host sees
-// the pending view URI (e.g. "/project/newname.go" while the disk
-// still has "/project/oldname.go") and fails to open the file.
 func TestExpandNodeAtReturnsBaseURIForRenamedFile(t *testing.T) {
 	c, buf, _ := newComp(t, map[string][]mockEntry{
 		"/project": {{name: "old.go"}},
@@ -401,12 +353,6 @@ func TestExpandNodeAtReturnsBaseURIForRenamedFile(t *testing.T) {
 			"on-disk location, not at the pending view URI")
 }
 
-// TestMoveIntoDirectoryAndRenamePreservesIdentity: user `dd`s a
-// top-level file, `p`s it under a sibling directory, `>>`s to
-// indent into the dir, then renames it. The row ID is preserved
-// through the whole sequence, so DryFlush must report a single
-// MOVE (different parent + different name) and never a
-// delete+create pair — which would lose the file's contents.
 func TestMoveIntoDirectoryAndRenamePreservesIdentity(t *testing.T) {
 	c, buf, _ := newComp(t, map[string][]mockEntry{
 		"/project": {
@@ -1920,8 +1866,6 @@ func TestDryFlush(t *testing.T) {
 	}
 }
 
-// TestFlushExecutesOperations verifies Flush mutates the filesystem
-// and updates the buffer to match.
 func TestFlushExecutesOperations(t *testing.T) {
 	mfs := &mockFS{
 		dirs:  map[string][]mockEntry{"/project": {{name: "old.go"}}},
@@ -1947,8 +1891,6 @@ func TestFlushExecutesOperations(t *testing.T) {
 	assert.False(t, ok)
 }
 
-// TestFlushBlockedByConflicts returns a non-nil error and does not
-// touch the filesystem.
 func TestFlushBlockedByConflicts(t *testing.T) {
 	mfs := &mockFS{dirs: map[string][]mockEntry{
 		"/project": {{name: "a"}, {name: "b"}},
@@ -1965,7 +1907,6 @@ func TestFlushBlockedByConflicts(t *testing.T) {
 	assert.True(t, cs.HasConflicts())
 }
 
-// TestDryFlushDoesNotMutate confirms DryFlush is pure.
 func TestDryFlushDoesNotMutate(t *testing.T) {
 	c, buf, _ := newComp(t, map[string][]mockEntry{
 		"/project": {{name: "main.go"}},
@@ -1976,8 +1917,6 @@ func TestDryFlushDoesNotMutate(t *testing.T) {
 	assert.Equal(t, before, buf.String())
 }
 
-// TestOperationString and TestOperationTypeString kept as regression
-// guards for the Operation stringification helpers.
 func TestOperationString(t *testing.T) {
 	tests := []struct {
 		op   Operation
@@ -2020,8 +1959,6 @@ func mustParseURI(s string) workspaceapi.URI {
 	return u
 }
 
-// TestHasPendingEditsClean reports false when the buffer matches
-// the canonical rendering and there are no FS operations to apply.
 func TestHasPendingEditsClean(t *testing.T) {
 	c, _, _ := newComp(t, map[string][]mockEntry{
 		"/project": {{name: "a.go"}},
@@ -2029,8 +1966,6 @@ func TestHasPendingEditsClean(t *testing.T) {
 	require.False(t, c.HasPendingEdits())
 }
 
-// TestHasPendingEditsAfterEdit reports true once the user mutates
-// the buffer in a way that would translate to FS operations.
 func TestHasPendingEditsAfterEdit(t *testing.T) {
 	c, buf, _ := newComp(t, map[string][]mockEntry{
 		"/project": {{name: "a.go"}},
@@ -2040,8 +1975,6 @@ func TestHasPendingEditsAfterEdit(t *testing.T) {
 	require.True(t, c.HasPendingEdits())
 }
 
-// TestRefreshAddsNewFile reflects an externally-created file in
-// the rendered tree without requiring a re-open.
 func TestRefreshAddsNewFile(t *testing.T) {
 	dirs := map[string][]mockEntry{
 		"/project": {{name: "a.go"}},
@@ -2059,8 +1992,6 @@ func TestRefreshAddsNewFile(t *testing.T) {
 	require.Contains(t, after, "b.go")
 }
 
-// TestRefreshRemovesDeletedFile reflects an externally-deleted
-// file in the rendered tree.
 func TestRefreshRemovesDeletedFile(t *testing.T) {
 	dirs := map[string][]mockEntry{
 		"/project": {{name: "a.go"}, {name: "b.go"}},
@@ -2076,11 +2007,6 @@ func TestRefreshRemovesDeletedFile(t *testing.T) {
 	require.NotContains(t, after, "b.go")
 }
 
-// TestRefreshRebuildsFromScratch documents the simplifying
-// invariant of Refresh: it takes the same load path as a fresh
-// New, so any prior expand/collapse state is discarded and only
-// the root directory is read from disk. Subdirectories load
-// lazily on ExpandNodeAt, just like on initial open.
 func TestRefreshRebuildsFromScratch(t *testing.T) {
 	dirs := map[string][]mockEntry{
 		"/project": {
@@ -2411,10 +2337,6 @@ func parseURIs(t *testing.T, raw []string) []workspaceapi.URI {
 	return ret
 }
 
-// TestRefreshDiscardsUnflushedBufferEdits is a property that
-// callers must know about: Refresh re-renders the canonical tree
-// from disk, dropping any unflushed in-buffer edits. Callers that
-// want to preserve user edits must gate on HasPendingEdits().
 func TestRefreshDiscardsUnflushedBufferEdits(t *testing.T) {
 	c, buf, _ := newComp(t, map[string][]mockEntry{
 		"/project": {{name: "a.go"}},
@@ -2429,24 +2351,6 @@ func TestRefreshDiscardsUnflushedBufferEdits(t *testing.T) {
 	require.False(t, c.HasPendingEdits())
 }
 
-// TestIgnoreFiltersOutMatchingEntries verifies that entries whose
-// URI matches the configured ignore matcher are filtered out of
-// the rendered tree at every level of the hierarchy.
-//
-// This is a regression test for RUNE-143: prior to the fix the file
-// explorer rendered every entry returned by FileSystem.ReadDir,
-// surfacing noise such as `.git/`, `*.swp` files and anything
-// listed in `.gitignore`. The rest of the IDE (workspace event
-// dispatcher, fuzzy finder, idetask watcher) all hide those
-// entries via vctrl.Matcher; the explorer now does the same.
-//
-// The test covers:
-//   - top-level ignored file (e.g. "noisy.swp")
-//   - top-level ignored directory (e.g. ".git/")
-//   - a non-ignored sibling (e.g. "main.go") that must remain
-//   - filtering is applied lazily on expand: an ignored file
-//     inside a non-ignored directory must be hidden when the
-//     parent is expanded
 func TestIgnoreFiltersOutMatchingEntries(t *testing.T) {
 	dirs := map[string][]mockEntry{
 		"/project": {
@@ -2481,10 +2385,6 @@ func TestIgnoreFiltersOutMatchingEntries(t *testing.T) {
 	}
 }
 
-// TestIgnoreNilDefaultsToNoFiltering documents the zero-value
-// behavior of Config.Ignore: a nil matcher is equivalent to
-// vctrl.NopMatcher(false), preserving the pre-RUNE-143 default of
-// "show every entry the FileSystem reports".
 func TestIgnoreNilDefaultsToNoFiltering(t *testing.T) {
 	dirs := map[string][]mockEntry{
 		"/project": {
@@ -2498,9 +2398,6 @@ func TestIgnoreNilDefaultsToNoFiltering(t *testing.T) {
 	_ = c
 }
 
-// TestValidateEntryName covers the names the explorer refuses to
-// write. The icon-glyph case is what a yanked row pasted into the
-// filename column produces.
 func TestValidateEntryName(t *testing.T) {
 	cfg := Config{IndentRune: '│', IndentWidth: 4}
 	cases := []struct {
@@ -2545,10 +2442,6 @@ func TestValidateEntryName(t *testing.T) {
 	}
 }
 
-// TestFlushRefusesPastedIconGlyphName reproduces yanking a directory
-// row and pasting it: the rendered icon travels with the row and
-// lands inside the new filename. The write must be refused instead of
-// creating a directory named with a private-use glyph.
 func TestFlushRefusesPastedIconGlyphName(t *testing.T) {
 	dirs := map[string][]mockEntry{
 		"/project":     {{name: "cmd", isDir: true}},

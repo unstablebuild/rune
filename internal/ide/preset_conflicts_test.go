@@ -387,11 +387,6 @@ func terminalReachable(k term.KeyComb) bool {
 // unboundChord is a chord no editor binds, to prove a probe can decline.
 var unboundChord = term.KeyComb{Key: term.KeyF12, Mod: term.ModCtrl | term.ModAlt | term.ModMeta}
 
-// TestPresetConflicts loads every Linux preset under every <meta> meaning
-// its editor is offered, and checks that Rune's chords stay unambiguous
-// and reachable: the config loads clean, no chord runs two commands, and
-// no editor state, prompt, input box or terminal takes a Rune chord first
-// unless acceptedOverlaps says why.
 func TestPresetConflicts(t *testing.T) {
 	var found []overlap
 	bound := map[overlap]string{}

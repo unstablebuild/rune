@@ -47,6 +47,8 @@ func TestNewExtensionMetadata(t *testing.T) {
 	want := append([]extensionapi.Permission{
 		extensionapi.PermissionCommands,
 		extensionapi.PermissionConfig,
+		extensionapi.PermissionSyntaxTree,
+		extensionapi.PermissionPackages,
 	}, finder.Permissions()...)
 	for _, perm := range want {
 		if _, ok := meta.Permissions[perm]; !ok {

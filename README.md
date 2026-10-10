@@ -32,9 +32,46 @@ https://github.com/user-attachments/assets/4ab84f7f-47c8-47af-9d32-7c69afd02669
 
 ## install
 
+On macOS and Linux, this installs the latest release, which keeps itself up to date:
+
 ```bash
 curl -fsSL https://rune.build/install.sh | sh
 ```
+
+See the [getting started guide](https://docs.rune.build/) for requirements and your first
+steps in Rune.
+
+**Homebrew** (macOS and Linux):
+
+```bash
+brew install unstablebuild/tap/rune
+```
+
+**Debian and Ubuntu**: download the `.deb` for your architecture from the
+[latest release](https://github.com/unstablebuild/rune/releases/latest), then:
+
+```bash
+sudo apt install ./rune_*.deb
+```
+
+**Arch Linux and Omarchy**: Rune is in the AUR as
+[`rune-ide`](https://aur.archlinux.org/packages/rune-ide):
+
+```bash
+yay -S rune-ide
+```
+
+Or, without an AUR helper:
+
+```bash
+git clone https://aur.archlinux.org/rune-ide.git
+cd rune-ide
+makepkg -si
+```
+
+Packages are updated by your package manager rather than by Rune itself. On other Linux
+distributions, use the install command above, or
+[build from source](https://docs.rune.build/#other-ways-to-install).
 
 ## development
 
@@ -52,39 +89,32 @@ To create a macOS application bundle:
 make rune-dmg
 ```
 
-See [prerequisites](https://docs.rune.build/#prerequisites) for more details.
-
-## Makefile
-
-The Makefile has a few rules for common operations needed during development.
-
+To compile all executables in `./bin`:
 ```bash
-make                 # build all binaries into bin/
-make debug           # build with the race detector and debug-only commands enabled
-make clean           # remove bin/ and target/
-
-# individual binaries
-make rune            # the editor (bin/rune)
-make rune-agent      # the agent extension binary (bin/rune-agent)
-
-# testing and code quality
-make test            # run the test suite with the race detector
-make test-e2e        # also run the e2e suites (requires docker)
-make test-no-race    # run the test suite without the race detector
-make coverage        # generate a coverage report
-make lint            # run golangci-lint
-make format          # run go fmt
-make generate        # regenerate generated files (protobufs, mocks, docs)
-
-# license headers
-make license         # add the license header to files that are missing one
-make assert_license  # fail if any file is missing the canonical header
+make -j16
 ```
 
-The remaining targets (`dist`, `release`, `rune-dmg*`, `*-docker-*`,
-`*-notarize`, `*-dist*`) drive Unstable Build's internal
-release, packaging, and cloud deployment pipelines and are not expected to
-work outside that environment.
+## headless
+
+Run Rune in headless mode to serve a workspace to all of your development machines,
+over the [Rune network](https://docs.rune.build/learn/network):
+
+```bash
+docker run -d --name rune \
+  --hostname devpod \
+  -v /src/projects:/home/rune/projects \
+  unstablebuild/rune
+
+$ docker logs -f rune  # prints the sign-in code
+```
+
+`--hostname` is the name the node joins the network under, so from any of your machines
+`workspaceopen rune://devpod/home/rune/projects` opens the mounted projects.
+Language packages install on demand: when a workspace on the node needs one it lacks,
+Rune asks you on your machine and installs it on the node.
+
+The [headless guide](https://docs.rune.build/learn/headless) covers running the node as a
+service under systemd, launchd, OpenRC, or runit, and adding system tools to the Docker image.
 
 ## Contributing
 

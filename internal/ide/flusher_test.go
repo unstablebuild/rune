@@ -75,10 +75,6 @@ func (immediateFlusherTarget) Resource(
 	return nil, false
 }
 
-// TestFlusherWaitConcurrentWithStart reproduces the workspace-handler
-// race: the FS watcher goroutine starts a reload (flusher bookkeeping
-// going 0 -> 1) while the drain helper waits for in-flight ops from
-// another goroutine. Both must be safe to call concurrently.
 func TestFlusherWaitConcurrentWithStart(t *testing.T) {
 	f := newFlusher(immediateFlusherTarget{}, &fakeNotifications{},
 		func(func()) bool { return true })

@@ -33,8 +33,6 @@ var testAttr = term.Attributes{Fg: term.ColorSilver, Bg: term.ColorGray}
 // total is the frame budget shader.Component runs these effects against.
 var total = int(Duration / (time.Second / DefaultFPS))
 
-// Every name the catalog lists must resolve, or a valid config would
-// silently leave its target unshaded.
 func TestNamesAllResolve(t *testing.T) {
 	require.NotEmpty(t, Names())
 	for _, name := range Names() {
@@ -93,11 +91,6 @@ func cellsSignature(cells [][]term.Cell) string {
 	return b.String()
 }
 
-// An effect that builds but paints the same cells on every frame is
-// indistinguishable from no effect at all. timeshader.Loop advances the
-// inner shader in strides of Duration/loop, so an effect keyed off
-// absolute frame counts rather than against total can alias to a single
-// phase and silently stop animating.
 func TestNamesAllAnimate(t *testing.T) {
 	frames := loopFrames(DefaultFPS, DefaultLoop)
 	// The grid is kept narrow because the simulation effects cost time
@@ -128,12 +121,6 @@ func TestNamesAllAnimate(t *testing.T) {
 	}
 }
 
-// blaze, inferno, noise and trippy run their clock off the frame index
-// alone and never read total. timeshader.Loop replays the whole
-// Duration inside one loop window, which steps their clock by thousands
-// of seconds per drawn frame and makes them a blur, so they have to be
-// returned unwrapped. A shader that ignores total paints the same cells
-// whatever frame budget it is handed.
 func TestTimeContinuousShadersIgnoreTotal(t *testing.T) {
 	// Past one loop window, so a Loop wrapper would fold the frame
 	// against a different framesPerLoop for each budget.
@@ -155,9 +142,6 @@ func TestTimeContinuousShadersIgnoreTotal(t *testing.T) {
 	}
 }
 
-// The UI these effects run over carries meaning in colour, so pulse
-// must only brighten it. At the stock intensity its peak washed a navy
-// cell most of the way to white and read as a different colour.
 func TestPulseIsSubtle(t *testing.T) {
 	navy := term.NewRGBColor(0, 0, 128)
 	sh, ok := New("pulse", term.Attributes{}, DefaultFPS, DefaultLoop)
@@ -174,8 +158,6 @@ func TestPulseIsSubtle(t *testing.T) {
 	assert.Greater(t, b, r, "navy must stay blue at the peak")
 }
 
-// The loop knob sets how much of a looped effect's animation is replayed
-// per window, so widening it must change what the effect paints.
 func TestLoopChangesLoopedEffects(t *testing.T) {
 	snapshot := rowSnapshot(8)
 	var got []string

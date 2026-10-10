@@ -56,11 +56,7 @@ uv.lock
 # or symlink of the private repo.
 /deploy/*
 !/deploy/rune-linux/
-!/deploy/rune-agent/
-!/deploy/fuzzy-search/
+!/deploy/rune-headless/
 
 # distribution packaging build outputs (dist/README.md)
 dist/out/
-dist/arch/src/
-dist/arch/rune/
-dist/arch/*.pkg.tar*

@@ -40,9 +40,6 @@ func (s *recordingShader) Shade(_, _ int, cells [][]term.Cell) {
 	}
 }
 
-// TestVirtualClipsAndOffsets asserts that the inner shader sees only
-// the sub-rectangle and that mutations land at the requested offset in
-// the original matrix.
 func TestVirtualClipsAndOffsets(t *testing.T) {
 	t.Parallel()
 	cells := make([][]term.Cell, 4)
@@ -78,8 +75,6 @@ func TestVirtualClipsAndOffsets(t *testing.T) {
 	}
 }
 
-// TestVirtualOutOfRangeIsNoOp asserts that zero dimensions, negative
-// offsets, and offsets past the bottom edge mutate no cells.
 func TestVirtualOutOfRangeIsNoOp(t *testing.T) {
 	t.Parallel()
 	cells := [][]term.Cell{
@@ -103,8 +98,6 @@ func TestVirtualOutOfRangeIsNoOp(t *testing.T) {
 		"out-of-range Virtual must not mutate any cell")
 }
 
-// TestVirtualClampsWidthHeightToMatrix asserts that Width/Height
-// larger than the underlying matrix are truncated to what is available.
 func TestVirtualClampsWidthHeightToMatrix(t *testing.T) {
 	t.Parallel()
 	cells := [][]term.Cell{

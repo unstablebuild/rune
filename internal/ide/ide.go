@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/url"
 	"os"
 	"os/user"
 	"path"
@@ -50,7 +51,7 @@ import (
 	"unstable.build/rune/internal/handler/command"
 	"unstable.build/rune/internal/ide/idenag"
 	"unstable.build/rune/internal/ide/idepkg"
-	"unstable.build/rune/internal/ide/pkgtrust"
+	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
 	"unstable.build/rune/internal/text"
 	"unstable.build/rune/internal/workspace"
 	"unstable.build/rune/internal/workspace/workspacessh"
@@ -69,26 +70,6 @@ type IDE struct {
 	nag              *idenag.Scheduler
 	publishEventFn   EventPublisher
 	storage          storageapi.Service
-}
-
-// provisionManifest builds the encoded package-provisioning manifest passed
-// to a remote `rune -x` server so it mirrors the local toolchain. It returns
-// an empty string (skip provisioning) when the package manager is not yet
-// initialized or has no in-use packages.
-func (i *IDE) provisionManifest() string {
-	if i.workspaceHandler == nil {
-		return ""
-	}
-	pm := i.workspaceHandler.pkgmanager
-	if pm == nil || pm.pkg == nil {
-		return ""
-	}
-	entries, err := idepkg.BuildProvisionManifest(context.Background(), pm.pkg)
-	if err != nil {
-		log.Warnf("build remote provision manifest: %v", err)
-		return ""
-	}
-	return idepkg.EncodeProvisionManifest(entries)
 }
 
 // EventPublisher is a function that publishes the given event back
@@ -154,7 +135,7 @@ func ConfigWithOverlays(
 
 // DefaultConfigTree decodes def into the raw config map the editor uses as the
 // predeclared `config` base when reading a package's .star config during a
-// merge. Headless callers (the remote provisioning manager) pass the result to
+// merge. Headless callers (a host's package manager) pass the result to
 // idepkg.NewProvisioningManager so a .star-based gui.env merge resolves against
 // the same tree the editor would.
 func DefaultConfigTree(def DefaultConfig) (map[string]any, error) {
@@ -168,8 +149,8 @@ func DefaultConfigTree(def DefaultConfig) (map[string]any, error) {
 // "standard", and a missing or unreadable editor.mode defaults to "vim". A nil
 // cfg yields "vim".
 //
-// The remote `rune -x` provisioning server has no editor UI, so it calls this
-// to thread the user's mode into idepkg.NewProvisioningManager; without it, a
+// A host's package manager has no editor UI, so it calls this to thread the
+// user's mode into idepkg.NewProvisioningManager; without it, a
 // package's config.star that reads RUNE_EDITOR_MODE fails to decode with
 // "undefined: RUNE_EDITOR_MODE".
 func PkgEditorMode(cfg config.Config) string {
@@ -384,6 +365,12 @@ func (i *IDE) DispatchCommand(cmd string, args ...string) error {
 	return i.workspaceHandler.focusEx().dispatchCommand(cmd, args...)
 }
 
+// OpenURL opens a URL the user clicked as the focused workspace's
+// meta_open_url config says. It must run on the event loop.
+func (i *IDE) OpenURL(u *url.URL) error {
+	return i.workspaceHandler.focusEx().openURL(u)
+}
+
 // Models returns the models available through the IDE's host-side LLM
 // service. The service belongs to the IDE rather than any workspace, so it is
 // available while the home workspace is focused.
@@ -476,6 +463,13 @@ func (i *IDE) WaitInflight() {
 // This should be called before Run or Handler are called for the first time.
 func (i *IDE) SetReleaseManager(m release.Manager) {
 	i.workspaceHandler.setReleaseManager(m)
+}
+
+// PackageManager manages this machine's packages for other machines to
+// install through. Unlike the editor's own lookups, a missing package
+// is reported as not installed rather than offered for install.
+func (i *IDE) PackageManager() idepkg.PackageManager {
+	return i.workspaceHandler.pkgmanager.pkg
 }
 
 // Notifications returns an cross-workspace, goroutine-safe implementation
@@ -602,14 +596,13 @@ func (i *IDE) init(
 	err := workspaceManager.RegisterScheme(
 		workspacessh.Scheme,
 		workspacessh.New(newWorkspaceWindowManagerUI(i),
-			workspacessh.WithProvisionManifest(i.provisionManifest),
 			workspacessh.WithRemoteDataDir(filepath.Base(dataDir))),
 	)
 	if err != nil {
 		return fmt.Errorf("register ssh scheme: %w", err)
 	}
 	err = workspaceManager.RegisterScheme(workspace.FileScheme,
-		fileSchemeFunc(op.zdotDir))
+		workspace.NewFileSchemeFunc(op.hostDataDir, op.shellRCDir))
 	if err != nil {
 		return fmt.Errorf("register file scheme: %w", err)
 	}
@@ -673,10 +666,11 @@ func (i *IDE) init(
 		i.publishEvent,
 		op.extensionRunner, trust, i.locker, op.extensions, func() (ideConfig, error) {
 			cfg, err := reloadConfig(cfgfilename,
-				op.defaultWallpaper, defaultCfg, op.bell, op.scheduleFn,
-				op.zdotDir)
+				op.defaultWallpaper, defaultCfg, op.bell, op.scheduleFn)
 			cfg.storage = i.ideConfig.storage
 			cfg.cellPixelSize = op.cellPixelSize
+			cfg.clip = op.clip
+			cfg.systemOpenURL = op.systemOpenURL
 			return cfg, err
 		}, op.workspaceConfig, op.tabBarOffset,
 		op.rightInset, op.tabBarHeight, op.workspacesIcon, op.workspacesBarHeight,
@@ -794,8 +788,10 @@ func loadIDEConfig(cfgfilename string, op options) (ideConfig, error) {
 	var cfg ideConfig
 	err := loadConfig(&cfg, cfgfilename,
 		op.defaultWallpaper, newDefaultConfig(op), op.bell,
-		op.scheduleFn, op.zdotDir)
+		op.scheduleFn)
 	cfg.cellPixelSize = op.cellPixelSize
+	cfg.clip = op.clip
+	cfg.systemOpenURL = op.systemOpenURL
 	return cfg, err
 }
 
@@ -807,32 +803,4 @@ func (i *IDE) initRunning() {
 		i.root.runShader(i.options.initShaderFn(i.root.defAttr, i.ideConfig.windowFrameCharset()),
 			i.options.initShaderFPS, i.options.initShaderDuration)
 	}
-}
-
-func fileSchemeFunc(zdotDir string) schemeapi.SchemeFunc {
-	return func(
-		ctx context.Context, cfg config.Config, uri workspaceapi.URI,
-	) (schemeapi.Scheme, error) {
-		if zdotDir != "" {
-			cfg = configWithZdotDir(cfg, zdotDir)
-		}
-		return workspace.NewFileScheme(ctx, cfg, uri)
-	}
-}
-
-func configWithZdotDir(base config.Config, zdotDir string) config.Config {
-	if base != nil {
-		if existing, err := base.GetString("zdotdir"); err == nil && existing != "" {
-			return base
-		}
-	}
-	merged := map[string]any{"zdotdir": zdotDir}
-	if base != nil {
-		base.Iterate(func(k string, v any) {
-			if _, ok := merged[k]; !ok {
-				merged[k] = v
-			}
-		})
-	}
-	return config.MapConfig(merged)
 }

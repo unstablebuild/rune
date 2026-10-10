@@ -27,6 +27,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -55,7 +57,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"gopkg.in/yaml.v3"
 	"unstable.build/rune/internal/ide/idepkg/idepkgtest"
-	"unstable.build/rune/internal/ide/pkgtrust"
+	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
 	"unstable.build/rune/internal/ide/starlarkconfig"
 	"unstable.build/rune/internal/localstorage"
 	"unstable.build/rune/internal/localstorage/bluestore"
@@ -456,10 +458,6 @@ func TestLatestVersion(t *testing.T) {
 	})
 }
 
-// TestTranslateReleaseErrors verifies that the wrapper methods
-// translate *cdnrelease.StatusError responses into friendly
-// sentinel-wrapped errors that callers can match with errors.Is.
-// Other (non-StatusError) errors must pass through unchanged.
 func TestTranslateReleaseErrors(t *testing.T) {
 	t.Parallel()
 
@@ -768,7 +766,7 @@ func TestPackageVersionInUse(t *testing.T) {
 		err := m.InstallPackageVersion(context.Background(), "go", "1", repl.NopProgressWriter())
 		require.NoError(t, err)
 
-		actual, ok := m.PackageVersionInUse("go")
+		actual, ok := versionInUse(t, m, "go")
 		require.True(t, ok)
 		assert.Equal(t, release.Version("1"), actual)
 	})
@@ -788,7 +786,7 @@ func TestPackageVersionInUse(t *testing.T) {
 		err = m.InstallPackageVersion(context.Background(), "go", "2", repl.NopProgressWriter())
 		require.NoError(t, err)
 
-		actual, ok := m.PackageVersionInUse("go")
+		actual, ok := versionInUse(t, m, "go")
 		require.True(t, ok)
 		assert.Equal(t, release.Version("2"), actual)
 	})
@@ -811,7 +809,7 @@ func TestPackageVersionInUse(t *testing.T) {
 		err = m.UsePackageVersion(context.Background(), "go", "1")
 		require.NoError(t, err)
 
-		actual, ok := m.PackageVersionInUse("go")
+		actual, ok := versionInUse(t, m, "go")
 		require.True(t, ok)
 		assert.Equal(t, release.Version("1"), actual)
 	})
@@ -822,7 +820,7 @@ func TestPackageVersionInUse(t *testing.T) {
 		versions := idepkgtest.MakeBundles([]release.Bundle{{Package: "go", Version: "1"}})
 		m, _, _, _ := newTestManager(t, pkgs, versions)
 
-		_, ok := m.PackageVersionInUse("go")
+		_, ok := versionInUse(t, m, "go")
 		require.False(t, ok)
 	})
 }
@@ -1084,7 +1082,7 @@ func assertDataDirNotExists(t *testing.T, datadir string, pkgs ...string) {
 }
 
 var goTarExpectedExecutables = []string{
-	"go", "gofmt", "goimports", "gopls", "tree-sitter.so",
+	"go", "gofmt", "goimports", "gopls",
 }
 
 func assertExecutables(t *testing.T, datadir string, expected ...string) {
@@ -1113,12 +1111,6 @@ func listFiles(t *testing.T, bindir string) []string {
 
 var syncTick = func(fn func()) bool { fn(); return true }
 
-// TestVerifyExtensionEntrypoint pins verified-publisher resolution against the
-// shapes packages actually have on disk. Extensions are launched through the
-// path their package config declares — in practice the datadir bin copy — so
-// every install path that legitimately reaches a signed executable must return
-// the signing fingerprint, and every path whose bytes no longer match the
-// signed manifest must not.
 func TestVerifyExtensionEntrypoint(t *testing.T) {
 	t.Parallel()
 
@@ -1287,6 +1279,13 @@ func newTestManager(
 		idepkgtest.TrustStore(),
 		fileScheme, temp, configPath, wm, syncTick, term.NopInterrupter())
 	return manager, n, m, temp
+}
+
+func versionInUse(t testing.TB, m PackageManager, pkgID string) (release.Version, bool) {
+	t.Helper()
+	version, ok, err := m.PackageVersionInUse(context.Background(), pkgID)
+	require.NoError(t, err)
+	return version, ok
 }
 
 type mockWindowManager struct {
@@ -1505,7 +1504,7 @@ func TestInstallPackageVersionConfig(t *testing.T) {
 		doc := readUserConfig(t, datadir)
 		root := doc.Content[0]
 		assertNestedYAMLKey(t, root, "env", "GOROOT",
-			datadir+"/pkg/configpkg/1/go")
+			"$RUNE_DATADIR/pkg/configpkg/1/go")
 		assertNestedYAMLKey(t, root, "settings", "theme", "dark")
 		assertNestedYAMLKey(t, root, "settings", "indent", "4")
 	})
@@ -1522,7 +1521,7 @@ func TestInstallPackageVersionConfig(t *testing.T) {
 		doc := readUserConfig(t, datadir)
 		root := doc.Content[0]
 		assertNestedYAMLKey(t, root, "env", "GOROOT",
-			datadir+"/pkg/configpkg/1/go")
+			"$RUNE_DATADIR/pkg/configpkg/1/go")
 	})
 }
 
@@ -1561,7 +1560,7 @@ func TestUsePackageVersionConfig(t *testing.T) {
 		doc := readUserConfig(t, datadir)
 		root := doc.Content[0]
 		assertNestedYAMLKey(t, root, "env", "GOROOT",
-			datadir+"/pkg/configpkg/1/go")
+			"$RUNE_DATADIR/pkg/configpkg/1/go")
 		assertNestedYAMLKey(t, root, "settings", "theme", "dark")
 		assertNestedYAMLKey(t, root, "settings", "indent", "4")
 
@@ -1601,7 +1600,7 @@ func TestProcessInstalledSettingsConfig(t *testing.T) {
 		doc := readUserConfig(t, datadir)
 		root := doc.Content[0]
 		assertNestedYAMLKey(t, root, "env", "GOROOT",
-			datadir+"/pkg/configpkg/1/go")
+			"$RUNE_DATADIR/pkg/configpkg/1/go")
 		assertNestedYAMLKey(t, root, "settings", "theme", "dark")
 	})
 	t.Run("seeds and merges when no user config exists", func(t *testing.T) {
@@ -1619,7 +1618,7 @@ func TestProcessInstalledSettingsConfig(t *testing.T) {
 		doc := readUserConfig(t, datadir)
 		root := doc.Content[0]
 		assertNestedYAMLKey(t, root, "env", "GOROOT",
-			datadir+"/pkg/configpkg/1/go")
+			"$RUNE_DATADIR/pkg/configpkg/1/go")
 	})
 }
 
@@ -1688,7 +1687,7 @@ func TestInstallPackageVersionConfigCrossFormat(t *testing.T) {
 
 			env, ok := cfg["env"].(map[string]any)
 			require.True(t, ok)
-			assert.Equal(t, filepath.Join(datadir, "pkg", tt.pkgName, "1", "go"), env["GOROOT"])
+			assert.Equal(t, "$RUNE_DATADIR/pkg/"+tt.pkgName+"/1/go", env["GOROOT"])
 
 			settings, ok := cfg["settings"].(map[string]any)
 			require.True(t, ok)
@@ -1698,11 +1697,6 @@ func TestInstallPackageVersionConfigCrossFormat(t *testing.T) {
 	}
 }
 
-// TestInstallPackageVersionConfigEmptyUserConfig verifies that a package
-// overlay can still merge into a user config file whose body is empty or
-// only contains comments. Without this, installing any package against a
-// freshly created (or fully commented-out) user config.star failed with
-// "load user config: starlark: expected top-level \"config\" dict".
 func TestInstallPackageVersionConfigEmptyUserConfig(t *testing.T) {
 	t.Parallel()
 
@@ -1763,7 +1757,7 @@ func TestInstallPackageVersionConfigEmptyUserConfig(t *testing.T) {
 
 			env, ok := cfg["env"].(map[string]any)
 			require.True(t, ok, "env not present in merged config: %#v", cfg)
-			assert.Equal(t, filepath.Join(datadir, "pkg", tt.pkgName, "1", "go"), env["GOROOT"])
+			assert.Equal(t, "$RUNE_DATADIR/pkg/"+tt.pkgName+"/1/go", env["GOROOT"])
 
 			settings, ok := cfg["settings"].(map[string]any)
 			require.True(t, ok, "settings not present in merged config: %#v", cfg)
@@ -1818,10 +1812,10 @@ func TestInstallConfigExtensionPathPrompt(t *testing.T) {
 
 			pkgs := idepkgtest.MakePackages()
 			versions := idepkgtest.MakeBundles([]release.Bundle{{Package: pkgID, Version: "1"}})
-			m, n, rm, datadir := newTestManager(t, pkgs, versions)
+			m, n, rm, _ := newTestManager(t, pkgs, versions)
 
 			oldPath := "/usr/local/bin/rune-agent"
-			newPath := filepath.Join(datadir, "bin", pkgID)
+			newPath := "$RUNE_DATADIR/bin/" + pkgID
 			userConfig := fmt.Sprintf("extensions:\n  %s:\n    path: %q\n", pkgID, oldPath)
 			require.NoError(t, os.WriteFile(m.configPath, []byte(userConfig), 0o644))
 
@@ -1829,7 +1823,7 @@ func TestInstallConfigExtensionPathPrompt(t *testing.T) {
 			var mergeHookCalls int
 			m.afterConfigMerge = func(ConfigMergeEvent) (ConfigMergeResult, error) {
 				mergeHookCalls++
-				return ConfigMergeResult{LiveApplied: true}, nil
+				return ConfigMergeResult{LivePaths: [][]string{{"extensions", pkgID}}}, nil
 			}
 			m.wm = &mockWindowManager{
 				floatingFn: func(h browserapi.Floating, _ browserapi.FloatingConfig) (browserapi.Window, error) {
@@ -1901,11 +1895,6 @@ func TestProcessInstalledSettingsDoesNotPromptForExtensionPath(t *testing.T) {
 	assert.NotEqual(t, filepath.Join(datadir, "bin", "testpkg"), fmt.Sprint(extension["path"]))
 }
 
-// TestInstallPackageVersionConfigMissingUserConfig asserts that when the user
-// config file does not exist, installing a package still merges the package's
-// env block by creating the config file. Without this, a fresh datadir (e.g. a
-// remote `rune -x` provisioned into ~/.rune on first use) never gets GOROOT and
-// the go toolchain fails with "cannot find GOROOT directory".
 func TestInstallPackageVersionConfigMissingUserConfig(t *testing.T) {
 	t.Parallel()
 
@@ -1925,13 +1914,9 @@ func TestInstallPackageVersionConfigMissingUserConfig(t *testing.T) {
 	cfg := readUserConfigMap(t, configPath)
 	env, ok := cfg["env"].(map[string]any)
 	require.True(t, ok, "env not merged into a fresh (missing) user config: %#v", cfg)
-	assert.Equal(t, filepath.Join(datadir, "pkg", "configpkg", "1", "go"), env["GOROOT"])
+	assert.Equal(t, "$RUNE_DATADIR/pkg/configpkg/1/go", env["GOROOT"])
 }
 
-// TestProcessConfigSequentialDistinctPackages pins the fix for the first-open
-// bug where config.yaml was missing until a reload: provisioning installs each
-// package sequentially, and every package's env key must accumulate into the
-// same fresh user config rather than clobbering earlier merges.
 func TestProcessConfigSequentialDistinctPackages(t *testing.T) {
 	t.Parallel()
 
@@ -1949,7 +1934,7 @@ func TestProcessConfigSequentialDistinctPackages(t *testing.T) {
 		cfgFile := pkgConfigFile(dir)
 		content := fmt.Sprintf("env:\n  KEY_%d: value_%d\n", i, i)
 		require.NoError(t, os.WriteFile(cfgFile, []byte(content), 0o644))
-		require.NoError(t, m.processConfig(
+		require.NoError(t, m.processConfig(context.Background(),
 			fmt.Sprintf("p%d", i), release.Version("1"), cfgFile))
 	}
 
@@ -2081,6 +2066,83 @@ func TestInstallConfigPromptDeny(t *testing.T) {
 	})
 }
 
+// promptingUI records what an install asks and notifies through it.
+type promptingUI struct {
+	*idepkgtest.Notifications
+	mu      sync.Mutex
+	prompts []ConfigPrompt
+	answers []func(bool)
+}
+
+func (u *promptingUI) PromptConfig(p ConfigPrompt, answer func(bool)) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.prompts = append(u.prompts, p)
+	u.answers = append(u.answers, answer)
+}
+
+func notificationMessages(n *idepkgtest.Notifications) []string {
+	var msgs []string
+	for _, noti := range n.Active() {
+		msgs = append(msgs, noti.Msg)
+	}
+	sort.Strings(msgs)
+	return msgs
+}
+
+func TestInstallAsksTheUIOfItsContext(t *testing.T) {
+	t.Parallel()
+	pkgs := idepkgtest.MakePackages()
+	versions := idepkgtest.MakeBundles([]release.Bundle{
+		{Package: "configpkg", Version: "2"},
+	})
+	m, n, _, datadir := newTestManager(t, pkgs, versions)
+	m.wm = &mockWindowManager{
+		floatingFn: func(browserapi.Floating, browserapi.FloatingConfig) (browserapi.Window, error) {
+			t.Error("the prompt must reach the user the install is for")
+			return &mockWindow{}, nil
+		},
+	}
+	configPath := filepath.Join(datadir, "config.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte("env:\n  GOROOT: /custom/go\n"), 0o644))
+	ui := &promptingUI{Notifications: idepkgtest.NewNotifications(t)}
+
+	err := m.InstallPackageVersion(WithUI(context.Background(), ui), "configpkg", "2",
+		repl.NopProgressWriter())
+	require.NoError(t, err)
+
+	require.Len(t, ui.prompts, 1)
+	assert.Contains(t, ui.prompts[0].Message, "GOROOT")
+	assert.Equal(t, []PromptOption{{Label: "Allow", Key: 'a'}, {Label: "Deny", Key: 'd'}},
+		ui.prompts[0].Options)
+	assert.Equal(t, []string{
+		"saved configpkg configuration updates to your config. " +
+			"None are in effect yet; restart the program to load: " +
+			"settings.indent, settings.newkey, settings.theme.",
+	}, notificationMessages(ui.Notifications), "the new settings are applied without asking")
+
+	// Another merge lands before the user answers; approving must not
+	// write back the config the prompt was planned against.
+	cfg, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(configPath, append(cfg, "other: kept\n"...), 0o644))
+	ui.answers[0](true)
+
+	merged := readUserConfigMap(t, configPath)
+	assert.Equal(t, "$RUNE_DATADIR/pkg/configpkg/2/go",
+		merged["env"].(map[string]any)["GOROOT"])
+	assert.Equal(t, "added", fmt.Sprint(merged["settings"].(map[string]any)["newkey"]))
+	assert.Equal(t, "kept", merged["other"])
+	assert.Equal(t, []string{
+		"saved configpkg configuration updates to your config. " +
+			"None are in effect yet; restart the program to load: env.GOROOT.",
+		"saved configpkg configuration updates to your config. " +
+			"None are in effect yet; restart the program to load: " +
+			"settings.indent, settings.newkey, settings.theme.",
+	}, notificationMessages(ui.Notifications))
+	assert.Empty(t, n.Active(), "nothing is shown to the Manager's own user")
+}
+
 func TestInstallConfigPreservesUserValues(t *testing.T) {
 	t.Parallel()
 
@@ -2121,7 +2183,7 @@ func TestInstallConfigPreservesUserValues(t *testing.T) {
 		cfg := readUserConfigMap(t, configPath)
 		env, ok := cfg["env"].(map[string]any)
 		require.True(t, ok)
-		wantGOROOT := filepath.Join(datadir, "pkg", "configpkg", "1", "go")
+		wantGOROOT := "$RUNE_DATADIR/pkg/configpkg/1/go"
 		assert.Equal(t, wantGOROOT, fmt.Sprint(env["GOROOT"]),
 			"version-dependent GOROOT updates to the resolved value")
 		settings, ok := cfg["settings"].(map[string]any)
@@ -2171,7 +2233,7 @@ func TestInstallConfigPreservesUserValues(t *testing.T) {
 		cfg := readUserConfigMap(t, configPath)
 		env, ok := cfg["env"].(map[string]any)
 		require.True(t, ok)
-		wantGOROOT := filepath.Join(datadir, "pkg", "configpkg", "2", "go")
+		wantGOROOT := "$RUNE_DATADIR/pkg/configpkg/2/go"
 		assert.Equal(t, wantGOROOT, fmt.Sprint(env["GOROOT"]),
 			"version-dependent GOROOT updates to the v2 resolved value")
 		settings, ok := cfg["settings"].(map[string]any)
@@ -2782,6 +2844,561 @@ func TestProcessInstalledSettingsSkipsIncomplete(t *testing.T) {
 
 // --- Atomic operation tests ---
 
+func TestProcessInstalledSettingsRespellsWhatAnOlderReleaseExpanded(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		pkg    startupPackage
+		before string
+		after  string
+	}{
+		{
+			name: "gui.env value",
+			pkg: startupPackage{
+				config: "gui:\n  env:\n    STARTPKG_HOME: $RUNE_DATADIR/lib/$RUNE_PKG_ID\n",
+			},
+			before: "gui:\n  env:\n    STARTPKG_HOME: <DATA>/lib/startpkg\n",
+			after:  "gui:\n  env:\n    STARTPKG_HOME: $RUNE_DATADIR/lib/startpkg\n",
+		},
+		{
+			name: "gui.env value pinned to the version in use",
+			pkg: startupPackage{
+				config:   "gui:\n  env:\n    GOROOT: $RUNE_DATADIR/pkg/$RUNE_PKG_ID/$RUNE_PKG_VERSION/go\n",
+				versions: []string{"1", "2"},
+			},
+			before: "gui:\n  env:\n    GOROOT: <DATA>/pkg/startpkg/2/go\n",
+			after:  "gui:\n  env:\n    GOROOT: $RUNE_DATADIR/pkg/startpkg/2/go\n",
+		},
+		{
+			name: "braced spelling is kept as the package writes it",
+			pkg: startupPackage{
+				config: "gui:\n  env:\n    STARTPKG_HOME: ${RUNE_DATADIR}/lib/$RUNE_PKG_ID\n",
+			},
+			before: "gui:\n  env:\n    STARTPKG_HOME: <DATA>/lib/startpkg\n",
+			after:  "gui:\n  env:\n    STARTPKG_HOME: ${RUNE_DATADIR}/lib/startpkg\n",
+		},
+		{
+			name: "data directory inside a longer value",
+			pkg: startupPackage{
+				config: "gui:\n  env:\n    STARTPKG_FLAGS: --root=$RUNE_DATADIR/lib/$RUNE_PKG_ID --fast\n",
+			},
+			before: "gui:\n  env:\n    STARTPKG_FLAGS: --root=<DATA>/lib/startpkg --fast\n",
+			after:  "gui:\n  env:\n    STARTPKG_FLAGS: --root=$RUNE_DATADIR/lib/startpkg --fast\n",
+		},
+		{
+			name: "gui.env PATH entry among the user's own",
+			pkg: startupPackage{
+				config: "gui:\n  env:\n    PATH: $RUNE_DATADIR/lib/$RUNE_PKG_ID/bin:$PATH\n",
+			},
+			before: "gui:\n  env:\n    PATH: /opt/mine/bin:<DATA>/lib/startpkg/bin:$PATH:/opt/last/bin\n",
+			after:  "gui:\n  env:\n    PATH: /opt/mine/bin:$RUNE_DATADIR/lib/startpkg/bin:$PATH:/opt/last/bin\n",
+		},
+		{
+			name: "setting outside gui.env",
+			pkg: startupPackage{
+				config: "debugger:\n  startpkg:\n    command: $RUNE_DATADIR/lib/$RUNE_PKG_ID/dap --listen={addr}\n",
+			},
+			before: "debugger:\n  startpkg:\n    command: <DATA>/lib/startpkg/dap --listen={addr}\n",
+			after:  "debugger:\n  startpkg:\n    command: $RUNE_DATADIR/lib/startpkg/dap --listen={addr}\n",
+		},
+		{
+			name: "list element",
+			pkg: startupPackage{
+				config: "extensions:\n  startpkg:\n    config:\n      roots:\n" +
+					"        - $RUNE_DATADIR/lib/$RUNE_PKG_ID/std\n        - /usr/share/startpkg\n",
+			},
+			before: "extensions:\n  startpkg:\n    config:\n      roots:\n" +
+				"        - <DATA>/lib/startpkg/std\n        - /usr/share/startpkg\n",
+			after: "extensions:\n  startpkg:\n    config:\n      roots:\n" +
+				"        - $RUNE_DATADIR/lib/startpkg/std\n        - /usr/share/startpkg\n",
+		},
+		{
+			name: "extension entrypoint",
+			pkg: startupPackage{
+				config: "extensions:\n  startpkg:\n    path: $RUNE_DATADIR/lib/$RUNE_PKG_ID/ext\n",
+			},
+			before: "extensions:\n  startpkg:\n    path: <DATA>/lib/startpkg/ext\n",
+			after:  "extensions:\n  startpkg:\n    path: $RUNE_DATADIR/lib/startpkg/ext\n",
+		},
+		{
+			name: "tutorial",
+			pkg: startupPackage{
+				config: "tutorials:\n  startpkg-intro: $RUNE_DATADIR/lib/$RUNE_PKG_ID/intro.star\n",
+			},
+			before: "tutorials:\n  startpkg-intro: <DATA>/lib/startpkg/intro.star\n",
+			after:  "tutorials:\n  startpkg-intro: $RUNE_DATADIR/lib/startpkg/intro.star\n",
+		},
+		{
+			name: "value a starlark package config builds from RUNE_DATADIR",
+			pkg: startupPackage{
+				file: "config.star",
+				config: "config[\"gui\"] = {\"env\": {\"STARTPKG_HOME\": " +
+					"RUNE_DATADIR + \"/lib/\" + RUNE_PKG_ID}}\n",
+			},
+			before: "gui:\n  env:\n    STARTPKG_HOME: <DATA>/lib/startpkg\n",
+			after:  "gui:\n  env:\n    STARTPKG_HOME: $RUNE_DATADIR/lib/startpkg\n",
+		},
+		{
+			name: "user's comments, order and other keys are kept",
+			pkg: startupPackage{
+				config: "gui:\n  env:\n    STARTPKG_HOME: $RUNE_DATADIR/lib/$RUNE_PKG_ID\n",
+			},
+			before: "# mine\neditor:\n  mode: modal # modal for me\ngui:\n  env:\n" +
+				"    # startpkg wrote this\n    STARTPKG_HOME: <DATA>/lib/startpkg # keep\n" +
+				"    MINE: /opt/mine\nworkspace:\n  home: /work\n",
+			after: "# mine\neditor:\n  mode: modal # modal for me\ngui:\n  env:\n" +
+				"    # startpkg wrote this\n    STARTPKG_HOME: $RUNE_DATADIR/lib/startpkg # keep\n" +
+				"    MINE: /opt/mine\nworkspace:\n  home: /work\n",
+		},
+		{
+			name: "every value of the package at once",
+			pkg: startupPackage{
+				config: "gui:\n  env:\n    STARTPKG_HOME: $RUNE_DATADIR/lib/$RUNE_PKG_ID\n" +
+					"    PATH: $RUNE_DATADIR/lib/$RUNE_PKG_ID/bin:$PATH\n" +
+					"debugger:\n  startpkg:\n    command: $RUNE_DATADIR/lib/$RUNE_PKG_ID/dap --listen={addr}\n" +
+					"tutorials:\n  startpkg-intro: $RUNE_DATADIR/lib/$RUNE_PKG_ID/intro.star\n",
+			},
+			before: "gui:\n  env:\n    STARTPKG_HOME: <DATA>/lib/startpkg\n" +
+				"    PATH: <DATA>/lib/startpkg/bin:$PATH\n" +
+				"debugger:\n  startpkg:\n    command: <DATA>/lib/startpkg/dap --listen={addr}\n" +
+				"tutorials:\n  startpkg-intro: <DATA>/lib/startpkg/intro.star\n",
+			after: "gui:\n  env:\n    STARTPKG_HOME: $RUNE_DATADIR/lib/startpkg\n" +
+				"    PATH: $RUNE_DATADIR/lib/startpkg/bin:$PATH\n" +
+				"debugger:\n  startpkg:\n    command: $RUNE_DATADIR/lib/startpkg/dap --listen={addr}\n" +
+				"tutorials:\n  startpkg-intro: $RUNE_DATADIR/lib/startpkg/intro.star\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newStartupHost(t, "config.yaml", tc.pkg)
+			h.writeConfig(t, tc.before)
+
+			h.launch(t)
+			assert.Equal(t, h.expand(tc.after), h.readConfig(t))
+			assert.Zero(t, h.promptCount(), "respelling changes nothing on this host to ask about")
+			assert.Len(t, h.merged(), 1, "the host re-applies what the merge touched")
+			assert.Len(t, h.notices(), 1)
+
+			h.launch(t)
+			assert.Equal(t, h.expand(tc.after), h.readConfig(t),
+				"the next launch leaves the respelled config as it is")
+			assert.Zero(t, h.promptCount())
+			assert.Empty(t, h.merged())
+			assert.Empty(t, h.notices())
+		})
+	}
+}
+
+func TestProcessInstalledSettingsKeepsWhatIsNotThisDataDir(t *testing.T) {
+	t.Parallel()
+	debuggerPkg := startupPackage{
+		config: "debugger:\n  startpkg:\n    command: $RUNE_DATADIR/lib/$RUNE_PKG_ID/dap --listen={addr}\n",
+	}
+	for _, tc := range []struct {
+		name   string
+		pkg    startupPackage
+		config string
+	}{
+		{
+			name: "value already spelled with RUNE_DATADIR",
+			pkg: startupPackage{
+				config: "gui:\n  env:\n    STARTPKG_HOME: $RUNE_DATADIR/lib/$RUNE_PKG_ID\n",
+			},
+			config: "gui:\n  env:\n    STARTPKG_HOME: $RUNE_DATADIR/lib/startpkg\n",
+		},
+		{
+			name: "braced value already spelled with RUNE_DATADIR",
+			pkg: startupPackage{
+				config: "gui:\n  env:\n    STARTPKG_HOME: $RUNE_DATADIR/lib/$RUNE_PKG_ID\n",
+			},
+			config: "gui:\n  env:\n    STARTPKG_HOME: ${RUNE_DATADIR}/lib/startpkg\n",
+		},
+		{
+			name: "braced PATH entry already spelled with RUNE_DATADIR",
+			pkg: startupPackage{
+				config: "gui:\n  env:\n    PATH: $RUNE_DATADIR/lib/$RUNE_PKG_ID/bin:$PATH\n",
+			},
+			config: "gui:\n  env:\n    PATH: /opt/mine/bin:${RUNE_DATADIR}/lib/startpkg/bin:$PATH\n",
+		},
+		{
+			name: "braced list element already spelled with RUNE_DATADIR",
+			pkg: startupPackage{
+				config: "extensions:\n  startpkg:\n    config:\n      roots:\n" +
+					"        - $RUNE_DATADIR/lib/$RUNE_PKG_ID/std\n",
+			},
+			config: "extensions:\n  startpkg:\n    config:\n      roots:\n" +
+				"        - ${RUNE_DATADIR}/lib/startpkg/std\n",
+		},
+		{
+			name:   "user's own value outside gui.env",
+			pkg:    debuggerPkg,
+			config: "debugger:\n  startpkg:\n    command: /opt/custom/dap --listen={addr}\n",
+		},
+		{
+			name:   "sibling of the data directory outside gui.env",
+			pkg:    debuggerPkg,
+			config: "debugger:\n  startpkg:\n    command: <DATA>-old/lib/startpkg/dap --listen={addr}\n",
+		},
+		{
+			name:   "another machine's data directory outside gui.env",
+			pkg:    debuggerPkg,
+			config: "debugger:\n  startpkg:\n    command: /home/other/.rune/lib/startpkg/dap --listen={addr}\n",
+		},
+		{
+			name: "PATH that already has the package's entry",
+			pkg: startupPackage{
+				config: "gui:\n  env:\n    PATH: $RUNE_DATADIR/lib/$RUNE_PKG_ID/bin:$PATH\n",
+			},
+			config: "gui:\n  env:\n    PATH: $RUNE_DATADIR/lib/startpkg/bin:<DATA>/lib/startpkg/bin:$PATH\n",
+		},
+		{
+			name: "value no installed package provides",
+			pkg: startupPackage{
+				config: "gui:\n  env:\n    STARTPKG_HOME: $RUNE_DATADIR/lib/$RUNE_PKG_ID\n",
+			},
+			config: "gui:\n  env:\n    STARTPKG_HOME: $RUNE_DATADIR/lib/startpkg\n" +
+				"    GONE_HOME: <DATA>/lib/gone\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newStartupHost(t, "config.yaml", tc.pkg)
+			h.writeConfig(t, tc.config)
+
+			h.launch(t)
+			assert.Equal(t, h.expand(tc.config), h.readConfig(t))
+			assert.Zero(t, h.promptCount())
+			assert.Empty(t, h.merged())
+			assert.Empty(t, h.notices())
+			_, err := os.Stat(h.configPath + ".backup")
+			assert.ErrorIs(t, err, os.ErrNotExist, "an untouched config is not backed up")
+		})
+	}
+}
+
+func TestProcessInstalledSettingsAsksBeforeReplacingAnotherDataDir(t *testing.T) {
+	t.Parallel()
+	homePkg := startupPackage{
+		config: "gui:\n  env:\n    STARTPKG_HOME: $RUNE_DATADIR/lib/$RUNE_PKG_ID\n",
+	}
+	for _, tc := range []struct {
+		name    string
+		pkg     startupPackage
+		before  string
+		allowed string
+		asked   string
+	}{
+		{
+			name:    "gui.env value under another machine's data directory",
+			pkg:     homePkg,
+			before:  "gui:\n  env:\n    STARTPKG_HOME: /home/other/.rune/lib/startpkg\n",
+			allowed: "gui:\n  env:\n    STARTPKG_HOME: $RUNE_DATADIR/lib/startpkg\n",
+			asked:   "$RUNE_DATADIR/lib/startpkg",
+		},
+		{
+			name:    "gui.env value under a sibling of the data directory",
+			pkg:     homePkg,
+			before:  "gui:\n  env:\n    STARTPKG_HOME: <DATA>-old/lib/startpkg\n",
+			allowed: "gui:\n  env:\n    STARTPKG_HOME: $RUNE_DATADIR/lib/startpkg\n",
+			asked:   "$RUNE_DATADIR/lib/startpkg",
+		},
+		{
+			name: "gui.env PATH entry under another machine's data directory",
+			pkg: startupPackage{
+				config: "gui:\n  env:\n    PATH: $RUNE_DATADIR/lib/$RUNE_PKG_ID/bin:$PATH\n",
+			},
+			before: "gui:\n  env:\n    PATH: /home/other/.rune/lib/startpkg/bin:$PATH\n",
+			allowed: "gui:\n  env:\n    PATH: $RUNE_DATADIR/lib/startpkg/bin:" +
+				"/home/other/.rune/lib/startpkg/bin:$PATH\n",
+			asked: "$RUNE_DATADIR/lib/startpkg/bin",
+		},
+		{
+			name: "value pinned to a version no longer in use",
+			pkg: startupPackage{
+				config:   "gui:\n  env:\n    GOROOT: $RUNE_DATADIR/pkg/$RUNE_PKG_ID/$RUNE_PKG_VERSION/go\n",
+				versions: []string{"1", "2"},
+			},
+			before:  "gui:\n  env:\n    GOROOT: <DATA>/pkg/startpkg/1/go\n",
+			allowed: "gui:\n  env:\n    GOROOT: $RUNE_DATADIR/pkg/startpkg/2/go\n",
+			asked:   "$RUNE_DATADIR/pkg/startpkg/2/go",
+		},
+	} {
+		for _, allow := range []bool{true, false} {
+			name := tc.name + "/denied"
+			if allow {
+				name = tc.name + "/allowed"
+			}
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				h := newStartupHost(t, "config.yaml", tc.pkg)
+				h.writeConfig(t, tc.before)
+				h.answer(allow)
+
+				h.launch(t)
+				prompts := h.prompts()
+				require.Len(t, prompts, 1)
+				assert.Contains(t, prompts[0], tc.asked, "the prompt shows what is written")
+				if !allow {
+					assert.Equal(t, h.expand(tc.before), h.readConfig(t))
+					assert.Empty(t, h.merged())
+					return
+				}
+				assert.Equal(t, h.expand(tc.allowed), h.readConfig(t))
+				assert.Len(t, h.merged(), 1)
+
+				h.launch(t)
+				assert.Equal(t, h.expand(tc.allowed), h.readConfig(t))
+				assert.Zero(t, h.promptCount(), "an approved value is not asked about again")
+			})
+		}
+	}
+}
+
+func TestProcessInstalledSettingsRespellsTheManagedSectionOfAStarlarkConfig(t *testing.T) {
+	t.Parallel()
+	h := newStartupHost(t, "config.star", startupPackage{
+		config: "gui:\n  env:\n    STARTPKG_HOME: $RUNE_DATADIR/lib/$RUNE_PKG_ID\n" +
+			"debugger:\n  startpkg:\n    command: $RUNE_DATADIR/lib/$RUNE_PKG_ID/dap --listen={addr}\n",
+	})
+	const userCode = "config = {\"editor\": {\"mode\": \"modal\"}}\n"
+	require.NoError(t, os.WriteFile(h.configPath, []byte(userCode), 0o644))
+	require.NoError(t, starlarkconfig.WriteManagedConfigFileAtomic(h.configPath, map[string]any{
+		"gui": map[string]any{"env": map[string]any{
+			"STARTPKG_HOME": h.expand("<DATA>/lib/startpkg"),
+		}},
+		"debugger": map[string]any{"startpkg": map[string]any{
+			"command": h.expand("<DATA>/lib/startpkg/dap --listen={addr}"),
+		}},
+	}))
+
+	h.launch(t)
+	cfg := readUserConfigMap(t, h.configPath)
+	assert.Equal(t, map[string]any{"STARTPKG_HOME": "$RUNE_DATADIR/lib/startpkg"},
+		cfg["gui"].(map[string]any)["env"])
+	assert.Equal(t, map[string]any{"startpkg": map[string]any{
+		"command": "$RUNE_DATADIR/lib/startpkg/dap --listen={addr}",
+	}}, cfg["debugger"])
+	assert.Equal(t, map[string]any{"mode": "modal"}, cfg["editor"])
+	raw := h.readConfig(t)
+	assert.True(t, strings.HasPrefix(raw, userCode), "the user's own code is kept:\n%s", raw)
+	assert.Equal(t, 1, strings.Count(raw, starlarkconfig.ManagedBegin))
+	assert.NotContains(t, raw, h.dataDir)
+	assert.Zero(t, h.promptCount())
+
+	h.launch(t)
+	assert.Equal(t, raw, h.readConfig(t), "the next launch leaves the respelled config as it is")
+	assert.Empty(t, h.merged())
+}
+
+func TestProcessInstalledSettingsRespellsEveryPackageInUse(t *testing.T) {
+	t.Parallel()
+	h := newStartupHost(t, "config.yaml",
+		startupPackage{
+			id:     "alphapkg",
+			config: "gui:\n  env:\n    ALPHA_HOME: $RUNE_DATADIR/lib/$RUNE_PKG_ID\n",
+		},
+		startupPackage{
+			id:     "betapkg",
+			config: "gui:\n  env:\n    BETA_HOME: $RUNE_DATADIR/lib/$RUNE_PKG_ID\n",
+		},
+	)
+	h.writeConfig(t, "gui:\n  env:\n    ALPHA_HOME: <DATA>/lib/alphapkg\n"+
+		"    BETA_HOME: <DATA>/lib/betapkg\n")
+
+	h.launch(t)
+	assert.Equal(t, "gui:\n  env:\n    ALPHA_HOME: $RUNE_DATADIR/lib/alphapkg\n"+
+		"    BETA_HOME: $RUNE_DATADIR/lib/betapkg\n", h.readConfig(t))
+	assert.Zero(t, h.promptCount())
+	assert.Len(t, h.merged(), 2, "each package's merge is applied on its own")
+}
+
+type startupPackage struct {
+	// id defaults to "startpkg".
+	id string
+	// file defaults to "config.yaml".
+	file   string
+	config string
+	// versions are installed in order, so the last one is in use. It
+	// defaults to ["1"].
+	versions []string
+}
+
+type startupHost struct {
+	m          *Manager
+	n          *idepkgtest.Notifications
+	dataDir    string
+	configPath string
+
+	mu     sync.Mutex
+	allow  bool
+	asked  []string
+	merges []ConfigMergeEvent
+}
+
+func newStartupHost(t *testing.T, configName string, pkgs ...startupPackage) *startupHost {
+	t.Helper()
+	dataDir, err := os.MkdirTemp("", "")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dataDir) })
+	h := &startupHost{
+		n:          idepkgtest.NewNotifications(t),
+		dataDir:    dataDir,
+		configPath: filepath.Join(dataDir, configName),
+		allow:      true,
+	}
+
+	var packages []release.Package
+	var bundles [][]release.Bundle
+	for i := range pkgs {
+		p := &pkgs[i]
+		if p.id == "" {
+			p.id = "startpkg"
+		}
+		if p.file == "" {
+			p.file = "config.yaml"
+		}
+		if len(p.versions) == 0 {
+			p.versions = []string{"1"}
+		}
+		packages = append(packages, release.Package{
+			Name: p.id, Latest: release.Version(p.versions[len(p.versions)-1]),
+		})
+		var versions []release.Bundle
+		for _, v := range p.versions {
+			versions = append(versions, release.Bundle{Package: p.id, Version: release.Version(v)})
+		}
+		bundles = append(bundles, versions)
+	}
+	rm := idepkgtest.NewReleaseManager(
+		idepkgtest.MakePackages(packages...), idepkgtest.MakeBundles(bundles...))
+	for _, p := range pkgs {
+		rm.SetTarball(p.id, startupPackageTarball(t, p.file, p.config))
+	}
+
+	wm := &mockWindowManager{floatingFn: h.prompt}
+	h.m = NewManager(h.n, rm, storagestub.NewInMemoryService(), idepkgtest.TrustStore(),
+		newLocalScheme(dataDir), dataDir, h.configPath, wm, syncTick, term.NopInterrupter(),
+		WithAfterConfigMerge(h.afterMerge))
+
+	for _, p := range pkgs {
+		for _, v := range p.versions {
+			require.NoError(t, h.m.InstallPackageVersion(context.Background(),
+				p.id, release.Version(v), repl.NopProgressWriter()))
+		}
+	}
+	h.reset()
+	return h
+}
+
+func (h *startupHost) launch(t *testing.T) {
+	t.Helper()
+	h.reset()
+	require.NoError(t, h.m.ProcessInstalledSettings(context.Background()))
+}
+
+func (h *startupHost) reset() {
+	h.n.Reset()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.asked = nil
+	h.merges = nil
+}
+
+func (h *startupHost) answer(allow bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.allow = allow
+}
+
+func (h *startupHost) prompt(
+	p browserapi.Floating, _ browserapi.FloatingConfig,
+) (browserapi.Window, error) {
+	const width, height = 160, 40
+	p.Resize(width, height)
+	w := term.NewStringWriter(width, height)
+	p.Draw(w)
+	_ = w.Flush()
+	h.mu.Lock()
+	h.asked = append(h.asked, w.String())
+	allow := h.allow
+	h.mu.Unlock()
+	if !allow {
+		p.Handle(term.Event{Type: term.EventKey, Key: term.KeyArrowRight})
+	}
+	p.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
+	return &mockWindow{}, nil
+}
+
+func (h *startupHost) afterMerge(event ConfigMergeEvent) (ConfigMergeResult, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.merges = append(h.merges, event)
+	return ConfigMergeResult{LivePaths: [][]string{{"gui", "env"}}}, nil
+}
+
+func (h *startupHost) prompts() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return slices.Clone(h.asked)
+}
+
+func (h *startupHost) promptCount() int {
+	return len(h.prompts())
+}
+
+func (h *startupHost) merged() []ConfigMergeEvent {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return slices.Clone(h.merges)
+}
+
+func (h *startupHost) notices() []string {
+	var out []string
+	for _, n := range h.n.Active() {
+		out = append(out, fmt.Sprintf("%v: %s", n.Level, n.Msg))
+	}
+	slices.Sort(out)
+	return out
+}
+
+func (h *startupHost) expand(s string) string {
+	return strings.ReplaceAll(s, "<DATA>", h.dataDir)
+}
+
+func (h *startupHost) writeConfig(t *testing.T, config string) {
+	t.Helper()
+	require.NoError(t, os.WriteFile(h.configPath, []byte(h.expand(config)), 0o644))
+	// So a test can tell whether the launch backed the config up.
+	require.NoError(t, os.RemoveAll(h.configPath+".backup"))
+}
+
+func (h *startupHost) readConfig(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile(h.configPath)
+	require.NoError(t, err)
+	return string(b)
+}
+
+func startupPackageTarball(t *testing.T, file, config string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gzw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gzw)
+	for name, content := range map[string]string{
+		file:             config,
+		"lib/readme.txt": "startpkg\n",
+	} {
+		require.NoError(t, tw.WriteHeader(&tar.Header{
+			Name: name, Mode: 0o644, Size: int64(len(content)),
+		}))
+		_, err := tw.Write([]byte(content))
+		require.NoError(t, err)
+	}
+	require.NoError(t, tw.Close())
+	require.NoError(t, gzw.Close())
+	return buf.Bytes()
+}
+
 func TestInstallAtomicOperations(t *testing.T) {
 	t.Parallel()
 
@@ -2812,9 +3429,6 @@ func TestInstallAtomicOperations(t *testing.T) {
 	})
 }
 
-// TestProcessConfigAutoApply covers the auto-apply path: purely-new overlay
-// keys are written to disk without prompting, while keys that override an
-// existing user value still prompt for confirmation.
 func TestProcessConfigAutoApply(t *testing.T) {
 	t.Parallel()
 
@@ -2846,7 +3460,7 @@ func TestProcessConfigAutoApply(t *testing.T) {
 		require.NoError(t, os.WriteFile(pkgConfig, []byte(
 			"settings:\n  theme: dark\n  indent: 4\n"), 0o644))
 
-		require.NoError(t, m.processConfig("vpkg", release.Version("1"), pkgConfig))
+		require.NoError(t, m.processConfig(context.Background(), "vpkg", release.Version("1"), pkgConfig))
 		n.RequireNoErrorNotification()
 		assert.True(t, hasInfoNotification(n),
 			"auto-apply must surface an info notification")
@@ -2901,7 +3515,7 @@ func TestProcessConfigAutoApply(t *testing.T) {
 		assert.Contains(t, string(promptYAML), "GOROOT",
 			"prompt covers only the conflicting key")
 
-		require.NoError(t, m.processConfig("vpkg", release.Version("2"), pkgConfig))
+		require.NoError(t, m.processConfig(context.Background(), "vpkg", release.Version("2"), pkgConfig))
 		n.RequireNoErrorNotification()
 		assert.True(t, prompted, "conflicting key must prompt")
 
@@ -2941,7 +3555,7 @@ func TestProcessConfigAutoApply(t *testing.T) {
 			"env:\n  GOROOT: $RUNE_DATADIR/pkg/$RUNE_PKG_ID/$RUNE_PKG_VERSION/go\n"+
 				"  NEW: added\n"), 0o644))
 
-		require.NoError(t, m.processConfig("vpkg", release.Version("2"), pkgConfig))
+		require.NoError(t, m.processConfig(context.Background(), "vpkg", release.Version("2"), pkgConfig))
 		n.RequireNoErrorNotification()
 		assert.Equal(t, 1, promptCount, "conflicting key prompts")
 		assert.True(t, hasInfoNotification(n),
@@ -2975,7 +3589,7 @@ func TestProcessConfigAutoApply(t *testing.T) {
 		require.NoError(t, os.WriteFile(pkgConfig, []byte(
 			"settings:\n  theme: dark\n"), 0o644))
 
-		require.NoError(t, m.processConfig("vpkg", release.Version("1"), pkgConfig))
+		require.NoError(t, m.processConfig(context.Background(), "vpkg", release.Version("1"), pkgConfig))
 		n.RequireNoErrorNotification()
 		assert.False(t, hasInfoNotification(n),
 			"no notification when nothing changed")
@@ -3017,11 +3631,6 @@ func TestProcessConfigSkipsPromptWhenAlreadyMerged(t *testing.T) {
 	})
 }
 
-// TestProcessConfigRepromptsOnVersionDependentChange is a regression test
-// for RUNE-225: when a package config scalar's raw template depends on
-// $RUNE_PKG_VERSION, the resolved value changes across versions. Rune must
-// re-prompt and persist the new value when it differs from what is stored,
-// while leaving user-customized static scalars untouched (RUNE-187).
 func TestProcessConfigRepromptsOnVersionDependentChange(t *testing.T) {
 	t.Parallel()
 
@@ -3032,7 +3641,7 @@ func TestProcessConfigRepromptsOnVersionDependentChange(t *testing.T) {
 			{Package: "vpkg", Version: "1"},
 			{Package: "vpkg", Version: "2"},
 		})
-		m, _, _, datadir := newTestManager(t, pkgs, versions)
+		m, _, _, _ := newTestManager(t, pkgs, versions)
 
 		require.NoError(t, os.WriteFile(m.configPath, []byte("{}\n"), 0o644))
 
@@ -3053,20 +3662,20 @@ func TestProcessConfigRepromptsOnVersionDependentChange(t *testing.T) {
 		}
 
 		// v1: new key auto-applies without a prompt and the value is written.
-		require.NoError(t, m.processConfig("vpkg", release.Version("1"), pkgConfig))
+		require.NoError(t, m.processConfig(context.Background(), "vpkg", release.Version("1"), pkgConfig))
 		assert.Equal(t, 0, promptCount, "first install auto-applies the new key without prompting")
 
-		v1Want := filepath.Join(datadir, "pkg", "vpkg", "1", "go")
+		v1Want := "$RUNE_DATADIR/pkg/vpkg/1/go"
 		cfg := readUserConfigMap(t, m.configPath)
 		env, ok := cfg["env"].(map[string]any)
 		require.True(t, ok)
 		assert.Equal(t, v1Want, fmt.Sprint(env["GOROOT"]))
 
 		// v2: same template, different resolved value -> must re-prompt and update.
-		require.NoError(t, m.processConfig("vpkg", release.Version("2"), pkgConfig))
+		require.NoError(t, m.processConfig(context.Background(), "vpkg", release.Version("2"), pkgConfig))
 		assert.Equal(t, 1, promptCount, "version bump re-prompts the version-dependent key")
 
-		v2Want := filepath.Join(datadir, "pkg", "vpkg", "2", "go")
+		v2Want := "$RUNE_DATADIR/pkg/vpkg/2/go"
 		cfg = readUserConfigMap(t, m.configPath)
 		env, ok = cfg["env"].(map[string]any)
 		require.True(t, ok)
@@ -3099,11 +3708,11 @@ func TestProcessConfigRepromptsOnVersionDependentChange(t *testing.T) {
 			},
 		}
 
-		require.NoError(t, m.processConfig("vpkg", release.Version("1"), pkgConfig))
+		require.NoError(t, m.processConfig(context.Background(), "vpkg", release.Version("1"), pkgConfig))
 		assert.Equal(t, 0, promptCount, "first install auto-applies the new key without prompting")
 
 		// Same version again: resolved value matches disk, no re-prompt.
-		require.NoError(t, m.processConfig("vpkg", release.Version("1"), pkgConfig))
+		require.NoError(t, m.processConfig(context.Background(), "vpkg", release.Version("1"), pkgConfig))
 		assert.Equal(t, 0, promptCount, "unchanged version-dependent value must not re-prompt")
 	})
 
@@ -3136,7 +3745,7 @@ func TestProcessConfigRepromptsOnVersionDependentChange(t *testing.T) {
 			},
 		}
 
-		require.NoError(t, m.processConfig("vpkg", release.Version("1"), pkgConfig))
+		require.NoError(t, m.processConfig(context.Background(), "vpkg", release.Version("1"), pkgConfig))
 		assert.Equal(t, 0, promptCount, "static differing scalar must not re-prompt (RUNE-187)")
 
 		cfg := readUserConfigMap(t, m.configPath)
@@ -3146,12 +3755,6 @@ func TestProcessConfigRepromptsOnVersionDependentChange(t *testing.T) {
 	})
 }
 
-// TestInstallPackageVersionNonUTF8PAXXattr is a regression test for
-// RUNE-174: previously, tar.Header values returned by untar were persisted
-// verbatim into the TOML-backed package store, so a tarball carrying a PAX
-// xattr with non-UTF-8 bytes (such as macOS's "com.apple.provenance"
-// containing 0xad) made storage.Update fail with
-// "invalid UTF-8 byte: 0xad", aborting the install.
 func TestInstallPackageVersionNonUTF8PAXXattr(t *testing.T) {
 	t.Parallel()
 	pkgID := "paxpkg"
@@ -3185,7 +3788,7 @@ func TestInstallPackageVersionNonUTF8PAXXattr(t *testing.T) {
 	require.NoError(t, storage.Get(context.Background(), key, &got))
 	assert.Equal(t, pkgID, got.Package)
 	require.Len(t, got.Executables, 1)
-	assert.Equal(t, "tool", got.Executables[0].Name)
+	assert.Equal(t, "bin/tool", got.Executables[0].Name)
 }
 
 // newTestManagerWithLocalStorage is like newTestManager but uses the
@@ -3232,7 +3835,7 @@ func makePAXXattrTarball(t *testing.T) []byte {
 
 	const content = "#!/bin/sh\necho hi\n"
 	hdr := &tar.Header{
-		Name:   "tool",
+		Name:   "bin/tool",
 		Mode:   0o755,
 		Size:   int64(len(content)),
 		Format: tar.FormatPAX,
@@ -3405,9 +4008,6 @@ func (s *orderingStorage) Update(
 	return err
 }
 
-// TestEditorModeParamExposed verifies that RUNE_EDITOR_MODE reaches package
-// config.star scripts via idePkgStarlarkParams. RUNE-137 needs this to drive
-// the extension_fuzzy_search mode-aware key bindings.
 func TestEditorModeParamExposed(t *testing.T) {
 	t.Parallel()
 
@@ -3429,8 +4029,7 @@ else:
 		t.Run(tc.mode, func(t *testing.T) {
 			got, err := loadIdePkgConfigFromBytes(
 				"config.star", []byte(src),
-				nil, "pkg", release.Version("1"), "/data",
-				tc.mode,
+				nil, "pkg", release.Version("1"), tc.mode,
 			)
 			require.NoError(t, err)
 			assert.Equal(t, tc.wantMod, got["picked_mode"])
@@ -3438,10 +4037,6 @@ else:
 	}
 }
 
-// TestPkgConfigFilePrefersYAML and TestPkgConfigFileFallsBackToStar lock in
-// the shared discovery used by download/untar/UsePackageVersion/
-// ProcessInstalledSettings: config.yaml wins when both formats are present,
-// config.star is picked up when only it ships.
 func TestPkgConfigFilePrefersYAML(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -3457,11 +4052,6 @@ func TestPkgConfigFileFallsBackToStar(t *testing.T) {
 	assert.Equal(t, filepath.Join(dir, "config.star"), pkgConfigFile(dir))
 }
 
-// TestPkgConfigFileNestedWrapperDir locks in discovery for tarballs that
-// nest everything under a single top-level wrapper directory (the Linux
-// rune-agent bundle tars `rune-agent/...` rather than `.`, so config.yaml
-// lands at <dir>/rune-agent/config.yaml). Without descending one level the
-// extension's shipped config is silently never merged.
 func TestPkgConfigFileNestedWrapperDir(t *testing.T) {
 	t.Parallel()
 	t.Run("yaml under single wrapper dir", func(t *testing.T) {
@@ -3495,11 +4085,6 @@ func TestPkgConfigFileNestedWrapperDir(t *testing.T) {
 	})
 }
 
-// TestLoadUserConfigStarEmptyOrCommentsOnly verifies that a user-side
-// config.star that is empty or contains only comments loads as an empty
-// configuration instead of failing with "expected top-level config dict".
-// Without this, installing a package against a fresh/commented user config
-// would surface a confusing "load user config" error to the user.
 func TestLoadUserConfigStarEmptyOrCommentsOnly(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -3514,7 +4099,7 @@ func TestLoadUserConfigStarEmptyOrCommentsOnly(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := loadIdePkgConfigFromBytes(
 				"config.star", []byte(tc.src),
-				nil, "pkg", release.Version("1"), "/data", "modal",
+				nil, "pkg", release.Version("1"), "modal",
 			)
 			require.NoError(t, err)
 			assert.Equal(t, map[string]any{}, got)
@@ -3531,23 +4116,19 @@ func fileInode(t *testing.T, path string) uint64 {
 	return uint64(st.Ino)
 }
 
-// TestCopyExecutablesAtomicSwap verifies that upgrading an installed
-// executable replaces the directory entry with a fresh inode rather
-// than truncating the existing one in place. Rewriting the inode of a
-// running, unsigned extension binary causes macOS Gatekeeper/AMFI to
-// kill it.
 func TestCopyExecutablesAtomicSwap(t *testing.T) {
 	srcDir := t.TempDir()
 	dstDir := t.TempDir()
 
-	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "ext"),
+	require.NoError(t, os.Mkdir(filepath.Join(srcDir, "bin"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "bin", "ext"),
 		[]byte("new-binary"), 0o755))
 
 	target := filepath.Join(dstDir, "ext")
 	require.NoError(t, os.WriteFile(target, []byte("old-binary"), 0o755))
 	oldInode := fileInode(t, target)
 
-	files := []executableEntry{{Name: "ext", Mode: 0o755}}
+	files := []executableEntry{{Name: "bin/ext", Mode: 0o755}}
 	require.NoError(t, copyExecutables(files, srcDir, dstDir))
 
 	got, err := os.ReadFile(target)
@@ -3570,12 +4151,69 @@ func TestCopyExecutablesAtomicSwap(t *testing.T) {
 func TestCopyExecutablesMissingSource(t *testing.T) {
 	srcDir := t.TempDir()
 	dstDir := t.TempDir()
-	files := []executableEntry{{Name: "missing", Mode: 0o755}}
+	files := []executableEntry{{Name: "bin/missing", Mode: 0o755}}
 	err := copyExecutables(files, srcDir, dstDir)
 	require.Error(t, err)
 	entries, derr := os.ReadDir(dstDir)
 	require.NoError(t, derr)
 	assert.Empty(t, entries, "no temp files left behind on error")
+}
+
+func TestCopyExecutablesSkipsEntriesOutsideBin(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+	// Install records from older releases list executables found anywhere
+	// in the package; reusing such a version must not copy them.
+	files := []executableEntry{
+		{Name: "bin/tool", Mode: 0o755},
+		{Name: "lib/tree-sitter.so", Mode: 0o755},
+		{Name: "pkg/tool/darwin_arm64/link", Mode: 0o755},
+	}
+	for _, f := range files {
+		path := filepath.Join(srcDir, filepath.FromSlash(f.Name))
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+		require.NoError(t, os.WriteFile(path, nil, 0o755))
+	}
+
+	require.NoError(t, copyExecutables(files, srcDir, dstDir))
+
+	entries, err := os.ReadDir(dstDir)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "tool", entries[0].Name())
+}
+
+func TestUntarCollectsOnlyTopLevelBinExecutables(t *testing.T) {
+	t.Parallel()
+	entries := []struct {
+		name string
+		mode int64
+		want bool
+	}{
+		{name: "bin/tool", mode: 0o755, want: true},
+		{name: "./bin/dotted", mode: 0o755, want: true},
+		{name: "bin/readme.txt", mode: 0o644},
+		{name: "bin/.hidden", mode: 0o755},
+		{name: "bin/nested/tool", mode: 0o755},
+		{name: "lib/tree-sitter.so", mode: 0o755},
+		{name: "pkg/tool/darwin_arm64/link", mode: 0o755},
+		{name: "agent-browser/bin/agent-browser", mode: 0o755},
+		{name: "make.bash", mode: 0o755},
+	}
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	var want []executableEntry
+	for _, e := range entries {
+		require.NoError(t, tw.WriteHeader(&tar.Header{Name: e.name, Mode: e.mode}))
+		if e.want {
+			want = append(want, executableEntry{Name: e.name, Mode: e.mode})
+		}
+	}
+	require.NoError(t, tw.Close())
+
+	got, _, err := untar(t.TempDir(), &buf, nil)
+	require.NoError(t, err)
+	assert.Equal(t, want, got)
 }
 
 // mergeStep is one apply iteration in a TestConfigMergeIntegration case:
@@ -3590,12 +4228,6 @@ type mergeStep struct {
 	wantNotContains []string
 }
 
-// TestConfigMergeIntegration is the black-box contract for extension config
-// updates. It drives the real production path (processConfig ->
-// planConfigChange -> auto-accepted prompt -> buildMergedConfig -> atomic
-// write) for both .star and .yaml user configs, asserting only inputs and
-// final on-disk + decoded outputs. It is the primary guard for RUNE-225:
-// .star updates must preserve user comments, helpers, and custom logic.
 func TestConfigMergeIntegration(t *testing.T) {
 	t.Parallel()
 
@@ -4124,7 +4756,7 @@ func TestConfigMergeIntegration(t *testing.T) {
 				pkgConfig := filepath.Join(pkgDir, tc.configName)
 				require.NoError(t, os.WriteFile(pkgConfig, []byte(step.pkgConfig), 0o644))
 
-				require.NoError(t, m.processConfig("mpkg", release.Version(step.version), pkgConfig),
+				require.NoError(t, m.processConfig(context.Background(), "mpkg", release.Version(step.version), pkgConfig),
 					"step %d", i)
 				n.RequireNoErrorNotification()
 
@@ -4186,17 +4818,17 @@ func TestConfigMergeIntegration(t *testing.T) {
 		src := "config = {\"env\": {\"GOROOT\": RUNE_DATADIR + \"/pkg/\" + RUNE_PKG_ID + \"/\" + RUNE_PKG_VERSION + \"/go\"}}\n"
 		require.NoError(t, os.WriteFile(pkgConfig, []byte(src), 0o644))
 
-		require.NoError(t, m.processConfig("vpkg", release.Version("1"), pkgConfig))
+		require.NoError(t, m.processConfig(context.Background(), "vpkg", release.Version("1"), pkgConfig))
 		assert.Equal(t, 0, promptCount, "first install auto-applies the new key without prompting")
 		cfg := readUserConfigMap(t, m.configPath)
 		env := cfg["env"].(map[string]any)
-		assert.Equal(t, filepath.Join(datadir, "pkg", "vpkg", "1", "go"), fmt.Sprint(env["GOROOT"]))
+		assert.Equal(t, "$RUNE_DATADIR/pkg/vpkg/1/go", fmt.Sprint(env["GOROOT"]))
 
-		require.NoError(t, m.processConfig("vpkg", release.Version("2"), pkgConfig))
+		require.NoError(t, m.processConfig(context.Background(), "vpkg", release.Version("2"), pkgConfig))
 		assert.Equal(t, 1, promptCount, "version bump re-prompts the version-dependent key")
 		cfg = readUserConfigMap(t, m.configPath)
 		env = cfg["env"].(map[string]any)
-		assert.Equal(t, filepath.Join(datadir, "pkg", "vpkg", "2", "go"), fmt.Sprint(env["GOROOT"]))
+		assert.Equal(t, "$RUNE_DATADIR/pkg/vpkg/2/go", fmt.Sprint(env["GOROOT"]))
 
 		raw, err := os.ReadFile(m.configPath)
 		require.NoError(t, err)
@@ -4228,8 +4860,8 @@ func TestConfigMergeIntegration(t *testing.T) {
 		src := "config = {\"env\": {\"GOROOT\": RUNE_DATADIR + \"/pkg/\" + RUNE_PKG_ID + \"/\" + RUNE_PKG_VERSION + \"/go\"}}\n"
 		require.NoError(t, os.WriteFile(pkgConfig, []byte(src), 0o644))
 
-		require.NoError(t, m.processConfig("vpkg", release.Version("1"), pkgConfig))
-		require.NoError(t, m.processConfig("vpkg", release.Version("1"), pkgConfig))
+		require.NoError(t, m.processConfig(context.Background(), "vpkg", release.Version("1"), pkgConfig))
+		require.NoError(t, m.processConfig(context.Background(), "vpkg", release.Version("1"), pkgConfig))
 		assert.Equal(t, 0, promptCount, "unchanged version-dependent value must not re-prompt")
 	})
 }
@@ -4250,14 +4882,14 @@ func TestAfterConfigMergeHook(t *testing.T) {
 			events = append(events, e)
 			data, _ := os.ReadFile(m.configPath)
 			configOnDisk = string(data)
-			return ConfigMergeResult{LiveApplied: true}, nil
+			return ConfigMergeResult{LivePaths: [][]string{{"gui", "env"}}}, nil
 		}
 
 		pkgConfig := filepath.Join(t.TempDir(), "config.yaml")
 		require.NoError(t, os.WriteFile(pkgConfig, []byte(
 			"gui:\n  env:\n    FOO: bar\n"), 0o644))
 
-		require.NoError(t, m.processConfig("vpkg", release.Version("1"), pkgConfig))
+		require.NoError(t, m.processConfig(context.Background(), "vpkg", release.Version("1"), pkgConfig))
 		n.RequireNoErrorNotification()
 
 		require.Len(t, events, 1)
@@ -4268,59 +4900,63 @@ func TestAfterConfigMergeHook(t *testing.T) {
 			"hook must run after the merged config is written to disk")
 	})
 
-	t.Run("live-applied result yields env-oriented notification", func(t *testing.T) {
+	t.Run("notification names the keys in effect and pending", func(t *testing.T) {
 		t.Parallel()
-		pkgs := idepkgtest.MakePackages()
-		versions := idepkgtest.MakeBundles([]release.Bundle{{Package: "vpkg", Version: "1"}})
-		m, n, _, _ := newTestManager(t, pkgs, versions)
-		require.NoError(t, os.WriteFile(m.configPath, []byte("existing: true\n"), 0o644))
-		m.afterConfigMerge = func(ConfigMergeEvent) (ConfigMergeResult, error) {
-			return ConfigMergeResult{LiveApplied: true}, nil
+		for _, tt := range []struct {
+			name      string
+			pkgConfig string
+			hook      ConfigMergeResult
+			hookErr   error
+			want      string
+		}{
+			{
+				name:      "fully applied",
+				pkgConfig: "gui:\n  env:\n    FOO: bar\n",
+				hook:      ConfigMergeResult{LivePaths: [][]string{{"gui", "env"}}},
+				want:      "applied vpkg configuration updates. All changes are in effect now: gui.env.",
+			},
+			{
+				name:      "nothing live",
+				pkgConfig: "settings:\n  theme: dark\n",
+				want: "saved vpkg configuration updates to your config. " +
+					"None are in effect yet; restart the program to load: settings.theme.",
+			},
+			{
+				name:      "partially applied",
+				pkgConfig: "gui:\n  env:\n    FOO: bar\nsettings:\n  theme: dark\n",
+				hook:      ConfigMergeResult{LivePaths: [][]string{{"gui", "env"}}},
+				want: "partially applied vpkg configuration updates. " +
+					"In effect now: gui.env. Restart the program to load: settings.theme.",
+			},
+			{
+				name:      "hook error still reports the saved config",
+				pkgConfig: "gui:\n  env:\n    FOO: bar\n",
+				hookErr:   errors.New("boom"),
+				want: "saved vpkg configuration updates to your config. " +
+					"None are in effect yet; restart the program to load: gui.env.",
+			},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+				pkgs := idepkgtest.MakePackages()
+				versions := idepkgtest.MakeBundles([]release.Bundle{{Package: "vpkg", Version: "1"}})
+				m, n, _, _ := newTestManager(t, pkgs, versions)
+				require.NoError(t, os.WriteFile(m.configPath, []byte("existing: true\n"), 0o644))
+				m.afterConfigMerge = func(ConfigMergeEvent) (ConfigMergeResult, error) {
+					return tt.hook, tt.hookErr
+				}
+
+				pkgConfig := filepath.Join(t.TempDir(), "config.yaml")
+				require.NoError(t, os.WriteFile(pkgConfig, []byte(tt.pkgConfig), 0o644))
+				err := m.processConfig(context.Background(), "vpkg", release.Version("1"), pkgConfig)
+				if tt.hookErr != nil {
+					require.ErrorIs(t, err, tt.hookErr)
+				} else {
+					require.NoError(t, err)
+				}
+				assert.Equal(t, []string{tt.want}, notificationMessages(n))
+			})
 		}
-
-		pkgConfig := filepath.Join(t.TempDir(), "config.yaml")
-		require.NoError(t, os.WriteFile(pkgConfig, []byte(
-			"gui:\n  env:\n    FOO: bar\n"), 0o644))
-		require.NoError(t, m.processConfig("vpkg", release.Version("1"), pkgConfig))
-
-		require.True(t, hasNotificationContaining(n, "applied vpkg configuration updates"))
-		assert.False(t, hasNotificationContaining(n, "Restart the program"))
-	})
-
-	t.Run("non-live result keeps restart notification", func(t *testing.T) {
-		t.Parallel()
-		pkgs := idepkgtest.MakePackages()
-		versions := idepkgtest.MakeBundles([]release.Bundle{{Package: "vpkg", Version: "1"}})
-		m, n, _, _ := newTestManager(t, pkgs, versions)
-		require.NoError(t, os.WriteFile(m.configPath, []byte("existing: true\n"), 0o644))
-		m.afterConfigMerge = func(ConfigMergeEvent) (ConfigMergeResult, error) {
-			return ConfigMergeResult{}, nil
-		}
-
-		pkgConfig := filepath.Join(t.TempDir(), "config.yaml")
-		require.NoError(t, os.WriteFile(pkgConfig, []byte(
-			"settings:\n  theme: dark\n"), 0o644))
-		require.NoError(t, m.processConfig("vpkg", release.Version("1"), pkgConfig))
-
-		require.True(t, hasNotificationContaining(n, "Restart the program"))
-	})
-
-	t.Run("hook error propagates through auto-apply", func(t *testing.T) {
-		t.Parallel()
-		pkgs := idepkgtest.MakePackages()
-		versions := idepkgtest.MakeBundles([]release.Bundle{{Package: "vpkg", Version: "1"}})
-		m, _, _, _ := newTestManager(t, pkgs, versions)
-		require.NoError(t, os.WriteFile(m.configPath, []byte("existing: true\n"), 0o644))
-		m.afterConfigMerge = func(ConfigMergeEvent) (ConfigMergeResult, error) {
-			return ConfigMergeResult{}, errors.New("boom")
-		}
-
-		pkgConfig := filepath.Join(t.TempDir(), "config.yaml")
-		require.NoError(t, os.WriteFile(pkgConfig, []byte(
-			"gui:\n  env:\n    FOO: bar\n"), 0o644))
-		err := m.processConfig("vpkg", release.Version("1"), pkgConfig)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "boom")
 	})
 
 	t.Run("prompt allow invokes hook, deny does not", func(t *testing.T) {
@@ -4356,7 +4992,7 @@ func TestAfterConfigMergeHook(t *testing.T) {
 			pkgConfig := filepath.Join(t.TempDir(), "config.yaml")
 			require.NoError(t, os.WriteFile(pkgConfig, []byte(
 				"env:\n  GOROOT: $RUNE_DATADIR/pkg/$RUNE_PKG_ID/$RUNE_PKG_VERSION/go\n"), 0o644))
-			require.NoError(t, m.processConfig("vpkg", release.Version("2"), pkgConfig))
+			require.NoError(t, m.processConfig(context.Background(), "vpkg", release.Version("2"), pkgConfig))
 			n.RequireNoErrorNotification()
 			return calls
 		}
@@ -4370,15 +5006,6 @@ func TestAfterConfigMergeHook(t *testing.T) {
 			assert.Equal(t, 0, run(t, true))
 		})
 	})
-}
-
-func hasNotificationContaining(n *idepkgtest.Notifications, substr string) bool {
-	for _, noti := range n.Active() {
-		if strings.Contains(noti.Msg, substr) {
-			return true
-		}
-	}
-	return false
 }
 
 const (
@@ -4414,11 +5041,6 @@ func installVerifyPackages(t *testing.T) (*Manager, string) {
 	return manager, dataDir
 }
 
-// TestVerifyExtensionEntrypointAfterUpgrade pins that the shared bin copy is
-// vouched for by the version the lib symlink records — the same install step
-// writes both — not by whichever installed record happens to list first.
-// After an upgrade the superseded version stays on disk, and its stale
-// manifest hash must not veto the copy the newer version produced.
 func TestVerifyExtensionEntrypointAfterUpgrade(t *testing.T) {
 	t.Parallel()
 	manager, _, rm, dataDir := newTestManager(t,
@@ -4481,12 +5103,6 @@ func pkgTarballScript(t *testing.T, entrypoint, prefix, script string) []byte {
 	return buf.Bytes()
 }
 
-// TestInstallPackagePreservesUserConfigComments pins that merging a
-// package overlay into a YAML user config rewrites only the keys the
-// package adds. The merge used to round-trip the decoded config map,
-// which stripped every comment and re-sorted keys alphabetically, so a
-// freshly bootstrapped preset config lost all of its documentation the
-// first time an extension installed.
 func TestInstallPackagePreservesUserConfigComments(t *testing.T) {
 	t.Parallel()
 
@@ -4637,9 +5253,6 @@ func TestInstallPackagePreservesUserConfigComments(t *testing.T) {
 	}
 }
 
-// TestInstallPackagePreservesShippedPresetComments runs the merge over
-// the emacs preset bootstrap writes into a fresh datadir, which is where
-// the comment loss was reported.
 func TestInstallPackagePreservesShippedPresetComments(t *testing.T) {
 	t.Parallel()
 
@@ -4794,16 +5407,12 @@ func TestInstallPackagePreservesStarConfigComments(t *testing.T) {
 			cfg := readUserConfigMap(t, configPath)
 			env, ok := cfg["env"].(map[string]any)
 			require.True(t, ok, "env not merged: %#v", cfg)
-			assert.Equal(t, filepath.Join(
-				filepath.Dir(configPath), "pkg", "configpkg", "2", "go"),
+			assert.Equal(t, "$RUNE_DATADIR/pkg/configpkg/2/go",
 				env["GOROOT"])
 		})
 	}
 }
 
-// TestUpgradePackagePreservesUserConfigComments covers the prompt path:
-// a version-dependent key the user approved is overwritten in place
-// without disturbing the rest of the file.
 func TestUpgradePackagePreservesUserConfigComments(t *testing.T) {
 	t.Parallel()
 
@@ -4836,7 +5445,7 @@ func TestUpgradePackagePreservesUserConfigComments(t *testing.T) {
 	cfg := readUserConfigMap(t, configPath)
 	env, ok := cfg["env"].(map[string]any)
 	require.True(t, ok)
-	assert.Equal(t, filepath.Join(datadir, "pkg", "configpkg", "2", "go"),
+	assert.Equal(t, "$RUNE_DATADIR/pkg/configpkg/2/go",
 		env["GOROOT"], "the approved version-dependent key must be updated")
 }
 

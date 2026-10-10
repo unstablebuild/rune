@@ -32,7 +32,6 @@ import (
 	"unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/handler"
-	"unstable.build/rune/internal/ide/syntax"
 	"unstable.build/rune/internal/text"
 )
 
@@ -639,8 +638,6 @@ func (vi *cellSubscriber) OnDidEdit(
 	}
 	vi.oobEdited = vi.oob
 }
-
-var _ foldsService = (*syntax.Tree)(nil)
 
 type foldsService interface {
 	FoldsFrom(pos term.Coordinates) (iterator.Iterator[term.Range], bool)

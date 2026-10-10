@@ -444,8 +444,6 @@ func TestCompletionSpaceClosesBand(t *testing.T) {
 	assert.Empty(t, comp.Attachments())
 }
 
-// TestCompletionCtrlCClosesBand pins that Ctrl-C dismisses the band
-// instead of falling through to the compose input's clear.
 func TestCompletionCtrlCClosesBand(t *testing.T) {
 	h, comp := newCompletionHandler(t)
 

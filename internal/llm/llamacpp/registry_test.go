@@ -251,11 +251,6 @@ func TestRegistry_GetMissing(t *testing.T) {
 	}
 }
 
-// TestRegistry_FallsBackToDefaultWhenMetadataReadFails pins the behaviour
-// when the weight blob on disk is not a valid GGUF: the registry must
-// still list the model, and must report the default context window so
-// callers can at least attempt to load it (and fail loudly at load time
-// if the file is really broken).
 func TestRegistry_FallsBackToDefaultWhenMetadataReadFails(t *testing.T) {
 	r, err := llamacpp.NewRegistry(t.TempDir())
 	if err != nil {
@@ -272,9 +267,6 @@ func TestRegistry_FallsBackToDefaultWhenMetadataReadFails(t *testing.T) {
 	}
 }
 
-// TestRegistry_WithContextWindowOverridesMetadata ensures that the
-// explicit override wins over whatever metadata (or fallback) the
-// registry would otherwise produce.
 func TestRegistry_WithContextWindowOverridesMetadata(t *testing.T) {
 	r, err := llamacpp.NewRegistry(
 		t.TempDir(),
@@ -293,11 +285,6 @@ func TestRegistry_WithContextWindowOverridesMetadata(t *testing.T) {
 	}
 }
 
-// TestRegistry_DeleteRemovesManifestBlobAndStorageEntry exercises the
-// consistency guarantee that Delete (a) removes the manifest, (b)
-// prunes the weight blob when no other manifest references it, and
-// (c) clears the persistent context-window record so re-pulls get a
-// fresh reading.
 func TestRegistry_DeleteRemovesManifestBlobAndStorageEntry(t *testing.T) {
 	storage := storagestub.NewInMemoryService()
 	t.Cleanup(func() { _ = storage.Close() })
@@ -355,9 +342,6 @@ func TestRegistry_DeleteRemovesManifestBlobAndStorageEntry(t *testing.T) {
 	}
 }
 
-// TestRegistry_DeleteKeepsBlobReferencedByAnotherManifest ensures that
-// pruning only removes blobs no other manifest still points at, so the
-// surviving manifest stays usable.
 func TestRegistry_DeleteKeepsBlobReferencedByAnotherManifest(t *testing.T) {
 	r, err := llamacpp.NewRegistry(t.TempDir())
 	if err != nil {
@@ -383,9 +367,6 @@ func TestRegistry_DeleteKeepsBlobReferencedByAnotherManifest(t *testing.T) {
 	}
 }
 
-// TestRegistry_DeleteMissingReferenceReturnsNotExist pins the error
-// surface the shell relies on when a user types a reference that was
-// never pulled.
 func TestRegistry_DeleteMissingReferenceReturnsNotExist(t *testing.T) {
 	r, err := llamacpp.NewRegistry(t.TempDir())
 	if err != nil {
@@ -398,10 +379,6 @@ func TestRegistry_DeleteMissingReferenceReturnsNotExist(t *testing.T) {
 	}
 }
 
-// TestRegistry_PersistentContextWindowSurvivesReopen verifies that
-// once a GGUF's context window has been read (or seeded), a second
-// Registry pointed at the same root backed by the same storage will
-// surface the cached value without re-parsing the blob.
 func TestRegistry_PersistentContextWindowSurvivesReopen(t *testing.T) {
 	dir := t.TempDir()
 	storage := storagestub.NewInMemoryService()

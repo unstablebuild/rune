@@ -278,13 +278,6 @@ func TestResolveGitIdentity(t *testing.T) {
 	}
 }
 
-// TestResolveGitIdentityIgnoresHookGitEnv guards resolveGitIdentity
-// against the repo-location overrides git exports to hook
-// subprocesses (GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE): when the
-// editor or its tests run under `git commit` (pre-commit hooks,
-// `git rebase -x`, ...), those variables must not redirect identity
-// resolution away from the workspace directory to the hook's
-// repository.
 func TestResolveGitIdentityIgnoresHookGitEnv(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available on PATH")

@@ -1160,3 +1160,176 @@ func TestSearchDoesNotScrollOnVisibleResult(t *testing.T) {
 	// Result is already visible at Y=0, so offset should stay at 0.
 	assert.Equal(t, 0, md.SeekOffset())
 }
+
+var testCodePadding = Padding{Top: 1, Right: 2, Bottom: 1, Left: 2}
+
+func TestCodeBlockPadding(t *testing.T) {
+	tests := []struct {
+		name    string
+		padding Padding
+		width   int
+		want    []string
+	}{
+		{
+			name:  "unpadded",
+			width: 6,
+			want:  []string{"abc   ", "      "},
+		},
+		{
+			name:    "padded",
+			padding: testCodePadding,
+			width:   7,
+			want:    []string{"       ", "  abc  ", "       ", "       "},
+		},
+		{
+			name:    "code wraps inside the padding",
+			padding: testCodePadding,
+			width:   6,
+			want:    []string{"      ", "  ab  ", "  c   ", "      ", "      "},
+		},
+		{
+			name:    "horizontal padding dropped when no column is left",
+			padding: testCodePadding,
+			width:   4,
+			want:    []string{"    ", "abc ", "    ", "    "},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.CodeBlockPadding = tt.padding
+			md, err := NewWithConfig("```\nabc\n```", cfg)
+			require.NoError(t, err)
+			height := len(tt.want)
+			require.Equal(t, height, md.Height(tt.width))
+			md.Resize(tt.width, height)
+
+			w := term.NewStringWriter(tt.width, height)
+			md.Draw(w)
+			require.NoError(t, w.Flush())
+			assert.Equal(t, strings.Join(tt.want, "\n"), w.String())
+
+			for y, row := range tt.want {
+				for x, want := range row {
+					got, ok := md.blocks[0].CharAt(x, y)
+					if !ok {
+						got = ' '
+					}
+					assert.Equal(t, want, got, "CharAt(%d, %d)", x, y)
+				}
+			}
+		})
+	}
+}
+
+func TestCodeBlockCopyTargets(t *testing.T) {
+	iconWidth := textWidth(string(DefaultConfig().CodeBlockCopyIcon))
+	tests := []struct {
+		name          string
+		content       string
+		enabled       bool
+		padding       Padding
+		width, height int
+		seek          int
+		want          []CodeBlockCopyTarget
+	}{
+		{
+			name:    "disabled by default",
+			content: "```\nls\n```",
+			padding: testCodePadding,
+			width:   20, height: 10,
+		},
+		{
+			name:    "no room without padding",
+			content: "```\nls\n```",
+			enabled: true,
+			width:   20, height: 10,
+		},
+		{
+			name:    "no room once a narrow block drops its padding",
+			content: "```\nls\n```",
+			enabled: true,
+			padding: testCodePadding,
+			width:   4, height: 10,
+		},
+		{
+			name:    "one icon in the top-right padding of each code block",
+			content: "intro\n\n```sh\nfoo\nbar\n```\n\ntext\n\n    baz\n",
+			enabled: true,
+			padding: testCodePadding,
+			width:   20, height: 12,
+			want: []CodeBlockCopyTarget{
+				{Pos: term.Coordinates{X: 18, Y: 2}, Width: iconWidth, Code: "foo\nbar"},
+				{Pos: term.Coordinates{X: 18, Y: 9}, Width: iconWidth, Code: "baz"},
+			},
+		},
+		{
+			name:    "wrapped code copies the unwrapped source",
+			content: "```\nabcdefghij\n```",
+			enabled: true,
+			padding: testCodePadding,
+			width:   8, height: 10,
+			want: []CodeBlockCopyTarget{
+				{Pos: term.Coordinates{X: 6, Y: 0}, Width: iconWidth, Code: "abcdefghij"},
+			},
+		},
+		{
+			name:    "positions follow the scroll offset",
+			content: "intro\n\n```\nls\n```",
+			enabled: true,
+			padding: testCodePadding,
+			width:   10, height: 2,
+			seek: 1,
+			want: []CodeBlockCopyTarget{
+				{Pos: term.Coordinates{X: 8, Y: 1}, Width: iconWidth, Code: "ls"},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.CodeBlockCopy = tt.enabled
+			cfg.CodeBlockPadding = tt.padding
+			md, err := NewWithConfig(tt.content, cfg)
+			require.NoError(t, err)
+			md.Resize(tt.width, tt.height)
+			md.SeekTo(tt.seek)
+
+			assert.Equal(t, tt.want, md.CodeBlockCopyTargets())
+		})
+	}
+}
+
+func TestCodeBlockCopyIconHover(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.CodeBlockCopy = true
+	cfg.CodeBlockPadding = testCodePadding
+	md, err := NewWithConfig("```\nls\n```", cfg)
+	require.NoError(t, err)
+	md.Resize(10, 4)
+	targets := md.CodeBlockCopyTargets()
+	require.Len(t, targets, 1)
+	icon := targets[0].Pos
+
+	drawIcon := func() term.Cell {
+		w := term.NewStringWriter(10, 4)
+		md.Draw(w)
+		return w.Cells()[icon.Y*10+icon.X]
+	}
+	onCodeBg := func(attr term.Attributes) term.Attributes {
+		attr.Bg = cfg.CodeBlock.Bg
+		return attr
+	}
+
+	cell := drawIcon()
+	assert.Equal(t, cfg.CodeBlockCopyIcon, cell.Ch)
+	assert.Equal(t, onCodeBg(cfg.CodeBlockCopyIconAttr), cell.Attributes())
+
+	assert.True(t, md.HoverCodeBlockCopy(icon))
+	assert.Equal(t, onCodeBg(cfg.CodeBlockCopyIconHoverAttr), drawIcon().Attributes())
+	assert.False(t, md.HoverCodeBlockCopy(icon), "hovering the same icon again")
+
+	assert.True(t, md.HoverCodeBlockCopy(term.Coordinates{X: 0, Y: icon.Y}))
+	assert.Equal(t, onCodeBg(cfg.CodeBlockCopyIconAttr), drawIcon().Attributes(),
+		"moving off the icon clears the highlight")
+}

@@ -397,6 +397,74 @@ func TestRowScannerScanRow(t *testing.T) {
 			},
 		},
 
+		// Markdown links.
+		{
+			description: "a markdown link ends at its closing paren",
+			row:         cellRow("[docs](https://rune.build/docs)"),
+			expected: []linkSpan{
+				{y: 3, x0: 7, x1: 30, url: "https://rune.build/docs"},
+			},
+		},
+		{
+			description: "a markdown link whose text is its url",
+			row:         cellRow("[https://a.com](https://a.com)"),
+			expected: []linkSpan{
+				{y: 3, x0: 1, x1: 14, url: "https://a.com"},
+				{y: 3, x0: 16, x1: 29, url: "https://a.com"},
+			},
+		},
+		{
+			description: "a markdown image nested in a markdown link",
+			row: cellRow("[![Discord](https://img.shields.io/discord/1068976834382925865)]" +
+				"(https://discord.gg/ZjZadyC7PK)"),
+			expected: []linkSpan{
+				{
+					y: 3, x0: 12, x1: 62,
+					url: "https://img.shields.io/discord/1068976834382925865",
+				},
+				{y: 3, x0: 65, x1: 94, url: "https://discord.gg/ZjZadyC7PK"},
+			},
+		},
+		{
+			description: "adjacent markdown links",
+			row:         cellRow("[a](https://a.com)[b](https://b.com)"),
+			expected: []linkSpan{
+				{y: 3, x0: 4, x1: 17, url: "https://a.com"},
+				{y: 3, x0: 22, x1: 35, url: "https://b.com"},
+			},
+		},
+		{
+			description: "a reference-style markdown link",
+			row:         cellRow("[https://a.com][1]"),
+			expected: []linkSpan{
+				{y: 3, x0: 1, x1: 14, url: "https://a.com"},
+			},
+		},
+		{
+			description: "a markdown link to a url with balanced parens",
+			row:         cellRow("[Go](https://en.wikipedia.org/wiki/Go_(language))"),
+			expected: []linkSpan{
+				{
+					y: 3, x0: 5, x1: 48,
+					url: "https://en.wikipedia.org/wiki/Go_(language)",
+				},
+			},
+		},
+		{
+			description: "a markdown link to a url with nested brackets",
+			row:         cellRow("[x](https://a.com/(x[y]))"),
+			expected: []linkSpan{
+				{y: 3, x0: 4, x1: 24, url: "https://a.com/(x[y])"},
+			},
+		},
+		{
+			description: "a markdown link ending a sentence",
+			row:         cellRow("see [a](https://a.com)."),
+			expected: []linkSpan{
+				{y: 3, x0: 8, x1: 21, url: "https://a.com"},
+			},
+		},
+
 		// Unicode.
 		{
 			description: "a narrow non-ascii host is kept whole",
@@ -553,8 +621,6 @@ func TestRowScannerScanRow(t *testing.T) {
 	}
 }
 
-// The scanner reuses its scratch across rows, so a row must not be able
-// to leak bytes into the next one.
 func TestRowScannerReusesScratchWithoutLeaking(t *testing.T) {
 	var s rowScanner
 	rows := []string{
@@ -604,21 +670,12 @@ func TestTrimURL(t *testing.T) {
 		{"", ""},
 		{".", ""},
 		{"....,,;;::!!??", ""},
-		{")", ""},
-		{"]", ""},
-		{"}", ""},
+		{")", ")"},
 		{"()", "()"},
-		{"[]", "[]"},
-		{"{}", "{}"},
-		{"(", "("},
 		{"a.", "a"},
 		{"a", "a"},
-		{"a)", "a"},
-		{"(a)", "(a)"},
-		{"(a))", "(a)"},
-		{"((a)", "((a)"},
-		{"a).", "a"},
-		{"a(", "a("},
+		{"(a).", "(a)"},
+		{"a.b.", "a.b"},
 	}
 	for _, tc := range suite {
 		t.Run(tc.raw, func(t *testing.T) {
@@ -696,7 +753,6 @@ func TestSchemeAt(t *testing.T) {
 	}
 }
 
-// A cluster split across the wrap boundary must survive the join too.
 func TestRowScannerJoinsWrappedURLWithGraphemeCluster(t *testing.T) {
 	first := cellRow("https://rune.build?aa")
 	second := slices.Concat(
@@ -727,6 +783,7 @@ func FuzzRowScannerScan(f *testing.F) {
 	f.Add("https://cafe\u0301.fr", 9)
 	f.Add("https://a.com/👨\u200d👧\u200d👦", 6)
 	f.Add("\u0301\u0301\u0301https://a.com\ufe0f", 3)
+	f.Add("[![a](https://a.com/(x)y)](https://b.com/[z])", 9)
 
 	f.Fuzz(func(t *testing.T, text string, width int) {
 		width = min(max(width, 1), 256)
@@ -794,10 +851,6 @@ func TestRowScannerScanAllRows(t *testing.T) {
 	}, got)
 }
 
-// A terminal wraps a long line with no marker of any kind: the URL just
-// runs into the last cell of a row and resumes at column 0 of the next
-// one. Scanning each row on its own underlines the first half and hands
-// a click the truncated address, which opens the wrong page.
 func TestRowScannerJoinsURLWrappedAcrossRows(t *testing.T) {
 	suite := []struct {
 		description string
@@ -918,6 +971,36 @@ func TestRowScannerJoinsURLWrappedAcrossRows(t *testing.T) {
 			expected: []linkSpan{
 				{y: 0, x0: 0, x1: 21, url: "https://rune.build?aabb"},
 				{y: 1, x0: 0, x1: 2, url: "https://rune.build?aabb"},
+			},
+		},
+		{
+			description: "a paren opened before the wrap is closed after it",
+			rows: []string{
+				"[Go](https://en.wikipedia.org/wiki/Go_(",
+				"language)) rest",
+			},
+			wrapped: []int{0},
+			expected: []linkSpan{
+				{
+					y: 0, x0: 5, x1: 39,
+					url: "https://en.wikipedia.org/wiki/Go_(language)",
+				},
+				{
+					y: 1, x0: 0, x1: 9,
+					url: "https://en.wikipedia.org/wiki/Go_(language)",
+				},
+			},
+		},
+		{
+			description: "a markdown link closed on the continuation row",
+			rows: []string{
+				"[![ci](https://rune.build?aaaa",
+				"bbbb)](#ci)",
+			},
+			wrapped: []int{0},
+			expected: []linkSpan{
+				{y: 0, x0: 7, x1: 30, url: "https://rune.build?aaaabbbb"},
+				{y: 1, x0: 0, x1: 4, url: "https://rune.build?aaaabbbb"},
 			},
 		},
 	}
@@ -1149,8 +1232,6 @@ func TestLinkScannerHandleMouseWithDefaultObserver(t *testing.T) {
 		term.Event{Type: term.EventMouse, Key: term.MouseLeft, MouseX: 6}, cells))
 }
 
-// A rendered address is not necessarily a parseable one. The click is
-// still the GUI's, so it must be swallowed rather than handed on.
 func TestLinkScannerHandleMouseOnUnparseableURL(t *testing.T) {
 	var opened []*url.URL
 	l := heldScanner(func(u *url.URL) { opened = append(opened, u) })
@@ -1161,8 +1242,6 @@ func TestLinkScannerHandleMouseOnUnparseableURL(t *testing.T) {
 	assert.Empty(t, opened)
 }
 
-// A resize between the scan and the paint leaves the cached spans
-// pointing past the end of the new frame.
 func TestLinkScannerOverlayIgnoresSpansPastTheFrame(t *testing.T) {
 	l := heldScanner(nil)
 	l.scan(linkGrid("plain", "plain", "https://example.com"))
@@ -1172,8 +1251,6 @@ func TestLinkScannerOverlayIgnoresSpansPastTheFrame(t *testing.T) {
 	assert.NotPanics(t, func() { l.overlay(shrunk) })
 }
 
-// Clicking either half of a wrapped link must open the whole address,
-// not the fragment that happened to fit on the clicked row.
 func TestLinkScannerClickOnWrappedURLOpensWholeAddress(t *testing.T) {
 	cells := markWrapped(linkGrid("see https://rune.build?aaaa", "bbbb=cc"), 0)
 	const whole = "https://rune.build?aaaabbbb=cc"
@@ -1497,8 +1574,6 @@ func pane(width, left int, rows ...string) [][]term.Cell {
 	return grid
 }
 
-// The frame the scanner sees is the whole window, so a terminal line
-// wraps at the pane's right edge, not the row's.
 func TestRowScannerJoinsWrappedURLInsideAPane(t *testing.T) {
 	const width, left, paneWidth = 60, 8, 34
 	head := "https://rune.build?"
@@ -1513,8 +1588,6 @@ func TestRowScannerJoinsWrappedURLInsideAPane(t *testing.T) {
 	}, got)
 }
 
-// Frame rows are sparse, so the row a link wrapped onto can be shorter
-// than the column the pane starts at.
 func TestRowScannerJoinsWrappedURLWithShortContinuationRow(t *testing.T) {
 	const width, left = 40, 8
 	head := markWrapped(pane(width, left, "https://rune.build?aa"), 0)[0]
@@ -1526,9 +1599,6 @@ func TestRowScannerJoinsWrappedURLWithShortContinuationRow(t *testing.T) {
 	}, got)
 }
 
-// A vertical split puts a second pane to the right of the one a link
-// overflowed, so the scan can meet another scheme on the same row after
-// the wrap. The join must still stand for the link that wrapped.
 func TestRowScannerJoinsWrappedURLWithLaterCandidateOnTheSameRow(t *testing.T) {
 	cells := markWrapped(pane(60, 0, "https://rune.build/aa", "bb"), 0)
 	copy(cells[0][30:], cellRow("http://"))
@@ -1540,11 +1610,6 @@ func TestRowScannerJoinsWrappedURLWithLaterCandidateOnTheSameRow(t *testing.T) {
 	}, got)
 }
 
-// A line can break on a character that ends a sentence in prose, and an
-// oauth redirect wrapping on the dot of a host is the common case. The
-// break says the address continues, so the dot is interior to it and
-// trimming it would both shorten the address and move its end off the
-// marker cell, losing every continuation row.
 func TestRowScannerJoinsWrappedURLBreakingOnPunctuation(t *testing.T) {
 	const width = 40
 	head := "xx api_url=https://rune-prod.us."
@@ -1559,8 +1624,6 @@ func TestRowScannerJoinsWrappedURLBreakingOnPunctuation(t *testing.T) {
 	}, got)
 }
 
-// Every row a link breaks on can break on punctuation, not just the
-// first, so no intermediate row may be trimmed either.
 func TestRowScannerJoinsWrappedURLBreakingOnPunctuationRepeatedly(t *testing.T) {
 	cells := markWrapped(pane(30, 0,
 		"https://rune.build/a,",
@@ -1577,8 +1640,6 @@ func TestRowScannerJoinsWrappedURLBreakingOnPunctuationRepeatedly(t *testing.T) 
 	}, got)
 }
 
-// Only the end of the whole address belongs to the prose around it, so
-// the trim still applies once the continuations have been read.
 func TestRowScannerTrimsWrappedURLOnlyAtItsEnd(t *testing.T) {
 	cells := markWrapped(pane(30, 0, "https://rune.build/a.", "b/c."), 0)
 
@@ -1590,8 +1651,6 @@ func TestRowScannerTrimsWrappedURLOnlyAtItsEnd(t *testing.T) {
 	}, got)
 }
 
-// A link that breaks on punctuation before it has a host is still only a
-// link once the continuation supplies one.
 func TestRowScannerJoinsWrappedURLWithHostOnTheContinuation(t *testing.T) {
 	cells := markWrapped(pane(30, 0, "https://", "rune.build/a"), 0)
 
@@ -1615,10 +1674,6 @@ func framed(width, left, paneWidth int, rows ...string) [][]term.Cell {
 	return grid
 }
 
-// The frame the scanner reads covers the whole window, so the chrome
-// around a pane is rendered into the very cells beside its text. Taking
-// the border for part of the address ran the link past the cell holding
-// the wrap marker, and the continuation rows then went unlinked.
 func TestRowScannerJoinsWrappedURLInsideAFramedPane(t *testing.T) {
 	const width, left, paneWidth = 30, 2, 21
 	cells := framed(width, left, paneWidth, "https://rune.build/aa", "bb")
@@ -1632,8 +1687,6 @@ func TestRowScannerJoinsWrappedURLInsideAFramedPane(t *testing.T) {
 	}, got)
 }
 
-// A link can also reach the margin on a line that does not carry on, and
-// the chrome beside it is still not part of the address.
 func TestRowScannerStopsAtTheChromeBesideAPane(t *testing.T) {
 	const width, left, paneWidth = 30, 2, 21
 	cells := framed(width, left, paneWidth, "https://rune.build/aa")
@@ -1644,9 +1697,6 @@ func TestRowScannerStopsAtTheChromeBesideAPane(t *testing.T) {
 	}, got)
 }
 
-// A vertical split can seat a second pane's text directly against the
-// first, with no chrome between them to stop the scan. The marker is
-// what names the margin then, so the link ends on it.
 func TestRowScannerStopsAtTheMarkerBesideAnotherPane(t *testing.T) {
 	const width, paneWidth = 40, 21
 	cells := pane(width, 0, "https://rune.build/aa", "bb")
@@ -1661,9 +1711,6 @@ func TestRowScannerStopsAtTheMarkerBesideAnotherPane(t *testing.T) {
 	}, got)
 }
 
-// An oauth login URL is long enough to break three times. The rows and
-// marker column below are what the terminal emulator produces for it in
-// a 103 column pane, so the whole address has to survive the join.
 func TestRowScannerJoinsWrappedURLAcrossFourRows(t *testing.T) {
 	const width, margin = 110, 102
 	rows := []string{

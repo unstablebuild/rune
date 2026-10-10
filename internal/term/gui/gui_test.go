@@ -20,8 +20,11 @@ import (
 	"context"
 	"image"
 	"image/color"
+	"maps"
 	"math"
+	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -365,6 +368,116 @@ func TestUpdate(t *testing.T) {
 	})
 }
 
+func TestPublishEventSchedulesUserFunc(t *testing.T) {
+	t.Run("a tick the loop never picked up runs on Close", func(t *testing.T) {
+		var mu sync.Mutex
+		gui := newLockedTestGUI(t, &mu)
+		var runs int
+		var locked bool
+		require.True(t, gui.PublishEvent(term.Event{Type: term.EventInterrupt, UserFunc: func() {
+			runs++
+			locked = !mu.TryLock()
+			if !locked {
+				mu.Unlock()
+			}
+		}}))
+		require.NoError(t, gui.Close())
+		assert.Equal(t, 1, runs)
+		assert.True(t, locked, "a tick runs under the UI lock")
+		require.NoError(t, gui.Close())
+		assert.Equal(t, 1, runs)
+	})
+
+	t.Run("a tick queued behind the exiting event runs on Close", func(t *testing.T) {
+		var handled int
+		gui, _ := newTestGUI(t, &mockHandler{
+			assertDraw: func(term.Writer) {},
+			assertEvent: func(term.Event) (bool, bool) {
+				handled++
+				return true, true
+			},
+		})
+		var runs int
+		require.True(t, gui.PublishEvent(term.Event{Type: term.EventKey, Ch: 'q', Raw: []byte("q")}))
+		require.True(t, gui.PublishEvent(term.Event{
+			Type: term.EventInterrupt, UserFunc: func() { runs++ },
+		}))
+		require.ErrorIs(t, gui.Update(), ErrHandlerExited)
+		require.Zero(t, runs)
+		require.NoError(t, gui.Close())
+		assert.Equal(t, 1, runs)
+		assert.Equal(t, 1, handled, "Close must not redeliver the exiting event")
+	})
+
+	t.Run("Close rejects events", func(t *testing.T) {
+		var runs int
+		tests := []struct {
+			name string
+			ev   term.Event
+		}{
+			{name: "user func", ev: term.Event{
+				Type: term.EventInterrupt, UserFunc: func() { runs++ },
+			}},
+			{name: "key", ev: term.Event{Type: term.EventKey, Ch: 'a', Raw: []byte("a")}},
+		}
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				gui, _ := newTestGUI(t, &mockHandler{assertDraw: func(term.Writer) {}})
+				require.NoError(t, gui.Close())
+				assert.False(t, gui.PublishEvent(tc.ev))
+			})
+		}
+		assert.Zero(t, runs)
+	})
+
+	t.Run("a tick run on Close cannot schedule another", func(t *testing.T) {
+		gui, _ := newTestGUI(t, &mockHandler{assertDraw: func(term.Writer) {}})
+		rescheduled, ran := true, false
+		require.True(t, gui.PublishEvent(term.Event{Type: term.EventInterrupt, UserFunc: func() {
+			rescheduled = gui.PublishEvent(term.Event{
+				Type: term.EventInterrupt, UserFunc: func() { ran = true },
+			})
+		}}))
+		require.NoError(t, gui.Close())
+		assert.False(t, rescheduled)
+		assert.False(t, ran)
+	})
+
+	t.Run("publishers racing Close", func(t *testing.T) {
+		gui, _ := newTestGUI(t, &mockHandler{assertDraw: func(term.Writer) {}})
+		const publishers, ticks = 8, 100
+		var runs [publishers][ticks]atomic.Int32
+		var accepted [publishers][ticks]bool
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		for p := range publishers {
+			wg.Add(1)
+			go debug.CapturePanicReport(func() {
+				defer wg.Done()
+				<-start
+				for i := range ticks {
+					accepted[p][i] = gui.PublishEvent(term.Event{
+						Type: term.EventInterrupt, UserFunc: func() { runs[p][i].Add(1) },
+					})
+				}
+			})
+		}
+		close(start)
+		require.NoError(t, gui.Close())
+		wg.Wait()
+		for p := range publishers {
+			for i := range ticks {
+				want := int32(0)
+				if accepted[p][i] {
+					want = 1
+				}
+				require.Equal(t, want, runs[p][i].Load(),
+					"publisher %d tick %d accepted=%v", p, i, accepted[p][i])
+			}
+		}
+	})
+}
+
 func TestSetForceFullRepaint(t *testing.T) {
 	mock := mockHandler{
 		assertDraw:  func(term.Writer) {},
@@ -460,12 +573,6 @@ func TestLayout(t *testing.T) {
 	})
 }
 
-// TestSetFontUnknownFamilyDoesNotPanic is a regression test for
-// RUNE-51. Attempting to switch to a font family that either does not
-// exist on the system or produces degenerate metrics must surface an
-// error through SetFont instead of crashing the process in
-// cell.NewBufferWriter, and must leave the GUI in a usable state so
-// subsequent draws still work.
 func TestSetFontUnknownFamilyDoesNotPanic(t *testing.T) {
 	mock := mockHandler{}
 	gui, _ := newTestGUI(t, &mock)
@@ -510,10 +617,116 @@ func TestCloseRestoresColorValues(t *testing.T) {
 	require.NoError(t, g.Close(), "Close must be idempotent")
 }
 
-// TestCellPixelSizeMatchesImagePlacement pins that the cell size the
-// kitty graphics protocol advertises is the pitch image placements are
-// scaled by, so a client sizing an image to N cells gets exactly N
-// cells, and that it follows font changes.
+func TestSetThemeResetClearsActiveTheme(t *testing.T) {
+	original := tcell.GetColorValues()
+	t.Cleanup(func() { tcell.SetColorValues(original) })
+
+	theme := Theme{
+		Foreground: tcell.ColorWhite,
+		Background: tcell.ColorBlack,
+		Cursor:     tcell.ColorRed,
+		Colors: map[tcell.Color]tcell.Color{
+			tcell.ColorRed: tcell.NewHexColor(0x123456),
+		},
+	}
+	g, err := New(&mockHandler{}, WithColorThemes("a", map[string]Theme{"a": theme}))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = g.Close() })
+	require.Equal(t, "a", g.Theme())
+
+	_, err = g.SetTheme("")
+	require.NoError(t, err)
+	assert.Empty(t, g.Theme())
+	assert.Equal(t, original, tcell.GetColorValues())
+}
+
+func TestSetColorThemes(t *testing.T) {
+	newTheme := func(fg, bg tcell.Color, red int32) Theme {
+		return Theme{
+			Foreground: fg,
+			Background: bg,
+			Cursor:     tcell.ColorRed,
+			Colors:     map[tcell.Color]tcell.Color{tcell.ColorRed: tcell.NewHexColor(red)},
+		}
+	}
+	a := newTheme(tcell.ColorWhite, tcell.ColorBlack, 0x123456)
+	aRedefined := newTheme(tcell.ColorYellow, tcell.ColorBlue, 0x654321)
+	b := newTheme(tcell.ColorGreen, tcell.ColorNavy, 0xabcdef)
+
+	tests := []struct {
+		name          string
+		initial       string
+		themes        map[string]Theme
+		wantReapplied bool
+		wantTheme     string
+		// wantRendered is the theme whose colors must be in effect after
+		// the call; nil means the default colors.
+		wantRendered *Theme
+	}{
+		{
+			name:          "new theme added",
+			initial:       "a",
+			themes:        map[string]Theme{"a": a, "b": b},
+			wantReapplied: true,
+			wantTheme:     "a",
+			wantRendered:  &a,
+		},
+		{
+			name:          "active theme redefined",
+			initial:       "a",
+			themes:        map[string]Theme{"a": aRedefined},
+			wantReapplied: true,
+			wantTheme:     "a",
+			wantRendered:  &aRedefined,
+		},
+		{
+			name:         "active theme absent from new set",
+			initial:      "a",
+			themes:       map[string]Theme{"b": b},
+			wantTheme:    "a",
+			wantRendered: &a,
+		},
+		{
+			name:    "no theme active",
+			initial: "",
+			themes:  map[string]Theme{"a": a, "b": b},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			original := tcell.GetColorValues()
+			t.Cleanup(func() { tcell.SetColorValues(original) })
+
+			g, err := New(&mockHandler{}, WithColorThemes(tt.initial, map[string]Theme{"a": a}))
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = g.Close() })
+
+			got, reapplied := g.SetColorThemes(tt.themes)
+			assert.Equal(t, tt.wantReapplied, reapplied)
+			assert.Equal(t, tt.wantTheme, g.Theme())
+			if tt.wantReapplied {
+				assert.Equal(t, tt.themes[tt.wantTheme], got)
+			}
+
+			wantFg, wantBg, wantRed := tcell.ColorWhite, tcell.ColorBlack, original[tcell.ColorRed]
+			if tt.wantRendered != nil {
+				wantFg, wantBg = tt.wantRendered.Foreground, tt.wantRendered.Background
+				wantRed = tt.wantRendered.Colors[tcell.ColorRed].Hex()
+			}
+			assert.Equal(t, term.FromTcellColor(wantFg), g.defaultAttr.Fg)
+			assert.Equal(t, term.FromTcellColor(wantBg), g.defaultAttr.Bg)
+			assert.Equal(t, wantRed, tcell.GetColorValues()[tcell.ColorRed])
+
+			assert.ElementsMatch(t, slices.Collect(maps.Keys(tt.themes)), g.Themes())
+			for name, theme := range tt.themes {
+				applied, err := g.SetTheme(name)
+				require.NoError(t, err)
+				assert.Equal(t, theme, applied)
+			}
+		})
+	}
+}
+
 func TestCellPixelSizeMatchesImagePlacement(t *testing.T) {
 	gui, _ := newTestGUI(t, &mockHandler{})
 
@@ -529,9 +742,6 @@ func TestCellPixelSizeMatchesImagePlacement(t *testing.T) {
 	assert.Greater(t, w2*h2, w*h, "a larger font means larger cells")
 }
 
-// TestDrawPaintsPicturesOnTheirCells asserts a picture lands on the
-// pixels the renderer paints its cells on, so the cells a floating
-// window writes over it hide all of it.
 func TestDrawPaintsPicturesOnTheirCells(t *testing.T) {
 	pic := term.Image{
 		Src: solidRGBA(4, 4, color.RGBA{G: 255, A: 255}), ID: term.NewImageID(),
@@ -679,9 +889,6 @@ func updateWhileHeld(t *testing.T, gui *GUI) bool {
 	}
 }
 
-// The render loop wakes on every vsync regardless of whether anything
-// happened. Taking the UI lock on a frame with nothing to do contends
-// with the extension RPC goroutines that need it, for no benefit.
 func TestUpdateSkipsUILockOnIdleFrame(t *testing.T) {
 	var mu sync.Mutex
 	gui := newLockedTestGUI(t, &mu)
@@ -692,8 +899,6 @@ func TestUpdateSkipsUILockOnIdleFrame(t *testing.T) {
 		"an idle tick must not wait on the UI lock")
 }
 
-// The skip must be an optimization, not a hole in the locking: a tick
-// with an event to route still mutates UI state and must serialize.
 func TestUpdateTakesUILockWhenEventPending(t *testing.T) {
 	var mu sync.Mutex
 	gui := newLockedTestGUI(t, &mu)
@@ -705,9 +910,6 @@ func TestUpdateTakesUILockWhenEventPending(t *testing.T) {
 	mu.Unlock()
 }
 
-// A drag in flight produces no pending events and owes no redraw, so the
-// drag probe is the only thing keeping its observer callbacks — which
-// reach into browser window state — under the UI lock.
 func TestUpdateTakesUILockWhileDragging(t *testing.T) {
 	t.Run("drag in progress", func(t *testing.T) {
 		var mu sync.Mutex

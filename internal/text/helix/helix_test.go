@@ -28,9 +28,12 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/cell"
 	"unstable.build/rune/internal/component"
+	"unstable.build/rune/internal/ide/syntax/treesitter"
 	"unstable.build/rune/internal/text"
 	"unstable.build/rune/internal/text/registerset"
 )
+
+var _ foldsService = (*treesitter.Tree)(nil)
 
 // newHelix builds a real Helix handler over content with an in-memory
 // clipboard, positions the caret, and returns the handler plus the
@@ -176,7 +179,6 @@ func (v testSelectionView) SelectionShrink(
 	return next, ok
 }
 
-// TestHandlerSatisfiesTextHandler pins the interface the IDE depends on.
 func TestHandlerSatisfiesTextHandler(t *testing.T) {
 	var _ text.Handler = (*Helix)(nil)
 	hx, _, _ := newHelix(t, "abc", term.Coordinates{})
@@ -185,7 +187,6 @@ func TestHandlerSatisfiesTextHandler(t *testing.T) {
 	assert.NotNil(t, hx.CellEditor())
 }
 
-// TestSetCursorAtScroll pins clamping and the pending-position path.
 func TestSetCursorAtScroll(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -249,7 +250,6 @@ func TestSetCursorAtScroll(t *testing.T) {
 	})
 }
 
-// TestLocationLists pins the location plumbing the IDE drives.
 func TestLocationLists(t *testing.T) {
 	locs := textapi.LocationSlice([]textapi.Location{
 		{From: term.Coordinates{Y: 0}, To: term.Coordinates{X: 1, Y: 0}},
@@ -290,7 +290,6 @@ func TestLocationLists(t *testing.T) {
 	})
 }
 
-// TestDrawAndDimensions exercises the component surface.
 func TestDrawAndDimensions(t *testing.T) {
 	t.Run("draws the buffer", func(t *testing.T) {
 		hx, _, _ := newHelix(t, "one\ntwo", term.Coordinates{})
@@ -349,7 +348,6 @@ func TestDrawAndDimensions(t *testing.T) {
 	})
 }
 
-// TestSeekSurface pins the scrollable API the IDE reads.
 func TestSeekSurface(t *testing.T) {
 	hx, _, _ := newHelix(t, strings.Repeat("line\n", 200), term.Coordinates{})
 	assert.Equal(t, 0, hx.SeekOffset())
@@ -361,8 +359,6 @@ func TestSeekSurface(t *testing.T) {
 	assert.Equal(t, 0, hx.SeekOffset())
 }
 
-// TestConstructors pins the entry points the IDE uses to build a Helix
-// editor, including the Scroll-backed variant used by embedded views.
 func TestConstructors(t *testing.T) {
 	resource, err := workspaceapi.ParseURI("test:///main.go")
 	require.NoError(t, err)
@@ -402,8 +398,6 @@ func TestConstructors(t *testing.T) {
 	})
 }
 
-// TestUndoRedo pins u/U and the Alt variants, which the wrapper claims
-// before the state machine sees them.
 func TestUndoRedo(t *testing.T) {
 	t.Run("u undoes the last edit", func(t *testing.T) {
 		hx, buf, _ := newHelix(t, "abc", term.Coordinates{})
@@ -474,9 +468,6 @@ func TestUndoRedo(t *testing.T) {
 	})
 }
 
-// TestDotRepeat pins `.`, which replays the last insert session.
-// Leaving insert mode does not step the cursor back as vi does, so
-// the replayed insert goes in where typing stopped.
 func TestDotRepeat(t *testing.T) {
 	t.Run("repeats the last insert", func(t *testing.T) {
 		hx, buf, _ := newHelix(t, "", term.Coordinates{})
@@ -502,8 +493,6 @@ func TestDotRepeat(t *testing.T) {
 	})
 }
 
-// TestSelectionBoundsAndPaste pins the two thin wrapper methods the IDE
-// calls directly.
 func TestSelectionBoundsAndPaste(t *testing.T) {
 	t.Run("SelectionBounds reports the raw anchor and head", func(t *testing.T) {
 		hx, _, _ := newHelix(t, "foo bar", term.Coordinates{})

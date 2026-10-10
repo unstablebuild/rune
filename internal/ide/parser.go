@@ -25,11 +25,11 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
-	"unstable.build/rune/internal/ide/syntax"
+	"unstable.build/rune/internal/ide/syntax/treesitter"
 )
 
 // uses lazyly initialized syntaxapi.Parser to circumvent
-// cosmetic circular dependency between pkgmanager and syntax.NewParser
+// cosmetic circular dependency between pkgmanager and treesitter.NewParser
 type lazyParser struct {
 	root *workspaceManagerHandler
 	once sync.Once
@@ -40,7 +40,7 @@ var _ syntaxapi.Parser = (*lazyParser)(nil)
 
 func (w *lazyParser) parser() syntaxapi.Parser {
 	w.once.Do(func() {
-		w.p = syntax.NewParser(w.root.homeWorkspace, w.root.pkgmanager, w.root.homeURI)
+		w.p = treesitter.NewParser(w.root.homeWorkspace, w.root.pkgmanager, w.root.homeURI)
 	})
 	return w.p
 }

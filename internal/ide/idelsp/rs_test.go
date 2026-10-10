@@ -25,6 +25,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -32,6 +33,29 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/semanticapi"
 )
+
+type rustReadyCallback struct {
+	testCallback
+	ready chan struct{}
+	once  sync.Once
+}
+
+func (c *rustReadyCallback) HandleNotification(_ context.Context, method string, params json.RawMessage) error {
+	if method != "experimental/serverStatus" {
+		return nil
+	}
+	var status struct {
+		Quiescent bool   `json:"quiescent"`
+		Health    string `json:"health"`
+	}
+	if err := json.Unmarshal(params, &status); err != nil {
+		return err
+	}
+	if status.Quiescent && status.Health == "ok" {
+		c.once.Do(func() { close(c.ready) })
+	}
+	return nil
+}
 
 func findRustAnalyzer(t *testing.T) string {
 	t.Helper()
@@ -107,12 +131,13 @@ func setupRustManager(
 
 	uri := makeURI(t, "file://"+tmpDir)
 	scheme := newTestScheme()
+	callback := &rustReadyCallback{ready: make(chan struct{})}
 
 	mgr := New(uri, scheme, scheme,
 		&stubPkgManager{bin: raBin},
 		nil, nil,
 		Config{
-			Callback:           &testCallback{},
+			Callback:           callback,
 			MaxRetries:         1,
 			NoInitializeServer: true,
 			InitializeTimeout:  30 * time.Second,
@@ -120,6 +145,11 @@ func setupRustManager(
 	t.Cleanup(func() { _ = mgr.Close() })
 
 	params := autoInitParams(uri.String())
+	var capabilities map[string]any
+	require.NoError(t, json.Unmarshal(params.Capabilities, &capabilities))
+	capabilities["experimental"] = map[string]any{"serverStatusNotification": true}
+	params.Capabilities, err = json.Marshal(capabilities)
+	require.NoError(t, err)
 	initOpts, err := json.Marshal(map[string]any{
 		"langID":  "rust",
 		"command": raBin,
@@ -144,6 +174,11 @@ func setupRustManager(
 		},
 	}))
 
+	select {
+	case <-callback.ready:
+	case <-ctx.Done():
+		t.Fatalf("waiting for rust-analyzer quiescence: %v", ctx.Err())
+	}
 	waitForRustReady(t, ctx, mgr, mainURI, pos)
 	return mgr, mainURI, pos
 }
@@ -195,6 +230,26 @@ func waitForRustReady(
 			})
 			return err == nil && len(syms) > 0
 		},
+		func() bool {
+			hs, err := mgr.DocumentHighlight(ctx, semanticapi.DocumentHighlightParams{
+				TextDocument: semanticapi.TextDocumentIdentifier{URI: mainURI},
+				Position:     pos.addFn,
+			})
+			return err == nil && len(hs) > 0
+		},
+		func() bool {
+			items, err := mgr.PrepareCallHierarchy(ctx, semanticapi.CallHierarchyPrepareParams{
+				TextDocument: semanticapi.TextDocumentIdentifier{URI: mainURI},
+				Position:     pos.addFn,
+			})
+			return err == nil && len(items) > 0
+		},
+		func() bool {
+			tokens, err := mgr.SemanticTokensFull(ctx, semanticapi.SemanticTokensParams{
+				TextDocument: semanticapi.TextDocumentIdentifier{URI: mainURI},
+			})
+			return err == nil && tokens != nil && len(tokens.Data) > 0
+		},
 	}
 	deadline := time.Now().Add(90 * time.Second)
 	next := 0
@@ -211,17 +266,9 @@ func waitForRustReady(
 		case <-time.After(500 * time.Millisecond):
 		}
 	}
-	t.Fatal("timed out waiting for rust-analyzer to become ready")
+	t.Fatalf("timed out waiting for rust-analyzer readiness probe %d/%d", next+1, len(probes))
 }
 
-// TestE2ERust drives the same request surface the Go and Python e2e
-// suites cover, against a real rust-analyzer. Because rust-analyzer
-// output (hover markdown, semantic-token legend, code-action kinds)
-// varies across toolchain versions, the cases assert structural
-// correctness — that the Manager routes the request and the server
-// answers about the expected symbol — rather than pinning exact strings,
-// which keeps the suite stable across rust-analyzer releases while still
-// validating that the LSP init params and routing are correct.
 func TestE2ERust(t *testing.T) {
 	t.Parallel()
 
@@ -328,6 +375,18 @@ func TestE2ERust(t *testing.T) {
 			fn: func(t *testing.T, mgr *Manager) {
 				orig, err := os.ReadFile(strings.TrimPrefix(mainURI, "file://"))
 				require.NoError(t, err)
+				t.Cleanup(func() {
+					require.NoError(t, mgr.DidChange(ctx, semanticapi.DidChangeTextDocumentParams{
+						TextDocument: semanticapi.VersionedTextDocumentIdentifier{
+							URI: mainURI, Version: 6,
+						},
+						ContentChanges: []semanticapi.TextDocumentContentChangeEvent{
+							{Text: string(orig)},
+						},
+					}))
+					// didChange delivery does not wait for the restored document's analysis.
+					waitForRustReady(t, ctx, mgr, mainURI, pos)
+				})
 				// Put the member-access probe on its own line so the
 				// completion position is a deterministic column right
 				// after `g.`.
@@ -356,14 +415,6 @@ func TestE2ERust(t *testing.T) {
 					labels[i] = it.Label
 				}
 				assert.Contains(t, labels, "greet")
-				require.NoError(t, mgr.DidChange(ctx, semanticapi.DidChangeTextDocumentParams{
-					TextDocument: semanticapi.VersionedTextDocumentIdentifier{
-						URI: mainURI, Version: 6,
-					},
-					ContentChanges: []semanticapi.TextDocumentContentChangeEvent{
-						{Text: string(orig)},
-					},
-				}))
 			},
 		},
 		{
@@ -496,14 +547,6 @@ func withPullDiagnosticsCapability(
 	return params
 }
 
-// TestRustE2E_PullDiagnosticsPublish is the RUNE-332 regression guard.
-// rust-analyzer builds >= 2026-05-11 never compute native semantic
-// diagnostics on the push path when build scripts and proc macros are
-// enabled, so native semantic diagnostics never reach the location
-// list. The error below is appended to the open buffer but never
-// written to disk: that isolates the assertion from clippy flycheck,
-// which compiles the on-disk crate and would otherwise report the same
-// error, so a pass here can only come from the pull bridge.
 func TestRustE2E_PullDiagnosticsPublish(t *testing.T) {
 	// Deliberately not parallel: TestE2ERust already drives a
 	// rust-analyzer against the same fixture, and two concurrent

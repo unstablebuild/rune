@@ -141,7 +141,8 @@ type testLoader struct {
 	expectError   error
 	// reloadContent, when set, is propagated to the testFlusherCloser that
 	// Load creates, so Reload installs it instead of re-installing content.
-	reloadContent string
+	reloadContent   string
+	caseInsensitive bool
 }
 
 type markdownReloadFile struct {
@@ -262,6 +263,10 @@ func (t *testLoader) Stat(path string) (os.FileInfo, error) {
 
 func (t *testLoader) ReadDir(name string) ([]os.DirEntry, error) {
 	panic("unused")
+}
+
+func (t *testLoader) PathCaseSensitive() bool {
+	return !t.caseInsensitive
 }
 
 func newTestComponentErr(ed text.Editor, cfg text.Config) (*text.Component, *testLoader, error) {
@@ -438,6 +443,26 @@ func TestComponentOpen(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, h1, h2)
 	})
+
+	for _, tc := range []struct {
+		name            string
+		caseInsensitive bool
+		wantSameTab     bool
+	}{
+		{"different case opens another tab on a case-sensitive workspace", false, false},
+		{"different case returns the open tab on a case-insensitive workspace", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, loader, h1, _ := newTestComponentWithFile(t, "file:///tmp/Ws/tsconfig.json")
+			loader.caseInsensitive = tc.caseInsensitive
+			other, err := workspaceapi.ParseURI("file:///tmp/ws/tsconfig.json")
+			require.NoError(t, err)
+
+			h2, err := c.Open(other)
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantSameTab, h1 == h2)
+		})
+	}
 
 	t.Run("opens recovery prompt if err == workspaceapi.ErrFileAlreadyOpen", func(t *testing.T) {
 		c, loader, _, _ := newTestComponentWithFile(t, "file:///tmp/wasup")
@@ -2176,6 +2201,44 @@ func TestComponentEditor(t *testing.T) {
 		assert.Error(t, err)
 		assert.Nil(t, h)
 	})
+
+	for _, tc := range []struct {
+		name            string
+		caseInsensitive bool
+		wantFound       bool
+	}{
+		{"tells apart different case on a case-sensitive workspace", false, false},
+		{"matches different case on a case-insensitive workspace", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			other, err := workspaceapi.ParseURI("file:///tmp/ennio_morricone.go")
+			require.NoError(t, err)
+
+			c, loader, tab, _ := newTestComponentWithFile(t, "file:///tmp/Ennio_Morricone.go")
+			loader.caseInsensitive = tc.caseInsensitive
+			h, err := c.Editor(other)
+			if tc.wantFound {
+				require.NoError(t, err)
+				assert.Equal(t, tab.(*browser.Tab).Handler(), h)
+			} else {
+				assert.ErrorIs(t, err, text.ErrHandlerNotFound)
+			}
+
+			c, loader = newTestComponent(t, NopEditor())
+			loader.caseInsensitive = tc.caseInsensitive
+			edited, err := workspaceapi.ParseURI("file:///tmp/Ennio_Morricone.go")
+			require.NoError(t, err)
+			ed, err := c.Edit(context.Background(), edited, cell.NewBuffer(), false, false)
+			require.NoError(t, err)
+			h, err = c.Editor(other)
+			if tc.wantFound {
+				require.NoError(t, err)
+				assert.Equal(t, ed, h)
+			} else {
+				assert.ErrorIs(t, err, text.ErrHandlerNotFound)
+			}
+		})
+	}
 }
 
 func TestComponentCommands(t *testing.T) {
@@ -2709,6 +2772,7 @@ func TestFlush(t *testing.T) {
 
 		mockWorkspace.EXPECT().Load(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 			Return(mockFlusherCloser, nil).Times(1)
+		mockWorkspace.EXPECT().PathCaseSensitive().Return(true).AnyTimes()
 		mock.EXPECT().Resize(gomock.Any(), gomock.Any()).Times(1)
 		mock.EXPECT().CursorAtScroll().
 			Return(term.Coordinates{}).Times(1)
@@ -2898,6 +2962,7 @@ func TestReload(t *testing.T) {
 
 		mockWorkspace.EXPECT().Load(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 			Return(mockFlusherCloser, nil).Times(1)
+		mockWorkspace.EXPECT().PathCaseSensitive().Return(true).AnyTimes()
 		mock.EXPECT().Resize(gomock.Any(), gomock.Any()).Times(1)
 		mock.EXPECT().CursorAtScroll().
 			Return(term.Coordinates{}).Times(1)
@@ -3093,11 +3158,6 @@ func TestReload(t *testing.T) {
 	})
 }
 
-// TestDirtyStateAfterFlush covers what an observer sees once a save settles.
-// The filesystem watcher asks whether a file has unflushed changes at exactly
-// that moment to decide between reloading it and prompting about a conflict,
-// so a tab that claims to be clean while the buffer differs from disk sends it
-// down the wrong branch and silently discards the user's work.
 func TestDirtyStateAfterFlush(t *testing.T) {
 	resource1, err := workspaceapi.ParseURI("file:///a")
 	require.NoError(t, err)
@@ -3218,12 +3278,6 @@ func TestDirtyStateAfterFlush(t *testing.T) {
 	})
 }
 
-// TestCloseWithSavesInFlight covers a workspace tearing down while saves are
-// still running. Close must not wait on the closer's goroutines (the workspace
-// layer already holds Close until a flush's bytes are on disk, and a reload's
-// worker parks on the very event loop Close runs on), and those goroutines
-// must not outlive the workspace's result: the only thing they wait on
-// besides it is the previous save, which always hands over.
 func TestCloseWithSavesInFlight(t *testing.T) {
 	resource1, err := workspaceapi.ParseURI("file:///a")
 	require.NoError(t, err)
@@ -3283,12 +3337,6 @@ func TestCloseWithSavesInFlight(t *testing.T) {
 	}
 }
 
-// TestReloadClampsStaleCursor guards the editorFlusherCloser reload seam: when a
-// reload replaces the buffer with a shorter file, a caret left on a now-missing
-// row must be pulled back into bounds before any row-indexed buffer access runs.
-// It drives the real production path — text.Component + the standard editor +
-// c.Reload — rather than mutating the buffer directly, so the efc.OnDidEdit
-// reload guard (gated by the reloading flag) is exercised end to end.
 func TestReloadClampsStaleCursor(t *testing.T) {
 	resource, err := workspaceapi.ParseURI("file:///robust.go")
 	require.NoError(t, err)

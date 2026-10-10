@@ -17,6 +17,7 @@
 package dialoguetui
 
 import (
+	"net/url"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -170,7 +171,7 @@ func TestMouseDelegateSelection(t *testing.T) {
 			comp.Resize(width, height)
 
 			grid := drawGrid(comp, width, height)
-			d := newMouseDelegate(grid, &comp.messages)
+			d := newMouseDelegate(grid, comp)
 			m := mouse.New(d)
 
 			keys, err := term.ParseKeys(tc.input)
@@ -200,7 +201,7 @@ func TestMouseDelegateSelectWordAt(t *testing.T) {
 	comp.Resize(30, 10)
 
 	grid := drawGrid(comp, 30, 10)
-	d := newMouseDelegate(grid, &comp.messages)
+	d := newMouseDelegate(grid, comp)
 
 	// SelectWordAt on X=2 selects the word "Hello".
 	d.SelectWordAt(term.Coordinates{X: 2, Y: 0})
@@ -216,7 +217,7 @@ func TestMouseDelegateSelectLine(t *testing.T) {
 	comp.Resize(30, 10)
 
 	grid := drawGrid(comp, 30, 10)
-	d := newMouseDelegate(grid, &comp.messages)
+	d := newMouseDelegate(grid, comp)
 
 	// SelectLine on row 0 selects the full line content.
 	d.SelectLine(0)
@@ -240,7 +241,7 @@ func TestMouseDelegateScrollN(t *testing.T) {
 	comp.Resize(width, height)
 
 	grid := drawGrid(comp, width, height)
-	d := newMouseDelegate(grid, &comp.messages)
+	d := newMouseDelegate(grid, comp)
 
 	// Scroll to the top so we can measure downward scrolls.
 	for d.ScrollUp(1) {
@@ -291,9 +292,6 @@ type scrollSelectCase struct {
 	wantActive bool
 }
 
-// TestMouseDelegateSelectionStartPinnedAcrossAutoScroll asserts that the
-// selection start stays pinned to the originally pressed content row while
-// the message list scrolls under it from any source.
 func TestMouseDelegateSelectionStartPinnedAcrossAutoScroll(t *testing.T) {
 	const (
 		defWidth  = 30
@@ -426,7 +424,7 @@ func TestMouseDelegateSelectionStartPinnedAcrossAutoScroll(t *testing.T) {
 			comp.Resize(width, height)
 
 			grid := drawGrid(comp, width, height)
-			d := newMouseDelegate(grid, &comp.messages)
+			d := newMouseDelegate(grid, comp)
 
 			redraw := func() {
 				grid.Clear()
@@ -485,12 +483,6 @@ func gridRowOf(g *tterm.SelectionWriter, want string) int {
 	return -1
 }
 
-// TestMouseDelegateSelectionCopiesOffscreenContent asserts that copying a
-// selection returns the full selected text even when the selection's start or
-// end rows have scrolled off the visible viewport. The grid backing the
-// on-screen highlight only holds the visible viewport, so Selection must
-// render the entire list into a private full-height grid to extract the
-// off-screen rows.
 func TestMouseDelegateSelectionCopiesOffscreenContent(t *testing.T) {
 	manyMessages := func(prefix string, n int) func(*Component) {
 		return func(c *Component) {
@@ -572,7 +564,7 @@ func TestMouseDelegateSelectionCopiesOffscreenContent(t *testing.T) {
 			comp.Resize(tc.width, tc.height)
 
 			grid := drawGrid(comp, tc.width, tc.height)
-			d := newMouseDelegate(grid, &comp.messages)
+			d := newMouseDelegate(grid, comp)
 
 			redraw := func() {
 				grid.Clear()
@@ -621,7 +613,7 @@ func TestMouseDelegateClearAndReselect(t *testing.T) {
 	comp.Resize(30, 10)
 
 	grid := drawGrid(comp, 30, 10)
-	d := newMouseDelegate(grid, &comp.messages)
+	d := newMouseDelegate(grid, comp)
 
 	// Select, then clear, then re-select.
 	d.SetSelectionStart(term.Coordinates{X: 0, Y: 0})
@@ -645,10 +637,6 @@ func TestMouseDelegateClearAndReselect(t *testing.T) {
 	assert.Equal(t, "Hello", text)
 }
 
-// TestMouseDelegateSelectionEndPinnedAcrossScroll asserts that once a selection
-// end is set, scrolling the list (without moving the pointer) keeps both
-// endpoints anchored to their content rows. The end must not follow the scroll
-// offset; the copied text must stay identical across the scroll.
 func TestMouseDelegateSelectionEndPinnedAcrossScroll(t *testing.T) {
 	const (
 		width  = 30
@@ -675,7 +663,7 @@ func TestMouseDelegateSelectionEndPinnedAcrossScroll(t *testing.T) {
 			comp.Resize(width, height)
 
 			grid := drawGrid(comp, width, height)
-			d := newMouseDelegate(grid, &comp.messages)
+			d := newMouseDelegate(grid, comp)
 
 			redraw := func() {
 				grid.Clear()
@@ -725,11 +713,44 @@ func TestMouseDelegateSelectionEndPinnedAcrossScroll(t *testing.T) {
 	}
 }
 
-// TestMouseDelegateSelectionNegativeCoords exercises drags whose pointer leaves
-// the window into negative coordinates, which the terminal reports while the
-// mouse is dragged above or to the left of the viewport. The selection must not
-// panic and must resolve to sensible content. Events are driven through the
-// real mouse.Mouse so the drag/auto-scroll path matches production.
+func TestMouseDelegateSelectionStableWhileStreaming(t *testing.T) {
+	const (
+		width  = 30
+		height = 8
+	)
+	comp := NewComponent(ComponentConfig{})
+	for i := range 30 {
+		comp.AddSendMessage("message " + string(rune('A'+i)))
+	}
+	comp.AddReceiveMessageChunk("reply")
+	comp.Resize(width, height)
+
+	grid := drawGrid(comp, width, height)
+	d := newMouseDelegate(grid, comp)
+	redraw := func() {
+		grid.Clear()
+		comp.Draw(grid)
+	}
+
+	for gridRowOf(grid, "message V") < 0 || gridRowOf(grid, "message W") < 0 {
+		require.True(t, d.ScrollUp(1))
+		redraw()
+	}
+	startRow := gridRowOf(grid, "message V")
+	endRow := gridRowOf(grid, "message W")
+
+	d.SetSelectionStart(term.Coordinates{X: 0, Y: startRow})
+	comp.AddReceiveMessageChunk("\n\nmore\n\nrows")
+	redraw()
+	assert.Equal(t, endRow, gridRowOf(grid, "message W"),
+		"streamed content must not move the visible rows")
+	d.SetSelectionEnd(term.Coordinates{X: len("message W") - 1, Y: endRow})
+
+	text, ok := d.Selection()
+	require.True(t, ok)
+	assert.Equal(t, "message V\nmessage W", text)
+}
+
 func TestMouseDelegateSelectionNegativeCoords(t *testing.T) {
 	const (
 		width  = 30
@@ -788,7 +809,7 @@ func TestMouseDelegateSelectionNegativeCoords(t *testing.T) {
 			comp.Resize(width, height)
 
 			grid := drawGrid(comp, width, height)
-			d := newMouseDelegate(grid, &comp.messages)
+			d := newMouseDelegate(grid, comp)
 			m := mouse.New(d)
 
 			redraw := func() {
@@ -831,4 +852,250 @@ func TestMouseDelegateSelectionNegativeCoords(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestMouseDelegate_LinkClick(t *testing.T) {
+	const (
+		width  = 50
+		height = 10
+	)
+
+	t.Run("sent message markdown link invokes callback and suppresses selection", func(t *testing.T) {
+		var clickedURL *url.URL
+		comp := NewComponent(ComponentConfig{
+			OnLinkClick: func(u *url.URL) bool {
+				clickedURL = u
+				return true
+			},
+		})
+		comp.AddSendMessageMarkdown("Visit [Rune](https://github.com/unstablebuild/rune)")
+		comp.Resize(width, height)
+
+		grid := drawGrid(comp, width, height)
+		d := newMouseDelegate(grid, comp)
+		m := mouse.New(d)
+
+		row := gridRowOf(grid, "Visit Rune")
+		require.GreaterOrEqual(t, row, 0)
+
+		m.Handle(term.Event{Type: term.EventMouse, Key: term.MouseLeft, MouseX: 7, MouseY: row})
+		m.Handle(term.Event{Type: term.EventMouse, Key: term.MouseRelease, MouseX: 7, MouseY: row})
+
+		require.NotNil(t, clickedURL)
+		assert.Equal(t, "https://github.com/unstablebuild/rune", clickedURL.String())
+		_, ok := d.Selection()
+		assert.False(t, ok, "selection must be suppressed when link click is handled")
+	})
+
+	t.Run("received message markdown link invokes callback and suppresses selection", func(t *testing.T) {
+		var clickedURL *url.URL
+		comp := NewComponent(ComponentConfig{
+			OnLinkClick: func(u *url.URL) bool {
+				clickedURL = u
+				return true
+			},
+		})
+		comp.AddReceiveMessage("Visit [Rune](https://github.com/unstablebuild/rune)")
+		comp.Resize(width, height)
+
+		grid := drawGrid(comp, width, height)
+		d := newMouseDelegate(grid, comp)
+		m := mouse.New(d)
+
+		row := gridRowOf(grid, "Visit Rune")
+		require.GreaterOrEqual(t, row, 0)
+
+		m.Handle(term.Event{Type: term.EventMouse, Key: term.MouseLeft, MouseX: 7, MouseY: row})
+		m.Handle(term.Event{Type: term.EventMouse, Key: term.MouseRelease, MouseX: 7, MouseY: row})
+
+		require.NotNil(t, clickedURL)
+		assert.Equal(t, "https://github.com/unstablebuild/rune", clickedURL.String())
+		_, ok := d.Selection()
+		assert.False(t, ok, "selection must be suppressed when link click is handled")
+	})
+
+	t.Run("prompt body markdown link invokes callback and suppresses selection", func(t *testing.T) {
+		var clickedURL *url.URL
+		comp := NewComponent(ComponentConfig{
+			OnLinkClick: func(u *url.URL) bool {
+				clickedURL = u
+				return true
+			},
+		})
+		comp.AddPrompt("Pick", "Header", "See [Docs](https://docs.rune.build)", nil, false, nil)
+		comp.Resize(width, height)
+
+		grid := drawGrid(comp, width, height)
+		d := newMouseDelegate(grid, comp)
+		m := mouse.New(d)
+
+		row := gridRowOf(grid, "See Docs")
+		require.GreaterOrEqual(t, row, 0)
+
+		m.Handle(term.Event{Type: term.EventMouse, Key: term.MouseLeft, MouseX: 5, MouseY: row})
+		m.Handle(term.Event{Type: term.EventMouse, Key: term.MouseRelease, MouseX: 5, MouseY: row})
+
+		require.NotNil(t, clickedURL)
+		assert.Equal(t, "https://docs.rune.build", clickedURL.String())
+		_, ok := d.Selection()
+		assert.False(t, ok, "selection must be suppressed when link click is handled")
+	})
+
+	t.Run("non-link text click falls through to text selection", func(t *testing.T) {
+		var clickedURL *url.URL
+		comp := NewComponent(ComponentConfig{
+			OnLinkClick: func(u *url.URL) bool {
+				clickedURL = u
+				return true
+			},
+		})
+		comp.AddSendMessageMarkdown("Visit [Rune](https://github.com/unstablebuild/rune)")
+		comp.Resize(width, height)
+
+		grid := drawGrid(comp, width, height)
+		d := newMouseDelegate(grid, comp)
+		m := mouse.New(d)
+
+		row := gridRowOf(grid, "Visit Rune")
+		require.GreaterOrEqual(t, row, 0)
+
+		m.Handle(term.Event{Type: term.EventMouse, Key: term.MouseLeft, MouseX: 0, MouseY: row})
+		m.Handle(term.Event{Type: term.EventMouse, Key: term.MouseLeft, MouseX: 4, MouseY: row})
+		m.Handle(term.Event{Type: term.EventMouse, Key: term.MouseRelease, MouseX: 4, MouseY: row})
+
+		assert.Nil(t, clickedURL, "callback must not be invoked for non-link text")
+		sel, ok := d.Selection()
+		assert.True(t, ok, "text selection must activate for non-link text")
+		assert.Equal(t, "Visit", sel)
+	})
+
+	t.Run("unhandled bare anchor falls through to text selection", func(t *testing.T) {
+		var clickedURL *url.URL
+		_ = clickedURL
+		comp := NewComponent(ComponentConfig{
+			OnLinkClick: func(u *url.URL) bool {
+				clickedURL = u
+				return u.Scheme == "http" || u.Scheme == "https"
+			},
+		})
+		comp.AddSendMessageMarkdown("[Section](#heading)")
+		comp.Resize(width, height)
+
+		grid := drawGrid(comp, width, height)
+		d := newMouseDelegate(grid, comp)
+		m := mouse.New(d)
+
+		row := gridRowOf(grid, "Section")
+		require.GreaterOrEqual(t, row, 0)
+
+		m.Handle(term.Event{Type: term.EventMouse, Key: term.MouseLeft, MouseX: 0, MouseY: row})
+		m.Handle(term.Event{Type: term.EventMouse, Key: term.MouseLeft, MouseX: 6, MouseY: row})
+		m.Handle(term.Event{Type: term.EventMouse, Key: term.MouseRelease, MouseX: 6, MouseY: row})
+
+		sel, ok := d.Selection()
+		assert.True(t, ok, "text selection must activate when link callback returns false")
+		assert.Equal(t, "Section", sel)
+	})
+
+	t.Run("nil callback allows all clicks to fall through to text selection", func(t *testing.T) {
+		comp := NewComponent(ComponentConfig{
+			OnLinkClick: nil,
+		})
+		comp.AddSendMessageMarkdown("Visit [Rune](https://github.com/unstablebuild/rune)")
+		comp.Resize(width, height)
+
+		grid := drawGrid(comp, width, height)
+		d := newMouseDelegate(grid, comp)
+		m := mouse.New(d)
+
+		row := gridRowOf(grid, "Visit Rune")
+		require.GreaterOrEqual(t, row, 0)
+
+		m.Handle(term.Event{Type: term.EventMouse, Key: term.MouseLeft, MouseX: 6, MouseY: row})
+		m.Handle(term.Event{Type: term.EventMouse, Key: term.MouseLeft, MouseX: 9, MouseY: row})
+		m.Handle(term.Event{Type: term.EventMouse, Key: term.MouseRelease, MouseX: 9, MouseY: row})
+
+		sel, ok := d.Selection()
+		assert.True(t, ok, "text selection must activate when callback is nil")
+		assert.Equal(t, "Rune", sel)
+	})
+
+	t.Run("handled link click clears an earlier selection", func(t *testing.T) {
+		comp := NewComponent(ComponentConfig{
+			OnLinkClick: func(*url.URL) bool { return true },
+		})
+		comp.AddSendMessageMarkdown("Visit [Rune](https://github.com/unstablebuild/rune)")
+		comp.Resize(width, height)
+
+		grid := drawGrid(comp, width, height)
+		d := newMouseDelegate(grid, comp)
+		m := mouse.New(d)
+
+		row := gridRowOf(grid, "Visit Rune")
+		require.GreaterOrEqual(t, row, 0)
+
+		m.Handle(term.Event{Type: term.EventMouse, Key: term.MouseLeft, MouseX: 0, MouseY: row})
+		m.Handle(term.Event{Type: term.EventMouse, Key: term.MouseLeft, MouseX: 4, MouseY: row})
+		m.Handle(term.Event{Type: term.EventMouse, Key: term.MouseRelease, MouseX: 4, MouseY: row})
+		m.Handle(term.Event{Type: term.EventMouse, Key: term.MouseLeft, MouseX: 7, MouseY: row})
+		m.Handle(term.Event{Type: term.EventMouse, Key: term.MouseRelease, MouseX: 7, MouseY: row})
+
+		_, ok := d.Selection()
+		assert.False(t, ok, "the earlier selection must not survive a link click")
+	})
+
+	t.Run("drag starting on a handled link selects from the link", func(t *testing.T) {
+		var clicks int
+		comp := NewComponent(ComponentConfig{
+			OnLinkClick: func(*url.URL) bool {
+				clicks++
+				return true
+			},
+		})
+		comp.AddSendMessageMarkdown("Visit [Rune](https://github.com/unstablebuild/rune) today")
+		comp.Resize(width, height)
+
+		grid := drawGrid(comp, width, height)
+		d := newMouseDelegate(grid, comp)
+		m := mouse.New(d)
+
+		row := gridRowOf(grid, "Visit Rune today")
+		require.GreaterOrEqual(t, row, 0)
+
+		m.Handle(term.Event{Type: term.EventMouse, Key: term.MouseLeft, MouseX: 6, MouseY: row})
+		m.Handle(term.Event{Type: term.EventMouse, Key: term.MouseLeft, MouseX: 14, MouseY: row})
+		m.Handle(term.Event{Type: term.EventMouse, Key: term.MouseRelease, MouseX: 14, MouseY: row})
+
+		assert.Equal(t, 1, clicks, "dragging must not follow the link again")
+		sel, ok := d.Selection()
+		assert.True(t, ok)
+		assert.Equal(t, "Rune toda", sel)
+	})
+
+	t.Run("link scrolled out of view is not followed", func(t *testing.T) {
+		var clickedURL *url.URL
+		comp := NewComponent(ComponentConfig{
+			OnLinkClick: func(u *url.URL) bool {
+				clickedURL = u
+				return true
+			},
+		})
+		comp.AddSendMessageMarkdown("Visit [Rune](https://github.com/unstablebuild/rune)")
+		comp.Resize(width, height)
+
+		row := gridRowOf(drawGrid(comp, width, height), "Visit Rune")
+		require.GreaterOrEqual(t, row, 0)
+		for range 20 {
+			comp.AddReceiveMessage("filler")
+		}
+		grid := drawGrid(comp, width, height)
+		require.Equal(t, -1, gridRowOf(grid, "Visit Rune"), "link scrolled out of view")
+		d := newMouseDelegate(grid, comp)
+		m := mouse.New(d)
+
+		m.Handle(term.Event{Type: term.EventMouse, Key: term.MouseLeft, MouseX: 7, MouseY: row})
+		m.Handle(term.Event{Type: term.EventMouse, Key: term.MouseRelease, MouseX: 7, MouseY: row})
+
+		assert.Nil(t, clickedURL)
+	})
 }

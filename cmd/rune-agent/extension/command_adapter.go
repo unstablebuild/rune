@@ -574,12 +574,11 @@ func (a *commandAdapter) handleCompact(
 }
 
 const (
-	// chatReviewAttachmentIcon is the Nerd Font diff glyph. The strip
-	// renders "<icon> <name>", so the leading space in the name widens
-	// the gap to the two columns the label is specified with.
+	// The strip inserts a space after the icon; the icon itself occupies
+	// two columns in the SDK's width table.
 	chatReviewAttachmentIcon = '\uf4d2'
 	chatReviewAttachmentID   = "chatreviewchanges"
-	chatReviewAttachmentName = " changes review"
+	chatReviewAttachmentName = "changes review"
 	chatReviewHeading        = "Changes review from the user:"
 
 	chatReviewAllAttachmentID   = "chatreviewall"

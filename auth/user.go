@@ -65,6 +65,14 @@ const (
 	NetworkNodeRemovePath = "/api/network/nodes/remove"
 )
 
+// ServeTagPrefix starts the mesh tag the API server puts on an
+// account's serve-only machines; the rest of the tag is the account's
+// mesh user name. A serve-only machine accepts connections from its
+// account's machines and cannot open any, and since a tagged machine
+// no longer reports the account as its owner, the tag is also how it
+// knows which account it serves.
+const ServeTagPrefix = "tag:serve-"
+
 // RPCUser represents a rune user, from an auth point of view.
 type RPCUser struct {
 	ID      string
@@ -77,6 +85,14 @@ type RPCUser struct {
 	// client uses this to drive the 7-day soft-warn grace window after
 	// a subscription lapses without yet hitting hard lockdown.
 	PlanEnds time.Time `json:"plan_ends,omitzero"`
+
+	// ServeOnly marks a token issued to a serve-only machine, a
+	// `rune --headless` node: the API server mints it only for sign-ins
+	// through Config.HeadlessClientID and keeps it on refresh, so a
+	// stolen serve-only token never becomes a full-access one. The API
+	// server answers it with tagged network keys and denies it every
+	// endpoint a headless node does not need.
+	ServeOnly bool `json:"serve_only,omitempty"`
 }
 
 // String returns the string representation of this role.
@@ -101,4 +117,10 @@ func (r Role) String() string {
 
 // WebUser represents a website user, provided directly
 // from an oauth2 provider claims.
-type WebUser struct{}
+type WebUser struct {
+	// ServeOnly is set when the bearer is not a website token but an
+	// RPCUser token with RPCUser.ServeOnly, which the API server's web
+	// verifier also accepts because both are signed with its keys. The
+	// API server refuses such a bearer on every web endpoint.
+	ServeOnly bool `json:"serve_only,omitempty"`
+}

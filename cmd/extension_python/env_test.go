@@ -19,6 +19,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -52,7 +53,7 @@ func newFakeNotifications() *fakeNotifications {
 func (n *fakeNotifications) Notify(_ browserapi.NotificationLevel, msg string, args ...any) (string, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	n.notifs = append(n.notifs, msg)
+	n.notifs = append(n.notifs, fmt.Sprintf(msg, args...))
 	return n.openID, nil
 }
 
@@ -135,9 +136,6 @@ func TestDetectProject(t *testing.T) {
 	}
 }
 
-// TestDetectProjectAtNested checks that markers are probed within the
-// given directory, so a nested project is classified the same way the
-// workspace-root project is.
 func TestDetectProjectAtNested(t *testing.T) {
 	const dir = "services/edge-worker"
 	cases := []struct {
@@ -175,10 +173,6 @@ func TestDetectProjectAtNested(t *testing.T) {
 	}
 }
 
-// TestEnsureEnvironmentRunsInProjectDir asserts that every uv invocation
-// for a nested project carries Cmd.Dir set to that project directory, so
-// uv operates on the nested project's environment rather than the
-// workspace root.
 func TestEnsureEnvironmentRunsInProjectDir(t *testing.T) {
 	const dir = "services/edge-worker"
 	fs := newFakeFS().addFile(dir + "/requirements.txt")
@@ -196,9 +190,6 @@ func TestEnsureEnvironmentRunsInProjectDir(t *testing.T) {
 	}
 }
 
-// TestRunUVWorkspaceRootLeavesDirEmpty asserts a workspace-root project
-// (dir "" or ".") leaves Cmd.Dir empty so the executor falls back to its
-// own resolved workspace path instead of a redundant or doubled path.
 func TestRunUVWorkspaceRootLeavesDirEmpty(t *testing.T) {
 	for _, dir := range []string{"", "."} {
 		t.Run("dir="+dir, func(t *testing.T) {
@@ -315,10 +306,6 @@ func TestEnsureEnvironmentInstallsInterpreterOnFirstRun(t *testing.T) {
 	assertMonotonicProgress(t, notify)
 }
 
-// TestEnsureInterpreterRelinksMissingManagedFallback covers installs
-// migrated from the layout where uv's links lived in python/bin: the
-// managed interpreter is installed and found, but the shim's uvbin
-// fallback target is absent, so an install must run to relink it.
 func TestEnsureInterpreterRelinksMissingManagedFallback(t *testing.T) {
 	fs := newFakeFS().addDir("/data/python/python")
 	ex := newFakeExecutor()
@@ -333,9 +320,6 @@ func TestEnsureInterpreterRelinksMissingManagedFallback(t *testing.T) {
 		ex.callsSnapshot())
 }
 
-// TestEnsureInterpreterSkipsInstallWithoutManagedInterpreter pins the
-// no-download guarantee: uv found an interpreter and none is managed, so
-// there is nothing to relink and no CPython to fetch.
 func TestEnsureInterpreterSkipsInstallWithoutManagedInterpreter(t *testing.T) {
 	fs := newFakeFS()
 	ex := newFakeExecutor()
@@ -371,9 +355,6 @@ func readUVStderr(t *testing.T, name string) string {
 	return string(b)
 }
 
-// TestEnsureEnvironmentFailureReportsUVDiagnostic pins that a failed uv
-// step surfaces uv's own diagnosis instead of a bare exit status, so the
-// failure notification tells the user what to fix.
 func TestEnsureEnvironmentFailureReportsUVDiagnostic(t *testing.T) {
 	exitErr := errors.New("exit status 1")
 	cases := []struct {
@@ -443,9 +424,6 @@ func TestEnsureEnvironmentFailureReportsUVDiagnostic(t *testing.T) {
 	}
 }
 
-// TestEnsureEnvironmentFailureCompletesProgress pins that a failed setup
-// does not leave the progress notification stuck mid-step next to the
-// failure report.
 func TestEnsureEnvironmentFailureCompletesProgress(t *testing.T) {
 	fs := newFakeFS().addFile("requirements.txt")
 	ex := newFakeExecutor()

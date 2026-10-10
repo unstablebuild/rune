@@ -85,12 +85,6 @@ func TestFilenameForLanguage(t *testing.T) {
 	}
 }
 
-// TestLanguageForFile covers the file→language id mapping with an
-// emphasis on the regression that triggered the syntax-tree freeze:
-// arbitrary .log files were being claimed as Salesforce sflog source
-// just because of the extension. That mapping is gone — .log now
-// falls through to the bare-extension fallback (which a separate
-// follow-up will further tighten to an error).
 func TestLanguageForFile(t *testing.T) {
 	tests := []struct {
 		filename string
@@ -103,6 +97,9 @@ func TestLanguageForFile(t *testing.T) {
 		{"main.go", "go", false},
 		{"app.py", "python", false},
 		{"index.js", "javascript", false},
+		{"App.jsx", "javascript", false},
+		{"App.tsx", "tsx", false},
+		{"index.mts", "typescript", false},
 		{"snippet.rs", "rust", false},
 
 		// Regression: .log files must NOT be parsed as Salesforce

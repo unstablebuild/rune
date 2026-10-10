@@ -306,12 +306,6 @@ func TestBufferTruncateRowFrom2(t *testing.T) {
 	assert.Equal(t, "hello\nwo", buf.String())
 }
 
-// TestBufferEditorNegativeCoordinates locks in the safeEditor.Edit
-// contract documented at cell/buffer.go:861 ("doesn't panic on
-// out-of-bounds calls") for negative coordinates. The crash report
-// 787830382 mouse path and the textrpc Edit wire surface both feed
-// arbitrary coordinates into this editor, so any panic here surfaces
-// as a process-level crash.
 func TestBufferEditorNegativeCoordinates(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -348,11 +342,6 @@ func TestBufferEditorNegativeCoordinates(t *testing.T) {
 	}
 }
 
-// TestBufferEditWithAttrNegativeCoordinates guards the downstream
-// consequence of safeEditor.Edit's negative-coord short-circuit:
-// EditWithAttr feeds the returned from/to into selector.iterateCells
-// which would panic on cells[negative]. Returning {0,0},{0,0} keeps
-// iterateCells safe.
 func TestBufferEditWithAttrNegativeCoordinates(t *testing.T) {
 	buf := newBufferWithContent(t, "hello\nworld")
 	before := buf.String()
@@ -364,9 +353,6 @@ func TestBufferEditWithAttrNegativeCoordinates(t *testing.T) {
 	assert.Equal(t, before, buf.String())
 }
 
-// TestBufferWrapRowNegativeY guards both WrapRow branches (with and
-// without an undoer) against negative row indexes that previously
-// panicked through Buffer.Columns(y).
 func TestBufferWrapRowNegativeY(t *testing.T) {
 	t.Run("performance mode (no undoer)", func(t *testing.T) {
 		buf := new(Buffer)

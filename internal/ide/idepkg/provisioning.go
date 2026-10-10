@@ -27,7 +27,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
-	"unstable.build/rune/internal/ide/pkgtrust"
+	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
 )
 
 // StoragePartition is the storage partition every package Manager reads and
@@ -53,8 +53,10 @@ func HostArch() string {
 }
 
 // NewProvisioningManager builds a Manager configured for headless package
-// install/activation with no editor UI: notifications and window management
-// are discarded and scheduling is synchronous. It owns the storage partition
+// install/activation with no UI of its own: notifications are discarded,
+// config prompts go unanswered, which denies them, and scheduling is
+// synchronous. A caller serving a user on another machine passes that
+// user's UI to each call with WithUI. It owns the storage partition
 // (StoragePartition) and the baseline option set so a headless caller — the
 // remote `rune -x` server — cannot drift from the editor's package-manager
 // wiring in ide/pkgmanager. It returns the Manager and the partitioned
@@ -65,10 +67,7 @@ func HostArch() string {
 // the tree the editor feeds via WithConfigBase or a .star-based gui.env merge
 // resolves against a nil base.
 //
-// The interactive prompt options (WithSyntaxParser, WithFrameCharSet) are
-// deliberately omitted: they only drive promptConfigChange, which a headless
-// caller never reaches because purely-new keys (a fresh remote's gui.env
-// block) take the auto-apply path. Extra opts are appended after the baseline.
+// Extra opts are appended after the baseline.
 func NewProvisioningManager(
 	rootStorage storageapi.Service, rm release.Manager, scheme schemeapi.Scheme,
 	dataDir, configPath, editorMode string, configBase func() map[string]any,
@@ -111,8 +110,7 @@ func (nopNotifications) UpdateNotificationProgress(string, string, int64, int64)
 }
 
 // nopWindowManager satisfies browserapi.WindowManager for a headless package
-// manager. Installs on a fresh config take the auto-apply path, so no window
-// is ever opened; the methods exist only to satisfy the interface.
+// manager: there is no window to open, so its prompts go unanswered.
 type nopWindowManager struct{}
 
 func (nopWindowManager) Focus() (browserapi.Window, error) { return nil, nil }

@@ -575,9 +575,6 @@ func collectResults(t *testing.T, it iterator.Iterator[syntaxapi.Result]) []synt
 	return results
 }
 
-// TestHighlightHonoursClientCancel guards against the regression where
-// the Highlight RPC drove its iterator with context.Background, so a
-// client-side cancellation could not unblock the server goroutine.
 func TestHighlightHonoursClientCancel(t *testing.T) {
 	released := make(chan struct{})
 	started := make(chan struct{})

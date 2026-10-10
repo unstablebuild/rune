@@ -1602,8 +1602,8 @@ func TestViCaseChangeOperators(t *testing.T) {
 		{"gu$ lowercases to end of line", "Hello WORLD", "gu$", "hello world", normalMode},
 		{"gue lowercases to end of word", "HELLO World", "gue", "hello World", normalMode},
 		{"guu lowercases whole line", "HELLO WORLD", "guu", "hello world", normalMode},
-		{"gub lowercases backward word", "Hello WORLD", "Wgub", "hello wORLD", normalMode},
-		{"guB lowercases backward WORD", "Hello-Two WORLD", "WguB", "hello-two wORLD", normalMode},
+		{"gub lowercases backward word", "Hello WORLD", "Wgub", "hello WORLD", normalMode},
+		{"guB lowercases backward WORD", "Hello-Two WORLD", "WguB", "hello-two WORLD", normalMode},
 		{"guW lowercases forward WORD", "Hello-World test", "guW", "hello-world test", normalMode},
 		{"guE lowercases to end of WORD", "Hello-World test", "guE", "hello-world test", normalMode},
 		{"gu^ lowercases to first non-blank", "  Hello WORLD", "WWgu^", "  hello wORLD", normalMode},
@@ -1618,8 +1618,8 @@ func TestViCaseChangeOperators(t *testing.T) {
 		{"gU$ uppercases to end of line", "hello world", "gU$", "HELLO WORLD", normalMode},
 		{"gUe uppercases to end of word", "hello world", "gUe", "HELLO world", normalMode},
 		{"gUU uppercases whole line", "hello world", "gUU", "HELLO WORLD", normalMode},
-		{"gUb uppercases backward word", "hello world", "WgUb", "HELLO World", normalMode},
-		{"gUB uppercases backward WORD", "hello-two world", "WgUB", "HELLO-TWO World", normalMode},
+		{"gUb uppercases backward word", "hello world", "WgUb", "HELLO world", normalMode},
+		{"gUB uppercases backward WORD", "hello-two world", "WgUB", "HELLO-TWO world", normalMode},
 		{"gUW uppercases forward WORD", "hello-world test", "gUW", "HELLO-WORLD test", normalMode},
 		{"gUE uppercases to end of WORD", "hello-world test", "gUE", "HELLO-WORLD test", normalMode},
 		{"gU^ uppercases to first non-blank", "  hello world", "fogU^", "  HELLO world", normalMode},
@@ -1634,7 +1634,7 @@ func TestViCaseChangeOperators(t *testing.T) {
 		{"g~$ toggles case to end of line", "Hello World", "g~$", "hELLO wORLD", normalMode},
 		{"g~e toggles case to end of word", "Hello World", "g~e", "hELLO World", normalMode},
 		{"g~~ toggles case of whole line", "Hello World", "g~~", "hELLO wORLD", normalMode},
-		{"g~b toggles backward word", "Hello World", "Wg~b", "hELLO world", normalMode},
+		{"g~b toggles backward word", "Hello World", "Wg~b", "hELLO World", normalMode},
 		{"g~W toggles forward WORD", "Hello-World Test", "g~W", "hELLO-wORLD Test", normalMode},
 		{"g~E toggles to end of WORD", "Hello-World Test", "g~E", "hELLO-wORLD Test", normalMode},
 		{"g~l toggles single char", "Hello World", "g~l", "hEllo World", normalMode},
@@ -2266,7 +2266,7 @@ func TestViOperatorCounts(t *testing.T) {
 			name:        "2cw changes two words",
 			content:     "one two three four",
 			seq:         "2cw",
-			wantContent: "three four",
+			wantContent: " three four",
 			wantMode:    insertMode,
 		},
 		{
@@ -2450,6 +2450,77 @@ func TestViWordMotionEmptyLines(t *testing.T) {
 	}
 }
 
+func TestViChangeWord(t *testing.T) {
+	col := func(x int) term.Coordinates {
+		return term.Coordinates{X: x}
+	}
+	for _, tc := range []struct {
+		name        string
+		content     string
+		seq         string
+		wantScroll  term.Coordinates
+		wantContent string
+		wantMode    viMode
+	}{
+		{name: "cw keeps the space after the word", wantMode: insertMode, content: "one two", seq: "cw", wantContent: " two"},
+		{name: "cw mid-word keeps the space after the word", wantMode: insertMode, content: "one two", seq: "lcw", wantContent: "o two", wantScroll: col(1)},
+		{name: "cw at a word end changes that cell only", wantMode: insertMode, content: "one two", seq: "llcw", wantContent: "on two", wantScroll: col(2)},
+		{name: "cw at a word end does not reach the next line", wantMode: insertMode, content: "one\ntwo", seq: "llcw", wantContent: "on\ntwo", wantScroll: term.Coordinates{X: 2}},
+		{name: "cw at end of the last word in buffer changes that cell", wantMode: insertMode, content: "one", seq: "llcw", wantContent: "on", wantScroll: col(2)},
+		{name: "cw on a single-letter word keeps the space", wantMode: insertMode, content: "a b c", seq: "cw", wantContent: " b c"},
+		{name: "cw on a blank between words changes the blanks", wantMode: insertMode, content: "one  two", seq: "lllcw", wantContent: "onetwo", wantScroll: col(3)},
+		{name: "cw on blanks before line end keeps the line", wantMode: insertMode, content: "one  \ntwo", seq: "lllcw", wantContent: "one\ntwo", wantScroll: col(3)},
+		{name: "c2w changes through the second word end", wantMode: insertMode, content: "one two three four", seq: "c2w", wantContent: " three four"},
+		{name: "c2w counts a word end under the cursor", wantMode: insertMode, content: "one two three", seq: "llc2w", wantContent: "on three", wantScroll: col(2)},
+		{name: "cW keeps the space after the WORD", wantMode: insertMode, content: "one, two", seq: "cW", wantContent: " two"},
+		{name: "cW on a blank changes the blanks", wantMode: insertMode, content: "one  two", seq: "lllcW", wantContent: "onetwo", wantScroll: col(3)},
+
+		// Vim splits a word on the word-rune/punctuation boundary, so each
+		// punctuation run is its own word.
+		{name: "cw before a punctuation word stops before it", wantMode: insertMode, content: "a$b x", seq: "cw", wantContent: "$b x"},
+		{name: "c2w over a punctuation word keeps the next word", wantMode: insertMode, content: "a$b x", seq: "c2w", wantContent: "b x"},
+		{name: "c2w changes a word plus the following punctuation", wantMode: insertMode, content: "ab$ x", seq: "c2w", wantContent: " x"},
+		{name: "cw on a punctuation run changes the run", wantMode: insertMode, content: "a++b x", seq: "lcw", wantContent: "ab x", wantScroll: col(1)},
+		{name: "cW treats punctuation as part of the WORD", wantMode: insertMode, content: "a-b c", seq: "cW", wantContent: " c"},
+		{name: "cw keeps the underscore inside the word", wantMode: insertMode, content: "foo_bar x", seq: "cw", wantContent: " x"},
+
+		// Counted cw crossing empty lines lands on the word end, not the word
+		// start: an inserted X proves the exact range without relying on the
+		// empty-buffer default.
+		{name: "c2w crosses an empty line to the next word end", wantMode: insertMode, content: "one\n\ntwo", seq: "c2wX", wantContent: "X", wantScroll: col(1)},
+		{name: "cw keeps the tab after the word", wantMode: insertMode, content: "a\tb", seq: "cw", wantContent: "\tb"},
+		{name: "cw keeps a wide rune inside the word", wantMode: insertMode, content: "a字b x", seq: "cw", wantContent: " x"},
+		{name: "cw stops before a null cell", wantMode: insertMode, content: "a\x00b x", seq: "cw", wantContent: "\x00b x"},
+		{name: "c9w past the last word changes to the buffer end", wantMode: insertMode, content: "one two", seq: "c9wX", wantContent: "X", wantScroll: col(1)},
+
+		{name: "dw still consumes the space after the word", content: "one two", seq: "dw", wantContent: "two"},
+		{name: "yw still yanks the space after the word", content: "one two", seq: "yw", wantContent: "one two"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vi := setupVi(t, tc.content, 2)
+			vi.Resize(80, 8)
+			vi.Draw(term.NoopWriter{})
+
+			for _, eventChar := range tc.seq {
+				_, handled := vi.Handle(term.Event{Type: term.EventKey, Ch: eventChar})
+				require.True(t, handled, "event %q", eventChar)
+			}
+
+			wantContent := tc.wantContent
+			if wantContent == "" {
+				wantContent = tc.content
+			}
+			assert.Equal(t, wantContent, vi.less.Buffer().String())
+			assert.Equal(t, tc.wantScroll, vi.cursor.CursorAtScroll())
+			wantMode := tc.wantMode
+			if wantMode == 0 {
+				wantMode = normalMode
+			}
+			assert.Equal(t, wantMode, vi.mode())
+		})
+	}
+}
+
 func TestViCountedOperatorScenarios(t *testing.T) {
 	type testCase struct {
 		name           string
@@ -2488,12 +2559,12 @@ func TestViCountedOperatorScenarios(t *testing.T) {
 		{name: "2d2w multiplies operator and motion counts", content: "one two three four five", seq: "2d2w", wantContent: "five", wantScroll: coord(0, 0)},
 		{name: "2de deletes through second word end", content: "one two three", seq: "2de", wantContent: " three", wantScroll: coord(0, 0)},
 		{name: "d2e deletes through second word end", content: "one two three", seq: "d2e", wantContent: " three", wantScroll: coord(0, 0)},
-		{name: "2cw changes two words", content: "one two three four", seq: "2cw", wantContent: "three four", wantMode: insertMode, wantScroll: coord(0, 0)},
-		{name: "c2w changes two words", content: "one two three four", seq: "c2w", wantContent: "three four", wantMode: insertMode, wantScroll: coord(0, 0)},
-		{name: "2c2w changes four words", content: "one two three four five", seq: "2c2w", wantContent: "five", wantMode: insertMode, wantScroll: coord(0, 0)},
+		{name: "2cw changes two words", content: "one two three four", seq: "2cw", wantContent: " three four", wantMode: insertMode, wantScroll: coord(0, 0)},
+		{name: "c2w changes two words", content: "one two three four", seq: "c2w", wantContent: " three four", wantMode: insertMode, wantScroll: coord(0, 0)},
+		{name: "2c2w changes four words", content: "one two three four five", seq: "2c2w", wantContent: " five", wantMode: insertMode, wantScroll: coord(0, 0)},
 		{name: "wrap 2dw deletes two words", content: "one two three four", seq: "2dw", wrap: true, width: 5, wantContent: "three four", wantScroll: coord(0, 0)},
 		{name: "wrap d2w deletes two words", content: "one two three four", seq: "d2w", wrap: true, width: 5, wantContent: "three four", wantScroll: coord(0, 0)},
-		{name: "wrap 2cw changes two words", content: "one two three four", seq: "2cw", wrap: true, width: 5, wantContent: "three four", wantMode: insertMode, wantScroll: coord(0, 0)},
+		{name: "wrap 2cw changes two words", content: "one two three four", seq: "2cw", wrap: true, width: 5, wantContent: " three four", wantMode: insertMode, wantScroll: coord(0, 0)},
 
 		// Counted character-find motions in operator-pending mode.
 		{name: "d2fx deletes through second x", content: "ax bx cx", seq: "d2fx", wantContent: " cx", wantScroll: coord(0, 0)},
@@ -2503,6 +2574,11 @@ func TestViCountedOperatorScenarios(t *testing.T) {
 		{name: "wrap d2fx deletes through second x", content: "ax bx cx", seq: "d2fx", wrap: true, width: 4, wantContent: " cx", wantScroll: coord(0, 0)},
 		{name: "dfw finds w instead of moving by word", content: "one two wow", seq: "dfw", wantContent: "o wow", wantScroll: coord(0, 0)},
 		{name: "dtw stops before w instead of moving by word", content: "one two wow", seq: "dtw", wantContent: "wo wow", wantScroll: coord(0, 0)},
+		{name: "dfb finds b instead of moving back by word", content: "one bob two", seq: "dfb", wantContent: "ob two", wantScroll: coord(0, 0)},
+		{name: "dtb stops before b instead of moving back by word", content: "one bob two", seq: "dtb", wantContent: "bob two", wantScroll: coord(0, 0)},
+		{name: "dFb finds b backward (cursor char at line end included) instead of moving back by word", content: "bob one", seq: "$dFb", wantContent: "bo", wantScroll: coord(1, 0)},
+		{name: "dTb stops after b instead of moving back by word", content: "bob one", seq: "$dTb", wantContent: "bob", wantScroll: coord(2, 0)},
+		{name: "dfB finds B instead of moving back by word", content: "one Bob two", seq: "dfB", wantContent: "ob two", wantScroll: coord(0, 0)},
 
 		// Counted word operators across empty lines: the last word stops at its
 		// line end, and an end in column 0 is pulled back to the previous line.
@@ -2513,7 +2589,7 @@ func TestViCountedOperatorScenarios(t *testing.T) {
 		{name: "d2w from indented word over empty line deletes linewise", content: "  one\n\ntwo", seq: "wd2w", wantContent: "two", wantScroll: coord(0, 0)},
 		{name: "d2w from line end over empty line joins lines", content: "one\n\ntwo", seq: "$d2w", wantContent: "on\ntwo", wantScroll: coord(1, 0)},
 		{name: "c2w over two empty lines keeps one line", content: "\n\nthree", seq: "c2wX", wantContent: "X\nthree", wantMode: insertMode, wantScroll: coord(1, 0)},
-		{name: "c2w from indented word over empty line keeps indent", content: "  one\n\ntwo", seq: "wc2wX", wantContent: "  X\ntwo", wantMode: insertMode, wantScroll: coord(3, 0)},
+		{name: "c2w from indented word over empty line keeps indent", content: "  one\n\ntwo", seq: "wc2wX", wantContent: "  X", wantMode: insertMode, wantScroll: coord(3, 0)},
 		{name: "y2w over two empty lines yanks linewise", content: "\n\nthree", seq: "y2w", wantClipboard: true, clipboardText: "\n\n", clipboardMode: text.LineSelection, wantScroll: coord(0, 0)},
 		{name: "y2w from line end over empty line yanks through newline", content: "one\n\ntwo", seq: "$y2w", wantClipboard: true, clipboardText: "e\n", clipboardMode: text.StandardSelection, wantScroll: coord(2, 0)},
 
@@ -2537,8 +2613,11 @@ func TestViCountedOperatorScenarios(t *testing.T) {
 		// Boundary and no-op operator paths.
 		{name: "2dw in empty buffer is a no-op", content: "", seq: "2dw", wantScroll: coord(0, 0), allowUnhandled: true},
 		{name: "2yy in empty buffer is a no-op", content: "", seq: "2yy", wantScroll: coord(0, 0)},
+		{name: "cw in empty buffer is a no-op", content: "", seq: "cw", wantScroll: coord(0, 0), allowUnhandled: true},
 		{name: "2dw from past last column does not edit", content: "one two", seq: "2dw", setup: pastLastColumn, wantScroll: coord(len("one two")-1, 0), allowUnhandled: true},
 		{name: "2dw from past last line does not edit", content: "one two", seq: "2dw", setup: pastLastLine, wantScroll: coord(0, 10), allowUnhandled: true},
+		{name: "cw from past last column clamps and changes the last cell", content: "one two", seq: "cw", setup: pastLastColumn, wantContent: "one tw", wantMode: insertMode, wantScroll: coord(len("one two")-1, 0), allowUnhandled: true},
+		{name: "cw from past last line does not edit", content: "one two", seq: "cw", setup: pastLastLine, wantScroll: coord(0, 10), allowUnhandled: true},
 	}
 
 	for _, tc := range cases {
@@ -3068,6 +3147,46 @@ func TestVisualMoveToChar(t *testing.T) {
 	assert.Equal(t, "abc", selection)
 }
 
+func TestVisualMoveToCharKeepsVisualMode(t *testing.T) {
+	tests := []struct {
+		name string
+		keys string
+		mode viMode
+	}{
+		{"visual", "vf,", visualMode},
+		{"visual line", "Vf,", visualLineMode},
+		{"visual block", "Vf,", visualBlockMode},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			vi := setupVi(t, `ab,de`, 0, WithWrap(false))
+			vi.Resize(10, 20)
+			vi.Draw(term.NoopWriter{})
+
+			if tt.mode == visualBlockMode {
+				vi.Handle(term.Event{Type: term.EventKey, Ch: 'v', Mod: term.ModCtrl})
+				tt.keys = "f,"
+			}
+			for _, eventChar := range tt.keys {
+				vi.Handle(term.Event{Type: term.EventKey, Ch: eventChar})
+			}
+			assert.Equal(t, tt.mode, vi.currMode)
+		})
+	}
+}
+
+func TestVisualMoveToCharThenDelete(t *testing.T) {
+	vi := setupVi(t, `ab,de`, 0, WithWrap(false))
+	vi.Resize(10, 20)
+	vi.Draw(term.NoopWriter{})
+
+	for _, eventChar := range "vf,x" {
+		vi.Handle(term.Event{Type: term.EventKey, Ch: eventChar})
+	}
+	assert.Equal(t, "de", vi.less.Buffer().String())
+	assert.Equal(t, normalMode, vi.currMode)
+}
+
 func handleViEvents(vi *viHandlerImpl, events []term.Event) {
 	for _, ev := range events {
 		vi.Handle(ev)
@@ -3407,7 +3526,7 @@ diff_buf_adjust(win_
 			`                    
 /*                  
  * Check if the curr
- * ▐uffers.         
+ * ▐buffers.        
  */                 
   void              
 diff_buf_adjust(win_
@@ -4524,10 +4643,6 @@ func TestInsertModeTabUsesIndentServiceWhenAvailable(t *testing.T) {
 	})
 }
 
-// TestInsertModeTabAfterOInsertsFullIndentLevel reproduces RUNE-121: pressing
-// `o<tab>` in a 2-space indented file must add a full indent level rather
-// than a single space, and a second `<tab>` must add another level rather
-// than dedenting.
 func TestInsertModeTabAfterOInsertsFullIndentLevel(t *testing.T) {
 	t.Run("tab on line at target inserts full indent level", func(t *testing.T) {
 		buf := cell.NewBuffer()
@@ -5663,11 +5778,6 @@ func TestViCountChangeToLineVisualMode(t *testing.T) {
 	}
 }
 
-// TestViNormalModeArrowEdgeReturnsUnhandled verifies that, in normal
-// mode, arrow-key cursor moves report handled=false when the cursor is
-// already at the buffer edge and cannot move. Outer handlers rely on
-// this to fall through (e.g. the dialogue compose box recalling queued
-// messages on ArrowUp).
 func TestViNormalModeArrowEdgeReturnsUnhandled(t *testing.T) {
 	newVi := func(t *testing.T, content string) *viHandlerImpl {
 		t.Helper()
@@ -5717,8 +5827,6 @@ func TestViNormalModeArrowEdgeReturnsUnhandled(t *testing.T) {
 	})
 }
 
-// TestViJoin pins the normal-mode join commands: J joins with a single
-// space (dropping the next line's indent), gJ joins verbatim.
 func TestViJoin(t *testing.T) {
 	type joinCase struct {
 		name          string
@@ -6323,8 +6431,6 @@ func TestViJoin(t *testing.T) {
 	}
 }
 
-// TestViJoinUndoAndRepeat pins that a join is a single undo step and
-// that `.` replays it.
 func TestViJoinUndoAndRepeat(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -8265,10 +8371,6 @@ type callbackAdapter struct {
 	}
 }
 
-// TestGwFormatWrapParagraph mirrors a subset of TestGoFormatWrapParagraph
-// but for the `gw` operator, which performs the same paragraph reflow as
-// `gq` while restoring the cursor to its position from before the
-// operator was invoked.
 func TestGwFormatWrapParagraph(t *testing.T) {
 	type tc struct {
 		name        string
@@ -8541,9 +8643,6 @@ func TestGwFormatWrapParagraph(t *testing.T) {
 	}
 }
 
-// TestSearchOperatorMotion covers `/pattern<CR>` and `?pattern<CR>` as
-// operator-pending motions for d, y, c, >, <, gu, gU, g~. The gq
-// operator is exercised by TestGoFormatWrapParagraph above.
 func TestSearchOperatorMotion(t *testing.T) {
 	type tc struct {
 		name        string
@@ -9564,9 +9663,6 @@ func TestSearchOperatorMotion(t *testing.T) {
 	}
 }
 
-// TestMarkOperatorMotion covers `'{mark}` and “ `{mark} “ as
-// operator-pending motions for d, c, y, >, <, gu, gU, g~. The gq
-// operator is exercised by TestGoFormatWrapParagraph above.
 func TestMarkOperatorMotion(t *testing.T) {
 	type tc struct {
 		name        string
@@ -12307,9 +12403,6 @@ func TestGjGk(t *testing.T) {
 	})
 }
 
-// TestHandleMouseWindowCoordinates verifies vi accepts mouse events
-// in every mode (vim's mouse=a): drags enter visual mode and select,
-// an insert-mode click repositions the caret and stays in insert.
 func TestHandleMouseWindowCoordinates(t *testing.T) {
 	newVi := func() *Vi {
 		buf := cell.NewBuffer()
@@ -12373,8 +12466,246 @@ func TestHandleMouseWindowCoordinates(t *testing.T) {
 		require.True(t, ok)
 		assert.Equal(t, "bravo ", sel)
 	})
+
+	t.Run("normal mode click repositions caret and stays normal", func(t *testing.T) {
+		v := newVi()
+		v.Handle(mouseEventAt(term.MouseLeft, 6, 0))
+		v.Handle(mouseEventAt(term.MouseRelease, 6, 0))
+
+		assert.Equal(t, term.Coordinates{X: 6}, v.CursorAtScroll())
+		assert.Equal(t, normalMode, v.handler.mode())
+		_, ok := v.Selection()
+		assert.False(t, ok, "a focus click must not leave a selection")
+	})
+
+	t.Run("jitter inside the pressed cell does not select", func(t *testing.T) {
+		v := newVi()
+		v.Handle(mouseEventAt(term.MouseLeft, 6, 0))
+		v.Handle(mouseEventAt(term.MouseLeft, 6, 0))
+		v.Handle(mouseEventAt(term.MouseLeft, 6, 0))
+		v.Handle(mouseEventAt(term.MouseRelease, 6, 0))
+
+		assert.Equal(t, term.Coordinates{X: 6}, v.CursorAtScroll())
+		assert.Equal(t, normalMode, v.handler.mode())
+		_, ok := v.Selection()
+		assert.False(t, ok)
+	})
+
+	t.Run("insert mode jitter inside the pressed cell stays insert", func(t *testing.T) {
+		v := newVi()
+		v.Handle(term.Event{Type: term.EventKey, Ch: 'i'})
+
+		v.Handle(mouseEventAt(term.MouseLeft, 6, 0))
+		v.Handle(mouseEventAt(term.MouseLeft, 6, 0))
+		v.Handle(mouseEventAt(term.MouseRelease, 6, 0))
+
+		assert.Equal(t, insertMode, v.handler.mode())
+		_, ok := v.Selection()
+		assert.False(t, ok)
+	})
+
+	t.Run("click then scroll leaves no highlight behind", func(t *testing.T) {
+		v := newVi()
+		v.Handle(mouseEventAt(term.MouseLeft, 6, 0))
+		v.Handle(mouseEventAt(term.MouseRelease, 6, 0))
+		v.Handle(mouseEventAt(term.MouseWheelDown, 6, 0))
+		v.Handle(mouseEventAt(term.MouseWheelUp, 6, 0))
+
+		assert.Equal(t, normalMode, v.handler.mode())
+		_, ok := v.Selection()
+		assert.False(t, ok)
+	})
+
+	t.Run("click during visual exits visual and repositions", func(t *testing.T) {
+		v := newVi()
+		v.Handle(term.Event{Type: term.EventKey, Ch: 'v'})
+		v.Handle(term.Event{Type: term.EventKey, Ch: 'l'})
+		require.Equal(t, visualMode, v.handler.mode())
+
+		v.Handle(mouseEventAt(term.MouseLeft, 2, 0))
+		v.Handle(mouseEventAt(term.MouseRelease, 2, 0))
+
+		assert.Equal(t, term.Coordinates{X: 2}, v.CursorAtScroll())
+		assert.Equal(t, normalMode, v.handler.mode())
+		_, ok := v.Selection()
+		assert.False(t, ok)
+	})
+
+	t.Run("drag returning to the pressed cell keeps the selection live", func(t *testing.T) {
+		v := newVi()
+		v.Handle(mouseEventAt(term.MouseLeft, 6, 0))
+		v.Handle(mouseEventAt(term.MouseLeft, 7, 0))
+		v.Handle(mouseEventAt(term.MouseLeft, 6, 0))
+		v.Handle(mouseEventAt(term.MouseRelease, 6, 0))
+
+		assert.Equal(t, visualMode, v.handler.mode())
+		sel, ok := v.Selection()
+		require.True(t, ok)
+		assert.Equal(t, "b", sel)
+	})
+
+	t.Run("double-click selects the word in visual mode", func(t *testing.T) {
+		v := newVi()
+		v.Handle(mouseEventAt(term.MouseLeft, 7, 0))
+		v.Handle(mouseEventAt(term.MouseRelease, 7, 0))
+		v.Handle(mouseEventAt(term.MouseLeft, 7, 0))
+		v.Handle(mouseEventAt(term.MouseRelease, 7, 0))
+
+		assert.Equal(t, visualMode, v.handler.mode())
+		sel, ok := v.Selection()
+		require.True(t, ok)
+		assert.Equal(t, "bravo", sel)
+		assert.Equal(t, term.Coordinates{X: 10}, v.CursorAtScroll(),
+			"the cursor rests on the word's last character")
+	})
+
+	t.Run("double-click selects the last word of a line", func(t *testing.T) {
+		v := newVi()
+		v.Resize(20, 1)
+		v.Handle(mouseEventAt(term.MouseLeft, 15, 0))
+		v.Handle(mouseEventAt(term.MouseRelease, 15, 0))
+		v.Handle(mouseEventAt(term.MouseLeft, 15, 0))
+		v.Handle(mouseEventAt(term.MouseRelease, 15, 0))
+
+		assert.Equal(t, visualMode, v.handler.mode())
+		sel, ok := v.Selection()
+		require.True(t, ok)
+		assert.Equal(t, "charlie", sel)
+		assert.Equal(t, term.Coordinates{X: 18}, v.CursorAtScroll())
+	})
+
+	t.Run("double-click on a non-word keeps the drag selection", func(t *testing.T) {
+		v := newVi()
+		drag(v, 0, 3)
+
+		sel, ok := v.Selection()
+		require.True(t, ok)
+		require.Equal(t, "alph", sel)
+
+		v.Handle(mouseEventAt(term.MouseLeft, 5, 0))
+		v.Handle(mouseEventAt(term.MouseRelease, 5, 0))
+
+		assert.Equal(t, term.Coordinates{X: 3}, v.CursorAtScroll())
+		sel, ok = v.Selection()
+		require.True(t, ok)
+		assert.Equal(t, "alph", sel)
+	})
+
+	t.Run("double-click then yank copies the word", func(t *testing.T) {
+		clip := new(mockClip)
+		buf := cell.NewBuffer()
+		buf.ReadFrom(strings.NewReader("alpha bravo charlie"))
+		v := NewWithIndent(buf, workspaceapi.RandomURI("memory"),
+			text.IndentRuneTab, 0,
+			WithWrap(false), WithClipboard(registerset.New(clip)))
+		v.Resize(20, 1)
+
+		v.Handle(mouseEventAt(term.MouseLeft, 7, 0))
+		v.Handle(mouseEventAt(term.MouseRelease, 7, 0))
+		v.Handle(mouseEventAt(term.MouseLeft, 7, 0))
+		v.Handle(mouseEventAt(term.MouseRelease, 7, 0))
+		v.Handle(term.Event{Type: term.EventKey, Ch: 'y'})
+
+		assert.Equal(t, normalMode, v.handler.mode())
+		assert.Equal(t, "bravo", clip.data.Text)
+	})
+
+	t.Run("jitter after double-click keeps the word selected", func(t *testing.T) {
+		v := newVi()
+		v.Handle(mouseEventAt(term.MouseLeft, 7, 0))
+		v.Handle(mouseEventAt(term.MouseRelease, 7, 0))
+		v.Handle(mouseEventAt(term.MouseLeft, 7, 0))
+		v.Handle(mouseEventAt(term.MouseLeft, 7, 0))
+		v.Handle(mouseEventAt(term.MouseRelease, 7, 0))
+
+		assert.Equal(t, visualMode, v.handler.mode())
+		sel, ok := v.Selection()
+		require.True(t, ok)
+		assert.Equal(t, "bravo", sel)
+	})
+
+	t.Run("triple-click selects the line in visual line mode", func(t *testing.T) {
+		v := newVi()
+		v.Handle(mouseEventAt(term.MouseLeft, 7, 0))
+		v.Handle(mouseEventAt(term.MouseRelease, 7, 0))
+		v.Handle(mouseEventAt(term.MouseLeft, 7, 0))
+		v.Handle(mouseEventAt(term.MouseRelease, 7, 0))
+		v.Handle(mouseEventAt(term.MouseLeft, 7, 0))
+		v.Handle(mouseEventAt(term.MouseRelease, 7, 0))
+
+		assert.Equal(t, visualLineMode, v.handler.mode())
+		sel, ok := v.Selection()
+		require.True(t, ok)
+		// Line selections carry a trailing newline.
+		assert.Equal(t, "alpha bravo charlie\n", sel)
+	})
+
+	t.Run("held move inside the pressed cell after triple-click keeps the cursor", func(t *testing.T) {
+		v := newVi()
+		v.Resize(20, 1)
+		v.Handle(mouseEventAt(term.MouseLeft, 7, 0))
+		v.Handle(mouseEventAt(term.MouseRelease, 7, 0))
+		v.Handle(mouseEventAt(term.MouseLeft, 7, 0))
+		v.Handle(mouseEventAt(term.MouseRelease, 7, 0))
+		v.Handle(mouseEventAt(term.MouseLeft, 7, 0))
+		v.Handle(mouseEventAt(term.MouseLeft, 7, 0))
+		v.Handle(mouseEventAt(term.MouseRelease, 7, 0))
+
+		assert.Equal(t, visualLineMode, v.handler.mode())
+		assert.Equal(t, term.Coordinates{X: 0}, v.CursorAtScroll(),
+			"jitter inside the pressed cell must not drift the cursor")
+		sel, ok := v.Selection()
+		require.True(t, ok)
+		assert.Equal(t, "alpha bravo charlie\n", sel)
+	})
+
+	t.Run("held move to another cell after triple-click follows the pointer", func(t *testing.T) {
+		v := newVi()
+		v.Resize(20, 1)
+		v.Handle(mouseEventAt(term.MouseLeft, 7, 0))
+		v.Handle(mouseEventAt(term.MouseRelease, 7, 0))
+		v.Handle(mouseEventAt(term.MouseLeft, 7, 0))
+		v.Handle(mouseEventAt(term.MouseRelease, 7, 0))
+		v.Handle(mouseEventAt(term.MouseLeft, 7, 0))
+		v.Handle(mouseEventAt(term.MouseLeft, 8, 0))
+		v.Handle(mouseEventAt(term.MouseRelease, 8, 0))
+
+		assert.Equal(t, visualLineMode, v.handler.mode())
+		assert.Equal(t, term.Coordinates{X: 8}, v.CursorAtScroll())
+		sel, ok := v.Selection()
+		require.True(t, ok)
+		assert.Equal(t, "alpha bravo charlie\n", sel)
+	})
 }
 
 func mouseEventAt(key term.Key, x, y int) term.Event {
 	return term.Event{Type: term.EventMouse, Key: key, MouseX: x, MouseY: y}
+}
+
+func TestViOperatorLeftStartWordKeepsCharUnderCursor(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		content  string
+		at       term.Coordinates
+		seq      string
+		want     string
+		wantMode viMode
+	}{
+		{"delete b", "one two three", term.Coordinates{X: 8}, "db", "one three", normalMode},
+		{"delete B", "one two-x three", term.Coordinates{X: 10}, "dB", "one three", normalMode},
+		{"change b", "one two three", term.Coordinates{X: 8}, "cb", "one three", insertMode},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vi := setupVi(t, tc.content, 2)
+			vi.Resize(80, 10)
+			vi.setCursorAtScroll(tc.at)
+			vi.Draw(term.NoopWriter{})
+			for _, ch := range tc.seq {
+				_, handled := vi.Handle(term.Event{Type: term.EventKey, Ch: ch})
+				require.True(t, handled)
+			}
+			assert.Equal(t, tc.want, strings.TrimRight(vi.less.Buffer().String(), "\n"))
+			assert.Equal(t, tc.wantMode, vi.mode())
+		})
+	}
 }

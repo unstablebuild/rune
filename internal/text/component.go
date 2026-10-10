@@ -21,7 +21,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -37,13 +36,14 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
-	"github.com/unstablebuild/rune-go-sdk/clipboard"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/cell"
+	tcomponent "unstable.build/rune/internal/component"
+	"unstable.build/rune/internal/component/imageuri"
 	"unstable.build/rune/internal/component/markdown"
 	"unstable.build/rune/internal/debug"
 	thandler "unstable.build/rune/internal/handler"
@@ -68,6 +68,8 @@ type Workspace interface {
 	walkdir.Reader
 	schemeapi.Executor
 	Open(string) (workspaceapi.File, error)
+	// PathCaseSensitive is [workspace.Workspace.PathCaseSensitive].
+	PathCaseSensitive() bool
 }
 
 // Component is an implementation of browser.Browser for file editing.
@@ -201,11 +203,12 @@ func (c *Component) buildEditorHandler(
 		handler.SetLocationList(textapi.LocationPriorityInfo, "syntax", ll)
 	})
 
-	var tree *syntax.Tree
-	if c.config.MaxSyntaxParseSize == 0 || buf.Size() <= c.config.MaxSyntaxParseSize {
+	var tree syntax.Tree
+	if c.config.SyntaxTree != nil &&
+		(c.config.MaxSyntaxParseSize == 0 || buf.Size() <= c.config.MaxSyntaxParseSize) {
 		// install tree in Buffer first so editor can use its
 		// capabilities while initializing
-		tree = syntax.WithTree(c.ctx, c.config, interrupter,
+		tree = c.config.SyntaxTree(c.ctx, c.config, interrupter,
 			c.config.PkgManager, locs, file, buf, fc, c.workspace, c.config.Syntax)
 		fc = tree
 	}
@@ -218,7 +221,7 @@ func (c *Component) buildEditorHandler(
 	var commands []textapi.CommandManual
 	if tree != nil {
 		var cmdHandler syntax.CommandHandler
-		commands, cmdHandler = syntax.Commands(handler, tree)
+		commands, cmdHandler = tree.Commands(handler)
 		for _, cmd := range commands {
 			err := c.fileRegistry.SubscribeCommandForFile(file, cmd, cmdHandler)
 			if err != nil {
@@ -484,7 +487,7 @@ func (c *Component) openFileTab(
 	file workspaceapi.URI, recoveryFilename workspaceapi.URI,
 	readOnly, forceRecover bool,
 ) (browserapi.Handler, error) {
-	t, ok := c.comp.Tab(file)
+	t, ok := c.fileTab(file)
 	if ok {
 		return t, nil
 	}
@@ -503,7 +506,8 @@ func (c *Component) openFileTab(
 		readOnly = c.fileExists(file)
 	}
 
-	if userRequestedView && !c.ed.IsExternal() {
+	// An image has no text to edit, so editing one views it too.
+	if (userRequestedView || isImageFile(file)) && !c.ed.IsExternal() {
 		viewHandler, viewCloser, viewOK, viewErr := c.loadView(file)
 		if viewErr != nil {
 			return nil, viewErr
@@ -529,6 +533,23 @@ func (c *Component) openFileTabSync(
 	}
 	t := c.newTab(file, c.iconFor(file), fileTabName(file), handler, fc)
 	return t, nil
+}
+
+// fileTab returns the tab open on file under the workspace's case rule,
+// so a server naming the file with different case does not open it twice.
+func (c *Component) fileTab(file workspaceapi.URI) (*browser.Tab, bool) {
+	if t, ok := c.comp.Tab(file); ok {
+		return t, true
+	}
+	if c.workspace.PathCaseSensitive() {
+		return nil, false
+	}
+	for _, t := range c.comp.Tabs() {
+		if workspace.SameDocument(t.URI(), file, false) {
+			return t, true
+		}
+	}
+	return nil, false
 }
 
 func (c *Component) newViewTab(
@@ -757,10 +778,12 @@ func (c *Component) ReadFile(file workspaceapi.URI, h Handler) error {
 // handler exists for the requested resource.
 var ErrHandlerNotFound = errors.New("handler not found")
 
-// Editor satisfies Editor interface.
+// Editor satisfies Editor interface. On a workspace whose paths are not
+// case-sensitive, a file URI matches an editor whatever its case.
 func (c *Component) Editor(resource workspaceapi.URI) (Handler, error) {
+	caseSensitive := c.workspace.PathCaseSensitive()
 	for _, tab := range c.comp.Tabs() {
-		if tab.URI().String() == resource.String() {
+		if workspace.SameDocument(tab.URI(), resource, caseSensitive) {
 			h, ok := tab.Handler().(Handler)
 			if !ok {
 				continue
@@ -771,7 +794,7 @@ func (c *Component) Editor(resource workspaceapi.URI) (Handler, error) {
 	// ensure that non-tab handlers returned by Handler
 	// can also be returned with Editor.
 	for _, ed := range c.editors {
-		if ed.Resource().String() == resource.String() {
+		if workspace.SameDocument(ed.Resource(), resource, caseSensitive) {
 			return ed, nil
 		}
 	}
@@ -1689,6 +1712,16 @@ func (c *Component) loadView(file workspaceapi.URI) (
 	bool,
 	error,
 ) {
+	if isImageFile(file) {
+		imageComponent, modTime, err := c.loadImage(file)
+		if err != nil {
+			return nil, nil, false, err
+		}
+		imageHandler := &imageViewHandler{comp: imageComponent}
+		closer := newImageFlusherCloser(c, file, imageHandler, modTime)
+		return imageHandler, closer, true, nil
+	}
+
 	lang, _ := languages.LanguageForFile(filepath.Base(file.Path()))
 	if lang != "markdown" {
 		return nil, nil, false, nil
@@ -1729,23 +1762,24 @@ func (c *Component) loadMarkdown(
 	return component, info.ModTime(), nil
 }
 
+// loadImage only stats the file. The returned component reads it through
+// the workspace when first drawn, which keeps remote reads off the event
+// loop.
+func (c *Component) loadImage(
+	uri workspaceapi.URI,
+) (*imageuri.Component, time.Time, error) {
+	info, err := c.workspace.Stat(uri.Path())
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	comp := imageuri.NewFromFileSystem(
+		c.workspace, uri.Path(), browser.EventPublisherInterrupter(c),
+		imageuri.Style{Fit: term.ImageFitContain, ProblemArt: tcomponent.ProblemArt})
+	return comp, info.ModTime(), nil
+}
+
 func (c *Component) newMarkdownHandler(component *markdown.Component) *hmarkdown.Handler {
-	return hmarkdown.New(component, hmarkdown.WithOnLinkClick(func(link *url.URL) bool {
-		if link.Scheme != "http" && link.Scheme != "https" {
-			return false
-		}
-		linkstr := link.String()
-		meta := clipboard.Data{Text: linkstr}
-		err := c.config.Clipboard.Copy(clipboard.DefaultRegisterID, meta)
-		if err != nil {
-			_, _ = c.config.Notifications.Notify(browserapi.LevelError,
-				"copy URL to clipboard: %v", err)
-		} else {
-			_, _ = c.config.Notifications.Notify(browserapi.LevelSuccess,
-				"copied URL %s to clipboard", linkstr)
-		}
-		return true
-	}))
+	return hmarkdown.New(component, hmarkdown.WithOnLinkClick(c.config.OnLinkClick))
 }
 
 var loadingSpinnerFrames = []rune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")

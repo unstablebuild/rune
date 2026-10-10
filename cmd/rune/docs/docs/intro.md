@@ -6,6 +6,8 @@ description: Install and set up Rune, the fast, keyboard-driven IDE for power us
 ---
 
 import Head from '@docusaurus/Head';
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
 import Install from '@site/src/components/Install';
 
 <Head>
@@ -23,7 +25,9 @@ Rune is a fast, keyboard-driven IDE for power users. The Unix way, finished as a
 
 ## Prerequisites
 
-Rune runs on macOS and Linux. Find your platform below for the specifics.
+Rune runs on macOS and Linux, with
+[Windows coming soon](https://github.com/unstablebuild/rune/issues/68). Find
+your platform below for the specifics.
 
 ### macOS
 
@@ -38,16 +42,112 @@ Rune runs on macOS and Linux. Find your platform below for the specifics.
   newer versions are fine. musl-based distributions such as Alpine are not
   supported.
 - **Graphics:** a graphical environment (X11, or Wayland via XWayland) with
-  the system OpenGL and X11 libraries installed and an OpenGL-capable driver.
-  On a minimal or headless install you may need to add your distribution's
-  OpenGL (Mesa) and X11 client library packages. Most desktop installs
-  already include them. This applies to the windowed editor only: `rune
-  --tui` and `rune --headless` load no graphical library and run on a
-  machine that has none.
+  an OpenGL-capable driver. Only Rune's GUI needs one: `rune --headless`
+  loads no graphical library and runs on a machine that has none.
 
 ## Install
 
 <Install />
+
+### Other ways to install
+
+<Tabs groupId="install-method">
+<TabItem value="homebrew" label="Homebrew" default>
+
+On macOS and Linux:
+
+```bash
+brew install unstablebuild/tap/rune
+```
+
+Rune updates itself, so you don't need `brew upgrade` for it. To remove it,
+run `brew uninstall rune`, or add `--zap` to delete your user data and
+settings too.
+
+</TabItem>
+<TabItem value="debian" label="Debian and Ubuntu">
+
+Download the `.deb` for your architecture (`amd64` or `arm64`) from the
+[latest release](https://github.com/unstablebuild/rune/releases/latest), then
+install it from the download directory:
+
+```bash
+sudo apt install ./rune_*.deb
+```
+
+`apt` pulls in the OpenGL and X11 libraries Rune's GUI needs.
+Rune does not update itself when installed from a package: install the
+newer `.deb` the same way to update. If you want automatic updates, use the
+[install command](#install) instead. To remove it, run `sudo apt remove rune`.
+
+The package needs Debian 12 or Ubuntu 22.04 or newer. On older releases, use
+the [install command](#install) instead: its build runs on Debian 10 and
+Ubuntu 20.04.
+
+</TabItem>
+<TabItem value="arch" label="Arch Linux">
+
+Rune is in the AUR as [`rune-ide`](https://aur.archlinux.org/packages/rune-ide).
+With an AUR helper such as `yay`:
+
+```bash
+yay -S rune-ide
+```
+
+Without one, build it with `makepkg`:
+
+```bash
+sudo pacman -S --needed base-devel git
+git clone https://aur.archlinux.org/rune-ide.git
+cd rune-ide
+makepkg -si
+```
+
+Rune does not update itself when installed from a package: update it with
+`yay`, or with `git pull` and `makepkg -si`. If you want automatic updates,
+use the [install command](#install) instead. To remove it, run
+`sudo pacman -R rune-ide`.
+
+</TabItem>
+<TabItem value="omarchy" label="Omarchy">
+
+Omarchy is Arch Linux and ships the `yay` AUR helper, so Rune installs from
+the AUR:
+
+```bash
+yay -S rune-ide
+```
+
+Rune then appears in the app launcher. Hyprland runs it through XWayland,
+which Omarchy already includes. `yay` updates it with the rest of your system.
+If you want Rune to update itself instead, use the
+[install command](#install). To remove it, run `sudo pacman -R rune-ide`.
+
+</TabItem>
+<TabItem value="other-linux" label="Other Linux">
+
+On Fedora, RHEL, openSUSE, Void, and other glibc distributions, the command
+above installs the prebuilt release. To build it from source instead,
+install `make` and the
+[build dependencies for your distribution](./develop/building.md#linux), then:
+
+```bash
+git clone https://github.com/unstablebuild/rune.git
+cd rune
+git checkout "$(git tag --list 'v*' --sort=-v:refname | grep -v -- - | head -n 1)"
+GOTOOLCHAIN=auto make rune-install-linux
+```
+
+The `git checkout` line selects the latest release, skipping prereleases.
+`GOTOOLCHAIN=auto` lets Go download the version Rune needs when your
+distribution's Go is older. Fedora's Go does not do this by default.
+
+This installs Rune in `~/.local/rune.app`, links `~/.local/bin/rune`, and
+adds Rune to your desktop's applications. Add `~/.local/bin` to your `PATH`
+if it is not there already. Rune keeps this install up to date itself.
+
+</TabItem>
+</Tabs>
 
 ## Your first steps
 

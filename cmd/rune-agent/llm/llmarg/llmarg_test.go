@@ -185,9 +185,6 @@ func (s *aliasService) GetModel(
 	return llmapi.ModelEntry{}, llmapi.ErrModelNotFound
 }
 
-// TestResolve_BareAliasResolvesViaGetModel verifies a bare name that the
-// service resolves through GetModel (an alias) is returned directly,
-// without requiring a single-provider catalog match.
 func TestResolve_BareAliasResolvesViaGetModel(t *testing.T) {
 	target := llmapi.ModelEntry{Provider: "openai", Name: "gpt-5.5"}
 	svc := &aliasService{

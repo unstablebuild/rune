@@ -40,10 +40,12 @@ import (
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/ide"
+	"unstable.build/rune/internal/ide/hostenv"
 	"unstable.build/rune/internal/ide/idelsp/languages"
-	"unstable.build/rune/internal/ide/pkgtrust"
+	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
 	"unstable.build/rune/internal/ide/syntax"
 	"unstable.build/rune/internal/ide/syntax/grammarfixture"
+	"unstable.build/rune/internal/ide/syntax/treesitter"
 	"unstable.build/rune/internal/term/gui"
 	"unstable.build/rune/internal/text"
 )
@@ -153,7 +155,7 @@ func stageSyntaxFixture(tb testing.TB, dataDir, langID string) {
 		tb.Fatalf("mkdir %s: %v", dst, err)
 	}
 	for _, e := range entries {
-		if e.IsDir() || e.Name() == syntax.ParserFilename {
+		if e.IsDir() || e.Name() == treesitter.ParserFilename {
 			continue
 		}
 		data, err := os.ReadFile(filepath.Join(src, e.Name()))
@@ -170,9 +172,9 @@ func stageSyntaxFixture(tb testing.TB, dataDir, langID string) {
 		tb.Fatalf("read %s: %v", parser, err)
 	}
 	if err := os.WriteFile(
-		filepath.Join(dst, syntax.ParserFilename), data, 0o755,
+		filepath.Join(dst, treesitter.ParserFilename), data, 0o755,
 	); err != nil {
-		tb.Fatalf("write %s: %v", syntax.ParserFilename, err)
+		tb.Fatalf("write %s: %v", treesitter.ParserFilename, err)
 	}
 }
 
@@ -261,7 +263,8 @@ func newGUIBenchSession(tb testing.TB, cfg guiBenchConfig) *guiBenchSession {
 	}
 
 	root, err := newBootstrapHandler(
-		s.dataDir, configPath, s.workDir, "" /* zdotDir */, files,
+		s.dataDir, configPath, s.workDir, "", /* shellRCDir */
+		hostenv.New(s.dataDir, ""), files,
 		nil /* launchCmd */, ide.FuncExtensionsRunner(testE2EExtensionsRunner),
 		s.mu, publishEvent, cellPixelSize, nil, /* setAltModifier */
 		func(*url.URL) error { return nil }, clipboard.NewInMemory(),
@@ -427,7 +430,7 @@ func (s *guiBenchSession) settle(timeout time.Duration) {
 	}
 }
 
-func (s *guiBenchSession) focusedSyntaxTree() (*syntax.Tree, error) {
+func (s *guiBenchSession) focusedSyntaxTree() (*treesitter.Tree, error) {
 	win, err := s.root.browser().Focus()
 	if err != nil {
 		return nil, fmt.Errorf("focused window: %w", err)
@@ -444,9 +447,9 @@ func (s *guiBenchSession) focusedSyntaxTree() (*syntax.Tree, error) {
 	if !ok {
 		return nil, fmt.Errorf("focused tab handler is %T, want text.Handler", tab.Handler())
 	}
-	tree, ok := h.CellView().(*syntax.Tree)
+	tree, ok := h.CellView().(*treesitter.Tree)
 	if !ok {
-		return nil, fmt.Errorf("focused editor view is %T, want *syntax.Tree", h.CellView())
+		return nil, fmt.Errorf("focused editor view is %T, want *treesitter.Tree", h.CellView())
 	}
 	return tree, nil
 }
@@ -454,7 +457,7 @@ func (s *guiBenchSession) focusedSyntaxTree() (*syntax.Tree, error) {
 func (s *guiBenchSession) waitSyntaxReady(expectedLang string, timeout time.Duration) {
 	s.tb.Helper()
 	deadline := time.Now().Add(timeout)
-	var tree *syntax.Tree
+	var tree *treesitter.Tree
 	var lastErr error
 	for time.Now().Before(deadline) {
 		tree, lastErr = s.focusedSyntaxTree()

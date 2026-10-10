@@ -149,9 +149,6 @@ func TestVTESearchHighlightsAndNavigatesScrollback(t *testing.T) {
 	}
 }
 
-// TestVTESearchParksOnCurrentMatch pins that closing the find window
-// leaves the scrollback parked on the current match with every match
-// still highlighted, so the results can actually be read.
 func TestVTESearchParksOnCurrentMatch(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -193,8 +190,6 @@ func TestVTESearchParksOnCurrentMatch(t *testing.T) {
 	}
 }
 
-// TestVTESearchWithoutMatchRestoresLiveView keeps the terminal where it
-// was when there is no match to park on.
 func TestVTESearchWithoutMatchRestoresLiveView(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -218,9 +213,6 @@ func TestVTESearchWithoutMatchRestoresLiveView(t *testing.T) {
 	}
 }
 
-// TestVTESearchReopensFromParkedMatch pins that searching again from a
-// parked view continues where the reader is looking rather than jumping
-// back to the live cursor.
 func TestVTESearchReopensFromParkedMatch(t *testing.T) {
 	t.Parallel()
 	h := newSearchHarness(t, "one\nfiller\none\nfiller\none", term.Coordinates{Y: 4})
@@ -238,9 +230,6 @@ func TestVTESearchReopensFromParkedMatch(t *testing.T) {
 	assert.Equal(t, term.Coordinates{}, h.cursor())
 }
 
-// TestVTESearchMatchIsTheSelection pins what copying yields while the
-// results are up: searching highlights but never selects, so the current
-// match has to stand in for a selection.
 func TestVTESearchMatchIsTheSelection(t *testing.T) {
 	t.Parallel()
 	h := newSearchHarness(t, "one two\nthree once", term.Coordinates{})
@@ -268,11 +257,6 @@ func TestVTESearchMatchIsTheSelection(t *testing.T) {
 	assert.Empty(t, selected)
 }
 
-// TestVTESearchOriginFollowsViCursorInModal pins that, once the reader
-// has navigated into modal (vi) mode and moved around, opening the
-// search box starts from wherever they are looking — the vi cursor —
-// instead of the live terminal's last known cursor, which is stale
-// while modal navigation is active.
 func TestVTESearchOriginFollowsViCursorInModal(t *testing.T) {
 	t.Parallel()
 	liveCursor := term.Coordinates{Y: 5, X: 2}
@@ -343,8 +327,6 @@ func newSearchHandler(t *testing.T, cfg Config) *Handler {
 	return handler
 }
 
-// TestHandlerSearchKeyRouting pins which keys reach the scrollback search
-// overlay and which keep flowing to the shell.
 func TestHandlerSearchKeyRouting(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -384,8 +366,6 @@ func TestHandlerSearchKeyRouting(t *testing.T) {
 	}
 }
 
-// TestHandlerSearchIgnoredInAltBuffer keeps full-screen programs, which
-// paint their own view and have no scrollback, free of the overlay.
 func TestHandlerSearchIgnoredInAltBuffer(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Search = testSearchConfig()
@@ -401,9 +381,6 @@ func TestHandlerSearchIgnoredInAltBuffer(t *testing.T) {
 	assert.False(t, handler.searchViewing())
 }
 
-// TestHandlerSearchOpensWhileInViMode pins that <meta-f> also opens the
-// search box once the reader has actually navigated into modal (vi)
-// mode, not just when the terminal is configured to allow it.
 func TestHandlerSearchOpensWhileInViMode(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Modal = true
@@ -422,9 +399,6 @@ func TestHandlerSearchOpensWhileInViMode(t *testing.T) {
 	assert.True(t, handler.viMode, "vi mode stays active behind the box")
 }
 
-// TestHandlerSearchQueriedBeforeFirstDraw guards the overlay against
-// hosts that ask for the cursor or the selection between opening the box
-// and the next frame.
 func TestHandlerSearchQueriedBeforeFirstDraw(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Search = testSearchConfig()
@@ -442,13 +416,6 @@ func TestHandlerSearchQueriedBeforeFirstDraw(t *testing.T) {
 	assert.Empty(t, selected)
 }
 
-// TestHandlerSearchLetsUnboundShortcutsThroughWhileOpen pins that the
-// open box only claims the keys it understands. ex.handleEvent tries the
-// focused handler before its own command.key_bindings, so a key the box
-// swallows outright can never trigger an IDE command such as
-// clipboardcopy — and unlike ordinary typed characters, a key carrying
-// alt/meta can never reach the shell either, so there is nothing else
-// it could be for.
 func TestHandlerSearchLetsUnboundShortcutsThroughWhileOpen(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Search = testSearchConfig()
@@ -463,9 +430,6 @@ func TestHandlerSearchLetsUnboundShortcutsThroughWhileOpen(t *testing.T) {
 	assert.True(t, handler.searchOpen(), "the box itself stays open")
 }
 
-// TestHandlerSearchCtrlCActsLikeEscapeWhileOpen pins that ctrl-c closes
-// the open box the same way <esc> does — parking on the current match —
-// instead of leaking through as the shell's interrupt signal.
 func TestHandlerSearchCtrlCActsLikeEscapeWhileOpen(t *testing.T) {
 	h := newSearchHarness(t, "one two\nthree one", term.Coordinates{})
 	h.open(t)
@@ -486,9 +450,6 @@ type nopEventPublisher struct{}
 
 func (nopEventPublisher) PublishEvent(term.Event) error { return nil }
 
-// TestHandlerSearchOverlayPosition parks the box on the top-right corner
-// of the terminal, flush with the top edge and two columns clear of the
-// right one.
 func TestHandlerSearchOverlayPosition(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Search = testSearchConfig()
@@ -509,10 +470,6 @@ func TestHandlerSearchOverlayPosition(t *testing.T) {
 		"the frame ends two columns clear of the right edge")
 }
 
-// TestHandlerSearchOverlayCroppedTopStaysUsable pins that hiding the
-// box's own leading blank row does not break input: the query still
-// receives typed characters and shows a cursor, and a click on the
-// visible frame still reaches it.
 func TestHandlerSearchOverlayCroppedTopStaysUsable(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Search = testSearchConfig()
@@ -560,10 +517,6 @@ func waitForScrollback(t *testing.T, h *Handler, want string) {
 	}, 5*time.Second, 10*time.Millisecond)
 }
 
-// TestHandlerSearchResultsStayUntilDismissed pins the reading flow: after
-// the find window closes, the terminal keeps showing the highlighted match
-// so it can be read and copied, and only goes back to the live view when
-// the user dismisses it or sends something to the shell.
 func TestHandlerSearchResultsStayUntilDismissed(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -613,10 +566,6 @@ func TestHandlerSearchResultsStayUntilDismissed(t *testing.T) {
 	}
 }
 
-// TestHandlerSearchOpenCtrlCClosesInsteadOfInterrupting pins that
-// ctrl-c, pressed while the box still has the keyboard, closes it and
-// parks on the match instead of reaching the shell as SIGINT: nothing
-// new appears in the scrollback, since nothing was written to the pty.
 func TestHandlerSearchOpenCtrlCClosesInsteadOfInterrupting(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Search = testSearchConfig()
@@ -652,9 +601,6 @@ func scrollbackContent(h *Handler) string {
 	return scroll.Buffer().String()
 }
 
-// TestHandlerSearchViewSelection pins the copy path while the box is up:
-// a drag over the results outside of the overlay selects on the results
-// view, and that is what the terminal reports as its selection.
 func TestHandlerSearchViewSelection(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Search = testSearchConfig()
@@ -695,8 +641,6 @@ func TestHandlerSearchViewSelection(t *testing.T) {
 	assert.Equal(t, "needle", selected)
 }
 
-// TestHandlerSearchOverlayHidesContentUnderneath keeps the terminal from
-// showing through the box, which only tints the cells it draws on.
 func TestHandlerSearchOverlayHidesContentUnderneath(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Search = testSearchConfig()
@@ -706,7 +650,11 @@ func TestHandlerSearchOverlayHidesContentUnderneath(t *testing.T) {
 	_, err := handler.comp.pty.Master.Write(
 		[]byte("yes " + strings.Repeat("x", 70) + " | head -40\n"))
 	require.NoError(t, err)
-	waitForScrollback(t, handler, strings.Repeat("x", 70))
+	// The echoed command line also contains the needle, so wait for the
+	// output lines themselves rather than the first occurrence.
+	require.Eventually(t, func() bool {
+		return strings.Count(scrollbackContent(handler), strings.Repeat("x", 70)) >= 40
+	}, 5*time.Second, 10*time.Millisecond)
 
 	_, handled := handler.Handle(term.Event{Type: term.EventKey, Mod: term.ModMeta, Ch: 'f'})
 	require.True(t, handled)

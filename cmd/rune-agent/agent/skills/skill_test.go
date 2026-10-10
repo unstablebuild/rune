@@ -342,9 +342,6 @@ func TestPlanSkillFile(t *testing.T) {
 	}
 }
 
-// TestPlanSkillParentContext asserts the built-in plan skill opts into
-// parent-dialogue context sharing. This is the mechanism that lets /plan
-// see the prior conversation when invoked inside an existing chat.
 func TestPlanSkillParentContext(t *testing.T) {
 	skillDir := filepath.Join(repoSkillsDir(t), "plan")
 	data, err := os.ReadFile(filepath.Join(skillDir, "SKILL.md"))

@@ -72,8 +72,6 @@ func chEv(ch rune, mod term.Modifier) term.Event {
 	return term.Event{Type: term.EventKey, Ch: ch, Mod: mod}
 }
 
-// TestKittyKeyboardFlags pins the flag stacks to kitty's
-// screen_{push,pop,set,report}_key_encoding_flags (kitty/screen.c).
 func TestKittyKeyboardFlags(t *testing.T) {
 	t.Parallel()
 	var overflow strings.Builder
@@ -148,9 +146,6 @@ func TestModifyOtherKeysQuery(t *testing.T) {
 	}
 }
 
-// TestKeyEncodingKitty pins the kitty encoding to the vectors of
-// kitty_tests/keys.py test_encode_key_event, as the terminal sees keys:
-// only presses, and shift already applied to the character typed.
 func TestKeyEncodingKitty(t *testing.T) {
 	t.Parallel()
 	const (
@@ -283,8 +278,6 @@ func TestKeyEncodingModifyOtherKeys(t *testing.T) {
 	}
 }
 
-// TestHandlerKeyboardProtocols types keys after the program selected an
-// encoding, so the parser's state must reach the input path.
 func TestHandlerKeyboardProtocols(t *testing.T) {
 	t.Parallel()
 	ctrlC := term.Event{Type: term.EventKey, Ch: 'c', Mod: term.ModCtrl, Raw: []byte{0x03}}
@@ -325,6 +318,87 @@ func TestHandlerKeyboardProtocols(t *testing.T) {
 			h.written()
 			_, handled := h.Handle(tc.ev)
 			assert.True(t, handled)
+			assert.Equal(t, tc.want, h.written())
+		})
+	}
+}
+
+func TestHandlerCopyPassThrough(t *testing.T) {
+	t.Parallel()
+	cmdC := chEv('c', term.ModMeta)
+	cases := []struct {
+		name     string
+		output   string
+		selected bool
+		ev       term.Event
+		want     string
+	}{
+		{name: "kitty", output: "\x1b[>1u", ev: cmdC, want: "\x1b[99;9u"},
+		{name: "kitty reports all keys", output: "\x1b[>27u", ev: cmdC, want: "\x1b[99;9u"},
+		{name: "legacy has no cmd", ev: cmdC},
+		{name: "selection", output: "\x1b[>1u", selected: true, ev: cmdC},
+		{name: "cmd v", output: "\x1b[>1u", ev: chEv('v', term.ModMeta)},
+		{name: "cmd shift c", output: "\x1b[>1u", ev: chEv('C', term.ModMeta)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newKeyboardHarness(t)
+			h.output(tc.output + "hello")
+			h.written()
+			if tc.selected {
+				h.comp.Select(term.Coordinates{})
+				h.comp.SelectEnd(term.Coordinates{X: 4})
+				_, ok := h.comp.Selection()
+				require.True(t, ok)
+			}
+
+			_, handled := h.Handle(tc.ev)
+
+			assert.Equal(t, tc.want != "", handled)
+			assert.Equal(t, tc.want, h.written())
+		})
+	}
+}
+
+func TestHandlerBracketedPaste(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name       string
+		output     string
+		start, end string
+		paste      string
+		want       string
+	}{
+		{
+			name:   "rune paste",
+			output: "\x1b[?2004h",
+			paste:  "a\x1bb\n",
+			want:   "\x1b[200~ab\n\x1b[201~",
+		},
+		{
+			name:   "terminal paste",
+			output: "\x1b[?2004h",
+			start:  "\x1b[200~",
+			end:    "\x1b[201~",
+			paste:  "a\x1bb\n",
+			want:   "\x1b[200~ab\n\x1b[201~",
+		},
+		{name: "program without bracketed paste", paste: "ab\n", want: "ab\r"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newKeyboardHarness(t)
+			h.output(tc.output)
+			h.written()
+
+			h.Handle(term.Event{Type: term.EventPasteStart, Raw: []byte(tc.start)})
+			for _, ch := range tc.paste {
+				h.Handle(term.Event{Type: term.EventKey, Ch: ch, Raw: []byte(string(ch))})
+			}
+			h.Handle(term.Event{Type: term.EventPasteEnd, Raw: []byte(tc.end)})
+
 			assert.Equal(t, tc.want, h.written())
 		})
 	}

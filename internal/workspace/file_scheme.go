@@ -17,14 +17,18 @@
 package workspace
 
 import (
+	"bytes"
 	"context"
+	"embed"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"os/user"
+	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -42,8 +46,9 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"unstable.build/rune/internal/debug"
-	"unstable.build/rune/internal/gitenv"
-	"unstable.build/rune/internal/procattr"
+	"unstable.build/rune/internal/ide/hostenv"
+	"unstable.build/rune/internal/ide/procattr"
+	"unstable.build/rune/internal/ide/vctrl/gitenv"
 )
 
 const (
@@ -63,17 +68,89 @@ var (
 // resize worker matches on the text to drop the resize silently.
 var ErrInvalidMasterPtyFd = errors.New("invalid master pty fd")
 
+// embeddedShellRC holds the zsh dotfiles and bash inputrc that bind the
+// keys the vte sends to the shell (see vte.ptyWriter.triggerBell and
+// vte.viHandler.remoteMoveTo). They ship in the binary because the
+// executor's host may have no app bundle to read them from: dev builds,
+// `rune -x` servers, and launches that skip the desktop defaults.
+//
+//go:embed all:shellrc
+var embeddedShellRC embed.FS
+
+// InstallShellRC writes the embedded dotfiles into dataDir/shellrc and
+// returns that directory for NewFileSchemeFunc. On error it returns "":
+// zsh reads no startup files from a ZDOTDIR that lacks them, and readline
+// does not fall back to ~/.inputrc when INPUTRC names a missing file, so
+// exporting a partly written directory would drop the user's own
+// configuration.
+func InstallShellRC(dataDir string) (string, error) {
+	dir := filepath.Join(dataDir, "shellrc")
+	// zsh keeps state beside the dotfiles, such as the history macOS's
+	// /etc/zshrc puts in ZDOTDIR, so carry over the directory releases
+	// used before bash shared it. The rename fails harmlessly once zdot
+	// is gone or dir is populated.
+	_ = os.Rename(filepath.Join(dataDir, "zdot"), dir)
+	if err := writeShellRCFiles(dir); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+// fishBindings binds ^A/^E/^G in fish so the vte's bell handshake
+// (see vte.ptyWriter.triggerBell) and its end-of-line moves (see
+// vte.viHandler.remoteMoveTo) work: fish binds none of them in insert
+// mode and has no beep widget, so ^G prints BEL itself.
+const fishBindings = `bind \ca beginning-of-line; bind \ce end-of-line; ` +
+	`bind \cg 'printf \a'; bind -M insert \ca beginning-of-line; ` +
+	`bind -M insert \ce end-of-line; bind -M insert \cg 'printf \a'`
+
+// fishInitCommand is what fish runs after its own startup files: Rune's
+// environment from shellRCDir, if any, and the bindings.
+func fishInitCommand(shellRCDir string) string {
+	if shellRCDir == "" {
+		return fishBindings
+	}
+	env := fishQuote(filepath.Join(shellRCDir, hostenv.FishFragment))
+	return "test -r " + env + "; and source " + env + "; " + fishBindings
+}
+
+func fishQuote(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	return "'" + strings.ReplaceAll(s, "'", `\'`) + "'"
+}
+
 // NewFileScheme returns a Scheme that manages resources
-// on the local file system.
+// on the local file system. Terminal shells it starts load only the user's
+// own dotfiles, and $RUNE_DATADIR in the commands it starts names the
+// process's RUNE_DATADIR; see NewFileSchemeFunc.
 func NewFileScheme(
-	ctx context.Context, cfg config.Config, workspace workspaceapi.URI,
+	_ context.Context, _ config.Config, workspace workspaceapi.URI,
 ) (schemeapi.Scheme, error) {
+	return newFileScheme(workspace, "", "")
+}
+
+// NewFileSchemeFunc returns a SchemeFunc for file schemes whose terminal
+// shells also load the dotfiles in shellRCDir, as returned by
+// InstallShellRC, and that expand $RUNE_DATADIR in the path, arguments
+// and environment of the commands they start to dataDir, the Rune data
+// directory of this host. An empty shellRCDir loads no Rune dotfiles; an
+// empty dataDir expands $RUNE_DATADIR from the process environment.
+func NewFileSchemeFunc(dataDir, shellRCDir string) schemeapi.SchemeFunc {
+	return func(
+		_ context.Context, _ config.Config, workspace workspaceapi.URI,
+	) (schemeapi.Scheme, error) {
+		return newFileScheme(workspace, dataDir, shellRCDir)
+	}
+}
+
+func newFileScheme(workspace workspaceapi.URI, dataDir, shellRCDir string) (schemeapi.Scheme, error) {
 	ret := new(fileScheme)
 	ret.getUser = user.Current
 	ret.osStat = os.Stat
 	ret.lookupUser = user.Lookup
-	err := ret.init(cfg, workspace)
-	if err != nil {
+	ret.dataDir = dataDir
+	ret.shellRCDir = shellRCDir
+	if err := ret.init(workspace); err != nil {
 		return nil, err
 	}
 	return ret, nil
@@ -115,15 +192,8 @@ type fileScheme struct {
 	ctx        context.Context
 	cancelCtx  func()
 	cmds       sync.Map // map[workspaceapi.Pid]struct{}
-
-	// zdotDir, when non-empty, is exported as ZDOTDIR to the shell
-	// processes started via the empty-cmd-Path protocol contract (see
-	// StartCommand). Resolved from the scheme's config at init time so
-	// it always reflects the executor's host: for SSH workspaces the
-	// remote `rune -x` server reads its own config, so the local IDE's
-	// zdotdir (which points at a host-specific path) doesn't leak into
-	// the remote shell's environment.
-	zdotDir string
+	dataDir    string   // see NewFileSchemeFunc
+	shellRCDir string   // see NewFileSchemeFunc
 
 	watchpoints    sync.Map
 	nextWatchPoint atomic.Int64
@@ -151,7 +221,7 @@ type fileScheme struct {
 }
 
 func (p *fileScheme) init(
-	cfg config.Config, workspace workspaceapi.URI,
+	workspace workspaceapi.URI,
 ) error {
 	if workspace.Host() != "" || workspace.User() != "" || workspace.Scheme() != FileScheme {
 		return errors.New("invalid file URI")
@@ -172,12 +242,6 @@ func (p *fileScheme) init(
 	}
 	if p.execMu == nil {
 		p.execMu = new(sync.RWMutex)
-	}
-	if cfg != nil {
-		// zdotdir is optional; ErrNotFound just means "not configured".
-		if z, err := cfg.GetString("zdotdir"); err == nil {
-			p.zdotDir = z
-		}
 	}
 	return nil
 }
@@ -386,19 +450,33 @@ func (p *fileScheme) StartCommand(ctx context.Context, cmd workspaceapi.Cmd) (
 		if len(cmd.Args) == 0 {
 			cmd.Args = []string{"--login", "-i"}
 		}
-		if filepath.Base(cmd.Path) == "zsh" && p.zdotDir != "" {
-			cmd.Env = append(cmd.Env, fmt.Sprintf("ZDOTDIR=%s", p.zdotDir))
-		}
+	}
+	// Only the terminal's shell, which the vte starts on a controlling
+	// terminal, is driven by the vte; the shells that run tasks and
+	// tools must not load Rune's bindings.
+	if procattr.ControlsTerminal(cmd.SysProcAttr) {
+		cmd = p.withShellRC(cmd)
 	}
 	// Unlike file paths, the executable comes from configuration such as
 	// an extension entrypoint of "$RUNE_DATADIR/bin/x", and is expanded
 	// here so an SSH workspace resolves it against the remote environment.
+	dataDir := p.hostDataDir()
 	cmd.Path, err = workspaceapi.ExpandPath(
-		os.ExpandEnv(cmd.Path), p.getUserOrLookup,
+		os.Expand(cmd.Path, func(name string) string {
+			if name == hostenv.DataDirVar {
+				return dataDir
+			}
+			return os.Getenv(name)
+		}), p.getUserOrLookup,
 		func() (string, error) { return "", nil })
 	if err != nil {
 		return 0, fmt.Errorf("expand cmd.Path: %w", err)
 	}
+	// $RUNE_DATADIR names the data directory of the host that runs the
+	// command, which only this host knows; other variables in arguments
+	// are left for the program, which may be a shell, to expand.
+	cmd.Args = expandDataDirArgs(cmd.Args, dataDir)
+	cmd.Env = expandDataDirEnv(cmd.Env, dataDir)
 	path := cmd.Path
 	if filepath.Base(cmd.Path) == cmd.Path {
 		path, err = find.Executable(cmd.Path)
@@ -495,6 +573,105 @@ func (p *fileScheme) StartCommand(ctx context.Context, cmd workspaceapi.Cmd) (
 	return pid, nil
 }
 
+func (p *fileScheme) hostDataDir() string {
+	if p.dataDir != "" {
+		return p.dataDir
+	}
+	return os.Getenv(hostenv.DataDirVar)
+}
+
+// expandDataDirArgs copies rather than edits args, which the caller owns.
+func expandDataDirArgs(args []string, dataDir string) []string {
+	out := slices.Clone(args)
+	for i, arg := range out {
+		out[i] = hostenv.ExpandDataDir(arg, dataDir)
+	}
+	return out
+}
+
+// expandDataDirEnv expands only the values of the KEY=value entries in env,
+// copying rather than editing env, which the caller owns.
+func expandDataDirEnv(env []string, dataDir string) []string {
+	out := slices.Clone(env)
+	for i, kv := range out {
+		if k, v, ok := strings.Cut(kv, "="); ok {
+			out[i] = k + "=" + hostenv.ExpandDataDir(v, dataDir)
+		}
+	}
+	return out
+}
+
+// withShellRC binds the keys that the vte sends to a zsh, bash or fish cmd,
+// whether the shell came from $SHELL or terminal.shell.
+func (p *fileScheme) withShellRC(cmd workspaceapi.Cmd) workspaceapi.Cmd {
+	switch filepath.Base(cmd.Path) {
+	case "zsh":
+		if p.shellRCDir != "" {
+			cmd.Env = append(cmd.Env, "ZDOTDIR="+p.shellRCDir)
+		}
+	case "bash":
+		if p.shellRCDir != "" {
+			cmd.Env = append(cmd.Env, "INPUTRC="+filepath.Join(p.shellRCDir, "inputrc"))
+			cmd.Args = bashShellRCArgs(cmd.Args, p.shellRCDir)
+		}
+	case "fish":
+		// ahead of the configured args, where a script operand would take
+		// every argument after it as its own
+		cmd.Args = append([]string{"-C", fishInitCommand(p.shellRCDir)}, cmd.Args...)
+	}
+	return cmd
+}
+
+// bashShellRCArgs makes an interactive bash read the startup file in
+// shellRCDir, which reads the user's own and then applies Rune's
+// environment. bash takes a startup file only when it is not a login
+// shell, so a login shell becomes an interactive one whose startup file,
+// bash_profile, does what --login would. Arguments that pick startup files
+// or give bash a command or script to run are left alone.
+func bashShellRCArgs(args []string, shellRCDir string) []string {
+	login := false
+	rest := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--login":
+			login = true
+		case arg == "--norc", arg == "--noprofile", arg == "--rcfile",
+			arg == "--init-file", arg == "--":
+			return args
+		case arg == "-o", arg == "+o", arg == "-O", arg == "+O":
+			// the option name is the next argument
+			rest = append(rest, arg)
+			if i+1 < len(args) {
+				i++
+				rest = append(rest, args[i])
+			}
+		case strings.HasPrefix(arg, "--") || strings.HasPrefix(arg, "+"):
+			rest = append(rest, arg)
+		case strings.HasPrefix(arg, "-") && len(arg) > 1:
+			if strings.ContainsRune(arg, 'c') {
+				return args
+			}
+			if flags := strings.ReplaceAll(arg, "l", ""); flags != arg {
+				login = true
+				if flags == "-" {
+					continue
+				}
+				arg = flags
+			}
+			rest = append(rest, arg)
+		default:
+			// a script operand, or "-" which ends the options
+			return args
+		}
+	}
+	// bash reads long options only ahead of single-character ones
+	if login {
+		return append([]string{"--init-file", filepath.Join(shellRCDir, "bash_profile")}, rest...)
+	}
+	return append([]string{"--rcfile", filepath.Join(shellRCDir, "bashrc")}, rest...)
+}
+
 func (p *fileScheme) Chroot(path string) (schemeapi.Scheme, error) {
 	uri, err := p.URI(path)
 	if err != nil {
@@ -506,8 +683,9 @@ func (p *fileScheme) Chroot(path string) (schemeapi.Scheme, error) {
 	child.lookupUser = p.lookupUser
 	child.files = p.files
 	child.execMu = p.execMu
-	child.zdotDir = p.zdotDir
-	if err := child.init(config.NopConfig(), uri); err != nil {
+	child.dataDir = p.dataDir
+	child.shellRCDir = p.shellRCDir
+	if err := child.init(uri); err != nil {
 		return nil, err
 	}
 	return child, nil
@@ -849,6 +1027,54 @@ func resolveLoginShell() string {
 		}
 	}
 	return fallback
+}
+
+// writeShellRCFiles updates dir in place rather than recreating it,
+// because zsh keeps state such as its history beside the dotfiles.
+func writeShellRCFiles(dir string) error {
+	entries, err := embeddedShellRC.ReadDir("shellrc")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	for _, e := range entries {
+		data, err := embeddedShellRC.ReadFile(path.Join("shellrc", e.Name()))
+		if err != nil {
+			return err
+		}
+		name := filepath.Join(dir, e.Name())
+		if got, err := os.ReadFile(name); err == nil && bytes.Equal(got, data) {
+			continue
+		}
+		if err := writeFileAtomic(name, data); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// writeFileAtomic writes aside and renames, so a shell starting
+// concurrently never reads a partial file.
+func writeFileAtomic(name string, data []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(name), "."+filepath.Base(name)+"-*.tmp")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name()) //nolint:errcheck
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Chmod(0o644); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), name)
 }
 
 // isExecutableFile reports whether path refers to a regular,

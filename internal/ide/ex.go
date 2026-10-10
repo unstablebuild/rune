@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"runtime"
 	rtdebug "runtime/debug"
@@ -57,9 +58,9 @@ import (
 	thandler "unstable.build/rune/internal/handler"
 	"unstable.build/rune/internal/handler/command"
 	hmarkdown "unstable.build/rune/internal/handler/markdown"
+	"unstable.build/rune/internal/ide/console/ideconsole"
+	"unstable.build/rune/internal/ide/console/ideconsole/workspaceshell"
 	"unstable.build/rune/internal/ide/idecmd"
-	"unstable.build/rune/internal/ide/ideshell"
-	"unstable.build/rune/internal/ide/ideshell/workspaceshell"
 	"unstable.build/rune/internal/ide/idetask"
 	"unstable.build/rune/internal/ide/keymeta"
 	"unstable.build/rune/internal/ide/plugin"
@@ -197,6 +198,7 @@ type ex struct {
 	// editorAutoSave records whether the editor flushes buffers
 	// automatically. The cheatsheet uses it to gate the manual write row.
 	editorAutoSave   bool
+	metaOpenURL      metaOpenURLConfig
 	fullscreenID     uint64
 	exit             bool
 	forceExit        bool
@@ -207,7 +209,7 @@ type ex struct {
 
 	companionTerminal    vtereservoir.VTE
 	companionTerminalWin browser.Window
-	companionConsole     *ideshell.Handler
+	companionConsole     *ideconsole.Handler
 	companionConsoleURI  workspaceapi.URI
 
 	fileExplorerWin     browser.Window
@@ -266,6 +268,7 @@ func newEx(
 	metaKey keymeta.Meta,
 	editorAutoSave bool,
 	consoleCfg consoleConfig,
+	metaOpenURL metaOpenURLConfig,
 	opts ...text.Option,
 ) (e *ex, err error) {
 	e = new(ex)
@@ -287,6 +290,7 @@ func newEx(
 	e.metaKey = metaKey
 	e.editorAutoSave = editorAutoSave
 	e.consoleCfg = consoleCfg
+	e.metaOpenURL = metaOpenURL
 	return
 }
 
@@ -535,7 +539,8 @@ func (e *ex) doInit(
 
 	e.config = text.DefaultConfig()
 
-	opts = append(opts, text.WithNotifications(e.notifications))
+	opts = append(opts, text.WithNotifications(e.notifications),
+		text.WithOnLinkClick(e.onLinkClick))
 	for _, o := range opts {
 		o(&e.config)
 	}
@@ -1059,13 +1064,20 @@ func (e *ex) dispatchCommand(cmd string, args ...string) (err error) {
 // dispatchCommandCtx is dispatchCommand with a caller-supplied base
 // context, letting the caller thread values (e.g. a textrpc.Waiter) down
 // to the leaf command handler so it can observe asynchronous completion.
-//
-// Dispatches are serialised: while an earlier one is still in flight the
-// command queues and the returned error is nil. A Waiter on ctx is
-// claimed in that case and receives the result instead.
 func (e *ex) dispatchCommandCtx(
 	ctx context.Context, cmd string, args ...string,
 ) (err error) {
+	return e.dispatchSerialized(ctx, func(ctx context.Context) error {
+		return e.dispatchResolved(ctx, cmd, args...)
+	})
+}
+
+// dispatchSerialized runs dispatch unless an earlier dispatch is still in
+// flight, in which case dispatch queues and the returned error is nil. A
+// Waiter on ctx is claimed in that case and receives the result instead.
+func (e *ex) dispatchSerialized(
+	ctx context.Context, dispatch func(context.Context) error,
+) error {
 	if e.runInFlight != nil {
 		var w *textrpc.Waiter
 		if cw, ok := textrpc.WaiterFromContext(ctx); ok {
@@ -1073,11 +1085,11 @@ func (e *ex) dispatchCommandCtx(
 			w = cw
 		}
 		e.runQueue = append(e.runQueue, queuedDispatch{
-			ctx: ctx, cmd: cmd, args: args, waiter: w,
+			ctx: ctx, dispatch: dispatch, waiter: w,
 		})
 		return nil
 	}
-	return e.dispatchResolved(ctx, cmd, args...)
+	return dispatch(ctx)
 }
 
 // drainRunQueue dispatches queued commands in arrival order until the
@@ -1100,7 +1112,7 @@ func (e *ex) dispatchQueued(q queuedDispatch) {
 		// the result must be delivered exactly once, from here.
 		ctx = textrpc.ContextWithWaiter(ctx, inner)
 	}
-	err := e.dispatchResolved(ctx, q.cmd, q.args...)
+	err := q.dispatch(ctx)
 	if q.waiter == nil {
 		if err != nil {
 			e.setError(err)
@@ -1125,18 +1137,7 @@ func (e *ex) dispatchQueued(q queuedDispatch) {
 func (e *ex) dispatchResolved(
 	ctx context.Context, cmd string, args ...string,
 ) (err error) {
-	uri, h, ok := e.handlerInFocus()
-	scmd := textapi.Command{
-		Name:     cmd,
-		Args:     args,
-		Resource: h,
-		URI:      uri,
-		Window:   e.invokeWindow(),
-	}
-	if ok {
-		scmd.Cursor.Content = h.CursorAtScroll()
-		scmd.Cursor.Window, _, _ = h.Cursor()
-	}
+	scmd, ok := e.focusCommand(cmd, args)
 	target, isAlias := e.aliasExpander.ResolveAlias(cmd)
 	if cmd == "!" || cmd == "!!" {
 		ctx = cmdenv.WithCommandSubstitution(ctx)
@@ -1146,20 +1147,11 @@ func (e *ex) dispatchResolved(
 	}
 	var handled bool
 	if isAlias {
-		var parent *textrpc.Waiter
-		if w, wok := textrpc.WaiterFromContext(ctx); wok {
-			parent = w
+		it, xerr := e.aliasExpander.Expand(ctx, scmd)
+		if xerr != nil {
+			return xerr
 		}
-		r, rerr := newAliasRun(e, ctx, scmd, nil, parent, false)
-		if rerr != nil {
-			return rerr
-		}
-		r.step()
-		if r.detached {
-			// The run owns its result from here on.
-			return nil
-		}
-		handled, err = r.handled, r.err
+		handled, err = e.runAlias(ctx, cmd, it)
 	} else {
 		handled, err = e.dispatchLeaf(ctx, cmd, scmd)
 	}
@@ -1173,6 +1165,127 @@ func (e *ex) dispatchResolved(
 		return fmt.Errorf("unknown command or command alias %q", cmd)
 	}
 	return fmt.Errorf("%s is aliased to an unknown command %v", cmd, target.Commands)
+}
+
+// focusCommand returns name and args as a command aimed at the handler in
+// focus. ok is false when that handler is not a text handler.
+func (e *ex) focusCommand(name string, args []string) (textapi.Command, bool) {
+	uri, h, ok := e.handlerInFocus()
+	ret := textapi.Command{
+		Name:     name,
+		Args:     args,
+		Resource: h,
+		URI:      uri,
+		Window:   e.invokeWindow(),
+	}
+	if ok {
+		ret.Cursor.Content = h.CursorAtScroll()
+		ret.Cursor.Window, _, _ = h.Cursor()
+	}
+	return ret, ok
+}
+
+// runAlias dispatches the steps it yields for the alias called name. A
+// run that detaches owns its result from then on, so it reports handled
+// and no error here.
+func (e *ex) runAlias(
+	ctx context.Context, name string, it iterator.Iterator[textapi.Command],
+) (handled bool, err error) {
+	var parent *textrpc.Waiter
+	if w, ok := textrpc.WaiterFromContext(ctx); ok {
+		parent = w
+	}
+	r := newAliasRun(e, ctx, name, it, nil, parent, false)
+	r.step()
+	if r.detached {
+		return true, nil
+	}
+	return r.handled, r.err
+}
+
+// openURL opens u as the meta_open_url config says: its command opens
+// http(s) URLs, or they are copied to the clipboard, and the system
+// browser opens every other URL. The command queues behind a dispatch
+// still in flight, like a typed one.
+func (e *ex) openURL(u *url.URL) error {
+	web := u.Scheme == "http" || u.Scheme == "https"
+	switch {
+	case web && e.metaOpenURL.clipboard:
+		s := u.String()
+		if err := e.clip.Copy(clipboard.DefaultRegisterID, clipboard.Data{Text: s}); err != nil {
+			return fmt.Errorf("copy URL to clipboard: %w", err)
+		}
+		_, _ = e.notifications.Notify(browserapi.LevelSuccess, "copied URL %s to clipboard", s)
+		return nil
+	case web && e.metaOpenURL.command != "":
+		return e.dispatchSerialized(context.Background(), func(ctx context.Context) error {
+			return e.dispatchURLCommand(ctx, u)
+		})
+	case e.metaOpenURL.system == nil:
+		return errors.New("no system browser configured")
+	}
+	return e.metaOpenURL.system(u)
+}
+
+// dispatchURLCommand runs the meta_open_url command as a one-step alias
+// with $URL bound to the shell-inert form of u. $URL expands to a single
+// argument, and ! and !! bodies receive it as data in any quoting
+// context.
+func (e *ex) dispatchURLCommand(ctx context.Context, u *url.URL) error {
+	chain := idecmd.NewChain()
+	chain.Set("URL", shellInertURL(u))
+	ctx = idecmd.WithChain(ctx, keyMetaOpenURL, chain)
+	scmd, _ := e.focusCommand(keyMetaOpenURL, nil)
+	it, err := e.aliasExpander.ExpandAlias(ctx, scmd,
+		text.CommandAlias{Commands: []string{e.metaOpenURL.command}})
+	if err != nil {
+		return fmt.Errorf("%s: %w", keyMetaOpenURL, err)
+	}
+	handled, err := e.runAlias(ctx, keyMetaOpenURL, it)
+	if err != nil {
+		return fmt.Errorf("%s: %w", keyMetaOpenURL, err)
+	}
+	if !handled {
+		return fmt.Errorf("%s: unknown command in %q",
+			keyMetaOpenURL, e.metaOpenURL.command)
+	}
+	return nil
+}
+
+// shellInertURL returns u with every byte percent-encoded that a URI
+// may not contain, as well as ' and $, so that the result holds no
+// character a shell interprets inside quotes. The encoded characters
+// mean the same to a web server, so the URL still names the same
+// resource. The protection is for commands that hand $URL to a shell
+// a second time, as eval, sh -c and ssh do; quoting $URL there is
+// still needed, since & ; ( ) and other reserved characters stay.
+func shellInertURL(u *url.URL) string {
+	const keep = "-._~:/?#[]@!&()*+,;=%"
+	s := u.String()
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' ||
+			strings.IndexByte(keep, c) >= 0 {
+			b.WriteByte(c)
+			continue
+		}
+		fmt.Fprintf(&b, "%%%02X", c)
+	}
+	return b.String()
+}
+
+// onLinkClick is the link handler of rendered markdown: it opens http(s)
+// links with openURL and leaves every other link to the markdown handler.
+func (e *ex) onLinkClick(link *url.URL) bool {
+	if link.Scheme != "http" && link.Scheme != "https" {
+		return false
+	}
+	if err := e.openURL(link); err != nil {
+		_, _ = e.notifications.Notify(browserapi.LevelError, "open %s: %v", link, err)
+	}
+	return true
 }
 
 // dispatchLeaf expands a non-alias command's args and dispatches it.
@@ -1371,7 +1484,7 @@ func (e *ex) reloadfile(_ context.Context, args ...string) error {
 	}
 	// :reloadfile is fire-and-forget: the reload runs on a
 	// background goroutine and a reparse is scheduled back onto
-	// the host event loop via syntax.Tree.wrapReparse. Awaiting
+	// the host event loop via treesitter.Tree.wrapReparse. Awaiting
 	// the result synchronously here would deadlock that reparse
 	// against the host mutex.
 	return e.flusher.reloadAsync(t.URI(), t, nil)
@@ -2305,7 +2418,7 @@ func (e *ex) consolenewtab(_ context.Context, args ...string) error {
 		if err != nil {
 			return fmt.Errorf("workspace uri: %w", err)
 		}
-		consoleCfg := ideshell.Config{
+		consoleCfg := ideconsole.Config{
 			Storage:           e.storage,
 			HistoryDocumentID: shellHistoryDocumentID,
 			MaxHistory:        e.config.ShellMaxHistory,
@@ -2315,7 +2428,7 @@ func (e *ex) consolenewtab(_ context.Context, args ...string) error {
 			ModalStartInsert:  e.consoleCfg.modalStartInsert,
 			Prompt:            e.consoleCfg.prompt,
 		}
-		h, registry := ideshell.New(
+		h, registry := ideconsole.New(
 			e.emulatorConfig.ScheduleNextTick, e, e.promptEditor,
 			consoleCfg,
 		)
@@ -3474,7 +3587,7 @@ func (e *ex) openMarkdownFloating(md, title string, width int) error {
 	if err != nil {
 		return fmt.Errorf("new markdown component: %w", err)
 	}
-	mdh := hmarkdown.New(mdComp, hmarkdown.WithOnLinkClick(openCheatsheetLink))
+	mdh := hmarkdown.New(mdComp, hmarkdown.WithOnLinkClick(e.onLinkClick))
 	span := handler.NewSpan(mdh, component.SpanConfig{
 		PadHorizontal:    2,
 		ContentAlignment: component.AlignmentCentered,

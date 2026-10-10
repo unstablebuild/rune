@@ -167,9 +167,6 @@ func TestService_ProgressReporting(t *testing.T) {
 		"a success notification is emitted when the model becomes ready")
 }
 
-// TestService_ProgressStreamsAllOutputLines asserts that every server output
-// line is surfaced as the progress message, not just the ones carrying a
-// percentage, and that lines are trimmed to a single line.
 func TestService_ProgressStreamsAllOutputLines(t *testing.T) {
 	exec := &fakeExecutor{
 		emitLines: []string{
@@ -223,9 +220,6 @@ func TestService_Close_StopsAllServers(t *testing.T) {
 	assert.ErrorIs(t, err, ErrServerClosed)
 }
 
-// TestService_Crash_RestartsOnNextAcquire simulates an unexpected process
-// exit (the watcher fires), which must evict the server so the next acquire
-// starts a fresh one.
 func TestService_Crash_RestartsOnNextAcquire(t *testing.T) {
 	exec := &fakeExecutor{}
 	svc, _ := newTestService(t, exec, Config{StartupTimeout: 5 * time.Second, IdleTimeout: time.Hour})

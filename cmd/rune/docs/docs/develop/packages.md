@@ -125,10 +125,10 @@ When a user installs one, Rune:
    latest version and installs any that are not already installed, config
    merge and environment included, before the package itself. If a requirement
    cannot be installed, the whole install is aborted.
-2. **Puts executables on the `PATH`.** Every executable the package ships is
-   copied into Rune's shared binary directory, which is always first on the
-   `PATH` of Rune's terminals and of anything Rune launches. The tools are
-   available immediately, with no separate step.
+2. **Puts executables on the `PATH`.** Every executable in the package's
+   top-level `bin/` directory is copied into Rune's shared binary directory,
+   which is always first on the `PATH` of Rune's terminals and of anything
+   Rune launches. The tools are available immediately, with no separate step.
 3. **Merges the config overlay.** The package's config is deep-merged into
    the user's config: keys the package introduces are added, including new
    leaves under a map the user already has. A package only needs to carry the
@@ -150,9 +150,11 @@ described under [the on-disk package format](#the-on-disk-package-format).
 :::info[The shared binary directory is always on PATH]
 The overlay does not need a `PATH` entry for a bundled executable. Rune
 places its shared binary directory first on the `PATH` at startup, so a
-bundled binary is reachable as soon as it is installed. Only set `gui.env`
-in the overlay when a tool needs extra environment variables of its own, not
-to expose the binary.
+bundled binary is reachable as soon as it is installed. That holds in Rune's
+terminals too: they put the directory back in front after the shell's startup
+files run, even when one of them resets `PATH`. Only set `gui.env` in the
+overlay when a tool needs extra environment variables of its own, not to
+expose the binary.
 :::
 
 ## The config overlay
@@ -169,14 +171,23 @@ present, `config.yaml` wins.
 ### Referencing the install location
 
 If a value in the overlay must point back into the installed package, use
-these variables. They expand to the install location when the configuration
-is applied:
+these variables:
 
 | Variable | Expands to |
 | --- | --- |
-| `$RUNE_DATADIR` | The user's Rune data directory. |
+| `$RUNE_DATADIR` | The Rune data directory on the machine that uses the value. |
 | `$RUNE_PKG_ID` | The package's name. |
 | `$RUNE_PKG_VERSION` | The installed version. |
+
+`$RUNE_PKG_ID` and `$RUNE_PKG_VERSION` are expanded when the package is
+installed. `$RUNE_DATADIR` is kept as written in the user's config and
+resolved on the machine that uses the value, when it starts a command or
+applies an environment. One config therefore serves local, `ssh://` and
+`rune://` workspaces: in a remote workspace, an extension entrypoint, a
+debugger command or a `gui.env` value names the data directory on the remote
+machine, where the package is installed. A config written by an earlier
+version of Rune may hold the expanded path instead; the next install or update
+of the package writes `$RUNE_DATADIR` back without asking.
 
 A package's own files are reachable at `$RUNE_DATADIR/lib/$RUNE_PKG_ID`,
 which resolves to the version currently in use: the cloned repository for a
@@ -311,13 +322,15 @@ Installing it, or cloning a git repository, produces this layout:
 
 Three kinds of content, three destinations:
 
-- **Executables.** Any non-hidden file with an execute bit set is copied
-  into Rune's shared binary directory by its base name, and that directory is
-  always first on the `PATH`. A `bin/` directory is the convention, not a
-  requirement, and the file can be a compiled binary or a script with a
-  shebang. Because names are taken by base name, keep each executable's file
-  name unique. A git-hosted extension usually ships no executables at all: it
-  runs from source through a required language toolchain.
+- **Executables.** Any non-hidden file with an execute bit set directly
+  inside the top-level `bin/` directory is copied into Rune's shared binary
+  directory by its base name, and that directory is always first on the
+  `PATH`. The file can be a compiled binary or a script with a shebang.
+  Executable files anywhere else, such as shared libraries under `lib/` or a
+  bundled toolchain's internal tools, stay in the payload. Because names are
+  taken by base name, keep each executable's file name unique. A git-hosted
+  extension usually ships no executables at all: it runs from source through
+  a required language toolchain.
 - **Everything else (the payload).** All other files stay in place under
   `pkg/<pkg>/<version>/`, reachable through
   [`$RUNE_DATADIR/lib/$RUNE_PKG_ID`](#referencing-the-install-location). For a

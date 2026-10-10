@@ -142,7 +142,97 @@ func TestPlanConfigChange(t *testing.T) {
 			version:      "1",
 			wantPathID:   "testpkg",
 			wantPathFrom: "/old/testpkg",
-			wantPathTo:   "/data/bin/testpkg",
+			wantPathTo:   "$RUNE_DATADIR/bin/testpkg",
+		},
+		{
+			name:      "extension path expanded by an older install does not prompt",
+			pkgConfig: "extensions:\n  testpkg:\n    path: $RUNE_DATADIR/bin/testpkg\n",
+			userCfg: map[string]any{"extensions": map[string]any{
+				"testpkg": map[string]any{"path": "/data/bin/testpkg"},
+			}},
+			version: "1",
+			wantAutoApply: map[string]any{"extensions": map[string]any{
+				"testpkg": map[string]any{"path": "$RUNE_DATADIR/bin/testpkg"},
+			}},
+		},
+		{
+			name:          "data directory stays literal in new keys",
+			pkgConfig:     "debugger:\n  command: $RUNE_DATADIR/pkg/$RUNE_PKG_ID/$RUNE_PKG_VERSION/bin/dap\n",
+			userCfg:       map[string]any{},
+			version:       "2",
+			wantAutoApply: map[string]any{"debugger": map[string]any{"command": "$RUNE_DATADIR/pkg/testpkg/2/bin/dap"}},
+		},
+		{
+			name:      "expanded scalar from an older install is respelled without prompt",
+			pkgConfig: "gui:\n  env:\n    GOROOT: $RUNE_DATADIR/pkg/testpkg/$RUNE_PKG_VERSION/go\n",
+			userCfg: map[string]any{"gui": map[string]any{"env": map[string]any{
+				"GOROOT": "/data/pkg/testpkg/1/go",
+			}}},
+			version: "1",
+			wantAutoApply: map[string]any{"gui": map[string]any{"env": map[string]any{
+				"GOROOT": "$RUNE_DATADIR/pkg/testpkg/1/go",
+			}}},
+		},
+		{
+			name:      "expanded non-gui.env scalar is respelled without prompt",
+			pkgConfig: "cache: $RUNE_DATADIR/cache\n",
+			userCfg:   map[string]any{"cache": "/data/cache"},
+			version:   "1",
+			wantAutoApply: map[string]any{
+				"cache": "$RUNE_DATADIR/cache",
+			},
+		},
+		{
+			name:      "expanded list from an older install is respelled without prompt",
+			pkgConfig: "debugger:\n  command: [$RUNE_DATADIR/bin/dap, --port]\n",
+			userCfg: map[string]any{"debugger": map[string]any{
+				"command": []any{"/data/bin/dap", "--port"},
+			}},
+			version: "1",
+			wantAutoApply: map[string]any{"debugger": map[string]any{
+				"command": []any{"$RUNE_DATADIR/bin/dap", "--port"},
+			}},
+		},
+		{
+			name:      "customized list is preserved",
+			pkgConfig: "debugger:\n  command: [$RUNE_DATADIR/bin/dap, --port]\n",
+			userCfg: map[string]any{"debugger": map[string]any{
+				"command": []any{"/data/bin/dap", "--verbose"},
+			}},
+			version: "1",
+		},
+		{
+			name:       "expanded version-dependent scalar with new version prompts with literal",
+			pkgConfig:  "goroot: $RUNE_DATADIR/pkg/testpkg/$RUNE_PKG_VERSION/go\n",
+			userCfg:    map[string]any{"goroot": "/data/pkg/testpkg/1/go"},
+			version:    "2",
+			wantPrompt: true,
+			wantConflict: map[string]any{
+				"goroot": "$RUNE_DATADIR/pkg/testpkg/2/go",
+			},
+		},
+		{
+			name:      "expanded gui.env.PATH chunk is respelled in place without prompt",
+			pkgConfig: "gui:\n  env:\n    PATH: $RUNE_DATADIR/python/bin:$PATH\n",
+			userCfg: map[string]any{"gui": map[string]any{"env": map[string]any{
+				"PATH": "/user/bin:/data/python/bin:$PATH",
+			}}},
+			version: "1",
+			wantAutoApply: map[string]any{"gui": map[string]any{"env": map[string]any{
+				"PATH": "/user/bin:$RUNE_DATADIR/python/bin:$PATH",
+			}}},
+		},
+		{
+			name:      "gui.env.PATH respells old chunk and prompts for the new one",
+			pkgConfig: "gui:\n  env:\n    PATH: $RUNE_DATADIR/go/bin:$RUNE_DATADIR/python/bin:$PATH\n",
+			userCfg: map[string]any{"gui": map[string]any{"env": map[string]any{
+				"PATH": "/data/python/bin:$PATH",
+			}}},
+			version:    "1",
+			wantPrompt: true,
+			wantConflict: map[string]any{"gui": map[string]any{"env": map[string]any{
+				"PATH": "$RUNE_DATADIR/go/bin:$RUNE_DATADIR/python/bin:$PATH",
+			}}},
 		},
 		{
 			name:      "extension path using data directory variable does not prompt",
@@ -385,11 +475,12 @@ func TestMergePathValue(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		userPath    string
-		pkgPath     string
-		want        string
-		wantChanged bool
+		name          string
+		userPath      string
+		pkgPath       string
+		want          string
+		wantChanged   bool
+		wantRespelled bool
 	}{
 		{
 			name:        "new chunk prepended before user value",
@@ -426,13 +517,48 @@ func TestMergePathValue(t *testing.T) {
 			want:        "A:$PATH",
 			wantChanged: false,
 		},
+		{
+			name:          "expanded data directory chunk respelled in place",
+			userPath:      "A:/data/bin:$PATH",
+			pkgPath:       "$RUNE_DATADIR/bin:$PATH",
+			want:          "A:$RUNE_DATADIR/bin:$PATH",
+			wantRespelled: true,
+		},
+		{
+			name:          "respelled and added together",
+			userPath:      "/data/bin:$PATH",
+			pkgPath:       "$RUNE_DATADIR/go/bin:${RUNE_DATADIR}/bin:$PATH",
+			want:          "$RUNE_DATADIR/go/bin:${RUNE_DATADIR}/bin:$PATH",
+			wantChanged:   true,
+			wantRespelled: true,
+		},
+		{
+			name:     "literal chunk already present is not respelled",
+			userPath: "$RUNE_DATADIR/bin:/data/bin:$PATH",
+			pkgPath:  "$RUNE_DATADIR/bin:$PATH",
+			want:     "$RUNE_DATADIR/bin:/data/bin:$PATH",
+		},
+		{
+			name:     "chunk the user spelled another way is present",
+			userPath: "/user/bin:${RUNE_DATADIR}/bin:$PATH",
+			pkgPath:  "$RUNE_DATADIR/bin:$PATH",
+			want:     "/user/bin:${RUNE_DATADIR}/bin:$PATH",
+		},
+		{
+			name:        "chunk under another data directory is added",
+			userPath:    "/other/bin:$PATH",
+			pkgPath:     "$RUNE_DATADIR/bin:$PATH",
+			want:        "$RUNE_DATADIR/bin:/other/bin:$PATH",
+			wantChanged: true,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got, changed := mergePathValue(tt.userPath, tt.pkgPath)
-			assert.Equal(t, tt.wantChanged, changed)
+			got, respelled, added := mergePathValue(tt.userPath, tt.pkgPath, "/data")
+			assert.Equal(t, tt.wantChanged, added)
+			assert.Equal(t, tt.wantRespelled, respelled)
 			assert.Equal(t, tt.want, got)
 		})
 	}
@@ -449,10 +575,6 @@ func normalizeYAML(t *testing.T, want map[string]any) map[string]any {
 	return normalizeIdePkgConfig(out).(map[string]any)
 }
 
-// TestVersionDependentByDecode asserts that diffing a real-version decode
-// against a sentinel-version decode marks exactly the leaves whose value
-// changed, mirroring the nesting, so .star overlays re-prompt on version
-// bumps identically to YAML (RUNE-225).
 func TestVersionDependentByDecode(t *testing.T) {
 	t.Parallel()
 

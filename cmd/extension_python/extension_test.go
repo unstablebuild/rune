@@ -18,6 +18,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -27,10 +29,13 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
+	"github.com/unstablebuild/rune-go-sdk/api/pkgapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"unstable.build/rune/internal/extension/langext"
+	"unstable.build/rune/internal/extension/langext/langexttest"
 )
 
 // bringUp is one run of the extension against a scripted executor, so
@@ -54,6 +59,14 @@ func runBringUp(
 	t *testing.T, dir string, storage storageapi.Service, wm *fakeWindowManager,
 ) bringUp {
 	t.Helper()
+	return runBringUpWith(t, dir, storage, wm, &langexttest.Installer{}, config.NopConfig())
+}
+
+func runBringUpWith(
+	t *testing.T, dir string, storage storageapi.Service, wm *fakeWindowManager,
+	inst *langexttest.Installer, cfg config.Config,
+) bringUp {
+	t.Helper()
 	dataDir := t.TempDir()
 	seedManagedFallback(t, dataDir)
 
@@ -70,8 +83,7 @@ func runBringUp(
 	ext := &pyExtension{}
 	require.NoError(t, ext.extendWorkspaceWith(context.Background(),
 		fs, ex, b.notify, b.lsp, &fakeEditor{},
-		fakeInstaller{fs: fs, root: dataDir},
-		config.NopConfig(), dataDir, storage, windows,
+		inst, cfg, dataDir, storage, windows,
 		func(textapi.CommandManual, textapi.REPLHandler) error { return nil },
 	))
 	return b
@@ -95,6 +107,125 @@ var (
 	}
 	dismissEvent = []term.Event{{Type: term.EventKey, Key: term.KeyEsc}}
 )
+
+func TestBringUpLooksUpPythonPackageOnlyWhenNeeded(t *testing.T) {
+	override := config.JSONFromMap(map[string]any{"command": "/opt/pyright --stdio"})
+	tests := []struct {
+		name    string
+		managed bool
+		cfg     config.Config
+		want    int
+	}{
+		{name: "managed needs uv, ty and ruff", managed: true, cfg: config.NopConfig(), want: 1},
+		{name: "unmanaged needs ty and ruff", managed: false, cfg: config.NopConfig(), want: 1},
+		{name: "managed with a command override needs uv", managed: true, cfg: override, want: 1},
+		{name: "unmanaged with a command override needs nothing", managed: false, cfg: override},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := newProjectDir(t)
+			storage := storagestub.NewInMemoryService()
+			require.NoError(t, newEnvSetting(storage).set(context.Background(), dirRoot(dir), tc.managed))
+			inst := &langexttest.Installer{}
+
+			runBringUpWith(t, dir, storage, nil, inst, tc.cfg).waitForInit(t)
+			assert.Equal(t, tc.want, inst.Lookups())
+		})
+	}
+}
+
+// pyTools is the lookup bring-up gets for a python package shipping files.
+func pyTools(t *testing.T, inst *langexttest.Installer) *langext.Tools {
+	return langext.NewInitializer(t.Context(), nil, nil, inst, langext.ProjectConfig{
+		LanguageID: "python", Tools: []string{"uv", "uvx", "ty", "ruff"},
+	}).Tools()
+}
+
+// fakeInstallRoot is the data directory the IDE resolved on the
+// workspace host, which differs from the extension's own for a remote
+// workspace.
+type fakeInstallRoot struct {
+	dir     string
+	err     error
+	relpath string
+}
+
+func (r *fakeInstallRoot) FindInstalledResource(_ context.Context, relpath string) (string, error) {
+	r.relpath = relpath
+	if r.err != nil {
+		return "", r.err
+	}
+	return r.dir, nil
+}
+
+func TestHostDataDir(t *testing.T) {
+	tests := []struct {
+		name string
+		root *fakeInstallRoot
+		want string
+	}{
+		{
+			name: "resolves the install root on the workspace host",
+			root: &fakeInstallRoot{dir: "/home/rune/.rune"},
+			want: "/home/rune/.rune",
+		},
+		{
+			name: "unresolvable root disables the shims",
+			root: &fakeInstallRoot{err: os.ErrNotExist},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, hostDataDir(t.Context(), tc.root))
+			assert.Equal(t, ".", tc.root.relpath)
+		})
+	}
+}
+
+// notInstalled is a python package the user declined to install, so
+// every tool comes from PATH.
+var notInstalled = &langexttest.Installer{Err: fmt.Errorf("python: %w", pkgapi.ErrNotInstalled)}
+
+func TestFindTool(t *testing.T) {
+	lookupErr := errors.New("rpc error: code = PermissionDenied")
+	tests := []struct {
+		name     string
+		inst     *langexttest.Installer
+		want     string
+		warnings []string
+	}{
+		{
+			name: "packaged",
+			inst: &langexttest.Installer{Files: []string{"/lib/python/bin/uv"}},
+			want: "/lib/python/bin/uv",
+		},
+		{
+			name: "package not installed falls back quietly",
+			inst: notInstalled,
+		},
+		{
+			name: "package without uv warns",
+			inst: &langexttest.Installer{Files: []string{"/lib/python/bin/ty"}},
+			warnings: []string{"Could not find uv in the python package: " +
+				"python/bin/uv: langext: tool not shipped by package. " +
+				"Using the uv on PATH instead."},
+		},
+		{
+			name: "failed lookup warns",
+			inst: &langexttest.Installer{Err: lookupErr},
+			warnings: []string{"Could not find uv in the python package: " +
+				"rpc error: code = PermissionDenied. Using the uv on PATH instead."},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			notify := newFakeNotifications()
+			got := findTool(t.Context(), pyTools(t, tc.inst), notify, "uv")
+			assert.Equal(t, tc.want, got)
+			assert.ElementsMatch(t, tc.warnings, notify.notifs)
+		})
+	}
+}
 
 func TestExtendWorkspaceEnvPolicy(t *testing.T) {
 	ctx := context.Background()

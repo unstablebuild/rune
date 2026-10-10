@@ -29,7 +29,7 @@ import (
 const completionLanguageID = "go"
 
 // CompletionPrefix returns the trailing Go identifier the completion
-// overlay must replace on accept. ideshell deletes this many runes
+// overlay must replace on accept. ideconsole deletes this many runes
 // before inserting the chosen candidate, so it has to be just the
 // partial member name at the cursor (e.g. "fmt.Pri" -> "Pri"), not the
 // whole whitespace-delimited token. A line ending in a non-identifier
@@ -85,7 +85,7 @@ func isSpace(b byte) bool {
 }
 
 // rejoinArgs reconstructs the raw Go fragment from the cmd/args split
-// ideshell performs on whitespace. Completion needs the full line so the
+// ideconsole performs on whitespace. Completion needs the full line so the
 // fragment ("buf.Wri") survives intact through gopls.
 func rejoinArgs(cmd string, args []string) string {
 	if len(args) == 0 {

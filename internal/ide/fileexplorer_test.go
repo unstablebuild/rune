@@ -199,9 +199,6 @@ func TestFileExplorerHandlerRenderAndInteraction(t *testing.T) {
 	}
 }
 
-// TestFileExplorerClickBelowTreeIsNoop asserts that clicking on an
-// empty row past the last tree entry resolves to no node and is a
-// safe no-op: nothing toggles, nothing opens, and no error fires.
 func TestFileExplorerClickBelowTreeIsNoop(t *testing.T) {
 	h, host := newTestFileExplorerHandler(t, map[string][]explorerMockEntry{
 		"/project": {
@@ -224,11 +221,6 @@ func TestFileExplorerClickBelowTreeIsNoop(t *testing.T) {
 	require.Empty(t, host.errs, "an empty-area click is not an error")
 }
 
-// TestFileExplorerClickDoesNotScroll asserts that clicking a visible
-// row in a scrolled tree opens/toggles that row without moving the
-// viewport. The editor runs with autoCenter on (as in production),
-// which would otherwise recenter the viewport on the click. Jerking
-// the scroll out from under the user on click is a poor experience.
 func TestFileExplorerClickDoesNotScroll(t *testing.T) {
 	files := make([]explorerMockEntry, 0, 40)
 	for i := range 40 {
@@ -266,10 +258,6 @@ func TestFileExplorerClickDoesNotScroll(t *testing.T) {
 		"the clicked row must be the one opened")
 }
 
-// TestFileExplorerClickDirToggleDoesNotScroll asserts that clicking a
-// visible directory row in a scrolled tree expands it without moving
-// the viewport, even with the editor's autoCenter enabled (as in
-// production).
 func TestFileExplorerClickDirToggleDoesNotScroll(t *testing.T) {
 	dirs := map[string][]explorerMockEntry{"/project": {}}
 	for i := range 40 {
@@ -300,10 +288,6 @@ func TestFileExplorerClickDirToggleDoesNotScroll(t *testing.T) {
 		"expanding a visible directory must not move the viewport")
 }
 
-// TestFileExplorerDragOpensOnlyInitialPress asserts that dragging the
-// left button across rows (press, then MouseLeft moves while held)
-// acts only on the initial press. Otherwise a drag would open or
-// toggle every node it passes over.
 func TestFileExplorerDragOpensOnlyInitialPress(t *testing.T) {
 	h, host := newTestFileExplorerHandler(t, map[string][]explorerMockEntry{
 		"/project": {
@@ -415,19 +399,6 @@ func TestFileExplorerHandlerRuntimeLikeDimensionsAndRender(t *testing.T) {
 	require.Equal(t, w+2, host.lastWidth)
 }
 
-// TestFileExplorerHandlerDimensionsForPrecommitConfig reproduces the
-// truncation bug reported against the file explorer where rendering
-// `.pre-commit-config.yaml` clipped the trailing `l`. The handler's
-// Dimensions() must report a width large enough to cover the icon,
-// the trailing space, the full filename, and the aux line-number bar
-// — otherwise the parent window sizes itself one cell too narrow and
-// the last filename character is dropped.
-//
-// The root cause was that leaf text handlers used cell.View.Columns()
-// for width — a count of cells, not the visual width — which
-// under-reports any row containing a wide-glyph (Nerd Font icons,
-// CJK). The file icon configured in production is a Nerd Font glyph
-// listed by graphemecluster as width 2.
 func TestFileExplorerHandlerDimensionsForPrecommitConfig(t *testing.T) {
 	const fileName = ".pre-commit-config.yaml"
 	// Use a width-2 Nerd Font glyph as the default file icon. The
@@ -528,12 +499,6 @@ func TestFileExplorerHandlerDimensionsForPrecommitConfig(t *testing.T) {
 	)
 }
 
-// TestFileExplorerConfirmMessageFormat verifies the prompt message
-// groups operations by type, uses markdown bold labels, and shows
-// paths relative to the workspace root. RENAME is used when the
-// source and destination share a parent directory; MOVE is used
-// when they have different parents (even if the basename also
-// changes).
 func TestFileExplorerConfirmMessageFormat(t *testing.T) {
 	h, _ := newTestFileExplorerHandler(t, map[string][]explorerMockEntry{
 		"/project": {{name: "a", isDir: true}, {name: "b", isDir: true}},
@@ -587,10 +552,6 @@ func TestFileExplorerConfirmMessageFormat(t *testing.T) {
 	}
 }
 
-// TestFileExplorerHandlerFSEventRefreshesWhenVisibleAndClean
-// asserts that an FS event arriving while the explorer is visible
-// with no pending buffer edits triggers an immediate refresh that
-// picks up the newly-created file.
 func TestFileExplorerHandlerFSEventRefreshesWhenVisibleAndClean(t *testing.T) {
 	dirs := map[string][]explorerMockEntry{
 		"/project": {{name: "a.go", isDir: false}},
@@ -613,11 +574,6 @@ func TestFileExplorerHandlerFSEventRefreshesWhenVisibleAndClean(t *testing.T) {
 	require.False(t, h.pendingRefresh)
 }
 
-// TestFileExplorerHandlerFSEventDefersWhilePending asserts that
-// an FS event arriving while the user has unflushed buffer edits
-// does not clobber those edits — it queues a refresh that is
-// replayed only after the user resolves the edits (flush or
-// close).
 func TestFileExplorerHandlerFSEventDefersWhilePending(t *testing.T) {
 	dirs := map[string][]explorerMockEntry{
 		"/project": {{name: "a.go", isDir: false}},
@@ -643,10 +599,6 @@ func TestFileExplorerHandlerFSEventDefersWhilePending(t *testing.T) {
 	require.NotContains(t, buf.String(), "b.go")
 }
 
-// TestFileExplorerHandlerOnWindowClosedReplaysPending asserts that
-// closing the explorer with a pending refresh discards unflushed
-// buffer edits and applies the deferred refresh so the next open
-// shows the up-to-date tree.
 func TestFileExplorerHandlerOnWindowClosedReplaysPending(t *testing.T) {
 	dirs := map[string][]explorerMockEntry{
 		"/project": {{name: "a.go", isDir: false}},
@@ -672,10 +624,6 @@ func TestFileExplorerHandlerOnWindowClosedReplaysPending(t *testing.T) {
 	require.NotContains(t, buf.String(), "typed.go")
 }
 
-// TestFileExplorerHandlerFSEventRefreshesWhenWindowClosed asserts
-// that when the explorer's window is closed (i.e. the explorer is
-// not visible to the user), an FS event refreshes the tree
-// immediately and discards any unflushed buffer edits.
 func TestFileExplorerHandlerFSEventRefreshesWhenWindowClosed(t *testing.T) {
 	dirs := map[string][]explorerMockEntry{
 		"/project": {{name: "a.go", isDir: false}},
@@ -891,9 +839,6 @@ func TestFileExplorerHandlerRefreshPreservesExpandedDirectories(t *testing.T) {
 	}
 }
 
-// TestFileExplorerHandlerFSEventOutsideRootIgnored asserts that
-// FS events for paths not strictly under the explorer's root
-// (including the root itself) do not trigger a refresh.
 func TestFileExplorerHandlerFSEventOutsideRootIgnored(t *testing.T) {
 	dirs := map[string][]explorerMockEntry{
 		"/project": {{name: "a.go", isDir: false}},
@@ -928,11 +873,6 @@ func cloneExplorerMockDirs(in map[string][]explorerMockEntry) map[string][]explo
 	return out
 }
 
-// TestFileExplorerEmptyWorkspaceIsVisible reproduces the "no size,
-// didn't show anything" report. A workspace with nothing to render
-// yields a zero-height, zero-width component, which the host would
-// turn into an invisible sliver. The handler must floor that into a
-// window the user can see and type the first entry into.
 func TestFileExplorerEmptyWorkspaceIsVisible(t *testing.T) {
 	h, host := newTestFileExplorerHandler(t, map[string][]explorerMockEntry{
 		"/project": {},
@@ -950,10 +890,6 @@ func TestFileExplorerEmptyWorkspaceIsVisible(t *testing.T) {
 	require.GreaterOrEqual(t, host.lastWidth, h.cfg.MinWidth)
 }
 
-// TestFileExplorerEnterOnUnsavedRowReportsError covers the "I can't do
-// anything with it" half of the pasted-row report: a row the user
-// typed has no node identity yet, so <enter> resolves to nothing.
-// Silently swallowing it leaves the user stuck; say why instead.
 func TestFileExplorerEnterOnUnsavedRowReportsError(t *testing.T) {
 	h, host := newTestFileExplorerHandler(t, map[string][]explorerMockEntry{
 		"/project": {{name: "main.go", isDir: false}},
@@ -972,9 +908,6 @@ func TestFileExplorerEnterOnUnsavedRowReportsError(t *testing.T) {
 	require.Contains(t, host.errs[0].Error(), "unsaved row")
 }
 
-// TestFileExplorerReadOnlyRefusesEdits verifies that read-only mode
-// refuses buffer mutations outright and refuses writes, while leaving
-// navigation, expansion and opening intact.
 func TestFileExplorerReadOnlyRefusesEdits(t *testing.T) {
 	h, host := newTestFileExplorerHandler(t, map[string][]explorerMockEntry{
 		"/project": {
@@ -1012,9 +945,6 @@ func TestFileExplorerReadOnlyRefusesEdits(t *testing.T) {
 	require.Empty(t, host.errs)
 }
 
-// TestFileExplorerReadOnlyUnlocksWithShiftEsc verifies the hint row
-// names the way out of read-only, that <shift-esc> takes it, and that
-// closing the explorer re-arms the configured default.
 func TestFileExplorerReadOnlyUnlocksWithShiftEsc(t *testing.T) {
 	h, host := newTestFileExplorerHandler(t, map[string][]explorerMockEntry{
 		"/project": {{name: "main.go", isDir: false}},
@@ -1040,9 +970,6 @@ func TestFileExplorerReadOnlyUnlocksWithShiftEsc(t *testing.T) {
 	require.True(t, h.readOnly, "closing re-arms the configured default")
 }
 
-// TestFileExplorerUnboundSaveKeyHidesHint verifies that an unbound
-// `write` drops the hint instead of naming the command prompt
-// ("save <shift-;> write"), and gives the row back to the tree.
 func TestFileExplorerUnboundSaveKeyHidesHint(t *testing.T) {
 	h, _ := newTestFileExplorerHandler(t, map[string][]explorerMockEntry{
 		"/project": {{name: "main.go", isDir: false}},
@@ -1062,9 +989,6 @@ func TestFileExplorerUnboundSaveKeyHidesHint(t *testing.T) {
 		"the hint row only exists when there is something to say")
 }
 
-// TestFileExplorerUnlockDropsHintWithoutSaveKey covers the transition
-// the two other hint tests do not: locked with no `write` binding
-// shows the unlock hint, and unlocking then leaves nothing to show.
 func TestFileExplorerUnlockDropsHintWithoutSaveKey(t *testing.T) {
 	h, _ := newTestFileExplorerHandler(t, map[string][]explorerMockEntry{
 		"/project": {{name: "main.go", isDir: false}},
@@ -1082,9 +1006,6 @@ func TestFileExplorerUnlockDropsHintWithoutSaveKey(t *testing.T) {
 		"unlocking hands the hint row back to the tree")
 }
 
-// TestFileExplorerEnterInInsertModeIsNewline verifies that once a
-// modal editor leaves normal mode, <enter> keeps its text meaning in
-// an editable explorer instead of expanding the row under the cursor.
 func TestFileExplorerEnterInInsertModeIsNewline(t *testing.T) {
 	h, host := newTestFileExplorerHandler(t, map[string][]explorerMockEntry{
 		"/project":     {{name: "src", isDir: true}},
@@ -1105,9 +1026,6 @@ func TestFileExplorerEnterInInsertModeIsNewline(t *testing.T) {
 	require.True(t, h.ed.IsNormalMode())
 }
 
-// TestFileExplorerEnterLockedIgnoresEditorMode pins the lock as the
-// override: a modal user who pressed `i` on a locked explorer still
-// gets expand-or-open from <enter>, since nothing they type lands.
 func TestFileExplorerEnterLockedIgnoresEditorMode(t *testing.T) {
 	h, _ := newTestFileExplorerHandler(t, map[string][]explorerMockEntry{
 		"/project":     {{name: "src", isDir: true}},
@@ -1122,9 +1040,6 @@ func TestFileExplorerEnterLockedIgnoresEditorMode(t *testing.T) {
 	require.False(t, h.comp.HasPendingEdits())
 }
 
-// TestFileExplorerClickOnHintRowIsNoop guards the row reserved for the
-// hint: it sits past the tree, so a click there must not resolve to
-// the last node.
 func TestFileExplorerClickOnHintRowIsNoop(t *testing.T) {
 	h, host := newTestFileExplorerHandler(t, map[string][]explorerMockEntry{
 		"/project": {

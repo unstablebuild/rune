@@ -28,7 +28,7 @@ import (
 	"github.com/unstablebuild/blue/iterator"
 	"github.com/unstablebuild/blue/release"
 	"unstable.build/rune/internal/debug"
-	"unstable.build/rune/internal/ide/pkgtrust"
+	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
 )
 
 // ReleaseManager is a release.Manager for testing idepkg.Manager.

@@ -25,6 +25,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	tterm "unstable.build/rune/internal/term"
 	"unstable.build/rune/internal/term/gui/font"
 )
 
@@ -376,11 +377,31 @@ func TestMouseEvents(t *testing.T) {
 					assert.Empty(t, events, i)
 				} else {
 					require.Len(t, events, 1, i)
+					// Every event carries the pointer's position inside
+					// the reported cell so consumers can snap to cell
+					// edges; the payload is checked separately from the
+					// cell coordinates.
+					frac, ok := tterm.SubCellFractionFromContext(events[0].Context)
+					require.True(t, ok, i)
+					assert.InDelta(t, expectedFracX(t, test.cursorPosition[i], mouse), frac.X, 1e-9, i)
+					events[0].Context = nil
 					assert.Equal(t, expectedEvent, events[0], i)
 				}
 			}
 		})
 	}
+}
+
+// expectedFracX recomputes the in-cell fraction processMouse should attach
+// for a cursor pixel: the pointer's distance from the reported cell's left
+// edge over the cell pitch, with the same window clamp the event position
+// gets.
+func expectedFracX(t *testing.T, cursor image.Point, m *mouse) float64 {
+	t.Helper()
+	pitch := m.fontManager.PixelX(1)
+	px := min(max(float64(cursor.X), 0), pitch*float64(m.width)-1)
+	cell := m.clampedCoordinates().X
+	return (px - m.fontManager.PixelX(cell)) / pitch
 }
 
 func TestProcessMouseClampsToResizedBounds(t *testing.T) {
@@ -418,6 +439,33 @@ func TestCalculateCoordinatesNegativePixelsStayNegative(t *testing.T) {
 	got := mouse.calculateCoordinates()
 	assert.Negative(t, got.X, "clamping is the caller's responsibility, not calculateCoordinates")
 	assert.Negative(t, got.Y)
+}
+
+func TestSubCellFractionReportsPositionInsideCell(t *testing.T) {
+	_, mouse := newTestMouse(t)
+	pitch := mouse.fontManager.PixelX(1)
+
+	suite := []struct {
+		description string
+		x           float64
+		wantX       float64
+	}{
+		{"cell's left edge", pitch * 3, 0},
+		{"cell's midpoint", pitch*3 + pitch/2, .5},
+		{"just before the next cell", pitch*4 - 1, (pitch - 1) / pitch},
+		{"past the window's right edge", pitch * float64(mouse.width) * 2, (pitch - 1) / pitch},
+		{"past the window's left edge", -pitch * 2, 0},
+	}
+	for _, test := range suite {
+		t.Run(test.description, func(t *testing.T) {
+			mouse.state.x = int(test.x)
+			pos := mouse.clampedCoordinates()
+			frac := mouse.subCellFraction(pos)
+			// state.x is a whole pixel, so the fraction can sit a
+			// pixel off the ideal position.
+			assert.InDelta(t, test.wantX, frac.X, 1.0/pitch)
+		})
+	}
 }
 
 func TestResizeUpdatesClampBounds(t *testing.T) {
@@ -500,9 +548,6 @@ func TestMouseWheelMultiplierEmitsMultipleLines(t *testing.T) {
 	}
 }
 
-// TestMouseWheelLineCounts exercises the accumulator's truncation and remainder
-// arithmetic across multipliers and deltas, including fractional multipliers and
-// sign reversals, where off-by-one and rounding faults would surface.
 func TestMouseWheelLineCounts(t *testing.T) {
 	suite := []struct {
 		description   string
@@ -538,9 +583,6 @@ func TestMouseWheelLineCounts(t *testing.T) {
 	}
 }
 
-// TestMouseWheelRemainderCarriesAcrossGestures verifies that the fractional
-// remainder accumulates across many frames and eventually crosses a line,
-// rather than being discarded each frame.
 func TestMouseWheelRemainderCarriesAcrossGestures(t *testing.T) {
 	mock, mouse := newTestMouse(t)
 	mouse.multiplier = 1
@@ -555,9 +597,6 @@ func TestMouseWheelRemainderCarriesAcrossGestures(t *testing.T) {
 	assert.InDelta(t, 0.5, mouse.accumY, 1e-9)
 }
 
-// TestMouseWheelSignReversalCancelsRemainder verifies that a positive remainder
-// is correctly cancelled by a subsequent negative delta within the same
-// accumulator, so direction changes do not produce phantom events.
 func TestMouseWheelSignReversalCancelsRemainder(t *testing.T) {
 	mock, mouse := newTestMouse(t)
 	mouse.multiplier = 1
@@ -571,9 +610,6 @@ func TestMouseWheelSignReversalCancelsRemainder(t *testing.T) {
 	assert.InDelta(t, 0.0, mouse.accumY, 1e-9)
 }
 
-// TestMouseWheelRemainderSurvivesNonWheelFrames verifies that an intervening
-// frame without wheel movement (e.g. a button press) does not reset the
-// accumulated scroll remainder.
 func TestMouseWheelRemainderSurvivesNonWheelFrames(t *testing.T) {
 	mock, mouse := newTestMouse(t)
 	mouse.multiplier = 1
@@ -598,8 +634,6 @@ func TestMouseWheelRemainderSurvivesNonWheelFrames(t *testing.T) {
 	assert.InDelta(t, 0.1, mouse.accumY, 1e-9)
 }
 
-// TestMouseWheelCoordinatesAreClamped verifies that emitted wheel events carry
-// the clamped cursor cell position, even when scrolling occurs off-window.
 func TestMouseWheelCoordinatesAreClamped(t *testing.T) {
 	mock, mouse := newTestMouse(t)
 	mouse.multiplier = 1
@@ -612,9 +646,6 @@ func TestMouseWheelCoordinatesAreClamped(t *testing.T) {
 	assert.Equal(t, 27, events[0].MouseY)
 }
 
-// TestMouseWheelDoesNotPanicOnPathologicalDeltas guards the wheelEvents slice
-// allocation against non-finite and absurdly large deltas, which would
-// otherwise overflow the line count and panic in makeslice.
 func TestMouseWheelDoesNotPanicOnPathologicalDeltas(t *testing.T) {
 	suite := []struct {
 		description string
@@ -644,8 +675,6 @@ func TestMouseWheelDoesNotPanicOnPathologicalDeltas(t *testing.T) {
 	}
 }
 
-// TestMouseWheelCapsLinesPerFrame verifies the per-frame line cap bounds the
-// slice allocation for very large but finite deltas.
 func TestMouseWheelCapsLinesPerFrame(t *testing.T) {
 	mock, mouse := newTestMouse(t)
 	mouse.multiplier = 1
@@ -658,9 +687,6 @@ func TestMouseWheelCapsLinesPerFrame(t *testing.T) {
 	}
 }
 
-// TestMouseWheelRecoversAfterNonFiniteDelta verifies that a NaN/Inf delta does
-// not permanently poison the accumulator: a subsequent finite gesture must
-// still produce events.
 func TestMouseWheelRecoversAfterNonFiniteDelta(t *testing.T) {
 	for _, bad := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
 		mock, mouse := newTestMouse(t)
@@ -677,16 +703,11 @@ func TestMouseWheelRecoversAfterNonFiniteDelta(t *testing.T) {
 	}
 }
 
-// TestNewMouseDefaultMultiplier documents the default scroll multiplier so a
-// change to the constant is a deliberate, test-visible decision.
 func TestNewMouseDefaultMultiplier(t *testing.T) {
 	_, mouse := newTestMouse(t)
 	assert.Equal(t, float64(defaultScrollMultiplier), mouse.multiplier)
 }
 
-// TestWithScrollMultiplierIgnoresNonPositive verifies the option guard: values
-// <= 0 are ignored so a zero or negative config never disables scrolling or
-// inverts it.
 func TestWithScrollMultiplierIgnoresNonPositive(t *testing.T) {
 	suite := []struct {
 		description string

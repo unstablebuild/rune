@@ -53,13 +53,6 @@ type sshConfig struct {
 	// skipped, those failures will instead manifest as a less-helpful
 	// startup error from the rune worker itself.
 	skipPreflight bool
-	// provisionPackages controls whether the local IDE mirrors its
-	// in-use toolchain packages onto the remote `rune -x` server (the
-	// `--install` manifest) before it starts serving. Defaults to true;
-	// set to false to skip provisioning entirely, e.g. when the remote
-	// already has a managed toolchain or when installs are unwanted on
-	// the connect critical path.
-	provisionPackages bool
 	// strictHostKeyChecking controls how unknown or changed host keys are
 	// handled. Defaults to true, matching OpenSSH's `ask` semantics: an
 	// unknown host prompts trust-on-first-use and a changed key prompts a
@@ -102,10 +95,6 @@ func fromConfig(cfg config.Config) (ret sshConfig, retErr error) {
 	if err != nil && err != config.ErrNotFound {
 		retErr = multierr.Append(retErr, err)
 	}
-	provisionPackages, err := getProvisionPackages(cfg)
-	if err != nil && err != config.ErrNotFound {
-		retErr = multierr.Append(retErr, err)
-	}
 	strictHostKeyChecking, err := getStrictHostKeyChecking(cfg)
 	if err != nil && err != config.ErrNotFound {
 		retErr = multierr.Append(retErr, err)
@@ -123,22 +112,8 @@ func fromConfig(cfg config.Config) (ret sshConfig, retErr error) {
 	ret.kbdInteractive = kbdInteractive
 	ret.knownHostsPath = knownHosts
 	ret.skipPreflight = skipPreflight
-	ret.provisionPackages = provisionPackages
 	ret.strictHostKeyChecking = strictHostKeyChecking
 	return
-}
-
-// getProvisionPackages reads workspace.ssh.provision_packages, defaulting to
-// true when unset so remote toolchain provisioning is on out of the box.
-func getProvisionPackages(cfg config.Config) (bool, error) {
-	v, err := cfg.GetBool("provision_packages")
-	if err == config.ErrNotFound {
-		return true, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return v, nil
 }
 
 // getStrictHostKeyChecking reads workspace.ssh.strict_host_key_checking,

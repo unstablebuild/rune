@@ -177,8 +177,6 @@ func TestReviewWorkingTree(t *testing.T) {
 	}
 }
 
-// TestReviewWorkingTreeE2E drives /reviewall the way the command does:
-// a real repository, the real git service, and the shared renderer.
 func TestReviewWorkingTreeE2E(t *testing.T) {
 	dir := t.TempDir()
 	write := func(rel, content string) {

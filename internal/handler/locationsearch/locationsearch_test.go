@@ -104,12 +104,6 @@ func TestHandlerCloseClosesInner(t *testing.T) {
 	require.NoError(t, h.Close())
 }
 
-// TestHandlerGitGrepIntegration drives the locationsearch handler
-// against a real `git grep -n --column` process running in a
-// throw-away git repo. It validates that the parser handles the
-// `path:line:col:matched-content` format git grep emits and that the
-// preview pane loads the actual file contents through the workspace
-// FileSystem.
 func TestHandlerGitGrepIntegration(t *testing.T) {
 	requireGit(t)
 	dir := newGitRepo(t, fileContent{
@@ -133,10 +127,6 @@ func TestHandlerGitGrepIntegration(t *testing.T) {
 	})
 }
 
-// TestHandlerGrepAlias drives the handler with the shell expansion of
-// the `:grep` alias (`grep -n -R $1`). The list entries are
-// `path:line:matched-content` (no column), so the preview should load
-// the file but leave the target line unhighlighted.
 func TestHandlerGrepAlias(t *testing.T) {
 	requireExec(t, "grep")
 	dir := newWorkspaceDir(t, fileContent{
@@ -162,12 +152,6 @@ func TestHandlerGrepAlias(t *testing.T) {
 		"grep alias has no column, target line must not be highlighted")
 }
 
-// TestHandlerTodoGrepAlias drives the handler with the shell expansion
-// of the `:todogrep` alias (`grep -n -R -E (TODO|FIXME)`) against a
-// repo containing both kinds of markers. It validates that the list
-// contains every match and that typing a fuzzy-search query narrows
-// the list to a single matching entry, which becomes the new
-// preview target.
 func TestHandlerTodoGrepAlias(t *testing.T) {
 	requireExec(t, "grep")
 	dir := newWorkspaceDir(t, fileContent{
@@ -204,12 +188,6 @@ func TestHandlerTodoGrepAlias(t *testing.T) {
 	assert.Equal(t, "./a.go:3:FIXME second", sel)
 }
 
-// TestHandlerConflictsAlias drives the handler with the shell
-// expansion of the `:conflicts` alias against a file containing real
-// merge-conflict markers. The alias uses ERE alternation so every
-// git implementation lists the same three markers; with BRE `\|`
-// Apple's git dropped the `^=======$` branch while GNU's kept it.
-// Each entry includes a column, so the target line is highlighted.
 func TestHandlerConflictsAlias(t *testing.T) {
 	requireGit(t)
 	const content = "before\n" +
@@ -244,14 +222,6 @@ func TestHandlerConflictsAlias(t *testing.T) {
 		"conflicts alias includes a column, target line must be highlighted")
 }
 
-// TestHandlerGitChangesAlias drives the handler with the shell
-// expansion of the `:gitchanges` alias against a real git repo
-// containing both an in-place edit (one hunk in the middle of a
-// committed file) and a brand-new file (one hunk starting at line
-// 1). The awk script reads `git diff -U0` from a sub-pipe, so the
-// finder spawns one process whose stdout already contains the
-// hunk locations. Each entry carries column 1, so the target line
-// is visually highlighted in the preview.
 func TestHandlerGitChangesAlias(t *testing.T) {
 	requireGit(t)
 	requireExec(t, "awk")
@@ -397,10 +367,6 @@ func TestHandlerDimensions(t *testing.T) {
 	assert.Equal(t, defaultMaxListHeight+defaultPreviewContextLines+defaultSeparatorHeight, ht)
 }
 
-// TestHandlerHighlightTargetLine asserts the preview only highlights
-// the target line when the input location specifies a column. Without
-// a column the target line defaults to the first line of the file
-// and a reverse-video bar would be misleading.
 func TestHandlerHighlightTargetLine(t *testing.T) {
 	fc := fileContent{"/a.go": "alpha\nbeta\ngamma"}
 	h := newTestHandler(t, "echo 'a.go:2'", fc, nil)
@@ -419,13 +385,6 @@ func TestHandlerHighlightTargetLine(t *testing.T) {
 		"with column => target line should be visually highlighted")
 }
 
-// TestHandlerScanSpinnerAnimates asserts that while the inner
-// finder is still scanning, Draw renders a component.Animation
-// frame in the freed top-right cell (innerW-1) on the search-bar
-// row, and that the inner finder is rendered into the remaining
-// width-1 columns so its match-counter does not overlap the
-// spinner. Once the scan completes the spinner cell becomes blank
-// and the inner finder reclaims the full width on the next render.
 func TestHandlerScanSpinnerAnimates(t *testing.T) {
 	requireExec(t, "sh")
 	requireExec(t, "sleep")

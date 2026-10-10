@@ -186,12 +186,13 @@ All of these are empty when nothing is focused or when the focused tab is not a 
 | `$WORKSPACE_HASH` | A short, stable hex digest of the workspace's URI. Two workspaces sharing a basename (for example a local repo and a remote checkout of the same project) produce distinct hashes so derived paths do not collide. |
 | `$WORKSPACE_URI` | Full URI of the focused workspace. |
 | `$WORKSPACE_PATH` | Path portion of `$WORKSPACE_URI`. |
+| `$RUNE_DATADIR` | The Rune data directory (by default `~/.rune`) on the machine that hosts the focused workspace, which is the remote machine for a remote workspace. |
 
 Every workspace variable resolves for every supported workspace type. Commands dispatched through an alias run inside the workspace's own filesystem, whether that workspace is local or remote over SSH, so the workspace URI is a meaningful identifier in all cases. A `worktreenew` alias keyed on `$RUNE_DATADIR/worktrees/$WORKSPACE-$WORKSPACE_HASH/$1` does the right thing whether you triggered it from a local repo or from a workspace mounted over SSH.
 
 ### Environment fallback
 
-Any `$VAR` that Rune does not recognise falls through to the process environment, so `$HOME`, `$SHELL`, `$RUNE_DATADIR`, and any other exported variable resolve as expected.
+Any `$VAR` that Rune does not recognise falls through to the process environment, so `$HOME`, `$SHELL`, and any other exported variable resolve as expected.
 
 ### Escaping
 
@@ -375,11 +376,27 @@ Captures behave like a small, per-alias scope:
 ### Inline expansion vs. shell expansion
 
 Rune expands the `$1`…`$9` positional arguments and any Rune builtin or environment variable in
-the `!`/`!!` body *before* handing the line to the shell interpreter. Each substituted value is
-shell-quoted, so a positional argument that contains whitespace or shell metacharacters becomes
-a single field instead of being re-split. Names that Rune does not know are left in the body
-unchanged; the shell interpreter then resolves them against the host environment (or the chain
-captures from earlier steps).
+the `!`/`!!` body *before* handing the line to the shell interpreter. A substituted value always
+reaches the shell as plain text, never as code. Rune quotes it to match where it appears:
+unquoted, inside `"…"`, inside `'…'`, inside `$'…'`, in a here-document or inside backticks. A
+value with whitespace, quotes or shell metacharacters therefore stays a single field and is
+never run, even when it comes from a file, a link or the output of an earlier step. Names that
+Rune does not know are left in the body unchanged; the shell interpreter then resolves them
+against the host environment (or the chain captures from earlier steps).
+
+Some places in a shell line do not hold plain text, and Rune limits what it substitutes there:
+
+- Arithmetic, such as `$(( $1 + 1 ))`, `(( … ))`, `let` and the `-eq` family of `[[ … ]]`
+  tests, only takes non-negative integers.
+- `[[ -v … ]]` only takes a variable name.
+- Array subscripts, such as `list[$1]=x`, take no substituted value.
+- A here-document only takes values without control characters other than newlines and tabs,
+  and a here-document with a quoted delimiter also refuses backslashes.
+
+Rune refuses to run a step, and reports why, when its body is not valid shell syntax, when a
+value does not fit where it is substituted, or when substituting the values would change the
+commands, arguments, redirections or expansions of the body. A body that hands a value to a
+second shell, for example through `eval`, `sh -c` or `ssh`, must quote it again for that shell.
 
 You can defer expansion to the shell by escaping the dollar with `$$`:
 

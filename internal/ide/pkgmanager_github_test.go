@@ -33,9 +33,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/blue/release"
 	"github.com/unstablebuild/rune-go-sdk/handler/repl"
+	"unstable.build/rune/internal/ide/console/pkgconsole"
 	"unstable.build/rune/internal/ide/idepkg"
 	"unstable.build/rune/internal/ide/idepkg/idepkgtest"
-	"unstable.build/rune/internal/ide/pkgshell"
 )
 
 // gitFixtureCommit writes files into a fixture repo worktree and
@@ -97,24 +97,21 @@ func TestPkgManagerGitHubInstallFacade(t *testing.T) {
 	m := newTestWorkspaceManagerHandlerForPkgManager(t, rm, false, 0, ghURL)
 	defer m.Close()
 
-	h := pkgshell.New(pkgshell.Config{
-		Manager:       m.pkgmanager.pkg,
-		UpdateChecker: m.pkgmanager.uc,
-	})
+	h := pkgconsole.New(pkgconsole.Config{Manager: m.pkgmanager.pkg})
 	ctx := context.Background()
 
 	// install resolves HEAD as the latest version, clones, and installs
 	// the declared requirement from the official distribution first.
 	_, err := h.HandleCommand(ctx, repl.Command{
-		Name: pkgshell.CommandName,
+		Name: pkgconsole.CommandName,
 		Args: []string{"install", ghID},
 	}, repl.NopProgressWriter())
 	require.NoError(t, err)
 
-	version, ok := m.pkgmanager.pkg.PackageVersionInUse(ghID)
+	version, ok := pkgVersionInUse(t, m.pkgmanager.pkg, ghID)
 	require.True(t, ok)
 	assert.Equal(t, release.Version(sha[:12]), version)
-	_, ok = m.pkgmanager.pkg.PackageVersionInUse("six")
+	_, ok = pkgVersionInUse(t, m.pkgmanager.pkg, "six")
 	assert.True(t, ok, "requirement must be installed from the official distribution")
 
 	it, err := m.pkgmanager.LibDir(ctx, ghID)
@@ -135,7 +132,7 @@ func TestPkgManagerGitHubInstallFacade(t *testing.T) {
 	sha2 := gitFixtureCommit(t, repoDir, map[string]string{
 		"main.py": "print('v2')\n",
 	})
-	updates, err := m.pkgmanager.uc.CheckForUpdates(ctx)
+	updates, err := idepkg.CheckForUpdates(ctx, m.pkgmanager.pkg)
 	require.NoError(t, err)
 	require.Len(t, updates, 1)
 	assert.Equal(t, idepkg.Update{
@@ -146,10 +143,10 @@ func TestPkgManagerGitHubInstallFacade(t *testing.T) {
 
 	// remove cleans up through the shell
 	_, err = h.HandleCommand(ctx, repl.Command{
-		Name: pkgshell.CommandName,
+		Name: pkgconsole.CommandName,
 		Args: []string{"remove", ghID},
 	}, repl.NopProgressWriter())
 	require.NoError(t, err)
-	_, ok = m.pkgmanager.pkg.PackageVersionInUse(ghID)
+	_, ok = pkgVersionInUse(t, m.pkgmanager.pkg, ghID)
 	assert.False(t, ok)
 }

@@ -24,6 +24,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/blue/iterator"
 	"github.com/unstablebuild/blue/release"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
@@ -47,8 +48,7 @@ func TestCheckForUpdates(t *testing.T) {
 		err := m.InstallPackageVersion(context.Background(), "go", "1", repl.NopProgressWriter())
 		require.NoError(t, err)
 
-		uc := NewUpdateChecker(m)
-		updates, err := uc.CheckForUpdates(context.Background())
+		updates, err := CheckForUpdates(context.Background(), m)
 		require.NoError(t, err)
 		require.Len(t, updates, 1)
 		assert.Equal(t, "go", updates[0].Package)
@@ -67,8 +67,7 @@ func TestCheckForUpdates(t *testing.T) {
 		err := m.InstallPackageVersion(context.Background(), "go", "1", repl.NopProgressWriter())
 		require.NoError(t, err)
 
-		uc := NewUpdateChecker(m)
-		updates, err := uc.CheckForUpdates(context.Background())
+		updates, err := CheckForUpdates(context.Background(), m)
 		require.NoError(t, err)
 		assert.Empty(t, updates)
 	})
@@ -88,8 +87,7 @@ func TestCheckForUpdates(t *testing.T) {
 		err = m.InstallPackageVersion(context.Background(), "testpkg", "1", repl.NopProgressWriter())
 		require.NoError(t, err)
 
-		uc := NewUpdateChecker(m)
-		updates, err := uc.CheckForUpdates(context.Background())
+		updates, err := CheckForUpdates(context.Background(), m)
 		require.NoError(t, err)
 		require.Len(t, updates, 1)
 		assert.Equal(t, "go", updates[0].Package)
@@ -110,8 +108,7 @@ func TestCheckForUpdates(t *testing.T) {
 		err = m.InstallPackageVersion(context.Background(), "go", "2", repl.NopProgressWriter())
 		require.NoError(t, err)
 
-		uc := NewUpdateChecker(m)
-		updates, err := uc.CheckForUpdates(context.Background())
+		updates, err := CheckForUpdates(context.Background(), m)
 		require.NoError(t, err)
 		// should only return one update for "go", not two
 		require.Len(t, updates, 1)
@@ -131,11 +128,50 @@ func TestCheckForUpdates(t *testing.T) {
 
 		rm.ExpectReturnErr(auth.ErrNotAuthenticated)
 
-		uc := NewUpdateChecker(m)
-		_, err = uc.CheckForUpdates(context.Background())
+		_, err = CheckForUpdates(context.Background(), m)
 		require.Error(t, err)
 		assert.True(t, errors.Is(err, auth.ErrNotAuthenticated))
 	})
+
+	t.Run("checks any PackageManager", func(t *testing.T) {
+		t.Parallel()
+		pm := &inUsePackageManager{
+			installed: []string{"go", "six", "rust"},
+			inUse:     map[string]release.Version{"go": "1", "six": "2"},
+			latest:    map[string]release.Version{"go": "2", "six": "2", "rust": "9"},
+		}
+		updates, err := CheckForUpdates(context.Background(), pm)
+		require.NoError(t, err)
+		assert.Equal(t, []Update{{Package: "go", Current: "1", Latest: "2"}}, updates)
+	})
+}
+
+// inUsePackageManager implements only what CheckForUpdates may call; any
+// other method panics on the nil embedded interface.
+type inUsePackageManager struct {
+	PackageManager
+	installed []string
+	inUse     map[string]release.Version
+	latest    map[string]release.Version
+}
+
+func (f *inUsePackageManager) ListInstalledPackages(
+	context.Context,
+) (iterator.Iterator[string], error) {
+	return iterator.FromSlice(f.installed), nil
+}
+
+func (f *inUsePackageManager) PackageVersionInUse(
+	_ context.Context, pkgID string,
+) (release.Version, bool, error) {
+	v, ok := f.inUse[pkgID]
+	return v, ok, nil
+}
+
+func (f *inUsePackageManager) DescribePackage(
+	_ context.Context, pkgID string,
+) (release.Package, error) {
+	return release.Package{Name: pkgID, Latest: f.latest[pkgID]}, nil
 }
 
 func TestStart(t *testing.T) {
@@ -423,7 +459,7 @@ func TestUpdatePromptActions(t *testing.T) {
 
 		// The install runs off the event loop, so wait for it to land.
 		require.Eventually(t, func() bool {
-			inUse, ok := m.PackageVersionInUse("go")
+			inUse, ok := versionInUse(t, m, "go")
 			return ok && inUse == release.Version("2")
 		}, 10*time.Second, 10*time.Millisecond,
 			"Upgrade All should install and switch to the latest version")

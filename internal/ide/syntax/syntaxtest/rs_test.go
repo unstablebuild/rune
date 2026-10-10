@@ -31,6 +31,7 @@ import (
 	"unstable.build/rune/internal/cell"
 	"unstable.build/rune/internal/handler/handlertest"
 	"unstable.build/rune/internal/ide/syntax"
+	"unstable.build/rune/internal/ide/syntax/treesitter"
 	"unstable.build/rune/internal/text"
 )
 
@@ -413,21 +414,21 @@ func newRustEditFile(
 	return newEditFileName(t, mu, comp, content, strconv.Itoa(n)+".rs")
 }
 
-func newRustTree(t *testing.T, content string) (*syntax.Tree, func()) {
+func newRustTree(t *testing.T, content string) (*treesitter.Tree, func()) {
 	_, _, tree, cleanup := newRustTreeFull(t, newInstalledRustPkgManager(t), content)
 	return tree, cleanup
 }
 
 func newRustTreeWithPkgManager(
 	t *testing.T, pkgs syntax.PkgManager, content string,
-) (*syntax.Tree, func()) {
+) (*treesitter.Tree, func()) {
 	_, _, tree, cleanup := newRustTreeFull(t, pkgs, content)
 	return tree, cleanup
 }
 
 func newRustTreeFull(
 	t *testing.T, pkgs syntax.PkgManager, content string,
-) (*cell.Buffer, *text.Component, *syntax.Tree, func()) {
+) (*cell.Buffer, *text.Component, *treesitter.Tree, func()) {
 	var wg sync.WaitGroup
 	ready := func(context.Context) error { wg.Done(); return nil }
 	const width, height = 30, 15
@@ -441,7 +442,7 @@ func newRustTreeFull(
 
 	cref, ok := h.(*text.StatusBar)
 	require.True(t, ok)
-	tree, ok := cref.Buffer().View().(*syntax.Tree)
+	tree, ok := cref.Buffer().View().(*treesitter.Tree)
 	require.True(t, ok)
 
 	return cref.Buffer(), comp, tree, cleanup

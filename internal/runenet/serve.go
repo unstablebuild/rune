@@ -36,17 +36,44 @@ import (
 	tworkspacerpc "unstable.build/rune/internal/workspace/workspacerpc"
 )
 
-// WhoIs resolves a mesh address to the account that owns the machine
-// behind it. It is the authentication primitive the workspace server
-// authorizes against: the address cannot be spoofed because packets
-// only reach the listener after the WireGuard handshake succeeded.
-type WhoIs func(ctx context.Context, addr string) (login string, err error)
+// WhoIs resolves a mesh address to the machine behind it. It is the
+// authentication primitive the workspace server authorizes against: the
+// address cannot be spoofed because packets only reach the listener
+// after the WireGuard handshake succeeded.
+type WhoIs func(ctx context.Context, addr string) (Caller, error)
+
+// Caller is the machine behind a mesh address.
+type Caller struct {
+	// Login is the account the coordination server reports as the
+	// machine's owner. For a tagged machine it is a placeholder, not
+	// an account.
+	Login string
+	// Tags are the machine's ACL tags. Empty for a machine owned by
+	// an account.
+	Tags []string
+}
 
 // WorkspaceServer serves this machine's filesystem, processes and
 // terminals to authorized mesh peers.
 type WorkspaceServer struct {
 	grpcServer *grpc.Server
 	rpcServer  *tworkspacerpc.Server
+}
+
+// ServeOption configures ServeWorkspace.
+type ServeOption func(*serveOptions)
+
+type serveOptions struct {
+	register []func(grpc.ServiceRegistrar)
+}
+
+// WithServices registers more services next to the workspace's own,
+// behind the same authorization. The host's package manager is served
+// this way.
+func WithServices(register func(grpc.ServiceRegistrar)) ServeOption {
+	return func(o *serveOptions) {
+		o.register = append(o.register, register)
+	}
 }
 
 // ServeWorkspace starts serving scheme to mesh peers on the node's
@@ -58,8 +85,12 @@ type WorkspaceServer struct {
 // toolchains under the peer's actual install root rather than guessing
 // it from its own datadir. It must be an absolute path on this host.
 func ServeWorkspace(
-	node *Node, scheme schemeapi.Scheme, dataDir string,
+	node *Node, scheme schemeapi.Scheme, dataDir string, opts ...ServeOption,
 ) (*WorkspaceServer, error) {
+	var o serveOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
 	lis, err := node.Listen()
 	if err != nil {
 		return nil, fmt.Errorf("listen on network: %w", err)
@@ -78,6 +109,9 @@ func ServeWorkspace(
 	workspacerpc.RegisterExecutorServer(grpcServer, rpcServer)
 	workspacerpc.RegisterTerminalServer(grpcServer, rpcServer)
 	runenetpb.RegisterPeerInfoServer(grpcServer, peerInfoServer{dataDir: dataDir})
+	for _, register := range o.register {
+		register(grpcServer)
+	}
 
 	go debug.CapturePanicReport(func() {
 		if err := grpcServer.Serve(lis); err != nil {
@@ -108,20 +142,20 @@ func (s *WorkspaceServer) Close() error {
 	return s.rpcServer.Stop()
 }
 
-// WhoIs resolves a mesh address to the account owning that machine.
-func (n *Node) WhoIs(ctx context.Context, addr string) (string, error) {
+// WhoIs resolves a mesh address to the machine behind it.
+func (n *Node) WhoIs(ctx context.Context, addr string) (Caller, error) {
 	lc, err := n.client()
 	if err != nil {
-		return "", err
+		return Caller{}, err
 	}
 	who, err := lc.WhoIs(ctx, addr)
 	if err != nil {
-		return "", fmt.Errorf("whois %s: %w", addr, err)
+		return Caller{}, fmt.Errorf("whois %s: %w", addr, err)
 	}
-	if who.UserProfile == nil {
-		return "", fmt.Errorf("whois %s: no user profile", addr)
+	if who.UserProfile == nil || who.Node == nil {
+		return Caller{}, fmt.Errorf("whois %s: no user profile", addr)
 	}
-	return who.UserProfile.LoginName, nil
+	return Caller{Login: who.UserProfile.LoginName, Tags: who.Node.Tags}, nil
 }
 
 // LoginName is the account this node belongs to. It is empty until the
@@ -148,9 +182,12 @@ func (n *Node) LoginName(ctx context.Context) (string, error) {
 }
 
 // PeerAuthorizer rejects mesh requests coming from machines owned by a
-// different account. Sharing a tailnet is not enough: a shared or
-// tagged node belongs to someone else and must not read this machine's
-// files or run commands on it.
+// different account, and from every tagged machine. Sharing a tailnet
+// is not enough: a shared node belongs to someone else and must not
+// read this machine's files or run commands on it. A tagged machine is
+// a serve-only one, which the mesh policy already forbids from opening
+// connections; refusing it here keeps that true if the policy is ever
+// misapplied.
 type PeerAuthorizer struct {
 	whoIs WhoIs
 	self  func(context.Context) (string, error)
@@ -175,14 +212,20 @@ func (a *PeerAuthorizer) Authorize(ctx context.Context) error {
 		return status.Errorf(codes.Unavailable,
 			"could not resolve local network identity: %v", err)
 	}
-	login, err := a.whoIs(ctx, p.Addr.String())
+	caller, err := a.whoIs(ctx, p.Addr.String())
 	if err != nil {
 		return status.Errorf(codes.Unauthenticated,
 			"could not identify caller %s: %v", p.Addr, err)
 	}
-	if login != self {
+	if len(caller.Tags) > 0 {
 		log.WithField(logging.KeyClass, "runenet").
-			Warnf("rejected network request from %s owned by %q", p.Addr, login)
+			Warnf("rejected network request from %s tagged %v", p.Addr, caller.Tags)
+		return status.Errorf(codes.PermissionDenied,
+			"caller %s is a serve-only machine and cannot open workspaces", p.Addr)
+	}
+	if caller.Login != self {
+		log.WithField(logging.KeyClass, "runenet").
+			Warnf("rejected network request from %s owned by %q", p.Addr, caller.Login)
 		return status.Errorf(codes.PermissionDenied,
 			"caller %s is not owned by %s", p.Addr, self)
 	}

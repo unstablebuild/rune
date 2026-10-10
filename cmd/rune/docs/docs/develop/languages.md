@@ -150,8 +150,6 @@ time. The files worth understanding first are:
   which builds the LSP initialization request.
 - [`env.go`](https://github.com/unstablebuild/rune/blob/main/cmd/extension_python/env.go),
   which recognizes Python projects and prepares their environment.
-- [`lookup.go`](https://github.com/unstablebuild/rune/blob/main/cmd/extension_python/lookup.go),
-  which finds tools on the workspace host.
 - [`handler.go`](https://github.com/unstablebuild/rune/blob/main/cmd/extension_python/handler.go),
   which implements Python-specific console commands.
 
@@ -227,12 +225,13 @@ to combine two behaviors:
 Python wires those pieces together in a small block:
 
 ```go
-init := langext.NewInitializer(ctx, fs, editor, langext.ProjectConfig{
+init := langext.NewInitializer(ctx, fs, editor, inst, langext.ProjectConfig{
     LanguageID: "python",
     Markers:    pyMarkers,
     FileMatch:  isPythonFile,
-    InitRoot: func(ctx context.Context, root langext.Root) error {
-        return initializeProjectRoot(ctx, fs, exec, notify, lsp, inst, cfg, dataDir, root)
+    Tools:      []string{"uv", "uvx", "ty", "ruff"},
+    InitRoot: func(ctx context.Context, root langext.Root, tools *langext.Tools) error {
+        return initializeProjectRoot(ctx, fs, exec, notify, lsp, tools, cfg, dataDir, root)
     },
 })
 if err := init.Start(); err != nil {
@@ -242,8 +241,9 @@ if err := init.Start(); err != nil {
 
 See the complete code, including eager initialization of a root project, in
 [`extension.go`](https://github.com/unstablebuild/rune/blob/main/cmd/extension_python/extension.go#L107-L128).
-Replace `python`, `pyMarkers`, and `isPythonFile` with your language's values,
-then make `InitRoot` call your own bring-up function.
+Replace `python`, `pyMarkers`, `isPythonFile`, and the tools with your
+language's values, then make `InitRoot` call your own bring-up function.
+[Step 3](#3-prepare-the-project-for-its-language-server) covers `Tools`.
 
 `langext` is an internal helper for integrations built in the Rune repository.
 An extension maintained in another Go module cannot import it as public SDK. It
@@ -288,14 +288,63 @@ environment synchronization fails and still starts its language server, because
 partial analysis is better than no analysis. Make the same decision explicitly
 for your ecosystem: fail only when the server cannot do useful work.
 
-When the package includes the language server, its executable should be resolved through
-[`FindInstalledExecutable`](https://github.com/unstablebuild/rune-go-sdk/blob/main/api/extensionapi/workspace.go),
-as Python does in
-[`lookup.go`](https://github.com/unstablebuild/rune/blob/main/cmd/extension_python/lookup.go#L28-L58).
-Support a user-configured path when appropriate, then decide whether a missing
-packaged binary should fall back to the workspace host's `PATH`. Treat “not
-installed” differently from permission, filesystem, and network errors; those
-usually deserve a visible warning rather than a silent fallback.
+When your package ships the language server or other tools, list them in
+`ProjectConfig.Tools` and grant the extension `PermissionPackages`. `InitRoot`
+receives a `*langext.Tools`; `tools.Find(ctx, "name")` returns the tool's
+absolute path under `bin/` in the package named after `LanguageID`. The path is
+on the workspace host, which may not be the machine the extension runs on.
+
+The first `Find` looks the package up. If it is not installed on the workspace
+host, Rune asks the user whether to install it, and `Find` waits for their
+answer. Nothing is looked up until `Find`, so call it only when the tool is
+about to be used: check user-configured paths first and skip setup the user
+declined, as Python does with its `command` override and unmanaged
+environments. Otherwise a user who never needs your package is still asked to
+install it. Work outside a project root, such as a console command, can get the
+same lookup from `Tools` on the initializer.
+
+`Find` tells the extension why a tool is missing so it can decide what the
+user needs to hear:
+
+- `pkgapi.ErrNotInstalled`: the package ended up not installed, because the
+  user declined or it is not published for the host's platform. Rune has
+  already told the user why, so do not notify again.
+- `langext.ErrNotShipped`: the package is installed but lacks the tool, a
+  packaging defect worth a warning.
+- Anything else: the lookup itself failed, say because the host is unreachable
+  or the user denied the extension package access, and the tool was not
+  provisioned under the install root either. Warn with the error.
+
+Then decide whether the tool should fall back to the workspace host's `PATH`,
+as Go, Zig and Python do, or whether bring-up cannot proceed without it, as
+Rust does with its toolchain installer.
+
+An extension outside the Rune repository can do the same lookup with `LibDir`
+on
+[`Packages`](https://github.com/unstablebuild/rune-go-sdk/blob/main/api/extensionapi/workspace.go).
+It reports `pkgapi.ErrNotInstalled` when the package ends up not installed,
+which Rune has already explained to the user. Other errors, such as permission,
+filesystem, and network failures, usually deserve a visible warning rather
+than a silent fallback.
+
+Keep two directories apart. `DataDir` on the extension's
+[`Workspace`](https://github.com/unstablebuild/rune-go-sdk/blob/main/api/extensionapi/workspace.go)
+is on the machine the extension runs on: use it for the extension's own caches
+and state. Files your package installed are on the workspace host. Find them
+with `FindInstalledExecutable` for `bin/` and `FindInstalledResource` for
+anything else, both of which return paths on the workspace host. Do not join
+`DataDir` with a package path to reach an installed tool: in an SSH workspace
+that path names the wrong machine.
+
+The same applies to `$RUNE_DATADIR` in configuration. A `$RUNE_DATADIR` path
+that your package's config overlay writes into the extension's `config` block
+reaches the extension as written, because only the machine that uses it knows
+where its data directory is. Commands started through the workspace executor
+have `$RUNE_DATADIR` in their path, arguments and environment expanded on the
+workspace host, so such a value can be passed through as is. A path the
+extension resolves itself, for example to stat a file through the workspace
+filesystem, must be expanded against `InstallDir`, the data directory on the
+workspace host that Rune passes in the extension's startup `Config`.
 
 ## 4. Initialize the language server
 
@@ -493,6 +542,10 @@ Choose examples by semantics, not syntax:
 - [Zig](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/symbolresolve/zig.go#L27-L64)
   demonstrates `@import` aliases, field expressions, and methods declared in
   container types.
+- [TypeScript](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/symbolresolve/typescript.go#L26-L101)
+  demonstrates one language served by several specs (TypeScript, TSX, and
+  JavaScript), namespace and `require` imports, and re-exports from `index.*`
+  files.
 
 Add focused fixtures while writing the spec. Test imports with and without
 aliases, two symbols with the same name, nested modules, private declarations,
@@ -506,8 +559,9 @@ parser, the packaged syntax queries, and the real resolver specification. The
 [Go](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/symbolresolve/go_test.go),
 [Python](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/symbolresolve/py_test.go),
 [Rust](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/symbolresolve/rs_test.go),
+[Zig](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/symbolresolve/zig_test.go),
 and
-[Zig](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/symbolresolve/zig_test.go)
+[TypeScript](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/symbolresolve/ts_test.go)
 suites show the required structure. A passing language-server test does not
 replace this suite because Rune's indexer resolves these names independently of
 the language server.
@@ -532,15 +586,15 @@ adapter: set a breakpoint, launch a program, inspect stack frames and variables,
 and attach to an existing process when the adapter supports it.
 
 If the language supports debugging, add
-`internal/ide/ideshell/debugshell/<file-id>_test.go` and a deterministic program
-under `internal/ide/ideshell/debugshell/testdata/`. The test must use Rune's real
+`internal/ide/console/ideconsole/debugshell/<file-id>_test.go` and a deterministic program
+under `internal/ide/console/ideconsole/debugshell/testdata/`. The test must use Rune's real
 Debugger Manager, the supported debug adapter, the real compiler or interpreter,
 and the language's real syntax assets. Follow the
-[Go](https://github.com/unstablebuild/rune/blob/main/internal/ide/ideshell/debugshell/go_test.go),
-[Python](https://github.com/unstablebuild/rune/blob/main/internal/ide/ideshell/debugshell/py_test.go),
-[Rust](https://github.com/unstablebuild/rune/blob/main/internal/ide/ideshell/debugshell/rs_test.go),
+[Go](https://github.com/unstablebuild/rune/blob/main/internal/ide/console/ideconsole/debugshell/go_test.go),
+[Python](https://github.com/unstablebuild/rune/blob/main/internal/ide/console/ideconsole/debugshell/py_test.go),
+[Rust](https://github.com/unstablebuild/rune/blob/main/internal/ide/console/ideconsole/debugshell/rs_test.go),
 and
-[Zig](https://github.com/unstablebuild/rune/blob/main/internal/ide/ideshell/debugshell/zig_test.go)
+[Zig](https://github.com/unstablebuild/rune/blob/main/internal/ide/console/ideconsole/debugshell/zig_test.go)
 suites. These tests belong behind the `e2e` build tag because they launch real
 tools and speak the Debug Adapter Protocol through Rune's production path.
 
@@ -640,6 +694,13 @@ Native grammars, external scanners, language servers, debuggers, and toolchains
 may all have different cross-compilation requirements; successfully building the
 Go extension does not prove the package works on the target.
 
+Build `extension_<language>` with `CGO_ENABLED=0`. Without cgo the extension
+does not link against the build machine's C libraries, so one binary meets the
+platform floors in the [Prerequisites](../intro.md#prerequisites) and
+cross-compiles without a C toolchain. Rune's `make` builds every language
+extension this way and fails when one stops compiling without cgo, for example
+because it started importing a package that links Tree-sitter.
+
 Test the artifacts users will download, not only the staging directory. Inspect
 the final tarball and, when produced, the macOS notarization zip. Verify that
 required binaries and query files are present, executable permissions are
@@ -680,7 +741,7 @@ Each suite protects a different boundary:
 | `internal/ide/idelsp/<file-id>_test.go` | Rune can initialize and use the real supported LSP server, including the capabilities and server-specific options the extension advertises. | A buildable project in `internal/ide/idelsp/testdata/`. |
 | `internal/ide/syntax/syntaxtest/<file-id>_test.go` | Rune can load the real native grammar and packaged `.scm` queries and use them for highlighting, indentation, folds, definitions, references, scopes, and incremental edits. | A package-shaped syntax fixture plus representative valid and incomplete source. |
 | `internal/ide/idelsp/symbolresolve/<file-id>_test.go` | Rune's own indexer understands the language's modules, imports, aliases, methods, visibility, ambiguity, and re-exports. | A real multi-file project in `symbolresolve/testdata_<file-id>/`. |
-| `internal/ide/ideshell/debugshell/<file-id>_test.go` | Rune can launch or attach through the real debug adapter, set breakpoints, stop, inspect stack frames and variables, continue, and terminate. Required when debugging is supported. | A deterministic executable project in `debugshell/testdata/`. |
+| `internal/ide/console/ideconsole/debugshell/<file-id>_test.go` | Rune can launch or attach through the real debug adapter, set breakpoints, stop, inspect stack frames and variables, continue, and terminate. Required when debugging is supported. | A deterministic executable project in `debugshell/testdata/`. |
 
 The extension should also retain its own end-to-end suite, such as
 [Python's `cmd/extension_python/e2e_test.go`](https://github.com/unstablebuild/rune/blob/main/cmd/extension_python/e2e_test.go).

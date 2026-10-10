@@ -63,6 +63,18 @@ func TestDetectSpecs(t *testing.T) {
 			want:  []*symbolresolve.Spec{symbolresolve.Zig},
 		},
 		{
+			name:  "typescript, tsx and javascript",
+			files: []string{"src/main.ts", "src/App.tsx", "lib/util.cjs"},
+			want: []*symbolresolve.Spec{
+				symbolresolve.TypeScript, symbolresolve.TSX, symbolresolve.JavaScript,
+			},
+		},
+		{
+			name:  "declaration files alone select typescript",
+			files: []string{"types/index.d.ts"},
+			want:  []*symbolresolve.Spec{symbolresolve.TypeScript},
+		},
+		{
 			name:  "mixed go and python",
 			files: []string{"main.go", "app.py"},
 			want:  []*symbolresolve.Spec{symbolresolve.Go, symbolresolve.Python},
@@ -105,10 +117,6 @@ func TestDetectSpecs(t *testing.T) {
 	}
 }
 
-// TestDetectSpecsHonorsContextFilter verifies DetectSpecs respects a
-// walkdir.Filter installed on the context: source files that live only
-// inside excluded dependency/build directories (.venv, target) must not
-// trigger language detection, while real source under src/ still does.
 func TestDetectSpecsHonorsContextFilter(t *testing.T) {
 	t.Parallel()
 

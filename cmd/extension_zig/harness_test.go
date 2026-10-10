@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	iofs "io/fs"
 	"os"
@@ -40,6 +41,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
+	"unstable.build/rune/internal/extension/langext/langexttest"
 )
 
 // assertErr is a sentinel error scripted into the fake executor to
@@ -192,28 +194,6 @@ func (f *fakeFS) ReadDir(p string) ([]os.DirEntry, error) {
 		return f.entries, nil
 	}
 	return nil, &iofs.PathError{Op: "readdir", Path: p, Err: os.ErrNotExist}
-}
-
-// fakeInstaller mirrors extensionapi.Workspace.FindInstalledExecutable
-// against any FileSystem: it resolves <root>/bin/<name> and reports the
-// path only when it exists as a regular file.
-type fakeInstaller struct {
-	fs   workspaceapi.FileSystem
-	root string
-}
-
-func (i fakeInstaller) FindInstalledExecutable(
-	_ context.Context, name string,
-) (string, error) {
-	p := i.root + "/bin/" + name
-	info, err := i.fs.Stat(p)
-	if err != nil {
-		return "", err
-	}
-	if info == nil || info.IsDir() {
-		return "", os.ErrNotExist
-	}
-	return p, nil
 }
 
 // scriptedCmd records the stdout/stderr payload and exit error returned
@@ -572,7 +552,7 @@ func newFakeNotifications() *fakeNotifications {
 func (n *fakeNotifications) Notify(_ browserapi.NotificationLevel, msg string, args ...any) (string, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	n.notifs = append(n.notifs, msg)
+	n.notifs = append(n.notifs, fmt.Sprintf(msg, args...))
 	return "notif-1", nil
 }
 
@@ -676,7 +656,7 @@ type zigEnv struct {
 // prepared workspace directory dir, using a real FileSystem and Executor
 // rooted there with a fake LSP and Notifications, and returns the
 // resulting environment for assertions.
-func runZigExtensionOnDir(t *testing.T, dir, dataDir string, cfg config.Config) zigEnv {
+func runZigExtensionOnDir(t *testing.T, dir string, cfg config.Config) zigEnv {
 	t.Helper()
 	lsp := &captureLSP{}
 	notify := newFakeNotifications()
@@ -691,7 +671,7 @@ func runZigExtensionOnDir(t *testing.T, dir, dataDir string, cfg config.Config) 
 		lsp,
 		editor,
 		&fakeWM{},
-		fakeInstaller{fs: realFS{root: dir}, root: dataDir},
+		&langexttest.Installer{},
 		cfg,
 		func(m textapi.CommandManual, _ textapi.REPLHandler) error {
 			env.manuals = append(env.manuals, m)

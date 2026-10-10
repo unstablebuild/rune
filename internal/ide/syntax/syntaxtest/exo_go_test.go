@@ -34,29 +34,13 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/ide/syntax"
+	"unstable.build/rune/internal/ide/syntax/treesitter"
 	"unstable.build/rune/internal/term/vte"
 	"unstable.build/rune/internal/text"
 	"unstable.build/rune/internal/text/exoeditor"
 	"unstable.build/rune/internal/workspace"
 )
 
-// TestExoSyntaxHighlightsOverlayScrolling drives the full
-// exo → vte → real-vim pipeline against a real Go file. text.Component
-// installs the tree-sitter syntax tree which calls SetLocationList on
-// the exo handler; Draw then overlays those locations on top of vim's
-// rendered output. The test verifies that the overlay tracks the
-// embedded editor as the cursor scrolls through the file.
-//
-// term.StringWriter with ForegroundCh = '#' renders every cell that
-// carries a non-default foreground attribute as '#': the location
-// overlay sets such an attribute, so every '#' in the rendered frame
-// corresponds to a Rune-managed highlight cell. Cells the embedded
-// editor renders without an overlay show their literal rune (vim's
-// own attributes are stripped by ignoreAttrWriter under
-// experimental_highlights=true).
-//
-// Skips when the local machine has no vim binary or no Go tree-sitter
-// grammar artefacts.
 func TestExoSyntaxHighlightsOverlayScrolling(t *testing.T) {
 	if _, err := exec.LookPath("vim"); err != nil {
 		t.Skip("vim binary not available")
@@ -245,6 +229,7 @@ func newExoGoTestComponent(
 	tcfg := text.DefaultConfig()
 	tcfg.ScheduleNextTick = schedule
 	tcfg.Syntax = syntaxCfg
+	tcfg.SyntaxTree = treesitter.New
 	tcfg.PkgManager = pkgs
 	tcfg.EventPublisher = func(term.Event) bool { return true }
 

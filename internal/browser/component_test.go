@@ -340,10 +340,6 @@ func TestWindowFocusTabIconCueFollowsFocus(t *testing.T) {
 	assert.Equal(t, expectedFocusTabAttr, cells[7].Attributes())
 }
 
-// TestSetTabIconAttr pins that a tab's icon attribute override is
-// layered over the focus-driven icon attributes the tab bar re-applies
-// on every redraw: it survives focus changes, colors it leaves unset
-// keep the configured ones, and it never leaks to other tabs.
 func TestSetTabIconAttr(t *testing.T) {
 	const offset = term.AttrNegativeVerticalRenderOffset
 	focusIconAttr := term.Attributes{Bg: term.ColorGreen, Attrs: term.AttrBold}
@@ -455,10 +451,6 @@ func TestSetTabIconAttr(t *testing.T) {
 	}
 }
 
-// TestNewTabHonorsTabOverrideIcon verifies that when
-// Config.TabOverrideIcon is set, every tab icon rendered in the tab
-// bar uses that single rune regardless of the icon argument passed to
-// NewTab.
 func TestNewTabHonorsTabOverrideIcon(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Frame = false
@@ -491,10 +483,6 @@ func TestNewTabHonorsTabOverrideIcon(t *testing.T) {
 	assert.Equal(t, 'b', cells[7].Ch)
 }
 
-// TestWindowFocusTabHighlightCueFollowsFocus verifies that when multiple
-// tabs are bound to different tiles, only the focused window's tab
-// renders the focus-frame highlight; switching window focus moves the
-// highlight to the newly focused tab.
 func TestWindowFocusTabHighlightCueFollowsFocus(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Frame = false
@@ -549,9 +537,6 @@ func TestWindowFocusTabHighlightCueFollowsFocus(t *testing.T) {
 	}
 }
 
-// TestTabClickFocusesOwningWindow verifies that clicking a tab bound to
-// a non-focused window switches focus to that window (instead of
-// returning ErrTabNotFree silently).
 func TestTabClickFocusesOwningWindow(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Frame = false
@@ -598,12 +583,6 @@ func TestTabClickFocusesOwningWindow(t *testing.T) {
 	}
 }
 
-// TestSplitAlreadyBoundTabFocusesOwningWindow reproduces RUNE-236's
-// sibling crash: `runectl wm split <focus> <file>` with the file already
-// open resolves to the existing, already-bound *Tab. Binding that one
-// tab to a second window corrupts the tab/window bookkeeping and later
-// panics in Draw when the tab is removed. Split must instead focus the
-// window already showing the tab, like the tab-click path.
 func TestSplitAlreadyBoundTabFocusesOwningWindow(t *testing.T) {
 	b := NewComponent(DefaultConfig())
 
@@ -631,10 +610,6 @@ func TestSplitAlreadyBoundTabFocusesOwningWindow(t *testing.T) {
 	assert.Equal(t, 1, refs, "exactly one window may reference the tab")
 }
 
-// TestSplitInvertedUsesSplitWindowArgument guards against splitInverted
-// swapping the handler.Window of the *focused* window instead of the one
-// passed as the split target. Splitting a non-focused tile must not move
-// the focused window's tile.
 func TestSplitInvertedUsesSplitWindowArgument(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Frame = false
@@ -675,8 +650,6 @@ func TestSplitInvertedUsesSplitWindowArgument(t *testing.T) {
 		"the new window must be placed left of the split target")
 }
 
-// TestTabClickOnFocusedTabIsNoOp verifies that clicking the tab of the
-// currently-focused window does not change focus or surface an error.
 func TestTabClickOnFocusedTabIsNoOp(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Frame = false
@@ -706,8 +679,6 @@ func TestTabClickOnFocusedTabIsNoOp(t *testing.T) {
 		"clicking the tab of the focused window must not change focus")
 }
 
-// TestTabClickFreeTabLoadsIntoFocusedWindow guards the unchanged
-// free-tab path: clicking a free tab swaps it into the focused window.
 func TestTabClickFreeTabLoadsIntoFocusedWindow(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Frame = false
@@ -741,10 +712,6 @@ func TestTabClickFreeTabLoadsIntoFocusedWindow(t *testing.T) {
 		"clicking a free tab must load it into the focused window")
 }
 
-// TestSwapContentRebindsTabs reproduces a crash where swapping window
-// contents left each tab bound to the window it moved out of. Closing
-// one of the windows then freed the wrong tab, and clicking the other
-// tab focused the closed window and panicked in SetFocus.
 func TestSwapContentRebindsTabs(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -804,16 +771,6 @@ func TestSwapContentRebindsTabs(t *testing.T) {
 	}
 }
 
-// TestLayoutAliasSwitchingThenTabClick reproduces the user's crash: open
-// a file (a tab in the focused window), repeatedly switch window layouts
-// via aliases that run `windowcloseall` followed by one or more
-// `windownew right`, then click the tab. `windownew right` focuses the
-// new empty window, so `windowcloseall` closes the tab's original window.
-// CloseOtherWindows closed the raw handler window without going through
-// the browser's closeWindow path, so the tab's window binding was never
-// released: it stayed "stuck" pointing at a removed window. Clicking it
-// focused that detached tile and the next cursor pass panicked in
-// TileTree.TilePosition.
 func TestLayoutAliasSwitchingThenTabClick(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Frame = false
@@ -872,14 +829,6 @@ func TestLayoutAliasSwitchingThenTabClick(t *testing.T) {
 	draw()
 }
 
-// TestNonFocusTabAttrRespectedWithFrameFg is a regression test for
-// non_focus_tab_attr being overridden by the window manager's frame_attr
-// foreground. The tabs Scroll background used to share frame_attr (gray
-// in the production rune.star), and any tab name whose configured fg
-// was ColorDefault picked up that gray fg instead of the configured
-// non_focus_tab_attr default. Verify that a free (non-focused) tab
-// renders with NonFocusTabAttr (Fg=ColorDefault) even when frame_attr
-// has a non-default Fg.
 func TestNonFocusTabAttrRespectedWithFrameFg(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Frame = false
@@ -926,14 +875,6 @@ func TestNonFocusTabAttrRespectedWithFrameFg(t *testing.T) {
 		"focused tab name must render with FocusTabAttr")
 }
 
-// TestFocusedLastTabVisibleWithTabBarOffset is a regression test for a bug
-// where the focused tab (the rightmost one) was being clipped off-screen
-// because the underlying component.Tabs was being resized to the full
-// component width while a TabBarOffset visually shifted the bar to the
-// right, leaving the trailing portion of the bar outside the visible
-// viewport. The fix is to subtract TabBarOffset from the width passed to
-// the Tabs component so the resize algorithm operates on the actual
-// viewport width and the focused tab is rendered in the visible area.
 func TestFocusedLastTabVisibleWithTabBarOffset(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Frame = false
@@ -984,10 +925,6 @@ func TestFocusedLastTabVisibleWithTabBarOffset(t *testing.T) {
 		"expected at least one non-focused tab to be shrunk: %q", bar)
 }
 
-// TestRightInsetReservesWindowColumn asserts Config.RightInset narrows
-// only the window manager. The tab bar is a top union member, so it is
-// laid out before the reserved column and keeps the full width, which
-// is what lets a native overlay float below it.
 func TestRightInsetReservesWindowColumn(t *testing.T) {
 	const width, height, inset = 40, 8, 5
 
@@ -1030,10 +967,6 @@ func TestRightInsetReservesWindowColumn(t *testing.T) {
 	require.Positive(t, windowRows, "expected the window to fill some rows")
 }
 
-// TestSetRightInsetRelaysOut asserts the reserved column can be widened
-// and collapsed after construction. The union only ever appends members,
-// so this exercises the rebuild path, including replaying bars added
-// through the public Bar API.
 func TestSetRightInsetRelaysOut(t *testing.T) {
 	const width, height, inset = 40, 8, 5
 
@@ -1253,11 +1186,6 @@ func TestBrowserFloating(t *testing.T) {
 		})
 }
 
-// TestComponentCloseFloatingReentrantWindowClose reproduces a shutdown crash
-// where a floating handler's Close callback closes its own captured window
-// (as the cheatsheet does). Component.Close must not create a duplicate
-// browserWindow that defeats the double-close guard and panics with
-// "window not found".
 func TestComponentCloseFloatingReentrantWindowClose(t *testing.T) {
 	b := NewComponent(DefaultConfig())
 
@@ -1274,9 +1202,6 @@ func TestComponentCloseFloatingReentrantWindowClose(t *testing.T) {
 	})
 }
 
-// TestWindowBarCloseIconClick covers the window-bar close routing: a
-// press on the close icon must run through Component.closeWindow so
-// the windows map is cleaned and the handler is released.
 func TestWindowBarCloseIconClick(t *testing.T) {
 	b := NewComponent(DefaultConfig())
 	b.Resize(30, 14)
@@ -1299,9 +1224,6 @@ func TestWindowBarCloseIconClick(t *testing.T) {
 	assert.True(t, h.closed, "handler must be released")
 }
 
-// TestFloatingWindowBarOptOut covers that FloatingConfig.NoWindowBar
-// opens bar-less floating windows even though the browser wraps
-// handlers in browserContent adapters.
 func TestFloatingWindowBarOptOut(t *testing.T) {
 	b := NewComponent(DefaultConfig())
 	b.Resize(30, 14)
@@ -1315,9 +1237,6 @@ func TestFloatingWindowBarOptOut(t *testing.T) {
 	assert.True(t, regular.(*browserWindow).win.HasWindowBar())
 }
 
-// TestFloatingWindowTitle covers that FloatingConfig.Title sets the
-// floating window's bar title even though the browser wraps handlers
-// in browserContent adapters.
 func TestFloatingWindowTitle(t *testing.T) {
 	b := NewComponent(DefaultConfig())
 	b.Resize(30, 14)
@@ -1439,10 +1358,6 @@ func TestRemoveTab(t *testing.T) {
 	assertTabNames(t, b, []string{"c"})
 }
 
-// TestRemoveTabStale asserts that removing a tab whose handle is already
-// gone from the component returns false without panicking. A non-modal
-// prompt can capture a *Tab, the user closes that tab, and the prompt's
-// discard later calls RemoveTab on the now-stale handle.
 func TestRemoveTabStale(t *testing.T) {
 	b := NewComponent(DefaultConfig())
 
@@ -1457,11 +1372,6 @@ func TestRemoveTabStale(t *testing.T) {
 	})
 }
 
-// TestRemoveTabDoesNotRetainPointersInTail asserts that after RemoveTab the
-// dropped *Tab pointers are not retained past len(c.buffers) in the slice's
-// backing array. A naive append(s[:i], s[i+1:]...) leaves the previous tail
-// duplicate behind, which transitively pins the file's *cell.Buffer and
-// produces multi-GB workspace-close leaks on large files.
 func TestRemoveTabDoesNotRetainPointersInTail(t *testing.T) {
 	b := NewComponent(DefaultConfig())
 
@@ -1508,9 +1418,6 @@ func newActivityComponent(t *testing.T, onActivity func()) (*Component, []*Tab) 
 	return b, tabs
 }
 
-// Activity is a per-tab level: the shader runs while any tab is active,
-// setting the current state again changes nothing and the listener only
-// hears about actual changes.
 func TestSetTabActivity(t *testing.T) {
 	var calls int
 	b, tabs := newActivityComponent(t, func() { calls++ })
@@ -1542,7 +1449,6 @@ func TestSetTabActivity(t *testing.T) {
 	assert.Equal(t, 4, calls)
 }
 
-// Activity follows the tab rather than its position in the bar.
 func TestTabActivityFollowsMovedTab(t *testing.T) {
 	b, tabs := newActivityComponent(t, nil)
 	require.True(t, b.SetTabActivity(tabs[0].uri, true))
@@ -1552,8 +1458,6 @@ func TestTabActivityFollowsMovedTab(t *testing.T) {
 	assert.Equal(t, []int{1}, b.activeTabIndices())
 }
 
-// A tab's activity dies with it, so a crashed extension cannot leave a
-// stale mark behind.
 func TestRemoveTabClearsActivity(t *testing.T) {
 	var calls int
 	b, tabs := newActivityComponent(t, func() { calls++ })
@@ -1573,8 +1477,6 @@ func TestRemoveTabClearsActivity(t *testing.T) {
 	assert.False(t, b.HasActiveTabs())
 }
 
-// Activity marked before the host installs an interrupter is shown as
-// soon as it does, and closing the browser stops the effect.
 func TestSetInterrupterStartsPendingActivity(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.ActiveTabShader = "pulse"
@@ -1624,9 +1526,6 @@ func TestTabAttrs(t *testing.T) {
 	assert.Equal(t, term.Attributes{}, actualAttr)
 }
 
-// TestSetTabIcon verifies SetTabIcon overrides the tab icon for a
-// known URI and returns false for an unknown URI, and that
-// ResetTabIcon restores the icon the tab was created with.
 func TestSetTabIcon(t *testing.T) {
 	b := NewComponent(DefaultConfig())
 
@@ -1659,10 +1558,6 @@ func TestSetTabIcon(t *testing.T) {
 	assert.False(t, b.ResetTabIcon(missing))
 }
 
-// TestSetTabIconHonorsTabOverrideIcon verifies that when
-// Config.TabOverrideIcon is set, ResetTabIcon restores to the
-// overridden glyph (not the icon argument originally passed to
-// NewTab).
 func TestSetTabIconHonorsTabOverrideIcon(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.TabOverrideIcon = '●'
@@ -2113,10 +2008,6 @@ func mouseAt(b *Component, key term.Key, pos term.Coordinates) term.Event {
 	}
 }
 
-// TestWinDropThroughMouseEvents drives the whole feature the way the
-// runtime does - a press on the float's bar, moves, then a release -
-// instead of calling the FloatingBarHandler hooks directly, so the
-// window manager wiring is covered end to end.
 func TestWinDropThroughMouseEvents(t *testing.T) {
 	t.Run("dragging onto a tile edge splits it and installs a tab",
 		func(t *testing.T) {
@@ -2294,11 +2185,6 @@ func assertWinDropInvariants(t *testing.T, b *Component, float Window, baseTiles
 	}
 }
 
-// TestWinDropSweepNeverCorruptsLayout drags the float's bar across every
-// cell of a complex layout. The single-tile fixtures used by the other
-// tests cannot reach the sibling redistribution that splitting one of
-// several siblings triggers, which is where the layout and the recorded
-// pre-split geometry drift apart.
 func TestWinDropSweepNeverCorruptsLayout(t *testing.T) {
 	const width, height = 60, 20
 	b, float := complexDragBrowser(t, width, height, false)
@@ -2320,9 +2206,6 @@ func TestWinDropSweepNeverCorruptsLayout(t *testing.T) {
 	assert.Equal(t, float, b.Focus())
 }
 
-// TestWinDropSweepWithRelayout repeats the sweep while the surface is
-// resized between events, so the geometry recorded when a placeholder
-// was installed is stale by the time the next event arrives.
 func TestWinDropSweepWithRelayout(t *testing.T) {
 	b, float := complexDragBrowser(t, 60, 20, false)
 	base := b.Tiles()
@@ -2350,10 +2233,6 @@ func TestWinDropSweepWithRelayout(t *testing.T) {
 	assert.Equal(t, base, b.Tiles())
 }
 
-// TestWinDropMouseSweep repeats the sweep through the runtime's own
-// path - a press on the bar followed by mouse moves - so the window
-// manager wiring, which the direct hook calls bypass entirely, is
-// exercised over the whole surface.
 func TestWinDropMouseSweep(t *testing.T) {
 	const width, height = 45, 15
 	b, float := complexDragBrowser(t, width, height, true)
@@ -2380,9 +2259,6 @@ func TestWinDropMouseSweep(t *testing.T) {
 	assert.Equal(t, 1, b.FloatingWindows())
 }
 
-// TestWinDropSweepDropsEverywhere releases the drag on every cell of a
-// complex layout, each time on a fresh browser, and checks the drop
-// leaves consistent tab and window bookkeeping behind.
 func TestWinDropSweepDropsEverywhere(t *testing.T) {
 	const width, height = 45, 15
 	for y := 0; y < height; y += 2 {

@@ -29,6 +29,7 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -46,13 +47,13 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/syntaxapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/component"
-	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/handler/repl"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"gopkg.in/yaml.v3"
 	"unstable.build/rune/internal/debug"
-	"unstable.build/rune/internal/ide/gitpkg"
-	"unstable.build/rune/internal/ide/pkgtrust"
+	"unstable.build/rune/internal/ide/hostenv"
+	"unstable.build/rune/internal/ide/idepkg/gitpkg"
+	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
 	"unstable.build/rune/internal/ide/starlarkconfig"
 	"unstable.build/rune/internal/workspace/walkdir"
 )
@@ -419,7 +420,7 @@ func (m *Manager) InstallPackageVersion(
 	mu.Lock() // block calls to iterator
 	m.iterators.Unlock()
 
-	return m.download(pkgID, version, tarfile, pw, key)
+	return m.download(ctx, pkgID, version, tarfile, pw, key)
 }
 
 // DeletePackageVersion deletes a package version from local storage. This method is idempotent.
@@ -587,7 +588,7 @@ func (m *Manager) ProcessInstalledSettings(ctx context.Context) (ret error) {
 		}
 		dir := makePackageVersionDirname(m.dataDir, pkv.Package, pkv.Version)
 		configFile := pkgConfigFile(dir)
-		err = m.processConfig(pkv.Package, pkv.Version, configFile)
+		err = m.processConfig(ctx, pkv.Package, pkv.Version, configFile)
 		if err != nil {
 			ret = errors.Join(ret, fmt.Errorf("process %s: %w", configFile, err))
 		}
@@ -656,7 +657,7 @@ func (m *Manager) UsePackageVersion(
 	pkgVersionDirname := makePackageVersionDirname(m.dataDir, pkgID, version)
 
 	configFile := pkgConfigFile(pkgVersionDirname)
-	err = m.processConfig(pkgID, version, configFile)
+	err = m.processConfig(ctx, pkgID, version, configFile)
 	if err != nil {
 		return err
 	}
@@ -668,20 +669,22 @@ func (m *Manager) UsePackageVersion(
 // never contacts the release server, so it is safe on offline/remote hosts and
 // always reflects the local source of truth. It returns false when the package
 // has no in-use version installed locally.
-func (m *Manager) PackageVersionInUse(pkgID string) (release.Version, bool) {
-	if validatePkgPath(pkgID) != nil {
-		return "", false
+func (m *Manager) PackageVersionInUse(
+	_ context.Context, pkgID string,
+) (release.Version, bool, error) {
+	if err := validatePkgPath(pkgID); err != nil {
+		return "", false, fmt.Errorf("package id: %w", err)
 	}
 	libDir := makePackageLibDirname(m.dataDir, pkgID)
 	target, err := os.Readlink(libDir)
 	if err != nil {
-		return "", false
+		return "", false, nil
 	}
 	version := filepath.Base(target)
 	if version == "" || version == "." || version == string(filepath.Separator) {
-		return "", false
+		return "", false, nil
 	}
-	return release.Version(version), true
+	return release.Version(version), true, nil
 }
 
 func (m *Manager) isPackageVersionInUse(
@@ -716,10 +719,10 @@ func newPkgVersionValue(pkgID string, version release.Version) pkgVersionValue {
 }
 
 func (m *Manager) download(
-	pkgID string, version release.Version, tarfile *os.File,
+	ctx context.Context, pkgID string, version release.Version, tarfile *os.File,
 	pw repl.ProgressWriter, key string,
 ) error {
-	err := m.runDownload(pkgID, version, tarfile, pw, key)
+	err := m.runDownload(ctx, pkgID, version, tarfile, pw, key)
 	if err != nil {
 		m.abortDownload(err, pkgID, version)
 		return err
@@ -731,12 +734,12 @@ func (m *Manager) download(
 // runDownload performs the fetch, extract, link and config steps for a
 // single package version, returning the first error encountered. It owns
 // the on-disk cleanup of partial state so download can keep the
-// completion bookkeeping in one place.
+// completion bookkeeping in one place. Cancelling ctx does not abort it.
 func (m *Manager) runDownload(
-	pkgID string, version release.Version, tarfile *os.File,
+	ctx context.Context, pkgID string, version release.Version, tarfile *os.File,
 	pw repl.ProgressWriter, key string,
 ) error {
-	ctx := context.Background()
+	ctx = context.WithoutCancel(ctx)
 	defer m.cleanupFile(tarfile)
 
 	if err := makePkgDirs(m.dataDir); err != nil {
@@ -826,7 +829,7 @@ func (m *Manager) runDownload(
 		return fmt.Errorf("update storage field: %w", err)
 	}
 
-	if err := m.processInstalledConfig(pkgID, version, configFile); err != nil {
+	if err := m.processInstalledConfig(ctx, pkgID, version, configFile); err != nil {
 		return fmt.Errorf("process configuration for %s version %s: %w",
 			pkgID, version, err)
 	}
@@ -857,7 +860,7 @@ func (m *Manager) installRequirements(
 		return fmt.Errorf("read staged config: %w", err)
 	}
 	reqs, err := pkgConfigRequirements(
-		configFile, data, pkgID, version, m.dataDir, m.editorMode,
+		configFile, data, pkgID, version, m.editorMode,
 	)
 	if err != nil {
 		return fmt.Errorf("parse requirements: %w", err)
@@ -869,7 +872,11 @@ func (m *Manager) installRequirements(
 		if req == pkgID {
 			continue
 		}
-		if _, installed := m.PackageVersionInUse(req); installed {
+		_, installed, err := m.PackageVersionInUse(ctx, req)
+		if err != nil {
+			return fmt.Errorf("requirement %s in use: %w", req, err)
+		}
+		if installed {
 			continue
 		}
 		reqVersion, err := m.LatestVersion(ctx, req)
@@ -970,117 +977,57 @@ func (m *Manager) linkLibCopyBin(
 }
 
 func (m *Manager) promptConfigChange(
-	pkgID string, pkgVersion release.Version, configYAML []byte,
-	userDoc, pkgDoc *yaml.Node,
-) error {
+	ui UI, pkgID string, pkgVersion release.Version, configYAML []byte,
+	pkgDoc *yaml.Node,
+) {
 	message := fmt.Sprintf(
 		"Extension %s (version %s) wants to **update** your configuration "+
 			"with the following settings:\n\n```yaml\n%s\n```\n\nDo you want to allow this?",
 		pkgID, pkgVersion, string(configYAML))
-	return m.promptConfigMerge(
-		pkgID, pkgVersion, message,
-		[]string{"    Allow    ", "    Deny    "},
-		[]term.KeyComb{{Ch: 'a'}, {Ch: 'd'}}, userDoc, pkgDoc,
-	)
+	ui.PromptConfig(ConfigPrompt{
+		Message: message,
+		Options: []PromptOption{{Label: "Allow", Key: 'a'}, {Label: "Deny", Key: 'd'}},
+	}, func(approved bool) {
+		if !approved {
+			return
+		}
+		userDoc, err := m.userConfigDocument()
+		if err == nil {
+			err = m.applyConfigMerge(ui, browserapi.LevelSuccess, pkgID, pkgVersion, userDoc, pkgDoc)
+		}
+		if err != nil {
+			_, _ = ui.Notify(browserapi.LevelError, "apply configuration: %s", err)
+		}
+	})
 }
 
 func (m *Manager) promptExtensionPathChange(
-	pkgID string, pkgVersion release.Version, userDoc *yaml.Node,
-	change extensionPathChange,
-) error {
+	ui UI, pkgID string, change extensionPathChange,
+) {
 	message := fmt.Sprintf(
 		"Package **%s** wants to install extension **%s** at:\n\n`%s`\n\n"+
 			"An extension with the same ID is already registered at:\n\n`%s`\n\n"+
 			"Do you want to replace it?",
 		pkgID, change.extensionID, change.installedPath, change.currentPath)
-	return m.promptConfigMergeWithResult(
-		pkgID, pkgVersion, message,
-		[]string{"    Yes    ", "    No    "},
-		[]term.KeyComb{{Ch: 'y'}, {Ch: 'n'}}, userDoc, change.pkgDoc,
-		false,
-		80,
-		func(_ ConfigMergeResult) {
-			_, _ = m.n.Notify(browserapi.LevelSuccess,
-				"updated %s extension path. Restart the program to load the changes.", pkgID)
-		},
-	)
-}
-
-func (m *Manager) promptConfigMerge(
-	pkgID string, pkgVersion release.Version, message string,
-	options []string, bindings []term.KeyComb, userDoc, pkgDoc *yaml.Node,
-) error {
-	return m.promptConfigMergeWithResult(
-		pkgID, pkgVersion, message, options, bindings, userDoc, pkgDoc,
-		true,
-		0,
-		func(result ConfigMergeResult) {
-			m.notifyConfigApplied(browserapi.LevelSuccess, pkgID, result)
-		},
-	)
-}
-
-func (m *Manager) promptConfigMergeWithResult(
-	pkgID string, pkgVersion release.Version, message string,
-	options []string, bindings []term.KeyComb, userDoc, pkgDoc *yaml.Node,
-	runAfterMerge bool,
-	maxWidth int,
-	onApplied func(ConfigMergeResult),
-) error {
-	newMessage := markdownOrFallback(m.parser, m.scheduleNextTick)
-	if maxWidth > 0 {
-		newMessage = boundedFloatingMessage(newMessage, maxWidth)
-	}
-
-	prompt := handler.NewPrompt(handler.PromptConfig{
-		HighlightAttr: term.Attributes{
-			Attrs: term.AttrBold,
-			Bg:    term.ColorRed,
-		},
-		OptionAttr: term.Attributes{
-			Attrs: term.AttrBold,
-			Bg:    term.ColorGray,
-		},
-		OptionBindings: bindings,
-		PromptConfig: component.PromptConfig{
-			Message:    message,
-			Options:    options,
-			NewMessage: newMessage,
-		},
-		PromptHandler: handler.FuncPromptHandler(func(idx int, _ string) {
-			allowed := idx == 0
-			if !allowed {
-				return
-			}
-			var result ConfigMergeResult
-			var err error
-			if runAfterMerge {
-				result, err = m.applyConfigMerge(pkgID, pkgVersion, userDoc, pkgDoc)
-			} else {
-				err = m.writeConfigMerge(userDoc, pkgDoc)
-			}
-			if err != nil {
-				_, _ = m.n.Notify(browserapi.LevelError, "apply configuration: %s", err)
-				return
-			}
-			onApplied(result)
-		}, func() error { return nil }),
-	})
-
-	ok := m.scheduleNextTick(func() {
-		_, err := m.wm.Floating(prompt, browserapi.FloatingConfig{
-			Alignment: component.AlignmentCentered,
-		})
-		if err != nil {
-			_, _ = m.n.Notify(browserapi.LevelError, "show config prompt: %s", err)
+	ui.PromptConfig(ConfigPrompt{
+		Message:  message,
+		Options:  []PromptOption{{Label: "Yes", Key: 'y'}, {Label: "No", Key: 'n'}},
+		MaxWidth: 80,
+	}, func(approved bool) {
+		if !approved {
+			return
 		}
+		userDoc, err := m.userConfigDocument()
+		if err == nil {
+			err = m.writeConfigMerge(userDoc, change.pkgDoc)
+		}
+		if err != nil {
+			_, _ = ui.Notify(browserapi.LevelError, "apply configuration: %s", err)
+			return
+		}
+		_, _ = ui.Notify(browserapi.LevelSuccess,
+			"updated %s extension path. Restart the program to load the changes.", pkgID)
 	})
-	if !ok {
-		m.log(log.ErrorLevel, "idepkg config prompt: could not schedule")
-		return nil
-	}
-
-	return nil
 }
 
 func boundedFloatingMessage(
@@ -1137,25 +1084,34 @@ func (e ConfigMergeEvent) AddedTutorialNames() []string {
 	return addedTutorialNames(e.Diff)
 }
 
-// ConfigMergeResult reports what a post-merge hook did. LiveApplied is true
-// when the hook applied changes to the running process such that a full
-// restart is not required for new work to observe them.
+// ConfigMergeResult reports what a post-merge hook did.
 type ConfigMergeResult struct {
-	LiveApplied bool
+	// LivePaths lists the config key paths whose merged values the running
+	// process picked up. Each entry covers the whole subtree under it. Diff
+	// keys not covered by any entry need a restart to take effect. Paths are
+	// segment slices rather than dotted strings because ids and names may
+	// contain dots.
+	LivePaths [][]string
 }
 
 // applyConfigMerge deep-merges addDoc into userDoc and writes the result to
 // the user config file atomically, after backing up the existing file. It is
 // shared by the auto-apply path (purely-new keys) and the prompt's Allow path
-// (version-dependent conflicts the user approved). On success it invokes the
-// post-merge hook (if configured) and returns its result.
+// (version-dependent conflicts the user approved). Once the file is written
+// it invokes the post-merge hook (if configured) and notifies ui at level
+// which keys are in effect and which need a restart. The notice is shown even
+// when the hook fails, since the config was saved; the hook's error is then
+// returned. A write error is returned without notifying.
 func (m *Manager) applyConfigMerge(
+	ui UI, level browserapi.NotificationLevel,
 	pkgID string, pkgVersion release.Version, userDoc, addDoc *yaml.Node,
-) (ConfigMergeResult, error) {
+) error {
 	if err := m.writeConfigMerge(userDoc, addDoc); err != nil {
-		return ConfigMergeResult{}, err
+		return err
 	}
-	return m.runAfterConfigMerge(pkgID, pkgVersion, addDoc)
+	result, err := m.runAfterConfigMerge(pkgID, pkgVersion, addDoc)
+	m.notifyConfigApplied(ui, level, pkgID, addDoc, result)
+	return err
 }
 
 func (m *Manager) writeConfigMerge(userDoc, addDoc *yaml.Node) error {
@@ -1198,35 +1154,47 @@ func (m *Manager) runAfterConfigMerge(
 	})
 }
 
-// notifyConfigApplied reports a successful config merge. When the post-merge
-// hook live-applied changes, no further action is requested from the user;
-// otherwise it keeps the restart-oriented wording.
+// notifyConfigApplied reports a saved config merge, naming the diff keys that
+// result made live and those that still need a restart.
 func (m *Manager) notifyConfigApplied(
-	level browserapi.NotificationLevel, pkgID string, result ConfigMergeResult,
+	ui UI, level browserapi.NotificationLevel, pkgID string,
+	diff *yaml.Node, result ConfigMergeResult,
 ) {
-	if result.LiveApplied {
-		_, _ = m.n.Notify(level, "applied %s configuration updates. ", pkgID)
-		return
+	inEffect, pending := summarizeConfigDiff(diff, result.LivePaths)
+	switch {
+	case len(pending) == 0:
+		_, _ = ui.Notify(level, "applied %s configuration updates. "+
+			"All changes are in effect now: %s.", pkgID, strings.Join(inEffect, ", "))
+	case len(inEffect) == 0:
+		_, _ = ui.Notify(level, "saved %s configuration updates to your config. "+
+			"None are in effect yet; restart the program to load: %s.",
+			pkgID, strings.Join(pending, ", "))
+	default:
+		_, _ = ui.Notify(level, "partially applied %s configuration updates. "+
+			"In effect now: %s. Restart the program to load: %s.",
+			pkgID, strings.Join(inEffect, ", "), strings.Join(pending, ", "))
 	}
-	_, _ = m.n.Notify(level, "applied %s configuration updates. "+
-		"Restart the program to load the changes.", pkgID)
 }
 
 func (m *Manager) processConfig(
-	pkgID string, pkgVersion release.Version, pkgConfigFile string,
+	ctx context.Context, pkgID string, pkgVersion release.Version, pkgConfigFile string,
 ) error {
-	return m.processConfigFile(pkgID, pkgVersion, pkgConfigFile, false)
+	return m.processConfigFile(ctx, pkgID, pkgVersion, pkgConfigFile, false)
 }
 
 func (m *Manager) processInstalledConfig(
-	pkgID string, pkgVersion release.Version, pkgConfigFile string,
+	ctx context.Context, pkgID string, pkgVersion release.Version, pkgConfigFile string,
 ) error {
-	return m.processConfigFile(pkgID, pkgVersion, pkgConfigFile, true)
+	return m.processConfigFile(ctx, pkgID, pkgVersion, pkgConfigFile, true)
 }
 
+// processConfigFile merges a package's config into the user config.
+// Changes that would replace the user's settings are asked about
+// through the UI of ctx, and applied when the user approves them, which
+// can be after this returns.
 func (m *Manager) processConfigFile(
-	pkgID string, pkgVersion release.Version, pkgConfigFile string,
-	promptExtensionPaths bool,
+	ctx context.Context, pkgID string, pkgVersion release.Version,
+	pkgConfigFile string, promptExtensionPaths bool,
 ) error {
 	_, err := os.Stat(pkgConfigFile)
 	if err != nil && !os.IsNotExist(err) {
@@ -1241,7 +1209,7 @@ func (m *Manager) processConfigFile(
 	}
 	// A fresh datadir has no user config yet. Seed an empty one so the
 	// package's env/settings still merge; otherwise a first install (e.g. a
-	// remote `rune -x` provisioning into a brand-new ~/.rune) never gets
+	// remote host installing into a brand-new ~/.rune) never gets
 	// GOROOT and the toolchain fails with "cannot find GOROOT directory".
 	if _, statErr := os.Stat(m.configPath); os.IsNotExist(statErr) {
 		if err := os.MkdirAll(filepath.Dir(m.configPath), 0o777); err != nil {
@@ -1270,30 +1238,20 @@ func (m *Manager) processConfigFile(
 		return err
 	}
 
+	ui := m.ui(ctx)
 	if plan.autoApplyDoc != nil {
-		result, err := m.applyConfigMerge(pkgID, pkgVersion, plan.userDoc, plan.autoApplyDoc)
-		if err != nil {
+		if err := m.applyConfigMerge(
+			ui, browserapi.LevelInfo, pkgID, pkgVersion, plan.userDoc, plan.autoApplyDoc,
+		); err != nil {
 			return fmt.Errorf("auto-apply config change: %w", err)
 		}
-		m.notifyConfigApplied(browserapi.LevelInfo, pkgID, result)
 	}
 	for _, change := range plan.pathChanges {
-		if err := m.promptExtensionPathChange(
-			pkgID, pkgVersion, plan.userDoc, change,
-		); err != nil {
-			return fmt.Errorf("prompt extension path change: %w", err)
-		}
+		m.promptExtensionPathChange(ui, pkgID, change)
 	}
-
 	if plan.prompt {
-		err = m.promptConfigChange(
-			pkgID, pkgVersion, plan.missingYAML, plan.userDoc, plan.pkgDoc,
-		)
-		if err != nil {
-			return fmt.Errorf("prompt config change: %w", err)
-		}
+		m.promptConfigChange(ui, pkgID, pkgVersion, plan.missingYAML, plan.pkgDoc)
 	}
-
 	return nil
 }
 
@@ -1364,7 +1322,7 @@ func loadIdePkgConfigFile(path string, base map[string]any) (map[string]any, err
 	if err != nil {
 		return nil, err
 	}
-	return loadIdePkgConfigFromBytes(path, data, base, "", "", "", "")
+	return loadIdePkgConfigFromBytes(path, data, base, "", "", "")
 }
 
 // configBaseTree returns the editor's default config tree to predeclare as
@@ -1421,14 +1379,13 @@ func loneSubdir(dir string) (string, bool) {
 	return filepath.Join(dir, entries[0].Name()), true
 }
 
+// idePkgStarlarkParams binds RUNE_DATADIR to its own placeholder so a
+// config.star that builds paths from it yields "$RUNE_DATADIR/..." and the
+// host that uses the value resolves it.
 func idePkgStarlarkParams(
-	pkgID string, pkgVersion release.Version, dataDir string,
-	editorMode string,
+	pkgID string, pkgVersion release.Version, editorMode string,
 ) map[string]any {
-	params := map[string]any{}
-	if dataDir != "" {
-		params["RUNE_DATADIR"] = dataDir
-	}
+	params := map[string]any{"RUNE_DATADIR": "$" + hostenv.DataDirVar}
 	if pkgID != "" {
 		params["RUNE_PKG_ID"] = pkgID
 	}
@@ -1443,8 +1400,7 @@ func idePkgStarlarkParams(
 
 func loadIdePkgConfigFromBytes(
 	filename string, data []byte, base map[string]any,
-	pkgID string, pkgVersion release.Version, dataDir string,
-	editorMode string,
+	pkgID string, pkgVersion release.Version, editorMode string,
 ) (map[string]any, error) {
 	if strings.HasSuffix(strings.ToLower(filename), ".star") {
 		// User configs are authored as overlays that mutate a
@@ -1458,7 +1414,7 @@ func loadIdePkgConfigFromBytes(
 		cfg, err := starlarkconfig.Decode(starlarkconfig.Source{
 			Src:      data,
 			Filename: filename,
-			Params:   idePkgStarlarkParams(pkgID, pkgVersion, dataDir, editorMode),
+			Params:   idePkgStarlarkParams(pkgID, pkgVersion, editorMode),
 			Base:     base,
 		})
 		if errors.Is(err, starlarkconfig.ErrMissingConfig) {
@@ -1478,19 +1434,18 @@ func loadIdePkgConfigFromBytes(
 
 func loadIdePkgConfigOverlay(
 	filename string, data []byte, base map[string]any,
-	pkgID string, pkgVersion release.Version, dataDir string,
-	editorMode string,
+	pkgID string, pkgVersion release.Version, editorMode string,
 ) (map[string]any, error) {
 	if strings.HasSuffix(strings.ToLower(filename), ".star") {
 		return starlarkconfig.Decode(starlarkconfig.Source{
 			Src:      data,
 			Filename: filename,
-			Params:   idePkgStarlarkParams(pkgID, pkgVersion, dataDir, editorMode),
+			Params:   idePkgStarlarkParams(pkgID, pkgVersion, editorMode),
 			Base:     base,
 		})
 	}
 	return loadIdePkgConfigFromBytes(filename, data, base, pkgID, pkgVersion,
-		dataDir, editorMode)
+		editorMode)
 }
 
 func normalizeIdePkgConfig(v any) any {
@@ -1521,8 +1476,11 @@ func normalizeIdePkgConfig(v any) any {
 // idePkgConfigDiff classifies overlay keys against the user config into two
 // disjoint subsets:
 //
-//   - newCfg: overlay key paths absent from the user config. These can be
-//     auto-applied without prompting.
+//   - newCfg: overlay key paths absent from the user config, plus user values
+//     that only differ from the overlay in spelling the data directory (an
+//     absolute path where the overlay has $RUNE_DATADIR, written by releases
+//     that expanded it at install time). These can be auto-applied without
+//     prompting.
 //   - conflictCfg: overlay scalar leaves that already exist in the user config
 //     with a different value and must be approved. Outside gui.env only
 //     version-dependent leaves qualify (RUNE-225); under gui.env every
@@ -1533,7 +1491,7 @@ func normalizeIdePkgConfig(v any) any {
 // Either returned map is nil when its subset is empty.
 func idePkgConfigDiff(
 	user, overlay map[string]any, versionDependent map[string]any,
-	keyPath []string,
+	dataDir string, keyPath []string,
 ) (newCfg, conflictCfg map[string]any) {
 	for key, overlayVal := range overlay {
 		userVal, ok := user[key]
@@ -1547,24 +1505,35 @@ func idePkgConfigDiff(
 		overlayMap, overlayIsMap := overlayVal.(map[string]any)
 		userMap, userIsMap := userVal.(map[string]any)
 		if !overlayIsMap || !userIsMap {
-			if isScalar(userVal) && isScalar(overlayVal) {
-				conflictVal, conflict := scalarConflict(
+			var val any
+			change := valueSame
+			switch {
+			case isScalar(userVal) && isScalar(overlayVal):
+				val, change = scalarChange(
 					append(keyPath, key),
 					isVersionDependentScalar(versionDependent, key),
-					userVal, overlayVal,
+					userVal, overlayVal, dataDir,
 				)
-				if conflict {
-					if conflictCfg == nil {
-						conflictCfg = map[string]any{}
-					}
-					conflictCfg[key] = conflictVal
+			case listRespelled(userVal, overlayVal, dataDir):
+				val, change = overlayVal, valueRespelled
+			}
+			switch change {
+			case valueRespelled:
+				if newCfg == nil {
+					newCfg = map[string]any{}
 				}
+				newCfg[key] = val
+			case valueConflict:
+				if conflictCfg == nil {
+					conflictCfg = map[string]any{}
+				}
+				conflictCfg[key] = val
 			}
 			continue
 		}
 		nestedVersionDependent, _ := versionDependent[key].(map[string]any)
 		nestedNew, nestedConflict := idePkgConfigDiff(
-			userMap, overlayMap, nestedVersionDependent, append(keyPath, key),
+			userMap, overlayMap, nestedVersionDependent, dataDir, append(keyPath, key),
 		)
 		if nestedNew != nil {
 			if newCfg == nil {
@@ -1582,25 +1551,91 @@ func idePkgConfigDiff(
 	return newCfg, conflictCfg
 }
 
-func scalarConflict(
-	keyPath []string, versionDependent bool, userVal, overlayVal any,
-) (any, bool) {
+type valueChange int
+
+const (
+	// valueSame keeps the user value.
+	valueSame valueChange = iota
+	// valueRespelled replaces the user value without asking: it is the
+	// overlay as a release that expanded $RUNE_DATADIR at install time
+	// wrote it.
+	valueRespelled
+	// valueConflict replaces the user value only with the user's approval.
+	valueConflict
+)
+
+func scalarChange(
+	keyPath []string, versionDependent bool, userVal, overlayVal any, dataDir string,
+) (any, valueChange) {
 	if isGUIEnvPathLeaf(keyPath) {
-		merged, changed := mergePathValue(
-			fmt.Sprint(userVal), fmt.Sprint(overlayVal),
+		merged, respelled, added := mergePathValue(
+			fmt.Sprint(userVal), fmt.Sprint(overlayVal), dataDir,
 		)
-		if !changed {
-			return nil, false
+		switch {
+		case added:
+			return merged, valueConflict
+		case respelled:
+			return merged, valueRespelled
 		}
-		return merged, true
+		return nil, valueSame
 	}
-	if fmt.Sprint(overlayVal) == fmt.Sprint(userVal) {
-		return nil, false
+	userStr, overlayStr := fmt.Sprint(userVal), fmt.Sprint(overlayVal)
+	if overlayStr == userStr {
+		return nil, valueSame
+	}
+	if expandedAtInstall(userStr, overlayStr, dataDir) {
+		return overlayVal, valueRespelled
+	}
+	if sameAfterDataDir(userStr, overlayStr, dataDir) {
+		return nil, valueSame
 	}
 	if isGUIEnvLeaf(keyPath) || versionDependent {
-		return overlayVal, true
+		return overlayVal, valueConflict
 	}
-	return nil, false
+	return nil, valueSame
+}
+
+// expandedAtInstall reports whether userStr is overlayStr with $RUNE_DATADIR
+// expanded with dataDir, as older releases merged it. Any other spelling of
+// the same value, such as ${RUNE_DATADIR}, is the user's to keep.
+func expandedAtInstall(userStr, overlayStr, dataDir string) bool {
+	return dataDir != "" && userStr != overlayStr &&
+		userStr == hostenv.ExpandDataDir(overlayStr, dataDir)
+}
+
+// sameAfterDataDir reports whether the user and overlay spellings name the
+// same value on this host once $RUNE_DATADIR is expanded with dataDir.
+func sameAfterDataDir(userStr, overlayStr, dataDir string) bool {
+	return dataDir != "" &&
+		hostenv.ExpandDataDir(userStr, dataDir) == hostenv.ExpandDataDir(overlayStr, dataDir)
+}
+
+// listRespelled reports whether two lists of scalars differ only in elements
+// that a release expanded $RUNE_DATADIR in at install time.
+func listRespelled(userVal, overlayVal any, dataDir string) bool {
+	userList, ok := userVal.([]any)
+	if !ok {
+		return false
+	}
+	overlayList, ok := overlayVal.([]any)
+	if !ok || len(userList) != len(overlayList) {
+		return false
+	}
+	differ := false
+	for i := range overlayList {
+		if !isScalar(userList[i]) || !isScalar(overlayList[i]) {
+			return false
+		}
+		userStr, overlayStr := fmt.Sprint(userList[i]), fmt.Sprint(overlayList[i])
+		if userStr == overlayStr {
+			continue
+		}
+		if !expandedAtInstall(userStr, overlayStr, dataDir) {
+			return false
+		}
+		differ = true
+	}
+	return differ
 }
 
 func isGUIEnvLeaf(keyPath []string) bool {
@@ -1625,9 +1660,14 @@ func isScalar(v any) bool {
 	}
 }
 
-func mergePathValue(userPath, pkgPath string) (string, bool) {
+// mergePathValue merges the package's PATH chunks into the user's. A user
+// chunk that is a package chunk with $RUNE_DATADIR expanded with dataDir is
+// rewritten in place to the package spelling (respelled); a user chunk naming
+// the same directory in another spelling counts as present; package chunks
+// the user lacks are prepended in package order (added).
+func mergePathValue(userPath, pkgPath, dataDir string) (merged string, respelled, added bool) {
 	if pkgPath == "" {
-		return userPath, false
+		return userPath, false, false
 	}
 	userChunks := strings.Split(userPath, ":")
 	present := make(map[string]struct{}, len(userChunks))
@@ -1640,15 +1680,40 @@ func mergePathValue(userPath, pkgPath string) (string, bool) {
 			continue
 		}
 		present[chunk] = struct{}{}
-		missing = append(missing, chunk)
+		i, same := userChunkFor(userChunks, chunk, dataDir)
+		switch {
+		case i >= 0:
+			userChunks[i] = chunk
+			respelled = true
+		case !same:
+			missing = append(missing, chunk)
+		}
 	}
+	userPath = strings.Join(userChunks, ":")
 	if len(missing) == 0 {
-		return userPath, false
+		return userPath, respelled, false
 	}
 	if userPath == "" {
-		return strings.Join(missing, ":"), true
+		return strings.Join(missing, ":"), respelled, true
 	}
-	return strings.Join(missing, ":") + ":" + userPath, true
+	return strings.Join(missing, ":") + ":" + userPath, respelled, true
+}
+
+// userChunkFor returns the index of the user chunk to respell to pkgChunk, or
+// -1 when there is none, and whether some user chunk names pkgChunk's
+// directory already.
+func userChunkFor(userChunks []string, pkgChunk, dataDir string) (int, bool) {
+	if !strings.Contains(pkgChunk, hostenv.DataDirVar) {
+		return -1, false
+	}
+	same := false
+	for i, chunk := range userChunks {
+		if expandedAtInstall(chunk, pkgChunk, dataDir) {
+			return i, true
+		}
+		same = same || sameAfterDataDir(chunk, pkgChunk, dataDir)
+	}
+	return -1, same
 }
 
 func versionDependentKeys(overlay map[string]any) map[string]any {
@@ -1684,14 +1749,14 @@ const versionDependentSentinel = "\x00rune-version-sentinel\x00"
 
 func versionDependentOverlayKeys(
 	filename string, data []byte, overlay map[string]any,
-	pkgID string, dataDir, editorMode string,
+	pkgID, editorMode string,
 ) (map[string]any, error) {
 	if !strings.HasSuffix(strings.ToLower(filename), ".star") {
 		return versionDependentKeys(overlay), nil
 	}
 	sentinel, err := loadIdePkgConfigOverlay(
 		filename, data, map[string]any{},
-		pkgID, versionDependentSentinel, dataDir, editorMode,
+		pkgID, versionDependentSentinel, editorMode,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("decode package config (version probe): %w", err)
@@ -1870,7 +1935,7 @@ func untar(dst string, r io.Reader, onProgress func()) ([]executableEntry, pkgtr
 
 		target := filepath.Join(dst, filepath.Clean(hdr.Name))
 		entry := pkgtrust.Entry{Path: filepath.ToSlash(hdr.Name), Mode: hdr.FileInfo().Mode()}
-		if isExecutable(hdr.FileInfo()) && !isHidden(hdr.Name) {
+		if isExecutable(hdr.FileInfo()) && isPackageBin(hdr.Name) {
 			executables = append(executables, executableEntry{
 				Name: hdr.Name,
 				Mode: hdr.Mode,
@@ -1917,6 +1982,11 @@ func untar(dst string, r io.Reader, onProgress func()) ([]executableEntry, pkgtr
 func copyExecutables(files []executableEntry, dirname, targetdirname string) error {
 	var ret error
 	for _, executable := range files {
+		// Install records written by older releases list executables
+		// found anywhere in the package.
+		if !isPackageBin(executable.Name) {
+			continue
+		}
 		name := filepath.Clean(executable.Name)
 		orig := filepath.Join(dirname, name)
 		origfile, err := os.OpenFile(orig, os.O_RDONLY, 0)
@@ -1962,8 +2032,9 @@ func swapExecutable(orig *os.File, targetdirname, name string, mode int64) error
 	return nil
 }
 
-func isHidden(file string) bool {
-	return strings.HasPrefix(filepath.Base(file), ".")
+func isPackageBin(name string) bool {
+	dir, file := path.Split(path.Clean(name))
+	return dir == "bin/" && !strings.HasPrefix(file, ".")
 }
 
 func removeExecutables(files []executableEntry, targetdirname string) error {

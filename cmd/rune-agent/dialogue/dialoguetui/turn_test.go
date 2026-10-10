@@ -958,7 +958,7 @@ func TestTurnAddChildResultCollapsed(t *testing.T) {
 	// Child tool
 	assert.Contains(t, got, "├─ ✓ read_file a.go")
 	// Result leaf node with success icon
-	assert.Contains(t, got, "└─ 󰆈 Done exploring the code.")
+	assert.Contains(t, got, "└─ 󰆈  Done exploring the code.")
 }
 
 func TestTurnAddChildResultCollapsedError(t *testing.T) {
@@ -976,7 +976,7 @@ func TestTurnAddChildResultCollapsedError(t *testing.T) {
 
 	got := w.String()
 	// Result leaf node with error icon
-	assert.Contains(t, got, "└─ 󰅽 something failed")
+	assert.Contains(t, got, "└─ 󰅽  something failed")
 }
 
 func TestTurnCollapsedHeightWithChildResult(t *testing.T) {

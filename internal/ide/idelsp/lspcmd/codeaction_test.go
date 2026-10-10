@@ -198,10 +198,6 @@ func TestCodeActionNoActionNotifiesHint(t *testing.T) {
 	assert.Equal(t, []string{"no rewrite here"}, notify.messages())
 }
 
-// A handler bound to a broad kind offers every action through the
-// picker and runs nothing until the user confirms, even when only one
-// action applies, because the command name does not say which of the
-// family it would be.
 func TestCodeActionConfirmsThroughPicker(t *testing.T) {
 	t.Parallel()
 
@@ -274,9 +270,6 @@ func TestCodeActionConfirmsThroughPicker(t *testing.T) {
 	}
 }
 
-// An empty kind requests every kind (nil Only) and keeps every returned
-// action regardless of kind, which is how a "list everything" subcommand
-// browses the full menu.
 func TestCodeActionListRequestsAllKinds(t *testing.T) {
 	t.Parallel()
 
@@ -306,9 +299,6 @@ func TestCodeActionListRequestsAllKinds(t *testing.T) {
 	require.Error(t, <-done)
 }
 
-// A handler bound to a kind that names exactly one operation runs a sole
-// result straight away: the picker would only echo the subcommand the
-// user just typed. More than one result still needs a choice.
 func TestCodeActionAppliesLoneAction(t *testing.T) {
 	t.Parallel()
 
@@ -363,8 +353,6 @@ func TestCodeActionAppliesLoneAction(t *testing.T) {
 	})
 }
 
-// A one-line action would otherwise float a box barely wider than its
-// title, which reads as a rendering glitch rather than a menu.
 func TestCodeActionPickerHasMinimumSize(t *testing.T) {
 	t.Parallel()
 
@@ -386,10 +374,6 @@ func TestCodeActionPickerHasMinimumSize(t *testing.T) {
 	assert.Equal(t, maxPickerHeight, h, "the height cap still applies")
 }
 
-// zls answers source.organizeImports with a full rewrite of the import
-// block on every invocation, even when the imports are already sorted.
-// A confirmed action that produces the text already in the buffer must
-// not edit it.
 func TestCodeActionSkipsNoopWorkspaceEdit(t *testing.T) {
 	t.Parallel()
 
@@ -473,6 +457,82 @@ func TestCodeActionSkipsNoopWorkspaceEdit(t *testing.T) {
 			picker.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
 			require.NoError(t, <-done)
 			assert.Equal(t, tt.wantEdits, applied)
+		})
+	}
+}
+
+func TestCodeActionLoneNoopActionNotifiesHint(t *testing.T) {
+	t.Parallel()
+
+	const src = "import { a } from \"./a\";\n"
+	const file = "file:///ws/src/main.go"
+	tests := []struct {
+		name       string
+		action     semanticapi.CodeAction
+		wantEdits  int
+		wantNotify []string
+	}{
+		{
+			name: "rewrite to the same text",
+			action: semanticapi.CodeAction{Edit: &semanticapi.WorkspaceEdit{
+				Changes: map[string][]semanticapi.TextEdit{
+					file: {replaceEdit(0, 0, 1, 0, src)},
+				},
+			}},
+			wantNotify: []string{"already organized"},
+		},
+		{
+			name: "edit with no changes",
+			action: semanticapi.CodeAction{Edit: &semanticapi.WorkspaceEdit{
+				Changes: map[string][]semanticapi.TextEdit{},
+			}},
+			wantNotify: []string{"already organized"},
+		},
+		{
+			name: "edit that changes the text",
+			action: semanticapi.CodeAction{Edit: &semanticapi.WorkspaceEdit{
+				Changes: map[string][]semanticapi.TextEdit{
+					file: {replaceEdit(0, 0, 1, 0, "")},
+				},
+			}},
+			wantEdits: 1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			uri := codeActionTestURI(t)
+			handler := &mockHandler{uri: uri}
+			view := &mockCellView{cells: cellsOf(src)}
+			applied := 0
+			editor := &mockEditor{
+				editorFn: func(workspaceapi.URI) (textapi.Handler, error) {
+					return handler, nil
+				},
+				cellViewFn: func(textapi.Handler) textapi.CellView { return view },
+				cellEditorFn: func(textapi.Handler) textapi.CellEditor {
+					return &mockCellEditor{editFn: func(
+						context.Context, term.Coordinates, term.Coordinates, string,
+					) (term.Coordinates, term.Coordinates, string, error) {
+						applied++
+						return term.Coordinates{}, term.Coordinates{}, "", nil
+					}}
+				},
+			}
+			action := tt.action
+			action.Title, action.Kind = "Organize imports", "source.organizeImports"
+			lsp := &codeActionLSP{results: []semanticapi.CodeActionResult{{CodeAction: &action}}}
+			notify := &notifyRecorder{}
+			floats := &floatRecorder{}
+			h := CodeActionHandler(lsp, editor, notify.notifications(),
+				floats.manager(), NewSelectionTracker(),
+				"source.organizeImports", true, "already organized")
+
+			require.NoError(t, h.HandleCommand(t.Context(), codeActionCommand(uri, "organize")))
+			assert.Nil(t, floats.floated(), "no picker may be shown")
+			assert.Equal(t, tt.wantEdits, applied)
+			assert.Equal(t, tt.wantNotify, notify.messages())
 		})
 	}
 }

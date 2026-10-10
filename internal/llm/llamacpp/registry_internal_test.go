@@ -126,15 +126,6 @@ func buildMiniGGUF(t *testing.T, ctx uint32) []byte {
 	return b.buf.Bytes()
 }
 
-// TestRegistry_ContextWindow_PersistsAcrossReopen drives the full
-// metadata-cache path against a real (mini) GGUF blob:
-//
-//   - first Get reads the GGUF header (refreshContextWindow path is
-//     also implicit via Download→refresh, but Get→contextWindowForBlob
-//     is the user-visible entry point);
-//   - the value is written to the persistent storage (storeContextWindow);
-//   - a second Registry pointed at the same root surfaces the value
-//     via loadContextWindow without re-parsing the file.
 func TestRegistry_ContextWindow_PersistsAcrossReopen(t *testing.T) {
 	dir := t.TempDir()
 	storage := storagestub.NewInMemoryService()

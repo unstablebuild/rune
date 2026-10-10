@@ -19,11 +19,14 @@ package extension
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -31,10 +34,12 @@ import (
 	gomcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
 	"github.com/unstablebuild/rune-go-sdk/api/semanticapi"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"github.com/unstablebuild/rune-go-sdk/clipboard"
 	"github.com/unstablebuild/rune-go-sdk/handler/handlertest"
 	"github.com/unstablebuild/rune-go-sdk/term"
 
@@ -69,9 +74,6 @@ func TestCompleteChatAddSymbolUsesReferencedSymbols(t *testing.T) {
 	assert.Equal(t, []string{"pkg.A", "pkg.B"}, got)
 }
 
-// TestOpenChatTabUsesDialogueIDAsLabel verifies that the visible tab name is
-// the dialogue's petname ID (e.g. "rolling-fox") and not the internal
-// "rune-agent://<model>/<id>" URI.
 func TestOpenChatTabUsesDialogueIDAsLabel(t *testing.T) {
 	const dialogueID = "rolling-fox"
 	uri, err := dialoguemanager.TabURI(dialogueID, "gpt-5")
@@ -301,8 +303,6 @@ func TestHandleChatRejectsAlreadyOpenDialogue(t *testing.T) {
 	assert.Contains(t, err.Error(), `agent chat "RUNE-256" is already open`)
 }
 
-// A chat's turns mark the tab it was opened in, so the status component
-// must carry the same URI the tab was created with.
 func TestHandleChatTracksTabURIForActivity(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -337,9 +337,6 @@ func TestHandleChatTracksTabURIForActivity(t *testing.T) {
 	assert.Equal(t, wm.gotURI, v.(syncComponent).uri)
 }
 
-// A restored workspace reopens a chat tab through OpenResource, which must
-// return the dialogue the tab URI names, known by that very URI, and leave
-// the tab to the host: it shows the content where it keeps the tab.
 func TestOpenResourceResumesChat(t *testing.T) {
 	const dialogueID = "rolling-fox"
 	chatURI := func(model string) workspaceapi.URI {
@@ -444,10 +441,6 @@ func TestOpenResourceResumesChat(t *testing.T) {
 	}
 }
 
-// A chat's /compact runs through that chat's own agentshell, so the budget
-// set with /max_tokens in the chat must reach the summarize request.
-// Otherwise the summary falls back to the provider's default output cap
-// and a truncation error advising /max_tokens could never be acted on.
 func TestChatCompactUsesChatMaxOutputTokens(t *testing.T) {
 	const dialogueID = "rolling-fox"
 	ctx, cancel := context.WithCancel(context.Background())
@@ -504,13 +497,6 @@ func TestChatCompactUsesChatMaxOutputTokens(t *testing.T) {
 	assert.Equal(t, 50_000, svc.Requests()[0].Request.MaxOutputTokens)
 }
 
-// TestE2ECtrlCDismissesSelectionPrompt drives the chat tab handler
-// end-to-end through the public handlertest.RunHandlerSequence API:
-// the user types "hi" and presses Enter, the scripted LLM emits an
-// ask_user_question tool call which renders a selection prompt, and
-// Ctrl-C must clear that prompt. The two cases compare the rendered
-// frame before and after Ctrl-C, with no access to private dialogue
-// component state.
 func TestE2ECtrlCDismissesSelectionPrompt(t *testing.T) {
 	args := mustJSON(t, map[string]any{
 		"questions": []map[string]any{{
@@ -556,12 +542,6 @@ func TestE2ECtrlCDismissesSelectionPrompt(t *testing.T) {
 	})
 }
 
-// TestE2EMultiSelectSpaceToggles drives a multiSelect ask_user_question
-// prompt through handlertest.RunHandlerSequence, whose <space> token
-// arrives as Key=KeySpace with Ch=0, the shape input backends deliver
-// it in. Enter with nothing checked must leave the prompt open (a nil
-// result would be reported to the agent as a dismissal), <space> must
-// tick the checkbox under the cursor, and Enter must then submit.
 func TestE2EMultiSelectSpaceToggles(t *testing.T) {
 	args := mustJSON(t, map[string]any{
 		"questions": []map[string]any{{
@@ -630,13 +610,6 @@ func TestE2EMultiSelectSpaceToggles(t *testing.T) {
 	})
 }
 
-// TestE2ENoLSPLanguageDisablesAutoDiagnostics is the RUNE-AGENT-96
-// end-to-end regression. The scripted LLM edits a .py file on two
-// consecutive turns through a real apply_patch tool, while the stub LSP
-// reports that no language server is running for python. The first edit
-// must still auto-inject check_file_errors (so the user sees the error
-// once); the second edit must not, because the language was learned to
-// be unsupported for the remainder of the session.
 func TestE2ENoLSPLanguageDisablesAutoDiagnostics(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -715,26 +688,6 @@ func TestE2ENoLSPLanguageDisablesAutoDiagnostics(t *testing.T) {
 	}
 }
 
-// TestE2EUTF8SafetyAcrossAgentLoop is the RUNE-179 end-to-end
-// regression. The scripted LLM walks a workspace that contains:
-//
-//   - utf8.txt: valid UTF-8 text
-//   - latin1.log: text with a stray 0xff byte
-//   - bin.dat: binary blob with a NUL in the first 8 KiB
-//
-// It issues a read_file call against each path and a final grep_files
-// over the workspace before replying with "done". The test then
-// inspects the captured llmapi.Request log to verify:
-//
-//  1. Layer 1 — every outgoing string field is valid UTF-8.
-//  2. Layer 3 — read_file on the binary file returns a BinaryStub that
-//     steers the model toward bash inspection.
-//  3. Layer 3 — read_file on the latin-1 file ends with the U+FFFD
-//     marker and the bad byte is replaced.
-//  4. Layer 3 — read_file on the UTF-8 file is passed through with no
-//     marker.
-//  5. Layer 4 — grep_files for "needle" returns the UTF-8 file but
-//     not the binary blob, even though both contain the literal bytes.
 func TestE2EUTF8SafetyAcrossAgentLoop(t *testing.T) {
 	dir := t.TempDir()
 
@@ -915,13 +868,6 @@ func TestE2EUTF8SafetyAcrossAgentLoop(t *testing.T) {
 		"grep must skip binary files even when their bytes contain the pattern")
 }
 
-// TestE2EPauseTurnResumesAgentLoop drives the chat handler end-to-end
-// through the "agent" command path. The scripted LLM ends the first
-// turn with FinishReasonPause (Anthropic's pause_turn) carrying a
-// partial assistant message, then completes on the resume. The agent
-// loop must re-enter without a user turn, re-sending the partial
-// assistant message, instead of ending with "unexpected finish
-// reason".
 func TestE2EPauseTurnResumesAgentLoop(t *testing.T) {
 	svc := llmtest.New(
 		[]llmapi.ModelEntry{{Provider: "test", Name: "test-model", ContextWindow: 128_000}},
@@ -969,11 +915,6 @@ func TestE2EPauseTurnResumesAgentLoop(t *testing.T) {
 	}, 3*time.Second, 10*time.Millisecond)
 }
 
-// TestE2ERefusalTerminatesCleanly drives the chat handler end-to-end
-// through the "agent" command path. The scripted LLM ends the turn
-// with FinishReasonRefusal. The agent loop must terminate without a
-// resume and without emitting the generic "unexpected finish reason"
-// error: exactly one CreateCompletion call is issued.
 func TestE2ERefusalTerminatesCleanly(t *testing.T) {
 	svc := llmtest.New(
 		[]llmapi.ModelEntry{{Provider: "test", Name: "test-model", ContextWindow: 128_000}},
@@ -1011,14 +952,6 @@ func TestE2ERefusalTerminatesCleanly(t *testing.T) {
 		"refusal must terminate the turn without resuming the agent loop")
 }
 
-// TestE2EEmptyToolResultIsNeverSentEmpty reproduces the mid-turn 400
-// "text content blocks must be non-empty" failure. A bash command that
-// produces no output (and matches no tool hint) returns an empty
-// ToolResult; that empty content flows verbatim into the tool-role
-// message replayed on the next turn. Anthropic rejects an empty
-// tool_result text block, so the agent must guarantee the replayed
-// tool result content is non-empty. The assertion runs at the
-// llmapi.Service boundary — the exact bytes the provider would send.
 func TestE2EEmptyToolResultIsNeverSentEmpty(t *testing.T) {
 	dir := t.TempDir()
 
@@ -1077,12 +1010,6 @@ func TestE2EEmptyToolResultIsNeverSentEmpty(t *testing.T) {
 			"Anthropic rejects it with \"text content blocks must be non-empty\"")
 }
 
-// TestE2ECtrlCDismissesFreeFormPrompt drives the same handler with an
-// ask_user_question call that has no options (free-form text input).
-// The user types "Ali" into the main inputbox; Ctrl-C must dismiss
-// the prompt without submitting the typed text. The third frame
-// asserts that the typed text remains in the inputbox for the user
-// to edit or send as a regular chat message.
 func TestE2ECtrlCDismissesFreeFormPrompt(t *testing.T) {
 	args := mustJSON(t, map[string]any{
 		"questions": []map[string]any{{
@@ -1129,12 +1056,6 @@ func TestE2ECtrlCDismissesFreeFormPrompt(t *testing.T) {
 	})
 }
 
-// TestE2ECtrlCDismissesRequiresInputPrompt covers the PromptInputMode
-// branch of the dialogue handler. ask_user_question never marks an
-// option as RequiresInput, so the fixture installs a synthetic prompt
-// with RequiresInput=true before any user input. Enter selects the
-// only option and transitions to text-input mode; Ctrl-C must dismiss
-// the entire prompt instead of merely leaving text-input mode.
 func TestE2ECtrlCDismissesRequiresInputPrompt(t *testing.T) {
 	h := newPromptHandler(t, promptHandlerOpts{
 		extraPrompt: &dialoguetui.MessageEvent{
@@ -1174,15 +1095,6 @@ func TestE2ECtrlCDismissesRequiresInputPrompt(t *testing.T) {
 	})
 }
 
-// TestE2ESubAgentInheritsQualifiedModel drives the chat handler
-// end-to-end through the production "agent" command path after switching
-// the parent to a different model. The parent emits one `agent` tool call
-// without a model override, which spawns a sub-agent through a real
-// agent.GoroutineSpawner. The sub-agent inherits the parent's active
-// model from context, and the spawner's service factory resolves it
-// through llmarg against a catalog that exposes the same model name under
-// two providers. A bare name would be ambiguous and fail; the test
-// asserts the factory received the provider-qualified active model.
 func TestE2ESubAgentInheritsQualifiedModel(t *testing.T) {
 	const (
 		modelName = "claude-opus-4-8"
@@ -1282,13 +1194,6 @@ func TestE2ESubAgentInheritsQualifiedModel(t *testing.T) {
 	}
 }
 
-// TestPlanSkillSpawnInheritsQualifiedModel reproduces RUNE-258: invoking
-// an agent-type skill via a slash command (e.g. /plan) spawned the
-// sub-agent with the bare model name from ag.Model(), dropping the
-// provider. When the name is registered under multiple providers the
-// spawner's llmarg.Resolve then fails with an ambiguity error. The
-// agent is bound to a fully-qualified model, so the spawn must pass the
-// qualified provider/name to the service factory.
 func TestPlanSkillSpawnInheritsQualifiedModel(t *testing.T) {
 	const (
 		modelName = "claude-opus-4-8"
@@ -1394,12 +1299,6 @@ func TestPlanSkillSpawnInheritsQualifiedModel(t *testing.T) {
 	}
 }
 
-// TestE2EMaxTokensRejectedAboveModelCeiling drives the floating chat
-// handler end-to-end: the user types /max_tokens with a value above the
-// bound model's documented output ceiling. The command must not run —
-// the validation error renders inline and the agent's session override
-// stays unset. claude-sonnet-4-5 caps output at 64000, so 128000 is
-// rejected.
 func TestE2EMaxTokensRejectedAboveModelCeiling(t *testing.T) {
 	model := llmapi.ModelEntry{
 		Provider: "anthropic", Name: "claude-sonnet-4-5", ContextWindow: 200_000,
@@ -1424,17 +1323,6 @@ func TestE2EMaxTokensRejectedAboveModelCeiling(t *testing.T) {
 		"rejected /max_tokens must not apply the session override")
 }
 
-// TestE2ESearchContentSkipsSwapFiles is the end-to-end regression for the
-// agent's file-walking tools leaking editor swap files. The scripted LLM
-// runs search_content for a token that is present in both a tracked file
-// and a sibling .rswp swap file. Because agentools.DefaultTools loads the
-// vctrl gitignore/swap matcher (matching the IDE fuzzy finder), the swap
-// file must be excluded: the captured tool result sent back to the
-// llmapi.Service must surface the tracked file but neither the swap file's
-// name nor its contents.
-//
-// The handler under test is the floating dialogue handler the production
-// "agent" command opens, driven black-box through handlertest.RunHandlerSequence.
 func TestE2ESearchContentSkipsSwapFiles(t *testing.T) {
 	dir := t.TempDir()
 
@@ -1503,8 +1391,6 @@ func TestE2ESearchContentSkipsSwapFiles(t *testing.T) {
 		"search_content must not leak swap file contents to the model")
 }
 
-// MCP servers connect in the background, so the base tool set grows
-// after initialization while chats are already reading it.
 func TestHandlerAddToolsIsConcurrentWithReaders(t *testing.T) {
 	t.Parallel()
 
@@ -1604,4 +1490,324 @@ func TestWarnPendingMCPServersReportsConnecting(t *testing.T) {
 	default:
 		t.Fatal("expected a pending-MCP warning event")
 	}
+}
+
+func TestWebBrowserDirIsInWorkspaceHostDataDir(t *testing.T) {
+	tests := []struct {
+		name    string
+		root    string
+		err     error
+		want    string
+		wantErr string
+	}{
+		{
+			name: "local workspace",
+			root: "/Users/u/.rune",
+			want: "/Users/u/.rune/agent-browser",
+		},
+		{
+			name: "remote workspace server with its own data directory",
+			root: "/home/dev/.runedev",
+			want: "/home/dev/.runedev/agent-browser",
+		},
+		{
+			name:    "data directory not found",
+			err:     os.ErrNotExist,
+			wantErr: "resolve the data directory on the workspace host",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := webBrowserDir(context.Background(), fakeInstallRoot{root: tt.root, err: tt.err})
+
+			if tt.wantErr != "" {
+				assert.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestHandlerWebBrowser(t *testing.T) {
+	const dir = "/home/dev/.runedev/agent-browser"
+	tests := []struct {
+		name       string
+		browserDir string
+		lookupErr  error
+		want       bool
+	}{
+		{name: "installed", browserDir: dir, want: true},
+		{name: "not installed", browserDir: dir, lookupErr: errors.New("exit status 1")},
+		{name: "no data directory on the workspace host"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			exec := &lookupExec{stdout: "/opt/bin/agent-browser\n", err: tt.lookupErr}
+			fs := &dirRecordingFS{}
+			h := &aiEditorHandler{
+				ctx:        context.Background(),
+				executor:   exec,
+				fs:         fs,
+				browserDir: tt.browserDir,
+			}
+
+			tool := h.webBrowser("chat-1")
+
+			if tt.browserDir == "" {
+				assert.Empty(t, exec.commands(), "nothing to look up without a directory to run in")
+			}
+			if !tt.want {
+				assert.Nil(t, tool)
+				return
+			}
+			require.NotNil(t, tool)
+
+			result := tool.Execute(context.Background(), `{"command":["get","title"]}`)
+			require.False(t, result.IsError, result.Content)
+			cmds := exec.commands()
+			run := cmds[len(cmds)-1]
+			assert.Equal(t, "/opt/bin/agent-browser", run.Path)
+			assert.Equal(t, dir, run.Dir)
+			assert.Contains(t, run.Env, "AGENT_BROWSER_SOCKET_DIR="+dir+"/sockets")
+			assert.Equal(t, []string{dir}, fs.dirs)
+		})
+	}
+}
+
+type recordingNotifications struct {
+	stubNotifications
+	calls     int
+	lastLevel browserapi.NotificationLevel
+	lastMsg   string
+	lastArgs  []any
+}
+
+func (r *recordingNotifications) Notify(level browserapi.NotificationLevel, format string, args ...any) (string, error) {
+	r.calls++
+	r.lastLevel = level
+	r.lastMsg = format
+	r.lastArgs = args
+	return "", nil
+}
+
+type failingClipboard struct {
+	err error
+}
+
+func (f *failingClipboard) Copy(string, clipboard.Data) error {
+	return f.err
+}
+
+func (f *failingClipboard) Paste(string) (clipboard.Data, error) {
+	return clipboard.Data{}, f.err
+}
+
+func TestExtensionDialogue_LinkClick_CopiesToClipboard(t *testing.T) {
+	clip := clipboard.NewInMemory()
+	noti := &recordingNotifications{}
+	ret := &aiEditorHandler{
+		clip: clip,
+		n:    noti,
+	}
+	// The dialogue holds its lock while it calls OnLinkClick.
+	mu := new(sync.Mutex)
+	mu.Lock()
+	defer mu.Unlock()
+	ret.cfg.OnLinkClick = newLinkClickHandler(mu, ret.clip, ret.n)
+
+	// Valid https URL
+	u, err := url.Parse("https://example.com/repo")
+	require.NoError(t, err)
+	handled := ret.cfg.OnLinkClick(u)
+	assert.True(t, handled)
+
+	data, err := clip.Paste(clipboard.DefaultRegisterID)
+	require.NoError(t, err)
+	assert.Equal(t, "https://example.com/repo", data.Text)
+	assert.Equal(t, browserapi.LevelSuccess, noti.lastLevel)
+	assert.Contains(t, noti.lastMsg, "copied URL %s to clipboard")
+
+	// Valid http URL
+	uHTTP, err := url.Parse("http://example.com/docs")
+	require.NoError(t, err)
+	handled = ret.cfg.OnLinkClick(uHTTP)
+	assert.True(t, handled)
+	data, err = clip.Paste(clipboard.DefaultRegisterID)
+	require.NoError(t, err)
+	assert.Equal(t, "http://example.com/docs", data.Text)
+
+	// Non-http URL (fragment / anchor)
+	noti.calls = 0
+	uAnchor, err := url.Parse("#section")
+	require.NoError(t, err)
+	handled = ret.cfg.OnLinkClick(uAnchor)
+	assert.False(t, handled)
+	assert.Equal(t, 0, noti.calls)
+
+	// Non-http URL (file scheme)
+	noti.calls = 0
+	uFile, err := url.Parse("file:///etc/passwd")
+	require.NoError(t, err)
+	handled = ret.cfg.OnLinkClick(uFile)
+	assert.False(t, handled)
+	assert.Equal(t, 0, noti.calls)
+
+	// Clipboard error notification
+	failClip := &failingClipboard{err: errors.New("clipboard failure")}
+	retFail := &aiEditorHandler{
+		clip: failClip,
+		n:    noti,
+	}
+	retFail.cfg.OnLinkClick = newLinkClickHandler(mu, retFail.clip, retFail.n)
+	handled = retFail.cfg.OnLinkClick(u)
+	assert.True(t, handled)
+	assert.Equal(t, browserapi.LevelError, noti.lastLevel)
+	assert.Contains(t, noti.lastMsg, "copy URL to clipboard: %v")
+}
+
+// dialogueLock is a dialogue's sync.Locker. It counts the misuse a
+// sync.Mutex would make a fatal error instead, so a test can report it.
+type dialogueLock struct {
+	mu         sync.Mutex
+	held       atomic.Bool
+	badUnlocks atomic.Int32
+}
+
+func (l *dialogueLock) Lock() {
+	l.mu.Lock()
+	l.held.Store(true)
+}
+
+func (l *dialogueLock) Unlock() {
+	if !l.held.Swap(false) {
+		l.badUnlocks.Add(1)
+		return
+	}
+	l.mu.Unlock()
+}
+
+// linkClickIO is a clipboard and notifications that record each call,
+// marking the ones made while lock was held.
+type linkClickIO struct {
+	stubNotifications
+	clipboard.Register
+	lock    *dialogueLock
+	copyErr error
+	panics  bool
+	calls   []string
+}
+
+func (r *linkClickIO) Copy(registerID string, data clipboard.Data) error {
+	r.record("copy " + data.Text)
+	if r.panics {
+		panic("clipboard utility crashed")
+	}
+	if r.copyErr != nil {
+		return r.copyErr
+	}
+	return r.Register.Copy(registerID, data)
+}
+
+func (r *linkClickIO) Notify(
+	_ browserapi.NotificationLevel, format string, args ...any,
+) (string, error) {
+	r.record(fmt.Sprintf(format, args...))
+	return "", nil
+}
+
+func (r *linkClickIO) record(call string) {
+	if r.lock.held.Load() {
+		call += " (locked)"
+	}
+	r.calls = append(r.calls, call)
+}
+
+func TestDialogueLinkClickLock(t *testing.T) {
+	const (
+		width  = 40
+		height = 10
+		link   = "https://example.com/rune"
+	)
+	tests := []struct {
+		name      string
+		link      string
+		copyErr   error
+		panics    bool
+		wantCalls []string
+	}{
+		{
+			name:      "copy runs unlocked",
+			link:      link,
+			wantCalls: []string{"copy " + link, "copied URL " + link + " to clipboard"},
+		},
+		{
+			name:      "failed copy notifies unlocked",
+			link:      link,
+			copyErr:   errors.New("clipboard unavailable"),
+			wantCalls: []string{"copy " + link, "copy URL to clipboard: clipboard unavailable"},
+		},
+		{
+			name:      "panicking copy hands the lock back",
+			link:      link,
+			panics:    true,
+			wantCalls: []string{"copy " + link},
+		},
+		{
+			name: "declined link does no I/O",
+			link: "#section",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lock := &dialogueLock{}
+			io := &linkClickIO{
+				Register: clipboard.NewInMemory(),
+				lock:     lock,
+				copyErr:  tt.copyErr,
+				panics:   tt.panics,
+			}
+			h := &aiEditorHandler{clip: io, n: io}
+			comp := h.newDialogueComponent(lock)
+			dh, tx, _ := dialoguetui.Handler(context.Background(), lock, comp, term.NopInterrupter())
+			defer close(tx)
+			dh.Resize(width, height)
+			comp.AddSendMessageMarkdown("[Rune](" + tt.link + ")")
+			w := term.NewStringWriter(width, height)
+			dh.Draw(w)
+			pos, ok := cellOf(w, width, "Rune")
+			require.True(t, ok, "link drawn")
+
+			click := func() {
+				dh.Handle(term.Event{
+					Type: term.EventMouse, Key: term.MouseLeft, MouseX: pos.X, MouseY: pos.Y,
+				})
+			}
+			if tt.panics {
+				assert.Panics(t, click)
+			} else {
+				click()
+			}
+
+			assert.Equal(t, tt.wantCalls, io.calls)
+			assert.Zero(t, lock.badUnlocks.Load(), "unlocked while not held")
+			assert.False(t, lock.held.Load(), "dialogue still holds its lock")
+		})
+	}
+}
+
+// cellOf returns the screen cell where text starts in w.
+func cellOf(w *term.StringWriter, width int, text string) (term.Coordinates, bool) {
+	cells, want := w.Cells(), []rune(text)
+	for i := range cells {
+		n := 0
+		for n < len(want) && i+n < len(cells) && cells[i+n].Ch == want[n] {
+			n++
+		}
+		if n == len(want) {
+			return term.Coordinates{X: i % width, Y: i / width}, true
+		}
+	}
+	return term.Coordinates{}, false
 }

@@ -34,31 +34,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
+	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/workspace/workspacessh"
 )
 
-// TestIntegrationTerminalShell exercises the protocol contract used by
-// vte.Component when the user opens a terminal in an SSH workspace:
-// the IDE sends an empty Cmd.Path and empty Cmd.Args, and the remote
-// fileScheme is responsible for turning that into the user's login
-// shell on the *remote* host.
-//
-// Regression scenario: a remote host advertises a login shell at a
-// path that exists on a typical interactive shell's view of the
-// filesystem but not on disk in the way fork/exec needs (e.g.
-// $SHELL=/usr/bin/bash on a host that only ships /bin/bash). With
-// the buggy resolveLoginShell, the remote fileScheme would forward
-// the bogus path straight into exec.CommandContext and surface the
-// confusing error "fork/exec /usr/bin/bash: no such file or
-// directory" all the way back through the gRPC channel to the IDE.
-//
-// We reproduce that here by installing a tiny login-shell wrapper on
-// the container that exports SHELL=/usr/bin/bash before delegating
-// to /bin/sh, then chsh-ing the test user to use it. SSH then sets
-// SHELL=/usr/bin/bash for the runesvc process, exactly mirroring the
-// shape of the bug. The test passes only if the executor falls back
-// to a real shell on disk instead of forwarding the broken path.
 func TestIntegrationTerminalShell(t *testing.T) {
 	SkipIfNoDocker(t)
 	EnsureImage(t)
@@ -312,34 +293,92 @@ func chshUser(t *testing.T, id, user, shell string) {
 		strings.TrimSpace(string(out)))
 }
 
-// TestIntegrationTerminalSurvivesKeepaliveIdle is the end-to-end proof
-// for the too_many_pings GOAWAY storm that drops terminals over SSH.
-//
-// A terminal is an active server-streaming StartCommand RPC that stays
-// open for the life of the remote process while no data flows during
-// idle. The SSH-tunneled gRPC client pings every clientKeepalive.Time
-// (10s). With an open stream the server enforces its
-// EnforcementPolicy.MinTime: a bare grpc.NewServer() uses MinTime 5m,
-// so every 10s ping arrives "too soon" and earns a strike. After
-// maxPingStrikes (2) — on the 3rd offending ping, ~30-40s after the
-// stream opened — the server sends GOAWAY ENHANCE_YOUR_CALM /
-// too_many_pings and tears down the single HTTP/2 connection carried
-// over the SSH pipe. That kills the terminal stream (surfacing "context
-// canceled") and forces a reconnect that re-runs remote provisioning.
-//
-// We open a long-lived remote process to hold the stream, keep it idle
-// well past the strike threshold, then assert two things that only hold
-// once NewSchemeServer's enforcement permits the client cadence:
-//   - the stream did not die early: the process watcher reports no exit
-//     before we cancel it ourselves;
-//   - no reconnect occurred: WithProvisionManifest makes every
-//     connection emit exactly one opening provision Notify (see
-//     TestConnectSchemeProvisionAppliesGUIEnv), and that count is
-//     unchanged across the idle window.
-//
-// Before the fix this fails: the stream is torn down by GOAWAY around
-// 30-40s and maintainConnection re-dials. After the fix the ping
-// cadence is permitted and the stream survives.
+func TestIntegrationTerminalLoginShellAppliesRuneEnvironment(t *testing.T) {
+	SkipIfNoDocker(t)
+	EnsureImage(t)
+	t.Parallel()
+
+	c := StartContainer(t, SSHDScenario{
+		PublicKeyFile:     "/id_ed25519.pub",
+		InstallRuneBinary: true,
+	})
+	chshUser(t, c.ID, "test", "/bin/bash")
+
+	// The image's /etc/profile assigns PATH outright, as Debian's does, and
+	// the user's profile overrides a variable that gui.env also sets. The
+	// runesvc stand-in reads gui.env from gui_env in the data directory.
+	const setup = `set -e
+home="$(getent passwd test | cut -d: -f6)"
+mkdir -p "$home/.rune"
+printf '%s\n' 'RUNE_E2E_VAR=from-gui-env' 'PATH=$RUNE_DATADIR/tools/bin:$PATH' \
+	> "$home/.rune/gui_env"
+printf '%s\n' 'export RUNE_E2E_VAR=from-profile' 'export RUNE_E2E_PROFILE=read' \
+	> "$home/.profile"
+chown -R test "$home/.rune" "$home/.profile"
+printf %s "$home"`
+	out, err := exec.Command("docker", "exec", c.ID, "sh", "-c", setup).Output()
+	require.NoError(t, err, "set up gui_env and profile: %s", exitStderr(err))
+	dataDir := string(out) + "/.rune"
+
+	keyPath := PrivateKeyPath(t, "id_ed25519")
+	s := newSchemeIntegration(t, c.HostPort, config.MapConfig(map[string]any{
+		"private_keys": []any{keyPath},
+		"timeout":      "20s",
+		"insecure":     true,
+	}))
+
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	pty, err := s.NewPty(ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = pty.Master.Close()
+		_ = pty.Slave.Close()
+	})
+	var output bytes.Buffer
+	done := make(chan struct{})
+	go debug.CapturePanicReport(func() {
+		defer close(done)
+		_, _ = output.ReadFrom(pty.Master)
+	})
+
+	ch := make(chan error, 1)
+	_, err = s.StartCommand(ctx, workspaceapi.Cmd{
+		SysProcAttr: &syscall.SysProcAttr{Setsid: true, Setctty: true},
+		Stdin:       pty.Slave,
+		Stdout:      pty.Slave,
+		Stderr:      pty.Slave,
+		Watcher:     workspaceapi.ChanProcessWatcher(ch),
+	})
+	require.NoError(t, err)
+
+	// The terminal echoes this input, so the assertions below match only
+	// the expanded values, never the literal variable references.
+	_, err = pty.Master.Write([]byte(
+		`echo "PATH<$PATH>" "VAR<$RUNE_E2E_VAR>" "PROFILE<$RUNE_E2E_PROFILE>"; exit` + "\n"))
+	require.NoError(t, err)
+
+	select {
+	case <-ch:
+	case <-ctx.Done():
+		t.Fatalf("timed out waiting for the terminal shell to exit")
+	}
+	_ = pty.Slave.Close()
+	<-done
+
+	got := output.String()
+	assert.Contains(t, got, "PROFILE<read>",
+		"the login shell must read the user's profile; got %q", got)
+	assert.Contains(t, got, "VAR<from-gui-env>",
+		"gui.env must win over the user's profile; got %q", got)
+	assert.Contains(t, got, "PATH<"+dataDir+"/bin:"+dataDir+"/tools/bin:",
+		"Rune's data dir and the gui.env PATH entries must lead the PATH "+
+			"that /etc/profile assigned; got %q", got)
+	assert.Contains(t, got, ":/usr/bin:",
+		"the PATH /etc/profile assigned must follow; got %q", got)
+}
+
 func TestIntegrationTerminalSurvivesKeepaliveIdle(t *testing.T) {
 	SkipIfNoDocker(t)
 	EnsureImage(t)
@@ -362,20 +401,12 @@ func TestIntegrationTerminalSurvivesKeepaliveIdle(t *testing.T) {
 		"insecure":     true,
 	})
 
-	// A non-empty manifest makes every connection re-run provisioning,
-	// which emits exactly one opening Notify per connection. That Notify
-	// count is our reconnect detector.
-	ui := &notifyRecordingUI{}
-	schemeFn := workspacessh.New(ui,
-		workspacessh.WithProvisionManifest(func() string {
-			return "pkg-a@1.0.0,pkg-b@2.0.0"
-		}))
-	scheme, err := schemeFn(context.Background(), cfg, uri)
+	scheme, err := workspacessh.New(errorUI{})(context.Background(), cfg, uri)
 	require.NoError(t, err)
 	defer scheme.Close()
 
-	// Drive the initial connect and settle the first provisioning burst
-	// before opening the long-lived stream we care about.
+	// Drive the initial connect before opening the long-lived stream we
+	// care about.
 	deadline := time.Now().Add(20 * time.Second)
 	var fi any
 	for time.Now().Before(deadline) {
@@ -388,9 +419,7 @@ func TestIntegrationTerminalSurvivesKeepaliveIdle(t *testing.T) {
 	require.NoError(t, err, "initial connect must complete the bootstrap")
 	require.NotNil(t, fi)
 
-	provisionsBefore := len(ui.messages())
-	require.GreaterOrEqual(t, provisionsBefore, 1,
-		"the first connection must have provisioned at least once")
+	serverBefore := remoteServerPID(t, scheme)
 
 	// Open a long-lived remote process. StartCommand is a server-
 	// streaming RPC, so this keeps a gRPC stream active with no data
@@ -432,8 +461,35 @@ func TestIntegrationTerminalSurvivesKeepaliveIdle(t *testing.T) {
 			"would have killed it")
 	require.NotNil(t, fi)
 
-	assert.Equal(t, provisionsBefore, len(ui.messages()),
+	assert.Equal(t, serverBefore, remoteServerPID(t, scheme),
 		"no reconnect must have occurred during the idle window: a new "+
-			"provisioning burst means the connection was torn down "+
+			"remote server means the connection was torn down "+
 			"(too_many_pings) and maintainConnection re-dialed")
+}
+
+// remoteServerPID returns the pid of the remote workspace server, which
+// is the parent of the commands it runs. Every connection starts a new
+// server.
+func remoteServerPID(t *testing.T, scheme schemeapi.Scheme) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	var stdout bytes.Buffer
+	ch := make(chan error, 1)
+	_, err := scheme.StartCommand(ctx, workspaceapi.Cmd{
+		Path:    "sh",
+		Args:    []string{"-c", "echo $PPID"},
+		Stdout:  &stdout,
+		Watcher: workspaceapi.ChanProcessWatcher(ch),
+	})
+	require.NoError(t, err)
+	select {
+	case err := <-ch:
+		require.NoError(t, err)
+	case <-ctx.Done():
+		t.Fatalf("timed out reading the remote server pid")
+	}
+	pid := strings.TrimSpace(stdout.String())
+	require.NotEmpty(t, pid)
+	return pid
 }

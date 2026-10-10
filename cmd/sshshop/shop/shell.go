@@ -26,14 +26,14 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/iterator"
 
 	"unstable.build/rune/internal/browser"
-	"unstable.build/rune/internal/ide/ideshell"
+	"unstable.build/rune/internal/ide/console/ideconsole"
 )
 
 func (r *Root) mustInitShellTab() {
 	if r.shellTab != nil {
 		return
 	}
-	registry := ideshell.NewRegistry()
+	registry := ideconsole.NewRegistry()
 	registry.Register("help", "Show available commands", shopHelpHandler{r: registry})
 	r.registerShellCommands(registry)
 	h := repl.New(registry, r.scheduleNextTick, r.interrupter,
@@ -45,7 +45,7 @@ func (r *Root) mustInitShellTab() {
 }
 
 type shopHelpHandler struct {
-	r *ideshell.CommandRegistry
+	r *ideconsole.CommandRegistry
 }
 
 func (h shopHelpHandler) HandleCommand(
@@ -72,7 +72,7 @@ func (h shopHelpHandler) Help(
 	).HandleCommand(context.Background(), repl.Command{}, repl.NopProgressWriter())
 }
 
-func (r *Root) registerShellCommands(reg *ideshell.CommandRegistry) {
+func (r *Root) registerShellCommands(reg *ideconsole.CommandRegistry) {
 	reg.Register("download", "Download the sshshop CLI", newStaticShellCommand(
 		"Download",
 		"A dedicated sshshop CLI is coming soon.",

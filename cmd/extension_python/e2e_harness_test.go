@@ -38,6 +38,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/cmd/extension_python/pyshim"
 	"unstable.build/rune/internal/extension/langext"
+	"unstable.build/rune/internal/extension/langext/langexttest"
 )
 
 // fakeWindowManager replays a scripted key sequence into every floated
@@ -374,7 +375,7 @@ func runExtensionOnDirWith(
 		notify,
 		lsp,
 		editor,
-		fakeInstaller{fs: realFS{root: dir}, root: ""},
+		&langexttest.Installer{},
 		config.NopConfig(),
 		dataDir,
 		storage,

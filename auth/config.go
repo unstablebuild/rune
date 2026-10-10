@@ -45,8 +45,8 @@ const (
 )
 
 // APIURL, TokenURL, MgmtTokenURL, AuthURL, DeviceAuthURL, JWKSURL,
-// ClientID, and SignupURL are the auth0/signup endpoints baked into the
-// binary at build time.
+// ClientID, HeadlessClientID and SignupURL are the auth0/signup
+// endpoints baked into the binary at build time.
 var (
 	APIURL = "https://dev-fv7z5qrer6vkxhxf.us.auth0.com/api/v2/"
 	// TokenURL is used for the end-user / first-party API oauth2 flow and
@@ -63,6 +63,8 @@ var (
 	JWKSURL       = "https://dev-fv7z5qrer6vkxhxf.us.auth0.com/.well-known/jwks.json"
 	ClientID      = "AhY5YlLUiEjOXNFmmyw4Nve32Hp0ag22"
 	SignupURL     = "https://unstable-build-blue-dev.web.app/signup"
+	// HeadlessClientID is the tenant's "Rune Headless" application.
+	HeadlessClientID = "qcNGC5OI17C02YePk34a3A2mfo3LAcx6"
 )
 
 // Config represents a full oauth2 configuration for clients and servers to use.
@@ -82,6 +84,12 @@ type Config struct {
 	// the Management API audience is not addressable through Auth0
 	// custom domains.
 	MgmtTokenURL string
+	// HeadlessClientID is the oauth2 client `rune --headless` signs in
+	// and refreshes through instead of ClientID. Tokens obtained through
+	// it are the only ones the API server marks RPCUser.ServeOnly. The
+	// API server always serves one; a config without it comes from a
+	// server that predates serve-only machines.
+	HeadlessClientID string `json:"headless_client_id"`
 	oauth2.Config
 }
 
@@ -134,6 +142,7 @@ func DefaultNativeConfig(api *url.URL) Config {
 		SignupURL:             SignupURL,
 		MgmtTokenURL:          MgmtTokenURL,
 		PackageKeyringArmored: packageKeyringArmored,
+		HeadlessClientID:      HeadlessClientID,
 		Config: oauth2.Config{
 			ClientID: ClientID,
 			Scopes: []string{
@@ -184,6 +193,11 @@ func ServeNativeConfig(logger *log.Logger, api *url.URL) (http.Handler, error) {
 	cfg := DefaultNativeConfig(api)
 	if err := validateConfig(cfg); err != nil {
 		return nil, err
+	}
+	// Clients tolerate a config without it from older servers; this
+	// server must not be one, or no headless machine can sign in.
+	if cfg.HeadlessClientID == "" {
+		return nil, errors.New("unusable oauth2 config: no headless client")
 	}
 
 	data, err := json.Marshal(cfg)

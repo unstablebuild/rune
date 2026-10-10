@@ -17,8 +17,10 @@
 package dialoguetui
 
 import (
+	"net/url"
 	"time"
 
+	"github.com/unstablebuild/rune-go-sdk/clipboard"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/component/markdown"
@@ -158,13 +160,20 @@ type ComponentConfig struct {
 	SelectionConfig SelectionConfig
 
 	// MarkdownConfig, when non-nil, configures the markdown renderer
-	// used for received messages. A nil value uses markdown.DefaultConfig().
+	// used for received messages. A nil value uses DefaultMarkdownConfig().
 	MarkdownConfig *markdown.Config
 
 	// ReasoningMarkdownConfig, when non-nil, configures the markdown
 	// renderer used for reasoning text. A nil value derives a config from
 	// MarkdownConfig styled with ReasoningStringConfig's attributes.
 	ReasoningMarkdownConfig *markdown.Config
+
+	// Clipboard, when non-nil, enables MarkdownConfig.CodeBlockCopy for
+	// transcript code blocks; clicking the icon copies the block's source
+	// to the default register and swaps the icon for
+	// MarkdownConfig.CodeBlockCopiedIcon until the pointer leaves it. The
+	// icon is only drawn when MarkdownConfig.CodeBlockPadding has room for it.
+	Clipboard clipboard.Register
 
 	// DurationPrecision, when positive, truncates tool call durations
 	// to this precision (e.g. time.Second shows "1s" instead of "1.234s").
@@ -224,6 +233,20 @@ type ComponentConfig struct {
 	// StatusBar configures the dialogue's bottom status row. A
 	// zero value leaves the bar disabled and the layout unchanged.
 	StatusBar StatusBarConfig
+
+	// OnLinkClick is called when a markdown link is clicked in the messages area.
+	// Returning true marks the click as handled and suppresses text selection.
+	// A nil callback ignores clicks.
+	OnLinkClick func(*url.URL) bool
+}
+
+// DefaultMarkdownConfig returns the markdown config the transcript uses
+// when ComponentConfig.MarkdownConfig is nil.
+func DefaultMarkdownConfig() *markdown.Config {
+	cfg := markdown.DefaultConfig()
+	cfg.HeaderPrefix = false
+	cfg.CodeBlockPadding = markdown.Padding{Top: 1, Right: 2, Bottom: 1, Left: 2}
+	return &cfg
 }
 
 // InputBoxConfig holds styling configuration for the compose input

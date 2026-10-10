@@ -287,8 +287,6 @@ func TestRegistryRegisterReplacement(t *testing.T) {
 	})
 }
 
-// MCP servers Add tools to a registry while agents may be reading it
-// concurrently; new tools must be visible to subsequent lookups.
 func TestRegistryAddConcurrentWithReads(t *testing.T) {
 	t.Parallel()
 

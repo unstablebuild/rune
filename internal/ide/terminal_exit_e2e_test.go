@@ -39,11 +39,6 @@ import (
 	"unstable.build/rune/internal/workspace"
 )
 
-// TestE2ETerminalTabExit runs a real process in a terminal on a real
-// pty and lets it exit. A tab whose process failed must stay open with
-// an editor on its output, drained of color, showing the error as the
-// executor reported it; a clean exit, or a failure outside a tab,
-// drops the terminal.
 func TestE2ETerminalTabExit(t *testing.T) {
 	const width, height = 40, 14
 

@@ -73,10 +73,6 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
-// Abandoning a completion must silence the values the extension is still
-// streaming for it: the editor cancels the completion when the extension
-// supports it, and drops late values without logging an unknown-stream
-// warning until the extension reports the completion done.
 func TestCommandClientStreamCompleteCancelLifecycle(t *testing.T) {
 	cases := []struct {
 		name           string
@@ -253,9 +249,6 @@ func TestCommandClientStreamHandleCommandWaiter(t *testing.T) {
 	}
 }
 
-// A reply for a command dispatched without a Waiter must reach the
-// fire-and-forget handleCommand channel (the logger); a reply for a
-// command dispatched with a Waiter must reach the waiter instead.
 func TestCommandClientStreamHandleResponseRouting(t *testing.T) {
 	stream := newWaitableServerStream()
 	c := newCommandClientStream(context.Background(), stream, true, true)
@@ -295,10 +288,6 @@ func TestCommandClientStreamHandleResponseRouting(t *testing.T) {
 	}
 }
 
-// Interleaved waiting and non-waiting commands on one stream must each
-// receive their own reply in send order: because the wire reply has no
-// correlation id, a registered waiter must not greedily consume a reply
-// belonging to a different command sent between it and its own reply.
 func TestCommandClientStreamHandleResponseFIFO(t *testing.T) {
 	stream := newWaitableServerStream()
 	c := newCommandClientStream(context.Background(), stream, true, true)
@@ -344,11 +333,6 @@ func TestCommandClientStreamHandleResponseFIFO(t *testing.T) {
 	}
 }
 
-// Teardown must never mis-deliver: when the extension drops a reply (it
-// only does so as its stream context is cancelled, command_stream.go), no
-// further replies arrive and receiveMessages exits, so a still-pending
-// waiter unblocks via context cancellation rather than receiving the
-// wrong command's result off the FIFO.
 func TestCommandClientStreamHandleResponseDropOnTeardown(t *testing.T) {
 	stream := newWaitableServerStream()
 	streamCtx, cancelStream := context.WithCancel(context.Background())

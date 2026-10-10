@@ -94,7 +94,7 @@ func TestPkgConfigRequirements(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			got, err := pkgConfigRequirements(
-				tt.filename, []byte(tt.data), "pkg", "1", "/data", "modal",
+				tt.filename, []byte(tt.data), "pkg", "1", "modal",
 			)
 			if tt.wantErr {
 				require.Error(t, err)
@@ -187,9 +187,9 @@ func TestInstallPackageRequirements(t *testing.T) {
 		require.NoError(t, err)
 		n.RequireNoErrorNotification()
 
-		_, ok := m.PackageVersionInUse(depID)
+		_, ok := versionInUse(t, m, depID)
 		assert.True(t, ok, "requirement must be installed")
-		_, ok = m.PackageVersionInUse(parentID)
+		_, ok = versionInUse(t, m, parentID)
 		assert.True(t, ok, "dependent package must be installed")
 
 		cfg := readUserConfigMap(t, m.configPath)
@@ -260,7 +260,7 @@ func TestInstallPackageRequirements(t *testing.T) {
 			ctx, parentID, "1", repl.NopProgressWriter()))
 		n.RequireNoErrorNotification()
 
-		version, ok := m.PackageVersionInUse(depID)
+		version, ok := versionInUse(t, m, depID)
 		require.True(t, ok)
 		assert.Equal(t, release.Version("1"), version,
 			"installed requirement must not be upgraded")
@@ -280,7 +280,7 @@ func TestInstallPackageRequirements(t *testing.T) {
 		require.Error(t, err)
 		assert.ErrorIs(t, err, ErrPackageNotFound)
 
-		_, ok := m.PackageVersionInUse(parentID)
+		_, ok := versionInUse(t, m, parentID)
 		assert.False(t, ok, "aborted install must not promote the package")
 
 		_, statErr := os.Stat(makeStagingDirname(datadir, parentID, "1"))
@@ -310,7 +310,7 @@ func TestInstallPackageRequirements(t *testing.T) {
 			context.Background(), parentID, "1", repl.NopProgressWriter())
 		require.Error(t, err)
 
-		_, ok := m.PackageVersionInUse(parentID)
+		_, ok := versionInUse(t, m, parentID)
 		assert.False(t, ok, "aborted install must not promote the package")
 	})
 
@@ -339,9 +339,9 @@ func TestInstallPackageRequirements(t *testing.T) {
 		require.NoError(t, err)
 		n.RequireNoErrorNotification()
 
-		_, ok := m.PackageVersionInUse(parentID)
+		_, ok := versionInUse(t, m, parentID)
 		assert.True(t, ok)
-		_, ok = m.PackageVersionInUse(depID)
+		_, ok = versionInUse(t, m, depID)
 		assert.True(t, ok)
 	})
 
@@ -359,7 +359,7 @@ func TestInstallPackageRequirements(t *testing.T) {
 		require.NoError(t, err)
 		n.RequireNoErrorNotification()
 
-		_, ok := m.PackageVersionInUse(parentID)
+		_, ok := versionInUse(t, m, parentID)
 		assert.True(t, ok)
 	})
 
@@ -383,7 +383,7 @@ func TestInstallPackageRequirements(t *testing.T) {
 		require.NoError(t, err)
 		n.RequireNoErrorNotification()
 
-		_, ok := m.PackageVersionInUse(depID)
+		_, ok := versionInUse(t, m, depID)
 		assert.True(t, ok, "star-declared requirement must be installed")
 
 		cfg := readUserConfigMap(t, m.configPath)

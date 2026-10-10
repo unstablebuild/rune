@@ -27,20 +27,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestStdConnCloseConcurrent exercises the contract documented by the
-// FIXME on stdConn: concurrent Close() calls must be goroutine-safe
-// AND the close hook must run at most once.
-//
-// gRPC's Close path (used by remoteScheme.Close) and the watcher
-// goroutine in connectScheme can both call into the dialed net.Conn at
-// roughly the same time when an SSH workspace tears down — for example
-// when the IDE shuts down while the remote process is also exiting.
-// Without synchronization, callHook reads s.closeHook, then writes nil
-// to it, and finally invokes the captured func. Two goroutines racing
-// through that sequence both observe the non-nil hook and invoke it
-// twice, which surfaces in production as duplicate "ssh connection
-// closed unexpectedly" notifications and in tests as a `-race` data
-// race on the func value.
 func TestStdConnCloseConcurrent(t *testing.T) {
 	// Two pipes wired into a single stdConn — the same shape
 	// connectScheme installs in production.

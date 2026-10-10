@@ -18,23 +18,16 @@ package text
 
 import (
 	"github.com/unstablebuild/rune-go-sdk/term"
-	"unstable.build/rune/internal/ide/syntax"
 )
-
-var _ indentService = (*syntax.Tree)(nil)
 
 type selectionService interface {
 	SelectionExpand(rng term.Range) (term.Range, bool)
 	SelectionShrink(rng term.Range, caret term.Coordinates) (term.Range, bool)
 }
 
-var _ selectionService = (*syntax.Tree)(nil)
-
 type commentService interface {
 	CommentCoverage(rng term.Range) ([]term.Range, bool)
 }
-
-var _ commentService = (*syntax.Tree)(nil)
 
 type indentService interface {
 	IndentationAt(line int) (int, bool)

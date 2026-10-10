@@ -32,6 +32,7 @@ import (
 	"unstable.build/rune/internal/handler/command"
 	"unstable.build/rune/internal/handler/handlertest"
 	"unstable.build/rune/internal/ide/syntax"
+	"unstable.build/rune/internal/ide/syntax/treesitter"
 	"unstable.build/rune/internal/text"
 	"unstable.build/rune/internal/text/texttest"
 	"unstable.build/rune/internal/text/vi"
@@ -81,9 +82,10 @@ func newPythonTestCase(
 	tcfg := text.DefaultConfig()
 	// Share cfg's mutex-serializing scheduler; see newTestCase in
 	// go_test.go for why an independent inline scheduler races with
-	// syntax.Tree's async parser init on the shared cell.Buffer.
+	// treesitter.Tree's async parser init on the shared cell.Buffer.
 	tcfg.ScheduleNextTick = cfg.ScheduleNextTick
 	tcfg.Syntax = cfg
+	tcfg.SyntaxTree = treesitter.New
 	tcfg.PkgManager = pkgs
 	tcfg.EventPublisher = func(ev term.Event) bool {
 		interrupt(context.Background())
@@ -101,7 +103,7 @@ func newPythonTestCase(
 	}
 }
 
-func newPythonTree(t *testing.T) (*syntax.Tree, func()) {
+func newPythonTree(t *testing.T) (*treesitter.Tree, func()) {
 	pkgs := newInstalledPythonPkgManager(t)
 	_, tree, cleanup := newPythonTreeWithContent(t, pkgs, pyFileContent)
 	return tree, cleanup
@@ -109,7 +111,7 @@ func newPythonTree(t *testing.T) (*syntax.Tree, func()) {
 
 func newPythonTreeWithContent(
 	t *testing.T, pkgs syntax.PkgManager, content string,
-) (*text.Component, *syntax.Tree, func()) {
+) (*text.Component, *treesitter.Tree, func()) {
 	var wg sync.WaitGroup
 	ready := func(context.Context) error {
 		wg.Done()
@@ -126,7 +128,7 @@ func newPythonTreeWithContent(
 
 	cref, ok := h.(*text.StatusBar)
 	require.True(t, ok)
-	tree, ok := cref.Buffer().View().(*syntax.Tree)
+	tree, ok := cref.Buffer().View().(*treesitter.Tree)
 	require.True(t, ok)
 
 	return comp, tree, cleanup
@@ -167,7 +169,7 @@ func TestPythonTreeQueryIntegration(t *testing.T) {
 
 		matches, err := iterator.ToSlice(context.Background(), it)
 		require.NoError(t, err)
-		assert.Equal(t, []syntax.Match{
+		assert.Equal(t, []treesitter.Match{
 			{CaptureName: "local.definition.function", LineString: "def greet(name):", Line: 5},
 			{CaptureName: "local.definition.function", LineString: "    def __init__(self, prefix):", Line: 13},
 		}, matches)
@@ -182,7 +184,7 @@ func TestPythonJumpToSyntaxMethodIntegration(t *testing.T) {
 	defer cleanup()
 
 	cursor := new(syntaxCommandCursor)
-	_, handler := syntax.Commands(cursor, tree)
+	_, handler := tree.Commands(cursor)
 	cmd := textapi.Command{
 		Name: "jumptoast",
 		Args: []string{
@@ -219,7 +221,7 @@ func TestPythonJumpToSyntaxQuotedLineIntegration(t *testing.T) {
 	defer cleanup()
 
 	cursor := new(syntaxCommandCursor)
-	_, handler := syntax.Commands(cursor, tree)
+	_, handler := tree.Commands(cursor)
 	cmd := textapi.Command{
 		Name: "jumptoast",
 		Args: []string{

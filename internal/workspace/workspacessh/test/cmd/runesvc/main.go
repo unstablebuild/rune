@@ -38,7 +38,7 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
-	"gopkg.in/yaml.v3"
+	"unstable.build/rune/internal/ide/hostenv"
 	"unstable.build/rune/internal/workspace"
 	"unstable.build/rune/internal/workspace/workspacerpc"
 	"unstable.build/rune/internal/workspace/workspacessh"
@@ -49,11 +49,6 @@ func main() {
 		"local workspace path to expose over the workspace gRPC server")
 	dataDir := flag.String("datadir", "",
 		"data directory used by the workspace server")
-	install := flag.String("install", "",
-		"CSV manifest of id@version packages to provision (mirrors the "+
-			"real rune -x flag). When non-empty, runesvc loads "+
-			"~/.rune/config.yaml and applies its gui.env block to this "+
-			"process before serving, exercising the provisioning ordering.")
 	flag.Parse()
 
 	if *workspacePath == "" {
@@ -61,21 +56,24 @@ func main() {
 		os.Exit(2)
 	}
 
-	// Mirror the real -x path's ordering: provisioning (install + config
-	// load + gui.env apply) happens before the server starts serving, so a
-	// child process spawned over the workspace RPC inherits the applied env.
-	if *install != "" {
-		emitProvisionProgress(*install)
-		installPackageBins(*dataDir, *install)
-		applyRemoteGUIEnv(*dataDir)
-	}
-
 	uri, err := workspaceapi.ParseURI("file://" + *workspacePath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "runesvc: parse uri:", err)
 		os.Exit(3)
 	}
-	scheme, err := workspace.NewFileScheme(
+	if *dataDir == "" {
+		*dataDir = defaultDataDir()
+	}
+	// Set up the host environment the way `rune -x` does, so terminals
+	// started here exercise the real shell rc and gui.env mechanism.
+	shellRCDir, err := workspace.InstallShellRC(*dataDir)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "runesvc: install shell rc:", err)
+	}
+	if err := hostenv.New(*dataDir, shellRCDir).Apply(guiEnv(*dataDir)); err != nil {
+		fmt.Fprintln(os.Stderr, "runesvc: apply host environment:", err)
+	}
+	scheme, err := workspace.NewFileSchemeFunc(*dataDir, shellRCDir)(
 		context.Background(), config.NopConfig(), uri)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "runesvc: new file scheme:", err)
@@ -88,14 +86,19 @@ func main() {
 			func(context.Context, workspaceapi.Cmd) error { return nil }))
 	defer func() { _ = server.Stop() }()
 
-	// Stand in for a slow pre-serving phase (e.g. a lengthy install). The
+	// Stand in for a slow pre-serving phase (e.g. a slow config load). The
 	// delay happens before StartSchemeServer emits the ServerReady sentinel,
 	// so an e2e test can prove connectScheme waits for readiness and does not
 	// hand back a client while stdout carries no gRPC server yet.
 	sleepServeDelay(*dataDir)
 
+	grpcServer := workspacessh.NewSchemeServer()
+	if err := servePackages(grpcServer, filepath.Join(*dataDir, "bin")); err != nil {
+		fmt.Fprintln(os.Stderr, "runesvc: serve packages:", err)
+		os.Exit(6)
+	}
 	if err := workspacessh.StartSchemeServer(
-		log.New(), server, workspacessh.NewSchemeServer()); err != nil {
+		log.New(), server, grpcServer); err != nil {
 		fmt.Fprintln(os.Stderr, "runesvc: start scheme server:", err)
 		os.Exit(5)
 	}
@@ -106,9 +109,6 @@ func main() {
 // deterministic pre-serving delay without a test-only flag on the production
 // connectScheme launch. A missing or malformed file is a no-op.
 func sleepServeDelay(dataDir string) {
-	if dataDir == "" {
-		dataDir = defaultDataDir()
-	}
 	if dataDir == "" {
 		return
 	}
@@ -125,38 +125,20 @@ func sleepServeDelay(dataDir string) {
 	time.Sleep(d)
 }
 
-// applyRemoteGUIEnv loads the remote data directory's config.yaml and applies
-// its gui.env block to this process, standing in for the real -x server's
-// post-install config load.
-// Failures warn and continue, matching the never-abort provisioning policy.
-func applyRemoteGUIEnv(dataDir string) {
-	if dataDir == "" {
-		dataDir = defaultDataDir()
-	}
-	if dataDir == "" {
-		fmt.Fprintln(os.Stderr, "runesvc: cannot resolve data dir")
-		return
-	}
-	configPath := filepath.Join(dataDir, "config.yaml")
-	data, err := os.ReadFile(configPath)
+// guiEnv stands in for the gui.env block `rune -x` reads from the user
+// config: KEY=VALUE lines in the data directory's gui_env file, if present.
+func guiEnv(dataDir string) config.Config {
+	env := map[string]any{}
+	data, err := os.ReadFile(filepath.Join(dataDir, "gui_env"))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "runesvc: read %s: %v\n", configPath, err)
-		return
+		return config.MapConfig(env)
 	}
-	var doc struct {
-		GUI struct {
-			Env map[string]any `yaml:"env"`
-		} `yaml:"gui"`
-	}
-	if err := yaml.Unmarshal(data, &doc); err != nil {
-		fmt.Fprintf(os.Stderr, "runesvc: parse %s: %v\n", configPath, err)
-		return
-	}
-	for k, v := range doc.GUI.Env {
-		if err := os.Setenv(k, fmt.Sprintf("%v", v)); err != nil {
-			fmt.Fprintf(os.Stderr, "runesvc: setenv %s: %v\n", k, err)
+	for line := range strings.Lines(string(data)) {
+		if k, v, ok := strings.Cut(strings.TrimRight(line, "\n"), "="); ok {
+			env[k] = v
 		}
 	}
+	return config.MapConfig(env)
 }
 
 func defaultDataDir() string {
@@ -170,79 +152,4 @@ func defaultDataDir() string {
 		return ""
 	}
 	return filepath.Join(home, ".rune")
-}
-
-// emitProvisionProgress streams JSON-Lines provisioning progress to stderr for
-// each package in the manifest, standing in for the real -x server's install
-// loop. The local side (workspacessh) forwards each line to a UI notification,
-// so the e2e test can assert the ordered stream reaches the browser.
-func emitProvisionProgress(manifest string) {
-	entries := strings.Split(manifest, ",")
-	total := len(entries)
-	for i, entry := range entries {
-		id, ver, _ := strings.Cut(entry, "@")
-		index := i + 1
-		emit(workspacessh.ProvisionProgress{
-			Index: index, Total: total, Package: id, Version: ver,
-			Phase: workspacessh.ProvisionPhaseInstalling,
-		})
-		emit(workspacessh.ProvisionProgress{
-			Index: index, Total: total, Package: id, Version: ver,
-			Phase: workspacessh.ProvisionPhaseActivating,
-		})
-	}
-	emit(workspacessh.ProvisionProgress{
-		Index: total, Total: total, Phase: workspacessh.ProvisionPhaseDone,
-	})
-	// Mirror the real -x path: after installs finish, a finalizing checkpoint
-	// keeps the local progress bar alive through the config/env phase before
-	// serving. The bar is closed by the local side at ServerReady.
-	emit(workspacessh.ProvisionProgress{
-		Phase: workspacessh.ProvisionPhaseFinalizing,
-	})
-}
-
-func emit(p workspacessh.ProvisionProgress) {
-	line, err := workspacessh.EncodeProvisionProgress(p)
-	if err != nil {
-		return
-	}
-	fmt.Fprint(os.Stderr, line)
-}
-
-// installPackageBins stands in for a real package install by writing an
-// executable for each manifest entry into the remote data directory's bin
-// directory and prepending it to PATH, exactly as the real -x server does via
-// setupRuneBinPATH.
-// Each fake tool is named after the package id and prints a recognizable line
-// so an e2e test can run it through the workspace executor and prove the
-// provisioned toolchain is on the served process's PATH.
-func installPackageBins(dataDir, manifest string) {
-	if dataDir == "" {
-		dataDir = defaultDataDir()
-	}
-	if dataDir == "" {
-		fmt.Fprintln(os.Stderr, "runesvc: cannot resolve data dir for bin install")
-		return
-	}
-	binDir := filepath.Join(dataDir, "bin")
-	if err := os.MkdirAll(binDir, 0o755); err != nil {
-		fmt.Fprintf(os.Stderr, "runesvc: mkdir %s: %v\n", binDir, err)
-		return
-	}
-	for entry := range strings.SplitSeq(manifest, ",") {
-		id, ver, _ := strings.Cut(entry, "@")
-		if id == "" {
-			continue
-		}
-		toolPath := filepath.Join(binDir, id)
-		script := fmt.Sprintf("#!/bin/sh\necho \"%s ok %s\"\n", id, ver)
-		if err := os.WriteFile(toolPath, []byte(script), 0o755); err != nil {
-			fmt.Fprintf(os.Stderr, "runesvc: write %s: %v\n", toolPath, err)
-			continue
-		}
-	}
-	if err := os.Setenv("PATH", binDir+":"+os.Getenv("PATH")); err != nil {
-		fmt.Fprintf(os.Stderr, "runesvc: set PATH: %v\n", err)
-	}
 }

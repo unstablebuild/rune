@@ -47,10 +47,6 @@ func (l *errLSP) ExecuteRequest(
 	return nil, l.err
 }
 
-// Extension requests travel over gRPC: a server-side failure arrives as
-// a status error whose rendering buries the actual rust-analyzer
-// message under "rpc error: code = Unknown desc = ...". The user-facing
-// error must carry only the server's message.
 func TestExecRequestStripsGRPCStatusNoise(t *testing.T) {
 	cases := []struct {
 		name string
