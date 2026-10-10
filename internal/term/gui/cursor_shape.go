@@ -61,12 +61,12 @@ type CursorShapeMessage struct {
 // under the cursor that it doesn't know about.
 // ObjectUnderCursors are usually represent GUI objects, like links, scrollbars,
 // and resize borders. However, there are 3 special values that do not represent
-// GUI objects: None, Empty, and NotInWindow.
+// GUI objects: none, Empty, and NotInWindow.
 type ObjectUnderCursor uint8
 
 const (
-	// None is a special value only used for a new and empty CursorShapeMessage.
-	None ObjectUnderCursor = 0 + iota
+	// none is a special value only used for a new and empty CursorShapeMessage.
+	none ObjectUnderCursor = iota
 	// Empty is a special value representing a cell that has no object.
 	Empty
 	// NotInWindow is a special value used when the cursor is outside a window.
@@ -98,41 +98,53 @@ func (a cursorShapeArbiter) arbitrate() {
 	for {
 		select {
 		case msg := <-a.cursorShapeChan:
-			// Compare previously winningMsg to incoming msg
+			// Consider the previously winningMsg
 			switch winningMsg.object {
-			case None:
+			case none:
 				// There is no winningMsg yet, so the incoming msg auto wins
 				winningMsg = msg
 				
 			case NotInWindow:
-				// A graphical component sends an NotInWindow object when the mouse goes
-				// goes outside a window. There is no contest here because there are no
+				// A graphical component sent an NotInWindow object because the mouse went
+				// outside a window. There is no contest here because there are no
 				// objects outside windows, or at least the arbitrator assumes so.
-				winningMsg = msg
+				// The winningMsg stays the winner.
+				break
 				
 			case Empty:
 				// The previously winning graphical component sent an Empty object because
 				// it believes there is truly nothing in its cell. However, it may not know
 				// about other components that may have objects at that cell. Those
 				// components win instead.
-				switch msg.object {
-				case Empty:
-					break
-				default:
-					// If other components have objects at that cell, they win.
-					winningMsg = msg
-				}
+				// We then only need to consider the special objects: none cannot be sent
+				// as it is not exported, NotInWindow wins, and Empty wins (arbitrary tie).
+				// In every case, the incoming message wins.
+				winningMsg = msg
 			
 			default:
-				// All other objects overwrite the winner. This is not a problem if there
-				// is only one object under the cursor at a time
-				winningMsg = msg
+				// Here the previously winningMsg is an actual object that exists, like a
+				// Link, a ResizeBorder, or a ScrollBar.
+				// Consider what the incoming object is:
+				switch msg.object {
+				case Empty:
+					// Empty object doesn't win against an actual object; the actual object stays the winner.
+					break
+					
+				case NotInWindow:
+					// The incoming message is the NotInWindow object, so it wins (see comment above).
+					winningMsg = msg
+					
+				default:
+					// All other objects overwrite the winner. This is not a problem if there
+					// is only one object under the cursor at a time.
+					winningMsg = msg
+				}
 			}
 			
 		default:
 			// If winningMsg is not brand new, meaning it is one of the received messages,
 			// set the winning cursor shape. If there are no messages received, do nothing.
-			if winningMsg.object != None {
+			if winningMsg.object != none {
 				ebiten.SetCursorShape(winningMsg.cursorShape)
 			}
 			return
@@ -154,7 +166,7 @@ type ResizeBorderHandler struct {}
 // ok indicates whether there is a window under the cursor;
 // win would be undefined if not.
 func (ResizeBorderHandler) OnMouseover(mousePos term.Coordinates, win component.Window, ok bool) {
-	// If there is no window, reset the cursor to default.
+	// If there is no window, tell the arbiter to reset the cursor to default.
 	if !ok {
 		CursorShapeArbiter().SendToArbiter(
 			CursorShapeMessage{NotInWindow, ebiten.CursorShapeDefault})
@@ -181,8 +193,8 @@ func (ResizeBorderHandler) OnMouseover(mousePos term.Coordinates, win component.
 			ebiten.SetCursorShape(ebiten.CursorShapeNSResize)
 		default:
 			// All other cells "have Empty objects".
-			CursorShapeArbiter().SendToArbiter(
-				CursorShapeMessage{Empty, ebiten.CursorShapeNotAllowed})
+			//CursorShapeArbiter().SendToArbiter(
+				//CursorShapeMessage{Empty, ebiten.CursorShapeNotAllowed})
 		}
 	} else {
 		// Cursor for floating windows.

@@ -261,13 +261,8 @@ func (wm *WindowManager) Handle(ev term.Event) (exit bool, handled bool) {
 			// to reset the cursor to default shape before the control flow here exits.
 			// The behaviour of setting the cursor shape is hidden inside OnMouseover
 			// when ok is false instead of directly sending a message to
-			// CursorShapeArbiter like this:
-			// ```
-			// CursorShapeArbiter().SendToArbiter(
-			// 	CursorShapeMessage{Empty, ebiten.CursorShapeDefault})
-			// ```
-			// because these methods are in the GUI package which the term handler is
-			// not supposed to import.
+			// CursorShapeArbiter, because its methods are in the GUI package which
+			// the term handler is not supposed to import.
 			if wm.config.ResizeBorder != nil {
 				wm.config.ResizeBorder.OnMouseover(
 					term.Coordinates{},
