@@ -63,6 +63,18 @@ func TestDetectSpecs(t *testing.T) {
 			want:  []*symbolresolve.Spec{symbolresolve.Zig},
 		},
 		{
+			name:  "typescript, tsx and javascript",
+			files: []string{"src/main.ts", "src/App.tsx", "lib/util.cjs"},
+			want: []*symbolresolve.Spec{
+				symbolresolve.TypeScript, symbolresolve.TSX, symbolresolve.JavaScript,
+			},
+		},
+		{
+			name:  "declaration files alone select typescript",
+			files: []string{"types/index.d.ts"},
+			want:  []*symbolresolve.Spec{symbolresolve.TypeScript},
+		},
+		{
 			name:  "mixed go and python",
 			files: []string{"main.go", "app.py"},
 			want:  []*symbolresolve.Spec{symbolresolve.Go, symbolresolve.Python},

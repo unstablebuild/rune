@@ -333,15 +333,35 @@ func (c *Component) CodeBlockCopyTargets() []CodeBlockCopyTarget {
 
 // HoverCodeBlockCopy highlights the copy icon under pos, in viewport
 // coordinates, and clears any other highlight. A pos outside every icon
-// clears them all. It reports whether the rendering changed.
+// clears them all. Leaving an icon also reverts a copied icon, set by
+// MarkCodeBlockCopied, to the copy icon. It reports whether the rendering
+// changed.
 func (c *Component) HoverCodeBlockCopy(pos term.Coordinates) (changed bool) {
 	c.eachCopyTarget(func(cb *codeBlock, t CodeBlockCopyTarget) {
-		if hovered := t.Contains(pos); hovered != cb.copyHovered {
+		hovered := t.Contains(pos)
+		if hovered != cb.copyHovered {
 			cb.copyHovered = hovered
+			changed = true
+		}
+		if !hovered && cb.copied {
+			cb.copied = false
 			changed = true
 		}
 	})
 	return changed
+}
+
+// MarkCodeBlockCopied draws Config.CodeBlockCopiedIcon in place of the
+// copy icon under pos, in viewport coordinates, until HoverCodeBlockCopy
+// moves off it. It reports whether pos was on a copy icon.
+func (c *Component) MarkCodeBlockCopied(pos term.Coordinates) (found bool) {
+	c.eachCopyTarget(func(cb *codeBlock, t CodeBlockCopyTarget) {
+		if t.Contains(pos) {
+			cb.copied = true
+			found = true
+		}
+	})
+	return found
 }
 
 func (c *Component) eachCopyTarget(fn func(*codeBlock, CodeBlockCopyTarget)) {

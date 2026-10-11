@@ -1,0 +1,11 @@
+{
+  "name": "@mono/b",
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "@mono/a": "workspace:*"
+  },
+  "scripts": {
+    "test": "echo b tests via $npm_config_user_agent"
+  }
+}

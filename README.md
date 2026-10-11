@@ -32,9 +32,46 @@ https://github.com/user-attachments/assets/4ab84f7f-47c8-47af-9d32-7c69afd02669
 
 ## install
 
+On macOS and Linux, this installs the latest release, which keeps itself up to date:
+
 ```bash
 curl -fsSL https://rune.build/install.sh | sh
 ```
+
+See the [getting started guide](https://docs.rune.build/) for requirements and your first
+steps in Rune.
+
+**Homebrew** (macOS and Linux):
+
+```bash
+brew install unstablebuild/tap/rune
+```
+
+**Debian and Ubuntu**: download the `.deb` for your architecture from the
+[latest release](https://github.com/unstablebuild/rune/releases/latest), then:
+
+```bash
+sudo apt install ./rune_*.deb
+```
+
+**Arch Linux and Omarchy**: Rune is in the AUR as
+[`rune-ide`](https://aur.archlinux.org/packages/rune-ide):
+
+```bash
+yay -S rune-ide
+```
+
+Or, without an AUR helper:
+
+```bash
+git clone https://aur.archlinux.org/rune-ide.git
+cd rune-ide
+makepkg -si
+```
+
+Packages are updated by your package manager rather than by Rune itself. On other Linux
+distributions, use the install command above, or
+[build from source](https://docs.rune.build/#other-ways-to-install).
 
 ## development
 

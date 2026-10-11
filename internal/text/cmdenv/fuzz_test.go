@@ -18,8 +18,11 @@ package cmdenv
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
+
+	"mvdan.cc/sh/v3/syntax"
 )
 
 // FuzzExpand fuzzes the POSIX-style parameter/arithmetic expander
@@ -125,6 +128,83 @@ func FuzzExpand(f *testing.F) {
 		}
 		if got != "$" {
 			t.Fatalf("Expand(`\\$`) = %q, want %q", got, "$")
+		}
+	})
+}
+
+// FuzzExpandBody checks that no value substituted into a ! / !! body
+// starts a command, and that a substituted value reaches the command
+// unchanged.
+func FuzzExpandBody(f *testing.F) {
+	for _, v := range adversarialValues {
+		f.Add(v)
+	}
+	bodies := shellContextBodies()
+	f.Fuzz(func(t *testing.T, v string) {
+		if strings.ContainsRune(v, 0) {
+			// Shell words cannot hold NUL.
+			return
+		}
+		src := Source(func(name string) (string, bool) {
+			return v, name == "X"
+		})
+		for _, c := range bodies {
+			line, err := ExpandBody(context.Background(), c.body, src)
+			if err != nil {
+				continue
+			}
+			out, started, err := runShell(line)
+			if len(started) > 0 {
+				t.Fatalf("%s: %q started %q", c.name, line, started)
+			}
+			if err == nil && c.want != nil && out != c.want(v) {
+				t.Fatalf("%s: %q printed %q, want %q", c.name, line, out, c.want(v))
+			}
+		}
+	})
+}
+
+// FuzzExpandBodyTemplate checks that no body, valid shell or not,
+// makes ExpandBody panic, and that a line it returns parses with the
+// command structure of the body.
+func FuzzExpandBodyTemplate(f *testing.F) {
+	for _, c := range shellContextBodies() {
+		f.Add(c.body, "a b")
+		f.Add(c.body, "$(touch pwned)")
+	}
+	f.Add("", "")
+	f.Add("${X", "'")
+	f.Add("$$X $X", "\\")
+	f.Add("cat <<$X\nx\nEOF", "EOF")
+	f.Add("$X() { :; }", "f")
+	f.Add("a[$X]=1", "0")
+	f.Add("echo $X >$X <<$X\n$X\n$X", "EOF")
+	f.Fuzz(func(t *testing.T, body, v string) {
+		src := Source(func(name string) (string, bool) {
+			return v, name == "X"
+		})
+		line, err := ExpandBody(context.Background(), body, src)
+		if err != nil {
+			return
+		}
+		tmpl, substs := bodyTemplate(body, src)
+		if len(substs) == 0 {
+			if line != tmpl {
+				t.Fatalf("no substitution, but %q became %q", body, line)
+			}
+			return
+		}
+		parser := syntax.NewParser()
+		want, err := parser.Parse(strings.NewReader(tmpl), "")
+		if err != nil {
+			t.Fatalf("%q was returned for a body that does not parse: %v", line, err)
+		}
+		got, err := parser.Parse(strings.NewReader(line), "")
+		if err != nil {
+			t.Fatalf("%q does not parse: %v", line, err)
+		}
+		if !slices.Equal(shellStructure(want, substs), shellStructure(got, nil)) {
+			t.Fatalf("%q has a different structure from %q", line, body)
 		}
 	})
 }

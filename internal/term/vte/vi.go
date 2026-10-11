@@ -58,6 +58,11 @@ type viHandler struct {
 	edited          bool
 	vteParserEdited bool
 
+	// active is set while the vi view is on screen, in modal mode or
+	// showing search results, which is when its cursor has to follow the
+	// content that the parser scrolls into history.
+	active bool
+
 	// keeep a copy of vi and all the contents
 	// so it can be accessed synchronously and provide
 	// correct returned handled in Handle.
@@ -83,6 +88,7 @@ func (v *viHandler) init(comp *Component, config Config) {
 	if log.IsLevelEnabled(log.TraceLevel) {
 		v.remote = newLoggingRemote(v.remote)
 	}
+	comp.parserHandler.historyScrolled = v.historyScrolled
 }
 
 func (v *viHandler) doInit(comp parentComponent, config Config) {
@@ -415,28 +421,16 @@ func (v *viHandler) Edit(ctx context.Context, start, end term.Coordinates, str s
 		v.remote.insertChar(ch)
 		if ch == '\n' {
 			to.X = 0
-			// see comment below
-			if to.Y < v.height-1 {
-				to.Y++
-			}
+			to.Y++
 		} else {
 			to.X++
 			if to.X == v.width {
 				prevWrapped = true
 				v.remote.wrapLine()
 				to.X = 0
-				// if we return the "correct" to.Y after wrapping the last line
-				// vi's text.Cursor sets the window coordinates at height, so then
-				// when parser handler scrolls up the content, since cursor uses
-				// window coordinates, the cursor stays there, preventing further updates.
-				// This doesn't happen on text files, because text.Cursor is initialized with Init
-				// rather than InitPerformance, and so it automatically seeks **and corrects
-				// coordinates**, if cursor is out of bounds.
-				// If this method doesn't work well, we can always subscribe to scroll
-				// and correct vi's cursor coordinates.
-				if to.Y < v.height-1 {
-					to.Y++
-				}
+				// to is in content coordinates even when this wrap scrolls the
+				// screen: historyScrolled moves the cursor with the content.
+				to.Y++
 				continue
 			}
 		}
@@ -578,8 +572,43 @@ func (v *viHandler) enterViMode(pos term.Coordinates) {
 
 	v.sync.mu.Lock()
 	defer v.sync.mu.Unlock()
+	v.active = true
 	v.viSetCursorAtScroll(pos)
 	v.scheduleAfterBell(false, v.moveViToBounds)
+}
+
+// deactivate stops the vi cursor from following scrolled content. It must
+// not go through scheduleAfterBell: another bell handshake would send the
+// shell a ctrl-a after the cursor move that leaving modal mode schedules.
+func (v *viHandler) deactivate() {
+	v.sync.mu.Lock()
+	defer v.sync.mu.Unlock()
+	v.active = false
+}
+
+// historyScrolled moves the vi cursor count rows up the content, to account
+// for the screen having scrolled count rows up into history, but never above
+// the top row of the window. It does nothing while the vi view is not on
+// screen. v.sync.mu must be held.
+func (v *viHandler) historyScrolled(count int) {
+	if !v.active {
+		return
+	}
+	// Invariant: once the shell's redraw has been parsed, the vi cursor sits
+	// on the content where the user is typing, inside lastPromptLine.
+	// Otherwise the next Edit is rejected with a bell, or reaches the shell
+	// at the wrong row. text.Cursor stores window coordinates, and with
+	// InvertOffset the window stays anchored to the bottom of the buffer, so
+	// every scroll into history moves the cursor count rows down the content.
+	// Edit cannot compensate in advance: whether and when the screen scrolls
+	// depends on the shell's redraw, which is parsed after Edit returns.
+	pos := v.sync.vi.CursorAtScroll()
+	pos.Y -= count
+	if win, _ := v.sync.scroll.ScrollToWindowCoordinates(pos); win.Y < 0 {
+		// like vi, keep the cursor on screen when its row scrolls away
+		pos.Y -= win.Y
+	}
+	v.viSetCursorAtScroll(pos)
 }
 
 func (v *viHandler) log(level log.Level, line string, params ...any) {

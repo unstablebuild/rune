@@ -116,13 +116,20 @@ func (i *Initializer) Handle(_ context.Context, ev textapi.Event) bool {
 		return false
 	}
 
-	root, found := FindProjectRoot(i.fs, wsRoot, ev.URI, i.cfg.Markers)
+	root, found := i.findRoot(wsRoot, ev.URI)
 	if !found {
 		i.markUnresolved(ev.Type, dir)
 		return false
 	}
 	i.initializeAsync(i.baseCtx, root)
 	return false
+}
+
+func (i *Initializer) findRoot(wsRoot, uri workspaceapi.URI) (Root, bool) {
+	if i.cfg.Outermost {
+		return FindOutermostProjectRoot(i.fs, wsRoot, uri, i.cfg.Markers)
+	}
+	return FindProjectRoot(i.fs, wsRoot, uri, i.cfg.Markers)
 }
 
 // watchEvents defaults to open-only when cfg.WatchEvents is empty.

@@ -459,6 +459,72 @@ func TestMouseDriverSelectionStartPinnedAcrossAutoScroll(t *testing.T) {
 		"selection must keep the originally pressed cell after auto-scroll")
 }
 
+func TestViCursorFollowsContentScrolledIntoHistory(t *testing.T) {
+	t.Parallel()
+	const width, height = 10, 3
+
+	for _, tc := range []struct {
+		name         string
+		maxLines     int
+		cursorWindow term.Coordinates
+		wantCh       rune
+		wantWindow   term.Coordinates
+	}{
+		{
+			name:     "history grows",
+			maxLines: 100, cursorWindow: term.Coordinates{Y: 2, X: 7},
+			wantCh: '1', wantWindow: term.Coordinates{Y: 1, X: 7},
+		},
+		{
+			name:     "history full recycles the oldest row",
+			maxLines: height, cursorWindow: term.Coordinates{Y: 2, X: 7},
+			wantCh: '1', wantWindow: term.Coordinates{Y: 1, X: 7},
+		},
+		{
+			name:     "history disabled rotates the screen",
+			maxLines: 0, cursorWindow: term.Coordinates{Y: 2, X: 7},
+			wantCh: '1', wantWindow: term.Coordinates{Y: 1, X: 7},
+		},
+		{
+			name:     "cursor whose row leaves the screen stays on the top row",
+			maxLines: 100, cursorWindow: term.Coordinates{Y: 0, X: 0},
+			wantCh: 'b', wantWindow: term.Coordinates{Y: 0, X: 0},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := DefaultConfig()
+			cfg.MaxLines = tc.maxLines
+			comp, err := NewComponent(&testExecutor{}, &testExecutor{}, &mockTabManager{}, cfg)
+			require.NoError(t, err)
+			require.NoError(t, comp.Resize(width, height))
+			var v viHandler
+			v.init(comp, cfg)
+			v.Resize(width, height)
+
+			comp.parser.AdvanceBytes([]byte("a\r\nb\r\n$ echo 12"))
+			v.enterViMode(comp.CursorAtScroll())
+			top := comp.CursorAtScroll().Y - (height - 1)
+			v.setCursorAtScroll(term.Coordinates{
+				Y: top + tc.cursorWindow.Y, X: tc.cursorWindow.X,
+			})
+
+			// the shell's redraw after an insert in the middle of the line
+			// pushes its tail past the last column, scrolling the screen
+			comp.parser.AdvanceBytes([]byte("34"))
+
+			pos := v.cursorAtScroll()
+			cells := v.sync.vi.CellView().RawCells()
+			require.Less(t, pos.Y, len(cells))
+			require.Less(t, pos.X, len(cells[pos.Y]))
+			assert.Equal(t, string(tc.wantCh), string(cells[pos.Y][pos.X].Ch),
+				"vi cursor must stay on the content it was on")
+			win, _, _ := v.Cursor()
+			assert.Equal(t, tc.wantWindow, win)
+		})
+	}
+}
+
 type testExecutor struct {
 }
 

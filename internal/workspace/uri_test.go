@@ -205,3 +205,27 @@ func TestURIUnderPrefix(t *testing.T) {
 		})
 	}
 }
+
+func TestSameDocument(t *testing.T) {
+	for _, tc := range []struct {
+		a, b          string
+		caseSensitive bool
+		want          bool
+	}{
+		{"file:///ws/tsconfig.json", "file:///ws/tsconfig.json", true, true},
+		{"file:///Ws/tsconfig.json", "file:///ws/tsconfig.json", true, false},
+		{"file:///Ws/tsconfig.json", "file:///ws/tsconfig.json", false, true},
+		{"file:///ws/a.ts", "file:///ws/b.ts", false, false},
+		{"memory:///Ws/a.ts", "memory:///ws/a.ts", false, false},
+		{"ssh://host/Ws/a.ts", "ssh://host/ws/a.ts", false, false},
+	} {
+		t.Run(fmt.Sprintf("%s %s %v", tc.a, tc.b, tc.caseSensitive), func(t *testing.T) {
+			a, err := workspaceapi.ParseURI(tc.a)
+			require.NoError(t, err)
+			b, err := workspaceapi.ParseURI(tc.b)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, SameDocument(a, b, tc.caseSensitive))
+			assert.Equal(t, tc.want, URIKey(a, tc.caseSensitive) == URIKey(b, tc.caseSensitive))
+		})
+	}
+}

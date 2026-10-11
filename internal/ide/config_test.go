@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -2326,5 +2327,51 @@ func TestFileExplorerEditKeyInvalid(t *testing.T) {
 		assert.Equal(t, term.KeyComb{Key: term.KeyEsc, Mod: term.ModShift},
 			c.fileExplorerEditKey())
 		assert.Contains(t, c.errors, "editor.file_explorer.edit_key")
+	}
+}
+
+func TestMetaOpenURLConfig(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name          string
+		cfg           map[string]any
+		wantCommand   string
+		wantClipboard bool
+		wantErr       bool
+	}{
+		{name: "unset", cfg: map[string]any{}},
+		{name: "system", cfg: map[string]any{"meta_open_url": "system"}},
+		{
+			name:          "clipboard",
+			cfg:           map[string]any{"meta_open_url": "clipboard"},
+			wantClipboard: true,
+		},
+		{
+			name:        "command",
+			cfg:         map[string]any{"meta_open_url": "browser $URL"},
+			wantCommand: "browser $URL",
+		},
+		{name: "blank", cfg: map[string]any{"meta_open_url": "  "}, wantErr: true},
+		{name: "not a string", cfg: map[string]any{"meta_open_url": 1}, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var opened bool
+			c := ideConfig{cfg: tc.cfg, errors: map[string]error{},
+				systemOpenURL: func(*url.URL) error { opened = true; return nil }}
+
+			got := c.metaOpenURL()
+
+			assert.Equal(t, tc.wantCommand, got.command)
+			assert.Equal(t, tc.wantClipboard, got.clipboard)
+			require.NotNil(t, got.system)
+			require.NoError(t, got.system(&url.URL{}))
+			assert.True(t, opened, "the system opener must be the IDE's")
+			if tc.wantErr {
+				assert.Contains(t, c.errors, "meta_open_url")
+			} else {
+				assert.Empty(t, c.errors)
+			}
+		})
 	}
 }

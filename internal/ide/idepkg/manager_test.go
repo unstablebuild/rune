@@ -1082,7 +1082,7 @@ func assertDataDirNotExists(t *testing.T, datadir string, pkgs ...string) {
 }
 
 var goTarExpectedExecutables = []string{
-	"go", "gofmt", "goimports", "gopls", "tree-sitter.so",
+	"go", "gofmt", "goimports", "gopls",
 }
 
 func assertExecutables(t *testing.T, datadir string, expected ...string) {
@@ -3785,7 +3785,7 @@ func TestInstallPackageVersionNonUTF8PAXXattr(t *testing.T) {
 	require.NoError(t, storage.Get(context.Background(), key, &got))
 	assert.Equal(t, pkgID, got.Package)
 	require.Len(t, got.Executables, 1)
-	assert.Equal(t, "tool", got.Executables[0].Name)
+	assert.Equal(t, "bin/tool", got.Executables[0].Name)
 }
 
 // newTestManagerWithLocalStorage is like newTestManager but uses the
@@ -3832,7 +3832,7 @@ func makePAXXattrTarball(t *testing.T) []byte {
 
 	const content = "#!/bin/sh\necho hi\n"
 	hdr := &tar.Header{
-		Name:   "tool",
+		Name:   "bin/tool",
 		Mode:   0o755,
 		Size:   int64(len(content)),
 		Format: tar.FormatPAX,
@@ -4117,14 +4117,15 @@ func TestCopyExecutablesAtomicSwap(t *testing.T) {
 	srcDir := t.TempDir()
 	dstDir := t.TempDir()
 
-	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "ext"),
+	require.NoError(t, os.Mkdir(filepath.Join(srcDir, "bin"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "bin", "ext"),
 		[]byte("new-binary"), 0o755))
 
 	target := filepath.Join(dstDir, "ext")
 	require.NoError(t, os.WriteFile(target, []byte("old-binary"), 0o755))
 	oldInode := fileInode(t, target)
 
-	files := []executableEntry{{Name: "ext", Mode: 0o755}}
+	files := []executableEntry{{Name: "bin/ext", Mode: 0o755}}
 	require.NoError(t, copyExecutables(files, srcDir, dstDir))
 
 	got, err := os.ReadFile(target)
@@ -4147,12 +4148,69 @@ func TestCopyExecutablesAtomicSwap(t *testing.T) {
 func TestCopyExecutablesMissingSource(t *testing.T) {
 	srcDir := t.TempDir()
 	dstDir := t.TempDir()
-	files := []executableEntry{{Name: "missing", Mode: 0o755}}
+	files := []executableEntry{{Name: "bin/missing", Mode: 0o755}}
 	err := copyExecutables(files, srcDir, dstDir)
 	require.Error(t, err)
 	entries, derr := os.ReadDir(dstDir)
 	require.NoError(t, derr)
 	assert.Empty(t, entries, "no temp files left behind on error")
+}
+
+func TestCopyExecutablesSkipsEntriesOutsideBin(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+	// Install records from older releases list executables found anywhere
+	// in the package; reusing such a version must not copy them.
+	files := []executableEntry{
+		{Name: "bin/tool", Mode: 0o755},
+		{Name: "lib/tree-sitter.so", Mode: 0o755},
+		{Name: "pkg/tool/darwin_arm64/link", Mode: 0o755},
+	}
+	for _, f := range files {
+		path := filepath.Join(srcDir, filepath.FromSlash(f.Name))
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+		require.NoError(t, os.WriteFile(path, nil, 0o755))
+	}
+
+	require.NoError(t, copyExecutables(files, srcDir, dstDir))
+
+	entries, err := os.ReadDir(dstDir)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "tool", entries[0].Name())
+}
+
+func TestUntarCollectsOnlyTopLevelBinExecutables(t *testing.T) {
+	t.Parallel()
+	entries := []struct {
+		name string
+		mode int64
+		want bool
+	}{
+		{name: "bin/tool", mode: 0o755, want: true},
+		{name: "./bin/dotted", mode: 0o755, want: true},
+		{name: "bin/readme.txt", mode: 0o644},
+		{name: "bin/.hidden", mode: 0o755},
+		{name: "bin/nested/tool", mode: 0o755},
+		{name: "lib/tree-sitter.so", mode: 0o755},
+		{name: "pkg/tool/darwin_arm64/link", mode: 0o755},
+		{name: "agent-browser/bin/agent-browser", mode: 0o755},
+		{name: "make.bash", mode: 0o755},
+	}
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	var want []executableEntry
+	for _, e := range entries {
+		require.NoError(t, tw.WriteHeader(&tar.Header{Name: e.name, Mode: e.mode}))
+		if e.want {
+			want = append(want, executableEntry{Name: e.name, Mode: e.mode})
+		}
+	}
+	require.NoError(t, tw.Close())
+
+	got, _, err := untar(t.TempDir(), &buf, nil)
+	require.NoError(t, err)
+	assert.Equal(t, want, got)
 }
 
 // mergeStep is one apply iteration in a TestConfigMergeIntegration case:

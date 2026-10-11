@@ -17,7 +17,6 @@
 package ide
 
 import (
-	"net/url"
 	"strings"
 	"testing"
 
@@ -154,44 +153,6 @@ func TestCheatsheetJumpToastFallback(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Contains(t, md, "| `: jumptoast` | Jump to a function or method in the current file |")
-}
-
-func TestOpenCheatsheetLink(t *testing.T) {
-	prev := browseURL
-	t.Cleanup(func() { browseURL = prev })
-
-	var opened []string
-	browseURL = func(urls ...*url.URL) error {
-		for _, u := range urls {
-			opened = append(opened, u.String())
-		}
-		return nil
-	}
-
-	for _, scheme := range []string{"http", "https"} {
-		u := &url.URL{Scheme: scheme, Host: "docs.rune.build", Path: "/learn/vim-editor"}
-		assert.True(t, openCheatsheetLink(u), "%s link must be handled", scheme)
-	}
-	assert.Equal(t, []string{
-		"http://docs.rune.build/learn/vim-editor",
-		"https://docs.rune.build/learn/vim-editor",
-	}, opened)
-
-	opened = nil
-	for _, scheme := range []string{"", "mailto", "file", "#anchor"} {
-		u := &url.URL{Scheme: scheme, Path: "x"}
-		assert.False(t, openCheatsheetLink(u), "%q link must fall through", scheme)
-	}
-	assert.Empty(t, opened, "non-http links must not open a browser")
-}
-
-func TestOpenCheatsheetLinkToleratesError(t *testing.T) {
-	prev := browseURL
-	t.Cleanup(func() { browseURL = prev })
-	browseURL = func(...*url.URL) error { return assert.AnError }
-
-	u := &url.URL{Scheme: "https", Host: "docs.rune.build"}
-	assert.True(t, openCheatsheetLink(u))
 }
 
 func TestCheatsheetFirstWriterWins(t *testing.T) {

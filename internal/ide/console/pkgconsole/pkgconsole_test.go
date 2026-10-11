@@ -43,21 +43,30 @@ import (
 	"unstable.build/rune/internal/ide/idepkg/pkgrpc"
 )
 
-type recordingProgressWriter struct {
-	mu      sync.Mutex
-	samples int
+type progressSample struct {
+	progress, total int64
+	units           string
 }
 
-func (w *recordingProgressWriter) Progress(_, _ int64, _ string) {
+type recordingProgressWriter struct {
+	mu      sync.Mutex
+	samples []progressSample
+}
+
+func (w *recordingProgressWriter) Progress(progress, total int64, units string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.samples++
+	w.samples = append(w.samples, progressSample{progress, total, units})
 }
 
 func (w *recordingProgressWriter) count() int {
+	return len(w.get())
+}
+
+func (w *recordingProgressWriter) get() []progressSample {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.samples
+	return append([]progressSample(nil), w.samples...)
 }
 
 func newHandlerForTest(t *testing.T) (*Handler, *idepkgtest.Notifications) {
@@ -425,7 +434,11 @@ func (f *hostPackageManager) InstallPackageVersion(
 ) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	pw.Progress(1, 1, "B")
+	// Mirrors idepkg.Manager: each install restarts its phases at zero.
+	pw.Progress(1, 4, "MiB downloaded")
+	pw.Progress(3, 4, "MiB downloaded")
+	pw.Progress(1, 2, "MiB extracted")
+	pw.Progress(1, 1, "done")
 	f.inUse[pkgID] = version
 	f.installed = append(f.installed, pkgID)
 	return nil
@@ -479,6 +492,39 @@ func TestHandlerUsesAnyPackageManager(t *testing.T) {
 		require.Len(t, out, 1, tc.args)
 		assert.Contains(t, renderText(t, out[0]), tc.want, tc.args)
 	}
+}
+
+func TestUpdateAllAggregatesProgress(t *testing.T) {
+	t.Parallel()
+	pm := &hostPackageManager{
+		latest:    "2",
+		inUse:     map[string]release.Version{"go": "1", "node": "1", "ripgrep": "2"},
+		installed: []string{"go", "node", "ripgrep"},
+	}
+	h := New(Config{Manager: pm})
+	ctx := context.Background()
+	pw := &recordingProgressWriter{}
+
+	it, err := h.HandleCommand(ctx,
+		repl.Command{Name: CommandName, Args: []string{"update-all"}}, pw)
+	require.NoError(t, err)
+	out, err := iterator.ToSlice(ctx, it)
+	require.NoError(t, err)
+	require.Len(t, out, 1)
+	text := renderText(t, out[0])
+	assert.Contains(t, text, "go: updated to 2")
+	assert.Contains(t, text, "node: updated to 2")
+	assert.Contains(t, text, "ripgrep: already at latest version (2)")
+
+	samples := pw.get()
+	require.NotEmpty(t, samples)
+	for i := 1; i < len(samples); i++ {
+		prev, cur := samples[i-1], samples[i]
+		assert.Equal(t, prev.total, cur.total, "total changed at %d: %v", i, samples)
+		assert.GreaterOrEqual(t, cur.progress, prev.progress,
+			"progress went backwards at %d: %v", i, samples)
+	}
+	assert.Equal(t, progressSample{100, 100, "(2/2 packages)"}, samples[len(samples)-1])
 }
 
 // oldHost runs a Rune that does not serve package management.

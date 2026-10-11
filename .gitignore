@@ -60,6 +60,3 @@ uv.lock
 
 # distribution packaging build outputs (dist/README.md)
 dist/out/
-dist/arch/src/
-dist/arch/rune/
-dist/arch/*.pkg.tar*

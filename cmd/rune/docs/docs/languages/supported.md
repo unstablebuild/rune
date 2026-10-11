@@ -24,7 +24,7 @@ so every supported capability remains available as a language moves up.
 | [Python](./python.md) | Supported |
 | [Rust](./rust.md) | Beta |
 | [Zig](./zig.md) | Beta |
-| TypeScript | Roadmap |
+| [TypeScript and JavaScript](./typescript.md) | Beta |
 
 Beta means the language is complete enough for daily work and shipped
 by default, while its commands and defaults may still change between

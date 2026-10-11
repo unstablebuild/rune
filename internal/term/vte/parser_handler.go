@@ -110,6 +110,11 @@ type parserHandler struct {
 	glyphBuf []vtescreen.Glyph
 
 	graphics graphicsState
+
+	// historyScrolled, when set, is called with sync.mu held after the
+	// primary screen scrolled count rows up into history, which moves
+	// every row above the bottom margin up by count.
+	historyScrolled func(count int)
 }
 
 // use a common api for alternate and primary buffers
@@ -1014,12 +1019,14 @@ func (t *parserHandler) ResetState() {
 	fs := t.fs
 	tempDir := t.tempDir
 	keyboard := t.keyboard
+	historyScrolled := t.historyScrolled
 	*t = parserHandler{}
 	t.init(mu, pty, tm, clipboard, bell, uri,
 		needsAttentionAttr, useTitleAsTabname, maxScrollLength, minWidth,
 		cellPixelSize, fs, tempDir)
 	t.keyboard = keyboard
 	t.keyboard.reset()
+	t.historyScrolled = historyScrolled
 
 	// resize
 	t.sync.altBuf.Resize(width, height)
@@ -1655,6 +1662,9 @@ func (t *parserHandler) scrollUp(count int) bool {
 		buf.ScrollDown(r-(t.height-bottom)-count, r, count)
 	}
 	t.graphicsScrolled(count)
+	if t.historyScrolled != nil {
+		t.historyScrolled(count)
+	}
 	return true
 }
 

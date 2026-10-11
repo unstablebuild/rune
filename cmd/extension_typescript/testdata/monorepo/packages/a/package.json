@@ -1,0 +1,9 @@
+{
+  "name": "@mono/a",
+  "version": "1.0.0",
+  "type": "module",
+  "exports": "./src/index.ts",
+  "scripts": {
+    "test": "echo a tests via $npm_config_user_agent"
+  }
+}

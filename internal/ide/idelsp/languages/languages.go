@@ -278,6 +278,8 @@ var extensionToLanguageID = map[string]string{
 	".js":  "javascript",
 	".mjs": "javascript",
 	".cjs": "javascript",
+	// tree-sitter-javascript parses JSX; there is no separate grammar.
+	".jsx": "javascript",
 
 	// Jinja
 	".jinja":  "jinja",

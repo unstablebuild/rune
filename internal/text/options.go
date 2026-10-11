@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"net/url"
 	"path/filepath"
 	"time"
 
@@ -101,6 +102,10 @@ type Config struct {
 	Clipboard     clipboard.Register
 	OpenRouter    OpenRouter
 	Comments      CommentConfig
+	// OnLinkClick handles a link clicked in a markdown tab and reports
+	// whether it did. Links it declines, or every link when it is nil,
+	// only scroll to the in-document anchors they name.
+	OnLinkClick func(*url.URL) bool
 	// StreamingOpen enables the async streaming file-open path.
 	// When true, OpenFileTab returns a lightweight read-only
 	// streaming handler immediately and runs workspace.Load on a
@@ -801,6 +806,13 @@ func WithEventPublisher(f func(term.Event) bool) Option {
 func WithOpenRouter(r OpenRouter) Option {
 	return func(cfg *Config) {
 		cfg.OpenRouter = r
+	}
+}
+
+// WithOnLinkClick sets Config.OnLinkClick.
+func WithOnLinkClick(fn func(*url.URL) bool) Option {
+	return func(cfg *Config) {
+		cfg.OnLinkClick = fn
 	}
 }
 

@@ -25,13 +25,14 @@ import (
 	"fmt"
 	"image"
 	_ "image/gif"
-	_ "image/jpeg"
-	_ "image/png"
+	"image/jpeg"
+	"image/png"
 	"path/filepath"
 	"strings"
 
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"golang.org/x/image/draw"
 	_ "golang.org/x/image/webp"
 	"unstable.build/rune/cmd/rune-agent/agent"
 	"unstable.build/rune/cmd/rune-agent/agent/utf8validate"
@@ -50,6 +51,11 @@ const maxImageBytes = 5 * 1024 * 1024
 // requests. An image exceeding it on either axis causes the API to
 // reject the entire request with a 400, poisoning the conversation.
 const maxImageEdge = 2000
+
+// maxDecodePixels bounds the memory spent decoding an oversized image
+// for downscaling (~4 bytes per pixel), so a small file declaring huge
+// dimensions cannot exhaust memory.
+const maxDecodePixels = 50_000_000
 
 type readFileTool struct {
 	fs           workspaceapi.FileSystem
@@ -246,9 +252,19 @@ func ImageMediaType(path string) (string, bool) {
 
 // EncodeImageDataURI enforces the model image caps on data and returns a
 // base64 data URI suitable for an llmapi.ContentPartTypeImageURL part.
-// The returned error is user-facing: it explains which cap was exceeded
-// and how to get the image under it.
+// Images exceeding the per-dimension cap are downscaled to fit,
+// preserving aspect ratio; JPEGs are re-encoded as JPEG and every other
+// format as PNG, so the URI's media type may differ from mime. The
+// returned error is user-facing: it explains which cap was exceeded and
+// how to get the image under it.
 func EncodeImageDataURI(path string, data []byte, mime string) (string, error) {
+	if cfg, _, err := image.DecodeConfig(bytes.NewReader(data)); err == nil &&
+		(cfg.Width > maxImageEdge || cfg.Height > maxImageEdge) {
+		data, mime, err = downscaleImage(path, data, cfg)
+		if err != nil {
+			return "", err
+		}
+	}
 	if len(data) > maxImageBytes {
 		return "", fmt.Errorf(
 			"image file %s is too large to send to the model "+
@@ -257,18 +273,47 @@ func EncodeImageDataURI(path string, data []byte, mime string) (string, error) {
 			filepath.Base(path), len(data), maxImageBytes,
 			maxImageBytes/(1024*1024))
 	}
-	if cfg, _, err := image.DecodeConfig(bytes.NewReader(data)); err == nil {
-		if cfg.Width > maxImageEdge || cfg.Height > maxImageEdge {
-			return "", fmt.Errorf(
-				"image file %s dimensions are too large to send "+
-					"to the model (%dx%d px, max %dpx per dimension). "+
-					"Resize or crop the image so neither dimension "+
-					"exceeds %dpx and try again",
-				filepath.Base(path), cfg.Width, cfg.Height,
-				maxImageEdge, maxImageEdge)
-		}
-	}
 	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data), nil
+}
+
+// downscaleImage resizes data so its longest edge is maxImageEdge and
+// returns the re-encoded bytes with their media type.
+func downscaleImage(path string, data []byte, cfg image.Config) ([]byte, string, error) {
+	name := filepath.Base(path)
+	if int64(cfg.Width)*int64(cfg.Height) > maxDecodePixels {
+		return nil, "", fmt.Errorf(
+			"image file %s dimensions are too large to downscale "+
+				"(%dx%d px, max %d pixels). Resize or crop the image so "+
+				"neither dimension exceeds %dpx and try again",
+			name, cfg.Width, cfg.Height, maxDecodePixels, maxImageEdge)
+	}
+	src, format, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, "", fmt.Errorf("decode image file %s to downscale it: %w", name, err)
+	}
+
+	w, h := cfg.Width, cfg.Height
+	if w >= h {
+		w, h = maxImageEdge, max(1, (h*maxImageEdge+w/2)/w)
+	} else {
+		w, h = max(1, (w*maxImageEdge+h/2)/h), maxImageEdge
+	}
+	dst := image.NewRGBA(image.Rect(0, 0, w, h))
+	// CatmullRom keeps screenshot text legible where bilinear blurs it.
+	draw.CatmullRom.Scale(dst, dst.Bounds(), src, src.Bounds(), draw.Src, nil)
+
+	var buf bytes.Buffer
+	mime := "image/png"
+	if format == "jpeg" {
+		mime = "image/jpeg"
+		err = jpeg.Encode(&buf, dst, &jpeg.Options{Quality: 90})
+	} else {
+		err = png.Encode(&buf, dst)
+	}
+	if err != nil {
+		return nil, "", fmt.Errorf("encode downscaled image file %s: %w", name, err)
+	}
+	return buf.Bytes(), mime, nil
 }
 
 func (t *readFileTool) executeImage(ctx context.Context, path string, data []byte, mime string) agent.ToolResult {

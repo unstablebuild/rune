@@ -195,6 +195,12 @@ func (t *NopScheme) ReadDir(string) (
 	panic("unimplemented")
 }
 
+// PathCaseSensitive satisfies workspace.Workspace for fakes embedding
+// NopScheme, keeping exact path matching.
+func (t *NopScheme) PathCaseSensitive() bool {
+	return true
+}
+
 // MkdirAll satisfies schemeapi.Scheme
 func (t *NopScheme) MkdirAll(path string, perm os.FileMode) error {
 	return nil

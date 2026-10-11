@@ -201,45 +201,65 @@ func (h *Handler) handleUpdateAll(
 
 	type result struct {
 		pkg     string
+		inUse   release.Version
 		latest  release.Version
 		updated bool
 		err     error
 	}
 	results := make([]result, len(packages))
-	var wg sync.WaitGroup
-	wg.Add(len(packages))
-	for i := range packages {
-		go debug.CapturePanicReport(func() {
-			defer wg.Done()
-			pkgID := packages[i]
-			results[i].pkg = pkgID
-			inUse, ok, err := h.mgr.PackageVersionInUse(ctx, pkgID)
-			if err != nil {
-				results[i].err = err
-				return
-			}
-			if !ok {
-				results[i].err = fmt.Errorf(
-					"no version of package %s is currently in use", pkgID)
-				return
-			}
-			latest, err := h.getLatestVersion(ctx, pkgID)
-			if err != nil {
-				results[i].err = fmt.Errorf("cannot update package %s: %w", pkgID, err)
-				return
-			}
-			results[i].latest = latest
-			if latest == inUse {
-				return
-			}
-			if err := h.mgr.InstallPackageVersion(ctx, pkgID, latest, pw); err != nil {
-				results[i].err = fmt.Errorf("update package version: %w", err)
-				return
-			}
-			results[i].updated = true
-		})
+	parallel := func(n int, fn func(i int)) {
+		var wg sync.WaitGroup
+		wg.Add(n)
+		for i := range n {
+			go debug.CapturePanicReport(func() {
+				defer wg.Done()
+				fn(i)
+			})
+		}
+		wg.Wait()
 	}
-	wg.Wait()
+
+	// Resolve every package before installing any so the progress bar
+	// knows how many installs it spans from the first sample.
+	parallel(len(packages), func(i int) {
+		pkgID := packages[i]
+		results[i].pkg = pkgID
+		inUse, ok, err := h.mgr.PackageVersionInUse(ctx, pkgID)
+		if err != nil {
+			results[i].err = err
+			return
+		}
+		if !ok {
+			results[i].err = fmt.Errorf(
+				"no version of package %s is currently in use", pkgID)
+			return
+		}
+		latest, err := h.getLatestVersion(ctx, pkgID)
+		if err != nil {
+			results[i].err = fmt.Errorf("cannot update package %s: %w", pkgID, err)
+			return
+		}
+		results[i].inUse = inUse
+		results[i].latest = latest
+	})
+
+	var stale []*result
+	for i := range results {
+		if r := &results[i]; r.err == nil && r.latest != r.inUse {
+			stale = append(stale, r)
+		}
+	}
+	progress := newUpdateProgress(pw, len(stale))
+	parallel(len(stale), func(i int) {
+		r := stale[i]
+		defer progress.finish(i)
+		err := h.mgr.InstallPackageVersion(ctx, r.pkg, r.latest, progress.install(i))
+		if err != nil {
+			r.err = fmt.Errorf("update package version: %w", err)
+			return
+		}
+		r.updated = true
+	})
 
 	var b strings.Builder
 	b.WriteString("## Package updates\n\n")
@@ -256,6 +276,82 @@ func (h *Handler) handleUpdateAll(
 		}
 	}
 	return markdownOutput(b.String()), ret
+}
+
+// updateProgress folds the concurrent installs of `pkg update-all` into one
+// monotonic progress bar. Each install restarts its own phases (download,
+// requirements, extraction) at zero with its own total and units, so relaying
+// them to a shared writer makes the bar jump between packages. Instead every
+// install owns an equal share of the bar that only grows with its furthest
+// sample and fills completely once the install returns, successfully or not.
+type updateProgress struct {
+	pw repl.ProgressWriter
+
+	mu        sync.Mutex
+	fractions []float64
+	finished  int
+	lastPct   int64
+}
+
+func newUpdateProgress(pw repl.ProgressWriter, installs int) *updateProgress {
+	return &updateProgress{
+		pw: pw, fractions: make([]float64, installs), lastPct: -1,
+	}
+}
+
+// install returns the writer the i-th install reports its progress to.
+func (u *updateProgress) install(i int) repl.ProgressWriter {
+	return updateInstallProgress{u: u, i: i}
+}
+
+// finish marks the i-th install as returned.
+func (u *updateProgress) finish(i int) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.fractions[i] = 1
+	u.finished++
+	u.emitLocked(true)
+}
+
+func (u *updateProgress) advance(i int, progress, total int64) {
+	// Terminal samples are dropped so an install only fills its share
+	// through finish, after it has actually returned.
+	if total <= 0 || progress >= total {
+		return
+	}
+	f := float64(progress) / float64(total)
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if f <= u.fractions[i] {
+		return
+	}
+	u.fractions[i] = f
+	u.emitLocked(false)
+}
+
+// emitLocked reports the aggregate unless its percentage is unchanged and
+// force is false, which keeps chatty downloads from flooding the writer.
+func (u *updateProgress) emitLocked(force bool) {
+	var sum float64
+	for _, f := range u.fractions {
+		sum += f
+	}
+	pct := int64(sum / float64(len(u.fractions)) * 100)
+	if pct == u.lastPct && !force {
+		return
+	}
+	u.lastPct = pct
+	u.pw.Progress(pct, 100,
+		fmt.Sprintf("(%d/%d packages)", u.finished, len(u.fractions)))
+}
+
+type updateInstallProgress struct {
+	u *updateProgress
+	i int
+}
+
+func (w updateInstallProgress) Progress(progress, total int64, _ string) {
+	w.u.advance(w.i, progress, total)
 }
 
 func (h *Handler) handleUpdateCheck(

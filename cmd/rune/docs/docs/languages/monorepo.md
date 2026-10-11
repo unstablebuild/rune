@@ -1,5 +1,5 @@
 ---
-sidebar_position: 8
+sidebar_position: 9
 ---
 
 # Monorepos
@@ -26,6 +26,7 @@ begins:
 | [Go](./go.md) | `go.mod`, `go.sum`, `go.work` |
 | Rust | `Cargo.toml` |
 | Python | `pyproject.toml`, `requirements.txt` (or `.lock`, `.in`), `.venv` |
+| [TypeScript and JavaScript](./typescript.md) | `tsconfig.json`, `jsconfig.json`, `package.json` |
 
 Discovery happens in two ways:
 
@@ -43,12 +44,20 @@ worker, you end up with one language server per project, each scoped to
 its own subtree. Opening a Go file in one service never pulls the Rust
 crate or the Python worker into that server's view.
 
+TypeScript and JavaScript differ within their own projects: one server
+serves every `tsconfig.json` below its root, so Rune roots it at the
+outermost folder with a marker. The packages of a JavaScript workspace
+share that server, and find references and rename cross between them.
+
 A source file with no marker in any folder between it and the workspace
 root gets no code intelligence, because there is no project to root a
 server at. This is deliberate: a stray script deep in the tree does not
 silently spin up a language server over a whole subtree. Add the
 appropriate manifest (`go mod init`, `cargo init`, or a
 `pyproject.toml`) at the project root and reopen the file.
+TypeScript and JavaScript are the exception: their language server
+checks a file with no project as an inferred project, so such a file is
+served from the workspace root.
 
 ## Search and navigation scale with the repo
 

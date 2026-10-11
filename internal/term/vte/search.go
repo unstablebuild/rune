@@ -124,6 +124,9 @@ func (c *searchController) exitView() {
 	c.matchIdx = -1
 	c.viewing = false
 	c.vi.clearSearch()
+	if c.viModeActive == nil || !c.viModeActive() {
+		c.vi.deactivate()
+	}
 }
 
 func (c *searchController) research() {
@@ -168,6 +171,7 @@ func (v *viHandler) enterSearchMode(pos term.Coordinates) {
 
 	v.sync.mu.Lock()
 	defer v.sync.mu.Unlock()
+	v.active = true
 	v.viSetCursorAtScroll(pos)
 }
 

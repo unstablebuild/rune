@@ -172,6 +172,9 @@ Used for components that can calculate ideal dimensions from known content.
   that only uses in-process fakes or checked-in fixtures belongs in `make test`
   regardless of its name. Keep shared fakes and harnesses in untagged files so
   the hermetic tests in the same package can still use them.
+- Don't create bespoke test files. All methods of a struct should be defined
+  in the same file the struct is declared, and so all tests should be in the
+  same <struct>_test.go file.
 
 ### `handlertest.SequenceTestCase.InputSequence`
 

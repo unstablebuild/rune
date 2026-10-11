@@ -90,17 +90,48 @@ func paneStart(row []term.Cell, x int) int {
 // survives, which also means the run would otherwise swallow the border
 // or scroll bar the window drew hard against the pane. The wrap marker
 // is the one thing that names the pane's right margin, so a line that
-// reaches it stops there.
-func lineEnd(row []term.Cell, x int) int {
+// reaches it stops there. open carries the brackets the address has left
+// open, so a line continuing a wrapped address can still close them.
+func lineEnd(row []term.Cell, x int, open *nesting) int {
 	// Ch == 0 is both a blank cell and the continuation half of a wide
 	// character, so it ends the line either way.
-	for x < len(row) && row[x].Ch != 0 && isURLRune(row[x].Ch) {
+	for x < len(row) && row[x].Ch != 0 && isURLRune(row[x].Ch) && open.admit(row[x].Ch) {
 		if row[x].Bytes == cell.WrapMarker {
 			return x + 1
 		}
 		x++
 	}
 	return x
+}
+
+// nesting counts the brackets an address has opened and not yet closed,
+// one count per kind of bracket.
+type nesting [3]int
+
+// admit reports whether r continues the address, counting it if it is a
+// bracket. A closing bracket the address never opened belongs to the
+// prose around it, as the ")" and "](" closing a markdown link do, so it
+// ends the address rather than being swallowed with whatever follows.
+func (n *nesting) admit(r rune) bool {
+	switch r {
+	case '(', '[', '{':
+		n[bracketKind(r)]++
+	case ')', ']', '}':
+		kind := bracketKind(r)
+		if n[kind] == 0 {
+			return false
+		}
+		n[kind]--
+	}
+	return true
+}
+
+// bracketKind indexes the count a bracket belongs to. The opener and
+// closer of each ASCII pair share their top three bits, which tell the
+// three pairs apart, so the shift stays cheap enough for admit to inline
+// into the cell walk.
+func bracketKind(r rune) int {
+	return int(r>>5) - 1
 }
 
 // joinWrapped continues the link at dst[first] onto the rows it wrapped
@@ -110,13 +141,18 @@ func (s *rowScanner) joinWrapped(
 ) ([]linkSpan, int) {
 	left := paneStart(cells[y], dst[first].x1-1)
 	s.wrapped = append(s.wrapped[:0], dst[first].url...)
+	// Brackets are ASCII, which never occurs inside a multi-byte rune.
+	var open nesting
+	for _, b := range s.wrapped {
+		open.admit(rune(b))
+	}
 	last := first
 	for y+1 < len(cells) {
 		row := cells[y+1]
 		if left >= len(row) {
 			break
 		}
-		end := lineEnd(row, left)
+		end := lineEnd(row, left, &open)
 		if end == left {
 			break
 		}
@@ -172,7 +208,8 @@ func (s *rowScanner) scanRow(y int, row []term.Cell, dst []linkSpan) []linkSpan 
 			continue
 		}
 
-		end := lineEnd(row, x+width)
+		var open nesting
+		end := lineEnd(row, x+width, &open)
 
 		s.text = s.text[:0]
 		for i := x; i < end; i++ {
@@ -333,39 +370,18 @@ func isURLByte(b byte) bool {
 	return true
 }
 
-// trimURL strips trailing characters that belong to the surrounding
-// prose rather than the URL: sentence punctuation and closing brackets
-// with no opener inside the URL.
+// trimURL strips trailing sentence punctuation, which belongs to the
+// surrounding prose rather than the URL.
 func trimURL(raw []byte) []byte {
 	for len(raw) > 0 {
-		last := raw[len(raw)-1]
-		switch last {
+		switch raw[len(raw)-1] {
 		case '.', ',', ';', ':', '!', '?':
-		case ')', ']', '}':
-			if balanced(raw, openerFor(last), last) {
-				return raw
-			}
 		default:
 			return raw
 		}
 		raw = raw[:len(raw)-1]
 	}
 	return raw
-}
-
-func openerFor(closer byte) byte {
-	switch closer {
-	case ')':
-		return '('
-	case ']':
-		return '['
-	default:
-		return '{'
-	}
-}
-
-func balanced(s []byte, opener, closer byte) bool {
-	return bytes.Count(s, []byte{opener}) >= bytes.Count(s, []byte{closer})
 }
 
 // hasHost reports whether the URL carries anything after its scheme.

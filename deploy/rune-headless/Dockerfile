@@ -39,6 +39,9 @@ RUN set -eux; \
 ARG RUNE_BUILD_TAG
 ARG RUNE_BUILD_COMMIT
 ARG RUNE_BUILD_DATE
+# RUNE_EXTRA_LDFLAGS is empty for prod; a staging build passes the
+# Makefile's STAGING_LDFLAGS to point the node at the staging endpoints.
+ARG RUNE_EXTRA_LDFLAGS=
 
 WORKDIR /src
 COPY . .
@@ -59,7 +62,8 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 			-X unstable.build/rune/internal/debug.Commit=$RUNE_BUILD_COMMIT \
 			-X unstable.build/rune/internal/debug.BuildDate=$RUNE_BUILD_DATE \
 			-X unstable.build/rune/internal/debug.Package=rune \
-			-X unstable.build/rune/internal/debug.OSPackaged=true" \
+			-X unstable.build/rune/internal/debug.OSPackaged=true \
+			$RUNE_EXTRA_LDFLAGS" \
 		-o /out/rune \
 		./cmd/rune; \
 	xx-verify /out/rune

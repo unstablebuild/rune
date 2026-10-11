@@ -1461,6 +1461,10 @@ func (t *testLoader) ReadDir(name string) ([]os.DirEntry, error) {
 	panic("unused")
 }
 
+func (t *testLoader) PathCaseSensitive() bool {
+	return true
+}
+
 func newTestComponentErr(ed text.Editor) (*text.Component, error) {
 	cfg := text.DefaultConfig()
 	cfg.ScheduleNextTick = func(fn func()) bool { fn(); return true }

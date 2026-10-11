@@ -50,11 +50,17 @@ type Config struct {
 	// the copying.
 	CodeBlockCopy     bool
 	CodeBlockCopyIcon rune
-	// CodeBlockCopyIconAttr styles CodeBlockCopyIcon, and
-	// CodeBlockCopyIconHoverAttr styles it while hovered. Both take the
+	// CodeBlockCopiedIcon replaces CodeBlockCopyIcon once the host marks
+	// the block copied with Component.MarkCodeBlockCopied, until the
+	// pointer leaves the icon.
+	CodeBlockCopiedIcon rune
+	// CodeBlockCopyIconAttr styles CodeBlockCopyIcon,
+	// CodeBlockCopyIconHoverAttr styles it while hovered and
+	// CodeBlockCopiedIconAttr styles CodeBlockCopiedIcon. All take the
 	// CodeBlock background when it sets one.
 	CodeBlockCopyIconAttr      term.Attributes
 	CodeBlockCopyIconHoverAttr term.Attributes
+	CodeBlockCopiedIconAttr    term.Attributes
 	// Parser, when set, enables syntax highlighting inside fenced code blocks.
 	Parser syntaxapi.Parser
 	// ScheduleNextTick schedules a function to run on the next event-loop
@@ -162,6 +168,8 @@ func DefaultConfig() Config {
 		CodeBlockCopyIcon:          '', // nf-fa-copy
 		CodeBlockCopyIconAttr:      def,
 		CodeBlockCopyIconHoverAttr: term.Attributes{Fg: term.ColorBlue},
+		CodeBlockCopiedIcon:        '', // nf-fa-check
+		CodeBlockCopiedIconAttr:    term.Attributes{Fg: term.ColorGreen},
 
 		Link:    cyanUnderline,
 		LinkURL: cyan,

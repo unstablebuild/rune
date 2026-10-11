@@ -638,6 +638,9 @@ func (e *Handler) enterViMode(cursor term.Coordinates) {
 
 func (e *Handler) exitViMode() {
 	e.viMode = false
+	if !e.searchViewing() {
+		e.vi.deactivate()
+	}
 }
 
 // searchViewing reports whether the scrollback search results are on

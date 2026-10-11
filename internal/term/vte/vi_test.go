@@ -274,7 +274,18 @@ $ ▐
                     
                     
                     `},
-			{"echo \"<k0llvk0yG0lllllpjla\"", // multiline paste
+			{"echo \"<k0llvk0yG0lllllp", // multiline paste lands on its last character
+				`$ echo bla          
+bla                 
+$ echo "$ echo blabl
+▐                   
+                    
+                    
+                    
+                    
+                    
+                    `},
+			{"la\"",
 				`$ echo bla          
 bla                 
 $ echo "$ echo blabl
@@ -647,6 +658,59 @@ aaaaaaaaaaaaaaaa▐
 		cfg.Modal = true
 		testSequenceShell(t, cfg, defaultWaitForIdleVte, zshPath, cases)
 	})
+
+	// Once the wrapped line scrolls the screen, or there is scrollback above
+	// the prompt, the vi cursor must keep inserting where the user is typing
+	// instead of drifting to another row.
+	for _, tc := range []struct {
+		name string
+		vtetest.Case
+	}{
+		{"insert mid-line on the bottom row wraps and scrolls", vtetest.Case{
+			InputSequence: "seq 30>echo aa bb cc dd<02WaXXXX",
+			Expected: `23                  
+24                  
+25                  
+26                  
+27                  
+28                  
+29                  
+30                  
+$ echo aa bXXXX▐ cc 
+dd                  `}},
+		{"insert at end of line on the bottom row wraps and scrolls", vtetest.Case{
+			InputSequence: "seq 30>echo<0Cecho aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			Expected: `23                  
+24                  
+25                  
+26                  
+27                  
+28                  
+29                  
+30                  
+$ echo aaaaaaaaaaaaa
+aaaaaaaaaaaaaaaaa▐  `}},
+		// '$' clears the screen, which leaves the prompt on the top row
+		// with scrollback above it
+		{"insert at end of line with scrollback above the prompt wraps", vtetest.Case{
+			InputSequence: "seq 30>$echo<0Cecho aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			Expected: `$ echo aaaaaaaaaaaaa
+aaaaaaaaaaaaaaaaa▐  
+                    
+                    
+                    
+                    
+                    
+                    
+                    
+                    `}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.Modal = true
+			testSequenceShell(t, cfg, defaultWaitForIdleVte, zshPath, []vtetest.Case{tc.Case})
+		})
+	}
 
 	// RUNE-193: tab-completion below the prompt confused lastPromptLine
 	// so that subsequent vi edits on the real prompt row rang the bell
@@ -1562,7 +1626,7 @@ $ ECHO AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 `,
 			expectedRingBell: false,
 			expectedFrom:     term.Coordinates{Y: 4, X: 2},
-			expectedTo:       term.Coordinates{Y: 17, X: 0},
+			expectedTo:       term.Coordinates{Y: 19, X: 0},
 			expectedOld:      "echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 			expectedContent: `
 ~/src/blue master

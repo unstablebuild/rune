@@ -79,7 +79,7 @@ func TestCallbackHandler_ShowMessage(t *testing.T) {
 			t.Parallel()
 			notif := &mockNotifications{}
 			h := NewCallbackHandler(
-				notif, nil, nil, nil, nil,
+				notif, nil, nil, nil, caseFS{},
 				"",
 				CallbackHandlerConfig{},
 			)
@@ -109,7 +109,7 @@ func TestCallbackHandler_ShowMessage(t *testing.T) {
 		t.Parallel()
 		notif := &mockNotifications{}
 		h := NewCallbackHandler(
-			notif, nil, nil, nil, nil,
+			notif, nil, nil, nil, caseFS{},
 			"",
 			CallbackHandlerConfig{},
 		)
@@ -159,7 +159,7 @@ func TestCallbackHandler_LogMessage(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			h := NewCallbackHandler(
-				nil, nil, nil, nil, nil,
+				nil, nil, nil, nil, caseFS{},
 				"",
 				CallbackHandlerConfig{},
 			)
@@ -366,7 +366,7 @@ func TestCallbackHandler_PublishDiagnostics(t *testing.T) {
 				handler: &mockEditorHandler{uri: uri},
 			}
 			h := NewCallbackHandler(
-				nil, nil, nil, ed, nil,
+				nil, nil, nil, ed, caseFS{},
 				"",
 				CallbackHandlerConfig{},
 			)
@@ -389,7 +389,7 @@ func TestCallbackHandler_PublishDiagnostics_BySource(t *testing.T) {
 	uri, err := workspaceapi.ParseURI("file:///tmp/main.py")
 	require.NoError(t, err)
 	ed := &mockEditor{handler: &mockEditorHandler{uri: uri}}
-	h := NewCallbackHandler(nil, nil, nil, ed, nil, "", CallbackHandlerConfig{})
+	h := NewCallbackHandler(nil, nil, nil, ed, caseFS{}, "", CallbackHandlerConfig{})
 
 	tyDiag := semanticapi.Diagnostic{
 		Range: semanticapi.Range{
@@ -479,7 +479,7 @@ func TestCallbackHandler_PublishDiagnostics_PushAndPullCoexist(t *testing.T) {
 	uri, err := workspaceapi.ParseURI("file:///tmp/main.rs")
 	require.NoError(t, err)
 	ed := &mockEditor{handler: &mockEditorHandler{uri: uri}}
-	h := NewCallbackHandler(nil, nil, nil, ed, nil, "", CallbackHandlerConfig{})
+	h := NewCallbackHandler(nil, nil, nil, ed, caseFS{}, "", CallbackHandlerConfig{})
 
 	pushDiag := semanticapi.Diagnostic{
 		Range: semanticapi.Range{
@@ -571,7 +571,7 @@ func TestCallbackHandler_PublishDiagnostics_FileNotOpen(t *testing.T) {
 			t.Parallel()
 			ed := &mockEditor{editorErr: tt.editorErr}
 			h := NewCallbackHandler(
-				nil, nil, nil, ed, nil, "", CallbackHandlerConfig{},
+				nil, nil, nil, ed, caseFS{}, "", CallbackHandlerConfig{},
 			)
 			var buf bytes.Buffer
 			h.log = slog.New(slog.NewTextHandler(&buf, nil))
@@ -601,7 +601,7 @@ func TestCallbackHandler_PublishDiagnostics_IconConfig(t *testing.T) {
 		handler: &mockEditorHandler{uri: uri},
 	}
 	h := NewCallbackHandler(
-		nil, nil, nil, ed, nil,
+		nil, nil, nil, ed, caseFS{},
 		"",
 		CallbackHandlerConfig{
 			Icons: IconSet{
@@ -670,7 +670,7 @@ func TestCallbackHandler_Diagnostics(t *testing.T) {
 	require.NoError(t, err)
 	ed := &mockEditor{handler: &mockEditorHandler{uri: uri}}
 	h := NewCallbackHandler(
-		nil, nil, nil, ed, nil, "", CallbackHandlerConfig{},
+		nil, nil, nil, ed, caseFS{}, "", CallbackHandlerConfig{},
 	)
 
 	// Empty source initially.
@@ -713,12 +713,85 @@ func TestCallbackHandler_Diagnostics(t *testing.T) {
 	assert.Empty(t, h.Diagnostics())
 }
 
+func TestCallbackHandler_URICase(t *testing.T) {
+	t.Parallel()
+	const editorURI = "file:///Ws/a.ts"
+	const serverURI = "file:///ws/a.ts"
+	diags := func(msg string) []semanticapi.Diagnostic {
+		return []semanticapi.Diagnostic{
+			{Severity: semanticapi.DiagnosticSeverityError, Message: msg},
+		}
+	}
+	for _, tc := range []struct {
+		name            string
+		insensitive     bool
+		wantDiagnostics map[string][]string
+		wantLocations   []string
+		wantWaitErr     error
+	}{
+		{
+			name:            "case-sensitive host keeps spellings apart",
+			wantDiagnostics: map[string][]string{editorURI: {"a"}, serverURI: {"b"}},
+			wantLocations:   []string{"b"},
+			wantWaitErr:     context.DeadlineExceeded,
+		},
+		{
+			name:            "case-insensitive host merges spellings under the first",
+			insensitive:     true,
+			wantDiagnostics: map[string][]string{editorURI: {"a", "b"}},
+			wantLocations:   []string{"a", "b"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ed := &mockEditor{handler: &mockEditorHandler{}}
+			h := NewCallbackHandler(nil, nil, nil, ed,
+				caseFS{insensitive: tc.insensitive}, "", CallbackHandlerConfig{})
+			tsc := ContextWithMetadata(t.Context(), Metadata{ServerName: "tsc"})
+			lint := ContextWithMetadata(t.Context(), Metadata{ServerName: "lint"})
+
+			h.FileDidChange(editorURI, 2, true, false)
+			require.NoError(t, h.PublishDiagnostics(tsc, semanticapi.PublishDiagnosticsParams{
+				URI: editorURI, Diagnostics: diags("a"),
+			}))
+			require.NoError(t, h.PublishDiagnostics(lint, semanticapi.PublishDiagnosticsParams{
+				URI: serverURI, Version: 2, Diagnostics: diags("b"),
+			}))
+
+			got := make(map[string][]string)
+			for uri, ds := range h.Diagnostics() {
+				for _, d := range ds {
+					got[uri] = append(got[uri], d.Message)
+				}
+			}
+			require.Len(t, got, len(tc.wantDiagnostics))
+			for uri, want := range tc.wantDiagnostics {
+				assert.ElementsMatch(t, want, got[uri], uri)
+			}
+			var locs []string
+			for _, l := range ed.locations {
+				locs = append(locs, l.Message)
+			}
+			assert.ElementsMatch(t, tc.wantLocations, locs)
+
+			ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+			defer cancel()
+			err := h.WaitFileProcessed(ctx, editorURI)
+			if tc.wantWaitErr == nil {
+				require.NoError(t, err)
+			} else {
+				require.ErrorIs(t, err, tc.wantWaitErr)
+			}
+		})
+	}
+}
+
 func TestCallbackHandler_WaitFileProcessed(t *testing.T) {
 	t.Parallel()
 
 	newHandler := func() *CallbackHandler {
 		return NewCallbackHandler(
-			nil, nil, nil, nil, nil,
+			nil, nil, nil, nil, caseFS{},
 			"",
 			CallbackHandlerConfig{
 				ScheduleNextTick: func(func()) bool {
@@ -1321,7 +1394,7 @@ func TestCallbackHandler_Progress(t *testing.T) {
 			t.Parallel()
 			notif := &mockNotifications{}
 			h := NewCallbackHandler(
-				notif, nil, nil, nil, nil,
+				notif, nil, nil, nil, caseFS{},
 				"",
 				CallbackHandlerConfig{},
 			)
@@ -1349,7 +1422,7 @@ func TestCallbackHandler_ProgressIgnoredAfterCreate(t *testing.T) {
 	t.Parallel()
 	notif := &mockNotifications{}
 	h := NewCallbackHandler(
-		notif, nil, nil, nil, nil, "", CallbackHandlerConfig{},
+		notif, nil, nil, nil, caseFS{}, "", CallbackHandlerConfig{},
 	)
 	token := semanticapi.ProgressToken{StringValue: "rust-analyzer/flycheck/0"}
 	require.NoError(t, h.WorkDoneProgressCreate(t.Context(),
@@ -1372,7 +1445,7 @@ func TestCallbackHandler_ProgressIgnoredAfterCreate(t *testing.T) {
 func TestCallbackHandler_LogTrace(t *testing.T) {
 	t.Parallel()
 	h := NewCallbackHandler(
-		nil, nil, nil, nil, nil,
+		nil, nil, nil, nil, caseFS{},
 		"",
 		CallbackHandlerConfig{},
 	)
@@ -1432,7 +1505,7 @@ func TestCallbackHandler_ShowDocument(t *testing.T) {
 				}
 			}
 			h := NewCallbackHandler(
-				notif, nil, opener, ed, nil,
+				notif, nil, opener, ed, caseFS{},
 				"",
 				CallbackHandlerConfig{},
 			)
@@ -1464,7 +1537,7 @@ func TestCallbackHandler_ShowDocument_HTTP(t *testing.T) {
 		wm := &mockWindowManager{}
 		opener := &mockResourceOpener{}
 		h := NewCallbackHandler(
-			&mockNotifications{}, wm, opener, nil, nil,
+			&mockNotifications{}, wm, opener, nil, caseFS{},
 			"",
 			CallbackHandlerConfig{},
 		)
@@ -1488,7 +1561,7 @@ func TestCallbackHandler_ShowDocument_HTTP(t *testing.T) {
 		wm := &mockWindowManager{}
 		opener := &mockResourceOpener{}
 		h := NewCallbackHandler(
-			&mockNotifications{}, wm, opener, nil, nil,
+			&mockNotifications{}, wm, opener, nil, caseFS{},
 			"",
 			CallbackHandlerConfig{},
 		)
@@ -1513,7 +1586,7 @@ func TestCallbackHandler_ShowDocument_HTTP(t *testing.T) {
 		opener := &mockResourceOpener{}
 		notif := &mockNotifications{}
 		h := NewCallbackHandler(
-			notif, wm, opener, nil, nil,
+			notif, wm, opener, nil, caseFS{},
 			"",
 			CallbackHandlerConfig{},
 		)
@@ -1566,7 +1639,7 @@ func TestCallbackHandler_WorkDoneProgressCreate(
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			h := NewCallbackHandler(
-				nil, nil, nil, nil, nil,
+				nil, nil, nil, nil, caseFS{},
 				"",
 				CallbackHandlerConfig{},
 			)
@@ -2020,7 +2093,7 @@ func TestCallbackHandler_WorkspaceFolders(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			h := NewCallbackHandler(
-				nil, nil, nil, nil, nil,
+				nil, nil, nil, nil, caseFS{},
 				tt.rootURI,
 				CallbackHandlerConfig{},
 			)
@@ -2080,7 +2153,7 @@ func TestCallbackHandler_Configuration(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			h := NewCallbackHandler(
-				nil, nil, nil, nil, nil,
+				nil, nil, nil, nil, caseFS{},
 				"",
 				CallbackHandlerConfig{
 					Config: tt.config,
@@ -2108,7 +2181,7 @@ func TestCallbackHandler_RegisterUnregister(
 ) {
 	t.Parallel()
 	h := NewCallbackHandler(
-		nil, nil, nil, nil, nil,
+		nil, nil, nil, nil, caseFS{},
 		"",
 		CallbackHandlerConfig{},
 	)
@@ -2125,7 +2198,7 @@ func TestCallbackHandler_RefreshNoOps(
 ) {
 	t.Parallel()
 	h := NewCallbackHandler(
-		nil, nil, nil, nil, nil,
+		nil, nil, nil, nil, caseFS{},
 		"",
 		CallbackHandlerConfig{},
 	)

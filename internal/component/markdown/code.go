@@ -37,6 +37,8 @@ type codeBlock struct {
 	cancel context.CancelFunc
 	// copyHovered draws the copy icon with CodeBlockCopyIconHoverAttr.
 	copyHovered bool
+	// copied draws CodeBlockCopiedIcon instead of the copy icon.
+	copied bool
 }
 
 var _ block = (*codeBlock)(nil)
@@ -195,27 +197,31 @@ func (c *codeBlock) Draw(w term.Writer) {
 	}
 
 	if x, _, ok := c.copyIcon(); ok {
-		attr := c.cfg.CodeBlockCopyIconAttr
-		if c.copyHovered {
+		icon, attr := c.cfg.CodeBlockCopyIcon, c.cfg.CodeBlockCopyIconAttr
+		switch {
+		case c.copied:
+			icon, attr = c.cfg.CodeBlockCopiedIcon, c.cfg.CodeBlockCopiedIconAttr
+		case c.copyHovered:
 			attr = c.cfg.CodeBlockCopyIconHoverAttr
 		}
 		if c.cfg.CodeBlock.Bg != term.ColorDefault {
 			attr.Bg = c.cfg.CodeBlock.Bg
 		}
-		component.WriteText(w, x, 0, c.w,
-			string(c.cfg.CodeBlockCopyIcon), attr)
+		component.WriteText(w, x, 0, c.w, string(icon), attr)
 	}
 }
 
 // copyIcon returns the column and width of the copy icon, which sits on
-// the block's first row where the right padding starts. ok is false when
-// the icon is disabled or the padding has no room for it.
+// the block's first row where the right padding starts. The width fits
+// both the copy and copied icons so the target does not move on click.
+// ok is false when the icon is disabled or the padding has no room for it.
 func (c *codeBlock) copyIcon() (x, width int, ok bool) {
 	if !c.cfg.CodeBlockCopy {
 		return 0, 0, false
 	}
 	p := c.padding(c.w)
-	width = textWidth(string(c.cfg.CodeBlockCopyIcon))
+	width = max(textWidth(string(c.cfg.CodeBlockCopyIcon)),
+		textWidth(string(c.cfg.CodeBlockCopiedIcon)))
 	if p.Top < 1 || p.Right < width {
 		return 0, 0, false
 	}

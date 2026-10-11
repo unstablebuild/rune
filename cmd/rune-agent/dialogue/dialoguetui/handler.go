@@ -23,7 +23,6 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/clipboard"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
@@ -567,18 +566,15 @@ func (s *dialogueHandler) handleCodeCopy(ev term.Event, dragging bool) (handled 
 		if !ok {
 			return false
 		}
-		// The system clipboard may shell out and notifying is an RPC to the
-		// host; do not stall streaming on either.
-		notes := s.comp.cfg.Notifications
+		// The system clipboard may shell out; do not stall streaming on it.
 		s.mu.Unlock()
 		err := clip.Copy(clipboard.DefaultRegisterID, clipboard.Data{Text: code})
-		if err == nil {
-			_, _ = notes.Notify(browserapi.LevelSuccess, "copied to clipboard")
-		}
 		s.mu.Lock()
 		if err != nil {
 			slog.Error("copy code block", "struct", "dialogue.handler", "error", err)
+			return true
 		}
+		s.comp.markCodeCopied(pos)
 		return true
 	}
 	return false

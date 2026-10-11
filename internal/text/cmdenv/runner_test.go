@@ -81,8 +81,9 @@ func TestRunnerCapturesParameterExpansionAfterExpandBody(t *testing.T) {
 		}
 		return "", false
 	})
-	line := ExpandBody(context.Background(),
+	line, err := ExpandBody(context.Background(),
 		`ROOT_NAME=${ROOT##*/}`, src)
+	require.NoError(t, err)
 	r := Runner{Executor: &osExecutor{}, EnvSource: src}
 	captured, err := r.Run(context.Background(), line, nil)
 	require.NoError(t, err)

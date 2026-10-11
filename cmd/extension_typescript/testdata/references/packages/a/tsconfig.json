@@ -1,0 +1,10 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "rootDir": "src",
+    "outDir": "dist",
+    "module": "nodenext",
+    "strict": true
+  },
+  "include": ["src"]
+}

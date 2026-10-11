@@ -25,7 +25,7 @@ import (
 
 // registry lists the language specs in resolution-preference order. Go
 // is tried first to preserve existing behavior.
-var registry = []*Spec{Go, Python, Rust, Zig}
+var registry = []*Spec{Go, Python, Rust, Zig, TypeScript, TSX, JavaScript}
 
 // SpecFor returns the spec for a tree-sitter language id, or nil when no
 // spec is registered for that language.

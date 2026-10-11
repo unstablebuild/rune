@@ -9,7 +9,7 @@
 #
 #   RELEASE_TAG   required, e.g. v1.3.0
 #   RELEASE_REPO  defaults to unstablebuild/rune
-#   TAP_REPO      defaults to unstablebuild/homebrew-rune
+#   TAP_REPO      defaults to unstablebuild/homebrew-tap
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -24,7 +24,7 @@ esac
 
 tag="${RELEASE_TAG:?RELEASE_TAG is required, e.g. v1.3.0}"
 release_repo="${RELEASE_REPO:-unstablebuild/rune}"
-tap_repo="${TAP_REPO:-unstablebuild/homebrew-rune}"
+tap_repo="${TAP_REPO:-unstablebuild/homebrew-tap}"
 cask_path=Casks/rune.rb
 version=${tag#v}
 yes=✅ no=❌ skip=➖

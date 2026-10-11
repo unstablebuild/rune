@@ -75,6 +75,24 @@ func TestExpanderNonAliasPreservesURIAndCursor(t *testing.T) {
 	assert.Equal(t, []string{"file.go"}, got[0].Args)
 }
 
+func TestExpanderExpandAliasBindsArgsVerbatim(t *testing.T) {
+	t.Setenv("RUNE_TEST_SECRET", "leaked")
+	exp := newExpander(map[string]text.CommandAlias{
+		"registered": {Commands: []string{"edit registered"}},
+	}, nil)
+	alias := text.CommandAlias{Commands: []string{"edit $1", "! open $1"}}
+	cmd := textapi.Command{Name: "registered", Args: []string{"$RUNE_TEST_SECRET"}}
+
+	it, err := exp.ExpandAlias(context.Background(), cmd, alias)
+	require.NoError(t, err)
+	got, iterErr := collect(context.Background(), it, nil)
+	require.NoError(t, iterErr)
+	assertCmdSequence(t, []wantCmd{
+		{"edit", []string{"$RUNE_TEST_SECRET"}},
+		{"!", []string{"open '$RUNE_TEST_SECRET'"}},
+	}, got)
+}
+
 func TestExpanderChainCaptureFlowsAcrossSteps(t *testing.T) {
 	aliases := map[string]text.CommandAlias{
 		"chain": {Commands: []string{
