@@ -522,6 +522,7 @@ func (e *ex) markHome() {
 	for _, cmd := range []string{
 		"chateffort", "chatmaxtokens", "chatskill", "chatmodel",
 		"chatclear", "chatcompact", "chatfork", "chatexport", "chatlog",
+		"chatrename",
 	} {
 		e.config.CommandFallbacks[cmd] = e
 	}

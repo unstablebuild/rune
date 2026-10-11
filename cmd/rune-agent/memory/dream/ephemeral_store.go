@@ -97,6 +97,24 @@ func (s *ephemeralStore) AppendMessages(
 	return nil
 }
 
+func (s *ephemeralStore) SetTitle(_ context.Context, id, title string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d, ok := s.data[id]
+	if !ok {
+		return storageapi.ErrNotFound
+	}
+	d.Title = title
+	s.data[id] = d
+	for aid, a := range s.data {
+		if dialoguemanager.IsArchivedOf(aid, id) {
+			a.Title = dialoguemanager.ArchivedTitle(title)
+			s.data[aid] = a
+		}
+	}
+	return nil
+}
+
 func (s *ephemeralStore) List(_ context.Context) (iterator.Iterator[dialoguemanager.DialogueHeader], error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -112,6 +130,7 @@ func (s *ephemeralStore) ArchiveAndReplace(_ context.Context, p dialoguemanager.
 	defer s.mu.Unlock()
 	archived := p.Dialogue
 	archived.ID = p.ArchivedDialogueID
+	archived.Title = dialoguemanager.ArchivedTitle(archived.Title)
 	s.data[p.ArchivedDialogueID] = archived
 	replaced := p.Dialogue
 	replaced.Messages = p.Messages

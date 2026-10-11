@@ -127,6 +127,14 @@ var (
 			Synopsis: "",
 		},
 		{
+			Name: commandRename,
+			Summary: "Give the focused agent chat a meaningful name. With no " +
+				"argument a popup asks for the title; with arguments the " +
+				"title is set directly. The tab label updates when the " +
+				"chat is reopened. Run from an open agent chat tab.",
+			Synopsis: "[title]",
+		},
+		{
 			Name: commandAddSymbol,
 			Summary: "Attach a named symbol, or the symbol under the cursor, " +
 				"with its definition, references and documentation to the last " +

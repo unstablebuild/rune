@@ -72,6 +72,13 @@ func (s *compactDialogueStore) ArchiveAndReplace(
 	s.dialogue.Messages = params.Messages
 	return nil
 }
+func (s *compactDialogueStore) SetTitle(_ context.Context, id, title string) error {
+	if id != s.dialogue.ID {
+		return storageapi.ErrNotFound
+	}
+	s.dialogue.Title = title
+	return nil
+}
 func (s *compactDialogueStore) List(context.Context) (
 	iterator.Iterator[dialoguemanager.DialogueHeader], error,
 ) {

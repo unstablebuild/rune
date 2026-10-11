@@ -19,6 +19,7 @@ package ide
 import (
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/internal/browser"
 )
@@ -68,6 +69,13 @@ func (c currentWorkspaceWindowManager) Tab(
 	browserapi.Handler, error,
 ) {
 	return c.root.focusBrowser().Tab(uri, icon, name, h)
+}
+
+// SetTabName relabels the tab identified by URI in the focused workspace.
+func (c currentWorkspaceWindowManager) SetTabName(
+	uri workspaceapi.URI, name string,
+) error {
+	return c.root.focusBrowser().SetTabName(uri, name, term.Attributes{})
 }
 
 // SetWindowContent sets the content of the given window to the given handler.

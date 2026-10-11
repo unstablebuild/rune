@@ -56,6 +56,7 @@ func (stubWM) Tab(workspaceapi.URI, rune, string, browserapi.Handler) (browserap
 }
 func (stubWM) SetWindowContent(browserapi.Window, browserapi.Handler) error { return nil }
 func (stubWM) CloseWindow(browserapi.Window) error                          { return nil }
+func (stubWM) SetTabName(workspaceapi.URI, string) error                    { return nil }
 
 func (stubWM) SetTabActivity(workspaceapi.URI, bool) error { return nil }
 

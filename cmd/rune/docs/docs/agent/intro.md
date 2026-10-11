@@ -106,6 +106,7 @@ everything it offers. The most useful subcommands:
 | `agent chats export [--audit] <id>` | Export a conversation or its audit log. |
 | `agent chats compact <id>` | Compact a conversation into a summarized copy. |
 | `agent chats fork <id>` | Fork a conversation at a chosen message. |
+| `agent chats rename <id> [<title>]` | Rename a conversation; with no title a popup asks for one. |
 | `agent chats clear <id>` | Clear a conversation (its contents are archived). |
 | `agent skills ...` | Inspect and manage skills (see above). |
 | `agent tools` | List the tools the agent can use. |
@@ -127,6 +128,7 @@ conversation:
 | `chatclear` | Clear the focused chat and archive its previous contents. |
 | `chatcompact` | Compact the focused chat into a summarized copy. |
 | `chatfork` | Fork the focused chat at a selected message. |
+| `chatrename [<title>]` | Rename the focused chat; with no title a popup asks for one. |
 | `chatreviewchanges` | Review everything the focused chat changed as one editable diff. |
 | `chatexport [--audit]` | Export the focused chat or its audit log. |
 | `chatlog` | Show the focused chat's LLM token audit log. |

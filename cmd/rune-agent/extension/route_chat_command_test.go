@@ -86,6 +86,8 @@ func TestRouteChatCommandDelivers(t *testing.T) {
 		{"reviewchanges", commandReviewChanges, nil, "reviewchanges", nil},
 		{"export", commandExport, []string{"--audit"}, "export", []string{"--audit"}},
 		{"log", commandLog, nil, "log", nil},
+		{"rename", commandRename, nil, "rename", nil},
+		{"rename title", commandRename, []string{"my", "title"}, "rename", []string{"my", "title"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -129,6 +131,15 @@ func TestRouteChatCommandErrors(t *testing.T) {
 		URI:  mustURI(t, "rune-agent://openai_gpt-5/missing-chat"),
 	})
 	require.Error(t, err)
+
+	// chatrename outside a chat tab reports the standard error.
+	err = h.routeChatCommand(textapi.Command{Name: commandRename})
+	assert.EqualError(t, err, "chatrename must be run from an open agent chat tab")
+	err = h.routeChatCommand(textapi.Command{
+		Name: commandRename,
+		URI:  mustURI(t, "file:///tmp/foo"),
+	})
+	assert.EqualError(t, err, "chatrename must be run from an open agent chat tab")
 
 	// skill without a name.
 	h.openChatTx.Store("rolling-fox",
@@ -202,11 +213,28 @@ func TestCompleteChatPromptCommandsDialogues(t *testing.T) {
 
 	for _, name := range []string{
 		commandClear, commandFork, commandReviewChanges,
-		commandExport, commandLog,
+		commandExport, commandLog, commandRename,
 	} {
 		t.Run(name, func(t *testing.T) {
 			got := completeToSlice(t, ctx, h, name)
 			assert.Empty(t, got)
+		})
+	}
+}
+
+func TestParseDialogueIDNamedCandidates(t *testing.T) {
+	for _, tc := range []struct{ name, in, want string }{
+		{"bare id", "rolling-fox", "rolling-fox"},
+		{"named", "fix the flaky test (rolling-fox)", "rolling-fox"},
+		{"named with worktree", "worktree-b:fix the flaky test (rolling-fox)", "rolling-fox"},
+		{"named legacy", "<legacy>:fix the flaky test (rolling-fox)", "rolling-fox"},
+		{"worktree bare", "worktree-b:rolling-fox", "rolling-fox"},
+		{"title with parens", "fix (auth) bug (rolling-fox)", "rolling-fox"},
+		{"unclosed paren", "no close (paren", "no close (paren"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := textapi.Command{Args: []string{tc.in}}
+			assert.Equal(t, tc.want, parseDialogueID(cmd))
 		})
 	}
 }
