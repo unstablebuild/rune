@@ -406,6 +406,18 @@ func TestE2E(t *testing.T) {
 			},
 		},
 		{
+			name: "RenameConflict",
+			fn: func(t *testing.T, mgr *Manager) {
+				_, err := mgr.Rename(t.Context(), semanticapi.RenameParams{
+					TextDocument: semanticapi.TextDocumentIdentifier{URI: utilURI},
+					Position:     semanticapi.Position{Line: 24, Character: 5},
+					NewName:      "Multiply",
+				})
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "conflicts with func in same block")
+			},
+		},
+		{
 			// given a set of positions, selection ranges that user
 			// might be interested in selecting
 			name: "SelectionRange",
