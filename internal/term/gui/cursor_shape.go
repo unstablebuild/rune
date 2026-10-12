@@ -167,6 +167,7 @@ func (h *ResizeBorderHandler) sendIfDifferentShape(object ObjectUnderCursor, new
 	if newShape != h.lastCursorShape {
 		h.lastCursorShape = newShape
 		CursorShapeArbiter().SendToArbiter(CursorShapeMessage{object, newShape})
+		// TODO remove debug print
 		fmt.Printf("DEBUG: sendIfDifferentShape: lastCursorShape=%v, newShape=%v\n",
 			h.lastCursorShape, newShape)
 	}

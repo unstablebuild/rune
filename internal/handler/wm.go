@@ -255,21 +255,15 @@ func (wm *WindowManager) Handle(ev term.Event) (exit bool, handled bool) {
 		}
 
 		if !ok {
-			// TODO actually this probably belongs outside of ev == term.EventMouse,
-			// to reset the mouse shape when outside a window
-			// The call to ResizeBorderInterface.OnMouseover here handles the case where
-			// the above code did not set childAtMouse, and ok is false. This happens
-			// when the cursor is over an area that is not a Window. The intent is
-			// to reset the cursor to default shape before the control flow here exits.
-			// The behaviour of setting the cursor shape is hidden inside OnMouseover
-			// when ok is false instead of directly sending a message to
-			// CursorShapeArbiter, because its methods are in the GUI package which
-			// the term handler is not supposed to import.
+			// The call to ResizeBorder.OnMouseover here handles the case where
+			// the cursor is over an area that is not a Window. The intent is to reset
+			// the cursor to default shape. The behaviour of resetting the cursor shape is
+			// hidden inside OnMouseover when ok is false.
 			if wm.config.ResizeBorder != nil {
 				wm.config.ResizeBorder.OnMouseover(
 					term.Coordinates{},
-					childAtMouse,
-					ok,
+					component.Window{},
+					false,
 				)
 			}
 			return
@@ -364,6 +358,18 @@ func (wm *WindowManager) Handle(ev term.Event) (exit bool, handled bool) {
 		if ev.Key == term.MouseLeft {
 			wm.prevMouseLeftDrag = true
 			wm.prevMouseLeftChild = childAtMouse
+		}
+	} else {
+		// The call to ResizeBorder.OnMouseover here handles the case where
+		// the cursor is over an area that is not a Window. The intent is to reset
+		// the cursor to default shape. The behaviour of resetting the cursor shape is
+		// hidden inside OnMouseover when ok is false.
+		if wm.config.ResizeBorder != nil {
+			wm.config.ResizeBorder.OnMouseover(
+				term.Coordinates{},
+				component.Window{},
+				false,
+			)
 		}
 	}
 
