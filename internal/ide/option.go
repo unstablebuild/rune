@@ -218,7 +218,7 @@ func WithDefaultWallpaper(wallpaper browser.Wallpaper) Option {
 // implementation that is passed to handler.WindowManagerConfig.
 // Setting the resizeBorderHandler to nil means the cursor shape will not change.
 // See handler.WindowManager for more info.
-func WithResizeBorderHandler(h handler.ResizeBorderHandler) Option {
+func WithResizeBorderHandler(h handler.ResizeBorderInterface) Option {
 	return func(opts *options) {
 		opts.resizeBorderHandler = h
 	}
@@ -558,7 +558,7 @@ type options struct {
 	hostDataDir          string
 	workspaceConfig      string
 	defaultWallpaper     browser.Wallpaper
-	resizeBorderHandler  handler.ResizeBorderHandler
+	resizeBorderHandler  handler.ResizeBorderInterface
 	defaultConfig        string
 	bell                 func()
 	scheduleFn           func(func()) bool

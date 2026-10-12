@@ -288,7 +288,7 @@ type ideConfig struct {
 	// goos overrides runtime.GOOS for the gui.meta_key options; see hostOS.
 	goos string
 	// resizeBorderHandler is an optional config passed along to WindowManager.
-	resizeBorderHandler handler.ResizeBorderHandler
+	resizeBorderHandler handler.ResizeBorderInterface
 }
 
 func overrideConfig(ideConfig, cfg map[string]any) {
@@ -2262,7 +2262,7 @@ func (c ideConfig) windowScrollBarHoverChar() (ch rune) {
 }
 
 // getResizeBorderHandler retrieves the handler set in the config.
-func (c ideConfig) getResizeBorderHandler() handler.ResizeBorderHandler {
+func (c ideConfig) getResizeBorderHandler() handler.ResizeBorderInterface {
 	return c.resizeBorderHandler
 }
 
@@ -2494,7 +2494,7 @@ func (c ideConfig) windowManagerConfig() handler.WindowManagerConfig {
 		FocusFrameAttr:     c.windowFocusFrameAttr(),
 		FocusFrameCharSet:  c.windowFocusFrameCharset(),
 		ScrollBarHoverChar: c.windowScrollBarHoverChar(),
-		ResizeBorder:	   c.getResizeBorderHandler(),
+		ResizeBorder:       c.getResizeBorderHandler(),
 		WindowManagerConfig: tcomponent.WindowManagerConfig{
 			NoMaxSize:        c.windowNoMaxSize(),
 			Frame:            c.frame(),

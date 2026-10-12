@@ -1788,8 +1788,8 @@ func TestLinkScannerRestoresPointerAfterExternalCursorReset(t *testing.T) {
 	// Move within the same link - pointer cursor MUST be restored
 	l.pointAt(term.Coordinates{X: 8}, cells)
 	assert.Equal(t, []ebiten.CursorShapeType{
-		ebiten.CursorShapePointer,  // initial pointer
-		ebiten.CursorShapeDefault,  // external reset
-		ebiten.CursorShapePointer,  // restored - THIS IS THE REGRESSION FIX
+		ebiten.CursorShapePointer, // initial pointer
+		ebiten.CursorShapeDefault, // external reset
+		ebiten.CursorShapePointer, // restored - THIS IS THE REGRESSION FIX
 	}, *shapes)
 }

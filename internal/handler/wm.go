@@ -40,8 +40,8 @@ type WindowManagerConfig struct {
 	ScrollBarHoverChar rune
 	// FloatingBar receives the interactions produced by floating
 	// window bars. It may be nil.
-	FloatingBar FloatingBarHandler
-	ResizeBorder ResizeBorderHandler
+	FloatingBar  FloatingBarHandler
+	ResizeBorder ResizeBorderInterface
 }
 
 // FloatingBarHandler groups the interactions produced by a floating
@@ -78,8 +78,8 @@ func (NopFloatingBarHandler) OnBarDrop(Window, term.Coordinates) bool { return f
 // OnBarDragCancel satisfies FloatingBarHandler.
 func (NopFloatingBarHandler) OnBarDragCancel(Window) {}
 
-// ResizeBorderHandler encapsulates behaviour along the resize border.
-type ResizeBorderHandler interface {
+// ResizeBorderInterface encapsulates behaviour along the resize border.
+type ResizeBorderInterface interface {
 	OnMouseover(mousePos term.Coordinates, win component.Window, ok bool)
 }
 
@@ -253,9 +253,11 @@ func (wm *WindowManager) Handle(ev term.Event) (exit bool, handled bool) {
 				endDragAfter = true
 			}
 		}
-		
+
 		if !ok {
-			// The call to ResizeBorderHandler.OnMouseover here handles the case where
+			// TODO actually this probably belongs outside of ev == term.EventMouse,
+			// to reset the mouse shape when outside a window
+			// The call to ResizeBorderInterface.OnMouseover here handles the case where
 			// the above code did not set childAtMouse, and ok is false. This happens
 			// when the cursor is over an area that is not a Window. The intent is
 			// to reset the cursor to default shape before the control flow here exits.
@@ -268,7 +270,7 @@ func (wm *WindowManager) Handle(ev term.Event) (exit bool, handled bool) {
 					term.Coordinates{},
 					childAtMouse,
 					ok,
-					)
+				)
 			}
 			return
 		}
@@ -313,7 +315,7 @@ func (wm *WindowManager) Handle(ev term.Event) (exit bool, handled bool) {
 					term.Coordinates{X: ev.MouseX, Y: ev.MouseY},
 					childAtMouse,
 					ok,
-					)
+				)
 			}
 			ev.MouseY--
 			ev.MouseX--
