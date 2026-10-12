@@ -49,14 +49,23 @@ type keydump struct {
 	list          component.ResponsiveList
 	selection     string
 	exit          bool
+	// mouseDown tracks whether the left button is currently held so
+	// that drag events (MouseLeft repeated while held) are ignored;
+	// only the initial press copies a row.
+	mouseDown bool
 }
 
 func (k *keydump) Handle(ev term.Event) (exit, handled bool) {
 	switch ev.Type {
 	case term.EventMouse:
-		if ev.Key != term.MouseLeft {
+		if ev.Key == term.MouseRelease {
+			k.mouseDown = false
 			return
 		}
+		if ev.Key != term.MouseLeft || k.mouseDown {
+			return
+		}
+		k.mouseDown = true
 		selection, ok := k.list.ElementAt(term.Coordinates{X: ev.MouseX, Y: ev.MouseY})
 		if ok {
 			sel := selection.Value().(*component.ResponsiveString)
