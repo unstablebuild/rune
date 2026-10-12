@@ -30,6 +30,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/clipboard"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/ide/vctrl"
+	"unstable.build/rune/internal/text/texttest"
 	"unstable.build/rune/internal/workspace"
 )
 
@@ -130,7 +131,7 @@ func gitshowDiff(t *testing.T, uri workspaceapi.URI, committed, current string) 
 
 func TestGitShowErrors(t *testing.T) {
 	t.Run("no file in focus", func(t *testing.T) {
-		e := newExForTesting(t, nil)
+		e := newExForTesting(t, texttest.NopEditor())
 		defer e.Close()
 		e.Resize(80, 24)
 		assert.ErrorContains(t, e.gitshow(t.Context()), "no file in focus")
