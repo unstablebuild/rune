@@ -82,7 +82,7 @@ func bootstrap(
 	// .rune/config.yaml while resolving reads through the overlay only.
 	cfg := configedit.NewConfig(fs, cwd, nil)
 	tools, tracker := agentools.DefaultTools(
-		fs, executor, cwd, lsp, agentools.Config{}, cfg)
+		fs, executor, cwd, lsp, parser, agentools.Config{}, cfg)
 	tools = append(tools, agentools.LSPTools(lsp, fs, parser, cwd, tracker)...)
 	tools = append(tools, agentools.SyntaxTools(parser, fs, cwd, tracker)...)
 	registry := agent.NewRegistry(tools...)
