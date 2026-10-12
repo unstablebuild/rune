@@ -95,60 +95,59 @@ func (a cursorShapeArbiter) SendToArbiter(msg CursorShapeMessage) {
 // was at the same position, over the same cell.
 func (a cursorShapeArbiter) arbitrate() {
 	winningMsg := CursorShapeMessage{}
-	for {
-		select {
-		case msg := <-a.cursorShapeChan:
-			// Consider the previously winningMsg
-			switch winningMsg.object {
-			case none:
-				// There is no winningMsg yet, so the incoming msg auto wins
-				winningMsg = msg
-				
-			case NotInWindow:
-				// A graphical component sent an NotInWindow object because the mouse went
-				// outside a window. There is no contest here because there are no
-				// objects outside windows, or at least the arbitrator assumes so.
-				// The winningMsg stays the winner.
+	
+	// Process all messages in cursorShapeChan
+	cursorShapeChanLength := len(a.cursorShapeChan)
+	for i := 0; i < cursorShapeChanLength; i++ {
+		msg := <-a.cursorShapeChan
+		// Consider the previously winningMsg
+		switch winningMsg.object {
+		case none:
+			// There is no winningMsg yet, so the incoming msg auto wins
+			winningMsg = msg
+			
+		case NotInWindow:
+			// A graphical component sent an NotInWindow object because the mouse went
+			// outside a window. There is no contest here because there are no
+			// objects outside windows, or at least the arbitrator assumes so.
+			// The winningMsg stays the winner.
+			break
+			
+		case Empty:
+			// The previously winning graphical component sent an Empty object because
+			// it believes there is truly nothing in its cell. However, it may not know
+			// about other components that may have objects at that cell. Those
+			// components win instead.
+			// We then only need to consider the special objects: none cannot be sent
+			// as it is not exported, NotInWindow wins, and Empty wins (arbitrary tie).
+			// In every case, the incoming message wins.
+			winningMsg = msg
+		
+		default:
+			// Here the previously winningMsg is an actual object that exists, like a
+			// Link, a ResizeBorder, or a ScrollBar.
+			// Consider what the incoming object is:
+			switch msg.object {
+			case Empty:
+				// Empty object doesn't win against an actual object; the actual object stays the winner.
 				break
 				
-			case Empty:
-				// The previously winning graphical component sent an Empty object because
-				// it believes there is truly nothing in its cell. However, it may not know
-				// about other components that may have objects at that cell. Those
-				// components win instead.
-				// We then only need to consider the special objects: none cannot be sent
-				// as it is not exported, NotInWindow wins, and Empty wins (arbitrary tie).
-				// In every case, the incoming message wins.
+			case NotInWindow:
+				// The incoming message is the NotInWindow object, so it wins (see comment above).
 				winningMsg = msg
-			
+				
 			default:
-				// Here the previously winningMsg is an actual object that exists, like a
-				// Link, a ResizeBorder, or a ScrollBar.
-				// Consider what the incoming object is:
-				switch msg.object {
-				case Empty:
-					// Empty object doesn't win against an actual object; the actual object stays the winner.
-					break
-					
-				case NotInWindow:
-					// The incoming message is the NotInWindow object, so it wins (see comment above).
-					winningMsg = msg
-					
-				default:
-					// All other objects overwrite the winner. This is not a problem if there
-					// is only one object under the cursor at a time.
-					winningMsg = msg
-				}
+				// All other objects overwrite the winner. This is not a problem if there
+				// is only one object under the cursor at a time.
+				winningMsg = msg
 			}
-			
-		default:
-			// If winningMsg is not brand new, meaning it is one of the received messages,
-			// set the winning cursor shape. If there are no messages received, do nothing.
-			if winningMsg.object != none {
-				ebiten.SetCursorShape(winningMsg.cursorShape)
-			}
-			return
 		}
+	}
+		
+	// If winningMsg is not brand new, meaning it is one of the received messages,
+	// set the winning cursor shape. If there are no messages received, do nothing.
+	if winningMsg.object != none {
+		ebiten.SetCursorShape(winningMsg.cursorShape)
 	}
 }
 
