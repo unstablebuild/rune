@@ -150,11 +150,10 @@ func (a cursorShapeArbiter) arbitrate() {
 	}
 }
 
-// ResizeBorderHandler This is the implementation, the interface lives in handler.
-// TODO implement this in handler instead
+// ResizeBorderHandler satisfies handler.ResizeBorderInterface.
 type ResizeBorderHandler struct {
 	// lastCursorShape tracks what the ResizeBorderHandler's last cursor shape was.
-	// This is internal to ResizeBorder, it does not track cursor shapes set by
+	// This is internal to ResizeBorderHandler, it does not track cursor shapes set by
 	// other graphical components.
 	lastCursorShape ebiten.CursorShapeType
 }
@@ -173,6 +172,11 @@ func (h *ResizeBorderHandler) sendIfDifferentShape(object ObjectUnderCursor, new
 // It tracks the last cursor shape and only sets the cursor shape when it's different.
 // hasWindowBar indicates whether the window has a bar.
 func (h *ResizeBorderHandler) OnMouseover(area handler.MouseoverArea, hasWindowBar bool) {
+	// If mouse is not over any area, then it must be outside the window.
+	// Send a NotInWindow message to the CursorShapeArbiter to reset the cursor shape.
+	if area == 0 {
+		h.sendIfDifferentShape(NotInWindow, ebiten.CursorShapeDefault)
+	}
 	left := area & handler.FrameLeft != 0
 	right := area & handler.FrameRight != 0
 	top := area & handler.FrameTop != 0

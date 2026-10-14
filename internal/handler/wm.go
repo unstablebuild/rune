@@ -97,7 +97,8 @@ const (
 
 // MouseoverArea is a bitmask describing the areas where winDragMode works
 // on a floating window's bar or a window's frame edge, as well as
-// the WindowBarCloseIcon.
+// the windowBarCloseIcon, and if the mouse is outside a window, the bitmask
+// is all zeros.
 type MouseoverArea uint8
 
 const (
@@ -272,6 +273,13 @@ func (wm *WindowManager) Handle(ev term.Event) (exit bool, handled bool) {
 		}
 
 		if !ok {
+			// Reset cursor to default
+			if wm.config.ResizeBorder != nil {
+				wm.config.ResizeBorder.OnMouseover(
+					wm.detectMouseOverWindowFrame(component.Window{}, ev),
+					false,
+				)
+			}
 			return
 		}
 		offset := childAtMouse.Position()
@@ -293,9 +301,16 @@ func (wm *WindowManager) Handle(ev term.Event) (exit bool, handled bool) {
 				end := position.Y + height
 				if ev.MouseX == position.X && ev.MouseY >= position.Y && ev.MouseY < end ||
 					wm.prevMouseScrollBarDrag {
+					// Reset cursor to default over scroll bars.
+					// (We could also show a different cursor shape over scroll bars)
+					if wm.config.ResizeBorder != nil {
+						wm.config.ResizeBorder.OnMouseover(
+							wm.detectMouseOverWindowFrame(component.Window{}, term.Event{}),
+							false,
+						)
+					}
 					return wm.handleScrollBarMouse(childAtMouse, position.Y, height, frame, ev)
 				}
-				// lost drag; reset if mouse is now outside of scroll bar
 				wm.resetScrollBarMouse()
 			} else {
 				// lost scroll bar; content could have changed
@@ -936,6 +951,15 @@ func (wm *WindowManager) handleWindowFramePress(
 func (WindowManager) detectMouseOverWindowFrame(
 	win component.Window, ev term.Event,
 ) (area MouseoverArea) {
+	// win.wm could be nil, in which case a lot of the win methods panic. We
+	// recover by returning an empty bitmask, indicating the mouse is not in
+	// the window.
+	defer func() {
+		if r := recover(); r != nil {
+			return
+		}
+	}()
+	
 	if _, minimized := win.IsMinimized(); minimized {
 		return
 	}
@@ -1054,8 +1078,6 @@ func (wm *WindowManager) handleScrollBarMouse(
 		wm.prevMouseScrollBarOffset = barPos - ev.MouseY
 		wm.prevMouseScrollBarDrag = true
 		wm.prevMouseLeftChild = win
-		// TODO resolve https://github.com/unstablebuild/rune/pull/163#discussion_r4182531314
-		//CursorShapeArbiter().SendToArbiter(CursorShapeMessage{})
 		return false, false
 	}
 
