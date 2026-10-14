@@ -17,12 +17,10 @@
 package gui
 
 import (
-	"fmt"
 	"sync"
 
 	ebiten "github.com/hajimehoshi/ebiten/v2"
-	"github.com/unstablebuild/rune-go-sdk/term"
-	"unstable.build/rune/internal/component"
+	"unstable.build/rune/internal/handler"
 )
 
 // Arbiter exposes an interface for graphical components to send messages to it.
@@ -167,76 +165,30 @@ func (h *ResizeBorderHandler) sendIfDifferentShape(object ObjectUnderCursor, new
 	if newShape != h.lastCursorShape {
 		h.lastCursorShape = newShape
 		CursorShapeArbiter().SendToArbiter(CursorShapeMessage{object, newShape})
-		// TODO remove debug print
-		fmt.Printf("DEBUG: sendIfDifferentShape: lastCursorShape=%v, newShape=%v\n",
-			h.lastCursorShape, newShape)
 	}
 }
 
-// OnMouseover sets the ebiten.CursorShape when the cursor is at the positions
-// mentioned in handler.handleWindowFramePress. This means it also inherits
-// handler.handleWindowFramePress's conditional checks.
+// OnMouseover sets the ebiten.CursorShape when the cursor is over
+// handler.MouseoverArea.
 // It tracks the last cursor shape and only sets the cursor shape when it's different.
-// If there is no window, reset the cursor to default.
-// mousePos is the mouse coordinates relative to the window's top left.
-// win is the Window component used to determine where the resize borders are,
-// if any.
-// ok indicates whether there is a window under the cursor;
-// win would be undefined if not.
-func (h *ResizeBorderHandler) OnMouseover(mousePos term.Coordinates, win component.Window, ok bool) {
-	// If there is no window, tell the arbiter to reset the cursor to default.
-	if !ok {
-		h.sendIfDifferentShape(NotInWindow, ebiten.CursorShapeDefault)
-		return
-	}
-
-	// Minimized windows cannot be resized.
-	if _, minimized := win.IsMinimized(); minimized {
-		return
-	}
-	minX, minY := 0, 0
-	maxX, maxY := win.Width()-1, win.Height()-1
-
-	if !win.IsFloating() {
-		// Tiled windows resize from their right and bottom edges.
-		right := mousePos.X == maxX
-		bottom := mousePos.Y == maxY
-		switch {
-		case right && bottom:
-			h.sendIfDifferentShape(ResizeBorder, ebiten.CursorShapeNWSEResize)
-		case right:
-			h.sendIfDifferentShape(ResizeBorder, ebiten.CursorShapeEWResize)
-		case bottom:
-			h.sendIfDifferentShape(ResizeBorder, ebiten.CursorShapeNSResize)
-		default:
-			// All other cells "have Empty objects".
-			h.sendIfDifferentShape(Empty, ebiten.CursorShapeDefault)
-		}
-	} else {
-		// Cursor for floating windows.
-		// handleWindowFramePress implements drag to resize for windows with bars like this:
-		// - dragging on the top side just move-drags the window,
-		// - dragging on top left corner resizes both ways,
-		// - dragging on top right corner resizes both ways,
-		// - dragging on the other sides happen the conventional way.
-		// This impacts the implementation here in that the cursor never changes to
-		// CursorShapeNSResize when hovering over the top bar.
-		left := mousePos.X == minX
-		right := mousePos.X == maxX
-		top := mousePos.Y == minY
-		bottom := mousePos.Y == maxY
-		switch {
-		case (left && top) || (right && bottom):
-			h.sendIfDifferentShape(ResizeBorder, ebiten.CursorShapeNWSEResize)
-		case (right && top) || (left && bottom):
-			h.sendIfDifferentShape(ResizeBorder, ebiten.CursorShapeNESWResize)
-		case left || right:
-			h.sendIfDifferentShape(ResizeBorder, ebiten.CursorShapeEWResize)
-		case bottom || (!win.HasWindowBar() && top):
-			h.sendIfDifferentShape(ResizeBorder, ebiten.CursorShapeNSResize)
-		default:
-			// All other cells "have Empty objects".
-			h.sendIfDifferentShape(Empty, ebiten.CursorShapeDefault)
-		}
+// hasWindowBar indicates whether the window has a bar.
+func (h *ResizeBorderHandler) OnMouseover(area handler.MouseoverArea, hasWindowBar bool) {
+	left := area & handler.FrameLeft != 0
+	right := area & handler.FrameRight != 0
+	top := area & handler.FrameTop != 0
+	bottom := area & handler.FrameBottom != 0
+	switch {
+	case (left && top) || (right && bottom):
+		h.sendIfDifferentShape(ResizeBorder, ebiten.CursorShapeNWSEResize)
+	case (right && top) || (left && bottom):
+		h.sendIfDifferentShape(ResizeBorder, ebiten.CursorShapeNESWResize)
+	case left || right:
+		h.sendIfDifferentShape(ResizeBorder, ebiten.CursorShapeEWResize)
+	case bottom || (!hasWindowBar && top):
+		h.sendIfDifferentShape(ResizeBorder, ebiten.CursorShapeNSResize)
+	default:
+		// If area is barCloseIcon, or FrameCenter, or not set at all,
+		// The cell under the cursor "has an Empty object".
+		h.sendIfDifferentShape(Empty, ebiten.CursorShapeDefault)
 	}
 }

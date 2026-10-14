@@ -80,7 +80,7 @@ func (NopFloatingBarHandler) OnBarDragCancel(Window) {}
 
 // ResizeBorderInterface encapsulates behaviour along the resize border.
 type ResizeBorderInterface interface {
-	OnMouseover(mousePos term.Coordinates, win component.Window, ok bool)
+	OnMouseover(area MouseoverArea, hasWindowBar bool)
 }
 
 // winDragMode is a bitmask describing an in-progress window drag
@@ -93,6 +93,23 @@ const (
 	winDragRight
 	winDragBottom
 	winDragTop
+)
+
+// MouseoverArea is a bitmask describing the areas where winDragMode works
+// on a floating window's bar or a window's frame edge, as well as
+// the WindowBarCloseIcon.
+type MouseoverArea uint8
+
+const (
+	// FrameLeft is the left-side vertical
+	FrameLeft MouseoverArea = 1 << iota
+	// FrameRight is the right-side vertical
+	FrameRight
+	// FrameBottom is the bottom-side horizontal
+	FrameBottom
+	// FrameTop is the top-side horizontal
+	FrameTop
+	windowBarCloseIcon
 )
 
 // windowBarDoubleClickTimeout is the maximum delay between two bar
@@ -255,17 +272,6 @@ func (wm *WindowManager) Handle(ev term.Event) (exit bool, handled bool) {
 		}
 
 		if !ok {
-			// The call to ResizeBorder.OnMouseover here handles the case where
-			// the cursor is over an area that is not a Window. The intent is to reset
-			// the cursor to default shape. The behaviour of resetting the cursor shape is
-			// hidden inside OnMouseover when ok is false.
-			if wm.config.ResizeBorder != nil {
-				wm.config.ResizeBorder.OnMouseover(
-					term.Coordinates{},
-					component.Window{},
-					false,
-				)
-			}
 			return
 		}
 		offset := childAtMouse.Position()
@@ -306,9 +312,8 @@ func (wm *WindowManager) Handle(ev term.Event) (exit bool, handled bool) {
 		if wm.config.Frame {
 			if wm.config.ResizeBorder != nil {
 				wm.config.ResizeBorder.OnMouseover(
-					term.Coordinates{X: ev.MouseX, Y: ev.MouseY},
-					childAtMouse,
-					ok,
+					wm.detectMouseOverWindowFrame(childAtMouse, ev),
+					childAtMouse.HasWindowBar(),
 				)
 			}
 			ev.MouseY--
@@ -358,18 +363,6 @@ func (wm *WindowManager) Handle(ev term.Event) (exit bool, handled bool) {
 		if ev.Key == term.MouseLeft {
 			wm.prevMouseLeftDrag = true
 			wm.prevMouseLeftChild = childAtMouse
-		}
-	} else {
-		// The call to ResizeBorder.OnMouseover here handles the case where
-		// the cursor is over an area that is not a Window. The intent is to reset
-		// the cursor to default shape. The behaviour of resetting the cursor shape is
-		// hidden inside OnMouseover when ok is false.
-		if wm.config.ResizeBorder != nil {
-			wm.config.ResizeBorder.OnMouseover(
-				term.Coordinates{},
-				component.Window{},
-				false,
-			)
 		}
 	}
 
@@ -891,17 +884,13 @@ func (wm *WindowManager) applyWindowDrag(mouse term.Coordinates) {
 func (wm *WindowManager) handleWindowFramePress(
 	win component.Window, ev term.Event,
 ) (exit, handled, done bool) {
-	if _, minimized := win.IsMinimized(); minimized {
-		return
-	}
-	wx, wy := ev.MouseX, ev.MouseY
-	w, h := win.Width(), win.Height()
+	area := wm.detectMouseOverWindowFrame(win, ev)
+	var mode winDragMode
 	if !win.IsFloating() {
-		var mode winDragMode
-		if wx == w-1 {
+		if area & FrameRight != 0 {
 			mode |= winDragRight
 		}
-		if wy == h-1 {
+		if area & FrameBottom != 0 {
 			mode |= winDragBottom
 		}
 		if mode == 0 {
@@ -911,29 +900,81 @@ func (wm *WindowManager) handleWindowFramePress(
 		wm.winDragWin = win
 		return false, true, true
 	}
-	if win.HasWindowBar() && wy == 0 {
-		return wm.handleWindowBarPress(win, wx, w)
+	if win.HasWindowBar() && (area & FrameTop != 0) {
+		return wm.handleWindowBarPress(win, ev.MouseX, win.Width())
 	}
-	var mode winDragMode
-	if wx == 0 {
+	if area & FrameLeft != 0 {
 		mode |= winDragLeft
 	}
-	if wx == w-1 {
+	if area & FrameRight != 0 {
 		mode |= winDragRight
 	}
-	if wy == h-1 {
+	if area & FrameBottom != 0 {
 		mode |= winDragBottom
 	}
-	if wy == 0 {
+	if area & FrameTop != 0 {
 		mode |= winDragTop
 	}
+	// If area is FrameCenter, or not set at all, do nothing on wm.
+	
 	if mode == 0 {
 		return
 	}
-	wm.SetFocus(wm.newNode(win))
 	wm.winDrag = mode
+	wm.SetFocus(wm.newNode(win))
 	wm.winDragWin = win
 	return false, true, true
+}
+
+// detectMouseOverWindowFrame returns mouse position in a window: on a
+// floating window's bar (close icon or the bar itself) and on frame edges
+// and in any area other than that. Event coordinates are window-local.
+// This function returns zero values if the window is minimised, or if the
+// window is not floating and mouse is not over the bottom or right parts
+// of the frame, or if the window is floating and the mouse is not on any
+// part of the frame.
+func (WindowManager) detectMouseOverWindowFrame(
+	win component.Window, ev term.Event,
+) (area MouseoverArea) {
+	if _, minimized := win.IsMinimized(); minimized {
+		return
+	}
+	wx, wy := ev.MouseX, ev.MouseY
+	w, h := win.Width(), win.Height()
+	if !win.IsFloating() {
+		if wx == w-1 {
+			area |= FrameRight
+		}
+		if wy == h-1 {
+			area |= FrameBottom
+		}
+		return area
+	}
+	if win.HasWindowBar() && wy == 0 {
+		switch wx {
+		case component.WindowBarCloseIconX:
+			return FrameTop | windowBarCloseIcon
+		case 0, w - 1:
+			area = FrameTop | FrameLeft
+			if wx == w-1 {
+				area = FrameTop | FrameRight
+			}
+			return area
+		}
+	}
+	if wx == 0 {
+		area |= FrameLeft
+	}
+	if wx == w-1 {
+		area |= FrameRight
+	}
+	if wy == h-1 {
+		area |= FrameBottom
+	}
+	if wy == 0 {
+		area |= FrameTop
+	}
+	return area
 }
 
 // handleWindowBarPress routes a press on a floating window's bar: the
