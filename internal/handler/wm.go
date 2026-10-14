@@ -887,10 +887,10 @@ func (wm *WindowManager) handleWindowFramePress(
 	area := wm.detectMouseOverWindowFrame(win, ev)
 	var mode winDragMode
 	if !win.IsFloating() {
-		if area & FrameRight != 0 {
+		if area&FrameRight != 0 {
 			mode |= winDragRight
 		}
-		if area & FrameBottom != 0 {
+		if area&FrameBottom != 0 {
 			mode |= winDragBottom
 		}
 		if mode == 0 {
@@ -900,23 +900,23 @@ func (wm *WindowManager) handleWindowFramePress(
 		wm.winDragWin = win
 		return false, true, true
 	}
-	if win.HasWindowBar() && (area & FrameTop != 0) {
+	if win.HasWindowBar() && (area&FrameTop != 0) {
 		return wm.handleWindowBarPress(win, ev.MouseX, win.Width())
 	}
-	if area & FrameLeft != 0 {
+	if area&FrameLeft != 0 {
 		mode |= winDragLeft
 	}
-	if area & FrameRight != 0 {
+	if area&FrameRight != 0 {
 		mode |= winDragRight
 	}
-	if area & FrameBottom != 0 {
+	if area&FrameBottom != 0 {
 		mode |= winDragBottom
 	}
-	if area & FrameTop != 0 {
+	if area&FrameTop != 0 {
 		mode |= winDragTop
 	}
 	// If area is FrameCenter, or not set at all, do nothing on wm.
-	
+
 	if mode == 0 {
 		return
 	}

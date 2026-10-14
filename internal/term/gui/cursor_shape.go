@@ -187,7 +187,7 @@ func (h *ResizeBorderHandler) OnMouseover(area handler.MouseoverArea, hasWindowB
 	case bottom || (!hasWindowBar && top):
 		h.sendIfDifferentShape(ResizeBorder, ebiten.CursorShapeNSResize)
 	default:
-		// If area is barCloseIcon, or FrameCenter, or not set at all,
+		// If area is windowBarCloseIcon, or "FrameCenter", or not set at all,
 		// The cell under the cursor "has an Empty object".
 		h.sendIfDifferentShape(Empty, ebiten.CursorShapeDefault)
 	}
