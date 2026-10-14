@@ -959,7 +959,7 @@ func (WindowManager) detectMouseOverWindowFrame(
 			return
 		}
 	}()
-	
+
 	if _, minimized := win.IsMinimized(); minimized {
 		return
 	}

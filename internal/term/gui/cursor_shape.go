@@ -177,10 +177,10 @@ func (h *ResizeBorderHandler) OnMouseover(area handler.MouseoverArea, hasWindowB
 	if area == 0 {
 		h.sendIfDifferentShape(NotInWindow, ebiten.CursorShapeDefault)
 	}
-	left := area & handler.FrameLeft != 0
-	right := area & handler.FrameRight != 0
-	top := area & handler.FrameTop != 0
-	bottom := area & handler.FrameBottom != 0
+	left := area&handler.FrameLeft != 0
+	right := area&handler.FrameRight != 0
+	top := area&handler.FrameTop != 0
+	bottom := area&handler.FrameBottom != 0
 	switch {
 	case (left && top) || (right && bottom):
 		h.sendIfDifferentShape(ResizeBorder, ebiten.CursorShapeNWSEResize)
