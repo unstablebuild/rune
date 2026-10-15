@@ -17,6 +17,7 @@
 package gui
 
 import (
+	"fmt"
 	"sync"
 
 	ebiten "github.com/hajimehoshi/ebiten/v2"
@@ -76,6 +77,8 @@ const (
 	ScrollBar
 	// ResizeBorder represents a resize border
 	ResizeBorder
+	// CloseButton represents a window's close button
+	CloseButton
 )
 
 // SendToArbiter is used by multiple graphical components to defer the decision
@@ -146,6 +149,9 @@ func (a cursorShapeArbiter) arbitrate() {
 	// If winningMsg is not brand new, meaning it is one of the received messages,
 	// set the winning cursor shape. If there are no messages received, do nothing.
 	if winningMsg.object != none {
+	    fmt.Printf("DEBUG: winning: object=%v, cursorShape=%v\n",
+	                       winningMsg.object, 
+	                       winningMsg.cursorShape)
 		ebiten.SetCursorShape(winningMsg.cursorShape)
 	}
 }
@@ -181,6 +187,7 @@ func (h *ResizeBorderHandler) OnMouseover(area handler.MouseoverArea, hasWindowB
 	right := area&handler.FrameRight != 0
 	top := area&handler.FrameTop != 0
 	bottom := area&handler.FrameBottom != 0
+	center := area&handler.FrameCenter != 0
 	switch {
 	case (left && top) || (right && bottom):
 		h.sendIfDifferentShape(ResizeBorder, ebiten.CursorShapeNWSEResize)
@@ -190,9 +197,13 @@ func (h *ResizeBorderHandler) OnMouseover(area handler.MouseoverArea, hasWindowB
 		h.sendIfDifferentShape(ResizeBorder, ebiten.CursorShapeEWResize)
 	case bottom || (!hasWindowBar && top):
 		h.sendIfDifferentShape(ResizeBorder, ebiten.CursorShapeNSResize)
-	default:
-		// If area is windowBarCloseIcon, or "FrameCenter", or not set at all,
-		// The cell under the cursor "has an Empty object".
+	case center:
+		// If area has FrameCenter, the cell under the cursor "has an Empty object";
+		// there could be other objects in the "Empty" cell, but the ResizeBorderHandler
+		// doesn't know about them.
 		h.sendIfDifferentShape(Empty, ebiten.CursorShapeDefault)
+	case area&handler.WindowBarCloseIcon != 0:
+		// If area has WindowBarCloseIcon, the cell under the cursor is a close button.
+		h.sendIfDifferentShape(CloseButton, ebiten.CursorShapeDefault)
 	}
 }

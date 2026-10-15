@@ -97,7 +97,7 @@ const (
 
 // MouseoverArea is a bitmask describing the areas where winDragMode works
 // on a floating window's bar or a window's frame edge, as well as
-// the windowBarCloseIcon, and if the mouse is outside a window, the bitmask
+// the WindowBarCloseIcon, and if the mouse is outside a window, the bitmask
 // is all zeros.
 type MouseoverArea uint8
 
@@ -110,7 +110,10 @@ const (
 	FrameBottom
 	// FrameTop is the top-side horizontal
 	FrameTop
-	windowBarCloseIcon
+	// FrameCenter is the entire area inside the frame
+	FrameCenter
+	// WindowBarCloseIcon is the close button of the window
+	WindowBarCloseIcon
 )
 
 // windowBarDoubleClickTimeout is the maximum delay between two bar
@@ -972,12 +975,16 @@ func (WindowManager) detectMouseOverWindowFrame(
 		if wy == h-1 {
 			area |= FrameBottom
 		}
+		// If mouse is anywhere inside frame, add FrameCenter to the area.
+		if wx > 0 && wx < w-1 && wy > 0 && wy < h-1 {
+			area |= FrameCenter
+		}
 		return area
 	}
 	if win.HasWindowBar() && wy == 0 {
 		switch wx {
 		case component.WindowBarCloseIconX:
-			return FrameTop | windowBarCloseIcon
+			return FrameTop | WindowBarCloseIcon
 		case 0, w - 1:
 			area = FrameTop | FrameLeft
 			if wx == w-1 {
@@ -997,6 +1004,10 @@ func (WindowManager) detectMouseOverWindowFrame(
 	}
 	if wy == 0 {
 		area |= FrameTop
+	}
+	// If mouse is anywhere inside frame, add FrameCenter to the area.
+	if wx > 0 && wx < w-1 && wy > 0 && wy < h-1 {
+		area |= FrameCenter
 	}
 	return area
 }
