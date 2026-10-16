@@ -2012,6 +2012,66 @@ func TestOpenFileTargetMatchesTabUnderOtherCase(t *testing.T) {
 	}
 }
 
+func TestCheckOpenableUsesTheHostOfTheFile(t *testing.T) {
+	// The home workspace is on memory://, which holds none of the files
+	// on disk, and has the focus. A file:// URL is on the host the file
+	// workspace names, so it must be checked there.
+	home := t.TempDir()
+	dir := t.TempDir()
+	file := filepath.Join(dir, "a.go")
+	require.NoError(t, os.WriteFile(file, []byte("package a\n"), 0o666))
+
+	cfg := defaultConfigWithWrap(false)
+	m := newTestWorkspaceManagerHandlerWithDir(t, cfg, home, nopShutdownShaderConfig())
+	defer func() {
+		require.NoError(t, m.Close())
+	}()
+	dirURI, err := workspaceapi.ParseURI("file://" + dir)
+	require.NoError(t, err)
+	require.NoError(t, m.addOrCreateWorkspace(dirURI))
+	m.quiesce()
+	m.switchToWorkspace(0)
+	focus := m.focusEx()
+	focusURI, err := focus.workspace.URI(".")
+	require.NoError(t, err)
+	require.Equal(t, "memory", focusURI.Scheme(), "the focused workspace is not on disk")
+
+	suite := []struct {
+		description string
+		path        string
+		wantErr     string
+	}{
+		{"a file on the other host exists", file, ""},
+		{"a missing file on the other host", filepath.Join(dir, "missing.go"), "no such file"},
+		{"a directory on the other host", dir, "is a directory"},
+	}
+	for _, tc := range suite {
+		t.Run(tc.description, func(t *testing.T) {
+			uri, err := workspaceapi.ParseURI("file://" + tc.path)
+			require.NoError(t, err)
+
+			err = m.checkOpenable(focus, uri)
+
+			if tc.wantErr == "" {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
+
+	t.Run("a host with no workspace is reported", func(t *testing.T) {
+		uri, err := workspaceapi.ParseURI("ssh://elsewhere" + file)
+		require.NoError(t, err)
+
+		err = m.checkOpenable(focus, uri)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no workspace is open")
+	})
+}
+
 func TestOpenPrevSessionFilesSkipsNonTextHandler(t *testing.T) {
 	tmp := t.TempDir()
 	mdPath := filepath.Join(tmp, "README.md")

@@ -4315,6 +4315,75 @@ func (h *workspaceManagerHandler) openURI(file workspaceapi.URI, focus bool) err
 	return err
 }
 
+// openURIAt opens file in the focused workspace, out of the way of the
+// companion terminal, and puts the cursor on the 1-based line and col. It
+// refuses a file that does not exist, which openURI would instead open as a
+// new buffer.
+func (h *workspaceManagerHandler) openURIAt(
+	file workspaceapi.URI, line, col int,
+) error {
+	ex := h.focusEx()
+	if err := h.checkOpenable(ex, file); err != nil {
+		return err
+	}
+	// Meta-clicking compiler output in the companion terminal is the
+	// common case, and the file would otherwise replace the terminal.
+	if err := ex.dismissCompanionTerminal(); err != nil {
+		return err
+	}
+	tab, err := ex.editFileURI(file, ex.invokeWindow(), false)
+	if err != nil {
+		return err
+	}
+	eh, ok := tab.Handler().(text.Handler)
+	if !ok {
+		return fmt.Errorf("%s did not open in an editor", file.Path())
+	}
+	target := term.Coordinates{X: max(col, 1) - 1, Y: max(line, 1) - 1}
+	// SetCursorAtScroll reports false when it had to clamp the target to
+	// the text, and true without moving anything while a large file is
+	// still loading (deferHandler). Only a cursor that is neither moved
+	// nor where it was asked to be is an error, so that neither a
+	// position past the end of the file nor a deferred load is reported
+	// as a failure.
+	if !eh.SetCursorAtScroll(target) && eh.CursorAtScroll() != target {
+		return fmt.Errorf("could not move the cursor to line %d, column %d", line, col)
+	}
+	return nil
+}
+
+// checkOpenable reports whether file names an existing file, looked up on
+// the host the file's URI names rather than on the focused workspace's:
+// the open itself loads a URI from, or routes it to, the workspace
+// registered for its scheme and host, so a local file URL clicked while an
+// SSH workspace has focus must not be checked on the remote machine. focus
+// stands in when no workspace is registered, and only if it is on that
+// host.
+func (h *workspaceManagerHandler) checkOpenable(focus *ex, file workspaceapi.URI) error {
+	owner, ok, err := h.workspace.Workspace(file)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		same, err := workspace.CanWorkspaceURI(focus.workspace, file)
+		if err != nil {
+			return err
+		}
+		if !same {
+			return fmt.Errorf("%s is on %s, where no workspace is open", file.Path(), file.Host())
+		}
+		owner = focus.workspace
+	}
+	info, err := owner.Stat(file.Path())
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		return fmt.Errorf("%s is a directory", file.Path())
+	}
+	return nil
+}
+
 func (h *workspaceManagerHandler) openFile(file string, focus bool) error {
 	ex := h.exHandler(h.focusHandler())
 	uri, err := ex.workspace.URI(file)

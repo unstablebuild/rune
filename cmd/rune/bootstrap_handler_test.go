@@ -17,12 +17,15 @@
 package main
 
 import (
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
 	"testing"
 	"time"
 
+	log "github.com/sirupsen/logrus"
+	logtest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/term"
@@ -357,6 +360,80 @@ func TestGUIThemesLiveApplyHook(t *testing.T) {
 			assert.Empty(t, b.g.Theme(), "installing a theme must not switch the active one")
 			_, err = b.g.SetTheme("livetest")
 			require.NoError(t, err)
+		})
+	}
+}
+
+func TestBootstrapLinkObserver(t *testing.T) {
+	b := newConfiguredBootstrapForEnvTest(t, configFilename,
+		"editor:\n  mode: modal\n", t.TempDir())
+	hook := logtest.NewGlobal()
+	t.Cleanup(hook.Reset)
+
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	file := filepath.Join(dir, "a.go")
+	require.NoError(t, os.WriteFile(file, []byte("package a\n\nfunc f() {}\n"), 0o644))
+	fileURL := &url.URL{Scheme: "file", Path: file}
+
+	suite := []struct {
+		description string
+		link        gui.Link
+		wantErr     string
+	}{
+		{
+			description: "a bare path opens at its position",
+			link:        gui.Link{Path: file, Line: 3, Col: 6},
+		},
+		{
+			description: "a file url opens at its position",
+			link:        gui.Link{URL: fileURL, Line: 3, Col: 6},
+		},
+		{
+			description: "a file url without a position is shown",
+			link:        gui.Link{URL: fileURL},
+		},
+		{
+			description: "a missing path is reported",
+			link:        gui.Link{Path: filepath.Join(dir, "missing.go"), Line: 1},
+			wantErr:     "no such file or directory",
+		},
+		{
+			description: "a missing file url is reported",
+			link: gui.Link{
+				URL:  &url.URL{Scheme: "file", Path: filepath.Join(dir, "missing.go")},
+				Line: 1,
+			},
+			wantErr: "no such file or directory",
+		},
+		{
+			description: "a directory is reported",
+			link:        gui.Link{Path: dir, Line: 1},
+			wantErr:     "is a directory",
+		},
+	}
+
+	for _, tc := range suite {
+		t.Run(tc.description, func(t *testing.T) {
+			hook.Reset()
+
+			b.mu.Lock()
+			b.linkObserver(tc.link)
+			b.mu.Unlock()
+
+			var errs []string
+			for _, entry := range hook.AllEntries() {
+				if entry.Level <= log.ErrorLevel {
+					errs = append(errs, entry.Message)
+				}
+			}
+			if tc.wantErr == "" {
+				assert.Empty(t, errs)
+				return
+			}
+			require.Len(t, errs, 1)
+			assert.Contains(t, errs[0], "open link")
+			assert.Contains(t, errs[0], tc.wantErr)
 		})
 	}
 }

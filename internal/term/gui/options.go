@@ -18,7 +18,6 @@ package gui
 
 import (
 	"fmt"
-	"net/url"
 	"strings"
 	"sync"
 
@@ -305,11 +304,11 @@ func WithDragObserver(observer func(DragEvent)) Option {
 	}
 }
 
-// WithLinkObserver installs a callback invoked when a URL rendered in the
-// frame is clicked while the meta modifier is held. It runs on the GUI
-// loop goroutine, in the same context as handler events. A nil observer
-// is ignored.
-func WithLinkObserver(observer func(*url.URL)) Option {
+// WithLinkObserver installs a callback invoked when a URL or file path
+// rendered in the frame is clicked while the meta modifier is held. It
+// runs on the GUI loop goroutine, in the same context as handler events. A
+// nil observer is ignored.
+func WithLinkObserver(observer func(Link)) Option {
 	return func(g *GUI) error {
 		if observer != nil {
 			g.links.observer = observer

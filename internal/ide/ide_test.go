@@ -401,6 +401,142 @@ func TestOpen(t *testing.T) {
 	})
 }
 
+func TestOpenAt(t *testing.T) {
+	t.Parallel()
+
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "sub"), 0o755))
+	file := filepath.Join(root, "sub", "a.go")
+	require.NoError(t, os.WriteFile(file,
+		[]byte("package a\n\nfunc one() {}\nfunc two() {}\n"), 0o644))
+
+	configFile, _ := makeTestFiles(t)
+	dataDir := t.TempDir()
+	mu := new(sync.Mutex)
+	scheduleNextTick, drain := newTestScheduler(t, mu)
+	i, err := New(root, configFile.Name(), dataDir, pkgtrust.NewStore(dataDir, nil),
+		newTestStorage(t, dataDir),
+		WithLocker(mu),
+		WithScheduleNextTick(scheduleNextTick),
+		WithPublishEvent(nopPublishEvent),
+		WithExtensionsRunner(FuncExtensionsRunner(testRunnerFn)),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = i.Close() })
+
+	ready := i.Ready()
+	drain()
+	i.WaitWorkspaces()
+	drain()
+	ready.Resize(80, 24)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	focused := func(t *testing.T) (workspaceapi.URI, term.Coordinates) {
+		t.Helper()
+		ex := i.workspaceHandler.exHandler(i.workspaceHandler.focusHandler())
+		uri, h, ok := ex.handlerInFocus()
+		require.True(t, ok)
+		return uri, h.CursorAtScroll()
+	}
+
+	t.Run("a relative path resolves against the workspace root", func(t *testing.T) {
+		uri, err := i.FileURI("sub/a.go")
+		require.NoError(t, err)
+		assert.Equal(t, filepath.Join(root, "sub", "a.go"), uri.Path())
+	})
+
+	suite := []struct {
+		description string
+		line, col   int
+		want        term.Coordinates
+	}{
+		{"line and column are 1-based", 3, 6, term.Coordinates{X: 5, Y: 2}},
+		{"the first line and column", 1, 1, term.Coordinates{}},
+		{"a missing column is the first column", 4, 0, term.Coordinates{Y: 3}},
+		{"a missing line is the first line", 0, 0, term.Coordinates{}},
+		{"a negative position is clamped", -3, -2, term.Coordinates{}},
+	}
+	for _, tc := range suite {
+		t.Run(tc.description, func(t *testing.T) {
+			uri, err := i.FileURI(file)
+			require.NoError(t, err)
+
+			require.NoError(t, i.OpenAt(uri, tc.line, tc.col))
+
+			gotURI, cursor := focused(t)
+			assert.Equal(t, uri, gotURI)
+			assert.Equal(t, tc.want, cursor)
+		})
+	}
+
+	t.Run("reopening an open file moves its cursor", func(t *testing.T) {
+		uri, err := i.FileURI(file)
+		require.NoError(t, err)
+		require.NoError(t, i.OpenAt(uri, 1, 1))
+		require.NoError(t, i.OpenAt(uri, 4, 3))
+
+		_, cursor := focused(t)
+		assert.Equal(t, term.Coordinates{X: 2, Y: 3}, cursor)
+	})
+
+	t.Run("a position past the end lands on the last character", func(t *testing.T) {
+		uri, err := i.FileURI(file)
+		require.NoError(t, err)
+
+		require.NoError(t, i.OpenAt(uri, 99, 99))
+
+		_, cursor := focused(t)
+		assert.Equal(t, term.Coordinates{X: 13, Y: 3}, cursor)
+	})
+
+	t.Run("a focused companion terminal is closed and not replaced", func(t *testing.T) {
+		ex := i.workspaceHandler.focusEx()
+		ex.newEmulatorHandler = func([]string) (vtereservoir.VTE, error) {
+			return newTestVte(), nil
+		}
+		require.NoError(t, ex.toggleCompanionTerminal())
+		terminal := ex.companionTerminalWin
+		require.NotNil(t, terminal)
+		require.Equal(t, terminal, ex.invokeWindow(), "the terminal holds the focus")
+		uri, err := i.FileURI(file)
+		require.NoError(t, err)
+
+		require.NoError(t, i.OpenAt(uri, 3, 6))
+
+		assert.True(t, terminal.Closed(), "the companion terminal is dismissed")
+		assert.Nil(t, ex.companionTerminalWin)
+		gotURI, cursor := focused(t)
+		assert.Equal(t, uri, gotURI)
+		assert.Equal(t, term.Coordinates{X: 5, Y: 2}, cursor)
+	})
+
+	t.Run("a missing file is reported and not opened", func(t *testing.T) {
+		before, _ := focused(t)
+		uri, err := i.FileURI("sub/missing.go")
+		require.NoError(t, err)
+
+		err = i.OpenAt(uri, 1, 1)
+
+		require.Error(t, err)
+		assert.ErrorIs(t, err, os.ErrNotExist)
+		after, _ := focused(t)
+		assert.Equal(t, before, after, "no buffer is created for the missing file")
+	})
+
+	t.Run("a directory is reported", func(t *testing.T) {
+		uri, err := i.FileURI("sub")
+		require.NoError(t, err)
+
+		err = i.OpenAt(uri, 1, 1)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "is a directory")
+	})
+}
+
 func TestHomeWorkspaceDoesNotStartExtensions(t *testing.T) {
 	t.Parallel()
 

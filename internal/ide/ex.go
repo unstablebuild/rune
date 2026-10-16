@@ -1372,10 +1372,8 @@ func (e *ex) editFilesReadOnly(readOnly bool, args ...string) error {
 		return errors.New("expected at least one file name")
 	}
 
-	if e.invokeWindow() == e.companionTerminalWin {
-		if err := e.toggleCompanionTerminal(); err != nil {
-			return fmt.Errorf("toggle companion terminal: %v", err)
-		}
+	if err := e.dismissCompanionTerminal(); err != nil {
+		return err
 	}
 
 	for _, arg := range args {
@@ -1390,6 +1388,19 @@ func (e *ex) editFilesReadOnly(readOnly bool, args ...string) error {
 		}
 	}
 
+	return nil
+}
+
+// dismissCompanionTerminal closes the companion terminal when it holds the
+// focus, so that a file opened next shows in the window behind it rather
+// than replacing the terminal.
+func (e *ex) dismissCompanionTerminal() error {
+	if e.invokeWindow() != e.companionTerminalWin {
+		return nil
+	}
+	if err := e.toggleCompanionTerminal(); err != nil {
+		return fmt.Errorf("toggle companion terminal: %v", err)
+	}
 	return nil
 }
 
