@@ -40,7 +40,8 @@ type WindowManagerConfig struct {
 	ScrollBarHoverChar rune
 	// FloatingBar receives the interactions produced by floating
 	// window bars. It may be nil.
-	FloatingBar FloatingBarHandler
+	FloatingBar  FloatingBarHandler
+	ResizeBorder ResizeBorderInterface
 }
 
 // FloatingBarHandler groups the interactions produced by a floating
@@ -77,6 +78,11 @@ func (NopFloatingBarHandler) OnBarDrop(Window, term.Coordinates) bool { return f
 // OnBarDragCancel satisfies FloatingBarHandler.
 func (NopFloatingBarHandler) OnBarDragCancel(Window) {}
 
+// ResizeBorderInterface encapsulates behaviour along the resize border.
+type ResizeBorderInterface interface {
+	OnMouseover(area MouseoverArea, hasWindowBar bool)
+}
+
 // winDragMode is a bitmask describing an in-progress window drag
 // started from a floating window's bar or a window's frame edge.
 type winDragMode uint8
@@ -87,6 +93,27 @@ const (
 	winDragRight
 	winDragBottom
 	winDragTop
+)
+
+// MouseoverArea is a bitmask describing the areas where winDragMode works
+// on a floating window's bar or a window's frame edge, as well as
+// the WindowBarCloseIcon, and if the mouse is outside a window, the bitmask
+// is all zeros.
+type MouseoverArea uint8
+
+const (
+	// FrameLeft is the left-side vertical
+	FrameLeft MouseoverArea = 1 << iota
+	// FrameRight is the right-side vertical
+	FrameRight
+	// FrameBottom is the bottom-side horizontal
+	FrameBottom
+	// FrameTop is the top-side horizontal
+	FrameTop
+	// FrameCenter is the entire area inside the frame
+	FrameCenter
+	// WindowBarCloseIcon is the close button of the window
+	WindowBarCloseIcon
 )
 
 // windowBarDoubleClickTimeout is the maximum delay between two bar
@@ -247,7 +274,15 @@ func (wm *WindowManager) Handle(ev term.Event) (exit bool, handled bool) {
 				endDragAfter = true
 			}
 		}
+
 		if !ok {
+			// Reset cursor to default
+			if wm.config.ResizeBorder != nil {
+				wm.config.ResizeBorder.OnMouseover(
+					wm.detectMouseOverWindowFrame(component.Window{}, ev),
+					false,
+				)
+			}
 			return
 		}
 		offset := childAtMouse.Position()
@@ -269,9 +304,16 @@ func (wm *WindowManager) Handle(ev term.Event) (exit bool, handled bool) {
 				end := position.Y + height
 				if ev.MouseX == position.X && ev.MouseY >= position.Y && ev.MouseY < end ||
 					wm.prevMouseScrollBarDrag {
+					// Reset cursor to default over scroll bars.
+					// (We could also show a different cursor shape over scroll bars)
+					if wm.config.ResizeBorder != nil {
+						wm.config.ResizeBorder.OnMouseover(
+							wm.detectMouseOverWindowFrame(component.Window{}, term.Event{}),
+							false,
+						)
+					}
 					return wm.handleScrollBarMouse(childAtMouse, position.Y, height, frame, ev)
 				}
-				// lost drag; reset if mouse is now outside of scroll bar
 				wm.resetScrollBarMouse()
 			} else {
 				// lost scroll bar; content could have changed
@@ -286,6 +328,12 @@ func (wm *WindowManager) Handle(ev term.Event) (exit bool, handled bool) {
 		}
 
 		if wm.config.Frame {
+			if wm.config.ResizeBorder != nil {
+				wm.config.ResizeBorder.OnMouseover(
+					wm.detectMouseOverWindowFrame(childAtMouse, ev),
+					childAtMouse.HasWindowBar(),
+				)
+			}
 			ev.MouseY--
 			ev.MouseX--
 		}
@@ -854,17 +902,13 @@ func (wm *WindowManager) applyWindowDrag(mouse term.Coordinates) {
 func (wm *WindowManager) handleWindowFramePress(
 	win component.Window, ev term.Event,
 ) (exit, handled, done bool) {
-	if _, minimized := win.IsMinimized(); minimized {
-		return
-	}
-	wx, wy := ev.MouseX, ev.MouseY
-	w, h := win.Width(), win.Height()
+	area := wm.detectMouseOverWindowFrame(win, ev)
+	var mode winDragMode
 	if !win.IsFloating() {
-		var mode winDragMode
-		if wx == w-1 {
+		if area&FrameRight != 0 {
 			mode |= winDragRight
 		}
-		if wy == h-1 {
+		if area&FrameBottom != 0 {
 			mode |= winDragBottom
 		}
 		if mode == 0 {
@@ -874,29 +918,98 @@ func (wm *WindowManager) handleWindowFramePress(
 		wm.winDragWin = win
 		return false, true, true
 	}
-	if win.HasWindowBar() && wy == 0 {
-		return wm.handleWindowBarPress(win, wx, w)
+	if win.HasWindowBar() && (area&FrameTop != 0) {
+		return wm.handleWindowBarPress(win, ev.MouseX, win.Width())
 	}
-	var mode winDragMode
-	if wx == 0 {
+	if area&FrameLeft != 0 {
 		mode |= winDragLeft
 	}
-	if wx == w-1 {
+	if area&FrameRight != 0 {
 		mode |= winDragRight
 	}
-	if wy == h-1 {
+	if area&FrameBottom != 0 {
 		mode |= winDragBottom
 	}
-	if wy == 0 {
+	if area&FrameTop != 0 {
 		mode |= winDragTop
 	}
+	// If area is FrameCenter, or not set at all, do nothing on wm.
+
 	if mode == 0 {
 		return
 	}
-	wm.SetFocus(wm.newNode(win))
 	wm.winDrag = mode
+	wm.SetFocus(wm.newNode(win))
 	wm.winDragWin = win
 	return false, true, true
+}
+
+// detectMouseOverWindowFrame returns mouse position in a window: on a
+// floating window's bar (close icon or the bar itself) and on frame edges
+// and in any area other than that. Event coordinates are window-local.
+// This function returns zero values if the window is minimised, or if the
+// window is not floating and mouse is not over the bottom or right parts
+// of the frame, or if the window is floating and the mouse is not on any
+// part of the frame.
+func (WindowManager) detectMouseOverWindowFrame(
+	win component.Window, ev term.Event,
+) (area MouseoverArea) {
+	// win.wm could be nil, in which case a lot of the win methods panic. We
+	// recover by returning an empty bitmask, indicating the mouse is not in
+	// the window.
+	defer func() {
+		if r := recover(); r != nil {
+			return
+		}
+	}()
+
+	if _, minimized := win.IsMinimized(); minimized {
+		return
+	}
+	wx, wy := ev.MouseX, ev.MouseY
+	w, h := win.Width(), win.Height()
+	if !win.IsFloating() {
+		if wx == w-1 {
+			area |= FrameRight
+		}
+		if wy == h-1 {
+			area |= FrameBottom
+		}
+		// If mouse is anywhere inside frame, add FrameCenter to the area.
+		if wx > 0 && wx < w-1 && wy > 0 && wy < h-1 {
+			area |= FrameCenter
+		}
+		return area
+	}
+	if win.HasWindowBar() && wy == 0 {
+		switch wx {
+		case component.WindowBarCloseIconX:
+			return FrameTop | WindowBarCloseIcon
+		case 0, w - 1:
+			area = FrameTop | FrameLeft
+			if wx == w-1 {
+				area = FrameTop | FrameRight
+			}
+			return area
+		}
+	}
+	if wx == 0 {
+		area |= FrameLeft
+	}
+	if wx == w-1 {
+		area |= FrameRight
+	}
+	if wy == h-1 {
+		area |= FrameBottom
+	}
+	if wy == 0 {
+		area |= FrameTop
+	}
+	// If mouse is anywhere inside frame, add FrameCenter to the area.
+	if wx > 0 && wx < w-1 && wy > 0 && wy < h-1 {
+		area |= FrameCenter
+	}
+	return area
 }
 
 // handleWindowBarPress routes a press on a floating window's bar: the
