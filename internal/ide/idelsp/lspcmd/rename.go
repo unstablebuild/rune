@@ -38,7 +38,7 @@ import (
 // workspace edit returned by the language server.
 func RenameHandler(
 	lsp semanticapi.LSP, editor textapi.Editor, wm browserapi.WindowManager,
-	opener browserapi.ResourceOpener,
+	opener browserapi.ResourceOpener, notify browserapi.Notifications,
 	log *slog.Logger,
 ) textapi.CommandHandler {
 	if log == nil {
@@ -49,6 +49,7 @@ func RenameHandler(
 		editor: editor,
 		wm:     wm,
 		opener: opener,
+		notify: notify,
 		log:    log,
 	}
 }
@@ -60,6 +61,7 @@ type renameHandler struct {
 	editor textapi.Editor
 	wm     browserapi.WindowManager
 	opener browserapi.ResourceOpener
+	notify browserapi.Notifications
 	log    *slog.Logger
 }
 
@@ -91,6 +93,7 @@ func (h *renameHandler) HandleCommand(ctx context.Context, cmd textapi.Command) 
 		lsp:      h.lsp,
 		editor:   h.editor,
 		opener:   h.opener,
+		notify:   h.notify,
 		wm:       h.wm,
 		uri:      cmd.URI,
 		position: pos,
@@ -129,6 +132,7 @@ type renameFloatingHandler struct {
 	lsp      semanticapi.LSP
 	editor   textapi.Editor
 	opener   browserapi.ResourceOpener
+	notify   browserapi.Notifications
 	wm       browserapi.WindowManager
 	win      browserapi.Window
 	uri      workspaceapi.URI
@@ -160,18 +164,51 @@ func (r *renameFloatingHandler) Handle(ev term.Event) (bool, bool) {
 	})
 	if err != nil {
 		r.log.Warn("rename", "err", err)
+		r.notifyRenameError(err)
 		return true, true
 	}
-	if edit == nil {
+	if edit == nil || renameEditEmpty(edit) {
+		r.notifyRenameError(fmt.Errorf("no edits returned for %q", newName))
 		return true, true
 	}
 
 	err = ApplyWorkspaceEdit(r.ctx, r.editor, r.opener, r.uri, edit, r.log)
 	if err != nil {
 		r.log.Warn("rename apply", "err", err)
+		r.notifyRenameError(err)
 		return true, true
 	}
 	return true, true
+}
+
+func (r *renameFloatingHandler) notifyRenameError(err error) {
+	if r.notify == nil || err == nil {
+		return
+	}
+	_, _ = r.notify.Notify(browserapi.LevelError, "rename: %s", err)
+}
+
+// renameEditEmpty reports whether a workspace edit contains no text edits.
+// gopls can return a non-nil empty edit for some failure modes; treat that
+// the same as a failed rename so the user sees feedback.
+func renameEditEmpty(edit *semanticapi.WorkspaceEdit) bool {
+	if edit == nil {
+		return true
+	}
+	for _, dc := range edit.DocumentChanges {
+		if dc.TextDocumentEdit != nil && len(dc.TextDocumentEdit.Edits) > 0 {
+			return false
+		}
+		if dc.CreateFile != nil || dc.RenameFile != nil || dc.DeleteFile != nil {
+			return false
+		}
+	}
+	for _, edits := range edit.Changes {
+		if len(edits) > 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *renameFloatingHandler) Cursor() (term.Coordinates, term.CursorStyle, bool) {

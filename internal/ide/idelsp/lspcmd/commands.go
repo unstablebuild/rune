@@ -200,7 +200,7 @@ func AllHandler(
 		),
 		"signature-help": SignatureHelpHandler(lsp, editor, wm,
 			cfg.ScheduleNextTick, cfg.SignatureHelp, wsLog),
-		"rename": RenameHandler(lsp, editor, wm, opener, wsLog),
+		"rename": RenameHandler(lsp, editor, wm, opener, notify, wsLog),
 	}
 	return r, nil
 }
