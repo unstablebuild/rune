@@ -66,8 +66,32 @@ func (a *Client) PostReport(ctx context.Context, payload crashreport.Payload) er
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusForbidden {
+		// Retry without auth - the auth requirement is legacy from when Rune was not
+		// open source, so fall back to posting unauthenticated.
+		// Reuse the original request but remove the Authorization header
+		r.Header.Del("Authorization")
+		if r.GetBody != nil {
+			body, err := r.GetBody()
+			if err != nil {
+				return fmt.Errorf("reset request body: %w", err)
+			}
+			r.Body = body
+		}
+		resp2, err := http.DefaultClient.Do(r)
+		if err != nil {
+			return fmt.Errorf("post report (unauth): %w", err)
+		}
+		defer resp2.Body.Close()
+		if resp2.StatusCode != http.StatusOK && resp2.StatusCode != http.StatusCreated {
+			return fmt.Errorf("report upload (unauth): status %d", resp2.StatusCode)
+		}
+		return nil
+	}
+
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		return fmt.Errorf("report upload: status %d", resp.StatusCode)
 	}
+
 	return nil
 }

@@ -155,3 +155,97 @@ func TestPostReport_SendsAnonymouslyWithoutToken(t *testing.T) {
 		})
 	}
 }
+
+func TestPostReport_FallsBackToUnauthenticatedOn403(t *testing.T) {
+	var authCount, unauthCount int
+	var unauthBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/reports" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		if r.Method != "POST" {
+			t.Errorf("unexpected method: %s", r.Method)
+		}
+		ct := r.Header.Get("Content-Type")
+		if ct != reportContentType {
+			t.Errorf("unexpected content-type: %s", ct)
+		}
+		if r.Header.Get("Authorization") != "" {
+			authCount++
+		} else {
+			unauthCount++
+			var err error
+			unauthBody, err = io.ReadAll(r.Body)
+			if err != nil {
+				t.Errorf("read body: %v", err)
+			}
+		}
+		// First request (with auth) gets 403 to trigger fallback
+		if r.Header.Get("Authorization") != "" {
+			w.WriteHeader(http.StatusForbidden)
+		} else {
+			// Second request (unauthenticated) gets 201 to succeed
+			w.WriteHeader(http.StatusCreated)
+		}
+	}))
+	defer srv.Close()
+
+	u, _ := url.Parse(srv.URL)
+	client := &Client{
+		httpEndpointURL: u,
+		tokenSource:     newValidTestTokenSource(),
+	}
+
+	payload := crashreport.Payload{YAML: []byte("package: testpkg\n")}
+
+	err := client.PostReport(context.Background(), payload)
+	if err != nil {
+		t.Fatalf("PostReport: expected retry to succeed on 403->2xx, got: %v", err)
+	}
+
+	if authCount != 1 {
+		t.Errorf("auth request count = %d, want 1", authCount)
+	}
+	if unauthCount != 1 {
+		t.Errorf("unauth request count = %d, want 1", unauthCount)
+	}
+	if string(unauthBody) != string(payload.YAML) {
+		t.Errorf("unauth body = %q, want %q", string(unauthBody), string(payload.YAML))
+	}
+}
+
+func TestPostReport_FallbackAlsoFails(t *testing.T) {
+	var authCount, unauthCount int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "" {
+			authCount++
+		} else {
+			unauthCount++
+		}
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	u, _ := url.Parse(srv.URL)
+	client := &Client{
+		httpEndpointURL: u,
+		tokenSource:     newValidTestTokenSource(),
+	}
+
+	err := client.PostReport(context.Background(), crashreport.Payload{YAML: []byte("package: testpkg\n")})
+	if err == nil {
+		t.Fatal("expected error when both authenticated and unauthenticated requests fail")
+	}
+
+	if authCount != 1 {
+		t.Errorf("auth request count = %d, want 1", authCount)
+	}
+	if unauthCount != 1 {
+		t.Errorf("unauth request count = %d, want 1", unauthCount)
+	}
+
+	expected := "report upload (unauth): status 403"
+	if err.Error() != expected {
+		t.Errorf("error = %q, want %q", err.Error(), expected)
+	}
+}
