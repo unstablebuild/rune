@@ -38,9 +38,12 @@ import (
 // workspace edit returned by the language server.
 func RenameHandler(
 	lsp semanticapi.LSP, editor textapi.Editor, wm browserapi.WindowManager,
-	opener browserapi.ResourceOpener,
+	opener browserapi.ResourceOpener, notify browserapi.Notifications,
 	log *slog.Logger,
 ) textapi.CommandHandler {
+	if notify == nil {
+		panic("lspcmd: RenameHandler: notify must not be nil")
+	}
 	if log == nil {
 		log = slog.Default()
 	}
@@ -49,6 +52,7 @@ func RenameHandler(
 		editor: editor,
 		wm:     wm,
 		opener: opener,
+		notify: notify,
 		log:    log,
 	}
 }
@@ -60,6 +64,7 @@ type renameHandler struct {
 	editor textapi.Editor
 	wm     browserapi.WindowManager
 	opener browserapi.ResourceOpener
+	notify browserapi.Notifications
 	log    *slog.Logger
 }
 
@@ -92,6 +97,7 @@ func (h *renameHandler) HandleCommand(ctx context.Context, cmd textapi.Command) 
 		editor:   h.editor,
 		opener:   h.opener,
 		wm:       h.wm,
+		notify:   h.notify,
 		uri:      cmd.URI,
 		position: pos,
 		ctx:      ctx,
@@ -131,6 +137,7 @@ type renameFloatingHandler struct {
 	opener   browserapi.ResourceOpener
 	wm       browserapi.WindowManager
 	win      browserapi.Window
+	notify   browserapi.Notifications
 	uri      workspaceapi.URI
 	position semanticapi.Position
 	ctx      context.Context
@@ -160,18 +167,38 @@ func (r *renameFloatingHandler) Handle(ev term.Event) (bool, bool) {
 	})
 	if err != nil {
 		r.log.Warn("rename", "err", err)
+		_, _ = r.notify.Notify(browserapi.LevelError, "rename: %s", err)
 		return true, true
 	}
-	if edit == nil {
+	if edit == nil || renameEditEmpty(edit) {
+		_, _ = r.notify.Notify(browserapi.LevelError, "rename: no edits returned")
 		return true, true
 	}
 
 	err = ApplyWorkspaceEdit(r.ctx, r.editor, r.opener, r.uri, edit, r.log)
 	if err != nil {
 		r.log.Warn("rename apply", "err", err)
+		_, _ = r.notify.Notify(browserapi.LevelError, "rename: %s", err)
 		return true, true
 	}
 	return true, true
+}
+
+func renameEditEmpty(edit *semanticapi.WorkspaceEdit) bool {
+	for _, dc := range edit.DocumentChanges {
+		if dc.TextDocumentEdit != nil && len(dc.TextDocumentEdit.Edits) > 0 {
+			return false
+		}
+		if dc.CreateFile != nil || dc.RenameFile != nil || dc.DeleteFile != nil {
+			return false
+		}
+	}
+	for _, edits := range edit.Changes {
+		if len(edits) > 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *renameFloatingHandler) Cursor() (term.Coordinates, term.CursorStyle, bool) {
