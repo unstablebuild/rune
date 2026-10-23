@@ -43,6 +43,7 @@ import (
 
 func newTestRenameFloating(
 	t *testing.T, text string, lsp *mockLSP, editor *mockEditor,
+	notify browserapi.Notifications,
 ) *renameFloatingHandler {
 	t.Helper()
 	ib := inputbox.New(
@@ -55,6 +56,7 @@ func newTestRenameFloating(
 		ib:       ib,
 		lsp:      lsp,
 		editor:   editor,
+		notify:   notify,
 		uri:      testURI(t, "file:///test.go"),
 		position: semanticapi.Position{Line: 5, Character: 4},
 		ctx:      ctx,
@@ -76,7 +78,7 @@ func TestRenameFloatingHandlerEsc(t *testing.T) {
 		},
 	}
 
-	h := newTestRenameFloating(t, "oldName", lsp, &mockEditor{})
+	h := newTestRenameFloating(t, "oldName", lsp, &mockEditor{}, nil)
 	exit, handled := h.Handle(term.Event{
 		Type: term.EventKey, Key: term.KeyEsc,
 	})
@@ -130,7 +132,7 @@ func TestRenameFloatingHandlerEnter(t *testing.T) {
 		},
 	}
 
-	h := newTestRenameFloating(t, "newName", lsp, editor)
+	h := newTestRenameFloating(t, "newName", lsp, editor, nil)
 	exit, handled := h.Handle(term.Event{
 		Type: term.EventKey, Key: term.KeyEnter,
 	})
@@ -151,17 +153,23 @@ func TestRenameFloatingHandlerRenameError(t *testing.T) {
 		renameFn: func(
 			_ context.Context, _ semanticapi.RenameParams,
 		) (*semanticapi.WorkspaceEdit, error) {
-			return nil, errors.New("server error")
+			return nil, errors.New("renaming \"Foo\" to \"Bar\" failed: Bar already declared at")
 		},
 	}
 
-	h := newTestRenameFloating(t, "newName", lsp, &mockEditor{})
+	notify := &recordingNotifications{}
+	h := newTestRenameFloating(t, "Bar", lsp, &mockEditor{}, notify)
 	exit, handled := h.Handle(term.Event{
 		Type: term.EventKey, Key: term.KeyEnter,
 	})
 
 	assert.True(t, exit, "should exit even on error")
 	assert.True(t, handled)
+	notifies, _ := notify.snapshot()
+	require.Len(t, notifies, 1)
+	assert.Equal(t, browserapi.LevelError, notifies[0].level)
+	assert.Contains(t, notifies[0].msg, "rename:")
+	assert.Contains(t, notifies[0].msg, "already declared")
 }
 
 func TestRenameFloatingHandlerNilEdit(t *testing.T) {
@@ -175,19 +183,94 @@ func TestRenameFloatingHandlerNilEdit(t *testing.T) {
 		},
 	}
 
-	h := newTestRenameFloating(t, "newName", lsp, &mockEditor{})
+	notify := &recordingNotifications{}
+	h := newTestRenameFloating(t, "newName", lsp, &mockEditor{}, notify)
 	exit, handled := h.Handle(term.Event{
 		Type: term.EventKey, Key: term.KeyEnter,
 	})
 
 	assert.True(t, exit)
 	assert.True(t, handled)
+	notifies, _ := notify.snapshot()
+	require.Len(t, notifies, 1)
+	assert.Equal(t, browserapi.LevelError, notifies[0].level)
+	assert.Contains(t, notifies[0].msg, "no edits returned")
+}
+
+func TestRenameFloatingHandlerEmptyEdit(t *testing.T) {
+	t.Parallel()
+
+	lsp := &mockLSP{
+		renameFn: func(
+			_ context.Context, _ semanticapi.RenameParams,
+		) (*semanticapi.WorkspaceEdit, error) {
+			return &semanticapi.WorkspaceEdit{
+				Changes: map[string][]semanticapi.TextEdit{},
+			}, nil
+		},
+	}
+
+	notify := &recordingNotifications{}
+	h := newTestRenameFloating(t, "collide", lsp, &mockEditor{}, notify)
+	exit, handled := h.Handle(term.Event{
+		Type: term.EventKey, Key: term.KeyEnter,
+	})
+
+	assert.True(t, exit)
+	assert.True(t, handled)
+	notifies, _ := notify.snapshot()
+	require.Len(t, notifies, 1)
+	assert.Equal(t, browserapi.LevelError, notifies[0].level)
+	assert.Contains(t, notifies[0].msg, "no edits returned for \"collide\"")
+}
+
+func TestRenameFloatingHandlerApplyError(t *testing.T) {
+	t.Parallel()
+
+	lsp := &mockLSP{
+		renameFn: func(
+			_ context.Context, _ semanticapi.RenameParams,
+		) (*semanticapi.WorkspaceEdit, error) {
+			return &semanticapi.WorkspaceEdit{
+				Changes: map[string][]semanticapi.TextEdit{
+					"file:///missing.go": {
+						{
+							Range: semanticapi.Range{
+								Start: semanticapi.Position{Line: 0, Character: 0},
+								End:   semanticapi.Position{Line: 0, Character: 3},
+							},
+							NewText: "bar",
+						},
+					},
+				},
+			}, nil
+		},
+	}
+
+	editor := &mockEditor{
+		editorFn: func(uri workspaceapi.URI) (textapi.Handler, error) {
+			return nil, errors.New("not open")
+		},
+	}
+
+	notify := &recordingNotifications{}
+	h := newTestRenameFloating(t, "bar", lsp, editor, notify)
+	exit, handled := h.Handle(term.Event{
+		Type: term.EventKey, Key: term.KeyEnter,
+	})
+
+	assert.True(t, exit)
+	assert.True(t, handled)
+	notifies, _ := notify.snapshot()
+	require.Len(t, notifies, 1)
+	assert.Equal(t, browserapi.LevelError, notifies[0].level)
+	assert.Contains(t, notifies[0].msg, "rename:")
 }
 
 func TestRenameFloatingHandlerTyping(t *testing.T) {
 	t.Parallel()
 
-	h := newTestRenameFloating(t, "", &mockLSP{}, &mockEditor{})
+	h := newTestRenameFloating(t, "", &mockLSP{}, &mockEditor{}, nil)
 
 	exit, handled := h.Handle(term.Event{
 		Type: term.EventKey, Ch: 'a',
@@ -219,7 +302,7 @@ func TestRenameFloatingHandlerDimensions(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			h := newTestRenameFloating(
-				t, test.text, &mockLSP{}, &mockEditor{},
+				t, test.text, &mockLSP{}, &mockEditor{}, nil,
 			)
 			w, ht := h.Dimensions()
 			assert.GreaterOrEqual(t, w, test.wantMinW)
@@ -231,7 +314,7 @@ func TestRenameFloatingHandlerDimensions(t *testing.T) {
 func TestRenameFloatingHandlerCursor(t *testing.T) {
 	t.Parallel()
 
-	h := newTestRenameFloating(t, "test", &mockLSP{}, &mockEditor{})
+	h := newTestRenameFloating(t, "test", &mockLSP{}, &mockEditor{}, nil)
 	h.Resize(30, 1)
 
 	_, _, visible := h.Cursor()
@@ -292,7 +375,7 @@ func TestRenameFloatingHandlerMultiFileEdit(t *testing.T) {
 		},
 	}
 
-	h := newTestRenameFloating(t, "bar", lsp, editor)
+	h := newTestRenameFloating(t, "bar", lsp, editor, nil)
 	exit, _ := h.Handle(term.Event{
 		Type: term.EventKey, Key: term.KeyEnter,
 	})
@@ -364,7 +447,7 @@ func TestRenameHandlerPrepareRenameNil(t *testing.T) {
 		},
 	}
 
-	h := RenameHandler(lsp, &mockEditor{}, &mockWindowManager{}, nil, nil)
+	h := RenameHandler(lsp, &mockEditor{}, &mockWindowManager{}, nil, nil, nil)
 	uri := testURI(t, "file:///test.go")
 	err := h.HandleCommand(context.Background(), textapi.Command{
 		Name:     "rename",
@@ -386,7 +469,7 @@ func TestRenameHandlerPrepareRenameError(t *testing.T) {
 		},
 	}
 
-	h := RenameHandler(lsp, &mockEditor{}, &mockWindowManager{}, nil, nil)
+	h := RenameHandler(lsp, &mockEditor{}, &mockWindowManager{}, nil, nil, nil)
 	uri := testURI(t, "file:///test.go")
 	err := h.HandleCommand(context.Background(), textapi.Command{
 		Name:     "rename",
@@ -426,7 +509,7 @@ func TestRenameHandlerSuccess(t *testing.T) {
 		},
 	}
 
-	h := RenameHandler(lsp, &mockEditor{}, wm, nil, nil)
+	h := RenameHandler(lsp, &mockEditor{}, wm, nil, nil, nil)
 	uri := testURI(t, "file:///test.go")
 	cmd := textapi.Command{
 		Name:     "rename",
