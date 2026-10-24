@@ -109,6 +109,8 @@ import (
 const (
 	cmdSwitchToWorkspace = "workspacefocus"
 	cmdMoveWorkspace     = "workspacemove"
+	cmdNextWorkspace     = "workspacenext"
+	cmdPreviousWorkspace = "workspaceprevious"
 	cmdCloseWorkspace    = "workspaceclose"
 	cmdReloadWorkspace   = "workspacereload"
 	cmdAddWorkspace      = "workspaceopen"
@@ -3173,6 +3175,28 @@ func (h *workspaceManagerHandler) commandSwitchToWorkspace(args ...string) error
 	return nil
 }
 
+func (h *workspaceManagerHandler) commandNextWorkspace(...string) error {
+	h.cycleWorkspace(1)
+	return nil
+}
+
+func (h *workspaceManagerHandler) commandPreviousWorkspace(...string) error {
+	h.cycleWorkspace(-1)
+	return nil
+}
+
+// cycleWorkspace skips empty slots so that next and previous only visit
+// workspaces that are open, the way the workspace bar lists them.
+func (h *workspaceManagerHandler) cycleWorkspace(step int) {
+	for i := 1; i < workspaceSlots; i++ {
+		slot := ((h.focus+step*i)%workspaceSlots + workspaceSlots) % workspaceSlots
+		if h.workspaces[slot] != nil {
+			h.switchToWorkspace(slot)
+			return
+		}
+	}
+}
+
 func (h *workspaceManagerHandler) moveWorkspace(args ...string) error {
 	if len(args) == 0 {
 		return errors.New("command expects at least one argument")
@@ -3974,6 +3998,20 @@ func (h *workspaceManagerHandler) subscribeActiveWorkspaceCommands(ex *ex) (ret 
 			man: textapi.CommandManual{
 				Summary:  "Switches the current active workspace to the workspace at the given position.",
 				Synopsis: "(1|2|3|4|5|6|7|8|9)",
+			},
+		},
+		cmdNextWorkspace: {
+			handler: (*workspaceManagerHandler).commandNextWorkspace,
+			man: textapi.CommandManual{
+				Summary: "Switches the current active workspace to the next open " +
+					"workspace. Wraps around to the first open workspace.",
+			},
+		},
+		cmdPreviousWorkspace: {
+			handler: (*workspaceManagerHandler).commandPreviousWorkspace,
+			man: textapi.CommandManual{
+				Summary: "Switches the current active workspace to the previous open " +
+					"workspace. Wraps around to the last open workspace.",
 			},
 		},
 		cmdMoveWorkspace: {

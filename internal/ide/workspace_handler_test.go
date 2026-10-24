@@ -11662,3 +11662,21 @@ editor:
 func workingStatus() programstatus.Report {
 	return programstatus.Report{State: programstatus.Working, Progress: -1}
 }
+
+func TestWorkspaceNextPreviousCycleOpenWorkspaces(t *testing.T) {
+	m, other := newActivityTestManager(t, defaultConfigWithWrap(false))
+	t.Cleanup(func() { _ = m.Close() })
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	start := m.focus
+
+	require.NoError(t, m.focusEx().dispatchCommand("workspacenext"))
+	assert.Equal(t, other, m.focus, "next focuses the other open workspace")
+	require.NoError(t, m.focusEx().dispatchCommand("workspacenext"))
+	assert.Equal(t, start, m.focus, "next wraps around, skipping empty slots")
+
+	require.NoError(t, m.focusEx().dispatchCommand("workspaceprevious"))
+	assert.Equal(t, other, m.focus, "previous wraps around, skipping empty slots")
+	require.NoError(t, m.focusEx().dispatchCommand("workspaceprevious"))
+	assert.Equal(t, start, m.focus)
+}
