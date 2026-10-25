@@ -831,6 +831,12 @@ func runGUI(
 	}
 
 	g, err := gui.New(root, options...)
+	if errors.Is(err, gui.ErrNoDisplay) {
+		fmt.Printf("%s\nuse --tui to run Rune in this terminal, or --headless to only "+
+			"expose this machine's workspaces on the Rune network\n", err)
+		log.Errorf("gui: %v", err)
+		return 1
+	}
 	if err != nil {
 		fmt.Printf("gui: %s", err)
 		log.Errorf("gui: %v", err)

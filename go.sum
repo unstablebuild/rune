@@ -496,8 +496,8 @@ github.com/u-root/uio v0.0.0-20240224005618-d2acac8f3701 h1:pyC9PaHYZFgEKFdlp3G8
 github.com/u-root/uio v0.0.0-20240224005618-d2acac8f3701/go.mod h1:P3a5rG4X7tI17Nn3aOIAYr5HbIMukwXG0urG0WuL8OA=
 github.com/unstablebuild/blue v1.85.2 h1:J2pBH6G1Y7twNU3CBuKsKZBGTDfqjFi/V9JUIYuvYhs=
 github.com/unstablebuild/blue v1.85.2/go.mod h1:9yTwjlRwKO9rBPFiHCPb91jwM1GKf/+x5MJXS6tRN5I=
-github.com/unstablebuild/ebiten/v2 v2.7.5-ub.32 h1:hrz41+X1fnLIpUOukUJQUzkmU6hZLv2pP5YNNg7V9KQ=
-github.com/unstablebuild/ebiten/v2 v2.7.5-ub.32/go.mod h1:ktenNSafDcraZPupfeBBts/GZ9uP9oDbB4IXMJweNwk=
+github.com/unstablebuild/ebiten/v2 v2.7.5-ub.33 h1:EFxi8yPRvHr8qo0XJ7EvQqfdNvbNusHU/3qp3yVMits=
+github.com/unstablebuild/ebiten/v2 v2.7.5-ub.33/go.mod h1:ktenNSafDcraZPupfeBBts/GZ9uP9oDbB4IXMJweNwk=
 github.com/unstablebuild/go-billy/v6 v6.0.0-ub.1 h1:pPmxLsBLNuZv+LWeytIcvwzxeUAMYzeY2MDKmSWXMTA=
 github.com/unstablebuild/go-billy/v6 v6.0.0-ub.1/go.mod h1:E3VhlS+AKkrq6ZNn1axE2/nDRJ87l1FJk9r5HT2vPX0=
 github.com/unstablebuild/go-git/v6 v6.0.1-ub.1 h1:xBomYWGQkSIm023lhJxu+F1uU4YjZlIZaKpnm+7nIak=

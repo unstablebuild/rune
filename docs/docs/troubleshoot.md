@@ -115,10 +115,15 @@ rune --headless
 If that fails with `error while loading shared libraries`, the binary is an
 older release that still linked `libX11` eagerly; upgrade it.
 
-`rune --gui` is the one mode that does need a display: it reports
-`X11: Failed to load libX11` or `The DISPLAY environment variable is
-missing` when there is none. Install your distribution's Mesa and X11
-client library packages.
+`rune --gui`, which is also what a plain `rune` starts, is the one mode
+that does need a display. Without one, Rune exits with `no display
+available` followed by the reason, and suggests `--tui` or `--headless`
+instead. `The DISPLAY environment variable is missing` means the session
+has no X server at all, as over SSH without X11 forwarding. `Failed to
+open display` means the X server that `DISPLAY` names is not running or
+not reachable. `X11: Failed to load libX11` means the X11 client
+libraries are missing: install your distribution's Mesa and X11 client
+library packages.
 
 ## The command prompt will not open in an external editor
 

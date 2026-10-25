@@ -44,6 +44,11 @@ var (
 	// ErrHandlerExited is returned by GUI.Run to indicate that
 	// the root tui.Handler exited.
 	ErrHandlerExited = errors.New("tui handler exited")
+
+	// ErrNoDisplay is wrapped by the error New returns when the windowing
+	// system cannot start, such as when no display server is reachable.
+	// No GUI can be created in the process after that.
+	ErrNoDisplay = errors.New("no display available")
 )
 
 const (
@@ -144,6 +149,11 @@ type GUI struct {
 // New allocates storage for a new GUI and initializes it with the given
 // tui.Handler and options.
 func New(handler tui.Handler, options ...Option) (*GUI, error) {
+	// Any other ebiten call would initialize the windowing system too, but
+	// it panics when that fails.
+	if err := ebiten.Init(); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrNoDisplay, err)
+	}
 	drawrect.Init()
 	const (
 		cellOverlapX = 0
