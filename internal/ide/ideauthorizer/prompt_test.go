@@ -132,12 +132,11 @@ func TestPermissionPrompterNotificationIncludesScopeLabel(t *testing.T) {
 	}, status)
 
 	decision, err := prompter.PromptPermission(context.Background(), PermissionRequest{
-		Path:              "/usr/local/bin/plugin-cli",
-		Args:              []string{"run"},
-		Permission:        extensionapi.PermissionExecute,
-		CommandPath:       "/bin/grep",
-		CommandArgs:       []string{"foo", "file.txt"},
-		CommandScopeLabel: "/bin/grep *",
+		Path:        "/usr/local/bin/plugin-cli",
+		Args:        []string{"run"},
+		Permission:  extensionapi.PermissionExecute,
+		CommandPath: "/bin/grep",
+		CommandArgs: []string{"foo", "file.txt"},
 	})
 	require.NoError(t, err)
 	assert.Equal(t, PermissionAllowOnce, decision)
@@ -180,138 +179,130 @@ func TestPluginPermissionPromptMessageWithCommand(t *testing.T) {
 		{
 			name: "short simple args stay inline",
 			req: PermissionRequest{
-				Path:              "/usr/local/bin/plugin-cli",
-				Args:              []string{"run"},
-				Permission:        extensionapi.PermissionExecute,
-				CommandPath:       "/bin/grep",
-				CommandArgs:       []string{"foo", "/tmp/workspace"},
-				CommandDir:        "/tmp/workspace",
-				CommandScopeLabel: "/bin/grep *",
+				Path:        "/usr/local/bin/plugin-cli",
+				Args:        []string{"run"},
+				Permission:  extensionapi.PermissionExecute,
+				CommandPath: "/bin/grep",
+				CommandArgs: []string{"foo", "/tmp/workspace"},
+				CommandDir:  "/tmp/workspace",
 			},
 			contains: []string{
 				"Program **/usr/local/bin/plugin-cli** with args **[run]**",
 				"wants to run **/bin/grep**",
 				"with args **[foo /tmp/workspace]**",
 				"in **/tmp/workspace**",
-				"\n\nChoosing **Always** approves **/bin/grep** for all future authorization requests, for any argument combination.",
+				"\n\nChoosing **Always** or **Never** decides for each of these programs with any arguments, as long as it runs the same file.",
 			},
 			notContains: []string{"**/bin/grep ∗**", "```"},
 		},
 		{
 			name: "long python script arg uses code block",
 			req: PermissionRequest{
-				Path:              "/usr/local/bin/plugin-cli",
-				Args:              []string{"run"},
-				Permission:        extensionapi.PermissionExecute,
-				CommandPath:       "/bin/bash",
-				CommandArgs:       []string{"-c", longPython},
-				CommandScopeLabel: "/bin/bash *",
+				Path:        "/usr/local/bin/plugin-cli",
+				Args:        []string{"run"},
+				Permission:  extensionapi.PermissionExecute,
+				CommandPath: "/bin/bash",
+				CommandArgs: []string{"-c", longPython},
 			},
 			contains: []string{
 				"run **/bin/bash** with args:\n\n```",
 				"-c\n" + longPython,
-				"\n\nChoosing **Always** approves **/bin/bash** for all future authorization requests, for any argument combination.",
+				"\n\nChoosing **Always** or **Never** decides for each of these programs with any arguments, as long as it runs the same file.",
 			},
 			notContains: []string{"with args **[-c "},
 		},
 		{
 			name: "multiline script arg uses code block",
 			req: PermissionRequest{
-				Path:              "/usr/local/bin/plugin-cli",
-				Args:              []string{"run"},
-				Permission:        extensionapi.PermissionExecute,
-				CommandPath:       "/bin/bash",
-				CommandArgs:       []string{"-c", "echo first\necho second"},
-				CommandScopeLabel: "/bin/bash *",
+				Path:        "/usr/local/bin/plugin-cli",
+				Args:        []string{"run"},
+				Permission:  extensionapi.PermissionExecute,
+				CommandPath: "/bin/bash",
+				CommandArgs: []string{"-c", "echo first\necho second"},
 			},
 			contains: []string{
 				"run **/bin/bash** with args:\n\n```",
 				"-c\necho first\necho second",
-				"\n\nChoosing **Always** approves **/bin/bash** for all future authorization requests, for any argument combination.",
+				"\n\nChoosing **Always** or **Never** decides for each of these programs with any arguments, as long as it runs the same file.",
 			},
 			notContains: []string{"with args **[-c "},
 		},
 		{
 			name: "markdown args use code block",
 			req: PermissionRequest{
-				Path:              "/usr/local/bin/plugin-cli",
-				Args:              []string{"run"},
-				Permission:        extensionapi.PermissionExecute,
-				CommandPath:       "/bin/echo",
-				CommandArgs:       []string{"**bold** [link](target) # heading"},
-				CommandScopeLabel: "/bin/echo *",
+				Path:        "/usr/local/bin/plugin-cli",
+				Args:        []string{"run"},
+				Permission:  extensionapi.PermissionExecute,
+				CommandPath: "/bin/echo",
+				CommandArgs: []string{"**bold** [link](target) # heading"},
 			},
 			contains: []string{
 				"run **/bin/echo** with args:\n\n```",
 				"**bold** [link](target) # heading",
-				"\n\nChoosing **Always** approves **/bin/echo** for all future authorization requests, for any argument combination.",
+				"\n\nChoosing **Always** or **Never** decides for each of these programs with any arguments, as long as it runs the same file.",
 			},
 			notContains: []string{"run **/bin/echo** with args **["},
 		},
 		{
 			name: "backtick args use safe code fence",
 			req: PermissionRequest{
-				Path:              "/usr/local/bin/plugin-cli",
-				Args:              []string{"run"},
-				Permission:        extensionapi.PermissionExecute,
-				CommandPath:       "/bin/bash",
-				CommandArgs:       []string{"-c", "echo ```fence```"},
-				CommandScopeLabel: "/bin/bash *",
+				Path:        "/usr/local/bin/plugin-cli",
+				Args:        []string{"run"},
+				Permission:  extensionapi.PermissionExecute,
+				CommandPath: "/bin/bash",
+				CommandArgs: []string{"-c", "echo ```fence```"},
 			},
 			contains: []string{
 				"run **/bin/bash** with args:\n\n````\n-c\necho ```fence```\n````",
-				"\n\nChoosing **Always** approves **/bin/bash** for all future authorization requests, for any argument combination.",
+				"\n\nChoosing **Always** or **Never** decides for each of these programs with any arguments, as long as it runs the same file.",
 			},
 			notContains: []string{"with args **[-c "},
 		},
 		{
 			name: "perl one-liner script arg uses code block",
 			req: PermissionRequest{
-				Path:              "/usr/local/bin/plugin-cli",
-				Args:              []string{"run"},
-				Permission:        extensionapi.PermissionExecute,
-				CommandPath:       "/usr/bin/perl",
-				CommandArgs:       []string{"-e", perlScript},
-				CommandScopeLabel: "perl *",
+				Path:        "/usr/local/bin/plugin-cli",
+				Args:        []string{"run"},
+				Permission:  extensionapi.PermissionExecute,
+				CommandPath: "/usr/bin/perl",
+				CommandArgs: []string{"-e", perlScript},
 			},
 			contains: []string{
 				"run **/usr/bin/perl** with args:\n\n```",
 				"-e\n" + perlScript,
-				"\n\nChoosing **Always** approves **perl** for all future authorization requests, for any argument combination.",
+				"\n\nChoosing **Always** or **Never** decides for each of these programs with any arguments, as long as it runs the same file.",
 			},
 			notContains: []string{"run **/usr/bin/perl** with args **["},
 		},
 		{
 			name: "python heredoc shell script uses code block",
 			req: PermissionRequest{
-				Path:              "/usr/local/bin/plugin-cli",
-				Args:              []string{"run"},
-				Permission:        extensionapi.PermissionExecute,
-				CommandPath:       "/bin/bash",
-				CommandArgs:       []string{"-c", pythonEOF},
-				CommandScopeLabel: "python *",
+				Path:        "/usr/local/bin/plugin-cli",
+				Args:        []string{"run"},
+				Permission:  extensionapi.PermissionExecute,
+				CommandPath: "/bin/bash",
+				CommandArgs: []string{"-c", pythonEOF},
 			},
 			contains: []string{
 				"run **/bin/bash** with args:\n\n```",
 				"-c\n" + pythonEOF,
-				"\n\nChoosing **Always** approves **python** for all future authorization requests, for any argument combination.",
+				"\n\nChoosing **Always** or **Never** decides for each of these programs with any arguments, as long as it runs the same file.",
 			},
 			notContains: []string{"with args **[-c "},
 		},
 		{
 			name: "complex bash substitutions use safe fence and scope list",
 			req: PermissionRequest{
-				Path:               "/usr/local/bin/plugin-cli",
-				Args:               []string{"run"},
-				Permission:         extensionapi.PermissionExecute,
-				CommandPath:        "/bin/bash",
-				CommandArgs:        []string{"-c", complexBash},
-				CommandScopeLabels: []string{"echo *", "git *", "printf *", "python *"},
+				Path:        "/usr/local/bin/plugin-cli",
+				Args:        []string{"run"},
+				Permission:  extensionapi.PermissionExecute,
+				CommandPath: "/bin/bash",
+				CommandArgs: []string{"-c", complexBash},
 			},
 			contains: []string{
 				"run **/bin/bash** with args:\n\n``",
 				"-c\n" + complexBash,
-				"Choosing **Always** approves **echo**, **git**, **printf**, **python** for all future authorization requests, for any argument combination.",
+				"\n\nChoosing **Always** or **Never** decides for each of these programs with any arguments, as long as it runs the same file.",
 			},
 			notContains: []string{"with args **[-c "},
 		},
@@ -336,95 +327,76 @@ func TestPluginPermissionPromptMessageWithLauncherAndCommand(t *testing.T) {
 	t.Parallel()
 
 	message := pluginPermissionPromptMessage(PermissionRequest{
-		Path:              "/usr/local/bin/plugin-cli",
-		Args:              []string{"run"},
-		LauncherPath:      "/bin/zsh",
-		LauncherArgs:      []string{"--login"},
-		Permission:        extensionapi.PermissionExecute,
-		CommandPath:       "/bin/rm",
-		CommandArgs:       []string{"-rf", "foo"},
-		CommandScopeLabel: "/bin/rm *",
+		Path:         "/usr/local/bin/plugin-cli",
+		Args:         []string{"run"},
+		LauncherPath: "/bin/zsh",
+		LauncherArgs: []string{"--login"},
+		Permission:   extensionapi.PermissionExecute,
+		CommandPath:  "/bin/rm",
+		CommandArgs:  []string{"-rf", "foo"},
 	})
 	assert.Contains(t, message,
 		"Program **/usr/local/bin/plugin-cli** with args **[run]** running inside **/bin/zsh** **[--login]**")
 	assert.Contains(t, message, "wants to run **/bin/rm**")
 	assert.Contains(t, message, "with args **[-rf foo]**")
-	assert.Contains(t, message, "\n\nChoosing **Always** approves **/bin/rm** for all future authorization requests, for any argument combination.")
+	assert.Contains(t, message, "\n\nChoosing **Always** or **Never** decides for each of these programs with any arguments, as long as it runs the same file.")
 }
 
 func TestPermissionPromptMessageHighlightsExtensionCommand(t *testing.T) {
 	t.Parallel()
 
 	message := pluginPermissionPromptMessage(PermissionRequest{
-		ExtensionID:       "test-extension",
-		ExtensionName:     "Test Extension",
-		DeveloperID:       "dev-id",
-		Permission:        extensionapi.PermissionExecute,
-		CommandPath:       "/bin/grep",
-		CommandArgs:       []string{"foo"},
-		CommandDir:        "/tmp/workspace",
-		CommandScopeLabel: "/bin/grep *",
+		ExtensionID:   "test-extension",
+		ExtensionName: "Test Extension",
+		DeveloperID:   "dev-id",
+		Permission:    extensionapi.PermissionExecute,
+		CommandPath:   "/bin/grep",
+		CommandArgs:   []string{"foo"},
+		CommandDir:    "/tmp/workspace",
 	})
 	assert.Contains(t, message,
 		"Extension Test Extension by dev-id wants to run **/bin/grep** with args **[foo]** in **/tmp/workspace**.")
 	assert.Contains(t, message,
-		"\n\nChoosing **Always** approves **/bin/grep** for all future authorization requests, for any argument combination.")
+		"\n\nChoosing **Always** or **Never** decides for each of these programs with any arguments, as long as it runs the same file.")
 }
 
 func TestPluginPermissionPromptMessageWithCommandHighlightsApprovalScope(t *testing.T) {
 	t.Parallel()
 
 	message := pluginPermissionPromptMessage(PermissionRequest{
-		Path:              "/usr/local/bin/plugin-cli",
-		Args:              []string{"run"},
-		Permission:        extensionapi.PermissionExecute,
-		CommandPath:       "/bin/grep",
-		CommandArgs:       []string{"foo", "file.txt"},
-		CommandDir:        "/tmp/workspace",
-		CommandScopeLabel: "/bin/grep *",
+		Path:        "/usr/local/bin/plugin-cli",
+		Args:        []string{"run"},
+		Permission:  extensionapi.PermissionExecute,
+		CommandPath: "/bin/grep",
+		CommandArgs: []string{"foo", "file.txt"},
+		CommandDir:  "/tmp/workspace",
 	})
 
 	assert.Contains(t, message, "run **/bin/grep** with args **[foo file.txt]**")
-	assert.Contains(t, message, "\n\nChoosing **Always** approves **/bin/grep** for all future authorization requests, for any argument combination.")
-	assert.Contains(t, message, "for all future authorization requests, for any argument combination")
+	assert.Contains(t, message, "\n\nChoosing **Always** or **Never** decides for each of these programs with any arguments, as long as it runs the same file.")
 }
 
-func TestPluginPermissionPromptMessageWithShellWrappedCommandUsesInnerScope(t *testing.T) {
+func TestPluginPermissionPromptMessageWithShellWrappedCommandListsPrograms(t *testing.T) {
 	t.Parallel()
 
 	message := pluginPermissionPromptMessage(PermissionRequest{
-		Path:              "/usr/local/bin/plugin-cli",
-		Args:              []string{"run"},
-		Permission:        extensionapi.PermissionExecute,
-		CommandPath:       "/bin/bash",
-		CommandArgs:       []string{"-c", "grep foo file.txt"},
-		CommandScopeLabel: "grep *",
+		Path:        "/usr/local/bin/plugin-cli",
+		Args:        []string{"run"},
+		Permission:  extensionapi.PermissionExecute,
+		CommandPath: "/bin/bash",
+		CommandArgs: []string{"-c", "grep foo file.txt"},
+		Programs: []ProgramSummary{
+			{Name: "/bin/bash", ResolvedPath: "/bin/bash"},
+			{Name: "grep", ResolvedPath: "/usr/bin/grep"},
+		},
 	})
 
 	assert.Contains(t, message, "run **/bin/bash** with args **[-c grep foo file.txt]**")
-	assert.Contains(t, message, "\n\nChoosing **Always** approves **grep** for all future authorization requests, for any argument combination.")
+	assert.Contains(t, message, "\n\nRuns `/bin/bash`, `/usr/bin/grep`.")
+	assert.Contains(t, message, "\n\nChoosing **Always** or **Never** decides for each of these programs with any arguments, as long as it runs the same file.")
 }
 
 func TestPluginPermissionPromptMessageWithUnknownShellScriptUsesExactScopeNote(t *testing.T) {
-	t.Parallel()
-
-	message := pluginPermissionPromptMessage(PermissionRequest{
-		Path:              "/usr/local/bin/plugin-cli",
-		Args:              []string{"run"},
-		Permission:        extensionapi.PermissionExecute,
-		CommandPath:       "/bin/bash",
-		CommandArgs:       []string{"-c", "$CMD foo"},
-		CommandDir:        "/tmp",
-		CommandScopeExact: true,
-	})
-
-	assert.Equal(t, "Program **/usr/local/bin/plugin-cli** with args **[run]** "+
-		"wants to run **/bin/bash** with args **[-c $CMD foo]** in **/tmp**."+
-		"\n\nChoosing **Always** approves only this exact command. "+
-		"Any change to its arguments or working directory will prompt again.", message)
-}
-
-func TestPluginPermissionPromptMessageWithMultipleScopeLabels(t *testing.T) {
 	t.Parallel()
 
 	message := pluginPermissionPromptMessage(PermissionRequest{
@@ -432,14 +404,46 @@ func TestPluginPermissionPromptMessageWithMultipleScopeLabels(t *testing.T) {
 		Args:               []string{"run"},
 		Permission:         extensionapi.PermissionExecute,
 		CommandPath:        "/bin/bash",
-		CommandArgs:        []string{"-c", "grep foo && make test && rm file"},
-		CommandScopeLabels: []string{"grep *", "make *", "rm *"},
-		CommandScopeLabel:  "grep *, make *, rm *",
+		CommandArgs:        []string{"-c", "$CMD foo"},
+		CommandDir:         "/tmp",
+		Programs:           []ProgramSummary{{Name: "/bin/bash", ResolvedPath: "/bin/bash"}},
+		CommandExactOnly:   true,
+		CommandExactReason: "it runs no program a scope can describe",
+	})
+
+	assert.Equal(t, "Program **/usr/local/bin/plugin-cli** with args **[run]** "+
+		"wants to run **/bin/bash** with args **[-c $CMD foo]** in **/tmp**."+
+		"\n\nRuns `/bin/bash`."+
+		"\n\nChoosing **Always** or **Never** covers only this exact command because "+
+		"it runs no program a scope can describe. Any change to it will prompt again.", message)
+}
+
+func TestPluginPermissionPromptMessageListsWhatEachProgramRuns(t *testing.T) {
+	t.Parallel()
+
+	message := pluginPermissionPromptMessage(PermissionRequest{
+		Path:        "/usr/local/bin/plugin-cli",
+		Args:        []string{"run"},
+		Permission:  extensionapi.PermissionExecute,
+		CommandPath: "/bin/bash",
+		CommandArgs: []string{"-c", "cd x && ./git status && $CMD && make test && rm file"},
+		Programs: []ProgramSummary{
+			{Name: "/bin/bash", ResolvedPath: "/bin/bash"},
+			{Name: "./git"},
+			{Name: "$CMD", Opaque: true},
+			{Name: "echo", Builtin: true},
+			{Name: "make", ResolvedPath: "/usr/bin/make", Changed: true},
+			{Name: "rm", ResolvedPath: "/ws/bin/rm"},
+		},
 	})
 
 	assert.Contains(t, message, "run **/bin/bash**")
 	assert.Contains(t, message,
-		"\n\nChoosing **Always** approves **grep**, **make**, **rm** for all future authorization requests, for any argument combination.")
+		"\n\nRuns `/bin/bash`, `./git` (not found, so Rune asks every time), `$CMD` (known only when it runs), "+
+			"`echo` (shell builtin), **`/usr/bin/make`** (changed since you approved it), "+
+			"`/ws/bin/rm`.")
+	assert.Contains(t, message,
+		"\n\nChoosing **Always** or **Never** decides for each of these programs with any arguments, as long as it runs the same file.")
 }
 
 func TestPermissionPromptMessageHighlightsExtensionIntent(t *testing.T) {
@@ -631,4 +635,45 @@ func TestPermissionPrompterReportsStatus(t *testing.T) {
 		assert.Equal(t, programstatus.Blocked, reports[0].report.State)
 		assert.Equal(t, programstatus.Report{State: programstatus.Clear}, reports[1].report)
 	})
+}
+
+func TestPermissionPrompterPromptRenewal(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		option string
+		close  bool
+		want   RenewalDecision
+	}{
+		{option: PromptOptionRenew, want: RenewalRenew},
+		{option: PromptOptionOnce, want: RenewalOnce},
+		{option: PromptOptionNo, want: RenewalDeny},
+		{close: true, want: RenewalDeny},
+	}
+	for _, tc := range cases {
+		promptOpener := &fakePluginPromptOpener{option: tc.option, close: tc.close}
+		status := &capturingStatus{}
+		prompter := newPermissionPrompter(promptOpener, func(fn func()) bool {
+			fn()
+			return true
+		}, status)
+
+		decision, err := prompter.PromptRenewal(context.Background(), RenewalRequest{
+			Requester: "extension Agent",
+			Changes: []ExecutableChange{{
+				Path:   "/usr/bin/git",
+				Scopes: []string{"git *", "git `x` *"},
+				Old:    ExecutableFingerprint{SHA256: strings.Repeat("a", 64)},
+				New:    ExecutableFingerprint{SHA256: "b1"},
+			}},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, tc.want, decision)
+		assert.True(t, strings.HasPrefix(promptOpener.message,
+			"**`/usr/bin/git`** has changed since you approved `git *`, ``git `x` *`` "+
+				"for extension Agent.\n\nsha256 `aaaaaaaaaaaa…` → `b1`, modified "), promptOpener.message)
+		blocked := status.blocked()
+		require.Len(t, blocked, 1)
+		assert.Equal(t, "User authorization required: /usr/bin/git changed", blocked[0].Msg)
+	}
 }

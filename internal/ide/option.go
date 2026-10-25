@@ -647,7 +647,7 @@ type nopExtensions struct {
 func (n nopExtensions) WorkspaceExtensionsRunner(
 	uri workspaceapi.URI,
 	res map[extensionapi.Permission]extension.ResourceRegistrar,
-	authorizer *ideauthorizer.Authorizer,
+	authorizer extensionv2.ServerAuthorizer,
 	trust extensionv2.TrustVerifier,
 	dataDir, installDir string, notifications browser.Notifications,
 	exec, extExec schemeapi.Executor,

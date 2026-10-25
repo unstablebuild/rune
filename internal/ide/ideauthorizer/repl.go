@@ -20,11 +20,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/component"
@@ -34,9 +36,10 @@ import (
 )
 
 const (
-	authorizerREPLCommand       = "authorizer"
-	authorizerREPLCommandList   = "list"
-	authorizerREPLCommandRevoke = "revoke"
+	authorizerREPLCommand            = "authorizer"
+	authorizerREPLCommandList        = "list"
+	authorizerREPLCommandRevoke      = "revoke"
+	authorizerREPLCommandExecutables = "executables"
 )
 
 // WorkspaceConfigDecision is the user's answer to whether a workspace's
@@ -68,7 +71,7 @@ func registerAuthorizerREPLCommand(
 	return editor.RegisterREPLCommand(textapi.CommandManual{
 		Name:     authorizerREPLCommand,
 		Summary:  "Manage extension permission and workspace config trust decisions.",
-		Synopsis: "(list|revoke) [<decision>]",
+		Synopsis: "(list|revoke|executables) [<decision>]",
 		Commands: []textapi.CommandManual{
 			{
 				Name:    authorizerREPLCommandList,
@@ -76,8 +79,12 @@ func registerAuthorizerREPLCommand(
 			},
 			{
 				Name:     authorizerREPLCommandRevoke,
-				Summary:  "Revoke a decision, so Rune asks again.",
+				Summary:  "Revoke a decision, by ID or command scope, so Rune asks again.",
 				Synopsis: "<decision>",
+			},
+			{
+				Name:    authorizerREPLCommandExecutables,
+				Summary: "List the executables approved commands run, with their fingerprints.",
 			},
 		},
 	}, authorizerREPLHandler{authorizer: authorizer})
@@ -98,6 +105,8 @@ func (h authorizerREPLHandler) HandleCommand(
 		return h.handleList(ctx)
 	case authorizerREPLCommandRevoke:
 		return h.handleRevoke(ctx, cmd.Args[1:])
+	case authorizerREPLCommandExecutables:
+		return h.handleExecutables(ctx)
 	default:
 		return nil, fmt.Errorf("unknown authorizer subcommand %q", cmd.Args[0])
 	}
@@ -106,18 +115,17 @@ func (h authorizerREPLHandler) HandleCommand(
 func (h authorizerREPLHandler) Complete(
 	ctx context.Context, _ string, args []string,
 ) (iterator.Iterator[string], error) {
+	subcommands := []string{
+		authorizerREPLCommandList,
+		authorizerREPLCommandRevoke,
+		authorizerREPLCommandExecutables,
+	}
 	if len(args) == 0 {
-		return iterator.FromSlice([]string{
-			authorizerREPLCommandList,
-			authorizerREPLCommandRevoke,
-		}), nil
+		return iterator.FromSlice(subcommands), nil
 	}
 	if len(args) == 1 {
 		var ret []string
-		for _, subcommand := range []string{
-			authorizerREPLCommandList,
-			authorizerREPLCommandRevoke,
-		} {
+		for _, subcommand := range subcommands {
 			if strings.HasPrefix(subcommand, args[0]) {
 				ret = append(ret, subcommand)
 			}
@@ -233,6 +241,29 @@ func (h authorizerREPLHandler) handleRevoke(
 	return authorizerREPLLines(fmt.Sprintf("Revoked %s", entry.Display())), nil
 }
 
+func (h authorizerREPLHandler) handleExecutables(
+	ctx context.Context,
+) (iterator.Iterator[component.Responsive], error) {
+	records, err := h.authorizer.storedExecutables(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(records) == 0 {
+		return authorizerREPLLines("No approved executables."), nil
+	}
+	lines := []string{"Approved executables:"}
+	for _, r := range records {
+		name := r.Path
+		if r.Host != "" {
+			name = r.Host + ":" + r.Path
+		}
+		lines = append(lines, fmt.Sprintf("- %s sha256 %s size %d modified %s, approved %s",
+			name, fingerprintPreview(r.SHA256), r.Size,
+			r.ModTime.Format(time.RFC3339), r.Updated.Format(time.RFC3339)))
+	}
+	return authorizerREPLLines(lines...), nil
+}
+
 // workspaceConfigDecisions returns the workspace config decisions sorted
 // for display, or none when the authorizer has no WorkspaceConfigs.
 func (h authorizerREPLHandler) workspaceConfigDecisions(
@@ -305,8 +336,9 @@ func workspaceConfigDecisionDisplay(d WorkspaceConfigDecision) string {
 
 func authorizerREPLHelp() iterator.Iterator[component.Responsive] {
 	return authorizerREPLLines(
-		"Usage: authorizer <list|revoke>",
-		"Lists or revokes extension permission and workspace config trust decisions.",
+		"Usage: authorizer <list|revoke|executables>",
+		"Lists or revokes extension permission and workspace config trust decisions, "+
+			"or lists the executables approved commands run.",
 	)
 }
 
@@ -327,6 +359,17 @@ type pluginPermissionStoredDecisionEntry struct {
 	Scope      string
 	Expires    time.Time
 	Command    *pluginPermissionCommandDetail
+	// CommandScope is the commands a command decision covers, such as
+	// "git commit *".
+	CommandScope string
+	Executables  []executableEntry
+}
+
+// executableEntry is an executable a command decision is bound to, with
+// the fingerprint it was approved at, if any.
+type executableEntry struct {
+	executableRef
+	SHA256 string
 }
 
 func (e pluginPermissionStoredDecisionEntry) Display() string {
@@ -338,7 +381,20 @@ func (e pluginPermissionStoredDecisionEntry) Display() string {
 		scope = "persisted"
 	}
 	ret := fmt.Sprintf("%s %s %s %s %v", scope, e.Decision, e.Permission, e.Path, e.Args)
-	if e.Command != nil {
+	switch {
+	case e.CommandScope != "":
+		ret += " cmd " + e.CommandScope
+		exes := make([]string, len(e.Executables))
+		for i, exe := range e.Executables {
+			exes[i] = exe.Path
+			if exe.SHA256 != "" {
+				exes[i] += " sha256 " + fingerprintPreview(exe.SHA256)
+			}
+		}
+		if len(exes) > 0 {
+			ret += " ← " + strings.Join(exes, ", ")
+		}
+	case e.Command != nil:
 		ret += " cmd " + pluginPermissionExactCommandLabel(*e.Command)
 	}
 	if !e.Expires.IsZero() {
@@ -361,7 +417,11 @@ func (e pluginPermissionStoredDecisionEntry) ID() string {
 		sanitizePluginPermissionIDPart(e.Permission),
 		sanitizePluginPermissionIDPart(programBaseName(e.Path)),
 	}
-	if e.Command != nil {
+	switch {
+	case len(e.Executables) > 0:
+		parts = append(parts,
+			sanitizePluginPermissionIDPart(programBaseName(e.Executables[0].Path)))
+	case e.Command != nil:
 		parts = append(parts,
 			sanitizePluginPermissionIDPart(programBaseName(e.Command.Path)))
 	}
@@ -450,36 +510,93 @@ func (a *Authorizer) storedDecisions(
 	if a == nil || a.storage == nil {
 		return nil, nil
 	}
-	it, err := a.storage.List(ctx, nil)
+	decisions, err := a.listPermissionDecisions(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("list plugin permission decisions: %w", err)
+		return nil, err
 	}
-	defer it.Close()
 	var ret []pluginPermissionStoredDecisionEntry
-	for it.HasNext() {
-		var stored storedPermissionDecision
-		if err := it.NextTo(&stored); err != nil {
-			return nil, fmt.Errorf("read plugin permission decision: %w", err)
-		}
-		if stored.Key == "" || !isPermissionStorageKey(stored.Key) {
-			continue
-		}
+	for _, stored := range decisions {
 		entry := pluginPermissionStoredDecisionEntry{
-			Key:        stored.Key,
-			Decision:   stored.Decision,
-			Path:       stored.Path,
-			Args:       append([]string(nil), stored.Args...),
-			Permission: string(stored.Permission),
-			Scope:      "persisted",
+			Key:          stored.Key,
+			Decision:     stored.Decision,
+			Path:         stored.Path,
+			Args:         append([]string(nil), stored.Args...),
+			Permission:   string(stored.Permission),
+			Scope:        "persisted",
+			CommandScope: stored.Scope,
 		}
 		if stored.Command.Path != "" {
 			cmd := copyPluginPermissionCommandDetail(stored.Command)
 			entry.Command = &cmd
 		}
+		for _, ref := range stored.Executables {
+			exe := executableEntry{executableRef: ref}
+			var record storedExecutable
+			err := a.storage.Get(ctx, executableStorageKey(ref.Host, ref.Path), &record)
+			switch {
+			case err == nil:
+				exe.SHA256 = record.SHA256
+			case !errors.Is(err, storageapi.ErrNotFound):
+				return nil, fmt.Errorf("get executable fingerprint: %w", err)
+			}
+			entry.Executables = append(entry.Executables, exe)
+		}
 		ret = append(ret, entry)
 	}
 	sort.Slice(ret, func(i, j int) bool {
 		return ret[i].Display() < ret[j].Display()
+	})
+	return ret, nil
+}
+
+// listPermissionDecisions returns the permission decisions in storage.
+func (a *Authorizer) listPermissionDecisions(
+	ctx context.Context,
+) ([]storedPermissionDecision, error) {
+	it, err := a.storage.List(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("list plugin permission decisions: %w", err)
+	}
+	defer it.Close()
+	var ret []storedPermissionDecision
+	for it.HasNext() {
+		var stored storedPermissionDecision
+		if err := it.NextTo(&stored); err != nil {
+			return nil, fmt.Errorf("read plugin permission decision: %w", err)
+		}
+		if stored.Key != "" && isPermissionStorageKey(stored.Key) {
+			ret = append(ret, stored)
+		}
+	}
+	return ret, nil
+}
+
+// storedExecutables returns the executables approved commands run, sorted
+// by host and path.
+func (a *Authorizer) storedExecutables(ctx context.Context) ([]storedExecutable, error) {
+	if a == nil || a.storage == nil {
+		return nil, nil
+	}
+	it, err := a.storage.List(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("list executable fingerprints: %w", err)
+	}
+	defer it.Close()
+	var ret []storedExecutable
+	for it.HasNext() {
+		var stored storedExecutable
+		if err := it.NextTo(&stored); err != nil {
+			return nil, fmt.Errorf("read executable fingerprint: %w", err)
+		}
+		if strings.HasPrefix(stored.Key, executableStoragePrefix) {
+			ret = append(ret, stored)
+		}
+	}
+	sort.Slice(ret, func(i, j int) bool {
+		if ret[i].Host != ret[j].Host {
+			return ret[i].Host < ret[j].Host
+		}
+		return ret[i].Path < ret[j].Path
 	})
 	return ret, nil
 }
@@ -528,7 +645,26 @@ func (a *Authorizer) findStoredDecision(
 			return entry, true, nil
 		}
 	}
-	return pluginPermissionStoredDecisionEntry{}, false, nil
+	var byScope []pluginPermissionStoredDecisionEntry
+	for _, entry := range entries {
+		if entry.CommandScope != "" && selected == entry.CommandScope {
+			byScope = append(byScope, entry)
+		}
+	}
+	switch len(byScope) {
+	case 0:
+		return pluginPermissionStoredDecisionEntry{}, false, nil
+	case 1:
+		return byScope[0], true, nil
+	default:
+		ids := make([]string, len(byScope))
+		for i, entry := range byScope {
+			ids[i] = entry.ID()
+		}
+		return pluginPermissionStoredDecisionEntry{}, false, fmt.Errorf(
+			"%d decisions cover %s; revoke one by ID: %s",
+			len(byScope), selected, strings.Join(ids, ", "))
+	}
 }
 
 func isPermissionStorageKey(key string) bool {

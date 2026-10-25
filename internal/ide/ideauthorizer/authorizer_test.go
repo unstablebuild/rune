@@ -17,9 +17,13 @@
 package ideauthorizer
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"path"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -27,6 +31,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	blueauth "github.com/unstablebuild/blue/auth"
+	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
+	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/api/extensionapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
@@ -42,7 +48,9 @@ import (
 	"unstable.build/rune/internal/extension/extensionv2/peerprocess"
 	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
 	"unstable.build/rune/internal/text"
+	"unstable.build/rune/internal/text/standard"
 	"unstable.build/rune/internal/text/texttest"
+	"unstable.build/rune/internal/workspace"
 )
 
 const testWindowManagerResource = "/browser.WindowManager/NewWindow"
@@ -52,6 +60,8 @@ const testWindowManagerResource = "/browser.WindowManager/NewWindow"
 // can assert what the user would see.
 type stubPromptOpener struct {
 	decision PermissionDecision
+	// renewal is the option picked in renewal prompts.
+	renewal  string
 	calls    int
 	messages []string
 }
@@ -63,6 +73,9 @@ func (s *stubPromptOpener) Prompt(
 	s.calls++
 	s.messages = append(s.messages, message)
 	want := optionForDecision(s.decision)
+	if slices.Contains(options, PromptOptionRenew) {
+		want = cmp.Or(s.renewal, PromptOptionNo)
+	}
 	for i, opt := range options {
 		if opt == want {
 			promptHandler.OnSelect(i, opt)
@@ -70,6 +83,128 @@ func (s *stubPromptOpener) Prompt(
 		}
 	}
 	panic("test prompt option was not provided: " + want)
+}
+
+// fakeResolver is a host where every file exists unless it is missing,
+// and holds its own path unless its contents were set. Programs are
+// looked up in hostPATH.
+type fakeResolver struct {
+	mu       sync.Mutex
+	host     string
+	hostPATH []string
+	missing  map[string]bool
+	contents map[string]string
+	modified map[string]time.Time
+}
+
+func newFakeResolver(missing ...string) *fakeResolver {
+	r := &fakeResolver{
+		hostPATH: []string{"/usr/bin", "/bin"},
+		missing:  map[string]bool{},
+		contents: map[string]string{},
+		modified: map[string]time.Time{},
+	}
+	for _, m := range missing {
+		r.missing[m] = true
+	}
+	return r
+}
+
+func (r *fakeResolver) setContent(p, content string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.contents[p] = content
+	r.modified[p] = time.Date(2026, 10, 25, 14, 2, 0, 0, time.Local)
+}
+
+func (r *fakeResolver) HostID() string { return r.host }
+
+func (r *fakeResolver) setMissing(p string, missing bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.missing[p] = missing
+}
+
+func (r *fakeResolver) HostPATH(context.Context) ([]string, error) {
+	return r.hostPATH, nil
+}
+
+func (r *fakeResolver) Resolve(
+	_ context.Context, name, dir string, pathList []string,
+) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if dir == "" {
+		dir = "/ws"
+	}
+	var candidates []string
+	switch {
+	case path.IsAbs(name):
+		candidates = []string{path.Clean(name)}
+	case strings.Contains(name, "/"):
+		candidates = []string{path.Join(dir, name)}
+	default:
+		if pathList == nil {
+			pathList = r.hostPATH
+		}
+		for _, d := range pathList {
+			if !path.IsAbs(d) {
+				d = path.Join(dir, d)
+			}
+			candidates = append(candidates, path.Join(d, name))
+		}
+	}
+	for _, c := range candidates {
+		if !r.missing[c] {
+			return c, nil
+		}
+	}
+	return "", ErrExecutableNotFound
+}
+
+func (r *fakeResolver) Fingerprint(_ context.Context, p string) (ExecutableFingerprint, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.missing[p] {
+		return ExecutableFingerprint{}, ErrExecutableNotFound
+	}
+	content, ok := r.contents[p]
+	if !ok {
+		content = p
+	}
+	return ExecutableFingerprint{
+		SHA256:  sha256Hex(content),
+		Size:    int64(len(content)),
+		ModTime: r.modified[p],
+	}, nil
+}
+
+// storedCommandDecisions returns the command decisions in storage.
+func storedCommandDecisions(t *testing.T, storage storageapi.Service) []storedPermissionDecision {
+	t.Helper()
+	it, err := storage.List(context.Background(), nil)
+	require.NoError(t, err)
+	defer it.Close()
+	var ret []storedPermissionDecision
+	for it.HasNext() {
+		var stored storedPermissionDecision
+		require.NoError(t, it.NextTo(&stored))
+		if isPermissionStorageKey(stored.Key) && stored.Command.Path != "" {
+			ret = append(ret, stored)
+		}
+	}
+	return ret
+}
+
+// storedScopes maps the scopes of the command decisions in storage to
+// their decisions.
+func storedScopes(t *testing.T, storage storageapi.Service) map[string]string {
+	t.Helper()
+	ret := map[string]string{}
+	for _, d := range storedCommandDecisions(t, storage) {
+		ret[d.Scope] = d.Decision
+	}
+	return ret
 }
 
 // optionForDecision returns the prompt option label that maps to decision.
@@ -183,7 +318,7 @@ func mustNewAutoAuthorizer(
 ) *Authorizer {
 	t.Helper()
 	a, err := NewAuthorizer(editor, opener, storage, syncScheduleNextTick, &capturingStatus{},
-		testTrustStore(t), Config{
+		testTrustStore(t), newFakeResolver(), Config{
 			AutoAuthorizeExtensions: true,
 			AutoAuthorizeCommands:   true,
 		})
@@ -218,7 +353,7 @@ func TestAuthorizerAutoAuthorizeScopes(t *testing.T) {
 			opener := &stubPromptOpener{decision: PermissionAllowOnce}
 			a, err := NewAuthorizer(texttest.NopEditor(), opener,
 				storagestub.NewInMemoryService(), syncScheduleNextTick, &capturingStatus{},
-				testTrustStore(t), tc.config)
+				testTrustStore(t), newFakeResolver(), tc.config)
 			require.NoError(t, err)
 			ext := testPluginExtension(nil)
 
@@ -289,7 +424,7 @@ func TestAuthorizerAutoAuthorizeStartCommandGrantsWithoutPrompt(t *testing.T) {
 	// auto-authorization is also enabled.
 	trustedFingerprint := "D3F9E65DE72888CC03D45CF5064D4ABCFA6D9338"
 	a, err := NewAuthorizer(texttest.NopEditor(), opener, storage,
-		syncScheduleNextTick, &capturingStatus{}, testTrustStore(t), Config{
+		syncScheduleNextTick, &capturingStatus{}, testTrustStore(t), newFakeResolver(), Config{
 			AutoAuthorizeCommands:          true,
 			AutoAuthorizeVerifiedPublisher: true,
 		})
@@ -306,13 +441,7 @@ func TestAuthorizerAutoAuthorizeStartCommandGrantsWithoutPrompt(t *testing.T) {
 
 	// Auto-granted decisions are not persisted, so disabling automatic
 	// command authorization later prompts again.
-	command := pluginPermissionCommandDetail{Path: cmd.Path, Args: cmd.Args, Dir: cmd.Dir}
-	keys := extensionPermissionCommandStorageKeys(ext,
-		extensionapi.PermissionExecute, command)
-	require.NotEmpty(t, keys)
-	var stored storedPermissionDecision
-	err = storage.Get(context.Background(), keys[0], &stored)
-	assert.ErrorIs(t, err, storageapi.ErrNotFound)
+	assert.Empty(t, storedCommandDecisions(t, storage))
 }
 
 func TestAuthorizerAutoAuthorizeHonorsPersistedDeny(t *testing.T) {
@@ -350,7 +479,7 @@ func TestAuthorizerVerifiedPublisherAutoAuthorizes(t *testing.T) {
 	opener := &stubPromptOpener{decision: PermissionDenyOnce}
 	a, err := NewAuthorizer(texttest.NopEditor(), opener,
 		storagestub.NewInMemoryService(), syncScheduleNextTick, &capturingStatus{},
-		testTrustStore(t), Config{
+		testTrustStore(t), newFakeResolver(), Config{
 			AutoAuthorizeVerifiedPublisher: true,
 			AutoAuthorizeCommands:          true,
 		})
@@ -374,7 +503,7 @@ func TestAuthorizerVerifiedPublisherAloneStillPromptsCommands(t *testing.T) {
 	opener := &stubPromptOpener{decision: PermissionAllowOnce}
 	a, err := NewAuthorizer(texttest.NopEditor(), opener,
 		storagestub.NewInMemoryService(), syncScheduleNextTick, &capturingStatus{},
-		testTrustStore(t), Config{
+		testTrustStore(t), newFakeResolver(), Config{
 			AutoAuthorizeVerifiedPublisher: true,
 		})
 	require.NoError(t, err)
@@ -414,7 +543,7 @@ func TestAuthorizerOnboardingCommandAutoAuthorize(t *testing.T) {
 			storage := storagestub.NewInMemoryService()
 			opener := &stubPromptOpener{decision: PermissionAllowOnce}
 			a, err := NewAuthorizer(texttest.NopEditor(), opener, storage,
-				syncScheduleNextTick, &capturingStatus{}, testTrustStore(t), Config{
+				syncScheduleNextTick, &capturingStatus{}, testTrustStore(t), newFakeResolver(), Config{
 					AutoAuthorizeVerifiedPublisher: true,
 					OnboardingActive:               func() bool { return tc.onboarding },
 				})
@@ -428,19 +557,7 @@ func TestAuthorizerOnboardingCommandAutoAuthorize(t *testing.T) {
 
 			// Onboarding grants are never persisted: once onboarding ends
 			// the same command must prompt again.
-			command := pluginPermissionCommandDetail{
-				Path: cmd.Path, Args: cmd.Args, Dir: cmd.Dir,
-			}
-			keys := extensionPermissionCommandStorageKeys(tc.ext,
-				extensionapi.PermissionExecute, command)
-			if tc.ext.Plugin {
-				keys = pluginPermissionCommandStorageKeys(tc.ext.Path, tc.ext.Args,
-					extensionapi.PermissionExecute, command)
-			}
-			require.NotEmpty(t, keys)
-			var stored storedPermissionDecision
-			err = storage.Get(context.Background(), keys[0], &stored)
-			assert.ErrorIs(t, err, storageapi.ErrNotFound)
+			assert.Empty(t, storedCommandDecisions(t, storage))
 		})
 	}
 }
@@ -459,7 +576,7 @@ func TestAuthorizerVerifiedPublisherToggleAndStoredDeny(t *testing.T) {
 
 	opener := &stubPromptOpener{decision: PermissionAllowOnce}
 	a, err := NewAuthorizer(texttest.NopEditor(), opener, storage,
-		syncScheduleNextTick, &capturingStatus{}, testTrustStore(t),
+		syncScheduleNextTick, &capturingStatus{}, testTrustStore(t), newFakeResolver(),
 		Config{AutoAuthorizeVerifiedPublisher: true})
 	require.NoError(t, err)
 	assert.ErrorIs(t, a.Authorize(context.Background(), blueauth.UserClaims[Extension]{Extra: ext},
@@ -469,7 +586,7 @@ func TestAuthorizerVerifiedPublisherToggleAndStoredDeny(t *testing.T) {
 	noToggleOpener := &stubPromptOpener{decision: PermissionAllowOnce}
 	withoutToggle, err := NewAuthorizer(texttest.NopEditor(), noToggleOpener,
 		storagestub.NewInMemoryService(), syncScheduleNextTick, &capturingStatus{},
-		testTrustStore(t), Config{})
+		testTrustStore(t), newFakeResolver(), Config{})
 	require.NoError(t, err)
 	require.NoError(t, withoutToggle.Authorize(context.Background(),
 		blueauth.UserClaims[Extension]{Extra: ext}, testWindowManagerResource))
@@ -1043,246 +1160,6 @@ func TestPluginPermissionStorageKeyChangesWhenPermissionChanges(t *testing.T) {
 	assert.NotEqual(t, keyA, keyB)
 }
 
-func TestPluginPermissionCommandStorageKeysIgnoresArgsForSameCommand(t *testing.T) {
-	t.Parallel()
-
-	keysA := pluginPermissionCommandStorageKeys("/bin/test", []string{"a"},
-		extensionapi.PermissionExecute, pluginPermissionCommandDetail{
-			Path: "/bin/grep",
-			Args: []string{"foo"},
-			Dir:  "/tmp/workspace",
-		})
-	keysB := pluginPermissionCommandStorageKeys("/bin/test", []string{"a"},
-		extensionapi.PermissionExecute, pluginPermissionCommandDetail{
-			Path: "/bin/grep",
-			Args: []string{"bar", "file.txt"},
-			Dir:  "/other",
-		})
-
-	assert.Equal(t, keysA, keysB)
-}
-
-func TestPluginPermissionCommandStorageKeysChangeWithEffectiveCommand(t *testing.T) {
-	t.Parallel()
-
-	keysA := pluginPermissionCommandStorageKeys("/bin/test", []string{"a"},
-		extensionapi.PermissionExecute, pluginPermissionCommandDetail{
-			Path: "/bin/grep",
-			Args: []string{"foo"},
-			Dir:  "/tmp/workspace",
-		})
-	keysB := pluginPermissionCommandStorageKeys("/bin/test", []string{"a"},
-		extensionapi.PermissionExecute, pluginPermissionCommandDetail{
-			Path: "/bin/rm",
-			Args: []string{"-rf", "foo"},
-			Dir:  "/tmp/workspace",
-		})
-
-	assert.NotEqual(t, keysA, keysB)
-}
-
-func TestPluginPermissionCommandStorageKeysNormalizeShellWrappedCommand(t *testing.T) {
-	t.Parallel()
-
-	keysA := pluginPermissionCommandStorageKeys("/bin/test", []string{"a"},
-		extensionapi.PermissionExecute, pluginPermissionCommandDetail{
-			Path: "/bin/sh",
-			Args: []string{"-lc", "cd /tmp/workspace && grep foo file.txt"},
-			Dir:  "/tmp",
-		})
-	keysB := pluginPermissionCommandStorageKeys("/bin/test", []string{"a"},
-		extensionapi.PermissionExecute, pluginPermissionCommandDetail{
-			Path: "/usr/bin/grep",
-			Args: []string{"bar", "other.txt"},
-			Dir:  "/elsewhere",
-		})
-
-	assert.Equal(t, keysA, keysB)
-}
-
-func TestPluginPermissionCommandStorageKeysDecomposeCompoundScript(t *testing.T) {
-	t.Parallel()
-
-	compound := pluginPermissionCommandStorageKeys("/bin/test", []string{"a"},
-		extensionapi.PermissionExecute, pluginPermissionCommandDetail{
-			Path: "/bin/bash",
-			Args: []string{"-c", "grep foo file.txt && rm file.txt"},
-			Dir:  "/tmp",
-		})
-	grepOnly := pluginPermissionCommandStorageKeys("/bin/test", []string{"a"},
-		extensionapi.PermissionExecute, pluginPermissionCommandDetail{
-			Path: "/usr/bin/grep",
-			Args: []string{"bar", "other.txt"},
-			Dir:  "/tmp",
-		})
-
-	assert.Len(t, compound, 2)
-	assert.Len(t, grepOnly, 1)
-	assert.Contains(t, compound, grepOnly[0])
-}
-
-func TestPluginPermissionCommandStorageKeysDecomposePipelineScript(t *testing.T) {
-	t.Parallel()
-
-	pipeline := pluginPermissionCommandStorageKeys("/bin/test", []string{"a"},
-		extensionapi.PermissionExecute, pluginPermissionCommandDetail{
-			Path: "/bin/bash",
-			Args: []string{"-c", "grep foo file.txt | wc -l"},
-			Dir:  "/tmp",
-		})
-	grepOnly := pluginPermissionCommandStorageKeys("/bin/test", []string{"a"},
-		extensionapi.PermissionExecute, pluginPermissionCommandDetail{
-			Path: "/usr/bin/grep",
-			Args: []string{"bar", "other.txt"},
-			Dir:  "/tmp",
-		})
-
-	assert.Len(t, pipeline, 2)
-	assert.Contains(t, pipeline, grepOnly[0])
-}
-
-func TestPluginPermissionCommandStorageKeysOpaqueScriptFallsBackToExactMatch(t *testing.T) {
-	t.Parallel()
-
-	keysA := pluginPermissionCommandStorageKeys("/bin/test", []string{"a"},
-		extensionapi.PermissionExecute, pluginPermissionCommandDetail{
-			Path: "/bin/bash",
-			Args: []string{"-c", "$CMD args"},
-			Dir:  "/tmp",
-		})
-	keysB := pluginPermissionCommandStorageKeys("/bin/test", []string{"a"},
-		extensionapi.PermissionExecute, pluginPermissionCommandDetail{
-			Path: "/bin/bash",
-			Args: []string{"-c", "$OTHER x"},
-			Dir:  "/tmp",
-		})
-
-	assert.Len(t, keysA, 1)
-	assert.Len(t, keysB, 1)
-	assert.NotEqual(t, keysA, keysB)
-}
-
-func TestPluginPermissionCommandStorageKeysDecomposeCmdSubstScript(t *testing.T) {
-	t.Parallel()
-
-	complex := pluginPermissionCommandStorageKeys("/bin/test", []string{"a"},
-		extensionapi.PermissionExecute, pluginPermissionCommandDetail{
-			Path: "/bin/bash",
-			Args: []string{"-c",
-				"cd /Users/ernestrc/.rune/worktrees/vim && gofmt -l $(find . -name '.go' -not -path './.git/' 2>/dev/null) 2>&1 | head -20"},
-			Dir: "/tmp",
-		})
-	findOnly := pluginPermissionCommandStorageKeys("/bin/test", []string{"a"},
-		extensionapi.PermissionExecute, pluginPermissionCommandDetail{
-			Path: "/usr/bin/find",
-			Args: []string{".", "-name", "*.go"},
-			Dir:  "/tmp",
-		})
-	gofmtOnly := pluginPermissionCommandStorageKeys("/bin/test", []string{"a"},
-		extensionapi.PermissionExecute, pluginPermissionCommandDetail{
-			Path: "/usr/bin/gofmt",
-			Args: []string{"-l", "."},
-			Dir:  "/tmp",
-		})
-	headOnly := pluginPermissionCommandStorageKeys("/bin/test", []string{"a"},
-		extensionapi.PermissionExecute, pluginPermissionCommandDetail{
-			Path: "/usr/bin/head",
-			Args: []string{"-20"},
-			Dir:  "/tmp",
-		})
-
-	assert.Len(t, complex, 3)
-	assert.Contains(t, complex, findOnly[0])
-	assert.Contains(t, complex, gofmtOnly[0])
-	assert.Contains(t, complex, headOnly[0])
-}
-
-func TestPluginPermissionEffectiveCommandsDecomposeScriptSubstitutions(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name string
-		cmd  pluginPermissionCommandDetail
-		want []string
-	}{
-		{
-			name: "perl script with backtick command substitution",
-			cmd: pluginPermissionCommandDetail{
-				Path: "/usr/bin/perl",
-				Args: []string{"-e", "print `git rev-parse --show-toplevel`;"},
-			},
-			want: []string{"perl"},
-		},
-		{
-			name: "python stdin script from shell heredoc",
-			cmd: pluginPermissionCommandDetail{
-				Path: "/bin/bash",
-				Args: []string{"-c", "python <<'PY'\nimport json\nprint(json.dumps({'ok': True}))\nPY"},
-			},
-			want: []string{"python"},
-		},
-		{
-			name: "backtick command substitution in argument",
-			cmd: pluginPermissionCommandDetail{
-				Path: "/bin/bash",
-				Args: []string{"-c", "echo `git rev-parse --show-toplevel`"},
-			},
-			want: []string{"echo", "git"},
-		},
-		{
-			name: "nested dollar command substitutions in argument",
-			cmd: pluginPermissionCommandDetail{
-				Path: "/bin/bash",
-				Args: []string{"-c", "printf %s $(dirname $(which go))"},
-			},
-			want: []string{"dirname", "printf", "which"},
-		},
-		{
-			name: "command substitution command name with literal nested command",
-			cmd: pluginPermissionCommandDetail{
-				Path: "/bin/bash",
-				Args: []string{"-c", "$(echo grep) foo file.txt"},
-			},
-			want: []string{"echo", "grep"},
-		},
-		{
-			name: "backtick command name with literal nested command",
-			cmd: pluginPermissionCommandDetail{
-				Path: "/bin/bash",
-				Args: []string{"-c", "`echo grep` foo file.txt"},
-			},
-			want: []string{"echo", "grep"},
-		},
-		{
-			name: "complex bash sequence with nested substitutions",
-			cmd: pluginPermissionCommandDetail{
-				Path: "/bin/bash",
-				Args: []string{"-c", "cd /tmp && echo `git rev-parse --show-toplevel` && printf %s $(dirname $(which go)) | wc -c"},
-			},
-			want: []string{"dirname", "echo", "git", "printf", "wc", "which"},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got, ok := pluginPermissionEffectiveCommands(tt.cmd)
-			require.True(t, ok)
-			assert.Equal(t, tt.want, got)
-			assert.Equal(t, expectedScopeLabels(tt.want), pluginPermissionApprovalScopeLabels(tt.cmd))
-		})
-	}
-}
-
-func expectedScopeLabels(commands []string) []string {
-	labels := make([]string, len(commands))
-	for i, command := range commands {
-		labels[i] = command + " *"
-	}
-	return labels
-}
-
 func TestAuthorizerAuthorizeStartCommandComplexBashScriptDecomposes(t *testing.T) {
 	t.Parallel()
 
@@ -1299,6 +1176,11 @@ func TestAuthorizerAuthorizeStartCommandComplexBashScriptDecomposes(t *testing.T
 			"cd /Users/ernestrc/.rune/worktrees/vim && gofmt -l $(find . -name '.go' -not -path './.git/' 2>/dev/null) 2>&1 | head -20"},
 		Dir: "/tmp",
 	}))
+	assert.Equal(t, map[string]string{
+		"gofmt *": pluginPermissionDecisionAllow,
+		"find *":  pluginPermissionDecisionAllow,
+		"head *":  pluginPermissionDecisionAllow,
+	}, storedScopes(t, storage))
 	require.NoError(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
 		Path: "/usr/bin/find", Args: []string{".", "-name", "*.go"}, Dir: "/tmp",
 	}))
@@ -1343,7 +1225,7 @@ func mustNewAuthorizer(
 ) *Authorizer {
 	t.Helper()
 	a, err := NewAuthorizer(editor, opener, storage, syncScheduleNextTick, &capturingStatus{},
-		testTrustStore(t), Config{})
+		testTrustStore(t), newFakeResolver(), Config{})
 	require.NoError(t, err)
 	return a
 }
@@ -1355,9 +1237,26 @@ func mustNewAuthorizerWithStatus(
 ) *Authorizer {
 	t.Helper()
 	a, err := NewAuthorizer(editor, opener, storage, syncScheduleNextTick, status,
-		testTrustStore(t), Config{})
+		testTrustStore(t), newFakeResolver(), Config{})
 	require.NoError(t, err)
 	return a
+}
+
+// newTextComponent returns the kind of PromptOpener the IDE builds the
+// authorizer with.
+func newTextComponent(t *testing.T) *text.Component {
+	t.Helper()
+	cwd, err := workspaceapi.ParseURI("memory:///")
+	require.NoError(t, err)
+	scheme, err := workspace.NewMemoryScheme(context.Background(), config.NopConfig(), cwd)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = scheme.Close() })
+	cfg := text.DefaultConfig()
+	cfg.ScheduleNextTick = syncScheduleNextTick
+	comp, err := text.NewComponent(standard.Editor(),
+		workspace.NewSchemeWorkspace(cwd, scheme, syncScheduleNextTick), cfg)
+	require.NoError(t, err)
+	return comp
 }
 
 // testTrustStore returns a pkgtrust.Store backed by the embedded keyring,
@@ -1374,6 +1273,7 @@ func newTestAuthorizerCore(
 		prompter: newPermissionPrompter(opener, syncScheduleNextTick, &capturingStatus{}),
 		storage:  storage,
 		trust:    pkgtrust.NewStore(),
+		resolver: newFakeResolver(),
 		once:     make(map[string]pluginPermissionOnceDecision),
 		pending:  make(map[string]*pendingPrompt),
 	}
@@ -1480,9 +1380,9 @@ func TestAuthorizerAuthorizeStartCommandPromptsWithCommandDetails(t *testing.T) 
 	assert.Contains(t, msg, "/bin/grep")
 	assert.Contains(t, msg, "[foo]")
 	assert.Contains(t, msg, "/tmp/workspace")
-	assert.Contains(t, msg, "Always")
-	assert.Contains(t, msg, "\n\nChoosing **Always** approves **grep** for all future authorization requests, for any argument combination.")
-	assert.NotContains(t, msg, "grep ∗")
+	assert.Contains(t, msg, "\n\nRuns `/bin/grep`.")
+	assert.Contains(t, msg, "\n\nChoosing **Always** or **Never** decides for each of "+
+		"these programs with any arguments, as long as it runs the same file.")
 }
 
 const moveTestsScript = `M=/tmp/movetests/movetests; D=internal/workspace/vtescheme; set -e
@@ -1499,11 +1399,12 @@ func TestAuthorizerAuthorizeOpaqueScriptPromptsForExactApproval(t *testing.T) {
 	t.Parallel()
 
 	const width, height = 120, 40
-	comp := browser.NewComponent(browser.DefaultConfig())
+	opener := newTextComponent(t)
+	comp := opener.Browser()
 	ticks := make(chan func())
 	status := &capturingStatus{}
-	a := newTestAuthorizerCore(comp, storagestub.NewInMemoryService())
-	a.prompter = newPermissionPrompter(comp, func(fn func()) bool {
+	a := newTestAuthorizerCore(opener, storagestub.NewInMemoryService())
+	a.prompter = newPermissionPrompter(opener, func(fn func()) bool {
 		ticks <- fn
 		return true
 	}, status)
@@ -1597,38 +1498,38 @@ func TestAuthorizerAuthorizeOpaqueScriptPromptsForExactApproval(t *testing.T) {
 ├──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                                                      │
 │                                                                                                                      │
-│█●███████████████████████████████████████████████████████████████████████████████████████████████████████████████████ │
-││                                                                                                                   │ │
-││  Extension Test Extension by dev-id wants to run bash with args:                                                  │ │
-││                                                                                                                   │ │
-││  -c                                                                                                               │ │
-││  M=/tmp/movetests/movetests; D=internal/workspace/vtescheme; set -e                                               │ │
-││  $M -src $D/vte_scheme_test.go -dst $D/vte_scheme_e2e_test.go -names TestServerSchemeOwnsTerminals,TestServerChr  │ │
-││  oot,TestClientSchemesShareTheMachineServer,TestLoopbackOwnsTerminalsInProcess                                    │ │
-││  $M -src $D/vteclient_test.go -dst $D/vteclient_e2e_test.go -names TestClientVTERendersCanonicalStream,TestClien  │ │
-││  tVTEReplicasConverge,TestClientVTEConvergesAfterResize,TestClientVTEReportsTitleToItsOwnUI,TestClientVTEIsNotAS  │ │
-││  econdResponder,TestClientVTEDeliversOSCToEveryClient                                                             │ │
-││  $M -src $D/vtelifecycle_test.go -dst $D/vtelifecycle_e2e_test.go -names TestVTELifecycleOverRPC                  │ │
-││  $M -src $D/vteregistry_test.go -dst $D/vteregistry_e2e_test.go -names TestVTERegistryLifecycle,TestVTERegistryR  │ │
-││  esizeAuthority,TestVTERegistryDetachRestoresTheHeirsSize                                                         │ │
-││  $M -src $D/vteserver_test.go -dst $D/vteserver_e2e_test.go -names TestVTEServerAttachStreamsOutput,TestVTEServe  │ │
-││  rFansOutToEveryClient,TestVTEServerResizeFollowsFocus,TestVTEServerDetachLeavesEmulatorRunning,TestVTEServerDro  │ │
-││  psSlowClient,TestVTEServerSurvivesDegenerateResize,TestVTEServerClampsCreateDimensions,TestVTEServerRejectsWron  │ │
-││  gDirectionFrames,TestVTEServerRejectsSecondHello,TestVTEServerDetachKeepsTheEmulator,TestVTEServerHandlesEmptyI  │ │
-││  nput                                                                                                             │ │
-││  $M -src $D/vteserver_unit_test.go -dst $D/vteserver_e2e_test.go -names TestAttachmentDelegatesToItsEmulator      │ │
-││  /Users/ernestrc/.rune/bin/goimports -w $D/*_test.go                                                              │ │
-││  go vet ./$D/ && go vet -tags e2e ./$D/ && echo vet-ok; sed -n '17p' $D/test/persistence_test.go                  │ │
-││                                                                                                                   │ │
-││  in /Users/ernestrc/.rune/worktrees/rune-7bf2/RUNE-321-2                                                          │ │
-││                                                                                                                   │ │
-││  Choosing Always approves only this exact command. Any change to its arguments or working directory will prompt   │ │
-││  again.                                                                                                           │ │
-││                                                                                                                   │ │
-││                                                                                                                   │ │
-││                  Yes                     Always                     No                     Never                  │ │
-│└───────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘ │
-│                                                                                                                      │
+│█●████████████████████████████████████████████████████████████████████████████████████████████████████████████████████│
+││                                                                                                                    ││
+││  Extension Test Extension by dev-id wants to run bash with args:                                                   ││
+││                                                                                                                    ││
+││  -c                                                                                                                ││
+││  M=/tmp/movetests/movetests; D=internal/workspace/vtescheme; set -e                                                ││
+││  $M -src $D/vte_scheme_test.go -dst $D/vte_scheme_e2e_test.go -names TestServerSchemeOwnsTerminals,TestServerChro  ││
+││  ot,TestClientSchemesShareTheMachineServer,TestLoopbackOwnsTerminalsInProcess                                      ││
+││  $M -src $D/vteclient_test.go -dst $D/vteclient_e2e_test.go -names TestClientVTERendersCanonicalStream,TestClient  ││
+││  VTEReplicasConverge,TestClientVTEConvergesAfterResize,TestClientVTEReportsTitleToItsOwnUI,TestClientVTEIsNotASec  ││
+││  ondResponder,TestClientVTEDeliversOSCToEveryClient                                                                ││
+││  $M -src $D/vtelifecycle_test.go -dst $D/vtelifecycle_e2e_test.go -names TestVTELifecycleOverRPC                   ││
+││  $M -src $D/vteregistry_test.go -dst $D/vteregistry_e2e_test.go -names TestVTERegistryLifecycle,TestVTERegistryRe  ││
+││  sizeAuthority,TestVTERegistryDetachRestoresTheHeirsSize                                                           ││
+││  $M -src $D/vteserver_test.go -dst $D/vteserver_e2e_test.go -names TestVTEServerAttachStreamsOutput,TestVTEServer  ││
+││  FansOutToEveryClient,TestVTEServerResizeFollowsFocus,TestVTEServerDetachLeavesEmulatorRunning,TestVTEServerDrops  ││
+││  SlowClient,TestVTEServerSurvivesDegenerateResize,TestVTEServerClampsCreateDimensions,TestVTEServerRejectsWrongDi  ││
+││  rectionFrames,TestVTEServerRejectsSecondHello,TestVTEServerDetachKeepsTheEmulator,TestVTEServerHandlesEmptyInput  ││
+││  $M -src $D/vteserver_unit_test.go -dst $D/vteserver_e2e_test.go -names TestAttachmentDelegatesToItsEmulator       ││
+││  /Users/ernestrc/.rune/bin/goimports -w $D/*_test.go                                                               ││
+││  go vet ./$D/ && go vet -tags e2e ./$D/ && echo vet-ok; sed -n '17p' $D/test/persistence_test.go                   ││
+││                                                                                                                    ││
+││  in /Users/ernestrc/.rune/worktrees/rune-7bf2/RUNE-321-2                                                           ││
+││                                                                                                                    ││
+││  Runs /usr/bin/bash, $M (known only when it runs), /Users/ernestrc/.rune/bin/goimports, /usr/bin/go, echo (shell   ││
+││  builtin), /usr/bin/sed.                                                                                           ││
+││                                                                                                                    ││
+││  Choosing Always or Never decides for each of these programs with any arguments, as long as it runs the same       ││
+││  file.                                                                                                             ││
+││                                                                                                                    ││
+││                  Yes                      Always                     No                     Never                  ││
+│└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘│
 │                                                                                                                      │
 │                                                                                                                      │
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘`[1:]},
@@ -1704,14 +1605,15 @@ func TestAuthorizerAuthorizeStartCommandDecisions(t *testing.T) {
 		name       string
 		decision   PermissionDecision
 		wantErrIs  error
-		wantStored string
+		wantStored map[string]string
 	}{
-		{name: "allow once", decision: PermissionAllowOnce},
-		{name: "deny once", decision: PermissionDenyOnce, wantErrIs: blueauth.ErrForbidden},
+		{name: "allow once", decision: PermissionAllowOnce, wantStored: map[string]string{}},
+		{name: "deny once", decision: PermissionDenyOnce, wantErrIs: blueauth.ErrForbidden,
+			wantStored: map[string]string{}},
 		{name: "allow always", decision: PermissionAllowAlways,
-			wantStored: pluginPermissionDecisionAllow},
-		{name: "deny always", decision: PermissionDenyAlways,
-			wantErrIs: blueauth.ErrForbidden, wantStored: pluginPermissionDecisionDeny},
+			wantStored: map[string]string{"/bin/grep *": pluginPermissionDecisionAllow}},
+		{name: "deny always", decision: PermissionDenyAlways, wantErrIs: blueauth.ErrForbidden,
+			wantStored: map[string]string{"/bin/grep *": pluginPermissionDecisionDeny}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1731,20 +1633,22 @@ func TestAuthorizerAuthorizeStartCommandDecisions(t *testing.T) {
 				assert.NoError(t, err)
 			}
 
-			command := pluginPermissionCommandDetail{Path: cmd.Path, Args: cmd.Args, Dir: cmd.Dir}
-			keys := pluginPermissionCommandStorageKeys(ext.Path, ext.Args,
-				extensionapi.PermissionExecute, command)
-			require.Len(t, keys, 1)
-			var stored storedPermissionDecision
-			err = storage.Get(context.Background(), keys[0], &stored)
-			if tc.wantStored == "" {
-				assert.ErrorIs(t, err, storageapi.ErrNotFound)
-			} else {
+			assert.Equal(t, tc.wantStored, storedScopes(t, storage))
+			for _, stored := range storedCommandDecisions(t, storage) {
+				assert.Equal(t, []executableRef{{Name: "/bin/grep", Path: "/bin/grep"}},
+					stored.Executables)
+				assert.Equal(t, cmd.Path, stored.Command.Path)
+				assert.Equal(t, cmd.Args, stored.Command.Args)
+				assert.Equal(t, cmd.Dir, stored.Command.Dir)
+			}
+			// Only approving a command records the executables it runs.
+			var exe storedExecutable
+			err = storage.Get(context.Background(), executableStorageKey("", "/bin/grep"), &exe)
+			if tc.decision == PermissionAllowAlways {
 				require.NoError(t, err)
-				assert.Equal(t, tc.wantStored, stored.Decision)
-				assert.Equal(t, command.Path, stored.Command.Path)
-				assert.Equal(t, command.Args, stored.Command.Args)
-				assert.Equal(t, command.Dir, stored.Command.Dir)
+				assert.Equal(t, sha256Hex("/bin/grep"), exe.SHA256)
+			} else {
+				assert.ErrorIs(t, err, storageapi.ErrNotFound)
 			}
 		})
 	}
@@ -1754,7 +1658,9 @@ func TestAuthorizerAuthorizeStartCommandPersistedDecisionAppliesToSameCommandWit
 	t.Parallel()
 
 	storage := storagestub.NewInMemoryService()
-	opener := &stubPromptOpener{decision: PermissionAllowAlways}
+	opener := &stubPromptOpener{
+		decision: PermissionAllowAlways,
+	}
 	a := newTestAuthorizerCore(opener, storage)
 	ext := testPluginExtension(nil)
 	ctx := blueauth.ContextWithClaims(context.Background(), blueauth.UserClaims[Extension]{Extra: ext})
@@ -1762,6 +1668,8 @@ func TestAuthorizerAuthorizeStartCommandPersistedDecisionAppliesToSameCommandWit
 	require.NoError(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
 		Path: "/bin/grep", Args: []string{"foo"}, Dir: "/tmp",
 	}))
+	require.Equal(t, map[string]string{"/bin/grep *": pluginPermissionDecisionAllow},
+		storedScopes(t, storage))
 	require.NoError(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
 		Path: "/bin/grep", Args: []string{"foo"}, Dir: "/tmp",
 	}))
@@ -1779,7 +1687,9 @@ func TestAuthorizerAuthorizeStartCommandRegularExtensionPersistedDecisionApplies
 	t.Parallel()
 
 	storage := storagestub.NewInMemoryService()
-	opener := &stubPromptOpener{decision: PermissionAllowAlways}
+	opener := &stubPromptOpener{
+		decision: PermissionAllowAlways,
+	}
 	a := newTestAuthorizerCore(opener, storage)
 	ext := testRegularExtension(extensionapi.NewPermissions(extensionapi.PermissionExecute))
 	ctx := blueauth.ContextWithClaims(context.Background(), blueauth.UserClaims[Extension]{Extra: ext})
@@ -1800,64 +1710,42 @@ func TestAuthorizerAuthorizeStartCommandRegularExtensionPersistedDecisionApplies
 func TestAuthorizerAuthorizeStartCommandPersistedDecisionNormalizesShellWrapper(t *testing.T) {
 	t.Parallel()
 
-	storage := storagestub.NewInMemoryService()
-	opener := &stubPromptOpener{decision: PermissionAllowAlways}
-	a := newTestAuthorizerCore(opener, storage)
-	ext := testPluginExtension(nil)
-	ctx := blueauth.ContextWithClaims(context.Background(), blueauth.UserClaims[Extension]{Extra: ext})
+	for _, wrapped := range []workspaceapi.Cmd{
+		{Path: "/bin/sh", Args: []string{"-lc", "cd /tmp/workspace && grep foo file.txt"}, Dir: "/tmp"},
+		{Path: "/bin/bash", Args: []string{"-c", "grep foo file.txt"}, Dir: "/tmp"},
+	} {
+		t.Run(wrapped.Path, func(t *testing.T) {
+			t.Parallel()
 
-	require.NoError(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
-		Path: "/bin/sh",
-		Args: []string{"-lc", "cd /tmp/workspace && grep foo file.txt"},
-		Dir:  "/tmp",
-	}))
-	require.NoError(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
-		Path: "/usr/bin/grep",
-		Args: []string{"bar", "other.txt"},
-		Dir:  "/tmp/workspace",
-	}))
-	require.NoError(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
-		Path: "/bin/rm",
-		Args: []string{"-rf", "other.txt"},
-		Dir:  "/tmp/workspace",
-	}))
+			storage := storagestub.NewInMemoryService()
+			opener := &stubPromptOpener{
+				decision: PermissionAllowAlways,
+			}
+			a := newTestAuthorizerCore(opener, storage)
+			ext := testPluginExtension(nil)
+			ctx := blueauth.ContextWithClaims(context.Background(),
+				blueauth.UserClaims[Extension]{Extra: ext})
 
-	assert.Equal(t, 2, opener.calls)
-}
+			require.NoError(t, a.AuthorizeCommand(ctx, wrapped))
+			require.NoError(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
+				Path: "/usr/bin/grep", Args: []string{"bar", "other.txt"}, Dir: "/tmp/workspace",
+			}))
+			require.NoError(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
+				Path: "/bin/rm", Args: []string{"-rf", "other.txt"}, Dir: "/tmp/workspace",
+			}))
 
-func TestAuthorizerAuthorizeStartCommandPersistedDecisionNormalizesPlainShellWrapper(t *testing.T) {
-	t.Parallel()
-
-	storage := storagestub.NewInMemoryService()
-	opener := &stubPromptOpener{decision: PermissionAllowAlways}
-	a := newTestAuthorizerCore(opener, storage)
-	ext := testPluginExtension(nil)
-	ctx := blueauth.ContextWithClaims(context.Background(), blueauth.UserClaims[Extension]{Extra: ext})
-
-	require.NoError(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
-		Path: "/bin/bash",
-		Args: []string{"-c", "grep foo file.txt"},
-		Dir:  "/tmp",
-	}))
-	require.NoError(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
-		Path: "/usr/bin/grep",
-		Args: []string{"bar", "other.txt"},
-		Dir:  "/tmp/workspace",
-	}))
-	require.NoError(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
-		Path: "/bin/rm",
-		Args: []string{"-rf", "other.txt"},
-		Dir:  "/tmp/workspace",
-	}))
-
-	assert.Equal(t, 2, opener.calls)
+			assert.Equal(t, 2, opener.calls)
+		})
+	}
 }
 
 func TestAuthorizerAuthorizeStartCommandPersistedDecisionBroadensSequenceShellScripts(t *testing.T) {
 	t.Parallel()
 
 	storage := storagestub.NewInMemoryService()
-	opener := &stubPromptOpener{decision: PermissionAllowAlways}
+	opener := &stubPromptOpener{
+		decision: PermissionAllowAlways,
+	}
 	a := newTestAuthorizerCore(opener, storage)
 	ext := testPluginExtension(nil)
 	ctx := blueauth.ContextWithClaims(context.Background(), blueauth.UserClaims[Extension]{Extra: ext})
@@ -1880,12 +1768,13 @@ func TestAuthorizerAuthorizeStartCommandPersistedDecisionBroadensCompoundShellSc
 	t.Parallel()
 
 	storage := storagestub.NewInMemoryService()
-	opener := &stubPromptOpener{decision: PermissionAllowAlways}
+	opener := &stubPromptOpener{
+		decision: PermissionAllowAlways,
+	}
 	a := newTestAuthorizerCore(opener, storage)
 	ext := testPluginExtension(nil)
 	ctx := blueauth.ContextWithClaims(context.Background(), blueauth.UserClaims[Extension]{Extra: ext})
 
-	// Approve a compound script containing make, grep, and rm.
 	require.NoError(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
 		Path: "/bin/bash",
 		Args: []string{
@@ -1894,18 +1783,24 @@ func TestAuthorizerAuthorizeStartCommandPersistedDecisionBroadensCompoundShellSc
 		},
 		Dir: "/tmp",
 	}))
-	// Each constituent command runs silently afterwards.
+	// Each command runs silently afterwards, as long as it is the same
+	// file.
 	require.NoError(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
-		Path: "/bin/rm", Args: []string{"-rf", "foo.txt"}, Dir: "/tmp",
+		Path: "/usr/bin/rm", Args: []string{"-rf", "foo.txt"}, Dir: "/tmp",
 	}))
 	require.NoError(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
-		Path: "/usr/bin/grep", Args: []string{"bar", "other.txt"}, Dir: "/tmp",
+		Path: "grep", Args: []string{"bar", "other.txt"}, Dir: "/tmp",
 	}))
 	require.NoError(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
 		Path: "/usr/bin/make", Args: []string{"build"}, Dir: "/tmp",
 	}))
-
 	assert.Equal(t, 1, opener.calls)
+
+	opener.decision = PermissionDenyOnce
+	require.ErrorIs(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
+		Path: "/bin/rm", Args: []string{"-rf", "foo.txt"}, Dir: "/tmp",
+	}), blueauth.ErrForbidden)
+	assert.Equal(t, 2, opener.calls)
 }
 
 func TestAuthorizerAuthorizeStartCommandPersistedDecisionDoesNotBroadenBeyondEffectiveSet(t *testing.T) {
@@ -1935,49 +1830,52 @@ func TestAuthorizerAuthorizeStartCommandPartialApprovalStillPrompts(t *testing.T
 
 	storage := storagestub.NewInMemoryService()
 	ext := testPluginExtension(nil)
-
-	// Pre-seed approval for grep only.
-	grepKeys := pluginPermissionCommandStorageKeys(ext.Path, ext.Args,
-		extensionapi.PermissionExecute, pluginPermissionCommandDetail{
-			Path: "/usr/bin/grep",
-			Args: []string{"x"},
-			Dir:  "/tmp",
-		})
-	require.Len(t, grepKeys, 1)
-	require.NoError(t, storage.Set(context.Background(), grepKeys[0],
-		storedPermissionDecision{Decision: pluginPermissionDecisionAllow}))
-
-	opener := &stubPromptOpener{decision: PermissionAllowAlways}
+	opener := &stubPromptOpener{
+		decision: PermissionAllowAlways,
+	}
 	a := newTestAuthorizerCore(opener, storage)
 	ctx := blueauth.ContextWithClaims(context.Background(),
 		blueauth.UserClaims[Extension]{Extra: ext})
+	require.NoError(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
+		Path: "grep", Args: []string{"x"}, Dir: "/tmp",
+	}))
+	require.Equal(t, 1, opener.calls)
 
-	// Compound script containing grep and rm: grep is already approved,
-	// rm is not, so a prompt is shown.
+	// grep is already approved, rm is not, so a prompt is shown.
 	require.NoError(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
 		Path: "/bin/bash",
 		Args: []string{"-c", "grep foo file.txt && rm file.txt"},
 		Dir:  "/tmp",
 	}))
-	assert.Equal(t, 1, opener.calls)
+	assert.Equal(t, 2, opener.calls)
 
-	// After "Yes, All" both commands are approved; a subsequent rm runs
-	// silently, and grep's approval was not duplicated.
 	require.NoError(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
-		Path: "/bin/rm", Args: []string{"-rf", "foo"}, Dir: "/tmp",
+		Path: "rm", Args: []string{"-rf", "foo"}, Dir: "/tmp",
 	}))
-	assert.Equal(t, 1, opener.calls)
+	assert.Equal(t, 2, opener.calls)
 }
 
 func TestAuthorizerAuthorizeStartCommandOpaqueScriptFallsBackToExactMatch(t *testing.T) {
 	t.Parallel()
 
 	storage := storagestub.NewInMemoryService()
-	opener := &stubPromptOpener{decision: PermissionAllowAlways}
+	opener := &stubPromptOpener{
+		decision: PermissionAllowAlways,
+	}
 	a := newTestAuthorizerCore(opener, storage)
 	ext := testPluginExtension(nil)
 	ctx := blueauth.ContextWithClaims(context.Background(), blueauth.UserClaims[Extension]{Extra: ext})
 
+	require.NoError(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
+		Path: "/bin/bash",
+		Args: []string{"-c", "$CMD args"},
+		Dir:  "/tmp",
+	}))
+	assert.Contains(t, opener.messages[0], "Choosing **Always** or **Never** covers only this "+
+		"exact command because it runs no program a scope can describe.")
+	assert.Equal(t, map[string]string{
+		"this exact command (/bin/bash -c '$CMD args' in /tmp)": pluginPermissionDecisionAllow,
+	}, storedScopes(t, storage))
 	require.NoError(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
 		Path: "/bin/bash",
 		Args: []string{"-c", "$CMD args"},
@@ -2154,4 +2052,298 @@ func TestAuthorizerCoalescesConcurrentPrompts(t *testing.T) {
 	// concurrent Authorize calls; the rest must have coalesced.
 	assert.Equal(t, 1, opener.promptCalls(),
 		"concurrent Authorize calls for the same onceKey must coalesce on a single prompt")
+}
+
+func TestAuthorizerPersistedScopeDoesNotCoverOtherExecutables(t *testing.T) {
+	t.Parallel()
+
+	opener := &stubPromptOpener{
+		decision: PermissionAllowAlways,
+	}
+	a := newTestAuthorizerCore(opener, storagestub.NewInMemoryService())
+	ctx := blueauth.ContextWithClaims(context.Background(),
+		blueauth.UserClaims[Extension]{Extra: testPluginExtension(nil)})
+	require.NoError(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
+		Path: "git", Args: []string{"status"}, Dir: "/ws",
+	}))
+	require.NoError(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
+		Path: "/usr/bin/git", Args: []string{"push"}, Dir: "/ws",
+	}))
+	require.Equal(t, 1, opener.calls)
+
+	cases := []struct {
+		name string
+		cmd  workspaceapi.Cmd
+		want string
+	}{
+		{name: "relative to the directory",
+			cmd:  workspaceapi.Cmd{Path: "./git", Args: []string{"status"}, Dir: "/ws"},
+			want: "Runs `/ws/git`."},
+		{name: "elsewhere",
+			cmd:  workspaceapi.Cmd{Path: "/tmp/evil/git", Args: []string{"status"}},
+			want: "Runs `/tmp/evil/git`."},
+		{name: "in a PATH the command sets",
+			cmd: workspaceapi.Cmd{Path: "bash", Args: []string{"-c", "git status"},
+				Env: []string{"PATH=/home/u/.local/bin:/usr/bin"}},
+			want: "`/home/u/.local/bin/git`"},
+		{name: "with a preloaded library",
+			cmd: workspaceapi.Cmd{Path: "git", Args: []string{"status"},
+				Env: []string{"LD_PRELOAD=/tmp/x.so"}},
+			want: "covers only this exact command because it sets LD_PRELOAD"},
+		{name: "under a wrapper never approved",
+			cmd:  workspaceapi.Cmd{Path: "nice", Args: []string{"git", "status"}},
+			want: "Runs `/usr/bin/nice`, `/usr/bin/git`."},
+	}
+	for _, tc := range cases {
+		opener.decision = PermissionDenyOnce
+		calls := opener.calls
+		err := a.AuthorizeCommand(ctx, tc.cmd)
+		assert.ErrorIs(t, err, blueauth.ErrForbidden, tc.name)
+		require.Equal(t, calls+1, opener.calls, tc.name)
+		assert.Contains(t, opener.messages[len(opener.messages)-1], tc.want, tc.name)
+	}
+}
+
+func TestAuthorizerPersistedScopeDoesNotCoverShadowingExecutable(t *testing.T) {
+	t.Parallel()
+
+	r := newFakeResolver("/home/u/go/bin/git")
+	r.hostPATH = []string{"/home/u/go/bin", "/usr/bin"}
+	opener := &stubPromptOpener{
+		decision: PermissionAllowAlways,
+	}
+	a := newTestAuthorizerCore(opener, storagestub.NewInMemoryService())
+	a.resolver = r
+	ctx := blueauth.ContextWithClaims(context.Background(),
+		blueauth.UserClaims[Extension]{Extra: testPluginExtension(nil)})
+	cmd := workspaceapi.Cmd{Path: "bash", Args: []string{"-c", "git status"}}
+	require.NoError(t, a.AuthorizeCommand(ctx, cmd))
+	require.NoError(t, a.AuthorizeCommand(ctx, cmd))
+	require.Equal(t, 1, opener.calls)
+
+	// A git dropped earlier in the PATH is another program.
+	r.setMissing("/home/u/go/bin/git", false)
+	opener.decision = PermissionDenyOnce
+	require.ErrorIs(t, a.AuthorizeCommand(ctx, cmd), blueauth.ErrForbidden)
+	require.Equal(t, 2, opener.calls)
+	assert.Contains(t, opener.messages[1], "`/home/u/go/bin/git`")
+}
+
+func TestAuthorizerTransparentWrappersScopeTheCommandTheyRun(t *testing.T) {
+	t.Parallel()
+
+	storage := storagestub.NewInMemoryService()
+	opener := &stubPromptOpener{decision: PermissionAllowAlways}
+	a := newTestAuthorizerCore(opener, storage)
+	ctx := blueauth.ContextWithClaims(context.Background(),
+		blueauth.UserClaims[Extension]{Extra: testPluginExtension(nil)})
+	require.NoError(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
+		Path: "env", Args: []string{"FOO=1", "make"},
+	}))
+	assert.Equal(t, map[string]string{"make *": pluginPermissionDecisionAllow},
+		storedScopes(t, storage))
+
+	opener.decision = PermissionDenyOnce
+	require.ErrorIs(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
+		Path: "env", Args: []string{"rm", "-rf", "/"},
+	}), blueauth.ErrForbidden)
+	require.NoError(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
+		Path: "env", Args: []string{"BAR=2", "make", "test"},
+	}))
+	assert.Equal(t, 2, opener.calls)
+}
+
+func TestAuthorizerRenewsChangedExecutable(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		option string
+		// wantErr is the error the commands that run the changed
+		// executable get.
+		wantErr error
+		// wantPrompts are the prompts after a second command runs the
+		// changed executable.
+		wantPrompts int
+	}{
+		{option: PromptOptionRenew, wantPrompts: 2},
+		{option: PromptOptionOnce, wantPrompts: 3},
+		{option: PromptOptionNo, wantErr: blueauth.ErrForbidden, wantPrompts: 3},
+	}
+	for _, tc := range cases {
+		t.Run(strings.TrimSpace(tc.option), func(t *testing.T) {
+			t.Parallel()
+
+			r := newFakeResolver()
+			storage := storagestub.NewInMemoryService()
+			opener := &stubPromptOpener{
+				decision: PermissionAllowAlways,
+			}
+			a := newTestAuthorizerCore(opener, storage)
+			a.resolver = r
+			ext := testRegularExtension(extensionapi.NewPermissions(extensionapi.PermissionExecute))
+			ctx := blueauth.ContextWithClaims(context.Background(),
+				blueauth.UserClaims[Extension]{Extra: ext})
+			require.NoError(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
+				Path: "git", Args: []string{"status"},
+			}))
+
+			r.setContent("/usr/bin/git", "rebuilt")
+			opener.renewal = tc.option
+			push := workspaceapi.Cmd{Path: "git", Args: []string{"push"}}
+			err := a.AuthorizeCommand(ctx, push)
+			if tc.wantErr != nil {
+				require.ErrorIs(t, err, tc.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+			require.Equal(t, 2, opener.calls)
+			assert.Equal(t, "**`/usr/bin/git`** has changed since you approved `git *` for "+
+				"extension Test Extension.\n\n"+
+				"sha256 `"+fingerprintPreview(sha256Hex("/usr/bin/git"))+"` → `"+
+				fingerprintPreview(sha256Hex("rebuilt"))+"`, modified 2026-10-25 14:02.\n\n"+
+				"Renew authorization?", opener.messages[1])
+
+			// Renewing covers every approval of the executable at once.
+			err = a.AuthorizeCommand(ctx, workspaceapi.Cmd{Path: "git", Args: []string{"status"}})
+			if tc.wantErr != nil {
+				require.ErrorIs(t, err, tc.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Equal(t, tc.wantPrompts, opener.calls)
+
+			var exe storedExecutable
+			require.NoError(t, storage.Get(context.Background(),
+				executableStorageKey("", "/usr/bin/git"), &exe))
+			if tc.option == PromptOptionRenew {
+				assert.Equal(t, sha256Hex("rebuilt"), exe.SHA256)
+			} else {
+				assert.Equal(t, sha256Hex("/usr/bin/git"), exe.SHA256)
+			}
+		})
+	}
+}
+
+func TestAuthorizerNeverLeavesAllowedProgramsAllowed(t *testing.T) {
+	t.Parallel()
+
+	storage := storagestub.NewInMemoryService()
+	opener := &stubPromptOpener{decision: PermissionAllowAlways}
+	a := newTestAuthorizerCore(opener, storage)
+	ctx := blueauth.ContextWithClaims(context.Background(),
+		blueauth.UserClaims[Extension]{Extra: testPluginExtension(nil)})
+	require.NoError(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
+		Path: "git", Args: []string{"status"},
+	}))
+
+	opener.decision = PermissionDenyAlways
+	require.ErrorIs(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
+		Path: "bash", Args: []string{"-c", "git push origin && curl x"},
+	}), blueauth.ErrForbidden)
+	assert.Equal(t, map[string]string{
+		"git *":  pluginPermissionDecisionAllow,
+		"curl *": pluginPermissionDecisionDeny,
+	}, storedScopes(t, storage))
+
+	calls := opener.calls
+	require.NoError(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
+		Path: "git", Args: []string{"push", "-f"},
+	}))
+	require.ErrorIs(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
+		Path: "curl", Args: []string{"y"},
+	}), blueauth.ErrForbidden)
+	assert.Equal(t, calls, opener.calls)
+}
+
+type capturingNotifications struct {
+	browserapi.Notifications
+	messages []string
+}
+
+func (n *capturingNotifications) Notify(
+	_ browserapi.NotificationLevel, msg string, args ...any,
+) (string, error) {
+	n.messages = append(n.messages, fmt.Sprintf(msg, args...))
+	return "", nil
+}
+
+func TestNewAuthorizerForgetsLegacyCommandDecisions(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	storage := storagestub.NewInMemoryService()
+	prefix := pluginPermissionStorageKey("/bin/test", nil, extensionapi.PermissionExecute)
+	legacy := prefix + ":legacy"
+	require.NoError(t, storage.Set(ctx, legacy, storedPermissionDecision{
+		Key: legacy, Decision: pluginPermissionDecisionAllow,
+		Command: pluginPermissionCommandDetail{Path: "/bin/bash", Args: []string{"-c", "git status"}},
+	}))
+	program := pluginPermissionProgramStorageKey("/bin/test", extensionapi.PermissionLSP)
+	require.NoError(t, storage.Set(ctx, program, storedPermissionDecision{
+		Key: program, Decision: pluginPermissionDecisionAllow,
+	}))
+	scoped := commandScopeKey(prefix, "scoped")
+	require.NoError(t, storage.Set(ctx, scoped, storedPermissionDecision{
+		Key: scoped, Decision: pluginPermissionDecisionAllow,
+		Command: pluginPermissionCommandDetail{Path: "git"}, Scope: "git *",
+	}))
+
+	notes := &capturingNotifications{}
+	newAuthorizer := func() {
+		_, err := NewAuthorizer(texttest.NopEditor(), nil, storage, syncScheduleNextTick,
+			&capturingStatus{}, testTrustStore(t), newFakeResolver(),
+			Config{Notifications: notes})
+		require.NoError(t, err)
+	}
+	newAuthorizer()
+
+	var stored storedPermissionDecision
+	assert.ErrorIs(t, storage.Get(ctx, legacy, &stored), storageapi.ErrNotFound)
+	assert.NoError(t, storage.Get(ctx, program, &stored))
+	assert.NoError(t, storage.Get(ctx, scoped, &stored))
+	require.Len(t, notes.messages, 1)
+	assert.Contains(t, notes.messages[0], "Rune forgot 1 command approvals saved by an older version")
+
+	newAuthorizer()
+	assert.Len(t, notes.messages, 1)
+}
+
+func TestAuthorizerNeverPersistsApprovalsOfProgramsNotFound(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		cmd  workspaceapi.Cmd
+	}{
+		{name: "relative to a directory the script changes to",
+			cmd: workspaceapi.Cmd{Path: "bash", Args: []string{"-c", "cd sub && ./build --fast"}}},
+		{name: "not on the PATH yet",
+			cmd: workspaceapi.Cmd{Path: "bash", Args: []string{"-c", "make install && tool run"}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			r := newFakeResolver("/usr/bin/tool", "/bin/tool")
+			storage := storagestub.NewInMemoryService()
+			opener := &stubPromptOpener{
+				decision: PermissionAllowAlways,
+			}
+			a := newTestAuthorizerCore(opener, storage)
+			a.resolver = r
+			ext := testPluginExtension(nil)
+			ctx := blueauth.ContextWithClaims(context.Background(),
+				blueauth.UserClaims[Extension]{Extra: ext})
+
+			require.NoError(t, a.AuthorizeCommand(ctx, tc.cmd))
+			assert.Contains(t, opener.messages[0], "(not found, so Rune asks every time)")
+			for scope := range storedScopes(t, storage) {
+				assert.NotContains(t, scope, "build", "programs not found are not approved")
+				assert.NotContains(t, scope, "tool")
+				assert.NotContains(t, scope, "this exact command")
+			}
+			require.NoError(t, a.AuthorizeCommand(ctx, tc.cmd))
+			assert.Equal(t, 2, opener.calls)
+		})
+	}
 }

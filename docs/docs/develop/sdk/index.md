@@ -60,6 +60,10 @@ extension never declared is rejected outright, and the first time it uses a
 declared capability Rune prompts the user to allow or deny it. If a
 capability seems unreachable, check `authorizer list` for a lingering
 **deny always** decision and clear it with `authorizer revoke <permission>`.
+Command approvals are bound to the files a command runs, so a command that
+prompts again after you approved it usually runs a different file than the
+one you approved, or one that changed: compare its prompt with
+`authorizer executables`.
 
 ## Sample responses with runectl
 

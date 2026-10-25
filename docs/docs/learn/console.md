@@ -264,8 +264,13 @@ The `authorizer` command lets you review and undo those decisions:
 
 | Command | What it does |
 | --- | --- |
-| `authorizer list` | List extension permission decisions, and the workspace configs you trusted or ignored. |
-| `authorizer revoke <decision>` | Revoke a decision, so Rune asks again next time. |
+| `authorizer list` | List extension permission decisions, and the workspace configs you trusted or ignored. Command decisions show the commands they cover and the files they run. |
+| `authorizer revoke <decision>` | Revoke a decision, by ID or by the commands it covers such as `git commit *`, so Rune asks again next time. |
+| `authorizer executables` | List the files approved commands run, with the SHA-256 they were approved at. |
+
+A command approval is bound to the files the command runs: when one of them
+changes, Rune asks you to renew the approval. See
+[Command approvals](../develop/extensions.md#command-approvals).
 
 Workspace config decisions are listed as `persisted` when you chose **trust**,
 and as `transient` when you chose **trust once** or **ignore**, which last

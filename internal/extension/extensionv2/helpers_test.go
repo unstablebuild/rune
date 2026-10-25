@@ -18,9 +18,13 @@ package extensionv2
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -53,6 +57,33 @@ import (
 type nopTrustVerifier struct{}
 
 func (nopTrustVerifier) VerifyExtensionEntrypoint(string) (string, bool) { return "", false }
+
+// e2eResolver finds every program, in /usr/bin when its name has no
+// slash, so command prompts name a file without the tests depending on
+// the files of the host.
+type e2eResolver struct{}
+
+func (e2eResolver) HostID() string { return "" }
+
+func (e2eResolver) HostPATH(context.Context) ([]string, error) {
+	return []string{"/usr/bin"}, nil
+}
+
+func (e2eResolver) Resolve(_ context.Context, name, dir string, _ []string) (string, error) {
+	switch {
+	case path.IsAbs(name):
+		return path.Clean(name), nil
+	case strings.Contains(name, "/"):
+		return path.Join(dir, name), nil
+	default:
+		return path.Join("/usr/bin", name), nil
+	}
+}
+
+func (e2eResolver) Fingerprint(_ context.Context, p string) (ideauthorizer.ExecutableFingerprint, error) {
+	sum := sha256.Sum256([]byte(p))
+	return ideauthorizer.ExecutableFingerprint{SHA256: hex.EncodeToString(sum[:])}, nil
+}
 
 type e2ePromptOpener struct {
 	option string
@@ -218,7 +249,7 @@ func dialExtensionWorkspace(
 	authorizer, err := ideauthorizer.NewAuthorizer(
 		texttest.NopEditor(), prompt, storage,
 		func(fn func()) bool { fn(); return true },
-		e2eBrowser{}, pkgtrust.NewStore(), ideauthorizer.Config{},
+		e2eBrowser{}, pkgtrust.NewStore(), e2eResolver{}, ideauthorizer.Config{},
 	)
 	require.NoError(t, err)
 

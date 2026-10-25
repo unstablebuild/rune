@@ -32,7 +32,7 @@ import (
 type ExtensionsRunner interface {
 	WorkspaceExtensionsRunner(
 		uri workspaceapi.URI, res map[extensionapi.Permission]extension.ResourceRegistrar,
-		authorizer *ideauthorizer.Authorizer,
+		authorizer extensionv2.ServerAuthorizer,
 		trust extensionv2.TrustVerifier,
 		dataDir, installDir string, notifications browser.Notifications,
 		executor, extExecutor schemeapi.Executor,
@@ -69,7 +69,7 @@ type fnExtensions struct {
 func (f fnExtensions) WorkspaceExtensionsRunner(
 	uri workspaceapi.URI,
 	res map[extensionapi.Permission]extension.ResourceRegistrar,
-	authorizer *ideauthorizer.Authorizer,
+	authorizer extensionv2.ServerAuthorizer,
 	trust extensionv2.TrustVerifier,
 	dataDir, installDir string, n browser.Notifications, exec, extExec schemeapi.Executor,
 	grantor extension.Grantor,

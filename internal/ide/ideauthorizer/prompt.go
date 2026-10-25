@@ -36,7 +36,13 @@ const (
 	PromptOptionYesAlways = "   Always   "
 	PromptOptionNo        = "   No   "
 	PromptOptionNoNever   = "   Never   "
+	PromptOptionRenew     = "   Renew   "
+	PromptOptionOnce      = "   Once   "
 )
+
+// fingerprintPreviewLength is how many hex digits of an executable's
+// SHA-256 prompts show.
+const fingerprintPreviewLength = 12
 
 type permissionPrompter struct {
 	promptOpener     PromptOpener
@@ -67,9 +73,6 @@ func newPermissionPrompter(
 func (p *permissionPrompter) PromptPermission(
 	ctx context.Context, req PermissionRequest,
 ) (PermissionDecision, error) {
-	result := make(chan PermissionDecision, 1)
-	message := pluginPermissionPromptMessage(req)
-	warning := permissionPromptWarningMessage(req)
 	options := []string{
 		PromptOptionYes,
 		PromptOptionYesAlways,
@@ -77,19 +80,53 @@ func (p *permissionPrompter) PromptPermission(
 		PromptOptionNoNever,
 	}
 	bindings := []term.KeyComb{{Ch: 'Y'}, {Ch: 'A'}, {Ch: 'N'}, {Ch: 'V'}}
+	opt, err := p.ask(ctx, pluginPermissionPromptMessage(req),
+		permissionPromptWarningMessage(req), options, bindings)
+	return pluginPromptDecision(opt), err
+}
+
+// PromptRenewal asks the user whether approvals still hold after the
+// executables they run changed.
+func (p *permissionPrompter) PromptRenewal(
+	ctx context.Context, req RenewalRequest,
+) (RenewalDecision, error) {
+	options := []string{PromptOptionRenew, PromptOptionOnce, PromptOptionNo}
+	bindings := []term.KeyComb{{Ch: 'R'}, {Ch: 'O'}, {Ch: 'N'}}
+	paths := make([]string, len(req.Changes))
+	for i, c := range req.Changes {
+		paths[i] = c.Path
+	}
+	warning := "User authorization required: " + strings.Join(paths, ", ") + " changed"
+	opt, err := p.ask(ctx, renewalPromptMessage(req), warning, options, bindings)
+	switch opt {
+	case PromptOptionRenew:
+		return RenewalRenew, err
+	case PromptOptionOnce:
+		return RenewalOnce, err
+	default:
+		return RenewalDeny, err
+	}
+}
+
+// ask shows a prompt and returns the option the user picked, or "" when
+// they dismissed it.
+func (p *permissionPrompter) ask(
+	ctx context.Context, message, warning string, options []string, bindings []term.KeyComb,
+) (string, error) {
+	result := make(chan string, 1)
 	statusURI := p.promptStatusURI()
 	scheduled := p.scheduleNextTick(func() {
 		p.announce(statusURI, warning)
 		win := p.promptOpener.Prompt(message, options, bindings, handler.FuncPromptHandler(
 			func(i int, opt string) {
 				select {
-				case result <- pluginPromptDecision(opt):
+				case result <- opt:
 				default:
 				}
 			},
 			func() error {
 				select {
-				case result <- PermissionDenyOnce:
+				case result <- "":
 				default:
 				}
 				return nil
@@ -99,15 +136,15 @@ func (p *permissionPrompter) PromptPermission(
 		}
 	})
 	if !scheduled {
-		return PermissionDenyOnce, nil
+		return "", nil
 	}
 
 	defer p.withdraw(statusURI)
 	select {
-	case decision := <-result:
-		return decision, nil
+	case opt := <-result:
+		return opt, nil
 	case <-ctx.Done():
-		return PermissionDenyOnce, ctx.Err()
+		return "", ctx.Err()
 	}
 }
 
@@ -143,10 +180,6 @@ func (p *permissionPrompter) withdraw(uri workspaceapi.URI) {
 }
 
 func permissionPromptWarningMessage(req PermissionRequest) string {
-	labels := displayScopeLabels(req)
-	if len(labels) > 0 {
-		return fmt.Sprintf("User authorization required for %s", strings.Join(labels, ", "))
-	}
 	if req.CommandPath != "" {
 		return fmt.Sprintf("User authorization required for %s", req.CommandPath)
 	}
@@ -157,21 +190,6 @@ func permissionPromptWarningMessage(req PermissionRequest) string {
 		return fmt.Sprintf("User authorization required for %s", req.Path)
 	}
 	return "User authorization required"
-}
-
-func displayScopeLabels(req PermissionRequest) []string {
-	labels := req.CommandScopeLabels
-	if len(labels) == 0 && req.CommandScopeLabel != "" {
-		labels = []string{req.CommandScopeLabel}
-	}
-	if len(labels) == 0 {
-		return nil
-	}
-	ret := make([]string, len(labels))
-	for i, l := range labels {
-		ret[i] = strings.TrimSpace(strings.ReplaceAll(l, "*", ""))
-	}
-	return ret
 }
 
 func pluginPermissionPromptMessage(req PermissionRequest) string {
@@ -377,28 +395,81 @@ func joinAdjacentPromptFragments(left promptFragment, right promptFragment) prom
 	return promptFragment{text: left.text + separator + right.text, block: right.block}
 }
 
-// commandScopeNote renders the scope-approval suffix shown after a
-// command-scoped permission request.
-// for a command-scoped permission prompt. When multiple scope labels are
-// provided, each is rendered bold and separated by commas so the user
-// sees which commands will be broadened.
+// commandScopeNote tells the user which files a command runs, so that a
+// program shadowing another stands out, and what Always and Never cover.
 func commandScopeNote(req PermissionRequest) string {
-	if req.CommandScopeExact {
-		return "\n\nChoosing **Always** approves only this exact command. " +
-			"Any change to its arguments or working directory will prompt again."
+	var note strings.Builder
+	if len(req.Programs) > 0 {
+		parts := make([]string, len(req.Programs))
+		for i, p := range req.Programs {
+			parts[i] = programNote(p)
+		}
+		fmt.Fprintf(&note, "\n\nRuns %s.", strings.Join(parts, ", "))
 	}
-	labels := displayScopeLabels(req)
-	if len(labels) == 0 {
-		return ""
+	if req.CommandExactOnly {
+		note.WriteString("\n\nChoosing **Always** or **Never** covers only this exact command")
+		if req.CommandExactReason != "" {
+			fmt.Fprintf(&note, " because %s", req.CommandExactReason)
+		}
+		note.WriteString(". Any change to it will prompt again.")
+		return note.String()
 	}
-	parts := make([]string, len(labels))
-	for i, l := range labels {
-		parts[i] = fmt.Sprintf("**%s**", l)
+	note.WriteString("\n\nChoosing **Always** or **Never** decides for each of these " +
+		"programs with any arguments, as long as it runs the same file.")
+	return note.String()
+}
+
+func programNote(p ProgramSummary) string {
+	switch {
+	case p.Opaque:
+		return inlineCode(p.Name) + " (known only when it runs)"
+	case p.Builtin:
+		return inlineCode(p.Name) + " (shell builtin)"
+	case p.ResolvedPath == "":
+		return inlineCode(p.Name) + " (not found, so Rune asks every time)"
+	case p.Changed:
+		return "**" + inlineCode(p.ResolvedPath) + "** (changed since you approved it)"
+	default:
+		return inlineCode(p.ResolvedPath)
 	}
-	return fmt.Sprintf(
-		"\n\nChoosing **Always** approves %s for all future authorization requests, for any argument combination.",
-		strings.Join(parts, ", "),
-	)
+}
+
+func renewalPromptMessage(req RenewalRequest) string {
+	var msg strings.Builder
+	for _, c := range req.Changes {
+		scopes := make([]string, len(c.Scopes))
+		for i, s := range c.Scopes {
+			scopes[i] = inlineCode(s)
+		}
+		approved := "commands that run it"
+		if len(scopes) > 0 {
+			approved = strings.Join(scopes, ", ")
+		}
+		fmt.Fprintf(&msg, "**%s** has changed since you approved %s for %s.\n\n",
+			inlineCode(c.Path), approved, req.Requester)
+		fmt.Fprintf(&msg, "sha256 %s → %s, modified %s.\n\n",
+			inlineCode(fingerprintPreview(c.Old.SHA256)),
+			inlineCode(fingerprintPreview(c.New.SHA256)),
+			c.New.ModTime.Local().Format("2006-01-02 15:04"))
+	}
+	msg.WriteString("Renew authorization?")
+	return msg.String()
+}
+
+func fingerprintPreview(sha string) string {
+	if len(sha) <= fingerprintPreviewLength {
+		return sha
+	}
+	return sha[:fingerprintPreviewLength] + "…"
+}
+
+// inlineCode renders s as a markdown code span.
+func inlineCode(s string) string {
+	fence := strings.Repeat("`", maxConsecutiveBackticks(s)+1)
+	if strings.HasPrefix(s, "`") || strings.HasSuffix(s, "`") {
+		s = " " + s + " "
+	}
+	return fence + s + fence
 }
 
 func pluginPromptDecision(opt string) PermissionDecision {

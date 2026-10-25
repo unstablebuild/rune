@@ -17,6 +17,7 @@
 package sandbox
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -28,6 +29,8 @@ import (
 	"syscall"
 	"time"
 
+	blueauth "github.com/unstablebuild/blue/auth"
+	"github.com/unstablebuild/blue/auth/grpcauth"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/api/extensionapi"
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
@@ -35,18 +38,16 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
-	sdkhandler "github.com/unstablebuild/rune-go-sdk/handler"
-	"github.com/unstablebuild/rune-go-sdk/term"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"unstable.build/rune/cmd/xsandbox/internal/record"
-	"unstable.build/rune/internal/browser"
-	"unstable.build/rune/internal/browser/browsertest"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/extension"
 	"unstable.build/rune/internal/extension/extensionv2"
 	"unstable.build/rune/internal/ide/ideauthorizer"
-	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
 	"unstable.build/rune/internal/localstorage"
 	"unstable.build/rune/internal/workspace"
+	tworkspacerpc "unstable.build/rune/internal/workspace/workspacerpc"
 )
 
 // ensureLaunched builds the extension host and starts the extension
@@ -110,20 +111,11 @@ func (s *sandbox) launch() error {
 		}
 	})
 
-	prompt := autoPromptOpener{}
 	storage := storagestub.NewInMemoryService()
 	tick := func(fn func()) bool { fn(); return true }
-	trust := pkgtrust.NewStore()
-	authorizer, err := ideauthorizer.NewAuthorizer(
-		s.editor, prompt, storage, tick, s.browser, trust, ideauthorizer.Config{
-			AutoAuthorizeExtensions: true,
-			AutoAuthorizeCommands:   true,
-		})
-	if err != nil {
-		return fmt.Errorf("new authorizer: %w", err)
-	}
-
 	cwd := workspace.NewSchemeWorkspace(uri, scheme, tick)
+	authorizer := sandboxAuthorizer{}
+
 	res := s.browser.resources()
 	res = extension.MergeResourceMap(res, s.editor.resources(s.browser))
 	res = extension.MergeResourceMap(res,
@@ -154,7 +146,7 @@ func (s *sandbox) launch() error {
 	}
 	runner, err := base.WorkspaceExtensionsRunner(
 		uri, res, authorizer, nopTrustVerifier{}, s.dataDir, s.dataDir, s.browser,
-		scheme, s.exec, s.grantor, s.editor, prompt, storage, tick)
+		scheme, s.exec, s.grantor, s.editor, nil /* promptOpener */, storage, tick)
 	if err != nil {
 		return fmt.Errorf("new workspace extensions runner: %w", err)
 	}
@@ -335,26 +327,42 @@ func (g *recordingGrantor) observedMap() map[string]any {
 	}
 }
 
-// autoPromptOpener answers permission prompts by selecting "yes" (or
-// the first option) so the sandbox never blocks on interactive UI.
-type autoPromptOpener struct{}
+// sandboxAuthorizer lets the extension use every capability it declares
+// and run any command, without asking: the sandbox has no user to ask.
+// Like Rune, it rejects calls into capabilities the extension did not
+// declare, so a spec cannot pass on an extension Rune would refuse.
+type sandboxAuthorizer struct{}
 
-var _ ideauthorizer.PromptOpener = autoPromptOpener{}
+var (
+	_ extensionv2.ServerAuthorizer                 = sandboxAuthorizer{}
+	_ tworkspacerpc.CommandAuthorizer              = sandboxAuthorizer{}
+	_ blueauth.Authorizer[ideauthorizer.Extension] = sandboxAuthorizer{}
+)
 
-func (autoPromptOpener) Prompt(
-	_ string, options []string, _ []term.KeyComb,
-	promptHandler sdkhandler.PromptHandler,
-) browser.Window {
-	for i, opt := range options {
-		if opt == ideauthorizer.PromptOptionYes {
-			promptHandler.OnSelect(i, opt)
-			return browsertest.NopWindow()
-		}
+func (a sandboxAuthorizer) GRPCAuthServerOptions(
+	keys blueauth.Keys, creds credentials.TransportCredentials,
+) []grpc.ServerOption {
+	if creds == nil {
+		return grpcauth.GRPCServerWithInsecureOauth2(keys, a)
 	}
-	if len(options) > 0 {
-		promptHandler.OnSelect(0, options[0])
+	return grpcauth.GRPCServerWithOauth2(keys, a, creds)
+}
+
+func (sandboxAuthorizer) Authorize(
+	_ context.Context, claims blueauth.UserClaims[ideauthorizer.Extension], resource string,
+) error {
+	perm, ok := extensionapi.PermissionForResource(resource)
+	if !ok {
+		return fmt.Errorf("extraneous rpc resource %s: %w", resource, blueauth.ErrForbidden)
 	}
-	return browsertest.NopWindow()
+	if _, ok := claims.Extra.Permissions[perm]; !ok {
+		return blueauth.ErrForbidden
+	}
+	return nil
+}
+
+func (sandboxAuthorizer) AuthorizeCommand(context.Context, workspaceapi.Cmd) error {
+	return nil
 }
 
 // nopProgress discards REPL progress updates.

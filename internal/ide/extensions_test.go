@@ -747,7 +747,7 @@ type recordingExtensionsRunner struct{ runner *recordingRunner }
 
 func (r recordingExtensionsRunner) WorkspaceExtensionsRunner(
 	_ workspaceapi.URI, _ map[extensionapi.Permission]extension.ResourceRegistrar,
-	_ *ideauthorizer.Authorizer,
+	_ extensionv2.ServerAuthorizer,
 	_ extensionv2.TrustVerifier,
 	_, _ string, _ browser.Notifications, _, _ schemeapi.Executor,
 	_ extension.Grantor, _ text.Editor,

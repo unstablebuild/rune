@@ -28,12 +28,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
 	blueauth "github.com/unstablebuild/blue/auth"
 	"github.com/unstablebuild/blue/auth/grpcauth"
+	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/extensionapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
@@ -43,6 +43,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"unstable.build/rune/internal/browser"
+	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
 	"unstable.build/rune/internal/text"
 )
@@ -60,25 +61,70 @@ type Extension struct {
 // PermissionRequest describes a single permission requested by an extension or
 // ad-hoc plugin program.
 type PermissionRequest struct {
-	Path               string
-	Args               []string
-	LauncherPath       string
-	LauncherArgs       []string
-	ExtensionID        string
-	ExtensionName      string
-	DeveloperID        string
-	Permission         extensionapi.Permission
-	Resource           string
-	CommandPath        string
-	CommandArgs        []string
-	CommandDir         string
-	CommandScopeLabel  string
-	CommandScopeLabels []string
-	// CommandScopeExact reports that approving Always covers only this exact
-	// command path, args and dir, because the programs it runs couldn't be
-	// determined. The scope labels are empty when it is set.
-	CommandScopeExact bool
+	Path          string
+	Args          []string
+	LauncherPath  string
+	LauncherArgs  []string
+	ExtensionID   string
+	ExtensionName string
+	DeveloperID   string
+	Permission    extensionapi.Permission
+	Resource      string
+	CommandPath   string
+	CommandArgs   []string
+	CommandDir    string
+	// Programs are the programs the command runs, shells and wrappers
+	// before the programs they run.
+	Programs []ProgramSummary
+	// CommandExactOnly reports that Always and Never can only cover this
+	// exact command, for CommandExactReason.
+	CommandExactOnly   bool
+	CommandExactReason string
 }
+
+// ProgramSummary describes a program a command runs.
+type ProgramSummary struct {
+	Name string
+	// ResolvedPath is the file that runs, or "" when there is none: the
+	// program was not found, is a shell builtin or is Opaque.
+	ResolvedPath string
+	Builtin      bool
+	// Opaque reports that the program is not known until the command
+	// runs.
+	Opaque bool
+	// Changed reports that the file changed since the user approved a
+	// command that runs it.
+	Changed bool
+}
+
+// ExecutableChange is an executable whose contents changed since the
+// user approved commands that run it.
+type ExecutableChange struct {
+	Path string
+	// Scopes are the approved commands that run the executable.
+	Scopes   []string
+	Old, New ExecutableFingerprint
+}
+
+// RenewalRequest asks the user whether approvals of commands still hold
+// after executables they run changed.
+type RenewalRequest struct {
+	// Requester names who runs the command, such as "extension Agent".
+	Requester string
+	Changes   []ExecutableChange
+}
+
+// RenewalDecision is the user's answer to a RenewalRequest.
+type RenewalDecision string
+
+const (
+	// RenewalRenew approves the changed executables for good.
+	RenewalRenew RenewalDecision = "renew"
+	// RenewalOnce allows the command this time only.
+	RenewalOnce RenewalDecision = "once"
+	// RenewalDeny denies the command this time.
+	RenewalDeny RenewalDecision = "deny"
+)
 
 // PermissionDecision is the user's decision for an extension permission request.
 type PermissionDecision string
@@ -119,17 +165,24 @@ type Config struct {
 	// WorkspaceConfigs, when set, makes the authorizer command list and
 	// revoke the user's workspace config trust decisions too.
 	WorkspaceConfigs WorkspaceConfigTrust
+	// Notifications, when set, tells the user of the command approvals
+	// saved by older versions of Rune that were forgotten.
+	Notifications browserapi.Notifications
 }
 
 // NewAuthorizer returns an Authorizer that satisfies both the workspace
 // CommandAuthorizer interface and the blue auth authorizer used by the
-// extension runner for gRPC middleware.
+// extension runner for gRPC middleware. resolver finds the executables
+// commands run on the workspace host, which approvals are bound to.
+//
+// Command approvals saved by older versions of Rune, which covered every
+// program with the same name, are deleted.
 func NewAuthorizer(
 	editor text.Editor,
 	promptOpener PromptOpener, storage storageapi.Service,
 	scheduleNextTick func(func()) bool,
 	status browser.TabManager,
-	trust *pkgtrust.Store, config Config,
+	trust *pkgtrust.Store, resolver ExecutableResolver, config Config,
 ) (*Authorizer, error) {
 	if editor == nil {
 		return nil, errors.New("editor is required")
@@ -140,21 +193,58 @@ func NewAuthorizer(
 	if trust == nil {
 		return nil, errors.New("trust store is required")
 	}
+	if resolver == nil {
+		return nil, errors.New("executable resolver is required")
+	}
 	a := &Authorizer{
 		prompter: newPermissionPrompter(promptOpener, scheduleNextTick, status),
 		storage:  storage,
 		config:   config,
 		trust:    trust,
+		resolver: resolver,
 		once:     make(map[string]pluginPermissionOnceDecision),
 		pending:  make(map[string]*pendingPrompt),
 	}
 	if a.prompter != nil {
 		a.prompter.onWindow = config.OnPromptWindow
 	}
+	if err := a.forgetLegacyCommandDecisions(context.Background()); err != nil {
+		return nil, err
+	}
 	if err := registerAuthorizerREPLCommand(editor, a); err != nil {
 		return nil, fmt.Errorf("register authorizer repl command: %w", err)
 	}
 	return a, nil
+}
+
+// forgetLegacyCommandDecisions deletes the command decisions saved before
+// they were bound to executables, and tells the user.
+func (a *Authorizer) forgetLegacyCommandDecisions(ctx context.Context) error {
+	if a.storage == nil {
+		return nil
+	}
+	decisions, err := a.listPermissionDecisions(ctx)
+	if err != nil {
+		return err
+	}
+	var legacy []string
+	for _, stored := range decisions {
+		if stored.legacyCommand() {
+			legacy = append(legacy, stored.Key)
+		}
+	}
+	for _, key := range legacy {
+		if err := a.storage.Delete(ctx, key); err != nil {
+			return fmt.Errorf("delete legacy command decision: %w", err)
+		}
+	}
+	if len(legacy) > 0 && a.config.Notifications != nil {
+		_, _ = a.config.Notifications.Notify(browserapi.LevelWarn,
+			"Rune forgot %d command approvals saved by an older version: they "+
+				"covered more programs than shown. Rune asks again the next time "+
+				"an extension runs one of those commands.", len(legacy))
+	}
+	return nil
 }
 
 // Authorizer implements both workspacerpc.CommandAuthorizer and
@@ -166,6 +256,7 @@ type Authorizer struct {
 	storage  storageapi.Service
 	config   Config
 	trust    *pkgtrust.Store
+	resolver ExecutableResolver
 
 	onceMu sync.Mutex
 	once   map[string]pluginPermissionOnceDecision
@@ -243,11 +334,16 @@ func (a *Authorizer) authorizePlugin(
 	identity := pluginPermissionIdentityFromContext(ctx, ext)
 	key := pluginPermissionProgramStorageKey(identity.Path, perm)
 	onceKey := pluginPermissionOnceKey(identity, perm, nil)
-	return a.authorizePermission(ctx, ext, identity, []string{key}, onceKey, perm, resource,
-		nil, a.config.AutoAuthorizeExtensions)
+	return a.authorizePermission(ctx, ext, identity, key, onceKey, perm, resource,
+		a.config.AutoAuthorizeExtensions)
 }
 
 // AuthorizeCommand satisfies workspacerpc.CommandAuthorizer.
+//
+// A command runs without prompting when decisions the user saved cover
+// every program it runs, and every executable it runs is the file the
+// user approved. When an executable changed, the user is asked to renew
+// the approvals.
 func (a *Authorizer) AuthorizeCommand(
 	ctx context.Context, cmd workspaceapi.Cmd,
 ) error {
@@ -259,32 +355,131 @@ func (a *Authorizer) AuthorizeCommand(
 		Path: cmd.Path,
 		Args: append([]string(nil), cmd.Args...),
 		Dir:  cmd.Dir,
+		Env:  envOverrides(cmd.Env),
 	}
 	perm := extensionapi.PermissionExecute
 	resource := workspacerpc.Executor_StartCommand_FullMethodName
 	var identity pluginPermissionIdentity
-	var keys []string
-	var onceKey string
+	var prefix, onceKey string
 	if claims.Extra.Plugin {
 		identity = pluginPermissionIdentityFromContext(ctx, claims.Extra)
-		keys = pluginPermissionCommandStorageKeys(identity.Path, identity.Args, perm, command)
+		prefix = pluginPermissionStorageKey(identity.Path, identity.Args, perm)
 		onceKey = pluginPermissionOnceKey(identity, perm, &command)
 	} else {
 		if _, ok := claims.Extra.Permissions[perm]; !ok {
 			return blueauth.ErrForbidden
 		}
 		identity = extensionPermissionIdentity(claims.Extra)
-		keys = extensionPermissionCommandStorageKeys(claims.Extra, perm, command)
+		prefix = extensionPermissionStorageKey(claims.Extra, perm)
 		onceKey = stablePermissionOnceKey(identity, perm, &command)
+	}
+	c, err := a.checkCommand(ctx, prefix, command, cmd.Env)
+	if err != nil {
+		return err
+	}
+	if c.denied {
+		return blueauth.ErrForbidden
+	}
+	unknown := c.unknownExecutables()
+	changed := c.changedExecutables()
+	if c.covered && len(unknown) == 0 && len(changed) == 0 {
+		return nil
 	}
 	// Commands run silently only when the operator opted into
 	// auto-authorizing commands AND the extension is from a verified
 	// publisher; either alone still prompts. First-run onboarding stands
 	// in for the operator opt-in while it lasts (see Config.OnboardingActive).
-	autoAuthorize := (a.config.AutoAuthorizeCommands || a.onboardingActive()) &&
-		!claims.Extra.Plugin && a.verified(claims.Extra)
-	return a.authorizePermission(ctx, claims.Extra, identity, keys, onceKey, perm, resource,
-		&command, autoAuthorize)
+	if (a.config.AutoAuthorizeCommands || a.onboardingActive()) &&
+		!claims.Extra.Plugin && a.verified(claims.Extra) {
+		return nil
+	}
+	if done, err := a.onceDecided(onceKey); done {
+		return err
+	}
+	if a.prompter == nil {
+		return blueauth.ErrForbidden
+	}
+	req := permissionRequest(claims.Extra, identity, perm, resource)
+	req.CommandPath = command.Path
+	req.CommandArgs = append([]string(nil), command.Args...)
+	req.CommandDir = command.Dir
+	req.Programs = c.programSummaries()
+	req.CommandExactOnly = c.plan.Opaque
+	req.CommandExactReason = c.plan.Reason
+	run := func(ctx context.Context) (PermissionDecision, error) {
+		return a.approveCommand(ctx, c, req, identity, perm)
+	}
+	if c.covered && len(unknown) == 0 {
+		renewal := RenewalRequest{Requester: requesterName(req), Changes: c.executableChanges(changed)}
+		run = func(ctx context.Context) (PermissionDecision, error) {
+			return a.renewExecutables(ctx, c, changed, renewal)
+		}
+	}
+	decision, err := a.coalescedPrompt(ctx, onceKey, run)
+	if err != nil {
+		return err
+	}
+	return a.applyDecision(onceKey, identity, perm, &command, decision)
+}
+
+// approveCommand asks the user whether the command of c may run and saves
+// the decisions the user makes for good.
+func (a *Authorizer) approveCommand(
+	ctx context.Context, c *commandCheck, req PermissionRequest,
+	identity pluginPermissionIdentity, perm extensionapi.Permission,
+) (PermissionDecision, error) {
+	decision, err := a.prompter.PromptPermission(ctx, req)
+	if err != nil {
+		return decision, err
+	}
+	var stored string
+	var once PermissionDecision
+	switch decision {
+	case PermissionAllowAlways:
+		stored, once = pluginPermissionDecisionAllow, PermissionAllowOnce
+	case PermissionDenyAlways:
+		stored, once = pluginPermissionDecisionDeny, PermissionDenyOnce
+	default:
+		return decision, nil
+	}
+	selected := c.alwaysScopes(stored == pluginPermissionDecisionAllow)
+	if len(selected) == 0 {
+		return once, nil
+	}
+	if err := a.persistScopes(ctx, c, selected, identity, perm, stored); err != nil {
+		return PermissionDenyOnce, err
+	}
+	return decision, nil
+}
+
+// renewExecutables asks the user whether the approvals of the command of
+// c still hold after the executables changed changed.
+func (a *Authorizer) renewExecutables(
+	ctx context.Context, c *commandCheck, changed []int, req RenewalRequest,
+) (PermissionDecision, error) {
+	decision, err := a.prompter.PromptRenewal(ctx, req)
+	if err != nil {
+		return PermissionDenyOnce, err
+	}
+	switch decision {
+	case RenewalRenew:
+		if err := a.recordExecutables(ctx, c, changed); err != nil {
+			return PermissionDenyOnce, err
+		}
+		return PermissionAllowAlways, nil
+	case RenewalOnce:
+		return PermissionAllowOnce, nil
+	default:
+		return PermissionDenyOnce, nil
+	}
+}
+
+// requesterName names who a permission is requested for in prompts.
+func requesterName(req PermissionRequest) string {
+	if req.ExtensionName != "" {
+		return "extension " + req.ExtensionName
+	}
+	return "program " + req.Path
 }
 
 func (a *Authorizer) authorizeExtension(
@@ -293,8 +488,8 @@ func (a *Authorizer) authorizeExtension(
 	identity := extensionPermissionIdentity(ext)
 	key := extensionPermissionStorageKey(ext, perm)
 	onceKey := stablePermissionOnceKey(identity, perm, nil)
-	return a.authorizePermission(ctx, ext, identity, []string{key}, onceKey, perm, resource,
-		nil, a.config.AutoAuthorizeExtensions || a.verified(ext))
+	return a.authorizePermission(ctx, ext, identity, key, onceKey, perm, resource,
+		a.config.AutoAuthorizeExtensions || a.verified(ext))
 }
 
 func (a *Authorizer) verified(ext Extension) bool {
@@ -308,39 +503,72 @@ func (a *Authorizer) onboardingActive() bool {
 
 func (a *Authorizer) authorizePermission(
 	ctx context.Context, ext Extension, identity pluginPermissionIdentity,
-	keys []string, onceKey string, perm extensionapi.Permission, resource string,
-	command *pluginPermissionCommandDetail, autoAuthorize bool,
+	key string, onceKey string, perm extensionapi.Permission, resource string,
+	autoAuthorize bool,
 ) error {
-	missingKeys := keys
-	if a.storage != nil && len(keys) > 0 {
-		var err error
-		missingKeys, err = a.filterMissingStoredDecisions(ctx, keys)
-		if err != nil {
-			return err
+	stored, ok, err := a.storedDecision(ctx, key)
+	if err != nil {
+		return err
+	}
+	if ok {
+		if stored.Decision == pluginPermissionDecisionDeny {
+			return blueauth.ErrForbidden
 		}
-		if len(missingKeys) == 0 {
-			return nil
-		}
+		return nil
 	}
 
 	if autoAuthorize {
 		return nil
 	}
 
-	if decision, ok := a.getOnceDecision(onceKey, time.Now()); ok {
-		switch decision {
-		case pluginPermissionDecisionAllow:
-			return nil
-		case pluginPermissionDecisionDeny:
-			return blueauth.ErrForbidden
-		default:
-			return fmt.Errorf("unknown cached plugin permission decision %q", decision)
-		}
+	if done, err := a.onceDecided(onceKey); done {
+		return err
 	}
 
 	if a.prompter == nil {
 		return blueauth.ErrForbidden
 	}
+	req := permissionRequest(ext, identity, perm, resource)
+	decision, err := a.coalescedPrompt(ctx, onceKey,
+		func(ctx context.Context) (PermissionDecision, error) {
+			return a.prompter.PromptPermission(ctx, req)
+		})
+	if err != nil {
+		return err
+	}
+	switch decision {
+	case PermissionAllowAlways:
+		err = a.setStoredDecision(ctx, key, identity, perm, pluginPermissionDecisionAllow)
+	case PermissionDenyAlways:
+		err = a.setStoredDecision(ctx, key, identity, perm, pluginPermissionDecisionDeny)
+	}
+	if err != nil {
+		return err
+	}
+	return a.applyDecision(onceKey, identity, perm, nil, decision)
+}
+
+// onceDecided reports whether the user decided onceKey a moment ago, and
+// the error that decision calls for.
+func (a *Authorizer) onceDecided(onceKey string) (bool, error) {
+	decision, ok := a.getOnceDecision(onceKey, time.Now())
+	if !ok {
+		return false, nil
+	}
+	switch decision {
+	case pluginPermissionDecisionAllow:
+		return true, nil
+	case pluginPermissionDecisionDeny:
+		return true, blueauth.ErrForbidden
+	default:
+		return true, fmt.Errorf("unknown cached plugin permission decision %q", decision)
+	}
+}
+
+func permissionRequest(
+	ext Extension, identity pluginPermissionIdentity, perm extensionapi.Permission,
+	resource string,
+) PermissionRequest {
 	req := PermissionRequest{
 		Path:         identity.Path,
 		Args:         append([]string(nil), identity.Args...),
@@ -349,50 +577,31 @@ func (a *Authorizer) authorizePermission(
 		Permission:   perm,
 		Resource:     resource,
 	}
-	if command != nil {
-		req.CommandPath = command.Path
-		req.CommandArgs = append([]string(nil), command.Args...)
-		req.CommandDir = command.Dir
-		labels := pluginPermissionApprovalScopeLabels(*command)
-		req.CommandScopeLabels = labels
-		req.CommandScopeLabel = strings.Join(labels, ", ")
-		req.CommandScopeExact = len(labels) == 0
-	}
 	if !ext.Plugin {
 		req.ExtensionID = ext.ExtensionID
 		req.ExtensionName = ext.ExtensionName
 		req.DeveloperID = ext.DeveloperID
 	}
-	decision, err := a.coalescedPrompt(ctx, onceKey, req)
-	if err != nil {
-		return err
-	}
-	a.notifyDecisionChanged()
+	return req
+}
 
+// applyDecision remembers the user's decision for onceKey when it holds
+// only for a moment, and returns the error the decision calls for.
+func (a *Authorizer) applyDecision(
+	onceKey string, identity pluginPermissionIdentity, perm extensionapi.Permission,
+	command *pluginPermissionCommandDetail, decision PermissionDecision,
+) error {
+	a.notifyDecisionChanged()
 	switch decision {
 	case PermissionAllowOnce:
 		a.setOnceDecision(onceKey, identity, perm, command,
 			pluginPermissionDecisionAllow, time.Now())
 		return nil
 	case PermissionAllowAlways:
-		for _, k := range missingKeys {
-			if err := a.setStoredDecision(ctx, k, identity, perm, command,
-				pluginPermissionDecisionAllow); err != nil {
-				return err
-			}
-		}
 		return nil
 	case PermissionDenyOnce:
 		a.setOnceDecision(onceKey, identity, perm, command,
 			pluginPermissionDecisionDeny, time.Now())
-		return blueauth.ErrForbidden
-	case PermissionDenyAlways:
-		for _, k := range missingKeys {
-			if err := a.setStoredDecision(ctx, k, identity, perm, command,
-				pluginPermissionDecisionDeny); err != nil {
-				return err
-			}
-		}
 		return blueauth.ErrForbidden
 	default:
 		return blueauth.ErrForbidden
@@ -413,18 +622,20 @@ type pendingPrompt struct {
 }
 
 // coalescedPrompt ensures that concurrent callers with the same onceKey
-// share a single prompt. The first caller opens the prompt; subsequent
-// callers wait on the same pendingPrompt and observe the same decision.
-// When ctx is canceled, the caller returns early without affecting other
-// waiters or the in-flight prompt.
+// share a single prompt. The first caller runs prompt, which asks the user
+// and saves what they decide for good; subsequent callers wait on the
+// same pendingPrompt and observe the same decision. When ctx is canceled,
+// the caller returns early without affecting other waiters or the
+// in-flight prompt.
 func (a *Authorizer) coalescedPrompt(
-	ctx context.Context, onceKey string, req PermissionRequest,
+	ctx context.Context, onceKey string,
+	prompt func(context.Context) (PermissionDecision, error),
 ) (PermissionDecision, error) {
 	// onceKey is derived from identity + permission (+ command for
 	// Execute); callers with the same onceKey would otherwise open
 	// identical prompts that the browser dedup by message.
 	if onceKey == "" {
-		return a.prompter.PromptPermission(ctx, req)
+		return prompt(ctx)
 	}
 	a.pendingMu.Lock()
 	if existing, ok := a.pending[onceKey]; ok {
@@ -439,15 +650,15 @@ func (a *Authorizer) coalescedPrompt(
 	// goroutine with a background context, so no single caller's
 	// ctx.Done() can tear down the prompt for the others. Waiters each
 	// honor their own ctx in awaitPending below.
-	go func() {
-		decision, err := a.prompter.PromptPermission(context.Background(), req)
+	go debug.CapturePanicReport(func() {
+		decision, err := prompt(context.Background())
 		a.pendingMu.Lock()
 		pending.decision = decision
 		pending.err = err
 		delete(a.pending, onceKey)
 		a.pendingMu.Unlock()
 		close(pending.done)
-	}()
+	})
 
 	return a.awaitPending(ctx, pending)
 }
@@ -468,36 +679,6 @@ func (a *Authorizer) awaitPending(
 	case <-ctx.Done():
 		return PermissionDenyOnce, ctx.Err()
 	}
-}
-
-// filterMissingStoredDecisions returns the subset of keys that have no
-// persisted allow/deny decision. If any key has a stored deny, it returns
-// blueauth.ErrForbidden immediately. Returns nil when all keys are stored
-// as allow (meaning no prompt is required).
-func (a *Authorizer) filterMissingStoredDecisions(
-	ctx context.Context, keys []string,
-) ([]string, error) {
-	missing := make([]string, 0, len(keys))
-	for _, k := range keys {
-		var stored storedPermissionDecision
-		err := a.storage.Get(ctx, k, &stored)
-		if err == nil {
-			switch stored.Decision {
-			case pluginPermissionDecisionAllow:
-				continue
-			case pluginPermissionDecisionDeny:
-				return nil, blueauth.ErrForbidden
-			default:
-				return nil, fmt.Errorf(
-					"unknown stored plugin permission decision %q", stored.Decision)
-			}
-		}
-		if !errors.Is(err, storageapi.ErrNotFound) {
-			return nil, fmt.Errorf("get plugin permission decision: %w", err)
-		}
-		missing = append(missing, k)
-	}
-	return missing, nil
 }
 
 func (a *Authorizer) getOnceDecision(
@@ -565,7 +746,7 @@ func sameStringSlice(a, b []string) bool {
 
 func (a *Authorizer) setStoredDecision(
 	ctx context.Context, key string, identity pluginPermissionIdentity,
-	perm extensionapi.Permission, command *pluginPermissionCommandDetail, decision string,
+	perm extensionapi.Permission, decision string,
 ) error {
 	if a.storage == nil {
 		return nil
@@ -576,9 +757,6 @@ func (a *Authorizer) setStoredDecision(
 		Path:       identity.Path,
 		Args:       append([]string(nil), identity.Args...),
 		Permission: perm,
-	}
-	if command != nil {
-		stored.Command = copyPluginPermissionCommandDetail(*command)
 	}
 	err := a.storage.Set(ctx, key, stored)
 	if err != nil {

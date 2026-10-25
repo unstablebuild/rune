@@ -38,6 +38,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	blueauth "github.com/unstablebuild/blue/auth"
 	"github.com/unstablebuild/blue/document"
 	"github.com/unstablebuild/blue/iterator"
 	"github.com/unstablebuild/blue/release/docrelease"
@@ -67,6 +68,7 @@ import (
 	"unstable.build/rune/internal/component/shader"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/extension"
+	"unstable.build/rune/internal/extension/extensionv2"
 	thandler "unstable.build/rune/internal/handler"
 	"unstable.build/rune/internal/handler/handlertest"
 	handlermarkdown "unstable.build/rune/internal/handler/markdown"
@@ -9152,6 +9154,113 @@ func TestBuildExtensionsFailureClosesOwnedResources(t *testing.T) {
 	require.Positive(t, tracker.opens.Load())
 	require.Equal(t, tracker.opens.Load(), tracker.closes.Load(),
 		"failed builds must close every resource allocated before the error")
+}
+
+// authorizerCapturingRunner is an ExtensionsRunner that keeps the
+// authorizer each workspace's extensions are served with.
+type authorizerCapturingRunner struct {
+	mu          sync.Mutex
+	authorizers map[string]extensionv2.ServerAuthorizer
+}
+
+func (r *authorizerCapturingRunner) WorkspaceExtensionsRunner(
+	uri workspaceapi.URI, _ map[extensionapi.Permission]extension.ResourceRegistrar,
+	authorizer extensionv2.ServerAuthorizer, _ extensionv2.TrustVerifier,
+	_, _ string, _ browser.Notifications, _, _ schemeapi.Executor,
+	_ extension.Grantor, _ text.Editor, _ ideauthorizer.PromptOpener,
+	_ storageapi.Service, _ func(func()) bool,
+) (extension.Runner, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.authorizers[uri.String()] = authorizer
+	return fnRunner{fn: func(string, string, config.Config) error { return nil }}, nil
+}
+
+func (r *authorizerCapturingRunner) authorizer(uri workspaceapi.URI) extensionv2.ServerAuthorizer {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.authorizers[uri.String()]
+}
+
+func TestBuildExtensionsCommandAuthorizerBindsAlwaysToTheFileItRuns(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bin")
+	require.NoError(t, os.Mkdir(bin, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "tool"), []byte("#!/bin/sh\n"), 0o755))
+	t.Setenv("PATH", bin+string(filepath.ListSeparator)+os.Getenv("PATH"))
+
+	cfg := defaultConfigWithWrap(false)
+	mu, sched, drain := buildTestSchedulerForCfg(t, &cfg)
+	manager := workspace.NewManager(config.NopConfig(), sched)
+	require.NoError(t, manager.RegisterScheme(workspace.MemoryScheme,
+		workspace.NewMemoryScheme))
+	require.NoError(t, manager.RegisterScheme(workspace.FileScheme,
+		workspace.NewFileScheme))
+	uri, err := workspaceapi.ParseURI("file://" + dir)
+	require.NoError(t, err)
+	runner := &authorizerCapturingRunner{authorizers: map[string]extensionv2.ServerAuthorizer{}}
+	m := newTestWorkspaceManagerHandlerWithManagerMu(t, manager, mu, drain,
+		&uri, cfg, runner, nil, t.TempDir(), nil, nopShutdownShaderConfig())
+	t.Cleanup(func() { _ = m.Close() })
+	m.quiesce()
+
+	authorizer, ok := runner.authorizer(uri).(*ideauthorizer.Authorizer)
+	require.True(t, ok, "the workspace's extensions are served with the command authorizer")
+	ctx := blueauth.ContextWithClaims(context.Background(),
+		blueauth.UserClaims[ideauthorizer.Extension]{Extra: ideauthorizer.Extension{
+			Metadata: extensionapi.Metadata{
+				DeveloperID: "dev-id", ExtensionID: "test-extension",
+				ExtensionName: "Test Extension",
+				Permissions:   extensionapi.NewPermissions(extensionapi.PermissionExecute),
+			},
+		}})
+	authorize := func(path string, args ...string) <-chan error {
+		done := make(chan error, 1)
+		go debug.CapturePanicReport(func() {
+			done <- authorizer.AuthorizeCommand(ctx, workspaceapi.Cmd{
+				Path: path, Args: args, Dir: dir,
+			})
+		})
+		return done
+	}
+	const width, height = 120, 40
+	h := newSafeHandler(m)
+	h.Resize(width, height)
+	screen := func() string { return handlertest.DrawHandler(h, width, height) }
+	waitFor := func(text string) {
+		t.Helper()
+		require.EventuallyWithT(t, func(c *assert.CollectT) {
+			m.quiesce()
+			assert.Contains(c, screen(), text)
+		}, 5*time.Second, 10*time.Millisecond)
+	}
+	await := func(done <-chan error) error {
+		t.Helper()
+		var err error
+		require.EventuallyWithT(t, func(c *assert.CollectT) {
+			m.quiesce()
+			select {
+			case err = <-done:
+			default:
+				assert.Fail(c, "authorization is pending")
+			}
+		}, 5*time.Second, 10*time.Millisecond)
+		return err
+	}
+
+	done := authorize("tool", "sub", "arg")
+	waitFor("decides for each of these programs")
+	h.Handle(term.Event{Type: term.EventKey, Ch: 'A'})
+	require.NoError(t, await(done))
+
+	require.NoError(t, await(authorize("tool", "other")),
+		"Always covers the program with any arguments")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tool"), []byte("#!/bin/sh\n"), 0o755))
+	done = authorize("./tool", "sub", "arg")
+	waitFor("./tool")
+	h.Handle(term.Event{Type: term.EventKey, Ch: 'N'})
+	require.ErrorIs(t, await(done), blueauth.ErrForbidden,
+		"another file with the same name is another program")
 }
 
 func TestWorkspaceReadyCommand(t *testing.T) {

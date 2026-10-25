@@ -2389,13 +2389,14 @@ func (h *workspaceManagerHandler) buildExtensions(
 	}
 	cmdAuthorizer, err := ideauthorizer.NewAuthorizer(
 		ed, promptOpener, promptStorage, cfg.scheduleNextTick, ex.tm,
-		h.trust, ideauthorizer.Config{
+		h.trust, newCommandResolver(cwd, uri, uri.Path(), installDir), ideauthorizer.Config{
 			AutoAuthorizeExtensions:        cfg.authorizerAutoAuthorizeExtensions(),
 			AutoAuthorizeCommands:          cfg.authorizerAutoAuthorizeCommands(),
 			AutoAuthorizeVerifiedPublisher: cfg.authorizerAutoAuthorizeVerified(),
 			OnboardingActive:               h.onboardingActive,
 			OnPromptWindow:                 ex.setStatusWindow,
 			WorkspaceConfigs:               h.workspaceTrust,
+			Notifications:                  notifications,
 		})
 	if err != nil {
 		return nil, nil, nil, nil, nil, fmt.Errorf("new command authorizer: %w", err)

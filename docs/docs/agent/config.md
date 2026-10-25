@@ -57,6 +57,11 @@ authorizer:
 other extensions and plugins too, so only enable it if you trust the code
 installed in Rune. Existing saved denials still apply.
 
+Without it, choosing **Always** in a command prompt approves each program the
+command runs, such as `git *`. Approvals are bound to the files the commands
+run, so Rune asks you to renew them when one of those files changes. See
+[Command approvals](../develop/extensions.md#command-approvals).
+
 Rune separately grants non-command extension and plugin permissions
 automatically by default. Set `authorizer.auto_authorize_extensions` to `false`
 if you want Rune to prompt for those permissions too.

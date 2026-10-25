@@ -139,12 +139,19 @@ type TrustVerifier interface {
 	VerifyExtensionEntrypoint(path string) (fingerprint string, ok bool)
 }
 
+// ServerAuthorizer authenticates and authorizes the RPCs extensions make
+// to the workspace server. creds is nil when the transport is secured
+// some other way.
+type ServerAuthorizer interface {
+	GRPCAuthServerOptions(keys auth.Keys, creds credentials.TransportCredentials) []grpc.ServerOption
+}
+
 // WorkspaceExtensionsRunner creates an extension runner for a workspace. It
 // starts a gRPC server that hosts the extension resources and returns a runner
 // that can launch extensions and execute commands in the workspace.
 func (r *Runner) WorkspaceExtensionsRunner(
 	uri workspaceapi.URI, res map[extensionapi.Permission]extension.ResourceRegistrar,
-	authorizer *ideauthorizer.Authorizer,
+	authorizer ServerAuthorizer,
 	trustVerifier TrustVerifier,
 	dataDir, installDir string, notifications browser.Notifications,
 	executor, extExecutor schemeapi.Executor,

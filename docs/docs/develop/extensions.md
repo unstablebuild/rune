@@ -107,17 +107,48 @@ remembers your answer. Each prompt offers four choices:
 - **Deny once**.
 - **Deny always**.
 
-Command execution is checked more closely than a one-time grant: Rune can
-prompt based on what is actually being run, not just on the fact that the
+Command execution is checked more closely than a one-time grant: Rune
+prompts based on what is actually being run, not just on the fact that the
 extension may run commands at all.
+
+#### Command approvals
+
+A command prompt lists the files the command runs, as Rune resolved them on
+the workspace host: the shell, any wrappers such as `env`, `timeout` or
+`sudo`, and every program in its script, for example
+`/bin/bash`, `/usr/bin/git`, `/usr/bin/make`. A program you did not expect,
+such as `/home/you/project/git`, stands out there.
+
+Choosing **Always** or **Never** decides for each program the command runs,
+with any arguments: `git *` and `make *` for `git commit -m fix && make test`.
+**Never** does not deny the programs you already approved. Commands Rune
+cannot follow, such as a script that runs `$CMD`, uses `eval` or sets
+`LD_PRELOAD`, can only be approved exactly.
+
+An approval is bound to the files it runs, not to program names: approving
+`git *` lets `/usr/bin/git` run, not a `git` elsewhere in the `PATH` or in the
+workspace. Rune records each file's SHA-256, and when a file changes, for
+example after an upgrade or a rebuild, the next command that runs it asks you
+to renew the approvals of that file: **Renew** approves the new file for every
+approval that runs it, **Once** lets the command run this time, and **No**
+denies it. A script is fingerprinted, not the interpreter its `#!` line names,
+and runners like `uv run` or `npx` only bind the runner, not the program they
+install. A program Rune cannot find when it checks the command, such as one
+an earlier step of the script builds or one relative to a directory the
+script changes to, has no file to bind to, so Rune asks every time it runs.
+
+Command approvals saved by Rune versions before this check covered every
+program with the same name. Rune forgets them and tells you so, and asks
+again the next time an extension runs one of those commands.
 
 You can review and undo the answers Rune has remembered from the
 [console](../learn/console.md) with the `authorizer` command:
 
 | Command | What it does |
 | --- | --- |
-| `authorizer list` | List the permission decisions Rune has persisted. |
-| `authorizer revoke <decision>` | Forget a decision, so you are prompted again next time. |
+| `authorizer list` | List the permission decisions Rune has persisted, with the commands each covers and the files they run. |
+| `authorizer revoke <decision>` | Forget a decision, by ID or by the commands it covers such as `git commit *`, so you are prompted again next time. |
+| `authorizer executables` | List the files approved commands run, with the SHA-256 they were approved at. |
 
 Revoking a decision is the clean way to reset an extension you granted too
 much, or to re-test a permission prompt.
