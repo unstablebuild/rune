@@ -69,8 +69,7 @@ func TestLoadRemoteConfigAppliesGUIEnv(t *testing.T) {
 	setFlagForTest(t, flagConfigPath, configPath)
 	setFlagForTest(t, flagDataPath, dataDir)
 
-	cwd, uri := newTestFileScheme(t, t.TempDir())
-	loadRemoteConfigAndApplyEnv(hostenv.New(dataDir, ""), cwd, uri)
+	applyUserConfigEnv(hostenv.New(dataDir, ""))
 
 	assert.Equal(t, envVal, os.Getenv(envKey),
 		"gui.env from the remote config must be applied to the process env")
@@ -78,33 +77,6 @@ func TestLoadRemoteConfigAppliesGUIEnv(t *testing.T) {
 	// ~/.rune/bin must be on PATH so package executables resolve.
 	assert.Contains(t, os.Getenv("PATH"), filepath.Join(dataDir, "bin"),
 		"~/.rune/bin must be prepended to PATH")
-}
-
-func TestWorkspaceOverlayWinsOverHomeConfig(t *testing.T) {
-	const envKey = "RUNE_TEST_OVERLAY_VAR"
-	require.NoError(t, os.Unsetenv(envKey))
-	t.Cleanup(func() { _ = os.Unsetenv(envKey) })
-	t.Setenv("PATH", os.Getenv("PATH"))
-	t.Setenv("RUNE_DATADIR", os.Getenv("RUNE_DATADIR"))
-
-	dataDir := t.TempDir()
-	configPath := filepath.Join(dataDir, "config.yaml")
-	require.NoError(t, os.WriteFile(configPath,
-		[]byte("editor:\n  mode: modal\ngui:\n  env:\n    "+envKey+": home\n"), 0o644))
-
-	setFlagForTest(t, flagConfigPath, configPath)
-	setFlagForTest(t, flagDataPath, dataDir)
-
-	wsRoot := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(wsRoot, ".rune"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(wsRoot, workspaceConfigFilename),
-		[]byte("gui:\n  env:\n    "+envKey+": workspace\n"), 0o644))
-
-	cwd, uri := newTestFileScheme(t, wsRoot)
-	loadRemoteConfigAndApplyEnv(hostenv.New(dataDir, ""), cwd, uri)
-
-	assert.Equal(t, "workspace", os.Getenv(envKey),
-		"workspace-root .rune/config.yaml must override the home config")
 }
 
 func TestResolveRemoteEditorMode(t *testing.T) {

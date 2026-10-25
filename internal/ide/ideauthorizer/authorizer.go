@@ -116,6 +116,9 @@ type Config struct {
 	// window showing each permission prompt and of the uri its blocked
 	// status is reported under, so the status can be traced back to it.
 	OnPromptWindow func(uri workspaceapi.URI, win browser.Window)
+	// WorkspaceConfigs, when set, makes the authorizer command list and
+	// revoke the user's workspace config trust decisions too.
+	WorkspaceConfigs WorkspaceConfigTrust
 }
 
 // NewAuthorizer returns an Authorizer that satisfies both the workspace

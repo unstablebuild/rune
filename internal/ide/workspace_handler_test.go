@@ -53,6 +53,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/clipboard"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/handler"
+	"github.com/unstablebuild/rune-go-sdk/handler/repl"
 	sdkiterator "github.com/unstablebuild/rune-go-sdk/iterator"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
@@ -8650,6 +8651,134 @@ func TestPendingWorkspaceScheduleRejectTearsDown(t *testing.T) {
 	created := tracker.snapshot()
 	require.Len(t, created, 1)
 	require.Equal(t, int32(1), created[0].closeCalls.Load())
+}
+
+func TestWorkspaceConfigRequiresTrust(t *testing.T) {
+	const wsConfig = "authorizer:\n  auto_authorize_commands: true\neditor:\n  tabspaces: 2\n"
+	tests := []struct {
+		name        string
+		answer      int
+		promptErr   error
+		wantApplied bool
+	}{
+		{name: "ignore", answer: workspaceTrustIgnore},
+		{name: "dismiss", answer: -1, promptErr: context.Canceled},
+		{name: "trust once", answer: workspaceTrustOnce, wantApplied: true},
+		{name: "trust", answer: workspaceTrustPersist, wantApplied: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newTestWorkspaceManagerHandlerWithDir(t, defaultCfg(), "", nopShutdownShaderConfig())
+			t.Cleanup(func() { _ = m.Close() })
+			m.workspaceConfigFilename = ".rune/config.yaml"
+			var prompts []string
+			m.workspaceTrust.prompt = func(_ context.Context, message string, _ []string) (int, error) {
+				prompts = append(prompts, message)
+				return tt.answer, tt.promptErr
+			}
+			uri, err := workspaceapi.ParseURI("memory://" + t.TempDir())
+			require.NoError(t, err)
+
+			for build := range 2 {
+				cfg := buildWorkspaceWithConfig(t, m, uri, wsConfig)
+				assert.Equal(t, tt.wantApplied, cfg.authorizerAutoAuthorizeCommands(), "build %d", build)
+				assert.Equal(t, tt.wantApplied, cfg.editorTabspaces() == 2, "build %d", build)
+			}
+			require.Len(t, prompts, 1, "one answer holds for the session")
+			assert.Contains(t, prompts[0], wsConfig)
+		})
+	}
+
+	t.Run("the user's own config is not offered for trust", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, ".rune"), 0o755))
+		configPath := filepath.Join(dir, ".rune", "config.yaml")
+		require.NoError(t, os.WriteFile(configPath, []byte(wsConfig), 0o644))
+		m := newTestWorkspaceManagerHandlerWithDir(t, defaultCfg(), "", nopShutdownShaderConfig())
+		t.Cleanup(func() { _ = m.Close() })
+		m.workspaceConfigFilename = ".rune/config.yaml"
+		m.configPath = configPath
+		m.workspaceTrust.prompt = func(context.Context, string, []string) (int, error) {
+			t.Error("the user's own config must not be offered for trust")
+			return workspaceTrustIgnore, nil
+		}
+		uri, err := workspaceapi.CurrentUserHostURI(dir)
+		require.NoError(t, err)
+
+		cfg := buildWorkspaceWithConfig(t, m, uri, "")
+		assert.True(t, cfg.authorizerAutoAuthorizeCommands())
+		assert.Equal(t, 2, cfg.editorTabspaces())
+	})
+
+	t.Run("the authorizer command revokes trust", func(t *testing.T) {
+		m := newTestWorkspaceManagerHandlerWithDir(t, defaultCfg(), "", nopShutdownShaderConfig())
+		t.Cleanup(func() { _ = m.Close() })
+		m.workspaceConfigFilename = ".rune/config.yaml"
+		answers := []int{workspaceTrustPersist, workspaceTrustIgnore}
+		m.workspaceTrust.prompt = func(context.Context, string, []string) (int, error) {
+			require.NotEmpty(t, answers, "unexpected workspace trust prompt")
+			answer := answers[0]
+			answers = answers[1:]
+			return answer, nil
+		}
+		uri, err := workspaceapi.ParseURI("memory:///repo")
+		require.NoError(t, err)
+		require.True(t, buildWorkspaceWithConfig(t, m, uri, wsConfig).authorizerAutoAuthorizeCommands())
+
+		m.mu.Lock()
+		authorizer, ok := m.focusEx().comp.REPLCommand("authorizer")
+		m.mu.Unlock()
+		require.True(t, ok)
+		run := func(args ...string) string {
+			t.Helper()
+			it, err := authorizer.HandleCommand(context.Background(),
+				repl.Command{Name: "authorizer", Args: args}, repl.NopProgressWriter())
+			require.NoError(t, err)
+			return renderResponsives(t, it)
+		}
+		decision := fmt.Sprintf("persisted trust %s sha256:%s",
+			uri.String(), workspaceConfigFingerprint([]byte(wsConfig))[:8])
+		assert.Contains(t, run("list"), decision)
+
+		assert.Contains(t, run(append([]string{"revoke"}, strings.Fields(decision)...)...), "Revoked")
+		assert.Contains(t, run("list"), "No workspace config decisions.")
+		assert.False(t, buildWorkspaceWithConfig(t, m, uri, wsConfig).authorizerAutoAuthorizeCommands(),
+			"a revoked workspace asks again")
+		assert.Empty(t, answers)
+	})
+}
+
+// buildWorkspaceWithConfig builds uri as a workspace open runs it, with
+// contents as its workspace config unless contents is empty, and returns
+// the config the workspace was built with.
+func buildWorkspaceWithConfig(
+	t *testing.T, m *testWorkspaceManagerHandler, uri workspaceapi.URI, contents string,
+) ideConfig {
+	t.Helper()
+	m.mu.Lock()
+	cwd, err := m.createWorkspaceScheme(uri)
+	m.mu.Unlock()
+	require.NoError(t, err)
+	if contents != "" {
+		require.NoError(t, cwd.MkdirAll(cwd.Join(cwd.Root(), ".rune"), 0o755))
+		f, err := cwd.OpenFile(cwd.Join(cwd.Root(), m.workspaceConfigFilename),
+			os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+		require.NoError(t, err)
+		_, err = f.Write([]byte(contents))
+		require.NoError(t, err)
+		require.NoError(t, f.Close())
+	}
+	built, err := m.buildWorkspaceAsync(context.Background(), uri, cwd,
+		&pendingWorkspace{uri: uri, cancelCtx: func() {}})
+	require.NoError(t, err)
+	m.discardBuiltWorkspace(built)
+	m.mu.Lock()
+	detached, released := m.workspace.ReleaseWorkspace(uri)
+	m.mu.Unlock()
+	if released {
+		require.NoError(t, detached.Close())
+	}
+	return built.cfg
 }
 
 // blockingPtyScheme wraps a scheme so NewPty wedges until the scheme

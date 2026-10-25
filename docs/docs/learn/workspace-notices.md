@@ -91,7 +91,7 @@ workspace:
 
 ## Per-workspace overrides
 
-Notices are workspace-scoped, so the most useful place to configure them is a workspace-local config file rather than your user-level config. That way the notice ships with the project and turns on for everyone who opens it, instead of having to be re-pasted into each contributor's personal config.
+Notices are workspace-scoped, so the most useful place to configure them is a workspace-local config file rather than your user-level config. That way the notice ships with the project and turns on for everyone who opens it and [trusts its config](../config.md#where-the-config-lives), instead of having to be re-pasted into each contributor's personal config.
 
 ## A few patterns
 

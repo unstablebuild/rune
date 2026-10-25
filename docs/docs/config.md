@@ -16,6 +16,25 @@ create it by hand: the first time you open Rune, the bootstrap offers
 A workspace can also carry its own `.rune/config.yaml` at the repository
 root, which is layered on top of your personal config for that project.
 
+A workspace config can run programs on your machine, through extensions,
+language servers, aliases or the terminal shell, so it only applies once you
+trust it. The first time you open a workspace that has one, Rune shows you the
+file and asks:
+
+- **trust** applies it now and every time you open this workspace, until the
+  file changes.
+- **trust once** applies it until you quit Rune.
+- **ignore** opens the workspace with only your personal config until you quit
+  Rune. Closing the prompt does the same.
+
+Rune asks again whenever the file changes, whether you edited it yourself or
+pulled a change. A workspace config larger than 64 KiB is never applied.
+
+To change your mind, find the decision with `authorizer list` in the
+[console](./learn/console.md#reviewing-permissions-and-trust-with-authorizer),
+revoke it with `authorizer revoke <decision>`, and run `:workspacereload` in
+that workspace to be asked again.
+
 ## YAML or Starlark?
 
 The two formats produce the same configuration; they differ in how you write
@@ -60,8 +79,9 @@ nothing happens until you reload. There are two levels of reload.
 buffers, cursor positions, window layout and the extension tabs shown in it,
 such as agent chats, are restored, but everything the workspace owns is
 rebuilt from a fresh read of your config file and the workspace's
-`.rune/config.yaml`. This is the fastest way to try out a change
-and covers most of the configuration surface:
+`.rune/config.yaml`, which asks for your trust again if it changed. This is
+the fastest way to try out a change and covers most of the configuration
+surface:
 
 - `editor.*`: mode, auto-save, tabspaces, comments, syntax size limits
 - `command.*`: prompt key, aliases, key bindings, history key, overlay
@@ -464,7 +484,9 @@ config["animations"]["screensaver"]["time_shader"] = "ping_pong"
   value may reference other variables, such as `$HOME`, and `$RUNE_DATADIR`
   names the Rune data directory of the machine that applies it. Each machine
   applies the config stored on it, so in a remote workspace the variables come
-  from `~/.rune/config.yaml` on the remote machine.
+  from `~/.rune/config.yaml` on the remote machine. The remote machine never
+  applies the `gui.env` of a project's `.rune/config.yaml`, because it can't
+  ask you to trust that file.
 
   `PATH` extends the existing `PATH` instead of replacing it: the directories
   listed before `$PATH` go in front of it and the ones after it go at the end.

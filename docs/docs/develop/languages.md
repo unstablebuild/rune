@@ -64,8 +64,9 @@ not configure the Debugger Manager or supply data to the Indexer.
 
 The installed language package also contributes configuration defaults, including
 the `debugger.<langid>` configuration used by Rune's Debugger Manager. Rune merges
-those defaults with the user's `.rune/config.yaml`; the extension receives the
-resulting configuration through its workspace session.
+those defaults with the user's config and, once the user trusts it, the
+workspace's `.rune/config.yaml`; the extension receives the resulting
+configuration through its workspace session.
 
 Adding a language requires syntax support inside Rune as well as an extension.
 There are two layers to that syntax support:

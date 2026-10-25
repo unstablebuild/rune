@@ -247,6 +247,7 @@ func (b *bootstrapHandler) buildConfiguredIDE(
 		ide.WithShellRCDir(b.shellRCDir),
 		ide.WithHostDataDir(b.dataDir),
 		ide.WithScheme(workspace.DocsScheme, newDocsSchemeFunc(b.configPath)),
+		ide.WithTrustedWorkspaceConfig(docsConfigYAML),
 		ide.WithTabsClickCallback(b.handleTabsClick),
 		ide.WithPackageConfigMergeHook(b.packageConfigMergeHook),
 		ide.WithDispatchOnPreview(cmdSetTheme,

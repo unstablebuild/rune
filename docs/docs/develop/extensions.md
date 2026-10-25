@@ -117,7 +117,7 @@ You can review and undo the answers Rune has remembered from the
 | Command | What it does |
 | --- | --- |
 | `authorizer list` | List the permission decisions Rune has persisted. |
-| `authorizer revoke <permission>` | Forget a decision, so you are prompted again next time. |
+| `authorizer revoke <decision>` | Forget a decision, so you are prompted again next time. |
 
 Revoking a decision is the clean way to reset an extension you granted too
 much, or to re-test a permission prompt.

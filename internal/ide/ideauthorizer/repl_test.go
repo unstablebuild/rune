@@ -28,6 +28,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
+	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/handler/repl"
 	sdkiterator "github.com/unstablebuild/rune-go-sdk/iterator"
@@ -370,6 +371,203 @@ func TestAuthorizerListAndRevokeREPLDistinguishCommandScopedDecisions(t *testing
 	require.NoError(t, storage.Get(context.Background(), rmKeys[0], &stored),
 		"revoking by ID must leave the rm decision intact")
 	assert.Equal(t, pluginPermissionDecisionAllow, stored.Decision)
+}
+
+type fakeWorkspaceConfigTrust struct {
+	decisions []WorkspaceConfigDecision
+	revoked   []WorkspaceConfigDecision
+}
+
+func (f *fakeWorkspaceConfigTrust) WorkspaceConfigDecisions(
+	context.Context,
+) ([]WorkspaceConfigDecision, error) {
+	return f.decisions, nil
+}
+
+func (f *fakeWorkspaceConfigTrust) RevokeWorkspaceConfigDecision(
+	_ context.Context, d WorkspaceConfigDecision,
+) error {
+	f.revoked = append(f.revoked, d)
+	return nil
+}
+
+func newWorkspaceConfigREPLHandler(
+	t *testing.T, decisions ...WorkspaceConfigDecision,
+) (authorizerREPLHandler, *fakeWorkspaceConfigTrust) {
+	t.Helper()
+	trust := &fakeWorkspaceConfigTrust{decisions: decisions}
+	authorizer := newTestAuthorizerCore(nil, storagestub.NewInMemoryService())
+	authorizer.config.WorkspaceConfigs = trust
+	return authorizerREPLHandler{authorizer: authorizer}, trust
+}
+
+func testWorkspaceConfigDecision(
+	t *testing.T, workspace, fingerprint string, trusted, persisted bool,
+) WorkspaceConfigDecision {
+	t.Helper()
+	uri, err := workspaceapi.ParseURI(workspace)
+	require.NoError(t, err)
+	return WorkspaceConfigDecision{
+		Workspace:   uri,
+		Fingerprint: fingerprint,
+		Trusted:     trusted,
+		Persisted:   persisted,
+	}
+}
+
+func runAuthorizerREPL(
+	t *testing.T, handler authorizerREPLHandler, args ...string,
+) ([]string, error) {
+	t.Helper()
+	it, err := handler.HandleCommand(context.Background(), repl.Command{
+		Name: authorizerREPLCommand,
+		Args: args,
+	}, repl.NopProgressWriter())
+	if err != nil {
+		return nil, err
+	}
+	items, err := sdkiterator.ToSlice(context.Background(), it)
+	require.NoError(t, err)
+	return responsiveStrings(t, items), nil
+}
+
+func TestAuthorizerListREPLListsWorkspaceConfigDecisions(t *testing.T) {
+	t.Parallel()
+
+	const fingerprint = "0123456789abcdef"
+	tests := []struct {
+		name      string
+		decisions []WorkspaceConfigDecision
+		want      []string
+	}{
+		{
+			name: "none",
+			want: []string{"No extension permission decisions.", "No workspace config decisions."},
+		},
+		{
+			name: "trusted and ignored",
+			decisions: []WorkspaceConfigDecision{
+				testWorkspaceConfigDecision(t, "file:///home/u/repo", fingerprint, true, true),
+				testWorkspaceConfigDecision(t, "file:///home/u/other", fingerprint, false, false),
+			},
+			want: []string{
+				"No extension permission decisions.",
+				"Workspace config decisions:",
+				"persisted trust file:///home/u/repo sha256:01234567",
+				"transient ignore file:///home/u/other sha256:01234567",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler, _ := newWorkspaceConfigREPLHandler(t, tt.decisions...)
+			out, err := runAuthorizerREPL(t, handler, authorizerREPLCommandList)
+			require.NoError(t, err)
+			require.Len(t, out, len(tt.want))
+			for i, want := range tt.want {
+				assert.Contains(t, out[i], want)
+			}
+			for i, d := range tt.decisions {
+				assert.Contains(t, out[2+i], workspaceConfigDecisionID(d))
+			}
+		})
+	}
+}
+
+func TestAuthorizerWorkspaceConfigDecisionIDs(t *testing.T) {
+	t.Parallel()
+
+	const fingerprint = "0123456789abcdef"
+	decisions := []WorkspaceConfigDecision{
+		testWorkspaceConfigDecision(t, "file:///a/repo", fingerprint, true, true),
+		testWorkspaceConfigDecision(t, "file:///b/repo", fingerprint, true, true),
+		testWorkspaceConfigDecision(t, "file:///a/repo", "fedcba9876543210", true, false),
+		testWorkspaceConfigDecision(t, "file:///a/repo", fingerprint, false, false),
+	}
+	seen := make(map[string]bool)
+	for _, d := range decisions {
+		id := workspaceConfigDecisionID(d)
+		assert.NotContains(t, id, " ")
+		assert.Contains(t, id, ":workspace-config:repo:")
+		assert.False(t, seen[id], "decision IDs must be unique: %s", id)
+		seen[id] = true
+	}
+}
+
+func TestAuthorizerRevokeREPLRevokesWorkspaceConfigDecision(t *testing.T) {
+	t.Parallel()
+
+	trusted := testWorkspaceConfigDecision(t, "file:///home/u/repo", "0123456789abcdef", true, true)
+	ignored := testWorkspaceConfigDecision(t, "file:///home/u/other", "fedcba9876543210", false, false)
+	tests := []struct {
+		name        string
+		selected    string
+		wantRevoked []WorkspaceConfigDecision
+		wantErr     bool
+	}{
+		{
+			name:        "persisted trust by ID",
+			selected:    workspaceConfigDecisionID(trusted),
+			wantRevoked: []WorkspaceConfigDecision{trusted},
+		},
+		{
+			name:        "transient ignore by display",
+			selected:    workspaceConfigDecisionDisplay(ignored),
+			wantRevoked: []WorkspaceConfigDecision{ignored},
+		},
+		{
+			name:     "unknown",
+			selected: "persisted:trust:workspace-config:repo:00000000",
+			wantErr:  true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler, fake := newWorkspaceConfigREPLHandler(t, trusted, ignored)
+			out, err := runAuthorizerREPL(t, handler,
+				append([]string{authorizerREPLCommandRevoke}, strings.Fields(tt.selected)...)...)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Empty(t, fake.revoked)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantRevoked, fake.revoked)
+			require.Len(t, out, 1)
+			assert.Contains(t, out[0], "Revoked")
+			assert.Contains(t, out[0], "asks again the next time the workspace opens")
+		})
+	}
+}
+
+func TestAuthorizerRevokeREPLCompletesWorkspaceConfigDecisions(t *testing.T) {
+	t.Parallel()
+
+	trusted := testWorkspaceConfigDecision(t, "file:///home/u/repo", "0123456789abcdef", true, true)
+	ignored := testWorkspaceConfigDecision(t, "file:///home/u/other", "fedcba9876543210", false, false)
+	tests := []struct {
+		prefix string
+		want   []string
+	}{
+		{prefix: "", want: []string{workspaceConfigDecisionID(trusted), workspaceConfigDecisionID(ignored)}},
+		{prefix: "persisted", want: []string{workspaceConfigDecisionID(trusted)}},
+		{prefix: "ignore", want: []string{workspaceConfigDecisionID(ignored)}},
+		{prefix: "workspace-config", want: []string{
+			workspaceConfigDecisionID(trusted), workspaceConfigDecisionID(ignored),
+		}},
+		{prefix: "allow", want: []string{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.prefix, func(t *testing.T) {
+			handler, _ := newWorkspaceConfigREPLHandler(t, trusted, ignored)
+			it, err := handler.Complete(context.Background(), authorizerREPLCommand,
+				[]string{authorizerREPLCommandRevoke, tt.prefix})
+			require.NoError(t, err)
+			items, err := sdkiterator.ToSlice(context.Background(), it)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, items)
+		})
+	}
 }
 
 func responsiveStrings(t *testing.T, items []component.Responsive) []string {

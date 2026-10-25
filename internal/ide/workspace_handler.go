@@ -192,6 +192,8 @@ type workspaceManagerHandler struct {
 	commandObserver         *commandObserverRegistry
 	commandHistory          command.HistoryAccessor
 	workspaceOpenCompleters map[string]command.Completer
+	trustedWorkspaceConfigs map[string]struct{}
+	workspaceTrust          *workspaceTrust
 
 	union        handler.FrameUnion
 	bar          handler.Tabs
@@ -653,6 +655,9 @@ func (h *workspaceManagerHandler) init(
 	}
 	h.storage = storage
 	h.ideStorage = storageapi.WithPartition(h.storage, "ide")
+	h.workspaceTrust = newWorkspaceTrust(
+		storageapi.WithPartition(h.ideStorage, workspaceTrustPartition),
+		h.trustedWorkspaceConfigs, h.promptWorkspaceTrust)
 	h.commandHistory = search.NewHistory(
 		h.ideStorage, commandHistoryDocumentID, cfg.commandMaxHistory())
 	cfg.storage = h.ideStorage
@@ -1715,7 +1720,7 @@ func (h *workspaceManagerHandler) launchBuild(
 	shouldRestore, promptRecommended bool,
 ) {
 	go debug.CapturePanicReport(func() {
-		built, buildErr := h.buildWorkspaceAsync(uri, cwd, pending)
+		built, buildErr := h.buildWorkspaceAsync(ctx, uri, cwd, pending)
 		pending.buildPhase.CompareAndSwap(pendingBuildActive, pendingBuildReturned)
 		if pending.canceled.Load() {
 			h.abortPendingBuild(pending, built, cancel)
@@ -1894,15 +1899,24 @@ type builtWorkspace struct {
 	promptStorage       storageapi.Service
 }
 
+// buildWorkspaceAsync builds the workspace uri off the event loop. ctx ends
+// when the pending workspace is closed, which abandons a workspace config
+// trust prompt that is still waiting on the user.
 func (h *workspaceManagerHandler) buildWorkspaceAsync(
-	uri workspaceapi.URI, cwd workspace.Workspace,
+	ctx context.Context, uri workspaceapi.URI, cwd workspace.Workspace,
 	pending *pendingWorkspace,
 ) (*builtWorkspace, error) {
 	cfg, configErr := h.reloadConfig()
 	cfg.storage = h.ideStorage
 	cfg.scheduleNextTick = h.scheduleNextTick
 	if _, wConfigErr := loadWorkspaceConfig(
-		h.workspaceConfigFilename, cwd, uri, &cfg,
+		h.workspaceConfigFilename, cwd, &cfg,
+		func(contents []byte) (bool, error) {
+			if h.isUserConfig(uri, h.workspaceConfigFilename) {
+				return true, nil
+			}
+			return h.workspaceTrust.trusted(ctx, uri, h.workspaceConfigFilename, contents)
+		},
 	); wConfigErr != nil {
 		configErr = multierror.Append(configErr,
 			fmt.Errorf("workspace config: %w", wConfigErr))
@@ -2069,6 +2083,54 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 			ex.onLinkClick, noticeCfg)
 	}
 	return built, nil
+}
+
+// isUserConfig reports whether filename in the workspace uri is the user's
+// own config file, as when the workspace is the home directory: it already
+// applied as the user config, so it needs no trust.
+func (h *workspaceManagerHandler) isUserConfig(uri workspaceapi.URI, filename string) bool {
+	if h.configPath == "" || uri.Scheme() != workspace.FileScheme {
+		return false
+	}
+	configPath, err := workspaceapi.ExpandPath(h.configPath, user.Current, os.Getwd)
+	if err != nil {
+		return false
+	}
+	return filepath.Clean(configPath) == filepath.Join(uri.Path(), filename)
+}
+
+// promptWorkspaceTrust is the workspaceTrustPrompt of workspace builds. It
+// asks in the workspace in focus and, when ctx ends first, takes the prompt
+// down so that reopening the workspace can ask again.
+func (h *workspaceManagerHandler) promptWorkspaceTrust(
+	ctx context.Context, message string, options []string,
+) (int, error) {
+	completion := newPromptChoiceCompletion()
+	// win is only touched on the event loop.
+	var win browser.Window
+	scheduled := h.scheduleNextTick(func() {
+		win = h.focusEx().comp.Prompt(message, options, nil, handlerapi.FuncPromptHandler(
+			func(i int, _ string) {
+				completion.selectIndex(i)
+			},
+			func() error {
+				completion.dismiss()
+				return nil
+			},
+		))
+	})
+	if !scheduled {
+		return -1, errors.New("show workspace config trust prompt: event loop is not running")
+	}
+	answer, err := completion.wait(ctx)
+	if ctx.Err() != nil {
+		h.scheduleNextTick(func() {
+			if win != nil {
+				_ = win.Close()
+			}
+		})
+	}
+	return answer, err
 }
 
 func (h *workspaceManagerHandler) installPendingWorkspace(
@@ -2333,6 +2395,7 @@ func (h *workspaceManagerHandler) buildExtensions(
 			AutoAuthorizeVerifiedPublisher: cfg.authorizerAutoAuthorizeVerified(),
 			OnboardingActive:               h.onboardingActive,
 			OnPromptWindow:                 ex.setStatusWindow,
+			WorkspaceConfigs:               h.workspaceTrust,
 		})
 	if err != nil {
 		return nil, nil, nil, nil, nil, fmt.Errorf("new command authorizer: %w", err)

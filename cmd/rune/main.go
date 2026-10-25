@@ -272,14 +272,16 @@ func startWorkspaceServer(host *hostenv.Host, shellRCDir string, shellRCErr erro
 	}
 	defer scheme.Close()
 	// Apply gui.env before serving so the tools the client starts here
-	// see the packages installed on this host.
-	loadRemoteConfigAndApplyEnv(host, scheme, uri)
+	// see the packages installed on this host. Only this host's user
+	// config applies: the workspace config needs the user's trust, and
+	// the server has no UI to ask for it.
+	applyUserConfigEnv(host)
 
 	// The client installs the packages its workspace needs on this host
 	// through this manager, served next to the workspace.
 	pkgs, pkgStorage := newHostPackageManager(newRuneStorage(*flagDataPath),
 		newRemoteReleaseManager(), scheme,
-		func() { loadRemoteConfigAndApplyEnv(host, scheme, uri) })
+		func() { applyUserConfigEnv(host) })
 	defer func() {
 		_ = pkgStorage.Close()
 	}()
@@ -609,6 +611,7 @@ func runTUI(
 		ide.WithShellRCDir(shellRCDir),
 		ide.WithHostDataDir(*flagDataPath),
 		ide.WithScheme(workspace.DocsScheme, newDocsSchemeFunc(*flagConfigPath)),
+		ide.WithTrustedWorkspaceConfig(docsConfigYAML),
 		ide.WithStreamingOpen(true),
 		ide.WithClipboard(text.NewAsyncSystemClipboard()),
 		ide.WithSystemURLOpener(func(u *url.URL) error { return extbrowser.Browse(u) }),

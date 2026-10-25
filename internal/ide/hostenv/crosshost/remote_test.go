@@ -99,8 +99,9 @@ func TestRemoteServerAppliesItsOwnGUIEnv(t *testing.T) {
 		"the remote host applies its own user config")
 	assert.Equal(t, dataDir+"/data", env["RUNE_E2E_DATA"],
 		"$RUNE_DATADIR in gui.env names the remote data directory")
-	assert.Equal(t, "from-workspace-config", env["RUNE_E2E_WS_VAR"],
-		"the remote host overlays the workspace config")
+	assert.NotContains(t, env, "RUNE_E2E_WS_VAR",
+		"the remote host has no UI to ask the user to trust the workspace config, "+
+			"so it must not apply it")
 	path := pathEntries(env["PATH"])
 	require.GreaterOrEqual(t, len(path), 3, "PATH=%q", env["PATH"])
 	assert.Equal(t, []string{dataDir + "/bin", dataDir + "/tools/bin"}, path[:2],

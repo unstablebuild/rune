@@ -94,7 +94,7 @@ installed in the workspace, but the core commands are:
 | `agent <command> [<args>]` | Inspect and manage [Rune Agent](../agent/intro.md) models, chats, tools, skills, and configuration (available once the `rune-agent` package is installed). |
 | `debugger <subcommand> [...]` | Control a [debug session](./debugger.md) via the Debug Adapter Protocol. Start with `debugger initialize <langID>`, then `launch` or `attach`, then `configured`. |
 | `extensions (status\|info\|start\|stop\|restart\|logs) ...` | Manage workspace extensions. |
-| `authorizer (list\|revoke) [<permission>]` | Manage persisted plugin authorizer decisions. |
+| `authorizer (list\|revoke) [<decision>]` | Manage [extension permission](#reviewing-permissions-and-trust-with-authorizer) and workspace config trust decisions. |
 | `lsp (status\|info\|params\|capabilities\|restart\|start\|stop) [<server>]` | Inspect and control the workspace's [language servers](#managing-language-servers-with-lsp). |
 | `process` | Process management: inspect and control processes Rune tracks. |
 | `network <subcommand>` | Manage this machine's membership in your [private network](./network.md) of Rune instances. |
@@ -255,16 +255,23 @@ their status and control their lifecycle:
 | `extensions restart <id>` | Restart a known workspace extension. |
 | `extensions logs <id> [--tail <N>]` | Show an extension's captured stderr logs, optionally limited to the last `N` lines. |
 
-## Reviewing plugin permissions with `authorizer`
+## Reviewing permissions and trust with `authorizer`
 
 When an extension or plugin (i.e. `runectl`) asks for a permission, Rune can
-remember your answer so it does not prompt again. The `authorizer` command
-lets you review and undo those persisted decisions:
+remember your answer so it does not prompt again. Rune also remembers whether
+you trusted a [workspace's `.rune/config.yaml`](../config.md#where-the-config-lives).
+The `authorizer` command lets you review and undo those decisions:
 
 | Command | What it does |
 | --- | --- |
-| `authorizer list` | List persisted plugin permission decisions. |
-| `authorizer revoke <permission>` | Revoke a persisted decision, so the plugin is prompted again next time. |
+| `authorizer list` | List extension permission decisions, and the workspace configs you trusted or ignored. |
+| `authorizer revoke <decision>` | Revoke a decision, so Rune asks again next time. |
+
+Workspace config decisions are listed as `persisted` when you chose **trust**,
+and as `transient` when you chose **trust once** or **ignore**, which last
+until you quit Rune. A workspace that is already open keeps the config it
+opened with: after revoking, run `:workspacereload` to be asked again right
+away.
 
 ## See also
 

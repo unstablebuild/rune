@@ -18,12 +18,15 @@ package ideauthorizer
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
+	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/handler/repl"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
@@ -36,22 +39,45 @@ const (
 	authorizerREPLCommandRevoke = "revoke"
 )
 
+// WorkspaceConfigDecision is the user's answer to whether a workspace's
+// config may apply.
+type WorkspaceConfigDecision struct {
+	Workspace workspaceapi.URI
+	// Fingerprint identifies the exact contents of the workspace config
+	// the decision covers.
+	Fingerprint string
+	// Trusted reports whether those contents apply.
+	Trusted bool
+	// Persisted reports whether the decision outlives the Rune session.
+	Persisted bool
+}
+
+// WorkspaceConfigTrust holds the user's workspace config trust decisions.
+type WorkspaceConfigTrust interface {
+	WorkspaceConfigDecisions(ctx context.Context) ([]WorkspaceConfigDecision, error)
+	// RevokeWorkspaceConfigDecision forgets d, so the workspace asks again
+	// the next time it opens. A workspace that is already open keeps the
+	// config it opened with. Revoking a decision that no longer holds,
+	// such as trust the user has since replaced, changes nothing.
+	RevokeWorkspaceConfigDecision(ctx context.Context, d WorkspaceConfigDecision) error
+}
+
 func registerAuthorizerREPLCommand(
 	editor text.Editor, authorizer *Authorizer,
 ) error {
 	return editor.RegisterREPLCommand(textapi.CommandManual{
 		Name:     authorizerREPLCommand,
-		Summary:  "Manage persisted plugin authorizer decisions.",
-		Synopsis: "(list|revoke) [<permission>]",
+		Summary:  "Manage extension permission and workspace config trust decisions.",
+		Synopsis: "(list|revoke) [<decision>]",
 		Commands: []textapi.CommandManual{
 			{
 				Name:    authorizerREPLCommandList,
-				Summary: "List persisted plugin permission decisions.",
+				Summary: "List extension permission and workspace config trust decisions.",
 			},
 			{
 				Name:     authorizerREPLCommandRevoke,
-				Summary:  "Revoke a persisted plugin permission decision.",
-				Synopsis: "<permission>",
+				Summary:  "Revoke a decision, so Rune asks again.",
+				Synopsis: "<decision>",
 			},
 		},
 	}, authorizerREPLHandler{authorizer: authorizer})
@@ -105,12 +131,23 @@ func (h authorizerREPLHandler) Complete(
 	if err != nil {
 		return nil, err
 	}
+	decisions, err := h.workspaceConfigDecisions(ctx)
+	if err != nil {
+		return nil, err
+	}
 	prefix := args[len(args)-1]
+	matches := func(id string) bool {
+		return strings.HasPrefix(id, prefix) || strings.Contains(id, ":"+prefix)
+	}
 	var ret []string
 	for _, entry := range entries {
 		id := entry.ID()
-		if strings.HasPrefix(id, prefix) || strings.Contains(id, ":"+prefix) ||
-			strings.HasPrefix(entry.Key, prefix) {
+		if matches(id) || strings.HasPrefix(entry.Key, prefix) {
+			ret = append(ret, id)
+		}
+	}
+	for _, d := range decisions {
+		if id := workspaceConfigDecisionID(d); matches(id) {
 			ret = append(ret, id)
 		}
 	}
@@ -130,13 +167,30 @@ func (h authorizerREPLHandler) handleList(
 	if err != nil {
 		return nil, err
 	}
+	var lines []string
 	if len(entries) == 0 {
-		return authorizerREPLLines("No extension permission decisions."), nil
+		lines = append(lines, "No extension permission decisions.")
+	} else {
+		lines = append(lines, "Extension permission decisions:")
+		for _, entry := range entries {
+			lines = append(lines, fmt.Sprintf("- %s — %s", entry.ID(), entry.Display()))
+		}
 	}
-	lines := make([]string, 0, len(entries)+1)
-	lines = append(lines, "Extension permission decisions:")
-	for _, entry := range entries {
-		lines = append(lines, fmt.Sprintf("- %s — %s", entry.ID(), entry.Display()))
+	if h.authorizer.config.WorkspaceConfigs == nil {
+		return authorizerREPLLines(lines...), nil
+	}
+	decisions, err := h.workspaceConfigDecisions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(decisions) == 0 {
+		lines = append(lines, "No workspace config decisions.")
+	} else {
+		lines = append(lines, "Workspace config decisions:")
+		for _, d := range decisions {
+			lines = append(lines, fmt.Sprintf("- %s — %s",
+				workspaceConfigDecisionID(d), workspaceConfigDecisionDisplay(d)))
+		}
 	}
 	return authorizerREPLLines(lines...), nil
 }
@@ -153,13 +207,25 @@ func (h authorizerREPLHandler) handleRevoke(
 		return nil, err
 	}
 	if !ok {
+		if d, ok, err := h.findWorkspaceConfigDecision(ctx, selected); err != nil {
+			return nil, err
+		} else if ok {
+			if err := h.authorizer.config.WorkspaceConfigs.RevokeWorkspaceConfigDecision(
+				ctx, d,
+			); err != nil {
+				return nil, fmt.Errorf("revoke workspace config decision: %w", err)
+			}
+			return authorizerREPLLines(fmt.Sprintf(
+				"Revoked %s. Rune asks again the next time the workspace opens.",
+				workspaceConfigDecisionDisplay(d))), nil
+		}
 		if isPermissionStorageKey(selected) {
 			if err := h.authorizer.deleteStoredDecision(ctx, selected); err != nil {
 				return nil, err
 			}
 			return authorizerREPLLines(fmt.Sprintf("Revoked %s", selected)), nil
 		}
-		return nil, fmt.Errorf("plugin permission decision not found: %s", selected)
+		return nil, fmt.Errorf("decision not found: %s", selected)
 	}
 	if err := h.authorizer.deleteStoredDecision(ctx, entry.Key); err != nil {
 		return nil, err
@@ -167,10 +233,80 @@ func (h authorizerREPLHandler) handleRevoke(
 	return authorizerREPLLines(fmt.Sprintf("Revoked %s", entry.Display())), nil
 }
 
+// workspaceConfigDecisions returns the workspace config decisions sorted
+// for display, or none when the authorizer has no WorkspaceConfigs.
+func (h authorizerREPLHandler) workspaceConfigDecisions(
+	ctx context.Context,
+) ([]WorkspaceConfigDecision, error) {
+	trust := h.authorizer.config.WorkspaceConfigs
+	if trust == nil {
+		return nil, nil
+	}
+	decisions, err := trust.WorkspaceConfigDecisions(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list workspace config decisions: %w", err)
+	}
+	sort.Slice(decisions, func(i, j int) bool {
+		return workspaceConfigDecisionDisplay(decisions[i]) <
+			workspaceConfigDecisionDisplay(decisions[j])
+	})
+	return decisions, nil
+}
+
+func (h authorizerREPLHandler) findWorkspaceConfigDecision(
+	ctx context.Context, selected string,
+) (WorkspaceConfigDecision, bool, error) {
+	decisions, err := h.workspaceConfigDecisions(ctx)
+	if err != nil {
+		return WorkspaceConfigDecision{}, false, err
+	}
+	for _, d := range decisions {
+		if selected == workspaceConfigDecisionID(d) ||
+			selected == workspaceConfigDecisionDisplay(d) {
+			return d, true, nil
+		}
+	}
+	return WorkspaceConfigDecision{}, false, nil
+}
+
+func workspaceConfigDecisionScope(d WorkspaceConfigDecision) string {
+	if d.Persisted {
+		return "persisted"
+	}
+	return "transient"
+}
+
+func workspaceConfigDecisionVerb(d WorkspaceConfigDecision) string {
+	if d.Trusted {
+		return "trust"
+	}
+	return "ignore"
+}
+
+// workspaceConfigDecisionID is unique per workspace and config contents:
+// workspaces that share a directory name, or one workspace's config
+// before and after a change, get different IDs.
+func workspaceConfigDecisionID(d WorkspaceConfigDecision) string {
+	sum := sha256.Sum256([]byte(d.Workspace.String() + "\x00" + d.Fingerprint))
+	return strings.Join([]string{
+		workspaceConfigDecisionScope(d),
+		workspaceConfigDecisionVerb(d),
+		"workspace-config",
+		sanitizePluginPermissionIDPart(programBaseName(d.Workspace.Path())),
+		hex.EncodeToString(sum[:4]),
+	}, ":")
+}
+
+func workspaceConfigDecisionDisplay(d WorkspaceConfigDecision) string {
+	return fmt.Sprintf("%s %s %s sha256:%s",
+		workspaceConfigDecisionScope(d), workspaceConfigDecisionVerb(d),
+		d.Workspace.String(), d.Fingerprint[:min(8, len(d.Fingerprint))])
+}
+
 func authorizerREPLHelp() iterator.Iterator[component.Responsive] {
 	return authorizerREPLLines(
 		"Usage: authorizer <list|revoke>",
-		"Lists or revokes persisted extension permission decisions.",
+		"Lists or revokes extension permission and workspace config trust decisions.",
 	)
 }
 

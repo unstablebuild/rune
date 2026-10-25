@@ -192,6 +192,19 @@ func WithConfigFilename(filename string) Option {
 	}
 }
 
+// WithTrustedWorkspaceConfig applies a workspace configuration whose
+// contents are exactly contents without asking the user to trust it, for
+// configs Rune itself ships. Any other contents, even in the same
+// workspace, still ask.
+func WithTrustedWorkspaceConfig(contents []byte) Option {
+	return func(opts *options) {
+		if opts.trustedWorkspaceConfigs == nil {
+			opts.trustedWorkspaceConfigs = make(map[string]struct{})
+		}
+		opts.trustedWorkspaceConfigs[workspaceConfigFingerprint(contents)] = struct{}{}
+	}
+}
+
 // WithWorkspaceOpenCompleter makes c the sole `workspaceopen`
 // completer for arguments starting with "<scheme>://": history and
 // local directories would offer workspaces the scheme can no longer
@@ -571,6 +584,9 @@ type options struct {
 	disableSessionReopen bool
 
 	workspaceOpenCompleters map[string]command.Completer
+	// trustedWorkspaceConfigs holds the workspaceConfigFingerprint of
+	// every workspace config applied without asking.
+	trustedWorkspaceConfigs map[string]struct{}
 
 	defaultConfigModeModal bool
 	defaultConfigTUI       bool

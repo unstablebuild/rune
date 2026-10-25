@@ -5543,8 +5543,20 @@ func reloadConfig(
 	return
 }
 
+// maxWorkspaceConfigSize bounds the workspace config the user is asked to
+// review before it applies: real ones are a few lines, and a larger file
+// can't be reviewed in a prompt.
+const maxWorkspaceConfigSize = 64 << 10
+
+// loadWorkspaceConfig overlays the workspace's filename onto c once trust
+// approves its exact contents. Nothing in the file is evaluated before
+// that, and c is left untouched unless the whole overlay decodes and
+// validates. A missing or unreadable file is not an error and is not
+// offered to trust; a file over maxWorkspaceConfigSize is an error and is
+// not offered either.
 func loadWorkspaceConfig(
-	filename string, cwd workspace.Workspace, _ workspaceapi.URI, c *ideConfig,
+	filename string, cwd workspace.Workspace, c *ideConfig,
+	trust func(contents []byte) (bool, error),
 ) (isConfigErr bool, err error) {
 	f, err := cwd.OpenFile(filename, os.O_RDONLY, 0)
 	if err != nil {
@@ -5558,7 +5570,24 @@ func loadWorkspaceConfig(
 	}
 	defer f.Close()
 
-	cfg, err := decodeOverlayConfigFile(f, filename, c.cfg)
+	contents, err := io.ReadAll(io.LimitReader(f, maxWorkspaceConfigSize+1))
+	if err != nil {
+		return false, fmt.Errorf("read '%s': %w", filename, err)
+	}
+	if len(contents) > maxWorkspaceConfigSize {
+		return false, fmt.Errorf("'%s' is larger than %d KiB, so it is ignored",
+			filename, maxWorkspaceConfigSize>>10)
+	}
+	trusted, err := trust(contents)
+	if err != nil {
+		return false, fmt.Errorf("trust '%s': %w", filename, err)
+	}
+	if !trusted {
+		return false, nil
+	}
+
+	cfg, err := decodeOverlayConfigFile(bytes.NewReader(contents), filename,
+		copyConfigValue(c.cfg).(map[string]any))
 	if err != nil {
 		return true, err
 	}

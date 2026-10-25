@@ -106,35 +106,6 @@ func Config(cfgfilename string, def DefaultConfig, opts ...Option) (config.Confi
 	return config.MapConfig(cfg.cfg), err
 }
 
-// ConfigWithOverlays loads the IDE config from cfgfilename (like Config) and
-// then overlays each file in overlayFiles, in order, reading them through cwd
-// (so a remote workspace resolves them over its RPC file scheme). Missing or
-// permission-denied overlay files are silently skipped; a malformed overlay
-// returns an error. It is the exported entry point for callers outside this
-// package (the remote `rune -x` server) that must layer a workspace-root or
-// remote-home config over the base config before applying gui.env.
-func ConfigWithOverlays(
-	cfgfilename string, def DefaultConfig, cwd workspace.Workspace,
-	overlayFiles []string, opts ...Option,
-) (config.Config, error) {
-	op := newOptions(append([]Option{def.option()}, opts...)...)
-	cfg, err := loadIDEConfig(cfgfilename, op)
-	if err != nil {
-		return config.MapConfig(cfg.cfg), err
-	}
-	if cwd != nil {
-		for _, filename := range overlayFiles {
-			if _, oErr := loadWorkspaceConfig(
-				filename, cwd, workspaceapi.URI{}, &cfg,
-			); oErr != nil {
-				return config.MapConfig(cfg.cfg),
-					fmt.Errorf("overlay config %q: %w", filename, oErr)
-			}
-		}
-	}
-	return config.MapConfig(cfg.cfg), nil
-}
-
 // DefaultConfigTree decodes def into the raw config map the editor uses as the
 // predeclared `config` base when reading a package's .star config during a
 // merge. Headless callers (a host's package manager) pass the result to
@@ -661,6 +632,7 @@ func (i *IDE) init(
 	i.workspaceHandler.packageConfigMergeHook = op.packageConfigMergeHook
 	i.workspaceHandler.watchedFilesChangeHook = op.watchedFilesChangeHook
 	i.workspaceHandler.workspaceOpenCompleters = op.workspaceOpenCompleters
+	i.workspaceHandler.trustedWorkspaceConfigs = op.trustedWorkspaceConfigs
 	i.workspaceHandler.tutorialsInstalled = i.onTutorialsInstalled
 	i.workspaceHandler.sessionReopenDisabled = op.disableSessionReopen
 	i.workspaceHandler.sponsorsURL = op.sponsorsURL

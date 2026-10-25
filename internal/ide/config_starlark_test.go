@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	_ "embed"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -668,7 +669,7 @@ func TestLoadWorkspaceConfigStar(t *testing.T) {
 	ws := workspace.NewSchemeWorkspace(uri, scheme, inlineSchedule)
 	defer ws.Close()
 
-	isConfigErr, err := loadWorkspaceConfig("config.star", ws, uri, c)
+	isConfigErr, err := loadWorkspaceConfig("config.star", ws, c, trustAllWorkspaceConfigs)
 	require.NoError(t, err)
 	assert.False(t, isConfigErr)
 	assert.Equal(t, "debug", c.cfg["log_level"])
@@ -703,7 +704,7 @@ config["extensions"]["git"]["config"]["nested"]["override"] = "star"
 	ws := workspace.NewSchemeWorkspace(uri, scheme, inlineSchedule)
 	defer ws.Close()
 
-	isConfigErr, err := loadWorkspaceConfig("config.star", ws, uri, c)
+	isConfigErr, err := loadWorkspaceConfig("config.star", ws, c, trustAllWorkspaceConfigs)
 	require.NoError(t, err)
 	assert.False(t, isConfigErr)
 
@@ -787,10 +788,138 @@ func TestLoadWorkspaceConfigYAML(t *testing.T) {
 	ws := workspace.NewSchemeWorkspace(uri, scheme, inlineSchedule)
 	defer ws.Close()
 
-	isConfigErr, err := loadWorkspaceConfig("config.yaml", ws, uri, c)
+	isConfigErr, err := loadWorkspaceConfig("config.yaml", ws, c, trustAllWorkspaceConfigs)
 	require.NoError(t, err)
 	assert.False(t, isConfigErr)
 	assert.Equal(t, "warn", c.cfg["log_level"])
+}
+
+func trustAllWorkspaceConfigs([]byte) (bool, error) { return true, nil }
+
+func newTestFileWorkspace(t *testing.T, dir string) workspace.Workspace {
+	t.Helper()
+	uri, err := workspaceapi.CurrentUserHostURI(dir)
+	require.NoError(t, err)
+	scheme, err := workspace.NewFileScheme(context.Background(), config.NopConfig(), uri)
+	require.NoError(t, err)
+	ws := workspace.NewSchemeWorkspace(uri, scheme, inlineSchedule)
+	t.Cleanup(func() { _ = ws.Close() })
+	return ws
+}
+
+func loadTestUserConfig(t *testing.T) ideConfig {
+	t.Helper()
+	var cfg ideConfig
+	require.NoError(t, loadConfig(&cfg, filepath.Join(t.TempDir(), "config.yaml"), nil,
+		DefaultConfig{src: string(readRuneStar(t)), modal: true},
+		term.RingBell, term.ScheduleNextTick))
+	return cfg
+}
+
+func TestLoadWorkspaceConfigTrust(t *testing.T) {
+	const hostile = `authorizer:
+  auto_authorize_commands: true
+updates:
+  auto_install: true
+gui:
+  env:
+    RUNE_PWNED: "1"
+extensions:
+  pwned:
+    path: /tmp/pwned
+editor:
+  tabspaces: 2
+`
+	tests := []struct {
+		name        string
+		contents    string
+		trust       bool
+		trustErr    error
+		wantCalled  bool
+		wantErr     bool
+		wantApplied bool
+	}{
+		{name: "missing file is not offered for trust"},
+		{
+			name:       "untrusted applies nothing",
+			contents:   hostile,
+			wantCalled: true,
+		},
+		{
+			name:       "trust error applies nothing",
+			contents:   hostile,
+			trustErr:   errors.New("prompt failed"),
+			wantCalled: true,
+			wantErr:    true,
+		},
+		{
+			name:        "trusted applies everything",
+			contents:    hostile,
+			trust:       true,
+			wantCalled:  true,
+			wantApplied: true,
+		},
+		{
+			name:       "trusted but undecodable applies nothing",
+			contents:   "editor:\n  tabspaces: 2\nbroken: [\n",
+			trust:      true,
+			wantCalled: true,
+			wantErr:    true,
+		},
+		{
+			name: "trusted but invalid applies nothing",
+			contents: "editor:\n  tabspaces: 2\ncommand:\n  aliases:\n" +
+				"    meh: [yay]\n    yay: [meh]\n",
+			trust:      true,
+			wantCalled: true,
+			wantErr:    true,
+		},
+		{
+			name:     "oversized is neither offered nor applied",
+			contents: "editor:\n  tabspaces: 2\n" + strings.Repeat("#", maxWorkspaceConfigSize),
+			trust:    true,
+			wantErr:  true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if tt.contents != "" {
+				require.NoError(t, os.WriteFile(
+					filepath.Join(dir, "config.yaml"), []byte(tt.contents), 0o644))
+			}
+			c := loadTestUserConfig(t)
+			before := copyConfigValue(c.cfg)
+
+			var offered []byte
+			called := false
+			_, err := loadWorkspaceConfig("config.yaml", newTestFileWorkspace(t, dir), &c,
+				func(contents []byte) (bool, error) {
+					called = true
+					offered = contents
+					return tt.trust, tt.trustErr
+				})
+
+			if tt.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+			require.Equal(t, tt.wantCalled, called)
+			if tt.wantCalled {
+				assert.Equal(t, tt.contents, string(offered),
+					"the trust decision must cover exactly the bytes that are applied")
+			}
+			if !tt.wantApplied {
+				assert.Equal(t, before, c.cfg)
+				return
+			}
+			assert.Equal(t, 2, c.editorTabspaces())
+			assert.True(t, c.cfg["authorizer"].(map[string]any)["auto_authorize_commands"].(bool))
+			assert.True(t, c.updatesAutoInstall())
+			assert.Contains(t, c.extensions(), "pwned")
+		})
+	}
 }
 
 func TestVimSettingsSectionSpellings(t *testing.T) {
@@ -907,7 +1036,7 @@ config["editor"]["modal"]["message_bar"] = {"attr": {"fg": "white", "bg": "navy"
 		require.NoError(t, err)
 		w := workspace.NewSchemeWorkspace(uri, scheme, inlineSchedule)
 		t.Cleanup(func() { w.Close() })
-		_, err = loadWorkspaceConfig(ws.name, w, uri, &cfg)
+		_, err = loadWorkspaceConfig(ws.name, w, &cfg, trustAllWorkspaceConfigs)
 		require.NoError(t, err)
 		return cfg
 	}

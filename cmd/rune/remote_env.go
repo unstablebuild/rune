@@ -23,14 +23,11 @@ import (
 	"github.com/unstablebuild/blue/release"
 	"github.com/unstablebuild/blue/release/cdnrelease"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
-	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
-	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"unstable.build/rune/internal/ide"
 	"unstable.build/rune/internal/ide/hostenv"
 	"unstable.build/rune/internal/ide/idepkg"
 	"unstable.build/rune/internal/ide/idepkg/gitpkg"
 	"unstable.build/rune/internal/ide/idepkg/multipkg"
-	"unstable.build/rune/internal/workspace"
 )
 
 func newRemoteReleaseManager(gitOpts ...gitpkg.Option) release.Manager {
@@ -41,29 +38,6 @@ func newRemoteReleaseManager(gitOpts ...gitpkg.Option) release.Manager {
 		&http.Client{},
 		idepkg.ReleasesURL(*flagHTTPAddress, idepkg.HostArch()))
 	return multipkg.New(gitpkg.New(gitOpts...), official)
-}
-
-// loadRemoteConfigAndApplyEnv loads the remote ~/.rune config overlaid with
-// the workspace-root .rune/config.yaml and applies its gui.env block to
-// host, so the tools the `rune -x` server spawns see the packages installed
-// on this host. On any error it warns and continues so serving is never
-// blocked.
-func loadRemoteConfigAndApplyEnv(
-	host *hostenv.Host, scheme schemeapi.Scheme, uri workspaceapi.URI,
-) {
-	cwd := workspace.NewSchemeWorkspace(uri, scheme,
-		func(fn func()) bool { fn(); return true })
-	rootCfg, err := ide.ConfigWithOverlays(
-		*flagConfigPath, runeDefaultConfig(), cwd,
-		[]string{workspaceConfigFilename},
-	)
-	if err != nil {
-		log.Warnf("load remote config: %v", err)
-		if rootCfg == nil {
-			rootCfg = config.NopConfig()
-		}
-	}
-	applyConfigEnv(host, rootCfg)
 }
 
 // applyConfigEnv applies rootCfg's gui.env block to host. Failures are

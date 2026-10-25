@@ -172,6 +172,12 @@ settings. This is the natural place to pin things that depend on where the code
 actually runs, such as the paths to language servers and toolchains on that
 host. See [Configuration](../config.md) for the full set of keys.
 
+As with a local project, Rune shows you the project's `.rune/config.yaml` and
+applies it only once you trust it. One part of it never applies: `gui.env`,
+which the remote host reads itself and has no way to ask you about. Put
+environment variables for a remote host in `~/.rune/config.yaml` on that host
+instead.
+
 ```yaml tab
 extensions:
   go:
@@ -286,5 +292,9 @@ when Rune offered to install the language package on the remote, run
 still does not work, the tool may live somewhere non-standard on the host, or
 you may be managing it yourself outside Rune. Install the toolchain on the
 remote, or set the matching override key from the remote `.rune/config.yaml`.
+If you chose **ignore** when Rune asked whether to trust that file, the
+override doesn't apply until you trust it: revoke that decision with
+`authorizer revoke` from the console and run `:workspacereload` to be asked
+again.
 See
 [Language toolchains on the remote host](#language-toolchains-on-the-remote-host).
