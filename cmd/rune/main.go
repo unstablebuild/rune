@@ -48,7 +48,6 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"google.golang.org/grpc"
-	"unstable.build/rune/auth"
 	"unstable.build/rune/cmd/rune/crashreport"
 	"unstable.build/rune/cmd/rune/ide/apiclient"
 	"unstable.build/rune/internal/browser"
@@ -547,10 +546,8 @@ func run() int {
 
 	// A single process-wide trust store distributes the package-signing
 	// keyring to the package manager (install verification) and the
-	// authorizer (verified-publisher check). The store fetches the served
-	// keyring once, asynchronously, at construction; the first
-	// VerifyBundle briefly waits for it.
-	trust := pkgtrust.NewStore(*flagDataPath, trustKeyringFetcher())
+	// authorizer (verified-publisher check).
+	trust := pkgtrust.NewStore()
 
 	if *flagGUI {
 		return runGUI(filenames, runner, trust, &mu, pathDone, host, shellRCDir, shellRCErr)
@@ -988,24 +985,6 @@ func apiClientConfig(installBackupDir string, cfg config.Config) apiclient.Confi
 	apicfg.InstallBackupDir = installBackupDir
 	apicfg.EditorMode = ide.EditorMode(cfg)
 	return apicfg
-}
-
-// trustKeyringFetcher builds the KeyringFetcher the process trust store uses
-// to load the package-signing keyring the API advertises. It fetches the
-// oauth2 config once and returns the armored keyring it carries.
-func trustKeyringFetcher() pkgtrust.KeyringFetcher {
-	endpoint, err := url.Parse(*flagHTTPAddress)
-	if err != nil {
-		log.Warnf("parse http endpoint for trust keyring fetch: %v", err)
-		return nil
-	}
-	return func() ([]byte, error) {
-		conf, err := auth.FetchConfig(endpoint)
-		if err != nil {
-			return nil, err
-		}
-		return []byte(conf.PackageKeyringArmored), nil
-	}
 }
 
 func doRunTUI(mu *sync.Mutex, i *ide.IDE) error {

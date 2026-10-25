@@ -89,7 +89,7 @@ command:
 		return true
 	}
 
-	i, err := New(dir, configPath, dataDir, pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir),
+	i, err := New(dir, configPath, dataDir, pkgtrust.NewStore(), newTestStorage(t, dataDir),
 		WithLocker(mu),
 		WithScheduleNextTick(scheduleNextTick),
 		WithBell(func() {}),
@@ -253,7 +253,7 @@ command:
 	mu := new(sync.Mutex)
 	scheduleNextTick, drainSchedule := newTestScheduler(t, mu)
 
-	i, err := New(dir, configPath, dataDir, pkgtrust.NewStore(dataDir, nil),
+	i, err := New(dir, configPath, dataDir, pkgtrust.NewStore(),
 		newTestStorage(t, dataDir),
 		WithLocker(mu),
 		WithScheduleNextTick(scheduleNextTick),

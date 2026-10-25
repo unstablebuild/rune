@@ -885,7 +885,7 @@ config = {
 	}
 
 	i := new(IDE)
-	require.NoError(t, i.init(".", configFile.Name(), dir, pkgtrust.NewStore(dir, nil), newTestStorage(t, dir),
+	require.NoError(t, i.init(".", configFile.Name(), dir, pkgtrust.NewStore(), newTestStorage(t, dir),
 		WithPublishEvent(nopPublishEvent),
 		WithExtensionsRunner(FuncExtensionsRunner(testRunnerFn)),
 		WithLocker(new(sync.Mutex)),
@@ -918,7 +918,7 @@ config = {
 `
 	dir := t.TempDir()
 	i := new(IDE)
-	require.NoError(t, i.init(".", configFile.Name(), dir, pkgtrust.NewStore(dir, nil), newTestStorage(t, dir),
+	require.NoError(t, i.init(".", configFile.Name(), dir, pkgtrust.NewStore(), newTestStorage(t, dir),
 		WithPublishEvent(nopPublishEvent),
 		WithExtensionsRunner(FuncExtensionsRunner(testRunnerFn)),
 		WithLocker(new(sync.Mutex)),
@@ -963,7 +963,7 @@ config = {
 `
 	dir := t.TempDir()
 	i := new(IDE)
-	require.NoError(t, i.init(".", configFile.Name(), dir, pkgtrust.NewStore(dir, nil), newTestStorage(t, dir),
+	require.NoError(t, i.init(".", configFile.Name(), dir, pkgtrust.NewStore(), newTestStorage(t, dir),
 		WithPublishEvent(nopPublishEvent),
 		WithExtensionsRunner(FuncExtensionsRunner(testRunnerFn)),
 		WithLocker(new(sync.Mutex)),

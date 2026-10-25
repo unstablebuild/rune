@@ -1364,7 +1364,7 @@ func mustNewAuthorizerWithStatus(
 // which trusts the fingerprint the verified-publisher tests exercise.
 func testTrustStore(t *testing.T) *pkgtrust.Store {
 	t.Helper()
-	return pkgtrust.NewStore(t.TempDir(), nil)
+	return pkgtrust.NewStore()
 }
 
 func newTestAuthorizerCore(
@@ -1373,7 +1373,7 @@ func newTestAuthorizerCore(
 	a := &Authorizer{
 		prompter: newPermissionPrompter(opener, syncScheduleNextTick, &capturingStatus{}),
 		storage:  storage,
-		trust:    pkgtrust.NewStore("", nil),
+		trust:    pkgtrust.NewStore(),
 		once:     make(map[string]pluginPermissionOnceDecision),
 		pending:  make(map[string]*pendingPrompt),
 	}

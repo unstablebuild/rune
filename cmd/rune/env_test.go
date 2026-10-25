@@ -204,7 +204,7 @@ func newBootstrapForTest(
 		nil /* launchCmd */, ide.FuncExtensionsRunner(testE2EExtensionsRunner),
 		mu, publishEvent, nil /* cellPixelSize */, nil, /* setAltModifier */
 		func(*url.URL) error { return nil }, clipboard.NewInMemory(),
-		installBackupDir, rootCfg, pkgtrust.NewStore(dataDir, nil),
+		installBackupDir, rootCfg, pkgtrust.NewStore(),
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = b.Close() })

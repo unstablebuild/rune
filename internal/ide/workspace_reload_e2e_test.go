@@ -69,7 +69,7 @@ workspace:
 	mu := new(sync.Mutex)
 	scheduleNextTick, drainSchedule := newTestScheduler(t, mu)
 
-	i, err := New(dir, configPath, dataDir, pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir),
+	i, err := New(dir, configPath, dataDir, pkgtrust.NewStore(), newTestStorage(t, dataDir),
 		WithLocker(mu),
 		WithScheduleNextTick(scheduleNextTick),
 		WithPublishEvent(func(term.Event) bool { return true }),
@@ -248,7 +248,7 @@ func TestFileSchemeShellRC(t *testing.T) {
 			require.NoError(t, os.WriteFile(configPath, []byte(
 				"editor:\n  mode: vim\nterminal:\n  initial_reservoir: 0\n"), 0o644))
 
-			i, err := New("", configPath, dir, pkgtrust.NewStore(dir, nil), newTestStorage(t, dir),
+			i, err := New("", configPath, dir, pkgtrust.NewStore(), newTestStorage(t, dir),
 				append([]Option{
 					WithPublishEvent(nopPublishEvent),
 					WithLocker(new(sync.Mutex)),

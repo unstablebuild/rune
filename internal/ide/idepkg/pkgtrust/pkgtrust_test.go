@@ -27,12 +27,45 @@ import (
 	"testing"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
-	"github.com/ProtonMail/go-crypto/openpgp/armor"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/blue/release"
 )
 
-const embeddedFingerprint = "D3F9E65DE72888CC03D45CF5064D4ABCFA6D9338"
+// The two independent signers baked into the release ring. Either one
+// alone can sign a release, so losing one key does not block shipping.
+var embeddedFingerprints = []string{
+	"D3F9E65DE72888CC03D45CF5064D4ABCFA6D9338",
+	"E885B45B2BD6E53B5C50077A49421B9547B5B830",
+}
+
+func TestEmbeddedKeyring(t *testing.T) {
+	store := NewStore()
+	require.Len(t, store.ring, len(embeddedFingerprints))
+	for _, fp := range embeddedFingerprints {
+		require.True(t, store.IsTrustedFingerprint(fp), fp)
+		require.True(t, store.IsTrustedFingerprint(strings.ToLower(fp)), fp)
+	}
+
+	t.Run("ignores a planted keyring on disk", func(t *testing.T) {
+		// A v1.3.x data dir may still hold the cache the served keyring
+		// used to be persisted to; an attacker who can write there must
+		// not be able to add a trust anchor through it.
+		attacker, err := openpgp.NewEntity("Attacker", "", "attacker@example.com", nil)
+		require.NoError(t, err)
+		fingerprint := strings.ToUpper(hex.EncodeToString(attacker.PrimaryKey.Fingerprint))
+		dataDir := t.TempDir()
+		var planted bytes.Buffer
+		require.NoError(t, attacker.Serialize(&planted))
+		require.NoError(t, os.WriteFile(
+			filepath.Join(dataDir, "trusted_keys.asc"), planted.Bytes(), 0o644))
+
+		store := NewStore()
+		require.False(t, store.IsTrustedFingerprint(fingerprint))
+		bundle := signedTestBundle(t, attacker, []byte("bundle contents"))
+		_, err = store.VerifyBundle(bundle, bytes.NewReader([]byte("bundle contents")))
+		require.ErrorContains(t, err, "is not trusted")
+	})
+}
 
 func TestVerifyBundle(t *testing.T) {
 	entity, err := openpgp.NewEntity("Test Publisher", "", "test@example.com", nil)
@@ -77,84 +110,6 @@ func TestVerifyEntries(t *testing.T) {
 	require.Error(t, VerifyEntries(dir, entries))
 	require.NoError(t, os.Remove(path))
 	require.Error(t, VerifyEntries(dir, entries))
-}
-
-func TestKeyringFetchReplaces(t *testing.T) {
-	entity, err := openpgp.NewEntity("Rotated Publisher", "", "rotated@example.com", nil)
-	require.NoError(t, err)
-	fingerprint := strings.ToUpper(hex.EncodeToString(entity.PrimaryKey.Fingerprint))
-	armored := armoredPublicKey(t, entity)
-
-	store := NewStore(t.TempDir(), func() ([]byte, error) { return armored, nil })
-
-	bundle := signedTestBundle(t, entity, []byte("bundle contents"))
-	provenance, err := store.VerifyBundle(bundle, bytes.NewReader([]byte("bundle contents")))
-	require.NoError(t, err)
-	require.Equal(t, fingerprint, provenance.Fingerprint)
-
-	// replace semantics: the fetched ring revokes embedded trust anchors
-	require.True(t, store.IsTrustedFingerprint(fingerprint))
-	require.False(t, store.IsTrustedFingerprint(embeddedFingerprint))
-}
-
-func TestKeyringFetchFailureKeepsEmbedded(t *testing.T) {
-	store := NewStore(t.TempDir(), func() ([]byte, error) {
-		return nil, fmt.Errorf("network down")
-	})
-	// VerifyBundle waits for the fetch to finish (here it fails), then
-	// falls back to the embedded ring.
-	require.True(t, store.IsTrustedFingerprint(embeddedFingerprint))
-}
-
-func TestKeyringFetchMalformedKeepsEmbedded(t *testing.T) {
-	store := NewStore(t.TempDir(), func() ([]byte, error) { return []byte("junk"), nil })
-	store.awaitFetch()
-	require.True(t, store.IsTrustedFingerprint(embeddedFingerprint))
-}
-
-func TestKeyringCache(t *testing.T) {
-	dataDir := t.TempDir()
-	entity, err := openpgp.NewEntity("Cached Publisher", "", "cached@example.com", nil)
-	require.NoError(t, err)
-	fingerprint := strings.ToUpper(hex.EncodeToString(entity.PrimaryKey.Fingerprint))
-	armored := armoredPublicKey(t, entity)
-
-	store := NewStore(dataDir, func() ([]byte, error) { return armored, nil })
-	store.awaitFetch()
-	require.True(t, store.IsTrustedFingerprint(fingerprint))
-	_, err = os.Stat(filepath.Join(dataDir, "trusted_keys.asc"))
-	require.NoError(t, err)
-
-	// simulate a restart: a new store over the same dataDir loads the
-	// cached ring, which replaces the embedded one, even without a fetch.
-	restarted := NewStore(dataDir, nil)
-	require.True(t, restarted.IsTrustedFingerprint(fingerprint))
-	require.False(t, restarted.IsTrustedFingerprint(embeddedFingerprint))
-
-	t.Run("missing cache file keeps embedded ring", func(t *testing.T) {
-		fresh := NewStore(t.TempDir(), nil)
-		require.True(t, fresh.IsTrustedFingerprint(embeddedFingerprint))
-	})
-
-	t.Run("corrupt cache file falls back to embedded ring", func(t *testing.T) {
-		corruptDir := t.TempDir()
-		require.NoError(t, os.WriteFile(
-			filepath.Join(corruptDir, "trusted_keys.asc"), []byte("junk"), 0644))
-		fresh := NewStore(corruptDir, nil)
-		require.True(t, fresh.IsTrustedFingerprint(embeddedFingerprint))
-	})
-}
-
-func armoredPublicKey(t *testing.T, entities ...*openpgp.Entity) []byte {
-	t.Helper()
-	var buf bytes.Buffer
-	w, err := armor.Encode(&buf, openpgp.PublicKeyType, nil)
-	require.NoError(t, err)
-	for _, entity := range entities {
-		require.NoError(t, entity.Serialize(w))
-	}
-	require.NoError(t, w.Close())
-	return buf.Bytes()
 }
 
 func signedTestBundle(t *testing.T, entity *openpgp.Entity, contents []byte) release.Bundle {

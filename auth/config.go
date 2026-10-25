@@ -17,7 +17,6 @@
 package auth
 
 import (
-	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,9 +29,6 @@ import (
 	"github.com/unstablebuild/blue/logging/trace"
 	"golang.org/x/oauth2"
 )
-
-//go:embed package_keyring.asc
-var packageKeyringArmored string
 
 const (
 	// ServeTokenPath is the path at which oauth2 token redemption is performed.
@@ -72,11 +68,6 @@ type Config struct {
 	APIURL    string
 	SignupURL string
 	JWKSURL   string
-	// PackageKeyringArmored is the armored PGP public keyring that Rune
-	// clients trust to verify official package bundle signatures. Serving
-	// it here lets clients pick up key rotations and revocations without
-	// shipping a new binary.
-	PackageKeyringArmored string `json:"package_keyring_armored,omitempty"`
 	// MgmtTokenURL is the oauth2 token endpoint used by ox-api's
 	// server-to-server client_credentials grant against the Auth0
 	// Management API. It is distinct from oauth2.Config.Endpoint.TokenURL
@@ -137,12 +128,11 @@ func DefaultM2MConfig() Config {
 func DefaultNativeConfig(api *url.URL) Config {
 	tokenURL := api.JoinPath(ServeTokenPath).String()
 	return Config{
-		APIURL:                APIURL,
-		JWKSURL:               JWKSURL,
-		SignupURL:             SignupURL,
-		MgmtTokenURL:          MgmtTokenURL,
-		PackageKeyringArmored: packageKeyringArmored,
-		HeadlessClientID:      HeadlessClientID,
+		APIURL:           APIURL,
+		JWKSURL:          JWKSURL,
+		SignupURL:        SignupURL,
+		MgmtTokenURL:     MgmtTokenURL,
+		HeadlessClientID: HeadlessClientID,
 		Config: oauth2.Config{
 			ClientID: ClientID,
 			Scopes: []string{

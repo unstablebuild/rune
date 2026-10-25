@@ -3827,7 +3827,7 @@ func TestWorkspaceConfig(t *testing.T) {
 			notificationsConfig(), cfg, storage, dir,
 			func(term.Event) bool {
 				return true
-			}, runner, pkgtrust.NewStore(dir, nil), mu, nil,
+			}, runner, pkgtrust.NewStore(), mu, nil,
 			func() (ideConfig, error) { return cfg, errors.New("boom") },
 			".sixrc", 0, 0, 0, '1', 0, 0, true, nil, releaseManager, shRunner, 0, nil, false,
 			false, newCommandObserverRegistry())
@@ -7267,7 +7267,7 @@ func newTestWorkspaceManagerHandlerWithHome(
 		fn(m.workspaceManagerHandler)
 	}
 	err := m.workspaceManagerHandler.init(uri, homeURI, manager,
-		notiConfig, cfg, storage, dir, publish, runner, pkgtrust.NewStore(dir, nil), mu, extensions,
+		notiConfig, cfg, storage, dir, publish, runner, pkgtrust.NewStore(), mu, extensions,
 		func() (ideConfig, error) {
 			// Like a real reload, every workspace build records its
 			// soft errors into its own map.
@@ -11756,7 +11756,7 @@ editor:
 
 	mu := new(sync.Mutex)
 	scheduleNextTick, drainSchedule := newTestScheduler(t, mu)
-	i, err := New(dir, configPath, dataDir, pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir),
+	i, err := New(dir, configPath, dataDir, pkgtrust.NewStore(), newTestStorage(t, dataDir),
 		WithLocker(mu),
 		WithScheduleNextTick(scheduleNextTick),
 		WithPublishEvent(func(term.Event) bool { return true }),

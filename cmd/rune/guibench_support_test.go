@@ -269,7 +269,7 @@ func newGUIBenchSession(tb testing.TB, cfg guiBenchConfig) *guiBenchSession {
 		s.mu, publishEvent, cellPixelSize, nil, /* setAltModifier */
 		func(*url.URL) error { return nil }, clipboard.NewInMemory(),
 		s.dataDir /* installBackupDir */, rootCfg,
-		pkgtrust.NewStore(s.dataDir, nil),
+		pkgtrust.NewStore(),
 	)
 	if err != nil {
 		tb.Fatalf("new bootstrap handler: %v", err)

@@ -218,7 +218,7 @@ func dialExtensionWorkspace(
 	authorizer, err := ideauthorizer.NewAuthorizer(
 		texttest.NopEditor(), prompt, storage,
 		func(fn func()) bool { fn(); return true },
-		e2eBrowser{}, pkgtrust.NewStore(t.TempDir(), nil), ideauthorizer.Config{},
+		e2eBrowser{}, pkgtrust.NewStore(), ideauthorizer.Config{},
 	)
 	require.NoError(t, err)
 

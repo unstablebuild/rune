@@ -80,7 +80,7 @@ workspace:
 
 	var mu sync.Mutex
 	i, err := ide.New(workspaceURI.String(), cfgPath, dir,
-		pkgtrust.NewStore(dir, nil),
+		pkgtrust.NewStore(),
 		localstorage.New(context.Background(), dir, docbson.Marshaler()),
 		ide.WithLocker(&mu),
 		ide.WithScheduleNextTick(hostScheduleNextTickIDE(&mu)),

@@ -109,7 +109,7 @@ workspace:
 	uri, err := workspaceapi.CurrentUserHostURI(dir)
 	require.NoError(t, err)
 	i, err := ide.New(uri.String(), cfgPath, dataDir,
-		pkgtrust.NewStore(dataDir, nil),
+		pkgtrust.NewStore(),
 		localstorage.New(context.Background(), dataDir, docbson.Marshaler()),
 		ide.WithLocker(mu),
 		ide.WithScheduleNextTick(func(fn func()) bool {

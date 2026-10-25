@@ -42,7 +42,7 @@ func newHostPackageManager(
 	rootStorage storageapi.Service, releases release.Manager,
 	scheme schemeapi.Scheme, applyEnv func(),
 ) (*idepkg.Manager, storageapi.Service) {
-	trust := pkgtrust.NewStore(*flagDataPath, trustKeyringFetcher())
+	trust := pkgtrust.NewStore()
 	mgr, storage := idepkg.NewProvisioningManager(
 		rootStorage, releases, scheme,
 		*flagDataPath, *flagConfigPath, resolveRemoteEditorMode(),

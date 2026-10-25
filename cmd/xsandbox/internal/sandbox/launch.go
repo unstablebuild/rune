@@ -113,7 +113,7 @@ func (s *sandbox) launch() error {
 	prompt := autoPromptOpener{}
 	storage := storagestub.NewInMemoryService()
 	tick := func(fn func()) bool { fn(); return true }
-	trust := pkgtrust.NewStore(s.dataDir, nil)
+	trust := pkgtrust.NewStore()
 	authorizer, err := ideauthorizer.NewAuthorizer(
 		s.editor, prompt, storage, tick, s.browser, trust, ideauthorizer.Config{
 			AutoAuthorizeExtensions: true,

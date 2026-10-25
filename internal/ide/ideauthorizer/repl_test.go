@@ -64,7 +64,7 @@ func TestAuthorizerRegistersRevokeREPLCommand(t *testing.T) {
 
 	editor := newCapturingEditor()
 	_, err := NewAuthorizer(editor, nil, storagestub.NewInMemoryService(),
-		syncScheduleNextTick, &capturingStatus{}, pkgtrust.NewStore(t.TempDir(), nil), Config{})
+		syncScheduleNextTick, &capturingStatus{}, pkgtrust.NewStore(), Config{})
 	require.NoError(t, err)
 
 	require.Equal(t, 1, editor.calls)
@@ -79,7 +79,7 @@ func TestAuthorizerRequiresEditor(t *testing.T) {
 	t.Parallel()
 
 	_, err := NewAuthorizer(nil, nil, storagestub.NewInMemoryService(),
-		syncScheduleNextTick, &capturingStatus{}, pkgtrust.NewStore(t.TempDir(), nil), Config{})
+		syncScheduleNextTick, &capturingStatus{}, pkgtrust.NewStore(), Config{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "editor is required")
 }
@@ -88,7 +88,7 @@ func TestAuthorizerRequiresStatus(t *testing.T) {
 	t.Parallel()
 
 	_, err := NewAuthorizer(newCapturingEditor(), nil, storagestub.NewInMemoryService(),
-		syncScheduleNextTick, nil, pkgtrust.NewStore(t.TempDir(), nil), Config{})
+		syncScheduleNextTick, nil, pkgtrust.NewStore(), Config{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "status reporter is required")
 }

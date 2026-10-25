@@ -141,7 +141,7 @@ func TestPromptChoiceBrowserLifecycle(t *testing.T) {
 		workspaceDir,
 		configFile.Name(),
 		dataDir,
-		pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir),
+		pkgtrust.NewStore(), newTestStorage(t, dataDir),
 		WithPublishEvent(nopPublishEvent),
 		WithExtensionsRunner(FuncExtensionsRunner(testRunnerFn)),
 		WithLocker(mu),

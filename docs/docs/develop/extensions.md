@@ -124,9 +124,11 @@ much, or to re-test a permission prompt.
 
 ### Verified publishers
 
-Official packages Rune installs are signed. Rune ships a trust keyring and
-refreshes it from the API at startup, so it can tell when an extension's
-entrypoint belongs to a package signed by a **verified publisher**.
+Official packages Rune installs are signed. Rune ships a trust keyring, so it
+can tell when an extension's entrypoint belongs to a package signed by a
+**verified publisher**. The keyring is fixed per release: Rune never loads
+signing keys from the network or from disk, and you pick up a new or revoked
+key by upgrading Rune.
 
 You can let verified publishers skip the permission prompts with two
 top-level `authorizer` settings:

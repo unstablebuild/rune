@@ -75,7 +75,7 @@ func TestScheduleNextTickDoesNotReacquireHostLock(t *testing.T) {
 	err = h.init(nil, homeURI, manager,
 		notificationsConfig(), cfg, storage, dir,
 		func(term.Event) bool { return true },
-		FuncExtensionsRunner(testRunnerFn), pkgtrust.NewStore(dir, nil), mu, nil,
+		FuncExtensionsRunner(testRunnerFn), pkgtrust.NewStore(), mu, nil,
 		func() (ideConfig, error) { return cfg, nil },
 		".sixrc", 0, 0, 0, '1', 0, 0, true, nil, releaseManager,
 		shRunner, 0, nil, false, false, newCommandObserverRegistry())

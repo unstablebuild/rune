@@ -31,14 +31,10 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
-	"time"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
-	log "github.com/sirupsen/logrus"
 	bluecrypto "github.com/unstablebuild/blue/crypto"
 	"github.com/unstablebuild/blue/release"
-	"unstable.build/rune/internal/debug"
 )
 
 const (
@@ -53,139 +49,28 @@ const (
 //go:embed trusted_keys.asc
 var embeddedKeyring []byte
 
-// fetchWaitTimeout bounds how long the first VerifyBundle blocks for the
-// background keyring fetch to finish before falling back to the cached or
-// embedded ring. A stale in-memory ring is acceptable — restarting Rune
-// re-fetches — so verification never waits indefinitely.
-const fetchWaitTimeout = 5 * time.Second
-
-// KeyringFetcher retrieves the armored PGP keyring the API advertises. It is
-// injected so pkgtrust stays decoupled from the oauth2 config transport.
-type KeyringFetcher func() (armored []byte, err error)
-
 // Store holds the trust ring used to verify official package bundles.
-// A single Store is created at process startup and distributed to every
-// component that verifies provenance. When constructed with a
-// KeyringFetcher it fetches the served keyring once, in the background, and
-// the first VerifyBundle blocks briefly for that fetch to land; the fetched
-// ring is never mutated afterwards, so a stale in-memory ring is tolerated
-// until the next restart.
 type Store struct {
-	mu   sync.RWMutex
 	ring openpgp.EntityList
-	// cachePath persists the last fetched keyring; empty for test stores.
-	cachePath string
-	// fetchDone is closed once the background fetch completes (success or
-	// failure). Nil when no fetcher was supplied, in which case
-	// VerifyBundle never waits.
-	fetchDone chan struct{}
 }
 
-// NewStore returns the trust store rooted at dataDir. A keyring previously
-// fetched from the API — cached under dataDir — fully replaces the embedded
-// ring so served updates can both rotate and revoke trust anchors; the
-// embedded ring backs verification until a fetch succeeds. When fetch is
-// non-nil, the store fetches the served keyring once in the background and
-// the first VerifyBundle waits up to fetchWaitTimeout for it. Panics if the
-// embedded keyring does not parse, which is a build defect.
-func NewStore(dataDir string, fetch KeyringFetcher) *Store {
+// NewStore returns the trust store over the keyring compiled into this
+// binary.
+func NewStore() *Store {
 	ring, err := parseArmoredKeyring(embeddedKeyring)
 	if err != nil {
 		panic(fmt.Sprintf("pkgtrust: parse embedded keyring: %v", err))
 	}
-	s := &Store{ring: ring, cachePath: filepath.Join(dataDir, "trusted_keys.asc")}
-	if data, err := os.ReadFile(s.cachePath); err == nil {
-		if cached, perr := parseArmoredKeyring(data); perr == nil {
-			s.ring = cached
-		} else {
-			log.Warnf("parse package trust keyring cache %s: %v", s.cachePath, perr)
-		}
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		log.Warnf("read package trust keyring cache: %v", err)
-	}
-	if fetch != nil {
-		s.fetchDone = make(chan struct{})
-		go debug.CapturePanicReport(func() { s.runFetch(fetch) })
-	}
-	return s
+	return &Store{ring: ring}
 }
 
-// NewStoreWithKeyring returns a store over a fixed ring with no cache
-// persistence and no background fetch. Tests use it to inject their own
-// trust anchors.
+// NewStoreWithKeyring returns a store over the given ring. Tests use it to
+// inject their own trust anchors.
 func NewStoreWithKeyring(ring openpgp.EntityList) *Store {
 	if len(ring) == 0 {
 		panic("pkgtrust: empty keyring")
 	}
 	return &Store{ring: ring}
-}
-
-// runFetch performs the one-shot background keyring fetch and closes
-// fetchDone so the first VerifyBundle can proceed.
-func (s *Store) runFetch(fetch KeyringFetcher) {
-	defer close(s.fetchDone)
-	armored, err := fetch()
-	if err != nil {
-		log.Debugf("fetch package trust keyring: %v", err)
-		return
-	}
-	ring, err := parseArmoredKeyring(armored)
-	if err != nil {
-		log.Warnf("parse fetched package trust keyring: %v", err)
-		return
-	}
-	s.mu.Lock()
-	s.ring = ring
-	s.mu.Unlock()
-	if err := s.persist(armored); err != nil {
-		log.Warnf("persist package trust keyring cache: %v", err)
-	}
-}
-
-// persist atomically writes the fetched armored keyring to the on-disk cache
-// so a later offline startup reuses it.
-func (s *Store) persist(armored []byte) error {
-	cachePath := s.cachePath
-	if cachePath == "" {
-		return nil
-	}
-	if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err != nil {
-		return fmt.Errorf("create keyring cache dir: %w", err)
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(cachePath), ".trusted_keys-*")
-	if err != nil {
-		return fmt.Errorf("create keyring cache: %w", err)
-	}
-	defer func() { _ = os.Remove(tmp.Name()) }()
-	if _, err := tmp.Write(armored); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("write keyring cache: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close keyring cache: %w", err)
-	}
-	if err := os.Rename(tmp.Name(), cachePath); err != nil {
-		return fmt.Errorf("persist keyring cache: %w", err)
-	}
-	return nil
-}
-
-// awaitFetch blocks until the background fetch finishes or fetchWaitTimeout
-// elapses. It is a no-op for stores without a fetcher.
-func (s *Store) awaitFetch() {
-	if s.fetchDone == nil {
-		return
-	}
-	select {
-	case <-s.fetchDone:
-	case <-time.After(fetchWaitTimeout):
-	}
-}
-
-func (s *Store) keyring() openpgp.EntityList {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.ring
 }
 
 func parseArmoredKeyring(armored []byte) (openpgp.EntityList, error) {
@@ -267,8 +152,6 @@ func VerifyEntries(dir string, entries []Entry) error {
 // VerifyBundle validates an official bundle's detached signature over its raw
 // tarball bytes and returns the signing provenance.
 func (s *Store) VerifyBundle(bundle release.Bundle, tar io.ReadSeeker) (Provenance, error) {
-	s.awaitFetch()
-	ring := s.keyring()
 	keyID := bundle.Metadata[MetadataSigningKeyID]
 	if keyID == "" {
 		return Provenance{}, errors.New("bundle lacks pgp-signing-key-id metadata")
@@ -277,7 +160,7 @@ func (s *Store) VerifyBundle(bundle release.Bundle, tar io.ReadSeeker) (Provenan
 	if err != nil {
 		return Provenance{}, fmt.Errorf("parse signing key ID %q: %w", keyID, err)
 	}
-	keys := ring.KeysById(parsedID)
+	keys := s.ring.KeysById(parsedID)
 	if len(keys) == 0 {
 		return Provenance{}, fmt.Errorf("signing key %q is not trusted", keyID)
 	}
@@ -318,7 +201,7 @@ func (s *Store) VerifyBundle(bundle release.Bundle, tar io.ReadSeeker) (Provenan
 // IsTrustedFingerprint reports whether fp is a primary-key fingerprint in the
 // trust ring.
 func (s *Store) IsTrustedFingerprint(fp string) bool {
-	for _, entity := range s.keyring() {
+	for _, entity := range s.ring {
 		fingerprint := strings.ToUpper(hex.EncodeToString(entity.PrimaryKey.Fingerprint))
 		if strings.EqualFold(fp, fingerprint) {
 			return true

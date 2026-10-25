@@ -36,7 +36,6 @@ import (
 	"time"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
-	"github.com/ProtonMail/go-crypto/openpgp/armor"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -99,7 +98,7 @@ func TestIDEInitializationIntegration(t *testing.T) {
 		})
 
 		i := new(IDE)
-		err = i.init(cwdURI.String(), configFile.Name(), dir, pkgtrust.NewStore(dir, nil), newTestStorage(t, dir),
+		err = i.init(cwdURI.String(), configFile.Name(), dir, pkgtrust.NewStore(), newTestStorage(t, dir),
 			WithPublishEvent(nopPublishEvent),
 			WithExtensionsRunner(FuncExtensionsRunner(testRunnerFn)),
 			WithLocker(new(sync.Mutex)))
@@ -129,7 +128,7 @@ func TestIDEInitializationIntegration(t *testing.T) {
 
 		i := new(IDE)
 		err = i.init(cwdURI.String(), configFile.Name(),
-			dir, pkgtrust.NewStore(dir, nil), newTestStorage(t, dir), WithPublishEvent(nopPublishEvent),
+			dir, pkgtrust.NewStore(), newTestStorage(t, dir), WithPublishEvent(nopPublishEvent),
 			WithExtensionsRunner(FuncExtensionsRunner(testRunnerFn)),
 			WithLocker(new(sync.Mutex)))
 		require.NoError(t, err)
@@ -154,7 +153,7 @@ func TestIDEInitializationIntegration(t *testing.T) {
 		})
 
 		i := new(IDE)
-		err = i.init(".", configFile.Name(), dir, pkgtrust.NewStore(dir, nil), newTestStorage(t, dir),
+		err = i.init(".", configFile.Name(), dir, pkgtrust.NewStore(), newTestStorage(t, dir),
 			WithPublishEvent(nopPublishEvent),
 			WithExtensionsRunner(FuncExtensionsRunner(testRunnerFn)),
 			WithLocker(new(sync.Mutex)))
@@ -187,7 +186,7 @@ func TestIDEInitializationIntegration(t *testing.T) {
 		require.NoError(t, err)
 
 		i := new(IDE)
-		err = i.init(".", configFile.Name(), dir, pkgtrust.NewStore(dir, nil), newTestStorage(t, dir),
+		err = i.init(".", configFile.Name(), dir, pkgtrust.NewStore(), newTestStorage(t, dir),
 			WithPublishEvent(nopPublishEvent),
 			WithExtensionsRunner(FuncExtensionsRunner(testRunnerFn)),
 			WithLocker(new(sync.Mutex)))
@@ -210,7 +209,7 @@ func TestIDEInitializationIntegration(t *testing.T) {
 		})
 
 		i := new(IDE)
-		err = i.init("", configFile.Name(), dir, pkgtrust.NewStore(dir, nil), newTestStorage(t, dir),
+		err = i.init("", configFile.Name(), dir, pkgtrust.NewStore(), newTestStorage(t, dir),
 			WithPublishEvent(nopPublishEvent),
 			WithExtensionsRunner(FuncExtensionsRunner(testRunnerFn)),
 			WithLocker(new(sync.Mutex)))
@@ -231,7 +230,7 @@ func TestIDEInitializationIntegration(t *testing.T) {
 		})
 
 		i := new(IDE)
-		err = i.init("", configPath, dataDir, pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir),
+		err = i.init("", configPath, dataDir, pkgtrust.NewStore(), newTestStorage(t, dataDir),
 			WithPublishEvent(nopPublishEvent),
 			WithExtensionsRunner(FuncExtensionsRunner(testRunnerFn)),
 			WithLocker(new(sync.Mutex)),
@@ -257,7 +256,7 @@ func TestIDEInitializationIntegration(t *testing.T) {
 		dataDir := t.TempDir()
 
 		i := new(IDE)
-		err := i.init("", configPath, dataDir, pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir),
+		err := i.init("", configPath, dataDir, pkgtrust.NewStore(), newTestStorage(t, dataDir),
 			WithPublishEvent(nopPublishEvent),
 			WithExtensionsRunner(FuncExtensionsRunner(testRunnerFn)),
 			WithLocker(new(sync.Mutex)),
@@ -283,7 +282,7 @@ func TestIDEInitializationIntegration(t *testing.T) {
 		dataDir := t.TempDir()
 
 		i := new(IDE)
-		err := i.init("", configPath, dataDir, pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir),
+		err := i.init("", configPath, dataDir, pkgtrust.NewStore(), newTestStorage(t, dataDir),
 			WithPublishEvent(nopPublishEvent),
 			WithExtensionsRunner(FuncExtensionsRunner(testRunnerFn)),
 			WithLocker(new(sync.Mutex)),
@@ -320,7 +319,7 @@ func TestIDEInitializationIntegration(t *testing.T) {
 		})
 
 		var captured term.Attributes
-		i, err := New("", configPath, dataDir, pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir),
+		i, err := New("", configPath, dataDir, pkgtrust.NewStore(), newTestStorage(t, dataDir),
 			WithPublishEvent(nopPublishEvent),
 			WithExtensionsRunner(FuncExtensionsRunner(testRunnerFn)),
 			WithLocker(new(sync.Mutex)),
@@ -354,7 +353,7 @@ func TestIDEInitializationIntegration(t *testing.T) {
 		})
 
 		i := new(IDE)
-		err = i.init("", configFile.Name(), dataDir, pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir),
+		err = i.init("", configFile.Name(), dataDir, pkgtrust.NewStore(), newTestStorage(t, dataDir),
 			WithPublishEvent(nopPublishEvent),
 			WithExtensionsRunner(FuncExtensionsRunner(testRunnerFn)),
 			WithLocker(new(sync.Mutex)))
@@ -391,7 +390,7 @@ func TestOpen(t *testing.T) {
 		dataDir, err := os.MkdirTemp("", "")
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = os.RemoveAll(dataDir) })
-		i, err := New("", config.Name(), dataDir, pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir), WithPublishEvent(nopPublishEvent))
+		i, err := New("", config.Name(), dataDir, pkgtrust.NewStore(), newTestStorage(t, dataDir), WithPublishEvent(nopPublishEvent))
 		require.NoError(t, err)
 		uri, err := workspaceapi.CurrentUserHostURI(file.Name())
 		require.NoError(t, err)
@@ -409,7 +408,7 @@ func TestOpen(t *testing.T) {
 		dataDir, err := os.MkdirTemp("", "")
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = os.RemoveAll(dataDir) })
-		i, err := New(os.TempDir(), config.Name(), dataDir, pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir), WithPublishEvent(nopPublishEvent))
+		i, err := New(os.TempDir(), config.Name(), dataDir, pkgtrust.NewStore(), newTestStorage(t, dataDir), WithPublishEvent(nopPublishEvent))
 		require.NoError(t, err)
 		uri, err := workspaceapi.CurrentUserHostURI(file.Name())
 		require.NoError(t, err)
@@ -436,7 +435,7 @@ func TestOpen(t *testing.T) {
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = os.RemoveAll(dataDir) })
 		rm := idepkgtest.NewReleaseManager(pkgs, bundles)
-		i, err := New("", config.Name(), dataDir, pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir), WithReleaseManager(rm), WithPublishEvent(nopPublishEvent))
+		i, err := New("", config.Name(), dataDir, pkgtrust.NewStore(), newTestStorage(t, dataDir), WithReleaseManager(rm), WithPublishEvent(nopPublishEvent))
 		require.NoError(t, err)
 		uri, err := workspaceapi.CurrentUserHostURI(file.Name())
 		require.NoError(t, err)
@@ -466,7 +465,7 @@ func TestHomeWorkspaceDoesNotStartExtensions(t *testing.T) {
 
 	recorder := &recordingRunner{}
 	mu := new(sync.Mutex)
-	i, err := New("", configPath, dir, pkgtrust.NewStore(dir, nil), newTestStorage(t, dir),
+	i, err := New("", configPath, dir, pkgtrust.NewStore(), newTestStorage(t, dir),
 		WithPublishEvent(nopPublishEvent),
 		WithExtensionsRunner(recordingExtensionsRunner{runner: recorder}),
 		WithLocker(mu),
@@ -499,7 +498,7 @@ func TestSystemClipboardSharedAcrossConfigs(t *testing.T) {
 			"workspace:\n  home: "+dir+"\n"), 0o644))
 
 	sys := clipboard.NewInMemory()
-	i, err := New("", configPath, dir, pkgtrust.NewStore(dir, nil), newTestStorage(t, dir),
+	i, err := New("", configPath, dir, pkgtrust.NewStore(), newTestStorage(t, dir),
 		WithPublishEvent(nopPublishEvent),
 		WithClipboard(sys),
 	)
@@ -529,7 +528,7 @@ func TestTutorialsSeeTheConfiguredConfigPath(t *testing.T) {
 	require.NoError(t, os.WriteFile(configPath,
 		[]byte("workspace:\n  home: "+dir+"\n"), 0o644))
 
-	i, err := New("", configPath, dir, pkgtrust.NewStore(dir, nil),
+	i, err := New("", configPath, dir, pkgtrust.NewStore(),
 		newTestStorage(t, dir),
 		WithPublishEvent(nopPublishEvent),
 		WithLocker(new(sync.Mutex)),
@@ -591,8 +590,7 @@ func TestSignedPackageTrustIntegration(t *testing.T) {
 	schedule, drainSchedule := newTestScheduler(t, mu)
 	extensions, err := extensionv2.NewRunner(context.Background(), mu, dataDir)
 	require.NoError(t, err)
-	keyring := armoredPublicKeyring(t, entity)
-	trust := pkgtrust.NewStore(dataDir, func() ([]byte, error) { return keyring, nil })
+	trust := pkgtrust.NewStoreWithKeyring(openpgp.EntityList{entity})
 	i, err := New(workspaceDir, configPath, dataDir, trust, newTestStorage(t, dataDir),
 		WithReleaseManager(rm),
 		WithExtensionsRunner(extensions),
@@ -766,18 +764,6 @@ func seedSignedPackage(
 		release.NopProgressReader(bytes.NewReader(payload))))
 }
 
-func armoredPublicKeyring(t *testing.T, entities ...*openpgp.Entity) []byte {
-	t.Helper()
-	var buf bytes.Buffer
-	w, err := armor.Encode(&buf, openpgp.PublicKeyType, nil)
-	require.NoError(t, err)
-	for _, entity := range entities {
-		require.NoError(t, entity.Serialize(w))
-	}
-	require.NoError(t, w.Close())
-	return buf.Bytes()
-}
-
 func deleteExtensionSentinel(t *testing.T, dataDir, extensionID string) {
 	t.Helper()
 	storage := localstorage.New(context.Background(), filepath.Join(dataDir, "extensions"),
@@ -825,7 +811,7 @@ command:
 	require.NoError(t, os.WriteFile(repoBFile, nil, 0666))
 
 	mu := new(sync.Mutex)
-	i, err := New(repoB, configPath, dataDir, pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir),
+	i, err := New(repoB, configPath, dataDir, pkgtrust.NewStore(), newTestStorage(t, dataDir),
 		WithPublishEvent(nopPublishEvent),
 		WithExtensionsRunner(FuncExtensionsRunner(testRunnerFn)),
 		WithLocker(mu),
@@ -925,7 +911,7 @@ workspace:
 	require.NoError(t, os.WriteFile(repoBFile, nil, 0666))
 
 	mu := new(sync.Mutex)
-	i, err := New(repoB, configPath, dataDir, pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir),
+	i, err := New(repoB, configPath, dataDir, pkgtrust.NewStore(), newTestStorage(t, dataDir),
 		WithPublishEvent(nopPublishEvent),
 		WithExtensionsRunner(FuncExtensionsRunner(testRunnerFn)),
 		WithLocker(mu),
@@ -1017,7 +1003,7 @@ command:
 		return iterator.FromSlice([]string{"fake://online/"}), "", nil
 	})
 	mu := new(sync.Mutex)
-	i, err := New(repoB, configPath, dataDir, pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir),
+	i, err := New(repoB, configPath, dataDir, pkgtrust.NewStore(), newTestStorage(t, dataDir),
 		WithPublishEvent(nopPublishEvent),
 		WithExtensionsRunner(FuncExtensionsRunner(testRunnerFn)),
 		WithLocker(mu),
@@ -1105,7 +1091,7 @@ command:
 		return answer(), "", nil
 	})
 	mu := new(sync.Mutex)
-	i, err := New(repo, configPath, dataDir, pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir),
+	i, err := New(repo, configPath, dataDir, pkgtrust.NewStore(), newTestStorage(t, dataDir),
 		WithPublishEvent(nopPublishEvent),
 		WithExtensionsRunner(FuncExtensionsRunner(testRunnerFn)),
 		WithLocker(mu),
@@ -1219,7 +1205,7 @@ command:
 	require.NoError(t, os.WriteFile(repoBFile, nil, 0666))
 
 	mu := new(sync.Mutex)
-	i, err := New(repoB, configPath, dataDir, pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir),
+	i, err := New(repoB, configPath, dataDir, pkgtrust.NewStore(), newTestStorage(t, dataDir),
 		WithPublishEvent(nopPublishEvent),
 		WithExtensionsRunner(FuncExtensionsRunner(testRunnerFn)),
 		WithLocker(mu),
@@ -1276,7 +1262,7 @@ command:
 
 	mu := new(sync.Mutex)
 	scheduleNextTick, drain := newTestScheduler(t, mu)
-	i, err := New(repoB, configPath, dataDir, pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir),
+	i, err := New(repoB, configPath, dataDir, pkgtrust.NewStore(), newTestStorage(t, dataDir),
 		WithPublishEvent(nopPublishEvent),
 		WithExtensionsRunner(FuncExtensionsRunner(testRunnerFn)),
 		WithLocker(mu),
@@ -1375,7 +1361,7 @@ func TestWorkspaceOpenCompletionDispatchesQuotedPath(t *testing.T) {
 			mu := new(sync.Mutex)
 			scheduleNextTick, drain := newTestScheduler(t, mu)
 			i, err := New(repoB, configFile.Name(), dataDir,
-				pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir),
+				pkgtrust.NewStore(), newTestStorage(t, dataDir),
 				WithPublishEvent(nopPublishEvent),
 				WithExtensionsRunner(FuncExtensionsRunner(testRunnerFn)),
 				WithLocker(mu),
@@ -1504,7 +1490,7 @@ command:
 		return runner, nil
 	}
 
-	i, err := New(repo, configPath, dataDir, pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir),
+	i, err := New(repo, configPath, dataDir, pkgtrust.NewStore(), newTestStorage(t, dataDir),
 		WithPublishEvent(nopPublishEvent),
 		WithExtensionsRunner(FuncExtensionsRunner(runnerFn)),
 		WithScheduleNextTick(scheduleNextTick),
@@ -1610,7 +1596,7 @@ command:
 		return runner, nil
 	}
 
-	i, err := New(repo, configPath, dataDir, pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir),
+	i, err := New(repo, configPath, dataDir, pkgtrust.NewStore(), newTestStorage(t, dataDir),
 		WithPublishEvent(nopPublishEvent),
 		WithExtensionsRunner(FuncExtensionsRunner(runnerFn)),
 		WithScheduleNextTick(scheduleNextTick),
@@ -1696,7 +1682,7 @@ workspace:
 	mu := new(sync.Mutex)
 	scheduleNextTick, drainSchedule := newTestScheduler(t, mu)
 
-	i, err := New(homeDir, configPath, dataDir, pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir),
+	i, err := New(homeDir, configPath, dataDir, pkgtrust.NewStore(), newTestStorage(t, dataDir),
 		WithLocker(mu),
 		WithScheduleNextTick(scheduleNextTick),
 		WithExtensionsRunner(FuncExtensionsRunner(testRunnerFn)),
@@ -1840,7 +1826,7 @@ workspace:
 
 		mu := new(sync.Mutex)
 		scheduleNextTick, drainSchedule := newTestScheduler(t, mu)
-		i, err := New(cwd, configPath, dataDir, pkgtrust.NewStore(dataDir, nil),
+		i, err := New(cwd, configPath, dataDir, pkgtrust.NewStore(),
 			newTestStorage(t, dataDir),
 			WithLocker(mu),
 			WithScheduleNextTick(scheduleNextTick),
@@ -2029,7 +2015,7 @@ command:
 
 	mu := new(sync.Mutex)
 	scheduleNextTick, drainSchedule := newTestScheduler(t, mu)
-	i, err := New(dir, configPath, dataDir, pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir),
+	i, err := New(dir, configPath, dataDir, pkgtrust.NewStore(), newTestStorage(t, dataDir),
 		WithLocker(mu),
 		WithScheduleNextTick(scheduleNextTick),
 		WithPublishEvent(func(term.Event) bool { return true }),
@@ -2127,7 +2113,7 @@ command:
 
 	mu := new(sync.Mutex)
 	scheduleNextTick, drainSchedule := newTestScheduler(t, mu)
-	i, err := New(dir, configPath, dataDir, pkgtrust.NewStore(dataDir, nil),
+	i, err := New(dir, configPath, dataDir, pkgtrust.NewStore(),
 		newTestStorage(t, dataDir),
 		WithLocker(mu),
 		WithScheduleNextTick(scheduleNextTick),
@@ -2227,7 +2213,7 @@ command:
 
 	mu := new(sync.Mutex)
 	scheduleNextTick, drainSchedule := newTestScheduler(t, mu)
-	i, err := New(dir, configPath, dataDir, pkgtrust.NewStore(dataDir, nil),
+	i, err := New(dir, configPath, dataDir, pkgtrust.NewStore(),
 		newTestStorage(t, dataDir),
 		WithLocker(mu),
 		WithScheduleNextTick(scheduleNextTick),
@@ -2365,7 +2351,7 @@ workspace:
 	mu := new(sync.Mutex)
 	scheduleNextTick, drainSchedule := newTestScheduler(t, mu)
 
-	i, err := New(dir, configPath, dataDir, pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir),
+	i, err := New(dir, configPath, dataDir, pkgtrust.NewStore(), newTestStorage(t, dataDir),
 		WithLocker(mu),
 		WithScheduleNextTick(scheduleNextTick),
 		WithPublishEvent(func(term.Event) bool { return true }),
@@ -2441,7 +2427,7 @@ clipboard: memory
 	mu := new(sync.Mutex)
 	scheduleNextTick, drainSchedule := newTestScheduler(t, mu)
 
-	i, err := New(dir, configPath, dataDir, pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir),
+	i, err := New(dir, configPath, dataDir, pkgtrust.NewStore(), newTestStorage(t, dataDir),
 		WithLocker(mu),
 		WithScheduleNextTick(scheduleNextTick),
 		WithPublishEvent(func(term.Event) bool { return true }),
@@ -2486,7 +2472,7 @@ command:
 	mu := new(sync.Mutex)
 	scheduleNextTick, drainSchedule := newTestScheduler(t, mu)
 
-	i, err := New(dir, configPath, dataDir, pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir),
+	i, err := New(dir, configPath, dataDir, pkgtrust.NewStore(), newTestStorage(t, dataDir),
 		WithLocker(mu),
 		WithScheduleNextTick(scheduleNextTick),
 		WithPublishEvent(func(term.Event) bool { return true }),
@@ -2566,7 +2552,7 @@ workspace:
 	startupCallback := make(chan struct{})
 	require.True(t, scheduleNextTick(func() { close(startupCallback) }))
 
-	i, err := New(dir, configPath, dataDir, pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir),
+	i, err := New(dir, configPath, dataDir, pkgtrust.NewStore(), newTestStorage(t, dataDir),
 		WithLocker(mu),
 		WithScheduleNextTick(scheduleNextTick),
 		WithPublishEvent(func(term.Event) bool { return true }),
@@ -2703,7 +2689,7 @@ command:
 	mu := new(sync.Mutex)
 	scheduleNextTick, drainSchedule := newTestScheduler(t, mu)
 
-	i, err := New(dir, configPath, dataDir, pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir),
+	i, err := New(dir, configPath, dataDir, pkgtrust.NewStore(), newTestStorage(t, dataDir),
 		WithLocker(mu),
 		WithScheduleNextTick(scheduleNextTick),
 		WithPublishEvent(func(term.Event) bool { return true }),
@@ -2986,7 +2972,7 @@ func TestIDEExoMisconfigurationFallsBackToDefault(t *testing.T) {
 			i := new(IDE)
 			require.NotPanics(t, func() {
 				err = i.init(cwdURI.String(),
-					configFile.Name(), dir, pkgtrust.NewStore(dir, nil), newTestStorage(t, dir),
+					configFile.Name(), dir, pkgtrust.NewStore(), newTestStorage(t, dir),
 					WithPublishEvent(nopPublishEvent),
 					WithExtensionsRunner(FuncExtensionsRunner(testRunnerFn)),
 					WithLocker(new(sync.Mutex)))
@@ -3037,7 +3023,7 @@ func TestIDEExoWellFormedConfigDoesNotFallBack(t *testing.T) {
 	i := new(IDE)
 	require.NotPanics(t, func() {
 		err = i.init(cwdURI.String(),
-			configFile.Name(), dir, pkgtrust.NewStore(dir, nil), newTestStorage(t, dir),
+			configFile.Name(), dir, pkgtrust.NewStore(), newTestStorage(t, dir),
 			WithPublishEvent(nopPublishEvent),
 			WithExtensionsRunner(FuncExtensionsRunner(testRunnerFn)),
 			WithLocker(new(sync.Mutex)))
@@ -3132,7 +3118,7 @@ func TestIDEStartingTutorialDispatchesOnReady(t *testing.T) {
 			}
 
 			i, err := New("", configPath, dataDir,
-				pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir), opts...)
+				pkgtrust.NewStore(), newTestStorage(t, dataDir), opts...)
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = i.Close() })
 
@@ -3215,7 +3201,7 @@ func TestIDEOnboardingActiveGate(t *testing.T) {
 				opts = append(opts, WithStartingTutorial("basics"))
 			}
 			i, err := New("", configFile.Name(), dataDir,
-				pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir), opts...)
+				pkgtrust.NewStore(), newTestStorage(t, dataDir), opts...)
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = i.Close() })
 
@@ -3245,7 +3231,7 @@ func TestIDESetRightInsetReachesTheHomeWorkspace(t *testing.T) {
 	dataDir := t.TempDir()
 	mu := new(sync.Mutex)
 	i, err := New("", configFile.Name(), dataDir,
-		pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir),
+		pkgtrust.NewStore(), newTestStorage(t, dataDir),
 		WithPublishEvent(nopPublishEvent),
 		WithExtensionsRunner(FuncExtensionsRunner(testRunnerFn)),
 		WithLocker(mu),
@@ -3277,7 +3263,7 @@ func TestIDETutorialTileSitsOutsideTheWorkspaces(t *testing.T) {
 	dataDir := t.TempDir()
 	mu := new(sync.Mutex)
 	i, err := New("", configFile.Name(), dataDir,
-		pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir),
+		pkgtrust.NewStore(), newTestStorage(t, dataDir),
 		WithPublishEvent(nopPublishEvent),
 		WithExtensionsRunner(FuncExtensionsRunner(testRunnerFn)),
 		WithLocker(mu),
@@ -3333,7 +3319,7 @@ func TestIDETutorialTileLinesUpWithTheWorkspaceWindows(t *testing.T) {
 	dataDir := t.TempDir()
 	mu := new(sync.Mutex)
 	i, err := New("", configFile.Name(), dataDir,
-		pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir),
+		pkgtrust.NewStore(), newTestStorage(t, dataDir),
 		WithPublishEvent(nopPublishEvent),
 		WithExtensionsRunner(FuncExtensionsRunner(testRunnerFn)),
 		WithLocker(mu),
@@ -3379,7 +3365,7 @@ func TestIDEPointerLeaves(t *testing.T) {
 		"package main // a line long enough to run past the edge of a window ✓✓✓\n", 80)), 0o600))
 	mu := new(sync.Mutex)
 	i, err := New("", configFile.Name(), dataDir,
-		pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir),
+		pkgtrust.NewStore(), newTestStorage(t, dataDir),
 		WithPublishEvent(nopPublishEvent),
 		WithExtensionsRunner(FuncExtensionsRunner(testRunnerFn)),
 		WithLocker(mu),
@@ -3529,7 +3515,7 @@ tutorial(entry=run)
 		if registerNavigation {
 			opts = append(opts, WithStarlarkTutorial("navigation", minimalStarTutorial))
 		}
-		i, err := New("", configFile.Name(), dataDir, pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir), opts...)
+		i, err := New("", configFile.Name(), dataDir, pkgtrust.NewStore(), newTestStorage(t, dataDir), opts...)
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = i.Close() })
 		root := i.Ready()
@@ -3655,7 +3641,7 @@ func TestIDECloseCommandPrompt(t *testing.T) {
 	scheduleNextTick, drain := newTestScheduler(t, mu)
 
 	i, err := New("", configFile.Name(), dataDir,
-		pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir),
+		pkgtrust.NewStore(), newTestStorage(t, dataDir),
 		WithPublishEvent(nopPublishEvent),
 		WithExtensionsRunner(FuncExtensionsRunner(testRunnerFn)),
 		WithLocker(mu),
@@ -3707,7 +3693,7 @@ func TestCloseDoesNotCloseBorrowedStorage(t *testing.T) {
 	store := &closeCountingService{Service: newTestStorage(t, dataDir)}
 	t.Cleanup(func() { _ = store.Service.Close() })
 
-	i, err := New("", config.Name(), dataDir, pkgtrust.NewStore(dataDir, nil), store,
+	i, err := New("", config.Name(), dataDir, pkgtrust.NewStore(), store,
 		WithPublishEvent(nopPublishEvent),
 		WithExtensionsRunner(FuncExtensionsRunner(testRunnerFn)),
 		WithLocker(new(sync.Mutex)))
@@ -3749,7 +3735,7 @@ func TestSharedStorageSurvivesPreIDEClose(t *testing.T) {
 	t.Cleanup(func() { _ = os.RemoveAll(dataDir) })
 
 	shared := newTestStorage(t, dataDir)
-	trust := pkgtrust.NewStore(dataDir, nil)
+	trust := pkgtrust.NewStore()
 	t.Cleanup(func() { _ = shared.Close() })
 
 	opts := []Option{
@@ -3802,7 +3788,7 @@ func TestIDEOpenDoesNotReadProtectedDirs(t *testing.T) {
 
 	mu := new(sync.Mutex)
 	scheduleNextTick, drain := newTestScheduler(t, mu)
-	i, err := New(homeURI, configFile.Name(), dataDir, pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir),
+	i, err := New(homeURI, configFile.Name(), dataDir, pkgtrust.NewStore(), newTestStorage(t, dataDir),
 		WithLocker(mu),
 		WithScheduleNextTick(scheduleNextTick),
 		WithPublishEvent(nopPublishEvent),

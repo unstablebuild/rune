@@ -1258,6 +1258,15 @@ func newTestManager(
 	packages map[string]release.Package,
 	versions map[string][]release.Bundle,
 ) (*Manager, *idepkgtest.Notifications, *idepkgtest.ReleaseManager, string) {
+	return newTestManagerWithTrust(t, packages, versions, idepkgtest.TrustStore())
+}
+
+func newTestManagerWithTrust(
+	t *testing.T,
+	packages map[string]release.Package,
+	versions map[string][]release.Bundle,
+	trust *pkgtrust.Store,
+) (*Manager, *idepkgtest.Notifications, *idepkgtest.ReleaseManager, string) {
 	temp, err := os.MkdirTemp("", "")
 	require.NoError(t, err)
 	t.Cleanup(func() {
@@ -1276,7 +1285,7 @@ func newTestManager(
 		},
 	}
 	manager := NewManager(n, m, storagestub.NewInMemoryService(),
-		idepkgtest.TrustStore(),
+		trust,
 		fileScheme, temp, configPath, wm, syncTick, term.NopInterrupter())
 	return manager, n, m, temp
 }
@@ -5057,6 +5066,76 @@ func TestVerifyExtensionEntrypointAfterUpgrade(t *testing.T) {
 		filepath.Join(makeBinDirname(dataDir), dotEntrypoint))
 	assert.True(t, ok)
 	assert.NotEmpty(t, fingerprint)
+}
+
+func TestVerifyExtensionEntrypointEmbeddedSigners(t *testing.T) {
+	t.Parallel()
+
+	// testdata/signed/<fingerprint>.tar.gz is a stub package and the .asc
+	// beside it its detached signature, made offline with that embedded
+	// signer's real private key. The tarball must be re-signed if it changes.
+	signers := []struct {
+		fingerprint string
+		entrypoint  string
+	}{
+		{fingerprint: "D3F9E65DE72888CC03D45CF5064D4ABCFA6D9338", entrypoint: "extension_d3f9e65d"},
+		{fingerprint: "E885B45B2BD6E53B5C50077A49421B9547B5B830", entrypoint: "extension_e885b45b"},
+	}
+	type signedFixture struct {
+		tarball   []byte
+		keyID     string
+		signature string
+	}
+	load := func(t *testing.T, fingerprint string) signedFixture {
+		t.Helper()
+		path := filepath.Join("testdata", "signed", fingerprint+".tar.gz")
+		tarball, err := os.ReadFile(path)
+		require.NoError(t, err)
+		signature, err := os.ReadFile(path + ".asc")
+		require.NoError(t, err)
+		// Release signing records the primary key's ID, which for a v4 key
+		// is the low 64 bits of its fingerprint.
+		return signedFixture{
+			tarball:   tarball,
+			keyID:     fingerprint[len(fingerprint)-16:],
+			signature: string(signature),
+		}
+	}
+	const pkgID = "signed"
+	install := func(t *testing.T, tarball []byte, signedBy signedFixture) (*Manager, string, error) {
+		t.Helper()
+		manager, _, rm, dataDir := newTestManagerWithTrust(t,
+			idepkgtest.MakePackages(release.Package{Name: pkgID, Latest: verifyPkgVersion}),
+			idepkgtest.MakeBundles([]release.Bundle{{Package: pkgID, Version: verifyPkgVersion}}),
+			pkgtrust.NewStore())
+		rm.SetSignedTarball(pkgID, tarball, signedBy.keyID, signedBy.signature)
+		err := manager.InstallPackageVersion(
+			context.Background(), pkgID, verifyPkgVersion, repl.NopProgressWriter())
+		return manager, dataDir, err
+	}
+
+	for i, signer := range signers {
+		t.Run(signer.fingerprint, func(t *testing.T) {
+			t.Parallel()
+			fixture := load(t, signer.fingerprint)
+			manager, dataDir, err := install(t, fixture.tarball, fixture)
+			require.NoError(t, err)
+
+			fingerprint, ok := manager.VerifyExtensionEntrypoint(
+				filepath.Join(makeBinDirname(dataDir), signer.entrypoint))
+			require.True(t, ok)
+			assert.Equal(t, signer.fingerprint, fingerprint)
+			assert.True(t, pkgtrust.NewStore().IsTrustedFingerprint(fingerprint))
+		})
+
+		other := signers[(i+1)%len(signers)]
+		t.Run(signer.fingerprint+" signature does not transfer", func(t *testing.T) {
+			t.Parallel()
+			tarball := load(t, signer.fingerprint).tarball
+			_, _, err := install(t, tarball, load(t, other.fingerprint))
+			require.ErrorContains(t, err, "verify bundle signature")
+		})
+	}
 }
 
 // pkgTarball builds a gzipped tar holding an extension entrypoint under bin/,

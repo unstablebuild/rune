@@ -128,7 +128,7 @@ func newHostIDE(t *testing.T, mu *sync.Mutex, dir, cfgPath string,
 		ide.WithScheduleNextTick(sched),
 		ide.WithPublishEvent(func(term.Event) bool { return true }),
 	}, opts...)
-	i, err := ide.New(dir, cfgPath, dir, pkgtrust.NewStore(dir, nil),
+	i, err := ide.New(dir, cfgPath, dir, pkgtrust.NewStore(),
 		newE2EStorage(t, dir), opts...)
 	require.NoError(t, err)
 	start()

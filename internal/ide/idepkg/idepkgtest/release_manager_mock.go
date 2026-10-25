@@ -43,6 +43,12 @@ type ReleaseManager struct {
 	missProgressComplete bool
 	hook                 func()
 	tarballs             map[string][]byte
+	signatures           map[string]presignature
+}
+
+type presignature struct {
+	keyID     string
+	signature string
 }
 
 // NewReleaseManager returns a new instance of ReleaseManager.
@@ -74,6 +80,21 @@ func (t *ReleaseManager) SetTarball(pkgID string, data []byte) {
 		t.tarballs = make(map[string][]byte)
 	}
 	t.tarballs[pkgID] = data
+	delete(t.signatures, pkgID)
+}
+
+// SetSignedTarball registers a gzipped-tar payload that Get returns with the
+// given signing key ID and armored detached signature instead of signing it
+// with the shared test entity, so tests can serve bundles signed by keys
+// whose private half they do not hold.
+func (t *ReleaseManager) SetSignedTarball(pkgID string, data []byte, keyID, signature string) {
+	t.SetTarball(pkgID, data)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.signatures == nil {
+		t.signatures = make(map[string]presignature)
+	}
+	t.signatures[pkgID] = presignature{keyID: keyID, signature: signature}
 }
 
 // SetHook sets a hook to be called before any of the methods return
@@ -213,13 +234,18 @@ func (t *ReleaseManager) Get(
 		if payload == nil {
 			return
 		}
-		// Sign the payload with the shared test entity and record the
-		// provenance metadata so mandatory bundle verification passes
-		// for every non-git package install without a production backdoor.
-		keyID, signature, signErr := signTestPayload(payload)
-		if signErr != nil {
-			err = signErr
-			return
+		sig, presigned := t.signatures[pkgID]
+		keyID, signature := sig.keyID, sig.signature
+		if !presigned {
+			// Sign the payload with the shared test entity and record the
+			// provenance metadata so mandatory bundle verification passes
+			// for every non-git package install without a production backdoor.
+			var signErr error
+			keyID, signature, signErr = signTestPayload(payload)
+			if signErr != nil {
+				err = signErr
+				return
+			}
 		}
 		found.Metadata = cloneMetadata(found.Metadata)
 		found.Metadata[pkgtrust.MetadataSigningKeyID] = keyID
