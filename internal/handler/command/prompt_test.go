@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -34,6 +35,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"github.com/unstablebuild/rune-go-sdk/term/graphemecluster"
 	"unstable.build/rune/internal/cell"
 	"unstable.build/rune/internal/handler/handlertest"
 )
@@ -1534,6 +1536,379 @@ func (d *delayedIter) Next(ctx context.Context) (string, bool) {
 func (d *delayedIter) Close() error { return nil }
 func (d *delayedIter) Err() error   { return d.ctx.Err() }
 
+func TestPromptDeleteAfterMultilineArg(t *testing.T) {
+	backspace := term.Event{Type: term.EventKey, Key: term.KeyBackspace}
+	tab := term.Event{Type: term.EventKey, Key: term.KeyTab}
+	ctrlW := term.Event{Type: term.EventKey, Mod: term.ModCtrl, Ch: 'w'}
+	ctrlU := term.Event{Type: term.EventKey, Mod: term.ModCtrl, Ch: 'u'}
+	altBackspace := term.Event{Type: term.EventKey, Mod: term.ModAlt, Key: term.KeyBackspace}
+	cmd := typedEvents("kotomichi ")
+
+	tests := []struct {
+		name       string
+		candidates []string
+		input      []term.Event
+		want       string
+		key        term.Event
+		// steps is the input after each press of key. Nil means every
+		// press removes exactly the last user-visible character, down
+		// to nothing.
+		steps []string
+	}{
+		{
+			name:  "backspace after LF paste",
+			input: slices.Concat(cmd, pastedEvents("ab\ncd")),
+			want:  "kotomichi ab\ncd",
+			key:   backspace,
+		},
+		{
+			name:  "backspace after CRLF paste",
+			input: slices.Concat(cmd, pastedEvents("ab\r\ncd")),
+			want:  "kotomichi ab\ncd",
+			key:   backspace,
+		},
+		{
+			name:  "backspace after CR paste",
+			input: slices.Concat(cmd, pastedEvents("ab\rcd")),
+			want:  "kotomichi ab\ncd",
+			key:   backspace,
+		},
+		{
+			name:  "backspace after paste with trailing LF",
+			input: slices.Concat(cmd, pastedEvents("ab\n")),
+			want:  "kotomichi ab\n",
+			key:   backspace,
+		},
+		{
+			name:  "backspace after paste with leading LF",
+			input: slices.Concat(cmd, pastedEvents("\nab")),
+			want:  "kotomichi \nab",
+			key:   backspace,
+		},
+		{
+			name:  "backspace after paste of blank lines",
+			input: slices.Concat(cmd, pastedEvents("a\n\n\nb")),
+			want:  "kotomichi a\n\n\nb",
+			key:   backspace,
+		},
+		{
+			name:  "backspace after paste of trailing blank lines",
+			input: slices.Concat(cmd, pastedEvents("ab\n\n\n")),
+			want:  "kotomichi ab\n\n\n",
+			key:   backspace,
+		},
+		{
+			name:  "backspace after paste of only LFs",
+			input: slices.Concat(cmd, pastedEvents("\n\n")),
+			want:  "kotomichi \n\n",
+			key:   backspace,
+		},
+		{
+			name:  "backspace after paste of indented line",
+			input: slices.Concat(cmd, pastedEvents("do\n  echo")),
+			want:  "kotomichi do\n  echo",
+			key:   backspace,
+		},
+		{
+			name:  "backspace after typed LF",
+			input: slices.Concat(cmd, typedEvents("ab\ncd")),
+			want:  "kotomichi ab\ncd",
+			key:   backspace,
+		},
+		{
+			name:  "backspace after LFs typed before the command",
+			input: typedEvents("\n\nab"),
+			want:  "\n\nab",
+			key:   backspace,
+		},
+		{
+			name:  "backspace after only LFs typed as the command",
+			input: typedEvents("\n\n"),
+			want:  "\n\n",
+			key:   backspace,
+		},
+		{
+			name:  "backspace after LF in quoted argument",
+			input: slices.Concat(cmd, pastedEvents("'ab\ncd'")),
+			want:  "kotomichi 'ab\ncd'",
+			key:   backspace,
+		},
+		{
+			name:  "backspace after LF in second argument",
+			input: slices.Concat(cmd, typedEvents("arg1 "), pastedEvents("ab\ncd")),
+			want:  "kotomichi arg1 ab\ncd",
+			key:   backspace,
+		},
+		{
+			name:  "backspace after LF argument between arguments",
+			input: slices.Concat(cmd, pastedEvents("ab \n cd")),
+			want:  "kotomichi ab \n cd",
+			key:   backspace,
+		},
+		{
+			name:  "backspace after wide character before LF",
+			input: slices.Concat(cmd, pastedEvents("界\n界")),
+			want:  "kotomichi 界\n界",
+			key:   backspace,
+		},
+		{
+			name:  "backspace after combining mark before LF",
+			input: slices.Concat(cmd, pastedEvents("e\u0301\nx")),
+			want:  "kotomichi e\u0301\nx",
+			key:   backspace,
+		},
+		{
+			name:  "backspace after emoji modifier sequence before LF",
+			input: slices.Concat(cmd, pastedEvents("👍🏽\n👍🏽")),
+			want:  "kotomichi 👍🏽\n👍🏽",
+			key:   backspace,
+		},
+		{
+			name:  "backspace after dropping two files",
+			input: slices.Concat(cmd, pastedEvents("/tmp/a.png\n/tmp/b.png")),
+			want:  "kotomichi /tmp/a.png\n/tmp/b.png",
+			key:   backspace,
+		},
+		{
+			name:       "backspace after completing a directory named with LF",
+			candidates: []string{"ab\ncd/"},
+			input:      slices.Concat(cmd, []term.Event{tab}),
+			want:       "kotomichi ab\ncd/",
+			key:        backspace,
+		},
+		{
+			name:       "tab after deleting LF completes the joined query",
+			candidates: []string{"xyz", "abc"},
+			input:      slices.Concat(cmd, pastedEvents("ab\n"), []term.Event{backspace}),
+			want:       "kotomichi ab",
+			key:        tab,
+			steps:      []string{"kotomichi abc "},
+		},
+		{
+			name:       "tab after deleting blank lines completes the joined query",
+			candidates: []string{"xyz", "abc"},
+			input: slices.Concat(cmd, pastedEvents("ab\n\n"),
+				[]term.Event{backspace, backspace}),
+			want:  "kotomichi ab",
+			key:   tab,
+			steps: []string{"kotomichi abc "},
+		},
+		{
+			name:       "tab after deleting LF of a reopened argument completes the joined query",
+			candidates: []string{"xyz", "abc"},
+			input: slices.Concat(cmd, pastedEvents("ab\n "),
+				[]term.Event{backspace, backspace}),
+			want:  "kotomichi ab",
+			key:   tab,
+			steps: []string{"kotomichi abc "},
+		},
+		{
+			name:  "ctrl-w after LF paste",
+			input: slices.Concat(cmd, pastedEvents("ab\ncd")),
+			want:  "kotomichi ab\ncd",
+			key:   ctrlW,
+			steps: []string{"kotomichi ab\n", "kotomichi ", ""},
+		},
+		{
+			name:  "ctrl-w after paste of blank lines",
+			input: slices.Concat(cmd, pastedEvents("a\n\nb")),
+			want:  "kotomichi a\n\nb",
+			key:   ctrlW,
+			steps: []string{"kotomichi a\n\n", "kotomichi ", ""},
+		},
+		{
+			name:  "ctrl-w after LFs and spaces between arguments",
+			input: slices.Concat(cmd, pastedEvents("ab \n \ncd")),
+			want:  "kotomichi ab \n \ncd",
+			key:   ctrlW,
+			steps: []string{"kotomichi ab \n \n", "kotomichi ", ""},
+		},
+		{
+			name:  "ctrl-w after paste of only LFs",
+			input: slices.Concat(cmd, pastedEvents("\n\n")),
+			want:  "kotomichi \n\n",
+			key:   ctrlW,
+			steps: []string{""},
+		},
+		{
+			name:  "alt-backspace after LF paste",
+			input: slices.Concat(cmd, pastedEvents("ab\ncd")),
+			want:  "kotomichi ab\ncd",
+			key:   altBackspace,
+			steps: []string{"kotomichi ab\n", "kotomichi ", ""},
+		},
+		{
+			name:  "ctrl-u after LF paste",
+			input: slices.Concat(cmd, pastedEvents("ab\ncd")),
+			want:  "kotomichi ab\ncd",
+			key:   ctrlU,
+			steps: []string{""},
+		},
+		{
+			name:  "ctrl-u after LFs typed before the command",
+			input: typedEvents("\n\nab"),
+			want:  "\n\nab",
+			key:   ctrlU,
+			steps: []string{""},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testDefaultConfig()
+			cfg.ShowManual = false
+			cfg.Sync = true
+
+			candidates := tc.candidates
+			if candidates == nil {
+				candidates = []string{"arg1", "arg2"}
+			}
+			completeFn, cleanupComplete := completeWith(candidates...)()
+			defer cleanupComplete(t)
+
+			b := NewPrompt(
+				storagestub.NewInMemoryService(),
+				FuncCompleter(completeFn),
+				FuncDispatcher(func(string, ...string) bool { return true }),
+				term.NopInterrupter(),
+				[]Manual{{Name: "kotomichi"}},
+				cfg,
+			)
+			defer b.Close()
+
+			h := testCommandHandler{b}
+			for _, ev := range tc.input {
+				h.Handle(ev)
+			}
+			require.Equal(t, tc.want, b.buf.String())
+
+			steps := tc.steps
+			if steps == nil {
+				chars := graphemes(tc.want)
+				for n := range slices.Backward(chars) {
+					steps = append(steps, strings.Join(chars[:n], ""))
+				}
+			}
+			for i, want := range steps {
+				var quit bool
+				require.NotPanics(t, func() { quit, _ = h.Handle(tc.key) }, "press %d", i+1)
+				require.False(t, quit, "press %d closed the prompt", i+1)
+				require.Equal(t, want, b.buf.String(), "press %d", i+1)
+			}
+			if tc.key.Key == term.KeyBackspace && tc.key.Mod == 0 {
+				quit, _ := h.Handle(tc.key)
+				require.True(t, quit, "backspace on the empty prompt must close it")
+			}
+		})
+	}
+}
+
+func TestPromptDispatchesPastedScript(t *testing.T) {
+	tests := []struct {
+		name   string
+		script string
+		want   string
+	}{
+		{
+			name:   "loop",
+			script: "for f in a b; do\necho $f\ndone",
+			want:   "for f in a b; do\necho $f\ndone",
+		},
+		{
+			name:   "comment line",
+			script: "# say hi\necho hi",
+			want:   "# say hi\necho hi",
+		},
+		{
+			name:   "blank lines",
+			script: "echo a\n\n\necho b",
+			want:   "echo a\n\n\necho b",
+		},
+		{
+			name:   "trailing LF",
+			script: "echo a\necho b\n",
+			want:   "echo a\necho b\n",
+		},
+		{
+			name:   "CRLF",
+			script: "echo a\r\necho b\r\n",
+			want:   "echo a\necho b\n",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testDefaultConfig()
+			cfg.ShowManual = false
+			cfg.Sync = true
+
+			var dispatched []string
+			dispatch := func(cmd string, args ...string) bool {
+				dispatched = append([]string{cmd}, args...)
+				return true
+			}
+			completeFn, cleanupComplete := nopComplete()
+			defer cleanupComplete(t)
+
+			b := NewPrompt(
+				storagestub.NewInMemoryService(),
+				FuncCompleter(completeFn),
+				FuncDispatcher(dispatch),
+				term.NopInterrupter(),
+				testNoManualCommands([]string{"!"}),
+				cfg,
+			)
+			defer b.Close()
+
+			for _, ev := range typedEvents("! ") {
+				b.Handle(ev)
+			}
+			b.Wait()
+			for _, ev := range pastedEvents(tc.script) {
+				b.Handle(ev)
+			}
+			b.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
+
+			require.NotEmpty(t, dispatched)
+			require.Equal(t, "!", dispatched[0])
+			require.Equal(t, tc.want, strings.Join(dispatched[1:], " "))
+		})
+	}
+}
+
+func TestPromptHistoryCycleKeyAfterLeadingLF(t *testing.T) {
+	cfg := testDefaultConfig()
+	cfg.ShowManual = false
+	cfg.HistoryCycleKey = term.KeyComb{Ch: ':'}
+	cfg.Sync = true
+
+	completeFn, cleanupComplete := nopComplete()
+	defer cleanupComplete(t)
+
+	commands := testNoManualCommands([]string{"edit"})
+	b := NewPrompt(
+		storagestub.NewInMemoryService(),
+		FuncCompleter(completeFn),
+		FuncDispatcher(func(string, ...string) bool { return true }),
+		term.NopInterrupter(),
+		commands,
+		cfg,
+	)
+	defer b.Close()
+
+	for _, ev := range typedEvents("edit") {
+		b.Handle(ev)
+	}
+	b.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
+	b.Reset(commands)
+
+	for _, ev := range pastedEvents("\nab") {
+		b.Handle(ev)
+	}
+	b.Handle(term.Event{Type: term.EventKey, Ch: ':'})
+	require.Equal(t, "\nab:", b.buf.String())
+}
+
 func TestCommandHandlerPreviewCancelCallsBackIntoPrompt(t *testing.T) {
 	storage := storagestub.NewInMemoryService()
 	cfg := testDefaultConfig()
@@ -1777,7 +2152,36 @@ func TestCommandHandlerEditMode(t *testing.T) {
 		feedKeys(t, testCommandHandler{b}, "rori<space>my<shift-esc>")
 		require.NotNil(t, captured)
 		// "rori my" -> 7 columns; cursor must land just after the y.
-		assert.Equal(t, 7, captured.cursorX)
+		assert.Equal(t, term.Coordinates{X: 7}, captured.cursor)
+	})
+
+	t.Run("places editor cursor at end of last row on entry", func(t *testing.T) {
+		cfg := testDefaultConfig()
+		cfg.ShowManual = false
+		cfg.HistoryCycleKey = term.KeyComb{Ch: '@'}
+		cfg.Sync = true
+
+		var captured *stubEditHandler
+		cfg.Editor = capturingEditor{captured: &captured}
+
+		completeFn, cleanupComplete := nopComplete()
+		defer cleanupComplete(t)
+
+		b := NewPrompt(
+			storagestub.NewInMemoryService(), FuncCompleter(completeFn),
+			FuncDispatcher(func(string, ...string) bool { return true }),
+			term.NopInterrupter(), testNoManualCommands([]string{"rori"}), cfg,
+		)
+		defer b.Close()
+
+		h := testCommandHandler{b}
+		feedKeys(t, h, "rori<space>")
+		for _, ev := range pastedEvents("ab\ncd") {
+			h.Handle(ev)
+		}
+		feedKeys(t, h, "<shift-esc>")
+		require.NotNil(t, captured)
+		assert.Equal(t, term.Coordinates{X: 2, Y: 1}, captured.cursor)
 	})
 
 	t.Run("forwards editor selection while edit mode is active", func(t *testing.T) {
@@ -3071,10 +3475,10 @@ func (e stubEditorImpl) Edit(buf *cell.Buffer) EditHandler {
 type stubEditHandler struct {
 	buf  *cell.Buffer
 	seen *[]term.Event
-	// cursor X within the buffer; updated by SetCursorAtScroll and
+	// cursor within the buffer; updated by SetCursorAtScroll and
 	// recorded by tests asserting that the prompt restores the
 	// command-mode cursor on entry.
-	cursorX int
+	cursor term.Coordinates
 	// selection is returned by Selection() so tests can verify the
 	// Prompt forwards Selection from the active EditHandler.
 	selection string
@@ -3089,13 +3493,13 @@ type stubEditHandler struct {
 func (s *stubEditHandler) Resize(width, height int) {}
 func (s *stubEditHandler) Draw(term.Writer)         {}
 func (s *stubEditHandler) Cursor() (term.Coordinates, term.CursorStyle, bool) {
-	return term.Coordinates{X: s.cursorX}, term.CursorStyleBlinkingBlock, true
+	return s.cursor, term.CursorStyleBlinkingBlock, true
 }
 func (s *stubEditHandler) CursorAtScroll() term.Coordinates {
-	return term.Coordinates{X: s.cursorX}
+	return s.cursor
 }
 func (s *stubEditHandler) SetCursorAtScroll(pos term.Coordinates) bool {
-	s.cursorX = pos.X
+	s.cursor = pos
 	return true
 }
 func (s *stubEditHandler) Selection() (string, bool) { return s.selection, s.selection != "" }
@@ -3196,6 +3600,33 @@ func completeDirsUnder(root string) func() (
 	) {
 		return NonRecursiveDirsCompleter(newFSReader(root)).Complete, func(*testing.T) {}
 	}
+}
+
+func typedEvents(s string) []term.Event {
+	evs := make([]term.Event, 0, len(s))
+	for _, ch := range s {
+		evs = append(evs, term.Event{Type: term.EventKey, Ch: ch})
+	}
+	return evs
+}
+
+func pastedEvents(s string) []term.Event {
+	evs := []term.Event{{Type: term.EventPasteStart}}
+	evs = append(evs, typedEvents(s)...)
+	return append(evs, term.Event{Type: term.EventPasteEnd})
+}
+
+// graphemes splits s into the user-visible characters a single
+// backspace is expected to remove.
+func graphemes(s string) []string {
+	var chars []string
+	state := -1
+	for s != "" {
+		var c string
+		c, s, _, state = graphemecluster.StepString(s, state)
+		chars = append(chars, c)
+	}
+	return chars
 }
 
 func completeWith(data ...string) func() (
