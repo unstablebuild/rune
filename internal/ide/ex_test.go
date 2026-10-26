@@ -69,6 +69,7 @@ import (
 	"unstable.build/rune/internal/handler/handlertest"
 	"unstable.build/rune/internal/ide/console/ideconsole"
 	"unstable.build/rune/internal/ide/idehistory"
+	"unstable.build/rune/internal/ide/idenotice"
 	"unstable.build/rune/internal/ide/plugin"
 	"unstable.build/rune/internal/term/programstatus"
 	"unstable.build/rune/internal/term/vte"
@@ -1411,6 +1412,88 @@ func TestShowFallbackPromptNoDoesNothing(t *testing.T) {
 	assert.True(t, handled)
 	assert.Equal(t, 0, b.comp.Browser().FloatingWindows())
 	assert.Nil(t, b.ex.companionConsole)
+}
+
+func TestShowFallbackPromptOverSelfClosingFloatingWindowDoesNotPanic(t *testing.T) {
+	tests := []struct {
+		name string
+		// open shows the floating windows that are open when the user
+		// answers the install prompt.
+		open func(t *testing.T, b testEx, svc storageapi.Service, uri workspaceapi.URI)
+	}{
+		{
+			name: "workspace notice",
+			open: func(t *testing.T, b testEx, svc storageapi.Service, uri workspaceapi.URI) {
+				showTestWorkspaceNotice(t, b, svc, uri)
+			},
+		},
+		{
+			name: "cheatsheet",
+			open: func(t *testing.T, b testEx, _ storageapi.Service, _ workspaceapi.URI) {
+				require.NoError(t, b.ex.cheatsheet(context.Background()))
+			},
+		},
+		{
+			name: "workspace notice under cheatsheet",
+			open: func(t *testing.T, b testEx, svc storageapi.Service, uri workspaceapi.URI) {
+				showTestWorkspaceNotice(t, b, svc, uri)
+				require.NoError(t, b.ex.cheatsheet(context.Background()))
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			workspaceURI, err := workspaceapi.ParseURI("file:///tmp/fallback-self-closing")
+			require.NoError(t, err)
+			w := testWorkspaceWithURI{
+				testLoader: &testLoader{exitStartedCommands: true},
+				uri:        workspaceURI,
+			}
+			cfg := vte.DefaultConfig()
+			scheduler := newQueuedScheduler()
+			cfg.ScheduleNextTick = scheduler.ScheduleNextTick
+			svc := storagestub.NewInMemoryService()
+			b := newExForTestingWithStorage(t, w, svc, texttest.NopEditor(),
+				cfg, nopPublishEvent, clipboard.NewInMemory(),
+				text.WithCommandKey(testCommandKey),
+			)
+			b.mu = &sync.Mutex{}
+			b.scheduler = scheduler
+			defer b.Close()
+			b.Resize(100, 40)
+
+			tc.open(t, b, svc, workspaceURI)
+			floating := b.comp.Browser().FloatingWindows()
+			// The fallback prompt is reached the way the user reaches it:
+			// by running the command from the command prompt.
+			keys, err := term.ParseKeys("<c-\\\\>agent<enter>")
+			require.NoError(t, err)
+			for _, k := range keys {
+				b.Handle(term.Event{Type: term.EventKey, Ch: k.Ch, Mod: k.Mod, Key: k.Key})
+			}
+			require.Equal(t, floating+1, b.comp.Browser().FloatingWindows(),
+				"the install prompt must open over the other floating windows")
+
+			require.NotPanics(t, func() {
+				b.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
+			})
+		})
+	}
+}
+
+func showTestWorkspaceNotice(
+	t *testing.T, b testEx, svc storageapi.Service, uri workspaceapi.URI,
+) {
+	t.Helper()
+	notice := idenotice.New(nil, newBrowserAdapter(b.ex.Browser()), nil,
+		b.scheduler.ScheduleNextTick, func(*url.URL) bool { return false },
+		idenotice.Config{
+			Literal:      "Run the `agent` command.",
+			Show:         idenotice.ShowAlways,
+			Storage:      svc,
+			WorkspaceURI: uri,
+		})
+	require.NoError(t, notice.Show(context.Background()))
 }
 
 func TestShellCommandPastesArgument(t *testing.T) {

@@ -2542,6 +2542,12 @@ func (e *ex) consolenewtab(_ context.Context, args ...string) error {
 	}
 	tab.Subscribe((*tabSubscriber)(e))
 	if line := strings.TrimSpace(strings.Join(args, " ")); line != "" {
+		// Content that closes its own window on Close, such as the
+		// workspace notice, closes the console's window as SetContent
+		// replaces it, and Subscribe then frees the console.
+		if e.companionConsole == nil {
+			return fmt.Errorf("console closed before %q could run", line)
+		}
 		e.companionConsole.Submit(line)
 	}
 	return nil
