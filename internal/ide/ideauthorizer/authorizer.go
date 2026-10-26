@@ -188,7 +188,6 @@ type Config struct {
 	AutoAuthorizeExtensions        bool
 	AutoAuthorizeCommands          bool
 	AutoAuthorizeVerifiedPublisher bool
-	OnboardingActive               func() bool
 	// OnPromptWindow, when set, is told on the host event loop of the
 	// window showing each permission prompt and of the uri its blocked
 	// status is reported under, so the status can be traced back to it.
@@ -418,10 +417,8 @@ func (a *Authorizer) AuthorizeCommand(
 	}
 	// Commands run silently only when the operator opted into
 	// auto-authorizing commands AND the extension is from a verified
-	// publisher; either alone still prompts. First-run onboarding stands
-	// in for the operator opt-in while it lasts (see Config.OnboardingActive).
-	if (a.config.AutoAuthorizeCommands || a.onboardingActive()) &&
-		!claims.Extra.Plugin && a.verified(claims.Extra) {
+	// publisher; either alone still prompts.
+	if a.config.AutoAuthorizeCommands && !claims.Extra.Plugin && a.verified(claims.Extra) {
 		return nil
 	}
 	if done, err := a.onceDecided(onceKey); done {
@@ -544,10 +541,6 @@ func (a *Authorizer) authorizeExtension(
 func (a *Authorizer) verified(ext Extension) bool {
 	return a.config.AutoAuthorizeVerifiedPublisher && ext.VerifiedPublisher != "" &&
 		a.trust.IsTrustedFingerprint(ext.VerifiedPublisher)
-}
-
-func (a *Authorizer) onboardingActive() bool {
-	return a.config.OnboardingActive != nil && a.config.OnboardingActive()
 }
 
 func (a *Authorizer) authorizePermission(

@@ -560,55 +560,6 @@ func TestAuthorizerVerifiedPublisherAloneStillPromptsCommands(t *testing.T) {
 	assert.Equal(t, 1, opener.calls)
 }
 
-func TestAuthorizerOnboardingCommandAutoAuthorize(t *testing.T) {
-	t.Parallel()
-
-	trustedFingerprint := "D3F9E65DE72888CC03D45CF5064D4ABCFA6D9338"
-	verified := func() Extension {
-		ext := testRegularExtension(extensionapi.NewPermissions(
-			extensionapi.PermissionExecute))
-		ext.VerifiedPublisher = trustedFingerprint
-		return ext
-	}
-	cases := []struct {
-		name        string
-		ext         Extension
-		onboarding  bool
-		wantPrompts int
-	}{
-		{"verified during onboarding", verified(), true, 0},
-		{"verified after onboarding", verified(), false, 1},
-		{"unverified during onboarding",
-			testRegularExtension(extensionapi.NewPermissions(
-				extensionapi.PermissionExecute)), true, 1},
-		{"plugin during onboarding", testPluginExtension(nil), true, 1},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			storage := storagestub.NewInMemoryService()
-			opener := &stubPromptOpener{decision: PermissionAllowOnce}
-			a, err := NewAuthorizer(texttest.NopEditor(), opener, storage,
-				syncScheduleNextTick, &capturingStatus{}, testTrustStore(t), newFakeResolver(), Config{
-					AutoAuthorizeVerifiedPublisher: true,
-					OnboardingActive:               func() bool { return tc.onboarding },
-				})
-			require.NoError(t, err)
-
-			ctx := blueauth.ContextWithClaims(context.Background(),
-				blueauth.UserClaims[Extension]{Extra: tc.ext})
-			cmd := workspaceapi.Cmd{Path: "/bin/grep", Args: []string{"foo"}, Dir: "/tmp"}
-			require.NoError(t, a.AuthorizeCommand(ctx, cmd))
-			assert.Equal(t, tc.wantPrompts, opener.calls)
-
-			// Onboarding grants are never persisted: once onboarding ends
-			// the same command must prompt again.
-			assert.Empty(t, storedCommandDecisions(t, storage))
-		})
-	}
-}
-
 func TestAuthorizerVerifiedPublisherToggleAndStoredDeny(t *testing.T) {
 	t.Parallel()
 
