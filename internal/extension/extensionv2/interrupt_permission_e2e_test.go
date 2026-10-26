@@ -32,6 +32,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	blueauth "github.com/unstablebuild/blue/auth"
+	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi/browserrpc"
 	"github.com/unstablebuild/rune-go-sdk/api/extensionapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
@@ -502,6 +503,12 @@ func (p *dedupingPromptOpener) calls() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.count
+}
+
+func (p *dedupingPromptOpener) Floating(
+	browser.Floating, browserapi.FloatingConfig,
+) (browser.Window, error) {
+	panic("deduping prompts never answer Always or Never, so open no scope picker")
 }
 
 // selectStored fires OnSelect on every stored prompt handler exactly

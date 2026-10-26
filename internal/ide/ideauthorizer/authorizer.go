@@ -76,11 +76,30 @@ type PermissionRequest struct {
 	// Programs are the programs the command runs, shells and wrappers
 	// before the programs they run.
 	Programs []ProgramSummary
-	// CommandExactOnly reports that Always and Never can only cover this
-	// exact command, for CommandExactReason.
-	CommandExactOnly   bool
-	CommandExactReason string
+	// CommandRemember is what deciding for good on the command does.
+	CommandRemember CommandRemember
+	// CommandOnceReason tells why no decision for good can cover the
+	// command when CommandRemember is RememberNothing, or is "" when
+	// Programs tell already.
+	CommandOnceReason string
 }
+
+// CommandRemember is what deciding for good on a command does, which
+// decides the options of its prompt.
+type CommandRemember int
+
+const (
+	// RememberScopes lets the user pick the scopes Always and Never
+	// cover.
+	RememberScopes CommandRemember = iota
+	// RememberPrograms is for commands whose decisions are all made but
+	// that run programs the user never approved, which Always approves.
+	// There is nothing for Never to cover.
+	RememberPrograms
+	// RememberNothing is for commands no decision for good can cover,
+	// which the user is asked about every time with Yes and No.
+	RememberNothing
+)
 
 // ProgramSummary describes a program a command runs.
 type ProgramSummary struct {
@@ -95,6 +114,14 @@ type ProgramSummary struct {
 	// Changed reports that the file changed since the user approved a
 	// command that runs it.
 	Changed bool
+	// RunsCode reports that the program runs arbitrary code its
+	// arguments carry, such as the script of sed or the command of
+	// docker run.
+	RunsCode bool
+	// DirUnknown tells why the directory the program runs in is not
+	// known, which leaves ResolvedPath empty and has the user asked about
+	// the command every time, or is "".
+	DirUnknown string
 }
 
 // ExecutableChange is an executable whose contents changed since the
@@ -142,13 +169,17 @@ const (
 	PermissionDenyAlways PermissionDecision = "deny-always"
 )
 
-// PromptOpener opens a browser prompt for extension host decisions.
+// PromptOpener opens the prompts and floating windows that ask the user
+// for extension host decisions: Prompt asks for the decision, Floating
+// shows the picker of what a decision to always allow or never allow a
+// command covers.
 type PromptOpener interface {
 	Prompt(
 		message string, options []string,
 		bindings []term.KeyComb,
 		promptHandler handler.PromptHandler,
 	) browser.Window
+	Floating(h browser.Floating, cfg browserapi.FloatingConfig) (browser.Window, error)
 }
 
 // Config controls which permission requests are granted without
@@ -404,8 +435,8 @@ func (a *Authorizer) AuthorizeCommand(
 	req.CommandArgs = append([]string(nil), command.Args...)
 	req.CommandDir = command.Dir
 	req.Programs = c.programSummaries()
-	req.CommandExactOnly = c.plan.Opaque
-	req.CommandExactReason = c.plan.Reason
+	req.CommandRemember = c.remember()
+	req.CommandOnceReason = c.plan.Reason
 	run := func(ctx context.Context) (PermissionDecision, error) {
 		return a.approveCommand(ctx, c, req, identity, perm)
 	}
@@ -422,8 +453,8 @@ func (a *Authorizer) AuthorizeCommand(
 	return a.applyDecision(onceKey, identity, perm, &command, decision)
 }
 
-// approveCommand asks the user whether the command of c may run and saves
-// the decisions the user makes for good.
+// approveCommand asks the user whether the command of c may run and, when
+// the user decides for good, which scopes the decision covers.
 func (a *Authorizer) approveCommand(
 	ctx context.Context, c *commandCheck, req PermissionRequest,
 	identity pluginPermissionIdentity, perm extensionapi.Permission,
@@ -431,6 +462,13 @@ func (a *Authorizer) approveCommand(
 	decision, err := a.prompter.PromptPermission(ctx, req)
 	if err != nil {
 		return decision, err
+	}
+	if decision == PermissionAllowAlways && req.CommandRemember == RememberPrograms {
+		err := a.recordExecutables(ctx, c, append(c.unknownExecutables(), c.changedExecutables()...))
+		if err != nil {
+			return PermissionDenyOnce, err
+		}
+		return decision, nil
 	}
 	var stored string
 	var once PermissionDecision
@@ -442,7 +480,18 @@ func (a *Authorizer) approveCommand(
 	default:
 		return decision, nil
 	}
-	selected := c.alwaysScopes(stored == pluginPermissionDecisionAllow)
+	selected, ok, err := a.prompter.PickScopes(ctx, scopePickerRequest{
+		Allow:     stored == pluginPermissionDecisionAllow,
+		Requester: requesterName(req),
+		Scopes:    c.scopes,
+		Selected:  c.preselectedScopes(),
+	})
+	if err != nil {
+		return PermissionDenyOnce, err
+	}
+	if !ok {
+		return PermissionDenyOnce, nil
+	}
 	if len(selected) == 0 {
 		return once, nil
 	}

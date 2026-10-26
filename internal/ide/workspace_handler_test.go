@@ -9182,7 +9182,7 @@ func (r *authorizerCapturingRunner) authorizer(uri workspaceapi.URI) extensionv2
 	return r.authorizers[uri.String()]
 }
 
-func TestBuildExtensionsCommandAuthorizerBindsAlwaysToTheFileItRuns(t *testing.T) {
+func TestBuildExtensionsCommandAuthorizerAsksWhatAlwaysCovers(t *testing.T) {
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "bin")
 	require.NoError(t, os.Mkdir(bin, 0o755))
@@ -9214,11 +9214,11 @@ func TestBuildExtensionsCommandAuthorizerBindsAlwaysToTheFileItRuns(t *testing.T
 				Permissions:   extensionapi.NewPermissions(extensionapi.PermissionExecute),
 			},
 		}})
-	authorize := func(path string, args ...string) <-chan error {
+	authorize := func(args ...string) <-chan error {
 		done := make(chan error, 1)
 		go debug.CapturePanicReport(func() {
 			done <- authorizer.AuthorizeCommand(ctx, workspaceapi.Cmd{
-				Path: path, Args: args, Dir: dir,
+				Path: "tool", Args: args, Dir: dir,
 			})
 		})
 		return done
@@ -9248,19 +9248,25 @@ func TestBuildExtensionsCommandAuthorizerBindsAlwaysToTheFileItRuns(t *testing.T
 		return err
 	}
 
-	done := authorize("tool", "sub", "arg")
-	waitFor("decides for each of these programs")
+	done := authorize("sub", "arg")
+	waitFor("Choosing Always or Never lets you pick")
 	h.Handle(term.Event{Type: term.EventKey, Ch: 'A'})
+	waitFor("From now on, extension Test Extension may run the")
+	picker := screen()
+	assert.Contains(t, picker, "│ \U000F012E  tool *")
+	assert.Contains(t, picker, "│ └─ \U000F0132  tool sub *")
+	assert.Contains(t, picker, "│    └─ \U000F0132  tool sub arg")
+	h.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
 	require.NoError(t, await(done))
+	assert.NotContains(t, screen(), "From now on")
 
-	require.NoError(t, await(authorize("tool", "other")),
-		"Always covers the program with any arguments")
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "tool"), []byte("#!/bin/sh\n"), 0o755))
-	done = authorize("./tool", "sub", "arg")
-	waitFor("./tool")
+	require.NoError(t, await(authorize("sub", "other")),
+		"the picked scope covers the subcommand")
+	done = authorize("other")
+	waitFor("Choosing Always or Never lets you pick")
 	h.Handle(term.Event{Type: term.EventKey, Ch: 'N'})
 	require.ErrorIs(t, await(done), blueauth.ErrForbidden,
-		"another file with the same name is another program")
+		"the scope that was not picked is not covered")
 }
 
 func TestWorkspaceReadyCommand(t *testing.T) {

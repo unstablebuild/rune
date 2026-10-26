@@ -21,7 +21,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
+	"maps"
+	"os"
 	"path"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -41,6 +45,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/handler/handlertest"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"github.com/unstablebuild/rune-go-sdk/tui"
 	"google.golang.org/grpc/peer"
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/browser/browsertest"
@@ -57,13 +62,24 @@ const testWindowManagerResource = "/browser.WindowManager/NewWindow"
 
 // stubPromptOpener is a test PromptOpener that always selects the option
 // whose label maps to decision. It records each prompt message so tests
-// can assert what the user would see.
+// can assert what the user would see. Its scope pickers pick the scopes
+// labeled picks that they offer, or confirm the preselected ones when
+// picks is nil, or are cancelled.
 type stubPromptOpener struct {
 	decision PermissionDecision
 	// renewal is the option picked in renewal prompts.
 	renewal  string
 	calls    int
 	messages []string
+	// options are the options of each prompt.
+	options [][]string
+	picks   []string
+	cancel  bool
+	// floatingErr fails the scope pickers opened.
+	floatingErr error
+	// offered are the rows of each picker opened, as the branch of the
+	// tree followed by "[x] label" when preselected or "[ ] label".
+	offered [][]string
 }
 
 func (s *stubPromptOpener) Prompt(
@@ -72,6 +88,7 @@ func (s *stubPromptOpener) Prompt(
 ) browser.Window {
 	s.calls++
 	s.messages = append(s.messages, message)
+	s.options = append(s.options, options)
 	want := optionForDecision(s.decision)
 	if slices.Contains(options, PromptOptionRenew) {
 		want = cmp.Or(s.renewal, PromptOptionNo)
@@ -83,6 +100,36 @@ func (s *stubPromptOpener) Prompt(
 		}
 	}
 	panic("test prompt option was not provided: " + want)
+}
+
+func (s *stubPromptOpener) Floating(
+	h browser.Floating, _ browserapi.FloatingConfig,
+) (browser.Window, error) {
+	if s.floatingErr != nil {
+		return nil, s.floatingErr
+	}
+	p := h.(*scopePicker)
+	var rows []string
+	p.list.Iterate(func(c tui.Component) {
+		r := c.(*scopeRow)
+		box := "[ ] "
+		if p.selected[r.scope] {
+			box = "[x] "
+		}
+		rows = append(rows, r.tree+box+p.text(r.scope))
+	})
+	s.offered = append(s.offered, rows)
+	if s.cancel {
+		_ = p.Close()
+		return browsertest.NopWindow(), nil
+	}
+	if s.picks != nil {
+		for i, sc := range p.req.Scopes {
+			p.selected[i] = slices.Contains(s.picks, sc.Label)
+		}
+	}
+	p.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
+	return browsertest.NopWindow(), nil
 }
 
 // fakeResolver is a host where every file exists unless it is missing,
@@ -1177,9 +1224,9 @@ func TestAuthorizerAuthorizeStartCommandComplexBashScriptDecomposes(t *testing.T
 		Dir: "/tmp",
 	}))
 	assert.Equal(t, map[string]string{
-		"gofmt *": pluginPermissionDecisionAllow,
-		"find *":  pluginPermissionDecisionAllow,
-		"head *":  pluginPermissionDecisionAllow,
+		"gofmt *":  pluginPermissionDecisionAllow,
+		"find . *": pluginPermissionDecisionAllow,
+		"head *":   pluginPermissionDecisionAllow,
 	}, storedScopes(t, storage))
 	require.NoError(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
 		Path: "/usr/bin/find", Args: []string{".", "-name", "*.go"}, Dir: "/tmp",
@@ -1381,8 +1428,8 @@ func TestAuthorizerAuthorizeStartCommandPromptsWithCommandDetails(t *testing.T) 
 	assert.Contains(t, msg, "[foo]")
 	assert.Contains(t, msg, "/tmp/workspace")
 	assert.Contains(t, msg, "\n\nRuns `/bin/grep`.")
-	assert.Contains(t, msg, "\n\nChoosing **Always** or **Never** decides for each of "+
-		"these programs with any arguments, as long as it runs the same file.")
+	assert.Contains(t, msg, "\n\nChoosing **Always** or **Never** lets you pick which "+
+		"commands and subcommands the decision covers.")
 }
 
 const moveTestsScript = `M=/tmp/movetests/movetests; D=internal/workspace/vtescheme; set -e
@@ -1497,7 +1544,6 @@ func TestAuthorizerAuthorizeOpaqueScriptPromptsForExactApproval(t *testing.T) {
 │                                                                                                                      │
 ├──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                                                      │
-│                                                                                                                      │
 │█●████████████████████████████████████████████████████████████████████████████████████████████████████████████████████│
 ││                                                                                                                    ││
 ││  Extension Test Extension by dev-id wants to run bash with args:                                                   ││
@@ -1525,20 +1571,72 @@ func TestAuthorizerAuthorizeOpaqueScriptPromptsForExactApproval(t *testing.T) {
 ││  Runs /usr/bin/bash, $M (known only when it runs), /Users/ernestrc/.rune/bin/goimports, /usr/bin/go, echo (shell   ││
 ││  builtin), /usr/bin/sed.                                                                                           ││
 ││                                                                                                                    ││
-││  Choosing Always or Never decides for each of these programs with any arguments, as long as it runs the same       ││
-││  file.                                                                                                             ││
+││  ⚠  sed runs arbitrary code.                                                                                       ││
+││                                                                                                                    ││
+││  Choosing Always or Never lets you pick which commands and subcommands the decision covers.                        ││
+││                                                                                                                    ││
 ││                                                                                                                    ││
 ││                  Yes                      Always                     No                     Never                  ││
 │└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘│
 │                                                                                                                      │
-│                                                                                                                      │
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘`[1:]},
 		{InputSequence: "A", Expected: closed},
 	})
+	// Always opens the scope picker, after the prompt's status is
+	// withdrawn, where the whole command is picked since $M is not known
+	// until it runs.
+	openPrompt()
+	openPrompt()
+	handlertest.RunHandlerSequence(t, comp, width, height, []handlertest.SequenceTestCase{
+		{Expected: `
+┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                                                      │
+├──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│█●███████████████████████████████████████████████████ Always allow ███████████████████████████████████████████████████│
+││                                                                                                                    ││
+││ From now on, extension Test Extension may run the checked commands without asking you. * stands for any further    ││
+││ arguments.                                                                                                         ││
+││                                                                                                                    ││
+││ 󰄲  /Users/ernestrc/.rune/bin/goimports *                                                                           ││
+││ └─ 󰄲  /Users/ernestrc/.rune/bin/goimports -w *                                                                     ││
+││ 󰄮  go *                                                                                                            ││
+││ └─ 󰄲  go vet *                                                                                                     ││
+││    └─ 󰄲  go vet -tags *                                                                                            ││
+││       └─ 󰄲  go vet -tags e2e *                                                                                     ││
+││ 󰄮  echo *  (shell builtin)                                                                                         ││
+││ └─ 󰄲  echo vet-ok *  (shell builtin)                                                                               ││
+││    └─ 󰄲  echo vet-ok  (shell builtin)                                                                              ││
+││ 󰄮  sed *  ⚠  runs arbitrary code                                                                                   ││
+││ └─ 󰄮  sed -n *  ⚠  runs arbitrary code                                                                             ││
+││                                                                                                                    ││
+││ Run authorizer list in the console to see what each extension may run, and authorizer revoke <id> to revoke a      ││
+││ decision.                                                                                                          ││
+││                                                                                                                    ││
+││ <space> toggles · <enter> confirms · <esc> cancels                                                                 ││
+│└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘│
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘`[1:]},
+		{InputSequence: "<enter>", Expected: closed},
+	})
 	require.NoError(t, awaitAuthorization(done))
 	blocked := status.blocked()
-	require.Len(t, blocked, 1)
+	require.Len(t, blocked, 2)
 	assert.Equal(t, "User authorization required for bash", blocked[0].Msg)
+	assert.Equal(t, "User authorization required: pick the commands extension Test Extension may run",
+		blocked[1].Msg)
 
 	select {
 	case err := <-authorize(cmd):
@@ -1611,9 +1709,9 @@ func TestAuthorizerAuthorizeStartCommandDecisions(t *testing.T) {
 		{name: "deny once", decision: PermissionDenyOnce, wantErrIs: blueauth.ErrForbidden,
 			wantStored: map[string]string{}},
 		{name: "allow always", decision: PermissionAllowAlways,
-			wantStored: map[string]string{"/bin/grep *": pluginPermissionDecisionAllow}},
+			wantStored: map[string]string{"/bin/grep foo *": pluginPermissionDecisionAllow}},
 		{name: "deny always", decision: PermissionDenyAlways, wantErrIs: blueauth.ErrForbidden,
-			wantStored: map[string]string{"/bin/grep *": pluginPermissionDecisionDeny}},
+			wantStored: map[string]string{"/bin/grep foo *": pluginPermissionDecisionDeny}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1660,6 +1758,7 @@ func TestAuthorizerAuthorizeStartCommandPersistedDecisionAppliesToSameCommandWit
 	storage := storagestub.NewInMemoryService()
 	opener := &stubPromptOpener{
 		decision: PermissionAllowAlways,
+		picks:    []string{"/bin/grep *"},
 	}
 	a := newTestAuthorizerCore(opener, storage)
 	ext := testPluginExtension(nil)
@@ -1668,8 +1767,11 @@ func TestAuthorizerAuthorizeStartCommandPersistedDecisionAppliesToSameCommandWit
 	require.NoError(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
 		Path: "/bin/grep", Args: []string{"foo"}, Dir: "/tmp",
 	}))
-	require.Equal(t, map[string]string{"/bin/grep *": pluginPermissionDecisionAllow},
-		storedScopes(t, storage))
+	require.Equal(t, [][]string{{
+		"[ ] /bin/grep *",
+		"└─ [x] /bin/grep foo *",
+		"   └─ [ ] /bin/grep foo",
+	}}, opener.offered)
 	require.NoError(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
 		Path: "/bin/grep", Args: []string{"foo"}, Dir: "/tmp",
 	}))
@@ -1683,12 +1785,41 @@ func TestAuthorizerAuthorizeStartCommandPersistedDecisionAppliesToSameCommandWit
 	assert.Equal(t, 2, opener.calls)
 }
 
+func TestAuthorizerScopePickerNestsScopesUnderTheScopesThatCoverThem(t *testing.T) {
+	t.Parallel()
+
+	storage := storagestub.NewInMemoryService()
+	opener := &stubPromptOpener{
+		decision: PermissionAllowAlways,
+		picks:    []string{"git *", "git commit *"},
+	}
+	a := newTestAuthorizerCore(opener, storage)
+	ctx := blueauth.ContextWithClaims(context.Background(),
+		blueauth.UserClaims[Extension]{Extra: testPluginExtension(nil)})
+
+	require.NoError(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
+		Path: "/bin/bash", Args: []string{"-c", "git status && git commit -m fix"}, Dir: "/tmp",
+	}))
+	require.Equal(t, [][]string{{
+		"[ ] git *",
+		"├─ [x] git status *",
+		"│  └─ [ ] git status",
+		"└─ [x] git commit *",
+		"   └─ [ ] git commit -m *",
+		"      └─ [ ] git commit -m fix",
+	}}, opener.offered)
+	// git * covers git commit *, which needs no approval of its own.
+	assert.Equal(t, map[string]string{"git *": pluginPermissionDecisionAllow},
+		storedScopes(t, storage))
+}
+
 func TestAuthorizerAuthorizeStartCommandRegularExtensionPersistedDecisionAppliesToSameCommandWithDifferentArgs(t *testing.T) {
 	t.Parallel()
 
 	storage := storagestub.NewInMemoryService()
 	opener := &stubPromptOpener{
 		decision: PermissionAllowAlways,
+		picks:    []string{"/bin/grep *"},
 	}
 	a := newTestAuthorizerCore(opener, storage)
 	ext := testRegularExtension(extensionapi.NewPermissions(extensionapi.PermissionExecute))
@@ -1720,6 +1851,7 @@ func TestAuthorizerAuthorizeStartCommandPersistedDecisionNormalizesShellWrapper(
 			storage := storagestub.NewInMemoryService()
 			opener := &stubPromptOpener{
 				decision: PermissionAllowAlways,
+				picks:    []string{"grep *"},
 			}
 			a := newTestAuthorizerCore(opener, storage)
 			ext := testPluginExtension(nil)
@@ -1745,6 +1877,7 @@ func TestAuthorizerAuthorizeStartCommandPersistedDecisionBroadensSequenceShellSc
 	storage := storagestub.NewInMemoryService()
 	opener := &stubPromptOpener{
 		decision: PermissionAllowAlways,
+		picks:    []string{"echo *  (shell builtin)", "grep *"},
 	}
 	a := newTestAuthorizerCore(opener, storage)
 	ext := testPluginExtension(nil)
@@ -1770,6 +1903,7 @@ func TestAuthorizerAuthorizeStartCommandPersistedDecisionBroadensCompoundShellSc
 	storage := storagestub.NewInMemoryService()
 	opener := &stubPromptOpener{
 		decision: PermissionAllowAlways,
+		picks:    []string{"make *", "grep *", "rm *"},
 	}
 	a := newTestAuthorizerCore(opener, storage)
 	ext := testPluginExtension(nil)
@@ -1783,8 +1917,8 @@ func TestAuthorizerAuthorizeStartCommandPersistedDecisionBroadensCompoundShellSc
 		},
 		Dir: "/tmp",
 	}))
-	// Each command runs silently afterwards, as long as it is the same
-	// file.
+	// Each picked command runs silently afterwards, as long as it is the
+	// same file.
 	require.NoError(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
 		Path: "/usr/bin/rm", Args: []string{"-rf", "foo.txt"}, Dir: "/tmp",
 	}))
@@ -1829,66 +1963,136 @@ func TestAuthorizerAuthorizeStartCommandPartialApprovalStillPrompts(t *testing.T
 	t.Parallel()
 
 	storage := storagestub.NewInMemoryService()
-	ext := testPluginExtension(nil)
 	opener := &stubPromptOpener{
 		decision: PermissionAllowAlways,
+		picks:    []string{"git *", "tail *"},
 	}
 	a := newTestAuthorizerCore(opener, storage)
 	ctx := blueauth.ContextWithClaims(context.Background(),
-		blueauth.UserClaims[Extension]{Extra: ext})
+		blueauth.UserClaims[Extension]{Extra: testPluginExtension(nil)})
 	require.NoError(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
-		Path: "grep", Args: []string{"x"}, Dir: "/tmp",
+		Path: "/bin/bash", Args: []string{"-c", "git log | tail -n 5"}, Dir: "/tmp",
 	}))
 	require.Equal(t, 1, opener.calls)
 
-	// grep is already approved, rm is not, so a prompt is shown.
+	// git and bash are approved already, head is not, so the prompt asks
+	// about head alone.
+	opener.picks = nil
 	require.NoError(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
-		Path: "/bin/bash",
-		Args: []string{"-c", "grep foo file.txt && rm file.txt"},
-		Dir:  "/tmp",
+		Path: "/bin/bash", Args: []string{"-c", "git log | head -n 5"}, Dir: "/tmp",
+	}))
+	require.Equal(t, 2, opener.calls)
+	assert.Contains(t, opener.messages[1], "\n\nRuns `/usr/bin/head`.\n\n")
+	require.Len(t, opener.offered, 2)
+	assert.Equal(t, []string{
+		"[x] head *",
+		"└─ [ ] head -n *",
+		"   └─ [ ] head -n 5",
+	}, opener.offered[1])
+
+	require.NoError(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
+		Path: "/bin/bash", Args: []string{"-c", "git status | head -n 1"}, Dir: "/tmp",
 	}))
 	assert.Equal(t, 2, opener.calls)
 
+	// When what is left runs arbitrary code, the prompt warns of it too.
+	opener.decision = PermissionAllowOnce
 	require.NoError(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
-		Path: "rm", Args: []string{"-rf", "foo"}, Dir: "/tmp",
+		Path: "/bin/bash", Args: []string{"-c", "git log | sed -n 1p"}, Dir: "/tmp",
 	}))
-	assert.Equal(t, 2, opener.calls)
+	require.Equal(t, 3, opener.calls)
+	assert.Contains(t, opener.messages[2],
+		"\n\nRuns `/usr/bin/sed`.\n\n⚠️ `sed` runs arbitrary code.\n\n")
 }
 
-func TestAuthorizerAuthorizeStartCommandOpaqueScriptFallsBackToExactMatch(t *testing.T) {
+func TestAuthorizerAlwaysApprovesTheProgramsOfACommandAllowedOtherwise(t *testing.T) {
 	t.Parallel()
 
 	storage := storagestub.NewInMemoryService()
 	opener := &stubPromptOpener{
 		decision: PermissionAllowAlways,
+		picks:    []string{"git *"},
 	}
 	a := newTestAuthorizerCore(opener, storage)
-	ext := testPluginExtension(nil)
-	ctx := blueauth.ContextWithClaims(context.Background(), blueauth.UserClaims[Extension]{Extra: ext})
+	ctx := blueauth.ContextWithClaims(context.Background(),
+		blueauth.UserClaims[Extension]{Extra: testPluginExtension(nil)})
+	require.NoError(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{Path: "git", Args: []string{"status"}}))
+
+	// git * covers what timeout runs, so Always only approves timeout.
+	require.NoError(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
+		Path: "timeout", Args: []string{"5", "git", "status"},
+	}))
+	require.Equal(t, 2, opener.calls)
+	assert.Equal(t, []string{PromptOptionYes, PromptOptionYesAlways, PromptOptionNo},
+		opener.options[1])
+	assert.Contains(t, opener.messages[1], "\n\nRuns `/usr/bin/timeout`.\n\n"+
+		"Choosing **Always** approves `/usr/bin/timeout` from now on.")
+	assert.Len(t, opener.offered, 1, "there is nothing to pick")
+	assert.Equal(t, map[string]string{"git *": pluginPermissionDecisionAllow},
+		storedScopes(t, storage))
 
 	require.NoError(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
-		Path: "/bin/bash",
-		Args: []string{"-c", "$CMD args"},
-		Dir:  "/tmp",
+		Path: "timeout", Args: []string{"9", "git", "log"},
 	}))
-	assert.Contains(t, opener.messages[0], "Choosing **Always** or **Never** covers only this "+
-		"exact command because it runs no program a scope can describe.")
-	assert.Equal(t, map[string]string{
-		"this exact command (/bin/bash -c '$CMD args' in /tmp)": pluginPermissionDecisionAllow,
-	}, storedScopes(t, storage))
-	require.NoError(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
-		Path: "/bin/bash",
-		Args: []string{"-c", "$CMD args"},
-		Dir:  "/tmp",
-	}))
-	// Different opaque script prompts again (no broadening).
-	require.NoError(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
-		Path: "/bin/bash",
-		Args: []string{"-c", "$OTHER args"},
-		Dir:  "/tmp",
-	}))
-
 	assert.Equal(t, 2, opener.calls)
+}
+
+func TestAuthorizerAsksEveryTimeWhenNoDecisionForGoodCanCoverTheCommand(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		cmd  workspaceapi.Cmd
+		want string
+	}{
+		{name: "programs that cannot be told",
+			cmd:  workspaceapi.Cmd{Path: "/bin/bash", Args: []string{"-c", "$CMD args"}},
+			want: "\n\nRune asks every time because it runs no program a scope can describe."},
+		{name: "program in a directory not known until it runs",
+			cmd:  workspaceapi.Cmd{Path: "bash", Args: []string{"-c", "cd sub && ./build --fast"}},
+			want: "`./build` (the script changes directory, so Rune asks every time)."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			storage := storagestub.NewInMemoryService()
+			opener := &stubPromptOpener{decision: PermissionAllowOnce}
+			a := newTestAuthorizerCore(opener, storage)
+			ctx := blueauth.ContextWithClaims(context.Background(),
+				blueauth.UserClaims[Extension]{Extra: testPluginExtension(nil)})
+
+			require.NoError(t, a.AuthorizeCommand(ctx, tc.cmd))
+			assert.Equal(t, [][]string{{PromptOptionYes, PromptOptionNo}}, opener.options)
+			assert.Contains(t, opener.messages[0], tc.want)
+			assert.NotContains(t, opener.messages[0], "Always")
+			assert.Empty(t, storedCommandDecisions(t, storage))
+		})
+	}
+}
+
+func TestAuthorizerScopesContainerCommandsAsArbitraryCode(t *testing.T) {
+	t.Parallel()
+
+	storage := storagestub.NewInMemoryService()
+	opener := &stubPromptOpener{decision: PermissionAllowAlways}
+	a := newTestAuthorizerCore(opener, storage)
+	ctx := blueauth.ContextWithClaims(context.Background(),
+		blueauth.UserClaims[Extension]{Extra: testPluginExtension(nil)})
+
+	require.NoError(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
+		Path: "/bin/bash", Args: []string{"-c", "docker run --rm alpine"},
+	}))
+	assert.Contains(t, opener.messages[0], "\n\nRuns `/bin/bash`, `/usr/bin/docker`.\n\n"+
+		"⚠️ `docker` runs arbitrary code.\n\n")
+	assert.Equal(t, [][]string{{
+		"[ ] docker *" + scopeWarning,
+		"└─ [ ] docker run *" + scopeWarning,
+		"   └─ [ ] docker run --rm *" + scopeWarning,
+		"      └─ [x] docker run --rm alpine",
+	}}, opener.offered)
+	assert.Equal(t, map[string]string{"docker run --rm alpine": pluginPermissionDecisionAllow},
+		storedScopes(t, storage))
 }
 
 func TestAuthorizerAuthorizeStartCommandOnceDecisionIncludesPeerAndCommand(t *testing.T) {
@@ -1976,6 +2180,12 @@ func (p *blockingPromptOpener) Prompt(
 	return browsertest.NopWindow()
 }
 
+func (p *blockingPromptOpener) Floating(
+	browser.Floating, browserapi.FloatingConfig,
+) (browser.Window, error) {
+	panic("blocking prompts answer Yes, so open no scope picker")
+}
+
 // release unblocks every Prompt call made so far and fires the stored
 // PromptHandler's OnSelect exactly once with the matching option index.
 // This simulates the user approving a single floating prompt that the
@@ -2059,6 +2269,7 @@ func TestAuthorizerPersistedScopeDoesNotCoverOtherExecutables(t *testing.T) {
 
 	opener := &stubPromptOpener{
 		decision: PermissionAllowAlways,
+		picks:    []string{"git *"},
 	}
 	a := newTestAuthorizerCore(opener, storagestub.NewInMemoryService())
 	ctx := blueauth.ContextWithClaims(context.Background(),
@@ -2089,10 +2300,10 @@ func TestAuthorizerPersistedScopeDoesNotCoverOtherExecutables(t *testing.T) {
 		{name: "with a preloaded library",
 			cmd: workspaceapi.Cmd{Path: "git", Args: []string{"status"},
 				Env: []string{"LD_PRELOAD=/tmp/x.so"}},
-			want: "covers only this exact command because it sets LD_PRELOAD"},
+			want: "Rune asks every time because it sets LD_PRELOAD."},
 		{name: "under a wrapper never approved",
 			cmd:  workspaceapi.Cmd{Path: "nice", Args: []string{"git", "status"}},
-			want: "Runs `/usr/bin/nice`, `/usr/bin/git`."},
+			want: "Runs `/usr/bin/nice`.\n\n"},
 	}
 	for _, tc := range cases {
 		opener.decision = PermissionDenyOnce
@@ -2111,6 +2322,7 @@ func TestAuthorizerPersistedScopeDoesNotCoverShadowingExecutable(t *testing.T) {
 	r.hostPATH = []string{"/home/u/go/bin", "/usr/bin"}
 	opener := &stubPromptOpener{
 		decision: PermissionAllowAlways,
+		picks:    []string{"git *"},
 	}
 	a := newTestAuthorizerCore(opener, storagestub.NewInMemoryService())
 	a.resolver = r
@@ -2177,6 +2389,7 @@ func TestAuthorizerRenewsChangedExecutable(t *testing.T) {
 			storage := storagestub.NewInMemoryService()
 			opener := &stubPromptOpener{
 				decision: PermissionAllowAlways,
+				picks:    []string{"git *", "git status *"},
 			}
 			a := newTestAuthorizerCore(opener, storage)
 			a.resolver = r
@@ -2224,34 +2437,104 @@ func TestAuthorizerRenewsChangedExecutable(t *testing.T) {
 	}
 }
 
-func TestAuthorizerNeverLeavesAllowedProgramsAllowed(t *testing.T) {
+func TestAuthorizerScopePickerCancelDeniesAndEmptyPickAllowsOnce(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		opener  *stubPromptOpener
+		wantErr error
+	}{
+		{name: "cancel", wantErr: blueauth.ErrForbidden, opener: &stubPromptOpener{
+			decision: PermissionAllowAlways,
+			cancel:   true,
+		}},
+		{name: "nothing picked", opener: &stubPromptOpener{
+			decision: PermissionAllowAlways,
+			picks:    []string{},
+		}},
+		{name: "nothing picked for never", wantErr: blueauth.ErrForbidden,
+			opener: &stubPromptOpener{
+				decision: PermissionDenyAlways,
+				picks:    []string{},
+			}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			storage := storagestub.NewInMemoryService()
+			a := newTestAuthorizerCore(tc.opener, storage)
+			ext := testRegularExtension(extensionapi.NewPermissions(extensionapi.PermissionExecute))
+			ctx := blueauth.ContextWithClaims(context.Background(),
+				blueauth.UserClaims[Extension]{Extra: ext})
+			cmd := workspaceapi.Cmd{Path: "git", Args: []string{"status"}}
+			for range 2 {
+				err := a.AuthorizeCommand(ctx, cmd)
+				if tc.wantErr != nil {
+					assert.ErrorIs(t, err, tc.wantErr)
+				} else {
+					assert.NoError(t, err)
+				}
+			}
+			// The decision holds for a moment only.
+			assert.Equal(t, 1, tc.opener.calls)
+			assert.Len(t, tc.opener.offered, 1)
+			assert.Empty(t, storedCommandDecisions(t, storage))
+		})
+	}
+}
+
+func TestAuthorizerScopePickerThatCannotOpenSavesNothing(t *testing.T) {
+	t.Parallel()
+
+	errNoWindow := errors.New("no window")
+	storage := storagestub.NewInMemoryService()
+	opener := &stubPromptOpener{decision: PermissionAllowAlways, floatingErr: errNoWindow}
+	a := newTestAuthorizerCore(opener, storage)
+	ctx := blueauth.ContextWithClaims(context.Background(), blueauth.UserClaims[Extension]{
+		Extra: testRegularExtension(extensionapi.NewPermissions(extensionapi.PermissionExecute)),
+	})
+
+	err := a.AuthorizeCommand(ctx, workspaceapi.Cmd{Path: "git", Args: []string{"status"}})
+
+	assert.ErrorIs(t, err, errNoWindow)
+	assert.Empty(t, storedCommandDecisions(t, storage))
+}
+
+func TestAuthorizerNeverDeniesPickedScopesOverAllowedOnes(t *testing.T) {
 	t.Parallel()
 
 	storage := storagestub.NewInMemoryService()
-	opener := &stubPromptOpener{decision: PermissionAllowAlways}
+	opener := &stubPromptOpener{
+		decision: PermissionDenyAlways,
+		picks:    []string{"git push *"},
+	}
 	a := newTestAuthorizerCore(opener, storage)
 	ctx := blueauth.ContextWithClaims(context.Background(),
 		blueauth.UserClaims[Extension]{Extra: testPluginExtension(nil)})
+	require.ErrorIs(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
+		Path: "git", Args: []string{"push", "origin"},
+	}), blueauth.ErrForbidden)
+
+	opener.decision = PermissionAllowAlways
+	opener.picks = []string{"git *"}
 	require.NoError(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
 		Path: "git", Args: []string{"status"},
 	}))
-
-	opener.decision = PermissionDenyAlways
-	require.ErrorIs(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
-		Path: "bash", Args: []string{"-c", "git push origin && curl x"},
-	}), blueauth.ErrForbidden)
 	assert.Equal(t, map[string]string{
-		"git *":  pluginPermissionDecisionAllow,
-		"curl *": pluginPermissionDecisionDeny,
+		"git *":      pluginPermissionDecisionAllow,
+		"git push *": pluginPermissionDecisionDeny,
 	}, storedScopes(t, storage))
 
+	// git * allows git push, but the deny of git push * wins.
 	calls := opener.calls
-	require.NoError(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
-		Path: "git", Args: []string{"push", "-f"},
-	}))
 	require.ErrorIs(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
-		Path: "curl", Args: []string{"y"},
+		Path: "git", Args: []string{"push", "-f"},
 	}), blueauth.ErrForbidden)
+	require.NoError(t, a.AuthorizeCommand(ctx, workspaceapi.Cmd{
+		Path: "git", Args: []string{"log"},
+	}))
 	assert.Equal(t, calls, opener.calls)
 }
 
@@ -2314,11 +2597,14 @@ func TestAuthorizerNeverPersistsApprovalsOfProgramsNotFound(t *testing.T) {
 	cases := []struct {
 		name string
 		cmd  workspaceapi.Cmd
+		want string
 	}{
 		{name: "relative to a directory the script changes to",
-			cmd: workspaceapi.Cmd{Path: "bash", Args: []string{"-c", "cd sub && ./build --fast"}}},
+			cmd:  workspaceapi.Cmd{Path: "bash", Args: []string{"-c", "cd sub && make && ./build --fast"}},
+			want: "`./build` (the script changes directory, so Rune asks every time)"},
 		{name: "not on the PATH yet",
-			cmd: workspaceapi.Cmd{Path: "bash", Args: []string{"-c", "make install && tool run"}}},
+			cmd:  workspaceapi.Cmd{Path: "bash", Args: []string{"-c", "make install && tool run"}},
+			want: "`tool` (not found, so Rune asks every time)"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2336,14 +2622,343 @@ func TestAuthorizerNeverPersistsApprovalsOfProgramsNotFound(t *testing.T) {
 				blueauth.UserClaims[Extension]{Extra: ext})
 
 			require.NoError(t, a.AuthorizeCommand(ctx, tc.cmd))
-			assert.Contains(t, opener.messages[0], "(not found, so Rune asks every time)")
-			for scope := range storedScopes(t, storage) {
-				assert.NotContains(t, scope, "build", "programs not found are not approved")
-				assert.NotContains(t, scope, "tool")
-				assert.NotContains(t, scope, "this exact command")
+			assert.Contains(t, opener.messages[0], tc.want)
+			for _, rows := range opener.offered {
+				for _, row := range rows {
+					assert.NotContains(t, row, "build", "programs not found are not offered")
+					assert.NotContains(t, row, "tool")
+					assert.NotContains(t, row, "this exact command")
+				}
 			}
+			// What was found is allowed now, so only Yes and No are left
+			// for what was not.
+			opener.decision = PermissionAllowOnce
 			require.NoError(t, a.AuthorizeCommand(ctx, tc.cmd))
 			assert.Equal(t, 2, opener.calls)
+			assert.Equal(t, []string{PromptOptionYes, PromptOptionNo}, opener.options[1])
 		})
 	}
+}
+
+func TestAuthorizerAuthorizeCommandBuildsOnPastDecisions(t *testing.T) {
+	t.Parallel()
+
+	built := time.Date(2026, 10, 25, 14, 2, 0, 0, time.Local)
+	rebuilt := built.Add(19 * time.Hour)
+	content := func(p string) string { return "#!/bin/sh\n# " + p + "\n" }
+	const rebuiltGit = "#!/bin/sh\n# git, rebuilt with a fix\n"
+	host := diskHost{t: t, root: t.TempDir()}
+	for _, p := range []string{
+		"/bin/bash", "/bin/sh", "/usr/bin/git", "/usr/bin/tail", "/usr/bin/head",
+		"/usr/bin/sed", "/usr/bin/find", "/usr/bin/xargs", "/usr/bin/rm", "/usr/bin/make",
+		"/usr/bin/timeout", "/usr/bin/grep", "/usr/bin/docker", "/home/u/bin/git",
+		"/ws/build", "/ws/sub/build",
+	} {
+		host.write(p, content(p), built)
+	}
+	storage := storagestub.NewInMemoryService()
+	opener := &stubPromptOpener{}
+	a, err := NewAuthorizer(texttest.NopEditor(), opener, storage, syncScheduleNextTick,
+		&capturingStatus{}, testTrustStore(t), NewWorkspaceResolver(WorkspaceResolverConfig{
+			FS: host, Root: "/ws", Home: "/home/u", HostPATH: staticHostPATH("/usr/bin", "/bin"),
+		}), Config{})
+	require.NoError(t, err)
+	agent := testRegularExtension(extensionapi.NewPermissions(extensionapi.PermissionExecute))
+	other := agent
+	other.ExtensionID, other.ExtensionName = "other-extension", "Other Extension"
+
+	run := func(name string, args ...string) workspaceapi.Cmd {
+		return workspaceapi.Cmd{Path: name, Args: args}
+	}
+	bash := func(script string) workspaceapi.Cmd { return run("bash", "-c", script) }
+	const pick = "\n\nChoosing **Always** or **Never** lets you pick which commands and " +
+		"subcommands the decision covers."
+	scopes := []string{PromptOptionYes, PromptOptionYesAlways, PromptOptionNo, PromptOptionNoNever}
+	programs := []string{PromptOptionYes, PromptOptionYesAlways, PromptOptionNo}
+	once := []string{PromptOptionYes, PromptOptionNo}
+	renewal := []string{PromptOptionRenew, PromptOptionOnce, PromptOptionNo}
+	allow, deny := pluginPermissionDecisionAllow, pluginPermissionDecisionDeny
+
+	steps := []struct {
+		name string
+		// ext runs the command, or the agent when nil.
+		ext   *Extension
+		setup func()
+		cmd   workspaceapi.Cmd
+		// The user's answers. Prompts nobody expects are answered No.
+		decision PermissionDecision
+		picks    []string
+		renew    string
+		// wantOptions are the options of the prompt, or nil when the user
+		// is not asked.
+		wantOptions []string
+		// wantNote is the prompt without its first paragraph, which shows
+		// the command, or the whole prompt of a renewal.
+		wantNote    string
+		wantOffered []string
+		wantErr     error
+		// wantSaved are the decisions the step saves, by scope.
+		wantSaved map[string]string
+		// wantApproved are the executables whose fingerprints the step
+		// saves.
+		wantApproved []string
+	}{
+		{name: "Always on a first command lets the user pick what it covers",
+			cmd: run("git", "status"), decision: PermissionAllowAlways, picks: []string{"git *"},
+			wantOptions: scopes, wantNote: "Runs `/usr/bin/git`." + pick,
+			wantOffered: []string{"[ ] git *", "└─ [x] git status *", "   └─ [ ] git status"},
+			wantSaved:   map[string]string{"git *": allow}, wantApproved: []string{"/usr/bin/git"}},
+		{name: "a scope covers other arguments, and the same file by its path",
+			cmd: run("/usr/bin/git", "push", "origin", "main")},
+		{name: "a pipeline asks only about the programs not approved yet",
+			cmd: bash("git log | tail -n 5"), decision: PermissionAllowAlways, picks: []string{"tail *"},
+			wantOptions: scopes, wantNote: "Runs `/bin/bash`, `/usr/bin/tail`." + pick,
+			wantOffered:  []string{"[x] tail *", "└─ [ ] tail -n *", "   └─ [ ] tail -n 5"},
+			wantSaved:    map[string]string{"tail *": allow},
+			wantApproved: []string{"/bin/bash", "/usr/bin/tail"}},
+		{name: "what was approved is neither asked about nor offered again",
+			cmd: bash("git diff | head -n 5"), decision: PermissionAllowAlways,
+			wantOptions: scopes, wantNote: "Runs `/usr/bin/head`." + pick,
+			wantOffered: []string{"[x] head *", "└─ [ ] head -n *", "   └─ [ ] head -n 5"},
+			wantSaved:   map[string]string{"head *": allow}, wantApproved: []string{"/usr/bin/head"}},
+		{name: "a script whose programs are all approved runs without asking",
+			cmd: bash("git status | head -n 1 && tail -n 1 log")},
+		{name: "Always approves a shell never approved when its programs are",
+			cmd: run("sh", "-c", "git log | tail -n 2"), decision: PermissionAllowAlways,
+			wantOptions:  programs,
+			wantNote:     "Runs `/bin/sh`.\n\nChoosing **Always** approves `/bin/sh` from now on.",
+			wantApproved: []string{"/bin/sh"}},
+		{name: "the shell runs without asking from then on",
+			cmd: run("sh", "-c", "git status | head -n 3")},
+		{name: "a wrapper is approved by its file alone",
+			cmd: run("timeout", "5", "git", "status"), decision: PermissionAllowAlways,
+			wantOptions: programs,
+			wantNote: "Runs `/usr/bin/timeout`.\n\nChoosing **Always** approves " +
+				"`/usr/bin/timeout` from now on.",
+			wantApproved: []string{"/usr/bin/timeout"}},
+		{name: "and then wraps any command approved",
+			cmd: run("timeout", "60", "git", "push")},
+		{name: "a program that shadows an approved one is another program",
+			cmd: workspaceapi.Cmd{Path: "bash", Args: []string{"-c", "git status"},
+				Env: []string{"PATH=/home/u/bin:/usr/bin"}},
+			wantOptions: scopes, wantNote: "Runs `/home/u/bin/git`." + pick,
+			wantErr: blueauth.ErrForbidden},
+		{name: "a rebuilt executable asks to renew the approvals that run it",
+			setup: func() { host.write("/usr/bin/git", rebuiltGit, rebuilt) },
+			cmd:   run("git", "log"), renew: PromptOptionRenew, wantOptions: renewal,
+			wantNote: "**`/usr/bin/git`** has changed since you approved `git *` for extension " +
+				"Test Extension.\n\nsha256 `" + fingerprintPreview(sha256Hex(content("/usr/bin/git"))) +
+				"` → `" + fingerprintPreview(sha256Hex(rebuiltGit)) + "`, modified " +
+				rebuilt.Format("2006-01-02 15:04") + ".\n\nRenew authorization?",
+			wantApproved: []string{"/usr/bin/git"}},
+		{name: "renewing holds for every approval that runs the file",
+			cmd: bash("git log | tail -n 9")},
+		{name: "Never denies the scopes picked",
+			cmd: run("rm", "-rf", "build"), decision: PermissionDenyAlways, picks: []string{"rm *"},
+			wantOptions: scopes, wantNote: "Runs `/usr/bin/rm`." + pick,
+			wantOffered: []string{"[x] rm *", "└─ [ ] rm -rf *", "   └─ [ ] rm -rf build"},
+			wantErr:     blueauth.ErrForbidden, wantSaved: map[string]string{"rm *": deny}},
+		{name: "a denied program forbids every command that runs it without asking",
+			cmd: bash("git status && rm -f log"), wantErr: blueauth.ErrForbidden},
+		{name: "find is approved like any program, since what -exec runs is asked about apart",
+			cmd: run("find", ".", "-exec", "head", "{}", "+"), decision: PermissionAllowAlways,
+			picks: []string{"find *"}, wantOptions: scopes, wantNote: "Runs `/usr/bin/find`." + pick,
+			wantOffered: []string{"[ ] find *", "└─ [x] find . *", "   └─ [ ] find . -exec *",
+				"      └─ [ ] find . -exec head *", "         └─ [ ] find . -exec head '{}' *",
+				"            └─ [ ] find . -exec head '{}' +"},
+			wantSaved: map[string]string{"find *": allow}, wantApproved: []string{"/usr/bin/find"}},
+		{name: "find * does not cover a command -exec runs that was denied",
+			cmd:     run("find", ".", "-name", "*.o", "-exec", "rm", "{}", ";"),
+			wantErr: blueauth.ErrForbidden},
+		{name: "nor one never approved",
+			cmd:         run("find", ".", "-name", "*.go", "-exec", "grep", "-l", "TODO", "{}", "+"),
+			wantOptions: scopes, wantNote: "Runs `/usr/bin/grep`." + pick,
+			wantErr: blueauth.ErrForbidden},
+		{name: "but runs commands approved without asking",
+			cmd: run("find", ".", "-name", "*.go", "-exec", "head", "-n", "1", "{}", "+")},
+		{name: "a shell builtin is approved like a program",
+			cmd: run("sh", "-c", "echo ok"), decision: PermissionAllowAlways,
+			picks:       []string{"echo *  (shell builtin)"},
+			wantOptions: scopes, wantNote: "Runs `echo` (shell builtin)." + pick,
+			wantOffered: []string{"[ ] echo *  (shell builtin)", "└─ [x] echo ok *  (shell builtin)",
+				"   └─ [ ] echo ok  (shell builtin)"},
+			wantSaved: map[string]string{"echo *  (shell builtin)": allow}},
+		{name: "find passing the file it found to a script runs without asking",
+			cmd: run("find", ".", "-name", "*.txt", "-exec", "sh", "-c", `echo "$1"`, "sh", "{}", ";")},
+		{name: "find putting the file it found in a script is asked about every time",
+			cmd:      run("find", ".", "-name", "*.txt", "-exec", "sh", "-c", "echo {}", ";"),
+			decision: PermissionAllowOnce, wantOptions: once,
+			wantNote: "Rune asks every time because find puts the names of the files it finds " +
+				"in the command it runs, where they can run as code."},
+		{name: "a program in the workspace is approved by its file",
+			cmd: run("./build", "--fast"), decision: PermissionAllowAlways, picks: []string{"./build *"},
+			wantOptions: scopes, wantNote: "Runs `/ws/build`." + pick,
+			wantOffered: []string{"[x] ./build *", "└─ [ ] ./build --fast *", "   └─ [ ] ./build --fast"},
+			wantSaved:   map[string]string{"./build *": allow}, wantApproved: []string{"/ws/build"}},
+		{name: "so the same name in another directory is another program",
+			cmd:         workspaceapi.Cmd{Path: "./build", Args: []string{"--fast"}, Dir: "/ws/sub"},
+			wantOptions: scopes, wantNote: "Runs `/ws/sub/build`." + pick,
+			wantErr: blueauth.ErrForbidden},
+		{name: "find -execdir runs a relative name in each directory it finds",
+			cmd:      run("find", ".", "-name", "Makefile", "-execdir", "./build", ";"),
+			decision: PermissionAllowOnce, wantOptions: once,
+			wantNote: "Runs `./build` (find runs it in the directory of each file it finds, " +
+				"so Rune asks every time)."},
+		{name: "a script that changes directory does too",
+			cmd: bash("cd sub && ./build"), decision: PermissionAllowOnce, wantOptions: once,
+			wantNote: "Runs `./build` (the script changes directory, so Rune asks every time)."},
+		{name: "but not a name looked up in an absolute PATH",
+			cmd: bash("cd sub && head -n 1 x")},
+		{name: "xargs is approved by its file alone",
+			cmd: bash("git ls-files | xargs head -n 1"), decision: PermissionAllowAlways,
+			wantOptions: programs,
+			wantNote: "Runs `/usr/bin/xargs`.\n\nChoosing **Always** approves " +
+				"`/usr/bin/xargs` from now on.",
+			wantApproved: []string{"/usr/bin/xargs"}},
+		{name: "xargs putting what it reads in a script is asked about every time",
+			cmd:      bash(`git ls-files | xargs -I{} sh -c "echo {}"`),
+			decision: PermissionAllowOnce, wantOptions: once,
+			wantNote: "Rune asks every time because xargs puts the lines it reads in the " +
+				"command it runs, where they can run as code."},
+		{name: "a program that runs arbitrary code is warned of and approved exactly",
+			cmd: bash("git log | sed -n 1p"), decision: PermissionAllowAlways,
+			wantOptions: scopes,
+			wantNote:    "Runs `/usr/bin/sed`.\n\n⚠️ `sed` runs arbitrary code." + pick,
+			wantOffered: []string{"[ ] sed *" + scopeWarning, "└─ [ ] sed -n *" + scopeWarning,
+				"   └─ [x] sed -n 1p"},
+			wantSaved: map[string]string{"sed -n 1p": allow}, wantApproved: []string{"/usr/bin/sed"}},
+		{name: "so other code asks again",
+			cmd: bash("git log | sed -n 2p"), decision: PermissionAllowOnce, wantOptions: scopes,
+			wantNote: "Runs `/usr/bin/sed`.\n\n⚠️ `sed` runs arbitrary code." + pick},
+		{name: "a container runs arbitrary code",
+			cmd: bash("docker run --rm alpine"), decision: PermissionAllowAlways,
+			wantOptions: scopes,
+			wantNote:    "Runs `/usr/bin/docker`.\n\n⚠️ `docker` runs arbitrary code." + pick,
+			wantOffered: []string{"[ ] docker *" + scopeWarning, "└─ [ ] docker run *" + scopeWarning,
+				"   └─ [ ] docker run --rm *" + scopeWarning, "      └─ [x] docker run --rm alpine"},
+			wantSaved:    map[string]string{"docker run --rm alpine": allow},
+			wantApproved: []string{"/usr/bin/docker"}},
+		{name: "a script whose programs cannot be told is asked about every time",
+			cmd: bash("$CMD --version"), decision: PermissionAllowOnce, wantOptions: once,
+			wantNote: "Rune asks every time because it runs no program a scope can describe."},
+		{name: "so is a command that sets what its programs load",
+			cmd: workspaceapi.Cmd{Path: "git", Args: []string{"status"},
+				Env: []string{"LD_PRELOAD=/tmp/x.so"}},
+			wantOptions: once, wantNote: "Rune asks every time because it sets LD_PRELOAD.",
+			wantErr: blueauth.ErrForbidden},
+		{name: "a program not found is never approved",
+			cmd: bash("make && tool run"), decision: PermissionAllowAlways, picks: []string{"make *"},
+			wantOptions: scopes,
+			wantNote:    "Runs `/usr/bin/make`, `tool` (not found, so Rune asks every time)." + pick,
+			wantOffered: []string{"[x] make *", "└─ [ ] make"},
+			wantSaved:   map[string]string{"make *": allow}, wantApproved: []string{"/usr/bin/make"}},
+		{name: "so it is asked about every time",
+			cmd: bash("make && tool run"), decision: PermissionAllowOnce, wantOptions: once,
+			wantNote: "Runs `tool` (not found, so Rune asks every time)."},
+		{name: "another extension is asked about what this one may run",
+			ext: &other, cmd: run("git", "status"),
+			wantOptions: scopes, wantNote: "Runs `/usr/bin/git`." + pick,
+			wantErr: blueauth.ErrForbidden},
+	}
+	for _, step := range steps {
+		t.Run(step.name, func(t *testing.T) {
+			if step.setup != nil {
+				step.setup()
+			}
+			ext := agent
+			if step.ext != nil {
+				ext = *step.ext
+			}
+			calls, pickers := opener.calls, len(opener.offered)
+			decisions, fingerprints := storedScopes(t, storage), storedFingerprints(t, storage)
+			opener.decision = cmp.Or(step.decision, PermissionDenyOnce)
+			opener.picks, opener.renewal = step.picks, step.renew
+			ctx := blueauth.ContextWithClaims(context.Background(),
+				blueauth.UserClaims[Extension]{Extra: ext})
+
+			err := a.AuthorizeCommand(ctx, step.cmd)
+
+			if step.wantErr != nil {
+				assert.ErrorIs(t, err, step.wantErr)
+			} else {
+				assert.NoError(t, err)
+			}
+			if step.wantOptions == nil {
+				assert.Equal(t, calls, opener.calls, "the user is not asked")
+			} else if assert.Equal(t, calls+1, opener.calls, "the user is asked once") {
+				assert.Equal(t, step.wantOptions, opener.options[calls])
+				note := opener.messages[calls]
+				if !slices.Contains(step.wantOptions, PromptOptionRenew) {
+					_, note, _ = strings.Cut(note, "\n\n")
+				}
+				assert.Equal(t, step.wantNote, note)
+			}
+			var offered []string
+			if len(opener.offered) > pickers {
+				offered = opener.offered[pickers]
+			}
+			assert.Equal(t, step.wantOffered, offered)
+			assert.Equal(t, step.wantSaved, changedEntries(decisions, storedScopes(t, storage)))
+			assert.Equal(t, step.wantApproved, slices.Sorted(maps.Keys(
+				changedEntries(fingerprints, storedFingerprints(t, storage)))))
+		})
+	}
+}
+
+// diskHost is a workspace host whose file system is a directory on the
+// disk, so that the resolver the IDE uses finds and fingerprints its
+// executables: /usr/bin/git is <root>/usr/bin/git.
+type diskHost struct {
+	t    *testing.T
+	root string
+}
+
+func (h diskHost) Stat(name string) (fs.FileInfo, error) { return os.Stat(h.file(name)) }
+
+func (h diskHost) Open(name string) (workspaceapi.File, error) { return os.Open(h.file(name)) }
+
+func (h diskHost) file(name string) string {
+	return filepath.Join(h.root, filepath.FromSlash(name))
+}
+
+// write writes the executable p, modified at mtime so that the prompts
+// that show it read the same on every run.
+func (h diskHost) write(p, content string, mtime time.Time) {
+	h.t.Helper()
+	writeExecutable(h.t, h.file(p), content, 0o755)
+	require.NoError(h.t, os.Chtimes(h.file(p), mtime, mtime))
+}
+
+// storedFingerprints maps the executables in storage to the digests the
+// user approved.
+func storedFingerprints(t *testing.T, storage storageapi.Service) map[string]string {
+	t.Helper()
+	it, err := storage.List(context.Background(), nil)
+	require.NoError(t, err)
+	defer it.Close()
+	ret := map[string]string{}
+	for it.HasNext() {
+		var stored storedExecutable
+		require.NoError(t, it.NextTo(&stored))
+		if strings.HasPrefix(stored.Key, executableStoragePrefix) {
+			ret[stored.Path] = stored.SHA256
+		}
+	}
+	return ret
+}
+
+// changedEntries returns the entries of after that before lacks or holds
+// another value for, or nil when there are none.
+func changedEntries(before, after map[string]string) map[string]string {
+	var ret map[string]string
+	for k, v := range after {
+		if old, ok := before[k]; ok && old == v {
+			continue
+		}
+		if ret == nil {
+			ret = map[string]string{}
+		}
+		ret[k] = v
+	}
+	return ret
 }

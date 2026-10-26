@@ -93,15 +93,31 @@ type programSpec struct {
 	// stdinCode reports that, without an operand, the program reads code
 	// from its standard input.
 	stdinCode bool
-	// opaqueSub lists the subcommands that run commands the authorizer
-	// cannot follow (docker run).
-	opaqueSub []string
+	// codeSub lists the subcommands that run arbitrary commands, such as
+	// those of a container (docker run).
+	codeSub []string
 	// remoteCommand reports that operands after the first one are a
 	// command for another host (ssh).
 	remoteCommand bool
-	// embedded returns the commands a kindSpawning utility runs, and the
-	// index of the argument that starts the first of them.
-	embedded func(args []shellWord) (cmds [][]shellWord, code int, ok bool)
+	// embedded returns the commands a kindSpawning utility runs. They are
+	// programs of their own, so the utility runs no code a scope of it
+	// covers.
+	embedded func(args []shellWord) (cmds [][]shellWord, ok bool)
+	// placeholders are what a kindSpawning utility replaces with what it
+	// found in the commands it runs (find's {}). A word that holds one is
+	// not known until it runs: a file name put in a script is code.
+	placeholders []string
+	// found tells prompts what replaces the placeholders and the value of
+	// replaceOpts.
+	found string
+	// dirOpts are the options that make a kindSpawning utility run its
+	// commands in another directory (find -execdir), which may hold other
+	// files of the same relative name. dir tells prompts which.
+	dirOpts []string
+	dir     string
+	// replaceOpts are the options whose value, or {} when there is none,
+	// a kindTransparent wrapper replaces with what it reads (xargs -I).
+	replaceOpts []string
 	// scope returns the arguments that scope the program and the index of
 	// the first that carries code, for programs whose global options
 	// are left out of the scope (git -C).
@@ -118,6 +134,16 @@ var bashOptions = optionSpec{
 }
 
 var posixShellOptions = optionSpec{short: "abCefhimnuvxEVlcso:", plus: true}
+
+var (
+	findSpec = programSpec{kind: kindSpawning, appends: true, embedded: findCommands,
+		placeholders: []string{"{}"}, found: "the names of the files it finds",
+		dirOpts: []string{"-execdir", "-okdir"},
+		dir:     "runs it in the directory of each file it finds"}
+	fdSpec = programSpec{kind: kindSpawning, appends: true, embedded: fdCommands,
+		placeholders: []string{"{}", "{/}", "{//}", "{.}", "{/.}"}, found: "the paths it finds",
+		dirOpts: []string{"--base-directory"}, dir: "runs it in its base directory"}
+)
 
 var programSpecs = map[string]programSpec{
 	"env": {kind: kindTransparent, envAssign: true,
@@ -180,7 +206,8 @@ var programSpecs = map[string]programSpec{
 		long: []string{"null", "arg-file=", "delimiter=", "eof=?", "replace=?",
 			"max-lines=?", "max-args=", "open-tty", "max-procs=", "interactive",
 			"no-run-if-empty", "max-chars=", "show-limits", "verbose", "exit",
-			"process-slot-var="}}},
+			"process-slot-var="}},
+		replaceOpts: []string{"-I", "-i", "--replace"}, found: "the lines it reads"},
 
 	"sudo": {kind: kindEscalating, envAssign: true, requireCommand: true, opts: optionSpec{
 		short: "Aa:BbC:D:Eeg:Hh?iKklNnPp:R:r:SsT:t:U:u:Vv",
@@ -205,10 +232,10 @@ var programSpecs = map[string]programSpec{
 	"pkexec": {kind: kindEscalating, requireCommand: true, opts: optionSpec{
 		long: []string{"user=", "disable-internal-agent", "keep-cwd", "help", "version"}}},
 
-	"find":   {kind: kindSpawning, appends: true, embedded: findCommands},
-	"gfind":  {kind: kindSpawning, appends: true, embedded: findCommands},
-	"fd":     {kind: kindSpawning, appends: true, embedded: fdCommands},
-	"fdfind": {kind: kindSpawning, appends: true, embedded: fdCommands},
+	"find":   findSpec,
+	"gfind":  findSpec,
+	"fd":     fdSpec,
+	"fdfind": fdSpec,
 	"entr": {kind: kindSpawning, appends: true, embedded: optionCommands(
 		optionSpec{short: "acdnprsz"}, []string{"-s"}, 0)},
 	"flock": {kind: kindSpawning, embedded: optionCommands(optionSpec{
@@ -262,10 +289,10 @@ var programSpecs = map[string]programSpec{
 	"scp":   {kind: kindInterpreter, code: []string{"-S", "-o", "-F"}},
 	"ssh": {kind: kindInterpreter, remoteCommand: true, code: []string{"-o", "-F"},
 		opts: optionSpec{short: "46AaCfGgKkMNnqsTtVvXxYyB:b:c:D:E:e:F:I:i:J:L:l:m:O:o:P:p:Q:R:S:W:w:"}},
-	"docker":  {kind: kindInterpreter, opaqueSub: []string{"run", "exec", "compose", "buildx"}},
-	"podman":  {kind: kindInterpreter, opaqueSub: []string{"run", "exec", "compose"}},
-	"kubectl": {kind: kindInterpreter, opaqueSub: []string{"exec", "run", "debug", "attach"}},
-	"nix":     {kind: kindInterpreter, opaqueSub: []string{"develop", "shell", "run"}},
+	"docker":  {kind: kindInterpreter, codeSub: []string{"run", "exec", "compose", "buildx"}},
+	"podman":  {kind: kindInterpreter, codeSub: []string{"run", "exec", "compose"}},
+	"kubectl": {kind: kindInterpreter, codeSub: []string{"exec", "run", "debug", "attach"}},
+	"nix":     {kind: kindInterpreter, codeSub: []string{"develop", "shell", "run"}},
 
 	"zsh":        {kind: kindOpaque, reason: "zsh scripts cannot be parsed"},
 	"fish":       {kind: kindOpaque, reason: "fish scripts cannot be parsed"},
@@ -509,12 +536,11 @@ func perfCommandStart(args []shellWord) (int, bool) {
 
 // findCommands returns the commands find runs for -exec, -execdir, -ok
 // and -okdir.
-func findCommands(args []shellWord) ([][]shellWord, int, bool) {
+func findCommands(args []shellWord) ([][]shellWord, bool) {
 	var cmds [][]shellWord
-	code := -1
 	for i := 0; i < len(args); i++ {
 		if !args[i].lit {
-			return nil, -1, false
+			return nil, false
 		}
 		switch args[i].text {
 		case "-exec", "-execdir", "-ok", "-okdir":
@@ -524,7 +550,7 @@ func findCommands(args []shellWord) ([][]shellWord, int, bool) {
 		end := i + 1
 		for ; end < len(args); end++ {
 			if !args[end].lit {
-				return nil, -1, false
+				return nil, false
 			}
 			t := args[end].text
 			if t == ";" || (t == "+" && end > i+1 && args[end-1].text == "{}") {
@@ -532,23 +558,20 @@ func findCommands(args []shellWord) ([][]shellWord, int, bool) {
 			}
 		}
 		if end == len(args) || end == i+1 {
-			return nil, -1, false
-		}
-		if code < 0 {
-			code = i
+			return nil, false
 		}
 		cmds = append(cmds, args[i+1:end])
 		i = end
 	}
-	return cmds, code, true
+	return cmds, true
 }
 
 // fdCommands returns the command fd runs for -x or -X, which takes every
 // argument up to a ";" or the end.
-func fdCommands(args []shellWord) ([][]shellWord, int, bool) {
+func fdCommands(args []shellWord) ([][]shellWord, bool) {
 	for i, w := range args {
 		if !w.lit {
-			return nil, -1, false
+			return nil, false
 		}
 		switch t := w.text; {
 		case t == "-x" || t == "--exec" || t == "-X" || t == "--exec-batch":
@@ -557,40 +580,40 @@ func fdCommands(args []shellWord) ([][]shellWord, int, bool) {
 				end++
 			}
 			if end == i+1 {
-				return nil, -1, false
+				return nil, false
 			}
-			return [][]shellWord{args[i+1 : end]}, i, true
+			return [][]shellWord{args[i+1 : end]}, true
 		case strings.HasPrefix(t, "--exec"),
 			!strings.HasPrefix(t, "--") && strings.HasPrefix(t, "-") &&
 				strings.ContainsAny(t[1:], "xX"):
-			return nil, -1, false
+			return nil, false
 		}
 	}
-	return nil, -1, true
+	return nil, true
 }
 
 // optionCommands returns the embedded function of a utility whose command
 // follows its options and skip operands, such as entr and flock.
 func optionCommands(
 	spec optionSpec, opaque []string, skip int,
-) func([]shellWord) ([][]shellWord, int, bool) {
-	return func(args []shellWord) ([][]shellWord, int, bool) {
+) func([]shellWord) ([][]shellWord, bool) {
+	return func(args []shellWord) ([][]shellWord, bool) {
 		opts, operand, ok := spec.scan(args)
 		if !ok {
-			return nil, -1, false
+			return nil, false
 		}
 		if _, found := hasOption(opts, opaque); found {
-			return nil, -1, false
+			return nil, false
 		}
 		start := operand + skip
 		if start >= len(args) {
-			return nil, -1, true
+			return nil, true
 		}
 		// flock takes -c after its file too.
 		if args[start].lit && slices.Contains(opaque, args[start].text) {
-			return nil, -1, false
+			return nil, false
 		}
-		return [][]shellWord{args[start:]}, start, true
+		return [][]shellWord{args[start:]}, true
 	}
 }
 

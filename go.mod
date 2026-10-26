@@ -49,7 +49,7 @@ require (
 	github.com/unstablebuild/blue v1.85.2
 	github.com/unstablebuild/notify v0.10.4
 	github.com/unstablebuild/pty v1.3.1
-	github.com/unstablebuild/rune-go-sdk v0.18.1
+	github.com/unstablebuild/rune-go-sdk v0.18.2
 	github.com/unstablebuild/tcell/v3 v3.6.5
 	github.com/yuin/goldmark v1.7.17
 	github.com/zalando/go-keyring v0.2.8

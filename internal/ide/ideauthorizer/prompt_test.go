@@ -41,6 +41,11 @@ type fakePluginPromptOpener struct {
 	close   bool
 	calls   int
 	message string
+	options []string
+	// floatingErr fails the scope pickers opened; otherwise they confirm
+	// what is preselected.
+	floatingErr error
+	floatings   int
 }
 
 func (f *fakePluginPromptOpener) Prompt(
@@ -50,6 +55,7 @@ func (f *fakePluginPromptOpener) Prompt(
 ) browser.Window {
 	f.calls++
 	f.message = message
+	f.options = options
 	if f.close {
 		if err := promptHandler.OnClose(); err != nil {
 			panic(err)
@@ -63,6 +69,17 @@ func (f *fakePluginPromptOpener) Prompt(
 		}
 	}
 	panic("test prompt option was not provided")
+}
+
+func (f *fakePluginPromptOpener) Floating(
+	h browser.Floating, _ browserapi.FloatingConfig,
+) (browser.Window, error) {
+	f.floatings++
+	if f.floatingErr != nil {
+		return nil, f.floatingErr
+	}
+	h.(*scopePicker).Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
+	return browsertest.NopWindow(), nil
 }
 
 func TestPermissionPrompter(t *testing.T) {
@@ -148,6 +165,37 @@ func TestPermissionPrompterNotificationIncludesScopeLabel(t *testing.T) {
 	assert.NotContains(t, blocked[0].Msg, "/bin/grep *")
 }
 
+func TestPermissionPrompterOffersTheDecisionsForGoodACommandCanHave(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		remember CommandRemember
+		want     []string
+	}{
+		{remember: RememberScopes, want: []string{
+			PromptOptionYes, PromptOptionYesAlways, PromptOptionNo, PromptOptionNoNever}},
+		{remember: RememberPrograms, want: []string{
+			PromptOptionYes, PromptOptionYesAlways, PromptOptionNo}},
+		{remember: RememberNothing, want: []string{PromptOptionYes, PromptOptionNo}},
+	}
+	for _, tc := range cases {
+		opener := &fakePluginPromptOpener{option: PromptOptionYes}
+		prompter := newPermissionPrompter(opener, func(fn func()) bool {
+			fn()
+			return true
+		}, &capturingStatus{})
+
+		_, err := prompter.PromptPermission(context.Background(), PermissionRequest{
+			Permission:      extensionapi.PermissionExecute,
+			CommandPath:     "/bin/bash",
+			CommandArgs:     []string{"-c", "git status"},
+			CommandRemember: tc.remember,
+		})
+		require.NoError(t, err)
+		assert.Equal(t, tc.want, opener.options, tc.remember)
+	}
+}
+
 func TestPluginPermissionPromptMessageWithLauncher(t *testing.T) {
 	t.Parallel()
 
@@ -191,7 +239,7 @@ func TestPluginPermissionPromptMessageWithCommand(t *testing.T) {
 				"wants to run **/bin/grep**",
 				"with args **[foo /tmp/workspace]**",
 				"in **/tmp/workspace**",
-				"\n\nChoosing **Always** or **Never** decides for each of these programs with any arguments, as long as it runs the same file.",
+				"\n\nChoosing **Always** or **Never** lets you pick which commands and subcommands the decision covers.",
 			},
 			notContains: []string{"**/bin/grep ∗**", "```"},
 		},
@@ -207,7 +255,7 @@ func TestPluginPermissionPromptMessageWithCommand(t *testing.T) {
 			contains: []string{
 				"run **/bin/bash** with args:\n\n```",
 				"-c\n" + longPython,
-				"\n\nChoosing **Always** or **Never** decides for each of these programs with any arguments, as long as it runs the same file.",
+				"\n\nChoosing **Always** or **Never** lets you pick which commands and subcommands the decision covers.",
 			},
 			notContains: []string{"with args **[-c "},
 		},
@@ -223,7 +271,7 @@ func TestPluginPermissionPromptMessageWithCommand(t *testing.T) {
 			contains: []string{
 				"run **/bin/bash** with args:\n\n```",
 				"-c\necho first\necho second",
-				"\n\nChoosing **Always** or **Never** decides for each of these programs with any arguments, as long as it runs the same file.",
+				"\n\nChoosing **Always** or **Never** lets you pick which commands and subcommands the decision covers.",
 			},
 			notContains: []string{"with args **[-c "},
 		},
@@ -239,7 +287,7 @@ func TestPluginPermissionPromptMessageWithCommand(t *testing.T) {
 			contains: []string{
 				"run **/bin/echo** with args:\n\n```",
 				"**bold** [link](target) # heading",
-				"\n\nChoosing **Always** or **Never** decides for each of these programs with any arguments, as long as it runs the same file.",
+				"\n\nChoosing **Always** or **Never** lets you pick which commands and subcommands the decision covers.",
 			},
 			notContains: []string{"run **/bin/echo** with args **["},
 		},
@@ -254,7 +302,7 @@ func TestPluginPermissionPromptMessageWithCommand(t *testing.T) {
 			},
 			contains: []string{
 				"run **/bin/bash** with args:\n\n````\n-c\necho ```fence```\n````",
-				"\n\nChoosing **Always** or **Never** decides for each of these programs with any arguments, as long as it runs the same file.",
+				"\n\nChoosing **Always** or **Never** lets you pick which commands and subcommands the decision covers.",
 			},
 			notContains: []string{"with args **[-c "},
 		},
@@ -270,7 +318,7 @@ func TestPluginPermissionPromptMessageWithCommand(t *testing.T) {
 			contains: []string{
 				"run **/usr/bin/perl** with args:\n\n```",
 				"-e\n" + perlScript,
-				"\n\nChoosing **Always** or **Never** decides for each of these programs with any arguments, as long as it runs the same file.",
+				"\n\nChoosing **Always** or **Never** lets you pick which commands and subcommands the decision covers.",
 			},
 			notContains: []string{"run **/usr/bin/perl** with args **["},
 		},
@@ -286,7 +334,7 @@ func TestPluginPermissionPromptMessageWithCommand(t *testing.T) {
 			contains: []string{
 				"run **/bin/bash** with args:\n\n```",
 				"-c\n" + pythonEOF,
-				"\n\nChoosing **Always** or **Never** decides for each of these programs with any arguments, as long as it runs the same file.",
+				"\n\nChoosing **Always** or **Never** lets you pick which commands and subcommands the decision covers.",
 			},
 			notContains: []string{"with args **[-c "},
 		},
@@ -302,7 +350,7 @@ func TestPluginPermissionPromptMessageWithCommand(t *testing.T) {
 			contains: []string{
 				"run **/bin/bash** with args:\n\n``",
 				"-c\n" + complexBash,
-				"\n\nChoosing **Always** or **Never** decides for each of these programs with any arguments, as long as it runs the same file.",
+				"\n\nChoosing **Always** or **Never** lets you pick which commands and subcommands the decision covers.",
 			},
 			notContains: []string{"with args **[-c "},
 		},
@@ -339,7 +387,7 @@ func TestPluginPermissionPromptMessageWithLauncherAndCommand(t *testing.T) {
 		"Program **/usr/local/bin/plugin-cli** with args **[run]** running inside **/bin/zsh** **[--login]**")
 	assert.Contains(t, message, "wants to run **/bin/rm**")
 	assert.Contains(t, message, "with args **[-rf foo]**")
-	assert.Contains(t, message, "\n\nChoosing **Always** or **Never** decides for each of these programs with any arguments, as long as it runs the same file.")
+	assert.Contains(t, message, "\n\nChoosing **Always** or **Never** lets you pick which commands and subcommands the decision covers.")
 }
 
 func TestPermissionPromptMessageHighlightsExtensionCommand(t *testing.T) {
@@ -357,7 +405,7 @@ func TestPermissionPromptMessageHighlightsExtensionCommand(t *testing.T) {
 	assert.Contains(t, message,
 		"Extension Test Extension by dev-id wants to run **/bin/grep** with args **[foo]** in **/tmp/workspace**.")
 	assert.Contains(t, message,
-		"\n\nChoosing **Always** or **Never** decides for each of these programs with any arguments, as long as it runs the same file.")
+		"\n\nChoosing **Always** or **Never** lets you pick which commands and subcommands the decision covers.")
 }
 
 func TestPluginPermissionPromptMessageWithCommandHighlightsApprovalScope(t *testing.T) {
@@ -373,7 +421,7 @@ func TestPluginPermissionPromptMessageWithCommandHighlightsApprovalScope(t *test
 	})
 
 	assert.Contains(t, message, "run **/bin/grep** with args **[foo file.txt]**")
-	assert.Contains(t, message, "\n\nChoosing **Always** or **Never** decides for each of these programs with any arguments, as long as it runs the same file.")
+	assert.Contains(t, message, "\n\nChoosing **Always** or **Never** lets you pick which commands and subcommands the decision covers.")
 }
 
 func TestPluginPermissionPromptMessageWithShellWrappedCommandListsPrograms(t *testing.T) {
@@ -393,29 +441,72 @@ func TestPluginPermissionPromptMessageWithShellWrappedCommandListsPrograms(t *te
 
 	assert.Contains(t, message, "run **/bin/bash** with args **[-c grep foo file.txt]**")
 	assert.Contains(t, message, "\n\nRuns `/bin/bash`, `/usr/bin/grep`.")
-	assert.Contains(t, message, "\n\nChoosing **Always** or **Never** decides for each of these programs with any arguments, as long as it runs the same file.")
+	assert.Contains(t, message, "\n\nChoosing **Always** or **Never** lets you pick which commands and subcommands the decision covers.")
 }
 
-func TestPluginPermissionPromptMessageWithUnknownShellScriptUsesExactScopeNote(t *testing.T) {
+func TestPluginPermissionPromptMessageTellsWhatDecidingForGoodDoes(t *testing.T) {
 	t.Parallel()
 
-	message := pluginPermissionPromptMessage(PermissionRequest{
-		Path:               "/usr/local/bin/plugin-cli",
-		Args:               []string{"run"},
-		Permission:         extensionapi.PermissionExecute,
-		CommandPath:        "/bin/bash",
-		CommandArgs:        []string{"-c", "$CMD foo"},
-		CommandDir:         "/tmp",
-		Programs:           []ProgramSummary{{Name: "/bin/bash", ResolvedPath: "/bin/bash"}},
-		CommandExactOnly:   true,
-		CommandExactReason: "it runs no program a scope can describe",
-	})
-
-	assert.Equal(t, "Program **/usr/local/bin/plugin-cli** with args **[run]** "+
-		"wants to run **/bin/bash** with args **[-c $CMD foo]** in **/tmp**."+
-		"\n\nRuns `/bin/bash`."+
-		"\n\nChoosing **Always** or **Never** covers only this exact command because "+
-		"it runs no program a scope can describe. Any change to it will prompt again.", message)
+	const intro = "Program **/usr/local/bin/plugin-cli** with args **[run]** " +
+		"wants to run **/bin/bash** with args **[-c $CMD foo]** in **/tmp**."
+	cases := []struct {
+		name     string
+		programs []ProgramSummary
+		remember CommandRemember
+		reason   string
+		want     string
+	}{
+		{name: "nothing, with a reason", remember: RememberNothing,
+			programs: []ProgramSummary{{Name: "/bin/bash", ResolvedPath: "/bin/bash"}},
+			reason:   "it runs no program a scope can describe",
+			want: intro + "\n\nRuns `/bin/bash`." +
+				"\n\nRune asks every time because it runs no program a scope can describe."},
+		{name: "nothing, which the programs tell", remember: RememberNothing,
+			programs: []ProgramSummary{{Name: "./build"}},
+			want:     intro + "\n\nRuns `./build` (not found, so Rune asks every time)."},
+		{name: "nothing, since the directory a program runs in is not known",
+			remember: RememberNothing,
+			programs: []ProgramSummary{{Name: "./build", DirUnknown: "the script changes directory"}},
+			want: intro + "\n\nRuns `./build` (the script changes directory, so Rune asks " +
+				"every time)."},
+		{name: "programs", remember: RememberPrograms,
+			programs: []ProgramSummary{
+				{Name: "timeout", ResolvedPath: "/usr/bin/timeout"},
+				{Name: "git", ResolvedPath: "/usr/bin/git", Changed: true},
+			},
+			want: intro + "\n\nRuns `/usr/bin/timeout`, **`/usr/bin/git`** (changed since you " +
+				"approved it).\n\nChoosing **Always** approves `/usr/bin/timeout`, " +
+				"`/usr/bin/git` from now on."},
+		{name: "a program that runs arbitrary code", remember: RememberScopes,
+			programs: []ProgramSummary{{Name: "sed", ResolvedPath: "/usr/bin/sed", RunsCode: true}},
+			want: intro + "\n\nRuns `/usr/bin/sed`.\n\n⚠️ `sed` runs arbitrary code." +
+				"\n\nChoosing **Always** or **Never** lets you pick which commands and " +
+				"subcommands the decision covers."},
+		{name: "programs that run arbitrary code", remember: RememberScopes,
+			programs: []ProgramSummary{
+				{Name: "sed", ResolvedPath: "/usr/bin/sed", RunsCode: true},
+				{Name: "head", ResolvedPath: "/usr/bin/head"},
+				{Name: "python3", ResolvedPath: "/usr/bin/python3", RunsCode: true},
+			},
+			want: intro + "\n\nRuns `/usr/bin/sed`, `/usr/bin/head`, `/usr/bin/python3`." +
+				"\n\n⚠️ `sed`, `python3` run arbitrary code." +
+				"\n\nChoosing **Always** or **Never** lets you pick which commands and " +
+				"subcommands the decision covers."},
+	}
+	for _, tc := range cases {
+		message := pluginPermissionPromptMessage(PermissionRequest{
+			Path:              "/usr/local/bin/plugin-cli",
+			Args:              []string{"run"},
+			Permission:        extensionapi.PermissionExecute,
+			CommandPath:       "/bin/bash",
+			CommandArgs:       []string{"-c", "$CMD foo"},
+			CommandDir:        "/tmp",
+			Programs:          tc.programs,
+			CommandRemember:   tc.remember,
+			CommandOnceReason: tc.reason,
+		})
+		assert.Equal(t, tc.want, message, tc.name)
+	}
 }
 
 func TestPluginPermissionPromptMessageListsWhatEachProgramRuns(t *testing.T) {
@@ -443,7 +534,7 @@ func TestPluginPermissionPromptMessageListsWhatEachProgramRuns(t *testing.T) {
 			"`echo` (shell builtin), **`/usr/bin/make`** (changed since you approved it), "+
 			"`/ws/bin/rm`.")
 	assert.Contains(t, message,
-		"\n\nChoosing **Always** or **Never** decides for each of these programs with any arguments, as long as it runs the same file.")
+		"\n\nChoosing **Always** or **Never** lets you pick which commands and subcommands the decision covers.")
 }
 
 func TestPermissionPromptMessageHighlightsExtensionIntent(t *testing.T) {
@@ -675,5 +766,52 @@ func TestPermissionPrompterPromptRenewal(t *testing.T) {
 		blocked := status.blocked()
 		require.Len(t, blocked, 1)
 		assert.Equal(t, "User authorization required: /usr/bin/git changed", blocked[0].Msg)
+	}
+}
+
+func TestPermissionPrompterPickScopes(t *testing.T) {
+	t.Parallel()
+
+	errNoWindow := errors.New("no window")
+	ladder := []commandScope{{Label: "git *"}, {Label: "git status *"}, {Label: "git status"}}
+	cases := []struct {
+		name          string
+		scopes        []commandScope
+		floatingErr   error
+		wantSelected  []int
+		wantOK        bool
+		wantErr       error
+		wantFloatings int
+	}{
+		{name: "ladder is picked", scopes: ladder,
+			wantSelected: []int{1}, wantOK: true, wantFloatings: 1},
+		{name: "single scope wider than the command is picked", scopes: ladder[:1],
+			wantOK: true, wantFloatings: 1},
+		{name: "picker that cannot open fails", scopes: ladder, floatingErr: errNoWindow,
+			wantErr: errNoWindow, wantFloatings: 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			opener := &fakePluginPromptOpener{floatingErr: tc.floatingErr}
+			prompter := newPermissionPrompter(opener, func(fn func()) bool {
+				fn()
+				return true
+			}, &capturingStatus{})
+			var preselected []int
+			if len(tc.scopes) > 1 {
+				preselected = []int{1}
+			}
+
+			selected, ok, err := prompter.PickScopes(context.Background(), scopePickerRequest{
+				Requester: "extension Agent", Scopes: tc.scopes, Selected: preselected,
+			})
+
+			assert.ErrorIs(t, err, tc.wantErr)
+			assert.Equal(t, tc.wantOK, ok)
+			assert.Equal(t, tc.wantSelected, selected)
+			assert.Equal(t, tc.wantFloatings, opener.floatings)
+		})
 	}
 }

@@ -161,8 +161,32 @@ func TestPlanCommand(t *testing.T) {
 			want: []string{"~/bin/bash", "rm -f …"}},
 		{name: "brace expansions are not literal", cmd: bash("git {status,push}"),
 			want: []string{"~/bin/bash", "git …"}},
-		{name: "find placeholders are literal", cmd: bash("find . -exec rm {} \\;"),
-			want: []string{"~/bin/bash", "find . -exec rm {} ; ⚠1", "rm {} …"}},
+		{name: "find placeholders are not known until it runs", cmd: bash("find . -exec rm {} \\;"),
+			want: []string{"~/bin/bash", "find . -exec rm {} ;", "rm …"}},
+		{name: "find placeholder in a script",
+			cmd: []string{"find", ".", "-exec", "sh", "-c", "cat {}", ";"},
+			want: []string{"opaque: find puts the names of the files it finds in the command " +
+				"it runs, where they can run as code"}},
+		{name: "find placeholder passed to a script",
+			cmd:  []string{"find", ".", "-exec", "sh", "-c", `cat "$1"`, "sh", "{}", ";"},
+			want: []string{"find . -exec sh -c cat \"$1\" sh {} ;", "~sh", "cat …"}},
+		{name: "find placeholder as the command",
+			cmd:  []string{"find", ".", "-name", "*.sh", "-exec", "{}", ";"},
+			want: []string{"find . -name *.sh -exec {} ;", "?{}"}},
+		{name: "find placeholder next to what cannot be followed anyway",
+			cmd:  []string{"find", ".", "-exec", "env", "-i", "{}", ";"},
+			want: []string{"opaque: env -i runs a command that cannot be followed"}},
+		{name: "fd placeholder in a script", cmd: []string{"fd", "-x", "sh", "-c", "cat {/}"},
+			want: []string{"opaque: fd puts the paths it finds in the command it runs, " +
+				"where they can run as code"}},
+		{name: "xargs replace string in a script", cmd: bash(`ls | xargs -I % sh -c "cat %"`),
+			want: []string{"opaque: xargs puts the lines it reads in the command it runs, " +
+				"where they can run as code"}},
+		{name: "xargs default replace string", cmd: bash(`ls | xargs --replace sh -c "cat {}"`),
+			want: []string{"opaque: xargs puts the lines it reads in the command it runs, " +
+				"where they can run as code"}},
+		{name: "xargs replace string in the command name", cmd: bash("ls | xargs -I e make"),
+			want: []string{"~/bin/bash", "ls", "~xargs", "?make"}},
 		{name: "ansi-c escapes in a command name", cmd: bash(`$'\x72m' -rf x`),
 			want: []string{"opaque: it runs no program a scope can describe"}},
 
@@ -179,15 +203,15 @@ func TestPlanCommand(t *testing.T) {
 		{name: "sudo dangerous env", cmd: []string{"sudo", "LD_PRELOAD=x", "ls"},
 			want: []string{"opaque: it sets LD_PRELOAD"}},
 		{name: "find exec", cmd: []string{"find", ".", "-exec", "rm", "{}", "+"},
-			want: []string{"find . -exec rm {} + ⚠1", "rm {} …"}},
+			want: []string{"find . -exec rm {} +", "rm …"}},
 		{name: "find without terminator", cmd: []string{"find", ".", "-exec", "rm", "{}"},
 			want: []string{"opaque: find runs commands that cannot be followed"}},
 		{name: "find with a variable", cmd: bash("find $D -exec rm {} +"),
 			want: []string{"opaque: find runs commands that cannot be followed"}},
 		{name: "fd exec", cmd: []string{"fd", "-e", "go", "-x", "cat"},
-			want: []string{"fd -e go -x cat ⚠2", "cat …"}},
+			want: []string{"fd -e go -x cat", "cat …"}},
 		{name: "flock", cmd: []string{"flock", "/tmp/l", "make", "all"},
-			want: []string{"flock /tmp/l make all ⚠1", "make all"}},
+			want: []string{"flock /tmp/l make all", "make all"}},
 		{name: "flock command string", cmd: []string{"flock", "/tmp/l", "-c", "make"},
 			want: []string{"opaque: flock runs commands that cannot be followed"}},
 		{name: "xargs", cmd: bash("ls | xargs -0 rm"),
@@ -273,7 +297,18 @@ func TestPlanCommand(t *testing.T) {
 		{name: "make file", cmd: []string{"make", "test", "-f", "x.mk"},
 			want: []string{"make test -f x.mk ⚠1"}},
 		{name: "docker run", cmd: []string{"docker", "run", "--rm", "alpine"},
-			want: []string{"opaque: docker run runs commands that cannot be followed"}},
+			want: []string{"docker run --rm alpine ⚠0"}},
+		{name: "docker run in a shell", cmd: bash(`docker run --rm -v "$PWD:/w" alpine sh -c 'ls /w'`),
+			want: []string{"~/bin/bash", "docker run --rm -v … ⚠0"}},
+		{name: "docker run after global options",
+			cmd:  []string{"docker", "--context", "ci", "run", "alpine"},
+			want: []string{"docker --context ci run alpine ⚠2"}},
+		{name: "docker subcommand not known until it runs", cmd: bash(`docker "$SUB" alpine`),
+			want: []string{"opaque: the subcommand of docker is not known until it runs"}},
+		{name: "kubectl exec", cmd: []string{"kubectl", "exec", "pod", "--", "ls"},
+			want: []string{"kubectl exec pod -- ls ⚠0"}},
+		{name: "nix develop", cmd: []string{"nix", "develop"},
+			want: []string{"nix develop ⚠0"}},
 		{name: "docker ps", cmd: []string{"docker", "ps"},
 			want: []string{"docker ps"}},
 		{name: "busybox", cmd: []string{"busybox", "sh", "-c", "x"},
@@ -323,7 +358,29 @@ func TestPlanCommandBenchmarkComparisonScript(t *testing.T) {
 func TestPlanCommandDirChanged(t *testing.T) {
 	t.Parallel()
 
-	assert.False(t, planCommand("bash", []string{"-c", "./run"}, nil).DirChanged)
-	assert.True(t, planCommand("bash", []string{"-c", "cd /tmp && ./run"}, nil).DirChanged)
-	assert.True(t, planCommand("bash", []string{"-c", "pushd /tmp; ls"}, nil).DirChanged)
+	const findDir = "find runs it in the directory of each file it finds"
+	const fdDir = "fd runs it in its base directory"
+	cases := []struct {
+		cmd         []string
+		wantChanged bool
+		// wantDir is the Dir of the last program.
+		wantDir string
+	}{
+		{cmd: []string{"bash", "-c", "./run"}},
+		{cmd: []string{"bash", "-c", "cd /tmp && ./run"}, wantChanged: true},
+		{cmd: []string{"bash", "-c", "pushd /tmp; ls"}, wantChanged: true},
+		{cmd: []string{"find", ".", "-exec", "./run", ";"}},
+		{cmd: []string{"find", ".", "-execdir", "./run", ";"}, wantDir: findDir},
+		{cmd: []string{"find", ".", "-okdir", "make", ";"}, wantDir: findDir},
+		{cmd: []string{"find", ".", "-execdir", "sh", "-c", "./run", ";"}, wantDir: findDir},
+		{cmd: []string{"fd", "--base-directory", "x", "-x", "./run"}, wantDir: fdDir},
+		{cmd: []string{"fd", "--base-directory=x", "-x", "./run"}, wantDir: fdDir},
+	}
+	for _, tc := range cases {
+		plan := planCommand(tc.cmd[0], tc.cmd[1:], nil)
+		require.False(t, plan.Opaque, tc.cmd)
+		assert.Equal(t, tc.wantChanged, plan.DirChanged, tc.cmd)
+		assert.Equal(t, tc.wantDir, plan.Programs[len(plan.Programs)-1].Dir, tc.cmd)
+		assert.Empty(t, plan.Programs[0].Dir, "%v runs in the directory of the command", tc.cmd)
+	}
 }

@@ -17,6 +17,7 @@
 package ideauthorizer
 
 import (
+	"cmp"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -92,6 +93,10 @@ type programInvocation struct {
 	// StdPATH reports that the program is looked up in the standard
 	// PATH (command -p).
 	StdPATH bool
+	// Dir tells which other directory than the command's the program
+	// runs in, where names relative to the directory are not known, or
+	// is "".
+	Dir string
 }
 
 // commandPlan is what the authorizer knows of the programs a command runs.
@@ -116,6 +121,8 @@ type planner struct {
 	arith bool
 	// suspicious reports a string holding a command substitution.
 	suspicious bool
+	// dir is the Dir of the programs added.
+	dir string
 }
 
 type callContext struct {
@@ -168,6 +175,7 @@ func (p *planner) opaque(reason string) {
 }
 
 func (p *planner) add(inv programInvocation) int {
+	inv.Dir = p.dir
 	p.plan.Programs = append(p.plan.Programs, inv)
 	return len(p.plan.Programs) - 1
 }
@@ -217,19 +225,21 @@ func (p *planner) expand(words []shellWord, c callContext) {
 	case kindEscalating:
 		p.escalating(name, args, spec, c)
 	case kindSpawning:
-		cmds, code, ok := spec.embedded(args)
+		cmds, ok := spec.embedded(args)
 		if !ok {
 			p.opaque(base + " runs commands that cannot be followed")
 			return
 		}
-		inv := p.invocation(name, args, c)
-		if code >= 0 && code < len(inv.Scope) {
-			inv.Code = code
+		p.add(p.invocation(name, args, c))
+		outer := p.dir
+		if slices.ContainsFunc(args, func(w shellWord) bool { return isOption(w, spec.dirOpts) }) {
+			p.dir = base + " " + spec.dir
 		}
-		p.add(inv)
 		for _, cmd := range cmds {
-			p.expand(cmd, callContext{shell: -1, appended: spec.appends})
+			p.embed(base, cmd, spec.placeholders, spec.found,
+				callContext{shell: -1, appended: spec.appends})
 		}
+		p.dir = outer
 	case kindShell:
 		p.shell(name, args, spec, c)
 	case kindInterpreter:
@@ -448,7 +458,32 @@ func (p *planner) transparent(name string, args []shellWord, spec programSpec, c
 	if _, found := hasOption(opts, spec.stdPATH); found {
 		inner.stdPATH = true
 	}
-	p.expand(rest, inner)
+	var placeholders []string
+	if o, found := hasOption(opts, spec.replaceOpts); found {
+		placeholders = []string{cmp.Or(o.value, "{}")}
+	}
+	p.embed(base, rest, placeholders, spec.found, inner)
+}
+
+// embed adds the programs of cmd, which base runs with found in place of
+// placeholders. When the command cannot be followed only because what
+// replaces them is not known until it runs, the plan says so.
+func (p *planner) embed(base string, cmd []shellWord, placeholders []string, found string, c callContext) {
+	hidden := withPlaceholders(cmd, placeholders)
+	if p.plan.Opaque || slices.Equal(hidden, cmd) {
+		p.expand(cmd, c)
+		return
+	}
+	probe := &planner{funcs: p.funcs, depth: p.depth, dir: p.dir}
+	probe.expand(cmd, c)
+	if probe.plan.Opaque {
+		p.opaque(probe.plan.Reason)
+		return
+	}
+	p.expand(hidden, c)
+	if p.plan.Opaque {
+		p.plan.Reason = base + " puts " + found + " in the command it runs, where they can run as code"
+	}
 }
 
 func (p *planner) escalating(name string, args []shellWord, spec programSpec, c callContext) {
@@ -529,22 +564,19 @@ func (p *planner) interpreter(name string, args []shellWord, spec programSpec, c
 			return
 		}
 	}
-	if len(spec.opaqueSub) > 0 {
-		if len(lits) < len(args) {
+	inv := p.invocation(name, args, c)
+	switch {
+	case spec.scope != nil:
+		inv.Scope, inv.Code = spec.scope(lits)
+	case len(spec.codeSub) > 0:
+		inv.Code = slices.IndexFunc(lits, func(a string) bool {
+			return slices.Contains(spec.codeSub, a)
+		})
+		if inv.Code < 0 && len(lits) < len(args) {
 			p.opaque("the subcommand of " + base + " is not known until it runs")
 			return
 		}
-		for _, sub := range spec.opaqueSub {
-			if slices.Contains(lits, sub) {
-				p.opaque(base + " " + sub + " runs commands that cannot be followed")
-				return
-			}
-		}
-	}
-	inv := p.invocation(name, args, c)
-	if spec.scope != nil {
-		inv.Scope, inv.Code = spec.scope(lits)
-	} else {
+	default:
 		inv.Code = codeIndex(spec, lits, len(lits) < len(args))
 	}
 	if inv.Code >= 0 && inv.Code == len(inv.Scope) && !spec.codeAlways {
@@ -690,6 +722,27 @@ func (p *planner) visit(n syntax.Node, shell int) {
 
 func hidesCommand(s string) bool {
 	return strings.Contains(s, "$(") || strings.Contains(s, "`")
+}
+
+// withPlaceholders returns words with those that hold one of
+// placeholders made not literal, since what replaces it is only known
+// when the command runs.
+func withPlaceholders(words []shellWord, placeholders []string) []shellWord {
+	ret := slices.Clone(words)
+	for i, w := range ret {
+		ret[i].lit = w.lit && !slices.ContainsFunc(placeholders, func(ph string) bool {
+			return strings.Contains(w.text, ph)
+		})
+	}
+	return ret
+}
+
+// isOption reports whether w is one of the options names, with or without
+// an attached value.
+func isOption(w shellWord, names []string) bool {
+	return w.lit && slices.ContainsFunc(names, func(n string) bool {
+		return w.text == n || strings.HasPrefix(w.text, n+"=")
+	})
 }
 
 // wordOf returns the value of w when the shell would pass it on as

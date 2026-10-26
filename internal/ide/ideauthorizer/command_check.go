@@ -40,10 +40,15 @@ const commandPreviewLength = 60
 
 // commandScope is a set of commands one decision can cover.
 type commandScope struct {
-	Key         string
-	Label       string
-	Exact       bool
+	Key   string
+	Label string
+	// Warn reports that the scope covers arguments that run arbitrary
+	// code.
+	Warn        bool
 	Recommended bool
+	// Parent is the key of the scope this one narrows, which covers
+	// every command this one does, or "" when no scope does.
+	Parent string
 	// Executables index the executables the commands of the scope run.
 	Executables []int
 }
@@ -68,8 +73,11 @@ func (e checkedExecutable) changed() bool {
 type checkedProgram struct {
 	inv programInvocation
 	// path is the file the program runs, the shell's for a builtin, or ""
-	// when it was not found.
+	// when it was not found or not looked up.
 	path string
+	// dirUnknown tells why the program was not looked up: the directory
+	// it runs in is not known and its name depends on it.
+	dirUnknown string
 	// exe indexes the executable of the program, or is -1.
 	exe        int
 	prefixKeys []string
@@ -96,8 +104,8 @@ type commandCheck struct {
 	// no file can be bound to an approval and only the user can allow
 	// the command, each time.
 	unbound bool
-	// allowedKeys are the keys of the scopes the user already allowed.
-	allowedKeys map[string]bool
+	// wholeAllowed reports that the user allowed this exact command.
+	wholeAllowed bool
 }
 
 // envOverrides returns the variables of env, as "NAME=VALUE" sorted by
@@ -167,8 +175,14 @@ func (a *Authorizer) checkCommand(
 				}
 				pathList = innerPATH
 			}
-			if !inv.TopLevel && c.plan.DirChanged && dirDependent(inv.Name, pathList) {
-				break
+			if !inv.TopLevel && dirDependent(inv.Name, pathList) {
+				p.dirUnknown = inv.Dir
+				if p.dirUnknown == "" && c.plan.DirChanged {
+					p.dirUnknown = "the script changes directory"
+				}
+				if p.dirUnknown != "" {
+					break
+				}
 			}
 			resolved, err := a.resolver.Resolve(ctx, inv.Name, command.Dir, pathList)
 			if err != nil {
@@ -189,10 +203,10 @@ func (a *Authorizer) checkCommand(
 		c.programs = append(c.programs, p)
 	}
 	c.keys(prefix)
-	c.buildScopes()
 	if err := a.lookupCommandDecisions(ctx, c); err != nil {
 		return nil, err
 	}
+	c.buildScopes()
 	return c, nil
 }
 
@@ -289,22 +303,25 @@ func (c *commandCheck) addScope(s commandScope) {
 	c.scopes = append(c.scopes, s)
 }
 
+// buildScopes offers the scopes of the programs the user did not allow
+// yet, so it needs the decisions looked up.
 func (c *commandCheck) buildScopes() {
-	whole := c.plan.Opaque || len(c.programs) > 1 || !c.programs[0].inv.Complete
-	wholeRecommended := c.plan.Opaque
+	// The whole command is offered only when the scopes of its programs
+	// cannot cover it, or only by covering much more than it runs.
+	whole := c.plan.Opaque
 	for _, p := range c.programs {
-		if p.inv.Role != roleScoped {
+		if p.inv.Role != roleScoped || p.allowed {
 			continue
 		}
 		if p.inv.Opaque {
-			wholeRecommended = true
+			whole = true
 			continue
 		}
 		if p.path == "" {
 			continue
 		}
 		k, exact, ok := recommendation(p)
-		wholeRecommended = wholeRecommended || !ok
+		whole = whole || !ok
 		var exes []int
 		if p.exe >= 0 {
 			exes = []int{p.exe}
@@ -314,6 +331,7 @@ func (c *commandCheck) buildScopes() {
 			suffix = "  (shell builtin)"
 		}
 		n := len(p.inv.Scope)
+		parent := ""
 		for i, key := range p.prefixKeys {
 			if i == n && p.inv.Complete && n >= 2 {
 				break
@@ -321,21 +339,24 @@ func (c *commandCheck) buildScopes() {
 			c.addScope(commandScope{
 				Key:         key,
 				Label:       shellJoin(p.inv.Name, p.inv.Scope[:i]) + " *" + suffix,
+				Warn:        p.inv.Code >= 0,
 				Recommended: ok && !exact && k == i,
+				Parent:      parent,
 				Executables: exes,
 			})
+			parent = key
 		}
 		if p.exactKey != "" {
 			c.addScope(commandScope{
 				Key:         p.exactKey,
 				Label:       shellJoin(p.inv.Name, p.inv.Args) + suffix,
-				Exact:       true,
 				Recommended: ok && exact,
+				Parent:      parent,
 				Executables: exes,
 			})
 		}
 	}
-	if c.unbound || (!whole && !wholeRecommended) {
+	if c.unbound || !whole || c.wholeAllowed {
 		return
 	}
 	all := make([]int, len(c.executables))
@@ -345,8 +366,7 @@ func (c *commandCheck) buildScopes() {
 	c.addScope(commandScope{
 		Key:         c.exactKey,
 		Label:       "this exact command (" + commandPreview(c.command) + ")",
-		Exact:       true,
-		Recommended: wholeRecommended,
+		Recommended: true,
 		Executables: all,
 	})
 }
@@ -399,7 +419,6 @@ func (a *Authorizer) storedDecision(
 }
 
 func (a *Authorizer) lookupCommandDecisions(ctx context.Context, c *commandCheck) error {
-	c.allowedKeys = map[string]bool{}
 	check := func(key string) (storedPermissionDecision, bool, error) {
 		stored, ok, err := a.storedDecision(ctx, key)
 		if err != nil || !ok {
@@ -409,10 +428,10 @@ func (a *Authorizer) lookupCommandDecisions(ctx context.Context, c *commandCheck
 			c.denied = true
 			return stored, false, nil
 		}
-		c.allowedKeys[key] = true
 		return stored, true, nil
 	}
-	_, wholeAllowed, err := check(c.exactKey)
+	var err error
+	_, c.wholeAllowed, err = check(c.exactKey)
 	if err != nil {
 		return err
 	}
@@ -434,7 +453,7 @@ func (a *Authorizer) lookupCommandDecisions(ctx context.Context, c *commandCheck
 		}
 		everyProgram = everyProgram && p.allowed
 	}
-	c.covered = !c.denied && !c.unbound && (wholeAllowed || everyProgram)
+	c.covered = !c.denied && !c.unbound && (c.wholeAllowed || everyProgram)
 	if a.storage == nil {
 		return nil
 	}
@@ -476,28 +495,29 @@ func (c *commandCheck) changedExecutables() []int {
 	return ret
 }
 
-// alwaysScopes index the scopes a decision to always allow, or never
-// allow, the command saves: each program it runs, with any arguments, as
-// long as the program runs the same file, and the exact command when part
-// of it is known only when it runs. Never leaves the programs the user
-// allowed already allowed.
-func (c *commandCheck) alwaysScopes(allow bool) []int {
-	programs := map[string]bool{}
-	for _, p := range c.programs {
-		if len(p.prefixKeys) > 0 {
-			programs[p.prefixKeys[0]] = true
-		}
-	}
+// preselectedScopes index the scopes recommended.
+func (c *commandCheck) preselectedScopes() []int {
 	var ret []int
 	for i, s := range c.scopes {
-		if !allow && c.allowedKeys[s.Key] {
-			continue
-		}
-		if programs[s.Key] || (s.Key == c.exactKey && s.Recommended) {
+		if s.Recommended {
 			ret = append(ret, i)
 		}
 	}
 	return ret
+}
+
+// remember returns what deciding for good on the command does.
+func (c *commandCheck) remember() CommandRemember {
+	switch {
+	case slices.ContainsFunc(c.scopes, func(s commandScope) bool { return s.Key != c.exactKey }):
+		return RememberScopes
+	case c.covered:
+		return RememberPrograms
+	default:
+		// This exact command is too narrow a decision to remember: any
+		// change to it would ask again.
+		return RememberNothing
+	}
 }
 
 // executableChanges describes the executables idx for a renewal prompt,
@@ -540,13 +560,20 @@ func appendUnique(list []string, items ...string) []string {
 	return list
 }
 
-// programSummaries describes the programs of the command for prompts,
-// once each.
+// programSummaries describes the programs of the command that the user
+// did not approve yet for prompts, once each.
 func (c *commandCheck) programSummaries() []ProgramSummary {
 	var ret []ProgramSummary
-	seen := map[string]bool{}
+	seen := map[string]int{}
 	for _, p := range c.programs {
-		s := ProgramSummary{Name: p.inv.Name, Opaque: p.inv.Opaque, Builtin: p.inv.Shell >= 0}
+		if c.settled(p) {
+			continue
+		}
+		s := ProgramSummary{
+			Name: p.inv.Name, Opaque: p.inv.Opaque, Builtin: p.inv.Shell >= 0,
+			RunsCode:   p.inv.Role == roleScoped && p.inv.Code >= 0,
+			DirUnknown: p.dirUnknown,
+		}
 		if !s.Builtin {
 			s.ResolvedPath = p.path
 		}
@@ -557,13 +584,26 @@ func (c *commandCheck) programSummaries() []ProgramSummary {
 		if s.ResolvedPath != "" {
 			id = s.ResolvedPath
 		}
-		if seen[id] {
+		if i, ok := seen[id]; ok {
+			ret[i].RunsCode = ret[i].RunsCode || s.RunsCode
 			continue
 		}
-		seen[id] = true
+		seen[id] = len(ret)
 		ret = append(ret, s)
 	}
 	return ret
+}
+
+// settled reports that the user approved p already: the file it runs
+// and, unless a program is bound only by its file, what it runs it with.
+func (c *commandCheck) settled(p checkedProgram) bool {
+	if p.exe >= 0 && !c.executables[p.exe].known() {
+		return false
+	}
+	if p.inv.Role == roleBound {
+		return p.exe >= 0
+	}
+	return p.allowed
 }
 
 func (a *Authorizer) persistScopes(

@@ -23,7 +23,9 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/browser"
@@ -80,6 +82,13 @@ func (p *permissionPrompter) PromptPermission(
 		PromptOptionNoNever,
 	}
 	bindings := []term.KeyComb{{Ch: 'Y'}, {Ch: 'A'}, {Ch: 'N'}, {Ch: 'V'}}
+	switch req.CommandRemember {
+	case RememberPrograms:
+		options, bindings = options[:3], bindings[:3]
+	case RememberNothing:
+		options = []string{PromptOptionYes, PromptOptionNo}
+		bindings = []term.KeyComb{{Ch: 'Y'}, {Ch: 'N'}}
+	}
 	opt, err := p.ask(ctx, pluginPermissionPromptMessage(req),
 		permissionPromptWarningMessage(req), options, bindings)
 	return pluginPromptDecision(opt), err
@@ -105,6 +114,58 @@ func (p *permissionPrompter) PromptRenewal(
 		return RenewalOnce, err
 	default:
 		return RenewalDeny, err
+	}
+}
+
+// PickScopes asks the user which of req.Scopes a decision covers. ok is
+// false when the user cancelled or the picker could not be shown.
+func (p *permissionPrompter) PickScopes(
+	ctx context.Context, req scopePickerRequest,
+) (selected []int, ok bool, err error) {
+	type pick struct {
+		selected []int
+		ok       bool
+		err      error
+	}
+	result := make(chan pick, 1)
+	send := func(r pick) {
+		select {
+		case result <- r:
+		default:
+		}
+	}
+	statusURI := p.promptStatusURI()
+	scheduled := p.scheduleNextTick(func() {
+		p.announce(statusURI, "User authorization required: pick the commands "+
+			req.Requester+" may run")
+		picker, err := newScopePicker(req, func(selected []int, ok bool) {
+			send(pick{selected: selected, ok: ok})
+		})
+		if err != nil {
+			send(pick{err: err})
+			return
+		}
+		win, err := p.promptOpener.Floating(picker, browserapi.FloatingConfig{
+			Alignment: component.AlignmentCentered,
+			Title:     picker.title(),
+		})
+		if err != nil {
+			send(pick{err: fmt.Errorf("open command scope picker: %w", err)})
+			return
+		}
+		if p.onWindow != nil && win != nil {
+			p.onWindow(statusURI, win)
+		}
+	})
+	if !scheduled {
+		return nil, false, nil
+	}
+	defer p.withdraw(statusURI)
+	select {
+	case r := <-result:
+		return r.selected, r.ok, r.err
+	case <-ctx.Done():
+		return nil, false, ctx.Err()
 	}
 }
 
@@ -396,26 +457,45 @@ func joinAdjacentPromptFragments(left promptFragment, right promptFragment) prom
 }
 
 // commandScopeNote tells the user which files a command runs, so that a
-// program shadowing another stands out, and what Always and Never cover.
+// program shadowing another stands out, and what deciding for good does.
 func commandScopeNote(req PermissionRequest) string {
 	var note strings.Builder
 	if len(req.Programs) > 0 {
 		parts := make([]string, len(req.Programs))
+		var code []string
 		for i, p := range req.Programs {
 			parts[i] = programNote(p)
+			if p.RunsCode {
+				code = append(code, inlineCode(p.Name))
+			}
 		}
 		fmt.Fprintf(&note, "\n\nRuns %s.", strings.Join(parts, ", "))
-	}
-	if req.CommandExactOnly {
-		note.WriteString("\n\nChoosing **Always** or **Never** covers only this exact command")
-		if req.CommandExactReason != "" {
-			fmt.Fprintf(&note, " because %s", req.CommandExactReason)
+		switch len(code) {
+		case 0:
+		case 1:
+			fmt.Fprintf(&note, "\n\n⚠️ %s runs arbitrary code.", code[0])
+		default:
+			fmt.Fprintf(&note, "\n\n⚠️ %s run arbitrary code.", strings.Join(code, ", "))
 		}
-		note.WriteString(". Any change to it will prompt again.")
-		return note.String()
 	}
-	note.WriteString("\n\nChoosing **Always** or **Never** decides for each of these " +
-		"programs with any arguments, as long as it runs the same file.")
+	switch req.CommandRemember {
+	case RememberNothing:
+		if req.CommandOnceReason != "" {
+			fmt.Fprintf(&note, "\n\nRune asks every time because %s.", req.CommandOnceReason)
+		}
+	case RememberPrograms:
+		var paths []string
+		for _, p := range req.Programs {
+			if p.ResolvedPath != "" {
+				paths = append(paths, inlineCode(p.ResolvedPath))
+			}
+		}
+		fmt.Fprintf(&note, "\n\nChoosing **Always** approves %s from now on.",
+			strings.Join(paths, ", "))
+	default:
+		note.WriteString("\n\nChoosing **Always** or **Never** lets you pick which commands " +
+			"and subcommands the decision covers.")
+	}
 	return note.String()
 }
 
@@ -425,6 +505,8 @@ func programNote(p ProgramSummary) string {
 		return inlineCode(p.Name) + " (known only when it runs)"
 	case p.Builtin:
 		return inlineCode(p.Name) + " (shell builtin)"
+	case p.ResolvedPath == "" && p.DirUnknown != "":
+		return inlineCode(p.Name) + " (" + p.DirUnknown + ", so Rune asks every time)"
 	case p.ResolvedPath == "":
 		return inlineCode(p.Name) + " (not found, so Rune asks every time)"
 	case p.Changed:

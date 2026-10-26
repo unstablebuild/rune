@@ -25,6 +25,7 @@ import (
 	"github.com/ProtonMail/go-crypto/openpgp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/extensionapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
@@ -65,6 +66,12 @@ func (f *fakePromptOpener) Prompt(
 		}
 	}
 	panic("test prompt option was not provided")
+}
+
+func (f *fakePromptOpener) Floating(
+	browser.Floating, browserapi.FloatingConfig,
+) (browser.Window, error) {
+	panic("grantor prompts open no floating window")
 }
 
 func TestPermissionGrantor(t *testing.T) {

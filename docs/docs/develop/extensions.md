@@ -119,11 +119,36 @@ the workspace host: the shell, any wrappers such as `env`, `timeout` or
 `/bin/bash`, `/usr/bin/git`, `/usr/bin/make`. A program you did not expect,
 such as `/home/you/project/git`, stands out there.
 
-Choosing **Always** or **Never** decides for each program the command runs,
-with any arguments: `git *` and `make *` for `git commit -m fix && make test`.
-**Never** does not deny the programs you already approved. Commands Rune
-cannot follow, such as a script that runs `$CMD`, uses `eval` or sets
-`LD_PRELOAD`, can only be approved exactly.
+Choosing **Always** or **Never** opens a picker of the commands the decision
+can cover, from the whole program down to this exact invocation, each nested
+under the broader command that covers it. A `*` stands for any further
+arguments:
+
+```
+[ ] git *
+└─ [x] git commit *
+   └─ [ ] git commit -m fix
+[ ] make *
+└─ [x] make test *
+```
+
+Rune preselects a recommendation, such as `git commit *`, and shows the rows
+you pick checked in green. Picking a row decides for the rows nested under it
+too, so those show checked in gray until you unpick it: picking `git *` covers
+`git commit *`. Rows marked `⚠ runs arbitrary code` cover arguments that run
+code of their own, like `python3 -c` or `sed -e`, so approving them is close to
+approving any command. Move between the rows with `<up>` and `<down>`,
+`<ctrl-j>` and `<ctrl-k>`, or `<ctrl-n>` and `<ctrl-p>`, press `<space>` to
+toggle one and `<enter>` to confirm. Confirming with no row picked decides for
+this command only, and `<esc>` denies it this time. To review or undo these
+decisions later, run `authorizer list` and `authorizer revoke <id>` in the
+[console](../learn/console.md).
+
+Commands Rune cannot follow, such as a script that runs `$CMD`, uses `eval` or
+sets `LD_PRELOAD`, can only be approved exactly, so **Always** and **Never**
+save that exact command without opening the picker. When Rune can follow only
+part of a command, the picker adds a row for the exact command, the only one
+that covers all of it.
 
 An approval is bound to the files it runs, not to program names: approving
 `git *` lets `/usr/bin/git` run, not a `git` elsewhere in the `PATH` or in the

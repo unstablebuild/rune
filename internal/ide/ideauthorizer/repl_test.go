@@ -329,6 +329,7 @@ func TestAuthorizerListAndRevokeREPLDistinguishCommandScopedDecisions(t *testing
 	ext := testPluginExtension(nil)
 	opener := &stubPromptOpener{
 		decision: PermissionAllowAlways,
+		picks:    []string{"grep *", "rm *"},
 	}
 	authorizer := newTestAuthorizerCore(opener, storage)
 	ctx := blueauth.ContextWithClaims(context.Background(),
@@ -380,6 +381,7 @@ func TestAuthorizerRevokeREPLRejectsAmbiguousScope(t *testing.T) {
 	storage := storagestub.NewInMemoryService()
 	authorizer := newTestAuthorizerCore(&stubPromptOpener{
 		decision: PermissionAllowAlways,
+		picks:    []string{"git *"},
 	}, storage)
 	for _, ext := range []Extension{
 		testPluginExtension(nil),

@@ -113,6 +113,12 @@ func (p *e2ePromptOpener) Prompt(
 	panic("test prompt option was not provided")
 }
 
+func (p *e2ePromptOpener) Floating(
+	browser.Floating, browserapi.FloatingConfig,
+) (browser.Window, error) {
+	panic("e2e prompts never answer Always or Never, so open no scope picker")
+}
+
 func (p *e2ePromptOpener) message(t *testing.T, wantPrompts int) string {
 	t.Helper()
 	p.mu.Lock()
