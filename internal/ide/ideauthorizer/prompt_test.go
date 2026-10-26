@@ -477,11 +477,18 @@ func TestPluginPermissionPromptMessageTellsWhatDecidingForGoodDoes(t *testing.T)
 			want: intro + "\n\nRuns `/usr/bin/timeout`, **`/usr/bin/git`** (changed since you " +
 				"approved it).\n\nChoosing **Always** approves `/usr/bin/timeout`, " +
 				"`/usr/bin/git` from now on."},
+		{name: "programs, one of which is not found", remember: RememberPrograms,
+			programs: []ProgramSummary{
+				{Name: "sh", ResolvedPath: "/bin/sh"},
+				{Name: "gtimeout", Absent: true},
+			},
+			want: intro + "\n\nRuns `/bin/sh`, `gtimeout` (not found).\n\nChoosing **Always** " +
+				"approves `/bin/sh`, `gtimeout` (as long as it is not found) from now on."},
 		{name: "a program that runs arbitrary code", remember: RememberScopes,
 			programs: []ProgramSummary{{Name: "sed", ResolvedPath: "/usr/bin/sed", RunsCode: true}},
-			want: intro + "\n\nRuns `/usr/bin/sed`.\n\n⚠️ `sed` runs arbitrary code." +
+			want: intro + "\n\nRuns `/usr/bin/sed`." +
 				"\n\nChoosing **Always** or **Never** lets you pick which commands and " +
-				"subcommands the decision covers."},
+				"subcommands the decision covers. ⚠️ Be careful: `sed` can run arbitrary code."},
 		{name: "programs that run arbitrary code", remember: RememberScopes,
 			programs: []ProgramSummary{
 				{Name: "sed", ResolvedPath: "/usr/bin/sed", RunsCode: true},
@@ -489,9 +496,9 @@ func TestPluginPermissionPromptMessageTellsWhatDecidingForGoodDoes(t *testing.T)
 				{Name: "python3", ResolvedPath: "/usr/bin/python3", RunsCode: true},
 			},
 			want: intro + "\n\nRuns `/usr/bin/sed`, `/usr/bin/head`, `/usr/bin/python3`." +
-				"\n\n⚠️ `sed`, `python3` run arbitrary code." +
 				"\n\nChoosing **Always** or **Never** lets you pick which commands and " +
-				"subcommands the decision covers."},
+				"subcommands the decision covers. ⚠️ Be careful: `sed`, `python3` can run " +
+				"arbitrary code."},
 	}
 	for _, tc := range cases {
 		message := pluginPermissionPromptMessage(PermissionRequest{

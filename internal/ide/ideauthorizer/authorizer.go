@@ -122,6 +122,9 @@ type ProgramSummary struct {
 	// known, which leaves ResolvedPath empty and has the user asked about
 	// the command every time, or is "".
 	DirUnknown string
+	// Absent reports that no file runs for the program, which approving
+	// the command approves for as long as there is none.
+	Absent bool
 }
 
 // ExecutableChange is an executable whose contents changed since the

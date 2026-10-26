@@ -460,9 +460,9 @@ func joinAdjacentPromptFragments(left promptFragment, right promptFragment) prom
 // program shadowing another stands out, and what deciding for good does.
 func commandScopeNote(req PermissionRequest) string {
 	var note strings.Builder
+	var code []string
 	if len(req.Programs) > 0 {
 		parts := make([]string, len(req.Programs))
-		var code []string
 		for i, p := range req.Programs {
 			parts[i] = programNote(p)
 			if p.RunsCode {
@@ -470,13 +470,6 @@ func commandScopeNote(req PermissionRequest) string {
 			}
 		}
 		fmt.Fprintf(&note, "\n\nRuns %s.", strings.Join(parts, ", "))
-		switch len(code) {
-		case 0:
-		case 1:
-			fmt.Fprintf(&note, "\n\n⚠️ %s runs arbitrary code.", code[0])
-		default:
-			fmt.Fprintf(&note, "\n\n⚠️ %s run arbitrary code.", strings.Join(code, ", "))
-		}
 	}
 	switch req.CommandRemember {
 	case RememberNothing:
@@ -484,17 +477,26 @@ func commandScopeNote(req PermissionRequest) string {
 			fmt.Fprintf(&note, "\n\nRune asks every time because %s.", req.CommandOnceReason)
 		}
 	case RememberPrograms:
-		var paths []string
+		var approved []string
 		for _, p := range req.Programs {
-			if p.ResolvedPath != "" {
-				paths = append(paths, inlineCode(p.ResolvedPath))
+			switch {
+			case p.Absent:
+				approved = append(approved, inlineCode(p.Name)+" (as long as it is not found)")
+			case p.ResolvedPath != "":
+				approved = append(approved, inlineCode(p.ResolvedPath))
 			}
 		}
 		fmt.Fprintf(&note, "\n\nChoosing **Always** approves %s from now on.",
-			strings.Join(paths, ", "))
+			strings.Join(approved, ", "))
 	default:
 		note.WriteString("\n\nChoosing **Always** or **Never** lets you pick which commands " +
 			"and subcommands the decision covers.")
+		// The warning is about what deciding for good covers: this
+		// command is shown in full above.
+		if len(code) > 0 {
+			fmt.Fprintf(&note, " ⚠️ Be careful: %s can run arbitrary code.",
+				strings.Join(code, ", "))
+		}
 	}
 	return note.String()
 }
@@ -505,6 +507,8 @@ func programNote(p ProgramSummary) string {
 		return inlineCode(p.Name) + " (known only when it runs)"
 	case p.Builtin:
 		return inlineCode(p.Name) + " (shell builtin)"
+	case p.Absent:
+		return inlineCode(p.Name) + " (not found)"
 	case p.ResolvedPath == "" && p.DirUnknown != "":
 		return inlineCode(p.Name) + " (" + p.DirUnknown + ", so Rune asks every time)"
 	case p.ResolvedPath == "":

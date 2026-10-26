@@ -384,3 +384,41 @@ func TestPlanCommandDirChanged(t *testing.T) {
 		assert.Empty(t, plan.Programs[0].Dir, "%v runs in the directory of the command", tc.cmd)
 	}
 }
+
+func TestPlanCommandFirst(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		cmd []string
+		// want are the programs that run before anything else the command
+		// runs could create them.
+		want []string
+	}{
+		{cmd: []string{"timeout", "5", "go", "test"}, want: []string{"timeout"}},
+		{cmd: []string{"bash", "-c", "timeout 300 go test > /tmp/log 2>&1; echo $?"},
+			want: []string{"bash", "timeout"}},
+		{cmd: []string{"bash", "-c", "bash -c 'tool run'"}, want: []string{"bash", "bash", "tool"}},
+		{cmd: []string{"bash", "-c", "tool <<'EOF'\n$(x)\nEOF"}, want: []string{"bash", "tool"}},
+		{cmd: []string{"bash", "-c", "make install && tool run"}, want: []string{"bash"}},
+		{cmd: []string{"bash", "-c", "make install; tool run"}, want: []string{"bash", "make"}},
+		{cmd: []string{"bash", "-c", "make | tool"}, want: []string{"bash"}},
+		{cmd: []string{"bash", "-c", "tool $(make)"}, want: []string{"bash"}},
+		{cmd: []string{"bash", "-c", "tool > $(make)"}, want: []string{"bash"}},
+		{cmd: []string{"bash", "-c", "tool <<EOF\n$(make)\nEOF"}, want: []string{"bash"}},
+		{cmd: []string{"bash", "-c", "tool < <(make)"}, want: []string{"bash"}},
+		{cmd: []string{"bash", "-c", "X=$(make) tool"}, want: []string{"bash"}},
+		{cmd: []string{"bash", "-c", "f() { tool; }; f"}, want: []string{"bash"}},
+		{cmd: []string{"nice", "tool"}, want: []string{"nice"}},
+	}
+	for _, tc := range cases {
+		plan := planCommand(tc.cmd[0], tc.cmd[1:], nil)
+		require.False(t, plan.Opaque, tc.cmd)
+		var got []string
+		for _, inv := range plan.Programs {
+			if inv.First {
+				got = append(got, inv.Name)
+			}
+		}
+		assert.Equal(t, tc.want, got, tc.cmd)
+	}
+}

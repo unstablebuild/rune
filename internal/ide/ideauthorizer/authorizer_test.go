@@ -1522,13 +1522,13 @@ func TestAuthorizerAuthorizeOpaqueScriptPromptsForExactApproval(t *testing.T) {
 ││  Runs /usr/bin/bash, $M (known only when it runs), /Users/ernestrc/.rune/bin/goimports, /usr/bin/go, echo (shell   ││
 ││  builtin), /usr/bin/sed.                                                                                           ││
 ││                                                                                                                    ││
-││  ⚠  sed runs arbitrary code.                                                                                       ││
-││                                                                                                                    ││
-││  Choosing Always or Never lets you pick which commands and subcommands the decision covers.                        ││
+││  Choosing Always or Never lets you pick which commands and subcommands the decision covers. ⚠  Be careful: sed     ││
+││  can run arbitrary code.                                                                                           ││
 ││                                                                                                                    ││
 ││                                                                                                                    ││
 ││                  Yes                      Always                     No                     Never                  ││
 │└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘│
+│                                                                                                                      │
 │                                                                                                                      │
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘`[1:]},
 		{InputSequence: "A", Expected: closed},
@@ -1953,7 +1953,8 @@ func TestAuthorizerAuthorizeStartCommandPartialApprovalStillPrompts(t *testing.T
 	}))
 	require.Equal(t, 3, opener.calls)
 	assert.Contains(t, opener.messages[2],
-		"\n\nRuns `/usr/bin/sed`.\n\n⚠️ `sed` runs arbitrary code.\n\n")
+		"\n\nRuns `/usr/bin/sed`.\n\nChoosing **Always** or **Never** lets you pick which "+
+			"commands and subcommands the decision covers. ⚠️ Be careful: `sed` can run arbitrary code.")
 }
 
 func TestAuthorizerAlwaysApprovesTheProgramsOfACommandAllowedOtherwise(t *testing.T) {
@@ -2035,7 +2036,8 @@ func TestAuthorizerScopesContainerCommandsAsArbitraryCode(t *testing.T) {
 		Path: "/bin/bash", Args: []string{"-c", "docker run --rm alpine"},
 	}))
 	assert.Contains(t, opener.messages[0], "\n\nRuns `/bin/bash`, `/usr/bin/docker`.\n\n"+
-		"⚠️ `docker` runs arbitrary code.\n\n")
+		"Choosing **Always** or **Never** lets you pick which commands and subcommands the "+
+		"decision covers. ⚠️ Be careful: `docker` can run arbitrary code.")
 	assert.Equal(t, [][]string{{
 		"[ ] docker *" + scopeWarning,
 		"└─ [ ] docker run *" + scopeWarning,
@@ -2643,8 +2645,9 @@ func TestAuthorizerAuthorizeCommandBuildsOnPastDecisions(t *testing.T) {
 		// wantOptions are the options of the prompt, or nil when the user
 		// is not asked.
 		wantOptions []string
-		// wantNote is the prompt without its first paragraph, which shows
-		// the command, or the whole prompt of a renewal.
+		// wantNote is the prompt from the programs it lists, or from why
+		// it asks every time when it lists none, after the command, which
+		// may span paragraphs. It is the whole prompt of a renewal.
 		wantNote    string
 		wantOffered []string
 		wantErr     error
@@ -2774,17 +2777,17 @@ func TestAuthorizerAuthorizeCommandBuildsOnPastDecisions(t *testing.T) {
 		{name: "a program that runs arbitrary code is warned of and approved exactly",
 			cmd: bash("git log | sed -n 1p"), decision: PermissionAllowAlways,
 			wantOptions: scopes,
-			wantNote:    "Runs `/usr/bin/sed`.\n\n⚠️ `sed` runs arbitrary code." + pick,
+			wantNote:    "Runs `/usr/bin/sed`." + pick + " ⚠️ Be careful: `sed` can run arbitrary code.",
 			wantOffered: []string{"[ ] sed *" + scopeWarning, "└─ [ ] sed -n *" + scopeWarning,
 				"   └─ [x] sed -n 1p"},
 			wantSaved: map[string]string{"sed -n 1p": allow}, wantApproved: []string{"/usr/bin/sed"}},
 		{name: "so other code asks again",
 			cmd: bash("git log | sed -n 2p"), decision: PermissionAllowOnce, wantOptions: scopes,
-			wantNote: "Runs `/usr/bin/sed`.\n\n⚠️ `sed` runs arbitrary code." + pick},
+			wantNote: "Runs `/usr/bin/sed`." + pick + " ⚠️ Be careful: `sed` can run arbitrary code."},
 		{name: "a container runs arbitrary code",
 			cmd: bash("docker run --rm alpine"), decision: PermissionAllowAlways,
 			wantOptions: scopes,
-			wantNote:    "Runs `/usr/bin/docker`.\n\n⚠️ `docker` runs arbitrary code." + pick,
+			wantNote:    "Runs `/usr/bin/docker`." + pick + " ⚠️ Be careful: `docker` can run arbitrary code.",
 			wantOffered: []string{"[ ] docker *" + scopeWarning, "└─ [ ] docker run *" + scopeWarning,
 				"   └─ [ ] docker run --rm *" + scopeWarning, "      └─ [x] docker run --rm alpine"},
 			wantSaved:    map[string]string{"docker run --rm alpine": allow},
@@ -2806,6 +2809,32 @@ func TestAuthorizerAuthorizeCommandBuildsOnPastDecisions(t *testing.T) {
 		{name: "so it is asked about every time",
 			cmd: bash("make && tool run"), decision: PermissionAllowOnce, wantOptions: once,
 			wantNote: "Runs `tool` (not found, so Rune asks every time)."},
+		{name: "a program not installed that runs first is approved while it is not found",
+			cmd:      run("sh", "-c", "stdbuf -oL git status > /tmp/log 2>&1; echo $?"),
+			decision: PermissionAllowAlways, wantOptions: programs,
+			wantNote: "Runs `stdbuf` (not found).\n\nChoosing **Always** approves `stdbuf` " +
+				"(as long as it is not found) from now on.",
+			wantApproved: []string{"stdbuf (not found)"}},
+		{name: "so the command runs without asking while it is not found",
+			cmd: run("sh", "-c", "stdbuf -oL git log > /tmp/log 2>&1; echo $?")},
+		{name: "but not after another program, which could have installed it",
+			cmd:      run("sh", "-c", "git status && stdbuf -oL git log"),
+			decision: PermissionAllowOnce, wantOptions: once,
+			wantNote: "Runs `stdbuf` (not found, so Rune asks every time)."},
+		{name: "once it is installed it is another program",
+			setup:       func() { host.write("/usr/bin/stdbuf", content("/usr/bin/stdbuf"), built) },
+			cmd:         run("sh", "-c", "stdbuf -oL git log > /tmp/log 2>&1; echo $?"),
+			wantOptions: programs,
+			wantNote: "Runs `/usr/bin/stdbuf`.\n\nChoosing **Always** approves " +
+				"`/usr/bin/stdbuf` from now on.",
+			wantErr: blueauth.ErrForbidden},
+		{name: "a command not installed has scopes while it is not found",
+			cmd: run("rg", "--version"), decision: PermissionAllowAlways, picks: []string{"rg *"},
+			wantOptions: scopes, wantNote: "Runs `rg` (not found)." + pick,
+			wantOffered: []string{"[x] rg *", "└─ [ ] rg --version *", "   └─ [ ] rg --version"},
+			wantSaved:   map[string]string{"rg *": allow}, wantApproved: []string{"rg (not found)"}},
+		{name: "which cover it while it is not found",
+			cmd: run("rg", "TODO")},
 		{name: "another extension is asked about what this one may run",
 			ext: &other, cmd: run("git", "status"),
 			wantOptions: scopes, wantNote: "Runs `/usr/bin/git`." + pick,
@@ -2840,7 +2869,11 @@ func TestAuthorizerAuthorizeCommandBuildsOnPastDecisions(t *testing.T) {
 				assert.Equal(t, step.wantOptions, opener.options[calls])
 				note := opener.messages[calls]
 				if !slices.Contains(step.wantOptions, PromptOptionRenew) {
-					_, note, _ = strings.Cut(note, "\n\n")
+					i := strings.Index(note, "\n\nRuns ")
+					if i < 0 {
+						i = strings.Index(note, "\n\nRune asks every time")
+					}
+					note = note[i+len("\n\n"):]
 				}
 				assert.Equal(t, step.wantNote, note)
 			}

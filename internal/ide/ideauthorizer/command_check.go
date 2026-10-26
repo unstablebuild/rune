@@ -38,6 +38,14 @@ var stdPATH = []string{"/usr/bin", "/bin", "/usr/sbin", "/sbin"}
 
 const commandPreviewLength = 60
 
+// An absent executable is stored under its name with absentSuffix, which
+// no absolute path ends up as, and fingerprinted as absentSHA256, which
+// no file hashes to.
+const (
+	absentSuffix = " (not found)"
+	absentSHA256 = "absent"
+)
+
 // commandScope is a set of commands one decision can cover.
 type commandScope struct {
 	Key   string
@@ -60,6 +68,10 @@ type checkedExecutable struct {
 	// Err tells why the executable could not be fingerprinted.
 	Err    error
 	Stored *storedExecutable
+	// Absent reports that no file runs for Name. The command cannot have
+	// created one before running it, so it can be approved as absent:
+	// once a file appears, it is another executable.
+	Absent bool
 }
 
 func (e checkedExecutable) known() bool {
@@ -185,7 +197,10 @@ func (a *Authorizer) checkCommand(
 				}
 			}
 			resolved, err := a.resolver.Resolve(ctx, inv.Name, command.Dir, pathList)
-			if err != nil {
+			absent := inv.First && errors.Is(err, ErrExecutableNotFound)
+			if absent {
+				resolved = inv.Name + absentSuffix
+			} else if err != nil {
 				break
 			}
 			p.path = resolved
@@ -193,8 +208,12 @@ func (a *Authorizer) checkCommand(
 			if !ok {
 				idx = len(c.executables)
 				exes[resolved] = idx
-				e := checkedExecutable{Name: inv.Name, Path: resolved}
-				e.Current, e.Err = a.resolver.Fingerprint(ctx, resolved)
+				e := checkedExecutable{Name: inv.Name, Path: resolved, Absent: absent}
+				if absent {
+					e.Current = ExecutableFingerprint{SHA256: absentSHA256}
+				} else {
+					e.Current, e.Err = a.resolver.Fingerprint(ctx, resolved)
+				}
 				c.executables = append(c.executables, e)
 			}
 			p.exe = idx
@@ -574,7 +593,9 @@ func (c *commandCheck) programSummaries() []ProgramSummary {
 			RunsCode:   p.inv.Role == roleScoped && p.inv.Code >= 0,
 			DirUnknown: p.dirUnknown,
 		}
-		if !s.Builtin {
+		if p.exe >= 0 && c.executables[p.exe].Absent {
+			s.Absent = true
+		} else if !s.Builtin {
 			s.ResolvedPath = p.path
 		}
 		if p.exe >= 0 {

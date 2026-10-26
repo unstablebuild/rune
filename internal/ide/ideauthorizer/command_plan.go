@@ -97,6 +97,9 @@ type programInvocation struct {
 	// runs in, where names relative to the directory are not known, or
 	// is "".
 	Dir string
+	// First reports that the program runs before anything else the
+	// command runs, which therefore cannot have created it.
+	First bool
 }
 
 // commandPlan is what the authorizer knows of the programs a command runs.
@@ -123,10 +126,16 @@ type planner struct {
 	suspicious bool
 	// dir is the Dir of the programs added.
 	dir string
+	// firstStmt is the statement of the script being planned whose
+	// program runs first, or nil.
+	firstStmt *syntax.Stmt
 }
 
 type callContext struct {
 	topLevel bool
+	// first reports that the call runs before anything else the command
+	// runs.
+	first bool
 	// shell is the index of the shell that runs the call, or -1 when a
 	// program execs it.
 	shell    int
@@ -191,6 +200,7 @@ func (p *planner) invocation(name string, args []shellWord, c callContext) progr
 		Shell:    -1,
 		TopLevel: c.topLevel,
 		StdPATH:  c.stdPATH,
+		First:    c.first || c.topLevel,
 	}
 }
 
@@ -547,7 +557,7 @@ func (p *planner) shell(name string, args []shellWord, spec programSpec, c callC
 		return
 	}
 	shell := p.bound(name, args, c)
-	p.script(args[start].text, spec.lang, shell)
+	p.script(args[start].text, spec.lang, shell, c.first || c.topLevel)
 }
 
 func (p *planner) interpreter(name string, args []shellWord, spec programSpec, c callContext) {
@@ -630,17 +640,24 @@ func codeIndex(spec programSpec, args []string, more bool) int {
 	return -1
 }
 
-func (p *planner) script(src string, lang syntax.LangVariant, shell int) {
+// script adds the programs of the script that shell runs. first reports
+// that the shell runs first, and so does the first statement of the
+// script unless something runs before it does.
+func (p *planner) script(src string, lang syntax.LangVariant, shell int, first bool) {
 	file, err := syntax.NewParser(syntax.Variant(lang)).Parse(strings.NewReader(src), "")
 	if err != nil {
 		p.opaque("its script does not parse as " + lang.String())
 		return
 	}
-	outer := p.funcs
+	outer, outerFirst := p.funcs, p.firstStmt
 	p.funcs = map[string]bool{}
+	p.firstStmt = nil
+	if first && len(file.Stmts) > 0 && runsFirst(file.Stmts[0]) {
+		p.firstStmt = file.Stmts[0]
+	}
 	p.depth++
 	defer func() {
-		p.funcs = outer
+		p.funcs, p.firstStmt = outer, outerFirst
 		p.depth--
 	}()
 	syntax.Walk(file, func(n syntax.Node) bool {
@@ -666,7 +683,7 @@ func (p *planner) visit(n syntax.Node, shell int) {
 		for i, w := range call.Args {
 			words[i] = wordOf(w)
 		}
-		p.expand(words, callContext{shell: shell})
+		p.expand(words, callContext{shell: shell, first: n == p.firstStmt})
 	case *syntax.Assign:
 		if n.Name != nil && dangerousEnv(n.Name.Value) {
 			p.opaque("it sets " + n.Name.Value)
@@ -722,6 +739,27 @@ func (p *planner) visit(n syntax.Node, shell int) {
 
 func hidesCommand(s string) bool {
 	return strings.Contains(s, "$(") || strings.Contains(s, "`")
+}
+
+// runsFirst reports whether the program of s runs before anything else:
+// a simple command whose words, assignments and redirections run no
+// command substitution first.
+func runsFirst(s *syntax.Stmt) bool {
+	call, ok := s.Cmd.(*syntax.CallExpr)
+	if !ok || len(call.Args) == 0 || len(call.Assigns) > 0 {
+		return false
+	}
+	for _, w := range call.Args {
+		if !wordOf(w).lit {
+			return false
+		}
+	}
+	for _, r := range s.Redirs {
+		if (r.Word != nil && !wordOf(r.Word).lit) || (r.Hdoc != nil && !wordOf(r.Hdoc).lit) {
+			return false
+		}
+	}
+	return true
 }
 
 // withPlaceholders returns words with those that hold one of
