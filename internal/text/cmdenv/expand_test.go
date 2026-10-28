@@ -985,7 +985,9 @@ func TestShellStructure(t *testing.T) {
 
 	t.Run("a parameter expansion without a name", func(t *testing.T) {
 		file := &syntax.File{Stmts: []*syntax.Stmt{{Cmd: &syntax.CallExpr{
-			Args: []*syntax.Word{{Parts: []syntax.WordPart{&syntax.ParamExp{}}}},
+			Args: []*syntax.Word{{Parts: []syntax.WordPart{
+				&syntax.ParamExp{Dollar: syntax.NewPos(0, 1, 1)},
+			}}},
 		}}}}
 		assert.Equal(t, []string{"*syntax.File", stmt, "*syntax.CallExpr",
 			"*syntax.Word", "ParamExp "}, shellStructure(file, nil))

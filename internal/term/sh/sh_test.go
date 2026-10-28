@@ -250,11 +250,24 @@ func TestHandleCommand(t *testing.T) {
 			wantOut:     []string{"err"},
 			wantIterErr: false,
 		},
+		{
+			name: "command named like a builtin the console does not run",
+			cmd:  repl.Command{Name: "help", Args: []string{"status"}},
+			wantCalls: []repl.Command{
+				{Name: "help", Args: []string{"status"}},
+			},
+		},
+		{
+			name:      "function named like a builtin the console does not run",
+			cmd:       repl.Command{Name: "help()", Args: []string{"{", "echo", "fn;", "};", "help"}},
+			wantOut:   []string{"fn"},
+			wantCalls: []repl.Command{},
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			mock := &mockHandler{handleFn: tc.handleFn}
+			mock := &mockHandler{handleFn: tc.handleFn, calls: []repl.Command{}}
 			h := New(mock, workspaceapi.URI{})
 			ctx := context.Background()
 			iter, err := h.HandleCommand(ctx, tc.cmd, repl.NopProgressWriter())
@@ -781,6 +794,33 @@ func TestExternalCommandRoutedThroughExecutor(t *testing.T) {
 	require.Len(t, exec.commands, 1)
 	assert.Equal(t, "ls", exec.commands[0].Path)
 	assert.Equal(t, "/nonexistent/remote/workspace", exec.commands[0].Dir)
+}
+
+func TestProgramNamedLikeBuiltinRoutedThroughExecutor(t *testing.T) {
+	exec := &stubExecutor{}
+	mock := &mockHandler{
+		handleFn: func(_ context.Context, _ repl.Command, _ repl.ProgressWriter) (
+			iterator.Iterator[component.Responsive], error,
+		) {
+			return nil, repl.ErrNotFound
+		},
+	}
+	h := New(mock, workspaceapi.URI{}, WithExecutor(exec))
+
+	iter, err := h.HandleCommand(context.Background(), repl.Command{
+		Name: "kill", Args: []string{"-0", "1"},
+	}, repl.NopProgressWriter())
+	require.NoError(t, err)
+	defer func() { _ = iter.Close() }()
+
+	_, iterErr := collectOutput(t, iter)
+	require.NoError(t, iterErr)
+
+	exec.mu.Lock()
+	defer exec.mu.Unlock()
+	require.Len(t, exec.commands, 1)
+	assert.Equal(t, "kill", exec.commands[0].Path)
+	assert.Equal(t, []string{"-0", "1"}, exec.commands[0].Args)
 }
 
 func TestExternalCommandFallsBackToLocalWithoutExecutor(t *testing.T) {

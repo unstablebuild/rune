@@ -135,6 +135,10 @@ var bashOptions = optionSpec{
 
 var posixShellOptions = optionSpec{short: "abCefhimnuvxEVlcso:", plus: true}
 
+// zshOptions leave out the options that change how zsh reads or expands
+// a script, such as -o and -y.
+var zshOptions = optionSpec{short: "cefilsuvx", plus: true}
+
 var (
 	findSpec = programSpec{kind: kindSpawning, appends: true, embedded: findCommands,
 		placeholders: []string{"{}"}, found: "the names of the files it finds",
@@ -251,6 +255,7 @@ var programSpecs = map[string]programSpec{
 	"ksh":   {kind: kindShell, lang: syntax.LangMirBSDKorn, opts: posixShellOptions},
 	"mksh":  {kind: kindShell, lang: syntax.LangMirBSDKorn, opts: posixShellOptions},
 	"ksh93": {kind: kindShell, lang: syntax.LangMirBSDKorn, opts: posixShellOptions},
+	"zsh":   {kind: kindShell, lang: syntax.LangZsh, opts: zshOptions},
 
 	"python": {kind: kindInterpreter, code: []string{"-c", "-m"}, stdinCode: true},
 	"pypy":   {kind: kindInterpreter, code: []string{"-c", "-m"}, stdinCode: true},
@@ -294,7 +299,6 @@ var programSpecs = map[string]programSpec{
 	"kubectl": {kind: kindInterpreter, codeSub: []string{"exec", "run", "debug", "attach"}},
 	"nix":     {kind: kindInterpreter, codeSub: []string{"develop", "shell", "run"}},
 
-	"zsh":        {kind: kindOpaque, reason: "zsh scripts cannot be parsed"},
 	"fish":       {kind: kindOpaque, reason: "fish scripts cannot be parsed"},
 	"nu":         {kind: kindOpaque, reason: "nu scripts cannot be parsed"},
 	"pwsh":       {kind: kindOpaque, reason: "PowerShell scripts cannot be parsed"},
@@ -331,34 +335,144 @@ func lookupProgramSpec(name string) (programSpec, bool) {
 	return programSpec{}, false
 }
 
-// Shell builtins by what the authorizer makes of them. Builtins in none
-// of these sets are looked up on PATH like any other command.
-var (
-	// shellNoProgram builtins run nothing that needs approval.
-	shellNoProgram = setOf("cd", "pushd", "popd", "dirs", "shift", "return",
+// shellBuiltins says what the authorizer makes of the builtins of a shell
+// language. Builtins in none of its sets are looked up on PATH like any
+// other command.
+type shellBuiltins struct {
+	// noProgram builtins run nothing that needs approval.
+	noProgram map[string]bool
+	// programs are scoped like programs and bound to the shell that runs
+	// them.
+	programs map[string]bool
+	// opaque builtins run code given as a string, or change what a later
+	// command name runs.
+	opaque map[string]bool
+	// dir builtins change the directory relative names resolve in.
+	dir map[string]bool
+	// arith builtins may evaluate arithmetic, and so array subscripts
+	// holding command substitutions, in their arguments.
+	arith map[string]bool
+	// input builtins set variables to data they read while the script
+	// runs.
+	input map[string]bool
+	// assigning builtins set the variables their operands name, and map
+	// to their options.
+	assigning map[string]optionSpec
+	// integers are the special parameters whose assignments evaluate the
+	// value as arithmetic.
+	integers map[string]bool
+}
+
+var declareOptions = optionSpec{short: "aAfFgiIlnprtux", plus: true}
+
+// bashBuiltins are those of bash, and of the POSIX and Korn shells too.
+var bashBuiltins = shellBuiltins{
+	noProgram: setOf("cd", "pushd", "popd", "dirs", "shift", "return",
 		"break", "continue", ":", "true", "false", "set", "unset", "shopt", "umask",
 		"ulimit", "wait", "times", "jobs", "getopts", "let", "caller", "local",
 		"declare", "typeset", "export", "readonly", "exit", "logout", "unalias",
-		"disown", "suspend", "fg", "bg", "help", "history")
-	// shellBuiltinPrograms are scoped like programs and bound to the
-	// shell that runs them.
-	shellBuiltinPrograms = setOf("echo", "printf", "test", "[", "pwd", "read",
-		"mapfile", "readarray", "kill", "type")
-	// shellOpaqueBuiltins run code given as a string, or change what a
-	// later command name runs.
-	shellOpaqueBuiltins = setOf("eval", "source", ".", "alias", "enable", "hash",
-		"trap", "fc", "bind", "complete", "compgen")
-	// shellDirBuiltins change the directory relative names resolve in.
-	shellDirBuiltins = setOf("cd", "pushd", "popd")
-	// shellArithBuiltins may evaluate arithmetic, and so array subscripts
-	// holding command substitutions, in their arguments.
-	shellArithBuiltins = setOf("test", "[", "unset", "declare", "local", "typeset",
+		"disown", "suspend", "fg", "bg", "help", "history"),
+	programs: setOf("echo", "printf", "test", "[", "pwd", "read",
+		"mapfile", "readarray", "kill", "type"),
+	opaque: setOf("eval", "source", ".", "alias", "enable", "hash",
+		"trap", "fc", "bind", "complete", "compgen"),
+	dir: setOf("cd", "pushd", "popd"),
+	arith: setOf("test", "[", "unset", "declare", "local", "typeset",
 		"readonly", "export", "read", "mapfile", "readarray", "let", "getopts",
-		"printf")
-	// shellAssigningBuiltins set the variables their operands name.
-	shellAssigningBuiltins = setOf("read", "mapfile", "readarray", "getopts",
-		"unset", "export", "declare", "local", "typeset", "readonly")
-)
+		"printf"),
+	input: setOf("read", "mapfile", "readarray"),
+	assigning: map[string]optionSpec{
+		"read":      {short: "ersa:d:i:n:N:p:t:u:"},
+		"mapfile":   {short: "td:n:O:s:u:C:c:"},
+		"readarray": {short: "td:n:O:s:u:C:c:"},
+		"getopts":   {},
+		"unset":     {short: "fvn"},
+		"export":    {short: "fnp"},
+		"declare":   declareOptions,
+		"local":     declareOptions,
+		"typeset":   declareOptions,
+		"readonly":  declareOptions,
+	},
+	integers: setOf("OPTIND", "HISTCMD"),
+}
+
+// zshWords are the builtins and reserved words of zsh 5.9, with the
+// builtins of the modules it loads only when asked to.
+var zshWords = setOf("-", ":", ".", "[", "alias", "autoload", "bg", "bindkey",
+	"break", "builtin", "bye", "cd", "chdir", "command", "compadd", "comparguments",
+	"compcall", "compctl", "compdescribe", "compfiles", "compgroups", "compquote",
+	"compset", "comptags", "comptry", "compvalues", "continue", "declare", "dirs",
+	"disable", "disown", "echo", "echotc", "echoti", "emulate", "enable", "eval",
+	"exec", "exit", "export", "false", "fc", "fg", "float", "functions", "getln",
+	"getopts", "hash", "history", "integer", "jobs", "kill", "let", "limit", "local",
+	"log", "logout", "noglob", "popd", "print", "printf", "private", "pushd",
+	"pushln", "pwd", "r", "read", "readonly", "rehash", "return", "sched", "set",
+	"setopt", "shift", "source", "suspend", "test", "times", "trap", "true",
+	"ttyctl", "type", "typeset", "ulimit", "umask", "unalias", "unfunction",
+	"unhash", "unlimit", "unset", "unsetopt", "vared", "wait", "whence", "where",
+	"which", "zcompile", "zformat", "zle", "zmodload", "zparseopts", "zregexparse",
+	"zstyle",
+	"!", "[[", "{", "}", "case", "coproc", "do", "done", "elif", "else", "end",
+	"esac", "fi", "for", "foreach", "function", "if", "nocorrect", "repeat",
+	"select", "then", "time", "until", "while",
+	"cap", "clone", "getcap", "pcre_compile", "pcre_match", "pcre_study", "setcap",
+	"strftime", "syserror", "sysopen", "sysread", "sysseek", "syswrite", "zcurses",
+	"zdelattr", "zf_chgrp", "zf_chmod", "zf_chown", "zf_ln", "zf_mkdir", "zf_mv",
+	"zf_rm", "zf_rmdir", "zf_sync", "zftp", "zgdbmpath", "zgetattr", "zlistattr",
+	"zprof", "zpty", "zselect", "zsetattr", "zsocket", "zstat", "zsystem", "ztcp",
+	"ztie", "zuntie")
+
+// zshWrappers are the words of zsh that programSpecs follows.
+var zshWrappers = setOf("builtin", "command", "exec")
+
+var zshDeclareOptions = optionSpec{short: "AEFHLRTUZafghiklmprtuxz", plus: true}
+
+// zshBuiltins are those of zsh. Every other word of zshWords is opaque,
+// so that a builtin the authorizer does not know cannot run code that
+// the plan does not show.
+var zshBuiltins = func() shellBuiltins {
+	b := shellBuiltins{
+		noProgram: setOf(":", "true", "false", "cd", "chdir", "pushd", "popd", "dirs",
+			"shift", "return", "break", "continue", "unset", "umask", "ulimit", "limit",
+			"unlimit", "wait", "times", "jobs", "getopts", "let", "local", "declare",
+			"typeset", "export", "readonly", "integer", "float", "private", "exit", "bye",
+			"logout", "disown", "suspend", "fg", "bg", "rehash", "unalias", "set", "log"),
+		programs: setOf("echo", "print", "printf", "test", "[", "pwd", "read", "kill",
+			"type", "whence", "where", "which"),
+		opaque: map[string]bool{},
+		dir:    setOf("cd", "chdir", "pushd", "popd"),
+		arith: setOf("test", "[", "let", "read", "print", "printf", "unset", "getopts",
+			"local", "declare", "typeset", "export", "readonly", "integer", "float",
+			"private", "shift", "return", "exit", "bye", "logout", "break", "continue"),
+		input: setOf("read"),
+		assigning: map[string]optionSpec{
+			"read":     {short: "rszpqAclneEd:u:k?t?"},
+			"getopts":  {},
+			"unset":    {short: "fmv"},
+			"export":   zshDeclareOptions,
+			"declare":  zshDeclareOptions,
+			"local":    zshDeclareOptions,
+			"typeset":  zshDeclareOptions,
+			"readonly": zshDeclareOptions,
+			"integer":  zshDeclareOptions,
+			"float":    zshDeclareOptions,
+			"private":  zshDeclareOptions,
+		},
+		integers: setOf("COLUMNS", "EGID", "ERRNO", "EUID", "FUNCNEST", "GID",
+			"HISTSIZE", "KEYTIMEOUT", "LINES", "LISTMAX", "LOGCHECK", "MAILCHECK",
+			"OPTIND", "RANDOM", "SAVEHIST", "SECONDS", "SHLVL", "TRY_BLOCK_ERROR",
+			"TRY_BLOCK_INTERRUPT", "UID", "ZFTP_TMOUT"),
+	}
+	for w := range zshWords {
+		if !b.noProgram[w] && !b.programs[w] && !zshWrappers[w] {
+			b.opaque[w] = true
+		}
+	}
+	return b
+}()
+
+// zshPrintOptions are the options of zsh's print.
+var zshPrintOptions = optionSpec{short: "abcC:Df:ilmnNoOpPrRsSu:v:x:X:z"}
 
 // dangerousEnvNames change what a program runs or loads beyond its
 // arguments. Setting one makes a command approvable only exactly.
@@ -383,6 +497,23 @@ func dangerousEnv(name string) bool {
 		}
 	}
 	return false
+}
+
+// zshDangerousEnvNames change what zsh runs beyond dangerousEnvNames. Most
+// are special to zsh only, so they are dangerous in zsh scripts only.
+// ARGV0 names the programs zsh starts, which a shell reads to tell which
+// language it runs.
+var zshDangerousEnvNames = setOf("path", "fpath", "module_path", "MODULE_PATH",
+	"NULLCMD", "READNULLCMD", "STTY", "PROMPT", "PROMPT2", "PROMPT3", "PROMPT4",
+	"RPROMPT", "RPROMPT2", "RPS1", "RPS2", "PS3", "SPROMPT", "commands", "functions",
+	"aliases", "galiases", "saliases", "builtins", "reswords", "options", "nameddirs",
+	"userdirs", "patchars", "dis_aliases", "dis_galiases", "dis_saliases",
+	"dis_functions", "dis_builtins", "dis_reswords", "dis_patchars", "ARGV0")
+
+// zshDangerousEnv reports the names zshDangerousEnvNames lists, and the
+// arrays of hook functions such as chpwd_functions.
+func zshDangerousEnv(name string) bool {
+	return zshDangerousEnvNames[name] || strings.HasSuffix(name, "_functions")
 }
 
 func setOf(names ...string) map[string]bool {

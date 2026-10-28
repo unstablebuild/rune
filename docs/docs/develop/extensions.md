@@ -156,6 +156,16 @@ save that exact command without opening the picker. When Rune can follow only
 part of a command, the picker adds a row for the exact command, the only one
 that covers all of it.
 
+Rune follows the scripts that `sh`, `bash`, `ksh` and `zsh` run, but not those
+of `fish` or other shells. A zsh script that uses one of the ways zsh has to
+run code, such as glob qualifiers like `*(e:…:)`, parameter flags like
+`${(e)x}` or builtins like `setopt`, can only be approved exactly too.
+So can a script whose arithmetic, such as `$((n + 1))` or `[[ $n -gt 0 ]]`,
+may evaluate data it gets while it runs, like the output of a command, a line
+`read` reads or a file name: shells run the command substitutions in the
+array subscripts of the values they evaluate, so data holding `a[$(…)]` would
+run a command the prompt never showed.
+
 An approval is bound to the files it runs, not to program names: approving
 `git *` lets `/usr/bin/git` run, not a `git` elsewhere in the `PATH` or in the
 workspace. Rune records each file's SHA-256, and when a file changes, for

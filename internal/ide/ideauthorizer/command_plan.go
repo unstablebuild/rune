@@ -18,7 +18,9 @@ package ideauthorizer
 
 import (
 	"cmp"
+	"maps"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -131,10 +133,13 @@ type planner struct {
 	plan  commandPlan
 	funcs map[string]bool
 	depth int
-	// arith reports a context that evaluates arithmetic, which runs the
-	// command substitutions of array subscripts in variable values.
+	// arith reports a context that evaluates arithmetic on a value not
+	// known to be a number, which runs the command substitutions of the
+	// array subscripts the value holds.
 	arith bool
-	// suspicious reports a string holding a command substitution.
+	// suspicious reports a string holding a command substitution, or
+	// data the script gets while it runs, such as the output of a
+	// command, which may hold one.
 	suspicious bool
 	// dir is the Dir of the programs added.
 	dir string
@@ -155,6 +160,11 @@ type planner struct {
 	cmdEnv []string
 	// nodes enclose the node of the scripts being planned that is visited.
 	nodes []syntax.Node
+	// lang is the language of the script being planned.
+	lang syntax.LangVariant
+	// startEnv names the variables the command sets in the environment it
+	// starts with.
+	startEnv []string
 }
 
 type callContext struct {
@@ -181,12 +191,14 @@ func planCommand(path string, args []string, env []string, hostEnv envLookup) co
 		return p.plan
 	}
 	for _, kv := range env {
-		name, _, _ := strings.Cut(kv, "=")
+		name, value, _ := strings.Cut(kv, "=")
 		// The authorizer looks programs up in the PATH a command sets.
 		if name != "PATH" && dangerousEnv(name) {
 			p.opaque("it sets " + name)
 			return p.plan
 		}
+		p.startEnv = append(p.startEnv, name)
+		p.suspicious = p.suspicious || hidesCommand(value)
 	}
 	p.expand(literalWords(append([]string{path}, args...)), callContext{
 		topLevel: true, shell: -1,
@@ -208,6 +220,23 @@ func (p *planner) opaque(reason string) {
 	}
 	p.plan.Opaque = true
 	p.plan.Reason = reason
+}
+
+func (p *planner) zsh() bool {
+	return p.lang == syntax.LangZsh
+}
+
+func (p *planner) builtins() shellBuiltins {
+	if p.zsh() {
+		return zshBuiltins
+	}
+	return bashBuiltins
+}
+
+// dangerous reports whether setting the variable name in the script
+// being planned changes what programs run.
+func (p *planner) dangerous(name string) bool {
+	return dangerousEnv(name) || (p.zsh() && zshDangerousEnv(name))
 }
 
 func (p *planner) add(inv programInvocation) int {
@@ -294,29 +323,38 @@ func (p *planner) builtin(name string, args []shellWord, c callContext) bool {
 		// The function's body is planned where it is declared.
 		return true
 	}
-	if shellOpaqueBuiltins[name] {
+	b := p.builtins()
+	if b.opaque[name] {
 		p.opaque(name + " runs code that cannot be followed")
 		return true
 	}
-	if shellDirBuiltins[name] {
+	if b.dir[name] {
 		p.plan.DirChanged = true
 	}
-	if shellArithBuiltins[name] {
+	if b.arith[name] && p.evaluates(name, args) {
 		p.arith = true
 	}
-	if shellAssigningBuiltins[name] {
-		p.checkAssigned(name, args)
+	if b.input[name] {
+		p.suspicious = true
 	}
-	if name == "printf" {
+	if spec, ok := b.assigning[name]; ok {
+		p.checkAssigned(name, spec, args)
+	}
+	switch {
+	case p.zsh() && (name == "print" || name == "printf"):
+		p.checkZshPrint(name, args)
+	case p.zsh() && name == "set":
+		p.checkZshSet(args)
+	case name == "printf":
 		opts, _, _ := optionSpec{short: "v:"}.scan(args)
 		if o, ok := hasOption(opts, []string{"-v"}); ok {
 			p.checkName(o.value)
 		}
 	}
-	if shellNoProgram[name] {
+	if b.noProgram[name] {
 		return true
 	}
-	if !shellBuiltinPrograms[name] {
+	if !b.programs[name] {
 		return false
 	}
 	inv := p.invocation(name, args, c)
@@ -326,32 +364,61 @@ func (p *planner) builtin(name string, args []shellWord, c callContext) bool {
 	return true
 }
 
-var declareOptions = optionSpec{short: "aAfFgiIlnprtux", plus: true}
-
-// assigningBuiltinOptions are the options of shellAssigningBuiltins.
-var assigningBuiltinOptions = map[string]optionSpec{
-	"read":      {short: "ersa:d:i:n:N:p:t:u:"},
-	"mapfile":   {short: "td:n:O:s:u:C:c:"},
-	"readarray": {short: "td:n:O:s:u:C:c:"},
-	"getopts":   {},
-	"unset":     {short: "fvn"},
-	"export":    {short: "fnp"},
-	"declare":   declareOptions,
-	"local":     declareOptions,
-	"typeset":   declareOptions,
-	"readonly":  declareOptions,
+// checkZshPrint makes the plan opaque when zsh's print or printf, name,
+// runs prompt expansions, which run code with the PROMPT_SUBST option,
+// or sets a variable that changes what programs run. A word that is not
+// literal may hold either option.
+func (p *planner) checkZshPrint(name string, args []shellWord) {
+	spec := optionSpec{short: "v:"}
+	if name == "print" {
+		spec = zshPrintOptions
+	}
+	opts, _, ok := spec.scan(args)
+	if !ok {
+		p.opaque("the options of " + name + " cannot be followed")
+		return
+	}
+	if _, found := hasOption(opts, []string{"-P"}); found {
+		p.opaque("print -P runs prompt expansions, which can run code")
+		return
+	}
+	if o, found := hasOption(opts, []string{"-v"}); found {
+		p.checkName(o.value)
+	}
 }
 
-// checkAssigned makes the plan opaque when the builtin name sets a
-// variable that changes what programs run, or one it cannot tell.
-func (p *planner) checkAssigned(name string, args []shellWord) {
-	opts, operand, ok := assigningBuiltinOptions[name].scan(args)
+// checkZshSet makes the plan opaque when zsh's set changes options other
+// than those zsh -c may take, or sets an array (set -A).
+func (p *planner) checkZshSet(args []shellWord) {
+	for _, w := range args {
+		switch {
+		case !w.lit:
+			p.opaque("the options set changes are not known until it runs")
+			return
+		case w.text == "-" || w.text == "--" ||
+			!strings.HasPrefix(w.text, "-") && !strings.HasPrefix(w.text, "+"):
+			return
+		case strings.Trim(w.text[1:], "euvx") != "":
+			p.opaque("set " + w.text + " changes what the script runs")
+			return
+		}
+	}
+}
+
+// checkAssigned makes the plan opaque when the builtin name, which takes
+// the options spec, sets a variable that changes what programs run, or
+// one it cannot tell.
+func (p *planner) checkAssigned(name string, spec optionSpec, args []shellWord) {
+	opts, operand, ok := spec.scan(args)
 	if !ok {
 		p.opaque("the variables " + name + " sets are not known until it runs")
 		return
 	}
 	for _, o := range opts {
 		switch {
+		case p.zsh() && (o.name == "-f" || o.name == "-m") && name != "unset":
+			p.opaque(name + " " + o.name + " changes functions or sets variables by pattern")
+			return
 		case o.name == "-C":
 			p.opaque(name + " -C runs code that cannot be followed")
 			return
@@ -360,11 +427,15 @@ func (p *planner) checkAssigned(name string, args []shellWord) {
 			return
 		case o.name == "-a" && name == "read":
 			p.checkName(o.value)
-		case o.name == "-f" && (name == "unset" || name == "export"):
+		case o.name == "-f" && name == "unset":
+			p.opaque(unsetFunction)
+			return
+		case o.name == "-f" && name == "export":
 			// Functions, not variables.
 			return
 		}
 	}
+	_, varsOnly := hasOption(opts, []string{"-v"})
 	names := args[operand:]
 	if name == "getopts" {
 		if len(names) < 2 {
@@ -373,8 +444,141 @@ func (p *planner) checkAssigned(name string, args []shellWord) {
 		names = names[1:2]
 	}
 	for _, w := range names {
-		p.checkName(w.text)
+		text := w.text
+		if p.zsh() && name == "read" {
+			// zsh's read prompts with what follows a '?'.
+			text, _, _ = strings.Cut(text, "?")
+		}
+		// bash unsets the function of a name no variable has.
+		if name == "unset" && !p.zsh() && !varsOnly && p.funcs[text] {
+			p.opaque(unsetFunction)
+			return
+		}
+		p.checkName(text)
 	}
+}
+
+const unsetFunction = "unsetting a function makes later calls of it run a program"
+
+// evaluates reports whether the builtin name, which may evaluate
+// arithmetic, evaluates a value not known to be a number given args.
+func (p *planner) evaluates(name string, args []shellWord) bool {
+	switch name {
+	case "let", "integer", "float":
+		return true
+	case "test", "[":
+		if n := len(args); name == "[" && n > 0 && args[n-1].lit && args[n-1].text == "]" {
+			args = args[:n-1]
+		}
+		return testEvaluates(args)
+	case "printf", "print":
+		spec := optionSpec{short: "v:"}
+		if name == "print" {
+			spec = zshPrintOptions
+		}
+		opts, operand, ok := spec.scan(args)
+		if !ok {
+			return true
+		}
+		if o, found := hasOption(opts, []string{"-v"}); found && !isName(shellWord{text: o.value, lit: true}) {
+			return true
+		}
+		if name == "print" {
+			o, found := hasOption(opts, []string{"-f"})
+			return found && formatEvaluates(o.value)
+		}
+		return operand < len(args) && (!args[operand].lit || formatEvaluates(args[operand].text))
+	case "shift", "exit", "return", "break", "continue", "bye", "logout":
+		return slices.ContainsFunc(args, func(w shellWord) bool { return !isNumberWord(w) })
+	}
+	spec, ok := p.builtins().assigning[name]
+	if !ok {
+		return true
+	}
+	opts, operand, ok := spec.scan(args)
+	if !ok {
+		return true
+	}
+	for _, o := range opts {
+		switch {
+		case (name == "mapfile" || name == "readarray") && strings.Contains("nOsuc", o.name[1:]) &&
+			!numberLiteral.MatchString(o.value):
+			return true
+		case o.name == "-a" && name == "read" && !isName(shellWord{text: o.value, lit: true}):
+			return true
+		case name != "read" && p.declares(o.name):
+			return true
+		}
+	}
+	names := args[operand:]
+	if name == "getopts" {
+		names = names[min(1, len(names)):min(2, len(names))]
+	}
+	return slices.ContainsFunc(names, func(w shellWord) bool {
+		if p.zsh() && name == "read" {
+			w.text, _, _ = strings.Cut(w.text, "?")
+		}
+		return !w.lit || p.declares(w.text)
+	})
+}
+
+// testEvaluates reports whether test, given args, may evaluate an
+// operand not known to be a number: one of a numeric comparison, -t or
+// -v, or a word that is not literal where it may expand to one of those.
+func testEvaluates(args []shellWord) bool {
+	operator := func(i int) bool {
+		return i >= 0 && i < len(args) && args[i].lit && (strings.HasPrefix(args[i].text, "-") ||
+			slices.Contains([]string{"=", "==", "!=", "<", ">", "!", "=~"}, args[i].text))
+	}
+	number := func(i int) bool { return i >= 0 && i < len(args) && isNumberWord(args[i]) }
+	for i, w := range args {
+		if !w.lit {
+			if len(args) > 1 && !operator(i-1) && !operator(i+1) {
+				return true
+			}
+			continue
+		}
+		switch w.text {
+		case "-eq", "-ne", "-lt", "-le", "-gt", "-ge":
+			if !number(i-1) || !number(i+1) {
+				return true
+			}
+		case "-t":
+			if i+1 < len(args) && !number(i+1) {
+				return true
+			}
+		case "-v", "-R":
+			if i+1 < len(args) && !isName(args[i+1]) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// formatEvaluates reports whether the printf format f converts an
+// argument as a number, which evaluates it, or takes a width or
+// precision from one.
+func formatEvaluates(f string) bool {
+	for i := 0; i < len(f); i++ {
+		if f[i] != '%' {
+			continue
+		}
+		j := i + 1
+		for j < len(f) && strings.IndexByte("-+ #0123456789.'", f[j]) >= 0 {
+			j++
+		}
+		if j >= len(f) {
+			return false
+		}
+		switch c := f[j]; {
+		case c == '%':
+		case c == '*' || !strings.ContainsRune("sbcq", rune(c)):
+			return true
+		}
+		i = j
+	}
+	return false
 }
 
 func (p *planner) checkName(text string) {
@@ -384,7 +588,7 @@ func (p *planner) checkName(text string) {
 		return
 	}
 	p.forget(n)
-	if dangerousEnv(n) {
+	if p.dangerous(n) {
 		p.opaque("it sets " + n)
 	}
 }
@@ -421,7 +625,7 @@ func (p *planner) skipAssignments(base string, rest []shellWord) []shellWord {
 		if !ok {
 			break
 		}
-		if dangerousEnv(n) {
+		if p.dangerous(n) {
 			p.opaque("it sets " + n)
 			return nil
 		}
@@ -436,7 +640,7 @@ func (p *planner) checkEnvOptions(opts []parsedOption, spec programSpec) {
 		if !slices.Contains(spec.envOpts, o.name) {
 			continue
 		}
-		if n, _, _ := strings.Cut(o.value, "="); dangerousEnv(n) {
+		if n, _, _ := strings.Cut(o.value, "="); p.dangerous(n) {
 			p.opaque("it sets " + n)
 		}
 	}
@@ -491,7 +695,19 @@ func (p *planner) transparent(name string, args []shellWord, spec programSpec, c
 		rest = []shellWord{{text: spec.fallback, lit: true}}
 	}
 	inner := callContext{shell: -1, appended: c.appended || spec.appends}
-	if spec.builtin && name != "exec" {
+	switch {
+	case !spec.builtin:
+	case p.zsh() && name == "exec":
+		// zsh's exec runs builtins and functions too.
+		inner.shell = c.shell
+	case p.zsh() && name == "command":
+		// zsh's command runs programs only, unless options of the user's
+		// startup files make it run builtins too.
+		if rest[0].lit && zshBuiltins.opaque[rest[0].text] {
+			p.opaque("command " + rest[0].text + " may run the builtin, whose code cannot be followed")
+			return
+		}
+	case name != "exec":
 		inner.shell = c.shell
 		inner.noFuncs = true
 	}
@@ -514,7 +730,8 @@ func (p *planner) embed(base string, cmd []shellWord, placeholders []string, fou
 		p.expand(cmd, c)
 		return
 	}
-	probe := &planner{funcs: p.funcs, depth: p.depth, dir: p.dir, vars: map[string]*string{}}
+	probe := &planner{funcs: p.funcs, depth: p.depth, dir: p.dir, vars: map[string]*string{},
+		lang: p.lang}
 	probe.expand(cmd, c)
 	if probe.plan.Opaque {
 		p.opaque(probe.plan.Reason)
@@ -586,6 +803,21 @@ func (p *planner) shell(name string, args []shellWord, spec programSpec, c callC
 	if p.depth >= maxScriptDepth {
 		p.opaque("its shells nest too deep")
 		return
+	}
+	if spec.lang == syntax.LangZsh {
+		// zsh runs programs that variables of its environment name. The
+		// variables of the script that starts it may be exported.
+		names := slices.Concat(p.startEnv, p.cmdEnv, slices.Sorted(maps.Keys(p.vars)))
+		if i := slices.IndexFunc(names, zshDangerousEnv); i >= 0 {
+			p.opaque("it sets " + names[i])
+			return
+		}
+	}
+	// Arithmetic may evaluate the arguments the script gets, which file
+	// names or input put in place of placeholders, or after the script.
+	p.suspicious = p.suspicious || c.appended
+	for _, w := range args[start+1:] {
+		p.suspicious = p.suspicious || hidesCommand(w.text) || !w.lit && w.word == nil
 	}
 	shell := p.bound(name, args, c)
 	p.script(args[start].text, spec.lang, shell, c.first || c.topLevel)
@@ -682,9 +914,11 @@ func (p *planner) script(src string, lang syntax.LangVariant, shell int, first b
 	}
 	outer, outerFirst := p.funcs, p.firstStmt
 	outerVars, outerStraight := p.vars, p.straight
+	outerLang := p.lang
+	p.lang = lang
 	p.funcs = map[string]bool{}
 	p.firstStmt = nil
-	if first && len(file.Stmts) > 0 && runsFirst(file.Stmts[0]) {
+	if first && len(file.Stmts) > 0 && runsFirst(file.Stmts[0], lang) {
 		p.firstStmt = file.Stmts[0]
 	}
 	// A shell gets the variables of the script that starts it only when
@@ -704,14 +938,9 @@ func (p *planner) script(src string, lang syntax.LangVariant, shell int, first b
 	defer func() {
 		p.funcs, p.firstStmt = outer, outerFirst
 		p.vars, p.straight = outerVars, outerStraight
+		p.lang = outerLang
 		p.depth--
 	}()
-	syntax.Walk(file, func(n syntax.Node) bool {
-		if fd, ok := n.(*syntax.FuncDecl); ok && fd.Name != nil {
-			p.funcs[fd.Name.Value] = true
-		}
-		return true
-	})
 	syntax.Walk(file, func(n syntax.Node) bool {
 		if n == nil {
 			p.nodes = p.nodes[:len(p.nodes)-1]
@@ -731,12 +960,18 @@ func (p *planner) visit(n syntax.Node, shell int) {
 	case *syntax.Stmt:
 		p.assign(n)
 		call, ok := n.Cmd.(*syntax.CallExpr)
+		if p.zsh() && len(n.Redirs) > 0 && (n.Cmd == nil || ok && len(call.Args) == 0) &&
+			!p.readsFile(n) {
+			// zsh runs $NULLCMD or $READNULLCMD in place of the command.
+			p.opaque("zsh runs a program for a redirection without a command")
+			return
+		}
 		if !ok || len(call.Args) == 0 {
 			return
 		}
 		words := make([]shellWord, len(call.Args))
 		for i, w := range call.Args {
-			words[i] = wordOf(w)
+			words[i] = wordOf(w, p.lang)
 		}
 		p.cmdEnv = p.cmdEnv[:0]
 		for _, a := range call.Assigns {
@@ -746,12 +981,28 @@ func (p *planner) visit(n syntax.Node, shell int) {
 		}
 		p.expand(words, callContext{shell: shell, first: n == p.firstStmt})
 		p.cmdEnv = p.cmdEnv[:0]
+	case *syntax.FuncDecl:
+		// A name is a function from its declaration on, unless the
+		// declaration may not run: calls before it, or of one in a branch,
+		// run the program of that name.
+		if s, ok := p.nodes[len(p.nodes)-1].(*syntax.Stmt); !ok || !p.straight[s] {
+			return
+		}
+		for _, name := range append([]*syntax.Lit{n.Name}, n.Names...) {
+			if name != nil {
+				p.funcs[name.Value] = true
+			}
+		}
 	case *syntax.Assign:
-		if n.Name != nil && dangerousEnv(n.Name.Value) {
+		if n.Name != nil && p.dangerous(n.Name.Value) {
 			p.opaque("it sets " + n.Name.Value)
 		}
+		if readsValues(n.Index) || (n.Name != nil && p.builtins().integers[n.Name.Value]) {
+			p.arith = true
+		}
+	case *syntax.ArrayElem:
+		p.arith = p.arith || readsValues(n.Index)
 	case *syntax.DeclClause:
-		p.arith = true
 		if n.Variant != nil && n.Variant.Value == "nameref" {
 			p.opaque("namerefs hide the variables they set")
 			return
@@ -760,67 +1011,301 @@ func (p *planner) visit(n syntax.Node, shell int) {
 			if !a.Naked || a.Name != nil || a.Value == nil {
 				continue
 			}
-			w := wordOf(a.Value)
+			w := wordOf(a.Value, p.lang)
 			switch {
 			case !w.lit:
 				p.opaque("it sets a variable that is not known until it runs")
+			case p.zsh() && (strings.HasPrefix(w.text, "-") || strings.HasPrefix(w.text, "+")) &&
+				strings.ContainsAny(w.text, "fm"):
+				p.opaque(n.Variant.Value + " " + w.text +
+					" changes functions or sets variables by pattern")
 			case strings.HasPrefix(w.text, "-") && strings.Contains(w.text, "n"):
 				p.opaque("namerefs hide the variables they set")
 			}
+			p.arith = p.arith || p.declares(w.text)
 		}
 	case *syntax.WordIter:
 		if n.Name != nil {
 			p.forget(n.Name.Value)
 		}
-		if n.Name != nil && dangerousEnv(n.Name.Value) {
+		if n.Name != nil && p.dangerous(n.Name.Value) {
 			p.opaque("it sets " + n.Name.Value)
+		}
+		if n.Name != nil && p.builtins().integers[n.Name.Value] {
+			p.arith = true
 		}
 	case *syntax.CoprocClause:
 		if n.Name != nil {
-			if w := wordOf(n.Name); !w.lit || dangerousEnv(w.text) {
+			if w := wordOf(n.Name, p.lang); !w.lit || p.dangerous(w.text) {
 				p.opaque("it sets " + w.text)
 			}
 		}
 	case *syntax.Redirect:
-		if n.N != nil && dangerousEnv(strings.Trim(n.N.Value, "{}")) {
+		if n.N != nil && p.dangerous(strings.Trim(n.N.Value, "{}")) {
 			p.opaque("it sets " + strings.Trim(n.N.Value, "{}"))
 		}
 	case *syntax.ParamExp:
-		if n.Excl || n.Index != nil || n.Slice != nil {
+		if n.Excl || readsValues(n.Index) ||
+			n.Slice != nil && (readsValues(n.Slice.Offset) || readsValues(n.Slice.Length)) {
 			p.arith = true
 		}
 		if n.Exp != nil && n.Exp.Op == syntax.OtherParamOps && n.Exp.Word != nil &&
 			strings.Contains(n.Exp.Word.Lit(), "P") {
 			p.opaque("prompt expansions run command substitutions")
 		}
-	case *syntax.ArithmExp, *syntax.ArithmCmd, *syntax.LetClause, *syntax.TestClause:
-		p.arith = true
+		if n.Exp != nil && (n.Exp.Op == syntax.AssignUnset || n.Exp.Op == syntax.AssignUnsetOrNull) &&
+			n.Param != nil {
+			if p.dangerous(n.Param.Value) {
+				p.opaque("it sets " + n.Param.Value)
+			}
+			if p.builtins().integers[n.Param.Value] {
+				p.arith = true
+			}
+		}
+		switch {
+		case n.Flags != nil:
+			p.opaque("zsh parameter flags can run code")
+		case n.GlobSubst == syntax.OptOn:
+			p.opaque("${~…} globs values, whose qualifiers can run code")
+		}
+	case *syntax.ArithmExp:
+		p.arith = p.arith || readsValues(n.X)
+	case *syntax.ArithmCmd:
+		p.arith = p.arith || readsValues(n.X)
+	case *syntax.LetClause:
+		p.arith = p.arith || slices.ContainsFunc(n.Exprs, readsValues)
+	case *syntax.CStyleLoop:
+		p.arith = p.arith || readsValues(n.Init) || readsValues(n.Cond) || readsValues(n.Post)
+	case *syntax.BinaryTest:
+		if numericTests[n.Op] {
+			p.arith = p.arith || !isNumberTest(n.X) || !isNumberTest(n.Y)
+		}
+	case *syntax.UnaryTest:
+		switch n.Op {
+		case syntax.TsFdTerm:
+			p.arith = p.arith || !isNumberTest(n.X)
+		case syntax.TsVarSet, syntax.TsRefVar:
+			w, ok := n.X.(*syntax.Word)
+			p.arith = p.arith || !ok || !isName(wordOf(w, p.lang))
+		}
+	case *syntax.CmdSubst:
+		p.suspicious = true
+	case *syntax.Word:
+		p.arith = p.arith || oldArithmetic(n.Parts)
+	case *syntax.DblQuoted:
+		p.arith = p.arith || oldArithmetic(n.Parts)
 	case *syntax.Lit:
 		p.suspicious = p.suspicious || hidesCommand(n.Value)
+		if p.zsh() && p.inGlobbedWord() && hasUnescapedParen(n.Value) {
+			p.opaque("zsh glob qualifiers can run code")
+		}
+		if _, ok := unquotedLiteral(n.Value, p.zsh(), false); !ok && p.keepsFileNames() {
+			p.suspicious = true
+		}
 	case *syntax.SglQuoted:
 		p.suspicious = p.suspicious || hidesCommand(n.Value)
 	}
+}
+
+// keepsFileNames reports whether the literal visited is part of a word
+// whose file names the script keeps where its arithmetic may evaluate
+// them: a variable, or the positional parameters of the script or of a
+// function.
+func (p *planner) keepsFileNames() bool {
+	word, ok := p.nodes[len(p.nodes)-1].(*syntax.Word)
+	if !ok || len(p.nodes) < 2 {
+		return false
+	}
+	switch parent := p.nodes[len(p.nodes)-2].(type) {
+	case *syntax.Assign, *syntax.ArrayElem, *syntax.WordIter:
+		return true
+	case *syntax.CallExpr:
+		if len(parent.Args) == 0 || parent.Args[0] == word {
+			return false
+		}
+		name := wordOf(parent.Args[0], p.lang)
+		return !name.lit || name.text == "set" || p.funcs[name.text]
+	}
+	return false
+}
+
+// declares reports whether the literal operand of a declaration
+// evaluates arithmetic: an option giving an integer or float attribute,
+// which later assignments evaluate, or a name with a subscript or of a
+// special integer parameter.
+func (p *planner) declares(operand string) bool {
+	if strings.HasPrefix(operand, "-") || strings.HasPrefix(operand, "+") {
+		attrs := "i"
+		if p.zsh() {
+			attrs = "iEF"
+		}
+		return strings.ContainsAny(operand[1:], attrs)
+	}
+	name, _, _ := strings.Cut(operand, "=")
+	return strings.Contains(name, "[") || p.builtins().integers[name]
+}
+
+// numericTests are the conditions that compare their operands as
+// arithmetic.
+var numericTests = map[syntax.BinTestOperator]bool{
+	syntax.TsEql: true, syntax.TsNeq: true, syntax.TsLeq: true,
+	syntax.TsGeq: true, syntax.TsLss: true, syntax.TsGtr: true,
+}
+
+// readsValues reports whether evaluating the arithmetic x may evaluate
+// a value not known to be a number: whether x names a variable or
+// expands anything but a number.
+func readsValues(x syntax.ArithmExpr) bool {
+	switch x := x.(type) {
+	case nil:
+		return false
+	case *syntax.BinaryArithm:
+		return readsValues(x.X) || readsValues(x.Y)
+	case *syntax.UnaryArithm:
+		return readsValues(x.X)
+	case *syntax.ParenArithm:
+		return readsValues(x.X)
+	case *syntax.Word:
+		return !isNumber(x)
+	}
+	return true
+}
+
+func isNumberTest(x syntax.TestExpr) bool {
+	w, ok := x.(*syntax.Word)
+	return ok && isNumber(w)
+}
+
+// numberLiteral matches the integers and floats of shell arithmetic, in
+// any base.
+var numberLiteral = regexp.MustCompile(
+	`^([0-9]+(\.[0-9]*)?([eE][-+]?[0-9]+)?|0[xX][0-9a-fA-F]+|[0-9]+#[0-9a-zA-Z_@]+)$`)
+
+// isNumber reports whether w expands to a number: a numeric literal, or
+// a special parameter, length or set test that holds one.
+func isNumber(w *syntax.Word) bool {
+	if len(w.Parts) != 1 {
+		return false
+	}
+	part := w.Parts[0]
+	if dq, ok := part.(*syntax.DblQuoted); ok && len(dq.Parts) == 1 {
+		part = dq.Parts[0]
+	}
+	switch part := part.(type) {
+	case *syntax.Lit:
+		return numberLiteral.MatchString(part.Value)
+	case *syntax.ParamExp:
+		if part.Param == nil || part.Flags != nil || part.Excl || part.Index != nil ||
+			part.Slice != nil || part.Repl != nil || part.Exp != nil ||
+			len(part.Modifiers) > 0 || part.NestedParam != nil {
+			return false
+		}
+		return part.Length || part.IsSet || slices.Contains([]string{"#", "?", "$", "!"}, part.Param.Value)
+	}
+	return false
+}
+
+// isNumberWord reports whether w is a number, as isNumber does.
+func isNumberWord(w shellWord) bool {
+	if w.word != nil {
+		return isNumber(w.word)
+	}
+	return w.lit && numberLiteral.MatchString(w.text)
+}
+
+// isName reports whether w names a variable without a subscript.
+func isName(w shellWord) bool {
+	return w.lit && w.text != "" && assignedName(w.text) == w.text
+}
+
+// inGlobbedWord reports whether the node visited is part of a word that
+// is not quoted, a here-document, a condition's operand nor a case
+// pattern, from which zsh may generate file names.
+func (p *planner) inGlobbedWord() bool {
+	word, ok := p.nodes[len(p.nodes)-1].(*syntax.Word)
+	if !ok {
+		return false
+	}
+	switch parent := p.nodes[len(p.nodes)-2].(type) {
+	case *syntax.Redirect:
+		return parent.Hdoc != word
+	case *syntax.TestClause, *syntax.BinaryTest, *syntax.UnaryTest, *syntax.ParenTest,
+		*syntax.CaseItem:
+		return false
+	}
+	return true
+}
+
+// readsFile reports whether the statement s visited is the file of a
+// $(<file) substitution, whose contents zsh reads without running a
+// command: the only statement, of a single input redirection and no
+// assignments.
+func (p *planner) readsFile(s *syntax.Stmt) bool {
+	cs, ok := p.nodes[len(p.nodes)-1].(*syntax.CmdSubst)
+	if !ok || len(cs.Stmts) != 1 || len(s.Redirs) != 1 || s.Negated || s.Background ||
+		s.Coprocess {
+		return false
+	}
+	if call, ok := s.Cmd.(*syntax.CallExpr); ok && len(call.Assigns) > 0 {
+		return false
+	}
+	r := s.Redirs[0]
+	return r.Op == syntax.RdrIn && (r.N == nil || r.N.Value == "0")
+}
+
+// hasUnescapedParen reports whether the unquoted literal v holds a
+// parenthesis no backslash escapes, which in zsh opens a glob group or
+// qualifier.
+func hasUnescapedParen(v string) bool {
+	for i := 0; i < len(v); i++ {
+		switch v[i] {
+		case '\\':
+			i++
+		case '(':
+			return true
+		}
+	}
+	return false
 }
 
 func hidesCommand(s string) bool {
 	return strings.Contains(s, "$(") || strings.Contains(s, "`")
 }
 
+// oldArithmetic reports whether parts hold the $[…] arithmetic expansion
+// of zsh, which the parser takes for a literal "$" and a literal "[…".
+func oldArithmetic(parts []syntax.WordPart) bool {
+	for i := 0; i+1 < len(parts); i++ {
+		l, ok := parts[i].(*syntax.Lit)
+		next, nextOk := parts[i+1].(*syntax.Lit)
+		if !ok || !nextOk || !strings.HasPrefix(next.Value, "[") ||
+			!strings.HasSuffix(l.Value, "$") {
+			continue
+		}
+		escapes := len(l.Value) - 1 - len(strings.TrimRight(l.Value[:len(l.Value)-1], `\`))
+		if escapes%2 == 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // runsFirst reports whether the program of s runs before anything else:
 // a simple command whose words, assignments and redirections run no
-// command substitution first.
-func runsFirst(s *syntax.Stmt) bool {
+// command substitution first. lang is the language of its script.
+func runsFirst(s *syntax.Stmt, lang syntax.LangVariant) bool {
 	call, ok := s.Cmd.(*syntax.CallExpr)
 	if !ok || len(call.Args) == 0 || len(call.Assigns) > 0 {
 		return false
 	}
 	for _, w := range call.Args {
-		if !wordOf(w).lit {
+		if !wordOf(w, lang).lit {
 			return false
 		}
 	}
 	for _, r := range s.Redirs {
-		if (r.Word != nil && !wordOf(r.Word).lit) || (r.Hdoc != nil && !wordOf(r.Hdoc).lit) {
+		if (r.Word != nil && !wordOf(r.Word, lang).lit) ||
+			(r.Hdoc != nil && !wordOf(r.Hdoc, lang).lit) {
 			return false
 		}
 	}
@@ -852,21 +1337,22 @@ func isOption(w shellWord, names []string) bool {
 
 // wordOf returns the value of w when the shell would pass it on as
 // written, after quote removal, and its source otherwise: expansions,
-// globs and brace expansions make a word not literal.
-func wordOf(w *syntax.Word) shellWord {
+// globs and brace expansions make a word not literal. lang is the
+// language of its script.
+func wordOf(w *syntax.Word, lang syntax.LangVariant) shellWord {
 	var b strings.Builder
-	lit := true
-	for _, part := range w.Parts {
+	lit := !oldArithmetic(w.Parts)
+	for i, part := range w.Parts {
 		switch p := part.(type) {
 		case *syntax.Lit:
-			v, ok := unquotedLiteral(p.Value)
+			v, ok := unquotedLiteral(p.Value, lang == syntax.LangZsh, i == 0)
 			lit = lit && ok
 			b.WriteString(v)
 		case *syntax.SglQuoted:
 			lit = lit && !(p.Dollar && strings.Contains(p.Value, `\`))
 			b.WriteString(p.Value)
 		case *syntax.DblQuoted:
-			lit = lit && !p.Dollar
+			lit = lit && !p.Dollar && !oldArithmetic(p.Parts)
 			for _, inner := range p.Parts {
 				l, ok := inner.(*syntax.Lit)
 				if !ok {
@@ -893,8 +1379,11 @@ func wordOf(w *syntax.Word) shellWord {
 }
 
 // unquotedLiteral removes the backslashes of an unquoted literal, and
-// reports false when it holds a glob or a brace expansion.
-func unquotedLiteral(v string) (string, bool) {
+// reports false when it holds a glob or a brace expansion. zsh reports
+// that the literal is zsh's, whose extended globs and equals expansions
+// make it not literal too, as do its tildes, which expand to directories
+// the script can change, and start that it starts its word.
+func unquotedLiteral(v string, zsh, start bool) (string, bool) {
 	var b strings.Builder
 	ok := true
 	braceOpen, braceList := -1, false
@@ -925,10 +1414,15 @@ func unquotedLiteral(v string) (string, bool) {
 		case '.':
 			braceList = braceList || (braceOpen >= 0 && i+1 < len(v) && v[i+1] == '.')
 		case '}':
-			if braceOpen >= 0 && braceList {
+			// zsh may expand {ab} into a and b (BRACE_CCL), but not {}.
+			if braceOpen >= 0 && (braceList || zsh && i > braceOpen+1) {
 				ok = false
 			}
 			braceOpen = -1
+		case '^', '#', '<', '>', '(', ')', '|', '~':
+			ok = ok && !zsh
+		case '=':
+			ok = ok && !(zsh && i == 0 && start)
 		}
 		b.WriteByte(c)
 	}
@@ -969,7 +1463,8 @@ func (p *planner) assign(s *syntax.Stmt) {
 			continue
 		}
 		p.forget(a.Name.Value)
-		if !p.straight[s] || a.Append || a.Index != nil || a.Array != nil {
+		// expand follows bash, which zsh expands values unlike.
+		if !p.straight[s] || a.Append || a.Index != nil || a.Array != nil || p.zsh() {
 			continue
 		}
 		v := ""
@@ -1048,9 +1543,10 @@ func recursiveRM(args []shellWord) bool {
 }
 
 // fields returns the arguments w expands to, and false when they are not
-// known until the command runs. Globs are left unexpanded.
+// known until the command runs. Globs are left unexpanded. Words of zsh
+// are not expanded, since expand follows bash, which splits them.
 func (p *planner) fields(w shellWord) ([]string, bool) {
-	if w.word == nil {
+	if w.word == nil || p.zsh() {
 		return []string{w.text}, w.lit
 	}
 	env := newScriptEnv(p, w.word)
