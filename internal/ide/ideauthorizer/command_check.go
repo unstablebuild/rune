@@ -31,6 +31,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/extensionapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
 	"mvdan.cc/sh/v3/syntax"
+	"unstable.build/rune/internal/ide/hostenv"
 )
 
 // stdPATH is the PATH that command -p looks programs up in.
@@ -157,7 +158,7 @@ func (a *Authorizer) checkCommand(
 	c := &commandCheck{
 		host:    a.resolver.HostID(),
 		command: command,
-		plan:    planCommand(command.Path, command.Args, command.Env),
+		plan:    planCommand(command.Path, command.Args, command.Env, a.commandEnv(env)),
 	}
 	invocations := c.plan.Programs
 	if c.plan.Opaque {
@@ -239,6 +240,27 @@ func (a *Authorizer) innerPATH(ctx context.Context, env []string) []string {
 		return []string{}
 	}
 	return p
+}
+
+// commandEnv looks variables up in the environment a command started
+// with env gets on the workspace host, which this side only sees when the
+// host is this machine.
+func (a *Authorizer) commandEnv(env []string) envLookup {
+	return func(name string) (string, bool, bool) {
+		for _, kv := range slices.Backward(env) {
+			if v, ok := strings.CutPrefix(kv, name+"="); ok {
+				return v, true, true
+			}
+		}
+		if name == hostenv.DataDirVar && a.config.DataDir != "" {
+			return a.config.DataDir, true, true
+		}
+		if a.resolver.HostID() != "" {
+			return "", false, false
+		}
+		v, ok := os.LookupEnv(name)
+		return v, ok, true
+	}
 }
 
 // dirDependent reports whether what name runs depends on the directory
@@ -577,6 +599,18 @@ func appendUnique(list []string, items ...string) []string {
 		}
 	}
 	return list
+}
+
+// recursiveDeletes returns the recursive deletions of the command, once
+// each.
+func (c *commandCheck) recursiveDeletes() []RecursiveDelete {
+	var ret []RecursiveDelete
+	for _, d := range c.plan.Deletes {
+		if !slices.Contains(ret, d) {
+			ret = append(ret, d)
+		}
+	}
+	return ret
 }
 
 // programSummaries describes the programs of the command that the user

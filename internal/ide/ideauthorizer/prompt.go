@@ -263,7 +263,7 @@ func pluginPermissionPromptMessage(req PermissionRequest) string {
 		if !command.block {
 			message += "."
 		}
-		return message + commandScopeNote
+		return message + recursiveDeleteNote(req) + commandScopeNote
 	}
 	if req.ExtensionID != "" && req.ExtensionName != "" {
 		return fmt.Sprintf("Extension %s by %s wants to %s.",
@@ -280,7 +280,7 @@ func pluginPermissionPromptMessage(req PermissionRequest) string {
 		if !command.block {
 			message += "."
 		}
-		return message + commandScopeNote
+		return message + recursiveDeleteNote(req) + commandScopeNote
 	}
 	program := programPromptFragment(req.Path, req.Args, false, false)
 	if req.LauncherPath != "" {
@@ -454,6 +454,28 @@ func joinAdjacentPromptFragments(left promptFragment, right promptFragment) prom
 		separator = "\n\n"
 	}
 	return promptFragment{text: left.text + separator + right.text, block: right.block}
+}
+
+// recursiveDeleteNote shows the user the recursive rms of the command with
+// the variables the shell expands in them as it will expand them, since
+// the command as written may not tell. It says nothing of what the rm that
+// runs does with the files, which Rune cannot know.
+func recursiveDeleteNote(req PermissionRequest) string {
+	if len(req.RecursiveDeletes) == 0 {
+		return ""
+	}
+	commands := make([]string, len(req.RecursiveDeletes))
+	unresolved := false
+	for i, d := range req.RecursiveDeletes {
+		commands[i] = d.Command
+		unresolved = unresolved || d.Unresolved
+	}
+	note := "\n\n⚠️ **Removes recursively**, as the shell will run it:\n\n" +
+		fencedPromptCodeBlock(strings.Join(commands, "\n"))
+	if unresolved {
+		note += "\n\nWords left as written are only known when it runs."
+	}
+	return note
 }
 
 // commandScopeNote tells the user which files a command runs, so that a

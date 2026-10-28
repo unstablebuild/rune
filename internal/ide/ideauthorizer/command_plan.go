@@ -22,6 +22,7 @@ import (
 	"slices"
 	"strings"
 
+	"mvdan.cc/sh/v3/expand"
 	"mvdan.cc/sh/v3/syntax"
 )
 
@@ -33,6 +34,9 @@ const maxScriptDepth = 8
 type shellWord struct {
 	text string
 	lit  bool
+	// word is the word in the script the shell expands, or nil when there
+	// is none or what it expands to is not known until the command runs.
+	word *syntax.Word
 }
 
 func literalWords(texts []string) []shellWord {
@@ -113,7 +117,15 @@ type commandPlan struct {
 	// it runs some program, so names relative to the directory are not
 	// known.
 	DirChanged bool
+	// Deletes are the recursive deletions the command runs, of those the
+	// authorizer follows.
+	Deletes []RecursiveDelete
 }
+
+// envLookup looks a variable up in the environment a command starts with.
+// set reports that the variable is set, and known that its value can be
+// told before the command runs.
+type envLookup func(name string) (value string, set, known bool)
 
 type planner struct {
 	plan  commandPlan
@@ -129,6 +141,20 @@ type planner struct {
 	// firstStmt is the statement of the script being planned whose
 	// program runs first, or nil.
 	firstStmt *syntax.Stmt
+	// env is the environment the command starts with, or nil when it is
+	// not known.
+	env envLookup
+	// vars are the variables the script being planned set before the
+	// statement being planned. A nil value is not known until it runs.
+	vars map[string]*string
+	// straight are the statements of the script being planned that run
+	// one after another, whose assignments vars follows.
+	straight map[*syntax.Stmt]bool
+	// cmdEnv names the variables the command being planned gets in its
+	// environment on top of those the script exports.
+	cmdEnv []string
+	// nodes enclose the node of the scripts being planned that is visited.
+	nodes []syntax.Node
 }
 
 type callContext struct {
@@ -146,9 +172,10 @@ type callContext struct {
 }
 
 // planCommand returns the programs the command path args runs. env holds
-// the variables the command sets to values other than the IDE's own.
-func planCommand(path string, args []string, env []string) commandPlan {
-	p := &planner{funcs: map[string]bool{}}
+// the variables the command sets to values other than the IDE's own, and
+// hostEnv, which may be nil, looks up those it starts with.
+func planCommand(path string, args []string, env []string, hostEnv envLookup) commandPlan {
+	p := &planner{funcs: map[string]bool{}, env: hostEnv, vars: map[string]*string{}}
 	if path == "" {
 		p.opaque("it runs the login shell")
 		return p.plan
@@ -225,6 +252,7 @@ func (p *planner) expand(words []shellWord, c callContext) {
 	}
 	spec, ok := lookupProgramSpec(name)
 	if !ok || (spec.builtin && c.shell < 0) {
+		p.recursiveDelete(name, args, c)
 		p.add(p.invocation(name, args, c))
 		return
 	}
@@ -355,6 +383,7 @@ func (p *planner) checkName(text string) {
 		p.opaque("it sets a variable that is not known until it runs")
 		return
 	}
+	p.forget(n)
 	if dangerousEnv(n) {
 		p.opaque("it sets " + n)
 	}
@@ -396,6 +425,7 @@ func (p *planner) skipAssignments(base string, rest []shellWord) []shellWord {
 			p.opaque("it sets " + n)
 			return nil
 		}
+		p.cmdEnv = append(p.cmdEnv, n)
 		rest = rest[1:]
 	}
 	return rest
@@ -484,7 +514,7 @@ func (p *planner) embed(base string, cmd []shellWord, placeholders []string, fou
 		p.expand(cmd, c)
 		return
 	}
-	probe := &planner{funcs: p.funcs, depth: p.depth, dir: p.dir}
+	probe := &planner{funcs: p.funcs, depth: p.depth, dir: p.dir, vars: map[string]*string{}}
 	probe.expand(cmd, c)
 	if probe.plan.Opaque {
 		p.opaque(probe.plan.Reason)
@@ -529,6 +559,7 @@ func (p *planner) escalating(name string, args []shellWord, spec programSpec, c 
 		return
 	}
 	if rest[0].lit {
+		p.recursiveDelete(rest[0].text, rest[1:], callContext{shell: -1})
 		p.bound(rest[0].text, rest[1:], callContext{shell: -1})
 	}
 }
@@ -650,14 +681,29 @@ func (p *planner) script(src string, lang syntax.LangVariant, shell int, first b
 		return
 	}
 	outer, outerFirst := p.funcs, p.firstStmt
+	outerVars, outerStraight := p.vars, p.straight
 	p.funcs = map[string]bool{}
 	p.firstStmt = nil
 	if first && len(file.Stmts) > 0 && runsFirst(file.Stmts[0]) {
 		p.firstStmt = file.Stmts[0]
 	}
+	// A shell gets the variables of the script that starts it only when
+	// they are exported, which vars does not follow.
+	p.vars = map[string]*string{}
+	for n := range outerVars {
+		p.vars[n] = nil
+	}
+	for _, n := range p.cmdEnv {
+		p.vars[n] = nil
+	}
+	p.straight = map[*syntax.Stmt]bool{}
+	for _, s := range file.Stmts {
+		p.straight[s] = !s.Background && !s.Coprocess
+	}
 	p.depth++
 	defer func() {
 		p.funcs, p.firstStmt = outer, outerFirst
+		p.vars, p.straight = outerVars, outerStraight
 		p.depth--
 	}()
 	syntax.Walk(file, func(n syntax.Node) bool {
@@ -667,14 +713,23 @@ func (p *planner) script(src string, lang syntax.LangVariant, shell int, first b
 		return true
 	})
 	syntax.Walk(file, func(n syntax.Node) bool {
+		if n == nil {
+			p.nodes = p.nodes[:len(p.nodes)-1]
+			return true
+		}
 		p.visit(n, shell)
-		return !p.plan.Opaque
+		if p.plan.Opaque {
+			return false
+		}
+		p.nodes = append(p.nodes, n)
+		return true
 	})
 }
 
 func (p *planner) visit(n syntax.Node, shell int) {
 	switch n := n.(type) {
 	case *syntax.Stmt:
+		p.assign(n)
 		call, ok := n.Cmd.(*syntax.CallExpr)
 		if !ok || len(call.Args) == 0 {
 			return
@@ -683,7 +738,14 @@ func (p *planner) visit(n syntax.Node, shell int) {
 		for i, w := range call.Args {
 			words[i] = wordOf(w)
 		}
+		p.cmdEnv = p.cmdEnv[:0]
+		for _, a := range call.Assigns {
+			if a.Name != nil {
+				p.cmdEnv = append(p.cmdEnv, a.Name.Value)
+			}
+		}
 		p.expand(words, callContext{shell: shell, first: n == p.firstStmt})
+		p.cmdEnv = p.cmdEnv[:0]
 	case *syntax.Assign:
 		if n.Name != nil && dangerousEnv(n.Name.Value) {
 			p.opaque("it sets " + n.Name.Value)
@@ -707,6 +769,9 @@ func (p *planner) visit(n syntax.Node, shell int) {
 			}
 		}
 	case *syntax.WordIter:
+		if n.Name != nil {
+			p.forget(n.Name.Value)
+		}
 		if n.Name != nil && dangerousEnv(n.Name.Value) {
 			p.opaque("it sets " + n.Name.Value)
 		}
@@ -768,9 +833,11 @@ func runsFirst(s *syntax.Stmt) bool {
 func withPlaceholders(words []shellWord, placeholders []string) []shellWord {
 	ret := slices.Clone(words)
 	for i, w := range ret {
-		ret[i].lit = w.lit && !slices.ContainsFunc(placeholders, func(ph string) bool {
+		if slices.ContainsFunc(placeholders, func(ph string) bool {
 			return strings.Contains(w.text, ph)
-		})
+		}) {
+			ret[i].lit, ret[i].word = false, nil
+		}
 	}
 	return ret
 }
@@ -816,13 +883,13 @@ func wordOf(w *syntax.Word) shellWord {
 		}
 	}
 	if lit {
-		return shellWord{text: b.String(), lit: true}
+		return shellWord{text: b.String(), lit: true, word: w}
 	}
 	var src strings.Builder
 	if err := syntax.NewPrinter().Print(&src, w); err != nil {
 		return shellWord{text: "?"}
 	}
-	return shellWord{text: src.String()}
+	return shellWord{text: src.String(), word: w}
 }
 
 // unquotedLiteral removes the backslashes of an unquoted literal, and
@@ -884,3 +951,177 @@ func doubleQuotedLiteral(v string) string {
 	}
 	return b.String()
 }
+
+// assign follows the variables the statement s of a script sets.
+func (p *planner) assign(s *syntax.Stmt) {
+	var assigns []*syntax.Assign
+	switch c := s.Cmd.(type) {
+	case *syntax.CallExpr:
+		// Assignments before a program are its environment only.
+		if len(c.Args) == 0 {
+			assigns = c.Assigns
+		}
+	case *syntax.DeclClause:
+		assigns = c.Args
+	}
+	for _, a := range assigns {
+		if a.Name == nil || a.Naked {
+			continue
+		}
+		p.forget(a.Name.Value)
+		if !p.straight[s] || a.Append || a.Index != nil || a.Array != nil {
+			continue
+		}
+		v := ""
+		if a.Value != nil {
+			env := newScriptEnv(p, a.Value)
+			var err error
+			if v, err = expand.Literal(&expand.Config{Env: env}, a.Value); err != nil || env.missed {
+				continue
+			}
+		}
+		p.vars[a.Name.Value] = &v
+	}
+}
+
+// forget records that the variable name is not known until the command
+// runs.
+func (p *planner) forget(name string) {
+	if p.vars == nil {
+		p.vars = map[string]*string{}
+	}
+	p.vars[name] = nil
+}
+
+// inFunc reports whether the node visited is in a function, which runs
+// when it is called rather than where it is declared.
+func (p *planner) inFunc() bool {
+	return slices.ContainsFunc(p.nodes, func(n syntax.Node) bool {
+		_, ok := n.(*syntax.FuncDecl)
+		return ok
+	})
+}
+
+// recursiveDelete adds the command name args to the plan when it deletes
+// directories, with the words the authorizer can tell expanded.
+func (p *planner) recursiveDelete(name string, args []shellWord, c callContext) {
+	if filepath.Base(name) != "rm" || !recursiveRM(args) {
+		return
+	}
+	var d RecursiveDelete
+	fields := []string{name}
+	for _, w := range args {
+		f, ok := p.fields(w)
+		if !ok {
+			d.Unresolved = true
+			fields = append(fields, w.text)
+			continue
+		}
+		for _, s := range f {
+			fields = append(fields, displayField(s))
+		}
+	}
+	if c.appended && !d.Unresolved {
+		d.Unresolved = true
+		fields = append(fields, "…")
+	}
+	d.Command = strings.Join(fields, " ")
+	p.plan.Deletes = append(p.plan.Deletes, d)
+}
+
+// recursiveRM reports whether the arguments of rm make it delete
+// directories.
+func recursiveRM(args []shellWord) bool {
+	for _, w := range args {
+		switch {
+		case !w.lit:
+		case w.text == "--":
+			return false
+		case w.text == "--recursive":
+			return true
+		case strings.HasPrefix(w.text, "--"):
+		case strings.HasPrefix(w.text, "-") && strings.ContainsAny(w.text[1:], "rR"):
+			return true
+		}
+	}
+	return false
+}
+
+// fields returns the arguments w expands to, and false when they are not
+// known until the command runs. Globs are left unexpanded.
+func (p *planner) fields(w shellWord) ([]string, bool) {
+	if w.word == nil {
+		return []string{w.text}, w.lit
+	}
+	env := newScriptEnv(p, w.word)
+	f, err := expand.Fields(&expand.Config{Env: env}, w.word)
+	if err != nil || env.missed {
+		return nil, false
+	}
+	return f, true
+}
+
+// displayField quotes s when a shell would read it as more or less than
+// one word, leaving globs as they are.
+func displayField(s string) string {
+	if s != "" && !strings.ContainsAny(s, " \t\n'\"\\$`;&|<>()") {
+		return s
+	}
+	q, err := syntax.Quote(s, syntax.LangBash)
+	if err != nil {
+		return s
+	}
+	return q
+}
+
+// scriptEnv is what the planner expands the words of scripts with: the
+// variables the script set, then those the command starts with. missed
+// reports that the expansion read one that is not known until it runs.
+type scriptEnv struct {
+	p *planner
+	// refs are the variables the word expands, as opposed to those every
+	// expansion reads.
+	refs   map[string]bool
+	missed bool
+}
+
+func newScriptEnv(p *planner, w *syntax.Word) *scriptEnv {
+	e := &scriptEnv{p: p, refs: map[string]bool{}}
+	syntax.Walk(w, func(n syntax.Node) bool {
+		if pe, ok := n.(*syntax.ParamExp); ok && pe.Param != nil {
+			e.refs[pe.Param.Value] = true
+		}
+		return true
+	})
+	return e
+}
+
+func (e *scriptEnv) Get(name string) expand.Variable {
+	if e.p.inFunc() || !syntax.ValidName(name) {
+		e.missed = true
+		return expand.Variable{}
+	}
+	if v, ok := e.p.vars[name]; ok {
+		if v == nil {
+			e.missed = true
+			return expand.Variable{}
+		}
+		return expand.Variable{Set: true, Kind: expand.String, Str: *v}
+	}
+	if (name == "IFS" || name == "PWD") && !e.refs[name] {
+		return expand.Variable{}
+	}
+	// The shell sets PWD to its own directory, not the IDE's.
+	if e.p.env == nil || name == "PWD" {
+		e.missed = true
+		return expand.Variable{}
+	}
+	v, set, known := e.p.env(name)
+	e.missed = e.missed || !known
+	if !set {
+		return expand.Variable{}
+	}
+	return expand.Variable{Set: true, Exported: true, Kind: expand.String, Str: v}
+}
+
+func (e *scriptEnv) Each(func(name string, vr expand.Variable) bool) {}

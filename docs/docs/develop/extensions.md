@@ -119,6 +119,12 @@ the workspace host: the shell, any wrappers such as `env`, `timeout` or
 `/bin/bash`, `/usr/bin/git`, `/usr/bin/make`. A program you did not expect,
 such as `/home/you/project/git`, stands out there.
 
+When the command runs `rm -r`, the prompt shows each such `rm` under
+**Removes recursively** as the shell will run it, with the variables it can
+tell expanded: the ones the script sets before the `rm`, and those of the
+workspace host, such as `$RUNE_DATADIR`. Words it cannot tell, such as
+`$(pwd)`, are left as written.
+
 Choosing **Always** or **Never** opens a picker of the commands the decision
 can cover, from the whole program down to this exact invocation, each nested
 under the broader command that covers it. A `*` stands for any further

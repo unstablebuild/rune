@@ -82,6 +82,20 @@ type PermissionRequest struct {
 	// command when CommandRemember is RememberNothing, or is "" when
 	// Programs tell already.
 	CommandOnceReason string
+	// RecursiveDeletes are the rm commands that delete directories which
+	// the command runs, as far as Rune can follow it.
+	RecursiveDeletes []RecursiveDelete
+}
+
+// RecursiveDelete is an rm a command runs that deletes directories.
+type RecursiveDelete struct {
+	// Command is the rm as the shell runs it: the words whose value Rune
+	// can tell are expanded, quoted where a shell would need it, and the
+	// others are as written.
+	Command string
+	// Unresolved reports that some words of Command are only known when
+	// it runs.
+	Unresolved bool
 }
 
 // CommandRemember is what deciding for good on a command does, which
@@ -201,6 +215,11 @@ type Config struct {
 	// Notifications, when set, tells the user of the command approvals
 	// saved by older versions of Rune that were forgotten.
 	Notifications browserapi.Notifications
+	// DataDir is the Rune data directory of the workspace host, which
+	// shells there expand $RUNE_DATADIR to. When empty, it is taken from
+	// the IDE's environment for a workspace on this machine and not known
+	// for others.
+	DataDir string
 }
 
 // NewAuthorizer returns an Authorizer that satisfies both the workspace
@@ -437,6 +456,7 @@ func (a *Authorizer) AuthorizeCommand(
 	req.Programs = c.programSummaries()
 	req.CommandRemember = c.remember()
 	req.CommandOnceReason = c.plan.Reason
+	req.RecursiveDeletes = c.recursiveDeletes()
 	run := func(ctx context.Context) (PermissionDecision, error) {
 		return a.approveCommand(ctx, c, req, identity, perm)
 	}

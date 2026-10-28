@@ -334,8 +334,101 @@ func TestPlanCommand(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			plan := planCommand(tc.cmd[0], tc.cmd[1:], tc.env)
+			plan := planCommand(tc.cmd[0], tc.cmd[1:], tc.env, nil)
 			assert.Equal(t, tc.want, describePlan(plan))
+		})
+	}
+}
+
+func TestPlanCommandRecursiveDeletes(t *testing.T) {
+	t.Parallel()
+
+	bash := func(script string) []string { return []string{"/bin/bash", "-c", script} }
+	local := func(name string) (string, bool, bool) {
+		v, ok := map[string]string{"RUNE_DATADIR": "/home/me/.rune", "HOME": "/home/me"}[name]
+		return v, ok, true
+	}
+	remote := func(name string) (string, bool, bool) {
+		if name == "RUNE_DATADIR" {
+			return "/remote/.rune", true, true
+		}
+		return "", false, false
+	}
+	const unresolved = " (unresolved)"
+	cases := []struct {
+		name string
+		cmd  []string
+		env  envLookup
+		want []string
+	}{
+		{name: "the script sets the variable first",
+			cmd:  bash(`export RUNE_DATADIR=/tmp/rs-test; rm -rf $RUNE_DATADIR`),
+			want: []string{"rm -rf /tmp/rs-test"}},
+		{name: "the variable of the host",
+			cmd:  bash(`rm -rf "$RUNE_DATADIR"`),
+			want: []string{"rm -rf /home/me/.rune"}},
+		{name: "an unset variable expands to nothing",
+			cmd:  bash(`rm -rf "$BUILD_DIR/"`),
+			want: []string{"rm -rf /"}},
+		{name: "a tilde", cmd: bash(`rm -r ~/x`), want: []string{"rm -r /home/me/x"}},
+		{name: "options after operands", cmd: bash(`rm x -R`), want: []string{"rm x -R"}},
+		{name: "long option", cmd: bash(`rm --recursive x`), want: []string{"rm --recursive x"}},
+		{name: "not recursive", cmd: bash(`rm -f x; rm -- -r`)},
+		{name: "quoted when the shell would need it", cmd: bash(`rm -rf "/tmp/a b" ''`),
+			want: []string{`rm -rf '/tmp/a b' ''`}},
+		{name: "an assignment only for the command does not apply to its words",
+			cmd: bash(`D=/a rm -rf /x$D`), want: []string{"rm -rf /x"}},
+		{name: "an assignment that may not run",
+			cmd:  bash(`D=/a; test -n "$X" && D=/b; rm -rf $D`),
+			want: []string{"rm -rf $D" + unresolved}},
+		{name: "a command substitution",
+			cmd:  bash(`rm -rf "$(pwd)/x"`),
+			want: []string{`rm -rf "$(pwd)/x"` + unresolved}},
+		{name: "a variable a command substitution sets",
+			cmd:  bash(`D=$(mktemp -d); rm -rf $D`),
+			want: []string{"rm -rf $D" + unresolved}},
+		{name: "a loop variable",
+			cmd:  bash(`for d in a b; do rm -rf "$d"; done`),
+			want: []string{`rm -rf "$d"` + unresolved}},
+		{name: "a function runs after the assignments that follow it",
+			cmd:  bash(`f() { rm -rf $D; }; D=/a; f`),
+			want: []string{"rm -rf $D" + unresolved}},
+		{name: "a nested shell sees only what is exported",
+			cmd:  bash(`D=/a; bash -c 'rm -rf "$D"'`),
+			want: []string{`rm -rf "$D"` + unresolved}},
+		{name: "behind a wrapper", cmd: []string{"sudo", "rm", "-rf", "/x"},
+			want: []string{"rm -rf /x"}},
+		{name: "what find finds",
+			cmd:  bash(`find . -name build -exec rm -rf {} +`),
+			want: []string{"rm -rf {}" + unresolved}},
+		{name: "the directory of the shell", cmd: bash(`rm -rf "$PWD/x"`),
+			want: []string{`rm -rf "$PWD/x"` + unresolved}},
+		{name: "what xargs reads",
+			cmd:  bash(`xargs rm -r < list`),
+			want: []string{"rm -r …" + unresolved}},
+		{name: "remote host data dir", env: remote,
+			cmd:  bash(`rm -rf $RUNE_DATADIR/cache`),
+			want: []string{"rm -rf /remote/.rune/cache"}},
+		{name: "remote host variable", env: remote,
+			cmd:  bash(`rm -rf $HOME/x`),
+			want: []string{"rm -rf $HOME/x" + unresolved}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			env := tc.env
+			if env == nil {
+				env = local
+			}
+			plan := planCommand(tc.cmd[0], tc.cmd[1:], nil, env)
+			var got []string
+			for _, d := range plan.Deletes {
+				if d.Unresolved {
+					d.Command += unresolved
+				}
+				got = append(got, d.Command)
+			}
+			assert.Equal(t, tc.want, got)
 		})
 	}
 }
@@ -343,7 +436,7 @@ func TestPlanCommand(t *testing.T) {
 func TestPlanCommandBenchmarkComparisonScript(t *testing.T) {
 	t.Parallel()
 
-	plan := planCommand("/bin/bash", []string{"-c", benchmarkComparisonScript}, nil)
+	plan := planCommand("/bin/bash", []string{"-c", benchmarkComparisonScript}, nil, nil)
 	got := describePlan(plan)
 	require.Len(t, got, 5, got)
 	assert.Equal(t, "~/bin/bash", got[0])
@@ -377,7 +470,7 @@ func TestPlanCommandDirChanged(t *testing.T) {
 		{cmd: []string{"fd", "--base-directory=x", "-x", "./run"}, wantDir: fdDir},
 	}
 	for _, tc := range cases {
-		plan := planCommand(tc.cmd[0], tc.cmd[1:], nil)
+		plan := planCommand(tc.cmd[0], tc.cmd[1:], nil, nil)
 		require.False(t, plan.Opaque, tc.cmd)
 		assert.Equal(t, tc.wantChanged, plan.DirChanged, tc.cmd)
 		assert.Equal(t, tc.wantDir, plan.Programs[len(plan.Programs)-1].Dir, tc.cmd)
@@ -411,7 +504,7 @@ func TestPlanCommandFirst(t *testing.T) {
 		{cmd: []string{"nice", "tool"}, want: []string{"nice"}},
 	}
 	for _, tc := range cases {
-		plan := planCommand(tc.cmd[0], tc.cmd[1:], nil)
+		plan := planCommand(tc.cmd[0], tc.cmd[1:], nil, nil)
 		require.False(t, plan.Opaque, tc.cmd)
 		var got []string
 		for _, inv := range plan.Programs {
