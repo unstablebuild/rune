@@ -53,7 +53,7 @@ for a specific one. The main groups:
 | `runectl syntax ...` | Tree-sitter searches and structural queries across the workspace. |
 | `runectl storage ...` | Create, read, update, and delete extension documents. |
 | `runectl llm ...` | Talk to the workspace's model router. |
-| `runectl search ...` | Search the workspace's files through its index, by regular expression. |
+| `runectl search ...` | Search the workspace's files through its indexes, by regular expression or by meaning. |
 | `runectl mcp` | Start an MCP server over stdio exposing Rune's syntax and LSP tools. |
 | `runectl status <state> [message]` | Report program status to the terminal (OSC 7501): `idle`, `working`, `done`, `blocked`, `error`, or `clear`. |
 | `runectl status wrap -- <cmd> [args...]` | Run any command and report its progress and outcome to the terminal, with no changes to the command. |
@@ -231,6 +231,32 @@ them or a folder that holds them, as in ripgrep:
 ```
 runectl search regexp -r .github runs-on
 ```
+
+**Find code by what it does.** `search semantic` takes every argument as the
+query, so it needs no quoting, and ranks the workspace's files by meaning
+as well as words. Each result prints like a grep match, `path:line:`,
+followed by its score, how far it stands out by meaning (z), and the line
+it opens at:
+
+```
+runectl search semantic --root internal --limit 5 where is the retry backoff computed
+```
+
+```
+internal/retry/backoff.go:42:   3.14  2.50  func parseRetryBackoff(spec string) (time.Duration, error) {
+internal/retry/policy.go:18:    1.20  0.00  first, factor, _ := parseRetryBackoff(p.Spec)
+```
+
+A Go template shapes the output. `{{.Text}}` is the line as written, so
+this prints exactly what `grep -n` would. Run from Rune's command prompt,
+it lists the results in the `searchtext` finder, ready to filter and open:
+
+```
+searchtext runectl search semantic -F '{{.Path}}:{{.Line}}:{{.Text}}' retry backoff
+```
+
+`--meaning=false` ranks by words alone, and `--prefix-last` also matches
+the last word as a prefix, for search-as-you-type front ends.
 
 **Turn diagnostics into a commit gate.** Count workspace errors and fail
 a pre-commit hook if any remain:

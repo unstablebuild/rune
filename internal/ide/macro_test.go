@@ -525,6 +525,8 @@ command:
   key: ":"
   key_bindings:
     qq: record q
+search:
+  enabled: false
 `), 0666))
 	return name
 }

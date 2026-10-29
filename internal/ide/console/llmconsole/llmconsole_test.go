@@ -37,17 +37,23 @@ import (
 	"unstable.build/rune/internal/llm"
 	"unstable.build/rune/internal/llm/llamacpp"
 	"unstable.build/rune/internal/llm/llmrouter"
+	"unstable.build/rune/internal/llm/llmsearch"
 )
 
-// newRouterForTest constructs a router with the default llm.Config and a
-// fresh temp directory for the local registry.
+// newRouterForTest constructs a router with the default llm.Config, a
+// fresh local registry and a search service with the fake embedder.
 func newRouterForTest(t *testing.T) *llmrouter.Router {
 	t.Helper()
-	r, err := llmrouter.New(llm.DefaultConfig(), t.TempDir(),
-		storagestub.NewInMemoryService(), fakeLocalBackend{})
-	require.NoError(t, err)
+	reg := newRegistryForTest(t)
+	search := llmsearch.New(llmsearch.DefaultConfig(), llmsearch.NewFakeEmbedderFactory(), reg, nopCloser{})
+	r := llmrouter.New(llm.DefaultConfig(), reg, storagestub.NewInMemoryService(), fakeLocalBackend{}, search)
+	t.Cleanup(func() { _ = r.Close() })
 	return r
 }
+
+type nopCloser struct{}
+
+func (nopCloser) Close() error { return nil }
 
 // fakeLocalBackend is a no-op llmapi.Service stand-in for the local
 // (llama-server) backend the router now requires at construction.

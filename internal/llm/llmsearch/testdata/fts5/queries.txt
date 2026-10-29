@@ -1,0 +1,49 @@
+"payment" OR "error"
+"retry" OR "backoff"
+"running"
+"run"*
+"runn"*
+"running"*
+"cat"
+"cat"*
+"grok"*
+"grok"
+"gr"*
+"quantize row q8 0 ref"
+"quantize row q8 0"
+"quantize"
+"q8"*
+"data data"
+"data" OR "pipeline"
+"কুমির"*
+"কুমিরও"
+"কলকাতা"*
+"المكتبة"
+"مدرسة"*
+"الاردن"
+"4815162342"
+"k7q2lm"
+"cafe"
+"café"
+"strasse"
+"straße"
+"σίσυφος"
+"москва"
+"istanbul"
+"file"
+"abc"
+"日本語のテキスト"
+"llmsearch"
+"llmsearch" OR "snippet"
+"the"
+"the" OR "line"
+"snippet" OR "highlight" OR "window"
+"parseretrybackoff"
+"codelookup definition"
+"definition"*
+"stretch" OR "line"*
+"zzzz"
+"bm25" OR "fts5bm25function"
+"sleeping" OR "sofa"
+"words" OR "reader" OR "wrote"
+"pneumonoultramicroscopicsilicovolcanoconiosis"

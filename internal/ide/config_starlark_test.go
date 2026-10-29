@@ -39,6 +39,7 @@ import (
 	"unstable.build/rune/internal/handler"
 	"unstable.build/rune/internal/ide/idepreset"
 	"unstable.build/rune/internal/ide/idestatus"
+	"unstable.build/rune/internal/llm/llmsearch"
 	"unstable.build/rune/internal/sounds"
 	"unstable.build/rune/internal/workspace"
 )
@@ -590,8 +591,11 @@ func TestRuneStarSearchConfig(t *testing.T) {
 	assert.False(t, nested, "search is a top-level block, not models.search")
 
 	c := ideConfig{cfg: cfg, errors: map[string]error{}}
-	assert.True(t, c.workspaceSearch())
-	assert.Empty(t, c.searchExcludedFolders())
+	got := c.searchConfig()
+	assert.Empty(t, got.Options.ExcludedFolders)
+	assert.Empty(t, got.Options.ExcludedExtensions)
+	got.Options.ExcludedFolders, got.Options.ExcludedExtensions = nil, nil
+	assert.Equal(t, llmsearch.DefaultConfig(), got)
 	assert.Empty(t, c.errors)
 }
 

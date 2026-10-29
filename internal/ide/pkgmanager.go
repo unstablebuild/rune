@@ -34,6 +34,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/handler"
 	sdkiterator "github.com/unstablebuild/rune-go-sdk/iterator"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"golang.org/x/mod/semver"
 	"unstable.build/rune/auth"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/ide/idelsp"
@@ -42,6 +43,7 @@ import (
 	"unstable.build/rune/internal/ide/idepkg/multipkg"
 	"unstable.build/rune/internal/ide/idepkg/pkgrpc"
 	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
+	"unstable.build/rune/internal/llm/llamaserver"
 	"unstable.build/rune/internal/text"
 )
 
@@ -242,6 +244,47 @@ func (m *pkgManager) installLatest(
 		return nil, fmt.Errorf("install latest version: %w", err)
 	}
 	return m.pm.LibDir(ctx, pkgID)
+}
+
+// Install installs the latest version of pkgID, reporting progress in a
+// notification. The user asking for it undoes an earlier refusal to
+// install it when a tool needed it.
+func (m *pkgManager) Install(ctx context.Context, pkgID string) error {
+	version, err := m.getLatestVersion(ctx, pkgID)
+	if err != nil {
+		return fmt.Errorf("latest version of %s: %w", pkgID, err)
+	}
+	it, err := m.installLatest(ctx, pkgID, version)
+	if err != nil {
+		return err
+	}
+	m.declined.Delete(pkgID)
+	return it.Close()
+}
+
+// llamaServerPackage is the llama-server that local models run on, as
+// semanticsearch.Server.
+type llamaServerPackage struct {
+	pkgs *pkgManager
+	// path is the llama-server the user configured, if they did: it
+	// needs no installing, and keeping it up to date is up to them.
+	path string
+}
+
+func (p llamaServerPackage) Installed(ctx context.Context) (installed, outdated bool, err error) {
+	if p.path != "" {
+		return true, false, nil
+	}
+	version, ok, err := p.pkgs.pm.PackageVersionInUse(ctx, llamaserver.PackageID)
+	if err != nil || !ok {
+		return false, false, err
+	}
+	v := string(version)
+	return true, semver.IsValid(v) && semver.Compare(v, llamaserver.MinPackageVersion) < 0, nil
+}
+
+func (p llamaServerPackage) Install(ctx context.Context) error {
+	return p.pkgs.Install(ctx, llamaserver.PackageID)
 }
 
 func (m *pkgManager) getLatestVersion(

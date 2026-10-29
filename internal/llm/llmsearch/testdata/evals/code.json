@@ -1,0 +1,18 @@
+{
+ "base": "internal/llm/llmsearch",
+ "queries": [
+  {"q": "code: where is the bm25 score computed", "expect": ["keyword.go"], "tag": "code"},
+  {"q": "code: porter stemmer step 1b", "expect": ["porter.go"], "tag": "code"},
+  {"q": "code: cut code into stretches of whole lines", "expect": ["code.go"], "tag": "code"},
+  {"q": "code: convert a float32 to half precision", "expect": ["vectors.go"], "tag": "code"},
+  {"q": "code: put the cosine similarities of a query on their own scale", "expect": ["vectors.go"], "tag": "code"},
+  {"q": "code: never read files that hold passwords or private keys", "expect": ["rules.go"], "tag": "code"},
+  {"q": "code: read the cells of a jupyter notebook", "expect": ["code.go"], "tag": "code"},
+  {"q": "code: remove diacritics from letters before indexing", "expect": ["tokenizer.go", "unicode61_tables.go"], "tag": "code"},
+  {"q": "code: reserve ids in blocks so a crash never hands one out twice", "expect": ["store.go"], "tag": "code"},
+  {"q": "code: notice a file that was moved by its inode", "expect": ["indexer.go"], "tag": "code"},
+  {"q": "code: termFrequencies", "expect": ["keyword.go"], "focus": "func termFrequencies", "tag": "code-name"},
+  {"q": "code: classifyCode", "expect": ["rules.go"], "focus": "func classifyCode", "tag": "code-name"},
+  {"q": "code: snippet", "expect": ["keyword.go", "searchtext.go"], "tag": "code-name"}
+ ]
+}

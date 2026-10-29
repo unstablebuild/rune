@@ -15,11 +15,12 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 // Package llmconsole exposes the `models` REPL command tree on the rune
-// (IDE) side. The shell wraps an llmrouter.Router and surfaces two
+// (IDE) side. The shell wraps an llmrouter.Router and surfaces these
 // sub-commands:
 //
 //   - models providers — inspect provider authentication (codex login/status today)
 //   - models local — manage the local llama.cpp model cache
+//   - models alias — manage named model aliases
 //
 // The agent loop continues to expose its own `agent` shell from
 // rune-agent until migration; this shell is intentionally narrower.
@@ -163,7 +164,8 @@ var commandManual = textapi.CommandManual{
 				"and can be used anywhere a model is accepted, including the " +
 				"model name you pass when opening a chat. An unset alias " +
 				"falls back to `default`; an unset `default` resolves to " +
-				"the latest authenticated provider's flagship model.",
+				"the latest authenticated provider's flagship model, and an " +
+				"unset `search` to the local embedding model.",
 			Synopsis: "(list|set|remove) [<args>]",
 			Commands: []textapi.CommandManual{
 				{Name: "list", Summary: "List aliases and the models they resolve to."},

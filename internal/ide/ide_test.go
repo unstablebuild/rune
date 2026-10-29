@@ -75,6 +75,7 @@ import (
 	"unstable.build/rune/internal/ide/syntax/grammarfixture"
 	"unstable.build/rune/internal/ide/syntax/symboldb"
 	"unstable.build/rune/internal/ide/vctrl"
+	"unstable.build/rune/internal/llm/llmsearch"
 	"unstable.build/rune/internal/localstorage"
 	"unstable.build/rune/internal/sounds"
 	"unstable.build/rune/internal/term/vte"
@@ -2537,8 +2538,12 @@ func TestWorkspaceSearchIndexing(t *testing.T) {
 
 			mu.Lock()
 			wh := i.workspaceHandler.workspaces[i.workspaceHandler.focus]
+			router := i.workspaceHandler.llmRouter
+			home := i.workspaceHandler.homeURI
 			mu.Unlock()
 			require.NotNil(t, wh)
+			_, homeIndexed := router.SearchService().Index(home)
+			assert.False(t, homeIndexed, "the home workspace is never indexed")
 
 			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 			defer cancel()
@@ -2554,11 +2559,28 @@ func TestWorkspaceSearchIndexing(t *testing.T) {
 				Path: "invoice.go", Line: 4, Text: "func InvoiceTotal() {}", Spans: [][2]int{{0, 17}},
 			}}, lines, "searchregex works with or without an index")
 
+			idx, ok := wh.searchIndexCloser.(*llmsearch.Index)
+			require.Equal(t, tt.indexed, ok)
+			if !tt.indexed {
+				assert.Nil(t, wh.searchIndexCloser)
+				return
+			}
+
+			require.NoError(t, idx.Wait(ctx))
+			it, err := router.SemanticSearch(ctx, wh.uri, searchapi.SemanticRequest{Query: "invoice sales tax"})
+			require.NoError(t, err)
+			hits, err := sdkiterator.ToSlice(ctx, it)
+			require.NoError(t, err)
+			require.NotEmpty(t, hits)
+			assert.Equal(t, "invoice.go", hits[0].Path)
+
 			mu.Lock()
 			_, _, err = i.workspaceHandler.closeWorkspace()
 			mu.Unlock()
 			require.NoError(t, err)
 			i.workspaceHandler.waitClosing()
+			_, open := router.SearchService().Index(wh.uri)
+			assert.False(t, open, "closing the workspace closes its index")
 			_, err = wh.regexIndex.RegexpSearch(ctx, searchapi.RegexpRequest{Pattern: "x"})
 			assert.Error(t, err, "closing the workspace closes its regex index")
 		})

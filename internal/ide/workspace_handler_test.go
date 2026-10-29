@@ -7751,6 +7751,9 @@ func defaultCfg() ideConfig {
 		"notifications": map[string]any{
 			"progress_bar": false,
 		},
+		// keep goldens deterministic: indexing runs in the background and
+		// posts its progress whenever it gets to it.
+		"search": map[string]any{"enabled": false},
 	},
 		configPath: "not-empty",
 		sounds:     sounds.Silent,

@@ -37,6 +37,9 @@ const (
 	defaultMaxServers     = 1
 	defaultStartupTimeout = 120 * time.Second
 	defaultHost           = "127.0.0.1"
+	// defaultEmbeddingCtx is the context (and physical batch) of an
+	// embedding server when neither the config nor the entry sets one.
+	defaultEmbeddingCtx = 2048
 )
 
 // Config carries the server tunables sourced from `models.local.*` plus the
@@ -134,8 +137,12 @@ func (c Config) withDefaults() Config {
 // modelPath and projectorPath come from the resolved ModelEntry;
 // contextWindow overrides c.ContextWindow when non-zero so per-model context
 // windows from the registry take effect. host and port bind the server.
+// embedding starts a mean-pooling encoder instead of a chat server: the
+// generation flags are meaningless there and are left out, and the batch
+// sizes equal the context because llama-server rejects an embedding input
+// larger than one physical batch.
 func (c Config) serverArgs(
-	modelPath, projectorPath string, contextWindow uint32, host string, port int,
+	modelPath, projectorPath string, contextWindow uint32, embedding bool, host string, port int,
 ) []string {
 	args := []string{
 		"--model", modelPath,
@@ -149,10 +156,16 @@ func (c Config) serverArgs(
 	if contextWindow != 0 {
 		ctxSize = contextWindow
 	}
+	if embedding && ctxSize == 0 {
+		ctxSize = defaultEmbeddingCtx
+	}
 	if ctxSize != 0 {
 		args = append(args, "--ctx-size", strconv.FormatUint(uint64(ctxSize), 10))
 	}
-	if c.BatchSize != 0 {
+	if embedding {
+		n := strconv.FormatUint(uint64(ctxSize), 10)
+		args = append(args, "--embedding", "--pooling", "mean", "--batch-size", n, "--ubatch-size", n)
+	} else if c.BatchSize != 0 {
 		args = append(args, "--batch-size", strconv.FormatUint(uint64(c.BatchSize), 10))
 	}
 	// llama-server takes "all layers" as any sufficiently large count;
@@ -167,6 +180,9 @@ func (c Config) serverArgs(
 	}
 	if c.FlashAttention {
 		args = append(args, "--flash-attn")
+	}
+	if embedding {
+		return append(args, c.ExtraArgs...)
 	}
 	if c.MaxOutputTokens > 0 {
 		args = append(args, "--predict", strconv.Itoa(c.MaxOutputTokens))

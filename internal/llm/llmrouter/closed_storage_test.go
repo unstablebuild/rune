@@ -43,12 +43,9 @@ func TestGetModel_PropagatesClosedStorageError(t *testing.T) {
 	cfg := llm.DefaultConfig()
 	cfg.Gemini.APIKey = "test-key"
 	cfg.Gemini.BaseURL = "http://127.0.0.1:1"
-	r, err := New(cfg, t.TempDir(),
-		closedRootStorage{Service: storagestub.NewInMemoryService()},
-		&fakeLocalService{})
-	require.NoError(t, err)
+	r := newRouter(t, cfg, closedRootStorage{Service: storagestub.NewInMemoryService()}, &fakeLocalService{})
 
-	_, err = r.GetModel(context.Background(), llmapi.ModelEntry{Name: llmapi.DefaultModel})
+	_, err := r.GetModel(context.Background(), llmapi.ModelEntry{Name: llmapi.DefaultModel})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "Partition on closed Service",
 		"a closed host alias-store must surface to GetModel so the agent's "+

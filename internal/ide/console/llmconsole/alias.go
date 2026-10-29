@@ -31,9 +31,9 @@ import (
 )
 
 // reservedAliasNames are the alias names the router recognizes even when
-// unset (an unset alias other than `default` resolves to `default`).
-// They are always shown by `models alias list`.
-var reservedAliasNames = []string{llmapi.DefaultModel, "query", "compact", "dream"}
+// unset (an unset alias other than `default` and `search` resolves to
+// `default`). They are always shown by `models alias list`.
+var reservedAliasNames = []string{llmapi.DefaultModel, "query", "compact", "dream", llmrouter.SearchAlias}
 
 type aliasHandler struct {
 	router *llmrouter.Router

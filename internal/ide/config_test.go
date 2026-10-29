@@ -56,6 +56,7 @@ import (
 	"unstable.build/rune/internal/ide/idestatus"
 	"unstable.build/rune/internal/ide/plugin"
 	"unstable.build/rune/internal/ide/syntax"
+	"unstable.build/rune/internal/llm/llmsearch"
 	"unstable.build/rune/internal/sounds"
 	"unstable.build/rune/internal/term/programstatus"
 	"unstable.build/rune/internal/term/vte"
@@ -3831,15 +3832,61 @@ func TestMetaOpenURLConfig(t *testing.T) {
 func TestSearchConfig(t *testing.T) {
 	defaults := ideConfig{cfg: map[string]any{}, errors: map[string]error{}}
 	assert.True(t, defaults.workspaceSearch(), "search is on by default")
-	assert.Empty(t, defaults.searchExcludedFolders())
+	assert.Equal(t, llmsearch.DefaultConfig(), defaults.searchConfig())
 
 	c := ideConfig{cfg: map[string]any{
 		"search": map[string]any{
-			"enabled":          false,
-			"excluded_folders": []any{"fixtures", "third_party/big"},
+			"enabled":             false,
+			"model":               "huggingface.co/acme/encoder-GGUF:Q4_K_M",
+			"code_stretch":        900,
+			"excluded_folders":    []any{"fixtures", "third_party/big"},
+			"excluded_extensions": []any{"sql", "csv"},
+			"idle_timeout":        "45s",
 		},
 	}, errors: map[string]error{}}
+
+	got := c.searchConfig()
+	want := llmsearch.DefaultOptions()
+	want.CodeStretch = 900
+	want.ExcludedFolders = []string{"fixtures", "third_party/big"}
+	want.ExcludedExtensions = []string{"sql", "csv"}
+	want.IdleTimeout = 45 * time.Second
+	assert.Equal(t, llmsearch.Config{
+		Enabled: false,
+		Model:   "huggingface.co/acme/encoder-GGUF:Q4_K_M",
+		Options: want,
+	}, got)
 	assert.False(t, c.workspaceSearch())
-	assert.Equal(t, []string{"fixtures", "third_party/big"}, c.searchExcludedFolders())
 	assert.Empty(t, c.errors)
+
+	empty := ideConfig{cfg: map[string]any{
+		"search": map[string]any{"idle_timeout": ""},
+	}, errors: map[string]error{}}
+	assert.Equal(t, llmsearch.DefaultOptions().IdleTimeout, empty.searchConfig().Options.IdleTimeout,
+		"an empty idle_timeout keeps the built-in default")
+}
+
+func TestSearchConfigInvalidKeepsDefaults(t *testing.T) {
+	tests := []struct {
+		name   string
+		search map[string]any
+		key    string
+	}{
+		{"no model", map[string]any{"model": ""}, "search.model"},
+		{"empty stretches", map[string]any{"code_stretch": 0}, "search.code_stretch"},
+		{"negative stretches", map[string]any{"code_stretch": -5}, "search.code_stretch"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := ideConfig{cfg: map[string]any{"search": tt.search}, errors: map[string]error{}}
+			assert.Equal(t, llmsearch.DefaultConfig(), c.searchConfig())
+			assert.Contains(t, c.errors, tt.key)
+		})
+	}
+
+	off := ideConfig{cfg: map[string]any{
+		"search": map[string]any{"enabled": false, "model": ""},
+	}, errors: map[string]error{}}
+	assert.Empty(t, off.searchConfig().Model, "a disabled search needs no model")
+	assert.Empty(t, off.errors)
 }

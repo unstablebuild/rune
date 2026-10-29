@@ -86,10 +86,10 @@ func ValidateConfig(cfg Config) error {
 				"none|minimal|low|medium|high|xhigh|max|ultra",
 			cfg.Bedrock.ReasoningEffort)
 	}
-	// llmrouter.New mints a llamacpp.Registry whose root must not be
-	// empty. The router falls back to filepath.Join(dataDir, "models")
-	// when ModelsCacheDir is empty, so the only failure case here is
-	// a non-absolute user override.
+	// The IDE mints a llamacpp.Registry whose root must not be empty.
+	// It falls back to the models folder of its data directory when
+	// ModelsCacheDir is empty, so the only failure case here is a
+	// non-absolute user override.
 	if cfg.Local.ModelsCacheDir != "" && !filepath.IsAbs(cfg.Local.ModelsCacheDir) {
 		return fmt.Errorf(
 			"models.local.models_cache_dir: %q must be an absolute path",

@@ -18,13 +18,17 @@ package ide
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path"
 	"path/filepath"
 	"strings"
 
 	"github.com/unstablebuild/rune-go-sdk/api/searchapi"
+	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
+	"unstable.build/rune/internal/llm/llmrouter"
+	"unstable.build/rune/internal/llm/llmsearch"
 )
 
 // regexpSearcher searches a workspace's files for a regular expression,
@@ -45,24 +49,29 @@ func (noRegexpSearch) RegexpSearch(context.Context, searchapi.RegexpRequest) (
 }
 
 // workspaceSearcher implements searchapi.Searcher for one workspace:
-// regexp searches through its trigram index. It keeps no index to
-// search by meaning.
+// regexp searches through its trigram index, semantic ones through the
+// router's index of it.
 type workspaceSearcher struct {
+	// root is the workspace, as its indexes know it.
+	root workspaceapi.URI
 	// dir is the workspace's folder on its host, which absolute roots
 	// must be in.
 	dir    string
 	regexp regexpSearcher
+	router *llmrouter.Router
 }
 
 var _ searchapi.Searcher = (*workspaceSearcher)(nil)
 
-// newWorkspaceSearcher returns the searcher of the workspace whose folder
-// on its host is dir. Every argument is required.
-func newWorkspaceSearcher(dir string, regexp regexpSearcher) *workspaceSearcher {
-	if dir == "" || regexp == nil {
-		panic("newWorkspaceSearcher: dir and regexp are required")
+// newWorkspaceSearcher returns the searcher of the workspace root, whose
+// folder on its host is dir. Every argument is required.
+func newWorkspaceSearcher(
+	root workspaceapi.URI, dir string, regexp regexpSearcher, router *llmrouter.Router,
+) *workspaceSearcher {
+	if dir == "" || regexp == nil || router == nil {
+		panic("newWorkspaceSearcher: dir, regexp and router are required")
 	}
-	return &workspaceSearcher{dir: dir, regexp: regexp}
+	return &workspaceSearcher{root: root, dir: dir, regexp: regexp, router: router}
 }
 
 // RegexpSearch implements searchapi.Searcher.
@@ -77,12 +86,22 @@ func (s *workspaceSearcher) RegexpSearch(
 	return s.regexp.RegexpSearch(ctx, req)
 }
 
-// SemanticSearch implements searchapi.Searcher. The workspace has no
-// index to search by meaning, so it supports none.
+// SemanticSearch implements searchapi.Searcher. A workspace without an
+// open index supports none: the error wraps both searchapi.ErrUnsupported
+// and llmsearch.ErrNoIndex.
 func (s *workspaceSearcher) SemanticSearch(
-	context.Context, searchapi.SemanticRequest,
+	ctx context.Context, req searchapi.SemanticRequest,
 ) (iterator.Iterator[searchapi.SemanticResult], error) {
-	return nil, fmt.Errorf("this workspace has no semantic search index: %w", searchapi.ErrUnsupported)
+	roots, err := s.relRoots(req.Roots)
+	if err != nil {
+		return nil, err
+	}
+	req.Roots = roots
+	it, err := s.router.SemanticSearch(ctx, s.root, req)
+	if errors.Is(err, llmsearch.ErrNoIndex) {
+		return nil, fmt.Errorf("%w: %w", searchapi.ErrUnsupported, err)
+	}
+	return it, err
 }
 
 // relRoots returns roots relative to the workspace, slash-separated. A

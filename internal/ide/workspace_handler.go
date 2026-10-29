@@ -73,6 +73,7 @@ import (
 	"unstable.build/rune/internal/ide/console/llmconsole"
 	"unstable.build/rune/internal/ide/console/lspconsole"
 	"unstable.build/rune/internal/ide/console/pkgconsole"
+	"unstable.build/rune/internal/ide/console/searchconsole"
 	"unstable.build/rune/internal/ide/hostenv"
 	"unstable.build/rune/internal/ide/ideauthorizer"
 	"unstable.build/rune/internal/ide/idecursor"
@@ -89,12 +90,15 @@ import (
 	"unstable.build/rune/internal/ide/idestatus"
 	"unstable.build/rune/internal/ide/idetask"
 	"unstable.build/rune/internal/ide/regexsearch"
+	"unstable.build/rune/internal/ide/semanticsearch"
 	"unstable.build/rune/internal/ide/syntax/symboldb"
 	"unstable.build/rune/internal/ide/syntax/treesitter"
 	"unstable.build/rune/internal/ide/vctrl"
 	"unstable.build/rune/internal/ide/vctrl/gogit"
+	"unstable.build/rune/internal/llm/llamacpp"
 	"unstable.build/rune/internal/llm/llamaserver"
 	"unstable.build/rune/internal/llm/llmrouter"
+	"unstable.build/rune/internal/llm/llmsearch"
 	"unstable.build/rune/internal/localstorage"
 	"unstable.build/rune/internal/term/programstatus"
 	"unstable.build/rune/internal/term/vte/vtereservoir"
@@ -730,12 +734,22 @@ func (h *workspaceManagerHandler) init(
 	h.homeURI = homeDirUri
 	h.homeWorkspace = homeWorkspace
 	h.setReleaseManager(releaseManager)
-	// Construct the llama-server backend and router here, after
-	// setReleaseManager has installed h.pkgmanager and h.notifications is
-	// set. The backend takes three stable, non-nil IDE-scoped handles; the
-	// "server not installed" state lives inside the locator, never in a nil
-	// dependency.
+	// Construct the llama-server pools, search service and router here,
+	// after setReleaseManager has installed h.pkgmanager and
+	// h.notifications is set. Each pool takes stable, non-nil IDE-scoped
+	// handles; the "server not installed" state lives inside the locator,
+	// never in a nil dependency. Chat and embedding models run in separate
+	// pools so a search never evicts the chat model.
 	llmCfg := cfg.llmConfig()
+	searchCfg := cfg.searchConfig()
+	cacheDir := llmCfg.Local.ModelsCacheDir
+	if cacheDir == "" {
+		cacheDir = filepath.Join(sixDir, "models")
+	}
+	registry, err := llamacpp.NewRegistry(cacheDir)
+	if err != nil {
+		return fmt.Errorf("init local model registry: %w", err)
+	}
 	h.localExecutor, err = newExtensionsExecutor()
 	if err != nil {
 		return fmt.Errorf("init local models executor: %w", err)
@@ -746,11 +760,15 @@ func (h *workspaceManagerHandler) init(
 		h.localServerLocator(llmCfg.Local.Service),
 		h.notifications.current(),
 	)
-	router, err := llmrouter.New(llmCfg, sixDir, h.storage, localBackend)
-	if err != nil {
-		return fmt.Errorf("init llm router: %w", err)
-	}
-	h.llmRouter = router
+	embedBackend := llamaserver.New(
+		llmCfg.Local.EmbeddingService(searchCfg.Options.IdleTimeout),
+		h.localExecutor,
+		h.localServerLocator(llmCfg.Local.Service),
+		h.notifications.current(),
+	)
+	searchSvc := llmsearch.New(searchCfg,
+		llmsearch.NewLlamaEmbedderFactory(embedBackend), registry, embedBackend)
+	h.llmRouter = llmrouter.New(llmCfg, registry, h.storage, localBackend, searchSvc)
 	h.events.setFocus(h.homeURI)
 
 	// don't install a fs watcher for the home workspace,
@@ -938,6 +956,7 @@ func (h *workspaceManagerHandler) initScavenger(ctx context.Context) {
 		return
 	}
 	cleaner.AddWorkspaceHook(symboldb.CleanupWorkspaceHook(h.ideStorage))
+	cleaner.AddWorkspaceHook(llmsearch.CleanupWorkspaceHook(h.ideStorage))
 	cleaner.AddWorkspaceHook(codesearch.CleanupWorkspaceHook(h.codesearchDir()))
 	cleaner.AddWorkspaceHook(h.state.ClearWorkspaceState)
 	h.scavenger = cleaner
@@ -1920,6 +1939,7 @@ type builtWorkspace struct {
 	runner              extension.Runner
 	cursorHistoryCloser io.Closer
 	symbolDBCloser      io.Closer
+	searchIndexCloser   io.Closer
 	regexIndex          *codesearch.Index
 	notice              *idenotice.Crier
 	lspManager          *idelsp.Manager
@@ -2045,6 +2065,7 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 		return nil, fmt.Errorf("install cursor history: %w", err)
 	}
 	tm.tm = ex.Browser()
+	searchIndexCloser := h.openSearchIndex(cfg, ex, uri, cwd)
 	regexIndex := h.openRegexIndex(cfg, ex, uri, cwd)
 	h.subscribeSearchRegex(ex, uri, regexIndex, wsParser, apibrowser)
 
@@ -2052,6 +2073,7 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 		vctrlService:        vctrlService,
 		cursorHistoryCloser: cursorHistoryCloser,
 		symbolDBCloser:      symbolDBCloser,
+		searchIndexCloser:   searchIndexCloser,
 		regexIndex:          regexIndex,
 		cancelCtx:           pending.cancelCtx,
 		uri:                 uri,
@@ -2068,6 +2090,9 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 		_ = cursorHistoryCloser.Close()
 		if symbolDBCloser != nil {
 			_ = symbolDBCloser.Close()
+		}
+		if searchIndexCloser != nil {
+			_ = searchIndexCloser.Close()
 		}
 		_ = regexIndex.Close()
 		_, _ = h.notifications.current().Notify(browserapi.LevelError,
@@ -2103,6 +2128,7 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 		runner:              runner,
 		cursorHistoryCloser: cursorHistoryCloser,
 		symbolDBCloser:      symbolDBCloser,
+		searchIndexCloser:   searchIndexCloser,
 		regexIndex:          regexIndex,
 		lspManager:          lspManager,
 		dapManager:          dapManager,
@@ -2117,6 +2143,35 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 	return built, nil
 }
 
+// openSearchIndex opens the code search index of the workspace uri and
+// feeds it the workspace's editor events. It returns nil when search is
+// disabled or the index cannot open: the workspace then works without
+// search.
+func (h *workspaceManagerHandler) openSearchIndex(
+	cfg ideConfig, ex *ex, uri workspaceapi.URI, cwd workspace.Workspace,
+) io.Closer {
+	if !cfg.workspaceSearch() {
+		return nil
+	}
+	idx, err := h.llmRouter.SearchService().OpenIndex(llmsearch.IndexConfig{
+		Root: uri,
+		FS:   cwd,
+		DB: storageapi.WithPartition(
+			storageapi.WithPartition(h.ideStorage, llmsearch.PartitionName), uri.String()),
+		Notify:   h.notifications.current(),
+		Schedule: h.scheduleNextTick,
+		Options:  cfg.searchConfig().Options,
+	})
+	if err != nil {
+		h.empty.log(log.ErrorLevel, "search index for workspace %q: %v", uri.Path(), err)
+		return nil
+	}
+	if err := ex.comp.SubscribeEvents(llmsearch.EditorEvents(), idx); err != nil {
+		log.Errorf("subscribe search index events for %s: %v", uri.String(), err)
+	}
+	return idx
+}
+
 // codesearchDir is where the trigram indexes of the workspaces persist.
 func (h *workspaceManagerHandler) codesearchDir() string {
 	return filepath.Join(h.sixDir, "codesearch")
@@ -2128,11 +2183,12 @@ func (h *workspaceManagerHandler) codesearchDir() string {
 func (h *workspaceManagerHandler) openRegexIndex(
 	cfg ideConfig, ex *ex, uri workspaceapi.URI, cwd workspace.Workspace,
 ) *codesearch.Index {
+	searchCfg := cfg.searchConfig()
 	icfg := codesearch.Config{
-		Root: uri, FS: cwd, ExcludedFolders: cfg.searchExcludedFolders(),
+		Root: uri, FS: cwd, ExcludedFolders: searchCfg.Options.ExcludedFolders,
 		Notify: h.notifications.current(), Schedule: h.scheduleNextTick,
 	}
-	if !cfg.workspaceSearch() {
+	if !searchCfg.Enabled {
 		return codesearch.Open(icfg)
 	}
 	icfg.File = codesearch.IndexFile(h.codesearchDir(), uri)
@@ -2398,6 +2454,9 @@ func (h *workspaceManagerHandler) discardBuiltWorkspace(built *builtWorkspace) {
 	if built.symbolDBCloser != nil {
 		_ = built.symbolDBCloser.Close()
 	}
+	if built.searchIndexCloser != nil {
+		_ = built.searchIndexCloser.Close()
+	}
 	if built.regexIndex != nil {
 		_ = built.regexIndex.Close()
 	}
@@ -2516,7 +2575,7 @@ func (h *workspaceManagerHandler) buildExtensions(
 	if err != nil {
 		return nil, nil, nil, nil, nil, fmt.Errorf("resolve workspace root: %w", err)
 	}
-	searcher := newWorkspaceSearcher(rootURI.Path(), regexp)
+	searcher := newWorkspaceSearcher(uri, rootURI.Path(), regexp, h.llmRouter)
 	callbacks := idelsp.NewCallbackHandler(notifications, apibrowser, ex.Browser(),
 		apieditor, cwd, rootURI.String(), lspCallbackCfg)
 	lspConfig := idelsp.Config{
@@ -2629,6 +2688,43 @@ func (h *workspaceManagerHandler) buildExtensions(
 	})
 	if err := ex.editorObserver.RegisterREPLCommand(llmconsole.Manual(), llmHandler); err != nil {
 		log.Errorf("register llm repl command: %v", err)
+	}
+	if err := ex.editorObserver.RegisterREPLCommand(searchconsole.Manual(), searchconsole.New(searchconsole.Config{
+		Searcher: searcher,
+		Search:   h.llmRouter.SearchService(),
+		Root:     uri,
+	})); err != nil {
+		log.Errorf("register search repl command: %v", err)
+	}
+	// The home workspace has no search index; markHome tells the user to
+	// open a workspace instead.
+	if !ex.home {
+		searchHandler := semanticsearch.New(semanticsearch.Config{
+			Root:     uri,
+			Searcher: searcher,
+			Search:   h.llmRouter.SearchService(),
+			Models:   h.llmRouter.LocalRegistry(),
+			// llama-server runs locally whatever the workspace host:
+			// see the locator the router was built with.
+			Server: llamaServerPackage{
+				pkgs: h.pkgmanager.pkgManager,
+				path: cfg.llmConfig().Local.Service.ServerBinPath,
+			},
+			Clients: finder.Clients{
+				ResourceOpener: apibrowser,
+				WindowManager:  apibrowser,
+				Interrupter:    apibrowser,
+				Notifications:  notifications,
+				Editor:         apieditor,
+				FileSystem:     ex.workspace,
+			},
+			Parser:           parser,
+			Prompt:           &ex.comp,
+			ScheduleNextTick: cfg.scheduleNextTick,
+		})
+		if err := ex.editorObserver.SubscribeCommand(semanticsearch.Manual(), searchHandler); err != nil {
+			log.Errorf("subscribe %s command: %v", semanticsearch.Name, err)
+		}
 	}
 
 	// Register the top-level `pkg` REPL command for package management.
@@ -3480,6 +3576,7 @@ type workspaceHandler struct {
 	vctrlService        vctrl.Service
 	cursorHistoryCloser io.Closer
 	symbolDBCloser      io.Closer
+	searchIndexCloser   io.Closer
 	regexIndex          *codesearch.Index
 	cancelCtx           func()
 	uri                 workspaceapi.URI
@@ -3519,6 +3616,11 @@ func (hm *workspaceHandler) Close() error {
 		}
 		if hm.symbolDBCloser != nil {
 			if err := hm.symbolDBCloser.Close(); err != nil {
+				ret = multierror.Append(ret, err)
+			}
+		}
+		if hm.searchIndexCloser != nil {
+			if err := hm.searchIndexCloser.Close(); err != nil {
 				ret = multierror.Append(ret, err)
 			}
 		}

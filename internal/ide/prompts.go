@@ -32,6 +32,7 @@ import (
 	"unstable.build/rune/internal/ide/idehistory"
 	"unstable.build/rune/internal/ide/idetask"
 	"unstable.build/rune/internal/ide/regexsearch"
+	"unstable.build/rune/internal/ide/semanticsearch"
 	"unstable.build/rune/internal/workspace"
 )
 
@@ -529,7 +530,7 @@ func (e *ex) markHome() {
 	for _, cmd := range []string{
 		"chateffort", "chatmaxtokens", "chatskill", "chatmodel",
 		"chatclear", "chatcompact", "chatfork", "chatexport", "chatlog",
-		regexsearch.Name,
+		semanticsearch.Name, regexsearch.Name,
 	} {
 		e.config.CommandFallbacks[cmd] = e
 	}

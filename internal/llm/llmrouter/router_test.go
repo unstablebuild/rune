@@ -18,12 +18,16 @@ package llmrouter
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -31,13 +35,23 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
+	"github.com/unstablebuild/rune-go-sdk/api/searchapi"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
+	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
+	"unstable.build/rune/internal/ide/idepkg/idepkgtest"
 	"unstable.build/rune/internal/llm"
 	"unstable.build/rune/internal/llm/bedrock"
 	"unstable.build/rune/internal/llm/codex"
 	"unstable.build/rune/internal/llm/gemini"
+	"unstable.build/rune/internal/llm/llamacpp"
+	"unstable.build/rune/internal/llm/llamacpp/ociregistry"
+	"unstable.build/rune/internal/llm/llmsearch"
+	"unstable.build/rune/internal/llm/openai"
+	"unstable.build/rune/internal/workspace"
 )
 
 func TestMain(m *testing.M) {
@@ -59,8 +73,90 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// newTestRouter constructs a router with sensible defaults rooted in
-// a fresh temp directory.
+const searchModel = "huggingface.co/ggml-org/embeddinggemma-2-GGUF:Q8_0"
+
+type closerFunc func() error
+
+func (f closerFunc) Close() error { return f() }
+
+func newSearchService(t *testing.T, reg *llamacpp.Registry, closer closerFunc) *llmsearch.Service {
+	t.Helper()
+	return llmsearch.New(
+		llmsearch.Config{Enabled: true, Model: searchModel, Options: llmsearch.DefaultOptions()},
+		llmsearch.NewFakeEmbedderFactory(), reg, closer)
+}
+
+// newRouter builds a router over an empty model registry, with a search
+// service that embeds searchModel with the fake embedder.
+func newRouter(t *testing.T, cfg llm.Config, storage storageapi.Service, local llmapi.Service) *Router {
+	t.Helper()
+	reg, err := llamacpp.NewRegistry(t.TempDir())
+	require.NoError(t, err)
+	return New(cfg, reg, storage, local, newSearchService(t, reg, func() error { return nil }))
+}
+
+// seedLocalModel writes a manifest and a weight blob for name, as a
+// download would.
+func seedLocalModel(t *testing.T, reg *llamacpp.Registry, name string) {
+	t.Helper()
+	ref, err := llamacpp.ParseReference(name)
+	require.NoError(t, err)
+	body := []byte("gguf " + name)
+	sum := sha256.Sum256(body)
+	blobs := filepath.Join(reg.Root(), "blobs")
+	require.NoError(t, os.MkdirAll(blobs, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(blobs, "sha256-"+hex.EncodeToString(sum[:])), body, 0o644))
+	manifest, err := json.Marshal(ociregistry.Manifest{
+		SchemaVersion: 2,
+		MediaType:     ociregistry.MediaTypeDockerManifestV2,
+		Layers: []ociregistry.Descriptor{{
+			MediaType: ociregistry.MediaTypeOllamaModel,
+			Digest:    "sha256:" + hex.EncodeToString(sum[:]),
+			Size:      int64(len(body)),
+		}},
+	})
+	require.NoError(t, err)
+	dir := filepath.Join(reg.Root(), "manifests", ref.Host, filepath.FromSlash(ref.Repository))
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ref.Tag), manifest, 0o644))
+}
+
+// openSearchIndex opens r's index of a workspace holding two Go files and
+// waits for it to be built.
+func openSearchIndex(t *testing.T, r *Router) (workspaceapi.URI, *idepkgtest.Notifications) {
+	t.Helper()
+	dir := t.TempDir()
+	for name, content := range map[string]string{
+		"billing/invoice.go": "package billing\n\n// InvoiceTotal sums the invoice lines and the sales tax.\nfunc InvoiceTotal() {}\n",
+		"geo/route.go":       "package geo\n\n// ShortestRoute walks the map between two cities.\nfunc ShortestRoute() {}\n",
+	} {
+		p := filepath.Join(dir, filepath.FromSlash(name))
+		require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755))
+		require.NoError(t, os.WriteFile(p, []byte(content), 0o644))
+	}
+	root, err := workspaceapi.CurrentUserHostURI(dir)
+	require.NoError(t, err)
+	fsys, err := workspace.NewFileScheme(context.Background(), config.NopConfig(), root)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = fsys.Close() })
+	notify := idepkgtest.NewNotifications(t)
+	idx, err := r.SearchService().OpenIndex(llmsearch.IndexConfig{
+		Root:     root,
+		FS:       fsys,
+		DB:       storagestub.NewInMemoryService(),
+		Notify:   notify,
+		Schedule: func(fn func()) bool { fn(); return true },
+		Options:  llmsearch.DefaultOptions(),
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = idx.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	require.NoError(t, idx.Wait(ctx))
+	return root, notify
+}
+
+// newTestRouter constructs a router with sensible defaults.
 func newTestRouter(t *testing.T) *Router {
 	t.Helper()
 	cfg := llm.DefaultConfig()
@@ -70,9 +166,7 @@ func newTestRouter(t *testing.T) *Router {
 	// the environment.
 	cfg.Gemini.APIKey = "test-key"
 	cfg.Gemini.BaseURL = "http://127.0.0.1:1"
-	r, err := New(cfg, t.TempDir(), storagestub.NewInMemoryService(), &fakeLocalService{})
-	require.NoError(t, err)
-	return r
+	return newRouter(t, cfg, storagestub.NewInMemoryService(), &fakeLocalService{})
 }
 
 // newTestRouterWithLocal is newTestRouter but also returns the injected
@@ -83,8 +177,7 @@ func newTestRouterWithLocal(t *testing.T) (*Router, *fakeLocalService) {
 	cfg.Gemini.APIKey = "test-key"
 	cfg.Gemini.BaseURL = "http://127.0.0.1:1"
 	local := &fakeLocalService{}
-	r, err := New(cfg, t.TempDir(), storagestub.NewInMemoryService(), local)
-	require.NoError(t, err)
+	r := newRouter(t, cfg, storagestub.NewInMemoryService(), local)
 	return r, local
 }
 
@@ -329,8 +422,7 @@ func TestRouter_CustomCatalogSurfacesEntries(t *testing.T) {
 			"my-model": 8192,
 		},
 	}
-	r, err := New(cfg, t.TempDir(), storagestub.NewInMemoryService(), &fakeLocalService{})
-	require.NoError(t, err)
+	r := newRouter(t, cfg, storagestub.NewInMemoryService(), &fakeLocalService{})
 
 	got, err := r.GetModel(context.Background(),
 		llmapi.ModelEntry{Provider: ProviderCustom, Name: "my-model"})
@@ -384,8 +476,7 @@ func TestRouter_Models_IncludesBedrock(t *testing.T) {
 func TestRouter_ResolveBedrock_EmptyKeyUsesCredentialChain(t *testing.T) {
 	ctx := context.Background()
 	cfg := llm.DefaultConfig()
-	r, err := New(cfg, t.TempDir(), storagestub.NewInMemoryService(), &fakeLocalService{})
-	require.NoError(t, err)
+	r := newRouter(t, cfg, storagestub.NewInMemoryService(), &fakeLocalService{})
 
 	svc, err := r.resolveBedrock(ctx)
 	require.NoError(t, err)
@@ -472,8 +563,7 @@ func TestRouter_Models_GeminiErrorDoesNotTruncate(t *testing.T) {
 func TestRouter_Models_GeminiStaticWithoutKey(t *testing.T) {
 	cfg := llm.DefaultConfig()
 	cfg.Gemini.APIKey = ""
-	r, err := New(cfg, t.TempDir(), storagestub.NewInMemoryService(), &fakeLocalService{})
-	require.NoError(t, err)
+	r := newRouter(t, cfg, storagestub.NewInMemoryService(), &fakeLocalService{})
 
 	ctx := context.Background()
 	it := r.Models()
@@ -531,9 +621,8 @@ func TestRouter_GetModel_ClaudeDisambiguates(t *testing.T) {
 }
 
 func TestRouter_ResolveClaude_NotLoggedIn(t *testing.T) {
-	r, err := New(llm.DefaultConfig(), t.TempDir(), storagestub.NewInMemoryService(), &fakeLocalService{})
-	require.NoError(t, err)
-	_, err = r.resolveClaude(context.Background())
+	r := newRouter(t, llm.DefaultConfig(), storagestub.NewInMemoryService(), &fakeLocalService{})
+	_, err := r.resolveClaude(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no claude credential found")
 	assert.Contains(t, err.Error(), "models providers claude login")
@@ -551,8 +640,7 @@ func TestRouter_ResolveHosted_StorageWinsOverConfig(t *testing.T) {
 	cfg := llm.DefaultConfig()
 	cfg.OpenAI.APIKey = "config-key"
 	storage := storagestub.NewInMemoryService()
-	r, err := New(cfg, t.TempDir(), storage, &fakeLocalService{})
-	require.NoError(t, err)
+	r := newRouter(t, cfg, storage, &fakeLocalService{})
 	require.NoError(t, r.AddProviderKey(ctx, ProviderOpenAI, "work", "storage-key", ""))
 
 	svc, err := r.resolveOpenAI(ctx)
@@ -571,8 +659,7 @@ func TestRouter_ResolveHosted_FallsBackToConfig(t *testing.T) {
 	ctx := context.Background()
 	cfg := llm.DefaultConfig()
 	cfg.Anthropic.APIKey = "config-key"
-	r, err := New(cfg, t.TempDir(), storagestub.NewInMemoryService(), &fakeLocalService{})
-	require.NoError(t, err)
+	r := newRouter(t, cfg, storagestub.NewInMemoryService(), &fakeLocalService{})
 
 	svc, err := r.resolveAnthropic(ctx)
 	require.NoError(t, err)
@@ -589,10 +676,9 @@ func TestRouter_ResolveHosted_ErrorWhenUnset(t *testing.T) {
 	cfg.OpenAI.APIKey = ""
 	cfg.Anthropic.APIKey = ""
 	cfg.Gemini.APIKey = ""
-	r, err := New(cfg, t.TempDir(), storagestub.NewInMemoryService(), &fakeLocalService{})
-	require.NoError(t, err)
+	r := newRouter(t, cfg, storagestub.NewInMemoryService(), &fakeLocalService{})
 
-	_, err = r.resolveOpenAI(ctx)
+	_, err := r.resolveOpenAI(ctx)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openai api key not configured")
 
@@ -752,6 +838,86 @@ func TestRouterClose_Idempotent(t *testing.T) {
 	require.NoError(t, r.Close())
 	require.NoError(t, r.Close())
 	assert.Equal(t, int32(1), local.closes.Load())
+}
+
+func TestRouterClose_ClosesSearch(t *testing.T) {
+	reg, err := llamacpp.NewRegistry(t.TempDir())
+	require.NoError(t, err)
+	errStuck := errors.New("embedding server did not stop")
+	var closes atomic.Int32
+	search := newSearchService(t, reg, func() error { closes.Add(1); return errStuck })
+	local := &fakeLocalService{}
+	r := New(llm.DefaultConfig(), reg, storagestub.NewInMemoryService(), local, search)
+	require.Same(t, search, r.SearchService())
+	root, _ := openSearchIndex(t, r)
+
+	require.ErrorIs(t, r.Close(), errStuck)
+	require.NoError(t, r.Close())
+	assert.Equal(t, int32(1), closes.Load())
+	assert.Equal(t, int32(1), local.closes.Load(), "a failed search close must still close the local backend")
+	_, open := search.Index(root)
+	assert.False(t, open, "closing the router closes the open indexes")
+}
+
+func TestRouterSemanticSearch(t *testing.T) {
+	const hint = "models local download ggml-org/embeddinggemma-2-GGUF:Q8_0"
+	tests := []struct {
+		name       string
+		downloaded bool
+		model      llmapi.ModelEntry
+		meaning    bool
+	}{
+		{"no model before it is downloaded answers by words", false, llmapi.ModelEntry{}, false},
+		{"no model is the search alias", true, llmapi.ModelEntry{}, true},
+		{"search alias before the model is downloaded answers by words", false, llmapi.ModelEntry{Name: SearchAlias}, false},
+		{"search alias with the model downloaded answers by meaning", true, llmapi.ModelEntry{Name: SearchAlias}, true},
+		{"qualified local model", true, llmapi.ModelEntry{Name: searchModel, Provider: ProviderLocal}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			r := newTestRouter(t)
+			t.Cleanup(func() { _ = r.Close() })
+			if tt.downloaded {
+				seedLocalModel(t, r.LocalRegistry(), searchModel)
+			}
+			root, notify := openSearchIndex(t, r)
+
+			it, err := r.SemanticSearch(ctx, root,
+				searchapi.SemanticRequest{Query: "invoice sales tax", Model: tt.model, Meaning: true})
+			require.NoError(t, err)
+			hits, err := iterator.ToSlice(ctx, it)
+			require.NoError(t, err)
+			require.NotEmpty(t, hits)
+			assert.Equal(t, "billing/invoice.go", hits[0].Path)
+			assert.Equal(t, tt.meaning, hits[0].Cosine != 0, "cosine %v", hits[0].Cosine)
+
+			var hinted bool
+			for _, n := range notify.Active() {
+				hinted = hinted || strings.Contains(n.Msg, hint)
+			}
+			assert.Equal(t, !tt.downloaded, hinted, "%v", notify.Active())
+		})
+	}
+}
+
+func TestRouterSemanticSearch_Errors(t *testing.T) {
+	ctx := context.Background()
+	r := newTestRouter(t)
+	t.Cleanup(func() { _ = r.Close() })
+	root, _ := openSearchIndex(t, r)
+
+	_, err := r.SemanticSearch(ctx, root, searchapi.SemanticRequest{
+		Query: "invoice", Model: llmapi.ModelEntry{Name: openai.GPT5Dot5, Provider: ProviderOpenAI},
+	})
+	assert.ErrorIs(t, err, searchapi.ErrUnsupported, "a hosted model cannot search")
+
+	_, err = r.SemanticSearch(ctx, workspaceapi.Join(root, "elsewhere"), searchapi.SemanticRequest{Query: "invoice"})
+	assert.ErrorIs(t, err, llmsearch.ErrNoIndex)
+
+	require.NoError(t, r.Close())
+	_, err = r.SemanticSearch(ctx, root, searchapi.SemanticRequest{Query: "invoice"})
+	assert.ErrorIs(t, err, ErrRouterClosed)
 }
 
 func TestRouterResolveLocal_RejectsAfterClose(t *testing.T) {

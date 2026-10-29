@@ -225,6 +225,9 @@ Which model the agent uses for each kind of work is controlled by named
 - `query`: the model `?` uses for quick questions.
 - `compact`: the model used to compact (summarize) long conversations.
 - `dream`: the model used for memory consolidation.
+- `search`: the local embedding model
+  [workspace search](./local-models.md#workspace-search) encodes queries
+  with.
 
 An alias is just a name that resolves to a real model, and it works
 anywhere a model is accepted. You manage aliases with the `models alias`
@@ -262,6 +265,10 @@ model. Set the others only when you want them to differ.
 provider you most recently signed in to**. So once you authenticate a
 provider (see [Providers](./providers.md)), every alias works out of the
 box, and signing in to a newer provider moves them over automatically.
+
+`search` is the exception: it never falls back to `default`, because
+searching needs an embedding model. Unset, it resolves to the
+`search.model` setting.
 Set an alias explicitly whenever you want to pin a specific model
 instead.
 

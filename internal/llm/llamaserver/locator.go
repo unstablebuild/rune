@@ -24,9 +24,14 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/iterator"
 )
 
-// serverPackageID is the package identifier under which the llama-server
-// binary is installed (`pkg install llama-server`).
-const serverPackageID = "llama-server"
+// PackageID is the package the llama-server binary is installed from
+// (`pkg install llama-server`).
+const PackageID = "llama-server"
+
+// MinPackageVersion is the oldest version of PackageID that runs every
+// model Rune downloads: it ships llama.cpp b11972, and the search
+// model's gemma-embedding2 architecture needs b11452 or later.
+const MinPackageVersion = "v0.0.4"
 
 // serverBinaryName is the executable name shipped by the llama-server
 // package.
@@ -83,7 +88,7 @@ func NewPkgLocator(pkg pkgLibDirLister) BinaryLocator {
 }
 
 func (l *pkgLocator) Locate(ctx context.Context) (string, error) {
-	it, err := l.pkg.LibDir(ctx, serverPackageID)
+	it, err := l.pkg.LibDir(ctx, PackageID)
 	if err != nil {
 		return "", ErrServerNotInstalled
 	}

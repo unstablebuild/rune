@@ -389,6 +389,14 @@ func (s *serverProcess) completionClient() llmapi.Service {
 	return s.client
 }
 
+// embeddingsURL returns the ready server's OpenAI-compatible embeddings
+// endpoint.
+func (s *serverProcess) embeddingsURL() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.baseURL + "/embeddings"
+}
+
 // pipeWriter adapts an *io.PipeWriter to workspaceapi.Cmd's io.Writer stdout /
 // stderr fields.
 type pipeWriter struct {

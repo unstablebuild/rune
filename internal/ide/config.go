@@ -73,6 +73,7 @@ import (
 	"unstable.build/rune/internal/ide/syntax"
 	"unstable.build/rune/internal/ide/vctrl"
 	"unstable.build/rune/internal/llm"
+	"unstable.build/rune/internal/llm/llmsearch"
 	"unstable.build/rune/internal/sounds"
 	"unstable.build/rune/internal/term/programstatus"
 	"unstable.build/rune/internal/term/vte"
@@ -614,6 +615,46 @@ func (c ideConfig) llmConfig() llm.Config {
 		}
 	}
 	c.recordLLMValidationError(llm.ValidateConfig(out))
+	return out
+}
+
+// searchConfig returns workspace code search, from llmsearch.DefaultConfig()
+// overlaid with the `search` block. An empty model or a stretch under one
+// character is reported and keeps its default: indexes would otherwise
+// never find a model to encode with, or fail to open.
+func (c ideConfig) searchConfig() llmsearch.Config {
+	out := llmsearch.DefaultConfig()
+	if c.cfg == nil {
+		return out
+	}
+	search, ok := c.getConfig(config.MapConfig(c.cfg), "search")
+	if !ok {
+		return out
+	}
+	overrideBool(search, "enabled", &out.Enabled)
+	if model, err := search.GetString("model"); err == nil {
+		if model == "" && out.Enabled {
+			c.errors["search.model"] = errors.New("must be set when search.enabled is True")
+		} else {
+			out.Model = model
+		}
+	}
+	if n, err := search.GetInt("code_stretch"); err == nil {
+		if n <= 0 {
+			c.errors["search.code_stretch"] = fmt.Errorf("expected value > 0, got %d", n)
+		} else {
+			out.Options.CodeStretch = n
+		}
+	}
+	if folders, err := getStringSlice(search, "excluded_folders"); err == nil {
+		out.Options.ExcludedFolders = folders
+	}
+	if exts, err := getStringSlice(search, "excluded_extensions"); err == nil {
+		out.Options.ExcludedExtensions = exts
+	}
+	if d, err := config.GetDuration(search, "idle_timeout", out.Options.IdleTimeout); err == nil {
+		out.Options.IdleTimeout = d
+	}
 	return out
 }
 
@@ -5018,29 +5059,7 @@ func (c ideConfig) workspaceSymbolDB() bool {
 // workspaceSearch reports whether workspaces are indexed for code search
 // (`search.enabled`).
 func (c ideConfig) workspaceSearch() bool {
-	enabled := true
-	if search, ok := c.searchBlock(); ok {
-		overrideBool(search, "enabled", &enabled)
-	}
-	return enabled
-}
-
-// searchExcludedFolders returns the workspace-relative folders search
-// never reads besides what git ignores (`search.excluded_folders`).
-func (c ideConfig) searchExcludedFolders() []string {
-	search, ok := c.searchBlock()
-	if !ok {
-		return nil
-	}
-	folders, _ := getStringSlice(search, "excluded_folders")
-	return folders
-}
-
-func (c ideConfig) searchBlock() (config.Config, bool) {
-	if c.cfg == nil {
-		return nil, false
-	}
-	return c.getConfig(config.MapConfig(c.cfg), "search")
+	return c.searchConfig().Enabled
 }
 
 func (c ideConfig) workspaceWallpaperBackgroundAttr() term.Attributes {

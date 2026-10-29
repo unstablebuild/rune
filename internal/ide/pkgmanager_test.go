@@ -52,6 +52,7 @@ import (
 	"unstable.build/rune/internal/ide/hostenv"
 	"unstable.build/rune/internal/ide/idepkg"
 	"unstable.build/rune/internal/ide/idepkg/idepkgtest"
+	"unstable.build/rune/internal/llm/llamaserver"
 	"unstable.build/rune/internal/localstorage"
 	"unstable.build/rune/internal/text"
 	"unstable.build/rune/internal/workspace"
@@ -162,6 +163,48 @@ func TestPkgManager_LibDir_NotAuthenticated(t *testing.T) {
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, storageapi.ErrNotFound),
 		"expected storageapi.ErrNotFound, got %v", err)
+}
+
+func TestLlamaServerPackage(t *testing.T) {
+	t.Parallel()
+	const id = llamaserver.PackageID
+	pkgs := idepkgtest.MakePackages(release.Package{Name: id})
+	bundles := idepkgtest.MakeBundles([]release.Bundle{
+		{Package: id, Version: "v0.0.3", CreatedAt: time.Now().Add(-time.Hour)},
+		{Package: id, Version: llamaserver.MinPackageVersion, CreatedAt: time.Now()},
+	})
+	rm := idepkgtest.NewReleaseManager(pkgs, bundles)
+	rm.SetMissProgressComplete(true)
+	rm.SetTarball(id, idepkgtest.MakeTarball(t, map[string]string{"llama-server": "#!/bin/sh\n"}))
+	m := newTestWorkspaceManagerHandlerForPkgManager(t, rm, false, 0)
+	defer m.Close()
+	ctx := context.Background()
+	server := llamaServerPackage{pkgs: m.pkgmanager.pkgManager}
+	assertInstalled := func(wantInstalled, wantOutdated bool, msg string) {
+		t.Helper()
+		installed, outdated, err := server.Installed(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, wantInstalled, installed, msg)
+		assert.Equal(t, wantOutdated, outdated, msg)
+	}
+
+	assertInstalled(false, false, "nothing is installed")
+	require.NoError(t, m.pkgmanager.pkg.InstallPackageVersion(ctx, id, "v0.0.3", nil))
+	assertInstalled(true, true, "a version before the cutoff cannot run the search model")
+
+	m.pkgmanager.declined.Store(id, struct{}{})
+	require.NoError(t, server.Install(ctx))
+	assertInstalled(true, false, "installing upgrades to the latest version")
+	_, declined := m.pkgmanager.declined.Load(id)
+	assert.False(t, declined, "installing on request forgets the refusal")
+
+	installed, outdated, err := llamaServerPackage{pkgs: m.pkgmanager.pkgManager, path: "/opt/llama-server"}.
+		Installed(ctx)
+	require.NoError(t, err)
+	assert.True(t, installed, "a configured server needs no installing")
+	assert.False(t, outdated, "a configured server is the user's to keep up to date")
+
+	assert.ErrorContains(t, m.pkgmanager.Install(ctx, "nope"), "latest version of nope")
 }
 
 func TestPkgManager_HandlePkgInstall_NotAuthenticated(t *testing.T) {

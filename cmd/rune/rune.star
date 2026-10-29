@@ -241,11 +241,24 @@ config = {
         },
     },
     "search": {
-        # Index each workspace's files for `searchregex`. Off,
-        # `searchregex` reads every file.
-        "enabled":          True,
+        # Index each workspace's code for the `search` console command,
+        # `searchsemantic` and `searchregex`. Keyword and regular
+        # expression search work at once; meaning search needs
+        # llama-server and the model below, which `searchsemantic` offers
+        # to install on first use. Off, `searchregex` reads every file.
+        "enabled":             True,
+        # The local embedding model that encodes code and queries.
+        "model":               "huggingface.co/ggml-org/embeddinggemma-2-GGUF:Q8_0",
+        # Characters a stretch of code holds at most (whole lines).
+        "code_stretch":        1800,
         # Workspace-relative folders never read, besides what git ignores.
-        "excluded_folders": [],
+        "excluded_folders":    [],
+        # File extensions never read, e.g. ["sql", "csv"].
+        "excluded_extensions": [],
+        # How long the embedding model and the vectors stay in memory
+        # after the last search, e.g. "2m". Empty uses the built-in
+        # default.
+        "idle_timeout":        "",
     },
     "console": {
         "max_history": 2000,
