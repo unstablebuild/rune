@@ -1500,7 +1500,7 @@ func (p *planner) inFunc() bool {
 // recursiveDelete adds the command name args to the plan when it deletes
 // directories, with the words the authorizer can tell expanded.
 func (p *planner) recursiveDelete(name string, args []shellWord, c callContext) {
-	if filepath.Base(name) != "rm" || !recursiveRM(args) {
+	if !deletesDirectories(name, args) {
 		return
 	}
 	var d RecursiveDelete
@@ -1522,6 +1522,18 @@ func (p *planner) recursiveDelete(name string, args []shellWord, c callContext) 
 	}
 	d.Command = strings.Join(fields, " ")
 	p.plan.Deletes = append(p.plan.Deletes, d)
+}
+
+// deletesDirectories reports whether the program name deletes directories
+// when it runs with args.
+func deletesDirectories(name string, args []shellWord) bool {
+	switch filepath.Base(name) {
+	case "rmdir":
+		return true
+	case "rm":
+		return recursiveRM(args)
+	}
+	return false
 }
 
 // recursiveRM reports whether the arguments of rm make it delete
