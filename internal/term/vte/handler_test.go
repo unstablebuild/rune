@@ -501,6 +501,26 @@ $ XX▐
 	})
 }
 
+func TestHandlerModalEscReachesForegroundProgram(t *testing.T) {
+	t.Parallel()
+	cfg := DefaultConfig()
+	cfg.Modal = true
+	cases := []vtetest.Case{
+		{"cat -v><x>",
+			`$ cat -v            
+^[x                 
+^[x                 
+▐                   
+                    
+                    
+                    
+                    
+                    
+                    `},
+	}
+	testSequence(t, cfg, defaultWaitForIdleVte, cases)
+}
+
 func TestHandlerResizeViIntegration(t *testing.T) {
 	t.Parallel()
 	cases := []vtetest.Case{

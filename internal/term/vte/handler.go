@@ -342,7 +342,11 @@ func (e *Handler) Handle(ev term.Event) (exit, handled bool) {
 			return false, handled
 		}
 
-		if ev.Key == term.KeyEsc && ev.Mod == 0 && !e.comp.IsAltBuffer() {
+		// Esc enters vi mode by ringing the shell's bell, which a program in
+		// the foreground would read as ctrl-g instead (claude opens $EDITOR),
+		// so it gets Esc itself.
+		if ev.Key == term.KeyEsc && ev.Mod == 0 && !e.comp.IsAltBuffer() &&
+			!e.comp.programInForeground() {
 			handled = true
 			cursor := e.comp.CursorAtScroll()
 			e.comp.systemCanDispatchBell(func(err error) {

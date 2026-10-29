@@ -1075,6 +1075,20 @@ func (t *Component) Pid() workspaceapi.Pid {
 	return workspaceapi.Pid(t.pid.Load())
 }
 
+// programInForeground reports whether a process other than the one the
+// Component started owns the terminal, as a program run from the shell
+// does. It reports false when that cannot be told, as for a pty on a
+// remote workspace.
+func (t *Component) programInForeground() bool {
+	m, ok := t.pty.Master.(interface{ ForegroundPgrp() (int, error) })
+	pid := t.Pid()
+	if !ok || pid == 0 {
+		return false
+	}
+	pgrp, err := m.ForegroundPgrp()
+	return err == nil && pgrp != int(pid)
+}
+
 // WaitSpawn blocks until the async expandAndStart goroutine
 // (created by Init when Config.CommandExpander is set) has
 // finished, including any reportSpawnError watcher hand-off.
