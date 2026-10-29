@@ -79,6 +79,7 @@ import (
 	"unstable.build/rune/internal/ide/idetask"
 	"unstable.build/rune/internal/ide/plugin"
 	"unstable.build/rune/internal/ide/vctrl/testgit"
+	"unstable.build/rune/internal/llm/llamaserver"
 	"unstable.build/rune/internal/localstorage"
 	"unstable.build/rune/internal/sounds"
 	"unstable.build/rune/internal/term/programstatus"
@@ -12105,4 +12106,12 @@ func TestWorkspaceNextPreviousCycleOpenWorkspaces(t *testing.T) {
 	assert.Equal(t, other, m.focus, "previous wraps around, skipping empty slots")
 	require.NoError(t, m.focusEx().dispatchCommand("workspaceprevious"))
 	assert.Equal(t, start, m.focus)
+}
+
+func TestLocalServerLocatorHonorsServerBinPath(t *testing.T) {
+	h := &workspaceManagerHandler{pkgmanager: new(localPkgManager)}
+	got, err := h.localServerLocator(llamaserver.Config{ServerBinPath: "/opt/llama/llama-server"}).
+		Locate(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "/opt/llama/llama-server", got)
 }

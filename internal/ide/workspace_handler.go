@@ -743,7 +743,7 @@ func (h *workspaceManagerHandler) init(
 	localBackend := llamaserver.New(
 		llmCfg.Local.Service,
 		h.localExecutor,
-		llamaserver.NewPkgLocator(h.pkgmanager),
+		h.localServerLocator(llmCfg.Local.Service),
 		h.notifications.current(),
 	)
 	router, err := llmrouter.New(llmCfg, sixDir, h.storage, localBackend)
@@ -912,6 +912,15 @@ func (h *workspaceManagerHandler) focusHandler() tui.Handler {
 	}
 
 	return h.empty
+}
+
+// localServerLocator finds llama-server at models.local.server_bin_path
+// when it is set, and through the package manager otherwise.
+func (h *workspaceManagerHandler) localServerLocator(cfg llamaserver.Config) llamaserver.BinaryLocator {
+	if cfg.ServerBinPath != "" {
+		return llamaserver.NewFixedLocator(cfg.ServerBinPath)
+	}
+	return llamaserver.NewPkgLocator(h.pkgmanager)
 }
 
 // initScavenger sets up the reclamation of storage left behind by
