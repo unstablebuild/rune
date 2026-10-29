@@ -435,15 +435,21 @@ config = {
         "key_mapping": {
         #     "<capslock>": "<esc>",
         },
-        # Buttons of the quick menu, the vertical bar of native buttons
-        # floating over the right edge of the window (macOS only; ignored
-        # elsewhere). Order is top to bottom, and an empty list removes the
-        # bar along with the column it reserves.
-        #   symbol  — SF Symbol name drawn as the button image.
+        # Buttons of the quick menu, the vertical bar of buttons floating
+        # over the right edge of the window. Order is top to bottom, and an
+        # empty list removes the bar along with the column it reserves.
+        # Without sprites it is a bar of native buttons (macOS only; ignored
+        # elsewhere); with them Rune draws it, on every platform.
+        #   symbol  — SF Symbol name drawn as the native button image. Not
+        #             needed with a sprite.
         #   title   — hover tooltip.
         #   command — any Rune command line, as a space-separated string or
         #             a list of words. It also identifies the button, so it
         #             must be unique across the menu.
+        #   sprite  — the button's images, as file:// or http(s) URIs:
+        #             {"idle": uri, "hover": uri, "pressed": uri}. hover
+        #             defaults to idle and pressed to hover. Set it on every
+        #             button or on none.
         "quick_menu": [
             {"symbol": "command", "title": "Command Prompt", "command": "echo {prompt}"},
             {"symbol": "plus", "title": "Open Project", "command": "workspaceopen"},
@@ -470,6 +476,13 @@ config = {
             {"symbol": "gearshape", "title": "Settings", "command": "config"},
             {"symbol": "questionmark.circle", "title": "Rune Help", "command": "help"},
         ],
+        # The sounds the quick menu plays when Rune draws it, that is with
+        # sprites: "hover" when the pointer moves onto a button and "click"
+        # when one is clicked. Each is a name from `sounds`, or "" for none.
+        "quick_menu_sounds": {
+            "hover": "",
+            "click": "",
+        },
     },
     "editor": {
         # Editor mode and exo settings are not configured here. The

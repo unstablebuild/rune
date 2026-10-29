@@ -43,12 +43,14 @@ import (
 	"unstable.build/rune/cmd/rune/ide/apiclient"
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/debug"
+	"unstable.build/rune/internal/handler/quickmenu"
 	"unstable.build/rune/internal/ide"
 	"unstable.build/rune/internal/ide/hostenv"
 	"unstable.build/rune/internal/ide/idepkg"
 	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
 	"unstable.build/rune/internal/ide/ideupgrade"
 	"unstable.build/rune/internal/ide/keymeta"
+	"unstable.build/rune/internal/sounds"
 	"unstable.build/rune/internal/term/gui"
 	"unstable.build/rune/internal/term/gui/appmenu"
 	"unstable.build/rune/internal/term/gui/glassbar"
@@ -103,10 +105,13 @@ type bootstrapHandler struct {
 	goos          string
 	closingPreIDE bool
 	recent        *recentWorkspaces
-	// quickMenu is the configured native quick menu. It is parsed once
-	// per config load because the reserved grid column it implies is
+	// quickMenu is the configured quick menu. It is read when the
+	// handler is built because the reserved grid column it implies is
 	// fixed at ide.New time.
 	quickMenu []ide.QuickMenuButton
+	// quickMenuBar draws quickMenu in place of the native bar when its
+	// buttons have sprites, and is nil otherwise.
+	quickMenuBar *quickmenu.Bar
 	// quickMenuOff is set while the user has toggled the bar off with
 	// the quickmenu command.
 	quickMenuOff bool
@@ -147,7 +152,10 @@ func newBootstrapHandler(
 		installBackupDir: installBackupDir,
 	}
 	bh.recent = newRecentWorkspaces(bh.storage)
-	bh.loadQuickMenu()
+	var quickMenuSounds quickmenu.Sounds
+	bh.quickMenu, quickMenuSounds = readQuickMenu(configPath)
+	bh.quickMenuBar = newQuickMenuBar(bh.quickMenu, quickMenuSounds, bh.storage,
+		publishEvent, sounds.PlayerFunc(bh.playSound), bh.activateQuickMenuButton)
 	bh.rootCfg = rootCfg
 
 	if isBootstrapped(dataDir) {
@@ -306,20 +314,6 @@ func (b *bootstrapHandler) attachGUI(g *gui.GUI, transparentWindow bool) {
 	b.g = g
 	b.transparentWindow = transparentWindow
 	b.publishQuickMenuInstall()
-}
-
-// loadQuickMenu re-reads the configured quick menu. It loads the config
-// standalone because the reserved grid column must be known before
-// ide.New, and again after the bootstrap wizard writes the user config.
-// A validation error still yields a usable tree with the offending
-// entries neutralised, and the IDE reports it to the user, so the valid
-// buttons are kept rather than dropping the whole bar.
-func (b *bootstrapHandler) loadQuickMenu() {
-	cfg, err := ide.Config(b.configPath, runeDefaultConfig())
-	if err != nil {
-		log.Warnf("load config for quick menu: %v", err)
-	}
-	b.quickMenu = ide.QuickMenuButtons(cfg)
 }
 
 // setupPreIDE registers the GUI command family on the pre-config IDE
@@ -577,6 +571,9 @@ func (b *bootstrapHandler) Resize(w, h int) {
 	b.lastResizeW = w
 	b.lastResizeH = h
 	b.inner.Resize(w, h)
+	if b.quickMenuBar != nil {
+		b.quickMenuBar.Resize(w, h)
+	}
 	b.positionQuickMenu(w)
 }
 
@@ -592,7 +589,12 @@ func (b *bootstrapHandler) positionQuickMenu(width int) {
 	glassbar.SetFrame(x, y, w)
 }
 
-func (b *bootstrapHandler) Draw(w term.Writer) { b.inner.Draw(w) }
+func (b *bootstrapHandler) Draw(w term.Writer) {
+	b.inner.Draw(w)
+	if bar := b.visibleQuickMenuBar(); bar != nil {
+		bar.Draw(w)
+	}
+}
 
 func (b *bootstrapHandler) Cursor() (term.Coordinates, term.CursorStyle, bool) {
 	return b.inner.Cursor()
@@ -614,6 +616,9 @@ func (b *bootstrapHandler) Handle(ev term.Event) (exit, handled bool) {
 			return false, true
 		}
 	}
+	if bar := b.visibleQuickMenuBar(); bar != nil && ev.Type == term.EventMouse {
+		return b.handleQuickMenuMouse(bar, ev)
+	}
 	return b.inner.Handle(ev)
 }
 
@@ -623,7 +628,6 @@ func (b *bootstrapHandler) performSwap() error {
 	}
 
 	b.configPath = filepath.Join(b.dataDir, configFilename)
-	b.loadQuickMenu()
 
 	b.mu.Unlock()
 	defer b.mu.Lock()
@@ -913,6 +917,12 @@ func (b *bootstrapHandler) Close() error {
 			errs = append(errs, err)
 		}
 		b.preIDE = nil
+	}
+	if b.quickMenuBar != nil {
+		if err := b.quickMenuBar.Close(); err != nil {
+			errs = append(errs, err)
+		}
+		b.quickMenuBar = nil
 	}
 	if b.storage != nil {
 		if err := b.storage.Close(); err != nil {

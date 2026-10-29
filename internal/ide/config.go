@@ -54,6 +54,7 @@ import (
 	tcomponent "unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/component/asciiart"
 	"unstable.build/rune/internal/component/imagecomp"
+	"unstable.build/rune/internal/component/imageuri"
 	"unstable.build/rune/internal/component/notifications"
 	"unstable.build/rune/internal/component/shader/glslshader"
 	"unstable.build/rune/internal/component/shader/shaderloop"
@@ -111,8 +112,11 @@ const (
 
 	keyCommandKeyBindingHintFocusColor = "key_binding_hint_focus_color"
 
-	keyGUI       = "gui"
-	keyQuickMenu = "quick_menu"
+	keyGUI             = "gui"
+	keyQuickMenu       = "quick_menu"
+	keyQuickMenuSounds = "quick_menu_sounds"
+	keyQuickMenuHover  = "hover"
+	keyQuickMenuClick  = "click"
 
 	keySounds       = "sounds"
 	keyTerminal     = "terminal"
@@ -131,13 +135,26 @@ const (
 // C string boundary.
 var quickMenuSymbolRe = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 
-// QuickMenuButton is one button of the native quick menu and the Rune
-// command it runs. Symbol is an SF Symbol name.
+// QuickMenuButton is one button of the quick menu and the Rune command
+// it runs. Symbol is the SF Symbol name the native bar draws. A Sprite
+// has Rune draw the bar instead; either every button has one or none
+// does, and Symbol is empty when it was left out for one.
 type QuickMenuButton struct {
 	Symbol  string
 	Title   string
 	Command []string
+	Sprite  QuickMenuSprite
 }
+
+// QuickMenuSprite is the image URIs a quick menu button shows while
+// idle, under the pointer and pressed. Either all are set or none is.
+type QuickMenuSprite struct {
+	Idle, Hover, Pressed string
+}
+
+// HasSprite reports whether Rune draws the button rather than the
+// native bar.
+func (b QuickMenuButton) HasSprite() bool { return b.Sprite.Idle != "" }
 
 // ID identifies the button to the native bar and keys the key-binding
 // lookup that renders its accelerator.
@@ -152,6 +169,24 @@ func QuickMenuButtons(cfg config.Config) []QuickMenuButton {
 		return nil
 	}
 	return parseQuickMenuButtons(guiCfg, map[string]error{})
+}
+
+// QuickMenuSounds reads `gui.quick_menu_sounds`: the names of the sounds
+// the Rune-drawn quick menu plays when the pointer moves onto a button
+// and when a button is clicked. "" plays none, and so does what is left
+// unset or validateSounds reports.
+func QuickMenuSounds(cfg config.Config) (hover, click string) {
+	guiCfg, err := cfg.GetConfig(keyGUI)
+	if err != nil {
+		return "", ""
+	}
+	soundsCfg, err := guiCfg.GetConfig(keyQuickMenuSounds)
+	if err != nil {
+		return "", ""
+	}
+	hover, _ = soundsCfg.GetString(keyQuickMenuHover)
+	click, _ = soundsCfg.GetString(keyQuickMenuClick)
+	return hover, click
 }
 
 func parseQuickMenuButtons(
@@ -171,6 +206,7 @@ func parseQuickMenuButtons(
 		entries = entries[:maxQuickMenuButtons]
 	}
 	ret := make([]QuickMenuButton, 0, len(entries))
+	paths := make([]string, 0, len(entries))
 	seen := make(map[string]bool, len(entries))
 	for i, entry := range entries {
 		path := fmt.Sprintf("%s.%s[%d]", keyGUI, keyQuickMenu, i)
@@ -188,8 +224,23 @@ func parseQuickMenuButtons(
 		}
 		seen[button.ID()] = true
 		ret = append(ret, *button)
+		paths = append(paths, path)
 	}
-	return ret
+	if !slices.ContainsFunc(ret, QuickMenuButton.HasSprite) {
+		return ret
+	}
+	// The Rune-drawn bar has no SF Symbols to fall back on, so a button
+	// without a sprite could not be drawn at all.
+	kept := ret[:0]
+	for i, button := range ret {
+		if button.HasSprite() {
+			kept = append(kept, button)
+			continue
+		}
+		errs[paths[i]+".sprite"] = errors.New("required because other " +
+			"buttons set one: set a sprite on every button or on none")
+	}
+	return kept
 }
 
 // parseQuickMenuButton returns a nil button when a field-level error was
@@ -201,22 +252,32 @@ func parseQuickMenuButton(
 	m, ok := entry.(map[string]any)
 	if !ok {
 		return nil, errors.New("expected a dict with 'symbol', " +
-			"'title' and 'command' keys")
+			"'title', 'command' and 'sprite' keys")
 	}
 	for key := range m {
 		switch key {
-		case "symbol", "title", "command":
+		case "symbol", "title", "command", "sprite":
 		default:
 			return nil, fmt.Errorf("unknown key %q", key)
 		}
 	}
 
-	symbol, ok := m["symbol"].(string)
-	if !ok {
-		errs[path+".symbol"] = errors.New("required, must be an SF Symbol name")
-		return nil, nil
+	var sprite QuickMenuSprite
+	if raw, ok := m["sprite"]; ok {
+		if sprite, ok = parseQuickMenuSprite(raw, path+".sprite", errs); !ok {
+			return nil, nil
+		}
 	}
-	if !quickMenuSymbolRe.MatchString(symbol) {
+
+	raw, hasSymbol := m["symbol"]
+	symbol, ok := raw.(string)
+	switch {
+	case !hasSymbol && sprite.Idle != "":
+	case !ok:
+		errs[path+".symbol"] = errors.New("must be an SF Symbol name, " +
+			"required unless 'sprite' is set")
+		return nil, nil
+	case !quickMenuSymbolRe.MatchString(symbol):
 		errs[path+".symbol"] = fmt.Errorf(
 			"%q is not a valid SF Symbol name", symbol)
 		return nil, nil
@@ -237,7 +298,65 @@ func parseQuickMenuButton(
 		}
 	}
 
-	return &QuickMenuButton{Symbol: symbol, Title: title, Command: cmdAndArgs}, nil
+	return &QuickMenuButton{
+		Symbol: symbol, Title: title, Command: cmdAndArgs, Sprite: sprite,
+	}, nil
+}
+
+// parseQuickMenuSprite records every error under path and reports
+// whether there were none.
+func parseQuickMenuSprite(
+	raw any, path string, errs map[string]error,
+) (QuickMenuSprite, bool) {
+	m, ok := raw.(map[string]any)
+	if !ok {
+		errs[path] = errors.New("expected a dict with 'idle', 'hover' " +
+			"and 'pressed' image URIs")
+		return QuickMenuSprite{}, false
+	}
+	var sprite QuickMenuSprite
+	ok = true
+	for _, key := range slices.Sorted(maps.Keys(m)) {
+		var slot *string
+		switch key {
+		case "idle":
+			slot = &sprite.Idle
+		case "hover":
+			slot = &sprite.Hover
+		case "pressed":
+			slot = &sprite.Pressed
+		default:
+			errs[path] = fmt.Errorf("unknown key %q", key)
+			ok = false
+			continue
+		}
+		uri, isString := m[key].(string)
+		if !isString {
+			errs[path+"."+key] = errors.New("must be an image URI")
+			ok = false
+			continue
+		}
+		if err := imageuri.ValidateURI(uri); err != nil {
+			errs[path+"."+key] = err
+			ok = false
+			continue
+		}
+		*slot = uri
+	}
+	if !ok {
+		return QuickMenuSprite{}, false
+	}
+	if sprite.Idle == "" {
+		errs[path+".idle"] = errors.New("required")
+		return QuickMenuSprite{}, false
+	}
+	if sprite.Hover == "" {
+		sprite.Hover = sprite.Idle
+	}
+	if sprite.Pressed == "" {
+		sprite.Pressed = sprite.Hover
+	}
+	return sprite, true
 }
 
 func parseQuickMenuCommand(raw any) ([]string, error) {

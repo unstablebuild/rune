@@ -111,6 +111,30 @@ commands run in the IDE console, play a sound when they finish, fail or wait
 on you. `program_status.sounds` maps each state to a sound; see
 [Program status](./terminal/program-status.md#sounds).
 
+## Quick menu
+
+`gui.quick_menu_sounds` names the sounds the quick menu plays: `hover` when
+the pointer moves onto a button and `click` when you click one. Each is the
+name of a sound, built-in or your own, or an empty string for none, which is
+the default.
+
+```yaml tab
+gui:
+  quick_menu_sounds:
+    hover: ding
+    click: success
+```
+
+```python tab
+config["gui"]["quick_menu_sounds"] = {"hover": "ding", "click": "success"}
+```
+
+- The quick menu plays sounds only when its buttons set a `sprite`. The
+  native macOS quick menu plays none.
+- Rune reports an unknown sound name as a config error, and that event plays
+  nothing.
+- Like other `gui.*` settings, a change applies after restarting Rune.
+
 ## Play a sound from an alias
 
 To play a sound from an [alias](./aliases.md), add a `guisound` step. An

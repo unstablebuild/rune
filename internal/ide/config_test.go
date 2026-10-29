@@ -1148,7 +1148,9 @@ func TestValidateSounds(t *testing.T) {
 		wantBell   any
 		// wantStatus is what is left of program_status.sounds.
 		wantStatus any
-		wantErrs   []string
+		// wantQuickMenu is what is left of gui.quick_menu_sounds.
+		wantQuickMenu any
+		wantErrs      []string
 	}{
 		{
 			name:     "no sounds and a reserved bell",
@@ -1229,6 +1231,35 @@ func TestValidateSounds(t *testing.T) {
 			wantStatus: nil,
 			wantErrs:   []string{`'program_status.sounds' must map states to sound names`},
 		},
+		{
+			name: "quick menu sounds name events and known sounds",
+			cfg: map[string]any{
+				"sounds": map[string]any{"tick": "/tick.wav"},
+				"gui": map[string]any{"quick_menu_sounds": map[string]any{
+					"hover": "tick", "click": "",
+				}},
+			},
+			wantSounds:    map[string]any{"tick": "/tick.wav"},
+			wantQuickMenu: map[string]any{"hover": "tick", "click": ""},
+		},
+		{
+			name: "invalid quick menu sounds are dropped",
+			cfg: map[string]any{"gui": map[string]any{"quick_menu_sounds": map[string]any{
+				"hover": "tikc", "click": 1, "press": "info",
+			}}},
+			wantQuickMenu: map[string]any{},
+			wantErrs: []string{
+				`'gui.quick_menu_sounds.hover' names unknown sound "tikc"`,
+				`'gui.quick_menu_sounds.click' must be a sound name or "", got int`,
+				`'gui.quick_menu_sounds.press': unknown event`,
+			},
+		},
+		{
+			name:          "quick menu sounds is not a map",
+			cfg:           map[string]any{"gui": map[string]any{"quick_menu_sounds": "info"}},
+			wantQuickMenu: nil,
+			wantErrs:      []string{`'gui.quick_menu_sounds' must map hover and click`},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := validateSounds(tc.cfg)
@@ -1248,6 +1279,9 @@ func TestValidateSounds(t *testing.T) {
 			}
 			if status, ok := tc.cfg["program_status"].(map[string]any); ok {
 				assert.Equal(t, tc.wantStatus, status["sounds"])
+			}
+			if gui, ok := tc.cfg["gui"].(map[string]any); ok {
+				assert.Equal(t, tc.wantQuickMenu, gui["quick_menu_sounds"])
 			}
 		})
 	}
@@ -3320,8 +3354,18 @@ func quickMenuEntry(symbol, title string, command any) map[string]any {
 	return map[string]any{"symbol": symbol, "title": title, "command": command}
 }
 
+func quickMenuSpriteEntry(title, command string, sprite any) map[string]any {
+	return map[string]any{"title": title, "command": command, "sprite": sprite}
+}
+
 func TestQuickMenuButtons(t *testing.T) {
 	t.Parallel()
+	const (
+		idle    = "file:///hud/idle.png"
+		hover   = "file:///hud/hover.png"
+		pressed = "https://example.com/pressed.png"
+	)
+	every := map[string]any{"idle": idle, "hover": hover, "pressed": pressed}
 	tests := []struct {
 		name     string
 		entries  any
@@ -3395,6 +3439,66 @@ func TestQuickMenuButtons(t *testing.T) {
 			{Symbol: "plus", Title: "First", Command: []string{"help"}},
 		},
 		wantErrs: []string{"gui.quick_menu[1]"},
+	}, {
+		name:    "a sprite replaces the symbol",
+		entries: []any{quickMenuSpriteEntry("Help", "help", every)},
+		want: []QuickMenuButton{{Title: "Help", Command: []string{"help"},
+			Sprite: QuickMenuSprite{Idle: idle, Hover: hover, Pressed: pressed}}},
+	}, {
+		name: "a symbol is kept alongside a sprite",
+		entries: []any{map[string]any{
+			"symbol": "plus", "command": "help", "sprite": every,
+		}},
+		want: []QuickMenuButton{{Symbol: "plus", Title: "help", Command: []string{"help"},
+			Sprite: QuickMenuSprite{Idle: idle, Hover: hover, Pressed: pressed}}},
+	}, {
+		name: "hover defaults to idle and pressed to hover",
+		entries: []any{
+			quickMenuSpriteEntry("Idle", "help", map[string]any{"idle": idle}),
+			quickMenuSpriteEntry("Hover", "config",
+				map[string]any{"idle": idle, "hover": hover}),
+		},
+		want: []QuickMenuButton{
+			{Title: "Idle", Command: []string{"help"},
+				Sprite: QuickMenuSprite{Idle: idle, Hover: idle, Pressed: idle}},
+			{Title: "Hover", Command: []string{"config"},
+				Sprite: QuickMenuSprite{Idle: idle, Hover: hover, Pressed: hover}},
+		},
+	}, {
+		name:     "a sprite needs an idle image",
+		entries:  []any{quickMenuSpriteEntry("Help", "help", map[string]any{"hover": hover})},
+		wantErrs: []string{"gui.quick_menu[0].sprite.idle"},
+	}, {
+		name:     "a sprite must be a dict",
+		entries:  []any{quickMenuSpriteEntry("Help", "help", idle)},
+		wantErrs: []string{"gui.quick_menu[0].sprite"},
+	}, {
+		name: "sprite images must be valid URIs",
+		entries: []any{quickMenuSpriteEntry("Help", "help", map[string]any{
+			"idle": "ftp://example.com/idle.png", "pressed": 3,
+		})},
+		wantErrs: []string{
+			"gui.quick_menu[0].sprite.idle", "gui.quick_menu[0].sprite.pressed",
+		},
+	}, {
+		name: "unknown sprite keys are rejected",
+		entries: []any{quickMenuSpriteEntry("Help", "help",
+			map[string]any{"idle": idle, "focus": hover})},
+		wantErrs: []string{"gui.quick_menu[0].sprite"},
+	}, {
+		name: "once a button sets a sprite every button needs one",
+		entries: []any{
+			quickMenuSpriteEntry("Help", "help", every),
+			quickMenuEntry("plus", "Open Project", "workspaceopen"),
+			quickMenuSpriteEntry("Settings", "config", every),
+		},
+		want: []QuickMenuButton{
+			{Title: "Help", Command: []string{"help"},
+				Sprite: QuickMenuSprite{Idle: idle, Hover: hover, Pressed: pressed}},
+			{Title: "Settings", Command: []string{"config"},
+				Sprite: QuickMenuSprite{Idle: idle, Hover: hover, Pressed: pressed}},
+		},
+		wantErrs: []string{"gui.quick_menu[1].sprite"},
 	}}
 
 	for _, tc := range tests {
@@ -3411,9 +3515,7 @@ func TestQuickMenuButtons(t *testing.T) {
 			for _, key := range tc.wantErrs {
 				assert.Contains(t, errs, key)
 			}
-			if len(tc.wantErrs) == 0 {
-				assert.Empty(t, errs)
-			}
+			assert.Len(t, errs, len(tc.wantErrs))
 		})
 	}
 }
@@ -3440,6 +3542,40 @@ func TestQuickMenuButtonsMissingSection(t *testing.T) {
 		map[string]any{"gui": map[string]any{}})))
 }
 
+func TestQuickMenuSounds(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name         string
+		cfg          map[string]any
+		hover, click string
+	}{
+		{name: "unset plays none", cfg: map[string]any{}},
+		{name: "no gui section plays none", cfg: map[string]any{"gui": map[string]any{}}},
+		{
+			name: "both events",
+			cfg: map[string]any{"gui": map[string]any{"quick_menu_sounds": map[string]any{
+				"hover": "tick", "click": "info",
+			}}},
+			hover: "tick", click: "info",
+		},
+		{
+			name: "an event left out plays none",
+			cfg: map[string]any{"gui": map[string]any{"quick_menu_sounds": map[string]any{
+				"click": "success",
+			}}},
+			click: "success",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			hover, click := QuickMenuSounds(config.MapConfig(tc.cfg))
+			assert.Equal(t, tc.hover, hover)
+			assert.Equal(t, tc.click, click)
+		})
+	}
+}
+
 func TestValidateQuickMenuDropsInvalidEntries(t *testing.T) {
 	t.Parallel()
 	cfg := map[string]any{"gui": map[string]any{"quick_menu": []any{
@@ -3454,6 +3590,24 @@ func TestValidateQuickMenuDropsInvalidEntries(t *testing.T) {
 	// reach the native bar.
 	assert.Equal(t, []QuickMenuButton{{Symbol: "plus", Title: "Open Project",
 		Command: []string{"workspaceopen"}}}, QuickMenuButtons(config.MapConfig(cfg)))
+}
+
+func TestValidateQuickMenuKeepsSprites(t *testing.T) {
+	t.Parallel()
+	sprite := map[string]any{"idle": "file:///hud/help.png"}
+	cfg := map[string]any{"gui": map[string]any{"quick_menu": []any{
+		quickMenuSpriteEntry("Help", "help", sprite),
+		quickMenuEntry("plus", "Open Project", "workspaceopen"),
+	}}}
+
+	err := validateQuickMenu(cfg)
+	assert.ErrorContains(t, err, "gui.quick_menu[1].sprite")
+
+	want := []QuickMenuButton{{Title: "Help", Command: []string{"help"},
+		Sprite: QuickMenuSprite{Idle: "file:///hud/help.png",
+			Hover: "file:///hud/help.png", Pressed: "file:///hud/help.png"}}}
+	assert.Equal(t, want, QuickMenuButtons(config.MapConfig(cfg)))
+	assert.NoError(t, validateQuickMenu(cfg), "the neutralised tree must be valid")
 }
 
 func TestValidateQuickMenuAcceptsValidConfig(t *testing.T) {
