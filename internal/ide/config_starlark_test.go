@@ -579,6 +579,22 @@ func TestRuneStarModelsConfig(t *testing.T) {
 	}
 }
 
+func TestRuneStarSearchConfig(t *testing.T) {
+	cfg, err := decodeStarlarkConfig(starlarkConfigSource{
+		src:      readRuneStar(t),
+		filename: "rune.star",
+		params:   map[string]any{"mode": "modal", "tui": false},
+	})
+	require.NoError(t, err)
+	_, nested := cfg["models"].(map[string]any)["search"]
+	assert.False(t, nested, "search is a top-level block, not models.search")
+
+	c := ideConfig{cfg: cfg, errors: map[string]error{}}
+	assert.True(t, c.workspaceSearch())
+	assert.Empty(t, c.searchExcludedFolders())
+	assert.Empty(t, c.errors)
+}
+
 func TestDecodeStarlarkOverlayRead(t *testing.T) {
 	base := map[string]any{
 		"editor":     map[string]any{"mode": "modal"},

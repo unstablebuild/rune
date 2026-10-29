@@ -5015,6 +5015,34 @@ func (c ideConfig) workspaceSymbolDB() bool {
 	return enabled
 }
 
+// workspaceSearch reports whether workspaces are indexed for code search
+// (`search.enabled`).
+func (c ideConfig) workspaceSearch() bool {
+	enabled := true
+	if search, ok := c.searchBlock(); ok {
+		overrideBool(search, "enabled", &enabled)
+	}
+	return enabled
+}
+
+// searchExcludedFolders returns the workspace-relative folders search
+// never reads besides what git ignores (`search.excluded_folders`).
+func (c ideConfig) searchExcludedFolders() []string {
+	search, ok := c.searchBlock()
+	if !ok {
+		return nil
+	}
+	folders, _ := getStringSlice(search, "excluded_folders")
+	return folders
+}
+
+func (c ideConfig) searchBlock() (config.Config, bool) {
+	if c.cfg == nil {
+		return nil, false
+	}
+	return c.getConfig(config.MapConfig(c.cfg), "search")
+}
+
 func (c ideConfig) workspaceWallpaperBackgroundAttr() term.Attributes {
 	return c.getConfigAttr("workspace", "wallpaper_background_attr",
 		term.Attributes{})

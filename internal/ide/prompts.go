@@ -31,6 +31,7 @@ import (
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/ide/idehistory"
 	"unstable.build/rune/internal/ide/idetask"
+	"unstable.build/rune/internal/ide/regexsearch"
 	"unstable.build/rune/internal/workspace"
 )
 
@@ -519,14 +520,16 @@ func (e *ex) ShowFallbackPrompt(_ context.Context, command string, _ ...string) 
 }
 
 // markHome flags this ex as the home/empty workspace and routes every
-// rune-agent command through the fallback prompt. The home workspace starts
-// no extensions, so without these entries the chat* commands would surface a
-// raw "unknown command" error instead of the "open a workspace" message.
+// rune-agent command, and the workspace searches, through the fallback
+// prompt. The home workspace starts no extensions and has no search index,
+// so without these entries those commands would surface a raw "unknown
+// command" error instead of the "open a workspace" message.
 func (e *ex) markHome() {
 	e.home = true
 	for _, cmd := range []string{
 		"chateffort", "chatmaxtokens", "chatskill", "chatmodel",
 		"chatclear", "chatcompact", "chatfork", "chatexport", "chatlog",
+		regexsearch.Name,
 	} {
 		e.config.CommandFallbacks[cmd] = e
 	}

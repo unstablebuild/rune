@@ -3827,3 +3827,19 @@ func TestMetaOpenURLConfig(t *testing.T) {
 		})
 	}
 }
+
+func TestSearchConfig(t *testing.T) {
+	defaults := ideConfig{cfg: map[string]any{}, errors: map[string]error{}}
+	assert.True(t, defaults.workspaceSearch(), "search is on by default")
+	assert.Empty(t, defaults.searchExcludedFolders())
+
+	c := ideConfig{cfg: map[string]any{
+		"search": map[string]any{
+			"enabled":          false,
+			"excluded_folders": []any{"fixtures", "third_party/big"},
+		},
+	}, errors: map[string]error{}}
+	assert.False(t, c.workspaceSearch())
+	assert.Equal(t, []string{"fixtures", "third_party/big"}, c.searchExcludedFolders())
+	assert.Empty(t, c.errors)
+}

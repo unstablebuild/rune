@@ -240,6 +240,13 @@ config = {
             },
         },
     },
+    "search": {
+        # Index each workspace's files for `searchregex`. Off,
+        # `searchregex` reads every file.
+        "enabled":          True,
+        # Workspace-relative folders never read, besides what git ignores.
+        "excluded_folders": [],
+    },
     "console": {
         "max_history": 2000,
         # Open the companion console's input line in insert mode when the

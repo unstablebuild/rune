@@ -23,6 +23,7 @@ At a glance:
 | [Find a type definition anywhere in the workspace](#search-across-the-workspace) | `searchtype` | <KeyBinding command="searchtype" /> |
 | [Search a file by name](#search-files) | `searchfile` | <KeyBinding command="searchfile" /> |
 | [Search file contents across the workspace](#search-text) | `searchtext` | <KeyBinding command="searchtext" /> |
+| [Search the workspace for a regular expression](#search-with-a-regular-expression) | `searchregex <pattern>` | (define your own) |
 | [Jump to an arbitrary symbol's definition](#semantic-symbol-search) | `lsp definition <symbol>` | <KeyBinding command="echo {prompt}lsp<space>definition<space>" /> |
 | [Open an arbitrary symbol's documentation](#semantic-symbol-search) | `lsp hover <symbol>` | <KeyBinding command="echo {prompt}lsp<space>hover<space>" /> |
 | [List an arbitrary symbol's references](#semantic-symbol-search) | `lsp references <symbol>` | <KeyBinding command="echo {prompt}lsp<space>references<space>" /> |
@@ -105,6 +106,76 @@ files by name across the workspace and press `<enter>` to open the match.
 
 `searchtext` (<KeyBinding command="searchtext" />) searches file contents across the workspace and
 presents the matches in a fuzzy picker, jumping you to the line you pick.
+
+## Search with a regular expression
+
+`searchregex` searches every file of the workspace for a regular
+expression and floats the matching lines in a picker, one per line, the
+way `grep` lists them:
+
+```
+searchregex 'func\s+New\w*\('
+```
+
+The preview above the list shows the focused line in its file with its
+matches emphasized. The status bar at the bottom counts the matching
+lines and their files, says how long the search took and how it was
+asked for, and says when it stopped at the limit or when the index was
+not ready and it read every file. On its right it says which of its
+file's matches the focused line is, and where. A red `ERROR` label
+replaces `REGEXP` when the search failed. Type to narrow the results
+down and press `<enter>` to jump to the match.
+
+Flags go anywhere in the pattern:
+
+| Flag | Does |
+| --- | --- |
+| `-i`, `--ignore-case` | ignores case |
+| `-F`, `--fixed-strings` | searches for the pattern as plain text |
+| `-r <dir>`, `--root <dir>` | searches only in this folder; repeat it for several |
+| `-n <limit>`, `--limit <limit>` | lists at most this many lines (5000 by default) |
+| `--` | ends the flags, so the rest is the pattern even if it starts with `-` |
+
+Patterns use the RE2 regular expression syntax. `^` and `$` match at the
+start and end of every line, and a match never spans lines. The command
+prompt reads a backslash outside quotes as an escape and joins the words
+of a pattern with single spaces, so single-quote a pattern that has
+backslashes or runs of spaces.
+
+`searchregex` skips binary files and files larger than 64 MB, and leaves
+out what git ignores, hidden folders, and the folders in
+`search.excluded_folders`. As in ripgrep,
+that only applies below a root: `searchregex -r .github runs-on` searches
+the hidden `.github` folder because `-r` names it.
+
+Rune keeps a trigram index of each workspace, so a search reads only the
+files that may match and answers in milliseconds even in large
+repositories. Rune builds the index in the background when you open the
+workspace and keeps it up to date as files change. Until the index is
+ready, or with `search.enabled` off, `searchregex` reads every file.
+Search is configured under `search`:
+
+```yaml tab
+search:
+  # Index workspaces for `searchregex`.
+  enabled: true
+  # Workspace-relative folders never read, besides what git ignores.
+  excluded_folders: []
+```
+
+```python tab
+"search": {
+    "enabled": True,
+    "excluded_folders": [],
+},
+```
+
+The same index answers [`runectl search regexp`](../develop/runectl.md)
+from a Rune terminal:
+
+```
+runectl search regexp -g '*.go' 'func\s+New\w*\('
+```
 
 ## Semantic symbol search
 

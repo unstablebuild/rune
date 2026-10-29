@@ -53,6 +53,7 @@ for a specific one. The main groups:
 | `runectl syntax ...` | Tree-sitter searches and structural queries across the workspace. |
 | `runectl storage ...` | Create, read, update, and delete extension documents. |
 | `runectl llm ...` | Talk to the workspace's model router. |
+| `runectl search ...` | Search the workspace's files through its index, by regular expression. |
 | `runectl mcp` | Start an MCP server over stdio exposing Rune's syntax and LSP tools. |
 | `runectl status <state> [message]` | Report program status to the terminal (OSC 7501): `idle`, `working`, `done`, `blocked`, `error`, or `clear`. |
 | `runectl status wrap -- <cmd> [args...]` | Run any command and report its progress and outcome to the terminal, with no changes to the command. |
@@ -212,6 +213,23 @@ review back in your terminal:
 
 ```
 runectl llm message gemini/gemini-3.5-flash "Review this Go file for bugs and edge cases: $(runectl editor print ./convert.go)"
+```
+
+**Grep the workspace without walking it.** `search regexp` answers from
+the index Rune keeps of the workspace, so it returns as fast in a large
+monorepo as in a small project. It prints each line as `grep -n` does,
+and takes ripgrep's flags for case (`-i`), literal text (`-Q`), file
+globs (`-g`), and matches per file (`-m`):
+
+```
+runectl search regexp -g '*.go' -m 1 'func \w+Retry'
+```
+
+Hidden, ignored, and excluded folders are skipped unless `--root` names
+them or a folder that holds them, as in ripgrep:
+
+```
+runectl search regexp -r .github runs-on
 ```
 
 **Turn diagnostics into a commit gate.** Count workspace errors and fail

@@ -28,7 +28,7 @@ import (
 )
 
 // regexpSearcher searches a workspace's files for a regular expression,
-// with workspace-relative roots.
+// with workspace-relative roots; *codesearch.Index is one.
 type regexpSearcher interface {
 	RegexpSearch(ctx context.Context, req searchapi.RegexpRequest) (
 		iterator.Iterator[searchapi.RegexpResult], error)
@@ -45,8 +45,8 @@ func (noRegexpSearch) RegexpSearch(context.Context, searchapi.RegexpRequest) (
 }
 
 // workspaceSearcher implements searchapi.Searcher for one workspace:
-// regexp searches through its index. It keeps no index to search by
-// meaning.
+// regexp searches through its trigram index. It keeps no index to
+// search by meaning.
 type workspaceSearcher struct {
 	// dir is the workspace's folder on its host, which absolute roots
 	// must be in.

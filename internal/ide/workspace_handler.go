@@ -55,6 +55,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/cell"
+	"unstable.build/rune/internal/codesearch"
 	tcomponent "unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/component/markdown"
 	"unstable.build/rune/internal/component/notifications"
@@ -63,6 +64,7 @@ import (
 	"unstable.build/rune/internal/extension/extensionv2"
 	"unstable.build/rune/internal/handler"
 	"unstable.build/rune/internal/handler/command"
+	"unstable.build/rune/internal/handler/finder"
 	thandlerrpc "unstable.build/rune/internal/handler/handlerrpc"
 	handlermarkdown "unstable.build/rune/internal/handler/markdown"
 	"unstable.build/rune/internal/handler/search"
@@ -86,6 +88,7 @@ import (
 	"unstable.build/rune/internal/ide/idescavenger"
 	"unstable.build/rune/internal/ide/idestatus"
 	"unstable.build/rune/internal/ide/idetask"
+	"unstable.build/rune/internal/ide/regexsearch"
 	"unstable.build/rune/internal/ide/syntax/symboldb"
 	"unstable.build/rune/internal/ide/syntax/treesitter"
 	"unstable.build/rune/internal/ide/vctrl"
@@ -803,7 +806,7 @@ func (h *workspaceManagerHandler) init(
 	h.homeInstallDir = installDataDir(trackedCwd, homeDirUri, h.sixDir)
 	runner, lspManager, dapManager, _, _, err := h.buildExtensions(
 		cfg, homeDirUri, trackedCwd, h.empty, extExec, homeParser, false,
-		h.homeInstallDir)
+		h.homeInstallDir, noRegexpSearch{})
 	if err != nil {
 		_, _ = h.notifications.current().Notify(browserapi.LevelError,
 			"Error building channel for extensions and plugins: %v", err)
@@ -935,6 +938,7 @@ func (h *workspaceManagerHandler) initScavenger(ctx context.Context) {
 		return
 	}
 	cleaner.AddWorkspaceHook(symboldb.CleanupWorkspaceHook(h.ideStorage))
+	cleaner.AddWorkspaceHook(codesearch.CleanupWorkspaceHook(h.codesearchDir()))
 	cleaner.AddWorkspaceHook(h.state.ClearWorkspaceState)
 	h.scavenger = cleaner
 	cleaner.Start(ctx)
@@ -1916,6 +1920,7 @@ type builtWorkspace struct {
 	runner              extension.Runner
 	cursorHistoryCloser io.Closer
 	symbolDBCloser      io.Closer
+	regexIndex          *codesearch.Index
 	notice              *idenotice.Crier
 	lspManager          *idelsp.Manager
 	dapManager          *idedebug.Manager
@@ -2040,11 +2045,14 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 		return nil, fmt.Errorf("install cursor history: %w", err)
 	}
 	tm.tm = ex.Browser()
+	regexIndex := h.openRegexIndex(cfg, ex, uri, cwd)
+	h.subscribeSearchRegex(ex, uri, regexIndex, wsParser, apibrowser)
 
 	wh := &workspaceHandler{
 		vctrlService:        vctrlService,
 		cursorHistoryCloser: cursorHistoryCloser,
 		symbolDBCloser:      symbolDBCloser,
+		regexIndex:          regexIndex,
 		cancelCtx:           pending.cancelCtx,
 		uri:                 uri,
 		ex:                  ex,
@@ -2061,6 +2069,7 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 		if symbolDBCloser != nil {
 			_ = symbolDBCloser.Close()
 		}
+		_ = regexIndex.Close()
 		_, _ = h.notifications.current().Notify(browserapi.LevelError,
 			"Error building extensions executor: %v", err)
 		log.Errorf("build extensions executor for workspace %s: %v",
@@ -2068,7 +2077,7 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 		return nil, fmt.Errorf("new extensions executor: %w", err)
 	}
 	runner, lspManager, dapManager, hostPkgs, promptStorage, err := h.buildExtensions(
-		cfg, uri, trackedCwd, ex, extExec, wsParser, symbolDB != nil, wh.installDir)
+		cfg, uri, trackedCwd, ex, extExec, wsParser, symbolDB != nil, wh.installDir, regexIndex)
 	if err != nil {
 		_, _ = h.notifications.current().Notify(browserapi.LevelError,
 			"Error building channel for extensions and plugins: %v", err)
@@ -2094,6 +2103,7 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 		runner:              runner,
 		cursorHistoryCloser: cursorHistoryCloser,
 		symbolDBCloser:      symbolDBCloser,
+		regexIndex:          regexIndex,
 		lspManager:          lspManager,
 		dapManager:          dapManager,
 		hostPackages:        hostPkgs,
@@ -2105,6 +2115,57 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 			ex.onLinkClick, noticeCfg)
 	}
 	return built, nil
+}
+
+// codesearchDir is where the trigram indexes of the workspaces persist.
+func (h *workspaceManagerHandler) codesearchDir() string {
+	return filepath.Join(h.sixDir, "codesearch")
+}
+
+// openRegexIndex opens the trigram index searchregex searches the
+// workspace uri with, and feeds it the workspace's editor events. With
+// search disabled it keeps no index: every search reads every file.
+func (h *workspaceManagerHandler) openRegexIndex(
+	cfg ideConfig, ex *ex, uri workspaceapi.URI, cwd workspace.Workspace,
+) *codesearch.Index {
+	icfg := codesearch.Config{
+		Root: uri, FS: cwd, ExcludedFolders: cfg.searchExcludedFolders(),
+		Notify: h.notifications.current(), Schedule: h.scheduleNextTick,
+	}
+	if !cfg.workspaceSearch() {
+		return codesearch.Open(icfg)
+	}
+	icfg.File = codesearch.IndexFile(h.codesearchDir(), uri)
+	idx := codesearch.Open(icfg)
+	if err := ex.comp.SubscribeEvents(codesearch.EditorEvents(), idx); err != nil {
+		log.Errorf("subscribe regex index events for %s: %v", uri.String(), err)
+	}
+	return idx
+}
+
+// subscribeSearchRegex registers the searchregex command of the workspace
+// uri, which searches idx.
+func (h *workspaceManagerHandler) subscribeSearchRegex(
+	ex *ex, uri workspaceapi.URI, idx *codesearch.Index, parser syntaxapi.Parser,
+	apibrowser browserapi.Browser,
+) {
+	handler := regexsearch.New(regexsearch.Config{
+		Root:     uri,
+		Searcher: idx,
+		Clients: finder.Clients{
+			ResourceOpener: apibrowser,
+			WindowManager:  apibrowser,
+			Interrupter:    apibrowser,
+			Notifications:  h.notifications.new(uri, ex.container),
+			Editor:         newEditorAdapter(ex.Editor()),
+			FileSystem:     ex.workspace,
+		},
+		Parser:           parser,
+		ScheduleNextTick: h.scheduleNextTick,
+	})
+	if err := ex.editorObserver.SubscribeCommand(regexsearch.Manual(), handler); err != nil {
+		log.Errorf("subscribe %s command: %v", regexsearch.Name, err)
+	}
 }
 
 // isUserConfig reports whether filename in the workspace uri is the user's
@@ -2337,6 +2398,9 @@ func (h *workspaceManagerHandler) discardBuiltWorkspace(built *builtWorkspace) {
 	if built.symbolDBCloser != nil {
 		_ = built.symbolDBCloser.Close()
 	}
+	if built.regexIndex != nil {
+		_ = built.regexIndex.Close()
+	}
 	if built.runner != nil {
 		if c, ok := built.runner.(io.Closer); ok {
 			_ = c.Close()
@@ -2377,11 +2441,13 @@ func lspConfig(cfg ideConfig) config.Config {
 
 // buildExtensions wires the extensions, language servers and debuggers of
 // the workspace at uri. installDir is the Rune data directory of the
-// workspace's host, as resolved by installDataDir.
+// workspace's host, as resolved by installDataDir. regexp answers the
+// regexp searches of the workspace's searcher.
 func (h *workspaceManagerHandler) buildExtensions(
 	cfg ideConfig, uri workspaceapi.URI,
 	cwd workspace.Workspace, ex *ex, extExecutor *extensionsExecutor,
 	parser syntaxapi.Parser, indexedSymbols bool, installDir string,
+	regexp regexpSearcher,
 ) (
 	_ extension.Runner, _ *idelsp.Manager, _ *idedebug.Manager,
 	_ *pkgManager, _ storageapi.Service, retErr error,
@@ -2450,7 +2516,7 @@ func (h *workspaceManagerHandler) buildExtensions(
 	if err != nil {
 		return nil, nil, nil, nil, nil, fmt.Errorf("resolve workspace root: %w", err)
 	}
-	searcher := newWorkspaceSearcher(rootURI.Path(), noRegexpSearch{})
+	searcher := newWorkspaceSearcher(rootURI.Path(), regexp)
 	callbacks := idelsp.NewCallbackHandler(notifications, apibrowser, ex.Browser(),
 		apieditor, cwd, rootURI.String(), lspCallbackCfg)
 	lspConfig := idelsp.Config{
@@ -3414,6 +3480,7 @@ type workspaceHandler struct {
 	vctrlService        vctrl.Service
 	cursorHistoryCloser io.Closer
 	symbolDBCloser      io.Closer
+	regexIndex          *codesearch.Index
 	cancelCtx           func()
 	uri                 workspaceapi.URI
 	Extensions          atomic.Value
@@ -3452,6 +3519,11 @@ func (hm *workspaceHandler) Close() error {
 		}
 		if hm.symbolDBCloser != nil {
 			if err := hm.symbolDBCloser.Close(); err != nil {
+				ret = multierror.Append(ret, err)
+			}
+		}
+		if hm.regexIndex != nil {
+			if err := hm.regexIndex.Close(); err != nil {
 				ret = multierror.Append(ret, err)
 			}
 		}

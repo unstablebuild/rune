@@ -27,6 +27,7 @@ require (
 	github.com/go-git/go-git/v6 v6.0.0-20250819122726-39261590f7f3
 	github.com/go-jose/go-jose/v4 v4.1.4
 	github.com/go-text/typesetting v0.3.4
+	github.com/google/codesearch v1.3.0-rc.1.0.20260830194954-74a12a911a79
 	github.com/google/go-dap v0.12.0
 	github.com/google/uuid v1.6.0
 	github.com/hajimehoshi/ebiten/v2 v2.7.4
@@ -259,3 +260,5 @@ replace github.com/go-git/go-git/v6 => github.com/unstablebuild/go-git/v6 v6.0.1
 replace github.com/tree-sitter/go-tree-sitter => github.com/unstablebuild/go-tree-sitter v0.25.0-ub.2
 
 replace github.com/hajimehoshi/ebiten/v2 => github.com/unstablebuild/ebiten/v2 v2.7.5-ub.33
+
+replace github.com/google/codesearch => github.com/unstablebuild/codesearch v1.4.0-ub.1
