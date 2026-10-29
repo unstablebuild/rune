@@ -505,18 +505,19 @@ func TestHandlerModalEscReachesForegroundProgram(t *testing.T) {
 	t.Parallel()
 	cfg := DefaultConfig()
 	cfg.Modal = true
+	// The tty echoes esc as ^[ and cat -v prints it back; a bell handshake
+	// would show as ^A^G instead.
+	rows := []string{"$ cat -v", "^[x", "^[x", "▐"}
+	screen := make([]string, 10)
+	for i := range screen {
+		var row string
+		if i < len(rows) {
+			row = rows[i]
+		}
+		screen[i] = fmt.Sprintf("%-20s", row)
+	}
 	cases := []vtetest.Case{
-		{"cat -v><x>",
-			`$ cat -v            
-^[x                 
-^[x                 
-▐                   
-                    
-                    
-                    
-                    
-                    
-                    `},
+		{"cat -v><x>", strings.Join(screen, "\n")},
 	}
 	testSequence(t, cfg, defaultWaitForIdleVte, cases)
 }
