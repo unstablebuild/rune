@@ -369,6 +369,193 @@ func TestHandlerDimensions(t *testing.T) {
 	assert.Equal(t, defaultMaxListHeight+defaultPreviewContextLines+defaultSeparatorHeight, ht)
 }
 
+func TestHandlerDimensionsKeepTheWidestPreview(t *testing.T) {
+	wide := strings.Repeat("w", defaultMinPreviewWidth+20)
+	fc := fileContent{"/narrow.go": "n", "/wide.go": wide, "/wider.go": wide + "er"}
+	h := newTestHandler(t, "echo 'narrow.go:1'", fc, nil)
+	t.Cleanup(func() { _ = h.Close() })
+
+	steps := []struct {
+		focus string
+		want  int
+	}{
+		{"narrow.go:1", defaultMinPreviewWidth},
+		{"wide.go:1", len(wide)},
+		{"narrow.go:1", len(wide)},
+		{"wider.go:1", len(wide) + 2},
+		{"wide.go:1", len(wide) + 2},
+	}
+	for _, s := range steps {
+		h.loadPreview(s.focus)
+		w, _ := h.Dimensions()
+		assert.Equal(t, s.want, w, "after focusing %s the picker does not narrow", s.focus)
+	}
+}
+
+func TestHandlerSource(t *testing.T) {
+	fc := fileContent{"/a.go": "alpha\nbeta"}
+	cfg := DefaultConfig()
+	cfg.PreviewContextLines = 2
+	cfg.Source = func(context.Context) (iterator.Iterator[string], error) {
+		return iterator.FromSlice([]string{"a.go:2: beta", "a.go:1: alpha"}), nil
+	}
+	h := newTestHandler(t, "", fc, nil, cfg)
+	t.Cleanup(func() { _ = h.Close() })
+	waitForScan(t, h)
+
+	expected := strings.TrimPrefix(`
+ alpha                  
+ beta                   
+ ────────────────────── 
+ ▐                  2/2 
+ a.go:2: beta           
+ a.go:1: alpha          `, "\n")
+	handlertest.RunHandlerSequence(t, h, 24, 6, []handlertest.SequenceTestCase{
+		{InputSequence: "", Expected: expected},
+	})
+
+	_, err := New(context.Background(), finder.Clients{}, stubWindow(0), cfg, nil, syncTick, "echo", nil)
+	assert.Error(t, err, "a command and a Source are exclusive")
+}
+
+// attrWriter records the attributes of the cells drawn on it.
+type attrWriter struct {
+	*term.StringWriter
+	attrs map[term.Coordinates]term.Attributes
+}
+
+func (w *attrWriter) SetCell(pos term.Coordinates, c term.Cell) {
+	w.StringWriter.SetCell(pos, c)
+	w.attrs[pos] = c.Attributes()
+}
+
+func (w *attrWriter) UnionAttributes(pos term.Coordinates, a term.Attributes) {
+	w.StringWriter.UnionAttributes(pos, a)
+	w.attrs[pos] = term.AttributesUnion(w.attrs[pos], a)
+}
+
+func TestHandlerAnnotation(t *testing.T) {
+	const entry = "a.go:2: beta gamma"
+	fc := fileContent{"/a.go": "alpha\nbeta gamma\ndelta"}
+	cfg := DefaultConfig()
+	cfg.PreviewContextLines = 3
+	cfg.Label = "FIND"
+	cfg.Source = func(context.Context) (iterator.Iterator[string], error) {
+		return iterator.FromSlice([]string{entry}), nil
+	}
+	focused := Annotation{Status: "score 1.00", Detail: "lines 1–2", First: 1, Last: 2, Terms: []string{"GAMMA"}}
+	cfg.Annotate = func(e string) Annotation {
+		if e != entry {
+			return Annotation{Status: "nothing focused"}
+		}
+		return focused
+	}
+	h := newTestHandler(t, "", fc, nil, cfg)
+	t.Cleanup(func() { _ = h.Close() })
+	waitForScan(t, h)
+
+	w, ht := h.Dimensions()
+	assert.Equal(t, 80, w)
+	assert.Equal(t, defaultMaxListHeight+3+defaultSeparatorHeight+statusBarHeight, ht, "the status bar takes a row")
+
+	tests := []struct {
+		name     string
+		ann      Annotation
+		expected string
+	}{
+		{"status and detail", focused, `
+ alpha                            
+ beta gamma                       
+ delta                            
+ ──────────────────────────────── 
+ ▐                            1/1 
+ a.go:2: beta gamma               
+                                  
+  FIND █▓▒░ score 1.00  lines 1–2 `},
+		{"status cut short before the detail", Annotation{Status: "score 1.00 · words #1", Detail: "line 2", First: 2, Last: 2}, `
+ alpha                            
+ beta gamma                       
+ delta                            
+ ──────────────────────────────── 
+ ▐                            1/1 
+ a.go:2: beta gamma               
+                                  
+  FIND █▓▒░ score 1.00 · … line 2 `},
+		{"error label and only the first line", Annotation{Status: "fell back\nto words", Error: true}, `
+ alpha                            
+ beta gamma                       
+ delta                            
+ ──────────────────────────────── 
+ ▐                            1/1 
+ a.go:2: beta gamma               
+                                  
+  ERROR █▓▒░ fell back            `},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			focused = tt.ann
+			handlertest.RunHandlerSequence(t, h, 34, 8, []handlertest.SequenceTestCase{
+				{InputSequence: "", Expected: strings.TrimPrefix(tt.expected, "\n")},
+			})
+		})
+	}
+
+	focused = Annotation{Status: "score 1.00", First: 1, Last: 2, Terms: []string{"GAMMA"}}
+	aw := &attrWriter{StringWriter: term.NewStringWriter(30, 8), attrs: map[term.Coordinates]term.Attributes{}}
+	h.Resize(30, 8)
+	h.Draw(aw)
+	for x := 1; x <= 10; x++ {
+		attrs := aw.attrs[term.Coordinates{X: x, Y: 1}].Attrs
+		assert.NotZero(t, attrs&term.AttrReverse, "the entry's line is highlighted without a column, x=%d", x)
+		assert.Equal(t, x >= 6, attrs&term.AttrBold != 0, "only the term is emphasized, x=%d", x)
+	}
+	assert.Zero(t, aw.attrs[term.Coordinates{X: 1, Y: 0}].Attrs, "other lines are left alone")
+	shifted := func(a term.Attributes) term.Attributes {
+		a.Attrs |= term.AttrVerticalRenderOffset
+		return a
+	}
+	assert.Equal(t, shifted(labelAttr), aw.attrs[term.Coordinates{X: 1, Y: 7}], "the label")
+	assert.Equal(t, shifted(term.Attributes{Fg: labelAttr.Bg, Bg: statusBarAttr.Bg}),
+		aw.attrs[term.Coordinates{X: 7, Y: 7}], "the label shades into the bar")
+	assert.Equal(t, shifted(statusBarAttr), aw.attrs[term.Coordinates{X: 29, Y: 7}],
+		"the bar spans the handler, shifted onto the frame")
+	assert.Zero(t, aw.attrs[term.Coordinates{X: 29, Y: 6}].Attrs&term.AttrVerticalRenderOffset, "the list is not shifted")
+
+	focused = Annotation{Error: true}
+	h.Draw(aw)
+	assert.Equal(t, shifted(errorLabelAttr), aw.attrs[term.Coordinates{X: 1, Y: 7}], "an error label is red")
+}
+
+func TestTermCells(t *testing.T) {
+	tests := []struct {
+		name  string
+		line  string
+		terms []string
+		want  string
+	}{
+		{"no terms", "retry backoff", nil, ""},
+		{"one term", "retry backoff", []string{"backoff"}, "      xxxxxxx"},
+		{"any case", "Retry BackOff", []string{"retry", "backoff"}, "xxxxx xxxxxxx"},
+		{"every occurrence", "ab ab", []string{"ab"}, "xx xx"},
+		{"overlapping terms", "backoff", []string{"back", "koff"}, "xxxxxxx"},
+		{"empty term", "retry", []string{""}, "     "},
+		{"no match", "retry", []string{"wait"}, "     "},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got strings.Builder
+			for _, marked := range termCells(term.StringToCells(tt.line)[0], tt.terms) {
+				if marked {
+					got.WriteByte('x')
+				} else {
+					got.WriteByte(' ')
+				}
+			}
+			assert.Equal(t, tt.want, got.String())
+		})
+	}
+}
+
 func TestHandlerHighlightTargetLine(t *testing.T) {
 	fc := fileContent{"/a.go": "alpha\nbeta\ngamma"}
 	h := newTestHandler(t, "echo 'a.go:2'", fc, nil)

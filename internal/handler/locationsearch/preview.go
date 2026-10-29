@@ -20,6 +20,9 @@ import (
 	"context"
 	"io"
 	"os"
+	"slices"
+	"strings"
+	"unicode"
 
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/component"
@@ -56,6 +59,9 @@ func (h *Handler) loadPreview(line string) {
 	}
 	content := string(data)
 	h.previewCells = term.StringToCells(content)
+	for _, row := range h.previewCells {
+		h.previewW = max(h.previewW, len(row))
+	}
 	h.targetLine = coords.Y
 	h.targetStartX = coords.X
 	h.targetEndX = coords.X
@@ -101,7 +107,7 @@ func (h *Handler) loadHighlights(
 	})
 }
 
-func (h *Handler) drawPreview(w term.Writer) {
+func (h *Handler) drawPreview(w term.Writer, ann Annotation) {
 	if h.previewCells == nil {
 		return
 	}
@@ -126,8 +132,12 @@ func (h *Handler) drawPreview(w term.Writer) {
 		if srcLine >= len(h.previewCells) {
 			break
 		}
-		isTarget := srcLine == targetLine
+		highlight := srcLine == targetLine && (h.highlightTargetLine || ann.First > 0)
 		cells := h.previewCells[srcLine]
+		var emphasized []bool
+		if ann.First > 0 && srcLine+1 >= ann.First && srcLine+1 <= ann.Last {
+			emphasized = termCells(cells, ann.Terms)
+		}
 		for x := range contentW {
 			var cell term.Cell
 			if x < len(cells) {
@@ -135,16 +145,46 @@ func (h *Handler) drawPreview(w term.Writer) {
 			} else {
 				cell = term.Cell{Ch: ' ', Width: 1}
 			}
-			if isTarget && h.highlightTargetLine {
+			if highlight {
 				cell.SetAttributes(term.AttributesUnion(cell.Attributes(), h.cfg.PreviewAttr))
 				if h.targetStartX < h.targetEndX &&
 					x >= h.targetStartX && x < h.targetEndX {
 					cell.Attrs |= term.AttrReverse
 				}
 			}
+			if x < len(emphasized) && emphasized[x] {
+				cell.SetAttributes(term.AttributesUnion(cell.Attributes(), h.cfg.TermAttr))
+			}
 			w.SetCell(term.Coordinates{X: leftPad + x, Y: row}, cell)
 		}
 	}
+}
+
+// termCells reports which of cells spell one of terms, regardless of
+// case.
+func termCells(cells []term.Cell, terms []string) []bool {
+	if len(terms) == 0 {
+		return nil
+	}
+	line := make([]rune, len(cells))
+	for i, c := range cells {
+		line[i] = unicode.ToLower(c.Ch)
+	}
+	marked := make([]bool, len(cells))
+	for _, t := range terms {
+		word := []rune(strings.ToLower(t))
+		if len(word) == 0 {
+			continue
+		}
+		for i := 0; i+len(word) <= len(line); i++ {
+			if slices.Equal(line[i:i+len(word)], word) {
+				for j := range word {
+					marked[i+j] = true
+				}
+			}
+		}
+	}
+	return marked
 }
 
 func (h *Handler) drawSeparator(w term.Writer) {
