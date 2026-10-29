@@ -19,6 +19,7 @@ package agentools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"regexp"
@@ -26,7 +27,9 @@ import (
 
 	"github.com/unstablebuild/blue/iterator"
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
+	"github.com/unstablebuild/rune-go-sdk/api/searchapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	sdkiterator "github.com/unstablebuild/rune-go-sdk/iterator"
 	"unstable.build/rune/cmd/rune-agent/agent"
 	"unstable.build/rune/internal/workspace/walkdir"
 )
@@ -34,10 +37,11 @@ import (
 const maxSearchResults = 200
 
 type searchTool struct {
-	fs      workspaceapi.FileSystem
-	cwd     workspaceapi.URI
-	tracker *FileTracker
-	filter  walkdir.Filter
+	fs       workspaceapi.FileSystem
+	cwd      workspaceapi.URI
+	tracker  *FileTracker
+	filter   walkdir.Filter
+	searcher searchapi.Searcher
 }
 
 type searchArgs struct {
@@ -46,8 +50,14 @@ type searchArgs struct {
 	Include string `json:"include"`
 }
 
-func newSearch(wfs workspaceapi.FileSystem, cwd workspaceapi.URI, tracker *FileTracker, filter walkdir.Filter) agent.Tool {
-	return &searchTool{fs: wfs, cwd: cwd, tracker: tracker, filter: filter}
+func newSearch(
+	wfs workspaceapi.FileSystem, cwd workspaceapi.URI, tracker *FileTracker,
+	filter walkdir.Filter, searcher searchapi.Searcher,
+) agent.Tool {
+	if searcher == nil {
+		panic("agentools.newSearch: searcher must not be nil; pass NoIndex() when there is no index")
+	}
+	return &searchTool{fs: wfs, cwd: cwd, tracker: tracker, filter: filter, searcher: searcher}
 }
 
 func (t *searchTool) NeedsDeterministicOrder() bool { return false }
@@ -61,7 +71,7 @@ func (t *searchTool) Definition() llmapi.Tool {
 Recursively walks the directory tree starting from path (defaults to
 workspace root), skipping .git, node_modules, and vendor directories as
 well as gitignored and editor swap files. Binary files are automatically
-excluded.
+excluded. Hidden folders are searched only when path points into one.
 
 Returns matching lines formatted as "filepath:line:content", one per
 line, capped at 200 matches. The filepath is relative to the workspace
@@ -115,6 +125,75 @@ var skipDirs = map[string]bool{
 	"vendor":       true,
 }
 
+// inSkipDir reports whether the file at rel lies in one of skipDirs.
+func inSkipDir(rel string) bool {
+	for _, part := range strings.Split(filepath.Dir(rel), string(filepath.Separator)) {
+		if skipDirs[part] {
+			return true
+		}
+	}
+	return false
+}
+
+// NoIndex returns a Searcher for a workspace without an index. The
+// search tools then walk the files themselves.
+func NoIndex() searchapi.Searcher { return noIndex{} }
+
+type noIndex struct{}
+
+func (noIndex) RegexpSearch(context.Context, searchapi.RegexpRequest) (sdkiterator.Iterator[searchapi.RegexpResult], error) {
+	return nil, searchapi.ErrUnsupported
+}
+
+func (noIndex) SemanticSearch(context.Context, searchapi.SemanticRequest) (sdkiterator.Iterator[searchapi.SemanticResult], error) {
+	return nil, searchapi.ErrUnsupported
+}
+
+// within reports whether path is dir or lies below it.
+func within(dir, path string) bool {
+	rel, err := filepath.Rel(dir, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// indexedSearch runs req against the workspace index and passes each
+// line it reports to yield, with its path relative to cwd, until yield
+// returns false. Lines inside skipDirs are dropped. answered is false
+// when the index reported ErrUnsupported before any line, so the
+// caller has to walk the files itself.
+func indexedSearch(
+	ctx context.Context, s searchapi.Searcher, fs workspaceapi.FileSystem, cwd workspaceapi.URI,
+	req searchapi.RegexpRequest, yield func(rel string, r searchapi.RegexpResult) bool,
+) (answered bool, err error) {
+	it, err := s.RegexpSearch(ctx, req)
+	if err != nil {
+		return !errors.Is(err, searchapi.ErrUnsupported), err
+	}
+	defer func() { _ = it.Close() }()
+	// Results are relative to the workspace root, which differs from
+	// cwd when a headless run starts in a subfolder.
+	wsRoot, err := fs.URI(".")
+	if err != nil {
+		return true, fmt.Errorf("workspace root: %w", err)
+	}
+	received := false
+	for {
+		r, ok := it.Next(ctx)
+		if !ok {
+			break
+		}
+		received = true
+		rel, err := filepath.Rel(cwd.Path(), filepath.Join(wsRoot.Path(), filepath.FromSlash(r.Path)))
+		if err != nil || inSkipDir(rel) {
+			continue
+		}
+		if !yield(rel, r) {
+			return true, nil
+		}
+	}
+	err = it.Err()
+	return received || !errors.Is(err, searchapi.ErrUnsupported), err
+}
+
 func (t *searchTool) Execute(ctx context.Context, arguments string) agent.ToolResult {
 	var args searchArgs
 	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
@@ -130,57 +209,20 @@ func (t *searchTool) Execute(ctx context.Context, arguments string) agent.ToolRe
 	if args.Path != "" {
 		root = resolvePath(t.cwd, args.Path)
 	}
-	walkCtx := walkdir.WithContextFilter(boundedWalkdirContext(ctx), t.filter)
 	wsRoot := t.cwd.Path()
 
-	paths, err := listToolFiles(walkCtx, t.fs, t.cwd, root, t.filter)
-	if err != nil {
-		return agent.ToolResult{Content: fmt.Sprintf("error: listing files: %v", err), IsError: true}
+	var (
+		results   []string
+		truncated bool
+		answered  bool
+	)
+	if within(wsRoot, root) {
+		results, truncated, answered, err = t.searchIndex(ctx, root, args)
 	}
-
-	filtered := iterator.Filter(paths, func(path string) bool {
-		for _, part := range strings.Split(filepath.Dir(path), string(filepath.Separator)) {
-			if skipDirs[part] {
-				return false
-			}
-		}
-		if args.Include != "" {
-			matched, _ := filepath.Match(args.Include, filepath.Base(path))
-			if !matched {
-				return false
-			}
-		}
-		return !pathIsBinary(t.fs, filepath.Join(wsRoot, path))
-	})
-
-	lines, err := walkdir.ReadLines(walkCtx, t.fs, filtered)
-	if err != nil {
-		return agent.ToolResult{Content: fmt.Sprintf("error: reading files: %v", err), IsError: true}
+	if !answered {
+		results, truncated, err = t.walk(ctx, re, root, args)
 	}
-	defer func() { _ = lines.Close() }()
-
-	var results []string
-	truncated := false
-	for {
-		line, ok := lines.Next(ctx)
-		if !ok {
-			break
-		}
-		content := contentAfterLineNum(line)
-		if re.MatchString(content) {
-			results = append(results, line)
-			if len(results) >= maxSearchResults {
-				truncated = true
-				break
-			}
-		}
-	}
-
-	var iterErr error
-	if !truncated {
-		iterErr = lines.Err()
-	}
-	warning, fatal := walkIterErr(ctx, iterErr, len(results))
+	warning, fatal := walkIterErr(ctx, err, len(results))
 	if fatal {
 		return agent.ToolResult{Content: warning, IsError: true}
 	}
@@ -211,6 +253,64 @@ func (t *searchTool) Execute(ctx context.Context, arguments string) agent.ToolRe
 		output += "\n\n" + warning
 	}
 	return agent.ToolResult{Content: output}
+}
+
+// searchIndex reports answered false when the index cannot serve the
+// search, so Execute walks the files instead.
+func (t *searchTool) searchIndex(ctx context.Context, root string, args searchArgs) (results []string, truncated, answered bool, err error) {
+	req := searchapi.RegexpRequest{Pattern: args.Pattern, Roots: []string{root}}
+	if args.Include != "" {
+		req.Include = []string{args.Include}
+	}
+	answered, err = indexedSearch(ctx, t.searcher, t.fs, t.cwd, req, func(rel string, r searchapi.RegexpResult) bool {
+		results = append(results, fmt.Sprintf("%s:%d:%s", rel, r.Line, r.Text))
+		truncated = len(results) >= maxSearchResults
+		return !truncated
+	})
+	return results, truncated, answered, err
+}
+
+func (t *searchTool) walk(ctx context.Context, re *regexp.Regexp, root string, args searchArgs) (results []string, truncated bool, err error) {
+	walkCtx := walkdir.WithContextFilter(boundedWalkdirContext(ctx), t.filter)
+	wsRoot := t.cwd.Path()
+
+	paths, err := listToolFiles(walkCtx, t.fs, t.cwd, root, t.filter)
+	if err != nil {
+		return nil, false, fmt.Errorf("listing files: %w", err)
+	}
+
+	filtered := iterator.Filter(paths, func(path string) bool {
+		if inSkipDir(path) {
+			return false
+		}
+		if args.Include != "" {
+			matched, _ := filepath.Match(args.Include, filepath.Base(path))
+			if !matched {
+				return false
+			}
+		}
+		return !pathIsBinary(t.fs, filepath.Join(wsRoot, path))
+	})
+
+	lines, err := walkdir.ReadLines(walkCtx, t.fs, filtered)
+	if err != nil {
+		return nil, false, fmt.Errorf("reading files: %w", err)
+	}
+	defer func() { _ = lines.Close() }()
+
+	for {
+		line, ok := lines.Next(ctx)
+		if !ok {
+			break
+		}
+		if re.MatchString(contentAfterLineNum(line)) {
+			results = append(results, line)
+			if len(results) >= maxSearchResults {
+				return results, true, nil
+			}
+		}
+	}
+	return results, false, lines.Err()
 }
 
 // contentAfterLineNum extracts the content portion from a "path:linenum:content" line.

@@ -485,9 +485,9 @@ func TestProviderContentSearch(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "literal.txt"), []byte("other\nneedle configuration value\n"), 0o644))
 	fs := testLocalFS{root: dir}
 	cwd := dirURI(dir)
-	tools, tracker := agentools.DefaultTools(fs, testLocalExec{}, cwd, nil, agentools.Config{}, configedit.NopConfig())
+	tools, tracker := agentools.DefaultTools(fs, testLocalExec{}, cwd, nil, agentools.NoIndex(), agentools.Config{}, configedit.NopConfig())
 	registry := agent.NewRegistry(tools...)
-	registerOpenAITools(registry, fs, cwd, tracker, nil, configedit.NopConfig())
+	registerOpenAITools(registry, fs, cwd, agentools.NoIndex(), tracker, nil, configedit.NopConfig())
 	for _, provider := range []string{"openai", "codex", "anthropic"} {
 		t.Run(provider, func(t *testing.T) {
 			tool, ok := registry.Get("search_content", provider)
@@ -511,9 +511,9 @@ func TestProviderContentSearch(t *testing.T) {
 func TestRegisterOpenAIToolsKeepsCompact(t *testing.T) {
 	dir := t.TempDir()
 	fs, cwd := testLocalFS{root: dir}, dirURI(dir)
-	tools, tracker := agentools.DefaultTools(fs, testLocalExec{}, cwd, nil, agentools.Config{}, configedit.NopConfig())
+	tools, tracker := agentools.DefaultTools(fs, testLocalExec{}, cwd, nil, agentools.NoIndex(), agentools.Config{}, configedit.NopConfig())
 	registry := agent.NewRegistry(tools...)
-	registerOpenAITools(registry, fs, cwd, tracker, nil, configedit.NopConfig())
+	registerOpenAITools(registry, fs, cwd, agentools.NoIndex(), tracker, nil, configedit.NopConfig())
 	for _, provider := range []string{"openai", "codex", "anthropic"} {
 		t.Run(provider, func(t *testing.T) {
 			_, ok := registry.Get("compact", provider)
@@ -1925,9 +1925,9 @@ func TestChatRepeatedReadRequestsReturnToolErrors(t *testing.T) {
 			mu := new(sync.Mutex)
 			dhandler, tx, rx := dialoguetui.Handler(ctx, mu, comp, interrupter)
 			fs, cwd := testLocalFS{root: dir}, dirURI(dir)
-			tools, tracker := agentools.DefaultTools(fs, testLocalExec{}, cwd, nil, agentools.Config{}, configedit.NopConfig())
+			tools, tracker := agentools.DefaultTools(fs, testLocalExec{}, cwd, nil, agentools.NoIndex(), agentools.Config{}, configedit.NopConfig())
 			registry := agent.NewRegistry(tools...)
-			registerOpenAITools(registry, fs, cwd, tracker, nil, configedit.NopConfig())
+			registerOpenAITools(registry, fs, cwd, agentools.NoIndex(), tracker, nil, configedit.NopConfig())
 			skillReg := skills.NewRegistry(fs, cwd, nil, nil)
 			store := newMemDialogueStore()
 			ag := agent.NewAgent(svc, registry, skillReg, store, agent.NoMemory(), agent.Config{

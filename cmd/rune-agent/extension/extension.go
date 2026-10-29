@@ -156,6 +156,7 @@ var (
 		extensionapi.PermissionSyntaxTree,
 		extensionapi.PermissionLSP,
 		extensionapi.PermissionLLM,
+		extensionapi.PermissionSearch,
 	}
 )
 

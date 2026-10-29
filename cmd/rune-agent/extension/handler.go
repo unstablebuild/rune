@@ -49,6 +49,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/api/extensionapi"
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
+	"github.com/unstablebuild/rune-go-sdk/api/searchapi"
 	"github.com/unstablebuild/rune-go-sdk/api/semanticapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
 	"github.com/unstablebuild/rune-go-sdk/api/syntaxapi"
@@ -263,12 +264,16 @@ var (
 	}
 )
 
-func registerOpenAITools(registry *agent.Registry, fs workspaceapi.FileSystem, cwd workspaceapi.URI, tracker *agentools.FileTracker, sessions *agentools.SessionManager, cfg configedit.Config) {
+func registerOpenAITools(
+	registry *agent.Registry, fs workspaceapi.FileSystem, cwd workspaceapi.URI,
+	searcher searchapi.Searcher, tracker *agentools.FileTracker,
+	sessions *agentools.SessionManager, cfg configedit.Config,
+) {
 	for _, provider := range []string{"openai", "codex"} {
 		registry.RegisterOverrides(provider,
 			agentools.NewListDir(fs, cwd),
 			agentools.NewWriteStdin(sessions),
-			agentools.NewGrepFiles(fs, cwd, tracker),
+			agentools.NewGrepFiles(fs, cwd, tracker, searcher),
 		)
 		registry.RegisterReplacement(provider, "bash",
 			agentools.NewExecCommand(sessions, cwd, cfg))
@@ -344,8 +349,9 @@ func newCommandEventHandler(
 	}
 
 	lsp := w.LSP(ctx)
+	searcher := w.Search(ctx)
 	cfg := configedit.NewConfig(fs, cwd, pconfig)
-	tools, tracker := agentools.DefaultTools(fs, executor, cwd, lsp, toolsCfg, cfg)
+	tools, tracker := agentools.DefaultTools(fs, executor, cwd, lsp, searcher, toolsCfg, cfg)
 
 	parser := w.Parser(ctx)
 	tools = append(tools, agentools.LSPTools(lsp, fs, parser, cwd, tracker)...)
@@ -388,7 +394,7 @@ func newCommandEventHandler(
 	ret.toolRegistry = agent.NewRegistry(tools...)
 	ret.executor = executor
 	ret.sessionMgr = agentools.NewSessionManager(ret.ctx, executor, terminal)
-	registerOpenAITools(ret.toolRegistry, fs, cwd, tracker, ret.sessionMgr, cfg)
+	registerOpenAITools(ret.toolRegistry, fs, cwd, searcher, tracker, ret.sessionMgr, cfg)
 	geminitools.Register(ret.toolRegistry)
 	ret.systemPrompt = agent.DefaultSystemPrompt(cwd)
 	ret.attribution = agent.DefaultAttribution()

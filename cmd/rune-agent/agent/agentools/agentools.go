@@ -19,6 +19,7 @@ package agentools
 import (
 	"log/slog"
 
+	"github.com/unstablebuild/rune-go-sdk/api/searchapi"
 	"github.com/unstablebuild/rune-go-sdk/api/semanticapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"unstable.build/rune/cmd/rune-agent/agent"
@@ -44,16 +45,23 @@ type Config struct {
 // invocations (read force_builtin_tools, prompt the user, persist
 // "Always"/"Never" choices). Tests that have no workspace
 // configuration should pass configedit.NopConfig().
+//
+// searcher is mandatory too: search_content searches through it when
+// it can. Pass NoIndex() for a workspace without an index.
 func DefaultTools(
 	fs workspaceapi.FileSystem,
 	exec workspaceapi.Executor,
 	cwd workspaceapi.URI,
 	lsp semanticapi.LSP,
+	searcher searchapi.Searcher,
 	toolsCfg Config,
 	cfg configedit.Config,
 ) ([]agent.Tool, *FileTracker) {
 	if cfg == nil {
 		panic("agentools.DefaultTools: cfg must not be nil; pass configedit.NopConfig() in tests")
+	}
+	if searcher == nil {
+		panic("agentools.DefaultTools: searcher must not be nil; pass NoIndex() when there is no index")
 	}
 	tracker := NewFileTracker()
 	// Match the IDE fuzzy finder: skip .gitignore'd and swap files in the
@@ -68,7 +76,7 @@ func DefaultTools(
 	return []agent.Tool{
 		newReadFile(fs, cwd, tracker, toolsCfg.MaxLineBytes),
 		newApplyPatch(fs, cwd, tracker, lsp),
-		newSearch(fs, cwd, tracker, ignore),
+		newSearch(fs, cwd, tracker, ignore, searcher),
 		newFindFiles(fs, cwd, tracker, ignore),
 		newBash(exec, cwd, cfg),
 		newCompact(),

@@ -43,8 +43,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
+	"github.com/unstablebuild/rune-go-sdk/api/searchapi"
 	"github.com/unstablebuild/rune-go-sdk/api/semanticapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	sdkiterator "github.com/unstablebuild/rune-go-sdk/iterator"
 	"unstable.build/rune/cmd/rune-agent/agent"
 	"unstable.build/rune/cmd/rune-agent/configedit"
 	"unstable.build/rune/internal/ide/vctrl"
@@ -149,7 +151,7 @@ func dirURI(dir string) workspaceapi.URI {
 }
 
 func TestDefaultTools(t *testing.T) {
-	tools, tracker := DefaultTools(localFS{}, localExec{}, dirURI("/workspace"), nil, Config{}, configedit.NopConfig())
+	tools, tracker := DefaultTools(localFS{}, localExec{}, dirURI("/workspace"), nil, NoIndex(), Config{}, configedit.NopConfig())
 	require.Len(t, tools, 6)
 	require.NotNil(t, tracker)
 
@@ -195,7 +197,7 @@ func TestDefinitions(t *testing.T) {
 	}{
 		{"read_file", newReadFile(fs, dirURI(dir), NewFileTracker(), 0), "read_file"},
 		{"apply_patch", newApplyPatch(fs, dirURI(dir), NewFileTracker(), &stubLSP{}), "apply_patch"},
-		{"search_content", newSearch(fs, dirURI(dir), NewFileTracker(), nil), "search_content"},
+		{"search_content", newSearch(fs, dirURI(dir), NewFileTracker(), nil, NoIndex()), "search_content"},
 		{"find_files", newFindFiles(fs, dirURI(dir), NewFileTracker(), nil), "find_files"},
 		{"list_dir", NewListDir(fs, dirURI(dir)), "list_dir"},
 		{"bash", newBash(ex, dirURI(dir), configedit.NopConfig()), "bash"},
@@ -230,7 +232,7 @@ func TestToolDescriptionsCrossReferenceSemanticSkills(t *testing.T) {
 		},
 		{
 			"search_content mentions search_symbols and find_definition tools",
-			newSearch(fs, dirURI(dir), NewFileTracker(), nil),
+			newSearch(fs, dirURI(dir), NewFileTracker(), nil, NoIndex()),
 			[]string{"search_symbols", "find_definition"},
 		},
 	}
@@ -266,9 +268,9 @@ func TestSummary(t *testing.T) {
 		{"apply_patch multi file", newApplyPatch(fs, dirURI(dir), NewFileTracker(), &stubLSP{}), `{"patch":"*** Begin Patch\n*** Add File: a.go\n+pkg\n*** Delete File: b.go\n*** End Patch"}`, "a.go, b.go"},
 		{"apply_patch invalid json", newApplyPatch(fs, dirURI(dir), NewFileTracker(), &stubLSP{}), `bad`, ""},
 		// search_content
-		{"search pattern only", newSearch(fs, dirURI(dir), NewFileTracker(), nil), `{"pattern":"TODO"}`, `"TODO"`},
-		{"search with path", newSearch(fs, dirURI(dir), NewFileTracker(), nil), `{"pattern":"TODO","path":"src"}`, `"TODO" in src`},
-		{"search invalid json", newSearch(fs, dirURI(dir), NewFileTracker(), nil), `bad`, ""},
+		{"search pattern only", newSearch(fs, dirURI(dir), NewFileTracker(), nil, NoIndex()), `{"pattern":"TODO"}`, `"TODO"`},
+		{"search with path", newSearch(fs, dirURI(dir), NewFileTracker(), nil, NoIndex()), `{"pattern":"TODO","path":"src"}`, `"TODO" in src`},
+		{"search invalid json", newSearch(fs, dirURI(dir), NewFileTracker(), nil, NoIndex()), `bad`, ""},
 		// find_files
 		{"find pattern only", newFindFiles(fs, dirURI(dir), NewFileTracker(), nil), `{"pattern":"*.go"}`, `"*.go"`},
 		{"find with path", newFindFiles(fs, dirURI(dir), NewFileTracker(), nil), `{"pattern":"*.go","path":"lib"}`, `"*.go" in lib`},
@@ -1074,10 +1076,247 @@ func TestSearch(t *testing.T) {
 				require.NoError(t, err)
 				filter = m
 			}
-			tool := newSearch(localFS{root: dir}, dirURI(dir), NewFileTracker(), filter)
+			tool := newSearch(localFS{root: dir}, dirURI(dir), NewFileTracker(), filter, NoIndex())
 
 			result := tool.Execute(context.Background(), tt.args)
 			tt.assertFn(t, result)
+		})
+	}
+}
+
+// fakeSearcher answers RegexpSearch with results, failing the call with
+// err or the iterator with iterErr, and records what it was asked.
+type fakeSearcher struct {
+	results []searchapi.RegexpResult
+	err     error
+	iterErr error
+
+	reqs   []searchapi.RegexpRequest
+	served int
+	closed bool
+}
+
+func (f *fakeSearcher) RegexpSearch(_ context.Context, req searchapi.RegexpRequest) (sdkiterator.Iterator[searchapi.RegexpResult], error) {
+	f.reqs = append(f.reqs, req)
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &fakeResults{f: f}, nil
+}
+
+func (f *fakeSearcher) SemanticSearch(context.Context, searchapi.SemanticRequest) (sdkiterator.Iterator[searchapi.SemanticResult], error) {
+	return nil, searchapi.ErrUnsupported
+}
+
+type fakeResults struct{ f *fakeSearcher }
+
+func (r *fakeResults) Next(context.Context) (searchapi.RegexpResult, bool) {
+	if r.f.served >= len(r.f.results) {
+		return searchapi.RegexpResult{}, false
+	}
+	r.f.served++
+	return r.f.results[r.f.served-1], true
+}
+
+func (r *fakeResults) Err() error {
+	if r.f.served < len(r.f.results) {
+		return nil
+	}
+	return r.f.iterErr
+}
+
+func (r *fakeResults) Close() error {
+	r.f.closed = true
+	return nil
+}
+
+func TestSearch_index(t *testing.T) {
+	many := make([]searchapi.RegexpResult, 250)
+	for i := range many {
+		many[i] = searchapi.RegexpResult{Path: "hello.txt", Line: i + 1, Text: "hello"}
+	}
+
+	tests := []struct {
+		name     string
+		args     string
+		searcher fakeSearcher
+		// wantRoots is relative to the workspace, or nil when the index
+		// must not be asked.
+		wantRoots   []string
+		wantInclude []string
+		wantError   bool
+		want        []string
+		notWant     []string
+		wantServed  int
+	}{
+		{
+			name:      "empty path searches the workspace",
+			args:      `{"pattern":"hello","path":null,"include":null}`,
+			searcher:  fakeSearcher{results: []searchapi.RegexpResult{{Path: "hello.txt", Line: 1, Text: "hello world"}}},
+			wantRoots: []string{"."},
+			want:      []string{"hello.txt:1:hello world"},
+		},
+		{
+			name:      "relative path",
+			args:      `{"pattern":"Foo","path":"sub","include":null}`,
+			searcher:  fakeSearcher{results: []searchapi.RegexpResult{{Path: "sub/nested.go", Line: 3, Text: "func Foo() {}"}}},
+			wantRoots: []string{"sub"},
+			want:      []string{filepath.Join("sub", "nested.go") + ":3:func Foo() {}"},
+		},
+		{
+			name:      "absolute path inside the workspace",
+			args:      `{"pattern":"Foo","path":"$DIR/sub/nested.go","include":null}`,
+			searcher:  fakeSearcher{results: []searchapi.RegexpResult{{Path: "sub/nested.go", Line: 3, Text: "func Foo() {}"}}},
+			wantRoots: []string{"sub/nested.go"},
+			want:      []string{filepath.Join("sub", "nested.go") + ":3:func Foo() {}"},
+		},
+		{
+			name:        "include is forwarded",
+			args:        `{"pattern":"Foo","path":null,"include":"*.go"}`,
+			searcher:    fakeSearcher{results: []searchapi.RegexpResult{{Path: "sub/nested.go", Line: 3, Text: "func Foo() {}"}}},
+			wantRoots:   []string{"."},
+			wantInclude: []string{"*.go"},
+			want:        []string{"nested.go:3:func Foo() {}"},
+		},
+		{
+			name: "skip dirs are dropped",
+			args: `{"pattern":"needle","path":null,"include":null}`,
+			searcher: fakeSearcher{results: []searchapi.RegexpResult{
+				{Path: "vendor/lib.go", Line: 1, Text: "needle"},
+				{Path: "web/node_modules/pkg/index.js", Line: 1, Text: "needle"},
+				{Path: ".git/config", Line: 1, Text: "needle"},
+				{Path: "kept.go", Line: 2, Text: "needle"},
+			}},
+			wantRoots: []string{"."},
+			want:      []string{"kept.go:2:needle"},
+			notWant:   []string{"vendor", "node_modules", ".git"},
+		},
+		{
+			name:       "stops at the result cap",
+			args:       `{"pattern":"hello","path":null,"include":null}`,
+			searcher:   fakeSearcher{results: many},
+			wantRoots:  []string{"."},
+			want:       []string{"hello.txt:200:hello", "(results truncated at 200 matches)"},
+			notWant:    []string{"hello.txt:201:hello"},
+			wantServed: maxSearchResults,
+		},
+		{
+			name:     "path outside the workspace walks without the index",
+			args:     `{"pattern":"elsewhere","path":"$OUT","include":null}`,
+			searcher: fakeSearcher{results: []searchapi.RegexpResult{{Path: "wrong.txt", Line: 1, Text: "elsewhere"}}},
+			want:     []string{"outside.txt:1:elsewhere"},
+			notWant:  []string{"wrong.txt"},
+		},
+		{
+			name:      "unsupported call walks",
+			args:      `{"pattern":"hello","path":null,"include":null}`,
+			searcher:  fakeSearcher{err: fmt.Errorf("no index: %w", searchapi.ErrUnsupported)},
+			wantRoots: []string{"."},
+			want:      []string{"hello.txt:1:hello world"},
+		},
+		{
+			name:      "unsupported stream walks",
+			args:      `{"pattern":"hello","path":null,"include":null}`,
+			searcher:  fakeSearcher{iterErr: searchapi.ErrUnsupported},
+			wantRoots: []string{"."},
+			want:      []string{"hello.txt:1:hello world"},
+		},
+		{
+			name:      "index error is surfaced",
+			args:      `{"pattern":"hello","path":null,"include":null}`,
+			searcher:  fakeSearcher{err: errors.New("index is broken")},
+			wantRoots: []string{"."},
+			wantError: true,
+			want:      []string{"index is broken"},
+		},
+		{
+			name: "index error after results is a warning",
+			args: `{"pattern":"hello","path":null,"include":null}`,
+			searcher: fakeSearcher{
+				results: []searchapi.RegexpResult{{Path: "hello.txt", Line: 1, Text: "hello world"}},
+				iterErr: errors.New("stream broke"),
+			},
+			wantRoots: []string{"."},
+			want:      []string{"hello.txt:1:hello world", "warning", "stream broke"},
+		},
+		{
+			name:      "no index results",
+			args:      `{"pattern":"hello","path":null,"include":null}`,
+			searcher:  fakeSearcher{},
+			wantRoots: []string{"."},
+			want:      []string{"no matches found"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := setupWorkspace(t)
+			out := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(out, "outside.txt"), []byte("elsewhere\n"), 0o644))
+			args := strings.NewReplacer("$DIR", dir, "$OUT", out).Replace(tt.args)
+
+			searcher := tt.searcher
+			tracker := NewFileTracker()
+			tool := newSearch(localFS{root: dir}, dirURI(dir), tracker, nil, &searcher)
+			ctx := agent.WithParentToolCallID(t.Context(), "search_1")
+			result := tool.Execute(ctx, args)
+
+			assert.Equal(t, tt.wantError, result.IsError, result.Content)
+			for _, want := range tt.want {
+				assert.Contains(t, result.Content, want)
+			}
+			for _, notWant := range tt.notWant {
+				assert.NotContains(t, result.Content, notWant)
+			}
+			if tt.wantRoots == nil {
+				assert.Empty(t, searcher.reqs)
+				return
+			}
+			wantRoots := make([]string, len(tt.wantRoots))
+			for i, root := range tt.wantRoots {
+				wantRoots[i] = filepath.Join(dir, root)
+			}
+			require.Len(t, searcher.reqs, 1)
+			assert.Equal(t, searchapi.RegexpRequest{
+				Pattern: searcher.reqs[0].Pattern,
+				Roots:   wantRoots,
+				Include: tt.wantInclude,
+			}, searcher.reqs[0])
+			if tt.searcher.err == nil {
+				assert.True(t, searcher.closed)
+			}
+			if tt.wantServed > 0 {
+				assert.Equal(t, tt.wantServed, searcher.served)
+			}
+		})
+	}
+}
+
+func TestSearch_indexTracksDiscovery(t *testing.T) {
+	dir := setupWorkspace(t)
+	tracker := NewFileTracker()
+	searcher := &fakeSearcher{results: []searchapi.RegexpResult{{Path: "sub/nested.go", Line: 3, Text: "func Foo() {}"}}}
+	tool := newSearch(localFS{root: dir}, dirURI(dir), tracker, nil, searcher)
+
+	result := tool.Execute(agent.WithParentToolCallID(t.Context(), "search_1"), `{"pattern":"Foo"}`)
+
+	require.False(t, result.IsError, result.Content)
+	assert.Equal(t, []string{"search_1"}, tracker.ConsumeDiscoveries(filepath.Join(dir, "sub", "nested.go")))
+}
+
+func TestSearchTools_nilSearcherPanics(t *testing.T) {
+	tests := []struct {
+		name string
+		fn   func()
+	}{
+		{"DefaultTools", func() {
+			DefaultTools(localFS{}, localExec{}, dirURI("/workspace"), nil, nil, Config{}, configedit.NopConfig())
+		}},
+		{"search_content", func() { newSearch(localFS{}, dirURI("/workspace"), NewFileTracker(), nil, nil) }},
+		{"grep_files", func() { NewGrepFiles(localFS{}, dirURI("/workspace"), NewFileTracker(), nil) }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Panics(t, tt.fn)
 		})
 	}
 }
@@ -1729,7 +1968,7 @@ func TestSearchTools_explicitFilePath(t *testing.T) {
 	}{
 		{
 			"search_content",
-			newSearch(localFS{root: dir}, dirURI(dir), NewFileTracker(), nil),
+			newSearch(localFS{root: dir}, dirURI(dir), NewFileTracker(), nil, NoIndex()),
 			`{"pattern":"needle","path":"target.txt","include":null}`,
 		},
 		{
@@ -1739,7 +1978,7 @@ func TestSearchTools_explicitFilePath(t *testing.T) {
 		},
 		{
 			"grep_files",
-			NewGrepFiles(localFS{root: dir}, dirURI(dir), NewFileTracker()),
+			NewGrepFiles(localFS{root: dir}, dirURI(dir), NewFileTracker(), NoIndex()),
 			`{"pattern":"needle","path":"target.txt"}`,
 		},
 	}
@@ -1760,7 +1999,7 @@ func TestSearchContent_skipsBinaryFiles(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "text.txt"),
 		[]byte("needle in text\n"), 0o644))
 
-	tool := newSearch(localFS{root: dir}, dirURI(dir), NewFileTracker(), nil)
+	tool := newSearch(localFS{root: dir}, dirURI(dir), NewFileTracker(), nil, NoIndex())
 	result := tool.Execute(t.Context(), `{"pattern":"needle","path":"","include":null}`)
 
 	require.False(t, result.IsError, result.Content)
@@ -1777,7 +2016,7 @@ func TestSearchTools_canceledContext(t *testing.T) {
 	}{
 		{
 			"search_content",
-			newSearch(localFS{root: dir}, dirURI(dir), NewFileTracker(), nil),
+			newSearch(localFS{root: dir}, dirURI(dir), NewFileTracker(), nil, NoIndex()),
 			`{"pattern":"hello","path":"","include":null}`,
 		},
 		{
@@ -1787,7 +2026,7 @@ func TestSearchTools_canceledContext(t *testing.T) {
 		},
 		{
 			"grep_files",
-			NewGrepFiles(localFS{root: dir}, dirURI(dir), NewFileTracker()),
+			NewGrepFiles(localFS{root: dir}, dirURI(dir), NewFileTracker(), NoIndex()),
 			`{"pattern":"hello"}`,
 		},
 	}
@@ -1821,7 +2060,7 @@ func TestSearchContent_cancelDuringSearch(t *testing.T) {
 		close(fs.release)
 	}()
 
-	tool := newSearch(fs, dirURI(dir), NewFileTracker(), nil)
+	tool := newSearch(fs, dirURI(dir), NewFileTracker(), nil, NoIndex())
 	result := tool.Execute(ctx, `{"pattern":"needle","path":"","include":null}`)
 
 	assert.True(t, result.IsError, result.Content)
@@ -1830,7 +2069,7 @@ func TestSearchContent_cancelDuringSearch(t *testing.T) {
 
 func TestDefaultTools_wiresApplyPatchLSP(t *testing.T) {
 	lsp := &stubLSP{}
-	tools, _ := DefaultTools(localFS{}, localExec{}, dirURI("/workspace"), lsp, Config{}, configedit.NopConfig())
+	tools, _ := DefaultTools(localFS{}, localExec{}, dirURI("/workspace"), lsp, NoIndex(), Config{}, configedit.NopConfig())
 
 	// Verify the apply_patch tool got the lsp reference.
 	var found bool

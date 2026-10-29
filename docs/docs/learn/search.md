@@ -170,8 +170,8 @@ search:
 },
 ```
 
-The same index answers [`runectl search regexp`](../develop/runectl.md)
-from a Rune terminal:
+The same index answers the agent's `search_content` tool, and
+[`runectl search regexp`](../develop/runectl.md) from a Rune terminal:
 
 ```
 runectl search regexp -g '*.go' 'func\s+New\w*\('
