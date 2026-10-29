@@ -38,7 +38,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/pkgapi"
+	"github.com/unstablebuild/rune-go-sdk/api/searchapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"github.com/unstablebuild/rune-go-sdk/iterator"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -345,6 +347,65 @@ func TestExtensionPackagesPermission(t *testing.T) {
 				assert.ErrorIs(t, err, tc.wantErr)
 			default:
 				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestExtensionSearchPermission(t *testing.T) {
+	results := []searchapi.RegexpResult{
+		{Path: "retry/backoff.go", Line: 3, Text: "func Backoff() {}", Spans: [][2]int{{5, 12}}},
+	}
+	tests := []struct {
+		name     string
+		answer   string
+		searcher stubSearcher
+		want     []searchapi.RegexpResult
+		wantErr  error
+		wantCode codes.Code
+	}{
+		{
+			name:     "granted",
+			answer:   ideauthorizer.PromptOptionYes,
+			searcher: stubSearcher{results: results},
+			want:     results,
+		},
+		{
+			name:     "denied",
+			answer:   ideauthorizer.PromptOptionNo,
+			searcher: stubSearcher{results: results},
+			wantCode: codes.PermissionDenied,
+		},
+		{
+			name:     "unsupported",
+			answer:   ideauthorizer.PromptOptionYes,
+			searcher: stubSearcher{err: fmt.Errorf("no index: %w", searchapi.ErrUnsupported)},
+			wantErr:  searchapi.ErrUnsupported,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+			prompt := newE2EPromptOpener(tc.answer)
+			ws := dialExtensionWorkspace(t, extension.SearchResources(tc.searcher), prompt)
+
+			var got []searchapi.RegexpResult
+			it, err := ws.Search(ctx).RegexpSearch(ctx, searchapi.RegexpRequest{Pattern: "Backoff"})
+			if err == nil {
+				got, err = iterator.ToSlice(ctx, it)
+			}
+
+			assert.Contains(t, prompt.message(t, 1), "search the workspace's files")
+			switch {
+			case tc.wantCode != codes.OK:
+				assert.Equal(t, tc.wantCode, status.Code(err), err)
+				assert.NotErrorIs(t, err, searchapi.ErrUnsupported,
+					"a denied search is not an unsupported one")
+			case tc.wantErr != nil:
+				assert.ErrorIs(t, err, tc.wantErr)
+			default:
+				require.NoError(t, err)
+				assert.Equal(t, tc.want, got)
 			}
 		})
 	}

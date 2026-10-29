@@ -318,6 +318,8 @@ func PermissionActionText(permission extensionapi.Permission) string {
 		return "use your configured LLM providers"
 	case extensionapi.PermissionPackages:
 		return "find and install Rune packages"
+	case extensionapi.PermissionSearch:
+		return "search the workspace's files"
 	default:
 		return fmt.Sprintf("access permission %s", permission)
 	}

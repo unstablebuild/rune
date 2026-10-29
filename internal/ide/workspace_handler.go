@@ -2450,6 +2450,7 @@ func (h *workspaceManagerHandler) buildExtensions(
 	if err != nil {
 		return nil, nil, nil, nil, nil, fmt.Errorf("resolve workspace root: %w", err)
 	}
+	searcher := newWorkspaceSearcher(rootURI.Path(), noRegexpSearch{})
 	callbacks := idelsp.NewCallbackHandler(notifications, apibrowser, ex.Browser(),
 		apieditor, cwd, rootURI.String(), lspCallbackCfg)
 	lspConfig := idelsp.Config{
@@ -2544,6 +2545,7 @@ func (h *workspaceManagerHandler) buildExtensions(
 	res = extension.MergeResourceMap(res, extension.SemanticResources(lspifc))
 	res = extension.MergeResourceMap(res, extension.DebugResources(dap))
 	res = extension.MergeResourceMap(res, extension.LLMResources(h.llmRouter))
+	res = extension.MergeResourceMap(res, extension.SearchResources(searcher))
 	res = extension.MergeResourceMap(res,
 		extension.PackagesResources(extensionPackages{pkgs: pkgs}))
 

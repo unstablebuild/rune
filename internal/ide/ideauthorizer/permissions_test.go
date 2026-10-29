@@ -55,6 +55,7 @@ func TestPermissionActionText(t *testing.T) {
 	}{
 		{extensionapi.PermissionBrowserWindowManager, "manage the window manager"},
 		{extensionapi.PermissionBrowserResourceOpener, "open files and links"},
+		{extensionapi.PermissionSearch, "search the workspace's files"},
 	} {
 		t.Run(string(tc.permission), func(t *testing.T) {
 			assert.Equal(t, tc.want, PermissionActionText(tc.permission))
