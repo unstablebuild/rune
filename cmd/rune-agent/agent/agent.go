@@ -48,7 +48,7 @@ import (
 
 // Config holds agent configuration.
 type Config struct {
-	MaxIterations      int
+	MaxIterations      int     // 0 means unlimited (the default); negative values use the default.
 	MaxToolOutputBytes int     // 0 uses DefaultMaxToolOutputBytes.
 	AutoCompactRatio   float64 // 0 uses defaultAutoCompactRatio.
 	SystemPrompt       string
@@ -224,8 +224,8 @@ func NewAgent(
 	if memory == nil {
 		panic("agent: memory must not be nil")
 	}
-	if config.MaxIterations <= 0 {
-		config.MaxIterations = 500
+	if config.MaxIterations < 0 {
+		config.MaxIterations = 0
 	}
 	if config.Hooks == nil {
 		// Auto-initialize so call sites can dispatch hooks
@@ -690,7 +690,7 @@ func (a *Agent) run(
 		checkpointStart = time.Now()
 		return true
 	}
-	for i := range a.config.MaxIterations {
+	for i := 0; a.config.MaxIterations == 0 || i < a.config.MaxIterations; i++ {
 		log.Debug("agent loop iteration",
 			"iteration", i, "messages", len(messages))
 

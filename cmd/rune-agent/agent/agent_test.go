@@ -472,21 +472,6 @@ func TestAgentRun(t *testing.T) {
 			},
 		},
 		{
-			name: "default MaxIterations is 500",
-			responses: func() []mockResponse {
-				r := make([]mockResponse, 505)
-				for i := range r {
-					r[i] = toolCallResponse("t", "{}", "c")
-				}
-				return r
-			}(),
-			tools:  []Tool{&mockTool{name: "t", result: ToolResult{Content: "ok"}}},
-			config: Config{SystemPrompt: "test", MaxIterations: 0}, // 0 → default 500
-			assertFn: func(t *testing.T, events []Event, store *mockStore, svc *mockService) {
-				assert.Equal(t, 500, svc.getCallCount())
-			},
-		},
-		{
 			name: "reasoning model emits EventReasoning events",
 			responses: []mockResponse{
 				stopResponseWithReasoning(
@@ -3535,15 +3520,55 @@ func TestSkillsNotInjectedWhenEmpty(t *testing.T) {
 	assert.Contains(t, req.Messages[1].Content, "plan")
 }
 
+func TestAgentRun_UnlimitedIterations(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		config Config
+	}{
+		{name: "default", config: Config{SystemPrompt: "test"}},
+		{name: "explicit zero", config: Config{SystemPrompt: "test", MaxIterations: 0}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			responses := make([]mockResponse, 501)
+			for i := range responses {
+				responses[i] = toolCallResponse("t", "{}", fmt.Sprintf("c%d", i))
+			}
+			responses = append(responses, stopResponse("Done!"))
+			svc := &mockService{responses: responses}
+			store := newMockStore()
+			registry := NewRegistry(&mockTool{name: "t", result: ToolResult{Content: "ok"}})
+			ag := NewAgent(svc, registry, noSkills(), store, NoMemory(), tt.config)
+
+			events := collectEvents(t, ag.Run(context.Background(), "d", "keep going"))
+
+			assert.Equal(t, len(responses), svc.getCallCount())
+			assert.Empty(t, eventsByType(events, EventError))
+			assert.Len(t, eventsByType(events, EventToolResult), 501)
+			assert.Len(t, eventsByType(events, EventDone), 1)
+			d, ok := store.getDialogue("d")
+			require.True(t, ok)
+			require.NotEmpty(t, d.Messages)
+			assert.Equal(t, "Done!", d.Messages[len(d.Messages)-1].Content)
+		})
+	}
+}
+
 func TestNewAgent_DefaultMaxIterations(t *testing.T) {
-	ag := NewAgent(&mockService{}, NewRegistry(), noSkills(), newMockStore(), NoMemory(), Config{MaxIterations: 0})
-	assert.Equal(t, 500, ag.config.MaxIterations)
-
-	ag2 := NewAgent(&mockService{}, NewRegistry(), noSkills(), newMockStore(), NoMemory(), Config{MaxIterations: -5})
-	assert.Equal(t, 500, ag2.config.MaxIterations)
-
-	ag3 := NewAgent(&mockService{}, NewRegistry(), noSkills(), newMockStore(), NoMemory(), Config{MaxIterations: 10})
-	assert.Equal(t, 10, ag3.config.MaxIterations)
+	for _, tt := range []struct {
+		name   string
+		config Config
+		want   int
+	}{
+		{name: "default", config: Config{}, want: 0},
+		{name: "explicit zero", config: Config{MaxIterations: 0}, want: 0},
+		{name: "negative uses default", config: Config{MaxIterations: -5}, want: 0},
+		{name: "positive limit", config: Config{MaxIterations: 10}, want: 10},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ag := NewAgent(&mockService{}, NewRegistry(), noSkills(), newMockStore(), NoMemory(), tt.config)
+			assert.Equal(t, tt.want, ag.config.MaxIterations)
+		})
+	}
 }
 
 func TestAgentMaxOutputTokens(t *testing.T) {
