@@ -135,13 +135,10 @@ type workspaceManagerHandler struct {
 	// git remote URLs. Production leaves it nil (clone from the host in
 	// the id); tests point it at a local fixture git server.
 	gitRemoteURL func(pkgID string) string
-	// localExecutor is a stable, IDE-scoped executor proxy handed to the
-	// llama-server backend at router construction. Its inner executor is
-	// swapped to the focused workspace's executor at each setExecutor site,
-	// mirroring the per-ex currentExecutor pattern. Before any workspace
-	// installs an executor it returns a clean "no executor installed" error
-	// rather than nil-derefing.
-	localExecutor           *currentExecutor
+	// localExecutor runs the llama-servers of local models on this
+	// machine. The IDE owns it, as the servers outlive every workspace:
+	// a workspace's executor is closed with the workspace.
+	localExecutor           *extensionsExecutor
 	exitPromptOpen          bool
 	scheduleNextTick        func(func()) bool
 	confirmedForceExit      bool
@@ -665,10 +662,6 @@ func (h *workspaceManagerHandler) init(
 	h.commandHistory = search.NewHistory(
 		h.ideStorage, commandHistoryDocumentID, cfg.commandMaxHistory())
 	cfg.storage = h.ideStorage
-	// localExecutor is the stable, IDE-scoped executor proxy passed to the
-	// llama-server backend at router construction. Created non-nil here; its
-	// inner executor is installed at the setExecutor sites below.
-	h.localExecutor = &currentExecutor{}
 	h.events = newEventRouter(publishEvent)
 	h.frameCharSet = cfg.windowFrameCharset()
 	notiConfig.Interrupter = h.events.globalInterrupter()
@@ -740,6 +733,10 @@ func (h *workspaceManagerHandler) init(
 	// "server not installed" state lives inside the locator, never in a nil
 	// dependency.
 	llmCfg := cfg.llmConfig()
+	h.localExecutor, err = newExtensionsExecutor()
+	if err != nil {
+		return fmt.Errorf("init local models executor: %w", err)
+	}
 	localBackend := llamaserver.New(
 		llmCfg.Local.Service,
 		h.localExecutor,
@@ -815,7 +812,6 @@ func (h *workspaceManagerHandler) init(
 		exec, isExecutor := runner.(schemeapi.Executor)
 		if isExecutor {
 			h.empty.setExecutor(exec, wsExec, extExec.shell)
-			h.localExecutor.set(exec)
 		}
 		h.homeRunner = runner
 		h.homeLSPManager = lspManager
@@ -2082,7 +2078,6 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 		exec, isExecutor := runner.(schemeapi.Executor)
 		if isExecutor {
 			ex.setExecutor(exec, wsExec, extExec.shell)
-			h.localExecutor.set(exec)
 		}
 		wh.Extensions.Store(runner)
 		wh.lspManager = lspManager
@@ -3384,6 +3379,11 @@ func (h *workspaceManagerHandler) Close() (ret error) {
 	}
 	if h.llmRouter != nil {
 		if err := h.llmRouter.Close(); err != nil {
+			ret = multierror.Append(ret, err)
+		}
+	}
+	if h.localExecutor != nil {
+		if err := h.localExecutor.Close(); err != nil {
 			ret = multierror.Append(ret, err)
 		}
 	}

@@ -28,6 +28,7 @@ import (
 	"sync"
 	"time"
 
+	log "github.com/sirupsen/logrus"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
 	"unstable.build/rune/internal/debug"
@@ -241,7 +242,8 @@ func (s *serverProcess) start() {
 	s.pollHealth(host, port)
 }
 
-// fail records a readiness error and wakes waitReady.
+// fail records a readiness error, finishes the starting notification,
+// which otherwise stays open, and wakes waitReady.
 func (s *serverProcess) fail(err error) {
 	s.mu.Lock()
 	firstWriter := s.readyErr == nil
@@ -251,9 +253,13 @@ func (s *serverProcess) fail(err error) {
 	id := s.progressID
 	s.signalReadyLocked()
 	s.mu.Unlock()
+	if firstWriter {
+		log.Errorf("%v", err)
+	}
 	// Only the first writer notifies so a later pollHealth timeout can't
 	// double-report an already-surfaced early-exit failure.
 	if firstWriter && id != "" {
+		s.svc.updateProgress(id, "Could not start local model "+s.model.name, 100, 100)
 		_, _ = s.svc.notis.Notify(browserapi.LevelError, "%s", err.Error())
 	}
 	s.cancel()
@@ -296,6 +302,7 @@ func (s *serverProcess) scanOutput(pr *io.PipeReader) {
 			if line == "" {
 				continue
 			}
+			log.Debugf("llamaserver: %s: %s", s.model.name, line)
 			s.recordLine(line)
 			s.mu.Lock()
 			if pct, ok := parseLoadProgress(line); ok {

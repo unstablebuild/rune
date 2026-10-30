@@ -12115,3 +12115,58 @@ func TestLocalServerLocatorHonorsServerBinPath(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "/opt/llama/llama-server", got)
 }
+
+// executorRunner runs commands on the executor its workspace's
+// extensions are given, and closes it with them, as the real runner does.
+type executorRunner struct {
+	testRunner
+	schemeapi.Executor
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
+func (r executorRunner) Close() error {
+	r.cancel()
+	return r.Executor.Close()
+}
+
+func (r executorRunner) LookPath(ctx context.Context, name, dir string) (string, error) {
+	if err := r.ctx.Err(); err != nil {
+		return "", err
+	}
+	return r.Executor.LookPath(ctx, name, dir)
+}
+
+func TestLocalModelsOutliveTheWorkspaceBuiltLast(t *testing.T) {
+	dir := t.TempDir()
+	binary := filepath.Join(t.TempDir(), "llama-server")
+	require.NoError(t, os.WriteFile(binary, nil, 0o755))
+	cfg := defaultCfg()
+	mu, sched, drain := buildTestSchedulerForCfg(t, &cfg)
+	manager := workspace.NewManager(config.NopConfig(), sched)
+	require.NoError(t, manager.RegisterScheme(workspace.MemoryScheme, workspace.NewMemoryScheme))
+	require.NoError(t, manager.RegisterScheme(workspace.FileScheme, workspace.NewFileScheme))
+	uri, err := workspaceapi.ParseURI("file://" + dir)
+	require.NoError(t, err)
+	runner := FuncExtensionsRunner(func(
+		_ workspaceapi.URI, _ map[extensionapi.Permission]extension.ResourceRegistrar,
+		_, _ string, _ browser.Notifications, _, extExec schemeapi.Executor, _ extension.Grantor,
+		_ text.Editor, _ ideauthorizer.PromptOpener, _ storageapi.Service, _ func(func()) bool,
+	) (extension.Runner, error) {
+		ctx, cancel := context.WithCancel(context.Background())
+		return executorRunner{Executor: extExec, ctx: ctx, cancel: cancel}, nil
+	})
+	m := newTestWorkspaceManagerHandlerWithManagerMu(t, manager, mu, drain,
+		&uri, cfg, runner, nil, dir, nil, nopShutdownShaderConfig())
+	t.Cleanup(func() { _ = m.Close() })
+
+	m.mu.Lock()
+	err = m.commandCloseWorkspace()
+	m.mu.Unlock()
+	require.NoError(t, err)
+	m.closeWG.Wait()
+
+	got, err := m.localExecutor.LookPath(context.Background(), binary, "")
+	require.NoError(t, err, "local models must not use a closed workspace's executor")
+	assert.Equal(t, binary, got)
+}
