@@ -15,6 +15,7 @@ import (
 	browserapi "github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	workspaceapi "github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	component "github.com/unstablebuild/rune-go-sdk/component"
+	handler "github.com/unstablebuild/rune-go-sdk/handler"
 	term "github.com/unstablebuild/rune-go-sdk/term"
 	tui "github.com/unstablebuild/rune-go-sdk/tui"
 	gomock "go.uber.org/mock/gomock"
@@ -1283,6 +1284,59 @@ func (mr *MockDragTargetMockRecorder) DragHover(pos any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DragHover", reflect.TypeOf((*MockDragTarget)(nil).DragHover), pos)
 }
 
+// MockPrompter is a mock of Prompter interface.
+type MockPrompter struct {
+	ctrl     *gomock.Controller
+	recorder *MockPrompterMockRecorder
+}
+
+// MockPrompterMockRecorder is the mock recorder for MockPrompter.
+type MockPrompterMockRecorder struct {
+	mock *MockPrompter
+}
+
+// NewMockPrompter creates a new mock instance.
+func NewMockPrompter(ctrl *gomock.Controller) *MockPrompter {
+	mock := &MockPrompter{ctrl: ctrl}
+	mock.recorder = &MockPrompterMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockPrompter) EXPECT() *MockPrompterMockRecorder {
+	return m.recorder
+}
+
+// ButtonImages mocks base method.
+func (m *MockPrompter) ButtonImages() *component.ButtonImages {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ButtonImages")
+	ret0, _ := ret[0].(*component.ButtonImages)
+	return ret0
+}
+
+// ButtonImages indicates an expected call of ButtonImages.
+func (mr *MockPrompterMockRecorder) ButtonImages() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ButtonImages", reflect.TypeOf((*MockPrompter)(nil).ButtonImages))
+}
+
+// OpenPrompt mocks base method.
+func (m *MockPrompter) OpenPrompt(cfg browserapi.PromptConfig, h handler.PromptHandler) (browser.Window, bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "OpenPrompt", cfg, h)
+	ret0, _ := ret[0].(browser.Window)
+	ret1, _ := ret[1].(bool)
+	ret2, _ := ret[2].(error)
+	return ret0, ret1, ret2
+}
+
+// OpenPrompt indicates an expected call of OpenPrompt.
+func (mr *MockPrompterMockRecorder) OpenPrompt(cfg, h any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "OpenPrompt", reflect.TypeOf((*MockPrompter)(nil).OpenPrompt), cfg, h)
+}
+
 // MockBrowser is a mock of Browser interface.
 type MockBrowser struct {
 	ctrl     *gomock.Controller
@@ -1318,6 +1372,20 @@ func (m *MockBrowser) Bar(arg0 browserapi.BarConfig, arg1 tui.Handler) error {
 func (mr *MockBrowserMockRecorder) Bar(arg0, arg1 any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Bar", reflect.TypeOf((*MockBrowser)(nil).Bar), arg0, arg1)
+}
+
+// ButtonImages mocks base method.
+func (m *MockBrowser) ButtonImages() *component.ButtonImages {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ButtonImages")
+	ret0, _ := ret[0].(*component.ButtonImages)
+	return ret0
+}
+
+// ButtonImages indicates an expected call of ButtonImages.
+func (mr *MockBrowserMockRecorder) ButtonImages() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ButtonImages", reflect.TypeOf((*MockBrowser)(nil).ButtonImages))
 }
 
 // Close mocks base method.
@@ -1497,6 +1565,22 @@ func (m *MockBrowser) Open(resource workspaceapi.URI) (browserapi.Handler, error
 func (mr *MockBrowserMockRecorder) Open(resource any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Open", reflect.TypeOf((*MockBrowser)(nil).Open), resource)
+}
+
+// OpenPrompt mocks base method.
+func (m *MockBrowser) OpenPrompt(cfg browserapi.PromptConfig, h handler.PromptHandler) (browser.Window, bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "OpenPrompt", cfg, h)
+	ret0, _ := ret[0].(browser.Window)
+	ret1, _ := ret[1].(bool)
+	ret2, _ := ret[2].(error)
+	return ret0, ret1, ret2
+}
+
+// OpenPrompt indicates an expected call of OpenPrompt.
+func (mr *MockBrowserMockRecorder) OpenPrompt(cfg, h any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "OpenPrompt", reflect.TypeOf((*MockBrowser)(nil).OpenPrompt), cfg, h)
 }
 
 // PublishEvent mocks base method.

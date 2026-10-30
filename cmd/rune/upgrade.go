@@ -96,7 +96,7 @@ func scheduleUpgradeCheck(
 		ManifestURL:      manifestBaseURL,
 		Storage:          i.Storage(),
 		Notifications:    i.Notifications(),
-		WindowManager:    i.WindowManager(),
+		Prompter:         i.Prompter(),
 		ScheduleNextTick: scheduleNextTick,
 		CheckPeriod:      upCfg.checkPeriod,
 	})

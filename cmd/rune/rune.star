@@ -1078,6 +1078,38 @@ config = {
         "tab_override_icon": "",
         "tab_name_separator": "   ",
         # Prompt configuration used when Rune asks the user questions.
+        #
+        # An "images" table names images that the GUI draws under the
+        # buttons of prompts, and of the search box, in place of their
+        # background. Each button state names a "left" image for the
+        # button's first cell, a "right" one for its last and a "middle"
+        # one repeated over every cell between:
+        #
+        #     "images": {
+        #         "idle":     {
+        #             "left":   "file:///path/to/button-left.png",
+        #             "middle": "file:///path/to/button-middle.png",
+        #             "right":  "file:///path/to/button-right.png",
+        #         },
+        #         "selected": {...},
+        #         "hover":    {...},
+        #         "pressed":  {...},
+        #         "outset":   {"top": 1, "bottom": 1, "sides": 1},
+        #     },
+        #
+        # "idle" is required whenever any other state is set. "selected",
+        # the button the keyboard is on, and "pressed" fall back to
+        # "hover", and "hover" falls back to "idle". The label keeps the
+        # foreground of text_attr, highlight_attr, hover_attr or
+        # clicked_attr, by state, over the prompt's background; in the
+        # search box, the foreground of button_attr or button_hover_attr
+        # over the background of its attr. "outset" stretches every image
+        # "top" rows above the button and "bottom" rows below it, and the
+        # left and right images "sides" cells outward. Prompts leave room
+        # for all of it; the search box only for "sides", and cuts the
+        # images at its edges. The terminal UI, and any image that has
+        # not loaded or failed to load, shows the buttons in their
+        # attributes.
         "prompt": {
             "text_attr":       attr(bg = "gray", flag = "bold"),
             "highlight_attr":  attr(bg = "red", flag = "bold"),

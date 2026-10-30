@@ -22,10 +22,12 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/unstablebuild/blue/logging"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
+	"github.com/unstablebuild/rune-go-sdk/api/syntaxapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
+	tcomponent "unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/component/shader/shaderloop"
 	"unstable.build/rune/internal/handler"
 	"unstable.build/rune/internal/term/programstatus"
@@ -178,6 +180,64 @@ type PromptConfig struct {
 	ClickedAttr    term.Attributes
 	BackgroundAttr term.Attributes
 	MinWidth       int
+	// Images names the images that writers that can draw images show
+	// under the prompt's buttons, in place of their background.
+	Images PromptImages
+	// Parser highlights the code blocks of prompt messages on the
+	// event loop that ScheduleNextTick schedules on, as in
+	// markdown.Config. Without a Parser, code blocks are not
+	// highlighted, and without ScheduleNextTick they are highlighted
+	// as the prompt is built.
+	Parser           syntaxapi.Parser
+	ScheduleNextTick func(func()) bool
+}
+
+// PromptImages names the images of a prompt's buttons in each state, as
+// component.ButtonImages draws them. A state without images is drawn
+// with another's, so Idle names images whenever any other state does.
+type PromptImages struct {
+	Idle, Selected, Hover, Pressed PromptButtonImage
+	Outset                         component.ButtonOutset
+}
+
+// Empty reports whether i names no image, whatever its Outset.
+func (i PromptImages) Empty() bool {
+	return i.Idle.Empty() && i.Selected.Empty() && i.Hover.Empty() && i.Pressed.Empty()
+}
+
+// ButtonImages returns the images i names, taken from g so that each
+// URI shares one image with whatever else g draws it in. It is nil when
+// i names no image or g is nil.
+func (i PromptImages) ButtonImages(g *tcomponent.FrameGraphics) *component.ButtonImages {
+	if i.Empty() || g == nil {
+		return nil
+	}
+	state := func(img PromptButtonImage) component.ButtonImage {
+		return component.ButtonImage{
+			Left:   g.Image(img.Left),
+			Middle: g.Image(img.Middle),
+			Right:  g.Image(img.Right),
+		}
+	}
+	return &component.ButtonImages{
+		Idle:     state(i.Idle),
+		Selected: state(i.Selected),
+		Hover:    state(i.Hover),
+		Pressed:  state(i.Pressed),
+		Outset:   i.Outset,
+	}
+}
+
+// PromptButtonImage names the image URIs of a button in one state, as
+// component.ButtonImage places them. An empty URI leaves its cells
+// without an image.
+type PromptButtonImage struct {
+	Left, Middle, Right string
+}
+
+// Empty reports whether i names no image.
+func (i PromptButtonImage) Empty() bool {
+	return i == PromptButtonImage{}
 }
 
 // Wallpaper is a tui.Component wallpaper factory.

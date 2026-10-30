@@ -98,9 +98,9 @@ type GraphicsSlot struct {
 
 // GetGraphics reads the graphics table at key: the URI of each slot from
 // its Key, where an empty string clears the slot, and into overlay its
-// "mode", "replace" or "overlay". What the table leaves out keeps its
-// value, and nothing changes when key is missing. If any entry is
-// invalid, nothing changes and it returns every error.
+// "mode", "replace" or "overlay", unless overlay is nil. What the table
+// leaves out keeps its value, and nothing changes when key is missing.
+// If any entry is invalid, nothing changes and it returns every error.
 func GetGraphics(
 	c config.Config, key string, overlay *bool, slots ...GraphicsSlot,
 ) error {
@@ -112,17 +112,20 @@ func GetGraphics(
 		return fmt.Errorf("%s: %w", key, err)
 	}
 
-	mode := *overlay
 	var errs []error
-	switch m, err := gcfg.GetString("mode"); {
-	case errors.Is(err, config.ErrNotFound):
-	case err != nil:
-		errs = append(errs, fmt.Errorf("%s.mode: %w", key, err))
-	case m == "replace" || m == "overlay":
-		mode = m == "overlay"
-	default:
-		errs = append(errs, fmt.Errorf(
-			`%s.mode: expected "replace" or "overlay", got %q`, key, m))
+	var mode bool
+	if overlay != nil {
+		mode = *overlay
+		switch m, err := gcfg.GetString("mode"); {
+		case errors.Is(err, config.ErrNotFound):
+		case err != nil:
+			errs = append(errs, fmt.Errorf("%s.mode: %w", key, err))
+		case m == "replace" || m == "overlay":
+			mode = m == "overlay"
+		default:
+			errs = append(errs, fmt.Errorf(
+				`%s.mode: expected "replace" or "overlay", got %q`, key, m))
+		}
 	}
 	uris := make([]string, len(slots))
 	for i, slot := range slots {
@@ -143,7 +146,9 @@ func GetGraphics(
 	if len(errs) > 0 {
 		return errors.Join(errs...)
 	}
-	*overlay = mode
+	if overlay != nil {
+		*overlay = mode
+	}
 	for i, slot := range slots {
 		*slot.URI = uris[i]
 	}

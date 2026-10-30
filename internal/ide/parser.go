@@ -19,87 +19,12 @@ package ide
 import (
 	"context"
 	"errors"
-	"sync"
 
 	"github.com/unstablebuild/rune-go-sdk/api/syntaxapi"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
-	"unstable.build/rune/internal/ide/syntax/treesitter"
 )
-
-// uses lazyly initialized syntaxapi.Parser to circumvent
-// cosmetic circular dependency between pkgmanager and treesitter.NewParser
-type lazyParser struct {
-	root *workspaceManagerHandler
-	once sync.Once
-	p    syntaxapi.Parser
-}
-
-var _ syntaxapi.Parser = (*lazyParser)(nil)
-
-func (w *lazyParser) parser() syntaxapi.Parser {
-	w.once.Do(func() {
-		w.p = treesitter.NewParser(w.root.homeWorkspace, w.root.pkgmanager, w.root.homeURI)
-	})
-	return w.p
-}
-
-func (w *lazyParser) Search(query string, captureNames []string, languages ...string) (
-	iterator.Iterator[syntaxapi.Result], error,
-) {
-	return nil, errors.New("parser not supported on home workspace")
-}
-
-// SearchNode is implemented with Search by using an internally provided
-// query that is able to capture a known set of tree nodes across programming
-// languages. Multiple node types can be combined using bitwise OR.
-func (w *lazyParser) SearchNode(
-	nodeTypes syntaxapi.NodeCaptureName, languages ...string,
-) (iterator.Iterator[syntaxapi.Result], error) {
-	return nil, errors.New("parser not supported on home workspace")
-}
-
-// Query searches for matches in a specific file using the given tree-sitter
-// literal query and a list of capture names that should be returned.
-func (w *lazyParser) Query(file workspaceapi.URI, query string, captureNames []string) (
-	iterator.Iterator[syntaxapi.Result], error,
-) {
-	return nil, errors.New("parser not supported on home workspace")
-}
-
-// QueryNode is implemented with Query by using an internally provided
-// query that is able to capture a known set of tree nodes across
-// programming languages. Multiple node types can be combined using bitwise OR.
-func (w *lazyParser) QueryNode(
-	file workspaceapi.URI, nodeTypes syntaxapi.NodeCaptureName,
-) (iterator.Iterator[syntaxapi.Result], error) {
-	return nil, errors.New("parser not supported on home workspace")
-}
-
-// Highlight returns syntax highlighting locations for the given content,
-// interpreted as belonging to the file identified by uri.
-func (w *lazyParser) Highlight(uri workspaceapi.URI, content string) (
-	iterator.Iterator[textapi.Location], error,
-) {
-	return w.parser().Highlight(uri, content)
-}
-
-// ResolveSymbol resolves a dotted symbol name to its declaration and
-// reference locations.
-func (w *lazyParser) ResolveSymbol(
-	ctx context.Context, name string, progress syntaxapi.Progress,
-) (iterator.Iterator[syntaxapi.Match], error) {
-	return nil, errors.New("parser not supported on home workspace")
-}
-
-// ListReferencedSymbols returns an empty iterator; the home workspace has no
-// symbol index.
-func (w *lazyParser) ListReferencedSymbols(
-	ctx context.Context,
-) (iterator.Iterator[string], error) {
-	return iterator.Empty[string](), nil
-}
 
 type currentParser struct {
 	root *workspaceManagerHandler

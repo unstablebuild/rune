@@ -17,6 +17,7 @@
 package idetutorial_test
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -421,6 +422,74 @@ func TestTileFooterButtonsHover(t *testing.T) {
 		assert.Zero(t, leave.Key, "a leave is a motion")
 		assert.GreaterOrEqual(t, leave.MouseY, tut.height, "below the lesson")
 	})
+}
+
+func TestTileFooterButtonImages(t *testing.T) {
+	t.Parallel()
+	const width, height = 30, 12
+	img := &imageStub{}
+	images := &component.ButtonImages{
+		Idle:   component.ButtonImage{Left: img, Middle: img, Right: img},
+		Outset: component.ButtonOutset{Top: 1, Bottom: 2},
+	}
+	cases := []struct {
+		name   string
+		images *component.ButtonImages
+		// footer is the rows the footer takes from the lesson.
+		footer int
+	}{
+		{name: "without images", footer: 2},
+		{name: "with images", images: images, footer: 5},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			style := framedStyle()
+			style.Prompt.ButtonImages = tc.images
+			tut := &fakeTutorial{}
+			tile := idetutorial.NewTile(tut, style, func() {}, func() {}, func() {})
+			tile.Resize(width, height)
+			w := &imageWriter{StringWriter: term.NewStringWriter(width, height)}
+			tile.Draw(w)
+			require.NoError(t, w.Flush())
+
+			assert.Equal(t, height-2-tc.footer, tut.height, "the lesson's rows")
+			lines := strings.Split(w.String(), "\n")
+			buttons := slices.IndexFunc(lines, func(l string) bool { return strings.Contains(l, "Stop") })
+			require.GreaterOrEqual(t, buttons, 0, "no buttons in:\n%s", w.String())
+			if tc.images == nil {
+				assert.Empty(t, w.images)
+				return
+			}
+			require.NotEmpty(t, w.images)
+			for _, im := range w.images {
+				assert.Equal(t, buttons-1, im.Pos.Y, "the images reach the top outset")
+				assert.Equal(t, 4, im.Height, "the images reach the bottom outset")
+				assert.Equal(t, term.ImageLayerBelowText, im.Layer)
+			}
+			assert.Less(t, buttons+2, height-1, "the bottom outset stays above the frame")
+		})
+	}
+}
+
+// imageStub draws one image over all of its cells.
+type imageStub struct{ width, height int }
+
+func (s *imageStub) Resize(width, height int) { s.width, s.height = width, height }
+
+func (s *imageStub) Draw(w term.Writer) {
+	w.DrawImage(term.Image{Width: s.width, Height: s.height})
+}
+
+// imageWriter records the images drawn on it, in its coordinates.
+type imageWriter struct {
+	*term.StringWriter
+	images []term.Image
+}
+
+func (w *imageWriter) DrawImage(img term.Image) bool {
+	w.images = append(w.images, img)
+	return true
 }
 
 func TestTilePointerLeaves(t *testing.T) {

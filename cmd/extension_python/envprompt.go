@@ -23,7 +23,6 @@ import (
 	"sync"
 
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
-	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/extension/langext"
@@ -42,12 +41,14 @@ type envAnswer struct {
 	answered bool
 }
 
-// newEnvPrompt builds the floating prompt asking whether Rune may manage
-// the environment of root. The answer travels over ch so the bring-up
-// goroutine stays off the window event stream. Selecting an option and
-// dismissing both reach ch, in that order, so ch must be buffered and
-// only the first send is kept.
-func newEnvPrompt(root langext.Root, ch chan<- envAnswer) *handler.Prompt {
+// newEnvPrompt returns the prompt asking whether Rune may manage the
+// environment of root, and the handler of its answer, which travels over
+// ch so the bring-up goroutine stays off the window event stream.
+// Selecting an option and dismissing both reach ch, in that order, so ch
+// must be buffered and only the first send is kept.
+func newEnvPrompt(
+	root langext.Root, ch chan<- envAnswer,
+) (browserapi.PromptConfig, handler.PromptHandler) {
 	where := root.RelPath
 	if where == "" {
 		where = root.Dir
@@ -71,53 +72,40 @@ func newEnvPrompt(root langext.Root, ch chan<- envAnswer) *handler.Prompt {
 		default:
 		}
 	}
-	return handler.NewPrompt(handler.PromptConfig{
-		HighlightAttr: term.Attributes{
-			Attrs: term.AttrBold,
-			Bg:    term.ColorRed,
-			Fg:    term.ColorWhite,
+	cfg := browserapi.PromptConfig{
+		Message:  message,
+		Options:  []string{manageOpt, unmanageOpt},
+		Bindings: []term.KeyComb{{Ch: 'r'}, {Ch: 'i'}},
+	}
+	return cfg, handler.FuncPromptHandler(
+		func(idx int, _ string) {
+			answer(envAnswer{managed: idx == 0, answered: true})
 		},
-		OptionAttr: term.Attributes{
-			Attrs: term.AttrBold,
-			Bg:    term.ColorGray,
-		},
-		OptionBindings: []term.KeyComb{{Ch: 'r'}, {Ch: 'i'}},
-		PromptConfig: component.PromptConfig{
-			Message: message,
-			Options: []string{manageOpt, unmanageOpt},
-		},
-		PromptHandler: handler.FuncPromptHandler(
-			func(idx int, _ string) {
-				answer(envAnswer{managed: idx == 0, answered: true})
-			},
-			func() error {
-				answer(envAnswer{})
-				return nil
-			}),
-	})
+		func() error {
+			answer(envAnswer{})
+			return nil
+		})
 }
 
 // envPromptMu serializes prompts so a monorepo bringing several project
 // roots up at once asks one question at a time.
 var envPromptMu sync.Mutex
 
-// askManageEnvironment floats the prompt for root and blocks until the
-// user answers or dismisses it. An unavailable window manager reports
+// askManageEnvironment asks the prompt for root and blocks until the
+// user answers or dismisses it. An unavailable prompter reports
 // answered=false, so bring-up falls back to leaving the environment
 // alone rather than acting without consent.
 func askManageEnvironment(
-	ctx context.Context, wm browserapi.WindowManager, root langext.Root,
+	ctx context.Context, prompter browserapi.Prompter, root langext.Root,
 ) (managed, answered bool) {
-	if wm == nil {
+	if prompter == nil {
 		return false, false
 	}
 	envPromptMu.Lock()
 	defer envPromptMu.Unlock()
 
 	ch := make(chan envAnswer, 1)
-	if _, err := wm.Floating(newEnvPrompt(root, ch), browserapi.FloatingConfig{
-		Alignment: component.AlignmentCentered,
-	}); err != nil {
+	if _, err := prompter.Prompt(newEnvPrompt(root, ch)); err != nil {
 		slog.Warn("python env prompt failed", "root", root.Dir, "error", err)
 		return false, false
 	}

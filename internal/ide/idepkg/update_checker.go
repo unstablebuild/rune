@@ -29,12 +29,9 @@ import (
 	"github.com/unstablebuild/blue/release"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
-	"github.com/unstablebuild/rune-go-sdk/api/syntaxapi"
-	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/auth"
-	"unstable.build/rune/internal/component/markdown"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/text"
 )
@@ -354,86 +351,41 @@ func formatUpdateNotification(updates []Update) string {
 	return b.String()
 }
 
-func markdownOrFallback(
-	parser syntaxapi.Parser, scheduleNextTick func(func()) bool,
-) func(string) component.Floating {
-	return func(str string) component.Floating {
-		mcfg := markdown.DefaultConfig()
-		mcfg.HeaderPrefix = false
-		mcfg.ScheduleNextTick = scheduleNextTick
-		mcfg.Parser = parser
-		mkd, err := markdown.NewWithConfig(str, mcfg)
-		if err == nil {
-			return component.NewSpan(mkd, component.SpanConfig{
-				PadHorizontal:    4,
-				PadVertical:      2,
-				ContentAlignment: component.AlignmentCentered,
-			})
-		}
-		cfg := component.StringResponsiveConfig{
-			NoSplitWords: true,
-			StringConfig: component.StringConfig{
-				PaddingVertical:   4,
-				PaddingHorizontal: 4,
-				Alignment:         component.AlignmentCentered,
-			},
-		}
-		messageResponsive := component.NewResponsiveString(str, cfg)
-
-		return component.NewAspectRatioFloatingResponsive(
-			messageResponsive, component.DefaultAspectRatio)
-	}
-}
-
 func (uc *UpdateChecker) showUpdatePrompt(ctx context.Context, updates []Update) {
 	message := formatUpdateSummary(updates) + "\n\nInstall updates?"
 
-	prompt := handler.NewPrompt(handler.PromptConfig{
-		HighlightAttr: term.Attributes{
-			Attrs: term.AttrBold,
-			Bg:    term.ColorRed,
-		},
-		OptionAttr: term.Attributes{
-			Attrs: term.AttrBold,
-			Bg:    term.ColorGray,
-		},
-		OptionBindings: []term.KeyComb{{Ch: 'u'}, {Ch: 'r'}, {Ch: 's'}},
-		PromptConfig: component.PromptConfig{
-			Message:    message,
-			Options:    []string{"   Upgrade All   ", "   Remind Later   ", "   Skip   "},
-			NewMessage: markdownOrFallback(uc.m.parser, uc.m.scheduleNextTick),
-		},
-		PromptHandler: handler.FuncPromptHandler(func(idx int, _ string) {
-			switch idx {
-			case 0: // Update All
-				go debug.CapturePanicReport(func() {
-					for _, u := range updates {
-						pw := text.NewNotifyProgressWriter(uc.m.n, uc.m.interrupter,
-							fmt.Sprintf("install %s@%s", u.Package, u.Latest),
-							uc.m.scheduleNextTick)
-						if err := uc.m.InstallPackageVersion(ctx, u.Package, u.Latest, pw); err != nil {
-							uc.m.log(log.WarnLevel, "install update %s %s: %v", u.Package, u.Latest, err)
-						}
-					}
-				})
-			case 2: // Skip These Versions
+	cfg := browserapi.PromptConfig{
+		Message:  message,
+		Options:  []string{"   Upgrade All   ", "   Remind Later   ", "   Skip   "},
+		Bindings: []term.KeyComb{{Ch: 'u'}, {Ch: 'r'}, {Ch: 's'}},
+	}
+	h := handler.FuncPromptHandler(func(idx int, _ string) {
+		switch idx {
+		case 0: // Update All
+			go debug.CapturePanicReport(func() {
 				for _, u := range updates {
-					if err := uc.SkipVersion(ctx, u.Package, u.Latest); err != nil {
-						uc.m.log(log.WarnLevel, "skip version %s %s: %v", u.Package, u.Latest, err)
+					pw := text.NewNotifyProgressWriter(uc.m.n, uc.m.interrupter,
+						fmt.Sprintf("install %s@%s", u.Package, u.Latest),
+						uc.m.scheduleNextTick)
+					if err := uc.m.InstallPackageVersion(ctx, u.Package, u.Latest, pw); err != nil {
+						uc.m.log(log.WarnLevel, "install update %s %s: %v", u.Package, u.Latest, err)
 					}
 				}
+			})
+		case 2: // Skip These Versions
+			for _, u := range updates {
+				if err := uc.SkipVersion(ctx, u.Package, u.Latest); err != nil {
+					uc.m.log(log.WarnLevel, "skip version %s %s: %v", u.Package, u.Latest, err)
+				}
 			}
-			// case 1 (Remind Later): no-op
-		}, func() error {
-			return nil
-		}),
+		}
+		// case 1 (Remind Later): no-op
+	}, func() error {
+		return nil
 	})
 
 	uc.m.scheduleNextTick(func() {
-		_, err := uc.m.wm.Floating(prompt, browserapi.FloatingConfig{
-			Alignment: component.AlignmentCentered,
-		})
-		if err != nil {
+		if _, err := uc.m.prompter.Prompt(cfg, h); err != nil {
 			uc.m.log(log.WarnLevel, "show update prompt: %v", err)
 		}
 	})

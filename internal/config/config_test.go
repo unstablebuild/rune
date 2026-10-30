@@ -202,6 +202,7 @@ func TestGetGraphics(t *testing.T) {
 	tests := []struct {
 		name    string
 		cfg     map[string]any
+		noMode  bool
 		want    slots
 		wantErr []string
 	}{
@@ -247,11 +248,24 @@ func TestGetGraphics(t *testing.T) {
 			want:    def,
 			wantErr: []string{"art: " + config.ErrInvalidType.Error()},
 		},
+		{
+			name: "graphics without a mode ignore it",
+			cfg: map[string]any{"art": map[string]any{
+				"mode": "blend",
+				"up":   "file:///img/up.png",
+			}},
+			noMode: true,
+			want:   slots{Up: "file:///img/up.png", Down: def.Down},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := def
-			err := tconfig.GetGraphics(config.MapConfig(tt.cfg), "art", &got.Overlay,
+			overlay := &got.Overlay
+			if tt.noMode {
+				overlay = nil
+			}
+			err := tconfig.GetGraphics(config.MapConfig(tt.cfg), "art", overlay,
 				tconfig.GraphicsSlot{Key: "up", URI: &got.Up},
 				tconfig.GraphicsSlot{Key: "down", URI: &got.Down},
 			)

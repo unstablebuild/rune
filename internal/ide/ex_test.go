@@ -4305,12 +4305,11 @@ func TestFloatingPromptClosePrefersFloatingFocus(t *testing.T) {
 		"fourth prompt",
 		"fifth prompt",
 	} {
-		prompts = append(prompts, browserComp.Prompt(
-			message,
-			[]string{yesOpt, noOpt},
-			yesNoKeyCombs,
-			handler.NopPromptHandler(),
-		))
+		prompts = append(prompts, browserComp.Prompt(browserapi.PromptConfig{
+			Message:  message,
+			Options:  []string{yesOpt, noOpt},
+			Bindings: yesNoKeyCombs,
+		}, handler.NopPromptHandler()))
 	}
 
 	require.Equal(t, len(prompts), browserComp.FloatingWindows())
@@ -4363,8 +4362,11 @@ func TestWindowCloseAllClosesFloatingWindows(t *testing.T) {
 	require.NoError(t, b.ex.windownew(t.Context()))
 	require.Equal(t, 2, browserComp.Tiles())
 
-	prompt := browserComp.Prompt("keep me?", []string{yesOpt, noOpt},
-		yesNoKeyCombs, handler.NopPromptHandler())
+	prompt := browserComp.Prompt(browserapi.PromptConfig{
+		Message:  "keep me?",
+		Options:  []string{yesOpt, noOpt},
+		Bindings: yesNoKeyCombs,
+	}, handler.NopPromptHandler())
 	require.Equal(t, 1, browserComp.FloatingWindows())
 
 	focus, err := b.ex.Browser().Focus()

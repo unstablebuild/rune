@@ -1802,7 +1802,21 @@ func (c *Component) Prompt(
 	bindings []term.KeyComb,
 	promptHandler handler.PromptHandler,
 ) browser.Window {
-	return c.comp.Prompt(message, options, bindings, promptHandler)
+	return c.comp.Prompt(browserapi.PromptConfig{
+		Message: message, Options: options, Bindings: bindings,
+	}, promptHandler)
+}
+
+// OpenPrompt satisfies browser.Prompter.
+func (c *Component) OpenPrompt(
+	cfg browserapi.PromptConfig, h handler.PromptHandler,
+) (browser.Window, bool, error) {
+	return c.comp.OpenPrompt(cfg, h)
+}
+
+// ButtonImages satisfies browser.Prompter.
+func (c *Component) ButtonImages() *component.ButtonImages {
+	return c.comp.ButtonImages()
 }
 
 // SubscribeWindow subscribes sub to changes in focus due to changing the window in focus.

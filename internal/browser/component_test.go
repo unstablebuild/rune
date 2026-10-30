@@ -1177,7 +1177,9 @@ func TestWindowManagerCloseDropsWindow(t *testing.T) {
 			return win
 		}},
 		{"prompt is dismissed", func(t *testing.T, b *Component) Window {
-			return b.Prompt("Proceed?", []string{"Yes", "No"}, nil, handler.NopPromptHandler())
+			return b.Prompt(browserapi.PromptConfig{
+				Message: "Proceed?", Options: []string{"Yes", "No"},
+			}, handler.NopPromptHandler())
 		}},
 	}
 	for _, tt := range tests {
@@ -3960,8 +3962,9 @@ func newPointerComponent(t *testing.T, tabBarOffset int) *Component {
 	b.Bar(browserapi.BarConfig{Orientation: browserapi.OrientationLeft, Size: 3},
 		NopHandler(newPointerLess(t)))
 	b.Floating(StaticFloating(NopHandler(newPointerLess(t)), 20, 6), browserapi.FloatingConfig{})
-	b.Prompt("Proceed with a rather long question?", []string{"Yes", "No"}, nil,
-		handler.NopPromptHandler())
+	b.Prompt(browserapi.PromptConfig{
+		Message: "Proceed with a rather long question?", Options: []string{"Yes", "No"},
+	}, handler.NopPromptHandler())
 	b.SetFocus(left)
 	return b
 }
@@ -3990,8 +3993,10 @@ func TestComponentPointerLeaves(t *testing.T) {
 func TestComponentContentPointerLeaves(t *testing.T) {
 	for _, size := range [][2]int{{60, 15}, {1, 1}} {
 		b := newPointerComponent(t, 0)
-		prompt := b.Prompt("Another long question for the prompt?", []string{"Yes", "No", "Maybe"},
-			nil, handler.NopPromptHandler())
+		prompt := b.Prompt(browserapi.PromptConfig{
+			Message: "Another long question for the prompt?",
+			Options: []string{"Yes", "No", "Maybe"},
+		}, handler.NopPromptHandler())
 		var contents []tui.Handler
 		for _, win := range []Window{prompt, b.Focus()} {
 			h, err := win.Content()

@@ -2201,6 +2201,59 @@ func (c ideConfig) promptConfig() browser.PromptConfig {
 	ret.HoverAttr = c.promptHoverAttr()
 	ret.ClickedAttr = c.promptClickedAttr()
 	ret.BackgroundAttr = c.promptBackgroundAttr()
+	ret.Images = c.promptImages()
+	return ret
+}
+
+// promptImages reads browser.prompt.images. Every state but idle falls
+// back to another's images, so naming any without idle is an error,
+// which draws no images at all.
+func (c ideConfig) promptImages() browser.PromptImages {
+	cfg, ok := c.prompt()
+	if !ok {
+		return browser.PromptImages{}
+	}
+	images, err := cfg.GetConfig("images")
+	if err != nil {
+		if err != config.ErrNotFound {
+			c.errors["prompt.images"] = err
+		}
+		return browser.PromptImages{}
+	}
+	var ret browser.PromptImages
+	states := []struct {
+		key string
+		dst *browser.PromptButtonImage
+	}{
+		{"idle", &ret.Idle},
+		{"selected", &ret.Selected},
+		{"hover", &ret.Hover},
+		{"pressed", &ret.Pressed},
+	}
+	var errs []error
+	for _, s := range states {
+		if err := tconfig.GetGraphics(images, s.key, nil,
+			tconfig.GraphicsSlot{Key: "left", URI: &s.dst.Left},
+			tconfig.GraphicsSlot{Key: "middle", URI: &s.dst.Middle},
+			tconfig.GraphicsSlot{Key: "right", URI: &s.dst.Right},
+		); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if len(errs) > 0 {
+		c.errors["prompt.images"] = errors.Join(errs...)
+		return browser.PromptImages{}
+	}
+	if ret.Idle.Empty() && !ret.Empty() {
+		c.errors["prompt.images.idle"] = errors.New(
+			"expected images for idle buttons, which the other states fall back to")
+		return browser.PromptImages{}
+	}
+	c.graphicsOutset(cfg, "images", "prompt",
+		outsetSide{&ret.Outset.Top, "top"},
+		outsetSide{&ret.Outset.Bottom, "bottom"},
+		outsetSide{&ret.Outset.Sides, "sides"},
+	)
 	return ret
 }
 
@@ -2763,7 +2816,7 @@ func (c ideConfig) windowScrollBarCharsets() (
 	}
 	hg.Overlay = g.Overlay
 	cs.Graphics, hover.Graphics = g, hg
-	c.graphicsOutset(sub, "window_manager.scroll_bar_charset",
+	c.graphicsOutset(sub, "graphics", "window_manager.scroll_bar_charset",
 		outsetSide{&outset, "left"},
 	)
 	return
@@ -2826,7 +2879,7 @@ func (c ideConfig) windowBarCharset() (cs tcomponent.WindowBarCharSet) {
 		c.errors["window_manager.window_bar_charset"] = err
 		return
 	}
-	c.graphicsOutset(sub, "window_manager.window_bar_charset",
+	c.graphicsOutset(sub, "graphics", "window_manager.window_bar_charset",
 		outsetSide{&g.Outset.Top, "top"},
 		outsetSide{&g.Outset.Bottom, "bottom"},
 		outsetSide{&g.Outset.Sides, "sides"},
@@ -2843,30 +2896,32 @@ type outsetSide struct {
 	key string
 }
 
-// graphicsOutset reads into sides the "outset" table of cfg's graphics
-// table, reporting its errors under name. Each side is a number of
+// graphicsOutset reads into sides the "outset" table of cfg's table
+// graphics, reporting its errors under name. Each side is a number of
 // cells, 0 or more; an invalid one is left as it is.
-func (c ideConfig) graphicsOutset(cfg config.Config, name string, sides ...outsetSide) {
-	g, err := cfg.GetConfig("graphics")
+func (c ideConfig) graphicsOutset(
+	cfg config.Config, graphics, name string, sides ...outsetSide,
+) {
+	g, err := cfg.GetConfig(graphics)
 	if err != nil {
 		return
 	}
 	o, err := g.GetConfig("outset")
 	if err != nil {
 		if err != config.ErrNotFound {
-			c.errors[name+".graphics.outset"] = err
+			c.errors[name+"."+graphics+".outset"] = err
 		}
 		return
 	}
 	for _, s := range sides {
 		n, err := o.GetInt(s.key)
+		key := name + "." + graphics + ".outset." + s.key
 		switch {
 		case errors.Is(err, config.ErrNotFound):
 		case err != nil:
-			c.errors[name+".graphics.outset."+s.key] = err
+			c.errors[key] = err
 		case n < 0:
-			c.errors[name+".graphics.outset."+s.key] = fmt.Errorf(
-				"expected 0 or more cells, got %d", n)
+			c.errors[key] = fmt.Errorf("expected 0 or more cells, got %d", n)
 		default:
 			*s.dst = n
 		}

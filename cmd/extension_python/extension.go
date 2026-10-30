@@ -78,7 +78,7 @@ func (e *pyExtension) ExtendWorkspace(
 		cfg,
 		hostDataDir(ctx, w),
 		w.Storage(ctx),
-		w.WindowManager(ctx),
+		w.Prompter(ctx),
 		w.RegisterREPLCommand,
 	)
 }
@@ -108,7 +108,7 @@ func (e *pyExtension) extendWorkspaceWith(
 	cfg config.Config,
 	dataDir string,
 	storage storageapi.Service,
-	wm browserapi.WindowManager,
+	prompter browserapi.Prompter,
 	registerREPL func(textapi.CommandManual, textapi.REPLHandler) error,
 ) error {
 	// The REPL command's cwd is always the workspace root, independent of
@@ -127,7 +127,7 @@ func (e *pyExtension) extendWorkspaceWith(
 		Tools:       []string{"uv", "uvx", "ty", "ruff"},
 		InitRoot: func(ctx context.Context, root langext.Root, tools *langext.Tools) error {
 			return initializeProjectRoot(
-				ctx, fs, exec, notify, lsp, tools, cfg, dataDir, setting, wm, root)
+				ctx, fs, exec, notify, lsp, tools, cfg, dataDir, setting, prompter, root)
 		},
 	})
 	syncEnv := func(ctx context.Context, root langext.Root) error {
@@ -185,11 +185,11 @@ func initializeProjectRoot(
 	cfg config.Config,
 	dataDir string,
 	setting *envSetting,
-	wm browserapi.WindowManager,
+	prompter browserapi.Prompter,
 	root langext.Root,
 ) error {
 	if detectProjectAt(ctx, fs, root.Dir) != kindScript {
-		managed := managedEnvironmentAllowed(ctx, notify, setting, wm, root)
+		managed := managedEnvironmentAllowed(ctx, notify, setting, prompter, root)
 		slog.Warn("initializing project root", "managed",
 			managed, "root", root.Dir, "uri", root.URI)
 		if managed {
@@ -248,7 +248,7 @@ func managedEnvironmentAllowed(
 	ctx context.Context,
 	notify browserapi.Notifications,
 	setting *envSetting,
-	wm browserapi.WindowManager,
+	prompter browserapi.Prompter,
 	root langext.Root,
 ) bool {
 	managed, known, err := setting.get(ctx, root)
@@ -259,7 +259,7 @@ func managedEnvironmentAllowed(
 	if known {
 		return managed
 	}
-	answer, answered := askManageEnvironment(ctx, wm, root)
+	answer, answered := askManageEnvironment(ctx, prompter, root)
 	if !answered {
 		return false
 	}

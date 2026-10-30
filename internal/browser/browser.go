@@ -291,10 +291,26 @@ type DragTarget interface {
 	DragDrop(pos term.Coordinates, paths []string) bool
 }
 
+// Prompter is the interface that wraps the OpenPrompt and ButtonImages
+// methods.
+type Prompter interface {
+	// OpenPrompt opens cfg in the host's theme, as
+	// browserapi.Prompter.Prompt does, and fails when cfg.Validate
+	// does. It reports false, along with the window of the prompt
+	// already open for cfg.Message, when it de-duplicates cfg; h is
+	// then never called. It must be called on the host event loop.
+	OpenPrompt(cfg browserapi.PromptConfig, h handler.PromptHandler) (win Window, opened bool, err error)
+	// ButtonImages returns the images the buttons of its prompts are
+	// drawn over, for buttons drawn elsewhere to match. It is nil when
+	// they are drawn in colour alone.
+	ButtonImages() *component.ButtonImages
+}
+
 // Browser is an interface that groups methods to manipulate
 // the user interface of a browser.
 type Browser interface {
 	WindowManager
+	Prompter
 	EventPublisher
 	ResourceOpener
 	Notifications

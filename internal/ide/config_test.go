@@ -2890,6 +2890,109 @@ func TestLoadEmbededConfig(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestConfigPromptImages(t *testing.T) {
+	idle := map[string]any{
+		"left":   "file:///btn/left.png",
+		"middle": "file:///btn/middle.png",
+		"right":  "file:///btn/right.png",
+	}
+	idleImage := browser.PromptButtonImage{
+		Left:   "file:///btn/left.png",
+		Middle: "file:///btn/middle.png",
+		Right:  "file:///btn/right.png",
+	}
+	cases := []struct {
+		name      string
+		images    any
+		want      browser.PromptImages
+		wantError map[string]string
+	}{
+		{name: "no images", want: browser.PromptImages{}},
+		{
+			name: "every state and an outset",
+			images: map[string]any{
+				"idle":     idle,
+				"selected": map[string]any{"middle": "https://example.com/sel.png"},
+				"hover":    map[string]any{"left": "file:///btn/hover.png"},
+				"pressed":  map[string]any{"right": "file:///btn/pressed.png"},
+				"outset":   map[string]any{"top": 1, "bottom": 2.0, "sides": 3},
+			},
+			want: browser.PromptImages{
+				Idle:     idleImage,
+				Selected: browser.PromptButtonImage{Middle: "https://example.com/sel.png"},
+				Hover:    browser.PromptButtonImage{Left: "file:///btn/hover.png"},
+				Pressed:  browser.PromptButtonImage{Right: "file:///btn/pressed.png"},
+				Outset:   component.ButtonOutset{Top: 1, Bottom: 2, Sides: 3},
+			},
+		},
+		{
+			name:   "states left out fall back to idle",
+			images: map[string]any{"idle": idle},
+			want:   browser.PromptImages{Idle: idleImage},
+		},
+		{
+			name: "other states need idle",
+			images: map[string]any{
+				"hover": map[string]any{"left": "file:///btn/hover.png"},
+			},
+			wantError: map[string]string{
+				"prompt.images.idle": "expected images for idle buttons",
+			},
+		},
+		{
+			name: "an invalid URI draws no images",
+			images: map[string]any{
+				"idle":  idle,
+				"hover": map[string]any{"left": "/btn/hover.png"},
+			},
+			wantError: map[string]string{
+				"prompt.images": `hover.left: imageuri: unsupported scheme ""`,
+			},
+		},
+		{
+			name: "an invalid outset side is reported and skipped",
+			images: map[string]any{
+				"idle":   idle,
+				"outset": map[string]any{"top": -1, "bottom": "one", "sides": 2},
+			},
+			want: browser.PromptImages{
+				Idle:   idleImage,
+				Outset: component.ButtonOutset{Sides: 2},
+			},
+			wantError: map[string]string{
+				"prompt.images.outset.top":    "expected 0 or more cells, got -1",
+				"prompt.images.outset.bottom": config.ErrInvalidType.Error(),
+			},
+		},
+		{
+			name:   "images that are not a map are reported",
+			images: "file:///btn.png",
+			wantError: map[string]string{
+				"prompt.images": config.ErrInvalidType.Error(),
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prompt := map[string]any{}
+			if tc.images != nil {
+				prompt["images"] = tc.images
+			}
+			cfg := &ideConfig{cfg: map[string]any{
+				"browser": map[string]any{"prompt": prompt},
+			}, errors: map[string]error{}}
+
+			assert.Equal(t, tc.want, cfg.promptConfig().Images)
+			assert.Len(t, cfg.errors, len(tc.wantError))
+			for key, msg := range tc.wantError {
+				if assert.Contains(t, cfg.errors, key) {
+					assert.ErrorContains(t, cfg.errors[key], msg)
+				}
+			}
+		})
+	}
+}
+
 func TestTutorialFilesDecoded(t *testing.T) {
 	cfg := ideConfig{
 		cfg: map[string]any{

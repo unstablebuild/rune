@@ -18,6 +18,7 @@ package searchbox_test
 
 import (
 	"errors"
+	"image"
 	"strings"
 	"testing"
 
@@ -25,6 +26,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/handler/handlertest"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	rhandlertest "unstable.build/rune/internal/handler/handlertest"
@@ -451,6 +453,164 @@ func TestFloatingConfiguredAttributesAndPureDraw(t *testing.T) {
 	assert.Equal(t, cfg.PlaceholderAttr, cells[2*48+2].Attributes())
 	upgrade := f.UpgradeRect()
 	assert.Equal(t, cfg.ButtonHoverAttr, cells[upgrade.Y*48+upgrade.X].Attributes())
+}
+
+func TestFloatingButtonImagesLayout(t *testing.T) {
+	tests := []struct {
+		name   string
+		images *component.ButtonImages
+		// before, between and after are the cells around the buttons.
+		before, between, after int
+	}{
+		{name: "without images", before: 1, between: 1, after: 1},
+		{name: "images without sides", images: &component.ButtonImages{
+			Idle: newButtonImage("idle", false),
+		}, before: 1, between: 1, after: 1},
+		{name: "sides make room", images: &component.ButtonImages{
+			Idle:   newButtonImage("idle", false),
+			Outset: component.ButtonOutset{Top: 1, Bottom: 1, Sides: 2},
+		}, before: 2, between: 4, after: 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testConfig()
+			cfg.ButtonImages = func() *component.ButtonImages { return tt.images }
+			f := searchbox.NewFloating(searchbox.New(new(replaceController), cfg),
+				searchbox.ModeReplace, "")
+			width, height := f.Dimensions()
+			assert.Equal(t, 8, height, "the images take no rows of their own")
+			f.Resize(width, height)
+
+			query, next, all := f.QueryRect(), f.NextRect(), f.AllRect()
+			assert.Equal(t, 32, query.Width, "the input keeps its width")
+			assert.Equal(t, tt.before, next.X-(query.X+query.Width))
+			assert.Equal(t, tt.between, all.X-(next.X+next.Width))
+			assert.Equal(t, tt.after, width-(all.X+all.Width))
+		})
+	}
+}
+
+func TestFloatingButtonImages(t *testing.T) {
+	cfg := testConfig()
+	cfg.Attr = term.Attributes{Bg: term.ColorBlack}
+	cfg.ButtonAttr = term.Attributes{Fg: term.ColorWhite, Bg: term.ColorGray}
+	cfg.ButtonHoverAttr = term.Attributes{Fg: term.ColorYellow, Bg: term.ColorBlue}
+	outset := component.ButtonOutset{Top: 1, Bottom: 1, Sides: 2}
+	images := &component.ButtonImages{
+		Idle:    newButtonImage("idle", false),
+		Hover:   newButtonImage("hover", false),
+		Pressed: newButtonImage("pressed", false),
+		Outset:  outset,
+	}
+	hover := func(f *searchbox.Floating) { f.SetHover(searchbox.ButtonUpgrade) }
+	press := func(f *searchbox.Floating) {
+		r := f.UpgradeRect()
+		f.Handle(mouseEvent(term.MouseLeft, r.X, r.Y))
+	}
+	tests := []struct {
+		name    string
+		images  *component.ButtonImages
+		refuse  bool
+		setup   func(*searchbox.Floating)
+		want    string
+		wantFg  term.Attributes
+		noImage bool
+	}{
+		{name: "without images", wantFg: cfg.ButtonAttr, noImage: true},
+		{name: "idle", images: images, want: "idle",
+			wantFg: term.Attributes{Fg: term.ColorWhite, Bg: term.ColorBlack}},
+		{name: "hover", images: images, setup: hover, want: "hover",
+			wantFg: term.Attributes{Fg: term.ColorYellow, Bg: term.ColorBlack}},
+		{name: "pressed", images: images, setup: press, want: "pressed",
+			wantFg: term.Attributes{Fg: term.ColorYellow, Bg: term.ColorBlack}},
+		{name: "pressed without its images is hovered", setup: press, want: "hover",
+			images: &component.ButtonImages{
+				Idle: images.Idle, Hover: images.Hover, Outset: outset,
+			},
+			wantFg: term.Attributes{Fg: term.ColorYellow, Bg: term.ColorBlack}},
+		{name: "images still loading", images: &component.ButtonImages{
+			Idle: newButtonImage("loading", true), Outset: outset,
+		}, wantFg: cfg.ButtonAttr, noImage: true},
+		{name: "writer draws no images", images: images, refuse: true,
+			wantFg: cfg.ButtonAttr, noImage: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := cfg
+			cfg.ButtonImages = func() *component.ButtonImages { return tt.images }
+			f := searchbox.NewFloating(searchbox.New(new(replaceController), cfg),
+				searchbox.ModeFind, "")
+			width, height := f.Dimensions()
+			f.Resize(width, height)
+			if tt.setup != nil {
+				tt.setup(f)
+			}
+			w := &imageWriter{StringWriter: term.NewStringWriter(width, height), refuse: tt.refuse}
+			f.Draw(w)
+
+			r := f.UpgradeRect()
+			cells := w.Cells()
+			for x := r.X; x < r.X+r.Width; x++ {
+				assert.Equal(t, tt.wantFg, cells[r.Y*width+x].Attributes(), "label cell %d", x)
+			}
+			if tt.noImage {
+				assert.Empty(t, w.images)
+				return
+			}
+			require.NotEmpty(t, w.images)
+			var bounds image.Rectangle
+			for _, img := range w.images {
+				assert.Equal(t, tt.want, buttonImageNames[img.ID])
+				assert.Equal(t, term.ImageLayerBelowText, img.Layer)
+				bounds = bounds.Union(img.Bounds())
+			}
+			assert.Equal(t, image.Rect(r.X-outset.Sides, r.Y-outset.Top,
+				r.X+r.Width+outset.Sides, r.Y+1+outset.Bottom), bounds,
+				"the images reach the outset around the label")
+			assert.True(t, bounds.In(image.Rect(0, 0, width, height)),
+				"the images stay in the box")
+		})
+	}
+}
+
+var buttonImageNames = map[term.ImageID]string{}
+
+// newButtonImage returns images that draw name over all of their cells,
+// or nothing while loading, as an image that has not loaded yet does.
+func newButtonImage(name string, loading bool) component.ButtonImage {
+	img := &buttonImage{id: term.NewImageID(), loading: loading}
+	buttonImageNames[img.id] = name
+	return component.ButtonImage{Left: img, Middle: img, Right: img}
+}
+
+type buttonImage struct {
+	id            term.ImageID
+	width, height int
+	loading       bool
+}
+
+func (i *buttonImage) Resize(width, height int) { i.width, i.height = width, height }
+
+func (i *buttonImage) Draw(w term.Writer) {
+	if !i.loading {
+		w.DrawImage(term.Image{ID: i.id, Width: i.width, Height: i.height})
+	}
+}
+
+// imageWriter records the images drawn on it, unless it refuses them as
+// a writer that cannot draw images does.
+type imageWriter struct {
+	*term.StringWriter
+	refuse bool
+	images []term.Image
+}
+
+func (w *imageWriter) DrawImage(img term.Image) bool {
+	if w.refuse {
+		return false
+	}
+	w.images = append(w.images, img)
+	return true
 }
 
 func TestFloatingReplacementEditRelayout(t *testing.T) {

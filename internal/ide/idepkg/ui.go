@@ -22,7 +22,6 @@ import (
 
 	log "github.com/sirupsen/logrus"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
-	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
 )
@@ -46,8 +45,7 @@ type ConfigPrompt struct {
 	// Options are the answers the user picks from. Options[0] approves
 	// the change; every other option denies it.
 	Options []PromptOption
-	// MaxWidth bounds the width of the prompt in cells; 0 sizes it to
-	// the message.
+	// MaxWidth is browserapi.PromptConfig.MaxWidth.
 	MaxWidth int
 }
 
@@ -85,16 +83,12 @@ func (u managerUI) PromptConfig(p ConfigPrompt, answer func(approved bool)) {
 	u.m.PromptConfig(p, answer)
 }
 
-// PromptConfig shows p in a floating window of the Manager's own
-// window manager. See UI.PromptConfig.
+// PromptConfig asks p with the Manager's own Prompter. See
+// UI.PromptConfig.
 func (m *Manager) PromptConfig(p ConfigPrompt, answer func(approved bool)) {
 	var once sync.Once
 	reply := func(approved bool) {
 		once.Do(func() { answer(approved) })
-	}
-	newMessage := markdownOrFallback(m.parser, m.scheduleNextTick)
-	if p.MaxWidth > 0 {
-		newMessage = boundedFloatingMessage(newMessage, p.MaxWidth)
 	}
 	options := make([]string, len(p.Options))
 	bindings := make([]term.KeyComb, 0, len(p.Options))
@@ -107,34 +101,20 @@ func (m *Manager) PromptConfig(p ConfigPrompt, answer func(approved bool)) {
 	if len(bindings) != len(options) {
 		bindings = nil
 	}
-	prompt := handler.NewPrompt(handler.PromptConfig{
-		HighlightAttr: term.Attributes{
-			Attrs: term.AttrBold,
-			Bg:    term.ColorRed,
-		},
-		OptionAttr: term.Attributes{
-			Attrs: term.AttrBold,
-			Bg:    term.ColorGray,
-		},
-		OptionBindings: bindings,
-		PromptConfig: component.PromptConfig{
-			Message:    p.Message,
-			Options:    options,
-			NewMessage: newMessage,
-		},
-		PromptHandler: handler.FuncPromptHandler(
-			func(idx int, _ string) { reply(idx == 0) },
-			func() error {
-				reply(false)
-				return nil
-			}),
-	})
-
-	ok := m.scheduleNextTick(func() {
-		_, err := m.wm.Floating(prompt, browserapi.FloatingConfig{
-			Alignment: component.AlignmentCentered,
+	cfg := browserapi.PromptConfig{
+		Message:  p.Message,
+		Options:  options,
+		Bindings: bindings,
+		MaxWidth: max(p.MaxWidth, 0),
+	}
+	h := handler.FuncPromptHandler(
+		func(idx int, _ string) { reply(idx == 0) },
+		func() error {
+			reply(false)
+			return nil
 		})
-		if err != nil {
+	ok := m.scheduleNextTick(func() {
+		if _, err := m.prompter.Prompt(cfg, h); err != nil {
 			_, _ = m.n.Notify(browserapi.LevelError, "show config prompt: %s", err)
 			reply(false)
 		}

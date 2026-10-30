@@ -722,6 +722,12 @@ func (wm *WindowManager) Close() error {
 	return wm.comp.Close()
 }
 
+// FrameGraphics returns the frames' images, as
+// component.WindowManager.FrameGraphics does.
+func (wm *WindowManager) FrameGraphics() *component.FrameGraphics {
+	return wm.comp.FrameGraphics()
+}
+
 // SetFocus sets the passed tile in focus. It returns the previous tile in focus.
 // The behaviour is undefined if the given tile is not part of this WindowManager.
 func (wm *WindowManager) SetFocus(tile Window) (

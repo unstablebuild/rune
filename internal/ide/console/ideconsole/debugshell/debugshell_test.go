@@ -33,6 +33,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/component"
+	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/handler/repl"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
 	"github.com/unstablebuild/rune-go-sdk/term"
@@ -624,7 +625,13 @@ func (b *fakeBrowser) Floating(
 ) (browser.Window, error) {
 	return nil, nil
 }
-func (b *fakeBrowser) Window(uint64) (browser.Window, bool) { return nil, false }
+func (b *fakeBrowser) OpenPrompt(
+	browserapi.PromptConfig, handler.PromptHandler,
+) (browser.Window, bool, error) {
+	return nil, false, errors.New("unimplemented")
+}
+func (b *fakeBrowser) ButtonImages() *component.ButtonImages { return nil }
+func (b *fakeBrowser) Window(uint64) (browser.Window, bool)  { return nil, false }
 func (b *fakeBrowser) Tab(
 	workspaceapi.URI, rune, string, browserapi.Handler,
 ) (browserapi.Handler, error) {

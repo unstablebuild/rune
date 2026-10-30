@@ -30,7 +30,6 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/pkgapi"
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
-	"github.com/unstablebuild/rune-go-sdk/api/syntaxapi"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/handler"
 	sdkiterator "github.com/unstablebuild/rune-go-sdk/iterator"
@@ -104,13 +103,12 @@ type installStorageValue struct {
 
 func (m *localPkgManager) init(
 	n browserapi.Notifications, rm release.Manager,
-	wm browserapi.WindowManager,
+	prompter browserapi.Prompter,
 	rootStorage storageapi.Service, scheme schemeapi.Scheme,
 	dataDir, configPath string,
 	fcs component.FrameCharSet,
 	interrupter term.Interrupter, wh *workspaceManagerHandler,
 	scheduleNextTick func(func()) bool,
-	parser syntaxapi.Parser,
 	editorMode string,
 	autoInstall bool,
 	afterConfigMerge func(idepkg.ConfigMergeEvent) (idepkg.ConfigMergeResult, error),
@@ -129,7 +127,6 @@ func (m *localPkgManager) init(
 	composed := multipkg.New(gitpkg.New(gitOpts...), rm)
 	opts := []idepkg.Option{
 		idepkg.WithFrameCharSet(fcs),
-		idepkg.WithSyntaxParser(parser),
 		idepkg.WithEditorMode(editorMode),
 		idepkg.WithConfigBase(func() map[string]any {
 			cfg, err := wh.reloadConfig()
@@ -141,7 +138,7 @@ func (m *localPkgManager) init(
 		idepkg.WithAfterConfigMerge(afterConfigMerge),
 	}
 	m.pkg = idepkg.NewManager(n, composed, storage, trust, scheme, dataDir,
-		configPath, wm, scheduleNextTick, interrupter,
+		configPath, prompter, scheduleNextTick, interrupter,
 		opts...,
 	)
 	m.uc = idepkg.NewUpdateChecker(m.pkg)

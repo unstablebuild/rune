@@ -1468,68 +1468,47 @@ func (c *Component) Selection() (string, bool) {
 	return c.union.Selection()
 }
 
-// Prompt creates a new prompt to be drawn as an overlay on the next call to Draw
-// and it also takes over event control until user either exits prompt or selects
-// an option. The passed options and bindings must be equal in length, or bindings
-// must be zero in length, meaning no key bindings are provided to user.
-// Callers must ensure that there's coherence between options and bindings, otherwise
-// this method panics.
+// Prompt opens a floating window centered over this Component that asks
+// cfg.Message, rendered as markdown, and takes over events until the
+// user picks an option or closes the window, which promptHandler is
+// told as browserapi.Prompter describes. The prompt is styled with
+// Config.PromptConfig. It panics when cfg.Validate fails.
 //
-// Prompt uses message to de-duplicate prompts. If a prompt is already open
-// then this method returns the window used to display that prompt.
+// Prompt uses cfg.Message to de-duplicate prompts: while a prompt with
+// the same message is open, it returns that prompt's window and
+// promptHandler is never called.
 func (c *Component) Prompt(
-	message string, options []string,
-	bindings []term.KeyComb,
-	promptHandler handler.PromptHandler,
+	cfg browserapi.PromptConfig, promptHandler handler.PromptHandler,
 ) Window {
-	if len(options) == 0 || (len(bindings) != 0 && len(options) != len(bindings)) {
-		panic("Prompt given invalid options and/or bindings")
+	if err := cfg.Validate(); err != nil {
+		panic(fmt.Sprintf("Prompt given an invalid config: %s", err))
 	}
-	if win, ok := c.prompts[message]; ok {
+	if win, ok := c.prompts[cfg.Message]; ok {
 		return win
 	}
 	clearHandler := &clearOnClosePromptHandler{
 		root:    promptHandler,
 		c:       c,
-		message: message,
+		message: cfg.Message,
 	}
+	style := c.config.PromptConfig
 	promptConfig := handler.PromptConfig{
 		PromptConfig: component.PromptConfig{
-			Message:              message,
-			Options:              options,
-			BackgroundAttributes: c.config.PromptConfig.BackgroundAttr,
-			MinWidth:             c.config.PromptConfig.MinWidth,
+			Message:              cfg.Message,
+			Options:              cfg.Options,
+			BackgroundAttributes: style.BackgroundAttr,
+			MinWidth:             style.MinWidth,
 			NewMessage: func(str string) component.Floating {
-				mcfg := markdown.DefaultConfig()
-				mcfg.HeaderPrefix = false
-				mkd, err := markdown.NewWithConfig(str, mcfg)
-				if err == nil {
-					return component.NewAspectRatioFloatingResponsive(
-						component.NewSpan(mkd, component.SpanConfig{
-							PadHorizontal:    4,
-							PadVertical:      2,
-							ContentAlignment: component.AlignmentCentered,
-						}), component.DefaultAspectRatio)
-				}
-				cfg := component.StringResponsiveConfig{
-					NoSplitWords: true,
-					StringConfig: component.StringConfig{
-						PaddingVertical:   4,
-						PaddingHorizontal: 4,
-						Alignment:         component.AlignmentCentered,
-					},
-				}
-				messageResponsive := component.NewResponsiveString(str, cfg)
-
-				return component.NewAspectRatioFloatingResponsive(
-					messageResponsive, component.DefaultAspectRatio)
+				return c.promptMessage(str, cfg.MaxWidth)
 			},
+			ButtonImages: c.ButtonImages(),
 		},
 		PromptHandler:  clearHandler,
-		OptionBindings: bindings,
-		OptionAttr:     c.config.PromptConfig.TextAttr,
-		HighlightAttr:  c.config.PromptConfig.HighlightAttr,
-		ClickedAttr:    c.config.PromptConfig.ClickedAttr,
+		OptionBindings: cfg.Bindings,
+		OptionAttr:     style.TextAttr,
+		HighlightAttr:  style.HighlightAttr,
+		HoverAttr:      style.HoverAttr,
+		ClickedAttr:    style.ClickedAttr,
 	}
 
 	prompt := handler.NewPrompt(promptConfig)
@@ -1539,8 +1518,89 @@ func (c *Component) Prompt(
 
 	win := c.Floating(prompt, floatingConfig)
 	clearHandler.win = win
-	c.prompts[message] = win
+	c.prompts[cfg.Message] = win
 	return win
+}
+
+// OpenPrompt satisfies Prompter.
+func (c *Component) OpenPrompt(
+	cfg browserapi.PromptConfig, h handler.PromptHandler,
+) (Window, bool, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, false, err
+	}
+	if win, ok := c.prompts[cfg.Message]; ok {
+		return win, false, nil
+	}
+	return c.Prompt(cfg, h), true, nil
+}
+
+// promptMessage renders the message of a prompt, as markdown when it
+// parses. See browserapi.PromptConfig.MaxWidth for its size.
+func (c *Component) promptMessage(str string, maxWidth int) component.Floating {
+	mcfg := markdown.DefaultConfig()
+	mcfg.HeaderPrefix = false
+	mcfg.Parser = c.config.PromptConfig.Parser
+	if c.config.PromptConfig.ScheduleNextTick != nil {
+		mcfg.ScheduleNextTick = c.config.PromptConfig.ScheduleNextTick
+	}
+	var msg floatingResponsive
+	if mkd, err := markdown.NewWithConfig(str, mcfg); err == nil {
+		span := component.NewSpan(mkd, component.SpanConfig{
+			PadHorizontal:    4,
+			PadVertical:      2,
+			ContentAlignment: component.AlignmentCentered,
+		})
+		if maxWidth > 0 {
+			// a Span is as wide as its widest line
+			return &maxWidthFloating{floatingResponsive: span, maxWidth: maxWidth}
+		}
+		msg = span
+	} else {
+		msg = component.NewResponsiveString(str, component.StringResponsiveConfig{
+			NoSplitWords: true,
+			StringConfig: component.StringConfig{
+				PaddingVertical:   4,
+				PaddingHorizontal: 4,
+				Alignment:         component.AlignmentCentered,
+			},
+		})
+	}
+	ret := component.NewAspectRatioFloatingResponsive(msg, component.DefaultAspectRatio)
+	if maxWidth == 0 {
+		return ret
+	}
+	return &maxWidthFloating{floatingResponsive: ret, maxWidth: maxWidth}
+}
+
+type floatingResponsive interface {
+	component.Floating
+	component.Responsive
+}
+
+// maxWidthFloating sizes a message no wider than maxWidth, wrapping it
+// at that width when it would be wider.
+type maxWidthFloating struct {
+	floatingResponsive
+	maxWidth int
+}
+
+// Dimensions satisfies component.Floating.
+func (f *maxWidthFloating) Dimensions() (width, height int) {
+	width, height = f.floatingResponsive.Dimensions()
+	if width <= f.maxWidth {
+		return width, height
+	}
+	return f.maxWidth, f.Height(f.maxWidth)
+}
+
+// ButtonImages returns the images under the buttons of the prompts this
+// Component opens, as Config.PromptConfig.Images names them, for buttons
+// drawn elsewhere to match. It is nil when no image is named or the
+// window manager draws no images, which is without
+// WindowManagerConfig.FrameGraphicsStorage or Interrupter.
+func (c *Component) ButtonImages() *component.ButtonImages {
+	return c.config.PromptConfig.Images.ButtonImages(c.wm.FrameGraphics())
 }
 
 // Subscribe subscribes sub to window focus events.

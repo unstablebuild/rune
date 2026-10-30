@@ -399,10 +399,12 @@ func (h *workspaceManagerHandler) newBuiltinStandardEditor(
 	auxBarConfig := cfg.auxiliaryBarConfig(h, svc)
 	iconsBarConfig := cfg.iconsBarConfig(h)
 	statusBarConfig := cfg.statusBarConfig(cwd, h, svc, h.events.newInterrupter(cwd))
+	wm := currentWorkspaceWindowManager{root: h}
+	searchConfig := cfg.standardSearchConfig(wm)
+	searchConfig.ButtonImages = wm.ButtonImages
 	return standard.Editor(
 		standard.WithCommandBar(true),
-		standard.WithSearchConfig(cfg.standardSearchConfig(
-			currentWorkspaceWindowManager{root: h})),
+		standard.WithSearchConfig(searchConfig),
 		standard.WithTabspaces(cfg.editorTabspaces()),
 		standard.WithIndents(cfg.editorIndents()),
 		standard.WithRuler(cfg.editorRuler()),
@@ -1532,6 +1534,9 @@ func (h *workspaceManagerHandler) textOpts(
 	markdownConfig := markdown.DefaultConfig()
 	markdownConfig.Parser = parser
 	markdownConfig.ScheduleNextTick = cfg.scheduleNextTick
+	promptConfig := cfg.promptConfig()
+	promptConfig.Parser = parser
+	promptConfig.ScheduleNextTick = cfg.scheduleNextTick
 	ret := []text.Option{
 		text.WithTabspaces(cfg.editorTabspaces()),
 		text.WithComments(cfg.editorComments()),
@@ -1579,7 +1584,7 @@ func (h *workspaceManagerHandler) textOpts(
 		text.WithTabOverrideIcon(cfg.tabOverrideIcon()),
 		text.WithCommandOverlayConfig(cfg.commandOverlayConfig()),
 		text.WithCommandAliases(cfg.commandAliases()),
-		text.WithPromptConfig(cfg.promptConfig()),
+		text.WithPromptConfig(promptConfig),
 		text.WithEventPublisher(h.events.newPublisher(uri)),
 		text.WithTabBarOffset(h.tabBarOffset),
 		text.WithRightInset(h.rightInset),
@@ -4648,7 +4653,6 @@ func (h *workspaceManagerHandler) setReleaseManager(releaseManager release.Manag
 		h.pkgmanager.Close()
 	}
 	wm := currentWorkspaceWindowManager{root: h}
-	parser := &lazyParser{root: h}
 	editorMode := ""
 	autoInstall := false
 	if cfg, err := h.reloadConfig(); err == nil {
@@ -4657,7 +4661,7 @@ func (h *workspaceManagerHandler) setReleaseManager(releaseManager release.Manag
 	}
 	h.pkgmanager.init(notifications, releaseManager, wm,
 		h.ideStorage, h.homeWorkspace, h.sixDir, h.configPath, h.frameCharSet,
-		h, h, h.scheduleNextTick, parser,
+		h, h, h.scheduleNextTick,
 		editorMode, autoInstall, h.afterPackageConfigMerge, h.gitRemoteURL,
 		h.trust)
 }

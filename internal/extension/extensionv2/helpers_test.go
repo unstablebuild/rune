@@ -31,6 +31,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/extensionapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
 	"github.com/unstablebuild/rune-go-sdk/term"
@@ -126,6 +127,14 @@ func (e2eBrowser) Floating(
 ) (browser.Window, error) {
 	return browsertest.NopWindow(), nil
 }
+
+func (e2eBrowser) OpenPrompt(
+	browserapi.PromptConfig, handler.PromptHandler,
+) (browser.Window, bool, error) {
+	return browsertest.NopWindow(), true, nil
+}
+
+func (e2eBrowser) ButtonImages() *component.ButtonImages { return nil }
 
 func (e2eBrowser) Bar(browserapi.BarConfig, tui.Handler) error { return nil }
 

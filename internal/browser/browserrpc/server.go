@@ -31,6 +31,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/handler/handlerrpc"
+	"github.com/unstablebuild/rune-go-sdk/term"
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
@@ -425,6 +426,104 @@ func (s *Server) Floating(srv browserrpc.WindowManager_FloatingServer) error {
 	resp := handlerrpc.InstallResourceResponse{WindowId: id}
 	respMsg := handlerrpc.ServerMessage{Type: handlerrpc.MessageType_Response, Response: &resp}
 	return s.scheduleOrRespond(streamHandler, client, srv, &respMsg)
+}
+
+// Prompt satisfies BrowserServer. It streams the prompt's window once it
+// is open, then the option the user picks, if any, and the prompt's
+// close. For a prompt already open for the same message, it streams only
+// that prompt's window. A prompt whose stream ends before it closes is
+// closed.
+func (s *Server) Prompt(
+	req *browserrpc.PromptRequest, srv browserrpc.WindowManager_PromptServer,
+) error {
+	cfg := browserapi.PromptConfig{
+		Message:  req.GetMessage(),
+		Options:  req.GetOptions(),
+		MaxWidth: int(req.GetMaxWidth()),
+	}
+	for _, b := range req.GetBindings() {
+		ev, err := b.ToModel()
+		if err != nil {
+			return status.Errorf(codes.InvalidArgument, "prompt binding: %v", err)
+		}
+		cfg.Bindings = append(cfg.Bindings, term.KeyComb{Mod: ev.Mod, Key: ev.Key, Ch: ev.Ch})
+	}
+	if err := cfg.Validate(); err != nil {
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	events := make(promptEvents, 2)
+	s.browser.Lock()
+	win, opened, err := s.browser.OpenPrompt(cfg, events)
+	s.browser.Unlock()
+	if err != nil {
+		return fmt.Errorf("open prompt: %w", err)
+	}
+	err = srv.Send(&browserrpc.PromptEvent{Event: &browserrpc.PromptEvent_Opened_{
+		Opened: &browserrpc.PromptEvent_Opened{WindowId: win.WindowID()},
+	}})
+	if err != nil || !opened {
+		if opened {
+			s.closePrompt(win)
+		}
+		return err
+	}
+	for {
+		select {
+		case ev := <-events:
+			if err := srv.Send(ev); err != nil {
+				s.closePrompt(win)
+				return err
+			}
+			if ev.GetClosed() != nil {
+				return nil
+			}
+		case <-srv.Context().Done():
+			s.closePrompt(win)
+			return srv.Context().Err()
+		case <-s.serverCtx.Done():
+			s.closePrompt(win)
+			return s.serverCtx.Err()
+		}
+	}
+}
+
+func (s *Server) closePrompt(win browser.Window) {
+	s.browser.Lock()
+	defer s.browser.Unlock()
+	if win.Closed() {
+		return
+	}
+	if err := win.Close(); err != nil {
+		s.log(log.WarnLevel, "close prompt: %v", err)
+	}
+}
+
+// promptEvents queues what the user does with a prompt for its stream.
+// The prompt calls it on the event loop, which must not wait on the
+// stream, at most once to select and once to close, so a buffer of two
+// never blocks.
+type promptEvents chan *browserrpc.PromptEvent
+
+func (e promptEvents) OnSelect(i int, option string) {
+	e.queue(&browserrpc.PromptEvent{Event: &browserrpc.PromptEvent_Selected_{
+		Selected: &browserrpc.PromptEvent_Selected{Index: uint32(i), Option: option},
+	}})
+}
+
+func (e promptEvents) OnClose() error {
+	e.queue(&browserrpc.PromptEvent{Event: &browserrpc.PromptEvent_Closed_{
+		Closed: new(browserrpc.PromptEvent_Closed),
+	}})
+	return nil
+}
+
+func (e promptEvents) queue(ev *browserrpc.PromptEvent) {
+	select {
+	case e <- ev:
+	default:
+		log.WithField(logging.KeyClass, "browser.Server").Warnf("prompt event dropped: %v", ev)
+	}
 }
 
 // Tab satisfies BrowserServer

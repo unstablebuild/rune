@@ -481,7 +481,14 @@ func TestSearchCompatibilityOptions(t *testing.T) {
 
 func TestEditorInstallsConfiguredSearchWrapper(t *testing.T) {
 	wm := new(searchTestWindowManager)
-	ed := Editor(WithSearchConfig(SearchConfig{WindowManager: wm}))
+	var askedImages int
+	ed := Editor(WithSearchConfig(SearchConfig{
+		WindowManager: wm,
+		ButtonImages: func() *component.ButtonImages {
+			askedImages++
+			return nil
+		},
+	}))
 	buf := cell.NewBuffer()
 	buf.WriteString("one two one")
 	h, err := ed.Edit(context.Background(), workspaceapi.URI{}, buf, false, false)
@@ -497,6 +504,7 @@ func TestEditorInstallsConfiguredSearchWrapper(t *testing.T) {
 	assert.Equal(t, term.Coordinates{Y: 2}, wm.config.Offset)
 	assert.False(t, wm.config.NoWindowBar)
 	assert.Equal(t, "Find / Replace", wm.config.Title)
+	assert.Equal(t, 1, askedImages, "the box takes its button images as it opens")
 }
 
 func componentTopCenter() component.Alignment {

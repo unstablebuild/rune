@@ -46,6 +46,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/internal/browser"
+	tcomponent "unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/component/shader"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/handler/command"
@@ -76,6 +77,10 @@ type IDE struct {
 	// soundRegistry resolves the names ideConfig.sounds plays. Only the
 	// IDE sets its entries, from the user config on every reload.
 	soundRegistry *sounds.Registry
+	// tutorialGraphics holds the images under the tutorials' buttons,
+	// which outlive any workspace's window manager and its images.
+	tutorialGraphics        *tcomponent.FrameGraphics
+	tutorialGraphicsStorage storageapi.Service
 }
 
 // EventPublisher is a function that publishes the given event back
@@ -320,6 +325,13 @@ func (i *IDE) WindowManager() browserapi.WindowManager {
 	return currentWorkspaceWindowManager{root: i.workspaceHandler}
 }
 
+// Prompter returns a browserapi.Prompter that opens prompts in the
+// workspace in focus, in the IDE's theme. It must be called on the
+// event loop.
+func (i *IDE) Prompter() browserapi.Prompter {
+	return currentWorkspaceWindowManager{root: i.workspaceHandler}
+}
+
 // Storage returns persistent storage acrosss IDE instances, given
 // the same data dir passed in ide.New, or ide.NewRecovery.
 func (i *IDE) Storage() storageapi.Service {
@@ -512,6 +524,16 @@ func (i *IDE) closeResources() (ret error) {
 
 	if err := i.tutorial.Close(); err != nil {
 		ret = multierr.Append(ret, err)
+	}
+
+	if i.tutorialGraphics != nil {
+		if err := i.tutorialGraphics.Close(); err != nil {
+			ret = multierr.Append(ret, err)
+		}
+		if err := i.tutorialGraphicsStorage.Close(); err != nil {
+			ret = multierr.Append(ret, err)
+		}
+		i.tutorialGraphics, i.tutorialGraphicsStorage = nil, nil
 	}
 
 	return

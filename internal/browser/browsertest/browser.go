@@ -23,6 +23,8 @@ import (
 
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"github.com/unstablebuild/rune-go-sdk/component"
+	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/internal/browser"
@@ -66,6 +68,14 @@ func (b toBrowser) EndTabStatus(workspaceapi.URI) error {
 func (b toBrowser) SetFocus(browser.Window) (browser.Window, error) {
 	return nil, errors.New("unimplemented")
 }
+
+func (b toBrowser) OpenPrompt(
+	browserapi.PromptConfig, handler.PromptHandler,
+) (browser.Window, bool, error) {
+	return nil, false, errors.New("unimplemented")
+}
+
+func (b toBrowser) ButtonImages() *component.ButtonImages { return nil }
 
 func (b toBrowser) Split(
 	o browserapi.Orientation, win browser.Window, h browserapi.Handler,

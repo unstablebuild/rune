@@ -37,6 +37,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/semanticapi"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/text"
 )
@@ -125,6 +126,64 @@ func TestCallbackHandler_ShowMessage(t *testing.T) {
 			"bare message", notif.notified[0].msg,
 		)
 	})
+}
+
+func TestCallbackHandler_ShowMessageRequest(t *testing.T) {
+	t.Parallel()
+	actions := []semanticapi.MessageActionItem{{Title: "Retry"}, {Title: "Cancel"}}
+	tests := []struct {
+		name    string
+		actions []semanticapi.MessageActionItem
+		answer  func(handler.PromptHandler)
+		want    *semanticapi.MessageActionItem
+		prompts int
+		notify  int
+	}{
+		{
+			name:    "picks an action",
+			actions: actions,
+			answer: func(h handler.PromptHandler) {
+				h.OnSelect(1, "Cancel")
+				_ = h.OnClose()
+			},
+			want:    &actions[1],
+			prompts: 1,
+		},
+		{
+			name:    "dismissed",
+			actions: actions,
+			answer:  func(h handler.PromptHandler) { _ = h.OnClose() },
+			prompts: 1,
+		},
+		{
+			name:   "no actions only notifies",
+			notify: 1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			wm := &mockWindowManager{answer: tt.answer}
+			notif := &mockNotifications{}
+			h := NewCallbackHandler(notif, wm, nil, nil, caseFS{}, "", CallbackHandlerConfig{})
+
+			got, err := h.ShowMessageRequest(t.Context(), semanticapi.ShowMessageRequestParams{
+				Type: semanticapi.MessageTypeWarning, Message: "Build failed", Actions: tt.actions,
+			})
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+			assert.Len(t, notif.notified, tt.notify)
+			wm.mu.Lock()
+			defer wm.mu.Unlock()
+			require.Len(t, wm.prompts, tt.prompts)
+			assert.Equal(t, tt.prompts, wm.closed, "the prompt closes once answered")
+			if tt.prompts > 0 {
+				assert.Equal(t, browserapi.PromptConfig{
+					Message: "Build failed", Options: []string{"   Retry    ", "   Cancel    "},
+				}, wm.prompts[0])
+			}
+		})
+	}
 }
 
 func TestCallbackHandler_LogMessage(t *testing.T) {
@@ -2494,6 +2553,11 @@ func (c *mockCellEditor) Edit(
 type mockWindowManager struct {
 	mu            sync.Mutex
 	floatingCalls int
+	prompts       []browserapi.PromptConfig
+	closed        int
+	// answer is what the user does with each prompt, nil to leave it
+	// open.
+	answer func(handler.PromptHandler)
 }
 
 func (m *mockWindowManager) Floating(
@@ -2508,7 +2572,26 @@ func (m *mockWindowManager) Floating(
 func (m *mockWindowManager) CloseWindow(
 	_ browserapi.Window,
 ) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.closed++
 	return nil
+}
+
+func (m *mockWindowManager) Prompt(
+	cfg browserapi.PromptConfig, h handler.PromptHandler,
+) (browserapi.Window, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	m.prompts = append(m.prompts, cfg)
+	answer := m.answer
+	m.mu.Unlock()
+	if answer != nil {
+		answer(h)
+	}
+	return &mockWindow{}, nil
 }
 
 func (m *mockWindowManager) SetTabStatus(workspaceapi.URI, browserapi.TabStatus) error { return nil }

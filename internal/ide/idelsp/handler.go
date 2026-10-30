@@ -50,9 +50,10 @@ var errCouldNotSchedule = errors.New(
 	"could not schedule operation",
 )
 
-// WindowManager provides floating window management for
-// LSP callback prompts.
+// WindowManager provides the floating windows and prompts that LSP
+// callbacks show. Its methods are called on the event loop.
 type WindowManager interface {
+	browserapi.Prompter
 	Floating(h browserapi.Floating, cfg browserapi.FloatingConfig) (browserapi.Window, error)
 	CloseWindow(browserapi.Window) error
 }
@@ -591,48 +592,47 @@ func (h *CallbackHandler) ShowMessageRequest(
 	ctx context.Context,
 	params semanticapi.ShowMessageRequestParams,
 ) (*semanticapi.MessageActionItem, error) {
+	if len(params.Actions) == 0 {
+		// A prompt needs an option, and with no action to pick there is
+		// nothing to answer but the message.
+		return nil, h.ShowMessage(ctx, semanticapi.ShowMessageParams{
+			Type: params.Type, Message: params.Message,
+		})
+	}
 	titles := make([]string, len(params.Actions))
 	for i, a := range params.Actions {
 		titles[i] = fmt.Sprintf("   %s    ", a.Title)
 	}
 
 	ch := make(chan *semanticapi.MessageActionItem, 1)
-	prompt := handler.NewPrompt(handler.PromptConfig{
-		HighlightAttr: term.Attributes{
-			Attrs: term.AttrBold,
-			Bg:    term.ColorRed,
+	answer := func(item *semanticapi.MessageActionItem) {
+		select {
+		case ch <- item:
+		default:
+		}
+	}
+	promptHandler := handler.FuncPromptHandler(
+		func(idx int, _ string) {
+			if idx >= 0 && idx < len(params.Actions) {
+				answer(&params.Actions[idx])
+			} else {
+				answer(nil)
+			}
 		},
-		OptionAttr: term.Attributes{
-			Attrs: term.AttrBold,
-			Bg:    term.ColorGray,
+		func() error {
+			answer(nil)
+			return nil
 		},
-		PromptConfig: component.PromptConfig{
-			Message: params.Message,
-			Options: titles,
-		},
-		PromptHandler: handler.FuncPromptHandler(
-			func(idx int, _ string) {
-				if idx >= 0 && idx < len(params.Actions) {
-					ch <- &params.Actions[idx]
-				} else {
-					ch <- nil
-				}
-			},
-			func() error {
-				ch <- nil
-				return nil
-			},
-		),
-	})
+	)
 
 	winCh := make(chan browserapi.Window, 1)
 	errCh := make(chan error, 1)
 	ok := h.scheduleNextTick(func() {
-		win, err := h.windowManager.Floating(
-			prompt, browserapi.FloatingConfig{Alignment: component.AlignmentCentered},
-		)
+		win, err := h.windowManager.Prompt(browserapi.PromptConfig{
+			Message: params.Message, Options: titles,
+		}, promptHandler)
 		if err != nil {
-			errCh <- fmt.Errorf("show floating: %w", err)
+			errCh <- fmt.Errorf("show prompt: %w", err)
 			return
 		}
 		winCh <- win

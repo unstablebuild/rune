@@ -24,9 +24,8 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
-	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
-	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
 )
 
@@ -83,7 +82,7 @@ func NewProvisioningManager(
 	}
 	mgr := NewManager(
 		nopNotifications{}, rm, storage, trust, scheme, dataDir, configPath,
-		nopWindowManager{}, syncScheduleNextTick, term.NopInterrupter(),
+		nopPrompter{}, syncScheduleNextTick, term.NopInterrupter(),
 		append(baseOpts, opts...)...,
 	)
 	return mgr, storage
@@ -109,21 +108,10 @@ func (nopNotifications) UpdateNotificationProgress(string, string, int64, int64)
 	return nil
 }
 
-// nopWindowManager satisfies browserapi.WindowManager for a headless package
-// manager: there is no window to open, so its prompts go unanswered.
-type nopWindowManager struct{}
+// nopPrompter is the Prompter of a headless package manager: there is no
+// window to open, so its prompts go unanswered.
+type nopPrompter struct{}
 
-func (nopWindowManager) Focus() (browserapi.Window, error) { return nil, nil }
-func (nopWindowManager) Split(browserapi.Orientation, browserapi.Window, browserapi.Handler) (browserapi.Window, error) {
+func (nopPrompter) Prompt(browserapi.PromptConfig, handler.PromptHandler) (browserapi.Window, error) {
 	return nil, nil
 }
-func (nopWindowManager) Floating(browserapi.Floating, browserapi.FloatingConfig) (browserapi.Window, error) {
-	return nil, nil
-}
-func (nopWindowManager) Bar(browserapi.BarConfig, tui.Handler) error { return nil }
-func (nopWindowManager) Tab(workspaceapi.URI, rune, string, browserapi.Handler) (browserapi.Handler, error) {
-	return nil, nil
-}
-func (nopWindowManager) SetWindowContent(browserapi.Window, browserapi.Handler) error { return nil }
-func (nopWindowManager) CloseWindow(browserapi.Window) error                          { return nil }
-func (nopWindowManager) SetTabStatus(workspaceapi.URI, browserapi.TabStatus) error    { return nil }

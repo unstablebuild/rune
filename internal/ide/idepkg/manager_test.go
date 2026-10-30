@@ -54,8 +54,8 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/handler/handlertest"
 	"github.com/unstablebuild/rune-go-sdk/handler/repl"
 	"github.com/unstablebuild/rune-go-sdk/term"
-	"github.com/unstablebuild/rune-go-sdk/tui"
 	"gopkg.in/yaml.v3"
+	"unstable.build/rune/internal/component/markdown"
 	"unstable.build/rune/internal/ide/idepkg/idepkgtest"
 	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
 	"unstable.build/rune/internal/ide/starlarkconfig"
@@ -186,7 +186,7 @@ func TestLibDir(t *testing.T) {
 				configPath := filepath.Join(temp, "config.yaml")
 				storage := sf.make()
 				fileScheme := newLocalScheme(temp)
-				wm := &mockWindowManager{
+				wm := &mockPrompter{
 					floatingFn: func(h browserapi.Floating, _ browserapi.FloatingConfig) (browserapi.Window, error) {
 						h.Resize(70, 20)
 						h.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
@@ -1276,7 +1276,7 @@ func newTestManagerWithTrust(
 	n := idepkgtest.NewNotifications(t)
 	m := idepkgtest.NewReleaseManager(packages, versions)
 	fileScheme := newLocalScheme(temp)
-	wm := &mockWindowManager{
+	wm := &mockPrompter{
 		floatingFn: func(h browserapi.Floating, _ browserapi.FloatingConfig) (browserapi.Window, error) {
 			// Auto-accept: send Enter to select "Allow"
 			h.Resize(70, 20)
@@ -1297,30 +1297,52 @@ func versionInUse(t testing.TB, m PackageManager, pkgID string) (release.Version
 	return version, ok
 }
 
-type mockWindowManager struct {
+// mockPrompter opens each prompt as a handler.Prompt with a markdown
+// message, as the host does, and floats it with floatingFn, which
+// answers it as the user would.
+type mockPrompter struct {
 	floatingFn func(browserapi.Floating, browserapi.FloatingConfig) (browserapi.Window, error)
+
+	mu      sync.Mutex
+	prompts []browserapi.PromptConfig
 }
 
-func (m *mockWindowManager) Focus() (browserapi.Window, error) { return nil, nil }
-func (m *mockWindowManager) Split(_ browserapi.Orientation, _ browserapi.Window, _ browserapi.Handler) (browserapi.Window, error) {
-	return nil, nil
-}
-func (m *mockWindowManager) Floating(h browserapi.Floating, cfg browserapi.FloatingConfig) (browserapi.Window, error) {
-	if m.floatingFn != nil {
-		return m.floatingFn(h, cfg)
+func (m *mockPrompter) Prompt(
+	cfg browserapi.PromptConfig, h handler.PromptHandler,
+) (browserapi.Window, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, err
 	}
-	return &mockWindow{}, nil
+	m.mu.Lock()
+	m.prompts = append(m.prompts, cfg)
+	m.mu.Unlock()
+	if m.floatingFn == nil {
+		return &mockWindow{}, nil
+	}
+	return m.floatingFn(handler.NewPrompt(handler.PromptConfig{
+		PromptConfig: component.PromptConfig{
+			Message: cfg.Message,
+			Options: cfg.Options,
+			NewMessage: func(msg string) component.Floating {
+				mcfg := markdown.DefaultConfig()
+				mcfg.HeaderPrefix = false
+				mkd, err := markdown.NewWithConfig(msg, mcfg)
+				if err != nil {
+					panic(err)
+				}
+				return component.NewAspectRatioFloatingResponsive(mkd, component.DefaultAspectRatio)
+			},
+		},
+		OptionBindings: cfg.Bindings,
+		PromptHandler:  h,
+	}), browserapi.FloatingConfig{Alignment: component.AlignmentCentered})
 }
-func (m *mockWindowManager) Bar(_ browserapi.BarConfig, _ tui.Handler) error { return nil }
-func (m *mockWindowManager) Tab(_ workspaceapi.URI, _ rune, _ string, _ browserapi.Handler) (browserapi.Handler, error) {
-	return nil, nil
-}
-func (m *mockWindowManager) SetWindowContent(_ browserapi.Window, _ browserapi.Handler) error {
-	return nil
-}
-func (m *mockWindowManager) CloseWindow(_ browserapi.Window) error { return nil }
 
-func (m *mockWindowManager) SetTabStatus(workspaceapi.URI, browserapi.TabStatus) error { return nil }
+func (m *mockPrompter) opened() []browserapi.PromptConfig {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return slices.Clone(m.prompts)
+}
 
 type mockWindow struct{}
 
@@ -1835,12 +1857,10 @@ func TestInstallConfigExtensionPathPrompt(t *testing.T) {
 				mergeHookCalls++
 				return ConfigMergeResult{LivePaths: [][]string{{"extensions", pkgID}}}, nil
 			}
-			m.wm = &mockWindowManager{
+			prompter := &mockPrompter{
 				floatingFn: func(h browserapi.Floating, _ browserapi.FloatingConfig) (browserapi.Window, error) {
-					width, height := h.Dimensions()
-					assert.LessOrEqual(t, width, 80)
-					h.Resize(width, height)
-					rendered = handlertest.DrawHandler(h, width, height)
+					h.Resize(80, 30)
+					rendered = handlertest.DrawHandler(h, 80, 30)
 					if !tt.accept {
 						h.Handle(term.Event{Type: term.EventKey, Key: term.KeyArrowRight})
 					}
@@ -1848,11 +1868,16 @@ func TestInstallConfigExtensionPathPrompt(t *testing.T) {
 					return &mockWindow{}, nil
 				},
 			}
+			m.prompter = prompter
 
 			rm.SetTarball(pkgID, pkgTarball(t, pkgID, ""))
 			require.NoError(t, m.InstallPackageVersion(
 				context.Background(), pkgID, release.Version("1"), repl.NopProgressWriter()))
 			n.RequireNoErrorNotification()
+			prompts := prompter.opened()
+			require.Len(t, prompts, 1)
+			assert.Equal(t, 80, prompts[0].MaxWidth)
+			assert.Equal(t, []term.KeyComb{{Ch: 'y'}, {Ch: 'n'}}, prompts[0].Bindings)
 			assert.Contains(t, rendered, "Package rune-agent wants to install extension rune-agent at:")
 			assert.Contains(t, rendered, newPath)
 			assert.Contains(t, rendered, "An extension with the same ID is already registered at:")
@@ -1890,7 +1915,7 @@ func TestProcessInstalledSettingsDoesNotPromptForExtensionPath(t *testing.T) {
 	oldPath := filepath.Join(t.TempDir(), "testpkg")
 	userConfig := fmt.Sprintf("extensions:\n  testpkg:\n    path: %q\n", oldPath)
 	require.NoError(t, os.WriteFile(m.configPath, []byte(userConfig), 0o644))
-	m.wm = &mockWindowManager{
+	m.prompter = &mockPrompter{
 		floatingFn: func(_ browserapi.Floating, _ browserapi.FloatingConfig) (browserapi.Window, error) {
 			t.Fatal("extension path prompts must only be scheduled during installation")
 			return nil, nil
@@ -2047,7 +2072,7 @@ func TestInstallConfigPromptDeny(t *testing.T) {
 		origGOROOT := fmt.Sprint(origEnv["GOROOT"])
 
 		// Override wm to simulate "Deny" (select index 1)
-		m.wm = &mockWindowManager{
+		m.prompter = &mockPrompter{
 			floatingFn: func(h browserapi.Floating, _ browserapi.FloatingConfig) (browserapi.Window, error) {
 				h.Resize(70, 20)
 				// Move to "Deny" then press Enter
@@ -2107,7 +2132,7 @@ func TestInstallAsksTheUIOfItsContext(t *testing.T) {
 		{Package: "configpkg", Version: "2"},
 	})
 	m, n, _, datadir := newTestManager(t, pkgs, versions)
-	m.wm = &mockWindowManager{
+	m.prompter = &mockPrompter{
 		floatingFn: func(browserapi.Floating, browserapi.FloatingConfig) (browserapi.Window, error) {
 			t.Error("the prompt must reach the user the install is for")
 			return &mockWindow{}, nil
@@ -2125,6 +2150,7 @@ func TestInstallAsksTheUIOfItsContext(t *testing.T) {
 	assert.Contains(t, ui.prompts[0].Message, "GOROOT")
 	assert.Equal(t, []PromptOption{{Label: "Allow", Key: 'a'}, {Label: "Deny", Key: 'd'}},
 		ui.prompts[0].Options)
+	assert.Equal(t, 120, ui.prompts[0].MaxWidth, "sized to the settings it shows")
 	assert.Equal(t, []string{
 		"saved configpkg configuration updates to your config. " +
 			"None are in effect yet; restart the program to load: " +
@@ -2175,7 +2201,7 @@ func TestInstallConfigPreservesUserValues(t *testing.T) {
 		), 0o644))
 
 		var promptCount int
-		m.wm = &mockWindowManager{
+		m.prompter = &mockPrompter{
 			floatingFn: func(h browserapi.Floating, _ browserapi.FloatingConfig) (browserapi.Window, error) {
 				promptCount++
 				h.Resize(70, 20)
@@ -2223,7 +2249,7 @@ func TestInstallConfigPreservesUserValues(t *testing.T) {
 		), 0o644))
 
 		var promptCount int
-		m.wm = &mockWindowManager{
+		m.prompter = &mockPrompter{
 			floatingFn: func(h browserapi.Floating, _ browserapi.FloatingConfig) (browserapi.Window, error) {
 				promptCount++
 				h.Resize(70, 20)
@@ -2268,7 +2294,7 @@ func TestInstallConfigPreservesUserValues(t *testing.T) {
 		require.NoError(t, os.WriteFile(configPath, []byte(userYAML), 0o644))
 
 		var promptCount int
-		m.wm = &mockWindowManager{
+		m.prompter = &mockPrompter{
 			floatingFn: func(h browserapi.Floating, _ browserapi.FloatingConfig) (browserapi.Window, error) {
 				promptCount++
 				h.Resize(70, 20)
@@ -2360,7 +2386,7 @@ func newTestManagerWithStorage(
 	n := idepkgtest.NewNotifications(t)
 	m := idepkgtest.NewReleaseManager(packages, versions)
 	fileScheme := newLocalScheme(temp)
-	wm := &mockWindowManager{
+	wm := &mockPrompter{
 		floatingFn: func(h browserapi.Floating, _ browserapi.FloatingConfig) (browserapi.Window, error) {
 			h.Resize(70, 20)
 			h.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
@@ -3285,7 +3311,7 @@ func newStartupHost(t *testing.T, configName string, pkgs ...startupPackage) *st
 		rm.SetTarball(p.id, startupPackageTarball(t, p.file, p.config))
 	}
 
-	wm := &mockWindowManager{floatingFn: h.prompt}
+	wm := &mockPrompter{floatingFn: h.prompt}
 	h.m = NewManager(h.n, rm, storagestub.NewInMemoryService(), idepkgtest.TrustStore(),
 		newLocalScheme(dataDir), dataDir, h.configPath, wm, syncTick, term.NopInterrupter(),
 		WithAfterConfigMerge(h.afterMerge))
@@ -3459,7 +3485,7 @@ func TestProcessConfigAutoApply(t *testing.T) {
 
 		require.NoError(t, os.WriteFile(m.configPath, []byte("existing: true\n"), 0o644))
 
-		m.wm = &mockWindowManager{
+		m.prompter = &mockPrompter{
 			floatingFn: func(_ browserapi.Floating, _ browserapi.FloatingConfig) (browserapi.Window, error) {
 				t.Fatal("no prompt should be scheduled for purely-new config")
 				return nil, nil
@@ -3497,7 +3523,7 @@ func TestProcessConfigAutoApply(t *testing.T) {
 
 		var prompted bool
 		var promptYAML []byte
-		m.wm = &mockWindowManager{
+		m.prompter = &mockPrompter{
 			floatingFn: func(h browserapi.Floating, _ browserapi.FloatingConfig) (browserapi.Window, error) {
 				prompted = true
 				// Deny so the disk stays unchanged.
@@ -3549,7 +3575,7 @@ func TestProcessConfigAutoApply(t *testing.T) {
 			"env:\n  GOROOT: "+v1GOROOT+"\n"), 0o644))
 
 		var promptCount int
-		m.wm = &mockWindowManager{
+		m.prompter = &mockPrompter{
 			floatingFn: func(h browserapi.Floating, _ browserapi.FloatingConfig) (browserapi.Window, error) {
 				promptCount++
 				// Deny: only the conflicting key is gated by the prompt.
@@ -3588,7 +3614,7 @@ func TestProcessConfigAutoApply(t *testing.T) {
 		require.NoError(t, os.WriteFile(m.configPath, []byte(
 			"settings:\n  theme: dark\n"), 0o644))
 
-		m.wm = &mockWindowManager{
+		m.prompter = &mockPrompter{
 			floatingFn: func(_ browserapi.Floating, _ browserapi.FloatingConfig) (browserapi.Window, error) {
 				t.Fatal("no prompt for an already-equal overlay")
 				return nil, nil
@@ -3628,7 +3654,7 @@ func TestProcessConfigSkipsPromptWhenAlreadyMerged(t *testing.T) {
 
 		// Override wm to panic if prompt is shown — it should NOT be called
 		// since the config is already merged.
-		m.wm = &mockWindowManager{
+		m.prompter = &mockPrompter{
 			floatingFn: func(_ browserapi.Floating, _ browserapi.FloatingConfig) (browserapi.Window, error) {
 				t.Fatal("prompt should not be shown when config is already merged")
 				return nil, nil
@@ -3662,7 +3688,7 @@ func TestProcessConfigRepromptsOnVersionDependentChange(t *testing.T) {
 		), 0o644))
 
 		var promptCount int
-		m.wm = &mockWindowManager{
+		m.prompter = &mockPrompter{
 			floatingFn: func(h browserapi.Floating, _ browserapi.FloatingConfig) (browserapi.Window, error) {
 				promptCount++
 				h.Resize(70, 20)
@@ -3709,7 +3735,7 @@ func TestProcessConfigRepromptsOnVersionDependentChange(t *testing.T) {
 		), 0o644))
 
 		var promptCount int
-		m.wm = &mockWindowManager{
+		m.prompter = &mockPrompter{
 			floatingFn: func(h browserapi.Floating, _ browserapi.FloatingConfig) (browserapi.Window, error) {
 				promptCount++
 				h.Resize(70, 20)
@@ -3746,7 +3772,7 @@ func TestProcessConfigRepromptsOnVersionDependentChange(t *testing.T) {
 		), 0o644))
 
 		var promptCount int
-		m.wm = &mockWindowManager{
+		m.prompter = &mockPrompter{
 			floatingFn: func(h browserapi.Floating, _ browserapi.FloatingConfig) (browserapi.Window, error) {
 				promptCount++
 				h.Resize(70, 20)
@@ -3818,7 +3844,7 @@ func newTestManagerWithLocalStorage(
 	n := idepkgtest.NewNotifications(t)
 	r := idepkgtest.NewReleaseManager(packages, versions)
 	fileScheme := newLocalScheme(temp)
-	wm := &mockWindowManager{
+	wm := &mockPrompter{
 		floatingFn: func(h browserapi.Floating, _ browserapi.FloatingConfig) (browserapi.Window, error) {
 			h.Resize(70, 20)
 			h.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
@@ -3901,7 +3927,7 @@ func TestInstallNoConfigPromptOnFailure(t *testing.T) {
 		rel := idepkgtest.NewReleaseManager(pkgs, versions)
 		fileScheme := newLocalScheme(temp)
 		var promptCalled atomic.Bool
-		wm := &mockWindowManager{
+		wm := &mockPrompter{
 			floatingFn: func(_ browserapi.Floating, _ browserapi.FloatingConfig) (browserapi.Window, error) {
 				// Recorded and asserted on the test goroutine after
 				// Wait — install runs on a different goroutine where
@@ -3971,7 +3997,7 @@ func TestInstallConfigPromptScheduledAfterSuccess(t *testing.T) {
 			promptCalled    bool
 			storageComplete bool
 		)
-		wm := &mockWindowManager{
+		wm := &mockPrompter{
 			floatingFn: func(h browserapi.Floating, _ browserapi.FloatingConfig) (browserapi.Window, error) {
 				assert.True(t, storageComplete,
 					"prompt must not be scheduled before storage marks the install complete")
@@ -4751,7 +4777,7 @@ func TestConfigMergeIntegration(t *testing.T) {
 			require.NoError(t, os.WriteFile(m.configPath, []byte(tc.userConfig), 0o644))
 
 			var promptCount int
-			m.wm = &mockWindowManager{
+			m.prompter = &mockPrompter{
 				floatingFn: func(h browserapi.Floating, _ browserapi.FloatingConfig) (browserapi.Window, error) {
 					promptCount++
 					h.Resize(70, 20)
@@ -4815,7 +4841,7 @@ func TestConfigMergeIntegration(t *testing.T) {
 		require.NoError(t, os.WriteFile(m.configPath, []byte("config = {}\n"), 0o644))
 
 		var promptCount int
-		m.wm = &mockWindowManager{
+		m.prompter = &mockPrompter{
 			floatingFn: func(h browserapi.Floating, _ browserapi.FloatingConfig) (browserapi.Window, error) {
 				promptCount++
 				h.Resize(70, 20)
@@ -4857,7 +4883,7 @@ func TestConfigMergeIntegration(t *testing.T) {
 		require.NoError(t, os.WriteFile(m.configPath, []byte("config = {}\n"), 0o644))
 
 		var promptCount int
-		m.wm = &mockWindowManager{
+		m.prompter = &mockPrompter{
 			floatingFn: func(h browserapi.Floating, _ browserapi.FloatingConfig) (browserapi.Window, error) {
 				promptCount++
 				h.Resize(70, 20)
@@ -4988,7 +5014,7 @@ func TestAfterConfigMergeHook(t *testing.T) {
 				calls++
 				return ConfigMergeResult{}, nil
 			}
-			m.wm = &mockWindowManager{
+			m.prompter = &mockPrompter{
 				floatingFn: func(h browserapi.Floating, _ browserapi.FloatingConfig) (browserapi.Window, error) {
 					h.Resize(70, 20)
 					if deny {

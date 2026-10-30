@@ -29,6 +29,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi/browserrpc"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	sdkhandler "github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/term/termrpc"
 	gomock "go.uber.org/mock/gomock"
@@ -317,6 +318,78 @@ func TestServerShow(t *testing.T) {
 				assert.NotNil(t, res)
 				assert.Equal(t, []string{tt.wantURI}, shown)
 			}
+		})
+	}
+}
+
+func TestServerPromptFails(t *testing.T) {
+	binding := func(t *testing.T, ev term.Event) *termrpc.Event {
+		ret := new(termrpc.Event)
+		require.NoError(t, ret.FromModel(ev))
+		return ret
+	}
+	tests := []struct {
+		name     string
+		req      func(t *testing.T) *browserrpc.PromptRequest
+		openErr  error
+		wantCode codes.Code
+		wantErr  string
+	}{
+		{
+			name: "no message",
+			req: func(*testing.T) *browserrpc.PromptRequest {
+				return &browserrpc.PromptRequest{Options: []string{"Yes"}}
+			},
+			wantCode: codes.InvalidArgument,
+		},
+		{
+			name: "no options",
+			req: func(*testing.T) *browserrpc.PromptRequest {
+				return &browserrpc.PromptRequest{Message: "Proceed?"}
+			},
+			wantCode: codes.InvalidArgument,
+		},
+		{
+			name: "fewer bindings than options",
+			req: func(t *testing.T) *browserrpc.PromptRequest {
+				return &browserrpc.PromptRequest{
+					Message: "Proceed?", Options: []string{"Yes", "No"},
+					Bindings: []*termrpc.Event{binding(t, term.Event{Type: term.EventKey, Ch: 'y'})},
+				}
+			},
+			wantCode: codes.InvalidArgument,
+		},
+		{
+			name: "bubbles up open error",
+			req: func(*testing.T) *browserrpc.PromptRequest {
+				return &browserrpc.PromptRequest{Message: "Proceed?", Options: []string{"Yes"}}
+			},
+			openErr: errors.New("oopsie daisy"),
+			wantErr: "oopsie daisy",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			mu := new(sync.Mutex)
+			s, mock := newTestServer(ctrl, mu)
+			opened := 0
+			mock.EXPECT().OpenPrompt(gomock.Any(), gomock.Any()).AnyTimes().DoAndReturn(
+				func(browserapi.PromptConfig, sdkhandler.PromptHandler) (browser.Window, bool, error) {
+					assert.False(t, mu.TryLock(), "must be called under the UI lock")
+					opened++
+					return nil, false, tt.openErr
+				})
+
+			err := s.Prompt(tt.req(t), nil)
+			require.Error(t, err)
+			if tt.wantCode != codes.OK {
+				assert.Equal(t, tt.wantCode, status.Code(err))
+				assert.Zero(t, opened)
+				return
+			}
+			assert.Contains(t, err.Error(), tt.wantErr)
+			assert.Equal(t, 1, opened)
 		})
 	}
 }

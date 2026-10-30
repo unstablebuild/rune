@@ -27,6 +27,8 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi/browserrpc"
 	"github.com/unstablebuild/rune-go-sdk/api/extensionapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"github.com/unstablebuild/rune-go-sdk/component"
+	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/internal/browser"
@@ -117,6 +119,16 @@ func (h *browserHost) Floating(
 	handler browser.Floating, cfg browserapi.FloatingConfig,
 ) (browser.Window, error) {
 	return h.comp.Floating(handler, cfg), nil
+}
+
+func (h *browserHost) OpenPrompt(
+	cfg browserapi.PromptConfig, handler handler.PromptHandler,
+) (browser.Window, bool, error) {
+	return h.comp.OpenPrompt(cfg, handler)
+}
+
+func (h *browserHost) ButtonImages() *component.ButtonImages {
+	return h.comp.ButtonImages()
 }
 
 func (h *browserHost) Bar(cfg browserapi.BarConfig, handler tui.Handler) error {

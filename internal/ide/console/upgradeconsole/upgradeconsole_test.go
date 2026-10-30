@@ -28,48 +28,32 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
-	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/handler/repl"
 	"github.com/unstablebuild/rune-go-sdk/term"
-	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/internal/ide/ideupgrade"
 )
 
-// promptWindowManager answers the upgrade prompt by feeding the given
-// key to the floating handler as soon as it is shown. A zero key
-// leaves the prompt unanswered.
-type promptWindowManager struct {
+// keyPrompter answers the upgrade prompt with the option bound to key
+// as soon as it is shown. A zero key leaves the prompt unanswered.
+type keyPrompter struct {
 	key rune
 }
 
-func (m *promptWindowManager) Floating(
-	h browserapi.Floating, _ browserapi.FloatingConfig,
+func (p *keyPrompter) Prompt(
+	cfg browserapi.PromptConfig, h handler.PromptHandler,
 ) (browserapi.Window, error) {
-	if m.key != 0 {
-		h.Resize(80, 20)
-		h.Handle(term.Event{Type: term.EventKey, Ch: m.key})
+	if p.key == 0 {
+		return nil, nil
 	}
-	return nil, nil
+	for i, b := range cfg.Bindings {
+		if b == (term.KeyComb{Ch: p.key}) {
+			h.OnSelect(i, cfg.Options[i])
+			break
+		}
+	}
+	return nil, h.OnClose()
 }
-
-func (m *promptWindowManager) Focus() (browserapi.Window, error) { return nil, nil }
-func (m *promptWindowManager) Split(
-	browserapi.Orientation, browserapi.Window, browserapi.Handler,
-) (browserapi.Window, error) {
-	return nil, nil
-}
-func (m *promptWindowManager) Bar(browserapi.BarConfig, tui.Handler) error { return nil }
-func (m *promptWindowManager) Tab(
-	workspaceapi.URI, rune, string, browserapi.Handler,
-) (browserapi.Handler, error) {
-	return nil, nil
-}
-func (m *promptWindowManager) SetWindowContent(browserapi.Window, browserapi.Handler) error {
-	return nil
-}
-func (m *promptWindowManager) CloseWindow(browserapi.Window) error { return nil }
-
-func (m *promptWindowManager) SetTabStatus(workspaceapi.URI, browserapi.TabStatus) error { return nil }
 
 type recordingProgressWriter struct {
 	mu    sync.Mutex
@@ -122,7 +106,7 @@ func newHandlerOSPackaged(
 		ManifestURL:      srv.URL,
 		Storage:          storagestub.NewInMemoryService(),
 		HTTPClient:       srv.Client(),
-		WindowManager:    &promptWindowManager{key: key},
+		Prompter:         &keyPrompter{key: key},
 		ScheduleNextTick: func(fn func()) bool { fn(); return true },
 	})
 	require.NoError(t, err)

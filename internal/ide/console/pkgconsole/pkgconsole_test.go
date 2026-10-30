@@ -38,10 +38,10 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/component"
+	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/handler/repl"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
 	"github.com/unstablebuild/rune-go-sdk/term"
-	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/ide/idepkg"
 	"unstable.build/rune/internal/ide/idepkg/idepkgtest"
@@ -105,37 +105,19 @@ func newManager(
 	configPath := filepath.Join(temp, "config.yaml")
 	return idepkg.NewManager(n, rm, storagestub.NewInMemoryService(),
 		idepkgtest.TrustStore(),
-		newFixtureScheme(temp), temp, configPath, &fixtureWindowManager{},
+		newFixtureScheme(temp), temp, configPath, fixturePrompter{},
 		syncTick, term.NopInterrupter())
 }
 
-type fixtureWindowManager struct{}
+// fixturePrompter picks the first option of every prompt.
+type fixturePrompter struct{}
 
-func (m *fixtureWindowManager) Focus() (browserapi.Window, error) { return &fixtureWindow{}, nil }
-func (m *fixtureWindowManager) Split(
-	_ browserapi.Orientation, _ browserapi.Window, _ browserapi.Handler,
+func (fixturePrompter) Prompt(
+	cfg browserapi.PromptConfig, h handler.PromptHandler,
 ) (browserapi.Window, error) {
-	return &fixtureWindow{}, nil
+	h.OnSelect(0, cfg.Options[0])
+	return &fixtureWindow{}, h.OnClose()
 }
-func (m *fixtureWindowManager) Floating(
-	h browserapi.Floating, _ browserapi.FloatingConfig,
-) (browserapi.Window, error) {
-	h.Resize(70, 20)
-	h.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
-	return &fixtureWindow{}, nil
-}
-func (m *fixtureWindowManager) Bar(_ browserapi.BarConfig, _ tui.Handler) error { return nil }
-func (m *fixtureWindowManager) Tab(
-	_ workspaceapi.URI, _ rune, _ string, _ browserapi.Handler,
-) (browserapi.Handler, error) {
-	return nil, nil
-}
-func (m *fixtureWindowManager) SetWindowContent(_ browserapi.Window, _ browserapi.Handler) error {
-	return nil
-}
-func (m *fixtureWindowManager) CloseWindow(_ browserapi.Window) error { return nil }
-
-func (m *fixtureWindowManager) SetTabStatus(workspaceapi.URI, browserapi.TabStatus) error { return nil }
 
 type fixtureWindow struct{}
 

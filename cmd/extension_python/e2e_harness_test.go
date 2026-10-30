@@ -35,33 +35,39 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"github.com/unstablebuild/rune-go-sdk/component"
+	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
-	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/cmd/extension_python/pyshim"
 	"unstable.build/rune/internal/extension/langext"
 	"unstable.build/rune/internal/extension/langext/langexttest"
 )
 
-// fakeWindowManager replays a scripted key sequence into every floated
-// handler and then closes it, matching the real window manager, which
-// tears the window down once a handler reports exit. The prompt reports
+// fakePrompter opens every prompt as hostPrompt does, replays a scripted
+// key sequence into it and then closes it, matching the host, which
+// tears the window down once the prompt reports exit. The prompt reports
 // its answer over a buffered channel, so the replay can run inline and
 // keep the tests deterministic.
-type fakeWindowManager struct {
+type fakePrompter struct {
 	events []term.Event
 
 	mu    sync.Mutex
 	calls int
 }
 
-var _ browserapi.WindowManager = (*fakeWindowManager)(nil)
+var _ browserapi.Prompter = (*fakePrompter)(nil)
 
-func (w *fakeWindowManager) Floating(
-	h browserapi.Floating, _ browserapi.FloatingConfig,
+func (w *fakePrompter) Prompt(
+	cfg browserapi.PromptConfig, ph handler.PromptHandler,
 ) (browserapi.Window, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
 	w.mu.Lock()
 	w.calls++
 	w.mu.Unlock()
+	h := hostPrompt(cfg, ph)
+	h.Resize(60, 12)
 	for _, ev := range w.events {
 		if exit, _ := h.Handle(ev); exit {
 			break
@@ -70,35 +76,23 @@ func (w *fakeWindowManager) Floating(
 	return nil, h.Close()
 }
 
-func (w *fakeWindowManager) callCount() int {
+func (w *fakePrompter) callCount() int {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.calls
 }
 
-func (w *fakeWindowManager) Focus() (browserapi.Window, error) { return nil, nil }
-
-func (w *fakeWindowManager) Split(
-	browserapi.Orientation, browserapi.Window, browserapi.Handler,
-) (browserapi.Window, error) {
-	return nil, nil
+// hostPrompt is the prompt the host opens for cfg, without its theme.
+func hostPrompt(cfg browserapi.PromptConfig, h handler.PromptHandler) *handler.Prompt {
+	return handler.NewPrompt(handler.PromptConfig{
+		PromptConfig: component.PromptConfig{
+			Message: cfg.Message,
+			Options: cfg.Options,
+		},
+		OptionBindings: cfg.Bindings,
+		PromptHandler:  h,
+	})
 }
-
-func (w *fakeWindowManager) Bar(browserapi.BarConfig, tui.Handler) error { return nil }
-
-func (w *fakeWindowManager) Tab(
-	workspaceapi.URI, rune, string, browserapi.Handler,
-) (browserapi.Handler, error) {
-	return nil, nil
-}
-
-func (w *fakeWindowManager) SetWindowContent(browserapi.Window, browserapi.Handler) error {
-	return nil
-}
-
-func (w *fakeWindowManager) CloseWindow(browserapi.Window) error { return nil }
-
-func (w *fakeWindowManager) SetTabStatus(workspaceapi.URI, browserapi.TabStatus) error { return nil }
 
 // realFS is a minimal workspaceapi.FileSystem backed by the OS and
 // rooted at a workspace directory. Relative paths resolve against root,
@@ -335,7 +329,7 @@ func runExtensionOnDir(t *testing.T, dir string) scenarioEnv {
 		context.Background(), dirRoot(dir), true))
 	// Nested roots discovered later have no stored answer, so an
 	// auto-accepting prompt keeps them managed like the workspace root.
-	return runExtensionOnDirWith(t, dir, storage, &fakeWindowManager{events: enterEvents})
+	return runExtensionOnDirWith(t, dir, storage, &fakePrompter{events: enterEvents})
 }
 
 // dirRoot builds the langext.Root the extension derives for a workspace
@@ -348,7 +342,7 @@ func dirRoot(dir string) langext.Root {
 // explicit storage service and window manager, so tests can control the
 // environment policy and the prompt.
 func runExtensionOnDirWith(
-	t *testing.T, dir string, storage storageapi.Service, wm *fakeWindowManager,
+	t *testing.T, dir string, storage storageapi.Service, wm *fakePrompter,
 ) scenarioEnv {
 	t.Helper()
 	dataDir := t.TempDir()
@@ -362,7 +356,7 @@ func runExtensionOnDirWith(
 		exec: ex, lsp: lsp, notify: notify, editor: editor,
 		storage: storage,
 	}
-	var windows browserapi.WindowManager
+	var windows browserapi.Prompter
 	if wm != nil {
 		windows = wm
 	}

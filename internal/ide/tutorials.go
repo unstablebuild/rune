@@ -29,6 +29,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 
 	"unstable.build/rune/internal/browser"
+	tcomponent "unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/handler/command"
 	"unstable.build/rune/internal/ide/idetutorial"
@@ -269,7 +270,18 @@ func newTutorialPromptStyle(i *IDE) idetutorial.PromptStyle {
 		HoverAttr:      cfg.HoverAttr,
 		ClickedAttr:    cfg.ClickedAttr,
 		BackgroundAttr: cfg.BackgroundAttr,
+		ButtonImages:   cfg.Images.ButtonImages(i.tutorialFrameGraphics()),
 	}
+}
+
+// tutorialFrameGraphics returns the images of the tutorials' buttons,
+// nil without storage to cache them in.
+func (i *IDE) tutorialFrameGraphics() *tcomponent.FrameGraphics {
+	if i.tutorialGraphics == nil && i.ideConfig.storage != nil {
+		i.tutorialGraphicsStorage = storageapi.WithPartition(i.ideConfig.storage, frameImagesPartition)
+		i.tutorialGraphics = tcomponent.NewFrameGraphics(i.tutorialGraphicsStorage, i)
+	}
+	return i.tutorialGraphics
 }
 
 // newTutorialTileStyle frames the tile like the IDE frames its

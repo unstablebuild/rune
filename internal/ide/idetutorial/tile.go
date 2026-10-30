@@ -29,9 +29,16 @@ import (
 // lesson, frame excluded.
 const MinTileWidth = 24
 
-// footerHeight is the room the footer's buttons take: their own row
-// and a row of air that keeps them off the lesson above.
-const footerHeight = 2
+// footerHeight is the room the footer's buttons take: their own row, a
+// row of air that keeps them off the lesson above and the rows the
+// images under them reach above and below.
+func footerHeight(style PromptStyle) int {
+	if style.ButtonImages == nil {
+		return 2
+	}
+	o := style.ButtonImages.Outset
+	return 2 + max(o.Top, 0) + max(o.Bottom, 0)
+}
 
 // The middle footer button has two faces: it skips the step the lesson
 // is on, but steps forward through copy the user paged back to, where
@@ -110,6 +117,7 @@ func NewTile(tut Tutorial, style TileStyle, onBack, onAdvance, onStop func()) *T
 				return component.NopFloating()
 			},
 			BackgroundAttributes: style.Prompt.BackgroundAttr,
+			ButtonImages:         style.Prompt.ButtonImages,
 		},
 		PromptHandler: handler.FuncPromptHandler(func(idx int, _ string) {
 			switch idx {
@@ -131,7 +139,7 @@ func NewTile(tut Tutorial, style TileStyle, onBack, onAdvance, onStop func()) *T
 	t.body = tileBody{FrameUnion: thandler.NewFrameUnion(tut), tut: tut}
 	// Neither member has a frame of its own to stitch.
 	t.body.Frame = false
-	t.body.UnionBottom(t.footer, footerHeight)
+	t.body.UnionBottom(t.footer, footerHeight(style.Prompt))
 	t.outer = t.body
 	if style.Frame {
 		t.frame = handler.NewFrame(t.body)

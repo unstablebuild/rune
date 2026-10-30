@@ -24,6 +24,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/internal/component/imageuri"
 	"unstable.build/rune/internal/component/template"
 )
@@ -144,6 +145,19 @@ func (g *FrameGraphics) Close() error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// Image returns the image of uri, the one that g draws wherever uri is
+// named, so it shares one ImageID with them. It is nil when uri is empty
+// or cannot be displayed. The image draws nothing until it has loaded.
+func (g *FrameGraphics) Image(uri string) tui.Component {
+	if uri == "" {
+		return nil
+	}
+	if img := g.image(uri); img != nil {
+		return img
+	}
+	return nil
 }
 
 // image returns the image for uri, or nil if it cannot be displayed.

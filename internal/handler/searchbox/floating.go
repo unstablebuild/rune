@@ -17,6 +17,7 @@
 package searchbox
 
 import (
+	"image"
 	"strings"
 
 	"github.com/unstablebuild/rune-go-sdk/component"
@@ -244,12 +245,16 @@ type floating struct {
 	pressed     button
 	mouseInput  *textInput
 	closed      bool
+	images      *component.ButtonImages
 }
 
 func newFloating(owner *Box, mode Mode, query string) *floating {
 	f := &floating{owner: owner, mode: mode, query: newTextInput(query, "Find", owner.config)}
 	if mode == ModeReplace {
 		f.replacement = newTextInput("", "Replace with", owner.config)
+	}
+	if owner.config.ButtonImages != nil {
+		f.images = owner.config.ButtonImages()
 	}
 	f.setFocus(focusQuery)
 	return f
@@ -289,16 +294,30 @@ func (f *floating) controlsWidth() int {
 		return 0
 	}
 	if f.mode == ModeReplace {
-		return 15
+		_, between, _ := f.buttonSpacing()
+		return 9 + between + 5
 	}
 	return 9
+}
+
+// buttonSpacing is the room before the buttons, between them and after
+// them. Their images reach Outset.Sides cells past them, so the room
+// grows to keep the images off the inputs, off each other and inside the
+// box.
+func (f *floating) buttonSpacing() (before, between, after int) {
+	sides := 0
+	if f.images != nil {
+		sides = max(0, f.images.Outset.Sides)
+	}
+	return max(colGap, sides), max(1, 2*sides), max(paddingX, sides)
 }
 
 // Dimensions satisfies handler.Floating.
 func (f *floating) Dimensions() (int, int) {
 	width := 2*paddingX + naturalInputWidth(f)
 	if controls := f.controlsWidth(); controls > 0 {
-		width += colGap + controls
+		before, _, after := f.buttonSpacing()
+		width += before + controls + after - paddingX
 	}
 	return width, f.measure(width, 0).contentHeight
 }
@@ -311,9 +330,10 @@ func (f *floating) Height(width int) int {
 func (f *floating) measure(width, height int) layout {
 	ret := layout{width: width, height: height}
 	controls := f.controlsWidth()
+	before, between, after := f.buttonSpacing()
 	available := max(0, width-2*paddingX)
 	if controls > 0 {
-		available -= colGap
+		available -= before + after - paddingX
 	}
 	inWidth := min(naturalInputWidth(f), max(3, available-controls))
 	inWidth = min(inWidth, max(0, width-paddingX))
@@ -321,7 +341,7 @@ func (f *floating) measure(width, height int) layout {
 	queryH := displayRows(f.query.text(), innerWidth) + 2
 	paddingTop := f.owner.config.PaddingTop
 	ret.query = rect{x: paddingX, y: paddingTop, width: inWidth, height: queryH}
-	buttonX := ret.query.x + inWidth + colGap
+	buttonX := ret.query.x + inWidth + before
 	if f.owner.replace != nil {
 		ret.upgrade = rect{x: buttonX, y: ret.query.y + (queryH-1)/2, width: 9, height: 1}
 	}
@@ -332,7 +352,7 @@ func (f *floating) measure(width, height int) layout {
 			width: inWidth, height: replaceH}
 		by := ret.replacement.y + (replaceH-1)/2
 		ret.next = rect{x: buttonX, y: by, width: 9, height: 1}
-		ret.all = rect{x: buttonX + 10, y: by, width: 5, height: 1}
+		ret.all = rect{x: buttonX + 9 + between, y: by, width: 5, height: 1}
 		ret.contentHeight = ret.replacement.y + replaceH
 	}
 	return ret
@@ -425,17 +445,39 @@ func (f *floating) drawInput(w term.Writer, in *textInput, r rect) {
 }
 
 func (f *floating) drawButton(w term.Writer, r rect, label string, b button) {
-	if r.x+r.width > f.layout.width || r.y-f.seek < 0 || r.y-f.seek >= f.layout.height {
+	y := r.y - f.seek
+	if r.x+r.width > f.layout.width || y < 0 || y >= f.layout.height {
 		return
 	}
-	attr := f.owner.config.ButtonAttr
-	if f.hover == b {
-		attr = f.owner.config.ButtonHoverAttr
+	state, attr := f.buttonState(b)
+	if f.images != nil {
+		// over its images, the label keeps the colour of its state but
+		// not its background, which would paint the images over
+		drawLabel(w, r.x, y, label, term.Attributes{
+			Fg:    attr.Fg,
+			Bg:    f.owner.config.Attr.Bg,
+			Attrs: attr.Attrs &^ term.AttrReverse,
+		})
+		if f.images.Draw(w, image.Rect(r.x, y, r.x+r.width, y+1), state) {
+			return
+		}
 	}
-	x := r.x
+	drawLabel(w, r.x, y, label, attr)
+}
+
+func (f *floating) buttonState(b button) (component.ButtonState, term.Attributes) {
+	switch b {
+	case f.pressed:
+		return component.ButtonPressed, f.owner.config.ButtonHoverAttr
+	case f.hover:
+		return component.ButtonHover, f.owner.config.ButtonHoverAttr
+	}
+	return component.ButtonIdle, f.owner.config.ButtonAttr
+}
+
+func drawLabel(w term.Writer, x, y int, label string, attr term.Attributes) {
 	for _, ch := range label {
-		w.SetCell(term.Coordinates{X: x, Y: r.y - f.seek},
-			term.NewCell(ch, 1, attr))
+		w.SetCell(term.Coordinates{X: x, Y: y}, term.NewCell(ch, 1, attr))
 		x++
 	}
 }

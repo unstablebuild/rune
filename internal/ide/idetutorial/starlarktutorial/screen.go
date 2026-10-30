@@ -152,6 +152,7 @@ func (t *Tutorial) openPrompt(r *request) {
 			Options:              padPromptOptions(r.options),
 			NewMessage:           func(string) component.Floating { return message },
 			BackgroundAttributes: t.promptStyle.BackgroundAttr,
+			ButtonImages:         t.promptStyle.ButtonImages,
 		},
 		PromptHandler: ph,
 		OptionAttr:    t.promptStyle.TextAttr,

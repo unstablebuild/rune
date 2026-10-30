@@ -67,6 +67,30 @@ func (s *interruptBrowser) Floating(srv browserrpc.WindowManager_FloatingServer)
 	return err
 }
 
+// Prompt satisfies browserrpc.BrowserServer. The prompt opens and closes
+// while the stream lasts, so the screen is redrawn as it opens.
+func (s *interruptBrowser) Prompt(
+	req *browserrpc.PromptRequest, srv browserrpc.WindowManager_PromptServer,
+) error {
+	err := s.browserServer.Prompt(req, interruptPromptServer{
+		WindowManager_PromptServer: srv, interruptDraw: s.interruptDraw,
+	})
+	s.interruptDraw()
+	return err
+}
+
+type interruptPromptServer struct {
+	browserrpc.WindowManager_PromptServer
+	interruptDraw func()
+}
+
+func (s interruptPromptServer) Send(ev *browserrpc.PromptEvent) error {
+	if ev.GetOpened() != nil {
+		s.interruptDraw()
+	}
+	return s.WindowManager_PromptServer.Send(ev)
+}
+
 // Tab satisfies browserrpc.BrowserServer
 func (s *interruptBrowser) Tab(srv browserrpc.WindowManager_TabServer) error {
 	err := s.browserServer.Tab(srv)

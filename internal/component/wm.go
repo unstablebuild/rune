@@ -327,6 +327,13 @@ func (wm *WindowManager) drawFrameGraphics(win Window, w term.Writer) {
 	wm.graphics.DrawScrollBar(vw, frame, width, height, wm.config.ScrollBarOutset)
 }
 
+// FrameGraphics returns the images that the frames' graphics are drawn
+// with, to draw the same images elsewhere. It is nil when the config
+// has no FrameGraphicsStorage or Interrupter, which draws no images.
+func (wm *WindowManager) FrameGraphics() *FrameGraphics {
+	return wm.graphics
+}
+
 // Close releases the images of the frames' graphics. It does not close
 // the windows.
 func (wm *WindowManager) Close() error {

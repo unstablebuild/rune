@@ -68,26 +68,13 @@ type ReplaceController interface {
 
 // Config configures Box.
 type Config struct {
-	// WindowManager, when set, presents the box in a floating window.
-	// Otherwise the host draws Content wherever it sees fit.
-	WindowManager WindowManager
-	// Editor provides the key bindings of the query and replacement inputs.
-	Editor text.Editor
-	// Title is rendered on the floating window bar. When empty a title is
-	// derived from whether the controller supports replacing.
-	Title string
-
-	FindKey term.KeyComb
-	// FindKeyAliases are additional key combinations that open and advance
-	// the search, on top of FindKey.
-	FindKeyAliases []term.KeyComb
-	ReplaceKey     term.KeyComb
-
-	// PaddingTop is the number of blank rows drawn above the frame. Hosts
-	// that present the box flush against an edge, such as a terminal
-	// overlay, can set this to 0.
-	PaddingTop int
-
+	WindowManager   WindowManager
+	Editor          text.Editor
+	Title           string
+	FindKey         term.KeyComb
+	FindKeyAliases  []term.KeyComb
+	ReplaceKey      term.KeyComb
+	PaddingTop      int
 	Attr            term.Attributes
 	InputAttr       term.Attributes
 	PlaceholderAttr term.Attributes
@@ -95,10 +82,8 @@ type Config struct {
 	FocusFrameAttr  term.Attributes
 	ButtonAttr      term.Attributes
 	ButtonHoverAttr term.Attributes
-
-	// OnOpenError is called when the floating window cannot be opened, so
-	// hosts can report the failure or fall back to another prompt.
-	OnOpenError func(Mode, error)
+	ButtonImages    func() *component.ButtonImages
+	OnOpenError     func(Mode, error)
 }
 
 // Box is a floating find and replace prompt driven by a Controller.

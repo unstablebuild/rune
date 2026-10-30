@@ -44,7 +44,6 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
-	"github.com/unstablebuild/rune-go-sdk/api/syntaxapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/handler/repl"
@@ -164,7 +163,7 @@ func NewManager(
 	n browserapi.Notifications, m release.Manager,
 	storage storageapi.Service, trust *pkgtrust.Store,
 	scheme schemeapi.Scheme, dataDir string,
-	configPath string, wm browserapi.WindowManager,
+	configPath string, prompter browserapi.Prompter,
 	scheduleNextTick func(func()) bool,
 	interrupter term.Interrupter, opts ...Option,
 ) *Manager {
@@ -187,7 +186,7 @@ func NewManager(
 		schemeURI:        schemeURI,
 		interrupter:      interrupter,
 		frameCharSet:     component.FrameCharSetDefault(),
-		wm:               wm,
+		prompter:         prompter,
 		scheduleNextTick: scheduleNextTick,
 		n:                n,
 		m:                m,
@@ -208,11 +207,12 @@ func NewManager(
 // Note that OS/system is managed by having a separate Manager that points
 // to a different underlying release.Manager.
 type Manager struct {
-	n                browserapi.Notifications
-	m                release.Manager
-	interrupter      term.Interrupter
-	wm               browserapi.WindowManager
-	parser           syntaxapi.Parser
+	n           browserapi.Notifications
+	m           release.Manager
+	interrupter term.Interrupter
+	// prompter is called on the event loop, which scheduleNextTick
+	// schedules on.
+	prompter         browserapi.Prompter
 	frameCharSet     component.FrameCharSet
 	scheduleNextTick func(func()) bool
 	storage          storageapi.Service
@@ -1107,6 +1107,8 @@ func (m *Manager) promptConfigChange(
 	ui.PromptConfig(ConfigPrompt{
 		Message: message,
 		Options: []PromptOption{{Label: "Allow", Key: 'a'}, {Label: "Deny", Key: 'd'}},
+		// the settings read best on their own lines, unwrapped
+		MaxWidth: 120,
 	}, func(approved bool) {
 		if !approved {
 			return
@@ -1148,30 +1150,6 @@ func (m *Manager) promptExtensionPathChange(
 		_, _ = ui.Notify(browserapi.LevelSuccess,
 			"updated %s extension path. Restart the program to load the changes.", pkgID)
 	})
-}
-
-func boundedFloatingMessage(
-	newMessage func(string) component.Floating, maxWidth int,
-) func(string) component.Floating {
-	return func(message string) component.Floating {
-		return &maxWidthFloating{
-			Floating: newMessage(message),
-			maxWidth: maxWidth,
-		}
-	}
-}
-
-type maxWidthFloating struct {
-	component.Floating
-	maxWidth int
-}
-
-func (f *maxWidthFloating) Dimensions() (width, height int) {
-	width, height = f.Floating.Dimensions()
-	if width <= f.maxWidth {
-		return width, height
-	}
-	return f.maxWidth, f.Floating.(component.Responsive).Height(f.maxWidth)
 }
 
 // ConfigMergeEvent describes a package config merge that was just written to

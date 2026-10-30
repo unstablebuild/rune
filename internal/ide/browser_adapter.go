@@ -22,6 +22,7 @@ import (
 
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/internal/browser"
@@ -29,8 +30,9 @@ import (
 )
 
 var _ browserapi.Browser = (*browserAdapter)(nil)
+var _ browserapi.Prompter = (*browserAdapter)(nil)
 
-func newBrowserAdapter(b browser.Browser) browserapi.Browser {
+func newBrowserAdapter(b browser.Browser) browserAdapter {
 	return browserAdapter{b: b}
 }
 
@@ -61,6 +63,18 @@ func (a browserAdapter) Floating(
 	cfg browserapi.FloatingConfig,
 ) (browserapi.Window, error) {
 	return a.b.Floating(h, cfg)
+}
+
+// Prompt satisfies browserapi.Prompter. It must be called on the event
+// loop, and calls h there.
+func (a browserAdapter) Prompt(
+	cfg browserapi.PromptConfig, h handler.PromptHandler,
+) (browserapi.Window, error) {
+	win, _, err := a.b.OpenPrompt(cfg, h)
+	if err != nil {
+		return nil, err
+	}
+	return win, nil
 }
 
 func (a browserAdapter) Bar(

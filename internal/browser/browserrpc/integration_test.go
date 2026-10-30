@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -30,6 +31,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi/browserrpc"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"go.uber.org/goleak"
@@ -219,6 +221,122 @@ func TestClientServerIntegrationTab(t *testing.T) {
 	mock.EXPECT().Window(gomock.Any()).Return(win1, true).AnyTimes()
 	require.NoError(t, client.SetWindowContent(win, tab))
 }
+
+func TestClientServerIntegrationPrompt(t *testing.T) {
+	cfg := browserapi.PromptConfig{
+		Message:  "Proceed?",
+		Options:  []string{"Yes", "No"},
+		Bindings: []term.KeyComb{{Ch: 'y'}, {Key: term.KeyEsc, Mod: term.ModCtrl}},
+		MaxWidth: 40,
+	}
+	for _, tcase := range []struct {
+		name string
+		// open reports false for a prompt already open for the message.
+		open bool
+		// user does what the user or the extension does with the prompt.
+		user   func(h handler.PromptHandler, client *browserrpc.Client, win browserapi.Window)
+		want   []string
+		closed bool
+	}{
+		{
+			name: "selected",
+			open: true,
+			user: func(h handler.PromptHandler, _ *browserrpc.Client, _ browserapi.Window) {
+				h.OnSelect(1, "No")
+				require.NoError(t, h.OnClose())
+			},
+			want: []string{"select 1 No", "close"},
+		},
+		{
+			name: "dismissed",
+			open: true,
+			user: func(h handler.PromptHandler, _ *browserrpc.Client, _ browserapi.Window) {
+				require.NoError(t, h.OnClose())
+			},
+			want: []string{"close"},
+		},
+		{
+			name: "closed by the extension",
+			open: true,
+			user: func(_ handler.PromptHandler, client *browserrpc.Client, win browserapi.Window) {
+				require.NoError(t, client.CloseWindow(win))
+			},
+			want:   []string{"close"},
+			closed: true,
+		},
+		{
+			name: "connection closed",
+			open: true,
+			user: func(_ handler.PromptHandler, client *browserrpc.Client, _ browserapi.Window) {
+				require.NoError(t, client.Close())
+			},
+			want:   []string{"close"},
+			closed: true,
+		},
+		{
+			name: "already open",
+			open: false,
+		},
+	} {
+		t.Run(tcase.name, func(t *testing.T) {
+			defer goleak.VerifyNone(t)
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mock := browsertest.NewMockBrowser(ctrl)
+			client, cleanup := newClientServerIntegration(t, mock)
+			defer cleanup()
+
+			win := &promptWindow{Window: browsertest.NopWindow()}
+			mock.EXPECT().Window(gomock.Any()).Return(win, true).AnyTimes()
+			mock.EXPECT().OpenPrompt(cfg, gomock.Any()).DoAndReturn(func(
+				_ browserapi.PromptConfig, h handler.PromptHandler,
+			) (browser.Window, bool, error) {
+				win.h = h
+				return win, tcase.open, nil
+			})
+
+			events := make(chan string, 2)
+			got, err := client.Prompt(cfg, handler.FuncPromptHandler(
+				func(i int, option string) { events <- fmt.Sprintf("select %d %s", i, option) },
+				func() error {
+					events <- "close"
+					return nil
+				}))
+			require.NoError(t, err)
+			assert.Equal(t, win.WindowID(), got.WindowID())
+
+			if tcase.user != nil {
+				tcase.user(win.h, client, got)
+			}
+			for _, want := range tcase.want {
+				select {
+				case ev := <-events:
+					assert.Equal(t, want, ev)
+				case <-time.After(5 * time.Second):
+					require.FailNow(t, "prompt event not delivered", want)
+				}
+			}
+			assert.Never(t, func() bool { return len(events) > 0 },
+				asyncResultsSleepDuration, 10*time.Millisecond, "unexpected prompt event")
+			assert.Equal(t, tcase.closed, win.closed.Load())
+		})
+	}
+}
+
+// promptWindow is a prompt's window, which tells its handler it closed.
+type promptWindow struct {
+	browser.Window
+	h      handler.PromptHandler
+	closed atomic.Bool
+}
+
+func (w *promptWindow) Close() error {
+	w.closed.Store(true)
+	return w.h.OnClose()
+}
+
+func (w *promptWindow) Closed() bool { return w.closed.Load() }
 
 func TestClientServerIntegrationSetTabStatus(t *testing.T) {
 	defer goleak.VerifyNone(t)

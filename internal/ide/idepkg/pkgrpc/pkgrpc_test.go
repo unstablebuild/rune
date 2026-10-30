@@ -37,6 +37,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/handler/repl"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"google.golang.org/grpc"
@@ -494,11 +495,10 @@ func TestInstallAsksTheClient(t *testing.T) {
 // ownUI is the UI of the user of a GUI node, who did not ask for what
 // its peers install.
 type ownUI struct {
-	browserapi.WindowManager
 	t *testing.T
 }
 
-func (u ownUI) Floating(browserapi.Floating, browserapi.FloatingConfig) (browserapi.Window, error) {
+func (u ownUI) Prompt(browserapi.PromptConfig, handler.PromptHandler) (browserapi.Window, error) {
 	u.t.Error("a peer's install must not prompt the node's own user")
 	return nil, errors.New("unexpected prompt")
 }
