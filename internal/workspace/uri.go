@@ -130,7 +130,7 @@ func IsWorkspaceURI(workspace Workspace, uri workspaceapi.URI) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return strings.HasPrefix(uri.Path(), workspaceURI.Path()), nil
+	return URIUnderPrefix(uri, workspaceURI), nil
 }
 
 // NewWorkspaceURI expands the given path with the given workspaceapi.URI

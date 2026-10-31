@@ -3484,6 +3484,71 @@ func TestReadfileCrossWorkspaceIntegration(t *testing.T) {
 	})
 }
 
+func TestSiblingDirectoryOpenRoutingIntegration(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		sdkOpen bool
+	}{
+		{"SDK workspace open", true},
+		{"SDK workspace not open", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			mainDir := filepath.Join(root, "src", "rune")
+			sdkDir := filepath.Join(root, "src", "rune-go-sdk")
+			worktreeDir := filepath.Join(root, "worktrees", "RUNE-389")
+			for _, dir := range []string{mainDir, sdkDir, worktreeDir} {
+				require.NoError(t, os.MkdirAll(dir, 0o755))
+			}
+			targetPath := filepath.Join(sdkDir, "definition.go")
+			require.NoError(t, os.WriteFile(targetPath, []byte("package sdk\n"), 0o666))
+			targetURI, err := workspaceapi.ParseURI("file://" + targetPath)
+			require.NoError(t, err)
+
+			m := newTestWorkspaceManagerHandlerWithDir(t, defaultConfigWithWrap(false), "",
+				nopShutdownShaderConfig())
+			t.Cleanup(func() {
+				require.NoError(t, m.Close())
+			})
+			dirs := []string{mainDir}
+			if tc.sdkOpen {
+				dirs = append(dirs, sdkDir)
+			}
+			dirs = append(dirs, worktreeDir)
+			for _, dir := range dirs {
+				uri, err := workspaceapi.ParseURI("file://" + dir)
+				require.NoError(t, err)
+				require.NoError(t, m.addOrCreateWorkspace(uri))
+				m.waitForWorkspace(t, uri)
+			}
+
+			origin := len(dirs) - 1
+			wantFocus := origin
+			if tc.sdkOpen {
+				wantFocus = 1
+			}
+			var openedTab *browser.Tab
+			m.locked(func() {
+				require.True(t, m.switchToWorkspace(origin))
+				e := m.workspaces[origin].ex
+				openedTab, err = e.editFileURI(targetURI, e.invokeWindow(), false)
+			})
+			require.NoError(t, err)
+			m.quiesce()
+
+			m.locked(func() {
+				assert.Equal(t, wantFocus, m.focus)
+				assert.Empty(t, m.workspaces[0].ex.comp.Tabs())
+				focusTab, ok := m.workspaces[wantFocus].ex.comp.FocusTab()
+				require.True(t, ok)
+				assert.Same(t, openedTab, focusTab)
+				assert.Equal(t, targetURI.String(), focusTab.URI().String())
+				assert.Len(t, m.workspaces[wantFocus].ex.comp.Tabs(), 1)
+			})
+		})
+	}
+}
+
 func TestCrossWorkspaceOpenRoutingIntegration(t *testing.T) {
 	type integrationCase struct {
 		name           string
