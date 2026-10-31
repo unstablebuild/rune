@@ -374,7 +374,7 @@ config = {
         "screensaver": {
             "enabled":      True,
             "idle_timeout": "10m",
-            "shaders":      ["thunderstorm", "spotlights", "vhsTape"],
+            "shaders":      ["thunderstorm", "vhsTape"],
             "duration":     "15s",
             # one of loop, ping_pong, reverse, accelerate, decelerate or boomerang
             "time_shader":  "loop",
