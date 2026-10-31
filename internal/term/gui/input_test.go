@@ -1036,6 +1036,7 @@ func TestInputSourceOwnership(t *testing.T) {
 	metaL := press(ebiten.KeyL, ebiten.KeyModSuper)
 	altA := press(ebiten.KeyA, ebiten.KeyModAlt)
 	repeatedA := repeat(ebiten.KeyA, ebiten.KeyModSuper)
+	space := press(ebiten.KeySpace)
 
 	suite := []struct {
 		description string
@@ -1135,6 +1136,67 @@ func TestInputSourceOwnership(t *testing.T) {
 					{Ch: ' '},
 				},
 			}},
+		},
+		{
+			description: "enter preserves the Hangul it commits before the key",
+			frames: []frame{{
+				events: action(press(ebiten.KeyEnter), '한'),
+				expectedEvents: []term.Event{
+					{Ch: '한'}, {Key: term.KeyEnter},
+				},
+			}},
+		},
+		{
+			description: "space preserves a multi-rune IME commit without duplicating the space",
+			frames: []frame{{
+				events: action(press(ebiten.KeySpace), '한', '글', ' '),
+				expectedEvents: []term.Event{
+					{Ch: '한'}, {Ch: '글'}, {Key: term.KeySpace},
+				},
+			}},
+		},
+		{
+			description: "shift enter preserves its IME commit and modifier",
+			frames: []frame{{
+				events: action(press(ebiten.KeyEnter, ebiten.KeyModShift), '글'),
+				expectedEvents: []term.Event{
+					{Ch: '글'}, {Mod: term.ModShift, Key: term.KeyEnter},
+				},
+			}},
+		},
+		{
+			description: "alt enter preserves its IME commit and modifier",
+			frames: []frame{{
+				events: action(press(ebiten.KeyEnter, ebiten.KeyModAlt), '한'),
+				expectedEvents: []term.Event{
+					{Ch: '한'}, {Mod: term.ModAlt, Key: term.KeyEnter},
+				},
+			}},
+		},
+		{
+			description: "an IME commit stays before its named key and subsequent typing",
+			frames: []frame{{
+				events: slices.Concat(
+					action(press(ebiten.KeySpace), '한', ' '),
+					action(press(ebiten.KeyR), '글'),
+				),
+				expectedEvents: []term.Event{
+					{Ch: '한'}, {Key: term.KeySpace}, {Ch: '글'},
+				},
+			}},
+		},
+		{
+			description: "a delayed space commit preserves Hangul and consumes its space echo",
+			frames: []frame{
+				{
+					events:         action(space),
+					expectedEvents: []term.Event{{Key: term.KeySpace}},
+				},
+				{
+					events:         commit(space, '한', ' '),
+					expectedEvents: []term.Event{{Ch: '한'}},
+				},
+			},
 		},
 		{
 			// macOS composes Option chords into text. On AZERTY the key
