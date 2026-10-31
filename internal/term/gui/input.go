@@ -354,19 +354,7 @@ func (i *input) isClaimed(ev ebiten.InputEvent) bool {
 }
 
 func isKeyTextEcho(key term.Key, ch rune) bool {
-	switch key {
-	case term.KeySpace:
-		return ch == ' '
-	case term.KeyEnter:
-		return ch == '\r' || ch == '\n'
-	case term.KeyTab:
-		return ch == '\t'
-	case term.KeyBackspace:
-		return ch == '\b' || ch == '\x7f'
-	case term.KeyEsc:
-		return ch == '\x1b'
-	}
-	return false
+	return key == term.KeySpace && ch == ' '
 }
 
 // ebitenModToTermMod converts an Ebiten modifier bitmask to a term.Modifier.

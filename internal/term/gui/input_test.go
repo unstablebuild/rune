@@ -1036,7 +1036,7 @@ func TestInputSourceOwnership(t *testing.T) {
 	metaL := press(ebiten.KeyL, ebiten.KeyModSuper)
 	altA := press(ebiten.KeyA, ebiten.KeyModAlt)
 	repeatedA := repeat(ebiten.KeyA, ebiten.KeyModSuper)
-	enter := press(ebiten.KeyEnter)
+	space := press(ebiten.KeySpace)
 
 	suite := []struct {
 		description string
@@ -1140,7 +1140,7 @@ func TestInputSourceOwnership(t *testing.T) {
 		{
 			description: "enter preserves the Hangul it commits before the key",
 			frames: []frame{{
-				events: action(press(ebiten.KeyEnter), '한', '\r'),
+				events: action(press(ebiten.KeyEnter), '한'),
 				expectedEvents: []term.Event{
 					{Ch: '한'}, {Key: term.KeyEnter},
 				},
@@ -1186,14 +1186,14 @@ func TestInputSourceOwnership(t *testing.T) {
 			}},
 		},
 		{
-			description: "a delayed named-key commit preserves Hangul and consumes its control echo",
+			description: "a delayed space commit preserves Hangul and consumes its space echo",
 			frames: []frame{
 				{
-					events:         action(enter),
-					expectedEvents: []term.Event{{Key: term.KeyEnter}},
+					events:         action(space),
+					expectedEvents: []term.Event{{Key: term.KeySpace}},
 				},
 				{
-					events:         commit(enter, '한', '\r'),
+					events:         commit(space, '한', ' '),
 					expectedEvents: []term.Event{{Ch: '한'}},
 				},
 			},
