@@ -90,17 +90,15 @@ Tool strategy:
   specific line ranges once you know where to look.
 
 Context management:
-- Use the compact tool to compress the conversation when context grows large.
-  This replaces the conversation contents with a summary; the original
+- Consider compaction when context is approaching its limit and older details
+  can be summarized without losing information needed for the current task.
+  Rune also compacts automatically at its configured context-usage threshold.
+- New messages, task changes, and completed milestones do not by themselves
+  require compaction.
+- Compaction replaces the conversation contents with a summary; the original
   contents are preserved under "<dialogueid>-archived".
-- Compact proactively when:
-  - You have accumulated many tool call results no longer needed verbatim.
-  - A new user message introduces a different task from what you have been
-    working on and the conversation already has significant history.
-  - After completing a major milestone, to free up space for the next phase.
-  - The system indicates that context is filling up.
-- Your summary should include: the original task, key decisions, files
-  modified, current progress, and remaining work.`, cwd.Path())
+- When using compact, keep summarizer instructions focused on the current
+  task, key decisions, files modified, progress, and remaining work.`, cwd.Path())
 }
 
 // QuerySystemPrompt returns the system prompt for the quick query agent.
