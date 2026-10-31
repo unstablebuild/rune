@@ -923,12 +923,29 @@ config = {
         "matched_text_attr":  attr(fg = "blue", bg = "default", flags = ["bold"]),
         "focus_element_attr": attr(fg = "purple", bg = "default"),
         # Glyphs used to stitch the prompt's manual/list separator
-        # row into the surrounding window frame.
+        # row into the surrounding window frame. Missing horizontal_left
+        # and horizontal_right inherit the effective frame's horizontalbottom:
+        # command.frame_charset when set, otherwise the window frame.
         "separator_charset": {
             "left":             "🭼",
-            "horizontal_left":  "▁",
-            "horizontal_right": "▁",
             "right":            "🭿",
+            # Optional GUI images (file:// or other supported image URIs):
+            # "graphics": {
+            #     "left":       "file:///separator-left.png",
+            #     "horizontal": "file:///separator-tile.png",
+            #     "right":      "file:///separator-right.png",
+            #     "mode":       "overlay",  # or "replace"
+            #     "outset":     {"top": 0, "bottom": 0, "inward": 0},
+            # },
+            # Missing horizontal image and mode inherit the effective frame's
+            # graphics.horizontalbottom and mode. End images do not inherit
+            # corners: absent end images preserve the vertical side images.
+            # Explicit "horizontal": "" clears only the inherited image,
+            # not the separator. The horizontal image repeats as tiles.
+            # Nonnegative cell outsets extend end images up, down and inward;
+            # they are clipped to the prompt and may cover its contents.
+            # Replace hides covered glyphs; overlay draws images over them.
+            # Terminals without graphics retain the configured rune fallback.
         },
         # The prompt frames itself with the window manager's frame_charset
         # and its shader animates focus_frame_charset, along with the
@@ -1494,8 +1511,6 @@ if tui:
             "focus_element_attr":attr(fg = "#c6c6c6", bg = "#1e1e1e", flags = ["bold"]),
             "separator_charset": {
                 "left":             "├",
-                "horizontal_left":  "─",
-                "horizontal_right": "─",
                 "right":            "┤",
             },
         },

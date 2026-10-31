@@ -29,6 +29,34 @@ import (
 	"unstable.build/rune/internal/component/template"
 )
 
+// SeparatorCharSet stitches an interior horizontal rule into a frame.
+// The four runes occupy columns 0, 1, width-2 and width-1; the remaining
+// columns use the frame's HorizontalBottom rune.
+type SeparatorCharSet struct {
+	Left, HorizontalLeft, HorizontalRight, Right rune
+	Graphics                                     SeparatorGraphics
+}
+
+// SeparatorGraphics names the two junction images and the repeating bar.
+// Empty junction slots preserve the frame's vertical images. An empty
+// horizontal slot leaves the rule's characters visible.
+type SeparatorGraphics struct {
+	Left, Horizontal, Right string
+	Overlay                 bool
+	Outset                  SeparatorOutset
+}
+
+// SeparatorOutset extends junction images above, below and into the frame
+// in whole cells. Outsets cover content without changing the layout.
+type SeparatorOutset struct {
+	Top, Bottom, Inward int
+}
+
+// Empty reports whether no image URIs are set, regardless of mode or outsets.
+func (g SeparatorGraphics) Empty() bool {
+	return g.Left == "" && g.Horizontal == "" && g.Right == ""
+}
+
 // FrameGraphics draws the images that FrameCharSet.Graphics names over
 // the border of a component.Frame. It keeps one image per URI, so a URI
 // is fetched and decoded once and shares one ImageID across every frame
@@ -94,6 +122,51 @@ func (g *FrameGraphics) Draw(
 	draw(gr.TopRight, f.TopRight, limitX, 0)
 	draw(gr.BottomLeft, f.BottomLeft, 0, limitY)
 	draw(gr.BottomRight, f.BottomRight, limitX, limitY)
+}
+
+// DrawSeparator draws images over an already drawn separator at y inside
+// the frame. Unavailable junctions keep the frame's side images; writers
+// without image support keep the separator's runes. Junction outsets are
+// clipped to the frame without reserving space or rescaling the images.
+func (g *FrameGraphics) DrawSeparator(
+	w term.Writer, f *component.Frame, cs SeparatorCharSet, width, height, y int,
+) {
+	if width < 3 || height < 3 || y <= 0 || y >= height-1 {
+		return
+	}
+	w = &component.VirtualWriter{Writer: w, Width: width, Height: height}
+	cw := cellImageWriter{
+		Writer: w,
+		under:  term.NewCell(' ', 1, f.Attributes),
+		layer:  term.ImageLayerAboveText,
+	}
+	draw := func(uri string, ch rune, x int, area image.Rectangle, overlay bool) bool {
+		if uri == "" {
+			return false
+		}
+		cw.keep = overlay
+		cw.fallback = term.NewCell(ch, 1, f.Attributes)
+		return g.drawArea(&cw, uri, term.Coordinates{X: x, Y: y}, area)
+	}
+	gr := cs.Graphics
+	for x := 1; x < width-1; x++ {
+		ch := f.HorizontalBottom
+		if x == 1 {
+			ch = cs.HorizontalLeft
+		}
+		if x == width-2 {
+			ch = cs.HorizontalRight
+		}
+		draw(gr.Horizontal, ch, x, image.Rect(x, y, x+1, y+1), gr.Overlay)
+	}
+	// Junctions cover the ends of the repeated bar, including their outsets.
+	top, bottom, inward := max(0, gr.Outset.Top), max(0, gr.Outset.Bottom), max(0, gr.Outset.Inward)
+	if !draw(gr.Left, cs.Left, 0, image.Rect(0, y-top, 1+inward, y+1+bottom), gr.Overlay) {
+		draw(f.Graphics.VerticalLeft, cs.Left, 0, image.Rect(0, y, 1, y+1), f.Graphics.Overlay)
+	}
+	if !draw(gr.Right, cs.Right, width-1, image.Rect(width-1-inward, y-top, width, y+1+bottom), gr.Overlay) {
+		draw(f.Graphics.VerticalRight, cs.Right, width-1, image.Rect(width-1, y, width, y+1), f.Graphics.Overlay)
+	}
 }
 
 // DrawScrollBar draws, over the scroll bar that f draws when it is
@@ -190,12 +263,13 @@ func (g *FrameGraphics) drawCell(
 // place of the cell at pos.
 func (g *FrameGraphics) drawArea(
 	cw *cellImageWriter, uri string, pos term.Coordinates, area image.Rectangle,
-) {
+) bool {
 	img := g.image(uri)
 	if img == nil || area.Empty() {
-		return
+		return false
 	}
 	cw.at = pos
+	cw.drawn = false
 	cw.area = component.VirtualWriter{
 		Writer: cw,
 		Offset: term.Coordinates{X: area.Min.X, Y: area.Min.Y},
@@ -204,6 +278,7 @@ func (g *FrameGraphics) drawArea(
 	}
 	img.Resize(area.Dx(), area.Dy())
 	img.Draw(&cw.area)
+	return cw.drawn
 }
 
 // cellImageWriter draws an image in place of the cell at at: over under,
@@ -214,6 +289,7 @@ type cellImageWriter struct {
 	term.Writer
 	under, fallback term.Cell
 	keep            bool
+	drawn           bool
 	layer           term.ImageLayer
 	at              term.Coordinates
 	area            component.VirtualWriter
@@ -226,6 +302,7 @@ func (w *cellImageWriter) DrawImage(img term.Image) bool {
 		w.Writer.SetCell(w.at, w.under)
 	}
 	if w.drawImage(img) {
+		w.drawn = true
 		return true
 	}
 	if !w.keep {

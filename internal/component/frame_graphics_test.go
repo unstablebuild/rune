@@ -223,6 +223,123 @@ LRRRRL`,
 	}
 }
 
+func TestFrameGraphicsDrawSeparator(t *testing.T) {
+	pics := newFramePictures(t)
+	const width, height, y = 7, 5, 2
+	attr := term.Attributes{Fg: term.ColorBlue, Bg: term.ColorBlack}
+	full := SeparatorGraphics{Left: "L", Horizontal: "R", Right: "L"}
+	overlay := full
+	overlay.Overlay = true
+	sides := component.FrameCharSetGraphics{VerticalLeft: "L", VerticalRight: "L"}
+	overlaySides := sides
+	overlaySides.Overlay = true
+	for _, tt := range []struct {
+		name       string
+		graphics   SeparatorGraphics
+		frame      component.FrameCharSetGraphics
+		noImages   bool
+		row, under string
+	}{
+		{name: "characters only", row: "├l───r┤", under: "├l───r┤"},
+		{name: "junctions and tiled bar", graphics: full, row: "LRRRRRL", under: "       "},
+		{name: "overlay keeps separator glyphs", graphics: overlay, row: "LRRRRRL", under: "├l───r┤"},
+		{name: "terminal fallback", graphics: full, frame: sides, noImages: true, row: "├l───r┤", under: "├l───r┤"},
+		{name: "overlay terminal fallback", graphics: overlay, frame: sides, noImages: true, row: "├l───r┤", under: "├l───r┤"},
+		{name: "bar without side images", graphics: SeparatorGraphics{Horizontal: "R"}, row: "├RRRRR┤", under: "├     ┤"},
+		{name: "missing junctions preserve rails", graphics: SeparatorGraphics{Horizontal: "R"}, frame: sides, row: "LRRRRRL", under: "       "},
+		{name: "no separator images preserves rails", frame: sides, row: "Ll───rL", under: " l───r "},
+		{name: "failed junctions preserve rails", graphics: SeparatorGraphics{Left: "missing", Horizontal: "R", Right: "invalid"}, frame: sides, row: "LRRRRRL", under: "       "},
+		{name: "failed images keep glyphs", graphics: SeparatorGraphics{Left: "missing", Horizontal: "invalid", Right: "missing"}, row: "├l───r┤", under: "├l───r┤"},
+		{name: "frame overlay is independent", graphics: SeparatorGraphics{Horizontal: "R"}, frame: overlaySides, row: "LRRRRRL", under: "├     ┤"},
+		{name: "separator overlay is independent", graphics: SeparatorGraphics{Horizontal: "R", Overlay: true}, frame: sides, row: "LRRRRRL", under: " l───r "},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := component.NewFrame(&component.TestComponent{Ch: 'x'})
+			f.Attributes = attr
+			f.Graphics = pics.resolve(tt.frame)
+			f.Resize(width, height)
+			cs := SeparatorCharSet{Left: '├', HorizontalLeft: 'l', HorizontalRight: 'r', Right: '┤', Graphics: tt.graphics}
+			for _, uri := range []*string{&cs.Graphics.Left, &cs.Graphics.Horizontal, &cs.Graphics.Right} {
+				*uri = pics.uris[*uri]
+			}
+			irq := make(interruptCounter, 16)
+			g := NewFrameGraphics(storagestub.NewInMemoryService(), irq)
+			t.Cleanup(func() { assert.NoError(t, g.Close()) })
+			uris := map[string]bool{}
+			for _, uri := range []string{cs.Graphics.Left, cs.Graphics.Horizontal, cs.Graphics.Right, f.Graphics.VerticalLeft, f.Graphics.VerticalRight} {
+				if !uris[uri] {
+					if img := g.Image(uri); img != nil {
+						img.Resize(1, 1)
+						img.Draw(term.NewStringWriter(1, 1))
+						irq.wait(t, 1)
+					}
+				}
+				uris[uri] = true
+			}
+			s := newImageScreen(width, height)
+			s.noImages = tt.noImages
+			f.Draw(s)
+			for x, ch := range []rune("├l───r┤") {
+				s.SetCell(term.Coordinates{X: x, Y: y}, term.NewCell(ch, 1, attr))
+			}
+			g.DrawSeparator(s, f, cs, width, height, y)
+			assert.Equal(t, tt.row, strings.Split(s.render(t, pics, attr, tt.graphics.Overlay || tt.frame.Overlay), "\n")[y+1])
+			assert.Equal(t, tt.under, strings.Split(s.String(), "\n")[y])
+		})
+	}
+}
+
+func TestFrameGraphicsSeparatorOutsets(t *testing.T) {
+	pics := newFramePictures(t)
+	for _, tt := range []struct {
+		name          string
+		width, height int
+		y             int
+		outset        SeparatorOutset
+		want          []image.Rectangle
+	}{
+		{name: "ornaments cover the bar ends", width: 7, height: 5, y: 2, outset: SeparatorOutset{Top: 1, Bottom: 1, Inward: 1}, want: []image.Rectangle{image.Rect(0, 1, 2, 4), image.Rect(5, 1, 7, 4)}},
+		{name: "oversized ornaments are clipped", width: 7, height: 5, y: 1, outset: SeparatorOutset{Top: 3, Bottom: 6, Inward: 8}, want: []image.Rectangle{image.Rect(0, 0, 7, 5), image.Rect(0, 0, 7, 5)}},
+		{name: "narrow frame", width: 3, height: 3, y: 1, outset: SeparatorOutset{Inward: 1}, want: []image.Rectangle{image.Rect(0, 1, 2, 2), image.Rect(1, 1, 3, 2)}},
+		{name: "negative outsets are zero", width: 5, height: 3, y: 1, outset: SeparatorOutset{Top: -1, Bottom: -1, Inward: -1}, want: []image.Rectangle{image.Rect(0, 1, 1, 2), image.Rect(4, 1, 5, 2)}},
+		{name: "too narrow", width: 2, height: 3, y: 1},
+		{name: "too short", width: 3, height: 2, y: 1},
+		{name: "top border is not a separator", width: 5, height: 3, y: 0},
+		{name: "bottom border is not a separator", width: 5, height: 3, y: 2},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := component.NewFrame(&component.TestComponent{Ch: 'x'})
+			f.Resize(tt.width, tt.height)
+			cs := SeparatorCharSet{Graphics: SeparatorGraphics{Left: pics.uris["L"], Horizontal: pics.uris["R"], Right: pics.uris["L"], Outset: tt.outset}}
+			irq := make(interruptCounter, 4)
+			g := NewFrameGraphics(storagestub.NewInMemoryService(), irq)
+			t.Cleanup(func() { assert.NoError(t, g.Close()) })
+			for _, uri := range []string{cs.Graphics.Left, cs.Graphics.Horizontal} {
+				img := g.Image(uri)
+				img.Resize(1, 1)
+				img.Draw(term.NewStringWriter(1, 1))
+			}
+			irq.wait(t, 2)
+			s := newImageScreen(tt.width, tt.height)
+			f.Draw(s)
+			g.DrawSeparator(s, f, cs, tt.width, tt.height, tt.y)
+			if tt.want == nil {
+				assert.Empty(t, s.images)
+				return
+			}
+			require.Len(t, s.images, tt.width)
+			for i, img := range s.images[:tt.width-2] {
+				assert.Equal(t, image.Rect(i+1, tt.y, i+2, tt.y+1), img.Visible())
+			}
+			for i, img := range s.images[tt.width-2:] {
+				assert.Equal(t, tt.want[i], img.Visible(), "junction %d", i)
+				assert.Equal(t, 1+max(0, tt.outset.Inward), img.Width, "clipping must not rescale the image")
+				assert.Equal(t, 1+max(0, tt.outset.Top)+max(0, tt.outset.Bottom), img.Height)
+			}
+		})
+	}
+}
+
 func TestFrameGraphicsSharesOneImagePerURI(t *testing.T) {
 	pics := newFramePictures(t)
 	irq := make(interruptCounter, 16)

@@ -434,6 +434,40 @@ func assertStandardSearchMap(t *testing.T, search map[string]any, bg string) {
 	assert.Equal(t, map[string]any{"fg": "default", "bg": "blue"}, search["button_hover_attr"])
 }
 
+func TestRuneStarSeparatorInheritsFrame(t *testing.T) {
+	data := readRuneStar(t)
+	for _, tc := range []struct {
+		name        string
+		tui         bool
+		left, right rune
+	}{
+		{"GUI", false, '\U0001fb7c', '\U0001fb7f'},
+		{"TUI", true, '├', '┤'},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := decodeDefaultConfig(DefaultConfig{src: string(data), modal: true, tui: tc.tui})
+			require.NoError(t, err)
+			cfg := ideConfig{cfg: raw, errors: map[string]error{}}
+			got := cfg.commandPromptCfg().separator
+			assert.Equal(t, tc.left, got.Left)
+			assert.Equal(t, tc.right, got.Right)
+			assert.Equal(t, cfg.windowFrameCharset().HorizontalBottom, got.HorizontalLeft)
+			assert.Equal(t, got.HorizontalLeft, got.HorizontalRight)
+
+			raw, err = decodeOverlayConfigFile(strings.NewReader(`config["command"]["frame_charset"] = {
+    "horizontalbottom": "=", "graphics": {"horizontalbottom": "file:///custom.png"},
+}`), "config.star", raw)
+			require.NoError(t, err)
+			cfg.cfg = raw
+			got = cfg.commandPromptCfg().separator
+			assert.Equal(t, '=', got.HorizontalLeft)
+			assert.Equal(t, '=', got.HorizontalRight)
+			assert.Equal(t, "file:///custom.png", got.Graphics.Horizontal)
+			assert.Empty(t, cfg.errors)
+		})
+	}
+}
+
 func TestRuneStarAsDefaultConfig(t *testing.T) {
 	data := readRuneStar(t)
 

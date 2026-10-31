@@ -1256,8 +1256,11 @@ func (c ideConfig) commandPromptShaderCfg() commandPromptShaderConfig {
 	return out
 }
 
-func (c ideConfig) commandPromptSeparatorCharset() commandPromptSeparatorCharset {
+func (c ideConfig) commandPromptSeparatorCharset(frame component.FrameCharSet) tcomponent.SeparatorCharSet {
 	out := defaultCommandPromptSeparatorCharset()
+	out.HorizontalLeft, out.HorizontalRight = frame.HorizontalBottom, frame.HorizontalBottom
+	out.Graphics.Horizontal = frame.Graphics.HorizontalBottom
+	out.Graphics.Overlay = frame.Graphics.Overlay
 	cmd, ok := c.command()
 	if !ok {
 		return out
@@ -1290,6 +1293,21 @@ func (c ideConfig) commandPromptSeparatorCharset() commandPromptSeparatorCharset
 		}
 		*f.dst = r
 	}
+	g := out.Graphics
+	if err := tconfig.GetGraphics(cfg, "graphics", &g.Overlay,
+		tconfig.GraphicsSlot{Key: "left", URI: &g.Left},
+		tconfig.GraphicsSlot{Key: "horizontal", URI: &g.Horizontal},
+		tconfig.GraphicsSlot{Key: "right", URI: &g.Right},
+	); err != nil {
+		c.errors["command.separator_charset"] = err
+		return out
+	}
+	c.graphicsOutset(cfg, "graphics", "command.separator_charset",
+		outsetSide{&g.Outset.Top, "top"},
+		outsetSide{&g.Outset.Bottom, "bottom"},
+		outsetSide{&g.Outset.Inward, "inward"},
+	)
+	out.Graphics = g
 	return out
 }
 
@@ -1312,9 +1330,13 @@ func (c ideConfig) commandPromptFrameCharset() (component.FrameCharSet, bool) {
 
 func (c ideConfig) commandPromptCfg() commandPromptConfig {
 	hintLookup := c.commandKeyBindingHintLookup()
+	frame, hasFrame := c.commandPromptFrameCharset()
+	if !hasFrame {
+		frame = c.windowFrameCharset()
+	}
 	cfg := commandPromptConfig{
 		shader:    c.commandPromptShaderCfg(),
-		separator: c.commandPromptSeparatorCharset(),
+		separator: c.commandPromptSeparatorCharset(frame),
 		keyBindingHint: func(line string) string {
 			return hintLookup[line]
 		},
@@ -1323,8 +1345,8 @@ func (c ideConfig) commandPromptCfg() commandPromptConfig {
 			Fg: c.commandKeyBindingHintFocusColor(),
 		},
 	}
-	if cs, ok := c.commandPromptFrameCharset(); ok {
-		cfg.frameCharSet = &cs
+	if hasFrame {
+		cfg.frameCharSet = &frame
 	}
 	return cfg
 }

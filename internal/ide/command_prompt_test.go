@@ -17,6 +17,7 @@
 package ide
 
 import (
+	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -63,13 +64,11 @@ func TestPromptStitcherDrawsFrameGraphics(t *testing.T) {
 	tests := []struct {
 		name     string
 		graphics component.FrameCharSetGraphics
-		// images reports whether every border cell carries an image,
-		// rather than none. The separator covers its ends unless the
-		// graphics are Overlay.
+		// images reports whether every border cell carries an image.
 		images bool
 	}{
 		{
-			name:     "every border cell but the separator's carries an image",
+			name:     "the separator preserves every side-frame image",
 			graphics: every,
 			images:   true,
 		},
@@ -122,10 +121,8 @@ func TestPromptStitcherDrawsFrameGraphics(t *testing.T) {
 					want[term.Coordinates{X: x, Y: height - 1}] = true
 				}
 				for y := 1; y < height-1; y++ {
-					if y != sepY || tt.graphics.Overlay {
-						want[term.Coordinates{Y: y}] = true
-						want[term.Coordinates{X: width - 1, Y: y}] = true
-					}
+					want[term.Coordinates{Y: y}] = true
+					want[term.Coordinates{X: width - 1, Y: y}] = true
 				}
 			}
 			assert.Equal(t, want, w.images)
@@ -134,8 +131,169 @@ func TestPromptStitcherDrawsFrameGraphics(t *testing.T) {
 				0: sep.Left, 1: sep.HorizontalLeft,
 				width - 2: sep.HorizontalRight, width - 1: sep.Right,
 			} {
+				if tt.images && !tt.graphics.Overlay && (x == 0 || x == width-1) {
+					ch = ' '
+				}
 				assert.Equal(t, string(ch), string(w.Cells()[sepY*width+x].Ch),
 					"separator cell %d", x)
+			}
+		})
+	}
+}
+
+func TestPromptStitcherDrawsSeparatorGraphics(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "separator.png")
+	require.NoError(t, os.WriteFile(path, imageuritest.SamplePNG, 0o600))
+	uri := (&url.URL{Scheme: "file", Path: filepath.ToSlash(path)}).String()
+	const width = 40
+	for _, tt := range []struct {
+		name, config         string
+		noFrame, hideManual  bool
+		height               int
+		separator, bar, ends bool
+	}{
+		{
+			name: "inherits the window frame bar",
+			config: `{"browser": {"window_manager": {"frame_charset": {
+				"horizontalbottom": "=", "graphics": {"horizontalbottom": %[1]q},
+			}}}}`,
+			separator: true, bar: true,
+		},
+		{
+			name: "inherits the command frame bar and overlay mode",
+			config: `{"command": {"frame_charset": {
+				"horizontalbottom": "~", "graphics": {"horizontalbottom": %[1]q, "mode": "overlay"},
+			}}}`,
+			separator: true, bar: true,
+		},
+		{
+			name: "separator-only sprites initialize the image cache",
+			config: `{"command": {"separator_charset": {"graphics": {
+				"left": %[1]q, "horizontal": %[1]q, "right": %[1]q,
+			}}}}`,
+			separator: true, bar: true, ends: true,
+		},
+		{
+			name: "custom junctions reuse the frame bar",
+			config: `{"command": {
+				"frame_charset": {"graphics": {"horizontalbottom": %[1]q}},
+				"separator_charset": {"graphics": {"left": %[1]q, "right": %[1]q}},
+			}}`,
+			separator: true, bar: true, ends: true,
+		},
+		{
+			name: "cleared bar leaves the glyph rule",
+			config: `{"command": {
+				"frame_charset": {"horizontalbottom": "=", "graphics": {"horizontalbottom": %[1]q}},
+				"separator_charset": {"graphics": {"horizontal": ""}},
+			}}`,
+			separator: true,
+		},
+		{
+			name: "hidden manual draws no separator sprites",
+			config: `{"command": {"separator_charset": {"graphics": {
+				"left": %[1]q, "horizontal": %[1]q, "right": %[1]q,
+			}}}}`,
+			hideManual: true,
+		},
+		{
+			name: "disabled frame draws no separator sprites",
+			config: `{"command": {"separator_charset": {"graphics": {
+				"left": %[1]q, "horizontal": %[1]q, "right": %[1]q,
+			}}}}`,
+			noFrame: true, separator: true,
+		},
+		{
+			name: "short prompt draws no separator sprites",
+			config: `{"command": {"separator_charset": {"graphics": {
+				"left": %[1]q, "horizontal": %[1]q, "right": %[1]q,
+			}}}}`,
+			height: 3,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := newAnimConfig(t, fmt.Sprintf("config = "+tt.config, uri))
+			b := newExForTesting(t, texttest.NopEditor(),
+				text.WithCommandKey(testCommandKey),
+				text.WithCommandOverlayConfig(text.CommandOverlayConfig{ShowManual: !tt.hideManual}))
+			t.Cleanup(func() { _ = b.Close() })
+			unlock := b.lock()
+			defer unlock()
+			b.ex.config.WindowManagerConfig.Frame = !tt.noFrame
+			b.ex.config.FrameCharSet = cfg.windowFrameCharset()
+			b.ex.commandPromptCfg = cfg.commandPromptCfg()
+			require.Empty(t, cfg.errors)
+			b.ex.openCommandPrompt()
+			require.NotNil(t, b.ex.cmd)
+			h := newCommandPromptHandler(b.ex.cmd, b.ex, func() error { return nil })
+			height := tt.height
+			if height == 0 {
+				height = 12
+			}
+			h.Resize(width, height)
+			for _, ch := range "edit" {
+				h.Handle(term.Event{Type: term.EventKey, Ch: ch})
+			}
+			sepY, ok := b.ex.cmd.SeparatorY()
+			require.Equal(t, tt.separator, ok)
+			sepY++
+
+			if tt.noFrame {
+				assert.Nil(t, b.ex.promptGraphics)
+			} else {
+				require.NotNil(t, b.ex.promptGraphics)
+				// Load even hidden sprites so visibility checks cannot pass
+				// merely because a loader has not finished yet.
+				img := b.ex.promptGraphics.Image(uri)
+				img.Resize(1, 1)
+				require.Eventually(t, func() bool {
+					w := newCoveringImageWriter(1, 1)
+					img.Draw(w)
+					return len(w.images) == 1
+				}, 5*time.Second, 10*time.Millisecond)
+			}
+			w := newCoveringImageWriter(width, height)
+			h.Draw(w)
+			want := map[term.Coordinates]bool{}
+			frame, _ := b.ex.promptFrameCharSets()
+			if !tt.noFrame && frame.Graphics.HorizontalBottom != "" {
+				for x := 1; x < width-1; x++ {
+					want[term.Coordinates{X: x, Y: height - 1}] = true
+				}
+			}
+			if tt.bar {
+				for x := 1; x < width-1; x++ {
+					want[term.Coordinates{X: x, Y: sepY}] = true
+				}
+			}
+			if tt.ends {
+				want[term.Coordinates{Y: sepY}] = true
+				want[term.Coordinates{X: width - 1, Y: sepY}] = true
+			}
+			assert.Equal(t, want, w.images)
+
+			if tt.separator && !tt.noFrame {
+				terminal := term.NewStringWriter(width, height)
+				h.Draw(terminal)
+				sep := b.ex.commandPromptCfg.separator
+				for x := range width {
+					ch := frame.HorizontalBottom
+					switch x {
+					case 0:
+						ch = sep.Left
+					case 1:
+						ch = sep.HorizontalLeft
+					case width - 2:
+						ch = sep.HorizontalRight
+					case width - 1:
+						ch = sep.Right
+					}
+					assert.Equal(t, ch, terminal.Cells()[sepY*width+x].Ch, "terminal cell %d", x)
+					if want[term.Coordinates{X: x, Y: sepY}] && !sep.Graphics.Overlay {
+						ch = ' '
+					}
+					assert.Equal(t, ch, w.Cells()[sepY*width+x].Ch, "GUI cell %d", x)
+				}
 			}
 		})
 	}

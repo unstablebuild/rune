@@ -38,22 +38,10 @@ type commandPromptShaderConfig struct {
 	cycles       int
 }
 
-// commandPromptSeparatorCharset configures the four glyphs that
-// stitch the prompt's manual/list separator row into the surrounding
-// frame. From left to right within the separator row they are placed
-// at columns 0, 1, W-2, W-1 of the floating window. The defaults
-// produce a single-line T-junction stitch (├ ─ ─ ┤).
-type commandPromptSeparatorCharset struct {
-	Left            rune
-	HorizontalLeft  rune
-	HorizontalRight rune
-	Right           rune
-}
-
 // defaultCommandPromptSeparatorCharset returns the stitch glyphs used
 // when no override is configured.
-func defaultCommandPromptSeparatorCharset() commandPromptSeparatorCharset {
-	return commandPromptSeparatorCharset{
+func defaultCommandPromptSeparatorCharset() tcomponent.SeparatorCharSet {
+	return tcomponent.SeparatorCharSet{
 		Left:            '├',
 		HorizontalLeft:  '─',
 		HorizontalRight: '─',
@@ -67,7 +55,7 @@ func defaultCommandPromptSeparatorCharset() commandPromptSeparatorCharset {
 // editor's text configuration.
 type commandPromptConfig struct {
 	shader    commandPromptShaderConfig
-	separator commandPromptSeparatorCharset
+	separator tcomponent.SeparatorCharSet
 	// frameCharSet is what the prompt draws its frame and separator row
 	// with, and the runes its radar shades. When nil, the prompt draws
 	// the window frame charset and its radar shades the focused one.
@@ -110,7 +98,7 @@ func newCommandPromptHandler(
 		framed:    framed,
 		separator: e.commandPromptCfg.separator,
 	}
-	if !framed.Graphics.Empty() {
+	if !framed.Graphics.Empty() || !stitched.separator.Graphics.Empty() {
 		stitched.graphics = e.promptFrameGraphics()
 	}
 	return browser.FuncFloating(
@@ -123,9 +111,9 @@ type promptStitcher struct {
 	cmd    *command.Prompt
 	padded *handler.Span
 	framed *component.Frame
-	// graphics is nil when the frame names no images.
+	// graphics is nil when neither the frame nor the separator names images.
 	graphics  *tcomponent.FrameGraphics
-	separator commandPromptSeparatorCharset
+	separator tcomponent.SeparatorCharSet
 	width     int
 	height    int
 }
@@ -139,17 +127,10 @@ func (s *promptStitcher) Resize(width, height int) {
 
 func (s *promptStitcher) Draw(w term.Writer) {
 	s.framed.Draw(w)
-	// Images that replace their runes go under the separator, which then
-	// covers the side images on its row. Overlays go over it, as they go
-	// over every rune.
-	overlay := s.graphics != nil && s.framed.Graphics.Overlay
-	if s.graphics != nil && !overlay {
+	if s.graphics != nil {
 		s.graphics.Draw(w, s.framed, s.width, s.height)
 	}
 	s.drawSeparator(w)
-	if overlay {
-		s.graphics.Draw(w, s.framed, s.width, s.height)
-	}
 }
 
 func (s *promptStitcher) drawSeparator(w term.Writer) {
@@ -172,6 +153,9 @@ func (s *promptStitcher) drawSeparator(w term.Writer) {
 		term.NewCell(s.separator.HorizontalRight, 0, s.framed.Attributes))
 	w.SetCell(term.Coordinates{X: s.width - 1, Y: y},
 		term.NewCell(s.separator.Right, 0, s.framed.Attributes))
+	if s.graphics != nil {
+		s.graphics.DrawSeparator(w, s.framed, s.separator, s.width, s.height, y)
+	}
 }
 
 func (s *promptStitcher) Handle(ev term.Event) (bool, bool) {

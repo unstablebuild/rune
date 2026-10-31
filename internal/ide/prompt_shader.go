@@ -23,6 +23,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/internal/browser"
+	tcomponent "unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/component/shader"
 	"unstable.build/rune/internal/component/shader/glslshader"
 	"unstable.build/rune/internal/component/shader/timeshader"
@@ -41,7 +42,7 @@ func (drawFunc) Resize(int, int)      {}
 
 func newPromptShader(
 	charSet component.FrameCharSet, frameAttr term.Attributes,
-	separator commandPromptSeparatorCharset,
+	separator tcomponent.SeparatorCharSet,
 	win browser.Window, offset term.Coordinates,
 	root tui.Component, interrupter term.Interrupter,
 	cfg commandPromptShaderConfig,

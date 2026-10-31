@@ -27,9 +27,61 @@ import (
 
 func TestCommandPromptSeparatorCharsetDefaults(t *testing.T) {
 	c := newAnimConfig(t, `config = {}`)
-	got := c.commandPromptSeparatorCharset()
+	got := c.commandPromptCfg().separator
 	assert.Equal(t, defaultCommandPromptSeparatorCharset(), got)
 	assert.Empty(t, c.errors)
+}
+
+func TestCommandPromptSeparatorCharsetGraphics(t *testing.T) {
+	for _, tc := range []struct {
+		name, command       string
+		horizontal          rune
+		left, image, right  string
+		overlay             bool
+		top, bottom, inward int
+		errors              []string
+	}{
+		{name: "window inheritance", command: `{}`, horizontal: '=', image: "file:///window.png", overlay: true},
+		{name: "command frame inheritance", command: `{"frame_charset": {"horizontalbottom": "~", "graphics": {"horizontalbottom": "file:///command.png", "mode": "replace"}}}`, horizontal: '~', image: "file:///command.png"},
+		{name: "partial command frame", command: `{"frame_charset": {"horizontalbottom": "~"}}`, horizontal: '~', image: "file:///window.png", overlay: true},
+		{name: "clear inherited image", command: `{"separator_charset": {"graphics": {"horizontal": ""}}}`, horizontal: '=', overlay: true},
+		{name: "three images", command: `{"separator_charset": {"graphics": {"left": "file:///left.png", "horizontal": "file:///middle.png", "right": "file:///right.png"}}}`, horizontal: '=', left: "file:///left.png", image: "file:///middle.png", right: "file:///right.png", overlay: true},
+		{name: "partial images", command: `{"separator_charset": {"graphics": {"right": "file:///right.png"}}}`, horizontal: '=', image: "file:///window.png", right: "file:///right.png", overlay: true},
+		{name: "replace", command: `{"separator_charset": {"graphics": {"mode": "replace"}}}`, horizontal: '=', image: "file:///window.png"},
+		{name: "overlay override", command: `{"frame_charset": {"graphics": {"mode": "replace"}}, "separator_charset": {"graphics": {"mode": "overlay"}}}`, horizontal: '=', image: "file:///window.png", overlay: true},
+		{name: "invalid image is atomic", command: `{"separator_charset": {"graphics": {"left": "file:///left.png", "horizontal": 12, "mode": "replace"}}}`, horizontal: '=', image: "file:///window.png", overlay: true, errors: []string{"command.separator_charset"}},
+		{name: "invalid mode is atomic", command: `{"separator_charset": {"graphics": {"left": "file:///left.png", "mode": "blend"}}}`, horizontal: '=', image: "file:///window.png", overlay: true, errors: []string{"command.separator_charset"}},
+		{name: "invalid graphics table", command: `{"separator_charset": {"graphics": 12}}`, horizontal: '=', image: "file:///window.png", overlay: true, errors: []string{"command.separator_charset"}},
+		{name: "outsets", command: `{"separator_charset": {"graphics": {"outset": {"top": 1, "bottom": 2, "inward": 3}}}}`, horizontal: '=', image: "file:///window.png", overlay: true, top: 1, bottom: 2, inward: 3},
+		{name: "invalid outsets preserve valid sides", command: `{"separator_charset": {"graphics": {"outset": {"top": -1, "bottom": "two", "inward": 3}}}}`, horizontal: '=', image: "file:///window.png", overlay: true, inward: 3, errors: []string{"command.separator_charset.graphics.outset.top", "command.separator_charset.graphics.outset.bottom"}},
+		{name: "invalid outset table", command: `{"separator_charset": {"graphics": {"outset": 1}}}`, horizontal: '=', image: "file:///window.png", overlay: true, errors: []string{"command.separator_charset.graphics.outset"}},
+		{name: "invalid separator table", command: `{"separator_charset": 1}`, horizontal: '=', image: "file:///window.png", overlay: true, errors: []string{"command.separator_charset"}},
+		{name: "invalid frame falls back", command: `{"frame_charset": {"graphics": {"mode": "blend"}}}`, horizontal: '=', image: "file:///window.png", overlay: true, errors: []string{"command.frame_charset"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := newAnimConfig(t, `config = {
+    "browser": {"window_manager": {"frame_charset": {
+        "horizontalbottom": "=",
+        "graphics": {"horizontalbottom": "file:///window.png", "bottomleft": "file:///corner.png", "verticalright": "file:///side.png", "mode": "overlay"},
+    }}},
+    "command": `+tc.command+`,
+}`)
+			got := c.commandPromptCfg().separator
+			assert.Equal(t, tc.horizontal, got.HorizontalLeft)
+			assert.Equal(t, tc.horizontal, got.HorizontalRight)
+			assert.Equal(t, tc.left, got.Graphics.Left)
+			assert.Equal(t, tc.image, got.Graphics.Horizontal)
+			assert.Equal(t, tc.right, got.Graphics.Right)
+			assert.Equal(t, tc.overlay, got.Graphics.Overlay)
+			assert.Equal(t, tc.top, got.Graphics.Outset.Top)
+			assert.Equal(t, tc.bottom, got.Graphics.Outset.Bottom)
+			assert.Equal(t, tc.inward, got.Graphics.Outset.Inward)
+			assert.Len(t, c.errors, len(tc.errors))
+			for _, key := range tc.errors {
+				assert.Contains(t, c.errors, key)
+			}
+		})
+	}
 }
 
 // hintConfig builds an ideConfig with the given command.key_bindings
@@ -184,7 +236,7 @@ config = {
     },
 }
 `)
-	got := c.commandPromptSeparatorCharset()
+	got := c.commandPromptCfg().separator
 	assert.Equal(t, '🭼', got.Left)
 	assert.Equal(t, '▁', got.HorizontalLeft)
 	assert.Equal(t, '▁', got.HorizontalRight)
@@ -203,7 +255,7 @@ config = {
     },
 }
 `)
-	got := c.commandPromptSeparatorCharset()
+	got := c.commandPromptCfg().separator
 	def := defaultCommandPromptSeparatorCharset()
 	assert.Equal(t, '╠', got.Left)
 	assert.Equal(t, def.HorizontalLeft, got.HorizontalLeft)
@@ -222,7 +274,7 @@ config = {
     },
 }
 `)
-	got := c.commandPromptSeparatorCharset()
+	got := c.commandPromptCfg().separator
 	def := defaultCommandPromptSeparatorCharset()
 	assert.Equal(t, def.Left, got.Left,
 		"wrong type must keep default Left glyph")
