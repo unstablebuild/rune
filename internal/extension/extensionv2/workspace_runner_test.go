@@ -339,6 +339,46 @@ func TestWorkspaceRunnerStartCommandPreservesCallerEnv(t *testing.T) {
 	assert.Equal(t, []string{"--login", "-i"}, exec.cmd.Args)
 }
 
+func TestWorkspaceRunnerStartCommandPID(t *testing.T) {
+	t.Parallel()
+	keys, err := auth.GenerateKeys()
+	require.NoError(t, err)
+
+	for _, tt := range []struct {
+		name     string
+		uri      string
+		insecure bool
+		want     string
+	}{
+		{name: "local", uri: "file:///tmp", want: fmt.Sprint(os.Getpid())},
+		{name: "local insecure", uri: "file:///tmp", insecure: true, want: fmt.Sprint(os.Getpid())},
+		{name: "remote", uri: "ssh://user@host/tmp"},
+		{name: "remote insecure", uri: "ssh://user@host/tmp", insecure: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			uri, err := workspaceapi.ParseURI(tt.uri)
+			require.NoError(t, err)
+			exec := &recordingExecutor{}
+			runner := newWorkspaceRunner(exec, exec, nil, nopTrustVerifier{}, uri,
+				"/tmp/ext.sock", "/tmp/ext-data", "/tmp/ext-install", []byte("cert"), keys)
+			defer runner.Close()
+			runner.cfg.insecureAuth = tt.insecure
+			_, err = runner.StartCommand(context.Background(), workspaceapi.Cmd{
+				Path: "/bin/ext",
+				Env:  []string{"RUNE_PID=123"},
+			})
+			require.NoError(t, err)
+			var pid string
+			for _, env := range exec.snapshotCmd().Env {
+				if value, ok := strings.CutPrefix(env, "RUNE_PID="); ok {
+					pid = value
+				}
+			}
+			assert.Equal(t, tt.want, pid, "generated environment must override the caller's PID")
+		})
+	}
+}
+
 func TestWorkspaceRunnerStartCommandDoesNotDoubleResolveDir(t *testing.T) {
 	t.Parallel()
 
@@ -448,6 +488,7 @@ func TestWorkspaceRunnerRunCarriesExtensionID(t *testing.T) {
 	assert.Equal(t, "test-extension", extensionID)
 	assert.Contains(t, exec.cmd.Env, "RUNE_DATADIR=/tmp/ext-data",
 		"extensions run next to the IDE and see its data dir")
+	assert.Contains(t, exec.cmd.Env, fmt.Sprintf("RUNE_PID=%d", os.Getpid()))
 
 	states := runner.listExtensions()
 	require.Len(t, states, 1)
@@ -494,6 +535,8 @@ func TestWorkspaceRunnerRunSSHWorkspaceUsesExtExecutor(t *testing.T) {
 	assert.Equal(t, dataDir, extExec.snapshotCmd().Dir,
 		"makeCommand sets dataDir for non-file workspaces so "+
 			"extensions can chdir into a path that exists on the IDE host")
+	assert.Contains(t, extExec.snapshotCmd().Env, "RUNE_DATADIR="+dataDir)
+	assert.Contains(t, extExec.snapshotCmd().Env, fmt.Sprintf("RUNE_PID=%d", os.Getpid()))
 }
 
 func TestWorkspaceRunnerRunSourceEntrypoint(t *testing.T) {

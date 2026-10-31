@@ -227,6 +227,15 @@ func WithPrintFPS(print bool) Option {
 	}
 }
 
+// WithScreenshotDir sets the output directory for Screenshot. An empty
+// directory disables screenshots; a nonempty directory is created on capture.
+func WithScreenshotDir(dir string) Option {
+	return func(g *GUI) error {
+		g.screenshotDir = dir
+		return nil
+	}
+}
+
 // WithForceFullRepaint disables the renderer's row-damage tracking so
 // every frame repaints the whole grid. It is a debug/benchmark knob:
 // the differential correctness harness compares the damage-tracked path

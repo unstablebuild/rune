@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"sort"
@@ -30,6 +31,7 @@ import (
 
 	"github.com/ernestrc/go-multierror"
 	"github.com/unstablebuild/blue/iterator"
+	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
@@ -121,6 +123,24 @@ func subscribeGUICommands(
 			iterator.Iterator[string], string, error,
 		)
 	}{
+		{
+			cmd: textapi.CommandManual{
+				Name: "screenshot",
+				Summary: fmt.Sprintf("Takes a screenshot and saves it to %s.",
+					filepath.Join(*flagDataPath, "screenshots")),
+			},
+			handleCommand: func(_ context.Context, cmd textapi.Command) error {
+				if len(cmd.Args) != 0 {
+					return errors.New("screenshot expects no arguments")
+				}
+				path, err := g.Screenshot()
+				if err != nil {
+					return err
+				}
+				_, err = i.Notifications().Notify(browserapi.LevelInfo, "Screenshot saved to %s", path)
+				return err
+			},
+		},
 		{
 			cmd: textapi.CommandManual{
 				Name:    "guiminimize",

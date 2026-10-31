@@ -816,6 +816,7 @@ func runGUI(
 	options := buildGUIOptions(browser, root.config(), guiCfg, transparentWindow, mu, *flagFPS)
 	options = append(options, gui.WithDragObserver(root.dragObserver))
 	options = append(options, gui.WithLinkObserver(root.linkObserver))
+	options = append(options, gui.WithScreenshotDir(filepath.Join(*flagDataPath, "screenshots")))
 
 	storage := root.storage
 	width, height, ok := getLastSize(storage)
@@ -843,7 +844,7 @@ func runGUI(
 	defer func() { _ = g.Close() }()
 	guiRef.Store(g)
 	root.attachGUI(g, transparentWindow)
-	defer watchGUISignals(publishEvent, quitEvent(appMenuKeyBindings(root.config())))()
+	defer watchGUISignals(root, quitEvent(appMenuKeyBindings(root.config())))()
 
 	if fg, bg := getGUIWindowOpacity(browser, guiCfg); transparentWindow && (fg != 1 || bg != 1) {
 		g.SetOpacity(bg, fg)

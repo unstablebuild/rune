@@ -45,6 +45,7 @@ for a specific one. The main groups:
 | `runectl open <uri>` | Open a resource in the workspace. |
 | `runectl uri <path>` | Resolve a filesystem path to a workspace URI. |
 | `runectl datadir` | Print the extension data directory. |
+| `runectl screenshot` | Take a GUI screenshot and print its absolute path. |
 | `runectl exec -- <cmd> [args...]` | Run a command through the workspace executor. |
 | `runectl editor ...` | Read and edit buffer text, cursors, and location lists. |
 | `runectl wm ...` | Window-manager actions: focus, split, float, close. |
@@ -59,6 +60,23 @@ for a specific one. The main groups:
 Most commands accept a `-F`/`--format` flag to choose the output format:
 `table` (the default, human-readable), `json` (for piping into other
 tools), or a Go template for custom shaping.
+
+## Screenshots
+
+```sh
+image=$(runectl screenshot)
+```
+
+`runectl screenshot` saves Rune's rendered GUI to a PNG in
+`$RUNE_DATADIR/screenshots/` and prints only its absolute path, followed by
+a newline. It waits up to five seconds for a new complete image. Errors go
+to stderr with a nonzero exit status and no path on stdout.
+
+creenshots require GUI mode. TUI sessions safely discard the request, and
+`runectl` times out without creating an image. The capture contains Rune's
+output, not native window borders or the desktop behind it. Requests sharing
+a data directory should run sequentially: simultaneous requests can observe
+the same new file.
 
 ## Program status
 

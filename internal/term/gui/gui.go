@@ -20,7 +20,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image"
+	"image/png"
 	"math"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -113,6 +117,8 @@ type GUI struct {
 	pendingEvents []term.Event
 	needsDraw     bool
 	needsRender   bool
+	hasContent    bool
+	screenshotDir string
 	width         int
 	height        int
 	lastPositionX int
@@ -309,6 +315,11 @@ func (g *GUI) Draw(screen *ebiten.Image) {
 	if !g.needsRender && !g.cursorEffect.needsFrame() {
 		return
 	}
+	g.render(screen)
+	g.needsRender = false
+}
+
+func (g *GUI) render(screen *ebiten.Image) {
 	screen.Clear()
 	cells := g.writer.RawCells()
 	if g.links.armed() {
@@ -316,10 +327,59 @@ func (g *GUI) Draw(screen *ebiten.Image) {
 	}
 	g.renderer.Draw(screen, cells, g.writer.Images(), g.cursor.show,
 		g.cursor.pos, g.cursor.style)
-	g.needsRender = false
 	if g.printFPS {
 		ebitenutil.DebugPrint(screen, fmt.Sprintf("FPS: %0.2f", ebiten.ActualFPS()))
 	}
+}
+
+// Screenshot saves a PNG of the latest drawn handler content and returns its
+// path after the file is closed. It must run on the GUI event loop. It returns
+// an error if the GUI is unavailable, closed, has no drawn content since its
+// last resize, or has no configured screenshot directory.
+func (g *GUI) Screenshot() (string, error) {
+	if g == nil {
+		return "", errors.New("screenshots require GUI mode; unavailable with --tui")
+	}
+	if g.screenshotDir == "" {
+		return "", errors.New("screenshot directory is not configured")
+	}
+	if g.publish.Load()&publishClosed != 0 {
+		return "", errors.New("cannot take a screenshot: GUI is closed")
+	}
+	if !g.hasContent {
+		return "", errors.New("cannot take a screenshot: no rendered content available")
+	}
+	width := int(float64(g.width) * g.deviceScale)
+	height := int(float64(g.height) * g.deviceScale)
+	screen := ebiten.NewImage(width, height)
+	defer screen.Deallocate()
+	g.render(screen)
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	screen.ReadPixels(img.Pix)
+	return writeScreenshot(g.screenshotDir, img)
+}
+
+func writeScreenshot(dir string, img image.Image) (string, error) {
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return "", fmt.Errorf("create screenshots directory: %w", err)
+	}
+	// Consumers discover completed screenshots by their non-hidden filenames.
+	name := ".screenshot-" + time.Now().UTC().Format("20060102T150405.000000000Z") + "-*.png"
+	f, err := os.CreateTemp(dir, name)
+	if err != nil {
+		return "", fmt.Errorf("create screenshot: %w", err)
+	}
+	defer os.Remove(f.Name())
+	err = png.Encode(f, img)
+	err = errors.Join(err, f.Close())
+	if err != nil {
+		return "", fmt.Errorf("write screenshot: %w", err)
+	}
+	path := filepath.Join(dir, filepath.Base(f.Name())[1:])
+	if err := os.Rename(f.Name(), path); err != nil {
+		return "", fmt.Errorf("publish screenshot: %w", err)
+	}
+	return path, nil
 }
 
 // NeedsRender reports whether the next Draw will repaint the screen,
@@ -774,6 +834,7 @@ func (g *GUI) drawHandler(ctx context.Context) {
 	_ = g.writer.Clear(g.defaultAttr)
 	g.handler.Draw(g.writer)
 	g.cursor.pos, g.cursor.style, g.cursor.show = g.handler.Cursor()
+	g.hasContent = true
 	g.needsDraw = false
 	g.needsRender = true
 	g.links.invalidate()
@@ -795,6 +856,7 @@ func (g *GUI) resize(width, height int, deviceScale float64) {
 	g.cellPixelSize.Store(uint64(math.Round(g.fontManager.PixelX(1)))<<32 |
 		uint64(math.Round(g.fontManager.PixelY(1))))
 	g.writer = cell.NewBufferWriter(g.ctx, cellsWidth, cellsHeight)
+	g.hasContent = false
 	if g.renderer != nil {
 		g.renderer.deallocate()
 	}

@@ -198,6 +198,12 @@ func (m *workspaceRunner) StartCommand(ctx context.Context, cmd workspaceapi.Cmd
 		return 0, err
 	}
 	cmd.Env = append(cmd.Env, env...)
+	pid := ""
+	if m.workspace.Scheme() == workspace.FileScheme {
+		pid = fmt.Sprint(os.Getpid())
+	}
+	// PIDs are host-local; clear caller or inherited values on remote hosts.
+	cmd.Env = append(cmd.Env, "RUNE_PID="+pid)
 	return m.executor.StartCommand(ctx, cmd)
 }
 
@@ -399,6 +405,7 @@ func (m *workspaceRunner) makeCommand(
 	if err != nil {
 		return workspaceapi.Cmd{}, nil, err
 	}
+	ret.Env = append(ret.Env, fmt.Sprintf("RUNE_PID=%d", os.Getpid()))
 	stdin, releaseStdin, stdout, err := m.makeProtocolExchange(state, verifiedPublisher)
 	if err != nil {
 		return workspaceapi.Cmd{}, nil, err

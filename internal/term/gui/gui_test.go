@@ -17,12 +17,18 @@
 package gui
 
 import (
+	"bytes"
 	"context"
 	"image"
 	"image/color"
+	"image/png"
 	"maps"
 	"math"
+	"os"
+	"path/filepath"
+	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -476,6 +482,301 @@ func TestPublishEventSchedulesUserFunc(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestScreenshot(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		gui  *GUI
+		err  string
+	}{
+		{name: "nil GUI", err: "screenshots require GUI mode"},
+		{name: "unconfigured", gui: &GUI{}, err: "directory is not configured"},
+		{name: "closed", gui: &GUI{screenshotDir: t.TempDir()}, err: "GUI is closed"},
+		{name: "no content", gui: &GUI{screenshotDir: t.TempDir()}, err: "no rendered content"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.name == "closed" {
+				tt.gui.publish.Store(publishClosed)
+			}
+			path, err := tt.gui.Screenshot()
+			require.ErrorContains(t, err, tt.err)
+			assert.Empty(t, path)
+			if tt.gui != nil {
+				assert.False(t, tt.gui.NeedsRender())
+			}
+		})
+	}
+
+	t.Run("close rejects drained requests", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "screenshots")
+		g, err := New(&mockHandler{}, WithScreenshotDir(dir))
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, g.Close()) })
+		called := false
+		require.True(t, g.PublishEvent(term.Event{
+			Type: term.EventInterrupt,
+			UserFunc: func() {
+				called = true
+				path, err := g.Screenshot()
+				require.ErrorContains(t, err, "GUI is closed")
+				assert.Empty(t, path)
+			},
+		}))
+		require.NoError(t, g.Close())
+		assert.True(t, called)
+		assert.NoDirExists(t, dir)
+	})
+
+	t.Run("saves before the user function returns", func(t *testing.T) {
+		draws := 0
+		dir := filepath.Join(t.TempDir(), "screenshots")
+		g, err := New(&mockHandler{
+			assertDraw:  func(term.Writer) { draws++ },
+			assertEvent: func(term.Event) (bool, bool) { return false, true },
+		}, WithScreenshotDir(dir), WithSize(160, 120))
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, g.Close()) })
+		g.input.input = &mockInputManager{}
+		require.NoError(t, g.Update())
+		called := false
+		require.True(t, g.PublishEvent(term.Event{
+			Type: term.EventInterrupt,
+			UserFunc: func() {
+				called = true
+				path, err := g.Screenshot()
+				require.NoError(t, err)
+				assert.FileExists(t, path)
+				assert.Equal(t, dir, filepath.Dir(path))
+				assert.Equal(t, 1, draws, "capture must not reenter the handler")
+			},
+		}))
+		benchdraw.BeginFrame(t)
+		defer benchdraw.EndFrame(t)
+		require.NoError(t, g.Update())
+		assert.True(t, called)
+		assert.Equal(t, 2, draws)
+	})
+
+	t.Run("resize invalidates cached content", func(t *testing.T) {
+		g, _ := newTestGUI(t, &mockHandler{
+			assertDraw:  func(term.Writer) {},
+			assertEvent: func(term.Event) (bool, bool) { return false, true },
+		})
+		t.Cleanup(func() { require.NoError(t, g.Close()) })
+		dir := filepath.Join(t.TempDir(), "screenshots")
+		require.NoError(t, WithScreenshotDir(dir)(g))
+		require.NoError(t, g.Update())
+		g.Layout(320, 240)
+		path, err := g.Screenshot()
+		require.ErrorContains(t, err, "no rendered content")
+		assert.Empty(t, path)
+		assert.NoDirExists(t, dir)
+	})
+}
+
+func TestWriteScreenshot(t *testing.T) {
+	t.Run("unique PNGs preserve dimensions and alpha", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "screenshots")
+		src := image.NewRGBA(image.Rect(0, 0, 3, 2))
+		src.SetRGBA(0, 0, color.RGBA{R: 255, A: 255})
+		src.SetRGBA(1, 0, color.RGBA{R: 128, B: 128, A: 128})
+		paths := make(map[string]bool)
+		for range 3 {
+			path, err := writeScreenshot(dir, src)
+			require.NoError(t, err)
+			assert.Equal(t, dir, filepath.Dir(path))
+			assert.Regexp(t, `^screenshot-\d{8}T\d{6}\.\d{9}Z-\d+\.png$`, filepath.Base(path))
+			assert.False(t, paths[path], "screenshots must not overwrite previous captures")
+			paths[path] = true
+			data, err := os.ReadFile(path)
+			require.NoError(t, err)
+			decoded, err := png.Decode(bytes.NewReader(data))
+			require.NoError(t, err)
+			assert.Equal(t, src.Bounds(), decoded.Bounds())
+			for y := range src.Bounds().Dy() {
+				for x := range src.Bounds().Dx() {
+					assert.Equal(t, src.At(x, y), color.RGBAModel.Convert(decoded.At(x, y)))
+				}
+			}
+			if runtime.GOOS != "windows" {
+				info, err := os.Stat(path)
+				require.NoError(t, err)
+				assert.Zero(t, info.Mode().Perm()&0077)
+			}
+		}
+		files, err := os.ReadDir(dir)
+		require.NoError(t, err)
+		assert.Len(t, files, 3)
+		if runtime.GOOS != "windows" {
+			info, err := os.Stat(dir)
+			require.NoError(t, err)
+			assert.Zero(t, info.Mode().Perm()&0077)
+		}
+	})
+
+	t.Run("directory creation fails", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "screenshots")
+		require.NoError(t, os.WriteFile(dir, []byte("obstruction"), 0600))
+		path, err := writeScreenshot(dir, image.NewRGBA(image.Rect(0, 0, 1, 1)))
+		require.ErrorContains(t, err, "create screenshots directory")
+		assert.Empty(t, path)
+		data, err := os.ReadFile(dir)
+		require.NoError(t, err)
+		assert.Equal(t, "obstruction", string(data))
+	})
+
+	t.Run("encode failure removes partial file", func(t *testing.T) {
+		dir := t.TempDir()
+		path, err := writeScreenshot(dir, image.NewRGBA(image.Rectangle{}))
+		require.ErrorContains(t, err, "write screenshot")
+		assert.Empty(t, path)
+		files, err := os.ReadDir(dir)
+		require.NoError(t, err)
+		assert.Empty(t, files)
+	})
+
+	for _, tt := range []struct {
+		name         string
+		blockPublish bool
+	}{
+		{name: "published only after encoding"},
+		{name: "publish failure removes temporary file", blockPublish: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			var temporary, final string
+			observed := false
+			src := screenshotTestImage{
+				Image: image.NewRGBA(image.Rect(0, 0, 3, 2)),
+				observe: func() {
+					if observed {
+						return
+					}
+					observed = true
+					files, err := os.ReadDir(dir)
+					require.NoError(t, err)
+					require.Len(t, files, 1)
+					require.True(t, strings.HasPrefix(files[0].Name(), "."),
+						"incomplete screenshots must not appear under their final name")
+					temporary = filepath.Join(dir, files[0].Name())
+					final = filepath.Join(dir, strings.TrimPrefix(files[0].Name(), "."))
+					if tt.blockPublish {
+						require.NoError(t, os.Mkdir(final, 0700))
+					}
+				},
+			}
+			path, err := writeScreenshot(dir, src)
+			require.True(t, observed)
+			assert.NoFileExists(t, temporary)
+			if tt.blockPublish {
+				require.ErrorContains(t, err, "publish screenshot")
+				assert.Empty(t, path)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, final, path)
+				assert.FileExists(t, path)
+			}
+			files, err := os.ReadDir(dir)
+			require.NoError(t, err)
+			assert.Len(t, files, 1)
+		})
+	}
+}
+
+type screenshotTestImage struct {
+	image.Image
+	observe func()
+}
+
+func (i screenshotTestImage) Bounds() image.Rectangle {
+	i.observe()
+	return i.Image.Bounds()
+}
+
+func TestScreenshotSavesCurrentContent(t *testing.T) {
+	for _, tt := range []struct {
+		name          string
+		printFPS      bool
+		blocked       bool
+		renderPending bool
+		scale         float64
+	}{
+		{name: "idle frame", scale: 1},
+		{name: "before first screen draw", renderPending: true, scale: 1},
+		{name: "FPS overlay", printFPS: true, scale: 1},
+		{name: "write failure", blocked: true, scale: 1},
+		{name: "high DPI", scale: 2},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "screenshots")
+			draws := 0
+			pic := term.Image{
+				Src: solidRGBA(4, 4, color.RGBA{G: 255, A: 255}), ID: term.NewImageID(),
+				Pos: term.Coordinates{X: 2, Y: 1}, Width: 1, Height: 1,
+			}
+			g, err := New(&mockHandler{
+				assertDraw: func(w term.Writer) {
+					draws++
+					require.True(t, w.DrawImage(pic))
+				},
+				assertEvent: func(term.Event) (bool, bool) { return false, true },
+				showCursor:  true,
+			}, WithScreenshotDir(dir), WithSize(160, 120), WithPrintFPS(tt.printFPS), WithDeviceScale(tt.scale))
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, g.Close()) })
+			g.input.input = &mockInputManager{}
+			require.NoError(t, g.Update())
+			bounds := image.Rect(0, 0, int(160*tt.scale), int(120*tt.scale))
+			screen := ebiten.NewImage(bounds.Dx(), bounds.Dy())
+			t.Cleanup(screen.Deallocate)
+			if !tt.renderPending {
+				benchdraw.BeginFrame(t)
+				g.Draw(screen)
+				benchdraw.EndFrame(t)
+			}
+			require.Equal(t, tt.renderPending, g.NeedsRender())
+			if tt.blocked {
+				require.NoError(t, os.WriteFile(dir, nil, 0600))
+			}
+
+			paths := make(map[string]bool)
+			for range 2 {
+				benchdraw.BeginFrame(t)
+				path, err := g.Screenshot()
+				benchdraw.EndFrame(t)
+				assert.Equal(t, tt.renderPending, g.NeedsRender(), "capture must not consume the window repaint")
+				assert.Equal(t, 1, draws, "capture must not reenter the handler")
+				if tt.blocked {
+					require.ErrorContains(t, err, "create screenshots directory")
+					assert.Empty(t, path)
+					continue
+				}
+				require.NoError(t, err)
+				assert.Equal(t, dir, filepath.Dir(path))
+				assert.False(t, paths[path])
+				paths[path] = true
+				data, err := os.ReadFile(path)
+				require.NoError(t, err, "the returned screenshot must already be saved")
+				decoded, err := png.Decode(bytes.NewReader(data))
+				require.NoError(t, err)
+				assert.Equal(t, bounds, decoded.Bounds())
+			}
+			if tt.blocked {
+				require.NoError(t, os.Remove(dir))
+			}
+			benchdraw.BeginFrame(t)
+			g.Draw(screen)
+			benchdraw.EndFrame(t)
+			if tt.blocked {
+				assert.NoDirExists(t, dir, "failed requests must not retry on subsequent frames")
+			} else {
+				files, err := os.ReadDir(dir)
+				require.NoError(t, err)
+				assert.Len(t, files, 2)
+			}
+		})
+	}
 }
 
 func TestSetForceFullRepaint(t *testing.T) {
