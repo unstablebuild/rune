@@ -56,6 +56,7 @@ var (
 		'\U00100008', '\U00100009', '\U0010000A', '\U0010000B',
 		'\U0010000C', '\U0010000D', '\U0010000E', '\U0010000F',
 		'\U00100010', '\U00100011',
+		'', '', '', '', '', '', '', '',
 	}
 	unhandled       = []rune{'a', 'b', 'A'}
 	allRunes        = append(append([]rune{}, handled...), unhandled...)
@@ -80,7 +81,7 @@ func TestCustomFace(t *testing.T) {
 		for _, width := range standardWidths {
 			for _, height := range standardWidths {
 				for _, offsetY := range standardOffsets {
-					f := newCustomFace(width, height, offsetY, &mockFace{}, false, 0, 0)
+					f := newCustomFace(width, height, offsetY, &mockFace{}, nil, false, 0, 0)
 					for _, r := range handled {
 						assert.NotPanics(t, func() {
 							f.GlyphBounds(r)

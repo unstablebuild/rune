@@ -740,7 +740,7 @@ func (m *Manager) createFace(f *sfnt.Font, bold bool) (font.Face, error) {
 	}
 	charSizeX, charSizeY, offsetY := m.calcFaceMetrics(face)
 	customFace := newCustomFace(charSizeX, charSizeY, offsetY,
-		face, bold, m.cellOverlapX, m.cellOverlapY)
+		face, f, bold, m.cellOverlapX, m.cellOverlapY)
 	faces := []font.Face{customFace, face, brailleFace, fallbackFace, symbolFace}
 	// CJK must come last: Noto Sans CJK also covers Latin, punctuation and
 	// box drawing, so any earlier position would steal those glyphs from

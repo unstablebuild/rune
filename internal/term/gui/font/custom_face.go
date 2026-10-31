@@ -21,7 +21,9 @@ import (
 	"math"
 
 	"golang.org/x/image/font"
+	"golang.org/x/image/font/sfnt"
 	"golang.org/x/image/math/fixed"
+	"golang.org/x/image/vector"
 )
 
 var _ font.Face = (*custom)(nil)
@@ -41,14 +43,21 @@ type custom struct {
 	overlapX      int
 	overlapY      int
 
+	// outlines is the font behind face, for glyphs reshaped from its
+	// outline. When nil, those glyphs are left to the next face.
+	outlines *sfnt.Font
+
 	// re-use allocs
-	mask    *image.RGBA
-	altMask *image.RGBA
+	mask     *image.RGBA
+	altMask  *image.RGBA
+	raster   vector.Rasterizer
+	coverage *image.Alpha
+	buf      sfnt.Buffer
 }
 
 func newCustomFace(
 	width, height, offsetY float64,
-	standard font.Face, bold bool,
+	standard font.Face, outlines *sfnt.Font, bold bool,
 	overlapX, overlapY int,
 ) *custom {
 	w := int(math.Max(width, 1))
@@ -61,6 +70,7 @@ func newCustomFace(
 		altMask:  altMask,
 		offsetY:  float64ToFixed(offsetY),
 		face:     standard,
+		outlines: outlines,
 		width:    float64ToFixed(width),
 		height:   float64ToFixed(height),
 		// we want certain characters to take into consideration cell overlap pixels
@@ -84,19 +94,7 @@ func (m *custom) Glyph(dot fixed.Point26_6, r rune) (
 	)
 
 	switch r {
-	case '', '':
-		dr, mask, maskp, advance, ok = m.face.Glyph(dot, r)
-		if ok {
-			dr = dr.Sub(image.Point{X: 4, Y: 0})
-		}
-		return
-	case '', '', '', '', '', '':
-		dr, mask, maskp, advance, ok = m.face.Glyph(dot, r)
-		if ok {
-			dr = dr.Sub(image.Point{X: 2, Y: 0})
-		}
-		return
-	case '', '', '', '', '', '', '', '':
+	case '', '', '', '':
 		dr, mask, maskp, advance, ok = m.face.Glyph(dot, r)
 		if ok {
 			dr = dr.Sub(image.Point{X: -1, Y: 0})
@@ -120,6 +118,38 @@ func (m *custom) Glyph(dot fixed.Point26_6, r rune) (
 			dr = dr.Sub(image.Point{X: 3, Y: 0})
 		}
 		return
+	// Solid powerline separators butt against the neighbouring cells'
+	// backgrounds, so they must fill the cell box exactly: font outlines
+	// overshoot it by an amount that varies with size and device scale,
+	// which shows up as a seam or a fringe.
+	case '':
+		ok = m.polygonGlyph(dr, [][2]float32{{0, 0}, {1, 0.5}, {0, 1}})
+	case '':
+		ok = m.polygonGlyph(dr, [][2]float32{{1, 0}, {0, 0.5}, {1, 1}})
+	case '':
+		ok = m.halfEllipseGlyph(dr, 0, 1)
+	case '':
+		ok = m.halfEllipseGlyph(dr, 1, 0)
+	case '':
+		ok = m.polygonGlyph(dr, [][2]float32{{0, 0}, {1, 1}, {0, 1}})
+	case '':
+		ok = m.polygonGlyph(dr, [][2]float32{{1, 0}, {1, 1}, {0, 1}})
+	case '':
+		ok = m.polygonGlyph(dr, [][2]float32{{0, 0}, {1, 0}, {0, 1}})
+	case '':
+		ok = m.polygonGlyph(dr, [][2]float32{{0, 0}, {1, 0}, {1, 1}})
+	case '':
+		ok = m.polygonGlyph(dr, [][2]float32{{0, 0}, {1, 0}, {1, 1}, {0, 1}, {1, 0.5}})
+	// Proportions of the Nerd Fonts reference design.
+	case '':
+		ok = m.polygonGlyph(dr,
+			[][2]float32{{0, 0}, {1, 0}, {1, 5. / 11}, {0.7, 5. / 11}},
+			[][2]float32{{0.7, 6. / 11}, {1, 6. / 11}, {1, 1}, {0, 1}})
+	// Flame and ice separators are too intricate to draw by hand, and
+	// Nerd Fonts designs them two cells wide, so their outline is fitted
+	// into the cell instead.
+	case '', '':
+		ok = m.outlineGlyph(dr, r)
 	case '░':
 		ok = m.shadeGlyph(dr, colorFillAlphaStep3)
 	case '▒':

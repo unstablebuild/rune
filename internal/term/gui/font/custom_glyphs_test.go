@@ -124,7 +124,7 @@ func TestFrameChannelGlyphs(t *testing.T) {
 
 	for _, test := range suite {
 		t.Run(test.description, func(t *testing.T) {
-			f := newCustomFace(test.width, test.height, 0, &mockFace{}, false, 0, 0)
+			f := newCustomFace(test.width, test.height, 0, &mockFace{}, nil, false, 0, 0)
 			dr, mask, maskp, advance, ok := f.Glyph(fixed.Point26_6{}, test.r)
 			require.True(t, ok)
 			require.Equal(t, image.Rect(0, 0, int(test.width), int(test.height)), dr)
