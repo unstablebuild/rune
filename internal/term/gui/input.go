@@ -239,7 +239,7 @@ func (i *input) processEvents(dst []term.Event) []term.Event {
 
 		if e, ok := mapEbitenKey(key, mod); ok {
 			var echo term.Key
-			if !remapped && ev.Mods&(ebiten.KeyModControl|ebiten.KeyModAlt|ebiten.KeyModSuper) == 0 {
+			if !remapped {
 				echo = e.Key
 				// Native key transitions precede the text they commit. Insert
 				// that text first so Enter cannot submit an incomplete line.
