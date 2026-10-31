@@ -1165,6 +1165,15 @@ func TestInputSourceOwnership(t *testing.T) {
 			}},
 		},
 		{
+			description: "alt enter preserves its IME commit and modifier",
+			frames: []frame{{
+				events: action(press(ebiten.KeyEnter, ebiten.KeyModAlt), '한'),
+				expectedEvents: []term.Event{
+					{Ch: '한'}, {Mod: term.ModAlt, Key: term.KeyEnter},
+				},
+			}},
+		},
+		{
 			description: "an IME commit stays before its named key and subsequent typing",
 			frames: []frame{{
 				events: slices.Concat(
