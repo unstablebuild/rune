@@ -18,6 +18,9 @@ package dialoguetui
 
 import (
 	"context"
+	"fmt"
+	"net/url"
+	"path"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -26,6 +29,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/term/graphemecluster"
 	tcomponent "unstable.build/rune/internal/component"
+	"unstable.build/rune/internal/component/markdown"
 )
 
 // collapseMode controls how a Turn renders its tool calls.
@@ -91,6 +95,7 @@ type toolNode struct {
 	startTime     time.Time       // when the tool call was announced (for live elapsed display)
 	duration      time.Duration   // final execution duration (set on completion)
 	childTurn     *Turn           // non-nil for sub-agent tool calls with children
+	images        []*markdown.Component
 }
 
 // ToolCallDetails is a snapshot of an invocation and its full response.
@@ -207,6 +212,10 @@ func (t *Turn) collectExpandedEntries(entries map[component.ListNode]*toolNode) 
 }
 
 func (t *Turn) collapsedToolAt(pos term.Coordinates) *toolNode {
+	return t.collapsedToolAtWidth(pos, t.width)
+}
+
+func (t *Turn) collapsedToolAtWidth(pos term.Coordinates, width int) *toolNode {
 	y := pos.Y
 	for _, id := range t.toolOrder {
 		tn := t.tools[id]
@@ -218,11 +227,18 @@ func (t *Turn) collapsedToolAt(pos term.Coordinates) *toolNode {
 			return tn
 		}
 		y--
-		if tn.childTurn != nil {
-			h := tn.childTurn.collapsedHeight()
+		for _, image := range tn.images {
+			h := image.Height(max(0, width-collapsedIndent))
 			if y < h {
-				return tn.childTurn.collapsedToolAt(
-					term.Coordinates{X: pos.X - collapsedIndent, Y: y})
+				return nil
+			}
+			y -= h
+		}
+		if tn.childTurn != nil {
+			h := tn.childTurn.collapsedHeightAt(max(0, width-collapsedIndent))
+			if y < h {
+				return tn.childTurn.collapsedToolAtWidth(
+					term.Coordinates{X: pos.X - collapsedIndent, Y: y}, max(0, width-collapsedIndent))
 			}
 			y -= h
 		}
@@ -428,12 +444,55 @@ func (t *Turn) CompleteToolCall(id, name, args, summary, output string, isError 
 		entry.PushBack(component.NewSpan(result, t.cfg.ToolResultSpanConfig))
 	}
 
+	for _, image := range tn.images {
+		entry.PushBack(image)
+	}
 	// Replace the running entry with the completed one.
 	tn.listNode.SetValue(entry)
 
 	if !t.hasRunningTools() {
 		t.stopAnimation()
 	}
+}
+
+// AddToolCallImage appends an image to an existing invocation, including child
+// invocations. Unknown IDs and empty paths are ignored. An empty caption uses
+// the filename. imagePath is a slash-separated path in the filesystem supplied
+// by MarkdownConfig, which need not match the local OS.
+func (t *Turn) AddToolCallImage(id, imagePath, caption string) {
+	if imagePath == "" {
+		return
+	}
+	tn, ok := t.tools[id]
+	if !ok {
+		for _, parent := range t.tools {
+			if parent.childTurn != nil {
+				parent.childTurn.AddToolCallImage(id, imagePath, caption)
+			}
+		}
+		return
+	}
+	cfg := *DefaultMarkdownConfig()
+	if t.cfg.MarkdownConfig != nil {
+		cfg = *t.cfg.MarkdownConfig
+	}
+	cfg.Dir = path.Dir(imagePath)
+	if caption == "" {
+		caption = path.Base(imagePath)
+	}
+	title := strings.NewReplacer("\\", "\\\\", "\"", "\\\"", "\n", " ", "\r", " ").Replace(caption)
+	caption = strings.NewReplacer("\\", "\\\\", "[", "\\[", "]", "\\]", "\n", " ", "\r", " ").Replace(caption)
+	destination := (&url.URL{Path: path.Base(imagePath)}).String()
+	image, err := markdown.NewWithConfig(fmt.Sprintf("![%s](<%s> \"%s\"){rows=12}", caption, destination, title), cfg)
+	if err != nil {
+		return
+	}
+	tn.images = append(tn.images, image)
+	entry := new(component.ResponsiveList)
+	entry.Init()
+	entry.PushBack(tn.listNode.Value().(component.Responsive))
+	entry.PushBack(image)
+	tn.listNode.SetValue(entry)
 }
 
 // AddChildToolCall adds a tool call nested under a parent
@@ -605,6 +664,7 @@ func (t *Turn) completeRunning() {
 			t.CompleteToolCall(id, tn.name, tn.args, tn.summary, "canceled", true)
 		}
 	}
+	t.stopAnimation()
 }
 
 // Close releases resources associated with this Turn, including
@@ -612,6 +672,9 @@ func (t *Turn) completeRunning() {
 func (t *Turn) Close() {
 	t.stopAnimation()
 	for _, tn := range t.tools {
+		for _, image := range tn.images {
+			image.Close()
+		}
 		if tn.childTurn != nil {
 			tn.childTurn.Close()
 		}
@@ -658,12 +721,19 @@ func (t *Turn) stopAnimation() {
 // collapsedHeight returns the number of lines needed to render
 // the collapsed tree view: one per tool plus recursive children.
 func (t *Turn) collapsedHeight() int {
+	return t.collapsedHeightAt(t.width)
+}
+
+func (t *Turn) collapsedHeightAt(width int) int {
 	h := 0
 	for _, id := range t.toolOrder {
 		h++
 		tn := t.tools[id]
+		for _, image := range tn.images {
+			h += image.Height(max(0, width-collapsedIndent))
+		}
 		if tn.childTurn != nil {
-			h += tn.childTurn.collapsedHeight()
+			h += tn.childTurn.collapsedHeightAt(max(0, width-collapsedIndent))
 		}
 	}
 	return h
@@ -672,7 +742,7 @@ func (t *Turn) collapsedHeight() int {
 // Height satisfies component.Responsive.
 func (t *Turn) Height(width int) int {
 	if t.mode == collapseModeCollapsed {
-		h := t.collapsedHeight()
+		h := t.collapsedHeightAt(width)
 		if h > 0 {
 			if t.root {
 				h++ // expand hint line
@@ -833,9 +903,18 @@ func (t *Turn) drawCollapsedAt(w term.Writer, width int) {
 		}
 		y++
 
+		for _, image := range tn.images {
+			imageWidth := max(0, width-collapsedIndent)
+			h := image.Height(imageWidth)
+			image.Resize(imageWidth, h)
+			image.Draw(&component.VirtualWriter{Writer: w,
+				Offset: term.Coordinates{X: collapsedIndent, Y: y}, Width: imageWidth, Height: h})
+			y += h
+		}
+
 		if tn.childTurn != nil && len(tn.childTurn.toolOrder) > 0 {
-			childH := tn.childTurn.collapsedHeight()
-			childWidth := width - collapsedIndent
+			childWidth := max(0, width-collapsedIndent)
+			childH := tn.childTurn.collapsedHeightAt(childWidth)
 			if !isLast {
 				for cy := 0; cy < childH; cy++ {
 					w.SetCell(term.Coordinates{X: 0, Y: y + cy}, term.NewCell('│', 1, tAttr))

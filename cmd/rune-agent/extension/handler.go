@@ -426,6 +426,11 @@ func newCommandEventHandler(
 	} else {
 		ret.browserDir = dir
 	}
+	if dir, err := imageGenDir(ctx, w); err != nil {
+		slog.Warn("imagegen tool unavailable", "error", err)
+	} else {
+		ret.imagesDir = dir
+	}
 	ret.memoryPath = memoryPath
 	ret.cwd = cwd
 	ret.fs = fs
@@ -664,6 +669,7 @@ func newCommandEventHandler(
 
 	ret.db = db
 	ret.cfg.StatusBar.Storage = storageapi.WithPartition(db, statusBarImagesPartition)
+	ret.imageCache = storageapi.WithPartition(db, transcriptImagesPartition)
 	if auditEnabled, _ := pconfig.GetBool("audit_enabled"); auditEnabled {
 		ret.auditStore = audit.NewStore(ret.db)
 	}
@@ -789,11 +795,26 @@ func dialogueLinkURI(cwd workspaceapi.URI, link *url.URL) (workspaceapi.URI, err
 	return workspaceapi.ParseURI(link.String())
 }
 
+const transcriptImagesPartition = "transcript-images"
+
 // dialogueConfig returns the config for a dialogue whose handler is given
 // mu, which the dialogue holds while it calls OnLinkClick.
 func (h *aiEditorHandler) dialogueConfig(mu sync.Locker) dialoguetui.ComponentConfig {
 	cfg := h.cfg
 	cfg.OnLinkClick = newLinkClickHandler(mu, h.cwd, h.o, h.n)
+	md := dialoguetui.DefaultMarkdownConfig()
+	if cfg.MarkdownConfig != nil {
+		shared := *cfg.MarkdownConfig
+		md = &shared
+	}
+	md.FS = h.fs
+	md.Dir = h.cwd.Path()
+	// Markdown rejects an interrupter without storage, so set them together.
+	if h.imageCache != nil {
+		md.Storage = h.imageCache
+		md.Interrupter = h.p
+	}
+	cfg.MarkdownConfig = md
 	return cfg
 }
 
@@ -831,10 +852,12 @@ type aiEditorHandler struct {
 	o              browserapi.ResourceOpener
 	p              term.Interrupter
 	db             storageapi.Service
+	imageCache     storageapi.Service
 	config         configedit.Config
 	skillRegistry  *skills.SkillRegistry
 	plansDir       string
 	browserDir     string
+	imagesDir      string
 	memoryDataPath string
 	exec           workspaceapi.Executor
 	lsp            semanticapi.LSP
@@ -1551,6 +1574,10 @@ func (h *aiEditorHandler) newChat(
 	}
 	chatRegistry := agent.NewRegistry(allTools...)
 	chatRegistry.AddOverrides(h.toolRegistry.Overrides())
+	adapter.modelToolsFn = func(svc llmapi.Service, model llmapi.ModelEntry) {
+		h.registerImageGen(chatRegistry, svc, model)
+	}
+	adapter.modelToolsFn(backendService, chatEntry)
 	chatRegistry.RegisterOverrides("openai",
 		agentools.NewUpdatePlan(progressUpdater),
 		agentools.NewRequestUserInput(prompter),
@@ -1619,7 +1646,9 @@ func (h *aiEditorHandler) newChat(
 
 	bhandler := browserapi.FuncHandler(handler, func() error {
 		cancel()
+		mu.Lock()
 		_ = comp.Close()
+		mu.Unlock()
 		if webBrowser != nil {
 			webBrowser.Close()
 		}
@@ -1672,6 +1701,28 @@ func (h *aiEditorHandler) webBrowser(dialogueID string) *agentools.WebBrowser {
 	return agentools.NewWebBrowser(h.executor, h.fs, bin, h.browserDir, dialogueID)
 }
 
+func (h *aiEditorHandler) registerImageGen(registry *agent.Registry, svc llmapi.Service, model llmapi.ModelEntry) {
+	registry.RegisterExclusions(model.Provider, "imagegen")
+	if tool := h.imageGen(svc, model); tool != nil {
+		registry.RegisterOverrides(model.Provider, tool)
+	}
+}
+
+func (h *aiEditorHandler) imageGen(svc llmapi.Service, model llmapi.ModelEntry) *agentools.ImageGen {
+	if svc == nil || h.imagesDir == "" || h.fs == nil {
+		return nil
+	}
+	available, err := svc.CanGenerateImages(h.ctx, model)
+	if err != nil {
+		slog.Debug("imagegen tool unavailable", "error", err)
+		return nil
+	}
+	if !available {
+		return nil
+	}
+	return agentools.NewImageGen(svc, model, h.fs, h.imagesDir)
+}
+
 // installRoot resolves paths under the data directory of the workspace
 // host, which the IDE resolves for extensions (extensionapi.Workspace).
 type installRoot interface {
@@ -1688,6 +1739,14 @@ func webBrowserDir(ctx context.Context, root installRoot) (string, error) {
 		return "", fmt.Errorf("resolve the data directory on the workspace host: %w", err)
 	}
 	return path.Join(dataDir, "agent-browser"), nil
+}
+
+func imageGenDir(ctx context.Context, root installRoot) (string, error) {
+	dataDir, err := root.FindInstalledResource(ctx, ".")
+	if err != nil {
+		return "", fmt.Errorf("resolve the data directory on the workspace host: %w", err)
+	}
+	return path.Join(dataDir, "generated_images"), nil
 }
 
 func getModelUri(id, model string) (workspaceapi.URI, error) {
@@ -1770,7 +1829,9 @@ func (h *aiEditorHandler) handleQuery(cmd textapi.Command) error {
 
 	bhandler := browserapi.FuncHandler(handler, func() error {
 		cancel()
-		return nil
+		mu.Lock()
+		defer mu.Unlock()
+		return comp.Close()
 	})
 	floating := browserapi.FuncFloating(bhandler, func() (int, int) {
 		mu.Lock()
@@ -2054,18 +2115,26 @@ func addMessage(c *dialoguetui.Component, msg llmapi.Message, pendingTools map[s
 			}
 		}
 	case llmapi.RoleUser:
+		attachments := replayedAttachments(msg)
+		// Tool images are carried in synthetic user messages for providers
+		// that cannot accept images in tool results. They are not user turns.
+		if msg.Content == "" && len(attachments) == 0 && slices.ContainsFunc(msg.MultiContent, func(part llmapi.ContentPart) bool {
+			return part.Type == llmapi.ContentPartTypeImageURL
+		}) {
+			return
+		}
 		if replayed, ok := parseStoredCommandMessage(msg.Content); ok {
 			c.AddSendMessage(replayed)
 		} else if strings.HasPrefix(msg.Content, agent.CompactSummaryPrefix) ||
 			strings.HasPrefix(msg.Content, "Plan approved. Saved to ") {
 			c.AddSendMessageMarkdown(msg.Content)
 		} else {
-			c.AddSendMessageAttachments(msg.Content, replayedAttachments(msg))
+			c.AddSendMessageAttachments(msg.Content, attachments)
 		}
 	case llmapi.RoleSystem:
 	case llmapi.RoleTool:
 		id := msg.ToolCallID
-		name := "tool"
+		name := cmp.Or(msg.Name, "tool")
 		args := ""
 		if pendingTools != nil {
 			if call, ok := pendingTools[id]; ok {
@@ -2098,9 +2167,30 @@ func addMessage(c *dialoguetui.Component, msg llmapi.Message, pendingTools map[s
 				return
 			}
 		}
-		c.AddToolCall(id, name, args, "")
-		c.CompleteToolCall(id, name, args, "", msg.Content, false)
+		summary := ""
+		if name == "imagegen" {
+			var parsed struct {
+				Prompt string `json:"prompt"`
+			}
+			if json.Unmarshal([]byte(args), &parsed) == nil {
+				summary = parsed.Prompt
+			}
+		}
+		c.AddToolCall(id, name, args, summary)
+		c.CompleteToolCall(id, name, args, summary, msg.Content, false)
+		for _, image := range toolResultImages(name, msg.Content, false) {
+			c.AddToolCallImage(id, image, summary)
+		}
 	}
+}
+
+func toolResultImages(name, output string, isError bool) []string {
+	if name == "imagegen" && !isError {
+		if image, ok := agentools.GeneratedImagePath(output); ok {
+			return []string{image}
+		}
+	}
+	return nil
 }
 
 func firstModel(svc llmapi.Service) string {
@@ -2328,6 +2418,7 @@ func createAgentCompletions(
 							IsError:          cev.Event.IsError,
 							ToolDuration:     cev.Event.ToolDuration,
 							ParentToolCallID: cev.ParentToolCallID,
+							ImagePaths:       toolResultImages(cev.Event.ToolName, cev.Event.ToolOutput, cev.Event.IsError),
 						}
 					case agent.EventToolsDropped:
 						msg = dialoguetui.MessageEvent{
@@ -2584,6 +2675,7 @@ func createAgentCompletions(
 						ToolOutput:   ev.ToolOutput,
 						IsError:      ev.IsError,
 						ToolDuration: ev.ToolDuration,
+						ImagePaths:   toolResultImages(ev.ToolName, ev.ToolOutput, ev.IsError),
 					}:
 					case <-ctx.Done():
 						return

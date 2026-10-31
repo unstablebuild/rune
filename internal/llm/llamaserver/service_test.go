@@ -26,6 +26,16 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
 )
 
+func TestService_ImageGenerationUnsupported(t *testing.T) {
+	var svc llmapi.Service = &Service{}
+	supported, err := svc.CanGenerateImages(context.Background(), llmapi.ModelEntry{})
+	require.NoError(t, err)
+	assert.False(t, supported)
+	image, err := svc.GenerateImage(context.Background(), llmapi.ModelEntry{}, llmapi.ImageRequest{})
+	require.ErrorIs(t, err, llmapi.ErrImageGenerationUnsupported)
+	assert.Equal(t, llmapi.Image{}, image)
+}
+
 func TestServiceNew_PanicsOnNilDeps(t *testing.T) {
 	exec := &fakeExecutor{}
 	loc := NewFixedLocator("/usr/bin/llama-server")

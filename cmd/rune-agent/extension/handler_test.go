@@ -17,14 +17,20 @@
 package extension
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	stdimage "image"
+	"image/color"
+	"image/png"
 	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -39,6 +45,8 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
 	"github.com/unstablebuild/rune-go-sdk/api/semanticapi"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/handler/handlertest"
@@ -55,8 +63,394 @@ import (
 	"unstable.build/rune/cmd/rune-agent/llm/llmarg"
 	"unstable.build/rune/cmd/rune-agent/llm/llmtest"
 	runemcp "unstable.build/rune/cmd/rune-agent/mcp"
+	"unstable.build/rune/internal/component/markdown"
 	"unstable.build/rune/internal/debug"
 )
+
+func TestAddMessageHiddenToolImages(t *testing.T) {
+	image := llmapi.ContentPart{Type: llmapi.ContentPartTypeImageURL, ImageURL: "data:image/png;base64,aW1hZ2U="}
+	for _, tt := range []struct {
+		name   string
+		msg    llmapi.Message
+		hidden bool
+	}{
+		{"tool image", llmapi.Message{Role: llmapi.RoleUser, MultiContent: []llmapi.ContentPart{image}}, true},
+		{"tool hint and image", llmapi.Message{Role: llmapi.RoleUser, MultiContent: []llmapi.ContentPart{
+			{Type: llmapi.ContentPartTypeText, Text: "Generated image saved to /tmp/image.png"}, image,
+		}}, true},
+		{"user text and image", llmapi.Message{Role: llmapi.RoleUser, Content: "edit this", MultiContent: []llmapi.ContentPart{image}}, false},
+		{"image attachment without text", llmapi.Message{Role: llmapi.RoleUser, MultiContent: []llmapi.ContentPart{
+			{Type: llmapi.ContentPartTypeText},
+			{Type: llmapi.ContentPartTypeText, Text: "Attached image /tmp/reference.png:"}, image,
+		}}, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			comp := dialoguetui.NewComponent(defaultComponentCfg)
+			t.Cleanup(func() { require.NoError(t, comp.Close()) })
+			addMessage(comp, llmapi.Message{Role: llmapi.RoleUser, Content: "generate an image"}, nil)
+			before := comp.Height(80)
+			addMessage(comp, tt.msg, nil)
+			if tt.hidden {
+				assert.Equal(t, before, comp.Height(80), "tool images must not add empty sent bubbles")
+			} else {
+				assert.Greater(t, comp.Height(80), before, "real user messages and attachments must remain visible")
+			}
+		})
+	}
+}
+
+func TestAddMessageGeneratedImageReplay(t *testing.T) {
+	var data bytes.Buffer
+	require.NoError(t, png.Encode(&data, stdimage.NewRGBA(stdimage.Rect(0, 0, 2, 2))))
+	dir := t.TempDir()
+	svc := &imageGenerationService{image: llmapi.Image{PNG: data.Bytes()}}
+	tool := agentools.NewImageGen(svc, llmapi.ModelEntry{Provider: "codex"}, testLocalFS{root: dir}, dir)
+	ctx := agent.WithDialogueID(t.Context(), "chat")
+	ctx = agent.WithParentToolCallID(ctx, "call")
+	const args = `{"prompt":"a blue bird"}`
+	result := tool.Execute(ctx, args)
+	require.False(t, result.IsError, result.Content)
+	imagePath, ok := agentools.GeneratedImagePath(result.Content)
+	require.True(t, ok)
+
+	for _, collapsed := range []bool{true, false} {
+		t.Run(fmt.Sprintf("collapsed=%v", collapsed), func(t *testing.T) {
+			cfg := defaultComponentCfg
+			cfg.StartCollapsed = collapsed
+			live := dialoguetui.NewComponent(cfg)
+			replayed := dialoguetui.NewComponent(cfg)
+			t.Cleanup(func() {
+				require.NoError(t, live.Close())
+				require.NoError(t, replayed.Close())
+			})
+			live.AddSendMessage("draw a bird")
+			live.AddToolCall("call", "imagegen", args, tool.Summary(args))
+			live.CompleteToolCall("call", "imagegen", args, tool.Summary(args), result.Content, false)
+			live.AddToolCallImage("call", imagePath, tool.Summary(args))
+			live.AddReceiveMessage("Done.")
+			pending := make(map[string]llmapi.ToolCall)
+			for _, msg := range []llmapi.Message{
+				{Role: llmapi.RoleUser, Content: "draw a bird"},
+				{Role: llmapi.RoleAssistant, ToolCalls: []llmapi.ToolCall{{ID: "call", Function: llmapi.FunctionCall{Name: "imagegen", Arguments: args}}}},
+				{Role: llmapi.RoleTool, ToolCallID: "call", Content: result.Content},
+				{Role: llmapi.RoleUser, MultiContent: result.MultiContent},
+				{Role: llmapi.RoleAssistant, Content: "Done."},
+			} {
+				addMessage(replayed, msg, pending)
+			}
+			require.Empty(t, pending)
+			assert.Equal(t, live.Height(80), replayed.Height(80))
+			draw := func(comp *dialoguetui.Component) string {
+				comp.Resize(80, 30)
+				writer := term.NewStringWriter(80, 30)
+				comp.Draw(writer)
+				require.NoError(t, writer.Flush())
+				return writer.String()
+			}
+			actual := draw(replayed)
+			assert.Equal(t, draw(live), actual)
+			wantCaptions := 2
+			if !collapsed {
+				wantCaptions++ // Expanded tools also show their arguments.
+			}
+			assert.Equal(t, wantCaptions, strings.Count(actual, "a blue bird"), "tool summary and image caption must both survive replay")
+		})
+	}
+	assert.Equal(t, []string{imagePath}, toolResultImages("imagegen", result.Content, false))
+	assert.Empty(t, toolResultImages("imagegen", result.Content, true))
+	assert.Empty(t, toolResultImages("read_file", result.Content, false))
+}
+
+func TestCreateAgentCompletionsChildImages(t *testing.T) {
+	var data bytes.Buffer
+	require.NoError(t, png.Encode(&data, stdimage.NewRGBA(stdimage.Rect(0, 0, 2, 2))))
+	dir := t.TempDir()
+	svc := &imageGenerationService{image: llmapi.Image{PNG: data.Bytes()}}
+	tool := agentools.NewImageGen(svc, llmapi.ModelEntry{Provider: "codex"}, testLocalFS{root: dir}, dir)
+	toolCtx := agent.WithParentToolCallID(agent.WithDialogueID(t.Context(), "child"), "call")
+	const args = `{"prompt":"a blue bird"}`
+	result := tool.Execute(toolCtx, args)
+	require.False(t, result.IsError, result.Content)
+	imagePath, ok := agentools.GeneratedImagePath(result.Content)
+	require.True(t, ok)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	tx := make(chan dialoguetui.MessageEvent)
+	childEvents := make(chan agent.ChildEvent)
+	done := make(chan struct{})
+	go debug.CapturePanicReport(func() {
+		defer close(done)
+		createAgentCompletions(ctx, cancel, tx, nil, nil, nil,
+			childEvents, nil, "parent", newStatusBarSyncComponent(), nil, newMemDialogueStore())
+	})
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+	for _, tt := range []struct {
+		name      string
+		toolName  string
+		isError   bool
+		wantPaths []string
+	}{
+		{name: "generated image", toolName: "imagegen", wantPaths: []string{imagePath}},
+		{name: "failed generation", toolName: "imagegen", isError: true},
+		{name: "ordinary tool", toolName: "read_file"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			event := agent.ChildEvent{ParentToolCallID: "spawn", Event: agent.Event{
+				Type: agent.EventToolResult, ToolCallID: "call", ToolName: tt.toolName,
+				ToolArgs: args, ToolSummary: "a blue bird", ToolOutput: result.Content, IsError: tt.isError,
+			}}
+			select {
+			case childEvents <- event:
+			case <-time.After(3 * time.Second):
+				t.Fatal("child event was not consumed")
+			}
+			select {
+			case msg := <-tx:
+				assert.Equal(t, dialoguetui.MessageEventToolResult, msg.Type)
+				assert.Equal(t, "spawn", msg.ParentToolCallID)
+				assert.Equal(t, "call", msg.ToolCallID)
+				assert.Equal(t, "a blue bird", msg.ToolSummary)
+				assert.Equal(t, tt.wantPaths, msg.ImagePaths)
+			case <-time.After(3 * time.Second):
+				t.Fatal("child result was not forwarded")
+			}
+		})
+	}
+}
+
+type imageGenerationService struct {
+	llmapi.Service
+	available bool
+	err       error
+	checks    int
+	image     llmapi.Image
+	// images, when set, are returned one per request before falling back to image.
+	images []llmapi.Image
+
+	mu       sync.Mutex
+	requests []llmapi.ImageRequest
+}
+
+func (s *imageGenerationService) CanGenerateImages(context.Context, llmapi.ModelEntry) (bool, error) {
+	s.checks++
+	return s.available, s.err
+}
+
+func (s *imageGenerationService) GenerateImage(_ context.Context, _ llmapi.ModelEntry, request llmapi.ImageRequest) (llmapi.Image, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.requests = append(s.requests, request)
+	if len(s.images) > 0 {
+		generated := s.images[0]
+		s.images = s.images[1:]
+		return generated, s.err
+	}
+	return s.image, s.err
+}
+
+func (s *imageGenerationService) imageRequests() []llmapi.ImageRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.requests)
+}
+
+func TestE2EImageGenEditsEarlierImagesFromTheSameRun(t *testing.T) {
+	solidPNG := func(c color.Color) []byte {
+		img := stdimage.NewRGBA(stdimage.Rect(0, 0, 2, 2))
+		for y := range 2 {
+			for x := range 2 {
+				img.Set(x, y, c)
+			}
+		}
+		var buf bytes.Buffer
+		require.NoError(t, png.Encode(&buf, img))
+		return buf.Bytes()
+	}
+	red := solidPNG(color.RGBA{R: 255, A: 255})
+	blue := solidPNG(color.RGBA{B: 255, A: 255})
+	combined := solidPNG(color.RGBA{R: 255, B: 255, A: 255})
+	imagegen := func(id, args string) llmtest.Response {
+		return llmtest.Response{ToolCalls: []llmapi.ToolCall{{
+			ID: id, Type: llmapi.ToolTypeFunction,
+			Function: llmapi.FunctionCall{Name: "imagegen", Arguments: args},
+		}}, FinishReason: llmapi.FinishReasonToolCall}
+	}
+	model := llmapi.ModelEntry{Provider: "test", Name: "test-model", ContextWindow: 128_000}
+	scripted := llmtest.New([]llmapi.ModelEntry{model},
+		imagegen("draw-red", `{"prompt":"a red square"}`),
+		imagegen("draw-blue", `{"prompt":"a blue square"}`),
+		imagegen("combine", `{"prompt":"put both squares side by side","num_last_images_to_include":2}`),
+		llmtest.Response{Chunks: []string{"done"}, FinishReason: llmapi.FinishReasonStop},
+	)
+	svc := &imageGenerationService{
+		Service: scripted, available: true,
+		images: []llmapi.Image{{PNG: red}, {PNG: blue}, {PNG: combined}},
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	dir := t.TempDir()
+	fs, cwd := testLocalFS{root: dir}, dirURI(dir)
+	h := &aiEditorHandler{
+		ctx:            ctx,
+		llmSvc:         svc,
+		defaultModel:   model.Name,
+		dialogueStore:  newMemDialogueStore(),
+		wm:             &recordingWindowManager{},
+		n:              stubNotifications{},
+		p:              term.NopInterrupter(),
+		config:         configedit.NopConfig(),
+		skillRegistry:  skills.NewRegistry(fs, cwd, nil, nil),
+		toolRegistry:   agent.NewRegistry(),
+		agentsConfig:   agent.NewConfig([]agent.Definition{{ID: "default", AllowAny: true}}),
+		cwd:            cwd,
+		fs:             fs,
+		memoryDataPath: t.TempDir(),
+		imagesDir:      filepath.Join(dir, "generated_images"),
+	}
+	c, err := h.newChat(textapi.Command{Args: []string{"painting-fox"}}, workspaceapi.URI{})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, c.content.Close()) })
+
+	const width, height = 100, 60
+	c.content.Resize(width, height)
+	keys, err := term.ParseKeys("draw<enter>")
+	require.NoError(t, err)
+	for _, k := range keys {
+		c.content.Handle(term.Event{Type: term.EventKey, Mod: k.Mod, Key: k.Key, Ch: k.Ch})
+	}
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		assert.Equal(c, 4, scripted.CallCount())
+	}, 5*time.Second, 10*time.Millisecond)
+
+	requests := svc.imageRequests()
+	require.Len(t, requests, 3)
+	assert.Empty(t, requests[0].Images)
+	assert.Empty(t, requests[1].Images)
+	assert.Equal(t, [][]byte{red, blue}, requests[2].Images,
+		"the edit must receive both images generated earlier in the run, oldest first")
+
+	var sent []string
+	for _, m := range scripted.Requests()[3].Request.Messages {
+		if m.Role != llmapi.RoleUser {
+			continue
+		}
+		for _, part := range m.MultiContent {
+			if part.Type == llmapi.ContentPartTypeImageURL {
+				sent = append(sent, part.ImageURL)
+			}
+		}
+	}
+	dataURI := func(data []byte) string {
+		return "data:image/png;base64," + base64.StdEncoding.EncodeToString(data)
+	}
+	assert.Equal(t, []string{dataURI(red), dataURI(blue), dataURI(combined)}, sent,
+		"the model must see every image generated in the run")
+}
+
+func TestHandlerImageGen(t *testing.T) {
+	for _, tt := range []struct {
+		name, provider, dir string
+		available           bool
+		err                 error
+		want                bool
+	}{
+		{name: "paid codex", provider: "codex", dir: "/host/generated_images", available: true, want: true},
+		{name: "no eligible login", provider: "codex", dir: "/host/generated_images"},
+		{name: "openai API key", provider: "openai", dir: "/host/generated_images", available: true, want: true},
+		{name: "future provider", provider: "future", dir: "/host/generated_images", available: true, want: true},
+		{name: "unsupported anthropic", provider: "anthropic", dir: "/host/generated_images"},
+		{name: "unsupported openai model", provider: "openai", dir: "/host/generated_images"},
+		{name: "no host directory", provider: "codex", available: true},
+		{name: "host error", provider: "codex", dir: "/host/generated_images", err: errors.New("offline")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := &imageGenerationService{available: tt.available, err: tt.err}
+			h := &aiEditorHandler{ctx: t.Context(), fs: nopFileSystem{}, imagesDir: tt.dir}
+			model := llmapi.ModelEntry{Provider: tt.provider, Name: "model"}
+			tool := h.imageGen(svc, model)
+			if tt.want {
+				require.NotNil(t, tool)
+				assert.Equal(t, "imagegen", tool.Definition().Function.Name)
+				svc.available = false
+				assert.Nil(t, h.imageGen(svc, model), "recheck eligibility for the next chat")
+				assert.Equal(t, 2, svc.checks)
+			} else {
+				assert.Nil(t, tool)
+			}
+			if tt.dir == "" {
+				assert.Zero(t, svc.checks)
+			}
+			assert.Nil(t, h.imageGen(llmtest.New(nil), model), "unsupported service")
+		})
+	}
+}
+
+func TestHandlerRegisterImageGen(t *testing.T) {
+	h := &aiEditorHandler{ctx: t.Context(), fs: nopFileSystem{}, imagesDir: "/host/generated_images"}
+	registry := agent.NewRegistry()
+	svc := &imageGenerationService{available: true}
+	for _, provider := range []string{"openai", "codex", "future"} {
+		model := llmapi.ModelEntry{Provider: provider, Name: "supported"}
+		h.registerImageGen(registry, svc, model)
+		_, ok := registry.Get("imagegen", provider)
+		require.True(t, ok)
+		_, ok = registry.Get("imagegen", "anthropic")
+		require.False(t, ok)
+		_, ok = registry.Get("imagegen", "")
+		require.False(t, ok)
+
+		svc.available = false
+		model.Name = "unsupported"
+		h.registerImageGen(registry, svc, model)
+		_, ok = registry.Get("imagegen", provider)
+		require.False(t, ok, "same-provider model switches must recheck eligibility")
+
+		svc.available = true
+		h.registerImageGen(registry, svc, model)
+		_, ok = registry.Get("imagegen", provider)
+		require.True(t, ok)
+	}
+}
+
+func TestImageGenDir(t *testing.T) {
+	for _, root := range []string{"/Users/u/.rune", "/home/dev/.runedev"} {
+		got, err := imageGenDir(t.Context(), fakeInstallRoot{root: root})
+		require.NoError(t, err)
+		assert.Equal(t, root+"/generated_images", got)
+	}
+	_, err := imageGenDir(t.Context(), fakeInstallRoot{err: os.ErrNotExist})
+	assert.ErrorContains(t, err, "data directory on the workspace host")
+}
+
+func TestDialogueConfigImages(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		cache storageapi.Service
+	}{
+		{name: "image cache", cache: storagestub.NewInMemoryService()},
+		{name: "no image cache"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			h := &aiEditorHandler{
+				cfg: defaultComponentCfg, imageCache: tt.cache, p: term.NopInterrupter(),
+				fs: nopFileSystem{}, cwd: dirURI("/workspace"),
+			}
+			cfg := h.dialogueConfig(new(sync.Mutex))
+			require.NotSame(t, h.cfg.MarkdownConfig, cfg.MarkdownConfig)
+			assert.Equal(t, h.cwd.Path(), cfg.MarkdownConfig.Dir)
+			assert.Equal(t, h.fs, cfg.MarkdownConfig.FS)
+			assert.Equal(t, tt.cache, cfg.MarkdownConfig.Storage)
+			assert.Equal(t, tt.cache != nil, cfg.MarkdownConfig.Interrupter != nil)
+			_, err := markdown.NewWithConfig("**hello**", *cfg.MarkdownConfig)
+			assert.NoError(t, err, "transcript markdown must render")
+			assert.Nil(t, h.cfg.MarkdownConfig.Storage, "shared defaults must remain unchanged")
+		})
+	}
+}
 
 func TestQueryFloatingCloseLeavesItsWindow(t *testing.T) {
 	model := llmapi.ModelEntry{Provider: "test", Name: "test-model", ContextWindow: 128_000}

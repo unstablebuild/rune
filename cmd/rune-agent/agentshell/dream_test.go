@@ -183,6 +183,14 @@ var _ dialoguemanager.Store = emptyDialogueStore{}
 
 type stopOnlyLLMService struct{}
 
+func (s *stopOnlyLLMService) CanGenerateImages(context.Context, llmapi.ModelEntry) (bool, error) {
+	return false, nil
+}
+
+func (s *stopOnlyLLMService) GenerateImage(context.Context, llmapi.ModelEntry, llmapi.ImageRequest) (llmapi.Image, error) {
+	return llmapi.Image{}, llmapi.ErrImageGenerationUnsupported
+}
+
 func (s *stopOnlyLLMService) CreateCompletion(
 	ctx context.Context, _ llmapi.ModelEntry, _ llmapi.Request,
 ) (iterator.Iterator[llmapi.Event], error) {

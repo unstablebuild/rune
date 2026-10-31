@@ -1172,13 +1172,12 @@ func (c *Component) AddReceiveMessage(msg string) {
 func (c *Component) AddReceiveMessageBreak() {
 	c.breakReasoning()
 	c.breakReceiveMessage()
-	// Complete and close all turns, not just the current one,
+	// Finalize all turns, not just the current one,
 	// since text breaks may have detached earlier turns.
 	node, ok := c.messages.Front()
 	for ok {
 		if turn, isTurn := node.Value().(*Turn); isTurn {
 			turn.completeRunning()
-			turn.Close()
 		}
 		node, ok = node.Next()
 	}
@@ -1457,6 +1456,16 @@ func (c *Component) CompleteToolCall(id, name, args, summary, output string, isE
 	}
 	c.currentTurn.CompleteToolCall(id, name, args, summary, output, isError)
 	c.moveTrailingToBack()
+}
+
+// AddToolCallImage appends an image to an existing tool in the current turn.
+// Empty captions use the filename; unknown IDs are ignored.
+func (c *Component) AddToolCallImage(id, path, caption string) {
+	maxOff, scrolled := c.scrollState()
+	defer c.restoreScroll(maxOff, scrolled)
+	if c.currentTurn != nil {
+		c.currentTurn.AddToolCallImage(id, path, caption)
+	}
 }
 
 // AddChildToolCall adds a tool call nested under a parent tool call
@@ -1892,6 +1901,7 @@ func (c *Component) Reset() {
 
 // Close releases the resources owned by this Component.
 func (c *Component) Close() error {
+	c.closeTranscript()
 	if c.statusBar != nil {
 		c.shadedBar.setRunning(false, c.interrupter)
 		return c.statusBar.Close()
@@ -1901,7 +1911,7 @@ func (c *Component) Close() error {
 
 // resetContent clears turns, reasoning, progress, and the message list.
 func (c *Component) resetContent() {
-	c.closeAllTurns()
+	c.closeTranscript()
 	c.currentTurn = nil
 	c.turnNode = nil
 	c.hoveredToolTurn = nil
@@ -2359,11 +2369,14 @@ func (c *Component) clearProgress() {
 	c.progressNode = nil
 }
 
-func (c *Component) closeAllTurns() {
+func (c *Component) closeTranscript() {
 	node, ok := c.messages.Front()
 	for ok {
 		if turn, isTurn := node.Value().(*Turn); isTurn {
 			turn.Close()
+		}
+		if md, _, isMarkdown := transcriptMarkdown(node.Value()); isMarkdown {
+			_ = md.Close()
 		}
 		node, ok = node.Next()
 	}

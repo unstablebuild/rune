@@ -72,6 +72,7 @@ type MessageEvent struct {
 	ToolArgs           string              // MessageEventToolCall: JSON arguments
 	ToolSummary        string              // MessageEventToolCall / MessageEventToolResult: short human-readable args summary
 	ToolOutput         string              // MessageEventToolResult: execution output
+	ImagePaths         []string            // MessageEventToolResult: image paths, captioned with ToolSummary (or filename when empty)
 	IsError            bool                // MessageEventToolResult: whether the tool errored
 	ToolStartTime      time.Time           // MessageEventToolCall: when the tool call was announced
 	ToolDuration       time.Duration       // MessageEventToolResult: how long the tool took

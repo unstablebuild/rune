@@ -555,6 +555,14 @@ type mockService struct {
 	cancelled  atomic.Bool
 }
 
+func (m *mockService) CanGenerateImages(context.Context, llmapi.ModelEntry) (bool, error) {
+	return false, nil
+}
+
+func (m *mockService) GenerateImage(context.Context, llmapi.ModelEntry, llmapi.ImageRequest) (llmapi.Image, error) {
+	return llmapi.Image{}, llmapi.ErrImageGenerationUnsupported
+}
+
 func (m *mockService) CreateCompletion(
 	ctx context.Context, model llmapi.ModelEntry, req llmapi.Request,
 ) (iterator.Iterator[llmapi.Event], error) {

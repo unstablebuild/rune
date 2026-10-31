@@ -138,6 +138,8 @@ type hostedCacheKey struct {
 // ErrRouterClosed is returned by dispatches issued after Router.Close.
 var ErrRouterClosed = errors.New("llmrouter: router closed")
 
+var _ llmapi.Service = (*Router)(nil)
+
 // New constructs a Router from cfg. dataDir is used as the parent
 // directory for the llama.cpp model cache when cfg.Local.ModelsCacheDir
 // is empty. storage is forwarded to providers that own their own
@@ -219,26 +221,31 @@ func (r *Router) Close() error {
 	return nil
 }
 
+// CanGenerateImages reports the resolved provider's image capability.
+func (r *Router) CanGenerateImages(ctx context.Context, model llmapi.ModelEntry) (bool, error) {
+	svc, model, err := r.serviceForModel(ctx, model)
+	if err != nil {
+		return false, err
+	}
+	return svc.CanGenerateImages(ctx, model)
+}
+
+// GenerateImage uses the same model and alias routing as completions.
+func (r *Router) GenerateImage(ctx context.Context, model llmapi.ModelEntry, request llmapi.ImageRequest) (llmapi.Image, error) {
+	svc, model, err := r.serviceForModel(ctx, model)
+	if err != nil {
+		return llmapi.Image{}, err
+	}
+	return svc.GenerateImage(ctx, model, request)
+}
+
 // CreateCompletion implements llmapi.Service.
 func (r *Router) CreateCompletion(
 	ctx context.Context,
 	model llmapi.ModelEntry,
 	req llmapi.Request,
 ) (iterator.Iterator[llmapi.Event], error) {
-	r.mu.Lock()
-	closed := r.closed
-	r.mu.Unlock()
-	if closed {
-		return nil, ErrRouterClosed
-	}
-	if model.Provider == "" {
-		if resolved, ok, err := r.resolveAlias(ctx, model); err != nil {
-			return nil, err
-		} else if ok {
-			model = resolved
-		}
-	}
-	svc, err := r.resolve(ctx, model)
+	svc, model, err := r.serviceForModel(ctx, model)
 	if err != nil {
 		return nil, err
 	}
@@ -247,21 +254,7 @@ func (r *Router) CreateCompletion(
 
 // CountTokens implements llmapi.Service.
 func (r *Router) CountTokens(model llmapi.ModelEntry, messages []llmapi.Message) (int, error) {
-	r.mu.Lock()
-	closed := r.closed
-	r.mu.Unlock()
-	if closed {
-		return 0, ErrRouterClosed
-	}
-	ctx := context.Background()
-	if model.Provider == "" {
-		if resolved, ok, err := r.resolveAlias(ctx, model); err != nil {
-			return 0, err
-		} else if ok {
-			model = resolved
-		}
-	}
-	svc, err := r.resolve(ctx, model)
+	svc, model, err := r.serviceForModel(context.Background(), model)
 	if err != nil {
 		return 0, err
 	}
@@ -324,6 +317,26 @@ func (r *Router) GetModel(ctx context.Context, model llmapi.ModelEntry) (llmapi.
 		}
 		return entry, nil
 	}
+}
+
+// serviceForModel rejects dispatch after Close and returns the canonical model
+// that must accompany calls to the resolved service, rather than its alias.
+func (r *Router) serviceForModel(ctx context.Context, model llmapi.ModelEntry) (llmapi.Service, llmapi.ModelEntry, error) {
+	r.mu.Lock()
+	closed := r.closed
+	r.mu.Unlock()
+	if closed {
+		return nil, llmapi.ModelEntry{}, ErrRouterClosed
+	}
+	if model.Provider == "" {
+		if resolved, ok, err := r.resolveAlias(ctx, model); err != nil {
+			return nil, llmapi.ModelEntry{}, err
+		} else if ok {
+			model = resolved
+		}
+	}
+	svc, err := r.resolve(ctx, model)
+	return svc, model, err
 }
 
 // resolve picks the llmapi.Service that serves model.Provider. The

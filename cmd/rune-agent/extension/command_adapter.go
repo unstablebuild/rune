@@ -70,6 +70,7 @@ type commandAdapter struct {
 	storage      storageapi.Service
 	currentModel string
 	auditStore   *audit.Store
+	modelToolsFn func(llmapi.Service, llmapi.ModelEntry)
 
 	// Skill resolution. When a /name command matches a skill, the
 	// formatted skill content is returned as UserMessage.
@@ -380,6 +381,9 @@ func (a *commandAdapter) handleModel(
 	svc := a.llmSvc
 	if a.auditStore != nil {
 		svc = audit.NewService(svc, a.auditStore, entry)
+	}
+	if a.modelToolsFn != nil {
+		a.modelToolsFn(svc, entry)
 	}
 	a.agent.SwapService(svc, entry)
 	a.syncStatusBarModel()

@@ -3860,6 +3860,14 @@ type mockResponse struct {
 	reasoningBlocks []llmapi.ReasoningBlock
 }
 
+func (m *mockService) CanGenerateImages(context.Context, llmapi.ModelEntry) (bool, error) {
+	return false, nil
+}
+
+func (m *mockService) GenerateImage(context.Context, llmapi.ModelEntry, llmapi.ImageRequest) (llmapi.Image, error) {
+	return llmapi.Image{}, llmapi.ErrImageGenerationUnsupported
+}
+
 func (m *mockService) CreateCompletion(
 	ctx context.Context, model llmapi.ModelEntry, req llmapi.Request,
 ) (iterator.Iterator[llmapi.Event], error) {
@@ -4309,6 +4317,14 @@ func TestStreamReset(t *testing.T) {
 // EventStreamReset for testing mid-stream retry handling in the agent.
 type streamResetMockService struct {
 	events []llmapi.Event
+}
+
+func (m *streamResetMockService) CanGenerateImages(context.Context, llmapi.ModelEntry) (bool, error) {
+	return false, nil
+}
+
+func (m *streamResetMockService) GenerateImage(context.Context, llmapi.ModelEntry, llmapi.ImageRequest) (llmapi.Image, error) {
+	return llmapi.Image{}, llmapi.ErrImageGenerationUnsupported
 }
 
 func (m *streamResetMockService) CreateCompletion(

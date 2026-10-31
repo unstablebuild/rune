@@ -17,15 +17,19 @@
 package openai
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/openai/openai-go/v2"
 	"github.com/openai/openai-go/v2/option"
 	"github.com/openai/openai-go/v2/packages/param"
@@ -146,12 +150,17 @@ func NewClientWithHTTP(token string, config Config, httpClient *http.Client) llm
 		))
 	}
 	c := openai.NewClient(opts...)
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
 
 	return &client{
 		tools:          tools,
 		responseFormat: openAIResponseFormatFromModel(config.ResponseFormat),
 		config:         config,
 		client:         c,
+		httpClient:     httpClient,
+		token:          token,
 	}
 }
 
@@ -258,7 +267,139 @@ type client struct {
 	responseFormat *openai.ChatCompletionNewParamsResponseFormatUnion
 	config         Config
 	client         openai.Client
+	httpClient     *http.Client
+	token          string
 	encoders       sync.Map // string → *modelEncoder
+}
+
+func (a *client) CanGenerateImages(_ context.Context, model llmapi.ModelEntry) (bool, error) {
+	return model.Provider == "openai" || model.Provider == "codex", nil
+}
+
+func (a *client) GenerateImage(ctx context.Context, model llmapi.ModelEntry, request llmapi.ImageRequest) (llmapi.Image, error) {
+	var result llmapi.Image
+	if supported, err := a.CanGenerateImages(ctx, model); err != nil {
+		return result, err
+	} else if !supported {
+		return result, llmapi.ErrImageGenerationUnsupported
+	}
+	if a.token == "" {
+		return result, fmt.Errorf("image generation requires an access token")
+	}
+	type reference struct {
+		ImageURL string `json:"image_url"`
+	}
+	body := struct {
+		Prompt     string      `json:"prompt"`
+		Background string      `json:"background"`
+		Model      string      `json:"model"`
+		Quality    string      `json:"quality"`
+		Size       string      `json:"size"`
+		Images     []reference `json:"images,omitempty"`
+	}{Prompt: request.Prompt, Background: "opaque", Model: "gpt-image-2", Quality: "auto", Size: "auto"}
+	if request.TransparentBackground {
+		body.Background = "transparent"
+	}
+	endpoint := "/images/generations"
+	for _, image := range request.Images {
+		mime := http.DetectContentType(image)
+		if !strings.HasPrefix(mime, "image/") {
+			return result, fmt.Errorf("unsupported reference image content type %q", mime)
+		}
+		body.Images = append(body.Images, reference{ImageURL: "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(image)})
+		endpoint = "/images/edits"
+	}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return result, err
+	}
+	baseURL := a.config.BaseURL
+	if baseURL == "" {
+		baseURL = "https://api.openai.com/v1"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(baseURL, "/")+endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return result, err
+	}
+	for key, value := range a.config.Headers {
+		if value != "" {
+			req.Header.Set(key, value)
+		}
+	}
+	req.Header.Set("Authorization", "Bearer "+a.token)
+	req.Header.Set("Content-Type", "application/json")
+	if model.Provider == "codex" {
+		turnID, err := uuid.NewRandom()
+		if err != nil {
+			return result, err
+		}
+		req.Header.Set("x-codex-image-turn-id", turnID.String())
+	}
+	// Keep billable image requests single-shot and bound response reads, including errors.
+	resp, err := a.httpClient.Do(req)
+	if err != nil {
+		return result, fmt.Errorf("image request: %w", err)
+	}
+	defer resp.Body.Close()
+	result.RequestID = resp.Header.Get("x-codex-imagegen-request-id")
+	if result.RequestID == "" {
+		result.RequestID = resp.Header.Get("x-request-id")
+	}
+	const maxResponse = 32 << 20
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponse+1))
+	if err != nil {
+		return result, fmt.Errorf("read image response: %w", err)
+	}
+	if len(data) > maxResponse {
+		return result, fmt.Errorf("image response exceeds %d bytes", maxResponse)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		var failure struct {
+			Error struct {
+				Type     string `json:"type"`
+				ResetsAt int64  `json:"resets_at"`
+			} `json:"error"`
+		}
+		if resp.StatusCode == http.StatusTooManyRequests && json.Unmarshal(data, &failure) == nil && failure.Error.Type == "usage_limit_reached" {
+			limit := &ImageUsageLimitError{RequestID: result.RequestID}
+			if failure.Error.ResetsAt > 0 {
+				limit.ResetAt = time.Unix(failure.Error.ResetsAt, 0)
+			}
+			return result, limit
+		}
+		return result, fmt.Errorf("image request failed (HTTP %d): %s", resp.StatusCode, strings.TrimSpace(string(data)))
+	}
+	var response struct {
+		Data []struct {
+			B64JSON      string `json:"b64_json"`
+			GenerationID string `json:"generation_id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(data, &response); err != nil {
+		return result, fmt.Errorf("decode image response: %w", err)
+	}
+	if len(response.Data) == 0 || response.Data[0].B64JSON == "" {
+		return result, fmt.Errorf("image response contains no image")
+	}
+	result.PNG, err = base64.StdEncoding.DecodeString(response.Data[0].B64JSON)
+	if err != nil {
+		return llmapi.Image{}, fmt.Errorf("decode image: %w", err)
+	}
+	result.GenerationID = response.Data[0].GenerationID
+	return result, nil
+}
+
+// ImageUsageLimitError carries the server's reset time; a zero time means unknown.
+type ImageUsageLimitError struct {
+	ResetAt   time.Time
+	RequestID string
+}
+
+func (e *ImageUsageLimitError) Error() string {
+	if e.ResetAt.IsZero() {
+		return "image generation usage limit reached"
+	}
+	return "image generation usage limit reached; resets at " + e.ResetAt.UTC().Format(time.RFC3339)
 }
 
 type modelEncoder struct {

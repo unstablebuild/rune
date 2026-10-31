@@ -249,8 +249,7 @@ func (s *dialogueHandler) Draw(w term.Writer) {
 		}
 	}
 	s.grid.Dump(w, sel)
-	// The grid keeps cells only, and the cells dumped after a placement
-	// would cover it anyway.
+	// Status-bar sprites can extend outside the bar's one-row cell layout.
 	s.comp.drawStatusBarImages(w)
 }
 
@@ -829,6 +828,9 @@ func (s *dialogueHandler) consumeIncoming() {
 				s.comp.CompleteChildToolCall(ev.ParentToolCallID, ev.ToolCallID, ev.ToolName, ev.ToolArgs, ev.ToolSummary, ev.ToolOutput, ev.IsError)
 			} else {
 				s.comp.CompleteToolCall(ev.ToolCallID, ev.ToolName, ev.ToolArgs, ev.ToolSummary, ev.ToolOutput, ev.IsError)
+			}
+			for _, path := range ev.ImagePaths {
+				s.comp.AddToolCallImage(ev.ToolCallID, path, ev.ToolSummary)
 			}
 		case MessageEventChildResult:
 			s.comp.AddChildResult(ev.ParentToolCallID, ev.ToolOutput, ev.IsError)

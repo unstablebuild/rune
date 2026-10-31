@@ -17,20 +17,123 @@
 package dialoguetui
 
 import (
+	"bytes"
 	"context"
+	"image"
+	"image/png"
+	"os"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
+	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/component/comptest"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"unstable.build/rune/internal/workspace"
 )
 
 var _ component.Responsive = (*Turn)(nil)
 
 func newTestTurn() *Turn {
 	return NewTurn(&ComponentConfig{}, nil)
+}
+
+func TestTurnToolCallImages(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		mode  collapseMode
+		frame string
+		nextY int
+	}{
+		{"expanded", collapseModeExpanded,
+			"✓ capture               \n" +
+				"preview                 \n" +
+				"                        \n" +
+				"✓ next                  ", 3},
+		{"collapsed", collapseModeCollapsed,
+			"├─ ✓ capture            \n" +
+				"   preview              \n" +
+				"                        \n" +
+				"└─ ✓ next               ", 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			turn := newTestTurn()
+			t.Cleanup(turn.Close)
+			turn.AddToolCall("image", "capture", "", "")
+			turn.AddToolCall("next", "next", "", "")
+			turn.AddToolCallImage("image", "/tmp/a picture.png", "preview")
+			turn.CompleteToolCall("image", "capture", "", "", "", false)
+			turn.CompleteToolCall("next", "next", "", "", "", false)
+			turn.SetCollapseMode(tc.mode)
+			turn.Resize(24, 4)
+			comptest.TestComponent(t, turn, term.NewStringWriter(24, 4), []comptest.TestCase{{Expected: tc.frame}})
+			x := 2
+			if tc.mode.isCollapsed() {
+				x += collapsedIndent
+			}
+			_, ok := turn.ToolCallAt(term.Coordinates{X: x, Y: 1})
+			assert.False(t, ok)
+			details, ok := turn.ToolCallAt(term.Coordinates{X: x, Y: tc.nextY})
+			assert.True(t, ok)
+			assert.Equal(t, "next", details.Name)
+		})
+	}
+}
+
+type turnImageFS map[string][]byte
+
+func (fs turnImageFS) OpenFile(path string, _ int, _ os.FileMode) (workspaceapi.File, error) {
+	data, ok := fs[path]
+	if !ok {
+		return nil, os.ErrNotExist
+	}
+	return workspace.NewMemoryFile(path, 1, 0, data, new(sync.Mutex)), nil
+}
+
+func TestTurnLoadedImageHeight(t *testing.T) {
+	var data bytes.Buffer
+	require.NoError(t, png.Encode(&data, image.NewRGBA(image.Rect(0, 0, 10, 240))))
+	for _, mode := range []collapseMode{collapseModeExpanded, collapseModeCollapsed} {
+		cfg := DefaultMarkdownConfig()
+		cfg.FS = turnImageFS{"/images/picture.png": data.Bytes()}
+		cfg.Storage = storagestub.NewInMemoryService()
+		cfg.Interrupter = term.NopInterrupter()
+		turn := NewTurn(&ComponentConfig{MarkdownConfig: cfg}, nil)
+		t.Cleanup(turn.Close)
+		turn.AddToolCall("image", "capture", "", "")
+		turn.CompleteToolCall("image", "capture", "", "", "", false)
+		turn.AddToolCallImage("image", "/images/picture.png", "preview")
+		turn.AddToolCall("next", "next", "", "")
+		turn.CompleteToolCall("next", "next", "", "", "", false)
+		turn.SetCollapseMode(mode)
+		w := term.NewStringWriter(30, 20)
+		w.SetContext = term.ContextWithCellPixelSize(context.Background(), 10, 20)
+		require.Eventually(t, func() bool {
+			turn.Resize(30, 20)
+			turn.Draw(w)
+			return turn.tools["image"].images[0].Height(27) == 14
+		}, time.Second, time.Millisecond)
+		turn.Resize(30, 20)
+		turn.Draw(w)
+		x := 2
+		wantHeight := 16
+		if mode.isCollapsed() {
+			x += collapsedIndent
+			wantHeight++
+		}
+		assert.Equal(t, wantHeight, turn.Height(30))
+		details, ok := turn.ToolCallAt(term.Coordinates{X: x, Y: 15})
+		assert.True(t, ok)
+		assert.Equal(t, "next", details.Name)
+		for y := 1; y < 15; y++ {
+			_, ok := turn.ToolCallAt(term.Coordinates{X: x, Y: y})
+			assert.False(t, ok)
+		}
+	}
 }
 
 func TestTurnAddToolCall(t *testing.T) {
@@ -40,6 +143,40 @@ func TestTurnAddToolCall(t *testing.T) {
 	assert.True(t, turn.HasTools())
 	assert.Contains(t, turn.tools, "c1")
 	assert.False(t, turn.tools["c1"].done)
+}
+
+func TestTurnChildImagesPreserveOrder(t *testing.T) {
+	for _, mode := range []collapseMode{collapseModeExpanded, collapseModeCollapsed} {
+		turn := newTestTurn()
+		t.Cleanup(turn.Close)
+		cfg := DefaultMarkdownConfig()
+		cfg.Dir = "original"
+		turn.cfg.MarkdownConfig = cfg
+		turn.AddToolCall("parent", "agent", "", "")
+		turn.AddToolCall("following", "following", "", "")
+		turn.AddChildToolCall("parent", "child", "capture", "", "")
+		turn.CompleteChildToolCall("parent", "child", "capture", "", "", "", false)
+		turn.AddToolCallImage("child", "/images/one.png", "")
+		turn.AddToolCallImage("child", "/images/two.png", "second")
+		turn.AddToolCallImage("missing", "/images/ignored.png", "")
+		turn.AddToolCallImage("child", "", "ignored")
+		turn.CompleteToolCall("parent", "agent", "", "", "", false)
+		turn.CompleteToolCall("following", "following", "", "", "", false)
+		turn.SetCollapseMode(mode)
+		w := drawTurn(turn, 40)
+		first := findText(t, w, 40, "one.png")
+		second := findText(t, w, 40, "second")
+		next := findText(t, w, 40, "following")
+		assert.Less(t, first.Y, second.Y)
+		assert.Less(t, second.Y, next.Y)
+		assert.Equal(t, "original", cfg.Dir)
+		assert.Len(t, turn.tools["parent"].childTurn.tools["child"].images, 2)
+		details, ok := turn.ToolCallAt(next)
+		assert.True(t, ok)
+		assert.Equal(t, "following", details.Name)
+		_, ok = turn.ToolCallAt(first)
+		assert.False(t, ok)
+	}
 }
 
 func TestTurnCompleteToolCall(t *testing.T) {

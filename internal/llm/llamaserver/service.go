@@ -59,6 +59,16 @@ type Service struct {
 	closed  bool
 }
 
+// CanGenerateImages reports false for all local models without starting a server.
+func (s *Service) CanGenerateImages(context.Context, llmapi.ModelEntry) (bool, error) {
+	return false, nil
+}
+
+// GenerateImage returns ErrImageGenerationUnsupported without starting a server.
+func (s *Service) GenerateImage(context.Context, llmapi.ModelEntry, llmapi.ImageRequest) (llmapi.Image, error) {
+	return llmapi.Image{}, llmapi.ErrImageGenerationUnsupported
+}
+
 // New constructs a Service. It panics if any dependency is nil, matching the
 // no-nil-constructor-dependency convention: the "server not installed" state
 // is represented by the locator returning ErrServerNotInstalled at

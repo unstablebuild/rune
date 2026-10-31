@@ -656,7 +656,6 @@ func (a *Agent) run(
 	var reads readCoverage
 	var infos []toolCallInfo
 	var toolMsgs []llmapi.Message
-	var imageContentParts []llmapi.ContentPart
 	// stopHookActive is set to true once the Stop hook has blocked
 	// once and we appended a continuation message. The second
 	// invocation passes this flag in the payload and ignores blocks.
@@ -1136,6 +1135,10 @@ func (a *Agent) run(
 			}
 
 			results := make(chan executedToolCall, len(infos))
+			toolConversation := messages
+			if serialize {
+				toolConversation = slices.Clone(messages)
+			}
 			var wg sync.WaitGroup
 			for i, info := range infos {
 				wg.Add(1)
@@ -1160,6 +1163,7 @@ func (a *Agent) run(
 							toolCtx = WithHooks(toolCtx, a.config.Hooks)
 							toolCtx = WithWorkspaceURI(toolCtx, a.config.Workspace)
 							toolCtx = WithDialogueID(toolCtx, dialogueID)
+							toolCtx = WithConversation(toolCtx, toolConversation)
 							toolCtx = WithPrompter(toolCtx, a.config.Prompter)
 							toolStart := time.Now()
 							result = info.tool.Execute(toolCtx, info.call.Function.Arguments)
@@ -1170,6 +1174,19 @@ func (a *Agent) run(
 								"output", len(result.Content),
 								"duration", dur,
 							)
+						}
+						// Ordered edits can refer to images produced earlier in this
+						// batch, before fan-in persists the hidden user message.
+						if serialize && !result.IsError {
+							var images []llmapi.ContentPart
+							for _, part := range result.MultiContent {
+								if part.Type == llmapi.ContentPartTypeImageURL {
+									images = append(images, part)
+								}
+							}
+							if len(images) > 0 {
+								toolConversation = append(toolConversation, llmapi.Message{Role: llmapi.RoleUser, MultiContent: images})
+							}
 						}
 						uncapped := result.Content
 						capToolResult(&result, maxOutput)
@@ -1200,9 +1217,9 @@ func (a *Agent) run(
 			toolMsgs = slices.Grow(toolMsgs[:0], len(infos))[:len(infos)]
 			clear(toolMsgs)
 			compacted := false
-			// Image parts may carry large data URLs; clear before truncating.
-			clear(imageContentParts)
-			imageContentParts = imageContentParts[:0]
+			// Allocated per batch: the synthetic image message below keeps this
+			// slice, so reusing it would overwrite images from earlier batches.
+			var imageContentParts []llmapi.ContentPart
 			var diagCandidates []executedToolCall
 			for tr := range results {
 				result := tr.result

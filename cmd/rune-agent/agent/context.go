@@ -33,6 +33,7 @@ const (
 	workspaceURIKey
 	dialogueIDKey
 	prompterKey
+	conversationKey
 )
 
 // WithParentToolCallID returns a context carrying the parent tool call ID.
@@ -91,6 +92,18 @@ func WithDialogueID(ctx context.Context, id string) context.Context {
 // DialogueIDFromContext extracts the dialogue ID from the context.
 func DialogueIDFromContext(ctx context.Context) string {
 	v, _ := ctx.Value(dialogueIDKey).(string)
+	return v
+}
+
+// WithConversation carries the live conversation, including unpersisted messages.
+// The messages and their nested content must be treated as read-only by callers.
+func WithConversation(ctx context.Context, messages []llmapi.Message) context.Context {
+	return context.WithValue(ctx, conversationKey, messages)
+}
+
+// Conversation returns the read-only conversation, or nil when none was attached.
+func Conversation(ctx context.Context) []llmapi.Message {
+	v, _ := ctx.Value(conversationKey).([]llmapi.Message)
 	return v
 }
 

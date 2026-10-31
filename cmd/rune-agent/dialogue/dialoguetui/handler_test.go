@@ -17,10 +17,13 @@
 package dialoguetui
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"image"
+	"image/color"
+	"image/png"
 	"net/url"
 	"strings"
 	"sync"
@@ -35,12 +38,104 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/iterator"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
+	"unstable.build/rune/internal/component/asciiart"
 	"unstable.build/rune/internal/handler/handlerrpc/handlerrpctest"
 	"unstable.build/rune/internal/handler/handlertest"
 	"unstable.build/rune/internal/text/standard"
 )
 
 var _ tui.Handler = (*dialogueHandler)(nil)
+
+func TestHandlerGeneratedImagePreview(t *testing.T) {
+	picture := image.NewNRGBA(image.Rect(0, 0, 80, 276))
+	for y := range 276 {
+		for x := range 80 {
+			shade := uint8(0)
+			if (x < 40) == (y < 138) {
+				shade = 255
+			}
+			picture.SetNRGBA(x, y, color.NRGBA{R: shade, G: shade, B: shade, A: 255})
+		}
+	}
+	var data bytes.Buffer
+	require.NoError(t, png.Encode(&data, picture))
+	for _, tc := range []struct {
+		name      string
+		collapsed bool
+		expected  string
+	}{
+		{name: "expanded", expected: "✓ imagegen              \n" +
+			"####....                \n" +
+			"####....                \n" +
+			"####....                \n" +
+			"####....                \n" +
+			"####....                \n" +
+			"####....                \n" +
+			"....####                \n" +
+			"....####                \n" +
+			"....####                \n" +
+			"....####                \n" +
+			"....####                \n" +
+			"....####                \n" +
+			"preview                 \n" +
+			"                        \n" +
+			"                        \n" +
+			"                        \n" +
+			"                        \n" +
+			"                        \n" +
+			"  ┌──────────────────┐  \n" +
+			"  │▐                 │  \n" +
+			"  └──────────────────┘  "},
+		{name: "collapsed", collapsed: true, expected: "└─ ✓ imagegen           \n" +
+			"   ####....             \n" +
+			"   ####....             \n" +
+			"   ####....             \n" +
+			"   ####....             \n" +
+			"   ####....             \n" +
+			"   ####....             \n" +
+			"   ....####             \n" +
+			"   ....####             \n" +
+			"   ....####             \n" +
+			"   ....####             \n" +
+			"   ....####             \n" +
+			"   ....####             \n" +
+			"   preview              \n" +
+			"                        \n" +
+			"Press <ctrl-o> to expand\n" +
+			"                        \n" +
+			"                        \n" +
+			"                        \n" +
+			"  ┌──────────────────┐  \n" +
+			"  │▐                 │  \n" +
+			"  └──────────────────┘  "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := DefaultMarkdownConfig()
+			cfg.FS = turnImageFS{"/images/picture.png": data.Bytes()}
+			cfg.Storage = storagestub.NewInMemoryService()
+			cfg.Interrupter = term.NopInterrupter()
+			comp := NewComponent(ComponentConfig{MarkdownConfig: cfg, StartCollapsed: tc.collapsed})
+			t.Cleanup(func() { require.NoError(t, comp.Close()) })
+			comp.AddToolCall("image", "imagegen", "", "")
+			comp.CompleteToolCall("image", "imagegen", "", "", "", false)
+			comp.AddToolCallImage("image", "/images/picture.png", "preview")
+			preview := comp.currentTurn.tools["image"].images[0]
+			h, incoming, _ := Handler(t.Context(), new(sync.Mutex), comp, term.NopInterrupter())
+			defer close(incoming)
+			h.Resize(24, 22)
+			ascii := asciiart.DefaultConfig()
+			ascii.DensityCharacters = ".#"
+			w := asciiart.NewStringWriter(24, 22, ascii)
+			w.SetContext = term.ContextWithCellPixelSize(t.Context(), 10, 23)
+			require.Eventually(t, func() bool {
+				h.Draw(w)
+				return preview.Height(21) == 14
+			}, time.Second, time.Millisecond)
+			handlertest.RunHandlerSequenceWriter(t, w, h, 24, 22, []handlertest.SequenceTestCase{{Expected: tc.expected}})
+			t.Logf("Rendered preview:\n%s", w.String())
+		})
+	}
+}
 
 func typeText(h tui.Handler, text string) {
 	for _, ch := range text {
@@ -177,6 +272,30 @@ func TestHandlerCtrlOToggleCollapsesTools(t *testing.T) {
 	_ = w.Flush()
 	assert.Contains(t, w.String(), "✓ read_file a.go")
 	assert.Contains(t, w.String(), "file data")
+}
+
+func TestHandlerToolResultImages(t *testing.T) {
+	interrupt := make(chan struct{}, 10)
+	comp := NewComponent(ComponentConfig{})
+	mu := new(sync.Mutex)
+	h, tx, _ := Handler(context.Background(), mu, comp, term.FuncInterrupter(func(context.Context) error {
+		interrupt <- struct{}{}
+		return nil
+	}))
+	defer close(tx)
+	h.Resize(40, 16)
+	tx <- MessageEvent{Type: MessageEventToolCall, ToolCallID: "image", ToolName: "capture"}
+	<-interrupt
+	tx <- MessageEvent{Type: MessageEventToolResult, ToolCallID: "image", ToolName: "capture",
+		ToolSummary: "preview", ImagePaths: []string{"/images/one.png", "/images/two.png"}}
+	<-interrupt
+	mu.Lock()
+	require.Len(t, comp.currentTurn.tools["image"].images, 2)
+	mu.Unlock()
+	w := term.NewStringWriter(40, 16)
+	h.Draw(w)
+	require.NoError(t, w.Flush())
+	assert.Contains(t, w.String(), "preview")
 }
 
 func TestHandlerErrorEvent(t *testing.T) {

@@ -250,6 +250,24 @@ func TestCommandAdapterRejectsPositionalID(t *testing.T) {
 	}
 }
 
+func TestCommandAdapterModelRefreshesTools(t *testing.T) {
+	model := llmapi.ModelEntry{Provider: "openai", Name: "supported"}
+	target := llmapi.ModelEntry{Provider: "openai", Name: "unsupported"}
+	a := newMaxTokensAdapter(t, model)
+	svc := llmtest.New([]llmapi.ModelEntry{model, target})
+	a.llmSvc = svc
+	called := false
+	a.modelToolsFn = func(got llmapi.Service, entry llmapi.ModelEntry) {
+		called = true
+		assert.Same(t, svc, got)
+		assert.Equal(t, target, entry)
+	}
+	_, err := a.handleModel(t.Context(), []string{"openai/unsupported"})
+	require.NoError(t, err)
+	require.True(t, called)
+	assert.Equal(t, target, a.agent.ModelEntry())
+}
+
 func TestCommandAdapterModelArgumentCompleters(t *testing.T) {
 	svc := llmtest.New([]llmapi.ModelEntry{
 		{Provider: "openai", Name: "gpt-5.5"},

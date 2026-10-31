@@ -108,6 +108,14 @@ type client struct {
 	initErr error
 }
 
+func (c *client) CanGenerateImages(context.Context, llmapi.ModelEntry) (bool, error) {
+	return false, nil
+}
+
+func (c *client) GenerateImage(context.Context, llmapi.ModelEntry, llmapi.ImageRequest) (llmapi.Image, error) {
+	return llmapi.Image{}, llmapi.ErrImageGenerationUnsupported
+}
+
 // runtimeAPI adapts the generated Bedrock runtime client to
 // converseStreamAPI, unwrapping the operation output down to the event
 // stream the iterator drains.

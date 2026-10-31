@@ -53,6 +53,14 @@ func newRouterForTest(t *testing.T) *llmrouter.Router {
 // (llama-server) backend the router now requires at construction.
 type fakeLocalBackend struct{}
 
+func (fakeLocalBackend) CanGenerateImages(context.Context, llmapi.ModelEntry) (bool, error) {
+	return false, nil
+}
+
+func (fakeLocalBackend) GenerateImage(context.Context, llmapi.ModelEntry, llmapi.ImageRequest) (llmapi.Image, error) {
+	return llmapi.Image{}, llmapi.ErrImageGenerationUnsupported
+}
+
 func (fakeLocalBackend) CreateCompletion(
 	context.Context, llmapi.ModelEntry, llmapi.Request,
 ) (iterator.Iterator[llmapi.Event], error) {

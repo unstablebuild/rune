@@ -19,11 +19,15 @@ package llmrouter
 import (
 	"context"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -32,6 +36,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/iterator"
 	"unstable.build/rune/internal/llm"
 	"unstable.build/rune/internal/llm/bedrock"
+	"unstable.build/rune/internal/llm/codex"
 	"unstable.build/rune/internal/llm/gemini"
 )
 
@@ -86,6 +91,214 @@ func newTestRouterWithLocal(t *testing.T) (*Router, *fakeLocalService) {
 func TestNew_ConstructsLocalRegistry(t *testing.T) {
 	r := newTestRouter(t)
 	require.NotNil(t, r.LocalRegistry())
+}
+
+func TestRouter_CanGenerateImages(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		provider  string
+		cred      *codex.Credential
+		available bool
+		err       string
+	}{
+		{name: "missing", provider: ProviderCodex, err: "no codex credential"},
+		{name: "free", provider: ProviderCodex, cred: &codex.Credential{AccessToken: "token", PlanType: "free"}, available: true},
+		{name: "paid", provider: ProviderCodex, cred: &codex.Credential{AccessToken: "token", PlanType: "plus"}, available: true},
+		{name: "unspecified plan", provider: ProviderCodex, cred: &codex.Credential{AccessToken: "token"}, available: true},
+		{name: "openai", provider: ProviderOpenAI, available: true},
+		{name: "anthropic", provider: ProviderAnthropic},
+		{name: "ollama", provider: ProviderOllama},
+		{name: "empty provider", err: "ModelEntry.Provider must be set"},
+		{name: "unknown provider", provider: "unknown", err: "no provider registered"},
+		{name: "invalid token", provider: ProviderCodex, cred: &codex.Credential{PlanType: "plus"}, err: "missing access token"},
+		{name: "expired", provider: ProviderCodex, cred: &codex.Credential{AccessToken: "token", PlanType: "plus", Expiry: time.Now().Add(-time.Hour)}, err: "expired and has no refresh token"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newTestRouter(t)
+			r.cfg.OpenAI.APIKey = "openai-token"
+			r.cfg.Anthropic.APIKey = "anthropic-token"
+			ctx := context.Background()
+			if tc.cred != nil {
+				require.NoError(t, codex.SaveCredential(ctx, r.storage, *tc.cred))
+			}
+			model := llmapi.ModelEntry{Provider: tc.provider}
+			available, err := r.CanGenerateImages(ctx, model)
+			assert.Equal(t, tc.available, available)
+			if tc.err != "" {
+				require.ErrorContains(t, err, tc.err)
+			} else {
+				require.NoError(t, err)
+			}
+			if !tc.available {
+				image, err := r.GenerateImage(ctx, model, llmapi.ImageRequest{Prompt: "a tree"})
+				require.Error(t, err)
+				assert.Empty(t, image)
+				if tc.err != "" {
+					assert.ErrorContains(t, err, tc.err)
+				}
+			}
+		})
+	}
+}
+
+func TestRouter_GenerateImage_ResolvesCurrentCredentials(t *testing.T) {
+	r := newTestRouter(t)
+	ctx := context.Background()
+	model := llmapi.ModelEntry{Provider: ProviderCodex}
+	cred := codex.Credential{AccessToken: "token", PlanType: "plus"}
+	require.NoError(t, codex.SaveCredential(ctx, r.storage, cred))
+	available, err := r.CanGenerateImages(ctx, model)
+	require.NoError(t, err)
+	require.True(t, available)
+	cred.AccessToken = ""
+	require.NoError(t, codex.SaveCredential(ctx, r.storage, cred))
+	_, err = r.GenerateImage(ctx, model, llmapi.ImageRequest{Prompt: "a tree"})
+	require.ErrorContains(t, err, "missing access token")
+}
+
+func TestRouter_ImageGeneration_Closed(t *testing.T) {
+	r := newTestRouter(t)
+	require.NoError(t, r.Close())
+	for _, provider := range []string{ProviderCodex, ProviderOpenAI} {
+		model := llmapi.ModelEntry{Provider: provider}
+		available, err := r.CanGenerateImages(context.Background(), model)
+		assert.False(t, available)
+		require.ErrorIs(t, err, ErrRouterClosed)
+		image, err := r.GenerateImage(context.Background(), model, llmapi.ImageRequest{})
+		assert.Empty(t, image)
+		require.ErrorIs(t, err, ErrRouterClosed)
+	}
+}
+
+func TestRouter_GenerateImage_ForwardsToConfiguredBaseURL(t *testing.T) {
+	for _, provider := range []string{ProviderCodex, ProviderOpenAI} {
+		t.Run(provider, func(t *testing.T) {
+			var calls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				calls.Add(1)
+				assert.Equal(t, http.MethodPost, req.Method)
+				assert.Equal(t, "Bearer image-token", req.Header.Get("Authorization"))
+				assert.Equal(t, "/custom/images/generations", req.URL.Path)
+				if provider == ProviderCodex {
+					assert.Equal(t, "account", req.Header.Get("ChatGPT-Account-ID"))
+					assert.Equal(t, "true", req.Header.Get("X-OpenAI-Fedramp"))
+					assert.NotEmpty(t, req.Header.Get("originator"))
+					assert.NotEmpty(t, req.Header.Get("x-codex-image-turn-id"))
+				} else {
+					assert.Empty(t, req.Header.Get("ChatGPT-Account-ID"))
+					assert.Empty(t, req.Header.Get("x-codex-image-turn-id"))
+				}
+				body, err := io.ReadAll(req.Body)
+				assert.NoError(t, err)
+				assert.Contains(t, string(body), "draw a purple tree")
+				http.Error(w, "image backend unavailable", http.StatusBadGateway)
+			}))
+			defer server.Close()
+			r := newTestRouter(t)
+			r.cfg.Codex.BaseURL = server.URL + "/custom"
+			r.cfg.OpenAI.BaseURL = server.URL + "/custom"
+			r.cfg.OpenAI.APIKey = "image-token"
+			ctx := context.Background()
+			require.NoError(t, codex.SaveCredential(ctx, r.storage, codex.Credential{
+				AccessToken: "image-token", PlanType: "plus", AccountID: "account", FedRAMP: true,
+			}))
+			image, err := r.GenerateImage(ctx, llmapi.ModelEntry{Provider: provider}, llmapi.ImageRequest{Prompt: "draw a purple tree"})
+			require.Error(t, err)
+			assert.Empty(t, image)
+			assert.EqualValues(t, 1, calls.Load())
+		})
+	}
+}
+
+type imageService struct {
+	llmapi.Service
+	canGenerate func(context.Context, llmapi.ModelEntry) (bool, error)
+	generate    func(context.Context, llmapi.ModelEntry, llmapi.ImageRequest) (llmapi.Image, error)
+}
+
+func (s *imageService) CanGenerateImages(ctx context.Context, model llmapi.ModelEntry) (bool, error) {
+	return s.canGenerate(ctx, model)
+}
+
+func (s *imageService) GenerateImage(ctx context.Context, model llmapi.ModelEntry, request llmapi.ImageRequest) (llmapi.Image, error) {
+	return s.generate(ctx, model, request)
+}
+
+func TestRouter_ImageDelegation(t *testing.T) {
+	for _, useAlias := range []bool{false, true} {
+		for _, failure := range []error{nil, errors.New("backend failure")} {
+			r := newTestRouter(t)
+			ctx := context.Background()
+			model := llmapi.ModelEntry{Provider: ProviderCustom, Name: "image-test", ContextWindow: 4096}
+			r.customCatalog = []llmapi.ModelEntry{model}
+			request := llmapi.ImageRequest{Prompt: "image", Images: [][]byte{[]byte("reference")}}
+			want := llmapi.Image{PNG: []byte("image"), RequestID: "request"}
+			r.custom = &imageService{
+				Service: &fakeLocalService{},
+				canGenerate: func(gotCtx context.Context, gotModel llmapi.ModelEntry) (bool, error) {
+					assert.Equal(t, ctx, gotCtx)
+					assert.Equal(t, model, gotModel)
+					return true, failure
+				},
+				generate: func(gotCtx context.Context, gotModel llmapi.ModelEntry, gotRequest llmapi.ImageRequest) (llmapi.Image, error) {
+					assert.Equal(t, ctx, gotCtx)
+					assert.Equal(t, model, gotModel)
+					assert.Equal(t, request, gotRequest)
+					return want, failure
+				},
+			}
+			input := model
+			if useAlias {
+				require.NoError(t, r.SetAlias(ctx, "images", ProviderCustom+"/"+model.Name))
+				input = llmapi.ModelEntry{Name: "images"}
+			}
+			available, err := r.CanGenerateImages(ctx, input)
+			assert.True(t, available)
+			require.ErrorIs(t, err, failure)
+			got, err := r.GenerateImage(ctx, input, request)
+			assert.Equal(t, want, got)
+			require.ErrorIs(t, err, failure)
+		}
+	}
+}
+
+func TestRouter_ServiceForModel(t *testing.T) {
+	canonical := llmapi.ModelEntry{Provider: ProviderCustom, Name: "test", ContextWindow: 4096}
+	qualifiedAlias := llmapi.ModelEntry{Provider: ProviderCustom, Name: "alias"}
+	for _, tc := range []struct {
+		name   string
+		input  llmapi.ModelEntry
+		want   llmapi.ModelEntry
+		closed bool
+		err    string
+	}{
+		{name: "qualified", input: canonical, want: canonical},
+		{name: "alias", input: llmapi.ModelEntry{Name: "alias"}, want: canonical},
+		{name: "explicit provider bypasses alias", input: qualifiedAlias, want: qualifiedAlias},
+		{name: "unknown bare name", input: llmapi.ModelEntry{Name: "unknown"}, err: "ModelEntry.Provider must be set"},
+		{name: "unknown provider", input: llmapi.ModelEntry{Provider: "unknown"}, err: "no provider registered"},
+		{name: "closed before alias lookup", input: llmapi.ModelEntry{Name: "alias"}, closed: true, err: ErrRouterClosed.Error()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newTestRouter(t)
+			r.custom = &fakeLocalService{}
+			r.customCatalog = []llmapi.ModelEntry{canonical}
+			ctx := context.Background()
+			require.NoError(t, r.SetAlias(ctx, "alias", ProviderCustom+"/"+canonical.Name))
+			if tc.closed {
+				require.NoError(t, r.Close())
+			}
+			svc, model, err := r.serviceForModel(ctx, tc.input)
+			if tc.err != "" {
+				require.ErrorContains(t, err, tc.err)
+				assert.Nil(t, svc)
+				return
+			}
+			require.NoError(t, err)
+			assert.Same(t, r.custom, svc)
+			assert.Equal(t, tc.want, model)
+		})
+	}
 }
 
 func TestRouter_UnknownProvider(t *testing.T) {
@@ -411,6 +624,14 @@ func (s *verifyService) GetModel(_ context.Context, _ llmapi.ModelEntry) (llmapi
 	return llmapi.ModelEntry{}, llmapi.ErrModelNotFound
 }
 
+func (s *verifyService) CanGenerateImages(context.Context, llmapi.ModelEntry) (bool, error) {
+	return false, nil
+}
+
+func (s *verifyService) GenerateImage(context.Context, llmapi.ModelEntry, llmapi.ImageRequest) (llmapi.Image, error) {
+	return llmapi.Image{}, llmapi.ErrImageGenerationUnsupported
+}
+
 func TestRouter_VerifyProviderKey_Success(t *testing.T) {
 	ctx := context.Background()
 	r := newTestRouter(t)
@@ -484,6 +705,15 @@ func (f *fakeLocalService) Models() iterator.Iterator[llmapi.ModelEntry] {
 func (f *fakeLocalService) GetModel(_ context.Context, _ llmapi.ModelEntry) (llmapi.ModelEntry, error) {
 	return llmapi.ModelEntry{}, llmapi.ErrModelNotFound
 }
+
+func (f *fakeLocalService) CanGenerateImages(context.Context, llmapi.ModelEntry) (bool, error) {
+	return false, nil
+}
+
+func (f *fakeLocalService) GenerateImage(context.Context, llmapi.ModelEntry, llmapi.ImageRequest) (llmapi.Image, error) {
+	return llmapi.Image{}, llmapi.ErrImageGenerationUnsupported
+}
+
 func (f *fakeLocalService) Close() error { f.closes.Add(1); return nil }
 
 func localModel(name string, ctxWindow int) llmapi.ModelEntry {

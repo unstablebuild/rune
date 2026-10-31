@@ -18,6 +18,7 @@ package openai
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,13 +31,130 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi/llmrpc"
 	"google.golang.org/protobuf/proto"
 )
+
+func TestCanGenerateImages(t *testing.T) {
+	c := NewClient("token", Config{})
+	for _, provider := range []string{"openai", "codex", "ollama", "custom", "anthropic", ""} {
+		t.Run(provider, func(t *testing.T) {
+			model := llmapi.ModelEntry{Provider: provider}
+			available, err := c.CanGenerateImages(context.Background(), model)
+			require.NoError(t, err)
+			assert.Equal(t, provider == "openai" || provider == "codex", available)
+			if !available {
+				_, err := c.GenerateImage(context.Background(), model, llmapi.ImageRequest{})
+				require.ErrorIs(t, err, llmapi.ErrImageGenerationUnsupported)
+			}
+		})
+	}
+}
+
+func TestGenerateImage(t *testing.T) {
+	png := []byte("\x89PNG\r\n\x1a\nfixture")
+	for _, provider := range []string{"openai", "codex"} {
+		for _, tc := range []struct {
+			name              string
+			transparent, edit bool
+		}{
+			{name: "generate"}, {name: "transparent", transparent: true}, {name: "edit", edit: true},
+		} {
+			t.Run(provider+"/"+tc.name, func(t *testing.T) {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					path := "/custom/images/generations"
+					if tc.edit {
+						path = "/custom/images/edits"
+					}
+					assert.Equal(t, http.MethodPost, r.Method)
+					assert.Equal(t, path, r.URL.Path)
+					assert.Equal(t, "Bearer token", r.Header.Get("Authorization"))
+					assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
+					assert.Equal(t, "custom", r.Header.Get("X-Custom-Header"))
+					if provider == "codex" {
+						_, err := uuid.Parse(r.Header.Get("x-codex-image-turn-id"))
+						assert.NoError(t, err)
+					} else {
+						assert.Empty(t, r.Header.Get("x-codex-image-turn-id"))
+					}
+					var body map[string]any
+					if !assert.NoError(t, json.NewDecoder(r.Body).Decode(&body)) {
+						return
+					}
+					background := "opaque"
+					if tc.transparent {
+						background = "transparent"
+					}
+					for key, want := range map[string]string{"prompt": "draw a bird", "background": background, "model": "gpt-image-2", "quality": "auto", "size": "auto"} {
+						assert.Equal(t, want, body[key], key)
+					}
+					if tc.edit {
+						assert.Equal(t, []any{map[string]any{"image_url": "data:image/png;base64," + base64.StdEncoding.EncodeToString(png)}}, body["images"])
+					} else {
+						assert.NotContains(t, body, "images")
+					}
+					w.Header().Set("x-request-id", "openai-request")
+					if provider == "codex" {
+						w.Header().Set("x-codex-imagegen-request-id", "codex-request")
+					}
+					_ = json.NewEncoder(w).Encode(map[string]any{"data": []any{map[string]string{"generation_id": "generation", "b64_json": base64.StdEncoding.EncodeToString(png)}}})
+				}))
+				defer server.Close()
+				c := NewClientWithHTTP("token", Config{BaseURL: server.URL + "/custom/", Headers: map[string]string{"X-Custom-Header": "custom"}}, server.Client())
+				request := llmapi.ImageRequest{Prompt: "draw a bird", TransparentBackground: tc.transparent}
+				if tc.edit {
+					request.Images = [][]byte{png}
+				}
+				got, err := c.GenerateImage(context.Background(), llmapi.ModelEntry{Provider: provider}, request)
+				require.NoError(t, err)
+				assert.Equal(t, llmapi.Image{PNG: png, GenerationID: "generation", RequestID: provider + "-request"}, got)
+			})
+		}
+	}
+}
+
+func TestGenerateImageErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		status     int
+		body, want string
+		limit      bool
+	}{
+		{"server", 500, `{"error":"failed"}`, "HTTP 500", false},
+		{"rate", 429, `{"error":{"type":"rate_limit_exceeded"}}`, "HTTP 429", false},
+		{"usage", 429, `{"error":{"type":"usage_limit_reached","resets_at":1800000000}}`, "resets at", true},
+		{"empty", 200, `{"data":[]}`, "no image", false},
+		{"base64", 200, `{"data":[{"b64_json":"!"}]}`, "decode image", false},
+		{"json", 200, `{`, "decode image response", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				w.Header().Set("x-request-id", "request")
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+			c := NewClient("token", Config{BaseURL: server.URL})
+			_, err := c.GenerateImage(context.Background(), llmapi.ModelEntry{Provider: "openai"}, llmapi.ImageRequest{Prompt: "bird"})
+			require.ErrorContains(t, err, tc.want)
+			assert.Equal(t, 1, calls, "generation must not be retried automatically")
+			var limit *ImageUsageLimitError
+			require.Equal(t, tc.limit, errors.As(err, &limit))
+			if tc.limit {
+				assert.True(t, limit.ResetAt.Equal(time.Unix(1800000000, 0)))
+				assert.Equal(t, "request", limit.RequestID)
+			}
+		})
+	}
+}
 
 func TestCreateCompletion(t *testing.T) {
 	t.SkipNow()

@@ -17,12 +17,21 @@
 package dialoguetui
 
 import (
+	"bytes"
+	"context"
 	"fmt"
+	"image"
+	"image/png"
+	"os"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
+	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/component/comptest"
 	"github.com/unstablebuild/rune-go-sdk/term"
@@ -34,6 +43,130 @@ var (
 	_ tui.Component        = (*Component)(nil)
 	_ component.Responsive = (*Component)(nil)
 )
+
+func TestComponentImageLifetime(t *testing.T) {
+	for _, dispose := range []string{"reset", "close"} {
+		t.Run(dispose, func(t *testing.T) {
+			var data bytes.Buffer
+			require.NoError(t, png.Encode(&data, image.NewRGBA(image.Rect(0, 0, 10, 240))))
+			cfg := DefaultMarkdownConfig()
+			cfg.FS = turnImageFS{"/images/picture.png": data.Bytes(), "images/picture.png": data.Bytes()}
+			cfg.Storage = storagestub.NewInMemoryService()
+			cfg.Interrupter = term.NopInterrupter()
+			comp := NewComponent(ComponentConfig{MarkdownConfig: cfg})
+			t.Cleanup(func() { require.NoError(t, comp.Close()) })
+			var previews []*markdown.Component
+			for _, id := range []string{"first", "second"} {
+				comp.AddToolCall(id, "capture", "", "")
+				comp.AddToolCallImage(id, "/images/picture.png", "preview")
+				previews = append(previews, comp.currentTurn.tools[id].images[0])
+				comp.AddReceiveMessage("![assistant](/images/picture.png)")
+			}
+			comp.eachTranscriptMarkdown(func(md *markdown.Component, _ term.Coordinates) {
+				previews = append(previews, md)
+			})
+			require.Len(t, previews, 4)
+			w := term.NewStringWriter(30, 20)
+			w.SetContext = term.ContextWithCellPixelSize(context.Background(), 10, 20)
+			for _, md := range previews {
+				require.Eventually(t, func() bool {
+					md.Resize(30, 20)
+					md.Draw(w)
+					return md.Height(30) > 10
+				}, time.Second, time.Millisecond, "replayed previews must load after answer breaks")
+			}
+			comp.AddReceiveMessage("later answer")
+			for _, md := range previews {
+				md.Draw(w)
+				assert.Greater(t, md.Height(30), 10)
+			}
+			if dispose == "reset" {
+				comp.Reset()
+			} else {
+				require.NoError(t, comp.Close())
+			}
+		})
+	}
+}
+
+type componentImageFS func(string, int, os.FileMode) (workspaceapi.File, error)
+
+func (fs componentImageFS) OpenFile(path string, flag int, mode os.FileMode) (workspaceapi.File, error) {
+	return fs(path, flag, mode)
+}
+
+func TestComponentImageLoadingAcrossBreak(t *testing.T) {
+	var data bytes.Buffer
+	require.NoError(t, png.Encode(&data, image.NewRGBA(image.Rect(0, 0, 10, 240))))
+	started, release := make(chan struct{}), make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(unblock)
+	cfg := DefaultMarkdownConfig()
+	cfg.FS = componentImageFS(func(path string, flag int, mode os.FileMode) (workspaceapi.File, error) {
+		close(started)
+		<-release
+		return (turnImageFS{"/images/picture.png": data.Bytes()}).OpenFile(path, flag, mode)
+	})
+	cfg.Storage = storagestub.NewInMemoryService()
+	cfg.Interrupter = term.NopInterrupter()
+	comp := NewComponent(ComponentConfig{MarkdownConfig: cfg})
+	t.Cleanup(func() { require.NoError(t, comp.Close()) })
+	comp.AddToolCall("image", "capture", "", "")
+	comp.AddToolCallImage("image", "/images/picture.png", "preview")
+	turn := comp.currentTurn
+	w := term.NewStringWriter(30, 20)
+	w.SetContext = term.ContextWithCellPixelSize(context.Background(), 10, 20)
+	turn.Resize(30, 20)
+	turn.Draw(w)
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("image load did not start")
+	}
+	comp.AddReceiveMessage("answer")
+	comp.AddReceiveMessage("later answer")
+	unblock()
+	require.Eventually(t, func() bool {
+		turn.Resize(30, 20)
+		turn.Draw(w)
+		return turn.tools["image"].images[0].Height(30) == 14
+	}, time.Second, time.Millisecond)
+}
+
+func TestComponentDisposesDeferredImages(t *testing.T) {
+	for _, dispose := range []string{"reset", "close"} {
+		t.Run(dispose, func(t *testing.T) {
+			var data bytes.Buffer
+			require.NoError(t, png.Encode(&data, image.NewRGBA(image.Rect(0, 0, 10, 240))))
+			cfg := DefaultMarkdownConfig()
+			cfg.FS = turnImageFS{"/images/picture.png": data.Bytes(), "images/picture.png": data.Bytes()}
+			cfg.Storage = storagestub.NewInMemoryService()
+			cfg.Interrupter = term.NopInterrupter()
+			comp := NewComponent(ComponentConfig{MarkdownConfig: cfg})
+			t.Cleanup(func() { require.NoError(t, comp.Close()) })
+			comp.AddToolCall("image", "capture", "", "")
+			comp.AddToolCallImage("image", "/images/picture.png", "preview")
+			preview := comp.currentTurn.tools["image"].images[0]
+			comp.AddReceiveMessageChunk("![assistant](/images/picture.png)")
+			assistant := comp.tailMd
+			if dispose == "reset" {
+				comp.Reset()
+			} else {
+				require.NoError(t, comp.Close())
+			}
+			w := term.NewStringWriter(30, 20)
+			w.SetContext = term.ContextWithCellPixelSize(context.Background(), 10, 20)
+			for _, md := range []*markdown.Component{preview, assistant} {
+				for deadline := time.Now().Add(100 * time.Millisecond); time.Now().Before(deadline); {
+					md.Resize(30, 20)
+					md.Draw(w)
+					require.LessOrEqual(t, md.Height(30), 10, "disposed images must not start loading")
+					time.Sleep(time.Millisecond)
+				}
+			}
+		})
+	}
+}
 
 func TestComponentDraw(t *testing.T) {
 	for i := range 2 {
