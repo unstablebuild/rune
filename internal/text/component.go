@@ -304,6 +304,7 @@ func (c *Component) Init(
 	// The browser's repaints go out through EventPublisher, so a
 	// caller's Interrupter could only diverge from it.
 	c.config.Interrupter = browser.EventPublisherInterrupter(c)
+	c.config.PromptConfig.OnLinkClick = c.config.OnLinkClick
 	c.ctx, c.cancelCtx = context.WithCancel(context.Background())
 
 	c.comp.Init(c.config.Config)

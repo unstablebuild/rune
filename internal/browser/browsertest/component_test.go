@@ -1316,7 +1316,7 @@ func TestComponentPromptPointerShape(t *testing.T) {
 	assert.Equal(t, term.PointerDefault, hover(at('P')), "over the message")
 }
 
-func TestComponentPromptHoverAttr(t *testing.T) {
+func TestComponentPromptHoverMovesHighlight(t *testing.T) {
 	const width, height = 60, 20
 	style := browser.DefaultConfig().PromptConfig
 	c := browser.NewComponent(browser.DefaultConfig())
@@ -1346,11 +1346,172 @@ func TestComponentPromptHoverAttr(t *testing.T) {
 	w := draw()
 	_, yes := cellOf(w, 'Y')
 	_, no := cellOf(w, 'N')
-	assert.Equal(t, style.HighlightAttr, yes, "the highlight stays on the keyboard's choice")
-	assert.Equal(t, style.HoverAttr, no, "the pointer's option is drawn with HoverAttr")
+	assert.Equal(t, style.TextAttr, yes, "the highlight leaves the keyboard's choice")
+	assert.Equal(t, style.HighlightAttr, no, "the highlight follows the pointer")
 
 	c.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
-	assert.Equal(t, 0, selected, "enter selects the keyboard's choice")
+	assert.Equal(t, 1, selected, "enter selects the hovered option")
+}
+
+func TestComponentPromptLinkClick(t *testing.T) {
+	const width, height = 60, 20
+	const link = "https://example.com/advisory"
+	for _, tcase := range []struct {
+		name   string
+		at     string
+		shape  term.PointerShape
+		opened []string
+	}{
+		{"a click on a link opens it", "advisory", term.PointerLink, []string{link}},
+		{"a click on plain text opens nothing", "See", term.PointerDefault, nil},
+	} {
+		t.Run(tcase.name, func(t *testing.T) {
+			var opened []string
+			cfg := browser.DefaultConfig()
+			cfg.PromptConfig.OnLinkClick = func(u *url.URL) bool {
+				opened = append(opened, u.String())
+				return true
+			}
+			c := browser.NewComponent(cfg)
+			c.Resize(width, height)
+			selected := -1
+			c.Prompt(browserapi.PromptConfig{
+				Message: "See the [advisory](" + link + ") first.", Options: []string{"Yes", "No"},
+			}, handler.FuncPromptHandler(func(i int, _ string) { selected = i }, func() error { return nil }))
+
+			w := term.NewStringWriter(width, height)
+			c.Draw(w)
+			require.NoError(t, w.Flush())
+			row, col, found := 0, 0, false
+			for y, line := range strings.Split(w.String(), "\n") {
+				if x := strings.Index(line, tcase.at); x >= 0 {
+					row, col, found = y, len([]rune(line[:x])), true
+					break
+				}
+			}
+			require.True(t, found, "%q not drawn in:\n%s", tcase.at, w.String())
+			mouse := func(key term.Key) term.PointerShape {
+				p := new(term.Pointer)
+				c.Handle(term.Event{
+					Type: term.EventMouse, Key: key, MouseX: col, MouseY: row,
+					Context: term.ContextWithPointer(context.Background(), p),
+				})
+				shape, _ := p.Shape()
+				return shape
+			}
+
+			assert.Equal(t, tcase.shape, mouse(0))
+			mouse(term.MouseLeft)
+			mouse(term.MouseRelease)
+			assert.Equal(t, tcase.opened, opened)
+			assert.Equal(t, -1, selected, "no option is selected")
+			assert.Equal(t, 1, c.FloatingWindows(), "the prompt stays open")
+		})
+	}
+
+	t.Run("a click on a link after a press released on an option opens it", func(t *testing.T) {
+		var opened []string
+		cfg := browser.DefaultConfig()
+		cfg.PromptConfig.OnLinkClick = func(u *url.URL) bool {
+			opened = append(opened, u.String())
+			return true
+		}
+		c := browser.NewComponent(cfg)
+		c.Resize(width, height)
+		c.Prompt(browserapi.PromptConfig{
+			Message: "See the [advisory](" + link + ") first.", Options: []string{"Yes", "No"},
+		}, handler.NopPromptHandler())
+		w := term.NewStringWriter(width, height)
+		c.Draw(w)
+		require.NoError(t, w.Flush())
+		at := func(s string) (pos term.Coordinates) {
+			t.Helper()
+			for y, line := range strings.Split(w.String(), "\n") {
+				if x := strings.Index(line, s); x >= 0 {
+					return term.Coordinates{X: len([]rune(line[:x])), Y: y}
+				}
+			}
+			require.Failf(t, "not drawn", "%q in:\n%s", s, w.String())
+			return
+		}
+		advisory, yes := at("advisory"), at("Yes")
+		mouse := func(key term.Key, pos term.Coordinates) {
+			c.Handle(term.Event{Type: term.EventMouse, Key: key, MouseX: pos.X, MouseY: pos.Y})
+		}
+
+		mouse(term.MouseLeft, advisory)
+		mouse(term.MouseRelease, yes)
+		mouse(term.MouseLeft, advisory)
+		mouse(term.MouseRelease, advisory)
+		assert.Equal(t, []string{link, link}, opened)
+		assert.Equal(t, 1, c.FloatingWindows(), "the prompt stays open")
+	})
+}
+
+func TestComponentPromptMarkdownMessageTakesTheMouseAnywhere(t *testing.T) {
+	message := strings.Join([]string{
+		"# A header with a [link](https://example.com/h)",
+		"A paragraph with a [link](https://example.com/p), **bold** and 日本語 text that wraps.",
+		"- an item with a [link](https://example.com/l)\n  - a nested item",
+		"> a quote with a [link](https://example.com/q)",
+		"| a | [b](https://example.com/t) |\n|---|---|\n| 日本 | d |",
+		"```go\nfunc main() {}\n```",
+		"---",
+	}, "\n\n")
+	// Each pass sends its events to every cell and to a cell beyond
+	// each edge, in turn; the drag presses on every cell without a
+	// release until the next pass.
+	passes := [][]term.Key{
+		{0},
+		{term.MouseLeft, term.MouseRelease},
+		{term.MouseLeft},
+		{term.MouseRelease},
+		{term.MouseRight, term.MouseRelease},
+		{term.MouseMiddle, term.MouseRelease},
+		{term.MouseWheelDown},
+		{term.MouseWheelUp},
+	}
+	for _, size := range []struct {
+		name          string
+		width, height int
+		// clicks is whether the clicks pass lands on a link.
+		clicks bool
+	}{
+		{"a message with room to spare", 100, 50, true},
+		{"a scrolled message", 100, 14, true},
+		{"a prompt narrower than the message's padding", 3, 14, false},
+		{"a prompt a row tall", 100, 1, false},
+	} {
+		t.Run(size.name, func(t *testing.T) {
+			cfg := browser.DefaultConfig()
+			clicks := 0
+			cfg.PromptConfig.OnLinkClick = func(*url.URL) bool { clicks++; return true }
+			c := browser.NewComponent(cfg)
+			c.Resize(size.width, size.height)
+			open := func() {
+				if c.FloatingWindows() == 0 {
+					c.Prompt(browserapi.PromptConfig{
+						Message: message, Options: []string{"Yes", "No"},
+					}, handler.NopPromptHandler())
+				}
+			}
+
+			require.NotPanics(t, func() {
+				for _, keys := range passes {
+					for y := -1; y <= size.height; y++ {
+						for x := -1; x <= size.width; x++ {
+							for _, key := range keys {
+								open()
+								c.Handle(term.Event{Type: term.EventMouse, Key: key, MouseX: x, MouseY: y})
+							}
+						}
+					}
+					c.Draw(term.NewStringWriter(size.width, size.height))
+				}
+			})
+			assert.Equal(t, size.clicks, clicks > 0, "%d clicks on links", clicks)
+		})
+	}
 }
 
 func TestComponentPromptClickedAttr(t *testing.T) {

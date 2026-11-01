@@ -17,6 +17,7 @@
 package browser
 
 import (
+	"net/url"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -173,7 +174,8 @@ type PromptConfig struct {
 	TextAttr      term.Attributes
 	HighlightAttr term.Attributes
 	// HoverAttr styles the tutorial tile's buttons under the mouse
-	// pointer.
+	// pointer. The highlight of a Component's prompts follows the
+	// pointer instead, as it does the arrow keys.
 	HoverAttr term.Attributes
 	// ClickedAttr styles a button from the mouse press until the
 	// release that selects it.
@@ -190,6 +192,9 @@ type PromptConfig struct {
 	// as the prompt is built.
 	Parser           syntaxapi.Parser
 	ScheduleNextTick func(func()) bool
+	// OnLinkClick handles a link clicked in a prompt's message and
+	// reports whether it did. Without it, links are plain text.
+	OnLinkClick func(*url.URL) bool
 }
 
 // PromptImages names the images of a prompt's buttons in each state, as

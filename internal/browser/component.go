@@ -43,6 +43,7 @@ import (
 	"unstable.build/rune/internal/component/shader"
 	"unstable.build/rune/internal/debug"
 	thandler "unstable.build/rune/internal/handler"
+	hmarkdown "unstable.build/rune/internal/handler/markdown"
 	"unstable.build/rune/internal/term/programstatus"
 )
 
@@ -1507,7 +1508,6 @@ func (c *Component) Prompt(
 		OptionBindings: cfg.Bindings,
 		OptionAttr:     style.TextAttr,
 		HighlightAttr:  style.HighlightAttr,
-		HoverAttr:      style.HoverAttr,
 		ClickedAttr:    style.ClickedAttr,
 	}
 
@@ -1536,7 +1536,8 @@ func (c *Component) OpenPrompt(
 }
 
 // promptMessage renders the message of a prompt, as markdown when it
-// parses. See browserapi.PromptConfig.MaxWidth for its size.
+// parses, whose links open with PromptConfig.OnLinkClick. See
+// browserapi.PromptConfig.MaxWidth for its size.
 func (c *Component) promptMessage(str string, maxWidth int) component.Floating {
 	mcfg := markdown.DefaultConfig()
 	mcfg.HeaderPrefix = false
@@ -1544,38 +1545,54 @@ func (c *Component) promptMessage(str string, maxWidth int) component.Floating {
 	if c.config.PromptConfig.ScheduleNextTick != nil {
 		mcfg.ScheduleNextTick = c.config.PromptConfig.ScheduleNextTick
 	}
-	var msg floatingResponsive
-	if mkd, err := markdown.NewWithConfig(str, mcfg); err == nil {
-		span := component.NewSpan(mkd, component.SpanConfig{
+	mkd, err := markdown.NewWithConfig(str, mcfg)
+	if err != nil {
+		msg := component.NewAspectRatioFloatingResponsive(
+			component.NewResponsiveString(str, component.StringResponsiveConfig{
+				NoSplitWords: true,
+				StringConfig: component.StringConfig{
+					PaddingVertical:   4,
+					PaddingHorizontal: 4,
+					Alignment:         component.AlignmentCentered,
+				},
+			}), component.DefaultAspectRatio)
+		if maxWidth == 0 {
+			return msg
+		}
+		return &maxWidthFloating{floatingResponsive: msg, maxWidth: maxWidth}
+	}
+	md := handler.NewSpan(
+		hmarkdown.New(mkd, hmarkdown.WithOnLinkClick(c.config.PromptConfig.OnLinkClick)),
+		component.SpanConfig{
 			PadHorizontal:    4,
 			PadVertical:      2,
 			ContentAlignment: component.AlignmentCentered,
 		})
-		if maxWidth > 0 {
-			// a Span is as wide as its widest line
-			return &maxWidthFloating{floatingResponsive: span, maxWidth: maxWidth}
-		}
-		msg = span
-	} else {
-		msg = component.NewResponsiveString(str, component.StringResponsiveConfig{
-			NoSplitWords: true,
-			StringConfig: component.StringConfig{
-				PaddingVertical:   4,
-				PaddingHorizontal: 4,
-				Alignment:         component.AlignmentCentered,
-			},
-		})
+	var size component.Floating = component.NewAspectRatioFloatingResponsive(
+		md, component.DefaultAspectRatio)
+	if maxWidth > 0 {
+		// a Span is as wide as its widest line
+		size = &maxWidthFloating{floatingResponsive: md, maxWidth: maxWidth}
 	}
-	ret := component.NewAspectRatioFloatingResponsive(msg, component.DefaultAspectRatio)
-	if maxWidth == 0 {
-		return ret
-	}
-	return &maxWidthFloating{floatingResponsive: ret, maxWidth: maxWidth}
+	return &markdownMessage{Span: md, size: size}
 }
 
 type floatingResponsive interface {
 	component.Floating
 	component.Responsive
+}
+
+// markdownMessage is a prompt's markdown message, sized by size. The
+// sizes wrap the Span themselves, which would hide the Handle that the
+// prompt passes the mouse events on the message to.
+type markdownMessage struct {
+	*handler.Span
+	size component.Floating
+}
+
+// Dimensions satisfies component.Floating.
+func (m *markdownMessage) Dimensions() (width, height int) {
+	return m.size.Dimensions()
 }
 
 // maxWidthFloating sizes a message no wider than maxWidth, wrapping it

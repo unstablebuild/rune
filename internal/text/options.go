@@ -114,9 +114,11 @@ type Config struct {
 	Clipboard            clipboard.Register
 	OpenRouter           OpenRouter
 	Comments             CommentConfig
-	// OnLinkClick handles a link clicked in a markdown tab and reports
-	// whether it did. Links it declines, or every link when it is nil,
-	// only scroll to the in-document anchors they name.
+	// OnLinkClick handles a link clicked in a markdown tab or in the
+	// message of a prompt, and reports whether it did. Links it
+	// declines in a markdown tab, or every link there when it is nil,
+	// only scroll to the in-document anchors they name; the links of
+	// prompts are plain text when it is nil.
 	OnLinkClick func(*url.URL) bool
 	// OpenURL opens the URIs Show does not open in a tab.
 	OpenURL func(*url.URL) error

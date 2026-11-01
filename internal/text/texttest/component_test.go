@@ -357,6 +357,42 @@ func TestComponentInterfaces(t *testing.T) {
 	comp.Resize(0, 0)
 }
 
+func TestComponentPromptOpensLinksWithOnLinkClick(t *testing.T) {
+	const width, height = 60, 20
+	const link = "https://example.com/advisory"
+	var opened []string
+	cfg := text.DefaultConfig()
+	cfg.OnLinkClick = func(u *url.URL) bool {
+		opened = append(opened, u.String())
+		return true
+	}
+	c, _ := newTestComponentConfig(t, NopEditor(), cfg)
+	c.Resize(width, height)
+	_, isNew, err := c.OpenPrompt(browserapi.PromptConfig{
+		Message: "See the [advisory](" + link + ").", Options: []string{"OK"},
+	}, handler.NopPromptHandler())
+	require.NoError(t, err)
+	require.True(t, isNew)
+
+	w := term.NewStringWriter(width, height)
+	c.Draw(w)
+	require.NoError(t, w.Flush())
+	var pos term.Coordinates
+	found := false
+	for i, cell := range w.Cells() {
+		if cell.Ch == 'a' && i+1 < len(w.Cells()) && w.Cells()[i+1].Ch == 'd' {
+			pos, found = term.Coordinates{X: i % width, Y: i / width}, true
+			break
+		}
+	}
+	require.True(t, found, "link not drawn in:\n%s", w.String())
+
+	for _, key := range []term.Key{term.MouseLeft, term.MouseRelease} {
+		c.Handle(term.Event{Type: term.EventMouse, Key: key, MouseX: pos.X, MouseY: pos.Y})
+	}
+	assert.Equal(t, []string{link}, opened)
+}
+
 func TestComponentTabStatusRepaintsThroughEventPublisher(t *testing.T) {
 	interrupts := make(chan struct{}, 1)
 	cfg := text.DefaultConfig()
