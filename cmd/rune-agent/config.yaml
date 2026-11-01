@@ -25,6 +25,12 @@ extensions:
         - ~/.rune/skills
         - .agents/skills
         - ~/.agents/skills
+      # Adds a web_search tool that asks a search API instead of driving
+      # headless Chrome. Off until you name a provider, since it sends the
+      # agent's queries to that service. keenable needs no account; set
+      # KEENABLE_API_KEY in the environment for higher rate limits.
+      #web_search:
+      #  provider: keenable
       background_attr:
         bg: default
       user_msg_attr:

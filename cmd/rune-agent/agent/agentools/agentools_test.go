@@ -301,6 +301,10 @@ func TestSummary(t *testing.T) {
 		// request_skill
 		{"request_skill", NewRequestSkill(&mockPrompter{}), `{"skill":"web_search","description":"Search the web"}`, "web_search"},
 		{"request_skill invalid json", NewRequestSkill(&mockPrompter{}), `bad`, ""},
+		// web_search
+		{"web_search", NewWebSearch(nil), `{"query":"go generics"}`, `"go generics"`},
+		{"web_search with site", NewWebSearch(nil), `{"query":"WithTimeout","site":"pkg.go.dev"}`, `"WithTimeout" on pkg.go.dev`},
+		{"web_search invalid json", NewWebSearch(nil), `bad`, ""},
 		// compact
 		{"compact", newCompact(), `{}`, ""},
 	}
