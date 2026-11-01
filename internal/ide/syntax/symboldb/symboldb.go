@@ -781,8 +781,12 @@ func (s *scanProgress) done() {
 			return
 		}
 		total := int64(max(scanned, 1))
+		files := "files"
+		if scanned == 1 {
+			files = "file"
+		}
 		_ = s.notify.UpdateNotificationProgress(s.id,
-			fmt.Sprintf("Indexed %d files", scanned), total, total)
+			fmt.Sprintf("Indexed the symbols of %d %s", scanned, files), total, total)
 	})
 }
 

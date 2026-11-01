@@ -1652,32 +1652,55 @@ func TestListReferencedPassthroughConstructionIsLazy(t *testing.T) {
 }
 
 func TestScanReportsProgressNotifications(t *testing.T) {
-	e := newEnv(t)
-	rootFile := e.writeFile(t, "a.go")
-	subFile := e.writeFile(t, filepath.Join("pkg", "b.go"))
-	e.fake.setGoFile(rootFile, goFile{pkg: "mypkg", defs: []string{"Widget"}})
-	e.fake.setGoFile(subFile, goFile{pkg: "pkg", defs: []string{"Gadget"}})
-	p := e.start(t)
-	require.NoError(t, p.Wait(context.Background()))
-
-	notified, updates := e.notify.snapshot()
-	require.Equal(t, []string{"Indexing workspace symbols"}, notified)
-	require.NotEmpty(t, updates)
-
-	var dirs []string
-	for _, u := range updates {
-		assert.Equal(t, "n1", u.id)
-		if dir, ok := strings.CutPrefix(u.message, "Indexing symbols: "); ok {
-			dirs = append(dirs, dir)
-			assert.Less(t, u.progress, u.total)
-		}
+	tests := []struct {
+		name      string
+		files     []string
+		wantDirs  []string
+		wantFinal string
+	}{
+		{
+			name:      "one file",
+			files:     []string{"a.go"},
+			wantDirs:  []string{"."},
+			wantFinal: "Indexed the symbols of 1 file",
+		},
+		{
+			name:      "two files",
+			files:     []string{"a.go", filepath.Join("pkg", "b.go")},
+			wantDirs:  []string{".", "pkg"},
+			wantFinal: "Indexed the symbols of 2 files",
+		},
 	}
-	assert.ElementsMatch(t, []string{".", "pkg"}, dirs)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newEnv(t)
+			for _, name := range tt.files {
+				uri := e.writeFile(t, name)
+				e.fake.setGoFile(uri, goFile{pkg: "mypkg", defs: []string{"Widget"}})
+			}
+			p := e.start(t)
+			require.NoError(t, p.Wait(context.Background()))
 
-	final := updates[len(updates)-1]
-	assert.Equal(t, "Indexed 2 files", final.message)
-	assert.Equal(t, final.total, final.progress)
-	assert.Equal(t, int64(2), final.total)
+			notified, updates := e.notify.snapshot()
+			require.Equal(t, []string{"Indexing workspace symbols"}, notified)
+			require.NotEmpty(t, updates)
+
+			var dirs []string
+			for _, u := range updates {
+				assert.Equal(t, "n1", u.id)
+				if dir, ok := strings.CutPrefix(u.message, "Indexing symbols: "); ok {
+					dirs = append(dirs, dir)
+					assert.Less(t, u.progress, u.total)
+				}
+			}
+			assert.ElementsMatch(t, tt.wantDirs, dirs)
+
+			final := updates[len(updates)-1]
+			assert.Equal(t, tt.wantFinal, final.message)
+			assert.Equal(t, final.total, final.progress)
+			assert.Equal(t, int64(len(tt.files)), final.total)
+		})
+	}
 }
 
 func TestCleanupWorkspaceHook(t *testing.T) {
