@@ -301,10 +301,12 @@ func (c *Component) Init(
 		panic("text.Component: config.ScheduleNextTick must not be nil")
 	}
 	c.config = config
+	// The browser's repaints go out through EventPublisher, so a
+	// caller's Interrupter could only diverge from it.
+	c.config.Interrupter = browser.EventPublisherInterrupter(c)
 	c.ctx, c.cancelCtx = context.WithCancel(context.Background())
 
 	c.comp.Init(c.config.Config)
-	c.comp.SetInterrupter(browser.EventPublisherInterrupter(c))
 	c.comp.Subscribe((*handlerWindowSubscriber)(c))
 	c.fileRegistry = newFileCommandRegistryFromComponent(c)
 	c.pending = newPendingTabs(&c.comp, c.animateTabLoading)

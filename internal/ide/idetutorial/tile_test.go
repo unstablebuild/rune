@@ -106,7 +106,7 @@ func framedStyle() idetutorial.TileStyle {
 		FocusFrameCharSet: component.FrameCharSetHighlight(),
 		FrameAttr:         term.Attributes{Fg: term.ColorBlue},
 		FocusFrameAttr:    term.Attributes{Fg: term.ColorRed},
-		ScrollBarChar:     '#',
+		ScrollBarCharSet:  component.ScrollBarCharSet{Middle: '#'},
 	}
 }
 

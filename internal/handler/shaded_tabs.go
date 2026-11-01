@@ -65,12 +65,6 @@ func NewShadedTabs(tabs *Tabs, config ShadedTabsConfig) *ShadedTabs {
 	return &ShadedTabs{Tabs: tabs, config: config}
 }
 
-// SetInterrupter replaces the interrupter used the next time the effect
-// starts.
-func (s *ShadedTabs) SetInterrupter(i term.Interrupter) {
-	s.config.Interrupter = i
-}
-
 // Running reports whether the effect is running.
 func (s *ShadedTabs) Running() bool {
 	return s.shader != nil

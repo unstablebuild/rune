@@ -59,7 +59,7 @@ type TileStyle struct {
 	FrameAttr         term.Attributes
 	FocusFrameAttr    term.Attributes
 	ScrollBarAttr     term.Attributes
-	ScrollBarChar     rune
+	ScrollBarCharSet  component.ScrollBarCharSet
 	Prompt            PromptStyle
 }
 
@@ -136,7 +136,7 @@ func NewTile(tut Tutorial, style TileStyle, onBack, onAdvance, onStop func()) *T
 	if style.Frame {
 		t.frame = handler.NewFrame(t.body)
 		t.frame.ScrollBarAttributes = style.ScrollBarAttr
-		t.frame.ScrollBarChar = style.ScrollBarChar
+		t.frame.ScrollBarCharSet = style.ScrollBarCharSet
 		t.outer = t.frame
 		t.SetFocused(false)
 	}

@@ -640,8 +640,47 @@ func TestCompleteHandlerCommandAsync(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, gotFloating)
 
-	// Wait for the goroutine to finish by closing.
-	require.NoError(t, gotFloating.Close())
+	t.Cleanup(func() { require.NoError(t, gotFloating.Close()) })
+	floating := gotFloating.(*completionHandler)
+	<-floating.fetchDone.Done()
+	<-floating.drainDone.Done()
+
+	w, height := gotFloating.Dimensions()
+	gotFloating.Resize(w, height)
+	sw := term.NewStringWriter(w, height)
+	for _, step := range []struct {
+		name  string
+		key   term.Key
+		focus int
+	}{
+		{name: "initial selection", focus: 0},
+		{name: "move down", key: term.KeyArrowDown, focus: 1},
+		{name: "move up", key: term.KeyArrowUp, focus: 0},
+	} {
+		t.Run(step.name, func(t *testing.T) {
+			if step.key != 0 {
+				exit, handled := gotFloating.Handle(term.Event{Type: term.EventKey, Key: step.key})
+				assert.False(t, exit)
+				require.True(t, handled)
+			}
+			gotFloating.Draw(sw)
+			require.NoError(t, sw.Flush())
+			cells := sw.Cells()
+			for y, item := range items {
+				want := term.Attributes{Fg: term.ColorGray}
+				if y == step.focus {
+					want = term.Attributes{Fg: term.ColorWhite, Bg: term.ColorGray}
+				}
+				for x := range w {
+					cell := cells[y*w+x]
+					assert.Equal(t, want.Bg, cell.Bg, "row %d column %d background", y, x)
+					if x < len(item.Label) {
+						assert.Equal(t, want.Fg, cell.Fg, "row %d column %d foreground", y, x)
+					}
+				}
+			}
+		})
+	}
 }
 
 func TestCompletionCloseLeavesItsWindow(t *testing.T) {

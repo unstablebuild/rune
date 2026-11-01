@@ -158,17 +158,6 @@ func TestShadedTabsWithoutShaderDrawsTabs(t *testing.T) {
 	}
 }
 
-func TestShadedTabsSetInterrupter(t *testing.T) {
-	s := newTestShadedTabs(ShadedTabsConfig{
-		Shader: "pulse",
-		Active: func() []int { return nil },
-	})
-	require.False(t, s.SetRunning(true))
-	s.SetInterrupter(term.NopInterrupter())
-	require.True(t, s.SetRunning(true))
-	require.True(t, s.SetRunning(false))
-}
-
 func TestShadedTabsHonoursConfiguredFPS(t *testing.T) {
 	for _, tc := range []struct {
 		name string

@@ -17,6 +17,7 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -26,11 +27,14 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/tcell/v3"
 	"unstable.build/rune/internal/handler/handlertest"
+	"unstable.build/rune/internal/handler/quickmenu"
 	"unstable.build/rune/internal/ide"
 	"unstable.build/rune/internal/ide/starlarkconfig"
+	"unstable.build/rune/internal/sounds"
 	"unstable.build/rune/internal/term/gui"
 	"unstable.build/rune/internal/term/gui/glassbar"
 )
@@ -279,19 +283,169 @@ func TestQuickMenuUnavailableWithoutButtons(t *testing.T) {
 	require.Zero(t, b.quickMenuCells())
 }
 
-func TestLoadQuickMenuKeepsValidButtons(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.star")
-	require.NoError(t, os.WriteFile(path, []byte(
+func TestReadQuickMenuKeepsValidEntries(t *testing.T) {
+	terminal := `{"symbol": "terminal", "title": "New Terminal", "command": "terminalnew"}`
+	tests := []struct {
+		name        string
+		config      string
+		wantButtons []ide.QuickMenuButton
+		wantSounds  quickmenu.Sounds
+	}{
+		{
+			name: "invalid buttons are dropped",
+			config: `config["gui"]["quick_menu"] = [` + terminal + `, ` +
+				`{"symbol": "not a symbol", "command": "help"}]`,
+			wantButtons: []ide.QuickMenuButton{{Symbol: "terminal",
+				Title: "New Terminal", Command: []string{"terminalnew"}}},
+		},
+		{
+			name: "a sound from sounds is kept and an unknown one plays none",
+			config: `config["gui"]["quick_menu"] = [` + terminal + `]` + "\n" +
+				`config["sounds"]["tick"] = "/tick.wav"` + "\n" +
+				`config["gui"]["quick_menu_sounds"] = {"hover": "tick", "click": "tikc"}`,
+			wantButtons: []ide.QuickMenuButton{{Symbol: "terminal",
+				Title: "New Terminal", Command: []string{"terminalnew"}}},
+			wantSounds: quickmenu.Sounds{Hover: "tick"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.star")
+			require.NoError(t, os.WriteFile(path, []byte(tt.config+"\n"), 0o644))
+			buttons, soundNames := readQuickMenu(path)
+			assert.Equal(t, tt.wantButtons, buttons)
+			assert.Equal(t, tt.wantSounds, soundNames)
+		})
+	}
+}
+
+func TestNewQuickMenuBarPlaysTheConfiguredSounds(t *testing.T) {
+	idle := "file:///nonexistent/help.png"
+	menu := []ide.QuickMenuButton{{Title: "Help", Command: []string{"help"},
+		Sprite: ide.QuickMenuSprite{Idle: idle, Hover: idle, Pressed: idle}}}
+	var played, activated []string
+	bar := newQuickMenuBar(menu, quickmenu.Sounds{Hover: "tick", Click: "clack"},
+		storagestub.NewInMemoryService(), func(term.Event) bool { return true },
+		sounds.PlayerFunc(func(name string) { played = append(played, name) }),
+		func(id string) { activated = append(activated, id) })
+	t.Cleanup(func() { assert.NoError(t, bar.Close()) })
+	bar.Resize(80, 24)
+
+	for _, ev := range []term.Event{
+		{Type: term.EventMouse, MouseX: 76, MouseY: 4},
+		{Type: term.EventMouse, Key: term.MouseLeft, MouseX: 76, MouseY: 4},
+		{Type: term.EventMouse, Key: term.MouseRelease, MouseX: 76, MouseY: 4},
+	} {
+		bar.Handle(ev)
+	}
+	assert.Equal(t, []string{"tick", "clack"}, played)
+	assert.Equal(t, []string{"help"}, activated)
+}
+
+func TestQuickMenuSpritesHaveRuneDrawTheBar(t *testing.T) {
+	stub := stubOpenPanel(t)
+	b := newConfiguredBootstrapForEnvTest(t, configStarFilename,
 		`config["gui"]["quick_menu"] = [`+
-			`{"symbol": "terminal", "title": "New Terminal", "command": "terminalnew"},`+
-			`{"symbol": "not a symbol", "command": "help"},`+
-			`]`+"\n"), 0o644))
+			`{"title": "Open Project", "command": "workspaceopen", `+
+			`"sprite": {"idle": "file:///nonexistent/open.png"}},`+
+			`]`+"\n", t.TempDir())
+	require.NotNil(t, b.quickMenuBar)
+	assert.True(t, b.quickMenuVisible(), "Rune draws the bar on every platform")
+	assert.Equal(t, quickMenuColumnCells, b.realIDE.RightInset())
+	assert.Empty(t, b.quickMenuButtons(), "the native bar must stay empty")
 
-	b := &bootstrapHandler{configPath: path}
-	b.loadQuickMenu()
+	handle := func(key term.Key, x, y int) bool {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		_, handled := b.Handle(term.Event{Type: term.EventMouse, Key: key, MouseX: x, MouseY: y})
+		return handled
+	}
+	b.mu.Lock()
+	b.Resize(80, 24)
+	b.mu.Unlock()
+	// The bar fills the last 5 columns from row 3, and the first button
+	// is right below its top.
+	require.True(t, handle(term.MouseLeft, 76, 4))
+	require.True(t, handle(term.MouseRelease, 76, 4))
+	require.Len(t, stub.opts, 1, "the click must run the button's command")
+	assert.Equal(t, appMenuPanelCommands["workspaceopen"], stub.opts[0])
 
-	require.Equal(t, []ide.QuickMenuButton{{Symbol: "terminal",
-		Title: "New Terminal", Command: []string{"terminalnew"}}}, b.quickMenu)
+	b.mu.Lock()
+	b.setQuickMenuVisible(false)
+	b.mu.Unlock()
+	assert.Zero(t, b.realIDE.RightInset())
+	handle(term.MouseLeft, 76, 4)
+	handle(term.MouseRelease, 76, 4)
+	assert.Len(t, stub.opts, 1, "a hidden bar must not take clicks")
+}
+
+// pointingHandler shows the text pointer for every mouse event.
+type pointingHandler struct{ fakeHandler }
+
+func (p *pointingHandler) Handle(ev term.Event) (exit, handled bool) {
+	term.SetPointerShape(ev, term.PointerText)
+	return p.fakeHandler.Handle(ev)
+}
+
+func TestQuickMenuBarRoutesTheMouse(t *testing.T) {
+	inner := &pointingHandler{}
+	idle := "file:///nonexistent/help.png"
+	menu := []ide.QuickMenuButton{{Title: "Help", Command: []string{"help"},
+		Sprite: ide.QuickMenuSprite{Idle: idle, Hover: idle, Pressed: idle}}}
+	storage := storagestub.NewInMemoryService()
+	publish := func(term.Event) bool { return true }
+	b := &bootstrapHandler{
+		inner:        inner,
+		storage:      storage,
+		publishEvent: publish,
+		quickMenu:    menu,
+		quickMenuBar: newQuickMenuBar(menu, quickmenu.Sounds{}, storage, publish,
+			sounds.Silent, func(string) {}),
+	}
+	t.Cleanup(func() { assert.NoError(t, b.Close()) })
+	b.Resize(80, 24)
+
+	steps := []struct {
+		name          string
+		key           term.Key
+		x, y          int
+		handled       bool
+		reachesIDE    bool
+		shape         term.PointerShape
+		hideBeforeHit bool
+	}{
+		{name: "a motion over the bar", x: 76, y: 4,
+			reachesIDE: true, shape: term.PointerLink},
+		{name: "a motion over the editor", x: 10, y: 10,
+			reachesIDE: true, shape: term.PointerText},
+		{name: "a press on a button", key: term.MouseLeft, x: 76, y: 4,
+			handled: true, shape: term.PointerLink},
+		{name: "its drag off the button", key: term.MouseLeft, x: 10, y: 10,
+			handled: true},
+		{name: "its release off the button", key: term.MouseRelease, x: 10, y: 10,
+			handled: true},
+		{name: "a press in the editor", key: term.MouseLeft, x: 10, y: 10,
+			reachesIDE: true, shape: term.PointerText},
+		{name: "its release over the bar", key: term.MouseRelease, x: 76, y: 4,
+			reachesIDE: true, shape: term.PointerText},
+		{name: "a press on a hidden bar", key: term.MouseLeft, x: 76, y: 4,
+			reachesIDE: true, shape: term.PointerText, hideBeforeHit: true},
+	}
+	for _, s := range steps {
+		if s.hideBeforeHit {
+			b.setQuickMenuVisible(false)
+		}
+		calls := inner.handleCalls
+		p := new(term.Pointer)
+		_, handled := b.Handle(term.Event{
+			Type: term.EventMouse, Key: s.key, MouseX: s.x, MouseY: s.y,
+			Context: term.ContextWithPointer(context.Background(), p),
+		})
+		assert.Equal(t, s.handled, handled, s.name)
+		assert.Equal(t, s.reachesIDE, inner.handleCalls > calls, "%s reaches the IDE", s.name)
+		shape, _ := p.Shape()
+		assert.Equal(t, s.shape, shape, "%s pointer", s.name)
+	}
 }
 
 func TestApplyInitialThemeAttrHoldsEventLoopLock(t *testing.T) {

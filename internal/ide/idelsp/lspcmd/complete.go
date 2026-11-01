@@ -142,7 +142,7 @@ func (h *completeHandler) HandleCommand(ctx context.Context, cmd textapi.Command
 	drainDone, drainDoneCancel := context.WithCancel(context.Background())
 
 	list := component.NewFocusList()
-	list.SetFocusAttr(term.Attributes{Fg: term.ColorWhite})
+	list.SetFocusAttr(term.Attributes{Fg: term.ColorWhite, Bg: term.ColorGray})
 
 	floating := &completionHandler{
 		list:        list,
@@ -230,7 +230,7 @@ type completionHandler struct {
 // Used in tests that need a synchronously filled handler.
 func newCompletionHandler(labels []string) *completionHandler {
 	list := component.NewFocusList()
-	list.SetFocusAttr(term.Attributes{Fg: term.ColorWhite})
+	list.SetFocusAttr(term.Attributes{Fg: term.ColorWhite, Bg: term.ColorGray})
 	strCfg := component.StringConfig{
 		Attributes: term.Attributes{Fg: term.ColorGray},
 	}

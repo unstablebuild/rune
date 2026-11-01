@@ -75,13 +75,13 @@ func dragConfig() Config {
 	return cfg
 }
 
-// splitBrowser returns a browser with two side-by-side windows, the
-// right one focused.
-func splitBrowser(t *testing.T, width, height int) (
+// splitBrowser returns a browser built from cfg with two side-by-side
+// windows, the right one focused.
+func splitBrowser(t *testing.T, cfg Config, width, height int) (
 	b *Component, left, right Window, leftH, rightH *dropRecorder,
 ) {
 	t.Helper()
-	b = NewComponent(dragConfig())
+	b = NewComponent(cfg)
 
 	uriA, err := workspaceapi.ParseURI("file:///a")
 	require.NoError(t, err)
@@ -115,7 +115,7 @@ func windowCenter(b *Component, win Window) term.Coordinates {
 }
 
 func TestComponentWindowAt(t *testing.T) {
-	b, left, right, _, _ := splitBrowser(t, 40, 10)
+	b, left, right, _, _ := splitBrowser(t, dragConfig(), 40, 10)
 
 	got, ok := b.WindowAt(windowCenter(b, left))
 	require.True(t, ok)
@@ -133,7 +133,7 @@ func TestComponentWindowAt(t *testing.T) {
 }
 
 func TestComponentDragDropFocusesTargetWindow(t *testing.T) {
-	b, left, right, leftH, rightH := splitBrowser(t, 40, 10)
+	b, left, right, leftH, rightH := splitBrowser(t, dragConfig(), 40, 10)
 	require.Equal(t, right, b.Focus())
 
 	paths := []string{"/tmp/a.png", "/tmp/b.txt"}
@@ -149,7 +149,7 @@ func TestComponentDragDropFocusesTargetWindow(t *testing.T) {
 }
 
 func TestComponentDragDropWithoutWindowIsNoOp(t *testing.T) {
-	b, _, _, leftH, rightH := splitBrowser(t, 40, 10)
+	b, _, _, leftH, rightH := splitBrowser(t, dragConfig(), 40, 10)
 
 	assert.False(t, b.DragDrop(term.Coordinates{X: -1, Y: -1}, []string{"/tmp/a"}))
 	assert.False(t, b.DragDrop(term.Coordinates{X: 5, Y: 5}, nil))
@@ -158,7 +158,7 @@ func TestComponentDragDropWithoutWindowIsNoOp(t *testing.T) {
 }
 
 func TestComponentDragVeilTogglesOnDraw(t *testing.T) {
-	b, left, right, _, _ := splitBrowser(t, 60, 10)
+	b, left, right, _, _ := splitBrowser(t, dragConfig(), 60, 10)
 
 	require.True(t, b.DragHover(windowCenter(b, left)))
 	assert.Contains(t, drawString(b, 60, 10), "Drop files here")
@@ -173,7 +173,7 @@ func TestComponentDragVeilTogglesOnDraw(t *testing.T) {
 }
 
 func TestComponentDragHoverOutsideClearsTarget(t *testing.T) {
-	b, left, _, _, _ := splitBrowser(t, 60, 10)
+	b, left, _, _, _ := splitBrowser(t, dragConfig(), 60, 10)
 
 	require.True(t, b.DragHover(windowCenter(b, left)))
 	assert.False(t, b.DragHover(term.Coordinates{X: -1, Y: -1}))
@@ -181,7 +181,7 @@ func TestComponentDragHoverOutsideClearsTarget(t *testing.T) {
 }
 
 func TestComponentDragDropClearsVeil(t *testing.T) {
-	b, left, _, _, _ := splitBrowser(t, 60, 10)
+	b, left, _, _, _ := splitBrowser(t, dragConfig(), 60, 10)
 
 	require.True(t, b.DragHover(windowCenter(b, left)))
 	require.True(t, b.DragDrop(windowCenter(b, left), []string{"/tmp/a.png"}))
@@ -189,15 +189,16 @@ func TestComponentDragDropClearsVeil(t *testing.T) {
 }
 
 func TestComponentDragVeilAnimates(t *testing.T) {
-	b, left, _, _, _ := splitBrowser(t, 60, 10)
 	interrupts := make(chan struct{}, 64)
-	b.SetInterrupter(term.FuncInterrupter(func(context.Context) error {
+	cfg := dragConfig()
+	cfg.Interrupter = term.FuncInterrupter(func(context.Context) error {
 		select {
 		case interrupts <- struct{}{}:
 		default:
 		}
 		return nil
-	}))
+	})
+	b, left, _, _, _ := splitBrowser(t, cfg, 60, 10)
 
 	require.True(t, b.DragHover(windowCenter(b, left)))
 	for range 2 {

@@ -18,11 +18,16 @@ package browsertest
 
 import (
 	"context"
+	"net/url"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/component/comptest"
@@ -30,6 +35,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	tcomponent "unstable.build/rune/internal/component"
+	"unstable.build/rune/internal/component/imageuri/imageuritest"
 
 	"unstable.build/rune/internal/browser"
 )
@@ -922,6 +928,107 @@ func TestComponentSetFocus(t *testing.T) {
 	prev = c.SetFocus(win1)
 	assert.Equal(t, win2, prev)
 	assert.Equal(t, win1, c.Focus())
+}
+
+func TestComponentKeepsFrameImagesAtFocusedCorners(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "frame.png")
+	require.NoError(t, os.WriteFile(path, imageuritest.StatusBarLeftPNG, 0o600))
+	uri := (&url.URL{Scheme: "file", Path: filepath.ToSlash(path)}).String()
+	graphics := component.FrameCharSetGraphics{
+		TopLeft: uri, TopRight: uri, BottomLeft: uri, BottomRight: uri,
+		HorizontalTop: uri, HorizontalBottom: uri,
+		VerticalLeft: uri, VerticalRight: uri,
+	}
+
+	for _, tcase := range []struct {
+		name      string
+		focusLeft bool
+		tabOffset int
+	}{
+		{"left window focused", true, 0},
+		{"right window focused", false, 0},
+		{"tab bar offset", true, 4},
+	} {
+		t.Run(tcase.name, func(t *testing.T) {
+			cfg := browser.DefaultConfig()
+			cfg.FrameUnion = false
+			cfg.TabBarOffset = tcase.tabOffset
+			cfg.WindowManagerConfig.FrameCharSet.Graphics = graphics
+			cfg.WindowManagerConfig.FocusFrameCharSet.Graphics = graphics
+			cfg.WindowManagerConfig.FrameGraphicsStorage = storagestub.NewInMemoryService()
+			loaded := make(frameImageInterrupter, 1)
+			cfg.Interrupter = loaded
+			c := browser.NewComponent(cfg)
+			defer func() { assert.NoError(t, c.Close()) }()
+			c.Resize(30, 10)
+			left := c.Focus()
+			_, ok := c.Split(browserapi.OrientationRight, left, NewTestHandler())
+			require.True(t, ok)
+			if tcase.focusLeft {
+				c.SetFocus(left)
+			}
+
+			c.Draw(newFrameImageScreen(30, 10))
+			select {
+			case <-loaded:
+			case <-time.After(5 * time.Second):
+				require.FailNow(t, "frame image did not load")
+			}
+			screen := newFrameImageScreen(30, 10)
+			c.Draw(screen)
+
+			assert.Empty(t, screen.covered, "cells drawn over frame images")
+			pos := c.WindowManagerPosition()
+			width, height := c.WindowManagerSize()
+			x := pos.X + width - 1
+			if tcase.focusLeft {
+				x = pos.X
+			}
+			for _, corner := range []term.Coordinates{
+				{X: x, Y: pos.Y}, {X: x, Y: pos.Y + height - 1},
+			} {
+				assert.True(t, screen.images[corner], "no frame image at %v", corner)
+			}
+		})
+	}
+}
+
+// frameImageScreen records where images are drawn, and the cells written
+// over them afterwards, which hide them.
+type frameImageScreen struct {
+	*term.StringWriter
+	images  map[term.Coordinates]bool
+	covered []term.Coordinates
+}
+
+func newFrameImageScreen(width, height int) *frameImageScreen {
+	return &frameImageScreen{
+		StringWriter: term.NewStringWriter(width, height),
+		images:       make(map[term.Coordinates]bool),
+	}
+}
+
+func (s *frameImageScreen) DrawImage(img term.Image) bool {
+	s.images[img.Pos] = true
+	return true
+}
+
+func (s *frameImageScreen) SetCell(pos term.Coordinates, c term.Cell) {
+	if s.images[pos] {
+		delete(s.images, pos)
+		s.covered = append(s.covered, pos)
+	}
+	s.StringWriter.SetCell(pos, c)
+}
+
+type frameImageInterrupter chan struct{}
+
+func (i frameImageInterrupter) Interrupt(context.Context) error {
+	select {
+	case i <- struct{}{}:
+	default:
+	}
+	return nil
 }
 
 func TestComponentOnTabsClick(t *testing.T) {

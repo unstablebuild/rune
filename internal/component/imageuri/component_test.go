@@ -235,6 +235,22 @@ abc⠅efg`},
 			wantFetches: 1,
 		},
 		{
+			name:   "draws nothing while loading when HideLoading",
+			source: "http", path: "pending.png",
+			width: 7, height: 1,
+			style: &imageuri.Style{HideLoading: true},
+			under: "abcdefg",
+			steps: []step{
+				{do: resize(7, 1), expected: `
+abcdefg`},
+				{do: awaitRequest, expected: `
+abcdefg`},
+				{expected: `
+abcdefg`},
+			},
+			wantFetches: 1,
+		},
+		{
 			name:   "re-encodes the image when resized",
 			source: "http", path: "sample.png",
 			width: 40, height: 10, images: true,
@@ -331,9 +347,22 @@ ab✗de`},
 			source: "fs", path: "missing.png",
 			width: 5, height: 1,
 			style: &imageuri.Style{},
+			under: "abcde",
 			steps: []step{
 				{do: seq(resize(5, 1), settle), expected: `
-     `},
+abcde`},
+			},
+			wantFetches: 1,
+		},
+		{
+			name:   "draws nothing for an empty problem art when the writer cannot draw images",
+			source: "fs", path: "sample.png",
+			width: 1, height: 1,
+			style: &imageuri.Style{},
+			under: "a",
+			steps: []step{
+				{do: seq(resize(1, 1), settle), expected: `
+a`},
 			},
 			wantFetches: 1,
 		},

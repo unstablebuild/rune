@@ -54,6 +54,7 @@ import (
 	tcomponent "unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/component/asciiart"
 	"unstable.build/rune/internal/component/imagecomp"
+	"unstable.build/rune/internal/component/imageuri"
 	"unstable.build/rune/internal/component/notifications"
 	"unstable.build/rune/internal/component/shader/glslshader"
 	"unstable.build/rune/internal/component/shader/shaderloop"
@@ -111,8 +112,11 @@ const (
 
 	keyCommandKeyBindingHintFocusColor = "key_binding_hint_focus_color"
 
-	keyGUI       = "gui"
-	keyQuickMenu = "quick_menu"
+	keyGUI             = "gui"
+	keyQuickMenu       = "quick_menu"
+	keyQuickMenuSounds = "quick_menu_sounds"
+	keyQuickMenuHover  = "hover"
+	keyQuickMenuClick  = "click"
 
 	keySounds       = "sounds"
 	keyTerminal     = "terminal"
@@ -131,13 +135,26 @@ const (
 // C string boundary.
 var quickMenuSymbolRe = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 
-// QuickMenuButton is one button of the native quick menu and the Rune
-// command it runs. Symbol is an SF Symbol name.
+// QuickMenuButton is one button of the quick menu and the Rune command
+// it runs. Symbol is the SF Symbol name the native bar draws. A Sprite
+// has Rune draw the bar instead; either every button has one or none
+// does, and Symbol is empty when it was left out for one.
 type QuickMenuButton struct {
 	Symbol  string
 	Title   string
 	Command []string
+	Sprite  QuickMenuSprite
 }
+
+// QuickMenuSprite is the image URIs a quick menu button shows while
+// idle, under the pointer and pressed. Either all are set or none is.
+type QuickMenuSprite struct {
+	Idle, Hover, Pressed string
+}
+
+// HasSprite reports whether Rune draws the button rather than the
+// native bar.
+func (b QuickMenuButton) HasSprite() bool { return b.Sprite.Idle != "" }
 
 // ID identifies the button to the native bar and keys the key-binding
 // lookup that renders its accelerator.
@@ -152,6 +169,24 @@ func QuickMenuButtons(cfg config.Config) []QuickMenuButton {
 		return nil
 	}
 	return parseQuickMenuButtons(guiCfg, map[string]error{})
+}
+
+// QuickMenuSounds reads `gui.quick_menu_sounds`: the names of the sounds
+// the Rune-drawn quick menu plays when the pointer moves onto a button
+// and when a button is clicked. "" plays none, and so does what is left
+// unset or validateSounds reports.
+func QuickMenuSounds(cfg config.Config) (hover, click string) {
+	guiCfg, err := cfg.GetConfig(keyGUI)
+	if err != nil {
+		return "", ""
+	}
+	soundsCfg, err := guiCfg.GetConfig(keyQuickMenuSounds)
+	if err != nil {
+		return "", ""
+	}
+	hover, _ = soundsCfg.GetString(keyQuickMenuHover)
+	click, _ = soundsCfg.GetString(keyQuickMenuClick)
+	return hover, click
 }
 
 func parseQuickMenuButtons(
@@ -171,6 +206,7 @@ func parseQuickMenuButtons(
 		entries = entries[:maxQuickMenuButtons]
 	}
 	ret := make([]QuickMenuButton, 0, len(entries))
+	paths := make([]string, 0, len(entries))
 	seen := make(map[string]bool, len(entries))
 	for i, entry := range entries {
 		path := fmt.Sprintf("%s.%s[%d]", keyGUI, keyQuickMenu, i)
@@ -188,8 +224,23 @@ func parseQuickMenuButtons(
 		}
 		seen[button.ID()] = true
 		ret = append(ret, *button)
+		paths = append(paths, path)
 	}
-	return ret
+	if !slices.ContainsFunc(ret, QuickMenuButton.HasSprite) {
+		return ret
+	}
+	// The Rune-drawn bar has no SF Symbols to fall back on, so a button
+	// without a sprite could not be drawn at all.
+	kept := ret[:0]
+	for i, button := range ret {
+		if button.HasSprite() {
+			kept = append(kept, button)
+			continue
+		}
+		errs[paths[i]+".sprite"] = errors.New("required because other " +
+			"buttons set one: set a sprite on every button or on none")
+	}
+	return kept
 }
 
 // parseQuickMenuButton returns a nil button when a field-level error was
@@ -201,22 +252,32 @@ func parseQuickMenuButton(
 	m, ok := entry.(map[string]any)
 	if !ok {
 		return nil, errors.New("expected a dict with 'symbol', " +
-			"'title' and 'command' keys")
+			"'title', 'command' and 'sprite' keys")
 	}
 	for key := range m {
 		switch key {
-		case "symbol", "title", "command":
+		case "symbol", "title", "command", "sprite":
 		default:
 			return nil, fmt.Errorf("unknown key %q", key)
 		}
 	}
 
-	symbol, ok := m["symbol"].(string)
-	if !ok {
-		errs[path+".symbol"] = errors.New("required, must be an SF Symbol name")
-		return nil, nil
+	var sprite QuickMenuSprite
+	if raw, ok := m["sprite"]; ok {
+		if sprite, ok = parseQuickMenuSprite(raw, path+".sprite", errs); !ok {
+			return nil, nil
+		}
 	}
-	if !quickMenuSymbolRe.MatchString(symbol) {
+
+	raw, hasSymbol := m["symbol"]
+	symbol, ok := raw.(string)
+	switch {
+	case !hasSymbol && sprite.Idle != "":
+	case !ok:
+		errs[path+".symbol"] = errors.New("must be an SF Symbol name, " +
+			"required unless 'sprite' is set")
+		return nil, nil
+	case !quickMenuSymbolRe.MatchString(symbol):
 		errs[path+".symbol"] = fmt.Errorf(
 			"%q is not a valid SF Symbol name", symbol)
 		return nil, nil
@@ -237,7 +298,65 @@ func parseQuickMenuButton(
 		}
 	}
 
-	return &QuickMenuButton{Symbol: symbol, Title: title, Command: cmdAndArgs}, nil
+	return &QuickMenuButton{
+		Symbol: symbol, Title: title, Command: cmdAndArgs, Sprite: sprite,
+	}, nil
+}
+
+// parseQuickMenuSprite records every error under path and reports
+// whether there were none.
+func parseQuickMenuSprite(
+	raw any, path string, errs map[string]error,
+) (QuickMenuSprite, bool) {
+	m, ok := raw.(map[string]any)
+	if !ok {
+		errs[path] = errors.New("expected a dict with 'idle', 'hover' " +
+			"and 'pressed' image URIs")
+		return QuickMenuSprite{}, false
+	}
+	var sprite QuickMenuSprite
+	ok = true
+	for _, key := range slices.Sorted(maps.Keys(m)) {
+		var slot *string
+		switch key {
+		case "idle":
+			slot = &sprite.Idle
+		case "hover":
+			slot = &sprite.Hover
+		case "pressed":
+			slot = &sprite.Pressed
+		default:
+			errs[path] = fmt.Errorf("unknown key %q", key)
+			ok = false
+			continue
+		}
+		uri, isString := m[key].(string)
+		if !isString {
+			errs[path+"."+key] = errors.New("must be an image URI")
+			ok = false
+			continue
+		}
+		if err := imageuri.ValidateURI(uri); err != nil {
+			errs[path+"."+key] = err
+			ok = false
+			continue
+		}
+		*slot = uri
+	}
+	if !ok {
+		return QuickMenuSprite{}, false
+	}
+	if sprite.Idle == "" {
+		errs[path+".idle"] = errors.New("required")
+		return QuickMenuSprite{}, false
+	}
+	if sprite.Hover == "" {
+		sprite.Hover = sprite.Idle
+	}
+	if sprite.Pressed == "" {
+		sprite.Pressed = sprite.Hover
+	}
+	return sprite, true
 }
 
 func parseQuickMenuCommand(raw any) ([]string, error) {
@@ -1174,9 +1293,26 @@ func (c ideConfig) commandPromptSeparatorCharset() commandPromptSeparatorCharset
 	return out
 }
 
+// commandPromptFrameCharset returns command.frame_charset, whose missing
+// slots keep those of the window frame charset, and whether it is set.
+func (c ideConfig) commandPromptFrameCharset() (component.FrameCharSet, bool) {
+	cmd, ok := c.command()
+	if !ok {
+		return component.FrameCharSet{}, false
+	}
+	cs, err := tconfig.GetFrameCharset(cmd, "frame_charset", c.windowFrameCharset())
+	if err != nil {
+		if err != config.ErrNotFound {
+			c.errors["command.frame_charset"] = err
+		}
+		return component.FrameCharSet{}, false
+	}
+	return cs, true
+}
+
 func (c ideConfig) commandPromptCfg() commandPromptConfig {
 	hintLookup := c.commandKeyBindingHintLookup()
-	return commandPromptConfig{
+	cfg := commandPromptConfig{
 		shader:    c.commandPromptShaderCfg(),
 		separator: c.commandPromptSeparatorCharset(),
 		keyBindingHint: func(line string) string {
@@ -1187,6 +1323,10 @@ func (c ideConfig) commandPromptCfg() commandPromptConfig {
 			Fg: c.commandKeyBindingHintFocusColor(),
 		},
 	}
+	if cs, ok := c.commandPromptFrameCharset(); ok {
+		cfg.frameCharSet = &cs
+	}
+	return cfg
 }
 
 // commandKeyBindingHintColor returns the color of the right-aligned
@@ -2552,27 +2692,80 @@ func (c ideConfig) windowScrollBarAttr() (attr term.Attributes) {
 	return c.windowAttr("scroll_bar_attr", defaultWindowManagerConfig.ScrollBarAttr)
 }
 
-func (c ideConfig) windowScrollBarChar() (ch rune) {
+// windowScrollBarCharsets reads window_manager.scroll_bar_charset. Only
+// older user configurations set scroll_bar_char and scroll_bar_hover_char,
+// so they replace its middle_char and hover_middle_char, which the
+// defaults set. outset is the cells left of the bar that its images
+// cover.
+func (c ideConfig) windowScrollBarCharsets() (
+	cs, hover component.ScrollBarCharSet, outset int,
+) {
+	cs = defaultWindowManagerConfig.ScrollBarCharSet
+	hover = defaultWindowManagerConfig.ScrollBarHoverCharSet
+	outset = defaultWindowManagerConfig.ScrollBarOutset
 	cfg, ok := c.windowManager()
 	if !ok {
 		return
 	}
-	r, err := cfg.GetRune("scroll_bar_char")
-	if err == nil {
-		ch = r
-	}
-	return
-}
+	defer func() {
+		for _, legacy := range []struct {
+			key string
+			dst *rune
+		}{
+			{"scroll_bar_char", &cs.Middle},
+			{"scroll_bar_hover_char", &hover.Middle},
+		} {
+			if r, err := cfg.GetRune(legacy.key); err == nil {
+				*legacy.dst = r
+			}
+		}
+	}()
 
-func (c ideConfig) windowScrollBarHoverChar() (ch rune) {
-	cfg, ok := c.windowManager()
-	if !ok {
+	sub, err := cfg.GetConfig("scroll_bar_charset")
+	if err != nil {
+		if err != config.ErrNotFound {
+			c.errors["window_manager.scroll_bar_charset"] = err
+		}
 		return
 	}
-	r, err := cfg.GetRune("scroll_bar_hover_char")
-	if err == nil {
-		ch = r
+	for _, f := range []struct {
+		key string
+		dst *rune
+	}{
+		{"top_char", &cs.Top},
+		{"middle_char", &cs.Middle},
+		{"bottom_char", &cs.Bottom},
+		{"hover_top_char", &hover.Top},
+		{"hover_middle_char", &hover.Middle},
+		{"hover_bottom_char", &hover.Bottom},
+	} {
+		r, err := sub.GetRune(f.key)
+		if err != nil {
+			if err != config.ErrNotFound {
+				c.errors["window_manager.scroll_bar_charset."+f.key] = err
+			}
+			continue
+		}
+		*f.dst = r
 	}
+
+	g, hg := cs.Graphics, hover.Graphics
+	if err := tconfig.GetGraphics(sub, "graphics", &g.Overlay,
+		tconfig.GraphicsSlot{Key: "top_char", URI: &g.Top},
+		tconfig.GraphicsSlot{Key: "middle_char", URI: &g.Middle},
+		tconfig.GraphicsSlot{Key: "bottom_char", URI: &g.Bottom},
+		tconfig.GraphicsSlot{Key: "hover_top_char", URI: &hg.Top},
+		tconfig.GraphicsSlot{Key: "hover_middle_char", URI: &hg.Middle},
+		tconfig.GraphicsSlot{Key: "hover_bottom_char", URI: &hg.Bottom},
+	); err != nil {
+		c.errors["window_manager.scroll_bar_charset"] = err
+		return
+	}
+	hg.Overlay = g.Overlay
+	cs.Graphics, hover.Graphics = g, hg
+	c.graphicsOutset(sub, "window_manager.scroll_bar_charset",
+		outsetSide{&outset, "left"},
+	)
 	return
 }
 
@@ -2624,7 +2817,60 @@ func (c ideConfig) windowBarCharset() (cs tcomponent.WindowBarCharSet) {
 		}
 		*f.dst = r
 	}
+	g := cs.Graphics
+	if err := tconfig.GetGraphics(sub, "graphics", &g.Overlay,
+		tconfig.GraphicsSlot{Key: "left", URI: &g.Left},
+		tconfig.GraphicsSlot{Key: "horizontal", URI: &g.Horizontal},
+		tconfig.GraphicsSlot{Key: "right", URI: &g.Right},
+	); err != nil {
+		c.errors["window_manager.window_bar_charset"] = err
+		return
+	}
+	c.graphicsOutset(sub, "window_manager.window_bar_charset",
+		outsetSide{&g.Outset.Top, "top"},
+		outsetSide{&g.Outset.Bottom, "bottom"},
+		outsetSide{&g.Outset.Sides, "sides"},
+		outsetSide{&g.Outset.Inward, "inward"},
+		outsetSide{&g.Outset.HorizontalTop, "horizontal_top"},
+	)
+	cs.Graphics = g
 	return
+}
+
+// outsetSide is a side of a graphics outset, read from key into dst.
+type outsetSide struct {
+	dst *int
+	key string
+}
+
+// graphicsOutset reads into sides the "outset" table of cfg's graphics
+// table, reporting its errors under name. Each side is a number of
+// cells, 0 or more; an invalid one is left as it is.
+func (c ideConfig) graphicsOutset(cfg config.Config, name string, sides ...outsetSide) {
+	g, err := cfg.GetConfig("graphics")
+	if err != nil {
+		return
+	}
+	o, err := g.GetConfig("outset")
+	if err != nil {
+		if err != config.ErrNotFound {
+			c.errors[name+".graphics.outset"] = err
+		}
+		return
+	}
+	for _, s := range sides {
+		n, err := o.GetInt(s.key)
+		switch {
+		case errors.Is(err, config.ErrNotFound):
+		case err != nil:
+			c.errors[name+".graphics.outset."+s.key] = err
+		case n < 0:
+			c.errors[name+".graphics.outset."+s.key] = fmt.Errorf(
+				"expected 0 or more cells, got %d", n)
+		default:
+			*s.dst = n
+		}
+	}
 }
 
 // windowCloseIcon reads window_manager.close_icon and returns the
@@ -2798,25 +3044,31 @@ func (c ideConfig) frameUnionCharset() (cs component.FrameUnionCharSet) {
 
 func (c ideConfig) windowManagerConfig() handler.WindowManagerConfig {
 	dim, bw := c.dim()
-	return handler.WindowManagerConfig{
-		Dim:                dim,
-		BW:                 bw,
-		FocusFrameAttr:     c.windowFocusFrameAttr(),
-		FocusFrameCharSet:  c.windowFocusFrameCharset(),
-		ScrollBarHoverChar: c.windowScrollBarHoverChar(),
+	scrollBar, scrollBarHover, scrollBarOutset := c.windowScrollBarCharsets()
+	ret := handler.WindowManagerConfig{
+		Dim:                   dim,
+		BW:                    bw,
+		FocusFrameAttr:        c.windowFocusFrameAttr(),
+		FocusFrameCharSet:     c.windowFocusFrameCharset(),
+		ScrollBarHoverCharSet: scrollBarHover,
 		WindowManagerConfig: tcomponent.WindowManagerConfig{
 			NoMaxSize:        c.windowNoMaxSize(),
 			Frame:            c.frame(),
 			FrameAttr:        c.windowFrameAttr(),
 			FrameCharSet:     c.windowFrameCharset(),
 			ScrollBarAttr:    c.windowScrollBarAttr(),
-			ScrollBarChar:    c.windowScrollBarChar(),
+			ScrollBarCharSet: scrollBar,
+			ScrollBarOutset:  scrollBarOutset,
 			WindowBar:        c.windowBar(),
 			WindowBarCharSet: c.windowBarCharset(),
 			CloseIcon:        c.windowCloseIcon(),
 			CloseIconAttr:    c.windowCloseIconAttr(),
 		},
 	}
+	if c.storage != nil {
+		ret.FrameGraphicsStorage = storageapi.WithPartition(c.storage, frameImagesPartition)
+	}
+	return ret
 }
 
 func (c ideConfig) browser() (config.Config, bool) {
@@ -3596,6 +3848,10 @@ const statusBarImagesPartition = "status_bar_images"
 
 // markdownImagesPartition caches the images markdown view tabs download.
 const markdownImagesPartition = "markdown_images"
+
+// frameImagesPartition caches the images that frame charsets name in
+// their graphics.
+const frameImagesPartition = "frame_images"
 
 func (c ideConfig) auxiliaryBarFolds() bool {
 	cfg, ok := c.auxiliaryBar()

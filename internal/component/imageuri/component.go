@@ -55,7 +55,8 @@ type Component struct {
 	mu      sync.Mutex
 	started bool
 	// loading is set while a fetch is in flight. anim is created by the
-	// first Draw while loading, and closed by the fetch when it settles.
+	// first Draw while loading, unless the style hides loading, and closed
+	// by the fetch when it settles.
 	loading bool
 	anim    *component.Animation
 	img     image.Image
@@ -76,6 +77,9 @@ type Style struct {
 	// Like the loading animation, it only writes the cells it occupies,
 	// so the component can overlay other content.
 	ProblemArt string
+	// HideLoading leaves the cells untouched while the image loads
+	// instead of drawing the progress animation.
+	HideLoading bool
 }
 
 // New returns a component that displays the image at uri. Cached bytes
@@ -86,11 +90,12 @@ type Style struct {
 //
 // It fails when ValidateURI rejects uri, when ttl < 0, or when storage or
 // interrupter is nil. The image is fetched on Start or the first Draw
-// with a non-empty size, whichever comes first, and the progress
-// animation is drawn centered until the fetch settles. If the image
-// cannot be loaded, or the writer cannot draw images, style.ProblemArt
-// is drawn centered instead. The fetch is not retried, and an expired
-// image stays on screen until the component is recreated.
+// with a non-empty size, whichever comes first, and, unless
+// style.HideLoading, the progress animation is drawn centered until the
+// fetch settles. If the image cannot be loaded, or the writer cannot draw
+// images, style.ProblemArt is drawn centered instead. The fetch is not
+// retried, and an expired image stays on screen until the component is
+// recreated.
 func New(
 	uri string, ttl time.Duration, storage storageapi.Service,
 	interrupter term.Interrupter, style Style,
@@ -209,7 +214,7 @@ func (c *Component) Draw(w term.Writer) {
 	c.mu.Lock()
 	img, version, err := c.img, c.version, c.err
 	if img == nil && err == nil {
-		if c.loading {
+		if c.loading && !c.style.HideLoading {
 			if c.anim == nil {
 				c.anim = c.newAnimation()
 			}
@@ -270,6 +275,9 @@ func (c *Component) Close() error {
 }
 
 func (c *Component) drawProblem(w term.Writer) {
+	if c.style.ProblemArt == "" {
+		return
+	}
 	art := centered(c.style.ProblemArt)
 	art.Resize(c.width, c.height)
 	art.Draw(w)
