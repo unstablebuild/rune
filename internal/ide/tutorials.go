@@ -283,7 +283,7 @@ func newTutorialTileStyle(i *IDE) idetutorial.TileStyle {
 		FrameAttr:         wm.FrameAttr,
 		FocusFrameAttr:    wm.FocusFrameAttr,
 		ScrollBarAttr:     wm.ScrollBarAttr,
-		ScrollBarChar:     wm.ScrollBarChar,
+		ScrollBarCharSet:  wm.ScrollBarCharSet,
 		Prompt:            newTutorialPromptStyle(i),
 	}
 }

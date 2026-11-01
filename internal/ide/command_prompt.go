@@ -22,6 +22,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/internal/browser"
+	tcomponent "unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/handler/command"
 )
 
@@ -67,6 +68,10 @@ func defaultCommandPromptSeparatorCharset() commandPromptSeparatorCharset {
 type commandPromptConfig struct {
 	shader    commandPromptShaderConfig
 	separator commandPromptSeparatorCharset
+	// frameCharSet is what the prompt draws its frame and separator row
+	// with, and the runes its radar shades. When nil, the prompt draws
+	// the window frame charset and its radar shades the focused one.
+	frameCharSet *component.FrameCharSet
 	// keyBindingHint returns the long-form key label bound to a full
 	// command line, or "" when unbound. nil disables the hints.
 	keyBindingHint     func(commandLine string) string
@@ -96,7 +101,7 @@ func newCommandPromptHandler(
 		)
 	}
 	framed := component.NewFrame(bg)
-	framed.FrameCharSet = e.config.FrameCharSet
+	framed.FrameCharSet, _ = e.promptFrameCharSets()
 	framed.Attributes = e.config.FrameAttr
 
 	stitched := &promptStitcher{
@@ -105,6 +110,9 @@ func newCommandPromptHandler(
 		framed:    framed,
 		separator: e.commandPromptCfg.separator,
 	}
+	if !framed.Graphics.Empty() {
+		stitched.graphics = e.promptFrameGraphics()
+	}
 	return browser.FuncFloating(
 		browser.FuncHandler(stitched, onClose),
 		framed.Dimensions,
@@ -112,9 +120,11 @@ func newCommandPromptHandler(
 }
 
 type promptStitcher struct {
-	cmd       *command.Prompt
-	padded    *handler.Span
-	framed    *component.Frame
+	cmd    *command.Prompt
+	padded *handler.Span
+	framed *component.Frame
+	// graphics is nil when the frame names no images.
+	graphics  *tcomponent.FrameGraphics
 	separator commandPromptSeparatorCharset
 	width     int
 	height    int
@@ -129,6 +139,20 @@ func (s *promptStitcher) Resize(width, height int) {
 
 func (s *promptStitcher) Draw(w term.Writer) {
 	s.framed.Draw(w)
+	// Images that replace their runes go under the separator, which then
+	// covers the side images on its row. Overlays go over it, as they go
+	// over every rune.
+	overlay := s.graphics != nil && s.framed.Graphics.Overlay
+	if s.graphics != nil && !overlay {
+		s.graphics.Draw(w, s.framed, s.width, s.height)
+	}
+	s.drawSeparator(w)
+	if overlay {
+		s.graphics.Draw(w, s.framed, s.width, s.height)
+	}
+}
+
+func (s *promptStitcher) drawSeparator(w term.Writer) {
 	if s.width < 3 || s.height < 3 {
 		return
 	}

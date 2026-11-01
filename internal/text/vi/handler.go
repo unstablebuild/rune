@@ -909,16 +909,38 @@ func (vi *viHandlerImpl) handleNormal(ev term.Event) (quit, handled bool) {
 				}
 			}
 		case 'f':
-			by := vi.less.Scroll().SizeHeight() - pagePadding
-			handled = vi.cursor.MoveDownLines(by)
-			if handled {
-				vi.cursor.RepositionTop()
+			scroll := vi.less.Scroll()
+			if scroll.Width() == 0 || scroll.SizeHeight() == 0 {
+				break
+			}
+			by := max(1, scroll.SizeHeight()-pagePadding)
+			offset := scroll.Offset()
+			if scroll.InvertOffset {
+				offset.Y = max(0, offset.Y-by)
+			} else {
+				last, _ := scroll.ScrollToWindowCoordinates(term.Coordinates{Y: max(0, scroll.Buffer().Rows()-1)})
+				if last.Y < scroll.SizeHeight() {
+					by = max(0, last.Y)
+				}
+				offset.Y += by
+			}
+			if handled = scroll.SetOffset(offset); handled {
+				vi.cursor.MoveToWindowTop()
 			}
 		case 'b':
-			by := vi.less.Scroll().SizeHeight() - pagePadding
-			handled = vi.cursor.MoveUpLines(by)
-			if handled {
-				vi.cursor.RepositionBottom()
+			scroll := vi.less.Scroll()
+			if scroll.Width() == 0 || scroll.SizeHeight() == 0 {
+				break
+			}
+			by := max(1, scroll.SizeHeight()-pagePadding)
+			offset := scroll.Offset()
+			if scroll.InvertOffset {
+				offset.Y = min(scroll.MaxSeekOffset(), offset.Y+by)
+			} else {
+				offset.Y = max(0, offset.Y-by)
+			}
+			if handled = scroll.SetOffset(offset); handled {
+				vi.cursor.MoveToWindowBottom()
 			}
 		case 'd':
 			handled = vi.cursor.MoveDownLines(vi.less.Scroll().SizeHeight() / 2)

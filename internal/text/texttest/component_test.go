@@ -57,6 +57,7 @@ import (
 	"unstable.build/rune/internal/handler/handlertest"
 	hmarkdown "unstable.build/rune/internal/handler/markdown"
 	"unstable.build/rune/internal/ide/idecmd"
+	"unstable.build/rune/internal/term/programstatus"
 	"unstable.build/rune/internal/text"
 	"unstable.build/rune/internal/text/standard"
 	"unstable.build/rune/internal/workspace"
@@ -354,6 +355,40 @@ func TestComponentInterfaces(t *testing.T) {
 	ed.Edit(context.Background(), workspaceapi.URI{}, cell.NewBuffer(), false, false)
 	_, _ = b.Focus()
 	comp.Resize(0, 0)
+}
+
+func TestComponentTabStatusRepaintsThroughEventPublisher(t *testing.T) {
+	interrupts := make(chan struct{}, 1)
+	cfg := text.DefaultConfig()
+	cfg.EventPublisher = func(ev term.Event) bool {
+		if ev.Type != term.EventInterrupt {
+			return true
+		}
+		select {
+		case interrupts <- struct{}{}:
+		default:
+		}
+		return true
+	}
+	c, _ := newTestComponentConfig(t, NopEditor(), cfg)
+	t.Cleanup(func() { _ = c.Close() })
+	uri, err := workspaceapi.ParseURI("rune-agent://model/chat")
+	require.NoError(t, err)
+	_, err = c.Tab(uri, 'E', "chat", browsertest.NewTestHandler())
+	require.NoError(t, err)
+	select {
+	case <-interrupts:
+	default:
+	}
+
+	require.NoError(t, c.SetTabStatus(uri, programstatus.Report{
+		State: programstatus.Working, Progress: -1,
+	}))
+	select {
+	case <-interrupts:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the working tab's spinner never asked the host to repaint")
+	}
 }
 
 func TestComponentCommandKeyBinding(t *testing.T) {

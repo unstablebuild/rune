@@ -33,11 +33,15 @@ import (
 type WindowManagerConfig struct {
 	component.WindowManagerConfig
 
-	Dim                bool
-	BW                 bool
-	FocusFrameAttr     term.Attributes
-	FocusFrameCharSet  compapi.FrameCharSet
-	ScrollBarHoverChar rune
+	Dim               bool
+	BW                bool
+	FocusFrameAttr    term.Attributes
+	FocusFrameCharSet compapi.FrameCharSet
+	// ScrollBarHoverCharSet draws the scroll bar under the pointer, and
+	// the one it drags. Each rune or image it leaves empty is
+	// ScrollBarCharSet's, and its graphics are Overlay when
+	// ScrollBarCharSet's are.
+	ScrollBarHoverCharSet compapi.ScrollBarCharSet
 	// FloatingBar receives the interactions produced by floating
 	// window bars. It may be nil.
 	FloatingBar FloatingBarHandler
@@ -289,16 +293,15 @@ func (wm *WindowManager) Handle(ev term.Event) (exit bool, handled bool) {
 		wm.comp.Iterate(func(win component.Window) {
 			f, ok := win.Frame()
 			if ok {
-				f.ScrollBarChar = wm.config.ScrollBarChar
+				f.ScrollBarCharSet = wm.config.ScrollBarCharSet
 			}
 		})
 
-		// set scroll bar hover char, if applicable
+		// set scroll bar hover charset, if applicable
 		if frame, ok := childAtMouse.Frame(); ok {
 			position, height, ok := frame.ScrollBar()
 			if ok {
-				end := position.Y + height
-				if ev.MouseX == position.X && ev.MouseY >= position.Y && ev.MouseY < end ||
+				if wm.onScrollBar(frame, position, height, ev.MouseX, ev.MouseY) ||
 					wm.prevMouseScrollBarDrag {
 					return wm.handleScrollBarMouse(childAtMouse, position.Y, height, frame, ev)
 				}
@@ -713,6 +716,12 @@ func (wm *WindowManager) Resize(width, height int) {
 	wm.comp.Resize(width, height)
 }
 
+// Close releases the frame images, as component.WindowManager.Close
+// does. It does not close the windows.
+func (wm *WindowManager) Close() error {
+	return wm.comp.Close()
+}
+
 // SetFocus sets the passed tile in focus. It returns the previous tile in focus.
 // The behaviour is undefined if the given tile is not part of this WindowManager.
 func (wm *WindowManager) SetFocus(tile Window) (
@@ -1104,7 +1113,7 @@ func (wm *WindowManager) handleScrollBarMouse(
 	win component.Window, barPos, barHeight int,
 	frame *compapi.Frame, ev term.Event,
 ) (bool, bool) {
-	frame.ScrollBarChar = wm.scrollBarHoverChar(frame)
+	frame.ScrollBarCharSet = wm.scrollBarHoverCharSet()
 	if ev.Key != term.MouseLeft {
 		wm.resetScrollBarMouse()
 		return false, false
@@ -1133,17 +1142,47 @@ func (wm *WindowManager) handleScrollBarMouse(
 	return false, false
 }
 
-func (wm *WindowManager) scrollBarHoverChar(f *compapi.Frame) (ch rune) {
-	ch = wm.config.ScrollBarHoverChar
-	if ch != 0 {
-		return
+// onScrollBar reports whether x, y, relative to frame, is on its scroll
+// bar at position, height cells high, or on the cells left of it that
+// the bar's images reach.
+func (wm *WindowManager) onScrollBar(
+	frame *compapi.Frame, position term.Coordinates, height, x, y int,
+) bool {
+	var outset int
+	if g := frame.ScrollBarCharSet.Graphics; g.Top != "" || g.Middle != "" || g.Bottom != "" {
+		outset = max(0, min(wm.config.ScrollBarOutset, position.X))
 	}
-	ch = f.ScrollBarChar
-	if ch != 0 {
-		return
+	return x >= position.X-outset && x <= position.X &&
+		y >= position.Y && y < position.Y+height
+}
+
+func (wm *WindowManager) scrollBarHoverCharSet() compapi.ScrollBarCharSet {
+	cs, hover := wm.config.ScrollBarCharSet, wm.config.ScrollBarHoverCharSet
+	for _, slot := range []struct {
+		dst *rune
+		src rune
+	}{
+		{&cs.Top, hover.Top},
+		{&cs.Middle, hover.Middle},
+		{&cs.Bottom, hover.Bottom},
+	} {
+		if slot.src != 0 {
+			*slot.dst = slot.src
+		}
 	}
-	ch = f.FrameCharSet.VerticalRight
-	return
+	for _, slot := range []struct {
+		dst *string
+		src string
+	}{
+		{&cs.Graphics.Top, hover.Graphics.Top},
+		{&cs.Graphics.Middle, hover.Graphics.Middle},
+		{&cs.Graphics.Bottom, hover.Graphics.Bottom},
+	} {
+		if slot.src != "" {
+			*slot.dst = slot.src
+		}
+	}
+	return cs
 }
 
 func (wm *WindowManager) switchFocus(tileFn func(Window) (Window, bool)) bool {

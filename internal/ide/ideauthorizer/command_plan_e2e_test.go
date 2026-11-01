@@ -176,7 +176,7 @@ func showsProgram(inv programInvocation, argv []string) bool {
 
 // assertPlanCovers asserts that what the authorizer approves of plan
 // covers everything run started: each program is one the plan shows,
-// with the literal arguments it shows, and each rm that deletes
+// with the literal arguments it shows, and each rm or rmdir that deletes
 // directories is one the prompt shows as it runs or as unresolved.
 func assertPlanCovers(t *testing.T, plan commandPlan, run zshRun) {
 	t.Helper()
@@ -192,10 +192,10 @@ func assertPlanCovers(t *testing.T, plan commandPlan, run zshRun) {
 		assert.True(t, slices.ContainsFunc(plan.Programs, func(inv programInvocation) bool {
 			return showsProgram(inv, argv)
 		}), "zsh started %q, which the plan does not show: %q", argv, describePlan(plan))
-		if argv[0] != "rm" || !recursiveRM(literalWords(argv[1:])) {
+		if !deletesDirectories(argv[0], literalWords(argv[1:])) {
 			continue
 		}
-		fields := []string{"rm"}
+		fields := []string{argv[0]}
 		for _, a := range argv[1:] {
 			fields = append(fields, displayField(a))
 		}
@@ -432,6 +432,10 @@ var zshFollowed = []string{
 	`rm -rf "$(pwd)/x"`,
 	"for d in a b; do rm -rf $d; done",
 	"find . -name nothing -exec rm -rf {} +",
+	"rmdir x y",
+	"D=x; rmdir -p $D/y",
+	"rmdir ~/x",
+	"find . -type d -empty -exec rmdir {} +",
 }
 
 // zshOpaque are scripts the authorizer only approves exactly. hides names

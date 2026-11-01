@@ -119,9 +119,9 @@ the workspace host: the shell, any wrappers such as `env`, `timeout` or
 `/bin/bash`, `/usr/bin/git`, `/usr/bin/make`. A program you did not expect,
 such as `/home/you/project/git`, stands out there.
 
-When the command runs `rm -r`, the prompt shows each such `rm` under
+When the command runs `rm -r` or `rmdir`, the prompt shows each of them under
 **Removes recursively** as the shell will run it, with the variables it can
-tell expanded: the ones the script sets before the `rm`, and those of the
+tell expanded: the ones the script sets before it, and those of the
 workspace host, such as `$RUNE_DATADIR`. Words it cannot tell, such as
 `$(pwd)`, are left as written.
 

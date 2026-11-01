@@ -270,6 +270,10 @@ type Config struct {
 	PromptConfig
 
 	component.FrameUnionCharSet
+	// WindowManagerConfig's Interrupter also animates the tab status
+	// spinner, the ActiveTabShader and the drop-target veil. Without
+	// one they hold still and only repaint when the host redraws for
+	// another reason.
 	handler.WindowManagerConfig
 }
 

@@ -23,6 +23,33 @@ TUI_FRAME_CHARSET = {
 }
 
 # GUI frame characters used by the default window-manager configuration.
+#
+# A frame charset may also name an image for each slot in a "graphics"
+# table, which the GUI draws over the slot's character in window frames
+# and the command prompt frame. The terminal UI, and any image that has not
+# loaded or failed to load, shows the character. Images are drawn as they
+# are: frame_attr, dimming and b&w do not tint them, though the frame_attr
+# background shows through their transparent pixels. To tell the focused
+# window apart, give focus_frame_charset its own pre-coloured images. For
+# example:
+#
+#     "graphics": {
+#         "mode":             "replace",
+#         "topleft":          "file:///path/to/topleft.png",
+#         "topright":         "file:///path/to/topright.png",
+#         "bottomleft":       "file:///path/to/bottomleft.png",
+#         "bottomright":      "file:///path/to/bottomright.png",
+#         "horizontaltop":    "https://example.com/frame/top.png",
+#         "horizontalbottom": "https://example.com/frame/bottom.png",
+#         "verticalleft":     "https://example.com/frame/left.png",
+#         "verticalright":    "https://example.com/frame/right.png",
+#     },
+#
+# "mode" is "replace", the default, to hide the character under each image,
+# or "overlay" to keep it there: it then shows through the image's
+# transparent pixels in its own color, which dimming and the command
+# prompt's shader still change. Leave a gap through an overlay image where
+# its character runs to let them show.
 GUI_FRAME_CHARSET = {
     "horizontaltop":    "▔",
     "horizontalbottom": "▁",
@@ -408,15 +435,21 @@ config = {
         "key_mapping": {
         #     "<capslock>": "<esc>",
         },
-        # Buttons of the quick menu, the vertical bar of native buttons
-        # floating over the right edge of the window (macOS only; ignored
-        # elsewhere). Order is top to bottom, and an empty list removes the
-        # bar along with the column it reserves.
-        #   symbol  — SF Symbol name drawn as the button image.
+        # Buttons of the quick menu, the vertical bar of buttons floating
+        # over the right edge of the window. Order is top to bottom, and an
+        # empty list removes the bar along with the column it reserves.
+        # Without sprites it is a bar of native buttons (macOS only; ignored
+        # elsewhere); with them Rune draws it, on every platform.
+        #   symbol  — SF Symbol name drawn as the native button image. Not
+        #             needed with a sprite.
         #   title   — hover tooltip.
         #   command — any Rune command line, as a space-separated string or
         #             a list of words. It also identifies the button, so it
         #             must be unique across the menu.
+        #   sprite  — the button's images, as file:// or http(s) URIs:
+        #             {"idle": uri, "hover": uri, "pressed": uri}. hover
+        #             defaults to idle and pressed to hover. Set it on every
+        #             button or on none.
         "quick_menu": [
             {"symbol": "command", "title": "Command Prompt", "command": "echo {prompt}"},
             {"symbol": "plus", "title": "Open Project", "command": "workspaceopen"},
@@ -443,6 +476,13 @@ config = {
             {"symbol": "gearshape", "title": "Settings", "command": "config"},
             {"symbol": "questionmark.circle", "title": "Rune Help", "command": "help"},
         ],
+        # The sounds the quick menu plays when Rune draws it, that is with
+        # sprites: "hover" when the pointer moves onto a button and "click"
+        # when one is clicked. Each is a name from `sounds`, or "" for none.
+        "quick_menu_sounds": {
+            "hover": "",
+            "click": "",
+        },
     },
     "editor": {
         # Editor mode and exo settings are not configured here. The
@@ -890,6 +930,34 @@ config = {
             "horizontal_right": "▁",
             "right":            "🭿",
         },
+        # The prompt frames itself with the window manager's frame_charset
+        # and its shader animates focus_frame_charset, along with the
+        # separator_charset. A "frame_charset" here, whose missing slots
+        # keep the window's, replaces both.
+        #
+        # The GUI draws "􀀈" to "􀀏" (top left, top right,
+        # bottom left, bottom right, top, bottom, left, right) as a channel
+        # for overlay images to frame: they lie in the groove of a rail flush
+        # with the cell's outer edge, half the cell's width thick at a side
+        # and a quarter of its height at the top or bottom. The groove runs
+        # from an eighth to three eighths of the width, or a sixteenth to
+        # three sixteenths of the height, in from the edge, so the shader
+        # glows inside the images. "􀀐" and "􀀑" branch the
+        # left and right channels into a bottom one: set them as the
+        # separator_charset "left" and "right", and "􀀍" between, to
+        # run the channel along the separator too:
+        #
+        #     "frame_charset": {
+        #         "topleft":          "􀀈",
+        #         "topright":         "􀀉",
+        #         "bottomleft":       "􀀊",
+        #         "bottomright":      "􀀋",
+        #         "horizontaltop":    "􀀌",
+        #         "horizontalbottom": "􀀍",
+        #         "verticalleft":     "􀀎",
+        #         "verticalright":    "􀀏",
+        #         "graphics":         {"mode": "overlay", ...},
+        #     },
     },
     "browser": {
         # What the workspace bar shows: the simplified path ("path"), the
@@ -905,13 +973,72 @@ config = {
             "frame_charset":         GUI_FRAME_CHARSET,
             "focus_frame_charset":   GUI_FRAME_CHARSET,
             "scroll_bar_attr":       attr(fg = "blue", bg = "default"),
-            "scroll_bar_char":       "▐",
-            "scroll_bar_hover_char": "█",
+            # The scroll bar's "top_char" draws its first cell and
+            # "bottom_char" its last, when it spans two cells or more,
+            # and "middle_char" every other cell. The "hover_" keys draw
+            # the bar under the pointer. A top or bottom left out is the
+            # middle, a middle left out is the frame's right edge, and a
+            # hover key left out is the plain one. Older configurations'
+            # "scroll_bar_char" and "scroll_bar_hover_char" replace
+            # "middle_char" and "hover_middle_char".
+            #
+            # A "graphics" table names an image for each of the six keys,
+            # which the GUI draws over the cells of that key's character,
+            # with the same "mode" as frame charsets:
+            #
+            #     "graphics": {
+            #         "mode":              "replace",
+            #         "top_char":          "file:///path/to/top.png",
+            #         "middle_char":       "file:///path/to/middle.png",
+            #         "bottom_char":       "file:///path/to/bottom.png",
+            #         "hover_top_char":    "file:///path/to/hover-top.png",
+            #         "hover_middle_char": "file:///path/to/hover-middle.png",
+            #         "hover_bottom_char": "file:///path/to/hover-bottom.png",
+            #     },
+            #
+            # A top or bottom image left out is the middle one, and a hover
+            # image left out is the plain one.
+            #
+            # An "outset" table in "graphics" stretches each image over
+            # "left" cells left of its own, up to the frame's left edge, as
+            # in "outset": {"left": 1}. They cover what is drawn there, and
+            # the pointer grabs the bar from them as from the bar itself.
+            "scroll_bar_charset":    {
+                "middle_char":       "▐",
+                "hover_middle_char": "█",
+            },
             # Solid bar drawn over floating windows' top frame line.
             # Dragging the bar moves the window, dragging edges resizes
             # it, double-clicking it maximizes the window, and the close
             # icon closes it. The icon and title backgrounds follow the
             # frame foreground.
+            #
+            # A "graphics" table in window_bar_charset names an image for
+            # "left", the bar's first cell, "right", its last, and
+            # "horizontal", repeated over every cell between, which the GUI
+            # draws under the close icon and title:
+            #
+            #     "graphics": {
+            #         "mode":       "replace",
+            #         "left":       "file:///path/to/bar-left.png",
+            #         "horizontal": "file:///path/to/bar-middle.png",
+            #         "right":      "file:///path/to/bar-right.png",
+            #     },
+            #
+            # With "mode" "replace", the icon and title sit on the frame's
+            # background; with "overlay", they keep the bar's colors behind
+            # them. Focused and unfocused windows share these images.
+            #
+            # An "outset" table in "graphics" stretches the left and right
+            # images past their cells: "top" rows above the bar, "bottom"
+            # rows down the window's sides, "sides" cells outward and
+            # "inward" cells toward the bar's other end, as in
+            # "outset": {"top": 1, "bottom": 1, "sides": 2}. Its
+            # "horizontal_top" stretches each "horizontal" image over that
+            # many rows above the bar, so a frame line can sit above the
+            # title. They cover what is drawn there, including the title and
+            # the window's content, are clipped at the edges of the window
+            # area, and do not change what the pointer can reach.
             "window_bar":            True,
             "window_bar_charset":    {
                 "left":       "█",
@@ -1352,8 +1479,10 @@ if tui:
                 "frame_charset":         TUI_FRAME_CHARSET,
                 "focus_frame_charset":   TUI_FRAME_CHARSET,
                 "scroll_bar_attr":       attr(fg = "#c6c6c6", bg = "#1e1e1e"),
-                "scroll_bar_char":       "┃",
-                "scroll_bar_hover_char": "║",
+                "scroll_bar_charset":    {
+                    "middle_char":       "┃",
+                    "hover_middle_char": "║",
+                },
                 "window_bar":            False,
             },
             "tab_name_separator":  "  ",

@@ -558,9 +558,10 @@ func TestPluginPermissionPromptMessageShowsRecursiveDeletes(t *testing.T) {
 	}{
 		{name: "none", want: intro + footer},
 		{name: "known",
-			deletes: []RecursiveDelete{{Command: "rm -rf /home/me/.rune"}, {Command: "rm -r x"}},
+			deletes: []RecursiveDelete{{Command: "rm -rf /home/me/.rune"}, {Command: "rm -r x"},
+				{Command: "rmdir /home/me/y"}},
 			want: intro + "\n\n⚠️ **Removes recursively**, as the shell will run it:\n\n" +
-				"```\nrm -rf /home/me/.rune\nrm -r x\n```" + footer},
+				"```\nrm -rf /home/me/.rune\nrm -r x\nrmdir /home/me/y\n```" + footer},
 		{name: "known only when it runs",
 			deletes: []RecursiveDelete{{Command: "rm -rf x"}, {Command: "rm -rf $(pwd)", Unresolved: true}},
 			want: intro + "\n\n⚠️ **Removes recursively**, as the shell will run it:\n\n" +

@@ -21,6 +21,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/term"
 )
 
@@ -245,4 +246,59 @@ config = {
 	assert.Equal(t, '╠', got.separator.Left)
 	assert.Equal(t, '╣', got.separator.Right)
 	assert.Empty(t, c.errors)
+}
+
+func TestCommandPromptFrameCharset(t *testing.T) {
+	window := component.FrameCharSetDefault()
+	window.Graphics = component.FrameCharSetGraphics{TopRight: "file:///window/tr.png"}
+	channel := window
+	channel.TopLeft, channel.VerticalLeft = '\U00100008', '\U0010000E'
+	channel.Graphics.TopLeft = "file:///prompt/tl.png"
+	channel.Graphics.Overlay = true
+
+	suite := []struct {
+		description string
+		command     string
+		want        *component.FrameCharSet
+		wantErr     bool
+	}{
+		{
+			description: "unset leaves the prompt to the window charsets",
+			command:     `{}`,
+		},
+		{
+			description: "missing slots keep the window frame charset's",
+			command: `{"frame_charset": {
+                "topleft": "\U00100008",
+                "verticalleft": "\U0010000E",
+                "graphics": {"mode": "overlay", "topleft": "file:///prompt/tl.png"},
+            }}`,
+			want: &channel,
+		},
+		{
+			description: "an invalid charset is reported and left unset",
+			command:     `{"frame_charset": {"graphics": {"mode": "blend"}}}`,
+			wantErr:     true,
+		},
+	}
+
+	for _, test := range suite {
+		t.Run(test.description, func(t *testing.T) {
+			c := newAnimConfig(t, `
+config = {
+    "browser": {"window_manager": {"frame_charset": {
+        "graphics": {"topright": "file:///window/tr.png"},
+    }}},
+    "command": `+test.command+`,
+}
+`)
+			got := c.commandPromptCfg().frameCharSet
+			assert.Equal(t, test.want, got)
+			if test.wantErr {
+				assert.Contains(t, c.errors, "command.frame_charset")
+			} else {
+				assert.Empty(t, c.errors)
+			}
+		})
+	}
 }

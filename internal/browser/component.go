@@ -104,7 +104,6 @@ type Component struct {
 	prompts     map[string]Window
 	drag        dragState
 	winDrop     winDropState
-	interrupter term.Interrupter
 	// spinner ticks while at least one tab is working so Draw can cycle
 	// the working tabs' icons.
 	spinner *statusSpinner
@@ -200,7 +199,7 @@ func (c *Component) Init(config Config) {
 		Loop:        config.ActiveTabShaderLoop,
 		Params:      config.ActiveTabShaderParams,
 		DefAttr:     config.NonFocusTabAttr,
-		Interrupter: c.interrupter,
+		Interrupter: config.Interrupter,
 		Active:      c.activeTabIndices,
 	})
 
@@ -646,14 +645,14 @@ func (c *Component) setSpinnerRunning(running bool) {
 		c.spinner = nil
 		return
 	}
-	if c.interrupter == nil || len(c.config.TabStatus.Spinner) == 0 {
+	if c.config.Interrupter == nil || len(c.config.TabStatus.Spinner) == 0 {
 		return
 	}
 	fps := c.config.TabStatus.SpinnerFPS
 	if fps <= 0 {
 		fps = DefaultTabStatusConfig().SpinnerFPS
 	}
-	c.spinner = newStatusSpinner(c.interrupter, fps)
+	c.spinner = newStatusSpinner(c.config.Interrupter, fps)
 }
 
 // drawSpinner moves the icons of working tabs to the current frame.
@@ -1651,6 +1650,9 @@ func (c *Component) Close() (ret error) {
 		}
 		_ = bw.Close()
 	})
+	if err := c.wm.Close(); err != nil {
+		ret = err
+	}
 	return ret
 }
 
@@ -1992,7 +1994,9 @@ func (c *Component) findWindow(winID uint64) (*browserWindow, bool) {
 }
 
 func (c *Component) overwriteFocusWindowUnion(w term.Writer) {
-	if !c.config.Frame || c.focusWindow == (thandler.Window{}) || c.wm.SizeTiles() == 1 {
+	// Without union junctions, the window manager drew these corners
+	// already, along with any frame images that rewriting them would hide.
+	if !c.union.Frame || c.focusWindow == (thandler.Window{}) || c.wm.SizeTiles() == 1 {
 		return
 	}
 	topleft := c.focusWindow.Position()
@@ -2485,17 +2489,6 @@ func (c *Component) winDropVeil() (win *browserWindow, label string, ok bool) {
 	}
 }
 
-// SetInterrupter installs the interrupter used to animate the
-// drop-target veil. Without one the veil is still drawn, but only
-// repaints when the host redraws for another reason.
-func (c *Component) SetInterrupter(i term.Interrupter) {
-	c.interrupter = i
-	c.shadedTabs.SetInterrupter(i)
-	working := c.HasWorkingTabs()
-	c.shadedTabs.SetRunning(working)
-	c.setSpinnerRunning(working)
-}
-
 // WindowAt returns the window rendered at pos, which is relative to
 // this Component's top-left corner.
 func (c *Component) WindowAt(pos term.Coordinates) (Window, bool) {
@@ -2573,12 +2566,12 @@ func (c *Component) DragDrop(pos term.Coordinates, paths []string) bool {
 // startVeil starts the shared pulse ticker used by both the file-drop
 // veil and the window-drag preview veil.
 func (c *Component) startVeil() {
-	if c.interrupter == nil || c.drag.cancel != nil {
+	if c.config.Interrupter == nil || c.drag.cancel != nil {
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	c.drag.cancel = cancel
-	interrupter := c.interrupter
+	interrupter := c.config.Interrupter
 	frame := &c.drag.frame
 	go debug.CapturePanicReport(func() {
 		ticker := time.NewTicker(time.Second / dragVeilFPS)
@@ -2608,10 +2601,10 @@ func (c *Component) stopVeil() {
 }
 
 func (c *Component) interrupt() {
-	if c.interrupter == nil {
+	if c.config.Interrupter == nil {
 		return
 	}
-	_ = c.interrupter.Interrupt(context.Background())
+	_ = c.config.Interrupter.Interrupt(context.Background())
 }
 
 // drawDragVeil renders the browser with a pulsing veil over the file
