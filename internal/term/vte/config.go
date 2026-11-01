@@ -84,6 +84,12 @@ type Config struct {
 	// MinWidth helps optimize growing and shrinking rows upon resize.
 	MinWidth int
 
+	// ShellCursorKeys are the option and cmd arrow chords the terminal sends
+	// to the program as word and line movement. A chord left out stays with
+	// Rune's own key bindings. The zero value sends none; CursorMotionKeys
+	// lists the chords that can be sent.
+	ShellCursorKeys []term.KeyComb
+
 	// Modal enables entering modal mode via Esc key.
 	// Changing mode to 'INSERT' mode switches back to
 	// the shell being in control of the input.

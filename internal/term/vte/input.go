@@ -35,6 +35,22 @@ func getModifierStr(ev term.Event) string {
 // the raw bytes coming from the event are already correct
 func mapKeyToEscapeSequence(comp *Component, ev term.Event) ([]byte, bool) {
 	switch ev.Mod {
+	case term.ModAlt:
+		switch ev.Key {
+		case term.KeyArrowLeft:
+			return []byte("\x1bb"), true
+		case term.KeyArrowRight:
+			return []byte("\x1bf"), true
+		}
+		return nil, false
+	case term.ModMeta:
+		switch ev.Key {
+		case term.KeyArrowLeft:
+			return []byte{0x01}, true
+		case term.KeyArrowRight:
+			return []byte{0x05}, true
+		}
+		return nil, false
 	case 0:
 		switch ev.Key {
 		case term.KeyArrowUp:

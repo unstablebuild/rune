@@ -729,6 +729,10 @@ func TestHandlerHandlePtyWriteError(t *testing.T) {
 	assert.Equal(t, []string{"write to pty: write failed"}, notifications.Messages())
 }
 
+func shellCursorKeys(keys ...term.KeyComb) func(*Handler) {
+	return func(h *Handler) { h.shellCursorKeys = keys }
+}
+
 func TestHandlerHandleInputPaths(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -779,6 +783,68 @@ func TestHandlerHandleInputPaths(t *testing.T) {
 			expected:    []byte("\r\n"),
 			expectWrite: true,
 			handled:     true,
+		},
+		{
+			name:        "alt-left moves a word back",
+			configure:   shellCursorKeys(CursorMotionKeys()...),
+			ev:          term.Event{Type: term.EventKey, Key: term.KeyArrowLeft, Mod: term.ModAlt, Raw: []byte("\x1b[1;3D")},
+			expected:    []byte("\x1bb"),
+			expectWrite: true,
+			handled:     true,
+		},
+		{
+			name:        "alt-right moves a word forward",
+			configure:   shellCursorKeys(CursorMotionKeys()...),
+			ev:          term.Event{Type: term.EventKey, Key: term.KeyArrowRight, Mod: term.ModAlt, Raw: []byte("\x1b[1;3C")},
+			expected:    []byte("\x1bf"),
+			expectWrite: true,
+			handled:     true,
+		},
+		{
+			name:        "meta-left moves to line start",
+			configure:   shellCursorKeys(CursorMotionKeys()...),
+			ev:          term.Event{Type: term.EventKey, Key: term.KeyArrowLeft, Mod: term.ModMeta, Raw: []byte("\x1b[1;9D")},
+			expected:    []byte{0x01},
+			expectWrite: true,
+			handled:     true,
+		},
+		{
+			name:        "meta-right moves to line end",
+			configure:   shellCursorKeys(CursorMotionKeys()...),
+			ev:          term.Event{Type: term.EventKey, Key: term.KeyArrowRight, Mod: term.ModMeta, Raw: []byte("\x1b[1;9C")},
+			expected:    []byte{0x05},
+			expectWrite: true,
+			handled:     true,
+		},
+		{
+			name:      "alt-left stays with rune when it is not configured",
+			ev:        term.Event{Type: term.EventKey, Key: term.KeyArrowLeft, Mod: term.ModAlt, Raw: []byte("\x1b[1;3D")},
+			configure: shellCursorKeys(),
+			handled:   false,
+		},
+		{
+			name: "meta-left stays with rune when only the alt chords are configured",
+			ev:   term.Event{Type: term.EventKey, Key: term.KeyArrowLeft, Mod: term.ModMeta, Raw: []byte("\x1b[1;9D")},
+			configure: shellCursorKeys(
+				term.KeyComb{Key: term.KeyArrowLeft, Mod: term.ModAlt},
+				term.KeyComb{Key: term.KeyArrowRight, Mod: term.ModAlt},
+			),
+			handled: false,
+		},
+		{
+			name: "alt-right is sent when configured on its own",
+			ev:   term.Event{Type: term.EventKey, Key: term.KeyArrowRight, Mod: term.ModAlt, Raw: []byte("\x1b[1;3C")},
+			configure: shellCursorKeys(
+				term.KeyComb{Key: term.KeyArrowRight, Mod: term.ModAlt},
+			),
+			expected:    []byte("\x1bf"),
+			expectWrite: true,
+			handled:     true,
+		},
+		{
+			name:    "meta-up stays with rune",
+			ev:      term.Event{Type: term.EventKey, Key: term.KeyArrowUp, Mod: term.ModMeta, Raw: []byte("\x1b[1;9A")},
+			handled: false,
 		},
 		{
 			name:    "unsupported modifier",

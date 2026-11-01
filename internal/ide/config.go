@@ -5228,6 +5228,7 @@ func (c ideConfig) terminalConfig() vte.Config {
 	ret.MaxLines = c.terminalMaxLines()
 	ret.Bell = c.terminalBellTrigger()
 	ret.Modal = c.terminalModal()
+	ret.ShellCursorKeys = c.terminalShellCursorKeys()
 	ret.Debug = c.terminalDebug()
 	ret.CommandAndArgs = c.terminalShell()
 	ret.Clipboard = c.clipboard()
@@ -5238,6 +5239,27 @@ func (c ideConfig) terminalConfig() vte.Config {
 	ret.CellPixelSize = c.cellPixelSize
 	ret.MinWidth = defaultMinWidth
 	ret.Search = c.terminalSearchConfig()
+	return ret
+}
+
+// terminalShellCursorKeys returns the option and cmd arrow chords a terminal
+// sends to its program as cursor movement: the ones no command key binding
+// uses. The terminal takes a focused chord before Rune sees it, so sending
+// one the user bound, such as the emacs preset's cmd+left and right for
+// resizing, would silently disable that binding.
+func (c ideConfig) terminalShellCursorKeys() []term.KeyComb {
+	bound := make(map[term.KeyComb]bool)
+	for seq, cmds := range c.commandKeyMappings() {
+		if !isUnbindCommand(cmds) {
+			bound[seq.First] = true
+		}
+	}
+	var ret []term.KeyComb
+	for _, key := range vte.CursorMotionKeys() {
+		if !bound[key] {
+			ret = append(ret, key)
+		}
+	}
 	return ret
 }
 

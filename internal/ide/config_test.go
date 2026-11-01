@@ -505,6 +505,7 @@ func assertDefaultConfig(t *testing.T, cfg *ideConfig) {
 		SelectionAttributes:      selectAttr,
 		NeedsAttentionAttributes: term.Attributes{Attrs: term.AttrBlink},
 		Modal:                    true,
+		ShellCursorKeys:          vte.CursorMotionKeys(),
 		ClipboardRegister:        clipboard.DefaultRegisterID,
 		MaxLines:                 10_000,
 		MinWidth:                 defaultMinWidth,
@@ -2060,6 +2061,7 @@ func TestConfigSetting(t *testing.T) {
 		SelectionAttributes:      term.Attributes{Fg: term.ColorGreen, Bg: term.ColorTeal},
 		NeedsAttentionAttributes: term.Attributes{Attrs: term.AttrBlink, Fg: term.ColorRed},
 		Modal:                    true,
+		ShellCursorKeys:          vte.CursorMotionKeys(),
 		DynamicTabName:           true,
 		MaxLines:                 999,
 		Bell:                     []byte{0x07},
@@ -3721,6 +3723,47 @@ func TestMetaOpenURLConfig(t *testing.T) {
 			} else {
 				assert.Empty(t, c.errors)
 			}
+		})
+	}
+}
+
+func TestTerminalConfigShellCursorKeys(t *testing.T) {
+	altLeft := term.KeyComb{Key: term.KeyArrowLeft, Mod: term.ModAlt}
+	altRight := term.KeyComb{Key: term.KeyArrowRight, Mod: term.ModAlt}
+	metaLeft := term.KeyComb{Key: term.KeyArrowLeft, Mod: term.ModMeta}
+	metaRight := term.KeyComb{Key: term.KeyArrowRight, Mod: term.ModMeta}
+
+	for _, tc := range []struct {
+		name, goos, mode, metaKey string
+		bindings                  map[string]any
+		want                      []term.KeyComb
+	}{
+		{"vim without bindings", "darwin", "vim", "", nil,
+			[]term.KeyComb{altLeft, altRight, metaLeft, metaRight}},
+		{"emacs preset resizes with meta arrows", "darwin", "emacs", "", map[string]any{
+			"<meta-left>":  "windowresize decrease width",
+			"<meta-right>": "windowresize increase width",
+		}, []term.KeyComb{altLeft, altRight}},
+		{"vim user binds alt-left", "darwin", "vim", "", map[string]any{
+			"<alt-left>": "tabprevious",
+		}, []term.KeyComb{altRight, metaLeft, metaRight}},
+		{"binding to empty string frees the chord", "darwin", "vim", "", map[string]any{
+			"<meta-left>": "",
+		}, []term.KeyComb{altLeft, altRight, metaLeft, metaRight}},
+		{"chord that starts a sequence stays with rune", "darwin", "vim", "", map[string]any{
+			"<meta-left>a": "tabprevious",
+		}, []term.KeyComb{altLeft, altRight, metaRight}},
+		{"meta key remapped to alt", "linux", "vim", "<alt>", map[string]any{
+			"<meta-left>": "tabprevious",
+		}, []term.KeyComb{altRight, metaLeft, metaRight}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rest := map[string]any{}
+			if tc.bindings != nil {
+				rest["command"] = map[string]any{"key_bindings": tc.bindings}
+			}
+			cfg := metaKeyTestConfig(tc.goos, tc.mode, tc.metaKey, rest)
+			assert.Equal(t, tc.want, cfg.terminalConfig().ShellCursorKeys)
 		})
 	}
 }

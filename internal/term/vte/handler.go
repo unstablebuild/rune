@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -70,10 +71,11 @@ type Handler struct {
 	ctx           context.Context
 	cancelCtx     func()
 
-	modalEnabled bool
-	viMode       bool
-	mouse        *mouse.Mouse
-	mouseDriver  *mouseDriver
+	modalEnabled    bool
+	shellCursorKeys []term.KeyComb
+	viMode          bool
+	mouse           *mouse.Mouse
+	mouseDriver     *mouseDriver
 
 	// viEnabled tracks whether the vi handler was initialized: both modal
 	// mode and the scrollback search render through it.
@@ -123,6 +125,7 @@ func (e *Handler) Init(
 	e.comp = comp
 
 	e.modalEnabled = config.Modal
+	e.shellCursorKeys = config.ShellCursorKeys
 	if config.Modal || config.Search.Editor != nil {
 		e.viEnabled = true
 		e.vi.init(e.comp, config)
@@ -367,7 +370,7 @@ func (e *Handler) Handle(ev term.Event) (exit, handled bool) {
 	}
 
 	enc := e.comp.keyboard.encoding()
-	if (ev.Mod&^term.ModCtrlShift != 0 && !e.copyPassesThrough(ev, enc)) ||
+	if (ev.Mod&^term.ModCtrlShift != 0 && !e.copyPassesThrough(ev, enc) && !e.isCursorMotionKey(ev)) ||
 		(ev.Type == term.EventKey && Whitelisted(ev.KeyComb())) {
 		return
 	}
@@ -427,6 +430,26 @@ func (e *Handler) copyPassesThrough(ev term.Event, enc keyEncoding) bool {
 	}
 	_, selected := e.comp.Selection()
 	return !selected
+}
+
+// CursorMotionKeys returns the chords the terminal can send to the program as
+// cursor movement: option+left and right as word movement, cmd+left and right
+// as line movement.
+func CursorMotionKeys() []term.KeyComb {
+	return []term.KeyComb{
+		{Key: term.KeyArrowLeft, Mod: term.ModAlt},
+		{Key: term.KeyArrowRight, Mod: term.ModAlt},
+		{Key: term.KeyArrowLeft, Mod: term.ModMeta},
+		{Key: term.KeyArrowRight, Mod: term.ModMeta},
+	}
+}
+
+// isCursorMotionKey reports whether ev is a chord the terminal was configured
+// to send to the program. macOS terminals send these to the shell, but a
+// chord Rune binds itself, like the emacs preset's cmd+left and right for
+// resizing, has to keep reaching Rune, so the set comes from the config.
+func (e *Handler) isCursorMotionKey(ev term.Event) bool {
+	return ev.Type == term.EventKey && slices.Contains(e.shellCursorKeys, ev.KeyComb())
 }
 
 // whitelist holds keys no terminal spec assigns bytes to, on which
