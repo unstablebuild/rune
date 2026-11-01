@@ -815,8 +815,22 @@ func (t *Component) Selection() (data string, ok bool) {
 		return
 	}
 	data = cell.RowsToString(cells)
-	data = strings.ReplaceAll(data, "\x00", "")
-	return data, ok
+	return blankCellsToSpaces(data), ok
+}
+
+// blankCellsToSpaces turns the NUL cells a cursor move leaves behind into the spaces
+// they display as, except at the end of a line, where they are unused screen and
+// copying them would only add trailing whitespace.
+func blankCellsToSpaces(s string) string {
+	if !strings.Contains(s, "\x00") {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		line = strings.TrimRight(line, "\x00")
+		lines[i] = strings.ReplaceAll(line, "\x00", " ")
+	}
+	return strings.Join(lines, "\n")
 }
 
 // OnFocusChange allows clients to report whether this vte.Component is on focus or not.

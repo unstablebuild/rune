@@ -975,6 +975,43 @@ func TestComponentSelectionUnwrapsSoftWrappedLines(t *testing.T) {
 	}
 }
 
+func TestComponentSelectionKeepsGapsLeftByCursorMoves(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		desc    string
+		payload string
+		want    string
+	}{
+		{desc: "cursor forward", payload: "foo\x1b[Cbar", want: "foo bar"},
+		{desc: "cursor forward by count", payload: "foo\x1b[3Cbar", want: "foo   bar"},
+		{desc: "cursor position", payload: "foo\x1b[1;6Hbar", want: "foo  bar"},
+		{desc: "leading gap", payload: "\x1b[2Cfoo", want: "  foo"},
+		{desc: "trailing blank cells are not copied", payload: "foo\x1b[5C", want: "foo"},
+		{desc: "gap before a wide rune", payload: "a\x1b[2C漢字", want: "a  漢字"},
+		{desc: "gaps per line", payload: "a\x1b[2Cb\r\nc\x1b[3Cd", want: "a  b\nc   d"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.desc, func(t *testing.T) {
+			t.Parallel()
+
+			comp, err := NewComponent(&testExecutor{}, &testExecutor{},
+				&mockTabManager{}, DefaultConfig())
+			require.NoError(t, err)
+			require.NoError(t, comp.Resize(20, 3))
+
+			comp.parser.AdvanceBytes([]byte(tc.payload))
+
+			comp.Select(term.Coordinates{})
+			comp.SelectEnd(term.Coordinates{X: 19, Y: strings.Count(tc.payload, "\n")})
+			got, ok := comp.Selection()
+			require.True(t, ok)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
 func TestComponentWidenWhileScrolledUpKeepsContentVisible(t *testing.T) {
 	t.Parallel()
 
