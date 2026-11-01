@@ -41,11 +41,16 @@ func (drawFunc) Resize(int, int)      {}
 
 func newPromptShader(
 	charSet component.FrameCharSet, frameAttr term.Attributes,
+	separator commandPromptSeparatorCharset,
 	win browser.Window, offset term.Coordinates,
 	root tui.Component, interrupter term.Interrupter,
 	cfg commandPromptShaderConfig,
 ) *shader.Component {
 	params := glslshader.DefaultRadarFrameParams(charSet)
+	params.Runes = []rune{
+		separator.Left, separator.HorizontalLeft,
+		separator.HorizontalRight, separator.Right,
+	}
 	if cfg.colorSet {
 		params.Color = cfg.color
 	}
@@ -76,23 +81,50 @@ func dynamicVirtual(
 }
 
 func (s *dynamicVirtualShader) Shade(frame, total int, cells [][]term.Cell) {
+	if view, _, ok := s.view(cells); ok {
+		s.inner.Shade(frame, total, view)
+	}
+}
+
+// ShadeImages satisfies shader.ImageShader. It hands inner the images in
+// the coordinates of the window's cells, and returns them in the
+// screen's.
+func (s *dynamicVirtualShader) ShadeImages(
+	frame, total int, cells [][]term.Cell, images []term.Image,
+) []term.Image {
+	view, pos, ok := s.view(cells)
+	if !ok {
+		return images
+	}
+	for i := range images {
+		images[i] = images[i].Translated(term.Coordinates{X: -pos.X, Y: -pos.Y})
+	}
+	images = shader.ShadeImages(s.inner, frame, total, view, images)
+	for i := range images {
+		images[i] = images[i].Translated(pos)
+	}
+	return images
+}
+
+// view returns the cells of the window, and where they start, or false
+// if none of them are on the screen.
+func (s *dynamicVirtualShader) view(
+	cells [][]term.Cell,
+) ([][]term.Cell, term.Coordinates, bool) {
 	if s.win == nil || s.win.Closed() {
-		return
+		return nil, term.Coordinates{}, false
 	}
 	width, height := s.win.Width(), s.win.Height()
 	if width <= 0 || height <= 0 {
-		return
+		return nil, term.Coordinates{}, false
 	}
 	pos := s.win.Position()
 	pos.X += s.offset.X
 	pos.Y += s.offset.Y
 	if pos.X < 0 || pos.Y < 0 || pos.Y >= len(cells) {
-		return
+		return nil, term.Coordinates{}, false
 	}
 	maxY := min(pos.Y+height, len(cells))
-	if maxY <= pos.Y {
-		return
-	}
 	view := make([][]term.Cell, 0, maxY-pos.Y)
 	for y := pos.Y; y < maxY; y++ {
 		row := cells[y]
@@ -103,5 +135,5 @@ func (s *dynamicVirtualShader) Shade(frame, total int, cells [][]term.Cell) {
 		end := min(pos.X+width, len(row))
 		view = append(view, row[pos.X:end])
 	}
-	s.inner.Shade(frame, total, view)
+	return view, pos, true
 }

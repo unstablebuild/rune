@@ -19,12 +19,15 @@ package component
 import (
 	"cmp"
 	"fmt"
+	"image"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/component/comptest"
 	"github.com/unstablebuild/rune-go-sdk/term"
@@ -2552,6 +2555,406 @@ func TestWindowBarAttrs(t *testing.T) {
 		"title foreground is the frame background")
 	assert.Equal(t, term.ColorBlue, title.Bg,
 		"title background is the bar foreground")
+}
+
+func TestWindowManagerFrameGraphics(t *testing.T) {
+	pics := newFramePictures(t)
+	every := func(name string) component.FrameCharSetGraphics {
+		return pics.resolve(component.FrameCharSetGraphics{
+			TopLeft: name, TopRight: name, BottomLeft: name, BottomRight: name,
+			HorizontalTop: name, HorizontalBottom: name,
+			VerticalLeft: name, VerticalRight: name,
+		})
+	}
+	attr := term.Attributes{Fg: term.ColorBlue, Bg: term.ColorBlack}
+
+	tests := []struct {
+		name      string
+		content   tui.Component
+		graphics  component.FrameCharSetGraphics
+		scrollBar component.ScrollBarCharSetGraphics
+		windowBar bool
+		noStorage bool
+		open      func(wm *WindowManager, tile Window)
+		loads     int
+		expected  string
+	}{
+		{
+			name:     "tiles draw their own images",
+			graphics: every("L"),
+			open: func(wm *WindowManager, tile Window) {
+				win, ok := wm.SplitVertical(tile, &component.TestComponent{Ch: 'D'})
+				require.True(t, ok)
+				cs := wm.config.FrameCharSet
+				cs.Graphics = every("R")
+				win.SetFrameCharSet(cs)
+			},
+			loads: 2,
+			expected: `
+LLLLLLRRRRRR
+LCCCCLRDDDDR
+LCCCCLRDDDDR
+LCCCCLRDDDDR
+LLLLLLRRRRRR`,
+		},
+		{
+			name:      "a floating window's bar keeps its runes",
+			graphics:  every("L"),
+			windowBar: true,
+			open: func(wm *WindowManager, _ Window) {
+				wm.FloatingWindow(
+					component.StaticFloating(&component.TestComponent{Ch: 'B'}, 2, 1),
+					FloatingConfig{Offset: term.Coordinates{X: 1, Y: 1}},
+				)
+			},
+			loads: 1,
+			expected: `
+LLLLLLLLLLLL
+L█●██CCCCCCL
+LLBBLCCCCCCL
+LLLLLCCCCCCL
+LLLLLLLLLLLL`,
+		},
+		{
+			name:     "the scroll bar keeps its rune",
+			content:  scrollingContent{TestComponent: &component.TestComponent{Ch: 'C'}},
+			graphics: every("R"),
+			loads:    1,
+			expected: `
+RRRRRRRRRRRR
+RCCCCCCCCCC┃
+RCCCCCCCCCC┃
+RCCCCCCCCCCR
+RRRRRRRRRRRR`,
+		},
+		{
+			name:      "the scroll bar draws its own images",
+			content:   scrollingContent{TestComponent: &component.TestComponent{Ch: 'C'}},
+			graphics:  every("R"),
+			scrollBar: component.ScrollBarCharSetGraphics{Top: "L", Bottom: "L"},
+			loads:     2,
+			expected: `
+RRRRRRRRRRRR
+RCCCCCCCCCCL
+RCCCCCCCCCCL
+RCCCCCCCCCCR
+RRRRRRRRRRRR`,
+		},
+		{
+			name:      "frames without storage draw their runes",
+			graphics:  every("L"),
+			noStorage: true,
+			expected: `
+┌──────────┐
+│CCCCCCCCCC│
+│CCCCCCCCCC│
+│CCCCCCCCCC│
+└──────────┘`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testWindowManagerConfig()
+			cfg.WindowBar = tt.windowBar
+			cfg.FrameAttr = attr
+			cfg.ScrollBarAttr = attr
+			cfg.ScrollBarCharSet = component.ScrollBarCharSet{
+				Middle:   '┃',
+				Graphics: pics.resolveScrollBar(tt.scrollBar),
+			}
+			cfg.FrameCharSet.Graphics = tt.graphics
+			if !tt.noStorage {
+				cfg.FrameGraphicsStorage = storagestub.NewInMemoryService()
+			}
+			irq := make(interruptCounter, 16)
+			cfg.Interrupter = irq
+			content := tt.content
+			if content == nil {
+				content = &component.TestComponent{Ch: 'C'}
+			}
+			wm, tile := NewWindowManager(content, cfg)
+			t.Cleanup(func() { assert.NoError(t, wm.Close()) })
+			wm.Resize(12, 5)
+			if tt.open != nil {
+				tt.open(wm, tile)
+			}
+			wm.Draw(term.NewStringWriter(12, 5))
+			irq.wait(t, tt.loads)
+
+			s := newImageScreen(12, 5)
+			wm.Draw(s)
+			assert.Equal(t, tt.expected, s.render(t, pics, attr, false))
+		})
+	}
+}
+
+func TestWindowBarGraphics(t *testing.T) {
+	pics := newFramePictures(t)
+	attr := term.Attributes{Fg: term.ColorBlue, Bg: term.ColorBlack}
+	every := WindowBarGraphics{Left: "L", Horizontal: "R", Right: "L"}
+	overlay := every
+	overlay.Overlay = true
+	solidIcon := term.Attributes{Fg: term.ColorRed, Bg: attr.Fg}
+	solidTitle := term.Attributes{Fg: attr.Bg, Bg: attr.Fg}
+	runes := `
+┌──────────┐
+│█●██ ab ██│
+││BBBBBBBB││
+│└────────┘│
+└──────────┘`
+
+	tests := []struct {
+		name      string
+		graphics  WindowBarGraphics
+		noBar     bool
+		noImages  bool
+		notLoaded bool
+		expected  string
+		// underneath, when set, is what the screen shows under the images.
+		underneath string
+		// below are the columns of the images drawn under the bar's text.
+		below []int
+		// icon and title are the attributes of the close icon and of the
+		// title's first letter.
+		icon, title term.Attributes
+	}{
+		{
+			name:     "every slot is drawn under the icon and title",
+			graphics: every,
+			expected: `
+┌──────────┐
+│L●RR ab RL│
+││BBBBBBBB││
+│└────────┘│
+└──────────┘`,
+			below: []int{2, 5, 6, 7, 8},
+			icon:  term.Attributes{Fg: term.ColorRed, Bg: attr.Bg},
+			title: attr,
+		},
+		{
+			name:     "overlay keeps the bar's colors under the text",
+			graphics: overlay,
+			expected: `
+┌──────────┐
+│L●RR ab RL│
+││BBBBBBBB││
+│└────────┘│
+└──────────┘`,
+			underneath: runes,
+			below:      []int{2, 5, 6, 7, 8},
+			icon:       solidIcon,
+			title:      solidTitle,
+		},
+		{
+			name:     "only the ends leave the middle to its runes",
+			graphics: WindowBarGraphics{Left: "L", Right: "L"},
+			expected: `
+┌──────────┐
+│L●██ ab █L│
+││BBBBBBBB││
+│└────────┘│
+└──────────┘`,
+			icon:  solidIcon,
+			title: solidTitle,
+		},
+		{
+			name:     "a writer that cannot draw images gets the runes",
+			graphics: every,
+			noImages: true,
+			expected: runes,
+			icon:     solidIcon,
+			title:    solidTitle,
+		},
+		{
+			name:      "images that are not loaded yet leave the runes",
+			graphics:  every,
+			notLoaded: true,
+			expected:  runes,
+			icon:      solidIcon,
+			title:     solidTitle,
+		},
+		{
+			name:     "a window without a bar draws no bar images",
+			graphics: every,
+			noBar:    true,
+			expected: `
+┌──────────┐
+│┌────────┐│
+││BBBBBBBB││
+│└────────┘│
+└──────────┘`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testWindowManagerConfig()
+			cfg.WindowBar = true
+			cfg.FrameAttr = attr
+			cfg.WindowBarCharSet.Graphics = pics.resolveWindowBar(tt.graphics)
+			cfg.FrameGraphicsStorage = storagestub.NewInMemoryService()
+			irq := make(interruptCounter, 16)
+			cfg.Interrupter = irq
+			wm, _ := NewWindowManager(&component.TestComponent{Ch: 'C'}, cfg)
+			t.Cleanup(func() { assert.NoError(t, wm.Close()) })
+			wm.Resize(12, 5)
+			wm.FloatingWindow(
+				component.StaticFloating(&component.TestComponent{Ch: 'B'}, 8, 2),
+				FloatingConfig{Offset: term.Coordinates{X: 1, Y: 1}, Title: "ab", NoBar: tt.noBar},
+			)
+			loads := pics.loadsWindowBar(tt.graphics)
+			if tt.noBar {
+				loads = 0
+			}
+			if !tt.notLoaded {
+				wm.Draw(term.NewStringWriter(12, 5))
+				irq.wait(t, loads)
+			}
+
+			s := newImageScreen(12, 5)
+			s.noImages = tt.noImages
+			wm.Draw(s)
+			assert.Equal(t, tt.expected, s.render(t, pics, attr, tt.graphics.Overlay))
+			if tt.underneath != "" {
+				assert.Equal(t, tt.underneath, "\n"+s.String())
+			}
+			var below []int
+			for _, img := range s.images {
+				if img.Layer == term.ImageLayerBelowText {
+					assert.Equal(t, 1, img.Pos.Y)
+					below = append(below, img.Pos.X)
+				}
+			}
+			slices.Sort(below)
+			assert.Equal(t, tt.below, below)
+			if !tt.noBar {
+				assert.Equal(t, tt.icon, s.Cells()[1*12+2].Attributes(), "close icon")
+				assert.Equal(t, tt.title, s.Cells()[1*12+6].Attributes(), "title")
+			}
+
+			if tt.notLoaded {
+				irq.wait(t, loads)
+			}
+		})
+	}
+}
+
+func TestWindowBarGraphicsOutset(t *testing.T) {
+	pics := newFramePictures(t)
+	attr := term.Attributes{Fg: term.ColorBlue, Bg: term.ColorBlack}
+	tests := []struct {
+		name     string
+		outset   WindowBarOutset
+		noImages bool
+		expected string
+		// ends are the cell rectangles of the left and right images.
+		ends []image.Rectangle
+	}{
+		{
+			name:   "the ends reach past their cells and are clipped at the edges",
+			outset: WindowBarOutset{Top: 1, Bottom: 1, Sides: 2},
+			expected: `
+┌────────────┐
+│LLLCCCCCCCCLL
+│LLL●RRRRRRRLL
+│LLLBBBBBBBBLL
+│CC│BBBBBBBB││
+│CC│BBBBBBBB││
+└──└────────┘┘`,
+			ends: []image.Rectangle{image.Rect(1, 1, 4, 4), image.Rect(12, 1, 15, 4)},
+		},
+		{
+			name:   "inward ends cover the bar, its close icon and the content",
+			outset: WindowBarOutset{Top: 1, Bottom: 1, Inward: 2},
+			expected: `
+┌────────────┐
+│CCLLLCCCCLLL│
+│CCLLLRRRRLLL│
+│CCLLLBBBBLLL│
+│CC│BBBBBBBB││
+│CC│BBBBBBBB││
+└──└────────┘┘`,
+			ends: []image.Rectangle{image.Rect(3, 1, 6, 4), image.Rect(10, 1, 13, 4)},
+		},
+		{
+			name:   "the horizontal images cover the rows above, also over the bar's text",
+			outset: WindowBarOutset{HorizontalTop: 1},
+			expected: `
+┌────────────┐
+│CCCRRRRRRRRC│
+│CCL●RRRRRRRL│
+│CC│BBBBBBBB││
+│CC│BBBBBBBB││
+│CC│BBBBBBBB││
+└──└────────┘┘`,
+			ends: []image.Rectangle{image.Rect(3, 2, 4, 3), image.Rect(12, 2, 13, 3)},
+		},
+		{
+			name:   "negative outsets keep the ends in their cells",
+			outset: WindowBarOutset{Top: -1, Bottom: -1, Sides: -1, Inward: -1, HorizontalTop: -1},
+			expected: `
+┌────────────┐
+│CCCCCCCCCCCC│
+│CCL●RRRRRRRL│
+│CC│BBBBBBBB││
+│CC│BBBBBBBB││
+│CC│BBBBBBBB││
+└──└────────┘┘`,
+			ends: []image.Rectangle{image.Rect(3, 2, 4, 3), image.Rect(12, 2, 13, 3)},
+		},
+		{
+			name:     "a writer that cannot draw images keeps the runes",
+			outset:   WindowBarOutset{Top: 1, Bottom: 1, Sides: 2},
+			noImages: true,
+			expected: `
+┌────────────┐
+│CCCCCCCCCCCC│
+│CC█●████████│
+│CC│BBBBBBBB││
+│CC│BBBBBBBB││
+│CC│BBBBBBBB││
+└──└────────┘┘`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testWindowManagerConfig()
+			cfg.WindowBar = true
+			cfg.FrameAttr = attr
+			cfg.WindowBarCharSet.Graphics = pics.resolveWindowBar(WindowBarGraphics{
+				Left: "L", Horizontal: "R", Right: "L", Outset: tt.outset,
+			})
+			cfg.FrameGraphicsStorage = storagestub.NewInMemoryService()
+			irq := make(interruptCounter, 16)
+			cfg.Interrupter = irq
+			wm, _ := NewWindowManager(&component.TestComponent{Ch: 'C'}, cfg)
+			t.Cleanup(func() { assert.NoError(t, wm.Close()) })
+			wm.Resize(14, 7)
+			wm.FloatingWindow(
+				component.StaticFloating(&component.TestComponent{Ch: 'B'}, 8, 3),
+				FloatingConfig{Offset: term.Coordinates{X: 3, Y: 2}},
+			)
+			wm.Draw(term.NewStringWriter(14, 7))
+			irq.wait(t, 2)
+
+			s := newImageScreen(14, 7)
+			s.noImages = tt.noImages
+			wm.Draw(s)
+			assert.Equal(t, tt.expected, s.render(t, pics, attr, false))
+			var ends []image.Rectangle
+			for _, img := range s.images {
+				if img.Width > 1 || img.Pos.X == 3 || img.Pos.X == 12 {
+					ends = append(ends, img.Bounds())
+				}
+			}
+			assert.Equal(t, tt.ends, ends)
+			if !tt.noImages {
+				for _, x := range []int{3, 12} {
+					assert.Equal(t, term.NewCell(' ', 1, attr), s.Cells()[2*14+x],
+						"the end's own cell at %d is blank under its image", x)
+				}
+			}
+		})
+	}
 }
 
 func TestWindowManagerToggleMaximize(t *testing.T) {

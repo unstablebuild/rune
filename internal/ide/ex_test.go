@@ -4539,6 +4539,62 @@ func TestCommandPromptHasNoWindowBar(t *testing.T) {
 	require.NoError(t, b.ex.cmdWin.Close())
 }
 
+func TestPromptFrameCharSets(t *testing.T) {
+	prompt := component.FrameCharSet{
+		TopLeft: '╔', TopRight: '╗', BottomLeft: '╚', BottomRight: '╝',
+		HorizontalTop: '═', HorizontalBottom: '═',
+		VerticalLeft: '║', VerticalRight: '║',
+	}
+	suite := []struct {
+		description  string
+		frameCharSet *component.FrameCharSet
+		// wantPrompt reports whether the prompt draws the prompt charset.
+		wantPrompt bool
+	}{
+		{
+			description: "unset draws the window charset and shades the focused one",
+		},
+		{
+			description:  "set draws and shades the prompt charset",
+			frameCharSet: &prompt,
+			wantPrompt:   true,
+		},
+	}
+
+	for _, test := range suite {
+		t.Run(test.description, func(t *testing.T) {
+			b := newExForTesting(t, texttest.NopEditor(), text.WithCommandKey(testCommandKey))
+			defer b.Close()
+			b.Resize(40, 20)
+			b.ex.config.FocusFrameCharSet = component.FrameCharSetHighlight()
+			b.ex.commandPromptCfg.frameCharSet = test.frameCharSet
+
+			wantFrame, wantRadar := b.ex.config.FrameCharSet, b.ex.config.FocusFrameCharSet
+			if test.wantPrompt {
+				wantFrame, wantRadar = prompt, prompt
+			}
+			frame, radar := b.ex.promptFrameCharSets()
+			assert.Equal(t, wantFrame, frame)
+			assert.Equal(t, wantRadar, radar)
+
+			b.ex.openCommandPrompt()
+			require.NotNil(t, b.ex.cmd)
+			w := term.NewStringWriter(40, 20)
+			b.Draw(w)
+			require.NoError(t, w.Flush())
+			out := w.String()
+			for _, r := range []rune{prompt.TopLeft, prompt.TopRight, prompt.BottomLeft, prompt.BottomRight} {
+				if test.wantPrompt {
+					assert.Contains(t, out, string(r))
+				} else {
+					assert.NotContains(t, out, string(r))
+				}
+			}
+			require.NoError(t, b.ex.cmdWin.Close())
+		})
+	}
+}
+
 func TestCommandPromptShaderGating(t *testing.T) {
 	t.Run("disabled", func(t *testing.T) {
 		b := newExForTesting(t, texttest.NopEditor(),
@@ -5857,13 +5913,21 @@ func TestExUsesSharedIDEStorage(t *testing.T) {
 	require.Equal(t, 1, storage.partitionCalls)
 	terminals := storage.partitions[idehistory.TerminalStatePartition]
 	require.NotNil(t, terminals)
+	// So do the command prompt's frame images.
+	ex.promptFrameGraphics()
+	ex.promptFrameGraphics()
+	require.Equal(t, 2, storage.partitionCalls)
+	frameImages := storage.partitions[frameImagesPartition]
+	require.NotNil(t, frameImages)
 
 	require.NoError(t, ex.Close())
 	require.Equal(t, 0, storage.closeCalls)
 	require.Equal(t, 1, terminals.closeCalls)
+	require.Equal(t, 1, frameImages.closeCalls)
 	require.NoError(t, ex.Close())
 	require.Equal(t, 0, storage.closeCalls)
 	require.Equal(t, 1, terminals.closeCalls)
+	require.Equal(t, 1, frameImages.closeCalls)
 }
 
 func TestFullScreen(t *testing.T) {
@@ -9979,7 +10043,7 @@ func TestOpenMarkdownFloatingScrollBar(t *testing.T) {
 			// The default bar is a bold border, which a string frame
 			// cannot tell apart from the border itself.
 			wmCfg := thandler.DefaultWindowManagerConfig()
-			wmCfg.ScrollBarChar = '#'
+			wmCfg.ScrollBarCharSet = component.ScrollBarCharSet{Middle: '#'}
 			b := newExForTesting(t, texttest.NopEditor(), text.WithWindowManagerConfig(wmCfg))
 			require.NoError(t, b.ex.openMarkdownFloating(tc.md, "Doc", 16))
 			assert.Equal(t, tc.want, gitshowFrame(t, b, 30, 12))

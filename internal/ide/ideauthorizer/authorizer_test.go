@@ -1296,12 +1296,13 @@ func TestAuthorizerAuthorizeCommandShowsRecursiveDeletesWithTheHostDataDir(t *te
 
 	err := a.AuthorizeCommand(ctx, workspaceapi.Cmd{
 		Path: "bash",
-		Args: []string{"-c", `rm -rf $RUNE_DATADIR/cache; X=/tmp/x; rm -r "$X"; sudo rm -r /tmp/x`},
+		Args: []string{"-c", `rm -rf $RUNE_DATADIR/cache; X=/tmp/x; rm -r "$X"; sudo rm -r /tmp/x; ` +
+			`rmdir $RUNE_DATADIR/lib`},
 	})
 	require.NoError(t, err)
 	require.Equal(t, 1, opener.calls)
 	assert.Contains(t, opener.messages[0], "⚠️ **Removes recursively**, as the shell will run it:"+
-		"\n\n```\nrm -rf /host/.rune/cache\nrm -r /tmp/x\n```")
+		"\n\n```\nrm -rf /host/.rune/cache\nrm -r /tmp/x\nrmdir /host/.rune/lib\n```")
 }
 
 const moveTestsScript = `M=/tmp/movetests/movetests; D=internal/workspace/vtescheme; set -e

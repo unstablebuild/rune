@@ -53,6 +53,7 @@ import (
 	"mvdan.cc/sh/v3/syntax"
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/cell"
+	tcomponent "unstable.build/rune/internal/component"
 	fileexplorercomp "unstable.build/rune/internal/component/fileexplorer"
 	"unstable.build/rune/internal/component/markdown"
 	"unstable.build/rune/internal/component/notifications"
@@ -204,9 +205,11 @@ type ex struct {
 	// promptMouseDown latches while a mouse button is held over the
 	// prompt handling path so a drag that leaves the prompt rect and
 	// releases outside is not mistaken for an outside click.
-	promptMouseDown  bool
-	promptShader     *shader.Component
-	commandPromptCfg commandPromptConfig
+	promptMouseDown       bool
+	promptShader          *shader.Component
+	commandPromptCfg      commandPromptConfig
+	promptGraphics        *tcomponent.FrameGraphics
+	promptGraphicsStorage storageapi.Service
 	// editorModeModal records whether the editor backing this ex runs in
 	// modal mode. The cheatsheet uses it to gate modal-only key tips.
 	editorModeModal bool
@@ -3122,7 +3125,7 @@ func (e *ex) newCommandPrompt(reset func(*command.Prompt)) {
 	commandCfg.ElementAttr = e.config.CommandOverlay.ElementAttr
 	commandCfg.ManualAttr = e.config.CommandOverlay.ManualAttr
 	commandCfg.DocumentID = commandHistoryDocumentID
-	commandCfg.FrameCharSet = e.config.FrameCharSet
+	commandCfg.FrameCharSet, _ = e.promptFrameCharSets()
 	commandCfg.FrameAttr = e.config.FrameAttr
 	commandCfg.ShowManual = e.config.CommandOverlay.ShowManual
 	commandCfg.ShowProgressHint = e.config.CommandOverlay.ShowProgressHint
@@ -3322,8 +3325,9 @@ func (e *ex) startPromptShader() {
 	offset := e.cmdV.Position()
 	offset.X += wmOff.X
 	offset.Y += wmOff.Y
+	_, radar := e.promptFrameCharSets()
 	e.promptShader = newPromptShader(
-		e.config.FocusFrameCharSet, e.config.FrameAttr,
+		radar, e.config.FrameAttr, e.commandPromptCfg.separator,
 		e.cmdWin, offset, drawFunc(e.drawCmdPrompt), e,
 		e.commandPromptCfg.shader,
 	)
@@ -3430,6 +3434,15 @@ func (e *ex) Close() (ret error) {
 		ret = multierror.Append(ret, err)
 	}
 	e.stopPromptShader()
+	if e.promptGraphics != nil {
+		if err := e.promptGraphics.Close(); err != nil {
+			ret = multierror.Append(ret, err)
+		}
+		if err := e.promptGraphicsStorage.Close(); err != nil {
+			ret = multierror.Append(ret, err)
+		}
+		e.promptGraphics, e.promptGraphicsStorage = nil, nil
+	}
 	if err := e.container.Close(); err != nil {
 		ret = multierror.Append(ret, err)
 	}
@@ -3445,6 +3458,23 @@ func (e *ex) Close() (ret error) {
 func (e *ex) cleanPartialReissueState() {
 	e.cancelPartialReissue = nil
 	e.ctxPartialReissue = context.Background()
+}
+
+func (e *ex) promptFrameGraphics() *tcomponent.FrameGraphics {
+	if e.promptGraphics == nil {
+		e.promptGraphicsStorage = storageapi.WithPartition(e.storage, frameImagesPartition)
+		e.promptGraphics = tcomponent.NewFrameGraphics(e.promptGraphicsStorage, e)
+	}
+	return e.promptGraphics
+}
+
+// promptFrameCharSets returns the charset the command prompt draws its frame
+// with, and the one whose runes its radar shades.
+func (e *ex) promptFrameCharSets() (frame, radar component.FrameCharSet) {
+	if cs := e.commandPromptCfg.frameCharSet; cs != nil {
+		return *cs, *cs
+	}
+	return e.config.FrameCharSet, e.config.FocusFrameCharSet
 }
 
 // stopTerminal releases the pty-resize worker. It is safe to call on a

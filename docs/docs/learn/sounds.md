@@ -68,6 +68,23 @@ To hear a sound, run `guisound` with its name:
 guisound ding
 ```
 
+## Sounds pack
+
+The [sounds pack](https://github.com/unstablebuild/rune-sounds-pack) adds the
+936 interface sounds of [UI SFX](https://uisfx.com): twelve packs, such as
+`minimal`, `glass` and `arcade`, each with the same 78 cues. Each sound is
+named `uisfx-<pack>-<cue>`, such as `uisfx-minimal-success`. To install it,
+run this in the [console](./console.md):
+
+```text
+pkg install github.com/unstablebuild/rune-sounds-pack
+```
+
+The install makes each built-in sound play its minimal counterpart, such as
+`uisfx-minimal-warning` for `warning`, and sets `terminal.bell` to
+`uisfx-minimal-blocked`, unless your config already sets them: Rune keeps the
+values you set. The pack's README lists every pack and cue.
+
 ## Terminal bell
 
 `terminal.bell` names the sound a program in a terminal plays when it rings
@@ -93,6 +110,68 @@ Programs that report their status, such as Rune Agent, agent CLIs and
 commands run in the IDE console, play a sound when they finish, fail or wait
 on you. `program_status.sounds` maps each state to a sound; see
 [Program status](./terminal/program-status.md#sounds).
+
+## Quick menu
+
+`gui.quick_menu_sounds` names the sounds the quick menu plays: `hover` when
+the pointer moves onto a button and `click` when you click one. Each is the
+name of a sound, built-in or your own, or an empty string for none, which is
+the default.
+
+```yaml tab
+gui:
+  quick_menu_sounds:
+    hover: ding
+    click: success
+```
+
+```python tab
+config["gui"]["quick_menu_sounds"] = {"hover": "ding", "click": "success"}
+```
+
+- The quick menu plays sounds only when its buttons set a `sprite`. The
+  native macOS quick menu plays none.
+- Rune reports an unknown sound name as a config error, and that event plays
+  nothing.
+- Like other `gui.*` settings, a change applies after restarting Rune.
+
+## Play a sound from an alias
+
+To play a sound from an [alias](./aliases.md), add a `guisound` step. An
+alias stops at the first step that fails, so a sound at the end plays only
+when the steps before it succeed:
+
+```yaml tab
+command:
+  aliases:
+    gitpush:
+      - "!! git push"
+      - guisound success
+```
+
+```python tab
+config["command"]["aliases"]["gitpush"] = ["!! git push", "guisound success"]
+```
+
+To make a command you already type play a sound, redefine its alias under the
+same name. Rune's default aliases, such as `w` and `save` for `write`, are
+redefined like your own:
+
+```yaml tab
+command:
+  aliases:
+    w:
+      - write
+      - guisound success
+```
+
+```python tab
+config["command"]["aliases"]["w"] = ["write", "guisound success"]
+```
+
+An alias named after a command replaces that command and cannot run it: Rune
+reports an alias `write` with a `write` step as an alias cycle. To add a sound
+to a command you type by its own name, give the alias a new name.
 
 ## Volume
 

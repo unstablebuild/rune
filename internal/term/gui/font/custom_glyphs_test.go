@@ -19,9 +19,11 @@ package font
 import (
 	"fmt"
 	"image"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"golang.org/x/image/math/fixed"
 )
 
@@ -49,6 +51,105 @@ func TestCustomGlyphRendersToCPUMask(t *testing.T) {
 		}
 	}
 	assert.Positivef(t, coverage, "box-drawing glyph rendered no pixels")
+}
+
+func TestFrameChannelGlyphs(t *testing.T) {
+	suite := []struct {
+		description   string
+		r             rune
+		width, height float64
+		want          []image.Rectangle
+	}{
+		{
+			description: "top left turns from the left groove into the top one",
+			r:           '\U00100008',
+			width:       16, height: 32,
+			want: []image.Rectangle{image.Rect(2, 2, 6, 32), image.Rect(2, 2, 16, 6)},
+		},
+		{
+			description: "top right turns from the top groove into the right one",
+			r:           '\U00100009',
+			width:       16, height: 32,
+			want: []image.Rectangle{image.Rect(10, 2, 14, 32), image.Rect(0, 2, 14, 6)},
+		},
+		{
+			description: "bottom left turns from the left groove into the bottom one",
+			r:           '\U0010000A',
+			width:       16, height: 32,
+			want: []image.Rectangle{image.Rect(2, 0, 6, 30), image.Rect(2, 26, 16, 30)},
+		},
+		{
+			description: "bottom right turns from the bottom groove into the right one",
+			r:           '\U0010000B',
+			width:       16, height: 32,
+			want: []image.Rectangle{image.Rect(10, 0, 14, 30), image.Rect(0, 26, 14, 30)},
+		},
+		{
+			description: "top spans the width along its groove",
+			r:           '\U0010000C',
+			width:       16, height: 32,
+			want: []image.Rectangle{image.Rect(0, 2, 16, 6)},
+		},
+		{
+			description: "bottom spans the width along its groove",
+			r:           '\U0010000D',
+			width:       16, height: 32,
+			want: []image.Rectangle{image.Rect(0, 26, 16, 30)},
+		},
+		{
+			description: "left spans the height along its groove",
+			r:           '\U0010000E',
+			width:       16, height: 32,
+			want: []image.Rectangle{image.Rect(2, 0, 6, 32)},
+		},
+		{
+			description: "right spans the height along its groove",
+			r:           '\U0010000F',
+			width:       16, height: 32,
+			want: []image.Rectangle{image.Rect(10, 0, 14, 32)},
+		},
+		{
+			description: "left tee branches from the left groove into a bottom one",
+			r:           '\U00100010',
+			width:       16, height: 32,
+			want: []image.Rectangle{image.Rect(2, 0, 6, 32), image.Rect(2, 26, 16, 30)},
+		},
+		{
+			description: "right tee branches from the right groove into a bottom one",
+			r:           '\U00100011',
+			width:       16, height: 32,
+			want: []image.Rectangle{image.Rect(10, 0, 14, 32), image.Rect(0, 26, 14, 30)},
+		},
+	}
+
+	for _, test := range suite {
+		t.Run(test.description, func(t *testing.T) {
+			f := newCustomFace(test.width, test.height, 0, &mockFace{}, false, 0, 0)
+			dr, mask, maskp, advance, ok := f.Glyph(fixed.Point26_6{}, test.r)
+			require.True(t, ok)
+			require.Equal(t, image.Rect(0, 0, int(test.width), int(test.height)), dr)
+			assert.Equal(t, fixed.I(int(test.width)), advance)
+
+			got := make([]string, dr.Dy())
+			want := make([]string, dr.Dy())
+			for y := range dr.Dy() {
+				var gotRow, wantRow strings.Builder
+				for x := range dr.Dx() {
+					_, _, _, a := mask.At(maskp.X+x, maskp.Y+y).RGBA()
+					gotRow.WriteByte(".#"[min(a, 1)])
+					covered := byte('.')
+					for _, r := range test.want {
+						if image.Pt(x, y).In(r) {
+							covered = '#'
+						}
+					}
+					wantRow.WriteByte(covered)
+				}
+				got[y], want[y] = gotRow.String(), wantRow.String()
+			}
+			assert.Equal(t, want, got)
+		})
+	}
 }
 
 func TestPlusGlyphBounds(t *testing.T) {

@@ -1567,8 +1567,8 @@ func newActivityComponent(t *testing.T, onActivity func()) (*Component, []*Tab) 
 			onActivity()
 		}
 	}
+	cfg.Interrupter = term.NopInterrupter()
 	b := NewComponent(cfg)
-	b.SetInterrupter(term.NopInterrupter())
 	b.Resize(40, 10)
 	t.Cleanup(func() { _ = b.Close() })
 	var tabs []*Tab
@@ -1677,8 +1677,8 @@ func TestOnTabRemoved(t *testing.T) {
 		cfg.OnTabRemoved = func(uri workspaceapi.URI) {
 			*events = append(*events, "removed "+name(uri))
 		}
+		cfg.Interrupter = term.NopInterrupter()
 		b := NewComponent(cfg)
-		b.SetInterrupter(term.NopInterrupter())
 		b.Resize(80, 24)
 		t.Cleanup(func() { _ = b.Close() })
 		f := fixture{
@@ -1965,9 +1965,10 @@ func TestRemoveTabClearsStatus(t *testing.T) {
 	assert.False(t, b.HasWorkingTabs())
 }
 
-func TestSetInterrupterStartsPendingActivity(t *testing.T) {
+func TestCloseStopsTabActivity(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.ActiveTabShader = "pulse"
+	cfg.Interrupter = term.NopInterrupter()
 	b := NewComponent(cfg)
 	uri, err := workspaceapi.ParseURI("file:///a")
 	require.NoError(t, err)
@@ -1976,12 +1977,12 @@ func TestSetInterrupterStartsPendingActivity(t *testing.T) {
 
 	working := programstatus.Report{State: programstatus.Working, Progress: -1}
 	require.True(t, b.SetTabStatus(uri, working))
-	assert.False(t, b.shadedTabs.Running())
-	b.SetInterrupter(term.NopInterrupter())
-	assert.True(t, b.shadedTabs.Running())
+	require.True(t, b.shadedTabs.Running())
+	require.NotNil(t, b.spinner)
 
 	require.NoError(t, b.Close())
 	assert.False(t, b.shadedTabs.Running())
+	assert.Nil(t, b.spinner)
 }
 
 // newStatusComponent returns a frameless Component with the tabs
@@ -1995,8 +1996,8 @@ func newStatusComponent(t *testing.T) (*Component, []*Tab, func() []term.Cell) {
 	cfg.FrameUnion = false
 	cfg.Dim = false
 	cfg.ActiveTabShader = "pulse"
+	cfg.Interrupter = term.NopInterrupter()
 	b := NewComponent(cfg)
-	b.SetInterrupter(term.NopInterrupter())
 	t.Cleanup(func() { _ = b.Close() })
 
 	uriA, err := workspaceapi.ParseURI("file:///a")
@@ -2258,8 +2259,8 @@ func TestSetTabStatusSpinnerCycles(t *testing.T) {
 func TestSetTabStatusWithoutSpinnerKeepsIcon(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.TabStatus.Spinner = nil
+	cfg.Interrupter = term.NopInterrupter()
 	b := NewComponent(cfg)
-	b.SetInterrupter(term.NopInterrupter())
 	t.Cleanup(func() { _ = b.Close() })
 	uri, err := workspaceapi.ParseURI("file:///a")
 	require.NoError(t, err)
@@ -3563,8 +3564,8 @@ func TestTabStatusRecords(t *testing.T) {
 	cfg.OnTabStatus = func(_ workspaceapi.URI, _, status programstatus.Summary) {
 		changes = append(changes, status)
 	}
+	cfg.Interrupter = term.NopInterrupter()
 	b := NewComponent(cfg)
-	b.SetInterrupter(term.NopInterrupter())
 	b.Resize(40, 10)
 	t.Cleanup(func() { _ = b.Close() })
 	uri, err := workspaceapi.ParseURI("rune-agent://model/chat")
@@ -3787,8 +3788,8 @@ func TestContentSeen(t *testing.T) {
 			var seen []browserapi.Handler
 			cfg := DefaultConfig()
 			cfg.OnContentSeen = func(content browserapi.Handler) { seen = append(seen, content) }
+			cfg.Interrupter = term.NopInterrupter()
 			b := NewComponent(cfg)
-			b.SetInterrupter(term.NopInterrupter())
 			b.Resize(60, 20)
 			t.Cleanup(func() { _ = b.Close() })
 			uri, err := workspaceapi.ParseURI("rune-agent://model/chat")
@@ -3932,8 +3933,8 @@ func newPointerComponent(t *testing.T, tabBarOffset int) *Component {
 	cfg.TabBarOffset = tabBarOffset
 	cfg.WindowManagerConfig.WindowBar = true
 	cfg.OnTabIconClick = func(*Tab) {}
+	cfg.Interrupter = term.NopInterrupter()
 	b := NewComponent(cfg)
-	b.SetInterrupter(term.NopInterrupter())
 	b.Resize(60, 15)
 	t.Cleanup(func() { _ = b.Close() })
 

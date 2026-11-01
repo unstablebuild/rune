@@ -496,6 +496,18 @@ func TestPlanCommandRecursiveDeletes(t *testing.T) {
 		{name: "zsh tildes depend on HOME, which the script may set",
 			cmd:  []string{"zsh", "-c", `rm -rf ~/x`},
 			want: []string{"rm -rf ~/x" + unresolved}},
+		{name: "rmdir", cmd: bash(`rmdir "$RUNE_DATADIR/x" ~/y`),
+			want: []string{"rmdir /home/me/.rune/x /home/me/y"}},
+		{name: "rmdir of the parents", cmd: bash(`D=a/b; rmdir -p "$D"`),
+			want: []string{"rmdir -p a/b"}},
+		{name: "rmdir by path", cmd: bash(`/bin/rmdir x`), want: []string{"/bin/rmdir x"}},
+		{name: "rmdir behind a wrapper", cmd: []string{"sudo", "rmdir", "/x"},
+			want: []string{"rmdir /x"}},
+		{name: "what find runs rmdir on",
+			cmd:  bash(`find . -type d -empty -exec rmdir {} +`),
+			want: []string{"rmdir {}" + unresolved}},
+		{name: "rm and rmdir", cmd: bash(`rm -r a/b; rmdir a`),
+			want: []string{"rm -r a/b", "rmdir a"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

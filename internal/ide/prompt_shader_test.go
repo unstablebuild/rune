@@ -17,9 +17,11 @@
 package ide
 
 import (
+	"image"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/term"
@@ -150,4 +152,93 @@ func TestDynamicVirtualClampsToMatrix(t *testing.T) {
 	assert.Equal(t, '.', cells[0][0].Ch)
 	assert.Equal(t, '.', cells[0][1].Ch)
 	assert.Equal(t, '.', cells[1][0].Ch)
+}
+
+func TestPromptShaderShadesFrameRunesUnderImages(t *testing.T) {
+	t.Parallel()
+	attr := term.Attributes{Fg: term.NewRGBColor(10, 20, 30)}
+	opaque := image.NewRGBA(image.Rect(0, 0, 2, 4))
+	for i := range opaque.Pix {
+		opaque.Pix[i] = 0xff
+	}
+	id := term.NewImageID()
+	rows := []string{"┌─┐", "│ │", "└─┘"}
+	root := drawFunc(func(w term.Writer) {
+		for y, row := range rows {
+			for x, ch := range []rune(row) {
+				pos := term.Coordinates{X: x, Y: y}
+				w.SetCell(pos, term.NewCell(ch, 1, attr))
+				if ch != ' ' {
+					w.DrawImage(term.Image{
+						Src: opaque, ID: id, Pos: pos, Width: 1, Height: 1,
+						Fit: term.ImageFitFill, Layer: term.ImageLayerAboveText,
+					})
+				}
+			}
+		}
+	})
+	// The window sits away from the screen's origin so that a placement
+	// left in the view's coordinates would show.
+	win := &fakeWindow{pos: term.Coordinates{X: 1, Y: 1}, w: 3, h: 3}
+	shifted := drawFunc(func(w term.Writer) {
+		root.Draw(&component.VirtualWriter{
+			Writer: w, Offset: win.pos, Width: 3, Height: 3,
+		})
+	})
+	sh := newPromptShader(component.FrameCharSetDefault(), attr,
+		defaultCommandPromptSeparatorCharset(), win,
+		term.Coordinates{}, shifted, term.NopInterrupter(),
+		commandPromptShaderConfig{enabled: true})
+	t.Cleanup(func() { _ = sh.Close() })
+	sh.Resize(5, 5)
+
+	w := newCoveringImageWriter(5, 5)
+	sh.Draw(w)
+
+	want := map[term.Coordinates]bool{}
+	for y, row := range rows {
+		for x, ch := range []rune(row) {
+			if ch != ' ' {
+				want[term.Coordinates{X: x + 1, Y: y + 1}] = true
+			}
+		}
+	}
+	assert.Equal(t, want, w.images, "the images pass through where they were drawn")
+	var glowing int
+	for pos := range want {
+		c := w.Cells()[pos.Y*5+pos.X]
+		require.NotEqual(t, ' ', c.Ch, "the rune under the image at %v", pos)
+		if c.Fg != attr.Fg {
+			glowing++
+		}
+	}
+	assert.Positive(t, glowing, "the sweep colors the runes under the images")
+}
+
+func TestPromptShaderShadesSeparatorRunes(t *testing.T) {
+	t.Parallel()
+	attr := term.Attributes{Fg: term.NewRGBColor(10, 20, 30)}
+	rows := []string{"┌─┐", "├─┤", "└─┘"}
+	root := drawFunc(func(w term.Writer) {
+		for y, row := range rows {
+			for x, ch := range []rune(row) {
+				w.SetCell(term.Coordinates{X: x, Y: y}, term.NewCell(ch, 1, attr))
+			}
+		}
+	})
+	win := &fakeWindow{w: 3, h: 3}
+	sh := newPromptShader(component.FrameCharSetDefault(), attr,
+		defaultCommandPromptSeparatorCharset(), win,
+		term.Coordinates{}, root, term.NopInterrupter(),
+		commandPromptShaderConfig{enabled: true})
+	t.Cleanup(func() { _ = sh.Close() })
+	sh.Resize(3, 3)
+
+	w := newCoveringImageWriter(3, 3)
+	sh.Draw(w)
+
+	// The sweep starts pointing right, at the separator's right end.
+	c := w.Cells()[1*3+2]
+	require.Equal(t, '┤', c.Ch)
+	assert.NotEqual(t, attr.Fg, c.Fg, "the sweep colors the separator's junction")
 }

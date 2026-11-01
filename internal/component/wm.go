@@ -17,8 +17,10 @@
 package component
 
 import (
+	"image"
 	"slices"
 
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
@@ -27,10 +29,15 @@ import (
 // WindowManagerConfig represents the configuration for a WindowManager
 // to be initialized.
 type WindowManagerConfig struct {
-	Frame         bool
-	FrameAttr     term.Attributes
-	ScrollBarAttr term.Attributes
-	ScrollBarChar rune
+	Frame            bool
+	FrameAttr        term.Attributes
+	ScrollBarAttr    term.Attributes
+	ScrollBarCharSet component.ScrollBarCharSet
+	// ScrollBarOutset stretches each image of ScrollBarCharSet.Graphics
+	// over this many cells left of its own, covering them. Where the
+	// frame's scroll bar charset names an image, those cells grab the
+	// thumb as the bar does. Negative values are 0.
+	ScrollBarOutset int
 	component.FrameCharSet
 	NoMaxSize bool
 
@@ -41,12 +48,59 @@ type WindowManagerConfig struct {
 	WindowBarCharSet WindowBarCharSet
 	CloseIcon        rune
 	CloseIconAttr    term.Attributes
+
+	// FrameGraphicsStorage caches the images of FrameCharSet.Graphics,
+	// ScrollBarCharSet.Graphics and WindowBarCharSet.Graphics. Without
+	// it, or without Interrupter, frames and window bars draw their
+	// runes only.
+	FrameGraphicsStorage storageapi.Service
+	// Interrupter is signalled each time an image of the frames'
+	// graphics loads, so the host repaints with it.
+	Interrupter term.Interrupter
 }
 
 // WindowBarCharSet is the set of characters used to draw the window
 // bar over a floating window's top frame line.
 type WindowBarCharSet struct {
 	Left, Horizontal, Right rune
+
+	// Graphics names an image for each slot, which writers that can draw
+	// images show in place of its rune, under the close icon and title.
+	Graphics WindowBarGraphics
+}
+
+// WindowBarGraphics names an image for each slot of a WindowBarCharSet:
+// Left for the bar's first cell, Right for its last and Horizontal for
+// every cell between. An empty URI leaves the slot to its rune.
+type WindowBarGraphics struct {
+	Left, Horizontal, Right string
+
+	// Outset stretches the Left and Right images past their cells.
+	Outset WindowBarOutset
+
+	// Overlay draws each image over its slot's rune, which shows through
+	// the image's transparent pixels, and keeps the bar's colors behind
+	// the close icon and title. Otherwise each image replaces its rune,
+	// and the icon and title sit on the frame's background.
+	Overlay bool
+}
+
+// Empty reports whether g names no image, whatever its Outset and
+// Overlay.
+func (g WindowBarGraphics) Empty() bool {
+	return g.Left == "" && g.Horizontal == "" && g.Right == ""
+}
+
+// WindowBarOutset is how far the images of a window bar's ends reach past
+// their cells: Top rows above the bar, Bottom rows down the window's
+// sides, Sides cells outward and Inward cells toward the bar's other end.
+// HorizontalTop is how many rows above the bar each Horizontal image
+// reaches, as one column. They cover whatever is drawn there before them,
+// including the close icon, title and window content, are clipped at the
+// window manager's edges, and change nothing the pointer reaches. Negative
+// values are 0.
+type WindowBarOutset struct {
+	Top, Bottom, Sides, Inward, HorizontalTop int
 }
 
 // WindowBarCloseIconX is the bar-local X offset at which the close
@@ -67,6 +121,8 @@ type WindowManager struct {
 	minimizedHeight int
 	minimizedWidth  int
 	minimizedPos    map[uint64]windowPos
+
+	graphics *FrameGraphics
 }
 
 // Draw satisfies tui.Component
@@ -221,11 +277,13 @@ func (wm *WindowManager) DrawWindow(win Window, w term.Writer) {
 	f, ok := win.node.(*floatingNode)
 	if !ok {
 		wm.tree.DrawTile(win.node.(*TileNode), &nonMinimizedW)
+		wm.drawFrameGraphics(win, &nonMinimizedW)
 		return
 	}
 
 	if f.minimized == 0 {
 		f.Draw(&nonMinimizedW)
+		wm.drawFrameGraphics(win, &nonMinimizedW)
 		wm.drawWindowBar(f, &nonMinimizedW)
 		return
 	}
@@ -254,6 +312,30 @@ func (wm *WindowManager) DrawWindow(win Window, w term.Writer) {
 	}
 }
 
+// drawFrameGraphics draws the images of win's frame over its border and
+// scroll bar.
+func (wm *WindowManager) drawFrameGraphics(win Window, w term.Writer) {
+	if wm.graphics == nil || !wm.config.Frame {
+		return
+	}
+	width, height := win.node.Width(), win.node.Height()
+	vw := &component.VirtualWriter{
+		Writer: w, Offset: win.node.Position(), Width: width, Height: height,
+	}
+	frame := win.node.Content().(*component.Frame)
+	wm.graphics.Draw(vw, frame, width, height)
+	wm.graphics.DrawScrollBar(vw, frame, width, height, wm.config.ScrollBarOutset)
+}
+
+// Close releases the images of the frames' graphics. It does not close
+// the windows.
+func (wm *WindowManager) Close() error {
+	if wm.graphics == nil {
+		return nil
+	}
+	return wm.graphics.Close()
+}
+
 // NewWindowManager allocates storage for a new WindowManager and initializes it.
 func NewWindowManager(
 	content tui.Component, config WindowManagerConfig,
@@ -271,6 +353,9 @@ func (wm *WindowManager) Init(
 	wm.minimizedDirty = true
 	wm.config = config
 	wm.minimizedPos = make(map[uint64]windowPos)
+	if config.FrameGraphicsStorage != nil && config.Interrupter != nil {
+		wm.graphics = NewFrameGraphics(config.FrameGraphicsStorage, config.Interrupter)
+	}
 
 	if wm.config.Frame {
 		content = wm.withFrame(content)
@@ -655,11 +740,15 @@ func DefaultWindowManagerConfig() WindowManagerConfig {
 }
 
 // barCharSet overrides the top frame characters of cs with the
-// configured window bar characters.
+// configured window bar characters, which the bar keeps over any
+// graphics.
 func (wm *WindowManager) barCharSet(cs component.FrameCharSet) component.FrameCharSet {
 	cs.TopLeft = wm.config.WindowBarCharSet.Left
 	cs.HorizontalTop = wm.config.WindowBarCharSet.Horizontal
 	cs.TopRight = wm.config.WindowBarCharSet.Right
+	cs.Graphics.TopLeft = ""
+	cs.Graphics.HorizontalTop = ""
+	cs.Graphics.TopRight = ""
 	return cs
 }
 
@@ -678,28 +767,47 @@ func (wm *WindowManager) hasWindowBar(f *floatingNode) bool {
 }
 
 // drawWindowBar draws the close icon and the window title over a
-// floating window's bar. The icon and title cells take the bar's
-// foreground as their background so they read as part of the bar.
+// floating window's bar, and the bar's images under them.
 func (wm *WindowManager) drawWindowBar(f *floatingNode, w term.Writer) {
 	if !wm.hasWindowBar(f) || f.realWidth < 3 || f.realHeight < 3 {
 		return
 	}
-	barAttr := f.Content().(*component.Frame).Attributes
-	if wm.config.CloseIcon != 0 {
-		attr := wm.config.CloseIconAttr
-		attr.Bg = barAttr.Fg
-		pos := f.realOffset
-		pos.X += WindowBarCloseIconX
-		w.SetCell(pos, term.NewCell(wm.config.CloseIcon, 1, attr))
+	frame := f.Content().(*component.Frame)
+	text := wm.windowBarText(f, frame.Attributes)
+	for _, c := range text {
+		w.SetCell(term.Coordinates{X: f.realOffset.X + c.x, Y: f.realOffset.Y}, c.solid)
 	}
-	wm.drawWindowTitle(f, barAttr, w)
+	wm.drawWindowBarGraphics(f, frame, text, w)
 }
 
-func (wm *WindowManager) drawWindowTitle(
-	f *floatingNode, barAttr term.Attributes, w term.Writer,
-) {
+// windowBarCell is a cell of a window bar's close icon or title, x cells
+// from the bar's left end.
+type windowBarCell struct {
+	x int
+	// solid is the cell over the bar's runes, which takes the bar's
+	// foreground as its background so it reads as part of the bar.
+	solid term.Cell
+	// onImage is the cell over an image that replaces the bar's runes,
+	// on the frame's background.
+	onImage term.Cell
+}
+
+// windowBarText returns the cells of f's close icon and title, from left
+// to right.
+func (wm *WindowManager) windowBarText(
+	f *floatingNode, barAttr term.Attributes,
+) (ret []windowBarCell) {
+	if wm.config.CloseIcon != 0 {
+		solid, onImage := wm.config.CloseIconAttr, wm.config.CloseIconAttr
+		solid.Bg, onImage.Bg = barAttr.Fg, barAttr.Bg
+		ret = append(ret, windowBarCell{
+			x:       WindowBarCloseIconX,
+			solid:   term.NewCell(wm.config.CloseIcon, 1, solid),
+			onImage: term.NewCell(wm.config.CloseIcon, 1, onImage),
+		})
+	}
 	if f.title == "" {
-		return
+		return ret
 	}
 	// interior bar cells span [1, realWidth-2]; keep one bar cell
 	// after the close icon so the icon stays distinguishable.
@@ -707,18 +815,67 @@ func (wm *WindowManager) drawWindowTitle(
 	maxX := f.realWidth - 2
 	avail := maxX - minX + 1
 	if avail < 3 {
-		return
+		return ret
 	}
 	title := []rune(" " + f.title + " ")
 	if len(title) > avail {
 		title = title[:avail]
 	}
-	attr := term.Attributes{Fg: barAttr.Bg, Bg: barAttr.Fg}
-	start := f.realOffset.X + minX + (avail-len(title))/2
+	solid := term.Attributes{Fg: barAttr.Bg, Bg: barAttr.Fg}
+	onImage := term.Attributes{Fg: barAttr.Fg, Bg: barAttr.Bg}
+	start := minX + (avail-len(title))/2
 	for i, r := range title {
-		w.SetCell(term.Coordinates{X: start + i, Y: f.realOffset.Y},
-			term.NewCell(r, 1, attr))
+		ret = append(ret, windowBarCell{
+			x:       start + i,
+			solid:   term.NewCell(r, 1, solid),
+			onImage: term.NewCell(r, 1, onImage),
+		})
 	}
+	return ret
+}
+
+// drawWindowBarGraphics draws the images of WindowBarCharSet.Graphics
+// over f's bar, whose close icon and title cells are text, drawn over
+// the images.
+func (wm *WindowManager) drawWindowBarGraphics(
+	f *floatingNode, frame *component.Frame, text []windowBarCell, w term.Writer,
+) {
+	gr := wm.config.WindowBarCharSet.Graphics
+	if wm.graphics == nil || gr.Empty() {
+		return
+	}
+	attr := frame.Attributes
+	limitX := f.realWidth - 1
+	cw := cellImageWriter{Writer: w}
+	draw := func(uri string, ch rune, x int, area image.Rectangle) {
+		if uri == "" {
+			return
+		}
+		cw.under = term.NewCell(' ', 1, attr)
+		cw.fallback = term.NewCell(ch, 1, attr)
+		cw.keep = gr.Overlay
+		cw.layer = term.ImageLayerAboveText
+		if i := slices.IndexFunc(text, func(c windowBarCell) bool { return c.x == x }); i >= 0 {
+			cw.under, cw.fallback = text[i].onImage, text[i].solid
+			if gr.Overlay {
+				cw.under = text[i].solid
+			}
+			cw.keep = false
+			cw.layer = term.ImageLayerBelowText
+		}
+		at := term.Coordinates{X: f.realOffset.X + x, Y: f.realOffset.Y}
+		wm.graphics.drawArea(&cw, uri, at, area.Add(image.Pt(at.X, at.Y)))
+	}
+	o := gr.Outset
+	column := image.Rect(0, -max(0, o.HorizontalTop), 1, 1)
+	for x := 1; x < limitX; x++ {
+		draw(gr.Horizontal, frame.HorizontalTop, x, column)
+	}
+	// The ends go last so that no cell of the bar covers their outsets.
+	top, bottom := max(0, o.Top), max(0, o.Bottom)
+	sides, inward := max(0, o.Sides), max(0, o.Inward)
+	draw(gr.Left, frame.TopLeft, 0, image.Rect(-sides, -top, 1+inward, 1+bottom))
+	draw(gr.Right, frame.TopRight, limitX, image.Rect(-inward, -top, 1+sides, 1+bottom))
 }
 
 // MoveWindow moves a floating window so its top-left corner sits at
@@ -784,7 +941,7 @@ func (wm *WindowManager) withFrame(handler tui.Component) *component.Frame {
 	f.FrameCharSet = wm.config.FrameCharSet
 	f.Attributes = wm.config.FrameAttr
 	f.ScrollBarAttributes = wm.config.ScrollBarAttr
-	f.ScrollBarChar = wm.config.ScrollBarChar
+	f.ScrollBarCharSet = wm.config.ScrollBarCharSet
 	return f
 }
 

@@ -68,8 +68,8 @@ func validateConfigOn(cfg map[string]any, goos string) (err error) {
 
 // validateSounds drops invalid `sounds` entries, resets a terminal.bell
 // that names no known sound to the default and drops invalid
-// program_status.sounds entries, so a typo costs one sound rather than
-// the whole config.
+// program_status.sounds and gui.quick_menu_sounds entries, so a typo
+// costs one sound rather than the whole config.
 func validateSounds(cfg map[string]any) error {
 	var errs []error
 	entries := make(map[string]string)
@@ -108,6 +108,7 @@ func validateSounds(cfg map[string]any) error {
 		errs = append(errs, err)
 	}
 	errs = append(errs, validateProgramStatusSounds(cfg, known)...)
+	errs = append(errs, validateQuickMenuSounds(cfg, known)...)
 	return errors.Join(errs...)
 }
 
@@ -173,6 +174,44 @@ func validateProgramStatusSounds(cfg map[string]any, known func(string) bool) []
 	return errs
 }
 
+// validateQuickMenuSounds drops the gui.quick_menu_sounds entries that
+// name no event or no known sound, for that event to play none.
+func validateQuickMenuSounds(cfg map[string]any, known func(string) bool) []error {
+	const key = keyGUI + "." + keyQuickMenuSounds
+	guiCfg, ok := cfg[keyGUI].(map[string]any)
+	if !ok {
+		return nil
+	}
+	raw, ok := guiCfg[keyQuickMenuSounds]
+	if !ok {
+		return nil
+	}
+	entries, ok := raw.(map[string]any)
+	if !ok {
+		delete(guiCfg, keyQuickMenuSounds)
+		return []error{fmt.Errorf("'%s' must map %s and %s to sound names",
+			key, keyQuickMenuHover, keyQuickMenuClick)}
+	}
+	var errs []error
+	for event, v := range entries {
+		name, isString := v.(string)
+		switch {
+		case event != keyQuickMenuHover && event != keyQuickMenuClick:
+			errs = append(errs, fmt.Errorf("'%s.%s': unknown event: expected %s or %s",
+				key, event, keyQuickMenuHover, keyQuickMenuClick))
+		case !isString:
+			errs = append(errs, fmt.Errorf("'%s.%s' must be a sound name or \"\", got %T",
+				key, event, v))
+		case !known(name):
+			errs = append(errs, fmt.Errorf("'%s.%s' names unknown sound %q", key, event, name))
+		default:
+			continue
+		}
+		delete(entries, event)
+	}
+	return errs
+}
+
 func validateAliases(c *ideConfig, cfg map[string]any) (err error) {
 	// Cycle detection only inspects alias Commands so we parse the
 	// commands without building completer chains, which would require
@@ -227,11 +266,21 @@ func validateQuickMenu(cfg map[string]any) error {
 func quickMenuEntries(buttons []QuickMenuButton) []any {
 	entries := make([]any, 0, len(buttons))
 	for _, button := range buttons {
-		entries = append(entries, map[string]any{
-			"symbol":  button.Symbol,
+		entry := map[string]any{
 			"title":   button.Title,
 			"command": strings.Join(button.Command, " "),
-		})
+		}
+		if button.Symbol != "" {
+			entry["symbol"] = button.Symbol
+		}
+		if button.HasSprite() {
+			entry["sprite"] = map[string]any{
+				"idle":    button.Sprite.Idle,
+				"hover":   button.Sprite.Hover,
+				"pressed": button.Sprite.Pressed,
+			}
+		}
+		entries = append(entries, entry)
 	}
 	return entries
 }

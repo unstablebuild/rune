@@ -17,17 +17,23 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"image"
 	"image/color"
 	"image/draw"
+	"image/png"
 	"math"
+	"net/url"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
 	compapi "github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/component/comptest"
 	"github.com/unstablebuild/rune-go-sdk/handler"
@@ -53,8 +59,8 @@ func prepareTest(width, height int, frame bool, root tui.Handler) (
 	writer := term.NewStringWriter(width, height)
 	cfg := DefaultWindowManagerConfig()
 	cfg.Frame = frame
-	cfg.ScrollBarChar = '|'
-	cfg.ScrollBarHoverChar = 'X'
+	cfg.ScrollBarCharSet = compapi.ScrollBarCharSet{Middle: '|'}
+	cfg.ScrollBarHoverCharSet = compapi.ScrollBarCharSet{Middle: 'X'}
 	cfg.WindowBar = false
 	handler := NewWindowManager(root, cfg)
 	handler.Resize(width, height)
@@ -64,6 +70,151 @@ func prepareTest(width, height int, frame bool, root tui.Handler) (
 
 func TestWindowManagerSetFocusFrame(t *testing.T) {
 	testWindowManagerSetFocus(t, true)
+}
+
+func TestWindowManagerFocusFrameGraphics(t *testing.T) {
+	dir := t.TempDir()
+	every := func(uri string) compapi.FrameCharSetGraphics {
+		return compapi.FrameCharSetGraphics{
+			TopLeft: uri, TopRight: uri, BottomLeft: uri, BottomRight: uri,
+			HorizontalTop: uri, HorizontalBottom: uri,
+			VerticalLeft: uri, VerticalRight: uri,
+		}
+	}
+
+	cfg := DefaultWindowManagerConfig()
+	cfg.WindowBar = false
+	cfg.FrameCharSet.Graphics = every(grayImageURI(t, dir, "frame.png", 128))
+	cfg.FocusFrameCharSet.Graphics = every(grayImageURI(t, dir, "focus.png", 200))
+	cfg.FrameGraphicsStorage = storagestub.NewInMemoryService()
+	irq := make(chan struct{}, 2)
+	cfg.Interrupter = interruptFunc(func() { irq <- struct{}{} })
+	wm := NewWindowManager(handler.NewTestHandler(), cfg)
+	t.Cleanup(func() { assert.NoError(t, wm.Close()) })
+	wm.Resize(12, 4)
+	left := wm.Focus()
+	b := handler.NewTestHandler()
+	b.Ch = 'B'
+	right, ok := wm.SplitVertical(left, b)
+	require.True(t, ok)
+
+	wm.Draw(term.NewStringWriter(12, 4))
+	for range 2 {
+		select {
+		case <-irq:
+		case <-time.After(5 * time.Second):
+			require.FailNow(t, "timed out waiting for the frame images")
+		}
+	}
+
+	comptest.TestComponent(t, wm, asciiart.NewStringWriter(12, 4, asciiart.DefaultConfig()),
+		[]comptest.TestCase{
+			{Expected: `
+666666aaaaaa
+6AAAA6aBBBBa
+6AAAA6aBBBBa
+666666aaaaaa`},
+			{Action: func() { wm.SetFocus(right) }, Expected: `
+aaaaaa666666
+aAAAAa6BBBB6
+aAAAAa6BBBB6
+aaaaaa666666`},
+		})
+}
+
+func TestWindowManagerScrollBarHoverGraphics(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultWindowManagerConfig()
+	cfg.WindowBar = false
+	cfg.ScrollBarCharSet = compapi.ScrollBarCharSet{
+		Top: 't', Middle: 'm', Bottom: 'b',
+		Graphics: compapi.ScrollBarCharSetGraphics{
+			Top:    grayImageURI(t, dir, "top.png", 40),
+			Middle: grayImageURI(t, dir, "middle.png", 128),
+		},
+	}
+	cfg.ScrollBarHoverCharSet = compapi.ScrollBarCharSet{
+		Middle: 'X',
+		Graphics: compapi.ScrollBarCharSetGraphics{
+			Middle: grayImageURI(t, dir, "hover.png", 200),
+		},
+	}
+	cfg.FrameGraphicsStorage = storagestub.NewInMemoryService()
+	irq := make(chan struct{}, 4)
+	cfg.Interrupter = interruptFunc(func() { irq <- struct{}{} })
+	buf := cell.NewBuffer()
+	buf.WriteString("A\nB\nC\nD\nE\nF\nG\nH\n")
+	wm := NewWindowManager(scrollableHandler{Scrollable: component.NewScroll(buf)}, cfg)
+	t.Cleanup(func() { assert.NoError(t, wm.Close()) })
+	wm.Resize(5, 7)
+
+	waitImages := func(n int) {
+		for range n {
+			select {
+			case <-irq:
+			case <-time.After(5 * time.Second):
+				require.FailNow(t, "timed out waiting for the scroll bar images")
+			}
+		}
+	}
+	wm.Draw(term.NewStringWriter(5, 7))
+	waitImages(2)
+
+	comptest.TestComponent(t, wm, asciiart.NewStringWriter(5, 7, asciiart.DefaultConfig()),
+		[]comptest.TestCase{
+			{Expected: `
+┌───┐
+│A  _
+│B  a
+│C  a
+│D  │
+│E  │
+└───┘`},
+			{Action: func() { wm.Handle(mouseEv(term.MouseRelease, 4, 2)) }, Expected: `
+┌───┐
+│A  _
+│B  X
+│C  b
+│D  │
+│E  │
+└───┘`},
+			{Action: func() { waitImages(1) }, Expected: `
+┌───┐
+│A  _
+│B  6
+│C  6
+│D  │
+│E  │
+└───┘`},
+			{Action: func() { wm.Handle(mouseEv(term.MouseRelease, 1, 2)) }, Expected: `
+┌───┐
+│A  _
+│B  a
+│C  a
+│D  │
+│E  │
+└───┘`},
+		})
+}
+
+// grayImageURI writes a PNG of a single gray of luminance y to name in
+// dir, and returns its file URI.
+func grayImageURI(t *testing.T, dir, name string, y uint8) string {
+	t.Helper()
+	img := image.NewNRGBA(image.Rect(0, 0, 4, 4))
+	draw.Draw(img, img.Rect, image.NewUniform(color.Gray{Y: y}), image.Point{}, draw.Src)
+	var b bytes.Buffer
+	require.NoError(t, png.Encode(&b, img))
+	path := filepath.Join(dir, name)
+	require.NoError(t, os.WriteFile(path, b.Bytes(), 0o600))
+	return (&url.URL{Scheme: "file", Path: filepath.ToSlash(path)}).String()
+}
+
+type interruptFunc func()
+
+func (f interruptFunc) Interrupt(context.Context) error {
+	f()
+	return nil
 }
 
 type recordingWMWriter struct {
@@ -2226,6 +2377,82 @@ func TestWindowManagerScrollBar(t *testing.T) {
 	handlertest.TestHandler(t, wm, cases, writer)
 }
 
+func TestWindowManagerScrollBarOutset(t *testing.T) {
+	const normal = `
+┌───┐
+│A  |
+│B  |
+│C  |
+│D  │
+│E  │
+└───┘`
+	const hovered = `
+┌───┐
+│A  X
+│B  X
+│C  X
+│D  │
+│E  │
+└───┘`
+	tests := []struct {
+		name     string
+		graphics compapi.ScrollBarCharSetGraphics
+		outset   int
+		cases    []handlertest.SingleTestCase
+	}{
+		{
+			name:     "the cells the images reach are the bar",
+			graphics: compapi.ScrollBarCharSetGraphics{Middle: "file:///bar.png"},
+			outset:   1,
+			cases: []handlertest.SingleTestCase{
+				{Event: mouseEv(term.MouseRelease, 3, 2), Expected: hovered},
+				{Event: mouseEv(term.MouseRelease, 2, 2), Expected: normal},
+				{Event: mouseEv(term.MouseLeft, 3, 1), Expected: hovered},
+				{Event: mouseEv(term.MouseLeft, 3, 2), Expected: `
+┌───┐
+│B  X
+│C  X
+│D  X
+│E  │
+│F  │
+└───┘`},
+			},
+		},
+		{
+			name:     "the outset stops at the left edge of the frame",
+			graphics: compapi.ScrollBarCharSetGraphics{Middle: "file:///bar.png"},
+			outset:   10,
+			cases: []handlertest.SingleTestCase{
+				{Event: mouseEv(term.MouseRelease, 0, 2), Expected: hovered},
+			},
+		},
+		{
+			name:   "without images the outset is the content",
+			outset: 1,
+			cases: []handlertest.SingleTestCase{
+				{Event: mouseEv(term.MouseRelease, 3, 2), Expected: normal},
+				{Event: mouseEv(term.MouseRelease, 4, 2), Expected: hovered},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultWindowManagerConfig()
+			cfg.WindowBar = false
+			cfg.ScrollBarCharSet = compapi.ScrollBarCharSet{Middle: '|', Graphics: tt.graphics}
+			cfg.ScrollBarHoverCharSet = compapi.ScrollBarCharSet{Middle: 'X'}
+			cfg.ScrollBarOutset = tt.outset
+			buf := cell.NewBuffer()
+			buf.WriteString("A\nB\nC\nD\nE\nF\nG\nH\n")
+			wm := NewWindowManager(scrollableHandler{Scrollable: component.NewScroll(buf)}, cfg)
+			wm.Resize(5, 7)
+
+			cases := append([]handlertest.SingleTestCase{{Expected: normal}}, tt.cases...)
+			handlertest.TestHandler(t, wm, cases, term.NewStringWriter(5, 7))
+		})
+	}
+}
+
 func mouseEv(key term.Key, x, y int) term.Event {
 	return term.Event{Type: term.EventMouse, Key: key, MouseX: x, MouseY: y}
 }
@@ -3441,7 +3668,7 @@ func TestWindowManagerPointerShape(t *testing.T) {
 		buf := cell.NewBuffer()
 		buf.WriteString("a\nb\nc\nd\ne\nf\n")
 		cfg := DefaultWindowManagerConfig()
-		cfg.ScrollBarChar = '|'
+		cfg.ScrollBarCharSet = compapi.ScrollBarCharSet{Middle: '|'}
 		wm := NewWindowManager(textPointerHandler(), cfg)
 		wm.Resize(12, 4)
 		rw, ok := wm.SplitVertical(wm.Focus(),
@@ -3561,7 +3788,7 @@ func TestWindowBarScrollBarPrecedence(t *testing.T) {
 	buf.WriteString("a\nb\nc\nd\ne\nf\n")
 	sh := scrollableHandler{Scrollable: component.NewScroll(buf)}
 	cfg := DefaultWindowManagerConfig()
-	cfg.ScrollBarChar = '|'
+	cfg.ScrollBarCharSet = compapi.ScrollBarCharSet{Middle: '|'}
 	wm := NewWindowManager(handler.NewTestHandler(), cfg)
 	wm.Resize(12, 4)
 	lw := wm.Focus()
