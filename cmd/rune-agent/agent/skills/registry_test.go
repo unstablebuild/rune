@@ -111,11 +111,23 @@ alpha body`)
 		r := NewRegistry(osFileSystem{}, dirURI(""), nil, nil)
 		assert.Empty(t, r.Dirs())
 		for _, name := range []string{
-			"explore", "plan",
+			"explore", "plan", "rune-hud",
 		} {
 			_, ok := r.Get(name)
 			assert.True(t, ok, "builtin %s must be present", name)
 		}
+	})
+
+	t.Run("rune-hud is an embedded prompt skill", func(t *testing.T) {
+		r := NewRegistry(osFileSystem{}, dirURI(""), nil, nil)
+		hud, ok := r.Get("rune-hud")
+		require.True(t, ok)
+
+		assert.Equal(t, "<builtin>/rune-hud", hud.Dir)
+		assert.Empty(t, hud.Type)
+		assert.NotEmpty(t, hud.Description)
+		assert.Contains(t, hud.Body, "# Rune HUD images and sounds")
+		assert.Contains(t, hud.Body, "runectl screenshot")
 	})
 
 	t.Run("explore cannot recursively invoke skills", func(t *testing.T) {
@@ -258,6 +270,7 @@ a`)
 	assert.Contains(t, names, "beta")
 	assert.Contains(t, names, "explore")
 	assert.Contains(t, names, "plan")
+	assert.Contains(t, names, "rune-hud")
 	assert.True(t, slices.IsSorted(names), "list must be sorted")
 }
 
@@ -382,6 +395,8 @@ body`)
 		assert.True(t, ok, "builtin explore must survive dir removal")
 		_, ok = r.Get("plan")
 		assert.True(t, ok, "builtin plan must survive dir removal")
+		_, ok = r.Get("rune-hud")
+		assert.True(t, ok, "builtin rune-hud must survive dir removal")
 		assert.Empty(t, r.Dirs())
 	})
 
@@ -394,17 +409,21 @@ body`)
 }
 
 func TestRegistryBuiltinsOverrideFilesystem(t *testing.T) {
-	dir := t.TempDir()
-	writeSkill(t, dir, "explore", `---
-name: explore
-description: Custom explore from filesystem
+	for _, name := range []string{"explore", "plan", "rune-hud"} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeSkill(t, dir, name, fmt.Sprintf(`---
+name: %s
+description: Custom skill from filesystem
 ---
-custom body`)
+custom body`, name))
 
-	r := NewRegistry(osFileSystem{}, dirURI(""), []string{dir}, nil)
-	s, ok := r.Get("explore")
-	require.True(t, ok)
-	assert.Equal(t, "<builtin>/explore", s.Dir, "builtin must override filesystem skill")
+			r := NewRegistry(osFileSystem{}, dirURI(""), []string{dir}, nil)
+			s, ok := r.Get(name)
+			require.True(t, ok)
+			assert.Equal(t, "<builtin>/"+name, s.Dir, "builtin must override filesystem skill")
+		})
+	}
 }
 
 func TestRegistryReload(t *testing.T) {
@@ -459,7 +478,7 @@ body`)
 	t.Run("preserves builtins", func(t *testing.T) {
 		r := NewRegistry(osFileSystem{}, dirURI(""), nil, nil)
 		r.Reload()
-		for _, name := range []string{"explore", "plan"} {
+		for _, name := range []string{"explore", "plan", "rune-hud"} {
 			_, ok := r.Get(name)
 			assert.True(t, ok, "builtin %s must survive Reload", name)
 		}

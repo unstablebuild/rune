@@ -12177,7 +12177,7 @@ func TestLocalModelsOutliveTheWorkspaceBuiltLast(t *testing.T) {
 	require.NoError(t, err, "local models must not use a closed workspace's executor")
 	assert.Equal(t, binary, got)
 }
-	
+
 // newHUDTestIDE opens cwd, unless empty, in an IDE that reads configPath,
 // once it is installed.
 func newHUDTestIDE(t *testing.T, cwd, configPath string, opts ...Option) (*IDE, *sync.Mutex) {

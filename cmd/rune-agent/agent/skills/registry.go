@@ -207,6 +207,7 @@ func (r *SkillRegistry) registerBuiltins() {
 	}{
 		{builtins.Explore, "explore"},
 		{builtins.Plan, "plan"},
+		{builtins.RuneHUD, "rune-hud"},
 	} {
 		s, err := Parse(entry.data, "<builtin>/"+entry.name)
 		if err != nil {

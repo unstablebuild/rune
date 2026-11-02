@@ -3272,7 +3272,8 @@ Greet the user warmly.
 `), 0o644))
 
 	registry := skills.NewRegistry(osFileSystem{}, dirURI(""), []string{skillDir}, nil)
-	require.Len(t, registry.List(), 3) // greet + builtins (explore, plan)
+	_, ok := registry.Get("greet")
+	require.True(t, ok)
 
 	svc := &mockService{responses: []mockResponse{stopResponse("hi")}}
 	store := newMockStore()
@@ -3290,6 +3291,8 @@ Greet the user warmly.
 	assert.Equal(t, llmapi.RoleSystem, req.Messages[1].Role)
 	assert.Contains(t, req.Messages[1].Content, "greet")
 	assert.Contains(t, req.Messages[1].Content, "skill tool")
+	assert.Contains(t, req.Messages[1].Content, "- rune-hud:")
+	assert.Contains(t, req.Messages[1].Content, "<builtin>/rune-hud/SKILL.md")
 
 	// The persisted messages should NOT contain the skills message.
 	d, ok := store.getDialogue("d")
