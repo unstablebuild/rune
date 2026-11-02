@@ -454,6 +454,58 @@ func TestFileExplorerOpenFile(t *testing.T) {
 	t.Fatalf("expected alpha.go to be opened in a tab")
 }
 
+func TestFileExplorerNavigationPreservesWindowSize(t *testing.T) {
+	for _, dimension := range []string{"width", "height"} {
+		for _, direction := range []string{"decrease", "increase"} {
+			t.Run(direction+" "+dimension, func(t *testing.T) {
+				uri, err := workspaceapi.ParseURI("memory:///")
+				require.NoError(t, err)
+				scheme, err := workspace.NewMemoryScheme(context.Background(), config.NopConfig(), uri)
+				require.NoError(t, err)
+				touchTestFile(t, scheme, "alpha.go")
+				touchTestFile(t, scheme, "beta.go")
+
+				ed := vi.Editor(vi.WithWorkspaceCommandRegistry(uri, texttest.NopWorkspaceRegistry()))
+				b := newExForTestingWithWorkspace(t, workspace.NewSchemeWorkspace(uri, scheme, inlineSchedule),
+					ed, vte.DefaultConfig(), nopPublishEvent, clipboard.NewInMemory())
+				defer b.Close()
+				b.Resize(100, 30)
+				require.NoError(t, b.fexplorer(context.Background()))
+				win := b.fileExplorerWin
+				if dimension == "height" {
+					require.NoError(t, b.dispatchCommand("windowsplit", "down"))
+					_, err = b.comp.SetFocus(win)
+					require.NoError(t, err)
+				}
+				b.Draw(term.NewStringWriter(100, 30))
+				initialSize := term.Coordinates{X: win.Width(), Y: win.Height()}
+
+				require.NoError(t, b.windowresize(context.Background(), direction, dimension))
+				b.Draw(term.NewStringWriter(100, 30))
+				resized := term.Coordinates{X: win.Width(), Y: win.Height()}
+				require.NotEqual(t, initialSize, resized)
+
+				for i, key := range "jk" {
+					_, handled := b.Handle(term.Event{Type: term.EventKey, Ch: key})
+					require.True(t, handled)
+					b.Draw(term.NewStringWriter(100, 30))
+					require.Equal(t, 1-i, b.fileExplorerHandler.ed.CursorAtScroll().Y)
+					require.Equal(t, resized, term.Coordinates{X: win.Width(), Y: win.Height()},
+						"navigation with %c must preserve the window size", key)
+				}
+
+				require.NoError(t, b.windowresize(context.Background(), "reset"))
+				b.Draw(term.NewStringWriter(100, 30))
+				require.Equal(t, initialSize, term.Coordinates{X: win.Width(), Y: win.Height()})
+
+				sendExplorerKeys(t, b.fileExplorerHandler, "A"+strings.Repeat("x", initialSize.X)+"<esc>")
+				b.Draw(term.NewStringWriter(100, 30))
+				require.Greater(t, win.Width(), initialSize.X, "editing a longer name must still resize the window")
+			})
+		}
+	}
+}
+
 func TestFileExplorerToggleTwice(t *testing.T) {
 	uri, err := workspaceapi.ParseURI("memory:///")
 	require.NoError(t, err)
