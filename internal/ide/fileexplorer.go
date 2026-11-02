@@ -214,11 +214,14 @@ func (h *fileExplorerHandler) Handle(ev term.Event) (exit, handled bool) {
 		h.mouseDown = false
 		return false, true
 	}
+	beforeWidth, _ := h.Dimensions()
 	exit, handled = h.span.Handle(ev)
 	if !handled {
 		return exit, handled
 	}
-	h.syncWidth()
+	if afterWidth, _ := h.Dimensions(); afterWidth != beforeWidth {
+		h.syncWidth()
+	}
 	if exit {
 		h.focusTarget()
 		return false, true
