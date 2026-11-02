@@ -377,8 +377,13 @@ listed under *Weaker matches*. A query shaped like an identifier, such as
 `search CodeLookup.definition`, jumps to where that symbol is
 defined.
 
-Keyword search works as soon as the workspace is scanned. Searching by
-meaning needs the [local model server](#what-you-need) and a small
+Semantic indexing is off by default. Set `search.semantic_enabled` to
+`true` (`True` in Starlark) and restart Rune to enable it.
+Regexp indexing (`search.regex_enabled`) and symbol indexing
+(`workspace.symboldb`) are independent of this opt-in.
+
+Once enabled, keyword search works as soon as the workspace is scanned.
+Searching by meaning needs the [local model server](#what-you-need) and a small
 embedding model. The first `searchsemantic` offers to set both up for
 you, and to upgrade the local model server when the installed version
 is too old to run the model; or download the model yourself, once:
@@ -415,12 +420,15 @@ Scripts and tools can run the same search from a Rune terminal with
 runectl search semantic --limit 5 where is the retry backoff computed
 ```
 
-Search is configured under `search`:
+Search is configured under `search`. The independent `regex_enabled` and
+`semantic_enabled` settings replace the old `enabled` switch:
 
 ```yaml tab
 search:
-  # Index workspaces for `search`, `searchsemantic` and `searchregex`.
-  enabled: true
+  # Off, `searchregex` reads every file instead of using its index.
+  regex_enabled: true
+  # Opt in to the semantic index for `search` and `searchsemantic`.
+  semantic_enabled: false
   # The local embedding model that encodes code and queries.
   model: "huggingface.co/ggml-org/embeddinggemma-2-GGUF:Q8_0"
   # Characters a stretch of indexed code holds at most (whole lines).
@@ -436,7 +444,8 @@ search:
 
 ```python tab
 "search": {
-    "enabled": True,
+    "regex_enabled": True,
+    "semantic_enabled": False,
     "model": "huggingface.co/ggml-org/embeddinggemma-2-GGUF:Q8_0",
     "code_stretch": 1800,
     "excluded_folders": [],

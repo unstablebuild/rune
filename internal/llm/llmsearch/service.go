@@ -73,10 +73,11 @@ type Config struct {
 	Options Options
 }
 
-// DefaultConfig returns search turned on, encoding with EmbeddingGemma 2.
+// DefaultConfig leaves semantic indexing off until enabled, using
+// EmbeddingGemma 2 when it is.
 func DefaultConfig() Config {
 	return Config{
-		Enabled: true,
+		Enabled: false,
 		Model:   "huggingface.co/ggml-org/embeddinggemma-2-GGUF:Q8_0",
 		Options: DefaultOptions(),
 	}

@@ -75,7 +75,7 @@ const examples = "```\n" +
 func Manual() textapi.CommandManual { return commandManual }
 
 var errNoSearchIndex = errors.New(
-	"this workspace has no search index: search.enabled is off, or the index failed to open")
+	"this workspace has no search index: search.semantic_enabled is off, or the index failed to open")
 
 // SemanticSearcher answers the console's queries. searchapi.Searcher
 // satisfies it.

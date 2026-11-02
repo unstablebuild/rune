@@ -62,6 +62,26 @@ func TestTelemetryEnabledFromUserConfig(t *testing.T) {
 	assert.False(t, ide.TelemetryEnabled(mustLoadConfig(t, path)))
 }
 
+func TestDefaultSearchIndexing(t *testing.T) {
+	cfg := mustLoadConfig(t, filepath.Join(t.TempDir(), "config.star"))
+	for _, tt := range []struct {
+		section, key string
+		want         bool
+	}{
+		{"search", "regex_enabled", true},
+		{"search", "semantic_enabled", false},
+		{"workspace", "symboldb", true},
+	} {
+		t.Run(tt.section+"."+tt.key, func(t *testing.T) {
+			section, err := cfg.GetConfig(tt.section)
+			require.NoError(t, err)
+			got, err := section.GetBool(tt.key)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestDefaultConfigShowsTheLogoWithItsIntro(t *testing.T) {
 	cfg := mustLoadConfig(t, filepath.Join(t.TempDir(), "config.star"))
 

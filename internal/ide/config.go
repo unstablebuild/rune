@@ -631,10 +631,10 @@ func (c ideConfig) searchConfig() llmsearch.Config {
 	if !ok {
 		return out
 	}
-	overrideBool(search, "enabled", &out.Enabled)
+	overrideBool(search, "semantic_enabled", &out.Enabled)
 	if model, err := search.GetString("model"); err == nil {
 		if model == "" && out.Enabled {
-			c.errors["search.model"] = errors.New("must be set when search.enabled is True")
+			c.errors["search.model"] = errors.New("must be set when search.semantic_enabled is True")
 		} else {
 			out.Model = model
 		}
@@ -5084,10 +5084,23 @@ func (c ideConfig) workspaceSymbolDB() bool {
 	return enabled
 }
 
-// workspaceSearch reports whether workspaces are indexed for code search
-// (`search.enabled`).
+// workspaceSearch reports whether workspaces get a semantic search index.
+// Regexp indexing is controlled independently by search.regex_enabled.
 func (c ideConfig) workspaceSearch() bool {
 	return c.searchConfig().Enabled
+}
+
+// workspaceRegexSearch defaults to true; disabling it makes regexp search
+// scan files directly without disabling semantic or symbol indexing.
+func (c ideConfig) workspaceRegexSearch() bool {
+	enabled := true
+	if c.cfg == nil {
+		return enabled
+	}
+	if search, ok := c.getConfig(config.MapConfig(c.cfg), "search"); ok {
+		overrideBool(search, "regex_enabled", &enabled)
+	}
+	return enabled
 }
 
 func (c ideConfig) workspaceWallpaperBackgroundAttr() term.Attributes {

@@ -241,12 +241,14 @@ config = {
         },
     },
     "search": {
-        # Index each workspace's code for the `search` console command,
-        # `searchsemantic` and `searchregex`. Keyword and regular
-        # expression search work at once; meaning search needs
-        # llama-server and the model below, which `searchsemantic` offers
-        # to install on first use. Off, `searchregex` reads every file.
-        "enabled":             True,
+        # Off, `searchregex` reads every file instead of using its index.
+        # Independent of semantic indexing and workspace.symboldb.
+        "regex_enabled":       True,
+        # Build the semantic index for `search` and `searchsemantic`.
+        # Off by default; independent of regexp indexing. Meaning search
+        # needs llama-server and the model below, which `searchsemantic`
+        # offers to install on first use. Restart Rune after changing.
+        "semantic_enabled":    False,
         # The local embedding model that encodes code and queries.
         "model":               "huggingface.co/ggml-org/embeddinggemma-2-GGUF:Q8_0",
         # Characters a stretch of code holds at most (whole lines).

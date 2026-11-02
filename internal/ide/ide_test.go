@@ -2502,12 +2502,16 @@ clipboard: memory
 
 func TestWorkspaceSearchIndexing(t *testing.T) {
 	tests := []struct {
-		name    string
-		config  string
-		indexed bool
+		name            string
+		config          string
+		regexIndexed    bool
+		semanticIndexed bool
 	}{
-		{"on by default", "clipboard: memory\n", true},
-		{"disabled", "clipboard: memory\nsearch:\n  enabled: false\n", false},
+		{"regexp only by default", "clipboard: memory\n", true, false},
+		{"semantic enabled", "clipboard: memory\nsearch:\n  semantic_enabled: true\n", true, true},
+		{"semantic disabled", "clipboard: memory\nsearch:\n  semantic_enabled: false\n", true, false},
+		{"semantic only", "clipboard: memory\nsearch:\n  regex_enabled: false\n  semantic_enabled: true\n", false, true},
+		{"all disabled", "clipboard: memory\nsearch:\n  regex_enabled: false\n  semantic_enabled: false\n", false, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -2548,9 +2552,9 @@ func TestWorkspaceSearchIndexing(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 			defer cancel()
 			require.NoError(t, wh.regexIndex.Wait(ctx))
-			assert.Equal(t, tt.indexed, wh.regexIndex.Status().Ready)
+			assert.Equal(t, tt.regexIndexed, wh.regexIndex.Status().Ready)
 			_, err = os.Stat(codesearch.IndexFile(filepath.Join(dataDir, "codesearch"), wh.uri))
-			assert.Equal(t, tt.indexed, err == nil, "the regex index persists only when search is enabled")
+			assert.Equal(t, tt.regexIndexed, err == nil, "the regex index persists only when regexp indexing is enabled")
 			regexIt, err := wh.regexIndex.RegexpSearch(ctx, searchapi.RegexpRequest{Pattern: `func Invoice\w+`})
 			require.NoError(t, err)
 			lines, err := sdkiterator.ToSlice(ctx, regexIt)
@@ -2560,8 +2564,8 @@ func TestWorkspaceSearchIndexing(t *testing.T) {
 			}}, lines, "searchregex works with or without an index")
 
 			idx, ok := wh.searchIndexCloser.(*llmsearch.Index)
-			require.Equal(t, tt.indexed, ok)
-			if !tt.indexed {
+			require.Equal(t, tt.semanticIndexed, ok)
+			if !tt.semanticIndexed {
 				assert.Nil(t, wh.searchIndexCloser)
 				return
 			}

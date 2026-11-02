@@ -153,7 +153,7 @@ Rune keeps a trigram index of each workspace, so a search reads only the
 files that may match and answers in milliseconds even in large
 repositories. Rune builds the index in the background when you open the
 workspace and keeps it up to date as files change. Until the index is
-ready, or with `search.enabled` off, `searchregex` reads every file. See
+ready, or with `search.regex_enabled` off, `searchregex` reads every file. See
 [Workspace search](../agent/local-models.md#workspace-search) for the
 `search` settings.
 
@@ -165,6 +165,11 @@ runectl search regexp -g '*.go' 'func\s+New\w*\('
 ```
 
 ## Search by meaning
+
+Semantic indexing is off by default. Enable `search.semantic_enabled`
+(`true` in YAML, `True` in Starlark) and restart Rune before using
+`searchsemantic`. Regexp and symbol indexing are unaffected by the semantic
+setting, and semantic indexing does not require regexp indexing.
 
 `searchsemantic` finds code by describing what it does, so you do not
 have to guess the words it uses:

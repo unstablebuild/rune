@@ -2189,7 +2189,7 @@ func (h *workspaceManagerHandler) codesearchDir() string {
 
 // openRegexIndex opens the trigram index searchregex searches the
 // workspace uri with, and feeds it the workspace's editor events. With
-// search disabled it keeps no index: every search reads every file.
+// search.regex_enabled off it keeps no index: every search reads every file.
 func (h *workspaceManagerHandler) openRegexIndex(
 	cfg ideConfig, ex *ex, uri workspaceapi.URI, cwd workspace.Workspace,
 ) *codesearch.Index {
@@ -2198,7 +2198,7 @@ func (h *workspaceManagerHandler) openRegexIndex(
 		Root: uri, FS: cwd, ExcludedFolders: searchCfg.Options.ExcludedFolders,
 		Notify: h.notifications.current(), Schedule: h.scheduleNextTick,
 	}
-	if !searchCfg.Enabled {
+	if !cfg.workspaceRegexSearch() {
 		return codesearch.Open(icfg)
 	}
 	icfg.File = codesearch.IndexFile(h.codesearchDir(), uri)

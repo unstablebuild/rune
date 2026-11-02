@@ -7757,7 +7757,7 @@ func defaultCfg() ideConfig {
 		},
 		// keep goldens deterministic: indexing runs in the background and
 		// posts its progress whenever it gets to it.
-		"search": map[string]any{"enabled": false},
+		"search": map[string]any{"regex_enabled": false, "semantic_enabled": false},
 	},
 		configPath: "not-empty",
 		sounds:     sounds.Silent,

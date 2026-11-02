@@ -102,7 +102,9 @@ func newSearchRouter(t *testing.T) (*llmrouter.Router, workspaceapi.URI, string)
 	t.Helper()
 	reg, err := llamacpp.NewRegistry(t.TempDir())
 	require.NoError(t, err)
-	search := llmsearch.New(llmsearch.DefaultConfig(), llmsearch.NewFakeEmbedderFactory(), reg, nopCloser{})
+	cfg := llmsearch.DefaultConfig()
+	cfg.Enabled = true
+	search := llmsearch.New(cfg, llmsearch.NewFakeEmbedderFactory(), reg, nopCloser{})
 	router := llmrouter.New(llm.DefaultConfig(), reg, storagestub.NewInMemoryService(), noLocalModels{}, search)
 	t.Cleanup(func() { _ = router.Close() })
 

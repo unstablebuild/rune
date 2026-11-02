@@ -77,7 +77,7 @@ func Manual() textapi.CommandManual {
 var (
 	errUsage   = errors.New("usage: " + Name + " " + synopsis)
 	errNoIndex = errors.New(
-		"this workspace has no search index: search.enabled is off, or the index failed to open")
+		"this workspace has no search index: search.semantic_enabled is off, or the index failed to open")
 )
 
 // Server is the llama-server that meaning search runs the embedding

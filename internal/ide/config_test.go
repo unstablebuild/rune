@@ -3995,12 +3995,13 @@ func TestMetaOpenURLConfig(t *testing.T) {
 
 func TestSearchConfig(t *testing.T) {
 	defaults := ideConfig{cfg: map[string]any{}, errors: map[string]error{}}
-	assert.True(t, defaults.workspaceSearch(), "search is on by default")
+	assert.False(t, defaults.workspaceSearch(), "semantic indexing is off by default")
+	assert.True(t, defaults.workspaceRegexSearch(), "regexp indexing remains on by default")
 	assert.Equal(t, llmsearch.DefaultConfig(), defaults.searchConfig())
 
 	c := ideConfig{cfg: map[string]any{
 		"search": map[string]any{
-			"enabled":             false,
+			"semantic_enabled":    true,
 			"model":               "huggingface.co/acme/encoder-GGUF:Q4_K_M",
 			"code_stretch":        900,
 			"excluded_folders":    []any{"fixtures", "third_party/big"},
@@ -4016,11 +4017,11 @@ func TestSearchConfig(t *testing.T) {
 	want.ExcludedExtensions = []string{"sql", "csv"}
 	want.IdleTimeout = 45 * time.Second
 	assert.Equal(t, llmsearch.Config{
-		Enabled: false,
+		Enabled: true,
 		Model:   "huggingface.co/acme/encoder-GGUF:Q4_K_M",
 		Options: want,
 	}, got)
-	assert.False(t, c.workspaceSearch())
+	assert.True(t, c.workspaceSearch())
 	assert.Empty(t, c.errors)
 
 	empty := ideConfig{cfg: map[string]any{
@@ -4028,6 +4029,35 @@ func TestSearchConfig(t *testing.T) {
 	}, errors: map[string]error{}}
 	assert.Equal(t, llmsearch.DefaultOptions().IdleTimeout, empty.searchConfig().Options.IdleTimeout,
 		"an empty idle_timeout keeps the built-in default")
+}
+
+func TestWorkspaceSearchIndexingConfig(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		search   map[string]any
+		semantic bool
+		regexp   bool
+	}{
+		{"defaults", nil, false, true},
+		{"regexp enabled", map[string]any{"regex_enabled": true}, false, true},
+		{"semantic disabled", map[string]any{"regex_enabled": true, "semantic_enabled": false}, false, true},
+		{"semantic enabled", map[string]any{"semantic_enabled": true}, true, true},
+		{"semantic only", map[string]any{"regex_enabled": false, "semantic_enabled": true}, true, false},
+		{"all disabled", map[string]any{"regex_enabled": false, "semantic_enabled": false}, false, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c := ideConfig{cfg: map[string]any{
+				"workspace": map[string]any{"symboldb": true},
+			}, errors: map[string]error{}}
+			if tt.search != nil {
+				c.cfg["search"] = tt.search
+			}
+			assert.Equal(t, tt.semantic, c.workspaceSearch())
+			assert.Equal(t, tt.regexp, c.workspaceRegexSearch())
+			assert.True(t, c.workspaceSymbolDB(), "search settings do not disable symbol indexing")
+			assert.Empty(t, c.errors)
+		})
+	}
 }
 
 func TestSearchConfigInvalidKeepsDefaults(t *testing.T) {
@@ -4042,14 +4072,17 @@ func TestSearchConfigInvalidKeepsDefaults(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			tt.search["semantic_enabled"] = true
 			c := ideConfig{cfg: map[string]any{"search": tt.search}, errors: map[string]error{}}
-			assert.Equal(t, llmsearch.DefaultConfig(), c.searchConfig())
+			want := llmsearch.DefaultConfig()
+			want.Enabled = true
+			assert.Equal(t, want, c.searchConfig())
 			assert.Contains(t, c.errors, tt.key)
 		})
 	}
 
 	off := ideConfig{cfg: map[string]any{
-		"search": map[string]any{"enabled": false, "model": ""},
+		"search": map[string]any{"semantic_enabled": false, "model": ""},
 	}, errors: map[string]error{}}
 	assert.Empty(t, off.searchConfig().Model, "a disabled search needs no model")
 	assert.Empty(t, off.errors)
