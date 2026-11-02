@@ -74,22 +74,54 @@ func TestWatchGUISignalsDropsTSTP(t *testing.T) {
 }
 
 func TestWatchGUISignalsRequestsScreenshot(t *testing.T) {
+	config := "editor:\n  mode: modal\nworkspace:\n  wallpaper_ascii: %s\n" +
+		"animations:\n  intro: false\n  loading_workspace: false\n  open_workspace: false\n"
+	configured := newConfiguredBootstrapForEnvTest(t, configFilename,
+		fmt.Sprintf(config, "before-reload"), t.TempDir())
+	render := func() string {
+		configured.mu.Lock()
+		defer configured.mu.Unlock()
+		configured.Resize(80, 24)
+		w := term.NewStringWriter(80, 24)
+		configured.Draw(w)
+		require.NoError(t, w.Flush())
+		return w.String()
+	}
+	require.Contains(t, render(), "before-reload")
+	require.NoError(t, os.WriteFile(configured.configPath,
+		fmt.Appendf(nil, config, "after-reload"), 0o644))
+
 	published := make(chan term.Event, 1)
-	root := &bootstrapHandler{publishEvent: func(ev term.Event) bool {
-		published <- ev
-		return true
-	}}
+	root := &bootstrapHandler{
+		realIDE: configured.realIDE,
+		publishEvent: func(ev term.Event) bool {
+			published <- ev
+			return true
+		},
+	}
 	stop := watchGUISignals(root, term.Event{})
 	defer stop()
 
 	require.NoError(t, syscall.Kill(syscall.Getpid(), syscall.SIGUSR2))
-	select {
-	case ev := <-published:
-		assert.Equal(t, term.EventInterrupt, ev.Type)
-		assert.NotNil(t, ev.UserFunc)
-	case <-time.After(5 * time.Second):
-		t.Fatal("no screenshot requested on SIGUSR2")
+	next := func(msg string) {
+		t.Helper()
+		select {
+		case ev := <-published:
+			require.Equal(t, term.EventInterrupt, ev.Type)
+			require.NotNil(t, ev.UserFunc)
+			configured.mu.Lock()
+			defer configured.mu.Unlock()
+			ev.UserFunc()
+		case <-time.After(5 * time.Second):
+			t.Fatal(msg)
+		}
 	}
+	next("no screenshot requested on SIGUSR2")
+	require.Contains(t, render(), "before-reload")
+	next("the HUD reload queued no tick to install it")
+	assert.Contains(t, render(), "after-reload")
+	next("no screenshot queued after applying the HUD")
+	assert.Empty(t, published)
 }
 
 func TestDispatchGUISignal(t *testing.T) {

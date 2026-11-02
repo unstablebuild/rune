@@ -18,6 +18,7 @@ package searchconsole
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -75,6 +76,18 @@ func (noLocalModels) Models() iterator.Iterator[llmapi.ModelEntry] {
 
 func (noLocalModels) GetModel(context.Context, llmapi.ModelEntry) (llmapi.ModelEntry, error) {
 	return llmapi.ModelEntry{}, llmapi.ErrModelNotFound
+}
+
+func (noLocalModels) CanGenerateImage(context.Context, llmapi.ModelEntry) (llmapi.ModelEntry, error) {
+	return llmapi.ModelEntry{}, llmapi.ErrModelNotFound
+}
+
+func (noLocalModels) CanGenerateImages(context.Context, llmapi.ModelEntry) (bool, error) {
+	return false, errors.New("unsupported")
+}
+
+func (noLocalModels) GenerateImage(context.Context, llmapi.ModelEntry, llmapi.ImageRequest) (llmapi.Image, error) {
+	return llmapi.Image{}, errors.New("unsupported")
 }
 
 // routerAt answers semantic searches over root through router, as the

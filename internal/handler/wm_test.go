@@ -2377,6 +2377,55 @@ func TestWindowManagerScrollBar(t *testing.T) {
 	handlertest.TestHandler(t, wm, cases, writer)
 }
 
+func TestWindowManagerRestyle(t *testing.T) {
+	newScroll := func(text string) tui.Handler {
+		buf := cell.NewBuffer()
+		buf.WriteString(text)
+		return scrollableHandler{Scrollable: component.NewScroll(buf)}
+	}
+	writer, wm := prepareTest(12, 4, true, newScroll("A\nB\nC\n"))
+	left := wm.Focus()
+	right, ok := wm.SplitVertical(left, newScroll("a\nb\nc\n"))
+	require.True(t, ok)
+
+	frameAttr := term.Attributes{Fg: term.ColorBlue}
+	focusAttr := term.Attributes{Fg: term.ColorYellow}
+	style := wm.config
+	style.FrameAttr = frameAttr
+	style.FrameCharSet = compapi.FrameCharSet{
+		TopLeft: '+', TopRight: '+', BottomLeft: '+', BottomRight: '+',
+		HorizontalTop: '-', HorizontalBottom: '-', VerticalLeft: '|', VerticalRight: '|',
+	}
+	style.FocusFrameAttr = focusAttr
+	style.FocusFrameCharSet = compapi.FrameCharSet{
+		TopLeft: '#', TopRight: '#', BottomLeft: '#', BottomRight: '#',
+		HorizontalTop: '=', HorizontalBottom: '=', VerticalLeft: '!', VerticalRight: '!',
+	}
+	style.ScrollBarCharSet = compapi.ScrollBarCharSet{Middle: 's'}
+	style.ScrollBarHoverCharSet = compapi.ScrollBarCharSet{Middle: 'H'}
+	style.Dim = !wm.config.Dim
+
+	comptest.TestComponent(t, wm, writer, []comptest.TestCase{
+		{Action: func() { wm.Restyle(style) }, Expected: `
+#====#+----+
+!A   s|a   s
+!B   !|b   |
+#====#+----+`},
+		{Action: func() { wm.Handle(mouseEv(term.MouseRelease, 11, 1)) }, Expected: `
+#====#+----+
+!A   s|a   H
+!B   !|b   |
+#====#+----+`},
+	})
+	assert.NotEqual(t, style.Dim, wm.config.Dim, "Dim is not style")
+	attr, ok := left.FrameAttr()
+	require.True(t, ok)
+	assert.Equal(t, focusAttr, attr)
+	attr, ok = right.FrameAttr()
+	require.True(t, ok)
+	assert.Equal(t, frameAttr, attr)
+}
+
 func TestWindowManagerScrollBarOutset(t *testing.T) {
 	const normal = `
 ┌───┐

@@ -726,6 +726,43 @@ func (wm *WindowManager) FloatingWindow(
 	return wm.nodeToWindow(f)
 }
 
+// Restyled returns c with the style of s: its frame, scroll bar and
+// window bar attributes and charsets, ScrollBarOutset and close icon.
+// What changes the layout or how images load, Frame, NoMaxSize,
+// WindowBar, FrameGraphicsStorage and Interrupter, stays c's.
+func (c WindowManagerConfig) Restyled(s WindowManagerConfig) WindowManagerConfig {
+	c.FrameAttr = s.FrameAttr
+	c.FrameCharSet = s.FrameCharSet
+	c.ScrollBarAttr = s.ScrollBarAttr
+	c.ScrollBarCharSet = s.ScrollBarCharSet
+	c.ScrollBarOutset = s.ScrollBarOutset
+	c.WindowBarCharSet = s.WindowBarCharSet
+	c.CloseIcon = s.CloseIcon
+	c.CloseIconAttr = s.CloseIconAttr
+	return c
+}
+
+// Restyle draws wm, from the next Draw on, with the style of cfg, as
+// WindowManagerConfig.Restyled takes it, and opens new windows with it.
+// A window whose frame attribute was set with Window.SetFrameAttr keeps
+// it unless cfg changes FrameAttr.
+func (wm *WindowManager) Restyle(cfg WindowManagerConfig) {
+	prev := wm.config
+	wm.config = wm.config.Restyled(cfg)
+	if !wm.config.Frame {
+		return
+	}
+	wm.Iterate(func(w Window) {
+		w.SetFrameCharSet(wm.config.FrameCharSet)
+		f := w.node.Content().(*component.Frame)
+		f.ScrollBarAttributes = wm.config.ScrollBarAttr
+		f.ScrollBarCharSet = wm.config.ScrollBarCharSet
+		if wm.config.FrameAttr != prev.FrameAttr {
+			f.Attributes = wm.config.FrameAttr
+		}
+	})
+}
+
 // DefaultWindowManagerConfig returns a sane WindowManagerConfig.
 func DefaultWindowManagerConfig() WindowManagerConfig {
 	charset := component.FrameCharSetDefault()

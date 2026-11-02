@@ -2994,6 +2994,170 @@ func TestConfigPromptImages(t *testing.T) {
 	}
 }
 
+func TestConfigHUDStyle(t *testing.T) {
+	cases := []struct {
+		name     string
+		cfg      map[string]any
+		check    func(t *testing.T, s hudStyle)
+		wantURIs []string
+	}{
+		{
+			name: "no HUD keys draw no images",
+			cfg:  map[string]any{},
+			check: func(t *testing.T, s hudStyle) {
+				def := handler.DefaultWindowManagerConfig()
+				assert.Equal(t, def.FrameCharSet, s.browser.WindowManager.FrameCharSet)
+				assert.Nil(t, s.commandPromptFrame)
+			},
+		},
+		{
+			name: "frames",
+			cfg: map[string]any{"browser": map[string]any{
+				"window_manager": map[string]any{
+					"frame_attr":       map[string]any{"fg": "blue"},
+					"focus_frame_attr": map[string]any{"fg": "purple"},
+					"frame_charset": map[string]any{
+						"topleft":  "╭",
+						"graphics": map[string]any{"topleft": "file:///frame/tl.png"},
+					},
+					"focus_frame_charset": map[string]any{
+						"graphics": map[string]any{"verticalright": "file:///focus/r.png"},
+					},
+				},
+				"frameunion_charset": map[string]any{"top": "┬"},
+			}},
+			check: func(t *testing.T, s hudStyle) {
+				wm := s.browser.WindowManager
+				assert.Equal(t, term.ColorBlue, wm.FrameAttr.Fg)
+				assert.Equal(t, term.ColorPurple, wm.FocusFrameAttr.Fg)
+				assert.Equal(t, '╭', wm.FrameCharSet.TopLeft)
+				assert.Equal(t, "file:///focus/r.png", wm.FocusFrameCharSet.Graphics.VerticalRight)
+				union := s.browser.FrameUnionCharSet
+				assert.Equal(t, wm.FrameCharSet, union.FrameCharSet)
+				assert.Equal(t, '┬', union.Top)
+				assert.Nil(t, wm.FrameGraphicsStorage)
+			},
+			wantURIs: []string{"file:///focus/r.png", "file:///frame/tl.png"},
+		},
+		{
+			name: "scroll bar",
+			cfg: map[string]any{"browser": map[string]any{"window_manager": map[string]any{
+				"scroll_bar_attr": map[string]any{"fg": "red"},
+				"scroll_bar_charset": map[string]any{"graphics": map[string]any{
+					"middle_char":       "file:///bar/middle.png",
+					"hover_middle_char": "file:///bar/hover.png",
+					"outset":            map[string]any{"left": 2},
+				}},
+			}}},
+			check: func(t *testing.T, s hudStyle) {
+				wm := s.browser.WindowManager
+				assert.Equal(t, term.ColorRed, wm.ScrollBarAttr.Fg)
+				assert.Equal(t, 2, wm.ScrollBarOutset)
+			},
+			wantURIs: []string{"file:///bar/hover.png", "file:///bar/middle.png"},
+		},
+		{
+			name: "window bar",
+			cfg: map[string]any{"browser": map[string]any{"window_manager": map[string]any{
+				"close_icon":      "x",
+				"close_icon_attr": map[string]any{"fg": "red"},
+				"window_bar_charset": map[string]any{"graphics": map[string]any{
+					"left": "file:///bar/left.png", "right": "file:///bar/right.png",
+				}},
+			}}},
+			check: func(t *testing.T, s hudStyle) {
+				wm := s.browser.WindowManager
+				assert.Equal(t, 'x', wm.CloseIcon)
+				assert.Equal(t, term.ColorRed, wm.CloseIconAttr.Fg)
+			},
+			wantURIs: []string{"file:///bar/left.png", "file:///bar/right.png"},
+		},
+		{
+			name: "the command prompt falls back to the window frame",
+			cfg: map[string]any{"browser": map[string]any{"window_manager": map[string]any{
+				"frame_charset": map[string]any{"graphics": map[string]any{
+					"horizontalbottom": "file:///frame/bottom.png",
+				}},
+			}}},
+			check: func(t *testing.T, s hudStyle) {
+				assert.Nil(t, s.commandPromptFrame)
+				assert.Equal(t, "file:///frame/bottom.png", s.commandPromptSeparator.Graphics.Horizontal)
+			},
+			wantURIs: []string{"file:///frame/bottom.png"},
+		},
+		{
+			name: "the command prompt frame and separator",
+			cfg: map[string]any{"command": map[string]any{
+				"frame_charset": map[string]any{"graphics": map[string]any{
+					"topleft": "file:///prompt/tl.png",
+				}},
+				"separator_charset": map[string]any{"graphics": map[string]any{
+					"left": "file:///prompt/sep.png",
+				}},
+			}},
+			check: func(t *testing.T, s hudStyle) {
+				require.NotNil(t, s.commandPromptFrame)
+				assert.Equal(t, "file:///prompt/tl.png", s.commandPromptFrame.Graphics.TopLeft)
+				assert.Equal(t, "file:///prompt/sep.png", s.commandPromptSeparator.Graphics.Left)
+			},
+			wantURIs: []string{"file:///prompt/sep.png", "file:///prompt/tl.png"},
+		},
+		{
+			name: "prompt buttons",
+			cfg: map[string]any{"browser": map[string]any{"prompt": map[string]any{
+				"text_attr":  map[string]any{"fg": "green"},
+				"hover_attr": map[string]any{"fg": "yellow"},
+				"images": map[string]any{
+					"idle": map[string]any{
+						"left": "file:///btn/left.png", "middle": "file:///btn/middle.png",
+					},
+					"hover": map[string]any{"left": "file:///btn/left.png"},
+				},
+			}}},
+			check: func(t *testing.T, s hudStyle) {
+				prompt := s.browser.Prompt
+				assert.Equal(t, term.ColorGreen, prompt.TextAttr.Fg)
+				assert.Equal(t, term.ColorYellow, prompt.HoverAttr.Fg)
+			},
+			wantURIs: []string{"file:///btn/left.png", "file:///btn/middle.png"},
+		},
+		{
+			name: "wallpaper",
+			cfg: map[string]any{"workspace": map[string]any{
+				"wallpaper_ascii":           "art",
+				"wallpaper_background_attr": map[string]any{"bg": "navy"},
+			}},
+			check: func(t *testing.T, s hudStyle) {
+				wallpaper := s.browser.Wallpaper
+				assert.Equal(t, term.ColorNavy, wallpaper.BackgroundAttr.Bg)
+				comp := wallpaper.NewComponent()
+				comp.Resize(3, 1)
+				w := cell.NewBufferWriter(context.Background(), 3, 1)
+				comp.Draw(w)
+				var drawn []rune
+				for _, c := range w.RawCells()[0] {
+					drawn = append(drawn, c.Ch)
+				}
+				assert.Equal(t, "art", string(drawn))
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := ideConfig{cfg: tc.cfg, errors: map[string]error{}}
+
+			s := cfg.hudStyle()
+			assert.Empty(t, cfg.errors)
+			tc.check(t, s)
+			if tc.wantURIs == nil {
+				assert.Empty(t, s.imageURIs())
+			} else {
+				assert.Equal(t, tc.wantURIs, s.imageURIs())
+			}
+		})
+	}
+}
+
 func TestTutorialFilesDecoded(t *testing.T) {
 	cfg := ideConfig{
 		cfg: map[string]any{

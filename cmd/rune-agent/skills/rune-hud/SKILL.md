@@ -1,24 +1,82 @@
 ---
 name: rune-hud
 description: >
-  Generate images and sounds for Rune's GUI and wire them into the user's
-  config.yaml: window frames, the scroll bar, floating window bars, the
-  command prompt frame and separator sprites, the editor and agent status
-  bars, the quick menu, prompt buttons and the wallpaper. Use when the user
-  wants to create, restyle or iterate on the look or sound of Rune's interface.
+  Edit Rune's configuration and generate sprites to refine its UI:
+  window frames, scroll bars, floating window bars, command prompts, editor
+  and agent status-bar layouts, the quick menu, prompt buttons, wallpaper and
+  sounds. Discover the configuration, edit it, run runectl screenshot and
+  inspect the result yourself. This is configuration and asset editing, not
+  Rune source development. Use when the user wants to create, restyle or
+  iterate on Rune's appearance or sounds.
 ---
 
 # Rune HUD images and sounds
 
-You generate image files and sound files, then point the user's config at them.
-You cannot run Rune commands, so every iteration ends with the user reloading.
+Own the edit-and-verify loop. Read the user's configuration and existing assets,
+make the requested changes, run `runectl screenshot`, inspect the PNG and fix
+what looks wrong. Do not ask the user to measure cells, run diagnostic commands
+or provide screenshots you can capture yourself. The configuration and
+status-bar layout reference is included in this file; no other document or
+Rune source checkout is needed.
+
+Use the user's brief and existing theme to make design decisions. If a detail
+is unspecified, choose a consistent default and proceed. Do not stop for
+approval between surfaces or revisions unless the user asked for checkpoints.
+
+## Scope: configuration and assets only
+- Edit the user's active configuration, theme assets, manifest and backups.
+  Generate or edit the requested sprites and wallpaper; generate sounds only
+  when requested. Keep unrelated configuration and artwork unchanged.
+- Do not locate, read or modify Rune's source code to carry out an appearance
+  request. Do not write parser tests, run test suites, build Rune, install a
+  development toolchain or implement new template features.
+- This boundary still applies when the current workspace happens to be Rune's
+  repository. The target is the user's configuration and theme, not the project
+  open in the editor. Restrict file discovery to those configuration and asset
+  locations instead of searching source directories.
+- Use the syntax and examples below. If the requested effect is unsupported,
+  explain the limitation and use a supported configuration or artwork approach;
+  do not turn the styling task into a code change.
+- Verify appearance with `runectl screenshot` and image inspection, not source
+  analysis or test programs.
+
+## Checking your work
+Take a baseline screenshot before editing. Run `runectl screenshot` yourself,
+then open the PNG at the printed path with your image-reading tool. Use the
+rendered result to judge proportions, spacing, legibility and seams. Repeat
+after each revision; run captures sequentially.
+
+Before each capture, Rune reads the active configuration file again and applies
+these keys to every open workspace:
+
+- `browser.window_manager`: `frame_attr`, `focus_frame_attr`, `frame_charset`,
+  `focus_frame_charset`, `scroll_bar_attr`, `scroll_bar_charset`,
+  `scroll_bar_char`, `scroll_bar_hover_char`, `window_bar_charset`, `close_icon`
+  and `close_icon_attr`;
+- `browser.frameunion_charset`;
+- `browser.prompt`: `text_attr`, `highlight_attr`, `hover_attr`,
+  `clicked_attr`, `background_attr` and `images`;
+- `command.frame_charset` and `command.separator_charset`;
+- `workspace`: `wallpaper_image`, `wallpaper_image_ascii`, `wallpaper_ascii`,
+  `wallpaper`, `wallpaper_attr`, `wallpaper_background_attr` and
+  `wallpaper_density_characters`;
+- `sounds`.
+
+Rune also reads again every image these keys name, including a file you
+overwrote at the same path. Existing prompts retain their style until reopened.
+Do not assume every configuration key is live-reloaded: the exceptions are
+listed under Apply and verify. Inspect the surfaces visible in the capture;
+do not claim to have verified a prompt or state that was not shown.
 
 ## Files
-- **Data directory:** `$RUNE_DATADIR` when set. Otherwise it is `~/.rune`, or
-  whatever `rune --datadir` was given; dev builds often use `~/.runedev`. If you
-  can't find `config.yaml` there, ask the user.
-- **Config:** `$RUNE_DATADIR/config.yaml`. If `config.star` exists instead, edit
-  it with `config["a"]["b"] = ...` statements.
+- **Data directory:** read `$RUNE_DATADIR` yourself with
+  `printf '%s\n' "$RUNE_DATADIR"`, including when it names a development
+  installation. Do not dump the full environment, which can contain credentials.
+- **Config:** read `$RUNE_DATADIR/config.yaml`, or `config.star` if the YAML file
+  is absent. If the user supplied another config path, edit that file instead.
+  Edit Starlark with `config["a"]["b"] = ...` statements. Do not create a new
+  default config over an unidentified installation. Ask only if these checks
+  leave a genuine ambiguity or access blocker, not as a routine first step.
 - **Assets:** `$RUNE_DATADIR/hud/<theme>/v<N>/...`, sounds in
   `$RUNE_DATADIR/hud/<theme>/sounds/`. Copy any asset the user hands you from
   elsewhere (such as `~/Downloads`) into `hud/<theme>/` before referencing it.
@@ -30,8 +88,6 @@ You cannot run Rune commands, so every iteration ends with the user reloading.
   background: "#080808"   # the theme background, see Colour continuity
   accent: "#d0622a"       # the one accent colour
   light: top-left         # where every surface is lit from
-  cell: {width: 10, height: 20}   # device pixels, measured below
-  scale: 4                # images are authored at scale × cell
   outsets:
     scroll_bar: {left: 1}
     window_bar: {top: 4, bottom: 2, sides: 1, inward: 3, horizontal_top: 1}
@@ -40,7 +96,7 @@ You cannot run Rune commands, so every iteration ends with the user reloading.
   ```
 
 - **Editing the config:**
-  - Back it up once per session: `cp config.yaml config.yaml.bak-$(date +%Y%m%d%H%M%S)`.
+  - Back up the active config once per session, using a timestamped filename.
   - Patch only the keys you change, as text. Never round-trip the file through a
     YAML library: it drops the user's comments.
   - When you replace a value, leave a one-line comment naming the previous
@@ -69,11 +125,17 @@ would need percent-encoding in a `file://` URI.
    `file:///absolute/path.png` or `https://...`, with no `~` and no `$VARS`.
    `workspace.wallpaper_image` is the exception: it takes a plain path, which
    may use `~` and environment variables.
-2. **Use a new URI for every iteration.** Images are cached by URI for 24 hours,
-   so a file overwritten in place is never shown. Write each iteration to a new
-   `v<N>` directory, or append `?v=<N>` to the URI: the cache key is the whole
-   URI, while the file read ignores the query. Keep the previous `v<N>` for
-   rollback. The wallpaper is not cached: overwrite it in place and reload.
+2. **Overwrite an image in place only if a key under Checking your work names
+   it.** Rune caches images by URI for 24 hours by default, but
+   `runectl screenshot` reads those images again, so you can overwrite them
+   while you iterate. Save each version you ship in a new `v<N>` directory
+   and keep the previous one for rollback.
+   - Images named by other keys, such as `editor.status_bar.layout`,
+     `extensions.rune-agent.config.status_bar.layout` and
+     `gui.quick_menu[i].sprite`, are not read again: give each iteration a
+     new URI, in a new `v<N>` directory or with `?v=<N>` appended. The cache
+     key is the whole URI, while the file read ignores the query.
+   - The wallpaper is not cached: overwrite it in place.
 3. **Formats:** PNG with alpha is preferred. JPEG, GIF and WebP also load, except
    for the wallpaper, which must be a PNG. Each side is at most 8192 px.
 4. **Images are drawn as they are.** Attrs, dimming, b&w and the theme do not
@@ -84,22 +146,26 @@ would need percent-encoding in a `file://` URI.
 5. **The terminal UI ignores images** and draws the characters. The GUI also
    falls back when images are unavailable, except separator junctions try the
    frame's vertical side image first (see Fallbacks). Keep characters sensible.
-6. **Size everything in cells.** An image covering w × h cells is drawn into
-   (w·cw) × (h·ch) device pixels, where (cw, ch) is the cell size.
-   - The cell size changes with the font size, `gui.column_width_offset`,
-     `gui.line_height_offset` and the display.
-   - Author at an integer multiple k of the exact size: (w·cw·k) × (h·ch·k).
-   - `fill` images are stretched to the exact rectangle, so a wrong aspect ratio
-     distorts them. `contain` images are letterboxed.
+6. **Use screenshots to size and position the art.** Configuration dimensions
+   are in text cells; source images are scaled by Rune. Reuse existing asset
+   dimensions when suitable, or start with a high-resolution raster matching
+   the target's approximate proportions. Do not block on exact pixel metrics.
+   - `fill` stretches to the configured rectangle; `contain` preserves the
+     source aspect ratio and can leave empty space.
+   - Apply a first version, inspect the screenshot, then adjust source
+     proportions, dimensions, offsets or outsets. Repeat until it fits.
+   - Judge pixel art in the rendered screenshot as well. Recheck it after font
+     or display settings change.
 
 ## Design rules
 A HUD reads as one object only when every surface follows one system. Clean
 geometric frames and icons work. Figures assembled from vector shapes look
 childish, and ornament repeated on every small surface turns into clutter.
 
-1. **Start from one reference surface.** Design the window frame first and get
-   the user's approval. Every other surface reuses its rail thickness,
-   material, light direction and palette. Record them in the manifest.
+1. **Start from one reference surface.** For a new theme, establish the window
+   frame first and verify it in a screenshot. For a targeted request, start
+   with that surface and match the existing theme. Reuse its rail thickness,
+   material, light direction and palette; record them in the manifest.
 2. **One accent; states change light only.** Use the one accent for focus and
    for the keyboard-selected button. Hover brightens, pressed darkens or
    insets. No state introduces a new hue.
@@ -121,7 +187,7 @@ childish, and ornament repeated on every small surface turns into clutter.
    - Scroll bar: a plain thumb in the frame's material.
    - Quick menu: one icon per button, all in the same style, line weight and
      plate.
-5. **Minimum size.** A figure needs about 3 rows (≈100 device px) to read.
+5. **Minimum size.** A figure needs about 3 rows to read.
    Below that, use a silhouette or a simple icon, or leave it out. Judge at
    true device size, never enlarged.
 6. **Outsets hug the structure.** Window bar end outsets draw over window
@@ -134,12 +200,13 @@ childish, and ornament repeated on every small surface turns into clutter.
    the right edge of column I in `right`), the scroll bar against the frame,
    and button ends against their middles. A few pixels off looks broken.
 8. **Tiling.** Edge and middle slices repeat once per cell. Keep them flat
-   along the tiling direction, or use a texture whose period divides the cell
-   exactly. Test by repeating the slice 12× at true size.
+   along the tiling direction. Test by repeating the slice 12×, then inspect
+   the joins in Rune's screenshot.
 
 ## Colour continuity
-The wallpaper, empty windows and every transparent pixel show the theme
-background, so build the HUD on that exact colour.
+Match background fills to the active theme. Transparent image pixels reveal
+whatever is underneath: usually the theme background, but also status colours,
+text or other images. Use that intentionally for status-bar ornaments.
 - Read `gui.default_theme`, then its `background`: from `gui.themes.<name>` in
   the user's config when it's defined there, otherwise from the built-in list
   below. Record it in the manifest.
@@ -188,8 +255,9 @@ bevels, buttons, the scroll bar and icons.
   if the model supports one. No text, border, frame, vignette or drop shadow,
   and the whole subject in frame with a margin.
 - The target rectangle's aspect ratio, at 2× its final device size or more.
-- Generate several candidates. Show the user the best two or three,
-  composited on the theme background at true size, before wiring any in.
+- Generate candidates as needed, choose the best match to the brief and verify
+  it in Rune. Do not require the user to pick a candidate before proceeding
+  unless they requested alternatives.
 
 **Post-process:**
 - Status-bar ornaments: remove the background to alpha (the model's
@@ -197,7 +265,8 @@ bevels, buttons, the scroll bar and icons.
   `-fuzz 3% -transparent "<background>"` when it's truly flat). Crop to the
   target's aspect, then downscale:
   `magick in.png -filter Lanczos -resize WxH! -unsharp 0x0.6+0.6+0 out.png`.
-  Place them with `height 3`, `overflow` and `alt ""`.
+  Start with `height 3` and `alt ""`. Add `overflow` only when the image must
+  cross the editor or chat component's outer bounds.
 - Wallpaper: sample a corner and confirm the background matches. Then
   feather the edges to transparent:
 
@@ -219,23 +288,6 @@ bevels, buttons, the scroll bar and icons.
       -compose difference -composite -format "$g %[fx:round(maxima*255)]\n" info:
   done
   ```
-
-## Measure the cell
-Ask the user to paste this into a terminal tab of the Rune GUI. Your own shell
-usually has no terminal attached, so it can't answer.
-
-```sh
-bash -c 'stty -echo -icanon min 0 time 10; printf "\033[16t"; IFS="[;t" read -r -d t _ _ ch cw; stty sane; echo "cell ${cw}x${ch}"'
-```
-
-- `cell x` with no numbers means it isn't the Rune GUI: the terminal UI and other
-  terminals don't report a cell size.
-- Measure before generating anything. Cells aren't always 1:2 (14×34, about
-  1:2.4, is common), and `fill` stretches art drawn for the wrong ratio.
-- Only if the user can't measure, assume ch = 2·cw and author at 96×192 px per
-  cell, which scales down cleanly. Pixel art must be authored at the exact
-  measured size.
-- Ask again whenever the user changes the font size.
 
 ## Surfaces
 Abbreviations:
@@ -263,18 +315,8 @@ Abbreviations:
 | | | `right` | (1+S) × (T+1+B) | fill |
 | Editor status bar | `editor.status_bar.layout` | `.Image` elements | `width` × `height` | contain, or `fit "fill"` |
 | Agent status bar | `extensions.rune-agent.config.status_bar.layout` | `.Image` elements | `width` × `height` | contain, or `fit "fill"` |
-| Quick menu | `gui.quick_menu[i].sprite` | `idle` `hover` `pressed` | a square 4·cw px a side | contain |
+| Quick menu | `gui.quick_menu[i].sprite` | `idle` `hover` `pressed` | square, each side as wide as 4 text columns | contain |
 | Wallpaper | `workspace.wallpaper_image` | a path, or `{path, width, height, fit}` | `width`/`height` in cells or `N%`, default 60% | `contain` (default), `cover` or `fill` |
-
-Worked sizes at 96×192 px per cell:
-- A frame slot is 96×192.
-- Separator ends with T=1, B=1, I=1 are 192×576; the middle stays 96×192.
-- A scroll bar slot with L=1 is 192×192.
-- Window bar ends with T=4, B=2, S=1, I=3 are 480×1344, and `horizontal` with
-  H=1 is 96×384.
-- Prompt button ends with T=1, B=1, S=1 are 192×576, and `middle` is 96×576.
-- An 18×3 status image is 1728×576.
-- A quick menu button is 384×384.
 
 ### Requirements
 - Frame and scroll bar images are drawn only while
@@ -347,8 +389,8 @@ Line up rails and seams across slices at these positions.
   reserved cell.
 - The anchor is at column ⌊w/2⌋, row ⌊h/2⌋ of the image, before `x_offset`,
   `y_offset` and the pixel offsets move it.
-- An image taller than 1 row needs `overflow` to show its rows above and below
-  the bar.
+- An image can extend above the bar into editor or chat content without
+  `overflow`. `overflow` permits drawing outside that component's bounds.
 
 **Quick menu:**
 - Buttons are square and contain-fitted, stacked half a cell apart from row 3.
@@ -438,24 +480,411 @@ Keep them under `overlay` images: they show through the transparent pixels.
 Animations (`animations.*`: the cursor, command prompt, tabs and screensaver)
 are shaders, not images. They're out of scope for this skill.
 
-### Status bar image directives
-`{{ .Image | src "file:///…/left.png" | width 18 | height 3 | reserve 3 | overflow | x_offset 8 | z_index 10 | alt "" }}`
+## Editor and agent status-bar layouts
 
-- `src`: required.
-- `width`: cells or `N%`; default 2.
-- `height`: rows; default 1.
-- `reserve`: cells the element takes up in the layout; defaults to `width`.
-- `x_offset`, `y_offset`: cells.
-- `x_pixel_offset`, `y_pixel_offset`: device pixels.
-- `fit`: `contain` (default) or `fill`.
-- `z_index`: 0 or more draws over the text; negative draws under it.
-- `overflow`: lets the image extend past the bar.
-- `max_cut`: default 1.
-- `alt`: drawn when the image can't be shown. The default is a cross glyph, so
-  set `alt ""`.
+Use this reference to edit the user's configuration without a Rune source
+checkout. Dimensions below are configuration units, not measurements the user
+must supply. Start with the existing layout and refine the result using
+screenshots. Preserve the user's useful status information while changing its
+presentation.
 
-Keep the layout's text fields (`.Status`, `.Model`, `.Filepath`, ...) as they
-are.
+### Configuration paths and activation
+
+| Bar | Layout key | Other relevant keys |
+|---|---|---|
+| Editor | `editor.status_bar.layout` | `background_attr.bg`, `foreground_error_attr.fg` under `editor.status_bar` |
+| Agent | `extensions.rune-agent.config.status_bar.layout` | `enabled`, `background_attr`, `status`, and the gauge settings below, under `extensions.rune-agent.config.status_bar` |
+
+These layouts are not currently reapplied by `runectl screenshot`. Changes
+require `:workspacereload` in the affected workspace, which also restarts its
+extensions. Do not reload the workspace hosting your conversation without
+warning the user. Once activated, take and inspect screenshots yourself.
+
+Images in these layouts are cached by URI. Give revised images a new URI, such
+as a versioned filename or `file:///absolute/path/ornament.png?v=2`, and update
+the layout before reloading. A screenshot alone does not purge these caches.
+
+Merge the examples into the existing configuration; do not replace unrelated
+keys or remove the user's useful fields. In Starlark, the equivalent paths are
+`config["editor"]["status_bar"]["layout"]` and
+`config["extensions"]["rune-agent"]["config"]["status_bar"]["layout"]`.
+
+### Layout syntax
+
+A layout is a single-line string containing literal text and actions such as
+`{{ .Status | bold }}`. It uses a restricted template syntax, **not a general
+Go template**.
+
+- Field names are case-sensitive. The complete field lists are below.
+- Pipes apply the styling directives below; image directives apply only to
+  `.Image`.
+- `.ShiftRight` is a pivot: elements before it align left, elements after it
+  align right, with the unused space between them. Use at most one pivot.
+- Use each ordinary field at most once. Repeating `.Status`, for example, does
+  not create independently styled copies: the occurrences share one component
+  and the last occurrence's formatting. Multiple `.Image` elements are allowed.
+- `if`, `else`, `range`, variables, nested field lookups, `printf`, and arbitrary
+  expressions are not supported.
+- There is no `.Text`, `.Space`, or `.Padding` field, nor a `prefix`, `suffix`,
+  `pad`, `align`, `flex`, `format`, or `attr` directive. Use literal text and the
+  spacing rules below. `width` cannot be used on text fields.
+- Keep YAML layout strings quoted. Single-quoted YAML lets the pipeline's
+  double quotes remain unescaped. Avoid multiline layout strings: line breaks
+  are not a row-layout feature.
+
+#### Text styling directives
+
+These directives apply to the field and its attached literal text:
+
+| Directive | Syntax |
+|---|---|
+| Foreground | `fg "silver"`, `fg "#c0c0c0"`, `fg "default"` |
+| Background | `bg "navy"`, `bg "#101828"`, `bg "default"` |
+| Style flags | `bold`, `italic`, `underline`, `reverse`, `blink`, `dim`, `strikethrough` |
+
+Colours accept lowercase W3C colour names, six-digit `#RRGGBB` values and
+`default`. Named colours can be remapped by Rune's active theme. Style flags
+take no arguments. These directives do not tint image pixels.
+
+Runtime status colours take precedence over layout colours. If a runtime
+attribute sets either foreground or background, its colour pair replaces the
+layout's pair rather than filling in only the missing side. Style flags are
+combined. A missing background falls back to the bar's background. `default`
+does not force a dynamically coloured field to ignore its runtime colour.
+
+#### Literal text, padding and separators
+
+Literals belong to an adjacent field and inherit its attributes; they are not
+independently styled segments. Their placement matters:
+
+1. Text before the first field is its prefix.
+2. On the left side of `.ShiftRight`, text after a field attaches to that field
+   until the first **two consecutive spaces**. Those two spaces and the
+   remaining text become the next field's prefix.
+3. On the right side, text through the first two-space separator stays with
+   the preceding field; any remaining text prefixes the next field.
+4. Trailing text attaches to the last field.
+5. Put the first action immediately after `.ShiftRight`. This avoids an editor
+   parser difference: the agent preserves a literal directly after the pivot,
+   but the editor can attach it to the invisible pivot instead.
+
+For example, on the left side:
+
+```gotemplate
+{{ .Status }} {{ .Model }}
+```
+
+The single space has the Status colour. In this version:
+
+```gotemplate
+{{ .Status }}  {{ .Model }}
+```
+
+The two spaces prefix Model and have Model's colour. Adding several spaces
+*after* Status therefore does not necessarily extend its coloured background.
+For a coloured area before Status, place padding in its prefix; see the
+transparent-ornament example below.
+
+In the agent bar, an empty value hides its attached literals too. Do not attach
+a separator that must always remain visible to an optional field such as
+`.Elapsed` or `.MaxTokens`.
+
+### Editor fields
+
+| Field | Display |
+|---|---|
+| `.Status` | Editor mode or status message; mode-dependent attributes are supplied by the editor. |
+| `.Filepath` | Workspace-relative filepath and dirty, recovered or read-only indicator. |
+| `.GitShortRef` | Git HEAD short reference; `untracked` when the reference cannot be obtained. |
+| `.GitDiffAdd` | Added-line count. |
+| `.GitDiffDel` | Deleted-line count. |
+| `.Language` | Syntax language ID, or `unknown`; parser errors can change its foreground. |
+| `.CursorLine` | One-based cursor line. |
+| `.CursorColumn` | One-based cursor column. |
+| `.TotalLines` | Number of buffer lines. |
+| `.DiagError`, `.DiagWarn`, `.DiagInfo` | Accepted by the parser but currently not populated; do not rely on them as working diagnostic counters. |
+| `.Image` | Image placement; see Image directives. |
+| `.ShiftRight` | Right-alignment pivot. |
+
+Example:
+
+```yaml
+editor:
+  status_bar:
+    background_attr: {bg: "#202020"}
+    foreground_error_attr: {fg: red}
+    layout: ' {{ .Status | bold }}  {{ .Filepath }}{{ .ShiftRight }}{{ .Language | fg "silver" }}  {{ .CursorLine }}:{{ .CursorColumn }} '
+```
+
+Only the background of `editor.status_bar.background_attr` is used; use field
+pipelines for static foregrounds. Only the foreground of
+`foreground_error_attr` is used, for language-parser errors. Filepath and Git
+fields also have runtime attributes for dirty/read-only/error states.
+
+The editor does not have the agent's `status.<PHASE>.attr` configuration.
+Vim and Helix supply their mode colours:
+
+- Vim: INSERT green, DELETE red, YANK/CASE fuchsia, SHIFT orange, COMMENT lime,
+  VISUAL blue, V-LINE teal, V-BLOCK aqua, REPLACE yellow, SEARCH silver.
+- Helix: SELECT blue, INSERT green, GOTO/JUMP fuchsia, MATCH lime, VIEW orange,
+  REPLACE yellow, BRACKET aqua, SEARCH silver.
+- Those coloured modes use black foreground. NORMAL uses layout defaults.
+
+When space is tight and Filepath is present, the editor drops the Git branch,
+Git statistics, Language and TotalLines in that order before further clipping.
+Do not design an ornament that relies on those optional fields always existing.
+
+### Agent fields
+
+| Field | Display |
+|---|---|
+| `.Spinner` | Current phase's animation frame; the default IDLE state shows a static icon. |
+| `.Status` | `IDLE` between turns; `ASKING` while waiting for an answer; otherwise the active task description or phase name. |
+| `.Conversation` | Conversation name. |
+| `.Elapsed` | Current turn duration, or previous turn duration when idle; hidden when no positive duration is available. |
+| `.Model` | Model name. |
+| `.Provider` | Provider name. |
+| `.Effort` | Reasoning effort, or `default` when unset. |
+| `.MaxTokens` | Output-token budget; hidden when nonpositive. |
+| `.TokensSent` | Cumulative input-token count. |
+| `.TokensReceived` | Cumulative output-token count. |
+| `.ContextTokens` | Current context occupancy. |
+| `.ContextWindow` | Model context-window capacity. |
+| `.ContextPct` | Context occupancy percentage, such as `42%`. |
+| `.Cache` | Cache-hit percentage; hidden before any input tokens have been sent. |
+| `.CachePct` | Cache-hit percentage, including `0%` before input. |
+| `.ContextGauge` | Context gauge labelled occupancy/capacity. |
+| `.CacheGauge` | Cache-hit gauge labelled `cache N%`. |
+| `.Image` | Image placement; see Image directives. |
+| `.ShiftRight` | Right-alignment pivot. |
+
+Token counts are formatted as integers below 1000, otherwise rounded `k`/`m`
+values. They do not include a `tokens` suffix. Durations use `Ns`, `Nm Ns` or
+`Nh Nm`. Percentages already include `%`; do not add a second one.
+
+Status is padded on the right to the longest phase name in the configured
+palette. Longer task descriptions can extend it. Its colour follows the phase
+even when its text is a task description.
+
+Example:
+
+```yaml
+extensions:
+  rune-agent:
+    config:
+      status_bar:
+        enabled: true
+        background_attr: {fg: silver, bg: "#202020"}
+        layout: '{{ .Spinner }} {{ .Status | bold }}  {{ .Conversation }}{{ .ShiftRight }}{{ .Elapsed }}  {{ .Model }}  {{ .ContextPct }}'
+```
+
+The agent uses both `fg` and `bg` from `background_attr`; the background fills
+the row. It does not automatically fill the whole row with the phase colour.
+
+#### Agent phase colours
+
+`status.<PHASE>.attr` colours Status and Spinner, including their ordinary
+literal padding. `status.<PHASE>.animation.ch` is a sequence of spinner frames;
+one rune is a still icon. `animation.attr` overrides Spinner colours only.
+
+| Phase | Shipped foreground | Shipped background |
+|---|---|---|
+| `IDLE` | white | silver |
+| `SENDING` | black | teal |
+| `REASONING` | white | navy |
+| `RECEIVING` | black | fuchsia |
+| `EXECUTING` | default | red |
+| `COMPACTING` | default | gray |
+| `ASKING` | black | yellow |
+| `ERROR` | default | maroon |
+
+All shipped phase attributes include bold. The IDLE spinner has yellow
+foreground and the ERROR spinner red foreground.
+
+Override a phase without changing the others:
+
+```yaml
+extensions:
+  rune-agent:
+    config:
+      status_bar:
+        status:
+          REASONING:
+            attr: {fg: white, bg: "#244860", bold: true}
+            animation:
+              ch: "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+              attr: {fg: yellow}
+```
+
+Unmentioned phases keep their defaults. Within one phase, specifying `attr`
+replaces that attribute value, and specifying `animation` replaces that
+animation configuration; specify all values you need within each. Omitting one
+of the two retains its default. Animation colour overrides inherit unspecified
+colours from the phase; animation style flags combine with the phase's flags.
+
+Use the phase palette to change dynamic colours. `.Status | bg "red"` is a
+static default, not an override of every runtime phase. Other fields and image
+reservations do not inherit the phase palette.
+
+Background glyphs such as `█▓▒░` attached to Status use the status background
+as their foreground over the bar background. This creates coloured fade edges.
+Ordinary spaces instead extend the solid status background.
+
+#### Agent gauges
+
+These keys belong under `extensions.rune-agent.config.status_bar`:
+
+| Key | Meaning |
+|---|---|
+| `gauge_width` | Width of each gauge including its caps; default 18. |
+| `gauge_empty_attr` | Attributes for the empty track and its label. |
+| `gauge_cap_attr` | Attributes for the end caps. |
+| `gauge_start_rune`, `gauge_end_rune` | First rune of each string is the cap. Empty strings omit caps, as the defaults do. |
+| `context_gauge_fill_attrs` | Ordered list of attribute stops for the context gauge. Defaults to black text on green → yellow → red. |
+| `cache_gauge_fill_attrs` | Ordered list of attribute stops for the cache gauge. Defaults to black text on red → yellow → green. |
+
+Example:
+
+```yaml
+extensions:
+  rune-agent:
+    config:
+      status_bar:
+        gauge_width: 14
+        gauge_empty_attr: {fg: silver, bg: "#202020"}
+        gauge_cap_attr: {fg: silver}
+        gauge_start_rune: "["
+        gauge_end_rune: "]"
+        context_gauge_fill_attrs:
+          - {fg: black, bg: green}
+          - {fg: black, bg: yellow}
+          - {fg: white, bg: red}
+        cache_gauge_fill_attrs:
+          - {fg: white, bg: red}
+          - {fg: black, bg: green}
+        layout: '{{ .Spinner }} {{ .Status }}{{ .ShiftRight }}{{ .ContextGauge }}  {{ .CacheGauge }}'
+```
+
+Gauge pipelines style the surrounding literals, not the internally coloured
+track. Use the gauge keys for the track. Preserve existing `shader`,
+`shader_fps` and `shader_loop` settings when changing a layout; those configure
+animation rather than layout elements.
+
+#### Narrow agent bars
+
+Elements are dropped in this order as width runs out: MaxTokens, Conversation,
+CacheGauge, Cache/CachePct, Provider, Effort, TokensSent/TokensReceived, numeric
+context fields, Model, ContextGauge, Elapsed. Status is then clipped. Spinner
+and image reservations are not in that drop list. Keep reservations small and
+do not assume a nearby optional field will always hold an ornament in place.
+
+### Image directives
+
+Only `src` is required. All image directives apply only to `.Image`.
+
+| Directive | Argument and default | Limits / meaning |
+|---|---|---|
+| `src` | Quoted absolute `file:///`, `https://` or `http://` URI | No `~` or environment-variable expansion. |
+| `width` | Integer columns, default `2`, or quoted `"N%"` | 1–4096 cells or 1–100% of bar width. |
+| `height` | Integer rows, default `1` | 1–4096. |
+| `reserve` | Integer columns | Layout space consumed; defaults to numeric width, or **0 for percentage width**. Range 0–4096. |
+| `x_offset` | Integer columns or quoted signed `"N%"`, default `0` | Positive moves right; negative left. ±4096 cells or ±100% of bar width. |
+| `y_offset` | Integer rows, default `0` | Positive moves down; negative up. ±4096. |
+| `x_pixel_offset`, `y_pixel_offset` | Integer device pixels, default `0` | Additional displacement, ±65536. Usually start with cell offsets and adjust visually. |
+| `fit` | `"contain"` (default) or `"fill"` | Preserve source proportions or stretch to the image rectangle. No `cover`. |
+| `z_index` | Signed 32-bit integer, default `0` | Layering described below. |
+| `overflow` | No arguments; absent by default | Allow the image past the editor/chat bounds, up to the screen edge. |
+| `max_cut` | Integer columns, default `1` | Hide the image when its layout element extends more than this far past the bar's end. Range 0–4096. Not an image crop percentage. |
+| `alt` | Quoted string, default cross glyph `\uf00d` | Use `""` to avoid a failure marker. Newlines are permitted; other control characters are not. |
+| `ttl` | Quoted duration, default `"24h"` | Nonnegative byte-cache lifetime, such as `"1h"`. Not a live-reload interval. |
+
+#### Anchor, reservation and clipping
+
+The anchor is the first reserved cell, after any literal prefix of the Image
+element. With `reserve 0`, it is where the next element starts. The image is
+centred on the anchor, then translated by its offsets. Even widths/heights
+place the centre half a cell left/up of the anchor cell's centre. Percentage
+widths and offsets truncate toward zero.
+
+The reserved space and the drawn rectangle are independent:
+
+- Increase `reserve` to push following text away; increase `width` to enlarge
+  the art without necessarily moving the text.
+- Use `reserve 0` for art layered behind an existing segment.
+- An image taller than one row can overlap editor/chat content above the bar
+  without `overflow`. Add `overflow` only to cross the component's outer bounds.
+- Floating windows still cover overflowing images.
+- Alt text remains clipped to the component, draws over text regardless of
+  `z_index`, and follows cell offsets but not pixel offsets.
+
+For a 6-column image starting at the next element's position, use `reserve 0`
+and `x_offset 3`. Verify the result in a screenshot instead of asking for the
+cell's pixel dimensions.
+
+#### Image layering and transparency
+
+| `z_index` | Placement |
+|---|---|
+| `0` or greater | Above text. |
+| `-1073741824` through `-1` | Below text, above cell backgrounds. |
+| Below `-1073741824` | Below backgrounds too; only cells without an explicit background reveal it. |
+
+Higher values draw above lower values; later images win ties. Alpha holes show
+the underlying layer. A transparent hole is not automatically filled with the
+current status colour: the cells underneath it must belong to Status or Spinner.
+
+### Example: status colour visible through a transparent ornament
+
+Place an image with a transparent opening over literal padding belonging to
+the existing Status field. Do not change the artwork's opaque pixels, invent
+a coloured spacer field or duplicate Status.
+
+Agent example:
+
+```yaml
+extensions:
+  rune-agent:
+    config:
+      status_bar:
+        layout: '{{ .Image | src "file:///absolute/path/ornament.png?v=2" | width 6 | height 3 | reserve 0 | x_offset 3 | z_index -1 | alt "" }}      {{ .Status | bold }}{{ .ShiftRight }}{{ .Model }}'
+```
+
+Editor example:
+
+```yaml
+editor:
+  status_bar:
+    layout: '{{ .Image | src "file:///absolute/path/ornament.png?v=2" | width 6 | height 3 | reserve 0 | x_offset 3 | z_index -1 | alt "" }}      {{ .Status | bold }}{{ .ShiftRight }}{{ .Filepath }}'
+```
+
+Replace the placeholder URI with the real asset path. There are **six spaces**
+between the Image action and the Status action. On the left side of the pivot,
+all six become Status's prefix. The image reserves no cells, so it overlaps
+this coloured prefix rather than adding a separate blank segment. The status
+label begins after the padding. `z_index -1` leaves text readable while showing
+the ornament above the background.
+
+The phase/mode colour fills only the status-bar row. A hole above or below that
+row reveals editor/chat content, not the status colour. Align the opening with
+that row or change the artwork; there is no dynamic multirow fill-rectangle
+directive. For an existing design, adapt this pattern around its single Status
+field and preserve its other fields rather than replacing the entire layout.
+
+### Screenshot checks
+
+- Verify the edit is active before interpreting a screenshot. A new layout
+  still awaiting workspace reload cannot be checked by capturing repeatedly.
+- Inspect status text, optional fields and the transparent opening separately.
+  Check whether padding belongs to the intended field before changing colours.
+- Test available idle and active states: a task description can be wider than
+  a phase label. Do not claim to have checked states that were not visible.
+- Check narrow widths when possible. Large image reservations can displace
+  text, and `max_cut` can hide an image when its element is clipped.
+- A missing image may be a bad URI, stale cached bytes or clipped placement.
+  Use a new URI for revised status-bar images, inspect notifications and the
+  configured `log_path`, and confirm the required reload happened.
+- When the result differs from the brief, adjust the layout or asset and
+  inspect another screenshot. No manual cell measurement is required.
 
 ## Sounds
 - **Registry:** `sounds:` maps a name to a file path, another name, or `""` to
@@ -502,55 +931,56 @@ gui: {quick_menu_sounds: {hover: hud-ember-hover, click: hud-ember-click}}
 ```
 
 ## Apply and verify
-End every iteration by telling the user exactly what to run.
+Run `runectl screenshot` yourself and inspect the result after each revision.
+For the keys under Checking your work, this also applies the change; do not
+ask the user to reload them. Do not restart Rune or reload the agent's own
+workspace automatically: that can interrupt the conversation and running work.
 
 | Change | Takes effect |
 |---|---|
-| `browser.*`, `command.*`, `editor.status_bar`, `extensions.*`, `sounds`, `terminal.bell`, `workspace.wallpaper_image` | `:workspacereload` in the focused workspace |
-| `gui.*` (quick menu, quick menu sounds, `sound_volume`), `program_status.*`, `animations.*`, the home screen | Restart Rune. `:guiwindownew` opens a fresh process to preview them |
+| A key listed under Checking your work, or an image it names, even overwritten at the same path | `runectl screenshot`, in every open workspace |
+| Any other `browser.*` or `command.*` key, `editor.status_bar`, `extensions.*`, `terminal.bell` | `:workspacereload` in the focused workspace |
+| `gui.*` (quick menu, quick menu sounds, `sound_volume`), `program_status.*`, `animations.*` | Restart Rune. `:guiwindownew` opens a fresh process to preview them |
 | A sound file overwritten at the same path | The next time it plays |
-| The wallpaper file overwritten at the same path | `:workspacereload` |
-| Any other image overwritten at the same URI | Never: bump `v<N>` |
+| The wallpaper file overwritten at the same path | `runectl screenshot` or `:workspacereload` |
+| Any other image overwritten at the same URI | Never: give it a new URI |
 
-Separator sprites require a compatible Rune binary: rebuild/restart it first
-when adopting this feature, then use `:workspacereload` for command settings.
+If a requested change needs a workspace reload or restart, prepare it and state
+that specific activation requirement once. After activation, capture and inspect
+the result yourself. Do not ask for a screenshot unless capture is genuinely
+unavailable. Do not claim unactivated changes have been verified.
 
 **Errors:**
-- Config errors appear as notifications after the reload.
-- One bad URI rejects its whole `graphics` table, and the previous images stay.
+- Config errors appear as notifications after the reload, so the screenshot
+  shows them. If the configuration file does not parse, no new styles are
+  installed. Correct the edit and capture again.
+- An invalid URI rejects its whole `graphics` table. Correct the URI instead
+  of assuming the previous images will remain.
 - An unreadable wallpaper is a config error.
 - Other missing or unreadable images use their slot fallback; separator
   junctions try the vertical side image before the rune, as described above.
   Load failures log a warning to the file named by `log_path`.
 
 ## Loop
-1. Read the config, the manifest and the theme background.
-2. Measure the cell, or reuse the manifest's if the font size hasn't changed.
-3. Agree on a brief with the user: style, palette, accent, light direction,
-   and which anchors get painted figures.
-4. Work one surface per iteration: the window frame first, then the surfaces
-   that join it, then the rest. Never ship the whole HUD at once.
-5. Compute each image's pixel size from the table above.
-6. Generate the images (figures per Painted art) and sounds.
-7. Check your work:
-   - view each PNG;
-   - compose mocks at the true cell size and inspect the seams: a frame row
-     (corner, 3 edges, corner), a window bar (`left`, 4 × `horizontal`,
-     `right`), a 6-cell scroll thumb, and a prompt button (`left`, 4 ×
-     `middle`, `right`) with its label drawn on row T.
-   - preview the full command separator at true size, joining vertical rails
-     above and below both ends. Include interior padding, check the middle's
-     pixel-Y alignment, and test narrow prompt clipping without shrinking the
-     junction art. Check inherited middle, cleared middle and failed-image
-     fallbacks, plus replace/overlay glyph behaviour.
-   - compose the real scene at true device size on the theme background: a
-     floating window with its bar beside a framed window, a prompt with three
-     buttons, the status bar and the wallpaper. View it at 100%, never
-     enlarged or on another background. Count the figures and accent colours
-     in view against the Design rules.
-   - run the wallpaper edge check.
-8. Write the files to a new `v<N>` directory and update the manifest.
-9. Patch the keys, using `file:///` URIs to the new files.
-10. Tell the user which reload to run and what to look at, and ask for a
-    screenshot. Fix any difference from your mock before starting the next
-    surface.
+1. Discover the active config and read it, the manifest and the existing assets.
+   Back up the config and preserve a rollback copy of any assets being replaced.
+2. Run `runectl screenshot` and inspect the baseline image.
+3. Use the user's brief and current theme to choose the palette, material and
+   light direction. Keep changes within the requested scope.
+4. Work one surface at a time without asking for approval at every step. Use
+   the surface table for configuration units and the screenshot for visual fit.
+5. Generate or edit the assets, or adjust the layout using the status-bar
+   reference. Inspect the asset files and test repeating tiles for seams.
+6. Patch only the relevant configuration keys. Use absolute image URIs and
+   follow the cache rules for the surface being edited.
+7. Run `runectl screenshot` again and open the returned PNG. Check readability,
+   clipping, rail continuity, background matching, transparent areas and whether
+   ornaments obscure text. 
+8. Fix any config errors shown in the capture or in the logs at $RUNE_DATADIR/debug.log.
+9. Adjust the assets, spacing, dimensions, offsets or colours and repeat steps
+   6–8 until the rendered result meets the brief. A successful file write or
+   screenshot command alone is not verification: inspect the image.
+10. Update the manifest and report the final screenshot path, changed keys and
+   rollback location. Note any state you could not inspect or change that still
+   needs activation. Do not end with routine measurement or screenshot chores
+   for the user.

@@ -342,6 +342,30 @@ type Config struct {
 	handler.WindowManagerConfig
 }
 
+// Style is what Component.Restyle changes on a running Component. Of
+// WindowManager and Prompt, only the fields Config.Restyled copies apply.
+type Style struct {
+	WindowManager     handler.WindowManagerConfig
+	FrameUnionCharSet component.FrameUnionCharSet
+	Prompt            PromptConfig
+	Wallpaper         Wallpaper
+}
+
+// Restyled returns c with the style of s. The rest of c, including the
+// prompts' Parser, ScheduleNextTick, OnLinkClick and MinWidth, stays c's.
+func (c Config) Restyled(s Style) Config {
+	c.WindowManagerConfig = c.WindowManagerConfig.Restyled(s.WindowManager)
+	c.FrameUnionCharSet = s.FrameUnionCharSet
+	c.PromptConfig.TextAttr = s.Prompt.TextAttr
+	c.PromptConfig.HighlightAttr = s.Prompt.HighlightAttr
+	c.PromptConfig.HoverAttr = s.Prompt.HoverAttr
+	c.PromptConfig.ClickedAttr = s.Prompt.ClickedAttr
+	c.PromptConfig.BackgroundAttr = s.Prompt.BackgroundAttr
+	c.PromptConfig.Images = s.Prompt.Images
+	c.Wallpaper = s.Wallpaper
+	return c
+}
+
 type logNotifications struct {
 }
 

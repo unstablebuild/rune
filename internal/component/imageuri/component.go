@@ -120,6 +120,19 @@ func New(
 	return newComponent(u.Redacted(), fetch, interrupter, style), nil
 }
 
+// NewLoaded returns a component that shows img as if it had just loaded
+// uri: it never fetches, and Start, Size and Draw see img from the start.
+// It fails when ValidateURI rejects uri.
+func NewLoaded(uri string, img image.Image, style Style) (*Component, error) {
+	u, err := parseURI(uri)
+	if err != nil {
+		return nil, err
+	}
+	c := newComponent(u.Redacted(), nil, nil, style)
+	c.started, c.img, c.version = true, img, 1
+	return c, nil
+}
+
 // ValidateURI returns the error New would fail with for uri: it must
 // parse, and be either a file URI with a path or an http or https URI
 // with a host.

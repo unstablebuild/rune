@@ -17,9 +17,13 @@
 package ide
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"maps"
 	"os"
@@ -12172,4 +12176,245 @@ func TestLocalModelsOutliveTheWorkspaceBuiltLast(t *testing.T) {
 	got, err := m.localExecutor.LookPath(context.Background(), binary, "")
 	require.NoError(t, err, "local models must not use a closed workspace's executor")
 	assert.Equal(t, binary, got)
+}
+	
+// newHUDTestIDE opens cwd, unless empty, in an IDE that reads configPath,
+// once it is installed.
+func newHUDTestIDE(t *testing.T, cwd, configPath string, opts ...Option) (*IDE, *sync.Mutex) {
+	t.Helper()
+	dataDir := t.TempDir()
+	mu := new(sync.Mutex)
+	sched, drain := newTestScheduler(t, mu)
+	opts = append([]Option{
+		WithLocker(mu),
+		WithScheduleNextTick(sched),
+		WithPublishEvent(func(term.Event) bool { return true }),
+	}, opts...)
+	i, err := New(cwd, configPath, dataDir, pkgtrust.NewStore(),
+		newTestStorage(t, dataDir), opts...)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = i.Close() })
+	_ = i.Ready()
+	drain()
+	i.WaitWorkspaces()
+	drain()
+	return i, mu
+}
+
+func writeHUDTestPNG(t *testing.T, path string, c color.Color) {
+	t.Helper()
+	img := image.NewNRGBA(image.Rect(0, 0, 1, 1))
+	img.Set(0, 0, c)
+	var buf bytes.Buffer
+	require.NoError(t, png.Encode(&buf, img))
+	require.NoError(t, os.WriteFile(path, buf.Bytes(), 0o644))
+}
+
+func TestLoadHUD(t *testing.T) {
+	ctx := context.Background()
+	tempDir := func(t *testing.T) string {
+		dir, err := filepath.EvalSymlinks(t.TempDir())
+		require.NoError(t, err)
+		return dir
+	}
+	writeConfig := func(t *testing.T, path, home, wm string) {
+		require.NoError(t, os.WriteFile(path, []byte("clipboard: memory\n"+
+			"workspace:\n  home: "+home+"\n"+
+			"browser:\n  window_manager:\n"+wm), 0o644))
+	}
+	topLeft := func(topLeft string) string {
+		return "    frame_charset:\n      topleft: \"" + topLeft + "\"\n"
+	}
+
+	t.Run("images are read again", func(t *testing.T) {
+		dir := tempDir(t)
+		imgPath := filepath.Join(dir, "tl.png")
+		uri := "file://" + imgPath
+		configPath := filepath.Join(dir, "rune.yaml")
+		writeConfig(t, configPath, dir,
+			"    frame_charset:\n      graphics:\n        topleft: "+uri+"\n")
+		writeHUDTestPNG(t, imgPath, color.White)
+		i, _ := newHUDTestIDE(t, "", configPath)
+		pixel := func(hud *HUD) color.Color {
+			require.Contains(t, hud.images, uri)
+			return color.NRGBAModel.Convert(hud.images[uri].At(0, 0))
+		}
+
+		first, err := i.LoadHUD(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, color.NRGBAModel.Convert(color.White), pixel(first))
+		assert.Empty(t, first.configErrs)
+
+		red := color.NRGBA{R: 255, A: 255}
+		writeHUDTestPNG(t, imgPath, red)
+		overwritten, err := i.LoadHUD(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, red, pixel(overwritten), "an image overwritten in place")
+		assert.Greater(t, overwritten.load, first.load)
+
+		require.NoError(t, os.Remove(imgPath))
+		missing, err := i.LoadHUD(ctx)
+		require.NoError(t, err)
+		assert.NotContains(t, missing.images, uri)
+	})
+
+	t.Run("config errors", func(t *testing.T) {
+		dir := tempDir(t)
+		configPath := filepath.Join(dir, "rune.yaml")
+		writeConfig(t, configPath, dir, topLeft("╭"))
+		i, _ := newHUDTestIDE(t, "", configPath)
+
+		writeConfig(t, configPath, dir,
+			"    frame_charset:\n      graphics:\n        topleft: ftp://example.com/tl.png\n")
+		hud, err := i.LoadHUD(ctx)
+		require.NoError(t, err)
+		assert.Contains(t, hud.configErrs, "window_manager.frame_charset")
+
+		require.NoError(t, os.WriteFile(configPath, []byte("browser: ["), 0o644))
+		hud, err = i.LoadHUD(ctx)
+		assert.Error(t, err)
+		assert.Nil(t, hud)
+	})
+
+	t.Run("a workspace config overlays the user's again", func(t *testing.T) {
+		home := tempDir(t)
+		ws := tempDir(t)
+		overlay := []byte("browser:\n  window_manager:\n    frame_attr:\n      fg: red\n")
+		require.NoError(t, os.WriteFile(filepath.Join(ws, ".iderc"), overlay, 0o644))
+		configPath := filepath.Join(home, "rune.yaml")
+		writeConfig(t, configPath, home, topLeft("╭"))
+		i, mu := newHUDTestIDE(t, ws, configPath, WithTrustedWorkspaceConfig(overlay))
+		mu.Lock()
+		w := i.workspaceHandler.workspaces[i.workspaceHandler.focus]
+		mu.Unlock()
+		require.NotNil(t, w)
+		assert.Equal(t, overlay, w.configOverlay)
+		uri := w.uri.String()
+
+		writeConfig(t, configPath, home, topLeft("╔"))
+		hud, err := i.LoadHUD(ctx)
+		require.NoError(t, err)
+		base := hud.base.browser.WindowManager
+		assert.Equal(t, '╔', base.FrameCharSet.TopLeft)
+		assert.NotEqual(t, term.ColorRed, base.FrameAttr.Fg)
+		require.Contains(t, hud.workspaces, uri)
+		layered := hud.workspaces[uri].browser.WindowManager
+		assert.Equal(t, '╔', layered.FrameCharSet.TopLeft)
+		assert.Equal(t, term.ColorRed, layered.FrameAttr.Fg)
+		assert.Empty(t, hud.skip)
+
+		mu.Lock()
+		w.configOverlay = []byte("browser: [")
+		mu.Unlock()
+		hud, err = i.LoadHUD(ctx)
+		require.NoError(t, err)
+		assert.NotContains(t, hud.workspaces, uri)
+		assert.Contains(t, hud.skip, uri, "an overlay that fails to decode")
+	})
+
+	t.Run("a workspace whose config is the user's", func(t *testing.T) {
+		dir := tempDir(t)
+		configPath := filepath.Join(dir, ".iderc")
+		writeConfig(t, configPath, dir, topLeft("╭"))
+		i, mu := newHUDTestIDE(t, dir, configPath)
+		mu.Lock()
+		w := i.workspaceHandler.workspaces[i.workspaceHandler.focus]
+		mu.Unlock()
+		require.NotNil(t, w)
+		assert.Nil(t, w.configOverlay, "the old contents would undo edits")
+
+		writeConfig(t, configPath, dir, topLeft("╔"))
+		hud, err := i.LoadHUD(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, '╔', hud.base.browser.WindowManager.FrameCharSet.TopLeft)
+		assert.Empty(t, hud.workspaces)
+		assert.Empty(t, hud.skip)
+	})
+}
+
+// hudTestStyle is the HUD style of a config whose window frames start with
+// topLeft and whose frame union has top junctions.
+func hudTestStyle(topLeft, top string) hudStyle {
+	return ideConfig{cfg: map[string]any{"browser": map[string]any{
+		"window_manager": map[string]any{
+			"frame_charset": map[string]any{"topleft": topLeft},
+		},
+		"frameunion_charset": map[string]any{"top": top},
+	}}, errors: map[string]error{}}.hudStyle()
+}
+
+func TestApplyHUD(t *testing.T) {
+	m, other := newActivityTestManager(t, defaultConfigWithWrap(false))
+	t.Cleanup(func() { _ = m.Close() })
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	focused, skipped := m.workspaces[m.focus], m.workspaces[other]
+	topLeft := func(e *ex) rune { return e.config.FrameCharSet.TopLeft }
+	untouched := topLeft(skipped.ex)
+
+	hud := &HUD{
+		load:       2,
+		base:       hudTestStyle("╭", "┳"),
+		workspaces: map[string]hudStyle{focused.uri.String(): hudTestStyle("┏", "┳")},
+		skip:       map[string]struct{}{skipped.uri.String(): {}},
+	}
+	m.applyHUD(hud)
+	assert.Equal(t, '╭', topLeft(m.empty), "the home workspace gets the base style")
+	assert.Equal(t, '┏', topLeft(focused.ex), "a workspace gets its overlay's style")
+	assert.Equal(t, untouched, topLeft(skipped.ex), "a skipped workspace keeps its style")
+	assert.Equal(t, '┳', m.union.Top)
+
+	m.applyHUD(&HUD{load: 1, base: hudTestStyle("╔", "┯")})
+	assert.Same(t, hud, m.hud, "an older HUD is ignored")
+	assert.Equal(t, '╭', topLeft(m.empty))
+	assert.Equal(t, '┳', m.union.Top)
+
+	skipped.configOverlay = []byte("browser: {}")
+	m.applyHUD(&HUD{load: 3, base: hudTestStyle("╔", "┯")})
+	assert.Equal(t, '╔', topLeft(m.empty))
+	assert.Equal(t, '╔', topLeft(focused.ex))
+	assert.Equal(t, untouched, topLeft(skipped.ex),
+		"a workspace whose overlay the HUD did not read keeps its style")
+}
+
+func TestInstallPendingWorkspaceAppliesNewerHUD(t *testing.T) {
+	cases := []struct {
+		name string
+		// loadsBeforeBuild is how many HUD loads had started when the
+		// build read the config.
+		loadsBeforeBuild uint64
+		want             rune
+	}{
+		{
+			name: "a HUD whose load started after the build read the config",
+			want: '┏',
+		},
+		{
+			name:             "a HUD the build read the config after",
+			loadsBeforeBuild: 1,
+			want:             thandler.DefaultWindowManagerConfig().FrameCharSet.TopLeft,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newTestWorkspaceManagerHandlerWithDir(t, defaultConfigWithWrap(false),
+				t.TempDir(), nopShutdownShaderConfig())
+			t.Cleanup(func() { _ = m.Close() })
+			m.hudLoads.Store(tc.loadsBeforeBuild)
+			m.mu.Lock()
+			m.hud = &HUD{load: 1, base: hudTestStyle("┏", "┳")}
+			m.mu.Unlock()
+
+			uri, err := workspaceapi.ParseURI("memory:///hud")
+			require.NoError(t, err)
+			require.NoError(t, m.addOrCreateWorkspace(uri))
+			m.quiesce()
+
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			slot, ok := m.findInstalledSlot(uri)
+			require.True(t, ok)
+			assert.Equal(t, tc.want, m.workspaces[slot].ex.config.FrameCharSet.TopLeft)
+		})
+	}
 }

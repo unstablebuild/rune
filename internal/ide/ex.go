@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image"
 	"maps"
 	"net/http"
 	"net/url"
@@ -3475,6 +3476,24 @@ func (e *ex) promptFrameCharSets() (frame, radar component.FrameCharSet) {
 		return *cs, *cs
 	}
 	return e.config.FrameCharSet, e.config.FocusFrameCharSet
+}
+
+// restyle draws e with s from the next Draw on, as browser.Component.Restyle
+// does, and the command prompts it opens later. Its frames and prompt
+// buttons draw images as tcomponent.FrameGraphics.Reload takes them.
+func (e *ex) restyle(s hudStyle, images map[string]image.Image) {
+	e.config.Config = e.config.Config.Restyled(s.browser)
+	e.commandPromptCfg.frameCharSet = s.commandPromptFrame
+	e.commandPromptCfg.separator = s.commandPromptSeparator
+	e.comp.Browser().Restyle(s.browser)
+	e.cmdV.C.Restyle(s.browser)
+	for _, g := range []*tcomponent.FrameGraphics{
+		e.comp.Browser().FrameGraphics(), e.cmdV.C.FrameGraphics(), e.promptGraphics,
+	} {
+		if g != nil {
+			g.Reload(images)
+		}
+	}
 }
 
 // stopTerminal releases the pty-resize worker. It is safe to call on a

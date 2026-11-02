@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image"
 	"io"
 	"maps"
 	"net"
@@ -57,8 +58,10 @@ import (
 	"unstable.build/rune/internal/cell"
 	"unstable.build/rune/internal/codesearch"
 	tcomponent "unstable.build/rune/internal/component"
+	"unstable.build/rune/internal/component/imageuri"
 	"unstable.build/rune/internal/component/markdown"
 	"unstable.build/rune/internal/component/notifications"
+	"unstable.build/rune/internal/component/template"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/extension"
 	"unstable.build/rune/internal/extension/extensionv2"
@@ -212,12 +215,18 @@ type workspaceManagerHandler struct {
 	barNonFocusAttr     term.Attributes
 	barFocusIconAttr    term.Attributes
 	barNonFocusIconAttr term.Attributes
-	status              *idestatus.Store
-	focusProxy          handler.Proxy
-	width, height       int
-	workspaces          [workspaceSlots]*workspaceHandler
-	workspaceCount      int
-	focus               int
+	barHighlightAttr    term.Attributes
+	// hud is the latest HUD applyHUD installed, nil before the first.
+	// hudLoads counts the HUD loads started, which builds compare with
+	// hud.load to tell whether they read the config before it.
+	hud            *HUD
+	hudLoads       atomic.Uint64
+	status         *idestatus.Store
+	focusProxy     handler.Proxy
+	width, height  int
+	workspaces     [workspaceSlots]*workspaceHandler
+	workspaceCount int
+	focus          int
 	// unfocused is set while the host terminal reports that Rune lost
 	// focus, when the user sees none of the workspaces.
 	unfocused           bool
@@ -846,9 +855,6 @@ func (h *workspaceManagerHandler) init(
 
 	h.bar.Init()
 	h.bar.OnClick = h.onBarTabClick
-	frameAttr := cfg.windowFrameAttr()
-	frameAttr.Attrs |= term.AttrVerticalRenderOffset
-	backgroundAttr := term.Attributes{Bg: frameAttr.Bg}
 	focusTabAttr := cfg.focusTabAttr()
 	focusTabAttr.Attrs |= term.AttrVerticalRenderOffset
 	nonFocusTabAttr := cfg.nonFocusTabAttr()
@@ -857,28 +863,19 @@ func (h *workspaceManagerHandler) init(
 	focusTabIconAttr.Attrs |= term.AttrVerticalRenderOffset
 	nonFocusTabIconAttr := cfg.nonFocusTabIconAttr()
 	nonFocusTabIconAttr.Attrs |= term.AttrVerticalRenderOffset
-	highlightAttr := cfg.highlightTabAttr()
-	h.bar.SetAttr(focusTabAttr, nonFocusTabAttr,
-		focusTabIconAttr, nonFocusTabIconAttr,
-		highlightAttr, frameAttr, backgroundAttr)
 	h.barFocusAttr = focusTabAttr
 	h.barNonFocusAttr = nonFocusTabAttr
 	h.barFocusIconAttr = focusTabIconAttr
 	h.barNonFocusIconAttr = nonFocusTabIconAttr
-	h.bar.SetFrameCharSet(cfg.windowFrameCharset())
+	h.barHighlightAttr = cfg.highlightTabAttr()
+	h.styleWorkspaceBar(cfg.windowFrameAttr(), cfg.windowFrameCharset())
 	h.bar.SetBorder(cfg.frame())
 	h.bar.SetBottomHighlight(true)
 	h.bar.SetFocusFrameChar(cfg.workspaceHighlightTabChar())
 
 	h.union.Init(&h.focusProxy)
-	h.union.Attributes = cfg.windowFrameAttr()
 	h.union.Frame = cfg.frame()
-
-	charset := cfg.frameUnionCharset()
-	h.union.Right = charset.Right
-	h.union.Left = charset.Left
-	h.union.Top = charset.Top
-	h.union.Bottom = charset.Bottom
+	h.styleWorkspaceUnion(cfg.windowFrameAttr(), cfg.frameUnionCharset())
 	h.workspaceBarKind = cfg.workspaceBarKind()
 	h.state = idehistory.New(h.ideStorage)
 	h.initScavenger(ctx)
@@ -1932,8 +1929,11 @@ func (h *workspaceManagerHandler) reservePendingSlot(
 }
 
 type builtWorkspace struct {
-	cfg                 ideConfig
-	configErr           error
+	cfg       ideConfig
+	configErr error
+	// hudLoads is the count of HUD loads started when the build read
+	// its config.
+	hudLoads            uint64
 	wh                  *workspaceHandler
 	ex                  *ex
 	runner              extension.Runner
@@ -1955,20 +1955,28 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 	ctx context.Context, uri workspaceapi.URI, cwd workspace.Workspace,
 	pending *pendingWorkspace,
 ) (*builtWorkspace, error) {
+	hudLoads := h.hudLoads.Load()
 	cfg, configErr := h.reloadConfig()
 	cfg.storage = h.ideStorage
 	cfg.scheduleNextTick = h.scheduleNextTick
-	if _, wConfigErr := loadWorkspaceConfig(
+	isUserConfig := h.isUserConfig(uri, h.workspaceConfigFilename)
+	configOverlay, _, wConfigErr := loadWorkspaceConfig(
 		h.workspaceConfigFilename, cwd, &cfg,
 		func(contents []byte) (bool, error) {
-			if h.isUserConfig(uri, h.workspaceConfigFilename) {
+			if isUserConfig {
 				return true, nil
 			}
 			return h.workspaceTrust.trusted(ctx, uri, h.workspaceConfigFilename, contents)
 		},
-	); wConfigErr != nil {
+	)
+	if wConfigErr != nil {
 		configErr = multierror.Append(configErr,
 			fmt.Errorf("workspace config: %w", wConfigErr))
+	}
+	if isUserConfig {
+		// A HUD reload reads it as the user config already; overlaying
+		// what it held here would undo the edits made to it since.
+		configOverlay = nil
 	}
 
 	// tracked from the build phase rather than the event loop: this is
@@ -2080,6 +2088,7 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 		ex:                  ex,
 		cwd:                 cwd,
 		installDir:          installDataDir(cwd, uri, h.sixDir),
+		configOverlay:       configOverlay,
 	}
 	tm.workspace = wh
 
@@ -2123,6 +2132,7 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 	built := &builtWorkspace{
 		cfg:                 cfg,
 		configErr:           configErr,
+		hudLoads:            hudLoads,
 		wh:                  wh,
 		ex:                  ex,
 		runner:              runner,
@@ -2335,6 +2345,10 @@ func (h *workspaceManagerHandler) installPendingWorkspace(
 	ex := built.ex
 	wh := built.wh
 	ex.setDefaultAttr(h.defAttr)
+	if h.hud != nil && h.hud.load > built.hudLoads && wh.configOverlay == nil {
+		// The build read the config before the installed HUD's load did.
+		ex.restyle(h.hud.base, h.hud.images)
+	}
 	go debug.CapturePanicReport(func() {
 		start := time.Now()
 		// to preserve the order of events we don't want to spawn
@@ -3076,6 +3090,119 @@ func (h *workspaceManagerHandler) logNonFatalErrs(
 	}
 }
 
+func (h *workspaceManagerHandler) styleWorkspaceBar(
+	frameAttr term.Attributes, cs component.FrameCharSet,
+) {
+	frameAttr.Attrs |= term.AttrVerticalRenderOffset
+	h.bar.SetAttr(h.barFocusAttr, h.barNonFocusAttr,
+		h.barFocusIconAttr, h.barNonFocusIconAttr,
+		h.barHighlightAttr, frameAttr, term.Attributes{Bg: frameAttr.Bg})
+	h.bar.SetFrameCharSet(cs)
+}
+
+func (h *workspaceManagerHandler) styleWorkspaceUnion(
+	frameAttr term.Attributes, cs component.FrameUnionCharSet,
+) {
+	h.union.Attributes = frameAttr
+	h.union.Right = cs.Right
+	h.union.Left = cs.Left
+	h.union.Top = cs.Top
+	h.union.Bottom = cs.Bottom
+}
+
+// loadHUD reads the config file and the images its HUD names, dropping
+// their cached copies. A workspace whose own config overlaid the user's
+// gets that overlay layered on the config read. It fails when the config
+// does not load. It must not run on the event loop: it takes the IDE
+// locker.
+func (h *workspaceManagerHandler) loadHUD(ctx context.Context) (*HUD, error) {
+	load := h.hudLoads.Add(1)
+	cfg, err := h.reloadConfig()
+	if err != nil {
+		return nil, err
+	}
+	overlays := make(map[string][]byte)
+	h.mu.Lock()
+	for _, w := range h.workspaces {
+		if w != nil && w.configOverlay != nil {
+			overlays[w.uri.String()] = w.configOverlay
+		}
+	}
+	h.mu.Unlock()
+
+	hud := &HUD{
+		load:       load,
+		base:       cfg.hudStyle(),
+		workspaces: make(map[string]hudStyle, len(overlays)),
+		skip:       make(map[string]struct{}),
+		images:     make(map[string]image.Image),
+		configErrs: cfg.errors,
+	}
+	uris := hud.base.imageURIs()
+	for uri, contents := range overlays {
+		wcfg := cfg
+		// The workspace reported the errors of its own config when it
+		// opened.
+		wcfg.errors = make(map[string]error)
+		if _, err := overlayWorkspaceConfig(contents, h.workspaceConfigFilename, &wcfg); err != nil {
+			log.Warnf("reload the HUD of workspace %s: %v", uri, err)
+			hud.skip[uri] = struct{}{}
+			continue
+		}
+		style := wcfg.hudStyle()
+		hud.workspaces[uri] = style
+		uris = append(uris, style.imageURIs()...)
+	}
+	slices.Sort(uris)
+	uris = slices.Compact(uris)
+
+	storage := storageapi.WithPartition(h.ideStorage, frameImagesPartition)
+	defer storage.Close() //nolint:errcheck
+	for _, uri := range uris {
+		img, err := imageuri.Refresh(ctx, uri, template.DefaultImageTTL, storage)
+		if err != nil {
+			log.Warnf("reload HUD image: %v", err)
+			continue
+		}
+		hud.images[uri] = img
+	}
+	return hud, nil
+}
+
+// applyHUD installs hud in every workspace, and in those still loading
+// once they open, unless a HUD whose load started later is installed
+// already. It must run on the event loop.
+func (h *workspaceManagerHandler) applyHUD(hud *HUD) {
+	if h.hud != nil && hud.load < h.hud.load {
+		return
+	}
+	h.hud = hud
+	h.logNonFatalErrs(h.focusBrowser(), nil, hud.configErrs)
+	wm := hud.base.browser.WindowManager
+	h.styleWorkspaceBar(wm.FrameAttr, wm.FrameCharSet)
+	h.styleWorkspaceUnion(wm.FrameAttr, hud.base.browser.FrameUnionCharSet)
+	h.empty.restyle(hud.base, hud.images)
+	for _, w := range h.workspaces {
+		if w == nil || w.ex == nil {
+			continue
+		}
+		uri := w.uri.String()
+		if _, ok := hud.skip[uri]; ok {
+			continue
+		}
+		style, ok := hud.workspaces[uri]
+		if !ok {
+			if w.configOverlay != nil {
+				// It opened after hud read the overlays, so hud knows
+				// nothing of its own config.
+				continue
+			}
+			style = hud.base
+		}
+		w.ex.restyle(style, hud.images)
+	}
+}
+
 func (h *workspaceManagerHandler) commandReloadWorkspace(args ...string) error {
 	i := h.focus
 	workspaceURI, _, err := h.closeWorkspace()
@@ -3591,6 +3718,9 @@ type workspaceHandler struct {
 	promptStorage       storageapi.Service
 	// installDir is the Rune data directory of the workspace's host.
 	installDir string
+	// configOverlay is the workspace config the workspace overlaid onto
+	// the user's, nil when it overlaid none.
+	configOverlay []byte
 }
 
 func (hm *workspaceHandler) Close() error {

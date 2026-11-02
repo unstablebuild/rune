@@ -207,7 +207,9 @@ file, so a project's `.rune/config.yaml` should use an absolute path, `~`, or
 a variable.
 
 Rune reads the image when it loads your configuration. After replacing the
-file, run `:workspacereload` to see the new image.
+file, run `:workspacereload` to see the new image. In the GUI,
+[`runectl screenshot`](../develop/runectl.md#screenshots) also reads it again,
+in every workspace, before it takes the screenshot.
 
 `wallpaper_attr` has no effect on an image wallpaper: every character takes
 its color from the image. `wallpaper_background_attr` sets the background and

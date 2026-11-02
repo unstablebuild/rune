@@ -549,6 +549,57 @@ func (b *bootstrapHandler) scheduleNextTick(fn func()) bool {
 	return b.publishEvent(term.Event{Type: term.EventInterrupt, UserFunc: fn})
 }
 
+// hudLoadTimeout leaves the screenshot time to land within the 5s that
+// runectl waits for it.
+const hudLoadTimeout = 3 * time.Second
+
+// reloadHUDAndScreenshot takes a screenshot that shows i with the HUD of
+// the config file, or with an error notification when the config does not
+// load. i is left as it is if it is no longer the current IDE. It must not
+// run on the event loop.
+func (b *bootstrapHandler) reloadHUDAndScreenshot(i *ide.IDE) {
+	ctx, cancel := context.WithTimeout(context.Background(), hudLoadTimeout)
+	hud, err := i.LoadHUD(ctx)
+	cancel()
+	if err != nil {
+		log.Errorf("reload the HUD: %v", err)
+	}
+	ok := b.scheduleNextTick(func() {
+		if hud != nil && b.currentIDE() == i {
+			i.ApplyHUD(hud)
+		} else if err != nil {
+			_, nerr := b.notifications().Notify(browserapi.LevelError,
+				"Could not reload the HUD: %v", err)
+			if nerr != nil {
+				log.Warnf("notify HUD reload: %v", nerr)
+			}
+		}
+		// A screenshot shows the last frame drawn, which this tick's
+		// changes reach only after it ends.
+		if !b.scheduleNextTick(b.screenshot) {
+			log.Errorf("request screenshot: could not queue screenshot request")
+		}
+	})
+	if !ok {
+		log.Errorf("request screenshot: could not queue screenshot request")
+	}
+}
+
+// screenshot captures the last frame the GUI drew. It must run on the
+// event loop.
+func (b *bootstrapHandler) screenshot() {
+	path, err := b.g.Screenshot()
+	if err != nil {
+		log.Errorf("take screenshot: %v", err)
+		return
+	}
+	_, err = b.notifications().Notify(browserapi.LevelInfo,
+		"Screenshot saved to %s", path)
+	if err != nil {
+		log.Warnf("notify screenshot: %v", err)
+	}
+}
+
 // handleTabsClick maximizes the GUI window on a double-click of the
 // tabs bar. Installed on both buildPreIDE and buildConfiguredIDE so
 // the affordance is available during the bootstrap UI as well as the

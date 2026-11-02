@@ -67,6 +67,12 @@ type FrameGraphics struct {
 	images      map[string]*imageuri.Component
 }
 
+var frameImageStyle = imageuri.Style{
+	Fit:         term.ImageFitFill,
+	Layer:       term.ImageLayerAboveText,
+	HideLoading: true,
+}
+
 // NewFrameGraphics returns a FrameGraphics that caches the downloaded
 // images in storage and signals interrupter when one settles.
 func NewFrameGraphics(
@@ -220,6 +226,26 @@ func (g *FrameGraphics) Close() error {
 	return errors.Join(errs...)
 }
 
+// Reload replaces every image g holds with images: g draws each without
+// fetching it, and fetches any other URI again, through storage, the
+// next time it draws it. The images it held are closed.
+func (g *FrameGraphics) Reload(images map[string]image.Image) {
+	old := g.images
+	g.images = make(map[string]*imageuri.Component, len(images))
+	for uri, src := range images {
+		img, err := imageuri.NewLoaded(uri, src, frameImageStyle)
+		if err != nil {
+			slog.Warn("frame graphics: reload image", "error", err)
+		}
+		g.images[uri] = img
+	}
+	for _, img := range old {
+		if img != nil {
+			_ = img.Close()
+		}
+	}
+}
+
 // Image returns the image of uri, the one that g draws wherever uri is
 // named, so it shares one ImageID with them. It is nil when uri is empty
 // or cannot be displayed. The image draws nothing until it has loaded.
@@ -240,11 +266,7 @@ func (g *FrameGraphics) image(uri string) *imageuri.Component {
 		return img
 	}
 	img, err := imageuri.New(uri, template.DefaultImageTTL, g.storage,
-		g.interrupter, imageuri.Style{
-			Fit:         term.ImageFitFill,
-			Layer:       term.ImageLayerAboveText,
-			HideLoading: true,
-		})
+		g.interrupter, frameImageStyle)
 	if err != nil {
 		slog.Warn("frame graphics: new image", "error", err)
 	}

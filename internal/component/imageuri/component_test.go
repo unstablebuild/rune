@@ -17,9 +17,11 @@
 package imageuri_test
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"image"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -633,6 +635,47 @@ func TestNew(t *testing.T) {
 			require.NoError(t, err)
 			assert.NoError(t, uriErr)
 			require.NoError(t, c.Close())
+		})
+	}
+}
+
+func TestNewLoaded(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	img, err := png.Decode(bytes.NewReader(imageuritest.SamplePNG))
+	require.NoError(t, err)
+	missing := (&url.URL{Scheme: "file", Path: filepath.ToSlash(
+		filepath.Join(t.TempDir(), "missing.png"))}).String()
+
+	tests := []struct {
+		name       string
+		uri        string
+		wantErr    string
+		wantScreen string
+	}{
+		{name: "draws the image without fetching", uri: missing, wantScreen: samplePNG40x10},
+		{name: "invalid URI", uri: "ftp://example.com/a.png", wantErr: `unsupported scheme "ftp"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, err := imageuri.NewLoaded(tt.uri, img,
+				imageuri.Style{Fit: term.ImageFitContain, ProblemArt: "✗"})
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				assert.Nil(t, c)
+				return
+			}
+			require.NoError(t, err)
+			defer c.Close() //nolint:errcheck
+
+			size, settled := c.Size()
+			assert.Equal(t, image.Pt(194, 179), size)
+			assert.True(t, settled)
+			c.Start()
+			w := asciiart.NewStringWriter(40, 10, asciiart.DefaultConfig())
+			comptest.TestComponent(t, c, w, []comptest.TestCase{
+				{Action: func() { c.Resize(40, 10) }, Expected: tt.wantScreen},
+			})
 		})
 	}
 }

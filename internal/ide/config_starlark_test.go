@@ -724,9 +724,10 @@ func TestLoadWorkspaceConfigStar(t *testing.T) {
 	ws := workspace.NewSchemeWorkspace(uri, scheme, inlineSchedule)
 	defer ws.Close()
 
-	isConfigErr, err := loadWorkspaceConfig("config.star", ws, c, trustAllWorkspaceConfigs)
+	applied, isConfigErr, err := loadWorkspaceConfig("config.star", ws, c, trustAllWorkspaceConfigs)
 	require.NoError(t, err)
 	assert.False(t, isConfigErr)
+	assert.Equal(t, `config["log_level"] = "debug"`, string(applied))
 	assert.Equal(t, "debug", c.cfg["log_level"])
 }
 
@@ -759,7 +760,7 @@ config["extensions"]["git"]["config"]["nested"]["override"] = "star"
 	ws := workspace.NewSchemeWorkspace(uri, scheme, inlineSchedule)
 	defer ws.Close()
 
-	isConfigErr, err := loadWorkspaceConfig("config.star", ws, c, trustAllWorkspaceConfigs)
+	_, isConfigErr, err := loadWorkspaceConfig("config.star", ws, c, trustAllWorkspaceConfigs)
 	require.NoError(t, err)
 	assert.False(t, isConfigErr)
 
@@ -843,9 +844,10 @@ func TestLoadWorkspaceConfigYAML(t *testing.T) {
 	ws := workspace.NewSchemeWorkspace(uri, scheme, inlineSchedule)
 	defer ws.Close()
 
-	isConfigErr, err := loadWorkspaceConfig("config.yaml", ws, c, trustAllWorkspaceConfigs)
+	applied, isConfigErr, err := loadWorkspaceConfig("config.yaml", ws, c, trustAllWorkspaceConfigs)
 	require.NoError(t, err)
 	assert.False(t, isConfigErr)
+	assert.Equal(t, "log_level: warn\n", string(applied))
 	assert.Equal(t, "warn", c.cfg["log_level"])
 }
 
@@ -948,7 +950,7 @@ editor:
 
 			var offered []byte
 			called := false
-			_, err := loadWorkspaceConfig("config.yaml", newTestFileWorkspace(t, dir), &c,
+			applied, _, err := loadWorkspaceConfig("config.yaml", newTestFileWorkspace(t, dir), &c,
 				func(contents []byte) (bool, error) {
 					called = true
 					offered = contents
@@ -966,9 +968,11 @@ editor:
 					"the trust decision must cover exactly the bytes that are applied")
 			}
 			if !tt.wantApplied {
+				assert.Nil(t, applied)
 				assert.Equal(t, before, c.cfg)
 				return
 			}
+			assert.Equal(t, tt.contents, string(applied))
 			assert.Equal(t, 2, c.editorTabspaces())
 			assert.True(t, c.cfg["authorizer"].(map[string]any)["auto_authorize_commands"].(bool))
 			assert.True(t, c.updatesAutoInstall())
@@ -1091,7 +1095,7 @@ config["editor"]["modal"]["message_bar"] = {"attr": {"fg": "white", "bg": "navy"
 		require.NoError(t, err)
 		w := workspace.NewSchemeWorkspace(uri, scheme, inlineSchedule)
 		t.Cleanup(func() { w.Close() })
-		_, err = loadWorkspaceConfig(ws.name, w, &cfg, trustAllWorkspaceConfigs)
+		_, _, err = loadWorkspaceConfig(ws.name, w, &cfg, trustAllWorkspaceConfigs)
 		require.NoError(t, err)
 		return cfg
 	}

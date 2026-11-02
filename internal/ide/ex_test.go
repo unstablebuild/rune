@@ -4520,6 +4520,54 @@ func TestCommandPromptUsesSharedStoragePartition(t *testing.T) {
 	assert.Equal(t, int32(0), store.partitionCloseCount.Load())
 }
 
+func TestExRestyle(t *testing.T) {
+	// Nothing is on disk at uri, so only a reloaded image can draw.
+	const uri = "file:///nonexistent/hud/frame.png"
+	wmCfg := thandler.DefaultWindowManagerConfig()
+	wmCfg.FrameGraphicsStorage = storagestub.NewInMemoryService()
+	wmCfg.Interrupter = term.NopInterrupter()
+	b := newExForTesting(t, texttest.NopEditor(), text.WithWindowManagerConfig(wmCfg))
+	t.Cleanup(func() { _ = b.Close() })
+	unlock := b.lock()
+	defer unlock()
+	b.ex.promptFrameGraphics()
+
+	cfg := ideConfig{cfg: map[string]any{
+		"browser": map[string]any{"window_manager": map[string]any{
+			"frame_charset": map[string]any{
+				"topleft": "╭", "graphics": map[string]any{"topleft": uri},
+			},
+		}},
+		"command": map[string]any{
+			"frame_charset":     map[string]any{"topright": "╮"},
+			"separator_charset": map[string]any{"left": "├"},
+		},
+	}, errors: map[string]error{}}
+	style := cfg.hudStyle()
+	require.Empty(t, cfg.errors)
+
+	b.ex.restyle(style, map[string]image.Image{uri: image.NewRGBA(image.Rect(0, 0, 1, 1))})
+
+	assert.Equal(t, '╭', b.ex.config.FrameCharSet.TopLeft)
+	assert.Equal(t, style.commandPromptFrame, b.ex.commandPromptCfg.frameCharSet)
+	assert.Equal(t, '├', b.ex.commandPromptCfg.separator.Left)
+	frame, _ := b.ex.promptFrameCharSets()
+	assert.Equal(t, '╮', frame.TopRight)
+	for name, g := range map[string]*tcomponent.FrameGraphics{
+		"browser":        b.ex.comp.Browser().FrameGraphics(),
+		"command":        b.ex.cmdV.C.FrameGraphics(),
+		"command prompt": b.ex.promptGraphics,
+	} {
+		require.NotNil(t, g, name)
+		img := g.Image(uri)
+		require.NotNil(t, img, name)
+		img.Resize(1, 1)
+		w := newCoveringImageWriter(1, 1)
+		img.Draw(w)
+		assert.Len(t, w.images, 1, "%s draws the reloaded image at once", name)
+	}
+}
+
 func TestCommandPromptHasNoWindowBar(t *testing.T) {
 	b := newExForTesting(t, texttest.NopEditor(), text.WithCommandKey(testCommandKey))
 	defer b.Close()

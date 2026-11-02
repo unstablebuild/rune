@@ -24,7 +24,6 @@ import (
 	"syscall"
 
 	log "github.com/sirupsen/logrus"
-	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
 
 	"unstable.build/rune/internal/debug"
@@ -34,7 +33,8 @@ import (
 // GUI exits through the same close chain as a window ✕. SIGTSTP is
 // caught and dropped rather than ignored: SIG_IGN survives execve and
 // would leak into child processes such as integrated-terminal shells.
-// SIGUSR2 schedules a screenshot on the GUI event loop.
+// SIGUSR2 takes a screenshot after reloading the HUD from the config file,
+// without delaying the signals that follow it.
 func watchGUISignals(root *bootstrapHandler, quit term.Event) func() {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP,
@@ -70,17 +70,13 @@ func dispatchGUISignal(
 	case syscall.SIGTSTP:
 		return false
 	case syscall.SIGUSR2:
+		// The swap to the configured IDE assigns it off the locker, so
+		// only the event loop reads it safely.
 		ok := root.scheduleNextTick(func() {
-			path, err := root.g.Screenshot()
-			if err != nil {
-				log.Errorf("take screenshot: %v", err)
-				return
-			}
-			_, err = root.notifications().Notify(browserapi.LevelInfo,
-				"Screenshot saved to %s", path)
-			if err != nil {
-				log.Warnf("notify screenshot: %v", err)
-			}
+			i := root.currentIDE()
+			go debug.CapturePanicReport(func() {
+				root.reloadHUDAndScreenshot(i)
+			})
 		})
 		if !ok {
 			log.Errorf("request screenshot: could not queue UI event")

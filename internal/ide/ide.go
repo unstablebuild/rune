@@ -224,6 +224,21 @@ func (i *IDE) Config() config.Config {
 	return config.MapConfig(i.ideConfig.cfg)
 }
 
+// LoadHUD reads the config file and the images its HUD names, dropping
+// their cached copies, for ApplyHUD to install. It fails when the config
+// does not load. It must not run on the event loop.
+func (i *IDE) LoadHUD(ctx context.Context) (*HUD, error) {
+	return i.workspaceHandler.loadHUD(ctx)
+}
+
+// ApplyHUD installs hud in every workspace, and in those still loading
+// once they open, so the next Draw shows it. A HUD whose load started
+// before that of the HUD installed last is ignored. It must run on the
+// event loop.
+func (i *IDE) ApplyHUD(hud *HUD) {
+	i.workspaceHandler.applyHUD(hud)
+}
+
 // Sounds returns the player for the sounds defined in the `sounds`
 // section of the user config, the packages merged into it, and the
 // built-in sounds.

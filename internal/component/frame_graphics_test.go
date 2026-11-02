@@ -367,6 +367,131 @@ func TestFrameGraphicsSharesOneImagePerURI(t *testing.T) {
 	}
 }
 
+func TestFrameGraphicsReload(t *testing.T) {
+	pics := newFramePictures(t)
+	attr := term.Attributes{Fg: term.ColorBlue, Bg: term.ColorBlack}
+	const width, height = 3, 3
+
+	tests := []struct {
+		name string
+		// before is the picture drawn, once loaded, before the reload.
+		before string
+		// held takes the corner's image before the reload without
+		// loading it, and draws it after.
+		held bool
+		// slot is the picture the top-left corner names.
+		slot string
+		// reload maps the names of the URIs reloaded to their pictures.
+		reload map[string]rune
+		// wantLoads counts the images fetched after the reload.
+		wantLoads int
+		expected  string
+		// wantNewID reports that the corner's ImageID changed.
+		wantNewID bool
+	}{
+		{
+			name:   "a reloaded URI draws at once without fetching",
+			slot:   "missing",
+			reload: map[string]rune{"missing": 'L'},
+			expected: `
+L─┐
+│x│
+└─┘`,
+		},
+		{
+			name:      "a URI missing from the reload is fetched again",
+			before:    "L",
+			slot:      "L",
+			reload:    map[string]rune{"R": 'R'},
+			wantLoads: 1,
+			expected: `
+L─┐
+│x│
+└─┘`,
+			wantNewID: true,
+		},
+		{
+			name:      "an image held before the reload is closed",
+			held:      true,
+			slot:      "L",
+			reload:    map[string]rune{"R": 'R'},
+			wantLoads: 1,
+			expected: `
+L─┐
+│x│
+└─┘`,
+		},
+		{
+			name:   "a reloaded URI gets a new ImageID",
+			before: "L",
+			slot:   "L",
+			reload: map[string]rune{"L": 'L'},
+			expected: `
+L─┐
+│x│
+└─┘`,
+			wantNewID: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := component.NewFrame(&component.TestComponent{Ch: 'x'})
+			f.Attributes = attr
+			f.Graphics = pics.resolve(component.FrameCharSetGraphics{TopLeft: tt.slot})
+			f.Resize(width, height)
+			irq := make(interruptCounter, 16)
+			g := NewFrameGraphics(storagestub.NewInMemoryService(), irq)
+			t.Cleanup(func() { assert.NoError(t, g.Close()) })
+
+			var old tui.Component
+			var oldID term.ImageID
+			if tt.before != "" {
+				g.Draw(term.NewStringWriter(width, height), f, width, height)
+				irq.wait(t, 1)
+				s := newImageScreen(width, height)
+				g.Draw(s, f, width, height)
+				require.Len(t, s.images, 1)
+				oldID = s.images[0].ID
+				old = g.Image(f.Graphics.TopLeft)
+			}
+			if tt.held {
+				old = g.Image(f.Graphics.TopLeft)
+			}
+
+			images := make(map[string]image.Image, len(tt.reload))
+			for name, pic := range tt.reload {
+				images[pics.uris[name]] = pics.imgs[pic]
+			}
+			g.Reload(images)
+			if old != nil {
+				assert.NotSame(t, old, g.Image(f.Graphics.TopLeft), "the old image is replaced")
+			}
+			if tt.held {
+				old.Resize(1, 1)
+				old.Draw(term.NewStringWriter(1, 1))
+			}
+
+			if tt.wantLoads > 0 {
+				g.Draw(term.NewStringWriter(width, height), f, width, height)
+				irq.wait(t, tt.wantLoads)
+			}
+			s := newImageScreen(width, height)
+			f.Draw(s)
+			g.Draw(s, f, width, height)
+			assert.Equal(t, tt.expected, s.render(t, pics, attr, false))
+			require.Len(t, s.images, 1)
+			if tt.wantNewID {
+				assert.NotEqual(t, oldID, s.images[0].ID)
+			}
+			select {
+			case <-irq:
+				assert.Fail(t, "an image loaded after the reload settled")
+			case <-time.After(50 * time.Millisecond):
+			}
+		})
+	}
+}
+
 func TestFrameGraphicsDrawScrollBar(t *testing.T) {
 	pics := newFramePictures(t)
 	attr := term.Attributes{Fg: term.ColorBlue, Bg: term.ColorBlack}
@@ -627,6 +752,7 @@ RRRRRR
 type framePictures struct {
 	uris map[string]string
 	pix  map[rune][]byte
+	imgs map[rune]*image.RGBA
 }
 
 func newFramePictures(t *testing.T) framePictures {
@@ -635,6 +761,7 @@ func newFramePictures(t *testing.T) framePictures {
 	p := framePictures{
 		uris: map[string]string{"invalid": "ftp://example.com/x.png"},
 		pix:  make(map[rune][]byte),
+		imgs: make(map[rune]*image.RGBA),
 	}
 	fileURI := func(name string) string {
 		return (&url.URL{Scheme: "file", Path: filepath.ToSlash(filepath.Join(dir, name))}).String()
@@ -653,6 +780,7 @@ func newFramePictures(t *testing.T) framePictures {
 		rgba := image.NewRGBA(image.Rect(0, 0, src.Bounds().Dx(), src.Bounds().Dy()))
 		draw.Draw(rgba, rgba.Bounds(), src, src.Bounds().Min, draw.Src)
 		p.pix[name] = rgba.Pix
+		p.imgs[name] = rgba
 	}
 	return p
 }

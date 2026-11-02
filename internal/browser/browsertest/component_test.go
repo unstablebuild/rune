@@ -1716,6 +1716,91 @@ func TestComponentSplitNil(t *testing.T) {
 	})
 }
 
+func TestComponentRestyle(t *testing.T) {
+	plus := component.FrameCharSet{
+		TopLeft: '+', TopRight: '+', BottomLeft: '+', BottomRight: '+',
+		HorizontalTop: '-', HorizontalBottom: '-', VerticalLeft: '|', VerticalRight: '|',
+	}
+	wallpaper := func(text string) browser.Wallpaper {
+		return browser.Wallpaper{NewComponent: func() tui.Component {
+			return component.NewStringWithConfig(text, component.StringConfig{
+				Alignment: component.AlignmentCentered,
+			})
+		}}
+	}
+	path := filepath.Join(t.TempDir(), "button.png")
+	require.NoError(t, os.WriteFile(path, imageuritest.StatusBarLeftPNG, 0o600))
+	uri := (&url.URL{Scheme: "file", Path: filepath.ToSlash(path)}).String()
+
+	cfg := browser.DefaultConfig()
+	cfg.Wallpaper = wallpaper("BART")
+	cfg.WindowManagerConfig.FrameGraphicsStorage = storagestub.NewInMemoryService()
+	cfg.Interrupter = make(frameImageInterrupter, 1)
+	c := browser.NewComponent(cfg)
+	defer func() { assert.NoError(t, c.Close()) }()
+	c.SetDefaultSplit(browserapi.OrientationLeft)
+	c.Resize(20, 8)
+	wallpaperWin := c.Focus()
+	tabURI, err := workspaceapi.ParseURI("file:///tab")
+	require.NoError(t, err)
+	tab := c.NewTab(tabURI, 'x', "tab", NewTestHandler(), nil)
+	tabWin, ok := c.Split(browserapi.OrientationDefault, wallpaperWin, tab)
+	require.True(t, ok)
+	c.SetFocus(tabWin)
+
+	highlight := term.Attributes{Fg: term.ColorBlack, Bg: term.ColorAqua}
+	style := browser.Style{
+		WindowManager:     cfg.WindowManagerConfig,
+		FrameUnionCharSet: component.FrameUnionCharSet{FrameCharSet: plus, Left: 'L', Right: 'R', Top: 'T', Bottom: 'B'},
+		Prompt:            cfg.PromptConfig,
+		Wallpaper:         wallpaper("NEW!"),
+	}
+	style.WindowManager.FrameCharSet = plus
+	style.WindowManager.FocusFrameCharSet = plus
+	style.Prompt.HighlightAttr = highlight
+	style.Prompt.Images = browser.PromptImages{Idle: browser.PromptButtonImage{Middle: uri}}
+	require.Nil(t, c.ButtonImages())
+
+	comptest.TestComponent(t, c, term.NewStringWriter(24, 8), []comptest.TestCase{
+		{Expected: `
+┌━━━━━─────────────┐    
+│x tab             │    
+┌────────┐┌────────┤    
+│AAAAAAAA││        │    
+│AAAAAAAA││  BART  │    
+│AAAAAAAA││        │    
+│AAAAAAAA││        │    
+└────────┘└────────┘    `},
+		{Action: func() { c.Restyle(style) }, Expected: `
++━━━━━-------------+    
+|x tab             |    
++--------++--------R    
+|AAAAAAAA||        |    
+|AAAAAAAA||  NEW!  |    
+|AAAAAAAA||        |    
+|AAAAAAAA||        |    
++--------++--------+    `},
+	})
+
+	content, err := tabWin.Content()
+	require.NoError(t, err)
+	assert.Same(t, tab, content, "the tab window keeps its tab")
+
+	assert.NotNil(t, c.ButtonImages(), "prompts get the new images")
+	c.Prompt(browserapi.PromptConfig{Message: "Proceed?", Options: []string{"Yes", "No"}},
+		handler.NopPromptHandler())
+	w := term.NewStringWriter(20, 8)
+	c.Draw(w)
+	require.NoError(t, w.Flush())
+	var yes term.Attributes
+	for _, cell := range w.Cells() {
+		if cell.Ch == 'Y' {
+			yes = cell.Attributes()
+		}
+	}
+	assert.Equal(t, highlight, yes, "prompts get the new attributes")
+}
+
 func TestFloatingPanicWallpaper(t *testing.T) {
 	cfg := browser.DefaultConfig()
 	c := browser.NewComponent(cfg)

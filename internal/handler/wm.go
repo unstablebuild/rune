@@ -230,6 +230,28 @@ func (wm *WindowManager) SetAttr(def, focus term.Attributes) {
 	wm.setFocusAttr(wm.focus)
 }
 
+// Restyled returns c with the style of s, as
+// component.WindowManagerConfig.Restyled takes it, and its
+// FocusFrameAttr, FocusFrameCharSet and ScrollBarHoverCharSet.
+func (c WindowManagerConfig) Restyled(s WindowManagerConfig) WindowManagerConfig {
+	c.WindowManagerConfig = c.WindowManagerConfig.Restyled(s.WindowManagerConfig)
+	c.FocusFrameAttr = s.FocusFrameAttr
+	c.FocusFrameCharSet = s.FocusFrameCharSet
+	c.ScrollBarHoverCharSet = s.ScrollBarHoverCharSet
+	return c
+}
+
+// Restyle draws wm, from the next Draw on, with the style of cfg, as
+// WindowManagerConfig.Restyled takes it, as component.WindowManager.Restyle
+// does, and the focus window with its focus style.
+func (wm *WindowManager) Restyle(cfg WindowManagerConfig) {
+	wm.config = wm.config.Restyled(cfg)
+	wm.comp.Restyle(cfg.WindowManagerConfig)
+	if wm.config.Frame {
+		wm.setFocusAttr(wm.focus)
+	}
+}
+
 // Handle satisfies tui.Handler.
 func (wm *WindowManager) Handle(ev term.Event) (exit bool, handled bool) {
 	// Cleared after dispatch so MouseRelease ending a drag still

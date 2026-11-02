@@ -181,19 +181,7 @@ func (c *Component) Init(config Config) {
 	c.wm.Subscribe((*wmSubscriber)(c))
 	c.buffers = make([]*Tab, 0)
 
-	frameAttr := config.WindowManagerConfig.FrameAttr
-	highlightAttr := config.FocusTabHighlightAttr
-	frameAttr.Attrs |= term.AttrNegativeVerticalRenderOffset
-	bgAttr := term.Attributes{Bg: frameAttr.Bg}
-	focusTabAttr := config.FocusTabAttr
-	focusTabAttr.Attrs |= term.AttrNegativeVerticalRenderOffset
-	nonFocusTabAttr := config.NonFocusTabAttr
-	nonFocusTabAttr.Attrs |= term.AttrNegativeVerticalRenderOffset
-	c.tabs.SetAttr(focusTabAttr, nonFocusTabAttr,
-		c.focusTabIconAttr(), c.nonFocusTabIconAttr(),
-		highlightAttr, frameAttr, bgAttr)
-	c.tabs.SetFrameCharSet(config.WindowManagerConfig.FrameCharSet)
-	c.tabs.SetFocusFrameChar(config.FocusTabHighlightChar)
+	c.styleTabs()
 	c.shadedTabs = thandler.NewShadedTabs(&c.tabs, thandler.ShadedTabsConfig{
 		Shader:      config.ActiveTabShader,
 		FPS:         config.ActiveTabShaderFPS,
@@ -209,6 +197,46 @@ func (c *Component) Init(config Config) {
 	if config.TabNameSeparator != "" {
 		c.tabs.SetNameSeparator(config.TabNameSeparator)
 	}
+}
+
+func (c *Component) styleTabs() {
+	frameAttr := c.config.WindowManagerConfig.FrameAttr
+	frameAttr.Attrs |= term.AttrNegativeVerticalRenderOffset
+	bgAttr := term.Attributes{Bg: frameAttr.Bg}
+	focusTabAttr := c.config.FocusTabAttr
+	focusTabAttr.Attrs |= term.AttrNegativeVerticalRenderOffset
+	nonFocusTabAttr := c.config.NonFocusTabAttr
+	nonFocusTabAttr.Attrs |= term.AttrNegativeVerticalRenderOffset
+	c.tabs.SetAttr(focusTabAttr, nonFocusTabAttr,
+		c.focusTabIconAttr(), c.nonFocusTabIconAttr(),
+		c.config.FocusTabHighlightAttr, frameAttr, bgAttr)
+	c.tabs.SetFrameCharSet(c.config.WindowManagerConfig.FrameCharSet)
+	c.tabs.SetFocusFrameChar(c.config.FocusTabHighlightChar)
+}
+
+// Restyle draws c with s from the next Draw on: its windows, frame union
+// and tab bar, the prompts it opens later, and the wallpaper of every
+// window showing it. Prompts already open keep their style.
+func (c *Component) Restyle(s Style) {
+	c.config = c.config.Restyled(s)
+	c.wm.Restyle(c.config.WindowManagerConfig)
+	c.union.Attributes = c.config.WindowManagerConfig.FrameAttr
+	c.union.Right = c.config.FrameUnionCharSet.Right
+	c.union.Left = c.config.FrameUnionCharSet.Left
+	c.union.Top = c.config.FrameUnionCharSet.Top
+	c.union.Bottom = c.config.FrameUnionCharSet.Bottom
+	c.styleTabs()
+	for _, bw := range c.windows {
+		if isWallpaper(bw.win.Content().(browserapi.Handler)) {
+			c.updateWindowContent(bw, c.wallpaper(), nil)
+		}
+	}
+}
+
+// FrameGraphics returns the images that c's frames and prompt buttons
+// are drawn with. It is nil when the window manager draws no images.
+func (c *Component) FrameGraphics() *tcomponent.FrameGraphics {
+	return c.wm.FrameGraphics()
 }
 
 // initUnion builds the frame union from scratch. The union only ever

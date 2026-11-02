@@ -1369,15 +1369,28 @@ func (c ideConfig) commandPromptFrameCharset() (component.FrameCharSet, bool) {
 	return cs, true
 }
 
-func (c ideConfig) commandPromptCfg() commandPromptConfig {
-	hintLookup := c.commandKeyBindingHintLookup()
+// commandPromptFrame returns command.frame_charset, nil when it is not
+// set, and the separator charset, built on the window frame charset
+// when command.frame_charset is not set.
+func (c ideConfig) commandPromptFrame() (*component.FrameCharSet, tcomponent.SeparatorCharSet) {
 	frame, hasFrame := c.commandPromptFrameCharset()
 	if !hasFrame {
 		frame = c.windowFrameCharset()
 	}
-	cfg := commandPromptConfig{
-		shader:    c.commandPromptShaderCfg(),
-		separator: c.commandPromptSeparatorCharset(frame),
+	separator := c.commandPromptSeparatorCharset(frame)
+	if !hasFrame {
+		return nil, separator
+	}
+	return &frame, separator
+}
+
+func (c ideConfig) commandPromptCfg() commandPromptConfig {
+	hintLookup := c.commandKeyBindingHintLookup()
+	frame, separator := c.commandPromptFrame()
+	return commandPromptConfig{
+		shader:       c.commandPromptShaderCfg(),
+		frameCharSet: frame,
+		separator:    separator,
 		keyBindingHint: func(line string) string {
 			return hintLookup[line]
 		},
@@ -1386,10 +1399,6 @@ func (c ideConfig) commandPromptCfg() commandPromptConfig {
 			Fg: c.commandKeyBindingHintFocusColor(),
 		},
 	}
-	if hasFrame {
-		cfg.frameCharSet = &frame
-	}
-	return cfg
 }
 
 // commandKeyBindingHintColor returns the color of the right-aligned
@@ -2266,6 +2275,25 @@ func (c ideConfig) promptConfig() browser.PromptConfig {
 	ret.BackgroundAttr = c.promptBackgroundAttr()
 	ret.Images = c.promptImages()
 	return ret
+}
+
+// hudStyle reads the keys of c that IDE.ApplyHUD applies to running
+// workspaces. It decodes the wallpaper image.
+func (c ideConfig) hudStyle() hudStyle {
+	// windowManagerConfig would open a storage partition that nothing
+	// here closes, and no style needs storage.
+	c.storage = nil
+	frame, separator := c.commandPromptFrame()
+	return hudStyle{
+		browser: browser.Style{
+			WindowManager:     c.windowManagerConfig(),
+			FrameUnionCharSet: c.frameUnionCharset(),
+			Prompt:            c.promptConfig(),
+			Wallpaper:         c.wallpaper(),
+		},
+		commandPromptFrame:     frame,
+		commandPromptSeparator: separator,
+	}
 }
 
 // promptImages reads browser.prompt.images. Every state but idle falls
@@ -6026,50 +6054,59 @@ const maxWorkspaceConfigSize = 64 << 10
 // that, and c is left untouched unless the whole overlay decodes and
 // validates. A missing or unreadable file is not an error and is not
 // offered to trust; a file over maxWorkspaceConfigSize is an error and is
-// not offered either.
+// not offered either. applied is the contents overlaid onto c, nil when
+// nothing was.
 func loadWorkspaceConfig(
 	filename string, cwd workspace.Workspace, c *ideConfig,
 	trust func(contents []byte) (bool, error),
-) (isConfigErr bool, err error) {
+) (applied []byte, isConfigErr bool, err error) {
 	f, err := cwd.OpenFile(filename, os.O_RDONLY, 0)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return false, nil
+			return nil, false, nil
 		}
 		if errors.Is(err, os.ErrPermission) {
-			return false, nil
+			return nil, false, nil
 		}
-		return false, fmt.Errorf("failed to open local '%s': %v", filename, err)
+		return nil, false, fmt.Errorf("failed to open local '%s': %v", filename, err)
 	}
 	defer f.Close()
 
 	contents, err := io.ReadAll(io.LimitReader(f, maxWorkspaceConfigSize+1))
 	if err != nil {
-		return false, fmt.Errorf("read '%s': %w", filename, err)
+		return nil, false, fmt.Errorf("read '%s': %w", filename, err)
 	}
 	if len(contents) > maxWorkspaceConfigSize {
-		return false, fmt.Errorf("'%s' is larger than %d KiB, so it is ignored",
+		return nil, false, fmt.Errorf("'%s' is larger than %d KiB, so it is ignored",
 			filename, maxWorkspaceConfigSize>>10)
 	}
 	trusted, err := trust(contents)
 	if err != nil {
-		return false, fmt.Errorf("trust '%s': %w", filename, err)
+		return nil, false, fmt.Errorf("trust '%s': %w", filename, err)
 	}
 	if !trusted {
-		return false, nil
+		return nil, false, nil
 	}
+	if isConfigErr, err := overlayWorkspaceConfig(contents, filename, c); err != nil {
+		return nil, isConfigErr, err
+	}
+	return contents, false, nil
+}
 
+// overlayWorkspaceConfig overlays contents, those of the workspace config
+// filename, onto c. c is left untouched unless the whole overlay decodes
+// and validates; isConfigErr reports that it did not decode.
+func overlayWorkspaceConfig(
+	contents []byte, filename string, c *ideConfig,
+) (isConfigErr bool, err error) {
 	cfg, err := decodeOverlayConfigFile(bytes.NewReader(contents), filename,
 		copyConfigValue(c.cfg).(map[string]any))
 	if err != nil {
 		return true, err
 	}
-
-	err = validateConfig(cfg)
-	if err != nil {
+	if err := validateConfig(cfg); err != nil {
 		return false, fmt.Errorf("validate config: %w", err)
 	}
-
 	c.cfg = cfg
 	return false, nil
 }

@@ -2434,6 +2434,150 @@ func TestWindowBarSetFrameCharSet(t *testing.T) {
 	})
 }
 
+func TestWindowManagerRestyle(t *testing.T) {
+	plusCharSet := component.FrameCharSet{
+		TopLeft: '+', TopRight: '+', BottomLeft: '+', BottomRight: '+',
+		HorizontalTop: '-', HorizontalBottom: '-', VerticalLeft: '|', VerticalRight: '|',
+	}
+	blue := term.Attributes{Fg: term.ColorBlue}
+	red := term.Attributes{Fg: term.ColorRed}
+	yellow := term.Attributes{Fg: term.ColorYellow}
+	scrollBarAttr := term.Attributes{Fg: term.ColorGreen}
+	scrollBarCharSet := component.ScrollBarCharSet{Middle: '#'}
+	openFloating := func(wm *WindowManager) {
+		wm.FloatingWindow(
+			component.StaticFloating(&component.TestComponent{Ch: 'B'}, 2, 2),
+			FloatingConfig{Offset: term.Coordinates{X: 1, Y: 1}},
+		)
+	}
+	const restyled = `
++------------------+
+|=x==CCCCCCCCCCCCCC|
+||BB|CCCCCCCCCCCCCC|
+||BB|CCCCCCCCCCCCCC|
+|+--+CCCCCCCCCCCCCC|
+|CCCCCCCCCCCCCCCCCC|
+|CCCCCCCCCCCCCCCCCC|
++------------------+`
+
+	tests := []struct {
+		name      string
+		noFrame   bool
+		before    func(wm *WindowManager, root Window)
+		frameAttr term.Attributes
+		after     func(wm *WindowManager)
+		expected  string
+		// wantRootAttr is the root tile's frame attribute after Restyle.
+		wantRootAttr term.Attributes
+	}{
+		{
+			name:         "tiles and floating windows with a bar",
+			before:       func(wm *WindowManager, _ Window) { openFloating(wm) },
+			frameAttr:    blue,
+			expected:     restyled,
+			wantRootAttr: blue,
+		},
+		{
+			name:      "no frame changes no window",
+			noFrame:   true,
+			before:    func(wm *WindowManager, _ Window) { openFloating(wm) },
+			frameAttr: blue,
+			expected: `
+CCCCCCCCCCCCCCCCCCCC
+CBBCCCCCCCCCCCCCCCCC
+CBBCCCCCCCCCCCCCCCCC
+CCCCCCCCCCCCCCCCCCCC
+CCCCCCCCCCCCCCCCCCCC
+CCCCCCCCCCCCCCCCCCCC
+CCCCCCCCCCCCCCCCCCCC
+CCCCCCCCCCCCCCCCCCCC`,
+		},
+		{
+			name: "an unchanged frame attribute keeps a window's own",
+			before: func(wm *WindowManager, root Window) {
+				openFloating(wm)
+				root.SetFrameAttr(red)
+			},
+			expected:     restyled,
+			wantRootAttr: red,
+		},
+		{
+			name: "a changed frame attribute replaces a window's own",
+			before: func(wm *WindowManager, root Window) {
+				openFloating(wm)
+				root.SetFrameAttr(red)
+			},
+			frameAttr:    yellow,
+			expected:     restyled,
+			wantRootAttr: yellow,
+		},
+		{
+			name:         "a window opened after Restyle uses the new style",
+			after:        openFloating,
+			frameAttr:    blue,
+			expected:     restyled,
+			wantRootAttr: blue,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultWindowManagerConfig()
+			cfg.NoMaxSize = true
+			cfg.Frame = !tt.noFrame
+			wm, root := NewWindowManager(&component.TestComponent{Ch: 'C'}, cfg)
+			wm.Resize(20, 8)
+			if tt.before != nil {
+				tt.before(wm, root)
+			}
+
+			style := cfg
+			style.FrameAttr = tt.frameAttr
+			style.FrameCharSet = plusCharSet
+			style.ScrollBarAttr = scrollBarAttr
+			style.ScrollBarCharSet = scrollBarCharSet
+			style.ScrollBarOutset = 2
+			style.WindowBarCharSet = WindowBarCharSet{Left: '=', Horizontal: '=', Right: '='}
+			style.CloseIcon = 'x'
+			style.CloseIconAttr = yellow
+			// What changes the layout is not style.
+			style.Frame = !cfg.Frame
+			style.WindowBar = false
+			style.NoMaxSize = false
+			wm.Restyle(style)
+			if tt.after != nil {
+				tt.after(wm)
+			}
+
+			want := cfg
+			want.FrameAttr = tt.frameAttr
+			want.FrameCharSet = plusCharSet
+			want.ScrollBarAttr = scrollBarAttr
+			want.ScrollBarCharSet = scrollBarCharSet
+			want.ScrollBarOutset = 2
+			want.WindowBarCharSet = style.WindowBarCharSet
+			want.CloseIcon = 'x'
+			want.CloseIconAttr = yellow
+			assert.Equal(t, want, wm.config)
+
+			w := term.NewStringWriter(20, 8)
+			wm.Draw(w)
+			require.NoError(t, w.Flush())
+			assert.Equal(t, tt.expected, "\n"+w.String())
+			if tt.noFrame {
+				return
+			}
+			attr, ok := root.FrameAttr()
+			require.True(t, ok)
+			assert.Equal(t, tt.wantRootAttr, attr)
+			wm.Iterate(func(win Window) {
+				f := win.node.Content().(*component.Frame)
+				assert.Equal(t, scrollBarAttr, f.ScrollBarAttributes)
+				assert.Equal(t, scrollBarCharSet, f.ScrollBarCharSet)
+			})
+		})
+	}
+}
+
 func TestWindowBarTitleDraw(t *testing.T) {
 	newFloating := func() component.Floating {
 		return component.StaticFloating(&component.TestComponent{Ch: 'B'}, 10, 2)

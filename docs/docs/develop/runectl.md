@@ -73,7 +73,29 @@ image=$(runectl screenshot)
 a newline. It waits up to five seconds for a new complete image. Errors go
 to stderr with a nonzero exit status and no path on stdout.
 
-creenshots require GUI mode. TUI sessions safely discard the request, and
+Before the capture, Rune reads its config file again and applies these
+keys to every open workspace:
+
+- `browser.window_manager`: `frame_attr`, `focus_frame_attr`,
+  `frame_charset`, `focus_frame_charset`, `scroll_bar_attr`,
+  `scroll_bar_charset`, `window_bar_charset`, `close_icon` and
+  `close_icon_attr`;
+- `browser.frameunion_charset`;
+- `browser.prompt`: `text_attr`, `highlight_attr`, `hover_attr`,
+  `clicked_attr`, `background_attr` and `images`;
+- `command.frame_charset` and `command.separator_charset`;
+- `workspace`: `wallpaper_image`, `wallpaper_image_ascii`,
+  `wallpaper_ascii`, `wallpaper_attr`, `wallpaper_background_attr` and
+  `wallpaper_density_characters`;
+- `sounds`.
+
+It also reads again every image these keys name, even a file overwritten
+at the same path, so you can edit an image and see it in the next
+screenshot. Config errors show up as notifications in the capture. If the
+config file does not parse, none of its keys are applied. Other keys still
+take `:workspacereload` or a restart.
+
+Screenshots require GUI mode. TUI sessions safely discard the request, and
 `runectl` times out without creating an image. The capture contains Rune's
 output, not native window borders or the desktop behind it. Requests sharing
 a data directory should run sequentially: simultaneous requests can observe
