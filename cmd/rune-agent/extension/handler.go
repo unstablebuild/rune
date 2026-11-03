@@ -753,12 +753,14 @@ func newCommandEventHandler(
 }
 
 // newLinkClickHandler shows http, https and file links through o, resolving
-// scheme-less file paths against cwd. Fragment-only links, network references
-// and other schemes are left to the dialogue.
+// scheme-less file paths against cwd. A file link to a source location then
+// moves the cursor of the editor ed returns for it. Fragment-only links,
+// network references and other schemes are left to the dialogue.
 func newLinkClickHandler(
 	mu sync.Locker,
 	cwd workspaceapi.URI,
 	o browserapi.ResourceOpener,
+	ed cursorEditor,
 	noti browserapi.Notifications,
 ) func(*url.URL) bool {
 	return func(link *url.URL) bool {
@@ -772,33 +774,121 @@ func newLinkClickHandler(
 			return false
 		}
 		// The dialogue calls this holding mu, which its stream consumer needs
-		// too, and Show and Notify wait on the host's lock. Relock in a defer
-		// so a panic still hands mu back to the dialogue's deferred Unlock.
+		// too, and the opener, editor and Notify wait on the host's lock.
+		// Relock in a defer so a panic still hands mu back to the dialogue's
+		// deferred Unlock.
 		mu.Unlock()
 		defer mu.Lock()
-		uri, err := dialogueLinkURI(cwd, link)
-		if err == nil {
-			err = o.Show(uri)
-		}
-		if err != nil {
+		if err := showDialogueLink(cwd, link, o, ed); err != nil {
 			_, _ = noti.Notify(browserapi.LevelError, "open %s: %v", link, err)
 		}
 		return true
 	}
 }
 
-func dialogueLinkURI(cwd workspaceapi.URI, link *url.URL) (workspaceapi.URI, error) {
+func showDialogueLink(
+	cwd workspaceapi.URI, link *url.URL, o browserapi.ResourceOpener, ed cursorEditor,
+) error {
+	uri, pos, err := dialogueLinkURI(cwd, link)
+	if err != nil {
+		return err
+	}
+	if err := o.Show(uri); err != nil {
+		return err
+	}
+	if pos == nil {
+		return nil
+	}
+	// Show also succeeds for resources it routes to another workspace,
+	// whose editors ed cannot reach, so a failed lookup is reported as
+	// the navigation failing rather than the file failing to open.
+	eh, err := ed.Editor(uri)
+	if err == nil {
+		err = ed.SetCursor(eh, *pos)
+	}
+	if err != nil {
+		return fmt.Errorf("go to %d:%d: %w", pos.Y+1, pos.X+1, err)
+	}
+	return nil
+}
+
+// dialogueLinkURI resolves link against the workspace directory cwd. When
+// the last path segment of a file or scheme-less link ends in :line or
+// :line:column, the location is removed from the URI and returned as
+// zero-based coordinates, which are nil for links without one. Only
+// unescaped colons delimit a location, so %3A keeps a colon in the file name.
+func dialogueLinkURI(
+	cwd workspaceapi.URI, link *url.URL,
+) (workspaceapi.URI, *term.Coordinates, error) {
+	var pos *term.Coordinates
+	if link.Scheme == "" || link.Scheme == "file" {
+		escaped, loc, err := splitSourceLocation(link.EscapedPath())
+		if err != nil {
+			return workspaceapi.URI{}, nil, err
+		}
+		if loc != nil {
+			stripped := *link
+			if stripped.Path, err = url.PathUnescape(escaped); err != nil {
+				return workspaceapi.URI{}, nil, err
+			}
+			stripped.RawPath = escaped
+			link, pos = &stripped, loc
+		}
+	}
 	if link.Scheme == "" {
 		base, err := url.Parse(cwd.String())
 		if err != nil {
-			return workspaceapi.URI{}, err
+			return workspaceapi.URI{}, nil, err
 		}
 		// The workspace URI denotes a directory even without a trailing slash.
 		base.Path = strings.TrimSuffix(base.Path, "/") + "/"
 		base.RawPath = ""
 		link = base.ResolveReference(link)
 	}
-	return workspaceapi.ParseURI(link.String())
+	uri, err := workspaceapi.ParseURI(link.String())
+	return uri, pos, err
+}
+
+// splitSourceLocation splits a one-based :line or :line:column suffix off
+// the last segment of the escaped path p. A colon followed by anything but
+// a decimal number is part of the file name. A number that cannot be a
+// position, such as zero, a signed number or one overflowing int32, is an
+// error rather than a file name, so the link never opens a file named after
+// part of its location.
+func splitSourceLocation(p string) (string, *term.Coordinates, error) {
+	dir, file := path.Split(p)
+	fields := strings.Split(file, ":")
+	n := len(fields)
+	if n < 2 || !isLocationField(fields[n-1]) {
+		return p, nil, nil
+	}
+	loc := fields[n-1:]
+	if n > 2 && isLocationField(fields[n-2]) {
+		loc = fields[n-2:]
+	}
+	name := strings.Join(fields[:n-len(loc)], ":")
+	suffix := ":" + strings.Join(loc, ":")
+	if name == "" {
+		return "", nil, fmt.Errorf("source location %q names no file", suffix)
+	}
+	lineCol := [2]int{1, 1}
+	for i, f := range loc {
+		v, err := strconv.ParseInt(f, 10, 32)
+		if err != nil || v < 1 || f[0] < '0' || f[0] > '9' {
+			return "", nil, fmt.Errorf("invalid source location %q", suffix)
+		}
+		lineCol[i] = int(v)
+	}
+	return dir + name, &term.Coordinates{X: lineCol[1] - 1, Y: lineCol[0] - 1}, nil
+}
+
+// isLocationField reports whether f is written as a decimal number, signed
+// or not, whether or not it is a valid position.
+func isLocationField(f string) bool {
+	if f != "" && (f[0] == '+' || f[0] == '-') {
+		f = f[1:]
+	}
+	return f != "" && strings.Trim(f, "0123456789") == ""
 }
 
 const transcriptImagesPartition = "transcript-images"
@@ -807,7 +897,7 @@ const transcriptImagesPartition = "transcript-images"
 // mu, which the dialogue holds while it calls OnLinkClick.
 func (h *aiEditorHandler) dialogueConfig(mu sync.Locker) dialoguetui.ComponentConfig {
 	cfg := h.cfg
-	cfg.OnLinkClick = newLinkClickHandler(mu, h.cwd, h.o, h.n)
+	cfg.OnLinkClick = newLinkClickHandler(mu, h.cwd, h.o, h.ed, h.n)
 	md := dialoguetui.DefaultMarkdownConfig()
 	if cfg.MarkdownConfig != nil {
 		shared := *cfg.MarkdownConfig

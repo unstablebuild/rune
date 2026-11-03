@@ -63,6 +63,7 @@ import (
 	"unstable.build/rune/cmd/rune-agent/llm/llmarg"
 	"unstable.build/rune/cmd/rune-agent/llm/llmtest"
 	runemcp "unstable.build/rune/cmd/rune-agent/mcp"
+	"unstable.build/rune/internal/browser/browsertest"
 	"unstable.build/rune/internal/component/markdown"
 	"unstable.build/rune/internal/debug"
 )
@@ -2182,14 +2183,242 @@ func TestHandlerWebBrowser(t *testing.T) {
 }
 
 func TestExtensionDialogueLinkClick(t *testing.T) {
+	goTo := func(uri, pos string) []string {
+		return []string{"show " + uri, "editor " + uri, "cursor " + uri + " " + pos}
+	}
+	const configURI = "file:///workspace/project/config.go"
 	tests := []struct {
 		name        string
 		cwd         string
 		link        string
 		showErr     error
+		editorErr   error
+		cursorErr   error
+		clicks      int
 		wantHandled bool
 		wantCalls   []string
 	}{
+		{
+			name:        "source link opens the file at its line",
+			link:        "internal/config/config.go:99",
+			wantHandled: true,
+			wantCalls: []string{
+				"show file:///workspace/project/internal/config/config.go",
+				"editor file:///workspace/project/internal/config/config.go",
+				"cursor file:///workspace/project/internal/config/config.go {X:0 Y:98}",
+			},
+		},
+		{
+			name:        "dot-prefixed source link to the first line",
+			link:        "./config.go:1",
+			wantHandled: true,
+			wantCalls:   goTo(configURI, "{X:0 Y:0}"),
+		},
+		{
+			name:        "line and column",
+			link:        "./config.go:99:7",
+			wantHandled: true,
+			wantCalls:   goTo(configURI, "{X:6 Y:98}"),
+		},
+		{
+			name:        "largest line and column",
+			link:        "./config.go:2147483647:2147483647",
+			wantHandled: true,
+			wantCalls:   goTo(configURI, "{X:2147483646 Y:2147483646}"),
+		},
+		{
+			name:        "absolute source link",
+			link:        "/tmp/main.go:12:3",
+			wantHandled: true,
+			wantCalls:   goTo("file:///tmp/main.go", "{X:2 Y:11}"),
+		},
+		{
+			name:        "file URL source link",
+			link:        "file:///tmp/main.go:12",
+			wantHandled: true,
+			wantCalls:   goTo("file:///tmp/main.go", "{X:0 Y:11}"),
+		},
+		{
+			name:        "source link in ssh workspace",
+			cwd:         "ssh://alice@example.com:2222/work/project",
+			link:        "internal/config/config.go:99:7",
+			wantHandled: true,
+			wantCalls: goTo(
+				"ssh://alice@example.com:2222/work/project/internal/config/config.go",
+				"{X:6 Y:98}",
+			),
+		},
+		{
+			name:        "source link in rune workspace",
+			cwd:         "rune://server:7000/work/project",
+			link:        "docs/README.md:3",
+			wantHandled: true,
+			wantCalls:   goTo("rune://server:7000/work/project/docs/README.md", "{X:0 Y:2}"),
+		},
+		{
+			name:        "source link keeps escaping query and fragment",
+			cwd:         "file:///workspace/my%20project",
+			link:        "docs/a%20b%2525.go:4:2?view=raw#section",
+			wantHandled: true,
+			wantCalls: goTo(
+				"file:///workspace/my%20project/docs/a%20b%2525.go?view=raw#section",
+				"{X:1 Y:3}",
+			),
+		},
+		{
+			name:        "encoded colon is part of the file name",
+			link:        "docs/notes%3A99",
+			wantHandled: true,
+			wantCalls:   []string{"show file:///workspace/project/docs/notes%3A99"},
+		},
+		{
+			name:        "location after an encoded colon",
+			link:        "docs/notes%3A99:5",
+			wantHandled: true,
+			wantCalls:   goTo("file:///workspace/project/docs/notes%3A99", "{X:0 Y:4}"),
+		},
+		{
+			name:        "encoded colon does not delimit a column",
+			link:        "./main.go:10%3A5",
+			wantHandled: true,
+			wantCalls:   []string{"show file:///workspace/project/main.go:10%3A5"},
+		},
+		{
+			name:        "nonnumeric colon is part of the file name",
+			link:        "docs/a:b.md",
+			wantHandled: true,
+			wantCalls:   []string{"show file:///workspace/project/docs/a:b.md"},
+		},
+		{
+			name:        "location is only read from the last segment",
+			link:        "./docs:9/README.md",
+			wantHandled: true,
+			wantCalls:   []string{"show file:///workspace/project/docs:9/README.md"},
+		},
+		{
+			name:        "https port and colon-number path are untouched",
+			link:        "https://example.com:8443/src/main.go:99:7",
+			wantHandled: true,
+			wantCalls:   []string{"show https://example.com:8443/src/main.go:99:7"},
+		},
+		{
+			name:        "http colon-number path is untouched",
+			link:        "http://example.com:8080/main.go:99?a=1#L3",
+			wantHandled: true,
+			wantCalls:   []string{"show http://example.com:8080/main.go:99?a=1#L3"},
+		},
+		{
+			name:        "zero line is rejected",
+			link:        "./config.go:0",
+			wantHandled: true,
+			wantCalls:   []string{`open ./config.go:0: invalid source location ":0"`},
+		},
+		{
+			name:        "zero column is rejected",
+			link:        "./config.go:9:0",
+			wantHandled: true,
+			wantCalls:   []string{`open ./config.go:9:0: invalid source location ":9:0"`},
+		},
+		{
+			name:        "negative line is rejected",
+			link:        "./config.go:-1",
+			wantHandled: true,
+			wantCalls:   []string{`open ./config.go:-1: invalid source location ":-1"`},
+		},
+		{
+			name:        "negative line with column is rejected",
+			link:        "./config.go:-9:2",
+			wantHandled: true,
+			wantCalls:   []string{`open ./config.go:-9:2: invalid source location ":-9:2"`},
+		},
+		{
+			name:        "signed column is rejected",
+			link:        "./config.go:9:+2",
+			wantHandled: true,
+			wantCalls:   []string{`open ./config.go:9:+2: invalid source location ":9:+2"`},
+		},
+		{
+			name:        "overflowing line is rejected",
+			link:        "./config.go:2147483648",
+			wantHandled: true,
+			wantCalls: []string{
+				`open ./config.go:2147483648: invalid source location ":2147483648"`,
+			},
+		},
+		{
+			name:        "overflowing column is rejected",
+			link:        "./config.go:1:99999999999999999999",
+			wantHandled: true,
+			wantCalls: []string{
+				`open ./config.go:1:99999999999999999999: ` +
+					`invalid source location ":1:99999999999999999999"`,
+			},
+		},
+		{
+			name:        "location without a file is rejected",
+			link:        "./:99",
+			wantHandled: true,
+			wantCalls:   []string{`open ./:99: source location ":99" names no file`},
+		},
+		{
+			name:        "line and column without a file are rejected",
+			link:        "docs/:99:1",
+			wantHandled: true,
+			wantCalls:   []string{`open docs/:99:1: source location ":99:1" names no file`},
+		},
+		{
+			name:        "failed show stops before navigating",
+			link:        "./config.go:99",
+			showErr:     errors.New("permission denied"),
+			wantHandled: true,
+			wantCalls: []string{
+				"show " + configURI,
+				"open ./config.go:99: permission denied",
+			},
+		},
+		{
+			name:        "failed editor lookup stops before moving the cursor",
+			link:        "./config.go:99",
+			editorErr:   errors.New("handler not found"),
+			wantHandled: true,
+			wantCalls: []string{
+				"show " + configURI,
+				"editor " + configURI,
+				"open ./config.go:99: go to 99:1: handler not found",
+			},
+		},
+		{
+			name:        "file shown outside the workspace reports failed navigation",
+			cwd:         "ssh://alice@example.com/work/project",
+			link:        "file:///tmp/main.go:3",
+			editorErr:   errors.New("handler not found"),
+			wantHandled: true,
+			wantCalls: []string{
+				"show file:///tmp/main.go",
+				"editor file:///tmp/main.go",
+				"open file:///tmp/main.go:3: go to 3:1: handler not found",
+			},
+		},
+		{
+			name:        "failed cursor move notifies",
+			link:        "./config.go:99:7",
+			cursorErr:   errors.New("line out of range"),
+			wantHandled: true,
+			wantCalls: append(
+				goTo(configURI, "{X:6 Y:98}"),
+				"open ./config.go:99:7: go to 99:7: line out of range",
+			),
+		},
+		{
+			name:        "repeated navigation to an open file",
+			link:        "./config.go:99",
+			clicks:      2,
+			wantHandled: true,
+			wantCalls: append(
+				goTo(configURI, "{X:0 Y:98}"),
+				goTo(configURI, "{X:0 Y:98}")...,
+			),
+		},
 		{
 			name:        "https is shown",
 			link:        "https://example.com/repo",
@@ -2283,28 +2512,36 @@ func TestExtensionDialogueLinkClick(t *testing.T) {
 		{name: "query without path is declined", link: "?view=raw"},
 		{name: "network reference is declined", link: "//example.com/README.md"},
 		{name: "mailto is declined", link: "mailto:a@example.com"},
+		{name: "bare scheme-like destination is declined", link: "config.go:99"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			lock := &dialogueLock{}
-			io := &linkClickIO{lock: lock, showErr: tt.showErr}
+			io := &linkClickIO{
+				lock:      lock,
+				showErr:   tt.showErr,
+				editorErr: tt.editorErr,
+				cursorErr: tt.cursorErr,
+			}
 			cwd := tt.cwd
 			if cwd == "" {
 				cwd = "file:///workspace/project"
 			}
 			uri, err := workspaceapi.ParseURI(cwd)
 			require.NoError(t, err)
-			h := &aiEditorHandler{o: io, n: io, cwd: uri}
+			h := &aiEditorHandler{o: io, n: io, ed: io, cwd: uri}
 			link, err := url.Parse(tt.link)
 			require.NoError(t, err)
 			original := *link
 
-			// The dialogue holds its lock while it calls OnLinkClick.
-			lock.Lock()
-			handled := h.dialogueConfig(lock).OnLinkClick(link)
-			lock.Unlock()
-
-			assert.Equal(t, tt.wantHandled, handled)
+			onClick := h.dialogueConfig(lock).OnLinkClick
+			for range max(tt.clicks, 1) {
+				// The dialogue holds its lock while it calls OnLinkClick.
+				lock.Lock()
+				handled := onClick(link)
+				lock.Unlock()
+				assert.Equal(t, tt.wantHandled, handled)
+			}
 			assert.Equal(t, tt.wantCalls, io.calls)
 			assert.Equal(t, original, *link, "the caller's URL must not be mutated")
 		})
@@ -2332,14 +2569,17 @@ func (l *dialogueLock) Unlock() {
 	l.mu.Unlock()
 }
 
-// linkClickIO is a resource opener and notifications that record each
-// call, marking the ones made while lock was held.
+// linkClickIO is a resource opener, editor and notifications that record
+// each call, marking the ones made while lock was held.
 type linkClickIO struct {
 	stubNotifications
-	lock    *dialogueLock
-	showErr error
-	panics  bool
-	calls   []string
+	lock      *dialogueLock
+	showErr   error
+	editorErr error
+	cursorErr error
+	// panicsIn names the call that panics: "show", "editor" or "cursor".
+	panicsIn string
+	calls    []string
 }
 
 func (r *linkClickIO) Open(uri workspaceapi.URI) (browserapi.Handler, error) {
@@ -2349,10 +2589,28 @@ func (r *linkClickIO) Open(uri workspaceapi.URI) (browserapi.Handler, error) {
 
 func (r *linkClickIO) Show(uri workspaceapi.URI) error {
 	r.record("show " + uri.String())
-	if r.panics {
-		panic("host connection lost")
-	}
+	r.panicIn("show")
 	return r.showErr
+}
+
+func (r *linkClickIO) Editor(uri workspaceapi.URI) (textapi.Handler, error) {
+	r.record("editor " + uri.String())
+	r.panicIn("editor")
+	if r.editorErr != nil {
+		return nil, r.editorErr
+	}
+	return cursorTestHandler{TestHandler: browsertest.NewTestHandler(), uri: uri}, nil
+}
+
+func (r *linkClickIO) CellView(textapi.Handler) textapi.CellView {
+	r.record("cell view")
+	return cursorTestView{}
+}
+
+func (r *linkClickIO) SetCursor(h textapi.Handler, pos term.Coordinates) error {
+	r.record(fmt.Sprintf("cursor %s %+v", h.Resource(), pos))
+	r.panicIn("cursor")
+	return r.cursorErr
 }
 
 func (r *linkClickIO) Notify(
@@ -2360,6 +2618,12 @@ func (r *linkClickIO) Notify(
 ) (string, error) {
 	r.record(fmt.Sprintf(format, args...))
 	return "", nil
+}
+
+func (r *linkClickIO) panicIn(call string) {
+	if r.panicsIn == call {
+		panic("host connection lost")
+	}
 }
 
 func (r *linkClickIO) record(call string) {
@@ -2374,13 +2638,21 @@ func TestDialogueLinkClickLock(t *testing.T) {
 		width  = 40
 		height = 10
 		link   = "https://example.com/rune"
+		source = "[`GetGraphics`](internal/config/config.go:99)"
+		config = "file:///workspace/project/internal/config/config.go"
 	)
 	tests := []struct {
-		name      string
-		cwd       string
-		link      string
+		name string
+		cwd  string
+		link string
+		// message is the rendered response, linking label. It defaults
+		// to a runbook link to link.
+		message   string
+		label     string
 		showErr   error
-		panics    bool
+		editorErr error
+		cursorErr error
+		panicsIn  string
 		wantCalls []string
 	}{
 		{
@@ -2419,8 +2691,64 @@ func TestDialogueLinkClickLock(t *testing.T) {
 		{
 			name:      "panicking show hands the lock back",
 			link:      link,
-			panics:    true,
+			panicsIn:  "show",
 			wantCalls: []string{"show " + link},
+		},
+		{
+			name:    "source link navigates unlocked",
+			cwd:     "file:///workspace/project",
+			message: "Graphics are read by " + source + ".",
+			label:   "GetGraphics",
+			wantCalls: []string{
+				"show " + config,
+				"editor " + config,
+				"cursor " + config + " {X:0 Y:98}",
+			},
+		},
+		{
+			name:      "failed lookup notifies unlocked",
+			cwd:       "file:///workspace/project",
+			message:   source,
+			label:     "GetGraphics",
+			editorErr: errors.New("handler not found"),
+			wantCalls: []string{
+				"show " + config,
+				"editor " + config,
+				"open internal/config/config.go:99: go to 99:1: handler not found",
+			},
+		},
+		{
+			name:      "failed cursor move notifies unlocked",
+			cwd:       "file:///workspace/project",
+			message:   source,
+			label:     "GetGraphics",
+			cursorErr: errors.New("line out of range"),
+			wantCalls: []string{
+				"show " + config,
+				"editor " + config,
+				"cursor " + config + " {X:0 Y:98}",
+				"open internal/config/config.go:99: go to 99:1: line out of range",
+			},
+		},
+		{
+			name:      "panicking lookup hands the lock back",
+			cwd:       "file:///workspace/project",
+			message:   source,
+			label:     "GetGraphics",
+			panicsIn:  "editor",
+			wantCalls: []string{"show " + config, "editor " + config},
+		},
+		{
+			name:     "panicking cursor move hands the lock back",
+			cwd:      "file:///workspace/project",
+			message:  source,
+			label:    "GetGraphics",
+			panicsIn: "cursor",
+			wantCalls: []string{
+				"show " + config,
+				"editor " + config,
+				"cursor " + config + " {X:0 Y:98}",
+			},
 		},
 		{
 			name: "declined link does no I/O",
@@ -2431,11 +2759,13 @@ func TestDialogueLinkClickLock(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			lock := &dialogueLock{}
 			io := &linkClickIO{
-				lock:    lock,
-				showErr: tt.showErr,
-				panics:  tt.panics,
+				lock:      lock,
+				showErr:   tt.showErr,
+				editorErr: tt.editorErr,
+				cursorErr: tt.cursorErr,
+				panicsIn:  tt.panicsIn,
 			}
-			h := &aiEditorHandler{o: io, n: io}
+			h := &aiEditorHandler{o: io, n: io, ed: io}
 			if tt.cwd != "" {
 				var err error
 				h.cwd, err = workspaceapi.ParseURI(tt.cwd)
@@ -2445,10 +2775,14 @@ func TestDialogueLinkClickLock(t *testing.T) {
 			dh, tx, _ := dialoguetui.Handler(context.Background(), lock, comp, term.NopInterrupter())
 			defer close(tx)
 			dh.Resize(width, height)
-			comp.AddReceiveMessage("See [the rollout runbook](" + tt.link + ").")
+			message, label := tt.message, tt.label
+			if message == "" {
+				message, label = "See [the rollout runbook]("+tt.link+").", "the rollout runbook"
+			}
+			comp.AddReceiveMessage(message)
 			w := term.NewStringWriter(width, height)
 			dh.Draw(w)
-			pos, ok := cellOf(w, width, "the rollout runbook")
+			pos, ok := cellOf(w, width, label)
 			require.True(t, ok, "link drawn")
 
 			click := func() {
@@ -2456,7 +2790,7 @@ func TestDialogueLinkClickLock(t *testing.T) {
 					Type: term.EventMouse, Key: term.MouseLeft, MouseX: pos.X, MouseY: pos.Y,
 				})
 			}
-			if tt.panics {
+			if tt.panicsIn != "" {
 				assert.Panics(t, click)
 			} else {
 				click()
