@@ -72,7 +72,7 @@ comments) is treated as an empty overlay.
 
 Rune does not watch the config file. Open it with `:config`, edit it, save it —
 nothing happens until you reload. There are two levels of reload, and
-`runectl screenshot` applies the appearance keys without either.
+`:themereload` applies the appearance keys without either.
 
 ### `:workspacereload`
 
@@ -97,15 +97,16 @@ surface:
 Only the focused workspace is reloaded; other workspace tabs keep running with
 the configuration they were opened with.
 
-### `runectl screenshot`
+### `:themereload`
 
-[`runectl screenshot`](./develop/runectl.md#screenshots) reads the config
-file again before each capture and applies the keys that style Rune to every
-open workspace, with nothing closed or reopened: frames, window bars and
-prompts, the editor and Rune Agent status bars, the wallpaper, `sounds`, the
-terminal bell, the sounds of program status, and the quick menu, themes and
-sound volume of the GUI. The screenshot section lists the exact keys. It is
-how Rune Agent checks a theme it is designing.
+`:themereload` reads the config file again and applies the keys that style
+Rune to every open workspace, with nothing closed or reopened: frames, window
+bars and prompts, the editor and Rune Agent status bars, the wallpaper,
+`sounds`, the terminal bell, the sounds of program status, and the quick menu,
+themes and sound volume of the GUI. It also reads again every image those keys
+name. [`runectl screenshot`](./develop/runectl.md#screenshots) does the same
+before each capture, which is how Rune Agent checks a theme it is designing;
+the screenshot section lists the exact keys.
 
 ### Restart
 

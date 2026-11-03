@@ -35,6 +35,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
+	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/clipboard"
 	"github.com/unstablebuild/rune-go-sdk/component"
@@ -56,8 +57,11 @@ import (
 	"unstable.build/rune/internal/term/gui/appmenu"
 	"unstable.build/rune/internal/term/gui/glassbar"
 	"unstable.build/rune/internal/term/gui/openpanel"
+	"unstable.build/rune/internal/text"
 	"unstable.build/rune/internal/workspace"
 )
+
+const cmdThemeReload = "themereload"
 
 type bootstrapPrompter interface {
 	Prompt(message string, options []string, bindings []term.KeyComb, h sdkhandler.PromptHandler) browser.Window
@@ -540,6 +544,9 @@ func (b *bootstrapHandler) setupConfiguredIDE(
 	if err := b.subscribeQuickMenuCommand(i); err != nil {
 		errs = append(errs, fmt.Errorf("subscribe quick menu command: %w", err))
 	}
+	if err := b.subscribeThemeReloadCommand(i); err != nil {
+		errs = append(errs, fmt.Errorf("subscribe theme reload command: %w", err))
+	}
 
 	if client.TelemetryEnabled() {
 		err := i.SubscribeEvents(apiclient.TelemetryEvents(), client)
@@ -582,32 +589,76 @@ const extensionReloadSettle = 300 * time.Millisecond
 // i is left as it is if it is no longer the current IDE. It must not run
 // on the event loop.
 func (b *bootstrapHandler) reloadHUDAndScreenshot(i *ide.IDE) {
-	ctx, cancel := context.WithTimeout(context.Background(), hudLoadTimeout)
-	hud, err := i.LoadHUD(ctx)
-	var menuImages map[string]image.Image
-	if hud != nil {
-		menuImages = readQuickMenuImages(ctx, ide.QuickMenuButtons(hud.Config()), b.storage)
-	}
-	cancel()
-	if err != nil {
-		log.Errorf("reload the HUD: %v", err)
-	}
+	hud, menuImages, err := b.loadHUD(i)
 	ok := b.scheduleNextTick(func() {
-		var signalled int
-		if hud != nil && b.currentIDE() == i {
-			signalled = b.applyHUD(i, hud, menuImages)
-		} else if err != nil {
-			_, nerr := b.notifications().Notify(browserapi.LevelError,
-				"Could not reload the HUD: %v", err)
-			if nerr != nil {
-				log.Warnf("notify HUD reload: %v", nerr)
-			}
-		}
-		b.queueScreenshot(signalled)
+		b.queueScreenshot(b.installHUD(i, hud, menuImages, err))
 	})
 	if !ok {
 		log.Errorf("request screenshot: could not queue screenshot request")
 	}
+}
+
+// loadHUD reads the HUD of the config file for i and the quick menu's
+// sprites, for installHUD to install. It must not run on the event loop.
+func (b *bootstrapHandler) loadHUD(i *ide.IDE) (*ide.HUD, map[string]image.Image, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), hudLoadTimeout)
+	defer cancel()
+	hud, err := i.LoadHUD(ctx)
+	if err != nil {
+		log.Errorf("reload the HUD: %v", err)
+		return nil, nil, err
+	}
+	return hud, readQuickMenuImages(ctx, ide.QuickMenuButtons(hud.Config()), b.storage), nil
+}
+
+// installHUD installs in i what loadHUD returned, or notifies loadErr. i
+// is left as it is if it is no longer the current IDE. It returns how
+// many extension processes were told to fetch their config again. It must
+// run on the event loop.
+func (b *bootstrapHandler) installHUD(
+	i *ide.IDE, hud *ide.HUD, menuImages map[string]image.Image, loadErr error,
+) int {
+	if loadErr != nil {
+		_, err := b.notifications().Notify(browserapi.LevelError,
+			"Could not reload the HUD: %v", loadErr)
+		if err != nil {
+			log.Warnf("notify HUD reload: %v", err)
+		}
+		return 0
+	}
+	if b.currentIDE() != i {
+		return 0
+	}
+	return b.applyHUD(i, hud, menuImages)
+}
+
+// subscribeThemeReloadCommand registers on i the command that applies the
+// HUD of the config file without a screenshot.
+func (b *bootstrapHandler) subscribeThemeReloadCommand(i *ide.IDE) error {
+	man := textapi.CommandManual{
+		Name: cmdThemeReload,
+		Summary: "Reads the config file again and restyles every open workspace " +
+			"without reopening it: window frames, scroll bars and window bars; " +
+			"frame unions; prompts and their buttons; the command prompt frame, " +
+			"separator and manual; the editor and extension status bars; the " +
+			"wallpaper; sounds, the terminal bell and program status sounds; and " +
+			"the GUI quick menu and themes, and its default theme and sound volume " +
+			"when they changed. Images those keys name are read again. Other " +
+			"settings need :workspacereload or a restart.",
+	}
+	handler := func(context.Context, textapi.Command) error {
+		go debug.CapturePanicReport(func() {
+			hud, menuImages, err := b.loadHUD(i)
+			ok := b.scheduleNextTick(func() {
+				b.installHUD(i, hud, menuImages, err)
+			})
+			if !ok {
+				log.Errorf("%s: could not queue UI event", cmdThemeReload)
+			}
+		})
+		return nil
+	}
+	return i.SubscribeCommand(man, text.FuncCommandHandler(handler, nil))
 }
 
 // queueScreenshot queues a screenshot, after extensionReloadSettle when

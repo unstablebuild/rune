@@ -74,7 +74,7 @@ a newline. It waits up to five seconds for a new complete image. Errors go
 to stderr with a nonzero exit status and no path on stdout.
 
 Before the capture, Rune reads its config file again and applies these
-keys to every open workspace:
+keys to every open workspace, as `:themereload` does:
 
 - `browser.window_manager`: `frame_attr`, `focus_frame_attr`,
   `frame_charset`, `focus_frame_charset`, `scroll_bar_attr`,

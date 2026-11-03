@@ -780,6 +780,29 @@ func TestQuickMenuCommandWorksOnceAReloadAddsSprites(t *testing.T) {
 	assert.Zero(t, b.realIDE.RightInset())
 }
 
+func TestThemeReloadCommandAppliesHUD(t *testing.T) {
+	b := newConfiguredBootstrapForEnvTest(t, configFilename,
+		"editor:\n  mode: modal\ngui:\n  quick_menu: []\n", t.TempDir())
+	require.NoError(t, b.subscribeThemeReloadCommand(b.realIDE))
+	const sprite = "file:///nonexistent/open.png"
+	require.NoError(t, os.WriteFile(b.configPath, []byte("editor:\n  mode: modal\n"+
+		"gui:\n  quick_menu:\n    - {title: Open Project, command: workspaceopen, "+
+		"sprite: {idle: "+sprite+"}}\n"), 0o644))
+
+	b.mu.Lock()
+	require.NoError(t, b.realIDE.DispatchCommand(cmdThemeReload))
+	b.mu.Unlock()
+
+	require.Eventually(t, func() bool {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return len(b.quickMenu) == 1 && b.quickMenu[0].Sprite.Idle == sprite
+	}, 10*time.Second, 10*time.Millisecond, "themereload must apply the config's HUD")
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	assert.Equal(t, quickMenuColumnCells, b.realIDE.RightInset())
+}
+
 func TestReloadHUDAppliesChangedVolumeAndTheme(t *testing.T) {
 	original := tcell.GetColorValues()
 	t.Cleanup(func() { tcell.SetColorValues(original) })
