@@ -1775,6 +1775,15 @@ func (vi *viHandlerImpl) handleInsert(ev term.Event) (quit, handled bool) {
 				vi.cursor.Backspace()
 			}
 			handled = true
+		case term.KeyDelete:
+			pos := vi.cursor.CursorAtScroll()
+			buf := vi.less.Buffer()
+			if pos.X == buf.Columns(pos.Y) && pos.Y+1 < buf.Rows() {
+				vi.cursor.Conflate()
+			} else {
+				vi.cursor.Delete()
+			}
+			handled = true
 		case term.KeyEsc:
 			vi.exitInsert()
 			handled = true
