@@ -288,6 +288,7 @@ func TestHandleCommandFallsBackToWords(t *testing.T) {
 		name      string
 		embed     llmsearch.EmbedderFactory
 		hits      []searchapi.SemanticResult
+		status    searchapi.SemanticStatus
 		err       error
 		regexpErr error
 		args      []string
@@ -304,6 +305,7 @@ func TestHandleCommandFallsBackToWords(t *testing.T) {
 		},
 		{
 			name: "the model cannot run but meaning answered", embed: failingEmbedderFactory, hits: cannedHits[:1],
+			status:  searchapi.SemanticStatus{Indexing: true, Message: "indexing stalled: llama-server exited"},
 			args:    []string{"invoice", "total"},
 			wantBar: "  SEMANTIC █▓▒░ score 3.14 · meaning z 2.50 cos 0.61 · words #2 · indexing stalled: ll… lines 40–47 ",
 		},
@@ -323,7 +325,7 @@ func TestHandleCommandFallsBackToWords(t *testing.T) {
 				embed = llmsearch.NewFakeEmbedderFactory()
 			}
 			h := newHarnessWith(t, true, true, embed)
-			h.searcher.hits, h.searcher.err = tt.hits, tt.err
+			h.searcher.hits, h.searcher.status, h.searcher.err = tt.hits, tt.status, tt.err
 			h.searcher.lines, h.searcher.regexpErr = words, tt.regexpErr
 			require.NoError(t, h.run(tt.args...))
 			out := draw(t, h.wm.waitPicker(t))
@@ -351,12 +353,14 @@ func TestHandleCommandErrors(t *testing.T) {
 	assert.ErrorIs(t, h.run("retry"), errNoIndex)
 }
 
-func TestNote(t *testing.T) {
+func TestHandleCommandShowsTheSearchStatus(t *testing.T) {
 	h := newHarness(t, true, true)
-	meaning := searchapi.SemanticRequest{Query: "q", Meaning: true}
-	assert.Empty(t, h.handler.note(meaning, cannedHits))
-	assert.Equal(t, "matched by words only", h.handler.note(meaning, cannedHits[1:]))
-	assert.Empty(t, h.handler.note(searchapi.SemanticRequest{Query: "q"}, cannedHits[1:]))
+	h.searcher.hits = cannedHits[1:2]
+	h.searcher.status = searchapi.SemanticStatus{Indexing: true, Message: "12 files left to index"}
+	require.NoError(t, h.run("shortest"))
+	lines := strings.Split(draw(t, h.wm.waitPicker(t)), "\n")
+	assert.True(t, strings.HasPrefix(lines[len(lines)-1],
+		"  SEMANTIC █▓▒░ score 2.00 · words #1 · 12 files left to index"), "%q", lines[len(lines)-1])
 }
 
 // harness runs the command over a workspace with an open search index.
@@ -591,6 +595,7 @@ func (d *stubDownloader) write(ref llamacpp.Reference) error {
 
 type stubSearcher struct {
 	hits      []searchapi.SemanticResult
+	status    searchapi.SemanticStatus
 	err       error
 	lines     []searchapi.RegexpResult
 	regexpErr error
@@ -619,15 +624,15 @@ func (s *stubSearcher) regexpRequest() *searchapi.RegexpRequest {
 }
 
 func (s *stubSearcher) SemanticSearch(_ context.Context, req searchapi.SemanticRequest) (
-	iterator.Iterator[searchapi.SemanticResult], error,
+	iterator.Iterator[searchapi.SemanticResult], searchapi.SemanticStatus, error,
 ) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.req = &req
 	if s.err != nil {
-		return nil, s.err
+		return nil, searchapi.SemanticStatus{}, s.err
 	}
-	return iterator.FromSlice(s.hits), nil
+	return iterator.FromSlice(s.hits), s.status, nil
 }
 
 func (s *stubSearcher) request(t *testing.T) searchapi.SemanticRequest {

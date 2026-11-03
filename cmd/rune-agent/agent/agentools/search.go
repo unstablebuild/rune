@@ -135,8 +135,8 @@ func inSkipDir(rel string) bool {
 	return false
 }
 
-// NoIndex returns a Searcher for a workspace without an index. The
-// search tools then walk the files themselves.
+// NoIndex returns a Searcher for a workspace without an index. Regexp
+// tools then walk the files themselves; semantic search reports unsupported.
 func NoIndex() searchapi.Searcher { return noIndex{} }
 
 type noIndex struct{}
@@ -145,8 +145,8 @@ func (noIndex) RegexpSearch(context.Context, searchapi.RegexpRequest) (sdkiterat
 	return nil, searchapi.ErrUnsupported
 }
 
-func (noIndex) SemanticSearch(context.Context, searchapi.SemanticRequest) (sdkiterator.Iterator[searchapi.SemanticResult], error) {
-	return nil, searchapi.ErrUnsupported
+func (noIndex) SemanticSearch(context.Context, searchapi.SemanticRequest) (sdkiterator.Iterator[searchapi.SemanticResult], searchapi.SemanticStatus, error) {
+	return nil, searchapi.SemanticStatus{}, searchapi.ErrUnsupported
 }
 
 // within reports whether path is dir or lies below it.

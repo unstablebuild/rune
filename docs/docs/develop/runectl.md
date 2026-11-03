@@ -269,6 +269,10 @@ internal/retry/backoff.go:42:   3.14  2.50  func parseRetryBackoff(spec string) 
 internal/retry/policy.go:18:    1.20  0.00  first, factor, _ := parseRetryBackoff(p.Spec)
 ```
 
+While the workspace is still being indexed, or when the query could only
+be ranked by words, `runectl` says why on stderr, such as
+`runectl: 1204 files left to index`, and stdout keeps only the results.
+
 A Go template shapes the output. `{{.Text}}` is the line as written, so
 this prints exactly what `grep -n` would. Run from Rune's command prompt,
 it lists the results in the `searchtext` finder, ready to filter and open:

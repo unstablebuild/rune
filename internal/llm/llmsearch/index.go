@@ -125,6 +125,33 @@ func (s Status) Unavailable() string {
 	return s.Stalled
 }
 
+// semantic is the status of a search answered while the index was s,
+// ranked by words alone for the reason wordsOnly when it is not empty.
+func (s Status) semantic(wordsOnly string) searchapi.SemanticStatus {
+	var out searchapi.SemanticStatus
+	var notes []string
+	pending := s.Files[statePending]
+	switch {
+	case s.Stalled != "":
+		notes = append(notes, "indexing stalled: "+s.Stalled)
+	case pending > 0:
+		files := "files"
+		if pending == 1 {
+			files = "file"
+		}
+		notes = append(notes, fmt.Sprintf("%d %s left to index", pending, files))
+	case !s.Scanned:
+		notes = append(notes, "still indexing")
+	}
+	out.Indexing = len(notes) > 0
+	if wordsOnly != "" {
+		out.WordsOnly = true
+		notes = append(notes, "matched by words only: "+wordsOnly)
+	}
+	out.Message = strings.Join(notes, " · ")
+	return out
+}
+
 // Index is one workspace's search index: a background indexer over the
 // workspace filesystem, persisted in IndexConfig.DB, and the searcher that
 // answers queries from it. It implements text.EventHandler so that editor
@@ -571,25 +598,29 @@ func (i *Index) Close() error {
 }
 
 // search answers req: by meaning too when req.Meaning, the index has the
-// vectors of req.Model's embedder, and req.Model is downloaded.
-func (i *Index) search(ctx context.Context, req searchapi.SemanticRequest) ([]searchapi.SemanticResult, error) {
+// vectors of req.Model's embedder, and req.Model is downloaded. The status
+// says why the answer may be partial or ranked by words alone.
+func (i *Index) search(
+	ctx context.Context, req searchapi.SemanticRequest,
+) ([]searchapi.SemanticResult, searchapi.SemanticStatus, error) {
 	select {
 	case <-i.loaded:
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return nil, searchapi.SemanticStatus{}, ctx.Err()
 	}
 	if i.loadErr != nil {
-		return nil, i.loadErr
+		return nil, searchapi.SemanticStatus{}, i.loadErr
 	}
 	text := stripCodePrefix(req.Query)
 	var query []float32
+	var wordsOnly string
 	if req.Meaning && strings.TrimSpace(text) != "" {
-		query = i.queryVector(ctx, req.Model, text)
+		query, wordsOnly = i.queryVector(ctx, req.Model, text)
 	}
 	if query != nil {
 		i.touch()
 		if err := i.cat.loadVectors(ctx, i.st); err != nil {
-			return nil, err
+			return nil, searchapi.SemanticStatus{}, err
 		}
 	}
 	var allowed func(string) bool
@@ -606,12 +637,13 @@ func (i *Index) search(ctx context.Context, req searchapi.SemanticRequest) ([]se
 	}
 	hits, err := newSearcher(i.st, i.cat).search(ctx, text, query, allowed, limit, req.PrefixLast)
 	if err != nil {
-		return nil, err
+		return nil, searchapi.SemanticStatus{}, err
 	}
-	return slices.DeleteFunc(hits, func(h searchapi.SemanticResult) bool {
+	hits = slices.DeleteFunc(hits, func(h searchapi.SemanticResult) bool {
 		_, err := i.cfg.FS.Stat(h.Path)
 		return err != nil
-	}), nil
+	})
+	return hits, i.Status().semantic(wordsOnly), nil
 }
 
 // cleanRoots makes the request's roots workspace-relative prefixes; the
@@ -628,17 +660,17 @@ func cleanRoots(roots []string) []string {
 	return out
 }
 
-// queryVector embeds text as a query with model, or returns nil when
-// meaning search cannot answer it: model is not downloaded, or the index
-// was not built with its vectors.
-func (i *Index) queryVector(ctx context.Context, model llmapi.ModelEntry, text string) []float32 {
+// queryVector embeds text as a query with model, or returns nil and why
+// meaning search cannot answer it: model is not downloaded, the index was
+// not built with its vectors, or the query could not be encoded.
+func (i *Index) queryVector(ctx context.Context, model llmapi.ModelEntry, text string) ([]float32, string) {
 	entry := model
 	if entry.BaseURL == "" {
 		e, ok := i.svc.registry.Get(ctx, model.Name)
 		if !ok {
 			i.setEncoder(encoderNotDownloaded)
 			i.notifyOnce("Meaning search needs the embedding model: " + i.svc.downloadHint())
-			return nil
+			return nil, "the embedding model is not downloaded: " + i.svc.downloadHint()
 		}
 		entry = e
 	}
@@ -653,11 +685,12 @@ func (i *Index) queryVector(ctx context.Context, model llmapi.ModelEntry, text s
 			// The indexer adopts the model on its next pass.
 			i.Rescan()
 		}
-		if indexed != "" {
-			i.notifyOnce(fmt.Sprintf("Meaning search is off: the search index was built with %s, not %s",
-				indexed, source))
+		if indexed == "" {
+			return nil, "the search index has no vectors yet"
 		}
-		return nil
+		why := fmt.Sprintf("the search index was built with %s, not %s", indexed, source)
+		i.notifyOnce("Meaning search is off: " + why)
+		return nil, why
 	}
 	if stalled {
 		i.Rescan()
@@ -667,7 +700,7 @@ func (i *Index) queryVector(ctx context.Context, model llmapi.ModelEntry, text s
 	cached, ok := i.queries[key]
 	i.mu.Unlock()
 	if ok {
-		return cached
+		return cached, ""
 	}
 	vecs, err := embed.EmbedTexts(ctx, []string{queryPrompt(text)})
 	if err != nil || len(vecs) != 1 || len(vecs[0]) != dims {
@@ -678,7 +711,7 @@ func (i *Index) queryVector(ctx context.Context, model llmapi.ModelEntry, text s
 			log.Warnf("llmsearch: embed query: %v", err)
 		}
 		i.setEncoder(encoderUnavailable + ": " + err.Error())
-		return nil
+		return nil, "the query could not be encoded: " + err.Error()
 	}
 	i.setEncoder(encoderReady)
 	i.mu.Lock()
@@ -691,7 +724,7 @@ func (i *Index) queryVector(ctx context.Context, model llmapi.ModelEntry, text s
 		i.queries[key] = vecs[0]
 		i.queryOrder = append(i.queryOrder, key)
 	}
-	return vecs[0]
+	return vecs[0], ""
 }
 
 func (i *Index) setEncoder(state string) {

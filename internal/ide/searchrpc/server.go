@@ -86,11 +86,18 @@ func (s *server) SemanticSearch(
 	req *searchrpc.SemanticRequest, stream grpc.ServerStreamingServer[searchrpc.SemanticResponse],
 ) error {
 	ctx := stream.Context()
-	it, err := s.s.SemanticSearch(ctx, searchrpc.FromProtoSemanticRequest(req))
+	it, st, err := s.s.SemanticSearch(ctx, searchrpc.FromProtoSemanticRequest(req))
 	if err != nil {
 		return toStatus(err)
 	}
 	defer func() { _ = it.Close() }()
+	// Clients wait for the first response, which carries the status, before
+	// their call returns, so it goes out before the search waits for a result.
+	if err := stream.Send(&searchrpc.SemanticResponse{
+		Status: searchrpc.ToProtoSemanticStatus(st),
+	}); err != nil {
+		return err
+	}
 	for {
 		r, ok := it.Next(ctx)
 		if !ok {

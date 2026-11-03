@@ -883,9 +883,10 @@ func TestRouterSemanticSearch(t *testing.T) {
 			}
 			root, notify := openSearchIndex(t, r)
 
-			it, err := r.SemanticSearch(ctx, root,
+			it, st, err := r.SemanticSearch(ctx, root,
 				searchapi.SemanticRequest{Query: "invoice sales tax", Model: tt.model, Meaning: true})
 			require.NoError(t, err)
+			assert.Equal(t, !tt.meaning, st.WordsOnly, "%+v", st)
 			hits, err := iterator.ToSlice(ctx, it)
 			require.NoError(t, err)
 			require.NotEmpty(t, hits)
@@ -907,16 +908,16 @@ func TestRouterSemanticSearch_Errors(t *testing.T) {
 	t.Cleanup(func() { _ = r.Close() })
 	root, _ := openSearchIndex(t, r)
 
-	_, err := r.SemanticSearch(ctx, root, searchapi.SemanticRequest{
+	_, _, err := r.SemanticSearch(ctx, root, searchapi.SemanticRequest{
 		Query: "invoice", Model: llmapi.ModelEntry{Name: openai.GPT5Dot5, Provider: ProviderOpenAI},
 	})
 	assert.ErrorIs(t, err, searchapi.ErrUnsupported, "a hosted model cannot search")
 
-	_, err = r.SemanticSearch(ctx, workspaceapi.Join(root, "elsewhere"), searchapi.SemanticRequest{Query: "invoice"})
+	_, _, err = r.SemanticSearch(ctx, workspaceapi.Join(root, "elsewhere"), searchapi.SemanticRequest{Query: "invoice"})
 	assert.ErrorIs(t, err, llmsearch.ErrNoIndex)
 
 	require.NoError(t, r.Close())
-	_, err = r.SemanticSearch(ctx, root, searchapi.SemanticRequest{Query: "invoice"})
+	_, _, err = r.SemanticSearch(ctx, root, searchapi.SemanticRequest{Query: "invoice"})
 	assert.ErrorIs(t, err, ErrRouterClosed)
 }
 

@@ -379,7 +379,7 @@ func (h *Handler) source(r *results, req searchapi.SemanticRequest) func(context
 		// result would otherwise not redraw.
 		defer func() { _ = h.cfg.Clients.Interrupter.Interrupt(context.Background()) }()
 		var hits []searchapi.SemanticResult
-		it, err := h.cfg.Searcher.SemanticSearch(ctx, req)
+		it, st, err := h.cfg.Searcher.SemanticSearch(ctx, req)
 		if err == nil {
 			hits, err = iterator.ToSlice(ctx, it)
 		}
@@ -399,7 +399,7 @@ func (h *Handler) source(r *results, req searchapi.SemanticRequest) func(context
 			}
 			return iterator.FromSlice[string](nil), nil
 		}
-		return iterator.FromSlice(r.found(hits, h.note(req, hits), false)), nil
+		return iterator.FromSlice(r.found(hits, st.Message, false)), nil
 	}
 }
 
@@ -420,28 +420,6 @@ func (h *Handler) meaningFailed(req searchapi.SemanticRequest, hits []searchapi.
 		return idx.Status().Unavailable()
 	}
 	return ""
-}
-
-// note says why the hits of req may be fewer or worse than they will
-// be, if they may.
-func (h *Handler) note(req searchapi.SemanticRequest, hits []searchapi.SemanticResult) string {
-	var notes []string
-	if idx, ok := h.cfg.Search.Index(h.cfg.Root); ok {
-		st := idx.Status()
-		switch {
-		case st.Stalled != "":
-			notes = append(notes, "indexing stalled: "+st.Stalled)
-		case st.Files["pending"] > 0:
-			notes = append(notes, fmt.Sprintf("%d %s left to index",
-				st.Files["pending"], plural(st.Files["pending"], "file", "files")))
-		case !st.Scanned:
-			notes = append(notes, "still indexing")
-		}
-	}
-	if req.Meaning && len(hits) > 0 && !slices.ContainsFunc(hits, func(h searchapi.SemanticResult) bool { return h.Cosine != 0 }) {
-		notes = append(notes, "matched by words only")
-	}
-	return strings.Join(notes, " · ")
 }
 
 // progressInterval spaces the updates of a download's notification.

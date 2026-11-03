@@ -41,6 +41,7 @@ import (
 type fakeSearcher struct {
 	regexp   []searchapi.RegexpResult
 	semantic []searchapi.SemanticResult
+	status   searchapi.SemanticStatus
 	callErr  error
 	iterErr  error
 	block    chan context.Context
@@ -58,9 +59,18 @@ func (f *fakeSearcher) RegexpSearch(
 
 func (f *fakeSearcher) SemanticSearch(
 	ctx context.Context, req searchapi.SemanticRequest,
-) (iterator.Iterator[searchapi.SemanticResult], error) {
+) (iterator.Iterator[searchapi.SemanticResult], searchapi.SemanticStatus, error) {
 	f.gotSemantic = req
-	return answer(ctx, f, f.semantic)
+	if f.block != nil {
+		// A semantic search answers at once and waits for its first result.
+		return iterator.FromFunc(func(context.Context) (searchapi.SemanticResult, bool, error) {
+			f.block <- ctx
+			<-ctx.Done()
+			return searchapi.SemanticResult{}, false, ctx.Err()
+		}, func() error { return nil }), f.status, nil
+	}
+	it, err := answer(ctx, f, f.semantic)
+	return it, f.status, err
 }
 
 func answer[T any](ctx context.Context, f *fakeSearcher, results []T) (iterator.Iterator[T], error) {
@@ -182,13 +192,19 @@ func TestSemanticSearch(t *testing.T) {
 		Query: "retry backoff", Model: llmapi.ModelEntry{Provider: "llamacpp", Name: "gemma"},
 		Roots: []string{"internal"}, Limit: 5, Meaning: true, PrefixLast: true,
 	}
+	indexing := searchapi.SemanticStatus{Indexing: true, Message: "1204 files left to index"}
 	tests := []struct {
-		name    string
-		s       *fakeSearcher
-		want    []searchapi.SemanticResult
-		wantErr error
+		name       string
+		s          *fakeSearcher
+		want       []searchapi.SemanticResult
+		wantStatus searchapi.SemanticStatus
+		wantErr    error
 	}{
 		{name: "results round-trip", s: &fakeSearcher{semantic: results}, want: results},
+		{name: "the status with results", s: &fakeSearcher{semantic: results, status: indexing},
+			want: results, wantStatus: indexing},
+		{name: "the status without results", s: &fakeSearcher{status: indexing},
+			want: []searchapi.SemanticResult{}, wantStatus: indexing},
 		{
 			name:    "unsupported",
 			s:       &fakeSearcher{callErr: fmt.Errorf("openai: %w", searchapi.ErrUnsupported)},
@@ -209,12 +225,16 @@ func TestSemanticSearch(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			c := serve(t, tc.s)
+			var status searchapi.SemanticStatus
 			got, err := search(t, func() (iterator.Iterator[searchapi.SemanticResult], error) {
-				return c.SemanticSearch(t.Context(), req)
+				it, st, err := c.SemanticSearch(t.Context(), req)
+				status = st
+				return it, err
 			})
 			checkErr(t, tc.wantErr, err)
 			if tc.wantErr == nil {
 				assert.Equal(t, tc.want, got)
+				assert.Equal(t, tc.wantStatus, status)
 			}
 			assert.Equal(t, req, tc.s.gotSemantic)
 		})
@@ -234,7 +254,7 @@ func TestCloseStopsTheSearch(t *testing.T) {
 			return it.Close, nil
 		}},
 		{"semantic", func(ctx context.Context, c *searchrpc.Client) (func() error, error) {
-			it, err := c.SemanticSearch(ctx, searchapi.SemanticRequest{Query: "x"})
+			it, _, err := c.SemanticSearch(ctx, searchapi.SemanticRequest{Query: "x"})
 			if err != nil {
 				return nil, err
 			}

@@ -232,13 +232,19 @@ func TestWorkspaceSearcherSemanticSearch(t *testing.T) {
 		name      string
 		root      workspaceapi.URI
 		roots     []string
+		meaning   bool
 		wantPaths []string
+		wantWords bool
 		wantErr   string
 		wantIs    []error
 	}{
 		{name: "the whole workspace", root: root, wantPaths: []string{"billing/invoice.go", "geo/tax.go"}},
 		{name: "an absolute root", root: root, roots: []string{filepath.Join(dir, "geo")}, wantPaths: []string{"geo/tax.go"}},
 		{name: "a relative root", root: root, roots: []string{"billing/"}, wantPaths: []string{"billing/invoice.go"}},
+		{
+			name: "by meaning before the model is downloaded", root: root, meaning: true,
+			wantPaths: []string{"billing/invoice.go", "geo/tax.go"}, wantWords: true,
+		},
 		{
 			name:    "a root outside",
 			root:    root,
@@ -256,8 +262,8 @@ func TestWorkspaceSearcherSemanticSearch(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			s := newWorkspaceSearcher(tt.root, dir, noRegexpSearch{}, router)
-			it, err := s.SemanticSearch(context.Background(),
-				searchapi.SemanticRequest{Query: "sales tax", Roots: tt.roots})
+			it, st, err := s.SemanticSearch(context.Background(),
+				searchapi.SemanticRequest{Query: "sales tax", Roots: tt.roots, Meaning: tt.meaning})
 			if tt.wantErr != "" {
 				require.ErrorContains(t, err, tt.wantErr)
 				for _, is := range tt.wantIs {
@@ -266,6 +272,8 @@ func TestWorkspaceSearcherSemanticSearch(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
+			assert.Equal(t, tt.wantWords, st.WordsOnly, "%+v", st)
+			assert.False(t, st.Indexing, "the index finished")
 			hits, err := sdkiterator.ToSlice(context.Background(), it)
 			require.NoError(t, err)
 			var paths []string

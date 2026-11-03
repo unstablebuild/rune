@@ -151,24 +151,25 @@ func (s *Service) unregister(idx *Index) {
 
 // Search answers req from root's index, by meaning with req.Model's
 // vectors when it is a downloaded local model the index was built with,
-// and by words always. req.Model must be resolved: an alias is not
-// local. It returns searchapi.ErrUnsupported for a model that is not
-// local, and ErrNoIndex when root has no open index.
+// and by words always; the status says when the index was still indexing
+// or the answer was ranked by words alone. req.Model must be resolved: an
+// alias is not local. It returns searchapi.ErrUnsupported for a model that
+// is not local, and ErrNoIndex when root has no open index.
 func (s *Service) Search(
 	ctx context.Context, root workspaceapi.URI, req searchapi.SemanticRequest,
-) (iterator.Iterator[searchapi.SemanticResult], error) {
+) (iterator.Iterator[searchapi.SemanticResult], searchapi.SemanticStatus, error) {
 	if req.Model.Provider != llamacpp.LLMProvider {
-		return nil, searchapi.ErrUnsupported
+		return nil, searchapi.SemanticStatus{}, searchapi.ErrUnsupported
 	}
 	idx, ok := s.Index(root)
 	if !ok {
-		return nil, fmt.Errorf("%w: %s", ErrNoIndex, root)
+		return nil, searchapi.SemanticStatus{}, fmt.Errorf("%w: %s", ErrNoIndex, root)
 	}
-	hits, err := idx.search(ctx, req)
+	hits, st, err := idx.search(ctx, req)
 	if err != nil {
-		return nil, err
+		return nil, searchapi.SemanticStatus{}, err
 	}
-	return iterator.FromSlice(hits), nil
+	return iterator.FromSlice(hits), st, nil
 }
 
 // EmbeddingModel returns the configured embedding model, or an error

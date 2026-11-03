@@ -231,12 +231,20 @@ func (ti *testIndex) wait(t *testing.T) {
 
 func (ti *testIndex) search(t *testing.T, model llmapi.ModelEntry, req searchapi.SemanticRequest) []searchapi.SemanticResult {
 	t.Helper()
+	hits, _ := ti.searchStatus(t, model, req)
+	return hits
+}
+
+func (ti *testIndex) searchStatus(
+	t *testing.T, model llmapi.ModelEntry, req searchapi.SemanticRequest,
+) ([]searchapi.SemanticResult, searchapi.SemanticStatus) {
+	t.Helper()
 	req.Model = model
-	it, err := ti.svc.Search(context.Background(), ti.root, req)
+	it, st, err := ti.svc.Search(context.Background(), ti.root, req)
 	require.NoError(t, err)
 	hits, err := iterator.ToSlice(context.Background(), it)
 	require.NoError(t, err)
-	return hits
+	return hits, st
 }
 
 func localModel(name string) llmapi.ModelEntry {
@@ -286,7 +294,7 @@ func TestServiceSearchErrors(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := ti.svc.Search(context.Background(), tt.root, searchapi.SemanticRequest{Query: "invoice", Model: tt.model})
+			_, _, err := ti.svc.Search(context.Background(), tt.root, searchapi.SemanticRequest{Query: "invoice", Model: tt.model})
 			assert.ErrorIs(t, err, tt.want)
 		})
 	}
@@ -312,7 +320,7 @@ func TestServiceOpenIndex(t *testing.T) {
 	require.NoError(t, ti.idx.Close(), "Close is idempotent")
 	_, ok = ti.svc.Index(ti.root)
 	assert.False(t, ok, "a closed index is unregistered")
-	_, err = ti.svc.Search(context.Background(), ti.root, searchapi.SemanticRequest{Query: "x", Model: localModel(testModel)})
+	_, _, err = ti.svc.Search(context.Background(), ti.root, searchapi.SemanticRequest{Query: "x", Model: localModel(testModel)})
 	assert.ErrorIs(t, err, ErrNoIndex)
 }
 

@@ -91,17 +91,17 @@ func (s *workspaceSearcher) RegexpSearch(
 // and llmsearch.ErrNoIndex.
 func (s *workspaceSearcher) SemanticSearch(
 	ctx context.Context, req searchapi.SemanticRequest,
-) (iterator.Iterator[searchapi.SemanticResult], error) {
+) (iterator.Iterator[searchapi.SemanticResult], searchapi.SemanticStatus, error) {
 	roots, err := s.relRoots(req.Roots)
 	if err != nil {
-		return nil, err
+		return nil, searchapi.SemanticStatus{}, err
 	}
 	req.Roots = roots
-	it, err := s.router.SemanticSearch(ctx, s.root, req)
+	it, st, err := s.router.SemanticSearch(ctx, s.root, req)
 	if errors.Is(err, llmsearch.ErrNoIndex) {
-		return nil, fmt.Errorf("%w: %w", searchapi.ErrUnsupported, err)
+		return nil, searchapi.SemanticStatus{}, fmt.Errorf("%w: %w", searchapi.ErrUnsupported, err)
 	}
-	return it, err
+	return it, st, err
 }
 
 // relRoots returns roots relative to the workspace, slash-separated. A

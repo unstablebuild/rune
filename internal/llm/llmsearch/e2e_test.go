@@ -196,8 +196,9 @@ func TestE2E_CodeEvals(t *testing.T) {
 	require.NoError(t, err)
 	reciprocal := 0.0
 	for _, q := range evals.Queries {
-		it, err := search.Search(ctx, root, searchapi.SemanticRequest{Query: q.Q, Model: model, Limit: 5, Meaning: true})
+		it, st, err := search.Search(ctx, root, searchapi.SemanticRequest{Query: q.Q, Model: model, Limit: 5, Meaning: true})
 		require.NoError(t, err)
+		require.Zero(t, st, "a finished index with the model answers by meaning")
 		hits, err := iterator.ToSlice(ctx, it)
 		require.NoError(t, err)
 		rank := 0
