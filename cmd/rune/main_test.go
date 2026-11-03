@@ -18,12 +18,19 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
+	"image"
+	"image/png"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -31,8 +38,17 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
+	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"github.com/unstablebuild/rune-go-sdk/clipboard"
+	"github.com/unstablebuild/rune-go-sdk/term"
 
 	"unstable.build/rune/internal/debug"
+	"unstable.build/rune/internal/ide"
+	"unstable.build/rune/internal/ide/hostenv"
+	"unstable.build/rune/internal/ide/idehistory"
+	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
+	"unstable.build/rune/internal/term/gui"
 	"unstable.build/rune/internal/workspace/workspacessh"
 )
 
@@ -295,6 +311,117 @@ func TestDataPathDefaultsUseOSPaths(t *testing.T) {
 			if tc.got != tc.want {
 				t.Fatalf("default = %q, want %q", tc.got, tc.want)
 			}
+		})
+	}
+}
+
+type recordingSink struct {
+	events []term.Event
+}
+
+func (s *recordingSink) PublishEvent(ev term.Event) bool {
+	s.events = append(s.events, ev)
+	return true
+}
+
+func TestGUIPublisherHoldsScheduledFunctionsUntilAttach(t *testing.T) {
+	var p guiPublisher
+	var ran []string
+	schedule := func(name string) term.Event {
+		return term.Event{Type: term.EventInterrupt, UserFunc: func() { ran = append(ran, name) }}
+	}
+
+	assert.True(t, p.publish(schedule("before")),
+		"a function scheduled before the GUI exists must run once it does")
+	assert.False(t, p.publish(term.Event{Type: term.EventInterrupt}),
+		"the GUI's first frame supersedes a redraw asked for before it exists")
+
+	sink := new(recordingSink)
+	p.attach(sink)
+	assert.True(t, p.publish(schedule("after")))
+
+	require.Len(t, sink.events, 2)
+	for _, ev := range sink.events {
+		ev.UserFunc()
+	}
+	assert.Equal(t, []string{"before", "after"}, ran,
+		"functions scheduled before attach run ahead of those scheduled after")
+}
+
+func TestRunGUIOffersToReopenTheLastSessionWithoutAnIntro(t *testing.T) {
+	wallpaper := filepath.Join(t.TempDir(), "wallpaper.png")
+	f, err := os.Create(wallpaper)
+	require.NoError(t, err)
+	require.NoError(t, png.Encode(f, image.NewNRGBA(image.Rect(0, 0, 4, 4))))
+	require.NoError(t, f.Close())
+
+	for _, tc := range []struct {
+		name   string
+		config string
+	}{
+		{name: "wallpaper image", config: "workspace:\n  wallpaper_image: " + wallpaper + "\n"},
+		{name: "wallpaper ascii", config: "workspace:\n  wallpaper_ascii: art\n"},
+		{name: "intro disabled", config: "animations:\n  intro: false\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dataDir := t.TempDir()
+			configPath := filepath.Join(dataDir, configFilename)
+			require.NoError(t, os.WriteFile(configPath, []byte("editor:\n  mode: modal\n"+
+				"upgrade:\n  auto_check_enabled: false\n"+tc.config), 0o644))
+			previous, err := workspaceapi.CurrentUserHostURI(t.TempDir())
+			require.NoError(t, err)
+			storage := newRuneStorage(dataDir)
+			require.NoError(t, idehistory.New(storageapi.WithPartition(storage, "ide")).
+				StoreLastSession(context.Background(), idehistory.Session{
+					Workspaces: []idehistory.SessionWorkspace{{URI: previous}},
+				}))
+			require.NoError(t, storage.Close())
+
+			srv := httptest.NewServer(http.NotFoundHandler())
+			t.Cleanup(srv.Close)
+			t.Cleanup(overrideBootstrapFlags(t, bootstrapFlagOverrides{
+				httpAddress:    srv.URL,
+				grpcAddress:    "127.0.0.1:1",
+				dataPath:       dataDir,
+				configPath:     configPath,
+				websiteAddress: "https://rune.test",
+			}))
+			rootCfg, err := ide.Config(configPath, runeDefaultConfig())
+			require.NoError(t, err)
+
+			mu := new(sync.Mutex)
+			var publisher guiPublisher
+			soundOutput := gui.NewSounds()
+			soundOutput.SetMuted(true)
+			root, err := newBootstrapHandler(
+				dataDir, configPath, "" /* workspace */, "", /* shellRCDir */
+				hostenv.New(dataDir, ""), nil /* filenames */, nil, /* launchCmd */
+				ide.FuncExtensionsRunner(testE2EExtensionsRunner),
+				mu, publisher.publish, nil, /* cellPixelSize */
+				func(*url.URL) error { return nil }, clipboard.NewInMemory(), soundOutput,
+				dataDir, rootCfg, pkgtrust.NewStore(),
+			)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = root.Close() })
+			require.NotNil(t, root.realIDE)
+
+			g, err := gui.New(root, gui.WithLocker(mu))
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = g.Close() })
+			publisher.attach(g)
+			root.attachGUI(g, false)
+			require.NoError(t, g.Update())
+
+			mu.Lock()
+			defer mu.Unlock()
+			const width, height = 160, 50
+			root.Resize(width, height)
+			w := term.NewStringWriter(width, height)
+			root.Draw(w)
+			require.NoError(t, w.Flush())
+			assert.True(t, strings.Contains(w.String(),
+				"Do you want to open the following workspaces"),
+				"the reopen offer must show on the first frame")
 		})
 	}
 }
