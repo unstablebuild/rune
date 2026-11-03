@@ -1,7 +1,7 @@
 ---
 name: rune-hud
 description: >
-  Edit Rune's configuration and generate sprites to refine its UI:
+  Update Rune's configuration and generate sprites to refine its UI:
   window frames, scroll bars, floating window bars, command prompts, editor
   and agent status-bar layouts, the quick menu, prompt buttons, wallpaper and
   sounds. Discover the configuration, edit it, run runectl screenshot and
@@ -15,13 +15,7 @@ description: >
 Own the edit-and-verify loop. Read the user's configuration and existing assets,
 make the requested changes, run `runectl screenshot`, inspect the PNG and fix
 what looks wrong. Do not ask the user to measure cells, run diagnostic commands
-or provide screenshots you can capture yourself. The configuration and
-status-bar layout reference is included in this file; no other document or
-Rune source checkout is needed.
-
-Use the user's brief and existing theme to make design decisions. If a detail
-is unspecified, choose a consistent default and proceed. Do not stop for
-approval between surfaces or revisions unless the user asked for checkpoints.
+or provide screenshots you can capture yourself.
 
 ## Scope: configuration and assets only
 - Edit the user's active configuration, theme assets, manifest and backups.
@@ -164,9 +158,8 @@ would need percent-encoding in a `file://` URI.
      or display settings change.
 
 ## Design rules
-A HUD reads as one object only when every surface follows one system. Clean
-geometric frames and icons work. Figures assembled from vector shapes look
-childish, and ornament repeated on every small surface turns into clutter.
+A HUD reads as one object only when every surface follows one set of cohesive guiding
+principles.
 
 1. **Start from one reference surface.** For a new theme, establish the window
    frame first and verify it in a screenshot. For a targeted request, start
@@ -273,27 +266,7 @@ bevels, buttons, the scroll bar and icons.
   `magick in.png -filter Lanczos -resize WxH! -unsharp 0x0.6+0.6+0 out.png`.
   Start with `height 3` and `alt ""`. Add `overflow` only when the image must
   cross the editor or chat component's outer bounds.
-- Wallpaper: sample a corner and confirm the background matches. Then
-  feather the edges to transparent:
-
-  ```sh
-  W=$(magick identify -format %w in.png); H=$(magick identify -format %h in.png); F=$((W/12))
-  magick in.png \( -size ${W}x${H} xc:black -fill white \
-    -draw "rectangle $F,$F $((W-F-1)),$((H-F-1))" -blur 0x$((F/3)) -level 2%,98% \) \
-    -alpha off -compose CopyOpacity -composite wallpaper.png
-  ```
-
-- Check the wallpaper's edges. All four must print 0:
-
-  ```sh
-  bg='#080808'
-  magick wallpaper.png -background "$bg" -flatten flat.png
-  for g in North South East West; do
-    case $g in North|South) c=100%x2+0+0;; *) c=2x100%+0+0;; esac
-    magick flat.png -gravity $g -crop $c +repage \( +clone -fill "$bg" -colorize 100 \) \
-      -compose difference -composite -format "$g %[fx:round(maxima*255)]\n" info:
-  done
-  ```
+- Wallpaper: sample a corner and confirm the background matches.
 
 ## Surfaces
 Abbreviations:
@@ -399,7 +372,8 @@ Line up rails and seams across slices at these positions.
   `overflow`. `overflow` permits drawing outside that component's bounds.
 
 **Quick menu:**
-- Buttons are square and contain-fitted, stacked half a cell apart from row 3.
+- Buttons can be square or any other shape that fits the design aesthetics and
+contain-fitted, stacked half a cell.
 - Draw all three states on the same canvas, so nothing jumps between states.
 - Put any padding inside the art.
 
@@ -976,11 +950,14 @@ unavailable. Do not claim unactivated changes have been verified.
 7. Run `runectl screenshot` again and open the returned PNG. Check readability,
    clipping, rail continuity, background matching, transparent areas and whether
    ornaments obscure text. 
-8. Fix any config errors shown in the capture or in the logs at $RUNE_DATADIR/debug.log.
+8. Fix any config errors shown in the captured screenshot or in the logs at
+$RUNE_DATADIR/debug.log.
 9. Adjust the assets, spacing, dimensions, offsets or colours and repeat steps
-   6–8 until the rendered result meets the brief. A successful file write or
-   screenshot command alone is not verification: inspect the image.
+   5–8 until the rendered result meets the brief. A successful file write or
+   screenshot command alone is not verification: inspect the resulting image.
 10. Update the manifest and report the final screenshot path, changed keys and
    rollback location. Note any state you could not inspect or change that still
-   needs activation. Do not end with routine measurement or screenshot chores
-   for the user.
+   needs activation.
+11. Ask the user if the new UI is to their liking.
+   rollback location. Note any state you could not inspect or change that still
+   needs activation.
