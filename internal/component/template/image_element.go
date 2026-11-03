@@ -69,6 +69,31 @@ func NewImageElement(
 	if err != nil {
 		return nil, err
 	}
+	return newImageElement(spec, view, tmpl, attrs, bg), nil
+}
+
+// NewLoadedImageElement returns the element NewImageElement would for
+// spec, tmpl, attrs and bg, but showing img as if it had just loaded
+// spec.URI: it never fetches, so it draws img from its first frame. It
+// fails when spec.Validate does.
+func NewLoadedImageElement(
+	spec Image, img image.Image, tmpl string, attrs term.Attributes, bg term.Color,
+) (*ImageElement, error) {
+	if err := spec.Validate(); err != nil {
+		return nil, err
+	}
+	view, err := imageuri.NewLoaded(spec.URI, img, imageuri.Style{
+		Fit: spec.Fit, Layer: spec.Layer(), ProblemArt: spec.Alt,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return newImageElement(spec, view, tmpl, attrs, bg), nil
+}
+
+func newImageElement(
+	spec Image, view *imageuri.Component, tmpl string, attrs term.Attributes, bg term.Color,
+) *ImageElement {
 	tmpl = strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) {
 			return ' '
@@ -90,7 +115,7 @@ func NewImageElement(
 			pixels:   image.Pt(spec.XOffsetPixels, spec.YOffsetPixels),
 			overflow: spec.Overflow,
 		},
-	}, nil
+	}
 }
 
 func literal(text string, attrs term.Attributes, bg term.Color) []component.Floating {

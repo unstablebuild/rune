@@ -4776,3 +4776,81 @@ func TestComponentScrollToPinnedMessage(t *testing.T) {
 		})
 	assert.False(t, comp.PinnedMessageAt(term.Coordinates{X: 0, Y: 0}))
 }
+
+func TestComponentSetStatusBarConfig(t *testing.T) {
+	const width, height = 40, 12
+	modelOnly, err := ParseStatusBarLayout(`{{ .Model }}`)
+	require.NoError(t, err)
+	withEffort, err := ParseStatusBarLayout(`{{ .Model }} {{ .Effort }}`)
+	require.NoError(t, err)
+	start := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	enabled := func(layout []StatusBarComponent, shader string) StatusBarConfig {
+		return StatusBarConfig{Enabled: true, Layout: layout, Shader: shader}
+	}
+	tests := []struct {
+		name string
+		from StatusBarConfig
+		// whileSet changes the state between the two configs.
+		whileSet     func(*StatusBarState)
+		to           StatusBarConfig
+		wantBar      int
+		wantEffect   bool
+		wantModel    string
+		wantRendered string
+	}{
+		{
+			name: "a new layout", from: enabled(modelOnly, ""), to: enabled(withEffort, ""),
+			wantBar: 1, wantModel: "opus", wantRendered: "opus high",
+		},
+		{
+			name: "turning the bar off", from: enabled(modelOnly, ""), to: StatusBarConfig{},
+			wantBar: 0,
+		},
+		{
+			name: "turning the bar back on", from: StatusBarConfig{},
+			whileSet: func(s *StatusBarState) { s.Model = "sonnet" },
+			to:       enabled(modelOnly, ""), wantBar: 1, wantModel: "sonnet", wantRendered: "sonnet",
+		},
+		{
+			name: "an effect during a turn", from: enabled(modelOnly, ""), to: enabled(modelOnly, "pulse"),
+			wantBar: 1, wantEffect: true, wantModel: "opus", wantRendered: "opus",
+		},
+		{
+			name: "an effect removed during a turn", from: enabled(modelOnly, "pulse"), to: enabled(modelOnly, ""),
+			wantBar: 1, wantModel: "opus", wantRendered: "opus",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			comp := NewComponent(ComponentConfig{StatusBar: tt.from})
+			h, tx, _ := Handler(context.Background(), new(sync.Mutex), comp, make(interrupts, 1))
+			t.Cleanup(func() {
+				close(tx)
+				assert.NoError(t, comp.Close())
+			})
+			h.Resize(width, height)
+			comp.SetStatusBarState(func(s *StatusBarState) {
+				s.Active, s.TurnStart, s.Model, s.Effort = true, start, "opus", "high"
+			})
+			if tt.whileSet != nil {
+				comp.SetStatusBarState(tt.whileSet)
+			}
+
+			comp.SetStatusBarConfig(tt.to)
+			assert.Equal(t, tt.wantBar, comp.barHeight())
+			boxH := comp.boxHeight(comp.boxWidth(width))
+			assert.Equal(t, height-tt.wantBar, comp.InputPosition().Y+boxH,
+				"the compose box sits right above the bar")
+			if tt.wantBar == 0 {
+				assert.Zero(t, comp.StatusBarState())
+				return
+			}
+			state := comp.StatusBarState()
+			assert.Equal(t, tt.wantModel, state.Model)
+			assert.True(t, state.Active)
+			assert.Equal(t, start, state.TurnStart, "the turn keeps its elapsed time")
+			assert.Equal(t, tt.wantEffect, comp.shadedBar.shader != nil)
+			assert.Equal(t, tt.wantRendered, strings.TrimSpace(render(t, comp.statusBar, width)))
+		})
+	}
+}

@@ -172,6 +172,9 @@ type Component struct {
 	// when the bar is disabled.
 	barArea   component.Virtual[tui.Component]
 	statusBar *StatusBar
+	// barState is what the status bar reports. It is kept while the bar
+	// is disabled, so that enabling it again shows the chat as it is.
+	barState StatusBarState
 	// shadedBar wraps the status bar so a configured effect can run
 	// over it for as long as a turn does.
 	shadedBar shadedBar
@@ -327,19 +330,46 @@ func (c *Component) Init(cfg ComponentConfig) {
 	c.attachTabs.SetBorder(false)
 	c.attachArea.C = &c.attachTabs
 
-	if cfg.StatusBar.Enabled {
-		// The interrupter only reaches the Component once Handler
-		// wraps it, which is where the bar starts repainting.
-		c.statusBar = NewStatusBar(cfg.StatusBar, nil)
-		c.shadedBar.root = c.statusBar
-		c.shadedBar.name = cfg.StatusBar.Shader
-		c.shadedBar.fps = cfg.StatusBar.ShaderFPS
-		c.shadedBar.loop = cfg.StatusBar.ShaderLoop
-		c.shadedBar.defAttr = term.Attributes{
-			Fg: cfg.StatusBar.ForegroundColor,
-			Bg: cfg.StatusBar.BackgroundColor,
+	// The interrupter only reaches the Component once Handler wraps it,
+	// which is where the bar starts repainting.
+	c.installStatusBar(cfg.StatusBar)
+}
+
+// installStatusBar makes the status bar the one cfg configures, showing
+// barState, or none when cfg disables it. The bar it replaces must be
+// closed already.
+func (c *Component) installStatusBar(cfg StatusBarConfig) {
+	c.statusBar = nil
+	c.barArea.C = nil
+	if !cfg.Enabled {
+		return
+	}
+	c.statusBar = NewStatusBar(cfg, nil)
+	state := c.barState
+	c.statusBar.SetState(func(s *StatusBarState) { *s = state })
+	c.shadedBar.configure(c.statusBar, cfg)
+	c.barArea.C = &c.shadedBar
+}
+
+// SetStatusBarConfig replaces the status bar with the one cfg configures,
+// or removes it when cfg disables it, and lays the dialogue out again. The
+// new bar reports what the old one did: a running turn keeps its elapsed
+// time, and the effect cfg names runs over it.
+func (c *Component) SetStatusBarConfig(cfg StatusBarConfig) {
+	if c.statusBar != nil {
+		c.shadedBar.setRunning(false, c.interrupter)
+		if err := c.statusBar.Close(); err != nil {
+			slog.Warn("dialoguetui: close the replaced status bar", "error", err)
 		}
-		c.barArea.C = &c.shadedBar
+	}
+	c.cfg.StatusBar = cfg
+	c.installStatusBar(cfg)
+	if c.statusBar != nil {
+		c.statusBar.start(c.interrupter)
+	}
+	c.relayout()
+	if c.statusBar != nil {
+		c.shadedBar.setRunning(c.barState.Active, c.interrupter)
 	}
 }
 
@@ -2242,14 +2272,16 @@ func (c *Component) drawStatusBarImages(w term.Writer) {
 	c.statusBar.drawImages(term.BoundsCheckWriter(c.width, c.height, w), c.height)
 }
 
-// SetStatusBarState applies fn to the status bar state. It is a no-op
-// when the bar is disabled.
+// SetStatusBarState applies fn to the status bar state. A disabled bar
+// shows the state once it is enabled.
 func (c *Component) SetStatusBarState(fn func(*StatusBarState)) {
+	fn(&c.barState)
 	if c.statusBar == nil {
 		return
 	}
-	c.statusBar.SetState(fn)
-	if c.shadedBar.setRunning(c.statusBar.State().Active, c.interrupter) {
+	state := c.barState
+	c.statusBar.SetState(func(s *StatusBarState) { *s = state })
+	if c.shadedBar.setRunning(state.Active, c.interrupter) {
 		// The effect only repaints on its own ticker, so the frame
 		// that starts or ends it needs a wakeup of its own.
 		_ = c.interrupter.Interrupt(context.Background())

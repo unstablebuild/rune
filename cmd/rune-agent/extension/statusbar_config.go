@@ -17,7 +17,10 @@
 package extension
 
 import (
+	"context"
 	"errors"
+	"fmt"
+	stdimage "image"
 	"log/slog"
 	"maps"
 	"slices"
@@ -26,8 +29,10 @@ import (
 
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/cmd/rune-agent/dialogue/dialoguetui"
+	"unstable.build/rune/internal/component/imageuri"
 	"unstable.build/rune/internal/extension/extutil"
 )
 
@@ -44,6 +49,51 @@ var defaultStatusBarConfig = dialoguetui.StatusBarConfig{
 
 // statusBarImagesPartition caches the images status bar layouts download.
 const statusBarImagesPartition = "status_bar_images"
+
+// ownConfig returns the config Rune started this extension with, which
+// host, the config Rune serves, holds under extensions.<id>.config. A host
+// without it gives an empty config. It fails when host could not be
+// fetched.
+func ownConfig(host config.Config) (config.Config, error) {
+	cfg := host
+	for _, key := range []string{"extensions", extensionID, "config"} {
+		sub, err := cfg.GetConfig(key)
+		if errors.Is(err, config.ErrNotFound) {
+			return config.NopConfig(), nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("get %q from the config: %w", key, err)
+		}
+		cfg = sub
+	}
+	return cfg, nil
+}
+
+// refreshStatusBarImages reads the images of layout again, dropping the
+// copies storage caches, and returns them by URI. An image that does not
+// load is left out.
+func refreshStatusBarImages(
+	ctx context.Context, layout []dialoguetui.StatusBarComponent, storage storageapi.Service,
+) map[string]stdimage.Image {
+	images := make(map[string]stdimage.Image)
+	tried := make(map[string]struct{})
+	for _, comp := range layout {
+		if comp.Type != dialoguetui.StatusBarImage {
+			continue
+		}
+		if _, ok := tried[comp.Image.URI]; ok {
+			continue
+		}
+		tried[comp.Image.URI] = struct{}{}
+		img, err := imageuri.Refresh(ctx, comp.Image.URI, comp.Image.TTL, storage)
+		if err != nil {
+			slog.Warn("reload status bar image", "error", err)
+			continue
+		}
+		images[comp.Image.URI] = img
+	}
+	return images
+}
 
 // statusBarConfig reads the status_bar block from the extension
 // config. Every key is optional: a missing or malformed value falls

@@ -211,6 +211,9 @@ type ex struct {
 	commandPromptCfg      commandPromptConfig
 	promptGraphics        *tcomponent.FrameGraphics
 	promptGraphicsStorage storageapi.Service
+	// statusBars styles the status bars of the editors e opens. It is
+	// nil where they are not restyled.
+	statusBars *text.StatusBarStyles
 	// editorModeModal records whether the editor backing this ex runs in
 	// modal mode. The cheatsheet uses it to gate modal-only key tips.
 	editorModeModal bool
@@ -441,13 +444,13 @@ func (e *ex) init(
 	// "!" plugins float with a window bar that shows the command as
 	// its title, so drop the command from the plugin's own bar. Task
 	// windows keep it: they can be tiled, where there is no bar.
-	floatPluginOpts := pluginOpts
-	if e.config.WindowManagerConfig.Frame &&
-		e.config.WindowManagerConfig.WindowBar {
-		floatPluginOpts = append(slices.Clip(pluginOpts),
-			plugin.WithoutBarCommand())
-	}
 	e.newPluginHandler = func(width int, args ...string) (pluginHandler, error) {
+		floatPluginOpts := pluginOpts
+		if e.config.WindowManagerConfig.Frame &&
+			e.config.WindowManagerConfig.WindowBar {
+			floatPluginOpts = append(slices.Clip(pluginOpts),
+				plugin.WithoutBarCommand())
+		}
 		h, err := plugin.New(e.Browser(), e.Browser(), e.executor, e.terminal,
 			e.tm, args, width, floatPluginOpts...)
 		if err != nil {
@@ -3481,10 +3484,17 @@ func (e *ex) promptFrameCharSets() (frame, radar component.FrameCharSet) {
 // restyle draws e with s from the next Draw on, as browser.Component.Restyle
 // does, and the command prompts it opens later. Its frames and prompt
 // buttons draw images as tcomponent.FrameGraphics.Reload takes them.
-func (e *ex) restyle(s hudStyle, images map[string]image.Image) {
+// Its editor status bars, open and later, draw statusBarImages as
+// text.StatusBarStyles.Restyle takes them, and its terminals, open and
+// later, ring the bell with s's sound.
+func (e *ex) restyle(s hudStyle, images, statusBarImages map[string]image.Image) {
 	e.config.Config = e.config.Config.Restyled(s.browser)
+	e.config.CommandOverlay.ShowManual = s.commandShowManual
 	e.commandPromptCfg.frameCharSet = s.commandPromptFrame
 	e.commandPromptCfg.separator = s.commandPromptSeparator
+	if e.emulatorConfig.BellSound != nil {
+		e.emulatorConfig.BellSound.Store(new(s.bellSound))
+	}
 	e.comp.Browser().Restyle(s.browser)
 	e.cmdV.C.Restyle(s.browser)
 	for _, g := range []*tcomponent.FrameGraphics{
@@ -3493,6 +3503,9 @@ func (e *ex) restyle(s hudStyle, images map[string]image.Image) {
 		if g != nil {
 			g.Reload(images)
 		}
+	}
+	if e.statusBars != nil {
+		e.statusBars.Restyle(s.statusBar, statusBarImages)
 	}
 }
 

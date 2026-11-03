@@ -17,7 +17,15 @@
 package extension
 
 import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	stdimage "image"
+	"image/png"
+	"net/url"
 	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 	"time"
@@ -25,6 +33,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"gopkg.in/yaml.v3"
 	"unstable.build/rune/cmd/rune-agent/dialogue/dialoguetui"
@@ -256,4 +265,72 @@ func TestStatusBarConfigResolvesBuiltInRampAgainstTheme(t *testing.T) {
 	assert.Equal(t, term.NewHexColor(0x98be65),
 		got.CacheGaugeFill[len(got.CacheGaugeFill)-1].Bg,
 		"the cache ramp runs the same stops backwards")
+}
+
+func TestOwnConfig(t *testing.T) {
+	own := map[string]any{"status_bar": map[string]any{"enabled": false}}
+	tests := []struct {
+		name    string
+		host    config.Config
+		want    config.Config
+		wantErr string
+	}{
+		{
+			name: "the agent's block",
+			host: config.MapConfig(map[string]any{
+				"editor":     map[string]any{"mode": "modal"},
+				"extensions": map[string]any{extensionID: map[string]any{"config": own}},
+			}),
+			want: config.MapConfig(own),
+		},
+		{name: "no extensions", host: config.MapConfig(map[string]any{}), want: config.NopConfig()},
+		{
+			name: "no config of its own",
+			host: config.MapConfig(map[string]any{
+				"extensions": map[string]any{extensionID: map[string]any{"path": "/bin/rune-agent"}},
+			}),
+			want: config.NopConfig(),
+		},
+		{name: "a config that could not be fetched", host: config.ErrConfig(errors.New("closed")), wantErr: "closed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ownConfig(tt.host)
+			if tt.wantErr != "" {
+				assert.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestRefreshStatusBarImagesReadsImagesOverwrittenInPlace(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ornament.png")
+	writePNG := func(w, h int) {
+		t.Helper()
+		var buf bytes.Buffer
+		require.NoError(t, png.Encode(&buf, stdimage.NewRGBA(stdimage.Rect(0, 0, w, h))))
+		require.NoError(t, os.WriteFile(path, buf.Bytes(), 0o600))
+	}
+	uri := (&url.URL{Scheme: "file", Path: filepath.ToSlash(path)}).String()
+	layout, err := dialoguetui.ParseStatusBarLayout(
+		fmt.Sprintf(`{{ .Image | src %q }}{{ .Model }}{{ .Image | src %[1]q }}`, uri))
+	require.NoError(t, err)
+	storage := storagestub.NewInMemoryService()
+
+	writePNG(1, 1)
+	first := refreshStatusBarImages(context.Background(), layout, storage)
+	require.Contains(t, first, uri)
+	assert.Equal(t, stdimage.Rect(0, 0, 1, 1), first[uri].Bounds())
+
+	writePNG(3, 2)
+	again := refreshStatusBarImages(context.Background(), layout, storage)
+	require.Len(t, again, 1)
+	assert.Equal(t, stdimage.Rect(0, 0, 3, 2), again[uri].Bounds(), "the cached copy is dropped")
+
+	require.NoError(t, os.Remove(path))
+	assert.Empty(t, refreshStatusBarImages(context.Background(), layout, storage),
+		"an image that does not load is left out")
 }

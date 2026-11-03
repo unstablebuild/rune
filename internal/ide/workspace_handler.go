@@ -323,19 +323,20 @@ func (h *workspaceManagerHandler) newEditor(
 	reloader exoeditor.Reloader,
 	cwd workspaceapi.URI, ws workspace.Workspace, tm browser.TabManager,
 	terminal schemeapi.Terminal, cfg ideConfig, svc vctrl.Service,
+	statusBars *text.StatusBarStyles,
 ) (text.Editor, error) {
 	switch cfg.editorMode() {
 	case editorModeVim:
-		return h.newBuiltinModalEditor(cwd, cfg, svc), nil
+		return h.newBuiltinModalEditor(cwd, cfg, svc, statusBars), nil
 	case editorModeHelix:
-		return h.newBuiltinHelixEditor(cwd, cfg, svc), nil
+		return h.newBuiltinHelixEditor(cwd, cfg, svc, statusBars), nil
 	case editorModeStandard:
-		return h.newBuiltinStandardEditor(cwd, cfg, svc), nil
+		return h.newBuiltinStandardEditor(cwd, cfg, svc, statusBars), nil
 	case editorModeEmacs:
-		return h.newBuiltinEmacsEditor(cwd, cfg, svc), nil
+		return h.newBuiltinEmacsEditor(cwd, cfg, svc, statusBars), nil
 	case editorModeExo:
 		return h.newExoFallbackEditor(
-			reloader, cwd, ws, tm, terminal, cfg, svc), nil
+			reloader, cwd, ws, tm, terminal, cfg, svc, statusBars), nil
 	default:
 		panic("invalid editor mode")
 	}
@@ -343,10 +344,12 @@ func (h *workspaceManagerHandler) newEditor(
 
 func (h *workspaceManagerHandler) newBuiltinModalEditor(
 	cwd workspaceapi.URI, cfg ideConfig, svc vctrl.Service,
+	statusBars *text.StatusBarStyles,
 ) text.Editor {
 	auxBarConfig := cfg.auxiliaryBarConfig(h, svc)
 	iconsBarConfig := cfg.iconsBarConfig(h)
 	statusBarConfig := cfg.statusBarConfig(cwd, h, svc, h.events.newInterrupter(cwd))
+	statusBarConfig.Styles = statusBars
 	viOpts := append([]vi.Option{},
 		vi.WithResAttr(cfg.vimResultAttr()),
 		vi.WithBarAttr(cfg.vimMessageBarAttr()),
@@ -376,10 +379,12 @@ func (h *workspaceManagerHandler) newBuiltinModalEditor(
 
 func (h *workspaceManagerHandler) newBuiltinHelixEditor(
 	cwd workspaceapi.URI, cfg ideConfig, svc vctrl.Service,
+	statusBars *text.StatusBarStyles,
 ) text.Editor {
 	auxBarConfig := cfg.auxiliaryBarConfig(h, svc)
 	iconsBarConfig := cfg.iconsBarConfig(h)
 	statusBarConfig := cfg.statusBarConfig(cwd, h, svc, h.events.newInterrupter(cwd))
+	statusBarConfig.Styles = statusBars
 	return helix.Editor(
 		helix.WithResAttr(cfg.helixResultAttr()),
 		helix.WithBarAttr(cfg.helixMessageBarAttr()),
@@ -408,10 +413,12 @@ func (h *workspaceManagerHandler) newBuiltinHelixEditor(
 
 func (h *workspaceManagerHandler) newBuiltinStandardEditor(
 	cwd workspaceapi.URI, cfg ideConfig, svc vctrl.Service,
+	statusBars *text.StatusBarStyles,
 ) text.Editor {
 	auxBarConfig := cfg.auxiliaryBarConfig(h, svc)
 	iconsBarConfig := cfg.iconsBarConfig(h)
 	statusBarConfig := cfg.statusBarConfig(cwd, h, svc, h.events.newInterrupter(cwd))
+	statusBarConfig.Styles = statusBars
 	wm := currentWorkspaceWindowManager{root: h}
 	searchConfig := cfg.standardSearchConfig(wm)
 	searchConfig.ButtonImages = wm.ButtonImages
@@ -442,10 +449,12 @@ func (h *workspaceManagerHandler) newBuiltinStandardEditor(
 
 func (h *workspaceManagerHandler) newBuiltinEmacsEditor(
 	cwd workspaceapi.URI, cfg ideConfig, svc vctrl.Service,
+	statusBars *text.StatusBarStyles,
 ) text.Editor {
 	auxBarConfig := cfg.auxiliaryBarConfig(h, svc)
 	iconsBarConfig := cfg.iconsBarConfig(h)
 	statusBarConfig := cfg.statusBarConfig(cwd, h, svc, h.events.newInterrupter(cwd))
+	statusBarConfig.Styles = statusBars
 	return emacs.Editor(
 		emacs.WithCommandBar(true),
 		emacs.WithResAttr(cfg.emacsResultAttr()),
@@ -477,18 +486,18 @@ func (h *workspaceManagerHandler) newExoFallbackEditor(
 	reloader exoeditor.Reloader,
 	cwd workspaceapi.URI, ws workspace.Workspace,
 	tm browser.TabManager, terminal schemeapi.Terminal,
-	cfg ideConfig, svc vctrl.Service,
+	cfg ideConfig, svc vctrl.Service, statusBars *text.StatusBarStyles,
 ) text.Editor {
 	var fallback text.Editor
 	switch cfg.exoFallback() {
 	case editorFallbackHelix:
-		fallback = h.newBuiltinHelixEditor(cwd, cfg, svc)
+		fallback = h.newBuiltinHelixEditor(cwd, cfg, svc, statusBars)
 	case editorFallbackStandard:
-		fallback = h.newBuiltinStandardEditor(cwd, cfg, svc)
+		fallback = h.newBuiltinStandardEditor(cwd, cfg, svc, statusBars)
 	case editorFallbackEmacs:
-		fallback = h.newBuiltinEmacsEditor(cwd, cfg, svc)
+		fallback = h.newBuiltinEmacsEditor(cwd, cfg, svc, statusBars)
 	default:
-		fallback = h.newBuiltinModalEditor(cwd, cfg, svc)
+		fallback = h.newBuiltinModalEditor(cwd, cfg, svc, statusBars)
 	}
 	return exofallback.New(
 		cfg.exoCommand(),
@@ -723,12 +732,8 @@ func (h *workspaceManagerHandler) init(
 	h.extReadyWait = extensionReadyWait
 	h.extCommandWait = extensionCommandWait
 	h.extHandleWait = extensionHandleWait
-	notifyStatus := cfg.tabStatusNotifyConfig()
-	if !cfg.tabStatusEnabled() {
-		notifyStatus = idestatus.NotifyConfig{}
-	}
 	h.status = idestatus.New(statusWorkspaces{h}, tabStatusConfigFor(cfg),
-		notifyStatus, cfg.sounds, cfg.statusInboxStyle(), h.scheduleNextTick,
+		cfg.statusNotifyConfig(), cfg.sounds, cfg.statusInboxStyle(), h.scheduleNextTick,
 		h.events.globalInterrupter())
 
 	// Files and workspaces under the home directory share this manager
@@ -787,12 +792,13 @@ func (h *workspaceManagerHandler) init(
 	globalOpts := h.textOpts(cfg, homeParser, h.homeURI, h.homeWorkspace)
 	tm := new(workspaceTabManager)
 	tm.parent = h
+	homeStatusBars := text.NewStatusBarStyles(cfg.statusBarStyle())
 	h.empty, err = newEx(
 		func(
 			reloader exoeditor.Reloader, terminal schemeapi.Terminal,
 		) (text.Editor, error) {
 			return h.newEditor(reloader, homeDirUri, h.homeWorkspace,
-				tm, terminal, cfg, vctrl.NopService())
+				tm, terminal, cfg, vctrl.NopService(), homeStatusBars)
 		},
 		homeWorkspace, h.ideStorage, h.notifications, h.homeURI,
 		cfg.terminalConfig(), cfg.pluginBarConfig(),
@@ -812,6 +818,7 @@ func (h *workspaceManagerHandler) init(
 		return fmt.Errorf("new ex: %w", err)
 	}
 	h.empty.sponsorsURL = h.sponsorsURL
+	h.empty.statusBars = homeStatusBars
 	tm.tm = h.empty.Browser()
 	if err = h.subscribeAllCommands(h.empty); err != nil {
 		return err
@@ -833,7 +840,7 @@ func (h *workspaceManagerHandler) init(
 	h.homeInstallDir = installDataDir(trackedCwd, homeDirUri, h.sixDir)
 	runner, lspManager, dapManager, _, _, err := h.buildExtensions(
 		cfg, homeDirUri, trackedCwd, h.empty, extExec, homeParser, false,
-		h.homeInstallDir, noRegexpSearch{})
+		h.homeInstallDir, noRegexpSearch{}, extension.NewLiveConfig(cfg.cfg))
 	if err != nil {
 		_, _ = h.notifications.current().Notify(browserapi.LevelError,
 			"Error building channel for extensions and plugins: %v", err)
@@ -1665,16 +1672,6 @@ func commandBindingOpts(cfg ideConfig) []text.Option {
 	return ret
 }
 
-func cleanedExtensionConfig(cfg map[string]any) map[string]any {
-	m := make(map[string]any, len(cfg))
-	for k, v := range cfg {
-		if k != "extensions" {
-			m[k] = v
-		}
-	}
-	return m
-}
-
 func (h *workspaceManagerHandler) addWorkspace(
 	uri workspaceapi.URI, shouldRestore, promptRecommended bool, slot int,
 ) error {
@@ -2023,12 +2020,13 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 	multicwd := workspace.Multi(context.Background(), visibleManager, cwd, uri)
 	tm := new(workspaceTabManager)
 	tm.parent = h
+	statusBars := text.NewStatusBarStyles(cfg.statusBarStyle())
 	ex, err := newEx(
 		func(
 			reloader exoeditor.Reloader, terminal schemeapi.Terminal,
 		) (text.Editor, error) {
 			return h.newEditor(reloader, uri, multicwd, tm, terminal,
-				cfg, vctrlService)
+				cfg, vctrlService, statusBars)
 		},
 		multicwd, h.ideStorage, h.notifications, uri,
 		cfg.terminalConfig(), cfg.pluginBarConfig(), h.events.newPublisher(uri),
@@ -2051,6 +2049,7 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 		return nil, fmt.Errorf("new ex: %w", err)
 	}
 	ex.sponsorsURL = h.sponsorsURL
+	ex.statusBars = statusBars
 	if symbolDB != nil {
 		if serr := ex.comp.SubscribeEvents(
 			symboldb.EditorEvents(), symbolDB,
@@ -2089,6 +2088,7 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 		cwd:                 cwd,
 		installDir:          installDataDir(cwd, uri, h.sixDir),
 		configOverlay:       configOverlay,
+		extensionConfig:     extension.NewLiveConfig(cfg.cfg),
 	}
 	tm.workspace = wh
 
@@ -2111,7 +2111,8 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 		return nil, fmt.Errorf("new extensions executor: %w", err)
 	}
 	runner, lspManager, dapManager, hostPkgs, promptStorage, err := h.buildExtensions(
-		cfg, uri, trackedCwd, ex, extExec, wsParser, symbolDB != nil, wh.installDir, regexIndex)
+		cfg, uri, trackedCwd, ex, extExec, wsParser, symbolDB != nil, wh.installDir, regexIndex,
+		wh.extensionConfig)
 	if err != nil {
 		_, _ = h.notifications.current().Notify(browserapi.LevelError,
 			"Error building channel for extensions and plugins: %v", err)
@@ -2347,7 +2348,9 @@ func (h *workspaceManagerHandler) installPendingWorkspace(
 	ex.setDefaultAttr(h.defAttr)
 	if h.hud != nil && h.hud.load > built.hudLoads && wh.configOverlay == nil {
 		// The build read the config before the installed HUD's load did.
-		ex.restyle(h.hud.base, h.hud.images)
+		ex.restyle(h.hud.base, h.hud.images, h.hud.statusBarImages)
+		// Its extensions have not started yet, so they need not be told.
+		wh.extensionConfig.Set(h.hud.cfg)
 	}
 	go debug.CapturePanicReport(func() {
 		start := time.Now()
@@ -2520,7 +2523,7 @@ func (h *workspaceManagerHandler) buildExtensions(
 	cfg ideConfig, uri workspaceapi.URI,
 	cwd workspace.Workspace, ex *ex, extExecutor *extensionsExecutor,
 	parser syntaxapi.Parser, indexedSymbols bool, installDir string,
-	regexp regexpSearcher,
+	regexp regexpSearcher, extensionConfig *extension.LiveConfig,
 ) (
 	_ extension.Runner, _ *idelsp.Manager, _ *idedebug.Manager,
 	_ *pkgManager, _ storageapi.Service, retErr error,
@@ -2571,7 +2574,7 @@ func (h *workspaceManagerHandler) buildExtensions(
 	res = extension.MergeResourceMap(res,
 		extension.StorageResources(h.extensionsStorage))
 	res = extension.MergeResourceMap(res,
-		extension.ConfigResources(config.MapConfig(cleanedExtensionConfig(cfg.cfg))))
+		extension.ConfigResources(extensionConfig))
 	res = extension.MergeResourceMap(res,
 		extension.SyntaxResources(parser))
 	apibrowser := newBrowserAdapter(ex.Browser())
@@ -3131,14 +3134,18 @@ func (h *workspaceManagerHandler) loadHUD(ctx context.Context) (*HUD, error) {
 	h.mu.Unlock()
 
 	hud := &HUD{
-		load:       load,
-		base:       cfg.hudStyle(),
-		workspaces: make(map[string]hudStyle, len(overlays)),
-		skip:       make(map[string]struct{}),
-		images:     make(map[string]image.Image),
-		configErrs: cfg.errors,
+		load:            load,
+		base:            cfg.hudStyle(),
+		workspaces:      make(map[string]hudStyle, len(overlays)),
+		skip:            make(map[string]struct{}),
+		images:          make(map[string]image.Image),
+		statusBarImages: make(map[string]image.Image),
+		configErrs:      cfg.errors,
+		cfg:             cfg.cfg,
+		workspaceCfgs:   make(map[string]map[string]any, len(overlays)),
 	}
 	uris := hud.base.imageURIs()
+	statusBarImages := hud.base.statusBarImages()
 	for uri, contents := range overlays {
 		wcfg := cfg
 		// The workspace reported the errors of its own config when it
@@ -3151,7 +3158,9 @@ func (h *workspaceManagerHandler) loadHUD(ctx context.Context) (*HUD, error) {
 		}
 		style := wcfg.hudStyle()
 		hud.workspaces[uri] = style
+		hud.workspaceCfgs[uri] = wcfg.cfg
 		uris = append(uris, style.imageURIs()...)
+		statusBarImages = append(statusBarImages, style.statusBarImages()...)
 	}
 	slices.Sort(uris)
 	uris = slices.Compact(uris)
@@ -3166,22 +3175,41 @@ func (h *workspaceManagerHandler) loadHUD(ctx context.Context) (*HUD, error) {
 		}
 		hud.images[uri] = img
 	}
+
+	statusBarStorage := storageapi.WithPartition(h.ideStorage, statusBarImagesPartition)
+	defer statusBarStorage.Close() //nolint:errcheck
+	refreshed := make(map[string]struct{}, len(statusBarImages))
+	for _, spec := range statusBarImages {
+		if _, ok := refreshed[spec.URI]; ok {
+			continue
+		}
+		refreshed[spec.URI] = struct{}{}
+		img, err := imageuri.Refresh(ctx, spec.URI, spec.TTL, statusBarStorage)
+		if err != nil {
+			log.Warnf("reload status bar image: %v", err)
+			continue
+		}
+		hud.statusBarImages[spec.URI] = img
+	}
 	return hud, nil
 }
 
 // applyHUD installs hud in every workspace, and in those still loading
 // once they open, unless a HUD whose load started later is installed
-// already. It must run on the event loop.
-func (h *workspaceManagerHandler) applyHUD(hud *HUD) {
+// already, and reports whether it did. Extensions of the workspaces it
+// installs hud in fetch hud's config from then on; it returns how many
+// extension processes it told so. It must run on the event loop.
+func (h *workspaceManagerHandler) applyHUD(hud *HUD) (applied bool, signalled int) {
 	if h.hud != nil && hud.load < h.hud.load {
-		return
+		return false, 0
 	}
 	h.hud = hud
 	h.logNonFatalErrs(h.focusBrowser(), nil, hud.configErrs)
+	h.status.SetNotifyConfig(hud.base.notifyStatus)
 	wm := hud.base.browser.WindowManager
 	h.styleWorkspaceBar(wm.FrameAttr, wm.FrameCharSet)
 	h.styleWorkspaceUnion(wm.FrameAttr, hud.base.browser.FrameUnionCharSet)
-	h.empty.restyle(hud.base, hud.images)
+	h.empty.restyle(hud.base, hud.images, hud.statusBarImages)
 	for _, w := range h.workspaces {
 		if w == nil || w.ex == nil {
 			continue
@@ -3191,16 +3219,19 @@ func (h *workspaceManagerHandler) applyHUD(hud *HUD) {
 			continue
 		}
 		style, ok := hud.workspaces[uri]
+		cfg := hud.workspaceCfgs[uri]
 		if !ok {
 			if w.configOverlay != nil {
 				// It opened after hud read the overlays, so hud knows
 				// nothing of its own config.
 				continue
 			}
-			style = hud.base
+			style, cfg = hud.base, hud.cfg
 		}
-		w.ex.restyle(style, hud.images)
+		w.ex.restyle(style, hud.images, hud.statusBarImages)
+		signalled += w.reloadExtensionConfig(cfg)
 	}
+	return true, signalled
 }
 
 func (h *workspaceManagerHandler) commandReloadWorkspace(args ...string) error {
@@ -3721,6 +3752,19 @@ type workspaceHandler struct {
 	// configOverlay is the workspace config the workspace overlaid onto
 	// the user's, nil when it overlaid none.
 	configOverlay []byte
+	// extensionConfig is what the workspace's extensions fetch as config.
+	extensionConfig *extension.LiveConfig
+}
+
+// reloadExtensionConfig serves cfg to the workspace's extensions and tells
+// their running processes, returning how many it told.
+func (hm *workspaceHandler) reloadExtensionConfig(cfg map[string]any) int {
+	hm.extensionConfig.Set(cfg)
+	runner, ok := hm.Extensions.Load().(extension.Runner)
+	if !ok {
+		return 0
+	}
+	return runner.SignalReload()
 }
 
 func (hm *workspaceHandler) Close() error {

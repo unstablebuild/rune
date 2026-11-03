@@ -144,6 +144,53 @@ If your extension restarts and registers the scheme again, the new
 registration replaces the old one. Rune versions that predate resource
 openers fail the registration with a `codes.Unimplemented` status.
 
+## Reloading configuration
+
+The `config.Config` passed to `run` is your extension's block as it was
+when the process started. `Workspace.Config` fetches the configuration from
+Rune on every call instead, so it reflects the file as Rune last read it:
+the shared settings plus your own block under `extensions.<id>.config`.
+Other extensions' blocks are left out.
+
+On macOS and Linux, Rune sends each running extension process `SIGUSR2`
+after it reads its config file again, for example before a
+[`runectl screenshot`](../runectl.md#screenshots). Install a handler to
+apply the change; the SDK installs none, and Go ignores the signal by
+default:
+
+```go
+reload := make(chan os.Signal, 1)
+signal.Notify(reload, syscall.SIGUSR2)
+go func() {
+	defer signal.Stop(reload)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-reload:
+			own, err := ws.Config(ctx).GetConfig("extensions")
+			if err == nil {
+				own, err = own.GetConfig("snippets")
+			}
+			if err == nil {
+				own, err = own.GetConfig("config")
+			}
+			if err != nil {
+				slog.Warn("reload config", "error", err)
+				continue
+			}
+			s.apply(own)
+		}
+	}
+}()
+```
+
+`ctx` stays live until the extension shuts down, so the goroutine may
+outlive `run`. A block that no longer exists returns `config.ErrNotFound`,
+which you may want to treat as the defaults. Rune captures a screenshot
+300 ms after signalling, so redraw promptly; a slower redraw shows up in
+the next capture.
+
 ## Run and debug it
 
 Build your binary, then start it in a workspace from the

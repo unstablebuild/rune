@@ -170,6 +170,13 @@ func New(
 	}
 }
 
+// SetNotifyConfig selects what s notifies from the next status reported
+// on. A notification it deferred already is still raised if the state
+// it waits for is one notify still notifies.
+func (s *Store) SetNotifyConfig(notify NotifyConfig) {
+	s.notify = notify
+}
+
 // SetTabStatus applies report, made by the program behind uri in the
 // workspace at ws, to the tab at uri among tabs, the tabs of the
 // workspace, or, when uri is no tab, to the records the store keeps for

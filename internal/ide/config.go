@@ -2293,6 +2293,10 @@ func (c ideConfig) hudStyle() hudStyle {
 		},
 		commandPromptFrame:     frame,
 		commandPromptSeparator: separator,
+		commandShowManual:      c.commandOverlayShowManual(),
+		statusBar:              c.statusBarStyle(),
+		bellSound:              c.terminalBellSound(),
+		notifyStatus:           c.statusNotifyConfig(),
 	}
 }
 
@@ -3973,20 +3977,31 @@ func (c ideConfig) statusBarConfig(
 	cwd workspaceapi.URI, pub text.EventPublisher, svc vctrl.Service,
 	interrupter term.Interrupter,
 ) text.StatusBarConfig {
+	style := c.statusBarStyle()
 	ret := text.StatusBarConfig{
 		Workspace:        cwd,
 		ScheduleNextTick: c.scheduleNextTick,
 		Publisher:        pub,
 		Interrupter:      interrupter,
-		BackgroundColor:  c.statusBarAttr("background_attr", term.Attributes{}).Bg,
-		ErrorColor:       c.statusBarAttr("foreground_error_attr", term.Attributes{}).Fg,
+		BackgroundColor:  style.BackgroundColor,
+		ErrorColor:       style.ErrorColor,
 		GitService:       svc,
-		Layout:           c.statusBarLayout(),
+		Layout:           style.Layout,
 	}
 	if c.storage != nil {
 		ret.Storage = storageapi.WithPartition(c.storage, statusBarImagesPartition)
 	}
 	return ret
+}
+
+// statusBarStyle reads the keys of editor.status_bar that a HUD reload
+// restyles open status bars with.
+func (c ideConfig) statusBarStyle() text.StatusBarStyle {
+	return text.StatusBarStyle{
+		Layout:          c.statusBarLayout(),
+		BackgroundColor: c.statusBarAttr("background_attr", term.Attributes{}).Bg,
+		ErrorColor:      c.statusBarAttr("foreground_error_attr", term.Attributes{}).Fg,
+	}
 }
 
 // statusBarImagesPartition caches the images status bar layouts download.
@@ -5230,7 +5245,7 @@ func (c ideConfig) terminalBellTrigger() (ret []byte) {
 // terminalBellSound reads terminal.bell, the name of the sound a
 // program ringing the bell plays; "" plays none.
 func (c ideConfig) terminalBellSound() string {
-	ret := vte.DefaultConfig().BellSound
+	ret := *vte.DefaultConfig().BellSound.Load()
 	cfg, ok := c.terminal()
 	if !ok {
 		return ret
@@ -5399,7 +5414,7 @@ func (c ideConfig) terminalConfig() vte.Config {
 	ret.ClipboardAccess = c.terminalClipboardAccess()
 	ret.ScheduleNextTick = c.scheduleNextTick
 	ret.Sounds = c.sounds
-	ret.BellSound = c.terminalBellSound()
+	ret.BellSound.Store(new(c.terminalBellSound()))
 	ret.CellPixelSize = c.cellPixelSize
 	ret.MinWidth = defaultMinWidth
 	ret.Search = c.terminalSearchConfig()
@@ -5622,6 +5637,15 @@ func tabStatusConfigFor(cfg ideConfig) browser.TabStatusConfig {
 		return browser.TabStatusConfig{}
 	}
 	return cfg.tabStatusConfig()
+}
+
+// statusNotifyConfig returns what tabStatusNotifyConfig selects, or
+// nothing when terminal.status is disabled.
+func (c ideConfig) statusNotifyConfig() idestatus.NotifyConfig {
+	if !c.tabStatusEnabled() {
+		return idestatus.NotifyConfig{}
+	}
+	return c.tabStatusNotifyConfig()
 }
 
 // tabStatusNotifyConfig reads terminal.status.notify, the states a tab

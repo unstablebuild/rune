@@ -19,6 +19,7 @@ package dialoguetui
 import (
 	"context"
 	"fmt"
+	"image"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -700,6 +701,25 @@ func TestStatusBarImagesAreHiddenWithoutRows(t *testing.T) {
 	bar.drawImages(rec, 0)
 	assert.Empty(t, rec.Images)
 	assert.Zero(t, rec.Cells)
+}
+
+func TestStatusBarPreloadedImageDrawsFromTheFirstFrame(t *testing.T) {
+	const uri = "file:///nowhere/preloaded.png"
+	parsed, err := ParseStatusBarLayout(fmt.Sprintf(`{{ .Image | src %q | width 2 }}`, uri))
+	require.NoError(t, err)
+	// No storage or interrupter: the bar cannot download anything.
+	bar := NewStatusBar(StatusBarConfig{
+		Enabled: true,
+		Layout:  parsed,
+		Images:  map[string]image.Image{uri: image.NewRGBA(image.Rect(0, 0, 4, 2))},
+	}, nil)
+	t.Cleanup(func() { assert.NoError(t, bar.Close()) })
+	bar.Resize(10, 1)
+
+	rec := &handlerrpctest.ImageRecorder{}
+	bar.drawImages(rec, 1)
+	require.Len(t, rec.Images, 1)
+	assert.Equal(t, 2, rec.Images[0].Width)
 }
 
 // newImageStatusBar returns a bar reporting model opus, effort high and

@@ -4630,15 +4630,20 @@ func TestExRestyle(t *testing.T) {
 			"frame_charset":     map[string]any{"topright": "╮"},
 			"separator_charset": map[string]any{"left": "├"},
 		},
+		"editor": map[string]any{"status_bar": map[string]any{
+			"layout": "[{{ .Status }}]",
+		}},
 	}, errors: map[string]error{}}
 	style := cfg.hudStyle()
 	require.Empty(t, cfg.errors)
+	b.ex.statusBars = text.NewStatusBarStyles(text.StatusBarStyle{})
 
-	b.ex.restyle(style, map[string]image.Image{uri: image.NewRGBA(image.Rect(0, 0, 1, 1))})
+	b.ex.restyle(style, map[string]image.Image{uri: image.NewRGBA(image.Rect(0, 0, 1, 1))}, nil)
 
 	assert.Equal(t, '╭', b.ex.config.FrameCharSet.TopLeft)
 	assert.Equal(t, style.commandPromptFrame, b.ex.commandPromptCfg.frameCharSet)
 	assert.Equal(t, '├', b.ex.commandPromptCfg.separator.Left)
+	assert.Equal(t, style.statusBar, b.ex.statusBars.Current())
 	frame, _ := b.ex.promptFrameCharSets()
 	assert.Equal(t, '╮', frame.TopRight)
 	for name, g := range map[string]*tcomponent.FrameGraphics{

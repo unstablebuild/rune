@@ -20,9 +20,13 @@ import (
 	"image"
 	"slices"
 
+	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"unstable.build/rune/internal/browser"
 	tcomponent "unstable.build/rune/internal/component"
+	"unstable.build/rune/internal/component/template"
+	"unstable.build/rune/internal/ide/idestatus"
+	"unstable.build/rune/internal/text"
 )
 
 // hudStyle is what a HUD reload re-applies to a running workspace.
@@ -32,6 +36,12 @@ type hudStyle struct {
 	// which draws the command prompt with the window frame charset.
 	commandPromptFrame     *component.FrameCharSet
 	commandPromptSeparator tcomponent.SeparatorCharSet
+	commandShowManual      bool
+	statusBar              text.StatusBarStyle
+	bellSound              string
+	// notifyStatus applies to every workspace, from the user's config
+	// alone.
+	notifyStatus idestatus.NotifyConfig
 }
 
 // imageURIs returns, sorted and once each, the URI of every image the
@@ -69,10 +79,24 @@ func (s hudStyle) imageURIs() []string {
 	return slices.DeleteFunc(uris, func(uri string) bool { return uri == "" })
 }
 
+// statusBarImages returns the images of the editor status bar layout of
+// s, in layout order.
+func (s hudStyle) statusBarImages() []template.Image {
+	var ret []template.Image
+	for _, comp := range s.statusBar.Layout {
+		if comp.Type == text.StatusBarImage {
+			ret = append(ret, comp.Image)
+		}
+	}
+	return ret
+}
+
 // HUD holds what IDE.LoadHUD read from the config file for ApplyHUD to
 // install: the keys of window frames, scroll bars, floating window bars,
-// frame unions, the command prompt frame and separator, prompt buttons and
-// the wallpaper, and the images they name.
+// frame unions, the command prompt frame, separator and manual, prompt
+// buttons, the editor status bar, the wallpaper, the terminal bell and
+// the program status notifications, and the images they name, and the
+// config extensions fetch.
 type HUD struct {
 	// load orders HUDs by when their load started.
 	load uint64
@@ -82,7 +106,21 @@ type HUD struct {
 	workspaces map[string]hudStyle
 	// skip holds the workspaces whose overlay failed to decode, which
 	// keep their style.
-	skip       map[string]struct{}
-	images     map[string]image.Image
-	configErrs map[string]error
+	skip   map[string]struct{}
+	images map[string]image.Image
+	// statusBarImages holds, by URI, the images of the status bar
+	// layouts, which are cached apart from images.
+	statusBarImages map[string]image.Image
+	configErrs      map[string]error
+	// cfg is the user's config the HUD was read from.
+	cfg map[string]any
+	// workspaceCfgs holds, by URI, the config of the workspaces in
+	// workspaces: the user's with their own overlaid.
+	workspaceCfgs map[string]map[string]any
+}
+
+// Config returns the user's config h was read from, without the config
+// of any workspace. Its errors are reported when h is applied.
+func (h *HUD) Config() config.Config {
+	return config.MapConfig(h.cfg)
 }

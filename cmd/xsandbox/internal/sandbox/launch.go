@@ -124,7 +124,7 @@ func (s *sandbox) launch() error {
 		filepath.Join(s.dataDir, "extensions"), docbson.Marshaler())
 	res = extension.MergeResourceMap(res, extension.StorageResources(s.extStorage))
 	res = extension.MergeResourceMap(res,
-		extension.ConfigResources(config.MapConfig(s.cfg)))
+		extension.ConfigResources(extension.NewLiveConfig(s.cfg)))
 	res = extension.MergeResourceMap(res, extension.SyntaxResources(stubParser{}))
 	res = extension.MergeResourceMap(res, extension.SemanticResources(stubLSP{}))
 	res = extension.MergeResourceMap(res, extension.DebugResources(stubDebugger{}))

@@ -78,22 +78,39 @@ keys to every open workspace:
 
 - `browser.window_manager`: `frame_attr`, `focus_frame_attr`,
   `frame_charset`, `focus_frame_charset`, `scroll_bar_attr`,
-  `scroll_bar_charset`, `window_bar_charset`, `close_icon` and
-  `close_icon_attr`;
+  `scroll_bar_charset`, `scroll_bar_char`, `scroll_bar_hover_char`,
+  `window_bar`, `window_bar_charset`, `close_icon` and `close_icon_attr`;
 - `browser.frameunion_charset`;
 - `browser.prompt`: `text_attr`, `highlight_attr`, `hover_attr`,
   `clicked_attr`, `background_attr` and `images`;
-- `command.frame_charset` and `command.separator_charset`;
+- `command.frame_charset`, `command.separator_charset` and
+  `command.show_manual`;
+- `editor.status_bar`: `layout`, `background_attr` and
+  `foreground_error_attr`;
+- `gui`: `quick_menu`, `quick_menu_sounds`, `themes`, `default_theme` and
+  `sound_volume`;
+- `program_status.sounds`;
+- `terminal.bell`;
 - `workspace`: `wallpaper_image`, `wallpaper_image_ascii`,
-  `wallpaper_ascii`, `wallpaper_attr`, `wallpaper_background_attr` and
-  `wallpaper_density_characters`;
+  `wallpaper_ascii`, `wallpaper`, `wallpaper_attr`,
+  `wallpaper_background_attr` and `wallpaper_density_characters`;
 - `sounds`.
 
 It also reads again every image these keys name, even a file overwritten
 at the same path, so you can edit an image and see it in the next
 screenshot. Config errors show up as notifications in the capture. If the
-config file does not parse, none of its keys are applied. Other keys still
-take `:workspacereload` or a restart.
+config file does not parse, none of its keys are applied.
+`gui.default_theme` and `gui.sound_volume` apply only when they differ
+from the values Rune read last, so a theme or volume picked since then
+stays. Prompts already open keep their style until reopened. Other keys
+still take `:workspacereload` or a restart.
+
+Rune also serves the new config to its extensions and, on macOS and
+Linux, sends each running extension process `SIGUSR2`. When it signalled
+any, it waits 300 ms before capturing so they can redraw; see [Reloading
+configuration](sdk/go.md#reloading-configuration). Rune Agent uses this to
+apply `extensions.rune-agent.config.status_bar` to its open chats. An
+extension slower than that shows its change in the next screenshot.
 
 Screenshots require GUI mode. TUI sessions safely discard the request, and
 `runectl` times out without creating an image. The capture contains Rune's

@@ -2541,7 +2541,6 @@ CCCCCCCCCCCCCCCCCCCC`,
 			style.CloseIconAttr = yellow
 			// What changes the layout is not style.
 			style.Frame = !cfg.Frame
-			style.WindowBar = false
 			style.NoMaxSize = false
 			wm.Restyle(style)
 			if tt.after != nil {
@@ -2574,6 +2573,80 @@ CCCCCCCCCCCCCCCCCCCC`,
 				assert.Equal(t, scrollBarAttr, f.ScrollBarAttributes)
 				assert.Equal(t, scrollBarCharSet, f.ScrollBarCharSet)
 			})
+		})
+	}
+}
+
+func TestWindowManagerRestyleWindowBar(t *testing.T) {
+	const withBar = `
+┌──────────────────┐
+│█●██CCCCCCCCCCCCCC│
+││BB│CCCCCCCCCCCCCC│
+││BB│CCCCCCCCCCCCCC│
+│└──┘CCCCCCCCCCCCCC│
+│CCCCCCCCCCCCCCCCCC│
+│CCCCCCCCCCCCCCCCCC│
+└──────────────────┘`
+	const withoutBar = `
+┌──────────────────┐
+│┌──┐CCCCCCCCCCCCCC│
+││BB│CCCCCCCCCCCCCC│
+││BB│CCCCCCCCCCCCCC│
+│└──┘CCCCCCCCCCCCCC│
+│CCCCCCCCCCCCCCCCCC│
+│CCCCCCCCCCCCCCCCCC│
+└──────────────────┘`
+	openFloating := func(wm *WindowManager) Window {
+		return wm.FloatingWindow(
+			component.StaticFloating(&component.TestComponent{Ch: 'B'}, 2, 2),
+			FloatingConfig{Offset: term.Coordinates{X: 1, Y: 1}},
+		)
+	}
+	tests := []struct {
+		name       string
+		bar        bool
+		restyled   bool
+		openBefore bool
+		expected   string
+	}{
+		{name: "turned off in an open window", bar: true, openBefore: true, expected: withoutBar},
+		{name: "turned on in an open window", restyled: true, openBefore: true, expected: withBar},
+		{name: "turned off in a window opened afterwards", bar: true, expected: withoutBar},
+		{name: "turned on in a window opened afterwards", restyled: true, expected: withBar},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultWindowManagerConfig()
+			cfg.WindowBar = tt.bar
+			wm, _ := NewWindowManager(&component.TestComponent{Ch: 'C'}, cfg)
+			wm.Resize(20, 8)
+			var win Window
+			if tt.openBefore {
+				win = openFloating(wm)
+			}
+			var pos term.Coordinates
+			var width, height int
+			if tt.openBefore {
+				pos, width, height = win.Position(), win.Width(), win.Height()
+			}
+
+			style := cfg
+			style.WindowBar = tt.restyled
+			wm.Restyle(style)
+			if !tt.openBefore {
+				win = openFloating(wm)
+			}
+
+			assert.Equal(t, tt.restyled, win.HasWindowBar())
+			if tt.openBefore {
+				assert.Equal(t, pos, win.Position(), "the bar does not move the window")
+				assert.Equal(t, [2]int{width, height}, [2]int{win.Width(), win.Height()},
+					"the bar does not resize the window")
+			}
+			w := term.NewStringWriter(20, 8)
+			wm.Draw(w)
+			require.NoError(t, w.Flush())
+			assert.Equal(t, tt.expected, "\n"+w.String())
 		})
 	}
 }

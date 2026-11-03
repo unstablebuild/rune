@@ -18,8 +18,11 @@ package texttest
 
 import (
 	"context"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -28,6 +31,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/component/comptest"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"go.uber.org/goleak"
 	"unstable.build/rune/internal/cell"
 	"unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/handler/handlertest"
@@ -615,6 +619,241 @@ func (s testSyntax) RawCells() [][]term.Cell {
 
 func (s testSyntax) String() string {
 	return s.view.String()
+}
+
+func TestStatusBarRestyle(t *testing.T) {
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+
+	tests := []struct {
+		name    string
+		initial string
+		run     func(t *testing.T, styles *text.StatusBarStyles, f *restyleBar)
+	}{
+		{
+			name:    "draws the fields of the new layout",
+			initial: `{{ .Status }}`,
+			run: func(t *testing.T, styles *text.StatusBarStyles, f *restyleBar) {
+				styles.Restyle(restyleStyle(t, `<{{ .Filepath }}>{{ .Status }}`), nil)
+				assert.Contains(t, f.row(), "<relpath.go")
+				assert.Contains(t, f.row(), "NORMAL")
+			},
+		},
+		{
+			name:    "keeps the status message",
+			initial: `{{ .Status }}`,
+			run: func(t *testing.T, styles *text.StatusBarStyles, f *restyleBar) {
+				styles.Restyle(restyleStyle(t, `[{{ .Status }}]`), nil)
+				assert.Equal(t, "[NORMAL]", strings.TrimSpace(f.row()))
+			},
+		},
+		{
+			name:    "draws the new background color",
+			initial: `{{ .Status }}`,
+			run: func(t *testing.T, styles *text.StatusBarStyles, f *restyleBar) {
+				style := restyleStyle(t, `{{ .Status }}`)
+				style.BackgroundColor = term.ColorBlue
+				styles.Restyle(style, nil)
+				cells := f.cells()
+				for i := range len("NORMAL") {
+					assert.Equal(t, term.ColorBlue, cells[i].Bg, i)
+				}
+			},
+		},
+		{
+			name:    "draws parser errors in the new error color",
+			initial: `{{ .Language }}`,
+			run: func(t *testing.T, styles *text.StatusBarStyles, f *restyleBar) {
+				f.sendSyntax(t, syntax.State{LangID: "GO", ParserError: "oops"}, "GO")
+				style := restyleStyle(t, `{{ .Language }}`)
+				style.ErrorColor = term.ColorBlue
+				styles.Restyle(style, nil)
+				cells := f.cells()
+				for i := range len("GO") {
+					assert.Equal(t, term.ColorBlue, cells[i].Fg, i)
+				}
+			},
+		},
+		{
+			name:    "keeps the language",
+			initial: `{{ .Language }}`,
+			run: func(t *testing.T, styles *text.StatusBarStyles, f *restyleBar) {
+				f.sendSyntax(t, syntax.State{LangID: "GO"}, "GO")
+				styles.Restyle(restyleStyle(t, `[{{ .Language }}]`), nil)
+				assert.Equal(t, "[GO]", strings.TrimSpace(f.row()))
+			},
+		},
+		{
+			name:    "keeps the git branch",
+			initial: `{{ .GitShortRef }}`,
+			run: func(t *testing.T, styles *text.StatusBarStyles, f *restyleBar) {
+				f.settle(t, "main")
+				styles.Restyle(restyleStyle(t, `<{{ .GitShortRef }}>`), nil)
+				assert.Equal(t, "<main>", strings.TrimSpace(f.row()))
+			},
+		},
+		{
+			name:    "streams the language once it is added",
+			initial: `{{ .Status }}`,
+			run: func(t *testing.T, styles *text.StatusBarStyles, f *restyleBar) {
+				assert.Zero(t, f.streams.Load())
+				styles.Restyle(restyleStyle(t, `{{ .Language }}`), nil)
+				styles.Restyle(restyleStyle(t, `[{{ .Language }}]`), nil)
+				assert.Equal(t, int32(1), f.streams.Load())
+				f.sendSyntax(t, syntax.State{LangID: "GO"}, "[GO]")
+			},
+		},
+		{
+			name:    "keeps streaming the language it streamed",
+			initial: `{{ .Language }}`,
+			run: func(t *testing.T, styles *text.StatusBarStyles, f *restyleBar) {
+				styles.Restyle(restyleStyle(t, `{{ .Status }}`), nil)
+				styles.Restyle(restyleStyle(t, `[{{ .Language }}]`), nil)
+				assert.Equal(t, int32(1), f.streams.Load())
+				f.sendSyntax(t, syntax.State{LangID: "GO"}, "[GO]")
+			},
+		},
+		{
+			name:    "restyles no closed bar",
+			initial: `{{ .Status }}`,
+			run: func(t *testing.T, styles *text.StatusBarStyles, f *restyleBar) {
+				before := f.row()
+				require.NoError(t, f.bar.Close())
+				styles.Restyle(restyleStyle(t, `[{{ .Status }}]`), nil)
+				assert.Equal(t, before, f.row())
+			},
+		},
+		{
+			name:    "creates bars with the style restyled last",
+			initial: `{{ .Status }}`,
+			run: func(t *testing.T, styles *text.StatusBarStyles, _ *restyleBar) {
+				styles.Restyle(restyleStyle(t, `[{{ .Status }}]`), nil)
+				f := newRestyleBar(t, styles)
+				assert.Equal(t, "[NORMAL]", strings.TrimSpace(f.row()))
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			styles := text.NewStatusBarStyles(restyleStyle(t, tt.initial))
+			assert.Equal(t, restyleStyle(t, tt.initial), styles.Current())
+			tt.run(t, styles, newRestyleBar(t, styles))
+		})
+	}
+}
+
+func restyleStyle(t *testing.T, layout string) text.StatusBarStyle {
+	t.Helper()
+	components, err := text.ParseStatusBarLayout(layout)
+	require.NoError(t, err)
+	return text.StatusBarStyle{Layout: components, ErrorColor: term.ColorMaroon}
+}
+
+// restyleBar is a 40 columns wide status bar of relpath.go, with status
+// NORMAL, whose scheduled ticks run when the test settles it, as they
+// run on the event loop.
+type restyleBar struct {
+	bar     *text.StatusBar
+	ticks   chan func()
+	syntax  chan syntax.State
+	streams *atomic.Int32
+}
+
+func newRestyleBar(t *testing.T, styles *text.StatusBarStyles) *restyleBar {
+	t.Helper()
+	workspace, err := workspaceapi.ParseURI("memory:///workspace")
+	require.NoError(t, err)
+	f := &restyleBar{
+		ticks:   make(chan func(), 64),
+		syntax:  make(chan syntax.State),
+		streams: new(atomic.Int32),
+	}
+	buf := cell.NewBuffer()
+	buf.WriteString("first line\n")
+	s := &streamedSyntax{ch: f.syntax, streams: f.streams}
+	s.View = buf.WithView(s)
+	scroll := component.NewScroll(buf)
+	h := newTestHandler(scroll)
+	h.URI, err = workspaceapi.ParseURI("memory:///workspace/relpath.go")
+	require.NoError(t, err)
+	f.bar = text.WithStatusBar(h, buf, scroll, false, false, text.StatusBarConfig{
+		ScheduleNextTick: func(fn func()) bool {
+			f.ticks <- fn
+			return true
+		},
+		Workspace:  workspace,
+		Publisher:  &TestEditor{},
+		GitService: differ{},
+		Styles:     styles,
+	})
+	t.Cleanup(func() { assert.NoError(t, f.bar.Close()) })
+	f.bar.SetStatus("NORMAL", term.Attributes{})
+	f.bar.Resize(40, 3)
+	return f
+}
+
+func (f *restyleBar) draw() *term.StringWriter {
+	w := term.NewStringWriter(40, 3)
+	f.bar.Draw(w)
+	_ = w.Flush()
+	return w
+}
+
+// row returns the bar's row.
+func (f *restyleBar) row() string {
+	rows := strings.Split(f.draw().String(), "\n")
+	return rows[len(rows)-1]
+}
+
+// cells returns the cells of the bar's row.
+func (f *restyleBar) cells() []term.Cell {
+	cells := f.draw().Cells()
+	return cells[len(cells)-40:]
+}
+
+// settle runs the scheduled ticks until the bar's row contains want.
+func (f *restyleBar) settle(t *testing.T, want string) {
+	t.Helper()
+	timeout := time.After(5 * time.Second)
+	for !strings.Contains(f.row(), want) {
+		select {
+		case fn := <-f.ticks:
+			fn()
+		case <-timeout:
+			t.Fatalf("timed out waiting for %q, last row %q", want, f.row())
+		}
+	}
+}
+
+// sendSyntax streams state to the bar and settles it until its row
+// contains want.
+func (f *restyleBar) sendSyntax(t *testing.T, state syntax.State, want string) {
+	t.Helper()
+	select {
+	case f.syntax <- state:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out streaming the syntax state")
+	}
+	f.settle(t, want)
+}
+
+// streamedSyntax is a syntax service whose states are sent on ch, which
+// counts the streams opened on it.
+type streamedSyntax struct {
+	cell.View
+	ch      chan syntax.State
+	streams *atomic.Int32
+}
+
+func (s *streamedSyntax) State() iterator.Iterator[syntax.State] {
+	s.streams.Add(1)
+	return iterator.FromFunc(func(ctx context.Context) (syntax.State, bool, error) {
+		select {
+		case state := <-s.ch:
+			return state, true, nil
+		case <-ctx.Done():
+			return syntax.State{}, false, ctx.Err()
+		}
+	}, func() error { return nil })
 }
 
 func TestStatusBarProgressiveHiding(t *testing.T) {

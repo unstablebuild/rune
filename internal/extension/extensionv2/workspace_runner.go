@@ -212,6 +212,31 @@ func (m *workspaceRunner) Signal(pid workspaceapi.Pid, sig syscall.Signal) error
 	return m.executor.Signal(pid, sig)
 }
 
+// SignalReload implements extension.Runner. Extensions run through
+// extExecutor, not the workspace's executor Signal uses.
+func (m *workspaceRunner) SignalReload() int {
+	if reloadSignal == 0 {
+		return 0
+	}
+	m.mu.Lock()
+	pids := make([]workspaceapi.Pid, 0, len(m.states))
+	for _, state := range m.states {
+		if state.running && state.pid != 0 {
+			pids = append(pids, state.pid)
+		}
+	}
+	m.mu.Unlock()
+	signalled := 0
+	for _, pid := range pids {
+		if err := m.extExecutor.Signal(pid, reloadSignal); err != nil {
+			m.log(log.DebugLevel, "signal extension pid %d to reload its config: %v", pid, err)
+			continue
+		}
+		signalled++
+	}
+	return signalled
+}
+
 // LookPath returns the path of the file StartCommand runs for name in dir.
 func (m *workspaceRunner) LookPath(ctx context.Context, name, dir string) (string, error) {
 	return m.executor.LookPath(ctx, name, dir)

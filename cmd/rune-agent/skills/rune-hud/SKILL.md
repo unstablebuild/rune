@@ -51,12 +51,19 @@ these keys to every open workspace:
 
 - `browser.window_manager`: `frame_attr`, `focus_frame_attr`, `frame_charset`,
   `focus_frame_charset`, `scroll_bar_attr`, `scroll_bar_charset`,
-  `scroll_bar_char`, `scroll_bar_hover_char`, `window_bar_charset`, `close_icon`
-  and `close_icon_attr`;
+  `scroll_bar_char`, `scroll_bar_hover_char`, `window_bar`, `window_bar_charset`,
+  `close_icon` and `close_icon_attr`;
 - `browser.frameunion_charset`;
 - `browser.prompt`: `text_attr`, `highlight_attr`, `hover_attr`,
   `clicked_attr`, `background_attr` and `images`;
-- `command.frame_charset` and `command.separator_charset`;
+- `command.frame_charset`, `command.separator_charset` and
+  `command.show_manual`;
+- `editor.status_bar`: `layout`, `background_attr` and `foreground_error_attr`;
+- `extensions.rune-agent.config.status_bar`, every key;
+- `gui`: `quick_menu`, `quick_menu_sounds`, `themes`, `default_theme` and
+  `sound_volume`;
+- `program_status.sounds`;
+- `terminal.bell`;
 - `workspace`: `wallpaper_image`, `wallpaper_image_ascii`, `wallpaper_ascii`,
   `wallpaper`, `wallpaper_attr`, `wallpaper_background_attr` and
   `wallpaper_density_characters`;
@@ -64,6 +71,10 @@ these keys to every open workspace:
 
 Rune also reads again every image these keys name, including a file you
 overwrote at the same path. Existing prompts retain their style until reopened.
+`gui.default_theme` and `gui.sound_volume` apply only when they differ from the
+values Rune read last, so a theme or volume the user picked since stays. The
+agent redraws its own status bar a moment after Rune reloads; if a capture
+still shows the old agent bar, capture again.
 Do not assume every configuration key is live-reloaded: the exceptions are
 listed under Apply and verify. Inspect the surfaces visible in the capture;
 do not claim to have verified a prompt or state that was not shown.
@@ -130,11 +141,6 @@ would need percent-encoding in a `file://` URI.
    `runectl screenshot` reads those images again, so you can overwrite them
    while you iterate. Save each version you ship in a new `v<N>` directory
    and keep the previous one for rollback.
-   - Images named by other keys, such as `editor.status_bar.layout`,
-     `extensions.rune-agent.config.status_bar.layout` and
-     `gui.quick_menu[i].sprite`, are not read again: give each iteration a
-     new URI, in a new `v<N>` directory or with `?v=<N>` appended. The cache
-     key is the whole URI, while the file read ignores the query.
    - The wallpaper is not cached: overwrite it in place.
 3. **Formats:** PNG with alpha is preferred. JPEG, GIF and WebP also load, except
    for the wallpaper, which must be a PNG. Each side is at most 8192 px.
@@ -222,7 +228,7 @@ text or other images. Use that intentionally for status-bar ornaments.
 - Opaque fills in frames, bars and buttons follow the same rule.
 - If the art can't be matched, the alternative is a custom theme whose
   `background` is the art's colour (`gui.themes.<name>`, then
-  `gui.default_theme`, then a restart). Ask first: it changes every window.
+  `gui.default_theme`). Ask first: it changes every window.
 
 ## Painted art
 Figures (creatures, skulls, statues, scenes) are high-fidelity painted raster
@@ -495,14 +501,9 @@ presentation.
 | Editor | `editor.status_bar.layout` | `background_attr.bg`, `foreground_error_attr.fg` under `editor.status_bar` |
 | Agent | `extensions.rune-agent.config.status_bar.layout` | `enabled`, `background_attr`, `status`, and the gauge settings below, under `extensions.rune-agent.config.status_bar` |
 
-These layouts are not currently reapplied by `runectl screenshot`. Changes
-require `:workspacereload` in the affected workspace, which also restarts its
-extensions. Do not reload the workspace hosting your conversation without
-warning the user. Once activated, take and inspect screenshots yourself.
-
-Images in these layouts are cached by URI. Give revised images a new URI, such
-as a versioned filename or `file:///absolute/path/ornament.png?v=2`, and update
-the layout before reloading. A screenshot alone does not purge these caches.
+`runectl screenshot` applies both bars' keys to the open editors and chats and
+to those opened later, and reads their images again, so you can overwrite an
+image at the same path while you iterate.
 
 Merge the examples into the existing configuration; do not replace unrelated
 keys or remove the user's useful fields. In Starlark, the equivalent paths are
@@ -872,17 +873,16 @@ field and preserve its other fields rather than replacing the entire layout.
 
 ### Screenshot checks
 
-- Verify the edit is active before interpreting a screenshot. A new layout
-  still awaiting workspace reload cannot be checked by capturing repeatedly.
+- Verify the edit is active before interpreting a screenshot: a config that
+  does not parse installs no new layout, and a notification says why.
 - Inspect status text, optional fields and the transparent opening separately.
   Check whether padding belongs to the intended field before changing colours.
 - Test available idle and active states: a task description can be wider than
   a phase label. Do not claim to have checked states that were not visible.
 - Check narrow widths when possible. Large image reservations can displace
   text, and `max_cut` can hide an image when its element is clipped.
-- A missing image may be a bad URI, stale cached bytes or clipped placement.
-  Use a new URI for revised status-bar images, inspect notifications and the
-  configured `log_path`, and confirm the required reload happened.
+- A missing image may be a bad URI or clipped placement. Inspect
+  notifications and the configured `log_path`.
 - When the result differs from the brief, adjust the layout or asset and
   inspect another screenshot. No manual cell measurement is required.
 
@@ -939,8 +939,8 @@ workspace automatically: that can interrupt the conversation and running work.
 | Change | Takes effect |
 |---|---|
 | A key listed under Checking your work, or an image it names, even overwritten at the same path | `runectl screenshot`, in every open workspace |
-| Any other `browser.*` or `command.*` key, `editor.status_bar`, `extensions.*`, `terminal.bell` | `:workspacereload` in the focused workspace |
-| `gui.*` (quick menu, quick menu sounds, `sound_volume`), `program_status.*`, `animations.*` | Restart Rune. `:guiwindownew` opens a fresh process to preview them |
+| Any other `browser.*`, `command.*` or `extensions.*` key | `:workspacereload` in the focused workspace |
+| Any other `gui.*` or `program_status.*` key, `animations.*` | Restart Rune. `:guiwindownew` opens a fresh process to preview them |
 | A sound file overwritten at the same path | The next time it plays |
 | The wallpaper file overwritten at the same path | `runectl screenshot` or `:workspacereload` |
 | Any other image overwritten at the same URI | Never: give it a new URI |

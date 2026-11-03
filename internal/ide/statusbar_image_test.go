@@ -17,13 +17,20 @@
 package ide
 
 import (
+	"bytes"
+	"context"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
@@ -122,6 +129,129 @@ func TestStatusBarImageIntegration(t *testing.T) {
 			awaitFrame(t, h, w, interrupts, tt.expected)
 		})
 	}
+}
+
+func TestStatusBarRestyleIntegration(t *testing.T) {
+	const width, height = 60, 10
+	interrupts := make(chan struct{}, 1)
+	newTestPublishOverride = func(term.Event) bool {
+		select {
+		case interrupts <- struct{}{}:
+		default:
+		}
+		return true
+	}
+	t.Cleanup(func() { newTestPublishOverride = nil })
+
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	ornament := filepath.Join(dir, "ornament.png")
+	writeOrnament := func(c color.Color) {
+		img := image.NewNRGBA(image.Rect(0, 0, 4, 4))
+		for y := range 4 {
+			for x := range 4 {
+				img.Set(x, y, c)
+			}
+		}
+		var buf bytes.Buffer
+		require.NoError(t, png.Encode(&buf, img))
+		require.NoError(t, os.WriteFile(ornament, buf.Bytes(), 0o644))
+	}
+	writeOrnament(color.White)
+	for name, contents := range map[string]string{
+		"main.go":  "package main\n",
+		"other.go": "package other\n",
+	} {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(contents), 0o644))
+	}
+	src := (&url.URL{Scheme: "file", Path: ornament}).String()
+	layout := func(status string) map[string]any {
+		return map[string]any{"layout": fmt.Sprintf(
+			`{{ .Image | src %q | width 4 | reserve 0 | x_offset 8 | fit "fill" | z_index -1 }}`+
+				` %s{{ .ShiftRight }}{{ .Language }} `, src, status)}
+	}
+
+	cfg := defaultConfigWithWrap(false)
+	editor := cfg.cfg["editor"].(map[string]any)
+	editor["status_bar"] = layout(`{{ .Status }}`)
+	m := newTestWorkspaceManagerHandlerWithDir(t, cfg, dir, nopShutdownShaderConfig())
+	t.Cleanup(func() { _ = m.Close() })
+	uri, err := workspaceapi.ParseURI("file://" + dir)
+	require.NoError(t, err)
+	require.NoError(t, m.addOrCreateWorkspace(uri))
+	m.quiesce()
+
+	h := newSafeHandler(m)
+	h.Resize(width, height)
+	w := &imageRecorder{Writer: asciiart.NewStringWriter(width, height, asciiart.DefaultConfig())}
+	typeKeys := func(keys string) {
+		parsed, err := term.ParseKeys(keys)
+		require.NoError(t, err)
+		for _, key := range parsed {
+			h.Handle(term.Event{Ch: key.Ch, Mod: key.Mod, Key: key.Key, Type: term.EventKey})
+		}
+	}
+	draw := func() string {
+		w.images = nil
+		require.NoError(t, w.Clear(term.Attributes{}))
+		h.Draw(w)
+		require.NoError(t, w.Flush())
+		return w.String()
+	}
+	typeKeys(`<c-\\>edit<space>main.go<enter>`)
+	timeout := time.After(10 * time.Second)
+	for draw(); !w.drew(color.White); draw() {
+		select {
+		case <-interrupts:
+		case <-time.After(10 * time.Millisecond):
+		case <-timeout:
+			t.Fatalf("timed out waiting for the ornament, last frame:\n%s", w.String())
+		}
+	}
+
+	writeOrnament(color.NRGBA{R: 255, A: 255})
+	editor["status_bar"] = layout(`[{{ .Status }}]`)
+	hud, err := m.loadHUD(context.Background())
+	require.NoError(t, err)
+	m.mu.Lock()
+	m.applyHUD(hud)
+	m.mu.Unlock()
+
+	frame := draw()
+	assert.True(t, w.drew(color.NRGBA{R: 255, A: 255}),
+		"the open editor draws the ornament overwritten in place at once")
+	assert.Contains(t, frame, "[ NORMAL]", "the open editor's bar has the new layout")
+
+	typeKeys(`<c-\\>edit<space>other.go<enter>`)
+	frame = draw()
+	assert.Contains(t, frame, "package other")
+	assert.Contains(t, frame, "[ NORMAL]", "an editor opened afterwards has the new layout")
+	assert.True(t, w.drew(color.NRGBA{R: 255, A: 255}),
+		"an editor opened afterwards draws the new ornament at once")
+	assert.False(t, strings.Contains(frame, " NORMAL "), "no bar keeps the old layout")
+}
+
+// imageRecorder records the images drawn through it.
+type imageRecorder struct {
+	handlertest.Writer
+	images []term.Image
+}
+
+func (w *imageRecorder) DrawImage(img term.Image) bool {
+	w.images = append(w.images, img)
+	return w.Writer.DrawImage(img)
+}
+
+// drew reports whether an image whose top left pixel is c was drawn.
+func (w *imageRecorder) drew(c color.Color) bool {
+	want := color.NRGBAModel.Convert(c)
+	for _, img := range w.images {
+		b := img.Src.Bounds()
+		if color.NRGBAModel.Convert(img.Src.At(b.Min.X, b.Min.Y)) == want {
+			return true
+		}
+	}
+	return false
 }
 
 // awaitFrame redraws on every interrupt, as the host event loop does,

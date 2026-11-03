@@ -75,6 +75,10 @@ type Config struct {
 	// one settles or a title is due.
 	Storage     storageapi.Service
 	Interrupter term.Interrupter
+	// Images holds, by URI, images of Buttons that are drawn as given
+	// from the first frame, without being fetched; the others load
+	// through Storage.
+	Images map[string]image.Image
 	// TooltipDelay is how long the pointer must rest on a button before
 	// its title is shown. Zero shows it at once.
 	TooltipDelay time.Duration
@@ -128,12 +132,19 @@ func New(cfg Config) *Bar {
 			if _, ok := b.images[uri]; ok {
 				continue
 			}
-			img, err := imageuri.New(uri, template.DefaultImageTTL,
-				cfg.Storage, cfg.Interrupter, imageuri.Style{
-					Fit:         term.ImageFitContain,
-					Layer:       term.ImageLayerAboveText,
-					HideLoading: true,
-				})
+			style := imageuri.Style{
+				Fit:         term.ImageFitContain,
+				Layer:       term.ImageLayerAboveText,
+				HideLoading: true,
+			}
+			var img *imageuri.Component
+			var err error
+			if loaded, ok := cfg.Images[uri]; ok {
+				img, err = imageuri.NewLoaded(uri, loaded, style)
+			} else {
+				img, err = imageuri.New(uri, template.DefaultImageTTL,
+					cfg.Storage, cfg.Interrupter, style)
+			}
 			if err != nil {
 				slog.Warn("quick menu: new image", "error", err)
 			} else {

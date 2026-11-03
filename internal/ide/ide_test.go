@@ -3036,6 +3036,8 @@ func (r testRunner) Close() error {
 	return nil
 }
 
+func (r testRunner) SignalReload() int { return 0 }
+
 func (r testRunner) WaitReady(ctx context.Context, id string) error {
 	return nil
 }

@@ -320,6 +320,37 @@ func TestBarFallsBack(t *testing.T) {
 	}
 }
 
+func TestBarDrawsTheImagesItIsGiven(t *testing.T) {
+	pics := newPictures(t, "")
+	loaded := color.RGBA{R: 1, G: 2, B: 3, A: 255}
+	pics.names[loaded] = 'z'
+	img := image.NewRGBA(image.Rect(0, 0, 4, 4))
+	for y := range 4 {
+		for x := range 4 {
+			img.SetRGBA(x, y, loaded)
+		}
+	}
+	b := New(Config{
+		Buttons:     []Button{pics.button("First", "missing", "missing", "missing")},
+		Columns:     testColumns,
+		Top:         testTop,
+		Storage:     storagestub.NewInMemoryService(),
+		Interrupter: term.NopInterrupter(),
+		Images:      map[string]image.Image{pics.uris["missing"]: img},
+	})
+	t.Cleanup(func() { assert.NoError(t, b.Close()) })
+	b.Resize(testWidth, testHeight)
+	b.Draw(newImageScreen(testWidth, testHeight, testCell))
+
+	assert.Equal(t, `
+..........
+.......zz.
+.......zz.
+..........
+..........`, render(t, b, pics, false),
+		"an image it is given draws from the first frame without being read")
+}
+
 func TestBarLaysButtonsOutLikeTheNativeBar(t *testing.T) {
 	pics := newPictures(t, "a")
 	for _, size := range []cell.PixelSize{

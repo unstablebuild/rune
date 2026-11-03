@@ -19,6 +19,7 @@ package ide
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
@@ -48,6 +49,7 @@ import (
 	"github.com/unstablebuild/blue/release/docrelease"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
+	"github.com/unstablebuild/rune-go-sdk/api/config/configrpc"
 	"github.com/unstablebuild/rune-go-sdk/api/extensionapi"
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
@@ -62,6 +64,7 @@ import (
 	sdkiterator "github.com/unstablebuild/rune-go-sdk/iterator"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
+	"google.golang.org/grpc"
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/browser/browsertest"
 	"unstable.build/rune/internal/cell"
@@ -7786,6 +7789,8 @@ func (f fnRunner) Close() error {
 	return nil
 }
 
+func (f fnRunner) SignalReload() int { return 0 }
+
 func (f fnRunner) WaitReady(ctx context.Context, id string) error {
 	return nil
 }
@@ -9641,6 +9646,8 @@ func (r *waitReadyRunner) Run(extensionID, path string, config config.Config) er
 
 func (r *waitReadyRunner) Close() error { return nil }
 
+func (r *waitReadyRunner) SignalReload() int { return 0 }
+
 func (r *waitReadyRunner) WaitReady(ctx context.Context, id string) error {
 	if r.waitErr != nil {
 		return r.waitErr
@@ -9688,6 +9695,8 @@ func (r *perIDReadyRunner) Run(extensionID, path string, config config.Config) e
 }
 
 func (r *perIDReadyRunner) Close() error { return nil }
+
+func (r *perIDReadyRunner) SignalReload() int { return 0 }
 
 func (r *perIDReadyRunner) WaitReady(ctx context.Context, id string) error {
 	ch := r.chanFor(id)
@@ -12258,6 +12267,40 @@ func TestLoadHUD(t *testing.T) {
 		assert.NotContains(t, missing.images, uri)
 	})
 
+	t.Run("status bar images are read again", func(t *testing.T) {
+		dir := tempDir(t)
+		imgPath := filepath.Join(dir, "ornament.png")
+		uri := "file://" + imgPath
+		configPath := filepath.Join(dir, "rune.yaml")
+		require.NoError(t, os.WriteFile(configPath, []byte("clipboard: memory\n"+
+			"workspace:\n  home: "+dir+"\n"+
+			"editor:\n  status_bar:\n    layout: '{{ .Status }}{{ .Image | src \""+uri+"\" }}'\n"),
+			0o644))
+		writeHUDTestPNG(t, imgPath, color.White)
+		i, _ := newHUDTestIDE(t, "", configPath)
+		pixel := func(hud *HUD) color.Color {
+			require.Contains(t, hud.statusBarImages, uri)
+			return color.NRGBAModel.Convert(hud.statusBarImages[uri].At(0, 0))
+		}
+
+		first, err := i.LoadHUD(ctx)
+		require.NoError(t, err)
+		assert.Empty(t, first.configErrs)
+		assert.Equal(t, color.NRGBAModel.Convert(color.White), pixel(first))
+		assert.NotContains(t, first.images, uri, "status bar images are cached apart")
+
+		red := color.NRGBA{R: 255, A: 255}
+		writeHUDTestPNG(t, imgPath, red)
+		overwritten, err := i.LoadHUD(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, red, pixel(overwritten), "an image overwritten in place")
+
+		require.NoError(t, os.Remove(imgPath))
+		missing, err := i.LoadHUD(ctx)
+		require.NoError(t, err)
+		assert.NotContains(t, missing.statusBarImages, uri)
+	})
+
 	t.Run("config errors", func(t *testing.T) {
 		dir := tempDir(t)
 		configPath := filepath.Join(dir, "rune.yaml")
@@ -12344,37 +12387,175 @@ func hudTestStyle(topLeft, top string) hudStyle {
 }
 
 func TestApplyHUD(t *testing.T) {
-	m, other := newActivityTestManager(t, defaultConfigWithWrap(false))
+	cfg := defaultConfigWithWrap(false)
+	var soundsMu sync.Mutex
+	var played []string
+	cfg.sounds = sounds.PlayerFunc(func(name string) {
+		soundsMu.Lock()
+		defer soundsMu.Unlock()
+		played = append(played, name)
+	})
+	m, other := newActivityTestManager(t, cfg)
 	t.Cleanup(func() { _ = m.Close() })
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	focused, skipped := m.workspaces[m.focus], m.workspaces[other]
 	topLeft := func(e *ex) rune { return e.config.FrameCharSet.TopLeft }
+	bell := func(e *ex) string { return *e.emulatorConfig.BellSound.Load() }
 	untouched := topLeft(skipped.ex)
+	untouchedBell := bell(skipped.ex)
+	// A terminal opened before the reload holds a copy of the config.
+	openTerminal := focused.ex.emulatorConfig
 
+	base, overlaid := hudTestStyle("╭", "┳"), hudTestStyle("┏", "┳")
+	base.bellSound, overlaid.bellSound = "base-bell", "overlay-bell"
+	base.commandShowManual, overlaid.commandShowManual = true, true
+	base.notifyStatus = idestatus.NotifyConfig{
+		Sounds: map[programstatus.State]string{programstatus.Working: "tick"},
+	}
 	hud := &HUD{
 		load:       2,
-		base:       hudTestStyle("╭", "┳"),
-		workspaces: map[string]hudStyle{focused.uri.String(): hudTestStyle("┏", "┳")},
+		base:       base,
+		workspaces: map[string]hudStyle{focused.uri.String(): overlaid},
 		skip:       map[string]struct{}{skipped.uri.String(): {}},
 	}
-	m.applyHUD(hud)
+	applied, _ := m.applyHUD(hud)
+	require.True(t, applied)
 	assert.Equal(t, '╭', topLeft(m.empty), "the home workspace gets the base style")
 	assert.Equal(t, '┏', topLeft(focused.ex), "a workspace gets its overlay's style")
 	assert.Equal(t, untouched, topLeft(skipped.ex), "a skipped workspace keeps its style")
 	assert.Equal(t, '┳', m.union.Top)
+	assert.Equal(t, "base-bell", bell(m.empty))
+	assert.Equal(t, "overlay-bell", bell(focused.ex))
+	assert.Equal(t, "overlay-bell", *openTerminal.BellSound.Load(),
+		"an open terminal rings the new bell")
+	assert.Equal(t, untouchedBell, bell(skipped.ex))
+	assert.True(t, m.empty.config.CommandOverlay.ShowManual)
+	assert.True(t, focused.ex.config.CommandOverlay.ShowManual)
+	assert.False(t, skipped.ex.config.CommandOverlay.ShowManual)
 
-	m.applyHUD(&HUD{load: 1, base: hudTestStyle("╔", "┯")})
+	chat, err := workspaceapi.ParseURI("rune-agent://model/hud")
+	require.NoError(t, err)
+	_, err = focused.comp.Tab(chat, 'x', "hud", browsertest.NewTestHandler())
+	require.NoError(t, err)
+	require.NoError(t, focused.comp.SetTabStatus(chat,
+		programstatus.Report{State: programstatus.Working, Progress: -1}))
+	m.mu.Unlock()
+	m.quiesce()
+	m.mu.Lock()
+	soundsMu.Lock()
+	assert.Equal(t, []string{"tick"}, played, "program_status.sounds of the base config")
+	soundsMu.Unlock()
+
+	applied, _ = m.applyHUD(&HUD{load: 1, base: hudTestStyle("╔", "┯")})
+	assert.False(t, applied)
 	assert.Same(t, hud, m.hud, "an older HUD is ignored")
 	assert.Equal(t, '╭', topLeft(m.empty))
 	assert.Equal(t, '┳', m.union.Top)
 
 	skipped.configOverlay = []byte("browser: {}")
-	m.applyHUD(&HUD{load: 3, base: hudTestStyle("╔", "┯")})
+	applied, _ = m.applyHUD(&HUD{load: 3, base: hudTestStyle("╔", "┯")})
+	assert.True(t, applied)
 	assert.Equal(t, '╔', topLeft(m.empty))
 	assert.Equal(t, '╔', topLeft(focused.ex))
 	assert.Equal(t, untouched, topLeft(skipped.ex),
 		"a workspace whose overlay the HUD did not read keeps its style")
+}
+
+// capturedServices is a registrar that keeps the services registered on it.
+type capturedServices map[string]any
+
+func (c capturedServices) RegisterService(desc *grpc.ServiceDesc, impl any) {
+	c[desc.ServiceName] = impl
+}
+
+func (c capturedServices) GetServiceInfo() map[string]grpc.ServiceInfo { return nil }
+
+// servedConfig returns the config res serves to an extension without an
+// ID.
+func servedConfig(t *testing.T, res extension.ResourceRegistrar) map[string]any {
+	t.Helper()
+	services := capturedServices{}
+	_, err := res.Register(services, new(sync.Mutex))
+	require.NoError(t, err)
+	server, ok := services[configrpc.Config_ServiceDesc.ServiceName].(configrpc.ConfigServer)
+	require.True(t, ok)
+	got, err := server.Get(context.Background(), &configrpc.GetRequest{})
+	require.NoError(t, err)
+	var cfg map[string]any
+	require.NoError(t, json.Unmarshal([]byte(got.GetData()), &cfg))
+	return cfg
+}
+
+func TestApplyHUDReloadsExtensionConfig(t *testing.T) {
+	var mu sync.Mutex
+	runners := map[string]*recordingRunner{}
+	configs := map[string]extension.ResourceRegistrar{}
+	runnerFn := func(
+		uri workspaceapi.URI,
+		res map[extensionapi.Permission]extension.ResourceRegistrar,
+		_, _ string, _ browser.Notifications,
+		_, _ schemeapi.Executor, _ extension.Grantor, _ text.Editor,
+		_ ideauthorizer.PromptOpener, _ storageapi.Service,
+		_ func(func()) bool) (extension.Runner, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		r := &recordingRunner{processes: 2}
+		runners[uri.String()] = r
+		configs[uri.String()] = res[extensionapi.PermissionConfig]
+		return r, nil
+	}
+	cfg := defaultConfigWithWrap(false)
+	dir := t.TempDir()
+	schedMu, sched, drain := buildTestSchedulerForCfg(t, &cfg)
+	manager := workspace.NewManager(config.NopConfig(), sched)
+	require.NoError(t, manager.RegisterScheme(workspace.MemoryScheme, workspace.NewMemoryScheme))
+	first, err := workspaceapi.ParseURI("memory://" + dir)
+	require.NoError(t, err)
+	m := newTestWorkspaceManagerHandlerWithManagerMu(t, manager, schedMu, drain,
+		&first, cfg, FuncExtensionsRunner(runnerFn), nil, dir, nil, nopShutdownShaderConfig())
+	t.Cleanup(func() { _ = m.Close() })
+	m.quiesce()
+	overlaid, err := workspaceapi.ParseURI("memory:///overlaid")
+	require.NoError(t, err)
+	skipped, err := workspaceapi.ParseURI("memory:///skipped")
+	require.NoError(t, err)
+	for _, uri := range []workspaceapi.URI{overlaid, skipped} {
+		require.NoError(t, m.addOrCreateWorkspace(uri))
+		m.quiesce()
+	}
+
+	m.mu.Lock()
+	_, signalled := m.applyHUD(&HUD{
+		load:          1,
+		base:          hudTestStyle("╭", "┳"),
+		cfg:           map[string]any{"marker": "base"},
+		workspaces:    map[string]hudStyle{overlaid.String(): hudTestStyle("┏", "┳")},
+		workspaceCfgs: map[string]map[string]any{overlaid.String(): {"marker": "overlay"}},
+		skip:          map[string]struct{}{skipped.String(): {}},
+	})
+	m.mu.Unlock()
+	assert.Equal(t, 4, signalled, "both processes of each workspace told")
+
+	mu.Lock()
+	defer mu.Unlock()
+	tests := []struct {
+		name        string
+		uri         workspaceapi.URI
+		wantMarker  any
+		wantReloads int
+	}{
+		{"a workspace with the user's config", first, "base", 1},
+		{"a workspace with its own config", overlaid, "overlay", 1},
+		{"a skipped workspace", skipped, nil, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Contains(t, runners, tt.uri.String())
+			assert.Equal(t, tt.wantReloads, runners[tt.uri.String()].reloadCount())
+			assert.Equal(t, tt.wantMarker, servedConfig(t, configs[tt.uri.String()])["marker"])
+		})
+	}
 }
 
 func TestInstallPendingWorkspaceAppliesNewerHUD(t *testing.T) {

@@ -27,6 +27,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -964,6 +965,80 @@ func TestWorkspaceRunnerRunRejectsDuplicateRunningID(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrExtensionAlreadyRunning)
 	assert.Contains(t, err.Error(), `extension "test-extension"`)
+}
+
+// signalRecordingExecutor records the signals it sends, failing those to
+// failPid as a process that exited meanwhile would.
+type signalRecordingExecutor struct {
+	recordingExecutor
+	failPid workspaceapi.Pid
+	signals map[workspaceapi.Pid]syscall.Signal
+}
+
+func (e *signalRecordingExecutor) Signal(pid workspaceapi.Pid, sig syscall.Signal) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if pid == e.failPid {
+		return errors.New("no such process")
+	}
+	if e.signals == nil {
+		e.signals = map[workspaceapi.Pid]syscall.Signal{}
+	}
+	e.signals[pid] = sig
+	return nil
+}
+
+func (e *signalRecordingExecutor) signalled() map[workspaceapi.Pid]syscall.Signal {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return maps.Clone(e.signals)
+}
+
+func TestWorkspaceRunnerSignalReload(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no reload signal")
+	}
+	t.Parallel()
+
+	keys, err := auth.GenerateKeys()
+	require.NoError(t, err)
+	uri, err := workspaceapi.ParseURI("file:///tmp")
+	require.NoError(t, err)
+
+	tests := []struct {
+		name    string
+		failPid workspaceapi.Pid
+		want    int
+		wantPid map[workspaceapi.Pid]syscall.Signal
+	}{
+		{
+			name:    "every running extension",
+			want:    2,
+			wantPid: map[workspaceapi.Pid]syscall.Signal{1: syscall.SIGUSR2, 2: syscall.SIGUSR2},
+		},
+		{
+			name:    "a process that exited meanwhile is not counted",
+			failPid: 2,
+			want:    1,
+			wantPid: map[workspaceapi.Pid]syscall.Signal{1: syscall.SIGUSR2},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wsExec := &signalRecordingExecutor{}
+			extExec := &signalRecordingExecutor{failPid: tt.failPid}
+			runner := newWorkspaceRunner(wsExec, extExec, nil, nopTrustVerifier{}, uri,
+				"/tmp/ext.sock", "/tmp/ext-data", "/tmp/ext-install", []byte("cert"), keys)
+			for _, id := range []string{"a", "b", "stopped"} {
+				require.NoError(t, runner.Run(id, "/bin/"+id, config.NopConfig()))
+			}
+			require.NoError(t, runner.stopExtensionByID("stopped"))
+
+			assert.Equal(t, tt.want, runner.SignalReload())
+			assert.Equal(t, tt.wantPid, extExec.signalled(), "only running processes, by their own pid")
+			assert.Empty(t, wsExec.signalled(), "extensions do not run on the workspace executor")
+		})
+	}
 }
 
 func TestWorkspaceRunnerStopExtensionMarksStateStopped(t *testing.T) {

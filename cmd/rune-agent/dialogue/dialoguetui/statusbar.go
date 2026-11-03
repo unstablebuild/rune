@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image"
 	"log/slog"
 	"strings"
 	"sync"
@@ -273,6 +274,10 @@ type StatusBarConfig struct {
 	// when Layout has a StatusBarImage component, and is used as-is: the
 	// caller owns its partitioning and lifetime.
 	Storage storageapi.Service
+	// Images holds images read already, by URI. A StatusBarImage
+	// component whose URI it holds draws its image from the first frame
+	// and never downloads it.
+	Images map[string]image.Image
 }
 
 // StatusBarState is everything the status bar reports. It is replaced
@@ -440,6 +445,10 @@ func (b *StatusBar) newImage(comp StatusBarComponent) (*template.ImageElement, e
 	attrs := comp.Attributes
 	if attrs.Fg == term.ColorDefault {
 		attrs.Fg = b.cfg.ForegroundColor
+	}
+	if img, ok := b.cfg.Images[comp.Image.URI]; ok {
+		return template.NewLoadedImageElement(comp.Image, img, comp.Template, attrs,
+			b.cfg.BackgroundColor)
 	}
 	return template.NewImageElement(comp.Image, comp.Template, attrs,
 		b.cfg.BackgroundColor, b.cfg.Storage, &b.interrupter)

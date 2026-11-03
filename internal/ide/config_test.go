@@ -49,6 +49,7 @@ import (
 	tcomponent "unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/component/imagecomp"
 	"unstable.build/rune/internal/component/notifications"
+	"unstable.build/rune/internal/component/template"
 	"unstable.build/rune/internal/handler"
 	"unstable.build/rune/internal/handler/command"
 	"unstable.build/rune/internal/ide/idedebug"
@@ -499,6 +500,8 @@ func assertDefaultConfig(t *testing.T, cfg *ideConfig) {
 	assert.NotNil(t, vteConfig.ScheduleNextTick)
 	vteConfig.ScheduleNextTick = nil
 	vteConfig.Sounds = nil
+	assert.Equal(t, sounds.Warning, *vteConfig.BellSound.Load())
+	vteConfig.BellSound = nil
 	assertTerminalSearchConfig(t, &vteConfig, cfg.standardResultAttr(), selectAttr)
 	assert.Equal(t, vte.Config{
 		Clipboard:                cfg.clipboard(),
@@ -509,7 +512,6 @@ func assertDefaultConfig(t *testing.T, cfg *ideConfig) {
 		ClipboardRegister:        clipboard.DefaultRegisterID,
 		MaxLines:                 10_000,
 		MinWidth:                 defaultMinWidth,
-		BellSound:                sounds.Warning,
 	}, vteConfig)
 	assert.True(t, cfg.tabStatusEnabled())
 	assert.Equal(t, browser.DefaultTabStatusConfig(), cfg.tabStatusConfig())
@@ -1135,7 +1137,7 @@ func TestTerminalBellSound(t *testing.T) {
 				m["terminal"] = tc.terminal
 			}
 			cfg := &ideConfig{cfg: m, errors: map[string]error{}}
-			assert.Equal(t, tc.want, cfg.terminalConfig().BellSound)
+			assert.Equal(t, tc.want, *cfg.terminalConfig().BellSound.Load())
 			assert.Empty(t, cfg.errors)
 		})
 	}
@@ -2050,6 +2052,8 @@ func TestConfigSetting(t *testing.T) {
 	vteConfig.ScheduleNextTick = nil
 	assert.NotNil(t, vteConfig.Sounds)
 	vteConfig.Sounds = nil
+	assert.Equal(t, sounds.Info, *vteConfig.BellSound.Load())
+	vteConfig.BellSound = nil
 	assertTerminalSearchConfig(t, &vteConfig, cfg.standardResultAttr(),
 		term.Attributes{Fg: term.ColorGreen, Bg: term.ColorTeal})
 	expectedEmulatorConfig := vte.Config{
@@ -2064,7 +2068,6 @@ func TestConfigSetting(t *testing.T) {
 		DynamicTabName:           true,
 		MaxLines:                 999,
 		Bell:                     []byte{0x07},
-		BellSound:                sounds.Info,
 		MinWidth:                 defaultMinWidth,
 	}
 	assert.Equal(t, expectedEmulatorConfig, vteConfig)
@@ -3000,6 +3003,8 @@ func TestConfigHUDStyle(t *testing.T) {
 		cfg      map[string]any
 		check    func(t *testing.T, s hudStyle)
 		wantURIs []string
+		// wantErr is the key of the only config error.
+		wantErr string
 	}{
 		{
 			name: "no HUD keys draw no images",
@@ -3008,6 +3013,8 @@ func TestConfigHUDStyle(t *testing.T) {
 				def := handler.DefaultWindowManagerConfig()
 				assert.Equal(t, def.FrameCharSet, s.browser.WindowManager.FrameCharSet)
 				assert.Nil(t, s.commandPromptFrame)
+				assert.Equal(t, text.StatusBarStyle{}, s.statusBar)
+				assert.Empty(t, s.statusBarImages())
 			},
 		},
 		{
@@ -3141,13 +3148,78 @@ func TestConfigHUDStyle(t *testing.T) {
 				assert.Equal(t, "art", string(drawn))
 			},
 		},
+		{
+			name: "status bar",
+			cfg: map[string]any{"editor": map[string]any{"status_bar": map[string]any{
+				"layout": `[{{ .Status }}]{{ .Image | src "file:///bar/a.png" | ttl "1h" }}` +
+					`{{ .Image | src "file:///bar/b.png" }}`,
+				"background_attr":       map[string]any{"bg": "navy"},
+				"foreground_error_attr": map[string]any{"fg": "red"},
+			}}},
+			check: func(t *testing.T, s hudStyle) {
+				assert.Equal(t, term.ColorNavy, s.statusBar.BackgroundColor)
+				assert.Equal(t, term.ColorRed, s.statusBar.ErrorColor)
+				require.Len(t, s.statusBar.Layout, 3)
+				assert.Equal(t, "[%s]", s.statusBar.Layout[0].Template)
+				images := s.statusBarImages()
+				require.Len(t, images, 2)
+				assert.Equal(t, "file:///bar/a.png", images[0].URI)
+				assert.Equal(t, time.Hour, images[0].TTL)
+				assert.Equal(t, "file:///bar/b.png", images[1].URI)
+				assert.Equal(t, template.DefaultImageTTL, images[1].TTL)
+			},
+		},
+		{
+			name: "a status bar layout that does not parse",
+			cfg: map[string]any{"editor": map[string]any{"status_bar": map[string]any{
+				"layout": `{{ .Nope }}`,
+			}}},
+			check: func(t *testing.T, s hudStyle) {
+				assert.Nil(t, s.statusBar.Layout)
+			},
+			wantErr: "editor.status_bar.layout",
+		},
+		{
+			name: "the bell, the command manual and program status sounds",
+			cfg: map[string]any{
+				"terminal": map[string]any{"bell": "ding"},
+				"command":  map[string]any{"show_manual": false},
+				"program_status": map[string]any{"sounds": map[string]any{
+					"working": "tick", "done": "",
+				}},
+			},
+			check: func(t *testing.T, s hudStyle) {
+				assert.Equal(t, "ding", s.bellSound)
+				assert.False(t, s.commandShowManual)
+				want := idestatus.DefaultNotifyConfig()
+				want.Sounds[programstatus.Working] = "tick"
+				want.Sounds[programstatus.Done] = ""
+				assert.Equal(t, want, s.notifyStatus)
+			},
+		},
+		{
+			name: "a disabled program status notifies nothing",
+			cfg: map[string]any{"terminal": map[string]any{
+				"status": map[string]any{"enabled": false},
+			}},
+			check: func(t *testing.T, s hudStyle) {
+				assert.Equal(t, sounds.Warning, s.bellSound)
+				assert.Equal(t, text.DefaultCommandOverlayConfig().ShowManual, s.commandShowManual)
+				assert.Equal(t, idestatus.NotifyConfig{}, s.notifyStatus)
+			},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := ideConfig{cfg: tc.cfg, errors: map[string]error{}}
 
 			s := cfg.hudStyle()
-			assert.Empty(t, cfg.errors)
+			if tc.wantErr == "" {
+				assert.Empty(t, cfg.errors)
+			} else {
+				assert.Len(t, cfg.errors, 1)
+				assert.Contains(t, cfg.errors, tc.wantErr)
+			}
 			tc.check(t, s)
 			if tc.wantURIs == nil {
 				assert.Empty(t, s.imageURIs())

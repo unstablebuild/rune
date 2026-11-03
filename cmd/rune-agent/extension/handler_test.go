@@ -2817,3 +2817,131 @@ func cellOf(w *term.StringWriter, width int, text string) (term.Coordinates, boo
 	}
 	return term.Coordinates{}, false
 }
+
+// statusBarRow draws comp and returns its bottom row, the status bar.
+func statusBarRow(t *testing.T, sc syncComponent) string {
+	t.Helper()
+	const width, height = 40, 8
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	sc.comp.Resize(width, height)
+	w := term.NewStringWriter(width, height)
+	sc.comp.Draw(w)
+	require.NoError(t, w.Flush())
+	lines := strings.Split(w.String(), "\n")
+	return strings.TrimSpace(lines[height-1])
+}
+
+func TestReloadStatusBar(t *testing.T) {
+	modelLayout, err := dialoguetui.ParseStatusBarLayout(`{{ .Model }}`)
+	require.NoError(t, err)
+	agentConfig := func(statusBar map[string]any) config.Config {
+		return config.MapConfig(map[string]any{"extensions": map[string]any{
+			extensionID: map[string]any{"config": map[string]any{"status_bar": statusBar}},
+		}})
+	}
+	tests := []struct {
+		name    string
+		host    config.Config
+		wantErr string
+		// wantRow is the open chat's bar after the reload; empty when
+		// it has none.
+		wantRow     string
+		wantEnabled bool
+		wantLayout  []dialoguetui.StatusBarComponent
+	}{
+		{
+			name:        "the agent's own block",
+			host:        agentConfig(map[string]any{"layout": `{{ .Effort }}`}),
+			wantRow:     "high",
+			wantEnabled: true,
+			wantLayout:  mustParseStatusBarLayout(t, `{{ .Effort }}`),
+		},
+		{
+			name:        "no block of its own",
+			host:        config.MapConfig(map[string]any{}),
+			wantEnabled: true,
+			wantRow:     "IDLE",
+		},
+		{
+			name: "a block that turns the bar off",
+			host: agentConfig(map[string]any{"enabled": false}),
+		},
+		{
+			name:        "a config that could not be fetched",
+			host:        config.ErrConfig(errors.New("closed")),
+			wantErr:     "closed",
+			wantRow:     "opus",
+			wantEnabled: true,
+			wantLayout:  modelLayout,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			initial := dialoguetui.StatusBarConfig{
+				Enabled: true, Layout: modelLayout, Storage: storagestub.NewInMemoryService(),
+			}
+			h := &aiEditorHandler{n: stubNotifications{}, p: term.NopInterrupter()}
+			h.cfg.StatusBar = initial
+			open := syncComponent{
+				mu:   new(sync.Mutex),
+				comp: dialoguetui.NewComponent(dialoguetui.ComponentConfig{StatusBar: initial}),
+			}
+			t.Cleanup(func() { assert.NoError(t, open.comp.Close()) })
+			open.setStatusBarState(func(s *dialoguetui.StatusBarState) { s.Model, s.Effort = "opus", "high" })
+			h.openChats.Store("open", open)
+			h.openChats.Store("opening", struct{}{})
+
+			err := h.reloadStatusBar(context.Background(), tt.host)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+			if tt.wantRow == "" {
+				assert.Zero(t, open.comp.StatusBarState(), "the open chat has no bar")
+			} else {
+				assert.Contains(t, statusBarRow(t, open), tt.wantRow)
+			}
+			next := h.dialogueConfig(new(sync.Mutex)).StatusBar
+			assert.Equal(t, tt.wantEnabled, next.Enabled, "a chat opened next")
+			assert.Equal(t, tt.wantLayout, next.Layout, "a chat opened next")
+			assert.NotNil(t, next.Storage, "the bar keeps caching its images")
+		})
+	}
+}
+
+func mustParseStatusBarLayout(t *testing.T, layout string) []dialoguetui.StatusBarComponent {
+	t.Helper()
+	parsed, err := dialoguetui.ParseStatusBarLayout(layout)
+	require.NoError(t, err)
+	return parsed
+}
+
+func TestWatchReloadFetchesTheConfigOnEachSignal(t *testing.T) {
+	h := &aiEditorHandler{n: stubNotifications{}, p: term.NopInterrupter()}
+	h.cfg.StatusBar = dialoguetui.StatusBarConfig{Enabled: true}
+	ctx, cancel := context.WithCancel(context.Background())
+	reload := make(chan os.Signal)
+	fetched := make(chan struct{}, 2)
+	done := make(chan struct{})
+	go debug.CapturePanicReport(func() {
+		defer close(done)
+		h.watchReload(ctx, reload, func(context.Context) config.Config {
+			fetched <- struct{}{}
+			return config.MapConfig(map[string]any{"extensions": map[string]any{
+				extensionID: map[string]any{"config": map[string]any{
+					"status_bar": map[string]any{"enabled": false},
+				}},
+			}})
+		})
+	})
+
+	for range 2 {
+		reload <- os.Interrupt
+		<-fetched
+	}
+	cancel()
+	<-done
+	assert.False(t, h.dialogueConfig(new(sync.Mutex)).StatusBar.Enabled)
+}

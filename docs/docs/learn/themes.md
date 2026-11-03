@@ -114,8 +114,12 @@ You do not have to set every color. Any name you leave out keeps its
 current value, so a theme can be as small as a couple of overrides.
 
 Rune loads the themes in your config at startup. After adding one, restart
-Rune or open a new window with `guiwindownew`, then activate it with
+Rune, open a new window with `guiwindownew`, or run
+[`runectl screenshot`](../develop/runectl.md#screenshots), which reads them
+again and repaints if you edited the active theme. Then activate it with
 `guitheme mytheme`, or set `default_theme` to it to use it at startup.
+`runectl screenshot` also switches to `default_theme` when you change it, and
+otherwise keeps the theme you picked with `guitheme`.
 
 ## Share your theme
 

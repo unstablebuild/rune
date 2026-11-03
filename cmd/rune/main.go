@@ -811,7 +811,9 @@ func runGUI(
 		reportShellRCErr(browser, shellRCErr)
 	}
 
-	soundOutput.SetVolume(getGUISoundVolume(browser, guiCfg))
+	root.soundVolume = getGUISoundVolume(browser, guiCfg)
+	soundOutput.SetVolume(root.soundVolume)
+	root.defaultTheme = getGUIDefaultColorTheme(browser, guiCfg)
 
 	options := buildGUIOptions(browser, root.config(), guiCfg, transparentWindow, mu, *flagFPS)
 	options = append(options, gui.WithDragObserver(root.dragObserver))

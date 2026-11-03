@@ -65,6 +65,14 @@ func (s syncComponent) setStatusBarState(fn func(*dialoguetui.StatusBarState)) {
 	s.comp.SetStatusBarState(fn)
 }
 
+// setStatusBarConfig replaces the chat's status bar with the one cfg
+// configures.
+func (s syncComponent) setStatusBarConfig(cfg dialoguetui.StatusBarConfig) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.comp.SetStatusBarConfig(cfg)
+}
+
 // swapPhase reports a new status bar phase and returns the one it
 // replaced, so a caller that owns the bar for the length of an
 // operation can hand it back to whatever was running before.

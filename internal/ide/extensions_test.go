@@ -736,6 +736,9 @@ type recordingRunner struct {
 	// moment Run is invoked, mirroring how a real extension subprocess
 	// inherits os.Environ() at fork time.
 	captureEnv string
+	// processes is how many processes SignalReload reports it signalled.
+	processes int
+	reloads   int
 }
 
 type runCall struct {
@@ -759,6 +762,19 @@ func (r *recordingRunner) Run(id, path string, cfg config.Config) error {
 func (r *recordingRunner) Close() error { return nil }
 
 func (r *recordingRunner) WaitReady(context.Context, string) error { return nil }
+
+func (r *recordingRunner) SignalReload() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.reloads++
+	return r.processes
+}
+
+func (r *recordingRunner) reloadCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.reloads
+}
 
 func (r *recordingRunner) runCalls() []runCall {
 	r.mu.Lock()

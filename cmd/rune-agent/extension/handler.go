@@ -660,7 +660,7 @@ func newCommandEventHandler(
 		slog.Warn("resolve dialogue editor, using inputbox", "error", cerr)
 	} else {
 		ret.cfg.Editor = editor
-		if modal, merr := extutil.EditorModal(w.Config(ctx)); merr != nil {
+		if modal, merr := extutil.EditorModal(hostConfig); merr != nil {
 			slog.Warn("resolve dialogue editor mode", "error", merr)
 		} else {
 			ret.cfg.EditorModal = modal
@@ -896,7 +896,9 @@ const transcriptImagesPartition = "transcript-images"
 // dialogueConfig returns the config for a dialogue whose handler is given
 // mu, which the dialogue holds while it calls OnLinkClick.
 func (h *aiEditorHandler) dialogueConfig(mu sync.Locker) dialoguetui.ComponentConfig {
+	h.statusBarMu.Lock()
 	cfg := h.cfg
+	h.statusBarMu.Unlock()
 	cfg.OnLinkClick = newLinkClickHandler(mu, h.cwd, h.o, h.ed, h.n)
 	md := dialoguetui.DefaultMarkdownConfig()
 	if cfg.MarkdownConfig != nil {
@@ -915,9 +917,11 @@ func (h *aiEditorHandler) dialogueConfig(mu sync.Locker) dialoguetui.ComponentCo
 }
 
 type aiEditorHandler struct {
-	exit                atomic.Uint32
-	llmSvc              llmapi.Service
-	defaultModel        string
+	exit         atomic.Uint32
+	llmSvc       llmapi.Service
+	defaultModel string
+	// statusBarMu guards cfg.StatusBar, which a config reload replaces.
+	statusBarMu         sync.Mutex
 	cfg                 dialoguetui.ComponentConfig
 	backgroundAttr      term.Attributes
 	dialogueStore       dialoguemanager.Store
@@ -1157,6 +1161,54 @@ func (h *aiEditorHandler) setDefaultMaxTokens(n int) {
 		}
 		return true
 	})
+}
+
+// watchReload reloads the status bar from the config fetch returns each
+// time reload delivers, until ctx ends. A nil reload never delivers.
+func (h *aiEditorHandler) watchReload(
+	ctx context.Context, reload <-chan os.Signal, fetch func(context.Context) config.Config,
+) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-reload:
+		}
+		if err := h.reloadStatusBar(ctx, fetch(ctx)); err != nil {
+			slog.Warn("reload the status bar", "error", err)
+		}
+	}
+}
+
+// reloadStatusBar configures the status bar of the open chats, and of
+// those opened from now on, with the status_bar block host holds for this
+// extension, reading its images again. host is the config Rune serves; a
+// host that could not be fetched leaves the bars as they are.
+func (h *aiEditorHandler) reloadStatusBar(ctx context.Context, host config.Config) error {
+	own, err := ownConfig(host)
+	if err != nil {
+		return err
+	}
+	h.statusBarMu.Lock()
+	storage := h.cfg.StatusBar.Storage
+	h.statusBarMu.Unlock()
+	cfg := statusBarConfig(own, host, h.n)
+	cfg.DurationPrecision = h.cfg.DurationPrecision
+	cfg.Storage = storage
+	cfg.Images = refreshStatusBarImages(ctx, cfg.Layout, storage)
+
+	h.statusBarMu.Lock()
+	h.cfg.StatusBar = cfg
+	h.statusBarMu.Unlock()
+	h.openChats.Range(func(_, v any) bool {
+		// Chats still opening hold no component yet; they read the
+		// config they open with afterwards.
+		if sc, ok := v.(syncComponent); ok {
+			sc.setStatusBarConfig(cfg)
+		}
+		return true
+	})
+	return h.p.Interrupt(ctx)
 }
 
 func (h *aiEditorHandler) Handle(ctx context.Context, ev textapi.Event) (exit bool) {

@@ -727,15 +727,17 @@ func (wm *WindowManager) FloatingWindow(
 }
 
 // Restyled returns c with the style of s: its frame, scroll bar and
-// window bar attributes and charsets, ScrollBarOutset and close icon.
-// What changes the layout or how images load, Frame, NoMaxSize,
-// WindowBar, FrameGraphicsStorage and Interrupter, stays c's.
+// window bar attributes and charsets, ScrollBarOutset, close icon and
+// whether floating windows draw the window bar, which takes their top
+// frame row either way. What changes the layout or how images load,
+// Frame, NoMaxSize, FrameGraphicsStorage and Interrupter, stays c's.
 func (c WindowManagerConfig) Restyled(s WindowManagerConfig) WindowManagerConfig {
 	c.FrameAttr = s.FrameAttr
 	c.FrameCharSet = s.FrameCharSet
 	c.ScrollBarAttr = s.ScrollBarAttr
 	c.ScrollBarCharSet = s.ScrollBarCharSet
 	c.ScrollBarOutset = s.ScrollBarOutset
+	c.WindowBar = s.WindowBar
 	c.WindowBarCharSet = s.WindowBarCharSet
 	c.CloseIcon = s.CloseIcon
 	c.CloseIconAttr = s.CloseIconAttr

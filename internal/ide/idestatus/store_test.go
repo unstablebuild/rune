@@ -692,7 +692,7 @@ func TestStatusStoreSounds(t *testing.T) {
 	host, store, ws := newStatusStoreTest(t)
 	var played []string
 	store.player = sounds.PlayerFunc(func(name string) { played = append(played, name) })
-	store.notify = DefaultNotifyConfig()
+	store.SetNotifyConfig(DefaultNotifyConfig())
 	uri := statusStoreTestURI(t, "file:///dev/ttys001")
 	key := statusKey{ws.String(), uri.String()}
 	report := func(state programstatus.State, msg string) *programstatus.Report {
@@ -729,9 +729,11 @@ func TestStatusStoreSounds(t *testing.T) {
 	}, {
 		name: "a state mapped to a sound plays it, one mapped to none plays nothing",
 		do: func() {
-			store.notify.Sounds = map[programstatus.State]string{
+			notify := DefaultNotifyConfig()
+			notify.Sounds = map[programstatus.State]string{
 				programstatus.Working: "tick", programstatus.Done: "",
 			}
+			store.SetNotifyConfig(notify)
 		},
 		report: report(programstatus.Working, "again"),
 		want:   []string{"tick"},
@@ -740,7 +742,7 @@ func TestStatusStoreSounds(t *testing.T) {
 		report: report(programstatus.Done, ""),
 	}, {
 		name: "a disabled status plays nothing",
-		do:   func() { store.notify = NotifyConfig{} },
+		do:   func() { store.SetNotifyConfig(NotifyConfig{}) },
 		report: &programstatus.Report{
 			State: programstatus.Blocked, Kind: programstatus.KindQuestion, Progress: -1,
 		},

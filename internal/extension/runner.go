@@ -37,4 +37,9 @@ type Runner interface {
 	// the terminal extension error on failure/exit, and ctx.Err() on
 	// cancellation.
 	WaitReady(ctx context.Context, id string) error
+	// SignalReload tells every running extension process that the config
+	// it fetches changed, so it can fetch it again, and returns how many
+	// it told. On Unix the process gets SIGUSR2, which Go programs ignore
+	// unless they handle it; elsewhere nothing is sent and it returns 0.
+	SignalReload() int
 }

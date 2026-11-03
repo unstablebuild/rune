@@ -93,7 +93,9 @@ func TestWatchGUISignalsRequestsScreenshot(t *testing.T) {
 
 	published := make(chan term.Event, 1)
 	root := &bootstrapHandler{
-		realIDE: configured.realIDE,
+		realIDE:         configured.realIDE,
+		quickMenu:       configured.quickMenu,
+		quickMenuSounds: configured.quickMenuSounds,
 		publishEvent: func(ev term.Event) bool {
 			published <- ev
 			return true

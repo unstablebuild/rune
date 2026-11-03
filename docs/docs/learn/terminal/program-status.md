@@ -190,7 +190,8 @@ config["program_status"]["sounds"]["working"] = "info"
 
 A state mapped to a sound Rune does not know keeps its default, and Rune
 reports it as a config error. Changes to `program_status.sounds` apply after a
-restart.
+restart, or on the next
+[`runectl screenshot`](../../develop/runectl.md#screenshots).
 
 ### The status inbox
 

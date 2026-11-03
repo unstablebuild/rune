@@ -81,6 +81,7 @@ func TestConfigRestyled(t *testing.T) {
 	want.ScrollBarAttr = blue
 	want.ScrollBarCharSet = s.WindowManager.ScrollBarCharSet
 	want.ScrollBarOutset = 2
+	want.WindowBar = false
 	want.WindowBarCharSet = s.WindowManager.WindowBarCharSet
 	want.CloseIcon = 'x'
 	want.CloseIconAttr = blue
