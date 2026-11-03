@@ -50,7 +50,7 @@ picture.
 The intro is the animation that plays over the logo when Rune starts: braille
 dots fly in and assemble the logo, then bloom into its picture. Set
 `animations.intro` to `false` to start on the logo directly, and run
-`:shaderrun intro` to play the intro at any time:
+`shaderrun intro` to play the intro at any time:
 
 ```yaml tab
 animations:
@@ -207,7 +207,7 @@ file, so a project's `.rune/config.yaml` should use an absolute path, `~`, or
 a variable.
 
 Rune reads the image when it loads your configuration. After replacing the
-file, run `:workspacereload` to see the new image. In the GUI,
+file, run `workspacereload` to see the new image. In the GUI,
 [`runectl screenshot`](../develop/runectl.md#screenshots) also reads it again,
 in every workspace, before it takes the screenshot.
 

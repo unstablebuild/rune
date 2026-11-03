@@ -158,9 +158,9 @@ exits, its log is a buffer.
 Tasks are identified by the `name` you give them at creation time, and that
 name is what the rest of the task commands take as an argument:
 
-- `:taskfocus <name>` focuses an existing task; un-minimizes it if it was
+- `taskfocus <name>` focuses an existing task; un-minimizes it if it was
   minimized, or switches to its tab if it was tabbed.
-- `:taskclose <name>` stops the task and removes its window.
+- `taskclose <name>` stops the task and removes its window.
 
 If you call `tasknew` or `tasknewtab` with a name that is already in use,
 Rune prompts you to replace the existing task rather than silently
@@ -211,7 +211,7 @@ command:
 },
 ```
 
-`:dev` opens the server as a tab. If it crashes, the tab turns red; press
+`dev` opens the server as a tab. If it crashes, the tab turns red; press
 `<ctrl-r>` in the tab to restart it.
 
 ### Use a filter to scope a watcher

@@ -32,7 +32,7 @@ pulled a change. A workspace config larger than 64 KiB is never applied.
 
 To change your mind, find the decision with `authorizer list` in the
 [console](./learn/console.md#reviewing-permissions-and-trust-with-authorizer),
-revoke it with `authorizer revoke <decision>`, and run `:workspacereload` in
+revoke it with `authorizer revoke <decision>`, and run `workspacereload` in
 that workspace to be asked again.
 
 ## YAML or Starlark?
@@ -70,13 +70,13 @@ comments) is treated as an empty overlay.
 
 ## Applying config changes
 
-Rune does not watch the config file. Open it with `:config`, edit it, save it —
+Rune does not watch the config file. Open it with `config`, edit it, save it —
 nothing happens until you reload. There are two levels of reload, and
-`:themereload` applies the appearance keys without either.
+`themereload` applies the appearance keys without either.
 
-### `:workspacereload`
+### `workspacereload`
 
-`:workspacereload` closes the focused workspace and opens it again. The open
+`workspacereload` closes the focused workspace and opens it again. The open
 buffers, cursor positions, window layout and the extension tabs shown in it,
 such as agent chats, are restored, but everything the workspace owns is
 rebuilt from a fresh read of your config file and the workspace's
@@ -97,9 +97,9 @@ surface:
 Only the focused workspace is reloaded; other workspace tabs keep running with
 the configuration they were opened with.
 
-### `:themereload`
+### `themereload`
 
-`:themereload` reads the config file again and applies the keys that style
+`themereload` reads the config file again and applies the keys that style
 Rune to every open workspace, with nothing closed or reopened: frames, window
 bars and prompts, the editor and Rune Agent status bars, the wallpaper,
 `sounds`, the terminal bell, the sounds of program status, and the quick menu,

@@ -74,7 +74,7 @@ a newline. It waits up to five seconds for a new complete image. Errors go
 to stderr with a nonzero exit status and no path on stdout.
 
 Before the capture, Rune reads its config file again and applies these
-keys to every open workspace, as `:themereload` does:
+keys to every open workspace, as `themereload` does:
 
 - `browser.window_manager`: `frame_attr`, `focus_frame_attr`,
   `frame_charset`, `focus_frame_charset`, `scroll_bar_attr`,
@@ -103,7 +103,7 @@ config file does not parse, none of its keys are applied.
 `gui.default_theme` and `gui.sound_volume` apply only when they differ
 from the values Rune read last, so a theme or volume picked since then
 stays. Prompts already open keep their style until reopened. Other keys
-still take `:workspacereload` or a restart.
+still take `workspacereload` or a restart.
 
 Rune also serves the new config to its extensions and, on macOS and
 Linux, sends each running extension process `SIGUSR2`. When it signalled

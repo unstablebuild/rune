@@ -913,10 +913,10 @@ workspace automatically: that can interrupt the conversation and running work.
 | Change | Takes effect |
 |---|---|
 | A key listed under Checking your work, or an image it names, even overwritten at the same path | `runectl screenshot`, in every open workspace |
-| Any other `browser.*`, `command.*` or `extensions.*` key | `:workspacereload` in the focused workspace |
+| Any other `browser.*`, `command.*` or `extensions.*` key | `workspacereload` in the focused workspace |
 | Any other `gui.*` or `program_status.*` key, `animations.*` | Restart Rune. `:guiwindownew` opens a fresh process to preview them |
 | A sound file overwritten at the same path | The next time it plays |
-| The wallpaper file overwritten at the same path | `runectl screenshot` or `:workspacereload` |
+| The wallpaper file overwritten at the same path | `runectl screenshot` or `workspacereload` |
 | Any other image overwritten at the same URI | Never: give it a new URI |
 
 If a requested change needs a workspace reload or restart, prepare it and state

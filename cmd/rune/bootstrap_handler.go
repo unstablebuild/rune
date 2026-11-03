@@ -644,7 +644,7 @@ func (b *bootstrapHandler) subscribeThemeReloadCommand(i *ide.IDE) error {
 			"wallpaper; sounds, the terminal bell and program status sounds; and " +
 			"the GUI quick menu and themes, and its default theme and sound volume " +
 			"when they changed. Images those keys name are read again. Other " +
-			"settings need :workspacereload or a restart.",
+			"settings need workspacereload or a restart.",
 	}
 	handler := func(context.Context, textapi.Command) error {
 		go debug.CapturePanicReport(func() {

@@ -291,7 +291,7 @@ changes, Rune asks you to renew the approval. See
 Workspace config decisions are listed as `persisted` when you chose **trust**,
 and as `transient` when you chose **trust once** or **ignore**, which last
 until you quit Rune. A workspace that is already open keeps the config it
-opened with: after revoking, run `:workspacereload` to be asked again right
+opened with: after revoking, run `workspacereload` to be asked again right
 away.
 
 ## See also

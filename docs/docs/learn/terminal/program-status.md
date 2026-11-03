@@ -32,7 +32,7 @@ in four places:
 - **As a notification.** Every new message comes through as a notification,
   and a tab out of sight that becomes blocked, fails, or finishes raises one
   too. See [Notifications](#notifications).
-- **In the status inbox.** `:programstatus` lists every reported status across
+- **In the status inbox.** `programstatus` lists every reported status across
   your workspaces, most pressing first, and jumps to the one you pick. See [The
   status inbox](#the-status-inbox).
 
@@ -231,7 +231,7 @@ stays empty once you reach the last one, so the list doesn't shift.
 | Click | Select a program |
 | Mouse wheel over the sidebar | Scroll the programs |
 | `<enter>` | Switch to the program's workspace and show it |
-| `<delete>` / `<backspace>` | Close the program as `:tabclose` would: a tab or window is closed, a task stopped, and the companion terminal hidden. A `working` or `blocked` program, or a file with unwritten changes, asks first |
+| `<delete>` / `<backspace>` | Close the program as `tabclose` would: a tab or window is closed, a task stopped, and the companion terminal hidden. A `working` or `blocked` program, or a file with unwritten changes, asks first |
 | `<esc>` / `q` / `<ctrl-c>` | Close the inbox |
 
 Tabs that never reported a status are not listed, and the inbox is not bound

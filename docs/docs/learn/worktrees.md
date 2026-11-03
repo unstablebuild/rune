@@ -162,7 +162,7 @@ OSC 7501 (`runectl status`, agents, builds) also show on the workspace bar: the
 tab's name takes the color of the most pressing status among the workspace's
 terminals (yellow when blocked on you, red on error, green once done), so a
 workspace that needs you reads at a glance even before any notification, and
-`:programstatus` lists every reported status across workspaces so you can jump
+`programstatus` lists every reported status across workspaces so you can jump
 to the one that needs you. (Tune the colors under
 `terminal.status.workspace_tab`.)
 
