@@ -103,16 +103,19 @@ func TestPromptStitcherDrawsFrameGraphics(t *testing.T) {
 			sepY++
 
 			// The test event stream drops the interrupt that reports the
-			// image loaded, so redraw until it shows.
-			deadline := time.Now().Add(5 * time.Second)
+			// image loaded, so wait for the image itself: a draw that the
+			// load lands in shows it on only the cells drawn after it.
+			if tt.images {
+				img := b.ex.promptGraphics.Image(uri)
+				img.Resize(1, 1)
+				require.Eventually(t, func() bool {
+					w := newCoveringImageWriter(1, 1)
+					img.Draw(w)
+					return len(w.images) == 1
+				}, 5*time.Second, 10*time.Millisecond)
+			}
 			w := newCoveringImageWriter(width, height)
 			h.Draw(w)
-			for tt.images && len(w.images) == 0 {
-				require.True(t, time.Now().Before(deadline), "timed out waiting for the frame image")
-				time.Sleep(10 * time.Millisecond)
-				w = newCoveringImageWriter(width, height)
-				h.Draw(w)
-			}
 
 			want := map[term.Coordinates]bool{}
 			if tt.images {
