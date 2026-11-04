@@ -68,7 +68,7 @@ func TestSkillsPromptSection(t *testing.T) {
 		result := skillsPromptSection(registry.List())
 		promptSection, agentSection, _ := strings.Cut(result, "Agent skills")
 
-		assert.Contains(t, promptSection, "- rune-hud: Edit Rune's configuration")
+		assert.Contains(t, promptSection, "- rune-hud: Update Rune's configuration")
 		assert.Contains(t, promptSection, "(location: <builtin>/rune-hud/SKILL.md)")
 		assert.NotContains(t, agentSection, "rune-hud")
 		assert.Contains(t, agentSection, "- explore (agent):")
