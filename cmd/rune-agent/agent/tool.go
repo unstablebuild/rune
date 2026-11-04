@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
+	"unstable.build/rune/cmd/rune-agent/agent/toolpolicy"
 	"unstable.build/rune/cmd/rune-agent/dialogue/dialoguemanager"
 )
 
@@ -70,6 +71,14 @@ type Tool interface {
 	// operations on the same path cannot race (e.g. bash "rm X"
 	// followed by apply_patch "Add X"). Read-only tools return false.
 	NeedsDeterministicOrder() bool
+}
+
+// PolicyTool is a Tool whose behavior depends on the tool policy of the
+// agent that uses it, such as a shell tool that checks the commands it
+// runs, or the skill tool that hides skills.
+type PolicyTool interface {
+	// WithPolicy returns a copy of the tool restricted by p.
+	WithPolicy(p toolpolicy.Policy) Tool
 }
 
 // Registry holds available tools and provides lookup.
@@ -251,36 +260,49 @@ func (r *Registry) Get(name, provider string) (Tool, bool) {
 	return t, ok
 }
 
-// WithFilteredTools returns a new Registry containing only the tools whose
-// names appear in allowedNames. Unknown names are silently ignored.
-// Provider overrides are preserved and filtered to matching names.
-func (r *Registry) WithFilteredTools(allowedNames []string) *Registry {
+// WithPolicy returns a Registry with the tools of r that p allows, each
+// tool implementing PolicyTool restricted by p. A zero policy returns r
+// itself, so that tools added to r later still show.
+//
+// Provider overrides are filtered the same way. Provider exclusions of the
+// tools p names explicitly are dropped, so that an agent that asks for a
+// tool gets it, unless the exclusion makes way for a replacement the
+// agent keeps: an agent allowed "bash" gets only exec_command on OpenAI,
+// as the main chat does.
+func (r *Registry) WithPolicy(p toolpolicy.Policy) *Registry {
+	if p.IsZero() {
+		return r
+	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	allowed := make(map[string]bool, len(allowedNames))
-	for _, name := range allowedNames {
-		allowed[name] = true
+	restrict := func(t Tool) Tool {
+		if pt, ok := t.(PolicyTool); ok {
+			return pt.WithPolicy(p)
+		}
+		return t
 	}
 	filtered := &Registry{
-		tools:        make(map[string]Tool, len(allowedNames)),
+		tools:        make(map[string]Tool, len(r.tools)),
 		overrides:    make(map[string]map[string]Tool),
 		replacements: make(map[string]map[string]string),
 	}
-	for _, name := range allowedNames {
-		if t, ok := r.tools[name]; ok {
-			filtered.tools[name] = t
+	for name, t := range r.tools {
+		if p.AllowsTool(name) {
+			filtered.tools[name] = restrict(t)
 		}
 	}
 	for provider, provTools := range r.overrides {
 		for name, tool := range provTools {
-			if !allowed[name] {
+			if !p.AllowsTool(name) {
 				continue
 			}
-			// Skip exclusions (nil) for explicitly allowed tools —
-			// if a tool is in the allowed list, the caller wants it
-			// available regardless of parent-level provider exclusions.
 			if tool == nil {
-				continue
+				repl, replaced := r.replacements[provider][name]
+				if p.NamesTool(name) && (!replaced || !p.AllowsTool(repl)) {
+					continue
+				}
+			} else {
+				tool = restrict(tool)
 			}
 			if filtered.overrides[provider] == nil {
 				filtered.overrides[provider] = make(map[string]Tool)
@@ -290,7 +312,7 @@ func (r *Registry) WithFilteredTools(allowedNames []string) *Registry {
 	}
 	for provider, provRepl := range r.replacements {
 		for baseName, replName := range provRepl {
-			if !allowed[replName] {
+			if !p.AllowsTool(replName) {
 				continue
 			}
 			if filtered.replacements[provider] == nil {

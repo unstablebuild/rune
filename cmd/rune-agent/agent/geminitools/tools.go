@@ -47,8 +47,9 @@ func runCommand(base agent.Tool) agent.Tool {
 		})
 	}
 	return &specializedTool{
-		base:      base,
-		translate: translate,
+		base:         base,
+		translate:    translate,
+		runsCommands: true,
 		summarize: func(arguments string) string {
 			var a antigravityArgs
 			if err := json.Unmarshal([]byte(arguments), &a); err != nil {

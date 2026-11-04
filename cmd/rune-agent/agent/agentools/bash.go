@@ -26,8 +26,10 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"unstable.build/rune/cmd/rune-agent/agent"
+	"unstable.build/rune/cmd/rune-agent/agent/toolpolicy"
 	"unstable.build/rune/cmd/rune-agent/agent/utf8validate"
 	"unstable.build/rune/cmd/rune-agent/configedit"
+	"unstable.build/rune/internal/term/shellplan"
 )
 
 const (
@@ -35,9 +37,10 @@ const (
 )
 
 type bashTool struct {
-	exec  workspaceapi.Executor
-	cwd   workspaceapi.URI
-	guard grepGuard
+	exec   workspaceapi.Executor
+	cwd    workspaceapi.URI
+	guard  grepGuard
+	policy toolpolicy.Policy
 }
 
 type bashArgs struct {
@@ -63,13 +66,39 @@ func newBash(
 	}
 }
 
+// WithPolicy implements agent.PolicyTool: the copy rejects the commands p
+// does not allow before running them.
+func (t *bashTool) WithPolicy(p toolpolicy.Policy) agent.Tool {
+	c := *t
+	c.policy = p
+	return &c
+}
+
+// withCommandHelp appends the restrictions of p on commands to the
+// description of a shell tool.
+func withCommandHelp(description string, p toolpolicy.Policy) string {
+	if help := p.CommandHelp(); help != "" {
+		return description + "\n\n" + help
+	}
+	return description
+}
+
+// checkCommand returns the result of a shell tool rejecting the command
+// shell runs with -c, and false when p allows it.
+func checkCommand(p toolpolicy.Policy, shell, command string) (agent.ToolResult, bool) {
+	if err := p.CheckCommand(shellplan.Command(shell, []string{"-c", command}, nil, nil)); err != nil {
+		return agent.ToolResult{Content: "error: " + err.Error(), IsError: true}, true
+	}
+	return agent.ToolResult{}, false
+}
+
 // Definition returns the LLM tool definition for bash.
 func (t *bashTool) Definition() llmapi.Tool {
 	return llmapi.Tool{
 		Type: llmapi.ToolTypeFunction,
 		Function: llmapi.FunctionDefinition{
 			Name: "bash",
-			Description: `Executes a bash command and returns its output.
+			Description: withCommandHelp(`Executes a bash command and returns its output.
 
 Commands run in the workspace root by default — do NOT prepend cd to
 the command. Use working_dir only if you need a different directory.
@@ -85,7 +114,7 @@ Do NOT use this tool for tasks that have a dedicated tool:
 • Symbol search → use search_symbols or find_definition
 
 Use bash only for running tests, build commands, git, or other tasks
-with no dedicated tool.`,
+with no dedicated tool.`, t.policy),
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -129,6 +158,10 @@ func (t *bashTool) Execute(ctx context.Context, arguments string) agent.ToolResu
 	var args bashArgs
 	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
 		return agent.ToolResult{Content: fmt.Sprintf("error: invalid arguments: %v", err), IsError: true}
+	}
+
+	if rejected, ok := checkCommand(t.policy, "bash", args.Command); ok {
+		return rejected
 	}
 
 	if isGrepInvocation(args.Command) {

@@ -14,7 +14,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-package ideauthorizer
+// Package shellplan tells the programs a command runs without running it:
+// the scripts of the shells it starts, the commands of the wrappers that
+// run others (env, timeout, xargs, sudo, find -exec, ...), and the
+// command substitutions of their words.
+package shellplan
 
 import (
 	"cmp"
@@ -60,18 +64,19 @@ func leadingLiterals(words []shellWord) []string {
 	return ret
 }
 
-type programRole int
+// Role tells whether a program needs a decision of its own.
+type Role int
 
 const (
-	// roleScoped programs need a decision of their own.
-	roleScoped programRole = iota
-	// roleBound programs, such as the shell of a script or the wrappers
-	// of a command, are only bound by fingerprint.
-	roleBound
+	// RoleScoped programs need a decision of their own.
+	RoleScoped Role = iota
+	// RoleBound programs, such as the shell of a script or the wrappers
+	// of a command, only run what the plan lists after them.
+	RoleBound
 )
 
-// programInvocation is a program a command runs.
-type programInvocation struct {
+// Program is a program a command runs.
+type Program struct {
 	// Name is the program as written. It is the source of the word when
 	// Opaque.
 	Name string
@@ -87,7 +92,7 @@ type programInvocation struct {
 	// code, len(Scope) when the code comes from the standard input, or
 	// -1.
 	Code int
-	Role programRole
+	Role Role
 	// Shell is the index into the plan's programs of the shell a builtin
 	// runs in, or -1 for programs that are files.
 	Shell int
@@ -108,11 +113,13 @@ type programInvocation struct {
 	First bool
 }
 
-// commandPlan is what the authorizer knows of the programs a command runs.
-type commandPlan struct {
-	Programs []programInvocation
-	// Opaque reports that the programs cannot be told, so the command is
-	// only approvable exactly. Reason says why.
+// Plan is what can be told of the programs a command runs.
+type Plan struct {
+	// Programs are the programs the command runs, shells and wrappers
+	// before the programs they run. They are incomplete when Opaque.
+	Programs []Program
+	// Opaque reports that the programs the command runs cannot be told,
+	// so that only the exact command can be judged. Reason says why.
 	Opaque bool
 	Reason string
 	// DirChanged reports that the command changes its directory before
@@ -120,17 +127,40 @@ type commandPlan struct {
 	// known.
 	DirChanged bool
 	// Deletes are the recursive deletions the command runs, of those the
-	// authorizer follows.
+	// planner follows.
 	Deletes []RecursiveDelete
+	// Writes are the files the redirections of the command's scripts
+	// open for writing. Programs may write other files of their own.
+	Writes []Write
 }
 
-// envLookup looks a variable up in the environment a command starts with.
+// Write is a file a redirection opens for writing.
+type Write struct {
+	// Target is the file after quote removal when Literal, and the word
+	// as written otherwise.
+	Target string
+	// Literal reports that Target is known before the command runs.
+	Literal bool
+}
+
+// RecursiveDelete is an rm a command runs that deletes directories.
+type RecursiveDelete struct {
+	// Command is the rm as the shell runs it: the words whose value Rune
+	// can tell are expanded, quoted where a shell would need it, and the
+	// others are as written.
+	Command string
+	// Unresolved reports that some words of Command are only known when
+	// it runs.
+	Unresolved bool
+}
+
+// EnvLookup looks a variable up in the environment a command starts with.
 // set reports that the variable is set, and known that its value can be
 // told before the command runs.
-type envLookup func(name string) (value string, set, known bool)
+type EnvLookup func(name string) (value string, set, known bool)
 
 type planner struct {
-	plan  commandPlan
+	plan  Plan
 	funcs map[string]bool
 	depth int
 	// arith reports a context that evaluates arithmetic on a value not
@@ -148,7 +178,7 @@ type planner struct {
 	firstStmt *syntax.Stmt
 	// env is the environment the command starts with, or nil when it is
 	// not known.
-	env envLookup
+	env EnvLookup
 	// vars are the variables the script being planned set before the
 	// statement being planned. A nil value is not known until it runs.
 	vars map[string]*string
@@ -181,10 +211,14 @@ type callContext struct {
 	noFuncs bool
 }
 
-// planCommand returns the programs the command path args runs. env holds
+// Command returns the programs the command path args runs. env holds
 // the variables the command sets to values other than the IDE's own, and
-// hostEnv, which may be nil, looks up those it starts with.
-func planCommand(path string, args []string, env []string, hostEnv envLookup) commandPlan {
+// hostEnv, which may be nil, looks up those it starts with. An empty path
+// runs the login shell, whose programs cannot be told.
+//
+// A plan that is not opaque may still hold programs whose names are not
+// known until the command runs (Program.Opaque), or no program at all.
+func Command(path string, args []string, env []string, hostEnv EnvLookup) Plan {
 	p := &planner{funcs: map[string]bool{}, env: hostEnv, vars: map[string]*string{}}
 	if path == "" {
 		p.opaque("it runs the login shell")
@@ -205,11 +239,6 @@ func planCommand(path string, args []string, env []string, hostEnv envLookup) co
 	})
 	if p.arith && p.suspicious {
 		p.opaque("its arithmetic may run command substitutions hidden in strings")
-	}
-	if !slices.ContainsFunc(p.plan.Programs, func(inv programInvocation) bool {
-		return inv.Role == roleScoped && !inv.Opaque
-	}) {
-		p.opaque("it runs no program a scope can describe")
 	}
 	return p.plan
 }
@@ -239,15 +268,15 @@ func (p *planner) dangerous(name string) bool {
 	return dangerousEnv(name) || (p.zsh() && zshDangerousEnv(name))
 }
 
-func (p *planner) add(inv programInvocation) int {
+func (p *planner) add(inv Program) int {
 	inv.Dir = p.dir
 	p.plan.Programs = append(p.plan.Programs, inv)
 	return len(p.plan.Programs) - 1
 }
 
-func (p *planner) invocation(name string, args []shellWord, c callContext) programInvocation {
+func (p *planner) invocation(name string, args []shellWord, c callContext) Program {
 	lits := leadingLiterals(args)
-	return programInvocation{
+	return Program{
 		Name:     name,
 		Args:     lits,
 		Scope:    lits,
@@ -262,7 +291,7 @@ func (p *planner) invocation(name string, args []shellWord, c callContext) progr
 
 func (p *planner) bound(name string, args []shellWord, c callContext) int {
 	inv := p.invocation(name, args, c)
-	inv.Role = roleBound
+	inv.Role = RoleBound
 	return p.add(inv)
 }
 
@@ -272,7 +301,7 @@ func (p *planner) expand(words []shellWord, c callContext) {
 		return
 	}
 	if !words[0].lit {
-		p.add(programInvocation{Name: words[0].text, Opaque: true, Code: -1, Shell: -1})
+		p.add(Program{Name: words[0].text, Opaque: true, Code: -1, Shell: -1})
 		return
 	}
 	name, args := words[0].text, words[1:]
@@ -1044,6 +1073,10 @@ func (p *planner) visit(n syntax.Node, shell int) {
 		if n.N != nil && p.dangerous(strings.Trim(n.N.Value, "{}")) {
 			p.opaque("it sets " + strings.Trim(n.N.Value, "{}"))
 		}
+		if n.Word != nil && opensForWriting(n, p.lang) {
+			w := wordOf(n.Word, p.lang)
+			p.plan.Writes = append(p.plan.Writes, Write{Target: w.text, Literal: w.lit})
+		}
 	case *syntax.ParamExp:
 		if n.Excl || readsValues(n.Index) ||
 			n.Slice != nil && (readsValues(n.Slice.Offset) || readsValues(n.Slice.Length)) {
@@ -1251,6 +1284,24 @@ func (p *planner) readsFile(s *syntax.Stmt) bool {
 	}
 	r := s.Redirs[0]
 	return r.Op == syntax.RdrIn && (r.N == nil || r.N.Value == "0")
+}
+
+// opensForWriting reports whether the redirection r opens a file for
+// writing, as opposed to reading one or duplicating a file descriptor.
+// lang is the language of its script.
+func opensForWriting(r *syntax.Redirect, lang syntax.LangVariant) bool {
+	switch r.Op {
+	case syntax.RdrOut, syntax.AppOut, syntax.RdrInOut, syntax.RdrClob, syntax.AppClob,
+		syntax.RdrAll, syntax.RdrAllClob, syntax.AppAll, syntax.AppAllClob:
+		return true
+	case syntax.DplOut:
+		// >&word redirects both outputs to the file word unless it names
+		// a descriptor, or closes or moves one.
+		w := wordOf(r.Word, lang)
+		fd := strings.TrimSuffix(w.text, "-")
+		return !w.lit || fd != "" && strings.Trim(fd, "0123456789") != ""
+	}
+	return false
 }
 
 // hasUnescapedParen reports whether the unquoted literal v holds a

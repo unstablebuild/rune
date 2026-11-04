@@ -21,13 +21,13 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
 	"unstable.build/rune/cmd/rune-agent/agent/skills"
+	"unstable.build/rune/cmd/rune-agent/agent/toolpolicy"
 	"unstable.build/rune/cmd/rune-agent/dialogue/dialoguemanager"
 	"unstable.build/rune/cmd/rune-agent/hooks"
 	"unstable.build/rune/cmd/rune-agent/llm/llmarg"
@@ -146,9 +146,7 @@ func (s *GoroutineSpawner) Run(
 			SystemPrompt: skill.Body,
 			Model:        skill.Model,
 		}
-		if skill.AllowedTools != "" && len(req.AllowedTools) == 0 {
-			req.AllowedTools = strings.Fields(skill.AllowedTools)
-		}
+		req.Tools = toolpolicy.Intersect(req.Tools, s.skillRegistry.AgentPolicy(skill))
 		skillBased = true
 		agentID = skill.Name
 	}
@@ -197,9 +195,10 @@ func (s *GoroutineSpawner) Run(
 	if registry == nil {
 		registry = NewRegistry()
 	}
-	if len(req.AllowedTools) > 0 {
-		registry = registry.WithFilteredTools(req.AllowedTools)
-	}
+	// The caller's restrictions bind everything it spawns, so that a
+	// restricted agent cannot escape them through an unrestricted child.
+	policy := toolpolicy.Intersect(ToolPolicyFromContext(ctx), req.Tools)
+	registry = registry.WithPolicy(policy)
 	prompt := req.SystemPrompt
 	if prompt == "" {
 		prompt = def.SystemPrompt
@@ -217,6 +216,7 @@ func (s *GoroutineSpawner) Run(
 		SubAgent:            true,
 		Workspace:           s.workspace,
 		Prompter:            s.prompter,
+		Tools:               policy,
 	})
 
 	// Sub-agent runs inherit the caller's cancellation but have no

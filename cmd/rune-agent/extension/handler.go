@@ -2712,10 +2712,6 @@ func createAgentCompletions(
 		var it iterator.Iterator[agent.Event]
 		if req.skillName != "" {
 			if skill, ok := skillRegistry.Get(req.skillName); ok && skill.Type == "agent" {
-				var allowedTools []string
-				if skill.AllowedTools != "" {
-					allowedTools = strings.Fields(skill.AllowedTools)
-				}
 				var initialMessages []llmapi.Message
 				if skill.ParentContext {
 					initialMessages = parentDialogueContextMessages(
@@ -2729,7 +2725,7 @@ func createAgentCompletions(
 					DisplayMessage:    req.displayText,
 					Attachments:       req.attachments,
 					AdditionalContext: upsRes.AdditionalContext,
-					AllowedTools:      allowedTools,
+					Tools:             skillRegistry.AgentPolicy(skill),
 					SystemPrompt:      skill.Body,
 					InitialMessages:   initialMessages,
 				})

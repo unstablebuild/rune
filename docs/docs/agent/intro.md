@@ -78,7 +78,8 @@ cheaper model for quick questions, point the `query` alias at one (see
 Skills are focused capability bundles the agent loads on demand, and
 sub-agents let it spawn scoped, parallel workers such as `explore` and
 `plan`. See [Skills](./skills.md) for how they are discovered, managed,
-and authored.
+and authored, and [Sub-agents](./sub-agents.md) for building your own
+sub-agents with a restricted set of tools.
 
 ## Memory
 

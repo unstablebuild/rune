@@ -23,6 +23,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"unstable.build/rune/cmd/rune-agent/agent"
 	"unstable.build/rune/cmd/rune-agent/configedit"
 )
 
@@ -137,4 +138,39 @@ func TestClamp(t *testing.T) {
 	assert.Equal(t, 5, clamp(5, 1, 10))
 	assert.Equal(t, 1, clamp(0, 1, 10))
 	assert.Equal(t, 10, clamp(99, 1, 10))
+}
+
+func TestExecCommandWithPolicy(t *testing.T) {
+	p := mustPolicy(t, []string{"bash(git log *)"}, nil)
+	cases := []struct {
+		args        string
+		wantErr     string
+		wantStarted int
+	}{
+		{args: `{"cmd":"git log -1"}`, wantStarted: 1},
+		{args: `{"cmd":"git log -1","shell":"zsh"}`, wantStarted: 1},
+		{args: `{"cmd":"git push"}`, wantErr: `"git push" matches no allowed pattern`},
+		{args: `{"cmd":"git log -1","shell":"python3"}`, wantErr: `"python3 -c git log -1"`},
+		{args: `{"cmd":"print(1)","shell":"python"}`, wantErr: `"python -c print(1)"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.args, func(t *testing.T) {
+			started := 0
+			mgr := NewSessionManager(context.Background(), countingExec(&started), nil)
+			t.Cleanup(func() { _ = mgr.Close() })
+			tool := NewExecCommand(mgr, dirURI(t.TempDir()), configedit.NopConfig()).(agent.PolicyTool).WithPolicy(p)
+
+			result := tool.Execute(context.Background(), tc.args)
+
+			assert.Equal(t, tc.wantStarted, started, "a rejected command never starts")
+			if tc.wantErr == "" {
+				assert.False(t, result.IsError, result.Content)
+				return
+			}
+			assert.True(t, result.IsError)
+			assert.Contains(t, result.Content, tc.wantErr)
+		})
+	}
+	assert.Contains(t, NewExecCommand(nil, dirURI("/w"), configedit.NopConfig()).(agent.PolicyTool).
+		WithPolicy(p).Definition().Function.Description, "`git log *`")
 }

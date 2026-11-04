@@ -46,6 +46,7 @@ import (
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
+	"unstable.build/rune/internal/term/shellplan"
 	"unstable.build/rune/internal/text"
 )
 
@@ -89,18 +90,7 @@ type PermissionRequest struct {
 	CommandOnceReason string
 	// RecursiveDeletes are the rm commands that delete directories which
 	// the command runs, as far as Rune can follow it.
-	RecursiveDeletes []RecursiveDelete
-}
-
-// RecursiveDelete is an rm a command runs that deletes directories.
-type RecursiveDelete struct {
-	// Command is the rm as the shell runs it: the words whose value Rune
-	// can tell are expanded, quoted where a shell would need it, and the
-	// others are as written.
-	Command string
-	// Unresolved reports that some words of Command are only known when
-	// it runs.
-	Unresolved bool
+	RecursiveDeletes []shellplan.RecursiveDelete
 }
 
 // CommandRemember is what deciding for good on a command does, which

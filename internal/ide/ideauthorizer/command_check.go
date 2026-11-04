@@ -32,6 +32,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
 	"mvdan.cc/sh/v3/syntax"
 	"unstable.build/rune/internal/ide/hostenv"
+	"unstable.build/rune/internal/term/shellplan"
 )
 
 // stdPATH is the PATH that command -p looks programs up in.
@@ -84,7 +85,7 @@ func (e checkedExecutable) changed() bool {
 }
 
 type checkedProgram struct {
-	inv programInvocation
+	inv shellplan.Program
 	// path is the file the program runs, the shell's for a builtin, or ""
 	// when it was not found or not looked up.
 	path string
@@ -106,7 +107,7 @@ type checkedProgram struct {
 type commandCheck struct {
 	host        string
 	command     pluginPermissionCommandDetail
-	plan        commandPlan
+	plan        shellplan.Plan
 	programs    []checkedProgram
 	executables []checkedExecutable
 	scopes      []commandScope
@@ -158,12 +159,18 @@ func (a *Authorizer) checkCommand(
 	c := &commandCheck{
 		host:    a.resolver.hostID,
 		command: command,
-		plan:    planCommand(command.Path, command.Args, command.Env, a.commandEnv(env)),
+		plan:    shellplan.Command(command.Path, command.Args, command.Env, a.commandEnv(env)),
+	}
+	if !c.plan.Opaque && !slices.ContainsFunc(c.plan.Programs, func(inv shellplan.Program) bool {
+		return inv.Role == shellplan.RoleScoped && !inv.Opaque
+	}) {
+		// Only an approval of the exact command could cover it.
+		c.plan.Opaque, c.plan.Reason = true, "it runs no program a scope can describe"
 	}
 	invocations := c.plan.Programs
 	if c.plan.Opaque {
-		invocations = []programInvocation{{
-			Name: command.Path, Role: roleBound, Code: -1, Shell: -1, TopLevel: true,
+		invocations = []shellplan.Program{{
+			Name: command.Path, Role: shellplan.RoleBound, Code: -1, Shell: -1, TopLevel: true,
 		}}
 	}
 	innerPATH, _ := envPATH(env)
@@ -233,7 +240,7 @@ func (a *Authorizer) checkCommand(
 // commandEnv looks variables up in the environment a command started
 // with env gets on the workspace host, which this side only sees when the
 // host is this machine.
-func (a *Authorizer) commandEnv(env []string) envLookup {
+func (a *Authorizer) commandEnv(env []string) shellplan.EnvLookup {
 	return func(name string) (string, bool, bool) {
 		for _, kv := range slices.Backward(env) {
 			if v, ok := strings.CutPrefix(kv, name+"="); ok {
@@ -290,7 +297,7 @@ func (c *commandCheck) keys(prefix string) {
 	}
 	for i := range c.programs {
 		p := &c.programs[i]
-		if p.inv.Role != roleScoped || p.inv.Opaque {
+		if p.inv.Role != shellplan.RoleScoped || p.inv.Opaque {
 			continue
 		}
 		if p.path == "" {
@@ -346,7 +353,7 @@ func (c *commandCheck) buildScopes() {
 	// cannot cover it, or only by covering much more than it runs.
 	whole := c.plan.Opaque
 	for _, p := range c.programs {
-		if p.inv.Role != roleScoped || p.allowed {
+		if p.inv.Role != shellplan.RoleScoped || p.allowed {
 			continue
 		}
 		if p.inv.Opaque {
@@ -474,7 +481,7 @@ func (a *Authorizer) lookupCommandDecisions(ctx context.Context, c *commandCheck
 	everyProgram := !c.plan.Opaque
 	for i := range c.programs {
 		p := &c.programs[i]
-		if p.inv.Role != roleScoped {
+		if p.inv.Role != shellplan.RoleScoped {
 			continue
 		}
 		for _, key := range append(append([]string(nil), p.prefixKeys...), p.exactKey) {
@@ -598,8 +605,8 @@ func appendUnique(list []string, items ...string) []string {
 
 // recursiveDeletes returns the recursive deletions of the command, once
 // each.
-func (c *commandCheck) recursiveDeletes() []RecursiveDelete {
-	var ret []RecursiveDelete
+func (c *commandCheck) recursiveDeletes() []shellplan.RecursiveDelete {
+	var ret []shellplan.RecursiveDelete
 	for _, d := range c.plan.Deletes {
 		if !slices.Contains(ret, d) {
 			ret = append(ret, d)
@@ -619,7 +626,7 @@ func (c *commandCheck) programSummaries() []ProgramSummary {
 		}
 		s := ProgramSummary{
 			Name: p.inv.Name, Opaque: p.inv.Opaque, Builtin: p.inv.Shell >= 0,
-			RunsCode:   p.inv.Role == roleScoped && p.inv.Code >= 0,
+			RunsCode:   p.inv.Role == shellplan.RoleScoped && p.inv.Code >= 0,
 			DirUnknown: p.dirUnknown,
 		}
 		if p.exe >= 0 && c.executables[p.exe].Absent {
@@ -650,7 +657,7 @@ func (c *commandCheck) settled(p checkedProgram) bool {
 	if p.exe >= 0 && !c.executables[p.exe].known() {
 		return false
 	}
-	if p.inv.Role == roleBound {
+	if p.inv.Role == shellplan.RoleBound {
 		return p.exe >= 0
 	}
 	return p.allowed

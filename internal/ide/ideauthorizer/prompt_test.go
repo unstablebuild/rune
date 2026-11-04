@@ -34,6 +34,7 @@ import (
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/browser/browsertest"
 	"unstable.build/rune/internal/term/programstatus"
+	"unstable.build/rune/internal/term/shellplan"
 )
 
 type fakePluginPromptOpener struct {
@@ -553,17 +554,17 @@ func TestPluginPermissionPromptMessageShowsRecursiveDeletes(t *testing.T) {
 		"subcommands the decision covers."
 	cases := []struct {
 		name    string
-		deletes []RecursiveDelete
+		deletes []shellplan.RecursiveDelete
 		want    string
 	}{
 		{name: "none", want: intro + footer},
 		{name: "known",
-			deletes: []RecursiveDelete{{Command: "rm -rf /home/me/.rune"}, {Command: "rm -r x"},
+			deletes: []shellplan.RecursiveDelete{{Command: "rm -rf /home/me/.rune"}, {Command: "rm -r x"},
 				{Command: "rmdir /home/me/y"}},
 			want: intro + "\n\n⚠️ **Removes recursively**, as the shell will run it:\n\n" +
 				"```\nrm -rf /home/me/.rune\nrm -r x\nrmdir /home/me/y\n```" + footer},
 		{name: "known only when it runs",
-			deletes: []RecursiveDelete{{Command: "rm -rf x"}, {Command: "rm -rf $(pwd)", Unresolved: true}},
+			deletes: []shellplan.RecursiveDelete{{Command: "rm -rf x"}, {Command: "rm -rf $(pwd)", Unresolved: true}},
 			want: intro + "\n\n⚠️ **Removes recursively**, as the shell will run it:\n\n" +
 				"```\nrm -rf x\nrm -rf $(pwd)\n```\n\nWords left as written are only known when it runs." +
 				footer},
@@ -628,7 +629,7 @@ func TestPluginPermissionPromptMessageShowsCommandDescription(t *testing.T) {
 			CommandPath:        "/bin/bash",
 			CommandArgs:        []string{"-c", "rm -rf $D"},
 			CommandDescription: tc.description,
-			RecursiveDeletes:   []RecursiveDelete{{Command: "rm -rf x"}},
+			RecursiveDeletes:   []shellplan.RecursiveDelete{{Command: "rm -rf x"}},
 		}
 		if tc.extension {
 			req.ExtensionID, req.ExtensionName, req.DeveloperID = "agent", "Agent", "dev-id"

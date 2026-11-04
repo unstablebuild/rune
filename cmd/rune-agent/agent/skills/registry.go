@@ -27,8 +27,13 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 
+	"unstable.build/rune/cmd/rune-agent/agent/toolpolicy"
 	builtins "unstable.build/rune/cmd/rune-agent/skills"
 )
+
+// builtinDir is the prefix of the Dir of the skills built into Rune,
+// which have no directory on disk.
+const builtinDir = "<builtin>/"
 
 // SkillRegistry is a thread-safe, mutable registry of skills.
 // Created once at startup and shared by the skill tool and agentshell.
@@ -114,6 +119,19 @@ func (r *SkillRegistry) Dirs() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return slices.Clone(r.dirs)
+}
+
+// AgentPolicy returns the tool policy of the sub-agent that runs the agent
+// skill s: s.Tools, with its bash($name) entries letting commands run the
+// scripts of the skills r holds. Builtin skills have no scripts.
+func (r *SkillRegistry) AgentPolicy(s Skill) toolpolicy.Policy {
+	dirs := make(map[string]string)
+	for _, other := range r.List() {
+		if !strings.HasPrefix(other.Dir, builtinDir) {
+			dirs[other.Name] = other.Dir
+		}
+	}
+	return s.Tools.WithSkillDirs(dirs)
 }
 
 // AddDir adds a skill directory. Resolves relative paths against
@@ -209,7 +227,7 @@ func (r *SkillRegistry) registerBuiltins() {
 		{builtins.Plan, "plan"},
 		{builtins.RuneHUD, "rune-hud"},
 	} {
-		s, err := Parse(entry.data, "<builtin>/"+entry.name)
+		s, err := Parse(entry.data, builtinDir+entry.name)
 		if err != nil {
 			panic("builtin skill " + entry.name + ": " + err.Error())
 		}
