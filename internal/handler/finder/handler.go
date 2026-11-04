@@ -119,6 +119,9 @@ func NewWithListConfig(
 	fallback func(workspaceapi.FileSystem, context.Context) (iterator.Iterator[string], error),
 	getResource func(exec workspaceapi.FileSystem, line string) (workspaceapi.URI, term.Coordinates, bool),
 ) (RedispatchHandler, error) {
+	if command == "" && fallback == nil {
+		return nil, errors.New("finder: a command or a fallback is required")
+	}
 	h := &fuzzyFinderHandler{
 		s:                    clients.Storage,
 		f:                    clients.ResourceOpener,
@@ -470,6 +473,17 @@ func (h *fuzzyFinderHandler) scanData() {
 
 	stderr, stdout, closeWrites, exec, err := h.execCommand(ctx, h.cmdStr)
 	if err != nil {
+		if h.workspaceFallback == nil {
+			if ctx.Err() == nil {
+				merr := h.notifyError("failed to execute '%s': %v", h.cmdStr, err)
+				if merr != nil {
+					log.Errorf("error setting message: %v", merr)
+				}
+			}
+			close(datachan)
+			cancelScan()
+			return
+		}
 		log.Debugf("fallback to scan data via workspace API: %v", err)
 		h.scanDataViaWorkspaceAPI(ctx, datachan, cancelScan)
 		return
