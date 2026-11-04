@@ -196,8 +196,8 @@ var _ browserapi.Floating = (*Handler)(nil)
 // preview pane above it. Each stdout line of `command` is parsed as
 // `path[:line[:col]]` for both the list entries and the preview
 // target. `parser` is optional; when nil the preview pane shows
-// uncolored cells. `command` must be empty when cfg.Source lists the
-// entries instead.
+// uncolored cells. Exactly one of `command` and cfg.Source must be set.
+// A `command` that fails to start is reported as an error notification.
 func New(
 	ctx context.Context,
 	clients finder.Clients,
