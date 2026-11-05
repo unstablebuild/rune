@@ -17,11 +17,13 @@
 package extension
 
 import (
+	stdimage "image"
 	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
+	"github.com/unstablebuild/rune-go-sdk/component"
 	"unstable.build/rune/cmd/rune-agent/dialogue/dialoguetui"
 )
 
@@ -71,6 +73,16 @@ func (s syncComponent) setStatusBarConfig(cfg dialoguetui.StatusBarConfig) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.comp.SetStatusBarConfig(cfg)
+}
+
+// setInputBoxFrameCharSet draws the chat's compose box frame with cs and
+// its images, by URI.
+func (s syncComponent) setInputBoxFrameCharSet(
+	cs component.FrameCharSet, images map[string]stdimage.Image,
+) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.comp.SetInputBoxFrameCharSet(cs, images)
 }
 
 // swapPhase reports a new status bar phase and returns the one it

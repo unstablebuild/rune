@@ -53,7 +53,8 @@ these keys to every open workspace:
 - `command.frame_charset`, `command.separator_charset` and
   `command.show_manual`;
 - `editor.status_bar`: `layout`, `background_attr` and `foreground_error_attr`;
-- `extensions.rune-agent.config.status_bar`, every key;
+- `extensions.rune-agent.config.status_bar`, every key, and
+  `extensions.rune-agent.config.input_box_frame_charset`;
 - `gui`: `quick_menu`, `quick_menu_sounds`, `themes`, `default_theme` and
   `sound_volume`;
 - `notifications`: `attr`, `background_attr`, `frame_charset`, `padding`,
@@ -70,8 +71,8 @@ overwrote at the same path. Existing prompts retain their style until reopened;
 open notifications take the new style at once.
 `gui.default_theme` and `gui.sound_volume` apply only when they differ from the
 values Rune read last, so a theme or volume the user picked since stays. The
-agent redraws its own status bar a moment after Rune reloads; if a capture
-still shows the old agent bar, capture again.
+agent redraws its own status bar and compose box a moment after Rune reloads;
+if a capture still shows the old ones, capture again.
 Do not assume every configuration key is live-reloaded: the exceptions are
 listed under Apply and verify. Inspect the surfaces visible in the capture;
 do not claim to have verified a prompt or state that was not shown.
@@ -291,6 +292,7 @@ Abbreviations:
 | Notification frame | `notifications.frame_charset.graphics` | same 8 | 1 × 1 | fill |
 | Notification progress bar | `notifications.progress_format.graphics` | `start`, `current_tip`, `end` | 1 × 1 | fill |
 | | | `current` `remain` (tiles →) | 1 × 1 | fill |
+| Agent compose box frame | `extensions.rune-agent.config.input_box_frame_charset.graphics` | same 8 | 1 × 1 | fill |
 | Scroll bar | `browser.window_manager.scroll_bar_charset.graphics` | `top_char`, `middle_char` (tiles ↓), `bottom_char`, and the `hover_` version of each | (1+L) × 1 | fill |
 | Floating window bar | `browser.window_manager.window_bar_charset.graphics` | `left` | (S+1+I) × (T+1+B) | fill |
 | | | `right` | (I+1+S) × (T+1+B) | fill |
@@ -422,6 +424,9 @@ Every `graphics` table takes a `mode`:
   and a missing `hover_` image uses the plain one.
 - **Command prompt frame:** slots `command.frame_charset.graphics` leaves out
   keep the normal window frame's images, forming the effective command frame.
+- **Agent compose box frame:** slots `input_box_frame_charset` leaves out keep
+  the default `┌─┐│└┘` runes and draw no image; they don't inherit the window
+  frame. `input_box_frame_attr` colours the runes, which `overlay` images show.
 - **Command separator:** omitted `graphics.horizontal` inherits that effective
   frame's `graphics.horizontalbottom`. Explicit `horizontal: ""` clears only
   the image, keeping the glyph rule. Missing, cleared, loading or failed
@@ -458,8 +463,6 @@ when a distinct middle tile is needed.
 
 ### Keys that look like they take images but don't
 Never write images to these:
-- `extensions.rune-agent.config.input_box_frame_charset.graphics`: accepted, but
-  never drawn.
 - `.Image` in `terminal.plugin.bar_layout` or `editor.<mode>.message_bar.layout`:
   a config error.
 - `browser.frameunion_charset` and `browser.window_manager.close_icon`:

@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
+	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"gopkg.in/yaml.v3"
 
@@ -117,4 +118,84 @@ func TestShippedAgentConfigUserMsgIconMatchesDefault(t *testing.T) {
 	assert.Equal(t, dialoguetui.DefaultSendMessageIcon, defaultComponentCfg.SendMessageIcon)
 	assert.Equal(t, defaultComponentCfg.SendMessageIcon, resolveUserMsgIcon(0, pconfig),
 		"user_msg_icon in %s", agentYAMLPath)
+}
+
+func TestResolveTranscriptHorizontalPadding(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  map[string]any
+		want int
+	}{
+		{name: "unset keeps 80 columns", cfg: map[string]any{}, want: -80},
+		{name: "a negative value is the width", cfg: map[string]any{"transcript_horizontal_padding": -120}, want: -120},
+		{name: "a positive value is the padding", cfg: map[string]any{"transcript_horizontal_padding": 20}, want: 20},
+		{name: "zero fills the tab", cfg: map[string]any{"transcript_horizontal_padding": 0}, want: 0},
+		{name: "a non-integer keeps 80 columns", cfg: map[string]any{"transcript_horizontal_padding": "wide"}, want: -80},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, resolveTranscriptHorizontalPadding(config.MapConfig(tc.cfg)))
+		})
+	}
+}
+
+func TestTranscriptHorizontalPaddingLaysOutTheTranscript(t *testing.T) {
+	const width, height = 100, 10
+	tests := []struct {
+		name    string
+		padding int
+		// wantX is the column the transcript starts at.
+		wantX int
+	}{
+		{name: "a width centers the transcript", padding: -80, wantX: 10},
+		{name: "a width wider than the tab fills it", padding: -120},
+		{name: "a padding splits evenly", padding: 20, wantX: 10},
+		{name: "no padding fills the tab", padding: 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := defaultComponentCfg
+			cfg.MessagesRowConfig.PadHorizontal = tc.padding
+			comp := dialoguetui.NewComponent(cfg)
+			t.Cleanup(func() { assert.NoError(t, comp.Close()) })
+			comp.Resize(width, height)
+			comp.AddWarningMessage("x")
+			w := term.NewStringWriter(width, height)
+			comp.Draw(w)
+			require.NoError(t, w.Flush())
+			x := -1
+			for i, c := range w.Cells() {
+				if c.Ch == 'x' {
+					x = i % width
+					break
+				}
+			}
+			require.GreaterOrEqual(t, x, 0, "the message is drawn")
+			assert.Equal(t, tc.wantX, x)
+		})
+	}
+}
+
+func TestShippedAgentConfigTranscriptAndInputBoxFrameMatchDefaults(t *testing.T) {
+	raw, err := os.ReadFile(agentYAMLPath)
+	require.NoError(t, err)
+	var doc struct {
+		Extensions struct {
+			RuneAgent struct {
+				Config map[string]any `yaml:"config"`
+			} `yaml:"rune-agent"`
+		} `yaml:"extensions"`
+	}
+	require.NoError(t, yaml.Unmarshal(raw, &doc))
+	pconfig := config.MapConfig(doc.Extensions.RuneAgent.Config)
+
+	_, err = pconfig.GetInt("transcript_horizontal_padding")
+	require.NoError(t, err, "transcript_horizontal_padding missing from %s", agentYAMLPath)
+	assert.Equal(t, defaultComponentCfg.MessagesRowConfig.PadHorizontal,
+		resolveTranscriptHorizontalPadding(pconfig), "transcript_horizontal_padding in %s", agentYAMLPath)
+
+	_, err = pconfig.GetConfig("input_box_frame_charset")
+	require.NoError(t, err, "input_box_frame_charset missing from %s", agentYAMLPath)
+	assert.Equal(t, component.FrameCharSetDefault(), inputBoxFrameCharSet(pconfig),
+		"input_box_frame_charset in %s", agentYAMLPath)
 }

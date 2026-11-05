@@ -26,12 +26,13 @@ TUI_FRAME_CHARSET = {
 #
 # A frame charset may also name an image for each slot in a "graphics"
 # table, which the GUI draws over the slot's character in window frames,
-# the command prompt frame and notifications. The terminal UI, and any
-# image that has not loaded or failed to load, shows the character.
-# Images are drawn as they are: frame_attr, dimming and b&w do not tint
-# them, though the frame_attr background shows through their transparent
-# pixels. To tell the focused window apart, give focus_frame_charset its
-# own pre-coloured images. For example:
+# the command prompt frame, notifications and the Rune Agent compose box
+# (extensions.rune-agent.config.input_box_frame_charset). The terminal UI,
+# and any image that has not loaded or failed to load, shows the
+# character. Images are drawn as they are: frame_attr, dimming and b&w do
+# not tint them, though the frame_attr background shows through their
+# transparent pixels. To tell the focused window apart, give
+# focus_frame_charset its own pre-coloured images. For example:
 #
 #     "graphics": {
 #         "mode":             "replace",

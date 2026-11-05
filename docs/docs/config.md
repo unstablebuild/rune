@@ -102,11 +102,12 @@ the configuration they were opened with.
 `themereload` reads the config file again and applies the keys that style
 Rune to every open workspace, with nothing closed or reopened: frames, window
 bars and prompts, notifications, the editor and Rune Agent status bars, the
-wallpaper, `sounds`, the terminal bell, the sounds of program status, and the
-quick menu, themes and sound volume of the GUI. It also reads again every
-image those keys name. [`runectl screenshot`](./develop/runectl.md#screenshots)
-does the same before each capture, which is how Rune Agent checks a theme it
-is designing; the screenshot section lists the exact keys.
+Rune Agent compose box frame, the wallpaper, `sounds`, the terminal bell, the
+sounds of program status, and the quick menu, themes and sound volume of the
+GUI. It also reads again every image those keys name.
+[`runectl screenshot`](./develop/runectl.md#screenshots) does the same before
+each capture, which is how Rune Agent checks a theme it is designing; the
+screenshot section lists the exact keys.
 
 ### Restart
 

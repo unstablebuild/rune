@@ -41,6 +41,11 @@ extensions:
         fg: default
         bg: default
         flags: italic
+      # Columns left beside the chat transcript, split evenly on either
+      # side. A negative value sets the transcript's width instead: -80
+      # keeps it 80 columns wide and centered, filling a narrower tab.
+      # 0 fills the tab.
+      transcript_horizontal_padding: -80
       input_box_attr:
         fg: default
         bg: default
@@ -50,6 +55,31 @@ extensions:
       input_box_frame_attr:
         fg: default
         bg: default
+      # Characters of the composer's border. A graphics table names an
+      # image the GUI draws over each slot's character, as frame charsets
+      # do in rune.star; mode is "replace" (the default) to hide the
+      # character under each image, or "overlay" to keep it showing
+      # through the image's transparent pixels in input_box_frame_attr:
+      #
+      #   graphics:
+      #     mode: replace
+      #     topleft: file:///path/to/topleft.png
+      #     topright: file:///path/to/topright.png
+      #     bottomleft: file:///path/to/bottomleft.png
+      #     bottomright: file:///path/to/bottomright.png
+      #     horizontaltop: file:///path/to/top.png
+      #     horizontalbottom: file:///path/to/bottom.png
+      #     verticalleft: file:///path/to/left.png
+      #     verticalright: file:///path/to/right.png
+      input_box_frame_charset:
+        topleft: "┌"
+        topright: "┐"
+        bottomleft: "└"
+        bottomright: "┘"
+        horizontaltop: "─"
+        horizontalbottom: "─"
+        verticalleft: "│"
+        verticalright: "│"
       # Styling for the '#' context completion overlay. Defaults mirror
       # the command prompt (see "command.*_attr" in rune.star) so both
       # search overlays look consistent.

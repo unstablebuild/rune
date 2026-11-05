@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"image"
+	"image/color"
 	"image/png"
 	"os"
 	"strings"
@@ -36,6 +37,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/component/comptest"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
+	"unstable.build/rune/internal/component/asciiart"
 	"unstable.build/rune/internal/component/markdown"
 )
 
@@ -4851,6 +4853,63 @@ func TestComponentSetStatusBarConfig(t *testing.T) {
 			assert.Equal(t, start, state.TurnStart, "the turn keeps its elapsed time")
 			assert.Equal(t, tt.wantEffect, comp.shadedBar.shader != nil)
 			assert.Equal(t, tt.wantRendered, strings.TrimSpace(render(t, comp.statusBar, width)))
+		})
+	}
+}
+
+func TestComponentInputBoxFrameGraphics(t *testing.T) {
+	const width, height = 24, 4
+	// Nothing is on disk at uri, so only a reloaded image can draw.
+	const uri = "file:///nonexistent/frame.png"
+	cs := component.FrameCharSetDefault()
+	cs.TopLeft = '╓'
+	cs.Graphics = component.FrameCharSetGraphics{TopLeft: uri, Overlay: true}
+	// The asciiart writer draws the gray 128 pixel as 'a'.
+	gray := image.NewNRGBA(image.Rect(0, 0, 1, 1))
+	gray.Set(0, 0, color.Gray{Y: 128})
+
+	tests := []struct {
+		name      string
+		noStorage bool
+		expected  string
+	}{
+		{
+			name: "a reloaded image draws over the frame",
+			expected: "                        \n" +
+				"  a──────────────────┐  \n" +
+				"  │                  │  \n" +
+				"  └──────────────────┘  ",
+		},
+		{
+			name:      "without storage the frame shows its runes alone",
+			noStorage: true,
+			expected: "                        \n" +
+				"  ╓──────────────────┐  \n" +
+				"  │                  │  \n" +
+				"  └──────────────────┘  ",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := ComponentConfig{InputBox: InputBoxConfig{
+				GraphicsStorage: storagestub.NewInMemoryService(),
+			}}
+			if tt.noStorage {
+				cfg.InputBox.GraphicsStorage = nil
+			}
+			comp := NewComponent(cfg)
+			t.Cleanup(func() { assert.NoError(t, comp.Close()) })
+			h, tx, _ := Handler(context.Background(), new(sync.Mutex), comp, term.NopInterrupter())
+			defer close(tx)
+			h.Resize(width, height)
+
+			comp.SetInputBoxFrameCharSet(cs, nil)
+			h.Draw(term.NewStringWriter(width, height))
+			comp.SetInputBoxFrameCharSet(cs, map[string]image.Image{uri: gray})
+			w := asciiart.NewStringWriter(width, height, asciiart.DefaultConfig())
+			h.Draw(w)
+			require.NoError(t, w.Flush())
+			assert.Equal(t, tt.expected, w.String())
 		})
 	}
 }

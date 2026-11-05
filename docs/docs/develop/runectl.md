@@ -112,8 +112,9 @@ Rune also serves the new config to its extensions and, on macOS and
 Linux, sends each running extension process `SIGUSR2`. When it signalled
 any, it waits 300 ms before capturing so they can redraw; see [Reloading
 configuration](sdk/go.md#reloading-configuration). Rune Agent uses this to
-apply `extensions.rune-agent.config.status_bar` to its open chats. An
-extension slower than that shows its change in the next screenshot.
+apply `extensions.rune-agent.config.status_bar` and
+`extensions.rune-agent.config.input_box_frame_charset` to its open chats.
+An extension slower than that shows its change in the next screenshot.
 
 Screenshots require GUI mode. TUI sessions safely discard the request, and
 `runectl` times out without creating an image. The capture contains Rune's
