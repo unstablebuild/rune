@@ -56,6 +56,8 @@ these keys to every open workspace:
 - `extensions.rune-agent.config.status_bar`, every key;
 - `gui`: `quick_menu`, `quick_menu_sounds`, `themes`, `default_theme` and
   `sound_volume`;
+- `notifications`: `attr`, `background_attr`, `frame_charset`, `padding`,
+  `progress_bar` and `progress_format`;
 - `program_status.sounds`;
 - `terminal.bell`;
 - `workspace`: `wallpaper_image`, `wallpaper_image_ascii`, `wallpaper_ascii`,
@@ -64,7 +66,8 @@ these keys to every open workspace:
 - `sounds`.
 
 Rune also reads again every image these keys name, including a file you
-overwrote at the same path. Existing prompts retain their style until reopened.
+overwrote at the same path. Existing prompts retain their style until reopened;
+open notifications take the new style at once.
 `gui.default_theme` and `gui.sound_volume` apply only when they differ from the
 values Rune read last, so a theme or volume the user picked since stays. The
 agent redraws its own status bar a moment after Rune reloads; if a capture
@@ -285,6 +288,9 @@ Abbreviations:
 | Command prompt frame | `command.frame_charset.graphics` | same 8 | 1 × 1 | fill |
 | Command separator | `command.separator_charset.graphics` | `left`, `right` | (1+I) × (T+1+B) | fill |
 | | | `horizontal` (tiles →) | 1 × 1 | fill |
+| Notification frame | `notifications.frame_charset.graphics` | same 8 | 1 × 1 | fill |
+| Notification progress bar | `notifications.progress_format.graphics` | `start`, `current_tip`, `end` | 1 × 1 | fill |
+| | | `current` `remain` (tiles →) | 1 × 1 | fill |
 | Scroll bar | `browser.window_manager.scroll_bar_charset.graphics` | `top_char`, `middle_char` (tiles ↓), `bottom_char`, and the `hover_` version of each | (1+L) × 1 | fill |
 | Floating window bar | `browser.window_manager.window_bar_charset.graphics` | `left` | (S+1+I) × (T+1+B) | fill |
 | | | `right` | (I+1+S) × (T+1+B) | fill |
@@ -305,6 +311,12 @@ Abbreviations:
   command with manual content and enough prompt space to display it.
 - Window bar images are drawn only while `browser.window_manager.window_bar`
   is true.
+- While `notifications.progress_bar` is true the progress bar is the
+  notification's bottom row: the frame's `bottomleft`, `horizontalbottom` and
+  `bottomright` images are not drawn, and `progress_format.graphics` draws there
+  instead, `start` and `end` at the corners, `current` up to `current_tip`, then
+  `remain`. Images are not tinted by notification level; use `overlay` and leave
+  the progress characters' channel transparent to keep the level colours.
 - Quick menu sprites move the bar from the native macOS bar to one Rune draws,
   on every platform. Set `sprite` on every button or on none; `symbol` isn't
   needed with one. Keep each button's `title` (its tooltip) and `command`.
@@ -446,8 +458,7 @@ when a distinct middle tile is needed.
 
 ### Keys that look like they take images but don't
 Never write images to these:
-- `notifications.frame_charset.graphics` and
-  `extensions.rune-agent.config.input_box_frame_charset.graphics`: accepted, but
+- `extensions.rune-agent.config.input_box_frame_charset.graphics`: accepted, but
   never drawn.
 - `.Image` in `terminal.plugin.bar_layout` or `editor.<mode>.message_bar.layout`:
   a config error.

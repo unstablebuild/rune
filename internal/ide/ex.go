@@ -206,11 +206,13 @@ type ex struct {
 	// promptMouseDown latches while a mouse button is held over the
 	// prompt handling path so a drag that leaves the prompt rect and
 	// releases outside is not mistaken for an outside click.
-	promptMouseDown       bool
-	promptShader          *shader.Component
-	commandPromptCfg      commandPromptConfig
-	promptGraphics        *tcomponent.FrameGraphics
-	promptGraphicsStorage storageapi.Service
+	promptMouseDown  bool
+	promptShader     *shader.Component
+	commandPromptCfg commandPromptConfig
+	// graphics draws the images of the command prompt and of the
+	// notifications. It is nil until either names one.
+	graphics        *tcomponent.FrameGraphics
+	graphicsStorage storageapi.Service
 	// statusBars styles the status bars of the editors e opens. It is
 	// nil where they are not restyled.
 	statusBars *text.StatusBarStyles
@@ -296,6 +298,7 @@ func newEx(
 	commandObserver commandObserver,
 	debugCommands bool,
 	commandPromptCfg commandPromptConfig,
+	notificationsStyle notifications.Style,
 	editorModeModal bool,
 	editorMode string,
 	metaKey keymeta.Meta,
@@ -318,6 +321,7 @@ func newEx(
 	e.commandObserver = commandObserver
 	e.debugCommands = debugCommands
 	e.commandPromptCfg = commandPromptCfg
+	e.container.Restyle(notificationsStyle)
 	e.editorModeModal = editorModeModal
 	e.editorMode = editorMode
 	e.metaKey = metaKey
@@ -582,11 +586,13 @@ func (e *ex) doInit(
 	e.stepWaitTimeout = e.pluginWaitTimeout + 30*time.Second
 	e.clip = clip
 	e.workspace = m
-	e.container = notifications.New(&e.comp, n.cfg)
+	e.storage = storage
+	notiCfg := n.cfg
+	notiCfg.Graphics = e.frameGraphics
+	e.container = notifications.New(&e.comp, notiCfg)
 	e.notifications = n.new(uri, e.container)
 	e.terminal = newAsyncTerminal(m, e.notifications)
 	e.publishEvent = publishEvent
-	e.storage = storage
 	e.workspaceURI = uri
 	// A t=f, t=t or t=s graphics transmission names a file on the
 	// machine the terminal's command runs on, which is this workspace.
@@ -3438,14 +3444,14 @@ func (e *ex) Close() (ret error) {
 		ret = multierror.Append(ret, err)
 	}
 	e.stopPromptShader()
-	if e.promptGraphics != nil {
-		if err := e.promptGraphics.Close(); err != nil {
+	if e.graphics != nil {
+		if err := e.graphics.Close(); err != nil {
 			ret = multierror.Append(ret, err)
 		}
-		if err := e.promptGraphicsStorage.Close(); err != nil {
+		if err := e.graphicsStorage.Close(); err != nil {
 			ret = multierror.Append(ret, err)
 		}
-		e.promptGraphics, e.promptGraphicsStorage = nil, nil
+		e.graphics, e.graphicsStorage = nil, nil
 	}
 	if err := e.container.Close(); err != nil {
 		ret = multierror.Append(ret, err)
@@ -3464,12 +3470,12 @@ func (e *ex) cleanPartialReissueState() {
 	e.ctxPartialReissue = context.Background()
 }
 
-func (e *ex) promptFrameGraphics() *tcomponent.FrameGraphics {
-	if e.promptGraphics == nil {
-		e.promptGraphicsStorage = storageapi.WithPartition(e.storage, frameImagesPartition)
-		e.promptGraphics = tcomponent.NewFrameGraphics(e.promptGraphicsStorage, e)
+func (e *ex) frameGraphics() *tcomponent.FrameGraphics {
+	if e.graphics == nil {
+		e.graphicsStorage = storageapi.WithPartition(e.storage, frameImagesPartition)
+		e.graphics = tcomponent.NewFrameGraphics(e.graphicsStorage, e)
 	}
-	return e.promptGraphics
+	return e.graphics
 }
 
 // promptFrameCharSets returns the charset the command prompt draws its frame
@@ -3482,8 +3488,9 @@ func (e *ex) promptFrameCharSets() (frame, radar component.FrameCharSet) {
 }
 
 // restyle draws e with s from the next Draw on, as browser.Component.Restyle
-// does, and the command prompts it opens later. Its frames and prompt
-// buttons draw images as tcomponent.FrameGraphics.Reload takes them.
+// does, and the command prompts it opens later, and its notifications,
+// open and later. Its frames, prompt buttons and notifications draw
+// images as tcomponent.FrameGraphics.Reload takes them.
 // Its editor status bars, open and later, draw statusBarImages as
 // text.StatusBarStyles.Restyle takes them, and its terminals, open and
 // later, ring the bell with s's sound.
@@ -3497,8 +3504,9 @@ func (e *ex) restyle(s hudStyle, images, statusBarImages map[string]image.Image)
 	}
 	e.comp.Browser().Restyle(s.browser)
 	e.cmdV.C.Restyle(s.browser)
+	e.container.Restyle(s.notifications)
 	for _, g := range []*tcomponent.FrameGraphics{
-		e.comp.Browser().FrameGraphics(), e.cmdV.C.FrameGraphics(), e.promptGraphics,
+		e.comp.Browser().FrameGraphics(), e.cmdV.C.FrameGraphics(), e.graphics,
 	} {
 		if g != nil {
 			g.Reload(images)

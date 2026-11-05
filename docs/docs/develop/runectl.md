@@ -89,6 +89,8 @@ keys to every open workspace, as `themereload` does:
   `foreground_error_attr`;
 - `gui`: `quick_menu`, `quick_menu_sounds`, `themes`, `default_theme` and
   `sound_volume`;
+- `notifications`: `attr`, `background_attr`, `frame_charset`, `padding`,
+  `progress_bar` and `progress_format`;
 - `program_status.sounds`;
 - `terminal.bell`;
 - `workspace`: `wallpaper_image`, `wallpaper_image_ascii`,
@@ -103,7 +105,8 @@ config file does not parse, none of its keys are applied.
 `gui.default_theme` and `gui.sound_volume` apply only when they differ
 from the values Rune read last, so a theme or volume picked since then
 stays. Prompts already open keep their style until reopened. Other keys
-still take `workspacereload` or a restart.
+still take `workspacereload` or a restart. Notifications already open take
+the new style at once.
 
 Rune also serves the new config to its extensions and, on macOS and
 Linux, sends each running extension process `SIGUSR2`. When it signalled

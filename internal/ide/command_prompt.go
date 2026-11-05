@@ -99,7 +99,7 @@ func newCommandPromptHandler(
 		separator: e.commandPromptCfg.separator,
 	}
 	if !framed.Graphics.Empty() || !stitched.separator.Graphics.Empty() {
-		stitched.graphics = e.promptFrameGraphics()
+		stitched.graphics = e.frameGraphics()
 	}
 	return browser.FuncFloating(
 		browser.FuncHandler(stitched, onClose),

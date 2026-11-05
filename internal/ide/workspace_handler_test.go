@@ -12375,6 +12375,167 @@ func TestLoadHUD(t *testing.T) {
 	})
 }
 
+func TestWorkspaceNotificationsTakeItsConfig(t *testing.T) {
+	const width, height = 30, 6
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	ws, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	frame := filepath.Join(ws, "frame.png")
+	writeHUDTestPNG(t, frame, color.Gray{Y: 128})
+	overlay := []byte("notifications:\n  frame_charset:\n    topleft: \"╓\"\n" +
+		"    graphics:\n      topright: file://" + frame + "\n")
+	require.NoError(t, os.WriteFile(filepath.Join(ws, ".iderc"), overlay, 0o644))
+	configPath := filepath.Join(home, "rune.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte("clipboard: memory\n"+
+		"workspace:\n  home: "+home+"\n  wallpaper_ascii: wallpaper\n"+
+		"notifications:\n  progress_bar: false\n"+
+		// Indexing would post notifications of its own.
+		"search:\n  regex_enabled: false\n  semantic_enabled: false\n"), 0o644))
+	i, mu := newHUDTestIDE(t, ws, configPath, WithTrustedWorkspaceConfig(overlay))
+	mu.Lock()
+	defer mu.Unlock()
+	w := i.workspaceHandler.workspaces[i.workspaceHandler.focus]
+	require.NotNil(t, w)
+
+	for _, tt := range []struct {
+		name     string
+		ex       *ex
+		expected string
+	}{
+		{
+			name: "a workspace's notifications take its own config", ex: w.ex,
+			expected: `╓────────────────────────────a
+│hud                         │
+└────────────────────────────┘
+│         wallpaper          │
+│                            │
+└────────────────────────────┘`,
+		},
+		{
+			name: "the home workspace's notifications take the user's", ex: i.workspaceHandler.empty,
+			expected: `┌────────────────────────────┐
+│hud                         │
+└────────────────────────────┘
+│         wallpaper          │
+│                            │
+└────────────────────────────┘`,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c := tt.ex.container
+			c.Resize(width, height)
+			require.True(t, c.UpdateProgress(c.Notify(notifications.LevelInfo, "hud"), "", 1, 2))
+			awaitFrame(t, c, asciiart.NewStringWriter(width, height, asciiart.DefaultConfig()),
+				nil, tt.expected)
+		})
+	}
+}
+
+func TestNotificationGraphicsIntegration(t *testing.T) {
+	const width, height = 40, 8
+	interrupts := make(chan struct{}, 1)
+	newTestPublishOverride = func(term.Event) bool {
+		select {
+		case interrupts <- struct{}{}:
+		default:
+		}
+		return true
+	}
+	t.Cleanup(func() { newTestPublishOverride = nil })
+
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	uri := func(name string, y uint8) string {
+		path := filepath.Join(dir, name)
+		writeHUDTestPNG(t, path, color.Gray{Y: y})
+		return "file://" + path
+	}
+	frame, progress, reloaded := uri("frame.png", 128), uri("progress.png", 255), uri("reloaded.png", 40)
+	notificationsCfg := func(frame string) map[string]any {
+		return map[string]any{
+			"progress_bar": true,
+			"frame_charset": map[string]any{"graphics": map[string]any{
+				"topleft": frame, "topright": frame, "bottomleft": frame, "bottomright": frame,
+				"horizontaltop": frame, "horizontalbottom": frame,
+				"verticalleft": frame, "verticalright": frame,
+			}},
+			"progress_format": map[string]any{
+				"start": "{", "current": "-", "current_tip": ">", "remain": " ", "end": "}",
+				"graphics": map[string]any{"current": progress, "current_tip": progress},
+			},
+		}
+	}
+	cfg := defaultConfigWithWrap(false)
+	cfg.cfg["notifications"] = notificationsCfg(frame)
+	m := newTestWorkspaceManagerHandlerWithDir(t, cfg, dir, nopShutdownShaderConfig())
+	t.Cleanup(func() { _ = m.Close() })
+	// The workspace reads cfg in the background, so the reload swaps in a
+	// config of its own rather than editing cfg.
+	reloadedCfg := defaultConfigWithWrap(false)
+	reloadedCfg.cfg["notifications"] = notificationsCfg(reloaded)
+	var current atomic.Pointer[ideConfig]
+	current.Store(&cfg)
+	m.reloadConfig = func() (ideConfig, error) { return *current.Load(), nil }
+	wsURI, err := workspaceapi.ParseURI("file://" + dir)
+	require.NoError(t, err)
+	require.NoError(t, m.addOrCreateWorkspace(wsURI))
+	m.quiesce()
+
+	h := newSafeHandler(m)
+	h.Resize(width, height)
+	w := asciiart.NewStringWriter(width, height, asciiart.DefaultConfig())
+	notify := func(msg string) {
+		m.locked(func() {
+			c := m.workspaces[m.focus].ex.container
+			// Pinned, so the progress bar neither moves nor closes.
+			require.True(t, c.UpdateProgress(c.Notify(notifications.LevelInfo, msg), "", 4, 10))
+		})
+	}
+	draw := func() string {
+		require.NoError(t, w.Clear(term.Attributes{}))
+		h.Draw(w)
+		require.NoError(t, w.Flush())
+		return w.String()
+	}
+
+	notify("hud")
+	awaitFrame(t, h, w, interrupts, `┌────────────────────────aaaaaaaaaaaaaaa
+│                        a hud         a
+├────────────────────────{@@@@@@       }
+│          workspaceWallpaper          │
+│                                      │
+├──────────────────────────────────────┤
+│1 1  2 2                              │
+└─────━━━──────────────────────────────┘`)
+
+	current.Store(&reloadedCfg)
+	hud, err := m.loadHUD(context.Background())
+	require.NoError(t, err)
+	m.locked(func() { m.applyHUD(hud) })
+	assert.Equal(t, `┌────────────────────────_______________
+│                        _ hud         _
+├────────────────────────{@@@@@@       }
+│          workspaceWallpaper          │
+│                                      │
+├──────────────────────────────────────┤
+│1 1  2 2                              │
+└─────━━━──────────────────────────────┘`, draw(),
+		"the open notification draws the reloaded images at once")
+
+	notify("new")
+	// The workspace bar's frame covers the last column of the lower one.
+	assert.Equal(t, `┌────────────────────────_______________
+│                        _ new         _
+├────────────────────────{@@@@@@       }
+│          workspaceWallp_______________
+│                        _ hud         _
+├────────────────────────{@@@@@@       ┤
+│1 1  2 2                              │
+└─────━━━──────────────────────────────┘`, draw(),
+		"a notification posted afterwards draws the reloaded images")
+}
+
 // hudTestStyle is the HUD style of a config whose window frames start with
 // topLeft and whose frame union has top junctions.
 func hudTestStyle(topLeft, top string) hudStyle {

@@ -476,7 +476,7 @@ func assertDefaultConfig(t *testing.T, cfg *ideConfig) {
 
 	actualNotifications := cfg.notificationsConfig()
 	expectedNotifications := defaultNotificationsConfig()
-	setNotificationsColor(&expectedNotifications)
+	setNotificationsColor(&expectedNotifications.Style)
 	assert.NotNil(t, actualNotifications.Interrupter)
 	actualNotifications.Interrupter = nil
 	expectedNotifications.Interrupter = nil
@@ -3207,6 +3207,56 @@ func TestConfigHUDStyle(t *testing.T) {
 				assert.Equal(t, text.DefaultCommandOverlayConfig().ShowManual, s.commandShowManual)
 				assert.Equal(t, idestatus.NotifyConfig{}, s.notifyStatus)
 			},
+		},
+		{
+			name: "notifications",
+			cfg: map[string]any{"notifications": map[string]any{
+				"progress_bar": false,
+				"padding":      2,
+				"attr":         map[string]any{"fg": "green"},
+				"frame_charset": map[string]any{
+					"topleft": "╓",
+					"graphics": map[string]any{
+						"topleft": "file:///noti/tl.png", "bottomright": "file:///noti/br.png",
+					},
+				},
+				"progress_format": map[string]any{
+					"start": "{",
+					"graphics": map[string]any{
+						"mode":   "overlay",
+						"start":  "file:///noti/start.png",
+						"remain": "file:///noti/tl.png",
+					},
+				},
+				// Read once at startup, so not part of the style.
+				"auto_close": "bogus",
+			}},
+			check: func(t *testing.T, s hudStyle) {
+				n := s.notifications
+				assert.False(t, n.ProgressBar)
+				assert.Equal(t, 2, n.Padding)
+				assert.Equal(t, term.ColorGreen, n.Attributes.Fg)
+				assert.Equal(t, '╓', n.FrameCharSet.TopLeft)
+				assert.Equal(t, "file:///noti/tl.png", n.FrameCharSet.Graphics.TopLeft)
+				assert.Equal(t, '{', n.ProgressRunes.Start)
+				assert.Equal(t, notifications.ProgressGraphics{
+					Start: "file:///noti/start.png", Remain: "file:///noti/tl.png", Overlay: true,
+				}, n.ProgressRunes.Graphics)
+			},
+			wantURIs: []string{"file:///noti/br.png", "file:///noti/start.png", "file:///noti/tl.png"},
+		},
+		{
+			name: "an invalid notification progress image keeps the default progress",
+			cfg: map[string]any{"notifications": map[string]any{
+				"progress_format": map[string]any{
+					"start":    "{",
+					"graphics": map[string]any{"start": "ftp://example.com/start.png"},
+				},
+			}},
+			check: func(t *testing.T, s hudStyle) {
+				assert.Equal(t, defaultNotificationsConfig().ProgressRunes, s.notifications.ProgressRunes)
+			},
+			wantErr: "notifications.progress_format",
 		},
 	}
 	for _, tc := range cases {
