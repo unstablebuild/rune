@@ -131,3 +131,9 @@ financially support us, you can do so via GitHub Sponsors; we might even send yo
 
 Rune is licensed under the [GNU General Public License, version 3](LICENSE)
 or, at your option, any later version.
+
+## Thanks to our contributors
+
+<a href="https://github.com/modular/modular/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=unstablebuild/rune" />
+</a>
