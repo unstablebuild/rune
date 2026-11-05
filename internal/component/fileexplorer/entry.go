@@ -33,26 +33,6 @@ type Entry struct {
 	Depth    int              // Nesting level (0 = root children)
 }
 
-// ParentURI returns the URI of this entry's parent directory.
-func (e Entry) ParentURI() workspaceapi.URI {
-	return workspaceapi.Dir(e.URI)
-}
-
-// EntryMap provides O(1) lookup of entries by ID.
-type EntryMap map[rune]*Entry
-
-// Add adds an entry to the map. If ID is 0, it's ignored (new entries).
-func (m EntryMap) Add(e *Entry) {
-	if e.ID != 0 {
-		m[e.ID] = e
-	}
-}
-
-// Get returns the entry with the given ID, or nil if not found.
-func (m EntryMap) Get(id rune) *Entry {
-	return m[id]
-}
-
 // collectEntries extracts all entries from a node tree into a flat list.
 //
 // All directories with loaded children are traversed, regardless of
@@ -80,13 +60,4 @@ func collectEntries(root *node) []*Entry {
 	}
 	walk(root)
 	return entries
-}
-
-// buildEntryMap creates a map of ID -> Entry from a list of entries.
-func buildEntryMap(entries []*Entry) EntryMap {
-	m := make(EntryMap)
-	for _, e := range entries {
-		m.Add(e)
-	}
-	return m
 }

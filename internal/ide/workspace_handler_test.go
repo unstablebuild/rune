@@ -70,6 +70,7 @@ import (
 	"unstable.build/rune/internal/cell"
 	tcomponent "unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/component/asciiart"
+	"unstable.build/rune/internal/component/fileexplorer/fileexplorertest"
 	"unstable.build/rune/internal/component/imageuri/imageuritest"
 	"unstable.build/rune/internal/component/notifications"
 	"unstable.build/rune/internal/component/shader"
@@ -409,6 +410,165 @@ func TestFileExplorerReactsToFilesystemChangesIntegration(t *testing.T) {
 			InputSequence: "<c-\\\\>fexplorer<enter>",
 			Expected:      reopenedFrame,
 		}})
+}
+
+func TestFileExplorerFlushIntegration(t *testing.T) {
+	cases := []struct {
+		name string
+		// files seeds the workspace; see fileexplorertest.WriteTree.
+		files map[string]string
+		// keys edits the explorer, which starts focused with every
+		// directory collapsed and the cursor on the first row. The
+		// edit is then written and the confirmation accepted.
+		keys string
+		// want is the workspace afterwards; see
+		// fileexplorertest.ReadTree.
+		want map[string]string
+	}{
+		{
+			name: "cut_paste_collapsed_dir_into_sibling",
+			files: map[string]string{
+				"agent/agent.go":            "agent",
+				"toolpolicy/policy.go":      "policy",
+				"toolpolicy/policy_test.go": "test",
+			},
+			// Rows after <enter>: agent/, │agent.go, toolpolicy/.
+			keys: "<enter>jjddp\\>\\>",
+			want: map[string]string{
+				"agent/agent.go":                  "agent",
+				"agent/toolpolicy/policy.go":      "policy",
+				"agent/toolpolicy/policy_test.go": "test",
+			},
+		},
+		{
+			name: "cut_paste_expanded_dir_into_sibling",
+			files: map[string]string{
+				"agent/agent.go":            "agent",
+				"toolpolicy/policy.go":      "policy",
+				"toolpolicy/policy_test.go": "test",
+			},
+			// Rows after both <enter>s: agent/, │agent.go,
+			// toolpolicy/, │policy.go, │policy_test.go.
+			keys: "<enter>jj<enter>3ddp\\>\\>j\\>\\>j\\>\\>",
+			want: map[string]string{
+				"agent/agent.go":                  "agent",
+				"agent/toolpolicy/policy.go":      "policy",
+				"agent/toolpolicy/policy_test.go": "test",
+			},
+		},
+		{
+			name: "replace_empty_dir_with_moved_dir",
+			files: map[string]string{
+				"agent/agent.go":            "agent",
+				"agent/toolpolicy/":         "",
+				"toolpolicy/policy.go":      "policy",
+				"toolpolicy/policy_test.go": "test",
+			},
+			// Rows after <enter>: agent/, │toolpolicy/, │agent.go,
+			// toolpolicy/.
+			keys: "<enter>jddj<enter>3ddp\\>\\>j\\>\\>j\\>\\>",
+			want: map[string]string{
+				"agent/agent.go":                  "agent",
+				"agent/toolpolicy/policy.go":      "policy",
+				"agent/toolpolicy/policy_test.go": "test",
+			},
+		},
+		{
+			name: "move_dir_carries_gitignored_files",
+			files: map[string]string{
+				".gitignore":           "*.log\n",
+				"agent/":               "",
+				"toolpolicy/debug.log": "log",
+				"toolpolicy/policy.go": "policy",
+			},
+			// Rows after j<enter>: agent/, toolpolicy/, │policy.go,
+			// .gitignore.
+			keys: "j<enter>\\>\\>j\\>\\>",
+			want: map[string]string{
+				".gitignore":                 "*.log\n",
+				"agent/toolpolicy/debug.log": "log",
+				"agent/toolpolicy/policy.go": "policy",
+			},
+		},
+		{
+			name: "delete_collapsed_dir",
+			files: map[string]string{
+				"keep.go":      "keep",
+				"pkg/a.go":     "a",
+				"pkg/sub/b.go": "b",
+			},
+			keys: "dd",
+			want: map[string]string{"keep.go": "keep"},
+		},
+		{
+			name: "delete_expanded_dir",
+			files: map[string]string{
+				"keep.go":      "keep",
+				"pkg/a.go":     "a",
+				"pkg/sub/b.go": "b",
+			},
+			// Rows after <enter>: pkg/, │sub/, │a.go, keep.go.
+			keys: "<enter>3dd",
+			want: map[string]string{"keep.go": "keep"},
+		},
+		{
+			name:  "move_file_out_then_delete_its_dir",
+			files: map[string]string{"src/a.go": "a", "src/b.go": "b"},
+			// Rows after <enter>: src/, │a.go, │b.go.
+			keys: "<enter>jcc-<space>a.go<esc>jddggdd",
+			want: map[string]string{"a.go": "a"},
+		},
+		{
+			name:  "rename_chain",
+			files: map[string]string{"a": "A", "b": "B"},
+			keys:  "jcc-<space>c<esc>kcc-<space>b<esc>",
+			want:  map[string]string{"b": "A", "c": "B"},
+		},
+		{
+			name:  "rename_swap",
+			files: map[string]string{"a": "A", "b": "B"},
+			keys:  "cc-<space>b<esc>jcc-<space>a<esc>",
+			want:  map[string]string{"a": "B", "b": "A"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// The watcher reports canonical paths; see
+			// TestFileExplorerReactsToFilesystemChangesIntegration.
+			dir, err := filepath.EvalSymlinks(t.TempDir())
+			require.NoError(t, err)
+			fileexplorertest.WriteTree(t, dir, tc.files)
+
+			cfg := defaultConfigWithWrap(false)
+			editorCfg := cfg.cfg["editor"].(map[string]any)
+			editorCfg["mode"] = editorModeVim
+			editorCfg["file_explorer"] = map[string]any{"read_only": false}
+			uri, err := workspaceapi.ParseURI("file://" + dir)
+			require.NoError(t, err)
+			m := newTestWorkspaceManagerHandlerWithDirs(t, cfg, dir,
+				t.TempDir(), nopShutdownShaderConfig())
+			require.NoError(t, m.addOrCreateWorkspace(uri))
+			m.quiesce()
+			t.Cleanup(func() { _ = m.Close() })
+
+			h := newSafeHandler(m)
+			h.Resize(60, 24)
+			sendExplorerKeys(t, h, "<c-\\\\>fexplorer<enter>")
+			m.mu.Lock()
+			ex := m.focusEx()
+			_, err = ex.comp.SetFocus(ex.fileExplorerWin)
+			m.mu.Unlock()
+			require.NoError(t, err)
+
+			sendExplorerKeys(t, h, tc.keys+"<c-\\\\>write<enter>y")
+
+			m.mu.Lock()
+			rows := ex.fileExplorerHandler.buf.String()
+			m.mu.Unlock()
+			assert.Equal(t, tc.want, fileexplorertest.ReadTree(t, dir),
+				"explorer after write:\n%s", rows)
+		})
+	}
 }
 
 func TestGitlinkIntegration(t *testing.T) {

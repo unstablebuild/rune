@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -32,6 +33,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/component/comptest"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/cell"
+	"unstable.build/rune/internal/component/fileexplorer/fileexplorertest"
 	"unstable.build/rune/internal/text"
 )
 
@@ -662,7 +664,6 @@ func TestDryFlush(t *testing.T) {
 			},
 			wantOps: []opKey{
 				{Type: OpDelete, Path: "/project/src"},
-				{Type: OpDelete, Path: "/project/src/main.go"},
 			},
 		},
 		{
@@ -1131,9 +1132,6 @@ func TestDryFlush(t *testing.T) {
 			},
 			wantOps: []opKey{
 				{Type: OpDelete, Path: "/project/a"},
-				{Type: OpDelete, Path: "/project/a/b"},
-				{Type: OpDelete, Path: "/project/a/b/c"},
-				{Type: OpDelete, Path: "/project/a/b/c/deep.go"},
 			},
 		},
 		// --- Insertion variants ---
@@ -1357,8 +1355,8 @@ func TestDryFlush(t *testing.T) {
 			// row keeps its id, so the change set must report
 			// OpMove for each folder instead of create+delete.
 			// One of the moved folders is EXPANDED, so its
-			// children must also re-parent correctly (reported as
-			// OpMove preserving their ids).
+			// children move with it and need no operation of
+			// their own.
 			name: "move_group_of_folders_into_sibling_folder",
 			dirs: map[string][]mockEntry{
 				"/project": {
@@ -1411,8 +1409,6 @@ func TestDryFlush(t *testing.T) {
 			},
 			wantOps: []opKey{
 				{Type: OpMove, Path: "/project/src1", New: "/project/dest/src1"},
-				{Type: OpMove, Path: "/project/src1/a.go", New: "/project/dest/src1/a.go"},
-				{Type: OpMove, Path: "/project/src1/b.go", New: "/project/dest/src1/b.go"},
 				{Type: OpMove, Path: "/project/src2", New: "/project/dest/src2"},
 			},
 		},
@@ -1559,11 +1555,9 @@ func TestDryFlush(t *testing.T) {
 		{
 			// Moving a DIRECTORY that wasn't expanded. The user
 			// changes its depth (outdent) without ever seeing its
-			// children. DryFlush must still move the children on
-			// the filesystem. The children come from baseTree
-			// (not visible in the buffer), and each must be
-			// reported as an OpMove preserving its id so file
-			// contents survive.
+			// children. The children come from baseTree (not
+			// visible in the buffer) and move with the directory,
+			// so only the directory itself is reported.
 			name: "move_collapsed_dir_moves_children_too",
 			dirs: map[string][]mockEntry{
 				"/project": {
@@ -1603,7 +1597,6 @@ func TestDryFlush(t *testing.T) {
 			},
 			wantOps: []opKey{
 				{Type: OpMove, Path: "/project/outer/nested", New: "/project/target/nested"},
-				{Type: OpMove, Path: "/project/outer/nested/leaf.go", New: "/project/target/nested/leaf.go"},
 			},
 		},
 		{
@@ -1611,8 +1604,8 @@ func TestDryFlush(t *testing.T) {
 			// its child, pastes them under a sibling directory,
 			// presses `>>` on each pasted line to indent it, and
 			// finally deletes the duplicate originals. Net effect:
-			// move the directory (with its visible child) into the
-			// sibling.
+			// move the directory into the sibling; its visible
+			// child goes with it.
 			//
 			// The user reported a bogus single-file move involving
 			// SKILL.md when the leading '\t' inserted by `>>` was
@@ -1662,15 +1655,14 @@ func TestDryFlush(t *testing.T) {
 			},
 			wantOps: []opKey{
 				{Type: OpMove, Path: "/project/issue-implement", New: "/project/issue-create/issue-implement"},
-				{Type: OpMove, Path: "/project/issue-implement/SKILL.md", New: "/project/issue-create/issue-implement/SKILL.md"},
 			},
 		},
 		{
 			// Same scenario as above but with ANOTHER SKILL.md
 			// already in the destination directory. The recovery
 			// logic must not pick the wrong base id for the moved
-			// child, and the directory move must still resolve
-			// children's URIs against the moved parent.
+			// child: a wrong id would surface as a spurious move of
+			// one of the SKILL.md files.
 			name: "copy_paste_indent_move_dir_with_sibling_same_name_child",
 			dirs: map[string][]mockEntry{
 				"/project": {
@@ -1714,7 +1706,6 @@ func TestDryFlush(t *testing.T) {
 			},
 			wantOps: []opKey{
 				{Type: OpMove, Path: "/project/issue-implement", New: "/project/issue-create/issue-implement"},
-				{Type: OpMove, Path: "/project/issue-implement/SKILL.md", New: "/project/issue-create/issue-implement/SKILL.md"},
 			},
 		},
 		{
@@ -1866,29 +1857,298 @@ func TestDryFlush(t *testing.T) {
 	}
 }
 
-func TestFlushExecutesOperations(t *testing.T) {
-	mfs := &mockFS{
-		dirs:  map[string][]mockEntry{"/project": {{name: "old.go"}}},
-		files: map[string][]byte{"/project/old.go": []byte("hello")},
+func TestFlushAppliesChangesToDisk(t *testing.T) {
+	cases := []struct {
+		name string
+		// files seeds the workspace; see fileexplorertest.WriteTree.
+		files map[string]string
+		cfg   Config
+		setup func(t *testing.T, c *Component, buf *cell.Buffer)
+		edit  func(t *testing.T, c *Component, buf *cell.Buffer)
+		// wantPlan is what DryFlush reports, in the order Flush
+		// applies it; see planLines.
+		wantPlan []string
+		// want is the workspace after Flush; see
+		// fileexplorertest.ReadTree.
+		want map[string]string
+	}{
+		{
+			name:  "rename_file",
+			files: map[string]string{"old.go": "old"},
+			edit: func(t *testing.T, c *Component, buf *cell.Buffer) {
+				replaceLine(buf, 0, "  new.go")
+			},
+			wantPlan: []string{"rename old.go -> new.go"},
+			want:     map[string]string{"new.go": "old"},
+		},
+		{
+			name: "move_unloaded_dir_into_expanded_sibling",
+			files: map[string]string{
+				"agent/agent.go":            "agent",
+				"toolpolicy/policy.go":      "policy",
+				"toolpolicy/policy_test.go": "test",
+			},
+			setup: func(t *testing.T, c *Component, buf *cell.Buffer) {
+				c.ExpandNodeAt(term.Coordinates{Y: 0}) // agent/
+			},
+			edit: func(t *testing.T, c *Component, buf *cell.Buffer) {
+				// Rows: agent/, │agent.go, toolpolicy/
+				buf.ShiftRowRight(2)
+			},
+			wantPlan: []string{"move toolpolicy -> agent/toolpolicy"},
+			want: map[string]string{
+				"agent/agent.go":                  "agent",
+				"agent/toolpolicy/policy.go":      "policy",
+				"agent/toolpolicy/policy_test.go": "test",
+			},
+		},
+		{
+			name: "move_expanded_dir_with_its_rows",
+			files: map[string]string{
+				"agent/agent.go":            "agent",
+				"toolpolicy/policy.go":      "policy",
+				"toolpolicy/policy_test.go": "test",
+			},
+			setup: func(t *testing.T, c *Component, buf *cell.Buffer) {
+				c.ExpandNodeAt(term.Coordinates{Y: 0}) // agent/
+				c.ExpandNodeAt(term.Coordinates{Y: 2}) // toolpolicy/
+			},
+			edit: func(t *testing.T, c *Component, buf *cell.Buffer) {
+				// Rows: agent/, │agent.go, toolpolicy/,
+				// │policy.go, │policy_test.go
+				buf.ShiftRowRight(2)
+				buf.ShiftRowRight(3)
+				buf.ShiftRowRight(4)
+			},
+			wantPlan: []string{"move toolpolicy -> agent/toolpolicy"},
+			want: map[string]string{
+				"agent/agent.go":                  "agent",
+				"agent/toolpolicy/policy.go":      "policy",
+				"agent/toolpolicy/policy_test.go": "test",
+			},
+		},
+		{
+			name: "move_dir_onto_deleted_empty_dir",
+			files: map[string]string{
+				"agent/agent.go":            "agent",
+				"agent/toolpolicy/":         "",
+				"toolpolicy/policy.go":      "policy",
+				"toolpolicy/policy_test.go": "test",
+			},
+			setup: func(t *testing.T, c *Component, buf *cell.Buffer) {
+				c.ExpandNodeAt(term.Coordinates{Y: 0}) // agent/
+				c.ExpandNodeAt(term.Coordinates{Y: 3}) // toolpolicy/
+			},
+			edit: func(t *testing.T, c *Component, buf *cell.Buffer) {
+				// Rows: agent/, │toolpolicy/, │agent.go,
+				// toolpolicy/, │policy.go, │policy_test.go
+				removeLine(buf, 1)
+				buf.ShiftRowRight(2)
+				buf.ShiftRowRight(3)
+				buf.ShiftRowRight(4)
+			},
+			wantPlan: []string{
+				"delete agent/toolpolicy",
+				"move toolpolicy -> agent/toolpolicy",
+			},
+			want: map[string]string{
+				"agent/agent.go":                  "agent",
+				"agent/toolpolicy/policy.go":      "policy",
+				"agent/toolpolicy/policy_test.go": "test",
+			},
+		},
+		{
+			name: "move_dir_carries_ignored_files",
+			files: map[string]string{
+				"agent/":               "",
+				"toolpolicy/debug.log": "log",
+				"toolpolicy/policy.go": "policy",
+			},
+			cfg: Config{Ignore: suffixIgnore{".log"}},
+			setup: func(t *testing.T, c *Component, buf *cell.Buffer) {
+				c.ExpandNodeAt(term.Coordinates{Y: 1}) // toolpolicy/
+			},
+			edit: func(t *testing.T, c *Component, buf *cell.Buffer) {
+				// Rows: agent/, toolpolicy/, │policy.go
+				buf.ShiftRowRight(1)
+				buf.ShiftRowRight(2)
+			},
+			wantPlan: []string{"move toolpolicy -> agent/toolpolicy"},
+			want: map[string]string{
+				"agent/toolpolicy/debug.log": "log",
+				"agent/toolpolicy/policy.go": "policy",
+			},
+		},
+		{
+			name:  "rename_unloaded_dir",
+			files: map[string]string{"old/a.go": "a"},
+			edit: func(t *testing.T, c *Component, buf *cell.Buffer) {
+				replaceLine(buf, 0, "  new/")
+			},
+			wantPlan: []string{"rename old -> new"},
+			want:     map[string]string{"new/a.go": "a"},
+		},
+		{
+			name:  "delete_unloaded_dir",
+			files: map[string]string{"keep.go": "keep", "pkg/a.go": "a"},
+			edit: func(t *testing.T, c *Component, buf *cell.Buffer) {
+				// Rows: pkg/, keep.go
+				removeLine(buf, 0)
+			},
+			wantPlan: []string{"delete pkg"},
+			want:     map[string]string{"keep.go": "keep"},
+		},
+		{
+			name: "delete_expanded_dir_with_its_rows",
+			files: map[string]string{
+				"keep.go":      "keep",
+				"pkg/a.go":     "a",
+				"pkg/sub/b.go": "b",
+			},
+			setup: func(t *testing.T, c *Component, buf *cell.Buffer) {
+				c.ExpandNodeAt(term.Coordinates{Y: 0}) // pkg/
+			},
+			edit: func(t *testing.T, c *Component, buf *cell.Buffer) {
+				// Rows: pkg/, │sub/, │a.go, keep.go
+				buf.Edit(context.Background(),
+					term.Coordinates{Y: 0, X: 0},
+					term.Coordinates{Y: 3, X: 0},
+					"",
+				)
+			},
+			wantPlan: []string{"delete pkg"},
+			want:     map[string]string{"keep.go": "keep"},
+		},
+		{
+			name:  "move_file_out_then_delete_its_dir",
+			files: map[string]string{"src/a.go": "a", "src/b.go": "b"},
+			setup: func(t *testing.T, c *Component, buf *cell.Buffer) {
+				c.ExpandNodeAt(term.Coordinates{Y: 0}) // src/
+			},
+			edit: func(t *testing.T, c *Component, buf *cell.Buffer) {
+				// Rows: src/, │a.go, │b.go
+				replaceLine(buf, 1, "  a.go")
+				removeLine(buf, 2)
+				removeLine(buf, 0)
+			},
+			wantPlan: []string{
+				"move src/a.go -> a.go",
+				"delete src",
+			},
+			want: map[string]string{"a.go": "a"},
+		},
+		{
+			name:  "rename_chain",
+			files: map[string]string{"a": "A", "b": "B"},
+			edit: func(t *testing.T, c *Component, buf *cell.Buffer) {
+				replaceLine(buf, 1, "  c")
+				replaceLine(buf, 0, "  b")
+			},
+			wantPlan: []string{
+				"rename b -> c",
+				"rename a -> b",
+			},
+			want: map[string]string{"b": "A", "c": "B"},
+		},
+		{
+			name:  "rename_swap",
+			files: map[string]string{"a": "A", "b": "B"},
+			edit: func(t *testing.T, c *Component, buf *cell.Buffer) {
+				replaceLine(buf, 0, "  b")
+				replaceLine(buf, 1, "  a")
+			},
+			wantPlan: []string{
+				"rename b -> a",
+				"rename a -> b",
+			},
+			want: map[string]string{"a": "B", "b": "A"},
+		},
+		{
+			name:  "swap_unloaded_dirs",
+			files: map[string]string{"a/x": "x", "b/y": "y"},
+			edit: func(t *testing.T, c *Component, buf *cell.Buffer) {
+				replaceLine(buf, 0, "  b/")
+				replaceLine(buf, 1, "  a/")
+			},
+			wantPlan: []string{
+				"rename b -> a",
+				"rename a -> b",
+			},
+			want: map[string]string{"a/y": "y", "b/x": "x"},
+		},
+		{
+			name:  "rename_file_inside_moved_dir",
+			files: map[string]string{"dst/": "", "pkg/a.go": "a"},
+			setup: func(t *testing.T, c *Component, buf *cell.Buffer) {
+				c.ExpandNodeAt(term.Coordinates{Y: 1}) // pkg/
+			},
+			edit: func(t *testing.T, c *Component, buf *cell.Buffer) {
+				// Rows: dst/, pkg/, │a.go
+				buf.ShiftRowRight(1)
+				buf.ShiftRowRight(2)
+				replaceLine(buf, 2, "\t│   b.go")
+			},
+			wantPlan: []string{
+				"move pkg -> dst/pkg",
+				"rename pkg/a.go -> dst/pkg/b.go",
+			},
+			want: map[string]string{"dst/pkg/b.go": "a"},
+		},
+		{
+			name:  "create_file_inside_moved_dir",
+			files: map[string]string{"dst/": "", "pkg/a.go": "a"},
+			setup: func(t *testing.T, c *Component, buf *cell.Buffer) {
+				c.ExpandNodeAt(term.Coordinates{Y: 1}) // pkg/
+			},
+			edit: func(t *testing.T, c *Component, buf *cell.Buffer) {
+				// Rows: dst/, pkg/, │a.go
+				buf.ShiftRowRight(1)
+				buf.ShiftRowRight(2)
+				insertAfter(buf, 2, "\t│   new.go")
+			},
+			wantPlan: []string{
+				"move pkg -> dst/pkg",
+				"create dst/pkg/new.go",
+			},
+			want: map[string]string{
+				"dst/pkg/a.go":   "a",
+				"dst/pkg/new.go": "",
+			},
+		},
 	}
-	buf := cell.NewBuffer()
-	c, err := New(buf, mfs, rootURI(), Config{})
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, buf, root := newDiskComp(t, tc.files, tc.cfg)
+			if tc.setup != nil {
+				tc.setup(t, c, buf)
+			}
+			tc.edit(t, c, buf)
+
+			dry := c.DryFlush()
+			require.Empty(t, dry.Conflicts)
+			assert.Equal(t, tc.wantPlan, planLines(c.Root(), dry.Operations))
+
+			_, err := c.Flush()
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, fileexplorertest.ReadTree(t, root))
+			assert.False(t, c.HasPendingEdits())
+		})
+	}
+}
+
+func TestFlushDeleteDirUnlinksSymlinksInsteadOfFollowingThem(t *testing.T) {
+	outside := t.TempDir()
+	fileexplorertest.WriteTree(t, outside, map[string]string{"keep.go": "keep"})
+	c, buf, root := newDiskComp(t, map[string]string{"pkg/a.go": "a"}, Config{})
+	require.NoError(t, os.Symlink(outside, filepath.Join(root, "pkg", "link")))
+
+	removeLine(buf, 0)
+	_, err := c.Flush()
 	require.NoError(t, err)
 
-	replaceLine(buf, 0, "  new.go")
-
-	cs, err := c.Flush()
-	require.NoError(t, err)
-	require.Len(t, cs.Operations, 1)
-	assert.Equal(t, OpRename, cs.Operations[0].Type)
-
-	// Buffer was rewritten to match the new base tree.
-	assert.Equal(t, " new.go", buf.String())
-	// FS reflects the rename.
-	_, ok := mfs.files["/project/new.go"]
-	assert.True(t, ok)
-	_, ok = mfs.files["/project/old.go"]
-	assert.False(t, ok)
+	assert.Empty(t, fileexplorertest.ReadTree(t, root))
+	assert.Equal(t, map[string]string{"keep.go": "keep"},
+		fileexplorertest.ReadTree(t, outside))
 }
 
 func TestFlushBlockedByConflicts(t *testing.T) {
@@ -2515,10 +2775,14 @@ func (m mockInfo) ModTime() time.Time { return time.Time{} }
 func (m mockInfo) IsDir() bool        { return m.e.isDir }
 func (m mockInfo) Sys() any           { return nil }
 
+// mockFS serves a fixed listing and refuses every write: anything that
+// flushes must run against a real directory (see newDiskComp), so no
+// test can pass on write semantics the real file system does not have.
 type mockFS struct {
-	dirs  map[string][]mockEntry
-	files map[string][]byte
+	dirs map[string][]mockEntry
 }
+
+var errMockFSReadOnly = fmt.Errorf("mockFS is read-only: flush against newDiskComp")
 
 func (m *mockFS) URI(path string) (workspaceapi.URI, error) {
 	return workspaceapi.ParseURI("file://" + path)
@@ -2536,49 +2800,10 @@ func (m *mockFS) ReadDir(name string) ([]os.DirEntry, error) {
 	return ret, nil
 }
 
-func (m *mockFS) OpenFile(path string, flag int, _ os.FileMode) (workspaceapi.File, error) {
-	if m.files == nil {
-		m.files = map[string][]byte{}
-	}
-	if flag&os.O_CREATE != 0 {
-		if _, ok := m.files[path]; !ok {
-			m.files[path] = nil
-		}
-	}
-	data, ok := m.files[path]
-	if !ok {
-		return nil, fmt.Errorf("not found: %s", path)
-	}
-	return &mockFile{fs: m, path: path, data: data, flag: flag}, nil
-}
-
-func (m *mockFS) Remove(path string) error {
-	if _, ok := m.files[path]; ok {
-		delete(m.files, path)
-		return nil
-	}
-	// Also remove from dirs map by searching parents.
-	for parent, entries := range m.dirs {
-		for i, e := range entries {
-			full := parent + "/" + e.Name()
-			if full == path {
-				m.dirs[parent] = append(entries[:i], entries[i+1:]...)
-				delete(m.dirs, path)
-				return nil
-			}
-		}
-	}
-	return nil
-}
-
 func (m *mockFS) Stat(path string) (os.FileInfo, error) {
-	if _, ok := m.files[path]; ok {
-		return mockInfo{mockEntry{name: path, isDir: false}}, nil
-	}
 	if _, ok := m.dirs[path]; ok {
 		return mockInfo{mockEntry{name: path, isDir: true}}, nil
 	}
-	// Fall back to scanning parents.
 	for parent, entries := range m.dirs {
 		for _, e := range entries {
 			if parent+"/"+e.Name() == path {
@@ -2589,66 +2814,62 @@ func (m *mockFS) Stat(path string) (os.FileInfo, error) {
 	return nil, fmt.Errorf("not found: %s", path)
 }
 
-func (m *mockFS) MkdirAll(path string, _ os.FileMode) error {
-	if _, ok := m.dirs[path]; !ok {
-		m.dirs[path] = nil
-	}
-	return nil
+func (m *mockFS) OpenFile(string, int, os.FileMode) (workspaceapi.File, error) {
+	return nil, errMockFSReadOnly
+}
+func (m *mockFS) Remove(string) error                { return errMockFSReadOnly }
+func (m *mockFS) MkdirAll(string, os.FileMode) error { return errMockFSReadOnly }
+func (m *mockFS) Rename(string, string) error        { return errMockFSReadOnly }
+
+type diskFS struct{}
+
+func (diskFS) URI(path string) (workspaceapi.URI, error) {
+	return workspaceapi.ParseURI("file://" + path)
+}
+func (diskFS) OpenFile(path string, flag int, perm os.FileMode) (workspaceapi.File, error) {
+	return os.OpenFile(path, flag, perm)
+}
+func (diskFS) Remove(path string) error                   { return os.Remove(path) }
+func (diskFS) Rename(oldpath, newpath string) error       { return os.Rename(oldpath, newpath) }
+func (diskFS) Stat(path string) (os.FileInfo, error)      { return os.Stat(path) }
+func (diskFS) ReadDir(path string) ([]os.DirEntry, error) { return os.ReadDir(path) }
+func (diskFS) MkdirAll(path string, perm os.FileMode) error {
+	return os.MkdirAll(path, perm)
 }
 
-type mockFile struct {
-	fs   *mockFS
-	path string
-	data []byte
-	pos  int
-	flag int
-	buf  []byte
+// newDiskComp roots a Component at a fresh directory seeded with files
+// (see fileexplorertest.WriteTree) and returns that directory.
+func newDiskComp(
+	t *testing.T, files map[string]string, cfg Config,
+) (*Component, *cell.Buffer, string) {
+	t.Helper()
+	root := t.TempDir()
+	fileexplorertest.WriteTree(t, root, files)
+	uri, err := workspaceapi.ParseURI("file://" + root)
+	require.NoError(t, err)
+	buf := cell.NewBuffer()
+	c, err := New(buf, diskFS{}, uri, cfg)
+	require.NoError(t, err)
+	return c, buf, root
 }
 
-func (f *mockFile) Read(p []byte) (int, error) {
-	if f.pos >= len(f.data) {
-		return 0, fmt.Errorf("EOF")
-	}
-	n := copy(p, f.data[f.pos:])
-	f.pos += n
-	return n, nil
-}
-
-func (f *mockFile) Write(p []byte) (int, error) {
-	f.buf = append(f.buf, p...)
-	return len(p), nil
-}
-
-func (f *mockFile) Close() error {
-	if f.flag&(os.O_WRONLY|os.O_RDWR) != 0 {
-		if f.flag&os.O_TRUNC != 0 {
-			f.fs.files[f.path] = f.buf
-		} else {
-			// For O_CREATE only (without O_TRUNC), empty means empty.
-			f.fs.files[f.path] = f.buf
+// planLines renders ops as "<type> <path>[ -> <path>]" with paths
+// relative to root.
+func planLines(root workspaceapi.URI, ops []Operation) []string {
+	rel := func(u workspaceapi.URI) string { return workspaceapi.RelPath(root, u) }
+	lines := make([]string, len(ops))
+	for i, op := range ops {
+		switch op.Type {
+		case OpCreate, OpMkdir:
+			lines[i] = fmt.Sprintf("%s %s", op.Type, rel(op.NewURI))
+		case OpDelete:
+			lines[i] = fmt.Sprintf("%s %s", op.Type, rel(op.URI))
+		default:
+			lines[i] = fmt.Sprintf("%s %s -> %s", op.Type, rel(op.URI), rel(op.NewURI))
 		}
 	}
-	return nil
+	return lines
 }
-
-func (f *mockFile) Name() string { return f.path }
-
-func (f *mockFile) Seek(int64, int) (int64, error)         { return 0, nil }
-func (f *mockFile) ReadAt(_ []byte, _ int64) (int, error)  { return 0, nil }
-func (f *mockFile) WriteAt(_ []byte, _ int64) (int, error) { return 0, nil }
-func (f *mockFile) Truncate(int64) error                   { return nil }
-func (f *mockFile) Stat() (os.FileInfo, error)             { return nil, nil }
-func (f *mockFile) Sync() error                            { return nil }
-func (f *mockFile) Chmod(os.FileMode) error                { return nil }
-func (f *mockFile) Chown(int, int) error                   { return nil }
-func (f *mockFile) SetDeadline(time.Time) error            { return nil }
-func (f *mockFile) SetReadDeadline(time.Time) error        { return nil }
-func (f *mockFile) SetWriteDeadline(time.Time) error       { return nil }
-func (f *mockFile) Chdir() error                           { return nil }
-func (f *mockFile) Fd() uintptr                            { return 0 }
-func (f *mockFile) Readdir(int) ([]os.FileInfo, error)     { return nil, nil }
-func (f *mockFile) Readdirnames(int) ([]string, error)     { return nil, nil }
-func (f *mockFile) ReadDir(int) ([]os.DirEntry, error)     { return nil, nil }
 
 func rootURI() workspaceapi.URI {
 	u, err := workspaceapi.ParseURI("file:///project")
