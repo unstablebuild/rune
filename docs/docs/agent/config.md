@@ -310,7 +310,8 @@ extensions:
 
 ## Appearance
 
-These keys style the chat tab and its composer. Each attribute value takes
+These keys style the chat tab and its composer, and the chats of
+[ACP agents](../learn/acp.md) too. Each attribute value takes
 an optional `fg` (foreground color), `bg` (background color), and `flags`
 (such as `dim`, `italic`, or `bold`).
 

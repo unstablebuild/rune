@@ -64,6 +64,7 @@ import (
 	"unstable.build/rune/internal/handler/search"
 	"unstable.build/rune/internal/handler/searchbox"
 	"unstable.build/rune/internal/ide/hostenv"
+	"unstable.build/rune/internal/ide/ideacp"
 	"unstable.build/rune/internal/ide/idedebug"
 	"unstable.build/rune/internal/ide/idelsp"
 	"unstable.build/rune/internal/ide/idestatus"
@@ -123,6 +124,8 @@ const (
 	keySounds       = "sounds"
 	keyTerminal     = "terminal"
 	keyTerminalBell = "bell"
+
+	keyACP = "acp"
 
 	keyProgramStatus       = "program_status"
 	keyProgramStatusSounds = "sounds"
@@ -835,6 +838,77 @@ func (c ideConfig) debuggerArgsTemplate(
 		}
 		ret[k] = s
 	}
+	return ret
+}
+
+// acpConfigs reads the Agent Client Protocol agents under
+// acp.agents.<name>: a required command, and optional args (a list of
+// strings) and env (a map of strings). Invalid entries are recorded in
+// c.errors and skipped.
+func (c ideConfig) acpConfigs() ideacp.Config {
+	ret := ideacp.Config{Agents: make(map[string]ideacp.AgentConfig)}
+	if c.cfg == nil {
+		return ret
+	}
+	acpCfg, ok := c.getConfig(config.MapConfig(c.cfg), keyACP)
+	if !ok {
+		return ret
+	}
+	agents, err := acpCfg.GetConfig("agents")
+	if err != nil {
+		if !errors.Is(err, config.ErrNotFound) {
+			c.errors[keyACP+".agents"] = err
+		}
+		return ret
+	}
+	agents.Iterate(func(name string, _ any) {
+		key := keyACP + ".agents." + name
+		entry, err := agents.GetConfig(name)
+		if err != nil {
+			c.errors[key] = err
+			return
+		}
+		command, err := entry.GetString("command")
+		if errors.Is(err, config.ErrNotFound) {
+			err = errors.New("command is required")
+		}
+		if err == nil && strings.TrimSpace(command) == "" {
+			err = errors.New("command is empty")
+		}
+		if err != nil {
+			c.errors[key+".command"] = err
+			return
+		}
+		agent := ideacp.AgentConfig{Command: command}
+		if raw, err := entry.GetSlice("args"); err == nil {
+			for i, v := range raw {
+				s, ok := v.(string)
+				if !ok {
+					c.errors[fmt.Sprintf("%s.args.%d", key, i)] = errors.New("value must be a string")
+					return
+				}
+				agent.Args = append(agent.Args, s)
+			}
+		} else if !errors.Is(err, config.ErrNotFound) {
+			c.errors[key+".args"] = err
+			return
+		}
+		if raw, err := entry.GetMap("env"); err == nil {
+			agent.Env = make(map[string]string, len(raw))
+			for k, v := range raw {
+				s, ok := v.(string)
+				if !ok {
+					c.errors[key+".env."+k] = errors.New("value must be a string")
+					return
+				}
+				agent.Env[k] = s
+			}
+		} else if !errors.Is(err, config.ErrNotFound) {
+			c.errors[key+".env"] = err
+			return
+		}
+		ret.Agents[name] = agent
+	})
 	return ret
 }
 
@@ -5114,6 +5188,23 @@ func (c ideConfig) inputMode() term.InputMode {
 	}
 
 	return ret
+}
+
+// agentChatConfig returns what dialoguetui.ReadConfig reads Rune Agent's
+// chats from, which ACP chats share so the two look and edit alike: own
+// is extensions.rune-agent.config, empty without it, and host is c as
+// Rune serves it to Rune Agent.
+func (c ideConfig) agentChatConfig() (own, host config.Config) {
+	if c.cfg == nil {
+		return config.NopConfig(), config.NopConfig()
+	}
+	host = config.MapConfig(c.cfg)
+	if p, ok := c.extensions()["rune-agent"]; ok {
+		if cfg, ok := p.config(); ok {
+			return cfg, host
+		}
+	}
+	return config.NopConfig(), host
 }
 
 func (c ideConfig) extensions() map[string]extensionConfig {

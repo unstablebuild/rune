@@ -27,6 +27,8 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"gopkg.in/yaml.v3"
+
+	"unstable.build/rune/cmd/rune-agent/dialogue/dialoguetui"
 )
 
 const (
@@ -136,9 +138,9 @@ func loadPromptTheme(t *testing.T) promptTheme {
 func TestCompletionThemeDefaultsMatchCommandPrompt(t *testing.T) {
 	want := loadPromptTheme(t)
 
-	assert.Equal(t, want.matched, defaultComponentCfg.CompletionMatchedTextAttr)
-	assert.Equal(t, want.focus, defaultComponentCfg.CompletionFocusElementAttr)
-	assert.Equal(t, want.element, defaultComponentCfg.CompletionElementAttr)
+	assert.Equal(t, want.matched, dialoguetui.DefaultComponentConfig().CompletionMatchedTextAttr)
+	assert.Equal(t, want.focus, dialoguetui.DefaultComponentConfig().CompletionFocusElementAttr)
+	assert.Equal(t, want.element, dialoguetui.DefaultComponentConfig().CompletionElementAttr)
 }
 
 func TestShippedAgentConfigMatchesCommandPrompt(t *testing.T) {
@@ -165,18 +167,18 @@ func TestShippedAgentConfigMatchesCommandPrompt(t *testing.T) {
 		{"completion_matched_text_attr", want.matched},
 		{"completion_focus_element_attr", want.focus},
 		{"completion_element_attr", want.element},
-		{"inline_attachment_attr", defaultComponentCfg.InlineAttachmentAttr},
+		{"inline_attachment_attr", dialoguetui.DefaultComponentConfig().InlineAttachmentAttr},
 	} {
 		got, err := config.GetAttributes(pconfig, tc.key)
 		require.NoError(t, err, "reading %q from %s", tc.key, agentYAMLPath)
 		assert.Equal(t, tc.want, got, "%s in %s", tc.key, agentYAMLPath)
 	}
 
-	// The radar tracks defaultComponentCfg rather than rune.star, but the
+	// The radar tracks DefaultComponentConfig rather than rune.star, but the
 	// two files still have to agree: config.yaml ships next to the binary
 	// and overrides the Go default at runtime.
 	radar, err := pconfig.GetColor("completion_radar_color")
 	require.NoError(t, err)
-	assert.Equal(t, defaultComponentCfg.CompletionRadarColor, radar,
+	assert.Equal(t, dialoguetui.DefaultComponentConfig().CompletionRadarColor, radar,
 		"completion_radar_color in %s", agentYAMLPath)
 }

@@ -19,6 +19,7 @@ package ide
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -47,6 +48,7 @@ import (
 	"github.com/unstablebuild/blue/document"
 	"github.com/unstablebuild/blue/iterator"
 	"github.com/unstablebuild/blue/release/docrelease"
+	"github.com/unstablebuild/rune-go-sdk/api/acpapi"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/api/config/configrpc"
@@ -64,6 +66,7 @@ import (
 	sdkiterator "github.com/unstablebuild/rune-go-sdk/iterator"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
+	"golang.org/x/oauth2"
 	"google.golang.org/grpc"
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/browser/browsertest"
@@ -3583,13 +3586,13 @@ func TestViewImageUnderCommandPromptShader(t *testing.T) {
 │ ▐                                      │
 │ !                                      │
 │ !!                                     │
+│ acp                                    │
 │ addBlaBla                              │
 │ cheatsheet                             │
 │ clipboardcopy                          │
 │ clipboardpaste                         │
 │ console                                │
 │ cursorhistory                          │
-│ debugger                               │
 ├────────────────────────────────────────┤
 │1 1  2 2                                │
 └─────━━━────────────────────────────────┘`,
@@ -13249,4 +13252,315 @@ func TestInstallPendingWorkspaceAppliesNewerHUD(t *testing.T) {
 			assert.Equal(t, tc.want, m.workspaces[slot].ex.config.FrameCharSet.TopLeft)
 		})
 	}
+}
+
+// acpProbeOutEnv names the file TestACPAgentProbeHelper reports to. Its
+// RUNE_ prefix keeps it in the report, showing configured env reaches the
+// agent too.
+const acpProbeOutEnv = "RUNE_IDE_ACPPROBE_OUT"
+
+// acpProbeReport is what an ACP agent saw of Rune.
+type acpProbeReport struct {
+	// Env are the agent's RUNE_ variables.
+	Env map[string]string
+	// CallErr is why the agent could not call back into Rune.
+	CallErr string
+	// IsDir reports whether Rune said the agent's working directory is a
+	// directory.
+	IsDir bool
+}
+
+func TestACPAgentsCallBackIntoRune(t *testing.T) {
+	workspaceDir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	dataDir := t.TempDir()
+	out := filepath.Join(t.TempDir(), "probe.json")
+	testBinary, err := os.Executable()
+	require.NoError(t, err)
+	// JSON is YAML, and needs no quoting of the paths.
+	cfg, err := json.Marshal(map[string]any{
+		"clipboard": "memory",
+		"acp": map[string]any{"agents": map[string]any{"probe": map[string]any{
+			"command": testBinary,
+			"args":    []string{"-test.run=^TestACPAgentProbeHelper$"},
+			"env":     map[string]string{acpProbeOutEnv: out},
+		}}},
+	})
+	require.NoError(t, err)
+	configPath := filepath.Join(dataDir, "rune.yaml")
+	require.NoError(t, os.WriteFile(configPath, cfg, 0o600))
+
+	mu := new(sync.Mutex)
+	scheduleNextTick, drainSchedule := newTestScheduler(t, mu)
+	runner, err := extensionv2.NewRunner(context.Background(), mu, dataDir)
+	require.NoError(t, err)
+	i, err := New(workspaceDir, configPath, dataDir, pkgtrust.NewStore(), newTestStorage(t, dataDir),
+		WithExtensionsRunner(runner),
+		WithLocker(mu),
+		WithScheduleNextTick(scheduleNextTick),
+		WithPublishEvent(nopPublishEvent),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, i.Close()) })
+	_ = i.Ready()
+	drainSchedule()
+	i.WaitWorkspaces()
+	mu.Lock()
+	acp := i.workspaceHandler.workspaces[i.workspaceHandler.focus].acpManager
+	mu.Unlock()
+	require.NotNil(t, acp)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	// The probe exits without speaking ACP, so the session fails.
+	_, sessionErr := acp.NewSession(ctx, acpapi.NewSessionRequest{Agent: "probe"})
+	require.Error(t, sessionErr)
+
+	data, err := os.ReadFile(out)
+	require.NoError(t, err, "the agent did not run: %v", sessionErr)
+	var got acpProbeReport
+	require.NoError(t, json.Unmarshal(data, &got))
+	for _, name := range []string{"RUNE_SOCKET", "RUNE_TOKEN", "RUNE_CERT"} {
+		assert.NotEmpty(t, got.Env[name], name)
+	}
+	assert.Equal(t, dataDir, got.Env["RUNE_DATADIR"])
+	assert.Equal(t, dataDir, got.Env["RUNE_INSTALLDIR"])
+	assert.Equal(t, strconv.Itoa(os.Getpid()), got.Env["RUNE_PID"])
+	assert.Equal(t, out, got.Env[acpProbeOutEnv])
+	assert.Empty(t, got.CallErr)
+	assert.True(t, got.IsDir)
+}
+
+func TestACPAgentProbeHelper(t *testing.T) {
+	out := os.Getenv(acpProbeOutEnv)
+	if out == "" {
+		return
+	}
+	report := acpProbeReport{Env: make(map[string]string)}
+	for _, kv := range os.Environ() {
+		if k, v, ok := strings.Cut(kv, "="); ok && strings.HasPrefix(k, "RUNE_") {
+			report.Env[k] = v
+		}
+	}
+	isDir, err := statWorkingDirThroughRune(report.Env)
+	report.IsDir = isDir
+	if err != nil {
+		report.CallErr = err.Error()
+	}
+	data, err := json.Marshal(report)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(out, data, 0o600))
+}
+
+// acpChatTest is an IDE whose config acpChatConfig writes, with an ACP
+// chat open in its focused window.
+type acpChatTest struct {
+	i          *IDE
+	mu         *sync.Mutex
+	configPath string
+	chat       browserapi.Handler
+}
+
+// acpChatConfig is a config whose idle agent exits at once, its chat
+// still taking input, with editor and chat merged in.
+func acpChatConfig(t *testing.T, editor, chat map[string]any) []byte {
+	t.Helper()
+	testBinary, err := os.Executable()
+	require.NoError(t, err)
+	cfg := map[string]any{
+		"clipboard": "memory",
+		"acp": map[string]any{"agents": map[string]any{"idle": map[string]any{
+			"command": testBinary,
+			"args":    []string{"-test.run=^$"},
+		}}},
+	}
+	if editor != nil {
+		cfg["editor"] = editor
+	}
+	if chat != nil {
+		cfg["extensions"] = map[string]any{"rune-agent": map[string]any{"config": chat}}
+	}
+	data, err := json.Marshal(cfg)
+	require.NoError(t, err)
+	return data
+}
+
+func newACPChatTest(t *testing.T, cfg []byte) *acpChatTest {
+	t.Helper()
+	workspaceDir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	dataDir := t.TempDir()
+	configPath := filepath.Join(dataDir, "rune.yaml")
+	require.NoError(t, os.WriteFile(configPath, cfg, 0o600))
+
+	mu := new(sync.Mutex)
+	scheduleNextTick, drainSchedule := newTestScheduler(t, mu)
+	runner, err := extensionv2.NewRunner(context.Background(), mu, dataDir)
+	require.NoError(t, err)
+	i, err := New(workspaceDir, configPath, dataDir, pkgtrust.NewStore(), newTestStorage(t, dataDir),
+		WithExtensionsRunner(runner),
+		WithLocker(mu),
+		WithScheduleNextTick(scheduleNextTick),
+		WithPublishEvent(nopPublishEvent),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, i.Close()) })
+	_ = i.Ready()
+	drainSchedule()
+	i.WaitWorkspaces()
+
+	mu.Lock()
+	defer mu.Unlock()
+	ex := i.workspaceHandler.workspaces[i.workspaceHandler.focus].ex
+	win, err := ex.Browser().Focus()
+	require.NoError(t, err)
+	handled, err := ex.comp.DispatchCommand(context.Background(), textapi.Command{
+		Name: "acp", Args: []string{"new", "idle", "chat"}, Window: win,
+	})
+	require.NoError(t, err)
+	require.True(t, handled)
+	bw, ok := ex.Browser().Window(win.WindowID())
+	require.True(t, ok)
+	content, err := bw.Content()
+	require.NoError(t, err)
+	require.IsType(t, &browser.Tab{}, content)
+	chat := content.(*browser.Tab).Handler()
+	chat.Resize(80, 24)
+	return &acpChatTest{i: i, mu: mu, configPath: configPath, chat: chat}
+}
+
+func (c *acpChatTest) typeKeys(t *testing.T, keys string) {
+	t.Helper()
+	parsed, err := term.ParseKeys(keys)
+	require.NoError(t, err)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, k := range parsed {
+		c.chat.Handle(term.Event{Type: term.EventKey, Ch: k.Ch, Mod: k.Mod, Key: k.Key})
+	}
+}
+
+// screen draws the chat without the cursor, which covers the letter it is
+// on.
+func (c *acpChatTest) screen() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	w := term.NewStringWriter(80, 24)
+	c.chat.Draw(w)
+	_ = w.Flush()
+	return w.String()
+}
+
+func TestACPChatsTakeTheRuneAgentChatConfig(t *testing.T) {
+	styled := map[string]any{
+		"status_bar":              map[string]any{"layout": "{{ .Status }}{{ .ShiftRight }}{{ .Conversation }} @@"},
+		"input_box_frame_charset": map[string]any{"topleft": "╔"},
+		"user_msg_icon":           "",
+	}
+	tests := []struct {
+		name         string
+		editor, chat map[string]any
+		keys         string
+		want, gone   []string
+	}{
+		{
+			name:   "vim edits the message",
+			editor: map[string]any{"mode": "vim"},
+			keys:   "hello<esc>x",
+			want:   []string{"hell"},
+			gone:   []string{"hello"},
+		},
+		{
+			name:   "standard edits the message",
+			editor: map[string]any{"mode": "standard"},
+			keys:   "hello<esc>x",
+			want:   []string{"hellox"},
+		},
+		{
+			name:   "vim starts in normal mode when the chat says so",
+			editor: map[string]any{"mode": "vim"},
+			chat:   map[string]any{"editor_modal_start_insert": false},
+			keys:   "ihello<esc>",
+			want:   []string{"hello"},
+			gone:   []string{"ihello"},
+		},
+		{
+			name: "the status bar and compose frame",
+			chat: styled,
+			want: []string{"chat @@", "╔"},
+		},
+		{
+			name: "the defaults",
+			gone: []string{"@@", "╔"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := newACPChatTest(t, acpChatConfig(t, tt.editor, tt.chat))
+			if tt.keys != "" {
+				c.typeKeys(t, tt.keys)
+			}
+			screen := c.screen()
+			for _, want := range tt.want {
+				assert.Contains(t, screen, want)
+			}
+			for _, gone := range tt.gone {
+				assert.NotContains(t, screen, gone)
+			}
+		})
+	}
+}
+
+func TestACPChatsRestyleWhenTheConfigReloads(t *testing.T) {
+	chat := func(marker, corner string) map[string]any {
+		return map[string]any{
+			"status_bar":              map[string]any{"layout": "{{ .Status }}{{ .ShiftRight }}{{ .Conversation }} " + marker},
+			"input_box_frame_charset": map[string]any{"topleft": corner},
+		}
+	}
+	c := newACPChatTest(t, acpChatConfig(t, nil, chat("@@", "╔")))
+	require.Contains(t, c.screen(), "chat @@")
+
+	require.NoError(t, os.WriteFile(c.configPath, acpChatConfig(t, nil, chat("##", "╓")), 0o600))
+	hud, err := c.i.workspaceHandler.loadHUD(context.Background())
+	require.NoError(t, err)
+	c.mu.Lock()
+	c.i.workspaceHandler.applyHUD(hud)
+	c.mu.Unlock()
+
+	require.Eventually(t, func() bool {
+		screen := c.screen()
+		return strings.Contains(screen, "chat ##") && strings.Contains(screen, "╓")
+	}, 10*time.Second, 10*time.Millisecond, "the open chat takes the reloaded style:\n%s", c.screen())
+}
+
+// statWorkingDirThroughRune connects to Rune as runectl does, with the
+// variables Rune gives the commands it starts, and stats the working
+// directory through it.
+func statWorkingDirThroughRune(env map[string]string) (bool, error) {
+	cert, err := base64.StdEncoding.DecodeString(env["RUNE_CERT"])
+	if err != nil {
+		return false, fmt.Errorf("decode RUNE_CERT: %w", err)
+	}
+	w, err := extensionapi.NewWorkspace(extensionapi.Config{
+		Socket:      env["RUNE_SOCKET"],
+		DataDir:     env["RUNE_DATADIR"],
+		InstallDir:  env["RUNE_INSTALLDIR"],
+		Token:       &oauth2.Token{AccessToken: env["RUNE_TOKEN"]},
+		Certificate: cert,
+	}, extensionapi.Metadata{ExtensionID: "acp-probe"})
+	if err != nil {
+		return false, err
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		return false, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	info, err := w.FileSystem(ctx).Stat(wd)
+	if err != nil {
+		return false, err
+	}
+	return info.IsDir(), nil
 }

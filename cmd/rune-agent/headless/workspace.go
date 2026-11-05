@@ -47,9 +47,9 @@ var ErrNotInRune = errors.New(
 	"must be invoked from a Rune plugin command (! or !!)")
 
 // Connect builds a Workspace from the plugin environment exported by the
-// Rune host. The returned Workspace is lazy: no RPC happens until a
-// capability is used.
-func Connect() (*extensionapi.Workspace, error) {
+// Rune host. extensionID partitions the Workspace's storage. The returned
+// Workspace is lazy: no RPC happens until a capability is used.
+func Connect(extensionID string) (*extensionapi.Workspace, error) {
 	socket := os.Getenv("RUNE_SOCKET")
 	if socket == "" {
 		return nil, ErrNotInRune
@@ -74,6 +74,6 @@ func Connect() (*extensionapi.Workspace, error) {
 		cfg.Certificate = data
 	}
 	return extensionapi.NewWorkspace(cfg, extensionapi.Metadata{
-		ExtensionID: ExtensionID,
+		ExtensionID: extensionID,
 	})
 }

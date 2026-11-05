@@ -18,10 +18,12 @@ package ide
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"unstable.build/rune/internal/ide/ideacp"
 	"unstable.build/rune/internal/ide/idedebug"
 )
 
@@ -127,5 +129,31 @@ func TestExpandAdapterDataDir(t *testing.T) {
 			Command:    []string{"/home/remote/.rune/lib/rust/bin/lldb-dap"},
 			AttachArgs: map[string]string{"program": "/home/remote/.rune/x"},
 		},
+	}, got)
+}
+
+func TestExpandACPDataDir(t *testing.T) {
+	got := expandACPDataDir(ideacp.Config{
+		Agents: map[string]ideacp.AgentConfig{
+			"rune-agent": {
+				Command: "$RUNE_DATADIR/bin/rune-agent",
+				Args:    []string{"acp", "--config", "${RUNE_DATADIR}/acp.yaml"},
+				Env:     map[string]string{"PATH": "$RUNE_DATADIR/bin:$PATH"},
+			},
+			"claude": {Command: "claude-agent-acp"},
+		},
+		CloseTimeout: time.Second,
+	}, "/home/remote/.rune")
+
+	assert.Equal(t, ideacp.Config{
+		Agents: map[string]ideacp.AgentConfig{
+			"rune-agent": {
+				Command: "/home/remote/.rune/bin/rune-agent",
+				Args:    []string{"acp", "--config", "/home/remote/.rune/acp.yaml"},
+				Env:     map[string]string{"PATH": "/home/remote/.rune/bin:$PATH"},
+			},
+			"claude": {Command: "claude-agent-acp"},
+		},
+		CloseTimeout: time.Second,
 	}, got)
 }

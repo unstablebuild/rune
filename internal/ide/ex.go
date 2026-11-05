@@ -65,6 +65,7 @@ import (
 	hmarkdown "unstable.build/rune/internal/handler/markdown"
 	"unstable.build/rune/internal/ide/console/ideconsole"
 	"unstable.build/rune/internal/ide/console/ideconsole/workspaceshell"
+	"unstable.build/rune/internal/ide/ideacp/acpcmd"
 	"unstable.build/rune/internal/ide/idecmd"
 	"unstable.build/rune/internal/ide/idetask"
 	"unstable.build/rune/internal/ide/keymeta"
@@ -213,6 +214,12 @@ type ex struct {
 	// notifications. It is nil until either names one.
 	graphics        *tcomponent.FrameGraphics
 	graphicsStorage storageapi.Service
+	// acpChats is the acp command, whose chats restyleChats restyles. It
+	// is nil until the workspace's extensions are built.
+	acpChats *acpcmd.Handler
+	// acpChatImages caches the images of the acp chats' status bars and
+	// compose box frames.
+	acpChatImages storageapi.Service
 	// statusBars styles the status bars of the editors e opens. It is
 	// nil where they are not restyled.
 	statusBars *text.StatusBarStyles
@@ -3453,6 +3460,12 @@ func (e *ex) Close() (ret error) {
 		}
 		e.graphics, e.graphicsStorage = nil, nil
 	}
+	if e.acpChatImages != nil {
+		if err := e.acpChatImages.Close(); err != nil {
+			ret = multierror.Append(ret, err)
+		}
+		e.acpChatImages = nil
+	}
 	if err := e.container.Close(); err != nil {
 		ret = multierror.Append(ret, err)
 	}
@@ -3517,6 +3530,15 @@ func (e *ex) restyle(s hudStyle, images, statusBarImages map[string]image.Image)
 	if e.statusBars != nil {
 		e.statusBars.Restyle(s.statusBar, statusBarImages)
 	}
+}
+
+// restyleChats gives e's acp chats, open and later, the status bar and
+// compose box frame of the Rune Agent chat settings in cfg.
+func (e *ex) restyleChats(cfg map[string]any) {
+	if e.acpChats == nil {
+		return
+	}
+	e.acpChats.Restyle(ideConfig{cfg: cfg, errors: make(map[string]error)}.agentChatConfig())
 }
 
 // stopTerminal releases the pty-resize worker. It is safe to call on a

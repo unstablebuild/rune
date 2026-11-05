@@ -4131,13 +4131,13 @@ func TestCommandPromptKeyBindingHintsIntegration(t *testing.T) {
 │ ▐                                    │
 │ !                                    │
 │ !!                                   │
+│ acp                                  │
 │ addBlaBla                            │
 │ cheatsheet                           │
 │ clipboardcopy                        │
 │ clipboardpaste                       │
 │ console                              │
 │ cursorhistory                        │
-│ debugger                             │
 └──────────────────────────────────────┘`},
 		{InputSequence: "windowconverttab", Expected: `┌──────────────────────────────────────┐
 │                                      │

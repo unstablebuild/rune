@@ -88,7 +88,7 @@ func TestAddMessageHiddenToolImages(t *testing.T) {
 		}}, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			comp := dialoguetui.NewComponent(defaultComponentCfg)
+			comp := dialoguetui.NewComponent(dialoguetui.DefaultComponentConfig())
 			t.Cleanup(func() { require.NoError(t, comp.Close()) })
 			addMessage(comp, llmapi.Message{Role: llmapi.RoleUser, Content: "generate an image"}, nil)
 			before := comp.Height(80)
@@ -118,7 +118,7 @@ func TestAddMessageGeneratedImageReplay(t *testing.T) {
 
 	for _, collapsed := range []bool{true, false} {
 		t.Run(fmt.Sprintf("collapsed=%v", collapsed), func(t *testing.T) {
-			cfg := defaultComponentCfg
+			cfg := dialoguetui.DefaultComponentConfig()
 			cfg.StartCollapsed = collapsed
 			live := dialoguetui.NewComponent(cfg)
 			replayed := dialoguetui.NewComponent(cfg)
@@ -439,7 +439,7 @@ func TestDialogueConfigImages(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			h := &aiEditorHandler{
-				cfg: defaultComponentCfg, imageCache: tt.cache, p: term.NopInterrupter(),
+				cfg: dialoguetui.DefaultComponentConfig(), imageCache: tt.cache, p: term.NopInterrupter(),
 				fs: nopFileSystem{}, cwd: dirURI("/workspace"),
 			}
 			cfg := h.dialogueConfig(new(sync.Mutex))
@@ -1882,7 +1882,7 @@ func newSkillChat(t *testing.T, skillDir string) *skillChat {
 		ctx:            ctx,
 		llmSvc:         c.llm,
 		defaultModel:   model.Name,
-		cfg:            defaultComponentCfg,
+		cfg:            dialoguetui.DefaultComponentConfig(),
 		dialogueStore:  c.store,
 		systemPrompt:   chatAgent + ": You are the chat agent.",
 		agentsConfig:   defaultAgentsConfig(defaultAgent + ": You are a sub-agent."),
@@ -3673,9 +3673,9 @@ func TestReloadStyleInputBoxFrame(t *testing.T) {
 				return nil
 			})
 			h := &aiEditorHandler{n: stubNotifications{}, p: p}
-			h.cfg = defaultComponentCfg
-			h.cfg.InputBox.FrameCharSet = inputBoxFrameCharSet(own)
+			h.cfg = dialoguetui.DefaultComponentConfig()
 			h.cfg.InputBox.GraphicsStorage = storagestub.NewInMemoryService()
+			h.cfg, _ = dialoguetui.ReadStyle(context.Background(), h.cfg, own, config.NopConfig(), stubNotifications{})
 			mu := new(sync.Mutex)
 			comp := dialoguetui.NewComponent(h.dialogueConfig(mu))
 			t.Cleanup(func() { assert.NoError(t, comp.Close()) })
@@ -3741,6 +3741,45 @@ func mustParseStatusBarLayout(t *testing.T, layout string) []dialoguetui.StatusB
 	parsed, err := dialoguetui.ParseStatusBarLayout(layout)
 	require.NoError(t, err)
 	return parsed
+}
+
+func TestOwnConfig(t *testing.T) {
+	own := map[string]any{"status_bar": map[string]any{"enabled": false}}
+	tests := []struct {
+		name    string
+		host    config.Config
+		want    config.Config
+		wantErr string
+	}{
+		{
+			name: "the agent's block",
+			host: config.MapConfig(map[string]any{
+				"editor":     map[string]any{"mode": "modal"},
+				"extensions": map[string]any{extensionID: map[string]any{"config": own}},
+			}),
+			want: config.MapConfig(own),
+		},
+		{name: "no extensions", host: config.MapConfig(map[string]any{}), want: config.NopConfig()},
+		{
+			name: "no config of its own",
+			host: config.MapConfig(map[string]any{
+				"extensions": map[string]any{extensionID: map[string]any{"path": "/bin/rune-agent"}},
+			}),
+			want: config.NopConfig(),
+		},
+		{name: "a config that could not be fetched", host: config.ErrConfig(errors.New("closed")), wantErr: "closed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ownConfig(tt.host)
+			if tt.wantErr != "" {
+				assert.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }
 
 func TestWatchReloadFetchesTheConfigOnEachSignal(t *testing.T) {

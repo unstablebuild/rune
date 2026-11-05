@@ -1525,18 +1525,19 @@ func (c *Component) AddToolCall(id, name, args, summary string) {
 }
 
 // CompleteToolCall replaces the running tool indicator with a completed
-// header (✓ or ✗) and truncated output. If no prior AddToolCall was
-// made for this id (e.g. when replaying stored messages), a new entry
-// is created directly in a completed state.
+// header (✓ or ✗) and truncated output, in the newest turn holding id. If
+// no turn holds it (e.g. when replaying stored messages), a new entry is
+// created directly in a completed state.
 func (c *Component) CompleteToolCall(id, name, args, summary, output string, isError bool) {
 	maxOff, scrolled := c.scrollState()
 	defer c.restoreScroll(maxOff, scrolled)
-	c.ensureCurrentTurn()
-	if _, ok := c.currentTurn.tools[id]; !ok {
-		// No running entry — add one so CompleteToolCall can update it.
-		c.currentTurn.AddToolCall(id, name, args, summary)
+	turn := c.toolTurn(id)
+	if turn == nil {
+		c.ensureCurrentTurn()
+		turn = c.currentTurn
+		turn.AddToolCall(id, name, args, summary)
 	}
-	c.currentTurn.CompleteToolCall(id, name, args, summary, output, isError)
+	turn.CompleteToolCall(id, name, args, summary, output, isError)
 	c.moveTrailingToBack()
 }
 
@@ -1550,38 +1551,76 @@ func (c *Component) AddToolCallImage(id, path, caption string) {
 	}
 }
 
-// AddChildToolCall adds a tool call nested under a parent tool call
-// in the current turn.
+// AddChildToolCall adds a tool call nested under a parent tool call,
+// in whichever turn holds the parent. A parent that no turn holds gets
+// the call as a top-level tool call of the current turn.
 func (c *Component) AddChildToolCall(parentID, id, name, args, summary string) {
 	maxOff, scrolled := c.scrollState()
 	defer c.restoreScroll(maxOff, scrolled)
-	c.ensureCurrentTurn()
-	c.currentTurn.AddChildToolCall(parentID, id, name, args, summary)
+	turn := c.parentTurn(parentID)
+	if turn == nil {
+		c.ensureCurrentTurn()
+		turn = c.currentTurn
+	}
+	turn.AddChildToolCall(parentID, id, name, args, summary)
 	c.moveTrailingToBack()
 }
 
 // CompleteChildToolCall completes a child tool call nested under a
-// parent tool call in the current turn.
+// parent tool call, in whichever turn holds the parent.
 func (c *Component) CompleteChildToolCall(parentID, id, name, args, summary, output string, isError bool) {
 	maxOff, scrolled := c.scrollState()
 	defer c.restoreScroll(maxOff, scrolled)
-	if c.currentTurn == nil {
+	turn := c.parentTurn(parentID)
+	if turn == nil {
+		turn = c.currentTurn
+	}
+	if turn == nil {
 		return
 	}
-	c.currentTurn.CompleteChildToolCall(parentID, id, name, args, summary, output, isError)
+	turn.CompleteChildToolCall(parentID, id, name, args, summary, output, isError)
 	c.moveTrailingToBack()
 }
 
 // AddChildResult adds a sub-agent result leaf node under a parent
-// tool call in the current turn.
+// tool call, in whichever turn holds the parent.
 func (c *Component) AddChildResult(parentID, output string, isError bool) {
 	maxOff, scrolled := c.scrollState()
 	defer c.restoreScroll(maxOff, scrolled)
-	if c.currentTurn == nil {
+	turn := c.parentTurn(parentID)
+	if turn == nil {
 		return
 	}
-	c.currentTurn.AddChildResult(parentID, output, isError)
+	turn.AddChildResult(parentID, output, isError)
 	c.moveTrailingToBack()
+}
+
+// toolTurn returns the newest turn holding the top-level tool call id,
+// or nil. Text detaches the current turn, and a sub-agent running in the
+// background keeps calling tools after its parent's text moved on, so
+// the parent need not be in the current turn.
+func (c *Component) toolTurn(id string) *Turn {
+	for node, ok := c.messages.Back(); ok; node, ok = node.Prev() {
+		if turn, isTurn := node.Value().(*Turn); isTurn {
+			if _, has := turn.tools[id]; has {
+				return turn
+			}
+		}
+	}
+	return nil
+}
+
+// parentTurn is toolTurn for the parent of a child tool call, which may
+// itself be nested, as when a sub-agent runs another one.
+func (c *Component) parentTurn(id string) *Turn {
+	for node, ok := c.messages.Back(); ok; node, ok = node.Prev() {
+		if turn, isTurn := node.Value().(*Turn); isTurn {
+			if tn, _ := turn.findTool(id); tn != nil {
+				return turn
+			}
+		}
+	}
+	return nil
 }
 
 // SetToolStartTime sets the start time for a tool call, used for live

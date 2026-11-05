@@ -1001,6 +1001,113 @@ func TestHandlerBusyQueueDrainsFIFOAcrossTurns(t *testing.T) {
 	mu.Unlock()
 }
 
+func TestHandlerWithoutSubmitEcho(t *testing.T) {
+	type step func(t *testing.T, h tui.Handler, tx chan<- MessageEvent, rx <-chan SubmitMessage, interrupt <-chan struct{})
+	receive := func(t *testing.T, rx <-chan SubmitMessage, want string) {
+		t.Helper()
+		select {
+		case msg := <-rx:
+			assert.Equal(t, want, msg.Text)
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for %q", want)
+		}
+	}
+	submitIdle := func(t *testing.T, h tui.Handler, _ chan<- MessageEvent, rx <-chan SubmitMessage, _ <-chan struct{}) {
+		typeText(h, "hello")
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			receive(t, rx, "hello")
+		}()
+		h.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
+		<-done
+	}
+	submitQueued := func(t *testing.T, h tui.Handler, tx chan<- MessageEvent, rx <-chan SubmitMessage, interrupt <-chan struct{}) {
+		tx <- MessageEvent{Type: MessageEventBusy, Busy: true}
+		<-interrupt
+		typeText(h, "hello")
+		h.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
+		go func() { tx <- MessageEvent{Type: MessageEventBusy, Busy: false} }()
+		receive(t, rx, "hello")
+		<-interrupt
+	}
+	submitCommand := func(t *testing.T, h tui.Handler, _ chan<- MessageEvent, rx <-chan SubmitMessage, _ <-chan struct{}) {
+		typeText(h, "/hello")
+		h.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
+		receive(t, rx, "/hello")
+	}
+	cases := []struct {
+		name     string
+		step     step
+		noEcho   bool
+		wantEcho bool
+	}{
+		{name: "idle submit echoes", step: submitIdle, wantEcho: true},
+		{name: "idle submit without echo", step: submitIdle, noEcho: true},
+		{name: "drained queue echoes", step: submitQueued, wantEcho: true},
+		{name: "drained queue without echo", step: submitQueued, noEcho: true},
+		{name: "command line echoes", step: submitCommand, wantEcho: true},
+		{name: "command line without echo", step: submitCommand, noEcho: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mu := new(sync.Mutex)
+			comp := NewComponent(ComponentConfig{})
+			interrupt := make(chan struct{}, 10)
+			opts := []HandlerOption{WithCommands(&mockCommandHandler{
+				handleFunc: func(_ context.Context, name string, _ []string) (CommandResult, error) {
+					return CommandResult{UserMessage: "/" + name}, nil
+				},
+			})}
+			if tc.noEcho {
+				opts = append(opts, WithoutSubmitEcho())
+			}
+			h, tx, rx := Handler(context.Background(), mu, comp,
+				term.FuncInterrupter(func(context.Context) error {
+					interrupt <- struct{}{}
+					return nil
+				}), opts...)
+			defer close(tx)
+			h.Resize(30, 9)
+
+			tc.step(t, h, tx, rx, interrupt)
+
+			w := term.NewStringWriter(30, 9)
+			h.Draw(w)
+			_ = w.Flush()
+			messages := strings.Join(strings.Split(w.String(), "\n")[:7], "\n")
+			assert.Equal(t, tc.wantEcho, strings.Contains(messages, "hello"), messages)
+			mu.Lock()
+			assert.Equal(t, 0, comp.QueueLen())
+			mu.Unlock()
+		})
+	}
+}
+
+func TestHandlerUserMessageEvent(t *testing.T) {
+	interrupt := make(chan struct{}, 10)
+	h, tx, _ := Handler(context.Background(), new(sync.Mutex), NewComponent(ComponentConfig{}),
+		term.FuncInterrupter(func(context.Context) error {
+			interrupt <- struct{}{}
+			return nil
+		}), WithoutSubmitEcho())
+	defer close(tx)
+	h.Resize(40, 9)
+
+	tx <- MessageEvent{
+		Type:        MessageEventUserMessage,
+		Text:        "from another viewer",
+		Attachments: []Attachment{{Path: "/work/alpha.go", Name: "alpha.go"}},
+	}
+	<-interrupt
+
+	w := term.NewStringWriter(40, 9)
+	h.Draw(w)
+	_ = w.Flush()
+	assert.Contains(t, w.String(), "from another viewer")
+	assert.Contains(t, w.String(), "alpha.go")
+}
+
 func TestHandlerArrowUpRecallsNewestQueuedMessage(t *testing.T) {
 	mu := new(sync.Mutex)
 	comp := NewComponent(ComponentConfig{})

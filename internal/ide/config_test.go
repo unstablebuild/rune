@@ -52,6 +52,7 @@ import (
 	"unstable.build/rune/internal/component/template"
 	"unstable.build/rune/internal/handler"
 	"unstable.build/rune/internal/handler/command"
+	"unstable.build/rune/internal/ide/ideacp"
 	"unstable.build/rune/internal/ide/idedebug"
 	"unstable.build/rune/internal/ide/idelsp"
 	"unstable.build/rune/internal/ide/idestatus"
@@ -1742,6 +1743,87 @@ func TestDebuggerConfigsConnectCommand(t *testing.T) {
 		assert.NotContains(t, got, "python")
 		assert.Contains(t, c.errors, "debugger.python.command")
 	})
+}
+
+func TestACPConfigs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		cfg       map[string]any
+		want      map[string]ideacp.AgentConfig
+		wantError string
+	}{
+		{
+			name: "absent block",
+			cfg:  map[string]any{},
+			want: map[string]ideacp.AgentConfig{},
+		},
+		{
+			name: "command args and env",
+			cfg: map[string]any{"acp": map[string]any{"agents": map[string]any{
+				"claude": map[string]any{
+					"command": "claude-agent-acp",
+					"args":    []any{"--verbose"},
+					"env":     map[string]any{"DEBUG": "1"},
+				},
+				"rune-agent": map[string]any{"command": "rune-agent"},
+			}}},
+			want: map[string]ideacp.AgentConfig{
+				"claude": {
+					Command: "claude-agent-acp",
+					Args:    []string{"--verbose"},
+					Env:     map[string]string{"DEBUG": "1"},
+				},
+				"rune-agent": {Command: "rune-agent"},
+			},
+		},
+		{
+			name: "missing command",
+			cfg: map[string]any{"acp": map[string]any{"agents": map[string]any{
+				"x": map[string]any{"args": []any{"a"}},
+			}}},
+			want:      map[string]ideacp.AgentConfig{},
+			wantError: "acp.agents.x.command",
+		},
+		{
+			name: "blank command",
+			cfg: map[string]any{"acp": map[string]any{"agents": map[string]any{
+				"x": map[string]any{"command": "  "},
+			}}},
+			want:      map[string]ideacp.AgentConfig{},
+			wantError: "acp.agents.x.command",
+		},
+		{
+			name: "non-string arg",
+			cfg: map[string]any{"acp": map[string]any{"agents": map[string]any{
+				"x": map[string]any{"command": "x", "args": []any{"a", 1}},
+			}}},
+			want:      map[string]ideacp.AgentConfig{},
+			wantError: "acp.agents.x.args.1",
+		},
+		{
+			name: "non-string env",
+			cfg: map[string]any{"acp": map[string]any{"agents": map[string]any{
+				"x": map[string]any{"command": "x", "env": map[string]any{"N": 1}},
+			}}},
+			want:      map[string]ideacp.AgentConfig{},
+			wantError: "acp.agents.x.env.N",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			c := ideConfig{cfg: tt.cfg, errors: map[string]error{}}
+			got := c.acpConfigs()
+			assert.Equal(t, tt.want, got.Agents)
+			if tt.wantError == "" {
+				assert.Empty(t, c.errors)
+				return
+			}
+			assert.Contains(t, c.errors, tt.wantError)
+		})
+	}
 }
 
 func TestHighlightTabCharEmptyDisables(t *testing.T) {

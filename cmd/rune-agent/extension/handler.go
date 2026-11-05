@@ -22,7 +22,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	stdimage "image"
 	"io"
 	"log/slog"
 	"maps"
@@ -71,15 +70,10 @@ import (
 
 	runemcp "unstable.build/rune/cmd/rune-agent/mcp"
 	"unstable.build/rune/cmd/rune-agent/memory"
-	"unstable.build/rune/internal/component/imageuri"
 	"unstable.build/rune/internal/component/markdown"
-	"unstable.build/rune/internal/component/template"
 	"unstable.build/rune/internal/debug"
-	"unstable.build/rune/internal/extension/extutil"
 	"unstable.build/rune/internal/ide/vctrl"
 	"unstable.build/rune/internal/text"
-
-	tconfig "unstable.build/rune/internal/config"
 )
 
 const (
@@ -118,153 +112,6 @@ const (
 	queryModelAlias   = "query"
 	compactModelAlias = "compact"
 	dreamModelAlias   = "dream"
-)
-
-// defaultPinnedUserMsgMaxLines keeps the pinned message to a glimpse of
-// what was asked, as the reply it heads is what is being read.
-const defaultPinnedUserMsgMaxLines = 2
-
-var (
-	defaultComponentCfg = dialoguetui.ComponentConfig{
-		MessagesRowConfig: component.SpanConfig{
-			PadHorizontal:    -90,
-			PadVertical:      2,
-			ContentAlignment: component.AlignmentCentered,
-		},
-		InputRowColumns: 10,
-		InputBox: dialoguetui.InputBoxConfig{
-			Placeholder: "Message your assistant...",
-			PlaceholderConfig: component.StringResponsiveConfig{
-				NoSplitWords: true,
-				StringConfig: component.StringConfig{
-					Alignment:            component.AlignmentLeft,
-					Attributes:           term.Attributes{Fg: term.ColorGray},
-					BackgroundAttributes: term.Attributes{},
-				},
-			},
-			ContentAttr: term.Attributes{},
-			FrameAttr:   term.Attributes{},
-		},
-		ReceiveMessageStringConfig: component.StringConfig{
-			Alignment:            component.AlignmentLeft,
-			Attributes:           term.Attributes{Fg: term.ColorSilver},
-			BackgroundAttributes: term.Attributes{},
-		},
-		ReceiveMessageSpanConfig: component.SpanConfig{
-			ContentAlignment: component.AlignmentLeft,
-		},
-		ReasoningStringConfig: component.StringConfig{
-			Alignment:            component.AlignmentLeft,
-			Attributes:           term.Attributes{Fg: term.GetColor("dimgray")},
-			BackgroundAttributes: term.Attributes{},
-		},
-		ReasoningSpanConfig: component.SpanConfig{
-			ContentAlignment: component.AlignmentLeft,
-		},
-		SendMessageStringConfig: component.StringConfig{
-			Alignment:            component.AlignmentLeft,
-			Attributes:           term.Attributes{},
-			BackgroundAttributes: term.Attributes{},
-		},
-		SendMessageSpanConfig: component.SpanConfig{
-			ContentAlignment: component.AlignmentLeft,
-		},
-		SendMessageBottomPad: 1,
-		SendMessageIcon:      dialoguetui.DefaultSendMessageIcon,
-		PinnedMessageMaxRows: defaultPinnedUserMsgMaxLines,
-		ToolCallStringConfig: component.StringConfig{
-			Alignment:            component.AlignmentLeft,
-			Attributes:           term.Attributes{Fg: term.ColorPurple},
-			BackgroundAttributes: term.Attributes{},
-		},
-		ToolCallSpanConfig: component.SpanConfig{
-			ContentAlignment: component.AlignmentLeft,
-		},
-		ToolCallArgsStringConfig: component.StringConfig{
-			Alignment:            component.AlignmentLeft,
-			Attributes:           term.Attributes{Fg: term.ColorGray},
-			BackgroundAttributes: term.Attributes{},
-		},
-		ToolResultStringConfig: component.StringConfig{
-			Alignment:            component.AlignmentLeft,
-			Attributes:           term.Attributes{Fg: term.ColorGray},
-			BackgroundAttributes: term.Attributes{},
-		},
-		ToolResultSpanConfig: component.SpanConfig{
-			ContentAlignment: component.AlignmentLeft,
-		},
-		ErrorStringConfig: component.StringConfig{
-			Alignment:            component.AlignmentLeft,
-			Attributes:           term.Attributes{Fg: term.ColorRed},
-			BackgroundAttributes: term.Attributes{},
-		},
-		ErrorSpanConfig: component.SpanConfig{
-			PadVertical:      1,
-			ContentAlignment: component.AlignmentLeft,
-		},
-		WarningStringConfig: component.StringConfig{
-			Alignment:            component.AlignmentLeft,
-			Attributes:           term.Attributes{Fg: term.ColorYellow},
-			BackgroundAttributes: term.Attributes{},
-		},
-		WarningSpanConfig: component.SpanConfig{
-			PadVertical:      1,
-			ContentAlignment: component.AlignmentLeft,
-		},
-		CommandOutputSpanConfig: component.SpanConfig{
-			PadVertical: 1,
-		},
-		ToolResultMaxLines: 5,
-		StartCollapsed:     true,
-		ReasoningAnnotationStringConfig: component.StringConfig{
-			Alignment:  component.AlignmentLeft,
-			Attributes: term.Attributes{Attrs: term.AttrDim},
-		},
-		MarkdownConfig: dialoguetui.DefaultMarkdownConfig(),
-		PromptToolCallStringConfig: component.StringConfig{
-			Alignment:            component.AlignmentLeft,
-			Attributes:           term.Attributes{Fg: term.ColorAqua},
-			BackgroundAttributes: term.Attributes{},
-		},
-		SelectionConfig: dialoguetui.SelectionConfig{
-			TitleStringConfig: component.StringConfig{
-				Alignment:  component.AlignmentLeft,
-				Attributes: term.Attributes{Fg: term.ColorSilver},
-			},
-			OptionStringConfig: component.StringConfig{
-				Alignment:  component.AlignmentLeft,
-				Attributes: term.Attributes{Fg: term.ColorSilver},
-			},
-			CursorStringConfig: component.StringConfig{
-				Alignment:  component.AlignmentLeft,
-				Attributes: term.Attributes{Attrs: term.AttrReverse},
-			},
-			HeaderStringConfig: component.StringConfig{
-				Alignment:  component.AlignmentLeft,
-				Attributes: term.Attributes{Fg: term.ColorYellow},
-			},
-			DescStringConfig: component.StringConfig{
-				Alignment:  component.AlignmentLeft,
-				Attributes: term.Attributes{Fg: term.GetColor("dimgray")},
-			},
-		},
-		// Mirrors the command prompt overlay shipped in cmd/rune/rune.star
-		// ("command.*_attr") rather than the library fallbacks, which the
-		// shipped config overrides.
-		CompletionMatchedTextAttr: term.Attributes{
-			Fg: term.ColorBlue, Attrs: term.AttrBold,
-		},
-		CompletionFocusElementAttr: term.Attributes{Fg: term.ColorPurple},
-		CompletionElementAttr:      term.Attributes{Attrs: term.AttrDim},
-		// Deliberately neutral rather than the command prompt's red: the
-		// shader bakes its blend into literal RGB inside this process,
-		// which has no access to the host's themed palette, so a hue would
-		// clash with themes that remap it.
-		CompletionRadarColor: term.GetColor("dimgray"),
-		InlineAttachmentAttr: term.Attributes{
-			Fg: term.ColorAqua, Attrs: term.AttrUnderline,
-		},
-	}
 )
 
 func registerOpenAITools(
@@ -490,184 +337,13 @@ func newCommandEventHandler(
 	ret.hookRunner = hooks.NewRunner(hooksCfg, executor, noti, cwd.Path())
 
 	hostConfig := w.Config(ctx)
-	ret.cfg = defaultComponentCfg
+	ret.clip = text.NewSystemClipboard()
+	ret.cfg = dialoguetui.ReadConfig(pconfig, hostConfig, ret.clip, noti)
 	ret.cfg.MarkdownConfig.Parser = w.Parser(ctx)
-	backgroundAttr, err := config.GetAttributes(pconfig, "background_attr")
-	if err != nil {
-		if err != config.ErrNotFound {
-			slog.Warn("get 'background_attr' from extension config", "error", err)
-		}
-	}
-	ret.cfg.ReceiveMessageStringConfig.BackgroundAttributes = backgroundAttr
-	ret.cfg.InputBox.PlaceholderConfig.BackgroundAttributes = backgroundAttr
-
-	ret.cfg.InputBox.FrameAttr.Bg = backgroundAttr.Bg
-	ret.cfg.InputBox.PlaceholderConfig.Bg = backgroundAttr.Bg
-	ret.cfg.InputBox.ContentAttr.Bg = backgroundAttr.Bg
-
-	ret.cfg.ReceiveMessageStringConfig.Bg = backgroundAttr.Bg
-
-	sendMsgBackgroundAttr, err := config.GetAttributes(pconfig, "user_msg_background_attr")
-	if err != nil {
-		if err != config.ErrNotFound {
-			slog.Warn("get 'user_msg_background_attr' from extension config", "error", err)
-		}
-		sendMsgBackgroundAttr = term.Attributes{Bg: term.ColorGray}
-	}
-	ret.cfg.SendMessageStringConfig.BackgroundAttributes = sendMsgBackgroundAttr
-	ret.cfg.SendMessageStringConfig.Bg = sendMsgBackgroundAttr.Bg
-	ret.cfg.ReasoningStringConfig.BackgroundAttributes = backgroundAttr
-	ret.cfg.ReasoningStringConfig.Bg = backgroundAttr.Bg
-	ret.cfg.ToolCallStringConfig.BackgroundAttributes = backgroundAttr
-	ret.cfg.ToolCallStringConfig.Bg = backgroundAttr.Bg
-	ret.cfg.ToolCallArgsStringConfig.BackgroundAttributes = backgroundAttr
-	ret.cfg.ToolCallArgsStringConfig.Bg = backgroundAttr.Bg
-	ret.cfg.ToolResultStringConfig.BackgroundAttributes = backgroundAttr
-	ret.cfg.ToolResultStringConfig.Bg = backgroundAttr.Bg
-	ret.cfg.ReasoningAnnotationStringConfig.BackgroundAttributes = backgroundAttr
-	ret.cfg.ReasoningAnnotationStringConfig.Bg = backgroundAttr.Bg
-	ret.cfg.ErrorStringConfig.BackgroundAttributes = backgroundAttr
-	ret.cfg.ErrorStringConfig.Bg = backgroundAttr.Bg
-	ret.cfg.WarningStringConfig.BackgroundAttributes = backgroundAttr
-	ret.cfg.WarningStringConfig.Bg = backgroundAttr.Bg
-	ret.cfg.PromptToolCallStringConfig.BackgroundAttributes = backgroundAttr
-	ret.cfg.PromptToolCallStringConfig.Bg = backgroundAttr.Bg
-	ret.cfg.SelectionConfig.TitleStringConfig.BackgroundAttributes = backgroundAttr
-	ret.cfg.SelectionConfig.TitleStringConfig.Bg = backgroundAttr.Bg
-	ret.cfg.SelectionConfig.OptionStringConfig.BackgroundAttributes = backgroundAttr
-	ret.cfg.SelectionConfig.OptionStringConfig.Bg = backgroundAttr.Bg
-	ret.cfg.SelectionConfig.CursorStringConfig.BackgroundAttributes = backgroundAttr
-	ret.cfg.SelectionConfig.CursorStringConfig.Bg = backgroundAttr.Bg
-	ret.cfg.SelectionConfig.HeaderStringConfig.BackgroundAttributes = backgroundAttr
-	ret.cfg.SelectionConfig.HeaderStringConfig.Bg = backgroundAttr.Bg
-	ret.cfg.SelectionConfig.DescStringConfig.BackgroundAttributes = backgroundAttr
-	ret.cfg.SelectionConfig.DescStringConfig.Bg = backgroundAttr.Bg
-	ret.cfg.BackgroundColor = backgroundAttr.Bg
-	ret.backgroundAttr = backgroundAttr
-
-	sendMsgAttr, err := config.GetAttributes(pconfig, "user_msg_attr")
-	if err != nil {
-		if err != config.ErrNotFound {
-			slog.Warn("get 'user_msg_attr' from extension config", "error", err)
-		}
-	} else {
-		ret.cfg.SendMessageStringConfig.Attributes = sendMsgAttr
-	}
-	ret.cfg.PinnedMessageMaxRows = resolvePinnedUserMsgMaxLines(pconfig)
-	ret.cfg.MessagesRowConfig.PadHorizontal = resolveTranscriptHorizontalPadding(pconfig)
-	ret.cfg.SendMessageIcon = resolveUserMsgIcon(ret.cfg.SendMessageIcon, pconfig)
-	recvMsgAttr, err := config.GetAttributes(pconfig, "assistant_msg_attr")
-	if err != nil {
-		if err != config.ErrNotFound {
-			slog.Warn("get 'assistant_msg_attr' from extension config", "error", err)
-		}
-	} else {
-		ret.cfg.ReceiveMessageStringConfig.Attributes = recvMsgAttr
-	}
-
-	inputBoxAttr, err := config.GetAttributes(pconfig, "input_box_attr")
-	if err != nil {
-		if err != config.ErrNotFound {
-			slog.Warn("get 'input_box_attr' from extension config", "error", err)
-		}
-	} else {
-		ret.cfg.InputBox.ContentAttr = inputBoxAttr
-	}
-	ret.cfg.InputBackgroundColor = resolveInputBackgroundColor(
-		ret.cfg.InputBackgroundColor, pconfig)
-	inputBoxPlaceholderAttr, err := config.GetAttributes(pconfig, "input_box_placeholder_attr")
-	if err != nil {
-		if err != config.ErrNotFound {
-			slog.Warn("Error getting 'input_box_placeholder_attr'"+
-				" from extension config", "error", err)
-		}
-	} else {
-		ret.cfg.InputBox.PlaceholderConfig.Attributes = inputBoxPlaceholderAttr
-	}
-
-	inputBoxFrameAttr, err := config.GetAttributes(pconfig, "input_box_frame_attr")
-	if err != nil {
-		if err != config.ErrNotFound {
-			slog.Warn("Error getting 'input_box_frame_attr' from extension config", "error", err)
-		}
-	} else {
-		ret.cfg.InputBox.FrameAttr = inputBoxFrameAttr
-	}
-
-	ret.cfg.InputBox.FrameCharSet = inputBoxFrameCharSet(pconfig)
-
-	inputBgColor, err := pconfig.GetColor("input_background_color")
-	if err != nil {
-		if err != config.ErrNotFound {
-			slog.Warn("get 'input_background_color' from extension config", "error", err)
-		}
-	} else {
-		ret.cfg.InputBackgroundColor = inputBgColor
-	}
-
-	if attr, err := config.GetAttributes(pconfig, "completion_matched_text_attr"); err != nil {
-		if err != config.ErrNotFound {
-			slog.Warn("get 'completion_matched_text_attr' from extension config", "error", err)
-		}
-	} else {
-		ret.cfg.CompletionMatchedTextAttr = attr
-	}
-	if attr, err := config.GetAttributes(pconfig, "completion_focus_element_attr"); err != nil {
-		if err != config.ErrNotFound {
-			slog.Warn("get 'completion_focus_element_attr' from extension config", "error", err)
-		}
-	} else {
-		ret.cfg.CompletionFocusElementAttr = attr
-	}
-	if attr, err := config.GetAttributes(pconfig, "completion_element_attr"); err != nil {
-		if err != config.ErrNotFound {
-			slog.Warn("get 'completion_element_attr' from extension config", "error", err)
-		}
-	} else {
-		ret.cfg.CompletionElementAttr = attr
-	}
-	if col, err := pconfig.GetColor("completion_radar_color"); err != nil {
-		if err != config.ErrNotFound {
-			slog.Warn("get 'completion_radar_color' from extension config", "error", err)
-		}
-	} else {
-		ret.cfg.CompletionRadarColor = col
-	}
-	if attr, err := config.GetAttributes(pconfig, "inline_attachment_attr"); err != nil {
-		if err != config.ErrNotFound {
-			slog.Warn("get 'inline_attachment_attr' from extension config", "error", err)
-		}
-	} else {
-		ret.cfg.InlineAttachmentAttr = attr
-	}
-	ret.cfg.StatusBar = statusBarConfig(pconfig, hostConfig, noti)
-	ret.cfg.StatusBar.DurationPrecision = ret.cfg.DurationPrecision
 
 	ret.queryDefaultModel = queryModelAlias
 
 	ret.compactModel = compactModelAlias
-
-	ret.clip = text.NewSystemClipboard()
-	ret.cfg.Clipboard = ret.clip
-
-	// Resolve the configured editor for composing messages. On error the
-	// compose editor stays nil and dialoguetui falls back to its inputbox.
-	if editor, cerr := extutil.Editor(ret.clip, hostConfig); cerr != nil {
-		slog.Warn("resolve dialogue editor, using inputbox", "error", cerr)
-	} else {
-		ret.cfg.Editor = editor
-		if modal, merr := extutil.EditorModal(hostConfig); merr != nil {
-			slog.Warn("resolve dialogue editor mode", "error", merr)
-		} else {
-			ret.cfg.EditorModal = modal
-		}
-		ret.cfg.ModalStartInsert = true
-		if startInsert, serr := pconfig.GetBool("editor_modal_start_insert"); serr == nil {
-			ret.cfg.ModalStartInsert = startInsert
-		} else if !errors.Is(serr, config.ErrNotFound) {
-			slog.Warn("get 'editor_modal_start_insert' from config", "error", serr)
-		}
-	}
 
 	ret.db = db
 	ret.cfg.StatusBar.Storage = storageapi.WithPartition(db, statusBarImagesPartition)
@@ -893,46 +569,8 @@ const transcriptImagesPartition = "transcript-images"
 // frameImagesPartition caches the images of the compose box frame.
 const frameImagesPartition = "frame_images"
 
-// inputBoxFrameCharSet reads input_box_frame_charset from pconfig, whose
-// missing slots keep those of the default frame. An invalid charset is
-// the default one.
-func inputBoxFrameCharSet(pconfig config.Config) component.FrameCharSet {
-	def := defaultComponentCfg.InputBox.FrameCharSet
-	if def == (component.FrameCharSet{}) {
-		def = component.FrameCharSetDefault()
-	}
-	cs, err := tconfig.GetFrameCharset(pconfig, "input_box_frame_charset", def)
-	if err != nil && !errors.Is(err, config.ErrNotFound) {
-		slog.Warn("get 'input_box_frame_charset' from extension config", "error", err)
-	}
-	return cs
-}
-
-// refreshFrameImages reads the images g names again, dropping the copies
-// storage caches, and returns them by URI. An image that does not load
-// is left out.
-func refreshFrameImages(
-	ctx context.Context, g component.FrameCharSetGraphics, storage storageapi.Service,
-) map[string]stdimage.Image {
-	images := make(map[string]stdimage.Image)
-	tried := make(map[string]struct{})
-	for _, uri := range []string{
-		g.TopLeft, g.TopRight, g.BottomLeft, g.BottomRight,
-		g.HorizontalTop, g.HorizontalBottom, g.VerticalLeft, g.VerticalRight,
-	} {
-		if _, ok := tried[uri]; ok || uri == "" {
-			continue
-		}
-		tried[uri] = struct{}{}
-		img, err := imageuri.Refresh(ctx, uri, template.DefaultImageTTL, storage)
-		if err != nil {
-			slog.Warn("reload frame image", "error", err)
-			continue
-		}
-		images[uri] = img
-	}
-	return images
-}
+// statusBarImagesPartition caches the images status bar layouts download.
+const statusBarImagesPartition = "status_bar_images"
 
 // dialogueConfig returns the config for a dialogue whose handler is given
 // mu, which the dialogue holds while it calls OnLinkClick.
@@ -965,7 +603,6 @@ type aiEditorHandler struct {
 	// which a config reload replaces.
 	statusBarMu         sync.Mutex
 	cfg                 dialoguetui.ComponentConfig
-	backgroundAttr      term.Attributes
 	dialogueStore       dialoguemanager.Store
 	queryAgent          *agent.Agent
 	queryDefaultModel   string
@@ -1234,33 +871,43 @@ func (h *aiEditorHandler) reloadStyle(ctx context.Context, host config.Config) e
 		return err
 	}
 	h.statusBarMu.Lock()
-	storage := h.cfg.StatusBar.Storage
-	frameStorage := h.cfg.InputBox.GraphicsStorage
+	cfg := h.cfg
 	h.statusBarMu.Unlock()
-	cfg := statusBarConfig(own, host, h.n)
-	cfg.DurationPrecision = h.cfg.DurationPrecision
-	cfg.Storage = storage
-	cfg.Images = refreshStatusBarImages(ctx, cfg.Layout, storage)
-	frame := inputBoxFrameCharSet(own)
-	var frameImages map[string]stdimage.Image
-	if frameStorage != nil {
-		frameImages = refreshFrameImages(ctx, frame.Graphics, frameStorage)
-	}
+	cfg, frameImages := dialoguetui.ReadStyle(ctx, cfg, own, host, h.n)
 
 	h.statusBarMu.Lock()
-	h.cfg.StatusBar = cfg
-	h.cfg.InputBox.FrameCharSet = frame
+	h.cfg.StatusBar = cfg.StatusBar
+	h.cfg.InputBox.FrameCharSet = cfg.InputBox.FrameCharSet
 	h.statusBarMu.Unlock()
 	h.openChats.Range(func(_, v any) bool {
 		// Chats still opening hold no component yet; they read the
 		// config they open with afterwards.
 		if sc, ok := v.(syncComponent); ok {
-			sc.setStatusBarConfig(cfg)
-			sc.setInputBoxFrameCharSet(frame, frameImages)
+			sc.setStatusBarConfig(cfg.StatusBar)
+			sc.setInputBoxFrameCharSet(cfg.InputBox.FrameCharSet, frameImages)
 		}
 		return true
 	})
 	return h.p.Interrupt(ctx)
+}
+
+// ownConfig returns the config Rune started this extension with, which
+// host, the config Rune serves, holds under extensions.<id>.config. A host
+// without it gives an empty config. It fails when host could not be
+// fetched.
+func ownConfig(host config.Config) (config.Config, error) {
+	cfg := host
+	for _, key := range []string{"extensions", extensionID, "config"} {
+		sub, err := cfg.GetConfig(key)
+		if errors.Is(err, config.ErrNotFound) {
+			return config.NopConfig(), nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("get %q from the config: %w", key, err)
+		}
+		cfg = sub
+	}
+	return cfg, nil
 }
 
 func (h *aiEditorHandler) Handle(ctx context.Context, ev textapi.Event) (exit bool) {
@@ -3047,68 +2694,4 @@ func agentMemoriesToTUI(ev agent.Event) dialoguetui.MessageEvent {
 		Memories:       entries,
 		MemoryDuration: ev.MemoryDuration,
 	}
-}
-
-// resolveInputBackgroundColor returns the compose input background color.
-// It keeps def unless input_box_attr.bg is set to an explicit,
-// non-default color, letting the shared input_box_attr drive the compose
-// background without a dedicated key.
-func resolveInputBackgroundColor(def term.Color, pconfig config.Config) term.Color {
-	attr, err := config.GetAttributes(pconfig, "input_box_attr")
-	if err != nil || attr.Bg == term.ColorDefault {
-		return def
-	}
-	return attr.Bg
-}
-
-// resolvePinnedUserMsgMaxLines reads pinned_user_msg_max_lines, the rows
-// the pinned user message may take over the top of the transcript. Zero
-// disables the pin, and a negative value is clamped to it.
-func resolvePinnedUserMsgMaxLines(pconfig config.Config) int {
-	v, err := pconfig.GetInt("pinned_user_msg_max_lines")
-	if err != nil {
-		if !errors.Is(err, config.ErrNotFound) {
-			slog.Warn("get 'pinned_user_msg_max_lines' from config", "error", err)
-		}
-		return defaultPinnedUserMsgMaxLines
-	}
-	return max(0, v)
-}
-
-// resolveTranscriptHorizontalPadding reads transcript_horizontal_padding,
-// the columns left beside the transcript, split evenly on either side. A
-// negative value is the transcript's width instead, and the transcript
-// fills a tab narrower than that. Zero fills the tab.
-func resolveTranscriptHorizontalPadding(pconfig config.Config) int {
-	v, err := pconfig.GetInt("transcript_horizontal_padding")
-	if err != nil {
-		if !errors.Is(err, config.ErrNotFound) {
-			slog.Warn("get 'transcript_horizontal_padding' from config", "error", err)
-		}
-		return defaultComponentCfg.MessagesRowConfig.PadHorizontal
-	}
-	return v
-}
-
-// resolveUserMsgIcon reads user_msg_icon, the character marking each of
-// the user's messages in the chat. An empty string hides the icon. Any
-// other value must be a single character, as the icon takes exactly one
-// cell; a longer value keeps def rather than being cut short.
-func resolveUserMsgIcon(def rune, pconfig config.Config) rune {
-	v, err := pconfig.GetString("user_msg_icon")
-	if err != nil {
-		if !errors.Is(err, config.ErrNotFound) {
-			slog.Warn("get 'user_msg_icon' from config", "error", err)
-		}
-		return def
-	}
-	icon := []rune(v)
-	switch len(icon) {
-	case 0:
-		return 0
-	case 1:
-		return icon[0]
-	}
-	slog.Warn("'user_msg_icon' must be a single character", "value", v)
-	return def
 }

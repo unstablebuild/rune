@@ -54,6 +54,7 @@ import (
 	handlerapi "github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
+	"unstable.build/rune/cmd/rune-agent/dialogue/dialoguetui"
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/cell"
 	"unstable.build/rune/internal/codesearch"
@@ -78,6 +79,8 @@ import (
 	"unstable.build/rune/internal/ide/console/pkgconsole"
 	"unstable.build/rune/internal/ide/console/searchconsole"
 	"unstable.build/rune/internal/ide/hostenv"
+	"unstable.build/rune/internal/ide/ideacp"
+	"unstable.build/rune/internal/ide/ideacp/acpcmd"
 	"unstable.build/rune/internal/ide/ideauthorizer"
 	"unstable.build/rune/internal/ide/idecursor"
 	"unstable.build/rune/internal/ide/idedebug"
@@ -242,6 +245,7 @@ type workspaceManagerHandler struct {
 	homeInstallDir      string
 	homeLSPManager      *idelsp.Manager
 	homeDAPManager      *idedebug.Manager
+	homeACPManager      *ideacp.Manager
 	openPrevFiles       []idehistory.File
 	openPrevFilesEx     *ex
 	openPrevWindows     map[uint64]browser.Window
@@ -843,7 +847,7 @@ func (h *workspaceManagerHandler) init(
 		return nil
 	}
 	h.homeInstallDir = installDataDir(trackedCwd, homeDirUri, h.sixDir)
-	runner, lspManager, dapManager, _, _, err := h.buildExtensions(
+	runner, lspManager, dapManager, acpManager, _, _, err := h.buildExtensions(
 		cfg, homeDirUri, trackedCwd, h.empty, extExec, homeParser, false,
 		h.homeInstallDir, noRegexpSearch{}, extension.NewLiveConfig(cfg.cfg))
 	if err != nil {
@@ -858,6 +862,7 @@ func (h *workspaceManagerHandler) init(
 		h.homeRunner = runner
 		h.homeLSPManager = lspManager
 		h.homeDAPManager = dapManager
+		h.homeACPManager = acpManager
 		// Deliberately do not start extensions on the home/empty workspace:
 		// rune-agent (and other user extensions) recursively walk the entire
 		// workspace root for .gitignore files at startup, which is ruinously
@@ -1557,7 +1562,40 @@ func (h *workspaceManagerHandler) afterPackageConfigMerge(
 			result.LivePaths = append(result.LivePaths, []string{keySounds})
 		}
 	}
+
+	if event.TouchesPath(keyACP) {
+		if cfg, reloadErr := h.reloadConfig(); reloadErr != nil {
+			err = errors.Join(err, fmt.Errorf("reload config for acp: %w", reloadErr))
+		} else {
+			h.reloadACPConfigs(cfg)
+			result.LivePaths = append(result.LivePaths, []string{keyACP})
+		}
+	}
 	return result, err
+}
+
+// reloadACPConfigs applies the agents of cfg, with each workspace's own
+// config overlaid, to the next agent starts of every workspace.
+func (h *workspaceManagerHandler) reloadACPConfigs(cfg ideConfig) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.homeACPManager != nil {
+		h.homeACPManager.SetConfig(expandACPDataDir(cfg.acpConfigs(), h.homeInstallDir))
+	}
+	for _, w := range h.workspaces {
+		if w == nil {
+			continue
+		}
+		wcfg := cfg
+		if w.configOverlay != nil {
+			wcfg.errors = make(map[string]error)
+			if _, err := overlayWorkspaceConfig(w.configOverlay, h.workspaceConfigFilename, &wcfg); err != nil {
+				log.Warnf("reload the agents of workspace %s: %v", w.uri.String(), err)
+				continue
+			}
+		}
+		w.reloadACPConfig(wcfg.cfg)
+	}
 }
 
 func (h *workspaceManagerHandler) textOpts(
@@ -1947,6 +1985,7 @@ type builtWorkspace struct {
 	notice              *idenotice.Crier
 	lspManager          *idelsp.Manager
 	dapManager          *idedebug.Manager
+	acpManager          *ideacp.Manager
 	hostPackages        *pkgManager
 	promptStorage       storageapi.Service
 }
@@ -2117,7 +2156,7 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 			uri.String(), err)
 		return nil, fmt.Errorf("new extensions executor: %w", err)
 	}
-	runner, lspManager, dapManager, hostPkgs, promptStorage, err := h.buildExtensions(
+	runner, lspManager, dapManager, acpManager, hostPkgs, promptStorage, err := h.buildExtensions(
 		cfg, uri, trackedCwd, ex, extExec, wsParser, symbolDB != nil, wh.installDir, regexIndex,
 		wh.extensionConfig)
 	if err != nil {
@@ -2133,6 +2172,7 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 		wh.Extensions.Store(runner)
 		wh.lspManager = lspManager
 		wh.dapManager = dapManager
+		wh.acpManager = acpManager
 		wh.hostPackages = hostPkgs
 		wh.promptStorage = promptStorage
 	}
@@ -2150,6 +2190,7 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 		regexIndex:          regexIndex,
 		lspManager:          lspManager,
 		dapManager:          dapManager,
+		acpManager:          acpManager,
 		hostPackages:        hostPkgs,
 		promptStorage:       promptStorage,
 	}
@@ -2489,6 +2530,9 @@ func (h *workspaceManagerHandler) discardBuiltWorkspace(built *builtWorkspace) {
 			_ = c.Close()
 		}
 	}
+	if built.acpManager != nil {
+		_ = built.acpManager.Close()
+	}
 	if built.lspManager != nil {
 		_ = built.lspManager.Close()
 	}
@@ -2533,7 +2577,7 @@ func (h *workspaceManagerHandler) buildExtensions(
 	regexp regexpSearcher, extensionConfig *extension.LiveConfig,
 ) (
 	_ extension.Runner, _ *idelsp.Manager, _ *idedebug.Manager,
-	_ *pkgManager, _ storageapi.Service, retErr error,
+	_ *ideacp.Manager, _ *pkgManager, _ storageapi.Service, retErr error,
 ) {
 	notifications := h.notifications.new(uri, ex.container)
 	ed := ex.Editor()
@@ -2570,7 +2614,7 @@ func (h *workspaceManagerHandler) buildExtensions(
 			DataDir:                        installDir,
 		})
 	if err != nil {
-		return nil, nil, nil, nil, nil, fmt.Errorf("new command authorizer: %w", err)
+		return nil, nil, nil, nil, nil, nil, fmt.Errorf("new command authorizer: %w", err)
 	}
 	var graphics thandlerrpc.GraphicsConfig
 	res := extension.BrowserResources(ex.Browser(), h.events.newPublisher(uri), graphics)
@@ -2597,7 +2641,7 @@ func (h *workspaceManagerHandler) buildExtensions(
 	// report (see workspaceRootURI).
 	rootURI, err := workspaceRootURI(cwd, uri)
 	if err != nil {
-		return nil, nil, nil, nil, nil, fmt.Errorf("resolve workspace root: %w", err)
+		return nil, nil, nil, nil, nil, nil, fmt.Errorf("resolve workspace root: %w", err)
 	}
 	searcher := newWorkspaceSearcher(uri, rootURI.Path(), regexp, h.llmRouter)
 	callbacks := idelsp.NewCallbackHandler(notifications, apibrowser, ex.Browser(),
@@ -2629,6 +2673,10 @@ func (h *workspaceManagerHandler) buildExtensions(
 		Adapters: expandAdapterDataDir(cfg.debuggerConfigs(), installDir),
 	}
 	dap := idedebug.New(rootURI, cwd, pkgs, dapCfg)
+	// Agents start through the executor `!` plugin commands use, which the
+	// extension runner backs once built, so they can call back into Rune
+	// under plugin claims.
+	acp := ideacp.New(rootURI, ex.executor, expandACPDataDir(cfg.acpConfigs(), installDir))
 	defer func() {
 		if retErr == nil {
 			return
@@ -2639,6 +2687,7 @@ func (h *workspaceManagerHandler) buildExtensions(
 		if err := dap.Close(); err != nil {
 			log.Warnf("close dap manager after build error: %v", err)
 		}
+		_ = acp.Close()
 	}()
 	err = ex.comp.SubscribeEvents(idelsp.EditorEvents(), lsp)
 	if err != nil {
@@ -2680,7 +2729,7 @@ func (h *workspaceManagerHandler) buildExtensions(
 		lspifc, apieditor, apibrowser, apibrowser, apibrowser,
 		ex.workspace, parser, cmdcfg)
 	if err != nil {
-		return nil, nil, nil, nil, nil, fmt.Errorf("new lsp command handler: %v", err)
+		return nil, nil, nil, nil, nil, nil, fmt.Errorf("new lsp command handler: %v", err)
 	}
 	handler := text.FuncCommandHandler(apiHandler.HandleCommand,
 		func(ctx context.Context, cmd textapi.Command) (iterator.Iterator[string], string, error) {
@@ -2693,6 +2742,25 @@ func (h *workspaceManagerHandler) buildExtensions(
 	}
 	res = extension.MergeResourceMap(res, extension.SemanticResources(lspifc))
 	res = extension.MergeResourceMap(res, extension.DebugResources(dap))
+	res = extension.MergeResourceMap(res, extension.ACPResources(acp))
+	own, host := cfg.agentChatConfig()
+	chat := dialoguetui.ReadConfig(own, host, h.clip, notifications)
+	ex.acpChatImages = storageapi.WithPartition(h.ideStorage, "acp_chat_images")
+	chat.StatusBar.Storage = ex.acpChatImages
+	chat.InputBox.GraphicsStorage = ex.acpChatImages
+	ex.acpChats = acpcmd.New(acp, acpcmd.Config{
+		WindowManager: apibrowser,
+		Interrupter:   apibrowser,
+		Notifications: notifications,
+		FileSystem:    ex.workspace,
+		Root:          rootURI,
+		Parser:        parser,
+		OnLinkClick:   ex.onLinkClick,
+		Chat:          chat,
+	})
+	if err := ex.editorObserver.SubscribeCommand(acpcmd.Manual(), ex.acpChats); err != nil {
+		log.Errorf("subscribe %s command: %v", acpcmd.Name, err)
+	}
 	res = extension.MergeResourceMap(res, extension.LLMResources(h.llmRouter))
 	res = extension.MergeResourceMap(res, extension.SearchResources(searcher))
 	res = extension.MergeResourceMap(res,
@@ -2764,7 +2832,7 @@ func (h *workspaceManagerHandler) buildExtensions(
 
 	dataDir := h.sixDir
 	if err := os.MkdirAll(dataDir, 0777); err != nil {
-		return nil, nil, nil, nil, nil, fmt.Errorf("mkdir %s: %v", dataDir, err)
+		return nil, nil, nil, nil, nil, nil, fmt.Errorf("mkdir %s: %v", dataDir, err)
 	}
 	browser := ex.Browser()
 	grantor := newExtensionPromptGrantor(promptOpener, promptStorage,
@@ -2773,9 +2841,9 @@ func (h *workspaceManagerHandler) buildExtensions(
 		h.pkgmanager.pkg, dataDir, installDir, browser, cwd, extExecutor, grantor,
 		ed, promptOpener, promptStorage, cfg.scheduleNextTick)
 	if err != nil {
-		return nil, nil, nil, nil, nil, fmt.Errorf("new workspace extensions runner: %v", err)
+		return nil, nil, nil, nil, nil, nil, fmt.Errorf("new workspace extensions runner: %v", err)
 	}
-	return runner, lsp, dap, hostPkgs, promptStorage, nil
+	return runner, lsp, dap, acp, hostPkgs, promptStorage, nil
 }
 
 // hostPackageManager is the package manager of the machine a workspace
@@ -2876,6 +2944,32 @@ func expandAdapterDataDir(
 		adapters[id] = a
 	}
 	return adapters
+}
+
+// expandACPDataDir returns cfg with $RUNE_DATADIR in its agents'
+// commands, arguments and environment expanded to installDir.
+func expandACPDataDir(cfg ideacp.Config, installDir string) ideacp.Config {
+	agents := make(map[string]ideacp.AgentConfig, len(cfg.Agents))
+	for name, a := range cfg.Agents {
+		a.Command = hostenv.ExpandDataDir(a.Command, installDir)
+		if a.Args != nil {
+			args := make([]string, len(a.Args))
+			for i, arg := range a.Args {
+				args[i] = hostenv.ExpandDataDir(arg, installDir)
+			}
+			a.Args = args
+		}
+		if a.Env != nil {
+			env := make(map[string]string, len(a.Env))
+			for k, v := range a.Env {
+				env[k] = hostenv.ExpandDataDir(v, installDir)
+			}
+			a.Env = env
+		}
+		agents[name] = a
+	}
+	cfg.Agents = agents
+	return cfg
 }
 
 func installDataDir(ws workspace.Workspace, uri workspaceapi.URI, localDataDir string) string {
@@ -3179,6 +3273,9 @@ func (h *workspaceManagerHandler) loadHUD(ctx context.Context) (*HUD, error) {
 		cfg:             cfg.cfg,
 		workspaceCfgs:   make(map[string]map[string]any, len(overlays)),
 	}
+	// applyHUD hands the agents to every workspace, so their errors are
+	// reported with the HUD's.
+	_ = cfg.acpConfigs()
 	uris := hud.base.imageURIs()
 	statusBarImages := hud.base.statusBarImages()
 	for uri, contents := range overlays {
@@ -3248,6 +3345,7 @@ func (h *workspaceManagerHandler) applyHUD(hud *HUD) (applied bool, signalled in
 	h.status.SetStyle(hud.base.statusInbox)
 	h.styleWorkspaceUnion(wm.FrameAttr, hud.base.browser.FrameUnionCharSet)
 	h.empty.restyle(hud.base, hud.images, hud.statusBarImages)
+	h.empty.restyleChats(hud.cfg)
 	for _, w := range h.workspaces {
 		if w == nil || w.ex == nil {
 			continue
@@ -3267,7 +3365,14 @@ func (h *workspaceManagerHandler) applyHUD(hud *HUD) (applied bool, signalled in
 			style, cfg = hud.base, hud.cfg
 		}
 		w.ex.restyle(style, hud.images, hud.statusBarImages)
+		w.ex.restyleChats(cfg)
 		signalled += w.reloadExtensionConfig(cfg)
+		w.reloadACPConfig(cfg)
+	}
+	if h.homeACPManager != nil {
+		h.homeACPManager.SetConfig(expandACPDataDir(
+			ideConfig{cfg: hud.cfg, errors: make(map[string]error)}.acpConfigs(),
+			h.homeInstallDir))
 	}
 	return true, signalled
 }
@@ -3721,6 +3826,11 @@ func (h *workspaceManagerHandler) Close() (ret error) {
 		}
 		h.graphics, h.graphicsStorage = nil, nil
 	}
+	if h.homeACPManager != nil {
+		if err := h.homeACPManager.Close(); err != nil {
+			ret = multierror.Append(ret, err)
+		}
+	}
 	if h.homeRunner != nil {
 		if err := h.homeRunner.(io.Closer).Close(); err != nil {
 			ret = multierror.Append(ret, err)
@@ -3792,6 +3902,7 @@ type workspaceHandler struct {
 	historyCloser       io.Closer
 	lspManager          *idelsp.Manager
 	dapManager          *idedebug.Manager
+	acpManager          *ideacp.Manager
 	hostPackages        *pkgManager
 	promptStorage       storageapi.Service
 	// installDir is the Rune data directory of the workspace's host.
@@ -3814,9 +3925,26 @@ func (hm *workspaceHandler) reloadExtensionConfig(cfg map[string]any) int {
 	return runner.SignalReload()
 }
 
+// reloadACPConfig applies the agents of cfg to the workspace's next agent
+// starts.
+func (hm *workspaceHandler) reloadACPConfig(cfg map[string]any) {
+	if hm.acpManager == nil {
+		return
+	}
+	c := ideConfig{cfg: cfg, errors: make(map[string]error)}
+	hm.acpManager.SetConfig(expandACPDataDir(c.acpConfigs(), hm.installDir))
+}
+
 func (hm *workspaceHandler) Close() error {
 	hm.closeOnce.Do(func() {
 		var ret error
+		// Agents get their stdin closed before the executor they run on
+		// goes away.
+		if hm.acpManager != nil {
+			if err := hm.acpManager.Close(); err != nil {
+				ret = multierror.Append(ret, err)
+			}
+		}
 		if err := hm.ex.Close(); err != nil {
 			ret = multierror.Append(ret, err)
 		}

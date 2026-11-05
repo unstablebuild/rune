@@ -298,3 +298,10 @@ extensions:
             bg: green
         # Cell width of the context and cache gauges.
         gauge_width: 18
+# `acp new rune-agent` runs rune-agent over the Agent Client Protocol, as
+# any ACP client would. Its sessions are kept apart from the chats above.
+acp:
+  agents:
+    rune-agent:
+      command: '$RUNE_DATADIR/bin/rune-agent'
+      args: [acp]

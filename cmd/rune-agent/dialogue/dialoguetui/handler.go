@@ -111,6 +111,13 @@ func WithCloseFunc(fn func()) HandlerOption {
 	return func(dh *dialogueHandler) { dh.closeFn = fn }
 }
 
+// WithoutSubmitEcho stops the handler from rendering submitted messages
+// and command lines itself, for owners that render every user message
+// from MessageEventUserMessage instead.
+func WithoutSubmitEcho() HandlerOption {
+	return func(dh *dialogueHandler) { dh.noSubmitEcho = true }
+}
+
 // Handler wraps a dialogue.Component and provides a simple-to-use
 // tui.Handler which sends input messages via rx and can
 // receive messages into the dialogue history via tx.
@@ -166,6 +173,7 @@ type dialogueHandler struct {
 	attachmentOpener AttachmentOpener
 	toolCallOpener   ToolCallOpener
 	closeFn          func()
+	noSubmitEcho     bool
 	ctx              context.Context
 	inputFocused     bool // true when last mouse interaction was in the input area
 	// messagesDragging is true while a left-button selection drag that
@@ -553,7 +561,7 @@ func (s *dialogueHandler) Handle(ev term.Event) (exit, handled bool) {
 		}
 		text := s.comp.Input().Text()
 		if s.commands != nil && isCommand(text) {
-			item, ok := s.comp.InputSubmit()
+			item, ok := s.submitCommandLine()
 			if ok {
 				s.appendHistory(Draft{Text: item})
 				name, args := parseCommand(item)
@@ -854,6 +862,8 @@ func (s *dialogueHandler) consumeIncoming() {
 			s.comp.UpdateTaskProgress(ev.TaskProgress)
 		case MessageEventAttachment:
 			s.comp.AddAttachment(ev.Attachment)
+		case MessageEventUserMessage:
+			s.comp.AddSendMessageAttachments(ev.Text, ev.Attachments)
 		case MessageEventPromptDismiss:
 			ch := s.comp.PreparePromptDismiss()
 			if ch != nil {
@@ -887,6 +897,20 @@ func parseCommand(text string) (string, []string) {
 		return "", nil
 	}
 	return parts[0], parts[1:]
+}
+
+// submitCommandLine takes the command line out of the compose input,
+// rendering it unless the echo is off.
+func (s *dialogueHandler) submitCommandLine() (string, bool) {
+	if !s.noSubmitEcho {
+		return s.comp.InputSubmit()
+	}
+	text := s.comp.Input().Text()
+	if text == "" {
+		return "", false
+	}
+	s.comp.Input().Clear()
+	return text, true
 }
 
 func (s *dialogueHandler) executeCommand(name string, args []string) {
@@ -933,7 +957,7 @@ func (s *dialogueHandler) submitMessage(msg SubmitMessage, queuedLabel string, d
 		s.comp.AddQueuedMessage(queuedLabel)
 		return
 	}
-	if displayNow {
+	if displayNow && !s.noSubmitEcho {
 		s.comp.AddSendMessageAttachments(msg.Text, msg.Attachments)
 	}
 	s.mu.Unlock()
@@ -1005,7 +1029,9 @@ func (s *dialogueHandler) drainQueue() {
 	msg := s.queue[0]
 	s.queue = s.queue[1:]
 	s.comp.PromoteFirstQueuedMessage()
-	s.comp.AddSendMessageAttachments(msg.Text, msg.Attachments)
+	if !s.noSubmitEcho {
+		s.comp.AddSendMessageAttachments(msg.Text, msg.Attachments)
+	}
 	s.mu.Unlock()
 	s.tx <- msg
 	s.mu.Lock()

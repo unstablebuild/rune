@@ -3114,6 +3114,85 @@ func TestComponentToolCallOrderings(t *testing.T) {
 		comptest.TestComponent(t, comp, w, tests)
 	})
 
+	t.Run("children and completion after text detached the turn", func(t *testing.T) {
+		comp := NewComponent(ComponentConfig{})
+		comp.Resize(W, H)
+		w := mkW()
+		tests := []comptest.TestCase{
+			{
+				Action: func() {
+					comp.AddToolCall("p1", "agent", "{}", "task")
+					comp.AddReceiveMessageChunk("waiting")
+					comp.AddChildToolCall("p1", "c1", "read", "{}", "f")
+					comp.CompleteChildToolCall("p1", "c1", "read", "{}", "f", "ok", false)
+					comp.CompleteToolCall("p1", "agent", "{}", "task", "done", false)
+				},
+				Expected: "✓ agent task                   \n" +
+					"done                           \n" +
+					"✓ read f                       \n" +
+					"ok                             \n" +
+					"waiting                        \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"  ┌───────────────────────┐    \n" +
+					"  │                       │    \n" +
+					"  └───────────────────────┘    \n" +
+					"                               ",
+			},
+		}
+		comptest.TestComponent(t, comp, w, tests)
+	})
+
+	t.Run("result of a nested sub-agent", func(t *testing.T) {
+		comp := NewComponent(ComponentConfig{StartCollapsed: true})
+		comp.Resize(W, H)
+		w := mkW()
+		tests := []comptest.TestCase{
+			{
+				Action: func() {
+					comp.AddToolCall("p1", "skill", "{}", "research")
+					comp.AddChildToolCall("p1", "c1", "agent", "{}", "scout")
+					comp.AddChildResult("c1", "found", false)
+					comp.CompleteChildToolCall("p1", "c1", "agent", "{}", "scout", "found", false)
+					comp.AddChildResult("p1", "done", false)
+					comp.CompleteToolCall("p1", "skill", "{}", "research", "done", false)
+				},
+				Expected: "└─ ✓ skill research            \n" +
+					"   ├─ ✓ agent scout            \n" +
+					"   │  └─ 󰆈  found              \n" +
+					"   └─ 󰆈  done                  \n" +
+					"Press <ctrl-o> to expand       \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"  ┌───────────────────────┐    \n" +
+					"  │                       │    \n" +
+					"  └───────────────────────┘    \n" +
+					"                               ",
+			},
+		}
+		comptest.TestComponent(t, comp, w, tests)
+	})
+
 	t.Run("child tool call error", func(t *testing.T) {
 		comp := NewComponent(ComponentConfig{})
 		comp.Resize(W, H)

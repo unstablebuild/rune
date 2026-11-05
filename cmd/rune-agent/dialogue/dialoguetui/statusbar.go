@@ -82,6 +82,19 @@ const (
 	DefaultStatusBarForeground = term.ColorSilver
 )
 
+// DefaultStatusBarConfig is the bar a chat gets when nothing configures
+// it. The layout and the gauge palette are left zero so the bar supplies
+// its own shipped defaults.
+func DefaultStatusBarConfig() StatusBarConfig {
+	return StatusBarConfig{
+		Enabled:          true,
+		BackgroundColor:  DefaultStatusBarBackground,
+		ForegroundColor:  DefaultStatusBarForeground,
+		ContextGaugeFill: DefaultContextGaugeFill,
+		CacheGaugeFill:   DefaultCacheGaugeFill,
+	}
+}
+
 // The gauge track sits flush with the bar; the caps are what mark its
 // extent, and its foreground doubles as the label colour over the
 // unfilled side.
