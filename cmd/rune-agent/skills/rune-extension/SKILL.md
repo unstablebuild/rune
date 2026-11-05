@@ -76,10 +76,49 @@ While it runs:
   returns. Never block in it. Run long-lived work in a goroutine bound to the
   `ctx` it receives, which stays live until shutdown, or in an asyncio task in
   Python.
-- Stdout carries the handshake. Log to stderr only: `slog` in Go, which the
-  SDK configures, or `logging` with `stream=sys.stderr` in Python.
+- Stdout carries the handshake. Log to stderr only; see Logging.
 - Return wrapped errors from command handlers; Rune shows them to the user.
   Notify only for successes, or for failures an event handler cannot return.
+
+## Logging
+The log is the only view into a running extension. You read it to debug the
+extension, and so does the user when it misbehaves on their machine. An error
+that is neither returned nor logged is lost. Log generously and choose the
+level carefully.
+
+- **Go:** use `log/slog`'s package-level functions: `slog.Error`,
+  `slog.Warn`, `slog.Info`, `slog.Debug`. The SDK replaces the default logger
+  with a JSON handler on stderr at the level Rune runs at. Do not install
+  another handler, and do not use `fmt.Print*`, `log` or stdout. Rune's own
+  Go, Python, Rust, TypeScript and Zig extensions log this way.
+- **Python:** `logging` with `stream=sys.stderr`. Rune adds JSON lines to its
+  main log too, so emit JSON with a `level` field if you want that.
+- **Error and Warn:** log every error you do not return: failures in
+  goroutines and background tasks, event handlers that cannot return,
+  best-effort steps that fall back or skip (a bad or missing config value, a
+  cache write, a prewarm, cleanup on shutdown). Use Error when a feature
+  stops working and Warn when the extension degrades or falls back. Do not
+  log an error you also return, because Rune already shows it to the user.
+- **Info:** lifecycle milestones, once each: setup finished with the
+  effective settings, a process or server started, a project or root
+  detected. Never per event or per keystroke.
+- **Debug:** what you need when iterating on a bug: the inputs to a
+  decision, which branch ran, summaries of event payloads, timings. It is
+  hidden unless debug logging is enabled, so add it freely along paths that
+  are hard to observe.
+- Use a constant message and structured fields. Pass the error as
+  `"error", err`, and add the identifiers that locate the problem, such as
+  the URI, root, command or ID:
+
+  ```go
+  slog.Warn("python env setup failed", "root", root.Dir, "error", err)
+  slog.Info("rust lsp initialized", "root", root.Dir, "command", command)
+  ```
+- Never log secrets, tokens or file contents.
+- Get debug output: `xsandbox --verbose` runs the extension at debug and
+  streams its stderr. In Rune, the extension takes Rune's level when it
+  starts. Have the user run `loglevel debug` in the console and then
+  `extensions restart <id>`, or set `log_level: debug` in their config.
 
 ## Reach the workspace only through the SDK
 The extension runs on the user's machine even when the workspace is on
@@ -272,4 +311,6 @@ extensions:
    files, commands, configuration or the data directory.
 5. The user started the extension, and you read its log and found no errors.
    For a UI, you inspected a screenshot.
-6. You told the user which console commands are still theirs to run.
+6. Every error that is not returned is logged, and the main lifecycle steps
+   log at Info.
+7. You told the user which console commands are still theirs to run.
