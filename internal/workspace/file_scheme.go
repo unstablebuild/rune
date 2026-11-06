@@ -45,6 +45,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"golang.org/x/sys/unix"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/ide/hostenv"
 	"unstable.build/rune/internal/ide/procattr"
@@ -936,6 +937,13 @@ type fileSchemeFile struct {
 
 func (f *fileSchemeFile) Fd() uintptr {
 	return f.fd
+}
+
+// ForegroundPgrp returns the process group in the foreground of the
+// terminal f is the master of. It fails when f is not a pty master or has
+// been closed.
+func (f *fileSchemeFile) ForegroundPgrp() (int, error) {
+	return unix.IoctlGetInt(int(f.fd), unix.TIOCGPGRP)
 }
 
 func (f *fileSchemeFile) Close() error {
