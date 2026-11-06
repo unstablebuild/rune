@@ -18,6 +18,7 @@ package component
 
 import (
 	"fmt"
+	"image"
 	"slices"
 
 	"github.com/unstablebuild/rune-go-sdk/component"
@@ -110,6 +111,10 @@ type Tabs struct {
 	frameBorders     component.FrameCharSet
 	separator        string
 	dirty            bool
+
+	graphics  *FrameGraphics
+	images    *component.ButtonImages
+	highlight LineGraphics
 }
 
 func newListFrame(
@@ -226,6 +231,33 @@ func (t *Tabs) SetBottomHighlight(on bool) {
 	t.dirty = true
 }
 
+// SetGraphics sets the images that writers that can draw images show:
+// images under each tab, across the rows inside the bar's border, in
+// ButtonSelected for the tabs in focus and ButtonIdle for the rest, and
+// highlight over the cells of the focus-frame highlight, which it draws
+// even without a focus-frame rune. Both go under the text of the labels.
+// images must be taken from g, and a nil g draws no images. The bar keeps
+// as many blank cells as the images' side outset before the first tab
+// and at least as many after the last, for the outsets to show.
+func (t *Tabs) SetGraphics(
+	g *FrameGraphics, images *component.ButtonImages, highlight LineGraphics,
+) {
+	t.graphics, t.images, t.highlight = g, images, highlight
+	if g == nil {
+		t.images, t.highlight = nil, LineGraphics{}
+	}
+	t.dirty = true
+}
+
+// outset is the side outset of the tab images, which the bar keeps room
+// for at both ends.
+func (t *Tabs) outset() int {
+	if t.images == nil {
+		return 0
+	}
+	return max(0, t.images.Outset.Sides)
+}
+
 // Resize : tui.Component
 func (t *Tabs) Resize(width, height int) {
 	t.width, t.height = width, height
@@ -259,18 +291,118 @@ func (t *Tabs) Draw(w term.Writer) {
 		t.fileListFrame.Draw(w)
 	}
 	t.drawFocusHighlight(w)
+	// Drawn after the highlight's runes, which would otherwise cover them.
+	t.drawTabImages(w)
+	t.drawHighlightGraphics(w)
 }
 
-// drawFocusHighlight overlays the focus-frame rune on y=0 across the
-// columns occupied by the highlighted tab's cell. No-op when the
-// highlight is disabled (highlightIdx < 0), when there are no tabs,
-// when the bar has no second row to host labels (h<2) or when nothing
-// is drawable.
+// drawFocusHighlight overlays the focus-frame rune across the columns
+// of the highlighted tab's cell, or the blanks its images replace it
+// with, before the tab images, which those cells would cover.
 func (t *Tabs) drawFocusHighlight(w term.Writer) {
-	if t.highlightIdx < 0 || t.height < 2 ||
-		t.width <= 0 || len(t.layout.cells) == 0 ||
-		t.focusFrameChar == 0 {
+	from, length, ok := t.highlightSpan()
+	if !ok {
 		return
+	}
+	cell := t.highlightRowCell(from.Y)
+	switch {
+	case t.graphics != nil && !t.highlight.Empty() &&
+		(t.focusFrameChar != 0 || !t.highlight.Overlay):
+		t.highlight.DrawCells(w, from, length, false, cell)
+	case t.focusFrameChar != 0:
+		for dx := range length {
+			w.SetCell(term.Coordinates{X: from.X + dx, Y: from.Y}, cell)
+		}
+	}
+}
+
+// drawHighlightGraphics draws the highlight images over the cells of the
+// focus-frame highlight.
+func (t *Tabs) drawHighlightGraphics(w term.Writer) {
+	if t.graphics == nil || t.highlight.Empty() {
+		return
+	}
+	from, length, ok := t.highlightSpan()
+	if !ok {
+		return
+	}
+	t.graphics.DrawLine(w, t.highlight, from, length, false,
+		t.highlightRowCell(from.Y), term.ImageLayerBelowText)
+}
+
+// highlightRowCell is the cell the highlight row shows at y: the
+// focus-frame rune or, without one, the border or the blank under it.
+func (t *Tabs) highlightRowCell(y int) term.Cell {
+	switch {
+	case t.focusFrameChar != 0:
+		return term.NewCell(t.focusFrameChar, 1, t.focusFrameAttr)
+	case t.border && y == 0:
+		return term.NewCell(t.frameBorders.HorizontalTop, 1, t.frameAttr)
+	case t.border:
+		return term.NewCell(t.frameBorders.HorizontalBottom, 1, t.frameAttr)
+	}
+	return term.NewCell(' ', 1, term.Attributes{Bg: t.backgroundAttr.Bg})
+}
+
+// highlightSpan returns where the focus-frame highlight goes: the first
+// of its cells and how many there are. It reports false when the
+// highlight is disabled, when there are no tabs, when the bar has no
+// second row to host labels or when nothing is drawable.
+func (t *Tabs) highlightSpan() (from term.Coordinates, length int, ok bool) {
+	if t.highlightIdx < 0 || t.height < 2 || t.width <= 0 {
+		return term.Coordinates{}, 0, false
+	}
+	start, width, ok := t.drawnTabBounds(t.highlightIdx)
+	if !ok {
+		return term.Coordinates{}, 0, false
+	}
+	y := 0
+	if t.bottomHighlight {
+		y = t.height - 1
+	}
+	return term.Coordinates{X: start, Y: y}, width, true
+}
+
+// drawTabImages draws the images of each drawn tab under its label.
+func (t *Tabs) drawTabImages(w term.Writer) {
+	if t.images == nil {
+		return
+	}
+	xLeft, xRight, top, rows := 0, t.width, 0, t.height
+	if t.border {
+		xLeft, xRight, top, rows = 1, t.width-1, 1, t.height-2
+	}
+	if xRight <= xLeft || rows <= 0 {
+		return
+	}
+	inner := &component.VirtualWriter{
+		Writer: w,
+		Offset: term.Coordinates{X: xLeft, Y: top},
+		Width:  xRight - xLeft,
+		Height: rows,
+	}
+	for _, cell := range t.layout.cells {
+		start, width, ok := t.drawnTabBounds(cell.idx)
+		if !ok {
+			continue
+		}
+		st := component.ButtonIdle
+		if t.tabs[cell.idx].focus {
+			st = component.ButtonSelected
+		}
+		t.images.Draw(inner, image.Rect(start-xLeft, 0, start-xLeft+width, rows), st)
+	}
+}
+
+// drawnTabBounds is tabBounds of a tab of the drawn layout, cut to the
+// columns inside the border.
+func (t *Tabs) drawnTabBounds(idx int) (start, width int, ok bool) {
+	if len(t.layout.cells) == 0 {
+		return 0, 0, false
+	}
+	start, width, ok = t.tabBounds(idx)
+	if !ok {
+		return 0, 0, false
 	}
 	xLeft := 0
 	xRight := t.width
@@ -278,28 +410,12 @@ func (t *Tabs) drawFocusHighlight(w term.Writer) {
 		xLeft = 1
 		xRight = t.width - 1
 	}
-	y := 0
-	if t.bottomHighlight {
-		y = t.height - 1
+	end := min(start+width, xRight)
+	start = max(start, xLeft)
+	if end <= start {
+		return 0, 0, false
 	}
-	innerX := 0
-	sepLen := len(t.separator)
-	for i, cell := range t.layout.cells {
-		if cell.idx == t.highlightIdx {
-			for dx := 0; dx < cell.width; dx++ {
-				x := xLeft + innerX + dx
-				if x < xLeft || x >= xRight {
-					continue
-				}
-				w.SetCell(term.Coordinates{X: x, Y: y},
-					term.NewCell(t.focusFrameChar, 1, t.focusFrameAttr))
-			}
-		}
-		innerX += cell.width
-		if i < len(t.layout.cells)-1 {
-			innerX += sepLen
-		}
-	}
+	return start, end - start, true
 }
 
 // ResetFocus resets the focus of all the tabs to false.
@@ -636,6 +752,9 @@ func (t *Tabs) TabAt(pos term.Coordinates) (int, bool) {
 			}
 			posX--
 		}
+		if posX -= t.outset(); posX < 0 {
+			return t.layout.cells[0].idx, true
+		}
 		sepLen := len(t.separator)
 		x := 0
 		for i, cell := range t.layout.cells {
@@ -658,7 +777,7 @@ func (t *Tabs) TabAt(pos term.Coordinates) (int, bool) {
 	// resized). Hit-test against a natural-width layout so callers can
 	// resolve clicks before a draw cycle has happened.
 	sepLen := len(t.separator)
-	x := 0
+	x := t.outset()
 	for i, tab := range t.tabs {
 		w := tabFullWidth(tab)
 		end := x + w
@@ -742,6 +861,7 @@ func (t *Tabs) tabBounds(idx int) (start, width int, ok bool) {
 	if t.border {
 		start = 1
 	}
+	start += t.outset()
 	sepLen := len(t.separator)
 	if len(t.layout.cells) > 0 {
 		for i, cell := range t.layout.cells {
@@ -912,6 +1032,9 @@ func (t *Tabs) prepareFileList() {
 	}
 
 	next := term.Coordinates{}
+	for range t.outset() {
+		next = t.fileListBuf.Insert(next, ' ')
+	}
 	for i, cell := range t.layout.cells {
 		next = t.insertTabCell(next, cell)
 		if i < len(t.layout.cells)-1 {
@@ -1008,15 +1131,16 @@ func (t *Tabs) insertTabCell(pos term.Coordinates, cell tabCellLayout) term.Coor
 // calculateLayout decides the visible window of tabs and the width
 // allocated to each. See the algorithm description in tabs_test.go.
 func (t *Tabs) calculateLayout() tabLayout {
-	innerW := t.innerWidth()
+	innerW := t.innerWidth() - t.outset()
 	if len(t.tabs) == 0 || innerW <= 0 {
 		return tabLayout{}
 	}
 	// Reserve tabBarRightPad trailing cells so the rightmost tab is
-	// never flush against the viewport edge. All width-budget decisions
-	// run against budgetW; padAfter naturally fills the reservation
-	// plus any extra slack when the row is drawn.
-	budgetW := innerW - tabBarRightPad
+	// never flush against the viewport edge, or more for the right
+	// outset of its images. All width-budget decisions run against
+	// budgetW; padAfter naturally fills the reservation plus any extra
+	// slack when the row is drawn.
+	budgetW := innerW - max(tabBarRightPad, t.outset())
 	if budgetW < 0 {
 		budgetW = 0
 	}

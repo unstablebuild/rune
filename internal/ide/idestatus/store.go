@@ -28,8 +28,10 @@ import (
 
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/browser"
+	tcomponent "unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/ide/idehistory"
 	"unstable.build/rune/internal/sounds"
@@ -127,11 +129,14 @@ func DefaultNotifyConfig() NotifyConfig {
 // forgotten with their workspace. A Store is not safe for concurrent
 // use: call it on the host event loop only. Use New to create one.
 type Store struct {
-	host        WorkspaceStatus
-	cfg         browser.TabStatusConfig
-	notify      NotifyConfig
-	player      sounds.Player
-	style       InboxStyle
+	host     WorkspaceStatus
+	cfg      browser.TabStatusConfig
+	notify   NotifyConfig
+	player   sounds.Player
+	style    InboxStyle
+	graphics *tcomponent.FrameGraphics
+	// images are the images of style.Images, taken from graphics.
+	images      *component.ButtonImages
 	interrupter term.Interrupter
 	schedule    func(func()) bool
 	sources     map[statusKey]*statusSource
@@ -146,20 +151,22 @@ type Store struct {
 
 // New returns an empty Store over the workspaces of host. cfg styles the
 // statuses, notify selects what is notified, player plays the sounds it
-// names, and style styles the inbox. schedule must run a function on a
-// later tick of the host event loop. interrupter, if not nil, wakes the
-// host to keep open inboxes live; without it, they stand still.
+// names, and style styles the inbox with images from graphics, which
+// may be nil to draw none. schedule must run a function on a later tick
+// of the host event loop. interrupter, if not nil, wakes the host to
+// keep open inboxes live; without it, they stand still.
 func New(
 	host WorkspaceStatus, cfg browser.TabStatusConfig,
 	notify NotifyConfig, player sounds.Player,
-	style InboxStyle, schedule func(func()) bool, interrupter term.Interrupter,
+	style InboxStyle, graphics *tcomponent.FrameGraphics,
+	schedule func(func()) bool, interrupter term.Interrupter,
 ) *Store {
-	return &Store{
+	s := &Store{
 		host:          host,
 		cfg:           cfg,
 		notify:        notify,
 		player:        player,
-		style:         style,
+		graphics:      graphics,
 		interrupter:   interrupter,
 		schedule:      schedule,
 		sources:       make(map[statusKey]*statusSource),
@@ -168,6 +175,8 @@ func New(
 		notes:         make(map[noteKey]string),
 		views:         make(map[*View]struct{}),
 	}
+	s.SetStyle(style)
+	return s
 }
 
 // SetNotifyConfig selects what s notifies from the next status reported
@@ -175,6 +184,14 @@ func New(
 // it waits for is one notify still notifies.
 func (s *Store) SetNotifyConfig(notify NotifyConfig) {
 	s.notify = notify
+}
+
+// SetStyle styles every inbox of s with style from its next draw on,
+// those open included. It takes the images of style from the graphics s
+// was created with as they are, so a Reload of them must come first.
+func (s *Store) SetStyle(style InboxStyle) {
+	s.style = style
+	s.images = style.Images.ButtonImages(s.graphics)
 }
 
 // SetTabStatus applies report, made by the program behind uri in the

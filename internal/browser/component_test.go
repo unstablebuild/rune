@@ -17,18 +17,26 @@
 package browser
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"image"
+	"image/color"
+	"image/png"
+	"net/url"
+	"os"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 	"weak"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/handler"
@@ -36,6 +44,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/internal/cell"
 	tcomponent "unstable.build/rune/internal/component"
+	"unstable.build/rune/internal/component/asciiart"
 	thandler "unstable.build/rune/internal/handler"
 	rhandlertest "unstable.build/rune/internal/handler/handlertest"
 	"unstable.build/rune/internal/term/programstatus"
@@ -626,6 +635,98 @@ func TestTabClickFocusesOwningWindow(t *testing.T) {
 	}
 }
 
+func TestComponentTabGraphics(t *testing.T) {
+	const width, height = 30, 6
+	dir := t.TempDir()
+	uri := func(name string, y uint8) string {
+		img := image.NewGray(image.Rect(0, 0, 1, 1))
+		img.SetGray(0, 0, color.Gray{Y: y})
+		var b bytes.Buffer
+		require.NoError(t, png.Encode(&b, img))
+		path := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(path, b.Bytes(), 0o600))
+		return (&url.URL{Scheme: "file", Path: filepath.ToSlash(path)}).String()
+	}
+	idle, focus, highlight := uri("idle.png", 128), uri("focus.png", 255), uri("highlight.png", 40)
+
+	cfg := DefaultConfig()
+	cfg.TabBarOffset = 13
+	cfg.TabBarHeight = 2
+	cfg.TabImages = PromptImages{
+		Idle:     PromptButtonImage{Left: idle, Middle: idle, Right: idle},
+		Selected: PromptButtonImage{Left: focus, Middle: focus, Right: focus},
+	}
+	cfg.FocusTabHighlightGraphics = tcomponent.LineGraphics{Middle: highlight}
+	cfg.WindowManagerConfig.FrameGraphicsStorage = storagestub.NewInMemoryService()
+	loaded := make(loadInterrupter, 8)
+	cfg.Interrupter = loaded
+	b := NewComponent(cfg)
+	defer func() { assert.NoError(t, b.Close()) }()
+	one, err := workspaceapi.ParseURI("file:///one")
+	require.NoError(t, err)
+	require.NoError(t, b.Focus().SetContent(b.NewTab(one, '1', "ONE", newTestHandler(), nil)))
+	two, err := workspaceapi.ParseURI("file:///two")
+	require.NoError(t, err)
+	b.NewTab(two, '2', "TWO", newTestHandler(), nil)
+	b.Resize(width, height)
+
+	w := asciiart.NewStringWriter(width, height, asciiart.DefaultConfig())
+	bar := func() string {
+		require.NoError(t, w.Clear(term.Attributes{}))
+		b.Draw(w)
+		require.NoError(t, w.Flush())
+		return strings.Join(strings.Split(w.String(), "\n")[:2], "\n")
+	}
+	_ = bar()
+	loaded.wait(t, 3)
+	assert.Equal(t, ""+
+		"             _____  aaaaa     \n"+
+		"             1@ONE  2aTWO     ", bar())
+
+	red := term.Attributes{Fg: term.ColorRed}
+	b.Restyle(Style{
+		WindowManager:     cfg.WindowManagerConfig,
+		FrameUnionCharSet: cfg.FrameUnionCharSet,
+		Prompt:            cfg.PromptConfig,
+		Wallpaper:         cfg.Wallpaper,
+		Tabs: TabStyle{
+			FocusTabAttr:          red,
+			NonFocusTabAttr:       red,
+			FocusTabHighlightChar: '=',
+			Images: PromptImages{
+				Idle:     PromptButtonImage{Left: highlight, Middle: highlight, Right: highlight},
+				Selected: PromptButtonImage{Left: idle, Middle: idle, Right: idle},
+			},
+		},
+	})
+	assert.Equal(t, ""+
+		"             =====  _____     \n"+
+		"             1aONE  2_TWO     ", bar())
+	name := w.Cells()[width+15]
+	require.Equal(t, 'O', name.Ch)
+	assert.Equal(t, term.ColorRed, name.Fg, "the labels take the new colors")
+}
+
+// loadInterrupter is a term.Interrupter that queues every interrupt,
+// which an image sends once it has loaded.
+type loadInterrupter chan struct{}
+
+func (l loadInterrupter) Interrupt(context.Context) error {
+	l <- struct{}{}
+	return nil
+}
+
+func (l loadInterrupter) wait(t *testing.T, n int) {
+	t.Helper()
+	for range n {
+		select {
+		case <-l:
+		case <-time.After(5 * time.Second):
+			require.FailNow(t, "timed out waiting for the images to load")
+		}
+	}
+}
+
 func TestSplitAlreadyBoundTabFocusesOwningWindow(t *testing.T) {
 	b := NewComponent(DefaultConfig())
 
@@ -1143,6 +1244,37 @@ func TestComponentRestoreTileLayoutFreesDisplayedTabs(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, tab, focused,
 		"clicking the freed tab must load it into the focused window")
+}
+
+// stitchingFloating records the frames it is asked to join its rules to.
+type stitchingFloating struct {
+	Floating
+	sizes [][2]int
+	bars  []bool
+}
+
+func (s *stitchingFloating) StitchFrame(
+	_ term.Writer, _ *component.Frame, _ *tcomponent.FrameGraphics, width, height int, bar bool,
+) {
+	s.sizes = append(s.sizes, [2]int{width, height})
+	s.bars = append(s.bars, bar)
+}
+
+func TestComponentFloatingStitchesFrame(t *testing.T) {
+	for _, noBar := range []bool{true, false} {
+		t.Run(fmt.Sprintf("no window bar %v", noBar), func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.Frame = true
+			cfg.WindowBar = true
+			b := NewComponent(cfg)
+			b.Resize(40, 12)
+			s := &stitchingFloating{Floating: StaticFloating(newTestHandler(), 6, 3)}
+			b.Floating(s, browserapi.FloatingConfig{NoWindowBar: noBar})
+			b.Draw(term.NewStringWriter(40, 12))
+			assert.Equal(t, [][2]int{{8, 5}}, s.sizes, "the frame around the content")
+			assert.Equal(t, []bool{!noBar}, s.bars)
+		})
+	}
 }
 
 func TestWindowClosedOnClose(t *testing.T) {

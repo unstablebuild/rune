@@ -212,11 +212,18 @@ func (c *Component) styleTabs() {
 		c.config.FocusTabHighlightAttr, frameAttr, bgAttr)
 	c.tabs.SetFrameCharSet(c.config.WindowManagerConfig.FrameCharSet)
 	c.tabs.SetFocusFrameChar(c.config.FocusTabHighlightChar)
+	g := c.wm.FrameGraphics()
+	c.tabs.SetGraphics(g, c.config.TabImages.ButtonImages(g), c.config.FocusTabHighlightGraphics)
+	if c.shadedTabs != nil {
+		c.shadedTabs.SetDefAttr(c.config.NonFocusTabAttr)
+	}
 }
 
 // Restyle draws c with s from the next Draw on: its windows, frame union
 // and tab bar, the prompts it opens later, and the wallpaper of every
-// window showing it. Prompts already open keep their style.
+// window showing it. Prompts already open keep their style. The tab bar
+// takes its images from FrameGraphics as it is now, so a Reload of it
+// must come first.
 func (c *Component) Restyle(s Style) {
 	c.config = c.config.Restyled(s)
 	c.wm.Restyle(c.config.WindowManagerConfig)
@@ -2301,6 +2308,16 @@ func (c *browserContent) Close() error {
 	}
 	c.closed = true
 	return c.Handler.Close()
+}
+
+// StitchFrame satisfies tcomponent.FrameStitcher for a Handler that
+// does, and draws nothing for any other.
+func (c *browserContent) StitchFrame(
+	w term.Writer, f *component.Frame, g *tcomponent.FrameGraphics, width, height int, bar bool,
+) {
+	if s, ok := c.Handler.(tcomponent.FrameStitcher); ok {
+		s.StitchFrame(w, f, g, width, height, bar)
+	}
 }
 
 var _ Floating = (*browserFloatingContent)(nil)

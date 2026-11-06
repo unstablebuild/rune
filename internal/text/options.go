@@ -33,6 +33,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/cell"
+	tcomponent "unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/component/markdown"
 	"unstable.build/rune/internal/component/shader/shaderloop"
 	"unstable.build/rune/internal/handler"
@@ -693,6 +694,23 @@ func WithFocusTabHighlightAttr(attr term.Attributes) Option {
 func WithFocusTabHighlightChar(r rune) Option {
 	return func(cfg *Config) {
 		cfg.FocusTabHighlightChar = r
+	}
+}
+
+// WithTabImages returns an Option that names the images drawn under the
+// tabs, as browser.Config.TabImages does.
+func WithTabImages(images browser.PromptImages) Option {
+	return func(cfg *Config) {
+		cfg.TabImages = images
+	}
+}
+
+// WithFocusTabHighlightGraphics returns an Option that names the images
+// drawn over the highlight on top of the focused tab, as
+// browser.Config.FocusTabHighlightGraphics does.
+func WithFocusTabHighlightGraphics(g tcomponent.LineGraphics) Option {
+	return func(cfg *Config) {
+		cfg.FocusTabHighlightGraphics = g
 	}
 }
 

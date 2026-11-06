@@ -17,10 +17,14 @@
 package component
 
 import (
+	"fmt"
+	"image"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/component/comptest"
 	"github.com/unstablebuild/rune-go-sdk/term"
@@ -416,6 +420,232 @@ func TestTabsDrawBottomHighlight(t *testing.T) {
 		} else {
 			assert.NotEqual(t, '━', c.Ch,
 				"unexpected highlight at x=%d on bottom row", x)
+		}
+	}
+}
+
+func TestTabsDrawGraphics(t *testing.T) {
+	pics := newFramePictures(t)
+	replace := LineGraphics{Start: "L", Middle: "h", End: "R"}
+	overlay := replace
+	overlay.Overlay = true
+	const width = 20
+
+	tests := []struct {
+		name           string
+		border, bottom bool
+		height         int
+		noChar         bool
+		// idle and selected name the picture of every image of the state.
+		idle, selected rune
+		sides          int
+		highlight      LineGraphics
+		noGraphics     bool
+		noImages       bool
+		expected       string
+		// highlightImages counts the images drawn over the highlight.
+		highlightImages int
+	}{
+		{
+			name: "no graphics draws the runes", height: 2,
+			idle: 'i', selected: 's', highlight: replace, noGraphics: true,
+			expected: `
+       ━━━━━        
+1 ONE  2 TWO        `,
+		},
+		{
+			name: "each tab is drawn over the images of its state", height: 2,
+			idle: 'i', selected: 's',
+			expected: `
+iiiii  ━━━━━        
+1iONE  2sTWO        `,
+		},
+		{
+			name: "only the tabs in focus have images", height: 2,
+			selected: 's',
+			expected: `
+       ━━━━━        
+1 ONE  2sTWO        `,
+		},
+		{
+			name: "the highlight replaces its runes with its images", height: 2,
+			idle: 'i', selected: 's', highlight: replace,
+			expected: `
+iiiii  LhhhR        
+1iONE  2sTWO        `,
+			highlightImages: 5,
+		},
+		{
+			name: "an overlay highlight keeps its runes over its images", height: 2,
+			idle: 'i', selected: 's', highlight: overlay,
+			expected: `
+iiiii  ━━━━━        
+1iONE  2sTWO        `,
+			highlightImages: 5,
+		},
+		{
+			name: "the tab images show through a highlight in place of its runes", height: 2,
+			idle: 'i', selected: 's', highlight: LineGraphics{Middle: "t"},
+			expected: `
+iiiii  sssss        
+1iONE  2sTWO        `,
+			highlightImages: 5,
+		},
+		{
+			name: "the tab images show through a highlight over its runes", height: 2,
+			idle: 'i', selected: 's', highlight: LineGraphics{Middle: "t", Overlay: true},
+			expected: `
+iiiii  ━━━━━        
+1iONE  2sTWO        `,
+			highlightImages: 5,
+		},
+		{
+			name: "the highlight draws its images without a rune", height: 2, noChar: true,
+			idle: 'i', selected: 's', highlight: replace,
+			expected: `
+iiiii  LhhhR        
+1iONE  2sTWO        `,
+			highlightImages: 5,
+		},
+		{
+			name: "a writer that cannot draw images gets the runes", height: 2,
+			idle: 'i', selected: 's', highlight: replace, noImages: true,
+			expected: `
+       ━━━━━        
+1 ONE  2 TWO        `,
+		},
+		{
+			name:   "a writer that cannot draw images keeps a highlight without a rune blank",
+			height: 2, noChar: true,
+			idle: 'i', selected: 's', highlight: replace, noImages: true,
+			expected: `
+                    
+1 ONE  2 TWO        `,
+		},
+		{
+			name: "the highlight at the bottom", height: 2, bottom: true,
+			idle: 'i', selected: 's', highlight: replace,
+			expected: `
+1iONE  2sTWO        
+iiiii  LhhhR        `,
+			highlightImages: 5,
+		},
+		{
+			name: "a bordered bar keeps the images inside its border", height: 4, border: true,
+			idle: 'i', selected: 's', sides: 1,
+			expected: `
+┌────────━━━━━─────┐
+│i1iONEis2sTWOs    │
+│iiiiiiisssssss    │
+└──────────────────┘`,
+		},
+		{
+			name: "the bar makes room for the first tab's outset", height: 2,
+			idle: 'i', selected: 's', sides: 1,
+			expected: `
+iiiiiiis━━━━━s      
+i1iONEis2sTWOs      `,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewFrameGraphics(storagestub.NewInMemoryService(), term.NopInterrupter())
+			t.Cleanup(func() { assert.NoError(t, g.Close()) })
+			loaded := make(map[string]image.Image)
+			for _, name := range "LRisht" {
+				loaded[pics.uris[string(name)]] = pics.imgs[name]
+			}
+			g.Reload(loaded)
+			state := func(name rune) component.ButtonImage {
+				if name == 0 {
+					return component.ButtonImage{}
+				}
+				img := g.Image(pics.uris[string(name)])
+				return component.ButtonImage{Left: img, Middle: img, Right: img}
+			}
+			images := &component.ButtonImages{
+				Idle:     state(tt.idle),
+				Selected: state(tt.selected),
+				Outset:   component.ButtonOutset{Sides: tt.sides},
+			}
+			highlight := tt.highlight
+			for _, uri := range []*string{&highlight.Start, &highlight.Middle, &highlight.End} {
+				*uri = pics.uris[*uri]
+			}
+
+			l := NewTabs()
+			l.SetBorder(tt.border)
+			l.SetBottomHighlight(tt.bottom)
+			if tt.noChar {
+				l.SetFocusFrameChar(0)
+			}
+			l.Resize(width, tt.height)
+			l.Add('1', "ONE")
+			l.Add('2', "TWO")
+			l.ResetFocus()
+			l.SetFocus(1)
+			if !tt.noGraphics {
+				l.SetGraphics(g, images, highlight)
+			}
+
+			s := newImageScreen(width, tt.height)
+			s.noImages = tt.noImages
+			l.Draw(s)
+			assert.Equal(t, tt.expected, s.composite(t, pics))
+			highlighted := 0
+			for _, img := range s.images {
+				assert.Equal(t, term.ImageLayerBelowText, img.Layer)
+				if strings.ContainsRune("LRht", pics.name(img)) {
+					highlighted++
+				}
+			}
+			assert.Equal(t, tt.highlightImages, highlighted)
+		})
+	}
+}
+
+func TestTabsOutsetLayout(t *testing.T) {
+	const sides = 3
+	for _, border := range []bool{false, true} {
+		for width := 10; width <= 24; width++ {
+			t.Run(fmt.Sprintf("border %v width %d", border, width), func(t *testing.T) {
+				g := NewFrameGraphics(storagestub.NewInMemoryService(), term.NopInterrupter())
+				t.Cleanup(func() { assert.NoError(t, g.Close()) })
+				l := NewTabs()
+				l.SetBorder(border)
+				l.Resize(width, 4)
+				l.Add('1', "ONE")
+				l.Add('2', "TWO")
+				l.ResetFocus()
+				l.SetFocus(1)
+				l.SetGraphics(g, &component.ButtonImages{
+					Outset: component.ButtonOutset{Sides: sides},
+				}, LineGraphics{})
+				l.Draw(term.NewStringWriter(width, 4))
+				require.NotEmpty(t, l.layout.cells)
+
+				left, right := 0, width
+				if border {
+					left, right = 1, width-1
+				}
+				first, last := l.layout.cells[0], l.layout.cells[len(l.layout.cells)-1]
+				start, _, ok := l.tabBounds(first.idx)
+				require.True(t, ok)
+				assert.Equal(t, left+sides, start, "the first tab leaves room for its left outset")
+				start, w, ok := l.tabBounds(last.idx)
+				require.True(t, ok)
+				assert.LessOrEqual(t, start+w+sides, right, "the last tab leaves room for its right outset")
+
+				idx, ok := l.TabAt(term.Coordinates{X: left})
+				assert.True(t, ok)
+				assert.Equal(t, first.idx, idx, "the outset before the first tab is part of it")
+				for _, cell := range l.layout.cells {
+					start, _, _ := l.tabBounds(cell.idx)
+					idx, ok := l.TabAt(term.Coordinates{X: start})
+					assert.True(t, ok)
+					assert.Equal(t, cell.idx, idx)
+				}
+			})
 		}
 	}
 }

@@ -273,6 +273,15 @@ type Config struct {
 	NonFocusTabIconAttr   term.Attributes
 	FocusTabHighlightAttr term.Attributes
 	FocusTabHighlightChar rune
+	// TabImages names the images that writers that can draw images show
+	// under each tab, across the rows of the tab bar: Selected's under
+	// the tabs in focus and Idle's under the rest. Hover and Pressed
+	// are never drawn, as the tab bar is not told where the pointer is.
+	TabImages PromptImages
+	// FocusTabHighlightGraphics names the images drawn over the cells of
+	// the focus-frame highlight, below the text of the labels, also when
+	// FocusTabHighlightChar is zero.
+	FocusTabHighlightGraphics tcomponent.LineGraphics
 	// TabOverrideIcon, when non-zero, forces every tab icon
 	// rendered by this Component to this rune, regardless of the
 	// icon passed to NewTab by callers.
@@ -349,6 +358,20 @@ type Style struct {
 	FrameUnionCharSet component.FrameUnionCharSet
 	Prompt            PromptConfig
 	Wallpaper         Wallpaper
+	Tabs              TabStyle
+}
+
+// TabStyle is how the tab bar of a Component looks, as the Config
+// fields of the same names define it.
+type TabStyle struct {
+	FocusTabAttr          term.Attributes
+	NonFocusTabAttr       term.Attributes
+	FocusTabIconAttr      term.Attributes
+	NonFocusTabIconAttr   term.Attributes
+	FocusTabHighlightAttr term.Attributes
+	FocusTabHighlightChar rune
+	Images                PromptImages
+	HighlightGraphics     tcomponent.LineGraphics
 }
 
 // Restyled returns c with the style of s. The rest of c, including the
@@ -363,6 +386,14 @@ func (c Config) Restyled(s Style) Config {
 	c.PromptConfig.BackgroundAttr = s.Prompt.BackgroundAttr
 	c.PromptConfig.Images = s.Prompt.Images
 	c.Wallpaper = s.Wallpaper
+	c.FocusTabAttr = s.Tabs.FocusTabAttr
+	c.NonFocusTabAttr = s.Tabs.NonFocusTabAttr
+	c.FocusTabIconAttr = s.Tabs.FocusTabIconAttr
+	c.NonFocusTabIconAttr = s.Tabs.NonFocusTabIconAttr
+	c.FocusTabHighlightAttr = s.Tabs.FocusTabHighlightAttr
+	c.FocusTabHighlightChar = s.Tabs.FocusTabHighlightChar
+	c.TabImages = s.Tabs.Images
+	c.FocusTabHighlightGraphics = s.Tabs.HighlightGraphics
 	return c
 }
 

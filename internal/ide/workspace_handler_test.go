@@ -2009,7 +2009,7 @@ func TestCommandProgramStatusPreviewsTab(t *testing.T) {
 func statusInboxSidebarWidth(t *testing.T, drawn string) int {
 	t.Helper()
 	first, _, _ := strings.Cut(drawn, "\n")
-	i := slices.Index([]rune(first), idestatus.DefaultInboxStyle().Frame.VerticalLeft)
+	i := slices.Index([]rune(first), idestatus.DefaultInboxStyle().Divider.Vertical)
 	require.GreaterOrEqual(t, i, 0, "the sidebar ends with a divider")
 	return i + 1
 }
@@ -12590,6 +12590,208 @@ func TestWorkspaceNotificationsTakeItsConfig(t *testing.T) {
 				nil, tt.expected)
 		})
 	}
+}
+
+func TestTabBarGraphicsIntegration(t *testing.T) {
+	const width, height = 40, 12
+	ctx := context.Background()
+	tempDir := func() string {
+		dir, err := filepath.EvalSymlinks(t.TempDir())
+		require.NoError(t, err)
+		return dir
+	}
+	home, ws, ws2 := tempDir(), tempDir(), tempDir()
+	uri := func(name string, y uint8) string {
+		path := filepath.Join(home, name)
+		writeHUDTestPNG(t, path, color.Gray{Y: y})
+		return "file://" + path
+	}
+	slices := func(uri string) string {
+		return "      left: " + uri + "\n      middle: " + uri + "\n      right: " + uri + "\n"
+	}
+	focus, highlight := uri("focus.png", 255), uri("highlight.png", 128)
+	wsFocus, wsIdle := uri("ws-focus.png", 200), uri("ws-idle.png", 75)
+	wsHighlight := uri("ws-highlight.png", 160)
+	// The bar is every workspace's, so a workspace's own config leaves it
+	// alone.
+	overlay := []byte("workspace:\n  tab_images:\n    focus:\n" + slices(uri("overlay.png", 40)))
+	require.NoError(t, os.WriteFile(filepath.Join(ws, ".iderc"), overlay, 0o644))
+	main := filepath.Join(ws, "main.go")
+	require.NoError(t, os.WriteFile(main, []byte("package main\n"), 0o644))
+	configPath := filepath.Join(home, "rune.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte("clipboard: memory\n"+
+		"workspace:\n  home: "+home+"\n  wallpaper_ascii: wallpaper\n"+
+		"  focus_tab_highlight_char: \"\"\n"+
+		"  tab_images:\n    focus:\n"+slices(wsFocus)+"    non_focus:\n"+slices(wsIdle)+
+		"  focus_tab_highlight_graphics:\n    horizontal: "+wsHighlight+"\n"+
+		"search:\n  regex_enabled: false\n  semantic_enabled: false\n"+
+		"browser:\n"+
+		"  tab_images:\n    focus:\n"+slices(focus)+
+		"  focus_tab_highlight_graphics:\n    horizontal: "+highlight+"\n"), 0o644))
+	i, mu := newHUDTestIDE(t, ws, configPath, WithTrustedWorkspaceConfig(overlay),
+		WithTabBarOffset(13), WithTabBarHeight(2),
+		WithWorkspacesBarHeight(2), WithWorkspacesBarOffset(2), WithWorkspacesBarFrame(false))
+	uri2, err := workspaceapi.CurrentUserHostURI(ws2)
+	require.NoError(t, err)
+	h := i.workspaceHandler
+	mu.Lock()
+	slot := h.focus
+	require.NoError(t, h.addWorkspace(uri2, false, false, -1))
+	mu.Unlock()
+	i.WaitWorkspaces()
+	fileURI, err := workspaceapi.ParseURI("file://" + main)
+	require.NoError(t, err)
+	mu.Lock()
+	require.True(t, h.switchToWorkspace(slot))
+	require.NoError(t, i.Open(fileURI))
+	mu.Unlock()
+	root := &safeHandler{mu: mu, Component: &i.root}
+	root.Resize(width, height)
+	w := asciiart.NewStringWriter(width, height, asciiart.DefaultConfig())
+
+	awaitFrame(t, root, w, nil, `             aaaaaaaaa                  
+             o@main.go                  
+┌──────────────────────────────────────┐
+│package main                          │
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+│                                NORMAL│
+└──────────────────────────────────────┘
+  161  2*2                              
+  111  ***                              `)
+
+	writeHUDTestPNG(t, strings.TrimPrefix(focus, "file://"), color.Gray{Y: 40})
+	writeHUDTestPNG(t, strings.TrimPrefix(wsFocus, "file://"), color.Gray{Y: 230})
+	hud, err := i.LoadHUD(ctx)
+	require.NoError(t, err)
+	mu.Lock()
+	applied, _ := i.ApplyHUD(hud)
+	mu.Unlock()
+	require.True(t, applied)
+	require.NoError(t, w.Clear(term.Attributes{}))
+	root.Draw(w)
+	require.NoError(t, w.Flush())
+	assert.Equal(t, `             aaaaaaaaa                  
+             o_main.go                  
+┌──────────────────────────────────────┐
+│package main                          │
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+│                                NORMAL│
+└──────────────────────────────────────┘
+  191  2*2                              
+  111  ***                              `, w.String(), "the tabs draw the reloaded images at once")
+}
+
+func TestStatusInboxGraphicsIntegration(t *testing.T) {
+	const width, height = 30, 6
+	ctx := context.Background()
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	ws, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	selected := filepath.Join(home, "selected.png")
+	writeHUDTestPNG(t, selected, color.Gray{Y: 200})
+	configPath := filepath.Join(home, "rune.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte("clipboard: memory\n"+
+		"workspace:\n  home: "+home+"\n"+
+		"search:\n  regex_enabled: false\n  semantic_enabled: false\n"+
+		"program_status:\n  images:\n    selected:\n      middle: file://"+selected+"\n"), 0o644))
+	i, mu := newHUDTestIDE(t, ws, configPath)
+	agent := mustURI(t, "rune-agent://model/agent")
+	mu.Lock()
+	h := i.workspaceHandler
+	focused := h.focusEx()
+	_, err = focused.comp.Tab(agent, 'x', "agent", browsertest.NewTestHandler())
+	require.NoError(t, err)
+	require.NoError(t, focused.comp.SetTabStatus(agent, programstatus.Report{
+		State: programstatus.Blocked, Progress: -1,
+	}))
+	require.NoError(t, h.commandProgramStatus())
+	win, err := focused.comp.Focus()
+	require.NoError(t, err)
+	content, err := win.Content()
+	require.NoError(t, err)
+	inbox, ok := content.(*idestatus.View)
+	require.True(t, ok)
+	inbox.Resize(width, height)
+	mu.Unlock()
+	view := &safeHandler{mu: mu, Component: inbox}
+	w := asciiart.NewStringWriter(width, height, asciiart.DefaultConfig())
+
+	awaitFrame(t, view, w, nil, `                        │AAAAA
+ ▌6661666666666666666   │AAAAA
+ ▌6󰹇6agent66666666666   │AAAAA
+ ▌666blocked666666666   │AAAAA
+                        │AAAAA
+                        │AAAAA`)
+
+	writeHUDTestPNG(t, selected, color.Gray{Y: 40})
+	hud, err := i.LoadHUD(ctx)
+	require.NoError(t, err)
+	mu.Lock()
+	applied, _ := i.ApplyHUD(hud)
+	mu.Unlock()
+	require.True(t, applied)
+	require.NoError(t, w.Clear(term.Attributes{}))
+	view.Draw(w)
+	require.NoError(t, w.Flush())
+	assert.Equal(t, `                        │AAAAA
+ ▌___1_______________   │AAAAA
+ ▌_󰹇_agent___________   │AAAAA
+ ▌___blocked_________   │AAAAA
+                        │AAAAA
+                        │AAAAA`, w.String(), "the open inbox draws the reloaded image at once")
+}
+
+func TestStatusInboxDividerIntegration(t *testing.T) {
+	const width, height = 50, 12
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	ws, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	bottom := filepath.Join(home, "bottom.png")
+	writeHUDTestPNG(t, bottom, color.Gray{Y: 255})
+	configPath := filepath.Join(home, "rune.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte("clipboard: memory\n"+
+		"workspace:\n  home: "+home+"\n"+
+		"search:\n  regex_enabled: false\n  semantic_enabled: false\n"+
+		"program_status:\n  divider_charset:\n"+
+		"    top: T\n    vertical_top: t\n    vertical: v\n    vertical_bottom: b\n    bottom: B\n"+
+		"    graphics:\n      bottom: file://"+bottom+"\n"), 0o644))
+	i, mu := newHUDTestIDE(t, ws, configPath)
+	agent := mustURI(t, "rune-agent://model/agent")
+	mu.Lock()
+	h := i.workspaceHandler
+	focused := h.focusEx()
+	_, err = focused.comp.Tab(agent, 'x', "agent", browsertest.NewTestHandler())
+	require.NoError(t, err)
+	require.NoError(t, focused.comp.SetTabStatus(agent, programstatus.Report{
+		State: programstatus.Blocked, Progress: -1,
+	}))
+	require.NoError(t, h.commandProgramStatus())
+	mu.Unlock()
+	root := &safeHandler{mu: mu, Component: &i.root}
+	root.Resize(width, height)
+	w := asciiart.NewStringWriter(width, height, asciiart.DefaultConfig())
+
+	// The window bar takes the top join's place.
+	awaitFrame(t, root, w, nil, `┌────────────────────────────────────────────────┐
+│󰹇  agent                                        │
+├█●██████████████████████████████████████████████┤
+││                        vAAAAAAAAAAAAAAAAAAAAA││
+││ ▌   1                  vAAAAAAAAAAAAAAAAAAAAA││
+││ ▌ 󰹇 agent              vAAAAAAAAAAAAAAAAAAAAA││
+││ ▌   blocked            vAAAAAAAAAAAAAAAAAAAAA││
+││                        vAAAAAAAAAAAAAAAAAAAAA││
+││                        bAAAAAAAAAAAAAAAAAAAAA││
+│└────────────────────────@─────────────────────┘│
+│                                                │
+└────────────────────────────────────────────────┘`)
 }
 
 func TestNotificationGraphicsIntegration(t *testing.T) {

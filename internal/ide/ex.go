@@ -3502,9 +3502,8 @@ func (e *ex) restyle(s hudStyle, images, statusBarImages map[string]image.Image)
 	if e.emulatorConfig.BellSound != nil {
 		e.emulatorConfig.BellSound.Store(new(s.bellSound))
 	}
-	e.comp.Browser().Restyle(s.browser)
-	e.cmdV.C.Restyle(s.browser)
-	e.container.Restyle(s.notifications)
+	// Reloaded first: the tab bars take their images from the graphics
+	// as they are restyled.
 	for _, g := range []*tcomponent.FrameGraphics{
 		e.comp.Browser().FrameGraphics(), e.cmdV.C.FrameGraphics(), e.graphics,
 	} {
@@ -3512,6 +3511,9 @@ func (e *ex) restyle(s hudStyle, images, statusBarImages map[string]image.Image)
 			g.Reload(images)
 		}
 	}
+	e.comp.Browser().Restyle(s.browser)
+	e.cmdV.C.Restyle(s.browser)
+	e.container.Restyle(s.notifications)
 	if e.statusBars != nil {
 		e.statusBars.Restyle(s.statusBar, statusBarImages)
 	}

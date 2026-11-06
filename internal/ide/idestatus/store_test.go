@@ -28,10 +28,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/browser"
+	tcomponent "unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/ide/idehistory"
 	"unstable.build/rune/internal/sounds"
 	"unstable.build/rune/internal/term/programstatus"
@@ -223,7 +225,7 @@ func newStatusStoreTestWith(
 		shownNotes: make(map[string]*statusTestNote),
 	}
 	host.addWorkspace(ws, "1 home")
-	return host, New(host, cfg, NotifyConfig{}, sounds.Silent, statusTestStyle(), host.schedule, interrupter), ws
+	return host, New(host, cfg, NotifyConfig{}, sounds.Silent, statusTestStyle(), nil, host.schedule, interrupter), ws
 }
 
 type statusStoreDetachedTest struct {
@@ -321,6 +323,36 @@ func TestStatusStoreLiveViews(t *testing.T) {
 	v.Draw(w)
 	require.NoError(t, w.Flush())
 	assert.Contains(t, w.String(), statusViewEmpty)
+}
+
+func TestStatusStoreSetStyle(t *testing.T) {
+	_, store, ws := newStatusStoreTest(t)
+	store.updateDetached(ws, statusStoreTestURI(t, "file:///a"), func(r *programstatus.Store) {
+		r.Apply(detachedTestReport(programstatus.Blocked, ""))
+	})
+	v := store.View(nil)
+	t.Cleanup(func() { require.NoError(t, v.Close()) })
+	v.Resize(statusSidebarMin, 5)
+	marker := func() rune {
+		w := term.NewStringWriter(statusSidebarMin, 5)
+		v.Draw(w)
+		return w.Cells()[statusPadTop*statusSidebarMin+statusPadLeft].Ch
+	}
+	require.Equal(t, statusTestStyle().Marker, marker())
+
+	style := statusTestStyle()
+	style.Marker = '#'
+	style.Images = browser.PromptImages{Idle: browser.PromptButtonImage{Middle: "file:///idle.png"}}
+	store.SetStyle(style)
+	assert.Equal(t, '#', marker(), "an open inbox draws the style set since")
+	assert.Nil(t, store.images, "without graphics, the inbox draws no images")
+
+	store.graphics = tcomponent.NewFrameGraphics(storagestub.NewInMemoryService(), term.NopInterrupter())
+	t.Cleanup(func() { assert.NoError(t, store.graphics.Close()) })
+	store.SetStyle(style)
+	require.NotNil(t, store.images)
+	assert.Same(t, store.graphics.Image("file:///idle.png"), store.images.Idle.Middle,
+		"the images are the graphics' own")
 }
 
 func TestStatusStoreWorkspaceCleanup(t *testing.T) {

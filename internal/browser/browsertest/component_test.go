@@ -1754,6 +1754,12 @@ func TestComponentRestyle(t *testing.T) {
 		FrameUnionCharSet: component.FrameUnionCharSet{FrameCharSet: plus, Left: 'L', Right: 'R', Top: 'T', Bottom: 'B'},
 		Prompt:            cfg.PromptConfig,
 		Wallpaper:         wallpaper("NEW!"),
+		Tabs: browser.TabStyle{
+			FocusTabAttr:          cfg.FocusTabAttr,
+			NonFocusTabAttr:       cfg.NonFocusTabAttr,
+			FocusTabHighlightAttr: cfg.FocusTabHighlightAttr,
+			FocusTabHighlightChar: '=',
+		},
 	}
 	style.WindowManager.FrameCharSet = plus
 	style.WindowManager.FocusFrameCharSet = plus
@@ -1772,7 +1778,7 @@ func TestComponentRestyle(t *testing.T) {
 │AAAAAAAA││        │    
 └────────┘└────────┘    `},
 		{Action: func() { c.Restyle(style) }, Expected: `
-+━━━━━-------------+    
++=====-------------+    
 |x tab             |    
 +--------++--------R    
 |AAAAAAAA||        |    

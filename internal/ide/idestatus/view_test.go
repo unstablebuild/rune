@@ -17,7 +17,14 @@
 package idestatus
 
 import (
+	"bytes"
 	"context"
+	"image"
+	"image/color"
+	"image/png"
+	"net/url"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -27,11 +34,14 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/cell"
+	tcomponent "unstable.build/rune/internal/component"
+	"unstable.build/rune/internal/component/asciiart"
 	"unstable.build/rune/internal/handler/handlertest"
 	"unstable.build/rune/internal/term/programstatus"
 )
@@ -1829,7 +1839,7 @@ func TestStatusViewStyle(t *testing.T) {
 		assert.Equal(t, repeat(term.Attributes{}, 2*statusPadTop), attrs(y, selEnd, statusSidebarMin),
 			"cells being about twice as tall as wide, the selection leaves twice as many columns of row %d "+
 				"empty on its right as rows above it, for the padding to look even", y)
-		assert.Equal(t, style.Frame.VerticalLeft, cells[y][statusSidebarMin].Ch,
+		assert.Equal(t, style.Divider.Vertical, cells[y][statusSidebarMin].Ch,
 			"a line stands between the sidebar and the preview")
 		assert.Equal(t, style.DividerAttr, cells[y][statusSidebarMin].Attributes())
 	}
@@ -1916,6 +1926,333 @@ func TestStatusViewStyle(t *testing.T) {
 		}
 	}
 	assert.Equal(t, strings.ReplaceAll(statusViewEmpty+statusPreviewNone, " ", ""), screen.String())
+}
+
+func TestViewDrawGraphics(t *testing.T) {
+	const width, height = statusSidebarMin + 10, 14
+	uris, pictures, dir := statusTestPictures(t)
+	button := func(name rune) browser.PromptButtonImage {
+		return browser.PromptButtonImage{Left: uris[name], Middle: uris[name], Right: uris[name]}
+	}
+	items := browser.PromptImages{Idle: button('*'), Selected: button('6'), Hover: button('1')}
+	missing := (&url.URL{Scheme: "file", Path: filepath.ToSlash(filepath.Join(dir, "missing.png"))}).String()
+	line := func(start, middle, end rune, overlay bool) tcomponent.LineGraphics {
+		return tcomponent.LineGraphics{Start: uris[start], Middle: uris[middle], End: uris[end], Overlay: overlay}
+	}
+
+	tests := []struct {
+		name  string
+		style func(*InboxStyle)
+		// hover is the row the mouse is over, if any.
+		hover int
+		want  string
+		// wantSelectedBg is the background of the selection's right edge.
+		wantSelectedBg term.Color
+	}{
+		{
+			name: "no images", style: func(*InboxStyle) {},
+			wantSelectedBg: term.ColorNavy,
+			want: `
+                        │         
+ ▌   1 home             │         
+ ▌ ! terminal           │         
+ ▌   blocked            │         
+                        │         
+     1 home             │         
+   ✓ terminal           │No previe
+     done               │         
+                        │         
+     1 home             │         
+   ⠋ terminal           │         
+     working            │         
+     🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋  50%   │         
+                        │         `,
+		},
+		{
+			name:  "each item is drawn over the images of its state",
+			style: func(s *InboxStyle) { s.Images = items }, hover: 6,
+			want: `
+                        │         
+ ▌66616home66666666666  │         
+ ▌6!6terminal666666666  │         
+ ▌666blocked6666666666  │         
+                        │         
+ 111111home11111111111  │         
+ 11✓1terminal111111111  │No previe
+ 1111done1111111111111  │         
+                        │         
+ ****1*home***********  │         
+ **⠋*terminal*********  │         
+ ****working**********  │         
+ ****🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋**50%*  │         
+                        │         `,
+		},
+		{
+			name: "images that do not draw leave the items in the colors of their states",
+			style: func(s *InboxStyle) {
+				s.Images = browser.PromptImages{Idle: browser.PromptButtonImage{Middle: missing}}
+			},
+			hover:          6,
+			wantSelectedBg: term.ColorNavy,
+			want: `
+                        │         
+ ▌   1 home             │         
+ ▌ ! terminal           │         
+ ▌   blocked            │         
+                        │         
+     1 home             │         
+   ✓ terminal           │No previe
+     done               │         
+                        │         
+     1 home             │         
+   ⠋ terminal           │         
+     working            │         
+     🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋  50%   │         
+                        │         `,
+		},
+		{
+			name:           "the marker replaces its character with its images",
+			style:          func(s *InboxStyle) { s.MarkerGraphics = line('a', '@', '_', false) },
+			wantSelectedBg: term.ColorNavy,
+			want: `
+                        │         
+ a   1 home             │         
+ @ ! terminal           │         
+ _   blocked            │         
+                        │         
+     1 home             │         
+   ✓ terminal           │No previe
+     done               │         
+                        │         
+     1 home             │         
+   ⠋ terminal           │         
+     working            │         
+     🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋  50%   │         
+                        │         `,
+		},
+		{
+			name: "the item's images show through the marker's in place of its character",
+			style: func(s *InboxStyle) {
+				s.Images, s.MarkerGraphics = items, line('t', 't', 't', false)
+			},
+			want: `
+                        │         
+ 666616home66666666666  │         
+ 66!6terminal666666666  │         
+ 6666blocked6666666666  │         
+                        │         
+ ****1*home***********  │         
+ **✓*terminal*********  │No previe
+ ****done*************  │         
+                        │         
+ ****1*home***********  │         
+ **⠋*terminal*********  │         
+ ****working**********  │         
+ ****🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋**50%*  │         
+                        │         `,
+		},
+		{
+			name: "the marker keeps its character under its images",
+			style: func(s *InboxStyle) {
+				s.Images, s.MarkerGraphics = items, line('t', 't', 't', true)
+			},
+			want: `
+                        │         
+ ▌66616home66666666666  │         
+ ▌6!6terminal666666666  │         
+ ▌666blocked6666666666  │         
+                        │         
+ ****1*home***********  │         
+ **✓*terminal*********  │No previe
+ ****done*************  │         
+                        │         
+ ****1*home***********  │         
+ **⠋*terminal*********  │         
+ ****working**********  │         
+ ****🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋**50%*  │         
+                        │         `,
+		},
+		{
+			name: "the progress bar replaces its characters with its images",
+			style: func(s *InboxStyle) {
+				s.ProgressBarGraphics = ProgressBarGraphics{
+					Left: uris['a'], Filled: uris['@'], Empty: uris['_'], Right: uris['1'],
+				}
+			},
+			wantSelectedBg: term.ColorNavy,
+			want: `
+                        │         
+ ▌   1 home             │         
+ ▌ ! terminal           │         
+ ▌   blocked            │         
+                        │         
+     1 home             │         
+   ✓ terminal           │No previe
+     done               │         
+                        │         
+     1 home             │         
+   ⠋ terminal           │         
+     working            │         
+     a@@@@_____1  50%   │         
+                        │         `,
+		},
+		{
+			name: "the item's images show through the progress bar's in place of its characters",
+			style: func(s *InboxStyle) {
+				s.Images = items
+				s.ProgressBarGraphics = ProgressBarGraphics{Filled: uris['t'], Empty: uris['t']}
+			},
+			want: `
+                        │         
+ ▌66616home66666666666  │         
+ ▌6!6terminal666666666  │         
+ ▌666blocked6666666666  │         
+                        │         
+ ****1*home***********  │         
+ **✓*terminal*********  │No previe
+ ****done*************  │         
+                        │         
+ ****1*home***********  │         
+ **⠋*terminal*********  │         
+ ****working**********  │         
+ *****************50%*  │         
+                        │         `,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, store, ws := newStatusStoreTestWith(t, statusViewTestConfig(), nil)
+			for path, report := range map[string]programstatus.Report{
+				"a": detachedTestReport(programstatus.Blocked, ""),
+				"b": detachedTestReport(programstatus.Done, ""),
+				"c": {State: programstatus.Working, Progress: 50},
+			} {
+				store.updateDetached(ws, statusStoreTestURI(t, "file:///"+path),
+					func(r *programstatus.Store) { r.Apply(report) })
+			}
+			g := tcomponent.NewFrameGraphics(storagestub.NewInMemoryService(), term.NopInterrupter())
+			t.Cleanup(func() { assert.NoError(t, g.Close()) })
+			g.Reload(pictures)
+			store.graphics = g
+			style := statusTestStyle()
+			tt.style(&style)
+			store.SetStyle(style)
+			v := store.View(nil)
+			t.Cleanup(func() { require.NoError(t, v.Close()) })
+			v.Resize(width, height)
+			w := asciiart.NewStringWriter(width, height, asciiart.DefaultConfig())
+			if tt.hover > 0 {
+				// The view finds the item under the mouse where it drew it.
+				v.Draw(w)
+				_, handled := v.Handle(term.Event{Type: term.EventMouse, MouseX: statusTextX, MouseY: tt.hover})
+				require.True(t, handled)
+				require.NoError(t, w.Clear(term.Attributes{}))
+			}
+			v.Draw(w)
+			require.NoError(t, w.Flush())
+			assert.Equal(t, tt.want, "\n"+w.String())
+			selEnd := statusSidebarMin - statusPadRight
+			assert.Equal(t, tt.wantSelectedBg, w.Cells()[statusPadTop*width+selEnd-1].Bg)
+		})
+	}
+}
+
+// statusTestPictures writes pictures of a single pixel, named after the
+// character asciiart encodes their gray as, or t for a transparent one,
+// to the directory it returns, with their URIs and the images Reload
+// takes for them.
+func statusTestPictures(t *testing.T) (map[rune]string, map[string]image.Image, string) {
+	t.Helper()
+	dir := t.TempDir()
+	uris := make(map[rune]string)
+	pictures := make(map[string]image.Image)
+	for name, c := range map[rune]color.Color{
+		'*': color.Gray{Y: 75}, '6': color.Gray{Y: 200}, '1': color.Gray{Y: 160},
+		'a': color.Gray{Y: 128}, '@': color.Gray{Y: 255}, '_': color.Gray{Y: 40},
+		't': color.Transparent,
+	} {
+		img := image.NewNRGBA(image.Rect(0, 0, 1, 1))
+		img.Set(0, 0, c)
+		var b bytes.Buffer
+		require.NoError(t, png.Encode(&b, img))
+		path := filepath.Join(dir, strconv.Itoa(int(name))+".png")
+		require.NoError(t, os.WriteFile(path, b.Bytes(), 0o600))
+		uris[name] = (&url.URL{Scheme: "file", Path: filepath.ToSlash(path)}).String()
+		pictures[uris[name]] = img
+	}
+	return uris, pictures, dir
+}
+
+func TestViewStitchFrame(t *testing.T) {
+	const width, height = statusSidebarMin + 8, 4
+	uris, pictures, _ := statusTestPictures(t)
+	resolve := func(name *string) {
+		if *name != "" {
+			*name = uris[[]rune(*name)[0]]
+		}
+	}
+	charset := tcomponent.DividerCharSet{Top: 'T', VerticalTop: 't', Vertical: '|', VerticalBottom: 'b', Bottom: 'B'}
+	tests := []struct {
+		name                string
+		graphics            tcomponent.DividerGraphics
+		edges               component.FrameCharSetGraphics
+		bar                 bool
+		noGraphics, drawing bool
+		// column is the divider's column, from the frame's top row to its
+		// bottom one.
+		column string
+	}{
+		{name: "the divider joins the frame", column: "Tt||bB"},
+		{name: "a window bar keeps the top row", bar: true, column: "─|||bB"},
+		{name: "without images the divider keeps its characters", noGraphics: true,
+			graphics: tcomponent.DividerGraphics{Top: "a", Vertical: "@", Bottom: "_"}, column: "Tt||bB"},
+		{name: "images replace the characters",
+			graphics: tcomponent.DividerGraphics{Top: "a", Vertical: "@", Bottom: "_"}, column: "a@@@@_"},
+		{name: "missing junctions keep the frame's images",
+			graphics: tcomponent.DividerGraphics{Vertical: "@"}, edges: component.FrameCharSetGraphics{
+				HorizontalTop: "6", HorizontalBottom: "1",
+			}, column: "6@@@@1"},
+		{name: "within its own draw the view joins nothing", drawing: true, column: "─||||─"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, store, ws := newStatusStoreTestWith(t, statusViewTestConfig(), nil)
+			store.updateDetached(ws, statusStoreTestURI(t, "file:///a"),
+				func(r *programstatus.Store) { r.Apply(detachedTestReport(programstatus.Done, "")) })
+			style := statusTestStyle()
+			style.Divider = charset
+			style.Divider.Graphics = tt.graphics
+			for _, uri := range []*string{&style.Divider.Graphics.Top, &style.Divider.Graphics.Vertical, &style.Divider.Graphics.Bottom} {
+				resolve(uri)
+			}
+			store.SetStyle(style)
+			v := store.View(nil)
+			t.Cleanup(func() { require.NoError(t, v.Close()) })
+			f := component.NewFrame(v)
+			f.Graphics = tt.edges
+			for _, uri := range []*string{&f.Graphics.HorizontalTop, &f.Graphics.HorizontalBottom} {
+				resolve(uri)
+			}
+			f.Resize(width+2, height+2)
+			var g *tcomponent.FrameGraphics
+			if !tt.noGraphics {
+				g = tcomponent.NewFrameGraphics(storagestub.NewInMemoryService(), term.NopInterrupter())
+				t.Cleanup(func() { assert.NoError(t, g.Close()) })
+				g.Reload(pictures)
+			}
+
+			w := asciiart.NewStringWriter(width+2, height+2, asciiart.DefaultConfig())
+			f.Draw(w)
+			v.drawing = tt.drawing
+			v.StitchFrame(w, f, g, width+2, height+2, tt.bar)
+			require.NoError(t, w.Flush())
+			var column strings.Builder
+			for row := range strings.SplitSeq(w.String(), "\n") {
+				column.WriteRune([]rune(row)[1+statusSidebarMin])
+			}
+			assert.Equal(t, tt.column, column.String())
+		})
+	}
 }
 
 func TestStatusViewSpinnerTurns(t *testing.T) {
@@ -2006,7 +2343,9 @@ func TestStatusProgress(t *testing.T) {
 			chars = DefaultInboxStyle().ProgressBar
 		}
 		w := cell.NewBufferWriter(context.Background(), tc.width, 1)
-		statusProgress(w, 0, 0, tc.width, tc.pct, chars, done, remaining, labelAttr)
+		statusProgressBar{
+			width: tc.width, pct: tc.pct, chars: chars, done: done, remaining: remaining, label: labelAttr,
+		}.draw(w)
 		var got strings.Builder
 		n := len([]rune(tc.bar))
 		gotAttrs := []term.Attributes{}

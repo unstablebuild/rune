@@ -703,6 +703,142 @@ func TestStatusInboxStyle(t *testing.T) {
 			want:    def,
 			wantErr: []string{"program_status.progress_bar"},
 		},
+		{
+			name: "images",
+			cfg: map[string]any{"program_status": map[string]any{
+				"images": map[string]any{
+					"idle":     map[string]any{"middle": "file:///inbox/idle.png"},
+					"selected": map[string]any{"left": "file:///inbox/l.png", "right": "file:///inbox/r.png"},
+					"hover":    map[string]any{"middle": "file:///inbox/hover.png"},
+					"outset":   map[string]any{"top": 1, "bottom": 2, "sides": 1},
+				},
+				"marker_graphics": map[string]any{
+					"top": "file:///marker/t.png", "vertical": "file:///marker/v.png", "bottom": "file:///marker/b.png",
+				},
+				"progress_bar_graphics": map[string]any{
+					"left": "file:///bar/l.png", "filled": "file:///bar/f.png",
+					"empty": "file:///bar/e.png", "right": "file:///bar/r.png",
+				},
+			}},
+			want: func() idestatus.InboxStyle {
+				s := def
+				s.Images = browser.PromptImages{
+					Idle:     browser.PromptButtonImage{Middle: "file:///inbox/idle.png"},
+					Selected: browser.PromptButtonImage{Left: "file:///inbox/l.png", Right: "file:///inbox/r.png"},
+					Hover:    browser.PromptButtonImage{Middle: "file:///inbox/hover.png"},
+					Outset:   component.ButtonOutset{Top: 1, Bottom: 2, Sides: 1},
+				}
+				s.MarkerGraphics = tcomponent.LineGraphics{
+					Start: "file:///marker/t.png", Middle: "file:///marker/v.png", End: "file:///marker/b.png",
+				}
+				s.ProgressBarGraphics = idestatus.ProgressBarGraphics{
+					Left: "file:///bar/l.png", Filled: "file:///bar/f.png",
+					Empty: "file:///bar/e.png", Right: "file:///bar/r.png",
+				}
+				return s
+			}(),
+		},
+		{
+			name: "only selected item images",
+			cfg: map[string]any{"program_status": map[string]any{"images": map[string]any{
+				"selected": map[string]any{"middle": "file:///inbox/selected.png"},
+			}}},
+			want: func() idestatus.InboxStyle {
+				s := def
+				s.Images = browser.PromptImages{
+					Selected: browser.PromptButtonImage{Middle: "file:///inbox/selected.png"},
+				}
+				return s
+			}(),
+		},
+		{
+			name: "invalid images draw none of their kind",
+			cfg: map[string]any{"program_status": map[string]any{
+				"images":                map[string]any{"idle": map[string]any{"middle": "ftp://example.com/idle.png"}},
+				"marker_graphics":       map[string]any{"vertical": "ftp://example.com/v.png"},
+				"progress_bar_graphics": map[string]any{"filled": "ftp://example.com/f.png"},
+			}},
+			want: def,
+			wantErr: []string{
+				"program_status.images", "program_status.marker_graphics",
+				"program_status.progress_bar_graphics",
+			},
+		},
+		{
+			name: "divider charset",
+			cfg: map[string]any{"program_status": map[string]any{"divider_charset": map[string]any{
+				"top": "╦", "vertical_top": "║", "vertical": "┃", "bottom": "╩",
+				"graphics": map[string]any{
+					"mode": "overlay", "top": "file:///divider/t.png",
+					"vertical": "file:///divider/v.png", "bottom": "file:///divider/b.png",
+					"outset": map[string]any{"left": 1, "right": 2, "inward": 3},
+				},
+			}}},
+			want: func() idestatus.InboxStyle {
+				s := def
+				s.Divider = tcomponent.DividerCharSet{
+					Top: '╦', VerticalTop: '║', Vertical: '┃', VerticalBottom: '┃', Bottom: '╩',
+					Graphics: tcomponent.DividerGraphics{
+						Top: "file:///divider/t.png", Vertical: "file:///divider/v.png",
+						Bottom: "file:///divider/b.png", Overlay: true,
+						Outset: tcomponent.DividerOutset{Left: 1, Right: 2, Inward: 3},
+					},
+				}
+				return s
+			}(),
+		},
+		{
+			name: "the divider takes the window frame's left edge",
+			cfg: map[string]any{"browser": map[string]any{"window_manager": map[string]any{
+				"frame_charset": map[string]any{
+					"verticalleft": "▏",
+					"graphics":     map[string]any{"mode": "overlay", "verticalleft": "file:///frame/left.png"},
+				},
+			}}},
+			want: func() idestatus.InboxStyle {
+				s := def
+				s.Divider.VerticalTop, s.Divider.Vertical, s.Divider.VerticalBottom = '▏', '▏', '▏'
+				s.Divider.Graphics = tcomponent.DividerGraphics{Vertical: "file:///frame/left.png", Overlay: true}
+				return s
+			}(),
+		},
+		{
+			name: "the divider clears the image it takes from the frame",
+			cfg: map[string]any{
+				"browser": map[string]any{"window_manager": map[string]any{"frame_charset": map[string]any{
+					"graphics": map[string]any{"verticalleft": "file:///frame/left.png"},
+				}}},
+				"program_status": map[string]any{"divider_charset": map[string]any{
+					"graphics": map[string]any{"vertical": ""},
+				}},
+			},
+			want: def,
+		},
+		{
+			name: "an invalid divider image draws none of the divider's images",
+			cfg: map[string]any{"program_status": map[string]any{"divider_charset": map[string]any{
+				"bottom":   "╩",
+				"graphics": map[string]any{"top": "file:///divider/t.png", "mode": "sideways"},
+			}}},
+			want: func() idestatus.InboxStyle {
+				s := def
+				s.Divider.Bottom = '╩'
+				return s
+			}(),
+			wantErr: []string{"program_status.divider_charset"},
+		},
+		{
+			name: "invalid divider characters keep their defaults",
+			cfg: map[string]any{"program_status": map[string]any{"divider_charset": map[string]any{
+				"top": true, "vertical": []any{"│"},
+				"graphics": map[string]any{"outset": map[string]any{"left": -1}},
+			}}},
+			want: def,
+			wantErr: []string{
+				"program_status.divider_charset.top", "program_status.divider_charset.vertical",
+				"program_status.divider_charset.graphics.outset.left",
+			},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := ideConfig{cfg: tc.cfg, errors: map[string]error{}}
@@ -3127,6 +3263,180 @@ func TestConfigHUDStyle(t *testing.T) {
 				assert.Equal(t, term.ColorYellow, prompt.HoverAttr.Fg)
 			},
 			wantURIs: []string{"file:///btn/left.png", "file:///btn/middle.png"},
+		},
+		{
+			name: "tab style",
+			cfg: map[string]any{"browser": map[string]any{
+				"focus_tab_attr":           map[string]any{"fg": "green"},
+				"non_focus_tab_attr":       map[string]any{"fg": "red"},
+				"focus_tab_icon_attr":      map[string]any{"fg": "yellow"},
+				"non_focus_tab_icon_attr":  map[string]any{"fg": "blue"},
+				"focus_tab_highlight_attr": map[string]any{"fg": "purple"},
+				"focus_tab_highlight_char": "▔",
+				"tab_images": map[string]any{
+					"focus":     map[string]any{"middle": "file:///tab/focus.png"},
+					"non_focus": map[string]any{"left": "file:///tab/l.png", "right": "file:///tab/r.png"},
+					"outset":    map[string]any{"sides": 1},
+				},
+				"focus_tab_highlight_graphics": map[string]any{
+					"mode": "overlay", "horizontal": "file:///tab/hl.png", "right": "file:///tab/r.png",
+				},
+			}},
+			check: func(t *testing.T, s hudStyle) {
+				assert.Equal(t, browser.TabStyle{
+					FocusTabAttr:          term.Attributes{Fg: term.ColorGreen},
+					NonFocusTabAttr:       term.Attributes{Fg: term.ColorRed},
+					FocusTabIconAttr:      term.Attributes{Fg: term.ColorYellow},
+					NonFocusTabIconAttr:   term.Attributes{Fg: term.ColorBlue},
+					FocusTabHighlightAttr: term.Attributes{Fg: term.ColorPurple},
+					FocusTabHighlightChar: '▔',
+					Images: browser.PromptImages{
+						Idle:     browser.PromptButtonImage{Left: "file:///tab/l.png", Right: "file:///tab/r.png"},
+						Selected: browser.PromptButtonImage{Middle: "file:///tab/focus.png"},
+						Outset:   component.ButtonOutset{Sides: 1},
+					},
+					HighlightGraphics: tcomponent.LineGraphics{
+						Middle: "file:///tab/hl.png", End: "file:///tab/r.png", Overlay: true,
+					},
+				}, s.browser.Tabs)
+			},
+			wantURIs: []string{
+				"file:///tab/focus.png", "file:///tab/hl.png", "file:///tab/l.png", "file:///tab/r.png",
+			},
+		},
+		{
+			name: "only focus tab images",
+			cfg: map[string]any{"browser": map[string]any{"tab_images": map[string]any{
+				"focus": map[string]any{"middle": "file:///tab/focus.png"},
+			}}},
+			check: func(t *testing.T, s hudStyle) {
+				assert.Equal(t, browser.PromptImages{
+					Selected: browser.PromptButtonImage{Middle: "file:///tab/focus.png"},
+				}, s.browser.Tabs.Images)
+			},
+			wantURIs: []string{"file:///tab/focus.png"},
+		},
+		{
+			name: "an invalid tab image draws no tab images",
+			cfg: map[string]any{"browser": map[string]any{"tab_images": map[string]any{
+				"focus":     map[string]any{"middle": "ftp://example.com/focus.png"},
+				"non_focus": map[string]any{"middle": "file:///tab/idle.png"},
+			}}},
+			check: func(t *testing.T, s hudStyle) {
+				assert.True(t, s.browser.Tabs.Images.Empty())
+			},
+			wantErr: "browser.tab_images",
+		},
+		{
+			name: "an invalid tab highlight image draws no highlight images",
+			cfg: map[string]any{"browser": map[string]any{"focus_tab_highlight_graphics": map[string]any{
+				"horizontal": "file:///tab/hl.png", "mode": "sideways",
+			}}},
+			check: func(t *testing.T, s hudStyle) {
+				assert.True(t, s.browser.Tabs.HighlightGraphics.Empty())
+			},
+			wantErr: "browser.focus_tab_highlight_graphics",
+		},
+		{
+			name: "workspace bar style",
+			cfg: map[string]any{
+				"browser": map[string]any{
+					"focus_tab_attr":           map[string]any{"fg": "green"},
+					"non_focus_tab_attr":       map[string]any{"fg": "red"},
+					"focus_tab_icon_attr":      map[string]any{"fg": "yellow"},
+					"non_focus_tab_icon_attr":  map[string]any{"fg": "blue"},
+					"focus_tab_highlight_attr": map[string]any{"fg": "purple"},
+					"focus_tab_highlight_char": "▔",
+					"tab_images": map[string]any{
+						"focus": map[string]any{"middle": "file:///tab/focus.png"},
+					},
+				},
+				"workspace": map[string]any{
+					"focus_tab_highlight_char": "",
+					"tab_images": map[string]any{
+						"focus":     map[string]any{"middle": "file:///ws/focus.png"},
+						"non_focus": map[string]any{"middle": "file:///ws/idle.png"},
+						"outset":    map[string]any{"sides": 1},
+					},
+					"focus_tab_highlight_graphics": map[string]any{
+						"left": "file:///ws/hl-l.png", "horizontal": "file:///ws/hl.png",
+					},
+				},
+			},
+			check: func(t *testing.T, s hudStyle) {
+				assert.Equal(t, workspaceBarStyle{
+					focusTabAttr:        term.Attributes{Fg: term.ColorGreen},
+					nonFocusTabAttr:     term.Attributes{Fg: term.ColorRed},
+					focusTabIconAttr:    term.Attributes{Fg: term.ColorYellow},
+					nonFocusTabIconAttr: term.Attributes{Fg: term.ColorBlue},
+					highlightAttr:       term.Attributes{Fg: term.ColorPurple},
+					images: browser.PromptImages{
+						Idle:     browser.PromptButtonImage{Middle: "file:///ws/idle.png"},
+						Selected: browser.PromptButtonImage{Middle: "file:///ws/focus.png"},
+						Outset:   component.ButtonOutset{Sides: 1},
+					},
+					highlight: tcomponent.LineGraphics{
+						Start: "file:///ws/hl-l.png", Middle: "file:///ws/hl.png",
+					},
+				}, s.workspaceBar)
+				assert.Equal(t, '▔', s.browser.Tabs.FocusTabHighlightChar)
+			},
+			wantURIs: []string{
+				"file:///tab/focus.png", "file:///ws/focus.png", "file:///ws/hl-l.png",
+				"file:///ws/hl.png", "file:///ws/idle.png",
+			},
+		},
+		{
+			name: "workspace bar without workspace keys",
+			cfg:  map[string]any{},
+			check: func(t *testing.T, s hudStyle) {
+				assert.Equal(t, browser.DefaultConfig().FocusTabHighlightChar,
+					s.workspaceBar.highlightChar)
+				assert.True(t, s.workspaceBar.images.Empty())
+				assert.True(t, s.workspaceBar.highlight.Empty())
+			},
+		},
+		{
+			name: "an invalid workspace tab image draws no workspace tab images",
+			cfg: map[string]any{"workspace": map[string]any{"tab_images": map[string]any{
+				"focus": map[string]any{"middle": "ftp://example.com/focus.png"},
+			}}},
+			check: func(t *testing.T, s hudStyle) {
+				assert.True(t, s.workspaceBar.images.Empty())
+			},
+			wantErr: "workspace.tab_images",
+		},
+		{
+			name: "an invalid workspace highlight image draws no workspace highlight images",
+			cfg: map[string]any{"workspace": map[string]any{"focus_tab_highlight_graphics": map[string]any{
+				"horizontal": "file:///ws/hl.png", "mode": "sideways",
+			}}},
+			check: func(t *testing.T, s hudStyle) {
+				assert.True(t, s.workspaceBar.highlight.Empty())
+			},
+			wantErr: "workspace.focus_tab_highlight_graphics",
+		},
+		{
+			name: "status inbox",
+			cfg: map[string]any{"program_status": map[string]any{
+				"marker":          "┃",
+				"images":          map[string]any{"idle": map[string]any{"middle": "file:///inbox/idle.png"}},
+				"marker_graphics": map[string]any{"vertical": "file:///inbox/marker.png"},
+				"divider_charset": map[string]any{"graphics": map[string]any{
+					"top": "file:///inbox/top.png", "vertical": "file:///inbox/divider.png",
+				}},
+				"progress_bar_graphics": map[string]any{
+					"filled": "file:///inbox/filled.png", "empty": "file:///inbox/empty.png",
+				},
+			}},
+			check: func(t *testing.T, s hudStyle) {
+				assert.Equal(t, '┃', s.statusInbox.Marker)
+				assert.Equal(t, "file:///inbox/idle.png", s.statusInbox.Images.Idle.Middle)
+			},
+			wantURIs: []string{
+				"file:///inbox/divider.png", "file:///inbox/empty.png", "file:///inbox/filled.png",
+				"file:///inbox/idle.png", "file:///inbox/marker.png", "file:///inbox/top.png",
+			},
 		},
 		{
 			name: "wallpaper",

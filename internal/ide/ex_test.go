@@ -4612,6 +4612,7 @@ func TestExRestyle(t *testing.T) {
 	// Nothing is on disk at uri, so only a reloaded image can draw.
 	const uri = "file:///nonexistent/hud/frame.png"
 	const notificationURI = "file:///nonexistent/hud/notification.png"
+	const tabURI = "file:///nonexistent/hud/tab.png"
 	wmCfg := thandler.DefaultWindowManagerConfig()
 	wmCfg.FrameGraphicsStorage = storagestub.NewInMemoryService()
 	wmCfg.Interrupter = term.NopInterrupter()
@@ -4622,11 +4623,17 @@ func TestExRestyle(t *testing.T) {
 	b.ex.frameGraphics()
 
 	cfg := ideConfig{cfg: map[string]any{
-		"browser": map[string]any{"window_manager": map[string]any{
-			"frame_charset": map[string]any{
-				"topleft": "╭", "graphics": map[string]any{"topleft": uri},
+		"browser": map[string]any{
+			"window_manager": map[string]any{
+				"frame_charset": map[string]any{
+					"topleft": "╭", "graphics": map[string]any{"topleft": uri},
+				},
 			},
-		}},
+			"focus_tab_highlight_char": "=",
+			"tab_images": map[string]any{"focus": map[string]any{
+				"left": tabURI, "middle": tabURI, "right": tabURI,
+			}},
+		},
 		"command": map[string]any{
 			"frame_charset":     map[string]any{"topright": "╮"},
 			"separator_charset": map[string]any{"left": "├"},
@@ -4648,9 +4655,12 @@ func TestExRestyle(t *testing.T) {
 	b.ex.restyle(style, map[string]image.Image{
 		uri:             image.NewRGBA(image.Rect(0, 0, 1, 1)),
 		notificationURI: image.NewRGBA(image.Rect(0, 0, 1, 1)),
+		tabURI:          image.NewRGBA(image.Rect(0, 0, 1, 1)),
 	}, nil)
 
 	assert.Equal(t, '╭', b.ex.config.FrameCharSet.TopLeft)
+	assert.Equal(t, '=', b.ex.config.FocusTabHighlightChar)
+	assert.Equal(t, style.browser.Tabs.Images, b.ex.config.TabImages)
 	assert.Equal(t, style.commandPromptFrame, b.ex.commandPromptCfg.frameCharSet)
 	assert.Equal(t, '├', b.ex.commandPromptCfg.separator.Left)
 	assert.Equal(t, style.statusBar, b.ex.statusBars.Current())
@@ -4672,6 +4682,17 @@ func TestExRestyle(t *testing.T) {
 
 	const width, height = 40, 10
 	b.Resize(width, height)
+
+	tab := b.ex.comp.Browser().NewTab(workspaceapi.URI{}, 'x', "tab", browsertest.NewTestHandler(), nil)
+	require.NoError(t, b.ex.comp.Browser().Focus().SetContent(tab))
+	tabs := newCoveringImageWriter(width, height)
+	b.ex.comp.Browser().Draw(tabs)
+	require.NoError(t, tabs.Flush())
+	label := strings.Index(strings.Split(tabs.String(), "\n")[1], "x tab")
+	require.GreaterOrEqual(t, label, 0, "the tab bar draws the tab")
+	assert.True(t, tabs.images[term.Coordinates{X: label + 1, Y: 1}],
+		"the tab bar draws the reloaded image under the tab at once")
+
 	b.ex.container.Notify(notifications.LevelInfo, "hi")
 	w := newCoveringImageWriter(width, height)
 	b.ex.container.Draw(w)

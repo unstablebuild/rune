@@ -17,13 +17,17 @@
 package handler
 
 import (
+	"image"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
+	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"go.uber.org/goleak"
+	tcomponent "unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/component/shader"
 	"unstable.build/rune/internal/component/shader/shaderloop"
 	"unstable.build/rune/internal/handler/handlertest"
@@ -133,6 +137,78 @@ func TestShadedTabsColor(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	require.True(t, painted, "the effect never painted the active tab's name")
+}
+
+func TestShadedTabsSetDefAttr(t *testing.T) {
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	s := newTestShadedTabs(ShadedTabsConfig{
+		Shader: "pulse",
+		FPS:    100,
+		Params: shaderloop.Params{
+			Pulse: shaderloop.PulseParams{Color: term.NewRGBColor(0, 255, 0)},
+		},
+		DefAttr:     term.Attributes{Fg: term.NewRGBColor(255, 0, 0)},
+		Interrupter: term.NopInterrupter(),
+		Active:      func() []int { return []int{1} },
+	})
+	s.SetDefAttr(term.Attributes{Fg: term.NewRGBColor(0, 0, 0)})
+	plain := drawShadedTabs(s)
+	require.True(t, s.SetRunning(true))
+	defer s.SetRunning(false)
+	painted := false
+	for deadline := time.Now().Add(5 * time.Second); !painted && time.Now().Before(deadline); {
+		cells := drawShadedTabs(s)
+		// beta's name sits at [11, 15).
+		for x := 11; x < 15; x++ {
+			if cells[x].Fg == plain[x].Fg {
+				continue
+			}
+			painted = true
+			r, _, _ := cells[x].Fg.RGB()
+			assert.Zero(t, r, "cell %d blends from the attributes set last", x)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	require.True(t, painted, "the effect never painted the active tab's name")
+}
+
+func TestShadedTabsDrawsImagesWhileRunning(t *testing.T) {
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	const uri = "file:///tab.png"
+	g := tcomponent.NewFrameGraphics(storagestub.NewInMemoryService(), term.NopInterrupter())
+	defer func() { assert.NoError(t, g.Close()) }()
+	g.Reload(map[string]image.Image{uri: image.NewRGBA(image.Rect(0, 0, 1, 1))})
+	img := g.Image(uri)
+	s := newTestShadedTabs(ShadedTabsConfig{
+		Shader:      "pulse",
+		Interrupter: term.NopInterrupter(),
+		Active:      func() []int { return []int{1} },
+	})
+	s.SetGraphics(g, &component.ButtonImages{
+		Idle: component.ButtonImage{Left: img, Middle: img, Right: img},
+	}, tcomponent.LineGraphics{})
+	draw := func() []term.Image {
+		w := &imageRecorder{StringWriter: term.NewStringWriter(20, 1)}
+		s.Draw(w)
+		return w.images
+	}
+	plain := draw()
+	require.NotEmpty(t, plain)
+
+	require.True(t, s.SetRunning(true))
+	defer s.SetRunning(false)
+	assert.Len(t, draw(), len(plain), "every tab image draws under the effect")
+}
+
+// imageRecorder records the images drawn on it.
+type imageRecorder struct {
+	*term.StringWriter
+	images []term.Image
+}
+
+func (w *imageRecorder) DrawImage(img term.Image) bool {
+	w.images = append(w.images, img)
+	return true
 }
 
 func TestShadedTabsWithoutShaderDrawsTabs(t *testing.T) {

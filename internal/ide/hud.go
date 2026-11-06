@@ -22,6 +22,7 @@ import (
 
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/component"
+	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/browser"
 	tcomponent "unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/component/notifications"
@@ -44,11 +45,32 @@ type hudStyle struct {
 	// notifyStatus applies to every workspace, from the user's config
 	// alone.
 	notifyStatus idestatus.NotifyConfig
+	// workspaceBar applies to every workspace, from the user's config
+	// alone.
+	workspaceBar workspaceBarStyle
+	// statusInbox applies to every workspace, from the user's config
+	// alone.
+	statusInbox idestatus.InboxStyle
+}
+
+// workspaceBarStyle is how the workspace bar looks: the tab colours of
+// the browser's tab bar, with a highlight character and images of its
+// own.
+type workspaceBarStyle struct {
+	focusTabAttr        term.Attributes
+	nonFocusTabAttr     term.Attributes
+	focusTabIconAttr    term.Attributes
+	nonFocusTabIconAttr term.Attributes
+	highlightAttr       term.Attributes
+	// highlightChar is 0 when the bar draws no highlight character.
+	highlightChar rune
+	images        browser.PromptImages
+	highlight     tcomponent.LineGraphics
 }
 
 // imageURIs returns, sorted and once each, the URI of every image the
-// frames, scroll bars, window bar, command prompt, prompt buttons and
-// notifications of s name.
+// frames, scroll bars, window bar, command prompt, prompt buttons, tab
+// bars, notifications and status inbox of s name.
 func (s hudStyle) imageURIs() []string {
 	wm := s.browser.WindowManager
 	var uris []string
@@ -74,12 +96,22 @@ func (s hudStyle) imageURIs() []string {
 	scrollBar(wm.ScrollBarHoverCharSet)
 	bar, sep := wm.WindowBarCharSet.Graphics, s.commandPromptSeparator.Graphics
 	uris = append(uris, bar.Left, bar.Horizontal, bar.Right, sep.Left, sep.Horizontal, sep.Right)
-	images := s.browser.Prompt.Images
-	for _, b := range []browser.PromptButtonImage{
-		images.Idle, images.Selected, images.Hover, images.Pressed,
-	} {
-		uris = append(uris, b.Left, b.Middle, b.Right)
+	buttons := func(images browser.PromptImages) {
+		for _, b := range []browser.PromptButtonImage{
+			images.Idle, images.Selected, images.Hover, images.Pressed,
+		} {
+			uris = append(uris, b.Left, b.Middle, b.Right)
+		}
 	}
+	buttons(s.browser.Prompt.Images)
+	buttons(s.browser.Tabs.Images)
+	buttons(s.workspaceBar.images)
+	buttons(s.statusInbox.Images)
+	uris = append(uris, s.browser.Tabs.HighlightGraphics.URIs()...)
+	uris = append(uris, s.workspaceBar.highlight.URIs()...)
+	uris = append(uris, s.statusInbox.MarkerGraphics.URIs()...)
+	uris = append(uris, s.statusInbox.Divider.Graphics.URIs()...)
+	uris = append(uris, s.statusInbox.ProgressBarGraphics.URIs()...)
 	slices.Sort(uris)
 	uris = slices.Compact(uris)
 	return slices.DeleteFunc(uris, func(uri string) bool { return uri == "" })
@@ -100,9 +132,9 @@ func (s hudStyle) statusBarImages() []template.Image {
 // HUD holds what IDE.LoadHUD read from the config file for ApplyHUD to
 // install: the keys of window frames, scroll bars, floating window bars,
 // frame unions, the command prompt frame, separator and manual, prompt
-// buttons, the editor status bar, the wallpaper, the terminal bell,
-// notifications and the program status notifications, and the images
-// they name, and the config extensions fetch.
+// buttons, the tab bars, the editor status bar, the wallpaper, the
+// terminal bell, notifications, the program status notifications and
+// inbox, and the images they name, and the config extensions fetch.
 type HUD struct {
 	// load orders HUDs by when their load started.
 	load uint64

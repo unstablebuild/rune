@@ -216,6 +216,10 @@ type workspaceManagerHandler struct {
 	barFocusIconAttr    term.Attributes
 	barNonFocusIconAttr term.Attributes
 	barHighlightAttr    term.Attributes
+	// graphics holds the images of the bar, which loadHUD refreshes the
+	// cache of through graphicsStorage. Nil until the bar is styled.
+	graphics        *tcomponent.FrameGraphics
+	graphicsStorage storageapi.Service
 	// hud is the latest HUD applyHUD installed, nil before the first.
 	// hudLoads counts the HUD loads started, which builds compare with
 	// hud.load to tell whether they read the config before it.
@@ -733,8 +737,8 @@ func (h *workspaceManagerHandler) init(
 	h.extCommandWait = extensionCommandWait
 	h.extHandleWait = extensionHandleWait
 	h.status = idestatus.New(statusWorkspaces{h}, tabStatusConfigFor(cfg),
-		cfg.statusNotifyConfig(), cfg.sounds, cfg.statusInboxStyle(), h.scheduleNextTick,
-		h.events.globalInterrupter())
+		cfg.statusNotifyConfig(), cfg.sounds, cfg.statusInboxStyle(), h.frameGraphics(),
+		h.scheduleNextTick, h.events.globalInterrupter())
 
 	// Files and workspaces under the home directory share this manager
 	// entry; the reference held here for the IDE's lifetime keeps their
@@ -863,23 +867,9 @@ func (h *workspaceManagerHandler) init(
 
 	h.bar.Init()
 	h.bar.OnClick = h.onBarTabClick
-	focusTabAttr := cfg.focusTabAttr()
-	focusTabAttr.Attrs |= term.AttrVerticalRenderOffset
-	nonFocusTabAttr := cfg.nonFocusTabAttr()
-	nonFocusTabAttr.Attrs |= term.AttrVerticalRenderOffset
-	focusTabIconAttr := cfg.focusTabIconAttr()
-	focusTabIconAttr.Attrs |= term.AttrVerticalRenderOffset
-	nonFocusTabIconAttr := cfg.nonFocusTabIconAttr()
-	nonFocusTabIconAttr.Attrs |= term.AttrVerticalRenderOffset
-	h.barFocusAttr = focusTabAttr
-	h.barNonFocusAttr = nonFocusTabAttr
-	h.barFocusIconAttr = focusTabIconAttr
-	h.barNonFocusIconAttr = nonFocusTabIconAttr
-	h.barHighlightAttr = cfg.highlightTabAttr()
-	h.styleWorkspaceBar(cfg.windowFrameAttr(), cfg.windowFrameCharset())
 	h.bar.SetBorder(cfg.frame())
 	h.bar.SetBottomHighlight(true)
-	h.bar.SetFocusFrameChar(cfg.workspaceHighlightTabChar())
+	h.styleWorkspaceBar(cfg.workspaceBarStyle(), cfg.windowFrameAttr(), cfg.windowFrameCharset())
 
 	h.union.Init(&h.focusProxy)
 	h.union.Frame = cfg.frame()
@@ -1570,6 +1560,7 @@ func (h *workspaceManagerHandler) textOpts(
 	promptConfig := cfg.promptConfig()
 	promptConfig.Parser = parser
 	promptConfig.ScheduleNextTick = cfg.scheduleNextTick
+	tabs := cfg.browserTabStyle()
 	ret := []text.Option{
 		text.WithTabspaces(cfg.editorTabspaces()),
 		text.WithComments(cfg.editorComments()),
@@ -1581,10 +1572,12 @@ func (h *workspaceManagerHandler) textOpts(
 		text.WithCommandMaxHistory(cfg.commandMaxHistory()),
 		text.WithShellMaxHistory(cfg.consoleMaxHistory()),
 		text.WithCommandHistoryKey(cfg.commandHistoryKey()),
-		text.WithFocusTabAttr(cfg.focusTabAttr(), cfg.focusTabIconAttr()),
-		text.WithNonFocusTabAttr(cfg.nonFocusTabAttr(), cfg.nonFocusTabIconAttr()),
-		text.WithFocusTabHighlightAttr(cfg.highlightTabAttr()),
-		text.WithFocusTabHighlightChar(cfg.highlightTabChar()),
+		text.WithFocusTabAttr(tabs.FocusTabAttr, tabs.FocusTabIconAttr),
+		text.WithNonFocusTabAttr(tabs.NonFocusTabAttr, tabs.NonFocusTabIconAttr),
+		text.WithFocusTabHighlightAttr(tabs.FocusTabHighlightAttr),
+		text.WithFocusTabHighlightChar(tabs.FocusTabHighlightChar),
+		text.WithTabImages(tabs.Images),
+		text.WithFocusTabHighlightGraphics(tabs.HighlightGraphics),
 		text.WithWallpaper(cfg.wallpaper()),
 		text.WithDropTarget(
 			term.Attributes{Bg: term.ColorGray, Fg: term.ColorBlack},
@@ -3095,14 +3088,40 @@ func (h *workspaceManagerHandler) logNonFatalErrs(
 	}
 }
 
+// styleWorkspaceBar styles the workspace bar with s, and its frame with
+// frameAttr and cs. The images of s come from frameGraphics as it is
+// now, so a Reload of it must come first.
 func (h *workspaceManagerHandler) styleWorkspaceBar(
-	frameAttr term.Attributes, cs component.FrameCharSet,
+	s workspaceBarStyle, frameAttr term.Attributes, cs component.FrameCharSet,
 ) {
-	frameAttr.Attrs |= term.AttrVerticalRenderOffset
+	offset := func(attr term.Attributes) term.Attributes {
+		attr.Attrs |= term.AttrVerticalRenderOffset
+		return attr
+	}
+	h.barFocusAttr = offset(s.focusTabAttr)
+	h.barNonFocusAttr = offset(s.nonFocusTabAttr)
+	h.barFocusIconAttr = offset(s.focusTabIconAttr)
+	h.barNonFocusIconAttr = offset(s.nonFocusTabIconAttr)
+	h.barHighlightAttr = s.highlightAttr
+	frameAttr = offset(frameAttr)
 	h.bar.SetAttr(h.barFocusAttr, h.barNonFocusAttr,
 		h.barFocusIconAttr, h.barNonFocusIconAttr,
 		h.barHighlightAttr, frameAttr, term.Attributes{Bg: frameAttr.Bg})
 	h.bar.SetFrameCharSet(cs)
+	h.bar.SetFocusFrameChar(s.highlightChar)
+	g := h.frameGraphics()
+	h.bar.SetGraphics(g, s.images.ButtonImages(g), s.highlight)
+	if h.shadedBar != nil {
+		h.shadedBar.SetDefAttr(s.nonFocusTabAttr)
+	}
+}
+
+func (h *workspaceManagerHandler) frameGraphics() *tcomponent.FrameGraphics {
+	if h.graphics == nil {
+		h.graphicsStorage = storageapi.WithPartition(h.ideStorage, frameImagesPartition)
+		h.graphics = tcomponent.NewFrameGraphics(h.graphicsStorage, h.events.globalInterrupter())
+	}
+	return h.graphics
 }
 
 func (h *workspaceManagerHandler) styleWorkspaceUnion(
@@ -3209,7 +3228,10 @@ func (h *workspaceManagerHandler) applyHUD(hud *HUD) (applied bool, signalled in
 	h.logNonFatalErrs(h.focusBrowser(), nil, hud.configErrs)
 	h.status.SetNotifyConfig(hud.base.notifyStatus)
 	wm := hud.base.browser.WindowManager
-	h.styleWorkspaceBar(wm.FrameAttr, wm.FrameCharSet)
+	h.frameGraphics().Reload(hud.images)
+	h.styleWorkspaceBar(hud.base.workspaceBar, wm.FrameAttr, wm.FrameCharSet)
+	h.decorateWorkspaceBar()
+	h.status.SetStyle(hud.base.statusInbox)
 	h.styleWorkspaceUnion(wm.FrameAttr, hud.base.browser.FrameUnionCharSet)
 	h.empty.restyle(hud.base, hud.images, hud.statusBarImages)
 	for _, w := range h.workspaces {
@@ -3675,6 +3697,15 @@ func (h *workspaceManagerHandler) Close() (ret error) {
 	}
 	if err := h.empty.Close(); err != nil {
 		ret = multierror.Append(ret, err)
+	}
+	if h.graphics != nil {
+		if err := h.graphics.Close(); err != nil {
+			ret = multierror.Append(ret, err)
+		}
+		if err := h.graphicsStorage.Close(); err != nil {
+			ret = multierror.Append(ret, err)
+		}
+		h.graphics, h.graphicsStorage = nil, nil
 	}
 	if h.homeRunner != nil {
 		if err := h.homeRunner.(io.Closer).Close(); err != nil {

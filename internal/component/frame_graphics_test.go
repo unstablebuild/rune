@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"image"
+	"image/color"
 	"image/draw"
 	"image/png"
 	"net/url"
@@ -340,6 +341,138 @@ func TestFrameGraphicsSeparatorOutsets(t *testing.T) {
 	}
 }
 
+func TestFrameGraphicsDrawDivider(t *testing.T) {
+	pics := newFramePictures(t)
+	const width, height, x = 5, 6, 2
+	attr := term.Attributes{Fg: term.ColorBlue, Bg: term.ColorBlack}
+	full := DividerGraphics{Top: "L", Vertical: "R", Bottom: "L"}
+	overlay := full
+	overlay.Overlay = true
+	edges := component.FrameCharSetGraphics{HorizontalTop: "L", HorizontalBottom: "L"}
+	overlayEdges := edges
+	overlayEdges.Overlay = true
+	for _, tt := range []struct {
+		name                string
+		graphics            DividerGraphics
+		frame               component.FrameCharSetGraphics
+		noImages, underABar bool
+		column, under       string
+	}{
+		{name: "characters only", column: "┬t││b┴", under: "┬t││b┴"},
+		{name: "junctions and tiled rule", graphics: full, column: "LRRRRL", under: "      "},
+		{name: "overlay keeps divider glyphs", graphics: overlay, column: "LRRRRL", under: "┬t││b┴"},
+		{name: "terminal fallback", graphics: full, frame: edges, noImages: true, column: "┬t││b┴", under: "┬t││b┴"},
+		{name: "overlay terminal fallback", graphics: overlay, frame: edges, noImages: true, column: "┬t││b┴", under: "┬t││b┴"},
+		{name: "rule without edge images", graphics: DividerGraphics{Vertical: "R"}, column: "┬RRRR┴", under: "┬    ┴"},
+		{name: "missing junctions preserve rails", graphics: DividerGraphics{Vertical: "R"}, frame: edges, column: "LRRRRL", under: "      "},
+		{name: "no divider images preserves rails", frame: edges, column: "Lt││bL", under: " t││b "},
+		{name: "failed junctions preserve rails", graphics: DividerGraphics{Top: "missing", Vertical: "R", Bottom: "invalid"}, frame: edges, column: "LRRRRL", under: "      "},
+		{name: "failed images keep glyphs", graphics: DividerGraphics{Top: "missing", Vertical: "invalid", Bottom: "missing"}, column: "┬t││b┴", under: "┬t││b┴"},
+		{name: "frame overlay is independent", graphics: DividerGraphics{Vertical: "R"}, frame: overlayEdges, column: "LRRRRL", under: "┬    ┴"},
+		{name: "divider overlay is independent", graphics: DividerGraphics{Vertical: "R", Overlay: true}, frame: edges, column: "LRRRRL", under: " t││b "},
+		{name: "a window bar keeps the top row", graphics: full, underABar: true, column: "┬RRRRL", under: "┬     "},
+		{name: "under a window bar the rule starts with its middle", graphics: full, underABar: true, noImages: true, column: "┬│││b┴", under: "┬│││b┴"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := component.NewFrame(&component.TestComponent{Ch: 'x'})
+			f.Attributes = attr
+			f.Graphics = pics.resolve(tt.frame)
+			f.Resize(width, height)
+			cs := DividerCharSet{Top: '┬', VerticalTop: 't', Vertical: '│', VerticalBottom: 'b', Bottom: '┴', Graphics: tt.graphics}
+			for _, uri := range []*string{&cs.Graphics.Top, &cs.Graphics.Vertical, &cs.Graphics.Bottom} {
+				*uri = pics.uris[*uri]
+			}
+			g := NewFrameGraphics(storagestub.NewInMemoryService(), term.NopInterrupter())
+			t.Cleanup(func() { assert.NoError(t, g.Close()) })
+			g.Reload(map[string]image.Image{pics.uris["L"]: pics.imgs['L'], pics.uris["R"]: pics.imgs['R']})
+			s := newImageScreen(width, height)
+			s.noImages = tt.noImages
+			f.Draw(s)
+			for y, ch := range []rune("┬t││b┴") {
+				s.SetCell(term.Coordinates{X: x, Y: y}, term.NewCell(ch, 1, attr))
+			}
+			g.DrawDivider(s, f, cs, attr, width, height, x, !tt.underABar)
+			column := func(screen string) string {
+				var b strings.Builder
+				for row := range strings.SplitSeq(strings.TrimPrefix(screen, "\n"), "\n") {
+					b.WriteRune([]rune(row)[x])
+				}
+				return b.String()
+			}
+			assert.Equal(t, tt.column, column(s.render(t, pics, attr, tt.graphics.Overlay || tt.frame.Overlay)))
+			assert.Equal(t, tt.under, column(s.String()))
+		})
+	}
+}
+
+func TestFrameGraphicsDividerAttributes(t *testing.T) {
+	pics := newFramePictures(t)
+	frameAttr := term.Attributes{Fg: term.ColorSilver}
+	ruleAttr := term.Attributes{Fg: term.ColorGray}
+	f := component.NewFrame(&component.TestComponent{Ch: 'x'})
+	f.Attributes = frameAttr
+	f.Resize(3, 4)
+	g := NewFrameGraphics(storagestub.NewInMemoryService(), term.NopInterrupter())
+	t.Cleanup(func() { assert.NoError(t, g.Close()) })
+	g.Reload(map[string]image.Image{pics.uris["L"]: pics.imgs['L']})
+	s := newImageScreen(3, 4)
+	s.noImages = true
+	f.Draw(s)
+	cs := DividerCharSet{Top: '┬', VerticalTop: '│', Vertical: '│', VerticalBottom: '│', Bottom: '┴',
+		Graphics: DividerGraphics{Top: pics.uris["L"], Vertical: pics.uris["L"], Bottom: pics.uris["L"]}}
+	g.DrawDivider(s, f, cs, ruleAttr, 3, 4, 1, true)
+	cells := s.Cells()
+	assert.Equal(t, frameAttr, cells[1].Attributes(), "the top junction takes the frame's attributes")
+	assert.Equal(t, ruleAttr, cells[3+1].Attributes(), "the rule takes its own")
+	assert.Equal(t, ruleAttr, cells[2*3+1].Attributes())
+	assert.Equal(t, frameAttr, cells[3*3+1].Attributes(), "the bottom junction takes the frame's attributes")
+}
+
+func TestFrameGraphicsDividerOutsets(t *testing.T) {
+	pics := newFramePictures(t)
+	for _, tt := range []struct {
+		name          string
+		width, height int
+		x             int
+		outset        DividerOutset
+		want          []image.Rectangle
+	}{
+		{name: "ornaments cover the rule ends", width: 5, height: 7, x: 2, outset: DividerOutset{Left: 1, Right: 1, Inward: 1}, want: []image.Rectangle{image.Rect(1, 0, 4, 2), image.Rect(1, 5, 4, 7)}},
+		{name: "oversized ornaments are clipped", width: 5, height: 7, x: 1, outset: DividerOutset{Left: 3, Right: 6, Inward: 8}, want: []image.Rectangle{image.Rect(0, 0, 5, 7), image.Rect(0, 0, 5, 7)}},
+		{name: "short frame", width: 3, height: 3, x: 1, outset: DividerOutset{Inward: 1}, want: []image.Rectangle{image.Rect(1, 0, 2, 2), image.Rect(1, 1, 2, 3)}},
+		{name: "negative outsets are zero", width: 3, height: 5, x: 1, outset: DividerOutset{Left: -1, Right: -1, Inward: -1}, want: []image.Rectangle{image.Rect(1, 0, 2, 1), image.Rect(1, 4, 2, 5)}},
+		{name: "too narrow", width: 2, height: 3, x: 1},
+		{name: "too short", width: 3, height: 2, x: 1},
+		{name: "left border is not a divider", width: 3, height: 5, x: 0},
+		{name: "right border is not a divider", width: 3, height: 5, x: 2},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := component.NewFrame(&component.TestComponent{Ch: 'x'})
+			f.Resize(tt.width, tt.height)
+			cs := DividerCharSet{Graphics: DividerGraphics{Top: pics.uris["L"], Vertical: pics.uris["R"], Bottom: pics.uris["L"], Outset: tt.outset}}
+			g := NewFrameGraphics(storagestub.NewInMemoryService(), term.NopInterrupter())
+			t.Cleanup(func() { assert.NoError(t, g.Close()) })
+			g.Reload(map[string]image.Image{pics.uris["L"]: pics.imgs['L'], pics.uris["R"]: pics.imgs['R']})
+			s := newImageScreen(tt.width, tt.height)
+			f.Draw(s)
+			g.DrawDivider(s, f, cs, term.Attributes{}, tt.width, tt.height, tt.x, true)
+			if tt.want == nil {
+				assert.Empty(t, s.images)
+				return
+			}
+			require.Len(t, s.images, tt.height)
+			for i, img := range s.images[:tt.height-2] {
+				assert.Equal(t, image.Rect(tt.x, i+1, tt.x+1, i+2), img.Visible())
+			}
+			for i, img := range s.images[tt.height-2:] {
+				assert.Equal(t, tt.want[i], img.Visible(), "junction %d", i)
+				assert.Equal(t, 1+max(0, tt.outset.Left)+max(0, tt.outset.Right), img.Width, "clipping must not rescale the image")
+				assert.Equal(t, 1+max(0, tt.outset.Inward), img.Height)
+			}
+		})
+	}
+}
+
 func TestFrameGraphicsSharesOneImagePerURI(t *testing.T) {
 	pics := newFramePictures(t)
 	irq := make(interruptCounter, 16)
@@ -403,6 +536,150 @@ func TestFrameGraphicsDrawCell(t *testing.T) {
 			assert.Equal(t, tt.expected, s.render(t, pics, attr, tt.overlay))
 			if tt.underneath != "" {
 				assert.Equal(t, tt.underneath, "\n"+s.String())
+			}
+		})
+	}
+}
+
+func TestFrameGraphicsDrawLine(t *testing.T) {
+	pics := newFramePictures(t)
+	attr := term.Attributes{Fg: term.ColorBlue, Bg: term.ColorBlack}
+	cell := term.NewCell('-', 1, attr)
+	full := LineGraphics{Start: "L", Middle: "R", End: "L"}
+	overlay := full
+	overlay.Overlay = true
+	const width, height = 6, 4
+
+	tests := []struct {
+		name     string
+		graphics LineGraphics
+		from     term.Coordinates
+		length   int
+		vertical bool
+		layer    term.ImageLayer
+		noImages bool
+		expected string
+		// underneath, when set, is what the screen shows under the images.
+		underneath string
+		// background, when set, draws picture s under the text of the line
+		// between its cells and its images, for composite to show.
+		background bool
+		composite  string
+	}{
+		{
+			name: "a horizontal line", graphics: full,
+			from: term.Coordinates{X: 1, Y: 1}, length: 4,
+			expected:   "\n......\n.LRRL.\n......\n......",
+			underneath: "\n......\n.    .\n......\n......",
+		},
+		{
+			name: "a vertical line", graphics: full,
+			from: term.Coordinates{X: 2}, length: 4, vertical: true,
+			expected: "\n..L...\n..R...\n..R...\n..L...",
+		},
+		{
+			name: "the ends fall back to the middle", graphics: LineGraphics{Middle: "R"},
+			from: term.Coordinates{X: 1, Y: 1}, length: 4,
+			expected: "\n......\n.RRRR.\n......\n......",
+		},
+		{
+			name:     "no middle leaves the cells between to their characters",
+			graphics: LineGraphics{Start: "L", End: "L"},
+			from:     term.Coordinates{X: 1, Y: 1}, length: 4,
+			expected:   "\n......\n.L--L.\n......\n......",
+			underneath: "\n......\n. -- .\n......\n......",
+		},
+		{
+			name: "a single cell draws the start", graphics: LineGraphics{Start: "L", Middle: "R", End: "R"},
+			from: term.Coordinates{X: 1, Y: 1}, length: 1,
+			expected: "\n......\n.L....\n......\n......",
+		},
+		{
+			name: "overlay keeps the characters under the images", graphics: overlay,
+			from: term.Coordinates{X: 1, Y: 1}, length: 4,
+			expected:   "\n......\n.LRRL.\n......\n......",
+			underneath: "\n......\n.----.\n......\n......",
+		},
+		{
+			name: "a writer that cannot draw images keeps the characters", graphics: full,
+			from: term.Coordinates{X: 1, Y: 1}, length: 4, noImages: true,
+			expected: "\n......\n.----.\n......\n......",
+		},
+		{
+			name:     "an image that fails to load keeps its character",
+			graphics: LineGraphics{Start: "L", Middle: "invalid", End: "L"},
+			from:     term.Coordinates{X: 1, Y: 1}, length: 4,
+			expected: "\n......\n.L--L.\n......\n......",
+		},
+		{
+			name:     "an image still loading keeps its character",
+			graphics: LineGraphics{Start: "L", Middle: "i", End: "L"},
+			from:     term.Coordinates{X: 1, Y: 1}, length: 4,
+			expected: "\n......\n.L--L.\n......\n......",
+		},
+		{
+			name:     "the images under the line show through it in place of its characters",
+			graphics: LineGraphics{Middle: "t"}, background: true,
+			from: term.Coordinates{X: 1, Y: 1}, length: 4,
+			composite: "\n......\n.ssss.\n......\n......",
+		},
+		{
+			name:     "the images under the line stay under its characters",
+			graphics: LineGraphics{Middle: "t", Overlay: true}, background: true,
+			from: term.Coordinates{X: 1, Y: 1}, length: 4,
+			composite: "\n......\n.----.\n......\n......",
+		},
+		{
+			name: "an image below the text stays under the glyph of its row", graphics: overlay,
+			from: term.Coordinates{X: 1, Y: 1}, length: 4, layer: term.ImageLayerBelowText,
+			expected: "\n......\n.----.\n......\n......",
+		},
+		{
+			name: "an empty line draws nothing", graphics: full,
+			from:     term.Coordinates{X: 1, Y: 1},
+			expected: "\n......\n......\n......\n......",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewFrameGraphics(storagestub.NewInMemoryService(), term.NopInterrupter())
+			t.Cleanup(func() { assert.NoError(t, g.Close()) })
+			g.Reload(map[string]image.Image{
+				pics.uris["L"]: pics.imgs['L'], pics.uris["R"]: pics.imgs['R'],
+				pics.uris["s"]: pics.imgs['s'], pics.uris["t"]: pics.imgs['t'],
+			})
+			lg := tt.graphics
+			for _, uri := range []*string{&lg.Start, &lg.Middle, &lg.End} {
+				*uri = pics.uris[*uri]
+			}
+
+			s := newImageScreen(width, height)
+			s.noImages = tt.noImages
+			for y := range height {
+				for x := range width {
+					s.SetCell(term.Coordinates{X: x, Y: y}, term.NewCell('.', 1, attr))
+				}
+			}
+			lg.DrawCells(s, tt.from, tt.length, tt.vertical, cell)
+			if tt.background {
+				bg := g.Image(pics.uris["s"])
+				images := &component.ButtonImages{
+					Idle: component.ButtonImage{Left: bg, Middle: bg, Right: bg},
+				}
+				require.True(t, images.Draw(s, image.Rect(
+					tt.from.X, tt.from.Y, tt.from.X+tt.length, tt.from.Y+1), component.ButtonIdle))
+			}
+			g.DrawLine(s, lg, tt.from, tt.length, tt.vertical, cell, tt.layer)
+			if tt.background {
+				assert.Equal(t, tt.composite, s.composite(t, pics))
+				return
+			}
+			assert.Equal(t, tt.expected, s.render(t, pics, attr, tt.graphics.Overlay))
+			if tt.underneath != "" {
+				assert.Equal(t, tt.underneath, "\n"+s.String())
+			}
+			for _, img := range s.images {
+				assert.Equal(t, tt.layer, img.Layer)
 			}
 		})
 	}
@@ -787,7 +1064,8 @@ RRRRRR
 	}
 }
 
-// framePictures holds two pictures, named L and R, on disk. The
+// framePictures holds two pictures, named L and R, three of a single
+// gray, named i, s and h, and a transparent one, named t, on disk. The
 // graphics of a test case name them, or "missing" for a file that does
 // not exist and "invalid" for a URI imageuri rejects.
 type framePictures struct {
@@ -811,6 +1089,10 @@ func newFramePictures(t *testing.T) framePictures {
 	for name, data := range map[rune][]byte{
 		'L': imageuritest.StatusBarLeftPNG,
 		'R': imageuritest.StatusBarRightPNG,
+		'i': grayPNG(t, 128),
+		's': grayPNG(t, 255),
+		'h': grayPNG(t, 40),
+		't': transparentPNG(t),
 	} {
 		file := string(name) + ".png"
 		require.NoError(t, os.WriteFile(filepath.Join(dir, file), data, 0o600))
@@ -824,6 +1106,38 @@ func newFramePictures(t *testing.T) framePictures {
 		p.imgs[name] = rgba
 	}
 	return p
+}
+
+// grayPNG encodes a picture of a single pixel of luminance y.
+func grayPNG(t *testing.T, y uint8) []byte {
+	t.Helper()
+	img := image.NewGray(image.Rect(0, 0, 1, 1))
+	img.SetGray(0, 0, color.Gray{Y: y})
+	var b bytes.Buffer
+	require.NoError(t, png.Encode(&b, img))
+	return b.Bytes()
+}
+
+// transparentPNG encodes a picture of a single transparent pixel.
+func transparentPNG(t *testing.T) []byte {
+	t.Helper()
+	var b bytes.Buffer
+	require.NoError(t, png.Encode(&b, image.NewNRGBA(image.Rect(0, 0, 1, 1))))
+	return b.Bytes()
+}
+
+// name returns the name of the picture img shows, or '?' for another.
+func (p framePictures) name(img term.Image) rune {
+	rgba, ok := img.Src.(*image.RGBA)
+	if !ok {
+		return '?'
+	}
+	for n, pix := range p.pix {
+		if bytes.Equal(rgba.Pix, pix) {
+			return n
+		}
+	}
+	return '?'
 }
 
 // resolve replaces the picture names in g with their URIs.
@@ -892,7 +1206,13 @@ type imageScreen struct {
 	*term.StringWriter
 	width, height int
 	images        []term.Image
-	noImages      bool
+	// drawnAt holds when each image was drawn, and writtenAt when each
+	// cell was last written, for a cell to cover the images drawn
+	// before it, as compositing writers do.
+	drawnAt   []int
+	writtenAt []int
+	writes    int
+	noImages  bool
 }
 
 func newImageScreen(width, height int) *imageScreen {
@@ -900,6 +1220,15 @@ func newImageScreen(width, height int) *imageScreen {
 		StringWriter: term.NewStringWriter(width, height),
 		width:        width,
 		height:       height,
+		writtenAt:    make([]int, width*height),
+	}
+}
+
+func (s *imageScreen) SetCell(pos term.Coordinates, c term.Cell) {
+	s.StringWriter.SetCell(pos, c)
+	s.writes++
+	if pos.X >= 0 && pos.X < s.width && pos.Y >= 0 && pos.Y < s.height {
+		s.writtenAt[pos.Y*s.width+pos.X] = s.writes
 	}
 }
 
@@ -907,7 +1236,9 @@ func (s *imageScreen) DrawImage(img term.Image) bool {
 	if s.noImages {
 		return false
 	}
+	s.writes++
 	s.images = append(s.images, img)
+	s.drawnAt = append(s.drawnAt, s.writes)
 	return true
 }
 
@@ -939,12 +1270,7 @@ func (s *imageScreen) render(
 			assert.Equal(t, attr, cell.Attributes(), "the cell under the image at %v", img.Pos)
 		}
 
-		name := '?'
-		for n, pix := range pics.pix {
-			if rgba, ok := img.Src.(*image.RGBA); ok && bytes.Equal(rgba.Pix, pix) {
-				name = n
-			}
-		}
+		name := pics.name(img)
 		if id, ok := ids[name]; ok {
 			assert.Equal(t, id, img.ID, "picture %c has one ImageID", name)
 		}
@@ -961,6 +1287,52 @@ func (s *imageScreen) render(
 	}
 	if len(ids) == 2 {
 		assert.NotEqual(t, ids['L'], ids['R'])
+	}
+	var b strings.Builder
+	for _, row := range screen {
+		b.WriteByte('\n')
+		b.WriteString(string(row))
+	}
+	return b.String()
+}
+
+// composite returns the screen with the cells each image shows replaced
+// by the name of its picture, as a writer that composes the layers
+// shows them: an image above the text over any cell, and one below the
+// text only over a blank cell no image above the text covers. A later
+// image goes over the earlier ones of its layer, a cell written after an
+// image covers it, and the transparent picture shows what is under it.
+func (s *imageScreen) composite(t *testing.T, pics framePictures) string {
+	t.Helper()
+	require.NoError(t, s.Flush())
+	rows := strings.Split(s.String(), "\n")
+	screen := make([][]rune, len(rows))
+	for i, row := range rows {
+		screen[i] = []rune(row)
+	}
+	cells := s.Cells()
+	above := make([]bool, len(cells))
+	for k, img := range s.images {
+		name := pics.name(img)
+		if name == 't' {
+			continue
+		}
+		isAbove := img.Layer == term.ImageLayerAboveText
+		visible := img.Visible().Intersect(image.Rect(0, 0, s.width, s.height))
+		for y := visible.Min.Y; y < visible.Max.Y; y++ {
+			for x := visible.Min.X; x < visible.Max.X; x++ {
+				i := y*s.width + x
+				if s.writtenAt[i] > s.drawnAt[k] {
+					continue
+				}
+				blank := cells[i].Ch == 0 || cells[i].Ch == ' '
+				if !isAbove && (above[i] || !blank) {
+					continue
+				}
+				above[i] = above[i] || isAbove
+				screen[y][x] = name
+			}
+		}
 	}
 	var b strings.Builder
 	for _, row := range screen {
