@@ -429,6 +429,11 @@ config = {
         # Volume of the GUI's sounds, from 0 (mute) to 1. The guivolume
         # command changes it for the current session.
         "sound_volume":         1,
+        # Image shown as the window icon on Linux and as the Dock and
+        # Cmd-Tab icon on macOS while Rune runs: a GIF, JPEG, PNG or WebP
+        # file, ideally square and at least 256 pixels wide. ~ and $VARS
+        # expand. `runectl screenshot` reloads it.
+        # "app_icon":           "~/.config/rune/icon.png",
         # Themes available to `default_theme` and the `guitheme` command.
         "themes":               GUI_THEMES,
         # Remap physical keys before they reach the editor (GUI only). Both

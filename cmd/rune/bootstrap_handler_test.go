@@ -856,6 +856,46 @@ func TestReloadHUDAppliesChangedVolumeAndTheme(t *testing.T) {
 	}
 }
 
+func TestReloadHUDAppliesAppIcon(t *testing.T) {
+	dir := t.TempDir()
+	iconPath := filepath.Join(dir, "icon.png")
+	var icon bytes.Buffer
+	require.NoError(t, png.Encode(&icon, image.NewNRGBA(image.Rect(0, 0, 2, 2))))
+	require.NoError(t, os.WriteFile(iconPath, icon.Bytes(), 0o644))
+	const base = "editor:\n  mode: modal\n"
+	b := newConfiguredBootstrapForEnvTest(t, configFilename, base, t.TempDir())
+	g, err := gui.New(b)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = g.Close() })
+	b.attachGUI(g, false)
+
+	steps := []struct {
+		name     string
+		config   string
+		wantIcon bool
+	}{
+		{name: "an image is the icon", config: base + "gui:\n  app_icon: " + iconPath + "\n",
+			wantIcon: true},
+		{name: "a config that does not parse keeps the icon", config: "gui: [",
+			wantIcon: true},
+		{name: "an image that does not load restores the default",
+			config: base + "gui:\n  app_icon: " + filepath.Join(dir, "missing.png") + "\n"},
+		{name: "the image again", config: base + "gui:\n  app_icon: " + iconPath + "\n",
+			wantIcon: true},
+		{name: "no key restores the default", config: base},
+	}
+	for _, step := range steps {
+		t.Run(step.name, func(t *testing.T) {
+			require.NoError(t, os.WriteFile(b.configPath, []byte(step.config), 0o644))
+			reloadHUD(t, b)
+
+			b.mu.Lock()
+			defer b.mu.Unlock()
+			assert.Equal(t, step.wantIcon, b.g.AppIcon() != nil)
+		})
+	}
+}
+
 func TestApplyHUDIgnoresTheGUIConfigOfAnOlderHUD(t *testing.T) {
 	ctx := context.Background()
 	b := newConfiguredBootstrapForEnvTest(t, configFilename,
@@ -872,8 +912,8 @@ func TestApplyHUDIgnoresTheGUIConfigOfAnOlderHUD(t *testing.T) {
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.applyHUD(b.realIDE, newer, nil)
-	b.applyHUD(b.realIDE, older, nil)
+	b.applyHUD(b.realIDE, newer, guiAssets{})
+	b.applyHUD(b.realIDE, older, guiAssets{})
 	assert.Equal(t, 0.6, b.soundOutput.Volume())
 }
 

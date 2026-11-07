@@ -589,26 +589,27 @@ const extensionReloadSettle = 300 * time.Millisecond
 // i is left as it is if it is no longer the current IDE. It must not run
 // on the event loop.
 func (b *bootstrapHandler) reloadHUDAndScreenshot(i *ide.IDE) {
-	hud, menuImages, err := b.loadHUD(i)
+	hud, assets, err := b.loadHUD(i)
 	ok := b.scheduleNextTick(func() {
-		b.queueScreenshot(b.installHUD(i, hud, menuImages, err))
+		b.queueScreenshot(b.installHUD(i, hud, assets, err))
 	})
 	if !ok {
 		log.Errorf("request screenshot: could not queue screenshot request")
 	}
 }
 
-// loadHUD reads the HUD of the config file for i and the quick menu's
-// sprites, for installHUD to install. It must not run on the event loop.
-func (b *bootstrapHandler) loadHUD(i *ide.IDE) (*ide.HUD, map[string]image.Image, error) {
+// loadHUD reads the HUD of the config file for i and the files its gui
+// section names, for installHUD to install. It must not run on the event
+// loop.
+func (b *bootstrapHandler) loadHUD(i *ide.IDE) (*ide.HUD, guiAssets, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), hudLoadTimeout)
 	defer cancel()
 	hud, err := i.LoadHUD(ctx)
 	if err != nil {
 		log.Errorf("reload the HUD: %v", err)
-		return nil, nil, err
+		return nil, guiAssets{}, err
 	}
-	return hud, readQuickMenuImages(ctx, ide.QuickMenuButtons(hud.Config()), b.storage), nil
+	return hud, readGUIAssets(ctx, hud.Config(), b.storage), nil
 }
 
 // installHUD installs in i what loadHUD returned, or notifies loadErr. i
@@ -616,7 +617,7 @@ func (b *bootstrapHandler) loadHUD(i *ide.IDE) (*ide.HUD, map[string]image.Image
 // many extension processes were told to fetch their config again. It must
 // run on the event loop.
 func (b *bootstrapHandler) installHUD(
-	i *ide.IDE, hud *ide.HUD, menuImages map[string]image.Image, loadErr error,
+	i *ide.IDE, hud *ide.HUD, assets guiAssets, loadErr error,
 ) int {
 	if loadErr != nil {
 		_, err := b.notifications().Notify(browserapi.LevelError,
@@ -629,7 +630,7 @@ func (b *bootstrapHandler) installHUD(
 	if b.currentIDE() != i {
 		return 0
 	}
-	return b.applyHUD(i, hud, menuImages)
+	return b.applyHUD(i, hud, assets)
 }
 
 // subscribeThemeReloadCommand registers on i the command that applies the
@@ -642,15 +643,15 @@ func (b *bootstrapHandler) subscribeThemeReloadCommand(i *ide.IDE) error {
 			"frame unions; prompts and their buttons; the command prompt frame, " +
 			"separator and manual; the editor and extension status bars; the " +
 			"wallpaper; sounds, the terminal bell and program status sounds; and " +
-			"the GUI quick menu and themes, and its default theme and sound volume " +
-			"when they changed. Images those keys name are read again. Other " +
-			"settings need workspacereload or a restart.",
+			"the GUI quick menu, themes and app icon, and its default theme and " +
+			"sound volume when they changed. Images those keys name are read " +
+			"again. Other settings need workspacereload or a restart.",
 	}
 	handler := func(context.Context, textapi.Command) error {
 		go debug.CapturePanicReport(func() {
-			hud, menuImages, err := b.loadHUD(i)
+			hud, assets, err := b.loadHUD(i)
 			ok := b.scheduleNextTick(func() {
-				b.installHUD(i, hud, menuImages, err)
+				b.installHUD(i, hud, assets, err)
 			})
 			if !ok {
 				log.Errorf("%s: could not queue UI event", cmdThemeReload)
@@ -678,26 +679,49 @@ func (b *bootstrapHandler) queueScreenshot(signalled int) {
 	b.afterFunc(extensionReloadSettle, queue)
 }
 
+// guiAssets are the files a HUD reload reads for applyGUIConfig, off the
+// event loop because reading them is slow.
+type guiAssets struct {
+	// menuImages are the quick menu's sprites.
+	menuImages map[string]image.Image
+	// appIcon is the icon of gui.app_icon, nil for the default one, and
+	// appIconErr why its image did not load.
+	appIcon    *gui.AppIcon
+	appIconErr error
+}
+
+// readGUIAssets reads the files the gui section of cfg names.
+func readGUIAssets(ctx context.Context, cfg config.Config, storage storageapi.Service) guiAssets {
+	assets := guiAssets{
+		menuImages: readQuickMenuImages(ctx, ide.QuickMenuButtons(cfg), storage),
+	}
+	// applyGUIConfig reports a gui that is not a section.
+	if guiCfg, ok, err := getGUIConfig(cfg); err == nil && ok {
+		assets.appIcon, assets.appIconErr = loadGUIAppIcon(guiCfg)
+	}
+	return assets
+}
+
 // applyHUD installs hud in i and, unless i has a HUD whose load started
 // later already, applies the app-wide settings of the config hud was
-// read from. menuImages are the quick menu's sprites, read already. It
-// returns how many extension processes were told to fetch their config
-// again. It must run on the event loop.
-func (b *bootstrapHandler) applyHUD(i *ide.IDE, hud *ide.HUD, menuImages map[string]image.Image) int {
+// read from, with the assets read from it already. It returns how many
+// extension processes were told to fetch their config again. It must run
+// on the event loop.
+func (b *bootstrapHandler) applyHUD(i *ide.IDE, hud *ide.HUD, assets guiAssets) int {
 	applied, signalled := i.ApplyHUD(hud)
 	if applied {
-		b.applyGUIConfig(hud.Config(), menuImages)
+		b.applyGUIConfig(hud.Config(), assets)
 	}
 	return signalled
 }
 
-// applyGUIConfig applies the quick menu, sound volume and color themes
-// of cfg. The volume and default theme are applied only when they differ
-// from the ones read last. menuImages are the quick menu's sprites, read
-// already. It must run on the event loop.
-func (b *bootstrapHandler) applyGUIConfig(cfg config.Config, menuImages map[string]image.Image) {
+// applyGUIConfig applies the quick menu, sound volume, app icon and color
+// themes of cfg, with the assets read from it already. The volume and
+// default theme are applied only when they differ from the ones read
+// last. It must run on the event loop.
+func (b *bootstrapHandler) applyGUIConfig(cfg config.Config, assets guiAssets) {
 	menu, menuSounds := quickMenuConfig(cfg)
-	b.setQuickMenu(menu, menuSounds, menuImages)
+	b.setQuickMenu(menu, menuSounds, assets.menuImages)
 
 	guiCfg, ok, err := getGUIConfig(cfg)
 	if err != nil {
@@ -716,6 +740,8 @@ func (b *bootstrapHandler) applyGUIConfig(cfg config.Config, menuImages map[stri
 	if b.g == nil {
 		return
 	}
+	notifyGUIAppIconErr(browser, assets.appIconErr)
+	b.g.SetAppIcon(assets.appIcon)
 	b.applyGUIThemes(guiCfg)
 	name := getGUIDefaultColorTheme(browser, guiCfg)
 	if name == b.defaultTheme {

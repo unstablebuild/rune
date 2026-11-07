@@ -3,11 +3,11 @@ name: rune-hud
 description: >
   Update Rune's configuration and generate sprites to refine its UI:
   window frames, scroll bars, floating window bars, command prompts, editor
-  and agent status-bar layouts, the quick menu, prompt buttons, wallpaper and
-  sounds. Discover the configuration, edit it, run runectl screenshot and
-  inspect the result yourself. This is configuration and asset editing, not
-  Rune source development. Use when the user wants to create, restyle or
-  iterate on Rune's appearance or sounds.
+  and agent status-bar layouts, the quick menu, prompt buttons, wallpaper, the
+  app icon and sounds. Discover the configuration, edit it, run runectl
+  screenshot and inspect the result yourself. This is configuration and asset
+  editing, not Rune source development. Use when the user wants to create,
+  restyle or iterate on Rune's appearance or sounds.
 ---
 
 # Rune HUD images and sounds
@@ -58,8 +58,8 @@ these keys to every open workspace:
 - `editor.status_bar`: `layout`, `background_attr` and `foreground_error_attr`;
 - `extensions.rune-agent.config.status_bar`, every key, and
   `extensions.rune-agent.config.input_box_frame_charset`;
-- `gui`: `quick_menu`, `quick_menu_sounds`, `themes`, `default_theme` and
-  `sound_volume`;
+- `gui`: `quick_menu`, `quick_menu_sounds`, `themes`, `default_theme`,
+  `sound_volume` and `app_icon`;
 - `notifications`: `attr`, `background_attr`, `frame_charset`, `padding`,
   `progress_bar` and `progress_format`;
 - `program_status`, every key;
@@ -69,6 +69,12 @@ these keys to every open workspace:
   `wallpaper_density_characters`, `focus_tab_highlight_char`, `tab_images` and
   `focus_tab_highlight_graphics`;
 - `sounds`.
+
+The capture cannot show `gui.app_icon`: the desktop draws the icon outside
+Rune's output. Inspect the icon file itself, downscaled to 16, 32 and 256 px
+(`magick icon.png -resize 16x16 icon-16.png`), then tell the user where to
+look: the Dock and the Command-Tab switcher on macOS, the taskbar or window
+title on Linux.
 
 Rune also reads again every image these keys name, including a file you
 overwrote at the same path. Existing prompts retain their style until reopened;
@@ -122,6 +128,7 @@ hud/<theme>/
   wallpaper.png
   sources/<name>.png, <name>.prompt.txt
   sounds/<cue>.wav
+  v<N>/icon.png
   v<N>/frame/{normal,focused,prompt}/<slot>.png
   v<N>/scroll/{top,middle,bottom,hover-top,hover-middle,hover-bottom}.png
   v<N>/window-bar/{left,middle,right}.png
@@ -134,16 +141,17 @@ Use lowercase kebab-case file names, with no spaces, `?`, `#` or `%`: they
 would need percent-encoding in a `file://` URI.
 
 ## Rules that apply to every image
-1. **Use absolute URIs**, except for the wallpaper. Image values are
-   `file:///absolute/path.png` or `https://...`, with no `~` and no `$VARS`.
-   `workspace.wallpaper_image` is the exception: it takes a plain path, which
-   may use `~` and environment variables.
+1. **Use absolute URIs**, except for the wallpaper and the app icon. Image
+   values are `file:///absolute/path.png` or `https://...`, with no `~` and no
+   `$VARS`. `workspace.wallpaper_image` and `gui.app_icon` are the
+   exceptions: they take a plain path, which may use `~` and environment
+   variables.
 2. **Overwrite an image in place only if a key under Checking your work names
    it.** Rune caches images by URI for 24 hours by default, but
    `runectl screenshot` reads those images again, so you can overwrite them
    while you iterate. Save each version you ship in a new `v<N>` directory
    and keep the previous one for rollback.
-   - The wallpaper is not cached: overwrite it in place.
+   - The wallpaper and the app icon are not cached: overwrite them in place.
 3. **Formats:** PNG with alpha is preferred. JPEG, GIF and WebP also load, except
    for the wallpaper, which must be a PNG. Each side is at most 8192 px.
 4. **Images are drawn as they are.** Attrs, dimming, b&w and the theme do not
@@ -194,6 +202,8 @@ principles.
    - Scroll bar: a plain thumb in the frame's material.
    - Quick menu: one icon per button, all in the same style, line weight and
      plate.
+   - App icon: one bold emblem on the theme's background, readable at 16 px,
+     with no text.
 5. **Minimum size.** A figure needs about 3 rows to read.
    Below that, use a silhouette or a simple icon, or leave it out. Judge at
    true device size, never enlarged.
@@ -350,6 +360,7 @@ Abbreviations:
 | Agent status bar | `extensions.rune-agent.config.status_bar.layout` | `.Image` elements | `width` × `height` | contain, or `fit "fill"` |
 | Quick menu | `gui.quick_menu[i].sprite` | `idle` `hover` `pressed` | square, each side as wide as 4 text columns | contain |
 | Wallpaper | `workspace.wallpaper_image` | a path, or `{path, width, height, fit}` | `width`/`height` in cells or `N%`, default 60% | `contain` (default), `cover` or `fill` |
+| App icon | `gui.app_icon` | a path | none: a square image, 256 px or larger | `contain`, centered on a transparent square |
 
 ### Requirements
 - Frame and scroll bar images are drawn only while
@@ -389,6 +400,12 @@ Abbreviations:
   `program_status.selected_attr` and `program_status.hover_attr`: an entry
   keeps their other colours, and gets the background back while its images
   don't draw.
+- The app icon is the window icon on Linux, but GNOME and KDE Plasma show the
+  icon of Rune's launcher instead; the user can set the `Icon=` line of
+  `~/.local/share/applications/rune.desktop` (copied from
+  `/usr/share/applications/` for the Debian package) to the image's absolute
+  path. On macOS it replaces the Dock and Command-Tab icon while Rune runs;
+  Finder and the Dock tile of a Rune that is not running keep the bundled icon.
 
 ### Where the anchor cell sits in each image
 Line up rails and seams across slices at these positions.
@@ -1128,6 +1145,7 @@ unavailable. Do not claim unactivated changes have been verified.
 - An invalid URI rejects its whole `graphics` table. Correct the URI instead
   of assuming the previous images will remain.
 - An unreadable wallpaper is a config error.
+- An unreadable app icon shows a notification and restores the default icon.
 - Other missing or unreadable images use their slot fallback; separator
   junctions try the vertical side image before the rune, as described above.
   Load failures log a warning to the file named by `log_path`.

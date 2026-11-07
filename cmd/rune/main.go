@@ -839,6 +839,7 @@ func runGUI(
 	guiRef.Store(g)
 	publisher.attach(g)
 	root.attachGUI(g, transparentWindow)
+	g.SetAppIcon(getGUIAppIcon(browser, guiCfg))
 	defer watchGUISignals(root, quitEvent(appMenuKeyBindings(root.config())))()
 
 	if fg, bg := getGUIWindowOpacity(browser, guiCfg); transparentWindow && (fg != 1 || bg != 1) {

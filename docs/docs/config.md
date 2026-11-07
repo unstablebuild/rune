@@ -103,8 +103,9 @@ the configuration they were opened with.
 Rune to every open workspace, with nothing closed or reopened: frames, window
 bars and prompts, tabs, notifications, the editor and Rune Agent status bars,
 the Rune Agent compose box frame, the wallpaper, `sounds`, the terminal bell,
-the program status inbox and its sounds, and the quick menu, themes and sound
-volume of the GUI. It also reads again every image those keys name.
+the program status inbox and its sounds, and the quick menu, themes, sound
+volume and app icon of the GUI. It also reads again every image those keys
+name.
 [`runectl screenshot`](./develop/runectl.md#screenshots) does the same before
 each capture, which is how Rune Agent checks a theme it is designing; the
 screenshot section lists the exact keys.
@@ -115,10 +116,10 @@ Everything that belongs to the process or to the GUI window is built once at
 startup and needs a restart:
 
 - all `gui.*` settings: fonts, themes, ligatures, opacity, blur,
-  scroll multiplier, sound volume, key mapping, quick menu, `gui.env`.
-  `runectl screenshot` applies the themes, sound volume and quick menu without
-  one, and themes and `gui.env` variables added by a package install are
-  available right away (see below).
+  scroll multiplier, sound volume, key mapping, quick menu, app icon,
+  `gui.env`. `runectl screenshot` applies the themes, sound volume, quick menu
+  and app icon without one, and themes and `gui.env` variables added by a
+  package install are available right away (see below).
 - `log.output_path` and `log.level`
 - `models.*` (the LLM router), `notifications.auto_close`, `telemetry.*`
 - `animations.*`, `workspace.home`, clipboard and macro settings
@@ -457,6 +458,34 @@ available:
       "EDITOR": "vim",
     "PATH": "$HOME/.local/bin:$PATH",
   }
+  ```
+
+- `gui.app_icon`: the path of a GIF, JPEG, PNG or WebP image that Rune shows
+  as its icon while it runs, in place of the Rune logo. `~` and variables
+  such as `$HOME` expand. A square image at least 256 pixels wide looks best;
+  other shapes are centered on a transparent square. Images wider or taller
+  than 8192 pixels are rejected.
+
+  - On Linux the image becomes the window icon. GNOME and KDE Plasma show the
+    icon of Rune's launcher instead, so also set the `Icon=` line of
+    `~/.local/share/applications/rune.desktop` to the absolute path of the
+    image. Rune's installer writes that file; with the Debian package, copy
+    `/usr/share/applications/rune.desktop` there first. Upgrades from within
+    Rune keep the edit, but running the installer again replaces the file.
+  - On macOS the image replaces the icon in the Dock and the Command-Tab
+    switcher. Finder, Launchpad and the Dock tile shown while Rune is not
+    running keep the bundled icon.
+
+  [`runectl screenshot`](./develop/runectl.md#screenshots) reads the key and
+  the image again, so you can try an icon without restarting Rune.
+
+  ```yaml tab
+  gui:
+    app_icon: ~/.config/rune/icon.png
+  ```
+
+  ```python tab
+  config["gui"]["app_icon"] = "~/.config/rune/icon.png"
   ```
 
 ## Links

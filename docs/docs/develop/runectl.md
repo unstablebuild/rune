@@ -91,8 +91,8 @@ keys to every open workspace, as `themereload` does:
   `command.show_manual`;
 - `editor.status_bar`: `layout`, `background_attr` and
   `foreground_error_attr`;
-- `gui`: `quick_menu`, `quick_menu_sounds`, `themes`, `default_theme` and
-  `sound_volume`;
+- `gui`: `quick_menu`, `quick_menu_sounds`, `themes`, `default_theme`,
+  `sound_volume` and [`app_icon`](../config.md#gui);
 - `notifications`: `attr`, `background_attr`, `frame_charset`, `padding`,
   `progress_bar` and `progress_format`;
 - `program_status`, every key;
@@ -103,6 +103,9 @@ keys to every open workspace, as `themereload` does:
   `focus_tab_highlight_char`, `tab_images` and
   `focus_tab_highlight_graphics`;
 - `sounds`.
+
+The capture cannot show `gui.app_icon`: the desktop draws the icon outside
+Rune's output, so look for it in the taskbar, the window title or the Dock.
 
 It also reads again every image these keys name, even a file overwritten
 at the same path, so you can edit an image and see it in the next
