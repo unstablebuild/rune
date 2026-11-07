@@ -126,11 +126,11 @@ func TestResolveTranscriptHorizontalPadding(t *testing.T) {
 		cfg  map[string]any
 		want int
 	}{
-		{name: "unset keeps 80 columns", cfg: map[string]any{}, want: -80},
+		{name: "unset keeps 90 columns", cfg: map[string]any{}, want: -90},
 		{name: "a negative value is the width", cfg: map[string]any{"transcript_horizontal_padding": -120}, want: -120},
 		{name: "a positive value is the padding", cfg: map[string]any{"transcript_horizontal_padding": 20}, want: 20},
 		{name: "zero fills the tab", cfg: map[string]any{"transcript_horizontal_padding": 0}, want: 0},
-		{name: "a non-integer keeps 80 columns", cfg: map[string]any{"transcript_horizontal_padding": "wide"}, want: -80},
+		{name: "a non-integer keeps 90 columns", cfg: map[string]any{"transcript_horizontal_padding": "wide"}, want: -90},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -147,7 +147,8 @@ func TestTranscriptHorizontalPaddingLaysOutTheTranscript(t *testing.T) {
 		// wantX is the column the transcript starts at.
 		wantX int
 	}{
-		{name: "a width centers the transcript", padding: -80, wantX: 10},
+		{name: "a width centers the transcript", padding: -90, wantX: 5},
+		{name: "a narrower width centers the transcript", padding: -80, wantX: 10},
 		{name: "a width wider than the tab fills it", padding: -120},
 		{name: "a padding splits evenly", padding: 20, wantX: 10},
 		{name: "no padding fills the tab", padding: 0},

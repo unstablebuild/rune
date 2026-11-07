@@ -127,7 +127,7 @@ const defaultPinnedUserMsgMaxLines = 2
 var (
 	defaultComponentCfg = dialoguetui.ComponentConfig{
 		MessagesRowConfig: component.SpanConfig{
-			PadHorizontal:    -80,
+			PadHorizontal:    -90,
 			PadVertical:      2,
 			ContentAlignment: component.AlignmentCentered,
 		},

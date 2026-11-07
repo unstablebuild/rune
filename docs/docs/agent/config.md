@@ -321,7 +321,7 @@ an optional `fg` (foreground color), `bg` (background color), and `flags`
 | `user_msg_background_attr` | The background behind your messages. |
 | `user_msg_icon` | The character marking each of your messages, left of its first line. Defaults to a Nerd Font right arrow; set it to an empty string to hide it. |
 | `assistant_msg_attr` | The agent's messages in the transcript. |
-| `transcript_horizontal_padding` | The columns left beside the transcript, split evenly on either side. A negative value sets the transcript's width instead: the default, `-80`, keeps it 80 columns wide and centered, and it fills a narrower tab. `0` fills the tab. A change applies after `workspacereload`. |
+| `transcript_horizontal_padding` | The columns left beside the transcript, split evenly on either side. A negative value sets the transcript's width instead: the default, `-90`, keeps it 90 columns wide and centered, and it fills a narrower tab. `0` fills the tab. A change applies after `workspacereload`. |
 | `input_box_attr` | The composer's text content. |
 | `input_box_placeholder_attr` | The composer's placeholder text. |
 | `input_box_frame_attr` | The composer's border. |
