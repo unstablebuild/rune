@@ -1057,12 +1057,18 @@ config = {
         "non_focus_tab_icon_attr": attr(fg = "silver", bg = "default"),
         "focus_tab_highlight_attr": attr(fg = "red", bg = "default"),
         "focus_tab_highlight_char":  "\U00100006",
+        # Layered over the label of a tab not in focus while the pointer is
+        # on it, under the colours the tab has of its own.
+        "hover_tab_attr":          attr(),
         # A "tab_images" table names images drawn under each tab: "focus"
         # for the tabs shown in a window, falling back to "non_focus" for
-        # the others. Each names a "left" image for the tab's first cell, a
-        # "right" one for its last and a "middle" one for every cell
-        # between. "outset" stretches the left and right images "sides"
-        # cells outward:
+        # the others. A tab not in focus is drawn over "hover" while the
+        # pointer is on it and over "pressed" while a press on it is held,
+        # as a tab activates when the button is released over it. "pressed"
+        # falls back to "hover" and "hover" to "non_focus". Each names a
+        # "left" image for the tab's first cell, a "right" one for its last
+        # and a "middle" one for every cell between. "outset" stretches the
+        # left and right images "sides" cells outward:
         #
         #     "tab_images": {
         #         "focus":     {
@@ -1071,6 +1077,8 @@ config = {
         #             "right":  "file:///path/to/tab-right.png",
         #         },
         #         "non_focus": {...},
+        #         "hover":     {...},
+        #         "pressed":   {...},
         #         "outset":    {"sides": 0},
         #     },
         #
@@ -1086,6 +1094,13 @@ config = {
         #         "horizontal": "file:///path/to/highlight.png",
         #         "right":      "file:///path/to/highlight-right.png",
         #     },
+        # The sounds the tab bar plays: "hover" when the pointer moves onto
+        # a tab not in focus and "click" when a tab is clicked. Each is a
+        # name from `sounds`, or "" for none.
+        "tab_sounds": {
+            "hover": "",
+            "click": "",
+        },
         # Icons for tabs; `terminal` is used for terminal tabs while
         # `default` is the fallback for files.
         "icons": {
@@ -1169,11 +1184,16 @@ config = {
         # Character drawn on the bottom row of the workspace tab bar to
         # highlight the workspace currently in focus.
         "focus_tab_highlight_char":  "",
-        # "tab_images" and "focus_tab_highlight_graphics" name images for
-        # the workspace tab bar, as their browser counterparts do; "focus"
-        # is the workspace in focus. The bar takes its colours from
-        # browser.*_tab_attr and browser.focus_tab_highlight_attr. Every
-        # workspace shares it, so a workspace's own config does not style it.
+        # "tab_images", "focus_tab_highlight_graphics" and "tab_sounds" name
+        # images and sounds for the workspace tab bar, as their browser
+        # counterparts do; "focus" is the workspace in focus. The bar takes
+        # its colours from browser.*_tab_attr, browser.hover_tab_attr and
+        # browser.focus_tab_highlight_attr. Every workspace shares it, so a
+        # workspace's own config does not style it.
+        "tab_sounds": {
+            "hover": "",
+            "click": "",
+        },
         # Per-workspace notice shown in a floating window when the
         # workspace opens. Either `path` (resolved against the
         # workspace filesystem) or `literal` provides the content;

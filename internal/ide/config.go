@@ -118,6 +118,7 @@ const (
 	keyQuickMenuSounds = "quick_menu_sounds"
 	keyQuickMenuHover  = "hover"
 	keyQuickMenuClick  = "click"
+	keyTabSounds       = "tab_sounds"
 
 	keySounds       = "sounds"
 	keyTerminal     = "terminal"
@@ -2399,12 +2400,29 @@ func (c ideConfig) lineGraphics(
 
 // tabImages reads the tab_images of cfg, whose errors go under errKey:
 // the tabs in focus are drawn over the focus images, or the non_focus
-// ones without them.
+// ones without them, and the rest over the hover and pressed ones while
+// the pointer is on them.
 func (c ideConfig) tabImages(cfg config.Config, errKey string) browser.PromptImages {
 	return c.buttonImages(cfg, "tab_images", errKey, []buttonImageKey{
 		{"non_focus", component.ButtonIdle},
 		{"focus", component.ButtonSelected},
+		{"hover", component.ButtonHover},
+		{"pressed", component.ButtonPressed},
 	}, false)
+}
+
+// tabSounds reads the tab_sounds of cfg: the sounds a tab bar plays when
+// the pointer moves onto a tab not in focus and when a tab is clicked.
+// validateSounds dropped the entries naming no known sound.
+func (c ideConfig) tabSounds(cfg config.Config) handler.TabSounds {
+	soundsCfg, err := cfg.GetConfig(keyTabSounds)
+	if err != nil {
+		return handler.TabSounds{}
+	}
+	var ret handler.TabSounds
+	ret.Hover, _ = soundsCfg.GetString(keyQuickMenuHover)
+	ret.Click, _ = soundsCfg.GetString(keyQuickMenuClick)
+	return ret
 }
 
 // tabHighlightGraphics reads the focus_tab_highlight_graphics of cfg,
@@ -2423,16 +2441,19 @@ func (c ideConfig) browserTabStyle() browser.TabStyle {
 		NonFocusTabIconAttr:   c.nonFocusTabIconAttr(),
 		FocusTabHighlightAttr: c.highlightTabAttr(),
 		FocusTabHighlightChar: c.highlightTabChar(),
+		HoverTabAttr:          c.hoverTabAttr(),
 	}
 	if cfg, ok := c.browser(); ok {
 		ret.Images = c.tabImages(cfg, "browser")
 		ret.HighlightGraphics = c.tabHighlightGraphics(cfg, "browser")
+		ret.Sounds = c.tabSounds(cfg)
 	}
 	return ret
 }
 
 // workspaceBarStyle reads how the workspace bar looks: the tab colours
-// of browser, with the highlight character and images of workspace.
+// of browser, with the highlight character, images and sounds of
+// workspace.
 func (c ideConfig) workspaceBarStyle() workspaceBarStyle {
 	ws := c.workspace()
 	return workspaceBarStyle{
@@ -2441,9 +2462,11 @@ func (c ideConfig) workspaceBarStyle() workspaceBarStyle {
 		focusTabIconAttr:    c.focusTabIconAttr(),
 		nonFocusTabIconAttr: c.nonFocusTabIconAttr(),
 		highlightAttr:       c.highlightTabAttr(),
+		hoverAttr:           c.hoverTabAttr(),
 		highlightChar:       c.workspaceHighlightTabChar(),
 		images:              c.tabImages(ws, "workspace"),
 		highlight:           c.tabHighlightGraphics(ws, "workspace"),
+		sounds:              c.tabSounds(ws),
 	}
 }
 
@@ -2835,6 +2858,11 @@ func (c ideConfig) nonFocusTabIconAttr() term.Attributes {
 func (c ideConfig) highlightTabAttr() term.Attributes {
 	return c.getBrowserAttr("focus_tab_highlight_attr",
 		browser.DefaultConfig().FocusTabHighlightAttr)
+}
+
+func (c ideConfig) hoverTabAttr() term.Attributes {
+	return c.getBrowserAttr("hover_tab_attr",
+		browser.DefaultConfig().HoverTabAttr)
 }
 
 func (c ideConfig) highlightTabChar() rune {

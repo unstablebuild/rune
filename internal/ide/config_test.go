@@ -1289,7 +1289,11 @@ func TestValidateSounds(t *testing.T) {
 		wantStatus any
 		// wantQuickMenu is what is left of gui.quick_menu_sounds.
 		wantQuickMenu any
-		wantErrs      []string
+		// wantBrowserTabs and wantWorkspaceTabs are what is left of
+		// browser.tab_sounds and workspace.tab_sounds.
+		wantBrowserTabs   any
+		wantWorkspaceTabs any
+		wantErrs          []string
 	}{
 		{
 			name:     "no sounds and a reserved bell",
@@ -1399,6 +1403,46 @@ func TestValidateSounds(t *testing.T) {
 			wantQuickMenu: nil,
 			wantErrs:      []string{`'gui.quick_menu_sounds' must map hover and click`},
 		},
+		{
+			name: "tab sounds name events and known sounds",
+			cfg: map[string]any{
+				"sounds":    map[string]any{"tick": "/tick.wav"},
+				"browser":   map[string]any{"tab_sounds": map[string]any{"hover": "tick", "click": "info"}},
+				"workspace": map[string]any{"tab_sounds": map[string]any{"click": ""}},
+			},
+			wantSounds:        map[string]any{"tick": "/tick.wav"},
+			wantBrowserTabs:   map[string]any{"hover": "tick", "click": "info"},
+			wantWorkspaceTabs: map[string]any{"click": ""},
+		},
+		{
+			name: "invalid tab sounds are dropped",
+			cfg: map[string]any{
+				"browser": map[string]any{"tab_sounds": map[string]any{
+					"hover": "tikc", "click": "info", "press": "info",
+				}},
+				"workspace": map[string]any{"tab_sounds": map[string]any{
+					"hover": "info", "click": true,
+				}},
+			},
+			wantBrowserTabs:   map[string]any{"click": "info"},
+			wantWorkspaceTabs: map[string]any{"hover": "info"},
+			wantErrs: []string{
+				`'browser.tab_sounds.hover' names unknown sound "tikc"`,
+				`'browser.tab_sounds.press': unknown event`,
+				`'workspace.tab_sounds.click' must be a sound name or "", got bool`,
+			},
+		},
+		{
+			name: "tab sounds is not a map",
+			cfg: map[string]any{
+				"browser":   map[string]any{"tab_sounds": "info"},
+				"workspace": map[string]any{"tab_sounds": []any{"info"}},
+			},
+			wantErrs: []string{
+				`'browser.tab_sounds' must map hover and click`,
+				`'workspace.tab_sounds' must map hover and click`,
+			},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := validateSounds(tc.cfg)
@@ -1421,6 +1465,12 @@ func TestValidateSounds(t *testing.T) {
 			}
 			if gui, ok := tc.cfg["gui"].(map[string]any); ok {
 				assert.Equal(t, tc.wantQuickMenu, gui["quick_menu_sounds"])
+			}
+			if b, ok := tc.cfg["browser"].(map[string]any); ok {
+				assert.Equal(t, tc.wantBrowserTabs, b["tab_sounds"])
+			}
+			if ws, ok := tc.cfg["workspace"].(map[string]any); ok {
+				assert.Equal(t, tc.wantWorkspaceTabs, ws["tab_sounds"])
 			}
 		})
 	}
@@ -3273,14 +3323,18 @@ func TestConfigHUDStyle(t *testing.T) {
 				"non_focus_tab_icon_attr":  map[string]any{"fg": "blue"},
 				"focus_tab_highlight_attr": map[string]any{"fg": "purple"},
 				"focus_tab_highlight_char": "▔",
+				"hover_tab_attr":           map[string]any{"fg": "white", "flags": "bold"},
 				"tab_images": map[string]any{
 					"focus":     map[string]any{"middle": "file:///tab/focus.png"},
 					"non_focus": map[string]any{"left": "file:///tab/l.png", "right": "file:///tab/r.png"},
+					"hover":     map[string]any{"middle": "file:///tab/hover.png"},
+					"pressed":   map[string]any{"middle": "file:///tab/pressed.png"},
 					"outset":    map[string]any{"sides": 1},
 				},
 				"focus_tab_highlight_graphics": map[string]any{
 					"mode": "overlay", "horizontal": "file:///tab/hl.png", "right": "file:///tab/r.png",
 				},
+				"tab_sounds": map[string]any{"hover": "tick", "click": "info"},
 			}},
 			check: func(t *testing.T, s hudStyle) {
 				assert.Equal(t, browser.TabStyle{
@@ -3290,18 +3344,23 @@ func TestConfigHUDStyle(t *testing.T) {
 					NonFocusTabIconAttr:   term.Attributes{Fg: term.ColorBlue},
 					FocusTabHighlightAttr: term.Attributes{Fg: term.ColorPurple},
 					FocusTabHighlightChar: '▔',
+					HoverTabAttr:          term.Attributes{Fg: term.ColorWhite, Attrs: term.AttrBold},
 					Images: browser.PromptImages{
 						Idle:     browser.PromptButtonImage{Left: "file:///tab/l.png", Right: "file:///tab/r.png"},
 						Selected: browser.PromptButtonImage{Middle: "file:///tab/focus.png"},
+						Hover:    browser.PromptButtonImage{Middle: "file:///tab/hover.png"},
+						Pressed:  browser.PromptButtonImage{Middle: "file:///tab/pressed.png"},
 						Outset:   component.ButtonOutset{Sides: 1},
 					},
 					HighlightGraphics: tcomponent.LineGraphics{
 						Middle: "file:///tab/hl.png", End: "file:///tab/r.png", Overlay: true,
 					},
+					Sounds: handler.TabSounds{Hover: "tick", Click: "info"},
 				}, s.browser.Tabs)
 			},
 			wantURIs: []string{
-				"file:///tab/focus.png", "file:///tab/hl.png", "file:///tab/l.png", "file:///tab/r.png",
+				"file:///tab/focus.png", "file:///tab/hl.png", "file:///tab/hover.png",
+				"file:///tab/l.png", "file:///tab/pressed.png", "file:///tab/r.png",
 			},
 		},
 		{
@@ -3347,20 +3406,24 @@ func TestConfigHUDStyle(t *testing.T) {
 					"non_focus_tab_icon_attr":  map[string]any{"fg": "blue"},
 					"focus_tab_highlight_attr": map[string]any{"fg": "purple"},
 					"focus_tab_highlight_char": "▔",
+					"hover_tab_attr":           map[string]any{"fg": "white"},
 					"tab_images": map[string]any{
 						"focus": map[string]any{"middle": "file:///tab/focus.png"},
 					},
+					"tab_sounds": map[string]any{"click": "info"},
 				},
 				"workspace": map[string]any{
 					"focus_tab_highlight_char": "",
 					"tab_images": map[string]any{
 						"focus":     map[string]any{"middle": "file:///ws/focus.png"},
 						"non_focus": map[string]any{"middle": "file:///ws/idle.png"},
+						"hover":     map[string]any{"middle": "file:///ws/hover.png"},
 						"outset":    map[string]any{"sides": 1},
 					},
 					"focus_tab_highlight_graphics": map[string]any{
 						"left": "file:///ws/hl-l.png", "horizontal": "file:///ws/hl.png",
 					},
+					"tab_sounds": map[string]any{"hover": "tick"},
 				},
 			},
 			check: func(t *testing.T, s hudStyle) {
@@ -3370,20 +3433,24 @@ func TestConfigHUDStyle(t *testing.T) {
 					focusTabIconAttr:    term.Attributes{Fg: term.ColorYellow},
 					nonFocusTabIconAttr: term.Attributes{Fg: term.ColorBlue},
 					highlightAttr:       term.Attributes{Fg: term.ColorPurple},
+					hoverAttr:           term.Attributes{Fg: term.ColorWhite},
 					images: browser.PromptImages{
 						Idle:     browser.PromptButtonImage{Middle: "file:///ws/idle.png"},
 						Selected: browser.PromptButtonImage{Middle: "file:///ws/focus.png"},
+						Hover:    browser.PromptButtonImage{Middle: "file:///ws/hover.png"},
 						Outset:   component.ButtonOutset{Sides: 1},
 					},
 					highlight: tcomponent.LineGraphics{
 						Start: "file:///ws/hl-l.png", Middle: "file:///ws/hl.png",
 					},
+					sounds: handler.TabSounds{Hover: "tick"},
 				}, s.workspaceBar)
 				assert.Equal(t, '▔', s.browser.Tabs.FocusTabHighlightChar)
+				assert.Equal(t, handler.TabSounds{Click: "info"}, s.browser.Tabs.Sounds)
 			},
 			wantURIs: []string{
 				"file:///tab/focus.png", "file:///ws/focus.png", "file:///ws/hl-l.png",
-				"file:///ws/hl.png", "file:///ws/idle.png",
+				"file:///ws/hl.png", "file:///ws/hover.png", "file:///ws/idle.png",
 			},
 		},
 		{

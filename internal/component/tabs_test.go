@@ -604,6 +604,258 @@ i1iONEis2sTWOs      `,
 	}
 }
 
+func TestTabsDrawPointer(t *testing.T) {
+	pics := newFramePictures(t)
+	const width, height = 24, 2
+	// Tabs sit at 0-4, 7-11 and 14-18, with the middle one in focus.
+	off := term.Coordinates{X: -1, Y: -1}
+	tests := []struct {
+		name string
+		// idle, selected, hover and pressed name the picture of every
+		// image of the state.
+		idle, selected, hover, pressed rune
+		pointer                        term.Coordinates
+		pressedTab                     int
+		armed                          bool
+		expected                       string
+	}{
+		{
+			name: "no pointer", idle: 'i', selected: 's', hover: 'v', pressed: 'p',
+			pointer: off, pressedTab: -1,
+			expected: `
+iiiii  ━━━━━  iiiii     
+1iONE  2sTWO  3iSIX     `,
+		},
+		{
+			name: "the tab under the pointer is drawn over its hover images",
+			idle: 'i', selected: 's', hover: 'v', pressed: 'p',
+			pointer: term.Coordinates{X: 1, Y: 1}, pressedTab: -1,
+			expected: `
+vvvvv  ━━━━━  iiiii     
+1vONE  2sTWO  3iSIX     `,
+		},
+		{
+			name: "the separator after the tab in focus is part of it",
+			idle: 'i', selected: 's', hover: 'v', pressed: 'p',
+			pointer: term.Coordinates{X: 13, Y: 0}, pressedTab: -1,
+			expected: `
+iiiii  ━━━━━  iiiii     
+1iONE  2sTWO  3iSIX     `,
+		},
+		{
+			name: "the separator after a tab is part of it",
+			idle: 'i', selected: 's', hover: 'v', pressed: 'p',
+			pointer: term.Coordinates{X: 6, Y: 0}, pressedTab: -1,
+			expected: `
+vvvvv  ━━━━━  iiiii     
+1vONE  2sTWO  3iSIX     `,
+		},
+		{
+			name: "the tab in focus keeps its images under the pointer",
+			idle: 'i', selected: 's', hover: 'v', pressed: 'p',
+			pointer: term.Coordinates{X: 8, Y: 1}, pressedTab: -1,
+			expected: `
+iiiii  ━━━━━  iiiii     
+1iONE  2sTWO  3iSIX     `,
+		},
+		{
+			name: "past the last tab no tab is hovered",
+			idle: 'i', selected: 's', hover: 'v', pressed: 'p',
+			pointer: term.Coordinates{X: 22, Y: 1}, pressedTab: -1,
+			expected: `
+iiiii  ━━━━━  iiiii     
+1iONE  2sTWO  3iSIX     `,
+		},
+		{
+			name: "a pointer below the bar has left it",
+			idle: 'i', selected: 's', hover: 'v', pressed: 'p',
+			pointer: term.Coordinates{X: 1, Y: height}, pressedTab: -1,
+			expected: `
+iiiii  ━━━━━  iiiii     
+1iONE  2sTWO  3iSIX     `,
+		},
+		{
+			name: "a pressed tab with the pointer on it is drawn over its pressed images",
+			idle: 'i', selected: 's', hover: 'v', pressed: 'p',
+			pointer: term.Coordinates{X: 15, Y: 1}, pressedTab: 2, armed: true,
+			expected: `
+iiiii  ━━━━━  ppppp     
+1iONE  2sTWO  3pSIX     `,
+		},
+		{
+			name: "a press dragged off its tab shows no tab under the pointer",
+			idle: 'i', selected: 's', hover: 'v', pressed: 'p',
+			pointer: term.Coordinates{X: 1, Y: 1}, pressedTab: 2,
+			expected: `
+iiiii  ━━━━━  iiiii     
+1iONE  2sTWO  3iSIX     `,
+		},
+		{
+			name: "the pressed images fall back to the hover ones",
+			idle: 'i', selected: 's', hover: 'v',
+			pointer: term.Coordinates{X: 15, Y: 1}, pressedTab: 2, armed: true,
+			expected: `
+iiiii  ━━━━━  vvvvv     
+1iONE  2sTWO  3vSIX     `,
+		},
+		{
+			name: "the hover images fall back to the idle ones", idle: 'i', selected: 's',
+			pointer: term.Coordinates{X: 1, Y: 1}, pressedTab: -1,
+			expected: `
+iiiii  ━━━━━  iiiii     
+1iONE  2sTWO  3iSIX     `,
+		},
+		{
+			name: "the tab in focus falls back to the idle images, not the hover ones",
+			idle: 'i', hover: 'v',
+			pointer: term.Coordinates{X: 15, Y: 1}, pressedTab: -1,
+			expected: `
+iiiii  ━━━━━  vvvvv     
+1iONE  2iTWO  3vSIX     `,
+		},
+		{
+			name: "without idle images only the tab under the pointer has images", hover: 'v',
+			pointer: term.Coordinates{X: 15, Y: 1}, pressedTab: -1,
+			expected: `
+       ━━━━━  vvvvv     
+1 ONE  2 TWO  3vSIX     `,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewFrameGraphics(storagestub.NewInMemoryService(), term.NopInterrupter())
+			t.Cleanup(func() { assert.NoError(t, g.Close()) })
+			loaded := make(map[string]image.Image)
+			for _, name := range "isvp" {
+				loaded[pics.uris[string(name)]] = pics.imgs[name]
+			}
+			g.Reload(loaded)
+			state := func(name rune) component.ButtonImage {
+				if name == 0 {
+					return component.ButtonImage{}
+				}
+				img := g.Image(pics.uris[string(name)])
+				return component.ButtonImage{Left: img, Middle: img, Right: img}
+			}
+
+			l := NewTabs()
+			l.SetBorder(false)
+			l.Resize(width, height)
+			l.Add('1', "ONE")
+			l.Add('2', "TWO")
+			l.Add('3', "SIX")
+			l.ResetFocus()
+			l.SetFocus(1)
+			l.SetGraphics(g, &component.ButtonImages{
+				Idle:     state(tt.idle),
+				Selected: state(tt.selected),
+				Hover:    state(tt.hover),
+				Pressed:  state(tt.pressed),
+			}, LineGraphics{})
+			// Drawn first, for the pointer and the press to redraw a
+			// bar laid out already.
+			l.Draw(newImageScreen(width, height))
+			l.SetPointer(tt.pointer)
+			l.SetPressed(tt.pressedTab, tt.armed)
+
+			s := newImageScreen(width, height)
+			l.Draw(s)
+			assert.Equal(t, tt.expected, s.composite(t, pics))
+		})
+	}
+}
+
+func TestTabsDrawHoverAttr(t *testing.T) {
+	const width, height = 24, 1
+	focus := term.Attributes{Fg: term.ColorWhite, Attrs: term.AttrNegativeVerticalRenderOffset}
+	nonFocus := term.Attributes{Fg: term.ColorGray, Attrs: term.AttrNegativeVerticalRenderOffset}
+	focusIcon := term.Attributes{Fg: term.ColorYellow}
+	nonFocusIcon := term.Attributes{Fg: term.ColorSilver}
+	hover := term.Attributes{Fg: term.ColorAqua, Bg: term.ColorNavy, Attrs: term.AttrBold}
+	status := term.Attributes{Fg: term.ColorRed}
+	statusIcon := term.Attributes{Fg: term.ColorGreen}
+	union := term.AttributesUnion
+	// Tabs sit at 0-4, 7-11 and 14-18, with the middle one in focus: icon,
+	// blank, then the name.
+	type tab struct{ icon, blank, name term.Attributes }
+	offset := term.Attributes{Attrs: term.AttrNegativeVerticalRenderOffset}
+	hoverBlank := term.Attributes{Bg: term.ColorNavy, Attrs: term.AttrNegativeVerticalRenderOffset}
+	idle := [3]tab{
+		{nonFocusIcon, offset, nonFocus},
+		{focusIcon, offset, focus},
+		{nonFocusIcon, offset, nonFocus},
+	}
+	hovered := tab{union(nonFocusIcon, hover), hoverBlank, union(nonFocus, hover)}
+	tests := []struct {
+		name       string
+		pointer    term.Coordinates
+		pressedTab int
+		armed      bool
+		// status colours the name and icon of the last tab.
+		status bool
+		want   [3]tab
+	}{
+		{name: "no pointer", pointer: term.Coordinates{X: -1}, pressedTab: -1, want: idle},
+		{
+			name: "the tab under the pointer", pointer: term.Coordinates{X: 15}, pressedTab: -1,
+			want: [3]tab{idle[0], idle[1], hovered},
+		},
+		{
+			name: "the tab in focus keeps its attributes", pointer: term.Coordinates{X: 8},
+			pressedTab: -1, want: idle,
+		},
+		{
+			name: "a pressed tab with the pointer on it", pointer: term.Coordinates{X: 15},
+			pressedTab: 2, armed: true, want: [3]tab{idle[0], idle[1], hovered},
+		},
+		{
+			name: "a press dragged off its tab", pointer: term.Coordinates{X: 1},
+			pressedTab: 2, want: idle,
+		},
+		{
+			name: "the tab's own attributes win", pointer: term.Coordinates{X: 15},
+			pressedTab: -1, status: true,
+			want: [3]tab{idle[0], idle[1], {
+				statusIcon, hoverBlank, union(union(nonFocus, hover), status),
+			}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := NewTabs()
+			l.SetBorder(false)
+			l.Resize(width, height)
+			l.SetAttr(focus, nonFocus, focusIcon, nonFocusIcon,
+				term.Attributes{}, term.Attributes{}, term.Attributes{})
+			l.SetHoverAttr(hover)
+			l.Add('1', "ONE")
+			l.Add('2', "TWO")
+			l.Add('3', "SIX")
+			l.ResetFocus()
+			l.SetFocus(1)
+			if tt.status {
+				l.SetTabAttr(2, status)
+				l.SetIconAttr(2, statusIcon)
+			}
+			l.Draw(term.NewStringWriter(width, height))
+			l.SetPointer(tt.pointer)
+			l.SetPressed(tt.pressedTab, tt.armed)
+
+			w := term.NewStringWriter(width, height)
+			l.Draw(w)
+			cells := w.Cells()
+			for i, want := range tt.want {
+				x := i * 7
+				assert.Equal(t, want.icon, cells[x].Attributes(), "icon of tab %d", i)
+				assert.Equal(t, want.blank, cells[x+1].Attributes(), "blank of tab %d", i)
+				for dx := 2; dx < 5; dx++ {
+					assert.Equal(t, want.name, cells[x+dx].Attributes(), "name of tab %d", i)
+				}
+			}
+		})
+	}
+}
+
 func TestTabsOutsetLayout(t *testing.T) {
 	const sides = 3
 	for _, border := range []bool{false, true} {

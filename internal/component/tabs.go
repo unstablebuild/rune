@@ -51,6 +51,11 @@ const minTabCellWidth = 1
 // the fast-path and resize-path width distributions.
 const tabBarRightPad = 2
 
+// verticalRenderOffsets are the attributes that move a cell's text and
+// background half a cell, which the blanks of a label must share with
+// its text for their backgrounds to line up.
+const verticalRenderOffsets = term.AttrVerticalRenderOffset | term.AttrNegativeVerticalRenderOffset
+
 // tabCellLayout describes how a single tab is rendered: which tab (idx)
 // and how many cells of the bar it occupies.
 type tabCellLayout struct {
@@ -115,6 +120,16 @@ type Tabs struct {
 	graphics  *FrameGraphics
 	images    *component.ButtonImages
 	highlight LineGraphics
+
+	hoverAttr term.Attributes
+	// pointer is where the pointer is, relative to the bar, and hoverIdx
+	// the tab under it as of the last layout, -1 for none.
+	pointer  term.Coordinates
+	hoverIdx int
+	// pressed is the tab a press is held on, -1 for none, and armed
+	// reports that the pointer is still over it.
+	pressed int
+	armed   bool
 }
 
 func newListFrame(
@@ -154,6 +169,9 @@ func (t *Tabs) Init() {
 	t.nonFocusAttr = defaultNonFocusAttr
 	t.focusFrameChar = defaultFocusFrameChar
 	t.highlightIdx = -1
+	t.pointer = term.Coordinates{X: -1, Y: -1}
+	t.hoverIdx = -1
+	t.pressed = -1
 	t.frameBorders = component.FrameCharSetDefault()
 	t.fileListBuf = new(cell.Buffer)
 	t.fileListBuf.InitPerformance(1, 10, ' ')
@@ -232,13 +250,17 @@ func (t *Tabs) SetBottomHighlight(on bool) {
 }
 
 // SetGraphics sets the images that writers that can draw images show:
-// images under each tab, across the rows inside the bar's border, in
-// ButtonSelected for the tabs in focus and ButtonIdle for the rest, and
+// images under each tab, across the rows inside the bar's border, and
 // highlight over the cells of the focus-frame highlight, which it draws
 // even without a focus-frame rune. Both go under the text of the labels.
-// images must be taken from g, and a nil g draws no images. The bar keeps
-// as many blank cells as the images' side outset before the first tab
-// and at least as many after the last, for the outsets to show.
+// A tab in focus is drawn over ButtonSelected's images or, without them,
+// ButtonIdle's. One not in focus is drawn over ButtonPressed's while
+// pressed with the pointer still on it, ButtonHover's while the pointer
+// is on it and no press is held, and ButtonIdle's otherwise, falling
+// back as component.ButtonImages does. images must be taken from g, and
+// a nil g draws no images. The bar keeps as many blank cells as the
+// images' side outset before the first tab and at least as many after
+// the last, for the outsets to show.
 func (t *Tabs) SetGraphics(
 	g *FrameGraphics, images *component.ButtonImages, highlight LineGraphics,
 ) {
@@ -247,6 +269,61 @@ func (t *Tabs) SetGraphics(
 		t.images, t.highlight = nil, LineGraphics{}
 	}
 	t.dirty = true
+}
+
+// SetHoverAttr sets the attributes layered over the label of a tab not
+// in focus while it shows the pointer on it, as SetGraphics tells,
+// under the tab's own attributes and its icon's.
+func (t *Tabs) SetHoverAttr(attr term.Attributes) {
+	t.hoverAttr = attr
+	t.dirty = true
+}
+
+// SetPointer records that the pointer is at pos, relative to the bar. A
+// pos outside the bar means the pointer is elsewhere.
+func (t *Tabs) SetPointer(pos term.Coordinates) {
+	t.pointer = pos
+	if idx, _ := t.TabUnder(pos); idx != t.hoverIdx {
+		t.dirty = true
+	}
+}
+
+// SetPressed records that a press is held on the tab at idx, -1 for
+// none, and whether the pointer is still on it.
+func (t *Tabs) SetPressed(idx int, armed bool) {
+	if idx == t.pressed && armed == t.armed {
+		return
+	}
+	t.pressed, t.armed = idx, armed
+	t.dirty = true
+}
+
+// TabUnder returns the tab that pos, relative to the bar, belongs to, as
+// TabAt does. It reports false outside the bar and past the last tab.
+func (t *Tabs) TabUnder(pos term.Coordinates) (int, bool) {
+	if pos.X < 0 || pos.Y < 0 || pos.X >= t.width || pos.Y >= t.height {
+		return -1, false
+	}
+	return t.TabAt(pos)
+}
+
+// Focused reports whether the tab at idx is in focus. It is false for
+// an idx with no tab.
+func (t *Tabs) Focused(idx int) bool {
+	return idx >= 0 && idx < len(t.tabs) && t.tabs[idx].focus
+}
+
+// lit reports whether the tab at idx shows the pointer on it, and
+// whether pressed, as SetGraphics tells.
+func (t *Tabs) lit(idx int) (lit, pressed bool) {
+	if t.tabs[idx].focus {
+		return false, false
+	}
+	if t.pressed >= 0 {
+		pressed = idx == t.pressed && t.armed
+		return pressed, pressed
+	}
+	return idx == t.hoverIdx, false
 }
 
 // outset is the side outset of the tab images, which the bar keeps room
@@ -387,8 +464,13 @@ func (t *Tabs) drawTabImages(w term.Writer) {
 			continue
 		}
 		st := component.ButtonIdle
-		if t.tabs[cell.idx].focus {
+		switch lit, pressed := t.lit(cell.idx); {
+		case t.tabs[cell.idx].focus && !t.images.Selected.Empty():
 			st = component.ButtonSelected
+		case pressed:
+			st = component.ButtonPressed
+		case lit:
+			st = component.ButtonHover
 		}
 		t.images.Draw(inner, image.Rect(start-xLeft, 0, start-xLeft+width, rows), st)
 	}
@@ -1021,6 +1103,7 @@ func (t *Tabs) Size() int {
 func (t *Tabs) prepareFileList() {
 	t.fileListBuf.Reset()
 	t.layout = tabLayout{}
+	t.hoverIdx = -1
 
 	if t.width == 0 || t.height == 0 {
 		return
@@ -1030,6 +1113,7 @@ func (t *Tabs) prepareFileList() {
 	if len(t.layout.cells) == 0 {
 		return
 	}
+	t.hoverIdx, _ = t.TabUnder(t.pointer)
 
 	next := term.Coordinates{}
 	for range t.outset() {
@@ -1060,11 +1144,19 @@ func (t *Tabs) insertTabCell(pos term.Coordinates, cell tabCellLayout) term.Coor
 			iconAttr = &t.focusIconAttr
 		}
 	} else {
-		attr = term.AttributesUnion(t.nonFocusAttr, attr)
+		base, icon := t.nonFocusAttr, t.nonFocusIconAttr
+		if lit, _ := t.lit(cell.idx); lit {
+			base = term.AttributesUnion(base, t.hoverAttr)
+			icon = term.AttributesUnion(icon, t.hoverAttr)
+		}
+		attr = term.AttributesUnion(base, attr)
 		if iconAttr == nil {
-			iconAttr = &t.nonFocusIconAttr
+			iconAttr = &icon
 		}
 	}
+	// The label's blanks take its background, for one set on hover not
+	// to stop at the gap between the icon and the name.
+	blank := term.Attributes{Bg: attr.Bg, Attrs: attr.Attrs & verticalRenderOffsets}
 
 	remaining := cell.width
 	// The action glyph is anchored to the right edge of the cell, so its
@@ -1080,13 +1172,13 @@ func (t *Tabs) insertTabCell(pos term.Coordinates, cell tabCellLayout) term.Coor
 			pos = t.fileListBuf.InsertWithAttr(pos, tab.icon, *iconAttr)
 			remaining -= iconWidth
 			if remaining > 0 {
-				pos = t.fileListBuf.Insert(pos, ' ')
+				pos = t.fileListBuf.InsertWithAttr(pos, ' ', blank)
 				remaining--
 			}
 		} else {
 			// No room for the icon: fill the cell with blanks.
 			for range cell.width {
-				pos = t.fileListBuf.Insert(pos, ' ')
+				pos = t.fileListBuf.InsertWithAttr(pos, ' ', blank)
 			}
 			return pos
 		}
@@ -1117,13 +1209,13 @@ func (t *Tabs) insertTabCell(pos term.Coordinates, cell tabCellLayout) term.Coor
 		remaining -= badgeW
 	}
 	for remaining > 0 {
-		pos = t.fileListBuf.Insert(pos, ' ')
+		pos = t.fileListBuf.InsertWithAttr(pos, ' ', blank)
 		remaining--
 	}
 	if actionW > 0 {
-		pos = t.fileListBuf.Insert(pos, ' ')
+		pos = t.fileListBuf.InsertWithAttr(pos, ' ', blank)
 		pos = t.fileListBuf.InsertWithAttr(pos, tab.action, tab.actionAttr)
-		pos = t.fileListBuf.Insert(pos, ' ')
+		pos = t.fileListBuf.InsertWithAttr(pos, ' ', blank)
 	}
 	return pos
 }

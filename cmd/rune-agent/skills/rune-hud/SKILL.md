@@ -49,8 +49,9 @@ these keys to every open workspace:
   `close_icon` and `close_icon_attr`;
 - `browser.frameunion_charset`;
 - `browser`: `focus_tab_attr`, `non_focus_tab_attr`, `focus_tab_icon_attr`,
-  `non_focus_tab_icon_attr`, `focus_tab_highlight_attr`,
-  `focus_tab_highlight_char`, `tab_images` and `focus_tab_highlight_graphics`;
+  `non_focus_tab_icon_attr`, `focus_tab_highlight_attr`, `hover_tab_attr`,
+  `focus_tab_highlight_char`, `tab_images`, `focus_tab_highlight_graphics` and
+  `tab_sounds`;
 - `browser.prompt`: `text_attr`, `highlight_attr`, `hover_attr`,
   `clicked_attr`, `background_attr` and `images`;
 - `command.frame_charset`, `command.separator_charset` and
@@ -66,8 +67,8 @@ these keys to every open workspace:
 - `terminal.bell`;
 - `workspace`: `wallpaper_image`, `wallpaper_image_ascii`, `wallpaper_ascii`,
   `wallpaper`, `wallpaper_attr`, `wallpaper_background_attr`,
-  `wallpaper_density_characters`, `focus_tab_highlight_char`, `tab_images` and
-  `focus_tab_highlight_graphics`;
+  `wallpaper_density_characters`, `focus_tab_highlight_char`, `tab_images`,
+  `focus_tab_highlight_graphics` and `tab_sounds`;
 - `sounds`.
 
 The capture cannot show `gui.app_icon`: the desktop draws the icon outside
@@ -337,12 +338,12 @@ Abbreviations:
 | Prompt buttons | `browser.prompt.images.<idle\|selected\|hover\|pressed>` | `left` | (S+1) × (T+1+B) | fill |
 | | | `middle` (tiles →) | 1 × (T+1+B) | fill |
 | | | `right` | (1+S) × (T+1+B) | fill |
-| File tab | `browser.tab_images.<focus\|non_focus>` | `left` | (S+1) × R | fill |
+| File tab | `browser.tab_images.<focus\|non_focus\|hover\|pressed>` | `left` | (S+1) × R | fill |
 | | | `middle` (tiles →) | 1 × R | fill |
 | | | `right` | (1+S) × R | fill |
 | File tab highlight | `browser.focus_tab_highlight_graphics` | `left`, `right` | 1 × 1 | fill |
 | | | `horizontal` (tiles →) | 1 × 1 | fill |
-| Workspace tab | `workspace.tab_images.<focus\|non_focus>` | `left` | (S+1) × R | fill |
+| Workspace tab | `workspace.tab_images.<focus\|non_focus\|hover\|pressed>` | `left` | (S+1) × R | fill |
 | | | `middle` (tiles →) | 1 × R | fill |
 | | | `right` | (1+S) × R | fill |
 | Workspace tab highlight | `workspace.focus_tab_highlight_graphics` | `left`, `right` | 1 × 1 | fill |
@@ -483,11 +484,20 @@ Line up rails and seams across slices at these positions.
 - The highlight covers row 0 of the focused window's tab only, cell by cell,
   over the tab images and under the name's lifted half. A highlight one cell
   wide uses `left`.
+- A tab activates when the button is released over it, as a quick menu button
+  does. `hover` and `pressed` apply only to tabs not in focus: a tab in focus
+  keeps `focus` under the pointer. Draw the states on the same canvas, so
+  nothing jumps between them.
+- `browser.hover_tab_attr` is layered over the name and icon of the tab under
+  the pointer, under any colour the tab has of its own, such as
+  `dirty_tab_attr`. Its `bg` fills the blanks of the name too.
 
 **Workspace tabs:**
 - The same as file tabs, upside down: Rune draws the name on row 0 lowered half
   a cell, and the highlight covers the last row, under the workspace in focus.
 - Tabs are as many cells apart as `browser.tab_name_separator` is wide.
+- The bar takes `browser.hover_tab_attr`, but its own `workspace.tab_images`
+  and `workspace.tab_sounds`.
 
 **Program status inbox:**
 - An entry spans from its marker column to the right edge of the selection.
@@ -587,6 +597,8 @@ Every `graphics` table takes a `mode`:
 take no `mode`.
 
 ### Fallbacks
+- **Tabs:** `focus` falls back to `non_focus`, not to `hover`. `pressed` falls
+  back to `hover`, and `hover` to `non_focus`.
 - **Scroll bar:** a missing `top_char` or `bottom_char` uses the middle image,
   and a missing `hover_` image uses the plain one.
 - **Command prompt frame:** slots `command.frame_charset.graphics` leaves out
@@ -1094,6 +1106,8 @@ field and preserve its other fields rather than replacing the entire layout.
   - `program_status.sounds` with `blocked`, `error`, `done` and `working`;
   - `gui.quick_menu_sounds` with `hover` and `click`, which play only with
     sprites.
+  - `browser.tab_sounds` and `workspace.tab_sounds` with `hover`, when the
+    pointer moves onto a tab not in focus, and `click`, when a tab is clicked.
   - Any command: make it a `command.aliases` entry whose steps end with
     `guisound <name>`, then bind the alias, or use it as a quick menu `command`.
 - **No hooks** exist for prompt buttons, window bars, the scroll bar or status
@@ -1116,6 +1130,8 @@ sounds:
 terminal: {bell: uisfx-glass-blocked}
 program_status: {sounds: {blocked: warning, error: error, done: success}}
 gui: {quick_menu_sounds: {hover: hud-ember-hover, click: hud-ember-click}}
+browser: {tab_sounds: {hover: hud-ember-hover, click: hud-ember-click}}
+workspace: {tab_sounds: {hover: hud-ember-hover, click: hud-ember-click}}
 ```
 
 ## Apply and verify

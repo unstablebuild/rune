@@ -1064,10 +1064,10 @@ RRRRRR
 	}
 }
 
-// framePictures holds two pictures, named L and R, three of a single
-// gray, named i, s and h, and a transparent one, named t, on disk. The
-// graphics of a test case name them, or "missing" for a file that does
-// not exist and "invalid" for a URI imageuri rejects.
+// framePictures holds two pictures, named L and R, five of a single
+// gray, named i, s, h, v and p, and a transparent one, named t, on disk.
+// The graphics of a test case name them, or "missing" for a file that
+// does not exist and "invalid" for a URI imageuri rejects.
 type framePictures struct {
 	uris map[string]string
 	pix  map[rune][]byte
@@ -1092,6 +1092,8 @@ func newFramePictures(t *testing.T) framePictures {
 		'i': grayPNG(t, 128),
 		's': grayPNG(t, 255),
 		'h': grayPNG(t, 40),
+		'v': grayPNG(t, 200),
+		'p': grayPNG(t, 75),
 		't': transparentPNG(t),
 	} {
 		file := string(name) + ".png"

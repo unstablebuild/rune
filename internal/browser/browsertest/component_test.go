@@ -1265,7 +1265,7 @@ func TestComponentOnTabIconClick(t *testing.T) {
 		assertWindowContent(t, f.c.Focus(), f.tabs[1])
 	})
 
-	t.Run("the pointer is a finger over the icons", func(t *testing.T) {
+	t.Run("the pointer is a finger over the tabs", func(t *testing.T) {
 		f := setup(t, browser.DefaultConfig(), remove)
 		hover := func(pos term.Coordinates) (term.PointerShape, bool) {
 			p := new(term.Pointer)
@@ -1279,8 +1279,10 @@ func TestComponentOnTabIconClick(t *testing.T) {
 
 		shape, _ := hover(icon)
 		assert.Equal(t, term.PointerLink, shape)
-		_, set := hover(name(icon))
-		assert.False(t, set, "the name sets no shape")
+		shape, _ = hover(name(icon))
+		assert.Equal(t, term.PointerLink, shape, "over the name")
+		_, set := hover(term.Coordinates{X: width - 3, Y: icon.Y})
+		assert.False(t, set, "past the tabs")
 	})
 }
 

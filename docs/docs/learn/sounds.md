@@ -136,6 +136,34 @@ config["gui"]["quick_menu_sounds"] = {"hover": "ding", "click": "success"}
   nothing.
 - A change applies after restarting Rune, or on the next `runectl screenshot`.
 
+## Tabs
+
+`browser.tab_sounds` names the sounds the file tabs play, and
+`workspace.tab_sounds` the sounds the workspace tabs play: `hover` when the
+pointer moves onto a tab that is not in focus and `click` when you click a
+tab. Each is the name of a sound, built-in or your own, or an empty string for
+none, which is the default.
+
+```yaml tab
+browser:
+  tab_sounds:
+    hover: ding
+    click: success
+workspace:
+  tab_sounds:
+    click: success
+```
+
+```python tab
+config["browser"]["tab_sounds"] = {"hover": "ding", "click": "success"}
+config["workspace"]["tab_sounds"] = {"click": "success"}
+```
+
+- A tab is clicked when you release the button over the tab you pressed.
+- Rune reports an unknown sound name as a config error, and that event plays
+  nothing.
+- A change applies after `themereload`, or on the next `runectl screenshot`.
+
 ## Play a sound from an alias
 
 To play a sound from an [alias](./aliases.md), add a `guisound` step. An

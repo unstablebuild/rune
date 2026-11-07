@@ -3787,13 +3787,13 @@ func TestCrossWorkspaceOpenRoutingIntegration(t *testing.T) {
 				{
 					InputSequence: "<c-\\\\>openCase<enter>",
 					Expected: `┌━━━━━━━━━━──────────────────┐
-│o ········                  │
+│o·········                  │
 ├────────────────────────────┤
 │▐ackage main                │
 │                            │
 │                      NORMAL│
 ├────────────────────────────┤
-│1 ·  2 2                    │
+│1··  2 2                    │
 └━━━─────────────────────────┘`,
 				},
 				{
@@ -3805,19 +3805,19 @@ func TestCrossWorkspaceOpenRoutingIntegration(t *testing.T) {
 │     workspaceWallpaper     │
 │                            │
 ├────────────────────────────┤
-│1 1  2 ·                    │
+│1 1  2··                    │
 └─────━━━────────────────────┘`,
 				},
 				{
 					InputSequence: "<c-\\\\>to1<enter>",
 					Expected: `┌━━━━━━━━━━──────────────────┐
-│o ········                  │
+│o·········                  │
 ├────────────────────────────┤
 │▐ackage main                │
 │                            │
 │                      NORMAL│
 ├────────────────────────────┤
-│1 ·  2 2                    │
+│1··  2 2                    │
 └━━━─────────────────────────┘`,
 				},
 			},
@@ -3841,13 +3841,13 @@ func TestCrossWorkspaceOpenRoutingIntegration(t *testing.T) {
 				{
 					InputSequence: "<c-\\\\>openCase<enter>",
 					Expected: `┌━━━━━━━━━━──────────────────┐
-│o ········                  │
+│o·········                  │
 ├────────────────────────────┤
 │▐ackage main                │
 │                            │
 │                      NORMAL│
 ├────────────────────────────┤
-│1 1  2 ·                    │
+│1 1  2··                    │
 └─────━━━────────────────────┘`,
 				},
 				{
@@ -3859,19 +3859,19 @@ func TestCrossWorkspaceOpenRoutingIntegration(t *testing.T) {
 │     workspaceWallpaper     │
 │                            │
 ├────────────────────────────┤
-│1 ·  2 2                    │
+│1··  2 2                    │
 └━━━─────────────────────────┘`,
 				},
 				{
 					InputSequence: "<c-\\\\>to2<enter>",
 					Expected: `┌━━━━━━━━━━──────────────────┐
-│o ········                  │
+│o·········                  │
 ├────────────────────────────┤
 │▐ackage main                │
 │                            │
 │                      NORMAL│
 ├────────────────────────────┤
-│1 1  2 ·                    │
+│1 1  2··                    │
 └─────━━━────────────────────┘`,
 				},
 			},
@@ -3900,13 +3900,13 @@ func TestCrossWorkspaceOpenRoutingIntegration(t *testing.T) {
 				{
 					InputSequence: "<c-\\\\>openCase<enter>",
 					Expected: `┌━━━━━━━━━━━─────────────────┐
-│o ·········                 │
+│o··········                 │
 ├────────────────────────────┤
 │▐ackage main                │
 │                            │
 │                      NORMAL│
 ├────────────────────────────┤
-│1 1  2 ·                    │
+│1 1  2··                    │
 └─────━━━────────────────────┘`,
 				},
 				{
@@ -3918,19 +3918,19 @@ func TestCrossWorkspaceOpenRoutingIntegration(t *testing.T) {
 │     workspaceWallpaper     │
 │                            │
 ├────────────────────────────┤
-│1 ·  2 2                    │
+│1··  2 2                    │
 └━━━─────────────────────────┘`,
 				},
 				{
 					InputSequence: "<c-\\\\>to2<enter>",
 					Expected: `┌━━━━━━━━━━━─────────────────┐
-│o ·········                 │
+│o··········                 │
 ├────────────────────────────┤
 │▐ackage main                │
 │                            │
 │                      NORMAL│
 ├────────────────────────────┤
-│1 1  2 ·                    │
+│1 1  2··                    │
 └─────━━━────────────────────┘`,
 				},
 			},
@@ -3954,13 +3954,13 @@ func TestCrossWorkspaceOpenRoutingIntegration(t *testing.T) {
 				{
 					InputSequence: "<c-\\\\>openCase<enter>",
 					Expected: `┌━━━━━━━━━───────────────────┐
-│o ·······                   │
+│o········                   │
 ├────────────────────────────┤
 │▐ackage main                │
 │                            │
 │                      NORMAL│
 ├────────────────────────────┤
-│1 1  2 ·                    │
+│1 1  2··                    │
 └─────━━━────────────────────┘`,
 				},
 				{
@@ -3972,19 +3972,19 @@ func TestCrossWorkspaceOpenRoutingIntegration(t *testing.T) {
 │     workspaceWallpaper     │
 │                            │
 ├────────────────────────────┤
-│1 ·  2 2                    │
+│1··  2 2                    │
 └━━━─────────────────────────┘`,
 				},
 				{
 					InputSequence: "<c-\\\\>to2<enter>",
 					Expected: `┌━━━━━━━━━───────────────────┐
-│o ·······                   │
+│o········                   │
 ├────────────────────────────┤
 │▐ackage main                │
 │                            │
 │                      NORMAL│
 ├────────────────────────────┤
-│1 1  2 ·                    │
+│1 1  2··                    │
 └─────━━━────────────────────┘`,
 				},
 			},
@@ -7056,25 +7056,25 @@ func TestWorkspaceBarTabClickIntegration(t *testing.T) {
 			name:      "dense_click_first_tab_focuses_slot_1",
 			filled:    []bool{true, true, true},
 			focusSlot: 2, mouseX: 1,
-			expected: screen("│1 ·  2 2  3 3               │", 0, 3),
+			expected: screen("│1··  2 2  3 3               │", 0, 3),
 		},
 		{
 			name:      "dense_click_middle_tab_focuses_slot_2",
 			filled:    []bool{true, true, true},
 			focusSlot: 0, mouseX: 7,
-			expected: screen("│1 1  2 ·  3 3               │", 5, 3),
+			expected: screen("│1 1  2··  3 3               │", 5, 3),
 		},
 		{
 			name:      "dense_click_last_tab_focuses_slot_3",
 			filled:    []bool{true, true, true},
 			focusSlot: 0, mouseX: 12,
-			expected: screen("│1 1  2 2  3 ·               │", 10, 3),
+			expected: screen("│1 1  2 2  3··               │", 10, 3),
 		},
 		{
 			name:      "dense_click_far_past_last_tab_keeps_focus",
 			filled:    []bool{true, true, true},
 			focusSlot: 0, mouseX: width - 2,
-			expected: screen("│1 ·  2 2  3 3               │", 0, 3),
+			expected: screen("│1··  2 2  3 3               │", 0, 3),
 		},
 
 		// Single empty middle slot — the original RUNE-126 bug. Bar
@@ -7084,19 +7084,19 @@ func TestWorkspaceBarTabClickIntegration(t *testing.T) {
 			name:      "middle_gap_click_first_visible_tab_focuses_slot_1",
 			filled:    []bool{true, false, true},
 			focusSlot: 2, mouseX: 1,
-			expected: screen("│1 ·  3 3                    │", 0, 3),
+			expected: screen("│1··  3 3                    │", 0, 3),
 		},
 		{
 			name:      "middle_gap_click_second_visible_tab_focuses_slot_3",
 			filled:    []bool{true, false, true},
 			focusSlot: 0, mouseX: 7,
-			expected: screen("│1 1  3 ·                    │", 5, 3),
+			expected: screen("│1 1  3··                    │", 5, 3),
 		},
 		{
 			name:      "middle_gap_click_past_last_visible_tab_keeps_focus",
 			filled:    []bool{true, false, true},
 			focusSlot: 0, mouseX: 15,
-			expected: screen("│1 ·  3 3                    │", 0, 3),
+			expected: screen("│1··  3 3                    │", 0, 3),
 		},
 
 		// Two consecutive empty middle slots: bar renders "1 1  4 4".
@@ -7104,7 +7104,7 @@ func TestWorkspaceBarTabClickIntegration(t *testing.T) {
 			name:      "double_gap_click_second_visible_tab_focuses_slot_4",
 			filled:    []bool{true, false, false, true},
 			focusSlot: 0, mouseX: 7,
-			expected: screen("│1 1  4 ·                    │", 5, 3),
+			expected: screen("│1 1  4··                    │", 5, 3),
 		},
 
 		// Focused empty middle slot: bar renders "1 1  2    3 3".
@@ -7118,13 +7118,13 @@ func TestWorkspaceBarTabClickIntegration(t *testing.T) {
 			name:      "focused_empty_middle_click_left_filled_focuses_slot_1",
 			filled:    []bool{true, false, true},
 			focusSlot: 1, mouseX: 1,
-			expected: screen("│1 ·  3 3                    │", 0, 3),
+			expected: screen("│1··  3 3                    │", 0, 3),
 		},
 		{
 			name:      "focused_empty_middle_click_right_filled_focuses_slot_3",
 			filled:    []bool{true, false, true},
 			focusSlot: 1, mouseX: 10,
-			expected: screen("│1 1  3 ·                    │", 5, 3),
+			expected: screen("│1 1  3··                    │", 5, 3),
 		},
 
 		// Focused empty first slot: bar renders "1  2 2  3 3" with
@@ -7135,13 +7135,13 @@ func TestWorkspaceBarTabClickIntegration(t *testing.T) {
 			name:      "focused_empty_first_click_second_visible_focuses_slot_2",
 			filled:    []bool{false, true, true},
 			focusSlot: 0, mouseX: 5,
-			expected: screen("│2 ·  3 3                    │", 0, 3),
+			expected: screen("│2··  3 3                    │", 0, 3),
 		},
 		{
 			name:      "focused_empty_first_click_third_visible_focuses_slot_3",
 			filled:    []bool{false, true, true},
 			focusSlot: 0, mouseX: 10,
-			expected: screen("│2 2  3 ·                    │", 5, 3),
+			expected: screen("│2 2  3··                    │", 5, 3),
 		},
 	}
 
@@ -7191,10 +7191,12 @@ func TestWorkspaceBarTabClickIntegration(t *testing.T) {
 			writer := term.NewStringWriter(width, height)
 			writer.BackgroundCh = '·'
 			h.Resize(width, height)
-			h.Handle(term.Event{
-				Type: term.EventMouse, Key: term.MouseLeft,
-				MouseX: tc.mouseX, MouseY: barY,
-			})
+			for _, key := range []term.Key{term.MouseLeft, term.MouseRelease} {
+				h.Handle(term.Event{
+					Type: term.EventMouse, Key: key,
+					MouseX: tc.mouseX, MouseY: barY,
+				})
+			}
 			handlertest.RunHandlerSequenceWriter(t, writer, h,
 				width, height, []handlertest.SequenceTestCase{
 					{InputSequence: "", Expected: tc.expected},
@@ -12685,6 +12687,132 @@ func TestTabBarGraphicsIntegration(t *testing.T) {
 └──────────────────────────────────────┘
   191  2*2                              
   111  ***                              `, w.String(), "the tabs draw the reloaded images at once")
+}
+
+func TestTabBarHoverIntegration(t *testing.T) {
+	const width, height = 40, 12
+	tempDir := func() string {
+		dir, err := filepath.EvalSymlinks(t.TempDir())
+		require.NoError(t, err)
+		return dir
+	}
+	home, ws, ws2 := tempDir(), tempDir(), tempDir()
+	uri := func(name string, y uint8) string {
+		path := filepath.Join(home, name)
+		writeHUDTestPNG(t, path, color.Gray{Y: y})
+		return "file://" + path
+	}
+	images := "  tab_images:\n"
+	for _, state := range []struct {
+		name string
+		y    uint8
+	}{{"non_focus", 75}, {"hover", 255}, {"pressed", 40}} {
+		u := uri(state.name+".png", state.y)
+		images += "    " + state.name + ":\n      left: " + u + "\n      middle: " + u +
+			"\n      right: " + u + "\n"
+	}
+	main, other := filepath.Join(ws, "main.go"), filepath.Join(ws, "other.go")
+	require.NoError(t, os.WriteFile(main, []byte("package main\n"), 0o644))
+	require.NoError(t, os.WriteFile(other, []byte("package other\n"), 0o644))
+	configPath := filepath.Join(home, "rune.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte("clipboard: memory\n"+
+		"sounds:\n  tab-hover: /tab-hover.wav\n  tab-click: /tab-click.wav\n"+
+		"  ws-hover: /ws-hover.wav\n  ws-click: /ws-click.wav\n"+
+		"workspace:\n  home: "+home+"\n  wallpaper_ascii: wallpaper\n"+
+		"  focus_tab_highlight_char: \"\"\n"+images+
+		"  tab_sounds:\n    hover: ws-hover\n    click: ws-click\n"+
+		"search:\n  regex_enabled: false\n  semantic_enabled: false\n"+
+		"browser:\n  focus_tab_highlight_char: \"\"\n"+images+
+		"  tab_sounds:\n    hover: tab-hover\n    click: tab-click\n"), 0o644))
+	var soundsMu sync.Mutex
+	var played []string
+	i, mu := newHUDTestIDE(t, ws, configPath,
+		WithSoundBackend(sounds.BackendFunc(func(s sounds.Sound) {
+			soundsMu.Lock()
+			defer soundsMu.Unlock()
+			played = append(played, s.Name)
+		})),
+		WithTabBarOffset(13), WithTabBarHeight(2),
+		WithWorkspacesBarHeight(2), WithWorkspacesBarOffset(2), WithWorkspacesBarFrame(false))
+	uri2, err := workspaceapi.CurrentUserHostURI(ws2)
+	require.NoError(t, err)
+	h := i.workspaceHandler
+	mu.Lock()
+	slot := h.focus
+	require.NoError(t, h.addWorkspace(uri2, false, false, -1))
+	mu.Unlock()
+	i.WaitWorkspaces()
+	mu.Lock()
+	require.True(t, h.switchToWorkspace(slot))
+	for _, path := range []string{main, other} {
+		fileURI, err := workspaceapi.ParseURI("file://" + path)
+		require.NoError(t, err)
+		require.NoError(t, i.Open(fileURI))
+	}
+	mu.Unlock()
+	root := &safeHandler{mu: mu, Component: &i.root, Handler: &i.root}
+	root.Resize(width, height)
+	w := asciiart.NewStringWriter(width, height, asciiart.DefaultConfig())
+	mouse := func(key term.Key, x, y int) {
+		root.Handle(term.Event{Type: term.EventMouse, Key: key, MouseX: x, MouseY: y})
+	}
+	heard := func() []string {
+		soundsMu.Lock()
+		defer soundsMu.Unlock()
+		return slices.Clone(played)
+	}
+	screen := func(top, editor, bottom string) string {
+		return top + `
+┌──────────────────────────────────────┐
+│` + editor + `│
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+│                                NORMAL│
+└──────────────────────────────────────┘
+` + bottom
+	}
+	const (
+		idleFiles = `             *********  **********      
+             o*main.go  o*other.go      `
+		idleWorkspaces = `  1*1  2*2                              
+  ***  ***                              `
+	)
+
+	awaitFrame(t, root, w, nil, screen(idleFiles, "package other                         ",
+		idleWorkspaces))
+
+	mouse(0, 15, 1)
+	awaitFrame(t, root, w, nil, screen(`             @@@@@@@@@  **********      
+             o@main.go  o*other.go      `, "package other                         ",
+		idleWorkspaces))
+	assert.Equal(t, []string{"tab-hover"}, heard(), "the pointer moves onto a file tab")
+
+	mouse(term.MouseLeft, 15, 1)
+	awaitFrame(t, root, w, nil, screen(`             _________  **********      
+             o_main.go  o*other.go      `, "package other                         ",
+		idleWorkspaces))
+	mouse(term.MouseRelease, 15, 1)
+	awaitFrame(t, root, w, nil, screen(idleFiles, "package main                          ",
+		idleWorkspaces))
+	assert.Equal(t, []string{"tab-hover", "tab-click"}, heard(),
+		"the release clicks the file tab, which keeps the look of the tab in focus")
+
+	mouse(0, 8, 11)
+	awaitFrame(t, root, w, nil, screen(idleFiles, "package main                          ",
+		`  1*1  2@2                              
+  ***  @@@                              `))
+	mouse(term.MouseLeft, 8, 11)
+	awaitFrame(t, root, w, nil, screen(idleFiles, "package main                          ",
+		`  1*1  2_2                              
+  ***  ___                              `))
+	mouse(term.MouseRelease, 8, 11)
+	assert.Equal(t, []string{"tab-hover", "tab-click", "ws-hover", "ws-click"}, heard(),
+		"the workspace tabs play the workspace's sounds")
+	mu.Lock()
+	assert.NotEqual(t, slot, h.focus, "the release clicks the workspace tab")
+	mu.Unlock()
 }
 
 func TestStatusInboxGraphicsIntegration(t *testing.T) {

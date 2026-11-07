@@ -867,6 +867,7 @@ func (h *workspaceManagerHandler) init(
 
 	h.bar.Init()
 	h.bar.OnClick = h.onBarTabClick
+	h.bar.Player = cfg.sounds
 	h.bar.SetBorder(cfg.frame())
 	h.bar.SetBottomHighlight(true)
 	h.styleWorkspaceBar(cfg.workspaceBarStyle(), cfg.windowFrameAttr(), cfg.windowFrameCharset())
@@ -1578,6 +1579,8 @@ func (h *workspaceManagerHandler) textOpts(
 		text.WithFocusTabHighlightChar(tabs.FocusTabHighlightChar),
 		text.WithTabImages(tabs.Images),
 		text.WithFocusTabHighlightGraphics(tabs.HighlightGraphics),
+		text.WithHoverTabAttr(tabs.HoverTabAttr),
+		text.WithTabSounds(tabs.Sounds, cfg.sounds),
 		text.WithWallpaper(cfg.wallpaper()),
 		text.WithDropTarget(
 			term.Attributes{Bg: term.ColorGray, Fg: term.ColorBlack},
@@ -3109,8 +3112,10 @@ func (h *workspaceManagerHandler) styleWorkspaceBar(
 		h.barHighlightAttr, frameAttr, term.Attributes{Bg: frameAttr.Bg})
 	h.bar.SetFrameCharSet(cs)
 	h.bar.SetFocusFrameChar(s.highlightChar)
+	h.bar.SetHoverAttr(s.hoverAttr)
 	g := h.frameGraphics()
 	h.bar.SetGraphics(g, s.images.ButtonImages(g), s.highlight)
+	h.bar.Sounds = s.sounds
 	if h.shadedBar != nil {
 		h.shadedBar.SetDefAttr(s.nonFocusTabAttr)
 	}
@@ -3902,6 +3907,7 @@ func (h *workspaceManagerHandler) initTabs(
 		bar = v
 	}
 	h.union.UnionBottomFrame(bar, h.barSize(), workspacesBarFrame)
+	h.union.CaptureDrags(bar)
 	h.refreshWorkspaceActivity()
 }
 

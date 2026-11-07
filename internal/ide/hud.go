@@ -27,6 +27,7 @@ import (
 	tcomponent "unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/component/notifications"
 	"unstable.build/rune/internal/component/template"
+	"unstable.build/rune/internal/handler"
 	"unstable.build/rune/internal/ide/idestatus"
 	"unstable.build/rune/internal/text"
 )
@@ -53,19 +54,21 @@ type hudStyle struct {
 	statusInbox idestatus.InboxStyle
 }
 
-// workspaceBarStyle is how the workspace bar looks: the tab colours of
-// the browser's tab bar, with a highlight character and images of its
-// own.
+// workspaceBarStyle is how the workspace bar looks and sounds: the tab
+// colours of the browser's tab bar, with a highlight character, images
+// and sounds of its own.
 type workspaceBarStyle struct {
 	focusTabAttr        term.Attributes
 	nonFocusTabAttr     term.Attributes
 	focusTabIconAttr    term.Attributes
 	nonFocusTabIconAttr term.Attributes
 	highlightAttr       term.Attributes
+	hoverAttr           term.Attributes
 	// highlightChar is 0 when the bar draws no highlight character.
 	highlightChar rune
 	images        browser.PromptImages
 	highlight     tcomponent.LineGraphics
+	sounds        handler.TabSounds
 }
 
 // imageURIs returns, sorted and once each, the URI of every image the

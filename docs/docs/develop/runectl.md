@@ -82,9 +82,9 @@ keys to every open workspace, as `themereload` does:
   `window_bar`, `window_bar_charset`, `close_icon` and `close_icon_attr`;
 - `browser.frameunion_charset`;
 - `browser`: `focus_tab_attr`, `non_focus_tab_attr`, `focus_tab_icon_attr`,
-  `non_focus_tab_icon_attr`, `focus_tab_highlight_attr`,
-  `focus_tab_highlight_char`, `tab_images` and
-  `focus_tab_highlight_graphics`;
+  `non_focus_tab_icon_attr`, `focus_tab_highlight_attr`, `hover_tab_attr`,
+  `focus_tab_highlight_char`, `tab_images`,
+  `focus_tab_highlight_graphics` and `tab_sounds`;
 - `browser.prompt`: `text_attr`, `highlight_attr`, `hover_attr`,
   `clicked_attr`, `background_attr` and `images`;
 - `command.frame_charset`, `command.separator_charset` and
@@ -100,8 +100,8 @@ keys to every open workspace, as `themereload` does:
 - `workspace`: `wallpaper_image`, `wallpaper_image_ascii`,
   `wallpaper_ascii`, `wallpaper`, `wallpaper_attr`,
   `wallpaper_background_attr`, `wallpaper_density_characters`,
-  `focus_tab_highlight_char`, `tab_images` and
-  `focus_tab_highlight_graphics`;
+  `focus_tab_highlight_char`, `tab_images`,
+  `focus_tab_highlight_graphics` and `tab_sounds`;
 - `sounds`.
 
 The capture cannot show `gui.app_icon`: the desktop draws the icon outside

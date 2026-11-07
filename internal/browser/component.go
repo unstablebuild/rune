@@ -212,8 +212,10 @@ func (c *Component) styleTabs() {
 		c.config.FocusTabHighlightAttr, frameAttr, bgAttr)
 	c.tabs.SetFrameCharSet(c.config.WindowManagerConfig.FrameCharSet)
 	c.tabs.SetFocusFrameChar(c.config.FocusTabHighlightChar)
+	c.tabs.SetHoverAttr(c.config.HoverTabAttr)
 	g := c.wm.FrameGraphics()
 	c.tabs.SetGraphics(g, c.config.TabImages.ButtonImages(g), c.config.FocusTabHighlightGraphics)
+	c.tabs.Player, c.tabs.Sounds = c.config.SoundPlayer, c.config.TabSounds
 	if c.shadedTabs != nil {
 		c.shadedTabs.SetDefAttr(c.config.NonFocusTabAttr)
 	}
@@ -654,6 +656,18 @@ func (c *Component) tabIconAttr(base term.Attributes, t *Tab) term.Attributes {
 		attr = term.AttributesUnion(attr, status)
 	}
 	return attr
+}
+
+// styleTabIcon styles the icon of t, at id, over base. The icon of a tab
+// no window shows takes base from the tab bar itself unless something
+// colours it, for the bar to layer its hover attributes in between.
+func (c *Component) styleTabIcon(id int, base term.Attributes, t *Tab) {
+	if t.free && t.iconAttr == (term.Attributes{}) &&
+		c.statusIconAttr(t.status) == (term.Attributes{}) {
+		c.tabs.ResetIconAttr(id)
+		return
+	}
+	c.tabs.SetIconAttr(id, c.tabIconAttr(base, t))
 }
 
 // spinnerFrame returns the current spinner frame, or zero without
@@ -1200,7 +1214,7 @@ func (c *Component) Draw(w term.Writer) {
 	if c.dirtyTabs {
 		c.tabs.ResetFocus()
 		for id, t := range c.buffers {
-			c.tabs.SetIconAttr(id, c.tabIconAttr(c.nonFocusTabIconAttr(), t))
+			c.styleTabIcon(id, c.nonFocusTabIconAttr(), t)
 			if !t.free {
 				c.tabs.SetFocus(id)
 			}

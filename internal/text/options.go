@@ -40,6 +40,7 @@ import (
 	"unstable.build/rune/internal/handler/command"
 	"unstable.build/rune/internal/ide/idelsp/languages"
 	"unstable.build/rune/internal/ide/syntax"
+	"unstable.build/rune/internal/sounds"
 	"unstable.build/rune/internal/term/programstatus"
 	"unstable.build/rune/internal/text/cmdenv"
 )
@@ -711,6 +712,23 @@ func WithTabImages(images browser.PromptImages) Option {
 func WithFocusTabHighlightGraphics(g tcomponent.LineGraphics) Option {
 	return func(cfg *Config) {
 		cfg.FocusTabHighlightGraphics = g
+	}
+}
+
+// WithHoverTabAttr returns an Option that configures the attributes of
+// the tab under the pointer, as browser.Config.HoverTabAttr does.
+func WithHoverTabAttr(attr term.Attributes) Option {
+	return func(cfg *Config) {
+		cfg.HoverTabAttr = attr
+	}
+}
+
+// WithTabSounds returns an Option that names the sounds the tabs play
+// through player, as browser.Config.TabSounds does.
+func WithTabSounds(names handler.TabSounds, player sounds.Player) Option {
+	return func(cfg *Config) {
+		cfg.TabSounds = names
+		cfg.SoundPlayer = player
 	}
 }
 
