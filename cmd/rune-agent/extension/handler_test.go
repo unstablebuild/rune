@@ -1787,6 +1787,660 @@ func TestPlanSkillSpawnInheritsQualifiedModel(t *testing.T) {
 	}
 }
 
+// The system prompt markers by which skillChat tells its agents apart.
+const (
+	chatAgent     = "CHAT-AGENT"
+	defaultAgent  = "DEFAULT-AGENT"
+	researchAgent = "RESEARCH-AGENT"
+	scoutAgent    = "SCOUT-AGENT"
+	recapAgent    = "RECAP-AGENT"
+	defaultSkill  = "DEFAULT-SKILL"
+)
+
+// skillChat is an agent chat opened as the chat command opens one, over a
+// workspace holding notes.txt and skills for every way to run a skill or
+// a sub-agent:
+//
+//   - notes and other are instruction skills.
+//   - research is an agent skill whose tool rules allow reading files,
+//     the notes skill, scout sub-agents, git log but not git log -p, and
+//     its own scripts.
+//   - scout is an agent skill with no tool rules.
+//   - recap is an agent skill that starts with the conversation so far.
+//   - default is an agent skill named like the default agent.
+//
+// Only the model and the shell are fakes: shell commands are recorded,
+// not run, and sub-agent conversations are numbered in the order they
+// start, as in sub-agent-research-1.
+type skillChat struct {
+	t        *testing.T
+	h        *aiEditorHandler
+	wm       *recordingWindowManager
+	tab      browserapi.Handler
+	llm      *agentRouter
+	exec     *recordingExec
+	store    *memDialogueStore
+	skillDir string
+}
+
+const (
+	skillChatID                     = "skills-chat"
+	skillChatWidth, skillChatHeight = 100, 50
+)
+
+// newSkillDir returns a directory holding the skills of a skillChat.
+func newSkillDir(t *testing.T) string {
+	skillDir := t.TempDir()
+	for name, content := range map[string]string{
+		"notes/SKILL.md": "---\nname: notes\ndescription: How to take notes\n---\nNOTES-SKILL: Take notes as bullet points.",
+		"other/SKILL.md": "---\nname: other\ndescription: Something else\n---\nOTHER-SKILL: Do something else.",
+		"research/SKILL.md": `---
+name: research
+description: Researches the notes
+type: agent
+allowed-tools: [read_file, "skill(notes)", "agent(scout)", "bash(git log *)", "bash($research)"]
+disallowed-tools: ["bash(git log -p *)"]
+---
+` + researchAgent + `: You research the notes.`,
+		"research/scripts/summarize": "#!/bin/sh\n",
+		"scout/SKILL.md": "---\nname: scout\ndescription: Scouts the workspace\ntype: agent\n---\n" +
+			scoutAgent + ": You scout the workspace.",
+		"recap/SKILL.md": "---\nname: recap\ndescription: Recaps the conversation\ntype: agent\n" +
+			"parent-context: true\nallowed-tools: [read_file]\n---\n" + recapAgent + ": You recap the conversation.",
+		"default/SKILL.md": "---\nname: default\ndescription: Named like the default agent\ntype: agent\n" +
+			"allowed-tools: [read_file]\n---\n" + defaultSkill + ": You only read files.",
+	} {
+		file := filepath.Join(skillDir, name)
+		require.NoError(t, os.MkdirAll(filepath.Dir(file), 0o755))
+		require.NoError(t, os.WriteFile(file, []byte(content), 0o755))
+	}
+	return skillDir
+}
+
+// newSkillChat opens a skillChat over the skills in skillDir, which
+// newSkillDir writes.
+func newSkillChat(t *testing.T, skillDir string) *skillChat {
+	workspace := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(workspace, "notes.txt"), []byte("hi\n"), 0o644))
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	fs, cwd := testLocalFS{root: workspace}, dirURI(workspace)
+	model := llmapi.ModelEntry{Provider: "test", Name: "test-model", ContextWindow: 128_000}
+	c := &skillChat{
+		t:  t,
+		wm: &recordingWindowManager{},
+		llm: newAgentRouter([]llmapi.ModelEntry{model},
+			chatAgent, defaultAgent, researchAgent, scoutAgent, recapAgent, defaultSkill),
+		exec:     &recordingExec{},
+		store:    newMemDialogueStore(),
+		skillDir: skillDir,
+	}
+	tools, _ := agentools.DefaultTools(fs, c.exec, cwd, stubLSP{}, agentools.NoIndex(), agentools.Config{},
+		configedit.NopConfig())
+	var started atomic.Int32
+	c.h = &aiEditorHandler{
+		ctx:            ctx,
+		llmSvc:         c.llm,
+		defaultModel:   model.Name,
+		cfg:            defaultComponentCfg,
+		dialogueStore:  c.store,
+		systemPrompt:   chatAgent + ": You are the chat agent.",
+		agentsConfig:   defaultAgentsConfig(defaultAgent + ": You are a sub-agent."),
+		baseTools:      tools,
+		toolRegistry:   agent.NewRegistry(tools...),
+		skillRegistry:  skills.NewRegistry(fs, cwd, []string{skillDir}, nil),
+		wm:             c.wm,
+		n:              stubNotifications{},
+		p:              term.NopInterrupter(),
+		config:         configedit.NopConfig(),
+		cwd:            cwd,
+		fs:             fs,
+		memoryDataPath: t.TempDir(),
+		generateDialogueID: func(_ context.Context, agentID string) string {
+			return fmt.Sprintf("sub-agent-%s-%d", agentID, started.Add(1))
+		},
+	}
+	c.open()
+	t.Cleanup(func() { require.NoError(t, c.tab.Close()) })
+	return c
+}
+
+// open opens the chat in a tab, replaying what it saved.
+func (c *skillChat) open() {
+	require.NoError(c.t, c.h.handleChat(textapi.Command{Args: []string{skillChatID}}))
+	c.tab = c.wm.gotHandler
+	c.tab.Resize(skillChatWidth, skillChatHeight)
+}
+
+// reopen closes the chat's tab and opens the chat again.
+func (c *skillChat) reopen() {
+	require.NoError(c.t, c.tab.Close())
+	c.open()
+}
+
+// send types text into the chat and submits it.
+func (c *skillChat) send(text string) {
+	keys, err := term.ParseKeys(strings.ReplaceAll(text, " ", "<space>") + "<enter>")
+	require.NoError(c.t, err)
+	for _, key := range keys {
+		c.tab.Handle(term.Event{Type: term.EventKey, Ch: key.Ch, Key: key.Key, Mod: key.Mod})
+	}
+}
+
+// chatskill runs the chatskill command on the chat, as the command
+// prompt does with the words of line.
+func (c *skillChat) chatskill(line string) {
+	require.NoError(c.t, c.h.HandleCommand(c.h.ctx, textapi.Command{
+		Name: commandSkill, Args: strings.Fields(line), URI: c.wm.gotURI,
+	}))
+}
+
+func (c *skillChat) screen() string {
+	return handlertest.DrawHandler(c.tab, skillChatWidth, skillChatHeight)
+}
+
+// saved returns the messages the conversation id holds.
+func (c *skillChat) saved(id string) []llmapi.Message {
+	c.store.mu.Lock()
+	defer c.store.mu.Unlock()
+	return slices.Clone(c.store.dialogues[id].Messages)
+}
+
+// subAgents returns the IDs of the sub-agent conversations, sorted.
+func (c *skillChat) subAgents() []string {
+	c.store.mu.Lock()
+	defer c.store.mu.Unlock()
+	var ids []string
+	for id := range c.store.dialogues {
+		if strings.HasPrefix(id, "sub-agent-") {
+			ids = append(ids, id)
+		}
+	}
+	slices.Sort(ids)
+	return ids
+}
+
+// await waits until the chat shows reply and holds want after its system
+// prompt, and returns the screen.
+func (c *skillChat) await(reply string, want []llmapi.Message) string {
+	var screen string
+	require.EventuallyWithT(c.t, func(t *assert.CollectT) {
+		screen = c.screen()
+		if assert.Contains(t, screen, reply) {
+			saved := c.saved(skillChatID)
+			if assert.NotEmpty(t, saved) {
+				assert.Equal(t, want, saved[1:], "screen:\n%s", screen)
+			}
+		}
+	}, 5*time.Second, 10*time.Millisecond)
+	return screen
+}
+
+// scriptResearch scripts the research sub-agent to try every kind of tool
+// its rules allow or forbid, including a scout sub-agent that tries a
+// command they forbid, and to then answer "The notes say hi.".
+func (c *skillChat) scriptResearch() {
+	script := filepath.Join(c.skillDir, "research", "scripts", "summarize")
+	c.llm.script(researchAgent,
+		toolCallsResponse(
+			toolCall("r-read", "read_file", `{"path":"notes.txt"}`),
+			toolCall("r-log", "bash", `{"command":"git log --oneline","description":"log"}`),
+			toolCall("r-log-p", "bash", `{"command":"git log -p notes.txt","description":"log"}`),
+			toolCall("r-rm", "bash", `{"command":"rm notes.txt","description":"remove"}`),
+			toolCall("r-script", "bash", mustJSON(c.t, map[string]string{
+				"command": script + " notes.txt", "description": "summarize",
+			})),
+			toolCall("r-notes", "skill", `{"name":"notes","args":null}`),
+			toolCall("r-other", "skill", `{"name":"other","args":null}`),
+			toolCall("r-scout", "agent", `{"description":"scout","prompt":"look around","subagent_type":"scout"}`),
+			toolCall("r-default", "agent", `{"description":"anything","prompt":"do anything"}`),
+			toolCall("r-patch", "apply_patch", `{"patch":""}`),
+		),
+		llmtest.Response{Chunks: []string{"The notes say hi."}},
+	)
+	c.llm.script(scoutAgent,
+		toolCallsResponse(toolCall("s-rm", "bash", `{"command":"rm notes.txt","description":"remove"}`)),
+		llmtest.Response{Chunks: []string{"Scout found notes.txt."}},
+	)
+}
+
+// checkResearch checks that the research sub-agent ran as scriptResearch
+// scripts it, given task, and that its tool rules bound it and the scout
+// sub-agent it ran.
+func (c *skillChat) checkResearch(task string) {
+	t := c.t
+	research := c.llm.requests(researchAgent)
+	require.Len(t, research, 2)
+	first := research[0].Request
+	assert.Equal(t, researchAgent+": You research the notes.", first.Messages[0].Content)
+	assert.Equal(t, []llmapi.Message{{Role: llmapi.RoleUser, Content: task}}, conversation(first.Messages),
+		"the sub-agent starts with the task alone")
+	assert.Equal(t, []string{"agent", "bash", "read_file", "skill"}, toolNames(first))
+	assert.Contains(t, toolDescription(first, "bash"), "Commands are restricted")
+	assert.Contains(t, toolDescription(first, "agent"), "- scout: Scouts the workspace")
+	assert.NotContains(t, toolDescription(first, "agent"), "- research")
+	skillList := systemMessage(first, "The following skills are available")
+	assert.Contains(t, skillList, "- notes: How to take notes")
+	for _, hidden := range []string{"other", "research", "scout", "explore"} {
+		assert.NotContains(t, skillList, "- "+hidden, "the rules hide the skills they do not allow")
+	}
+
+	results := research[1].Request.Messages
+	script := filepath.Join(c.skillDir, "research", "scripts", "summarize")
+	for id, want := range map[string]string{
+		"r-read":    "L1: hi",
+		"r-log":     "ran bash -c git log --oneline",
+		"r-log-p":   "error: ",
+		"r-rm":      "error: ",
+		"r-script":  "ran bash -c " + script + " notes.txt",
+		"r-notes":   "NOTES-SKILL: Take notes as bullet points.",
+		"r-other":   `unknown skill "other"`,
+		"r-scout":   "Scout found notes.txt.",
+		"r-default": "error: subagent_type is required",
+		"r-patch":   `error: unknown tool "apply_patch"`,
+	} {
+		got, ok := findToolResult(results, id)
+		if assert.True(t, ok, "no result for %s", id) {
+			assert.Contains(t, got, want, "result of %s", id)
+		}
+	}
+
+	scout := c.llm.requests(scoutAgent)
+	require.Len(t, scout, 2)
+	assert.Equal(t, toolNames(first), toolNames(scout[0].Request),
+		"a sub-agent gets no more than the agent that runs it")
+	got, _ := findToolResult(scout[1].Request.Messages, "s-rm")
+	assert.True(t, strings.HasPrefix(got, "error: "), "the scout's rm must be rejected: %s", got)
+	assert.Equal(t, []string{"bash -c git log --oneline", "bash -c " + script + " notes.txt"}, c.exec.ran(),
+		"only allowed commands may run")
+}
+
+func TestE2ESkillRuns(t *testing.T) {
+	// researchRows are the rows of the calls of research, as scriptResearch
+	// scripts it, and of its result.
+	researchRows := []string{
+		"├─ ✓ read_file notes.txt",
+		"├─ ✓ bash git log --oneline",
+		"├─ ✗ bash git log -p notes.txt",
+		"├─ ✗ bash rm notes.txt",
+		"├─ ✓ bash /", // the script, by its absolute path
+		"├─ ✓ skill notes",
+		"├─ ✗ skill other",
+		"├─ ✓ agent scout",
+		"│  ├─ ✗ bash rm notes.txt",
+		"│  └─ 󰆈  Scout found notes.txt.",
+		"├─ ✗ agent anything",
+		"├─ ✗ apply_patch",
+		"└─ 󰆈  The notes say hi.",
+	}
+	skillDir := newSkillDir(t)
+	notes, ok := skills.NewRegistry(testLocalFS{root: "/"}, dirURI(""), []string{skillDir}, nil).Get("notes")
+	require.True(t, ok)
+	tests := []struct {
+		name string
+		// greet has the chat agent answer a greeting before the run.
+		greet bool
+		// run starts the run as the user does, who sees shown.
+		run   func(c *skillChat)
+		shown string
+		// unechoed reports that the chat only shows the user's message
+		// once reopened.
+		unechoed bool
+		// research is the task the research sub-agent gets, when the run
+		// has it run as scriptResearch scripts it.
+		research string
+		scripts  map[string][]llmtest.Response
+		// reply is the last text the run shows, turn what the chat saves
+		// of it, and rows the row of the run's tool call followed by
+		// the rows nested under it.
+		reply     string
+		turn      []llmapi.Message
+		rows      []string
+		subAgents []string
+		check     func(t *testing.T, c *skillChat)
+	}{
+		{
+			name:      "slash command runs an agent skill",
+			run:       func(c *skillChat) { c.send("/research what do the notes say?") },
+			shown:     "/research what do the notes say?",
+			research:  skillCommand("research", "what do the notes say?"),
+			reply:     "The notes say hi.",
+			turn:      ranSkill(skillCommand("research", "what do the notes say?"), "research", 1, "The notes say hi."),
+			rows:      append([]string{"✓ skill research"}, researchRows...),
+			subAgents: []string{"sub-agent-research-1", "sub-agent-scout-2"},
+			check: func(t *testing.T, c *skillChat) {
+				assert.Empty(t, c.llm.requests(chatAgent), "the sub-agent answers, not the chat agent")
+			},
+		},
+		{
+			name:      "chatskill runs an agent skill",
+			run:       func(c *skillChat) { c.chatskill("research what do the notes say?") },
+			shown:     "/research what do the notes say?",
+			unechoed:  true,
+			research:  skillCommand("research", "what do the notes say?"),
+			reply:     "The notes say hi.",
+			turn:      ranSkill(skillCommand("research", "what do the notes say?"), "research", 1, "The notes say hi."),
+			rows:      append([]string{"✓ skill research"}, researchRows...),
+			subAgents: []string{"sub-agent-research-1", "sub-agent-scout-2"},
+			check: func(t *testing.T, c *skillChat) {
+				assert.Empty(t, c.llm.requests(chatAgent), "the sub-agent answers, not the chat agent")
+			},
+		},
+		{
+			name:     "skill tool runs an agent skill",
+			run:      func(c *skillChat) { c.send("research the notes") },
+			shown:    "research the notes",
+			research: "what do the notes say?",
+			scripts: map[string][]llmtest.Response{chatAgent: {
+				toolCallsResponse(toolCall("k1", "skill", `{"name":"research","args":"what do the notes say?"}`)),
+				{Chunks: []string{"Research says the notes say hi."}},
+			}},
+			reply: "Research says the notes say hi.",
+			turn: []llmapi.Message{
+				{Role: llmapi.RoleUser, Content: "research the notes"},
+				{Role: llmapi.RoleAssistant, ToolCalls: []llmapi.ToolCall{
+					toolCall("k1", "skill", `{"name":"research","args":"what do the notes say?"}`),
+				}},
+				{Role: llmapi.RoleTool, Content: "The notes say hi.", Name: "skill", ToolCallID: "k1"},
+				{Role: llmapi.RoleAssistant, Content: "Research says the notes say hi."},
+			},
+			rows:      append([]string{"✓ skill research what do the notes say?"}, researchRows...),
+			subAgents: []string{"sub-agent-research-1", "sub-agent-scout-2"},
+		},
+		{
+			name:     "agent tool runs an agent skill",
+			run:      func(c *skillChat) { c.send("research the notes") },
+			shown:    "research the notes",
+			research: "what do the notes say?",
+			scripts: map[string][]llmtest.Response{chatAgent: {
+				toolCallsResponse(toolCall("a1", "agent",
+					`{"description":"research the notes","prompt":"what do the notes say?","subagent_type":"research"}`)),
+				{Chunks: []string{"Research says the notes say hi."}},
+			}},
+			reply: "Research says the notes say hi.",
+			turn: []llmapi.Message{
+				{Role: llmapi.RoleUser, Content: "research the notes"},
+				{Role: llmapi.RoleAssistant, ToolCalls: []llmapi.ToolCall{toolCall("a1", "agent",
+					`{"description":"research the notes","prompt":"what do the notes say?","subagent_type":"research"}`)}},
+				{Role: llmapi.RoleTool, Content: "The notes say hi.", Name: "agent", ToolCallID: "a1"},
+				{Role: llmapi.RoleAssistant, Content: "Research says the notes say hi."},
+			},
+			rows:      append([]string{"✓ agent research the notes"}, researchRows...),
+			subAgents: []string{"sub-agent-research-1", "sub-agent-scout-2"},
+		},
+		{
+			name:  "agent tool runs the default agent",
+			run:   func(c *skillChat) { c.send("look around") },
+			shown: "look around",
+			scripts: map[string][]llmtest.Response{
+				chatAgent: {
+					toolCallsResponse(toolCall("a1", "agent", `{"description":"look around","prompt":"look around"}`)),
+					{Chunks: []string{"The sub-agent looked around."}},
+				},
+				defaultAgent: {{Chunks: []string{"Looked around."}}},
+			},
+			reply: "The sub-agent looked around.",
+			turn: []llmapi.Message{
+				{Role: llmapi.RoleUser, Content: "look around"},
+				{Role: llmapi.RoleAssistant, ToolCalls: []llmapi.ToolCall{
+					toolCall("a1", "agent", `{"description":"look around","prompt":"look around"}`),
+				}},
+				{Role: llmapi.RoleTool, Content: "Looked around.", Name: "agent", ToolCallID: "a1"},
+				{Role: llmapi.RoleAssistant, Content: "The sub-agent looked around."},
+			},
+			rows:      []string{"✓ agent look around", "└─ 󰆈  Looked around."},
+			subAgents: []string{"sub-agent-default-1"},
+			check: func(t *testing.T, c *skillChat) {
+				requests := c.llm.requests(defaultAgent)
+				require.Len(t, requests, 1)
+				tools := toolNames(requests[0].Request)
+				for _, tool := range []string{"agent", "apply_patch", "bash", "read_file", "skill"} {
+					assert.Contains(t, tools, tool, "an agent without tool rules gets every tool")
+				}
+				skillList := systemMessage(requests[0].Request, "The following skills are available")
+				assert.Contains(t, skillList, "- other: Something else")
+				assert.Contains(t, skillList, "- research (agent): Researches the notes")
+			},
+		},
+		{
+			name:  "slash command loads an instruction skill",
+			run:   func(c *skillChat) { c.send("/notes about today") },
+			shown: "/notes about today",
+			scripts: map[string][]llmtest.Response{chatAgent: {
+				toolCallsResponse(toolCall("n1", "skill", `{"name":"notes","args":"about today"}`)),
+				{Chunks: []string{"Noted."}},
+			}},
+			reply: "Noted.",
+			turn: []llmapi.Message{
+				{Role: llmapi.RoleUser, Content: skillCommand("notes", "about today") +
+					"\n<command-hint>Call the skill tool with name=\"notes\" to load and run this skill.</command-hint>"},
+				{Role: llmapi.RoleAssistant, ToolCalls: []llmapi.ToolCall{
+					toolCall("n1", "skill", `{"name":"notes","args":"about today"}`),
+				}},
+				{Role: llmapi.RoleTool, Content: skills.FormatSkillContent(notes), Name: "skill", ToolCallID: "n1"},
+				{Role: llmapi.RoleAssistant, Content: "Noted."},
+			},
+			rows: []string{"✓ skill notes about today"},
+			check: func(t *testing.T, c *skillChat) {
+				requests := c.llm.requests(chatAgent)
+				require.NotEmpty(t, requests)
+				assert.Equal(t, skills.FormatSkillContent(notes),
+					systemMessage(requests[0].Request, "NOTES-SKILL"), "the command loads the skill")
+			},
+		},
+		{
+			name:      "slash command runs an agent skill with the conversation",
+			greet:     true,
+			run:       func(c *skillChat) { c.send("/recap") },
+			shown:     "/recap",
+			scripts:   map[string][]llmtest.Response{recapAgent: {{Chunks: []string{"You said hello."}}}},
+			reply:     "You said hello.",
+			turn:      ranSkill(skillCommand("recap", ""), "recap", 1, "You said hello."),
+			rows:      []string{"✓ skill recap", "└─ 󰆈  You said hello."},
+			subAgents: []string{"sub-agent-recap-1"},
+			check: func(t *testing.T, c *skillChat) {
+				requests := c.llm.requests(recapAgent)
+				require.Len(t, requests, 1)
+				assert.Equal(t, append(greeting(), llmapi.Message{Role: llmapi.RoleUser, Content: skillCommand("recap", "")}),
+					conversation(requests[0].Request.Messages))
+			},
+		},
+		{
+			name:  "slash command runs a skill named like an agent",
+			greet: true,
+			run:   func(c *skillChat) { c.send("/default read the notes") },
+			shown: "/default read the notes",
+			scripts: map[string][]llmtest.Response{defaultSkill: {
+				toolCallsResponse(toolCall("d-ls", "bash", `{"command":"ls","description":"list"}`)),
+				{Chunks: []string{"Read the notes."}},
+			}},
+			reply:     "Read the notes.",
+			turn:      ranSkill(skillCommand("default", "read the notes"), "default", 1, "Read the notes."),
+			rows:      []string{"✓ skill default", "├─ ✗ bash command=ls description=list", "└─ 󰆈  Read the notes."},
+			subAgents: []string{"sub-agent-default-1"},
+			check: func(t *testing.T, c *skillChat) {
+				assert.Empty(t, c.llm.requests(defaultAgent), "the skill must not run as the agent")
+				requests := c.llm.requests(defaultSkill)
+				require.Len(t, requests, 2)
+				assert.Equal(t, []string{"read_file"}, toolNames(requests[0].Request))
+				assert.Equal(t, []llmapi.Message{{Role: llmapi.RoleUser, Content: skillCommand("default", "read the notes")}},
+					conversation(requests[0].Request.Messages), "the sub-agent starts with the task alone")
+				got, _ := findToolResult(requests[1].Request.Messages, "d-ls")
+				assert.Equal(t, `error: unknown tool "bash"`, got)
+				assert.Empty(t, c.exec.ran())
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := newSkillChat(t, skillDir)
+			var before []llmapi.Message
+			if tt.greet {
+				c.llm.script(chatAgent, llmtest.Response{Chunks: []string{"Hi there."}})
+				c.send("hello")
+				before = greeting()
+				c.await("Hi there.", before)
+			}
+			if tt.research != "" {
+				c.scriptResearch()
+			}
+			for marker, responses := range tt.scripts {
+				c.llm.script(marker, responses...)
+			}
+
+			tt.run(c)
+			turn := append(slices.Clone(before), tt.turn...)
+			screen := c.await(tt.reply, turn)
+			if !tt.unechoed {
+				assert.Contains(t, screen, tt.shown)
+			}
+			rows := runRows(screen)
+			if assert.Len(t, rows, len(tt.rows), "screen:\n%s", screen) {
+				for i, want := range tt.rows {
+					assert.True(t, strings.HasPrefix(rows[i], want), "row %d is %q, want %q", i, rows[i], want)
+				}
+			}
+			assert.Greater(t, strings.LastIndex(screen, tt.reply), strings.Index(screen, tt.rows[0]),
+				"the reply follows the run:\n%s", screen)
+			if tt.research != "" {
+				c.checkResearch(tt.research)
+			}
+			assert.Equal(t, tt.subAgents, c.subAgents())
+			if tt.check != nil {
+				tt.check(t, c)
+			}
+
+			c.reopen()
+			reopened := c.screen()
+			assert.Contains(t, reopened, tt.shown, "the reopened chat shows the run")
+			assert.Contains(t, reopened, tt.reply, "the reopened chat shows the run")
+			// Reopened, a call shows its arguments instead of its summary.
+			if rows := runRows(reopened); assert.NotEmpty(t, rows, "screen:\n%s", reopened) {
+				tool := strings.Join(strings.Fields(tt.rows[0])[:2], " ")
+				assert.True(t, strings.HasPrefix(rows[0], tool+" "), "row %q, want %s", rows[0], tool)
+			}
+			asked := len(c.llm.requests(chatAgent))
+			c.llm.script(chatAgent, llmtest.Response{Chunks: []string{"You're welcome."}})
+			c.send("thanks")
+			c.await("You're welcome.", append(slices.Clone(turn),
+				llmapi.Message{Role: llmapi.RoleUser, Content: "thanks"},
+				llmapi.Message{Role: llmapi.RoleAssistant, Content: "You're welcome."}))
+			requests := c.llm.requests(chatAgent)
+			require.Len(t, requests, asked+1)
+			assert.Equal(t, append(turn, llmapi.Message{Role: llmapi.RoleUser, Content: "thanks"}),
+				conversation(requests[asked].Request.Messages), "the chat agent answers knowing the run")
+		})
+	}
+}
+
+// skillCommand returns the message the chat sends for /name args.
+func skillCommand(name, args string) string {
+	msg := "<command-message>" + name + "</command-message>\n<command-name>/" + name + "</command-name>"
+	if args != "" {
+		msg += "\n" + args
+	}
+	return msg
+}
+
+// ranSkill returns what the chat saves of the user's message input running
+// the agent skill name in its n-th sub-agent, which replied reply.
+func ranSkill(input, name string, n int, reply string) []llmapi.Message {
+	call := toolCall(fmt.Sprintf("skill-sub-agent-%s-%d", name, n), "skill", `{"name":"`+name+`"}`)
+	return []llmapi.Message{
+		{Role: llmapi.RoleUser, Content: input},
+		{Role: llmapi.RoleAssistant, ToolCalls: []llmapi.ToolCall{call}},
+		{Role: llmapi.RoleTool, Content: reply, Name: "skill", ToolCallID: call.ID},
+		{Role: llmapi.RoleAssistant, Content: reply},
+	}
+}
+
+// greeting returns what the chat saves of a greeting the chat agent
+// answered.
+func greeting() []llmapi.Message {
+	return []llmapi.Message{
+		{Role: llmapi.RoleUser, Content: "hello"},
+		{Role: llmapi.RoleAssistant, Content: "Hi there."},
+	}
+}
+
+// toolDurationRegexp matches the duration a finished tool call shows
+// after its name.
+var toolDurationRegexp = regexp.MustCompile(`([✓✗] \S+) [0-9.]+(ns|µs|ms|s|m)\b`)
+
+// runRows returns the first top-level tool call row of screen and the rows
+// nested under it, without durations and with the nested rows relative
+// to it.
+func runRows(screen string) []string {
+	var rows []string
+	margin := 0
+	for line := range strings.SplitSeq(screen, "\n") {
+		line = toolDurationRegexp.ReplaceAllString(strings.TrimRight(line, " "), "$1")
+		if rows == nil {
+			trimmed := strings.TrimLeft(line, " ")
+			for _, glyph := range []string{"├─ ", "└─ "} {
+				if root, ok := strings.CutPrefix(trimmed, glyph); ok {
+					rows, margin = append(rows, root), len(line)-len(trimmed)
+				}
+			}
+			continue
+		}
+		if len(line) < margin {
+			break
+		}
+		nested, ok := strings.CutPrefix(line[margin:], "│  ")
+		if !ok {
+			nested, ok = strings.CutPrefix(line[margin:], "   ")
+		}
+		if !ok || strings.HasPrefix(nested, " ") {
+			break
+		}
+		rows = append(rows, nested)
+	}
+	return rows
+}
+
+func toolCallsResponse(calls ...llmapi.ToolCall) llmtest.Response {
+	return llmtest.Response{ToolCalls: calls, FinishReason: llmapi.FinishReasonToolCall}
+}
+
+// conversation returns msgs without their system messages.
+func conversation(msgs []llmapi.Message) []llmapi.Message {
+	var ret []llmapi.Message
+	for _, m := range msgs {
+		if m.Role != llmapi.RoleSystem {
+			ret = append(ret, m)
+		}
+	}
+	return ret
+}
+
+func toolNames(req llmapi.Request) []string {
+	var names []string
+	for _, tool := range req.Tools {
+		names = append(names, tool.Function.Name)
+	}
+	return names
+}
+
+func toolDescription(req llmapi.Request, name string) string {
+	for _, tool := range req.Tools {
+		if tool.Function.Name == name {
+			return tool.Function.Description
+		}
+	}
+	return ""
+}
+
+// systemMessage returns the first system message of req that holds text.
+func systemMessage(req llmapi.Request, text string) string {
+	for _, m := range req.Messages {
+		if m.Role == llmapi.RoleSystem && strings.Contains(m.Content, text) {
+			return m.Content
+		}
+	}
+	return ""
+}
+
 func TestE2EMaxTokensRejectedAboveModelCeiling(t *testing.T) {
 	model := llmapi.ModelEntry{
 		Provider: "anthropic", Name: "claude-sonnet-4-5", ContextWindow: 200_000,

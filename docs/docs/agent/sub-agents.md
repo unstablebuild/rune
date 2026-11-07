@@ -22,7 +22,11 @@ A sub-agent is a [skill](./skills.md) whose frontmatter sets `type: agent`.
 Place a `SKILL.md` in one of your
 [skill directories](./skills.md#skill-directories). The agent can then
 spawn it by name, and you can run it yourself as a slash command
-(`/<name>`).
+(`/<name>`). Either way, the chat shows the sub-agent as a `skill` call
+with its tool calls nested under it, and keeps the call and its reply in
+the conversation, so later questions can refer to them. When you run it
+yourself, its reply follows as the answer. The sub-agent's own
+conversation is saved as `sub-agent-<name>-…`.
 
 ```markdown
 ---
@@ -48,12 +52,16 @@ constraints and style.
 | `type: agent` | Marks the skill as a sub-agent. Without it, the skill is a set of instructions that the agent loads into its own conversation. |
 | `model` | Optional. The model the sub-agent runs on when the agent spawns it, written as `provider/name` or as a model name that `agent models` lists. By default, it uses the model of the conversation that spawns it. |
 | `allowed-tools` | Optional. The tools the sub-agent may use. Anything the list does not allow is unavailable. Omit it to give the sub-agent every tool. Leaving it empty gives it no tools. See [Tool rules](#tool-rules). |
-| `denied-tools` | Optional. The tools, commands, skills and sub-agents the sub-agent may not use, even when `allowed-tools` allows them. |
+| `disallowed-tools` | Optional. The tools, commands, skills and sub-agents the sub-agent may not use, even when `allowed-tools` allows them. |
 | `parent-context` | When `true` and you run the sub-agent as a slash command, it starts with the conversation so far. Defaults to `false`, which keeps the sub-agent isolated. |
 
 ## Tool rules
 
-`allowed-tools` and `denied-tools` each take a list of entries. You can
+Only sub-agents have tool rules. Rune ignores `allowed-tools` and
+`disallowed-tools` in other skills, which harnesses such as Claude Code
+read with a different meaning.
+
+`allowed-tools` and `disallowed-tools` each take a list of entries. You can
 write them as a YAML list, or as a single string with entries separated by
 spaces or commas:
 
@@ -67,7 +75,7 @@ Spaces, commas and quoted text inside parentheses belong to the entry.
 Quote patterns in a YAML list, so that YAML does not read characters like
 `*`, `:` and `,` as its own.
 
-| Entry | In `allowed-tools` | In `denied-tools` |
+| Entry | In `allowed-tools` | In `disallowed-tools` |
 | --- | --- | --- |
 | `read_file` | Allows the tool. | Removes the tool. |
 | `github_*` | Allows every tool whose name matches the glob. | Removes every matching tool. |
@@ -80,7 +88,7 @@ Quote patterns in a YAML list, so that YAML does not read characters like
 | `agent(explore)` | Allows spawning only the matching sub-agent types, in any case. | Forbids the matching sub-agent types. |
 
 Rules only take tools away. Without `allowed-tools`, a sub-agent gets every
-tool except the ones that `denied-tools` removes. An `allowed-tools` field
+tool except the ones that `disallowed-tools` removes. An `allowed-tools` field
 with no entries, such as `allowed-tools: []` or `allowed-tools:` with
 nothing after it, gives it no tools at all. A sub-agent never sees itself
 among the skills and sub-agents it can use, so it cannot start itself.
@@ -156,21 +164,21 @@ Some commands are always rejected when commands are restricted:
 
 - Commands whose programs Rune cannot tell before they run, such as
   `eval`, `source`, or a program name in a variable (`$CMD args`). This
-  also applies when only `denied-tools` has command patterns.
+  also applies when only `disallowed-tools` has command patterns.
 - `sudo` and other programs that run commands as another user, unless a
   pattern allows them. Allowing `sudo *` allows every command as root.
 - Redirections that write files, such as `> out.txt` or `>> log`. Writing
   to `/dev/null`, `/dev/stdout` or `/dev/stderr` is allowed, so
   `mycli a 2>/dev/null` runs.
 
-Patterns in `denied-tools` reject a matching program anywhere in a
+Patterns in `disallowed-tools` reject a matching program anywhere in a
 command, including inside wrappers and nested shells, and take precedence
 over `allowed-tools`. To allow most commands but block a few, pair a plain
 `bash` with deny patterns:
 
 ```yaml
 allowed-tools: [read_file, bash]
-denied-tools: ["bash(git push *)", "bash(git reset --hard *)"]
+disallowed-tools: ["bash(git push *)", "bash(git reset --hard *)"]
 ```
 
 :::caution
@@ -234,7 +242,7 @@ name: acme-triage
 description: Triages new Acme issues and drafts a summary for each. Use for issue triage.
 type: agent
 allowed-tools: [read_file, "skill(acme-*)", "bash($acme-notes)", "bash(acme issue *)", "bash(jq *)"]
-denied-tools: ["bash(acme issue delete *)"]
+disallowed-tools: ["bash(acme issue delete *)"]
 ---
 ```
 
@@ -269,11 +277,11 @@ without asking. See [Command approvals](../develop/extensions.md#command-approva
 
 ## Claude Code compatibility
 
-Rune accepts the Claude Code form of command patterns: `Bash(git add:*)`
-is the same as `bash(git add *)`. Write `:*` right after the last word:
-`bash(git add :*)` is an error. Claude Code's own tool names, such as
-`Read` and `Edit`, are not Rune Agent tool names. Replace them with the
-names that `agent tools` lists, such as `read_file`.
+Rune accepts some Claude Code entries as they are, such as
+`Bash(git add:*)`, but not all of them, and some mean something else. See
+[Claude Code › Use Claude Code skills in Rune
+Agent](./claude-code.md#use-claude-code-skills-in-rune-agent) to port a
+Claude Code skill or subagent.
 
 ## Troubleshooting
 
@@ -288,11 +296,11 @@ The sub-agent sees this message and can choose a command that is allowed.
 If it keeps hitting the same rejection, add a pattern for the program, or
 tell the sub-agent in its instructions which commands to use.
 
-**The sub-agent does not appear.** Rune does not load a skill with an
+**The sub-agent does not appear.** Rune does not load a sub-agent with an
 entry it cannot parse, such as an unbalanced parenthesis, a pattern on a
 tool other than `bash`, `skill` and `agent`, a command pattern with a
 variable in it, a name with a space, slash or quote in it, or a
-`bash($...)` entry in `denied-tools`. An unquoted comma inside
+`bash($...)` entry in `disallowed-tools`. An unquoted comma inside
 parentheses in a YAML list, as in `[bash(git commit -m 'a, b')]`, splits
 the entry in two and fails the same way; quote the entry. The skill is
 missing from `agent skills list`, and Rune logs a warning that names the

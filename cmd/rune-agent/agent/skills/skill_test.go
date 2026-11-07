@@ -197,7 +197,6 @@ body content`,
 				License:       "MIT",
 				Compatibility: "Requires git and docker",
 				Metadata:      map[string]string{"author": "test-org", "version": "1.0"},
-				Tools:         mustPolicy(t, []string{"Bash(git:*)", "Read"}, nil),
 			},
 		},
 		{
@@ -205,6 +204,7 @@ body content`,
 			input: `---
 name: list
 description: String list
+type: agent
 allowed-tools: read_file, bash(git commit -m 'a, b'), skill(acme-*), bash($acme-*)
 ---
 body`,
@@ -212,16 +212,19 @@ body`,
 			want: Skill{
 				Name: "list", Description: "String list", Body: "body", Dir: "/skills/list",
 				Tools: mustPolicy(t,
-					[]string{"read_file", "bash(git commit -m 'a, b')", "skill(acme-*)", "bash($acme-*)"}, nil),
+					[]string{"read_file", "bash(git commit -m 'a, b')", "skill(acme-*)", "bash($acme-*)"},
+					nil).WithoutSkill("list"),
+				Type: "agent",
 			},
 		},
 		{
-			name: "allowed-tools and denied-tools as YAML lists",
+			name: "allowed-tools and disallowed-tools as YAML lists",
 			input: `---
 name: acme-triage
 description: Triage issues
+type: agent
 allowed-tools: [read_file, "skill(acme-*)", "bash(acme issue *)", "bash($acme-notes)"]
-denied-tools:
+disallowed-tools:
   - bash(acme issue delete *)
 ---
 body`,
@@ -231,21 +234,24 @@ body`,
 				Dir: "/skills/acme-triage",
 				Tools: mustPolicy(t,
 					[]string{"read_file", "skill(acme-*)", "bash(acme issue *)", "bash($acme-notes)"},
-					[]string{"bash(acme issue delete *)"}),
+					[]string{"bash(acme issue delete *)"}).WithoutSkill("acme-triage"),
+				Type: "agent",
 			},
 		},
 		{
-			name: "denied-tools without allowed-tools",
+			name: "disallowed-tools without allowed-tools",
 			input: `---
 name: no-shell
 description: No shell
-denied-tools: bash
+type: agent
+disallowed-tools: bash
 ---
 body`,
 			dir: "/skills/no-shell",
 			want: Skill{
 				Name: "no-shell", Description: "No shell", Body: "body", Dir: "/skills/no-shell",
-				Tools: mustPolicy(t, nil, []string{"bash"}),
+				Tools: mustPolicy(t, nil, []string{"bash"}).WithoutSkill("no-shell"),
+				Type:  "agent",
 			},
 		},
 		{
@@ -253,6 +259,7 @@ body`,
 			input: `---
 name: broken
 description: Broken
+type: agent
 allowed-tools: read_file(x)
 ---
 body`,
@@ -260,11 +267,12 @@ body`,
 			wantErr: `"read_file(x)"`,
 		},
 		{
-			name: "an invalid denied-tools entry is an error",
+			name: "an invalid disallowed-tools entry is an error",
 			input: `---
 name: broken
 description: Broken
-denied-tools: [bash($X)]
+type: agent
+disallowed-tools: [bash($X)]
 ---
 body`,
 			dir:     "/skills/broken",
@@ -383,7 +391,8 @@ func TestParseTools(t *testing.T) {
 	empty := mustPolicy(t, []string{}, nil)
 	cases := []struct {
 		name string
-		// frontmatter follows the name and description of a skill named x.
+		// frontmatter follows the name, description and type of an agent
+		// skill named x, whose policy is want without x itself.
 		frontmatter string
 		want        toolpolicy.Policy
 		wantErr     string
@@ -428,26 +437,18 @@ func TestParseTools(t *testing.T) {
 			want:        mustPolicy(t, []string{"Bash(git:*)", "Read"}, nil)},
 		{name: "a tagged string", frontmatter: "allowed-tools: !!str read_file\n",
 			want: mustPolicy(t, []string{"read_file"}, nil)},
-		{name: "denied-tools only",
-			frontmatter: "denied-tools: bash, github_*\n",
+		{name: "disallowed-tools only",
+			frontmatter: "disallowed-tools: bash, github_*\n",
 			want:        mustPolicy(t, nil, []string{"bash", "github_*"})},
-		{name: "null denied-tools", frontmatter: "denied-tools:\n", want: toolpolicy.Policy{}},
-		{name: "empty denied-tools", frontmatter: "denied-tools: []\n", want: toolpolicy.Policy{}},
+		{name: "null disallowed-tools", frontmatter: "disallowed-tools:\n", want: toolpolicy.Policy{}},
+		{name: "empty disallowed-tools", frontmatter: "disallowed-tools: []\n", want: toolpolicy.Policy{}},
 		{name: "both",
-			frontmatter: "allowed-tools: [\"bash(git *)\"]\ndenied-tools: [\"bash(git push *)\"]\n",
+			frontmatter: "allowed-tools: [\"bash(git *)\"]\ndisallowed-tools: [\"bash(git push *)\"]\n",
 			want:        mustPolicy(t, []string{"bash(git *)"}, []string{"bash(git push *)"})},
-
-		// An agent skill may not use or spawn itself.
-		{name: "agent without tool fields", frontmatter: "type: agent\n",
-			want: toolpolicy.Policy{}.WithoutSkill("x")},
-		{name: "agent with an empty allow list", frontmatter: "type: agent\nallowed-tools: []\n",
-			want: empty.WithoutSkill("x")},
-		{name: "agent with tools", frontmatter: "type: agent\nallowed-tools: [skill, agent]\n",
-			want: mustPolicy(t, []string{"skill", "agent"}, nil).WithoutSkill("x")},
 
 		{name: "a mapping", frontmatter: "allowed-tools: {a: b}\n", wantErr: "allowed-tools"},
 		{name: "a nested list", frontmatter: "allowed-tools: [[a]]\n", wantErr: "allowed-tools"},
-		{name: "a denied mapping", frontmatter: "denied-tools: {a: b}\n", wantErr: "parse frontmatter"},
+		{name: "a disallowed mapping", frontmatter: "disallowed-tools: {a: b}\n", wantErr: "disallowed-tools"},
 		{name: "an alias", frontmatter: "allowed-tools: [*]\n", wantErr: "parse frontmatter"},
 		{name: "a colon and space in a block item",
 			frontmatter: "allowed-tools:\n  - Bash(git add: *)\n", wantErr: "parse frontmatter"},
@@ -457,15 +458,13 @@ func TestParseTools(t *testing.T) {
 			frontmatter: "allowed-tools: read_file\nallowed-tools: bash\n", wantErr: "already defined"},
 		{name: "an invalid allowed entry", frontmatter: "allowed-tools: read_file(x)\n",
 			wantErr: `"read_file(x)"`},
-		{name: "an invalid denied entry", frontmatter: "denied-tools: [bash($X)]\n",
+		{name: "an invalid disallowed entry", frontmatter: "disallowed-tools: [bash($X)]\n",
 			wantErr: "the scripts of a skill can only be allowed"},
-		{name: "an invalid entry in a prompt skill", frontmatter: "allowed-tools: bash(git $X)\n",
-			wantErr: `"bash(git $X)"`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			input := "---\nname: x\ndescription: d\n" + tc.frontmatter + "---\nbody"
+			input := "---\nname: x\ndescription: d\ntype: agent\n" + tc.frontmatter + "---\nbody"
 			got, err := Parse([]byte(input), "/skills/x")
 			if tc.wantErr != "" {
 				require.Error(t, err)
@@ -473,7 +472,33 @@ func TestParseTools(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
-			assert.Equal(t, tc.want, got.Tools)
+			assert.Equal(t, tc.want.WithoutSkill("x"), got.Tools)
+		})
+	}
+}
+
+func TestParsePromptSkillIgnoresTools(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name        string
+		frontmatter string
+	}{
+		{"Rune entries", "allowed-tools: read_file bash(git log *)\ndisallowed-tools: bash(git push *)\n"},
+		{"Claude Code tools", "allowed-tools: Bash(git:*) Read Grep\n"},
+		{"Claude Code patterns on other tools", "allowed-tools: Read(./.env) WebFetch(domain:example.com)\n"},
+		{"a Claude Code variable", "allowed-tools: Bash(${CLAUDE_SKILL_DIR}/scripts/render.sh *)\n"},
+		{"Claude Code wildcards", "allowed-tools: Bash(*) Bash(ls*) Bash(* --version)\n"},
+		{"Claude Code skill and agent lists", "allowed-tools: Skill(review-pr *), Agent(worker, researcher)\n"},
+		{"a Claude Code deny list", "disallowed-tools: AskUserQuestion Task(Explore)\n"},
+		{"a mapping", "allowed-tools: {a: b}\ndisallowed-tools: {a: b}\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			input := "---\nname: x\ndescription: d\n" + tc.frontmatter + "---\nbody"
+			got, err := Parse([]byte(input), "/skills/x")
+			require.NoError(t, err)
+			assert.True(t, got.Tools.IsZero(), "only agent skills have tool rules")
 		})
 	}
 }

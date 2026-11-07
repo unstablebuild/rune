@@ -17,6 +17,7 @@
 package agent
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"log/slog"
@@ -125,19 +126,23 @@ func (s *GoroutineSpawner) SetAttribution(attribution Attribution) {
 func (s *GoroutineSpawner) Run(
 	ctx context.Context, req RunRequest,
 ) (RunHandle, error) {
-	agentID := req.AgentID
-	if agentID == "" {
-		agentID = s.agentID
+	agentID := cmp.Or(req.AgentID, s.agentID)
+	var def Definition
+	ok := false
+	if req.Skill == "" {
+		def, ok = s.config.Get(agentID)
 	}
-	def, ok := s.config.Get(agentID)
 	skillBased := false
 	if !ok {
 		// Fallback: check skill registry for agent-type skill
 		// (case-insensitive). This lets the LLM call the agent
 		// tool with subagent_type="Plan" and have it resolve to
 		// the "plan" skill transparently.
-		skill, skillOK := s.skillRegistry.GetFold(agentID)
+		skill, skillOK := s.skillRegistry.GetFold(cmp.Or(req.Skill, agentID))
 		if !skillOK || skill.Type != "agent" {
+			if req.Skill != "" {
+				return RunHandle{}, fmt.Errorf("no agent skill named %q exists", req.Skill)
+			}
 			return RunHandle{}, fmt.Errorf("no agent or agent skill named %q exists", agentID)
 		}
 		def = Definition{

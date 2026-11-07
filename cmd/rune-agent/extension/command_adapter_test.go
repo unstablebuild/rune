@@ -319,24 +319,36 @@ func TestCommandAdapterModelResolvesAliasLabel(t *testing.T) {
 	assert.Equal(t, "openai/gpt-5.5", a.resolvedModelLabel(context.Background()))
 }
 
-func TestFormatSkillMessageIncludesSkillToolHint(t *testing.T) {
-	skill := skills.Skill{Name: "perplexity-search"}
+func TestFormatSkillMessageSkillToolHint(t *testing.T) {
+	tests := []struct {
+		name     string
+		skill    skills.Skill
+		wantHint bool
+	}{
+		{name: "instruction skill", skill: skills.Skill{Name: "perplexity-search"}, wantHint: true},
+		{name: "agent skill", skill: skills.Skill{Name: "perplexity-search", Type: "agent"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := formatSkillMessage(tc.skill, "pico go to line")
 
-	msg := formatSkillMessage(skill, "pico go to line")
-
-	assert.Contains(t, msg, "<command-message>perplexity-search</command-message>")
-	assert.Contains(t, msg, "<command-name>/perplexity-search</command-name>")
-	assert.Contains(t, msg, "pico go to line")
-	assert.Contains(t, msg, "<command-hint>")
-	assert.Contains(t, msg, "</command-hint>")
-	assert.Contains(t, msg, "perplexity-search")
-	// The hint must mention the skill tool by name so the model knows
-	// what action to take.
-	hintStart := strings.Index(msg, "<command-hint>")
-	hintEnd := strings.Index(msg, "</command-hint>")
-	require.Greater(t, hintEnd, hintStart)
-	hint := msg[hintStart+len("<command-hint>") : hintEnd]
-	assert.Contains(t, hint, "skill")
+			assert.True(t, strings.HasPrefix(msg, "<command-message>perplexity-search</command-message>\n"+
+				"<command-name>/perplexity-search</command-name>\npico go to line"), msg)
+			if !tc.wantHint {
+				assert.NotContains(t, msg, "<command-hint>", "a sub-agent has no skill tool to call for itself")
+				return
+			}
+			// The hint must mention the skill tool by name so the model
+			// knows what action to take.
+			hintStart := strings.Index(msg, "<command-hint>")
+			hintEnd := strings.Index(msg, "</command-hint>")
+			require.GreaterOrEqual(t, hintStart, 0)
+			require.Greater(t, hintEnd, hintStart)
+			hint := msg[hintStart+len("<command-hint>") : hintEnd]
+			assert.Contains(t, hint, "skill")
+			assert.Contains(t, hint, `"perplexity-search"`)
+		})
+	}
 }
 
 func TestParseStoredCommandMessageRoundTripsWithHint(t *testing.T) {
@@ -363,6 +375,17 @@ func TestParseStoredCommandMessageRoundTripsWithHint(t *testing.T) {
 			skill:    skills.Skill{Name: "issue-create"},
 			args:     "line one\nline two",
 			expected: "/issue-create\nline one\nline two",
+		},
+		{
+			name:     "agent skill without args",
+			skill:    skills.Skill{Name: "plan", Type: "agent"},
+			expected: "/plan",
+		},
+		{
+			name:     "agent skill with args",
+			skill:    skills.Skill{Name: "sourcegraph-search", Type: "agent"},
+			args:     "where is the output format defined?",
+			expected: "/sourcegraph-search where is the output format defined?",
 		},
 	}
 	for _, tc := range tests {

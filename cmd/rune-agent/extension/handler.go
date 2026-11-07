@@ -2393,6 +2393,28 @@ func toolResultImages(name, output string, isError bool) []string {
 	return nil
 }
 
+// childToolMessage returns the chat event that shows ev, a tool call or
+// tool result of a sub-agent, nested under the tool call parentID.
+func childToolMessage(parentID string, ev agent.Event) dialoguetui.MessageEvent {
+	msg := dialoguetui.MessageEvent{
+		Type:             dialoguetui.MessageEventToolCall,
+		ToolCallID:       ev.ToolCallID,
+		ToolName:         ev.ToolName,
+		ToolArgs:         ev.ToolArgs,
+		ToolSummary:      ev.ToolSummary,
+		ToolStartTime:    ev.ToolStartTime,
+		ParentToolCallID: parentID,
+	}
+	if ev.Type == agent.EventToolResult {
+		msg.Type = dialoguetui.MessageEventToolResult
+		msg.ToolOutput = ev.ToolOutput
+		msg.IsError = ev.IsError
+		msg.ToolDuration = ev.ToolDuration
+		msg.ImagePaths = toolResultImages(ev.ToolName, ev.ToolOutput, ev.IsError)
+	}
+	return msg
+}
+
 func firstModel(svc llmapi.Service) string {
 	it := svc.Models()
 	defer func() { _ = it.Close() }()
@@ -2598,28 +2620,9 @@ func createAgentCompletions(
 					case agent.EventToolCall:
 						syncComp.tab.childToolCall(cev.ParentToolCallID,
 							cev.Event.ToolName, cev.Event.ToolSummary)
-						msg = dialoguetui.MessageEvent{
-							Type:             dialoguetui.MessageEventToolCall,
-							ToolCallID:       cev.Event.ToolCallID,
-							ToolName:         cev.Event.ToolName,
-							ToolArgs:         cev.Event.ToolArgs,
-							ToolSummary:      cev.Event.ToolSummary,
-							ToolStartTime:    cev.Event.ToolStartTime,
-							ParentToolCallID: cev.ParentToolCallID,
-						}
+						msg = childToolMessage(cev.ParentToolCallID, cev.Event)
 					case agent.EventToolResult:
-						msg = dialoguetui.MessageEvent{
-							Type:             dialoguetui.MessageEventToolResult,
-							ToolCallID:       cev.Event.ToolCallID,
-							ToolName:         cev.Event.ToolName,
-							ToolArgs:         cev.Event.ToolArgs,
-							ToolSummary:      cev.Event.ToolSummary,
-							ToolOutput:       cev.Event.ToolOutput,
-							IsError:          cev.Event.IsError,
-							ToolDuration:     cev.Event.ToolDuration,
-							ParentToolCallID: cev.ParentToolCallID,
-							ImagePaths:       toolResultImages(cev.Event.ToolName, cev.Event.ToolOutput, cev.Event.IsError),
-						}
+						msg = childToolMessage(cev.ParentToolCallID, cev.Event)
 					case agent.EventToolsDropped:
 						msg = dialoguetui.MessageEvent{
 							Type:               dialoguetui.MessageEventToolsDropped,
@@ -2706,9 +2709,8 @@ func createAgentCompletions(
 			continue
 		}
 
-		// Agent-type skills: spawn a sub-agent whose events are
-		// rendered as top-level (tool calls, text, reasoning all
-		// visible in the TUI).
+		// Agent-type skills run in a sub-agent, shown like one the
+		// model spawns with the skill tool.
 		var it iterator.Iterator[agent.Event]
 		if req.skillName != "" {
 			if skill, ok := skillRegistry.Get(req.skillName); ok && skill.Type == "agent" {
@@ -2720,13 +2722,12 @@ func createAgentCompletions(
 				}
 				handle, skillErr := spawner.Run(req.ctx, agent.RunRequest{
 					Label:             skill.Name,
+					Skill:             skill.Name,
 					Model:             llmarg.Qualify(ag.ModelEntry()),
 					Message:           req.modelText,
 					DisplayMessage:    req.displayText,
 					Attachments:       req.attachments,
 					AdditionalContext: upsRes.AdditionalContext,
-					Tools:             skillRegistry.AgentPolicy(skill),
-					SystemPrompt:      skill.Body,
 					InitialMessages:   initialMessages,
 				})
 				if skillErr != nil {
@@ -2742,7 +2743,12 @@ func createAgentCompletions(
 					endTurn()
 					continue
 				}
-				it = handle.Events
+				it = newAgentSkillEvents(skill, handle, tx, syncComp.tab,
+					func(ctx context.Context, replies []llmapi.Message) error {
+						return ag.AppendTurn(ctx, id, req.modelText, replies,
+							agent.WithDisplayMessage(req.displayText),
+							agent.WithAttachments(req.attachments))
+					})
 			}
 		}
 		if it == nil {

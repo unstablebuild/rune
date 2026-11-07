@@ -288,7 +288,7 @@ func TestRegistryAgentPolicy(t *testing.T) {
 	agent("globbed", "allowed-tools: bash($acme-*)\n")
 	agent("every", "allowed-tools: bash($*)\n")
 	agent("unrestricted", `allowed-tools: [bash, "bash($acme-notes)"]`+"\n")
-	agent("deny-only", `denied-tools: ["bash(rm *)"]`+"\n")
+	agent("deny-only", `disallowed-tools: ["bash(rm *)"]`+"\n")
 	agent("missing", "allowed-tools: bash($nope)\n")
 	agent("shadowed", "allowed-tools: bash($dup)\n")
 	agent("builtin", "allowed-tools: bash($explore)\n")

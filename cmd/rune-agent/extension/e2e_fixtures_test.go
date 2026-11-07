@@ -19,6 +19,8 @@ package extension
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path"
 	"slices"
@@ -637,6 +639,96 @@ type nopSpawner struct{}
 
 func (nopSpawner) Run(context.Context, agent.RunRequest) (agent.RunHandle, error) {
 	return agent.RunHandle{}, nil
+}
+
+// agentRouter is an llmapi.Service that answers every agent of a chat,
+// the chat's own and the sub-agents it runs, from that agent's script.
+// It tells them apart by a marker in their system prompt, so that tests
+// do not depend on the order in which concurrent agents call the model.
+// A request whose system prompt holds no marker, or more than one, fails.
+type agentRouter struct {
+	// Service only serves the model catalog.
+	*llmtest.Service
+	agents map[string]*llmtest.Service
+}
+
+// newAgentRouter returns a router for the agents whose system prompts
+// hold markers, none of which has a script yet.
+func newAgentRouter(models []llmapi.ModelEntry, markers ...string) *agentRouter {
+	r := &agentRouter{Service: llmtest.New(models), agents: make(map[string]*llmtest.Service)}
+	for _, marker := range markers {
+		r.agents[marker] = llmtest.New(models)
+	}
+	return r
+}
+
+func (r *agentRouter) CreateCompletion(
+	ctx context.Context, model llmapi.ModelEntry, req llmapi.Request,
+) (iterator.Iterator[llmapi.Event], error) {
+	var system string
+	if len(req.Messages) > 0 && req.Messages[0].Role == llmapi.RoleSystem {
+		system = req.Messages[0].Content
+	}
+	var matches []string
+	for marker := range r.agents {
+		if strings.Contains(system, marker) {
+			matches = append(matches, marker)
+		}
+	}
+	if len(matches) != 1 {
+		return nil, fmt.Errorf("agentRouter: system prompt %q matches scripts %q", system, matches)
+	}
+	return r.agents[matches[0]].CreateCompletion(ctx, model, req)
+}
+
+// script appends responses to the script of the agent whose system
+// prompt holds marker.
+func (r *agentRouter) script(marker string, responses ...llmtest.Response) {
+	r.agents[marker].Enqueue(responses...)
+}
+
+// requests returns the requests of the agent whose system prompt holds
+// marker.
+func (r *agentRouter) requests(marker string) []llmtest.Request {
+	return r.agents[marker].Requests()
+}
+
+// recordingExec is a workspaceapi.Executor that runs nothing: it records
+// the command lines it is asked to run and answers each with "ran" and
+// the line, so that tests can tell which commands a tool let through
+// without spawning processes.
+type recordingExec struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (e *recordingExec) Start(_ context.Context, cmd workspaceapi.Cmd) (workspaceapi.Pid, error) {
+	line := strings.Join(append([]string{cmd.Path}, cmd.Args...), " ")
+	e.mu.Lock()
+	e.lines = append(e.lines, line)
+	e.mu.Unlock()
+	if cmd.Stdout != nil {
+		_, _ = fmt.Fprintf(cmd.Stdout, "ran %s", line)
+	}
+	if cmd.Watcher != nil {
+		go debug.CapturePanicReport(func() { cmd.Watcher.WatchProcess() <- nil })
+	}
+	return 1, nil
+}
+
+func (e *recordingExec) Signal(workspaceapi.Pid, syscall.Signal) error { return nil }
+
+func (e *recordingExec) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
+}
+
+func (e *recordingExec) Close() error { return nil }
+
+// ran returns the command lines e was asked to run, in order.
+func (e *recordingExec) ran() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return slices.Clone(e.lines)
 }
 
 // stopReasonE2EHandler wires the real floating chat handler through the

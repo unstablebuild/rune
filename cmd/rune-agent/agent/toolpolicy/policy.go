@@ -15,8 +15,8 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 // Package toolpolicy restricts the tools, shell commands, skills and
-// sub-agents an agent may use, as the allowed-tools and denied-tools of a
-// skill describe them. A policy only ever takes capabilities away: it
+// sub-agents an agent may use, as the allowed-tools and disallowed-tools of
+// a skill describe them. A policy only ever takes capabilities away: it
 // approves nothing, so whatever it allows still goes through the usual
 // permission checks.
 package toolpolicy
@@ -56,7 +56,7 @@ type Policy struct {
 	layers []layer
 }
 
-// layer is the policy of one allowed-tools and denied-tools pair.
+// layer is the policy of one allowed-tools and disallowed-tools pair.
 type layer struct {
 	// allowed reports that the layer has an allow list, so that it only
 	// allows what the list does.
@@ -75,7 +75,7 @@ type layer struct {
 	scriptDirs   []string
 }
 
-// List is a list of allowed-tools or denied-tools entries. It unmarshals
+// List is a list of allowed-tools or disallowed-tools entries. It unmarshals
 // from a YAML sequence of entries, or from a string of entries that
 // SplitList splits. An empty string or sequence gives an empty, non-nil
 // List, so that Parse tells it from a missing one; YAML decoders leave a

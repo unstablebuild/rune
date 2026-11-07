@@ -41,7 +41,13 @@ type RunRequest struct {
 	AdditionalContext string
 	Label             string
 	AgentID           string
-	Model             string
+	// Skill, when set, names the agent skill the sub-agent runs, which
+	// gives it the skill's body as system prompt and the skill's tool
+	// policy. Unlike an AgentID, it never names an agent definition, so
+	// that one sharing the skill's name cannot run without the skill's
+	// restrictions. AgentID is then ignored.
+	Skill string
+	Model string
 	// Tools restricts the tools of the sub-agent. It is combined with the
 	// restrictions of the caller, which the context of Run carries (see
 	// WithToolPolicy), so a sub-agent never gets more than its parent.

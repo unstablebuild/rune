@@ -402,35 +402,79 @@ You triage.`), 0o644))
 	skill, ok := skillRegistry.Get("acme-triage")
 	require.True(t, ok)
 
-	svc := &mockService{responses: []mockResponse{
-		toolCallResponse("read_file", `{"path":"a.go"}`, "tc1"),
-		stopResponse("done"),
-	}}
-	var seen toolpolicy.Policy
-	readTool := &mockTool{name: "read_file", executeFn: func(ctx context.Context, _ string) ToolResult {
-		seen = ToolPolicyFromContext(ctx)
-		return ToolResult{Content: "contents"}
-	}}
+	// An agent with the skill's name must not stand in for the skill,
+	// which would run it without the skill's restrictions.
+	shadow := NewConfig([]Definition{{ID: "acme-triage", SystemPrompt: "You do anything.", AllowAny: true}})
+	tests := []struct {
+		name string
+		cfg  *Cfg
+		req  RunRequest
+	}{
+		{name: "agent ID naming the skill", cfg: NewConfig(nil), req: RunRequest{AgentID: "Acme-Triage"}},
+		{name: "skill", cfg: NewConfig(nil), req: RunRequest{Skill: "acme-triage"}},
+		{name: "skill named like an agent", cfg: shadow, req: RunRequest{Skill: "acme-triage"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &mockService{responses: []mockResponse{
+				toolCallResponse("read_file", `{"path":"a.go"}`, "tc1"),
+				stopResponse("done"),
+			}}
+			var seen toolpolicy.Policy
+			readTool := &mockTool{name: "read_file", executeFn: func(ctx context.Context, _ string) ToolResult {
+				seen = ToolPolicyFromContext(ctx)
+				return ToolResult{Content: "contents"}
+			}}
+			store := newMockStore()
+			spawner := NewGoroutineSpawner(
+				store,
+				func(string) (llmapi.Service, llmapi.ModelEntry, error) {
+					return svc, llmapi.ModelEntry{Name: "test"}, nil
+				},
+				tc.cfg, skillRegistry, NoMemory(), "",
+				"session", "agent", workspaceapi.URI{},
+				noopPrompter{},
+			)
+			spawner.SetRegistry(NewRegistry(readTool, &mockTool{name: "skill"}, &mockTool{name: "bash"}))
+
+			req := tc.req
+			req.Message = "go"
+			handle, err := spawner.Run(context.Background(), req)
+			require.NoError(t, err)
+			assert.Equal(t, "done", consumeReply(t, handle))
+			assert.True(t, strings.HasPrefix(handle.DialogueID, "sub-agent-acme-triage-"), handle.DialogueID)
+			assert.Equal(t, skillRegistry.AgentPolicy(skill), seen)
+			var names []string
+			for _, tool := range svc.requests[0].Tools {
+				names = append(names, tool.Function.Name)
+			}
+			assert.Equal(t, []string{"bash", "read_file"}, names)
+			assert.Equal(t, "You triage.", svc.requests[0].Messages[0].Content)
+		})
+	}
+}
+
+func TestGoroutineSpawner_RunMissingSkill(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(dir+"/notes", 0o755))
+	require.NoError(t, os.WriteFile(dir+"/notes/SKILL.md", []byte("---\nname: notes\ndescription: Notes\n---\nTake notes."), 0o644))
+	skillRegistry := skills.NewRegistry(osFileSystem{}, dirURI(""), []string{dir}, nil)
 	spawner := NewGoroutineSpawner(
 		newMockStore(),
 		func(string) (llmapi.Service, llmapi.ModelEntry, error) {
-			return svc, llmapi.ModelEntry{Name: "test"}, nil
+			t.Fatal("no sub-agent may start")
+			return nil, llmapi.ModelEntry{}, nil
 		},
-		NewConfig(nil), skillRegistry, NoMemory(), "",
-		"session", "agent", workspaceapi.URI{},
+		NewConfig([]Definition{{ID: "default", AllowAny: true}}), skillRegistry, NoMemory(), "",
+		"session", "default", workspaceapi.URI{},
 		noopPrompter{},
 	)
-	spawner.SetRegistry(NewRegistry(readTool, &mockTool{name: "skill"}, &mockTool{name: "bash"}))
-
-	handle, err := spawner.Run(context.Background(), RunRequest{AgentID: "Acme-Triage", Message: "go"})
-	require.NoError(t, err)
-	assert.Equal(t, "done", consumeReply(t, handle))
-	assert.Equal(t, skillRegistry.AgentPolicy(skill), seen)
-	var names []string
-	for _, tool := range svc.requests[0].Tools {
-		names = append(names, tool.Function.Name)
+	for _, name := range []string{"default", "notes", "missing"} {
+		t.Run(name, func(t *testing.T) {
+			_, err := spawner.Run(context.Background(), RunRequest{Skill: name, Message: "go"})
+			assert.EqualError(t, err, fmt.Sprintf("no agent skill named %q exists", name))
+		})
 	}
-	assert.Equal(t, []string{"bash", "read_file"}, names)
 }
 
 func TestGoroutineSpawner_Run_streams_events(t *testing.T) {
