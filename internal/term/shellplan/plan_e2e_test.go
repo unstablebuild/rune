@@ -16,7 +16,7 @@
 
 //go:build e2e
 
-package ideauthorizer
+package shellplan
 
 import (
 	"context"
@@ -163,7 +163,7 @@ func (r *zshRun) startedEventually(t *testing.T, name string) bool {
 // showsProgram reports whether inv is the program argv a shell started:
 // a file of the same name, given the literal arguments inv tells, and
 // only those when inv tells them all.
-func showsProgram(inv programInvocation, argv []string) bool {
+func showsProgram(inv Program, argv []string) bool {
 	if inv.Opaque || inv.Shell >= 0 || filepath.Base(inv.Name) != argv[0] {
 		return false
 	}
@@ -178,18 +178,18 @@ func showsProgram(inv programInvocation, argv []string) bool {
 // covers everything run started: each program is one the plan shows,
 // with the literal arguments it shows, and each rm or rmdir that deletes
 // directories is one the prompt shows as it runs or as unresolved.
-func assertPlanCovers(t *testing.T, plan commandPlan, run zshRun) {
+func assertPlanCovers(t *testing.T, plan Plan, run zshRun) {
 	t.Helper()
 	require.False(t, plan.Opaque, plan.Reason)
-	if slices.ContainsFunc(plan.Programs, func(inv programInvocation) bool {
-		return inv.Opaque && inv.Role == roleScoped
+	if slices.ContainsFunc(plan.Programs, func(inv Program) bool {
+		return inv.Opaque && inv.Role == RoleScoped
 	}) {
 		// Only an approval of the exact command covers a program whose
 		// name is not known until it runs.
 		return
 	}
 	for _, argv := range run.started {
-		assert.True(t, slices.ContainsFunc(plan.Programs, func(inv programInvocation) bool {
+		assert.True(t, slices.ContainsFunc(plan.Programs, func(inv Program) bool {
 			return showsProgram(inv, argv)
 		}), "zsh started %q, which the plan does not show: %q", argv, describePlan(plan))
 		if !deletesDirectories(argv[0], literalWords(argv[1:])) {
@@ -205,7 +205,7 @@ func assertPlanCovers(t *testing.T, plan commandPlan, run zshRun) {
 		}), "zsh ran %q, which the prompt shows as %q", shown, plan.Deletes)
 	}
 	for _, name := range run.notFound {
-		assert.True(t, slices.ContainsFunc(plan.Programs, func(inv programInvocation) bool {
+		assert.True(t, slices.ContainsFunc(plan.Programs, func(inv Program) bool {
 			return !inv.Opaque && inv.Shell < 0 && inv.Name == name
 		}), "zsh looked %q up, which the plan does not show: %q", name, describePlan(plan))
 	}
@@ -438,10 +438,10 @@ var zshFollowed = []string{
 	"find . -type d -empty -exec rmdir {} +",
 }
 
-// zshOpaque are scripts the authorizer only approves exactly. hides names
-// a program zsh starts for the script that a plan following the script
-// as written would miss, or is empty when it only needs options of the
-// user's startup files to run code.
+// zshOpaque are scripts the authorizer only approves exactly (see
+// approvedExactly). hides names a program zsh starts for the script that
+// a plan following the script as written would miss, or is empty when it
+// only needs options of the user's startup files to run code.
 var zshOpaque = []struct{ script, hides string }{
 	{`ls *(e:'rm x':)`, "rm"},
 	{`ls a(e:'rm x':)`, "rm"},
@@ -521,6 +521,15 @@ var zshOpaque = []struct{ script, hides string }{
 	{"repeat 1 rm x", "rm"},
 }
 
+// approvedExactly reports whether only an approval of the exact command
+// covers plan: its programs cannot be told, or none of them is a program
+// whose name is known that needs a decision of its own.
+func approvedExactly(plan Plan) bool {
+	return plan.Opaque || !slices.ContainsFunc(plan.Programs, func(inv Program) bool {
+		return inv.Role == RoleScoped && !inv.Opaque
+	})
+}
+
 func TestPlanCommandZshCoversWhatZshStarts(t *testing.T) {
 	scripts := slices.Clone(zshFollowed)
 	for _, c := range zshOpaque {
@@ -530,15 +539,15 @@ func TestPlanCommandZshCoversWhatZshStarts(t *testing.T) {
 	for _, script := range zshFollowed {
 		t.Run(script, func(t *testing.T) {
 			t.Parallel()
-			plan := planCommand(h.zsh, []string{"-f", "-c", script}, nil, nil)
+			plan := Command(h.zsh, []string{"-f", "-c", script}, nil, nil)
 			assertPlanCovers(t, plan, h.run(t, script))
 		})
 	}
 	for _, c := range zshOpaque {
 		t.Run(c.script, func(t *testing.T) {
 			t.Parallel()
-			plan := planCommand(h.zsh, []string{"-f", "-c", c.script}, nil, nil)
-			assert.True(t, plan.Opaque, "%q", describePlan(plan))
+			plan := Command(h.zsh, []string{"-f", "-c", c.script}, nil, nil)
+			assert.True(t, approvedExactly(plan), "%q", describePlan(plan))
 			if c.hides == "" {
 				return
 			}
@@ -572,7 +581,7 @@ func TestPlanCommandZshSyntaxTheParserLacks(t *testing.T) {
 			t.Parallel()
 			_, err := syntax.NewParser(syntax.Variant(syntax.LangZsh)).Parse(strings.NewReader(script), "")
 			assert.Error(t, err, "the parser supports it now, so it belongs in zshFollowed")
-			plan := planCommand(h.zsh, []string{"-f", "-c", script}, nil, nil)
+			plan := Command(h.zsh, []string{"-f", "-c", script}, nil, nil)
 			assert.Equal(t, []string{"opaque: its script does not parse as zsh"}, describePlan(plan))
 			run := h.run(t, script)
 			assert.True(t, run.startedEventually(t, "rm"), "zsh did not run it")
@@ -648,7 +657,7 @@ func TestPlanCommandZshArithmeticOnData(t *testing.T) {
 	for _, script := range zshDataArithmetic {
 		t.Run(script, func(t *testing.T) {
 			t.Parallel()
-			plan := planCommand(h.zsh, []string{"-f", "-c", script}, nil, nil)
+			plan := Command(h.zsh, []string{"-f", "-c", script}, nil, nil)
 			assert.Equal(t, []string{
 				"opaque: its arithmetic may run command substitutions hidden in strings",
 			}, describePlan(plan))

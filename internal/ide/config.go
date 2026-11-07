@@ -2296,6 +2296,7 @@ func (c ideConfig) hudStyle() hudStyle {
 		commandShowManual:      c.commandOverlayShowManual(),
 		statusBar:              c.statusBarStyle(),
 		bellSound:              c.terminalBellSound(),
+		notifications:          c.notificationsStyle(),
 		notifyStatus:           c.statusNotifyConfig(),
 	}
 }
@@ -2635,6 +2636,15 @@ func getProgressRunes(c config.Config, def notifications.ProgressRunes) (
 	if err == nil {
 		ret.Start = r
 	}
+	if err := tconfig.GetGraphics(cfg, "graphics", &ret.Graphics.Overlay,
+		tconfig.GraphicsSlot{Key: "start", URI: &ret.Graphics.Start},
+		tconfig.GraphicsSlot{Key: "current", URI: &ret.Graphics.Current},
+		tconfig.GraphicsSlot{Key: "current_tip", URI: &ret.Graphics.CurrentTip},
+		tconfig.GraphicsSlot{Key: "remain", URI: &ret.Graphics.Remain},
+		tconfig.GraphicsSlot{Key: "end", URI: &ret.Graphics.End},
+	); err != nil {
+		return def, err
+	}
 	return ret, nil
 }
 
@@ -2674,18 +2684,26 @@ func (c ideConfig) notificationsDuration(key string, def time.Duration) (ret tim
 
 func (c ideConfig) notificationsConfig() notifications.Config {
 	ret := defaultNotificationsConfig()
+	ret.Style = c.notificationsStyle()
+	ret.AutoClose = c.notificationsDuration("auto_close", ret.AutoClose)
+	return ret
+}
+
+// notificationsStyle reads the keys of notifications that
+// notifications.Container.Restyle applies.
+func (c ideConfig) notificationsStyle() notifications.Style {
+	ret := defaultNotificationsConfig().Style
 	ret.Attributes = c.getConfigAttr("notifications", "attr", ret.Attributes)
 	ret.BackgroundAttributes = c.getConfigAttr("notifications", "background_attr", ret.BackgroundAttributes)
 	ret.FrameCharSet = c.notificationsCharset(ret.FrameCharSet)
 	ret.ProgressBar = c.notificationsBool("progress_bar", ret.ProgressBar)
-	ret.AutoClose = c.notificationsDuration("auto_close", ret.AutoClose)
 	ret.ProgressRunes = c.notificationsProgressRunes(ret.ProgressRunes)
 	ret.Padding = c.notificationsPadding(ret.Padding)
 	setNotificationsColor(&ret)
 	return ret
 }
 
-func setNotificationsColor(ret *notifications.Config) {
+func setNotificationsColor(ret *notifications.Style) {
 	ret.ColorInfo.Bg = ret.BackgroundAttributes.Bg
 	ret.ColorSuccess.Bg = ret.BackgroundAttributes.Bg
 	ret.ColorError.Bg = ret.BackgroundAttributes.Bg

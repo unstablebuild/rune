@@ -25,13 +25,14 @@ TUI_FRAME_CHARSET = {
 # GUI frame characters used by the default window-manager configuration.
 #
 # A frame charset may also name an image for each slot in a "graphics"
-# table, which the GUI draws over the slot's character in window frames
-# and the command prompt frame. The terminal UI, and any image that has not
-# loaded or failed to load, shows the character. Images are drawn as they
-# are: frame_attr, dimming and b&w do not tint them, though the frame_attr
-# background shows through their transparent pixels. To tell the focused
-# window apart, give focus_frame_charset its own pre-coloured images. For
-# example:
+# table, which the GUI draws over the slot's character in window frames,
+# the command prompt frame, notifications and the Rune Agent compose box
+# (extensions.rune-agent.config.input_box_frame_charset). The terminal UI,
+# and any image that has not loaded or failed to load, shows the
+# character. Images are drawn as they are: frame_attr, dimming and b&w do
+# not tint them, though the frame_attr background shows through their
+# transparent pixels. To tell the focused window apart, give
+# focus_frame_charset its own pre-coloured images. For example:
 #
 #     "graphics": {
 #         "mode":             "replace",
@@ -1226,7 +1227,24 @@ config = {
     "notifications": {
         "auto_close":   "5s",
         "padding":      1,
+        # The progress bar takes the frame's bottom row, so the
+        # bottomleft, horizontalbottom and bottomright images of
+        # frame_charset are not drawn while it is on.
         "progress_bar": True,
+        # A "graphics" table names an image for each of the five keys,
+        # drawn over the cells of that key's character with the same
+        # "mode" as frame charsets. Images are not tinted with the color
+        # of the notification's level; "overlay" keeps the colored
+        # character showing through their transparent pixels:
+        #
+        #     "graphics": {
+        #         "mode":        "overlay",
+        #         "start":       "file:///path/to/start.png",
+        #         "current":     "file:///path/to/current.png",
+        #         "current_tip": "file:///path/to/tip.png",
+        #         "remain":      "file:///path/to/remain.png",
+        #         "end":         "file:///path/to/end.png",
+        #     },
         "progress_format": {
             "start":       "\U00100000",
             "current":     "\U00100001",

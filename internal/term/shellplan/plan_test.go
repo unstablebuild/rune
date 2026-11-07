@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-package ideauthorizer
+package shellplan
 
 import (
 	"fmt"
@@ -48,7 +48,7 @@ for b in ['BenchmarkDrawRowsASCII','BenchmarkDrawRowsWide']:
 // bound program, "?" one whose name is not literal, "builtin" a shell
 // builtin, "…" arguments that are not all known and "⚠N" the index of
 // the scope argument that carries code.
-func describePlan(plan commandPlan) []string {
+func describePlan(plan Plan) []string {
 	if plan.Opaque {
 		return []string{"opaque: " + plan.Reason}
 	}
@@ -60,7 +60,7 @@ func describePlan(plan commandPlan) []string {
 			b.WriteString("?" + inv.Name)
 			ret = append(ret, b.String())
 			continue
-		case inv.Role == roleBound:
+		case inv.Role == RoleBound:
 			ret = append(ret, "~"+inv.Name)
 			continue
 		case inv.Shell >= 0:
@@ -126,7 +126,7 @@ func TestPlanCommand(t *testing.T) {
 			cmd:  bash(`diff <(gpg --show-keys a.asc | awk -F: '$1=="fpr"{print $10}') <(cat b) && echo OK`),
 			want: []string{"~/bin/bash", "diff …", "gpg --show-keys a.asc", "awk -F: $1==\"fpr\"{print $10} ⚠0", "cat b", "builtin echo OK"}},
 		{name: "variable command name", cmd: bash("$CMD args"),
-			want: []string{"opaque: it runs no program a scope can describe"}},
+			want: []string{"~/bin/bash", "?$CMD"}},
 		{name: "substitution in the command name", cmd: bash("$(echo grep) foo"),
 			want: []string{"~/bin/bash", "?$(echo grep)", "builtin echo grep"}},
 		{name: "eval", cmd: bash("eval echo foo"),
@@ -154,7 +154,7 @@ func TestPlanCommand(t *testing.T) {
 		{name: "login shell", cmd: []string{""},
 			want: []string{"opaque: it runs the login shell"}},
 		{name: "only builtins that run nothing", cmd: bash("cd /tmp; : > x"),
-			want: []string{"opaque: it runs no program a scope can describe"}},
+			want: []string{"~/bin/bash"}},
 		{name: "functions are planned where declared", cmd: bash("f() { rm -rf x; }; f; f"),
 			want: []string{"~/bin/bash", "rm -rf x"}},
 		{name: "a call before the function is declared runs the program",
@@ -202,7 +202,7 @@ func TestPlanCommand(t *testing.T) {
 		{name: "xargs replace string in the command name", cmd: bash("ls | xargs -I e make"),
 			want: []string{"~/bin/bash", "ls", "~xargs", "?make"}},
 		{name: "ansi-c escapes in a command name", cmd: bash(`$'\x72m' -rf x`),
-			want: []string{"opaque: it runs no program a scope can describe"}},
+			want: []string{"~/bin/bash", "?$'\\x72m'"}},
 
 		{name: "git global options", cmd: []string{"git", "-C", "x", "-c", "k=v", "commit", "-m", "fix"},
 			want: []string{"git -c k=v commit -m fix ⚠0"}},
@@ -379,7 +379,7 @@ func TestPlanCommand(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			plan := planCommand(tc.cmd[0], tc.cmd[1:], tc.env, nil)
+			plan := Command(tc.cmd[0], tc.cmd[1:], tc.env, nil)
 			assert.Equal(t, tc.want, describePlan(plan))
 		})
 	}
@@ -406,11 +406,11 @@ func TestPlanCommandZshArithmetic(t *testing.T) {
 	for _, ctx := range zshArithmetic {
 		t.Run(ctx, func(t *testing.T) {
 			t.Parallel()
-			plan := planCommand("/bin/zsh", []string{"-c", "x='a[$(id)]'\n" + ctx + "\nls"}, nil, nil)
+			plan := Command("/bin/zsh", []string{"-c", "x='a[$(id)]'\n" + ctx + "\nls"}, nil, nil)
 			assert.Equal(t, []string{
 				"opaque: its arithmetic may run command substitutions hidden in strings",
 			}, describePlan(plan))
-			plan = planCommand("/bin/zsh", []string{"-c", "x=1\n" + ctx + "\nls"}, nil, nil)
+			plan = Command("/bin/zsh", []string{"-c", "x=1\n" + ctx + "\nls"}, nil, nil)
 			assert.False(t, plan.Opaque, plan.Reason)
 		})
 	}
@@ -434,7 +434,7 @@ func TestPlanCommandRecursiveDeletes(t *testing.T) {
 	cases := []struct {
 		name string
 		cmd  []string
-		env  envLookup
+		env  EnvLookup
 		want []string
 	}{
 		{name: "the script sets the variable first",
@@ -516,7 +516,7 @@ func TestPlanCommandRecursiveDeletes(t *testing.T) {
 			if env == nil {
 				env = local
 			}
-			plan := planCommand(tc.cmd[0], tc.cmd[1:], nil, env)
+			plan := Command(tc.cmd[0], tc.cmd[1:], nil, env)
 			var got []string
 			for _, d := range plan.Deletes {
 				if d.Unresolved {
@@ -603,7 +603,7 @@ func TestPlanCommandZsh(t *testing.T) {
 		{name: "old arithmetic the parser takes for literals", cmd: zsh(`ls "$[1+2]"; ls $[1+2]`),
 			want: []string{"~/bin/zsh", "ls …", "ls …"}},
 		{name: "equals expansion in the command name", cmd: zsh(`=rm -rf x`),
-			want: []string{"opaque: it runs no program a scope can describe"}},
+			want: []string{"~/bin/zsh", "?=rm"}},
 		{name: "empty braces", cmd: zsh(`find . -exec rm {} \;`),
 			want: []string{"~/bin/zsh", "find . -exec rm {} ;", "rm …"}},
 		{name: "tildes depend on HOME, which the script may set", cmd: zsh(`HOME=/etc; ls ~/x ~+`),
@@ -750,8 +750,58 @@ func TestPlanCommandZsh(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			plan := planCommand(tc.cmd[0], tc.cmd[1:], tc.env, nil)
+			plan := Command(tc.cmd[0], tc.cmd[1:], tc.env, nil)
 			assert.Equal(t, tc.want, describePlan(plan))
+		})
+	}
+}
+
+func TestPlanCommandWrites(t *testing.T) {
+	t.Parallel()
+
+	const notLiteral = " (not literal)"
+	cases := []struct {
+		name   string
+		script string
+		lang   string
+		want   []string
+	}{
+		{name: "truncate", script: "ls > out", want: []string{"out"}},
+		{name: "append", script: "ls >> out", want: []string{"out"}},
+		{name: "clobber", script: "ls >| out", want: []string{"out"}},
+		{name: "both outputs", script: "ls &> out", want: []string{"out"}},
+		{name: "both outputs appended", script: "ls &>> out", want: []string{"out"}},
+		{name: "read and write", script: "ls <> out", want: []string{"out"}},
+		{name: "both outputs to a file", script: "ls >& out", want: []string{"out"}},
+		{name: "a descriptor", script: "ls 2> err", want: []string{"err"}},
+		{name: "quoted", script: `ls > "a b"`, want: []string{"a b"}},
+		{name: "not literal", script: "ls > $F", want: []string{"$F" + notLiteral}},
+		{name: "duplicating a descriptor", script: "ls 2>&1 >&2 <&0"},
+		{name: "closing and moving descriptors", script: "ls >&- 3>&2-"},
+		{name: "reading", script: "cat < in <<< x <<EOF\nx\nEOF"},
+		{name: "dev null", script: "ls 2>/dev/null", want: []string{"/dev/null"}},
+		{name: "in a nested shell", script: "bash -c 'ls > out'", want: []string{"out"}},
+		{name: "in a function", script: "f() { ls > out; }; f", want: []string{"out"}},
+		{name: "in a substitution", script: "echo $(ls > out)", want: []string{"out"}},
+		{name: "zsh append clobber", script: "ls >>| out", lang: "zsh", want: []string{"out"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			shell := "/bin/bash"
+			if tc.lang == "zsh" {
+				shell = "/bin/zsh"
+			}
+			plan := Command(shell, []string{"-c", tc.script}, nil, nil)
+			require.False(t, plan.Opaque, plan.Reason)
+			var got []string
+			for _, w := range plan.Writes {
+				if !w.Literal {
+					w.Target += notLiteral
+				}
+				got = append(got, w.Target)
+			}
+			assert.Equal(t, tc.want, got)
 		})
 	}
 }
@@ -759,7 +809,7 @@ func TestPlanCommandZsh(t *testing.T) {
 func TestPlanCommandBenchmarkComparisonScript(t *testing.T) {
 	t.Parallel()
 
-	plan := planCommand("/bin/bash", []string{"-c", benchmarkComparisonScript}, nil, nil)
+	plan := Command("/bin/bash", []string{"-c", benchmarkComparisonScript}, nil, nil)
 	got := describePlan(plan)
 	require.Len(t, got, 5, got)
 	assert.Equal(t, "~/bin/bash", got[0])
@@ -793,7 +843,7 @@ func TestPlanCommandDirChanged(t *testing.T) {
 		{cmd: []string{"fd", "--base-directory=x", "-x", "./run"}, wantDir: fdDir},
 	}
 	for _, tc := range cases {
-		plan := planCommand(tc.cmd[0], tc.cmd[1:], nil, nil)
+		plan := Command(tc.cmd[0], tc.cmd[1:], nil, nil)
 		require.False(t, plan.Opaque, tc.cmd)
 		assert.Equal(t, tc.wantChanged, plan.DirChanged, tc.cmd)
 		assert.Equal(t, tc.wantDir, plan.Programs[len(plan.Programs)-1].Dir, tc.cmd)
@@ -827,7 +877,7 @@ func TestPlanCommandFirst(t *testing.T) {
 		{cmd: []string{"nice", "tool"}, want: []string{"nice"}},
 	}
 	for _, tc := range cases {
-		plan := planCommand(tc.cmd[0], tc.cmd[1:], nil, nil)
+		plan := Command(tc.cmd[0], tc.cmd[1:], nil, nil)
 		require.False(t, plan.Opaque, tc.cmd)
 		var got []string
 		for _, inv := range plan.Programs {

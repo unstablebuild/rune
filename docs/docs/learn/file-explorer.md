@@ -70,14 +70,20 @@ tell the difference between renaming a file and deleting one. That means
 you can reshape your whole workspace with plain text edits:
 
 - **Rename** a file or directory by editing its line.
-- **Delete** a file by deleting its line (`dd` in modal mode).
+- **Delete** a file or directory by deleting its line (`dd` in modal
+  mode).
 - **Create** a file by typing a new line where you want it.
 - **Create** a directory by adding a line for it and nesting children
   underneath.
-- **Move** a file into another directory by changing its indentation.
-  Indent a line one level deeper to push it *into* the directory above
-  it; outdent it to move it back toward the parent.
+- **Move** a file or directory into another directory by changing its
+  indentation. Indent a line one level deeper to push it *into* the
+  directory above it; outdent it to move it back toward the parent.
 - **Copy** a file by duplicating its line (yank and paste it elsewhere).
+
+A directory takes everything inside it along when you move, rename or
+delete it, whether or not you expanded it, including the files the
+explorer hides. If you expanded it, move its child lines together with
+it; a child line left behind moves to wherever it now sits in the tree.
 
 <Preset when="standard emacs">
 
@@ -112,11 +118,14 @@ for a yes/no confirmation:
 
 > Apply the following changes?
 >
+> - **DELETE**  scratch.txt
 > - **RENAME**  old-name -> new-name
 > - **MOVE**    src/util.go -> internal/util.go
-> - **DELETE**  scratch.txt
-> - **CREATE**  notes/todo.md
 > - **MKDIR**   notes
+> - **CREATE**  notes/todo.md
+
+Changes are listed in the order they are applied. A directory you move,
+rename or delete is a single line: everything inside it goes with it.
 
 Press `y` to apply every change in one go, or `n` to back out and keep
 your pending edits. If two lines would resolve to the same path, Rune

@@ -4611,6 +4611,7 @@ func TestCommandPromptUsesSharedStoragePartition(t *testing.T) {
 func TestExRestyle(t *testing.T) {
 	// Nothing is on disk at uri, so only a reloaded image can draw.
 	const uri = "file:///nonexistent/hud/frame.png"
+	const notificationURI = "file:///nonexistent/hud/notification.png"
 	wmCfg := thandler.DefaultWindowManagerConfig()
 	wmCfg.FrameGraphicsStorage = storagestub.NewInMemoryService()
 	wmCfg.Interrupter = term.NopInterrupter()
@@ -4618,7 +4619,7 @@ func TestExRestyle(t *testing.T) {
 	t.Cleanup(func() { _ = b.Close() })
 	unlock := b.lock()
 	defer unlock()
-	b.ex.promptFrameGraphics()
+	b.ex.frameGraphics()
 
 	cfg := ideConfig{cfg: map[string]any{
 		"browser": map[string]any{"window_manager": map[string]any{
@@ -4633,12 +4634,21 @@ func TestExRestyle(t *testing.T) {
 		"editor": map[string]any{"status_bar": map[string]any{
 			"layout": "[{{ .Status }}]",
 		}},
+		"notifications": map[string]any{
+			"frame_charset": map[string]any{
+				"topleft":  "╓",
+				"graphics": map[string]any{"topleft": notificationURI, "mode": "overlay"},
+			},
+		},
 	}, errors: map[string]error{}}
 	style := cfg.hudStyle()
 	require.Empty(t, cfg.errors)
 	b.ex.statusBars = text.NewStatusBarStyles(text.StatusBarStyle{})
 
-	b.ex.restyle(style, map[string]image.Image{uri: image.NewRGBA(image.Rect(0, 0, 1, 1))}, nil)
+	b.ex.restyle(style, map[string]image.Image{
+		uri:             image.NewRGBA(image.Rect(0, 0, 1, 1)),
+		notificationURI: image.NewRGBA(image.Rect(0, 0, 1, 1)),
+	}, nil)
 
 	assert.Equal(t, '╭', b.ex.config.FrameCharSet.TopLeft)
 	assert.Equal(t, style.commandPromptFrame, b.ex.commandPromptCfg.frameCharSet)
@@ -4649,7 +4659,7 @@ func TestExRestyle(t *testing.T) {
 	for name, g := range map[string]*tcomponent.FrameGraphics{
 		"browser":        b.ex.comp.Browser().FrameGraphics(),
 		"command":        b.ex.cmdV.C.FrameGraphics(),
-		"command prompt": b.ex.promptGraphics,
+		"command prompt": b.ex.graphics,
 	} {
 		require.NotNil(t, g, name)
 		img := g.Image(uri)
@@ -4659,6 +4669,23 @@ func TestExRestyle(t *testing.T) {
 		img.Draw(w)
 		assert.Len(t, w.images, 1, "%s draws the reloaded image at once", name)
 	}
+
+	const width, height = 40, 10
+	b.Resize(width, height)
+	b.ex.container.Notify(notifications.LevelInfo, "hi")
+	w := newCoveringImageWriter(width, height)
+	b.ex.container.Draw(w)
+	require.NoError(t, w.Flush())
+	var corner []term.Coordinates
+	for y, row := range strings.Split(w.String(), "\n") {
+		for x, ch := range []rune(row) {
+			if ch == '╓' {
+				corner = append(corner, term.Coordinates{X: x, Y: y})
+			}
+		}
+	}
+	require.Len(t, corner, 1, "the notification draws with the restyled frame")
+	assert.True(t, w.images[corner[0]], "the notification draws the reloaded image over its corner")
 }
 
 func TestCommandPromptHasNoWindowBar(t *testing.T) {
@@ -6057,8 +6084,8 @@ func TestExUsesSharedIDEStorage(t *testing.T) {
 	terminals := storage.partitions[idehistory.TerminalStatePartition]
 	require.NotNil(t, terminals)
 	// So do the command prompt's frame images.
-	ex.promptFrameGraphics()
-	ex.promptFrameGraphics()
+	ex.frameGraphics()
+	ex.frameGraphics()
 	require.Equal(t, 2, storage.partitionCalls)
 	frameImages := storage.partitions[frameImagesPartition]
 	require.NotNil(t, frameImages)

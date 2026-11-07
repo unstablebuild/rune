@@ -24,46 +24,84 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"unstable.build/rune/cmd/rune-agent/agent/toolpolicy"
 )
 
-func TestRegistryWithFilteredTools(t *testing.T) {
-	t.Run("filters to allowed names", func(t *testing.T) {
+// policyMockTool is a PolicyTool that records the policy restricting it.
+type policyMockTool struct {
+	*mockTool
+	policy toolpolicy.Policy
+}
+
+func (t *policyMockTool) WithPolicy(p toolpolicy.Policy) Tool {
+	return &policyMockTool{mockTool: t.mockTool, policy: p}
+}
+
+func mustPolicy(t *testing.T, allowed, denied []string) toolpolicy.Policy {
+	t.Helper()
+	p, err := toolpolicy.Parse(allowed, denied)
+	require.NoError(t, err)
+	return p
+}
+
+func toolNames(r *Registry, provider string) []string {
+	var names []string
+	for _, tool := range r.Tools(provider) {
+		names = append(names, tool.Function.Name)
+	}
+	return names
+}
+
+func TestRegistryWithPolicy(t *testing.T) {
+	t.Run("filters to the tools the policy allows", func(t *testing.T) {
 		r := NewRegistry(
 			&mockTool{name: "read_file"},
 			&mockTool{name: "search"},
 			&mockTool{name: "bash"},
+			&mockTool{name: "github_issue"},
 		)
 
-		filtered := r.WithFilteredTools([]string{"read_file", "search"})
+		filtered := r.WithPolicy(mustPolicy(t, []string{"read_file", "search", "github_*", "nonexistent"}, nil))
 
-		_, ok := filtered.Get("read_file", "")
-		assert.True(t, ok, "read_file should be in filtered registry")
-		_, ok = filtered.Get("search", "")
-		assert.True(t, ok, "search should be in filtered registry")
-		_, ok = filtered.Get("bash", "")
-		assert.False(t, ok, "bash should not be in filtered registry")
+		assert.Equal(t, []string{"github_issue", "read_file", "search"}, toolNames(filtered, ""))
+		assert.Equal(t, []string{"read_file", "search"},
+			toolNames(r.WithPolicy(mustPolicy(t, nil, []string{"bash", "github_*"})), ""))
 	})
 
-	t.Run("unknown names are silently ignored", func(t *testing.T) {
-		r := NewRegistry(
-			&mockTool{name: "read_file"},
-		)
-
-		filtered := r.WithFilteredTools([]string{"read_file", "nonexistent"})
-
-		assert.Len(t, filtered.AllTools(), 1)
-		_, ok := filtered.Get("read_file", "")
-		assert.True(t, ok)
+	t.Run("an allow list naming no tool gives an empty registry", func(t *testing.T) {
+		r := NewRegistry(&mockTool{name: "read_file"})
+		assert.Empty(t, r.WithPolicy(mustPolicy(t, []string{"nonexistent"}, nil)).AllTools())
 	})
 
-	t.Run("empty allowed names returns empty registry", func(t *testing.T) {
-		r := NewRegistry(
-			&mockTool{name: "read_file"},
-		)
+	t.Run("a zero policy returns the registry itself", func(t *testing.T) {
+		r := NewRegistry(&mockTool{name: "read_file"})
+		filtered := r.WithPolicy(toolpolicy.Policy{})
+		assert.Same(t, r, filtered)
 
-		filtered := r.WithFilteredTools(nil)
+		r.Add(&mockTool{name: "late_mcp_tool"})
+		_, ok := filtered.Get("late_mcp_tool", "")
+		assert.True(t, ok, "tools added later still show")
+	})
 
-		assert.Empty(t, filtered.AllTools())
+	t.Run("restricts policy tools", func(t *testing.T) {
+		base := &policyMockTool{mockTool: &mockTool{name: "bash"}}
+		override := &policyMockTool{mockTool: &mockTool{name: "skill"}}
+		r := NewRegistry(base, &mockTool{name: "read_file"})
+		r.RegisterOverrides("openai", override)
+		p := mustPolicy(t, []string{"read_file", "bash(git *)", "skill(acme-*)"}, nil)
+
+		filtered := r.WithPolicy(p)
+
+		got, ok := filtered.Get("bash", "")
+		require.True(t, ok)
+		assert.Equal(t, p, got.(*policyMockTool).policy)
+		got, ok = filtered.Get("skill", "openai")
+		require.True(t, ok)
+		assert.Equal(t, p, got.(*policyMockTool).policy)
+		assert.True(t, base.policy.IsZero(), "the original tool is left as it is")
+		got, ok = filtered.Get("read_file", "")
+		require.True(t, ok)
+		assert.IsType(t, &mockTool{}, got)
 	})
 
 	t.Run("preserves overrides for allowed names", func(t *testing.T) {
@@ -74,34 +112,44 @@ func TestRegistryWithFilteredTools(t *testing.T) {
 		override := &mockTool{name: "search", result: ToolResult{Content: "openai-search"}}
 		r.RegisterOverrides("openai", override)
 
-		filtered := r.WithFilteredTools([]string{"search"})
+		filtered := r.WithPolicy(mustPolicy(t, []string{"search"}, nil))
 
 		got, ok := filtered.Get("search", "openai")
 		assert.True(t, ok)
 		assert.Equal(t, override, got)
 	})
 
-	t.Run("does not propagate exclusions for allowed names", func(t *testing.T) {
+	t.Run("does not propagate exclusions of the tools the policy names", func(t *testing.T) {
 		r := NewRegistry(
 			&mockTool{name: "exit_plan_mode"},
 			&mockTool{name: "bash"},
 		)
 		r.RegisterExclusions("openai", "exit_plan_mode")
 
-		filtered := r.WithFilteredTools([]string{"exit_plan_mode"})
+		filtered := r.WithPolicy(mustPolicy(t, []string{"exit_plan_mode"}, nil))
 
 		// exit_plan_mode is explicitly allowed, so the exclusion should not carry over.
 		got, ok := filtered.Get("exit_plan_mode", "openai")
 		assert.True(t, ok, "explicitly allowed tool should not be excluded")
 		assert.NotNil(t, got)
+		assert.Contains(t, toolNames(filtered, "openai"), "exit_plan_mode")
+	})
 
-		// Tools() should include it.
-		tools := filtered.Tools("openai")
-		var names []string
-		for _, tool := range tools {
-			names = append(names, tool.Function.Name)
+	t.Run("keeps exclusions of the tools the policy allows without naming them", func(t *testing.T) {
+		r := NewRegistry(
+			&mockTool{name: "TaskCreate"},
+			&mockTool{name: "read_file"},
+		)
+		r.RegisterExclusions("openai", "TaskCreate")
+
+		for _, p := range []toolpolicy.Policy{
+			mustPolicy(t, nil, []string{"bash"}),
+			mustPolicy(t, []string{"Task*", "read_file"}, nil),
+		} {
+			filtered := r.WithPolicy(p)
+			assert.Equal(t, []string{"read_file"}, toolNames(filtered, "openai"))
+			assert.Equal(t, []string{"TaskCreate", "read_file"}, toolNames(filtered, ""))
 		}
-		assert.Contains(t, names, "exit_plan_mode")
 	})
 
 	t.Run("drops overrides for excluded names", func(t *testing.T) {
@@ -111,10 +159,40 @@ func TestRegistryWithFilteredTools(t *testing.T) {
 		)
 		r.RegisterOverrides("openai", &mockTool{name: "bash"})
 
-		filtered := r.WithFilteredTools([]string{"search"})
+		filtered := r.WithPolicy(mustPolicy(t, []string{"search"}, nil))
 
 		_, ok := filtered.Get("bash", "openai")
 		assert.False(t, ok)
+	})
+
+	t.Run("keeps the shell replacements of providers", func(t *testing.T) {
+		for _, tc := range []struct{ provider, replacement string }{
+			{"openai", "exec_command"}, {"codex", "exec_command"}, {"gemini", "run_command"},
+		} {
+			r := NewRegistry(
+				&policyMockTool{mockTool: &mockTool{name: "bash"}},
+				&mockTool{name: "read_file"},
+			)
+			r.RegisterReplacement(tc.provider, "bash",
+				&policyMockTool{mockTool: &mockTool{name: tc.replacement}})
+
+			for _, allowed := range [][]string{{"read_file", "bash"}, {"read_file", "Bash(git:*)"}} {
+				p := mustPolicy(t, allowed, nil)
+				filtered := r.WithPolicy(p)
+
+				assert.ElementsMatch(t, []string{"read_file", tc.replacement}, toolNames(filtered, tc.provider),
+					"%s %v", tc.provider, allowed)
+				assert.Equal(t, []string{"bash", "read_file"}, toolNames(filtered, ""))
+				assert.Equal(t, tc.replacement, filtered.ReplacementFor("bash", tc.provider))
+				got, ok := filtered.Get(tc.replacement, tc.provider)
+				require.True(t, ok)
+				assert.Equal(t, p, got.(*policyMockTool).policy)
+			}
+
+			noShell := r.WithPolicy(mustPolicy(t, []string{"read_file"}, nil))
+			assert.Equal(t, []string{"read_file"}, toolNames(noShell, tc.provider))
+			assert.Empty(t, noShell.ReplacementFor("bash", tc.provider))
+		}
 	})
 }
 
@@ -269,7 +347,7 @@ func TestRegistryRegisterReplacement(t *testing.T) {
 		assert.Equal(t, "exec_command", dst.ReplacementFor("bash", "openai"))
 	})
 
-	t.Run("WithFilteredTools drops replacements whose target is filtered out", func(t *testing.T) {
+	t.Run("WithPolicy drops replacements whose target is filtered out", func(t *testing.T) {
 		r := NewRegistry(
 			&mockTool{name: "bash"},
 			&mockTool{name: "exec_command"},
@@ -277,12 +355,12 @@ func TestRegistryRegisterReplacement(t *testing.T) {
 		)
 		r.RegisterReplacement("openai", "bash", &mockTool{name: "exec_command"})
 
-		// exec_command not in allowed set -> replacement dropped.
-		filtered := r.WithFilteredTools([]string{"read_file"})
+		// exec_command not allowed -> replacement dropped.
+		filtered := r.WithPolicy(mustPolicy(t, []string{"read_file"}, nil))
 		assert.Empty(t, filtered.ReplacementFor("bash", "openai"))
 
 		// exec_command allowed -> replacement preserved.
-		kept := r.WithFilteredTools([]string{"read_file", "exec_command"})
+		kept := r.WithPolicy(mustPolicy(t, []string{"read_file", "exec_command"}, nil))
 		assert.Equal(t, "exec_command", kept.ReplacementFor("bash", "openai"))
 	})
 }

@@ -21,6 +21,7 @@ import (
 
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"unstable.build/rune/cmd/rune-agent/agent/toolpolicy"
 	"unstable.build/rune/cmd/rune-agent/hooks"
 )
 
@@ -34,6 +35,7 @@ const (
 	dialogueIDKey
 	prompterKey
 	conversationKey
+	toolPolicyKey
 )
 
 // WithParentToolCallID returns a context carrying the parent tool call ID.
@@ -119,5 +121,18 @@ func WithPrompter(ctx context.Context, p Prompter) context.Context {
 // nil when none was attached.
 func PrompterFromContext(ctx context.Context) Prompter {
 	v, _ := ctx.Value(prompterKey).(Prompter)
+	return v
+}
+
+// WithToolPolicy returns a context carrying the tool policy of the agent
+// whose tools run with it, which the sub-agents they spawn inherit.
+func WithToolPolicy(ctx context.Context, p toolpolicy.Policy) context.Context {
+	return context.WithValue(ctx, toolPolicyKey, p)
+}
+
+// ToolPolicyFromContext extracts the tool policy from the context. Returns
+// the zero Policy, which allows everything, when none was attached.
+func ToolPolicyFromContext(ctx context.Context) toolpolicy.Policy {
+	v, _ := ctx.Value(toolPolicyKey).(toolpolicy.Policy)
 	return v
 }

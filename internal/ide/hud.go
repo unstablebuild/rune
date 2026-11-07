@@ -24,6 +24,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"unstable.build/rune/internal/browser"
 	tcomponent "unstable.build/rune/internal/component"
+	"unstable.build/rune/internal/component/notifications"
 	"unstable.build/rune/internal/component/template"
 	"unstable.build/rune/internal/ide/idestatus"
 	"unstable.build/rune/internal/text"
@@ -39,14 +40,15 @@ type hudStyle struct {
 	commandShowManual      bool
 	statusBar              text.StatusBarStyle
 	bellSound              string
+	notifications          notifications.Style
 	// notifyStatus applies to every workspace, from the user's config
 	// alone.
 	notifyStatus idestatus.NotifyConfig
 }
 
 // imageURIs returns, sorted and once each, the URI of every image the
-// frames, scroll bars, window bar, command prompt and prompt buttons of
-// s name.
+// frames, scroll bars, window bar, command prompt, prompt buttons and
+// notifications of s name.
 func (s hudStyle) imageURIs() []string {
 	wm := s.browser.WindowManager
 	var uris []string
@@ -64,6 +66,10 @@ func (s hudStyle) imageURIs() []string {
 	if s.commandPromptFrame != nil {
 		frame(*s.commandPromptFrame)
 	}
+	frame(s.notifications.FrameCharSet)
+	progress := s.notifications.ProgressRunes.Graphics
+	uris = append(uris, progress.Start, progress.Current, progress.CurrentTip,
+		progress.Remain, progress.End)
 	scrollBar(wm.ScrollBarCharSet)
 	scrollBar(wm.ScrollBarHoverCharSet)
 	bar, sep := wm.WindowBarCharSet.Graphics, s.commandPromptSeparator.Graphics
@@ -94,9 +100,9 @@ func (s hudStyle) statusBarImages() []template.Image {
 // HUD holds what IDE.LoadHUD read from the config file for ApplyHUD to
 // install: the keys of window frames, scroll bars, floating window bars,
 // frame unions, the command prompt frame, separator and manual, prompt
-// buttons, the editor status bar, the wallpaper, the terminal bell and
-// the program status notifications, and the images they name, and the
-// config extensions fetch.
+// buttons, the editor status bar, the wallpaper, the terminal bell,
+// notifications and the program status notifications, and the images
+// they name, and the config extensions fetch.
 type HUD struct {
 	// load orders HUDs by when their load started.
 	load uint64

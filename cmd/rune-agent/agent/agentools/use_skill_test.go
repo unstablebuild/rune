@@ -179,6 +179,22 @@ Relative paths in this skill are relative to the skill directory.
 		assert.Contains(t, second.Content, "<skill_content")
 	})
 
+	t.Run("a skill the policy hides is unknown", func(t *testing.T) {
+		tool := NewSkillTool(registry, nil, nil).(agent.PolicyTool).
+			WithPolicy(mustPolicy(t, []string{"skill(debug)"}, nil))
+
+		result := tool.Execute(context.Background(), `{"name":"test-repo"}`)
+		assert.True(t, result.IsError)
+		assert.Contains(t, result.Content, `unknown skill "test-repo". Available skills: debug`)
+		assert.NotContains(t, result.Content, "test-repo,")
+		assert.NotContains(t, result.Content, "explore")
+
+		result = tool.Execute(context.Background(), `{"name":"nonexistent"}`)
+		assert.Equal(t, `unknown skill "nonexistent". Available skills: debug`, result.Content)
+
+		result = tool.Execute(context.Background(), `{"name":"debug"}`)
+		assert.False(t, result.IsError)
+	})
 }
 
 func TestSkillToolWithResources(t *testing.T) {
@@ -267,7 +283,11 @@ Prompt content`)
 		assert.Equal(t, "research findings here", result.Content)
 		assert.Equal(t, "research", spawner.lastRunReq.Label)
 		assert.Equal(t, "find all tests", spawner.lastRunReq.Message)
-		assert.Equal(t, []string{"read_file", "search_content"}, spawner.lastRunReq.AllowedTools)
+		research, ok := registry.Get("research")
+		require.True(t, ok)
+		assert.Equal(t, registry.AgentPolicy(research), spawner.lastRunReq.Tools)
+		assert.True(t, spawner.lastRunReq.Tools.AllowsTool("search_content"))
+		assert.False(t, spawner.lastRunReq.Tools.AllowsTool("bash"))
 		assert.Equal(t, "You are a researcher.", spawner.lastRunReq.SystemPrompt)
 	})
 

@@ -215,6 +215,24 @@ func (g *FrameGraphics) DrawScrollBar(
 	}
 }
 
+// DrawCell draws the image of uri over cell, which w shows at pos: over a
+// blank cell with cell's colors and attributes, or over cell itself when
+// overlay is set. The cell keeps its rune while the image is not loaded
+// yet, failed to load or w cannot draw it. It draws nothing when uri is
+// empty.
+func (g *FrameGraphics) DrawCell(
+	w term.Writer, uri string, pos term.Coordinates, cell term.Cell, overlay bool,
+) {
+	if uri == "" {
+		return
+	}
+	under := cell
+	under.Ch = ' '
+	under.Extra = nil
+	cw := cellImageWriter{Writer: w, under: under, fallback: cell, keep: overlay}
+	g.drawCell(&cw, uri, pos)
+}
+
 // Close closes every image.
 func (g *FrameGraphics) Close() error {
 	var errs []error

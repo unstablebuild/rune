@@ -20,6 +20,7 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
 	"github.com/unstablebuild/rune-go-sdk/clipboard"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/term"
@@ -276,4 +277,8 @@ type InputBoxConfig struct {
 	FrameAttr         term.Attributes
 	FrameCharSet      component.FrameCharSet
 	ContentAttr       term.Attributes
+	// GraphicsStorage caches the images that FrameCharSet.Graphics
+	// names, which the compose box draws over its frame once a Handler
+	// wraps the Component. Without it the frame shows its runes alone.
+	GraphicsStorage storageapi.Service
 }

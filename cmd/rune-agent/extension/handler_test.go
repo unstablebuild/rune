@@ -53,6 +53,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/handler/repl"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"github.com/unstablebuild/rune-go-sdk/tui"
 
 	"unstable.build/rune/cmd/rune-agent/agent"
 	"unstable.build/rune/cmd/rune-agent/agent/agentools"
@@ -64,6 +65,7 @@ import (
 	"unstable.build/rune/cmd/rune-agent/llm/llmtest"
 	runemcp "unstable.build/rune/cmd/rune-agent/mcp"
 	"unstable.build/rune/internal/browser/browsertest"
+	"unstable.build/rune/internal/component/asciiart"
 	"unstable.build/rune/internal/component/markdown"
 	"unstable.build/rune/internal/debug"
 )
@@ -2892,7 +2894,7 @@ func TestReloadStatusBar(t *testing.T) {
 			h.openChats.Store("open", open)
 			h.openChats.Store("opening", struct{}{})
 
-			err := h.reloadStatusBar(context.Background(), tt.host)
+			err := h.reloadStyle(context.Background(), tt.host)
 			if tt.wantErr != "" {
 				require.ErrorContains(t, err, tt.wantErr)
 			} else {
@@ -2909,6 +2911,175 @@ func TestReloadStatusBar(t *testing.T) {
 			assert.NotNil(t, next.Storage, "the bar keeps caching its images")
 		})
 	}
+}
+
+func TestReloadStyleInputBoxFrame(t *testing.T) {
+	const width, height = 32, 6
+	// The asciiart writer draws a gray 128 pixel as 'a', a gray 40 one as
+	// '_' and a white one as '@'.
+	const opened = "                                \n" +
+		"                                \n" +
+		"                                \n" +
+		"  a────────────────────────a    \n" +
+		"  │                        │    \n" +
+		"  └────────────────────────┘    "
+	const unframed = "                                \n" +
+		"                                \n" +
+		"                                \n" +
+		"  ┌────────────────────────┐    \n" +
+		"  │                        │    \n" +
+		"  └────────────────────────┘    "
+	host := func(charset map[string]any) config.Config {
+		own := map[string]any{"status_bar": map[string]any{"enabled": false}}
+		if charset != nil {
+			own["input_box_frame_charset"] = charset
+		}
+		return config.MapConfig(map[string]any{"extensions": map[string]any{
+			extensionID: map[string]any{"config": own},
+		}})
+	}
+	openWith := func(gray string) config.Config {
+		return host(map[string]any{
+			"topleft":  "╓",
+			"graphics": map[string]any{"topleft": gray, "topright": gray},
+		})
+	}
+	tests := []struct {
+		name string
+		// edit draws the gray image the chat opened with in gray 40
+		// before the reload.
+		edit bool
+		// host is the config reloaded given the URIs of a gray and a
+		// white image.
+		host     func(gray, white string) config.Config
+		expected string
+	}{
+		{
+			name: "an edited image is read again",
+			edit: true,
+			host: func(gray, _ string) config.Config { return openWith(gray) },
+			expected: "                                \n" +
+				"                                \n" +
+				"                                \n" +
+				"  _────────────────────────_    \n" +
+				"  │                        │    \n" +
+				"  └────────────────────────┘    ",
+		},
+		{
+			name: "runes and images over the default frame",
+			host: func(_, white string) config.Config {
+				return host(map[string]any{
+					"topleft": "╔",
+					"graphics": map[string]any{
+						"bottomright": white, "bottomleft": "file:///missing.png",
+					},
+				})
+			},
+			expected: "                                \n" +
+				"                                \n" +
+				"                                \n" +
+				"  ╔────────────────────────┐    \n" +
+				"  │                        │    \n" +
+				"  └────────────────────────@    ",
+		},
+		{
+			name: "an invalid image keeps the default frame",
+			host: func(_, _ string) config.Config {
+				return host(map[string]any{
+					"topleft": "╓", "graphics": map[string]any{"topleft": "ftp://x/y.png"},
+				})
+			},
+			expected: unframed,
+		},
+		{
+			name:     "no charset of its own",
+			host:     func(_, _ string) config.Config { return host(nil) },
+			expected: unframed,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			fileURI := func(name string, c color.Color) string {
+				path := filepath.Join(dir, name)
+				writeFramePNG(t, path, c)
+				return (&url.URL{Scheme: "file", Path: filepath.ToSlash(path)}).String()
+			}
+			gray := fileURI("gray.png", color.Gray{Y: 128})
+			white := fileURI("white.png", color.White)
+			own, err := ownConfig(openWith(gray))
+			require.NoError(t, err)
+
+			interrupts := make(chan struct{}, 1)
+			p := term.FuncInterrupter(func(context.Context) error {
+				select {
+				case interrupts <- struct{}{}:
+				default:
+				}
+				return nil
+			})
+			h := &aiEditorHandler{n: stubNotifications{}, p: p}
+			h.cfg = defaultComponentCfg
+			h.cfg.InputBox.FrameCharSet = inputBoxFrameCharSet(own)
+			h.cfg.InputBox.GraphicsStorage = storagestub.NewInMemoryService()
+			mu := new(sync.Mutex)
+			comp := dialoguetui.NewComponent(h.dialogueConfig(mu))
+			t.Cleanup(func() { assert.NoError(t, comp.Close()) })
+			dh, tx, _ := dialoguetui.Handler(context.Background(), mu, comp, p)
+			defer close(tx)
+			h.openChats.Store("open", syncComponent{mu: mu, comp: comp})
+			dh.Resize(width, height)
+			awaitChat(t, dh, width, height, interrupts, opened)
+
+			if tt.edit {
+				writeFramePNG(t, filepath.Join(dir, "gray.png"), color.Gray{Y: 40})
+			}
+			require.NoError(t, h.reloadStyle(context.Background(), tt.host(gray, white)))
+			awaitChat(t, dh, width, height, interrupts, tt.expected)
+
+			nextMu := new(sync.Mutex)
+			next := dialoguetui.NewComponent(h.dialogueConfig(nextMu))
+			t.Cleanup(func() { assert.NoError(t, next.Close()) })
+			nextH, nextTx, _ := dialoguetui.Handler(context.Background(), nextMu, next, p)
+			defer close(nextTx)
+			nextH.Resize(width, height)
+			awaitChat(t, nextH, width, height, interrupts, tt.expected)
+		})
+	}
+}
+
+// awaitChat redraws h on every interrupt until it draws expected with
+// the asciiart writer; the frame images load in the background.
+func awaitChat(
+	t *testing.T, h tui.Handler, width, height int,
+	interrupts <-chan struct{}, expected string,
+) {
+	t.Helper()
+	w := asciiart.NewStringWriter(width, height, asciiart.DefaultConfig())
+	timeout := time.After(10 * time.Second)
+	for {
+		require.NoError(t, w.Clear(term.Attributes{}))
+		h.Draw(w)
+		require.NoError(t, w.Flush())
+		if w.String() == expected {
+			return
+		}
+		select {
+		case <-interrupts:
+		case <-time.After(10 * time.Millisecond):
+		case <-timeout:
+			require.Equal(t, expected, w.String())
+		}
+	}
+}
+
+func writeFramePNG(t *testing.T, path string, c color.Color) {
+	t.Helper()
+	img := stdimage.NewNRGBA(stdimage.Rect(0, 0, 1, 1))
+	img.Set(0, 0, c)
+	var buf bytes.Buffer
+	require.NoError(t, png.Encode(&buf, img))
+	require.NoError(t, os.WriteFile(path, buf.Bytes(), 0o600))
 }
 
 func mustParseStatusBarLayout(t *testing.T, layout string) []dialoguetui.StatusBarComponent {

@@ -25,6 +25,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
 	"unstable.build/rune/cmd/rune-agent/agent"
 	"unstable.build/rune/cmd/rune-agent/agent/skills"
+	"unstable.build/rune/cmd/rune-agent/agent/toolpolicy"
 	"unstable.build/rune/cmd/rune-agent/llm/llmarg"
 )
 
@@ -45,6 +46,16 @@ type skillTool struct {
 	registry    *skills.SkillRegistry
 	spawner     agent.Spawner
 	childEvents chan<- agent.ChildEvent
+	// policy hides the skills the agent may not use.
+	policy toolpolicy.Policy
+}
+
+// WithPolicy implements agent.PolicyTool: the copy hides the skills p
+// does not allow, as if they did not exist.
+func (t *skillTool) WithPolicy(p toolpolicy.Policy) agent.Tool {
+	c := *t
+	c.policy = p
+	return &c
 }
 
 type skillArgs struct {
@@ -109,11 +120,13 @@ func (t *skillTool) Execute(
 	}
 
 	skill, ok := t.registry.Get(args.Name)
-	if !ok {
+	if !ok || !t.policy.AllowsSkill(skill.Name) {
 		all := t.registry.List()
 		names := make([]string, 0, len(all))
 		for _, s := range all {
-			names = append(names, s.Name)
+			if t.policy.AllowsSkill(s.Name) {
+				names = append(names, s.Name)
+			}
 		}
 		return agent.ToolResult{
 			Content: fmt.Sprintf(
@@ -140,9 +153,9 @@ func (t *skillTool) Execute(
 	return agent.ToolResult{Content: skills.FormatSkillContent(skill)}
 }
 
-// executeAgentSkill spawns a sub-agent with the skill's body as
-// system prompt and its allowed-tools as the tool filter. It blocks
-// until the sub-agent completes and returns its output.
+// executeAgentSkill spawns a sub-agent with the skill's body as system
+// prompt and its tool policy. It blocks until the sub-agent completes and
+// returns its output.
 func (t *skillTool) executeAgentSkill(
 	ctx context.Context, skill skills.Skill, userArgs string,
 ) agent.ToolResult {
@@ -158,16 +171,11 @@ func (t *skillTool) executeAgentSkill(
 		task = skill.Body
 	}
 
-	var allowedTools []string
-	if skill.AllowedTools != "" {
-		allowedTools = strings.Fields(skill.AllowedTools)
-	}
-
 	handle, err := t.spawner.Run(ctx, agent.RunRequest{
 		Label:        skill.Name,
 		Model:        llmarg.Qualify(agent.CurrentModel(ctx)),
 		Message:      task,
-		AllowedTools: allowedTools,
+		Tools:        t.registry.AgentPolicy(skill),
 		SystemPrompt: skill.Body,
 	})
 	if err != nil {

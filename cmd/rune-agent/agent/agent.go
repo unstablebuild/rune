@@ -38,6 +38,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/iterator"
 	"unstable.build/rune/cmd/rune-agent/agent/audit"
 	"unstable.build/rune/cmd/rune-agent/agent/skills"
+	"unstable.build/rune/cmd/rune-agent/agent/toolpolicy"
 	"unstable.build/rune/cmd/rune-agent/agent/utf8validate"
 	"unstable.build/rune/cmd/rune-agent/dialogue/dialoguemanager"
 	"unstable.build/rune/cmd/rune-agent/hooks"
@@ -85,6 +86,12 @@ type Config struct {
 	// must handle this case (typically by allowing the operation or
 	// returning an error).
 	Prompter Prompter
+
+	// Tools restricts the skills the agent is shown, and is propagated to
+	// tool executions through the context (see WithToolPolicy) so that
+	// the sub-agents its tools spawn inherit it. The registry the agent
+	// is given must already be restricted by it (see Registry.WithPolicy).
+	Tools toolpolicy.Policy
 }
 
 // Memory represents a single recalled memory entry.
@@ -450,6 +457,22 @@ func (p *readCoverage) record(o *ReadObservation) {
 	p.coverage = append(p.coverage, *o)
 }
 
+// visibleSkills returns the skills the agent is shown: none without a
+// skill tool, and otherwise those its tool policy allows.
+func (a *Agent) visibleSkills() []skills.Skill {
+	if _, ok := a.registry.Get("skill", a.provider()); !ok {
+		return nil
+	}
+	all := a.skillRegistry.List()
+	visible := all[:0]
+	for _, s := range all {
+		if a.config.Tools.AllowsSkill(s.Name) {
+			visible = append(visible, s)
+		}
+	}
+	return visible
+}
+
 func (a *Agent) run(
 	ctx context.Context, ch chan<- Event,
 	dialogueID string, userMessage string, opts runOptions,
@@ -712,7 +735,7 @@ func (a *Agent) run(
 		if instructions != "" {
 			transient = append(transient, llmapi.Message{Role: llmapi.RoleSystem, Content: instructions})
 		}
-		if section := skillsPromptSection(a.skillRegistry.List()); section != "" {
+		if section := skillsPromptSection(a.visibleSkills()); section != "" {
 			transient = append(transient, llmapi.Message{Role: llmapi.RoleSystem, Content: section})
 		}
 		if preloadedSkillMsg != "" {
@@ -1165,6 +1188,7 @@ func (a *Agent) run(
 							toolCtx = WithDialogueID(toolCtx, dialogueID)
 							toolCtx = WithConversation(toolCtx, toolConversation)
 							toolCtx = WithPrompter(toolCtx, a.config.Prompter)
+							toolCtx = WithToolPolicy(toolCtx, a.config.Tools)
 							toolStart := time.Now()
 							result = info.tool.Execute(toolCtx, info.call.Function.Arguments)
 							dur = time.Since(toolStart)

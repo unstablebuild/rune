@@ -29,6 +29,7 @@ import (
 
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
 	"unstable.build/rune/cmd/rune-agent/agent"
+	"unstable.build/rune/cmd/rune-agent/agent/toolpolicy"
 )
 
 // LLMProvider is the provider key under which these tools are registered.
@@ -46,9 +47,27 @@ type specializedTool struct {
 	base      agent.Tool
 	translate translator
 	summarize func(arguments string) string
+	// runsCommands reports that the base tool runs shell commands, whose
+	// restrictions the definition then describes.
+	runsCommands bool
 }
 
 func (t *specializedTool) Definition() llmapi.Tool { return t.def }
+
+// WithPolicy implements agent.PolicyTool: the copy delegates to its base
+// restricted by p, when the base depends on the policy.
+func (t *specializedTool) WithPolicy(p toolpolicy.Policy) agent.Tool {
+	base, ok := t.base.(agent.PolicyTool)
+	if !ok {
+		return t
+	}
+	c := *t
+	c.base = base.WithPolicy(p)
+	if help := p.CommandHelp(); help != "" && t.runsCommands {
+		c.def.Function.Description += "\n\n" + help
+	}
+	return &c
+}
 
 func (t *specializedTool) NeedsDeterministicOrder() bool {
 	return t.base.NeedsDeterministicOrder()

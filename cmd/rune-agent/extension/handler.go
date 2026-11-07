@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	stdimage "image"
 	"io"
 	"log/slog"
 	"maps"
@@ -70,7 +71,9 @@ import (
 
 	runemcp "unstable.build/rune/cmd/rune-agent/mcp"
 	"unstable.build/rune/cmd/rune-agent/memory"
+	"unstable.build/rune/internal/component/imageuri"
 	"unstable.build/rune/internal/component/markdown"
+	"unstable.build/rune/internal/component/template"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/extension/extutil"
 	"unstable.build/rune/internal/ide/vctrl"
@@ -551,6 +554,7 @@ func newCommandEventHandler(
 		ret.cfg.SendMessageStringConfig.Attributes = sendMsgAttr
 	}
 	ret.cfg.PinnedMessageMaxRows = resolvePinnedUserMsgMaxLines(pconfig)
+	ret.cfg.MessagesRowConfig.PadHorizontal = resolveTranscriptHorizontalPadding(pconfig)
 	ret.cfg.SendMessageIcon = resolveUserMsgIcon(ret.cfg.SendMessageIcon, pconfig)
 	recvMsgAttr, err := config.GetAttributes(pconfig, "assistant_msg_attr")
 	if err != nil {
@@ -590,15 +594,7 @@ func newCommandEventHandler(
 		ret.cfg.InputBox.FrameAttr = inputBoxFrameAttr
 	}
 
-	inputBoxFrameCharset, err := tconfig.GetFrameCharset(
-		pconfig, "input_box_frame_charset", ret.cfg.InputBox.FrameCharSet)
-	if err != nil {
-		if err != config.ErrNotFound {
-			slog.Warn("get 'input_box_frame_charset' from extension config", "error", err)
-		}
-	} else {
-		ret.cfg.InputBox.FrameCharSet = inputBoxFrameCharset
-	}
+	ret.cfg.InputBox.FrameCharSet = inputBoxFrameCharSet(pconfig)
 
 	inputBgColor, err := pconfig.GetColor("input_background_color")
 	if err != nil {
@@ -675,6 +671,7 @@ func newCommandEventHandler(
 
 	ret.db = db
 	ret.cfg.StatusBar.Storage = storageapi.WithPartition(db, statusBarImagesPartition)
+	ret.cfg.InputBox.GraphicsStorage = storageapi.WithPartition(db, frameImagesPartition)
 	ret.imageCache = storageapi.WithPartition(db, transcriptImagesPartition)
 	if auditEnabled, _ := pconfig.GetBool("audit_enabled"); auditEnabled {
 		ret.auditStore = audit.NewStore(ret.db)
@@ -893,6 +890,50 @@ func isLocationField(f string) bool {
 
 const transcriptImagesPartition = "transcript-images"
 
+// frameImagesPartition caches the images of the compose box frame.
+const frameImagesPartition = "frame_images"
+
+// inputBoxFrameCharSet reads input_box_frame_charset from pconfig, whose
+// missing slots keep those of the default frame. An invalid charset is
+// the default one.
+func inputBoxFrameCharSet(pconfig config.Config) component.FrameCharSet {
+	def := defaultComponentCfg.InputBox.FrameCharSet
+	if def == (component.FrameCharSet{}) {
+		def = component.FrameCharSetDefault()
+	}
+	cs, err := tconfig.GetFrameCharset(pconfig, "input_box_frame_charset", def)
+	if err != nil && !errors.Is(err, config.ErrNotFound) {
+		slog.Warn("get 'input_box_frame_charset' from extension config", "error", err)
+	}
+	return cs
+}
+
+// refreshFrameImages reads the images g names again, dropping the copies
+// storage caches, and returns them by URI. An image that does not load
+// is left out.
+func refreshFrameImages(
+	ctx context.Context, g component.FrameCharSetGraphics, storage storageapi.Service,
+) map[string]stdimage.Image {
+	images := make(map[string]stdimage.Image)
+	tried := make(map[string]struct{})
+	for _, uri := range []string{
+		g.TopLeft, g.TopRight, g.BottomLeft, g.BottomRight,
+		g.HorizontalTop, g.HorizontalBottom, g.VerticalLeft, g.VerticalRight,
+	} {
+		if _, ok := tried[uri]; ok || uri == "" {
+			continue
+		}
+		tried[uri] = struct{}{}
+		img, err := imageuri.Refresh(ctx, uri, template.DefaultImageTTL, storage)
+		if err != nil {
+			slog.Warn("reload frame image", "error", err)
+			continue
+		}
+		images[uri] = img
+	}
+	return images
+}
+
 // dialogueConfig returns the config for a dialogue whose handler is given
 // mu, which the dialogue holds while it calls OnLinkClick.
 func (h *aiEditorHandler) dialogueConfig(mu sync.Locker) dialoguetui.ComponentConfig {
@@ -920,7 +961,8 @@ type aiEditorHandler struct {
 	exit         atomic.Uint32
 	llmSvc       llmapi.Service
 	defaultModel string
-	// statusBarMu guards cfg.StatusBar, which a config reload replaces.
+	// statusBarMu guards cfg.StatusBar and cfg.InputBox.FrameCharSet,
+	// which a config reload replaces.
 	statusBarMu         sync.Mutex
 	cfg                 dialoguetui.ComponentConfig
 	backgroundAttr      term.Attributes
@@ -1163,8 +1205,9 @@ func (h *aiEditorHandler) setDefaultMaxTokens(n int) {
 	})
 }
 
-// watchReload reloads the status bar from the config fetch returns each
-// time reload delivers, until ctx ends. A nil reload never delivers.
+// watchReload reloads the style of the chats from the config fetch
+// returns each time reload delivers, until ctx ends. A nil reload never
+// delivers.
 func (h *aiEditorHandler) watchReload(
 	ctx context.Context, reload <-chan os.Signal, fetch func(context.Context) config.Config,
 ) {
@@ -1174,37 +1217,46 @@ func (h *aiEditorHandler) watchReload(
 			return
 		case <-reload:
 		}
-		if err := h.reloadStatusBar(ctx, fetch(ctx)); err != nil {
-			slog.Warn("reload the status bar", "error", err)
+		if err := h.reloadStyle(ctx, fetch(ctx)); err != nil {
+			slog.Warn("reload the chat style", "error", err)
 		}
 	}
 }
 
-// reloadStatusBar configures the status bar of the open chats, and of
-// those opened from now on, with the status_bar block host holds for this
-// extension, reading its images again. host is the config Rune serves; a
-// host that could not be fetched leaves the bars as they are.
-func (h *aiEditorHandler) reloadStatusBar(ctx context.Context, host config.Config) error {
+// reloadStyle configures the status bar and the compose box frame of the
+// open chats, and of those opened from now on, with the status_bar block
+// and input_box_frame_charset host holds for this extension, reading
+// their images again. host is the config Rune serves; a host that could
+// not be fetched leaves the chats as they are.
+func (h *aiEditorHandler) reloadStyle(ctx context.Context, host config.Config) error {
 	own, err := ownConfig(host)
 	if err != nil {
 		return err
 	}
 	h.statusBarMu.Lock()
 	storage := h.cfg.StatusBar.Storage
+	frameStorage := h.cfg.InputBox.GraphicsStorage
 	h.statusBarMu.Unlock()
 	cfg := statusBarConfig(own, host, h.n)
 	cfg.DurationPrecision = h.cfg.DurationPrecision
 	cfg.Storage = storage
 	cfg.Images = refreshStatusBarImages(ctx, cfg.Layout, storage)
+	frame := inputBoxFrameCharSet(own)
+	var frameImages map[string]stdimage.Image
+	if frameStorage != nil {
+		frameImages = refreshFrameImages(ctx, frame.Graphics, frameStorage)
+	}
 
 	h.statusBarMu.Lock()
 	h.cfg.StatusBar = cfg
+	h.cfg.InputBox.FrameCharSet = frame
 	h.statusBarMu.Unlock()
 	h.openChats.Range(func(_, v any) bool {
 		// Chats still opening hold no component yet; they read the
 		// config they open with afterwards.
 		if sc, ok := v.(syncComponent); ok {
 			sc.setStatusBarConfig(cfg)
+			sc.setInputBoxFrameCharSet(frame, frameImages)
 		}
 		return true
 	})
@@ -2660,10 +2712,6 @@ func createAgentCompletions(
 		var it iterator.Iterator[agent.Event]
 		if req.skillName != "" {
 			if skill, ok := skillRegistry.Get(req.skillName); ok && skill.Type == "agent" {
-				var allowedTools []string
-				if skill.AllowedTools != "" {
-					allowedTools = strings.Fields(skill.AllowedTools)
-				}
 				var initialMessages []llmapi.Message
 				if skill.ParentContext {
 					initialMessages = parentDialogueContextMessages(
@@ -2677,7 +2725,7 @@ func createAgentCompletions(
 					DisplayMessage:    req.displayText,
 					Attachments:       req.attachments,
 					AdditionalContext: upsRes.AdditionalContext,
-					AllowedTools:      allowedTools,
+					Tools:             skillRegistry.AgentPolicy(skill),
 					SystemPrompt:      skill.Body,
 					InitialMessages:   initialMessages,
 				})
@@ -3019,6 +3067,21 @@ func resolvePinnedUserMsgMaxLines(pconfig config.Config) int {
 		return defaultPinnedUserMsgMaxLines
 	}
 	return max(0, v)
+}
+
+// resolveTranscriptHorizontalPadding reads transcript_horizontal_padding,
+// the columns left beside the transcript, split evenly on either side. A
+// negative value is the transcript's width instead, and the transcript
+// fills a tab narrower than that. Zero fills the tab.
+func resolveTranscriptHorizontalPadding(pconfig config.Config) int {
+	v, err := pconfig.GetInt("transcript_horizontal_padding")
+	if err != nil {
+		if !errors.Is(err, config.ErrNotFound) {
+			slog.Warn("get 'transcript_horizontal_padding' from config", "error", err)
+		}
+		return defaultComponentCfg.MessagesRowConfig.PadHorizontal
+	}
+	return v
 }
 
 // resolveUserMsgIcon reads user_msg_icon, the character marking each of

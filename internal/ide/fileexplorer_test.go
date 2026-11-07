@@ -1182,7 +1182,9 @@ func TestFileExplorerHandlerPointerLeaves(t *testing.T) {
 	})
 }
 
-func sendExplorerKeys(t *testing.T, h *fileExplorerHandler, seq string) {
+func sendExplorerKeys(
+	t *testing.T, h interface{ Handle(term.Event) (bool, bool) }, seq string,
+) {
 	t.Helper()
 	keys, err := term.ParseKeys(seq)
 	require.NoError(t, err)
@@ -1412,6 +1414,10 @@ func (m *explorerMockFS) Stat(string) (os.FileInfo, error) {
 }
 
 func (m *explorerMockFS) MkdirAll(string, os.FileMode) error {
+	panic("not implemented")
+}
+
+func (m *explorerMockFS) Rename(string, string) error {
 	panic("not implemented")
 }
 

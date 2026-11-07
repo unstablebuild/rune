@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
 	"log/slog"
 	"slices"
 	"sort"
@@ -153,10 +154,13 @@ type Component struct {
 	messages     component.ResponsiveList
 	spanMessages component.Span
 	box          *handler.Frame
-	loadingBox   loadingFrame
-	input        Input
-	height       int
-	width        int
+	// boxGraphics draws the images of the compose box frame. It is nil
+	// until the frame names one.
+	boxGraphics *tcomponent.FrameGraphics
+	loadingBox  loadingFrame
+	input       Input
+	height      int
+	width       int
 
 	// layout: the viewport is split vertically between the messages region
 	// (top, full width) and the compose box (bottom, horizontally centered
@@ -323,7 +327,7 @@ func (c *Component) Init(cfg ComponentConfig) {
 	if cfg.InputBox.FrameCharSet != (component.FrameCharSet{}) {
 		c.box.FrameCharSet = cfg.InputBox.FrameCharSet
 	}
-	c.loadingBox.root = c.box
+	c.loadingBox.root = &framedBox{c: c}
 	c.boxArea.C = &c.loadingBox
 
 	c.attachTabs.Init()
@@ -370,6 +374,54 @@ func (c *Component) SetStatusBarConfig(cfg StatusBarConfig) {
 	c.relayout()
 	if c.statusBar != nil {
 		c.shadedBar.setRunning(c.barState.Active, c.interrupter)
+	}
+}
+
+// SetInputBoxFrameCharSet draws the compose box frame with cs from the
+// next Draw on, or with component.FrameCharSetDefault when cs is zero.
+// The frame draws images, by URI, without fetching them, and fetches any
+// other image cs names again.
+func (c *Component) SetInputBoxFrameCharSet(
+	cs component.FrameCharSet, images map[string]image.Image,
+) {
+	c.cfg.InputBox.FrameCharSet = cs
+	if cs == (component.FrameCharSet{}) {
+		cs = component.FrameCharSetDefault()
+	}
+	c.box.FrameCharSet = cs
+	if c.boxGraphics != nil {
+		c.boxGraphics.Reload(images)
+	}
+}
+
+// frameGraphics returns what draws the images of the compose box frame,
+// or nil when it names none or cannot fetch them.
+func (c *Component) frameGraphics() *tcomponent.FrameGraphics {
+	if c.box.Graphics.Empty() || c.cfg.InputBox.GraphicsStorage == nil || c.interrupter == nil {
+		return nil
+	}
+	if c.boxGraphics == nil {
+		c.boxGraphics = tcomponent.NewFrameGraphics(c.cfg.InputBox.GraphicsStorage, c.interrupter)
+	}
+	return c.boxGraphics
+}
+
+// framedBox draws the compose box of c, and over its border the images
+// its frame charset names.
+type framedBox struct {
+	c             *Component
+	width, height int
+}
+
+func (b *framedBox) Resize(width, height int) {
+	b.width, b.height = width, height
+	b.c.box.Resize(width, height)
+}
+
+func (b *framedBox) Draw(w term.Writer) {
+	b.c.box.Draw(w)
+	if g := b.c.frameGraphics(); g != nil {
+		g.Draw(w, &b.c.box.Frame, b.width, b.height)
 	}
 }
 
@@ -1932,11 +1984,16 @@ func (c *Component) Reset() {
 // Close releases the resources owned by this Component.
 func (c *Component) Close() error {
 	c.closeTranscript()
+	var errs []error
+	if c.boxGraphics != nil {
+		errs = append(errs, c.boxGraphics.Close())
+		c.boxGraphics = nil
+	}
 	if c.statusBar != nil {
 		c.shadedBar.setRunning(false, c.interrupter)
-		return c.statusBar.Close()
+		errs = append(errs, c.statusBar.Close())
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // resetContent clears turns, reasoning, progress, and the message list.

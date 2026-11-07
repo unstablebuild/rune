@@ -92,7 +92,7 @@ func TestPromptStitcherDrawsFrameGraphics(t *testing.T) {
 			b.ex.config.WindowManagerConfig.Frame = true
 			b.ex.config.FrameCharSet.Graphics = tt.graphics
 			h := newCommandPromptHandler(b.ex.cmd, b.ex, func() error { return nil })
-			assert.Equal(t, tt.images, b.ex.promptGraphics != nil,
+			assert.Equal(t, tt.images, b.ex.graphics != nil,
 				"the frame images partition is opened only for a frame with images")
 			h.Resize(width, height)
 			for _, ch := range "edit" {
@@ -106,7 +106,7 @@ func TestPromptStitcherDrawsFrameGraphics(t *testing.T) {
 			// image loaded, so wait for the image itself: a draw that the
 			// load lands in shows it on only the cells drawn after it.
 			if tt.images {
-				img := b.ex.promptGraphics.Image(uri)
+				img := b.ex.graphics.Image(uri)
 				img.Resize(1, 1)
 				require.Eventually(t, func() bool {
 					w := newCoveringImageWriter(1, 1)
@@ -242,12 +242,12 @@ func TestPromptStitcherDrawsSeparatorGraphics(t *testing.T) {
 			sepY++
 
 			if tt.noFrame {
-				assert.Nil(t, b.ex.promptGraphics)
+				assert.Nil(t, b.ex.graphics)
 			} else {
-				require.NotNil(t, b.ex.promptGraphics)
+				require.NotNil(t, b.ex.graphics)
 				// Load even hidden sprites so visibility checks cannot pass
 				// merely because a loader has not finished yet.
-				img := b.ex.promptGraphics.Image(uri)
+				img := b.ex.graphics.Image(uri)
 				img.Resize(1, 1)
 				require.Eventually(t, func() bool {
 					w := newCoveringImageWriter(1, 1)

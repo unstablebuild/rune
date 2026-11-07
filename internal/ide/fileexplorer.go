@@ -584,7 +584,7 @@ func (h *fileExplorerHandler) flush() error {
 	if len(cs.Operations) == 0 {
 		return nil
 	}
-	return h.openApplyPrompt(fileexplorercomp.OrderOperations(cs.Operations))
+	return h.openApplyPrompt(cs.Operations)
 }
 
 func (h *fileExplorerHandler) forceFlush() error {
