@@ -822,6 +822,8 @@ func TestClientServerIntegration(t *testing.T) {
 		wg.Wait()
 		require.Len(t, out, 1)
 		assert.Equal(t, "ok", renderResponsiveString(out[0], 80))
+
+		waitForUnregisterREPLCommand(t, ed, client, "status")
 	})
 
 	// A dispatcher that takes the editor lock the moment the server releases
@@ -898,6 +900,9 @@ func TestClientServerIntegration(t *testing.T) {
 				}
 				return nil
 			})
+		// Stream teardown unregisters the command; on the failing path it
+		// runs after the client has already given up on the stream.
+		ed.EXPECT().UnregisterREPLCommand(gomock.Any()).Return(nil).AnyTimes()
 
 		wg.Add(1)
 		require.NoError(t, client.RegisterREPLCommand(textapi.CommandManual{Name: "status"}, handler))
@@ -950,6 +955,8 @@ func TestClientServerIntegration(t *testing.T) {
 		require.NoError(t, err)
 		wg.Wait()
 		assert.Equal(t, []string{"--all", "--json"}, out)
+
+		waitForUnregisterREPLCommand(t, ed, client, "status")
 	})
 
 	t.Run("returns repl help output", func(t *testing.T) {
@@ -1000,6 +1007,8 @@ func TestClientServerIntegration(t *testing.T) {
 		wg.Wait()
 		require.Len(t, out, 1)
 		assert.Equal(t, "usage: status sub", renderResponsiveString(out[0], 80))
+
+		waitForUnregisterREPLCommand(t, ed, client, "status")
 	})
 
 	t.Run("returns repl registration error", func(t *testing.T) {
@@ -1090,6 +1099,8 @@ func TestClientServerIntegration(t *testing.T) {
 		assert.Equal(t, int64(100), last.progress)
 		assert.Equal(t, int64(100), last.total)
 		assert.Equal(t, "B", last.units)
+
+		waitForUnregisterREPLCommand(t, ed, client, "dl")
 	})
 }
 
@@ -1154,6 +1165,8 @@ func TestClientServer_ShellProgressE2E(t *testing.T) {
 	assert.Equal(t, int64(100), last.progress)
 	assert.Equal(t, int64(100), last.total)
 	assert.Equal(t, "B", last.units)
+
+	waitForUnregisterREPLCommand(t, ed, client, "dl")
 }
 
 // replByNameHandler adapts a textapi.REPLHandler into a
@@ -1260,6 +1273,20 @@ func waitForReplaceCommand(
 			return nil
 		})
 	ed.EXPECT().SubscribeCommand(gomock.Any(), gomock.Any()).Return(nil)
+	require.NoError(t, client.Close())
+	wg.Wait()
+}
+
+func waitForUnregisterREPLCommand(
+	t *testing.T, ed *texttest.MockEditor, client *Client, expectCmd string,
+) {
+	var wg sync.WaitGroup
+	wg.Add(1)
+	ed.EXPECT().UnregisterREPLCommand(expectCmd).DoAndReturn(
+		func(string) error {
+			wg.Done()
+			return nil
+		})
 	require.NoError(t, client.Close())
 	wg.Wait()
 }

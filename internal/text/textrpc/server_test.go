@@ -425,6 +425,44 @@ func TestServerSubscribeCommandReturnsUnexpectedUnsubscribeError(t *testing.T) {
 	assert.ErrorContains(t, err, `unsubscribe existing command "test-command": boom`)
 }
 
+// A stream that ends after another stream took over its command name must
+// leave the newer registration alone.
+func TestServerSubscribeCommandTeardownKeepsNewerSubscription(t *testing.T) {
+	ed := newStrictRecordingCommandEditor()
+	s := NewServer(nopNotifications{}, ed, nopLocker{}, thandlerrpc.GraphicsConfig{})
+
+	first := newTestSubscribeCommandServer()
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- s.SubscribeCommand(first)
+	}()
+	waitSent(t, first.sent, "first SubscribeCommand")
+
+	second := newTestSubscribeCommandServer()
+	secondDone := make(chan error, 1)
+	go func() {
+		secondDone <- s.SubscribeCommand(second)
+	}()
+	waitSent(t, second.sent, "second SubscribeCommand")
+
+	first.closeRecv()
+	waitDone(t, firstDone, "first SubscribeCommand")
+
+	ed.mu.Lock()
+	assert.Equal(t, []string{
+		"unsubscribe:test-command",
+		"subscribe:test-command",
+		"unsubscribe:test-command",
+		"subscribe:test-command",
+	}, ed.calls)
+	require.NotNil(t, ed.handler)
+	assert.Same(t, second, ed.handler.stream)
+	ed.mu.Unlock()
+
+	second.closeRecv()
+	waitDone(t, secondDone, "second SubscribeCommand")
+}
+
 func TestServerSubscribeREPLCommandUnregistersBeforeResubscribe(t *testing.T) {
 	ed := newStrictRecordingREPLEditor()
 	s := NewServer(nopNotifications{}, ed, nopLocker{}, thandlerrpc.GraphicsConfig{})
@@ -475,7 +513,9 @@ func TestServerSubscribeREPLCommandUnregistersBeforeResubscribe(t *testing.T) {
 		"unregister:test-repl-command",
 		"register:test-repl-command",
 		"unregister:test-repl-command",
+		"unregister:test-repl-command",
 		"register:test-repl-command",
+		"unregister:test-repl-command",
 	}, ed.calls)
 }
 
@@ -486,6 +526,94 @@ func TestServerSubscribeREPLCommandReturnsUnexpectedUnregisterError(t *testing.T
 	err := s.SubscribeREPLCommand(newTestSubscribeREPLCommandServer())
 	require.Error(t, err)
 	assert.ErrorContains(t, err, `unregister existing repl command "test-repl-command": boom`)
+}
+
+func TestServerSubscribeREPLCommandUnregistersOnDisconnect(t *testing.T) {
+	ed := newStrictRecordingREPLEditor()
+	s := NewServer(nopNotifications{}, ed, nopLocker{}, thandlerrpc.GraphicsConfig{})
+
+	stream := newTestSubscribeREPLCommandServer()
+	done := make(chan error, 1)
+	go func() {
+		done <- s.SubscribeREPLCommand(stream)
+	}()
+	waitSent(t, stream.sent, "SubscribeREPLCommand")
+
+	stream.closeRecv()
+	err := waitDone(t, done, "SubscribeREPLCommand")
+	assert.ErrorContains(t, err, "receive repl stream message")
+
+	ed.mu.Lock()
+	defer ed.mu.Unlock()
+	assert.Equal(t, []string{
+		"unregister:test-repl-command",
+		"register:test-repl-command",
+		"unregister:test-repl-command",
+	}, ed.calls)
+	assert.Empty(t, ed.registered)
+}
+
+// A stream that ends after another stream took over its REPL command name
+// must leave the newer registration alone, and the newer one still
+// unregisters when it ends.
+func TestServerSubscribeREPLCommandTeardownKeepsNewerSubscription(t *testing.T) {
+	ed := newStrictRecordingREPLEditor()
+	s := NewServer(nopNotifications{}, ed, nopLocker{}, thandlerrpc.GraphicsConfig{})
+
+	first := newTestSubscribeREPLCommandServer()
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- s.SubscribeREPLCommand(first)
+	}()
+	waitSent(t, first.sent, "first SubscribeREPLCommand")
+
+	second := newTestSubscribeREPLCommandServer()
+	secondDone := make(chan error, 1)
+	go func() {
+		secondDone <- s.SubscribeREPLCommand(second)
+	}()
+	waitSent(t, second.sent, "second SubscribeREPLCommand")
+
+	first.closeRecv()
+	waitDone(t, firstDone, "first SubscribeREPLCommand")
+
+	ed.mu.Lock()
+	assert.Equal(t, []string{
+		"unregister:test-repl-command",
+		"register:test-repl-command",
+		"unregister:test-repl-command",
+		"register:test-repl-command",
+	}, ed.calls)
+	assert.Contains(t, ed.registered, "test-repl-command")
+	ed.mu.Unlock()
+
+	second.closeRecv()
+	waitDone(t, secondDone, "second SubscribeREPLCommand")
+
+	ed.mu.Lock()
+	defer ed.mu.Unlock()
+	assert.Equal(t, "unregister:test-repl-command", ed.calls[len(ed.calls)-1])
+	assert.Empty(t, ed.registered)
+}
+
+func waitSent[T any](t *testing.T, sent <-chan T, what string) {
+	t.Helper()
+	select {
+	case <-sent:
+	case <-time.After(time.Second):
+		t.Fatalf("%s did not send subscribe response", what)
+	}
+}
+
+func waitDone(t *testing.T, done <-chan error, what string) error {
+	t.Helper()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(time.Second):
+		t.Fatalf("%s did not return after disconnect", what)
+		return nil
+	}
 }
 
 func TestServerSubscribeResourceOpenerRejects(t *testing.T) {
