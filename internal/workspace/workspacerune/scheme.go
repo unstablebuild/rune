@@ -14,9 +14,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-// Package workspacerune implements the rune:// workspace scheme, which
-// opens a workspace on another machine in the user's private mesh. It
-// needs no SSH server, no credentials and no port forwarding: the mesh
+// Package workspacerune implements the workspace schemes that open a
+// workspace on another machine of a private mesh: rune:// on Rune's
+// network, and tailscale:// on the user's own Tailscale network. They
+// need no SSH server, no credentials and no port forwarding: the mesh
 // already authenticates both ends, so the scheme only has to speak the
 // workspace RPC protocol over a mesh connection.
 package workspacerune
@@ -46,7 +47,7 @@ import (
 	"unstable.build/rune/internal/workspace/remotescheme"
 )
 
-// Scheme is the URL scheme implemented by this package.
+// Scheme is the URL scheme of Rune's network.
 const Scheme = workspace.RuneScheme
 
 // ErrConnectionClosed is reported when a mesh connection to a peer
@@ -63,23 +64,25 @@ type Dialer interface {
 	Dial(ctx context.Context, peer string) (net.Conn, error)
 }
 
-// New returns a scheme constructor for rune:// workspaces served by
-// peers reachable through dialer.
+// New returns a scheme constructor for the workspaces that URIs on
+// scheme name, such as rune://<peer>/<path>, served by peers reachable
+// through dialer.
 //
 // It panics if dialer is nil: the scheme is only registered once the
 // mesh node exists, so a missing one is a programming error.
-func New(dialer Dialer) schemeapi.SchemeFunc {
+func New(scheme string, dialer Dialer) schemeapi.SchemeFunc {
 	if dialer == nil {
 		panic("workspacerune.New: dialer is required")
 	}
 	return func(
 		ctx context.Context, _ config.Config, uri workspaceapi.URI,
 	) (schemeapi.Scheme, error) {
-		return newScheme(ctx, dialer, uri)
+		return newScheme(ctx, scheme, dialer, uri)
 	}
 }
 
 type scheme struct {
+	name   string
 	dialer Dialer
 	peer   string
 	// path is the remote directory to open, already defaulted to the
@@ -93,13 +96,13 @@ type scheme struct {
 }
 
 func newScheme(
-	ctx context.Context, dialer Dialer, uri workspaceapi.URI,
+	ctx context.Context, name string, dialer Dialer, uri workspaceapi.URI,
 ) (*scheme, error) {
-	peer, path, err := parseWorkspaceURI(uri)
+	peer, path, err := parseWorkspaceURI(name, uri)
 	if err != nil {
 		return nil, err
 	}
-	ret := &scheme{dialer: dialer, peer: peer, path: path}
+	ret := &scheme{name: name, dialer: dialer, peer: peer, path: path}
 	// The scheme outlives the constructor's context: the latter may be
 	// a per-open context, while reconnects must keep working for as
 	// long as the workspace is open.
@@ -108,20 +111,23 @@ func newScheme(
 	return ret, nil
 }
 
-// parseWorkspaceURI splits rune://<peer>[/path]. An absent path opens
-// the peer's home directory, which is also what the peer completer
-// offers, so `rune://<peer>/` is a complete workspace URI.
-func parseWorkspaceURI(uri workspaceapi.URI) (peer, path string, err error) {
-	if uri.Scheme() != Scheme {
-		return "", "", fmt.Errorf("invalid non-rune scheme %q", uri.Scheme())
+// parseWorkspaceURI splits <name>://<peer>[/path]. An absent path
+// opens the peer's home directory, which is also what the peer
+// completer offers, so `rune://<peer>/` is a complete workspace URI.
+func parseWorkspaceURI(
+	name string, uri workspaceapi.URI,
+) (peer, path string, err error) {
+	if uri.Scheme() != name {
+		return "", "", fmt.Errorf("invalid non-%s scheme %q", name, uri.Scheme())
 	}
 	if uri.User() != "" {
-		return "", "", errors.New(
-			"rune scheme does not take a user: peers authenticate by machine identity")
+		return "", "", fmt.Errorf(
+			"%s scheme does not take a user: peers authenticate by machine identity",
+			name)
 	}
 	peer = uri.Host()
 	if peer = strings.TrimSpace(peer); peer == "" {
-		return "", "", errors.New("rune scheme with empty peer is invalid")
+		return "", "", fmt.Errorf("%s scheme with empty peer is invalid", name)
 	}
 	path = uri.Path()
 	if path == "" || path == "/" {
@@ -243,16 +249,16 @@ func takeConn(conn *notifyConn) func(context.Context, string) (net.Conn, error) 
 	}
 }
 
-// URI resolves path on the peer and re-addresses it as a rune:// URI so
-// the IDE keeps identifying the workspace by peer rather than by the
-// peer's local filesystem layout.
+// URI resolves path on the peer and re-addresses it as a URI on the
+// scheme's own so the IDE keeps identifying the workspace by peer
+// rather than by the peer's local filesystem layout.
 func (s *scheme) URI(path string) (workspaceapi.URI, error) {
 	remote, err := s.Scheme.URI(path)
 	if err != nil {
 		return workspaceapi.URI{}, err
 	}
 	return workspaceapi.ParseURI(fmt.Sprintf("%s://%s%s",
-		Scheme, s.peer, remote.Path()))
+		s.name, s.peer, remote.Path()))
 }
 
 func (s *scheme) Close() (ret error) {

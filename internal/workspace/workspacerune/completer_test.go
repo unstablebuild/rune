@@ -70,8 +70,10 @@ func TestCompleterOffersPeers(t *testing.T) {
 
 	tsuite := []struct {
 		name string
-		args []string
-		want []string
+		// scheme is Scheme unless set.
+		scheme string
+		args   []string
+		want   []string
 	}{
 		{
 			name: "offers connected peers once the scheme is typed",
@@ -93,11 +95,27 @@ func TestCompleterOffersPeers(t *testing.T) {
 			args: []string{"workspaceopen"},
 			want: nil,
 		},
+		{
+			name:   "on its own scheme",
+			scheme: "tailscale",
+			args:   []string{"workspaceopen", "tailscale://w"},
+			want:   []string{"tailscale://workstation/"},
+		},
+		{
+			name:   "stays out of other schemes",
+			scheme: "tailscale",
+			args:   []string{"workspaceopen", "rune://"},
+			want:   nil,
+		},
 	}
 
 	for _, tcase := range tsuite {
 		t.Run(tcase.name, func(t *testing.T) {
-			it, newLastArg, err := Completer(mesh).
+			scheme := tcase.scheme
+			if scheme == "" {
+				scheme = Scheme
+			}
+			it, newLastArg, err := Completer(scheme, mesh).
 				Complete(context.Background(), tcase.args)
 			require.NoError(t, err)
 			assert.Empty(t, newLastArg)
@@ -121,8 +139,10 @@ func TestCompleterOffersPeerDirectories(t *testing.T) {
 
 	tsuite := []struct {
 		name string
-		last string
-		want []string
+		// scheme is Scheme unless set.
+		scheme string
+		last   string
+		want   []string
 	}{
 		{
 			name: "lists the directories of the typed directory",
@@ -150,11 +170,21 @@ func TestCompleterOffersPeerDirectories(t *testing.T) {
 			last: "rune://laptop" + root + "/.",
 			want: []string{"rune://laptop" + root + "/.cache/"},
 		},
+		{
+			name:   "on its own scheme",
+			scheme: "tailscale",
+			last:   "tailscale://laptop" + root + "/code/",
+			want:   []string{"tailscale://laptop" + root + "/code/rune/"},
+		},
 	}
 
 	for _, tcase := range tsuite {
 		t.Run(tcase.name, func(t *testing.T) {
-			it, newLastArg, err := Completer(mesh).Complete(
+			scheme := tcase.scheme
+			if scheme == "" {
+				scheme = Scheme
+			}
+			it, newLastArg, err := Completer(scheme, mesh).Complete(
 				context.Background(), []string{"workspaceopen", tcase.last})
 			require.NoError(t, err)
 			assert.Empty(t, newLastArg)

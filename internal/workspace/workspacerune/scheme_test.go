@@ -43,7 +43,9 @@ import (
 
 func TestParseWorkspaceURI(t *testing.T) {
 	tsuite := []struct {
-		name     string
+		name string
+		// scheme is Scheme unless set.
+		scheme   string
 		uri      string
 		wantPeer string
 		wantPath string
@@ -88,6 +90,25 @@ func TestParseWorkspaceURI(t *testing.T) {
 			uri:     "ssh://laptop/code",
 			wantErr: "invalid non-rune scheme",
 		},
+		{
+			name:     "tailscale",
+			scheme:   workspace.TailscaleScheme,
+			uri:      "tailscale://laptop/home/ernie/code",
+			wantPeer: "laptop",
+			wantPath: "/home/ernie/code",
+		},
+		{
+			name:    "rune is not tailscale",
+			scheme:  workspace.TailscaleScheme,
+			uri:     "rune://laptop/code",
+			wantErr: "invalid non-tailscale scheme",
+		},
+		{
+			name:    "tailscale with a user",
+			scheme:  workspace.TailscaleScheme,
+			uri:     "tailscale://ernie@laptop/code",
+			wantErr: "tailscale scheme does not take a user",
+		},
 	}
 
 	for _, tcase := range tsuite {
@@ -95,7 +116,11 @@ func TestParseWorkspaceURI(t *testing.T) {
 			uri, err := workspaceapi.ParseURI(tcase.uri)
 			require.NoError(t, err)
 
-			peer, path, err := parseWorkspaceURI(uri)
+			scheme := tcase.scheme
+			if scheme == "" {
+				scheme = Scheme
+			}
+			peer, path, err := parseWorkspaceURI(scheme, uri)
 			if tcase.wantErr != "" {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tcase.wantErr)
@@ -142,7 +167,7 @@ func TestConnectFailureReportsItsOwnError(t *testing.T) {
 	// coin flip.
 	uri, err := workspaceapi.ParseURI("rune://laptop/no/such/directory")
 	require.NoError(t, err)
-	s, err := New(dialer)(context.Background(), config.NopConfig(), uri)
+	s, err := New(Scheme, dialer)(context.Background(), config.NopConfig(), uri)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = s.Close() })
 
@@ -161,39 +186,43 @@ func (f dialerFunc) Dial(ctx context.Context, peer string) (net.Conn, error) {
 }
 
 func TestSchemeConnectsOverDialer(t *testing.T) {
-	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(
-		filepath.Join(dir, "hello.txt"), []byte("hi"), 0o600))
+	for _, scheme := range []string{Scheme, workspace.TailscaleScheme} {
+		t.Run(scheme, func(t *testing.T) {
+			dir := t.TempDir()
+			require.NoError(t, os.WriteFile(
+				filepath.Join(dir, "hello.txt"), []byte("hi"), 0o600))
 
-	addr := servePeerWorkspace(t, dir)
-	var dialedPeer string
-	dialer := dialerFunc(func(ctx context.Context, peer string) (net.Conn, error) {
-		dialedPeer = peer
-		var d net.Dialer
-		return d.DialContext(ctx, "tcp", addr)
-	})
+			addr := servePeerWorkspace(t, dir)
+			var dialedPeer string
+			dialer := dialerFunc(func(ctx context.Context, peer string) (net.Conn, error) {
+				dialedPeer = peer
+				var d net.Dialer
+				return d.DialContext(ctx, "tcp", addr)
+			})
 
-	uri, err := workspaceapi.ParseURI("rune://laptop" + dir)
-	require.NoError(t, err)
-	s, err := New(dialer)(context.Background(), config.NopConfig(), uri)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = s.Close() })
+			uri, err := workspaceapi.ParseURI(scheme + "://laptop" + dir)
+			require.NoError(t, err)
+			s, err := New(scheme, dialer)(context.Background(), config.NopConfig(), uri)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = s.Close() })
 
-	require.NoError(t, s.(workspace.RemoteScheme).WaitConnected(context.Background()))
-	assert.Equal(t, "laptop", dialedPeer)
-	assert.Equal(t, dir, s.Root())
+			require.NoError(t, s.(workspace.RemoteScheme).WaitConnected(context.Background()))
+			assert.Equal(t, "laptop", dialedPeer)
+			assert.Equal(t, dir, s.Root())
 
-	entries, err := s.ReadDir(".")
-	require.NoError(t, err)
-	require.Len(t, entries, 1)
-	assert.Equal(t, "hello.txt", entries[0].Name())
+			entries, err := s.ReadDir(".")
+			require.NoError(t, err)
+			require.Len(t, entries, 1)
+			assert.Equal(t, "hello.txt", entries[0].Name())
 
-	// The workspace must keep identifying itself by peer, not by the
-	// peer's local filesystem layout.
-	fileURI, err := s.URI("hello.txt")
-	require.NoError(t, err)
-	assert.Equal(t, "rune://laptop"+filepath.Join(dir, "hello.txt"),
-		fileURI.String())
+			// The workspace must keep identifying itself by peer, not
+			// by the peer's local filesystem layout.
+			fileURI, err := s.URI("hello.txt")
+			require.NoError(t, err)
+			assert.Equal(t, scheme+"://laptop"+filepath.Join(dir, "hello.txt"),
+				fileURI.String())
+		})
+	}
 }
 
 func TestSchemeReportsDisconnect(t *testing.T) {
@@ -211,7 +240,7 @@ func TestSchemeReportsDisconnect(t *testing.T) {
 
 	uri, err := workspaceapi.ParseURI("rune://laptop/")
 	require.NoError(t, err)
-	s, err := New(dialer)(context.Background(), config.NopConfig(), uri)
+	s, err := New(Scheme, dialer)(context.Background(), config.NopConfig(), uri)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = s.Close() })
 
@@ -299,7 +328,7 @@ func TestInstallRootReturnsPeerAdvertisedDataDir(t *testing.T) {
 
 	uri, err := workspaceapi.ParseURI("rune://laptop" + dir)
 	require.NoError(t, err)
-	s, err := New(dialer)(context.Background(), config.NopConfig(), uri)
+	s, err := New(Scheme, dialer)(context.Background(), config.NopConfig(), uri)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = s.Close() })
 
@@ -322,7 +351,7 @@ func TestInstallRootOnOldPeerReportsUnsupported(t *testing.T) {
 
 	uri, err := workspaceapi.ParseURI("rune://laptop" + dir)
 	require.NoError(t, err)
-	s, err := New(dialer)(context.Background(), config.NopConfig(), uri)
+	s, err := New(Scheme, dialer)(context.Background(), config.NopConfig(), uri)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = s.Close() })
 
@@ -359,7 +388,7 @@ func TestSchemeStartsCommandsInTheWorkspaceDirectory(t *testing.T) {
 
 	uri, err := workspaceapi.ParseURI("rune://laptop" + dir)
 	require.NoError(t, err)
-	s, err := New(dialer)(context.Background(), config.NopConfig(), uri)
+	s, err := New(Scheme, dialer)(context.Background(), config.NopConfig(), uri)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = s.Close() })
 	require.NoError(t, s.(workspace.RemoteScheme).WaitConnected(context.Background()))

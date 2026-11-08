@@ -14,6 +14,9 @@ run containers. Read [Running a machine without the
 editor](./network.md#running-a-machine-without-the-editor) first if you
 have not.
 
+To serve on your own Tailscale or Headscale tailnet instead of the Rune
+network, see [Tailscale](#tailscale).
+
 ## Before you install the service
 
 Every recipe below assumes the same setup. The exception is
@@ -363,6 +366,68 @@ Build it with `docker build -t rune-node .` and run `rune-node` in place
 of `unstablebuild/rune` above. The image is Debian, so `apt-get` and
 prebuilt binaries linked against glibc both work in it.
 
+## Tailscale
+
+`rune --headless` serves on the Rune network unless it is given
+`--control-url`: then it serves on your own [Tailscale](./tailscale.md)
+or [Headscale](https://headscale.net) tailnet instead, and needs no Rune
+account.
+
+```bash
+rune --headless --control-url https://controlplane.tailscale.com
+```
+
+`https://controlplane.tailscale.com` is Tailscale's own coordination
+server; for Headscale, pass the URL of yours. Rune joins the tailnet as
+a machine of its own, through a Tailscale node built into Rune, so the
+host needs no Tailscale client and nothing runs as root. The first start
+prints the page that signs the machine in:
+
+```
+To add this machine to your tailnet on controlplane.tailscale.com, open
+
+    https://login.tailscale.com/a/1a2b3c4d5e6f
+
+in any browser and sign in. The machines of whoever signs it in will be able to open workspaces on it.
+```
+
+Open it on any machine and sign in; the node prints its status once it
+has joined. On Headscale the page is a `/register/` URL, which
+`headscale auth register --auth-id <id> --user <user>` completes. From
+your laptop, `workspaceopen tailscale://buildbox/home/rune/projects/app`
+then opens a project on it.
+
+Who may open workspaces on the machine follows [the tailnet's
+rules](./tailscale.md#who-can-open-a-workspace): signed in by you, it is
+yours, and your other machines get in. To let others in, tag it from the
+admin console or with `headscale nodes tag`, and grant them access in
+the policy.
+
+The machine is named after `network.hostname` in the host's
+[config](../config.md), or the OS hostname, and serves on port 7473
+whatever `network.port` says. It keeps its tailnet identity in the data
+directory, one per coordination server and apart from its Rune network
+identity, so restarts do not sign it in again. When the tailnet expires
+its key, the log prints a new page to sign it in at; turn off [key
+expiry](https://tailscale.com/docs/features/access-control/key-expiry)
+for the machine to avoid that. Rune signs in by URL only, and ignores
+`TS_AUTHKEY` and the other Tailscale credentials in its environment.
+
+Every service manager recipe above works the same with `--control-url
+<url>` added after `--headless`. With Docker, pass both flags, since
+they replace the image's default `--headless`:
+
+```bash
+docker run -d --name rune --restart unless-stopped \
+  --hostname buildbox \
+  -v rune-data:/home/rune/.rune \
+  -v /srv/projects:/home/rune/projects \
+  unstablebuild/rune --headless --control-url https://controlplane.tailscale.com
+docker logs -f rune
+```
+
+The container needs no capabilities, devices or published ports.
+
 ## Operating the node
 
 **Logs.** Everything goes to standard output, so `journalctl`, the
@@ -445,6 +510,11 @@ installs and the `PATH` entries from [`gui.env`](../config.md#gui) in the
 host's config in front. A tool that is still missing is in neither place. Add its
 directory in your shell's startup files, or to `gui.env.PATH` in
 `~/.rune/config.yaml` on the host and restart the service.
+
+**`To add this machine to your tailnet` in the log.** The node was
+started with `--control-url` and waits to be signed in. Open the page in
+any browser and sign in. If it shows up again long after the node
+joined, the tailnet expired the machine's key.
 
 **`enter the code` in the log.** No account is signed in on the host.
 Open the page named in the log in any browser, enter the code, and the

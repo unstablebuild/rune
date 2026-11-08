@@ -103,7 +103,7 @@ func TestRejectsPeerOwnedByAnotherAccount(t *testing.T) {
 
 	uri, err := workspaceapi.ParseURI("rune://peer" + dir)
 	require.NoError(t, err)
-	scheme, err := workspacerune.New(client)(
+	scheme, err := workspacerune.New(workspacerune.Scheme, client)(
 		context.Background(), config.NopConfig(), uri)
 	require.NoError(t, err)
 	defer scheme.Close()

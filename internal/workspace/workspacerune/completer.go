@@ -30,9 +30,6 @@ import (
 	"unstable.build/rune/internal/runenet"
 )
 
-// prefix is what a user must type before peer names are offered.
-const prefix = Scheme + "://"
-
 // peerDirTimeout bounds the round-trip a directory completion makes to
 // a peer, so completing against a machine that is asleep or gone does
 // not hold a mesh connection open until the prompt closes.
@@ -44,7 +41,7 @@ type PeerLister interface {
 	Peers(ctx context.Context) ([]runenet.Peer, error)
 }
 
-// Mesh is what completing a rune:// URI needs: the machines to offer
+// Mesh is what completing a workspace URI needs: the machines to offer
 // while a hostname is being typed, and a connection to the chosen one
 // to list its directories. It is satisfied by [runenet.Node].
 type Mesh interface {
@@ -52,7 +49,7 @@ type Mesh interface {
 	Dialer
 }
 
-// Completer completes rune:// workspace URIs: first with the machines
+// Completer completes workspace URIs on scheme: first with the machines
 // currently connected to the mesh, so opening a workspace elsewhere is
 // a pick rather than a hostname the user has to remember, then with
 // the directories of the chosen machine, which only that machine can
@@ -61,10 +58,12 @@ type Mesh interface {
 //
 // It panics if mesh is nil: completion is wired from the same node the
 // scheme dials through, so a missing one is a programming error.
-func Completer(mesh Mesh) command.Completer {
+func Completer(scheme string, mesh Mesh) command.Completer {
 	if mesh == nil {
 		panic("workspacerune.Completer: mesh is required")
 	}
+	// What a user must type before peer names are offered.
+	prefix := scheme + "://"
 	return command.FuncCompleter(func(
 		ctx context.Context, args []string,
 	) (iterator.Iterator[string], string, error) {
@@ -82,11 +81,11 @@ func Completer(mesh Mesh) command.Completer {
 			strings.TrimPrefix(last, prefix), "/")
 		if !chosen {
 			return deferred(func(ctx context.Context) ([]string, error) {
-				return matchingPeers(ctx, mesh, peer)
+				return matchingPeers(ctx, mesh, prefix, peer)
 			}), "", nil
 		}
 		return deferred(func(ctx context.Context) ([]string, error) {
-			return peerDirs(ctx, mesh, peer, "/"+typedPath)
+			return peerDirs(ctx, mesh, prefix, peer, "/"+typedPath)
 		}), "", nil
 	})
 }
@@ -121,7 +120,7 @@ func deferred(
 }
 
 func matchingPeers(
-	ctx context.Context, peers PeerLister, typed string,
+	ctx context.Context, peers PeerLister, prefix, typed string,
 ) ([]string, error) {
 	found, err := peers.Peers(ctx)
 	if err != nil {
@@ -142,7 +141,7 @@ func matchingPeers(
 // completions carry a trailing separator so the next keystroke keeps
 // descending instead of re-listing what was just picked.
 func peerDirs(
-	ctx context.Context, dialer Dialer, peer, typed string,
+	ctx context.Context, dialer Dialer, prefix, peer, typed string,
 ) ([]string, error) {
 	dir, base := path.Split(typed)
 	entries, err := readPeerDir(ctx, dialer, peer, dir)

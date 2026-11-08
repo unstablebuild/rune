@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 
 	log "github.com/sirupsen/logrus"
 	"github.com/unstablebuild/blue/logging"
@@ -76,30 +77,46 @@ func WithServices(register func(grpc.ServiceRegistrar)) ServeOption {
 	}
 }
 
+// Authorizer decides whether the peer behind a request may issue it.
+// It reads the peer from the request context with [peer.FromContext],
+// and its error is the gRPC status the request fails with.
+type Authorizer interface {
+	Authorize(ctx context.Context) error
+}
+
 // ServeWorkspace starts serving scheme to mesh peers on the node's
 // workspace port. Only machines owned by the same account as this node
-// are allowed to issue requests; see [Node.WhoIs].
-//
-// dataDir is this instance's Rune data directory, advertised to peers
-// through the PeerInfo service so a client can provision and resolve
-// toolchains under the peer's actual install root rather than guessing
-// it from its own datadir. It must be an absolute path on this host.
+// are allowed to issue requests; see [Node.WhoIs] and [Serve].
 func ServeWorkspace(
 	node *Node, scheme schemeapi.Scheme, dataDir string, opts ...ServeOption,
 ) (*WorkspaceServer, error) {
-	var o serveOptions
-	for _, opt := range opts {
-		opt(&o)
-	}
 	lis, err := node.Listen()
 	if err != nil {
 		return nil, fmt.Errorf("listen on network: %w", err)
 	}
 	auth := NewPeerAuthorizer(node.WhoIs, node.LoginName)
+	return Serve(lis, auth, scheme, dataDir, opts...), nil
+}
+
+// Serve starts serving scheme on lis to the peers auth admits. Closing
+// the returned server closes lis.
+//
+// dataDir is this instance's Rune data directory, advertised to peers
+// through the PeerInfo service so a client can provision and resolve
+// toolchains under the peer's actual install root rather than guessing
+// it from its own datadir. It must be an absolute path on this host.
+func Serve(
+	lis net.Listener, auth Authorizer, scheme schemeapi.Scheme, dataDir string,
+	opts ...ServeOption,
+) *WorkspaceServer {
+	var o serveOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
 	grpcServer := grpc.NewServer(
 		grpc.KeepaliveEnforcementPolicy(remotescheme.ServerEnforcement),
-		grpc.ChainUnaryInterceptor(auth.UnaryInterceptor()),
-		grpc.ChainStreamInterceptor(auth.StreamInterceptor()),
+		grpc.ChainUnaryInterceptor(unaryInterceptor(auth)),
+		grpc.ChainStreamInterceptor(streamInterceptor(auth)),
 	)
 	rpcServer := tworkspacerpc.NewServer(scheme,
 		tworkspacerpc.CommandAuthorizerFunc(
@@ -119,7 +136,7 @@ func ServeWorkspace(
 				Warnf("network workspace server stopped: %v", err)
 		}
 	})
-	return &WorkspaceServer{grpcServer: grpcServer, rpcServer: rpcServer}, nil
+	return &WorkspaceServer{grpcServer: grpcServer, rpcServer: rpcServer}
 }
 
 // peerInfoServer answers PeerInfo requests with this instance's data
@@ -232,26 +249,24 @@ func (a *PeerAuthorizer) Authorize(ctx context.Context) error {
 	return nil
 }
 
-// UnaryInterceptor authorizes unary requests.
-func (a *PeerAuthorizer) UnaryInterceptor() grpc.UnaryServerInterceptor {
+func unaryInterceptor(auth Authorizer) grpc.UnaryServerInterceptor {
 	return func(
 		ctx context.Context, req any, _ *grpc.UnaryServerInfo,
 		handler grpc.UnaryHandler,
 	) (any, error) {
-		if err := a.Authorize(ctx); err != nil {
+		if err := auth.Authorize(ctx); err != nil {
 			return nil, err
 		}
 		return handler(ctx, req)
 	}
 }
 
-// StreamInterceptor authorizes streaming requests.
-func (a *PeerAuthorizer) StreamInterceptor() grpc.StreamServerInterceptor {
+func streamInterceptor(auth Authorizer) grpc.StreamServerInterceptor {
 	return func(
 		srv any, ss grpc.ServerStream, _ *grpc.StreamServerInfo,
 		handler grpc.StreamHandler,
 	) error {
-		if err := a.Authorize(ss.Context()); err != nil {
+		if err := auth.Authorize(ss.Context()); err != nil {
 			return err
 		}
 		return handler(srv, ss)

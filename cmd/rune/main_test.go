@@ -62,6 +62,12 @@ func TestCheckModeArgs(t *testing.T) {
 		{name: "gui alone", args: []string{"--gui"}},
 		{name: "headless alone", args: []string{"--headless"}},
 		{name: "headless with its own flags", args: []string{"--headless", "-c", "/c.yaml", "-d", "/d"}},
+		{name: "headless on a tailnet", args: []string{"--headless", "--control-url", "https://hs.example.com"}},
+		{
+			name:    "control url without headless",
+			args:    []string{"--gui", "--control-url", "https://hs.example.com"},
+			wantErr: "--control-url needs --headless",
+		},
 		{name: "tui with workspace and files", args: []string{"--tui", "-w", "/src"}, files: []string{"a.go"}},
 		{
 			name:    "two modes",
@@ -149,6 +155,7 @@ func parseModeFlags(
 	guiFlag := fs.BoolP("gui", "G", false, "")
 	tuiFlag := fs.Bool("tui", false, "")
 	headlessFlag := fs.Bool("headless", false, "")
+	fs.String("control-url", "", "")
 	fs.StringP("config", "c", "", "")
 	fs.StringP("datadir", "d", "", "")
 	fs.StringP("workspace", "w", "", "")

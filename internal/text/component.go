@@ -841,12 +841,13 @@ func (c *Component) tabWindow(tab *browser.Tab) (browser.Window, bool) {
 }
 
 // Show satisfies browser.Browser. URIs on the schemes of the workspaces
-// Rune supports (file, ssh and rune) open as OpenInWindow does in the
-// window in focus. Every other URI goes to Config.OpenURL, and Show fails
-// for them when it is nil.
+// Rune supports (file, ssh, rune and tailscale) open as OpenInWindow does
+// in the window in focus. Every other URI goes to Config.OpenURL, and
+// Show fails for them when it is nil.
 func (c *Component) Show(uri workspaceapi.URI) error {
 	switch uri.Scheme() {
-	case workspace.FileScheme, workspace.SSHScheme, workspace.RuneScheme:
+	case workspace.FileScheme, workspace.SSHScheme, workspace.RuneScheme,
+		workspace.TailscaleScheme:
 		_, err := c.OpenInWindow(uri, c.comp.Focus(), false)
 		return err
 	}

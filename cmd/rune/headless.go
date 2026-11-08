@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -32,11 +33,14 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"google.golang.org/grpc"
 	"unstable.build/rune/auth"
 	"unstable.build/rune/cmd/rune/ide/apiclient"
 	"unstable.build/rune/internal/ide"
 	"unstable.build/rune/internal/ide/hostenv"
+	"unstable.build/rune/internal/ide/idepkg/pkgrpc"
 	"unstable.build/rune/internal/runenet"
+	"unstable.build/rune/internal/tailnet"
 	"unstable.build/rune/internal/workspace"
 )
 
@@ -79,6 +83,9 @@ func runHeadless(
 		fmt.Fprintf(os.Stderr, "%s\n", err)
 		return 1
 	}
+	if *flagControlURL != "" {
+		return runHeadlessTailnet(ctx, netCfg, *flagControlURL, host, shellRCDir, os.Stdout)
+	}
 	// A headless node exists to be on the network and has no console to
 	// bring it up later, so auto_join being off leaves nothing to run.
 	if !netCfg.AutoJoin {
@@ -105,7 +112,7 @@ func runHeadless(
 		_ = net.Close()
 	}()
 
-	closePackages, err := serveHeadlessPackages(ctx, net, storage, host, shellRCDir)
+	closePackages, err := serveHeadlessPackages(ctx, &net.packages, storage, host, shellRCDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s\n", err)
 		return 1
@@ -128,12 +135,120 @@ func runHeadless(
 	return 0
 }
 
+// runHeadlessTailnet serves this machine's workspaces on the user's own
+// tailnet, which it joins as a machine of its own at the coordination
+// server controlURL. No Rune account is involved: the machine signs in
+// by URL, printed to out each time the coordination server asks for
+// one, including when the machine's key expires long after startup.
+func runHeadlessTailnet(
+	ctx context.Context, netCfg runenet.Config, controlURL string,
+	host *hostenv.Host, shellRCDir string, out io.Writer,
+) int {
+	controlURL, err := runenet.ParseControlURL(controlURL)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "--control-url: %s\n", err)
+		return 1
+	}
+	node := runenet.New(runenet.Config{
+		Hostname:      netCfg.Hostname,
+		ControlURL:    controlURL,
+		CustomControl: true,
+		// Fixed, unlike on Rune's network: the machines of the tailnet
+		// open workspaces on this port and have no config to say
+		// otherwise.
+		Port: runenet.DefaultPort,
+		Dir:  *flagDataPath,
+		OnAuthURL: func(authURL string) {
+			fmt.Fprint(out, formatTailnetSignIn(controlURL, authURL))
+		},
+	})
+	defer func() {
+		_ = node.Close()
+	}()
+
+	var packages servedPackages
+	closePackages, err := serveHeadlessPackages(
+		ctx, &packages, newRuneStorage(*flagDataPath), host, shellRCDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s\n", err)
+		return 1
+	}
+	defer closePackages()
+
+	// Signing in waits on a human, so a stop request has to be able to
+	// end the wait cleanly.
+	joinCtx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
+	server, err := joinHeadlessTailnet(joinCtx, node, &packages,
+		*flagDataPath, shellRCDir, out)
+	stopped := joinCtx.Err() != nil && ctx.Err() == nil
+	stop()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s\n", err)
+		return 1
+	}
+	if server == nil {
+		return 0
+	}
+	defer func() {
+		_ = server.Close()
+	}()
+	if !stopped {
+		waitForShutdownSignal(ctx)
+	}
+	return 0
+}
+
+// joinHeadlessTailnet starts node and serves this machine's workspaces
+// on it to whom the tailnet lets in, see tailnet.Authorizer, then
+// blocks until the machine is signed in and prints its status to out.
+// It returns a nil server, and no error, when ctx ends first.
+func joinHeadlessTailnet(
+	ctx context.Context, node *runenet.Node, packages *servedPackages,
+	dataDir, shellRCDir string, out io.Writer,
+) (*runenet.WorkspaceServer, error) {
+	scheme, dataDir, err := rootWorkspaceScheme(dataDir, shellRCDir)
+	if err != nil {
+		return nil, err
+	}
+	server, err := tailnet.Join(ctx, node, scheme, dataDir,
+		runenet.WithServices(func(r grpc.ServiceRegistrar) {
+			pkgrpc.NewServer(packages).Register(r)
+		}))
+	if err != nil || server == nil {
+		_ = scheme.Close()
+		return nil, err
+	}
+	st, err := node.Status(ctx)
+	if err != nil {
+		_ = server.Close()
+		return nil, fmt.Errorf("network status: %w", err)
+	}
+	fmt.Fprint(out, formatNodeStatus(st))
+	return server, nil
+}
+
+func formatTailnetSignIn(controlURL, authURL string) string {
+	return fmt.Sprintf("To add this machine to your tailnet on %s, open\n\n"+
+		"    %s\n\nin any browser and sign in. The machines of whoever signs "+
+		"it in will be able to open workspaces on it.\n\n",
+		controlHost(controlURL), authURL)
+}
+
+// controlHost is how the coordination server at controlURL is named to
+// the user.
+func controlHost(controlURL string) string {
+	if u, err := url.Parse(controlURL); err == nil && u.Host != "" {
+		return u.Host
+	}
+	return controlURL
+}
+
 // serveHeadlessPackages has peers install packages on this machine
 // through a manager of its own: there is no editor to own them. The
 // user config's gui.env is applied now and after every install that
 // changes it, so commands peers start see the installed toolchains.
 func serveHeadlessPackages(
-	ctx context.Context, net *network, rootStorage storageapi.Service,
+	ctx context.Context, packages *servedPackages, rootStorage storageapi.Service,
 	host *hostenv.Host, shellRCDir string,
 ) (func(), error) {
 	uri, err := workspaceapi.CurrentUserHostURI("/")
@@ -149,7 +264,7 @@ func serveHeadlessPackages(
 	applyEnv()
 	pkgs, pkgStorage := newHostPackageManager(
 		rootStorage, newRemoteReleaseManager(), scheme, applyEnv)
-	net.packages.set(pkgs)
+	packages.set(pkgs)
 	return func() {
 		_ = pkgStorage.Close()
 		_ = scheme.Close()
