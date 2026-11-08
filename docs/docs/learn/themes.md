@@ -166,4 +166,12 @@ Installing merges the theme into `gui.themes` and makes it available to
 `guitheme` immediately, with no restart. It does not change the active theme
 or `gui.default_theme`. Users can select it with `guitheme` or set
 `gui.default_theme: redmond95` in their own config to use it at startup.
+
+A theme package can also ship the images of a HUD: window frames, tabs,
+prompt buttons, status bar ornaments and the rest. Commit the images to the
+repository and name them in `config.yaml` with URIs such as
+`file://$RUNE_DATADIR/lib/$RUNE_PKG_ID/frame/topleft.png`. Rune fills in the
+package's name when it installs it, and its data directory when it loads the
+image. Like any other key, an image setting is merged only where the user's
+config doesn't set it already.
 See [Packages](../develop/packages.md) for installation and versioning details.

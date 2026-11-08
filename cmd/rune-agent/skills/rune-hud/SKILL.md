@@ -144,9 +144,10 @@ would need percent-encoding in a `file://` URI.
 ## Rules that apply to every image
 1. **Use absolute URIs**, except for the wallpaper and the app icon. Image
    values are `file:///absolute/path.png` or `https://...`, with no `~` and no
-   `$VARS`. `workspace.wallpaper_image` and `gui.app_icon` are the
-   exceptions: they take a plain path, which may use `~` and environment
-   variables.
+   `$VARS`, except `$RUNE_DATADIR` in a `file://` URI, as in
+   `file://$RUNE_DATADIR/hud/<theme>/v1/frame/normal/topleft.png`.
+   `workspace.wallpaper_image` and `gui.app_icon` are the exceptions: they
+   take a plain path, which may use `~` and environment variables.
 2. **Overwrite an image in place only if a key under Checking your work names
    it.** Rune caches images by URI for 24 hours by default, but
    `runectl screenshot` reads those images again, so you can overwrite them
@@ -985,7 +986,7 @@ Only `src` is required. All image directives apply only to `.Image`.
 
 | Directive | Argument and default | Limits / meaning |
 |---|---|---|
-| `src` | Quoted absolute `file:///`, `https://` or `http://` URI | No `~` or environment-variable expansion. |
+| `src` | Quoted absolute `file:///`, `https://` or `http://` URI | No `~` or environment-variable expansion, except `$RUNE_DATADIR` in a `file://` URI. |
 | `width` | Integer columns, default `2`, or quoted `"N%"` | 1–4096 cells or 1–100% of bar width. |
 | `height` | Integer rows, default `1` | 1–4096. |
 | `reserve` | Integer columns | Layout space consumed; defaults to numeric width, or **0 for percentage width**. Range 0–4096. |

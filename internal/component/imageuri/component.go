@@ -24,6 +24,7 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -33,6 +34,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/internal/debug"
+	"unstable.build/rune/internal/ide/hostenv"
 )
 
 var _ tui.Component = (*Component)(nil)
@@ -135,7 +137,9 @@ func NewLoaded(uri string, img image.Image, style Style) (*Component, error) {
 
 // ValidateURI returns the error New would fail with for uri: it must
 // parse, and be either a file URI with a path or an http or https URI
-// with a host.
+// with a host. In a file URI, $RUNE_DATADIR and ${RUNE_DATADIR} name the
+// data directory in the process environment, so a package can name the
+// images it ships; while that is unset they are left as written.
 func ValidateURI(uri string) error {
 	_, err := parseURI(uri)
 	return err
@@ -188,6 +192,9 @@ func newComponent(
 }
 
 func parseURI(raw string) (*url.URL, error) {
+	if len(raw) >= len("file:") && strings.EqualFold(raw[:len("file:")], "file:") {
+		raw = hostenv.ExpandDataDir(raw, os.Getenv(hostenv.DataDirVar))
+	}
 	u, err := url.Parse(raw)
 	if err != nil {
 		return nil, fmt.Errorf("imageuri: %w", err)
