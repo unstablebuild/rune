@@ -101,6 +101,9 @@ var (
 	flagTUI      = flag.Bool("tui", false, "Run Rune in TUI mode")
 	flagHeadless = flag.Bool("headless", false,
 		"Run Rune as a headless network node, with no editor UI")
+	flagControlURL = flag.String("control-url", "",
+		"With --headless, join your own Tailscale or Headscale tailnet at "+
+			"this coordination server URL instead of Rune's network")
 
 	// marked hidden
 	flagWorkspaceServer = flag.StringP("workspace-server", "x", "",
@@ -424,6 +427,7 @@ var headlessFlags = map[string]bool{
 	"rune-grpc-insecure":      true,
 	"rune-release-collection": true,
 	"rune-website-address":    true,
+	"control-url":             true,
 }
 
 // checkModeArgs rejects the argument combinations the mode dispatch in
@@ -446,6 +450,9 @@ func checkModeArgs(
 			strings.Join(modes, " "))
 	}
 	if !headless {
+		if f := fs.Lookup("control-url"); f != nil && f.Changed {
+			return fmt.Errorf("--control-url needs --headless")
+		}
 		return nil
 	}
 
@@ -632,7 +639,7 @@ func runTUI(
 	defer client.Close()
 
 	net := newNetwork(rootCfg, *flagDataPath, shellRCDir, newNetworkGate(client))
-	net.startAutoJoin()
+	net.start()
 	defer func() {
 		_ = net.Close()
 	}()
@@ -643,8 +650,8 @@ func runTUI(
 		sponsorsOption(),
 		ide.WithWatchedFilesChangeHook(client.RecordWatchedFilesChange),
 		ide.WithCommandDispatchHook(client.RecordCommand),
-		net.completerOption(),
 	)
+	opts = append(opts, net.completerOptions()...)
 
 	i, err := ide.New(*flagWorkspace, *flagConfigPath,
 		*flagDataPath, trust, storage, opts...)

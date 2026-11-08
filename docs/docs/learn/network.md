@@ -339,6 +339,10 @@ once open. They differ in what they need from you:
 Use `ssh://` for machines that are not yours, or that do not run Rune.
 Use `rune://` for your own machines.
 
+If your machines are already on a Tailscale network, Rune also opens
+workspaces through it, with no Rune account: see
+[Tailscale](./tailscale.md).
+
 ## Troubleshooting
 
 **"The network links the machines you sign in on..."** No account is

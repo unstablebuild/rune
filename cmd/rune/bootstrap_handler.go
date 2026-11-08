@@ -178,7 +178,7 @@ func newBootstrapHandler(
 	if isBootstrapped(dataDir) {
 		client, releaseManager := newAPIClient(bh.storage, installBackupDir, rootCfg)
 		bh.network = newNetwork(rootCfg, dataDir, shellRCDir, newNetworkGate(client))
-		bh.network.startAutoJoin()
+		bh.network.start()
 		realIDE, err := bh.buildConfiguredIDE(client, releaseManager, false)
 		if err != nil {
 			_ = client.Close()
@@ -316,8 +316,8 @@ func (b *bootstrapHandler) buildConfiguredIDE(
 		sponsorsOption(),
 		ide.WithWatchedFilesChangeHook(client.RecordWatchedFilesChange),
 		ide.WithCommandDispatchHook(client.RecordCommand),
-		b.network.completerOption(),
 	)
+	opts = append(opts, b.network.completerOptions()...)
 	realIDE, err := ide.New(b.workspace, b.configPath, b.dataDir,
 		b.trust, b.storage, opts...)
 	if err != nil {
@@ -866,7 +866,7 @@ func (b *bootstrapHandler) performSwap() error {
 	// The network gates on the account, so it exists only from the
 	// moment the API client that vouches for it does.
 	b.network = newNetwork(b.rootCfg, b.dataDir, b.shellRCDir, newNetworkGate(client))
-	b.network.startAutoJoin()
+	b.network.start()
 	realIDE, err := b.buildConfiguredIDE(client, releaseManager, true)
 	if err != nil {
 		_ = client.Close()
