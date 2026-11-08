@@ -449,6 +449,10 @@ func (g gatedNetwork) Peers(ctx context.Context) ([]runenet.Peer, error) {
 	return g.n.node.Peers(ctx)
 }
 
+func (g gatedNetwork) Ping(ctx context.Context, machine string) (runenet.PingResult, error) {
+	return g.n.node.Ping(ctx, machine)
+}
+
 func (g gatedNetwork) Down(ctx context.Context) error {
 	return g.n.node.Down(ctx)
 }

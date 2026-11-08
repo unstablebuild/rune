@@ -203,14 +203,54 @@ func (c *countingCredentials) get(context.Context) (string, string, error) {
 
 func newTestNode(t *testing.T, creds *countingCredentials) *Node {
 	t.Helper()
+	return newHostTestNode(t, "workstation", creds)
+}
+
+func newHostTestNode(t *testing.T, hostname string, creds *countingCredentials) *Node {
+	t.Helper()
 	node := New(Config{
-		Hostname:    "workstation",
+		Hostname:    hostname,
 		Port:        DefaultPort,
 		Dir:         t.TempDir(),
 		Credentials: creds.get,
 	})
 	t.Cleanup(func() { _ = node.Close() })
 	return node
+}
+
+func TestPing(t *testing.T) {
+	controlURL := startTestControl(t)
+	creds := &countingCredentials{controlURL: controlURL}
+	laptop := newHostTestNode(t, "laptop", creds)
+	desktop := newHostTestNode(t, "desktop", creds)
+	ctx, cancel := context.WithTimeout(context.Background(), joinTimeout)
+	defer cancel()
+	require.NoError(t, laptop.Up(ctx))
+	require.NoError(t, desktop.Up(ctx))
+	st, err := desktop.Status(ctx)
+	require.NoError(t, err)
+
+	var got PingResult
+	require.Eventually(t, func() bool {
+		pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		got, err = laptop.Ping(pingCtx, "desktop")
+		return err == nil
+	}, joinTimeout, 100*time.Millisecond, "no pong: %v", err)
+	assert.Equal(t, "desktop", got.Peer)
+	assert.Equal(t, st.Addrs[0], got.Addr)
+	assert.Positive(t, got.Latency)
+	assert.True(t, got.Endpoint != "" || got.DERPRegion != "", "%+v", got)
+
+	_, err = laptop.Ping(ctx, "nope")
+	assert.ErrorIs(t, err, ErrPeerNotFound)
+}
+
+func TestPingResultDirect(t *testing.T) {
+	assert.True(t, PingResult{Endpoint: "192.168.1.5:41641"}.Direct())
+	assert.False(t, PingResult{DERPRegion: "fra"}.Direct())
+	assert.False(t, PingResult{Endpoint: "10.0.0.1:41641", PeerRelay: "10.0.0.2:7777:vni:1"}.Direct())
+	assert.False(t, PingResult{}.Direct())
 }
 
 // requireJoined checks the node reached the configured coordination

@@ -23,6 +23,7 @@
 package runenet
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -33,6 +34,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -43,6 +45,7 @@ import (
 	"tailscale.com/hostinfo"
 	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
+	"tailscale.com/tailcfg"
 	"tailscale.com/tsnet"
 	"unstable.build/rune/auth"
 	"unstable.build/rune/internal/debug"
@@ -105,6 +108,29 @@ type Peer struct {
 	OS string
 	// Online is whether the peer is currently reachable.
 	Online bool
+}
+
+// PingResult is how one ping reached a peer; see [Node.Ping].
+type PingResult struct {
+	// Peer is the name of the machine that answered, and Addr its mesh
+	// address.
+	Peer string
+	Addr netip.Addr
+	// Latency is the ping's round trip.
+	Latency time.Duration
+	// Endpoint is the address the ping reached the peer at directly.
+	Endpoint string
+	// DERPRegion names the relay region that carried the ping when the
+	// machines could not reach each other directly.
+	DERPRegion string
+	// PeerRelay is the peer relay that carried the ping, if one did.
+	PeerRelay string
+}
+
+// Direct reports whether the ping went straight to the peer, without a
+// relay in between.
+func (r PingResult) Direct() bool {
+	return r.Endpoint != "" && r.DERPRegion == "" && r.PeerRelay == ""
 }
 
 // Status summarizes the local node's membership in the mesh.
@@ -731,6 +757,43 @@ func (n *Node) Peers(ctx context.Context) ([]Peer, error) {
 	sort.Slice(ret, func(i, j int) bool {
 		return ret[i].Hostname < ret[j].Hostname
 	})
+	return ret, nil
+}
+
+// Ping sends one ping to host, named as for [Node.Dial], over the mesh's
+// own discovery protocol, as `tailscale ping` does. Each ping is also a
+// chance for the two machines to find a direct path while their
+// traffic is relayed. It fails with ctx's error when no reply comes
+// first.
+func (n *Node) Ping(ctx context.Context, host string) (PingResult, error) {
+	lc, err := n.client()
+	if err != nil {
+		return PingResult{}, err
+	}
+	addr, err := n.resolve(ctx, host)
+	if err != nil {
+		return PingResult{}, err
+	}
+	pr, err := lc.Ping(ctx, addr, tailcfg.PingDisco)
+	if err != nil {
+		if ctx.Err() != nil {
+			return PingResult{}, ctx.Err()
+		}
+		return PingResult{}, fmt.Errorf("ping %s: %w", host, err)
+	}
+	if pr.Err != "" {
+		return PingResult{}, fmt.Errorf("ping %s: %s", host, pr.Err)
+	}
+	ret := PingResult{
+		Peer:      cmp.Or(trimDNSName(pr.NodeName), host),
+		Addr:      addr,
+		Latency:   time.Duration(pr.LatencySeconds * float64(time.Second)),
+		Endpoint:  pr.Endpoint,
+		PeerRelay: pr.PeerRelay,
+	}
+	if pr.DERPRegionID != 0 {
+		ret.DERPRegion = cmp.Or(pr.DERPRegionCode, strconv.Itoa(pr.DERPRegionID))
+	}
 	return ret, nil
 }
 

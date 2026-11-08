@@ -67,6 +67,7 @@ run it as `network <subcommand>`, or submit a one-off from the
 | --- | --- |
 | `network status` | Show this machine's name, addresses, and sign-in state, including the last error and any pending authorization URL. |
 | `network peers` | List the other machines connected to the network, with the `rune://` address each one is reachable at. |
+| `network ping <machine>` | Ping another machine on the network and show how each ping got there, directly or through a relay, and how long it took. |
 | `network machines` | List every machine registered to your account, whether or not it is on the network right now, and which one you are on. |
 | `network remove <machine>` | Unregister a machine from your account, freeing the slot it held. |
 | `network up` | Join the network and wait until this machine is a member. |
@@ -180,6 +181,27 @@ workspaces you opened before, since those machines may be offline now or
 the paths may never have existed. An empty list after `rune://` means no
 other machine is online. Check `network status` on this machine and
 `network peers` for the state of the others.
+
+### Checking the connection to a machine
+
+`network ping` shows how this machine reaches another one:
+
+```
+network ping carbon
+```
+
+```
+pong from carbon (100.64.0.2) via DERP(fra) in 31ms
+pong from carbon (100.64.0.2) via 192.168.1.5:41641 in 2ms
+```
+
+Each line is one ping, with the way it went and its round trip.
+`via DERP(<region>)` means it went through a relay server, because the
+two machines could not reach each other directly yet. An address such as
+`192.168.1.5:41641` means it went straight to the other machine. The
+machines keep looking for a direct path, so the first pings are often
+relayed. `network ping` stops at the first direct reply, or after 10
+pings. Press `Tab` after `network ping` to complete the machine name.
 
 ### Installing packages on another machine
 
@@ -386,3 +408,9 @@ its `error` field if it did not.
 
 **Workspaces stopped working after `network down`.** Leaving the network
 disconnects open `rune://` workspaces. Run `network up` to rejoin.
+
+**Workspaces on another machine feel slow.** Run `network ping
+<machine>`. If it ends with **"direct connection not established"**, the
+traffic between the two machines goes through a relay server, which
+adds its round trip to everything you do there. A firewall that blocks
+UDP between the machines is the usual cause.
