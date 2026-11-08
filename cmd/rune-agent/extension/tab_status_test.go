@@ -304,6 +304,63 @@ func TestTabStatusReporterWithoutTab(t *testing.T) {
 	}, noti.captured())
 }
 
+func TestTabStatusReporterTabs(t *testing.T) {
+	tab, err := workspaceapi.ParseURI("rune-agent://model/rolling-fox?view=2")
+	require.NoError(t, err)
+	working := browserapi.TabStatus{State: browserapi.TabWorking, Progress: -1, Title: statusTitleSending}
+	clearAll := browserapi.TabStatus{State: browserapi.TabClear, Progress: -1}
+
+	t.Run("a tab takes over the inbox entry and gets what was reported", func(t *testing.T) {
+		r, wm, _ := newTestTabStatusReporter(t)
+		r.beginTurn()
+		r.attach(tab)
+		assert.Equal(t, []browserapi.TabStatus{clearAll, working, clearAll}, wm.tabReports(r.uri))
+		assert.Equal(t, []browserapi.TabStatus{working}, wm.tabReports(tab))
+
+		wm.reset()
+		r.detach(tab)
+		assert.Equal(t, []browserapi.TabStatus{working}, wm.tabReports(r.uri),
+			"the chat goes back to the inbox with its last tab")
+	})
+
+	t.Run("closing withdraws unfinished work", func(t *testing.T) {
+		r, wm, _ := newTestTabStatusReporter(t)
+		r.beginTurn()
+		r.childStart("call_abc", "explore")
+		wm.reset()
+		r.close()
+		assert.Equal(t, []browserapi.TabStatus{clearAll}, wm.tabReports(r.uri))
+
+		wm.reset()
+		r.setTitle(statusTitleReasoning)
+		r.childEnd("call_abc")
+		r.canceled()
+		r.detach(r.uri)
+		r.attach(tab)
+		assert.Empty(t, wm.tabStatuses(), "a closed reporter reports nothing more")
+	})
+
+	t.Run("closing keeps the outcome of a turn for the inbox", func(t *testing.T) {
+		r, wm, _ := newTestTabStatusReporter(t)
+		r.beginTurn()
+		r.done("Fixed it.")
+		wm.reset()
+		r.close()
+		r.detach(r.uri)
+		assert.Empty(t, wm.tabStatuses())
+	})
+
+	t.Run("closing clears the tabs shown, not the inbox", func(t *testing.T) {
+		r, wm, _ := newTestTabStatusReporter(t)
+		r.attach(tab)
+		r.beginTurn()
+		wm.reset()
+		r.close()
+		assert.Equal(t, []browserapi.TabStatus{clearAll}, wm.tabReports(tab))
+		assert.Empty(t, wm.tabReports(r.uri))
+	})
+}
+
 func TestTabStatusReporterTextLimits(t *testing.T) {
 	for _, tc := range []struct{ name, text, title, message string }{
 		{"CJK over bytes", strings.Repeat("界", 70), strings.Repeat("界", 63) + "…", strings.Repeat("界", 70)},

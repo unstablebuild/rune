@@ -399,8 +399,13 @@ err := wm.SetTabStatus(uri, browserapi.TabStatus{
   one, or carries a control character, fails with an `InvalidArgument` error.
 - `TabDone`, `TabError` and `TabIdle` clear once you see the tab, and every
   record goes away when the tab closes.
+- A report for a URI that no tab shows, such as that of a program that goes
+  on working once its tab closed, is listed in the status inbox as a terminal
+  that is not a tab is. Showing it from the inbox opens the URI again, in a
+  tab, through the extension's resource opener.
 
-Rune Agent reports its chats this way.
+Rune Agent reports its chats this way, including those that keep running
+once their tab closes.
 
 ## Configuration
 

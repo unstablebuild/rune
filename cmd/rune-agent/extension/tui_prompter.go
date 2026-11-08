@@ -24,8 +24,9 @@ import (
 	"unstable.build/rune/cmd/rune-agent/dialogue/dialoguetui"
 )
 
-// tuiPrompter bridges agent.Prompter to the dialoguetui event channel
-// so prompts surface as inline selection UI in the chat tab.
+// tuiPrompter bridges agent.Prompter to the dialoguetui event channel,
+// or to the chat's session, so prompts surface as inline selection UI
+// in the chat tab.
 type tuiPrompter struct {
 	tx chan<- dialoguetui.MessageEvent
 	// chat is the chat the prompt belongs to, whose bar reports
@@ -62,10 +63,9 @@ func (tp *tuiPrompter) Prompt(ctx context.Context, req agent.PromptRequest) (age
 		PromptMultiSelect: req.MultiSelect,
 		PromptResult:      resultCh,
 	}
-	select {
-	case tp.tx <- ev:
-	case <-ctx.Done():
-		return agent.PromptResponse{}, ctx.Err()
+	withdraw, err := tp.show(ctx, ev)
+	if err != nil {
+		return agent.PromptResponse{}, err
 	}
 	// Restoring the phase the prompt displaced, rather than assuming
 	// the turn was executing tools, is what lets prompts that overlap
@@ -102,10 +102,29 @@ func (tp *tuiPrompter) Prompt(ctx context.Context, req agent.PromptRequest) (age
 		}
 		return agent.PromptResponse{Values: vals, TextInput: textInput}, nil
 	case <-ctx.Done():
+		withdraw()
+		return agent.PromptResponse{}, ctx.Err()
+	}
+}
+
+// show asks ev and returns what takes it down unanswered.
+func (tp *tuiPrompter) show(ctx context.Context, ev dialoguetui.MessageEvent) (withdraw func(), err error) {
+	if s := tp.chat.session; s != nil {
+		id, ok := s.ask(ev)
+		if !ok {
+			return nil, errChatClosed
+		}
+		return func() { s.answer(id, nil) }, nil
+	}
+	select {
+	case tp.tx <- ev:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return func() {
 		select {
 		case tp.tx <- dialoguetui.MessageEvent{Type: dialoguetui.MessageEventPromptDismiss}:
 		default:
 		}
-		return agent.PromptResponse{}, ctx.Err()
-	}
+	}, nil
 }

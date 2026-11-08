@@ -94,7 +94,7 @@ func TestRouteChatCommandDelivers(t *testing.T) {
 
 			ch := make(chan dialoguetui.MessageEvent, 1)
 			h := &aiEditorHandler{ctx: ctx}
-			h.openChatTx.Store("rolling-fox", (chan<- dialoguetui.MessageEvent)(ch))
+			h.focusedViews.Store("rolling-fox", channelSender(ch))
 
 			cmd := textapi.Command{
 				Name: tc.command,
@@ -131,8 +131,7 @@ func TestRouteChatCommandErrors(t *testing.T) {
 	require.Error(t, err)
 
 	// skill without a name.
-	h.openChatTx.Store("rolling-fox",
-		(chan<- dialoguetui.MessageEvent)(make(chan dialoguetui.MessageEvent, 1)))
+	h.focusedViews.Store("rolling-fox", channelSender(make(chan dialoguetui.MessageEvent, 1)))
 	err = h.routeChatCommand(textapi.Command{
 		Name: commandSkill,
 		URI:  mustURI(t, "rune-agent://openai_gpt-5/rolling-fox"),

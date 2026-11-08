@@ -60,8 +60,10 @@ var (
 			Summary: "Open a new conversation tab with your AI assistant. " +
 				"If no dialogue ID is provided, a new conversation is started. " +
 				"If no model is provided, the default model configured via extension " +
-				"configuration is used.",
-			Synopsis: "[<dialogue_id> [<model>]]",
+				"configuration is used. A conversation that is still running keeps " +
+				"its model, and shows the tab that shows it already; --new opens " +
+				"another tab that shows it too.",
+			Synopsis: "[--new] [<dialogue_id> [<model>]]",
 		},
 		{
 			Name: commandModel,
@@ -138,6 +140,19 @@ var (
 				"with its definition, references and documentation to the last " +
 				"focused agent chat.",
 			Synopsis: "[symbol]",
+		},
+		{
+			Name: commandAttach,
+			Summary: "Open another tab on a running agent chat, such as one " +
+				"whose tab was closed while it worked. Every tab on a chat " +
+				"shows the same conversation.",
+			Synopsis: "<dialogue_id>",
+		},
+		{
+			Name: commandClose,
+			Summary: "End a running agent chat in every tab on it, stopping " +
+				"its turn. Without a dialogue ID, the focused agent chat.",
+			Synopsis: "[<dialogue_id>]",
 		},
 	}
 	events = []textapi.EventType{

@@ -1791,6 +1791,60 @@ func TestWorkspaceTabManagerDropsClosedWorkspaceStatus(t *testing.T) {
 	}
 }
 
+func TestStatusInboxReopensExtensionProgramWithoutTab(t *testing.T) {
+	runner := newWaitReadyRunner()
+	close(runner.ready)
+	m := newTestWorkspaceManagerHandlerWithRunner(t, defaultConfigWithWrap(false), t.TempDir(), runner)
+	t.Cleanup(func() { _ = m.Close() })
+	m.quiesce()
+	content := browsertest.NewTestHandler()
+	opener := &recordingOpener{h: content}
+	opener.register(t, m)
+	view, err := workspaceapi.ParseURI("fake://host/chat")
+	require.NoError(t, err)
+	other, err := workspaceapi.ParseURI("fake://host/chat?view=2")
+	require.NoError(t, err)
+
+	m.mu.Lock()
+	m.Resize(80, 24)
+	ws := m.workspaces[m.focus].uri
+	e := m.exHandler(m.focusHandler())
+	b := statusInboxBrowser{Browser: e.Browser(), tm: e.tabAliases.TabManager}
+	_, err = e.comp.Tab(other, 'x', "chat", browsertest.NewTestHandler())
+	require.NoError(t, err)
+	// As an extension whose program goes on working once its tab closed.
+	require.NoError(t, b.SetTabStatus(view, programstatus.Report{
+		State: programstatus.Working, Progress: -1, App: "agent", Title: "Running tools",
+	}))
+	m.mu.Unlock()
+	m.quiesce()
+
+	m.mu.Lock()
+	items := m.status.Items()
+	require.Len(t, items, 1, "the program is listed without a tab")
+	assert.Equal(t, view.String(), items[0].URI.String())
+	require.NoError(t, m.focusStatusEntry(ws, view))
+	m.mu.Unlock()
+
+	require.Eventually(t, func() bool {
+		m.quiesce()
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		tab, ok := e.comp.Browser().Tab(view)
+		return ok && tab.Handler() == content
+	}, 5*time.Second, 10*time.Millisecond, "the inbox must open the program in a tab")
+	assert.Equal(t, []string{view.String()}, opener.snapshot())
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	focused, ok := e.comp.FocusTab()
+	require.True(t, ok)
+	assert.Equal(t, view.String(), focused.URI().String(), "the program's tab is shown, not another view's")
+	status, ok := m.status.Status(ws, view)
+	require.True(t, ok)
+	assert.Equal(t, programstatus.Working, status.State, "the tab takes over what the program reported")
+}
+
 func TestCommandProgramStatusFocusesEntry(t *testing.T) {
 	m, slot := newActivityTestManager(t, defaultConfigWithWrap(false))
 	t.Cleanup(func() { _ = m.Close() })
