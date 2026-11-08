@@ -698,8 +698,10 @@ func TestStatusBarRestyle(t *testing.T) {
 				assert.Zero(t, f.streams.Load())
 				styles.Restyle(restyleStyle(t, `{{ .Language }}`), nil)
 				styles.Restyle(restyleStyle(t, `[{{ .Language }}]`), nil)
-				assert.Equal(t, int32(1), f.streams.Load())
 				f.sendSyntax(t, syntax.State{LangID: "GO"}, "[GO]")
+				// The bar opens the stream from a goroutine; a state only
+				// reaches it once the stream is open.
+				assert.Equal(t, int32(1), f.streams.Load())
 			},
 		},
 		{
@@ -708,8 +710,8 @@ func TestStatusBarRestyle(t *testing.T) {
 			run: func(t *testing.T, styles *text.StatusBarStyles, f *restyleBar) {
 				styles.Restyle(restyleStyle(t, `{{ .Status }}`), nil)
 				styles.Restyle(restyleStyle(t, `[{{ .Language }}]`), nil)
-				assert.Equal(t, int32(1), f.streams.Load())
 				f.sendSyntax(t, syntax.State{LangID: "GO"}, "[GO]")
+				assert.Equal(t, int32(1), f.streams.Load())
 			},
 		},
 		{
