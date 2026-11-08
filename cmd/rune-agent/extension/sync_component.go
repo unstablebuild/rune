@@ -93,6 +93,14 @@ func (s syncComponent) setInputBoxColors(cfg dialoguetui.ComponentConfig) {
 	s.comp.SetInputBoxColors(cfg.InputBox.FrameAttr, cfg.InputBox.ContentAttr, cfg.InputBackgroundColor)
 }
 
+// addWarning shows text as an inline warning in the chat. The caller
+// must interrupt the host for it to be drawn.
+func (s syncComponent) addWarning(text string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.comp.AddWarningMessage(text)
+}
+
 // swapPhase reports a new status bar phase and returns the one it
 // replaced, so a caller that owns the bar for the length of an
 // operation can hand it back to whatever was running before.

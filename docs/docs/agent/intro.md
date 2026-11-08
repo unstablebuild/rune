@@ -110,7 +110,7 @@ everything it offers. The most useful subcommands:
 | `agent chats clear <id>` | Clear a conversation (its contents are archived). |
 | `agent skills ...` | Inspect and manage skills (see above). |
 | `agent tools` | List the tools the agent can use. |
-| `agent mcp` | Show MCP server status and tool stats. |
+| `agent mcp ...` | Show MCP server status, and sign in to, trust or reconnect servers (see [MCP servers](./mcp.md#commands)). |
 | `agent config` | Show the current configuration. |
 
 ## Focused chat commands
@@ -275,10 +275,13 @@ instead.
 
 ## Connecting external tools (MCP)
 
-Rune Agent is an MCP (Model Context Protocol) client. Declare external
-MCP servers in an `.mcp.json` file and the agent connects to them,
-discovers their tools, and makes them available in chat, extending what
-it can do with third-party integrations.
+Rune Agent is an MCP (Model Context Protocol) client. Declare MCP servers
+in your project's `.mcp.json` or in your Rune config, and the agent
+connects to them and adds their tools to every chat. Local servers run as
+a command on the workspace host; remote servers are reached over HTTP,
+with a browser sign-in when they need one. See
+[MCP servers](./mcp.md) for the configuration, trust prompts, sign-in,
+and the `agent mcp` commands.
 
 ## Project instructions
 

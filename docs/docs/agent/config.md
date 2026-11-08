@@ -32,6 +32,7 @@ extensions:
 | `agents_file` | string | `AGENTS.md` | Name of the [project instructions](./intro.md#project-instructions) file to discover. The agent walks up from the workspace root looking for files with this name and injects their contents into the system prompt. Set it empty to disable discovery. |
 | `attribution.commit` | string | `Co-Authored-By: Rune Agent ({{provider}}/{{model}}) <agent@rune.build>` | Attribution text Rune Agent is instructed to append to commits it creates. `{{provider}}` and `{{model}}` expand to the resolved model. Set it to an empty string to disable commit attribution. |
 | `skills` | list | the four directories below | Ordered list of [skill directories](./skills.md#skill-directories) to search. Overrides the default set when present. |
+| `mcpServers` | map | none | [MCP servers](./mcp.md) to connect in every workspace, in the same format as `.mcp.json`. A workspace server with the same name takes precedence. |
 | `max_line_bytes` | integer | `500` | Truncation limit, in bytes, for a single line of `read_file` output. |
 | `max_tool_output_bytes` | integer | `40000` | Truncation limit, in bytes, for a single tool's output before it is trimmed in the transcript. |
 | `auto_compact_ratio` | float | `0.85` | Fraction of the model's context window that must be filled before the agent automatically compacts the conversation. |

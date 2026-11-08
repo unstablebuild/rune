@@ -21,14 +21,19 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
 	"unstable.build/rune/cmd/rune-agent/agent"
 )
 
@@ -41,6 +46,7 @@ type everythingServerTest struct {
 	wantContent      string
 	wantJSON         map[string]any
 	wantPropertyType map[string]string
+	wantImage        bool
 }
 
 var everythingServerTests = []everythingServerTest{
@@ -63,12 +69,15 @@ var everythingServerTests = []everythingServerTest{
 		tool:        "get-tiny-image",
 		arguments:   `{}`,
 		wantContent: "Here's the image you requested:\nThe image above is the MCP logo.",
+		wantImage:   true,
 	},
 	{
-		name:        "keeps text alongside resource links",
-		tool:        "get-resource-links",
-		arguments:   `{"count":2}`,
-		wantContent: "Here are 2 resource links to resources available in this server:",
+		name:      "lists resource links after their text",
+		tool:      "get-resource-links",
+		arguments: `{"count":2}`,
+		wantContent: "Here are 2 resource links to resources available in this server:\n" +
+			"[resource] Blob Resource 1: demo://resource/dynamic/blob/1\n" +
+			"[resource] Text Resource 2: demo://resource/dynamic/text/2",
 	},
 	{
 		name:      "returns backward-compatible structured content",
@@ -94,47 +103,111 @@ func TestEverythingServerE2E(t *testing.T) {
 	}
 	serverEntry := installEverythingServer(t)
 
-	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
-	defer cancel()
+	transports := []struct {
+		name   string
+		config func(t *testing.T) ServerConfig
+	}{
+		{
+			name: "stdio",
+			config: func(*testing.T) ServerConfig {
+				return ServerConfig{Type: "stdio", Command: node, Args: []string{serverEntry, "stdio"}}
+			},
+		},
+		{
+			name: "streamable HTTP",
+			config: func(t *testing.T) ServerConfig {
+				return ServerConfig{Type: "http", URL: startEverythingServer(t, node, serverEntry, "streamableHttp") + "/mcp"}
+			},
+		},
+		{
+			name: "SSE",
+			config: func(t *testing.T) ServerConfig {
+				return ServerConfig{Type: "sse", URL: startEverythingServer(t, node, serverEntry, "sse") + "/sse"}
+			},
+		},
+	}
+	for _, tr := range transports {
+		t.Run(tr.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+			defer cancel()
 
-	m := NewManager(newLocalExec(), t.TempDir())
-	t.Cleanup(func() { require.NoError(t, m.Close()) })
+			// The server must outlive the manager, which closes its
+			// session on cleanup.
+			cfg := tr.config(t)
+			m := NewManager(newLocalExec(), t.TempDir(), nil)
+			t.Cleanup(func() { require.NoError(t, m.Close()) })
 
-	tools, err := m.ConnectServer(ctx, "everything", ServerConfig{
-		Type:    "stdio",
-		Command: node,
-		Args:    []string{serverEntry, "stdio"},
-	})
-	require.NoError(t, err)
-	require.NotEmpty(t, tools)
+			tools, err := m.ConnectServer(ctx, "everything", cfg)
+			require.NoError(t, err)
+			require.NotEmpty(t, tools)
 
-	toolsByName := indexTools(tools)
-	server := requireEverythingServer(t, m, len(tools))
+			toolsByName := indexTools(tools)
+			server := requireEverythingServer(t, m, len(tools))
 
-	for _, tt := range everythingServerTests {
-		t.Run(tt.name, func(t *testing.T) {
-			toolName := "everything_" + tt.tool
-			tool := toolsByName[toolName]
-			require.NotNil(t, tool, "%s was not advertised; got %v", toolName, server.ToolNames)
+			for _, tt := range everythingServerTests {
+				t.Run(tt.name, func(t *testing.T) {
+					toolName := "mcp__everything__" + tt.tool
+					tool := toolsByName[toolName]
+					require.NotNil(t, tool, "%s was not advertised; got %v", toolName, server.ToolNames)
 
-			if tt.wantPropertyType != nil {
-				requireSchemaProperties(t, tool, tt.wantPropertyType)
-			}
+					if tt.wantPropertyType != nil {
+						requireSchemaProperties(t, tool, tt.wantPropertyType)
+					}
 
-			callCtx, callCancel := context.WithTimeout(ctx, 10*time.Second)
-			defer callCancel()
-			result := tool.Execute(callCtx, tt.arguments)
-			require.False(t, result.IsError, result.Content)
+					callCtx, callCancel := context.WithTimeout(ctx, 10*time.Second)
+					defer callCancel()
+					result := tool.Execute(callCtx, tt.arguments)
+					require.False(t, result.IsError, result.Content)
 
-			if tt.wantJSON != nil {
-				var got map[string]any
-				require.NoError(t, json.Unmarshal([]byte(result.Content), &got))
-				assert.Equal(t, tt.wantJSON, got)
-			} else {
-				assert.Equal(t, tt.wantContent, result.Content)
+					if tt.wantJSON != nil {
+						var got map[string]any
+						require.NoError(t, json.Unmarshal([]byte(result.Content), &got))
+						assert.Equal(t, tt.wantJSON, got)
+					} else {
+						assert.Equal(t, tt.wantContent, result.Content)
+					}
+					if tt.wantImage {
+						require.Len(t, result.MultiContent, 2)
+						assert.Equal(t, llmapi.ContentPartTypeText, result.MultiContent[0].Type)
+						assert.Equal(t, llmapi.ContentPartTypeImageURL, result.MultiContent[1].Type)
+						assert.True(t, strings.HasPrefix(result.MultiContent[1].ImageURL, "data:image/"))
+					}
+				})
 			}
 		})
 	}
+}
+
+// startEverythingServer runs the fixture as a remote server and returns
+// its base URL once it accepts connections.
+func startEverythingServer(t *testing.T, node, entry, mode string) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	port := strconv.Itoa(ln.Addr().(*net.TCPAddr).Port)
+	require.NoError(t, ln.Close())
+
+	cmd := exec.Command(node, entry, mode) // #nosec G204 -- test fixture
+	cmd.Env = append(os.Environ(), "PORT="+port)
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	require.NoError(t, cmd.Start())
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", "localhost:"+port, time.Second)
+		if err == nil {
+			_ = conn.Close()
+			return fmt.Sprintf("http://localhost:%s", port)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("%s server did not listen on port %s", mode, port)
+	return ""
 }
 
 func installEverythingServer(t *testing.T) string {

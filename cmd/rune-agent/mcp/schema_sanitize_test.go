@@ -157,9 +157,9 @@ func TestToolAdapterDefinition_SanitizesArrayMissingItems(t *testing.T) {
 		},
 	}
 	adapter := &toolAdapter{
-		serverName: "rune",
-		toolName:   mcpTool.Name,
-		mcpTool:    mcpTool,
+		entry:    &serverEntry{name: "rune"},
+		toolName: mcpTool.Name,
+		mcpTool:  mcpTool,
 	}
 
 	def := adapter.Definition()

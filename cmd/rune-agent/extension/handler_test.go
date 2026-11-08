@@ -26,6 +26,8 @@ import (
 	"image/color"
 	"image/png"
 	"io/fs"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -34,11 +36,11 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 	"unicode/utf8"
 
-	gomcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
@@ -2652,7 +2654,7 @@ func TestChatRepeatedReadRequestsReturnToolErrors(t *testing.T) {
 	}
 }
 
-func TestHandlerAddToolsIsConcurrentWithReaders(t *testing.T) {
+func TestHandlerReplaceMCPToolsIsConcurrentWithReaders(t *testing.T) {
 	t.Parallel()
 
 	h := &aiEditorHandler{
@@ -2662,11 +2664,11 @@ func TestHandlerAddToolsIsConcurrentWithReaders(t *testing.T) {
 	snapshot := h.tools()
 
 	var wg sync.WaitGroup
-	for range 8 {
+	for i := range 8 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			h.addTools(stubTool{})
+			h.replaceMCPTools("srv", []agent.Tool{stubTool{name: fmt.Sprint(i)}}, nil)
 		}()
 		wg.Add(1)
 		go func() {
@@ -2697,59 +2699,563 @@ func TestSubscribedChatReceivesLateMCPTools(t *testing.T) {
 	t.Parallel()
 
 	h := &aiEditorHandler{toolRegistry: agent.NewRegistry()}
-	h.addTools(stubTool{name: "early"})
+	h.replaceMCPTools("srv", []agent.Tool{stubTool{name: "early"}}, nil)
 
 	snapshot := h.tools()
 	chatReg := agent.NewRegistry(snapshot...)
 
-	h.addTools(stubTool{name: "mid"})
-	h.subscribeTools("chat-1", len(snapshot), chatReg)
+	h.replaceMCPTools("srv", []agent.Tool{stubTool{name: "mid"}}, nil)
+	h.subscribeTools("chat-1", snapshot, chatReg)
 	_, ok := chatReg.Get("mid", "")
 	assert.True(t, ok, "delta between snapshot and subscription must be applied")
 
-	h.addTools(stubTool{name: "late"})
+	h.replaceMCPTools("srv", []agent.Tool{stubTool{name: "late"}}, nil)
 	_, ok = chatReg.Get("late", "")
 	assert.True(t, ok, "subscribed chats must receive late tools")
 	_, ok = h.toolRegistry.Get("late", "")
 	assert.True(t, ok, "the persistent registry must receive late tools")
 
 	h.unsubscribeTools("chat-1")
-	h.addTools(stubTool{name: "after-close"})
+	h.replaceMCPTools("srv", []agent.Tool{stubTool{name: "after-close"}}, nil)
 	_, ok = chatReg.Get("after-close", "")
 	assert.False(t, ok, "closed chats must not be updated")
 }
 
-func TestWarnPendingMCPServersReportsConnecting(t *testing.T) {
+func TestSubscribedChatFollowsMCPToolRemovals(t *testing.T) {
 	t.Parallel()
 
-	release := make(chan struct{})
-	m := runemcp.NewManagerWithTransport(
-		func(string, runemcp.ServerConfig) (gomcp.Transport, error) {
-			<-release
-			return nil, errors.New("halted")
+	builtin := stubTool{name: "read_file"}
+	h := &aiEditorHandler{
+		baseTools:    []agent.Tool{builtin},
+		toolRegistry: agent.NewRegistry(builtin),
+	}
+	h.replaceMCPTools("srv", []agent.Tool{
+		stubTool{name: "mcp__srv__a"}, stubTool{name: "mcp__srv__b"},
+	}, nil)
+
+	snapshot := h.tools()
+	chatReg := agent.NewRegistry(snapshot...)
+	// Between the snapshot and the subscription a tool goes away and
+	// another one changes its definition.
+	h.replaceMCPTools("srv", []agent.Tool{
+		describedTool{stubTool{name: "mcp__srv__b"}, "v2"},
+	}, []string{"mcp__srv__a", "mcp__srv__b"})
+	h.subscribeTools("chat-1", snapshot, chatReg)
+
+	assert.Equal(t, []string{"mcp__srv__b", "read_file"}, registryToolNames(chatReg))
+	got, ok := chatReg.Get("mcp__srv__b", "")
+	require.True(t, ok)
+	assert.Equal(t, "v2", got.Definition().Function.Description,
+		"a redefined tool must replace the snapshot's copy")
+
+	h.replaceMCPTools("srv", nil, []string{"mcp__srv__b"})
+	assert.Equal(t, []string{"read_file"}, registryToolNames(chatReg),
+		"subscribed chats must lose removed tools")
+	assert.Equal(t, []string{"read_file"}, registryToolNames(h.toolRegistry))
+	assert.Len(t, h.tools(), 1)
+}
+
+// describedTool is a stubTool with a description, standing in for a
+// tool whose server changed its definition.
+type describedTool struct {
+	stubTool
+	description string
+}
+
+func (t describedTool) Definition() llmapi.Tool {
+	def := t.stubTool.Definition()
+	def.Function.Description = t.description
+	return def
+}
+
+func registryToolNames(r *agent.Registry) []string {
+	var names []string
+	for _, t := range r.AllTools() {
+		names = append(names, t.Function.Name)
+	}
+	return names
+}
+
+func TestMCPChatWarning(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		srv  runemcp.ServerInfo
+		want string
+	}{
+		{
+			name: "starting",
+			srv:  runemcp.ServerInfo{Name: "fs", Status: runemcp.StatusConnecting},
+			want: `MCP server "fs" is still starting. Its tools will join this conversation once connected.`,
+		},
+		{
+			name: "needs sign-in",
+			srv: runemcp.ServerInfo{Name: "linear", Status: runemcp.StatusNeedsAuth,
+				Error: "needs sign-in: run `agent mcp login linear`"},
+			want: "MCP server \"linear\" needs sign-in: run `agent mcp login linear`. " +
+				"Its tools will join this conversation once you sign in.",
+		},
+		{
+			name: "needs a wider sign-in",
+			srv: runemcp.ServerInfo{Name: "linear", Status: runemcp.StatusNeedsAuth,
+				Error: "needs sign-in: run `agent mcp login linear` (the server requires scope \"write\")"},
+			want: "MCP server \"linear\" needs sign-in: run `agent mcp login linear` " +
+				"(the server requires scope \"write\"). Its tools will join this conversation once you sign in.",
+		},
+		{
+			name: "signed out",
+			srv:  runemcp.ServerInfo{Name: "linear", Status: runemcp.StatusNeedsAuth},
+			want: "MCP server \"linear\" needs sign-in: run `agent mcp login linear`. " +
+				"Its tools will join this conversation once you sign in.",
+		},
+		{
+			name: "failed",
+			srv:  runemcp.ServerInfo{Name: "fs", Status: runemcp.StatusError, Error: "exit status 1"},
+			want: "MCP server \"fs\" is unavailable: exit status 1\nRun `agent mcp reconnect fs` to try again.",
+		},
+		{
+			name: "not trusted",
+			srv: runemcp.ServerInfo{Name: "docs", Status: runemcp.StatusError, Blocked: true,
+				Error: "not trusted: run `agent mcp trust docs`"},
+			want: "MCP server \"docs\" is unavailable: not trusted: run `agent mcp trust docs`",
+		},
+		{name: "connected", srv: runemcp.ServerInfo{Name: "fs", Status: runemcp.StatusConnected}},
+		{name: "shut down", srv: runemcp.ServerInfo{Name: "fs", Status: runemcp.StatusDisconnected}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, mcpChatWarning(&tt.srv))
 		})
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		_, _ = m.ConnectServer(
-			context.Background(), "slow-srv", runemcp.ServerConfig{Command: "x"})
-	}()
-	t.Cleanup(func() { close(release); <-done })
-	require.Eventually(t, func() bool {
-		servers := m.Servers()
-		return len(servers) == 1 && servers[0].Status == runemcp.StatusConnecting
-	}, 5*time.Second, 10*time.Millisecond)
+	}
+}
 
-	h := &aiEditorHandler{mcpManager: m}
+// newMCPHandlerInEveryState returns a handler with one MCP server in
+// each state a chat is warned about, and one connected server. The
+// servers start before the handler so that, cleaning up in reverse, the
+// handler's sessions end before the servers stop.
+func newMCPHandlerInEveryState(t *testing.T) (*aiEditorHandler, *capturingNotifications) {
+	t.Helper()
+	mux, guard := signInMux(t)
+	signIn := serveMCP(t, mux, guard)
+	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "no MCP here", http.StatusBadRequest)
+	}))
+	t.Cleanup(broken.Close)
+	up := serveMCP(t, http.NewServeMux(), nil)
+	h, noti, _ := newMCPTestHandler(t, "file:///work/repo", nil)
+	ctx := context.Background()
+
+	h.mcpManager.Register("pending", runemcp.ServerConfig{URL: "https://pending.example.com/mcp"}, nil, nil)
+	h.mcpManager.Register("untrusted", runemcp.ServerConfig{URL: "https://mcp.example.com/mcp"}, nil,
+		errors.New("not trusted: run `agent mcp trust untrusted`"))
+	_, err := h.mcpManager.ConnectServer(ctx, "linear", runemcp.ServerConfig{URL: signIn + "/mcp"})
+	require.ErrorIs(t, err, runemcp.ErrNeedsAuth)
+	_, err = h.mcpManager.ConnectServer(ctx, "broken", runemcp.ServerConfig{URL: broken.URL + "/mcp"})
+	require.Error(t, err)
+	_, err = h.mcpManager.ConnectServer(ctx, "up", runemcp.ServerConfig{URL: up + "/mcp"})
+	require.NoError(t, err)
+	return h, noti
+}
+
+// openTestChat registers an open chat with h, as opening a chat tab does.
+func openTestChat(h *aiEditorHandler, id string) syncComponent {
+	sc := syncComponent{mu: new(sync.Mutex), comp: dialoguetui.NewComponent(dialoguetui.ComponentConfig{}), h: h}
+	h.openChats.Store(id, sc)
+	return sc
+}
+
+// chatText returns the words a chat shows.
+func chatText(t *testing.T, sc syncComponent) string {
+	t.Helper()
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	const width, height = 200, 60
+	sc.comp.Resize(width, height)
+	w := term.NewStringWriter(width, height)
+	sc.comp.Draw(w)
+	require.NoError(t, w.Flush())
+	return strings.Join(strings.Fields(w.String()), " ")
+}
+
+func TestWarnUnavailableMCPServers(t *testing.T) {
+	t.Parallel()
+
+	h, _ := newMCPHandlerInEveryState(t)
 	tx := make(chan dialoguetui.MessageEvent, 1)
-	h.warnPendingMCPServers(tx)
 
-	select {
-	case ev := <-tx:
-		assert.Equal(t, dialoguetui.MessageEventWarning, ev.Type)
-		assert.Contains(t, ev.Text, "slow-srv")
-	default:
-		t.Fatal("expected a pending-MCP warning event")
+	h.warnUnavailableMCPServers(tx)
+
+	require.Len(t, tx, 1, "every unavailable server is explained in one warning")
+	ev := <-tx
+	assert.Equal(t, dialoguetui.MessageEventWarning, ev.Type)
+	assert.Contains(t, ev.Text, `MCP server "pending" is still starting.`)
+	assert.Contains(t, ev.Text, "MCP server \"linear\" needs sign-in: run `agent mcp login linear`.")
+	assert.Contains(t, ev.Text, "MCP server \"untrusted\" is unavailable: not trusted: run `agent mcp trust untrusted`")
+	assert.Contains(t, ev.Text, "Run `agent mcp reconnect broken` to try again.")
+	assert.NotContains(t, ev.Text, `"up"`)
+}
+
+func TestWarnUnavailableMCPServersWithNoneUnavailable(t *testing.T) {
+	t.Parallel()
+
+	h, _, _ := newMCPTestHandler(t, "file:///work/repo", nil)
+	tx := make(chan dialoguetui.MessageEvent, 1)
+	h.warnUnavailableMCPServers(tx)
+	assert.Empty(t, tx)
+}
+
+func TestConnectMCPServersWarnsOpenChats(t *testing.T) {
+	t.Parallel()
+
+	mux, guard := signInMux(t)
+	signIn := serveMCP(t, mux, guard)
+	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "no MCP here", http.StatusBadRequest)
+	}))
+	t.Cleanup(broken.Close)
+	user, err := runemcp.ParseServers(map[string]any{
+		"linear": map[string]any{"type": "http", "url": signIn + "/mcp"},
+		"broken": map[string]any{"type": "http", "url": broken.URL + "/mcp"},
+		"up":     map[string]any{"type": "http", "url": serveMCP(t, http.NewServeMux(), nil) + "/mcp"},
+	})
+	require.NoError(t, err)
+	workspace, err := runemcp.ParseServers(map[string]any{
+		"untrusted": map[string]any{"type": "http", "url": "https://mcp.example.com/mcp"},
+	})
+	require.NoError(t, err)
+	servers := runemcp.Merge(user, workspace)
+	h, _, _ := newMCPTestHandler(t, "file:///work/repo", servers, 2)
+	var interrupts atomic.Int32
+	h.p = term.FuncInterrupter(func(context.Context) error {
+		interrupts.Add(1)
+		return nil
+	})
+	// Both chats open while the servers start, as chats restored at
+	// launch do; one closes before the servers settle.
+	open := openTestChat(h, "rolling-fox")
+	closed := openTestChat(h, "quiet-owl")
+	h.openChats.Delete("quiet-owl")
+
+	h.connectMCPServers(servers)
+
+	text := chatText(t, open)
+	assert.Contains(t, text, "MCP server \"linear\" needs sign-in: run `agent mcp login linear`.")
+	assert.Contains(t, text, "MCP server \"untrusted\" is unavailable: not trusted: run `agent mcp trust untrusted`")
+	assert.Contains(t, text, `MCP server "broken" is unavailable:`)
+	assert.Contains(t, text, "Run `agent mcp reconnect broken` to try again.")
+	assert.NotContains(t, text, `"up"`, "servers that connect bring tools, not warnings")
+	assert.NotContains(t, chatText(t, closed), "MCP server")
+	assert.Positive(t, interrupts.Load(), "the warnings are drawn")
+}
+
+func TestMCPServerLaterTroubleWarnsOpenChats(t *testing.T) {
+	t.Parallel()
+
+	h, noti := newMCPHandlerInEveryState(t)
+	chat := openTestChat(h, "rolling-fox")
+
+	h.mcpManager.OnNeedsAuth("linear")
+	h.mcpManager.OnServerExit("broken", "disconnected after 5 reconnect attempts: EOF")
+	h.warnChatsAboutMCPServer("pending")
+	h.warnChatsAboutMCPServer("up")
+
+	text := chatText(t, chat)
+	assert.Contains(t, text, "MCP server \"linear\" needs sign-in: run `agent mcp login linear`.")
+	assert.Contains(t, text, "Run `agent mcp reconnect broken` to try again.")
+	assert.NotContains(t, text, `"pending"`, "a server still starting settles in a later warning")
+	assert.NotContains(t, text, `"up"`)
+	assert.Contains(t, noteMessages(noti), "MCP server \"linear\" needs sign-in: run `agent mcp login linear`")
+	assert.Contains(t, noteMessages(noti), `MCP server "broken" disconnected after 5 reconnect attempts: EOF`)
+}
+
+func TestWarnChatsAboutMCPServerRacesChatEvents(t *testing.T) {
+	t.Parallel()
+
+	h, _, _ := newMCPTestHandler(t, "file:///work/repo", nil)
+	h.mcpManager.Register("untrusted", runemcp.ServerConfig{URL: "https://mcp.example.com/mcp"}, nil,
+		errors.New("not trusted: run `agent mcp trust untrusted`"))
+	chat := openTestChat(h, "rolling-fox")
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	_, tx, _ := dialoguetui.Handler(ctx, chat.mu, chat.comp, term.FuncInterrupter(func(context.Context) error {
+		return nil
+	}))
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go debug.CapturePanicReport(func() {
+		defer wg.Done()
+		for range 50 {
+			tx <- dialoguetui.MessageEvent{Type: dialoguetui.MessageEventWarning, Text: "from the agent"}
+		}
+	})
+	go debug.CapturePanicReport(func() {
+		defer wg.Done()
+		for range 50 {
+			h.warnChatsAboutMCPServer("untrusted")
+		}
+	})
+	wg.Wait()
+	close(tx)
+	assert.Contains(t, chatText(t, chat), `MCP server "untrusted" is unavailable`)
+}
+
+func TestConnectMCPServers(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		cwd     string
+		user    bool
+		answers []int
+		// want is the server's status after connecting, and wantNote and
+		// wantWarning parts of a notification and of a server warning.
+		want        runemcp.ServerStatus
+		wantTool    bool
+		wantNote    string
+		wantWarning string
+	}{
+		{
+			name:     "trusted workspace server",
+			cwd:      "file:///work/repo",
+			answers:  []int{0},
+			want:     runemcp.StatusConnected,
+			wantTool: true,
+			wantNote: `MCP server "docs" is up: 1 tools available`,
+		},
+		{
+			name:     "declined workspace server",
+			cwd:      "file:///work/repo",
+			answers:  []int{2},
+			want:     runemcp.StatusError,
+			wantNote: "MCP server \"docs\" is not connected: not trusted: run `agent mcp trust docs`",
+		},
+		{
+			name:        "loopback server of a remote workspace",
+			cwd:         "ssh://dev@build-box/work/repo",
+			user:        true,
+			want:        runemcp.StatusConnected,
+			wantTool:    true,
+			wantNote:    "which resolves on this machine, not the workspace host",
+			wantWarning: "resolves on this machine, not the workspace host",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			base := serveMCP(t, http.NewServeMux(), nil)
+			declared, err := runemcp.ParseServers(map[string]any{
+				"docs": map[string]any{"type": "http", "url": base + "/mcp"},
+			})
+			require.NoError(t, err)
+			servers := runemcp.Merge(nil, declared)
+			if tt.user {
+				servers = runemcp.Merge(declared, nil)
+			}
+			h, noti, _ := newMCPTestHandler(t, tt.cwd, servers, tt.answers...)
+
+			h.connectMCPServers(servers)
+
+			info := h.mcpManager.Servers()
+			require.Len(t, info, 1)
+			assert.Equal(t, tt.want, info[0].Status)
+			_, ok := h.toolRegistry.Get("mcp__docs__search", "")
+			assert.Equal(t, tt.wantTool, ok)
+			assert.Condition(t, func() bool {
+				for _, msg := range noteMessages(noti) {
+					if strings.Contains(msg, tt.wantNote) {
+						return true
+					}
+				}
+				return false
+			}, "notifications %q lack %q", noteMessages(noti), tt.wantNote)
+			if tt.wantWarning != "" {
+				require.Len(t, info[0].Warnings, 1)
+				assert.Contains(t, info[0].Warnings[0], tt.wantWarning)
+			}
+		})
+	}
+}
+
+// refusingExec records the commands it is asked to start, and starts
+// none.
+type refusingExec struct {
+	mu    sync.Mutex
+	calls []workspaceapi.Cmd
+}
+
+func (e *refusingExec) Start(_ context.Context, cmd workspaceapi.Cmd) (workspaceapi.Pid, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.calls = append(e.calls, cmd)
+	return 0, errors.New("refused")
+}
+
+func (*refusingExec) Signal(workspaceapi.Pid, syscall.Signal) error { return nil }
+
+func (*refusingExec) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
+}
+
+func (*refusingExec) Close() error { return nil }
+
+func (e *refusingExec) started() []workspaceapi.Cmd {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return slices.Clone(e.calls)
+}
+
+func TestConnectMCPServersAsksBeforeStartingWorkspaceCommands(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		user        bool
+		answers     []int
+		wantPrompts int
+		wantStart   string
+		wantError   string
+	}{
+		{
+			name:        "trusted",
+			answers:     []int{0},
+			wantPrompts: 1,
+			wantStart:   `MCP server "docs" from the workspace's .mcp.json`,
+		},
+		{
+			name:        "declined",
+			answers:     []int{2},
+			wantPrompts: 1,
+			wantError:   "not trusted: run `agent mcp trust docs`",
+		},
+		{
+			name:      "from the user's config",
+			user:      true,
+			wantStart: `MCP server "docs" from your Rune config`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			declared, err := runemcp.ParseServers(map[string]any{
+				"docs": map[string]any{"command": "docs-server", "args": []any{"--stdio"}},
+			})
+			require.NoError(t, err)
+			servers := runemcp.Merge(nil, declared)
+			if tt.user {
+				servers = runemcp.Merge(declared, nil)
+			}
+			h, _, prompter := newMCPTestHandler(t, "file:///work/repo", servers, tt.answers...)
+			exec := &refusingExec{}
+			require.NoError(t, h.mcpManager.Close())
+			h.mcpManager = runemcp.NewManager(exec, t.TempDir(), nil)
+			h.wireMCPManager()
+
+			h.connectMCPServers(servers)
+
+			assert.Equal(t, tt.wantPrompts, prompter.prompts())
+			started := exec.started()
+			if tt.wantStart == "" {
+				assert.Empty(t, started, "an untrusted command never reaches the executor")
+				assert.Equal(t, tt.wantError, h.mcpManager.Servers()[0].Error)
+				return
+			}
+			require.Len(t, started, 1)
+			assert.Equal(t, "docs-server", started[0].Path)
+			assert.Equal(t, tt.wantStart, started[0].Description)
+		})
+	}
+}
+
+func TestOpenURLRefusesNonWebSchemes(t *testing.T) {
+	t.Parallel()
+
+	opener := &signInOpener{errs: make(chan error, 1)}
+	h := &aiEditorHandler{o: opener}
+	err := h.openURL("file:///etc/passwd")
+	require.Error(t, err)
+	assert.Empty(t, opener.shown)
+}
+
+func TestLoadMCPServers(t *testing.T) {
+	t.Parallel()
+
+	userServers := map[string]any{
+		"docs":   map[string]any{"url": "https://user.example.com/mcp"},
+		"search": map[string]any{"url": "https://search.example.com/mcp"},
+	}
+	tests := []struct {
+		name    string
+		user    any
+		mcpJSON string
+		// want maps each server to its URL and whether the workspace
+		// declared it.
+		want     map[string]string
+		wantFrom map[string]bool
+		wantNote string
+	}{
+		{
+			name:     "workspace wins a name clash",
+			user:     userServers,
+			mcpJSON:  `{"mcpServers": {"docs": {"url": "https://workspace.example.com/mcp"}}}`,
+			want:     map[string]string{"docs": "https://workspace.example.com/mcp", "search": "https://search.example.com/mcp"},
+			wantFrom: map[string]bool{"docs": true, "search": false},
+		},
+		{
+			name:     "invalid .mcp.json keeps user servers",
+			user:     userServers,
+			mcpJSON:  `{"mcpServers": [`,
+			want:     map[string]string{"docs": "https://user.example.com/mcp", "search": "https://search.example.com/mcp"},
+			wantFrom: map[string]bool{"docs": false, "search": false},
+			wantNote: ".mcp.json: invalid config",
+		},
+		{
+			name:     "invalid user config keeps workspace servers",
+			user:     map[string]any{"docs": map[string]any{"url": 42}},
+			mcpJSON:  `{"mcpServers": {"docs": {"url": "https://workspace.example.com/mcp"}}}`,
+			want:     map[string]string{"docs": "https://workspace.example.com/mcp"},
+			wantFrom: map[string]bool{"docs": true},
+			wantNote: "mcpServers: invalid config",
+		},
+		{
+			name: "nothing configured",
+			want: map[string]string{},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			dir := t.TempDir()
+			if tt.mcpJSON != "" {
+				require.NoError(t, os.WriteFile(filepath.Join(dir, ".mcp.json"), []byte(tt.mcpJSON), 0o600))
+			}
+			raw := map[string]any{}
+			if tt.user != nil {
+				raw["mcpServers"] = tt.user
+			}
+			noti := &capturingNotifications{}
+
+			servers := loadMCPServers(testLocalFS{root: dir}, dir, config.MapConfig(raw), noti)
+
+			got := make(map[string]string, len(servers))
+			for name, cfg := range servers {
+				got[name] = cfg.URL
+				assert.Equal(t, tt.wantFrom[name], cfg.FromWorkspace(), name)
+			}
+			assert.Equal(t, tt.want, got)
+			notes := noteMessages(noti)
+			if tt.wantNote == "" {
+				assert.Empty(t, notes)
+			} else {
+				require.Len(t, notes, 1)
+				assert.Contains(t, notes[0], tt.wantNote)
+			}
+		})
 	}
 }
 
