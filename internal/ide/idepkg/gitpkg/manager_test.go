@@ -522,6 +522,28 @@ func TestGet(t *testing.T) {
 			release.Latest, &bufferProgressWriter{})
 		require.ErrorContains(t, err, "source entrypoint")
 	})
+	t.Run("extension config without a path installs", func(t *testing.T) {
+		base := t.TempDir()
+		cfg := "extensions:\n  rune-agent:\n    config:\n      status_bar:\n        enabled: true\n"
+		initFixtureRepo(t, filepath.Join(base, "github.com", "owner", "repo"),
+			map[string]fixtureFile{"config.yaml": {content: cfg}})
+		m := newFixtureManager(t, base)
+
+		_, err := m.Get(context.Background(), "github.com/owner/repo",
+			release.Latest, &bufferProgressWriter{})
+		require.NoError(t, err)
+	})
+	t.Run("empty extension path errors", func(t *testing.T) {
+		base := t.TempDir()
+		cfg := "extensions:\n  demo:\n    path: ''\n"
+		initFixtureRepo(t, filepath.Join(base, "github.com", "owner", "repo"),
+			map[string]fixtureFile{"config.yaml": {content: cfg}})
+		m := newFixtureManager(t, base)
+
+		_, err := m.Get(context.Background(), "github.com/owner/repo",
+			release.Latest, &bufferProgressWriter{})
+		require.ErrorContains(t, err, "path must not be empty")
+	})
 	t.Run("go entrypoint must be main.go", func(t *testing.T) {
 		base := t.TempDir()
 		cfg := "extensions:\n  demo:\n    path: $RUNE_DATADIR/lib/$RUNE_PKG_ID/other.go\n"

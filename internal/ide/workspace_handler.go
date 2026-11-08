@@ -1405,7 +1405,7 @@ func (h *workspaceManagerHandler) initExtensions(manager extension.Runner, cfg i
 	var wg sync.WaitGroup
 	userExtensions := cfg.extensions()
 
-	wg.Add(len(userExtensions) + len(h.builtinExtensions))
+	wg.Add(len(h.builtinExtensions))
 
 	for id, p := range h.builtinExtensions {
 		pconfig := p.Config
@@ -1425,6 +1425,10 @@ func (h *workspaceManagerHandler) initExtensions(manager extension.Runner, cfg i
 
 	for id, p := range userExtensions {
 		path, pconfig := extensionRunArgs(p)
+		if path == "" {
+			continue
+		}
+		wg.Add(1)
 		go debug.CapturePanicReport(func() {
 			defer wg.Done()
 			if err := startUserExtension(manager, id, path, pconfig); err != nil {
@@ -1436,6 +1440,8 @@ func (h *workspaceManagerHandler) initExtensions(manager extension.Runner, cfg i
 	wg.Wait()
 }
 
+// extensionRunArgs returns an empty path for an entry that only configures
+// an extension, which the package that installs it gives a path.
 func extensionRunArgs(p extensionConfig) (string, config.Config) {
 	path, _ := p.path()
 	pconfig, ok := p.config()
@@ -1475,6 +1481,9 @@ func (h *workspaceManagerHandler) startInstalledExtensions(ids []string) []strin
 	for _, id := range ids {
 		if p, ok := userExtensions[id]; ok {
 			path, pconfig := extensionRunArgs(p)
+			if path == "" {
+				continue
+			}
 			toStart = append(toStart, startArgs{id: id, path: path, pconfig: pconfig})
 		}
 	}
