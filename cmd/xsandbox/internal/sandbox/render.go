@@ -135,13 +135,31 @@ func (h *browserHost) sendKeys(sequence string) (handled, quit bool, err error) 
 	if err != nil {
 		return false, false, err
 	}
+	events := make([]term.Event, len(keys))
+	for i, key := range keys {
+		events[i] = term.Event{Ch: key.Ch, Mod: key.Mod, Key: key.Key, Type: term.EventKey}
+	}
+	handled, quit = h.sendEvents(events)
+	return handled, quit, nil
+}
+
+// selection returns the selection of the component, which is that of
+// the handler in focus.
+func (h *browserHost) selection() (string, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	for _, key := range keys {
-		ev := term.Event{Ch: key.Ch, Mod: key.Mod, Key: key.Key, Type: term.EventKey}
+	return h.comp.Selection()
+}
+
+// sendEvents delivers each event to the component, returning whether the
+// last was handled and whether it requested exit.
+func (h *browserHost) sendEvents(events []term.Event) (handled, quit bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, ev := range events {
 		quit, handled = h.comp.Handle(ev)
 	}
-	return handled, quit, nil
+	return handled, quit
 }
 
 // trimGrid removes trailing whitespace from each row and trailing
