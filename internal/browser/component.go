@@ -91,7 +91,7 @@ type Component struct {
 	// what gets installed in the frame union.
 	shadedTabs *thandler.ShadedTabs
 	wm         thandler.WindowManager
-	union      thandler.FrameUnion
+	union      handler.FrameUnion
 	width      int
 	height     int
 	nextSplit  browserapi.Orientation
@@ -253,7 +253,7 @@ func (c *Component) FrameGraphics() *tcomponent.FrameGraphics {
 // rebuilding and replaying everything stacked around the window
 // manager.
 func (c *Component) initUnion() {
-	c.union = thandler.FrameUnion{}
+	c.union = handler.FrameUnion{}
 	c.union.Init(&c.wm)
 
 	// make sure that frame union attrs are same as window manager attrs

@@ -207,7 +207,7 @@ type workspaceManagerHandler struct {
 	trustedWorkspaceConfigs map[string]struct{}
 	workspaceTrust          *workspaceTrust
 
-	union        handler.FrameUnion
+	union        handlerapi.FrameUnion
 	bar          handler.Tabs
 	shadedBar    *handler.ShadedTabs
 	barIdxToSlot []int
