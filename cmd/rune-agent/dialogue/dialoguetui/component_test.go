@@ -4992,3 +4992,64 @@ func TestComponentInputBoxFrameGraphics(t *testing.T) {
 		})
 	}
 }
+
+func TestComponentSetInputBoxColors(t *testing.T) {
+	const width, height = 24, 6
+	tests := []struct {
+		name           string
+		opened         ComponentConfig
+		frame, content term.Attributes
+		bg             term.Color
+		wantFrame      term.Attributes
+		wantInputBg    term.Color
+	}{
+		{
+			name:        "a new input background",
+			opened:      ComponentConfig{InputBackgroundColor: term.ColorGray},
+			frame:       term.Attributes{Fg: term.ColorAqua},
+			content:     term.Attributes{Fg: term.ColorOlive},
+			bg:          term.ColorRed,
+			wantFrame:   term.Attributes{Fg: term.ColorAqua, Bg: term.ColorRed},
+			wantInputBg: term.ColorRed,
+		},
+		{
+			name:        "an input background where there was none",
+			frame:       term.Attributes{Fg: term.ColorAqua, Bg: term.ColorNavy},
+			bg:          term.ColorBlue,
+			wantFrame:   term.Attributes{Fg: term.ColorAqua, Bg: term.ColorBlue},
+			wantInputBg: term.ColorBlue,
+		},
+		{
+			name: "no input background leaves the frame's",
+			opened: ComponentConfig{
+				InputBackgroundColor: term.ColorGray,
+				InputBox:             InputBoxConfig{FrameAttr: term.Attributes{Fg: term.ColorAqua}},
+			},
+			frame:       term.Attributes{Bg: term.ColorNavy},
+			wantFrame:   term.Attributes{Bg: term.ColorNavy},
+			wantInputBg: term.ColorDefault,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			comp := NewComponent(tt.opened)
+			t.Cleanup(func() { assert.NoError(t, comp.Close()) })
+			h, tx, _ := Handler(context.Background(), new(sync.Mutex), comp, term.NopInterrupter())
+			defer close(tx)
+			h.Resize(width, height)
+			typeText(h, "hi")
+
+			comp.SetInputBoxColors(tt.frame, tt.content, tt.bg)
+			w := term.NewStringWriter(width, height)
+			h.Draw(w)
+			pos := comp.InputPosition()
+			corner := w.Cells()[pos.Y*width+pos.X]
+			require.Equal(t, '┌', corner.Ch)
+			assert.Equal(t, tt.wantFrame, corner.Attributes(), "the frame")
+			typed := w.Cells()[(pos.Y+1)*width+pos.X+1]
+			require.Equal(t, 'h', typed.Ch)
+			assert.Equal(t, tt.wantInputBg, typed.Bg, "the input")
+			assert.Equal(t, tt.content, comp.cfg.InputBox.ContentAttr, "the feedback inputboxes")
+		})
+	}
+}

@@ -174,6 +174,58 @@ func TestReadStyle(t *testing.T) {
 	assert.Nil(t, frameImages, "a frame without storage draws no images")
 }
 
+func TestReadStyleInputBoxColors(t *testing.T) {
+	tests := []struct {
+		name        string
+		own         map[string]any
+		wantFrame   term.Attributes
+		wantContent term.Attributes
+		wantBg      term.Color
+	}{
+		{
+			name: "every key",
+			own: map[string]any{
+				"input_box_frame_attr":   map[string]any{"fg": "aqua"},
+				"input_box_attr":         map[string]any{"fg": "white", "bg": "red"},
+				"input_background_color": "blue",
+			},
+			wantFrame:   term.Attributes{Fg: term.ColorAqua},
+			wantContent: term.Attributes{Fg: term.ColorWhite, Bg: term.ColorRed},
+			wantBg:      term.ColorBlue,
+		},
+		{
+			name:        "the input box's background",
+			own:         map[string]any{"input_box_attr": map[string]any{"bg": "red"}},
+			wantContent: term.Attributes{Bg: term.ColorRed},
+			wantBg:      term.ColorRed,
+		},
+		{
+			name:        "over the background",
+			own:         map[string]any{"background_attr": map[string]any{"bg": "navy"}},
+			wantFrame:   term.Attributes{Bg: term.ColorNavy},
+			wantContent: term.Attributes{Bg: term.ColorNavy},
+		},
+		{name: "nothing configured", own: map[string]any{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultComponentConfig()
+			cfg.InputBox.FrameAttr = term.Attributes{Fg: term.ColorLime, Bg: term.ColorGray}
+			cfg.InputBox.ContentAttr = term.Attributes{Fg: term.ColorLime}
+			cfg.InputBackgroundColor = term.ColorGray
+			got, _ := ReadStyle(context.Background(), cfg, config.MapConfig(tt.own), config.NopConfig(), nopNotifications{})
+			assert.Equal(t, tt.wantFrame, got.InputBox.FrameAttr)
+			assert.Equal(t, tt.wantContent, got.InputBox.ContentAttr)
+			assert.Equal(t, tt.wantBg, got.InputBackgroundColor)
+
+			read := ReadConfig(config.MapConfig(tt.own), config.NopConfig(), clipboard.NewInMemory(), nopNotifications{})
+			assert.Equal(t, read.InputBox.FrameAttr, got.InputBox.FrameAttr, "as a chat opened with own")
+			assert.Equal(t, read.InputBox.ContentAttr, got.InputBox.ContentAttr, "as a chat opened with own")
+			assert.Equal(t, read.InputBackgroundColor, got.InputBackgroundColor, "as a chat opened with own")
+		})
+	}
+}
+
 func TestResolveInputBackgroundColor(t *testing.T) {
 	tests := []struct {
 		name string

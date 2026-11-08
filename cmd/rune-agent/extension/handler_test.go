@@ -3702,6 +3702,91 @@ func TestReloadStyleInputBoxFrame(t *testing.T) {
 	}
 }
 
+func TestReloadStyleInputBoxColors(t *testing.T) {
+	const width, height = 32, 6
+	host := func(own map[string]any) config.Config {
+		own["status_bar"] = map[string]any{"enabled": false}
+		return config.MapConfig(map[string]any{"extensions": map[string]any{
+			extensionID: map[string]any{"config": own},
+		}})
+	}
+	// colors draws h with "h" typed in its compose box and returns the
+	// background of the box's frame and of its input.
+	colors := func(t *testing.T, h tui.Handler) (frame, input term.Color) {
+		t.Helper()
+		h.Resize(width, height)
+		h.Handle(term.Event{Type: term.EventKey, Ch: 'h'})
+		w := term.NewStringWriter(width, height)
+		h.Draw(w)
+		var sawFrame, sawInput bool
+		for _, c := range w.Cells() {
+			switch c.Ch {
+			case '┌':
+				frame, sawFrame = c.Bg, true
+			case 'h':
+				input, sawInput = c.Bg, true
+			}
+		}
+		require.True(t, sawFrame && sawInput, "the compose box is drawn")
+		return frame, input
+	}
+	tests := []struct {
+		name      string
+		reloaded  map[string]any
+		wantFrame term.Color
+		wantInput term.Color
+	}{
+		{
+			name:      "a new input background",
+			reloaded:  map[string]any{"input_background_color": "blue"},
+			wantFrame: term.ColorBlue,
+			wantInput: term.ColorBlue,
+		},
+		{
+			name:      "the input box's background",
+			reloaded:  map[string]any{"input_box_attr": map[string]any{"bg": "teal"}},
+			wantFrame: term.ColorTeal,
+			wantInput: term.ColorTeal,
+		},
+		{
+			name:      "no input background",
+			reloaded:  map[string]any{"input_box_frame_attr": map[string]any{"bg": "navy"}},
+			wantFrame: term.ColorNavy,
+			wantInput: term.ColorDefault,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := &aiEditorHandler{n: stubNotifications{}, p: term.NopInterrupter()}
+			h.cfg = dialoguetui.DefaultComponentConfig()
+			h.cfg.InputBackgroundColor = term.ColorRed
+			mu := new(sync.Mutex)
+			comp := dialoguetui.NewComponent(h.dialogueConfig(mu))
+			t.Cleanup(func() { assert.NoError(t, comp.Close()) })
+			dh, tx, _ := dialoguetui.Handler(context.Background(), mu, comp, h.p)
+			defer close(tx)
+			h.openChats.Store("open", syncComponent{mu: mu, comp: comp})
+			frame, input := colors(t, dh)
+			require.Equal(t, term.ColorRed, frame, "opened")
+			require.Equal(t, term.ColorRed, input, "opened")
+
+			require.NoError(t, h.reloadStyle(context.Background(), host(tt.reloaded)))
+			frame, input = colors(t, dh)
+			assert.Equal(t, tt.wantFrame, frame, "the open chat's frame")
+			assert.Equal(t, tt.wantInput, input, "the open chat's input")
+
+			nextMu := new(sync.Mutex)
+			next := dialoguetui.NewComponent(h.dialogueConfig(nextMu))
+			t.Cleanup(func() { assert.NoError(t, next.Close()) })
+			nextH, nextTx, _ := dialoguetui.Handler(context.Background(), nextMu, next, h.p)
+			defer close(nextTx)
+			frame, input = colors(t, nextH)
+			assert.Equal(t, tt.wantFrame, frame, "a chat opened next: frame")
+			assert.Equal(t, tt.wantInput, input, "a chat opened next: input")
+		})
+	}
+}
+
 // awaitChat redraws h on every interrupt until it draws expected with
 // the asciiart writer; the frame images load in the background.
 func awaitChat(

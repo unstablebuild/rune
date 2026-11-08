@@ -394,6 +394,22 @@ func (c *Component) SetInputBoxFrameCharSet(
 	}
 }
 
+// SetInputBoxColors draws the compose box frame with frame, and fills the
+// box with bg, from the next Draw on. A bg of term.ColorDefault fills the
+// frame with frame's background and leaves the input at the terminal
+// default. The prompt feedback inputboxes opened from then on are drawn
+// with content.
+func (c *Component) SetInputBoxColors(frame, content term.Attributes, bg term.Color) {
+	c.cfg.InputBox.FrameAttr = frame
+	c.cfg.InputBox.ContentAttr = content
+	c.cfg.InputBackgroundColor = bg
+	c.box.SetAttr(frame)
+	if bg != term.ColorDefault {
+		c.box.Bg = bg
+	}
+	c.input.SetDefaultAttributes(term.Attributes{Bg: bg})
+}
+
 // frameGraphics returns what draws the images of the compose box frame,
 // or nil when it names none or cannot fetch them.
 func (c *Component) frameGraphics() *tcomponent.FrameGraphics {

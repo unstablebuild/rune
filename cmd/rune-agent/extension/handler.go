@@ -599,8 +599,8 @@ type aiEditorHandler struct {
 	exit         atomic.Uint32
 	llmSvc       llmapi.Service
 	defaultModel string
-	// statusBarMu guards cfg.StatusBar and cfg.InputBox.FrameCharSet,
-	// which a config reload replaces.
+	// statusBarMu guards cfg.StatusBar, cfg.InputBox and
+	// cfg.InputBackgroundColor, which a config reload replaces.
 	statusBarMu         sync.Mutex
 	cfg                 dialoguetui.ComponentConfig
 	dialogueStore       dialoguemanager.Store
@@ -860,11 +860,12 @@ func (h *aiEditorHandler) watchReload(
 	}
 }
 
-// reloadStyle configures the status bar and the compose box frame of the
-// open chats, and of those opened from now on, with the status_bar block
-// and input_box_frame_charset host holds for this extension, reading
-// their images again. host is the config Rune serves; a host that could
-// not be fetched leaves the chats as they are.
+// reloadStyle configures the status bar, the compose box frame and the
+// compose box colours of the open chats, and of those opened from now on,
+// with the status_bar block, input_box_frame_charset and input box colours
+// host holds for this extension, reading their images again. host is the
+// config Rune serves; a host that could not be fetched leaves the chats as
+// they are.
 func (h *aiEditorHandler) reloadStyle(ctx context.Context, host config.Config) error {
 	own, err := ownConfig(host)
 	if err != nil {
@@ -878,6 +879,9 @@ func (h *aiEditorHandler) reloadStyle(ctx context.Context, host config.Config) e
 	h.statusBarMu.Lock()
 	h.cfg.StatusBar = cfg.StatusBar
 	h.cfg.InputBox.FrameCharSet = cfg.InputBox.FrameCharSet
+	h.cfg.InputBox.FrameAttr = cfg.InputBox.FrameAttr
+	h.cfg.InputBox.ContentAttr = cfg.InputBox.ContentAttr
+	h.cfg.InputBackgroundColor = cfg.InputBackgroundColor
 	h.statusBarMu.Unlock()
 	h.openChats.Range(func(_, v any) bool {
 		// Chats still opening hold no component yet; they read the
@@ -885,6 +889,7 @@ func (h *aiEditorHandler) reloadStyle(ctx context.Context, host config.Config) e
 		if sc, ok := v.(syncComponent); ok {
 			sc.setStatusBarConfig(cfg.StatusBar)
 			sc.setInputBoxFrameCharSet(cfg.InputBox.FrameCharSet, frameImages)
+			sc.setInputBoxColors(cfg)
 		}
 		return true
 	})

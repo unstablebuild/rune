@@ -128,9 +128,9 @@ func New(m Manager, cfg Config) *Handler {
 }
 
 // Restyle gives the open chats, and those opened from now on, the status
-// bar and compose box frame dialoguetui.ReadStyle reads from own and host.
-// It reads their images in the background; a Restyle still reading when
-// another is called applies nothing.
+// bar, compose box frame and compose box colours dialoguetui.ReadStyle
+// reads from own and host. It reads their images in the background; a
+// Restyle still reading when another is called applies nothing.
 func (h *Handler) Restyle(own, host config.Config) {
 	h.mu.Lock()
 	h.restyles++
@@ -145,13 +145,16 @@ func (h *Handler) Restyle(own, host config.Config) {
 		}
 		h.cfg.Chat.StatusBar = cfg.StatusBar
 		h.cfg.Chat.InputBox.FrameCharSet = cfg.InputBox.FrameCharSet
+		h.cfg.Chat.InputBox.FrameAttr = cfg.InputBox.FrameAttr
+		h.cfg.Chat.InputBox.ContentAttr = cfg.InputBox.ContentAttr
+		h.cfg.Chat.InputBackgroundColor = cfg.InputBackgroundColor
 		chats := make([]*chat, 0, len(h.tabs))
 		for _, t := range h.tabs {
 			chats = append(chats, t.chat)
 		}
 		h.mu.Unlock()
 		for _, c := range chats {
-			c.restyle(cfg.StatusBar, cfg.InputBox.FrameCharSet, frameImages)
+			c.restyle(cfg, frameImages)
 		}
 	})
 }

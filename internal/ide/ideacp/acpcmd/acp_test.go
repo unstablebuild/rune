@@ -322,20 +322,34 @@ func TestHandlerRestyle(t *testing.T) {
 		_ = w.Flush()
 		return w.String()
 	}
-	style := func(marker string) config.Config {
+	inputBg := func(tb *tab, bg term.Color) bool {
+		w := term.NewStringWriter(width, height)
+		tb.Draw(w)
+		for _, c := range w.Cells() {
+			if c.Ch == '┌' {
+				return c.Bg == bg
+			}
+		}
+		return false
+	}
+	style := func(marker, bg string) config.Config {
 		return config.MapConfig(map[string]any{
-			"status_bar": map[string]any{"layout": "{{ .Conversation }} " + marker},
+			"status_bar":             map[string]any{"layout": "{{ .Conversation }} " + marker},
+			"input_background_color": bg,
 		})
 	}
 	open := newChat("open", window(1))
 	closed := newChat("closed", window(2))
 	require.NoError(t, wm.closeTab(closed.uri))
 
-	h.Restyle(style("@@"), config.NopConfig())
-	h.Restyle(style("##"), config.NopConfig())
+	h.Restyle(style("@@", "red"), config.NopConfig())
+	h.Restyle(style("##", "blue"), config.NopConfig())
 	require.Eventually(t, func() bool { return strings.Contains(screen(open), "open ##") },
 		10*time.Second, 10*time.Millisecond, "the open chat takes the last style:\n%s", screen(open))
-	assert.Contains(t, screen(newChat("next", window(3))), "next ##", "a chat opened next")
+	assert.True(t, inputBg(open, term.ColorBlue), "the open chat's compose box")
+	next := newChat("next", window(3))
+	assert.Contains(t, screen(next), "next ##", "a chat opened next")
+	assert.True(t, inputBg(next, term.ColorBlue), "a chat opened next: compose box")
 }
 
 func TestHandlerClose(t *testing.T) {

@@ -452,18 +452,11 @@ func ReadConfig(
 	own, host config.Config, clip clipboard.Register, noti browserapi.Notifications,
 ) ComponentConfig {
 	ret := DefaultComponentConfig()
-	backgroundAttr, err := config.GetAttributes(own, "background_attr")
-	if err != nil {
-		if err != config.ErrNotFound {
-			slog.Warn("get 'background_attr' from extension config", "error", err)
-		}
-	}
+	backgroundAttr := readBackgroundAttr(own)
 	ret.ReceiveMessageStringConfig.BackgroundAttributes = backgroundAttr
 	ret.InputBox.PlaceholderConfig.BackgroundAttributes = backgroundAttr
 
-	ret.InputBox.FrameAttr.Bg = backgroundAttr.Bg
 	ret.InputBox.PlaceholderConfig.Bg = backgroundAttr.Bg
-	ret.InputBox.ContentAttr.Bg = backgroundAttr.Bg
 
 	ret.ReceiveMessageStringConfig.Bg = backgroundAttr.Bg
 
@@ -524,15 +517,7 @@ func ReadConfig(
 		ret.ReceiveMessageStringConfig.Attributes = recvMsgAttr
 	}
 
-	inputBoxAttr, err := config.GetAttributes(own, "input_box_attr")
-	if err != nil {
-		if err != config.ErrNotFound {
-			slog.Warn("get 'input_box_attr' from extension config", "error", err)
-		}
-	} else {
-		ret.InputBox.ContentAttr = inputBoxAttr
-	}
-	ret.InputBackgroundColor = resolveInputBackgroundColor(ret.InputBackgroundColor, own)
+	ret.InputBox.FrameAttr, ret.InputBox.ContentAttr, ret.InputBackgroundColor = inputBoxColors(own, backgroundAttr.Bg)
 	inputBoxPlaceholderAttr, err := config.GetAttributes(own, "input_box_placeholder_attr")
 	if err != nil {
 		if err != config.ErrNotFound {
@@ -542,25 +527,7 @@ func ReadConfig(
 		ret.InputBox.PlaceholderConfig.Attributes = inputBoxPlaceholderAttr
 	}
 
-	inputBoxFrameAttr, err := config.GetAttributes(own, "input_box_frame_attr")
-	if err != nil {
-		if err != config.ErrNotFound {
-			slog.Warn("get 'input_box_frame_attr' from extension config", "error", err)
-		}
-	} else {
-		ret.InputBox.FrameAttr = inputBoxFrameAttr
-	}
-
 	ret.InputBox.FrameCharSet = inputBoxFrameCharSet(own)
-
-	inputBgColor, err := own.GetColor("input_background_color")
-	if err != nil {
-		if err != config.ErrNotFound {
-			slog.Warn("get 'input_background_color' from extension config", "error", err)
-		}
-	} else {
-		ret.InputBackgroundColor = inputBgColor
-	}
 
 	if attr, err := config.GetAttributes(own, "completion_matched_text_attr"); err != nil {
 		if err != config.ErrNotFound {
@@ -622,12 +589,13 @@ func ReadConfig(
 	return ret
 }
 
-// ReadStyle returns cfg with the status bar and the compose box frame
-// ReadConfig reads from own and host, and the images of that frame. They
-// are what of a chat's look Component.SetStatusBarConfig and
-// Component.SetInputBoxFrameCharSet change while it is open. Their images
-// are read again rather than taken from the copies cfg's storage caches,
-// so an image overwritten in place shows; an image that does not load is
+// ReadStyle returns cfg with the status bar, the compose box frame and
+// the compose box colours ReadConfig reads from own and host, and the
+// images of that frame. They are what of a chat's look
+// Component.SetStatusBarConfig, Component.SetInputBoxFrameCharSet and
+// Component.SetInputBoxColors change while it is open. Their images are
+// read again rather than taken from the copies cfg's storage caches, so
+// an image overwritten in place shows; an image that does not load is
 // left out.
 func ReadStyle(
 	ctx context.Context, cfg ComponentConfig, own, host config.Config, noti browserapi.Notifications,
@@ -638,11 +606,50 @@ func ReadStyle(
 	bar.Images = refreshStatusBarImages(ctx, bar.Layout, bar.Storage)
 	cfg.StatusBar = bar
 	cfg.InputBox.FrameCharSet = inputBoxFrameCharSet(own)
+	cfg.InputBox.FrameAttr, cfg.InputBox.ContentAttr, cfg.InputBackgroundColor = inputBoxColors(
+		own, readBackgroundAttr(own).Bg)
 	var frameImages map[string]stdimage.Image
 	if cfg.InputBox.GraphicsStorage != nil {
 		frameImages = refreshFrameImages(ctx, cfg.InputBox.FrameCharSet.Graphics, cfg.InputBox.GraphicsStorage)
 	}
 	return cfg, frameImages
+}
+
+// readBackgroundAttr reads background_attr from own, which is zero when
+// own leaves it out or gets it wrong.
+func readBackgroundAttr(own config.Config) term.Attributes {
+	attr, err := config.GetAttributes(own, "background_attr")
+	if err != nil && !errors.Is(err, config.ErrNotFound) {
+		slog.Warn("get 'background_attr' from extension config", "error", err)
+	}
+	return attr
+}
+
+// inputBoxColors reads from own the attributes of the compose box frame
+// and of the prompt feedback inputbox, whose background is bg unless own
+// sets them, and the background of the compose input, which is
+// term.ColorDefault unless own sets it.
+func inputBoxColors(own config.Config, bg term.Color) (frame, content term.Attributes, input term.Color) {
+	def := DefaultComponentConfig()
+	frame, content = def.InputBox.FrameAttr, def.InputBox.ContentAttr
+	frame.Bg, content.Bg = bg, bg
+	if attr, err := config.GetAttributes(own, "input_box_attr"); err == nil {
+		content = attr
+	} else if !errors.Is(err, config.ErrNotFound) {
+		slog.Warn("get 'input_box_attr' from extension config", "error", err)
+	}
+	if attr, err := config.GetAttributes(own, "input_box_frame_attr"); err == nil {
+		frame = attr
+	} else if !errors.Is(err, config.ErrNotFound) {
+		slog.Warn("get 'input_box_frame_attr' from extension config", "error", err)
+	}
+	input = resolveInputBackgroundColor(def.InputBackgroundColor, own)
+	if col, err := own.GetColor("input_background_color"); err == nil {
+		input = col
+	} else if !errors.Is(err, config.ErrNotFound) {
+		slog.Warn("get 'input_background_color' from extension config", "error", err)
+	}
+	return frame, content, input
 }
 
 // inputBoxFrameCharSet reads input_box_frame_charset from own, whose

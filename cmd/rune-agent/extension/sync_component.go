@@ -85,6 +85,14 @@ func (s syncComponent) setInputBoxFrameCharSet(
 	s.comp.SetInputBoxFrameCharSet(cs, images)
 }
 
+// setInputBoxColors colours the chat's compose box with the colours cfg
+// gives it.
+func (s syncComponent) setInputBoxColors(cfg dialoguetui.ComponentConfig) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.comp.SetInputBoxColors(cfg.InputBox.FrameAttr, cfg.InputBox.ContentAttr, cfg.InputBackgroundColor)
+}
+
 // swapPhase reports a new status bar phase and returns the one it
 // replaced, so a caller that owns the bar for the length of an
 // operation can hand it back to whatever was running before.
