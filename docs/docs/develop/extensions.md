@@ -379,6 +379,7 @@ logs.
 ## See also
 
 - [SDK](./sdk/index.md): build your own extension.
+- [rune.js](./runejs.md): customize Rune with JavaScript that reloads on save.
 - [Packages](./packages.md): how an extension is bundled and distributed for `pkg install`.
 - [runectl](./runectl.md): the same integration surface from the console, no extension required.
 - [Console](../learn/console.md): the `extensions` and `authorizer` commands in context.
