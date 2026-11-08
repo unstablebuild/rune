@@ -35,13 +35,16 @@ import (
 )
 
 // fakeSession replays events, then ends with err unless it follows, in
-// which case it waits for more until its viewer leaves.
+// which case it waits for more until its viewer leaves. With a log, its
+// events are the log's instead, which the test appends to as the agent
+// would.
 type fakeSession struct {
 	info      acpapi.SessionInfo
 	events    []acpapi.Event
 	err       error
 	follow    bool
 	promptErr error
+	log       *acpapi.Log
 
 	mu        sync.Mutex
 	prompts   [][]acp.ContentBlock
@@ -65,6 +68,9 @@ func newFakeSession(events ...acpapi.Event) *fakeSession {
 func (s *fakeSession) Info() acpapi.SessionInfo { return s.info }
 
 func (s *fakeSession) Events() iterator.Iterator[acpapi.Event] {
+	if s.log != nil {
+		return s.log.Events()
+	}
 	return &fakeEvents{s: s}
 }
 
@@ -100,6 +106,9 @@ func (s *fakeSession) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.closed = true
+	if s.log != nil {
+		s.log.Close(nil)
+	}
 	return nil
 }
 
@@ -122,8 +131,9 @@ func (s *fakeSession) snapshot() sessionCalls {
 }
 
 type fakeEvents struct {
-	s *fakeSession
-	i int
+	s   *fakeSession
+	i   int
+	err error
 }
 
 func (it *fakeEvents) Next(ctx context.Context) (acpapi.Event, bool) {
@@ -131,18 +141,15 @@ func (it *fakeEvents) Next(ctx context.Context) (acpapi.Event, bool) {
 		it.i++
 		return it.s.events[it.i-1], true
 	}
+	it.err = it.s.err
 	if it.s.follow {
 		<-ctx.Done()
+		it.err = ctx.Err()
 	}
 	return acpapi.Event{}, false
 }
 
-func (it *fakeEvents) Err() error {
-	if it.s.follow {
-		return nil
-	}
-	return it.s.err
-}
+func (it *fakeEvents) Err() error { return it.err }
 
 func (it *fakeEvents) Close() error { return nil }
 

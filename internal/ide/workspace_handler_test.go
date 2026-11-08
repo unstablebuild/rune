@@ -42,6 +42,7 @@ import (
 	"sync"
 	"testing"
 
+	acp "github.com/coder/acp-go-sdk"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	blueauth "github.com/unstablebuild/blue/auth"
@@ -68,6 +69,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"golang.org/x/oauth2"
 	"google.golang.org/grpc"
+	"unstable.build/rune/cmd/rune-agent/dialogue/dialoguetui"
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/browser/browsertest"
 	"unstable.build/rune/internal/cell"
@@ -83,6 +85,7 @@ import (
 	thandler "unstable.build/rune/internal/handler"
 	"unstable.build/rune/internal/handler/handlertest"
 	handlermarkdown "unstable.build/rune/internal/handler/markdown"
+	"unstable.build/rune/internal/ide/ideacp/acpcmd"
 	"unstable.build/rune/internal/ide/ideauthorizer"
 	"unstable.build/rune/internal/ide/idehistory"
 	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
@@ -2169,6 +2172,129 @@ type statusTestPluginHandler struct {
 }
 
 func (h *statusTestPluginHandler) StatusURI() workspaceapi.URI { return h.uri }
+
+func TestCommandProgramStatusListsACPSessions(t *testing.T) {
+	m, slot := newActivityTestManager(t, defaultConfigWithWrap(false))
+	t.Cleanup(func() { _ = m.Close() })
+	session := &statusTestACPSession{log: acpapi.NewLog()}
+	t.Cleanup(func() { session.log.Close(nil) })
+	require.NoError(t, session.log.Prompt(nil))
+	tabURI := mustURI(t, "acp://claude/brave-fox")
+	statusURI := mustURI(t, "acp://claude/brave-fox/session")
+	var e *ex
+	var ws workspaceapi.URI
+	m.locked(func() {
+		w := m.workspaces[slot]
+		e, ws = w.ex, w.uri
+		e.acpChats = acpcmd.New(statusTestACP{session}, acpcmd.Config{
+			WindowManager: newBrowserAdapter(e.Browser()),
+			Interrupter:   term.NopInterrupter(),
+			Root:          ws,
+			Chat:          dialoguetui.DefaultComponentConfig(),
+			Status:        e.tm,
+		})
+		require.NoError(t, e.acpChats.HandleCommand(context.Background(), textapi.Command{
+			Name: acpcmd.Name, Args: []string{"open", "brave-fox"},
+		}))
+		require.NoError(t, m.closeStatusSource(ws, tabURI), "its tab closes mid-turn")
+	})
+	listed := func() (idestatus.Item, bool) {
+		m.quiesce()
+		var item idestatus.Item
+		var ok bool
+		m.locked(func() {
+			i := slices.IndexFunc(m.status.Items(), func(it idestatus.Item) bool { return it.URI.Equal(statusURI) })
+			if ok = i >= 0; ok {
+				item = m.status.Items()[i]
+			}
+		})
+		return item, ok
+	}
+	require.Eventually(t, func() bool {
+		_, ok := listed()
+		return ok
+	}, 10*time.Second, 10*time.Millisecond, "the session runs on in the inbox")
+	item, _ := listed()
+	assert.Equal(t, programstatus.Working, item.Status.State)
+	assert.Equal(t, "brave-fox", item.App, "labelled by its name")
+
+	m.locked(func() {
+		require.NoError(t, m.focusStatusEntry(ws, statusURI))
+		tab, ok := e.comp.Browser().Tab(tabURI)
+		require.True(t, ok, "choosing it opens its chat")
+		win, shown := tab.Window()
+		require.True(t, shown)
+		assert.Equal(t, win.WindowID(), e.comp.Browser().Focus().WindowID())
+	})
+	require.Eventually(t, func() bool {
+		_, ok := listed()
+		return !ok
+	}, 10*time.Second, 10*time.Millisecond, "its chat shows it again")
+
+	m.locked(func() { require.NoError(t, m.closeStatusSource(ws, tabURI)) })
+	require.Eventually(t, func() bool {
+		_, ok := listed()
+		return ok
+	}, 10*time.Second, 10*time.Millisecond)
+	m.locked(func() { require.NoError(t, m.closeStatusSource(ws, statusURI)) })
+	require.Eventually(t, func() bool {
+		_, ok := listed()
+		return !ok && session.closed.Load()
+	}, 10*time.Second, 10*time.Millisecond, "closing it in the inbox ends the session")
+}
+
+// statusTestACP runs the one session brave-fox of agent claude.
+type statusTestACP struct{ s *statusTestACPSession }
+
+func (a statusTestACP) Agents(context.Context) sdkiterator.Iterator[acpapi.AgentInfo] {
+	return sdkiterator.FromSlice([]acpapi.AgentInfo{{Name: "claude", Running: true}})
+}
+
+func (a statusTestACP) NewSession(context.Context, acpapi.NewSessionRequest) (acpapi.Session, error) {
+	return nil, acpapi.ErrExists
+}
+
+func (a statusTestACP) Sessions(context.Context) sdkiterator.Iterator[acpapi.SessionInfo] {
+	return sdkiterator.FromSlice([]acpapi.SessionInfo{a.s.Info()})
+}
+
+func (a statusTestACP) OpenSession(_ context.Context, name string) (acpapi.Session, error) {
+	if name != "brave-fox" || a.s.closed.Load() {
+		return nil, acpapi.ErrNotFound
+	}
+	return a.s, nil
+}
+
+type statusTestACPSession struct {
+	log    *acpapi.Log
+	closed atomic.Bool
+}
+
+func (s *statusTestACPSession) Info() acpapi.SessionInfo {
+	return acpapi.SessionInfo{Name: "brave-fox", Agent: "claude", ID: "s1"}
+}
+
+func (s *statusTestACPSession) Events() sdkiterator.Iterator[acpapi.Event] { return s.log.Events() }
+
+func (s *statusTestACPSession) Prompt(_ context.Context, content []acp.ContentBlock) error {
+	return s.log.Prompt(content)
+}
+
+func (s *statusTestACPSession) Cancel(context.Context) error { return nil }
+
+func (s *statusTestACPSession) Respond(_ context.Context, id acpapi.PermissionID, o acp.RequestPermissionOutcome) error {
+	return s.log.Respond(id, o)
+}
+
+func (s *statusTestACPSession) SetConfigOption(context.Context, acp.SetSessionConfigOptionRequest) error {
+	return nil
+}
+
+func (s *statusTestACPSession) Close() error {
+	s.closed.Store(true)
+	s.log.Close(nil)
+	return nil
+}
 
 func TestCommandProgramStatusClosesPrograms(t *testing.T) {
 	type program struct {

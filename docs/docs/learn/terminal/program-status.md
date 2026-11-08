@@ -215,7 +215,9 @@ workspaces, most pressing first, then by workspace and tab. Each shows:
 A tab stays listed until you close it, even once you have seen what it
 reported: it then reads `idle`, followed by the `app` it last reported. A
 terminal that is not a tab leaves the list once it holds no record: once you
-have seen what it reported, or once it closes.
+have seen what it reported, or once it closes. An
+[ACP session](../acp.md#chat-with-an-agent) whose last tab closed mid-turn
+is listed under its name until a tab shows it again or it ends.
 
 When the programs don't all fit, the sidebar scrolls to keep the selected one
 in sight: moving past the last program shown scrolls down, and past the first
@@ -231,7 +233,7 @@ stays empty once you reach the last one, so the list doesn't shift.
 | Click | Select a program |
 | Mouse wheel over the sidebar | Scroll the programs |
 | `<enter>` | Switch to the program's workspace and show it |
-| `<delete>` / `<backspace>` | Close the program as `tabclose` would: a tab or window is closed, a task stopped, and the companion terminal hidden. A `working` or `blocked` program, or a file with unwritten changes, asks first |
+| `<delete>` / `<backspace>` | Close the program as `tabclose` would: a tab or window is closed, a task stopped, an ACP session ended, and the companion terminal hidden. A `working` or `blocked` program, or a file with unwritten changes, asks first |
 | `<esc>` / `q` / `<ctrl-c>` | Close the inbox |
 
 Tabs that never reported a status are not listed, and the inbox is not bound

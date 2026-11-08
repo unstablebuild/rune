@@ -2757,6 +2757,7 @@ func (h *workspaceManagerHandler) buildExtensions(
 		Parser:        parser,
 		OnLinkClick:   ex.onLinkClick,
 		Chat:          chat,
+		Status:        ex.tm,
 	})
 	if err := ex.editorObserver.SubscribeCommand(acpcmd.Manual(), ex.acpChats); err != nil {
 		log.Errorf("subscribe %s command: %v", acpcmd.Name, err)
@@ -4298,6 +4299,11 @@ func focusStatusSource(e *ex, uri workspaceapi.URI) error {
 		e.companionTerminalWin = nil
 		return e.toggleCompanionTerminal()
 	}
+	if e.acpChats != nil {
+		if _, err := e.acpChats.ShowStatus(uri); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -4475,6 +4481,11 @@ func (h *workspaceManagerHandler) closeStatusSource(ws, uri workspaceapi.URI) er
 	}
 	if _, ok := hiddenCompanionTerminal(e, uri); ok {
 		return nil
+	}
+	if e.acpChats != nil {
+		if ok, err := e.acpChats.CloseStatus(uri); ok {
+			return err
+		}
 	}
 	win, ok := statusWindowOf(e, uri)
 	if !ok {
