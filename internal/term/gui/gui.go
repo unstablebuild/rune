@@ -260,7 +260,7 @@ func New(handler tui.Handler, options ...Option) (*GUI, error) {
 		setAppIcon:       showAppIcon,
 	}
 	ret.input = newInput(ret.fontManager)
-	ret.mouse = newMouse(ret.fontManager)
+	ret.mouse = newMouse(ret.fontManager, ret.scheduleFrame)
 	ret.drag = newDragPoller(ret.mouse)
 	ret.pointer = newPointer()
 	ret.links = newLinkScanner(ret.pointer)
@@ -343,6 +343,7 @@ func (g *GUI) Close() error {
 		}
 		g.runAcceptedUserFuncs()
 		g.cancelCtx()
+		g.mouse.stopRepeatTimer()
 		g.cursorEffect.close()
 		if g.renderer != nil {
 			g.renderer.deallocate()
