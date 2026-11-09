@@ -73,6 +73,16 @@ func TestConfigRestyled(t *testing.T) {
 			Images:         PromptImages{Idle: PromptButtonImage{Middle: "file:///new.png"}},
 		},
 		Wallpaper: Wallpaper{BackgroundAttr: blue},
+		Tabs: TabStyle{
+			FocusTabAttr:          blue,
+			NonFocusTabAttr:       blue,
+			FocusTabIconAttr:      blue,
+			NonFocusTabIconAttr:   blue,
+			FocusTabHighlightAttr: blue,
+			FocusTabHighlightChar: '=',
+			Images:                PromptImages{Selected: PromptButtonImage{Middle: "file:///tab.png"}},
+			HighlightGraphics:     tcomponent.LineGraphics{Middle: "file:///highlight.png", Overlay: true},
+		},
 	}
 
 	want := c
@@ -96,6 +106,14 @@ func TestConfigRestyled(t *testing.T) {
 	want.PromptConfig.BackgroundAttr = blue
 	want.PromptConfig.Images = s.Prompt.Images
 	want.Wallpaper = s.Wallpaper
+	want.FocusTabAttr = blue
+	want.NonFocusTabAttr = blue
+	want.FocusTabIconAttr = blue
+	want.NonFocusTabIconAttr = blue
+	want.FocusTabHighlightAttr = blue
+	want.FocusTabHighlightChar = '='
+	want.TabImages = s.Tabs.Images
+	want.FocusTabHighlightGraphics = s.Tabs.HighlightGraphics
 
 	assert.Equal(t, want, c.Restyled(s))
 }

@@ -22,7 +22,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	stdimage "image"
 	"io"
 	"log/slog"
 	"maps"
@@ -31,6 +30,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"sort"
 	"strconv"
@@ -71,15 +71,10 @@ import (
 
 	runemcp "unstable.build/rune/cmd/rune-agent/mcp"
 	"unstable.build/rune/cmd/rune-agent/memory"
-	"unstable.build/rune/internal/component/imageuri"
 	"unstable.build/rune/internal/component/markdown"
-	"unstable.build/rune/internal/component/template"
 	"unstable.build/rune/internal/debug"
-	"unstable.build/rune/internal/extension/extutil"
 	"unstable.build/rune/internal/ide/vctrl"
 	"unstable.build/rune/internal/text"
-
-	tconfig "unstable.build/rune/internal/config"
 )
 
 const (
@@ -120,153 +115,6 @@ const (
 	dreamModelAlias   = "dream"
 )
 
-// defaultPinnedUserMsgMaxLines keeps the pinned message to a glimpse of
-// what was asked, as the reply it heads is what is being read.
-const defaultPinnedUserMsgMaxLines = 2
-
-var (
-	defaultComponentCfg = dialoguetui.ComponentConfig{
-		MessagesRowConfig: component.SpanConfig{
-			PadHorizontal:    -80,
-			PadVertical:      2,
-			ContentAlignment: component.AlignmentCentered,
-		},
-		InputRowColumns: 10,
-		InputBox: dialoguetui.InputBoxConfig{
-			Placeholder: "Message your assistant...",
-			PlaceholderConfig: component.StringResponsiveConfig{
-				NoSplitWords: true,
-				StringConfig: component.StringConfig{
-					Alignment:            component.AlignmentLeft,
-					Attributes:           term.Attributes{Fg: term.ColorGray},
-					BackgroundAttributes: term.Attributes{},
-				},
-			},
-			ContentAttr: term.Attributes{},
-			FrameAttr:   term.Attributes{},
-		},
-		ReceiveMessageStringConfig: component.StringConfig{
-			Alignment:            component.AlignmentLeft,
-			Attributes:           term.Attributes{Fg: term.ColorSilver},
-			BackgroundAttributes: term.Attributes{},
-		},
-		ReceiveMessageSpanConfig: component.SpanConfig{
-			ContentAlignment: component.AlignmentLeft,
-		},
-		ReasoningStringConfig: component.StringConfig{
-			Alignment:            component.AlignmentLeft,
-			Attributes:           term.Attributes{Fg: term.GetColor("dimgray")},
-			BackgroundAttributes: term.Attributes{},
-		},
-		ReasoningSpanConfig: component.SpanConfig{
-			ContentAlignment: component.AlignmentLeft,
-		},
-		SendMessageStringConfig: component.StringConfig{
-			Alignment:            component.AlignmentLeft,
-			Attributes:           term.Attributes{},
-			BackgroundAttributes: term.Attributes{},
-		},
-		SendMessageSpanConfig: component.SpanConfig{
-			ContentAlignment: component.AlignmentLeft,
-		},
-		SendMessageBottomPad: 1,
-		SendMessageIcon:      dialoguetui.DefaultSendMessageIcon,
-		PinnedMessageMaxRows: defaultPinnedUserMsgMaxLines,
-		ToolCallStringConfig: component.StringConfig{
-			Alignment:            component.AlignmentLeft,
-			Attributes:           term.Attributes{Fg: term.ColorPurple},
-			BackgroundAttributes: term.Attributes{},
-		},
-		ToolCallSpanConfig: component.SpanConfig{
-			ContentAlignment: component.AlignmentLeft,
-		},
-		ToolCallArgsStringConfig: component.StringConfig{
-			Alignment:            component.AlignmentLeft,
-			Attributes:           term.Attributes{Fg: term.ColorGray},
-			BackgroundAttributes: term.Attributes{},
-		},
-		ToolResultStringConfig: component.StringConfig{
-			Alignment:            component.AlignmentLeft,
-			Attributes:           term.Attributes{Fg: term.ColorGray},
-			BackgroundAttributes: term.Attributes{},
-		},
-		ToolResultSpanConfig: component.SpanConfig{
-			ContentAlignment: component.AlignmentLeft,
-		},
-		ErrorStringConfig: component.StringConfig{
-			Alignment:            component.AlignmentLeft,
-			Attributes:           term.Attributes{Fg: term.ColorRed},
-			BackgroundAttributes: term.Attributes{},
-		},
-		ErrorSpanConfig: component.SpanConfig{
-			PadVertical:      1,
-			ContentAlignment: component.AlignmentLeft,
-		},
-		WarningStringConfig: component.StringConfig{
-			Alignment:            component.AlignmentLeft,
-			Attributes:           term.Attributes{Fg: term.ColorYellow},
-			BackgroundAttributes: term.Attributes{},
-		},
-		WarningSpanConfig: component.SpanConfig{
-			PadVertical:      1,
-			ContentAlignment: component.AlignmentLeft,
-		},
-		CommandOutputSpanConfig: component.SpanConfig{
-			PadVertical: 1,
-		},
-		ToolResultMaxLines: 5,
-		StartCollapsed:     true,
-		ReasoningAnnotationStringConfig: component.StringConfig{
-			Alignment:  component.AlignmentLeft,
-			Attributes: term.Attributes{Attrs: term.AttrDim},
-		},
-		MarkdownConfig: dialoguetui.DefaultMarkdownConfig(),
-		PromptToolCallStringConfig: component.StringConfig{
-			Alignment:            component.AlignmentLeft,
-			Attributes:           term.Attributes{Fg: term.ColorAqua},
-			BackgroundAttributes: term.Attributes{},
-		},
-		SelectionConfig: dialoguetui.SelectionConfig{
-			TitleStringConfig: component.StringConfig{
-				Alignment:  component.AlignmentLeft,
-				Attributes: term.Attributes{Fg: term.ColorSilver},
-			},
-			OptionStringConfig: component.StringConfig{
-				Alignment:  component.AlignmentLeft,
-				Attributes: term.Attributes{Fg: term.ColorSilver},
-			},
-			CursorStringConfig: component.StringConfig{
-				Alignment:  component.AlignmentLeft,
-				Attributes: term.Attributes{Attrs: term.AttrReverse},
-			},
-			HeaderStringConfig: component.StringConfig{
-				Alignment:  component.AlignmentLeft,
-				Attributes: term.Attributes{Fg: term.ColorYellow},
-			},
-			DescStringConfig: component.StringConfig{
-				Alignment:  component.AlignmentLeft,
-				Attributes: term.Attributes{Fg: term.GetColor("dimgray")},
-			},
-		},
-		// Mirrors the command prompt overlay shipped in cmd/rune/rune.star
-		// ("command.*_attr") rather than the library fallbacks, which the
-		// shipped config overrides.
-		CompletionMatchedTextAttr: term.Attributes{
-			Fg: term.ColorBlue, Attrs: term.AttrBold,
-		},
-		CompletionFocusElementAttr: term.Attributes{Fg: term.ColorPurple},
-		CompletionElementAttr:      term.Attributes{Attrs: term.AttrDim},
-		// Deliberately neutral rather than the command prompt's red: the
-		// shader bakes its blend into literal RGB inside this process,
-		// which has no access to the host's themed palette, so a hue would
-		// clash with themes that remap it.
-		CompletionRadarColor: term.GetColor("dimgray"),
-		InlineAttachmentAttr: term.Attributes{
-			Fg: term.ColorAqua, Attrs: term.AttrUnderline,
-		},
-	}
-)
-
 func registerOpenAITools(
 	registry *agent.Registry, fs workspaceapi.FileSystem, cwd workspaceapi.URI,
 	searcher searchapi.Searcher, tracker *agentools.FileTracker,
@@ -289,22 +137,37 @@ func defaultMarkdownConfig() *markdown.Config {
 	return &cfg
 }
 
-// loadMCPConfig reads the workspace .mcp.json. A missing or malformed
-// file simply means no MCP servers.
-func loadMCPConfig(fs workspaceapi.FileSystem, root string) (runemcp.Config, bool) {
-	data, err := readWorkspaceFile(fs, filepath.Join(root, ".mcp.json"))
-	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			slog.Warn("mcp: failed to read .mcp.json", "error", err)
+// loadMCPServers returns the MCP servers of the user configuration's
+// mcpServers merged with the ones the workspace .mcp.json declares.
+// Invalid configuration is reported through noti and contributes no
+// servers.
+func loadMCPServers(
+	fs workspaceapi.FileSystem, root string, pconfig config.Config,
+	noti browserapi.Notifications,
+) map[string]runemcp.ServerConfig {
+	var user map[string]runemcp.ServerConfig
+	if raw, err := pconfig.GetMap("mcpServers"); err == nil {
+		if user, err = runemcp.ParseServers(raw); err != nil {
+			_, _ = noti.Notify(browserapi.LevelWarn, "mcpServers: invalid config: %v", err)
 		}
-		return runemcp.Config{}, false
+	} else if !errors.Is(err, config.ErrNotFound) {
+		_, _ = noti.Notify(browserapi.LevelWarn, "mcpServers: invalid config: %v", err)
 	}
-	cfg, err := runemcp.LoadConfig(data)
-	if err != nil {
-		slog.Warn("mcp: failed to parse .mcp.json", "error", err)
-		return runemcp.Config{}, false
+
+	var workspace map[string]runemcp.ServerConfig
+	data, err := readWorkspaceFile(fs, filepath.Join(root, ".mcp.json"))
+	switch {
+	case err == nil:
+		cfg, err := runemcp.LoadConfig(data)
+		if err != nil {
+			_, _ = noti.Notify(browserapi.LevelWarn, ".mcp.json: invalid config: %v", err)
+			break
+		}
+		workspace = cfg.MCPServers
+	case !errors.Is(err, os.ErrNotExist):
+		_, _ = noti.Notify(browserapi.LevelWarn, "read .mcp.json: %v", err)
 	}
-	return cfg, len(cfg.MCPServers) > 0
+	return runemcp.Merge(user, workspace)
 }
 
 func defaultAgentsConfig(systemPrompt string) *agent.Cfg {
@@ -360,9 +223,6 @@ func newCommandEventHandler(
 	tools = append(tools, agentools.LSPTools(lsp, fs, parser, cwd, tracker)...)
 	tools = append(tools, agentools.SyntaxTools(parser, fs, cwd, tracker)...)
 
-	mcpManager := runemcp.NewManager(executor, cwd.Path())
-	mcpCfg, hasMCP := loadMCPConfig(fs, cwd.Path())
-
 	// Discover skills from config dirs.
 	var skillDirs []string
 	if dirs, err := pconfig.GetSlice("skills"); err == nil {
@@ -388,11 +248,16 @@ func newCommandEventHandler(
 	dialogueStore := dialoguemanager.NewStore(db, sessionsDir)
 	tools = append(tools, agentools.ConversationTools(dialogueStore, fs, sessionsDir)...)
 
+	mcpManager := runemcp.NewManager(executor, cwd.Path(),
+		runemcp.NewCredentialStore(w.DataDir(ctx), db))
+	mcpServers := loadMCPServers(fs, cwd.Path(), pconfig, w.Notifications(ctx))
+
 	ret = new(aiEditorHandler)
 	ret.ctx, ret.cancelCtx = context.WithCancel(context.Background())
 	ret.ed = ed
 	ret.config = cfg
 	ret.mcpManager = mcpManager
+	ret.mcpServers = mcpServers
 	ret.baseTools = tools
 	ret.toolRegistry = agent.NewRegistry(tools...)
 	ret.executor = executor
@@ -490,184 +355,13 @@ func newCommandEventHandler(
 	ret.hookRunner = hooks.NewRunner(hooksCfg, executor, noti, cwd.Path())
 
 	hostConfig := w.Config(ctx)
-	ret.cfg = defaultComponentCfg
+	ret.clip = text.NewSystemClipboard()
+	ret.cfg = dialoguetui.ReadConfig(pconfig, hostConfig, ret.clip, noti)
 	ret.cfg.MarkdownConfig.Parser = w.Parser(ctx)
-	backgroundAttr, err := config.GetAttributes(pconfig, "background_attr")
-	if err != nil {
-		if err != config.ErrNotFound {
-			slog.Warn("get 'background_attr' from extension config", "error", err)
-		}
-	}
-	ret.cfg.ReceiveMessageStringConfig.BackgroundAttributes = backgroundAttr
-	ret.cfg.InputBox.PlaceholderConfig.BackgroundAttributes = backgroundAttr
-
-	ret.cfg.InputBox.FrameAttr.Bg = backgroundAttr.Bg
-	ret.cfg.InputBox.PlaceholderConfig.Bg = backgroundAttr.Bg
-	ret.cfg.InputBox.ContentAttr.Bg = backgroundAttr.Bg
-
-	ret.cfg.ReceiveMessageStringConfig.Bg = backgroundAttr.Bg
-
-	sendMsgBackgroundAttr, err := config.GetAttributes(pconfig, "user_msg_background_attr")
-	if err != nil {
-		if err != config.ErrNotFound {
-			slog.Warn("get 'user_msg_background_attr' from extension config", "error", err)
-		}
-		sendMsgBackgroundAttr = term.Attributes{Bg: term.ColorGray}
-	}
-	ret.cfg.SendMessageStringConfig.BackgroundAttributes = sendMsgBackgroundAttr
-	ret.cfg.SendMessageStringConfig.Bg = sendMsgBackgroundAttr.Bg
-	ret.cfg.ReasoningStringConfig.BackgroundAttributes = backgroundAttr
-	ret.cfg.ReasoningStringConfig.Bg = backgroundAttr.Bg
-	ret.cfg.ToolCallStringConfig.BackgroundAttributes = backgroundAttr
-	ret.cfg.ToolCallStringConfig.Bg = backgroundAttr.Bg
-	ret.cfg.ToolCallArgsStringConfig.BackgroundAttributes = backgroundAttr
-	ret.cfg.ToolCallArgsStringConfig.Bg = backgroundAttr.Bg
-	ret.cfg.ToolResultStringConfig.BackgroundAttributes = backgroundAttr
-	ret.cfg.ToolResultStringConfig.Bg = backgroundAttr.Bg
-	ret.cfg.ReasoningAnnotationStringConfig.BackgroundAttributes = backgroundAttr
-	ret.cfg.ReasoningAnnotationStringConfig.Bg = backgroundAttr.Bg
-	ret.cfg.ErrorStringConfig.BackgroundAttributes = backgroundAttr
-	ret.cfg.ErrorStringConfig.Bg = backgroundAttr.Bg
-	ret.cfg.WarningStringConfig.BackgroundAttributes = backgroundAttr
-	ret.cfg.WarningStringConfig.Bg = backgroundAttr.Bg
-	ret.cfg.PromptToolCallStringConfig.BackgroundAttributes = backgroundAttr
-	ret.cfg.PromptToolCallStringConfig.Bg = backgroundAttr.Bg
-	ret.cfg.SelectionConfig.TitleStringConfig.BackgroundAttributes = backgroundAttr
-	ret.cfg.SelectionConfig.TitleStringConfig.Bg = backgroundAttr.Bg
-	ret.cfg.SelectionConfig.OptionStringConfig.BackgroundAttributes = backgroundAttr
-	ret.cfg.SelectionConfig.OptionStringConfig.Bg = backgroundAttr.Bg
-	ret.cfg.SelectionConfig.CursorStringConfig.BackgroundAttributes = backgroundAttr
-	ret.cfg.SelectionConfig.CursorStringConfig.Bg = backgroundAttr.Bg
-	ret.cfg.SelectionConfig.HeaderStringConfig.BackgroundAttributes = backgroundAttr
-	ret.cfg.SelectionConfig.HeaderStringConfig.Bg = backgroundAttr.Bg
-	ret.cfg.SelectionConfig.DescStringConfig.BackgroundAttributes = backgroundAttr
-	ret.cfg.SelectionConfig.DescStringConfig.Bg = backgroundAttr.Bg
-	ret.cfg.BackgroundColor = backgroundAttr.Bg
-	ret.backgroundAttr = backgroundAttr
-
-	sendMsgAttr, err := config.GetAttributes(pconfig, "user_msg_attr")
-	if err != nil {
-		if err != config.ErrNotFound {
-			slog.Warn("get 'user_msg_attr' from extension config", "error", err)
-		}
-	} else {
-		ret.cfg.SendMessageStringConfig.Attributes = sendMsgAttr
-	}
-	ret.cfg.PinnedMessageMaxRows = resolvePinnedUserMsgMaxLines(pconfig)
-	ret.cfg.MessagesRowConfig.PadHorizontal = resolveTranscriptHorizontalPadding(pconfig)
-	ret.cfg.SendMessageIcon = resolveUserMsgIcon(ret.cfg.SendMessageIcon, pconfig)
-	recvMsgAttr, err := config.GetAttributes(pconfig, "assistant_msg_attr")
-	if err != nil {
-		if err != config.ErrNotFound {
-			slog.Warn("get 'assistant_msg_attr' from extension config", "error", err)
-		}
-	} else {
-		ret.cfg.ReceiveMessageStringConfig.Attributes = recvMsgAttr
-	}
-
-	inputBoxAttr, err := config.GetAttributes(pconfig, "input_box_attr")
-	if err != nil {
-		if err != config.ErrNotFound {
-			slog.Warn("get 'input_box_attr' from extension config", "error", err)
-		}
-	} else {
-		ret.cfg.InputBox.ContentAttr = inputBoxAttr
-	}
-	ret.cfg.InputBackgroundColor = resolveInputBackgroundColor(
-		ret.cfg.InputBackgroundColor, pconfig)
-	inputBoxPlaceholderAttr, err := config.GetAttributes(pconfig, "input_box_placeholder_attr")
-	if err != nil {
-		if err != config.ErrNotFound {
-			slog.Warn("Error getting 'input_box_placeholder_attr'"+
-				" from extension config", "error", err)
-		}
-	} else {
-		ret.cfg.InputBox.PlaceholderConfig.Attributes = inputBoxPlaceholderAttr
-	}
-
-	inputBoxFrameAttr, err := config.GetAttributes(pconfig, "input_box_frame_attr")
-	if err != nil {
-		if err != config.ErrNotFound {
-			slog.Warn("Error getting 'input_box_frame_attr' from extension config", "error", err)
-		}
-	} else {
-		ret.cfg.InputBox.FrameAttr = inputBoxFrameAttr
-	}
-
-	ret.cfg.InputBox.FrameCharSet = inputBoxFrameCharSet(pconfig)
-
-	inputBgColor, err := pconfig.GetColor("input_background_color")
-	if err != nil {
-		if err != config.ErrNotFound {
-			slog.Warn("get 'input_background_color' from extension config", "error", err)
-		}
-	} else {
-		ret.cfg.InputBackgroundColor = inputBgColor
-	}
-
-	if attr, err := config.GetAttributes(pconfig, "completion_matched_text_attr"); err != nil {
-		if err != config.ErrNotFound {
-			slog.Warn("get 'completion_matched_text_attr' from extension config", "error", err)
-		}
-	} else {
-		ret.cfg.CompletionMatchedTextAttr = attr
-	}
-	if attr, err := config.GetAttributes(pconfig, "completion_focus_element_attr"); err != nil {
-		if err != config.ErrNotFound {
-			slog.Warn("get 'completion_focus_element_attr' from extension config", "error", err)
-		}
-	} else {
-		ret.cfg.CompletionFocusElementAttr = attr
-	}
-	if attr, err := config.GetAttributes(pconfig, "completion_element_attr"); err != nil {
-		if err != config.ErrNotFound {
-			slog.Warn("get 'completion_element_attr' from extension config", "error", err)
-		}
-	} else {
-		ret.cfg.CompletionElementAttr = attr
-	}
-	if col, err := pconfig.GetColor("completion_radar_color"); err != nil {
-		if err != config.ErrNotFound {
-			slog.Warn("get 'completion_radar_color' from extension config", "error", err)
-		}
-	} else {
-		ret.cfg.CompletionRadarColor = col
-	}
-	if attr, err := config.GetAttributes(pconfig, "inline_attachment_attr"); err != nil {
-		if err != config.ErrNotFound {
-			slog.Warn("get 'inline_attachment_attr' from extension config", "error", err)
-		}
-	} else {
-		ret.cfg.InlineAttachmentAttr = attr
-	}
-	ret.cfg.StatusBar = statusBarConfig(pconfig, hostConfig, noti)
-	ret.cfg.StatusBar.DurationPrecision = ret.cfg.DurationPrecision
 
 	ret.queryDefaultModel = queryModelAlias
 
 	ret.compactModel = compactModelAlias
-
-	ret.clip = text.NewSystemClipboard()
-	ret.cfg.Clipboard = ret.clip
-
-	// Resolve the configured editor for composing messages. On error the
-	// compose editor stays nil and dialoguetui falls back to its inputbox.
-	if editor, cerr := extutil.Editor(ret.clip, hostConfig); cerr != nil {
-		slog.Warn("resolve dialogue editor, using inputbox", "error", cerr)
-	} else {
-		ret.cfg.Editor = editor
-		if modal, merr := extutil.EditorModal(hostConfig); merr != nil {
-			slog.Warn("resolve dialogue editor mode", "error", merr)
-		} else {
-			ret.cfg.EditorModal = modal
-		}
-		ret.cfg.ModalStartInsert = true
-		if startInsert, serr := pconfig.GetBool("editor_modal_start_insert"); serr == nil {
-			ret.cfg.ModalStartInsert = startInsert
-		} else if !errors.Is(serr, config.ErrNotFound) {
-			slog.Warn("get 'editor_modal_start_insert' from config", "error", serr)
-		}
-	}
 
 	ret.db = db
 	ret.cfg.StatusBar.Storage = storageapi.WithPartition(db, statusBarImagesPartition)
@@ -733,16 +427,15 @@ func newCommandEventHandler(
 
 	ret.agentsConfig = defaultAgentsConfig(ret.systemPrompt)
 
-	// Starting an MCP server needs StartCommand authorization, which
-	// blocks until the user answers a prompt. Connect in the background
-	// so the agent registers its commands immediately.
-	if hasMCP {
-		mcpManager.OnServerExit = func(name, detail string) {
-			_, _ = ret.n.Notify(browserapi.LevelError,
-				"MCP server %q %s", name, detail)
-		}
+	ret.mcpTrust = newMCPTrust(db, w.Prompter(ctx))
+	ret.wireMCPManager()
+	// Starting an MCP server needs StartCommand authorization or the
+	// user's trust, which block until the user answers a prompt.
+	// Connect in the background so the agent registers its commands
+	// immediately.
+	if len(mcpServers) > 0 {
 		go debug.CapturePanicReport(func() {
-			ret.connectMCPServers(mcpCfg)
+			ret.connectMCPServers(mcpServers)
 		})
 	}
 
@@ -893,46 +586,8 @@ const transcriptImagesPartition = "transcript-images"
 // frameImagesPartition caches the images of the compose box frame.
 const frameImagesPartition = "frame_images"
 
-// inputBoxFrameCharSet reads input_box_frame_charset from pconfig, whose
-// missing slots keep those of the default frame. An invalid charset is
-// the default one.
-func inputBoxFrameCharSet(pconfig config.Config) component.FrameCharSet {
-	def := defaultComponentCfg.InputBox.FrameCharSet
-	if def == (component.FrameCharSet{}) {
-		def = component.FrameCharSetDefault()
-	}
-	cs, err := tconfig.GetFrameCharset(pconfig, "input_box_frame_charset", def)
-	if err != nil && !errors.Is(err, config.ErrNotFound) {
-		slog.Warn("get 'input_box_frame_charset' from extension config", "error", err)
-	}
-	return cs
-}
-
-// refreshFrameImages reads the images g names again, dropping the copies
-// storage caches, and returns them by URI. An image that does not load
-// is left out.
-func refreshFrameImages(
-	ctx context.Context, g component.FrameCharSetGraphics, storage storageapi.Service,
-) map[string]stdimage.Image {
-	images := make(map[string]stdimage.Image)
-	tried := make(map[string]struct{})
-	for _, uri := range []string{
-		g.TopLeft, g.TopRight, g.BottomLeft, g.BottomRight,
-		g.HorizontalTop, g.HorizontalBottom, g.VerticalLeft, g.VerticalRight,
-	} {
-		if _, ok := tried[uri]; ok || uri == "" {
-			continue
-		}
-		tried[uri] = struct{}{}
-		img, err := imageuri.Refresh(ctx, uri, template.DefaultImageTTL, storage)
-		if err != nil {
-			slog.Warn("reload frame image", "error", err)
-			continue
-		}
-		images[uri] = img
-	}
-	return images
-}
+// statusBarImagesPartition caches the images status bar layouts download.
+const statusBarImagesPartition = "status_bar_images"
 
 // dialogueConfig returns the config for a dialogue whose handler is given
 // mu, which the dialogue holds while it calls OnLinkClick.
@@ -961,11 +616,10 @@ type aiEditorHandler struct {
 	exit         atomic.Uint32
 	llmSvc       llmapi.Service
 	defaultModel string
-	// statusBarMu guards cfg.StatusBar and cfg.InputBox.FrameCharSet,
-	// which a config reload replaces.
+	// statusBarMu guards cfg.StatusBar, cfg.InputBox and
+	// cfg.InputBackgroundColor, which a config reload replaces.
 	statusBarMu         sync.Mutex
 	cfg                 dialoguetui.ComponentConfig
-	backgroundAttr      term.Attributes
 	dialogueStore       dialoguemanager.Store
 	queryAgent          *agent.Agent
 	queryDefaultModel   string
@@ -980,6 +634,8 @@ type aiEditorHandler struct {
 	baseTools           []agent.Tool
 	chatRegistries      map[string][]*agent.Registry
 	mcpManager          *runemcp.Manager
+	mcpTrust            *mcpTrust
+	mcpServers          map[string]runemcp.ServerConfig
 	sessionMgr          *agentools.SessionManager
 
 	maxToolOutputBytes int
@@ -1051,38 +707,61 @@ func (h *aiEditorHandler) tools() []agent.Tool {
 	return slices.Clone(h.baseTools)
 }
 
-// addTools appends late-arriving tools to the base set and forwards
-// them to every subscribed conversation, so tools from MCP servers that
-// finish connecting mid-session reach chats that are already open.
-func (h *aiEditorHandler) addTools(tools ...agent.Tool) {
-	if len(tools) == 0 {
+// replaceMCPTools applies a change to an MCP server's tools: removed
+// leave the base set and added join it. The change reaches every
+// subscribed conversation, so servers that connect, sign in or change
+// their tools mid-session update chats that are already open.
+func (h *aiEditorHandler) replaceMCPTools(server string, added []agent.Tool, removed []string) {
+	if len(added) == 0 && len(removed) == 0 {
 		return
 	}
 	h.baseToolsMu.Lock()
 	defer h.baseToolsMu.Unlock()
-	h.baseTools = append(h.baseTools, tools...)
-	h.toolRegistry.Add(tools...)
+	if len(removed) > 0 {
+		h.baseTools = slices.DeleteFunc(h.baseTools, func(t agent.Tool) bool {
+			return slices.Contains(removed, t.Definition().Function.Name)
+		})
+	}
+	h.baseTools = append(h.baseTools, added...)
+	h.toolRegistry.Remove(removed...)
+	h.toolRegistry.Add(added...)
 	for _, regs := range h.chatRegistries {
 		for _, r := range regs {
-			r.Add(tools...)
+			r.Remove(removed...)
+			r.Add(added...)
 		}
 	}
 }
 
-// subscribeTools registers a conversation's registries to receive tools
-// that arrive after its snapshot was taken. The delta between the
-// snapshot and the current base set is applied immediately, under the
-// same lock addTools uses, so no tool can fall between snapshot and
-// subscription.
+// subscribeTools registers a conversation's registries, built from
+// snapshot, to receive later MCP tool changes. Whatever changed between
+// the snapshot and the subscription is applied immediately, under the
+// same lock replaceMCPTools uses, so no change can fall between them.
 func (h *aiEditorHandler) subscribeTools(
-	id string, snapshotLen int, regs ...*agent.Registry,
+	id string, snapshot []agent.Tool, regs ...*agent.Registry,
 ) {
 	h.baseToolsMu.Lock()
 	defer h.baseToolsMu.Unlock()
-	if delta := h.baseTools[snapshotLen:]; len(delta) > 0 {
-		for _, r := range regs {
-			r.Add(delta...)
+	stale := make(map[string]llmapi.Tool, len(snapshot))
+	for _, t := range snapshot {
+		def := t.Definition()
+		stale[def.Function.Name] = def
+	}
+	var added []agent.Tool
+	for _, t := range h.baseTools {
+		def := t.Definition()
+		old, ok := stale[def.Function.Name]
+		delete(stale, def.Function.Name)
+		// A server that redefines a tool keeps its name, so compare the
+		// definitions too.
+		if !ok || !reflect.DeepEqual(old, def) {
+			added = append(added, t)
 		}
+	}
+	removed := slices.Collect(maps.Keys(stale))
+	for _, r := range regs {
+		r.Remove(removed...)
+		r.Add(added...)
 	}
 	if h.chatRegistries == nil {
 		h.chatRegistries = make(map[string][]*agent.Registry)
@@ -1096,55 +775,201 @@ func (h *aiEditorHandler) unsubscribeTools(id string) {
 	delete(h.chatRegistries, id)
 }
 
-// warnPendingMCPServers tells a freshly opened conversation which MCP
-// servers are still starting, so missing tools are explained rather
-// than silently absent.
-func (h *aiEditorHandler) warnPendingMCPServers(tx chan<- dialoguetui.MessageEvent) {
+// wireMCPManager routes the MCP manager's events to the user: changed
+// tools to every conversation, and servers that stop or need sign-in to
+// a notification and to every open chat.
+func (h *aiEditorHandler) wireMCPManager() {
+	h.mcpManager.OnServerExit = func(name, detail string) {
+		_, _ = h.n.Notify(browserapi.LevelError, "MCP server %q %s", name, detail)
+		h.warnChatsAboutMCPServer(name)
+	}
+	h.mcpManager.OnToolsChanged = h.replaceMCPTools
+	h.mcpManager.OnNeedsAuth = func(name string) {
+		_, _ = h.n.Notify(browserapi.LevelWarn,
+			"MCP server %q needs sign-in: run `agent mcp login %s`", name, name)
+		h.warnChatsAboutMCPServer(name)
+	}
+	h.mcpManager.Open = h.openURL
+}
+
+// mcpChatWarning explains to a conversation why the tools of srv are
+// missing, or returns "" when they are not.
+func mcpChatWarning(srv *runemcp.ServerInfo) string {
+	switch srv.Status {
+	case runemcp.StatusConnecting:
+		return fmt.Sprintf("MCP server %q is still starting. "+
+			"Its tools will join this conversation once connected.", srv.Name)
+	case runemcp.StatusNeedsAuth:
+		reason := srv.Error
+		if reason == "" {
+			reason = fmt.Sprintf("needs sign-in: run `agent mcp login %s`", srv.Name)
+		}
+		return fmt.Sprintf("MCP server %q %s. "+
+			"Its tools will join this conversation once you sign in.", srv.Name, reason)
+	case runemcp.StatusError:
+		if srv.Blocked {
+			return fmt.Sprintf("MCP server %q is unavailable: %s", srv.Name, srv.Error)
+		}
+		return fmt.Sprintf("MCP server %q is unavailable: %s\n"+
+			"Run `agent mcp reconnect %s` to try again.", srv.Name, srv.Error, srv.Name)
+	}
+	return ""
+}
+
+// warnUnavailableMCPServers tells a freshly opened conversation which
+// MCP servers are still starting, wait for sign-in or failed, so missing
+// tools are explained rather than silently absent.
+func (h *aiEditorHandler) warnUnavailableMCPServers(tx chan<- dialoguetui.MessageEvent) {
 	if h.mcpManager == nil {
 		return
 	}
-	var pending []string
+	var lines []string
 	for _, srv := range h.mcpManager.Servers() {
-		if srv.Status == runemcp.StatusConnecting {
-			pending = append(pending, srv.Name)
+		if w := mcpChatWarning(srv); w != "" {
+			lines = append(lines, w)
 		}
 	}
-	if len(pending) == 0 {
+	if len(lines) == 0 {
 		return
 	}
 	tx <- dialoguetui.MessageEvent{
 		Type: dialoguetui.MessageEventWarning,
-		Text: fmt.Sprintf(
-			"MCP server(s) still starting: %s. Their tools will join this conversation once connected.",
-			strings.Join(pending, ", ")),
+		Text: strings.Join(lines, "\n"),
 	}
 }
 
-// connectMCPServers brings up every configured MCP server, keeping the
-// user informed: a progress notification stays open while a server
-// starts (authorization may hold it for a while), and resolves into a
-// success or error notification. Tools reach the base set and every
-// open conversation as each server comes up.
-func (h *aiEditorHandler) connectMCPServers(cfg runemcp.Config) {
-	for _, name := range slices.Sorted(maps.Keys(cfg.MCPServers)) {
-		id, nerr := h.n.Notify(browserapi.LevelInfo,
-			"Starting MCP server %q…", name)
-		if nerr == nil {
-			_ = h.n.UpdateNotificationProgress(id, "", 0, 1)
+// warnChatsAboutMCPServer tells every open chat why the server named
+// name became unavailable, so a chat that was promised its tools, or
+// relied on them, learns why they are missing. Chats opened later learn
+// it from warnUnavailableMCPServers.
+func (h *aiEditorHandler) warnChatsAboutMCPServer(name string) {
+	var text string
+	for _, srv := range h.mcpManager.Servers() {
+		// A server back to starting is being reconnected, which settles
+		// in its own warning or in its tools joining.
+		if srv.Name == name && srv.Status != runemcp.StatusConnecting {
+			text = mcpChatWarning(srv)
 		}
-		tools, err := h.mcpManager.ConnectServer(h.ctx, name, cfg.MCPServers[name])
-		if nerr == nil {
-			_ = h.n.UpdateNotificationProgress(id, "", 1, 1)
+	}
+	if text == "" {
+		return
+	}
+	// The warning goes straight to each chat's component rather than
+	// through its event channel, which its agent loop closes when the
+	// chat closes.
+	warned := false
+	h.openChats.Range(func(_, v any) bool {
+		if sc, ok := v.(syncComponent); ok {
+			sc.addWarning(text)
+			warned = true
 		}
-		if err != nil {
-			_, _ = h.n.Notify(browserapi.LevelError,
-				"MCP server %q failed to start: %v", name, err)
-			continue
+		return true
+	})
+	if warned && h.p != nil {
+		_ = h.p.Interrupt(h.ctx)
+	}
+}
+
+// connectMCPServers brings up every configured MCP server concurrently,
+// keeping the user informed: a progress notification stays open while a
+// server starts (authorization may hold it for a while), and resolves
+// into a success, warning or error notification. Tools reach the base
+// set and every open conversation as each server comes up.
+func (h *aiEditorHandler) connectMCPServers(servers map[string]runemcp.ServerConfig) {
+	var wg sync.WaitGroup
+	for _, name := range slices.Sorted(maps.Keys(servers)) {
+		wg.Add(1)
+		go debug.CapturePanicReport(func() {
+			defer wg.Done()
+			h.connectMCPServer(name, servers[name])
+		})
+	}
+	wg.Wait()
+}
+
+func (h *aiEditorHandler) connectMCPServer(name string, raw runemcp.ServerConfig) {
+	cfg, err := h.prepareMCPServer(h.ctx, name, raw)
+	if err != nil {
+		if h.ctx.Err() == nil {
+			_, _ = h.n.Notify(browserapi.LevelWarn, "MCP server %q is not connected: %v", name, err)
+			h.warnChatsAboutMCPServer(name)
 		}
-		h.addTools(tools...)
+		return
+	}
+	id, nerr := h.n.Notify(browserapi.LevelInfo, "Starting MCP server %q…", name)
+	if nerr == nil {
+		_ = h.n.UpdateNotificationProgress(id, "", 0, 1)
+	}
+	tools, err := h.mcpManager.ConnectServer(h.ctx, name, cfg)
+	if nerr == nil {
+		_ = h.n.UpdateNotificationProgress(id, "", 1, 1)
+	}
+	switch {
+	case errors.Is(err, runemcp.ErrNeedsAuth):
+		_, _ = h.n.Notify(browserapi.LevelWarn,
+			"MCP server %q needs sign-in: run `agent mcp login %s`", name, name)
+		h.warnChatsAboutMCPServer(name)
+	case err != nil:
+		_, _ = h.n.Notify(browserapi.LevelError,
+			"MCP server %q failed to start: %v", name, err)
+		h.warnChatsAboutMCPServer(name)
+	default:
+		h.replaceMCPTools(name, tools, nil)
 		_, _ = h.n.Notify(browserapi.LevelSuccess,
 			"MCP server %q is up: %d tools available", name, len(tools))
 	}
+}
+
+// prepareMCPServer expands the environment variables in the server's
+// config raw and asks for the user's trust where needed, recording the
+// server with the manager either way. It returns the config to connect
+// with, or why the server must not connect, which the manager keeps as
+// the server's error until the server is prepared again.
+func (h *aiEditorHandler) prepareMCPServer(
+	ctx context.Context, name string, raw runemcp.ServerConfig,
+) (runemcp.ServerConfig, error) {
+	cfg, exp, err := runemcp.ExpandConfig(raw, os.LookupEnv)
+	if err != nil {
+		h.mcpManager.Register(name, raw, nil, err)
+		return runemcp.ServerConfig{}, err
+	}
+	var warnings []string
+	for _, v := range exp.Missing {
+		warnings = append(warnings, fmt.Sprintf("environment variable %s is not set", v))
+	}
+	if kind, _ := cfg.Transport(); kind != runemcp.TransportStdio && h.cwd.Scheme() != "file" {
+		if u, err := url.Parse(cfg.URL); err == nil && runemcp.IsLoopbackHost(u.Hostname()) {
+			warnings = append(warnings, fmt.Sprintf(
+				"%s resolves on this machine, not the workspace host", u.Host))
+			_, _ = h.n.Notify(browserapi.LevelWarn,
+				"MCP server %q uses %s, which resolves on this machine, not the workspace host",
+				name, u.Host)
+		}
+	}
+	h.mcpManager.Register(name, cfg, warnings, nil)
+
+	ok, err := h.mcpTrust.Allow(ctx, h.cwd, name, raw, exp)
+	if err == nil && !ok {
+		err = fmt.Errorf("not trusted: run `agent mcp trust %s`", name)
+	}
+	if err != nil {
+		h.mcpManager.Register(name, cfg, warnings, err)
+		return runemcp.ServerConfig{}, err
+	}
+	return cfg, nil
+}
+
+// openURL shows an http or https URL through the host, which opens it
+// in the user's browser.
+func (h *aiEditorHandler) openURL(rawURL string) error {
+	uri, err := workspaceapi.ParseURI(rawURL)
+	if err != nil {
+		return err
+	}
+	if s := uri.Scheme(); s != "http" && s != "https" {
+		return fmt.Errorf("refusing to open %s URL", s)
+	}
+	return h.o.Show(uri)
 }
 
 // modelService resolves a model entry from the host-provided LLM
@@ -1223,44 +1048,59 @@ func (h *aiEditorHandler) watchReload(
 	}
 }
 
-// reloadStyle configures the status bar and the compose box frame of the
-// open chats, and of those opened from now on, with the status_bar block
-// and input_box_frame_charset host holds for this extension, reading
-// their images again. host is the config Rune serves; a host that could
-// not be fetched leaves the chats as they are.
+// reloadStyle configures the status bar, the compose box frame and the
+// compose box colours of the open chats, and of those opened from now on,
+// with the status_bar block, input_box_frame_charset and input box colours
+// host holds for this extension, reading their images again. host is the
+// config Rune serves; a host that could not be fetched leaves the chats as
+// they are.
 func (h *aiEditorHandler) reloadStyle(ctx context.Context, host config.Config) error {
 	own, err := ownConfig(host)
 	if err != nil {
 		return err
 	}
 	h.statusBarMu.Lock()
-	storage := h.cfg.StatusBar.Storage
-	frameStorage := h.cfg.InputBox.GraphicsStorage
+	cfg := h.cfg
 	h.statusBarMu.Unlock()
-	cfg := statusBarConfig(own, host, h.n)
-	cfg.DurationPrecision = h.cfg.DurationPrecision
-	cfg.Storage = storage
-	cfg.Images = refreshStatusBarImages(ctx, cfg.Layout, storage)
-	frame := inputBoxFrameCharSet(own)
-	var frameImages map[string]stdimage.Image
-	if frameStorage != nil {
-		frameImages = refreshFrameImages(ctx, frame.Graphics, frameStorage)
-	}
+	cfg, frameImages := dialoguetui.ReadStyle(ctx, cfg, own, host, h.n)
 
 	h.statusBarMu.Lock()
-	h.cfg.StatusBar = cfg
-	h.cfg.InputBox.FrameCharSet = frame
+	h.cfg.StatusBar = cfg.StatusBar
+	h.cfg.InputBox.FrameCharSet = cfg.InputBox.FrameCharSet
+	h.cfg.InputBox.FrameAttr = cfg.InputBox.FrameAttr
+	h.cfg.InputBox.ContentAttr = cfg.InputBox.ContentAttr
+	h.cfg.InputBackgroundColor = cfg.InputBackgroundColor
 	h.statusBarMu.Unlock()
 	h.openChats.Range(func(_, v any) bool {
 		// Chats still opening hold no component yet; they read the
 		// config they open with afterwards.
 		if sc, ok := v.(syncComponent); ok {
-			sc.setStatusBarConfig(cfg)
-			sc.setInputBoxFrameCharSet(frame, frameImages)
+			sc.setStatusBarConfig(cfg.StatusBar)
+			sc.setInputBoxFrameCharSet(cfg.InputBox.FrameCharSet, frameImages)
+			sc.setInputBoxColors(cfg)
 		}
 		return true
 	})
 	return h.p.Interrupt(ctx)
+}
+
+// ownConfig returns the config Rune started this extension with, which
+// host, the config Rune serves, holds under extensions.<id>.config. A host
+// without it gives an empty config. It fails when host could not be
+// fetched.
+func ownConfig(host config.Config) (config.Config, error) {
+	cfg := host
+	for _, key := range []string{"extensions", extensionID, "config"} {
+		sub, err := cfg.GetConfig(key)
+		if errors.Is(err, config.ErrNotFound) {
+			return config.NopConfig(), nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("get %q from the config: %w", key, err)
+		}
+		cfg = sub
+	}
+	return cfg, nil
 }
 
 func (h *aiEditorHandler) Handle(ctx context.Context, ev textapi.Event) (exit bool) {
@@ -1557,7 +1397,7 @@ func (h *aiEditorHandler) newDialogueComponent(mu sync.Locker) *dialoguetui.Comp
 
 func (h *aiEditorHandler) newAgentShell() textapi.REPLHandler {
 	opts := []agentshell.Option{
-		agentshell.WithMCPInfo(h.mcpManager),
+		agentshell.WithMCPInfo(mcpCommands{Manager: h.mcpManager, h: h}),
 		agentshell.WithHistorySystemPrompt(true),
 		agentshell.WithEffort(h.getDefaultEffort, h.setDefaultEffort),
 		agentshell.WithMaxTokens(h.getDefaultMaxTokens, h.setDefaultMaxTokens),
@@ -1667,7 +1507,7 @@ func (h *aiEditorHandler) newChat(
 	// before the chat can run any command.
 	var chatAgent *agent.Agent
 	cmdShellOpts := []agentshell.Option{
-		agentshell.WithMCPInfo(h.mcpManager),
+		agentshell.WithMCPInfo(mcpCommands{Manager: h.mcpManager, h: h}),
 		agentshell.WithMaxTokens(func() int { return chatAgent.MaxOutputTokens() }, nil),
 	}
 	if h.auditStore != nil {
@@ -1834,8 +1674,8 @@ func (h *aiEditorHandler) newChat(
 	})
 	h.openChatAgents.Store(d.ID, chatAgent)
 	h.openChatTx.Store(d.ID, tx)
-	h.subscribeTools(d.ID, len(baseTools), chatRegistry, cmdRegistry)
-	h.warnPendingMCPServers(tx)
+	h.subscribeTools(d.ID, baseTools, chatRegistry, cmdRegistry)
+	h.warnUnavailableMCPServers(tx)
 
 	handler, msgRx := h.wrapDialogueHandler(ctx, syncComp, dhandler, rx, d.ID)
 	go debug.CapturePanicReport(func() {
@@ -2393,6 +2233,28 @@ func toolResultImages(name, output string, isError bool) []string {
 	return nil
 }
 
+// childToolMessage returns the chat event that shows ev, a tool call or
+// tool result of a sub-agent, nested under the tool call parentID.
+func childToolMessage(parentID string, ev agent.Event) dialoguetui.MessageEvent {
+	msg := dialoguetui.MessageEvent{
+		Type:             dialoguetui.MessageEventToolCall,
+		ToolCallID:       ev.ToolCallID,
+		ToolName:         ev.ToolName,
+		ToolArgs:         ev.ToolArgs,
+		ToolSummary:      ev.ToolSummary,
+		ToolStartTime:    ev.ToolStartTime,
+		ParentToolCallID: parentID,
+	}
+	if ev.Type == agent.EventToolResult {
+		msg.Type = dialoguetui.MessageEventToolResult
+		msg.ToolOutput = ev.ToolOutput
+		msg.IsError = ev.IsError
+		msg.ToolDuration = ev.ToolDuration
+		msg.ImagePaths = toolResultImages(ev.ToolName, ev.ToolOutput, ev.IsError)
+	}
+	return msg
+}
+
 func firstModel(svc llmapi.Service) string {
 	it := svc.Models()
 	defer func() { _ = it.Close() }()
@@ -2598,28 +2460,9 @@ func createAgentCompletions(
 					case agent.EventToolCall:
 						syncComp.tab.childToolCall(cev.ParentToolCallID,
 							cev.Event.ToolName, cev.Event.ToolSummary)
-						msg = dialoguetui.MessageEvent{
-							Type:             dialoguetui.MessageEventToolCall,
-							ToolCallID:       cev.Event.ToolCallID,
-							ToolName:         cev.Event.ToolName,
-							ToolArgs:         cev.Event.ToolArgs,
-							ToolSummary:      cev.Event.ToolSummary,
-							ToolStartTime:    cev.Event.ToolStartTime,
-							ParentToolCallID: cev.ParentToolCallID,
-						}
+						msg = childToolMessage(cev.ParentToolCallID, cev.Event)
 					case agent.EventToolResult:
-						msg = dialoguetui.MessageEvent{
-							Type:             dialoguetui.MessageEventToolResult,
-							ToolCallID:       cev.Event.ToolCallID,
-							ToolName:         cev.Event.ToolName,
-							ToolArgs:         cev.Event.ToolArgs,
-							ToolSummary:      cev.Event.ToolSummary,
-							ToolOutput:       cev.Event.ToolOutput,
-							IsError:          cev.Event.IsError,
-							ToolDuration:     cev.Event.ToolDuration,
-							ParentToolCallID: cev.ParentToolCallID,
-							ImagePaths:       toolResultImages(cev.Event.ToolName, cev.Event.ToolOutput, cev.Event.IsError),
-						}
+						msg = childToolMessage(cev.ParentToolCallID, cev.Event)
 					case agent.EventToolsDropped:
 						msg = dialoguetui.MessageEvent{
 							Type:               dialoguetui.MessageEventToolsDropped,
@@ -2706,9 +2549,8 @@ func createAgentCompletions(
 			continue
 		}
 
-		// Agent-type skills: spawn a sub-agent whose events are
-		// rendered as top-level (tool calls, text, reasoning all
-		// visible in the TUI).
+		// Agent-type skills run in a sub-agent, shown like one the
+		// model spawns with the skill tool.
 		var it iterator.Iterator[agent.Event]
 		if req.skillName != "" {
 			if skill, ok := skillRegistry.Get(req.skillName); ok && skill.Type == "agent" {
@@ -2720,13 +2562,12 @@ func createAgentCompletions(
 				}
 				handle, skillErr := spawner.Run(req.ctx, agent.RunRequest{
 					Label:             skill.Name,
+					Skill:             skill.Name,
 					Model:             llmarg.Qualify(ag.ModelEntry()),
 					Message:           req.modelText,
 					DisplayMessage:    req.displayText,
 					Attachments:       req.attachments,
 					AdditionalContext: upsRes.AdditionalContext,
-					Tools:             skillRegistry.AgentPolicy(skill),
-					SystemPrompt:      skill.Body,
 					InitialMessages:   initialMessages,
 				})
 				if skillErr != nil {
@@ -2742,7 +2583,12 @@ func createAgentCompletions(
 					endTurn()
 					continue
 				}
-				it = handle.Events
+				it = newAgentSkillEvents(skill, handle, tx, syncComp.tab,
+					func(ctx context.Context, replies []llmapi.Message) error {
+						return ag.AppendTurn(ctx, id, req.modelText, replies,
+							agent.WithDisplayMessage(req.displayText),
+							agent.WithAttachments(req.attachments))
+					})
 			}
 		}
 		if it == nil {
@@ -3041,68 +2887,4 @@ func agentMemoriesToTUI(ev agent.Event) dialoguetui.MessageEvent {
 		Memories:       entries,
 		MemoryDuration: ev.MemoryDuration,
 	}
-}
-
-// resolveInputBackgroundColor returns the compose input background color.
-// It keeps def unless input_box_attr.bg is set to an explicit,
-// non-default color, letting the shared input_box_attr drive the compose
-// background without a dedicated key.
-func resolveInputBackgroundColor(def term.Color, pconfig config.Config) term.Color {
-	attr, err := config.GetAttributes(pconfig, "input_box_attr")
-	if err != nil || attr.Bg == term.ColorDefault {
-		return def
-	}
-	return attr.Bg
-}
-
-// resolvePinnedUserMsgMaxLines reads pinned_user_msg_max_lines, the rows
-// the pinned user message may take over the top of the transcript. Zero
-// disables the pin, and a negative value is clamped to it.
-func resolvePinnedUserMsgMaxLines(pconfig config.Config) int {
-	v, err := pconfig.GetInt("pinned_user_msg_max_lines")
-	if err != nil {
-		if !errors.Is(err, config.ErrNotFound) {
-			slog.Warn("get 'pinned_user_msg_max_lines' from config", "error", err)
-		}
-		return defaultPinnedUserMsgMaxLines
-	}
-	return max(0, v)
-}
-
-// resolveTranscriptHorizontalPadding reads transcript_horizontal_padding,
-// the columns left beside the transcript, split evenly on either side. A
-// negative value is the transcript's width instead, and the transcript
-// fills a tab narrower than that. Zero fills the tab.
-func resolveTranscriptHorizontalPadding(pconfig config.Config) int {
-	v, err := pconfig.GetInt("transcript_horizontal_padding")
-	if err != nil {
-		if !errors.Is(err, config.ErrNotFound) {
-			slog.Warn("get 'transcript_horizontal_padding' from config", "error", err)
-		}
-		return defaultComponentCfg.MessagesRowConfig.PadHorizontal
-	}
-	return v
-}
-
-// resolveUserMsgIcon reads user_msg_icon, the character marking each of
-// the user's messages in the chat. An empty string hides the icon. Any
-// other value must be a single character, as the icon takes exactly one
-// cell; a longer value keeps def rather than being cut short.
-func resolveUserMsgIcon(def rune, pconfig config.Config) rune {
-	v, err := pconfig.GetString("user_msg_icon")
-	if err != nil {
-		if !errors.Is(err, config.ErrNotFound) {
-			slog.Warn("get 'user_msg_icon' from config", "error", err)
-		}
-		return def
-	}
-	icon := []rune(v)
-	switch len(icon) {
-	case 0:
-		return 0
-	case 1:
-		return icon[0]
-	}
-	slog.Warn("'user_msg_icon' must be a single character", "value", v)
-	return def
 }

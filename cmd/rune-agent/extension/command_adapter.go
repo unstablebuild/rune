@@ -286,6 +286,8 @@ func rejectPositionalID(name string, args []string) error {
 // in the user turn, to invoke the skill tool. Without this cue the
 // model frequently fails to notice the system-message skill body and
 // either ignores the command or falls back to request_skill.
+// Agent skills get no hint: the message goes to the sub-agent running
+// the skill, whose system prompt the skill already is.
 func formatSkillMessage(skill skills.Skill, args string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "<command-message>%s</command-message>\n", skill.Name)
@@ -294,11 +296,13 @@ func formatSkillMessage(skill skills.Skill, args string) string {
 		b.WriteString("\n")
 		b.WriteString(args)
 	}
-	fmt.Fprintf(
-		&b,
-		"\n<command-hint>Call the skill tool with name=%q to load and run this skill.</command-hint>",
-		skill.Name,
-	)
+	if skill.Type != "agent" {
+		fmt.Fprintf(
+			&b,
+			"\n<command-hint>Call the skill tool with name=%q to load and run this skill.</command-hint>",
+			skill.Name,
+		)
+	}
 	return b.String()
 }
 

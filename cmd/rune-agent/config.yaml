@@ -42,10 +42,10 @@ extensions:
         bg: default
         flags: italic
       # Columns left beside the chat transcript, split evenly on either
-      # side. A negative value sets the transcript's width instead: -80
-      # keeps it 80 columns wide and centered, filling a narrower tab.
+      # side. A negative value sets the transcript's width instead: -90
+      # keeps it 90 columns wide and centered, filling a narrower tab.
       # 0 fills the tab.
-      transcript_horizontal_padding: -80
+      transcript_horizontal_padding: -90
       input_box_attr:
         fg: default
         bg: default
@@ -298,3 +298,10 @@ extensions:
             bg: green
         # Cell width of the context and cache gauges.
         gauge_width: 18
+# `acp new rune-agent` runs rune-agent over the Agent Client Protocol, as
+# any ACP client would. Its sessions are kept apart from the chats above.
+acp:
+  agents:
+    rune-agent:
+      command: '$RUNE_DATADIR/bin/rune-agent'
+      args: [acp]

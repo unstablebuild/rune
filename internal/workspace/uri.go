@@ -27,9 +27,12 @@ import (
 // The schemes of the remote workspaces that workspacessh and
 // workspacerune implement. They are declared here so that packages can
 // recognize those URIs without linking the network clients behind them.
+// RuneScheme reaches the machines of Rune's network, TailscaleScheme
+// those of the user's own Tailscale network.
 const (
-	SSHScheme  = "ssh"
-	RuneScheme = "rune"
+	SSHScheme       = "ssh"
+	RuneScheme      = "rune"
+	TailscaleScheme = "tailscale"
 )
 
 func checkURIRelative(a, b workspaceapi.URI) error {

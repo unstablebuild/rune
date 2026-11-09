@@ -133,7 +133,7 @@ func TestFrameUnionCaptureDrags(t *testing.T) {
 				}
 			}
 			top := member("T")
-			u := NewFrameUnion(member("M"))
+			u := handler.NewFrameUnion(member("M"))
 			u.UnionTopFrame(top, 2, false)
 			u.UnionBottomFrame(member("B"), 1, false)
 			u.CaptureDrags(top)
@@ -145,12 +145,12 @@ func TestFrameUnionCaptureDrags(t *testing.T) {
 }
 
 func TestFrameUnionPointerLeaves(t *testing.T) {
-	newUnion := func(got *[]dispatch) *FrameUnion {
+	newUnion := func(got *[]dispatch) *handler.FrameUnion {
 		member := func(name string) *unionMember {
 			return &unionMember{TestHandler: handler.NewTestHandler(), name: name, got: got}
 		}
 		top := member("T")
-		u := NewFrameUnion(member("M"))
+		u := handler.NewFrameUnion(member("M"))
 		u.UnionTopFrame(top, 2, false)
 		u.UnionBottomFrame(member("B"), 1, false)
 		u.CaptureDrags(top)
@@ -236,7 +236,7 @@ func TestFrameUnionPointerLeaves(t *testing.T) {
 
 // handleUnionEvents sends events to u and returns what its members got,
 // dropped() for an event that reached none of them.
-func handleUnionEvents(u *FrameUnion, got *[]dispatch, events []mouseEvent) []dispatch {
+func handleUnionEvents(u *handler.FrameUnion, got *[]dispatch, events []mouseEvent) []dispatch {
 	var dispatched []dispatch
 	for _, ev := range events {
 		before := len(*got)
@@ -254,7 +254,7 @@ func handleUnionEvents(u *FrameUnion, got *[]dispatch, events []mouseEvent) []di
 func TestFrameUnionKeysGoToMain(t *testing.T) {
 	var got []dispatch
 	top := &unionMember{TestHandler: handler.NewTestHandler(), name: "T", got: &got}
-	u := NewFrameUnion(&unionMember{
+	u := handler.NewFrameUnion(&unionMember{
 		TestHandler: handler.NewTestHandler(), name: "M", got: &got,
 	})
 	u.UnionTopFrame(top, 2, false)
@@ -273,7 +273,7 @@ func TestFrameUnionPointerLeavesBattery(t *testing.T) {
 	for _, size := range [][2]int{{60, 15}, {1, 1}} {
 		var clicks, iconClicks int
 		tabs := newPointerTabs(&clicks, &iconClicks)
-		u := NewFrameUnion(newPointerLess(t))
+		u := handler.NewFrameUnion(newPointerLess(t))
 		u.UnionTopFrame(tabs, 1, false)
 		u.UnionBottomFrame(newPointerLess(t), 2, false)
 		u.CaptureDrags(tabs)

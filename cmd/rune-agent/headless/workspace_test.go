@@ -46,7 +46,7 @@ func TestConnectRequiresPluginEnvironment(t *testing.T) {
 			t.Setenv("RUNE_SOCKET", tc.socket)
 			t.Setenv("RUNE_DATADIR", tc.datadir)
 
-			w, err := Connect()
+			w, err := Connect(ExtensionID)
 
 			assert.Nil(t, w)
 			assert.ErrorIs(t, err, ErrNotInRune)
@@ -62,7 +62,7 @@ func TestConnectDecodesCertificate(t *testing.T) {
 	t.Setenv("RUNE_TOKEN", "sekret")
 	t.Setenv("RUNE_CERT", base64.StdEncoding.EncodeToString(selfSignedPEM(t)))
 
-	w, err := Connect()
+	w, err := Connect(ExtensionID)
 
 	require.NoError(t, err)
 	require.NotNil(t, w)
@@ -73,7 +73,7 @@ func TestConnectRejectsMalformedCertificate(t *testing.T) {
 	t.Setenv("RUNE_DATADIR", t.TempDir())
 	t.Setenv("RUNE_CERT", "not base64!!")
 
-	w, err := Connect()
+	w, err := Connect(ExtensionID)
 
 	assert.Nil(t, w)
 	require.Error(t, err)

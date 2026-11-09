@@ -21,6 +21,7 @@ package networkconsole
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -56,6 +57,13 @@ var commandManual = textapi.CommandManual{
 				"rune:// address each one is reachable at.",
 		},
 		{
+			Name: "ping",
+			Summary: "Ping another machine on the network and show how each " +
+				"ping got there, directly or through a relay, and how long " +
+				"it took. Stops once the two machines reach each other " +
+				"directly, or after 10 pings.",
+		},
+		{
 			Name: "machines",
 			Summary: "List every machine registered to your account, " +
 				"whether or not it is on the network right now. The free " +
@@ -89,6 +97,8 @@ func Manual() textapi.CommandManual { return commandManual }
 type Network interface {
 	Status(ctx context.Context) (runenet.Status, error)
 	Peers(ctx context.Context) ([]runenet.Peer, error)
+	// Ping sends one ping to machine; see [runenet.Node.Ping].
+	Ping(ctx context.Context, machine string) (runenet.PingResult, error)
 	Up(ctx context.Context) error
 	Down(ctx context.Context) error
 	// Machines are the machines registered to the account, which is
@@ -127,7 +137,16 @@ type Config struct {
 // Handler implements the `network` command.
 type Handler struct {
 	network Network
+
+	// pingInterval spaces the pings that got an answer, and pingTimeout
+	// is how long each waits for one.
+	pingInterval time.Duration
+	pingTimeout  time.Duration
 }
+
+// pingCount bounds the pings `network ping` sends, as `tailscale ping`
+// does.
+const pingCount = 10
 
 var _ textapi.REPLHandler = (*Handler)(nil)
 
@@ -138,7 +157,11 @@ func New(cfg Config) *Handler {
 	if cfg.Network == nil {
 		panic("networkconsole: Config.Network must not be nil")
 	}
-	return &Handler{network: cfg.Network}
+	return &Handler{
+		network:      cfg.Network,
+		pingInterval: time.Second,
+		pingTimeout:  5 * time.Second,
+	}
 }
 
 // HandleCommand satisfies repl.CommandHandler. It runs off the IDE
@@ -154,6 +177,8 @@ func (h *Handler) HandleCommand(
 		return h.status(ctx)
 	case "peers":
 		return h.peers(ctx)
+	case "ping":
+		return h.ping(cmd.Args[1:])
 	case "machines":
 		return h.machines(ctx)
 	case "remove":
@@ -234,6 +259,86 @@ func (h *Handler) peers(ctx context.Context) (
 			p.Hostname, p.Hostname, p.OS, state)
 	}
 	return markdownOutput(b.String()), nil
+}
+
+func (h *Handler) ping(args []string) (
+	iterator.Iterator[component.Responsive], error,
+) {
+	if len(args) != 1 {
+		return nil, fmt.Errorf("usage: %s ping <machine>", CommandName)
+	}
+	p := &pinger{h: h, machine: args[0]}
+	return iterator.FromFunc(p.next, func() error { return nil }), nil
+}
+
+// pinger prints a line per ping, as it comes.
+type pinger struct {
+	h       *Handler
+	machine string
+
+	sent    int
+	replied bool
+	// pause is whether the last ping got its reply.
+	pause bool
+	done  bool
+}
+
+func (p *pinger) next(ctx context.Context) (component.Responsive, bool, error) {
+	if p.done {
+		return nil, false, nil
+	}
+	if p.sent == pingCount {
+		p.done = true
+		if !p.replied {
+			return nil, false, errors.New("no reply")
+		}
+		return nil, false, errors.New("direct connection not established")
+	}
+	// A ping that timed out already waited its turn.
+	if p.pause {
+		select {
+		case <-ctx.Done():
+			p.done = true
+			return nil, false, ctx.Err()
+		case <-time.After(p.h.pingInterval):
+		}
+	}
+	p.sent++
+	pingCtx, cancel := context.WithTimeout(ctx, p.h.pingTimeout)
+	defer cancel()
+	r, err := p.h.network.Ping(pingCtx, p.machine)
+	switch {
+	case err == nil:
+		p.replied, p.pause = true, true
+		p.done = r.Direct()
+		return pingLine(pongLine(r)), true, nil
+	case ctx.Err() != nil:
+		p.done = true
+		return nil, false, ctx.Err()
+	case errors.Is(err, context.DeadlineExceeded):
+		p.pause = false
+		return pingLine(fmt.Sprintf("ping %q timed out", p.machine)), true, nil
+	default:
+		p.done = true
+		return nil, false, err
+	}
+}
+
+// pongLine reads like a reply to `tailscale ping`.
+func pongLine(r runenet.PingResult) string {
+	via := r.Endpoint
+	switch {
+	case r.PeerRelay != "":
+		via = fmt.Sprintf("peer-relay(%s)", r.PeerRelay)
+	case r.DERPRegion != "":
+		via = fmt.Sprintf("DERP(%s)", r.DERPRegion)
+	}
+	return fmt.Sprintf("pong from %s (%s) via %s in %s",
+		r.Peer, r.Addr, via, r.Latency.Round(time.Millisecond))
+}
+
+func pingLine(line string) component.Responsive {
+	return component.NewResponsiveString(line, component.StringResponsiveConfig{})
 }
 
 func (h *Handler) machines(ctx context.Context) (
@@ -322,6 +427,9 @@ func (h *Handler) Complete(
 	if len(args) == 2 && args[0] == "remove" {
 		return h.completeMachine(ctx, args[1])
 	}
+	if len(args) == 2 && args[0] == "ping" {
+		return h.completePeer(ctx, args[1])
+	}
 	if len(args) > 1 {
 		return iterator.FromSlice[string](nil), nil
 	}
@@ -353,6 +461,24 @@ func (h *Handler) completeMachine(
 	for _, name := range names {
 		if strings.HasPrefix(name, filter) {
 			ret = append(ret, name)
+		}
+	}
+	return iterator.FromSlice(ret), nil
+}
+
+// completePeer offers the machines `ping` can reach: the ones online on
+// the network now.
+func (h *Handler) completePeer(
+	ctx context.Context, filter string,
+) (iterator.Iterator[string], error) {
+	peers, err := h.network.Peers(ctx)
+	if err != nil {
+		return iterator.FromSlice[string](nil), nil
+	}
+	var ret []string
+	for _, p := range peers {
+		if p.Online && strings.HasPrefix(p.Hostname, filter) {
+			ret = append(ret, p.Hostname)
 		}
 	}
 	return iterator.FromSlice(ret), nil

@@ -1,15 +1,5 @@
 # Rune default configuration, in Starlark form.
 #
-# The script's final top-level `config` dict is handed to the Rune config
-# loader exactly as if it had been written in YAML.
-#
-# Use normal Starlark `if` / `for` / dict-merge idioms to customise.
-
-# The Rune loader passes `tui` (bool) as a predeclared global; the script
-# branches on it below. The `mode` global is also exposed for backwards
-# compatibility but is no longer consulted here; editor mode is selected by
-# the editor preset written to the user config by the bootstrap flow.
-
 # Box-drawing frame characters used by the terminal-specific overrides below.
 TUI_FRAME_CHARSET = {
     "horizontaltop":    "─",
@@ -24,15 +14,10 @@ TUI_FRAME_CHARSET = {
 
 # GUI frame characters used by the default window-manager configuration.
 #
-# A frame charset may also name an image for each slot in a "graphics"
-# table, which the GUI draws over the slot's character in window frames,
-# the command prompt frame, notifications and the Rune Agent compose box
-# (extensions.rune-agent.config.input_box_frame_charset). The terminal UI,
-# and any image that has not loaded or failed to load, shows the
-# character. Images are drawn as they are: frame_attr, dimming and b&w do
-# not tint them, though the frame_attr background shows through their
-# transparent pixels. To tell the focused window apart, give
-# focus_frame_charset its own pre-coloured images. For example:
+# Any frame charset may also name an image for each slot in a "graphics"
+# table, drawn by the GUI over the slot's character. The terminal UI, and
+# an image that fails to load, shows the character. Images are not tinted
+# by frame_attr, dimming or b&w. For example:
 #
 #     "graphics": {
 #         "mode":             "replace",
@@ -46,11 +31,9 @@ TUI_FRAME_CHARSET = {
 #         "verticalright":    "https://example.com/frame/right.png",
 #     },
 #
-# "mode" is "replace", the default, to hide the character under each image,
-# or "overlay" to keep it there: it then shows through the image's
-# transparent pixels in its own color, which dimming and the command
-# prompt's shader still change. Leave a gap through an overlay image where
-# its character runs to let them show.
+# "mode" is "replace", the default, to hide the character under each
+# image, or "overlay" to keep it showing through the image's transparent
+# pixels. Every other "graphics" table takes the same "mode".
 GUI_FRAME_CHARSET = {
     "horizontaltop":    "▔",
     "horizontalbottom": "▁",
@@ -446,6 +429,11 @@ config = {
         # Volume of the GUI's sounds, from 0 (mute) to 1. The guivolume
         # command changes it for the current session.
         "sound_volume":         1,
+        # Image shown as the window icon on Linux and as the Dock and
+        # Cmd-Tab icon on macOS while Rune runs: a GIF, JPEG, PNG or WebP
+        # file, ideally square and at least 256 pixels wide. ~ and $VARS
+        # expand. `runectl screenshot` reloads it.
+        # "app_icon":           "~/.config/rune/icon.png",
         # Themes available to `default_theme` and the `guitheme` command.
         "themes":               GUI_THEMES,
         # Remap physical keys before they reach the editor (GUI only). Both
@@ -960,32 +948,11 @@ config = {
             #     "mode":       "overlay",  # or "replace"
             #     "outset":     {"top": 0, "bottom": 0, "inward": 0},
             # },
-            # Missing horizontal image and mode inherit the effective frame's
-            # graphics.horizontalbottom and mode. End images do not inherit
-            # corners: absent end images preserve the vertical side images.
-            # Explicit "horizontal": "" clears only the inherited image,
-            # not the separator. The horizontal image repeats as tiles.
-            # Nonnegative cell outsets extend end images up, down and inward;
-            # they are clipped to the prompt and may cover its contents.
-            # Replace hides covered glyphs; overlay draws images over them.
-            # Terminals without graphics retain the configured rune fallback.
         },
         # The prompt frames itself with the window manager's frame_charset
         # and its shader animates focus_frame_charset, along with the
         # separator_charset. A "frame_charset" here, whose missing slots
         # keep the window's, replaces both.
-        #
-        # The GUI draws "􀀈" to "􀀏" (top left, top right,
-        # bottom left, bottom right, top, bottom, left, right) as a channel
-        # for overlay images to frame: they lie in the groove of a rail flush
-        # with the cell's outer edge, half the cell's width thick at a side
-        # and a quarter of its height at the top or bottom. The groove runs
-        # from an eighth to three eighths of the width, or a sixteenth to
-        # three sixteenths of the height, in from the edge, so the shader
-        # glows inside the images. "􀀐" and "􀀑" branch the
-        # left and right channels into a bottom one: set them as the
-        # separator_charset "left" and "right", and "􀀍" between, to
-        # run the channel along the separator too:
         #
         #     "frame_charset": {
         #         "topleft":          "􀀈",
@@ -1023,8 +990,7 @@ config = {
             # "middle_char" and "hover_middle_char".
             #
             # A "graphics" table names an image for each of the six keys,
-            # which the GUI draws over the cells of that key's character,
-            # with the same "mode" as frame charsets:
+            # with the same top, bottom and hover fallbacks:
             #
             #     "graphics": {
             #         "mode":              "replace",
@@ -1034,15 +1000,11 @@ config = {
             #         "hover_top_char":    "file:///path/to/hover-top.png",
             #         "hover_middle_char": "file:///path/to/hover-middle.png",
             #         "hover_bottom_char": "file:///path/to/hover-bottom.png",
+            #         "outset":            {"left": 0},
             #     },
             #
-            # A top or bottom image left out is the middle one, and a hover
-            # image left out is the plain one.
-            #
-            # An "outset" table in "graphics" stretches each image over
-            # "left" cells left of its own, up to the frame's left edge, as
-            # in "outset": {"left": 1}. They cover what is drawn there, and
-            # the pointer grabs the bar from them as from the bar itself.
+            # "outset" stretches each image "left" cells to the left, where
+            # the pointer grabs the bar too.
             "scroll_bar_charset":    {
                 "middle_char":       "▐",
                 "hover_middle_char": "█",
@@ -1055,30 +1017,22 @@ config = {
             #
             # A "graphics" table in window_bar_charset names an image for
             # "left", the bar's first cell, "right", its last, and
-            # "horizontal", repeated over every cell between, which the GUI
-            # draws under the close icon and title:
+            # "horizontal", every cell between. Focused and unfocused
+            # windows share them:
             #
             #     "graphics": {
             #         "mode":       "replace",
             #         "left":       "file:///path/to/bar-left.png",
             #         "horizontal": "file:///path/to/bar-middle.png",
             #         "right":      "file:///path/to/bar-right.png",
+            #         "outset":     {"top": 0, "bottom": 0, "sides": 0, "inward": 0, "horizontal_top": 0},
             #     },
             #
             # With "mode" "replace", the icon and title sit on the frame's
-            # background; with "overlay", they keep the bar's colors behind
-            # them. Focused and unfocused windows share these images.
-            #
-            # An "outset" table in "graphics" stretches the left and right
-            # images past their cells: "top" rows above the bar, "bottom"
-            # rows down the window's sides, "sides" cells outward and
-            # "inward" cells toward the bar's other end, as in
-            # "outset": {"top": 1, "bottom": 1, "sides": 2}. Its
-            # "horizontal_top" stretches each "horizontal" image over that
-            # many rows above the bar, so a frame line can sit above the
-            # title. They cover what is drawn there, including the title and
-            # the window's content, are clipped at the edges of the window
-            # area, and do not change what the pointer can reach.
+            # background; with "overlay", on the bar's colors. "outset"
+            # stretches the left and right images "top" rows up, "bottom"
+            # rows down, "sides" cells outward and "inward" cells inward,
+            # and the horizontal images "horizontal_top" rows up.
             "window_bar":            True,
             "window_bar_charset":    {
                 "left":       "█",
@@ -1103,6 +1057,50 @@ config = {
         "non_focus_tab_icon_attr": attr(fg = "silver", bg = "default"),
         "focus_tab_highlight_attr": attr(fg = "red", bg = "default"),
         "focus_tab_highlight_char":  "\U00100006",
+        # Layered over the label of a tab not in focus while the pointer is
+        # on it, under the colours the tab has of its own.
+        "hover_tab_attr":          attr(),
+        # A "tab_images" table names images drawn under each tab: "focus"
+        # for the tabs shown in a window, falling back to "non_focus" for
+        # the others. A tab not in focus is drawn over "hover" while the
+        # pointer is on it and over "pressed" while a press on it is held,
+        # as a tab activates when the button is released over it. "pressed"
+        # falls back to "hover" and "hover" to "non_focus". Each names a
+        # "left" image for the tab's first cell, a "right" one for its last
+        # and a "middle" one for every cell between. "outset" stretches the
+        # left and right images "sides" cells outward:
+        #
+        #     "tab_images": {
+        #         "focus":     {
+        #             "left":   "file:///path/to/tab-left.png",
+        #             "middle": "file:///path/to/tab-middle.png",
+        #             "right":  "file:///path/to/tab-right.png",
+        #         },
+        #         "non_focus": {...},
+        #         "hover":     {...},
+        #         "pressed":   {...},
+        #         "outset":    {"sides": 0},
+        #     },
+        #
+        # A "focus_tab_highlight_graphics" table names images for the
+        # focus_tab_highlight_char cells of the focused window's tab:
+        # "left" for the first cell, "right" for the last and "horizontal"
+        # for every cell between, which a left or right left out falls back
+        # to. They draw even when focus_tab_highlight_char is "":
+        #
+        #     "focus_tab_highlight_graphics": {
+        #         "mode":       "replace",
+        #         "left":       "file:///path/to/highlight-left.png",
+        #         "horizontal": "file:///path/to/highlight.png",
+        #         "right":      "file:///path/to/highlight-right.png",
+        #     },
+        # The sounds the tab bar plays: "hover" when the pointer moves onto
+        # a tab not in focus and "click" when a tab is clicked. Each is a
+        # name from `sounds`, or "" for none.
+        "tab_sounds": {
+            "hover": "",
+            "click": "",
+        },
         # Icons for tabs; `terminal` is used for terminal tabs while
         # `default` is the fallback for files.
         "icons": {
@@ -1119,11 +1117,10 @@ config = {
         "tab_name_separator": "   ",
         # Prompt configuration used when Rune asks the user questions.
         #
-        # An "images" table names images that the GUI draws under the
-        # buttons of prompts, and of the search box, in place of their
-        # background. Each button state names a "left" image for the
-        # button's first cell, a "right" one for its last and a "middle"
-        # one repeated over every cell between:
+        # An "images" table names images drawn under the buttons of prompts
+        # and of the search box, in place of their background. Each button
+        # state names a "left", "middle" and "right" image, as tab_images
+        # does:
         #
         #     "images": {
         #         "idle":     {
@@ -1139,17 +1136,9 @@ config = {
         #
         # "idle" is required whenever any other state is set. "selected",
         # the button the keyboard is on, and "pressed" fall back to
-        # "hover", and "hover" falls back to "idle". The label keeps the
-        # foreground of text_attr, highlight_attr, hover_attr or
-        # clicked_attr, by state, over the prompt's background; in the
-        # search box, the foreground of button_attr or button_hover_attr
-        # over the background of its attr. "outset" stretches every image
-        # "top" rows above the button and "bottom" rows below it, and the
-        # left and right images "sides" cells outward. Prompts leave room
-        # for all of it; the search box only for "sides", and cuts the
-        # images at its edges. The terminal UI, and any image that has
-        # not loaded or failed to load, shows the buttons in their
-        # attributes.
+        # "hover", and "hover" falls back to "idle". "outset" stretches
+        # every image "top" rows up and "bottom" rows down, and the left
+        # and right images "sides" cells outward.
         "prompt": {
             "text_attr":       attr(bg = "gray", flag = "bold"),
             "highlight_attr":  attr(bg = "red", flag = "bold"),
@@ -1195,6 +1184,16 @@ config = {
         # Character drawn on the bottom row of the workspace tab bar to
         # highlight the workspace currently in focus.
         "focus_tab_highlight_char":  "",
+        # "tab_images", "focus_tab_highlight_graphics" and "tab_sounds" name
+        # images and sounds for the workspace tab bar, as their browser
+        # counterparts do; "focus" is the workspace in focus. The bar takes
+        # its colours from browser.*_tab_attr, browser.hover_tab_attr and
+        # browser.focus_tab_highlight_attr. Every workspace shares it, so a
+        # workspace's own config does not style it.
+        "tab_sounds": {
+            "hover": "",
+            "click": "",
+        },
         # Per-workspace notice shown in a floating window when the
         # workspace opens. Either `path` (resolved against the
         # workspace filesystem) or `literal` provides the content;
@@ -1231,11 +1230,8 @@ config = {
         # bottomleft, horizontalbottom and bottomright images of
         # frame_charset are not drawn while it is on.
         "progress_bar": True,
-        # A "graphics" table names an image for each of the five keys,
-        # drawn over the cells of that key's character with the same
-        # "mode" as frame charsets. Images are not tinted with the color
-        # of the notification's level; "overlay" keeps the colored
-        # character showing through their transparent pixels:
+        # A "graphics" table names an image for each of the five keys. The
+        # images are not tinted with the notification's level:
         #
         #     "graphics": {
         #         "mode":        "overlay",
@@ -1411,6 +1407,64 @@ config = {
         # stands in for them when there is nothing to show.
         "divider_attr":     attr(fg = "gray"),
         "placeholder_attr": attr(fg = "gray"),
+        # Glyphs joining the divider into the inbox window's frame: "top"
+        # and "bottom" are the joins, colored as the frame; "vertical_top",
+        # "vertical" and "vertical_bottom" are drawn under the top join,
+        # between, and over the bottom join, colored by "divider_attr".
+        # Missing vertical, vertical image and mode inherit the window
+        # frame's verticalleft; missing vertical_top and vertical_bottom
+        # inherit vertical. Under a window bar, there is no top join and
+        # the divider starts with vertical.
+        "divider_charset": {
+            "top":    "🭽",
+            "bottom": "🭼",
+            # Optional GUI images, with missing joins taking the frame's
+            # horizontaltop and horizontalbottom images:
+            # "graphics": {
+            #     "top":      "file:///divider-top.png",
+            #     "vertical": "file:///divider-tile.png",
+            #     "bottom":   "file:///divider-bottom.png",
+            #     "mode":     "overlay",  # or "replace"
+            #     "outset":   {"left": 0, "right": 0, "inward": 0},
+            # },
+        },
+        # An "images" table names images drawn under each program, in place
+        # of the backgrounds of "selected_attr" and "hover_attr", in the
+        # shape of browser.prompt.images: "selected" for the selected
+        # program, falling back to "hover" for the one under the mouse,
+        # falling back to "idle" for the rest. No state is required:
+        #
+        #     "images": {
+        #         "selected": {
+        #             "left":   "file:///path/to/entry-left.png",
+        #             "middle": "file:///path/to/entry-middle.png",
+        #             "right":  "file:///path/to/entry-right.png",
+        #         },
+        #         "hover":    {...},
+        #         "idle":     {...},
+        #         "outset":   {"top": 0, "bottom": 0, "sides": 0},
+        #     },
+        #
+        # "marker_graphics" names images for the marker: "top" for the
+        # first cell, "bottom" for the last and "vertical" for every cell
+        # between, which a top or bottom left out falls back to.
+        # "progress_bar_graphics" names images for the progress bar's
+        # cells, as "progress_bar" names their characters; an end left out
+        # takes the image of the cell it stands in:
+        #
+        #     "marker_graphics": {
+        #         "mode":     "replace",
+        #         "top":      "file:///path/to/marker-top.png",
+        #         "vertical": "file:///path/to/marker.png",
+        #         "bottom":   "file:///path/to/marker-bottom.png",
+        #     },
+        #     "progress_bar_graphics": {
+        #         "mode":   "replace",
+        #         "left":   "file:///path/to/progress-left.png",
+        #         "filled": "file:///path/to/progress-filled.png",
+        #         "empty":  "file:///path/to/progress-empty.png",
+        #         "right":  "file:///path/to/progress-right.png",
+        #     },
     },
 }
 
@@ -1601,6 +1655,12 @@ if tui:
             "attr":            attr(fg = "default", bg = "#1e1e1e"),
             "background_attr": attr(fg = "default", bg = "#1e1e1e"),
             "frame_charset":   TUI_FRAME_CHARSET,
+        },
+        "program_status": {
+            "divider_charset": {
+                "top":    "┬",
+                "bottom": "┴",
+            },
         },
         "terminal": {
             "attr":                  attr(fg = "default", bg = "#1e1e1e"),

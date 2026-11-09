@@ -72,7 +72,13 @@ func verifyExtensions(raw any, dir string) error {
 			return fmt.Errorf("extension %q must be a map, got %T",
 				id, extensions[id])
 		}
-		path, _ := ext["path"].(string)
+		// Without a path the entry configures an extension another
+		// package installs, such as a theme styling Rune Agent.
+		raw, ok := ext["path"]
+		if !ok {
+			continue
+		}
+		path, _ := raw.(string)
 		if err := verifyExtensionPath(path, dir); err != nil {
 			return fmt.Errorf("extension %q: %w", id, err)
 		}

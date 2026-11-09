@@ -70,6 +70,12 @@ func (s *ShadedTabs) Running() bool {
 	return s.shader != nil
 }
 
+// SetDefAttr sets the attributes that resolve term.ColorDefault cells
+// for the effect from the next time it starts.
+func (s *ShadedTabs) SetDefAttr(attr term.Attributes) {
+	s.config.DefAttr = attr
+}
+
 // SetRunning starts or stops the effect. It reports whether the state
 // changed, so callers can repaint only on the transition. Starting is a
 // no-op without a known shader name or an interrupter.

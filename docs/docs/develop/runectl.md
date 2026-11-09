@@ -81,22 +81,31 @@ keys to every open workspace, as `themereload` does:
   `scroll_bar_charset`, `scroll_bar_char`, `scroll_bar_hover_char`,
   `window_bar`, `window_bar_charset`, `close_icon` and `close_icon_attr`;
 - `browser.frameunion_charset`;
+- `browser`: `focus_tab_attr`, `non_focus_tab_attr`, `focus_tab_icon_attr`,
+  `non_focus_tab_icon_attr`, `focus_tab_highlight_attr`, `hover_tab_attr`,
+  `focus_tab_highlight_char`, `tab_images`,
+  `focus_tab_highlight_graphics` and `tab_sounds`;
 - `browser.prompt`: `text_attr`, `highlight_attr`, `hover_attr`,
   `clicked_attr`, `background_attr` and `images`;
 - `command.frame_charset`, `command.separator_charset` and
   `command.show_manual`;
 - `editor.status_bar`: `layout`, `background_attr` and
   `foreground_error_attr`;
-- `gui`: `quick_menu`, `quick_menu_sounds`, `themes`, `default_theme` and
-  `sound_volume`;
+- `gui`: `quick_menu`, `quick_menu_sounds`, `themes`, `default_theme`,
+  `sound_volume` and [`app_icon`](../config.md#gui);
 - `notifications`: `attr`, `background_attr`, `frame_charset`, `padding`,
   `progress_bar` and `progress_format`;
-- `program_status.sounds`;
+- `program_status`, every key;
 - `terminal.bell`;
 - `workspace`: `wallpaper_image`, `wallpaper_image_ascii`,
   `wallpaper_ascii`, `wallpaper`, `wallpaper_attr`,
-  `wallpaper_background_attr` and `wallpaper_density_characters`;
+  `wallpaper_background_attr`, `wallpaper_density_characters`,
+  `focus_tab_highlight_char`, `tab_images`,
+  `focus_tab_highlight_graphics` and `tab_sounds`;
 - `sounds`.
+
+The capture cannot show `gui.app_icon`: the desktop draws the icon outside
+Rune's output, so look for it in the taskbar, the window title or the Dock.
 
 It also reads again every image these keys name, even a file overwritten
 at the same path, so you can edit an image and see it in the next
@@ -105,8 +114,8 @@ config file does not parse, none of its keys are applied.
 `gui.default_theme` and `gui.sound_volume` apply only when they differ
 from the values Rune read last, so a theme or volume picked since then
 stays. Prompts already open keep their style until reopened. Other keys
-still take `workspacereload` or a restart. Notifications already open take
-the new style at once.
+still take `workspacereload` or a restart. Notifications and the program
+status inbox already open take the new style at once.
 
 Rune also serves the new config to its extensions and, on macOS and
 Linux, sends each running extension process `SIGUSR2`. When it signalled

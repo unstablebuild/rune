@@ -26,6 +26,8 @@ import (
 	"image/color"
 	"image/png"
 	"io/fs"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -34,11 +36,11 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 	"unicode/utf8"
 
-	gomcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
@@ -88,7 +90,7 @@ func TestAddMessageHiddenToolImages(t *testing.T) {
 		}}, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			comp := dialoguetui.NewComponent(defaultComponentCfg)
+			comp := dialoguetui.NewComponent(dialoguetui.DefaultComponentConfig())
 			t.Cleanup(func() { require.NoError(t, comp.Close()) })
 			addMessage(comp, llmapi.Message{Role: llmapi.RoleUser, Content: "generate an image"}, nil)
 			before := comp.Height(80)
@@ -118,7 +120,7 @@ func TestAddMessageGeneratedImageReplay(t *testing.T) {
 
 	for _, collapsed := range []bool{true, false} {
 		t.Run(fmt.Sprintf("collapsed=%v", collapsed), func(t *testing.T) {
-			cfg := defaultComponentCfg
+			cfg := dialoguetui.DefaultComponentConfig()
 			cfg.StartCollapsed = collapsed
 			live := dialoguetui.NewComponent(cfg)
 			replayed := dialoguetui.NewComponent(cfg)
@@ -439,7 +441,7 @@ func TestDialogueConfigImages(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			h := &aiEditorHandler{
-				cfg: defaultComponentCfg, imageCache: tt.cache, p: term.NopInterrupter(),
+				cfg: dialoguetui.DefaultComponentConfig(), imageCache: tt.cache, p: term.NopInterrupter(),
 				fs: nopFileSystem{}, cwd: dirURI("/workspace"),
 			}
 			cfg := h.dialogueConfig(new(sync.Mutex))
@@ -1787,6 +1789,660 @@ func TestPlanSkillSpawnInheritsQualifiedModel(t *testing.T) {
 	}
 }
 
+// The system prompt markers by which skillChat tells its agents apart.
+const (
+	chatAgent     = "CHAT-AGENT"
+	defaultAgent  = "DEFAULT-AGENT"
+	researchAgent = "RESEARCH-AGENT"
+	scoutAgent    = "SCOUT-AGENT"
+	recapAgent    = "RECAP-AGENT"
+	defaultSkill  = "DEFAULT-SKILL"
+)
+
+// skillChat is an agent chat opened as the chat command opens one, over a
+// workspace holding notes.txt and skills for every way to run a skill or
+// a sub-agent:
+//
+//   - notes and other are instruction skills.
+//   - research is an agent skill whose tool rules allow reading files,
+//     the notes skill, scout sub-agents, git log but not git log -p, and
+//     its own scripts.
+//   - scout is an agent skill with no tool rules.
+//   - recap is an agent skill that starts with the conversation so far.
+//   - default is an agent skill named like the default agent.
+//
+// Only the model and the shell are fakes: shell commands are recorded,
+// not run, and sub-agent conversations are numbered in the order they
+// start, as in sub-agent-research-1.
+type skillChat struct {
+	t        *testing.T
+	h        *aiEditorHandler
+	wm       *recordingWindowManager
+	tab      browserapi.Handler
+	llm      *agentRouter
+	exec     *recordingExec
+	store    *memDialogueStore
+	skillDir string
+}
+
+const (
+	skillChatID                     = "skills-chat"
+	skillChatWidth, skillChatHeight = 100, 50
+)
+
+// newSkillDir returns a directory holding the skills of a skillChat.
+func newSkillDir(t *testing.T) string {
+	skillDir := t.TempDir()
+	for name, content := range map[string]string{
+		"notes/SKILL.md": "---\nname: notes\ndescription: How to take notes\n---\nNOTES-SKILL: Take notes as bullet points.",
+		"other/SKILL.md": "---\nname: other\ndescription: Something else\n---\nOTHER-SKILL: Do something else.",
+		"research/SKILL.md": `---
+name: research
+description: Researches the notes
+type: agent
+allowed-tools: [read_file, "skill(notes)", "agent(scout)", "bash(git log *)", "bash($research)"]
+disallowed-tools: ["bash(git log -p *)"]
+---
+` + researchAgent + `: You research the notes.`,
+		"research/scripts/summarize": "#!/bin/sh\n",
+		"scout/SKILL.md": "---\nname: scout\ndescription: Scouts the workspace\ntype: agent\n---\n" +
+			scoutAgent + ": You scout the workspace.",
+		"recap/SKILL.md": "---\nname: recap\ndescription: Recaps the conversation\ntype: agent\n" +
+			"parent-context: true\nallowed-tools: [read_file]\n---\n" + recapAgent + ": You recap the conversation.",
+		"default/SKILL.md": "---\nname: default\ndescription: Named like the default agent\ntype: agent\n" +
+			"allowed-tools: [read_file]\n---\n" + defaultSkill + ": You only read files.",
+	} {
+		file := filepath.Join(skillDir, name)
+		require.NoError(t, os.MkdirAll(filepath.Dir(file), 0o755))
+		require.NoError(t, os.WriteFile(file, []byte(content), 0o755))
+	}
+	return skillDir
+}
+
+// newSkillChat opens a skillChat over the skills in skillDir, which
+// newSkillDir writes.
+func newSkillChat(t *testing.T, skillDir string) *skillChat {
+	workspace := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(workspace, "notes.txt"), []byte("hi\n"), 0o644))
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	fs, cwd := testLocalFS{root: workspace}, dirURI(workspace)
+	model := llmapi.ModelEntry{Provider: "test", Name: "test-model", ContextWindow: 128_000}
+	c := &skillChat{
+		t:  t,
+		wm: &recordingWindowManager{},
+		llm: newAgentRouter([]llmapi.ModelEntry{model},
+			chatAgent, defaultAgent, researchAgent, scoutAgent, recapAgent, defaultSkill),
+		exec:     &recordingExec{},
+		store:    newMemDialogueStore(),
+		skillDir: skillDir,
+	}
+	tools, _ := agentools.DefaultTools(fs, c.exec, cwd, stubLSP{}, agentools.NoIndex(), agentools.Config{},
+		configedit.NopConfig())
+	var started atomic.Int32
+	c.h = &aiEditorHandler{
+		ctx:            ctx,
+		llmSvc:         c.llm,
+		defaultModel:   model.Name,
+		cfg:            dialoguetui.DefaultComponentConfig(),
+		dialogueStore:  c.store,
+		systemPrompt:   chatAgent + ": You are the chat agent.",
+		agentsConfig:   defaultAgentsConfig(defaultAgent + ": You are a sub-agent."),
+		baseTools:      tools,
+		toolRegistry:   agent.NewRegistry(tools...),
+		skillRegistry:  skills.NewRegistry(fs, cwd, []string{skillDir}, nil),
+		wm:             c.wm,
+		n:              stubNotifications{},
+		p:              term.NopInterrupter(),
+		config:         configedit.NopConfig(),
+		cwd:            cwd,
+		fs:             fs,
+		memoryDataPath: t.TempDir(),
+		generateDialogueID: func(_ context.Context, agentID string) string {
+			return fmt.Sprintf("sub-agent-%s-%d", agentID, started.Add(1))
+		},
+	}
+	c.open()
+	t.Cleanup(func() { require.NoError(t, c.tab.Close()) })
+	return c
+}
+
+// open opens the chat in a tab, replaying what it saved.
+func (c *skillChat) open() {
+	require.NoError(c.t, c.h.handleChat(textapi.Command{Args: []string{skillChatID}}))
+	c.tab = c.wm.gotHandler
+	c.tab.Resize(skillChatWidth, skillChatHeight)
+}
+
+// reopen closes the chat's tab and opens the chat again.
+func (c *skillChat) reopen() {
+	require.NoError(c.t, c.tab.Close())
+	c.open()
+}
+
+// send types text into the chat and submits it.
+func (c *skillChat) send(text string) {
+	keys, err := term.ParseKeys(strings.ReplaceAll(text, " ", "<space>") + "<enter>")
+	require.NoError(c.t, err)
+	for _, key := range keys {
+		c.tab.Handle(term.Event{Type: term.EventKey, Ch: key.Ch, Key: key.Key, Mod: key.Mod})
+	}
+}
+
+// chatskill runs the chatskill command on the chat, as the command
+// prompt does with the words of line.
+func (c *skillChat) chatskill(line string) {
+	require.NoError(c.t, c.h.HandleCommand(c.h.ctx, textapi.Command{
+		Name: commandSkill, Args: strings.Fields(line), URI: c.wm.gotURI,
+	}))
+}
+
+func (c *skillChat) screen() string {
+	return handlertest.DrawHandler(c.tab, skillChatWidth, skillChatHeight)
+}
+
+// saved returns the messages the conversation id holds.
+func (c *skillChat) saved(id string) []llmapi.Message {
+	c.store.mu.Lock()
+	defer c.store.mu.Unlock()
+	return slices.Clone(c.store.dialogues[id].Messages)
+}
+
+// subAgents returns the IDs of the sub-agent conversations, sorted.
+func (c *skillChat) subAgents() []string {
+	c.store.mu.Lock()
+	defer c.store.mu.Unlock()
+	var ids []string
+	for id := range c.store.dialogues {
+		if strings.HasPrefix(id, "sub-agent-") {
+			ids = append(ids, id)
+		}
+	}
+	slices.Sort(ids)
+	return ids
+}
+
+// await waits until the chat shows reply and holds want after its system
+// prompt, and returns the screen.
+func (c *skillChat) await(reply string, want []llmapi.Message) string {
+	var screen string
+	require.EventuallyWithT(c.t, func(t *assert.CollectT) {
+		screen = c.screen()
+		if assert.Contains(t, screen, reply) {
+			saved := c.saved(skillChatID)
+			if assert.NotEmpty(t, saved) {
+				assert.Equal(t, want, saved[1:], "screen:\n%s", screen)
+			}
+		}
+	}, 5*time.Second, 10*time.Millisecond)
+	return screen
+}
+
+// scriptResearch scripts the research sub-agent to try every kind of tool
+// its rules allow or forbid, including a scout sub-agent that tries a
+// command they forbid, and to then answer "The notes say hi.".
+func (c *skillChat) scriptResearch() {
+	script := filepath.Join(c.skillDir, "research", "scripts", "summarize")
+	c.llm.script(researchAgent,
+		toolCallsResponse(
+			toolCall("r-read", "read_file", `{"path":"notes.txt"}`),
+			toolCall("r-log", "bash", `{"command":"git log --oneline","description":"log"}`),
+			toolCall("r-log-p", "bash", `{"command":"git log -p notes.txt","description":"log"}`),
+			toolCall("r-rm", "bash", `{"command":"rm notes.txt","description":"remove"}`),
+			toolCall("r-script", "bash", mustJSON(c.t, map[string]string{
+				"command": script + " notes.txt", "description": "summarize",
+			})),
+			toolCall("r-notes", "skill", `{"name":"notes","args":null}`),
+			toolCall("r-other", "skill", `{"name":"other","args":null}`),
+			toolCall("r-scout", "agent", `{"description":"scout","prompt":"look around","subagent_type":"scout"}`),
+			toolCall("r-default", "agent", `{"description":"anything","prompt":"do anything"}`),
+			toolCall("r-patch", "apply_patch", `{"patch":""}`),
+		),
+		llmtest.Response{Chunks: []string{"The notes say hi."}},
+	)
+	c.llm.script(scoutAgent,
+		toolCallsResponse(toolCall("s-rm", "bash", `{"command":"rm notes.txt","description":"remove"}`)),
+		llmtest.Response{Chunks: []string{"Scout found notes.txt."}},
+	)
+}
+
+// checkResearch checks that the research sub-agent ran as scriptResearch
+// scripts it, given task, and that its tool rules bound it and the scout
+// sub-agent it ran.
+func (c *skillChat) checkResearch(task string) {
+	t := c.t
+	research := c.llm.requests(researchAgent)
+	require.Len(t, research, 2)
+	first := research[0].Request
+	assert.Equal(t, researchAgent+": You research the notes.", first.Messages[0].Content)
+	assert.Equal(t, []llmapi.Message{{Role: llmapi.RoleUser, Content: task}}, conversation(first.Messages),
+		"the sub-agent starts with the task alone")
+	assert.Equal(t, []string{"agent", "bash", "read_file", "skill"}, toolNames(first))
+	assert.Contains(t, toolDescription(first, "bash"), "Commands are restricted")
+	assert.Contains(t, toolDescription(first, "agent"), "- scout: Scouts the workspace")
+	assert.NotContains(t, toolDescription(first, "agent"), "- research")
+	skillList := systemMessage(first, "The following skills are available")
+	assert.Contains(t, skillList, "- notes: How to take notes")
+	for _, hidden := range []string{"other", "research", "scout", "explore"} {
+		assert.NotContains(t, skillList, "- "+hidden, "the rules hide the skills they do not allow")
+	}
+
+	results := research[1].Request.Messages
+	script := filepath.Join(c.skillDir, "research", "scripts", "summarize")
+	for id, want := range map[string]string{
+		"r-read":    "L1: hi",
+		"r-log":     "ran bash -c git log --oneline",
+		"r-log-p":   "error: ",
+		"r-rm":      "error: ",
+		"r-script":  "ran bash -c " + script + " notes.txt",
+		"r-notes":   "NOTES-SKILL: Take notes as bullet points.",
+		"r-other":   `unknown skill "other"`,
+		"r-scout":   "Scout found notes.txt.",
+		"r-default": "error: subagent_type is required",
+		"r-patch":   `error: unknown tool "apply_patch"`,
+	} {
+		got, ok := findToolResult(results, id)
+		if assert.True(t, ok, "no result for %s", id) {
+			assert.Contains(t, got, want, "result of %s", id)
+		}
+	}
+
+	scout := c.llm.requests(scoutAgent)
+	require.Len(t, scout, 2)
+	assert.Equal(t, toolNames(first), toolNames(scout[0].Request),
+		"a sub-agent gets no more than the agent that runs it")
+	got, _ := findToolResult(scout[1].Request.Messages, "s-rm")
+	assert.True(t, strings.HasPrefix(got, "error: "), "the scout's rm must be rejected: %s", got)
+	assert.Equal(t, []string{"bash -c git log --oneline", "bash -c " + script + " notes.txt"}, c.exec.ran(),
+		"only allowed commands may run")
+}
+
+func TestE2ESkillRuns(t *testing.T) {
+	// researchRows are the rows of the calls of research, as scriptResearch
+	// scripts it, and of its result.
+	researchRows := []string{
+		"├─ ✓ read_file notes.txt",
+		"├─ ✓ bash git log --oneline",
+		"├─ ✗ bash git log -p notes.txt",
+		"├─ ✗ bash rm notes.txt",
+		"├─ ✓ bash /", // the script, by its absolute path
+		"├─ ✓ skill notes",
+		"├─ ✗ skill other",
+		"├─ ✓ agent scout",
+		"│  ├─ ✗ bash rm notes.txt",
+		"│  └─ 󰆈  Scout found notes.txt.",
+		"├─ ✗ agent anything",
+		"├─ ✗ apply_patch",
+		"└─ 󰆈  The notes say hi.",
+	}
+	skillDir := newSkillDir(t)
+	notes, ok := skills.NewRegistry(testLocalFS{root: "/"}, dirURI(""), []string{skillDir}, nil).Get("notes")
+	require.True(t, ok)
+	tests := []struct {
+		name string
+		// greet has the chat agent answer a greeting before the run.
+		greet bool
+		// run starts the run as the user does, who sees shown.
+		run   func(c *skillChat)
+		shown string
+		// unechoed reports that the chat only shows the user's message
+		// once reopened.
+		unechoed bool
+		// research is the task the research sub-agent gets, when the run
+		// has it run as scriptResearch scripts it.
+		research string
+		scripts  map[string][]llmtest.Response
+		// reply is the last text the run shows, turn what the chat saves
+		// of it, and rows the row of the run's tool call followed by
+		// the rows nested under it.
+		reply     string
+		turn      []llmapi.Message
+		rows      []string
+		subAgents []string
+		check     func(t *testing.T, c *skillChat)
+	}{
+		{
+			name:      "slash command runs an agent skill",
+			run:       func(c *skillChat) { c.send("/research what do the notes say?") },
+			shown:     "/research what do the notes say?",
+			research:  skillCommand("research", "what do the notes say?"),
+			reply:     "The notes say hi.",
+			turn:      ranSkill(skillCommand("research", "what do the notes say?"), "research", 1, "The notes say hi."),
+			rows:      append([]string{"✓ skill research"}, researchRows...),
+			subAgents: []string{"sub-agent-research-1", "sub-agent-scout-2"},
+			check: func(t *testing.T, c *skillChat) {
+				assert.Empty(t, c.llm.requests(chatAgent), "the sub-agent answers, not the chat agent")
+			},
+		},
+		{
+			name:      "chatskill runs an agent skill",
+			run:       func(c *skillChat) { c.chatskill("research what do the notes say?") },
+			shown:     "/research what do the notes say?",
+			unechoed:  true,
+			research:  skillCommand("research", "what do the notes say?"),
+			reply:     "The notes say hi.",
+			turn:      ranSkill(skillCommand("research", "what do the notes say?"), "research", 1, "The notes say hi."),
+			rows:      append([]string{"✓ skill research"}, researchRows...),
+			subAgents: []string{"sub-agent-research-1", "sub-agent-scout-2"},
+			check: func(t *testing.T, c *skillChat) {
+				assert.Empty(t, c.llm.requests(chatAgent), "the sub-agent answers, not the chat agent")
+			},
+		},
+		{
+			name:     "skill tool runs an agent skill",
+			run:      func(c *skillChat) { c.send("research the notes") },
+			shown:    "research the notes",
+			research: "what do the notes say?",
+			scripts: map[string][]llmtest.Response{chatAgent: {
+				toolCallsResponse(toolCall("k1", "skill", `{"name":"research","args":"what do the notes say?"}`)),
+				{Chunks: []string{"Research says the notes say hi."}},
+			}},
+			reply: "Research says the notes say hi.",
+			turn: []llmapi.Message{
+				{Role: llmapi.RoleUser, Content: "research the notes"},
+				{Role: llmapi.RoleAssistant, ToolCalls: []llmapi.ToolCall{
+					toolCall("k1", "skill", `{"name":"research","args":"what do the notes say?"}`),
+				}},
+				{Role: llmapi.RoleTool, Content: "The notes say hi.", Name: "skill", ToolCallID: "k1"},
+				{Role: llmapi.RoleAssistant, Content: "Research says the notes say hi."},
+			},
+			rows:      append([]string{"✓ skill research what do the notes say?"}, researchRows...),
+			subAgents: []string{"sub-agent-research-1", "sub-agent-scout-2"},
+		},
+		{
+			name:     "agent tool runs an agent skill",
+			run:      func(c *skillChat) { c.send("research the notes") },
+			shown:    "research the notes",
+			research: "what do the notes say?",
+			scripts: map[string][]llmtest.Response{chatAgent: {
+				toolCallsResponse(toolCall("a1", "agent",
+					`{"description":"research the notes","prompt":"what do the notes say?","subagent_type":"research"}`)),
+				{Chunks: []string{"Research says the notes say hi."}},
+			}},
+			reply: "Research says the notes say hi.",
+			turn: []llmapi.Message{
+				{Role: llmapi.RoleUser, Content: "research the notes"},
+				{Role: llmapi.RoleAssistant, ToolCalls: []llmapi.ToolCall{toolCall("a1", "agent",
+					`{"description":"research the notes","prompt":"what do the notes say?","subagent_type":"research"}`)}},
+				{Role: llmapi.RoleTool, Content: "The notes say hi.", Name: "agent", ToolCallID: "a1"},
+				{Role: llmapi.RoleAssistant, Content: "Research says the notes say hi."},
+			},
+			rows:      append([]string{"✓ agent research the notes"}, researchRows...),
+			subAgents: []string{"sub-agent-research-1", "sub-agent-scout-2"},
+		},
+		{
+			name:  "agent tool runs the default agent",
+			run:   func(c *skillChat) { c.send("look around") },
+			shown: "look around",
+			scripts: map[string][]llmtest.Response{
+				chatAgent: {
+					toolCallsResponse(toolCall("a1", "agent", `{"description":"look around","prompt":"look around"}`)),
+					{Chunks: []string{"The sub-agent looked around."}},
+				},
+				defaultAgent: {{Chunks: []string{"Looked around."}}},
+			},
+			reply: "The sub-agent looked around.",
+			turn: []llmapi.Message{
+				{Role: llmapi.RoleUser, Content: "look around"},
+				{Role: llmapi.RoleAssistant, ToolCalls: []llmapi.ToolCall{
+					toolCall("a1", "agent", `{"description":"look around","prompt":"look around"}`),
+				}},
+				{Role: llmapi.RoleTool, Content: "Looked around.", Name: "agent", ToolCallID: "a1"},
+				{Role: llmapi.RoleAssistant, Content: "The sub-agent looked around."},
+			},
+			rows:      []string{"✓ agent look around", "└─ 󰆈  Looked around."},
+			subAgents: []string{"sub-agent-default-1"},
+			check: func(t *testing.T, c *skillChat) {
+				requests := c.llm.requests(defaultAgent)
+				require.Len(t, requests, 1)
+				tools := toolNames(requests[0].Request)
+				for _, tool := range []string{"agent", "apply_patch", "bash", "read_file", "skill"} {
+					assert.Contains(t, tools, tool, "an agent without tool rules gets every tool")
+				}
+				skillList := systemMessage(requests[0].Request, "The following skills are available")
+				assert.Contains(t, skillList, "- other: Something else")
+				assert.Contains(t, skillList, "- research (agent): Researches the notes")
+			},
+		},
+		{
+			name:  "slash command loads an instruction skill",
+			run:   func(c *skillChat) { c.send("/notes about today") },
+			shown: "/notes about today",
+			scripts: map[string][]llmtest.Response{chatAgent: {
+				toolCallsResponse(toolCall("n1", "skill", `{"name":"notes","args":"about today"}`)),
+				{Chunks: []string{"Noted."}},
+			}},
+			reply: "Noted.",
+			turn: []llmapi.Message{
+				{Role: llmapi.RoleUser, Content: skillCommand("notes", "about today") +
+					"\n<command-hint>Call the skill tool with name=\"notes\" to load and run this skill.</command-hint>"},
+				{Role: llmapi.RoleAssistant, ToolCalls: []llmapi.ToolCall{
+					toolCall("n1", "skill", `{"name":"notes","args":"about today"}`),
+				}},
+				{Role: llmapi.RoleTool, Content: skills.FormatSkillContent(notes), Name: "skill", ToolCallID: "n1"},
+				{Role: llmapi.RoleAssistant, Content: "Noted."},
+			},
+			rows: []string{"✓ skill notes about today"},
+			check: func(t *testing.T, c *skillChat) {
+				requests := c.llm.requests(chatAgent)
+				require.NotEmpty(t, requests)
+				assert.Equal(t, skills.FormatSkillContent(notes),
+					systemMessage(requests[0].Request, "NOTES-SKILL"), "the command loads the skill")
+			},
+		},
+		{
+			name:      "slash command runs an agent skill with the conversation",
+			greet:     true,
+			run:       func(c *skillChat) { c.send("/recap") },
+			shown:     "/recap",
+			scripts:   map[string][]llmtest.Response{recapAgent: {{Chunks: []string{"You said hello."}}}},
+			reply:     "You said hello.",
+			turn:      ranSkill(skillCommand("recap", ""), "recap", 1, "You said hello."),
+			rows:      []string{"✓ skill recap", "└─ 󰆈  You said hello."},
+			subAgents: []string{"sub-agent-recap-1"},
+			check: func(t *testing.T, c *skillChat) {
+				requests := c.llm.requests(recapAgent)
+				require.Len(t, requests, 1)
+				assert.Equal(t, append(greeting(), llmapi.Message{Role: llmapi.RoleUser, Content: skillCommand("recap", "")}),
+					conversation(requests[0].Request.Messages))
+			},
+		},
+		{
+			name:  "slash command runs a skill named like an agent",
+			greet: true,
+			run:   func(c *skillChat) { c.send("/default read the notes") },
+			shown: "/default read the notes",
+			scripts: map[string][]llmtest.Response{defaultSkill: {
+				toolCallsResponse(toolCall("d-ls", "bash", `{"command":"ls","description":"list"}`)),
+				{Chunks: []string{"Read the notes."}},
+			}},
+			reply:     "Read the notes.",
+			turn:      ranSkill(skillCommand("default", "read the notes"), "default", 1, "Read the notes."),
+			rows:      []string{"✓ skill default", "├─ ✗ bash command=ls description=list", "└─ 󰆈  Read the notes."},
+			subAgents: []string{"sub-agent-default-1"},
+			check: func(t *testing.T, c *skillChat) {
+				assert.Empty(t, c.llm.requests(defaultAgent), "the skill must not run as the agent")
+				requests := c.llm.requests(defaultSkill)
+				require.Len(t, requests, 2)
+				assert.Equal(t, []string{"read_file"}, toolNames(requests[0].Request))
+				assert.Equal(t, []llmapi.Message{{Role: llmapi.RoleUser, Content: skillCommand("default", "read the notes")}},
+					conversation(requests[0].Request.Messages), "the sub-agent starts with the task alone")
+				got, _ := findToolResult(requests[1].Request.Messages, "d-ls")
+				assert.Equal(t, `error: unknown tool "bash"`, got)
+				assert.Empty(t, c.exec.ran())
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := newSkillChat(t, skillDir)
+			var before []llmapi.Message
+			if tt.greet {
+				c.llm.script(chatAgent, llmtest.Response{Chunks: []string{"Hi there."}})
+				c.send("hello")
+				before = greeting()
+				c.await("Hi there.", before)
+			}
+			if tt.research != "" {
+				c.scriptResearch()
+			}
+			for marker, responses := range tt.scripts {
+				c.llm.script(marker, responses...)
+			}
+
+			tt.run(c)
+			turn := append(slices.Clone(before), tt.turn...)
+			screen := c.await(tt.reply, turn)
+			if !tt.unechoed {
+				assert.Contains(t, screen, tt.shown)
+			}
+			rows := runRows(screen)
+			if assert.Len(t, rows, len(tt.rows), "screen:\n%s", screen) {
+				for i, want := range tt.rows {
+					assert.True(t, strings.HasPrefix(rows[i], want), "row %d is %q, want %q", i, rows[i], want)
+				}
+			}
+			assert.Greater(t, strings.LastIndex(screen, tt.reply), strings.Index(screen, tt.rows[0]),
+				"the reply follows the run:\n%s", screen)
+			if tt.research != "" {
+				c.checkResearch(tt.research)
+			}
+			assert.Equal(t, tt.subAgents, c.subAgents())
+			if tt.check != nil {
+				tt.check(t, c)
+			}
+
+			c.reopen()
+			reopened := c.screen()
+			assert.Contains(t, reopened, tt.shown, "the reopened chat shows the run")
+			assert.Contains(t, reopened, tt.reply, "the reopened chat shows the run")
+			// Reopened, a call shows its arguments instead of its summary.
+			if rows := runRows(reopened); assert.NotEmpty(t, rows, "screen:\n%s", reopened) {
+				tool := strings.Join(strings.Fields(tt.rows[0])[:2], " ")
+				assert.True(t, strings.HasPrefix(rows[0], tool+" "), "row %q, want %s", rows[0], tool)
+			}
+			asked := len(c.llm.requests(chatAgent))
+			c.llm.script(chatAgent, llmtest.Response{Chunks: []string{"You're welcome."}})
+			c.send("thanks")
+			c.await("You're welcome.", append(slices.Clone(turn),
+				llmapi.Message{Role: llmapi.RoleUser, Content: "thanks"},
+				llmapi.Message{Role: llmapi.RoleAssistant, Content: "You're welcome."}))
+			requests := c.llm.requests(chatAgent)
+			require.Len(t, requests, asked+1)
+			assert.Equal(t, append(turn, llmapi.Message{Role: llmapi.RoleUser, Content: "thanks"}),
+				conversation(requests[asked].Request.Messages), "the chat agent answers knowing the run")
+		})
+	}
+}
+
+// skillCommand returns the message the chat sends for /name args.
+func skillCommand(name, args string) string {
+	msg := "<command-message>" + name + "</command-message>\n<command-name>/" + name + "</command-name>"
+	if args != "" {
+		msg += "\n" + args
+	}
+	return msg
+}
+
+// ranSkill returns what the chat saves of the user's message input running
+// the agent skill name in its n-th sub-agent, which replied reply.
+func ranSkill(input, name string, n int, reply string) []llmapi.Message {
+	call := toolCall(fmt.Sprintf("skill-sub-agent-%s-%d", name, n), "skill", `{"name":"`+name+`"}`)
+	return []llmapi.Message{
+		{Role: llmapi.RoleUser, Content: input},
+		{Role: llmapi.RoleAssistant, ToolCalls: []llmapi.ToolCall{call}},
+		{Role: llmapi.RoleTool, Content: reply, Name: "skill", ToolCallID: call.ID},
+		{Role: llmapi.RoleAssistant, Content: reply},
+	}
+}
+
+// greeting returns what the chat saves of a greeting the chat agent
+// answered.
+func greeting() []llmapi.Message {
+	return []llmapi.Message{
+		{Role: llmapi.RoleUser, Content: "hello"},
+		{Role: llmapi.RoleAssistant, Content: "Hi there."},
+	}
+}
+
+// toolDurationRegexp matches the duration a finished tool call shows
+// after its name.
+var toolDurationRegexp = regexp.MustCompile(`([✓✗] \S+) [0-9.]+(ns|µs|ms|s|m)\b`)
+
+// runRows returns the first top-level tool call row of screen and the rows
+// nested under it, without durations and with the nested rows relative
+// to it.
+func runRows(screen string) []string {
+	var rows []string
+	margin := 0
+	for line := range strings.SplitSeq(screen, "\n") {
+		line = toolDurationRegexp.ReplaceAllString(strings.TrimRight(line, " "), "$1")
+		if rows == nil {
+			trimmed := strings.TrimLeft(line, " ")
+			for _, glyph := range []string{"├─ ", "└─ "} {
+				if root, ok := strings.CutPrefix(trimmed, glyph); ok {
+					rows, margin = append(rows, root), len(line)-len(trimmed)
+				}
+			}
+			continue
+		}
+		if len(line) < margin {
+			break
+		}
+		nested, ok := strings.CutPrefix(line[margin:], "│  ")
+		if !ok {
+			nested, ok = strings.CutPrefix(line[margin:], "   ")
+		}
+		if !ok || strings.HasPrefix(nested, " ") {
+			break
+		}
+		rows = append(rows, nested)
+	}
+	return rows
+}
+
+func toolCallsResponse(calls ...llmapi.ToolCall) llmtest.Response {
+	return llmtest.Response{ToolCalls: calls, FinishReason: llmapi.FinishReasonToolCall}
+}
+
+// conversation returns msgs without their system messages.
+func conversation(msgs []llmapi.Message) []llmapi.Message {
+	var ret []llmapi.Message
+	for _, m := range msgs {
+		if m.Role != llmapi.RoleSystem {
+			ret = append(ret, m)
+		}
+	}
+	return ret
+}
+
+func toolNames(req llmapi.Request) []string {
+	var names []string
+	for _, tool := range req.Tools {
+		names = append(names, tool.Function.Name)
+	}
+	return names
+}
+
+func toolDescription(req llmapi.Request, name string) string {
+	for _, tool := range req.Tools {
+		if tool.Function.Name == name {
+			return tool.Function.Description
+		}
+	}
+	return ""
+}
+
+// systemMessage returns the first system message of req that holds text.
+func systemMessage(req llmapi.Request, text string) string {
+	for _, m := range req.Messages {
+		if m.Role == llmapi.RoleSystem && strings.Contains(m.Content, text) {
+			return m.Content
+		}
+	}
+	return ""
+}
+
 func TestE2EMaxTokensRejectedAboveModelCeiling(t *testing.T) {
 	model := llmapi.ModelEntry{
 		Provider: "anthropic", Name: "claude-sonnet-4-5", ContextWindow: 200_000,
@@ -1998,7 +2654,7 @@ func TestChatRepeatedReadRequestsReturnToolErrors(t *testing.T) {
 	}
 }
 
-func TestHandlerAddToolsIsConcurrentWithReaders(t *testing.T) {
+func TestHandlerReplaceMCPToolsIsConcurrentWithReaders(t *testing.T) {
 	t.Parallel()
 
 	h := &aiEditorHandler{
@@ -2008,11 +2664,11 @@ func TestHandlerAddToolsIsConcurrentWithReaders(t *testing.T) {
 	snapshot := h.tools()
 
 	var wg sync.WaitGroup
-	for range 8 {
+	for i := range 8 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			h.addTools(stubTool{})
+			h.replaceMCPTools("srv", []agent.Tool{stubTool{name: fmt.Sprint(i)}}, nil)
 		}()
 		wg.Add(1)
 		go func() {
@@ -2043,59 +2699,563 @@ func TestSubscribedChatReceivesLateMCPTools(t *testing.T) {
 	t.Parallel()
 
 	h := &aiEditorHandler{toolRegistry: agent.NewRegistry()}
-	h.addTools(stubTool{name: "early"})
+	h.replaceMCPTools("srv", []agent.Tool{stubTool{name: "early"}}, nil)
 
 	snapshot := h.tools()
 	chatReg := agent.NewRegistry(snapshot...)
 
-	h.addTools(stubTool{name: "mid"})
-	h.subscribeTools("chat-1", len(snapshot), chatReg)
+	h.replaceMCPTools("srv", []agent.Tool{stubTool{name: "mid"}}, nil)
+	h.subscribeTools("chat-1", snapshot, chatReg)
 	_, ok := chatReg.Get("mid", "")
 	assert.True(t, ok, "delta between snapshot and subscription must be applied")
 
-	h.addTools(stubTool{name: "late"})
+	h.replaceMCPTools("srv", []agent.Tool{stubTool{name: "late"}}, nil)
 	_, ok = chatReg.Get("late", "")
 	assert.True(t, ok, "subscribed chats must receive late tools")
 	_, ok = h.toolRegistry.Get("late", "")
 	assert.True(t, ok, "the persistent registry must receive late tools")
 
 	h.unsubscribeTools("chat-1")
-	h.addTools(stubTool{name: "after-close"})
+	h.replaceMCPTools("srv", []agent.Tool{stubTool{name: "after-close"}}, nil)
 	_, ok = chatReg.Get("after-close", "")
 	assert.False(t, ok, "closed chats must not be updated")
 }
 
-func TestWarnPendingMCPServersReportsConnecting(t *testing.T) {
+func TestSubscribedChatFollowsMCPToolRemovals(t *testing.T) {
 	t.Parallel()
 
-	release := make(chan struct{})
-	m := runemcp.NewManagerWithTransport(
-		func(string, runemcp.ServerConfig) (gomcp.Transport, error) {
-			<-release
-			return nil, errors.New("halted")
+	builtin := stubTool{name: "read_file"}
+	h := &aiEditorHandler{
+		baseTools:    []agent.Tool{builtin},
+		toolRegistry: agent.NewRegistry(builtin),
+	}
+	h.replaceMCPTools("srv", []agent.Tool{
+		stubTool{name: "mcp__srv__a"}, stubTool{name: "mcp__srv__b"},
+	}, nil)
+
+	snapshot := h.tools()
+	chatReg := agent.NewRegistry(snapshot...)
+	// Between the snapshot and the subscription a tool goes away and
+	// another one changes its definition.
+	h.replaceMCPTools("srv", []agent.Tool{
+		describedTool{stubTool{name: "mcp__srv__b"}, "v2"},
+	}, []string{"mcp__srv__a", "mcp__srv__b"})
+	h.subscribeTools("chat-1", snapshot, chatReg)
+
+	assert.Equal(t, []string{"mcp__srv__b", "read_file"}, registryToolNames(chatReg))
+	got, ok := chatReg.Get("mcp__srv__b", "")
+	require.True(t, ok)
+	assert.Equal(t, "v2", got.Definition().Function.Description,
+		"a redefined tool must replace the snapshot's copy")
+
+	h.replaceMCPTools("srv", nil, []string{"mcp__srv__b"})
+	assert.Equal(t, []string{"read_file"}, registryToolNames(chatReg),
+		"subscribed chats must lose removed tools")
+	assert.Equal(t, []string{"read_file"}, registryToolNames(h.toolRegistry))
+	assert.Len(t, h.tools(), 1)
+}
+
+// describedTool is a stubTool with a description, standing in for a
+// tool whose server changed its definition.
+type describedTool struct {
+	stubTool
+	description string
+}
+
+func (t describedTool) Definition() llmapi.Tool {
+	def := t.stubTool.Definition()
+	def.Function.Description = t.description
+	return def
+}
+
+func registryToolNames(r *agent.Registry) []string {
+	var names []string
+	for _, t := range r.AllTools() {
+		names = append(names, t.Function.Name)
+	}
+	return names
+}
+
+func TestMCPChatWarning(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		srv  runemcp.ServerInfo
+		want string
+	}{
+		{
+			name: "starting",
+			srv:  runemcp.ServerInfo{Name: "fs", Status: runemcp.StatusConnecting},
+			want: `MCP server "fs" is still starting. Its tools will join this conversation once connected.`,
+		},
+		{
+			name: "needs sign-in",
+			srv: runemcp.ServerInfo{Name: "linear", Status: runemcp.StatusNeedsAuth,
+				Error: "needs sign-in: run `agent mcp login linear`"},
+			want: "MCP server \"linear\" needs sign-in: run `agent mcp login linear`. " +
+				"Its tools will join this conversation once you sign in.",
+		},
+		{
+			name: "needs a wider sign-in",
+			srv: runemcp.ServerInfo{Name: "linear", Status: runemcp.StatusNeedsAuth,
+				Error: "needs sign-in: run `agent mcp login linear` (the server requires scope \"write\")"},
+			want: "MCP server \"linear\" needs sign-in: run `agent mcp login linear` " +
+				"(the server requires scope \"write\"). Its tools will join this conversation once you sign in.",
+		},
+		{
+			name: "signed out",
+			srv:  runemcp.ServerInfo{Name: "linear", Status: runemcp.StatusNeedsAuth},
+			want: "MCP server \"linear\" needs sign-in: run `agent mcp login linear`. " +
+				"Its tools will join this conversation once you sign in.",
+		},
+		{
+			name: "failed",
+			srv:  runemcp.ServerInfo{Name: "fs", Status: runemcp.StatusError, Error: "exit status 1"},
+			want: "MCP server \"fs\" is unavailable: exit status 1\nRun `agent mcp reconnect fs` to try again.",
+		},
+		{
+			name: "not trusted",
+			srv: runemcp.ServerInfo{Name: "docs", Status: runemcp.StatusError, Blocked: true,
+				Error: "not trusted: run `agent mcp trust docs`"},
+			want: "MCP server \"docs\" is unavailable: not trusted: run `agent mcp trust docs`",
+		},
+		{name: "connected", srv: runemcp.ServerInfo{Name: "fs", Status: runemcp.StatusConnected}},
+		{name: "shut down", srv: runemcp.ServerInfo{Name: "fs", Status: runemcp.StatusDisconnected}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, mcpChatWarning(&tt.srv))
 		})
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		_, _ = m.ConnectServer(
-			context.Background(), "slow-srv", runemcp.ServerConfig{Command: "x"})
-	}()
-	t.Cleanup(func() { close(release); <-done })
-	require.Eventually(t, func() bool {
-		servers := m.Servers()
-		return len(servers) == 1 && servers[0].Status == runemcp.StatusConnecting
-	}, 5*time.Second, 10*time.Millisecond)
+	}
+}
 
-	h := &aiEditorHandler{mcpManager: m}
+// newMCPHandlerInEveryState returns a handler with one MCP server in
+// each state a chat is warned about, and one connected server. The
+// servers start before the handler so that, cleaning up in reverse, the
+// handler's sessions end before the servers stop.
+func newMCPHandlerInEveryState(t *testing.T) (*aiEditorHandler, *capturingNotifications) {
+	t.Helper()
+	mux, guard := signInMux(t)
+	signIn := serveMCP(t, mux, guard)
+	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "no MCP here", http.StatusBadRequest)
+	}))
+	t.Cleanup(broken.Close)
+	up := serveMCP(t, http.NewServeMux(), nil)
+	h, noti, _ := newMCPTestHandler(t, "file:///work/repo", nil)
+	ctx := context.Background()
+
+	h.mcpManager.Register("pending", runemcp.ServerConfig{URL: "https://pending.example.com/mcp"}, nil, nil)
+	h.mcpManager.Register("untrusted", runemcp.ServerConfig{URL: "https://mcp.example.com/mcp"}, nil,
+		errors.New("not trusted: run `agent mcp trust untrusted`"))
+	_, err := h.mcpManager.ConnectServer(ctx, "linear", runemcp.ServerConfig{URL: signIn + "/mcp"})
+	require.ErrorIs(t, err, runemcp.ErrNeedsAuth)
+	_, err = h.mcpManager.ConnectServer(ctx, "broken", runemcp.ServerConfig{URL: broken.URL + "/mcp"})
+	require.Error(t, err)
+	_, err = h.mcpManager.ConnectServer(ctx, "up", runemcp.ServerConfig{URL: up + "/mcp"})
+	require.NoError(t, err)
+	return h, noti
+}
+
+// openTestChat registers an open chat with h, as opening a chat tab does.
+func openTestChat(h *aiEditorHandler, id string) syncComponent {
+	sc := syncComponent{mu: new(sync.Mutex), comp: dialoguetui.NewComponent(dialoguetui.ComponentConfig{}), h: h}
+	h.openChats.Store(id, sc)
+	return sc
+}
+
+// chatText returns the words a chat shows.
+func chatText(t *testing.T, sc syncComponent) string {
+	t.Helper()
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	const width, height = 200, 60
+	sc.comp.Resize(width, height)
+	w := term.NewStringWriter(width, height)
+	sc.comp.Draw(w)
+	require.NoError(t, w.Flush())
+	return strings.Join(strings.Fields(w.String()), " ")
+}
+
+func TestWarnUnavailableMCPServers(t *testing.T) {
+	t.Parallel()
+
+	h, _ := newMCPHandlerInEveryState(t)
 	tx := make(chan dialoguetui.MessageEvent, 1)
-	h.warnPendingMCPServers(tx)
 
-	select {
-	case ev := <-tx:
-		assert.Equal(t, dialoguetui.MessageEventWarning, ev.Type)
-		assert.Contains(t, ev.Text, "slow-srv")
-	default:
-		t.Fatal("expected a pending-MCP warning event")
+	h.warnUnavailableMCPServers(tx)
+
+	require.Len(t, tx, 1, "every unavailable server is explained in one warning")
+	ev := <-tx
+	assert.Equal(t, dialoguetui.MessageEventWarning, ev.Type)
+	assert.Contains(t, ev.Text, `MCP server "pending" is still starting.`)
+	assert.Contains(t, ev.Text, "MCP server \"linear\" needs sign-in: run `agent mcp login linear`.")
+	assert.Contains(t, ev.Text, "MCP server \"untrusted\" is unavailable: not trusted: run `agent mcp trust untrusted`")
+	assert.Contains(t, ev.Text, "Run `agent mcp reconnect broken` to try again.")
+	assert.NotContains(t, ev.Text, `"up"`)
+}
+
+func TestWarnUnavailableMCPServersWithNoneUnavailable(t *testing.T) {
+	t.Parallel()
+
+	h, _, _ := newMCPTestHandler(t, "file:///work/repo", nil)
+	tx := make(chan dialoguetui.MessageEvent, 1)
+	h.warnUnavailableMCPServers(tx)
+	assert.Empty(t, tx)
+}
+
+func TestConnectMCPServersWarnsOpenChats(t *testing.T) {
+	t.Parallel()
+
+	mux, guard := signInMux(t)
+	signIn := serveMCP(t, mux, guard)
+	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "no MCP here", http.StatusBadRequest)
+	}))
+	t.Cleanup(broken.Close)
+	user, err := runemcp.ParseServers(map[string]any{
+		"linear": map[string]any{"type": "http", "url": signIn + "/mcp"},
+		"broken": map[string]any{"type": "http", "url": broken.URL + "/mcp"},
+		"up":     map[string]any{"type": "http", "url": serveMCP(t, http.NewServeMux(), nil) + "/mcp"},
+	})
+	require.NoError(t, err)
+	workspace, err := runemcp.ParseServers(map[string]any{
+		"untrusted": map[string]any{"type": "http", "url": "https://mcp.example.com/mcp"},
+	})
+	require.NoError(t, err)
+	servers := runemcp.Merge(user, workspace)
+	h, _, _ := newMCPTestHandler(t, "file:///work/repo", servers, 2)
+	var interrupts atomic.Int32
+	h.p = term.FuncInterrupter(func(context.Context) error {
+		interrupts.Add(1)
+		return nil
+	})
+	// Both chats open while the servers start, as chats restored at
+	// launch do; one closes before the servers settle.
+	open := openTestChat(h, "rolling-fox")
+	closed := openTestChat(h, "quiet-owl")
+	h.openChats.Delete("quiet-owl")
+
+	h.connectMCPServers(servers)
+
+	text := chatText(t, open)
+	assert.Contains(t, text, "MCP server \"linear\" needs sign-in: run `agent mcp login linear`.")
+	assert.Contains(t, text, "MCP server \"untrusted\" is unavailable: not trusted: run `agent mcp trust untrusted`")
+	assert.Contains(t, text, `MCP server "broken" is unavailable:`)
+	assert.Contains(t, text, "Run `agent mcp reconnect broken` to try again.")
+	assert.NotContains(t, text, `"up"`, "servers that connect bring tools, not warnings")
+	assert.NotContains(t, chatText(t, closed), "MCP server")
+	assert.Positive(t, interrupts.Load(), "the warnings are drawn")
+}
+
+func TestMCPServerLaterTroubleWarnsOpenChats(t *testing.T) {
+	t.Parallel()
+
+	h, noti := newMCPHandlerInEveryState(t)
+	chat := openTestChat(h, "rolling-fox")
+
+	h.mcpManager.OnNeedsAuth("linear")
+	h.mcpManager.OnServerExit("broken", "disconnected after 5 reconnect attempts: EOF")
+	h.warnChatsAboutMCPServer("pending")
+	h.warnChatsAboutMCPServer("up")
+
+	text := chatText(t, chat)
+	assert.Contains(t, text, "MCP server \"linear\" needs sign-in: run `agent mcp login linear`.")
+	assert.Contains(t, text, "Run `agent mcp reconnect broken` to try again.")
+	assert.NotContains(t, text, `"pending"`, "a server still starting settles in a later warning")
+	assert.NotContains(t, text, `"up"`)
+	assert.Contains(t, noteMessages(noti), "MCP server \"linear\" needs sign-in: run `agent mcp login linear`")
+	assert.Contains(t, noteMessages(noti), `MCP server "broken" disconnected after 5 reconnect attempts: EOF`)
+}
+
+func TestWarnChatsAboutMCPServerRacesChatEvents(t *testing.T) {
+	t.Parallel()
+
+	h, _, _ := newMCPTestHandler(t, "file:///work/repo", nil)
+	h.mcpManager.Register("untrusted", runemcp.ServerConfig{URL: "https://mcp.example.com/mcp"}, nil,
+		errors.New("not trusted: run `agent mcp trust untrusted`"))
+	chat := openTestChat(h, "rolling-fox")
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	_, tx, _ := dialoguetui.Handler(ctx, chat.mu, chat.comp, term.FuncInterrupter(func(context.Context) error {
+		return nil
+	}))
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go debug.CapturePanicReport(func() {
+		defer wg.Done()
+		for range 50 {
+			tx <- dialoguetui.MessageEvent{Type: dialoguetui.MessageEventWarning, Text: "from the agent"}
+		}
+	})
+	go debug.CapturePanicReport(func() {
+		defer wg.Done()
+		for range 50 {
+			h.warnChatsAboutMCPServer("untrusted")
+		}
+	})
+	wg.Wait()
+	close(tx)
+	assert.Contains(t, chatText(t, chat), `MCP server "untrusted" is unavailable`)
+}
+
+func TestConnectMCPServers(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		cwd     string
+		user    bool
+		answers []int
+		// want is the server's status after connecting, and wantNote and
+		// wantWarning parts of a notification and of a server warning.
+		want        runemcp.ServerStatus
+		wantTool    bool
+		wantNote    string
+		wantWarning string
+	}{
+		{
+			name:     "trusted workspace server",
+			cwd:      "file:///work/repo",
+			answers:  []int{0},
+			want:     runemcp.StatusConnected,
+			wantTool: true,
+			wantNote: `MCP server "docs" is up: 1 tools available`,
+		},
+		{
+			name:     "declined workspace server",
+			cwd:      "file:///work/repo",
+			answers:  []int{2},
+			want:     runemcp.StatusError,
+			wantNote: "MCP server \"docs\" is not connected: not trusted: run `agent mcp trust docs`",
+		},
+		{
+			name:        "loopback server of a remote workspace",
+			cwd:         "ssh://dev@build-box/work/repo",
+			user:        true,
+			want:        runemcp.StatusConnected,
+			wantTool:    true,
+			wantNote:    "which resolves on this machine, not the workspace host",
+			wantWarning: "resolves on this machine, not the workspace host",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			base := serveMCP(t, http.NewServeMux(), nil)
+			declared, err := runemcp.ParseServers(map[string]any{
+				"docs": map[string]any{"type": "http", "url": base + "/mcp"},
+			})
+			require.NoError(t, err)
+			servers := runemcp.Merge(nil, declared)
+			if tt.user {
+				servers = runemcp.Merge(declared, nil)
+			}
+			h, noti, _ := newMCPTestHandler(t, tt.cwd, servers, tt.answers...)
+
+			h.connectMCPServers(servers)
+
+			info := h.mcpManager.Servers()
+			require.Len(t, info, 1)
+			assert.Equal(t, tt.want, info[0].Status)
+			_, ok := h.toolRegistry.Get("mcp__docs__search", "")
+			assert.Equal(t, tt.wantTool, ok)
+			assert.Condition(t, func() bool {
+				for _, msg := range noteMessages(noti) {
+					if strings.Contains(msg, tt.wantNote) {
+						return true
+					}
+				}
+				return false
+			}, "notifications %q lack %q", noteMessages(noti), tt.wantNote)
+			if tt.wantWarning != "" {
+				require.Len(t, info[0].Warnings, 1)
+				assert.Contains(t, info[0].Warnings[0], tt.wantWarning)
+			}
+		})
+	}
+}
+
+// refusingExec records the commands it is asked to start, and starts
+// none.
+type refusingExec struct {
+	mu    sync.Mutex
+	calls []workspaceapi.Cmd
+}
+
+func (e *refusingExec) Start(_ context.Context, cmd workspaceapi.Cmd) (workspaceapi.Pid, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.calls = append(e.calls, cmd)
+	return 0, errors.New("refused")
+}
+
+func (*refusingExec) Signal(workspaceapi.Pid, syscall.Signal) error { return nil }
+
+func (*refusingExec) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
+}
+
+func (*refusingExec) Close() error { return nil }
+
+func (e *refusingExec) started() []workspaceapi.Cmd {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return slices.Clone(e.calls)
+}
+
+func TestConnectMCPServersAsksBeforeStartingWorkspaceCommands(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		user        bool
+		answers     []int
+		wantPrompts int
+		wantStart   string
+		wantError   string
+	}{
+		{
+			name:        "trusted",
+			answers:     []int{0},
+			wantPrompts: 1,
+			wantStart:   `MCP server "docs" from the workspace's .mcp.json`,
+		},
+		{
+			name:        "declined",
+			answers:     []int{2},
+			wantPrompts: 1,
+			wantError:   "not trusted: run `agent mcp trust docs`",
+		},
+		{
+			name:      "from the user's config",
+			user:      true,
+			wantStart: `MCP server "docs" from your Rune config`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			declared, err := runemcp.ParseServers(map[string]any{
+				"docs": map[string]any{"command": "docs-server", "args": []any{"--stdio"}},
+			})
+			require.NoError(t, err)
+			servers := runemcp.Merge(nil, declared)
+			if tt.user {
+				servers = runemcp.Merge(declared, nil)
+			}
+			h, _, prompter := newMCPTestHandler(t, "file:///work/repo", servers, tt.answers...)
+			exec := &refusingExec{}
+			require.NoError(t, h.mcpManager.Close())
+			h.mcpManager = runemcp.NewManager(exec, t.TempDir(), nil)
+			h.wireMCPManager()
+
+			h.connectMCPServers(servers)
+
+			assert.Equal(t, tt.wantPrompts, prompter.prompts())
+			started := exec.started()
+			if tt.wantStart == "" {
+				assert.Empty(t, started, "an untrusted command never reaches the executor")
+				assert.Equal(t, tt.wantError, h.mcpManager.Servers()[0].Error)
+				return
+			}
+			require.Len(t, started, 1)
+			assert.Equal(t, "docs-server", started[0].Path)
+			assert.Equal(t, tt.wantStart, started[0].Description)
+		})
+	}
+}
+
+func TestOpenURLRefusesNonWebSchemes(t *testing.T) {
+	t.Parallel()
+
+	opener := &signInOpener{errs: make(chan error, 1)}
+	h := &aiEditorHandler{o: opener}
+	err := h.openURL("file:///etc/passwd")
+	require.Error(t, err)
+	assert.Empty(t, opener.shown)
+}
+
+func TestLoadMCPServers(t *testing.T) {
+	t.Parallel()
+
+	userServers := map[string]any{
+		"docs":   map[string]any{"url": "https://user.example.com/mcp"},
+		"search": map[string]any{"url": "https://search.example.com/mcp"},
+	}
+	tests := []struct {
+		name    string
+		user    any
+		mcpJSON string
+		// want maps each server to its URL and whether the workspace
+		// declared it.
+		want     map[string]string
+		wantFrom map[string]bool
+		wantNote string
+	}{
+		{
+			name:     "workspace wins a name clash",
+			user:     userServers,
+			mcpJSON:  `{"mcpServers": {"docs": {"url": "https://workspace.example.com/mcp"}}}`,
+			want:     map[string]string{"docs": "https://workspace.example.com/mcp", "search": "https://search.example.com/mcp"},
+			wantFrom: map[string]bool{"docs": true, "search": false},
+		},
+		{
+			name:     "invalid .mcp.json keeps user servers",
+			user:     userServers,
+			mcpJSON:  `{"mcpServers": [`,
+			want:     map[string]string{"docs": "https://user.example.com/mcp", "search": "https://search.example.com/mcp"},
+			wantFrom: map[string]bool{"docs": false, "search": false},
+			wantNote: ".mcp.json: invalid config",
+		},
+		{
+			name:     "invalid user config keeps workspace servers",
+			user:     map[string]any{"docs": map[string]any{"url": 42}},
+			mcpJSON:  `{"mcpServers": {"docs": {"url": "https://workspace.example.com/mcp"}}}`,
+			want:     map[string]string{"docs": "https://workspace.example.com/mcp"},
+			wantFrom: map[string]bool{"docs": true},
+			wantNote: "mcpServers: invalid config",
+		},
+		{
+			name: "nothing configured",
+			want: map[string]string{},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			dir := t.TempDir()
+			if tt.mcpJSON != "" {
+				require.NoError(t, os.WriteFile(filepath.Join(dir, ".mcp.json"), []byte(tt.mcpJSON), 0o600))
+			}
+			raw := map[string]any{}
+			if tt.user != nil {
+				raw["mcpServers"] = tt.user
+			}
+			noti := &capturingNotifications{}
+
+			servers := loadMCPServers(testLocalFS{root: dir}, dir, config.MapConfig(raw), noti)
+
+			got := make(map[string]string, len(servers))
+			for name, cfg := range servers {
+				got[name] = cfg.URL
+				assert.Equal(t, tt.wantFrom[name], cfg.FromWorkspace(), name)
+			}
+			assert.Equal(t, tt.want, got)
+			notes := noteMessages(noti)
+			if tt.wantNote == "" {
+				assert.Empty(t, notes)
+			} else {
+				require.Len(t, notes, 1)
+				assert.Contains(t, notes[0], tt.wantNote)
+			}
+		})
 	}
 }
 
@@ -3019,9 +4179,9 @@ func TestReloadStyleInputBoxFrame(t *testing.T) {
 				return nil
 			})
 			h := &aiEditorHandler{n: stubNotifications{}, p: p}
-			h.cfg = defaultComponentCfg
-			h.cfg.InputBox.FrameCharSet = inputBoxFrameCharSet(own)
+			h.cfg = dialoguetui.DefaultComponentConfig()
 			h.cfg.InputBox.GraphicsStorage = storagestub.NewInMemoryService()
+			h.cfg, _ = dialoguetui.ReadStyle(context.Background(), h.cfg, own, config.NopConfig(), stubNotifications{})
 			mu := new(sync.Mutex)
 			comp := dialoguetui.NewComponent(h.dialogueConfig(mu))
 			t.Cleanup(func() { assert.NoError(t, comp.Close()) })
@@ -3044,6 +4204,91 @@ func TestReloadStyleInputBoxFrame(t *testing.T) {
 			defer close(nextTx)
 			nextH.Resize(width, height)
 			awaitChat(t, nextH, width, height, interrupts, tt.expected)
+		})
+	}
+}
+
+func TestReloadStyleInputBoxColors(t *testing.T) {
+	const width, height = 32, 6
+	host := func(own map[string]any) config.Config {
+		own["status_bar"] = map[string]any{"enabled": false}
+		return config.MapConfig(map[string]any{"extensions": map[string]any{
+			extensionID: map[string]any{"config": own},
+		}})
+	}
+	// colors draws h with "h" typed in its compose box and returns the
+	// background of the box's frame and of its input.
+	colors := func(t *testing.T, h tui.Handler) (frame, input term.Color) {
+		t.Helper()
+		h.Resize(width, height)
+		h.Handle(term.Event{Type: term.EventKey, Ch: 'h'})
+		w := term.NewStringWriter(width, height)
+		h.Draw(w)
+		var sawFrame, sawInput bool
+		for _, c := range w.Cells() {
+			switch c.Ch {
+			case '┌':
+				frame, sawFrame = c.Bg, true
+			case 'h':
+				input, sawInput = c.Bg, true
+			}
+		}
+		require.True(t, sawFrame && sawInput, "the compose box is drawn")
+		return frame, input
+	}
+	tests := []struct {
+		name      string
+		reloaded  map[string]any
+		wantFrame term.Color
+		wantInput term.Color
+	}{
+		{
+			name:      "a new input background",
+			reloaded:  map[string]any{"input_background_color": "blue"},
+			wantFrame: term.ColorBlue,
+			wantInput: term.ColorBlue,
+		},
+		{
+			name:      "the input box's background",
+			reloaded:  map[string]any{"input_box_attr": map[string]any{"bg": "teal"}},
+			wantFrame: term.ColorTeal,
+			wantInput: term.ColorTeal,
+		},
+		{
+			name:      "no input background",
+			reloaded:  map[string]any{"input_box_frame_attr": map[string]any{"bg": "navy"}},
+			wantFrame: term.ColorNavy,
+			wantInput: term.ColorDefault,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := &aiEditorHandler{n: stubNotifications{}, p: term.NopInterrupter()}
+			h.cfg = dialoguetui.DefaultComponentConfig()
+			h.cfg.InputBackgroundColor = term.ColorRed
+			mu := new(sync.Mutex)
+			comp := dialoguetui.NewComponent(h.dialogueConfig(mu))
+			t.Cleanup(func() { assert.NoError(t, comp.Close()) })
+			dh, tx, _ := dialoguetui.Handler(context.Background(), mu, comp, h.p)
+			defer close(tx)
+			h.openChats.Store("open", syncComponent{mu: mu, comp: comp})
+			frame, input := colors(t, dh)
+			require.Equal(t, term.ColorRed, frame, "opened")
+			require.Equal(t, term.ColorRed, input, "opened")
+
+			require.NoError(t, h.reloadStyle(context.Background(), host(tt.reloaded)))
+			frame, input = colors(t, dh)
+			assert.Equal(t, tt.wantFrame, frame, "the open chat's frame")
+			assert.Equal(t, tt.wantInput, input, "the open chat's input")
+
+			nextMu := new(sync.Mutex)
+			next := dialoguetui.NewComponent(h.dialogueConfig(nextMu))
+			t.Cleanup(func() { assert.NoError(t, next.Close()) })
+			nextH, nextTx, _ := dialoguetui.Handler(context.Background(), nextMu, next, h.p)
+			defer close(nextTx)
+			frame, input = colors(t, nextH)
+			assert.Equal(t, tt.wantFrame, frame, "a chat opened next: frame")
+			assert.Equal(t, tt.wantInput, input, "a chat opened next: input")
 		})
 	}
 }
@@ -3087,6 +4332,45 @@ func mustParseStatusBarLayout(t *testing.T, layout string) []dialoguetui.StatusB
 	parsed, err := dialoguetui.ParseStatusBarLayout(layout)
 	require.NoError(t, err)
 	return parsed
+}
+
+func TestOwnConfig(t *testing.T) {
+	own := map[string]any{"status_bar": map[string]any{"enabled": false}}
+	tests := []struct {
+		name    string
+		host    config.Config
+		want    config.Config
+		wantErr string
+	}{
+		{
+			name: "the agent's block",
+			host: config.MapConfig(map[string]any{
+				"editor":     map[string]any{"mode": "modal"},
+				"extensions": map[string]any{extensionID: map[string]any{"config": own}},
+			}),
+			want: config.MapConfig(own),
+		},
+		{name: "no extensions", host: config.MapConfig(map[string]any{}), want: config.NopConfig()},
+		{
+			name: "no config of its own",
+			host: config.MapConfig(map[string]any{
+				"extensions": map[string]any{extensionID: map[string]any{"path": "/bin/rune-agent"}},
+			}),
+			want: config.NopConfig(),
+		},
+		{name: "a config that could not be fetched", host: config.ErrConfig(errors.New("closed")), wantErr: "closed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ownConfig(tt.host)
+			if tt.wantErr != "" {
+				assert.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }
 
 func TestWatchReloadFetchesTheConfigOnEachSignal(t *testing.T) {

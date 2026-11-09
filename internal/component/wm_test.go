@@ -2404,6 +2404,102 @@ func TestWindowBarDraw(t *testing.T) {
 	}
 }
 
+// frameStitcher joins a rule at its first column to the frame around it.
+type frameStitcher struct {
+	tui.Component
+	width, height int
+	bars          []bool
+}
+
+func (s *frameStitcher) Dimensions() (int, int) { return s.width, s.height }
+
+func (s *frameStitcher) StitchFrame(
+	w term.Writer, f *component.Frame, _ *FrameGraphics, _, height int, bar bool,
+) {
+	s.bars = append(s.bars, bar)
+	x := f.ContentPosition().X
+	if !bar {
+		w.SetCell(term.Coordinates{X: x}, term.NewCell('┬', 1, f.Attributes))
+	}
+	w.SetCell(term.Coordinates{X: x, Y: height - 1}, term.NewCell('┴', 1, f.Attributes))
+}
+
+func TestWindowManagerStitchFrame(t *testing.T) {
+	tests := []struct {
+		name     string
+		frame    bool
+		bar      bool
+		floating bool
+		expected string
+		bars     []bool
+	}{
+		{
+			name: "a tile joins its rules to its frame", frame: true,
+			expected: `
+┌┬───────┐
+│SSSSSSSS│
+│SSSSSSSS│
+│SSSSSSSS│
+└┴───────┘`,
+			bars: []bool{false},
+		},
+		{
+			name: "a floating window joins its rules to its frame", frame: true, floating: true,
+			expected: `
+┌────────┐
+│┌┬─┐CCCC│
+││SS│CCCC│
+│└┴─┘CCCC│
+└────────┘`,
+			bars: []bool{false},
+		},
+		{
+			name: "a window bar keeps its row", frame: true, bar: true, floating: true,
+			expected: `
+┌────────┐
+│█●██CCCC│
+││SS│CCCC│
+│└┴─┘CCCC│
+└────────┘`,
+			bars: []bool{true},
+		},
+		{
+			name: "no frame, nothing to join", floating: true,
+			expected: `
+CCCCCCCCCC
+CSSCCCCCCC
+CCCCCCCCCC
+CCCCCCCCCC
+CCCCCCCCCC`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			const width, height = 10, 5
+			cfg := DefaultWindowManagerConfig()
+			cfg.NoMaxSize = true
+			cfg.Frame = tt.frame
+			cfg.WindowBar = tt.bar
+			cfg.CloseIcon = '●'
+			s := &frameStitcher{Component: &component.TestComponent{Ch: 'S'}, width: 2, height: 1}
+			var content tui.Component = s
+			if tt.floating {
+				content = &component.TestComponent{Ch: 'C'}
+			}
+			wm, _ := NewWindowManager(content, cfg)
+			wm.Resize(width, height)
+			if tt.floating {
+				wm.FloatingWindow(s, FloatingConfig{Offset: term.Coordinates{X: 1, Y: 1}})
+			}
+			w := term.NewStringWriter(width, height)
+			wm.Draw(w)
+			require.NoError(t, w.Flush())
+			assert.Equal(t, tt.expected, "\n"+w.String())
+			assert.Equal(t, tt.bars, s.bars)
+		})
+	}
+}
+
 func TestWindowBarSetFrameCharSet(t *testing.T) {
 	cfg := DefaultWindowManagerConfig()
 	cfg.NoMaxSize = true

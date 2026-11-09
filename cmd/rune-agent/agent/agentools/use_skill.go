@@ -153,9 +153,9 @@ func (t *skillTool) Execute(
 	return agent.ToolResult{Content: skills.FormatSkillContent(skill)}
 }
 
-// executeAgentSkill spawns a sub-agent with the skill's body as system
-// prompt and its tool policy. It blocks until the sub-agent completes and
-// returns its output.
+// executeAgentSkill runs the skill in a sub-agent, which the spawner gives
+// the skill's body as system prompt and its tool policy. It blocks until
+// the sub-agent completes and returns its output.
 func (t *skillTool) executeAgentSkill(
 	ctx context.Context, skill skills.Skill, userArgs string,
 ) agent.ToolResult {
@@ -172,11 +172,10 @@ func (t *skillTool) executeAgentSkill(
 	}
 
 	handle, err := t.spawner.Run(ctx, agent.RunRequest{
-		Label:        skill.Name,
-		Model:        llmarg.Qualify(agent.CurrentModel(ctx)),
-		Message:      task,
-		Tools:        t.registry.AgentPolicy(skill),
-		SystemPrompt: skill.Body,
+		Label:   skill.Name,
+		Skill:   skill.Name,
+		Model:   llmarg.Qualify(agent.CurrentModel(ctx)),
+		Message: task,
 	})
 	if err != nil {
 		return agent.ToolResult{

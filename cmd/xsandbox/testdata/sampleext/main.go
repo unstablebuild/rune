@@ -22,8 +22,10 @@
 //   - fetches the workspace config over RPC
 //   - reads VERSION from the workspace and notifies its contents
 //   - registers command "greet <name>" -> notifies "<prefix>: hi <name>"
-//   - registers command "count <args...>" -> notifies "<prefix>: n=<len>"
-//   - registers REPL command "status" -> prints "<prefix>: ok"
+//   - registers command "count <args...>" -> notifies "<prefix>: n=<len>",
+//     and completes its last argument from "alpha" and "beta"
+//   - registers REPL command "status" -> prints "<prefix>: ok", completes
+//     "verbose" and prints "usage: status [verbose]" as its help
 //   - subscribes to editor open events -> notifies "<prefix>: opened <base>"
 //   - registers command "api" -> exercises every workspace service
 //     exhaustively: EVERY method of every interface reachable through
@@ -209,8 +211,18 @@ func (h countHandler) HandleCommand(_ context.Context, cmd textapi.Command) erro
 	return err
 }
 
-func (h countHandler) Complete(context.Context, string, []string) (iterator.Iterator[string], error) {
-	return iterator.Empty[string](), nil
+func (h countHandler) Complete(_ context.Context, _ string, args []string) (iterator.Iterator[string], error) {
+	last := ""
+	if len(args) > 0 {
+		last = args[len(args)-1]
+	}
+	var ret []string
+	for _, c := range []string{"alpha", "beta"} {
+		if strings.HasPrefix(c, last) {
+			ret = append(ret, c)
+		}
+	}
+	return iterator.FromSlice(ret), nil
 }
 
 type statusHandler struct {
@@ -226,11 +238,13 @@ func (h statusHandler) HandleCommand(
 }
 
 func (h statusHandler) Complete(context.Context, string, []string) (iterator.Iterator[string], error) {
-	return iterator.Empty[string](), nil
+	return iterator.FromSlice([]string{"verbose"}), nil
 }
 
 func (h statusHandler) Help(context.Context, []string) (iterator.Iterator[component.Responsive], error) {
-	return iterator.Empty[component.Responsive](), nil
+	return iterator.FromSlice([]component.Responsive{
+		component.NewResponsiveString("usage: status [verbose]", component.StringResponsiveConfig{}),
+	}), nil
 }
 
 type openNotifier struct {
@@ -352,9 +366,14 @@ func (h counterHandler) Complete(context.Context, string, []string) (iterator.It
 
 // counterPanel is a deterministic browserapi.Handler: it draws
 // "count=N" at the top-left of its viewport and increments N whenever
-// it handles a <space> key press.
+// it handles a <space> key press. Below, it draws the last mouse press,
+// paste or focus change it handled.
 type counterPanel struct {
 	count int
+	last  string
+	// paste is the text of the paste in progress, while pasting.
+	paste   []rune
+	pasting bool
 }
 
 func newCounterPanel() *counterPanel { return &counterPanel{} }
@@ -362,18 +381,31 @@ func newCounterPanel() *counterPanel { return &counterPanel{} }
 func (*counterPanel) Resize(int, int) {}
 
 func (p *counterPanel) Draw(w term.Writer) {
-	text := fmt.Sprintf("count=%d", p.count)
-	for x, ch := range text {
-		w.SetCell(term.Coordinates{X: x, Y: 0}, term.Cell{Ch: ch})
+	for y, text := range []string{fmt.Sprintf("count=%d", p.count), p.last} {
+		for x, ch := range text {
+			w.SetCell(term.Coordinates{X: x, Y: y}, term.Cell{Ch: ch})
+		}
 	}
 }
 
 func (p *counterPanel) Handle(ev term.Event) (exit, handled bool) {
-	if ev.Type == term.EventKey && ev.Key == term.KeySpace {
+	switch {
+	case ev.Type == term.EventPasteStart:
+		p.pasting, p.paste = true, nil
+	case ev.Type == term.EventPasteEnd:
+		p.pasting, p.last = false, "paste "+string(p.paste)
+	case ev.Type == term.EventKey && p.pasting:
+		p.paste = append(p.paste, ev.Ch)
+	case ev.Type == term.EventKey && ev.Key == term.KeySpace:
 		p.count++
-		return false, true
+	case ev.Type == term.EventMouse && ev.Key == term.MouseLeft:
+		p.last = fmt.Sprintf("click %d,%d", ev.MouseX, ev.MouseY)
+	case ev.Type == term.EventFocus:
+		p.last = "focus"
+	default:
+		return false, false
 	}
-	return false, false
+	return false, true
 }
 
 func (*counterPanel) Close() error              { return nil }

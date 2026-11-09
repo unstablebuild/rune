@@ -39,8 +39,12 @@ type mockHost struct {
 	graphics Graphics
 	// output is what InvokeCommand returns.
 	output string
-	// completions is what CompleteResource returns.
+	// completions is what CompleteResource and CompleteCommand return.
 	completions []string
+	// handled is what the send builtins report.
+	handled bool
+	// selection is what Selection returns, if set.
+	selection *string
 }
 
 func (m *mockHost) record(name string, args ...any) error {
@@ -77,6 +81,14 @@ func (m *mockHost) ExpectCommand(name string, repl bool, timeout time.Duration) 
 
 func (m *mockHost) InvokeCommand(name string, args []string, repl bool, timeout time.Duration) (string, error) {
 	return m.output, m.record("invoke_command", name, args, repl, timeout)
+}
+
+func (m *mockHost) CompleteCommand(name string, args []string, repl bool, timeout time.Duration) ([]string, error) {
+	return m.completions, m.record("complete_command", name, args, repl, timeout)
+}
+
+func (m *mockHost) REPLHelp(name string, args []string, timeout time.Duration) (string, error) {
+	return m.output, m.record("repl_help", name, args, timeout)
 }
 
 func (m *mockHost) ExpectResourceOpener(scheme string, timeout time.Duration) error {
@@ -121,6 +133,26 @@ func (m *mockHost) RenderGraphics(handle string, width, height int, cellWidth, c
 func (m *mockHost) SendKey(handle, keys string) (bool, bool, error) {
 	err := m.record("send_key", handle, keys)
 	return false, false, err
+}
+
+func (m *mockHost) SendMouse(handle, keys string, x, y int) (bool, bool, error) {
+	return m.handled, false, m.record("send_mouse", handle, keys, x, y)
+}
+
+func (m *mockHost) SendPaste(handle, text string) (bool, bool, error) {
+	return m.handled, false, m.record("send_paste", handle, text)
+}
+
+func (m *mockHost) SendEvent(handle, eventType string) (bool, bool, error) {
+	return m.handled, false, m.record("send_event", handle, eventType)
+}
+
+func (m *mockHost) Selection(handle string) (string, bool, error) {
+	err := m.record("selection", handle)
+	if m.selection == nil {
+		return "", false, err
+	}
+	return *m.selection, true, err
 }
 
 func runSpec(t *testing.T, src string, host Host) error {
@@ -274,6 +306,71 @@ if complete_resource(o, prefix = "fake:///", timeout = "1s")[1] != "fake:///b c"
 	}, host.calls)
 }
 
+func TestSpecRunCommandCompletionAndHelp(t *testing.T) {
+	t.Parallel()
+
+	src := `
+h = expect_command("hello")
+r = expect_repl_command("shell")
+if complete_command(h, args = ["a"]) != ["ab", "ac"]:
+    fail("unexpected completions")
+complete_repl_command(r, timeout = "1s")
+complete_command("hello")
+if repl_help(r, args = ["ls"]) != "usage":
+    fail("unexpected help")
+repl_help("shell")
+`
+	host := &mockHost{completions: []string{"ab", "ac"}, output: "usage"}
+	require.NoError(t, runSpec(t, src, host))
+	assert.Equal(t, []hostCall{
+		{name: "expect_command", args: []any{"hello", false, 7 * time.Second}},
+		{name: "expect_command", args: []any{"shell", true, 7 * time.Second}},
+		{name: "complete_command", args: []any{"hello", []string{"a"}, false, 7 * time.Second}},
+		{name: "complete_command", args: []any{"shell", []string(nil), true, 1 * time.Second}},
+		{name: "complete_command", args: []any{"hello", []string(nil), false, 7 * time.Second}},
+		{name: "repl_help", args: []any{"shell", []string{"ls"}, 7 * time.Second}},
+		{name: "repl_help", args: []any{"shell", []string(nil), 7 * time.Second}},
+	}, host.calls)
+}
+
+func TestSpecRunSendEvents(t *testing.T) {
+	t.Parallel()
+
+	src := `
+w = expect_window(method = "browser.WindowManager/Split")
+if not send_mouse(w, "<mouse-left><mouse-release>", x = 3, y = 4)["handled"]:
+    fail("mouse")
+if send_paste(w, "a\nb") != {"handled": True, "quit": False}:
+    fail("paste")
+send_event(w, type = "focus")
+`
+	host := &mockHost{handled: true}
+	require.NoError(t, runSpec(t, src, host))
+	assert.Equal(t, []hostCall{
+		{name: "expect_window", args: []any{"browser.WindowManager/Split", 7 * time.Second}},
+		{name: "send_mouse", args: []any{"browser.WindowManager/Split", "<mouse-left><mouse-release>", 3, 4}},
+		{name: "send_paste", args: []any{"browser.WindowManager/Split", "a\nb"}},
+		{name: "send_event", args: []any{"browser.WindowManager/Split", "focus"}},
+	}, host.calls)
+}
+
+func TestSpecRunSelection(t *testing.T) {
+	t.Parallel()
+
+	src := `
+w = expect_window(method = "browser.WindowManager/Split")
+if selection(w) != "picked":
+    fail("selection")
+`
+	picked := "picked"
+	require.NoError(t, runSpec(t, src, &mockHost{selection: &picked}))
+	require.NoError(t, runSpec(t, `
+w = expect_window(method = "browser.WindowManager/Split")
+if selection(w) != None:
+    fail("no selection")
+`, &mockHost{}))
+}
+
 func TestSpecRunRenderGraphics(t *testing.T) {
 	t.Parallel()
 
@@ -413,6 +510,31 @@ func TestSpecRunErrors(t *testing.T) {
 			src:     "o = expect_resource_opener(\"fake\")\ncomplete_resource(o, \"fake://\")",
 			wantErr: "complete_resource failed",
 		},
+		{
+			name:    "complete_command with a REPL handle",
+			src:     "r = expect_repl_command(\"x\")\ncomplete_command(r)",
+			wantErr: "registered with repl=true",
+		},
+		{
+			name:    "repl_help with a command handle",
+			src:     "h = expect_command(\"x\")\nrepl_help(h)",
+			wantErr: "registered with repl=false",
+		},
+		{
+			name:    "complete_command failure is host error",
+			src:     `complete_command("x")`,
+			wantErr: "complete_command failed",
+		},
+		{
+			name:    "send_mouse without a position",
+			src:     "w = expect_window(method = \"m\")\nsend_mouse(w, \"<mouse-left>\")",
+			wantErr: "missing argument for x",
+		},
+		{
+			name:    "send_event without a window handle",
+			src:     `send_event("w", "focus")`,
+			wantErr: "send_event",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -420,6 +542,7 @@ func TestSpecRunErrors(t *testing.T) {
 			host := &mockHost{fail: map[string]error{
 				"publish_event":     errors.New("publish_event failed"),
 				"complete_resource": errors.New("complete_resource failed"),
+				"complete_command":  errors.New("complete_command failed"),
 			}}
 			err := runSpec(t, tc.src, host)
 			require.Error(t, err)

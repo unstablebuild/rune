@@ -305,6 +305,29 @@ func TestRegistryAddOverrides(t *testing.T) {
 	})
 }
 
+func TestRegistryRemove(t *testing.T) {
+	r := NewRegistry(
+		&mockTool{name: "search"},
+		&mockTool{name: "bash"},
+		&mockTool{name: "mcp__docs__fetch"},
+	)
+	override := &mockTool{name: "search", result: ToolResult{Content: "openai-search"}}
+	r.RegisterOverrides("openai", override)
+
+	r.Remove("mcp__docs__fetch", "search", "unknown")
+
+	names := make([]string, 0)
+	for _, tool := range r.AllTools() {
+		names = append(names, tool.Function.Name)
+	}
+	assert.Equal(t, []string{"bash"}, names)
+	_, ok := r.Get("search", "")
+	assert.False(t, ok)
+	got, ok := r.Get("search", "openai")
+	require.True(t, ok, "provider override should survive removing the base tool")
+	assert.Equal(t, override, got)
+}
+
 func TestRegistryRegisterReplacement(t *testing.T) {
 	t.Run("excludes base, adds replacement, records pairing", func(t *testing.T) {
 		r := NewRegistry(

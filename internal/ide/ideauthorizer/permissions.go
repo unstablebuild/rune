@@ -320,6 +320,8 @@ func PermissionActionText(permission extensionapi.Permission) string {
 		return "find and install Rune packages"
 	case extensionapi.PermissionSearch:
 		return "search the workspace's files"
+	case extensionapi.PermissionACP:
+		return "run your configured agents, which can run commands"
 	default:
 		return fmt.Sprintf("access permission %s", permission)
 	}

@@ -365,6 +365,46 @@ func TestRefresh(t *testing.T) {
 	}
 }
 
+func TestFileURIDataDir(t *testing.T) {
+	tests := []struct {
+		name    string
+		uri     string
+		dataDir string
+		wantErr string
+	}{
+		{name: "plain spelling", uri: "file://$RUNE_DATADIR/lib/theme/img.png", dataDir: "data"},
+		{name: "braced spelling", uri: "file://${RUNE_DATADIR}/lib/theme/img.png", dataDir: "data"},
+		{name: "unset leaves the URI as written", uri: "file://$RUNE_DATADIR/lib/theme/img.png", wantErr: "img.png"},
+		{name: "other variables stay literal", uri: "file://$HOME/lib/theme/img.png", dataDir: "data", wantErr: "img.png"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			dataDir := ""
+			if tt.dataDir != "" {
+				dataDir = filepath.Join(root, tt.dataDir)
+			}
+			t.Setenv("RUNE_DATADIR", dataDir)
+			path := filepath.Join(root, "data", "lib", "theme", "img.png")
+			require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+			require.NoError(t, os.WriteFile(path, encodePNG(t, solid(1, 1, testBlue)), 0o600))
+			require.NoError(t, ValidateURI(tt.uri))
+
+			img, err := loadNew(t, tt.uri, storagestub.NewInMemoryService())
+			refreshed, refreshErr := Refresh(t.Context(), tt.uri, time.Hour, storagestub.NewInMemoryService())
+			if tt.wantErr != "" {
+				assert.ErrorContains(t, err, tt.wantErr)
+				assert.ErrorContains(t, refreshErr, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			require.NoError(t, refreshErr)
+			assert.Equal(t, testBlue, pixel(t, img))
+			assert.Equal(t, testBlue, pixel(t, refreshed))
+		})
+	}
+}
+
 // loadNew returns what a Component from New settles with.
 func loadNew(
 	t *testing.T, uri string, storage storageapi.Service,

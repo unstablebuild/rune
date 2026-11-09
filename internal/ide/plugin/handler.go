@@ -34,7 +34,6 @@ import (
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/cell"
 	"unstable.build/rune/internal/debug"
-	thandler "unstable.build/rune/internal/handler"
 	"unstable.build/rune/internal/term/vte"
 	"unstable.build/rune/internal/text"
 	"unstable.build/rune/internal/text/standard"
@@ -424,7 +423,7 @@ func (e *Handler) initializeDoneHandler() {
 }
 
 func (e *Handler) newUnion(unionMain tui.Handler) tui.Handler {
-	union := thandler.NewFrameUnion(unionMain)
+	union := handler.NewFrameUnion(unionMain)
 	union.Frame = false
 	if e.bar.AlignBottom {
 		union.UnionBottom(handler.NopFromComponent(e.bar), barHeight)

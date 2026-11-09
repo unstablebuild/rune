@@ -24,6 +24,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -3715,6 +3716,155 @@ func TestPersistMessages_ReloadsFullContextAcrossRuns(t *testing.T) {
 	assert.Contains(t, contents, "first answer",
 		"second turn must reload prior assistant message")
 	assert.Contains(t, contents, "second question")
+}
+
+func TestAgentAppendTurn(t *testing.T) {
+	call := llmapi.Message{Role: llmapi.RoleAssistant, ToolCalls: []llmapi.ToolCall{{
+		ID: "skill-1", Type: llmapi.ToolTypeFunction,
+		Function: llmapi.FunctionCall{Name: "skill", Arguments: `{"name":"research"}`},
+	}}}
+	result := llmapi.Message{Role: llmapi.RoleTool, Content: "The notes say hi.", Name: "skill", ToolCallID: "skill-1"}
+	reply := llmapi.Message{Role: llmapi.RoleAssistant, Content: "The notes say hi."}
+	system := llmapi.Message{Role: llmapi.RoleSystem, Content: "test"}
+	earlier := []llmapi.Message{
+		system, {Role: llmapi.RoleUser, Content: "hello"}, {Role: llmapi.RoleAssistant, Content: "hi"},
+	}
+	image := llmapi.ContentPart{Type: llmapi.ContentPartTypeImageURL, ImageURL: "data:image/png;base64,AA=="}
+
+	tests := []struct {
+		name     string
+		existing []llmapi.Message
+		message  string
+		opts     []RunOption
+		replies  []llmapi.Message
+		canceled bool
+		want     []llmapi.Message
+	}{
+		{
+			name:    "new dialogue",
+			message: "/research go",
+			replies: []llmapi.Message{call, result, reply},
+			want:    []llmapi.Message{system, {Role: llmapi.RoleUser, Content: "/research go"}, call, result, reply},
+		},
+		{
+			name:     "existing dialogue",
+			existing: earlier,
+			message:  "/research go",
+			replies:  []llmapi.Message{call, result, reply},
+			want:     append(slices.Clone(earlier), llmapi.Message{Role: llmapi.RoleUser, Content: "/research go"}, call, result, reply),
+		},
+		{
+			name:    "display text and attachments",
+			message: "see <attachment-1>",
+			opts:    []RunOption{WithDisplayMessage("see shot.png"), WithAttachments([]llmapi.ContentPart{image})},
+			replies: []llmapi.Message{call, result, reply},
+			want: []llmapi.Message{system, {
+				Role: llmapi.RoleUser, Content: "see shot.png",
+				MultiContent: []llmapi.ContentPart{{Type: llmapi.ContentPartTypeText, Text: "see <attachment-1>"}, image},
+			}, call, result, reply},
+		},
+		{
+			name:    "tool result without output",
+			message: "/research go",
+			replies: []llmapi.Message{call, {Role: llmapi.RoleTool, Name: "skill", ToolCallID: "skill-1"}},
+			want: []llmapi.Message{system, {Role: llmapi.RoleUser, Content: "/research go"}, call,
+				{Role: llmapi.RoleTool, Content: emptyToolResultPlaceholder, Name: "skill", ToolCallID: "skill-1"}},
+		},
+		{
+			name:     "canceled context",
+			existing: earlier,
+			message:  "/research go",
+			replies:  []llmapi.Message{call, {Role: llmapi.RoleTool, Content: "sub-agent cancelled", Name: "skill", ToolCallID: "skill-1"}},
+			canceled: true,
+			want: append(slices.Clone(earlier), llmapi.Message{Role: llmapi.RoleUser, Content: "/research go"}, call,
+				llmapi.Message{Role: llmapi.RoleTool, Content: "sub-agent cancelled", Name: "skill", ToolCallID: "skill-1"}),
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newMockStore()
+			if tc.existing != nil {
+				store.data["d"] = dialoguemanager.Dialogue{ID: "d", Messages: tc.existing}
+			}
+			ag := NewAgent(&mockService{}, NewRegistry(), noSkills(), store, NoMemory(), Config{
+				SystemPrompt: "test", AgentID: "default", Model: llmapi.ModelEntry{Name: "m"},
+			})
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if tc.canceled {
+				cancel()
+			}
+			replies := slices.Clone(tc.replies)
+
+			require.NoError(t, ag.AppendTurn(ctx, "d", tc.message, replies, tc.opts...))
+
+			d, ok := store.getDialogue("d")
+			require.True(t, ok)
+			assert.Equal(t, tc.want, d.Messages)
+			assert.Equal(t, tc.replies, replies, "the caller's replies must not change")
+			if tc.existing == nil {
+				assert.Equal(t, "default", d.AgentID)
+				assert.Equal(t, "m", d.Model)
+			}
+		})
+	}
+}
+
+func TestAgentAppendTurnStoreErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		store   func(*mockStore)
+		wantErr string
+	}{
+		{name: "get", store: func(s *mockStore) { s.getErr = errors.New("read error") }, wantErr: "get dialogue: read error"},
+		{name: "create", store: func(s *mockStore) { s.createErr = errors.New("write error") }, wantErr: "write error"},
+		{name: "append", store: func(s *mockStore) {
+			s.data["d"] = dialoguemanager.Dialogue{ID: "d"}
+			s.appendErr = errors.New("write error")
+		}, wantErr: "write error"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newMockStore()
+			tc.store(store)
+			ag := NewAgent(&mockService{}, NewRegistry(), noSkills(), store, NoMemory(), Config{SystemPrompt: "test"})
+			assert.EqualError(t, ag.AppendTurn(t.Context(), "d", "/research go", nil), tc.wantErr)
+		})
+	}
+}
+
+func TestAgentRunAfterAppendTurn(t *testing.T) {
+	store := newMockStore()
+	svc := &mockService{responses: []mockResponse{stopResponse("You're welcome.")}}
+	ag := NewAgent(svc, NewRegistry(), noSkills(), store, NoMemory(), Config{SystemPrompt: "test"})
+	call := llmapi.ToolCall{
+		ID: "skill-1", Type: llmapi.ToolTypeFunction,
+		Function: llmapi.FunctionCall{Name: "skill", Arguments: `{"name":"research"}`},
+	}
+	require.NoError(t, ag.AppendTurn(t.Context(), "d", "/research go", []llmapi.Message{
+		{Role: llmapi.RoleAssistant, ToolCalls: []llmapi.ToolCall{call}},
+		{Role: llmapi.RoleTool, Content: "The notes say hi.", Name: "skill", ToolCallID: "skill-1"},
+		{Role: llmapi.RoleAssistant, Content: "The notes say hi."},
+	}))
+
+	_ = collectEvents(t, ag.Run(t.Context(), "d", "thanks"))
+
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	require.Len(t, svc.requests, 1)
+	var turn []llmapi.Message
+	for _, m := range svc.requests[0].Messages {
+		if m.Role != llmapi.RoleSystem {
+			turn = append(turn, llmapi.Message{Role: m.Role, Content: m.Content, ToolCalls: m.ToolCalls, ToolCallID: m.ToolCallID})
+		}
+	}
+	assert.Equal(t, []llmapi.Message{
+		{Role: llmapi.RoleUser, Content: "/research go"},
+		{Role: llmapi.RoleAssistant, ToolCalls: []llmapi.ToolCall{call}},
+		{Role: llmapi.RoleTool, Content: "The notes say hi.", ToolCallID: "skill-1"},
+		{Role: llmapi.RoleAssistant, Content: "The notes say hi."},
+		{Role: llmapi.RoleUser, Content: "thanks"},
+	}, turn, "the agent must answer follow-ups knowing the skill's run")
 }
 
 func TestPersistMessages_SaveOnCancelledContext(t *testing.T) {

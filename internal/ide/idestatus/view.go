@@ -20,6 +20,7 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"image"
 	"slices"
 	"strconv"
 	"strings"
@@ -32,6 +33,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term/graphemecluster"
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/internal/browser"
+	tcomponent "unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/term/programstatus"
 )
@@ -63,15 +65,58 @@ type InboxStyle struct {
 	// there are more out of sight below.
 	MoreBelow     rune
 	MoreBelowAttr term.Attributes
-	// Frame draws the line between the programs and the preview in
-	// DividerAttr, and PlaceholderAttr the text that stands in for them
-	// when there is nothing to show.
-	Frame                        component.FrameUnionCharSet
+	// Divider draws the line between the programs and the preview in
+	// DividerAttr, joined to the frame of the inbox's window, and
+	// PlaceholderAttr the text that stands in for them when there is
+	// nothing to show.
+	Divider                      tcomponent.DividerCharSet
 	DividerAttr, PlaceholderAttr term.Attributes
+	// Images are drawn under each item, from the marker's column to the
+	// right edge of the selection: ButtonSelected's under the selected
+	// item, ButtonHover's under the one under the mouse and ButtonIdle's
+	// under the rest. They stand in for the backgrounds of SelectedAttr
+	// and HoverAttr, which an item keeps while its images do not draw.
+	Images browser.PromptImages
+	// MarkerGraphics are drawn down the marker.
+	MarkerGraphics tcomponent.LineGraphics
+	// ProgressBarGraphics are drawn over the progress bars.
+	ProgressBarGraphics ProgressBarGraphics
+}
+
+// ProgressBarGraphics names the images drawn over the cells of a progress
+// bar: Left and Right over its ends, Filled over the cells done and Empty
+// over the others. An end left out takes the image of the cell it stands
+// in. Overlay keeps the characters of the bar under the images rather
+// than blanking them.
+type ProgressBarGraphics struct {
+	Left, Filled, Empty, Right string
+	Overlay                    bool
+}
+
+// URIs returns the URIs g names, empty ones included.
+func (g ProgressBarGraphics) URIs() []string {
+	return []string{g.Left, g.Filled, g.Empty, g.Right}
+}
+
+// cell returns the image of cell i of a bar of barW cells, filled of
+// them done, as a line of one cell.
+func (g ProgressBarGraphics) cell(i, barW, filled int) tcomponent.LineGraphics {
+	uri := g.Empty
+	if i < filled {
+		uri = g.Filled
+	}
+	switch i {
+	case 0:
+		uri = cmp.Or(g.Left, uri)
+	case barW - 1:
+		uri = cmp.Or(g.Right, uri)
+	}
+	return tcomponent.LineGraphics{Start: uri, Overlay: g.Overlay}
 }
 
 // DefaultInboxStyle returns the style of an unconfigured inbox.
 func DefaultInboxStyle() InboxStyle {
+	vertical := component.FrameCharSetDefault().VerticalLeft
 	return InboxStyle{
 		Marker:                 '▌',
 		MarkerAttr:             browser.DefaultConfig().FocusTabHighlightAttr,
@@ -87,9 +132,11 @@ func DefaultInboxStyle() InboxStyle {
 		ProgressRemainingAttr:         statusMutedAttr,
 		ProgressRemainingSelectedAttr: term.Attributes{Fg: term.ColorSilver},
 		MoreBelow:                     statusMoreBelow,
-		Frame:                         component.DefaultFrameUnionCharSet(),
-		DividerAttr:                   statusMutedAttr,
-		PlaceholderAttr:               statusMutedAttr,
+		Divider: tcomponent.DividerCharSet{
+			Top: '┬', VerticalTop: vertical, Vertical: vertical, VerticalBottom: vertical, Bottom: '┴',
+		},
+		DividerAttr:     statusMutedAttr,
+		PlaceholderAttr: statusMutedAttr,
 	}
 }
 
@@ -166,7 +213,8 @@ func (v *View) Draw(w term.Writer) {
 	if sideW >= v.width {
 		return
 	}
-	divider := term.NewCell(v.store.style.Frame.VerticalLeft, 1, v.store.style.DividerAttr)
+	style := v.store.style
+	divider := term.NewCell(style.Divider.Vertical, 1, style.DividerAttr)
 	for y := range v.height {
 		w.SetCell(term.Coordinates{X: sideW, Y: y}, divider)
 	}
@@ -177,6 +225,34 @@ func (v *View) Draw(w term.Writer) {
 	v.drawPreview(&component.VirtualWriter{
 		Writer: w, Offset: term.Coordinates{X: x}, Width: v.width - x, Height: v.height,
 	}, v.width-x, v.height)
+}
+
+// StitchFrame joins the divider to the frame f drew width by height
+// around the view, and draws the divider's images with g, unless it is
+// nil. Called from within the view's own Draw, it draws nothing, as Draw
+// does.
+func (v *View) StitchFrame(
+	w term.Writer, f *component.Frame, g *tcomponent.FrameGraphics, width, height int, bar bool,
+) {
+	sideW := v.sidebarWidth()
+	if v.drawing || sideW >= v.width {
+		return
+	}
+	x := f.ContentPosition().X + sideW
+	if width < 3 || height < 3 || x <= 0 || x >= width-1 {
+		return
+	}
+	style := v.store.style
+	cs := style.Divider
+	if !bar {
+		w.SetCell(term.Coordinates{X: x}, term.NewCell(cs.Top, 1, f.Attributes))
+		w.SetCell(term.Coordinates{X: x, Y: 1}, term.NewCell(cs.VerticalTop, 1, style.DividerAttr))
+	}
+	w.SetCell(term.Coordinates{X: x, Y: height - 2}, term.NewCell(cs.VerticalBottom, 1, style.DividerAttr))
+	w.SetCell(term.Coordinates{X: x, Y: height - 1}, term.NewCell(cs.Bottom, 1, f.Attributes))
+	if g != nil {
+		g.DrawDivider(w, f, cs, style.DividerAttr, width, height, x, !bar)
+	}
 }
 
 // Handle moves the selection, wrapping around, with the arrows, j and
@@ -454,29 +530,43 @@ func (v *View) drawSidebar(w term.Writer, width int) {
 	spans := v.layout(heights)
 	// A program cut short stops above the arrow's row.
 	list := &component.VirtualWriter{Writer: w, Width: width, Height: statusPadTop + rows}
+	g, images := v.store.graphics, v.store.images
 	for _, s := range spans {
+		st := component.ButtonIdle
 		var base term.Attributes
 		if s.i == v.hover {
-			base = style.HoverAttr
+			base, st = style.HoverAttr, component.ButtonHover
 		}
 		if s.i == sel {
-			base = term.AttributesUnion(base, style.SelectedAttr)
+			base, st = term.AttributesUnion(base, style.SelectedAttr), component.ButtonSelected
 		}
-		if s.i == v.hover || s.i == sel {
-			blank := term.NewCell(' ', 1, base)
-			for dy := range s.n {
-				for x := statusPadLeft; x < selEnd; x++ {
-					list.SetCell(term.Coordinates{X: x, Y: s.y + dy}, blank)
-				}
+		// Images go under what is written before them, and the cells
+		// written after them cover them: the item is written first, then
+		// its images, then the images over its marker and progress bar.
+		imaged := false
+		if images != nil && !images.Image(st).Empty() {
+			// Over its images, the item keeps the colors of its state but
+			// its background, which would paint over them.
+			over := base
+			over.Bg = term.ColorDefault
+			v.drawItem(list, s, sel, width, over)
+			imaged = images.Draw(list, image.Rect(statusPadLeft, s.y, selEnd, s.y+s.n), st)
+			if imaged {
+				base = over
 			}
 		}
-		v.drawEntry(list, s.i, s.y, width, base, s.i == sel)
-		if s.i != sel {
+		if !imaged {
+			v.drawItem(list, s, sel, width, base)
+		}
+		if g == nil {
 			continue
 		}
-		for dy := range s.n {
-			statusText(list, statusPadLeft, s.y+dy, string(style.Marker),
-				term.AttributesUnion(base, style.MarkerAttr), statusIconX)
+		if s.i == sel {
+			g.DrawLine(list, style.MarkerGraphics, term.Coordinates{X: statusPadLeft, Y: s.y}, s.n,
+				true, v.markerCell(base), term.ImageLayerAboveText)
+		}
+		if bar, ok := v.progressBar(s.i, s.y, width, base, s.i == sel); ok {
+			bar.drawGraphics(list, g)
 		}
 	}
 	if !arrow {
@@ -511,6 +601,31 @@ func (v *View) layout(heights []int) []statusSpan {
 	return spans
 }
 
+// drawItem writes the cells of the item s lays out in base, the
+// attributes of its state, sel being the selected item.
+func (v *View) drawItem(w term.Writer, s statusSpan, sel, width int, base term.Attributes) {
+	if s.i == v.hover || s.i == sel {
+		blank := term.NewCell(' ', 1, base)
+		for dy := range s.n {
+			for x := statusPadLeft; x < width-statusPadRight; x++ {
+				w.SetCell(term.Coordinates{X: x, Y: s.y + dy}, blank)
+			}
+		}
+	}
+	v.drawEntry(w, s.i, s.y, width, base, s.i == sel)
+	if s.i == sel {
+		v.store.style.MarkerGraphics.DrawCells(w, term.Coordinates{X: statusPadLeft, Y: s.y}, s.n,
+			true, v.markerCell(base))
+	}
+}
+
+// markerCell returns the marker drawn over base.
+func (v *View) markerCell(base term.Attributes) term.Cell {
+	style := v.store.style
+	return term.NewCell(style.Marker, uint8(max(graphemecluster.StringWidth(string(style.Marker)), 1)),
+		term.AttributesUnion(base, style.MarkerAttr))
+}
+
 func (v *View) scroll(down bool) bool {
 	heights := v.entryHeights()
 	rows, _ := v.listRows(heights)
@@ -531,6 +646,9 @@ func (v *View) scroll(down bool) bool {
 func (v *View) drawEntry(w term.Writer, i, y, width int, base term.Attributes, selected bool) {
 	e := v.entries[i]
 	style := v.store.style
+	if bar, ok := v.progressBar(i, y, width, base, selected); ok {
+		bar.draw(w)
+	}
 	// Short of room, text keeps clear of the padding, as it does when it
 	// fits, and never splits a wide character there.
 	textEnd := width - statusPadRight - statusSelectionPad
@@ -551,17 +669,35 @@ func (v *View) drawEntry(w term.Writer, i, y, width int, base term.Attributes, s
 	statusText(w, statusIconX, y, icon, term.AttributesUnion(e.iconAttr, base), statusTextX)
 	statusText(w, statusTextX, y, e.name, term.AttributesUnion(e.nameAttr, base), textEnd)
 	statusText(w, statusTextX, y+1, e.sub, term.AttributesUnion(e.subAttr, base), textEnd)
+}
+
+// progressBar returns the progress bar of item i, which is drawn from
+// row y in base, or false when it has none.
+func (v *View) progressBar(i, y, width int, base term.Attributes, selected bool) (statusProgressBar, bool) {
+	e := v.entries[i]
 	if e.progress < 0 {
-		return
+		return statusProgressBar{}, false
 	}
+	// It is below the name of the workspace, the item's and its state.
+	y += 2
+	if e.wsName != "" {
+		y++
+	}
+	style := v.store.style
+	textEnd := width - statusPadRight - statusSelectionPad
 	bar := term.AttributesUnion(base, style.ProgressAttr)
 	remaining := style.ProgressRemainingAttr
 	if selected {
 		remaining = style.ProgressRemainingSelectedAttr
 	}
-	statusProgress(w, statusTextX, y+2, textEnd-statusTextX, e.progress, style.ProgressBar,
-		term.AttributesUnion(bar, style.ProgressDoneAttr), term.AttributesUnion(bar, remaining),
-		term.AttributesUnion(style.ProgressLabelAttr, base))
+	return statusProgressBar{
+		x: statusTextX, y: y, width: textEnd - statusTextX, pct: e.progress,
+		chars:     style.ProgressBar,
+		done:      term.AttributesUnion(bar, style.ProgressDoneAttr),
+		remaining: term.AttributesUnion(bar, remaining),
+		label:     term.AttributesUnion(style.ProgressLabelAttr, base),
+		graphics:  style.ProgressBarGraphics,
+	}, true
 }
 
 func (v *View) drawPreview(w term.Writer, width, height int) {
@@ -842,34 +978,75 @@ func statusText(w term.Writer, x, y int, s string, attr term.Attributes, end int
 	return x
 }
 
-func statusProgress(
-	w term.Writer, x, y, width, pct int, chars component.ProgressBarCharSet, done, remaining, label term.Attributes,
-) {
-	// Padded, the bar keeps its length as the percentage grows.
-	text := fmt.Sprintf("%3d%%", pct)
-	barW := width - 1 - len(text)
-	if barW < 2 {
-		statusText(w, x, y, strconv.Itoa(pct)+"%", label, x+width)
+// statusProgressBar is a progress bar at pct, with its percentage on its
+// right, width cells wide from x, y: in done as far as it is done, in
+// remaining past that, and the percentage in label.
+type statusProgressBar struct {
+	x, y, width, pct       int
+	chars                  component.ProgressBarCharSet
+	done, remaining, label term.Attributes
+	graphics               ProgressBarGraphics
+}
+
+// draw draws the bar, but blanks in place of the characters its images
+// replace, or its percentage alone when the bar does not fit.
+func (b statusProgressBar) draw(w term.Writer) {
+	barW, filled, ok := b.layout()
+	if !ok {
+		statusText(w, b.x, b.y, strconv.Itoa(b.pct)+"%", b.label, b.x+b.width)
 		return
 	}
-	// Rounding down keeps the bar from looking full before it is.
-	filled := pct * barW / 100
 	for i := range barW {
-		r, attr := chars.Empty, remaining
-		if i < filled {
-			r, attr = chars.Filled, done
-		}
-		// The ends keep the colors of the cells they stand in, for a bar
-		// of one glyph all along to read as one.
-		switch i {
-		case 0:
-			r = chars.Left
-		case barW - 1:
-			r = chars.Right
-		}
-		w.SetCell(term.Coordinates{X: x + i, Y: y}, term.NewCell(r, 1, attr))
+		pos, c := b.cell(i, barW, filled)
+		b.graphics.cell(i, barW, filled).DrawCells(w, pos, 1, false, c)
 	}
-	statusText(w, x+barW+1, y, text, label, x+width)
+	statusText(w, b.x+barW+1, b.y, b.text(), b.label, b.x+b.width)
+}
+
+// drawGraphics draws the images of the bar over what draw drew.
+func (b statusProgressBar) drawGraphics(w term.Writer, g *tcomponent.FrameGraphics) {
+	barW, filled, ok := b.layout()
+	if !ok {
+		return
+	}
+	for i := range barW {
+		pos, c := b.cell(i, barW, filled)
+		g.DrawLine(w, b.graphics.cell(i, barW, filled), pos, 1, false, c, term.ImageLayerAboveText)
+	}
+}
+
+// layout returns how many cells the bar takes and how many of them are
+// done, or false when only the percentage fits.
+func (b statusProgressBar) layout() (barW, filled int, ok bool) {
+	// Padded, the bar keeps its length as the percentage grows.
+	barW = b.width - 1 - len(b.text())
+	if barW < 2 {
+		return 0, 0, false
+	}
+	// Rounding down keeps the bar from looking full before it is.
+	return barW, b.pct * barW / 100, true
+}
+
+func (b statusProgressBar) text() string {
+	return fmt.Sprintf("%3d%%", b.pct)
+}
+
+// cell returns where cell i of the bar is and what it shows, filled of
+// its barW cells being done.
+func (b statusProgressBar) cell(i, barW, filled int) (term.Coordinates, term.Cell) {
+	r, attr := b.chars.Empty, b.remaining
+	if i < filled {
+		r, attr = b.chars.Filled, b.done
+	}
+	// The ends keep the colors of the cells they stand in, for a bar of
+	// one glyph all along to read as one.
+	switch i {
+	case 0:
+		r = b.chars.Left
+	case barW - 1:
+		r = b.chars.Right
+	}
+	return term.Coordinates{X: b.x + i, Y: b.y}, term.NewCell(r, 1, attr)
 }
 
 func statusCloseMessage(e statusEntry) string {

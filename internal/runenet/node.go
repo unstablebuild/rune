@@ -23,13 +23,18 @@
 package runenet
 
 import (
+	"cmp"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -37,8 +42,10 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/unstablebuild/blue/logging"
 	"tailscale.com/client/local"
+	"tailscale.com/hostinfo"
 	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
+	"tailscale.com/tailcfg"
 	"tailscale.com/tsnet"
 	"unstable.build/rune/auth"
 	"unstable.build/rune/internal/debug"
@@ -84,6 +91,11 @@ const (
 	StateRunning    = "Running"
 )
 
+// App is what a Rune node reports to the coordination server as the
+// application it runs, which is how the other machines of a tailnet
+// tell a Rune node from the tailnet's other devices.
+const App = "rune"
+
 // Peer is one other machine in the mesh.
 type Peer struct {
 	// Hostname is the short name used in rune://<hostname> URIs.
@@ -96,6 +108,29 @@ type Peer struct {
 	OS string
 	// Online is whether the peer is currently reachable.
 	Online bool
+}
+
+// PingResult is how one ping reached a peer; see [Node.Ping].
+type PingResult struct {
+	// Peer is the name of the machine that answered, and Addr its mesh
+	// address.
+	Peer string
+	Addr netip.Addr
+	// Latency is the ping's round trip.
+	Latency time.Duration
+	// Endpoint is the address the ping reached the peer at directly.
+	Endpoint string
+	// DERPRegion names the relay region that carried the ping when the
+	// machines could not reach each other directly.
+	DERPRegion string
+	// PeerRelay is the peer relay that carried the ping, if one did.
+	PeerRelay string
+}
+
+// Direct reports whether the ping went straight to the peer, without a
+// relay in between.
+func (r PingResult) Direct() bool {
+	return r.Endpoint != "" && r.DERPRegion == "" && r.PeerRelay == ""
 }
 
 // Status summarizes the local node's membership in the mesh.
@@ -111,6 +146,8 @@ type Status struct {
 	// AuthURL is set while the node waits for an interactive login.
 	AuthURL string
 	// LoginName identifies the account this node belongs to.
+	// On the user's own coordination server it is the login of the
+	// user who signed this machine in, and empty for a tagged one.
 	LoginName string
 	// LastError is the most recent failure to bring the node up or
 	// join the mesh. It is empty once the node has joined.
@@ -138,23 +175,70 @@ type Node struct {
 	lastErr    error
 	login      chan struct{}
 	joinSem    chan struct{}
+	// authURL is the sign-in URL the backend is waiting on, and
+	// reportedAuthURL the last one passed to Config.OnAuthURL.
+	authURL         string
+	reportedAuthURL string
 }
 
 // New builds a Node from cfg. The node stays offline until Start runs.
 func New(cfg Config) *Node {
 	logger := log.WithField(logging.KeyClass, "runenet")
+	// Process-wide, but every node in this process is a Rune node.
+	hostinfo.SetApp(App)
+	userLogf := logger.Infof
+	if cfg.CustomControl {
+		// tsnet repeats its own sign-in advice every few seconds, and
+		// it names an auth key Rune never reads; Rune reports the URL
+		// itself through Config.OnAuthURL.
+		userLogf = logger.Debugf
+	}
 	return &Node{
 		cfg:        cfg,
 		controlURL: cfg.ControlURL,
 		joinSem:    make(chan struct{}, 1),
 		srv: &tsnet.Server{
-			Dir:        filepath.Join(cfg.Dir, "runenet"),
+			Dir:        filepath.Join(cfg.Dir, identityDir(cfg)),
 			Hostname:   cfg.Hostname,
 			AuthKey:    cfg.AuthKey,
 			ControlURL: cfg.ControlURL,
-			UserLogf:   logger.Infof,
+			UserLogf:   userLogf,
 			Logf:       logger.Tracef,
 		},
+	}
+}
+
+// identityDir is the directory under Config.Dir the node keeps its
+// identity in. Each of the user's own coordination servers gets one of
+// its own, so pointing --control-url elsewhere never presents one
+// tailnet's machine key to another, nor to Rune's network.
+func identityDir(cfg Config) string {
+	if !cfg.CustomControl {
+		return "runenet"
+	}
+	sum := sha256.Sum256([]byte(cfg.ControlURL))
+	return "runenet-" + hex.EncodeToString(sum[:])[:12]
+}
+
+// envCredentials are the variables tsnet reads credentials from when
+// none is set on the server.
+var envCredentials = []string{
+	"TS_AUTHKEY", "TS_AUTH_KEY", "TS_CLIENT_SECRET", "TS_CLIENT_ID",
+	"TS_ID_TOKEN", "TS_AUDIENCE",
+}
+
+// dropEnvCredentials removes envCredentials from the process
+// environment. A node on the user's own server always signs in by URL:
+// a key left in the environment would otherwise join this machine as
+// whoever minted it, unnoticed.
+func dropEnvCredentials() {
+	for _, name := range envCredentials {
+		if _, ok := os.LookupEnv(name); !ok {
+			continue
+		}
+		_ = os.Unsetenv(name)
+		log.WithField(logging.KeyClass, "runenet").Warnf(
+			"ignoring %s: Rune signs in to your coordination server by URL", name)
 	}
 }
 
@@ -189,6 +273,9 @@ func (n *Node) Start(ctx context.Context) error {
 	// The join outlives whatever call started the node, so its context
 	// is the node's own lifetime and nothing else.
 	n.ctx, n.cancelCtx = context.WithCancel(context.Background())
+	if n.cfg.CustomControl {
+		dropEnvCredentials()
+	}
 	if err := n.srv.Start(); err != nil {
 		n.cancelCtx()
 		n.lastErr = fmt.Errorf("start network node: %w", err)
@@ -206,8 +293,12 @@ func (n *Node) Start(ctx context.Context) error {
 
 	upCtx := n.ctx
 	login := make(chan struct{})
+	// tsnet only starts a login of its own for a node without a key.
+	// One that has a key may still read NeedsLogin until its first
+	// netmap arrives, and taking that for a login in progress would
+	// leave an expiry right after start with nobody to log back in.
 	if st, err := lc.StatusWithoutPeers(ctx); err == nil &&
-		st.BackendState == ipn.NeedsLogin.String() {
+		st.BackendState == ipn.NeedsLogin.String() && !st.HaveNodeKey {
 		n.login = login
 	}
 	go debug.CapturePanicReport(func() {
@@ -219,7 +310,7 @@ func (n *Node) Start(ctx context.Context) error {
 				Warnf("could not join network: %v", err)
 		}
 	})
-	if n.cfg.OnNeedsLogin != nil {
+	if n.cfg.OnNeedsLogin != nil || n.cfg.CustomControl {
 		go debug.CapturePanicReport(func() { n.watchBackendState(upCtx) })
 	}
 	return nil
@@ -229,7 +320,8 @@ func (n *Node) Start(ctx context.Context) error {
 // this machine learns it was logged out as it happens rather than the
 // next time someone asks. The coordination server expires a removed
 // machine's key while its stream is still open, and that expiry
-// arrives here as a move into NeedsLogin.
+// arrives here as a move into NeedsLogin. Sign-in URLs arrive here
+// too.
 func (n *Node) watchBackendState(ctx context.Context) {
 	state := ipn.NoState
 	for ctx.Err() == nil {
@@ -259,13 +351,74 @@ func (n *Node) readBackendState(ctx context.Context, prev ipn.State) ipn.State {
 		if err != nil {
 			return prev
 		}
+		if notify.BrowseToURL != nil && *notify.BrowseToURL != "" {
+			n.noteAuthURL(*notify.BrowseToURL)
+		}
 		if notify.State == nil {
 			continue
 		}
-		if enteredNeedsLogin(prev, *notify.State) {
-			n.cfg.OnNeedsLogin()
+		next := *notify.State
+		if next != ipn.NeedsLogin {
+			n.clearAuthURL()
 		}
-		prev = *notify.State
+		if enteredNeedsLogin(prev, next) {
+			if n.cfg.OnNeedsLogin != nil {
+				n.cfg.OnNeedsLogin()
+			}
+			if n.cfg.CustomControl {
+				go debug.CapturePanicReport(func() { n.relogin(ctx) })
+			}
+		}
+		prev = next
+	}
+}
+
+func (n *Node) noteAuthURL(url string) {
+	n.mu.Lock()
+	n.authURL = url
+	report := url != n.reportedAuthURL
+	n.reportedAuthURL = url
+	n.mu.Unlock()
+	if report && n.cfg.OnAuthURL != nil {
+		n.cfg.OnAuthURL(url)
+	}
+}
+
+// clearAuthURL forgets the pending sign-in URL once the backend has
+// left NeedsLogin: the URL was used, or abandoned for a new login.
+func (n *Node) clearAuthURL() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.authURL = ""
+}
+
+// PendingAuthURL is the sign-in URL this machine is waiting for someone
+// to open, or empty when it is waiting for none. It performs no I/O.
+func (n *Node) PendingAuthURL() string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.authURL
+}
+
+// relogin asks the user's coordination server for a new sign-in URL
+// once it stops accepting this machine's node key. Nobody would ask
+// for one otherwise: the backend waits in NeedsLogin without fetching
+// a URL until a login is started. It returns without waiting for the
+// sign-in, so a concurrent `network up` is not held up by a human.
+//
+// The backend is asked again once the join lock is held: a join that
+// held it meanwhile may have signed the machine in, and signing in
+// again would hand its peers a node key they do not know yet.
+func (n *Node) relogin(ctx context.Context) {
+	unlock, err := n.lockJoin(ctx)
+	if err != nil {
+		return
+	}
+	defer unlock()
+	if err := n.reauthenticate(ctx); err != nil {
+		n.recordJoin(err)
+		log.WithField(logging.KeyClass, "runenet").
+			Warnf("could not sign in to the network again: %v", err)
 	}
 }
 
@@ -336,16 +489,17 @@ func (n *Node) lockJoin(ctx context.Context) (unlock func(), err error) {
 // purpose: re-registering goes back through the account server, which
 // is what re-checks the account and how many machines its plan
 // covers. Without this the machine would sit waiting for a browser
-// login that the mesh never asks a Rune user for.
+// login that the mesh never asks a Rune user for. On the user's own
+// server it starts the sign-in by URL instead, unless one is pending.
 func (n *Node) reauthenticate(ctx context.Context) error {
-	if n.cfg.Credentials == nil {
+	if !n.reregisters() {
 		return nil
 	}
 	lc, err := n.client()
 	if err != nil {
 		return err
 	}
-	if n.loggingIn() {
+	if n.loggingIn() || n.PendingAuthURL() != "" {
 		return nil
 	}
 	st, err := lc.Status(ctx)
@@ -356,6 +510,30 @@ func (n *Node) reauthenticate(ctx context.Context) error {
 		return nil
 	}
 	return n.reregister(ctx, lc)
+}
+
+// reregisters reports whether this node has a way to register again:
+// credentials from the account, or a sign-in on the user's own server.
+// Without either it keeps whatever it was started with.
+func (n *Node) reregisters() bool {
+	return n.cfg.CustomControl || n.cfg.Credentials != nil
+}
+
+// credentials is what the node registers with. A node on the user's
+// own server signs in by URL, so it has no key. ok is false when the
+// node has no source to register again with.
+func (n *Node) credentials(
+	ctx context.Context,
+) (controlURL, authKey string, ok bool, err error) {
+	switch {
+	case n.cfg.CustomControl:
+		return n.cfg.ControlURL, "", true, nil
+	case n.cfg.Credentials != nil:
+		controlURL, authKey, err = n.cfg.Credentials(ctx)
+		return controlURL, authKey, true, err
+	default:
+		return "", "", false, nil
+	}
 }
 
 // loggingIn reports whether the login Start began is still going. It
@@ -376,17 +554,18 @@ func (n *Node) loggingIn() bool {
 	}
 }
 
-// reregister mints fresh credentials and logs the backend in with
-// them, the way tsnet does at boot. A logged-out backend has lost the
-// preferences that pointed it at the coordination server, and one
-// without a node key does not start logging in by itself.
+// reregister logs the backend in again with fresh credentials, the way
+// tsnet does at boot. A logged-out backend has lost the preferences
+// that pointed it at the coordination server, and one without a node
+// key, or without a key to present, does not start logging in by
+// itself.
 func (n *Node) reregister(ctx context.Context, lc *local.Client) error {
 	st, err := lc.StatusWithoutPeers(ctx)
 	if err != nil {
 		return fmt.Errorf("network status: %w", err)
 	}
-	controlURL, authKey, err := n.cfg.Credentials(ctx)
-	if err != nil {
+	controlURL, authKey, ok, err := n.credentials(ctx)
+	if err != nil || !ok {
 		return err
 	}
 	n.mu.Lock()
@@ -400,7 +579,7 @@ func (n *Node) reregister(ctx context.Context, lc *local.Client) error {
 	if err != nil {
 		return fmt.Errorf("re-register machine: %w", err)
 	}
-	if st.HaveNodeKey {
+	if st.HaveNodeKey && authKey != "" {
 		return nil
 	}
 	if err := lc.StartLoginInteractive(ctx); err != nil {
@@ -415,7 +594,7 @@ func (n *Node) reregister(ctx context.Context, lc *local.Client) error {
 // coordination server has already forgotten, so waiting to be told it
 // is logged out would leave it stranded.
 func (n *Node) Rejoin(ctx context.Context) error {
-	if n.cfg.Credentials == nil {
+	if !n.reregisters() {
 		return nil
 	}
 	lc, err := n.client()
@@ -493,6 +672,12 @@ func (n *Node) client() (*local.Client, error) {
 		return nil, ErrNotStarted
 	}
 	return n.lc, nil
+}
+
+// LocalClient is the node's Tailscale client API, for reading its
+// tailnet state. It fails with ErrNotStarted until Start has run.
+func (n *Node) LocalClient() (*local.Client, error) {
+	return n.client()
 }
 
 // Listen accepts mesh connections on the configured port.
@@ -575,6 +760,43 @@ func (n *Node) Peers(ctx context.Context) ([]Peer, error) {
 	return ret, nil
 }
 
+// Ping sends one ping to host, named as for [Node.Dial], over the mesh's
+// own discovery protocol, as `tailscale ping` does. Each ping is also a
+// chance for the two machines to find a direct path while their
+// traffic is relayed. It fails with ctx's error when no reply comes
+// first.
+func (n *Node) Ping(ctx context.Context, host string) (PingResult, error) {
+	lc, err := n.client()
+	if err != nil {
+		return PingResult{}, err
+	}
+	addr, err := n.resolve(ctx, host)
+	if err != nil {
+		return PingResult{}, err
+	}
+	pr, err := lc.Ping(ctx, addr, tailcfg.PingDisco)
+	if err != nil {
+		if ctx.Err() != nil {
+			return PingResult{}, ctx.Err()
+		}
+		return PingResult{}, fmt.Errorf("ping %s: %w", host, err)
+	}
+	if pr.Err != "" {
+		return PingResult{}, fmt.Errorf("ping %s: %s", host, pr.Err)
+	}
+	ret := PingResult{
+		Peer:      cmp.Or(trimDNSName(pr.NodeName), host),
+		Addr:      addr,
+		Latency:   time.Duration(pr.LatencySeconds * float64(time.Second)),
+		Endpoint:  pr.Endpoint,
+		PeerRelay: pr.PeerRelay,
+	}
+	if pr.DERPRegionID != 0 {
+		ret.DERPRegion = cmp.Or(pr.DERPRegionCode, strconv.Itoa(pr.DERPRegionID))
+	}
+	return ret, nil
+}
+
 // Status reports the local node's membership in the mesh. It is
 // best-effort by design — the console's `network status` calls it to
 // find out why the network is down, so a node that never came up
@@ -605,7 +827,11 @@ func (n *Node) Status(ctx context.Context) (Status, error) {
 	ret.Addrs = st.TailscaleIPs
 	ret.State = st.BackendState
 	ret.AuthURL = st.AuthURL
-	ret.LoginName = selfLoginName(st)
+	if n.cfg.CustomControl {
+		ret.LoginName = selfOwner(st)
+	} else {
+		ret.LoginName = selfLoginName(st)
+	}
 	ret.MachineID = selfMachineID(st)
 	return ret, nil
 }
@@ -633,6 +859,16 @@ func selfLoginName(st *ipnstate.Status) string {
 		tags = st.Self.Tags.AsSlice()
 	}
 	return accountOf(st.User[st.Self.UserID].LoginName, tags)
+}
+
+// selfOwner is the user who signed the local node in to the user's own
+// coordination server. A tagged node is owned by its tags, not by a
+// user, so it has none.
+func selfOwner(st *ipnstate.Status) string {
+	if st.Self == nil || (st.Self.Tags != nil && st.Self.Tags.Len() > 0) {
+		return ""
+	}
+	return st.User[st.Self.UserID].LoginName
 }
 
 // accountOf is the account a machine reported as owned by login and

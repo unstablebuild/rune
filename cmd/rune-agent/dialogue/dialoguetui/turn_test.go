@@ -22,6 +22,7 @@ import (
 	"image"
 	"image/png"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -892,11 +893,8 @@ func TestTurnCollapsedDrawDeepNest(t *testing.T) {
 	turn := newTestTurn()
 	turn.AddToolCall("p1", "agent", `{}`, "outer")
 	turn.AddChildToolCall("p1", "c1", "agent", `{}`, "inner")
-	// grandchild: manually build the nested turn
-	childTurn := turn.tools["p1"].childTurn
-	childTurn.tools["c1"].childTurn = NewTurn(childTurn.cfg, nil)
-	childTurn.tools["c1"].childTurn.AddToolCall("g1", "read_file", `{}`, "deep.go")
-	childTurn.tools["c1"].childTurn.CompleteToolCall("g1", "read_file", `{}`, "deep.go", "", false)
+	turn.AddChildToolCall("c1", "g1", "read_file", `{}`, "deep.go")
+	turn.CompleteChildToolCall("c1", "g1", "read_file", `{}`, "deep.go", "", false)
 	turn.CompleteChildToolCall("p1", "c1", "agent", `{}`, "inner", "", false)
 	turn.CompleteToolCall("p1", "agent", `{}`, "outer", "", false)
 
@@ -913,6 +911,58 @@ func TestTurnCollapsedDrawDeepNest(t *testing.T) {
 	assert.Contains(t, got, "└─ ✓ read_file deep.go")
 	// 3 levels: root → child → grandchild
 	assert.Equal(t, 3, turn.collapsedHeight())
+}
+
+func TestTurnGrandchildToolCalls(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mode collapseMode
+		want []string
+	}{
+		{"collapsed", collapseModeCollapsed, []string{
+			"├─ ✓ skill research",
+			"│  ├─ ✓ agent scout",
+			"│  │  ├─ ✓ read_file notes.txt",
+			"│  │  ├─ ✗ bash rm notes.txt",
+			"│  │  └─ 󰆈  Scout found notes.txt.",
+			"│  └─ ✓ bash ls",
+			"└─ ✓ edit_file b.go",
+		}},
+		{"expanded", collapseModeExpanded, []string{
+			"✓ skill research",
+			"✓ agent scout",
+			"✓ read_file notes.txt",
+			"✗ bash rm notes.txt",
+			"✓ bash ls",
+			"✓ edit_file b.go",
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			turn := newTestTurn()
+			turn.AddToolCall("p1", "skill", `{}`, "research")
+			turn.AddChildToolCall("p1", "c1", "agent", `{}`, "scout")
+			turn.AddChildToolCall("c1", "g1", "read_file", `{}`, "notes.txt")
+			turn.AddChildToolCall("p1", "c2", "bash", `{}`, "ls")
+			turn.AddChildToolCall("c1", "g2", "bash", `{}`, "rm notes.txt")
+			turn.CompleteChildToolCall("c1", "g1", "read_file", `{}`, "notes.txt", "", false)
+			turn.CompleteChildToolCall("c1", "g2", "bash", `{}`, "rm notes.txt", "", true)
+			turn.AddChildResult("c1", "Scout found notes.txt.", false)
+			turn.CompleteChildToolCall("p1", "c1", "agent", `{}`, "scout", "", false)
+			turn.CompleteChildToolCall("p1", "c2", "bash", `{}`, "ls", "", false)
+			turn.CompleteToolCall("p1", "skill", `{}`, "research", "", false)
+			turn.AddToolCall("t2", "edit_file", `{}`, "b.go")
+			turn.CompleteToolCall("t2", "edit_file", `{}`, "b.go", "", false)
+			turn.SetCollapseMode(tc.mode)
+
+			w := drawTurn(turn, 40)
+			require.NoError(t, w.Flush())
+			var got []string
+			for line := range strings.SplitSeq(strings.TrimRight(w.String(), " \n"), "\n") {
+				got = append(got, strings.TrimRight(line, " "))
+			}
+			assert.Equal(t, tc.want, got)
+		})
+	}
 }
 
 func TestTurnCollapseModeCycle(t *testing.T) {

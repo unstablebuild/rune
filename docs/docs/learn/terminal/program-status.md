@@ -472,12 +472,28 @@ over.
 | `more_below` | `\uf063` (Nerd Font arrow down) | The arrow drawn below the programs when there are more out of sight below. |
 | `more_below_attr` | default | Styles that arrow. |
 | `divider_attr` | gray | The line between the programs and the preview. |
+| `divider_charset` | joins `🭽` and `🭼` in the GUI, `┬` and `┴` in a terminal | The characters joining that line to the inbox's frame: `top` and `bottom` in the frame's top and bottom rows, colored as the frame, and `vertical_top`, `vertical` and `vertical_bottom` down the line, colored by `divider_attr`. `vertical` defaults to the window frame's `verticalleft`, and `vertical_top` and `vertical_bottom` to `vertical`. Under a window bar, there is no top join. A `graphics` table names images for the GUI: `top` and `bottom` over the joins, `vertical` over each cell of the line, a `mode`, and an `outset` with `left`, `right` and `inward` in cells that the joins reach into. A missing join image keeps the frame's own image; `vertical` defaults to the frame's `verticalleft` image. |
 | `placeholder_attr` | gray | The text shown when no program reported a status, or the selected one has nothing to preview. |
+| `images` | none | Images the GUI draws under each program, with its text on top: `selected`, `hover` and `idle`, each with a `left`, `middle` and `right` image, and an `outset` with `top`, `bottom` and `sides` in cells. `selected` falls back to `hover`, and `hover` to `idle`. They stand in for the backgrounds of `selected_attr` and `hover_attr`. |
+| `marker_graphics` | none | Images drawn down the marker of the selected program: `top`, `vertical` and `bottom`, and a `mode`. A top or bottom image left out is the vertical one. |
+| `progress_bar_graphics` | none | Images drawn over the cells of a progress bar: `left` and `right` over its ends, `filled` over what is done and `empty` over the rest, and a `mode`. An end left out takes the image of the cell it stands in. |
 
 A bar's ends are colored as the part of the bar they stand in, so a single
 character repeated four times draws a bar that only its colors split. The
 default, `🬋`, fills the middle third of a cell; Rune's GUI draws it itself,
 while a terminal running Rune draws it from its own fonts.
+
+With `mode: replace`, the default, the images of `marker_graphics`,
+`divider_charset` and `progress_bar_graphics` take the place of their
+characters; with `mode: overlay` they are drawn over them. The divider's mode
+defaults to the window frame's. The terminal UI, and any image that has not
+loaded or failed to load, shows the inbox in its characters and colors. The
+divider joins the frame, and draws its images, only while windows are framed.
+
+Every workspace shares the inbox, so only your config styles it, not a
+workspace's own. `themereload` and
+[`runectl screenshot`](../../develop/runectl.md#screenshots) apply these keys,
+and every image they name, to the inbox even while it is open.
 
 For example, to draw progress bars as the console does, on a dark track, and
 to highlight the program under the mouse:

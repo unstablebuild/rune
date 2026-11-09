@@ -174,7 +174,7 @@ func OpenWorkspace(
 	uri, err := workspaceapi.ParseURI("rune://" + peer + path)
 	require.NoError(t, err)
 
-	scheme, err := workspacerune.New(client)(
+	scheme, err := workspacerune.New(workspacerune.Scheme, client)(
 		context.Background(), config.NopConfig(), uri)
 	require.NoError(t, err)
 

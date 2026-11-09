@@ -14,12 +14,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-package extension
+package dialoguetui
 
 import (
 	"context"
 	"errors"
-	"fmt"
 	stdimage "image"
 	"log/slog"
 	"maps"
@@ -31,54 +30,20 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
-	"unstable.build/rune/cmd/rune-agent/dialogue/dialoguetui"
 	"unstable.build/rune/internal/component/imageuri"
 	"unstable.build/rune/internal/extension/extutil"
 )
-
-// defaultStatusBarConfig is what a chat gets when the extension config
-// carries no status_bar block at all. The layout and the gauge palette
-// are left zero so the bar supplies its own shipped defaults.
-var defaultStatusBarConfig = dialoguetui.StatusBarConfig{
-	Enabled:          true,
-	BackgroundColor:  dialoguetui.DefaultStatusBarBackground,
-	ForegroundColor:  dialoguetui.DefaultStatusBarForeground,
-	ContextGaugeFill: dialoguetui.DefaultContextGaugeFill,
-	CacheGaugeFill:   dialoguetui.DefaultCacheGaugeFill,
-}
-
-// statusBarImagesPartition caches the images status bar layouts download.
-const statusBarImagesPartition = "status_bar_images"
-
-// ownConfig returns the config Rune started this extension with, which
-// host, the config Rune serves, holds under extensions.<id>.config. A host
-// without it gives an empty config. It fails when host could not be
-// fetched.
-func ownConfig(host config.Config) (config.Config, error) {
-	cfg := host
-	for _, key := range []string{"extensions", extensionID, "config"} {
-		sub, err := cfg.GetConfig(key)
-		if errors.Is(err, config.ErrNotFound) {
-			return config.NopConfig(), nil
-		}
-		if err != nil {
-			return nil, fmt.Errorf("get %q from the config: %w", key, err)
-		}
-		cfg = sub
-	}
-	return cfg, nil
-}
 
 // refreshStatusBarImages reads the images of layout again, dropping the
 // copies storage caches, and returns them by URI. An image that does not
 // load is left out.
 func refreshStatusBarImages(
-	ctx context.Context, layout []dialoguetui.StatusBarComponent, storage storageapi.Service,
+	ctx context.Context, layout []StatusBarComponent, storage storageapi.Service,
 ) map[string]stdimage.Image {
 	images := make(map[string]stdimage.Image)
 	tried := make(map[string]struct{})
 	for _, comp := range layout {
-		if comp.Type != dialoguetui.StatusBarImage {
+		if comp.Type != StatusBarImage {
 			continue
 		}
 		if _, ok := tried[comp.Image.URI]; ok {
@@ -102,7 +67,7 @@ func refreshStatusBarImages(
 // what names the colour theme the gauge ramps blend through.
 func statusBarConfig(
 	pconfig, hostConfig config.Config, noti browserapi.Notifications,
-) dialoguetui.StatusBarConfig {
+) StatusBarConfig {
 	// The ramps are resolved here rather than where they are read so a
 	// config with no status_bar block at all still blends through the
 	// theme's colours instead of the W3C ones.
@@ -114,8 +79,8 @@ func statusBarConfig(
 
 func statusBarBlock(
 	pconfig config.Config, noti browserapi.Notifications,
-) dialoguetui.StatusBarConfig {
-	ret := defaultStatusBarConfig
+) StatusBarConfig {
+	ret := DefaultStatusBarConfig()
 	sub, err := pconfig.GetConfig("status_bar")
 	if err != nil {
 		if !errors.Is(err, config.ErrNotFound) {
@@ -131,7 +96,7 @@ func statusBarBlock(
 	}
 
 	if v, err := sub.GetString("layout"); err == nil {
-		layout, perr := dialoguetui.ParseStatusBarLayout(v)
+		layout, perr := ParseStatusBarLayout(v)
 		if perr != nil {
 			_, _ = noti.Notify(browserapi.LevelWarn,
 				"status_bar: invalid layout: %v", perr)
@@ -149,12 +114,12 @@ func statusBarBlock(
 	}
 
 	if v, err := sub.GetString("shader"); err == nil {
-		if dialoguetui.ValidStatusBarShader(v) {
+		if ValidStatusBarShader(v) {
 			ret.Shader = v
 		} else {
 			_, _ = noti.Notify(browserapi.LevelWarn,
 				"status_bar: unknown shader %q, expected one of %s",
-				v, strings.Join(dialoguetui.StatusBarShaderNames(), ", "))
+				v, strings.Join(StatusBarShaderNames(), ", "))
 		}
 	} else if !errors.Is(err, config.ErrNotFound) {
 		slog.Warn("get 'status_bar.shader' from extension config", "error", err)
@@ -292,7 +257,7 @@ func gaugeFill(
 // palette, so naming one phase does not drop the colours or the
 // animations of the rest. A phase that names only one of the two keeps
 // the shipped value of the other.
-func statuses(sub config.Config) map[string]dialoguetui.StatusBarStatusConfig {
+func statuses(sub config.Config) map[string]StatusBarStatusConfig {
 	statusSub, err := sub.GetConfig("status")
 	if err != nil {
 		if !errors.Is(err, config.ErrNotFound) {
@@ -300,7 +265,7 @@ func statuses(sub config.Config) map[string]dialoguetui.StatusBarStatusConfig {
 		}
 		return nil
 	}
-	ret := maps.Clone(dialoguetui.DefaultStatuses)
+	ret := maps.Clone(DefaultStatuses)
 	statusSub.Iterate(func(k string, _ any) {
 		entry, err := statusSub.GetConfig(k)
 		if err != nil {
@@ -328,10 +293,10 @@ func statuses(sub config.Config) map[string]dialoguetui.StatusBarStatusConfig {
 
 // animation reads one status's spinner: the frames it cycles and the
 // attributes they override the status's own with.
-func animation(sub config.Config, status string) dialoguetui.StatusBarAnimation {
-	var ret dialoguetui.StatusBarAnimation
+func animation(sub config.Config, status string) StatusBarAnimation {
+	var ret StatusBarAnimation
 	if v, err := sub.GetString("ch"); err == nil {
-		ret.Frames = dialoguetui.SpinnerFrames(v)
+		ret.Frames = SpinnerFrames(v)
 	} else if !errors.Is(err, config.ErrNotFound) {
 		slog.Warn("get 'status_bar.status' animation frames from extension config",
 			"status", status, "error", err)

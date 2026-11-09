@@ -69,7 +69,7 @@ The main frontmatter fields that define a sub-agent:
 | `description` | Tells the agent what the sub-agent is for and when to use it. |
 | `type: agent` | Marks the skill as a spawnable sub-agent. |
 | `allowed-tools` | The tools the sub-agent may use, including command patterns such as `bash(git log *)`. Anything the list does not allow is unavailable, which is how `explore` and `plan` stay read-only. |
-| `denied-tools` | Tools, commands, skills and sub-agents the sub-agent may not use, even when `allowed-tools` allows them. |
+| `disallowed-tools` | Tools, commands, skills and sub-agents the sub-agent may not use, even when `allowed-tools` allows them. |
 
 The body of the file is the sub-agent's system prompt: its instructions,
 constraints, and style.

@@ -122,6 +122,16 @@ func (r *Registry) Add(tools ...Tool) {
 	}
 }
 
+// Remove unregisters the named base tools. Provider overrides are kept.
+// Unknown names are ignored.
+func (r *Registry) Remove(names ...string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, name := range names {
+		delete(r.tools, name)
+	}
+}
+
 // RegisterOverrides adds provider-specific tool entries. If the tool
 // name matches a base tool it replaces it for that provider; otherwise
 // the tool is added only for that provider.

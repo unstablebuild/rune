@@ -14,12 +14,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-package extension
+package dialoguetui
 
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	stdimage "image"
 	"image/png"
@@ -32,11 +31,11 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"gopkg.in/yaml.v3"
-	"unstable.build/rune/cmd/rune-agent/dialogue/dialoguetui"
 )
 
 // noTheme stands in for a host that names no colour theme, which is
@@ -44,9 +43,21 @@ import (
 // configured with.
 var noTheme = config.MapConfig(map[string]any{})
 
+type nopNotifications struct{}
+
+func (nopNotifications) Notify(browserapi.NotificationLevel, string, ...any) (string, error) {
+	return "", nil
+}
+
+func (nopNotifications) NotifyOnce(browserapi.NotificationLevel, string, ...any) (string, error) {
+	return "", nil
+}
+
+func (nopNotifications) UpdateNotificationProgress(_, _ string, _, _ int64) error { return nil }
+
 func TestStatusBarConfigDefaultsWhenAbsent(t *testing.T) {
-	got := statusBarConfig(config.MapConfig(map[string]any{}), noTheme, stubNotifications{})
-	assert.Equal(t, defaultStatusBarConfig, got)
+	got := statusBarConfig(config.MapConfig(map[string]any{}), noTheme, nopNotifications{})
+	assert.Equal(t, DefaultStatusBarConfig(), got)
 }
 
 func TestStatusBarConfigReadsEveryKey(t *testing.T) {
@@ -89,7 +100,7 @@ func TestStatusBarConfigReadsEveryKey(t *testing.T) {
 				},
 			},
 		},
-	}), noTheme, stubNotifications{})
+	}), noTheme, nopNotifications{})
 
 	assert.True(t, got.Enabled)
 	assert.Equal(t, 12, got.GaugeWidth)
@@ -109,25 +120,25 @@ func TestStatusBarConfigReadsEveryKey(t *testing.T) {
 		{Fg: term.ColorBlack, Bg: term.ColorLime},
 		{Fg: term.ColorBlack, Bg: term.ColorAqua},
 	}, got.CacheGaugeFill)
-	assert.Equal(t, dialoguetui.StatusBarStatusConfig{
+	assert.Equal(t, StatusBarStatusConfig{
 		Attrs: term.Attributes{Fg: term.ColorBlack, Bg: term.ColorLime},
-		Animation: dialoguetui.StatusBarAnimation{
+		Animation: StatusBarAnimation{
 			Frames: []string{"a", "b", "c"},
 			Attrs:  term.Attributes{Fg: term.ColorYellow},
 		},
 	}, got.Statuses["THINKING"])
-	assert.Equal(t, dialoguetui.StatusBarStatusConfig{
-		Attrs:     dialoguetui.DefaultStatuses["REASONING"].Attrs,
-		Animation: dialoguetui.StatusBarAnimation{Frames: []string{"x", "y"}},
+	assert.Equal(t, StatusBarStatusConfig{
+		Attrs:     DefaultStatuses["REASONING"].Attrs,
+		Animation: StatusBarAnimation{Frames: []string{"x", "y"}},
 	}, got.Statuses["REASONING"],
 		"naming only an animation keeps the shipped attributes")
-	assert.Equal(t, dialoguetui.DefaultStatuses["SENDING"],
+	assert.Equal(t, DefaultStatuses["SENDING"],
 		got.Statuses["SENDING"],
 		"naming one status must not drop the rest of the palette")
-	assert.Equal(t, []dialoguetui.StatusBarComponent{
-		{Type: dialoguetui.StatusBarStatus, Template: "%s"},
-		{Type: dialoguetui.StatusBarVoid},
-		{Type: dialoguetui.StatusBarModel, Template: "%s"},
+	assert.Equal(t, []StatusBarComponent{
+		{Type: StatusBarStatus, Template: "%s"},
+		{Type: StatusBarVoid},
+		{Type: StatusBarModel, Template: "%s"},
 	}, got.Layout)
 }
 
@@ -137,7 +148,7 @@ func TestStatusBarConfigInvalidLayoutFallsBack(t *testing.T) {
 			"layout":      `{{ .Nonsense }}`,
 			"gauge_width": 7,
 		},
-	}), noTheme, stubNotifications{})
+	}), noTheme, nopNotifications{})
 
 	assert.Nil(t, got.Layout)
 	assert.Equal(t, 7, got.GaugeWidth)
@@ -147,7 +158,7 @@ func TestStatusBarConfigInvalidLayoutFallsBack(t *testing.T) {
 func TestStatusBarConfigDisabled(t *testing.T) {
 	got := statusBarConfig(config.MapConfig(map[string]any{
 		"status_bar": map[string]any{"enabled": false},
-	}), noTheme, stubNotifications{})
+	}), noTheme, nopNotifications{})
 	assert.False(t, got.Enabled)
 }
 
@@ -165,32 +176,32 @@ func TestShippedStatusBarConfigParses(t *testing.T) {
 	require.NoError(t, yaml.Unmarshal(data, &doc))
 
 	got := statusBarConfig(
-		config.MapConfig(doc.Extensions.RuneAgent.Config), noTheme, stubNotifications{})
+		config.MapConfig(doc.Extensions.RuneAgent.Config), noTheme, nopNotifications{})
 
 	assert.True(t, got.Enabled)
 	assert.Equal(t, 18, got.GaugeWidth)
-	assert.Equal(t, dialoguetui.DefaultStatusBarBackground, got.BackgroundColor)
-	assert.Equal(t, dialoguetui.DefaultStatusBarForeground, got.ForegroundColor)
+	assert.Equal(t, DefaultStatusBarBackground, got.BackgroundColor)
+	assert.Equal(t, DefaultStatusBarForeground, got.ForegroundColor)
 	assert.NotEmpty(t, got.Layout)
-	assert.Equal(t, dialoguetui.DefaultStatuses, got.Statuses,
+	assert.Equal(t, DefaultStatuses, got.Statuses,
 		"the shipped status palette must match the built-in one")
-	assert.Equal(t, dialoguetui.DefaultContextGaugeFill, got.ContextGaugeFill,
+	assert.Equal(t, DefaultContextGaugeFill, got.ContextGaugeFill,
 		"the shipped context ramp must match the built-in one")
-	assert.Equal(t, dialoguetui.DefaultCacheGaugeFill, got.CacheGaugeFill,
+	assert.Equal(t, DefaultCacheGaugeFill, got.CacheGaugeFill,
 		"the shipped cache ramp must match the built-in one")
 	reversed := slices.Clone(got.CacheGaugeFill)
 	slices.Reverse(reversed)
 	assert.Equal(t, reversed, got.ContextGaugeFill,
 		"the cache ramp lists the context ramp's stops backwards")
-	assert.EqualValues(t, dialoguetui.DefaultGaugeStartRune, got.GaugeStartRune)
-	assert.EqualValues(t, dialoguetui.DefaultGaugeEndRune, got.GaugeEndRune)
+	assert.EqualValues(t, DefaultGaugeStartRune, got.GaugeStartRune)
+	assert.EqualValues(t, DefaultGaugeEndRune, got.GaugeEndRune)
 	assert.Empty(t, got.Shader, "the shipped bar is not animated")
 }
 
 func TestStatusBarConfigRejectsUnknownShader(t *testing.T) {
 	got := statusBarConfig(config.MapConfig(map[string]any{
 		"status_bar": map[string]any{"shader": "nonsense"},
-	}), noTheme, stubNotifications{})
+	}), noTheme, nopNotifications{})
 	assert.Empty(t, got.Shader)
 }
 
@@ -218,7 +229,7 @@ func TestStatusBarConfigShaderCadence(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			got := statusBarConfig(config.MapConfig(map[string]any{
 				"status_bar": tc.block,
-			}), noTheme, stubNotifications{})
+			}), noTheme, nopNotifications{})
 			assert.Equal(t, tc.wantFPS, got.ShaderFPS)
 			assert.Equal(t, tc.wantLoop, got.ShaderLoop)
 		})
@@ -241,7 +252,7 @@ func TestStatusBarConfigResolvesGaugeRampAgainstTheme(t *testing.T) {
 				"other": map[string]any{"green": "#010101"},
 			},
 		},
-	}), stubNotifications{})
+	}), nopNotifications{})
 
 	assert.Equal(t, []term.Attributes{
 		{Fg: term.ColorBlack.TrueColor(), Bg: term.NewHexColor(0x98be65)},
@@ -258,52 +269,13 @@ func TestStatusBarConfigResolvesBuiltInRampAgainstTheme(t *testing.T) {
 					"test": map[string]any{"green": "#98be65"},
 				},
 			},
-		}), stubNotifications{})
+		}), nopNotifications{})
 
 	require.NotEmpty(t, got.ContextGaugeFill)
 	assert.Equal(t, term.NewHexColor(0x98be65), got.ContextGaugeFill[0].Bg)
 	assert.Equal(t, term.NewHexColor(0x98be65),
 		got.CacheGaugeFill[len(got.CacheGaugeFill)-1].Bg,
 		"the cache ramp runs the same stops backwards")
-}
-
-func TestOwnConfig(t *testing.T) {
-	own := map[string]any{"status_bar": map[string]any{"enabled": false}}
-	tests := []struct {
-		name    string
-		host    config.Config
-		want    config.Config
-		wantErr string
-	}{
-		{
-			name: "the agent's block",
-			host: config.MapConfig(map[string]any{
-				"editor":     map[string]any{"mode": "modal"},
-				"extensions": map[string]any{extensionID: map[string]any{"config": own}},
-			}),
-			want: config.MapConfig(own),
-		},
-		{name: "no extensions", host: config.MapConfig(map[string]any{}), want: config.NopConfig()},
-		{
-			name: "no config of its own",
-			host: config.MapConfig(map[string]any{
-				"extensions": map[string]any{extensionID: map[string]any{"path": "/bin/rune-agent"}},
-			}),
-			want: config.NopConfig(),
-		},
-		{name: "a config that could not be fetched", host: config.ErrConfig(errors.New("closed")), wantErr: "closed"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := ownConfig(tt.host)
-			if tt.wantErr != "" {
-				assert.ErrorContains(t, err, tt.wantErr)
-				return
-			}
-			require.NoError(t, err)
-			assert.Equal(t, tt.want, got)
-		})
-	}
 }
 
 func TestRefreshStatusBarImagesReadsImagesOverwrittenInPlace(t *testing.T) {
@@ -315,7 +287,7 @@ func TestRefreshStatusBarImagesReadsImagesOverwrittenInPlace(t *testing.T) {
 		require.NoError(t, os.WriteFile(path, buf.Bytes(), 0o600))
 	}
 	uri := (&url.URL{Scheme: "file", Path: filepath.ToSlash(path)}).String()
-	layout, err := dialoguetui.ParseStatusBarLayout(
+	layout, err := ParseStatusBarLayout(
 		fmt.Sprintf(`{{ .Image | src %q }}{{ .Model }}{{ .Image | src %[1]q }}`, uri))
 	require.NoError(t, err)
 	storage := storagestub.NewInMemoryService()
