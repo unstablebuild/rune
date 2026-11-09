@@ -301,8 +301,9 @@ func (i *Index) pass(j job) {
 
 	roots, sctx := j.paths, ctx
 	if j.full {
-		// Records the scan adds can be rebuilt, so they skip the per-write
+		// The records sync adds can be rebuilt, so they skip the per-write
 		// fsync; the synced meta write after it is the durability barrier.
+		// What run stores is written synced.
 		roots, sctx = []string{"."}, bluebolt.ContextWithNoSync(ctx)
 	}
 	sum, err := i.ix.sync(sctx, roots)

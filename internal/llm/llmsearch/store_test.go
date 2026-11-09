@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -168,16 +169,31 @@ func TestStoreClearsAnotherSchemaVersion(t *testing.T) {
 }
 
 // batchStorage wraps a storage so that each partition's ApplyBatch can be
-// intercepted, by partition name.
+// intercepted, by partition name, and counts the batches and the single
+// writes each partition gets.
 type batchStorage struct {
 	storageapi.Service
 	name      string
 	intercept func(partition string) error
 	calls     *atomic.Int64
+	counts    *writeCounts
+}
+
+// writeCounts tallies writes by partition name.
+type writeCounts struct {
+	mu      sync.Mutex
+	batches map[string]int
+	singles map[string]int
 }
 
 func newBatchStorage(db storageapi.Service, intercept func(partition string) error) *batchStorage {
-	return &batchStorage{Service: db, intercept: intercept, calls: new(atomic.Int64)}
+	if intercept == nil {
+		intercept = func(string) error { return nil }
+	}
+	return &batchStorage{
+		Service: db, intercept: intercept, calls: new(atomic.Int64),
+		counts: &writeCounts{batches: map[string]int{}, singles: map[string]int{}},
+	}
 }
 
 func (b *batchStorage) Partition(name string) (storageapi.Service, error) {
@@ -185,15 +201,42 @@ func (b *batchStorage) Partition(name string) (storageapi.Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &batchStorage{Service: child, name: name, intercept: b.intercept, calls: b.calls}, nil
+	return &batchStorage{Service: child, name: name, intercept: b.intercept, calls: b.calls, counts: b.counts}, nil
 }
 
 func (b *batchStorage) ApplyBatch(ctx context.Context, ops []storageapi.BatchOp) ([]storageapi.BatchOpResult, error) {
 	b.calls.Add(1)
+	b.counts.mu.Lock()
+	b.counts.batches[b.name]++
+	b.counts.mu.Unlock()
 	if err := b.intercept(b.name); err != nil {
 		return nil, err
 	}
 	return b.Service.(storageapi.BatchWriter).ApplyBatch(ctx, ops)
+}
+
+func (b *batchStorage) Set(ctx context.Context, id string, doc any) error {
+	b.counts.mu.Lock()
+	b.counts.singles[b.name]++
+	b.counts.mu.Unlock()
+	return b.Service.Set(ctx, id, doc)
+}
+
+func (b *batchStorage) Delete(ctx context.Context, id string) error {
+	b.counts.mu.Lock()
+	b.counts.singles[b.name]++
+	b.counts.mu.Unlock()
+	return b.Service.Delete(ctx, id)
+}
+
+// batches returns how many batches each partition got since the last call,
+// and how many single writes, by partition name.
+func (b *batchStorage) batches() (batches, singles map[string]int) {
+	b.counts.mu.Lock()
+	defer b.counts.mu.Unlock()
+	batches, singles = b.counts.batches, b.counts.singles
+	b.counts.batches, b.counts.singles = map[string]int{}, map[string]int{}
+	return batches, singles
 }
 
 func TestStoreFallsBackWhenBatchingIsUnimplemented(t *testing.T) {
