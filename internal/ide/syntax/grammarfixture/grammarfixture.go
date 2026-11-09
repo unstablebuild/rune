@@ -15,7 +15,7 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 // Package grammarfixture resolves the checked-in tree-sitter parser
-// fixtures for the host platform.
+// fixtures for the host platform and installs them as grammar packages.
 package grammarfixture
 
 import (

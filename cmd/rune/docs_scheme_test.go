@@ -28,6 +28,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"unstable.build/rune/docs"
 )
 
 // newTestConfigPath returns a fresh temp-dir-backed config path. The
@@ -323,13 +324,13 @@ func TestDocsSchemeNewFileRoutesConfigPath(t *testing.T) {
 
 func fsWalkMD(t *testing.T, out *map[string][]byte) error {
 	t.Helper()
-	entries, err := docsFS.ReadDir(docsSchemeRoot)
+	entries, err := docs.FS.ReadDir(docs.Root)
 	if err != nil {
 		return err
 	}
 	var walk func(dir string) error
 	walk = func(dir string) error {
-		es, err := docsFS.ReadDir(dir)
+		es, err := docs.FS.ReadDir(dir)
 		if err != nil {
 			return err
 		}
@@ -344,15 +345,15 @@ func fsWalkMD(t *testing.T, out *map[string][]byte) error {
 			if !strings.HasSuffix(e.Name(), ".md") {
 				continue
 			}
-			data, err := docsFS.ReadFile(p)
+			data, err := docs.FS.ReadFile(p)
 			if err != nil {
 				return err
 			}
-			rel := strings.TrimPrefix(p, docsSchemeRoot+"/")
+			rel := strings.TrimPrefix(p, docs.Root+"/")
 			(*out)[rel] = data
 		}
 		return nil
 	}
 	_ = entries
-	return walk(docsSchemeRoot)
+	return walk(docs.Root)
 }

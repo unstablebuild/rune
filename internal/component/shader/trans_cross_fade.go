@@ -19,6 +19,7 @@ package shader
 import (
 	"math"
 	"math/rand"
+	"slices"
 
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/component/shader/shaderutils"
@@ -42,6 +43,10 @@ import (
 //	| ▀▀▀ [·····|·····]     |
 //	|--shader1--|--shader2--|time->
 //	|     [·c·r·o·s·s·]
+//
+// Images are shaded by the first shader until the change point and by
+// the second from then on, as [ShadeImages] does. While they fade into
+// each other, pictures they do not both draw fade with the cells.
 func TransitionCrossFade(
 	params TransitionCrossFadeParams,
 	defaultAttr term.Attributes,
@@ -90,6 +95,12 @@ type transCrossFade struct {
 }
 
 func (t *transCrossFade) Shade(frame, total int, in [][]term.Cell) {
+	t.ShadeImages(frame, total, in, nil)
+}
+
+func (t *transCrossFade) ShadeImages(
+	frame, total int, in [][]term.Cell, images []term.Image,
+) []term.Image {
 	changePointFrame := t.ChangeAtPerc * float64(total)
 	transDurationInFrames := float64(total) * t.OverlapPerc
 
@@ -105,8 +116,7 @@ func (t *transCrossFade) Shade(frame, total int, in [][]term.Cell) {
 	// TransitionCrossFade docstring diagram case 1:
 	// no need for transition, it's 100% shader1
 	if float64(frame) < transStartFrame {
-		t.shader1.Shade(int(frameShader1), int(totalShader1), in)
-		return
+		return ShadeImages(t.shader1, int(frameShader1), int(totalShader1), in, images)
 	}
 
 	totalShader2 := math.Round(float64(total) - changePointFrame + transHalfDur)
@@ -115,8 +125,7 @@ func (t *transCrossFade) Shade(frame, total int, in [][]term.Cell) {
 	// TransitionCrossFade docstring diagram case 4:
 	// no need for transition, it's 100% shader2
 	if float64(frame) > transEndFrame || shader1FrameOverflow {
-		t.shader2.Shade(int(frameShader2), int(totalShader2), in)
-		return
+		return ShadeImages(t.shader2, int(frameShader2), int(totalShader2), in, images)
 	}
 
 	// TransitionCrossFade docstring diagram case 2 or case 3: we are in
@@ -124,16 +133,26 @@ func (t *transCrossFade) Shade(frame, total int, in [][]term.Cell) {
 	// changePointFrame we will write the first or second shader to buf
 
 	t.copyCells(in)
+	// The shader writing to buf shades its own copy, whose result is
+	// dropped along with its cells.
+	behind := slices.Clone(images)
 
 	midPointFramePassed := float64(frame) >= changePointFrame
+	var back []term.Image
 	if midPointFramePassed {
 		// TransitionCrossFade docstring diagram case 3:
-		t.shader2.Shade(int(frameShader2), int(totalShader2), in)
-		t.shader1.Shade(int(frameShader1), int(totalShader1), t.buf)
+		images = ShadeImages(t.shader2, int(frameShader2), int(totalShader2), in, images)
+		back = ShadeImages(t.shader1, int(frameShader1), int(totalShader1), t.buf, behind)
 	} else {
 		// TransitionCrossFade docstring diagram case 2:
-		t.shader1.Shade(int(frameShader1), int(totalShader1), in)
-		t.shader2.Shade(int(frameShader2), int(totalShader2), t.buf)
+		images = ShadeImages(t.shader1, int(frameShader1), int(totalShader1), in, images)
+		back = ShadeImages(t.shader2, int(frameShader2), int(totalShader2), t.buf, behind)
+	}
+	// Drawn over the fade, pictures would hide it.
+	if !slices.Equal(images, back) {
+		paintPictures(in, images)
+		paintPictures(t.buf, back)
+		images = nil
 	}
 
 	t.interpolateBuffer(
@@ -141,6 +160,7 @@ func (t *transCrossFade) Shade(frame, total int, in [][]term.Cell) {
 		transStartFrame, transEndFrame, transDurationInFrames,
 		in,
 	)
+	return images
 }
 
 func (t *transCrossFade) interpolateBuffer(

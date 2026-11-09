@@ -22,8 +22,10 @@ package syntax
 
 import (
 	"context"
+	"maps"
 	"os"
 	"strings"
+	"time"
 
 	blueiterator "github.com/unstablebuild/blue/iterator"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
@@ -54,6 +56,31 @@ type NewTreeFunc func(
 	uri workspaceapi.URI, buf *cell.Buffer, fc workspace.FlusherCloser,
 	opener Opener, config Config,
 ) Tree
+
+// ParseTreeFunc parses buf, the freshly loaded buffer of the file tab of uri,
+// into a tree that is not installed yet, so the parse can run off the event
+// loop. It blocks and may run on any goroutine. Nothing else may access buf
+// until the returned ParsedTree is installed or closed.
+type ParseTreeFunc func(
+	ctx context.Context, pkg PkgManager, uri workspaceapi.URI, buf *cell.Buffer,
+	config Config,
+) ParsedTree
+
+// ParsedTree is a tree parsed by a ParseTreeFunc that is not installed into
+// its buffer yet.
+type ParsedTree interface {
+	// Install installs the tree into the buffer it parsed, as NewTreeFunc
+	// does, and publishes the highlights of the parse to loc before
+	// returning. It must run on the event loop, at most once, before buf is
+	// edited.
+	Install(
+		n browserapi.Notifications, interrupter term.Interrupter, loc LocationSetter,
+		fc workspace.FlusherCloser, opener Opener,
+	) Tree
+	// Close releases a tree that will not be installed. It must not be called
+	// once Install has been.
+	Close() error
+}
 
 // Handler is the subset of text.Handler that a Tree's commands drive.
 type Handler interface {
@@ -107,6 +134,15 @@ type Config struct {
 	// Autoindent enables or disables indentation features. In practice,
 	// if disabled, IndentationAt always returns 0, false.
 	Autoindent bool
+
+	// FullReparseBudget bounds the full re-parses and re-highlights a tree
+	// runs on the event loop only to correct drift: after a flush or
+	// reload, after an incremental parse that reported errors, and to
+	// highlight a tree containing syntax errors. Once the last full parse
+	// and highlight of the file took longer than it, the tree skips them
+	// and keeps its incremental results, so highlights near syntax errors
+	// may differ from a full re-highlight. Zero never skips them.
+	FullReparseBudget time.Duration
 }
 
 // PkgManager abstracts a subset of idepkg.Manager for a tree parser.
@@ -127,14 +163,16 @@ func FuncLocationSetter(fn func(textapi.LocationList)) LocationSetter {
 	return fnLocationList{fn: fn}
 }
 
-// DefaultConfig returns a sane configuration for a tree parser.
+// DefaultConfig returns a sane configuration for a tree parser. Its
+// CaptureNamesAttributes is the caller's own copy of the defaults.
 func DefaultConfig() Config {
 	return Config{
-		CaptureNamesAttributes: defaultCaptureNamesAttributes,
+		CaptureNamesAttributes: maps.Clone(defaultCaptureNamesAttributes),
 		ScheduleNextTick:       func(cb func()) bool { cb(); return true },
 		ReparseOnErrors:        true,
 		StrictErrors:           false,
 		Autoindent:             true,
+		FullReparseBudget:      20 * time.Millisecond,
 	}
 }
 
@@ -174,6 +212,9 @@ var defaultCaptureNamesAttributes = map[string]term.Attributes{
 	"number":           {Fg: term.ColorRed},
 	"constant.builtin": {},
 	"comment":          {Fg: term.ColorBlue},
+
+	"diff.plus":  {Fg: term.ColorGreen},
+	"diff.minus": {Fg: term.ColorRed},
 
 	// Markup captures are emitted by common tree-sitter queries for markdown,
 	// markdown_inline, djot, rst, latex, typst, vimdoc, gitcommit, pod, and

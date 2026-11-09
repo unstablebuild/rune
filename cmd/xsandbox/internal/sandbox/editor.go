@@ -27,6 +27,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/textapi/textrpc"
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/extension"
+	"unstable.build/rune/internal/handler/handlerrpc"
 	"unstable.build/rune/internal/rpc"
 	"unstable.build/rune/internal/text"
 	ttextrpc "unstable.build/rune/internal/text/textrpc"
@@ -84,7 +85,7 @@ type editorRegistrar struct {
 func (r editorRegistrar) Register(
 	registrar rpc.ServiceRegistrar, lock sync.Locker,
 ) (io.Closer, error) {
-	server := ttextrpc.NewServer(r.notifications, r.editor, lock)
+	server := ttextrpc.NewServer(r.notifications, r.editor, lock, handlerrpc.GraphicsConfig{})
 	server.SetSyncMode()
 	textrpc.RegisterEditorServer(registrar, server)
 	return server, nil

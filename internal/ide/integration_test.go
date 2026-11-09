@@ -49,7 +49,7 @@ func newIntegrationTestCase(t *testing.T, content string) (
 	sched, drainSched := newTestScheduler(t, mu)
 	manager := workspace.NewManager(config.NopConfig(), sched)
 	require.NoError(t, manager.RegisterScheme(workspace.FileScheme, workspace.NewFileScheme))
-	w, err := manager.AddWorkspace(context.Background(), workspaceURI)
+	w, err := manager.AcquireWorkspace(context.Background(), workspaceURI)
 	require.NoError(t, err)
 
 	file, err := os.CreateTemp(tempDir, "workspace_int_test")

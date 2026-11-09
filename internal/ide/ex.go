@@ -20,6 +20,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image"
+	"maps"
+	"net/http"
+	"net/url"
 	"os"
 	"runtime"
 	rtdebug "runtime/debug"
@@ -31,6 +35,7 @@ import (
 	"syscall"
 	"time"
 
+	petname "github.com/dustinkirkland/golang-petname"
 	"github.com/ernestrc/go-multierror"
 	log "github.com/sirupsen/logrus"
 	"github.com/unstablebuild/blue/iterator"
@@ -49,6 +54,7 @@ import (
 	"mvdan.cc/sh/v3/syntax"
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/cell"
+	tcomponent "unstable.build/rune/internal/component"
 	fileexplorercomp "unstable.build/rune/internal/component/fileexplorer"
 	"unstable.build/rune/internal/component/markdown"
 	"unstable.build/rune/internal/component/notifications"
@@ -57,14 +63,16 @@ import (
 	thandler "unstable.build/rune/internal/handler"
 	"unstable.build/rune/internal/handler/command"
 	hmarkdown "unstable.build/rune/internal/handler/markdown"
+	"unstable.build/rune/internal/ide/console/ideconsole"
+	"unstable.build/rune/internal/ide/console/ideconsole/workspaceshell"
+	"unstable.build/rune/internal/ide/ideacp/acpcmd"
 	"unstable.build/rune/internal/ide/idecmd"
-	"unstable.build/rune/internal/ide/ideshell"
-	"unstable.build/rune/internal/ide/ideshell/workspaceshell"
 	"unstable.build/rune/internal/ide/idetask"
 	"unstable.build/rune/internal/ide/keymeta"
 	"unstable.build/rune/internal/ide/plugin"
 	"unstable.build/rune/internal/ide/vctrl"
 	tterm "unstable.build/rune/internal/term"
+	"unstable.build/rune/internal/term/programstatus"
 	"unstable.build/rune/internal/term/vte"
 	"unstable.build/rune/internal/term/vte/vtereservoir"
 	"unstable.build/rune/internal/text"
@@ -104,6 +112,19 @@ type macroRecorder interface {
 	RegisterID() string
 }
 
+// nameGenerator generates names for content the user did not name.
+type nameGenerator interface {
+	generateName() string
+}
+
+// petnameGenerator generates random two-word names such as "brave-otter".
+// Names are not guaranteed to be unique.
+type petnameGenerator struct{}
+
+func (petnameGenerator) generateName() string {
+	return petname.Generate(2, "-")
+}
+
 // ex implements a tui.Handler by wrapping an editor.Component and
 // providing an ex editor type of interface.
 type ex struct {
@@ -112,8 +133,11 @@ type ex struct {
 	clip           clipboard.Register
 	ed             text.Editor
 	editorObserver *commandRegisterObserver
-	parser         syntaxapi.Parser
-	svc            vctrl.Service
+	// rawArgsCommands holds the subscribed commands whose args the
+	// prompt dispatches as typed; see commandAll.rawArgs.
+	rawArgsCommands map[string]bool
+	parser          syntaxapi.Parser
+	svc             vctrl.Service
 	// gitshowSeq keeps a second :gitshow popup for the same file from
 	// colliding with one the user has not closed yet.
 	gitshowSeq int
@@ -145,6 +169,7 @@ type ex struct {
 	newEmulatorHandler       func([]string) (vtereservoir.VTE, error)
 	tm                       browser.TabManager
 	tabAliases               *tabNameAliaser
+	statusWindows            map[string]browser.Window
 	newPluginHandler         func(int, ...string) (pluginHandler, error)
 	workspace                workspace.Workspace
 	terminal                 *asyncTerminal
@@ -168,6 +193,7 @@ type ex struct {
 	// and the companion shell's input line. It is a required
 	// dependency (see newEx) so neither consumer has to guard nil.
 	promptEditor      command.Editor
+	nameGen           nameGenerator
 	pluginWaitTimeout time.Duration
 	// stepWaitTimeout bounds how long one alias step may hold the
 	// dispatch slot after claiming its waiter. Must exceed
@@ -184,6 +210,19 @@ type ex struct {
 	promptMouseDown  bool
 	promptShader     *shader.Component
 	commandPromptCfg commandPromptConfig
+	// graphics draws the images of the command prompt and of the
+	// notifications. It is nil until either names one.
+	graphics        *tcomponent.FrameGraphics
+	graphicsStorage storageapi.Service
+	// acpChats is the acp command, whose chats restyleChats restyles. It
+	// is nil until the workspace's extensions are built.
+	acpChats *acpcmd.Handler
+	// acpChatImages caches the images of the acp chats' status bars and
+	// compose box frames.
+	acpChatImages storageapi.Service
+	// statusBars styles the status bars of the editors e opens. It is
+	// nil where they are not restyled.
+	statusBars *text.StatusBarStyles
 	// editorModeModal records whether the editor backing this ex runs in
 	// modal mode. The cheatsheet uses it to gate modal-only key tips.
 	editorModeModal bool
@@ -196,7 +235,11 @@ type ex struct {
 	metaKey keymeta.Meta
 	// editorAutoSave records whether the editor flushes buffers
 	// automatically. The cheatsheet uses it to gate the manual write row.
-	editorAutoSave   bool
+	editorAutoSave bool
+	metaOpenURL    metaOpenURLConfig
+	// sponsorsURL is where :sponsors fetches the sponsor list. Empty
+	// when the IDE was given none.
+	sponsorsURL      string
 	fullscreenID     uint64
 	exit             bool
 	forceExit        bool
@@ -207,7 +250,7 @@ type ex struct {
 
 	companionTerminal    vtereservoir.VTE
 	companionTerminalWin browser.Window
-	companionConsole     *ideshell.Handler
+	companionConsole     *ideconsole.Handler
 	companionConsoleURI  workspaceapi.URI
 
 	fileExplorerWin     browser.Window
@@ -258,21 +301,24 @@ func newEx(
 	parser syntaxapi.Parser,
 	svc vctrl.Service,
 	promptEditor command.Editor,
+	nameGen nameGenerator,
 	commandObserver commandObserver,
 	debugCommands bool,
 	commandPromptCfg commandPromptConfig,
+	notificationsStyle notifications.Style,
 	editorModeModal bool,
 	editorMode string,
 	metaKey keymeta.Meta,
 	editorAutoSave bool,
 	consoleCfg consoleConfig,
+	metaOpenURL metaOpenURLConfig,
 	opts ...text.Option,
 ) (e *ex, err error) {
 	e = new(ex)
 	e.svc = svc
 	err = e.init(edFactory, m, storage, notifications, uri,
 		emulatorConfig, pluginBarConfig, publishEvent, initialVTECapacity, clip, macro,
-		dispatchOnPreview, tm, parser, promptEditor, opts...)
+		dispatchOnPreview, tm, parser, promptEditor, nameGen, opts...)
 	if err != nil {
 		// The async terminal's worker goroutine outlives a failed
 		// construction otherwise: nothing will ever call Close.
@@ -282,15 +328,17 @@ func newEx(
 	e.commandObserver = commandObserver
 	e.debugCommands = debugCommands
 	e.commandPromptCfg = commandPromptCfg
+	e.container.Restyle(notificationsStyle)
 	e.editorModeModal = editorModeModal
 	e.editorMode = editorMode
 	e.metaKey = metaKey
 	e.editorAutoSave = editorAutoSave
 	e.consoleCfg = consoleCfg
+	e.metaOpenURL = metaOpenURL
 	return
 }
 
-// init initializes this ex with the given editor and Options.
+// init initializes this ex with the given editor and Options. tm is required.
 // It returns an error if an initial filepath was given through WithFilePath option
 // and the file failed to be opened.
 func (e *ex) init(
@@ -309,12 +357,17 @@ func (e *ex) init(
 	tm browser.TabManager,
 	parser syntaxapi.Parser,
 	promptEditor command.Editor,
+	nameGen nameGenerator,
 	opts ...text.Option,
 ) (err error) {
 	if promptEditor == nil {
 		panic("ide.ex requires a prompt editor")
 	}
+	if nameGen == nil {
+		panic("ide.ex requires a name generator")
+	}
 	e.promptEditor = promptEditor
+	e.nameGen = nameGen
 	e.extReady = make(map[string]chan extReadyJob)
 	e.bgCtx, e.bgCancel = context.WithCancel(context.Background())
 	err = e.doInit(m, storage, notifications, uri,
@@ -353,9 +406,6 @@ func (e *ex) init(
 	e.pendingTabs = newPendingTabOpener(e.bgCtx, &e.comp, e.notifications,
 		e.sched, extensionHandleWait)
 	e.editorObserver.onResourceOpener = e.pendingTabs.reopenAsync
-	if tm == nil {
-		tm = e.Browser()
-	}
 	e.tabAliases = newTabNameAliaser(tm, e.sched)
 	e.tm = failedTerminalKeeper{tabNameAliaser: e.tabAliases, e: e}
 	e.comp.SubscribeWindow((*windowSubscriber)(e))
@@ -405,13 +455,13 @@ func (e *ex) init(
 	// "!" plugins float with a window bar that shows the command as
 	// its title, so drop the command from the plugin's own bar. Task
 	// windows keep it: they can be tiled, where there is no bar.
-	floatPluginOpts := pluginOpts
-	if e.config.WindowManagerConfig.Frame &&
-		e.config.WindowManagerConfig.WindowBar {
-		floatPluginOpts = append(slices.Clip(pluginOpts),
-			plugin.WithoutBarCommand())
-	}
 	e.newPluginHandler = func(width int, args ...string) (pluginHandler, error) {
+		floatPluginOpts := pluginOpts
+		if e.config.WindowManagerConfig.Frame &&
+			e.config.WindowManagerConfig.WindowBar {
+			floatPluginOpts = append(slices.Clip(pluginOpts),
+				plugin.WithoutBarCommand())
+		}
 		h, err := plugin.New(e.Browser(), e.Browser(), e.executor, e.terminal,
 			e.tm, args, width, floatPluginOpts...)
 		if err != nil {
@@ -434,8 +484,12 @@ func (e *ex) init(
 
 func (e *ex) subscribeCommands() error {
 	var ret error
+	e.rawArgsCommands = make(map[string]bool)
 	subscribe := func(name string, man commandAll) {
 		man.man.Name = name
+		if man.rawArgs {
+			e.rawArgsCommands[name] = true
+		}
 		err := e.editorObserver.SubscribeCommand(man.man, text.FuncCommandHandler(
 			func(ctx context.Context, cmd textapi.Command) error {
 				return man.handler(e, ctx, cmd.Args...)
@@ -485,6 +539,28 @@ func (e *ex) completeReadFile(
 	return e.filepathCompleter.Complete(ctx, args)
 }
 
+func (e *ex) completeFileURI(
+	ctx context.Context, args []string,
+) (iterator.Iterator[string], string, error) {
+	if len(args) == 0 {
+		return e.filepathCompleter.Complete(ctx, args)
+	}
+	prefix := command.DispatchedArg(ctx, command.UnquoteToken(args[len(args)-1]))
+	scheme, _, ok := strings.Cut(prefix, "://")
+	opener, registered := e.comp.ResourceOpener(scheme)
+	if !ok || !registered {
+		return e.filepathCompleter.Complete(ctx, args)
+	}
+	it, err := opener.CompleteResource(ctx, prefix)
+	if err != nil {
+		// the command prompt swallows a completer error and offers history instead.
+		// this does the same but ensures no history is displayed.
+		e.log(log.WarnLevel, "complete %s: %v", prefix, err)
+		it = iterator.Empty[string]()
+	}
+	return withoutHistoryFallback(iterator.Map(it, command.QuoteCandidate)), "", nil
+}
+
 func (e *ex) log(level log.Level, msg string, args ...any) {
 	if !log.IsLevelEnabled(level) {
 		return
@@ -517,11 +593,13 @@ func (e *ex) doInit(
 	e.stepWaitTimeout = e.pluginWaitTimeout + 30*time.Second
 	e.clip = clip
 	e.workspace = m
-	e.container = notifications.New(&e.comp, n.cfg)
+	e.storage = storage
+	notiCfg := n.cfg
+	notiCfg.Graphics = e.frameGraphics
+	e.container = notifications.New(&e.comp, notiCfg)
 	e.notifications = n.new(uri, e.container)
 	e.terminal = newAsyncTerminal(m, e.notifications)
 	e.publishEvent = publishEvent
-	e.storage = storage
 	e.workspaceURI = uri
 	// A t=f, t=t or t=s graphics transmission names a file on the
 	// machine the terminal's command runs on, which is this workspace.
@@ -535,7 +613,9 @@ func (e *ex) doInit(
 
 	e.config = text.DefaultConfig()
 
-	opts = append(opts, text.WithNotifications(e.notifications))
+	opts = append(opts, text.WithNotifications(e.notifications),
+		text.WithOnLinkClick(e.onLinkClick),
+		text.WithOpenURL(e.openURL))
 	for _, o := range opts {
 		o(&e.config)
 	}
@@ -774,12 +854,18 @@ func (e *ex) tabfocus(_ context.Context, args ...string) error {
 }
 
 func (e *ex) tabclose(_ context.Context, args ...string) error {
+	return e.closeWindowContent(e.invokeWindow())
+}
+
+// closeWindowContent closes what win shows as tabclose closes what the
+// focused window shows: it hides the companion terminal and the file
+// explorer, and asks before discarding changes pending to be written.
+func (e *ex) closeWindowContent(win browser.Window) error {
 	b := e.comp.Browser()
-	win := e.invokeWindow()
-	if win == e.companionTerminalWin {
+	if sameWindow(win, e.companionTerminalWin) {
 		return e.toggleCompanionTerminal()
 	}
-	if e.fileExplorerWin != nil && win == e.fileExplorerWin {
+	if sameWindow(win, e.fileExplorerWin) {
 		e.closeFileExplorerWindow()
 		return nil
 	}
@@ -787,7 +873,12 @@ func (e *ex) tabclose(_ context.Context, args ...string) error {
 	if err != nil {
 		return fmt.Errorf("get window content: %w", err)
 	}
-	if tab, ok := content.(*browser.Tab); ok && e.tabIsDirty(tab) {
+	tab, isTab := content.(*browser.Tab)
+	if !isTab && win.IsFloating() {
+		// Its content only lives in this window, so no tab may take its place.
+		return win.Close()
+	}
+	if isTab && e.tabIsDirty(tab) {
 		e.openCloseDirtyTabsPrompt(
 			fmt.Sprintf("File '%s' has changes pending to be written. "+
 				"Close and discard changes?", tab.URI().Name()),
@@ -801,6 +892,13 @@ func (e *ex) tabclose(_ context.Context, args ...string) error {
 	// on focus dispatch to vte.Handler via Close
 	b.RemoveWindowContent(win)
 	return nil
+}
+
+// sameWindow reports whether a and b are the same open window. Windows
+// are values handed out anew by each lookup, so they are told apart by
+// id.
+func sameWindow(a, b browser.Window) bool {
+	return a != nil && b != nil && !b.Closed() && a.WindowID() == b.WindowID()
 }
 
 // closeTabFromIcon closes tab like tabclose closes the one in focus,
@@ -1059,13 +1157,20 @@ func (e *ex) dispatchCommand(cmd string, args ...string) (err error) {
 // dispatchCommandCtx is dispatchCommand with a caller-supplied base
 // context, letting the caller thread values (e.g. a textrpc.Waiter) down
 // to the leaf command handler so it can observe asynchronous completion.
-//
-// Dispatches are serialised: while an earlier one is still in flight the
-// command queues and the returned error is nil. A Waiter on ctx is
-// claimed in that case and receives the result instead.
 func (e *ex) dispatchCommandCtx(
 	ctx context.Context, cmd string, args ...string,
 ) (err error) {
+	return e.dispatchSerialized(ctx, func(ctx context.Context) error {
+		return e.dispatchResolved(ctx, cmd, args...)
+	})
+}
+
+// dispatchSerialized runs dispatch unless an earlier dispatch is still in
+// flight, in which case dispatch queues and the returned error is nil. A
+// Waiter on ctx is claimed in that case and receives the result instead.
+func (e *ex) dispatchSerialized(
+	ctx context.Context, dispatch func(context.Context) error,
+) error {
 	if e.runInFlight != nil {
 		var w *textrpc.Waiter
 		if cw, ok := textrpc.WaiterFromContext(ctx); ok {
@@ -1073,11 +1178,11 @@ func (e *ex) dispatchCommandCtx(
 			w = cw
 		}
 		e.runQueue = append(e.runQueue, queuedDispatch{
-			ctx: ctx, cmd: cmd, args: args, waiter: w,
+			ctx: ctx, dispatch: dispatch, waiter: w,
 		})
 		return nil
 	}
-	return e.dispatchResolved(ctx, cmd, args...)
+	return dispatch(ctx)
 }
 
 // drainRunQueue dispatches queued commands in arrival order until the
@@ -1100,7 +1205,7 @@ func (e *ex) dispatchQueued(q queuedDispatch) {
 		// the result must be delivered exactly once, from here.
 		ctx = textrpc.ContextWithWaiter(ctx, inner)
 	}
-	err := e.dispatchResolved(ctx, q.cmd, q.args...)
+	err := q.dispatch(ctx)
 	if q.waiter == nil {
 		if err != nil {
 			e.setError(err)
@@ -1125,18 +1230,7 @@ func (e *ex) dispatchQueued(q queuedDispatch) {
 func (e *ex) dispatchResolved(
 	ctx context.Context, cmd string, args ...string,
 ) (err error) {
-	uri, h, ok := e.handlerInFocus()
-	scmd := textapi.Command{
-		Name:     cmd,
-		Args:     args,
-		Resource: h,
-		URI:      uri,
-		Window:   e.invokeWindow(),
-	}
-	if ok {
-		scmd.Cursor.Content = h.CursorAtScroll()
-		scmd.Cursor.Window, _, _ = h.Cursor()
-	}
+	scmd, ok := e.focusCommand(cmd, args)
 	target, isAlias := e.aliasExpander.ResolveAlias(cmd)
 	if cmd == "!" || cmd == "!!" {
 		ctx = cmdenv.WithCommandSubstitution(ctx)
@@ -1146,20 +1240,11 @@ func (e *ex) dispatchResolved(
 	}
 	var handled bool
 	if isAlias {
-		var parent *textrpc.Waiter
-		if w, wok := textrpc.WaiterFromContext(ctx); wok {
-			parent = w
+		it, xerr := e.aliasExpander.Expand(ctx, scmd)
+		if xerr != nil {
+			return xerr
 		}
-		r, rerr := newAliasRun(e, ctx, scmd, nil, parent, false)
-		if rerr != nil {
-			return rerr
-		}
-		r.step()
-		if r.detached {
-			// The run owns its result from here on.
-			return nil
-		}
-		handled, err = r.handled, r.err
+		handled, err = e.runAlias(ctx, cmd, it)
 	} else {
 		handled, err = e.dispatchLeaf(ctx, cmd, scmd)
 	}
@@ -1173,6 +1258,127 @@ func (e *ex) dispatchResolved(
 		return fmt.Errorf("unknown command or command alias %q", cmd)
 	}
 	return fmt.Errorf("%s is aliased to an unknown command %v", cmd, target.Commands)
+}
+
+// focusCommand returns name and args as a command aimed at the handler in
+// focus. ok is false when that handler is not a text handler.
+func (e *ex) focusCommand(name string, args []string) (textapi.Command, bool) {
+	uri, h, ok := e.handlerInFocus()
+	ret := textapi.Command{
+		Name:     name,
+		Args:     args,
+		Resource: h,
+		URI:      uri,
+		Window:   e.invokeWindow(),
+	}
+	if ok {
+		ret.Cursor.Content = h.CursorAtScroll()
+		ret.Cursor.Window, _, _ = h.Cursor()
+	}
+	return ret, ok
+}
+
+// runAlias dispatches the steps it yields for the alias called name. A
+// run that detaches owns its result from then on, so it reports handled
+// and no error here.
+func (e *ex) runAlias(
+	ctx context.Context, name string, it iterator.Iterator[textapi.Command],
+) (handled bool, err error) {
+	var parent *textrpc.Waiter
+	if w, ok := textrpc.WaiterFromContext(ctx); ok {
+		parent = w
+	}
+	r := newAliasRun(e, ctx, name, it, nil, parent, false)
+	r.step()
+	if r.detached {
+		return true, nil
+	}
+	return r.handled, r.err
+}
+
+// openURL opens u as the meta_open_url config says: its command opens
+// http(s) URLs, or they are copied to the clipboard, and the system
+// browser opens every other URL. The command queues behind a dispatch
+// still in flight, like a typed one.
+func (e *ex) openURL(u *url.URL) error {
+	web := u.Scheme == "http" || u.Scheme == "https"
+	switch {
+	case web && e.metaOpenURL.clipboard:
+		s := u.String()
+		if err := e.clip.Copy(clipboard.DefaultRegisterID, clipboard.Data{Text: s}); err != nil {
+			return fmt.Errorf("copy URL to clipboard: %w", err)
+		}
+		_, _ = e.notifications.Notify(browserapi.LevelSuccess, "copied URL %s to clipboard", s)
+		return nil
+	case web && e.metaOpenURL.command != "":
+		return e.dispatchSerialized(context.Background(), func(ctx context.Context) error {
+			return e.dispatchURLCommand(ctx, u)
+		})
+	case e.metaOpenURL.system == nil:
+		return errors.New("no system browser configured")
+	}
+	return e.metaOpenURL.system(u)
+}
+
+// dispatchURLCommand runs the meta_open_url command as a one-step alias
+// with $URL bound to the shell-inert form of u. $URL expands to a single
+// argument, and ! and !! bodies receive it as data in any quoting
+// context.
+func (e *ex) dispatchURLCommand(ctx context.Context, u *url.URL) error {
+	chain := idecmd.NewChain()
+	chain.Set("URL", shellInertURL(u))
+	ctx = idecmd.WithChain(ctx, keyMetaOpenURL, chain)
+	scmd, _ := e.focusCommand(keyMetaOpenURL, nil)
+	it, err := e.aliasExpander.ExpandAlias(ctx, scmd,
+		text.CommandAlias{Commands: []string{e.metaOpenURL.command}})
+	if err != nil {
+		return fmt.Errorf("%s: %w", keyMetaOpenURL, err)
+	}
+	handled, err := e.runAlias(ctx, keyMetaOpenURL, it)
+	if err != nil {
+		return fmt.Errorf("%s: %w", keyMetaOpenURL, err)
+	}
+	if !handled {
+		return fmt.Errorf("%s: unknown command in %q",
+			keyMetaOpenURL, e.metaOpenURL.command)
+	}
+	return nil
+}
+
+// shellInertURL returns u with every byte percent-encoded that a URI
+// may not contain, as well as ' and $, so that the result holds no
+// character a shell interprets inside quotes. The encoded characters
+// mean the same to a web server, so the URL still names the same
+// resource. The protection is for commands that hand $URL to a shell
+// a second time, as eval, sh -c and ssh do; quoting $URL there is
+// still needed, since & ; ( ) and other reserved characters stay.
+func shellInertURL(u *url.URL) string {
+	const keep = "-._~:/?#[]@!&()*+,;=%"
+	s := u.String()
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' ||
+			strings.IndexByte(keep, c) >= 0 {
+			b.WriteByte(c)
+			continue
+		}
+		fmt.Fprintf(&b, "%%%02X", c)
+	}
+	return b.String()
+}
+
+// onLinkClick is the link handler of rendered markdown: it opens http(s)
+// links with openURL and leaves every other link to the markdown handler.
+func (e *ex) onLinkClick(link *url.URL) bool {
+	if link.Scheme != "http" && link.Scheme != "https" {
+		return false
+	}
+	if err := e.openURL(link); err != nil {
+		_, _ = e.notifications.Notify(browserapi.LevelError, "open %s: %v", link, err)
+	}
+	return true
 }
 
 // dispatchLeaf expands a non-alias command's args and dispatches it.
@@ -1214,52 +1420,7 @@ func formatStep(cmd textapi.Command) string {
 func (e *ex) editFileURI(uri workspaceapi.URI, win browser.Window, readOnly bool) (
 	*browser.Tab, error,
 ) {
-	return e.editFileURILocal(uri, win, readOnly)
-}
-
-func (e *ex) editFileURILocal(uri workspaceapi.URI, win browser.Window, readOnly bool) (
-	*browser.Tab, error,
-) {
-	var h browserapi.Handler
-	var err error
-	if readOnly {
-		h, err = e.comp.OpenReadOnly(uri)
-	} else {
-		h, err = e.comp.Open(uri)
-	}
-	if err != nil {
-		return nil, err
-	}
-	if win.Closed() {
-		win, _ = e.comp.Focus()
-	}
-	err = win.SetContent(h)
-	if err == browserapi.ErrTabNotFree {
-		// The tab is already rendered in a window. If that window
-		// is ours (the file was already open in this workspace),
-		// focus it so <enter> brings it into view. Otherwise the
-		// multi-workspace OpenRouter already switched to and
-		// focused the owning workspace, so there is nothing left
-		// to do here.
-		err = nil
-		if owner, ok := e.localTabWindow(h.(*browser.Tab)); ok {
-			_, _ = e.comp.SetFocus(owner)
-		}
-	}
-	return h.(*browser.Tab), err
-}
-
-// localTabWindow returns the window of this ex's browser that
-// currently renders tab, if any. The lookup is scoped to this ex's
-// own windows by ID: a tab routed in from another workspace belongs
-// to a different window manager, and SetFocus panics on a foreign
-// window.
-func (e *ex) localTabWindow(tab *browser.Tab) (browser.Window, bool) {
-	owner, ok := tab.Window()
-	if !ok || owner.Closed() {
-		return nil, false
-	}
-	return e.comp.Browser().Window(owner.WindowID())
+	return e.comp.OpenInWindow(uri, win, readOnly)
 }
 
 func (e *ex) parseURIOrWorkspaceURI(path string) (workspaceapi.URI, error) {
@@ -1296,13 +1457,38 @@ func (e *ex) editFilesReadOnly(readOnly bool, args ...string) error {
 		if err != nil {
 			return err
 		}
-		_, err = e.editFileURI(uri, e.invokeWindow(), readOnly)
+		if opener, ok := e.comp.ResourceOpener(uri.Scheme()); ok {
+			err = e.openResourceTab(opener, uri, e.invokeWindow())
+		} else {
+			_, err = e.editFileURI(uri, e.invokeWindow(), readOnly)
+		}
 		if err != nil {
 			return err
 		}
 	}
 
 	return nil
+}
+
+// openResourceTab shows the tab of uri in win, or in the window in focus
+// when win is closed, as OpenInWindow does with a file's. A tab that is
+// not open yet shows a placeholder until opener answers with its content.
+func (e *ex) openResourceTab(
+	opener textapi.ResourceOpenHandler, uri workspaceapi.URI, win browser.Window,
+) error {
+	t := e.comp.PendingTabs().Open(uri, e.config.Icons.Default, uri.String())
+	if e.comp.PendingTabs().Contains(uri) {
+		e.pendingTabs.open(opener, uri)
+	}
+	if win.Closed() {
+		win, _ = e.comp.Focus()
+	}
+	err := win.SetContent(t)
+	if errors.Is(err, browserapi.ErrTabNotFree) {
+		owner, _ := t.Window()
+		_, err = e.comp.SetFocus(owner)
+	}
+	return err
 }
 
 func (e *ex) tabcopypath(_ context.Context, args ...string) error {
@@ -1499,12 +1685,14 @@ func (e *ex) moveTab(_ context.Context, args ...string) error {
 var defaultConvertTabIcon = ''
 
 func (e *ex) convertTab(ctx context.Context, args ...string) error {
-	if len(args) == 0 {
-		return errors.New("command expects at least one argument with tab name")
-	}
-
 	var icon rune
-	name := args[0]
+	var name string
+	if len(args) > 0 {
+		name = args[0]
+	}
+	if name == "" {
+		name = e.nameGen.generateName()
+	}
 	if len(args) > 1 {
 		runeArgs := []rune(args[1])
 		if len(runeArgs) > 0 {
@@ -1517,7 +1705,7 @@ func (e *ex) convertTab(ctx context.Context, args ...string) error {
 	win := e.invokeWindow()
 	tab, ok := e.comp.Browser().NewTabFromContent(icon, name, win)
 	if !ok {
-		return errors.New("window content is already a tab")
+		return nil
 	}
 
 	if win == e.companionTerminalWin {
@@ -1778,19 +1966,13 @@ func (e *ex) executePlugin(_ context.Context, args ...string) error {
 		Alignment: component.AlignmentCentered,
 		Title:     h.Title(),
 	}
-	// there can be multiple floating windows open
-	// so instead of matching windows on tabclose,
-	// we set a handler that closes the window if the handler
-	// is closed.
 	ph := &pluginAdapter{pluginHandler: h}
 	// mimic same behavior as tab
 	ph.OnFocusChange(false)
-	win, err := e.comp.Floating(ph, cfg)
-	if err != nil {
+	if _, err := e.comp.Floating(ph, cfg); err != nil {
 		_ = h.Close()
 		return err
 	}
-	ph.win = win
 	return nil
 }
 
@@ -2300,12 +2482,31 @@ func (e *ex) editExitedTerminal(av *asyncVTE, exitErr error) (text.Handler, erro
 }
 
 func (e *ex) consolenewtab(_ context.Context, args ...string) error {
+	if e.companionConsole != nil {
+		// The console is closed along with its tab, but merely hidden
+		// while its tab is out of every window.
+		if _, open := e.comp.Browser().Tab(e.companionConsoleURI); !open {
+			e.companionConsole = nil
+		}
+	}
 	if e.companionConsole == nil {
 		workspaceURI, err := e.workspace.URI(".")
 		if err != nil {
 			return fmt.Errorf("workspace uri: %w", err)
 		}
-		consoleCfg := ideshell.Config{
+		uri, err := workspaceapi.ParseURI("console:///")
+		if err == nil {
+			uri, err = workspaceapi.WithPath(uri, workspaceURI.Path())
+			if workspaceURI.Host() != "" {
+				uri, err = workspaceapi.ParseURI(
+					fmt.Sprintf("console://%s%s", workspaceURI.Host(), workspaceURI.Path()),
+				)
+			}
+		}
+		if err != nil {
+			return fmt.Errorf("parse console uri: %w", err)
+		}
+		consoleCfg := ideconsole.Config{
 			Storage:           e.storage,
 			HistoryDocumentID: shellHistoryDocumentID,
 			MaxHistory:        e.config.ShellMaxHistory,
@@ -2315,8 +2516,9 @@ func (e *ex) consolenewtab(_ context.Context, args ...string) error {
 			ModalStartInsert:  e.consoleCfg.modalStartInsert,
 			Prompt:            e.consoleCfg.prompt,
 		}
-		h, registry := ideshell.New(
+		h, registry := ideconsole.New(
 			e.emulatorConfig.ScheduleNextTick, e, e.promptEditor,
+			scheduledTabStatus{tm: &e.comp, sched: e.sched}, uri,
 			consoleCfg,
 		)
 		if e.wsExecutor != nil {
@@ -2347,19 +2549,6 @@ func (e *ex) consolenewtab(_ context.Context, args ...string) error {
 			}
 		}
 
-		uri, err := workspaceapi.ParseURI("console:///")
-		if err == nil {
-			uri, err = workspaceapi.WithPath(uri, workspaceURI.Path())
-			if workspaceURI.Host() != "" {
-				uri, err = workspaceapi.ParseURI(
-					fmt.Sprintf("console://%s%s", workspaceURI.Host(), workspaceURI.Path()),
-				)
-			}
-		}
-		if err != nil {
-			_ = h.Close()
-			return fmt.Errorf("parse console uri: %w", err)
-		}
 		e.companionConsole = h
 		e.companionConsoleURI = uri
 	}
@@ -2371,23 +2560,85 @@ func (e *ex) consolenewtab(_ context.Context, args ...string) error {
 
 	tab := t.(*browser.Tab)
 
-	win := e.invokeWindow()
+	win, err := e.consoleWindow()
+	if err != nil {
+		return err
+	}
 	if err := win.SetContent(tab); err != nil {
 		content, cerr := win.Content()
 		if cerr == nil {
 			if curr, ok := content.(*browser.Tab); ok && curr == tab {
-				if line := strings.TrimSpace(strings.Join(args, " ")); line != "" {
-					e.companionConsole.Submit(line)
-				}
-				return nil
+				return e.submitToConsole(args)
 			}
 		}
 		return err
 	}
-	tab.Subscribe((*tabSubscriber)(e))
-	if line := strings.TrimSpace(strings.Join(args, " ")); line != "" {
-		e.companionConsole.Submit(line)
+	if _, err := e.comp.SetFocus(win); err != nil {
+		return fmt.Errorf("focus console: %w", err)
 	}
+	tab.Subscribe((*tabSubscriber)(e))
+	return e.submitToConsole(args)
+}
+
+// submitToConsole submits args as one line, if any, to the console. It
+// fails rather than panics when callbacks run while showing the console
+// dropped it.
+func (e *ex) submitToConsole(args []string) error {
+	line := strings.TrimSpace(strings.Join(args, " "))
+	if line == "" {
+		return nil
+	}
+	if e.companionConsole == nil {
+		return errors.New("console was closed before the command could run")
+	}
+	e.companionConsole.Submit(line)
+	return nil
+}
+
+// consoleWindow returns the window the console takes over: the focused
+// one, or the first tile when the focused one floats with content that
+// lives only there.
+func (e *ex) consoleWindow() (browser.Window, error) {
+	win := e.invokeWindow()
+	if !win.IsFloating() {
+		return win, nil
+	}
+	content, err := win.Content()
+	if err != nil {
+		return nil, fmt.Errorf("get window content: %w", err)
+	}
+	if _, isTab := content.(*browser.Tab); isTab {
+		return win, nil
+	}
+	var tile browser.Window
+	e.comp.Browser().IterateWindows(func(w browser.Window) {
+		if tile == nil && !w.IsFloating() && !sameWindow(w, e.fileExplorerWin) {
+			tile = w
+		}
+	})
+	if tile == nil {
+		return nil, errors.New("no tiled window to open the console in")
+	}
+	return tile, nil
+}
+
+// scheduledTabStatus reports statuses made through the SDK from any
+// goroutine as the host's own, applying them to tm on the event loop
+// sched runs. A status for a uri that is no tab is dropped.
+type scheduledTabStatus struct {
+	tm    browser.TabManager
+	sched func(func()) bool
+}
+
+var _ ideconsole.TabManager = scheduledTabStatus{}
+
+// SetTabStatus satisfies ideconsole.TabManager.
+func (s scheduledTabStatus) SetTabStatus(uri workspaceapi.URI, status browserapi.TabStatus) error {
+	report, err := browser.ReportFromTabStatus(status, programstatus.HostApp)
+	if err != nil {
+		return err
+	}
+	s.sched(func() { _ = s.tm.SetTabStatus(uri, report) })
 	return nil
 }
 
@@ -2650,6 +2901,7 @@ func (e *ex) handleCommandEvent(ev term.Event) bool {
 }
 
 func (e *ex) onFocusChange(inFocus bool) {
+	e.comp.Browser().OnFocusChange(inFocus)
 	handler, _ := e.comp.Browser().Focus().Content()
 	onFocusChangeHandler(handler, inFocus)
 }
@@ -2665,6 +2917,7 @@ func (e *ex) handleEvent(ev term.Event) (
 
 	if inFocus := ev.Type == term.EventFocus; inFocus || ev.Type == term.EventUnfocus {
 		e.log(log.DebugLevel, "focus event: inFocus: %t", inFocus)
+		e.comp.Browser().OnFocusChange(inFocus)
 		handler, _ := e.invokeWindow().Content()
 		onFocusChangeHandler(handler, inFocus)
 		handled = true
@@ -2838,6 +3091,9 @@ func (e *ex) resetCommandList(cmd *command.Prompt) {
 	// commands can be registered dynamicall via Editor.Register:
 	// compile a new list every time we switch to command mode
 	commands := e.comp.Commands()
+	for i, c := range commands {
+		commands[i].RawArgs = e.rawArgsCommands[c.Name]
+	}
 	commands = append(commands, e.aliasExpander.Aliases()...)
 	sort.Slice(commands, func(i, j int) bool {
 		return commands[i].Name < commands[j].Name
@@ -2853,6 +3109,9 @@ func (e *ex) openCommandPrompt() {
 
 func (e *ex) openCommandHistoryPrompt(_ context.Context, _ ...string) error {
 	e.newCommandPrompt(func(cmd *command.Prompt) {
+		// The entries dispatch against the manuals, which say which
+		// commands take their args as typed.
+		e.resetCommandList(cmd)
 		cmd.ResetHistory()
 	})
 	return nil
@@ -2883,7 +3142,7 @@ func (e *ex) newCommandPrompt(reset func(*command.Prompt)) {
 	commandCfg.ElementAttr = e.config.CommandOverlay.ElementAttr
 	commandCfg.ManualAttr = e.config.CommandOverlay.ManualAttr
 	commandCfg.DocumentID = commandHistoryDocumentID
-	commandCfg.FrameCharSet = e.config.FrameCharSet
+	commandCfg.FrameCharSet, _ = e.promptFrameCharSets()
 	commandCfg.FrameAttr = e.config.FrameAttr
 	commandCfg.ShowManual = e.config.CommandOverlay.ShowManual
 	commandCfg.ShowProgressHint = e.config.CommandOverlay.ShowProgressHint
@@ -3083,8 +3342,9 @@ func (e *ex) startPromptShader() {
 	offset := e.cmdV.Position()
 	offset.X += wmOff.X
 	offset.Y += wmOff.Y
+	_, radar := e.promptFrameCharSets()
 	e.promptShader = newPromptShader(
-		e.config.FocusFrameCharSet, e.config.FrameAttr,
+		radar, e.config.FrameAttr, e.commandPromptCfg.separator,
 		e.cmdWin, offset, drawFunc(e.drawCmdPrompt), e,
 		e.commandPromptCfg.shader,
 	)
@@ -3191,6 +3451,21 @@ func (e *ex) Close() (ret error) {
 		ret = multierror.Append(ret, err)
 	}
 	e.stopPromptShader()
+	if e.graphics != nil {
+		if err := e.graphics.Close(); err != nil {
+			ret = multierror.Append(ret, err)
+		}
+		if err := e.graphicsStorage.Close(); err != nil {
+			ret = multierror.Append(ret, err)
+		}
+		e.graphics, e.graphicsStorage = nil, nil
+	}
+	if e.acpChatImages != nil {
+		if err := e.acpChatImages.Close(); err != nil {
+			ret = multierror.Append(ret, err)
+		}
+		e.acpChatImages = nil
+	}
 	if err := e.container.Close(); err != nil {
 		ret = multierror.Append(ret, err)
 	}
@@ -3206,6 +3481,64 @@ func (e *ex) Close() (ret error) {
 func (e *ex) cleanPartialReissueState() {
 	e.cancelPartialReissue = nil
 	e.ctxPartialReissue = context.Background()
+}
+
+func (e *ex) frameGraphics() *tcomponent.FrameGraphics {
+	if e.graphics == nil {
+		e.graphicsStorage = storageapi.WithPartition(e.storage, frameImagesPartition)
+		e.graphics = tcomponent.NewFrameGraphics(e.graphicsStorage, e)
+	}
+	return e.graphics
+}
+
+// promptFrameCharSets returns the charset the command prompt draws its frame
+// with, and the one whose runes its radar shades.
+func (e *ex) promptFrameCharSets() (frame, radar component.FrameCharSet) {
+	if cs := e.commandPromptCfg.frameCharSet; cs != nil {
+		return *cs, *cs
+	}
+	return e.config.FrameCharSet, e.config.FocusFrameCharSet
+}
+
+// restyle draws e with s from the next Draw on, as browser.Component.Restyle
+// does, and the command prompts it opens later, and its notifications,
+// open and later. Its frames, prompt buttons and notifications draw
+// images as tcomponent.FrameGraphics.Reload takes them.
+// Its editor status bars, open and later, draw statusBarImages as
+// text.StatusBarStyles.Restyle takes them, and its terminals, open and
+// later, ring the bell with s's sound.
+func (e *ex) restyle(s hudStyle, images, statusBarImages map[string]image.Image) {
+	e.config.Config = e.config.Config.Restyled(s.browser)
+	e.config.CommandOverlay.ShowManual = s.commandShowManual
+	e.commandPromptCfg.frameCharSet = s.commandPromptFrame
+	e.commandPromptCfg.separator = s.commandPromptSeparator
+	if e.emulatorConfig.BellSound != nil {
+		e.emulatorConfig.BellSound.Store(new(s.bellSound))
+	}
+	// Reloaded first: the tab bars take their images from the graphics
+	// as they are restyled.
+	for _, g := range []*tcomponent.FrameGraphics{
+		e.comp.Browser().FrameGraphics(), e.cmdV.C.FrameGraphics(), e.graphics,
+	} {
+		if g != nil {
+			g.Reload(images)
+		}
+	}
+	e.comp.Browser().Restyle(s.browser)
+	e.cmdV.C.Restyle(s.browser)
+	e.container.Restyle(s.notifications)
+	if e.statusBars != nil {
+		e.statusBars.Restyle(s.statusBar, statusBarImages)
+	}
+}
+
+// restyleChats gives e's acp chats, open and later, the status bar and
+// compose box frame of the Rune Agent chat settings in cfg.
+func (e *ex) restyleChats(cfg map[string]any) {
+	if e.acpChats == nil {
+		return
+	}
+	e.acpChats.Restyle(ideConfig{cfg: cfg, errors: make(map[string]error)}.agentChatConfig())
 }
 
 // stopTerminal releases the pty-resize worker. It is safe to call on a
@@ -3225,7 +3558,19 @@ func (e *ex) focusHandler() tui.Handler {
 
 type pluginAdapter struct {
 	pluginHandler
-	win browser.Window
+}
+
+// statusReporter is content showing a program that reports its
+// statuses under a uri of its own, rather than that of the content.
+type statusReporter interface {
+	StatusURI() workspaceapi.URI
+}
+
+func (h *pluginAdapter) StatusURI() workspaceapi.URI {
+	if r, ok := h.pluginHandler.(statusReporter); ok {
+		return r.StatusURI()
+	}
+	return workspaceapi.URI{}
 }
 
 type workspaceExecutorAdapter struct {
@@ -3244,15 +3589,17 @@ func (a workspaceExecutorAdapter) Signal(
 	return a.e.Signal(pid, sig)
 }
 
+func (a workspaceExecutorAdapter) LookPath(
+	ctx context.Context, name, dir string,
+) (string, error) {
+	return a.e.LookPath(ctx, name, dir)
+}
+
 func (a workspaceExecutorAdapter) Close() error {
 	return a.e.Close()
 }
 
 func (h *pluginAdapter) Close() error {
-	if !h.win.Closed() {
-		_ = h.win.Close()
-	}
-
 	// ephemeral handlers are closed when focus changes
 	// in component. So adding the following line here
 	// should handle all cases
@@ -3268,10 +3615,6 @@ func (e *tabSubscriber) OnFocus(t *browser.Tab) {
 }
 
 func (e *tabSubscriber) OnFree(t *browser.Tab) {
-	if e.companionConsole != nil && t.URI().String() == e.companionConsoleURI.String() {
-		e.companionConsole = nil
-		e.companionConsoleURI = workspaceapi.URI{}
-	}
 	onFocusChangeTab(t, false)
 }
 
@@ -3466,35 +3809,54 @@ func (c companionTerminalHandler) Close() error {
 
 // openMarkdownFloating renders md as a read-only markdown view in a
 // centered floating window pinned to a fixed width. It is shared by the
-// cheatsheet and keybindings commands so both views line up.
+// cheatsheet and keybindings commands so both views line up. md has no
+// file to resolve paths against, so it shows only https images.
 func (e *ex) openMarkdownFloating(md, title string, width int) error {
 	mdCfg := e.config.Markdown
 	mdCfg.HeaderPrefix = false
+	if storage := e.config.MarkdownImageStorage; storage != nil {
+		mdCfg.ImagesConfig = markdown.ImagesConfig{
+			Storage:     storage,
+			Interrupter: browser.EventPublisherInterrupter(e.Browser()),
+		}
+	}
 	mdComp, err := markdown.NewWithConfig(md, mdCfg)
 	if err != nil {
 		return fmt.Errorf("new markdown component: %w", err)
 	}
-	mdh := hmarkdown.New(mdComp, hmarkdown.WithOnLinkClick(openCheatsheetLink))
+	mdh := hmarkdown.New(mdComp, hmarkdown.WithOnLinkClick(e.onLinkClick))
 	span := handler.NewSpan(mdh, component.SpanConfig{
 		PadHorizontal:    2,
 		ContentAlignment: component.AlignmentCentered,
 	})
 
-	var win browser.Window
-	floating := browser.FuncFloatingHandler(span, func() error {
-		defer win.Close() //nolint:errcheck
-		return mdh.Close()
-	})
-	staticWidth := browser.FuncFloating(floating, func() (int, int) {
-		_, h := floating.Dimensions()
-		return width, h
-	})
-	win, err = e.comp.Floating(staticWidth, browserapi.FloatingConfig{
+	view := markdownFloating{Floating: span, md: mdh, width: width}
+	h := browser.FuncScrollableFloatingHandler(view, mdh.Close)
+	_, err = e.comp.Floating(h, browserapi.FloatingConfig{
 		Alignment: component.AlignmentCentered,
 		Title:     title,
 	})
 	return err
 }
+
+// markdownFloating pins a padded markdown view to a fixed width. The
+// padding Span does not pass on the markdown's scroll position, which
+// the window frame needs to draw a scroll bar, so it comes from md.
+type markdownFloating struct {
+	handler.Floating
+	md    *hmarkdown.Handler
+	width int
+}
+
+func (m markdownFloating) Dimensions() (int, int) {
+	_, h := m.Floating.Dimensions()
+	return m.width, h
+}
+
+func (m markdownFloating) SeekUp() bool       { return m.md.SeekUp() }
+func (m markdownFloating) SeekDown() bool     { return m.md.SeekDown() }
+func (m markdownFloating) SeekOffset() int    { return m.md.SeekOffset() }
+func (m markdownFloating) MaxSeekOffset() int { return m.md.MaxSeekOffset() }
 
 // cheatsheet renders a keys-first cheatsheet from the user's resolved key
 // bindings and editor mode and opens it as a read-only markdown view in a
@@ -3517,6 +3879,35 @@ func (e *ex) keybindings(_ context.Context, _ ...string) error {
 		return err
 	}
 	return e.openMarkdownFloating(md, "Key bindings", keybindingsWidth)
+}
+
+// sponsors fetches the sponsor list off the event loop and opens it in
+// a floating window once it arrives. If it cannot be fetched, the page
+// still opens with the tiers and open slots, as the website does.
+func (e *ex) sponsors(_ context.Context, _ ...string) error {
+	if e.sponsorsURL == "" {
+		return errors.New("sponsors: no sponsor list is configured")
+	}
+	go debug.CapturePanicReport(func() {
+		resp, err := fetchSponsors(e.bgCtx, http.DefaultClient, e.sponsorsURL)
+		if err != nil {
+			log.WithError(err).Warn("sponsors: show page without sponsors")
+		}
+		md, err := renderSponsors(resp)
+		if err != nil {
+			log.WithError(err).Error("sponsors: render")
+			return
+		}
+		e.sched(func() {
+			if e.closed {
+				return
+			}
+			if err := e.openMarkdownFloating(md, "Sponsors", sponsorsWidth); err != nil {
+				log.WithError(err).Error("sponsors: open window")
+			}
+		})
+	})
+	return nil
 }
 
 func (e *ex) gitshow(ctx context.Context, _ ...string) error {
@@ -3580,13 +3971,9 @@ func (e *ex) openGitshow(ctx context.Context) (text.Handler, error) {
 		Y: anchors[gitshowSeek(hunks, h.CursorAtScroll().Y+1)].Row,
 	})
 
-	var win browser.Window
 	bhandler := browser.FuncHandler(
-		gitshowKeyHandler(edh, e.editorModeModal), func() error {
-			defer win.Close() //nolint:errcheck
-			return edh.Close()
-		})
-	win, err = e.comp.Floating(
+		gitshowKeyHandler(edh, e.editorModeModal), edh.Close)
+	_, err = e.comp.Floating(
 		browser.FuncFloating(bhandler, func() (int, int) {
 			w, height := edh.Dimensions()
 			// dimensions does not account for the row the editors
@@ -3609,4 +3996,14 @@ func (e *ex) gitshowURI(rel string) (workspaceapi.URI, error) {
 	joined := workspaceapi.Join(gitshowBaseURI(), rel+".diff")
 	return workspaceapi.ParseURI(
 		fmt.Sprintf("%s?n=%d", joined.String(), e.gitshowSeq))
+}
+
+// setStatusWindow records win as showing what reports a status at uri.
+// It must be called on the host event loop.
+func (e *ex) setStatusWindow(uri workspaceapi.URI, win browser.Window) {
+	if e.statusWindows == nil {
+		e.statusWindows = make(map[string]browser.Window)
+	}
+	maps.DeleteFunc(e.statusWindows, func(_ string, w browser.Window) bool { return w.Closed() })
+	e.statusWindows[uri.String()] = win
 }

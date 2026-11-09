@@ -18,6 +18,7 @@ package vteparser
 
 import (
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"unstable.build/rune/internal/term/programstatus"
 )
 
 // Handler abstracts a terminal TUI implementation.
@@ -201,6 +202,12 @@ type Handler interface {
 	// ClipboardLoad loads data from the clipboard.
 	ClipboardLoad(register int, data string)
 
+	// RequestTermcap (XTGETTCAP) reports on the pty stream, for each of
+	// the terminfo capability names, the control sequence the terminal
+	// accepts for it, or that it has none. names holds at least one
+	// name.
+	RequestTermcap(names []string)
+
 	// Decaln runs the decaln routine.
 	Decaln()
 
@@ -247,6 +254,36 @@ type Handler interface {
 	// after an optional ';', the base64 payload. It is only valid for
 	// the duration of the call.
 	GraphicsCommand(data []byte)
+
+	// ProgramStatus applies an OSC 7501 report that already passed every
+	// protocol limit.
+	ProgramStatus(report programstatus.Report)
+
+	// ProgramStatusQuery answers OSC 7501 feature detection by echoing
+	// the query back with the given terminator (BEL or ST).
+	ProgramStatusQuery(terminator string)
+
+	// PromptStart marks the beginning of a shell prompt (OSC 133 A).
+	PromptStart()
+
+	// SetPointerShape replaces the shape on top of the OSC 22 pointer
+	// shape stack, pushing it onto an empty one. The empty shape lets the
+	// terminal choose.
+	SetPointerShape(shape PointerShape)
+
+	// PushPointerShape pushes shape onto the OSC 22 pointer shape stack.
+	PushPointerShape(shape PointerShape)
+
+	// PopPointerShape pops the OSC 22 pointer shape stack; popping an
+	// empty stack has no effect.
+	PopPointerShape()
+
+	// PointerShapeQuery answers an OSC 22 query with one comma separated
+	// answer per name, terminated with terminator (BEL or ST): 1 or 0
+	// for whether a shape name is supported, or the shape name for
+	// __current__ (0 when the terminal chooses), __default__ and
+	// __grabbed__.
+	PointerShapeQuery(names []string, terminator string)
 }
 
 // KeyboardMode is the vte keyboard mode.

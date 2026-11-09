@@ -23,7 +23,6 @@ import (
 	"os"
 	"unicode/utf8"
 
-	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/semanticapi"
 	"github.com/unstablebuild/rune-go-sdk/api/syntaxapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
@@ -57,8 +56,6 @@ func DefaultConfig() Config {
 type Picker struct {
 	entries          []Entry
 	list             *component.FocusList
-	wm               browserapi.WindowManager
-	win              browserapi.Window
 	fs               workspaceapi.FileSystem
 	scheduleNextTick func(func()) bool
 	parser           syntaxapi.Parser
@@ -83,7 +80,7 @@ type Picker struct {
 
 // New allocates a new location picker.
 func New(
-	entries []Entry, wm browserapi.WindowManager,
+	entries []Entry,
 	fs workspaceapi.FileSystem, scheduleNextTick func(func()) bool,
 	parser syntaxapi.Parser, cfg Config, log *slog.Logger,
 ) *Picker {
@@ -102,7 +99,6 @@ func New(
 	handler := &Picker{
 		entries:          entries,
 		list:             list,
-		wm:               wm,
 		fs:               fs,
 		scheduleNextTick: scheduleNextTick,
 		parser:           parser,
@@ -117,11 +113,6 @@ func New(
 	})
 	handler.loadPreview()
 	return handler
-}
-
-// SetWindow configures the floating window handle associated with this picker.
-func (l *Picker) SetWindow(win browserapi.Window) {
-	l.win = win
 }
 
 // SetOnSelect configures the callback invoked when Enter is pressed.
@@ -201,11 +192,9 @@ func (l *Picker) Resize(w, h int) {
 	l.span.Resize(w, h)
 }
 
-// Close closes the associated floating window, if any.
+// Close satisfies browserapi.Handler. The window is left to its owner,
+// since it may already show other content.
 func (l *Picker) Close() error {
-	if l.win != nil {
-		return l.wm.CloseWindow(l.win)
-	}
 	return nil
 }
 

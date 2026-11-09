@@ -26,7 +26,7 @@ import (
 
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
-	"mvdan.cc/sh/v3/syntax"
+	"unstable.build/rune/internal/ide/hostenv"
 )
 
 // loadOrCreateUserConfig reads a YAML file at path into a yaml.Node document.
@@ -255,44 +255,8 @@ func summarizeConfigDiff(doc *yaml.Node, live [][]string) (inEffect, pending []s
 	return slices.Sorted(maps.Keys(inEffectSet)), slices.Sorted(maps.Keys(pendingSet))
 }
 
-// expandRuneVars expands only the variables for which lookup returns
-// ok; every other $VAR / ${VAR} reference is left verbatim in the
-// result. It parses s as a single shell word with mvdan/sh so brace
-// forms (${VAR}) are handled faithfully, and copies any source span it
-// does not replace unchanged. If parsing fails (these are config
-// templates, not arbitrary shell), s is returned unchanged.
-func expandRuneVars(s string, lookup func(name string) (string, bool)) string {
-	word, err := syntax.NewParser().Document(strings.NewReader(s))
-	if err != nil || word == nil {
-		return s
-	}
-	var b strings.Builder
-	pos := 0
-	syntax.Walk(word, func(node syntax.Node) bool {
-		pe, ok := node.(*syntax.ParamExp)
-		if !ok || pe.Param == nil {
-			return true
-		}
-		val, ok := lookup(pe.Param.Value)
-		if !ok {
-			return true
-		}
-		start := int(pe.Pos().Offset())
-		end := int(pe.End().Offset())
-		if start < pos || end > len(s) {
-			return true
-		}
-		b.WriteString(s[pos:start])
-		b.WriteString(val)
-		pos = end
-		return true
-	})
-	b.WriteString(s[pos:])
-	return b.String()
-}
-
 // expandNodeValues walks all scalar nodes in the tree and applies
-// expandRuneVars with the given lookup function. Only string-tagged
+// hostenv.ExpandVars with the given lookup function. Only string-tagged
 // scalars are expanded (int, float, bool, null are skipped). Variables
 // the lookup does not recognize are left literal so they can be
 // expanded later at Rune startup.
@@ -307,11 +271,11 @@ func expandNodeValues(n *yaml.Node, lookup func(string) (string, bool)) {
 		case "!!int", "!!float", "!!bool", "!!null":
 			return
 		}
-		n.Value = expandRuneVars(n.Value, lookup)
+		n.Value = hostenv.ExpandVars(n.Value, lookup)
 	}
 }
 
-// expandMapValues walks cfg in place, applying expandRuneVars to every
+// expandMapValues walks cfg in place, applying hostenv.ExpandVars to every
 // string value using the given lookup function. Nested maps and slices
 // are traversed recursively; non-string scalars are left untouched.
 // Variables the lookup does not recognize are left literal.
@@ -324,7 +288,7 @@ func expandMapValues(cfg map[string]any, lookup func(string) (string, bool)) {
 func expandAnyValue(v any, lookup func(string) (string, bool)) any {
 	switch t := v.(type) {
 	case string:
-		return expandRuneVars(t, lookup)
+		return hostenv.ExpandVars(t, lookup)
 	case map[string]any:
 		expandMapValues(t, lookup)
 		return t

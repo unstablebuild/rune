@@ -22,6 +22,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
+	"github.com/unstablebuild/rune-go-sdk/term"
 )
 
 func TestParseHeaders(t *testing.T) {
@@ -72,7 +74,7 @@ func TestParseHeaders(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			blocks, err := parse(tt.input, &cfg)
+			blocks, err := parse(tt.input, &cfg, images{}, false)
 			require.NoError(t, err)
 			require.Len(t, blocks, tt.expected)
 
@@ -119,7 +121,7 @@ func TestParseParagraphs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			blocks, err := parse(tt.input, &cfg)
+			blocks, err := parse(tt.input, &cfg, images{}, false)
 			require.NoError(t, err)
 			require.Len(t, blocks, tt.expected)
 
@@ -157,7 +159,7 @@ func TestParseCodeBlocks(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			blocks, err := parse(tt.input, &cfg)
+			blocks, err := parse(tt.input, &cfg, images{}, false)
 			require.NoError(t, err)
 			require.Len(t, blocks, tt.expected)
 
@@ -204,7 +206,7 @@ func TestParseLists(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			blocks, err := parse(tt.input, &cfg)
+			blocks, err := parse(tt.input, &cfg, images{}, false)
 			require.NoError(t, err)
 			require.Len(t, blocks, 1)
 
@@ -240,7 +242,7 @@ func TestParseBlockquotes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			blocks, err := parse(tt.input, &cfg)
+			blocks, err := parse(tt.input, &cfg, images{}, false)
 			require.NoError(t, err)
 			require.Len(t, blocks, tt.expected)
 
@@ -264,7 +266,7 @@ func TestParseHorizontalRules(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			blocks, err := parse(tt.input, &cfg)
+			blocks, err := parse(tt.input, &cfg, images{}, false)
 			require.NoError(t, err)
 			require.Len(t, blocks, 1)
 
@@ -281,7 +283,7 @@ func TestParseTables(t *testing.T) {
 | Cell 1 | Cell 2 |
 | Cell 3 | Cell 4 |`
 
-	blocks, err := parse(input, &cfg)
+	blocks, err := parse(input, &cfg, images{}, false)
 	require.NoError(t, err)
 	require.Len(t, blocks, 1)
 
@@ -327,7 +329,7 @@ func TestParseInlineFormatting(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			blocks, err := parse(tt.input, &cfg)
+			blocks, err := parse(tt.input, &cfg, images{}, false)
 			require.NoError(t, err)
 			require.Len(t, blocks, 1)
 
@@ -358,7 +360,262 @@ This is a paragraph with **bold** and *italic* text.
 | ----- | ----- |
 | 1     | 2     |
 `
-	blocks, err := parse(input, &cfg)
+	blocks, err := parse(input, &cfg, images{}, false)
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, len(blocks), 6)
+}
+
+func TestParseImages(t *testing.T) {
+	type item struct {
+		alt, dest, url string
+		caption        string
+		size           imageSize
+		resolved       bool
+		gap, newline   bool
+	}
+	tests := []struct {
+		name     string
+		input    string
+		noImages bool
+		// wantItems is the image block the input parses to, if any.
+		wantItems []item
+		// wantRun is otherwise the content of the paragraph or the first
+		// list item the input parses to.
+		wantRun textRun
+	}{
+		{
+			name:      "a lone image",
+			input:     "![logo](logo.png)",
+			wantItems: []item{{alt: "logo", dest: "logo.png", url: "logo.png", resolved: true}},
+		},
+		{
+			name:  "a linked image",
+			input: "[![logo](logo.png)](https://example.com)",
+			wantItems: []item{
+				{alt: "logo", dest: "logo.png", url: "https://example.com", resolved: true},
+			},
+		},
+		{
+			name:  "alt text keeps its plain text",
+			input: "![*my* `logo`](logo.png)",
+			wantItems: []item{
+				{alt: "my logo", dest: "logo.png", url: "logo.png", resolved: true},
+			},
+		},
+		{
+			name:  "adjacent images",
+			input: "![a](a.png)![b](b.png)",
+			wantItems: []item{
+				{alt: "a", dest: "a.png", url: "a.png", resolved: true},
+				{alt: "b", dest: "b.png", url: "b.png", resolved: true},
+			},
+		},
+		{
+			name:  "images split by a space",
+			input: "![a](a.png) [![b](b.png)](https://example.com)",
+			wantItems: []item{
+				{alt: "a", dest: "a.png", url: "a.png", resolved: true},
+				{alt: "b", dest: "b.png", url: "https://example.com", resolved: true, gap: true},
+			},
+		},
+		{
+			name:  "images split by a soft break",
+			input: "![a](a.png)\n![b](b.png)",
+			wantItems: []item{
+				{alt: "a", dest: "a.png", url: "a.png", resolved: true},
+				{alt: "b", dest: "b.png", url: "b.png", resolved: true, gap: true},
+			},
+		},
+		{
+			name:  "images split by a hard break",
+			input: "![a](a.png)\\\n![b](b.png)",
+			wantItems: []item{
+				{alt: "a", dest: "a.png", url: "a.png", resolved: true},
+				{alt: "b", dest: "b.png", url: "b.png", resolved: true, newline: true},
+			},
+		},
+		{
+			name:  "destinations not shown keep their alt text",
+			input: "![a](http://example.com/a.png) ![b](b.png)",
+			wantItems: []item{
+				{alt: "a", dest: "http://example.com/a.png", url: "http://example.com/a.png"},
+				{alt: "b", dest: "b.png", url: "b.png", resolved: true, gap: true},
+			},
+		},
+		{
+			name:      "an empty alt",
+			input:     "![](a.png)",
+			wantItems: []item{{dest: "a.png", url: "a.png", resolved: true}},
+		},
+		{
+			name:  "a caption from the title",
+			input: `![a](a.png "Acme &amp; \"Co\"")`,
+			wantItems: []item{
+				{alt: "a", dest: "a.png", url: "a.png", caption: `Acme & "Co"`, resolved: true},
+			},
+		},
+		{
+			name:  "an escaped entity reference in a caption is literal",
+			input: `![a](a.png "\&amp; &lt;b&gt; &#65;\\")`,
+			wantItems: []item{
+				{alt: "a", dest: "a.png", url: "a.png", caption: `&amp; <b> A\`, resolved: true},
+			},
+		},
+		{
+			name:  "a caption is on one line",
+			input: "![a](a.png \"Acme\n\tCo  Inc\")",
+			wantItems: []item{
+				{alt: "a", dest: "a.png", url: "a.png", caption: "Acme Co Inc", resolved: true},
+			},
+		},
+		{
+			name:  "a size from an attribute block",
+			input: "![a](a.png){cols=16 rows=8 maintain_aspect_ratio=false}",
+			wantItems: []item{{
+				alt: "a", dest: "a.png", url: "a.png",
+				size: imageSize{cols: 16, rows: 8, stretch: true}, resolved: true,
+			}},
+		},
+		{
+			name:  "a linked image with a caption and a size",
+			input: `[![a](a.png "Acme"){rows=2 maintain_aspect_ratio=true}](https://example.com) ![b](b.png){cols=3}`,
+			wantItems: []item{
+				{
+					alt: "a", dest: "a.png", url: "https://example.com", caption: "Acme",
+					size: imageSize{rows: 2}, resolved: true,
+				},
+				{
+					alt: "b", dest: "b.png", url: "b.png",
+					size: imageSize{cols: 3}, resolved: true, gap: true,
+				},
+			},
+		},
+		{
+			name:  "sizes that are not whole cells are left to the picture",
+			input: `![a](a.png){cols=0 rows=2.5} ![b](b.png){cols=-1 rows=1001} ![c](c.png){cols="4" maintain_aspect_ratio="false"}`,
+			wantItems: []item{
+				{alt: "a", dest: "a.png", url: "a.png", resolved: true},
+				{alt: "b", dest: "b.png", url: "b.png", resolved: true, gap: true},
+				{alt: "c", dest: "c.png", url: "c.png", resolved: true, gap: true},
+			},
+		},
+		{
+			name:  "an inline image hides its attribute block",
+			input: "See ![a](a.png){cols=4} here",
+			wantRun: textRun{
+				{text: "See "},
+				{text: "a", style: styleLink, url: "a.png"},
+				{text: " here"},
+			},
+		},
+		{
+			name:  "an attribute block apart from an image is text",
+			input: "![a](a.png) {cols=4}",
+			wantRun: textRun{
+				{text: "a", style: styleLink, url: "a.png"},
+				{text: " "},
+				{text: "{cols=4}"},
+			},
+		},
+		{
+			name:  "an unclosed attribute block is text",
+			input: "![a](a.png){cols=4",
+			wantRun: textRun{
+				{text: "a", style: styleLink, url: "a.png"},
+				{text: "{cols=4"},
+			},
+		},
+		{
+			name:  "an attribute block without an image is text",
+			input: "a {cols=4 maintain_aspect_ratio=false}",
+			wantRun: textRun{
+				{text: "a {cols=4 maintain_"},
+				{text: "aspect_"},
+				{text: "ratio=false}"},
+			},
+		},
+		{
+			name:  "an image with text is a link to the image",
+			input: "See ![a](a.png) here",
+			wantRun: textRun{
+				{text: "See "},
+				{text: "a", style: styleLink, url: "a.png"},
+				{text: " here"},
+			},
+		},
+		{
+			name:  "an image linked with text is a link to the link",
+			input: "[![a](a.png) docs](https://example.com)",
+			wantRun: textRun{
+				{text: "a", style: styleLink, url: "https://example.com"},
+				{text: " docs", style: styleLink, url: "https://example.com"},
+			},
+		},
+		{
+			// Resolving would leak the images of a paragraph that is not
+			// drawn as an image block.
+			name:  "images followed by text are not resolved",
+			input: "![a](a.png) [![b](b.png)](https://example.com) here",
+			wantRun: textRun{
+				{text: "a", style: styleLink, url: "a.png"},
+				{text: " "},
+				{text: "b", style: styleLink, url: "https://example.com"},
+				{text: " here"},
+			},
+		},
+		{
+			name:  "an inline image with an empty alt shows its destination",
+			input: "See ![](a.png)",
+			wantRun: textRun{
+				{text: "See "},
+				{text: "a.png", style: styleLink, url: "a.png"},
+			},
+		},
+		{
+			name:    "an image in a list item is a link to the image",
+			input:   "- ![a](a.png)",
+			wantRun: textRun{{text: "a", style: styleLink, url: "a.png"}},
+		},
+		{
+			name:     "without Images an image is its plain alt text",
+			input:    "![a](a.png)",
+			noImages: true,
+			wantRun:  textRun{{text: "a"}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			imgs := images{
+				fs:          pictureFS{},
+				storage:     storagestub.NewInMemoryService(),
+				interrupter: term.NopInterrupter(),
+			}
+			blocks, err := parse(tt.input, &cfg, imgs, !tt.noImages)
+			require.NoError(t, err)
+			require.Len(t, blocks, 1)
+
+			switch blk := blocks[0].(type) {
+			case *imageBlock:
+				defer blk.close()
+				items := make([]item, len(blk.items))
+				for i, it := range blk.items {
+					items[i] = item{
+						alt: it.alt, dest: it.dest, url: it.url,
+						caption: it.caption, size: it.size,
+						resolved: it.img != nil, gap: it.gap, newline: it.newline,
+					}
+				}
+				assert.Equal(t, tt.wantItems, items)
+			case *paragraphBlock:
+				assert.Nil(t, tt.wantItems, "parsed to a paragraph")
+				assert.Equal(t, tt.wantRun, blk.content)
+			case *listBlock:
+				assert.Nil(t, tt.wantItems, "parsed to a list")
+				assert.Equal(t, tt.wantRun, blk.items[0].content)
+			default:
+				t.Fatalf("unexpected block %T", blk)
+			}
+		})
+	}
 }

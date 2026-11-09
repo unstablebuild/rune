@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -379,5 +380,41 @@ func TestPyHandlerEnvPolicySubcommands(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t,
 			[]string{"uv python find", "uv venv --allow-existing"}, ex.callsSnapshot())
+	})
+
+	t.Run("enable prewarm outlives the command context", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(
+			filepath.Join(dir, "main.py"), []byte("pass\n"), 0o644))
+		const prewarm = "uvx --from debugpy==1.8.17 python -c "
+		release := make(chan struct{})
+		ex := newFakeExecutor()
+		ex.respond("uv python find", scriptedCmd{})
+		ex.respond("uv venv --allow-existing", scriptedCmd{})
+		ex.respond(prewarm, scriptedCmd{release: release})
+		cfg := config.JSONFromMap(map[string]any{"debugpy": "1.8.17"})
+		_, handler := newTestPyHandler(t, dir, ex)
+		handler.syncEnv = func(ctx context.Context, root langext.Root) error {
+			return setupManagedEnvironment(ctx, realFS{root: dir}, ex, newFakeNotifications(),
+				pyTools(t, notInstalled), cfg, t.TempDir(), root)
+		}
+
+		// The REPL cancels the command context once its output is drained.
+		cmdCtx, cancel := context.WithCancel(ctx)
+		it, err := handler.HandleCommand(cmdCtx,
+			repl.Command{Name: "python", Args: []string{"enable"}},
+			repl.NopProgressWriter())
+		require.NoError(t, err)
+		_, err = iterator.ToSlice(cmdCtx, it)
+		require.NoError(t, err)
+		cancel()
+		close(release)
+
+		require.Eventually(t, func() bool {
+			_, exited := ex.exitFor(prewarm)
+			return exited
+		}, 5*time.Second, 10*time.Millisecond)
+		exitErr, _ := ex.exitFor(prewarm)
+		require.NoError(t, exitErr)
 	})
 }

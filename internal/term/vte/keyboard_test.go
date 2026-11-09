@@ -323,6 +323,37 @@ func TestHandlerKeyboardProtocols(t *testing.T) {
 	}
 }
 
+func TestHandlerLeavesWhitelistedKeysUnhandled(t *testing.T) {
+	t.Parallel()
+	ctrlBacktick := term.Event{Type: term.EventKey, Ch: '`', Mod: term.ModCtrl, Raw: []byte("`")}
+	for _, tc := range []struct {
+		name   string
+		output string
+		ev     term.Event
+		want   string
+	}{
+		{name: "legacy", ev: ctrlBacktick},
+		{name: "modifyOtherKeys", output: "\x1b[>4;2m", ev: ctrlBacktick},
+		{name: "kitty", output: "\x1b[>1u", ev: ctrlBacktick},
+		{name: "kitty reports all keys", output: "\x1b[>8u", ev: ctrlBacktick},
+		{
+			name: "backtick stays with the shell",
+			ev:   term.Event{Type: term.EventKey, Ch: '`', Raw: []byte("`")},
+			want: "`",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newKeyboardHarness(t)
+			h.output(tc.output)
+			h.written()
+			_, handled := h.Handle(tc.ev)
+			assert.Equal(t, tc.want != "", handled)
+			assert.Equal(t, tc.want, h.written())
+		})
+	}
+}
+
 func TestHandlerCopyPassThrough(t *testing.T) {
 	t.Parallel()
 	cmdC := chEv('c', term.ModMeta)

@@ -20,11 +20,20 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"image"
+	_ "image/gif"  // register the gif decoder
+	_ "image/jpeg" // register the jpeg decoder
+	_ "image/png"  // register the png decoder
+	"io"
+	"os"
+	"time"
 
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
+	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/tcell/v3"
+	_ "golang.org/x/image/webp" // register the webp decoder
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/ide"
 	"unstable.build/rune/internal/term/gui"
@@ -220,6 +229,26 @@ func getGUIColorThemes(browser browser.Browser, cfg config.Config) (
 	return
 }
 
+// getGUISoundVolume reads 'gui.sound_volume', from 0 (mute) to 1.
+func getGUISoundVolume(browser browser.Browser, cfg config.Config) (ret float64) {
+	ret = 1
+	volume, err := cfg.GetFloat("sound_volume")
+	if err != nil {
+		if err != config.ErrNotFound {
+			_, _ = browser.Notify(browserapi.LevelError,
+				"Could not load 'gui.sound_volume' from config: %v", err)
+		}
+		return
+	}
+	if volume < 0 || volume > 1 {
+		_, _ = browser.Notify(browserapi.LevelWarn,
+			"'gui.sound_volume' must be between 0 and 1, got %v", volume)
+		volume = max(0, min(volume, 1))
+	}
+	ret = volume
+	return
+}
+
 func getGUILigatures(browser browser.Browser, cfg config.Config) (ret bool) {
 	ret = false
 	ligatures, err := cfg.GetBool("ligatures")
@@ -306,6 +335,81 @@ func getGUIAltModifier(browser browser.Browser, cfg config.Config) gui.AltModifi
 	return modifier
 }
 
+// defaultCursorEffectDuration applies when 'animations.cursor' sets no
+// duration.
+const defaultCursorEffectDuration = 250 * time.Millisecond
+
+// getCursorEffect reads 'animations.cursor' from the root config: the Kage
+// source of the shader played when the cursor jumps, the built-in trail
+// unless 'shader' names a file, and how long it plays. True plays the
+// built-in trail, and a section is on unless 'enabled' is false. A nil
+// source turns the effect off: the key is absent or false, or one of its
+// values is invalid.
+func getCursorEffect(b browser.Browser, cfg config.Config) ([]byte, time.Duration) {
+	animations, err := cfg.GetConfig("animations")
+	if err != nil {
+		// The IDE already reports an 'animations' that is not a section.
+		return nil, 0
+	}
+	section, err := animations.GetConfig("cursor")
+	if err == config.ErrInvalidType {
+		on, err := animations.GetBool("cursor")
+		if err != nil {
+			_, _ = b.Notify(browserapi.LevelError,
+				"Invalid 'animations.cursor': must be true, false or a section")
+			return nil, 0
+		}
+		if !on {
+			return nil, 0
+		}
+		section = config.NopConfig()
+	} else if err != nil {
+		if err != config.ErrNotFound {
+			_, _ = b.Notify(browserapi.LevelError,
+				"Could not load 'animations.cursor' from config: %v", err)
+		}
+		return nil, 0
+	}
+	if enabled, err := section.GetBool("enabled"); err == nil && !enabled {
+		return nil, 0
+	} else if err != nil && err != config.ErrNotFound {
+		_, _ = b.Notify(browserapi.LevelError,
+			"Could not load 'animations.cursor.enabled' from config: %v", err)
+		return nil, 0
+	}
+
+	duration := defaultCursorEffectDuration
+	if s, err := section.GetString("duration"); err == nil {
+		if duration, err = time.ParseDuration(s); err != nil || duration <= 0 {
+			_, _ = b.Notify(browserapi.LevelError,
+				"Invalid 'animations.cursor.duration' %q: must be a positive "+
+					"duration such as \"250ms\"", s)
+			return nil, 0
+		}
+	} else if err != config.ErrNotFound {
+		_, _ = b.Notify(browserapi.LevelError,
+			"Could not load 'animations.cursor.duration' from config: %v", err)
+		return nil, 0
+	}
+
+	path, err := section.GetString("shader")
+	if err != nil && err != config.ErrNotFound {
+		_, _ = b.Notify(browserapi.LevelError,
+			"Could not load 'animations.cursor.shader' from config: %v", err)
+		return nil, 0
+	}
+	if path == "" {
+		return gui.CursorTrailShader, duration
+	}
+	src, err := os.ReadFile(os.ExpandEnv(path))
+	if err != nil {
+		_, _ = b.Notify(browserapi.LevelError,
+			"Could not read 'animations.cursor.shader': %v", err)
+		return nil, 0
+	}
+	return src, duration
+}
+
 func getGUIEnvVars(cfg config.Config) (ret config.Config, err error) {
 	var env config.Config
 	ret = config.NopConfig()
@@ -331,6 +435,69 @@ func getGUITransparentWindow(browser browser.Browser, cfg config.Config) (ret bo
 	}
 	ret = transparent
 	return
+}
+
+// maxAppIconSize bounds each side of the image of 'gui.app_icon'. It is
+// checked from the header, so that a small file cannot make us decode an
+// enormous raster.
+const maxAppIconSize = 8192
+
+// loadGUIAppIcon reads the GIF, JPEG, PNG or WebP image whose path
+// 'app_icon' of the gui section cfg sets; ~ and environment variables in
+// the path are expanded. It returns nil and no error when the key is absent
+// or empty. It is slow for a large image.
+func loadGUIAppIcon(cfg config.Config) (*gui.AppIcon, error) {
+	path, err := cfg.GetString("app_icon")
+	if err == config.ErrNotFound || (err == nil && path == "") {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	uri, err := workspaceapi.CurrentUserHostURI(os.ExpandEnv(path))
+	if err != nil {
+		return nil, fmt.Errorf("expand %q: %w", path, err)
+	}
+	f, err := os.Open(uri.Path())
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	header, format, err := image.DecodeConfig(f)
+	if err != nil {
+		return nil, fmt.Errorf("decode image header of %s: %w", uri.Path(), err)
+	}
+	if header.Width <= 0 || header.Height <= 0 {
+		return nil, fmt.Errorf("%s image %s is empty", format, uri.Path())
+	}
+	if header.Width > maxAppIconSize || header.Height > maxAppIconSize {
+		return nil, fmt.Errorf("%s image %s is %dx%d, larger than %dx%d", format, uri.Path(),
+			header.Width, header.Height, maxAppIconSize, maxAppIconSize)
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return nil, err
+	}
+	img, _, err := image.Decode(f)
+	if err != nil {
+		return nil, fmt.Errorf("decode %s image %s: %w", format, uri.Path(), err)
+	}
+	return gui.NewAppIcon(img), nil
+}
+
+// getGUIAppIcon is loadGUIAppIcon reporting its error to browser.
+func getGUIAppIcon(browser browser.Browser, cfg config.Config) *gui.AppIcon {
+	icon, err := loadGUIAppIcon(cfg)
+	notifyGUIAppIconErr(browser, err)
+	return icon
+}
+
+// notifyGUIAppIconErr reports err, an error of loadGUIAppIcon, to browser.
+// A nil err reports nothing.
+func notifyGUIAppIconErr(browser browser.Browser, err error) {
+	if err != nil {
+		_, _ = browser.Notify(browserapi.LevelError,
+			"Could not load 'gui.app_icon' from config: %v", err)
+	}
 }
 
 func getGUIWindowOpacity(browser browser.Browser, cfg config.Config) (fg, bg float64) {

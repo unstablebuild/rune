@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"image"
 	"image/color"
 	"image/png"
@@ -784,6 +785,10 @@ func (pipeTerminal) StartCommand(context.Context, workspaceapi.Cmd) (workspaceap
 
 func (pipeTerminal) Signal(workspaceapi.Pid, syscall.Signal) error {
 	return nil
+}
+
+func (pipeTerminal) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
 }
 
 func (pipeTerminal) Close() error {

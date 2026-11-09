@@ -47,7 +47,10 @@ type TileNode struct {
 	childSplit    splitDir
 	parent        *TileNode
 	fixedSize     int
-	dirty         bool
+	// defaultSize is the size along parent's split that a reset gives
+	// this node, 0 for an even share. It moves with fixedSize.
+	defaultSize int
+	dirty       bool
 }
 
 // TileLayout is a serializable representation of a TileTree's structure.
@@ -70,6 +73,7 @@ type FloatingLayout struct {
 	MinimizedPadding   int
 	NoBar              bool
 	Title              string
+	Moved              bool
 }
 
 // SplitOrientation identifies how a TileLayout stem splits its children.
@@ -307,6 +311,7 @@ func (t *TileNode) addChildAtIdx(
 		proxyNode.initNode(nil, t.parent)
 		proxyNode.childSplit = direction
 		proxyNode.fixedSize = t.fixedSize
+		proxyNode.defaultSize = t.defaultSize
 		proxyNode.children = append(proxyNode.children, &component.Virtual[*TileNode]{C: t}, v)
 
 		idx := t.parent.childIdx(t)
@@ -315,6 +320,7 @@ func (t *TileNode) addChildAtIdx(
 		child.initNode(content, proxyNode)
 		t.initNode(t.content, proxyNode)
 		t.fixedSize = 0
+		t.defaultSize = 0
 
 		proxyNode.parent.Resize(proxyNode.parent.width, proxyNode.parent.height)
 		return
@@ -376,6 +382,7 @@ func removeChild(parent, child *TileNode) {
 		// proxy held along the grandparent's axis; its own was along the
 		// proxy's axis, which is gone.
 		lastNode.C.fixedSize = proxyNode.fixedSize
+		lastNode.C.defaultSize = proxyNode.defaultSize
 
 		proxyNode.parent.Resize(proxyNode.parent.width, proxyNode.parent.height)
 
@@ -449,6 +456,10 @@ func (t *TileTree) SplitRoot(direction splitDir, idx int, content tui.Component)
 	// A root with at most one child has no meaningful orientation,
 	// so we simply adopt the caller's direction.
 	if len(root.children) <= 1 {
+		if len(root.children) == 1 && root.childSplit != direction {
+			// It would be taken as a default along the new direction.
+			root.children[0].C.defaultSize = 0
+		}
 		root.childSplit = direction
 	} else if root.childSplit != direction {
 		// Root already has multiple children split in the opposite
@@ -680,27 +691,11 @@ func (t *TileNode) SetContentResize(c tui.Component, resize bool) (prev tui.Comp
 // A node that spans its whole tree's height, and so cannot be fixed,
 // reports true when asked for the height it already has.
 //
-// Calling this method with height=0 effectively resets the
-// height to be automatically calculated based on the space available.
+// Calling this method with height=0 resets the height to the node's
+// default, or to be automatically calculated based on the space
+// available when it has none or the default does not fit.
 func (t *TileNode) SetFixedHeight(height int) bool {
-	if t.parent == nil {
-		panic("corrupted tile tree: exposed root node")
-	}
-	if t.parent.childSplit == horizontal && len(t.parent.children) > 1 {
-		if height != 0 && t.fixedSize == height {
-			return true
-		}
-		if !t.parent.fixChildSize(t, t.parent.height, height) {
-			return false
-		}
-		t.parent.dirty = true
-		t.dirty = true
-		return true
-	}
-	if t.parent.parent == nil {
-		return height != 0 && t.height == height
-	}
-	return t.parent.SetFixedHeight(height)
+	return t.setFixedSize(horizontal, height)
 }
 
 // SetFixedWidth sets the width of this node, or returns
@@ -709,32 +704,87 @@ func (t *TileNode) SetFixedHeight(height int) bool {
 // A node that spans its whole tree's width, and so cannot be fixed,
 // reports true when asked for the width it already has.
 //
-// Calling this method with width=0 effectively resets the
-// width to be automatically calculated based on the space available.
+// Calling this method with width=0 resets the width to the node's
+// default, set with SetDefaultWidth, or to be automatically calculated
+// based on the space available when it has none or the default does
+// not fit.
 func (t *TileNode) SetFixedWidth(width int) bool {
+	return t.setFixedSize(vertical, width)
+}
+
+// SetDefaultWidth sets the width this node is reset to, and fixes it to
+// that width as SetFixedWidth does, returning false when it cannot. The
+// default is kept even then, except by a node that spans its whole tree's
+// width, which has none. A width of 0 clears the default.
+func (t *TileNode) SetDefaultWidth(width int) bool {
+	return t.setDefaultSize(vertical, width)
+}
+
+func (t *TileNode) setFixedSize(dir splitDir, size int) bool {
 	if t.parent == nil {
 		panic("corrupted tile tree: exposed root node")
 	}
-	if t.parent.childSplit == vertical && len(t.parent.children) > 1 {
-		if width != 0 && t.fixedSize == width {
-			return true
-		}
-		if !t.parent.fixChildSize(t, t.parent.width, width) {
-			return false
-		}
-		t.parent.dirty = true
-		t.dirty = true
+	n := t.sizedNode(dir)
+	if n == nil {
+		return size != 0 && t.length(dir) == size
+	}
+	switch {
+	case size == 0:
+		n.parent.resetChildSize(n)
+	case n.fixedSize == size:
 		return true
+	case !n.parent.fixChildSize(n, n.parent.length(dir), size):
+		return false
 	}
-	if t.parent.parent == nil {
-		return width != 0 && t.width == width
+	n.parent.dirty = true
+	n.dirty = true
+	return true
+}
+
+func (t *TileNode) setDefaultSize(dir splitDir, size int) bool {
+	if t.parent == nil {
+		panic("corrupted tile tree: exposed root node")
 	}
-	return t.parent.SetFixedWidth(width)
+	if n := t.sizedNode(dir); n != nil {
+		n.defaultSize = size
+	}
+	return t.setFixedSize(dir, size)
+}
+
+// sizedNode returns the node, t or an ancestor, whose fixedSize sets t's
+// size along dir, or nil when t spans its whole tree along dir.
+func (t *TileNode) sizedNode(dir splitDir) *TileNode {
+	for n := t; n.parent != nil; n = n.parent {
+		if n.parent.childSplit == dir && len(n.parent.children) > 1 {
+			return n
+		}
+	}
+	return nil
+}
+
+func (t *TileNode) length(dir splitDir) int {
+	if dir == horizontal {
+		return t.height
+	}
+	return t.width
 }
 
 // ID returns a unique identifier for this tile.
 func (t *TileNode) ID() uint64 {
 	return uint64(uintptr(unsafe.Pointer(t)))
+}
+
+func (t *TileNode) divider(dir splitDir) (split *TileNode, idx int, ok bool) {
+	for n := t; n.parent != nil; n = n.parent {
+		p := n.parent
+		if p.childSplit != dir {
+			continue
+		}
+		if i := p.childIdx(n); i < len(p.children)-1 {
+			return p, i, true
+		}
+	}
+	return nil, 0, false
 }
 
 // Height returns the height of this node.
@@ -889,15 +939,7 @@ func (t *TileNode) fixChildSize(child *TileNode, avail, size int) bool {
 		child.fixedSize = 0
 		return true
 	}
-	fixed := size
-	flex := len(t.children) - 1
-	for _, c := range t.children {
-		if c.C != child && c.C.fixedSize != 0 {
-			fixed += c.C.fixedSize
-			flex--
-		}
-	}
-	if flex > 0 && (avail-fixed)/flex >= minFlexSize {
+	if t.fitsChildSize(child, avail, size) {
 		child.fixedSize = size
 		return true
 	}
@@ -907,6 +949,21 @@ func (t *TileNode) fixChildSize(child *TileNode, avail, size int) bool {
 	t.resetFixedSizes()
 	child.fixedSize = size
 	return true
+}
+
+// fitsChildSize reports whether child can take size along t's split axis while
+// the other fixed children keep their sizes and the flexible ones are left at
+// least minFlexSize each.
+func (t *TileNode) fitsChildSize(child *TileNode, avail, size int) bool {
+	fixed := size
+	flex := len(t.children) - 1
+	for _, c := range t.children {
+		if c.C != child && c.C.fixedSize != 0 {
+			fixed += c.C.fixedSize
+			flex--
+		}
+	}
+	return flex > 0 && (avail-fixed)/flex >= minFlexSize
 }
 
 // flexChildren counts the children whose size is not fixed.
@@ -919,4 +976,32 @@ func (t *TileNode) resetFixedSizes() {
 	for _, c := range t.children {
 		c.C.fixedSize = 0
 	}
+}
+
+// resetChildSize gives child its default size, or makes it flexible when it
+// has none or the default would leave its siblings too small.
+func (t *TileNode) resetChildSize(child *TileNode) {
+	if !t.fixChildSize(child, t.length(t.childSplit), child.defaultSize) {
+		child.fixedSize = 0
+	}
+}
+
+// resetDivider gives the children idx and idx+1, which meet at a divider,
+// their default sizes, or makes them flexible. A default is only taken if it
+// fits beside the other children's fixed sizes, so that no child away from the
+// divider loses its own: when both defaults cannot fit together, the first is
+// taken.
+func (t *TileNode) resetDivider(idx int) {
+	sides := t.children[idx : idx+2]
+	// Otherwise the old size of one side could crowd out the other's default.
+	for _, side := range sides {
+		side.C.fixedSize = 0
+	}
+	avail := t.length(t.childSplit)
+	for _, side := range sides {
+		if size := side.C.defaultSize; size != 0 && t.fitsChildSize(side.C, avail, size) {
+			side.C.fixedSize = size
+		}
+	}
+	t.dirty = true
 }

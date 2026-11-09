@@ -369,8 +369,27 @@ func TestCompleteWithDialoguesIterator(t *testing.T) {
 type fakeListStore struct {
 	dialoguemanager.Store
 	dialogues []dialoguemanager.DialogueHeader
+	err       error
+	// pulled counts the dialogues List has yielded.
+	pulled int
+	closed bool
 }
 
 func (f *fakeListStore) List(_ context.Context) (iterator.Iterator[dialoguemanager.DialogueHeader], error) {
-	return iterator.FromSlice(f.dialogues), nil
+	if f.err != nil {
+		return nil, f.err
+	}
+	rest := f.dialogues
+	return iterator.FromFunc(func(context.Context) (dialoguemanager.DialogueHeader, bool, error) {
+		if len(rest) == 0 {
+			return dialoguemanager.DialogueHeader{}, false, nil
+		}
+		d := rest[0]
+		rest = rest[1:]
+		f.pulled++
+		return d, true, nil
+	}, func() error {
+		f.closed = true
+		return nil
+	}), nil
 }

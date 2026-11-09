@@ -154,6 +154,16 @@ func (s *auditService) GetModel(ctx context.Context, model llmapi.ModelEntry) (l
 	return s.inner.GetModel(ctx, model)
 }
 
+var _ llmapi.Service = (*auditService)(nil)
+
+func (s *auditService) CanGenerateImages(ctx context.Context, model llmapi.ModelEntry) (bool, error) {
+	return s.inner.CanGenerateImages(ctx, model)
+}
+
+func (s *auditService) GenerateImage(ctx context.Context, model llmapi.ModelEntry, request llmapi.ImageRequest) (llmapi.Image, error) {
+	return s.inner.GenerateImage(ctx, model, request)
+}
+
 // CreateCompletion delegates to the inner service and wraps the returned
 // iterator to intercept completion events for audit logging.
 func (s *auditService) CreateCompletion(

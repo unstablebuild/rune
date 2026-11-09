@@ -16,11 +16,13 @@ gui:
 #   font_size: 13
 #   window_opacity: {fg: 1, bg: 1}
 #   window_blur_radius: 100
-#   # Remap physical keys before they reach the editor (see the key-mapping
-#   # docs). Both sides use the command key-binding syntax. <capslock>,
-#   # <numlock>, <scrolllock> and <menu> only act when remapped here.
-#   key_mapping:
-#     "<capslock>": "<esc>"
+  # Remap physical keys before they reach the editor (see the key-mapping
+  # docs). Both sides use the command key-binding syntax. <capslock>,
+  # <numlock>, <scrolllock> and <menu> only act when remapped here.[[if .CapsLockEscape]]
+  key_mapping:
+    "<capslock>": "<esc>"  # CapsLock acts as Escape[[else]]
+  # key_mapping:
+  #   "<capslock>": "<esc>"[[end]]
 
 # ---------------------------------------------------------------------------
 # Editor
@@ -169,6 +171,7 @@ command:
     "<meta-enter>": "terminalneworsplit"
     "<shift-meta-enter>": "!"
     "<meta-`>": "workspacesearch"
+    "<ctrl-`>": "programstatus"
     "<alt-1>": "tabfocus 1"
     "<alt-2>": "tabfocus 2"
     "<alt-3>": "tabfocus 3"
@@ -207,13 +210,37 @@ command:
     "<shift-meta-9>": "workspacemove 9"
 
 # ---------------------------------------------------------------------------
+# Wallpaper
+# ---------------------------------------------------------------------------
+# The Rune logo shows unless one of these is set.
+# workspace:
+#   wallpaper_image:
+#     path:   ~/Pictures/wallpaper.png
+#     width:  100%                        # cells, or a percentage of the window
+#     height: 100%
+#     fit:    cover                       # contain | cover | fill
+#   wallpaper_image_ascii: ~/Pictures/my-logo.png
+#   wallpaper_density_characters: " ░▒▓█"
+#   wallpaper_ascii: |
+#     ┌─────────────┐
+#     │   R U N E   │
+#     └─────────────┘
+#   wallpaper_attr:            {fg: "#D34728", bg: default}
+#   wallpaper_background_attr: {bg: default}
+
+# ---------------------------------------------------------------------------
 # Animations
 #
 # `active_content_tab` plays over tabs with work in progress, such as an agent
 # turn, and `active_workspace_tab` over the workspace tabs that own them. Their
-# shaders: blaze, burn, inferno, noise, pulse, shine, trippy.
+# shaders: blaze, burn, inferno, pulse, shine.
+#
+# `open_workspace` plays any shader of :shaderrun. The reveals uncover the
+# workspace from the screen it takes over: burn, beams, binaryPath, decrypt,
+# expand, matrix, middleOut, pour, print, rain and slide.
 # ---------------------------------------------------------------------------
 # animations:
+#   intro: true
 #   loading_workspace: true
 #   open_workspace:
 #     enabled:  true

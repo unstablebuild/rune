@@ -24,6 +24,8 @@ import (
 	"io"
 	"math"
 	"os"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 	"unicode"
@@ -37,6 +39,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/clipboard"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/browser"
+	"unstable.build/rune/internal/term/programstatus"
 	"unstable.build/rune/internal/term/vte/vtegraphics"
 	"unstable.build/rune/internal/term/vte/vteparser"
 	"unstable.build/rune/internal/term/vte/vtescreen"
@@ -50,7 +53,8 @@ const (
 )
 
 type parserHandler struct {
-	pty       workspaceapi.Pty
+	ptyIn     io.Writer
+	host      parserHost
 	clipboard clipboard.Register
 	tm        browser.TabManager
 	bell      func()
@@ -93,7 +97,10 @@ type parserHandler struct {
 	modeAlternateScroll       bool
 	modeUrgencyHints          bool
 	modeBracketedPaste        bool
-	modeSyncUpdate            bool
+	// modeSyncUpdate is guarded by sync.mu even on the parsing
+	// goroutine: the host ends a synchronized update on its own, as
+	// when it times out or the user scrolls, selects or resizes.
+	modeSyncUpdate bool
 
 	shouldWrap     bool
 	useAlt         bool
@@ -104,12 +111,47 @@ type parserHandler struct {
 	// Component hands it to the input path.
 	keyboard *keyboardState
 
+	// statusReported is whether the program reported a status that was
+	// not cleared since, so that a terminal whose program never reports
+	// does not tell the tab manager about every prompt. It outlives
+	// ResetState, which clears what was reported.
+	statusReported bool
+
 	// clusterBuf is reused scratch for the mergeContinuation probe.
 	clusterBuf []byte
 	// glyphBuf is reused scratch for the batched non-ASCII write.
 	glyphBuf []vtescreen.Glyph
 
 	graphics graphicsState
+
+	// historyScrolled, when set, is called with sync.mu held after the
+	// primary screen scrolled count rows up into history, which moves
+	// every row above the bottom margin up by count.
+	historyScrolled func(count int)
+
+	// pointerShapes is the OSC 22 pointer shape stack, top last.
+	pointerShapes []vteparser.PointerShape
+	// pointer is the slot of the last mouse event that reached the
+	// program, kept so that the shape changes under a resting pointer.
+	// It outlives ResetState.
+	pointer *term.Pointer
+}
+
+// pointerShapeStackSize is kitty's, the smallest its OSC 22 protocol
+// allows.
+const pointerShapeStackSize = 16
+
+// parserHost is the terminal a parserHandler parses the program's
+// output for.
+type parserHost interface {
+	// clipboardAccess is what the program may do with the clipboard
+	// through OSC 52.
+	clipboardAccess() ClipboardAccess
+	// syncUpdateLocked is called with sync.mu held when the program
+	// begins or ends a synchronized update (DEC mode 2026), including
+	// by a reset. It is called with begin set before the update changes
+	// anything, and is not called when the host ends the update itself.
+	syncUpdateLocked(begin bool)
 }
 
 // use a common api for alternate and primary buffers
@@ -152,7 +194,8 @@ type screenBuffer interface {
 }
 
 func newParserHandler(
-	mu sync.Locker, pty workspaceapi.Pty,
+	mu sync.Locker, ptyIn io.Writer,
+	host parserHost,
 	tm browser.TabManager,
 	clipboard clipboard.Register,
 	bell func(),
@@ -166,7 +209,7 @@ func newParserHandler(
 	tempDir string,
 ) *parserHandler {
 	ret := new(parserHandler)
-	ret.init(mu, pty, tm, clipboard, bell, uri,
+	ret.init(mu, ptyIn, host, tm, clipboard, bell, uri,
 		needsAttentionAttr, useTitleAsTabname, maxScrollLength, minWidth,
 		cellPixelSize, fs, tempDir)
 	ret.keyboard = new(keyboardState)
@@ -174,7 +217,8 @@ func newParserHandler(
 }
 
 func (t *parserHandler) init(
-	mu sync.Locker, pty workspaceapi.Pty,
+	mu sync.Locker, ptyIn io.Writer,
+	host parserHost,
 	tm browser.TabManager,
 	clipboard clipboard.Register,
 	bell func(),
@@ -193,7 +237,8 @@ func (t *parserHandler) init(
 	t.sync.primBuf = vtescreen.NewPrimaryBuffer(minWidth, maxScrollLength)
 	t.sync.buf = t.sync.primBuf
 	t.sync.mu = mu
-	t.pty = pty
+	t.ptyIn = ptyIn
+	t.host = host
 	t.clipboard = clipboard
 	t.tm = tm
 	t.uri = uri
@@ -230,7 +275,10 @@ func (t *parserHandler) resizeLocked(width, height int) {
 		return
 	}
 	anchors := t.graphicsAnchored()
-	t.sync.primBuf.Resize(width, height)
+	wrapPending := t.sync.primBuf.Reflow(width, height, t.shouldWrap && !t.useAlt)
+	if !t.useAlt {
+		t.shouldWrap = wrapPending
+	}
 	t.sync.altBuf.Resize(width, height)
 	t.width = width
 	t.height = height
@@ -620,9 +668,9 @@ func (t *parserHandler) MoveDown(rows int) {
 func (t *parserHandler) IdentifyTerminal(secondary bool) {
 	var err error
 	if secondary {
-		_, err = fmt.Fprintf(t.pty.Master, "\x1b[>0;%d;1c", pkgVersion)
+		_, err = fmt.Fprintf(t.ptyIn, "\x1b[>0;%d;1c", pkgVersion)
 	} else {
-		_, err = t.pty.Master.Write([]byte("\x1b[?6c"))
+		_, err = t.ptyIn.Write([]byte("\x1b[?6c"))
 	}
 	if err != nil {
 		t.log(log.ErrorLevel, "identify terminal: write to master: %v", err)
@@ -634,7 +682,7 @@ func (t *parserHandler) DeviceStatus(status int) {
 	var err error
 	switch status {
 	case 5:
-		_, err = t.pty.Master.Write([]byte("\x1b[0n"))
+		_, err = t.ptyIn.Write([]byte("\x1b[0n"))
 	case 6:
 		t.sync.mu.Lock()
 		pos := t.sync.buf.CursorAtScreen()
@@ -643,7 +691,7 @@ func (t *parserHandler) DeviceStatus(status int) {
 		}
 		t.sync.mu.Unlock()
 		text := fmt.Sprintf("\x1b[%d;%dR", pos.Y+1, pos.X+1)
-		_, err = t.pty.Master.Write([]byte(text))
+		_, err = t.ptyIn.Write([]byte(text))
 	default:
 		t.log(log.WarnLevel, "unknown device status query: %d", status)
 	}
@@ -771,14 +819,12 @@ func (t *parserHandler) Bell() {
 	}
 	t.sync.mu.Unlock()
 
-	// bell is caller-supplied (Config.scheduleBell in production,
-	// which forwards to ScheduleNextTick) and must run without
-	// holding the lock: callers commonly implement ScheduleNextTick
-	// as a synchronous call under their own lock to model a
-	// single-threaded event loop, and calling back into that lock
-	// while still holding t.sync.mu would invert lock order against
-	// any other parserHandler method invoked while the caller's lock
-	// is held (e.g. Draw/SetTitle).
+	// bell is caller-supplied and must run without holding the lock:
+	// a sound player may synchronize on the caller's own lock (tests
+	// commonly do, to model a single-threaded event loop), and calling
+	// back into that lock while still holding t.sync.mu would invert
+	// lock order against any other parserHandler method invoked while
+	// the caller's lock is held (e.g. Draw/SetTitle).
 	t.bell()
 }
 
@@ -998,7 +1044,8 @@ func (t *parserHandler) ResetState() {
 	t.sync.mu.Lock()
 	defer t.sync.mu.Unlock()
 
-	pty := t.pty
+	ptyIn := t.ptyIn
+	host := t.host
 	clipboard := t.clipboard
 	tm := t.tm
 	uri := t.uri
@@ -1014,12 +1061,22 @@ func (t *parserHandler) ResetState() {
 	fs := t.fs
 	tempDir := t.tempDir
 	keyboard := t.keyboard
+	statusReported := t.statusReported
+	historyScrolled := t.historyScrolled
+	pointer := t.pointer
+	if t.modeSyncUpdate {
+		host.syncUpdateLocked(false)
+	}
 	*t = parserHandler{}
-	t.init(mu, pty, tm, clipboard, bell, uri,
+	t.init(mu, ptyIn, host, tm, clipboard, bell, uri,
 		needsAttentionAttr, useTitleAsTabname, maxScrollLength, minWidth,
 		cellPixelSize, fs, tempDir)
 	t.keyboard = keyboard
 	t.keyboard.reset()
+	t.statusReported = statusReported
+	t.historyScrolled = historyScrolled
+	t.pointer = pointer
+	t.showPointerShape()
 
 	// resize
 	t.sync.altBuf.Resize(width, height)
@@ -1027,6 +1084,7 @@ func (t *parserHandler) ResetState() {
 	t.width = width
 	t.height = height
 	t.tabs.resize(width)
+	t.withdrawStatus()
 }
 
 // Reverse Index.
@@ -1154,7 +1212,10 @@ func (t *parserHandler) ReportPrivateMode(mode vteparser.PrivateMode) {
 	case vteparser.PrivateModeBracketedPaste:
 		modeVar = &t.modeBracketedPaste
 	case vteparser.PrivateModeSyncUpdate:
-		modeVar = &t.modeSyncUpdate
+		t.sync.mu.Lock()
+		syncUpdate := t.modeSyncUpdate
+		t.sync.mu.Unlock()
+		modeVar = &syncUpdate
 	default:
 		t.log(log.WarnLevel, "Set unkown private mode: %v", mode)
 	}
@@ -1205,6 +1266,9 @@ func (t *parserHandler) SetPrivateMode(mode vteparser.PrivateMode) {
 	case vteparser.PrivateModeBracketedPaste:
 		t.modeBracketedPaste = true
 	case vteparser.PrivateModeSyncUpdate:
+		if !t.modeSyncUpdate {
+			t.host.syncUpdateLocked(true)
+		}
 		t.modeSyncUpdate = true
 	default:
 		t.log(log.WarnLevel, "Set unkown private mode: %v", mode)
@@ -1256,6 +1320,9 @@ func (t *parserHandler) UnsetPrivateMode(mode vteparser.PrivateMode) {
 	case vteparser.PrivateModeBracketedPaste:
 		t.modeBracketedPaste = false
 	case vteparser.PrivateModeSyncUpdate:
+		if t.modeSyncUpdate {
+			t.host.syncUpdateLocked(false)
+		}
 		t.modeSyncUpdate = false
 	default:
 		t.log(log.WarnLevel, "Unset unkown private mode: %v", mode)
@@ -1362,6 +1429,10 @@ func (t *parserHandler) ConfigureCharset(
 
 // Store data into the clipboard.
 func (t *parserHandler) ClipboardStore(register int, data []byte) {
+	if !t.host.clipboardAccess().Write {
+		t.log(log.DebugLevel, "ClipboardStore refused: the program may not write the clipboard")
+		return
+	}
 	d := base64.NewDecoder(base64.StdEncoding, bytes.NewReader(data))
 	decodedData, err := io.ReadAll(d)
 	if err != nil {
@@ -1386,6 +1457,10 @@ func (t *parserHandler) ClipboardStore(register int, data []byte) {
 
 // Load data from the clipboard.
 func (t *parserHandler) ClipboardLoad(register int, terminator string) {
+	if !t.host.clipboardAccess().Read {
+		t.log(log.DebugLevel, "ClipboardLoad refused: the program may not read the clipboard")
+		return
+	}
 	var data clipboard.Data
 	var err error
 	switch register {
@@ -1417,11 +1492,45 @@ func (t *parserHandler) ClipboardLoad(register int, terminator string) {
 	}
 
 	encodedCmd := fmt.Sprintf("\x1b]52;%c;%s%s", rune(register), buf.String(), terminator)
-	if _, err := t.pty.Master.Write([]byte(encodedCmd)); err != nil {
+	if _, err := t.ptyIn.Write([]byte(encodedCmd)); err != nil {
 		t.log(log.WarnLevel, "write encoded clipboard data to pty "+
 			"for ClipboardLoad: %v", err)
 		return
 	}
+}
+
+// termcapMs is the terminfo Ms capability, the sequence that sets the
+// clipboard, in the source form terminfo databases and other terminals
+// report it in.
+const termcapMs = `\E]52;%p1%s;%p2%s\E\\`
+
+// RequestTermcap answers each name on its own, as the terminfo
+// capability for OSC 52 is the only one the terminal reports and
+// Neovim, which asks for it to decide whether to copy through OSC 52,
+// reads one capability per reply.
+func (t *parserHandler) RequestTermcap(names []string) {
+	var b bytes.Buffer
+	for _, name := range names {
+		value, ok := t.termcap(name)
+		if ok {
+			fmt.Fprintf(&b, "\x1bP1+r%x=%x\x1b\\", name, value)
+		} else {
+			fmt.Fprintf(&b, "\x1bP0+r%x\x1b\\", name)
+		}
+	}
+	if _, err := t.ptyIn.Write(b.Bytes()); err != nil {
+		t.log(log.WarnLevel, "write termcap reply to pty: %v", err)
+	}
+}
+
+// termcap returns the value of the named terminfo capability, when the
+// terminal supports it. Ms is reported only while programs may write
+// the clipboard, since it advertises exactly that.
+func (t *parserHandler) termcap(name string) (string, bool) {
+	if name == "Ms" && t.host.clipboardAccess().Write {
+		return termcapMs, true
+	}
+	return "", false
 }
 
 // Run the decaln routine.
@@ -1471,7 +1580,7 @@ func (t *parserHandler) TextAreaSizeChars() {
 	data := fmt.Sprintf("\x1b[8;%d;%dt", t.height, t.width)
 	t.sync.mu.Unlock()
 
-	if _, err := t.pty.Master.Write([]byte(data)); err != nil {
+	if _, err := t.ptyIn.Write([]byte(data)); err != nil {
 		t.log(log.WarnLevel, "write text area size in chars: %v", err)
 		return
 	}
@@ -1484,7 +1593,7 @@ func (t *parserHandler) SetHyperlink(link *vteparser.Hyperlink) {
 
 // ReportKeyboardMode reports current keyboard mode.
 func (t *parserHandler) ReportKeyboardMode() {
-	_, err := fmt.Fprintf(t.pty.Master, "\x1b[?%du", t.keyboard.kittyFlags(t.useAlt))
+	_, err := fmt.Fprintf(t.ptyIn, "\x1b[?%du", t.keyboard.kittyFlags(t.useAlt))
 	if err != nil {
 		t.log(log.WarnLevel, "report keyboard mode: %v", err)
 	}
@@ -1516,7 +1625,7 @@ func (t *parserHandler) SetModifyOtherKeys(mode vteparser.ModifyOtherKeysMode) {
 // ReportModifyOtherKeys report XTerm's [`ModifyOtherKeys`] state.
 func (t *parserHandler) ReportModifyOtherKeys() {
 	mode := t.keyboard.encoding().modifyOtherKeys
-	if _, err := fmt.Fprintf(t.pty.Master, "\x1b[>4;%dm", mode); err != nil {
+	if _, err := fmt.Fprintf(t.ptyIn, "\x1b[>4;%dm", mode); err != nil {
 		t.log(log.WarnLevel, "report modifyOtherKeys: %v", err)
 	}
 }
@@ -1539,7 +1648,7 @@ func (t *parserHandler) reportMode(template string, mode int, modeVar *bool) {
 		rep = 2
 	}
 
-	_, err := fmt.Fprintf(t.pty.Master, template, mode, rep)
+	_, err := fmt.Fprintf(t.ptyIn, template, mode, rep)
 	if err != nil {
 		t.log(log.WarnLevel, "report mode with template %q: %v", template, err)
 	}
@@ -1655,6 +1764,9 @@ func (t *parserHandler) scrollUp(count int) bool {
 		buf.ScrollDown(r-(t.height-bottom)-count, r, count)
 	}
 	t.graphicsScrolled(count)
+	if t.historyScrolled != nil {
+		t.historyScrolled(count)
+	}
 	return true
 }
 
@@ -1911,7 +2023,7 @@ func (t *parserHandler) GraphicsCommand(data []byte) {
 	// (spec §6.2), which holds because the parse stage is what writes
 	// it.
 	if ok {
-		if _, err := t.pty.Master.Write(resp); err != nil {
+		if _, err := t.ptyIn.Write(resp); err != nil {
 			t.log(log.WarnLevel, "write graphics response: %v", err)
 		}
 	}
@@ -2020,7 +2132,7 @@ func (t *parserHandler) TextAreaSizePixels() {
 	t.sync.mu.Lock()
 	data := fmt.Sprintf("\x1b[4;%d;%dt", t.height*cell.Height, t.width*cell.Width)
 	t.sync.mu.Unlock()
-	if _, err := t.pty.Master.Write([]byte(data)); err != nil {
+	if _, err := t.ptyIn.Write([]byte(data)); err != nil {
 		t.log(log.WarnLevel, "write text area size in pixels: %v", err)
 	}
 }
@@ -2033,7 +2145,7 @@ func (t *parserHandler) CellSizePixels() {
 		return
 	}
 	data := fmt.Sprintf("\x1b[6;%d;%dt", cell.Height, cell.Width)
-	if _, err := t.pty.Master.Write([]byte(data)); err != nil {
+	if _, err := t.ptyIn.Write([]byte(data)); err != nil {
 		t.log(log.WarnLevel, "write cell size in pixels: %v", err)
 	}
 }
@@ -2133,4 +2245,156 @@ func (t *parserHandler) readGraphicsMedium(
 		_ = t.fs.Remove(p)
 	}
 	return data, nil
+}
+
+// ProgramStatus satisfies vteparser.Handler.
+func (t *parserHandler) ProgramStatus(report programstatus.Report) {
+	t.sync.mu.Lock()
+	defer t.sync.mu.Unlock()
+	t.statusReported = report.State != programstatus.Clear || report.ID != ""
+	t.reportStatus(report)
+}
+
+// ProgramStatusQuery satisfies vteparser.Handler. The reply is the
+// fixed query body: nothing a program reported is ever written back.
+func (t *parserHandler) ProgramStatusQuery(terminator string) {
+	if _, err := t.ptyIn.Write([]byte("\x1b]7501;?" + terminator)); err != nil {
+		t.log(log.WarnLevel, "write program status reply to pty: %v", err)
+	}
+}
+
+// PromptStart satisfies vteparser.Handler. A new prompt means the
+// program that reported working or blocked is gone.
+func (t *parserHandler) PromptStart() {
+	t.sync.mu.Lock()
+	defer t.sync.mu.Unlock()
+	t.endStatus()
+}
+
+// SetPointerShape satisfies vteparser.Handler.
+func (t *parserHandler) SetPointerShape(shape vteparser.PointerShape) {
+	t.sync.mu.Lock()
+	defer t.sync.mu.Unlock()
+	if n := len(t.pointerShapes); n > 0 {
+		t.pointerShapes[n-1] = shape
+	} else {
+		t.pointerShapes = append(t.pointerShapes, shape)
+	}
+	t.showPointerShape()
+}
+
+// PushPointerShape satisfies vteparser.Handler. A full stack drops its
+// bottom shape.
+func (t *parserHandler) PushPointerShape(shape vteparser.PointerShape) {
+	t.sync.mu.Lock()
+	defer t.sync.mu.Unlock()
+	if len(t.pointerShapes) == pointerShapeStackSize {
+		t.pointerShapes = slices.Delete(t.pointerShapes, 0, 1)
+	}
+	t.pointerShapes = append(t.pointerShapes, shape)
+	t.showPointerShape()
+}
+
+// PopPointerShape satisfies vteparser.Handler.
+func (t *parserHandler) PopPointerShape() {
+	t.sync.mu.Lock()
+	defer t.sync.mu.Unlock()
+	if n := len(t.pointerShapes); n > 0 {
+		t.pointerShapes = t.pointerShapes[:n-1]
+		t.showPointerShape()
+	}
+}
+
+// PointerShapeQuery satisfies vteparser.Handler. The terminal's default
+// and grabbed shapes are the ones pointerShape falls back to.
+func (t *parserHandler) PointerShapeQuery(names []string, terminator string) {
+	t.sync.mu.Lock()
+	current := t.programPointerShape()
+	t.sync.mu.Unlock()
+	answers := make([]string, len(names))
+	for i, name := range names {
+		switch name {
+		case "__current__":
+			answers[i] = string(current)
+			if current == "" {
+				answers[i] = "0"
+			}
+		case "__default__":
+			answers[i] = term.PointerText.String()
+		case "__grabbed__":
+			answers[i] = term.PointerDefault.String()
+		default:
+			answers[i] = "0"
+			if _, ok := vteparser.ParsePointerShape(name); ok {
+				answers[i] = "1"
+			}
+		}
+	}
+	reply := "\x1b]22;" + strings.Join(answers, ",") + terminator
+	if _, err := t.ptyIn.Write([]byte(reply)); err != nil {
+		t.log(log.WarnLevel, "write pointer shape reply to pty: %v", err)
+	}
+}
+
+// programPointerShape returns the shape on top of the OSC 22 stack, empty
+// when the terminal chooses. It must be called with t.sync.mu held.
+func (t *parserHandler) programPointerShape() vteparser.PointerShape {
+	if n := len(t.pointerShapes); n > 0 {
+		return t.pointerShapes[n-1]
+	}
+	return ""
+}
+
+// pointerShape returns the program's shape, else the arrow while the
+// program tracks the mouse, else the text cursor of the selection, as
+// kitty does. It must be called with t.sync.mu held.
+func (t *parserHandler) pointerShape() term.PointerShape {
+	shape := t.programPointerShape()
+	switch {
+	case shape != "":
+		return shape.Shape()
+	case t.modeReportMouseClicks || t.modeReportCellMouseMotion || t.modeReportAllMouseMotion:
+		return term.PointerDefault
+	default:
+		return term.PointerText
+	}
+}
+
+// showPointerShape sets the shape on the pointer of the last mouse event
+// that reached the program. It must be called with t.sync.mu held.
+func (t *parserHandler) showPointerShape() {
+	if t.pointer != nil {
+		t.pointer.SetShape(t.pointerShape())
+	}
+}
+
+// endStatus tells the tab manager that the program that reported a
+// status ended. It must be called with t.sync.mu held.
+func (t *parserHandler) endStatus() {
+	if !t.statusReported {
+		return
+	}
+	// doesn't necessarily need to be a tab vte
+	if err := t.tm.EndTabStatus(t.uri); err != nil {
+		t.log(log.TraceLevel, "end tab status uri=%q: %v", t.uri, err)
+	}
+}
+
+// withdrawStatus clears every status the program reported. It must be
+// called with t.sync.mu held.
+func (t *parserHandler) withdrawStatus() {
+	if !t.statusReported {
+		return
+	}
+	t.statusReported = false
+	t.reportStatus(programstatus.Report{State: programstatus.Clear})
+}
+
+// reportStatus forwards report to the tab manager. It must be called
+// with t.sync.mu held.
+func (t *parserHandler) reportStatus(report programstatus.Report) {
+	// doesn't necessarily need to be a tab vte
+	if err := t.tm.SetTabStatus(t.uri, report); err != nil {
+		t.log(log.TraceLevel, "set tab status uri=%q: %v", t.uri, err)
+	}
 }

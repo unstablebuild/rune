@@ -33,13 +33,14 @@ func TestCopyExecutablesClearsQuarantine(t *testing.T) {
 	srcDir := t.TempDir()
 	dstDir := t.TempDir()
 
-	src := filepath.Join(srcDir, "ext")
+	require.NoError(t, os.Mkdir(filepath.Join(srcDir, "bin"), 0o755))
+	src := filepath.Join(srcDir, "bin", "ext")
 	require.NoError(t, os.WriteFile(src, []byte("binary"), 0o755))
 	require.NoError(t, unix.Setxattr(src, "com.apple.quarantine",
 		[]byte("0081;deadbeef;Test;"), 0))
 
 	require.NoError(t, copyExecutables(
-		[]executableEntry{{Name: "ext", Mode: 0o755}}, srcDir, dstDir))
+		[]executableEntry{{Name: "bin/ext", Mode: 0o755}}, srcDir, dstDir))
 
 	target := filepath.Join(dstDir, "ext")
 	_, err := unix.Getxattr(target, "com.apple.quarantine", make([]byte, 256))

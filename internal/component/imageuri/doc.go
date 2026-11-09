@@ -21,7 +21,8 @@
 // For URIs, the encoded bytes are cached in a storageapi.Service so
 // that components showing the same URI share a single download while
 // the entry is younger than its TTL. An expired entry is still served
-// when refreshing it fails. A progress animation is drawn while the image
-// loads. When the image cannot be loaded, or the writer cannot draw
-// images, the caller's problem art is drawn centered instead.
+// when refreshing it fails. The image is loaded on Start or the first
+// sized Draw, and a progress animation is drawn while it loads. When the
+// image cannot be loaded, or the writer cannot draw images, the caller's
+// problem art is drawn centered instead.
 package imageuri

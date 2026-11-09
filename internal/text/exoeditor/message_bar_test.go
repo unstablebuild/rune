@@ -26,6 +26,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/component/comptest"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/cell"
+	"unstable.build/rune/internal/handler/handlertest"
 	"unstable.build/rune/internal/term/vte/vteprobe"
 	"unstable.build/rune/internal/text"
 )
@@ -36,6 +37,7 @@ import (
 type stubTextHandler struct {
 	lastWidth  int
 	lastHeight int
+	events     []term.Event
 }
 
 func (s *stubTextHandler) Resize(w, h int) {
@@ -43,8 +45,11 @@ func (s *stubTextHandler) Resize(w, h int) {
 	s.lastHeight = h
 }
 
-func (s *stubTextHandler) Draw(term.Writer)               {}
-func (s *stubTextHandler) Handle(term.Event) (bool, bool) { return false, false }
+func (s *stubTextHandler) Draw(term.Writer) {}
+func (s *stubTextHandler) Handle(ev term.Event) (bool, bool) {
+	s.events = append(s.events, ev)
+	return false, false
+}
 func (s *stubTextHandler) Cursor() (term.Coordinates, term.CursorStyle, bool) {
 	return term.Coordinates{}, 0, false
 }
@@ -255,4 +260,49 @@ hello
 d    `}})
 	assert.Equal(t, 2, inner.lastHeight,
 		"inner should be shrunk to leave 3 rows for the bar")
+}
+
+func TestMessageBarPointerLeaves(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name          string
+		width, height int
+		message       string
+	}{
+		{name: "40x10 short message", width: 40, height: 10, message: "unused 世界"},
+		{name: "40x10 wrapped message", width: 40, height: 10, message: repeatRune('é', 130)},
+		{name: "1x1 message", width: 1, height: 1, message: "unused"},
+		{name: "40x10 no message", width: 40, height: 10},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			newBar := func(t *testing.T) (text.Handler, *stubTextHandler) {
+				h := editorHandlerWithCursor(t, term.Coordinates{X: 1, Y: 0})
+				h.locations.SetLocationList(0, "diag", sliceList([]textapi.Location{{
+					From: term.Coordinates{}, To: term.Coordinates{X: 5}, Message: tc.message,
+				}}))
+				inner := &stubTextHandler{}
+				return withMessageBar(inner, h), inner
+			}
+
+			bar, _ := newBar(t)
+			handlertest.RunPointerLeaves(t, bar, tc.width, tc.height)
+
+			bar, inner := newBar(t)
+			bar.Resize(tc.width, tc.height)
+			bar.Draw(term.NewStringWriter(tc.width, tc.height))
+			innerW, innerH := inner.lastWidth, inner.lastHeight
+
+			leave := term.Event{Type: term.EventMouse, MouseX: tc.width, MouseY: -1}
+			_, _ = bar.Handle(leave)
+			bar.Draw(term.NewStringWriter(tc.width, tc.height))
+
+			assert.Equal(t, []term.Event{leave}, inner.events,
+				"the bar keeps no pointer state, so the leave is the inner's to handle")
+			assert.Equal(t, innerW, inner.lastWidth)
+			assert.Equal(t, innerH, inner.lastHeight, "a leave must not resize the bar")
+		})
+	}
 }

@@ -17,6 +17,7 @@
 package shadertest
 
 import (
+	"math/rand"
 	"strconv"
 	"testing"
 
@@ -48,6 +49,139 @@ func BenchmarkShader(
 			sh.Shade(i, totalFrames, copy)
 		}
 	}
+}
+
+// AssertProgressOnly checks that the shaders build makes see the frame
+// and total they are given only through frame/total: frame f of total
+// T shades exactly as frame 3f of 3T. Every frame is shaded by a fresh
+// shader, so nothing one remembers can make up for the other.
+func AssertProgressOnly(t *testing.T, build func() shader.Shader, in [][]term.Cell) {
+	t.Helper()
+	for _, total := range []int{7, 20} {
+		for frame := range total {
+			want := shadeCopy(build(), frame, total, in)
+			got := shadeCopy(build(), 3*frame, 3*total, in)
+			if !assert.Equal(t, want, got, "frame %d of %d against frame %d of %d",
+				frame, total, 3*frame, 3*total) {
+				return
+			}
+		}
+	}
+}
+
+// AssertOrderIndependent checks that a shader build makes shades every
+// frame of total as a fresh shader does, whatever it shaded before:
+// frames played forwards, backwards or shuffled, or interleaved with
+// frames of a smaller canvas.
+func AssertOrderIndependent(t *testing.T, build func() shader.Shader, in [][]term.Cell, total int) {
+	t.Helper()
+	small := cropCanvas(in)
+	want := make([][][]term.Cell, total)
+	wantSmall := make([][][]term.Cell, total)
+	forward := make([]int, total)
+	backward := make([]int, total)
+	for f := range total {
+		want[f] = shadeCopy(build(), f, total, in)
+		wantSmall[f] = shadeCopy(build(), f, total, small)
+		forward[f] = f
+		backward[total-1-f] = f
+	}
+	for _, order := range []struct {
+		name   string
+		frames []int
+	}{
+		{"forwards", forward},
+		{"backwards", backward},
+		{"shuffled", rand.New(rand.NewSource(1)).Perm(total)},
+	} {
+		sh := build()
+		for _, f := range order.frames {
+			if !assert.Equal(t, want[f], shadeCopy(sh, f, total, in),
+				"%s: frame %d of %d", order.name, f, total) {
+				break
+			}
+		}
+	}
+	sh := build()
+	for _, f := range forward {
+		if !assert.Equal(t, want[f], shadeCopy(sh, f, total, in),
+			"resized: frame %d of %d", f, total) ||
+			!assert.Equal(t, wantSmall[f], shadeCopy(sh, f, total, small),
+				"resized: frame %d of %d on the smaller canvas", f, total) {
+			break
+		}
+	}
+}
+
+func shadeCopy(sh shader.Shader, frame, total int, in [][]term.Cell) [][]term.Cell {
+	out := term.CloneCells(in)
+	sh.Shade(frame, total, out)
+	return out
+}
+
+// AssertSeamless checks that the shaders build makes end as they start,
+// so that played on a loop they show no seam: on every canvas, the step
+// from the last frame of total back to the first is at most half again
+// as big as the steps either side of it. The longer total is, the
+// smaller those steps, and the finer the seam this can tell.
+func AssertSeamless(t *testing.T, build func() shader.Shader, total int, canvases ...[][]term.Cell) {
+	t.Helper()
+	for _, in := range canvases {
+		sh := build()
+		before := shadeCopy(sh, total-2, total, in)
+		last := shadeCopy(sh, total-1, total, in)
+		first := shadeCopy(sh, 0, total, in)
+		after := shadeCopy(sh, 1, total, in)
+		near := max(Distance(before, last), Distance(first, after))
+		assert.LessOrEqual(t, 2*Distance(last, first), 3*near,
+			"%dx%d canvas: the step from the last frame back to the first "+
+				"stands out from the steps either side of it", len(in[0]), len(in))
+	}
+}
+
+// Distance is how different two frames of the same canvas look: the sum
+// over their cells of how far each colour channel of the foreground and
+// background moved, a changed character counting as a whole channel.
+func Distance(a, b [][]term.Cell) int {
+	d := 0
+	for y := range a {
+		for x := range a[y] {
+			ca, cb := a[y][x], b[y][x]
+			if ca.Ch != cb.Ch {
+				d += 255
+			}
+			d += colorDistance(ca.Fg, cb.Fg) + colorDistance(ca.Bg, cb.Bg)
+		}
+	}
+	return d
+}
+
+func colorDistance(a, b term.Color) int {
+	if a == b {
+		return 0
+	}
+	if !a.IsRGB() || !b.IsRGB() {
+		return 3 * 255
+	}
+	ar, ag, ab := a.RGB()
+	br, bg, bb := b.RGB()
+	return int(abs(ar-br) + abs(ag-bg) + abs(ab-bb))
+}
+
+func abs(v int32) int32 {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
+// cropCanvas returns a copy of in less its last row and column.
+func cropCanvas(in [][]term.Cell) [][]term.Cell {
+	out := term.CloneCells(in[:max(1, len(in)-1)])
+	for y, row := range out {
+		out[y] = row[:max(0, len(row)-1)]
+	}
+	return out
 }
 
 func testFrameRanges(t *testing.T, sh shader.Shader) {

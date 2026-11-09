@@ -18,6 +18,7 @@ package workspace
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -145,6 +146,10 @@ func (t *testScheme) StartCommand(ctx context.Context, cmd workspaceapi.Cmd) (
 }
 func (t *testScheme) Signal(workspaceapi.Pid, syscall.Signal) error {
 	panic("unimplemented")
+}
+
+func (*testScheme) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
 }
 
 func (t *testScheme) NewFile(fd uintptr, name string) workspaceapi.File {

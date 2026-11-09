@@ -19,8 +19,6 @@ package text
 import (
 	"context"
 	"errors"
-	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -33,17 +31,8 @@ import (
 	"unstable.build/rune/internal/workspace"
 )
 
-// imageViewExtensions are the formats imageuri can decode.
-var imageViewExtensions = map[string]bool{
-	".gif":  true,
-	".jpeg": true,
-	".jpg":  true,
-	".png":  true,
-	".webp": true,
-}
-
 func isImageFile(file workspaceapi.URI) bool {
-	return imageViewExtensions[strings.ToLower(filepath.Ext(file.Path()))]
+	return imageuri.IsImagePath(file.Path())
 }
 
 var _ browserapi.Handler = (*imageViewHandler)(nil)

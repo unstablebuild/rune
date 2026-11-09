@@ -20,10 +20,17 @@ import (
 	"testing"
 
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"unstable.build/rune/internal/component/shader"
 	"unstable.build/rune/internal/component/shader/shadertest"
 )
 
 func TestRisingChars(t *testing.T) {
 	sh := RisingChars(DefaultRisingCharsParams(), term.Attributes{})
 	shadertest.TestShader(t, sh)
+}
+
+func TestRisingCharsDependsOnProgressOnly(t *testing.T) {
+	build := func() shader.Shader { return RisingChars(DefaultRisingCharsParams(), term.Attributes{}) }
+	shadertest.AssertProgressOnly(t, build, shadertest.MakeTextCanvas(12, 6))
+	shadertest.AssertOrderIndependent(t, build, shadertest.MakeTextCanvas(12, 6), 20)
 }

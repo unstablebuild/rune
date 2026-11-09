@@ -17,18 +17,24 @@
 package main
 
 import (
+	"bytes"
+	"image"
+	"image/png"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"go.uber.org/mock/gomock"
 
 	"unstable.build/rune/internal/browser/browsertest"
 	"unstable.build/rune/internal/ide"
+	"unstable.build/rune/internal/sounds"
 	"unstable.build/rune/internal/term/gui"
 )
 
@@ -57,6 +63,119 @@ func TestTelemetryEnabledFromUserConfig(t *testing.T) {
 	require.NoError(t, os.WriteFile(path,
 		[]byte("telemetry:\n  enabled: false\n"), 0o644))
 	assert.False(t, ide.TelemetryEnabled(mustLoadConfig(t, path)))
+}
+
+func TestDefaultSearchIndexing(t *testing.T) {
+	cfg := mustLoadConfig(t, filepath.Join(t.TempDir(), "config.star"))
+	for _, tt := range []struct {
+		section, key string
+		want         bool
+	}{
+		{"search", "regex_enabled", true},
+		{"search", "semantic_enabled", false},
+		{"workspace", "symboldb", true},
+	} {
+		t.Run(tt.section+"."+tt.key, func(t *testing.T) {
+			section, err := cfg.GetConfig(tt.section)
+			require.NoError(t, err)
+			got, err := section.GetBool(tt.key)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestDefaultConfigShowsTheLogoWithItsIntro(t *testing.T) {
+	cfg := mustLoadConfig(t, filepath.Join(t.TempDir(), "config.star"))
+
+	workspace, err := cfg.GetConfig("workspace")
+	require.NoError(t, err)
+	for key, want := range map[string]string{
+		"wallpaper_image_ascii":        "",
+		"wallpaper_ascii":              "",
+		"wallpaper_density_characters": " ▓▓▓▓",
+	} {
+		got, err := workspace.GetString(key)
+		require.NoError(t, err, key)
+		assert.Equal(t, want, got, key)
+	}
+	image, err := workspace.GetMap("wallpaper_image")
+	require.NoError(t, err)
+	assert.Equal(t, map[string]any{
+		"path": "", "width": "60%", "height": "60%", "fit": "contain",
+	}, image)
+
+	animations, err := cfg.GetConfig("animations")
+	require.NoError(t, err)
+	intro, err := animations.GetBool("intro")
+	require.NoError(t, err)
+	assert.True(t, intro)
+}
+
+func TestWallpaperImageOverridesTheDefaultSection(t *testing.T) {
+	section := func(path string) map[string]any {
+		return map[string]any{"path": path, "width": "60%", "height": "60%", "fit": "contain"}
+	}
+	tests := []struct {
+		name   string
+		file   string
+		config string
+		want   any
+	}{
+		{
+			name:   "a path in YAML",
+			file:   "config.yaml",
+			config: "workspace:\n  wallpaper_image: ~/a.png\n",
+			want:   "~/a.png",
+		},
+		{
+			name:   "a section in YAML",
+			file:   "config.yaml",
+			config: "workspace:\n  wallpaper_image:\n    path: ~/a.png\n    fit: cover\n",
+			want:   map[string]any{"path": "~/a.png", "width": "60%", "height": "60%", "fit": "cover"},
+		},
+		{
+			name:   "a path in Starlark",
+			file:   "config.star",
+			config: "config[\"workspace\"][\"wallpaper_image\"] = \"~/a.png\"\n",
+			want:   "~/a.png",
+		},
+		{
+			name:   "the path of the section in Starlark",
+			file:   "config.star",
+			config: "config[\"workspace\"][\"wallpaper_image\"][\"path\"] = \"~/a.png\"\n",
+			want:   section("~/a.png"),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), tt.file)
+			require.NoError(t, os.WriteFile(path, []byte(tt.config), 0o644))
+			workspace, err := mustLoadConfig(t, path).GetConfig("workspace")
+			require.NoError(t, err)
+			var got any
+			workspace.Iterate(func(k string, v any) {
+				if k == "wallpaper_image" {
+					got = v
+				}
+			})
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestDeprecatedWallpaperKeyIsKeptOverTheDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("workspace:\n  wallpaper: art\n"), 0o644))
+
+	workspace, err := mustLoadConfig(t, path).GetConfig("workspace")
+	require.NoError(t, err)
+	old, err := workspace.GetString("wallpaper")
+	require.NoError(t, err)
+	assert.Equal(t, "art", old)
+	ascii, err := workspace.GetString("wallpaper_ascii")
+	require.NoError(t, err)
+	assert.Empty(t, ascii, "the empty default defers to the deprecated key")
 }
 
 func mustLoadConfig(t *testing.T, path string) config.Config {
@@ -191,6 +310,158 @@ func TestGetGUIAltModifierUnconfigured(t *testing.T) {
 	require.Equal(t, gui.AltModifierNone, getGUIAltModifier(b, guiCfg))
 }
 
+func TestGetCursorEffect(t *testing.T) {
+	dir := t.TempDir()
+	shaderPath := filepath.Join(dir, "cursor.kage")
+	require.NoError(t, os.WriteFile(shaderPath, []byte("package main"), 0o644))
+	t.Setenv("RUNE_TEST_SHADER_DIR", dir)
+	cursor := func(v any) config.Config {
+		return config.MapConfig(map[string]any{
+			"animations": map[string]any{"cursor": v},
+		})
+	}
+
+	cases := []struct {
+		name         string
+		cfg          config.Config
+		wantSrc      []byte
+		wantDuration time.Duration
+		wantNotify   bool
+	}{
+		{name: "no animations is off", cfg: config.MapConfig(map[string]any{})},
+		{
+			name: "absent is off",
+			cfg:  config.MapConfig(map[string]any{"animations": map[string]any{}}),
+		},
+		{
+			name: "animations of the wrong type is off",
+			cfg:  config.MapConfig(map[string]any{"animations": "off"}),
+		},
+		{name: "false is off", cfg: cursor(false)},
+		{
+			name:         "true plays the built-in trail",
+			cfg:          cursor(true),
+			wantSrc:      gui.CursorTrailShader,
+			wantDuration: defaultCursorEffectDuration,
+		},
+		{
+			name:       "cursor of the wrong type",
+			cfg:        cursor("yes"),
+			wantNotify: true,
+		},
+		{
+			name: "disabled",
+			cfg:  cursor(map[string]any{"enabled": false, "duration": "1s"}),
+		},
+		{
+			name:       "enabled of the wrong type",
+			cfg:        cursor(map[string]any{"enabled": "yes"}),
+			wantNotify: true,
+		},
+		{
+			name:         "enabled",
+			cfg:          cursor(map[string]any{"enabled": true}),
+			wantSrc:      gui.CursorTrailShader,
+			wantDuration: defaultCursorEffectDuration,
+		},
+		{
+			name:         "a section is on unless disabled",
+			cfg:          cursor(map[string]any{}),
+			wantSrc:      gui.CursorTrailShader,
+			wantDuration: defaultCursorEffectDuration,
+		},
+		{
+			name:         "duration",
+			cfg:          cursor(map[string]any{"duration": "400ms"}),
+			wantSrc:      gui.CursorTrailShader,
+			wantDuration: 400 * time.Millisecond,
+		},
+		{
+			name:       "invalid duration",
+			cfg:        cursor(map[string]any{"duration": "soon"}),
+			wantNotify: true,
+		},
+		{
+			name:       "non-positive duration",
+			cfg:        cursor(map[string]any{"duration": "0s"}),
+			wantNotify: true,
+		},
+		{
+			name:         "shader file with variables expanded",
+			cfg:          cursor(map[string]any{"shader": "$RUNE_TEST_SHADER_DIR/cursor.kage"}),
+			wantSrc:      []byte("package main"),
+			wantDuration: defaultCursorEffectDuration,
+		},
+		{
+			name:       "missing shader file",
+			cfg:        cursor(map[string]any{"shader": filepath.Join(dir, "missing.kage")}),
+			wantNotify: true,
+		},
+		{
+			name:       "shader of the wrong type",
+			cfg:        cursor(map[string]any{"shader": 42}),
+			wantNotify: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			b := browsertest.NewMockBrowser(ctrl)
+			if tc.wantNotify {
+				b.EXPECT().Notify(gomock.Any(), gomock.Any(), gomock.Any()).Return("", nil)
+			}
+			src, duration := getCursorEffect(b, tc.cfg)
+			assert.Equal(t, tc.wantSrc, src)
+			assert.Equal(t, tc.wantDuration, duration)
+		})
+	}
+}
+
+func TestGetCursorEffectFromUserConfig(t *testing.T) {
+	cases := []struct {
+		name         string
+		file         string
+		config       string
+		wantSrc      []byte
+		wantDuration time.Duration
+	}{
+		{name: "off by default", file: "config.star"},
+		{
+			name:         "enabled in Starlark",
+			file:         "config.star",
+			config:       "config[\"animations\"][\"cursor\"][\"enabled\"] = True\n",
+			wantSrc:      gui.CursorTrailShader,
+			wantDuration: defaultCursorEffectDuration,
+		},
+		{
+			name:         "true in YAML",
+			file:         "config.yaml",
+			config:       "animations:\n  cursor: true\n",
+			wantSrc:      gui.CursorTrailShader,
+			wantDuration: defaultCursorEffectDuration,
+		},
+		{
+			name:         "enabled with a duration in YAML",
+			file:         "config.yaml",
+			config:       "animations:\n  cursor:\n    enabled: true\n    duration: 400ms\n",
+			wantSrc:      gui.CursorTrailShader,
+			wantDuration: 400 * time.Millisecond,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), tc.file)
+			require.NoError(t, os.WriteFile(path, []byte(tc.config), 0o644))
+
+			ctrl := gomock.NewController(t)
+			src, duration := getCursorEffect(browsertest.NewMockBrowser(ctrl),
+				mustLoadConfig(t, path))
+			assert.Equal(t, tc.wantSrc, src)
+			assert.Equal(t, tc.wantDuration, duration)
+		})
+	}
+}
+
 func TestGetGUIFontSize(t *testing.T) {
 	t.Run("returns 0 when absent to select DPI-aware default", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
@@ -210,4 +481,101 @@ func TestGetGUIFontSize(t *testing.T) {
 		got := getGUIFontSize(b, cfg)
 		assert.Equal(t, float64(15), got)
 	})
+}
+
+func TestGetGUISoundVolume(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  map[string]any
+		want float64
+		warn bool
+	}{
+		{name: "absent", cfg: map[string]any{}, want: 1},
+		{name: "in range", cfg: map[string]any{"sound_volume": 0.4}, want: 0.4},
+		{name: "mute", cfg: map[string]any{"sound_volume": 0}, want: 0},
+		{name: "above range", cfg: map[string]any{"sound_volume": 3}, want: 1, warn: true},
+		{name: "below range", cfg: map[string]any{"sound_volume": -1}, want: 0, warn: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			b := browsertest.NewMockBrowser(ctrl)
+			if tc.warn {
+				b.EXPECT().Notify(browserapi.LevelWarn, gomock.Any(), gomock.Any()).
+					Return("", nil)
+			}
+			assert.Equal(t, tc.want, getGUISoundVolume(b, config.MapConfig(tc.cfg)))
+		})
+	}
+}
+
+func TestGetGUIAppIcon(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("RUNE_TEST_ICON_DIR", dir)
+	writePNG := func(name string, w, h int) string {
+		path := filepath.Join(dir, name)
+		var buf bytes.Buffer
+		require.NoError(t, png.Encode(&buf, image.NewNRGBA(image.Rect(0, 0, w, h))))
+		require.NoError(t, os.WriteFile(path, buf.Bytes(), 0o644))
+		return path
+	}
+	iconPath := writePNG("icon.png", 64, 32)
+	largePath := writePNG("large.png", maxAppIconSize+1, 1)
+	textPath := filepath.Join(dir, "icon.txt")
+	require.NoError(t, os.WriteFile(textPath, []byte("not an image"), 0o644))
+
+	cases := []struct {
+		name       string
+		cfg        map[string]any
+		wantIcon   bool
+		wantNotify bool
+	}{
+		{name: "absent", cfg: map[string]any{}},
+		{name: "empty", cfg: map[string]any{"app_icon": ""}},
+		{name: "png", cfg: map[string]any{"app_icon": iconPath}, wantIcon: true},
+		{
+			name:     "variables expanded",
+			cfg:      map[string]any{"app_icon": "$RUNE_TEST_ICON_DIR/icon.png"},
+			wantIcon: true,
+		},
+		{
+			name:       "missing file",
+			cfg:        map[string]any{"app_icon": filepath.Join(dir, "missing.png")},
+			wantNotify: true,
+		},
+		{name: "not an image", cfg: map[string]any{"app_icon": textPath}, wantNotify: true},
+		{name: "too large", cfg: map[string]any{"app_icon": largePath}, wantNotify: true},
+		{name: "wrong type", cfg: map[string]any{"app_icon": 42}, wantNotify: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			b := browsertest.NewMockBrowser(ctrl)
+			if tc.wantNotify {
+				b.EXPECT().Notify(browserapi.LevelError, gomock.Any(), gomock.Any()).
+					Return("", nil).Times(1)
+			}
+			icon := getGUIAppIcon(b, config.MapConfig(tc.cfg))
+			assert.Equal(t, tc.wantIcon, icon != nil)
+		})
+	}
+}
+
+func TestSoundDefaults(t *testing.T) {
+	cfg := mustLoadConfig(t, filepath.Join(t.TempDir(), "missing.yaml"))
+	guiCfg, err := cfg.GetConfig("gui")
+	require.NoError(t, err)
+	volume, err := guiCfg.GetFloat("sound_volume")
+	require.NoError(t, err)
+	assert.Equal(t, 1.0, volume)
+
+	terminalCfg, err := cfg.GetConfig("terminal")
+	require.NoError(t, err)
+	bell, err := terminalCfg.GetString("bell")
+	require.NoError(t, err)
+	assert.Equal(t, sounds.Warning, bell)
+
+	entries, err := cfg.GetMap("sounds")
+	require.NoError(t, err)
+	assert.Empty(t, entries)
 }

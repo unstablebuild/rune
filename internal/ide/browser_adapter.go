@@ -22,14 +22,17 @@ import (
 
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/internal/browser"
+	"unstable.build/rune/internal/term/programstatus"
 )
 
 var _ browserapi.Browser = (*browserAdapter)(nil)
+var _ browserapi.Prompter = (*browserAdapter)(nil)
 
-func newBrowserAdapter(b browser.Browser) browserapi.Browser {
+func newBrowserAdapter(b browser.Browser) browserAdapter {
 	return browserAdapter{b: b}
 }
 
@@ -60,6 +63,18 @@ func (a browserAdapter) Floating(
 	cfg browserapi.FloatingConfig,
 ) (browserapi.Window, error) {
 	return a.b.Floating(h, cfg)
+}
+
+// Prompt satisfies browserapi.Prompter. It must be called on the event
+// loop, and calls h there.
+func (a browserAdapter) Prompt(
+	cfg browserapi.PromptConfig, h handler.PromptHandler,
+) (browserapi.Window, error) {
+	win, _, err := a.b.OpenPrompt(cfg, h)
+	if err != nil {
+		return nil, err
+	}
+	return win, nil
 }
 
 func (a browserAdapter) Bar(
@@ -94,10 +109,14 @@ func (a browserAdapter) CloseWindow(
 	return bw.Close()
 }
 
-func (a browserAdapter) SetTabActivity(
-	uri workspaceapi.URI, active bool,
+func (a browserAdapter) SetTabStatus(
+	uri workspaceapi.URI, status browserapi.TabStatus,
 ) error {
-	return a.b.SetTabActivity(uri, active)
+	report, err := browser.ReportFromTabStatus(status, programstatus.HostApp)
+	if err != nil {
+		return err
+	}
+	return a.b.SetTabStatus(uri, report)
 }
 
 func (a browserAdapter) Interrupt(
@@ -119,6 +138,10 @@ func (a browserAdapter) Open(
 	uri workspaceapi.URI,
 ) (browserapi.Handler, error) {
 	return a.b.Open(uri)
+}
+
+func (a browserAdapter) Show(uri workspaceapi.URI) error {
+	return a.b.Show(uri)
 }
 
 func (a browserAdapter) Notify(

@@ -363,6 +363,11 @@ func (e *recordingExecutor) Signal(workspaceapi.Pid, syscall.Signal) error {
 	return nil
 }
 func (e *recordingExecutor) Close() error { return nil }
+
+func (*recordingExecutor) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
+}
+
 func (e *recordingExecutor) NewPty(context.Context) (workspaceapi.Pty, error) {
 	return workspaceapi.Pty{}, errors.New("recordingExecutor: no pty")
 }
@@ -417,6 +422,11 @@ func (e *osExecutor) StartCommand(
 
 func (e *osExecutor) Signal(workspaceapi.Pid, syscall.Signal) error { return nil }
 func (e *osExecutor) Close() error                                  { return nil }
+
+func (*osExecutor) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
+}
+
 func (e *osExecutor) NewPty(context.Context) (workspaceapi.Pty, error) {
 	return workspaceapi.Pty{}, nil
 }
@@ -460,6 +470,11 @@ func (e *recursiveExecutor) Signal(workspaceapi.Pid, syscall.Signal) error {
 	return nil
 }
 func (e *recursiveExecutor) Close() error { return nil }
+
+func (*recursiveExecutor) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
+}
+
 func (e *recursiveExecutor) NewPty(context.Context) (workspaceapi.Pty, error) {
 	return workspaceapi.Pty{}, errors.New("recursiveExecutor: no pty")
 }

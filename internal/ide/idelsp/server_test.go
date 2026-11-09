@@ -18,6 +18,7 @@ package idelsp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -32,6 +33,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/semanticapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/ide/idelsp/jsonrpc2"
 	"unstable.build/rune/internal/workspace/processctx"
 )
@@ -108,6 +110,29 @@ func TestLangServerStartCancelsProcessWhenTransportSetupFails(t *testing.T) {
 	require.ErrorIs(t, err, wantErr)
 	require.ErrorIs(t, exec.ctx.Err(), context.Canceled,
 		"a spawned process must be canceled when transport ownership cannot be established")
+}
+
+func TestLangServerInitializeSendsClientInfo(t *testing.T) {
+	srv, fake, cleanup := newFakeLSPLangServer(t)
+	defer cleanup()
+	srv.params = semanticapi.InitializeParams{
+		RootURI:           "file:///workspace",
+		InitializeOptions: json.RawMessage(`{"usePlaceholders":true}`),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := srv.initialize(ctx)
+	require.NoError(t, err)
+
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(fake.paramsFor("initialize"), &got))
+	assert.Equal(t, map[string]any{"name": "rune", "version": debug.Tag},
+		got["clientInfo"])
+	assert.Equal(t, "file:///workspace", got["rootUri"],
+		"clientInfo must not displace the extension's params")
+	assert.Equal(t, map[string]any{"usePlaceholders": true},
+		got["initializationOptions"])
 }
 
 func TestLangServerCallDoesNotKillReader(t *testing.T) {
@@ -355,6 +380,10 @@ func (e *recordingStartExecutor) Signal(
 	return nil
 }
 
+func (*recordingStartExecutor) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
+}
+
 func (e *recordingStartExecutor) Close() error {
 	return nil
 }
@@ -369,6 +398,7 @@ type fakeLSP struct {
 
 	mu     sync.Mutex
 	delays map[string]time.Duration
+	params map[string]json.RawMessage
 }
 
 func (f *fakeLSP) setDelay(method string, d time.Duration) {
@@ -381,6 +411,12 @@ func (f *fakeLSP) delayFor(method string) time.Duration {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.delays[method]
+}
+
+func (f *fakeLSP) paramsFor(method string) json.RawMessage {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.params[method]
 }
 
 func (f *fakeLSP) serve(ctx context.Context) {
@@ -396,6 +432,9 @@ func (f *fakeLSP) serve(ctx context.Context) {
 		if !req.IsCall() {
 			continue
 		}
+		f.mu.Lock()
+		f.params[req.Method] = req.Params
+		f.mu.Unlock()
 		go f.respond(ctx, req)
 	}
 }
@@ -409,7 +448,11 @@ func (f *fakeLSP) respond(ctx context.Context, req *jsonrpc2.Request) {
 			return
 		}
 	}
-	resp, err := jsonrpc2.NewResponse(req.ID, "ok", nil)
+	var result any = "ok"
+	if req.Method == "initialize" {
+		result = semanticapi.InitializeResult{}
+	}
+	resp, err := jsonrpc2.NewResponse(req.ID, result, nil)
 	if err != nil {
 		return
 	}
@@ -443,6 +486,7 @@ func newFakeLSPLangServer(t *testing.T) (*langServer, *fakeLSP, func()) {
 		reader: framer.Reader(lspConn),
 		writer: framer.Writer(lspConn),
 		delays: map[string]time.Duration{},
+		params: map[string]json.RawMessage{},
 	}
 	serveCtx, serveCancel := context.WithCancel(context.Background())
 	go fake.serve(serveCtx)
@@ -594,6 +638,11 @@ func (e *retainingExecutor) StartCommand(
 }
 
 func (e *retainingExecutor) Signal(workspaceapi.Pid, syscall.Signal) error { return nil }
+
+func (*retainingExecutor) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
+}
+
 func (e *retainingExecutor) Close() error {
 	if e.cancel != nil {
 		e.cancel()

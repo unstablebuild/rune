@@ -23,6 +23,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"unstable.build/rune/cmd/rune-agent/agent"
 	"unstable.build/rune/cmd/rune-agent/dialogue/dialoguetui"
 )
@@ -41,8 +42,16 @@ func TestPromptReportsAskingPhase(t *testing.T) {
 		st.Phase = phaseToolCalling
 	})
 
+	wm := &recordingWindowManager{}
+	uri, err := getModelUri("rolling-fox", "gpt-5")
+	require.NoError(t, err)
+	s.tab = newTabStatusReporter(wm, uri, s.h.n)
+	s.tab.beginTurn()
+	s.tab.setTitle(statusTitleTools)
+	wm.reset()
+
 	tx := make(chan dialoguetui.MessageEvent, 1)
-	prompter := &tuiPrompter{tx: tx, noti: stubNotifications{}, status: s}
+	prompter := &tuiPrompter{tx: tx, chat: s}
 
 	type result struct {
 		resp agent.PromptResponse
@@ -53,19 +62,27 @@ func TestPromptReportsAskingPhase(t *testing.T) {
 		resp, err := prompter.Prompt(context.Background(), agent.PromptRequest{
 			Title:   "Pick one",
 			Options: []agent.PromptOption{{Label: "a", Value: "a"}},
+			Kind:    agent.PromptKindQuestion,
 		})
 		done <- result{resp, err}
 	}()
 
 	ev := <-tx
 	require.Equal(t, dialoguetui.MessageEventPrompt, ev.Type)
+	// Prompt sets the phase and reports the tab one after the other.
 	require.Eventually(t, func() bool {
-		return statusPhase(s) == phaseAsking
+		return statusPhase(s) == phaseAsking && len(wm.tabStatuses()) > 0
 	}, time.Second, time.Millisecond)
+	assert.Equal(t, []browserapi.TabStatus{{
+		State: browserapi.TabBlocked, Kind: browserapi.TabKindQuestion, Progress: -1,
+		Title: "Pick one", Message: "Pick one",
+	}}, wm.tabStatuses(), "the tab reports the chat blocked on the prompt")
 
 	ev.PromptResult <- []string{"a"}
 	got := <-done
 	require.NoError(t, got.err)
 	assert.Equal(t, []string{"a"}, got.resp.Values)
 	assert.Equal(t, phaseToolCalling, statusPhase(s))
+	assert.Equal(t, browserapi.TabStatus{State: browserapi.TabWorking, Progress: -1, Title: statusTitleTools},
+		wm.tabStatuses()[len(wm.tabStatuses())-1], "the tab goes back to working once answered")
 }

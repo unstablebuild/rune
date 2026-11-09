@@ -18,12 +18,19 @@ package agentools
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
 
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
 	"unstable.build/rune/cmd/rune-agent/agent"
 )
 
 type compactTool struct{}
+
+type compactArgs struct {
+	Instructions *string `json:"instructions"`
+}
 
 func newCompact() agent.Tool { return &compactTool{} }
 
@@ -39,17 +46,39 @@ func (t *compactTool) Definition() llmapi.Tool {
 				"are no longer needed verbatim. The current conversation is preserved " +
 				"immutably; a new one is created from the summary.",
 			Parameters: map[string]any{
-				"type":                 "object",
-				"properties":           map[string]any{},
-				"required":             []string{},
+				"type": "object",
+				"properties": map[string]any{
+					"instructions": map[string]any{
+						"type": []string{"string", "null"},
+						"description": "Optional guidance for the summarizer: what must survive " +
+							"compaction verbatim (e.g. the current plan, failing output, " +
+							"decisions) and what can be dropped.",
+					},
+				},
+				"required":             []string{"instructions"},
 				"additionalProperties": false,
 			},
 		},
 	}
 }
 
-func (t *compactTool) Execute(_ context.Context, _ string) agent.ToolResult {
-	return agent.ToolResult{Content: "Compacting conversation...", Compact: true}
+func (t *compactTool) Execute(_ context.Context, arguments string) agent.ToolResult {
+	var args compactArgs
+	// Calls recorded before the tool took arguments may carry none.
+	if strings.TrimSpace(arguments) != "" {
+		if err := json.Unmarshal([]byte(arguments), &args); err != nil {
+			return agent.ToolResult{Content: fmt.Sprintf("error: invalid arguments: %v", err), IsError: true}
+		}
+	}
+	var instructions string
+	if args.Instructions != nil {
+		instructions = strings.TrimSpace(*args.Instructions)
+	}
+	return agent.ToolResult{
+		Content:             "Compacting conversation...",
+		Compact:             true,
+		CompactInstructions: instructions,
+	}
 }
 
 func (t *compactTool) Summary(_ string) string { return "" }

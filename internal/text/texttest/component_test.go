@@ -19,8 +19,12 @@ package texttest
 import (
 	"context"
 	"errors"
+	"fmt"
+	"image"
+	"net/url"
 	"os"
 	"os/user"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -31,6 +35,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/blue/iterator"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/component"
@@ -45,11 +50,14 @@ import (
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/browser/browsertest"
 	"unstable.build/rune/internal/cell"
+	"unstable.build/rune/internal/component/asciiart"
+	"unstable.build/rune/internal/component/imageuri/imageuritest"
 	"unstable.build/rune/internal/extension/extutil"
 	"unstable.build/rune/internal/handler/command"
 	"unstable.build/rune/internal/handler/handlertest"
 	hmarkdown "unstable.build/rune/internal/handler/markdown"
 	"unstable.build/rune/internal/ide/idecmd"
+	"unstable.build/rune/internal/term/programstatus"
 	"unstable.build/rune/internal/text"
 	"unstable.build/rune/internal/text/standard"
 	"unstable.build/rune/internal/workspace"
@@ -141,7 +149,14 @@ type testLoader struct {
 	expectError   error
 	// reloadContent, when set, is propagated to the testFlusherCloser that
 	// Load creates, so Reload installs it instead of re-installing content.
-	reloadContent string
+	reloadContent   string
+	caseInsensitive bool
+	// files maps paths to the content of a fresh file on every open, ahead
+	// of openFile.
+	files map[string][]byte
+	mu    sync.Mutex
+	// opened lists the paths in files that were opened, in order.
+	opened []string
 }
 
 type markdownReloadFile struct {
@@ -207,6 +222,10 @@ func (t *testLoader) Signal(workspaceapi.Pid, syscall.Signal) error {
 	panic("unimplemented")
 }
 
+func (*testLoader) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
+}
+
 func (t *testLoader) Close() error {
 	panic("unimplemented")
 }
@@ -236,6 +255,10 @@ func (t *testLoader) Recover(
 	return t.Load(file, buf, workspaceapi.URI{}, false)
 }
 
+func (t *testLoader) LoaderFor(file workspaceapi.URI) (workspace.FileLoader, error) {
+	return workspace.FileLoaderOf(t, file), nil
+}
+
 func (t *testLoader) URI(path string) (workspaceapi.URI, error) {
 	panic("unused")
 }
@@ -243,10 +266,22 @@ func (t *testLoader) URI(path string) (workspaceapi.URI, error) {
 func (t *testLoader) OpenFile(path string, flag int, perm os.FileMode) (
 	workspaceapi.File, error,
 ) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if data, ok := t.files[path]; ok {
+		t.opened = append(t.opened, path)
+		return workspace.NewMemoryFile(path, 1, 0, data, new(sync.Mutex)), nil
+	}
 	if t.openFile == nil {
 		return nil, errors.New("not found")
 	}
 	return t.openFile, nil
+}
+
+func (t *testLoader) openedFiles() []string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return slices.Clone(t.opened)
 }
 
 func (t *testLoader) Open(path string) (workspaceapi.File, error) {
@@ -262,6 +297,10 @@ func (t *testLoader) Stat(path string) (os.FileInfo, error) {
 
 func (t *testLoader) ReadDir(name string) ([]os.DirEntry, error) {
 	panic("unused")
+}
+
+func (t *testLoader) PathCaseSensitive() bool {
+	return !t.caseInsensitive
 }
 
 func newTestComponentErr(ed text.Editor, cfg text.Config) (*text.Component, *testLoader, error) {
@@ -316,6 +355,76 @@ func TestComponentInterfaces(t *testing.T) {
 	ed.Edit(context.Background(), workspaceapi.URI{}, cell.NewBuffer(), false, false)
 	_, _ = b.Focus()
 	comp.Resize(0, 0)
+}
+
+func TestComponentPromptOpensLinksWithOnLinkClick(t *testing.T) {
+	const width, height = 60, 20
+	const link = "https://example.com/advisory"
+	var opened []string
+	cfg := text.DefaultConfig()
+	cfg.OnLinkClick = func(u *url.URL) bool {
+		opened = append(opened, u.String())
+		return true
+	}
+	c, _ := newTestComponentConfig(t, NopEditor(), cfg)
+	c.Resize(width, height)
+	_, isNew, err := c.OpenPrompt(browserapi.PromptConfig{
+		Message: "See the [advisory](" + link + ").", Options: []string{"OK"},
+	}, handler.NopPromptHandler())
+	require.NoError(t, err)
+	require.True(t, isNew)
+
+	w := term.NewStringWriter(width, height)
+	c.Draw(w)
+	require.NoError(t, w.Flush())
+	var pos term.Coordinates
+	found := false
+	for i, cell := range w.Cells() {
+		if cell.Ch == 'a' && i+1 < len(w.Cells()) && w.Cells()[i+1].Ch == 'd' {
+			pos, found = term.Coordinates{X: i % width, Y: i / width}, true
+			break
+		}
+	}
+	require.True(t, found, "link not drawn in:\n%s", w.String())
+
+	for _, key := range []term.Key{term.MouseLeft, term.MouseRelease} {
+		c.Handle(term.Event{Type: term.EventMouse, Key: key, MouseX: pos.X, MouseY: pos.Y})
+	}
+	assert.Equal(t, []string{link}, opened)
+}
+
+func TestComponentTabStatusRepaintsThroughEventPublisher(t *testing.T) {
+	interrupts := make(chan struct{}, 1)
+	cfg := text.DefaultConfig()
+	cfg.EventPublisher = func(ev term.Event) bool {
+		if ev.Type != term.EventInterrupt {
+			return true
+		}
+		select {
+		case interrupts <- struct{}{}:
+		default:
+		}
+		return true
+	}
+	c, _ := newTestComponentConfig(t, NopEditor(), cfg)
+	t.Cleanup(func() { _ = c.Close() })
+	uri, err := workspaceapi.ParseURI("rune-agent://model/chat")
+	require.NoError(t, err)
+	_, err = c.Tab(uri, 'E', "chat", browsertest.NewTestHandler())
+	require.NoError(t, err)
+	select {
+	case <-interrupts:
+	default:
+	}
+
+	require.NoError(t, c.SetTabStatus(uri, programstatus.Report{
+		State: programstatus.Working, Progress: -1,
+	}))
+	select {
+	case <-interrupts:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the working tab's spinner never asked the host to repaint")
+	}
 }
 
 func TestComponentCommandKeyBinding(t *testing.T) {
@@ -439,6 +548,26 @@ func TestComponentOpen(t *testing.T) {
 		assert.Equal(t, h1, h2)
 	})
 
+	for _, tc := range []struct {
+		name            string
+		caseInsensitive bool
+		wantSameTab     bool
+	}{
+		{"different case opens another tab on a case-sensitive workspace", false, false},
+		{"different case returns the open tab on a case-insensitive workspace", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, loader, h1, _ := newTestComponentWithFile(t, "file:///tmp/Ws/tsconfig.json")
+			loader.caseInsensitive = tc.caseInsensitive
+			other, err := workspaceapi.ParseURI("file:///tmp/ws/tsconfig.json")
+			require.NoError(t, err)
+
+			h2, err := c.Open(other)
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantSameTab, h1 == h2)
+		})
+	}
+
 	t.Run("opens recovery prompt if err == workspaceapi.ErrFileAlreadyOpen", func(t *testing.T) {
 		c, loader, _, _ := newTestComponentWithFile(t, "file:///tmp/wasup")
 		c.Resize(30, 20)
@@ -485,10 +614,10 @@ func TestComponentOpen(t *testing.T) {
 │  File file:///tmp/busy is  │
 │  already open by another   │
 │  process or an edit        │
-│  session for this file     │
-│  crashed.                  │
-│                            │
-│Open rdonly      Force Edit │
+│          Recover           │
+│        Open rdonly         │
+│        Force Edit          │
+│           Skip             │
 └────────────────────────────┘
 │                            │
 │                            │
@@ -547,10 +676,10 @@ func TestComponentOpen(t *testing.T) {
 │  File file:///tmp/more is  │
 │  already open by another   │
 │  process or an edit        │
-│  session for this file     │
-│  crashed.                  │
-│                            │
-│Open rdonly      Force Edit │
+│          Recover           │
+│        Open rdonly         │
+│        Force Edit          │
+│           Skip             │
 └────────────────────────────┘
 │AAAAAAAAAAAAAAAAAAAAAAAAAAAA│
 │AAAAAAAAAAAAAAAAAAAAAAAAAAAA│
@@ -573,10 +702,10 @@ func TestComponentOpen(t *testing.T) {
 │  File file:///tmp/m is     │
 │  already open by another   │
 │  process or an edit        │
-│  session for this file     │
-│  crashed.                  │
-│                            │
-│Open rdonly      Force Edit │
+│          Recover           │
+│        Open rdonly         │
+│        Force Edit          │
+│           Skip             │
 └────────────────────────────┘
 │AAAAAAAAAAAAAAAAAAAAAAAAAAAA│
 │AAAAAAAAAAAAAAAAAAAAAAAAAAAA│
@@ -736,10 +865,10 @@ func TestComponentOpen(t *testing.T) {
 │  File file:///tmp/busy is  │
 │  already open by another   │
 │  process or an edit        │
-│  session for this file     │
-│  crashed.                  │
-│                            │
-│Open rdonly      Force Edit │
+│          Recover           │
+│        Open rdonly         │
+│        Force Edit          │
+│           Skip             │
 └────────────────────────────┘
 │                            │
 │                            │
@@ -873,6 +1002,98 @@ Do not edit this file. Instead edit its [corresponding wiki page](https://x.unst
 		w.ForegroundCh = '$'
 		comptest.TestComponent(t, c, w, tests)
 
+	})
+}
+
+func TestComponentShow(t *testing.T) {
+	tests := []struct {
+		name       string
+		show       string
+		noOpener   bool
+		openErr    error
+		wantTab    string
+		wantOpened []string
+		wantErr    string
+	}{
+		{name: "file opens in a tab", show: "file:///tmp/show.go", wantTab: "file:///tmp/show.go"},
+		{name: "ssh opens in a tab", show: "ssh://host/show.go", wantTab: "ssh://host/show.go"},
+		{name: "runenet opens in a tab", show: "rune://host/show.go", wantTab: "rune://host/show.go"},
+		{name: "tailscale opens in a tab", show: "tailscale://host/show.go",
+			wantTab: "tailscale://host/show.go"},
+		{
+			name:       "https goes to the URL opener",
+			show:       "https://example.com/a?b=c#d",
+			wantOpened: []string{"https://example.com/a?b=c#d"},
+		},
+		{
+			name:       "other schemes go to the URL opener",
+			show:       "memory:///show.go",
+			wantOpened: []string{"memory:///show.go"},
+		},
+		{
+			name:       "URL opener error",
+			show:       "mailto:a@example.com",
+			openErr:    errors.New("no system browser configured"),
+			wantOpened: []string{"mailto:a@example.com"},
+			wantErr:    "no system browser configured",
+		},
+		{
+			name:     "no URL opener",
+			show:     "https://example.com/docs",
+			noOpener: true,
+			wantErr:  "no URL opener",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := text.DefaultConfig()
+			var opened []string
+			if !tt.noOpener {
+				cfg.OpenURL = func(u *url.URL) error {
+					opened = append(opened, u.String())
+					return tt.openErr
+				}
+			}
+			c, _ := newTestComponentConfig(t, NopEditor(), cfg)
+			uri, err := workspaceapi.ParseURI(tt.show)
+			require.NoError(t, err)
+
+			err = c.Show(uri)
+
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Equal(t, tt.wantOpened, opened)
+			tab, ok := c.FocusTab()
+			if tt.wantTab == "" {
+				assert.False(t, ok, "only files open in a tab")
+				return
+			}
+			require.True(t, ok, "the shown file must be in focus")
+			assert.Equal(t, tt.wantTab, tab.URI().String())
+		})
+	}
+
+	t.Run("focuses the window already showing the file", func(t *testing.T) {
+		c, _ := newTestComponent(t, NopEditor())
+		c.Resize(80, 24)
+		uri, err := workspaceapi.ParseURI("file:///tmp/show.go")
+		require.NoError(t, err)
+		require.NoError(t, c.Show(uri))
+		shown, err := c.Focus()
+		require.NoError(t, err)
+		other, err := c.Split(browserapi.OrientationRight, shown, browsertest.NewTestHandler())
+		require.NoError(t, err)
+		_, err = c.SetFocus(other)
+		require.NoError(t, err)
+
+		require.NoError(t, c.Show(uri))
+
+		focus, err := c.Focus()
+		require.NoError(t, err)
+		assert.Equal(t, shown.WindowID(), focus.WindowID())
 	})
 }
 
@@ -2176,6 +2397,44 @@ func TestComponentEditor(t *testing.T) {
 		assert.Error(t, err)
 		assert.Nil(t, h)
 	})
+
+	for _, tc := range []struct {
+		name            string
+		caseInsensitive bool
+		wantFound       bool
+	}{
+		{"tells apart different case on a case-sensitive workspace", false, false},
+		{"matches different case on a case-insensitive workspace", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			other, err := workspaceapi.ParseURI("file:///tmp/ennio_morricone.go")
+			require.NoError(t, err)
+
+			c, loader, tab, _ := newTestComponentWithFile(t, "file:///tmp/Ennio_Morricone.go")
+			loader.caseInsensitive = tc.caseInsensitive
+			h, err := c.Editor(other)
+			if tc.wantFound {
+				require.NoError(t, err)
+				assert.Equal(t, tab.(*browser.Tab).Handler(), h)
+			} else {
+				assert.ErrorIs(t, err, text.ErrHandlerNotFound)
+			}
+
+			c, loader = newTestComponent(t, NopEditor())
+			loader.caseInsensitive = tc.caseInsensitive
+			edited, err := workspaceapi.ParseURI("file:///tmp/Ennio_Morricone.go")
+			require.NoError(t, err)
+			ed, err := c.Edit(context.Background(), edited, cell.NewBuffer(), false, false)
+			require.NoError(t, err)
+			h, err = c.Editor(other)
+			if tc.wantFound {
+				require.NoError(t, err)
+				assert.Equal(t, ed, h)
+			} else {
+				assert.ErrorIs(t, err, text.ErrHandlerNotFound)
+			}
+		})
+	}
 }
 
 func TestComponentCommands(t *testing.T) {
@@ -2289,6 +2548,12 @@ func (*testResourceOpener) OpenResource(
 	context.Context, workspaceapi.URI,
 ) (browserapi.Handler, error) {
 	return browsertest.NewTestHandler(), nil
+}
+
+func (*testResourceOpener) CompleteResource(
+	context.Context, string,
+) (sdkiterator.Iterator[string], error) {
+	return sdkiterator.Empty[string](), nil
 }
 
 func TestComponentResourceOpeners(t *testing.T) {
@@ -2707,8 +2972,13 @@ func TestFlush(t *testing.T) {
 		win, err := c.Focus()
 		require.NoError(t, err)
 
+		mockWorkspace.EXPECT().LoaderFor(gomock.Any()).DoAndReturn(
+			func(file workspaceapi.URI) (workspace.FileLoader, error) {
+				return workspace.FileLoaderOf(mockWorkspace, file), nil
+			}).Times(1)
 		mockWorkspace.EXPECT().Load(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 			Return(mockFlusherCloser, nil).Times(1)
+		mockWorkspace.EXPECT().PathCaseSensitive().Return(true).AnyTimes()
 		mock.EXPECT().Resize(gomock.Any(), gomock.Any()).Times(1)
 		mock.EXPECT().CursorAtScroll().
 			Return(term.Coordinates{}).Times(1)
@@ -2896,8 +3166,13 @@ func TestReload(t *testing.T) {
 		win, err := c.Focus()
 		require.NoError(t, err)
 
+		mockWorkspace.EXPECT().LoaderFor(gomock.Any()).DoAndReturn(
+			func(file workspaceapi.URI) (workspace.FileLoader, error) {
+				return workspace.FileLoaderOf(mockWorkspace, file), nil
+			}).Times(1)
 		mockWorkspace.EXPECT().Load(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 			Return(mockFlusherCloser, nil).Times(1)
+		mockWorkspace.EXPECT().PathCaseSensitive().Return(true).AnyTimes()
 		mock.EXPECT().Resize(gomock.Any(), gomock.Any()).Times(1)
 		mock.EXPECT().CursorAtScroll().
 			Return(term.Coordinates{}).Times(1)
@@ -3091,6 +3366,195 @@ func TestReload(t *testing.T) {
 		require.True(t, ok)
 		assert.False(t, dirty)
 	})
+}
+
+// Frames of README.md in a markdown view tab, named after what it shows
+// and the size.
+const (
+	markdownImages42x16 = `
+┌━━━━━━━━━━━─────────────────────────────┐
+│o README.md                             │
+├────────────────────────────────────────┤
+│                                        │
+│ # Docs                                 │
+│                                        │
+│ @@@@@@@@@@@@@@   @@@@@@@@@@@@@@        │
+│ @@@b#cc#;;#@@@   @@@b#cc#;;#@@@        │
+│ @@@c;2;;:::@@@   @@@c;2;;:::@@@        │
+│ @@@;;#::#:0@@@   @@@;;#::#:0@@@        │
+│ @@@@@@@@@@@@@@   @@@@@@@@@@@@@@        │
+│ #@@#@#####@##@   #@@#@#####@##@        │
+│                                        │
+│                                        │
+│remote notes                            │
+└────────────────────────────────────────┘`
+	markdownImageLabels42x16 = `
+┌━━━━━━━━━━━─────────────────────────────┐
+│o README.md                             │
+├────────────────────────────────────────┤
+│                                        │
+│ # Docs                                 │
+│                                        │
+│logo root                               │
+│                                        │
+│remote notes                            │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+└────────────────────────────────────────┘`
+	markdownBelowImage42x12 = `
+┌━━━━━━━━━━━─────────────────────────────┐
+│o README.md                             │
+├────────────────────────────────────────┤
+│line 0                                  │
+│                                        │
+│line 1                                  │
+│                                        │
+│line 2                                  │
+│                                        │
+│line 3                                  │
+│                                        │
+└────────────────────────────────────────┘`
+)
+
+func TestMarkdownViewImages(t *testing.T) {
+	const readme = "# Docs\n\n" +
+		"![logo](img/sample.png) ![root](/assets/sample.png)\n\n" +
+		"![remote](http://example.com/a.png) ![notes](notes.txt)\n"
+	files := map[string][]byte{
+		"/tmp/docs/README.md":      []byte(readme),
+		"/tmp/docs/img/sample.png": imageuritest.SamplePNG,
+		"assets/sample.png":        imageuritest.SamplePNG,
+		"/tmp/docs/notes.txt":      []byte("notes"),
+	}
+	tests := []struct {
+		name    string
+		storage bool
+		// loading are the labels drawn until the images load.
+		loading  []string
+		expected string
+		// placements are the cells each image covers.
+		placements []image.Rectangle
+		opened     []string
+	}{
+		{
+			// Each image is 16x7 cells: GitHub's 194x179 CSS pixels with a
+			// 24 pixel line drawn on 20 pixel rows.
+			name:     "draws workspace images and the labels of the others",
+			storage:  true,
+			loading:  []string{"logo", "root"},
+			expected: markdownImages42x16,
+			placements: []image.Rectangle{
+				image.Rect(1, 6, 1+16, 6+7), image.Rect(18, 6, 18+16, 6+7),
+			},
+			opened: []string{
+				"/tmp/docs/README.md", "/tmp/docs/img/sample.png", "assets/sample.png",
+			},
+		},
+		{
+			name:     "draws only labels without image storage",
+			expected: markdownImageLabels42x16,
+			opened:   []string{"/tmp/docs/README.md"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var opts []text.Option
+			if tt.storage {
+				opts = append(opts, text.WithMarkdownImageStorage(storagestub.NewInMemoryService()))
+			}
+			f := newMarkdownImagesFixture(t, files, 42, 16, opts...)
+			f.open(true)
+			assert.Equal(t, strings.TrimPrefix(tt.expected, "\n"),
+				settleMarkdownImages(f, tt.loading...))
+			rec := &placementRecorder{StringerWriter: f.w}
+			f.c.Draw(rec)
+			var placements []image.Rectangle
+			for _, img := range rec.images {
+				placements = append(placements, img.Bounds())
+			}
+			assert.Equal(t, tt.placements, placements)
+			assert.ElementsMatch(t, tt.opened, f.loader.openedFiles())
+		})
+	}
+
+	t.Run("reload keeps the view below an image in place", func(t *testing.T) {
+		var content strings.Builder
+		content.WriteString("# Docs\n\n![logo](img/sample.png)\n\n")
+		for i := range 12 {
+			fmt.Fprintf(&content, "line %d\n\n", i)
+		}
+		files := map[string][]byte{
+			"/tmp/docs/README.md":      []byte(content.String()),
+			"/tmp/docs/img/sample.png": imageuritest.SamplePNG,
+		}
+		f := newMarkdownImagesFixture(t, files, 42, 12,
+			text.WithMarkdownImageStorage(storagestub.NewInMemoryService()))
+		h := f.open(true)
+		md, ok := h.(*browser.Tab).Handler().(*hmarkdown.Handler)
+		require.True(t, ok)
+		settleMarkdownImages(f, "logo")
+		md.ScrollDown(11)
+		offset := md.SeekOffset()
+		screen := settleMarkdownImages(f)
+		require.Equal(t, strings.TrimPrefix(markdownBelowImage42x12, "\n"), screen)
+
+		require.NoError(t, awaitErr(f.c.Reload(context.Background(), f.win)))
+		assert.Equal(t, offset, md.SeekOffset())
+		assert.Equal(t, screen, settleMarkdownImages(f),
+			"the image must keep its height while it loads again")
+
+		require.Eventually(t, func() bool {
+			return len(f.loader.openedFiles()) == 4
+		}, imageViewTimeout, time.Millisecond, "the image never loaded again")
+		select {
+		case <-f.irq:
+		case <-time.After(imageViewTimeout):
+			t.Fatal("the loaded image never interrupted the event loop")
+		}
+		assert.Equal(t, screen, settleMarkdownImages(f))
+		assert.Equal(t, offset, md.SeekOffset())
+	})
+}
+
+// newMarkdownImagesFixture shows memory:///tmp/docs/README.md, served from
+// files with the images it links to, in a writer that draws images as
+// ASCII art and has a 10x20 pixel cell.
+func newMarkdownImagesFixture(
+	t *testing.T, files map[string][]byte, width, height int, opts ...text.Option,
+) *imageViewFixture {
+	f := newImageViewFixture(t, "docs/README.md", width, height, true, opts...)
+	f.loader.files = files
+	f.w.(*asciiart.StringWriter).SetContext = cell.ContextWithPixelSize(
+		context.Background(), cell.PixelSize{Width: 10, Height: 20})
+	return f
+}
+
+// settleMarkdownImages redraws on every interrupt, as the host event loop
+// does, until none of the labels of the images loading is on screen, and
+// returns the screen.
+func settleMarkdownImages(f *imageViewFixture, loading ...string) string {
+	timeout := time.After(imageViewTimeout)
+	for {
+		f.c.Draw(f.w)
+		_ = f.w.Flush()
+		screen := f.w.String()
+		_ = f.w.Clear(term.Attributes{})
+		if !slices.ContainsFunc(loading, func(label string) bool {
+			return strings.Contains(screen, label)
+		}) {
+			return screen
+		}
+		select {
+		case <-f.irq:
+		case <-timeout:
+			f.t.Error("timed out waiting for the images to load")
+			return screen
+		}
+	}
 }
 
 func TestDirtyStateAfterFlush(t *testing.T) {
@@ -3458,3 +3922,56 @@ func expectFocusEvent(
 			return false
 		})
 }
+
+func TestComponentPointerLeaves(t *testing.T) {
+	t.Parallel()
+	uri, err := workspaceapi.ParseURI("memory:///tmp/日本語🙂.go")
+	require.NoError(t, err)
+	inline := func(fn func()) bool { fn(); return true }
+	// open shows uri in a standard editor with every bar, in a
+	// component 40x10.
+	open := func(t *testing.T) (*text.Component, browserapi.Handler) {
+		ed := standard.Editor(
+			standard.WithScheduleNextTick(inline),
+			standard.WithAuxiliaryBar(true, text.AuxBarConfig{
+				LinesEnabled: true, FoldsEnabled: true, ScheduleNextTick: inline,
+			}),
+			standard.WithIconsBar(true, text.IconsBarConfig{ScheduleNextTick: inline}),
+			standard.WithStatusBarConfig(true, text.StatusBarConfig{
+				ScheduleNextTick: inline, Publisher: &TestEditor{},
+			}),
+		)
+		c, loader := newTestComponent(t, ed)
+		loader.content = pointerContent
+		win, err := c.Focus()
+		require.NoError(t, err)
+		c.Resize(40, 10)
+		h, err := c.OpenFileTab(uri, false)
+		require.NoError(t, err)
+		require.NoError(t, win.SetContent(h))
+		return c, h
+	}
+	for _, size := range pointerSizes {
+		c, _ := open(t)
+		handlertest.RunPointerLeaves(t, componentHandler{c}, size.width, size.height)
+		_, h := open(t)
+		handlertest.RunPointerLeaves(t, h, size.width, size.height)
+	}
+	c, _ := open(t)
+	requirePointerLeavesKeepState(t, componentHandler{c}, 40, 10,
+		term.Coordinates{X: 12, Y: 4}, term.Coordinates{X: 18, Y: 6}, nil)
+	_, h := open(t)
+	require.Contains(t, pointerStateOf(h, 40, 10).Screen, "package main")
+	requirePointerLeavesKeepState(t, h, 40, 10,
+		term.Coordinates{X: 10, Y: 2}, term.Coordinates{X: 16, Y: 4}, nil)
+}
+
+// componentHandler lets the pointer leave helpers drive a text.Component,
+// which draws its windows' cursors itself instead of reporting one.
+type componentHandler struct{ *text.Component }
+
+func (componentHandler) Cursor() (term.Coordinates, term.CursorStyle, bool) {
+	return term.Coordinates{}, term.CursorStyleDefault, false
+}
+
+func (componentHandler) Selection() (string, bool) { return "", false }

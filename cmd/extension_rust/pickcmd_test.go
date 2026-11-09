@@ -28,6 +28,9 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/semanticapi"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"github.com/unstablebuild/rune-go-sdk/tui"
+	"unstable.build/rune/internal/handler/handlertest"
+	"unstable.build/rune/internal/handler/locationpicker"
 )
 
 // newTestPickCmd wires a listPickCmd over the given entries against
@@ -72,6 +75,48 @@ func TestPickerViewTickInterrupts(t *testing.T) {
 	v.tick(func() { ran = true })
 	require.True(t, ran, "the deferred work runs")
 	assert.Equal(t, 1, ir.interrupts(), "the tick requests a redraw")
+}
+
+// newTestPickerView builds the view present floats for a diagnostics
+// list, returning the channel its pick or cancel is reported on.
+func newTestPickerView(t *testing.T) (*pickerView, chan int) {
+	t.Helper()
+	cmd, _, _, _, _ := newTestPickCmd(nil)
+	entries := []pickEntry{
+		pickEntryAt("main.rs", 1),
+		pickEntryAt("lib.rs", 7),
+		pickEntryAt("parser.rs", 42),
+		pickEntryAt("lexer.rs", 3),
+		pickEntryAt("ast.rs", 120),
+	}
+	ch := make(chan int, 1)
+	view := &pickerView{ch: ch, interrupt: term.NopInterrupter()}
+	view.Picker = locationpicker.New(
+		cmd.pickerEntries(newTestURI(t), entries), cmd.fs, view.tick, nil,
+		locationpicker.DefaultConfig(), nil)
+	view.SetOnSelect(func(idx int) { ch <- idx })
+	return view, ch
+}
+
+func TestPickerViewPointerLeaves(t *testing.T) {
+	t.Parallel()
+	for _, size := range [][2]int{{60, 15}, {1, 1}} {
+		view, _ := newTestPickerView(t)
+		handlertest.RunPointerLeaves(t, view, size[0], size[1])
+	}
+}
+
+func TestPickerViewPointerLeaveIsInert(t *testing.T) {
+	t.Parallel()
+	var ch chan int
+	requirePointerLeaveInert(t, func(t *testing.T) tui.Handler {
+		var view *pickerView
+		view, ch = newTestPickerView(t)
+		view.Handle(term.Event{Type: term.EventKey, Key: term.KeyArrowDown})
+		return view
+	}, 60, 15, func(t *testing.T) {
+		assert.Empty(t, ch, "a leave neither picks nor cancels")
+	})
 }
 
 func TestListPickCmdEmptyNotifies(t *testing.T) {

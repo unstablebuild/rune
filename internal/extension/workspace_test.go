@@ -93,6 +93,10 @@ func (t *testWorkspace) Recover(
 	return testFlusherCloser{}, nil
 }
 
+func (t *testWorkspace) LoaderFor(file workspaceapi.URI) (workspace.FileLoader, error) {
+	return workspace.FileLoaderOf(t, file), nil
+}
+
 var _ workspace.Workspace = (*testWorkspace)(nil)
 
 type testFlusherCloser struct{}

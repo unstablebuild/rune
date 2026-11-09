@@ -26,25 +26,50 @@ import (
 func TestCompact(t *testing.T) {
 	tool := newCompact()
 
-	t.Run("Execute returns Compact true", func(t *testing.T) {
-		result := tool.Execute(context.Background(), "{}")
-		assert.Equal(t, "Compacting conversation...", result.Content)
-		assert.True(t, result.Compact)
-		assert.False(t, result.IsError)
+	executeTests := []struct {
+		name             string
+		args             string
+		wantInstructions string
+	}{
+		{name: "no arguments", args: "{}"},
+		{name: "empty arguments", args: ""},
+		{name: "null instructions", args: `{"instructions":null}`},
+		{name: "instructions", args: `{"instructions":"  keep the failing test output\n"}`,
+			wantInstructions: "keep the failing test output"},
+	}
+	for _, tt := range executeTests {
+		t.Run("Execute "+tt.name, func(t *testing.T) {
+			result := tool.Execute(context.Background(), tt.args)
+			assert.Equal(t, "Compacting conversation...", result.Content)
+			assert.True(t, result.Compact)
+			assert.False(t, result.IsError)
+			assert.Equal(t, tt.wantInstructions, result.CompactInstructions)
+		})
+	}
+
+	t.Run("Execute rejects malformed arguments", func(t *testing.T) {
+		result := tool.Execute(context.Background(), "{")
+		assert.True(t, result.IsError)
+		assert.False(t, result.Compact)
 	})
 
 	t.Run("Summary returns empty string", func(t *testing.T) {
 		assert.Equal(t, "", tool.Summary("{}"))
 	})
 
-	t.Run("Definition has correct name and empty required fields", func(t *testing.T) {
+	t.Run("Definition takes nullable instructions", func(t *testing.T) {
 		def := tool.Definition()
 		assert.Equal(t, "compact", def.Function.Name)
 		assert.NotEmpty(t, def.Function.Description)
 		params, ok := def.Function.Parameters.(map[string]any)
 		assert.True(t, ok)
 		assert.Equal(t, "object", params["type"])
-		assert.Equal(t, []string{}, params["required"])
+		assert.Equal(t, []string{"instructions"}, params["required"])
 		assert.Equal(t, false, params["additionalProperties"])
+		props, ok := params["properties"].(map[string]any)
+		assert.True(t, ok)
+		instructions, ok := props["instructions"].(map[string]any)
+		assert.True(t, ok)
+		assert.Equal(t, []string{"string", "null"}, instructions["type"])
 	})
 }

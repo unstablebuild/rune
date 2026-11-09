@@ -19,6 +19,7 @@ package ide
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -44,6 +45,7 @@ import (
 	"unstable.build/rune/internal/handler/command"
 	"unstable.build/rune/internal/ide/ideauthorizer"
 	"unstable.build/rune/internal/ide/idepkg"
+	"unstable.build/rune/internal/sounds"
 	"unstable.build/rune/internal/text"
 )
 
@@ -174,11 +176,33 @@ func WithShellRCDir(dir string) Option {
 	}
 }
 
+// WithHostDataDir sets the Rune data directory of this host, which
+// $RUNE_DATADIR names in the commands file workspaces start. Without this
+// option it is the process's RUNE_DATADIR.
+func WithHostDataDir(dir string) Option {
+	return func(opts *options) {
+		opts.hostDataDir = dir
+	}
+}
+
 // WithConfigFilename defines the base filename of the IDE configuration
 // to be expected in a workspace's directory.
 func WithConfigFilename(filename string) Option {
 	return func(opts *options) {
 		opts.workspaceConfig = filename
+	}
+}
+
+// WithTrustedWorkspaceConfig applies a workspace configuration whose
+// contents are exactly contents without asking the user to trust it, for
+// configs Rune itself ships. Any other contents, even in the same
+// workspace, still ask.
+func WithTrustedWorkspaceConfig(contents []byte) Option {
+	return func(opts *options) {
+		if opts.trustedWorkspaceConfigs == nil {
+			opts.trustedWorkspaceConfigs = make(map[string]struct{})
+		}
+		opts.trustedWorkspaceConfigs[workspaceConfigFingerprint(contents)] = struct{}{}
 	}
 }
 
@@ -195,11 +219,24 @@ func WithWorkspaceOpenCompleter(scheme string, c command.Completer) Option {
 	}
 }
 
-// WithDefaultWallpaper sets the default wallpaper if the
-// user doesn't provide one via rc configuration.
-func WithDefaultWallpaper(wallpaper browser.Wallpaper) Option {
+// Logo is the built-in wallpaper of windows without a tab, together with
+// the intro that animates it in at startup.
+type Logo struct {
+	Wallpaper browser.Wallpaper
+	// Shader returns the intro, which runs at ShaderFPS for ShaderDuration.
+	// It is nil for a logo without an intro.
+	Shader         func(term.Attributes, component.FrameCharSet) shader.Shader
+	ShaderFPS      int
+	ShaderDuration time.Duration
+}
+
+// WithLogo sets the built-in logo windows without a tab show, with its
+// intro, when no workspace.wallpaper_* setting names a wallpaper. A
+// wallpaper the user configures replaces the logo, and has no intro.
+// Without a logo such windows are blank.
+func WithLogo(logo Logo) Option {
 	return func(opts *options) {
-		opts.defaultWallpaper = wallpaper
+		opts.logo = &logo
 	}
 }
 
@@ -271,10 +308,13 @@ func (d DefaultConfig) option() Option {
 	return WithDefaultConfigStarlark(d.src, d.modal, d.tui)
 }
 
-// WithBell sets the default mechanism to ring the system bell.
-func WithBell(bell func()) Option {
+// WithSoundBackend sets where the IDE plays its sounds, such as a
+// terminal ringing the bell, once it has resolved their names from the
+// `sounds` config. The default rings the host terminal's bell for every
+// sound.
+func WithSoundBackend(o sounds.Backend) Option {
 	return func(opts *options) {
-		opts.bell = bell
+		opts.soundOutput = o
 	}
 }
 
@@ -305,16 +345,22 @@ func WithClipboard(clip clipboard.Register) Option {
 	}
 }
 
-// WithInitShader configures the IDE to initialize with the
-// given Shader animation.
-func WithInitShader(
-	shaderFn func(term.Attributes, component.FrameCharSet) shader.Shader,
-	fps int, duration time.Duration,
-) Option {
+// WithSystemURLOpener sets how a clicked URL opens in the system browser,
+// which is how every URL opens when the meta_open_url config is "system"
+// and how URLs other than http(s) always open. It is called on the event
+// loop, which it holds until it returns. Without it such URLs fail to
+// open.
+func WithSystemURLOpener(open func(*url.URL) error) Option {
 	return func(opts *options) {
-		opts.initShaderFn = shaderFn
-		opts.initShaderFPS = fps
-		opts.initShaderDuration = duration
+		opts.systemOpenURL = open
+	}
+}
+
+// WithSponsorsURL sets the URL of the sponsor list the sponsors command
+// shows. Without it the command fails.
+func WithSponsorsURL(u string) Option {
+	return func(opts *options) {
+		opts.sponsorsURL = u
 	}
 }
 
@@ -357,13 +403,16 @@ func WithLoadingShader(
 
 // WithOpenShader configures the IDE to play the given Shader
 // animation when a workspace finishes loading. Has no effect if no
-// loading shader is configured via [WithLoadingShader].
+// loading shader is configured via [WithLoadingShader]. shaderFn is
+// given the screen the workspace takes over, desaturated as far as a
+// [shader.GrayFade] loading shader got, for a reveal to start from; it
+// has no cells when there was nothing on screen to take.
 //
 // duration is the lifetime of the underlying [shader.Component]; the
 // open shader runs for this long after the loading shader finishes.
 // Passing duration <= 0 uses an internal default.
 func WithOpenShader(
-	shaderFn func(term.Attributes) shader.Shader,
+	shaderFn func(term.Attributes, shader.Snapshot) shader.Shader,
 	fps int,
 	duration time.Duration,
 ) Option {
@@ -523,33 +572,36 @@ type options struct {
 	extensions           map[string]Extension
 	schemes              map[string]schemeapi.SchemeFunc
 	shellRCDir           string
+	hostDataDir          string
 	workspaceConfig      string
-	defaultWallpaper     browser.Wallpaper
+	logo                 *Logo
 	defaultConfig        string
-	bell                 func()
+	soundOutput          sounds.Backend
 	scheduleFn           func(func()) bool
 	cellPixelSize        func() (int, int)
 	clip                 clipboard.Register
+	systemOpenURL        func(*url.URL) error
+	sponsorsURL          string
 	afterFunc            func(time.Duration, func()) *time.Timer
 	debugCommands        bool
 	streamingOpen        bool
 	disableSessionReopen bool
 
 	workspaceOpenCompleters map[string]command.Completer
+	// trustedWorkspaceConfigs holds the workspaceConfigFingerprint of
+	// every workspace config applied without asking.
+	trustedWorkspaceConfigs map[string]struct{}
 
 	defaultConfigModeModal bool
 	defaultConfigTUI       bool
 
-	initShaderFn           func(term.Attributes, component.FrameCharSet) shader.Shader
-	initShaderDuration     time.Duration
-	initShaderFPS          int
 	shutdownShaderFn       func(term.Attributes) shader.Shader
 	shutdownShaderDuration time.Duration
 	shutdownShaderFPS      int
 	loadingShaderFn        func(term.Attributes) shader.Shader
 	loadingShaderFPS       int
 	loadingShaderDuration  time.Duration
-	openShaderFn           func(term.Attributes) shader.Shader
+	openShaderFn           func(term.Attributes, shader.Snapshot) shader.Shader
 	openShaderFPS          int
 	openShaderDuration     time.Duration
 	starlarkTutorials      map[string]string
@@ -582,9 +634,8 @@ func defaultOptions() options {
 		locker:             new(sync.Mutex),
 		extensions:         make(map[string]Extension),
 		workspaceConfig:    ".iderc",
-		defaultWallpaper:   browser.NopWallpaper(),
 		defaultConfig:      "config = {}",
-		bell:               term.RingBell,
+		soundOutput:        terminalSounds,
 		scheduleFn:         term.ScheduleNextTick,
 		afterFunc:          time.AfterFunc,
 		workspacesBarFrame: true,
@@ -600,7 +651,7 @@ type nopExtensions struct {
 func (n nopExtensions) WorkspaceExtensionsRunner(
 	uri workspaceapi.URI,
 	res map[extensionapi.Permission]extension.ResourceRegistrar,
-	authorizer *ideauthorizer.Authorizer,
+	authorizer extensionv2.ServerAuthorizer,
 	trust extensionv2.TrustVerifier,
 	dataDir, installDir string, notifications browser.Notifications,
 	exec, extExec schemeapi.Executor,
@@ -627,3 +678,12 @@ func (n nopExtensionsRunner) Close() error {
 func (n nopExtensionsRunner) WaitReady(ctx context.Context, id string) error {
 	return nil
 }
+
+func (n nopExtensionsRunner) SignalReload() int { return 0 }
+
+// terminalSounds rings the host terminal's bell, which is the only
+// sound a terminal can make. It publishes the bell rather than ringing
+// it directly because Play may be called off the event loop.
+var terminalSounds = sounds.BackendFunc(func(sounds.Sound) {
+	term.PublishBell()
+})

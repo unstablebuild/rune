@@ -20,6 +20,8 @@ import (
 	"fmt"
 
 	"github.com/unstablebuild/blue/release"
+	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
+	"github.com/unstablebuild/rune-go-sdk/handler/repl"
 )
 
 // requirementsKey is the top-level package config key listing Rune
@@ -34,12 +36,11 @@ const requirementsKey = "requirements"
 // non-empty strings.
 func pkgConfigRequirements(
 	filename string, data []byte,
-	pkgID string, pkgVersion release.Version,
-	dataDir, editorMode string,
+	pkgID string, pkgVersion release.Version, editorMode string,
 ) ([]string, error) {
 	cfg, err := loadIdePkgConfigOverlay(
 		filename, data, map[string]any{},
-		pkgID, pkgVersion, dataDir, editorMode,
+		pkgID, pkgVersion, editorMode,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("decode package config: %w", err)
@@ -63,4 +64,50 @@ func pkgConfigRequirements(
 		reqs = append(reqs, s)
 	}
 	return reqs, nil
+}
+
+// RequirementChange is a requirement an install installed or upgraded
+// before the package that requires it.
+type RequirementChange struct {
+	Package string
+	// From is the version that was in use before the change, and empty
+	// when the requirement was not installed.
+	From release.Version
+	To   release.Version
+	// RequiredBy is the package whose install made the change.
+	RequiredBy string
+}
+
+// String describes c as a sentence for the user.
+func (c RequirementChange) String() string {
+	if c.From == "" {
+		return fmt.Sprintf("Installed %s %s, required by %s.", c.Package, c.To, c.RequiredBy)
+	}
+	return fmt.Sprintf("Upgraded %s from %s to %s, required by %s.",
+		c.Package, c.From, c.To, c.RequiredBy)
+}
+
+// RequirementReporter is implemented by the progress writer of an
+// install whose caller shows the requirement changes of the install
+// itself. Without one, each change is shown as a notification.
+type RequirementReporter interface {
+	ReportRequirement(RequirementChange)
+}
+
+// ReportRequirement reports c to the RequirementReporter of the install
+// pw is the progress writer of, including when pw is the writer of a
+// nested requirement install, and otherwise notifies n of c.
+func ReportRequirement(n browserapi.Notifications, pw repl.ProgressWriter, c RequirementChange) {
+	for {
+		w, ok := pw.(requirementProgressWriter)
+		if !ok {
+			break
+		}
+		pw = w.pw
+	}
+	if r, ok := pw.(RequirementReporter); ok {
+		r.ReportRequirement(c)
+		return
+	}
+	_, _ = n.Notify(browserapi.LevelInfo, "%s", c)
 }

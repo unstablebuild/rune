@@ -62,10 +62,10 @@ RACE_FLAG=$(if $(filter true,$(RUNE_DEBUG_BUILD)),-race)
 # build date.
 BUILD_DATE := $(shell out=$$(cd $(ROOT_DIR) && $(GO) run ./cmd/buildstamp) && printf '%s' "$$out")
 BUILD_DATE_LDFLAG = $(if $(strip $(BUILD_DATE)),,$(error buildstamp produced no build date; refusing to build a binary with an empty debug.BuildDate))-X unstable.build/rune/internal/debug.BuildDate=$(strip $(BUILD_DATE))
-# dist/arch/PKGBUILD and dist/debian/debian/rules re-declare this set
-# because makepkg and dpkg-buildpackage drive the compiler themselves and
-# never call these rules. A flag added or renamed here has to be mirrored
-# in both, or packaged builds quietly ship without it.
+# dist/debian/debian/rules re-declares this set because
+# dpkg-buildpackage drives the compiler itself and never calls these
+# rules. A flag added or renamed here has to be mirrored there, or the
+# .deb quietly ships without it.
 COMMON_LDFLAGS=-X unstable.build/rune/internal/debug.Tag=$$(git describe --tags) -X unstable.build/rune/internal/debug.Commit=$$(git rev-parse --short HEAD) $(BUILD_DATE_LDFLAG) $(DEBUG_LDFLAGS)
 GOFLAGS=$(RACE_FLAG) -ldflags="$(COMMON_LDFLAGS) -X unstable.build/rune/internal/debug.Package=six"
 
@@ -139,7 +139,7 @@ endif
 	release-linux-amd64 release-linux-arm64 \
 	release-linux-amd64-native release-linux-arm64-native \
 	release-linux-amd64-cross release-linux-arm64-cross \
-	docker-build docker-push \
+	docker-build docker-build-staging docker-push \
 	check-release-tag \
 	dist-linux-amd64 dist-linux-arm64 dist-darwin-arm64 dist-darwin-amd64 \
 	dist-linux-amd64-native dist-linux-arm64-native \
@@ -474,6 +474,14 @@ RUNE_IMAGE_BUILD = cd $(ROOT_DIR) && docker buildx build --rm \
 docker-build:
 	@$(RUNE_IMAGE_BUILD) --platform linux/$(HOST_ARCH) --load \
 		-t $(RUNE_IMAGE):$(VERSION) .
+
+# docker-build-staging is docker-build pointed at the staging endpoints,
+# tagged under RUNE_STAGING_IMAGE so it cannot be mistaken for a release.
+RUNE_STAGING_IMAGE ?= unstablebuild/rune-staging
+docker-build-staging:
+	@$(RUNE_IMAGE_BUILD) --platform linux/$(HOST_ARCH) --load \
+		--build-arg RUNE_EXTRA_LDFLAGS="$(STAGING_LDFLAGS)" \
+		-t $(RUNE_STAGING_IMAGE):$(VERSION) .
 
 # docker-push publishes the release tagged at HEAD for every platform in
 # RUNE_IMAGE_PLATFORMS under its tag. Only a stable release also moves

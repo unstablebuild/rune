@@ -103,6 +103,12 @@ func (t *NopScheme) InstallDataDir(context.Context) (string, error) {
 	return "", errors.ErrUnsupported
 }
 
+// LookPath satisfies schemeapi.Scheme with the "host cannot say"
+// default.
+func (t *NopScheme) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
+}
+
 // NewFile satisfies schemeapi.Scheme
 func (t *NopScheme) NewFile(fd uintptr, name string) workspaceapi.File {
 	return nopFile{}
@@ -193,6 +199,12 @@ func (t *NopScheme) ReadDir(string) (
 	[]os.DirEntry, error,
 ) {
 	panic("unimplemented")
+}
+
+// PathCaseSensitive satisfies workspace.Workspace for fakes embedding
+// NopScheme, keeping exact path matching.
+func (t *NopScheme) PathCaseSensitive() bool {
+	return true
 }
 
 // MkdirAll satisfies schemeapi.Scheme

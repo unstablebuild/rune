@@ -34,7 +34,8 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/handler/handlertest"
-	"unstable.build/rune/internal/ide/pkgtrust"
+	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
+	"unstable.build/rune/internal/sounds"
 	"unstable.build/rune/internal/term/vte/vtereservoir"
 	"unstable.build/rune/internal/text"
 )
@@ -89,10 +90,10 @@ command:
 		return true
 	}
 
-	i, err := New(dir, configPath, dataDir, pkgtrust.NewStore(dataDir, nil), newTestStorage(t, dataDir),
+	i, err := New(dir, configPath, dataDir, pkgtrust.NewStore(), newTestStorage(t, dataDir),
 		WithLocker(mu),
 		WithScheduleNextTick(scheduleNextTick),
-		WithBell(func() {}),
+		WithSoundBackend(sounds.BackendFunc(func(sounds.Sound) {})),
 		WithStreamingOpen(true),
 		WithPublishEvent(publish),
 	)
@@ -253,7 +254,7 @@ command:
 	mu := new(sync.Mutex)
 	scheduleNextTick, drainSchedule := newTestScheduler(t, mu)
 
-	i, err := New(dir, configPath, dataDir, pkgtrust.NewStore(dataDir, nil),
+	i, err := New(dir, configPath, dataDir, pkgtrust.NewStore(),
 		newTestStorage(t, dataDir),
 		WithLocker(mu),
 		WithScheduleNextTick(scheduleNextTick),

@@ -17,9 +17,14 @@
 package markdown
 
 import (
+	"context"
+	"image"
 	"testing"
 
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
 	"github.com/unstablebuild/rune-go-sdk/term"
+
+	"unstable.build/rune/internal/cell"
 )
 
 func FuzzParse(f *testing.F) {
@@ -37,7 +42,7 @@ func FuzzParse(f *testing.F) {
 
 	cfg := DefaultConfig()
 	f.Fuzz(func(t *testing.T, input string) {
-		_, err := parse(input, &cfg)
+		_, err := parse(input, &cfg, images{}, false)
 		if err != nil {
 			t.Skip()
 		}
@@ -51,21 +56,48 @@ func FuzzRender(f *testing.F) {
 	f.Add("", 10, 10)
 	f.Add("# Title\n\nParagraph", 1, 1)
 	f.Add("Long text that needs to wrap around", 5, 3)
+	f.Add("![a](a.png) [![b](bb.png)](u)\n![](c.png)\\\n![dddd](d)", 7, 4)
+	f.Add("Text ![a](a.png)\n\n- ![b](b.png)\n\n> ![c](c.png)", 12, 6)
+	f.Add(`[![a](a.png "Acme"){cols=4}](u) ![bb](bb.png "B"){rows=1000 cols=1000 maintain_aspect_ratio=false}`, 9, 5)
 
 	f.Fuzz(func(t *testing.T, input string, width, height int) {
 		if width < 0 || height < 0 || width > 1000 || height > 1000 {
 			t.Skip()
 		}
 
-		md, err := New(input)
-		if err != nil {
-			t.Skip()
-		}
-		md.Resize(width, height)
+		for _, images := range []bool{false, true} {
+			cfg := DefaultConfig()
+			if images {
+				cfg.ImagesConfig = ImagesConfig{
+					Storage:     storagestub.NewInMemoryService(),
+					Interrupter: term.NopInterrupter(),
+					FS:          pictureFS{},
+				}
+			}
+			md, err := NewWithConfig(input, cfg)
+			if err != nil {
+				t.Skip()
+			}
+			// Sizes vary with the destination; every third one fails.
+			fakes := make(map[string]*fakeImage)
+			for _, i := range md.imageBlocks {
+				for _, it := range md.blocks[i].(*imageBlock).items {
+					n := len(it.dest) % 3
+					fakes[it.dest] = loaded(image.Pt(n*len(it.dest)*20, n*30))
+				}
+			}
+			useFakes(md, fakes)
+			md.Resize(width, height)
 
-		if width > 0 && height > 0 {
-			w := term.NewStringWriter(width, height)
-			md.Draw(w)
+			if width > 0 && height > 0 {
+				w := term.NewStringWriter(width, height)
+				w.SetContext = cell.ContextWithPixelSize(context.Background(),
+					cell.PixelSize{Width: 10, Height: 20})
+				md.Draw(w)
+				md.SeekTo(md.MaxSeekOffset())
+				md.Draw(w)
+			}
+			_ = md.Close()
 		}
 	})
 }

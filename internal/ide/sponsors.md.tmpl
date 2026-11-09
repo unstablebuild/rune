@@ -1,0 +1,67 @@
+{{- /* The copy and layout follow the sponsors page on the website, whose tiers
+are copied from github.com/sponsors/unstablebuild: keep all three in sync.
+tier_id is GitHub's numeric id for the tier; the open slots in sponsors.go
+link to the same ids. */ -}}
+# Sponsors
+
+Writing code is being automated. Long-term vision and ownership of software systems are not. When the stakes are high, you want an experienced engineer who can keep the system coherent and take responsibility for it. That's who we build Rune for.
+
+Rune is free and open source, built entirely through open-source contributions and stewarded by Unstable Build, a small, self-funded company. Independent and user-supported: your sponsorship keeps it that way. See the tiers section for more details.
+
+[Become a Sponsor](<{{.SponsorURL}}>)
+
+---
+{{range .Rows}}
+### {{.Label}}
+
+{{join .Paragraphs "\n\n"}}
+{{end}}
+{{- with .PrivateCount}}
+{{.}} {{if eq . 1}}sponsor{{else}}sponsors{{end}} chose to keep their sponsorship private.
+{{end}}
+---
+
+## Tiers
+
+### [$5 a month](<{{.SponsorURL}}/sponsorships?tier_id=671932>)
+
+- Your GitHub username is added to Rune's sponsors page
+- 2 x small Rune sticker in the mail (50mm x 50mm or 2x2").
+
+### [$10 a month](<{{.SponsorURL}}/sponsorships?tier_id=671952>)
+
+- All benefits from previous tiers.
+- 2 x medium Rune sticker in the mail (100mm x 100mm or 4x4").
+
+### [$50 a month](<{{.SponsorURL}}/sponsorships?tier_id=671957>)
+
+- All benefits from previous tiers.
+- A Rune T-shirt, mailed to you.
+- Your name or a small logo in Rune’s README.
+
+### [$100 a month](<{{.SponsorURL}}/sponsorships?tier_id=671963>)
+
+- All benefits from previous tiers.
+- Priority for the issues you report.
+- Your extension or plugin gets distributed with Rune's package manager: `pkg install <name>`.
+
+### [$250 a month](<{{.SponsorURL}}/sponsorships?tier_id=671981>)
+
+- All benefits from previous tiers.
+- A built-in Rune theme named after you.
+
+### [$500 a month](<{{.SponsorURL}}/sponsorships?tier_id=671967>)
+
+- All benefits from previous tiers.
+- A Medium size logo on Rune's sponsors page and in the README.
+- A command named after you in Rune’s command prompt that displays markdown content of your choice.
+
+### [$1,000 a month](<{{.SponsorURL}}/sponsorships?tier_id=671970>)
+
+- All benefits from previous tiers.
+- Our largest logo placement on Rune’s sponsors page and in the README
+- A command named after you in Rune’s console, with custom behavior (subject to approval).
+
+[Become a Sponsor](<{{.SponsorURL}}>)
+
+GitHub Sponsors handles billing, and you can change or cancel your sponsorship at any time. Private sponsorships are never listed on this page.

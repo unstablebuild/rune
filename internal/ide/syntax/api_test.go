@@ -49,6 +49,32 @@ func TestCaptureNameAttributesUnknownCaptureReturnsZeroAttributes(t *testing.T) 
 	assert.Equal(t, term.Attributes{}, CaptureNameAttributes(nil, "unknown.capture"))
 }
 
+func TestDefaultConfigCaptureNamesAttributesAreIndependent(t *testing.T) {
+	attrs := DefaultConfig().CaptureNamesAttributes
+	attrs["keyword"] = term.Attributes{Fg: term.ColorGreen}
+	attrs["user.only"] = term.Attributes{Fg: term.ColorGreen}
+
+	fresh := DefaultConfig().CaptureNamesAttributes
+	assert.Equal(t, term.ColorYellow, fresh["keyword"].Fg)
+	assert.NotContains(t, fresh, "user.only")
+	assert.Equal(t, term.ColorYellow, CaptureNameAttributes(nil, "keyword").Fg)
+	assert.Equal(t, term.Attributes{}, CaptureNameAttributes(nil, "user.only"))
+}
+
+func TestCaptureNameAttributesColorsDiffLines(t *testing.T) {
+	attrs := DefaultConfig().CaptureNamesAttributes
+	for _, tc := range []struct {
+		name string
+		want term.Color
+	}{
+		{"diff.plus", term.ColorGreen},
+		{"diff.minus", term.ColorRed},
+	} {
+		assert.Equal(t, tc.want, CaptureNameAttributes(attrs, tc.name).Fg, tc.name)
+		assert.Equal(t, tc.want, CaptureNameAttributes(nil, tc.name).Fg, tc.name)
+	}
+}
+
 func TestCaptureNameAttributesFallsBackToBaseCapture(t *testing.T) {
 	attrs := DefaultConfig().CaptureNamesAttributes
 

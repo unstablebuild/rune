@@ -17,13 +17,19 @@
 package text
 
 import (
+	"context"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"github.com/unstablebuild/rune-go-sdk/mouse"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/internal/cell"
 	"unstable.build/rune/internal/component"
+	"unstable.build/rune/internal/handler/handlertest"
 )
 
 func TestMouseDelegateSelectWordAtInvertedScrollAboveBuffer(t *testing.T) {
@@ -96,5 +102,124 @@ func TestMouseDelegateSelectWordAtWiderThanWindow(t *testing.T) {
 			assert.Equal(t, "bbbbbbbbbbbbbbbbbb", cur.Selection())
 			assert.Equal(t, term.Coordinates{X: len(content)}, cur.CursorAtScroll())
 		})
+	}
+}
+
+func TestMouseDelegatePointerLeaves(t *testing.T) {
+	t.Parallel()
+	for _, size := range []struct{ width, height int }{{40, 10}, {1, 1}} {
+		handlertest.RunPointerLeaves(t, newPointerEditor(t, workspaceapi.URI{}),
+			size.width, size.height)
+	}
+	requirePointerLeavesKeepState(t, newPointerEditor(t, workspaceapi.URI{}), 40, 10,
+		term.Coordinates{X: 3, Y: 2}, term.Coordinates{X: 12, Y: 4})
+}
+
+// pointerContent has more rows and columns than the windows the pointer
+// leave tests draw it in, and wide runes whose cells a pointer can split.
+const pointerContent = `package main
+
+// 日本語のコメント と 絵文字 🙂🎉 in a line wider than any window drawn here
+import (
+	"fmt"
+	"strings"
+)
+
+func main() {
+	s := "日本語🙂"
+	for i := range 3 {
+		fmt.Println(strings.Repeat(s, i), "a long line that goes past the right edge")
+	}
+}
+`
+
+// pointerEditor is a Handler that handles the mouse the way the editors
+// do: a mouse.Mouse drives its Cursor through CursorMouseDelegate.
+type pointerEditor struct {
+	indentTestHandler
+	cursor *Cursor
+	mouse  *mouse.Mouse
+}
+
+func newPointerEditor(t *testing.T, uri workspaceapi.URI) *pointerEditor {
+	c := setupCursorContent(t, 40, 10, pointerContent, false)
+	return &pointerEditor{
+		indentTestHandler: indentTestHandler{uri: uri},
+		cursor:            c,
+		mouse:             mouse.New(CursorMouseDelegate(c)),
+	}
+}
+
+func (e *pointerEditor) Handle(ev term.Event) (bool, bool) { return e.mouse.Handle(ev) }
+func (e *pointerEditor) Draw(w term.Writer)                { e.cursor.scroll.Draw(w) }
+func (e *pointerEditor) Resize(width, height int)          { e.cursor.scroll.Resize(width, height) }
+func (e *pointerEditor) CursorAtScroll() term.Coordinates  { return e.cursor.CursorAtScroll() }
+func (e *pointerEditor) CellView() cell.View               { return e.cursor.buffer().View() }
+func (e *pointerEditor) CellEditor() cell.Editor           { return e.cursor.buffer().Editor() }
+
+func (e *pointerEditor) Cursor() (term.Coordinates, term.CursorStyle, bool) {
+	return e.cursor.Coordinates(), term.CursorStyleDefault, true
+}
+
+func (e *pointerEditor) Selection() (string, bool) {
+	s := e.cursor.Selection()
+	return s, s != ""
+}
+
+// pointerState is what a handler draws and reports to the frame.
+type pointerState struct {
+	Screen    string
+	Cursor    term.Coordinates
+	Style     term.CursorStyle
+	Shown     bool
+	Selection string
+	Selected  bool
+}
+
+func pointerStateOf(h tui.Handler, width, height int) pointerState {
+	w := term.NewStringWriter(width, height)
+	h.Draw(w)
+	_ = w.Flush()
+	s := pointerState{Screen: w.String()}
+	s.Cursor, s.Style, s.Shown = h.Cursor()
+	s.Selection, s.Selected = h.Selection()
+	return s
+}
+
+// requirePointerLeavesKeepState selects from press to drag in h, sized
+// width by height, then requires that the pointer leaving h to any side
+// changes nothing h draws or reports, both once the button is released
+// and while it is still held.
+func requirePointerLeavesKeepState(
+	t *testing.T, h tui.Handler, width, height int, press, drag term.Coordinates,
+) {
+	t.Helper()
+	h.Resize(width, height)
+	ctx := term.ContextWithPointer(context.Background(), new(term.Pointer))
+	mouseAt := func(key term.Key, at term.Coordinates) term.Event {
+		return term.Event{
+			Type: term.EventMouse, Key: key, MouseX: at.X, MouseY: at.Y, Context: ctx,
+		}
+	}
+	h.Handle(mouseAt(term.MouseLeft, press))
+	h.Handle(mouseAt(term.MouseLeft, drag))
+	h.Handle(mouseAt(term.MouseRelease, drag))
+	requireLeavesKeepState(t, h, width, height, "released")
+	h.Handle(mouseAt(term.MouseLeft, press))
+	requireLeavesKeepState(t, h, width, height, "held")
+}
+
+func requireLeavesKeepState(t *testing.T, h tui.Handler, width, height int, phase string) {
+	t.Helper()
+	far := 4*max(width, height) + 100
+	for _, out := range []term.Coordinates{
+		{X: -1, Y: height / 2}, {X: width, Y: height / 2},
+		{X: width / 2, Y: -1}, {X: width / 2, Y: height},
+		{X: -1, Y: -1}, {X: width, Y: height}, {X: -far, Y: -far}, {X: far, Y: far},
+	} {
+		before := pointerStateOf(h, width, height)
+		h.Handle(term.Event{Type: term.EventMouse, MouseX: out.X, MouseY: out.Y})
+		require.Equal(t, before, pointerStateOf(h, width, height),
+			"button %s, then a leave to %v", phase, out)
 	}
 }

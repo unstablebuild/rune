@@ -2858,10 +2858,11 @@ func TestEmacsLineManipulationEdgeCases(t *testing.T) {
 		assert.Equal(t, "solo\nsolo", buf.String())
 	})
 
-	t.Run("duplicate empty buffer is a no-op", func(t *testing.T) {
+	t.Run("duplicate empty buffer repeats its empty line", func(t *testing.T) {
 		h, buf, _ := newEmacsHandlerWithHistory(t, "")
 		require.NotPanics(t, func() { h.Handle(key2(term.KeyArrowDown, term.ModAltShift)) })
-		assert.Equal(t, "", buf.String())
+		assert.Equal(t, "\n", buf.String())
+		assert.Equal(t, term.Coordinates{Y: 1}, h.CursorAtScroll())
 	})
 
 }
@@ -3251,6 +3252,145 @@ func TestEmacsKillRingAccumulation(t *testing.T) {
 		assert.Equal(t, "hello", buf.String())
 		assert.Equal(t, term.Coordinates{X: 5}, h.CursorAtScroll())
 	})
+}
+
+func TestEmacsKillWholeLineMatchesGNU(t *testing.T) {
+	// The expectations come from GNU Emacs 29, where C-S-<backspace> runs
+	// kill-whole-line.
+	cases := []struct {
+		name     string
+		content  string
+		at       term.Coordinates
+		keys     string
+		want     string
+		wantAt   term.Coordinates
+		wantKill string
+	}{
+		{name: "C-S-DEL a middle line", content: "ab\ncd\nef", at: term.Coordinates{X: 1, Y: 1}, keys: "<ctrl-shift-backspace>", want: "ab\nef", wantAt: term.Coordinates{Y: 1}, wantKill: "cd\n"},
+		{name: "C-S-DEL the first line", content: "ab\ncd\nef", keys: "<ctrl-shift-backspace>", want: "cd\nef", wantAt: term.Coordinates{}, wantKill: "ab\n"},
+		{name: "C-S-DEL the last line", content: "ab\ncd\nef", at: term.Coordinates{X: 1, Y: 2}, keys: "<ctrl-shift-backspace>", want: "ab\ncd\n", wantAt: term.Coordinates{Y: 2}, wantKill: "ef"},
+		{name: "C-S-DEL the trailing empty line", content: "ab\ncd\n", at: term.Coordinates{Y: 2}, keys: "<ctrl-shift-backspace>", want: "ab\ncd\n", wantAt: term.Coordinates{Y: 2}},
+		{name: "C-S-DEL the line before the trailing empty line", content: "ab\ncd\n", at: term.Coordinates{Y: 1}, keys: "<ctrl-shift-backspace>", want: "ab\n", wantAt: term.Coordinates{Y: 1}, wantKill: "cd\n"},
+		{name: "C-S-DEL the only line", content: "ab", at: term.Coordinates{X: 1}, keys: "<ctrl-shift-backspace>", want: "", wantAt: term.Coordinates{}, wantKill: "ab"},
+		{name: "C-S-DEL on an empty buffer", content: "", keys: "<ctrl-shift-backspace>", want: "", wantAt: term.Coordinates{}},
+		{name: "C-S-DEL a double-width last line", content: "ab\n日本", at: term.Coordinates{X: 1, Y: 1}, keys: "<ctrl-shift-backspace>", want: "ab\n", wantAt: term.Coordinates{Y: 1}, wantKill: "日本"},
+		{name: "C-S-DEL an emoji line", content: "\U0001F600\ncd", keys: "<ctrl-shift-backspace>", want: "cd", wantAt: term.Coordinates{}, wantKill: "\U0001F600\n"},
+		{name: "C-S-DEL a tab-indented last line", content: "ab\n\tcd", at: term.Coordinates{X: 2, Y: 1}, keys: "<ctrl-shift-backspace>", want: "ab\n", wantAt: term.Coordinates{Y: 1}, wantKill: "\tcd"},
+		{name: "C-S-DEL past the line end", content: "ab\ncd", at: term.Coordinates{X: 9, Y: 1}, keys: "<ctrl-shift-backspace>", want: "ab\n", wantAt: term.Coordinates{Y: 1}, wantKill: "cd"},
+		{name: "C-S-DEL below the last line", content: "ab\ncd", at: term.Coordinates{Y: 9}, keys: "<ctrl-shift-backspace>", want: "ab\n", wantAt: term.Coordinates{Y: 1}, wantKill: "cd"},
+		{name: "C-S-DEL with a mark region to the end", content: "ab\ncd\nef", at: term.Coordinates{Y: 1}, keys: "<ctrl-space><ctrl-n><ctrl-shift-backspace>", want: "ab\ncd\n", wantAt: term.Coordinates{Y: 2}, wantKill: "ef"},
+		{name: "C-S-DEL with a shift region to the end", content: "ab\ncd\nef", at: term.Coordinates{Y: 1}, keys: "<shift-down><ctrl-shift-backspace>", want: "ab\ncd\n", wantAt: term.Coordinates{Y: 2}, wantKill: "ef"},
+		{name: "C-S-DEL with a mark region in the middle", content: "ab\ncd\nef\ngh", at: term.Coordinates{Y: 1}, keys: "<ctrl-space><ctrl-n><ctrl-shift-backspace>", want: "ab\ncd\ngh", wantAt: term.Coordinates{Y: 2}, wantKill: "ef\n"},
+		{name: "C-u 2 C-S-DEL at the end", content: "ab\ncd\nef", at: term.Coordinates{Y: 1}, keys: "<ctrl-u>2<ctrl-shift-backspace>", want: "ab\n", wantAt: term.Coordinates{Y: 1}, wantKill: "cd\nef"},
+		{name: "C-u 2 C-S-DEL in the middle", content: "ab\ncd\nef\ngh", at: term.Coordinates{Y: 1}, keys: "<ctrl-u>2<ctrl-shift-backspace>", want: "ab\ngh", wantAt: term.Coordinates{Y: 1}, wantKill: "cd\nef\n"},
+		{name: "C-S-DEL a tab-indented middle line", content: "\tab\ncd", at: term.Coordinates{X: 1}, keys: "<ctrl-shift-backspace>", want: "cd", wantAt: term.Coordinates{}, wantKill: "\tab\n"},
+		{name: "C-S-DEL a double-width middle line", content: "日本\ncd", at: term.Coordinates{X: 1}, keys: "<ctrl-shift-backspace>", want: "cd", wantAt: term.Coordinates{}, wantKill: "日本\n"},
+		{name: "C-S-DEL past the end of a middle line", content: "ab\ncd", at: term.Coordinates{X: 9}, keys: "<ctrl-shift-backspace>", want: "cd", wantAt: term.Coordinates{}, wantKill: "ab\n"},
+		{name: "C-S-DEL an empty middle line", content: "ab\n\ncd", at: term.Coordinates{Y: 1}, keys: "<ctrl-shift-backspace>", want: "ab\ncd", wantAt: term.Coordinates{Y: 1}, wantKill: "\n"},
+		{name: "C-u 0 C-S-DEL mid-line", content: "ab\ncd\nef", at: term.Coordinates{X: 1, Y: 1}, keys: "<ctrl-u>0<ctrl-shift-backspace>", want: "ab\n\nef", wantAt: term.Coordinates{Y: 1}, wantKill: "cd"},
+		{name: "C-u 0 C-S-DEL on an empty line", content: "ab\n\ncd", at: term.Coordinates{Y: 1}, keys: "<ctrl-u>0<ctrl-shift-backspace>", want: "ab\n\ncd", wantAt: term.Coordinates{Y: 1}},
+		{name: "C-u 0 C-S-DEL on the last line", content: "ab\ncd", at: term.Coordinates{X: 1, Y: 1}, keys: "<ctrl-u>0<ctrl-shift-backspace>", want: "ab\n", wantAt: term.Coordinates{Y: 1}, wantKill: "cd"},
+		{name: "C-u 0 C-S-DEL past the line end", content: "ab\ncd", at: term.Coordinates{X: 9}, keys: "<ctrl-u>0<ctrl-shift-backspace>", want: "\ncd", wantAt: term.Coordinates{}, wantKill: "ab"},
+		{name: "C-u -1 C-S-DEL a middle line", content: "ab\ncd\nef", at: term.Coordinates{X: 1, Y: 1}, keys: "<ctrl-u>-1<ctrl-shift-backspace>", want: "ab\nef", wantAt: term.Coordinates{X: 2}, wantKill: "\ncd"},
+		{name: "C-u -1 C-S-DEL the first line", content: "ab\ncd\nef", at: term.Coordinates{X: 1}, keys: "<ctrl-u>-1<ctrl-shift-backspace>", want: "\ncd\nef", wantAt: term.Coordinates{}, wantKill: "ab"},
+		{name: "C-u -2 C-S-DEL the last line", content: "ab\ncd\nef", at: term.Coordinates{X: 1, Y: 2}, keys: "<ctrl-u>-2<ctrl-shift-backspace>", want: "ab", wantAt: term.Coordinates{X: 2}, wantKill: "\ncd\nef"},
+		{name: "C-u -1 C-S-DEL an empty first line at the buffer start", content: "\nab", keys: "<ctrl-u>-1<ctrl-shift-backspace>", want: "\nab", wantAt: term.Coordinates{}},
+		{name: "C-u -1 C-S-DEL past the line end", content: "ab\ncd", at: term.Coordinates{X: 9, Y: 1}, keys: "<ctrl-u>-1<ctrl-shift-backspace>", want: "ab", wantAt: term.Coordinates{X: 2}, wantKill: "\ncd"},
+		{name: "C-u -1 C-S-DEL below the last line", content: "ab\ncd", at: term.Coordinates{Y: 9}, keys: "<ctrl-u>-1<ctrl-shift-backspace>", want: "ab", wantAt: term.Coordinates{X: 2}, wantKill: "\ncd"},
+		{name: "C-u -9 C-S-DEL", content: "ab\ncd\nef", at: term.Coordinates{X: 1, Y: 2}, keys: "<ctrl-u>-9<ctrl-shift-backspace>", want: "", wantAt: term.Coordinates{}, wantKill: "ab\ncd\nef"},
+		{name: "C-u 3 C-S-DEL past the end", content: "ab\ncd", keys: "<ctrl-u>3<ctrl-shift-backspace>", want: "", wantAt: term.Coordinates{}, wantKill: "ab\ncd"},
+		{name: "C-u C-S-DEL", content: "a\nb\nc\nd\ne\nf", at: term.Coordinates{Y: 1}, keys: "<ctrl-u><ctrl-shift-backspace>", want: "a\nf", wantAt: term.Coordinates{Y: 1}, wantKill: "b\nc\nd\ne\n"},
+		{name: "C-u 2 C-S-DEL on a double-width line", content: "日本\n\U0001F600\nab", at: term.Coordinates{X: 1}, keys: "<ctrl-u>2<ctrl-shift-backspace>", want: "ab", wantAt: term.Coordinates{}, wantKill: "日本\n\U0001F600\n"},
+		{name: "C-k then C-S-DEL", content: "ab\ncd\nef", at: term.Coordinates{X: 1, Y: 1}, keys: "<ctrl-k><ctrl-shift-backspace>", want: "ab\nef", wantAt: term.Coordinates{Y: 1}, wantKill: "cd\n"},
+		{name: "C-S-DEL twice", content: "ab\ncd\nef", keys: "<ctrl-shift-backspace><ctrl-shift-backspace>", want: "ef", wantAt: term.Coordinates{}, wantKill: "ab\ncd\n"},
+		{name: "C-S-DEL twice at the end", content: "ab\ncd\nef", at: term.Coordinates{Y: 1}, keys: "<ctrl-shift-backspace><ctrl-shift-backspace>", want: "ab\n", wantAt: term.Coordinates{Y: 1}, wantKill: "cd\nef"},
+		{name: "C-S-DEL then C-y", content: "ab\ncd", at: term.Coordinates{X: 1}, keys: "<ctrl-shift-backspace><ctrl-y>", want: "ab\ncd", wantAt: term.Coordinates{Y: 1}, wantKill: "ab\n"},
+		{name: "C-S-DEL on a whitespace line", content: "  \nab", at: term.Coordinates{X: 1}, keys: "<ctrl-shift-backspace>", want: "ab", wantAt: term.Coordinates{}, wantKill: "  \n"},
+		{name: "C-S-DEL on an emoji last line", content: "ab\n\U0001F600", at: term.Coordinates{X: 1, Y: 1}, keys: "<ctrl-shift-backspace>", want: "ab\n", wantAt: term.Coordinates{Y: 1}, wantKill: "\U0001F600"},
+		{name: "C-S-DEL a tab-indented middle line mid-indent", content: "\t\tab\ncd", at: term.Coordinates{X: 1}, keys: "<ctrl-shift-backspace>", want: "cd", wantAt: term.Coordinates{}, wantKill: "\t\tab\n"},
+		{name: "M-DEL then C-S-DEL", content: "ab cd\nef", at: term.Coordinates{X: 5}, keys: "<alt-backspace><ctrl-shift-backspace>", want: "ef", wantAt: term.Coordinates{}, wantKill: "ab cd\n"},
+		{name: "C-S-DEL on an empty first line", content: "\nab", keys: "<ctrl-shift-backspace>", want: "ab", wantAt: term.Coordinates{}, wantKill: "\n"},
+		{name: "C-S-DEL on a lone empty line", content: "\n", keys: "<ctrl-shift-backspace>", want: "", wantAt: term.Coordinates{}, wantKill: "\n"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, buf, clip := newEmacsHandlerWithClipboard(t, tc.content)
+			h.SetCursorAtScroll(tc.at)
+			if h.CursorAtScroll() != tc.at {
+				// SetCursorAtScroll clamps; only a buffer shrinking under
+				// point leaves it out of bounds.
+				h.(*emacsHandler).cursor.MoveToScroll(tc.at)
+			}
+			require.Equal(t, tc.at, h.CursorAtScroll())
+
+			feedKeys(t, h, tc.keys)
+
+			assert.Equal(t, tc.want, buf.String(), "content")
+			assert.Equal(t, tc.wantAt, h.CursorAtScroll(), "point")
+			assert.Equal(t, tc.wantKill, killRingText(clip), "kill ring")
+		})
+	}
+}
+
+func TestEmacsMoveAndDuplicateLinesMatchStandardEditor(t *testing.T) {
+	// GNU binds nothing to these keys, so they follow the standard editor, whose
+	// expectations come from VS Code's moveLines and copyLines commands. Unlike
+	// a kill, neither touches the kill ring.
+	cases := []struct {
+		name    string
+		content string
+		at      term.Coordinates
+		keys    string
+		want    string
+		wantAt  term.Coordinates
+		wantSel string
+	}{
+		{name: "M-up the last line", content: "ab\ncd\nef", at: term.Coordinates{X: 1, Y: 2}, keys: "<alt-up>", want: "ab\nef\ncd", wantAt: term.Coordinates{X: 1, Y: 1}},
+		{name: "M-down the second to last line", content: "ab\ncd\nef", at: term.Coordinates{X: 1, Y: 1}, keys: "<alt-down>", want: "ab\nef\ncd", wantAt: term.Coordinates{X: 1, Y: 2}},
+		{name: "M-down the last line", content: "ab\ncd\nef", at: term.Coordinates{Y: 2}, keys: "<alt-down>", want: "ab\ncd\nef", wantAt: term.Coordinates{Y: 2}},
+		{name: "M-up the first line", content: "ab\ncd\nef", keys: "<alt-up>", want: "ab\ncd\nef", wantAt: term.Coordinates{}},
+		{name: "M-up the trailing empty line", content: "ab\ncd\n", at: term.Coordinates{Y: 2}, keys: "<alt-up>", want: "ab\n\ncd", wantAt: term.Coordinates{Y: 1}},
+		{name: "M-down the line before the trailing empty line", content: "ab\ncd\n", at: term.Coordinates{Y: 1}, keys: "<alt-down>", want: "ab\n\ncd", wantAt: term.Coordinates{Y: 2}},
+		{name: "M-up a double-width last line", content: "ab\n日本", at: term.Coordinates{X: 1, Y: 1}, keys: "<alt-up>", want: "日本\nab", wantAt: term.Coordinates{X: 1}},
+		{name: "M-up a tab-indented last line", content: "ab\n\tcd", at: term.Coordinates{X: 1, Y: 1}, keys: "<alt-up>", want: "\tcd\nab", wantAt: term.Coordinates{X: 1}},
+		{name: "M-up past the line end", content: "ab\ncd", at: term.Coordinates{X: 9, Y: 1}, keys: "<alt-up>", want: "cd\nab", wantAt: term.Coordinates{X: 2}},
+		{name: "M-up on an empty buffer", content: "", keys: "<alt-up>", want: "", wantAt: term.Coordinates{}},
+		{name: "M-S-down the last line", content: "ab\ncd\nef", at: term.Coordinates{Y: 2}, keys: "<alt-shift-down>", want: "ab\ncd\nef\nef", wantAt: term.Coordinates{Y: 3}},
+		{name: "M-S-up the last line", content: "ab\ncd\nef", at: term.Coordinates{Y: 2}, keys: "<alt-shift-up>", want: "ab\ncd\nef\nef", wantAt: term.Coordinates{Y: 2}},
+		{name: "M-down the first line", content: "ab\ncd\nef", at: term.Coordinates{X: 1}, keys: "<alt-down>", want: "cd\nab\nef", wantAt: term.Coordinates{X: 1, Y: 1}},
+		{name: "M-up a middle line", content: "ab\ncd\nef", at: term.Coordinates{X: 2, Y: 1}, keys: "<alt-up>", want: "cd\nab\nef", wantAt: term.Coordinates{X: 2}},
+		{name: "M-down a shift region", content: "ab\ncd\nef\ngh", at: term.Coordinates{X: 1, Y: 1}, keys: "<shift-down><alt-down>", want: "ab\ngh\ncd\nef", wantAt: term.Coordinates{X: 1, Y: 3}, wantSel: "d\ne"},
+		{name: "M-up a shift region that ends at a line start", content: "ab\ncd\nef\ngh", at: term.Coordinates{Y: 1}, keys: "<shift-down><alt-up>", want: "cd\nab\nef\ngh", wantAt: term.Coordinates{Y: 1}, wantSel: "cd\n"},
+		{name: "M-down a double-width line", content: "日本\ncd", at: term.Coordinates{X: 1}, keys: "<alt-down>", want: "cd\n日本", wantAt: term.Coordinates{X: 1, Y: 1}},
+		{name: "M-down the line before the last past its end", content: "ab\ncd", at: term.Coordinates{X: 9}, keys: "<alt-down>", want: "cd\nab", wantAt: term.Coordinates{X: 2, Y: 1}},
+		{name: "M-S-down a middle line", content: "ab\ncd\nef", at: term.Coordinates{X: 1, Y: 1}, keys: "<alt-shift-down>", want: "ab\ncd\ncd\nef", wantAt: term.Coordinates{X: 1, Y: 2}},
+		{name: "M-S-up a middle line", content: "ab\ncd\nef", at: term.Coordinates{X: 1, Y: 1}, keys: "<alt-shift-up>", want: "ab\ncd\ncd\nef", wantAt: term.Coordinates{X: 1, Y: 1}},
+		{name: "M-S-down a shift region", content: "ab\ncd\nef", keys: "<shift-down><alt-shift-down>", want: "ab\nab\ncd\nef", wantAt: term.Coordinates{Y: 2}, wantSel: "ab\n"},
+		{name: "M-S-down on an empty buffer", content: "", keys: "<alt-shift-down>", want: "\n", wantAt: term.Coordinates{Y: 1}},
+		{name: "M-S-down the trailing empty line", content: "ab\n", at: term.Coordinates{Y: 1}, keys: "<alt-shift-down>", want: "ab\n\n", wantAt: term.Coordinates{Y: 2}},
+		{name: "M-S-down past the line end", content: "ab\ncd", at: term.Coordinates{X: 9}, keys: "<alt-shift-down>", want: "ab\nab\ncd", wantAt: term.Coordinates{X: 2, Y: 1}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, buf, clip := newEmacsHandlerWithClipboard(t, tc.content)
+			require.NoError(t, clip.Copy(clipboard.DefaultRegisterID, clipboard.Data{Text: "kept"}))
+			h.SetCursorAtScroll(tc.at)
+			if h.CursorAtScroll() != tc.at {
+				h.(*emacsHandler).cursor.MoveToScroll(tc.at)
+			}
+			require.Equal(t, tc.at, h.CursorAtScroll())
+
+			feedKeys(t, h, tc.keys)
+
+			assert.Equal(t, tc.want, buf.String(), "content")
+			assert.Equal(t, tc.wantAt, h.CursorAtScroll(), "point")
+			sel, _ := h.Selection()
+			assert.Equal(t, tc.wantSel, sel, "selection")
+			assert.Equal(t, "kept", killRingText(clip), "kill ring")
+		})
+	}
 }
 
 func TestEmacsTransposeChars(t *testing.T) {
@@ -4272,6 +4412,7 @@ func TestEmacsCommentToggle(t *testing.T) {
 			line: []string{"//"},
 		})
 		h := NewHandler(buf, emacsTestURI(t), text.IndentRuneTab, 0,
+			WithClipboard(clipboard.NewInMemory()),
 			WithComments(text.CommentConfig{
 				"go": {Line: []string{"//"}, Block: []text.CommentBlock{{Start: "/*", End: "*/"}}},
 			}))
@@ -4307,6 +4448,100 @@ func TestEmacsCommentToggle(t *testing.T) {
 		require.Equal(t, "// x := 1", buf.String())
 		require.True(t, runEvent(h, alt(';')))
 		assert.Equal(t, "x := 1", buf.String())
+	})
+
+	regionCases := []struct {
+		name      string
+		content   string
+		keys      string
+		want      string
+		afterUndo string
+	}{
+		{"an active region toggles the lines it covers", "a\nb\nc",
+			"<c-space><c-n><c-n><a-;>", "// a\n// b\nc", "a\nb\nc"},
+		{"an active region uncomments the lines it covers", "// a\n// b\nc",
+			"<c-space><c-n><c-n><a-;>", "a\nb\nc", "// a\n// b\nc"},
+		{"a backward region toggles the same lines", "a\nb\nc",
+			"<c-n><c-n><c-space><c-p><c-p><a-;>", "// a\n// b\nc", "a\nb\nc"},
+		{"a region ending inside a line covers it", "a\nb\nc",
+			"<c-space><c-n><c-f><a-;>", "// a\n// b\nc", "a\nb\nc"},
+		{"an empty region toggles point's line", "a\nb\nc",
+			"<c-n><c-space><a-;>", "a\n// b\nc", "a\nb\nc"},
+		{"an edit deactivates the mark", "a\nb\nc",
+			"<c-space><c-n>x<a-;>", "a\n// xb\nc", "a\nxb\nc"},
+		{"C-g deactivates the mark", "a\nb\nc",
+			"<c-space><c-n><c-g><a-;>", "a\n// b\nc", "a\nb\nc"},
+		{"M-w deactivates the mark", "a\nb\nc",
+			"<c-space><c-n><a-w><a-;>", "a\n// b\nc", "a\nb\nc"},
+		{"toggling the region deactivates the mark", "a\nb\nc",
+			"<c-space><c-n><c-n><a-;><a-;>", "// a\n// b\n// c", "// a\n// b\nc"},
+		{"a region within one line toggles that line", "ab\ncd",
+			"<c-n><c-space><c-f><a-;>", "ab\n// cd", "ab\ncd"},
+		{"a region ending at a line start leaves that line alone", "a\nb\nc",
+			"<c-space><c-n><a-;>", "// a\nb\nc", "a\nb\nc"},
+		{"a region through a trailing newline", "a\nb\n",
+			"<c-space><c-n><c-n><a-;>", "// a\n// b\n", "a\nb\n"},
+		{"a region over tab-indented lines aligns at the shallowest", "\t\ta\n\tb\nc",
+			"<c-space><c-n><c-e><a-;>", "\t// \ta\n\t// b\nc", "\t\ta\n\tb\nc"},
+		{"a region over wide runes and emoji", "界a\n👨‍👧‍👦\nc",
+			"<c-space><c-n><c-e><a-;>", "// 界a\n// 👨‍👧‍👦\nc", "界a\n👨‍👧‍👦\nc"},
+		{"blank lines inside a region are skipped", "a\n \t\nb\nc",
+			"<c-space><c-n><c-n><c-e><a-;>", "// a\n \t\n// b\nc", "a\n \t\nb\nc"},
+		{"motions keep the mark active", "a\nb\nc",
+			"<c-space><c-n><c-e><c-b><c-f><a-;>", "// a\n// b\nc", "a\nb\nc"},
+		{"a shift-selection wins over the mark", "a\nb\nc\nd",
+			"<c-space><c-n><c-n><s-down><a-;>", "a\nb\n// c\nd", "a\nb\nc\nd"},
+		{"C-w deactivates the mark", "a\nb\nc",
+			"<c-space><c-n><c-w><a-;>", "// b\nc", "b\nc"},
+		{"C-k deactivates the mark", "a\nbb\nc",
+			"<c-space><c-n><c-f><c-k><a-;>", "a\n// b\nc", "a\nb\nc"},
+		{"an undo deactivates the mark", "a\nb\nc",
+			"y<c-space><c-n><c-/><a-;>", "// a\nb\nc", "a\nb\nc"},
+	}
+	for _, tc := range regionCases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, buf := newCommentHandler(t, tc.content)
+			feedKeys(t, h, tc.keys)
+			require.Equal(t, tc.want, buf.String())
+			require.True(t, runEvent(h, ctrl('/')))
+			assert.Equal(t, tc.afterUndo, buf.String(), "one undo reverts the toggle")
+		})
+	}
+
+	t.Run("a typing run before M-; still undoes in one step", func(t *testing.T) {
+		h, buf := newCommentHandler(t, "a\nb")
+		feedKeys(t, h, "xyz<a-;>")
+		require.Equal(t, "// xyza\nb", buf.String())
+		for _, want := range []string{"xyza\nb", "a\nb"} {
+			require.True(t, runEvent(h, ctrl('/')))
+			assert.Equal(t, want, buf.String())
+		}
+	})
+
+	for _, keys := range []string{"<s-down><s-right><a-;>", "<s-down><s-down><a-;>"} {
+		t.Run("M-; deactivates a shift-selection "+keys, func(t *testing.T) {
+			h, buf := newCommentHandler(t, "a\nb\nc")
+			feedKeys(t, h, keys)
+			require.Equal(t, "// a\n// b\nc", buf.String())
+			_, selected := h.Selection()
+			assert.False(t, selected)
+		})
+	}
+
+	t.Run("mark-defun activates the region", func(t *testing.T) {
+		h, buf := newCommentHandler(t, "f {\n\tx\n}\ny")
+		require.True(t, h.SetCursorAtScroll(term.Coordinates{Y: 1, X: 1}))
+		feedKeys(t, h, "<c-a-h><a-;>")
+		assert.Equal(t, "// f {\n// \tx\n// }\ny", buf.String())
+	})
+
+	t.Run("an active mark beyond a shrunk buffer is panic-free", func(t *testing.T) {
+		h, buf := newCommentHandler(t, "a\nb\nc")
+		feedKeys(t, h, "<c-n><c-n><c-space><c-p><c-p>")
+		buf.Edit(context.Background(), term.Coordinates{Y: 0, X: 1}, term.Coordinates{Y: 2, X: 1}, "")
+		require.Equal(t, "a", buf.String())
+		require.NotPanics(t, func() { h.Handle(alt(';')) })
+		assert.Equal(t, "// a", buf.String())
 	})
 
 	t.Run("without comment configuration M-; is a no-op", func(t *testing.T) {
@@ -6583,4 +6818,113 @@ func TestHandleMouseWindowCoordinates(t *testing.T) {
 
 func mouseEventAt(key term.Key, x, y int) term.Event {
 	return term.Event{Type: term.EventMouse, Key: key, MouseX: x, MouseY: y}
+}
+
+func TestEmacsMouseSetsTheTextPointer(t *testing.T) {
+	h, _ := newEmacsHandler(t, "text")
+	p := new(term.Pointer)
+	ev := mouseEventAt(0, 1, 0)
+	ev.Context = term.ContextWithPointer(context.Background(), p)
+	h.Handle(ev)
+	shape, _ := p.Shape()
+	assert.Equal(t, term.PointerText, shape)
+}
+
+const pointerLeavesContent = "short\n" +
+	"a long line that runs well past the right edge of a forty column window\n" +
+	"日本語 wide 😀 emoji 日本語 wide 😀 emoji 日本語 wide 😀 emoji\n" +
+	"\tindented\n\n" +
+	"line 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12\n"
+
+// pointerLeaveEvents returns the Context-less, buttonless motions a parent
+// router sends a width by height child when the pointer moves off it.
+func pointerLeaveEvents(width, height int) []term.Event {
+	far := 4*max(width, height) + 100
+	var events []term.Event
+	for _, at := range []term.Coordinates{
+		{X: -1, Y: height / 2}, {X: width, Y: height / 2},
+		{X: width / 2, Y: -1}, {X: width / 2, Y: height},
+		{X: -1, Y: -1}, {X: width, Y: height},
+		{X: -far, Y: -far}, {X: far, Y: far}, {X: far, Y: -far}, {X: -far, Y: far},
+	} {
+		events = append(events, mouseEventAt(0, at.X, at.Y))
+	}
+	return events
+}
+
+type emacsPointerState struct {
+	cursor, from, to, offset                  term.Coordinates
+	selected                                  bool
+	marks                                     []textapi.Location
+	isearch, minibuffer, prefix, queryReplace bool
+	pendingGoto, pendingZap, quotedInsert     bool
+	lastKill, lastPaste                       bool
+	historyIdx, undoRunLen                    int
+	undoRun                                   undoRunKind
+	undoSequence                              undoSequenceState
+}
+
+func snapshotEmacsPointerState(h *emacsHandler) emacsPointerState {
+	from, to, selected := h.SelectionBounds()
+	return emacsPointerState{
+		cursor: h.CursorAtScroll(), from: from, to: to, offset: h.less.Scroll().Offset(),
+		selected: selected, marks: emacsMarks(h),
+		isearch: h.isearch.active, minibuffer: h.minibuffer.active,
+		prefix: h.prefix.active, queryReplace: h.queryReplace.active,
+		pendingGoto: h.pendingGoto, pendingZap: h.pendingZap, quotedInsert: h.pendingQuotedInsert,
+		lastKill: h.lastKill, lastPaste: h.lastPaste,
+		historyIdx: h.historyIdx, undoRunLen: h.undoRunLen,
+		undoRun: h.undoRun, undoSequence: h.undoSequence,
+	}
+}
+
+func TestEmacsHandlerPointerLeaves(t *testing.T) {
+	t.Parallel()
+	setMark := key2(term.KeySpace, term.ModCtrl)
+	tests := []struct {
+		name   string
+		events []term.Event
+	}{
+		{name: "idle"},
+		{name: "mark set with an active region on a wide line",
+			events: []term.Event{ctrl('n'), ctrl('n'), setMark, ctrl('f'), ctrl('f'), ctrl('n')}},
+		{name: "isearch active", events: []term.Event{ctrl('s'), char('w'), char('i'), char('d'), char('e')}},
+		{name: "scrolled to the end", events: []term.Event{alt('>'), ctrl('e')}},
+		{name: "end of a long line", events: []term.Event{ctrl('n'), ctrl('e')}},
+		{name: "kill chain open", events: []term.Event{ctrl('k')}},
+		{name: "yank-pop chain open", events: []term.Event{ctrl('y'), alt('y')}},
+		{name: "insert run open", events: []term.Event{char('x'), char('y')}},
+		{name: "undo sequence open", events: []term.Event{char('x'), ctrl('/')}},
+		{name: "prefix argument pending", events: []term.Event{ctrl('u'), char('3')}},
+		{name: "goto prompt open", events: []term.Event{alt('g'), char('g'), char('4')}},
+	}
+	for _, tt := range tests {
+		for _, size := range []term.Coordinates{{X: 40, Y: 10}, {X: 1, Y: 1}} {
+			t.Run(fmt.Sprintf("%s/%dx%d", tt.name, size.X, size.Y), func(t *testing.T) {
+				t.Parallel()
+				newHandler := func() *emacsHandler {
+					h, _, reg := newEmacsHandlerWithHistory(t, pointerLeavesContent)
+					for _, entry := range []string{"日本", "😀"} {
+						require.NoError(t, reg.Copy(clipboard.DefaultRegisterID,
+							clipboard.Data{Text: entry, Metadata: text.StandardSelection}))
+					}
+					h.Resize(size.X, size.Y)
+					for _, ev := range tt.events {
+						h.Handle(ev)
+					}
+					return h.(*emacsHandler)
+				}
+
+				h := newHandler()
+				want := snapshotEmacsPointerState(h)
+				for _, ev := range pointerLeaveEvents(size.X, size.Y) {
+					h.Handle(ev)
+					require.Equal(t, want, snapshotEmacsPointerState(h),
+						"leave to (%d, %d)", ev.MouseX, ev.MouseY)
+				}
+
+				handlertest.RunPointerLeaves(t, newHandler(), size.X, size.Y)
+			})
+		}
+	}
 }

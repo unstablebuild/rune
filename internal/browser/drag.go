@@ -39,9 +39,13 @@ const (
 )
 
 const (
-	// winDropBandDiv makes each edge band a fifth of its axis, and the
-	// center box a fifth of the tile on both axes.
-	winDropBandDiv = 5
+	// winDropBand is the depth in cells of each edge band. It is fixed
+	// rather than proportional so that on a large tile only the cells
+	// at its very edge split it, and a float can be moved over the rest.
+	winDropBand = 2
+	// winDropCenterDiv makes the center box a fifth of the tile on both
+	// axes.
+	winDropCenterDiv = 5
 	// winDropTabIcon mirrors the :windowconverttab default icon.
 	winDropTabIcon        = '\ueaee'
 	winDropDefaultTabName = "window"
@@ -99,19 +103,16 @@ func dropZoneAt(local term.Coordinates, w, h int) winDropZone {
 		return winDropCenter
 	}
 
-	bandW := max(1, w/winDropBandDiv)
-	bandH := max(1, h/winDropBandDiv)
-
 	distX, horizontal := -1, winDropNone
-	if local.X < bandW {
+	if local.X < winDropBand {
 		distX, horizontal = local.X, winDropLeft
-	} else if local.X >= w-bandW {
+	} else if local.X >= w-winDropBand {
 		distX, horizontal = w-1-local.X, winDropRight
 	}
 	distY, vertical := -1, winDropNone
-	if local.Y < bandH {
+	if local.Y < winDropBand {
 		distY, vertical = local.Y, winDropTop
-	} else if local.Y >= h-bandH {
+	} else if local.Y >= h-winDropBand {
 		distY, vertical = h-1-local.Y, winDropBottom
 	}
 
@@ -129,7 +130,7 @@ func dropZoneAt(local term.Coordinates, w, h int) winDropZone {
 
 // inCenterBox reports whether v lies in the middle fifth of dim.
 func inCenterBox(v, dim int) bool {
-	size := max(1, dim/winDropBandDiv)
+	size := max(1, dim/winDropCenterDiv)
 	start := (dim - size) / 2
 	return v >= start && v < start+size
 }

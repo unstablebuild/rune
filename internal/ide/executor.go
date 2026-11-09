@@ -62,6 +62,15 @@ func (d *currentExecutor) Signal(pid workspaceapi.Pid, sig syscall.Signal) error
 	return exe.Signal(pid, sig)
 }
 
+// LookPath satisfies schemeapi.Executor.
+func (d *currentExecutor) LookPath(ctx context.Context, name, dir string) (string, error) {
+	exe := d.get()
+	if exe == nil {
+		return "", errors.New("currentExecutor: no underlying executor installed")
+	}
+	return exe.LookPath(ctx, name, dir)
+}
+
 // Close satisfies io.Closer. Close is a no-op on the proxy itself;
 // ownership of the underlying executor lifecycle stays with the
 // component that produced it (workspace_handler, doInit).

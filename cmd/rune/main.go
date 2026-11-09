@@ -48,7 +48,6 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"google.golang.org/grpc"
-	"unstable.build/rune/auth"
 	"unstable.build/rune/cmd/rune/crashreport"
 	"unstable.build/rune/cmd/rune/ide/apiclient"
 	"unstable.build/rune/internal/browser"
@@ -56,9 +55,10 @@ import (
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/extension/extensionv2"
 	"unstable.build/rune/internal/ide"
+	"unstable.build/rune/internal/ide/hostenv"
 	"unstable.build/rune/internal/ide/idepkg"
 	"unstable.build/rune/internal/ide/idepkg/pkgrpc"
-	"unstable.build/rune/internal/ide/pkgtrust"
+	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
 	"unstable.build/rune/internal/llm/llmrpc"
 	"unstable.build/rune/internal/rpc"
 	"unstable.build/rune/internal/term/gui"
@@ -101,6 +101,9 @@ var (
 	flagTUI      = flag.Bool("tui", false, "Run Rune in TUI mode")
 	flagHeadless = flag.Bool("headless", false,
 		"Run Rune as a headless network node, with no editor UI")
+	flagControlURL = flag.String("control-url", "",
+		"With --headless, join your own Tailscale or Headscale tailnet at "+
+			"this coordination server URL instead of Rune's network")
 
 	// marked hidden
 	flagWorkspaceServer = flag.StringP("workspace-server", "x", "",
@@ -235,7 +238,7 @@ func cwdURI() workspaceapi.URI {
 	return uri
 }
 
-func startWorkspaceServer() int {
+func startWorkspaceServer(host *hostenv.Host, shellRCDir string, shellRCErr error) int {
 	var logger *slog.Logger
 
 	// The log defaults to <default datadir>/server.log; when the datadir is
@@ -314,11 +317,10 @@ func startWorkspaceServer() int {
 		return 2
 	}
 
-	shellRCDir, err := installShellRC(*flagDataPath)
-	if err != nil {
-		reportRemoteShellRCErr(os.Stderr, err)
+	if shellRCErr != nil {
+		reportRemoteShellRCErr(os.Stderr, shellRCErr)
 	}
-	newScheme := workspace.NewFileSchemeFunc(shellRCDir)
+	newScheme := workspace.NewFileSchemeFunc(*flagDataPath, shellRCDir)
 
 	scheme, err := newScheme(context.Background(), config.NopConfig(), uri)
 	if err != nil {
@@ -327,14 +329,16 @@ func startWorkspaceServer() int {
 	}
 	defer scheme.Close()
 	// Apply gui.env before serving so the tools the client starts here
-	// see the packages installed on this host.
-	loadRemoteConfigAndApplyEnv(scheme, uri)
+	// see the packages installed on this host. Only this host's user
+	// config applies: the workspace config needs the user's trust, and
+	// the server has no UI to ask for it.
+	applyUserConfigEnv(host)
 
 	// The client installs the packages its workspace needs on this host
 	// through this manager, served next to the workspace.
 	pkgs, pkgStorage := newHostPackageManager(newRuneStorage(*flagDataPath),
 		newRemoteReleaseManager(), scheme,
-		func() { loadRemoteConfigAndApplyEnv(scheme, uri) })
+		func() { applyUserConfigEnv(host) })
 	defer func() {
 		_ = pkgStorage.Close()
 	}()
@@ -487,6 +491,7 @@ var headlessFlags = map[string]bool{
 	"rune-grpc-insecure":      true,
 	"rune-release-collection": true,
 	"rune-website-address":    true,
+	"control-url":             true,
 }
 
 // checkModeArgs rejects the argument combinations the mode dispatch in
@@ -509,6 +514,9 @@ func checkModeArgs(
 			strings.Join(modes, " "))
 	}
 	if !headless {
+		if f := fs.Lookup("control-url"); f != nil && f.Changed {
+			return fmt.Errorf("--control-url needs --headless")
+		}
 		return nil
 	}
 
@@ -542,16 +550,24 @@ func run() int {
 		return 1
 	}
 
-	if err := setupRuneBinPATH(*flagDataPath); err != nil {
+	shellRCDir, shellRCErr := installShellRC(*flagDataPath)
+	// The TUI runs inside the user's own shell session and applies no
+	// gui.env, so it leaves the terminal fragments to the hosts that do.
+	hostShellRCDir := shellRCDir
+	if *flagTUI {
+		hostShellRCDir = ""
+	}
+	host := hostenv.New(*flagDataPath, hostShellRCDir)
+	if err := host.Apply(nil); err != nil {
 		log.Errorf("installed executables will not be available: "+
 			"set the PATH env variable: %v", err)
 	}
 
-	// TUI and headless inherit the parent-shell PATH the user already
-	// exported, so they skip the login SHELL PATH resolve.
+	// The TUI inherits the parent-shell PATH the user already exported, so
+	// it skips the login SHELL PATH resolve.
 	var pathDone <-chan error
-	if !*flagTUI && !*flagHeadless {
-		pathDone = startLoginShellPATHResolve(*flagDataPath)
+	if !*flagTUI {
+		pathDone = startLoginShellPATHResolve(host)
 	} else {
 		ch := make(chan error)
 		pathDone = ch
@@ -567,15 +583,20 @@ func run() int {
 			log.Errorf("could not resolve login shell PATH; tools on "+
 				"it (e.g. homebrew, mise) may be unavailable: %v", err)
 		}
-		code := startWorkspaceServer()
+		code := startWorkspaceServer(host, shellRCDir, shellRCErr)
 		return code
 	}
 
 	ctx := context.Background()
-	shellRCDir, shellRCErr := installShellRC(*flagDataPath)
 
 	if *flagHeadless {
-		return runHeadless(ctx, shellRCDir, shellRCErr)
+		go debug.CapturePanicReport(func() {
+			if err := <-pathDone; err != nil {
+				log.Warnf("could not resolve login shell PATH; tools on "+
+					"it may be unavailable: %v", err)
+			}
+		})
+		return runHeadless(ctx, host, shellRCDir, shellRCErr)
 	}
 
 	var mu sync.Mutex
@@ -596,13 +617,11 @@ func run() int {
 
 	// A single process-wide trust store distributes the package-signing
 	// keyring to the package manager (install verification) and the
-	// authorizer (verified-publisher check). The store fetches the served
-	// keyring once, asynchronously, at construction; the first
-	// VerifyBundle briefly waits for it.
-	trust := pkgtrust.NewStore(*flagDataPath, trustKeyringFetcher())
+	// authorizer (verified-publisher check).
+	trust := pkgtrust.NewStore()
 
 	if *flagGUI {
-		return runGUI(filenames, runner, trust, &mu, pathDone, shellRCDir, shellRCErr)
+		return runGUI(filenames, runner, trust, &mu, pathDone, host, shellRCDir, shellRCErr)
 	} else if *flagTUI {
 		return runTUI(filenames, runner, trust, &mu, shellRCDir, shellRCErr)
 	} else {
@@ -642,10 +661,9 @@ func runTUI(
 ) int {
 	opts := []ide.Option{
 		ide.WithExtensionsRunner(runner),
-		ide.WithInitShader(
-			initShader,
-			initShaderFPS,
-			initShaderDuration),
+		// The Rune logo is drawn for the font and pictures of the GUI, so a
+		// terminal shows the Unstable Build logo instead.
+		ide.WithLogo(makeUnstableBuildLogo()),
 		ide.WithShutdownShader(
 			func(defaultAttr term.Attributes) shader.Shader {
 				return shutdownShader(defaultAttr)
@@ -654,15 +672,17 @@ func runTUI(
 		ide.WithOpenShader(openShader, openShaderFPS, openShaderDuration),
 		ide.WithLocker(mu),
 		ide.WithConfigFilename(workspaceConfigFilename),
-		ide.WithDefaultWallpaper(makeWallpaper()),
 		ide.WithDefaultConfigStarlark(defaultStarlarkConfig, true, true),
 		ide.WithScheduleNextTick(func(fn func()) bool {
 			return tui.PublishEvent(term.Event{Type: term.EventInterrupt, UserFunc: fn})
 		}),
 		ide.WithShellRCDir(shellRCDir),
-		ide.WithScheme(docsScheme, newDocsSchemeFunc(*flagConfigPath)),
+		ide.WithHostDataDir(*flagDataPath),
+		ide.WithScheme(workspace.DocsScheme, newDocsSchemeFunc(*flagConfigPath)),
+		ide.WithTrustedWorkspaceConfig(docsConfigYAML),
 		ide.WithStreamingOpen(true),
 		ide.WithClipboard(text.NewAsyncSystemClipboard()),
+		ide.WithSystemURLOpener(func(u *url.URL) error { return extbrowser.Browse(u) }),
 	}
 	opts = append(opts, embeddedTutorialOptions()...)
 	if debug.DebugBuild == "true" {
@@ -683,7 +703,7 @@ func runTUI(
 	defer client.Close()
 
 	net := newNetwork(rootCfg, *flagDataPath, shellRCDir, newNetworkGate(client))
-	net.startAutoJoin()
+	net.start()
 	defer func() {
 		_ = net.Close()
 	}()
@@ -691,10 +711,11 @@ func runTUI(
 	opts = append(opts,
 		ide.WithReleaseManager(releaseManager),
 		nagPromptOption(client),
+		sponsorsOption(),
 		ide.WithWatchedFilesChangeHook(client.RecordWatchedFilesChange),
 		ide.WithCommandDispatchHook(client.RecordCommand),
-		net.completerOption(),
 	)
+	opts = append(opts, net.completerOptions()...)
 
 	i, err := ide.New(*flagWorkspace, *flagConfigPath,
 		*flagDataPath, trust, storage, opts...)
@@ -754,7 +775,8 @@ func runTUI(
 
 func runGUI(
 	filenames []string, runner ide.ExtensionsRunner, trust *pkgtrust.Store,
-	mu *sync.Mutex, pathDone <-chan error, shellRCDir string, shellRCErr error,
+	mu *sync.Mutex, pathDone <-chan error, host *hostenv.Host,
+	shellRCDir string, shellRCErr error,
 ) int {
 	setEnvForGUI()
 
@@ -780,30 +802,16 @@ func runGUI(
 		chdirerr = fmt.Errorf("cd %s: %w", home, chdirerr)
 	}
 
-	// The GUI is created after the bootstrap handler, but the IDE may
-	// publish redraw interrupts during its async init before the GUI
-	// exists. guiRef is loaded atomically so those early interrupts are
-	// dropped (superseded by the GUI's initial draw) rather than racing.
+	// The GUI is created after the bootstrap handler, but the IDE starts
+	// publishing events during its init, before the GUI exists.
 	var guiRef atomic.Pointer[gui.GUI]
-	publishEvent := func(ev term.Event) bool {
-		g := guiRef.Load()
-		if g == nil {
-			return false
-		}
-		return g.PublishEvent(ev)
-	}
+	var publisher guiPublisher
 	cellPixelSize := func() (int, int) {
 		g := guiRef.Load()
 		if g == nil {
 			return 0, 0
 		}
 		return g.CellPixelSize()
-	}
-
-	setAltModifier := func(modifier gui.AltModifier) {
-		if g := guiRef.Load(); g != nil {
-			g.SetAltModifier(modifier)
-		}
 	}
 
 	// We load config twice, but it's better than the race conditions caused
@@ -813,12 +821,12 @@ func runGUI(
 		envErr = fmt.Errorf("load config for gui.env: %w", envErr)
 		rootCfg = config.NopConfig()
 	}
-	guiCfg, _, err := getGUIConfig(rootCfg)
+	envGUICfg, _, err := getGUIConfig(rootCfg)
 	if err != nil {
 		envErr = multierr.Append(envErr, err)
 	}
-	if guiCfg == nil {
-		guiCfg = config.NopConfig()
+	if envGUICfg == nil {
+		envGUICfg = config.NopConfig()
 	}
 
 	// gui.env must be applied before the workspace is created, otherwise we
@@ -827,16 +835,17 @@ func runGUI(
 	// $PATH, so we must wait for the login-shell PATH resolve first; when it
 	// does not, we still wait, because we run LSP servers or other tools
 	// which might need PATH to be set
-	if err := applyShellPATHAndGUIEnv(guiCfg, pathDone); err != nil {
+	if err := applyShellPATHAndGUIEnv(host, envGUICfg, pathDone); err != nil {
 		envErr = multierr.Append(envErr, err)
 	}
 
+	soundOutput := gui.NewSounds()
 	root, err := newBootstrapHandler(
 		*flagDataPath, *flagConfigPath,
-		*flagWorkspace, shellRCDir, filenames,
-		launchCmd, runner, mu, publishEvent, cellPixelSize, setAltModifier,
+		*flagWorkspace, shellRCDir, host, filenames,
+		launchCmd, runner, mu, publisher.publish, cellPixelSize,
 		func(u *url.URL) error { return extbrowser.Browse(u) },
-		text.NewAsyncSystemClipboard(), os.TempDir(), rootCfg, trust,
+		text.NewAsyncSystemClipboard(), soundOutput, os.TempDir(), rootCfg, trust,
 	)
 	if err != nil {
 		fmt.Printf("ide: %s", err)
@@ -848,15 +857,15 @@ func runGUI(
 	if chdirerr != nil {
 		_, _ = browser.Notify(browserapi.LevelError, "%v", chdirerr)
 	}
-	cfg, ok, err := getGUIConfig(root.config())
+	guiCfg, ok, err := getGUIConfig(root.config())
 	if err != nil {
 		_, _ = browser.Notify(browserapi.LevelError, "%v", err)
 	}
 	if !ok {
-		cfg = config.NopConfig()
+		guiCfg = config.NopConfig()
 	}
 
-	transparentWindow := getGUITransparentWindow(browser, cfg)
+	transparentWindow := getGUITransparentWindow(browser, guiCfg)
 
 	if envErr != nil {
 		_, _ = browser.Notify(browserapi.LevelError, "%s", envErr)
@@ -865,9 +874,14 @@ func runGUI(
 		reportShellRCErr(browser, shellRCErr)
 	}
 
-	options := buildGUIOptions(browser, cfg, transparentWindow, mu, *flagFPS)
+	root.soundVolume = getGUISoundVolume(browser, guiCfg)
+	soundOutput.SetVolume(root.soundVolume)
+	root.defaultTheme = getGUIDefaultColorTheme(browser, guiCfg)
+
+	options := buildGUIOptions(browser, root.config(), guiCfg, transparentWindow, mu, *flagFPS)
 	options = append(options, gui.WithDragObserver(root.dragObserver))
 	options = append(options, gui.WithLinkObserver(root.linkObserver))
+	options = append(options, gui.WithScreenshotDir(filepath.Join(*flagDataPath, "screenshots")))
 
 	storage := root.storage
 	width, height, ok := getLastSize(storage)
@@ -880,6 +894,12 @@ func runGUI(
 	}
 
 	g, err := gui.New(root, options...)
+	if errors.Is(err, gui.ErrNoDisplay) {
+		fmt.Printf("%s\nuse --tui to run Rune in this terminal, or --headless to only "+
+			"expose this machine's workspaces on the Rune network\n", err)
+		log.Errorf("gui: %v", err)
+		return 1
+	}
 	if err != nil {
 		fmt.Printf("gui: %s", err)
 		log.Errorf("gui: %v", err)
@@ -888,11 +908,12 @@ func runGUI(
 	defer func() { _ = root.Close() }()
 	defer func() { _ = g.Close() }()
 	guiRef.Store(g)
+	publisher.attach(g)
 	root.attachGUI(g, transparentWindow)
-	defer watchGUISignals(publishEvent,
-		quitEvent(appMenuKeyBindings(cfg)))()
+	g.SetAppIcon(getGUIAppIcon(browser, guiCfg))
+	defer watchGUISignals(root, quitEvent(appMenuKeyBindings(root.config())))()
 
-	if fg, bg := getGUIWindowOpacity(browser, cfg); transparentWindow && (fg != 1 || bg != 1) {
+	if fg, bg := getGUIWindowOpacity(browser, guiCfg); transparentWindow && (fg != 1 || bg != 1) {
 		g.SetOpacity(bg, fg)
 	}
 	if root.alreadyBootstrapped() {
@@ -923,46 +944,86 @@ func runGUI(
 	return 0
 }
 
+// eventPublisher is the part of *gui.GUI that guiPublisher publishes to.
+type eventPublisher interface {
+	PublishEvent(ev term.Event) bool
+}
+
+// guiPublisher publishes the IDE's events to the GUI, which runGUI
+// creates after the IDE has started scheduling functions on its event
+// loop.
+type guiPublisher struct {
+	sink atomic.Pointer[eventPublisher]
+	// mu orders the events held before attach ahead of those published
+	// after it.
+	mu      sync.Mutex
+	pending []term.Event
+}
+
+// publish satisfies the IDE's publish-event hook. Before attach it holds
+// the events for attach to publish, except plain redraw interrupts, which
+// it drops because the GUI's first frame supersedes them.
+func (p *guiPublisher) publish(ev term.Event) bool {
+	if sink := p.sink.Load(); sink != nil {
+		return (*sink).PublishEvent(ev)
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if sink := p.sink.Load(); sink != nil {
+		return (*sink).PublishEvent(ev)
+	}
+	if ev.Type == term.EventInterrupt && ev.Raw == nil && ev.UserFunc == nil {
+		return false
+	}
+	p.pending = append(p.pending, ev)
+	return true
+}
+
+// attach publishes the events held so far to sink, and every event
+// published from then on.
+func (p *guiPublisher) attach(sink eventPublisher) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, ev := range p.pending {
+		if !sink.PublishEvent(ev) {
+			log.Errorf("publish event held until the GUI started: GUI rejected it")
+		}
+	}
+	p.pending = nil
+	p.sink.Store(&sink)
+}
+
 // buildGUIOptions builds the gui.Option list for the production GUI
-// runtime from the gui config section. It is shared between runGUI and
-// the GUI benchmark harness so benchmarks measure the exact production
-// GUI wiring.
+// runtime from cfg, the full configuration, and guiCfg, its gui
+// section. It is shared between runGUI and the GUI benchmark harness so
+// benchmarks measure the exact production GUI wiring.
 func buildGUIOptions(
-	b browser.Browser, cfg config.Config, transparentWindow bool,
+	b browser.Browser, cfg, guiCfg config.Config, transparentWindow bool,
 	mu sync.Locker, printFPS bool,
 ) []gui.Option {
 	return []gui.Option{
-		gui.WithColorThemes(getGUIDefaultColorTheme(b, cfg), getGUIColorThemes(b, cfg)),
-		gui.WithFontDPI(getGUIFontDPI(b, cfg)),
-		gui.WithFontSize(getGUIFontSize(b, cfg)),
-		gui.WithFontFamily(getGUIFontFamily(b, cfg)),
-		gui.WithColumnWidthOffset(getGUIColumnWidthOffset(b, cfg)),
-		gui.WithLineHeightOffset(getGUILineHeightOffset(b, cfg)),
-		gui.WithScrollMultiplier(getGUIScrollMultiplier(b, cfg)),
-		gui.WithLigatures(getGUILigatures(b, cfg)),
+		gui.WithColorThemes(getGUIDefaultColorTheme(b, guiCfg), getGUIColorThemes(b, guiCfg)),
+		gui.WithFontDPI(getGUIFontDPI(b, guiCfg)),
+		gui.WithFontSize(getGUIFontSize(b, guiCfg)),
+		gui.WithFontFamily(getGUIFontFamily(b, guiCfg)),
+		gui.WithColumnWidthOffset(getGUIColumnWidthOffset(b, guiCfg)),
+		gui.WithLineHeightOffset(getGUILineHeightOffset(b, guiCfg)),
+		gui.WithScrollMultiplier(getGUIScrollMultiplier(b, guiCfg)),
+		gui.WithLigatures(getGUILigatures(b, guiCfg)),
 		gui.WithTransparentWindow(transparentWindow),
-		gui.WithBackgroundBlur(getGUIBackgroundBlur(b, cfg)),
+		gui.WithBackgroundBlur(getGUIBackgroundBlur(b, guiCfg)),
 		gui.WithLocker(mu),
 		gui.WithPrintFPS(printFPS),
-		gui.WithKeyMapping(getGUIKeyMapping(b, cfg)),
-		gui.WithAltModifier(getGUIAltModifier(b, cfg)),
 		gui.WithCloseRequestEvent(quitEvent(appMenuKeyBindings(cfg))),
 	}
 }
 
-// applyShellPATHAndGUIEnv applies the login-shell PATH resolution and gui.env.
-//
-// When gui.env defines its own PATH, the value may expand $PATH and therefore
-// depends on the resolved login PATH; in that case we block on pathDone so the
-// gui.env baseline is captured after the resolved PATH lands, keeping expansion
-// race-free. On resolution timeout or error Rune continues with the inherited
-// PATH and notifies the user.
-//
-// When gui.env does not define PATH, blocking would needlessly delay startup,
-// so we apply gui.env immediately and let the background resolve apply the
-// resolved login PATH via os.Setenv whenever it completes.
+// applyShellPATHAndGUIEnv waits for the login-shell PATH resolution and then
+// applies gui.env to host. gui.env.PATH may expand $PATH, which is the
+// resolved login PATH once it lands. On resolution timeout or error Rune
+// continues with the inherited PATH and notifies the user.
 func applyShellPATHAndGUIEnv(
-	cfg config.Config, pathDone <-chan error,
+	host *hostenv.Host, cfg config.Config, pathDone <-chan error,
 ) (ret error) {
 	env, err := getGUIEnvVars(cfg)
 	if err != nil {
@@ -974,15 +1035,14 @@ func applyShellPATHAndGUIEnv(
 	// when trying to find "go" in their PATH.
 	ret = waitLoginShellPATH(pathDone)
 
-	if err := applyGUIEnvVars(env); err != nil {
+	if err := host.Apply(env); err != nil {
 		ret = multierr.Append(ret, fmt.Errorf("apply gui.env: %v", err))
 	}
 	return ret
 }
 
 // waitLoginShellPATH blocks until the background login-shell PATH resolution
-// completes, applying the resolved PATH via os.Setenv on success and notifying
-// the user on error or timeout.
+// completes and reports an error for the user on failure or timeout.
 func waitLoginShellPATH(pathDone <-chan error) error {
 	select {
 	case err := <-pathDone:
@@ -995,6 +1055,12 @@ func waitLoginShellPATH(pathDone <-chan error) error {
 		return fmt.Errorf("resolving your login shell PATH timed out; tools on it " +
 			"(e.g. homebrew, mise) may be unavailable")
 	}
+}
+
+// sponsorsOption points the sponsors command at the configured API
+// server. Every ide.New in this binary needs it, or the command fails.
+func sponsorsOption() ide.Option {
+	return ide.WithSponsorsURL(strings.TrimRight(*flagHTTPAddress, "/") + "/api/sponsors")
 }
 
 // newAPIClient constructs the production apiclient.Client and its
@@ -1031,24 +1097,6 @@ func apiClientConfig(installBackupDir string, cfg config.Config) apiclient.Confi
 	apicfg.InstallBackupDir = installBackupDir
 	apicfg.EditorMode = ide.EditorMode(cfg)
 	return apicfg
-}
-
-// trustKeyringFetcher builds the KeyringFetcher the process trust store uses
-// to load the package-signing keyring the API advertises. It fetches the
-// oauth2 config once and returns the armored keyring it carries.
-func trustKeyringFetcher() pkgtrust.KeyringFetcher {
-	endpoint, err := url.Parse(*flagHTTPAddress)
-	if err != nil {
-		log.Warnf("parse http endpoint for trust keyring fetch: %v", err)
-		return nil
-	}
-	return func() ([]byte, error) {
-		conf, err := auth.FetchConfig(endpoint)
-		if err != nil {
-			return nil, err
-		}
-		return []byte(conf.PackageKeyringArmored), nil
-	}
 }
 
 func doRunTUI(mu *sync.Mutex, i *ide.IDE) error {

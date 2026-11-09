@@ -17,12 +17,19 @@
 package gui
 
 import (
+	"bytes"
 	"context"
 	"image"
 	"image/color"
+	"image/draw"
+	"image/png"
 	"maps"
 	"math"
+	"os"
+	"path/filepath"
+	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -478,6 +485,301 @@ func TestPublishEventSchedulesUserFunc(t *testing.T) {
 	})
 }
 
+func TestScreenshot(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		gui  *GUI
+		err  string
+	}{
+		{name: "nil GUI", err: "screenshots require GUI mode"},
+		{name: "unconfigured", gui: &GUI{}, err: "directory is not configured"},
+		{name: "closed", gui: &GUI{screenshotDir: t.TempDir()}, err: "GUI is closed"},
+		{name: "no content", gui: &GUI{screenshotDir: t.TempDir()}, err: "no rendered content"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.name == "closed" {
+				tt.gui.publish.Store(publishClosed)
+			}
+			path, err := tt.gui.Screenshot()
+			require.ErrorContains(t, err, tt.err)
+			assert.Empty(t, path)
+			if tt.gui != nil {
+				assert.False(t, tt.gui.NeedsRender())
+			}
+		})
+	}
+
+	t.Run("close rejects drained requests", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "screenshots")
+		g, err := New(&mockHandler{}, WithScreenshotDir(dir))
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, g.Close()) })
+		called := false
+		require.True(t, g.PublishEvent(term.Event{
+			Type: term.EventInterrupt,
+			UserFunc: func() {
+				called = true
+				path, err := g.Screenshot()
+				require.ErrorContains(t, err, "GUI is closed")
+				assert.Empty(t, path)
+			},
+		}))
+		require.NoError(t, g.Close())
+		assert.True(t, called)
+		assert.NoDirExists(t, dir)
+	})
+
+	t.Run("saves before the user function returns", func(t *testing.T) {
+		draws := 0
+		dir := filepath.Join(t.TempDir(), "screenshots")
+		g, err := New(&mockHandler{
+			assertDraw:  func(term.Writer) { draws++ },
+			assertEvent: func(term.Event) (bool, bool) { return false, true },
+		}, WithScreenshotDir(dir), WithSize(160, 120))
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, g.Close()) })
+		g.input.input = &mockInputManager{}
+		require.NoError(t, g.Update())
+		called := false
+		require.True(t, g.PublishEvent(term.Event{
+			Type: term.EventInterrupt,
+			UserFunc: func() {
+				called = true
+				path, err := g.Screenshot()
+				require.NoError(t, err)
+				assert.FileExists(t, path)
+				assert.Equal(t, dir, filepath.Dir(path))
+				assert.Equal(t, 1, draws, "capture must not reenter the handler")
+			},
+		}))
+		benchdraw.BeginFrame(t)
+		defer benchdraw.EndFrame(t)
+		require.NoError(t, g.Update())
+		assert.True(t, called)
+		assert.Equal(t, 2, draws)
+	})
+
+	t.Run("resize invalidates cached content", func(t *testing.T) {
+		g, _ := newTestGUI(t, &mockHandler{
+			assertDraw:  func(term.Writer) {},
+			assertEvent: func(term.Event) (bool, bool) { return false, true },
+		})
+		t.Cleanup(func() { require.NoError(t, g.Close()) })
+		dir := filepath.Join(t.TempDir(), "screenshots")
+		require.NoError(t, WithScreenshotDir(dir)(g))
+		require.NoError(t, g.Update())
+		g.Layout(320, 240)
+		path, err := g.Screenshot()
+		require.ErrorContains(t, err, "no rendered content")
+		assert.Empty(t, path)
+		assert.NoDirExists(t, dir)
+	})
+}
+
+func TestWriteScreenshot(t *testing.T) {
+	t.Run("unique PNGs preserve dimensions and alpha", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "screenshots")
+		src := image.NewRGBA(image.Rect(0, 0, 3, 2))
+		src.SetRGBA(0, 0, color.RGBA{R: 255, A: 255})
+		src.SetRGBA(1, 0, color.RGBA{R: 128, B: 128, A: 128})
+		paths := make(map[string]bool)
+		for range 3 {
+			path, err := writeScreenshot(dir, src)
+			require.NoError(t, err)
+			assert.Equal(t, dir, filepath.Dir(path))
+			assert.Regexp(t, `^screenshot-\d{8}T\d{6}\.\d{9}Z-\d+\.png$`, filepath.Base(path))
+			assert.False(t, paths[path], "screenshots must not overwrite previous captures")
+			paths[path] = true
+			data, err := os.ReadFile(path)
+			require.NoError(t, err)
+			decoded, err := png.Decode(bytes.NewReader(data))
+			require.NoError(t, err)
+			assert.Equal(t, src.Bounds(), decoded.Bounds())
+			for y := range src.Bounds().Dy() {
+				for x := range src.Bounds().Dx() {
+					assert.Equal(t, src.At(x, y), color.RGBAModel.Convert(decoded.At(x, y)))
+				}
+			}
+			if runtime.GOOS != "windows" {
+				info, err := os.Stat(path)
+				require.NoError(t, err)
+				assert.Zero(t, info.Mode().Perm()&0077)
+			}
+		}
+		files, err := os.ReadDir(dir)
+		require.NoError(t, err)
+		assert.Len(t, files, 3)
+		if runtime.GOOS != "windows" {
+			info, err := os.Stat(dir)
+			require.NoError(t, err)
+			assert.Zero(t, info.Mode().Perm()&0077)
+		}
+	})
+
+	t.Run("directory creation fails", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "screenshots")
+		require.NoError(t, os.WriteFile(dir, []byte("obstruction"), 0600))
+		path, err := writeScreenshot(dir, image.NewRGBA(image.Rect(0, 0, 1, 1)))
+		require.ErrorContains(t, err, "create screenshots directory")
+		assert.Empty(t, path)
+		data, err := os.ReadFile(dir)
+		require.NoError(t, err)
+		assert.Equal(t, "obstruction", string(data))
+	})
+
+	t.Run("encode failure removes partial file", func(t *testing.T) {
+		dir := t.TempDir()
+		path, err := writeScreenshot(dir, image.NewRGBA(image.Rectangle{}))
+		require.ErrorContains(t, err, "write screenshot")
+		assert.Empty(t, path)
+		files, err := os.ReadDir(dir)
+		require.NoError(t, err)
+		assert.Empty(t, files)
+	})
+
+	for _, tt := range []struct {
+		name         string
+		blockPublish bool
+	}{
+		{name: "published only after encoding"},
+		{name: "publish failure removes temporary file", blockPublish: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			var temporary, final string
+			observed := false
+			src := screenshotTestImage{
+				Image: image.NewRGBA(image.Rect(0, 0, 3, 2)),
+				observe: func() {
+					if observed {
+						return
+					}
+					observed = true
+					files, err := os.ReadDir(dir)
+					require.NoError(t, err)
+					require.Len(t, files, 1)
+					require.True(t, strings.HasPrefix(files[0].Name(), "."),
+						"incomplete screenshots must not appear under their final name")
+					temporary = filepath.Join(dir, files[0].Name())
+					final = filepath.Join(dir, strings.TrimPrefix(files[0].Name(), "."))
+					if tt.blockPublish {
+						require.NoError(t, os.Mkdir(final, 0700))
+					}
+				},
+			}
+			path, err := writeScreenshot(dir, src)
+			require.True(t, observed)
+			assert.NoFileExists(t, temporary)
+			if tt.blockPublish {
+				require.ErrorContains(t, err, "publish screenshot")
+				assert.Empty(t, path)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, final, path)
+				assert.FileExists(t, path)
+			}
+			files, err := os.ReadDir(dir)
+			require.NoError(t, err)
+			assert.Len(t, files, 1)
+		})
+	}
+}
+
+type screenshotTestImage struct {
+	image.Image
+	observe func()
+}
+
+func (i screenshotTestImage) Bounds() image.Rectangle {
+	i.observe()
+	return i.Image.Bounds()
+}
+
+func TestScreenshotSavesCurrentContent(t *testing.T) {
+	for _, tt := range []struct {
+		name          string
+		printFPS      bool
+		blocked       bool
+		renderPending bool
+		scale         float64
+	}{
+		{name: "idle frame", scale: 1},
+		{name: "before first screen draw", renderPending: true, scale: 1},
+		{name: "FPS overlay", printFPS: true, scale: 1},
+		{name: "write failure", blocked: true, scale: 1},
+		{name: "high DPI", scale: 2},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "screenshots")
+			draws := 0
+			pic := term.Image{
+				Src: solidRGBA(4, 4, color.RGBA{G: 255, A: 255}), ID: term.NewImageID(),
+				Pos: term.Coordinates{X: 2, Y: 1}, Width: 1, Height: 1,
+			}
+			g, err := New(&mockHandler{
+				assertDraw: func(w term.Writer) {
+					draws++
+					require.True(t, w.DrawImage(pic))
+				},
+				assertEvent: func(term.Event) (bool, bool) { return false, true },
+				showCursor:  true,
+			}, WithScreenshotDir(dir), WithSize(160, 120), WithPrintFPS(tt.printFPS), WithDeviceScale(tt.scale))
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, g.Close()) })
+			g.input.input = &mockInputManager{}
+			require.NoError(t, g.Update())
+			bounds := image.Rect(0, 0, int(160*tt.scale), int(120*tt.scale))
+			screen := ebiten.NewImage(bounds.Dx(), bounds.Dy())
+			t.Cleanup(screen.Deallocate)
+			if !tt.renderPending {
+				benchdraw.BeginFrame(t)
+				g.Draw(screen)
+				benchdraw.EndFrame(t)
+			}
+			require.Equal(t, tt.renderPending, g.NeedsRender())
+			if tt.blocked {
+				require.NoError(t, os.WriteFile(dir, nil, 0600))
+			}
+
+			paths := make(map[string]bool)
+			for range 2 {
+				benchdraw.BeginFrame(t)
+				path, err := g.Screenshot()
+				benchdraw.EndFrame(t)
+				assert.Equal(t, tt.renderPending, g.NeedsRender(), "capture must not consume the window repaint")
+				assert.Equal(t, 1, draws, "capture must not reenter the handler")
+				if tt.blocked {
+					require.ErrorContains(t, err, "create screenshots directory")
+					assert.Empty(t, path)
+					continue
+				}
+				require.NoError(t, err)
+				assert.Equal(t, dir, filepath.Dir(path))
+				assert.False(t, paths[path])
+				paths[path] = true
+				data, err := os.ReadFile(path)
+				require.NoError(t, err, "the returned screenshot must already be saved")
+				decoded, err := png.Decode(bytes.NewReader(data))
+				require.NoError(t, err)
+				assert.Equal(t, bounds, decoded.Bounds())
+			}
+			if tt.blocked {
+				require.NoError(t, os.Remove(dir))
+			}
+			benchdraw.BeginFrame(t)
+			g.Draw(screen)
+			benchdraw.EndFrame(t)
+			if tt.blocked {
+				assert.NoDirExists(t, dir, "failed requests must not retry on subsequent frames")
+			} else {
+				files, err := os.ReadDir(dir)
+				require.NoError(t, err)
+				assert.Len(t, files, 2)
+			}
+		})
+	}
+}
+
 func TestSetForceFullRepaint(t *testing.T) {
 	mock := mockHandler{
 		assertDraw:  func(term.Writer) {},
@@ -492,6 +794,95 @@ func TestSetForceFullRepaint(t *testing.T) {
 	assert.True(t, g.forceFullRepaint)
 	assert.True(t, g.renderer.forceFullRepaint)
 	assert.True(t, g.NeedsRender())
+}
+
+func TestNewAppIcon(t *testing.T) {
+	assert.Nil(t, NewAppIcon(nil))
+	assert.Nil(t, NewAppIcon(image.NewNRGBA(image.Rect(3, 3, 3, 9))))
+
+	red := color.NRGBA{R: 255, A: 255}
+	src := image.NewNRGBA(image.Rect(5, 5, 69, 37))
+	draw.Draw(src, src.Bounds(), image.NewUniform(red), image.Point{}, draw.Src)
+	icon := NewAppIcon(src)
+	require.NotNil(t, icon)
+	require.Len(t, icon.images, len(appIconSizes))
+	for i, side := range appIconSizes {
+		assert.Equal(t, image.Rect(0, 0, side, side), icon.images[i].Bounds())
+	}
+
+	small := icon.images[slices.Index(appIconSizes, 32)]
+	rgba := func(x, y int) color.NRGBA {
+		return color.NRGBAModel.Convert(small.At(x, y)).(color.NRGBA)
+	}
+	for x := range 32 {
+		for _, y := range []int{0, 7, 24, 31} {
+			assert.Equal(t, color.NRGBA{}, rgba(x, y), "padding at %d,%d", x, y)
+		}
+		for _, y := range []int{8, 16, 23} {
+			assert.Equal(t, red, rgba(x, y), "picture at %d,%d", x, y)
+		}
+	}
+}
+
+func TestSetAppIcon(t *testing.T) {
+	icon := NewAppIcon(image.NewRGBA(image.Rect(0, 0, 4, 4)))
+	newGUI := func(t *testing.T) (*GUI, *[][]image.Image) {
+		mock := mockHandler{
+			assertDraw:  func(term.Writer) {},
+			assertEvent: func(term.Event) (bool, bool) { return false, true },
+		}
+		g, _ := newTestGUI(t, &mock)
+		shown := new([][]image.Image)
+		g.setAppIcon = func(images []image.Image) { *shown = append(*shown, images) }
+		return g, shown
+	}
+
+	t.Run("an icon set before the first frame shows once", func(t *testing.T) {
+		g, shown := newGUI(t)
+		g.SetAppIcon(icon)
+		assert.Same(t, icon, g.AppIcon())
+		require.NoError(t, g.Update())
+		require.NoError(t, g.Update())
+		assert.Equal(t, [][]image.Image{icon.images}, *shown)
+	})
+
+	t.Run("an idle frame shows a pending icon", func(t *testing.T) {
+		g, shown := newGUI(t)
+		require.NoError(t, g.Update())
+		g.SetAppIcon(icon)
+		require.NoError(t, g.Update())
+		assert.Equal(t, [][]image.Image{icon.images}, *shown)
+	})
+
+	t.Run("no icon without one set does nothing", func(t *testing.T) {
+		g, shown := newGUI(t)
+		g.SetAppIcon(nil)
+		require.NoError(t, g.Update())
+		assert.Empty(t, *shown)
+		assert.Nil(t, g.AppIcon())
+	})
+
+	t.Run("no icon restores the default", func(t *testing.T) {
+		g, shown := newGUI(t)
+		g.SetAppIcon(icon)
+		require.NoError(t, g.Update())
+		g.SetAppIcon(nil)
+		require.NoError(t, g.Update())
+		require.Len(t, *shown, 2)
+		assert.Empty(t, (*shown)[1])
+		assert.Nil(t, g.AppIcon())
+	})
+
+	t.Run("an icon a UserFunc sets shows in its tick", func(t *testing.T) {
+		g, shown := newGUI(t)
+		require.NoError(t, g.Update())
+		require.True(t, g.PublishEvent(term.Event{
+			Type:     term.EventInterrupt,
+			UserFunc: func() { g.SetAppIcon(icon) },
+		}))
+		require.NoError(t, g.Update())
+		assert.Equal(t, [][]image.Image{icon.images}, *shown)
+	})
 }
 
 func TestRootHandlerSynchronization(t *testing.T) {
@@ -767,6 +1158,55 @@ func TestDrawPaintsPicturesOnTheirCells(t *testing.T) {
 		rects[0], "the picture covers exactly its cells' pixels")
 }
 
+func TestSetCursorEffect(t *testing.T) {
+	gui, _ := newTestGUI(t, &mockHandler{})
+
+	require.NoError(t, gui.SetCursorEffect(CursorTrailShader, time.Second))
+	assert.NotNil(t, gui.cursorEffect.shader)
+	assert.Equal(t, time.Second, gui.cursorEffect.duration)
+	assert.Equal(t, jumpThreshold{rows: 2, columns: 9}, gui.cursorEffect.jump)
+
+	everyKey := jumpShader("const MinJumpRows = 1\nconst MinJumpColumns = 1")
+	require.NoError(t, gui.SetCursorEffect([]byte(everyKey), time.Second))
+	assert.Equal(t, jumpThreshold{rows: 1, columns: 1}, gui.cursorEffect.jump)
+
+	require.Error(t, gui.SetCursorEffect([]byte("package main"), time.Second))
+	assert.Nil(t, gui.cursorEffect.shader, "a broken shader turns the effect off")
+
+	require.Error(t, gui.SetCursorEffect([]byte(jumpShader("const MinJumpRows = 0")), time.Second))
+	assert.Nil(t, gui.cursorEffect.shader, "an invalid jump constant turns the effect off")
+
+	require.NoError(t, gui.SetCursorEffect(CursorTrailShader, time.Second))
+	require.NoError(t, gui.SetCursorEffect(nil, time.Second))
+	assert.Nil(t, gui.cursorEffect.shader)
+
+	require.NoError(t, gui.SetCursorEffect(CursorTrailShader, 0))
+	assert.Nil(t, gui.cursorEffect.shader)
+}
+
+func TestDrawTracksTheCursorCellForTheCursorEffect(t *testing.T) {
+	mock := &mockHandler{
+		assertDraw:  func(term.Writer) {},
+		assertEvent: func(term.Event) (bool, bool) { return false, true },
+		cursor:      term.Coordinates{X: 3, Y: 2},
+		showCursor:  true,
+	}
+	gui, _ := newTestGUI(t, mock)
+	require.NoError(t, gui.SetCursorEffect(CursorTrailShader, time.Second))
+	require.NoError(t, gui.Update())
+
+	r := gui.renderer
+	screen := ebiten.NewImage(r.frame.Bounds().Dx(), r.frame.Bounds().Dy())
+	t.Cleanup(screen.Deallocate)
+	benchdraw.BeginFrame(t)
+	gui.Draw(screen)
+	benchdraw.EndFrame(t)
+
+	assert.Equal(t, term.Coordinates{X: 3, Y: 2}, gui.cursorEffect.cell)
+	assert.Equal(t, r.cursorBounds(term.Cell{}, mock.cursor, term.CursorStyleDefault),
+		gui.cursorEffect.bounds)
+}
+
 // stubWindowClosing installs a processWindowClosed that reports one
 // pending close request for ev, mirroring ebiten consuming the closing
 // flag on the first read of a frame.
@@ -936,10 +1376,74 @@ func TestUpdateTakesUILockWhileDragging(t *testing.T) {
 	})
 }
 
+func TestUpdateShowsThePointerShapeOfTheLastMouseEvent(t *testing.T) {
+	type ctxKey struct{}
+	var slots []*term.Pointer
+	mock := mockHandler{
+		assertDraw: func(w term.Writer) { writeRow(w, 0, "https://example.com") },
+		assertEvent: func(ev term.Event) (bool, bool) {
+			p, ok := term.PointerFromContext(ev.Context)
+			require.True(t, ok, "every dispatched mouse event carries a Pointer")
+			assert.Equal(t, "kept", ev.Context.Value(ctxKey{}), "the event's own context is kept")
+			slots = append(slots, p)
+			if ev.MouseX == 1 {
+				term.SetPointerShape(ev, term.PointerText)
+			}
+			return false, true
+		},
+	}
+	g, input := newTestGUI(t, &mock)
+	var shapes []ebiten.CursorShapeType
+	g.pointer.setShape = func(s ebiten.CursorShapeType) { shapes = append(shapes, s) }
+	g.drawHandler(g.ctx)
+	mouse := func(x int) {
+		t.Helper()
+		g.pendingEvents = append(g.pendingEvents, term.Event{
+			Type: term.EventMouse, MouseX: x,
+			Context: context.WithValue(context.Background(), ctxKey{}, "kept"),
+		})
+		require.NoError(t, g.Update())
+	}
+
+	mouse(1)
+	mouse(1)
+	assert.Equal(t, []ebiten.CursorShapeType{ebiten.CursorShapeText}, shapes,
+		"a shape set on every event is pushed once")
+
+	mouse(2)
+	assert.Equal(t, []ebiten.CursorShapeType{
+		ebiten.CursorShapeText, ebiten.CursorShapeDefault,
+	}, shapes, "a handler that sets nothing gets the default")
+
+	slots[2].SetShape(term.PointerMove)
+	require.NoError(t, g.Update())
+	assert.Equal(t, ebiten.CursorShapeMove, shapes[len(shapes)-1],
+		"a late write to the last event's Pointer lands on an idle tick")
+
+	slots[1].SetShape(term.PointerLink)
+	require.NoError(t, g.Update())
+	assert.Len(t, shapes, 3, "a write to an earlier event's Pointer is ignored")
+
+	mouse(1)
+	metaDown(input)
+	require.NoError(t, g.Update())
+	input.events = nil
+	mouse(1)
+	assert.Equal(t, []ebiten.CursorShapeType{ebiten.CursorShapeText, ebiten.CursorShapePointer},
+		shapes[3:], "the meta-held link cursor overrides the handler")
+
+	metaUp(input)
+	require.NoError(t, g.Update())
+	assert.Equal(t, ebiten.CursorShapeText, shapes[len(shapes)-1],
+		"releasing meta restores the handler's shape")
+}
+
 type mockHandler struct {
 	width, height int
 	assertDraw    func(term.Writer)
 	assertEvent   func(term.Event) (bool, bool)
+	cursor        term.Coordinates
+	showCursor    bool
 }
 
 func (m *mockHandler) Resize(width, height int) {
@@ -955,7 +1459,7 @@ func (m *mockHandler) Handle(ev term.Event) (exit, handled bool) {
 }
 
 func (m *mockHandler) Cursor() (c term.Coordinates, s term.CursorStyle, show bool) {
-	return
+	return m.cursor, term.CursorStyleDefault, m.showCursor
 }
 
 func (m *mockHandler) Selection() (string, bool) {

@@ -24,11 +24,13 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"testing"
+	"time"
 
 	"github.com/unstablebuild/blue/iterator"
 	"github.com/unstablebuild/blue/release"
 	"unstable.build/rune/internal/debug"
-	"unstable.build/rune/internal/ide/pkgtrust"
+	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
 )
 
 // ReleaseManager is a release.Manager for testing idepkg.Manager.
@@ -41,6 +43,12 @@ type ReleaseManager struct {
 	missProgressComplete bool
 	hook                 func()
 	tarballs             map[string][]byte
+	signatures           map[string]presignature
+}
+
+type presignature struct {
+	keyID     string
+	signature string
 }
 
 // NewReleaseManager returns a new instance of ReleaseManager.
@@ -72,6 +80,21 @@ func (t *ReleaseManager) SetTarball(pkgID string, data []byte) {
 		t.tarballs = make(map[string][]byte)
 	}
 	t.tarballs[pkgID] = data
+	delete(t.signatures, pkgID)
+}
+
+// SetSignedTarball registers a gzipped-tar payload that Get returns with the
+// given signing key ID and armored detached signature instead of signing it
+// with the shared test entity, so tests can serve bundles signed by keys
+// whose private half they do not hold.
+func (t *ReleaseManager) SetSignedTarball(pkgID string, data []byte, keyID, signature string) {
+	t.SetTarball(pkgID, data)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.signatures == nil {
+		t.signatures = make(map[string]presignature)
+	}
+	t.signatures[pkgID] = presignature{keyID: keyID, signature: signature}
 }
 
 // SetHook sets a hook to be called before any of the methods return
@@ -211,13 +234,18 @@ func (t *ReleaseManager) Get(
 		if payload == nil {
 			return
 		}
-		// Sign the payload with the shared test entity and record the
-		// provenance metadata so mandatory bundle verification passes
-		// for every non-git package install without a production backdoor.
-		keyID, signature, signErr := signTestPayload(payload)
-		if signErr != nil {
-			err = signErr
-			return
+		sig, presigned := t.signatures[pkgID]
+		keyID, signature := sig.keyID, sig.signature
+		if !presigned {
+			// Sign the payload with the shared test entity and record the
+			// provenance metadata so mandatory bundle verification passes
+			// for every non-git package install without a production backdoor.
+			var signErr error
+			keyID, signature, signErr = signTestPayload(payload)
+			if signErr != nil {
+				err = signErr
+				return
+			}
 		}
 		found.Metadata = cloneMetadata(found.Metadata)
 		found.Metadata[pkgtrust.MetadataSigningKeyID] = keyID
@@ -285,6 +313,71 @@ func (t *ReleaseManager) callHook() {
 	if hook != nil {
 		hook()
 	}
+}
+
+// Download is the download of a version of a package.
+type Download struct {
+	Package string
+	Version release.Version
+}
+
+// HeldReleaseManager serves the bundles of a ReleaseManager, holding
+// the first download of each held version until it is released, which
+// keeps the install of that version in flight.
+type HeldReleaseManager struct {
+	*ReleaseManager
+	held map[Download]*heldDownload
+}
+
+type heldDownload struct {
+	once    sync.Once
+	started chan struct{}
+	release chan error
+}
+
+// NewHeldReleaseManager returns a HeldReleaseManager serving the bundles
+// of rm that holds the first download of each of held.
+func NewHeldReleaseManager(rm *ReleaseManager, held ...Download) *HeldReleaseManager {
+	h := &HeldReleaseManager{ReleaseManager: rm, held: make(map[Download]*heldDownload, len(held))}
+	for _, d := range held {
+		h.held[d] = &heldDownload{started: make(chan struct{}), release: make(chan error, 1)}
+	}
+	return h
+}
+
+// Get satisfies release.Manager. The first download of a held version
+// blocks until it is released, and fails with the error it is released
+// with.
+func (h *HeldReleaseManager) Get(
+	ctx context.Context, pkgID string, version release.Version, w release.ProgressWriter,
+) (release.Bundle, error) {
+	var err error
+	if d, ok := h.held[Download{Package: pkgID, Version: version}]; ok {
+		d.once.Do(func() {
+			close(d.started)
+			err = <-d.release
+		})
+	}
+	if err != nil {
+		return release.Bundle{}, err
+	}
+	return h.ReleaseManager.Get(ctx, pkgID, version, w)
+}
+
+// AwaitStarted fails t unless the first download of d starts soon.
+func (h *HeldReleaseManager) AwaitStarted(t testing.TB, d Download) {
+	t.Helper()
+	select {
+	case <-h.held[d].started:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("the download of %s@%s did not start", d.Package, d.Version)
+	}
+}
+
+// Release lets the first download of d go on, or fail with err when it
+// is not nil.
+func (h *HeldReleaseManager) Release(d Download, err error) {
+	h.held[d].release <- err
 }
 
 func makeConfigPkgStarTar() ([]byte, error) {

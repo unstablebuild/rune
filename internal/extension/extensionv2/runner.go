@@ -139,12 +139,19 @@ type TrustVerifier interface {
 	VerifyExtensionEntrypoint(path string) (fingerprint string, ok bool)
 }
 
+// ServerAuthorizer authenticates and authorizes the RPCs extensions make
+// to the workspace server. creds is nil when the transport is secured
+// some other way.
+type ServerAuthorizer interface {
+	GRPCAuthServerOptions(keys auth.Keys, creds credentials.TransportCredentials) []grpc.ServerOption
+}
+
 // WorkspaceExtensionsRunner creates an extension runner for a workspace. It
 // starts a gRPC server that hosts the extension resources and returns a runner
 // that can launch extensions and execute commands in the workspace.
 func (r *Runner) WorkspaceExtensionsRunner(
 	uri workspaceapi.URI, res map[extensionapi.Permission]extension.ResourceRegistrar,
-	authorizer *ideauthorizer.Authorizer,
+	authorizer ServerAuthorizer,
 	trustVerifier TrustVerifier,
 	dataDir, installDir string, notifications browser.Notifications,
 	executor, extExecutor schemeapi.Executor,
@@ -180,6 +187,7 @@ func (r *Runner) WorkspaceExtensionsRunner(
 	}
 	unaryInterceptors := []grpc.UnaryServerInterceptor{
 		rpc.UnaryReportRecoveryInterceptor(),
+		extensionIDUnaryInterceptor(),
 	}
 	streamInterceptors = append(streamInterceptors, r.cfg.extraStreamInterceptors...)
 	unaryInterceptors = append(unaryInterceptors, r.cfg.extraUnaryInterceptors...)
@@ -260,19 +268,31 @@ func (r *Runner) WorkspaceExtensionsRunner(
 	return ret, nil
 }
 
+func extensionIDUnaryInterceptor() grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo,
+		handler grpc.UnaryHandler) (any, error) {
+		return handler(extensionIDContext(ctx), req)
+	}
+}
+
 func extensionIDStreamInterceptor() grpc.StreamServerInterceptor {
 	return func(srv any, stream grpc.ServerStream, info *grpc.StreamServerInfo,
 		handler grpc.StreamHandler) error {
-		claims, ok := auth.ClaimsFromContext[ideauthorizer.Extension](stream.Context())
-		if ok && claims.Extra.ExtensionID != "" {
-			stream = contextServerStream{
-				ServerStream: stream,
-				ctx: processctx.ContextWithExtensionID(
-					stream.Context(), claims.Extra.ExtensionID),
-			}
+		if ctx := extensionIDContext(stream.Context()); ctx != stream.Context() {
+			stream = contextServerStream{ServerStream: stream, ctx: ctx}
 		}
 		return handler(srv, stream)
 	}
+}
+
+// extensionIDContext tags ctx with the ID of the authenticated extension
+// it carries, or returns it as is when it carries none.
+func extensionIDContext(ctx context.Context) context.Context {
+	claims, ok := auth.ClaimsFromContext[ideauthorizer.Extension](ctx)
+	if !ok || claims.Extra.ExtensionID == "" {
+		return ctx
+	}
+	return processctx.ContextWithExtensionID(ctx, claims.Extra.ExtensionID)
 }
 
 type contextServerStream struct {

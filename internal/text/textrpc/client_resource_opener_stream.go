@@ -28,6 +28,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi/textrpc"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"github.com/unstablebuild/rune-go-sdk/iterator"
 )
 
 var _ textapi.ResourceOpenHandler = (*resourceOpenerClientStream)(nil)
@@ -89,16 +90,23 @@ type resourceOpenerClientStream struct {
 	stream resourceOpenerServerStream
 	sendMu sync.Mutex
 	opens  *pendingOpens
+	// complete is whether the extension answers completion requests;
+	// SDKs that predate them end the stream on receiving one.
+	complete bool
+	// completion id -> chanCtx, until the extension reports it done
+	completions       sync.Map
+	completionCounter atomic.Int64
 }
 
 func newResourceOpenerClientStream(
-	ctx context.Context, stream resourceOpenerServerStream, opens *pendingOpens,
+	ctx context.Context, stream resourceOpenerServerStream, opens *pendingOpens, complete bool,
 ) *resourceOpenerClientStream {
 	return &resourceOpenerClientStream{
-		log:    slog.Default().With("struct", "textrpc.resourceOpenerClientStream"),
-		ctx:    ctx,
-		stream: stream,
-		opens:  opens,
+		log:      slog.Default().With("struct", "textrpc.resourceOpenerClientStream"),
+		ctx:      ctx,
+		stream:   stream,
+		opens:    opens,
+		complete: complete,
 	}
 }
 
@@ -147,6 +155,64 @@ func (c *resourceOpenerClientStream) OpenResource(
 	}
 }
 
+// CompleteResource satisfies textapi.ResourceOpenHandler. The extension
+// streams the values until it reports the completion done; closing the
+// iterator asks it to stop. An extension that does not complete resources
+// offers none.
+func (c *resourceOpenerClientStream) CompleteResource(
+	ctx context.Context, prefix string,
+) (iterator.Iterator[string], error) {
+	if !c.complete {
+		return iterator.Empty[string](), nil
+	}
+	id := c.completionCounter.Add(1)
+	ctx, cancel := context.WithCancel(ctx)
+	ch := make(chan chanValue)
+	c.completions.Store(id, chanCtx{ctx: ctx, ch: ch})
+	err := c.send(&textrpc.ServerResourceOpenerMessage{
+		Type:     textrpc.ServerResourceOpenerMessage_Complete,
+		Complete: &textrpc.CompleteResourceRequest{Id: id, Prefix: prefix},
+	})
+	if err != nil {
+		cancel()
+		c.completions.Delete(id)
+		return nil, fmt.Errorf("send complete resource request: %w", err)
+	}
+	return iterator.FromFunc(func(nextCtx context.Context) (string, bool, error) {
+		select {
+		case next, ok := <-ch:
+			if !ok {
+				return "", false, nil
+			}
+			if next.err != nil {
+				return "", false, next.err
+			}
+			return next.val, true, nil
+		case <-nextCtx.Done():
+			return "", false, nextCtx.Err()
+		case <-ctx.Done():
+			return "", false, ctx.Err()
+		case <-c.ctx.Done():
+			return "", false, fmt.Errorf("complete %s: extension disconnected", prefix)
+		}
+	}, func() error {
+		cancel()
+		// a completion still running keeps its entry, now canceled, so
+		// that the values in flight are dropped until it is done.
+		if _, running := c.completions.Load(id); !running {
+			return nil
+		}
+		err := c.send(&textrpc.ServerResourceOpenerMessage{
+			Type:           textrpc.ServerResourceOpenerMessage_CompleteCancel,
+			CompleteCancel: &textrpc.RequestCancel{Id: id},
+		})
+		if err != nil {
+			c.log.Warn("send complete resource cancel", "error", err)
+		}
+		return nil
+	}), nil
+}
+
 func (c *resourceOpenerClientStream) receiveMessages() error {
 	for {
 		var msg textrpc.ClientResourceOpenerMessage
@@ -166,8 +232,44 @@ func (c *resourceOpenerClientStream) receiveMessages() error {
 				err = errors.New("extension reported no error and no handler")
 			}
 			reply <- openResult{err: err}
+		case textrpc.ClientResourceOpenerMessage_CompleteValue:
+			value := msg.GetCompleteValue()
+			val, ok := c.completions.Load(value.GetId())
+			if !ok {
+				c.log.Warn("received complete value for unknown completion")
+				continue
+			}
+			if err := deliver(c.ctx, val.(chanCtx), chanValue{val: value.GetValue()}); err != nil {
+				return err
+			}
+		case textrpc.ClientResourceOpenerMessage_CompleteDone:
+			done := msg.GetCompleteDone()
+			val, ok := c.completions.LoadAndDelete(done.GetId())
+			if !ok {
+				continue
+			}
+			completion := val.(chanCtx)
+			if errStr := done.GetError(); errStr != "" {
+				err := deliver(c.ctx, completion, chanValue{err: errors.New(errStr)})
+				if err != nil {
+					return err
+				}
+			}
+			close(completion.ch)
 		default:
 			c.log.Warn("received extraneous message type", "type", msg.GetType())
 		}
+	}
+}
+
+// deliver hands v to the completion's iterator, unless it was abandoned.
+func deliver(ctx context.Context, completion chanCtx, v chanValue) error {
+	select {
+	case completion.ch <- v:
+		return nil
+	case <-completion.ctx.Done():
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }

@@ -34,12 +34,10 @@ type floatingNode struct {
 	minimizedPadding            int
 	noBar                       bool
 	title                       string
-
-	// maximized covers the whole window manager area; the restore
-	// fields hold the pre-maximize geometry for ToggleMaximize.
-	maximized        bool
-	restoreAlignment component.Alignment
-	restoreOffset    term.Coordinates
+	moved                       bool
+	maximized                   bool
+	restoreAlignment            component.Alignment
+	restoreOffset               term.Coordinates
 
 	realWidth, realHeight int              // calculated upon Resize, considering trimming
 	realOffset            term.Coordinates // calculated offset with alignment
@@ -48,14 +46,16 @@ type floatingNode struct {
 	content component.Virtual[component.Floating]
 }
 
+// reachableBarCells is how many cells of a moved window's bar stay on
+// screen when it extends past an edge: one cell to grab it by, besides
+// the corner and the close icon, which do not move the window.
+const reachableBarCells = 3
+
 func newFloatingNode(
 	wm *WindowManager, content component.Floating,
 	cfg FloatingConfig,
 	maxWidth, maxHeight int,
 ) *floatingNode {
-	if cfg.Offset.Y < 0 || cfg.Offset.X < 0 {
-		panic("invalid floating window coordinates")
-	}
 	ret := new(floatingNode)
 	ret.desiredOffset = cfg.Offset
 	ret.alignment = cfg.Alignment
@@ -175,6 +175,7 @@ func (w *floatingNode) layout() FloatingLayout {
 		MinimizedPadding:   w.minimizedPadding,
 		NoBar:              w.noBar,
 		Title:              w.title,
+		Moved:              w.moved,
 	}
 }
 
@@ -230,6 +231,19 @@ func (w *floatingNode) updateDesiredDimensions() {
 }
 
 func (w *floatingNode) resize() {
+	if w.moved {
+		w.layoutMoved()
+	} else {
+		w.layoutAligned()
+	}
+	if w.realOffset.Y >= w.maxHeight || w.realOffset.X >= w.maxWidth {
+		return
+	}
+	w.content.Resize(w.realWidth, w.realHeight)
+	w.content.Move(w.realOffset)
+}
+
+func (w *floatingNode) layoutAligned() {
 	verticalDiff := max(0, w.maxHeight-w.desiredHeight)
 	horizontalDiff := max(0, w.maxWidth-w.desiredWidth)
 
@@ -263,12 +277,30 @@ func (w *floatingNode) resize() {
 	if w.realOffset.X+w.realWidth >= w.maxWidth {
 		w.realWidth = max(0, w.maxWidth-w.realOffset.X)
 	}
+}
 
-	if w.realOffset.Y >= w.maxHeight || w.realOffset.X >= w.maxWidth {
-		return
+// layoutMoved keeps the window at its desired size, trimmed only to the
+// manager's, so that it can always be brought back fully on screen.
+func (w *floatingNode) layoutMoved() {
+	w.realWidth, w.realHeight = w.movedSize()
+	w.realOffset = w.reachableOffset(w.desiredOffset)
+}
+
+func (w *floatingNode) movedSize() (width, height int) {
+	return max(0, min(w.desiredWidth, w.maxWidth)),
+		max(0, min(w.desiredHeight, w.maxHeight))
+}
+
+// reachableOffset clamps pos so that the window's top row stays on
+// screen with reachableBarCells of it showing, or all of it when the
+// window is narrower than that.
+func (w *floatingNode) reachableOffset(pos term.Coordinates) term.Coordinates {
+	width, _ := w.movedSize()
+	visible := min(reachableBarCells, width)
+	return term.Coordinates{
+		X: max(visible-width, min(pos.X, w.maxWidth-visible)),
+		Y: max(0, min(pos.Y, w.maxHeight-1)),
 	}
-	w.content.Resize(w.realWidth, w.realHeight)
-	w.content.Move(w.realOffset)
 }
 
 func (w *floatingNode) Resize(width, height int) {

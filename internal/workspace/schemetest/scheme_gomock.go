@@ -105,6 +105,21 @@ func (mr *MockSchemeMockRecorder) Join(arg0 ...any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Join", reflect.TypeOf((*MockScheme)(nil).Join), arg0...)
 }
 
+// LookPath mocks base method.
+func (m *MockScheme) LookPath(arg0 context.Context, arg1, arg2 string) (string, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "LookPath", arg0, arg1, arg2)
+	ret0, _ := ret[0].(string)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// LookPath indicates an expected call of LookPath.
+func (mr *MockSchemeMockRecorder) LookPath(arg0, arg1, arg2 any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "LookPath", reflect.TypeOf((*MockScheme)(nil).LookPath), arg0, arg1, arg2)
+}
+
 // Lstat mocks base method.
 func (m *MockScheme) Lstat(arg0 string) (fs.FileInfo, error) {
 	m.ctrl.T.Helper()

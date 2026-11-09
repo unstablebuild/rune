@@ -825,6 +825,10 @@ func (s *localScheme) Signal(pid workspaceapi.Pid, sig syscall.Signal) error {
 	return proc.Signal(sig)
 }
 
+func (*localScheme) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
+}
+
 func (s *localScheme) Close() error {
 	return nil
 }

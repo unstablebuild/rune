@@ -19,6 +19,7 @@ package idelsp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -28,10 +29,22 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/semanticapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
+	"unstable.build/rune/internal/ide/idelsp/jsonrpc2"
+	"unstable.build/rune/internal/workspace"
 )
+
+// caseFS is a FileSystem for tests that only need its case rule; the
+// zero value is case-sensitive.
+type caseFS struct {
+	schemeapi.FileSystem
+	insensitive bool
+}
+
+func (f caseFS) PathCaseSensitive() bool { return !f.insensitive }
 
 type stubPkgManager struct {
 	bin string
@@ -256,6 +269,10 @@ func newTestScheme() *localScheme {
 
 // schemeapi.FileSystem methods
 
+func (s *localScheme) PathCaseSensitive() bool {
+	return workspace.ProbePathCaseSensitive(s, os.TempDir())
+}
+
 func (s *localScheme) Create(filename string) (workspaceapi.File, error) {
 	return os.Create(filename)
 }
@@ -358,6 +375,10 @@ func (s *localScheme) Signal(pid workspaceapi.Pid, sig syscall.Signal) error {
 	return proc.Signal(sig)
 }
 
+func (*localScheme) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
+}
+
 func (s *localScheme) Close() error {
 	return nil
 }
@@ -385,4 +406,160 @@ func makeURI(t *testing.T, uri string) workspaceapi.URI {
 	ret, err := workspaceapi.ParseURI(uri)
 	require.NoError(t, err)
 	return ret
+}
+
+// fakeProcExecutor is a schemeapi.Executor whose processes are
+// in-process LSP peers served over the file langServer.start hands to
+// StartCommand, so Manager lifecycle paths run without real servers.
+// A peer answers initialize with initResult and every other request
+// with null, and exits on the exit notification or a signal.
+type fakeProcExecutor struct {
+	initResult json.RawMessage
+
+	mu sync.Mutex
+	// startErr fails StartCommand, as when the program does not exist.
+	startErr error
+	// dieOnInit makes new processes exit with it on initialize instead
+	// of answering.
+	dieOnInit error
+	nextPid   workspaceapi.Pid
+	procs     map[workspaceapi.Pid]*fakeProc
+	cmds      []workspaceapi.Cmd
+}
+
+type fakeProc struct {
+	file    *os.File
+	watcher chan error
+	once    sync.Once
+
+	mu      sync.Mutex
+	methods []string
+	opens   []string
+}
+
+func newFakeProcExecutor() *fakeProcExecutor {
+	return &fakeProcExecutor{
+		initResult: json.RawMessage(
+			`{"capabilities":{"hoverProvider":true},` +
+				`"serverInfo":{"name":"fakels","version":"1.2.3"}}`),
+		procs: make(map[workspaceapi.Pid]*fakeProc),
+	}
+}
+
+func (e *fakeProcExecutor) setStartErr(err error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.startErr = err
+}
+
+func (e *fakeProcExecutor) proc(pid workspaceapi.Pid) *fakeProc {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.procs[pid]
+}
+
+func (e *fakeProcExecutor) StartCommand(
+	_ context.Context, cmd workspaceapi.Cmd,
+) (workspaceapi.Pid, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.cmds = append(e.cmds, cmd)
+	if e.startErr != nil {
+		return 0, e.startErr
+	}
+	f, ok := cmd.Stdout.(*os.File)
+	if !ok {
+		return 0, errors.New("fakeProcExecutor: stdout is not an *os.File")
+	}
+	e.nextPid++
+	p := &fakeProc{file: f}
+	if cmd.Watcher != nil {
+		p.watcher = cmd.Watcher.WatchProcess()
+	}
+	e.procs[e.nextPid] = p
+	go p.serve(e.initResult, e.dieOnInit)
+	return e.nextPid, nil
+}
+
+func (e *fakeProcExecutor) Signal(pid workspaceapi.Pid, _ syscall.Signal) error {
+	p := e.proc(pid)
+	if p == nil {
+		return fmt.Errorf("process %d not found", pid)
+	}
+	p.exit(errors.New("signal: killed"))
+	return nil
+}
+
+func (*fakeProcExecutor) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
+}
+
+func (e *fakeProcExecutor) Close() error { return nil }
+
+// exit reports the exit to the watcher before tearing down the
+// transport, the order the remote executor uses, so the server sees
+// the exit status by the time its connection breaks.
+func (p *fakeProc) exit(err error) {
+	p.once.Do(func() {
+		if p.watcher != nil {
+			p.watcher <- err
+		}
+		_ = p.file.Close()
+	})
+}
+
+func (p *fakeProc) record(method string, params json.RawMessage) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.methods = append(p.methods, method)
+	if method == "textDocument/didOpen" {
+		var open semanticapi.DidOpenTextDocumentParams
+		if json.Unmarshal(params, &open) == nil {
+			p.opens = append(p.opens, open.TextDocument.URI)
+		}
+	}
+}
+
+func (p *fakeProc) received() ([]string, []string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.methods...), append([]string(nil), p.opens...)
+}
+
+func (p *fakeProc) serve(initResult json.RawMessage, dieOnInit error) {
+	ctx := context.Background()
+	framer := jsonrpc2.HeaderFramer()
+	reader := framer.Reader(p.file)
+	writer := framer.Writer(p.file)
+	for {
+		msg, err := reader.Read(ctx)
+		if err != nil {
+			p.exit(nil)
+			return
+		}
+		req, ok := msg.(*jsonrpc2.Request)
+		if !ok {
+			continue
+		}
+		p.record(req.Method, req.Params)
+		switch {
+		case req.Method == "initialize" && dieOnInit != nil:
+			p.exit(dieOnInit)
+			return
+		case req.Method == "exit":
+			p.exit(nil)
+			return
+		case !req.IsCall():
+			continue
+		}
+		var result any
+		if req.Method == "initialize" {
+			result = initResult
+		}
+		resp, err := jsonrpc2.NewResponse(req.ID, result, nil)
+		if err != nil {
+			return
+		}
+		_ = writer.Write(ctx, resp)
+	}
 }

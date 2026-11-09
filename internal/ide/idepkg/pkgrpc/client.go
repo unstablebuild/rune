@@ -234,6 +234,8 @@ func (c *Client) handle(s *answerStream, ev *pkgrpcpb.ChangeEvent, pw repl.Progr
 		pw.Progress(e.Progress.GetProgress(), e.Progress.GetTotal(), e.Progress.GetUnits())
 	case *pkgrpcpb.ChangeEvent_Notice:
 		c.notify(e.Notice)
+	case *pkgrpcpb.ChangeEvent_Requirement:
+		idepkg.ReportRequirement(c.ui, pw, requirementFromProto(e.Requirement))
 	case *pkgrpcpb.ChangeEvent_Prompt:
 		c.prompt(s, e.Prompt)
 	case *pkgrpcpb.ChangeEvent_Done:

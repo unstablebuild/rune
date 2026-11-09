@@ -17,7 +17,10 @@
 package markdown
 
 import (
+	"context"
+	"fmt"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -266,6 +269,38 @@ func TestLocalAnchorScrolling(t *testing.T) {
 
 	if handled {
 		assert.NotEqual(t, initialOffset, h.SeekOffset(), "Anchor should scroll to header")
+	}
+}
+
+func TestHandleMouseSetsTheLinkPointer(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		key     term.Key
+		want    bool
+	}{
+		{"hover over a link", "[Click me](http://example.com)", 0, true},
+		{"press on a link", "[Click me](http://example.com)", term.MouseLeft, true},
+		{"hover over text", "Plain text", 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			comp, err := markdown.New(tt.content)
+			require.NoError(t, err)
+			h := New(comp, WithOnLinkClick(func(*url.URL) bool { return true }))
+			h.Resize(40, 5)
+
+			p := new(term.Pointer)
+			h.Handle(term.Event{
+				Type: term.EventMouse, Key: tt.key, MouseX: 3,
+				Context: term.ContextWithPointer(context.Background(), p),
+			})
+			shape, set := p.Shape()
+			assert.Equal(t, tt.want, set)
+			if tt.want {
+				assert.Equal(t, term.PointerLink, shape)
+			}
+		})
 	}
 }
 
@@ -1043,4 +1078,35 @@ func TestSlashSearchDraw(t *testing.T) {
 	lines := w.String()
 	// Last line should show the search prompt.
 	assert.Contains(t, lines, "/hi")
+}
+
+func TestHandlerPointerLeaves(t *testing.T) {
+	var doc strings.Builder
+	doc.WriteString("# Title\n\n")
+	for i := range 60 {
+		fmt.Fprintf(&doc, "%s [link %d](http://example.com/%d) and `code`\n\n",
+			strings.Repeat("a long paragraph line ", i%7+1), i, i)
+	}
+	doc.WriteString("```go\nfunc main() {}\n```\n")
+	for _, size := range [][2]int{{60, 15}, {1, 1}} {
+		comp, err := markdown.New(doc.String())
+		require.NoError(t, err)
+		var clicked int
+		h := New(comp, WithOnLinkClick(func(*url.URL) bool { clicked++; return true }))
+		h.Resize(size[0], size[1])
+		h.ScrollDown(5)
+		offset := h.SeekOffset()
+
+		for _, out := range []term.Coordinates{{X: -1, Y: 2}, {X: 2, Y: -40}, {X: 400, Y: 400}} {
+			h.Handle(term.Event{Type: term.EventMouse, MouseX: 1, MouseY: 1})
+			h.Handle(term.Event{Type: term.EventMouse, MouseX: out.X, MouseY: out.Y})
+		}
+		assert.Zero(t, clicked, "a leave does not follow a link")
+		assert.Equal(t, offset, h.SeekOffset(), "a leave does not scroll")
+		_, selected := h.Selection()
+		assert.False(t, selected, "a leave does not select")
+
+		handlertest.RunPointerLeaves(t, h, size[0], size[1])
+		require.NoError(t, h.Close())
+	}
 }

@@ -18,18 +18,29 @@ package extension
 
 import (
 	"context"
+	"sync"
 
 	"unstable.build/rune/cmd/rune-agent/agent/taskstore"
 	"unstable.build/rune/cmd/rune-agent/dialogue/dialoguetui"
 )
 
 // tuiProgressUpdater implements agent.ProgressUpdater by sending task
-// progress events to the TUI channel.
+// progress events to the TUI channel and the share of completed tasks
+// to the chat's tab status.
 type tuiProgressUpdater struct {
-	tx chan<- dialoguetui.MessageEvent
+	tx  chan<- dialoguetui.MessageEvent
+	tab *tabStatusReporter
+
+	mu    sync.Mutex
+	tasks map[string]string
+}
+
+func newTUIProgressUpdater(tx chan<- dialoguetui.MessageEvent, tab *tabStatusReporter) *tuiProgressUpdater {
+	return &tuiProgressUpdater{tx: tx, tab: tab, tasks: make(map[string]string)}
 }
 
 func (u *tuiProgressUpdater) UpdateTaskProgress(ctx context.Context, task taskstore.Task) {
+	u.tab.setProgress(u.track(task))
 	select {
 	case u.tx <- dialoguetui.MessageEvent{
 		Type: dialoguetui.MessageEventTaskProgress,
@@ -43,4 +54,23 @@ func (u *tuiProgressUpdater) UpdateTaskProgress(ctx context.Context, task taskst
 	}:
 	case <-ctx.Done():
 	}
+}
+
+// track records the task's status and returns how many tasks are
+// completed out of those not deleted.
+func (u *tuiProgressUpdater) track(task taskstore.Task) (done, total int) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if task.Status == "deleted" {
+		delete(u.tasks, task.ID)
+	} else {
+		u.tasks[task.ID] = task.Status
+	}
+	for _, status := range u.tasks {
+		total++
+		if status == "completed" {
+			done++
+		}
+	}
+	return done, total
 }

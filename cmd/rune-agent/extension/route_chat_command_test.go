@@ -186,7 +186,7 @@ func TestCompleteChatPromptCommands(t *testing.T) {
 	})
 	t.Run("skill", func(t *testing.T) {
 		got := completeToSlice(t, ctx, h, commandSkill)
-		assert.Equal(t, []string{"explore", "plan"}, got)
+		assert.Equal(t, []string{"explore", "plan", "rune-hud"}, got)
 	})
 	t.Run("maxtokens", func(t *testing.T) {
 		got := completeToSlice(t, ctx, h, commandMaxTokens)

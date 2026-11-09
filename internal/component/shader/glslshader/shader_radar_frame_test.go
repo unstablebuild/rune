@@ -59,6 +59,29 @@ func TestRadarFrameLeavesNonFrameCharsUntouched(t *testing.T) {
 	}
 }
 
+func TestRadarFrameShadesExtraRunes(t *testing.T) {
+	origFg := term.NewRGBColor(10, 20, 30)
+	target := term.NewRGBColor(255, 0, 0)
+	mk := func(ch rune) term.Cell {
+		return term.NewCell(ch, 1, term.Attributes{Fg: origFg})
+	}
+	// At frame 0 the wedge points along the positive-x axis, at the
+	// middle row's rightmost cell.
+	cells := [][]term.Cell{
+		{mk(' '), mk(' '), mk(' ')},
+		{mk('x'), mk(' '), mk('┤')},
+		{mk(' '), mk(' '), mk(' ')},
+	}
+
+	params := DefaultRadarFrameParams(guiFrameCharset())
+	params.Color = target
+	params.Runes = []rune{'┤', 'x'}
+	RadarFrame(params, term.Attributes{Fg: term.NewRGBColor(80, 80, 80)}).Shade(0, 1, cells)
+
+	assert.Equal(t, target, cells[1][2].Fg, "an extra rune at the wedge peak")
+	assert.Equal(t, origFg, cells[1][0].Fg, "an extra rune behind the wedge")
+}
+
 func TestRadarFramePeakIsFullColor(t *testing.T) {
 	fc := guiFrameCharset()
 	target := term.NewRGBColor(255, 0, 0)

@@ -17,6 +17,7 @@
 package vi
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -170,4 +171,27 @@ func TestInsertCompletionFloating(t *testing.T) {
 		assert.Equal(t, 6, w) // len("cdef") + 2
 		assert.Equal(t, 2, h)
 	})
+}
+
+func TestInsertCompletionFloatingPointerLeaves(t *testing.T) {
+	t.Parallel()
+	candidates := []string{"alpha", "日本語のテキスト", "🎉🚀 party", "beta", "a-much-longer-candidate-label"}
+	for _, size := range [][2]int{{40, 10}, {1, 1}} {
+		t.Run(fmt.Sprintf("%dx%d", size[0], size[1]), func(t *testing.T) {
+			t.Parallel()
+			var applied []string
+			f := newInsertCompletionFloating(candidates, 2, func(s string) { applied = append(applied, s) })
+			handlertest.RunPointerLeaves(t, f, size[0], size[1])
+
+			f.Resize(size[0], size[1])
+			for _, at := range []term.Coordinates{
+				{X: -1, Y: 0}, {X: size[0], Y: size[1]}, {X: -1000, Y: 1000},
+			} {
+				exit, _ := f.Handle(term.Event{Type: term.EventMouse, MouseX: at.X, MouseY: at.Y})
+				assert.False(t, exit, "a leave to %v must not close the popup", at)
+			}
+			assert.Equal(t, 2, f.list.FocusOffset())
+			assert.Empty(t, applied)
+		})
+	}
 }

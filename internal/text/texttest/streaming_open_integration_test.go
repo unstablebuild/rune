@@ -30,9 +30,11 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
+	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/cell"
+	"unstable.build/rune/internal/ide/syntax"
 	"unstable.build/rune/internal/text"
 	"unstable.build/rune/internal/text/texttest"
 	"unstable.build/rune/internal/workspace"
@@ -482,6 +484,12 @@ func (w *failingLoadWorkspace) Recover(
 	return nil, w.err()
 }
 
+func (w *failingLoadWorkspace) LoaderFor(
+	file workspaceapi.URI,
+) (workspace.FileLoader, error) {
+	return workspace.FileLoaderOf(w, file), nil
+}
+
 func TestStreamingOpenStaleRecoverShowsAreYouSurePrompt(t *testing.T) {
 	dir := t.TempDir()
 	wsURI, err := workspaceapi.ParseURI("file://" + dir)
@@ -812,6 +820,170 @@ func TestStreamingOpenDoesNotBlockOnFileOpen(t *testing.T) {
 	require.NoError(t, err)
 	assert.Positive(t, ed.CellView().Rows(),
 		"the swapped-in editor must expose the loaded file content")
+}
+
+// fakeParsedTree records where a streamed tab parses and installs its
+// syntax tree, and publishes highlights on Install the way a real tree
+// does before the tab's editor exists.
+type fakeParsedTree struct {
+	mu          sync.Mutex
+	parseGoID   uint64
+	installGoID uint64
+	parsed      string
+	installed   bool
+	closed      bool
+	highlights  []textapi.Location
+}
+
+func (p *fakeParsedTree) parse(
+	_ context.Context, _ syntax.PkgManager, _ workspaceapi.URI, buf *cell.Buffer, _ syntax.Config,
+) syntax.ParsedTree {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.parseGoID = currentGoID()
+	p.parsed = buf.String()
+	return p
+}
+
+func (p *fakeParsedTree) Install(
+	_ browserapi.Notifications, _ term.Interrupter, loc syntax.LocationSetter,
+	fc workspace.FlusherCloser, _ syntax.Opener,
+) syntax.Tree {
+	p.mu.Lock()
+	p.installGoID = currentGoID()
+	p.installed = true
+	p.mu.Unlock()
+	loc.SetLocationList(textapi.LocationSlice(p.highlights))
+	return &fakeSyntaxTree{FlusherCloser: fc}
+}
+
+func (p *fakeParsedTree) Close() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.closed = true
+	return nil
+}
+
+func newSyntaxParseComponent(
+	t *testing.T, sched func(func()) bool, parsed *fakeParsedTree,
+) (*text.Component, workspaceapi.URI) {
+	t.Helper()
+	dir := t.TempDir()
+	wsURI, err := workspaceapi.ParseURI("file://" + dir)
+	require.NoError(t, err)
+	scheme, err := workspace.NewFileScheme(
+		context.Background(), config.NopConfig(), wsURI)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = scheme.Close() })
+	ws := workspace.NewSchemeWorkspace(wsURI, scheme, inlineSchedule)
+
+	cfg := text.DefaultConfig()
+	cfg.ScheduleNextTick = sched
+	cfg.StreamingOpen = true
+	cfg.MaxSyntaxParseSize = 1024
+	cfg.SyntaxParse = parsed.parse
+	cfg.SyntaxTree = func(
+		context.Context, browserapi.Notifications, term.Interrupter,
+		syntax.PkgManager, syntax.LocationSetter, workspaceapi.URI, *cell.Buffer,
+		workspace.FlusherCloser, syntax.Opener, syntax.Config,
+	) syntax.Tree {
+		t.Error("a streamed tab must install the tree its load worker parsed")
+		return nil
+	}
+	c, err := text.NewComponent(texttest.NopEditor(), ws, cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+	return c, wsURI
+}
+
+func TestStreamingOpenParsesSyntaxOnLoadWorker(t *testing.T) {
+	sched := &goroutineTrackingScheduler{}
+	parsed := &fakeParsedTree{highlights: []textapi.Location{
+		{From: term.Coordinates{}, To: term.Coordinates{X: 4}, Attr: term.Attributes{Fg: term.ColorRed}},
+	}}
+	c, wsURI := newSyntaxParseComponent(t, sched.Schedule, parsed)
+
+	fpath := filepath.Join(wsURI.Path(), "parse.go")
+	writeNLines(t, fpath, 4)
+	fileURI, err := workspaceapi.ParseURI("file://" + fpath)
+	require.NoError(t, err)
+
+	_, err = c.OpenFileTab(fileURI, false)
+	require.NoError(t, err)
+	c.WaitStreamingLoads()
+
+	parsed.mu.Lock()
+	assert.Equal(t, "line0\nline1\nline2\nline3", parsed.parsed,
+		"the load worker must parse the loaded buffer")
+	assert.False(t, parsed.installed, "the tree must not be installed off the event loop")
+	parsed.mu.Unlock()
+
+	sched.drainAll()
+
+	parsed.mu.Lock()
+	defer parsed.mu.Unlock()
+	require.True(t, parsed.installed)
+	assert.False(t, parsed.closed)
+	sched.mu.Lock()
+	assert.Equal(t, sched.lastRun, parsed.installGoID,
+		"the parsed tree must be installed on the scheduler goroutine")
+	sched.mu.Unlock()
+	assert.NotEqual(t, parsed.installGoID, parsed.parseGoID,
+		"the tree must be parsed off the scheduler goroutine")
+
+	ed, err := c.Editor(fileURI)
+	require.NoError(t, err)
+	h, ok := ed.(*texttest.TestEditorHandler)
+	require.True(t, ok)
+	require.NotNil(t, h.LocationList,
+		"highlights published before the editor exists must reach it")
+	var got []textapi.Location
+	for l, ok := h.LocationList.Current(); ok; l, ok = h.LocationList.Next() {
+		got = append(got, l)
+	}
+	assert.Equal(t, parsed.highlights, got)
+}
+
+func TestStreamingOpenSkipsSyntaxParseAboveMaxSyntaxParseSize(t *testing.T) {
+	sched := &queuedScheduler{}
+	parsed := &fakeParsedTree{}
+	c, wsURI := newSyntaxParseComponent(t, sched.Schedule, parsed)
+
+	fpath := filepath.Join(wsURI.Path(), "large.go")
+	writeNLines(t, fpath, 1024)
+	fileURI, err := workspaceapi.ParseURI("file://" + fpath)
+	require.NoError(t, err)
+
+	_, err = c.OpenFileTab(fileURI, false)
+	require.NoError(t, err)
+	c.WaitStreamingLoads()
+	sched.drain()
+
+	parsed.mu.Lock()
+	defer parsed.mu.Unlock()
+	assert.Zero(t, parsed.parseGoID, "buffers above MaxSyntaxParseSize must not be parsed")
+	_, err = c.Editor(fileURI)
+	require.NoError(t, err)
+}
+
+func TestStreamingOpenClosesParsedSyntaxWhenSwapIsRejected(t *testing.T) {
+	parsed := &fakeParsedTree{}
+	c, wsURI := newSyntaxParseComponent(t, func(func()) bool { return false }, parsed)
+
+	fpath := filepath.Join(wsURI.Path(), "rejected.go")
+	writeNLines(t, fpath, 4)
+	fileURI, err := workspaceapi.ParseURI("file://" + fpath)
+	require.NoError(t, err)
+
+	_, err = c.OpenFileTab(fileURI, false)
+	require.NoError(t, err)
+	c.WaitStreamingLoads()
+
+	parsed.mu.Lock()
+	defer parsed.mu.Unlock()
+	assert.NotZero(t, parsed.parseGoID)
+	assert.False(t, parsed.installed)
+	assert.True(t, parsed.closed, "a parsed tree that will never be installed must be closed")
 }
 
 // currentGoID returns a unique-per-goroutine integer derived from

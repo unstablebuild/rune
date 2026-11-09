@@ -77,6 +77,35 @@ func cacheID(uri string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// Refresh drops what storage caches for uri, then fetches and decodes it
+// again, caching its bytes for ttl as New does. Components that New
+// returns afterwards show what uri names now. When the fetch fails,
+// nothing stays cached for uri.
+func Refresh(
+	ctx context.Context, uri string, ttl time.Duration, storage storageapi.Service,
+) (image.Image, error) {
+	u, err := parseURI(uri)
+	if err != nil {
+		return nil, err
+	}
+	key := u.String()
+	id := cacheID(key)
+	if err := storage.Delete(ctx, id); err != nil && !errors.Is(err, storageapi.ErrNotFound) {
+		return nil, fmt.Errorf("imageuri: drop cached %s: %w", u.Redacted(), err)
+	}
+	p := newCachedProvider(storage, ttl)
+	data, err := p.fetch(ctx, u)
+	if err != nil {
+		return nil, err
+	}
+	img, err := decode(data)
+	if err != nil {
+		return nil, err
+	}
+	p.store(ctx, id, key, data)
+	return img, nil
+}
+
 func (p *cachedProvider) image(
 	ctx context.Context, uri *url.URL,
 ) (image.Image, error) {

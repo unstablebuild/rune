@@ -23,6 +23,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/clipboard"
+	sdkcomponent "github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/text"
@@ -104,6 +105,8 @@ type SearchConfig struct {
 	MatchAttr        term.Attributes
 	CurrentMatchAttr term.Attributes
 	StatusAttr       term.Attributes
+	// ButtonImages is searchbox.Config.ButtonImages.
+	ButtonImages func() *sdkcomponent.ButtonImages
 }
 
 type statusBar interface {

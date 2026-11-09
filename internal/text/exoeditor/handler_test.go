@@ -18,7 +18,10 @@ package exoeditor
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -30,6 +33,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"unstable.build/rune/internal/handler/handlertest"
 	"unstable.build/rune/internal/term/vte/vteprobe"
 	"unstable.build/rune/internal/text"
 )
@@ -315,6 +319,10 @@ func (e *recordingSignalExecutor) Signal(
 	return nil
 }
 
+func (*recordingSignalExecutor) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
+}
+
 func (e *recordingSignalExecutor) Close() error { return nil }
 
 func (e *recordingSignalExecutor) sentSignals() []syscall.Signal {
@@ -407,4 +415,99 @@ func TestCloseTimeoutWarnsAndCloses(t *testing.T) {
 	assert.Equal(t, []syscall.Signal{syscall.SIGHUP}, hr.executor.sentSignals(),
 		"the timeout path must SIGHUP the editor for a clean hangup "+
 			"before the pty is torn down")
+}
+
+// drawableVTEHandler is a stubVTEHandler that can also be resized,
+// drawn and queried, as a parent routing pointer events does every frame.
+type drawableVTEHandler struct {
+	stubVTEHandler
+	cursor term.Coordinates
+}
+
+func (s *drawableVTEHandler) Resize(int, int)  {}
+func (s *drawableVTEHandler) Draw(term.Writer) {}
+func (s *drawableVTEHandler) Cursor() (term.Coordinates, term.CursorStyle, bool) {
+	return s.cursor, term.CursorStyleDefault, true
+}
+func (s *drawableVTEHandler) Selection() (string, bool) { return "", false }
+func (s *drawableVTEHandler) MaxSeekOffset() int        { return 0 }
+func (s *drawableVTEHandler) SeekOffset() int           { return 0 }
+
+func TestEditorHandlerPointerLeaves(t *testing.T) {
+	t.Parallel()
+
+	lines := []string{"package main", "", "func main() {", "\tprintln(\"héllo, 世界\")", "}"}
+	cases := []struct {
+		name          string
+		width, height int
+		highlights    bool
+	}{
+		{name: "40x10", width: 40, height: 10},
+		{name: "1x1", width: 1, height: 1},
+		{name: "40x10 highlights", width: 40, height: 10, highlights: true},
+		{name: "1x1 highlights", width: 1, height: 1, highlights: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			newEditor := func(t *testing.T) (*editorHandler, *drawableVTEHandler, *[]func()) {
+				h, comp := handlerForBufferTest(t, bufferOf(t, strings.Join(lines, "\n")+"\n"))
+				gutter := make([]string, len(lines))
+				for i, l := range lines {
+					gutter[i] = fmt.Sprintf(" %d %s", i+1, l)
+				}
+				// The vte grid is always the size of the window it is drawn in.
+				grid := gutterGrid(gutter, tc.width)
+				grid = grid[:min(len(grid), tc.height)]
+				for i := range grid {
+					grid[i] = grid[i][:tc.width]
+				}
+				comp.cells = grid
+				comp.cursor = term.Coordinates{X: 3, Y: 2}
+				vteH := &drawableVTEHandler{cursor: comp.cursor}
+				var scheduled []func()
+				h.vteHandler = vteH
+				h.experimentalHighlights = tc.highlights
+				h.probeSlab = vteprobe.NewSlab()
+				h.locations = text.NewLocationStore()
+				h.locations.SetLocationList(0, "diag", sliceList([]textapi.Location{{
+					From: term.Coordinates{X: 0, Y: 3}, To: term.Coordinates{X: 12, Y: 3},
+					Message: "unused",
+				}}))
+				h.scheduleNextTick = func(fn func()) bool {
+					scheduled = append(scheduled, fn)
+					return true
+				}
+				return h, vteH, &scheduled
+			}
+
+			h, _, _ := newEditor(t)
+			handlertest.RunPointerLeaves(t, h, tc.width, tc.height)
+
+			h, vteH, scheduled := newEditor(t)
+			h.Resize(tc.width, tc.height)
+			h.Draw(term.NewStringWriter(tc.width, tc.height))
+			cursor, style, visible := h.Cursor()
+			sel, selOK := h.Selection()
+			atScroll := h.CursorAtScroll()
+			queued := len(*scheduled)
+
+			leave := term.Event{Type: term.EventMouse, MouseX: -1, MouseY: tc.height}
+			_, _ = h.Handle(leave)
+
+			// The vte owns the pointer and drops a motion off its screen
+			// itself, using it only to stop updating the pointer shape,
+			// so the leave must reach it verbatim rather than be eaten.
+			assert.Equal(t, []term.Event{leave}, vteH.events)
+			gotCursor, gotStyle, gotVisible := h.Cursor()
+			assert.Equal(t, cursor, gotCursor)
+			assert.Equal(t, style, gotStyle)
+			assert.Equal(t, visible, gotVisible)
+			gotSel, gotSelOK := h.Selection()
+			assert.Equal(t, sel, gotSel)
+			assert.Equal(t, selOK, gotSelOK)
+			assert.Equal(t, atScroll, h.CursorAtScroll())
+			assert.Len(t, *scheduled, queued, "a leave must not inject keys into the editor")
+		})
+	}
 }

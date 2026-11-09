@@ -28,6 +28,16 @@ type PromptOption struct {
 	RequiresInput bool
 }
 
+// PromptKind says what a prompt waits for.
+type PromptKind uint8
+
+const (
+	// PromptKindQuestion waits for the user to answer a question.
+	PromptKindQuestion PromptKind = iota
+	// PromptKindPermission waits for the user to approve something.
+	PromptKindPermission
+)
+
 // PromptRequest describes a prompt to show to the user.
 type PromptRequest struct {
 	Title       string
@@ -35,6 +45,9 @@ type PromptRequest struct {
 	Body        string // optional markdown content shown before options
 	Options     []PromptOption
 	MultiSelect bool
+	// Kind says what the prompt waits for, so a host can tell an
+	// approval from a question where the chat is not in sight.
+	Kind PromptKind
 }
 
 // PromptResponse holds the user's selection(s).

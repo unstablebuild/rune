@@ -39,7 +39,6 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
-	"github.com/unstablebuild/rune-go-sdk/api/syntaxapi"
 	"github.com/unstablebuild/rune-go-sdk/handler/repl"
 	"golang.org/x/mod/semver"
 	"unstable.build/rune/internal/debug"
@@ -110,12 +109,10 @@ type Config struct {
 	// errors in the IDE.
 	Notifications browserapi.Notifications
 
-	// WindowManager, when set, is used to render the upgrade prompt as
-	// a floating window.
-	WindowManager browserapi.WindowManager
-
-	// Parser is used by the prompt's markdown renderer.
-	Parser syntaxapi.Parser
+	// Prompter, when set, opens the upgrade prompt. It is called on the
+	// event loop that ScheduleNextTick schedules on. Without one, the
+	// prompt is dismissed and an available upgrade is only notified.
+	Prompter browserapi.Prompter
 
 	// ScheduleNextTick schedules fn to run on the IDE event loop.
 	ScheduleNextTick func(func()) bool

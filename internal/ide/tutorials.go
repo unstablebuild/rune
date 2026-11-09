@@ -29,6 +29,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 
 	"unstable.build/rune/internal/browser"
+	tcomponent "unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/handler/command"
 	"unstable.build/rune/internal/ide/idetutorial"
@@ -39,7 +40,7 @@ import (
 const tutorialPlaylistPromptDelay = 3 * time.Second
 
 func buildTutorials(i *IDE) map[string]idetutorial.Tutorial {
-	files := i.ideConfig.tutorialFiles()
+	files := i.ideConfig.tutorialFiles(i.workspaceHandler.sixDir)
 	embedded := i.options.starlarkTutorials
 	i.tutorialsConfig = newTutorialsConfig(i)
 	if len(files) == 0 && len(embedded) == 0 {
@@ -90,7 +91,7 @@ func (i *IDE) onTutorialsInstalled(names []string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reload config for installed tutorials: %w", err)
 	}
-	files := cfg.tutorialFiles()
+	files := cfg.tutorialFiles(i.workspaceHandler.sixDir)
 
 	type built struct {
 		name string
@@ -266,8 +267,21 @@ func newTutorialPromptStyle(i *IDE) idetutorial.PromptStyle {
 	return idetutorial.PromptStyle{
 		TextAttr:       cfg.TextAttr,
 		HighlightAttr:  cfg.HighlightAttr,
+		HoverAttr:      cfg.HoverAttr,
+		ClickedAttr:    cfg.ClickedAttr,
 		BackgroundAttr: cfg.BackgroundAttr,
+		ButtonImages:   cfg.Images.ButtonImages(i.tutorialFrameGraphics()),
 	}
+}
+
+// tutorialFrameGraphics returns the images of the tutorials' buttons,
+// nil without storage to cache them in.
+func (i *IDE) tutorialFrameGraphics() *tcomponent.FrameGraphics {
+	if i.tutorialGraphics == nil && i.ideConfig.storage != nil {
+		i.tutorialGraphicsStorage = storageapi.WithPartition(i.ideConfig.storage, frameImagesPartition)
+		i.tutorialGraphics = tcomponent.NewFrameGraphics(i.tutorialGraphicsStorage, i)
+	}
+	return i.tutorialGraphics
 }
 
 // newTutorialTileStyle frames the tile like the IDE frames its
@@ -281,7 +295,7 @@ func newTutorialTileStyle(i *IDE) idetutorial.TileStyle {
 		FrameAttr:         wm.FrameAttr,
 		FocusFrameAttr:    wm.FocusFrameAttr,
 		ScrollBarAttr:     wm.ScrollBarAttr,
-		ScrollBarChar:     wm.ScrollBarChar,
+		ScrollBarCharSet:  wm.ScrollBarCharSet,
 		Prompt:            newTutorialPromptStyle(i),
 	}
 }

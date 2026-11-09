@@ -86,7 +86,7 @@ func (c *Component) Draw(w term.Writer) {
 	c.root.Draw(c.buf)
 
 	cells := c.buf.RawCells()
-	c.shader.Shade(int(c.epoch.Load()), c.total, cells)
+	images := ShadeImages(c.shader, int(c.epoch.Load()), c.total, cells, c.buf.Images())
 
 	for y, row := range cells {
 		for x, cell := range row {
@@ -95,7 +95,7 @@ func (c *Component) Draw(w term.Writer) {
 	}
 	// Placements are cut to the cells still showing them, so they go
 	// over the shaded cells the way they went over the root's.
-	for _, img := range c.buf.Images() {
+	for _, img := range images {
 		w.DrawImage(img)
 	}
 }
@@ -120,6 +120,10 @@ func (s *Component) Close() error {
 func (c *Component) Total() int {
 	return c.total
 }
+
+// Done reports whether the shader stopped animating: it ran all its
+// frames or was closed.
+func (c *Component) Done() bool { return c.done.Load() }
 
 func (c *Component) interrupt(ctx context.Context) {
 	cadence := time.Duration(int(time.Second) / c.fps)

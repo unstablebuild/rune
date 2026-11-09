@@ -50,9 +50,10 @@ type Instance struct {
 	// once it joined, as [runenet.Status] reports it.
 	LoginName string
 
-	cmd     *exec.Cmd
-	exited  chan struct{}
-	accepts *acceptLog
+	cmd        *exec.Cmd
+	exited     chan struct{}
+	accepts    *acceptLog
+	envApplied chan struct{}
 }
 
 // WorkspaceEndpoint is the instance's workspace server.
@@ -76,6 +77,24 @@ func (i *Instance) Stop(t *testing.T) {
 	case <-i.exited:
 	case <-time.After(30 * time.Second):
 		t.Fatalf("rune instance %q did not stop", i.Hostname)
+	}
+}
+
+// SetGUIEnv changes the instance's gui.env to the KEY=VALUE lines in env,
+// the way a user editing the config of a running Rune does, and returns
+// once the instance applied it.
+func (i *Instance) SetGUIEnv(t *testing.T, env string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(i.DataDir, "gui_env"), []byte(env), 0o644); err != nil {
+		t.Fatalf("write gui_env: %v", err)
+	}
+	if err := i.cmd.Process.Signal(syscall.SIGHUP); err != nil {
+		t.Fatalf("signal rune instance %q: %v", i.Hostname, err)
+	}
+	select {
+	case <-i.envApplied:
+	case <-time.After(30 * time.Second):
+		t.Fatalf("rune instance %q did not apply its gui.env", i.Hostname)
 	}
 }
 
@@ -109,11 +128,12 @@ func StartInstance(
 		t.Fatalf("start rune instance %q: %v", hostname, err)
 	}
 	inst := &Instance{
-		Hostname: hostname,
-		DataDir:  dataDir,
-		cmd:      cmd,
-		exited:   make(chan struct{}),
-		accepts:  &acceptLog{},
+		Hostname:   hostname,
+		DataDir:    dataDir,
+		cmd:        cmd,
+		exited:     make(chan struct{}),
+		accepts:    &acceptLog{},
+		envApplied: make(chan struct{}, 1),
 	}
 	t.Cleanup(func() {
 		_ = cmd.Process.Kill()
@@ -160,6 +180,8 @@ func (i *Instance) readStdout(t *testing.T, stdout io.Reader, ready chan<- struc
 			if err == nil {
 				i.accepts.record(addr)
 			}
+		case line == envLine:
+			i.envApplied <- struct{}{}
 		default:
 			t.Logf("%s: %s", i.Hostname, line)
 		}
@@ -179,6 +201,7 @@ const (
 	addrPrefix   = "runenetsvc: addr "
 	loginPrefix  = "runenetsvc: login "
 	acceptPrefix = "runenetsvc: accepted "
+	envLine      = "runenetsvc: env applied"
 )
 
 var (

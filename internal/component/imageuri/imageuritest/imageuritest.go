@@ -23,7 +23,33 @@
 // render slightly differently.
 package imageuritest
 
-import _ "embed"
+import (
+	"context"
+	"crypto/sha256"
+	_ "embed"
+	"encoding/hex"
+	"testing"
+	"time"
+
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
+)
+
+// Cache stores data in storage as the encoded image at uri, so that
+// imageuri.New serves it from storage without fetching uri.
+func Cache(t testing.TB, storage storageapi.Service, uri string, data []byte) {
+	t.Helper()
+	// Mirrors imageuri's cache record, which imageuri's tests check.
+	doc := struct {
+		URI       string
+		Data      []byte
+		FetchedAt time.Time
+		ExpiresAt time.Time
+	}{URI: uri, Data: data, FetchedAt: time.Now(), ExpiresAt: time.Now().Add(1000 * time.Hour)}
+	sum := sha256.Sum256([]byte(uri))
+	if err := storage.Set(context.Background(), hex.EncodeToString(sum[:]), doc); err != nil {
+		t.Fatalf("cache %s: %v", uri, err)
+	}
+}
 
 // SamplePNG is the sample picture as a PNG.
 //

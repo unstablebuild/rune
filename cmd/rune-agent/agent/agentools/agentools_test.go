@@ -19,9 +19,15 @@ package agentools
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/binary"
+	"errors"
 	"fmt"
+	"hash/crc32"
 	"image"
 	"image/color"
+	"image/gif"
 	"image/jpeg"
 	"image/png"
 	"os"
@@ -37,8 +43,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
+	"github.com/unstablebuild/rune-go-sdk/api/searchapi"
 	"github.com/unstablebuild/rune-go-sdk/api/semanticapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	sdkiterator "github.com/unstablebuild/rune-go-sdk/iterator"
 	"unstable.build/rune/cmd/rune-agent/agent"
 	"unstable.build/rune/cmd/rune-agent/configedit"
 	"unstable.build/rune/internal/ide/vctrl"
@@ -143,7 +151,7 @@ func dirURI(dir string) workspaceapi.URI {
 }
 
 func TestDefaultTools(t *testing.T) {
-	tools, tracker := DefaultTools(localFS{}, localExec{}, dirURI("/workspace"), nil, Config{}, configedit.NopConfig())
+	tools, tracker := DefaultTools(localFS{}, localExec{}, dirURI("/workspace"), nil, NoIndex(), Config{}, configedit.NopConfig())
 	require.Len(t, tools, 6)
 	require.NotNil(t, tracker)
 
@@ -189,7 +197,7 @@ func TestDefinitions(t *testing.T) {
 	}{
 		{"read_file", newReadFile(fs, dirURI(dir), NewFileTracker(), 0), "read_file"},
 		{"apply_patch", newApplyPatch(fs, dirURI(dir), NewFileTracker(), &stubLSP{}), "apply_patch"},
-		{"search_content", newSearch(fs, dirURI(dir), NewFileTracker(), nil), "search_content"},
+		{"search_content", newSearch(fs, dirURI(dir), NewFileTracker(), nil, NoIndex()), "search_content"},
 		{"find_files", newFindFiles(fs, dirURI(dir), NewFileTracker(), nil), "find_files"},
 		{"list_dir", NewListDir(fs, dirURI(dir)), "list_dir"},
 		{"bash", newBash(ex, dirURI(dir), configedit.NopConfig()), "bash"},
@@ -224,7 +232,7 @@ func TestToolDescriptionsCrossReferenceSemanticSkills(t *testing.T) {
 		},
 		{
 			"search_content mentions search_symbols and find_definition tools",
-			newSearch(fs, dirURI(dir), NewFileTracker(), nil),
+			newSearch(fs, dirURI(dir), NewFileTracker(), nil, NoIndex()),
 			[]string{"search_symbols", "find_definition"},
 		},
 	}
@@ -260,9 +268,9 @@ func TestSummary(t *testing.T) {
 		{"apply_patch multi file", newApplyPatch(fs, dirURI(dir), NewFileTracker(), &stubLSP{}), `{"patch":"*** Begin Patch\n*** Add File: a.go\n+pkg\n*** Delete File: b.go\n*** End Patch"}`, "a.go, b.go"},
 		{"apply_patch invalid json", newApplyPatch(fs, dirURI(dir), NewFileTracker(), &stubLSP{}), `bad`, ""},
 		// search_content
-		{"search pattern only", newSearch(fs, dirURI(dir), NewFileTracker(), nil), `{"pattern":"TODO"}`, `"TODO"`},
-		{"search with path", newSearch(fs, dirURI(dir), NewFileTracker(), nil), `{"pattern":"TODO","path":"src"}`, `"TODO" in src`},
-		{"search invalid json", newSearch(fs, dirURI(dir), NewFileTracker(), nil), `bad`, ""},
+		{"search pattern only", newSearch(fs, dirURI(dir), NewFileTracker(), nil, NoIndex()), `{"pattern":"TODO"}`, `"TODO"`},
+		{"search with path", newSearch(fs, dirURI(dir), NewFileTracker(), nil, NoIndex()), `{"pattern":"TODO","path":"src"}`, `"TODO" in src`},
+		{"search invalid json", newSearch(fs, dirURI(dir), NewFileTracker(), nil, NoIndex()), `bad`, ""},
 		// find_files
 		{"find pattern only", newFindFiles(fs, dirURI(dir), NewFileTracker(), nil), `{"pattern":"*.go"}`, `"*.go"`},
 		{"find with path", newFindFiles(fs, dirURI(dir), NewFileTracker(), nil), `{"pattern":"*.go","path":"lib"}`, `"*.go" in lib`},
@@ -272,9 +280,6 @@ func TestSummary(t *testing.T) {
 		{"bash empty description returns command", newBash(ex, dirURI(dir), configedit.NopConfig()), `{"command":"go test ./...","description":""}`, "go test ./..."},
 		{"bash no description returns command", newBash(ex, dirURI(dir), configedit.NopConfig()), `{"command":"go test ./..."}`, "go test ./..."},
 		{"bash invalid json", newBash(ex, dirURI(dir), configedit.NopConfig()), `bad`, ""},
-		// web_fetch
-		{"web_fetch", NewWebFetch(&stubFetcher{}), `{"url":"https://example.com"}`, "https://example.com"},
-		{"web_fetch invalid json", NewWebFetch(&stubFetcher{}), `bad`, ""},
 		// agent
 		{"agent with description", NewAgentTool(spawner, nil, nil, nil), `{"description":"search code","prompt":"find tests"}`, "search code"},
 		{"agent without description short prompt", NewAgentTool(spawner, nil, nil, nil), `{"prompt":"short task"}`, "short task"},
@@ -354,6 +359,94 @@ func TestResolvePath(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got := resolvePath(dirURI(tt.root), tt.path)
 			assert.Equal(t, tt.wantPath, got)
+		})
+	}
+}
+
+func TestReadFile_readObservation(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hello.txt")
+	data := []byte("first\nsecond\nthird\n")
+	require.NoError(t, os.WriteFile(path, data, 0o644))
+	tool := newReadFile(localFS{}, dirURI(dir), NewFileTracker(), 0)
+	tests := []struct {
+		name, path    string
+		offset, limit int
+		start, end    int
+		content       string
+	}{
+		{"relative", "hello.txt", 0, 0, 0, 4, "L1: first\nL2: second\nL3: third\nL4: \n"},
+		{"absolute", path, 2, 1, 1, 2, "L2: second\n"},
+		{"dot alias", "./hello.txt", 2, 1, 1, 2, "L2: second\n"},
+		{"parent alias", "sub/../hello.txt", 2, 1, 1, 2, "L2: second\n"},
+		{"limit clamped", "hello.txt", 3, 99, 2, 4, "L3: third\nL4: \n"},
+		{"offset clamped", "hello.txt", 99, 1, 4, 4, ""},
+		{"negative offset", "hello.txt", -1, 1, 0, 1, "L1: first\n"},
+		{"unlimited", "hello.txt", 3, -1, 2, 4, "L3: third\nL4: \n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := tool.Execute(context.Background(), fmt.Sprintf(`{"path":%q,"offset":%d,"limit":%d}`, tt.path, tt.offset, tt.limit))
+			require.False(t, result.IsError, result.Content)
+			assert.Equal(t, tt.content, result.Content)
+			require.NotNil(t, result.ReadObservation)
+			assert.Equal(t, &agent.ReadObservation{
+				Path: path, ContentHash: sha256.Sum256(data), StartLine: tt.start, EndLine: tt.end,
+			}, result.ReadObservation)
+		})
+	}
+	for _, content := range []string{"", "single", "single\n"} {
+		t.Run(fmt.Sprintf("content %q", content), func(t *testing.T) {
+			require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+			result := tool.Execute(context.Background(), `{"path":"hello.txt"}`)
+			require.False(t, result.IsError, result.Content)
+			require.NotNil(t, result.ReadObservation)
+			assert.Equal(t, 0, result.ReadObservation.StartLine)
+			assert.Equal(t, len(strings.Split(content, "\n")), result.ReadObservation.EndLine)
+			assert.Equal(t, sha256.Sum256([]byte(content)), result.ReadObservation.ContentHash)
+		})
+	}
+}
+
+func TestReadFile_readObservationMutation(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hello.txt")
+	tool := newReadFile(localFS{}, dirURI(dir), NewFileTracker(), 0)
+	var previous *agent.ReadObservation
+	for _, content := range []string{"first\nsecond\nthird", "changed\nsecond\nthird", "changed\nsecond\nlast"} {
+		require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+		result := tool.Execute(context.Background(), `{"path":"hello.txt","offset":2,"limit":1}`)
+		require.False(t, result.IsError, result.Content)
+		assert.Equal(t, "L2: second\n", result.Content)
+		require.NotNil(t, result.ReadObservation)
+		assert.Equal(t, sha256.Sum256([]byte(content)), result.ReadObservation.ContentHash)
+		if previous != nil {
+			assert.NotEqual(t, previous.ContentHash, result.ReadObservation.ContentHash)
+		}
+		previous = result.ReadObservation
+	}
+}
+
+func TestReadFile_noReadObservation(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "binary.dat"), []byte{0, 1, 2, 0}, 0o644))
+	var imageData bytes.Buffer
+	require.NoError(t, png.Encode(&imageData, image.NewRGBA(image.Rect(0, 0, 1, 1))))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "image.png"), imageData.Bytes(), 0o644))
+	tool := newReadFile(localFS{}, dirURI(dir), NewFileTracker(), 0)
+	for _, tt := range []struct {
+		name, args string
+		isError    bool
+	}{
+		{"invalid arguments", `not json`, true},
+		{"missing file", `{"path":"missing.txt"}`, true},
+		{"binary", `{"path":"binary.dat"}`, false},
+		{"image", `{"path":"image.png"}`, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			result := tool.Execute(context.Background(), tt.args)
+			assert.Equal(t, tt.isError, result.IsError, result.Content)
+			assert.Nil(t, result.ReadObservation)
 		})
 	}
 }
@@ -561,21 +654,22 @@ func TestReadFile_image(t *testing.T) {
 		assert.Contains(t, result.Content, "too large")
 	})
 
-	t.Run("dimensions too large", func(t *testing.T) {
+	t.Run("dimensions too large are downscaled", func(t *testing.T) {
 		dir := t.TempDir()
-		img := image.NewRGBA(image.Rect(0, 0, 3000, 1000))
+		img := image.NewRGBA(image.Rect(0, 0, 3024, 1964))
 		var buf bytes.Buffer
 		require.NoError(t, png.Encode(&buf, img))
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "tall.png"), buf.Bytes(), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "retina.png"), buf.Bytes(), 0o644))
 
 		tool := newReadFile(localFS{}, dirURI(dir), NewFileTracker(), 0)
-		result := tool.Execute(context.Background(), `{"path":"tall.png"}`)
+		result := tool.Execute(context.Background(), `{"path":"retina.png"}`)
 
-		assert.True(t, result.IsError)
-		assert.Nil(t, result.MultiContent)
-		assert.Contains(t, result.Content, "3000x1000")
-		assert.Contains(t, result.Content, "2000px")
-		assert.Contains(t, result.Content, "Resize")
+		require.False(t, result.IsError, result.Content)
+		require.Len(t, result.MultiContent, 2)
+		cfg, format := decodeDataURIConfig(t, result.MultiContent[1].ImageURL)
+		assert.Equal(t, "png", format)
+		assert.Equal(t, 2000, cfg.Width)
+		assert.Equal(t, 1299, cfg.Height)
 	})
 
 	t.Run("within dimension limit", func(t *testing.T) {
@@ -591,21 +685,6 @@ func TestReadFile_image(t *testing.T) {
 		assert.False(t, result.IsError)
 		require.Len(t, result.MultiContent, 2)
 		assert.Equal(t, llmapi.ContentPartTypeImageURL, result.MultiContent[1].Type)
-	})
-
-	t.Run("jpeg over dimension limit", func(t *testing.T) {
-		dir := t.TempDir()
-		img := image.NewRGBA(image.Rect(0, 0, 4000, 500))
-		var buf bytes.Buffer
-		require.NoError(t, jpeg.Encode(&buf, img, nil))
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "wide.jpg"), buf.Bytes(), 0o644))
-
-		tool := newReadFile(localFS{}, dirURI(dir), NewFileTracker(), 0)
-		result := tool.Execute(context.Background(), `{"path":"wide.jpg"}`)
-
-		assert.True(t, result.IsError)
-		assert.Contains(t, result.Content, "4000x500")
-		assert.Contains(t, result.Content, "2000px")
 	})
 
 	t.Run("image ignores offset and limit", func(t *testing.T) {
@@ -631,6 +710,144 @@ func TestReadFile_image(t *testing.T) {
 		assert.Nil(t, result.MultiContent)
 		assert.Contains(t, result.Content, "L1: hello world")
 	})
+}
+
+func decodeDataURIConfig(t *testing.T, uri string) (image.Config, string) {
+	t.Helper()
+	_, b64, ok := strings.Cut(uri, ";base64,")
+	require.True(t, ok, "not a base64 data URI: %.40s", uri)
+	data, err := base64.StdEncoding.DecodeString(b64)
+	require.NoError(t, err)
+	cfg, format, err := image.DecodeConfig(bytes.NewReader(data))
+	require.NoError(t, err)
+	return cfg, format
+}
+
+// pngHeader returns a PNG signature and IHDR chunk declaring w x h, which
+// is all image.DecodeConfig needs to report dimensions.
+func pngHeader(w, h uint32) []byte {
+	var ihdr bytes.Buffer
+	ihdr.WriteString("IHDR")
+	_ = binary.Write(&ihdr, binary.BigEndian, w)
+	_ = binary.Write(&ihdr, binary.BigEndian, h)
+	ihdr.Write([]byte{8, 6, 0, 0, 0})
+	var out bytes.Buffer
+	out.WriteString("\x89PNG\r\n\x1a\n")
+	_ = binary.Write(&out, binary.BigEndian, uint32(ihdr.Len()-4))
+	out.Write(ihdr.Bytes())
+	_ = binary.Write(&out, binary.BigEndian, crc32.ChecksumIEEE(ihdr.Bytes()))
+	return out.Bytes()
+}
+
+func TestEncodeImageDataURI(t *testing.T) {
+	encode := func(t *testing.T, format string, w, h int) []byte {
+		t.Helper()
+		img := image.NewRGBA(image.Rect(0, 0, w, h))
+		var buf bytes.Buffer
+		switch format {
+		case "png":
+			require.NoError(t, png.Encode(&buf, img))
+		case "jpeg":
+			require.NoError(t, jpeg.Encode(&buf, img, nil))
+		case "gif":
+			require.NoError(t, gif.Encode(&buf, img, nil))
+		}
+		return buf.Bytes()
+	}
+
+	tests := []struct {
+		name       string
+		path       string
+		mime       string
+		data       func(t *testing.T) []byte
+		wantMIME   string
+		wantFormat string
+		wantW      int
+		wantH      int
+		wantErr    string
+	}{
+		{
+			name:       "retina png screenshot",
+			path:       "shot.png",
+			mime:       "image/png",
+			data:       func(t *testing.T) []byte { return encode(t, "png", 3024, 1510) },
+			wantMIME:   "image/png",
+			wantFormat: "png",
+			wantW:      2000,
+			wantH:      999,
+		},
+		{
+			name:       "tall png",
+			path:       "tall.png",
+			mime:       "image/png",
+			data:       func(t *testing.T) []byte { return encode(t, "png", 1000, 3000) },
+			wantMIME:   "image/png",
+			wantFormat: "png",
+			wantW:      667,
+			wantH:      2000,
+		},
+		{
+			name:       "wide jpeg stays jpeg",
+			path:       "wide.jpg",
+			mime:       "image/jpeg",
+			data:       func(t *testing.T) []byte { return encode(t, "jpeg", 4000, 500) },
+			wantMIME:   "image/jpeg",
+			wantFormat: "jpeg",
+			wantW:      2000,
+			wantH:      250,
+		},
+		{
+			name:       "gif is re-encoded as png",
+			path:       "anim.gif",
+			mime:       "image/gif",
+			data:       func(t *testing.T) []byte { return encode(t, "gif", 2500, 100) },
+			wantMIME:   "image/png",
+			wantFormat: "png",
+			wantW:      2000,
+			wantH:      80,
+		},
+		{
+			name:       "at limit is untouched",
+			path:       "cap.png",
+			mime:       "image/png",
+			data:       func(t *testing.T) []byte { return encode(t, "png", 2000, 2000) },
+			wantMIME:   "image/png",
+			wantFormat: "png",
+			wantW:      2000,
+			wantH:      2000,
+		},
+		{
+			name:    "too many pixels to decode",
+			path:    "bomb.png",
+			mime:    "image/png",
+			data:    func(*testing.T) []byte { return pngHeader(100_000, 100_000) },
+			wantErr: "100000x100000",
+		},
+		{
+			name:    "too many bytes",
+			path:    "big.png",
+			mime:    "image/png",
+			data:    func(*testing.T) []byte { return make([]byte, maxImageBytes+1) },
+			wantErr: "too large",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data := tt.data(t)
+			uri, err := EncodeImageDataURI(tt.path, data, tt.mime)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.True(t, strings.HasPrefix(uri, "data:"+tt.wantMIME+";base64,"), "%.40s", uri)
+			cfg, format := decodeDataURIConfig(t, uri)
+			assert.Equal(t, tt.wantFormat, format)
+			assert.Equal(t, tt.wantW, cfg.Width)
+			assert.Equal(t, tt.wantH, cfg.Height)
+		})
+	}
 }
 
 func TestReadFile_imagePathWithSpaces(t *testing.T) {
@@ -859,10 +1076,247 @@ func TestSearch(t *testing.T) {
 				require.NoError(t, err)
 				filter = m
 			}
-			tool := newSearch(localFS{root: dir}, dirURI(dir), NewFileTracker(), filter)
+			tool := newSearch(localFS{root: dir}, dirURI(dir), NewFileTracker(), filter, NoIndex())
 
 			result := tool.Execute(context.Background(), tt.args)
 			tt.assertFn(t, result)
+		})
+	}
+}
+
+// fakeSearcher answers RegexpSearch with results, failing the call with
+// err or the iterator with iterErr, and records what it was asked.
+type fakeSearcher struct {
+	results []searchapi.RegexpResult
+	err     error
+	iterErr error
+
+	reqs   []searchapi.RegexpRequest
+	served int
+	closed bool
+}
+
+func (f *fakeSearcher) RegexpSearch(_ context.Context, req searchapi.RegexpRequest) (sdkiterator.Iterator[searchapi.RegexpResult], error) {
+	f.reqs = append(f.reqs, req)
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &fakeResults{f: f}, nil
+}
+
+func (f *fakeSearcher) SemanticSearch(context.Context, searchapi.SemanticRequest) (sdkiterator.Iterator[searchapi.SemanticResult], searchapi.SemanticStatus, error) {
+	return nil, searchapi.SemanticStatus{}, searchapi.ErrUnsupported
+}
+
+type fakeResults struct{ f *fakeSearcher }
+
+func (r *fakeResults) Next(context.Context) (searchapi.RegexpResult, bool) {
+	if r.f.served >= len(r.f.results) {
+		return searchapi.RegexpResult{}, false
+	}
+	r.f.served++
+	return r.f.results[r.f.served-1], true
+}
+
+func (r *fakeResults) Err() error {
+	if r.f.served < len(r.f.results) {
+		return nil
+	}
+	return r.f.iterErr
+}
+
+func (r *fakeResults) Close() error {
+	r.f.closed = true
+	return nil
+}
+
+func TestSearch_index(t *testing.T) {
+	many := make([]searchapi.RegexpResult, 250)
+	for i := range many {
+		many[i] = searchapi.RegexpResult{Path: "hello.txt", Line: i + 1, Text: "hello"}
+	}
+
+	tests := []struct {
+		name     string
+		args     string
+		searcher fakeSearcher
+		// wantRoots is relative to the workspace, or nil when the index
+		// must not be asked.
+		wantRoots   []string
+		wantInclude []string
+		wantError   bool
+		want        []string
+		notWant     []string
+		wantServed  int
+	}{
+		{
+			name:      "empty path searches the workspace",
+			args:      `{"pattern":"hello","path":null,"include":null}`,
+			searcher:  fakeSearcher{results: []searchapi.RegexpResult{{Path: "hello.txt", Line: 1, Text: "hello world"}}},
+			wantRoots: []string{"."},
+			want:      []string{"hello.txt:1:hello world"},
+		},
+		{
+			name:      "relative path",
+			args:      `{"pattern":"Foo","path":"sub","include":null}`,
+			searcher:  fakeSearcher{results: []searchapi.RegexpResult{{Path: "sub/nested.go", Line: 3, Text: "func Foo() {}"}}},
+			wantRoots: []string{"sub"},
+			want:      []string{filepath.Join("sub", "nested.go") + ":3:func Foo() {}"},
+		},
+		{
+			name:      "absolute path inside the workspace",
+			args:      `{"pattern":"Foo","path":"$DIR/sub/nested.go","include":null}`,
+			searcher:  fakeSearcher{results: []searchapi.RegexpResult{{Path: "sub/nested.go", Line: 3, Text: "func Foo() {}"}}},
+			wantRoots: []string{"sub/nested.go"},
+			want:      []string{filepath.Join("sub", "nested.go") + ":3:func Foo() {}"},
+		},
+		{
+			name:        "include is forwarded",
+			args:        `{"pattern":"Foo","path":null,"include":"*.go"}`,
+			searcher:    fakeSearcher{results: []searchapi.RegexpResult{{Path: "sub/nested.go", Line: 3, Text: "func Foo() {}"}}},
+			wantRoots:   []string{"."},
+			wantInclude: []string{"*.go"},
+			want:        []string{"nested.go:3:func Foo() {}"},
+		},
+		{
+			name: "skip dirs are dropped",
+			args: `{"pattern":"needle","path":null,"include":null}`,
+			searcher: fakeSearcher{results: []searchapi.RegexpResult{
+				{Path: "vendor/lib.go", Line: 1, Text: "needle"},
+				{Path: "web/node_modules/pkg/index.js", Line: 1, Text: "needle"},
+				{Path: ".git/config", Line: 1, Text: "needle"},
+				{Path: "kept.go", Line: 2, Text: "needle"},
+			}},
+			wantRoots: []string{"."},
+			want:      []string{"kept.go:2:needle"},
+			notWant:   []string{"vendor", "node_modules", ".git"},
+		},
+		{
+			name:       "stops at the result cap",
+			args:       `{"pattern":"hello","path":null,"include":null}`,
+			searcher:   fakeSearcher{results: many},
+			wantRoots:  []string{"."},
+			want:       []string{"hello.txt:200:hello", "(results truncated at 200 matches)"},
+			notWant:    []string{"hello.txt:201:hello"},
+			wantServed: maxSearchResults,
+		},
+		{
+			name:     "path outside the workspace walks without the index",
+			args:     `{"pattern":"elsewhere","path":"$OUT","include":null}`,
+			searcher: fakeSearcher{results: []searchapi.RegexpResult{{Path: "wrong.txt", Line: 1, Text: "elsewhere"}}},
+			want:     []string{"outside.txt:1:elsewhere"},
+			notWant:  []string{"wrong.txt"},
+		},
+		{
+			name:      "unsupported call walks",
+			args:      `{"pattern":"hello","path":null,"include":null}`,
+			searcher:  fakeSearcher{err: fmt.Errorf("no index: %w", searchapi.ErrUnsupported)},
+			wantRoots: []string{"."},
+			want:      []string{"hello.txt:1:hello world"},
+		},
+		{
+			name:      "unsupported stream walks",
+			args:      `{"pattern":"hello","path":null,"include":null}`,
+			searcher:  fakeSearcher{iterErr: searchapi.ErrUnsupported},
+			wantRoots: []string{"."},
+			want:      []string{"hello.txt:1:hello world"},
+		},
+		{
+			name:      "index error is surfaced",
+			args:      `{"pattern":"hello","path":null,"include":null}`,
+			searcher:  fakeSearcher{err: errors.New("index is broken")},
+			wantRoots: []string{"."},
+			wantError: true,
+			want:      []string{"index is broken"},
+		},
+		{
+			name: "index error after results is a warning",
+			args: `{"pattern":"hello","path":null,"include":null}`,
+			searcher: fakeSearcher{
+				results: []searchapi.RegexpResult{{Path: "hello.txt", Line: 1, Text: "hello world"}},
+				iterErr: errors.New("stream broke"),
+			},
+			wantRoots: []string{"."},
+			want:      []string{"hello.txt:1:hello world", "warning", "stream broke"},
+		},
+		{
+			name:      "no index results",
+			args:      `{"pattern":"hello","path":null,"include":null}`,
+			searcher:  fakeSearcher{},
+			wantRoots: []string{"."},
+			want:      []string{"no matches found"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := setupWorkspace(t)
+			out := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(out, "outside.txt"), []byte("elsewhere\n"), 0o644))
+			args := strings.NewReplacer("$DIR", dir, "$OUT", out).Replace(tt.args)
+
+			searcher := tt.searcher
+			tracker := NewFileTracker()
+			tool := newSearch(localFS{root: dir}, dirURI(dir), tracker, nil, &searcher)
+			ctx := agent.WithParentToolCallID(t.Context(), "search_1")
+			result := tool.Execute(ctx, args)
+
+			assert.Equal(t, tt.wantError, result.IsError, result.Content)
+			for _, want := range tt.want {
+				assert.Contains(t, result.Content, want)
+			}
+			for _, notWant := range tt.notWant {
+				assert.NotContains(t, result.Content, notWant)
+			}
+			if tt.wantRoots == nil {
+				assert.Empty(t, searcher.reqs)
+				return
+			}
+			wantRoots := make([]string, len(tt.wantRoots))
+			for i, root := range tt.wantRoots {
+				wantRoots[i] = filepath.Join(dir, root)
+			}
+			require.Len(t, searcher.reqs, 1)
+			assert.Equal(t, searchapi.RegexpRequest{
+				Pattern: searcher.reqs[0].Pattern,
+				Roots:   wantRoots,
+				Include: tt.wantInclude,
+			}, searcher.reqs[0])
+			if tt.searcher.err == nil {
+				assert.True(t, searcher.closed)
+			}
+			if tt.wantServed > 0 {
+				assert.Equal(t, tt.wantServed, searcher.served)
+			}
+		})
+	}
+}
+
+func TestSearch_indexTracksDiscovery(t *testing.T) {
+	dir := setupWorkspace(t)
+	tracker := NewFileTracker()
+	searcher := &fakeSearcher{results: []searchapi.RegexpResult{{Path: "sub/nested.go", Line: 3, Text: "func Foo() {}"}}}
+	tool := newSearch(localFS{root: dir}, dirURI(dir), tracker, nil, searcher)
+
+	result := tool.Execute(agent.WithParentToolCallID(t.Context(), "search_1"), `{"pattern":"Foo"}`)
+
+	require.False(t, result.IsError, result.Content)
+	assert.Equal(t, []string{"search_1"}, tracker.ConsumeDiscoveries(filepath.Join(dir, "sub", "nested.go")))
+}
+
+func TestSearchTools_nilSearcherPanics(t *testing.T) {
+	tests := []struct {
+		name string
+		fn   func()
+	}{
+		{"DefaultTools", func() {
+			DefaultTools(localFS{}, localExec{}, dirURI("/workspace"), nil, nil, Config{}, configedit.NopConfig())
+		}},
+		{"search_content", func() { newSearch(localFS{}, dirURI("/workspace"), NewFileTracker(), nil, nil) }},
+		{"grep_files", func() { NewGrepFiles(localFS{}, dirURI("/workspace"), NewFileTracker(), nil) }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Panics(t, tt.fn)
 		})
 	}
 }
@@ -1076,6 +1530,21 @@ func TestBash_env_is_nil_so_host_inherits(t *testing.T) {
 
 	assert.Nil(t, recorded.Env,
 		"Env must be nil so the host executor inherits its own environment")
+}
+
+func TestBash_tells_the_executor_its_description(t *testing.T) {
+	var recorded workspaceapi.Cmd
+	rec := &recordingExec{startFn: func(_ context.Context, cmd workspaceapi.Cmd) (workspaceapi.Pid, error) {
+		recorded = cmd
+		if cmd.Watcher != nil {
+			cmd.Watcher.WatchProcess() <- nil
+		}
+		return 1, nil
+	}}
+	tool := newBash(rec, dirURI("/workspace"), configedit.NopConfig())
+	tool.Execute(context.Background(), `{"command": "rm -f a", "description": "Remove a"}`)
+
+	assert.Equal(t, "Remove a", recorded.Description)
 }
 
 func TestBash(t *testing.T) {
@@ -1499,7 +1968,7 @@ func TestSearchTools_explicitFilePath(t *testing.T) {
 	}{
 		{
 			"search_content",
-			newSearch(localFS{root: dir}, dirURI(dir), NewFileTracker(), nil),
+			newSearch(localFS{root: dir}, dirURI(dir), NewFileTracker(), nil, NoIndex()),
 			`{"pattern":"needle","path":"target.txt","include":null}`,
 		},
 		{
@@ -1509,7 +1978,7 @@ func TestSearchTools_explicitFilePath(t *testing.T) {
 		},
 		{
 			"grep_files",
-			NewGrepFiles(localFS{root: dir}, dirURI(dir), NewFileTracker()),
+			NewGrepFiles(localFS{root: dir}, dirURI(dir), NewFileTracker(), NoIndex()),
 			`{"pattern":"needle","path":"target.txt"}`,
 		},
 	}
@@ -1530,7 +1999,7 @@ func TestSearchContent_skipsBinaryFiles(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "text.txt"),
 		[]byte("needle in text\n"), 0o644))
 
-	tool := newSearch(localFS{root: dir}, dirURI(dir), NewFileTracker(), nil)
+	tool := newSearch(localFS{root: dir}, dirURI(dir), NewFileTracker(), nil, NoIndex())
 	result := tool.Execute(t.Context(), `{"pattern":"needle","path":"","include":null}`)
 
 	require.False(t, result.IsError, result.Content)
@@ -1547,7 +2016,7 @@ func TestSearchTools_canceledContext(t *testing.T) {
 	}{
 		{
 			"search_content",
-			newSearch(localFS{root: dir}, dirURI(dir), NewFileTracker(), nil),
+			newSearch(localFS{root: dir}, dirURI(dir), NewFileTracker(), nil, NoIndex()),
 			`{"pattern":"hello","path":"","include":null}`,
 		},
 		{
@@ -1557,7 +2026,7 @@ func TestSearchTools_canceledContext(t *testing.T) {
 		},
 		{
 			"grep_files",
-			NewGrepFiles(localFS{root: dir}, dirURI(dir), NewFileTracker()),
+			NewGrepFiles(localFS{root: dir}, dirURI(dir), NewFileTracker(), NoIndex()),
 			`{"pattern":"hello"}`,
 		},
 	}
@@ -1591,7 +2060,7 @@ func TestSearchContent_cancelDuringSearch(t *testing.T) {
 		close(fs.release)
 	}()
 
-	tool := newSearch(fs, dirURI(dir), NewFileTracker(), nil)
+	tool := newSearch(fs, dirURI(dir), NewFileTracker(), nil, NoIndex())
 	result := tool.Execute(ctx, `{"pattern":"needle","path":"","include":null}`)
 
 	assert.True(t, result.IsError, result.Content)
@@ -1600,7 +2069,7 @@ func TestSearchContent_cancelDuringSearch(t *testing.T) {
 
 func TestDefaultTools_wiresApplyPatchLSP(t *testing.T) {
 	lsp := &stubLSP{}
-	tools, _ := DefaultTools(localFS{}, localExec{}, dirURI("/workspace"), lsp, Config{}, configedit.NopConfig())
+	tools, _ := DefaultTools(localFS{}, localExec{}, dirURI("/workspace"), lsp, NoIndex(), Config{}, configedit.NopConfig())
 
 	// Verify the apply_patch tool got the lsp reference.
 	var found bool
@@ -1667,4 +2136,12 @@ func TestApplyPatch_notifiesLSP_addAndDelete(t *testing.T) {
 	}
 	assert.Contains(t, addEvent.URI, "new.go")
 	assert.Contains(t, deleteEvent.URI, "hello.txt")
+}
+
+func (localExec) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
+}
+
+func (*recordingExec) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
 }

@@ -335,6 +335,21 @@ func (mr *MockExecutorMockRecorder) Close() *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Close", reflect.TypeOf((*MockExecutor)(nil).Close))
 }
 
+// LookPath mocks base method.
+func (m *MockExecutor) LookPath(arg0 context.Context, arg1, arg2 string) (string, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "LookPath", arg0, arg1, arg2)
+	ret0, _ := ret[0].(string)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// LookPath indicates an expected call of LookPath.
+func (mr *MockExecutorMockRecorder) LookPath(arg0, arg1, arg2 any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "LookPath", reflect.TypeOf((*MockExecutor)(nil).LookPath), arg0, arg1, arg2)
+}
+
 // Signal mocks base method.
 func (m *MockExecutor) Signal(arg0 workspaceapi.Pid, arg1 syscall.Signal) error {
 	m.ctrl.T.Helper()

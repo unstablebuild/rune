@@ -85,13 +85,11 @@ func (e *ex) locationpicker(ctx context.Context, args ...string) error {
 		return err
 	}
 
-	win, err := e.Browser().Floating(h, browserapi.FloatingConfig{
+	_, err = e.Browser().Floating(h, browserapi.FloatingConfig{
 		Alignment: component.AlignmentCentered,
 	})
 	if err != nil {
 		_ = h.Close()
-		return err
 	}
-	h.SetWindow(win)
-	return nil
+	return err
 }

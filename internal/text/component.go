@@ -23,6 +23,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -37,7 +38,6 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
-	"github.com/unstablebuild/rune-go-sdk/clipboard"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
@@ -53,6 +53,7 @@ import (
 	hmarkdown "unstable.build/rune/internal/handler/markdown"
 	"unstable.build/rune/internal/ide/idelsp/languages"
 	"unstable.build/rune/internal/ide/syntax"
+	"unstable.build/rune/internal/term/programstatus"
 	"unstable.build/rune/internal/text/cmdenv"
 	"unstable.build/rune/internal/text/streamload"
 	"unstable.build/rune/internal/workspace"
@@ -70,6 +71,8 @@ type Workspace interface {
 	walkdir.Reader
 	schemeapi.Executor
 	Open(string) (workspaceapi.File, error)
+	// PathCaseSensitive is [workspace.Workspace.PathCaseSensitive].
+	PathCaseSensitive() bool
 }
 
 // Component is an implementation of browser.Browser for file editing.
@@ -148,17 +151,24 @@ func (c *Component) newFileBuffer(
 	file, recSwapFile workspaceapi.URI, buf *cell.Buffer,
 	readOnly, forceRecover bool,
 ) (handler Handler, ret *editorFlusherCloser, err error) {
-	fc, recover, err := c.loadFileBuffer(
-		file, recSwapFile, buf, readOnly, forceRecover)
+	l, err := c.workspace.LoaderFor(file)
 	if err != nil {
 		return nil, nil, err
 	}
-	return c.buildEditorHandler(file, buf, fc, readOnly, recover)
+	fc, recover, err := c.loadFileBuffer(
+		l, file, recSwapFile, buf, readOnly, forceRecover)
+	if err != nil {
+		c.releaseLoader(file, l)
+		return nil, nil, err
+	}
+	return c.buildEditorHandler(file, buf, fc, nil, readOnly, recover)
 }
 
 // loadFileBuffer performs only the disk I/O half of newFileBuffer:
-// it populates buf from the workspace and returns the resulting
-// FlusherCloser plus a recover flag derived from recSwapFile.
+// it populates buf through l, which LoaderFor returned for file on the
+// event loop, and returns the resulting FlusherCloser plus a recover
+// flag derived from recSwapFile. When it fails, the caller releases l
+// on the event loop.
 //
 // The split exists so the streaming-open code path can run the I/O
 // off the host event loop and then schedule the editor-construction
@@ -168,7 +178,7 @@ func (c *Component) newFileBuffer(
 // bars, ...) that read window-manager and other event-loop-owned
 // state, so it must not run on the worker goroutine.
 func (c *Component) loadFileBuffer(
-	file, recSwapFile workspaceapi.URI, buf *cell.Buffer,
+	l workspace.FileLoader, file, recSwapFile workspaceapi.URI, buf *cell.Buffer,
 	readOnly, forceRecover bool,
 ) (workspace.FlusherCloser, bool, error) {
 	recover := recSwapFile != (workspaceapi.URI{})
@@ -177,12 +187,12 @@ func (c *Component) loadFileBuffer(
 		err error
 	)
 	if recover {
-		fc, err = c.workspace.Recover(file, recSwapFile, buf, forceRecover)
+		fc, err = l.Recover(recSwapFile, buf, forceRecover)
 	} else {
 		var swapDir workspaceapi.URI
 		swapDir, err = c.getSwapDir(file)
 		if err == nil {
-			fc, err = c.workspace.Load(file, buf, swapDir, readOnly)
+			fc, err = l.Load(buf, swapDir, readOnly)
 		}
 	}
 	if err != nil {
@@ -191,23 +201,53 @@ func (c *Component) loadFileBuffer(
 	return fc, recover, nil
 }
 
+func (c *Component) releaseLoader(file workspaceapi.URI, l workspace.FileLoader) {
+	if err := l.Release(); err != nil {
+		c.log(log.WarnLevel, "release workspace of %s: %v", file, err)
+	}
+}
+
+// syntaxParseable reports whether buf is small enough to install a
+// syntax tree into.
+func (c *Component) syntaxParseable(buf *cell.Buffer) bool {
+	return c.config.MaxSyntaxParseSize == 0 || buf.Size() <= c.config.MaxSyntaxParseSize
+}
+
+// parseSyntax parses the syntax tree of buf, the freshly loaded buffer of a
+// streamed tab, on the calling load worker. It returns nil when the tab is to
+// install its tree through SyntaxTree, or none at all.
+func (c *Component) parseSyntax(file workspaceapi.URI, buf *cell.Buffer) syntax.ParsedTree {
+	if c.config.SyntaxParse == nil || !c.syntaxParseable(buf) {
+		return nil
+	}
+	return c.config.SyntaxParse(c.ctx, c.config.PkgManager, file, buf, c.config.Syntax)
+}
+
+// buildEditorHandler installs parsed, when not nil, as buf's syntax tree.
 func (c *Component) buildEditorHandler(
 	file workspaceapi.URI, buf *cell.Buffer, fc workspace.FlusherCloser,
-	readOnly, recover bool,
+	parsed syntax.ParsedTree, readOnly, recover bool,
 ) (handler Handler, ret *editorFlusherCloser, err error) {
 	interrupter := browser.EventPublisherInterrupter(c)
+	// A tree publishes its highlights as it is installed, which is
+	// before the editor it highlights exists.
+	var pendingLocs textapi.LocationList
 	locs := syntax.FuncLocationSetter(func(ll textapi.LocationList) {
 		if handler == nil {
+			pendingLocs = ll
 			return
 		}
 		handler.SetLocationList(textapi.LocationPriorityInfo, "syntax", ll)
 	})
 
 	var tree syntax.Tree
-	if c.config.SyntaxTree != nil &&
-		(c.config.MaxSyntaxParseSize == 0 || buf.Size() <= c.config.MaxSyntaxParseSize) {
-		// install tree in Buffer first so editor can use its
-		// capabilities while initializing
+	// install tree in Buffer first so editor can use its
+	// capabilities while initializing
+	switch {
+	case parsed != nil:
+		tree = parsed.Install(c.config, interrupter, locs, fc, c.workspace)
+		fc = tree
+	case c.config.SyntaxTree != nil && c.syntaxParseable(buf):
 		tree = c.config.SyntaxTree(c.ctx, c.config, interrupter,
 			c.config.PkgManager, locs, file, buf, fc, c.workspace, c.config.Syntax)
 		fc = tree
@@ -216,6 +256,10 @@ func (c *Component) buildEditorHandler(
 	handler, err = c.ed.Edit(WithBars(c.ctx, BarOptions{}), file, buf, readOnly, recover)
 	if err != nil {
 		return nil, nil, err
+	}
+	if pendingLocs != nil {
+		handler.SetLocationList(textapi.LocationPriorityInfo, "syntax", pendingLocs)
+		pendingLocs = nil
 	}
 
 	var commands []textapi.CommandManual
@@ -257,10 +301,13 @@ func (c *Component) Init(
 		panic("text.Component: config.ScheduleNextTick must not be nil")
 	}
 	c.config = config
+	// The browser's repaints go out through EventPublisher, so a
+	// caller's Interrupter could only diverge from it.
+	c.config.Interrupter = browser.EventPublisherInterrupter(c)
+	c.config.PromptConfig.OnLinkClick = c.config.OnLinkClick
 	c.ctx, c.cancelCtx = context.WithCancel(context.Background())
 
 	c.comp.Init(c.config.Config)
-	c.comp.SetInterrupter(browser.EventPublisherInterrupter(c))
 	c.comp.Subscribe((*handlerWindowSubscriber)(c))
 	c.fileRegistry = newFileCommandRegistryFromComponent(c)
 	c.pending = newPendingTabs(&c.comp, c.animateTabLoading)
@@ -487,7 +534,7 @@ func (c *Component) openFileTab(
 	file workspaceapi.URI, recoveryFilename workspaceapi.URI,
 	readOnly, forceRecover bool,
 ) (browserapi.Handler, error) {
-	t, ok := c.comp.Tab(file)
+	t, ok := c.fileTab(file)
 	if ok {
 		return t, nil
 	}
@@ -535,6 +582,23 @@ func (c *Component) openFileTabSync(
 	return t, nil
 }
 
+// fileTab returns the tab open on file under the workspace's case rule,
+// so a server naming the file with different case does not open it twice.
+func (c *Component) fileTab(file workspaceapi.URI) (*browser.Tab, bool) {
+	if t, ok := c.comp.Tab(file); ok {
+		return t, true
+	}
+	if c.workspace.PathCaseSensitive() {
+		return nil, false
+	}
+	for _, t := range c.comp.Tabs() {
+		if workspace.SameDocument(t.URI(), file, false) {
+			return t, true
+		}
+	}
+	return nil, false
+}
+
 func (c *Component) newViewTab(
 	file workspaceapi.URI,
 	h browserapi.Handler,
@@ -576,6 +640,11 @@ func (c *Component) openFileTabStreaming(
 		}
 		return nil, fmt.Errorf("stream load file: %w", err)
 	}
+	l, err := c.workspace.LoaderFor(file)
+	if err != nil {
+		_ = sh.Close()
+		return nil, err
+	}
 	icon := c.iconFor(file)
 	def := newDeferHandler(sh)
 	streamingTab := c.newTab(file, icon, fileTabName(file), def, nil)
@@ -592,9 +661,16 @@ func (c *Component) openFileTabStreaming(
 
 		buf := cell.NewBuffer()
 		fc, _, loadErr := c.loadFileBuffer(
-			file, recoveryFilename, buf, readOnly, forceRecover)
+			l, file, recoveryFilename, buf, readOnly, forceRecover)
+		var parsed syntax.ParsedTree
+		if loadErr == nil {
+			parsed = c.parseSyntax(file, buf)
+		}
 
-		c.config.ScheduleNextTick(func() {
+		scheduled := c.config.ScheduleNextTick(func() {
+			if loadErr != nil {
+				c.releaseLoader(file, l)
+			}
 			var (
 				realHandler Handler
 				efc         *editorFlusherCloser
@@ -602,7 +678,7 @@ func (c *Component) openFileTabStreaming(
 			)
 			if loadErr == nil {
 				realHandler, efc, buildErr = c.buildEditorHandler(
-					file, buf, fc, readOnly, recovering)
+					file, buf, fc, parsed, readOnly, recovering)
 			}
 			openErr := loadErr
 			if openErr == nil {
@@ -612,6 +688,9 @@ func (c *Component) openFileTabStreaming(
 				streamingTab, sh, def, file, readOnly, recovering,
 				realHandler, efc, openErr)
 		})
+		if !scheduled && parsed != nil {
+			_ = parsed.Close()
+		}
 	})
 
 	return streamingTab, nil
@@ -719,6 +798,69 @@ func (c *Component) OpenReadOnly(file workspaceapi.URI) (browserapi.Handler, err
 	return h, err
 }
 
+// OpenInWindow opens file as Open does, or as OpenReadOnly does when
+// readOnly, and shows its tab in win, or in the window in focus when win
+// is closed. When the tab is already shown in another window of this
+// browser, that window takes focus instead.
+func (c *Component) OpenInWindow(
+	file workspaceapi.URI, win browser.Window, readOnly bool,
+) (*browser.Tab, error) {
+	open := c.Open
+	if readOnly {
+		open = c.OpenReadOnly
+	}
+	h, err := open(file)
+	if err != nil {
+		return nil, err
+	}
+	if win.Closed() {
+		win = c.comp.Focus()
+	}
+	t := h.(*browser.Tab)
+	err = win.SetContent(t)
+	if err == browserapi.ErrTabNotFree {
+		// When the window showing the tab is not ours, the OpenRouter
+		// already switched to and focused the workspace that owns it.
+		err = nil
+		if owner, ok := c.tabWindow(t); ok {
+			c.comp.SetFocus(owner)
+		}
+	}
+	return t, err
+}
+
+// tabWindow returns the window of this browser that shows tab. It looks
+// the window up by ID because a tab routed in from another workspace is
+// shown by another browser, and SetFocus panics on a foreign window.
+func (c *Component) tabWindow(tab *browser.Tab) (browser.Window, bool) {
+	owner, ok := tab.Window()
+	if !ok || owner.Closed() {
+		return nil, false
+	}
+	return c.comp.Window(owner.WindowID())
+}
+
+// Show satisfies browser.Browser. URIs on the schemes of the workspaces
+// Rune supports (file, ssh, rune and tailscale) open as OpenInWindow does
+// in the window in focus. Every other URI goes to Config.OpenURL, and
+// Show fails for them when it is nil.
+func (c *Component) Show(uri workspaceapi.URI) error {
+	switch uri.Scheme() {
+	case workspace.FileScheme, workspace.SSHScheme, workspace.RuneScheme,
+		workspace.TailscaleScheme:
+		_, err := c.OpenInWindow(uri, c.comp.Focus(), false)
+		return err
+	}
+	if c.config.OpenURL == nil {
+		return fmt.Errorf("cannot open %s: no URL opener", uri)
+	}
+	u, err := url.Parse(uri.String())
+	if err != nil {
+		return err
+	}
+	return c.config.OpenURL(u)
+}
+
 // ReadFile injects the contents of the desired file and writes it under the cursor.
 func (c *Component) ReadFile(file workspaceapi.URI, h Handler) error {
 	if ed, ok := h.(wrapEditor); ok {
@@ -761,10 +903,12 @@ func (c *Component) ReadFile(file workspaceapi.URI, h Handler) error {
 // handler exists for the requested resource.
 var ErrHandlerNotFound = errors.New("handler not found")
 
-// Editor satisfies Editor interface.
+// Editor satisfies Editor interface. On a workspace whose paths are not
+// case-sensitive, a file URI matches an editor whatever its case.
 func (c *Component) Editor(resource workspaceapi.URI) (Handler, error) {
+	caseSensitive := c.workspace.PathCaseSensitive()
 	for _, tab := range c.comp.Tabs() {
-		if tab.URI().String() == resource.String() {
+		if workspace.SameDocument(tab.URI(), resource, caseSensitive) {
 			h, ok := tab.Handler().(Handler)
 			if !ok {
 				continue
@@ -775,7 +919,7 @@ func (c *Component) Editor(resource workspaceapi.URI) (Handler, error) {
 	// ensure that non-tab handlers returned by Handler
 	// can also be returned with Editor.
 	for _, ed := range c.editors {
-		if ed.Resource().String() == resource.String() {
+		if workspace.SameDocument(ed.Resource(), resource, caseSensitive) {
 			return ed, nil
 		}
 	}
@@ -1157,9 +1301,10 @@ func (c *Component) SetFocus(win browser.Window) (browser.Window, error) {
 	return c.comp.SetFocus(win), nil
 }
 
-// SetWindowWidth sets the width of the given window.
-func (c *Component) SetWindowWidth(win browser.Window, width int) bool {
-	return c.comp.SetWindowWidth(win, width)
+// SetWindowDefaultWidth sets the width win is reset to and resizes win to it; see
+// browser.Component.SetWindowDefaultWidth.
+func (c *Component) SetWindowDefaultWidth(win browser.Window, width int) bool {
+	return c.comp.SetWindowDefaultWidth(win, width)
 }
 
 // Edit edits the resource with name and buffer
@@ -1629,18 +1774,26 @@ func (c *Component) OnTabExit(uri workspaceapi.URI) bool {
 	return c.comp.OnTabExit(uri)
 }
 
-// SetTabActivity satisfies browser.TabManager.
-func (c *Component) SetTabActivity(uri workspaceapi.URI, active bool) error {
-	if !c.comp.SetTabActivity(uri, active) {
-		return errors.New("set activity called on unknown tab")
+// SetTabStatus satisfies browser.TabManager.
+func (c *Component) SetTabStatus(uri workspaceapi.URI, report programstatus.Report) error {
+	if !c.comp.SetTabStatus(uri, report) {
+		return errors.New("set status called on unknown tab")
 	}
 	return nil
 }
 
-// HasActiveTabs reports whether any tab of this Component is marked
-// active via SetTabActivity.
-func (c *Component) HasActiveTabs() bool {
-	return c.comp.HasActiveTabs()
+// EndTabStatus satisfies browser.TabManager.
+func (c *Component) EndTabStatus(uri workspaceapi.URI) error {
+	if !c.comp.EndTabStatus(uri) {
+		return errors.New("end status called on unknown tab")
+	}
+	return nil
+}
+
+// HasWorkingTabs reports whether any tab of this Component reported
+// working via SetTabStatus.
+func (c *Component) HasWorkingTabs() bool {
+	return c.comp.HasWorkingTabs()
 }
 
 // Prompt creates a new prompt to be drawn as an overlay on the next call to Draw
@@ -1651,7 +1804,21 @@ func (c *Component) Prompt(
 	bindings []term.KeyComb,
 	promptHandler handler.PromptHandler,
 ) browser.Window {
-	return c.comp.Prompt(message, options, bindings, promptHandler)
+	return c.comp.Prompt(browserapi.PromptConfig{
+		Message: message, Options: options, Bindings: bindings,
+	}, promptHandler)
+}
+
+// OpenPrompt satisfies browser.Prompter.
+func (c *Component) OpenPrompt(
+	cfg browserapi.PromptConfig, h handler.PromptHandler,
+) (browser.Window, bool, error) {
+	return c.comp.OpenPrompt(cfg, h)
+}
+
+// ButtonImages satisfies browser.Prompter.
+func (c *Component) ButtonImages() *component.ButtonImages {
+	return c.comp.ButtonImages()
 }
 
 // SubscribeWindow subscribes sub to changes in focus due to changing the window in focus.
@@ -1736,7 +1903,16 @@ func (c *Component) loadMarkdown(
 	if err != nil {
 		return nil, time.Time{}, fmt.Errorf("read file: %w", err)
 	}
-	component, err := markdown.NewWithConfig(string(data), c.config.Markdown)
+	cfg := c.config.Markdown
+	if storage := c.config.MarkdownImageStorage; storage != nil {
+		cfg.ImagesConfig = markdown.ImagesConfig{
+			Storage:     storage,
+			Interrupter: browser.EventPublisherInterrupter(c),
+			FS:          c.workspace,
+			Dir:         path.Dir(uri.Path()),
+		}
+	}
+	component, err := markdown.NewWithConfig(string(data), cfg)
 	if err != nil {
 		return nil, time.Time{}, fmt.Errorf("new markdown component: %w", err)
 	}
@@ -1760,22 +1936,7 @@ func (c *Component) loadImage(
 }
 
 func (c *Component) newMarkdownHandler(component *markdown.Component) *hmarkdown.Handler {
-	return hmarkdown.New(component, hmarkdown.WithOnLinkClick(func(link *url.URL) bool {
-		if link.Scheme != "http" && link.Scheme != "https" {
-			return false
-		}
-		linkstr := link.String()
-		meta := clipboard.Data{Text: linkstr}
-		err := c.config.Clipboard.Copy(clipboard.DefaultRegisterID, meta)
-		if err != nil {
-			_, _ = c.config.Notifications.Notify(browserapi.LevelError,
-				"copy URL to clipboard: %v", err)
-		} else {
-			_, _ = c.config.Notifications.Notify(browserapi.LevelSuccess,
-				"copied URL %s to clipboard", linkstr)
-		}
-		return true
-	}))
+	return hmarkdown.New(component, hmarkdown.WithOnLinkClick(c.config.OnLinkClick))
 }
 
 var loadingSpinnerFrames = []rune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")

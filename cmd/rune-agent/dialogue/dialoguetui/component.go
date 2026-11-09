@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
 	"log/slog"
 	"slices"
 	"sort"
@@ -153,10 +154,13 @@ type Component struct {
 	messages     component.ResponsiveList
 	spanMessages component.Span
 	box          *handler.Frame
-	loadingBox   loadingFrame
-	input        Input
-	height       int
-	width        int
+	// boxGraphics draws the images of the compose box frame. It is nil
+	// until the frame names one.
+	boxGraphics *tcomponent.FrameGraphics
+	loadingBox  loadingFrame
+	input       Input
+	height      int
+	width       int
 
 	// layout: the viewport is split vertically between the messages region
 	// (top, full width) and the compose box (bottom, horizontally centered
@@ -172,6 +176,9 @@ type Component struct {
 	// when the bar is disabled.
 	barArea   component.Virtual[tui.Component]
 	statusBar *StatusBar
+	// barState is what the status bar reports. It is kept while the bar
+	// is disabled, so that enabling it again shows the chat as it is.
+	barState StatusBarState
 	// shadedBar wraps the status bar so a configured effect can run
 	// over it for as long as a turn does.
 	shadedBar shadedBar
@@ -215,6 +222,8 @@ type Component struct {
 
 	// collapse mode for tool turns
 	collapseMode       collapseMode
+	hoveredToolTurn    *Turn
+	hoveredTool        *toolNode
 	toggleAnchor       component.ListNode
 	toggleAnchorOffset int
 	toggleAnchorValid  bool
@@ -243,6 +252,12 @@ type Component struct {
 	// sent messages, paired with their list node so a mouse position can
 	// be resolved back to a chip.
 	sentAttachments []sentAttachmentGrid
+	// sentText maps the transcript nodes of sent messages to their text,
+	// for the newest one scrolled out of sight to be pinned.
+	sentText map[component.ListNode]string
+	pin      pinnedMessage
+	// jumpHovered is whether the pointer is over the jump-to-bottom arrow.
+	jumpHovered bool
 
 	interrupter term.Interrupter
 	mu          sync.Locker // set by Handler; used by AddCommand for async locking
@@ -286,6 +301,22 @@ func (c *Component) Init(cfg ComponentConfig) {
 	c.messages.Alignment = component.AlignmentBottom
 	c.spanMessages.Init(&c.messages, c.cfg.MessagesRowConfig)
 	c.msgArea.C = &c.spanMessages
+	c.sentText = make(map[component.ListNode]string)
+	c.pin.strCfg = component.StringResponsiveConfig{
+		NoSplitWords: true,
+		StringConfig: cfg.SendMessageStringConfig,
+	}
+	c.pin.spanCfg = cfg.SendMessageSpanConfig
+	c.pin.hoverBg = cfg.PinnedMessageHoverBackground
+	if c.pin.hoverBg == term.ColorDefault {
+		c.pin.hoverBg = term.ColorSilver
+	}
+	if c.cfg.JumpToBottomAttr == (term.Attributes{}) {
+		c.cfg.JumpToBottomAttr = term.Attributes{Fg: term.ColorSilver}
+	}
+	if c.cfg.JumpToBottomHoverAttr == (term.Attributes{}) {
+		c.cfg.JumpToBottomHoverAttr = term.Attributes{Fg: term.ColorWhite, Attrs: term.AttrBold}
+	}
 
 	c.input = c.newInputBackend(cfg)
 	c.box = handler.NewFrame(c.input)
@@ -296,26 +327,117 @@ func (c *Component) Init(cfg ComponentConfig) {
 	if cfg.InputBox.FrameCharSet != (component.FrameCharSet{}) {
 		c.box.FrameCharSet = cfg.InputBox.FrameCharSet
 	}
-	c.loadingBox.root = c.box
+	c.loadingBox.root = &framedBox{c: c}
 	c.boxArea.C = &c.loadingBox
 
 	c.attachTabs.Init()
 	c.attachTabs.SetBorder(false)
 	c.attachArea.C = &c.attachTabs
 
-	if cfg.StatusBar.Enabled {
-		// The interrupter only reaches the Component once Handler
-		// wraps it, which is where the repaint ticker starts.
-		c.statusBar = NewStatusBar(cfg.StatusBar, nil)
-		c.shadedBar.root = c.statusBar
-		c.shadedBar.name = cfg.StatusBar.Shader
-		c.shadedBar.fps = cfg.StatusBar.ShaderFPS
-		c.shadedBar.loop = cfg.StatusBar.ShaderLoop
-		c.shadedBar.defAttr = term.Attributes{
-			Fg: cfg.StatusBar.ForegroundColor,
-			Bg: cfg.StatusBar.BackgroundColor,
+	// The interrupter only reaches the Component once Handler wraps it,
+	// which is where the bar starts repainting.
+	c.installStatusBar(cfg.StatusBar)
+}
+
+// installStatusBar makes the status bar the one cfg configures, showing
+// barState, or none when cfg disables it. The bar it replaces must be
+// closed already.
+func (c *Component) installStatusBar(cfg StatusBarConfig) {
+	c.statusBar = nil
+	c.barArea.C = nil
+	if !cfg.Enabled {
+		return
+	}
+	c.statusBar = NewStatusBar(cfg, nil)
+	state := c.barState
+	c.statusBar.SetState(func(s *StatusBarState) { *s = state })
+	c.shadedBar.configure(c.statusBar, cfg)
+	c.barArea.C = &c.shadedBar
+}
+
+// SetStatusBarConfig replaces the status bar with the one cfg configures,
+// or removes it when cfg disables it, and lays the dialogue out again. The
+// new bar reports what the old one did: a running turn keeps its elapsed
+// time, and the effect cfg names runs over it.
+func (c *Component) SetStatusBarConfig(cfg StatusBarConfig) {
+	if c.statusBar != nil {
+		c.shadedBar.setRunning(false, c.interrupter)
+		if err := c.statusBar.Close(); err != nil {
+			slog.Warn("dialoguetui: close the replaced status bar", "error", err)
 		}
-		c.barArea.C = &c.shadedBar
+	}
+	c.cfg.StatusBar = cfg
+	c.installStatusBar(cfg)
+	if c.statusBar != nil {
+		c.statusBar.start(c.interrupter)
+	}
+	c.relayout()
+	if c.statusBar != nil {
+		c.shadedBar.setRunning(c.barState.Active, c.interrupter)
+	}
+}
+
+// SetInputBoxFrameCharSet draws the compose box frame with cs from the
+// next Draw on, or with component.FrameCharSetDefault when cs is zero.
+// The frame draws images, by URI, without fetching them, and fetches any
+// other image cs names again.
+func (c *Component) SetInputBoxFrameCharSet(
+	cs component.FrameCharSet, images map[string]image.Image,
+) {
+	c.cfg.InputBox.FrameCharSet = cs
+	if cs == (component.FrameCharSet{}) {
+		cs = component.FrameCharSetDefault()
+	}
+	c.box.FrameCharSet = cs
+	if c.boxGraphics != nil {
+		c.boxGraphics.Reload(images)
+	}
+}
+
+// SetInputBoxColors draws the compose box frame with frame, and fills the
+// box with bg, from the next Draw on. A bg of term.ColorDefault fills the
+// frame with frame's background and leaves the input at the terminal
+// default. The prompt feedback inputboxes opened from then on are drawn
+// with content.
+func (c *Component) SetInputBoxColors(frame, content term.Attributes, bg term.Color) {
+	c.cfg.InputBox.FrameAttr = frame
+	c.cfg.InputBox.ContentAttr = content
+	c.cfg.InputBackgroundColor = bg
+	c.box.SetAttr(frame)
+	if bg != term.ColorDefault {
+		c.box.Bg = bg
+	}
+	c.input.SetDefaultAttributes(term.Attributes{Bg: bg})
+}
+
+// frameGraphics returns what draws the images of the compose box frame,
+// or nil when it names none or cannot fetch them.
+func (c *Component) frameGraphics() *tcomponent.FrameGraphics {
+	if c.box.Graphics.Empty() || c.cfg.InputBox.GraphicsStorage == nil || c.interrupter == nil {
+		return nil
+	}
+	if c.boxGraphics == nil {
+		c.boxGraphics = tcomponent.NewFrameGraphics(c.cfg.InputBox.GraphicsStorage, c.interrupter)
+	}
+	return c.boxGraphics
+}
+
+// framedBox draws the compose box of c, and over its border the images
+// its frame charset names.
+type framedBox struct {
+	c             *Component
+	width, height int
+}
+
+func (b *framedBox) Resize(width, height int) {
+	b.width, b.height = width, height
+	b.c.box.Resize(width, height)
+}
+
+func (b *framedBox) Draw(w term.Writer) {
+	b.c.box.Draw(w)
+	if g := b.c.frameGraphics(); g != nil {
+		g.Draw(w, &b.c.box.Frame, b.width, b.height)
 	}
 }
 
@@ -366,6 +488,7 @@ func (c *Component) Draw(w term.Writer) {
 	}
 	vw := component.VirtualWriter{Writer: w, Height: c.height, Width: c.width}
 	c.msgArea.Draw(&vw)
+	c.drawScrollOverlays(&vw)
 	if c.completion != nil && c.completionRows > 0 {
 		cw := component.VirtualWriter{
 			Writer: &vw,
@@ -658,6 +781,54 @@ func (c *Component) SentAttachmentAt(pos term.Coordinates) (Attachment, bool) {
 	return Attachment{}, false
 }
 
+// ToolCallAt resolves a messages-relative viewport coordinate to the
+// invocation displayed there, including nested calls and result leaves.
+func (c *Component) ToolCallAt(pos term.Coordinates) (ToolCallDetails, bool) {
+	_, tn := c.toolAt(pos)
+	if tn == nil {
+		return ToolCallDetails{}, false
+	}
+	return tn.details(), true
+}
+
+// HoverToolCall changes the hovered tool row, clearing the previous row
+// when the pointer moves to another message or outside the viewport.
+func (c *Component) HoverToolCall(pos term.Coordinates) (changed bool) {
+	turn, tn := c.toolAt(pos)
+	if turn == c.hoveredToolTurn && tn == c.hoveredTool {
+		return false
+	}
+	if c.hoveredToolTurn != nil {
+		changed = c.hoveredToolTurn.setHovered(nil)
+	}
+	c.hoveredToolTurn, c.hoveredTool = turn, tn
+	if turn != nil && turn.setHovered(tn) {
+		changed = true
+	}
+	return
+}
+
+func (c *Component) toolAt(pos term.Coordinates) (*Turn, *toolNode) {
+	width, height := c.messages.SizeWidth(), c.messages.SizeHeight()
+	if pos.X < 0 || pos.X >= width || pos.Y < 0 || pos.Y >= height {
+		return nil, nil
+	}
+	pos.Y += c.messages.MaxOffset() - c.messages.Offset()
+	y := 0
+	for node, ok := c.messages.Front(); ok; node, ok = node.Next() {
+		v := node.Value().(component.Responsive)
+		h := v.Height(width)
+		if pos.Y >= y && pos.Y < y+h {
+			if turn, ok := v.(*Turn); ok {
+				return turn, turn.toolNodeAt(term.Coordinates{X: pos.X, Y: pos.Y - y})
+			}
+			break
+		}
+		y += h
+	}
+	return nil, nil
+}
+
 // HoverSentAttachment highlights the sent-message chip at pos, clearing
 // any other highlight, and reports whether the rendering changed.
 func (c *Component) HoverSentAttachment(pos term.Coordinates) (changed bool) {
@@ -696,6 +867,14 @@ func (c *Component) hoverCodeCopy(pos term.Coordinates) (changed bool) {
 		}
 	})
 	return changed
+}
+
+// markCodeCopied shows the copied icon in place of the copy icon at pos,
+// in messages content coordinates.
+func (c *Component) markCodeCopied(pos term.Coordinates) {
+	c.eachTranscriptMarkdown(func(md *markdown.Component, origin term.Coordinates) {
+		md.MarkCodeBlockCopied(term.CoordinatesDiff(pos, origin))
+	})
 }
 
 // eraseCodeCopyIcons blanks the copy icons in w, a render of the whole
@@ -786,7 +965,7 @@ func (c *Component) AddSendMessageAttachments(msg string, atts []Attachment) {
 			StringConfig: c.cfg.SendMessageStringConfig,
 		})
 	strComp = component.NewSpan(strComp, c.cfg.SendMessageSpanConfig)
-	c.messages.PushBack(strComp)
+	c.sentText[c.messages.PushBack(strComp)] = msg
 	if c.cfg.SendMessageBottomPad > 0 {
 		c.messages.PushBack(spacer(c.cfg.SendMessageBottomPad))
 	}
@@ -874,7 +1053,7 @@ func (c *Component) AddSendMessageMarkdown(msg string) {
 		strComp = md
 	}
 	strComp = component.NewSpan(strComp, c.cfg.SendMessageSpanConfig)
-	c.messages.PushBack(strComp)
+	c.sentText[c.messages.PushBack(strComp)] = msg
 	if c.cfg.SendMessageBottomPad > 0 {
 		c.messages.PushBack(spacer(c.cfg.SendMessageBottomPad))
 	}
@@ -1091,13 +1270,12 @@ func (c *Component) AddReceiveMessage(msg string) {
 func (c *Component) AddReceiveMessageBreak() {
 	c.breakReasoning()
 	c.breakReceiveMessage()
-	// Complete and close all turns, not just the current one,
+	// Finalize all turns, not just the current one,
 	// since text breaks may have detached earlier turns.
 	node, ok := c.messages.Front()
 	for ok {
 		if turn, isTurn := node.Value().(*Turn); isTurn {
 			turn.completeRunning()
-			turn.Close()
 		}
 		node, ok = node.Next()
 	}
@@ -1363,53 +1541,102 @@ func (c *Component) AddToolCall(id, name, args, summary string) {
 }
 
 // CompleteToolCall replaces the running tool indicator with a completed
-// header (✓ or ✗) and truncated output. If no prior AddToolCall was
-// made for this id (e.g. when replaying stored messages), a new entry
-// is created directly in a completed state.
+// header (✓ or ✗) and truncated output, in the newest turn holding id. If
+// no turn holds it (e.g. when replaying stored messages), a new entry is
+// created directly in a completed state.
 func (c *Component) CompleteToolCall(id, name, args, summary, output string, isError bool) {
 	maxOff, scrolled := c.scrollState()
 	defer c.restoreScroll(maxOff, scrolled)
-	c.ensureCurrentTurn()
-	if _, ok := c.currentTurn.tools[id]; !ok {
-		// No running entry — add one so CompleteToolCall can update it.
-		c.currentTurn.AddToolCall(id, name, args, summary)
+	turn := c.toolTurn(id)
+	if turn == nil {
+		c.ensureCurrentTurn()
+		turn = c.currentTurn
+		turn.AddToolCall(id, name, args, summary)
 	}
-	c.currentTurn.CompleteToolCall(id, name, args, summary, output, isError)
+	turn.CompleteToolCall(id, name, args, summary, output, isError)
 	c.moveTrailingToBack()
 }
 
-// AddChildToolCall adds a tool call nested under a parent tool call
-// in the current turn.
+// AddToolCallImage appends an image to an existing tool in the current turn.
+// Empty captions use the filename; unknown IDs are ignored.
+func (c *Component) AddToolCallImage(id, path, caption string) {
+	maxOff, scrolled := c.scrollState()
+	defer c.restoreScroll(maxOff, scrolled)
+	if c.currentTurn != nil {
+		c.currentTurn.AddToolCallImage(id, path, caption)
+	}
+}
+
+// AddChildToolCall adds a tool call nested under a parent tool call,
+// in whichever turn holds the parent. A parent that no turn holds gets
+// the call as a top-level tool call of the current turn.
 func (c *Component) AddChildToolCall(parentID, id, name, args, summary string) {
 	maxOff, scrolled := c.scrollState()
 	defer c.restoreScroll(maxOff, scrolled)
-	c.ensureCurrentTurn()
-	c.currentTurn.AddChildToolCall(parentID, id, name, args, summary)
+	turn := c.parentTurn(parentID)
+	if turn == nil {
+		c.ensureCurrentTurn()
+		turn = c.currentTurn
+	}
+	turn.AddChildToolCall(parentID, id, name, args, summary)
 	c.moveTrailingToBack()
 }
 
 // CompleteChildToolCall completes a child tool call nested under a
-// parent tool call in the current turn.
+// parent tool call, in whichever turn holds the parent.
 func (c *Component) CompleteChildToolCall(parentID, id, name, args, summary, output string, isError bool) {
 	maxOff, scrolled := c.scrollState()
 	defer c.restoreScroll(maxOff, scrolled)
-	if c.currentTurn == nil {
+	turn := c.parentTurn(parentID)
+	if turn == nil {
+		turn = c.currentTurn
+	}
+	if turn == nil {
 		return
 	}
-	c.currentTurn.CompleteChildToolCall(parentID, id, name, args, summary, output, isError)
+	turn.CompleteChildToolCall(parentID, id, name, args, summary, output, isError)
 	c.moveTrailingToBack()
 }
 
 // AddChildResult adds a sub-agent result leaf node under a parent
-// tool call in the current turn.
+// tool call, in whichever turn holds the parent.
 func (c *Component) AddChildResult(parentID, output string, isError bool) {
 	maxOff, scrolled := c.scrollState()
 	defer c.restoreScroll(maxOff, scrolled)
-	if c.currentTurn == nil {
+	turn := c.parentTurn(parentID)
+	if turn == nil {
 		return
 	}
-	c.currentTurn.AddChildResult(parentID, output, isError)
+	turn.AddChildResult(parentID, output, isError)
 	c.moveTrailingToBack()
+}
+
+// toolTurn returns the newest turn holding the top-level tool call id,
+// or nil. Text detaches the current turn, and a sub-agent running in the
+// background keeps calling tools after its parent's text moved on, so
+// the parent need not be in the current turn.
+func (c *Component) toolTurn(id string) *Turn {
+	for node, ok := c.messages.Back(); ok; node, ok = node.Prev() {
+		if turn, isTurn := node.Value().(*Turn); isTurn {
+			if _, has := turn.tools[id]; has {
+				return turn
+			}
+		}
+	}
+	return nil
+}
+
+// parentTurn is toolTurn for the parent of a child tool call, which may
+// itself be nested, as when a sub-agent runs another one.
+func (c *Component) parentTurn(id string) *Turn {
+	for node, ok := c.messages.Back(); ok; node, ok = node.Prev() {
+		if turn, isTurn := node.Value().(*Turn); isTurn {
+			if tn, _ := turn.findTool(id); tn != nil {
+				return turn
+			}
+		}
+	}
+	return nil
 }
 
 // SetToolStartTime sets the start time for a tool call, used for live
@@ -1454,6 +1681,214 @@ func (c *Component) SeekDown() bool {
 func (c *Component) SeekUp() bool {
 	c.toggleAnchorValid = false
 	return c.messages.SeekUp()
+}
+
+// jumpToBottomArrow is nf-fa-arrow_down, as the tutorial uses to point
+// at copy below the tile. The bundled Nerd Font draws it one cell wide.
+const jumpToBottomArrow = '\uf063'
+
+// DefaultSendMessageIcon is nf-fa-arrow_right. Marking sent messages
+// from the gutter left of the transcript keeps their text aligned with
+// the replies'.
+const DefaultSendMessageIcon = '\uf061'
+
+// sendGutterWidth is how many cells left of a sent message its icon is
+// drawn, on the chat's own background, to stand apart from the message.
+const sendGutterWidth = 3
+
+// drawScrollOverlays draws the sent messages' icons, the pinned message
+// and the jump-to-bottom row over the transcript. They are not part of
+// the messages list, so copying a selection never picks them up.
+func (c *Component) drawScrollOverlays(w term.Writer) {
+	width, height := c.messages.SizeWidth(), c.messages.SizeHeight()
+	if width <= 0 || height <= 0 {
+		return
+	}
+	origin := c.spanMessages.ContentOffset()
+	c.drawSendIcons(w, origin)
+	if _, ok := c.pinnedLayout(); ok {
+		for y := range c.pin.rows {
+			c.clearRow(w, origin.Y+y)
+		}
+		c.drawSendIcon(w, origin)
+		c.pin.draw(&component.VirtualWriter{
+			Writer: w, Offset: origin, Width: width, Height: height,
+		})
+	}
+	if pos, ok := c.jumpArrowPosition(); ok {
+		c.clearRow(w, origin.Y+pos.Y)
+		attr := c.cfg.JumpToBottomAttr
+		if c.jumpHovered {
+			attr = c.cfg.JumpToBottomHoverAttr
+		}
+		if attr.Bg == term.ColorDefault {
+			attr.Bg = c.cfg.BackgroundColor
+		}
+		w.SetCell(term.CoordinatesSum(origin, pos), term.NewCell(jumpToBottomArrow, 1, attr))
+	}
+}
+
+// clearRow blanks the chat's row y across its whole width, transcript
+// padding included, for an overlay to take it over.
+func (c *Component) clearRow(w term.Writer, y int) {
+	blank := term.NewCell(' ', 1, term.Attributes{Bg: c.cfg.BackgroundColor})
+	for x := range c.width {
+		w.SetCell(term.Coordinates{X: x, Y: y}, blank)
+	}
+}
+
+// gutterWidth is how far left of a sent message its icon is drawn, in
+// the transcript's left padding. Panes too narrow to pad the transcript
+// have no room for it.
+func (c *Component) gutterWidth() int {
+	return min(sendGutterWidth, c.spanMessages.ContentOffset().X)
+}
+
+// drawSendIcon draws the sent message icon left of the message whose
+// first row starts at pos.
+func (c *Component) drawSendIcon(w term.Writer, pos term.Coordinates) {
+	if c.cfg.SendMessageIcon == 0 || c.gutterWidth() <= 0 {
+		return
+	}
+	w.SetCell(term.Coordinates{X: pos.X - c.gutterWidth(), Y: pos.Y},
+		term.NewCell(c.cfg.SendMessageIcon, 1, term.Attributes{Bg: c.cfg.BackgroundColor}))
+}
+
+// drawSendIcons draws the icons of the sent messages whose first row is
+// in view.
+func (c *Component) drawSendIcons(w term.Writer, origin term.Coordinates) {
+	if c.cfg.SendMessageIcon == 0 || c.gutterWidth() <= 0 || len(c.sentText) == 0 {
+		return
+	}
+	width, height := c.messages.SizeWidth(), c.messages.SizeHeight()
+	y := c.messages.Offset() - c.messages.MaxOffset()
+	for n, more := c.messages.Front(); more && y < height; n, more = n.Next() {
+		resp, ok := n.Value().(component.Responsive)
+		if !ok {
+			continue
+		}
+		if _, sent := c.sentText[n]; sent && y >= 0 {
+			c.drawSendIcon(w, term.Coordinates{X: origin.X, Y: origin.Y + y})
+		}
+		y += resp.Height(width)
+	}
+}
+
+// jumpArrowPosition returns where, relative to the messages area, the
+// jump-to-bottom arrow is drawn. It is only shown while scrolled up, and
+// takes the transcript's last row over.
+func (c *Component) jumpArrowPosition() (term.Coordinates, bool) {
+	width, height := c.messages.SizeWidth(), c.messages.SizeHeight()
+	if width <= 0 || height <= 0 || !c.messages.CanSeekUp() {
+		return term.Coordinates{}, false
+	}
+	return term.Coordinates{X: (width - 1) / 2, Y: height - 1}, true
+}
+
+// JumpArrowAt reports whether the jump-to-bottom arrow is shown at the
+// messages-relative pos.
+func (c *Component) JumpArrowAt(pos term.Coordinates) bool {
+	arrow, ok := c.jumpArrowPosition()
+	return ok && arrow == pos
+}
+
+// JumpRowAt reports whether the messages-relative pos is on the row the
+// jump-to-bottom arrow takes over, which hides the transcript beneath.
+func (c *Component) JumpRowAt(pos term.Coordinates) bool {
+	arrow, ok := c.jumpArrowPosition()
+	return ok && arrow.Y == pos.Y
+}
+
+// ScrollOverlayAt reports whether a click at the messages-relative pos
+// lands on the jump-to-bottom arrow or the pinned message.
+func (c *Component) ScrollOverlayAt(pos term.Coordinates) bool {
+	return c.JumpArrowAt(pos) || c.PinnedMessageAt(pos)
+}
+
+// HoverScrollOverlays highlights the jump-to-bottom arrow or the pinned
+// message while the messages-relative pos is over it, and reports
+// whether either highlight changed.
+func (c *Component) HoverScrollOverlays(pos term.Coordinates) bool {
+	jump, pin := c.JumpArrowAt(pos), c.PinnedMessageAt(pos)
+	changed := jump != c.jumpHovered || pin != c.pin.hovered
+	c.jumpHovered, c.pin.hovered = jump, pin
+	return changed
+}
+
+// JumpToBottom scrolls the transcript to its end, from where it follows
+// new content again.
+func (c *Component) JumpToBottom() {
+	c.toggleAnchorValid = false
+	c.jumpHovered = false
+	c.pin.hovered = false
+	// SeekEnd cannot be used: on a bottom-aligned list it seeks to the
+	// start of the transcript instead.
+	for c.messages.SeekDown() {
+	}
+}
+
+// pinnedSent returns the node of the newest sent message whose top has
+// scrolled above the transcript's viewport, and how many of the rows it
+// may be pinned to are free. The next sent message pushes the pin out as
+// it scrolls up into those rows rather than being covered by it. Nothing
+// is pinned at the end of the transcript, which is where replies are
+// followed as they stream.
+func (c *Component) pinnedSent() (node component.ListNode, rows int, ok bool) {
+	// The pin takes at most half the transcript, for the conversation it
+	// heads to stay readable on short panes.
+	rows = min(c.cfg.PinnedMessageMaxRows, c.messages.SizeHeight()/2)
+	if rows <= 0 || len(c.sentText) == 0 || !c.messages.CanSeekUp() {
+		return component.ListNode{}, 0, false
+	}
+	viewTop := c.messages.MaxOffset() - c.messages.Offset()
+	width := c.messages.SizeWidth()
+	top := 0
+	for n, more := c.messages.Front(); more && top < viewTop+rows; n, more = n.Next() {
+		if _, sent := c.sentText[n]; sent {
+			if top >= viewTop {
+				return node, min(rows, top-viewTop), ok
+			}
+			node, ok = n, true
+		}
+		if resp, isResp := n.Value().(component.Responsive); isResp {
+			top += resp.Height(width)
+		}
+	}
+	return node, rows, ok
+}
+
+// pinnedLayout lays out the pinned message, if any, and returns its node.
+func (c *Component) pinnedLayout() (component.ListNode, bool) {
+	node, rows, ok := c.pinnedSent()
+	if !ok || rows <= 0 {
+		return component.ListNode{}, false
+	}
+	if c.pin.layout(c.sentText[node], c.messages.SizeWidth(), rows) <= 0 {
+		return component.ListNode{}, false
+	}
+	return node, true
+}
+
+// PinnedMessageAt reports whether the pinned message, gutter included, is
+// drawn at the messages-relative pos.
+func (c *Component) PinnedMessageAt(pos term.Coordinates) bool {
+	if _, ok := c.pinnedLayout(); !ok {
+		return false
+	}
+	return pos.X >= -c.gutterWidth() && pos.X < c.pin.width &&
+		pos.Y >= 0 && pos.Y < c.pin.rows
+}
+
+// ScrollToPinnedMessage scrolls the pinned message's top to the top of
+// the transcript, which unpins it.
+func (c *Component) ScrollToPinnedMessage() {
+	node, ok := c.pinnedLayout()
+	if !ok {
+		return
+	}
+	c.toggleAnchorValid = false
+	c.pin.hovered = false
+	c.alignVisibleAnchorTop(node, c.messages.Offset())
 }
 
 func (c *Component) refreshMessagesLayout() {
@@ -1526,6 +1961,30 @@ func (c *Component) alignVisibleAnchorTop(anchor component.ListNode, offset int)
 	}
 }
 
+// LinkAt queries for a markdown link at the messages-relative coordinate pos.
+// It searches visible message nodes in c.messages, unwrapping any outer spans
+// or handlers to find the underlying markdown component, and returns the
+// LinkInfo if a link is found.
+func (c *Component) LinkAt(pos term.Coordinates) *markdown.LinkInfo {
+	width, height := c.messages.SizeWidth(), c.messages.SizeHeight()
+	if width <= 0 || height <= 0 {
+		return nil
+	}
+	if pos.X < 0 || pos.X >= width || pos.Y < 0 || pos.Y >= height {
+		return nil
+	}
+	// eachTranscriptMarkdown reports origins in content coordinates.
+	pos.Y += c.messages.MaxOffset() - c.messages.Offset()
+	var link *markdown.LinkInfo
+	c.eachTranscriptMarkdown(func(md *markdown.Component, origin term.Coordinates) {
+		local := term.CoordinatesDiff(pos, origin)
+		if info := md.LinkAt(local.X, local.Y); link == nil && info != nil && info.URL != "" {
+			link = info
+		}
+	})
+	return link
+}
+
 // scrollState captures the current scroll position for later restoration.
 func (c *Component) scrollState() (maxOffset int, scrolledUp bool) {
 	return c.messages.MaxOffset(), c.messages.CanSeekUp()
@@ -1579,18 +2038,26 @@ func (c *Component) Reset() {
 
 // Close releases the resources owned by this Component.
 func (c *Component) Close() error {
+	c.closeTranscript()
+	var errs []error
+	if c.boxGraphics != nil {
+		errs = append(errs, c.boxGraphics.Close())
+		c.boxGraphics = nil
+	}
 	if c.statusBar != nil {
 		c.shadedBar.setRunning(false, c.interrupter)
-		return c.statusBar.Close()
+		errs = append(errs, c.statusBar.Close())
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // resetContent clears turns, reasoning, progress, and the message list.
 func (c *Component) resetContent() {
-	c.closeAllTurns()
+	c.closeTranscript()
 	c.currentTurn = nil
 	c.turnNode = nil
+	c.hoveredToolTurn = nil
+	c.hoveredTool = nil
 	c.breakReasoning()
 	c.reasoningEntries = nil
 	c.reasoningStreamComp = nil
@@ -1605,6 +2072,9 @@ func (c *Component) resetContent() {
 	}
 	c.queuedNodes = nil
 	c.sentAttachments = nil
+	clear(c.sentText)
+	c.jumpHovered = false
+	c.pin.hovered = false
 	c.msg.Reset()
 	c.tail = nil
 	c.tailMd = nil
@@ -1904,14 +2374,26 @@ func (c *Component) barHeight() int {
 	return 1
 }
 
-// SetStatusBarState applies fn to the status bar state. It is a no-op
-// when the bar is disabled.
+// drawStatusBarImages draws the status bar's images over the dialogue
+// drawn to w, cut off at its edges unless they overflow. Draw leaves
+// them out.
+func (c *Component) drawStatusBarImages(w term.Writer) {
+	if c.barHeight() == 0 {
+		return
+	}
+	c.statusBar.drawImages(term.BoundsCheckWriter(c.width, c.height, w), c.height)
+}
+
+// SetStatusBarState applies fn to the status bar state. A disabled bar
+// shows the state once it is enabled.
 func (c *Component) SetStatusBarState(fn func(*StatusBarState)) {
+	fn(&c.barState)
 	if c.statusBar == nil {
 		return
 	}
-	c.statusBar.SetState(fn)
-	if c.shadedBar.setRunning(c.statusBar.State().Active, c.interrupter) {
+	state := c.barState
+	c.statusBar.SetState(func(s *StatusBarState) { *s = state })
+	if c.shadedBar.setRunning(state.Active, c.interrupter) {
 		// The effect only repaints on its own ticker, so the frame
 		// that starts or ends it needs a wakeup of its own.
 		_ = c.interrupter.Interrupt(context.Background())
@@ -2031,11 +2513,14 @@ func (c *Component) clearProgress() {
 	c.progressNode = nil
 }
 
-func (c *Component) closeAllTurns() {
+func (c *Component) closeTranscript() {
 	node, ok := c.messages.Front()
 	for ok {
 		if turn, isTurn := node.Value().(*Turn); isTurn {
 			turn.Close()
+		}
+		if md, _, isMarkdown := transcriptMarkdown(node.Value()); isMarkdown {
+			_ = md.Close()
 		}
 		node, ok = node.Next()
 	}

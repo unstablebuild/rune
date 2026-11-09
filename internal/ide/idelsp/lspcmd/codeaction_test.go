@@ -23,6 +23,8 @@ import (
 	"testing"
 	"time"
 
+	"fmt"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
@@ -30,6 +32,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	runehandlertest "unstable.build/rune/internal/handler/handlertest"
 )
 
 // codeActionLSP returns a scripted set of code actions and records the
@@ -458,5 +461,99 @@ func TestCodeActionSkipsNoopWorkspaceEdit(t *testing.T) {
 			require.NoError(t, <-done)
 			assert.Equal(t, tt.wantEdits, applied)
 		})
+	}
+}
+
+func TestCodeActionLoneNoopActionNotifiesHint(t *testing.T) {
+	t.Parallel()
+
+	const src = "import { a } from \"./a\";\n"
+	const file = "file:///ws/src/main.go"
+	tests := []struct {
+		name       string
+		action     semanticapi.CodeAction
+		wantEdits  int
+		wantNotify []string
+	}{
+		{
+			name: "rewrite to the same text",
+			action: semanticapi.CodeAction{Edit: &semanticapi.WorkspaceEdit{
+				Changes: map[string][]semanticapi.TextEdit{
+					file: {replaceEdit(0, 0, 1, 0, src)},
+				},
+			}},
+			wantNotify: []string{"already organized"},
+		},
+		{
+			name: "edit with no changes",
+			action: semanticapi.CodeAction{Edit: &semanticapi.WorkspaceEdit{
+				Changes: map[string][]semanticapi.TextEdit{},
+			}},
+			wantNotify: []string{"already organized"},
+		},
+		{
+			name: "edit that changes the text",
+			action: semanticapi.CodeAction{Edit: &semanticapi.WorkspaceEdit{
+				Changes: map[string][]semanticapi.TextEdit{
+					file: {replaceEdit(0, 0, 1, 0, "")},
+				},
+			}},
+			wantEdits: 1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			uri := codeActionTestURI(t)
+			handler := &mockHandler{uri: uri}
+			view := &mockCellView{cells: cellsOf(src)}
+			applied := 0
+			editor := &mockEditor{
+				editorFn: func(workspaceapi.URI) (textapi.Handler, error) {
+					return handler, nil
+				},
+				cellViewFn: func(textapi.Handler) textapi.CellView { return view },
+				cellEditorFn: func(textapi.Handler) textapi.CellEditor {
+					return &mockCellEditor{editFn: func(
+						context.Context, term.Coordinates, term.Coordinates, string,
+					) (term.Coordinates, term.Coordinates, string, error) {
+						applied++
+						return term.Coordinates{}, term.Coordinates{}, "", nil
+					}}
+				},
+			}
+			action := tt.action
+			action.Title, action.Kind = "Organize imports", "source.organizeImports"
+			lsp := &codeActionLSP{results: []semanticapi.CodeActionResult{{CodeAction: &action}}}
+			notify := &notifyRecorder{}
+			floats := &floatRecorder{}
+			h := CodeActionHandler(lsp, editor, notify.notifications(),
+				floats.manager(), NewSelectionTracker(),
+				"source.organizeImports", true, "already organized")
+
+			require.NoError(t, h.HandleCommand(t.Context(), codeActionCommand(uri, "organize")))
+			assert.Nil(t, floats.floated(), "no picker may be shown")
+			assert.Equal(t, tt.wantEdits, applied)
+			assert.Equal(t, tt.wantNotify, notify.messages())
+		})
+	}
+}
+
+func TestCodeActionPickerPointerLeaves(t *testing.T) {
+	t.Parallel()
+	var actions []semanticapi.CodeAction
+	for i := range 30 {
+		actions = append(actions, semanticapi.CodeAction{
+			Title: fmt.Sprintf("Extract to function in package scope #%d", i),
+		})
+	}
+	for _, size := range []struct{ w, h int }{{60, 15}, {1, 1}} {
+		ch := make(chan int, 1)
+		picker := newCodeActionPicker(actions, ch)
+		picker.list.FocusDown()
+		runehandlertest.RunPointerLeaves(t, picker, size.w, size.h)
+		assert.Equal(t, 1, picker.list.FocusOffset(), "the pointer must not move the focus")
+		assert.Empty(t, ch, "the pointer must not pick an action")
 	}
 }

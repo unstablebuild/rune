@@ -19,6 +19,7 @@ package browserrpc
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -28,13 +29,20 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi/browserrpc"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	sdkhandler "github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/term/termrpc"
 	gomock "go.uber.org/mock/gomock"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
+	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/browser/browsertest"
 	"unstable.build/rune/internal/debug"
+	handler "unstable.build/rune/internal/handler"
+	"unstable.build/rune/internal/handler/handlerrpc"
+	"unstable.build/rune/internal/handler/handlertest"
+	"unstable.build/rune/internal/term/programstatus"
+	"unstable.build/rune/internal/workspace/processctx"
 )
 
 const asyncResultsSleepDuration = 300 * time.Millisecond
@@ -43,7 +51,7 @@ func newServerWithNoBroker(ctrl *gomock.Controller) (
 	*Server, *browsertest.MockBrowser,
 ) {
 	mock := browsertest.NewMockBrowser(ctrl)
-	s := NewServer(mock, new(sync.Mutex))
+	s := NewServer(mock, new(sync.Mutex), handlerrpc.GraphicsConfig{})
 	s.SetSyncMode()
 	return s, mock
 }
@@ -52,7 +60,7 @@ func newTestServer(ctrl *gomock.Controller, mu *sync.Mutex) (
 	*Server, *browsertest.MockBrowser,
 ) {
 	mockBrowser := browsertest.NewMockBrowser(ctrl)
-	s := NewServer(mockBrowser, mu)
+	s := NewServer(mockBrowser, mu, handlerrpc.GraphicsConfig{})
 	s.SetSyncMode()
 
 	return s, mockBrowser
@@ -140,7 +148,7 @@ func TestServerOpen(t *testing.T) {
 	})
 }
 
-func TestServerSetTabActivity(t *testing.T) {
+func TestServerSetTabStatus(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("delegates to underlying Browser under the lock", func(t *testing.T) {
@@ -151,17 +159,40 @@ func TestServerSetTabActivity(t *testing.T) {
 		uri, err := workspaceapi.ParseURI("rune-agent://model/rolling-fox")
 		require.NoError(t, err)
 
-		mock.EXPECT().SetTabActivity(gomock.Eq(uri), true).
-			DoAndReturn(func(workspaceapi.URI, bool) error {
+		want := programstatus.Report{
+			ID: "build", State: programstatus.Working, Progress: 25,
+			Title: "link", Msg: "building",
+		}
+		mock.EXPECT().SetTabStatus(gomock.Eq(uri), want).
+			DoAndReturn(func(workspaceapi.URI, programstatus.Report) error {
 				assert.False(t, mu.TryLock(), "must be called under the UI lock")
 				return nil
 			})
 
-		res, err := s.SetTabActivity(ctx, &browserrpc.SetTabActivityRequest{
-			ResourceId: uri.String(), Active: true,
+		res, err := s.SetTabStatus(ctx, &browserrpc.SetTabStatusRequest{
+			ResourceId: uri.String(), Id: "build", State: uint32(browserapi.TabWorking),
+			Progress: 25, Title: "link", Message: "building",
 		})
 		require.NoError(t, err)
 		assert.NotNil(t, res)
+	})
+
+	t.Run("attributes the report to the calling extension", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+		s, mock := newTestServer(ctrl, new(sync.Mutex))
+		uri, err := workspaceapi.ParseURI("rune-agent://model/rolling-fox")
+		require.NoError(t, err)
+
+		mock.EXPECT().SetTabStatus(gomock.Eq(uri), programstatus.Report{
+			State: programstatus.Done, Progress: -1, App: "rune-agent", Msg: "ok",
+		}).Return(nil)
+
+		_, err = s.SetTabStatus(processctx.ContextWithExtensionID(ctx, "rune-agent"),
+			&browserrpc.SetTabStatusRequest{
+				ResourceId: uri.String(), State: uint32(browserapi.TabDone), Message: "ok",
+			})
+		require.NoError(t, err)
 	})
 
 	t.Run("bubbles up Browser error", func(t *testing.T) {
@@ -169,10 +200,10 @@ func TestServerSetTabActivity(t *testing.T) {
 		defer ctrl.Finish()
 		s, mock := newTestServer(ctrl, new(sync.Mutex))
 
-		mock.EXPECT().SetTabActivity(gomock.Any(), false).
+		mock.EXPECT().SetTabStatus(gomock.Any(), programstatus.Report{Progress: -1}).
 			Return(errors.New("unknown tab"))
 
-		_, err := s.SetTabActivity(ctx, &browserrpc.SetTabActivityRequest{
+		_, err := s.SetTabStatus(ctx, &browserrpc.SetTabStatusRequest{
 			ResourceId: "file:///a",
 		})
 		require.Error(t, err)
@@ -184,11 +215,183 @@ func TestServerSetTabActivity(t *testing.T) {
 		defer ctrl.Finish()
 		s, _ := newTestServer(ctrl, new(sync.Mutex))
 
-		_, err := s.SetTabActivity(ctx, &browserrpc.SetTabActivityRequest{
-			ResourceId: "%zz", Active: true,
+		_, err := s.SetTabStatus(ctx, &browserrpc.SetTabStatusRequest{
+			ResourceId: "%zz", State: uint32(browserapi.TabWorking),
 		})
 		assert.Equal(t, codes.InvalidArgument, status.Code(err))
 	})
+
+	t.Run("rejects unknown state and kind", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+		s, _ := newTestServer(ctrl, new(sync.Mutex))
+
+		_, err := s.SetTabStatus(ctx, &browserrpc.SetTabStatusRequest{
+			ResourceId: "file:///a", State: 42,
+		})
+		assert.Equal(t, codes.InvalidArgument, status.Code(err))
+		_, err = s.SetTabStatus(ctx, &browserrpc.SetTabStatusRequest{
+			ResourceId: "file:///a", State: uint32(browserapi.TabBlocked), Kind: 42,
+		})
+		assert.Equal(t, codes.InvalidArgument, status.Code(err))
+	})
+
+	t.Run("rejects a report outside the protocol limits", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+		s, _ := newTestServer(ctrl, new(sync.Mutex))
+
+		_, err := s.SetTabStatus(ctx, &browserrpc.SetTabStatusRequest{
+			ResourceId: "file:///a", State: uint32(browserapi.TabWorking), Id: "/a",
+		})
+		assert.Equal(t, codes.InvalidArgument, status.Code(err))
+		_, err = s.SetTabStatus(ctx, &browserrpc.SetTabStatusRequest{
+			ResourceId: "file:///a", State: uint32(browserapi.TabDone), Message: "a\x1bb",
+		})
+		assert.Equal(t, codes.InvalidArgument, status.Code(err))
+	})
+}
+
+func TestServerShow(t *testing.T) {
+	tests := []struct {
+		name     string
+		resource string
+		showErr  error
+		wantURI  string
+		wantCode codes.Code
+		wantErr  string
+	}{
+		{
+			name:     "file",
+			resource: "file:///tmp/main.go",
+			wantURI:  "file:///tmp/main.go",
+		},
+		{
+			name:     "https",
+			resource: "https://example.com/a?b=c#d",
+			wantURI:  "https://example.com/a?b=c#d",
+		},
+		{
+			name:     "bubbles up show error",
+			resource: "https://example.com/docs",
+			showErr:  errors.New("no system browser configured"),
+			wantURI:  "https://example.com/docs",
+			wantErr:  "no system browser configured",
+		},
+		{
+			name:     "malformed resource",
+			resource: "%zz",
+			wantCode: codes.InvalidArgument,
+		},
+		{
+			name:     "relative resource",
+			resource: "#section",
+			wantCode: codes.InvalidArgument,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			mu := new(sync.Mutex)
+			s, mock := newTestServer(ctrl, mu)
+			var shown []string
+			mock.EXPECT().Show(gomock.Any()).AnyTimes().DoAndReturn(
+				func(uri workspaceapi.URI) error {
+					assert.False(t, mu.TryLock(), "must be called under the UI lock")
+					shown = append(shown, uri.String())
+					return tt.showErr
+				})
+
+			res, err := s.Show(context.Background(),
+				&browserrpc.ShowResourceRequest{Resource: tt.resource})
+
+			switch {
+			case tt.wantCode != codes.OK:
+				assert.Equal(t, tt.wantCode, status.Code(err))
+				assert.Empty(t, shown)
+			case tt.wantErr != "":
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				assert.Equal(t, []string{tt.wantURI}, shown)
+			default:
+				require.NoError(t, err)
+				assert.NotNil(t, res)
+				assert.Equal(t, []string{tt.wantURI}, shown)
+			}
+		})
+	}
+}
+
+func TestServerPromptFails(t *testing.T) {
+	binding := func(t *testing.T, ev term.Event) *termrpc.Event {
+		ret := new(termrpc.Event)
+		require.NoError(t, ret.FromModel(ev))
+		return ret
+	}
+	tests := []struct {
+		name     string
+		req      func(t *testing.T) *browserrpc.PromptRequest
+		openErr  error
+		wantCode codes.Code
+		wantErr  string
+	}{
+		{
+			name: "no message",
+			req: func(*testing.T) *browserrpc.PromptRequest {
+				return &browserrpc.PromptRequest{Options: []string{"Yes"}}
+			},
+			wantCode: codes.InvalidArgument,
+		},
+		{
+			name: "no options",
+			req: func(*testing.T) *browserrpc.PromptRequest {
+				return &browserrpc.PromptRequest{Message: "Proceed?"}
+			},
+			wantCode: codes.InvalidArgument,
+		},
+		{
+			name: "fewer bindings than options",
+			req: func(t *testing.T) *browserrpc.PromptRequest {
+				return &browserrpc.PromptRequest{
+					Message: "Proceed?", Options: []string{"Yes", "No"},
+					Bindings: []*termrpc.Event{binding(t, term.Event{Type: term.EventKey, Ch: 'y'})},
+				}
+			},
+			wantCode: codes.InvalidArgument,
+		},
+		{
+			name: "bubbles up open error",
+			req: func(*testing.T) *browserrpc.PromptRequest {
+				return &browserrpc.PromptRequest{Message: "Proceed?", Options: []string{"Yes"}}
+			},
+			openErr: errors.New("oopsie daisy"),
+			wantErr: "oopsie daisy",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			mu := new(sync.Mutex)
+			s, mock := newTestServer(ctrl, mu)
+			opened := 0
+			mock.EXPECT().OpenPrompt(gomock.Any(), gomock.Any()).AnyTimes().DoAndReturn(
+				func(browserapi.PromptConfig, sdkhandler.PromptHandler) (browser.Window, bool, error) {
+					assert.False(t, mu.TryLock(), "must be called under the UI lock")
+					opened++
+					return nil, false, tt.openErr
+				})
+
+			err := s.Prompt(tt.req(t), nil)
+			require.Error(t, err)
+			if tt.wantCode != codes.OK {
+				assert.Equal(t, tt.wantCode, status.Code(err))
+				assert.Zero(t, opened)
+				return
+			}
+			assert.Contains(t, err.Error(), tt.wantErr)
+			assert.Equal(t, 1, opened)
+		})
+	}
 }
 
 func TestServerPublish(t *testing.T) {
@@ -334,4 +537,35 @@ func TestStreamHandlerResizeDuringStreamSetup(t *testing.T) {
 
 	assert.Equal(t, [2]int{20, 6}, rec.last(),
 		"the window's size must reach the handler behind the stream")
+}
+
+func newPointerLess(t *testing.T) browserapi.Handler {
+	t.Helper()
+	l := handler.NewLess(handler.DefaultLessConfig())
+	_, err := l.Buffer().ReadFrom(strings.NewReader(
+		strings.Repeat("a line of the stream handler content that is long\n", 100)))
+	require.NoError(t, err)
+	return browser.NopHandler(l)
+}
+
+func TestStreamHandlerPointerLeaves(t *testing.T) {
+	for _, size := range [][2]int{{60, 15}, {1, 1}} {
+		for _, setup := range []bool{false, true} {
+			h := &streamHandler{Handler: newPointerLess(t), mu: new(sync.Mutex)}
+			if setup {
+				h.doneSetup()
+			}
+			handlertest.RunPointerLeaves(t, h, size[0], size[1])
+		}
+	}
+}
+
+func TestFloatingStreamHandlerPointerLeaves(t *testing.T) {
+	for _, size := range [][2]int{{60, 15}, {1, 1}} {
+		for _, setup := range []bool{false, true} {
+			h := &floatingStreamHandler{Floating: browser.StaticFloating(newPointerLess(t), 20, 6)}
+			h.setup.Store(setup)
+			handlertest.RunPointerLeaves(t, h, size[0], size[1])
+		}
+	}
 }

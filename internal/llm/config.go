@@ -22,6 +22,8 @@
 package llm
 
 import (
+	"time"
+
 	"unstable.build/rune/internal/llm/anthropic"
 	"unstable.build/rune/internal/llm/bedrock"
 	"unstable.build/rune/internal/llm/codex"
@@ -119,11 +121,32 @@ type CustomConfig struct {
 // by the backend from the resolved llmapi.ModelEntry.
 type LocalConfig struct {
 	// ModelsCacheDir is the on-disk root for the llamacpp registry.
-	// When empty, the router falls back to filepath.Join(dataDir, "models").
+	// When empty, the IDE falls back to the models folder of its data
+	// directory.
 	ModelsCacheDir string
 
 	// Service carries every llama-server runtime knob and lifecycle knob.
 	Service llamaserver.Config
+}
+
+// EmbeddingService returns the config of the llama-server pool that runs
+// the search embedding model. It shares the machine knobs of Service
+// (host, GPU layers, threads, flash attention, server binary, startup
+// timeout) but none of its generation knobs or extra arguments, which
+// are meant for chat models. One encoder runs at a time, with a context
+// of 2048 tokens, and stops after idle without a search.
+func (c LocalConfig) EmbeddingService(idle time.Duration) llamaserver.Config {
+	s := c.Service
+	s.ContextWindow = 2048
+	s.BatchSize = 2048
+	s.MaxServers = 1
+	s.IdleTimeout = idle
+	s.MaxOutputTokens = 0
+	s.ChatTemplate = ""
+	s.NCacheReuse = 0
+	s.Sampling = llamaserver.SamplerParams{}
+	s.ExtraArgs = nil
+	return s
 }
 
 // DefaultConfig returns the baseline used by ide.llmConfig() before

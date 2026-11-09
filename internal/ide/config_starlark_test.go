@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	_ "embed"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -34,9 +35,12 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
-	"unstable.build/rune/internal/browser"
+	"unstable.build/rune/internal/component/shader/shaderloop"
 	"unstable.build/rune/internal/handler"
 	"unstable.build/rune/internal/ide/idepreset"
+	"unstable.build/rune/internal/ide/idestatus"
+	"unstable.build/rune/internal/llm/llmsearch"
+	"unstable.build/rune/internal/sounds"
 	"unstable.build/rune/internal/workspace"
 )
 
@@ -369,6 +373,52 @@ func TestRuneStarFixture(t *testing.T) {
 			})
 			require.NoError(t, err)
 			c.checks(t, cfg)
+
+			var ide ideConfig
+			initConfig(&ide, cfg, nil, sounds.Silent, term.ScheduleNextTick, "")
+			status := ide.tabStatusConfig()
+			assert.False(t, status.ContentTab.Progress)
+			ct := status.ContentTab
+			assert.Equal(t, term.Attributes{Fg: term.ColorGray}, ct.IdleIconAttr)
+			assert.Equal(t, term.Attributes{Fg: term.ColorAqua}, ct.WorkingIconAttr)
+			assert.Equal(t, term.Attributes{Fg: term.ColorYellow}, ct.BlockedIconAttr)
+			assert.Equal(t, term.Attributes{Fg: term.ColorGreen}, ct.DoneIconAttr)
+			assert.Equal(t, term.Attributes{Fg: term.ColorRed}, ct.ErrorIconAttr)
+			ws := status.WorkspaceTab
+			assert.True(t, ws.Progress)
+			green := term.Attributes{Fg: term.ColorGreen}
+			assert.Equal(t, term.Attributes{Fg: term.ColorAqua}, ws.WorkingDoneAttr)
+			assert.Equal(t, green, ws.DoneAttr)
+			assert.Equal(t, term.Attributes{Fg: term.ColorYellow}, ws.BlockedAttr)
+			assert.Equal(t, term.Attributes{Fg: term.ColorRed}, ws.ErrorAttr)
+			for _, icon := range []term.Attributes{
+				ws.IdleIconAttr, ws.WorkingIconAttr, ws.BlockedIconAttr,
+				ws.DoneIconAttr, ws.ErrorIconAttr,
+			} {
+				assert.Zero(t, icon, "workspace tab icons keep the bar's own attributes")
+			}
+			assert.Equal(t, "shine", ide.animationsActiveTabShader(animActiveWorkspaceTab))
+			defaults := shaderloop.DefaultParams()
+			assert.Equal(t, defaults, ide.animationsActiveTabParams(animActiveContentTab),
+				"rune.star spells out the defaults for content tabs")
+			wsParams := ide.animationsActiveTabParams(animActiveWorkspaceTab)
+			wsShine := wsParams.Shine
+			assert.Equal(t, term.ColorGreen, wsShine.Color,
+				"the effect shines toward the colour progress paints")
+			assert.Greater(t, wsShine.Intensity, 0.5, "the green shine is plainly visible")
+			assert.Positive(t, wsShine.BandWidth)
+			assert.Equal(t, defaults.Shine.Direction, wsShine.Direction)
+			wsParams.Shine = defaults.Shine
+			assert.Equal(t, defaults, wsParams, "workspace tabs only retune the shine")
+			inbox, want := ide.statusInboxStyle(), idestatus.DefaultInboxStyle()
+			want.MarkerAttr = term.Attributes{Fg: ide.highlightTabAttr().Fg, Attrs: ide.highlightTabAttr().Attrs}
+			vertical := ide.windowFrameCharset().VerticalLeft
+			want.Divider.VerticalTop, want.Divider.Vertical, want.Divider.VerticalBottom = vertical, vertical, vertical
+			if !c.params["tui"].(bool) {
+				want.Divider.Top, want.Divider.Bottom = '🭽', '🭼'
+			}
+			assert.Equal(t, want, inbox, "rune.star spells out the inbox defaults")
+			assert.Empty(t, ide.errors)
 		})
 	}
 }
@@ -389,17 +439,51 @@ func assertStandardSearchMap(t *testing.T, search map[string]any, bg string) {
 	assert.Equal(t, map[string]any{"fg": "default", "bg": "blue"}, search["button_hover_attr"])
 }
 
+func TestRuneStarSeparatorInheritsFrame(t *testing.T) {
+	data := readRuneStar(t)
+	for _, tc := range []struct {
+		name        string
+		tui         bool
+		left, right rune
+	}{
+		{"GUI", false, '\U0001fb7c', '\U0001fb7f'},
+		{"TUI", true, '├', '┤'},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := decodeDefaultConfig(DefaultConfig{src: string(data), modal: true, tui: tc.tui})
+			require.NoError(t, err)
+			cfg := ideConfig{cfg: raw, errors: map[string]error{}}
+			got := cfg.commandPromptCfg().separator
+			assert.Equal(t, tc.left, got.Left)
+			assert.Equal(t, tc.right, got.Right)
+			assert.Equal(t, cfg.windowFrameCharset().HorizontalBottom, got.HorizontalLeft)
+			assert.Equal(t, got.HorizontalLeft, got.HorizontalRight)
+
+			raw, err = decodeOverlayConfigFile(strings.NewReader(`config["command"]["frame_charset"] = {
+    "horizontalbottom": "=", "graphics": {"horizontalbottom": "file:///custom.png"},
+}`), "config.star", raw)
+			require.NoError(t, err)
+			cfg.cfg = raw
+			got = cfg.commandPromptCfg().separator
+			assert.Equal(t, '=', got.HorizontalLeft)
+			assert.Equal(t, '=', got.HorizontalRight)
+			assert.Equal(t, "file:///custom.png", got.Graphics.Horizontal)
+			assert.Empty(t, cfg.errors)
+		})
+	}
+}
+
 func TestRuneStarAsDefaultConfig(t *testing.T) {
 	data := readRuneStar(t)
 
 	var cfg ideConfig
-	require.NoError(t, loadConfig(&cfg, "nonExistent", browser.NopWallpaper(),
+	require.NoError(t, loadConfig(&cfg, "nonExistent", nil,
 		DefaultConfig{
 			src:   string(data),
 			modal: true,
 			tui:   false,
 		},
-		term.RingBell, term.ScheduleNextTick))
+		sounds.Silent, term.ScheduleNextTick))
 	assert.Equal(t, "vim", cfg.editorMode())
 	assert.False(t, cfg.editorAutoPair())
 	assert.False(t, cfg.editorAutoSave())
@@ -500,6 +584,25 @@ func TestRuneStarModelsConfig(t *testing.T) {
 	}
 }
 
+func TestRuneStarSearchConfig(t *testing.T) {
+	cfg, err := decodeStarlarkConfig(starlarkConfigSource{
+		src:      readRuneStar(t),
+		filename: "rune.star",
+		params:   map[string]any{"mode": "modal", "tui": false},
+	})
+	require.NoError(t, err)
+	_, nested := cfg["models"].(map[string]any)["search"]
+	assert.False(t, nested, "search is a top-level block, not models.search")
+
+	c := ideConfig{cfg: cfg, errors: map[string]error{}}
+	got := c.searchConfig()
+	assert.Empty(t, got.Options.ExcludedFolders)
+	assert.Empty(t, got.Options.ExcludedExtensions)
+	got.Options.ExcludedFolders, got.Options.ExcludedExtensions = nil, nil
+	assert.Equal(t, llmsearch.DefaultConfig(), got)
+	assert.Empty(t, c.errors)
+}
+
 func TestDecodeStarlarkOverlayRead(t *testing.T) {
 	base := map[string]any{
 		"editor":     map[string]any{"mode": "modal"},
@@ -597,13 +700,13 @@ func TestLoadConfigStarUserOverlayPreservesEmbeddedRuneStar(t *testing.T) {
 		[]byte(`config = {"log_level": "debug"}`), 0o644))
 
 	var cfg ideConfig
-	require.NoError(t, loadConfig(&cfg, userPath, browser.NopWallpaper(),
+	require.NoError(t, loadConfig(&cfg, userPath, nil,
 		DefaultConfig{
 			src:   string(data),
 			modal: true,
 			tui:   false,
 		},
-		term.RingBell, term.ScheduleNextTick))
+		sounds.Silent, term.ScheduleNextTick))
 
 	assert.Equal(t, "debug", cfg.cfg["log_level"])
 	// Defaults from cmd/rune/rune.star survive the top-level rebind.
@@ -625,9 +728,10 @@ func TestLoadWorkspaceConfigStar(t *testing.T) {
 	ws := workspace.NewSchemeWorkspace(uri, scheme, inlineSchedule)
 	defer ws.Close()
 
-	isConfigErr, err := loadWorkspaceConfig("config.star", ws, uri, c)
+	applied, isConfigErr, err := loadWorkspaceConfig("config.star", ws, c, trustAllWorkspaceConfigs)
 	require.NoError(t, err)
 	assert.False(t, isConfigErr)
+	assert.Equal(t, `config["log_level"] = "debug"`, string(applied))
 	assert.Equal(t, "debug", c.cfg["log_level"])
 }
 
@@ -660,7 +764,7 @@ config["extensions"]["git"]["config"]["nested"]["override"] = "star"
 	ws := workspace.NewSchemeWorkspace(uri, scheme, inlineSchedule)
 	defer ws.Close()
 
-	isConfigErr, err := loadWorkspaceConfig("config.star", ws, uri, c)
+	_, isConfigErr, err := loadWorkspaceConfig("config.star", ws, c, trustAllWorkspaceConfigs)
 	require.NoError(t, err)
 	assert.False(t, isConfigErr)
 
@@ -697,9 +801,9 @@ func TestHelixPresetLoads(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	require.NoError(t, os.WriteFile(path, preset, 0o644))
 	var cfg ideConfig
-	require.NoError(t, loadConfig(&cfg, path, browser.NopWallpaper(),
+	require.NoError(t, loadConfig(&cfg, path, nil,
 		DefaultConfig{src: string(readRuneStar(t)), modal: true},
-		term.RingBell, term.ScheduleNextTick))
+		sounds.Silent, term.ScheduleNextTick))
 
 	aliases, err := cfg.parseAliasCommands()
 	require.NoError(t, err)
@@ -744,10 +848,141 @@ func TestLoadWorkspaceConfigYAML(t *testing.T) {
 	ws := workspace.NewSchemeWorkspace(uri, scheme, inlineSchedule)
 	defer ws.Close()
 
-	isConfigErr, err := loadWorkspaceConfig("config.yaml", ws, uri, c)
+	applied, isConfigErr, err := loadWorkspaceConfig("config.yaml", ws, c, trustAllWorkspaceConfigs)
 	require.NoError(t, err)
 	assert.False(t, isConfigErr)
+	assert.Equal(t, "log_level: warn\n", string(applied))
 	assert.Equal(t, "warn", c.cfg["log_level"])
+}
+
+func trustAllWorkspaceConfigs([]byte) (bool, error) { return true, nil }
+
+func newTestFileWorkspace(t *testing.T, dir string) workspace.Workspace {
+	t.Helper()
+	uri, err := workspaceapi.CurrentUserHostURI(dir)
+	require.NoError(t, err)
+	scheme, err := workspace.NewFileScheme(context.Background(), config.NopConfig(), uri)
+	require.NoError(t, err)
+	ws := workspace.NewSchemeWorkspace(uri, scheme, inlineSchedule)
+	t.Cleanup(func() { _ = ws.Close() })
+	return ws
+}
+
+func loadTestUserConfig(t *testing.T) ideConfig {
+	t.Helper()
+	var cfg ideConfig
+	require.NoError(t, loadConfig(&cfg, filepath.Join(t.TempDir(), "config.yaml"), nil,
+		DefaultConfig{src: string(readRuneStar(t)), modal: true},
+		sounds.Silent, term.ScheduleNextTick))
+	return cfg
+}
+
+func TestLoadWorkspaceConfigTrust(t *testing.T) {
+	const hostile = `authorizer:
+  auto_authorize_commands: true
+updates:
+  auto_install: true
+gui:
+  env:
+    RUNE_PWNED: "1"
+extensions:
+  pwned:
+    path: /tmp/pwned
+editor:
+  tabspaces: 2
+`
+	tests := []struct {
+		name        string
+		contents    string
+		trust       bool
+		trustErr    error
+		wantCalled  bool
+		wantErr     bool
+		wantApplied bool
+	}{
+		{name: "missing file is not offered for trust"},
+		{
+			name:       "untrusted applies nothing",
+			contents:   hostile,
+			wantCalled: true,
+		},
+		{
+			name:       "trust error applies nothing",
+			contents:   hostile,
+			trustErr:   errors.New("prompt failed"),
+			wantCalled: true,
+			wantErr:    true,
+		},
+		{
+			name:        "trusted applies everything",
+			contents:    hostile,
+			trust:       true,
+			wantCalled:  true,
+			wantApplied: true,
+		},
+		{
+			name:       "trusted but undecodable applies nothing",
+			contents:   "editor:\n  tabspaces: 2\nbroken: [\n",
+			trust:      true,
+			wantCalled: true,
+			wantErr:    true,
+		},
+		{
+			name: "trusted but invalid applies nothing",
+			contents: "editor:\n  tabspaces: 2\ncommand:\n  aliases:\n" +
+				"    meh: [yay]\n    yay: [meh]\n",
+			trust:      true,
+			wantCalled: true,
+			wantErr:    true,
+		},
+		{
+			name:     "oversized is neither offered nor applied",
+			contents: "editor:\n  tabspaces: 2\n" + strings.Repeat("#", maxWorkspaceConfigSize),
+			trust:    true,
+			wantErr:  true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if tt.contents != "" {
+				require.NoError(t, os.WriteFile(
+					filepath.Join(dir, "config.yaml"), []byte(tt.contents), 0o644))
+			}
+			c := loadTestUserConfig(t)
+			before := copyConfigValue(c.cfg)
+
+			var offered []byte
+			called := false
+			applied, _, err := loadWorkspaceConfig("config.yaml", newTestFileWorkspace(t, dir), &c,
+				func(contents []byte) (bool, error) {
+					called = true
+					offered = contents
+					return tt.trust, tt.trustErr
+				})
+
+			if tt.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+			require.Equal(t, tt.wantCalled, called)
+			if tt.wantCalled {
+				assert.Equal(t, tt.contents, string(offered),
+					"the trust decision must cover exactly the bytes that are applied")
+			}
+			if !tt.wantApplied {
+				assert.Nil(t, applied)
+				assert.Equal(t, before, c.cfg)
+				return
+			}
+			assert.Equal(t, tt.contents, string(applied))
+			assert.Equal(t, 2, c.editorTabspaces())
+			assert.True(t, c.cfg["authorizer"].(map[string]any)["auto_authorize_commands"].(bool))
+			assert.True(t, c.updatesAutoInstall())
+			assert.Contains(t, c.extensions(), "pwned")
+		})
+	}
 }
 
 func TestVimSettingsSectionSpellings(t *testing.T) {
@@ -850,9 +1085,9 @@ config["editor"]["modal"]["message_bar"] = {"attr": {"fg": "white", "bg": "navy"
 			require.NoError(t, os.WriteFile(userPath, []byte(user.src), 0o644))
 		}
 		var cfg ideConfig
-		require.NoError(t, loadConfig(&cfg, userPath, browser.NopWallpaper(),
+		require.NoError(t, loadConfig(&cfg, userPath, nil,
 			DefaultConfig{src: string(runeStar), modal: true},
-			term.RingBell, term.ScheduleNextTick))
+			sounds.Silent, term.ScheduleNextTick))
 		if ws.name == "" {
 			return cfg
 		}
@@ -864,7 +1099,7 @@ config["editor"]["modal"]["message_bar"] = {"attr": {"fg": "white", "bg": "navy"
 		require.NoError(t, err)
 		w := workspace.NewSchemeWorkspace(uri, scheme, inlineSchedule)
 		t.Cleanup(func() { w.Close() })
-		_, err = loadWorkspaceConfig(ws.name, w, uri, &cfg)
+		_, _, err = loadWorkspaceConfig(ws.name, w, &cfg, trustAllWorkspaceConfigs)
 		require.NoError(t, err)
 		return cfg
 	}
@@ -907,9 +1142,9 @@ func TestVimSettingsSectionMalformed(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "config.yaml")
 			require.NoError(t, os.WriteFile(path, []byte(tt.src), 0o644))
 			var cfg ideConfig
-			require.NoError(t, loadConfig(&cfg, path, browser.NopWallpaper(),
+			require.NoError(t, loadConfig(&cfg, path, nil,
 				DefaultConfig{src: string(runeStar), modal: true},
-				term.RingBell, term.ScheduleNextTick))
+				sounds.Silent, term.ScheduleNextTick))
 			cfg.vimAttr()
 			if tt.wantErr {
 				assert.Error(t, cfg.errors[editorSectionVim])

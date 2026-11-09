@@ -136,12 +136,13 @@ func (h *completeHandler) HandleCommand(ctx context.Context, cmd textapi.Command
 	}
 
 	ch := make(chan string, 1)
-	fetchCtx, cancel := context.WithCancel(context.Background())
+	// The fetch outlives the request ctx; closing the popup cancels it.
+	fetchCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	fetchDone, fetchDoneCancel := context.WithCancel(context.Background())
 	drainDone, drainDoneCancel := context.WithCancel(context.Background())
 
 	list := component.NewFocusList()
-	list.SetFocusAttr(term.Attributes{Fg: term.ColorWhite})
+	list.SetFocusAttr(term.Attributes{Fg: term.ColorWhite, Bg: term.ColorGray})
 
 	floating := &completionHandler{
 		list:        list,
@@ -160,7 +161,7 @@ func (h *completeHandler) HandleCommand(ctx context.Context, cmd textapi.Command
 		floating.drainLoop(ch)
 	})
 
-	win, err := h.wm.Floating(floating, browserapi.FloatingConfig{
+	_, err := h.wm.Floating(floating, browserapi.FloatingConfig{
 		Alignment: component.AlignmentLeft | component.AlignmentTop,
 		Offset:    term.Coordinates{X: cmd.Cursor.Window.X + 1, Y: cmd.Cursor.Window.Y + 2},
 	})
@@ -169,14 +170,12 @@ func (h *completeHandler) HandleCommand(ctx context.Context, cmd textapi.Command
 		fetchDoneCancel()
 		return err
 	}
-	floating.wm = h.wm
-	floating.win = win
 
 	go debug.CapturePanicReport(func() {
 		defer fetchDoneCancel()
 		defer close(ch)
 
-		result, err := h.lsp.Completion(ctx, params)
+		result, err := h.lsp.Completion(fetchCtx, params)
 		if err != nil {
 			h.log.Warn("completion fetch", "err", err)
 			return
@@ -218,10 +217,6 @@ type completionHandler struct {
 	fetchDone context.Context
 	drainDone context.Context
 
-	// Window lifecycle.
-	wm  browserapi.WindowManager
-	win browserapi.Window
-
 	// Completion items (protected by itemsMu).
 	itemsMu  sync.Mutex
 	items    []semanticapi.CompletionItem
@@ -235,7 +230,7 @@ type completionHandler struct {
 // Used in tests that need a synchronously filled handler.
 func newCompletionHandler(labels []string) *completionHandler {
 	list := component.NewFocusList()
-	list.SetFocusAttr(term.Attributes{Fg: term.ColorWhite})
+	list.SetFocusAttr(term.Attributes{Fg: term.ColorWhite, Bg: term.ColorGray})
 	strCfg := component.StringConfig{
 		Attributes: term.Attributes{Fg: term.ColorGray},
 	}
@@ -423,9 +418,6 @@ func (c *completionHandler) Close() error {
 	}
 	if c.drainDone != nil {
 		<-c.drainDone.Done()
-	}
-	if c.win != nil {
-		return c.wm.CloseWindow(c.win)
 	}
 	return nil
 }

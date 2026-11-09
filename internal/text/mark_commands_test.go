@@ -25,9 +25,31 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"unstable.build/rune/internal/handler/handlertest"
 )
 
 const testMarkListID = "mark"
+
+func TestMarkCommandHandlerPointerLeaves(t *testing.T) {
+	t.Parallel()
+	cwd, err := workspaceapi.ParseURI("memory:///")
+	require.NoError(t, err)
+	uri := workspaceapi.Join(cwd, "mark.go")
+	wrap := func() Handler {
+		fileRegistry := NewFileCommandRegistry(cwd, newIndentTestWorkspaceRegistry())
+		ed := newPointerEditor(t, uri)
+		ed.cursor.SetLocationList(textapi.LocationPriorityInfo, testMarkListID, LocationSlice(
+			[]textapi.Location{{From: term.Coordinates{Y: 2}, To: term.Coordinates{Y: 2, X: 1}}}))
+		h, err := SubscribeMarkCommands(uri, fileRegistry, ed.cursor, testMarkListID, ed)
+		require.NoError(t, err)
+		return h
+	}
+	for _, size := range []struct{ width, height int }{{40, 10}, {1, 1}} {
+		handlertest.RunPointerLeaves(t, wrap(), size.width, size.height)
+	}
+	requirePointerLeavesKeepState(t, wrap(), 40, 10,
+		term.Coordinates{X: 3, Y: 2}, term.Coordinates{X: 12, Y: 4})
+}
 
 func TestExchangePointAndMarkSwapsCursorAndMark(t *testing.T) {
 	cwd, err := workspaceapi.ParseURI("memory:///")

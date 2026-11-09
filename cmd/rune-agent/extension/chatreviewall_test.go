@@ -18,6 +18,7 @@ package extension
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -250,3 +251,7 @@ func (e schemeExecutor) Start(
 func (e schemeExecutor) Signal(workspaceapi.Pid, syscall.Signal) error { return nil }
 
 func (e schemeExecutor) Close() error { return nil }
+
+func (schemeExecutor) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
+}

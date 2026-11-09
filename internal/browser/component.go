@@ -25,6 +25,7 @@ import (
 	"path"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/ernestrc/go-multierror"
@@ -42,6 +43,8 @@ import (
 	"unstable.build/rune/internal/component/shader"
 	"unstable.build/rune/internal/debug"
 	thandler "unstable.build/rune/internal/handler"
+	hmarkdown "unstable.build/rune/internal/handler/markdown"
+	"unstable.build/rune/internal/term/programstatus"
 )
 
 var _ browserapi.Handler = (*Component)(nil)
@@ -88,20 +91,23 @@ type Component struct {
 	// what gets installed in the frame union.
 	shadedTabs *thandler.ShadedTabs
 	wm         thandler.WindowManager
-	union      thandler.FrameUnion
+	union      handler.FrameUnion
 	width      int
 	height     int
 	nextSplit  browserapi.Orientation
 
 	dirtyTabs   bool
 	focusWindow thandler.Window
+	inFocus     bool
 	config      Config
 	buffers     []*Tab
 	windows     map[uint64]*browserWindow
 	prompts     map[string]Window
 	drag        dragState
 	winDrop     winDropState
-	interrupter term.Interrupter
+	// spinner ticks while at least one tab is working so Draw can cycle
+	// the working tabs' icons.
+	spinner *statusSpinner
 
 	// rightInset is the live width of the reserved right column. It
 	// starts at Config.RightInset and SetRightInset changes it.
@@ -130,7 +136,9 @@ func NewComponent(config Config) *Component {
 func (c *Component) Init(config Config) {
 	c.config = config
 	c.config.WindowManagerConfig.FloatingBar = c
+	c.config.WindowManagerConfig.WindowClose = (*wmSubscriber)(c)
 	c.windows = make(map[uint64]*browserWindow)
+	c.inFocus = true
 
 	c.nextSplit = browserapi.OrientationRight
 	c.prompts = make(map[string]Window)
@@ -173,25 +181,14 @@ func (c *Component) Init(config Config) {
 	c.wm.Subscribe((*wmSubscriber)(c))
 	c.buffers = make([]*Tab, 0)
 
-	frameAttr := config.WindowManagerConfig.FrameAttr
-	highlightAttr := config.FocusTabHighlightAttr
-	frameAttr.Attrs |= term.AttrNegativeVerticalRenderOffset
-	bgAttr := term.Attributes{Bg: frameAttr.Bg}
-	focusTabAttr := config.FocusTabAttr
-	focusTabAttr.Attrs |= term.AttrNegativeVerticalRenderOffset
-	nonFocusTabAttr := config.NonFocusTabAttr
-	nonFocusTabAttr.Attrs |= term.AttrNegativeVerticalRenderOffset
-	c.tabs.SetAttr(focusTabAttr, nonFocusTabAttr,
-		c.focusTabIconAttr(), c.nonFocusTabIconAttr(),
-		highlightAttr, frameAttr, bgAttr)
-	c.tabs.SetFrameCharSet(config.WindowManagerConfig.FrameCharSet)
-	c.tabs.SetFocusFrameChar(config.FocusTabHighlightChar)
+	c.styleTabs()
 	c.shadedTabs = thandler.NewShadedTabs(&c.tabs, thandler.ShadedTabsConfig{
 		Shader:      config.ActiveTabShader,
 		FPS:         config.ActiveTabShaderFPS,
 		Loop:        config.ActiveTabShaderLoop,
+		Params:      config.ActiveTabShaderParams,
 		DefAttr:     config.NonFocusTabAttr,
-		Interrupter: c.interrupter,
+		Interrupter: config.Interrupter,
 		Active:      c.activeTabIndices,
 	})
 
@@ -202,12 +199,61 @@ func (c *Component) Init(config Config) {
 	}
 }
 
+func (c *Component) styleTabs() {
+	frameAttr := c.config.WindowManagerConfig.FrameAttr
+	frameAttr.Attrs |= term.AttrNegativeVerticalRenderOffset
+	bgAttr := term.Attributes{Bg: frameAttr.Bg}
+	focusTabAttr := c.config.FocusTabAttr
+	focusTabAttr.Attrs |= term.AttrNegativeVerticalRenderOffset
+	nonFocusTabAttr := c.config.NonFocusTabAttr
+	nonFocusTabAttr.Attrs |= term.AttrNegativeVerticalRenderOffset
+	c.tabs.SetAttr(focusTabAttr, nonFocusTabAttr,
+		c.focusTabIconAttr(), c.nonFocusTabIconAttr(),
+		c.config.FocusTabHighlightAttr, frameAttr, bgAttr)
+	c.tabs.SetFrameCharSet(c.config.WindowManagerConfig.FrameCharSet)
+	c.tabs.SetFocusFrameChar(c.config.FocusTabHighlightChar)
+	c.tabs.SetHoverAttr(c.config.HoverTabAttr)
+	g := c.wm.FrameGraphics()
+	c.tabs.SetGraphics(g, c.config.TabImages.ButtonImages(g), c.config.FocusTabHighlightGraphics)
+	c.tabs.Player, c.tabs.Sounds = c.config.SoundPlayer, c.config.TabSounds
+	if c.shadedTabs != nil {
+		c.shadedTabs.SetDefAttr(c.config.NonFocusTabAttr)
+	}
+}
+
+// Restyle draws c with s from the next Draw on: its windows, frame union
+// and tab bar, the prompts it opens later, and the wallpaper of every
+// window showing it. Prompts already open keep their style. The tab bar
+// takes its images from FrameGraphics as it is now, so a Reload of it
+// must come first.
+func (c *Component) Restyle(s Style) {
+	c.config = c.config.Restyled(s)
+	c.wm.Restyle(c.config.WindowManagerConfig)
+	c.union.Attributes = c.config.WindowManagerConfig.FrameAttr
+	c.union.Right = c.config.FrameUnionCharSet.Right
+	c.union.Left = c.config.FrameUnionCharSet.Left
+	c.union.Top = c.config.FrameUnionCharSet.Top
+	c.union.Bottom = c.config.FrameUnionCharSet.Bottom
+	c.styleTabs()
+	for _, bw := range c.windows {
+		if isWallpaper(bw.win.Content().(browserapi.Handler)) {
+			c.updateWindowContent(bw, c.wallpaper(), nil)
+		}
+	}
+}
+
+// FrameGraphics returns the images that c's frames and prompt buttons
+// are drawn with. It is nil when the window manager draws no images.
+func (c *Component) FrameGraphics() *tcomponent.FrameGraphics {
+	return c.wm.FrameGraphics()
+}
+
 // initUnion builds the frame union from scratch. The union only ever
 // appends members, so changing the reserved column's width means
 // rebuilding and replaying everything stacked around the window
 // manager.
 func (c *Component) initUnion() {
-	c.union = thandler.FrameUnion{}
+	c.union = handler.FrameUnion{}
 	c.union.Init(&c.wm)
 
 	// make sure that frame union attrs are same as window manager attrs
@@ -269,9 +315,10 @@ func (c *Component) NewTab(
 	return t
 }
 
-// NewTabFromContent converts the given window's content into a tab, if it's not a tab
-// already. This method always returns a valid tab; whether it created one
-// or returned false because the window's content is already a tab.
+// NewTabFromContent converts the given window's content into a tab and
+// reports whether it created one. If the content is already a tab, that
+// tab is returned. If the window shows the wallpaper there is nothing to
+// convert, so it returns nil.
 func (c *Component) NewTabFromContent(
 	icon rune, name string, win Window,
 ) (*Tab, bool) {
@@ -280,6 +327,9 @@ func (c *Component) NewTabFromContent(
 	tab, ok := content.(*Tab)
 	if ok {
 		return tab, false
+	}
+	if isWallpaper(content) {
+		return nil, false
 	}
 	content = c.unwrapContent(content)
 	var uri workspaceapi.URI
@@ -342,12 +392,11 @@ func (c *Component) TabIcon(uri workspaceapi.URI) (icon, defaultIcon rune, ok bo
 // TabAttrs returns the attributes of the tab with the given uri or false
 // if there's no tab with the given uri.
 func (c *Component) TabAttrs(uri workspaceapi.URI) (term.Attributes, bool) {
-	for i, t := range c.buffers {
-		if t.uri.String() == uri.String() {
-			return c.tabs.TabAttr(i), true
-		}
+	t, ok := c.Tab(uri)
+	if !ok {
+		return term.Attributes{}, false
 	}
-	return term.Attributes{}, false
+	return t.attr, true
 }
 
 // SetTabNameAndAttrs overrides the name and attributes of the tab with the given uri.
@@ -358,7 +407,8 @@ func (c *Component) SetTabNameAndAttrs(
 	for i, t := range c.buffers {
 		if t.uri.String() == uri.String() {
 			c.tabs.SetTabName(i, name)
-			c.tabs.SetTabAttr(i, attr)
+			t.attr = attr
+			c.applyTabAttr(i, t)
 			return true
 		}
 	}
@@ -372,50 +422,326 @@ func (c *Component) SetTabAttrs(
 ) bool {
 	for i, t := range c.buffers {
 		if t.uri.String() == uri.String() {
-			c.tabs.SetTabAttr(i, attr)
+			t.attr = attr
+			c.applyTabAttr(i, t)
 			return true
 		}
 	}
 	return false
 }
 
-// SetTabActivity marks the tab with the given uri as having work in
-// progress or as idle. The active-tab shader runs over the labels of
-// active tabs for as long as there is at least one. Activity is dropped
-// when the tab is removed. It returns false if there's no tab with the
-// given uri; setting the current state again is a no-op.
-func (c *Component) SetTabActivity(uri workspaceapi.URI, active bool) bool {
+// SetTabStatus applies report, made by the program behind the tab with
+// the given uri, to the tab's status, as browser.TabManager describes.
+// The tab is decorated after the status until it goes back to idle,
+// and every change is reported through Config.OnTabStatus. Done and
+// error records reported on the tab in sight are acknowledged right
+// after they are reported, as the user already sees them, and so are
+// idle ones. It returns false if there's no tab with the given uri.
+func (c *Component) SetTabStatus(uri workspaceapi.URI, report programstatus.Report) bool {
 	t, ok := c.Tab(uri)
 	if !ok {
 		return false
 	}
-	if t.active != active {
-		t.active = active
-		c.tabActivityChanged()
+	t.records.Apply(report)
+	c.refreshTabStatus(t)
+	if seen, ok := c.tabInSight(); ok && seen == t {
+		t.AckStatus()
 	}
 	return true
 }
 
-// HasActiveTabs reports whether any tab is marked active.
-func (c *Component) HasActiveTabs() bool {
-	return slices.ContainsFunc(c.buffers, func(t *Tab) bool { return t.active })
+// OnFocusChange tells whether the user's focus is on this Component,
+// which it cannot tell on its own when the host terminal or the
+// workspace it belongs to loses or regains it. A Component starts in
+// focus. Out of focus no tab is in sight, so done, error and idle
+// records stay until focus comes back and acknowledges those of the tab
+// in the focus window, and Config.OnContentSeen is told about what it
+// shows.
+func (c *Component) OnFocusChange(inFocus bool) {
+	c.inFocus = inFocus
+	c.ackInSight()
+}
+
+// FocusHandler returns the handler drawn in the focus window: its
+// content or, when it shows a tab, the tab's handler.
+func (c *Component) FocusHandler() browserapi.Handler {
+	return c.windowHandler(c.wm.Focus())
+}
+
+// ackInSight acknowledges the status of the tab in sight and tells
+// Config.OnContentSeen what the focus window shows, while the Component
+// is in focus.
+func (c *Component) ackInSight() {
+	if !c.inFocus || c.focusWindow == (thandler.Window{}) {
+		return
+	}
+	if t, ok := c.focusWindow.Content().(*Tab); ok {
+		t.AckStatus()
+	}
+	if c.config.OnContentSeen != nil {
+		c.config.OnContentSeen(c.windowHandler(c.focusWindow))
+	}
+}
+
+// windowHandler returns the handler drawn in win. It reads win rather
+// than the browserWindow tracking it, as restoring a layout focuses a
+// window before it is tracked.
+func (c *Component) windowHandler(win thandler.Window) browserapi.Handler {
+	content := win.Content().(browserapi.Handler)
+	if t, ok := content.(*Tab); ok {
+		return t.Handler()
+	}
+	return c.unwrapContent(content)
+}
+
+// tabInSight returns the tab the user sees: the one in the focus window
+// while the Component is in focus.
+func (c *Component) tabInSight() (*Tab, bool) {
+	if !c.inFocus || c.focusWindow == (thandler.Window{}) {
+		return nil, false
+	}
+	t, ok := c.focusWindow.Content().(*Tab)
+	return t, ok
+}
+
+// EndTabStatus drops what the program behind the tab with the given
+// uri reported working, blocked or idle, as browser.TabManager
+// describes. It returns false if there's no tab with the given uri.
+func (c *Component) EndTabStatus(uri workspaceapi.URI) bool {
+	t, ok := c.Tab(uri)
+	if !ok {
+		return false
+	}
+	if t.records.DropTransient() {
+		c.refreshTabStatus(t)
+	}
+	return true
+}
+
+// refreshTabStatus rolls the records of t up into its status and
+// decorates the tab after it when it changed. A removed tab is left
+// alone.
+func (c *Component) refreshTabStatus(t *Tab) {
+	idx, ok := c.findTabID(t)
+	if !ok {
+		return
+	}
+	status := t.records.Summary()
+	if t.status.Equal(status) {
+		return
+	}
+	prev := t.status
+	t.status = status
+	c.applyTabDecorations(idx, t)
+	c.tabStatusChanged(t.uri, prev, status)
+}
+
+// TabStatus returns the status last set on the tab with the given uri,
+// an empty idle one if none was, and false if there's no such tab.
+func (c *Component) TabStatus(uri workspaceapi.URI) (programstatus.Summary, bool) {
+	t, ok := c.Tab(uri)
+	if !ok {
+		return programstatus.Summary{}, false
+	}
+	return t.status, true
+}
+
+// HasWorkingTabs reports whether any tab's program reported working.
+func (c *Component) HasWorkingTabs() bool {
+	return slices.ContainsFunc(c.buffers, (*Tab).working)
+}
+
+// StatusRollup returns the most pressing status among the tabs
+// (blocked > error > done > working > reported idle) and the uri of
+// the tab it was reported on. When no tab reported anything it returns
+// an empty idle status and a zero uri.
+func (c *Component) StatusRollup() (programstatus.Summary, workspaceapi.URI) {
+	var top *Tab
+	for _, t := range c.buffers {
+		if top == nil || t.status.Outranks(top.status) {
+			top = t
+		}
+	}
+	if top == nil || (top.status.State == programstatus.Idle && len(top.status.Records) == 0) {
+		return programstatus.Summary{Progress: -1}, workspaceapi.URI{}
+	}
+	return top.status, top.uri
 }
 
 func (c *Component) activeTabIndices() []int {
 	var ret []int
 	for i, t := range c.buffers {
-		if t.active {
+		if t.working() {
 			ret = append(ret, i)
 		}
 	}
 	return ret
 }
 
-func (c *Component) tabActivityChanged() {
-	c.shadedTabs.SetRunning(c.HasActiveTabs())
-	if c.config.OnTabActivity != nil {
-		c.config.OnTabActivity()
+func (c *Component) tabStatusChanged(
+	uri workspaceapi.URI, prev, status programstatus.Summary,
+) {
+	working := c.HasWorkingTabs()
+	c.shadedTabs.SetRunning(working)
+	c.setSpinnerRunning(working)
+	if c.config.OnTabStatus != nil {
+		c.config.OnTabStatus(uri, prev, status)
 	}
+}
+
+// applyTabAttr pushes the tab's name attribute, with the status
+// attribute layered over it, to the tab bar.
+func (c *Component) applyTabAttr(idx int, t *Tab) {
+	attr := t.attr
+	if status := c.statusNameAttr(t.status); status != (term.Attributes{}) {
+		attr = term.AttributesUnion(attr, status)
+	}
+	c.tabs.SetTabAttr(idx, attr)
+}
+
+// applyTabDecorations redraws the icon, progress and name attribute of
+// the tab from its status. A status without an icon restores the underlying
+// tab icon. The icon attribute is resolved on the next Draw, as it depends
+// on which window has the focus.
+func (c *Component) applyTabDecorations(idx int, t *Tab) {
+	c.applyTabAttr(idx, t)
+	cfg := c.config.TabStatus
+	var icon rune
+	switch t.status.State {
+	case programstatus.Working:
+		if cfg.ContentTab.Progress && t.status.Progress >= 0 {
+			c.tabs.SetTabProgress(idx, t.status.Progress, cfg.ContentTab.WorkingDoneAttr)
+		} else {
+			c.tabs.ResetTabProgress(idx)
+		}
+		icon = c.spinnerFrame()
+	case programstatus.Blocked:
+		c.tabs.ResetTabProgress(idx)
+		icon = cfg.BlockedIcons[t.status.Kind]
+		if icon == 0 {
+			icon = cfg.BlockedIcons[programstatus.KindNone]
+		}
+	case programstatus.Done:
+		c.tabs.ResetTabProgress(idx)
+		icon = cfg.DoneIcon
+	case programstatus.Error:
+		c.tabs.ResetTabProgress(idx)
+		icon = cfg.ErrorIcon
+	default:
+		c.tabs.ResetTabProgress(idx)
+	}
+	if icon != 0 {
+		c.tabs.SetTabIcon(idx, icon)
+	} else {
+		c.tabs.ResetTabIcon(idx)
+	}
+	c.dirtyTabs = true
+}
+
+func (c *Component) statusNameAttr(status programstatus.Summary) term.Attributes {
+	name, _ := c.config.TabStatus.ContentTab.BarAttrs(status)
+	return name
+}
+
+func (c *Component) statusIconAttr(status programstatus.Summary) term.Attributes {
+	_, icon := c.config.TabStatus.ContentTab.BarAttrs(status)
+	return icon
+}
+
+// tabIconAttr layers the caller's and the status icon attributes over
+// the focus-dependent base.
+func (c *Component) tabIconAttr(base term.Attributes, t *Tab) term.Attributes {
+	attr := term.AttributesUnion(base, t.iconAttr)
+	if status := c.statusIconAttr(t.status); status != (term.Attributes{}) {
+		attr = term.AttributesUnion(attr, status)
+	}
+	return attr
+}
+
+// styleTabIcon styles the icon of t, at id, over base. The icon of a tab
+// no window shows takes base from the tab bar itself unless something
+// colours it, for the bar to layer its hover attributes in between.
+func (c *Component) styleTabIcon(id int, base term.Attributes, t *Tab) {
+	if t.free && t.iconAttr == (term.Attributes{}) &&
+		c.statusIconAttr(t.status) == (term.Attributes{}) {
+		c.tabs.ResetIconAttr(id)
+		return
+	}
+	c.tabs.SetIconAttr(id, c.tabIconAttr(base, t))
+}
+
+// spinnerFrame returns the current spinner frame, or zero without
+// frames to cycle.
+func (c *Component) spinnerFrame() rune {
+	frames := c.config.TabStatus.Spinner
+	if len(frames) == 0 {
+		return 0
+	}
+	var epoch int64
+	if c.spinner != nil {
+		epoch = c.spinner.epoch.Load()
+	}
+	return frames[int(epoch%int64(len(frames)))]
+}
+
+// setSpinnerRunning starts or stops the ticker that cycles the icons of
+// working tabs. Starting is a no-op without frames or an interrupter.
+func (c *Component) setSpinnerRunning(running bool) {
+	if running == (c.spinner != nil) {
+		return
+	}
+	if !running {
+		c.spinner.cancel()
+		c.spinner = nil
+		return
+	}
+	if c.config.Interrupter == nil || len(c.config.TabStatus.Spinner) == 0 {
+		return
+	}
+	fps := c.config.TabStatus.SpinnerFPS
+	if fps <= 0 {
+		fps = DefaultTabStatusConfig().SpinnerFPS
+	}
+	c.spinner = newStatusSpinner(c.config.Interrupter, fps)
+}
+
+// drawSpinner moves the icons of working tabs to the current frame.
+func (c *Component) drawSpinner() {
+	if c.spinner == nil {
+		return
+	}
+	frame := c.spinnerFrame()
+	for i, t := range c.buffers {
+		if t.working() && c.tabs.TabIcon(i) != frame {
+			c.tabs.SetTabIcon(i, frame)
+		}
+	}
+}
+
+// statusSpinner wakes the host at a fixed cadence and counts the frames
+// it asked for.
+type statusSpinner struct {
+	epoch  atomic.Int64
+	cancel context.CancelFunc
+}
+
+func newStatusSpinner(interrupter term.Interrupter, fps int) *statusSpinner {
+	ctx, cancel := context.WithCancel(context.Background())
+	s := &statusSpinner{cancel: cancel}
+	go debug.CapturePanicReport(func() {
+		ticker := time.NewTicker(time.Second / time.Duration(fps))
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				s.epoch.Add(1)
+				_ = interrupter.Interrupt(ctx)
+			case <-ctx.Done():
+				return
+			}
+		}
+	})
+	return s
 }
 
 // SetTabIcon overrides the icon of the tab with the given uri.
@@ -466,7 +792,8 @@ func (c *Component) ResetTabNameAndAttrs(uri workspaceapi.URI) bool {
 	for i, t := range c.buffers {
 		if t.uri.String() == uri.String() {
 			c.tabs.ResetTabName(i)
-			c.tabs.ResetTabAttr(i)
+			t.attr = c.tabs.TabDefaultAttr(i)
+			c.applyTabAttr(i, t)
 			return true
 		}
 	}
@@ -655,6 +982,21 @@ func (c *Component) IterateWindows(fn func(Window)) {
 	})
 }
 
+// ContentSize returns the size the content of win was last resized to,
+// or zero when it never was or win is not a window of c.
+func (c *Component) ContentSize(win Window) (width, height int) {
+	if !c.Owns(win) {
+		return 0, 0
+	}
+	return win.(*browserWindow).win.ContentSize()
+}
+
+// Owns reports whether win is an open window of c.
+func (c *Component) Owns(win Window) bool {
+	bw, ok := win.(*browserWindow)
+	return ok && bw.parent == c && !bw.Closed()
+}
+
 // TileLayout returns the current tiled browser window tree layout.
 func (c *Component) TileLayout() tcomponent.TileLayout {
 	return c.wm.TileLayout()
@@ -666,6 +1008,16 @@ func (c *Component) RestoreTileLayout(
 	layout tcomponent.TileLayout,
 	content func(windowID uint64) browserapi.Handler,
 ) map[uint64]Window {
+	// The window manager closes the content of every window it discards,
+	// but tabs outlive windows: release them first so they stay open in
+	// the bar instead of closed and bound to a window that is gone, which
+	// clicking them would then focus.
+	for _, bw := range c.windows {
+		if t, ok := browserTabAtWindow(bw); ok {
+			c.updateWindowContent(bw, c.wallpaper(), t)
+		}
+		bw.parent = nil
+	}
 	c.windows = make(map[uint64]*browserWindow)
 	c.prompts = make(map[string]Window)
 	windows := c.wm.RestoreTileLayout(layout, func(windowID uint64) tui.Handler {
@@ -858,10 +1210,11 @@ func (c *Component) Resize(width, height int) {
 
 // Draw satisfies tui.Component
 func (c *Component) Draw(w term.Writer) {
+	c.drawSpinner()
 	if c.dirtyTabs {
 		c.tabs.ResetFocus()
 		for id, t := range c.buffers {
-			c.tabs.SetIconAttr(id, term.AttributesUnion(c.nonFocusTabIconAttr(), t.iconAttr))
+			c.styleTabIcon(id, c.nonFocusTabIconAttr(), t)
 			if !t.free {
 				c.tabs.SetFocus(id)
 			}
@@ -878,7 +1231,7 @@ func (c *Component) Draw(w term.Writer) {
 				if ok {
 					// reset tab override attributes
 					id := c.mustFindTabID(t)
-					c.tabs.SetIconAttr(id, term.AttributesUnion(c.focusTabIconAttr(), t.iconAttr))
+					c.tabs.SetIconAttr(id, c.tabIconAttr(c.focusTabIconAttr(), t))
 					c.tabs.SetFocus(id)
 				}
 			}
@@ -1042,7 +1395,8 @@ func (c *Component) swapContent(
 	return true
 }
 
-// ResetWindowSize resets width and height to be automatically calculated.
+// ResetWindowSize resets the focus window's width and height to their defaults, see
+// SetWindowDefaultWidth, or to be automatically calculated when it has none.
 func (c *Component) ResetWindowSize() bool {
 	w := c.wm.Focus()
 	okh := c.wm.SetHeight(w, 0)
@@ -1098,13 +1452,16 @@ func (c *Component) DecreaseWindowWidth() bool {
 	return c.wm.SetWidth(w, w.Width()-1)
 }
 
-// SetWindowWidth sets the given window's width exactly.
-func (c *Component) SetWindowWidth(win Window, width int) bool {
+// SetWindowDefaultWidth sets the width win is reset to, by ResetWindowSize or by double
+// clicking a divider on its edge, and resizes win to it. Resizes by the user last only
+// until the next call. It returns false if win is closed, or if the width cannot be
+// set; see handler.WindowManager.SetDefaultWidth.
+func (c *Component) SetWindowDefaultWidth(win Window, width int) bool {
 	bwin := win.(*browserWindow)
 	if bwin.parent == nil {
 		return false
 	}
-	return c.wm.SetWidth(bwin.win, width)
+	return c.wm.SetDefaultWidth(bwin.win, width)
 }
 
 // SetFocus sets the underlying WindowManager's focus to win.
@@ -1161,67 +1518,46 @@ func (c *Component) Selection() (string, bool) {
 	return c.union.Selection()
 }
 
-// Prompt creates a new prompt to be drawn as an overlay on the next call to Draw
-// and it also takes over event control until user either exits prompt or selects
-// an option. The passed options and bindings must be equal in length, or bindings
-// must be zero in length, meaning no key bindings are provided to user.
-// Callers must ensure that there's coherence between options and bindings, otherwise
-// this method panics.
+// Prompt opens a floating window centered over this Component that asks
+// cfg.Message, rendered as markdown, and takes over events until the
+// user picks an option or closes the window, which promptHandler is
+// told as browserapi.Prompter describes. The prompt is styled with
+// Config.PromptConfig. It panics when cfg.Validate fails.
 //
-// Prompt uses message to de-duplicate prompts. If a prompt is already open
-// then this method returns the window used to display that prompt.
+// Prompt uses cfg.Message to de-duplicate prompts: while a prompt with
+// the same message is open, it returns that prompt's window and
+// promptHandler is never called.
 func (c *Component) Prompt(
-	message string, options []string,
-	bindings []term.KeyComb,
-	promptHandler handler.PromptHandler,
+	cfg browserapi.PromptConfig, promptHandler handler.PromptHandler,
 ) Window {
-	if len(options) == 0 || (len(bindings) != 0 && len(options) != len(bindings)) {
-		panic("Prompt given invalid options and/or bindings")
+	if err := cfg.Validate(); err != nil {
+		panic(fmt.Sprintf("Prompt given an invalid config: %s", err))
 	}
-	if win, ok := c.prompts[message]; ok {
+	if win, ok := c.prompts[cfg.Message]; ok {
 		return win
 	}
 	clearHandler := &clearOnClosePromptHandler{
 		root:    promptHandler,
 		c:       c,
-		message: message,
+		message: cfg.Message,
 	}
+	style := c.config.PromptConfig
 	promptConfig := handler.PromptConfig{
 		PromptConfig: component.PromptConfig{
-			Message:              message,
-			Options:              options,
-			BackgroundAttributes: c.config.PromptConfig.BackgroundAttr,
-			MinWidth:             c.config.PromptConfig.MinWidth,
+			Message:              cfg.Message,
+			Options:              cfg.Options,
+			BackgroundAttributes: style.BackgroundAttr,
+			MinWidth:             style.MinWidth,
 			NewMessage: func(str string) component.Floating {
-				mcfg := markdown.DefaultConfig()
-				mcfg.HeaderPrefix = false
-				mkd, err := markdown.NewWithConfig(str, mcfg)
-				if err == nil {
-					return component.NewAspectRatioFloatingResponsive(
-						component.NewSpan(mkd, component.SpanConfig{
-							PadHorizontal:    4,
-							PadVertical:      2,
-							ContentAlignment: component.AlignmentCentered,
-						}), component.DefaultAspectRatio)
-				}
-				cfg := component.StringResponsiveConfig{
-					NoSplitWords: true,
-					StringConfig: component.StringConfig{
-						PaddingVertical:   4,
-						PaddingHorizontal: 4,
-						Alignment:         component.AlignmentCentered,
-					},
-				}
-				messageResponsive := component.NewResponsiveString(str, cfg)
-
-				return component.NewAspectRatioFloatingResponsive(
-					messageResponsive, component.DefaultAspectRatio)
+				return c.promptMessage(str, cfg.MaxWidth)
 			},
+			ButtonImages: c.ButtonImages(),
 		},
 		PromptHandler:  clearHandler,
-		OptionBindings: bindings,
-		OptionAttr:     c.config.PromptConfig.TextAttr,
-		HighlightAttr:  c.config.PromptConfig.HighlightAttr,
+		OptionBindings: cfg.Bindings,
+		OptionAttr:     style.TextAttr,
+		HighlightAttr:  style.HighlightAttr,
+		ClickedAttr:    style.ClickedAttr,
 	}
 
 	prompt := handler.NewPrompt(promptConfig)
@@ -1231,8 +1567,106 @@ func (c *Component) Prompt(
 
 	win := c.Floating(prompt, floatingConfig)
 	clearHandler.win = win
-	c.prompts[message] = win
+	c.prompts[cfg.Message] = win
 	return win
+}
+
+// OpenPrompt satisfies Prompter.
+func (c *Component) OpenPrompt(
+	cfg browserapi.PromptConfig, h handler.PromptHandler,
+) (Window, bool, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, false, err
+	}
+	if win, ok := c.prompts[cfg.Message]; ok {
+		return win, false, nil
+	}
+	return c.Prompt(cfg, h), true, nil
+}
+
+// promptMessage renders the message of a prompt, as markdown when it
+// parses, whose links open with PromptConfig.OnLinkClick. See
+// browserapi.PromptConfig.MaxWidth for its size.
+func (c *Component) promptMessage(str string, maxWidth int) component.Floating {
+	mcfg := markdown.DefaultConfig()
+	mcfg.HeaderPrefix = false
+	mcfg.Parser = c.config.PromptConfig.Parser
+	if c.config.PromptConfig.ScheduleNextTick != nil {
+		mcfg.ScheduleNextTick = c.config.PromptConfig.ScheduleNextTick
+	}
+	mkd, err := markdown.NewWithConfig(str, mcfg)
+	if err != nil {
+		msg := component.NewAspectRatioFloatingResponsive(
+			component.NewResponsiveString(str, component.StringResponsiveConfig{
+				NoSplitWords: true,
+				StringConfig: component.StringConfig{
+					PaddingVertical:   4,
+					PaddingHorizontal: 4,
+					Alignment:         component.AlignmentCentered,
+				},
+			}), component.DefaultAspectRatio)
+		if maxWidth == 0 {
+			return msg
+		}
+		return &maxWidthFloating{floatingResponsive: msg, maxWidth: maxWidth}
+	}
+	md := handler.NewSpan(
+		hmarkdown.New(mkd, hmarkdown.WithOnLinkClick(c.config.PromptConfig.OnLinkClick)),
+		component.SpanConfig{
+			PadHorizontal:    4,
+			PadVertical:      2,
+			ContentAlignment: component.AlignmentCentered,
+		})
+	var size component.Floating = component.NewAspectRatioFloatingResponsive(
+		md, component.DefaultAspectRatio)
+	if maxWidth > 0 {
+		// a Span is as wide as its widest line
+		size = &maxWidthFloating{floatingResponsive: md, maxWidth: maxWidth}
+	}
+	return &markdownMessage{Span: md, size: size}
+}
+
+type floatingResponsive interface {
+	component.Floating
+	component.Responsive
+}
+
+// markdownMessage is a prompt's markdown message, sized by size. The
+// sizes wrap the Span themselves, which would hide the Handle that the
+// prompt passes the mouse events on the message to.
+type markdownMessage struct {
+	*handler.Span
+	size component.Floating
+}
+
+// Dimensions satisfies component.Floating.
+func (m *markdownMessage) Dimensions() (width, height int) {
+	return m.size.Dimensions()
+}
+
+// maxWidthFloating sizes a message no wider than maxWidth, wrapping it
+// at that width when it would be wider.
+type maxWidthFloating struct {
+	floatingResponsive
+	maxWidth int
+}
+
+// Dimensions satisfies component.Floating.
+func (f *maxWidthFloating) Dimensions() (width, height int) {
+	width, height = f.floatingResponsive.Dimensions()
+	if width <= f.maxWidth {
+		return width, height
+	}
+	return f.maxWidth, f.Height(f.maxWidth)
+}
+
+// ButtonImages returns the images under the buttons of the prompts this
+// Component opens, as Config.PromptConfig.Images names them, for buttons
+// drawn elsewhere to match. It is nil when no image is named or the
+// window manager draws no images, which is without
+// WindowManagerConfig.FrameGraphicsStorage or Interrupter.
+func (c *Component) ButtonImages() *component.ButtonImages {
+	return c.config.PromptConfig.Images.ButtonImages(c.wm.FrameGraphics())
 }
 
 // Subscribe subscribes sub to window focus events.
@@ -1327,6 +1761,7 @@ func (c *Component) Close() (ret error) {
 	clear(c.buffers)
 	c.buffers = c.buffers[:0]
 	c.shadedTabs.SetRunning(false)
+	c.setSpinnerRunning(false)
 	c.wm.UnsubscribeAll()
 
 	c.wm.Iterate(func(w thandler.Window) {
@@ -1341,6 +1776,9 @@ func (c *Component) Close() (ret error) {
 		}
 		_ = bw.Close()
 	})
+	if err := c.wm.Close(); err != nil {
+		ret = err
+	}
 	return ret
 }
 
@@ -1384,9 +1822,13 @@ func (c *Component) removeTab(t *Tab) bool {
 	if !ok {
 		panic(fmt.Sprintf("corrupted tabs: could not find tab with id %v", id))
 	}
-	if t.active {
-		t.active = false
-		c.tabActivityChanged()
+	if c.config.OnTabRemoved != nil {
+		c.config.OnTabRemoved(t.uri)
+	}
+	if len(t.status.Records) > 0 {
+		prev := t.status
+		t.status = programstatus.Summary{Progress: -1}
+		c.tabStatusChanged(t.uri, prev, t.status)
 	}
 	return true
 }
@@ -1608,7 +2050,7 @@ func (c *Component) splitInverted(
 
 func (c *Component) newWindowContent(h browserapi.Handler) (browserapi.Handler, bool) {
 	if h == nil {
-		h = c.wallpaper()
+		return c.wallpaper(), false
 	}
 	_, ok := h.(*Tab)
 	if !ok {
@@ -1668,12 +2110,6 @@ func (c *Component) closeWindow(win *browserWindow) error {
 	if err != nil {
 		return err
 	}
-
-	delete(c.windows, win.WindowID())
-
-	// ensure that if handler calls Closed to ensure that
-	// window is closed, the answer will be correct.
-	win.parent = nil
 	c.releaseHandler(content)
 	return nil
 }
@@ -1684,7 +2120,9 @@ func (c *Component) findWindow(winID uint64) (*browserWindow, bool) {
 }
 
 func (c *Component) overwriteFocusWindowUnion(w term.Writer) {
-	if !c.config.Frame || c.focusWindow == (thandler.Window{}) || c.wm.SizeTiles() == 1 {
+	// Without union junctions, the window manager drew these corners
+	// already, along with any frame images that rewriting them would hide.
+	if !c.union.Frame || c.focusWindow == (thandler.Window{}) || c.wm.SizeTiles() == 1 {
 		return
 	}
 	topleft := c.focusWindow.Position()
@@ -1752,9 +2190,15 @@ func (c *Component) wallpaper() browserapi.Handler {
 	// if wallpaper is being set as a default on a floating window
 	floating := component.StaticFloating(instance, 80, 40)
 	return &browserContent{
-		Handler: NopFloatingHandler(handler.NopFloatingFromComponent(floating)),
-		c:       c,
+		Handler:   NopFloatingHandler(handler.NopFloatingFromComponent(floating)),
+		c:         c,
+		wallpaper: true,
 	}
+}
+
+func isWallpaper(h browserapi.Handler) bool {
+	bc, ok := h.(*browserContent)
+	return ok && bc.wallpaper
 }
 
 func (c *Component) newBrowserContent(content browserapi.Handler) browserapi.Handler {
@@ -1841,6 +2285,9 @@ type browserContent struct {
 	browserapi.Handler
 	closed bool
 	c      *Component
+	// wallpaper marks the placeholder of windows without content, which
+	// must never be mistaken for content the user can act on.
+	wallpaper bool
 }
 
 // allow for advanced use of content
@@ -1875,6 +2322,16 @@ func (c *browserContent) Close() error {
 	}
 	c.closed = true
 	return c.Handler.Close()
+}
+
+// StitchFrame satisfies tcomponent.FrameStitcher for a Handler that
+// does, and draws nothing for any other.
+func (c *browserContent) StitchFrame(
+	w term.Writer, f *component.Frame, g *tcomponent.FrameGraphics, width, height int, bar bool,
+) {
+	if s, ok := c.Handler.(tcomponent.FrameStitcher); ok {
+		s.StitchFrame(w, f, g, width, height, bar)
+	}
 }
 
 var _ Floating = (*browserFloatingContent)(nil)
@@ -1936,14 +2393,29 @@ func (c *browserScrollableContent) MaxSeekOffset() int {
 	return c.Handler.(component.Scrollable).MaxSeekOffset()
 }
 
-// satisfies handler.WindowSubscriber to
-// override union attrs of focus window
+// satisfies handler.WindowSubscriber to override union attrs of the
+// focus window and to acknowledge what it shows.
 type wmSubscriber Component
 
 func (s *wmSubscriber) OnFocus(prev, focus thandler.Window) {
 	c := (*Component)(s)
 	c.focusWindow = focus
 	c.dirtyTabs = true
+	c.ackInSight()
+}
+
+// OnWindowClose satisfies handler.WindowCloseHandler. The content is
+// left alone: closeWindow releases it, and content that exited has
+// already been closed by browserContent.Handle.
+func (s *wmSubscriber) OnWindowClose(win thandler.Window) {
+	c := (*Component)(s)
+	bw, ok := c.windows[win.ID()]
+	if !ok {
+		return
+	}
+	delete(c.windows, win.ID())
+	// Holders of the closed window must not be able to fill or close it.
+	bw.parent = nil
 }
 
 // OnBarClose routes window-bar close icon clicks through closeWindow so
@@ -1999,6 +2471,10 @@ func (c *Component) OnBarDrop(win thandler.Window, pos term.Coordinates) bool {
 	}
 
 	tab, _ := c.NewTabFromContent(winDropTabIcon, c.winDropTabName(src), src)
+	if tab == nil {
+		c.clearWinDropPreview()
+		return false
+	}
 	// Release the preview before closing the float so the teardown
 	// below cannot reclaim the window we are about to fill.
 	c.winDrop = winDropState{}
@@ -2149,15 +2625,6 @@ func (c *Component) winDropVeil() (win *browserWindow, label string, ok bool) {
 	}
 }
 
-// SetInterrupter installs the interrupter used to animate the
-// drop-target veil. Without one the veil is still drawn, but only
-// repaints when the host redraws for another reason.
-func (c *Component) SetInterrupter(i term.Interrupter) {
-	c.interrupter = i
-	c.shadedTabs.SetInterrupter(i)
-	c.shadedTabs.SetRunning(c.HasActiveTabs())
-}
-
 // WindowAt returns the window rendered at pos, which is relative to
 // this Component's top-left corner.
 func (c *Component) WindowAt(pos term.Coordinates) (Window, bool) {
@@ -2235,12 +2702,12 @@ func (c *Component) DragDrop(pos term.Coordinates, paths []string) bool {
 // startVeil starts the shared pulse ticker used by both the file-drop
 // veil and the window-drag preview veil.
 func (c *Component) startVeil() {
-	if c.interrupter == nil || c.drag.cancel != nil {
+	if c.config.Interrupter == nil || c.drag.cancel != nil {
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	c.drag.cancel = cancel
-	interrupter := c.interrupter
+	interrupter := c.config.Interrupter
 	frame := &c.drag.frame
 	go debug.CapturePanicReport(func() {
 		ticker := time.NewTicker(time.Second / dragVeilFPS)
@@ -2270,10 +2737,10 @@ func (c *Component) stopVeil() {
 }
 
 func (c *Component) interrupt() {
-	if c.interrupter == nil {
+	if c.config.Interrupter == nil {
 		return
 	}
-	_ = c.interrupter.Interrupt(context.Background())
+	_ = c.config.Interrupter.Interrupt(context.Background())
 }
 
 // drawDragVeil renders the browser with a pulsing veil over the file
@@ -2314,11 +2781,11 @@ func (c *Component) drawDragVeil(w term.Writer) bool {
 	labelSpan := writeCenteredLabel(cells, pos, width, height, label,
 		c.config.DropTargetLabelAttr)
 	shader.Virtual(shader.Pulse(shader.PulseParams{
-		Color:        c.config.DropTargetAttr.Fg,
-		PeriodFrames: dragVeilPeriodFrame,
-		Intensity:    dragVeilIntensity,
+		Color:     c.config.DropTargetAttr.Fg,
+		Pulses:    1,
+		Intensity: dragVeilIntensity,
 	}, c.config.DropTargetAttr), pos, width, height).
-		Shade(int(c.drag.frame.Load()), 0, cells)
+		Shade(int(c.drag.frame.Load()%dragVeilPeriodFrame), dragVeilPeriodFrame, cells)
 
 	for y, row := range cells {
 		for x, cl := range row {

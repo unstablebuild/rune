@@ -18,10 +18,43 @@ package llm
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"unstable.build/rune/internal/llm/llamaserver"
 )
 
 func TestCodexClientConfigDisablesMaxOutputTokens(t *testing.T) {
 	assert.True(t, (Config{}).CodexClientConfig().DisableMaxOutputTokens)
+}
+
+func TestLocalConfigEmbeddingService(t *testing.T) {
+	local := DefaultConfig().Local
+	local.Service.ContextWindow = 32768
+	local.Service.BatchSize = 512
+	local.Service.NGPULayers = 12
+	local.Service.Threads = 6
+	local.Service.FlashAttention = true
+	local.Service.MaxOutputTokens = 4096
+	local.Service.ChatTemplate = "chatml"
+	local.Service.NCacheReuse = 256
+	local.Service.Host = "127.0.0.2"
+	local.Service.ServerBinPath = "/opt/llama-server"
+	local.Service.ExtraArgs = []string{"--jinja"}
+	local.Service.MaxServers = 3
+	local.Service.IdleTimeout = 10 * time.Minute
+	local.Service.StartupTimeout = time.Minute
+
+	assert.Equal(t, llamaserver.Config{
+		ContextWindow:  2048,
+		BatchSize:      2048,
+		NGPULayers:     12,
+		Threads:        6,
+		FlashAttention: true,
+		Host:           "127.0.0.2",
+		ServerBinPath:  "/opt/llama-server",
+		IdleTimeout:    45 * time.Second,
+		MaxServers:     1,
+		StartupTimeout: time.Minute,
+	}, local.EmbeddingService(45*time.Second))
 }

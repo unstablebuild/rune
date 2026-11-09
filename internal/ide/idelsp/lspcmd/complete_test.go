@@ -22,6 +22,8 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"fmt"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
@@ -30,6 +32,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/handler/handlertest"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	runehandlertest "unstable.build/rune/internal/handler/handlertest"
 )
 
 var _ browserapi.Floating = (*completionHandler)(nil)
@@ -637,8 +640,115 @@ func TestCompleteHandlerCommandAsync(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, gotFloating)
 
-	// Wait for the goroutine to finish by closing.
+	t.Cleanup(func() { require.NoError(t, gotFloating.Close()) })
+	floating := gotFloating.(*completionHandler)
+	<-floating.fetchDone.Done()
+	<-floating.drainDone.Done()
+
+	w, height := gotFloating.Dimensions()
+	gotFloating.Resize(w, height)
+	sw := term.NewStringWriter(w, height)
+	for _, step := range []struct {
+		name  string
+		key   term.Key
+		focus int
+	}{
+		{name: "initial selection", focus: 0},
+		{name: "move down", key: term.KeyArrowDown, focus: 1},
+		{name: "move up", key: term.KeyArrowUp, focus: 0},
+	} {
+		t.Run(step.name, func(t *testing.T) {
+			if step.key != 0 {
+				exit, handled := gotFloating.Handle(term.Event{Type: term.EventKey, Key: step.key})
+				assert.False(t, exit)
+				require.True(t, handled)
+			}
+			gotFloating.Draw(sw)
+			require.NoError(t, sw.Flush())
+			cells := sw.Cells()
+			for y, item := range items {
+				want := term.Attributes{Fg: term.ColorGray}
+				if y == step.focus {
+					want = term.Attributes{Fg: term.ColorWhite, Bg: term.ColorGray}
+				}
+				for x := range w {
+					cell := cells[y*w+x]
+					assert.Equal(t, want.Bg, cell.Bg, "row %d column %d background", y, x)
+					if x < len(item.Label) {
+						assert.Equal(t, want.Fg, cell.Fg, "row %d column %d foreground", y, x)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestCompletionCloseLeavesItsWindow(t *testing.T) {
+	lsp := &mockLSP{
+		completionFn: func(
+			_ context.Context, _ semanticapi.CompletionParams,
+		) (semanticapi.CompletionResult, error) {
+			return semanticapi.CompletionResult{Items: testItems("alpha")}, nil
+		},
+	}
+	var gotFloating browserapi.Floating
+	wm := &mockWindowManager{
+		floatingFn: func(
+			h browserapi.Floating, _ browserapi.FloatingConfig,
+		) (browserapi.Window, error) {
+			gotFloating = h
+			return &mockWindow{id: 1}, nil
+		},
+	}
+	h := CompleteHandler(lsp, &mockEditor{}, wm, DefaultCompleteConfig(), term.NopInterrupter(), nil)
+	require.NoError(t, h.HandleCommand(context.Background(), textapi.Command{Resource: &mockHandler{}}))
+	require.NotNil(t, gotFloating)
+
 	require.NoError(t, gotFloating.Close())
+
+	assert.Zero(t, wm.closeWindowCalls,
+		"the window may already show other content when the completion is released")
+}
+
+func TestCompleteHandlerFetchOutlivesRequestContext(t *testing.T) {
+	release := make(chan struct{})
+	lsp := &mockLSP{
+		completionFn: func(
+			ctx context.Context, _ semanticapi.CompletionParams,
+		) (semanticapi.CompletionResult, error) {
+			<-release
+			if err := ctx.Err(); err != nil {
+				return semanticapi.CompletionResult{}, err
+			}
+			return semanticapi.CompletionResult{Items: testItems("alpha", "beta")}, nil
+		},
+	}
+	var gotFloating browserapi.Floating
+	wm := &mockWindowManager{
+		floatingFn: func(
+			h browserapi.Floating, _ browserapi.FloatingConfig,
+		) (browserapi.Window, error) {
+			gotFloating = h
+			return &mockWindow{id: 1}, nil
+		},
+	}
+	h := CompleteHandler(lsp, &mockEditor{}, wm, DefaultCompleteConfig(), term.NopInterrupter(), nil)
+
+	// textrpc cancels the request context once HandleCommand returns.
+	ctx, cancel := context.WithCancel(t.Context())
+	require.NoError(t, h.HandleCommand(ctx, textapi.Command{Resource: &mockHandler{}}))
+	cancel()
+	close(release)
+
+	floating, ok := gotFloating.(*completionHandler)
+	require.True(t, ok)
+	<-floating.fetchDone.Done()
+	<-floating.drainDone.Done()
+	floating.mu.Lock()
+	labels := len(floating.labels)
+	floating.mu.Unlock()
+	assert.Equal(t, 2, labels)
+	require.NoError(t, floating.Close())
 }
 
 func TestCompletionHandlerClose(t *testing.T) {
@@ -707,5 +817,22 @@ func TestCompleteHandlerCommand(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, test.wantFloating, floatingCalled)
 		})
+	}
+}
+
+func TestCompletionHandlerPointerLeaves(t *testing.T) {
+	t.Parallel()
+	labels := make([]string, 60)
+	for i := range labels {
+		labels[i] = fmt.Sprintf("ƒ completionCandidate%02d(ctx context.Context) error", i)
+	}
+	for _, size := range []struct{ w, h int }{{60, 15}, {1, 1}} {
+		ch := newCompletionHandler(labels)
+		ch.list.FocusDown()
+		ch.list.FocusDown()
+		runehandlertest.RunPointerLeaves(t, ch, size.w, size.h)
+		assert.Equal(t, 2, ch.list.FocusOffset(), "the pointer must not move the focus")
+		_, ok := ch.Focus()
+		assert.False(t, ok, "the pointer must not accept a completion")
 	}
 }

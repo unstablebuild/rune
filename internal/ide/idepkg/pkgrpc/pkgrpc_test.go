@@ -37,6 +37,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/handler/repl"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"google.golang.org/grpc"
@@ -368,6 +369,69 @@ func TestInstallEventsKeepTheirOrder(t *testing.T) {
 	assert.Len(t, events.recorded(), 5)
 }
 
+type reportingProgressWriter struct {
+	repl.ProgressWriter
+	mu      sync.Mutex
+	changes []idepkg.RequirementChange
+}
+
+func (w *reportingProgressWriter) ReportRequirement(c idepkg.RequirementChange) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.changes = append(w.changes, c)
+}
+
+func (w *reportingProgressWriter) reported() []idepkg.RequirementChange {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]idepkg.RequirementChange(nil), w.changes...)
+}
+
+func TestInstallRelaysRequirementChanges(t *testing.T) {
+	t.Parallel()
+	change := idepkg.RequirementChange{
+		Package: "go", From: "1", To: "2", RequiredBy: "gopls",
+	}
+	tests := []struct {
+		name         string
+		reporter     bool
+		wantReported []idepkg.RequirementChange
+		wantEvents   []string
+	}{
+		{
+			name:         "a reporting writer receives the change",
+			reporter:     true,
+			wantReported: []idepkg.RequirementChange{change},
+		},
+		{
+			name: "without a reporter the change is a notification",
+			wantEvents: []string{
+				fmt.Sprintf("notify %d Upgraded go from 1 to 2, required by gopls.",
+					browserapi.LevelInfo),
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			c, events := serve(t, &fakePackageManager{
+				install: func(_ context.Context, _ string, _ release.Version, pw repl.ProgressWriter) error {
+					pw.(idepkg.RequirementReporter).ReportRequirement(change)
+					return nil
+				},
+			})
+			reporter := &reportingProgressWriter{ProgressWriter: repl.NopProgressWriter()}
+			var pw repl.ProgressWriter
+			if tt.reporter {
+				pw = reporter
+			}
+			require.NoError(t, c.InstallPackageVersion(context.Background(), "gopls", "1", pw))
+			assert.Equal(t, tt.wantReported, reporter.reported())
+			assert.Equal(t, tt.wantEvents, events.recorded())
+		})
+	}
+}
+
 // hostGOROOT reads the GOROOT the host's user config sets.
 func hostGOROOT(t *testing.T, dataDir string) string {
 	t.Helper()
@@ -396,8 +460,8 @@ func TestInstallAsksTheClient(t *testing.T) {
 		return fmt.Sprintf("notify %d saved configpkg configuration updates to your config. "+
 			"None are in effect yet; restart the program to load: %s.", level, keys)
 	}
-	v1GOROOT := filepath.Join(dataDir, "pkg", "configpkg", "1", "go")
-	v2GOROOT := filepath.Join(dataDir, "pkg", "configpkg", "2", "go")
+	const v1GOROOT = "$RUNE_DATADIR/pkg/configpkg/1/go"
+	const v2GOROOT = "$RUNE_DATADIR/pkg/configpkg/2/go"
 
 	require.NoError(t, c.InstallPackageVersion(ctx, "configpkg", "1", nil))
 	assert.Equal(t, []string{
@@ -431,11 +495,10 @@ func TestInstallAsksTheClient(t *testing.T) {
 // ownUI is the UI of the user of a GUI node, who did not ask for what
 // its peers install.
 type ownUI struct {
-	browserapi.WindowManager
 	t *testing.T
 }
 
-func (u ownUI) Floating(browserapi.Floating, browserapi.FloatingConfig) (browserapi.Window, error) {
+func (u ownUI) Prompt(browserapi.PromptConfig, handler.PromptHandler) (browserapi.Window, error) {
 	u.t.Error("a peer's install must not prompt the node's own user")
 	return nil, errors.New("unexpected prompt")
 }
@@ -460,7 +523,7 @@ func TestPeerInstallAsksThePeer(t *testing.T) {
 	events.answer(t, 0, true)
 	events.await(t, fmt.Sprintf("notify %d saved configpkg configuration updates to your config. "+
 		"None are in effect yet; restart the program to load: env.GOROOT.", browserapi.LevelSuccess))
-	assert.Equal(t, filepath.Join(dataDir, "pkg", "configpkg", "2", "go"), hostGOROOT(t, dataDir))
+	assert.Equal(t, "$RUNE_DATADIR/pkg/configpkg/2/go", hostGOROOT(t, dataDir))
 	assert.Empty(t, own.Active(), "nothing is notified to the node's own user")
 }
 

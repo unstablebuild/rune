@@ -170,7 +170,9 @@ func (h *testCmd) HandleCommand(
 		Watcher: watcher,
 	}
 
-	_, err := h.executor.Start(ctx, goCmd)
+	// The request ctx is canceled when HandleCommand returns, and the
+	// executor kills the process with it.
+	_, err := h.executor.Start(context.WithoutCancel(ctx), goCmd)
 	if err != nil {
 		_ = pw.Close()
 		_, _ = h.notify.Notify(browserapi.LevelError, "start go test: %s", err)

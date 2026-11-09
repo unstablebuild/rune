@@ -1,0 +1,77 @@
+//kage:unit pixels
+
+// Cursor trail: a tapered flame that stretches from where the cursor was
+// to where it jumped, its tail burning down into the cursor.
+//
+// Rune sets the uniforms below; see "Cursor effect" in the Animations guide.
+// Rectangles are x, y, width, height in window pixels. imageSrc0 is the
+// window, and the color returned replaces the pixel.
+
+package main
+
+// Typing, Enter and line wraps leave no trail: only moves of two rows, or
+// of nine columns along a row, pay for a full-window pass per frame.
+const MinJumpRows = 2
+const MinJumpColumns = 9
+
+var Time float
+var Duration float
+var Cursor vec4
+var PreviousCursor vec4
+
+// unevenCapsule is the signed distance from p to the capsule from a to b
+// whose radius goes from ra at a to rb at b. See
+// https://iquilezles.org/articles/distfunctions2d/.
+func unevenCapsule(p, a, b vec2, ra, rb float) float {
+	p -= a
+	b -= a
+	h := dot(b, b)
+	q := vec2(dot(p, vec2(b.y, -b.x)), dot(p, b)) / h
+	q.x = abs(q.x)
+	k := ra - rb
+	c := vec2(sqrt(h-k*k), k)
+	cr := c.x*q.y - c.y*q.x
+	if cr < 0 {
+		return sqrt(h*dot(q, q)) - ra
+	}
+	if cr > c.x {
+		return sqrt(h*(dot(q, q)+1-2*q.y)) - rb
+	}
+	return dot(c, q) - ra
+}
+
+func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
+	window := imageSrc0UnsafeAt(srcPos)
+	head := Cursor.xy + Cursor.zw/2
+	from := PreviousCursor.xy + PreviousCursor.zw/2
+	size := max(Cursor.z, Cursor.w)
+
+	p := clamp(Time/Duration, 0, 1)
+	// The tail races to the cursor and slows down as it reaches it.
+	tail := mix(from, head, 1-pow(1-p, 3))
+	// Thin bar and underline cursors still leave a cell-wide flame.
+	rb := max(min(Cursor.z, Cursor.w), 0.45*size) / 2
+	ra := 0.2 * rb
+	// Also covers typing back to where the jump started, which would leave
+	// the capsule no length.
+	if distance(head, tail) <= rb-ra+1 {
+		return window
+	}
+
+	d := unevenCapsule(dstPos.xy, tail, head, ra, rb)
+	// t runs from 0 at the tail to 1 at the cursor.
+	axis := head - tail
+	t := clamp(dot(dstPos.xy-tail, axis)/dot(axis, axis), 0, 1)
+
+	flicker := 0.85 + 0.15*sin(t*37-Time*90)
+	c := mix(vec3(0.35, 0.02, 0.01), vec3(0.85, 0.12, 0.02), smoothstep(0, 0.35, t))
+	c = mix(c, vec3(1, 0.45, 0.05), smoothstep(0.3, 0.8, t))
+	c = mix(c, vec3(1, 0.8, 0.35), smoothstep(0.85, 1, t)*flicker)
+
+	fade := 1 - smoothstep(0.55, 1, p)
+	a := (1 - smoothstep(-1, 1, d)) * mix(0.55, 1, t) * fade
+	glow := exp(-max(d, 0)/rb) * 0.3 * t * fade
+	glowColor := vec3(1, 0.35, 0.05)
+	flame := vec4(c*a+glowColor*glow*(1-a), a+glow*(1-a))
+	return flame + window*(1-flame.a)
+}

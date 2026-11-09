@@ -42,18 +42,20 @@ func TestMultiWorkspace(t *testing.T) {
 		recover            bool
 		wantError          bool
 		wantOtherWorkspace bool
-		expectAddWorkspace workspaceapi.URI
+		expectAcquire      workspaceapi.URI
 	}{
 		{"should load files in the default workspace",
 			parseURI(t, "memory:///"), parseURI(t, "memory:///file.txt"), false, false, false, workspaceapi.URI{}},
 		{"should recover files in the default workspace",
 			parseURI(t, "memory:///"), parseURI(t, "memory:///file.txt"), true, false, false, workspaceapi.URI{}},
-		{"should load files in a registered non-default workspace and should call AddWorkspace with dir URI",
+		{"should load files in a registered non-default workspace and should call AcquireWorkspace with dir URI",
 			parseURI(t, "memory:///"), parseURI(t, "test:///file.txt"), false, false, false, parseURI(t, "test:///")},
-		{"should recover files in a registered non-default workspace and should call AddWorkspace with dir URI",
+		{"should recover files in a registered non-default workspace and should call AcquireWorkspace with dir URI",
 			parseURI(t, "memory:///"), parseURI(t, "test:///file.txt"), true, false, false, parseURI(t, "test:///")},
 		{"should return other workspace error when file belongs to already open workspace",
 			parseURI(t, "memory:///"), parseURI(t, "test:///file.txt"), false, true, true, workspaceapi.URI{}},
+		{"should return other workspace error when recovering a file that belongs to already open workspace",
+			parseURI(t, "memory:///"), parseURI(t, "test:///file.txt"), true, true, true, workspaceapi.URI{}},
 		{"should not load files in a non-registered non-default workspace",
 			parseURI(t, "memory:///"), parseURI(t, "nagging:///file.txt"), false, true, false, workspaceapi.URI{}},
 		{"should not recover files in a non-registered non-default workspace",
@@ -91,17 +93,17 @@ func TestMultiWorkspace(t *testing.T) {
 				assert.NoError(t, err)
 			}
 
-			if tcase.expectAddWorkspace != (workspaceapi.URI{}) {
-				require.Len(t, mockManager.addWorkspace, 1)
-				assert.Equal(t, mockManager.addWorkspace[0], tcase.expectAddWorkspace)
+			if tcase.expectAcquire != (workspaceapi.URI{}) {
+				require.Len(t, mockManager.acquired, 1)
+				assert.Equal(t, mockManager.acquired[0], tcase.expectAcquire)
 			}
 		})
 	}
 }
 
 type mockManager struct {
-	addWorkspace []workspaceapi.URI
-	workspace    workspace.Workspace
+	acquired  []workspaceapi.URI
+	workspace workspace.Workspace
 }
 
 func (m *mockManager) RegisterScheme(string, schemeapi.SchemeFunc) error {
@@ -110,13 +112,13 @@ func (m *mockManager) RegisterScheme(string, schemeapi.SchemeFunc) error {
 func (m *mockManager) UnregisterScheme(string) error {
 	panic("should not be called")
 }
-func (m *mockManager) AddWorkspace(ctx context.Context, uri workspaceapi.URI) (
+func (m *mockManager) AcquireWorkspace(ctx context.Context, uri workspaceapi.URI) (
 	workspace.Workspace, error,
 ) {
 	if uri.Scheme() != "test" {
 		return nil, errors.New("not registered")
 	}
-	m.addWorkspace = append(m.addWorkspace, uri)
+	m.acquired = append(m.acquired, uri)
 	scheme, err := NewNopScheme(uri.Scheme())(ctx, config.NopConfig(), uri)
 	if err != nil {
 		return nil, err
@@ -138,11 +140,7 @@ func (m *mockManager) Workspace(file workspaceapi.URI) (workspace.Workspace, boo
 	return m.workspace, true, nil
 }
 
-func (m *mockManager) IncrementReference(workspaceapi.URI) {}
-
-func (m *mockManager) DecrementReference(workspaceapi.URI) error { return nil }
-
-func (m *mockManager) RemoveWorkspace(workspaceapi.URI) (workspace.Workspace, bool) {
+func (m *mockManager) ReleaseWorkspace(workspaceapi.URI) (workspace.Workspace, bool) {
 	panic("should not be called")
 }
 
@@ -187,7 +185,7 @@ func TestMultiExtraneousReleasesWorkspaceOnFileClose(t *testing.T) {
 		fc, err := multi.Load(extraneousFile, cell.NewBuffer(), extraneousDir, false)
 		require.NoError(t, err)
 		require.True(t, m.HasWorkspace(extraneousDir),
-			"loadExtraneous must install the ad-hoc workspace")
+			"Load must install the ad-hoc workspace")
 
 		require.NoError(t, fc.Close())
 		assert.False(t, m.HasWorkspace(extraneousDir),
@@ -254,7 +252,7 @@ func TestMultiExtraneousReleasesWorkspaceOnFileClose(t *testing.T) {
 		assert.False(t, m.HasWorkspace(extraneousDir))
 	})
 
-	t.Run("default workspace is never released by refcount", func(t *testing.T) {
+	t.Run("closing an extraneous file leaves the default workspace registered", func(t *testing.T) {
 		m := newRefcountManager(t)
 		def := defaultWorkspaceFor(t, ctx, m, defURI)
 		multi := workspace.Multi(ctx, hideExtraneous(m), def, defURI)
@@ -266,10 +264,113 @@ func TestMultiExtraneousReleasesWorkspaceOnFileClose(t *testing.T) {
 		require.NoError(t, fc.Close())
 
 		assert.True(t, m.HasWorkspace(defURI),
-			"the IDE-owned default workspace must not be subject "+
-				"to the refcount; only workspaces explicitly "+
-				"incremented should be released on decrement")
+			"the default workspace's own reference must keep it registered")
 	})
+}
+
+func TestMultiLoaderForHoldsTheWorkspaceOfTheFile(t *testing.T) {
+	ctx := context.Background()
+	defURI := parseURI(t, "memory:///")
+	extraneousDir := parseURI(t, "test:///tmp/")
+	extraneousFile := parseURI(t, "test:///tmp/file.txt")
+
+	tests := []struct {
+		name string
+		done func(t *testing.T, l workspace.FileLoader)
+	}{
+		{
+			name: "until it is released",
+			done: func(t *testing.T, l workspace.FileLoader) {
+				require.NoError(t, l.Release())
+			},
+		},
+		{
+			name: "until the file it loaded closes",
+			done: func(t *testing.T, l workspace.FileLoader) {
+				fc, err := l.Load(cell.NewBuffer(), extraneousDir, false)
+				require.NoError(t, err)
+				require.NoError(t, fc.Close())
+			},
+		},
+		{
+			name: "until the file it recovered closes",
+			done: func(t *testing.T, l workspace.FileLoader) {
+				fc, err := l.Recover(parseURI(t, "test:///tmp/file.txt.rswp"), cell.NewBuffer(), false)
+				require.NoError(t, err)
+				require.NoError(t, fc.Close())
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newRefcountManager(t)
+			def := defaultWorkspaceFor(t, ctx, m, defURI)
+			multi := workspace.Multi(ctx, hideExtraneous(m), def, defURI)
+
+			l, err := multi.LoaderFor(extraneousFile)
+			require.NoError(t, err)
+			require.True(t, m.HasWorkspace(extraneousDir),
+				"LoaderFor must take the reference itself, so the load "+
+					"can run off the event loop")
+
+			tt.done(t, l)
+			assert.False(t, m.HasWorkspace(extraneousDir))
+			assert.True(t, m.HasWorkspace(defURI))
+		})
+	}
+}
+
+func TestMultiExtraneousFailedOpenLeavesNoWorkspaceRegistered(t *testing.T) {
+	ctx := context.Background()
+	defURI := parseURI(t, "memory:///")
+	dir := t.TempDir()
+	dirURI := parseURI(t, "file://"+dir)
+	fileURI := parseURI(t, "file://"+dir+"/file.txt")
+	require.NoError(t, os.WriteFile(dir+"/file.txt", []byte("x\n"), 0o644))
+	swapDir := parseURI(t, "file://"+t.TempDir())
+
+	tests := []struct {
+		name string
+		open func(t *testing.T, multi workspace.Workspace) error
+	}{
+		{
+			name: "load of a file whose swap already exists",
+			open: func(t *testing.T, multi workspace.Workspace) error {
+				fs, err := workspace.NewFileScheme(ctx, config.NopConfig(), dirURI)
+				require.NoError(t, err)
+				holder := workspace.NewSchemeWorkspace(dirURI, fs, inlineSchedule)
+				t.Cleanup(func() { _ = holder.Close() })
+				held, err := holder.Load(fileURI, cell.NewBuffer(), swapDir, false)
+				require.NoError(t, err)
+				t.Cleanup(func() { _ = held.Close() })
+
+				_, err = multi.Load(fileURI, cell.NewBuffer(), swapDir, false)
+				require.ErrorIs(t, err, workspaceapi.ErrFileAlreadyOpen)
+				return err
+			},
+		},
+		{
+			name: "recover from a swap that does not exist",
+			open: func(t *testing.T, multi workspace.Workspace) error {
+				missingSwap := parseURI(t, "file://"+dir+"/.file.txt.swp")
+				_, err := multi.Recover(fileURI, missingSwap, cell.NewBuffer(), false)
+				return err
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newRefcountManager(t)
+			require.NoError(t, m.RegisterScheme(workspace.FileScheme, workspace.NewFileScheme))
+			def := defaultWorkspaceFor(t, ctx, m, defURI)
+			multi := workspace.Multi(ctx, hideExtraneous(m), def, defURI)
+
+			require.Error(t, tt.open(t, multi))
+			assert.False(t, m.HasWorkspace(dirURI),
+				"a failed open holds no reference, so it must not leave "+
+					"the directory's workspace registered and open")
+		})
+	}
 }
 
 // remoteWorkspace is a workspace.Workspace that also satisfies
@@ -302,7 +403,7 @@ func defaultWorkspaceFor(
 	m *workspace.Manager, uri workspaceapi.URI,
 ) workspace.Workspace {
 	t.Helper()
-	w, err := m.AddWorkspace(ctx, uri)
+	w, err := m.AcquireWorkspace(ctx, uri)
 	require.NoError(t, err)
 	return w
 }
@@ -311,8 +412,8 @@ func defaultWorkspaceFor(
 // workspace yet" from Workspace(file). This mirrors the production
 // visibleWorkspaceManager (ide/workspace_handler.go), which only
 // surfaces workspaces that own a visible tab slot; workspaces
-// created on demand never appear there, so multi.loadExtraneous
-// can find the existing manager entry via AddWorkspace without
+// created on demand never appear there, so multi.LoaderFor
+// can find the existing manager entry via AcquireWorkspace without
 // bailing out with ErrOpenInOtherWorkspace.
 func hideExtraneous(m *workspace.Manager) workspace.WorkspaceManager {
 	return hidingManager{m: m}
@@ -330,24 +431,16 @@ func (h hidingManager) UnregisterScheme(s string) error {
 	return h.m.UnregisterScheme(s)
 }
 
-func (h hidingManager) AddWorkspace(ctx context.Context, uri workspaceapi.URI) (
+func (h hidingManager) AcquireWorkspace(ctx context.Context, uri workspaceapi.URI) (
 	workspace.Workspace, error,
 ) {
-	return h.m.AddWorkspace(ctx, uri)
+	return h.m.AcquireWorkspace(ctx, uri)
 }
 
 func (h hidingManager) Workspace(workspaceapi.URI) (workspace.Workspace, bool, error) {
 	return nil, false, nil
 }
 
-func (h hidingManager) IncrementReference(uri workspaceapi.URI) {
-	h.m.IncrementReference(uri)
-}
-
-func (h hidingManager) DecrementReference(uri workspaceapi.URI) error {
-	return h.m.DecrementReference(uri)
-}
-
-func (h hidingManager) RemoveWorkspace(uri workspaceapi.URI) (workspace.Workspace, bool) {
-	return h.m.RemoveWorkspace(uri)
+func (h hidingManager) ReleaseWorkspace(uri workspaceapi.URI) (workspace.Workspace, bool) {
+	return h.m.ReleaseWorkspace(uri)
 }

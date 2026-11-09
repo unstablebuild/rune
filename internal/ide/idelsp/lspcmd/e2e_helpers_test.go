@@ -19,6 +19,7 @@ package lspcmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -377,6 +378,10 @@ func (s *localScheme) Signal(
 		return fmt.Errorf("process %d not found", pid)
 	}
 	return proc.Signal(sig)
+}
+
+func (*localScheme) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
 }
 
 func (s *localScheme) Close() error {

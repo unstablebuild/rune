@@ -21,17 +21,22 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
-
-	thandler "unstable.build/rune/internal/handler"
 )
 
 // MinTileWidth is the narrowest tile that still fits a readable
 // lesson, frame excluded.
 const MinTileWidth = 24
 
-// footerHeight is the room the footer's buttons take: their own row
-// and a row of air that keeps them off the lesson above.
-const footerHeight = 2
+// footerHeight is the room the footer's buttons take: their own row, a
+// row of air that keeps them off the lesson above and the rows the
+// images under them reach above and below.
+func footerHeight(style PromptStyle) int {
+	if style.ButtonImages == nil {
+		return 2
+	}
+	o := style.ButtonImages.Outset
+	return 2 + max(o.Top, 0) + max(o.Bottom, 0)
+}
 
 // The middle footer button has two faces: it skips the step the lesson
 // is on, but steps forward through copy the user paged back to, where
@@ -59,7 +64,7 @@ type TileStyle struct {
 	FrameAttr         term.Attributes
 	FocusFrameAttr    term.Attributes
 	ScrollBarAttr     term.Attributes
-	ScrollBarChar     rune
+	ScrollBarCharSet  component.ScrollBarCharSet
 	Prompt            PromptStyle
 }
 
@@ -87,7 +92,7 @@ type Tile struct {
 // tileBody stacks the tutorial over the footer and scrolls with the
 // tutorial, so the frame around it draws the tutorial's scroll bar.
 type tileBody struct {
-	*thandler.FrameUnion
+	*handler.FrameUnion
 	tut Tutorial
 }
 
@@ -110,6 +115,7 @@ func NewTile(tut Tutorial, style TileStyle, onBack, onAdvance, onStop func()) *T
 				return component.NopFloating()
 			},
 			BackgroundAttributes: style.Prompt.BackgroundAttr,
+			ButtonImages:         style.Prompt.ButtonImages,
 		},
 		PromptHandler: handler.FuncPromptHandler(func(idx int, _ string) {
 			switch idx {
@@ -123,18 +129,20 @@ func NewTile(tut Tutorial, style TileStyle, onBack, onAdvance, onStop func()) *T
 		}, func() error { return nil }),
 		OptionAttr:    style.Prompt.TextAttr,
 		HighlightAttr: style.Prompt.HighlightAttr,
+		HoverAttr:     style.Prompt.HoverAttr,
+		ClickedAttr:   style.Prompt.ClickedAttr,
 	}
 	t.footer = handler.NewPrompt(t.footerCfg)
 	t.flattenFooter()
-	t.body = tileBody{FrameUnion: thandler.NewFrameUnion(tut), tut: tut}
+	t.body = tileBody{FrameUnion: handler.NewFrameUnion(tut), tut: tut}
 	// Neither member has a frame of its own to stitch.
 	t.body.Frame = false
-	t.body.UnionBottom(t.footer, footerHeight)
+	t.body.UnionBottom(t.footer, footerHeight(style.Prompt))
 	t.outer = t.body
 	if style.Frame {
 		t.frame = handler.NewFrame(t.body)
 		t.frame.ScrollBarAttributes = style.ScrollBarAttr
-		t.frame.ScrollBarChar = style.ScrollBarChar
+		t.frame.ScrollBarCharSet = style.ScrollBarCharSet
 		t.outer = t.frame
 		t.SetFocused(false)
 	}
@@ -143,9 +151,12 @@ func NewTile(tut Tutorial, style TileStyle, onBack, onAdvance, onStop func()) *T
 
 // flattenFooter undoes the prompt's standing highlight of its first
 // option: the footer's buttons are mouse-only, so no option is the
-// default and none should look like one.
+// default and none should look like one. The pointer on it is another
+// matter: it looks hovered, or pressed.
 func (t *Tile) flattenFooter() {
-	t.footer.SetOptionAttr(0, t.style.Prompt.TextAttr)
+	if t.footer.Hovered() != 0 {
+		t.footer.SetOptionAttr(0, t.style.Prompt.TextAttr)
+	}
 }
 
 // SetFocused marks the tile as the pane holding focus, which the frame
@@ -202,16 +213,16 @@ func (t *Tile) syncFooter() {
 }
 
 // Handle routes mouse events to whatever they landed on, the footer's
-// buttons included, and every other event to the tutorial. exit is
-// always false: the tile is closed by the host, never by its content.
+// buttons included, and every other event to the tutorial. A motion
+// off the lesson and the footer, the reserved inset included, tells
+// them the pointer left. exit is always false: the tile is closed by
+// the host, never by its content.
 func (t *Tile) Handle(ev term.Event) (bool, bool) {
 	if ev.Type == term.EventMouse {
-		if ev.MouseX >= t.width-t.inset {
+		if ev.Key != 0 && ev.MouseX >= t.width-t.inset {
 			return false, false
 		}
-		if ev.Key != term.MouseLeft {
-			defer t.flattenFooter()
-		}
+		defer t.flattenFooter()
 	}
 	_, handled := t.outer.Handle(ev)
 	return false, handled

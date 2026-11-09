@@ -22,8 +22,9 @@ import (
 	"syscall"
 
 	"github.com/unstablebuild/rune-go-sdk/api/config"
+	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
-	"unstable.build/rune/internal/ide/ideshell/workspaceshell"
+	"unstable.build/rune/internal/ide/console/ideconsole/workspaceshell"
 	"unstable.build/rune/internal/workspace"
 )
 
@@ -60,15 +61,14 @@ func newExtensionsExecutor() (*extensionsExecutor, error) {
 	if err != nil {
 		return nil, fmt.Errorf("new extensions root scheme: %w", err)
 	}
-	return newExtensionsExecutorFromUnderlying(
-		workspaceExecutorAdapter{e: root}), nil
+	return newExtensionsExecutorFromUnderlying(root), nil
 }
 
 // newExtensionsExecutorFromUnderlying wraps the given underlying
 // executor in a tracking workspaceshell.Executor. Used by tests so
 // they can inject a recording mock instead of a real fileScheme.
 func newExtensionsExecutorFromUnderlying(
-	underlying workspaceapi.Executor,
+	underlying schemeapi.Executor,
 ) *extensionsExecutor {
 	return &extensionsExecutor{
 		shell: workspaceshell.NewExecutor(underlying),
@@ -89,6 +89,12 @@ func (e *extensionsExecutor) StartCommand(
 // Signal satisfies schemeapi.Executor.
 func (e *extensionsExecutor) Signal(pid workspaceapi.Pid, sig syscall.Signal) error {
 	return e.shell.Signal(pid, sig)
+}
+
+// LookPath satisfies schemeapi.Executor. Like StartCommand, it looks
+// name up in extensionsCmdDir whatever dir is.
+func (e *extensionsExecutor) LookPath(ctx context.Context, name, _ string) (string, error) {
+	return e.shell.LookPath(ctx, name, extensionsCmdDir)
 }
 
 // Close satisfies schemeapi.Executor (and io.Closer).

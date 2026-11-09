@@ -325,9 +325,10 @@ func (s *Server) VersionInUse(ctx context.Context, req *pkgrpcpb.PackageRef) (*p
 }
 
 // changeStream is the progress writer and the idepkg.UI of the install
-// or use a client requested. Progress and notices may come from the
-// installer's goroutines, including after the install returned, so
-// sends are serialized and stop at close.
+// or use a client requested. It reports requirement changes to the
+// client, which decides how to show them. Progress and notices may come
+// from the installer's goroutines, including after the install
+// returned, so sends are serialized and stop at close.
 type changeStream struct {
 	mu      sync.Mutex
 	stream  changeServerStream
@@ -339,12 +340,21 @@ type changeStream struct {
 	lastPrompt uint64
 }
 
-var _ idepkg.UI = (*changeStream)(nil)
+var (
+	_ idepkg.UI                  = (*changeStream)(nil)
+	_ idepkg.RequirementReporter = (*changeStream)(nil)
+)
 
 func (c *changeStream) Progress(progress, total int64, units string) {
 	c.send(&pkgrpcpb.ChangeEvent{Event: &pkgrpcpb.ChangeEvent_Progress{Progress: &pkgrpcpb.Progress{
 		Progress: progress, Total: total, Units: units,
 	}}})
+}
+
+func (c *changeStream) ReportRequirement(r idepkg.RequirementChange) {
+	c.send(&pkgrpcpb.ChangeEvent{Event: &pkgrpcpb.ChangeEvent_Requirement{
+		Requirement: requirementToProto(r),
+	}})
 }
 
 func (c *changeStream) Notify(

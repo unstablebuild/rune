@@ -33,6 +33,7 @@ func TestMaxOutputTokens(t *testing.T) {
 		model string
 		want  int
 	}{
+		{GPT6Dot1Terra, 0},
 		{GPT5Dot6Sol, 0},
 		{GPT5Dot6Terra, 0},
 		{GPT5Dot6Luna, 0},
@@ -52,10 +53,16 @@ func TestMaxOutputTokens(t *testing.T) {
 func TestModelEntries(t *testing.T) {
 	entries := ModelEntries()
 	byName := make(map[string]int, len(entries))
+	foundGPT6Dot1Terra := false
 	for _, e := range entries {
 		byName[e.Name] = e.ContextWindow
 		assert.Equal(t, LLMProvider, e.Provider)
 		assert.Equal(t, OpenAICompatibleURL, e.BaseURL)
+		if e.Name == GPT6Dot1Terra {
+			foundGPT6Dot1Terra = true
+			assert.Equal(t, LLMProvider, e.Provider)
+			assert.Equal(t, OpenAICompatibleURL, e.BaseURL)
+		}
 	}
 	// Catalog names are bare upstream slugs; the router disambiguates
 	// duplicates between providers via ModelEntry.Provider.
@@ -64,6 +71,8 @@ func TestModelEntries(t *testing.T) {
 	assert.False(t, hasBareGPT56)
 	assert.Equal(t, 872000, byName["gpt-6-astra"])
 	assert.Equal(t, 872000, byName["gpt-6-sol"])
+	assert.True(t, foundGPT6Dot1Terra)
+	assert.Equal(t, 872000, byName[GPT6Dot1Terra])
 	assert.Equal(t, 872000, byName["gpt-6-luna"])
 	assert.Equal(t, 872000, byName["gpt-5.6-sol"])
 	assert.Equal(t, 872000, byName["gpt-5.6-terra"])

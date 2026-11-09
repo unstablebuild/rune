@@ -18,6 +18,7 @@ package syntaxtest
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"os"
@@ -27,11 +28,14 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
@@ -306,6 +310,22 @@ func TestTreeFoldsIntegration(t *testing.T) {
 		assert.ElementsMatch(t, expected, actual)
 
 		cleanup()
+	})
+
+	t.Run("InitialFolds of a ready tree queries the tree when drained", func(t *testing.T) {
+		buffer, tree := newParsedTree(t, fileContent, syntax.DefaultConfig(),
+			syntax.FuncLocationSetter(func(textapi.LocationList) {}))
+
+		it, ok := tree.InitialFolds()
+		require.True(t, ok)
+		buffer.InsertString(term.Coordinates{}, "// edit\n")
+
+		actual, err := iterator.ToSlice(context.Background(), it)
+		require.NoError(t, err)
+		assert.Equal(t, []term.Range{{
+			Start: term.Coordinates{Y: 3},
+			End:   term.Coordinates{X: 1, Y: 7},
+		}}, actual)
 	})
 }
 
@@ -766,6 +786,32 @@ func TestTreeIndentsIntegration(t *testing.T) {
 
 	cleanup()
 	goleak.VerifyNone(t)
+}
+
+func TestTreeIndentationAtCostIsIndependentOfFileSize(t *testing.T) {
+	content := func(funcs int) string {
+		var b strings.Builder
+		b.WriteString("package main\n\n")
+		for i := range funcs {
+			fmt.Fprintf(&b, "func f%d() {\n\tprintln(%d)\n}\n\n", i, i)
+		}
+		b.WriteString("func main() {\n\tprintln(0)\n}\n")
+		return b.String()
+	}
+	allocs := func(funcs int) float64 {
+		c := content(funcs)
+		_, tree := newParsedTree(t, c, syntax.DefaultConfig(),
+			syntax.FuncLocationSetter(func(textapi.LocationList) {}))
+		bodyLine := strings.Count(c, "\n") - 2
+		indent, ok := tree.IndentationAt(bodyLine)
+		require.True(t, ok)
+		require.Equal(t, 1, indent)
+		return testing.AllocsPerRun(5, func() { tree.IndentationAt(bodyLine) })
+	}
+
+	small, large := allocs(1), allocs(1_000)
+	assert.InDelta(t, small, large, 10,
+		"IndentationAt must query the lines around it, not the whole file")
 }
 
 func TestEdgeCaseIndents(t *testing.T) {
@@ -1741,6 +1787,220 @@ func TestTreeStateIntegration(t *testing.T) {
 	})
 }
 
+func TestTreeParseIntegration(t *testing.T) {
+	ctx := context.Background()
+	newBuffer := func(t *testing.T, content string) *cell.Buffer {
+		buf := cell.NewBuffer()
+		_, err := buf.ReadFrom(strings.NewReader(content))
+		require.NoError(t, err)
+		return buf
+	}
+	offLoopConfig := func(t *testing.T) syntax.Config {
+		cfg := syntax.DefaultConfig()
+		cfg.ScheduleNextTick = func(func()) bool {
+			t.Error("Parse and Install must not schedule work on the event loop")
+			return false
+		}
+		return cfg
+	}
+	uri, err := workspaceapi.ParseURI("memory:///parse.go")
+	require.NoError(t, err)
+
+	t.Run("Install publishes the highlights New does, with the tree ready", func(t *testing.T) {
+		var expected []textapi.Location
+		newTree := treesitter.New(ctx, &recordingNotifications{}, term.NopInterrupter(),
+			newInstalledPkgManager(t), syntax.FuncLocationSetter(func(ll textapi.LocationList) {
+				expected = collectLocations(ll)
+			}), uri, newBuffer(t, fileContent), nopFlusherCloser{}, nil, syntax.DefaultConfig())
+		it := newTree.(*treesitter.Tree).State()
+		_, ok := it.Next(ctx)
+		require.True(t, ok)
+		require.NoError(t, it.Close())
+		require.NoError(t, newTree.Close())
+		require.NotEmpty(t, expected)
+
+		buf := newBuffer(t, fileContent)
+		parsed := treesitter.Parse(ctx, newInstalledPkgManager(t), uri, buf, offLoopConfig(t))
+		_, installed := buf.View().(*treesitter.Tree)
+		require.False(t, installed, "Parse must not install the tree into the buffer")
+
+		var published [][]textapi.Location
+		loc := syntax.FuncLocationSetter(func(ll textapi.LocationList) {
+			published = append(published, collectLocations(ll))
+		})
+		notis := &recordingNotifications{}
+		tree := parsed.Install(notis, term.NopInterrupter(), loc, nopFlusherCloser{}, nil)
+		defer func() { require.NoError(t, tree.Close()) }()
+
+		assert.Empty(t, notis.messages)
+		require.Len(t, published, 1, "Install must publish the parsed highlights once")
+		assert.Equal(t, expected, published[0])
+		view, ok := buf.View().(*treesitter.Tree)
+		require.True(t, ok, "Install must install the tree as the buffer's view")
+		assert.Equal(t, tree, syntax.Tree(view))
+
+		it = view.State()
+		defer it.Close()
+		state, ok := it.Next(ctx)
+		require.True(t, ok)
+		assert.Equal(t, syntax.State{
+			LangID: "go", Folds: true, Indents: true, Highlights: true, Progress: 1,
+		}, state)
+		_, ok = view.IndentationAt(10)
+		assert.True(t, ok, "an installed tree must serve indents synchronously")
+
+		buf.InsertString(term.Coordinates{}, "// edit\n")
+		assert.Len(t, published, 2, "an installed tree must re-highlight buffer edits")
+	})
+
+	t.Run("Install notifies a grammar that failed to load", func(t *testing.T) {
+		buf := newBuffer(t, fileContent)
+		pkgs := errPkgManager{err: errors.New("package store unreachable")}
+		parsed := treesitter.Parse(ctx, pkgs, uri, buf, offLoopConfig(t))
+
+		notis := &recordingNotifications{}
+		tree := parsed.Install(notis, term.NopInterrupter(),
+			syntax.FuncLocationSetter(func(textapi.LocationList) {}), nopFlusherCloser{}, nil)
+		defer func() { require.NoError(t, tree.Close()) }()
+
+		assert.Equal(t, []string{`syntax tree parser for language ("go") is not available`},
+			notis.messages)
+		it := tree.(*treesitter.Tree).State()
+		defer it.Close()
+		state, ok := it.Next(ctx)
+		require.True(t, ok)
+		assert.Equal(t, syntax.State{ParserError: "package store unreachable"}, state)
+	})
+
+	t.Run("a missing grammar package installs a tree without syntax", func(t *testing.T) {
+		buf := newBuffer(t, fileContent)
+		parsed := treesitter.Parse(ctx, errPkgManager{err: storageapi.ErrNotFound},
+			uri, buf, offLoopConfig(t))
+
+		notis := &recordingNotifications{}
+		tree := parsed.Install(notis, term.NopInterrupter(),
+			syntax.FuncLocationSetter(func(textapi.LocationList) {}), nopFlusherCloser{}, nil)
+		defer func() { require.NoError(t, tree.Close()) }()
+
+		assert.Empty(t, notis.messages)
+		_, ok := buf.View().(*treesitter.Tree)
+		assert.True(t, ok)
+		it := tree.(*treesitter.Tree).State()
+		defer it.Close()
+		state, ok := it.Next(ctx)
+		require.True(t, ok)
+		assert.Equal(t, syntax.State{LangID: "go"}, state)
+	})
+
+	t.Run("Close releases a tree that is never installed", func(t *testing.T) {
+		buf := newBuffer(t, fileContent)
+		parsed := treesitter.Parse(ctx, newInstalledPkgManager(t), uri, buf, offLoopConfig(t))
+		require.NoError(t, parsed.Close())
+		require.NoError(t, parsed.Close())
+		_, installed := buf.View().(*treesitter.Tree)
+		assert.False(t, installed)
+	})
+}
+
+func TestTreeFullReparseBudget(t *testing.T) {
+	ctx := context.Background()
+	newConfig := func(budget time.Duration) syntax.Config {
+		cfg := syntax.DefaultConfig()
+		cfg.StrictErrors = true
+		cfg.FullReparseBudget = budget
+		return cfg
+	}
+	tests := []struct {
+		name   string
+		budget time.Duration
+		// flushPublished is how many highlight lists a flush publishes.
+		flushPublished int
+		// editError is the parser error reported after an edit that
+		// introduces a syntax error.
+		editError string
+	}{
+		{
+			name:           "without a budget every full re-parse runs",
+			flushPublished: 1,
+			editError:      "re-parse error",
+		},
+		{
+			name:           "within the budget every full re-parse runs",
+			budget:         time.Hour,
+			flushPublished: 1,
+			editError:      "re-parse error",
+		},
+		{
+			name:           "over the budget the drift-correcting re-parses are skipped",
+			budget:         time.Nanosecond,
+			flushPublished: 0,
+			editError:      "incremental parse error",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name+": flush", func(t *testing.T) {
+			var published int
+			_, tree := newParsedTree(t, fileContent, newConfig(test.budget),
+				syntax.FuncLocationSetter(func(textapi.LocationList) { published++ }))
+			published = 0
+
+			ch, err := tree.Flush(ctx)
+			require.NoError(t, err)
+			require.NoError(t, <-ch)
+			assert.Equal(t, test.flushPublished, published)
+		})
+
+		t.Run(test.name+": edit with a syntax error", func(t *testing.T) {
+			buf, tree := newParsedTree(t, fileContent, newConfig(test.budget),
+				syntax.FuncLocationSetter(func(textapi.LocationList) {}))
+
+			buf.InsertString(term.Coordinates{Y: 8}, "func {\n")
+			it := tree.State()
+			defer it.Close()
+			state, ok := it.Next(ctx)
+			require.True(t, ok)
+			assert.Equal(t, test.editError, state.ParserError)
+		})
+	}
+
+	t.Run("over the budget, edits with syntax errors keep highlights of a full pass",
+		func(t *testing.T) {
+			var incremental []textapi.Location
+			buf, _ := newParsedTree(t, benchmarkGoContent(120), newConfig(time.Nanosecond),
+				syntax.FuncLocationSetter(func(ll textapi.LocationList) {
+					incremental = collectLocations(ll)
+				}))
+			fullHighlights := func() []textapi.Location {
+				var full []textapi.Location
+				newParsedTree(t, buf.String(), syntax.DefaultConfig(),
+					syntax.FuncLocationSetter(func(ll textapi.LocationList) {
+						full = collectLocations(ll)
+					}))
+				return full
+			}
+
+			rng := rand.New(rand.NewSource(317))
+			insertions := []string{"x", "0", `"s"`, "// note", "/*", "*/", "\n\t", "{", "}", "("}
+			for i := range 80 {
+				row := rng.Intn(buf.Rows())
+				columns := buf.Columns(row)
+				start := term.Coordinates{Y: row, X: rng.Intn(columns + 1)}
+				end := start
+				content := insertions[rng.Intn(len(insertions))]
+				if columns > start.X && rng.Intn(3) == 0 {
+					end.X += 1 + rng.Intn(columns-start.X)
+					if rng.Intn(2) == 0 {
+						content = ""
+					}
+				}
+				buf.Edit(ctx, start, end, content)
+				if diff := firstHighlightDiff(fullHighlights(), incremental); diff != "" {
+					t.Fatalf("highlight mismatch after edit %d: %s", i, diff)
+				}
+			}
+		})
+}
+
 func TestTreeIncrementalParseReleasesPreviousTree(t *testing.T) {
 	pkgs := newInstalledPkgManagerWithFiles(t,
 		"go/tree-sitter.so",
@@ -1936,6 +2196,52 @@ func BenchmarkKeystrokeInsert(b *testing.B) {
 		}
 		inserted = !inserted
 	}
+}
+
+// Large files with a syntax error used to run a full parse and highlight on
+// the event loop for every keystroke and flush, and indent by querying the
+// whole file.
+func BenchmarkTreeLargeFileWithSyntaxError(b *testing.B) {
+	var sb strings.Builder
+	sb.WriteString("package main\n\n")
+	for i := range 10_000 {
+		fmt.Fprintf(&sb, "func f%d(n int) int {\n\tif n > %d {\n\t\treturn n\n\t}\n\treturn %d\n}\n\n",
+			i, i, i)
+	}
+	sb.WriteString("func broken( {\n")
+	content := sb.String()
+	newTree := func(b *testing.B) (*cell.Buffer, *treesitter.Tree) {
+		return newParsedTree(b, content, syntax.DefaultConfig(),
+			syntax.FuncLocationSetter(func(textapi.LocationList) {}))
+	}
+	b.Run("Keystroke", func(b *testing.B) {
+		buf, _ := newTree(b)
+		pos := term.Coordinates{Y: buf.Rows() / 2, X: 1}
+		inserted := false
+		for b.Loop() {
+			if inserted {
+				buf.Edit(context.Background(), pos, term.Coordinates{Y: pos.Y, X: pos.X + 1}, "")
+			} else {
+				buf.InsertString(pos, "x")
+			}
+			inserted = !inserted
+		}
+	})
+	b.Run("Flush", func(b *testing.B) {
+		_, tree := newTree(b)
+		for b.Loop() {
+			ch, err := tree.Flush(context.Background())
+			require.NoError(b, err)
+			require.NoError(b, <-ch)
+		}
+	})
+	b.Run("IndentationAt", func(b *testing.B) {
+		buf, tree := newTree(b)
+		line := buf.Rows() / 2
+		for b.Loop() {
+			tree.IndentationAt(line)
+		}
+	})
 }
 
 func TestTreeQueryIntegration(t *testing.T) {
@@ -2256,6 +2562,9 @@ func newTestCase(
 	}
 	cfg.ReparseOnErrors = false
 	cfg.StrictErrors = true
+	// Tests compare incremental highlights with those of a flush's full
+	// re-parse, which a slow run could otherwise push over the budget.
+	cfg.FullReparseBudget = 0
 
 	ed := vi.Editor(vi.WithStatusBarConfig(true, text.StatusBarConfig{
 		Publisher:        texttest.NopEditor(),
@@ -2317,6 +2626,89 @@ func (n nopNotifications) UpdateNotificationProgress(
 	id, message string, progress, total int64,
 ) error {
 	return nil
+}
+
+type recordingNotifications struct {
+	messages []string
+}
+
+func (n *recordingNotifications) Notify(
+	_ browserapi.NotificationLevel, msg string, args ...any,
+) (string, error) {
+	n.messages = append(n.messages, fmt.Sprintf(msg, args...))
+	return "", nil
+}
+
+func (n *recordingNotifications) NotifyOnce(
+	level browserapi.NotificationLevel, msg string, args ...any,
+) (string, error) {
+	return n.Notify(level, msg, args...)
+}
+
+func (n *recordingNotifications) UpdateNotificationProgress(string, string, int64, int64) error {
+	return nil
+}
+
+type nopFlusherCloser struct{}
+
+func (nopFlusherCloser) Flush(context.Context) (<-chan error, error) {
+	return closedErrChan(), nil
+}
+
+func (nopFlusherCloser) ForceFlush(context.Context) (<-chan error, error) {
+	return closedErrChan(), nil
+}
+
+func (nopFlusherCloser) Reload(context.Context) (<-chan error, error) {
+	return closedErrChan(), nil
+}
+
+func (nopFlusherCloser) LastFlush() time.Time { return time.Time{} }
+
+func (nopFlusherCloser) Close() error { return nil }
+
+func closedErrChan() <-chan error {
+	ch := make(chan error, 1)
+	ch <- nil
+	close(ch)
+	return ch
+}
+
+type errPkgManager struct {
+	err error
+}
+
+func (m errPkgManager) LibDir(context.Context, string) (iterator.Iterator[string], error) {
+	return nil, m.err
+}
+
+func collectLocations(ll textapi.LocationList) []textapi.Location {
+	for ok := true; ok; _, ok = ll.Prev() {
+	}
+	var ret []textapi.Location
+	for l, ok := ll.Current(); ok; l, ok = ll.Next() {
+		ret = append(ret, l)
+	}
+	return ret
+}
+
+// newParsedTree returns a ready Go tree installed into a buffer holding
+// content. It opens no tab, so it leaves the tab names of other tests'
+// goldens unchanged.
+func newParsedTree(
+	t testing.TB, content string, cfg syntax.Config, loc syntax.LocationSetter,
+) (*cell.Buffer, *treesitter.Tree) {
+	t.Helper()
+	buf := cell.NewBuffer()
+	_, err := buf.ReadFrom(strings.NewReader(content))
+	require.NoError(t, err)
+	uri, err := workspaceapi.ParseURI("memory:///parsed.go")
+	require.NoError(t, err)
+	parsed := treesitter.Parse(context.Background(), newInstalledPkgManager(t), uri, buf, cfg)
+	tree := parsed.Install(&recordingNotifications{}, term.NopInterrupter(), loc,
+		nopFlusherCloser{}, nil)
+	t.Cleanup(func() { require.NoError(t, tree.Close()) })
+	return buf, tree.(*treesitter.Tree)
 }
 
 func newTree(t testing.TB) (*treesitter.Tree, func()) {

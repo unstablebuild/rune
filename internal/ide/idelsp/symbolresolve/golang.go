@@ -50,11 +50,14 @@ var Go = &Spec{
 	IsExported:          isExported,
 	DisplayPathFromURI:  goPackagePathFromURI,
 	Extensions:          []string{".go"},
-	MethodDefQuery: `(method_declaration ` +
+	MethodDefQuery: `[(method_declaration ` +
 		`receiver: (parameter_list (parameter_declaration ` +
 		`type: [(type_identifier) @recv ` +
 		`(pointer_type (type_identifier) @recv)])) ` +
-		`name: (field_identifier) @method)`,
+		`name: (field_identifier) @method) ` +
+		`(type_spec name: (type_identifier) @recv ` +
+		`type: (interface_type (method_elem ` +
+		`name: (field_identifier) @method)))]`,
 	MethodDefCaptures: []string{"recv", "method"},
 }
 

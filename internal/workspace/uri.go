@@ -24,6 +24,17 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 )
 
+// The schemes of the remote workspaces that workspacessh and
+// workspacerune implement. They are declared here so that packages can
+// recognize those URIs without linking the network clients behind them.
+// RuneScheme reaches the machines of Rune's network, TailscaleScheme
+// those of the user's own Tailscale network.
+const (
+	SSHScheme       = "ssh"
+	RuneScheme      = "rune"
+	TailscaleScheme = "tailscale"
+)
+
 func checkURIRelative(a, b workspaceapi.URI) error {
 	if a.Scheme() != b.Scheme() {
 		return fmt.Errorf("unexpected different schemes: %s vs %s",
@@ -54,6 +65,23 @@ func URIUnderPrefix(uri, prefix workspaceapi.URI) bool {
 	}
 	base := strings.TrimSuffix(prefix.Path(), "/")
 	return uri.Path() == base || strings.HasPrefix(uri.Path(), base+"/")
+}
+
+// URIKey returns a key that is equal for two URIs naming the same
+// document. The path of a file URI folds case when caseSensitive is
+// false, as reported by Workspace.PathCaseSensitive; any other URI is
+// keyed exactly, since case may matter to the scheme serving it.
+func URIKey(uri workspaceapi.URI, caseSensitive bool) string {
+	if caseSensitive || uri.Scheme() != FileScheme {
+		return uri.String()
+	}
+	return strings.ToLower(uri.String())
+}
+
+// SameDocument reports whether a and b name the same document under the
+// rules of URIKey.
+func SameDocument(a, b workspaceapi.URI, caseSensitive bool) bool {
+	return URIKey(a, caseSensitive) == URIKey(b, caseSensitive)
 }
 
 // DefaultSwapFile returns the swap entry a file gets inside swapDir,
@@ -105,7 +133,7 @@ func IsWorkspaceURI(workspace Workspace, uri workspaceapi.URI) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return strings.HasPrefix(uri.Path(), workspaceURI.Path()), nil
+	return URIUnderPrefix(uri, workspaceURI), nil
 }
 
 // NewWorkspaceURI expands the given path with the given workspaceapi.URI

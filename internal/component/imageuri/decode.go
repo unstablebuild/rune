@@ -24,9 +24,25 @@ import (
 	_ "image/gif"  // register the gif decoder
 	_ "image/jpeg" // register the jpeg decoder
 	_ "image/png"  // register the png decoder
+	"path"
+	"strings"
 
 	_ "golang.org/x/image/webp" // register the webp decoder
 )
+
+var extensions = map[string]bool{
+	".gif":  true,
+	".jpeg": true,
+	".jpg":  true,
+	".png":  true,
+	".webp": true,
+}
+
+// IsImagePath reports whether the extension of the slash-separated path
+// p, in any case, names a format the components decode.
+func IsImagePath(p string) bool {
+	return extensions[strings.ToLower(path.Ext(p))]
+}
 
 // maxDimension bounds each side of a decoded image. The header is
 // checked before decoding so that a small, highly compressed payload

@@ -153,6 +153,9 @@ func (h *Handler) Draw(w term.Writer) {
 // Keyboard events provide less-like navigation.
 func (h *Handler) Handle(ev term.Event) (exit, handled bool) {
 	if ev.Type == term.EventMouse {
+		if link := h.comp.LinkAt(ev.MouseX, ev.MouseY); link != nil && link.URL != "" {
+			term.SetPointerShape(ev, term.PointerLink)
+		}
 		return h.mouse.Handle(ev)
 	}
 

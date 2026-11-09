@@ -197,6 +197,9 @@ func (w Window) Close() error {
 	if err != nil {
 		return err
 	}
+	if h := w.wm.config.WindowClose; h != nil {
+		h.OnWindowClose(w)
+	}
 
 	if isFocus && ok {
 		// finally change the focus, which triggers the OnFocus

@@ -44,6 +44,8 @@ func NewExtension() (extensionapi.WorkspaceExtension, extensionapi.Metadata) {
 		DeveloperKey:   "064D4ABCFA6D9338",
 		ExtensionID:    "python",
 		ExtensionName:  "Python Language Extension",
+		// debug.Tag is stamped by the rune-language-python build with the package's release tag.
+		ExtensionVersion: debug.Tag,
 		Permissions: extensionapi.NewPermissions(
 			extensionapi.PermissionLSP,
 			extensionapi.PermissionEditor,
@@ -76,7 +78,7 @@ func (e *pyExtension) ExtendWorkspace(
 		cfg,
 		hostDataDir(ctx, w),
 		w.Storage(ctx),
-		w.WindowManager(ctx),
+		w.Prompter(ctx),
 		w.RegisterREPLCommand,
 	)
 }
@@ -106,7 +108,7 @@ func (e *pyExtension) extendWorkspaceWith(
 	cfg config.Config,
 	dataDir string,
 	storage storageapi.Service,
-	wm browserapi.WindowManager,
+	prompter browserapi.Prompter,
 	registerREPL func(textapi.CommandManual, textapi.REPLHandler) error,
 ) error {
 	// The REPL command's cwd is always the workspace root, independent of
@@ -125,7 +127,7 @@ func (e *pyExtension) extendWorkspaceWith(
 		Tools:       []string{"uv", "uvx", "ty", "ruff"},
 		InitRoot: func(ctx context.Context, root langext.Root, tools *langext.Tools) error {
 			return initializeProjectRoot(
-				ctx, fs, exec, notify, lsp, tools, cfg, dataDir, setting, wm, root)
+				ctx, fs, exec, notify, lsp, tools, cfg, dataDir, setting, prompter, root)
 		},
 	})
 	syncEnv := func(ctx context.Context, root langext.Root) error {
@@ -183,11 +185,11 @@ func initializeProjectRoot(
 	cfg config.Config,
 	dataDir string,
 	setting *envSetting,
-	wm browserapi.WindowManager,
+	prompter browserapi.Prompter,
 	root langext.Root,
 ) error {
 	if detectProjectAt(ctx, fs, root.Dir) != kindScript {
-		managed := managedEnvironmentAllowed(ctx, notify, setting, wm, root)
+		managed := managedEnvironmentAllowed(ctx, notify, setting, prompter, root)
 		slog.Warn("initializing project root", "managed",
 			managed, "root", root.Dir, "uri", root.URI)
 		if managed {
@@ -246,7 +248,7 @@ func managedEnvironmentAllowed(
 	ctx context.Context,
 	notify browserapi.Notifications,
 	setting *envSetting,
-	wm browserapi.WindowManager,
+	prompter browserapi.Prompter,
 	root langext.Root,
 ) bool {
 	managed, known, err := setting.get(ctx, root)
@@ -257,7 +259,7 @@ func managedEnvironmentAllowed(
 	if known {
 		return managed
 	}
-	answer, answered := askManageEnvironment(ctx, wm, root)
+	answer, answered := askManageEnvironment(ctx, prompter, root)
 	if !answered {
 		return false
 	}
@@ -291,8 +293,11 @@ func setupManagedEnvironment(
 
 	if pin := debugpyPin(cfg, notify); pin != "" {
 		uvx := findTool(ctx, tools, notify, "uvx")
+		// ctx may be a command's, canceled once its output is drained,
+		// which would kill the prewarm.
+		prewarmCtx := context.WithoutCancel(ctx)
 		go debug.CapturePanicReport(func() {
-			prewarmDebugpy(ctx, uvx, exec, root.Dir, pin)
+			prewarmDebugpy(prewarmCtx, uvx, exec, root.Dir, pin)
 		})
 	}
 	return envErr

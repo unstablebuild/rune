@@ -30,6 +30,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/textapi/textrpc"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term/termrpc"
+	"unstable.build/rune/internal/debug"
 )
 
 type commandClientStream struct {
@@ -210,7 +211,7 @@ func (c *commandClientStream) HandleCommand(
 		return fmt.Errorf("send complete request: %w", err)
 	}
 	if replyCh != nil && c.supportsHandleCancel {
-		go c.cancelOnDone(ctx, pending)
+		go debug.CapturePanicReport(func() { c.cancelOnDone(ctx, pending) })
 	}
 	return nil
 }

@@ -105,3 +105,22 @@ func TestToRGBA(t *testing.T) {
 	assert.Equal(t, 2*4, got.Stride)
 	assert.Equal(t, color.RGBA{G: 255, A: 255}, got.RGBAAt(1, 2))
 }
+
+func TestIsImagePath(t *testing.T) {
+	for _, tt := range []struct {
+		path string
+		want bool
+	}{
+		{path: "a.png", want: true},
+		{path: "dir/a.JPG", want: true},
+		{path: "a.jpeg", want: true},
+		{path: "a.gif", want: true},
+		{path: "a.webp", want: true},
+		{path: "a.svg"},
+		{path: "a.png/b"},
+		{path: "png"},
+		{path: ""},
+	} {
+		assert.Equal(t, tt.want, IsImagePath(tt.path), tt.path)
+	}
+}

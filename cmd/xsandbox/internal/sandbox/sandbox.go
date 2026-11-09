@@ -36,7 +36,10 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/handler/repl"
+	"github.com/unstablebuild/rune-go-sdk/iterator"
+	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/cmd/xsandbox/internal/record"
 	"unstable.build/rune/cmd/xsandbox/internal/spec"
 	"unstable.build/rune/internal/extension"
@@ -295,23 +298,23 @@ func (s *sandbox) ExpectCommand(name string, repl bool, timeout time.Duration) e
 // InvokeCommand satisfies spec.Host.
 func (s *sandbox) InvokeCommand(
 	name string, args []string, repl bool, timeout time.Duration,
-) error {
+) (string, error) {
 	expName := fmt.Sprintf("invoke_command %s %v", name, args)
 	if repl {
 		expName = fmt.Sprintf("invoke_repl_command %s %v", name, args)
 	}
 	if err := s.ensureLaunched(); err != nil {
-		return err
+		return "", err
 	}
 	start := time.Now()
-	err := s.invoke(name, args, repl, timeout)
-	return s.finishExpectation(expName, start, err)
+	out, err := s.invoke(name, args, repl, timeout)
+	return out, s.finishExpectation(expName, start, err)
 }
 
-func (s *sandbox) invoke(name string, args []string, repl bool, timeout time.Duration) error {
+func (s *sandbox) invoke(name string, args []string, repl bool, timeout time.Duration) (string, error) {
 	h, ok := s.editor.lookup(name, repl)
 	if !ok {
-		return fmt.Errorf("command %q is not registered (registered: %v)",
+		return "", fmt.Errorf("command %q is not registered (registered: %v)",
 			name, s.editor.registeredNames(repl))
 	}
 	ctx, cancel := context.WithTimeout(s.waitCtx, timeout)
@@ -328,39 +331,131 @@ func (s *sandbox) invoke(name string, args []string, repl bool, timeout time.Dur
 	})
 	s.locker.Unlock()
 	if err != nil {
-		return fmt.Errorf("dispatch command %q: %w", name, err)
+		return "", fmt.Errorf("dispatch command %q: %w", name, err)
 	}
 	if !waiter.Claimed {
-		return nil
+		return "", nil
 	}
 	select {
 	case err := <-waiter.Ch:
 		if err != nil {
-			return fmt.Errorf("command %q failed: %w", name, err)
+			return "", fmt.Errorf("command %q failed: %w", name, err)
 		}
-		return nil
+		return "", nil
 	case <-ctx.Done():
-		return fmt.Errorf("command %q did not complete: %w", name, ctx.Err())
+		return "", fmt.Errorf("command %q did not complete: %w", name, ctx.Err())
 	}
 }
 
+// replOutputWidth is the width REPL output is rendered at, which is the
+// width the extension lays it out at.
+const replOutputWidth = 80
+
+// invokeREPL runs a REPL command and returns its output, rendered as a
+// console shows it.
 func (s *sandbox) invokeREPL(
 	ctx context.Context, h textapi.REPLHandler, name string, args []string,
-) error {
+) (string, error) {
 	iter, err := h.HandleCommand(ctx, repl.Command{Name: name, Args: args}, nopProgress{})
 	if err != nil {
-		return fmt.Errorf("dispatch repl command %q: %w", name, err)
+		return "", fmt.Errorf("dispatch repl command %q: %w", name, err)
 	}
+	out, err := renderOutput(ctx, iter)
+	if err != nil {
+		return out, fmt.Errorf("repl command %q failed: %w", name, err)
+	}
+	return out, ctx.Err()
+}
+
+// renderOutput renders the REPL output iter yields, one component after
+// the other, as a console shows it.
+func renderOutput(ctx context.Context, iter iterator.Iterator[component.Responsive]) (string, error) {
 	if iter == nil {
-		return nil
+		return "", nil
 	}
+	defer func() { _ = iter.Close() }()
+	var out []string
 	for {
-		_, ok := iter.Next(ctx)
+		c, ok := iter.Next(ctx)
 		if !ok {
 			break
 		}
+		out = append(out, renderResponsive(c, replOutputWidth))
 	}
-	return ctx.Err()
+	return strings.Join(out, "\n"), iter.Err()
+}
+
+// CompleteCommand satisfies spec.Host.
+func (s *sandbox) CompleteCommand(
+	name string, args []string, repl bool, timeout time.Duration,
+) ([]string, error) {
+	expName := fmt.Sprintf("complete_command %s %v", name, args)
+	if repl {
+		expName = fmt.Sprintf("complete_repl_command %s %v", name, args)
+	}
+	if err := s.ensureLaunched(); err != nil {
+		return nil, err
+	}
+	start := time.Now()
+	values, err := s.completeCommand(name, args, repl, timeout)
+	return values, s.finishExpectation(expName, start, err)
+}
+
+func (s *sandbox) completeCommand(
+	name string, args []string, repl bool, timeout time.Duration,
+) ([]string, error) {
+	h, ok := s.editor.lookup(name, repl)
+	if !ok {
+		return nil, fmt.Errorf("command %q is not registered (registered: %v)",
+			name, s.editor.registeredNames(repl))
+	}
+	ctx, cancel := context.WithTimeout(s.waitCtx, timeout)
+	defer cancel()
+	// As Rune does, completion runs without s.locker held.
+	var it iterator.Iterator[string]
+	var err error
+	if repl {
+		it, err = h.(textapi.REPLHandler).Complete(ctx, name, args)
+	} else {
+		it, _, err = h.(text.CommandHandler).Complete(ctx, textapi.Command{Name: name, Args: args})
+	}
+	if err != nil {
+		return nil, fmt.Errorf("complete %s: %w", name, err)
+	}
+	values, err := drain(ctx, it)
+	if err != nil {
+		return values, fmt.Errorf("complete %s: %w", name, err)
+	}
+	return values, nil
+}
+
+// REPLHelp satisfies spec.Host.
+func (s *sandbox) REPLHelp(name string, args []string, timeout time.Duration) (string, error) {
+	if err := s.ensureLaunched(); err != nil {
+		return "", err
+	}
+	start := time.Now()
+	out, err := s.replHelp(name, args, timeout)
+	return out, s.finishExpectation(fmt.Sprintf("repl_help %s %v", name, args), start, err)
+}
+
+func (s *sandbox) replHelp(name string, args []string, timeout time.Duration) (string, error) {
+	h, ok := s.editor.lookup(name, true)
+	if !ok {
+		return "", fmt.Errorf("command %q is not registered (registered: %v)",
+			name, s.editor.registeredNames(true))
+	}
+	ctx, cancel := context.WithTimeout(s.waitCtx, timeout)
+	defer cancel()
+	iter, err := h.(textapi.REPLHandler).Help(ctx, args)
+	if err != nil {
+		return "", fmt.Errorf("help of repl command %q: %w", name, err)
+	}
+	out, err := renderOutput(ctx, iter)
+	if err != nil {
+		return out, fmt.Errorf("help of repl command %q failed: %w", name, err)
+	}
+	return out, ctx.Err()
 }
 
 // ExpectResourceOpener satisfies spec.Host.
@@ -409,6 +504,53 @@ func (s *sandbox) openResource(scheme, rawURI string, timeout time.Duration) err
 		return fmt.Errorf("show %s: %w", rawURI, err)
 	}
 	return nil
+}
+
+// CompleteResource satisfies spec.Host.
+func (s *sandbox) CompleteResource(scheme, prefix string, timeout time.Duration) ([]string, error) {
+	if err := s.ensureLaunched(); err != nil {
+		return nil, err
+	}
+	start := time.Now()
+	values, err := s.completeResource(scheme, prefix, timeout)
+	return values, s.finishExpectation("complete_resource "+prefix, start, err)
+}
+
+func (s *sandbox) completeResource(scheme, prefix string, timeout time.Duration) ([]string, error) {
+	h, ok := s.editor.lookupOpener(scheme)
+	if !ok {
+		return nil, fmt.Errorf("no resource opener for %q is registered (registered: %v)",
+			scheme, s.editor.openerSchemes())
+	}
+	ctx, cancel := context.WithTimeout(s.waitCtx, timeout)
+	defer cancel()
+	// As Rune does, completion runs without s.locker held.
+	it, err := h.CompleteResource(ctx, prefix)
+	if err != nil {
+		return nil, fmt.Errorf("complete %s: %w", prefix, err)
+	}
+	values, err := drain(ctx, it)
+	if err != nil {
+		return values, fmt.Errorf("complete %s: %w", prefix, err)
+	}
+	return values, nil
+}
+
+// drain returns what it yields, failing if it or ctx does.
+func drain(ctx context.Context, it iterator.Iterator[string]) ([]string, error) {
+	defer func() { _ = it.Close() }()
+	values := []string{}
+	for {
+		v, ok := it.Next(ctx)
+		if !ok {
+			break
+		}
+		values = append(values, v)
+	}
+	if err := it.Err(); err != nil {
+		return values, err
+	}
+	return values, ctx.Err()
 }
 
 // PublishEvent satisfies spec.Host.
@@ -491,12 +633,96 @@ func (s *sandbox) RenderWindow(_ string, width, height int) (string, error) {
 	return s.browser.render(width, height), nil
 }
 
+// RenderGraphics satisfies spec.Host.
+func (s *sandbox) RenderGraphics(
+	_ string, width, height int, cellWidth, cellHeight float64,
+) (spec.Graphics, error) {
+	if err := s.ensureLaunched(); err != nil {
+		return spec.Graphics{}, err
+	}
+	return s.browser.renderGraphics(width, height, cellWidth, cellHeight), nil
+}
+
 // SendKey satisfies spec.Host.
 func (s *sandbox) SendKey(_, keys string) (handled, quit bool, err error) {
 	if err := s.ensureLaunched(); err != nil {
 		return false, false, err
 	}
 	return s.browser.sendKeys(keys)
+}
+
+// SendMouse satisfies spec.Host.
+func (s *sandbox) SendMouse(_, keys string, x, y int) (handled, quit bool, err error) {
+	if err := s.ensureLaunched(); err != nil {
+		return false, false, err
+	}
+	combs, err := term.ParseKeys(keys)
+	if err != nil {
+		return false, false, err
+	}
+	events := make([]term.Event, len(combs))
+	for i, k := range combs {
+		switch k.Key {
+		case term.MouseLeft, term.MouseMiddle, term.MouseRight, term.MouseRelease,
+			term.MouseWheelUp, term.MouseWheelDown:
+		default:
+			return false, false, fmt.Errorf("send_mouse: %s is not a mouse key", k)
+		}
+		events[i] = term.Event{Type: term.EventMouse, Key: k.Key, Mod: k.Mod, MouseX: x, MouseY: y}
+	}
+	handled, quit = s.browser.sendEvents(events)
+	return handled, quit, nil
+}
+
+// SendPaste satisfies spec.Host.
+func (s *sandbox) SendPaste(_, text string) (handled, quit bool, err error) {
+	if err := s.ensureLaunched(); err != nil {
+		return false, false, err
+	}
+	events := []term.Event{{Type: term.EventPasteStart}}
+	for _, ch := range text {
+		ev := term.Event{Type: term.EventKey, Ch: ch}
+		switch ch {
+		case '\n':
+			ev = term.Event{Type: term.EventKey, Key: term.KeyEnter}
+		case '\t':
+			ev = term.Event{Type: term.EventKey, Key: term.KeyTab}
+		}
+		events = append(events, ev)
+	}
+	events = append(events, term.Event{Type: term.EventPasteEnd})
+	handled, quit = s.browser.sendEvents(events)
+	return handled, quit, nil
+}
+
+// Selection satisfies spec.Host.
+func (s *sandbox) Selection(string) (string, bool, error) {
+	if err := s.ensureLaunched(); err != nil {
+		return "", false, err
+	}
+	sel, ok := s.browser.selection()
+	return sel, ok, nil
+}
+
+// keylessEvents are the events send_event delivers.
+var keylessEvents = map[string]term.EventType{
+	"focus":     term.EventFocus,
+	"unfocus":   term.EventUnfocus,
+	"interrupt": term.EventInterrupt,
+}
+
+// SendEvent satisfies spec.Host.
+func (s *sandbox) SendEvent(_, eventType string) (handled, quit bool, err error) {
+	if err := s.ensureLaunched(); err != nil {
+		return false, false, err
+	}
+	t, ok := keylessEvents[eventType]
+	if !ok {
+		return false, false, fmt.Errorf("send_event: unknown event type %q (want focus, unfocus or interrupt)",
+			eventType)
+	}
+	handled, quit = s.browser.sendEvents([]term.Event{{Type: t}})
+	return handled, quit, nil
 }
 
 // finishExpectation records the expectation outcome and decorates

@@ -53,15 +53,22 @@ func newIndentCaptures() indentCaptures {
 	}
 }
 
-func (t *Tree) queryIndentCaptures() (ret indentCaptures) {
+// queryIndentCaptures captures the indents of the matches that intersect
+// rows from through to, so indenting a line does not scan the whole file.
+// getIndentation walks up the tree from a node on those rows, so every
+// ancestor it reads intersects them. Only the children of an ancestor in
+// error may lie outside them, and those are captured only by patterns
+// rooted at an ancestor.
+func (t *Tree) queryIndentCaptures(from, to uint) (ret indentCaptures) {
 	ret = newIndentCaptures()
 	root := t.tree.RootNode()
 
 	cur := tree_sitter.NewQueryCursor()
 	defer cur.Close()
+	cur.SetPointRange(tree_sitter.Point{Row: from}, tree_sitter.Point{Row: to + 1})
 
 	captureNames := t.indents.CaptureNames()
-	matches := cur.Matches(t.indents, root, []byte(t.buf.String()))
+	matches := cur.Matches(t.indents, root, t.content)
 	for {
 		m, ok := matches.Next()
 		if !ok {
@@ -101,12 +108,15 @@ func (t *Tree) queryIndentCaptures() (ret indentCaptures) {
 }
 
 func (t *Tree) getIndentation(line uint) int {
-	captures := t.queryIndentCaptures()
 	isEmptyLine := isEmptyLine(t.buf, int(line))
+	from := line
+	if isEmptyLine {
+		from = getPreviousNonBlankLine(t.buf, line)
+	}
+	captures := t.queryIndentCaptures(from, line)
 	var node *tree_sitter.Node
 	if isEmptyLine {
-		prevLine := getPreviousNonBlankLine(t.buf, line)
-		node = t.getLastNodeAtLine(prevLine)
+		node = t.getLastNodeAtLine(from)
 		if node != nil {
 			if _, ok := captures.end[node.Id()]; ok {
 				node = t.getFirstNodeAtLine(line)

@@ -77,6 +77,24 @@ func WithExecutor(exec schemeapi.Executor) Option {
 
 const pipeWidth = 200
 
+// consoleBuiltins are the builtins the console runs in the interpreter.
+// The interpreter takes more names for builtins, such as help, history
+// and kill, which in the console are Rune commands or programs.
+var consoleBuiltins = map[string]bool{
+	":": true, "true": true, "false": true, "exit": true, "set": true, "shift": true,
+	"unset": true, "echo": true, "printf": true, "break": true, "continue": true,
+	"pwd": true, "cd": true, "wait": true, "builtin": true, "trap": true, "type": true,
+	"source": true, ".": true, "command": true, "dirs": true, "pushd": true,
+	"popd": true, "umask": true, "alias": true, "unalias": true, "fg": true, "bg": true,
+	"getopts": true, "eval": true, "test": true, "[": true, "exec": true,
+	"return": true, "read": true, "mapfile": true, "readarray": true, "shopt": true,
+}
+
+// execMarker leads the arguments of a call the interpreter would take
+// for a builtin that the console runs as a command, so that it reaches
+// the exec handlers. No function or builtin can have its name.
+const execMarker = "\x00exec"
+
 type commandHandler struct {
 	underlying repl.CommandHandler
 	cwd        workspaceapi.URI
@@ -101,6 +119,13 @@ func (h *commandHandler) HandleCommand(
 	if err != nil {
 		return nil, err
 	}
+	funcs := map[string]bool{}
+	syntax.Walk(file, func(n syntax.Node) bool {
+		if fd, ok := n.(*syntax.FuncDecl); ok && fd.Name != nil {
+			funcs[fd.Name.Value] = true
+		}
+		return true
+	})
 
 	ch := make(chan component.Responsive, 64)
 	outW := &lineWriter{ch: ch, ctx: ctx}
@@ -108,6 +133,12 @@ func (h *commandHandler) HandleCommand(
 
 	opts := []interp.RunnerOption{
 		interp.StdIO(nil, outW, errW),
+		interp.CallHandler(func(_ context.Context, args []string) ([]string, error) {
+			if interp.IsBuiltin(args[0]) && !consoleBuiltins[args[0]] && !funcs[args[0]] {
+				return append([]string{execMarker}, args...), nil
+			}
+			return args, nil
+		}),
 		interp.ExecHandlers(func(next interp.ExecHandlerFunc) interp.ExecHandlerFunc {
 			return h.execMiddleware(pw, next)
 		}),
@@ -230,6 +261,9 @@ func (h *commandHandler) execMiddleware(
 	next interp.ExecHandlerFunc,
 ) interp.ExecHandlerFunc {
 	return func(ctx context.Context, args []string) error {
+		if args[0] == execMarker {
+			args = args[1:]
+		}
 		hc := interp.HandlerCtx(ctx)
 		cmd := repl.Command{
 			Name: args[0],

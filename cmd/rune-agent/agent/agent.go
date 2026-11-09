@@ -38,6 +38,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/iterator"
 	"unstable.build/rune/cmd/rune-agent/agent/audit"
 	"unstable.build/rune/cmd/rune-agent/agent/skills"
+	"unstable.build/rune/cmd/rune-agent/agent/toolpolicy"
 	"unstable.build/rune/cmd/rune-agent/agent/utf8validate"
 	"unstable.build/rune/cmd/rune-agent/dialogue/dialoguemanager"
 	"unstable.build/rune/cmd/rune-agent/hooks"
@@ -48,7 +49,7 @@ import (
 
 // Config holds agent configuration.
 type Config struct {
-	MaxIterations      int
+	MaxIterations      int     // 0 means unlimited (the default); negative values use the default.
 	MaxToolOutputBytes int     // 0 uses DefaultMaxToolOutputBytes.
 	AutoCompactRatio   float64 // 0 uses defaultAutoCompactRatio.
 	SystemPrompt       string
@@ -85,6 +86,12 @@ type Config struct {
 	// must handle this case (typically by allowing the operation or
 	// returning an error).
 	Prompter Prompter
+
+	// Tools restricts the skills the agent is shown, and is propagated to
+	// tool executions through the context (see WithToolPolicy) so that
+	// the sub-agents its tools spawn inherit it. The registry the agent
+	// is given must already be restricted by it (see Registry.WithPolicy).
+	Tools toolpolicy.Policy
 }
 
 // Memory represents a single recalled memory entry.
@@ -224,8 +231,8 @@ func NewAgent(
 	if memory == nil {
 		panic("agent: memory must not be nil")
 	}
-	if config.MaxIterations <= 0 {
-		config.MaxIterations = 500
+	if config.MaxIterations < 0 {
+		config.MaxIterations = 0
 	}
 	if config.Hooks == nil {
 		// Auto-initialize so call sites can dispatch hooks
@@ -406,6 +413,66 @@ func (a *Agent) Run(
 	return it
 }
 
+type readCoverage struct {
+	coverage []ReadObservation
+}
+
+func (p *readCoverage) contains(o *ReadObservation) bool {
+	if o == nil || o.Path == "" || o.StartLine < 0 || o.EndLine <= o.StartLine {
+		return false
+	}
+	var spans [][2]int
+	for _, old := range p.coverage {
+		if old.Path != o.Path || old.ContentHash != o.ContentHash {
+			continue
+		}
+		start, end := max(old.StartLine, o.StartLine), min(old.EndLine, o.EndLine)
+		if start < end {
+			spans = append(spans, [2]int{start, end})
+		}
+	}
+	sort.Slice(spans, func(i, j int) bool { return spans[i][0] < spans[j][0] })
+	end := o.StartLine
+	for _, span := range spans {
+		if span[0] > end {
+			return false
+		}
+		end = max(end, span[1])
+	}
+	return end == o.EndLine
+}
+
+func (p *readCoverage) record(o *ReadObservation) {
+	if o == nil || o.Path == "" || o.StartLine < 0 || o.EndLine <= o.StartLine {
+		return
+	}
+	p.coverage = slices.DeleteFunc(p.coverage, func(old ReadObservation) bool {
+		return old.Path == o.Path && old.ContentHash != o.ContentHash
+	})
+	// Prefer allowing a reread over retaining unbounded per-turn metadata.
+	if len(p.coverage) == 256 {
+		copy(p.coverage, p.coverage[1:])
+		p.coverage = p.coverage[:255]
+	}
+	p.coverage = append(p.coverage, *o)
+}
+
+// visibleSkills returns the skills the agent is shown: none without a
+// skill tool, and otherwise those its tool policy allows.
+func (a *Agent) visibleSkills() []skills.Skill {
+	if _, ok := a.registry.Get("skill", a.provider()); !ok {
+		return nil
+	}
+	all := a.skillRegistry.List()
+	visible := all[:0]
+	for _, s := range all {
+		if a.config.Tools.AllowsSkill(s.Name) {
+			visible = append(visible, s)
+		}
+	}
+	return visible
+}
+
 func (a *Agent) run(
 	ctx context.Context, ch chan<- Event,
 	dialogueID string, userMessage string, opts runOptions,
@@ -500,23 +567,8 @@ func (a *Agent) run(
 		log.Debug("added file to context", "uri", r.uri, "size", len(r.content))
 	}
 
-	// Content is the transcript representation. MultiContent is the model
-	// representation when the two texts differ or content parts are present.
-	displayMessage := userMessage
-	if opts.displaySet {
-		displayMessage = opts.displayMessage
-	}
-	userMsg := llmapi.Message{Role: llmapi.RoleUser, Content: displayMessage}
-	if displayMessage != userMessage || len(opts.attachments) > 0 {
-		// Providers that support content parts read MultiContent and
-		// ignore Content, so the text has to be repeated as a part.
-		userMsg.MultiContent = append(
-			[]llmapi.ContentPart{{
-				Type: llmapi.ContentPartTypeText,
-				Text: userMessage,
-			}},
-			opts.attachments...)
-	}
+	userMsg := newUserMessage(userMessage, opts)
+	displayMessage := userMsg.Content
 
 	// Build full message list
 	messages := make([]llmapi.Message, 0,
@@ -609,9 +661,9 @@ func (a *Agent) run(
 	tools := a.registry.Tools(a.provider())
 
 	var transient []llmapi.Message
+	var reads readCoverage
 	var infos []toolCallInfo
 	var toolMsgs []llmapi.Message
-	var imageContentParts []llmapi.ContentPart
 	// stopHookActive is set to true once the Stop hook has blocked
 	// once and we appended a continuation message. The second
 	// invocation passes this flag in the payload and ignores blocks.
@@ -645,7 +697,7 @@ func (a *Agent) run(
 		checkpointStart = time.Now()
 		return true
 	}
-	for i := range a.config.MaxIterations {
+	for i := 0; a.config.MaxIterations == 0 || i < a.config.MaxIterations; i++ {
 		log.Debug("agent loop iteration",
 			"iteration", i, "messages", len(messages))
 
@@ -668,7 +720,7 @@ func (a *Agent) run(
 		if instructions != "" {
 			transient = append(transient, llmapi.Message{Role: llmapi.RoleSystem, Content: instructions})
 		}
-		if section := skillsPromptSection(a.skillRegistry.List()); section != "" {
+		if section := skillsPromptSection(a.visibleSkills()); section != "" {
 			transient = append(transient, llmapi.Message{Role: llmapi.RoleSystem, Content: section})
 		}
 		if preloadedSkillMsg != "" {
@@ -792,6 +844,7 @@ func (a *Agent) run(
 					messages = append(dialogue.Messages[:len(dialogue.Messages):len(dialogue.Messages)], resourceMsgs...)
 					userMsgIdx = len(dialogue.Messages) - 1
 					lastAPITokensSent = 0
+					reads = readCoverage{}
 					emit(ctx, ch, Event{Type: EventDone})
 					continue
 				}
@@ -1090,6 +1143,10 @@ func (a *Agent) run(
 			}
 
 			results := make(chan executedToolCall, len(infos))
+			toolConversation := messages
+			if serialize {
+				toolConversation = slices.Clone(messages)
+			}
 			var wg sync.WaitGroup
 			for i, info := range infos {
 				wg.Add(1)
@@ -1114,7 +1171,9 @@ func (a *Agent) run(
 							toolCtx = WithHooks(toolCtx, a.config.Hooks)
 							toolCtx = WithWorkspaceURI(toolCtx, a.config.Workspace)
 							toolCtx = WithDialogueID(toolCtx, dialogueID)
+							toolCtx = WithConversation(toolCtx, toolConversation)
 							toolCtx = WithPrompter(toolCtx, a.config.Prompter)
+							toolCtx = WithToolPolicy(toolCtx, a.config.Tools)
 							toolStart := time.Now()
 							result = info.tool.Execute(toolCtx, info.call.Function.Arguments)
 							dur = time.Since(toolStart)
@@ -1125,7 +1184,24 @@ func (a *Agent) run(
 								"duration", dur,
 							)
 						}
+						// Ordered edits can refer to images produced earlier in this
+						// batch, before fan-in persists the hidden user message.
+						if serialize && !result.IsError {
+							var images []llmapi.ContentPart
+							for _, part := range result.MultiContent {
+								if part.Type == llmapi.ContentPartTypeImageURL {
+									images = append(images, part)
+								}
+							}
+							if len(images) > 0 {
+								toolConversation = append(toolConversation, llmapi.Message{Role: llmapi.RoleUser, MultiContent: images})
+							}
+						}
+						uncapped := result.Content
 						capToolResult(&result, maxOutput)
+						if result.Content != uncapped {
+							result.ReadObservation = nil
+						}
 						// Layer 1: belt-and-suspenders sanitisation so
 						// a stray invalid UTF-8 byte in any tool
 						// output (or in an error message that embeds
@@ -1150,9 +1226,9 @@ func (a *Agent) run(
 			toolMsgs = slices.Grow(toolMsgs[:0], len(infos))[:len(infos)]
 			clear(toolMsgs)
 			compacted := false
-			// Image parts may carry large data URLs; clear before truncating.
-			clear(imageContentParts)
-			imageContentParts = imageContentParts[:0]
+			// Allocated per batch: the synthetic image message below keeps this
+			// slice, so reusing it would overwrite images from earlier batches.
+			var imageContentParts []llmapi.ContentPart
 			var diagCandidates []executedToolCall
 			for tr := range results {
 				result := tr.result
@@ -1193,7 +1269,8 @@ func (a *Agent) run(
 							// would cause an API error during summarization.
 							compactD := dialogue
 							compactD.Messages = messages[:len(messages)-1]
-							compactedDialogue, compactErr := a.compact(ctx, ch, compactD)
+							compactedDialogue, compactErr := a.compact(ctx, ch, compactD,
+								WithCompactInstructions(result.CompactInstructions))
 							if compactErr != nil {
 								result = ToolResult{
 									Content: fmt.Sprintf("Compaction failed: %v. Continue without compacting.", compactErr),
@@ -1241,6 +1318,13 @@ func (a *Agent) run(
 					}
 				}
 
+				if !result.IsError && tr.info.call.Function.Name == "read_file" && reads.contains(result.ReadObservation) {
+					o := result.ReadObservation
+					result = ToolResult{
+						IsError: true,
+						Content: fmt.Sprintf("You’ve already read lines %d–%d of %q, and the file is unchanged. Use the content already in context or read a section containing new lines.", o.StartLine+1, o.EndLine, o.Path),
+					}
+				}
 				emit(ctx, ch, Event{
 					Type:         EventToolResult,
 					ToolCallID:   tr.info.call.ID,
@@ -1265,6 +1349,9 @@ func (a *Agent) run(
 					result.Content = hres.Reason
 					result.IsError = true
 				}
+				if !result.IsError && tr.info.call.Function.Name == "read_file" {
+					reads.record(result.ReadObservation)
+				}
 				toolMsgs[tr.index] = llmapi.Message{
 					Role:       llmapi.RoleTool,
 					Content:    nonEmptyToolResult(result.Content),
@@ -1286,6 +1373,7 @@ func (a *Agent) run(
 			log.Debug("executed all tools: continuing loop",
 				"duration", toolCallDuration)
 			if compacted {
+				reads = readCoverage{}
 				// Signal a turn boundary so the TUI closes the
 				// current Turn and resets streaming state before
 				// the next LLM iteration begins.
@@ -1646,16 +1734,79 @@ func (a *Agent) persistMessages(
 	if len(newMessages) == 0 {
 		return false
 	}
-	// If the caller's context is already cancelled (e.g. tab closed or
-	// request cancelled), use a background context with a timeout so
-	// the storage operation can still complete and the conversation
-	// state is not lost.
-	if ctx.Err() != nil {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		slog.Debug("agent: persisting messages with background context", "dialogueID", dialogueID, "messages", len(newMessages))
+	ctx, cancel := storageContext(ctx)
+	defer cancel()
+	if err := a.saveMessages(ctx, dialogueID, dialogue, newMessages, usage); err != nil {
+		slog.Error("agent: persist messages", "error", err, "dialogueID", dialogueID)
+		emit(ctx, ch, Event{Type: EventError, Error: fmt.Errorf(
+			"persist messages: %w", err)})
+		return false
 	}
+	return true
+}
+
+// AppendTurn saves to the dialogue a turn that ran without the agent, such
+// as an agent skill the user invoked.
+func (a *Agent) AppendTurn(
+	ctx context.Context, dialogueID, message string,
+	replies []llmapi.Message, opts ...RunOption,
+) error {
+	var options runOptions
+	for _, o := range opts {
+		o(&options)
+	}
+	ctx, cancel := storageContext(ctx)
+	defer cancel()
+	var newMessages []llmapi.Message
+	dialogue, err := a.store.Get(ctx, dialogueID)
+	switch {
+	case errors.Is(err, storageapi.ErrNotFound):
+		dialogue.ID = dialogueID
+		newMessages = append(newMessages, llmapi.Message{Role: llmapi.RoleSystem, Content: a.config.SystemPrompt})
+	case err != nil:
+		return fmt.Errorf("get dialogue: %w", err)
+	}
+	newMessages = append(newMessages, newUserMessage(message, options))
+	if len(options.toolCallResults) > 0 {
+		newMessages = append(newMessages, buildToolCallMessages(options.toolCallResults)...)
+	}
+	for _, m := range replies {
+		if m.Role == llmapi.RoleTool && len(m.MultiContent) == 0 {
+			m.Content = nonEmptyToolResult(m.Content)
+		}
+		newMessages = append(newMessages, m)
+	}
+	return a.saveMessages(ctx, dialogueID, dialogue, newMessages, llmapi.DialogueUsage{})
+}
+
+func newUserMessage(message string, opts runOptions) llmapi.Message {
+	display := message
+	if opts.displaySet {
+		display = opts.displayMessage
+	}
+	msg := llmapi.Message{Role: llmapi.RoleUser, Content: display}
+	if display != message || len(opts.attachments) > 0 {
+		// Providers that support content parts read MultiContent and
+		// ignore Content, so the text has to be repeated as a part.
+		msg.MultiContent = append(
+			[]llmapi.ContentPart{{Type: llmapi.ContentPartTypeText, Text: message}},
+			opts.attachments...)
+	}
+	return msg
+}
+
+func storageContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx.Err() == nil {
+		return ctx, func() {}
+	}
+	slog.Debug("agent: persisting messages with background context")
+	return context.WithTimeout(context.Background(), 10*time.Second)
+}
+
+func (a *Agent) saveMessages(
+	ctx context.Context, dialogueID string, dialogue dialoguemanager.Dialogue,
+	newMessages []llmapi.Message, usage llmapi.DialogueUsage,
+) error {
 	err := a.store.Create(ctx, dialoguemanager.Dialogue{
 		ID:           dialogueID,
 		AgentID:      a.config.AgentID,
@@ -1668,13 +1819,7 @@ func (a *Agent) persistMessages(
 	if errors.Is(err, storageapi.ErrAlreadyExists) {
 		err = a.store.AppendMessages(ctx, dialogue, newMessages, usage)
 	}
-	if err != nil {
-		slog.Error("agent: persist messages", "error", err, "dialogueID", dialogueID)
-		emit(ctx, ch, Event{Type: EventError, Error: fmt.Errorf(
-			"persist messages: %w", err)})
-		return false
-	}
-	return true
+	return err
 }
 
 // SummarizeMaxOutputTokens returns the output-token budget to use for a
@@ -1703,16 +1848,18 @@ func SummarizeMaxOutputTokens(sessionValue int, model llmapi.ModelEntry) int {
 func (a *Agent) compact(
 	ctx context.Context, ch chan<- Event,
 	d dialoguemanager.Dialogue,
+	opts ...CompactOption,
 ) (dialoguemanager.Dialogue, error) {
 	summarizeSvc := a.svc
 	if a.config.CompactSvc != nil {
 		summarizeSvc = a.config.CompactSvc
 	}
 
-	compactedMsgs, archivedID, err := CompactDialogue(
-		ctx, summarizeSvc, a.config.Model, a.store, d,
+	opts = append([]CompactOption{
 		WithMaxOutputTokens(SummarizeMaxOutputTokens(a.MaxOutputTokens(), a.config.Model)),
-	)
+	}, opts...)
+	compactedMsgs, archivedID, err := CompactDialogue(
+		ctx, summarizeSvc, a.config.Model, a.store, d, opts...)
 	if err != nil {
 		emit(ctx, ch, Event{Type: EventError, Error: fmt.Errorf("compact: %v", err)})
 		return dialoguemanager.Dialogue{}, err
@@ -1927,18 +2074,25 @@ func cleanSummary(raw string) string {
 // a structured summary. It returns the cleaned summary text. When
 // maxOutputTokens is greater than zero it is set on the request so the
 // provider's smaller default cap does not truncate long summaries.
+// Non-empty instructions are appended to SummarizePrompt as additional
+// guidance; they do not replace it.
 func Summarize(
 	ctx context.Context,
 	svc llmapi.Service,
 	model llmapi.ModelEntry,
 	messages []llmapi.Message,
 	maxOutputTokens int,
+	instructions string,
 ) (string, error) {
 	messages = normalizeMessages(slices.Clone(messages))
 
+	promptText := SummarizePrompt
+	if instructions != "" {
+		promptText += "\n\nAdditional instructions for this summary:\n" + instructions
+	}
 	prompt := llmapi.Message{
 		Role:    llmapi.RoleUser,
-		Content: SummarizePrompt,
+		Content: promptText,
 	}
 	summaryReq := llmapi.Request{
 		Messages: append(messages, prompt),
@@ -2028,7 +2182,7 @@ func CompactDialogue(
 		return nil, "", errors.New(reason)
 	}
 
-	summaryText, err := Summarize(ctx, svc, model, d.Messages, copts.maxOutputTokens)
+	summaryText, err := Summarize(ctx, svc, model, d.Messages, copts.maxOutputTokens, copts.instructions)
 	if err != nil {
 		return nil, "", err
 	}
@@ -2100,6 +2254,7 @@ type CompactOption func(*compactOptions)
 type compactOptions struct {
 	hooks           *hooks.Runner
 	maxOutputTokens int
+	instructions    string
 }
 
 // WithCompactHooks fires the PreCompact hook (manual trigger) before
@@ -2114,6 +2269,12 @@ func WithCompactHooks(r *hooks.Runner) CompactOption {
 // truncated mid-sentence by the provider's smaller default cap.
 func WithMaxOutputTokens(n int) CompactOption {
 	return func(o *compactOptions) { o.maxOutputTokens = n }
+}
+
+// WithCompactInstructions adds guidance for the summarize request on top
+// of SummarizePrompt. An empty string leaves the prompt unchanged.
+func WithCompactInstructions(instructions string) CompactOption {
+	return func(o *compactOptions) { o.instructions = instructions }
 }
 
 // toolInputJSON returns the tool's raw arguments string as a

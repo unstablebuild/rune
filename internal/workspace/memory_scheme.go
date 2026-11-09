@@ -19,6 +19,7 @@ package workspace
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -36,11 +37,21 @@ import (
 const (
 	// MemoryScheme represents an in-memory URI scheme.
 	MemoryScheme = "memory"
+	// DocsScheme serves Rune's bundled documentation from memory.
+	DocsScheme = "docs"
 )
 
 var (
 	errExecute = errors.New("cannot execute commands on in-memory scheme")
 )
+
+// IsInMemoryScheme reports whether workspaces under scheme live only in
+// the IDE's memory, so no process can run against their files. It is
+// keyed on the scheme name because that is all an extension, running in
+// its own process, can see of its workspace.
+func IsInMemoryScheme(scheme string) bool {
+	return scheme == MemoryScheme || scheme == DocsScheme
+}
 
 // NewMemoryScheme returns a Scheme that manages resources in a temporary
 // in-memory file system. It does not enforce O_RDONLY, O_WRONLY, O_RDWR Open flags
@@ -392,6 +403,11 @@ func (m *memoryScheme) StartCommand(ctx context.Context, cmd workspaceapi.Cmd) (
 
 func (m *memoryScheme) Signal(pid workspaceapi.Pid, signal syscall.Signal) error {
 	return errExecute
+}
+
+// LookPath reports that the scheme cannot tell: it runs no files.
+func (m *memoryScheme) LookPath(context.Context, string, string) (string, error) {
+	return "", fmt.Errorf("%w: %w", errExecute, errors.ErrUnsupported)
 }
 
 func (m *memoryScheme) NewPty(ctx context.Context) (workspaceapi.Pty, error) {

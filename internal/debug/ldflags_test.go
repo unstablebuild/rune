@@ -90,7 +90,7 @@ func isBuildScript(name string) bool {
 		return false
 	}
 	switch {
-	case name == "Makefile" || name == "PKGBUILD" || name == "rules":
+	case name == "Makefile" || name == "rules":
 		return true
 	case strings.HasPrefix(name, "Dockerfile"):
 		return true

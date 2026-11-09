@@ -129,12 +129,7 @@ func assertSelectionInvariants(t *testing.T, hx *Helix) {
 		return
 	}
 	p := s.primaryRange()
-	if hx.IsEditMode() {
-		assert.Equal(t, clampInsert(buf, p.cursor(buf)), hx.CursorAtScroll(),
-			"the caret sits on the primary's cursor")
-		return
-	}
-	assert.Equal(t, clampCell(buf, p.cursor(buf)), hx.CursorAtScroll(),
+	assert.Equal(t, clampInsert(buf, p.cursor(buf)), hx.CursorAtScroll(),
 		"the caret sits on the primary's cursor")
 }
 
@@ -152,9 +147,9 @@ func TestCopySelectionOnLine(t *testing.T) {
 		{name: "C skips a line too short for the column",
 			content: "abcd\nab\nabcd", at: xy(3, 0), evs: keys("C"),
 			wantSels: []string{"d", "d"}, wantPrimary: 1, wantAt: xy(3, 2)},
-		{name: "C lands on the line ending of a line exactly as long",
+		{name: "C from a line ending lands on the end of a line exactly as long",
 			content: "ab\nab", at: xy(1, 0), evs: keys("lC"),
-			wantSels: []string{"b", "b"}, wantPrimary: 1, wantAt: xy(1, 1)},
+			wantSels: []string{"\n", ""}, wantPrimary: 1, wantAt: xy(2, 1)},
 		{name: "A-C copies above", content: grid, at: xy(1, 2), evs: altKeys("C"),
 			wantSels: []string{"e", "h"}, wantPrimary: 0, wantAt: xy(1, 1)},
 		{name: "A-C twice fills the column upwards", content: grid, at: xy(1, 2), evs: altKeys("CC"),
@@ -234,14 +229,14 @@ func TestSelectionShapeCommandsOverAllRanges(t *testing.T) {
 			evs:      cat(keys("vl"), []term.Event{esc}, keys("C"), altKeys(":")),
 			wantSels: []string{"ab", "de"}, wantPrimary: 1, wantAt: xy(1, 1), wantHandled: new(false)},
 		{name: "x extends every range to its line", content: grid, at: xy(1, 0), evs: keys("Cx"),
-			wantSels: []string{"abc\n", "def\n"}, wantPrimary: 1, wantAt: xy(2, 1)},
+			wantSels: []string{"abc\n", "def\n"}, wantPrimary: 1, wantAt: xy(3, 1)},
 		{name: "x again merges lines that meet", content: grid, at: xy(1, 0), evs: keys("Cxx"),
-			wantSels: []string{"abc\ndef\nghi\n"}, wantAt: xy(2, 2)},
+			wantSels: []string{"abc\ndef\nghi\n"}, wantAt: xy(3, 2)},
 		{name: "X snaps every range to line bounds", content: grid, at: xy(1, 0), evs: keys("CvlX"),
-			wantSels: []string{"abc\n", "def\n"}, wantPrimary: 1, wantAt: xy(2, 1)},
+			wantSels: []string{"abc\n", "def\n"}, wantPrimary: 1, wantAt: xy(3, 1)},
 		{name: "A-x shrinks every range to whole lines", content: grid,
 			evs:      cat(keys("vjl"), []term.Event{esc}, keys("C"), altKeys("x")),
-			wantSels: []string{"abc\n", "ghi\n"}, wantPrimary: 1, wantAt: xy(2, 2)},
+			wantSels: []string{"abc\n", "ghi\n"}, wantPrimary: 1, wantAt: xy(3, 2)},
 		{name: "_ trims every range", content: " ab \n cd ", evs: cat(keys("%"), altKeys("s"), keys("_")),
 			wantSels: []string{"ab", "cd"}, wantPrimary: 0, wantAt: xy(2, 0)},
 		{name: "_ drops all-blank ranges and keeps the primary among the rest",
@@ -260,8 +255,10 @@ func TestMotionsOverAllRanges(t *testing.T) {
 			wantSels: []string{"c", "f", "i"}, wantPrimary: 2, wantAt: xy(2, 2)},
 		{name: "h", content: grid, at: xy(1, 0), evs: keys("CCh"),
 			wantSels: []string{"a", "d", "g"}, wantPrimary: 2, wantAt: xy(0, 2)},
-		{name: "h stops each range at the line start", content: grid, at: xy(1, 0), evs: keys("CChh"),
-			wantSels: []string{"a", "d", "g"}, wantPrimary: 2, wantAt: xy(0, 2)},
+		{name: "h stops at the document start and crosses line starts", content: grid, at: xy(1, 0), evs: keys("CChh"),
+			wantSels: []string{"a", "\n", "\n"}, wantPrimary: 2, wantAt: xy(3, 1)},
+		{name: "a count of h crosses a line ending", content: "ab\ncd", at: xy(1, 0), evs: keys("C3h"),
+			wantSels: []string{"a", "b"}, wantPrimary: 1, wantAt: xy(1, 0)},
 		{name: "w", content: "foo bar\nbaz qux", evs: keys("Cw"),
 			wantSels: []string{"foo ", "baz "}, wantPrimary: 1, wantAt: xy(3, 1)},
 		{name: "e", content: "foo bar\nbaz qux", evs: keys("Ce"),
@@ -275,9 +272,9 @@ func TestMotionsOverAllRanges(t *testing.T) {
 		{name: "j remembers a column per range",
 			content: "abcd\nab\nabcd\nab\nabcd", at: xy(3, 0), evs: keys("Cjj"),
 			wantSels: []string{"d", "d"}, wantPrimary: 1, wantAt: xy(3, 4)},
-		{name: "j clamps each range onto a shorter line",
+		{name: "j lands each range on a shorter line's line ending",
 			content: "abcd\nab\nabcd\nab\nabcd", at: xy(3, 0), evs: keys("Cj"),
-			wantSels: []string{"b", "b"}, wantPrimary: 1, wantAt: xy(1, 3)},
+			wantSels: []string{"\n", "\n"}, wantPrimary: 1, wantAt: xy(2, 3)},
 		{name: "k", content: grid, at: xy(1, 1), evs: keys("Ck"),
 			wantSels: []string{"b", "e"}, wantPrimary: 1, wantAt: xy(1, 1)},
 		{name: "f", content: "a-b\nc-d", evs: keys("Cf-"),
@@ -300,10 +297,12 @@ func TestMotionsOverAllRanges(t *testing.T) {
 			wantSels: []string{")", ")"}, wantPrimary: 1, wantAt: xy(2, 1)},
 		{name: "miw", content: "foo bar\nbaz qux", at: xy(5, 0), evs: keys("Cmiw"),
 			wantSels: []string{"bar", "qux"}, wantPrimary: 1, wantAt: xy(6, 1)},
-		{name: "ranges that land on the same cell merge", content: "ab\nab", evs: keys("Cll"),
-			wantSels: []string{"b", "b"}, wantPrimary: 1, wantAt: xy(1, 1)},
+		{name: "ranges that land on the same cell merge", content: "ab\nab", evs: keys("Cj"),
+			wantSels: []string{"a"}, wantAt: xy(0, 1)},
+		{name: "l takes each range onto its line ending or the document end", content: "ab\nab", evs: keys("Cll"),
+			wantSels: []string{"\n", ""}, wantPrimary: 1, wantAt: xy(2, 1)},
 		{name: "ranges pushed into each other merge", content: "abc\ndef", evs: keys("Cxx"),
-			wantSels: []string{"abc\ndef\n"}, wantAt: xy(2, 1)},
+			wantSels: []string{"abc\ndef"}, wantAt: xy(2, 1)},
 	})
 }
 
@@ -502,7 +501,7 @@ func TestOperatorsOverAllRanges(t *testing.T) {
 		{name: "counted p repeats every fragment", content: grid, at: xy(1, 0), evs: keys("Cy2p"),
 			want: "abbbc\ndeeef", wantSels: []string{"bb", "ee"}, wantPrimary: 1, wantAt: xy(3, 1)},
 		{name: "linewise paste lands under every range", content: "a\nb", evs: keys("xyCp"),
-			want: "a\na\nb\na", wantSels: []string{"a\n", "a\n"}, wantPrimary: 1, wantAt: xy(0, 3)},
+			want: "a\na\nba\n", wantSels: []string{"a\n", "a\n"}, wantPrimary: 1, wantAt: xy(2, 2)},
 		{name: "R replaces every range with its fragment", content: grid, at: xy(1, 0),
 			evs:  keys("CylR"),
 			want: "abb\ndee", wantSels: []string{"b", "e"}, wantPrimary: 1, wantAt: xy(2, 1)},
@@ -555,7 +554,7 @@ func TestOperatorsOverAllRanges(t *testing.T) {
 			evs:  keys("Cmr(["),
 			want: "[a]\n[b]", wantSels: []string{"a", "b"}, wantPrimary: 1, wantAt: xy(1, 1)},
 		{name: "md with a range lacking a pair does nothing", content: "(a)\nb", at: xy(1, 0),
-			evs: keys("Cmd("), want: "(a)\nb", wantSels: []string{"a", ""}, wantPrimary: 1, wantAt: xy(0, 1)},
+			evs: keys("Cmd("), want: "(a)\nb", wantSels: []string{"a", ""}, wantPrimary: 1, wantAt: xy(1, 1)},
 		{name: "C-a increments every range", content: "1\n1", evs: []term.Event{key('C'), ctrl('a')},
 			want: "2\n2", wantSels: []string{"2", "2"}, wantPrimary: 1, wantAt: xy(0, 1)},
 		{name: "the # register makes a sequence", content: "1\n1\n1",
@@ -878,17 +877,9 @@ func TestSelectionSetMirrorsCursor(t *testing.T) {
 			primary := h.sel.primaryRange()
 			primary.col = 0
 			buf := h.buf()
-			if hx.IsEditMode() {
-				// Insert mode keeps the range but the cursor holds only
-				// its caret, on the range's cursor.
-				assert.Equal(t, clampInsert(buf, primary.cursor(buf)), hx.CursorAtScroll(),
-					"caret sits on the primary's cursor")
-			} else {
-				// A range over a line ending reads back from the cursor
-				// as the last cell of its row; what the cursor holds is
-				// then the primary's image rather than the primary.
-				assert.Equal(t, clampCell(buf, primary.cursor(buf)), hx.CursorAtScroll(),
-					"caret sits on the primary's cursor")
+			assert.Equal(t, clampInsert(buf, primary.cursor(buf)), hx.CursorAtScroll(),
+				"caret sits on the primary's cursor")
+			if !hx.IsEditMode() {
 				assert.Equal(t, h.mirror, h.readRange(), "the cursor holds the primary's image")
 			}
 
@@ -920,20 +911,21 @@ func TestInstallRangeShapes(t *testing.T) {
 		{name: "across rows", r: fwd(2, 0, 2, 1), mode: text.StandardSelection,
 			from: xy(2, 0), to: xy(2, 1), caret: xy(1, 1)},
 		{name: "one line", r: fwd(0, 1, 0, 2), mode: text.LineSelection,
-			from: xy(0, 1), to: xy(3, 1), caret: xy(2, 1)},
+			from: xy(0, 1), to: xy(3, 1), caret: xy(3, 1)},
 		{name: "two lines backward", r: fwd(0, 2, 0, 0), mode: text.LineSelection,
 			from: xy(0, 0), to: xy(3, 1), caret: xy(0, 0)},
 		{name: "the last line reaches the document end", r: fwd(0, 3, 0, 4),
 			mode: text.LineSelection, from: xy(0, 3), to: xy(3, 3), caret: xy(2, 3)},
 		{name: "a point is one cell", r: fwd(1, 0, 1, 0), mode: text.StandardSelection,
 			from: xy(1, 0), to: xy(2, 0), caret: xy(1, 0), readBack: fwd(1, 0, 2, 0)},
-		{name: "a point on an empty row stays a point", r: fwd(0, 2, 0, 2),
-			mode: text.StandardSelection, from: xy(0, 2), to: xy(1, 2), caret: xy(0, 2)},
+		{name: "a point on an empty row is its line ending", r: fwd(0, 2, 0, 2),
+			mode: text.StandardSelection, from: xy(0, 2), to: xy(1, 2), caret: xy(0, 2),
+			readBack: fwd(0, 2, 0, 3)},
 		{name: "a range over the empty row", r: fwd(0, 2, 1, 3),
 			mode: text.StandardSelection, from: xy(0, 2), to: xy(1, 3), caret: xy(0, 3)},
-		{name: "past the document end clamps onto the last cell", r: fwd(9, 9, 9, 9),
-			mode: text.StandardSelection, from: xy(2, 3), to: xy(3, 3), caret: xy(2, 3),
-			readBack: fwd(2, 3, 3, 3)},
+		{name: "past the document end clamps onto the document end", r: fwd(9, 9, 9, 9),
+			mode: text.StandardSelection, from: xy(3, 3), to: xy(4, 3), caret: xy(3, 3),
+			readBack: fwd(3, 3, 3, 3)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			hx, _, _ := newHelix(t, content, term.Coordinates{})

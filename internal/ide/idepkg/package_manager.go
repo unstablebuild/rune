@@ -51,10 +51,12 @@ type PackageManager interface {
 	ListInstalledPackages(ctx context.Context) (iterator.Iterator[string], error)
 	ListInstalledPackageVersions(ctx context.Context, pkgID string) (
 		iterator.Iterator[release.Version], error)
-	// InstallPackageVersion installs version of pkgID, and its
-	// requirements, and makes it the in-use version. It blocks until the
-	// install ends and returns ErrAlreadyInstalled when that version is
-	// already fully installed. pw may be nil.
+	// InstallPackageVersion installs version of pkgID and makes it the
+	// in-use version, after installing its requirements or upgrading
+	// them to their latest version. Each requirement change is reported
+	// through ReportRequirement. It blocks until the install ends and
+	// returns ErrAlreadyInstalled when that version is already fully
+	// installed. pw may be nil.
 	InstallPackageVersion(ctx context.Context, pkgID string, version release.Version,
 		pw repl.ProgressWriter) error
 	// UsePackageVersion makes an installed version the in-use one. It

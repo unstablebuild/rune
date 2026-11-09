@@ -27,3 +27,8 @@ var Explore []byte
 //
 //go:embed plan/SKILL.md
 var Plan []byte
+
+// RuneHUD makes the HUD skill available without a filesystem installation.
+//
+//go:embed rune-hud/SKILL.md
+var RuneHUD []byte

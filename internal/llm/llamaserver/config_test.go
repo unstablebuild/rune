@@ -45,7 +45,7 @@ func TestConfig_ServerArgs_CoreFlags(t *testing.T) {
 		NCacheReuse:     128,
 		ExtraArgs:       []string{"--verbose"},
 	}
-	args := cfg.serverArgs("/m.gguf", "/proj.gguf", 0, "127.0.0.1", 8080)
+	args := cfg.serverArgs("/m.gguf", "/proj.gguf", 0, false, "127.0.0.1", 8080)
 
 	assert.Equal(t, "/m.gguf", argValue(args, "--model"))
 	assert.Equal(t, "/proj.gguf", argValue(args, "--mmproj"))
@@ -62,16 +62,65 @@ func TestConfig_ServerArgs_CoreFlags(t *testing.T) {
 	assert.Equal(t, "--verbose", args[len(args)-1], "extra args appended last")
 }
 
+func TestConfig_ServerArgs_EmbeddingMode(t *testing.T) {
+	chatKnobs := Config{
+		BatchSize:       512,
+		NGPULayers:      -1,
+		Threads:         4,
+		FlashAttention:  true,
+		MaxOutputTokens: 256,
+		ChatTemplate:    "chatml",
+		NCacheReuse:     128,
+		Sampling:        SamplerParams{Temperature: 0.7, TopK: 40, Seed: 7},
+	}
+	for _, tc := range []struct {
+		name      string
+		cfg       Config
+		ctxWindow uint32
+		wantN     string
+	}{
+		{name: "unset context defaults to 2048", cfg: chatKnobs, wantN: "2048"},
+		{name: "config context sizes both batches", cfg: func() Config { c := chatKnobs; c.ContextWindow = 1024; return c }(), wantN: "1024"},
+		{name: "entry context wins", cfg: chatKnobs, ctxWindow: 512, wantN: "512"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := tc.cfg.serverArgs("/e.gguf", "", tc.ctxWindow, true, "127.0.0.1", 1)
+			assert.True(t, slices.Contains(args, "--embedding"))
+			assert.Equal(t, "mean", argValue(args, "--pooling"))
+			assert.Equal(t, tc.wantN, argValue(args, "--ctx-size"))
+			assert.Equal(t, tc.wantN, argValue(args, "--batch-size"))
+			assert.Equal(t, tc.wantN, argValue(args, "--ubatch-size"))
+			assert.Equal(t, 1, countFlag(args, "--batch-size"), "config batch size is overridden, not duplicated")
+			assert.Equal(t, "999", argValue(args, "--n-gpu-layers"))
+			assert.Equal(t, "4", argValue(args, "--threads"))
+			assert.True(t, slices.Contains(args, "--flash-attn"))
+			for _, flag := range []string{"--mmproj", "--predict", "--chat-template", "--cache-reuse", "--temp", "--top-k", "--seed"} {
+				assert.False(t, slices.Contains(args, flag), flag)
+			}
+		})
+	}
+}
+
+func countFlag(args []string, flag string) int {
+	n := 0
+	for _, a := range args {
+		if a == flag {
+			n++
+		}
+	}
+	return n
+}
+
 func TestConfig_ServerArgs_PerModelContextOverridesConfig(t *testing.T) {
 	cfg := Config{ContextWindow: 4096}
-	args := cfg.serverArgs("/m.gguf", "", 8192, "127.0.0.1", 1)
+	args := cfg.serverArgs("/m.gguf", "", 8192, false, "127.0.0.1", 1)
 	assert.Equal(t, "8192", argValue(args, "--ctx-size"),
 		"registry per-model context window wins over config default")
 }
 
 func TestConfig_ServerArgs_OmitsUnsetKnobs(t *testing.T) {
 	cfg := Config{}
-	args := cfg.serverArgs("/m.gguf", "", 0, "127.0.0.1", 1)
+	args := cfg.serverArgs("/m.gguf", "", 0, false, "127.0.0.1", 1)
 	assert.Empty(t, argValue(args, "--mmproj"))
 	assert.Empty(t, argValue(args, "--ctx-size"))
 	assert.Empty(t, argValue(args, "--batch-size"))
@@ -90,7 +139,7 @@ func TestConfig_ServerArgs_SamplingFlags(t *testing.T) {
 		FreqPenalty:     0.2,
 		PresencePenalty: 0.3,
 	}}
-	args := cfg.serverArgs("/m.gguf", "", 0, "127.0.0.1", 1)
+	args := cfg.serverArgs("/m.gguf", "", 0, false, "127.0.0.1", 1)
 	assert.Equal(t, "0.7", argValue(args, "--temp"))
 	assert.Equal(t, "40", argValue(args, "--top-k"))
 	assert.Equal(t, "0.9", argValue(args, "--top-p"))

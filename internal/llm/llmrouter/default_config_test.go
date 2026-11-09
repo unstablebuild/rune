@@ -25,9 +25,7 @@ import (
 )
 
 func TestNew_AcceptsDefaultConfig(t *testing.T) {
-	r, err := New(llm.DefaultConfig(), t.TempDir(), storagestub.NewInMemoryService(),
-		&fakeLocalService{})
-	require.NoError(t, err)
+	r := newRouter(t, llm.DefaultConfig(), storagestub.NewInMemoryService(), &fakeLocalService{})
 	require.NotNil(t, r)
 	require.NotNil(t, r.LocalRegistry())
 }

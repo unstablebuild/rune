@@ -216,6 +216,10 @@ func (h *emacsHandler) dispatchCounted(
 		case ev.Ch == 't' && count < 0:
 			return false
 		}
+	case term.ModCtrlShift:
+		if ev.Key == term.KeyBackspace {
+			return h.killWholeLine(count)
+		}
 	}
 	if count < 0 {
 		mirror, ok := mirrorEvent(ev)

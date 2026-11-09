@@ -108,6 +108,9 @@ type renderer struct {
 	// can compare the damage-tracked path against the reference
 	// full-repaint path in the same process, and as a runtime fallback.
 	forceFullRepaint bool
+
+	// cursorEffect, when set, plays over the window as the cursor moves.
+	cursorEffect *cursorEffect
 }
 
 type cursorState struct {
@@ -222,6 +225,13 @@ func (r *renderer) Draw(
 	}
 	screen.DrawImage(r.frame, &frameToScreenOptions)
 	r.drawImages(screen, cells, images)
+	if r.cursorEffect.enabled() {
+		var bounds [4]float32
+		if drawCursor {
+			bounds = r.cursorBounds(r.getCell(cells, cursorPos), cursorPos, cursorStyle)
+		}
+		r.cursorEffect.draw(screen, cursor, bounds, ebiten.IsFocused(), r.cursorBackground)
+	}
 	// The cursor goes onto the screen rather than the frame so it stays
 	// above the image layer without being retained across frames.
 	if drawCursor {
@@ -714,7 +724,31 @@ func (r *renderer) renderCursor(
 	pos term.Coordinates, style term.CursorStyle,
 ) {
 	cell := r.getCell(cells, pos)
-	width := math.Max(1, float64(cell.Width))
+
+	// empty rect without focus
+	if !ebiten.IsFocused() {
+		b := r.cursorBounds(cell, pos, term.CursorStyleDefault)
+		r.bufVertices, r.bufIndices = drawrect.DrawRect(
+			&r.bufPath, r.bufVertices, r.bufIndices,
+			screen, b[0], b[1], b[2], b[3], r.cursorBackground)
+		r.bufVertices, r.bufIndices = drawrect.DrawRect(
+			&r.bufPath, r.bufVertices, r.bufIndices,
+			screen, b[0]+1, b[1]+1, b[2]-2, b[3]-2, r.cursorForeground)
+		return
+	}
+
+	b := r.cursorBounds(cell, pos, style)
+	r.bufVertices, r.bufIndices = drawrect.DrawRect(
+		&r.bufPath, r.bufVertices, r.bufIndices,
+		screen, b[0], b[1], b[2], b[3], r.cursorBackground)
+	switch style {
+	case term.CursorStyleBlinkingBar, term.CursorStyleSteadyBar,
+		term.CursorStyleBlinkingUnderline, term.CursorStyleSteadyUnderline:
+		return
+	}
+	if cell.Ch == 0 {
+		return
+	}
 
 	useFace := r.font.Regular
 	isBold := cell.Attrs&term.AttrBold != 0
@@ -726,48 +760,26 @@ func (r *renderer) renderCursor(
 	} else if isItalic {
 		useFace = r.font.Italic
 	}
+	r.drawer.DrawGlyph(screen, cell.Ch, useFace, r.fontManager.PixelX(pos.X),
+		r.fontManager.PixelY(pos.Y)+r.font.OffsetY,
+		glyphColor(r.cursorForeground, false), false)
+	r.drawer.Flush(screen)
+}
 
-	pixelX := r.fontManager.PixelX(pos.X)
-	pixelY := r.fontManager.PixelY(pos.Y)
-	textPixelY := pixelY + r.font.OffsetY
-	pixelW, pixelH := r.font.CellSize.X*width, r.font.CellSize.Y
-
-	// empty rect without focus
-	if !ebiten.IsFocused() {
-		r.bufVertices, r.bufIndices = drawrect.DrawRect(
-			&r.bufPath, r.bufVertices, r.bufIndices,
-			screen, float32(pixelX), float32(pixelY),
-			float32(pixelW), float32(pixelH), r.cursorBackground)
-		r.bufVertices, r.bufIndices = drawrect.DrawRect(
-			&r.bufPath, r.bufVertices, r.bufIndices,
-			screen, float32(pixelX+1), float32(pixelY+1),
-			float32(pixelW-2), float32(pixelH-2), r.cursorForeground)
-		return
-	}
-
-	// draw the cursor shape
+// cursorBounds returns the x, y, width and height in pixels of the shape
+// the cursor paints over cell at pos in style.
+func (r *renderer) cursorBounds(
+	cell term.Cell, pos term.Coordinates, style term.CursorStyle,
+) [4]float32 {
+	x, y := r.fontManager.PixelX(pos.X), r.fontManager.PixelY(pos.Y)
+	w, h := r.font.CellSize.X*math.Max(1, float64(cell.Width)), r.font.CellSize.Y
 	switch style {
 	case term.CursorStyleBlinkingBar, term.CursorStyleSteadyBar:
-		r.bufVertices, r.bufIndices = drawrect.DrawRect(
-			&r.bufPath, r.bufVertices, r.bufIndices,
-			screen, float32(pixelX), float32(pixelY), 2,
-			float32(pixelH), r.cursorBackground)
+		w = 2
 	case term.CursorStyleBlinkingUnderline, term.CursorStyleSteadyUnderline:
-		r.bufVertices, r.bufIndices = drawrect.DrawRect(
-			&r.bufPath, r.bufVertices, r.bufIndices,
-			screen, float32(pixelX), float32(pixelY+pixelH-2),
-			float32(pixelW), 2, r.cursorBackground)
-	default:
-		r.bufVertices, r.bufIndices = drawrect.DrawRect(
-			&r.bufPath, r.bufVertices, r.bufIndices,
-			screen, float32(pixelX), float32(pixelY),
-			float32(pixelW), float32(pixelH), r.cursorBackground)
-		if cell.Ch != 0 {
-			r.drawer.DrawGlyph(screen, cell.Ch, useFace, pixelX, textPixelY,
-				glyphColor(r.cursorForeground, false), false)
-			r.drawer.Flush(screen)
-		}
+		y, h = y+h-2, 2
 	}
+	return [4]float32{float32(x), float32(y), float32(w), float32(h)}
 }
 
 func (r *renderer) getCell(cells [][]term.Cell, pos term.Coordinates) (ret term.Cell) {

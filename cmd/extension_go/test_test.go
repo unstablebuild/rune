@@ -19,16 +19,19 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
 	"sync"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
+	"github.com/unstablebuild/rune-go-sdk/api/semanticapi"
 	"github.com/unstablebuild/rune-go-sdk/api/syntaxapi"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
@@ -111,29 +114,37 @@ func (p *stubParser) Search(
 
 // capturingExecutor records the workspaceapi.Cmd it is asked to start and
 // drives a canned pass stream so the test command completes synchronously
-// enough to assert on the spawned command.
+// enough to assert on the spawned command. With release set, the process
+// runs until release is closed and is killed if its Start ctx was canceled
+// by then, as the workspace RPC executor does.
 type capturingExecutor struct {
-	mu     sync.Mutex
-	cmd    workspaceapi.Cmd
-	stdout string
+	mu      sync.Mutex
+	cmd     workspaceapi.Cmd
+	stdout  string
+	release chan struct{}
 }
 
 var _ workspaceapi.Executor = (*capturingExecutor)(nil)
 
 func (e *capturingExecutor) Start(
-	_ context.Context, cmd workspaceapi.Cmd,
+	ctx context.Context, cmd workspaceapi.Cmd,
 ) (workspaceapi.Pid, error) {
 	e.mu.Lock()
 	e.cmd = cmd
 	e.mu.Unlock()
 
 	go func() {
-		if cmd.Stdout != nil && e.stdout != "" {
+		var exitErr error
+		if e.release != nil {
+			<-e.release
+			exitErr = ctx.Err()
+		}
+		if exitErr == nil && cmd.Stdout != nil && e.stdout != "" {
 			_, _ = io.Copy(cmd.Stdout, bytes.NewBufferString(e.stdout))
 		}
 		if cmd.Watcher != nil {
 			if ch := cmd.Watcher.WatchProcess(); ch != nil {
-				ch <- nil
+				ch <- exitErr
 			}
 		}
 	}()
@@ -167,6 +178,100 @@ func TestHandlersRequireOpenFile(t *testing.T) {
 			err := h.HandleCommand(t.Context(), textapi.Command{Name: name})
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "no file open")
+		})
+	}
+}
+
+// slowExecuteLSP models a long-running gopls command: ExecuteCommand
+// completes only after release is closed, and fails like the gRPC LSP
+// client if its context was canceled by then.
+type slowExecuteLSP struct {
+	noopLSP
+	lenses  []semanticapi.CodeLens
+	release chan struct{}
+	done    chan error
+}
+
+func (l *slowExecuteLSP) Initialize(
+	_ context.Context, _ semanticapi.InitializeParams,
+) (semanticapi.InitializeResult, error) {
+	return semanticapi.InitializeResult{}, nil
+}
+
+func (l *slowExecuteLSP) CodeLens(
+	_ context.Context, _ semanticapi.CodeLensParams,
+) ([]semanticapi.CodeLens, error) {
+	return l.lenses, nil
+}
+
+func (l *slowExecuteLSP) ExecuteCommand(
+	ctx context.Context, _ semanticapi.ExecuteCommandParams,
+) (string, error) {
+	<-l.release
+	err := ctx.Err()
+	l.done <- err
+	return "", err
+}
+
+func TestHandlersExecuteOutlivesRequestContext(t *testing.T) {
+	t.Parallel()
+
+	generateLens := []semanticapi.CodeLens{{
+		Command: &semanticapi.Command{Title: "run go generate", Command: "gopls.generate"},
+	}}
+	tests := []struct {
+		name       string
+		lenses     []semanticapi.CodeLens
+		newHandler func(semanticapi.LSP) textapi.CommandHandler
+	}{
+		{
+			name: "vulncheck",
+			newHandler: func(lsp semanticapi.LSP) textapi.CommandHandler {
+				return vulncheckHandler(lsp, &mockNotifications{})
+			},
+		},
+		{
+			name: "tidy",
+			newHandler: func(lsp semanticapi.LSP) textapi.CommandHandler {
+				return modCommandHandler(lsp, &mockNotifications{}, "gopls.tidy")
+			},
+		},
+		{
+			name:   "generate",
+			lenses: generateLens,
+			newHandler: func(lsp semanticapi.LSP) textapi.CommandHandler {
+				return codeLensHandler(lsp, &mockNotifications{}, "gopls.generate")
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			lsp := &slowExecuteLSP{
+				lenses:  tt.lenses,
+				release: make(chan struct{}),
+				done:    make(chan error, 1),
+			}
+			uri, err := workspaceapi.ParseURI("file:///work/pkg/main.go")
+			require.NoError(t, err)
+
+			// textrpc cancels the request context once HandleCommand returns.
+			ctx, cancel := context.WithCancel(t.Context())
+			require.NoError(t, tt.newHandler(lsp).HandleCommand(ctx, textapi.Command{
+				Name:     tt.name,
+				URI:      uri,
+				Resource: &stubResource{uri: uri},
+			}))
+			cancel()
+			close(lsp.release)
+
+			select {
+			case err := <-lsp.done:
+				require.NoError(t, err)
+			case <-time.After(5 * time.Second):
+				t.Fatal("ExecuteCommand never ran")
+			}
 		})
 	}
 }
@@ -235,6 +340,31 @@ func TestTestCmdHandleCommand(t *testing.T) {
 		assert.Equal(t,
 			[]string{"test", "-json", "-count=1", "-run", "^TestAdd$", "./..."},
 			got.Args)
+	})
+
+	t.Run("go test outlives the request context", func(t *testing.T) {
+		t.Parallel()
+
+		ex := &capturingExecutor{
+			stdout:  `{"Action":"pass","Package":"example.com/test","Test":"TestAdd","Elapsed":0.01}`,
+			release: make(chan struct{}),
+		}
+		mn := &mockNotifications{}
+		h := &testCmd{notify: mn, executor: ex}
+
+		// textrpc cancels the request context once HandleCommand returns.
+		ctx, cancel := context.WithCancel(t.Context())
+		require.NoError(t, h.HandleCommand(ctx, textapi.Command{
+			Name: "test",
+			Args: []string{"TestAdd"},
+		}))
+		cancel()
+		close(ex.release)
+
+		require.Eventually(t, func() bool {
+			return mn.hasMessage("TestAdd passed") || mn.hasMessage("TestAdd failed")
+		}, 5*time.Second, 10*time.Millisecond)
+		assert.True(t, mn.hasMessage("TestAdd passed"), "got %v", mn.getMessages())
 	})
 }
 
@@ -364,4 +494,8 @@ func TestProcessTestOutput(t *testing.T) {
 		assert.Equal(t, browserapi.LevelWarn, last.Level)
 		assert.Contains(t, last.Message, "no matching test ran")
 	})
+}
+
+func (*capturingExecutor) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
 }

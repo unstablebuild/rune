@@ -19,19 +19,280 @@ package idelsp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/semanticapi"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
 )
+
+const lifecycleRoot = "file:///workspace"
+
+func newLifecycleTestManager(
+	t *testing.T, exec *fakeProcExecutor, notifs *mockNotifications, cfg Config,
+) *Manager {
+	t.Helper()
+	cfg.NoInitializeServer = true
+	m := New(makeURI(t, lifecycleRoot), nil, exec, nil, notifs, nil, cfg)
+	t.Cleanup(func() { _ = m.Close() })
+	return m
+}
+
+func goInitParams(t *testing.T, command string) semanticapi.InitializeParams {
+	t.Helper()
+	opts, err := json.Marshal(map[string]any{
+		"langID": "go", "command": command, "semanticTokens": true,
+	})
+	require.NoError(t, err)
+	return semanticapi.InitializeParams{RootURI: lifecycleRoot, InitializeOptions: opts}
+}
+
+func onlyServer(t *testing.T, m *Manager) ServerStatus {
+	t.Helper()
+	servers := m.Servers()
+	require.Len(t, servers, 1)
+	return servers[0]
+}
+
+func TestInitializeSpawnFailureIsReported(t *testing.T) {
+	t.Parallel()
+	exec := newFakeProcExecutor()
+	spawnErr := errors.New("fork/exec /Users/me/go/bin/gopls: no such file or directory")
+	exec.setStartErr(spawnErr)
+	notifs := &mockNotifications{}
+	m := newLifecycleTestManager(t, exec, notifs, Config{})
+
+	_, err := m.Initialize(t.Context(), goInitParams(t, "/Users/me/go/bin/gopls serve"))
+	require.ErrorIs(t, err, spawnErr)
+
+	st := onlyServer(t, m)
+	assert.Equal(t, "go", st.Language)
+	assert.Equal(t, "go", st.Name)
+	assert.Equal(t, lifecycleRoot, st.RootURI)
+	assert.Equal(t, ServerFailed, st.State)
+	assert.Equal(t, "/Users/me/go/bin/gopls", st.Path)
+	assert.Equal(t, []string{"serve"}, st.Args)
+	assert.Zero(t, st.Pid, "no process was ever started")
+	assert.ErrorIs(t, st.LastError, spawnErr)
+	assert.Nil(t, st.Result)
+
+	var sent map[string]any
+	require.NoError(t, json.Unmarshal(st.Params, &sent))
+	assert.Equal(t, lifecycleRoot, sent["rootUri"])
+	assert.Equal(t, map[string]any{"semanticTokens": true}, sent["initializationOptions"],
+		"the params are the ones sent to the server, without rune's own options")
+	assert.Contains(t, sent, "clientInfo")
+
+	_, err = m.serverForURI(lifecycleRoot + "/main.go")
+	require.ErrorIs(t, err, ErrNoServer)
+	assert.Contains(t, err.Error(), "server go not running")
+	assert.Contains(t, err.Error(), spawnErr.Error(),
+		"requests must say why the server is missing")
+
+	notifs.mu.Lock()
+	defer notifs.mu.Unlock()
+	require.Len(t, notifs.notified, 1)
+	assert.Equal(t, browserapi.LevelError, notifs.notified[0].level)
+	assert.Contains(t, notifs.notified[0].msg, spawnErr.Error())
+}
+
+func TestInitializeReportsExitOfServerThatDiesDuringInitialize(t *testing.T) {
+	t.Parallel()
+	exec := newFakeProcExecutor()
+	exec.dieOnInit = errors.New("exit status 2")
+	m := newLifecycleTestManager(t, exec, &mockNotifications{}, Config{})
+
+	_, err := m.Initialize(t.Context(), goInitParams(t, "/bin/gopls serve"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exit status 2",
+		"the exit status explains the failure better than the broken connection")
+
+	st := onlyServer(t, m)
+	assert.Equal(t, ServerFailed, st.State)
+	assert.Equal(t, workspaceapi.Pid(1), st.Pid,
+		"the failed process is kept so its output can be inspected")
+}
+
+func TestServersReportsRunningServer(t *testing.T) {
+	t.Parallel()
+	exec := newFakeProcExecutor()
+	m := newLifecycleTestManager(t, exec, &mockNotifications{}, Config{})
+
+	_, err := m.Initialize(t.Context(), goInitParams(t, "/bin/gopls serve"))
+	require.NoError(t, err)
+
+	st := onlyServer(t, m)
+	assert.Equal(t, ServerRunning, st.State)
+	assert.Equal(t, workspaceapi.Pid(1), st.Pid)
+	assert.False(t, st.Started.IsZero())
+	assert.NoError(t, st.LastError)
+	assert.JSONEq(t, string(exec.initResult), string(st.Result),
+		"the raw response keeps fields InitializeResult does not model")
+}
+
+func TestRestartBringsUpNewProcessAndReopensFiles(t *testing.T) {
+	t.Parallel()
+	exec := newFakeProcExecutor()
+	m := newLifecycleTestManager(t, exec, &mockNotifications{}, Config{})
+	_, err := m.Initialize(t.Context(), goInitParams(t, "/bin/gopls serve"))
+	require.NoError(t, err)
+	openURI := lifecycleRoot + "/main.go"
+	m.mu.Lock()
+	m.files[openURI] = newFile(makeURI(t, openURI), "package main\n", "go",
+		serverKey{languageID: "go", rootURI: lifecycleRoot})
+	m.mu.Unlock()
+
+	require.NoError(t, m.Restart(t.Context(), "go", lifecycleRoot))
+
+	st := onlyServer(t, m)
+	assert.Equal(t, ServerRunning, st.State)
+	assert.Equal(t, workspaceapi.Pid(2), st.Pid)
+	assert.Equal(t, 1, st.Restarts)
+	// exit is a notification, so the old process may read it after Restart returns.
+	assert.Eventually(t, func() bool {
+		oldMethods, _ := exec.proc(1).received()
+		return slices.Contains(oldMethods, "shutdown") && slices.Contains(oldMethods, "exit")
+	}, 5*time.Second, 10*time.Millisecond, "the old server must be shut down cleanly")
+	assert.Eventually(t, func() bool {
+		_, opens := exec.proc(2).received()
+		return len(opens) == 1 && opens[0] == openURI
+	}, 5*time.Second, 10*time.Millisecond, "open files must be reopened on the new server")
+	_, err = m.serverForURI(openURI)
+	assert.NoError(t, err)
+}
+
+func TestStopAndStart(t *testing.T) {
+	t.Parallel()
+	exec := newFakeProcExecutor()
+	m := newLifecycleTestManager(t, exec, &mockNotifications{}, Config{})
+	ctx := t.Context()
+	_, err := m.Initialize(ctx, goInitParams(t, "/bin/gopls serve"))
+	require.NoError(t, err)
+
+	require.NoError(t, m.Stop(ctx, "go", lifecycleRoot))
+	assert.Equal(t, ServerStopped, onlyServer(t, m).State)
+	_, err = m.serverForURI(lifecycleRoot + "/main.go")
+	require.ErrorIs(t, err, ErrNoServer)
+	assert.Contains(t, err.Error(), "stopped")
+	require.ErrorIs(t, m.Stop(ctx, "go", lifecycleRoot), ErrNoServer)
+
+	require.NoError(t, m.Start(ctx, "go", lifecycleRoot))
+	st := onlyServer(t, m)
+	assert.Equal(t, ServerRunning, st.State)
+	assert.Equal(t, workspaceapi.Pid(2), st.Pid)
+	assert.Error(t, m.Start(ctx, "go", lifecycleRoot), "the server is already running")
+	assert.ErrorIs(t, m.Start(ctx, "rust", lifecycleRoot), ErrNoServer,
+		"a server that was never initialized has nothing to start from")
+}
+
+func TestStartAfterFailedInitialize(t *testing.T) {
+	t.Parallel()
+	exec := newFakeProcExecutor()
+	exec.setStartErr(errors.New("no such file or directory"))
+	m := newLifecycleTestManager(t, exec, &mockNotifications{}, Config{})
+	ctx := t.Context()
+	_, err := m.Initialize(ctx, goInitParams(t, "/bin/gopls serve"))
+	require.Error(t, err)
+
+	exec.setStartErr(nil)
+	require.NoError(t, m.Start(ctx, "go", lifecycleRoot))
+	assert.Equal(t, ServerRunning, onlyServer(t, m).State)
+}
+
+func TestCrashedServerRestartIsTracked(t *testing.T) {
+	t.Parallel()
+	exec := newFakeProcExecutor()
+	m := newLifecycleTestManager(t, exec, &mockNotifications{}, Config{MaxRetries: 2})
+	_, err := m.Initialize(t.Context(), goInitParams(t, "/bin/gopls serve"))
+	require.NoError(t, err)
+
+	require.NoError(t, exec.Signal(1, syscall.SIGKILL))
+
+	require.Eventually(t, func() bool {
+		st := onlyServer(t, m)
+		return st.State == ServerRunning && st.Pid == 2
+	}, 5*time.Second, 10*time.Millisecond)
+	st := onlyServer(t, m)
+	assert.Equal(t, 1, st.Restarts)
+	assert.Error(t, st.LastError, "the reason for the restart is kept")
+}
+
+func TestCrashedServerThatCannotRestartIsFailed(t *testing.T) {
+	t.Parallel()
+	exec := newFakeProcExecutor()
+	notifs := &mockNotifications{}
+	m := newLifecycleTestManager(t, exec, notifs, Config{MaxRetries: 1})
+	_, err := m.Initialize(t.Context(), goInitParams(t, "/bin/gopls serve"))
+	require.NoError(t, err)
+	spawnErr := errors.New("no such file or directory")
+	exec.setStartErr(spawnErr)
+
+	require.NoError(t, exec.Signal(1, syscall.SIGKILL))
+
+	require.Eventually(t, func() bool {
+		return onlyServer(t, m).State == ServerFailed
+	}, 5*time.Second, 10*time.Millisecond)
+	assert.ErrorIs(t, onlyServer(t, m).LastError, spawnErr)
+}
+
+func TestPendingOpenReachesEveryMultiServerChild(t *testing.T) {
+	t.Parallel()
+	exec := newFakeProcExecutor()
+	m := newLifecycleTestManager(t, exec, &mockNotifications{}, Config{})
+	openURI := lifecycleRoot + "/main.py"
+	require.NoError(t, m.handle(textapi.Event{
+		Type: textapi.EventTypeOpen, URI: makeURI(t, openURI), Content: "x = 1\n",
+	}))
+
+	opts, err := json.Marshal(map[string]any{
+		"langID":  "python",
+		"command": "/bin/ty server",
+		"alternate_commands": map[string]string{
+			"textDocument/formatting": "/bin/ruff server",
+		},
+	})
+	require.NoError(t, err)
+	_, err = m.Initialize(t.Context(), semanticapi.InitializeParams{
+		RootURI: lifecycleRoot, InitializeOptions: opts,
+	})
+	require.NoError(t, err)
+
+	for _, pid := range []workspaceapi.Pid{1, 2} {
+		assert.Eventually(t, func() bool {
+			_, opens := exec.proc(pid).received()
+			return slices.Equal(opens, []string{openURI})
+		}, 5*time.Second, 10*time.Millisecond,
+			"child %d must receive didOpen, or it rejects every later didChange", pid)
+	}
+}
+
+func TestInstallRestartedRefusesServerNoLongerRegistered(t *testing.T) {
+	t.Parallel()
+	m := New(makeURI(t, lifecycleRoot), nil, nil, nil, nil, nil,
+		Config{NoInitializeServer: true})
+	t.Cleanup(func() { _ = m.Close() })
+	key := serverKey{languageID: "go", rootURI: lifecycleRoot}
+	old := &langServer{cfg: langConfig{id: "go"}, rootURI: lifecycleRoot}
+	replacement := &langServer{cfg: langConfig{id: "go"}, rootURI: lifecycleRoot}
+
+	assert.False(t, m.installRestarted(key, old, replacement),
+		"a server stopped while restarting must not be resurrected")
+	m.mu.Lock()
+	_, registered := m.servers[key]
+	m.mu.Unlock()
+	assert.False(t, registered)
+}
 
 func TestEventTypeClose_evictsFilesCache(t *testing.T) {
 	t.Parallel()
@@ -320,6 +581,60 @@ func TestTransientOpenForUnopenedFile(t *testing.T) {
 	assert.False(t, cached, "transient open must not cache the file in m.files")
 }
 
+func TestTypeScriptDialectsShareServerWithPerFileLanguageID(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		file      string
+		transient bool
+		wantDocID string
+	}{
+		{"index.ts", false, "typescript"},
+		{"App.tsx", false, "typescriptreact"},
+		{"index.js", false, "javascript"},
+		{"App.jsx", false, "javascriptreact"},
+		{"lib.mts", true, "typescript"},
+		{"Widget.tsx", true, "typescriptreact"},
+		{"lib.cjs", true, "javascript"},
+		{"Widget.jsx", true, "javascriptreact"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.file, func(t *testing.T) {
+			t.Parallel()
+			tmpDir := t.TempDir()
+			filePath := filepath.Join(tmpDir, tt.file)
+			require.NoError(t, os.WriteFile(filePath, []byte("export {}\n"), 0o644))
+			fileURI := "file://" + filePath
+			rootURI := "file://" + tmpDir
+
+			m := New(makeURI(t, rootURI), newTestScheme(), nil, nil, nil, nil,
+				Config{NoInitializeServer: true})
+			t.Cleanup(func() { _ = m.Close() })
+			srv := &fakeChild{childName: "typescript", rootURI: rootURI}
+			m.mu.Lock()
+			m.servers[serverKey{languageID: "typescript", rootURI: rootURI}] = srv
+			m.mu.Unlock()
+
+			if tt.transient {
+				_, err := m.Hover(context.Background(), semanticapi.HoverParams{
+					TextDocument: semanticapi.TextDocumentIdentifier{URI: fileURI},
+				})
+				require.NoError(t, err)
+			} else {
+				require.NoError(t, m.handle(textapi.Event{
+					Type:    textapi.EventTypeOpen,
+					URI:     makeURI(t, fileURI),
+					Content: "export {}\n",
+				}))
+			}
+
+			opens := srv.didOpens()
+			require.Len(t, opens, 1)
+			assert.Equal(t, fileURI, opens[0].TextDocument.URI)
+			assert.Equal(t, tt.wantDocID, opens[0].TextDocument.LanguageID)
+		})
+	}
+}
+
 func TestLocationRequestDecodesSingleLocation(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
@@ -448,7 +763,7 @@ func TestDiagnosticSettleTimeoutDoesNotFail(t *testing.T) {
 	fileURI := "file://" + filePath
 	rootURI := "file://" + tmpDir
 
-	cb := NewCallbackHandler(nil, nil, nil, nil, nil, rootURI,
+	cb := NewCallbackHandler(nil, nil, nil, nil, caseFS{}, rootURI,
 		CallbackHandlerConfig{ScheduleNextTick: func(func()) bool { return true }})
 	uri := makeURI(t, rootURI)
 	m := New(uri, newTestScheme(), nil, nil, nil, nil,
@@ -494,7 +809,7 @@ func TestDiagnosticUnopenedFileSkipsSettleWait(t *testing.T) {
 	fileURI := "file://" + filePath
 	rootURI := "file://" + tmpDir
 
-	cb := NewCallbackHandler(nil, nil, nil, nil, nil, rootURI,
+	cb := NewCallbackHandler(nil, nil, nil, nil, caseFS{}, rootURI,
 		CallbackHandlerConfig{ScheduleNextTick: func(func()) bool { return true }})
 	uri := makeURI(t, rootURI)
 	m := New(uri, newTestScheme(), nil, nil, nil, nil,
@@ -535,7 +850,7 @@ func TestDiagnosticPropagatesCancellation(t *testing.T) {
 	fileURI := "file://" + filePath
 	rootURI := "file://" + tmpDir
 
-	cb := NewCallbackHandler(nil, nil, nil, nil, nil, rootURI,
+	cb := NewCallbackHandler(nil, nil, nil, nil, caseFS{}, rootURI,
 		CallbackHandlerConfig{ScheduleNextTick: func(func()) bool { return true }})
 	uri := makeURI(t, rootURI)
 	m := New(uri, newTestScheme(), nil, nil, nil, nil,

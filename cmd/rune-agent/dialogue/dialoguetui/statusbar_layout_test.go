@@ -18,10 +18,12 @@ package dialoguetui
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"unstable.build/rune/internal/component/template"
 )
 
 func TestParseStatusBarLayoutFields(t *testing.T) {
@@ -59,6 +61,18 @@ func TestParseStatusBarLayoutFields(t *testing.T) {
 }
 
 func TestParseStatusBarLayout(t *testing.T) {
+	// hud is the Image of `src "file:///tmp/hud.png"` with every other
+	// directive at its default.
+	hud := template.Image{
+		URI:     "file:///tmp/hud.png",
+		Width:   template.Length{N: 2},
+		Height:  1,
+		Reserve: 2,
+		MaxCut:  template.DefaultImageMaxCut,
+		Fit:     term.ImageFitContain,
+		Alt:     template.DefaultImageAlt,
+		TTL:     24 * time.Hour,
+	}
 	tests := []struct {
 		name   string
 		layout string
@@ -137,6 +151,36 @@ func TestParseStatusBarLayout(t *testing.T) {
 			name:   "unknown field",
 			layout: `{{ .Nonsense }}`,
 			err:    `unknown status bar component: "Nonsense"`,
+		},
+		{
+			name: "images with their literals and attributes",
+			layout: `{{ .Status }} <{{ .Image | src "file:///tmp/hud.png" | fg "red" }}>` +
+				`{{ .ShiftRight }}{{ .Image | src "file:///tmp/hud.png" | width 4 | z_index -1 }}`,
+			want: []StatusBarComponent{
+				{Type: StatusBarStatus, Template: "%s <"},
+				{
+					Type: StatusBarImage, Template: "%s>",
+					Attributes: term.Attributes{Fg: term.ColorRed}, Image: hud,
+				},
+				{Type: StatusBarVoid},
+				{
+					Type: StatusBarImage, Template: "%s",
+					Image: template.Image{
+						URI: hud.URI, Width: template.Length{N: 4}, Height: 1, Reserve: 4,
+						MaxCut: hud.MaxCut, Fit: hud.Fit, ZIndex: -1, Alt: hud.Alt, TTL: hud.TTL,
+					},
+				},
+			},
+		},
+		{
+			name:   "image without src",
+			layout: `{{ .Image | width 4 }}`,
+			err:    ".Image requires src",
+		},
+		{
+			name:   "image directive on another element",
+			layout: `{{ .Model | width 4 }}`,
+			err:    "width only applies to .Image, not .Model",
 		},
 	}
 

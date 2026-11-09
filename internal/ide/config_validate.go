@@ -25,6 +25,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/llm"
+	"unstable.build/rune/internal/sounds"
 	"unstable.build/rune/internal/text"
 )
 
@@ -62,7 +63,159 @@ func validateConfigOn(cfg map[string]any, goos string) (err error) {
 	if err = validateNotice(cfg); err != nil {
 		return
 	}
-	return
+	return validateSounds(cfg)
+}
+
+// validateSounds drops invalid `sounds` entries, resets a terminal.bell
+// that names no known sound to the default and drops invalid
+// program_status.sounds, gui.quick_menu_sounds, browser.tab_sounds and
+// workspace.tab_sounds entries, so a typo costs one sound rather than
+// the whole config.
+func validateSounds(cfg map[string]any) error {
+	var errs []error
+	entries := make(map[string]string)
+	if raw, ok := cfg[keySounds]; ok {
+		m, ok := raw.(map[string]any)
+		if !ok {
+			errs = append(errs, fmt.Errorf("'%s' must map sound names to "+
+				"file paths or other sound names", keySounds))
+			m = map[string]any{}
+		}
+		for name, v := range m {
+			value, ok := v.(string)
+			if !ok {
+				errs = append(errs, fmt.Errorf("'%s.%s' must be a file path, "+
+					"a sound name or \"\", got %T", keySounds, name, v))
+				continue
+			}
+			entries[name] = value
+		}
+		valid, err := sounds.Validate(entries)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("'%s' is invalid: %w", keySounds, err))
+		}
+		kept := make(map[string]any, len(valid))
+		for name, value := range valid {
+			kept[name] = value
+		}
+		cfg[keySounds] = kept
+		entries = valid
+	}
+	known := func(name string) bool {
+		_, configured := entries[name]
+		return name == "" || configured || sounds.IsReserved(name)
+	}
+	if err := validateTerminalBell(cfg, known); err != nil {
+		errs = append(errs, err)
+	}
+	errs = append(errs, validateProgramStatusSounds(cfg, known)...)
+	errs = append(errs, validateEventSounds(cfg, keyGUI, keyQuickMenuSounds, known)...)
+	errs = append(errs, validateEventSounds(cfg, "browser", keyTabSounds, known)...)
+	errs = append(errs, validateEventSounds(cfg, "workspace", keyTabSounds, known)...)
+	return errors.Join(errs...)
+}
+
+func validateTerminalBell(cfg map[string]any, known func(string) bool) error {
+	terminal, ok := cfg[keyTerminal].(map[string]any)
+	if !ok {
+		return nil
+	}
+	raw, ok := terminal[keyTerminalBell]
+	if !ok {
+		return nil
+	}
+	var err error
+	switch bell, ok := raw.(string); {
+	case !ok:
+		err = fmt.Errorf("'%s.%s' must be a sound name or \"\", got %T",
+			keyTerminal, keyTerminalBell, raw)
+	case !known(bell):
+		err = fmt.Errorf("'%s.%s' names unknown sound %q",
+			keyTerminal, keyTerminalBell, bell)
+	default:
+		return nil
+	}
+	terminal[keyTerminalBell] = sounds.Warning
+	return err
+}
+
+// validateProgramStatusSounds drops the program_status.sounds entries
+// that name no state or no known sound, for that state to keep its
+// default sound.
+func validateProgramStatusSounds(cfg map[string]any, known func(string) bool) []error {
+	const key = keyProgramStatus + "." + keyProgramStatusSounds
+	status, ok := cfg[keyProgramStatus].(map[string]any)
+	if !ok {
+		return nil
+	}
+	raw, ok := status[keyProgramStatusSounds]
+	if !ok {
+		return nil
+	}
+	entries, ok := raw.(map[string]any)
+	if !ok {
+		delete(status, keyProgramStatusSounds)
+		return []error{fmt.Errorf("'%s' must map states to sound names", key)}
+	}
+	var errs []error
+	for state, v := range entries {
+		name, isString := v.(string)
+		switch _, isState := statusStateNamed(state); {
+		case !isState:
+			errs = append(errs, fmt.Errorf(
+				"'%s.%s': unknown state: expected blocked, error, done or working", key, state))
+		case !isString:
+			errs = append(errs, fmt.Errorf("'%s.%s' must be a sound name or \"\", got %T",
+				key, state, v))
+		case !known(name):
+			errs = append(errs, fmt.Errorf("'%s.%s' names unknown sound %q", key, state, name))
+		default:
+			continue
+		}
+		delete(entries, state)
+	}
+	return errs
+}
+
+// validateEventSounds drops the entries of the section.field map of
+// hover and click sounds that name no event or no known sound, for that
+// event to play none.
+func validateEventSounds(
+	cfg map[string]any, section, field string, known func(string) bool,
+) []error {
+	key := section + "." + field
+	sectionCfg, ok := cfg[section].(map[string]any)
+	if !ok {
+		return nil
+	}
+	raw, ok := sectionCfg[field]
+	if !ok {
+		return nil
+	}
+	entries, ok := raw.(map[string]any)
+	if !ok {
+		delete(sectionCfg, field)
+		return []error{fmt.Errorf("'%s' must map %s and %s to sound names",
+			key, keyQuickMenuHover, keyQuickMenuClick)}
+	}
+	var errs []error
+	for event, v := range entries {
+		name, isString := v.(string)
+		switch {
+		case event != keyQuickMenuHover && event != keyQuickMenuClick:
+			errs = append(errs, fmt.Errorf("'%s.%s': unknown event: expected %s or %s",
+				key, event, keyQuickMenuHover, keyQuickMenuClick))
+		case !isString:
+			errs = append(errs, fmt.Errorf("'%s.%s' must be a sound name or \"\", got %T",
+				key, event, v))
+		case !known(name):
+			errs = append(errs, fmt.Errorf("'%s.%s' names unknown sound %q", key, event, name))
+		default:
+			continue
+		}
+		delete(entries, event)
+	}
+	return errs
 }
 
 func validateAliases(c *ideConfig, cfg map[string]any) (err error) {
@@ -119,11 +272,21 @@ func validateQuickMenu(cfg map[string]any) error {
 func quickMenuEntries(buttons []QuickMenuButton) []any {
 	entries := make([]any, 0, len(buttons))
 	for _, button := range buttons {
-		entries = append(entries, map[string]any{
-			"symbol":  button.Symbol,
+		entry := map[string]any{
 			"title":   button.Title,
 			"command": strings.Join(button.Command, " "),
-		})
+		}
+		if button.Symbol != "" {
+			entry["symbol"] = button.Symbol
+		}
+		if button.HasSprite() {
+			entry["sprite"] = map[string]any{
+				"idle":    button.Sprite.Idle,
+				"hover":   button.Sprite.Hover,
+				"pressed": button.Sprite.Pressed,
+			}
+		}
+		entries = append(entries, entry)
 	}
 	return entries
 }

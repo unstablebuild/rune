@@ -23,11 +23,8 @@ import (
 
 	log "github.com/sirupsen/logrus"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
-	"github.com/unstablebuild/rune-go-sdk/api/syntaxapi"
-	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
-	"unstable.build/rune/internal/component/markdown"
 	"unstable.build/rune/internal/debug"
 )
 
@@ -41,7 +38,7 @@ const (
 type Choice int
 
 // The possible answers to the upgrade prompt. ChoiceDismissed covers
-// both an explicit dismissal and the case where no window manager is
+// both an explicit dismissal and the case where no Prompter is
 // available to render the prompt.
 const (
 	ChoiceDismissed Choice = iota
@@ -58,7 +55,7 @@ const (
 func (m *Manager) PromptChoice(
 	ctx context.Context, manifest Manifest,
 ) (Choice, error) {
-	if m.cfg.WindowManager == nil {
+	if m.cfg.Prompter == nil {
 		return ChoiceDismissed, nil
 	}
 	// Buffered so the first answer never blocks the event loop and a
@@ -70,11 +67,9 @@ func (m *Manager) PromptChoice(
 		default:
 		}
 	}
-	prompt := m.newPrompt(manifest, reply)
+	cfg, h := m.newPrompt(manifest, reply)
 	scheduled := m.cfg.ScheduleNextTick(func() {
-		if _, err := m.cfg.WindowManager.Floating(prompt, browserapi.FloatingConfig{
-			Alignment: component.AlignmentCentered,
-		}); err != nil {
+		if _, err := m.cfg.Prompter.Prompt(cfg, h); err != nil {
 			log.WithError(err).Warn("ideupgrade: show upgrade prompt")
 			reply(ChoiceDismissed)
 		}
@@ -97,13 +92,13 @@ func (m *Manager) PromptChoice(
 // "Upgrade Now" is chosen, the upgrade runs on a background goroutine
 // reporting through notifications.
 func (m *Manager) showPrompt(ctx context.Context, manifest Manifest) {
-	if m.cfg.WindowManager == nil {
+	if m.cfg.Prompter == nil {
 		_, _ = m.cfg.Notifications.Notify(browserapi.LevelInfo,
 			"Rune %s is available", manifest.Version)
 		return
 	}
 
-	prompt := m.newPrompt(manifest, func(c Choice) {
+	cfg, h := m.newPrompt(manifest, func(c Choice) {
 		if c != ChoiceUpgradeNow {
 			m.persistChoice(ctx, c, manifest)
 			return
@@ -116,9 +111,7 @@ func (m *Manager) showPrompt(ctx context.Context, manifest Manifest) {
 	})
 
 	m.cfg.ScheduleNextTick(func() {
-		if _, err := m.cfg.WindowManager.Floating(prompt, browserapi.FloatingConfig{
-			Alignment: component.AlignmentCentered,
-		}); err != nil {
+		if _, err := m.cfg.Prompter.Prompt(cfg, h); err != nil {
 			log.WithError(err).Warn("ideupgrade: show upgrade prompt")
 		}
 	})
@@ -135,81 +128,34 @@ func (m *Manager) persistChoice(ctx context.Context, c Choice, manifest Manifest
 	}
 }
 
-// newPrompt builds the floating upgrade prompt for manifest. onChoice
-// is invoked with the user's answer, or with ChoiceDismissed when the
-// prompt is closed without a selection.
+// newPrompt returns the upgrade prompt for manifest, and the handler
+// that calls onChoice with the user's answer, or with ChoiceDismissed
+// when the prompt is closed without a selection.
 func (m *Manager) newPrompt(
 	manifest Manifest, onChoice func(Choice),
-) *handler.Prompt {
+) (browserapi.PromptConfig, handler.PromptHandler) {
 	message := fmt.Sprintf("A new version of Rune is available: **%s** (current: %s).\n\nUpgrade now?",
 		manifest.Version, m.cfg.CurrentVersion)
 	if manifest.Changelog != "" {
 		message = manifest.Changelog + "\n\n---\n\n" + message
 	}
 
-	return handler.NewPrompt(handler.PromptConfig{
-		HighlightAttr: term.Attributes{
-			Attrs: term.AttrBold,
-			Bg:    term.ColorBlue,
-		},
-		OptionAttr: term.Attributes{
-			Attrs: term.AttrBold,
-			Bg:    term.ColorGray,
-		},
-		OptionBindings: []term.KeyComb{{Ch: 'y'}, {Ch: 'l'}, {Ch: 's'}},
-		PromptConfig: component.PromptConfig{
-			Message:    message,
-			Options:    []string{upgradeNowOpt, remindLaterOpt, skipVersionOpt},
-			NewMessage: markdownOrFallback(m.cfg.Parser, m.cfg.ScheduleNextTick),
-		},
-		PromptHandler: handler.FuncPromptHandler(func(idx int, _ string) {
-			switch idx {
-			case 0:
-				onChoice(ChoiceUpgradeNow)
-			case 1:
-				onChoice(ChoiceRemindLater)
-			case 2:
-				onChoice(ChoiceSkipVersion)
-			}
-		}, func() error {
-			onChoice(ChoiceDismissed)
-			return nil
-		}),
-	})
-}
-
-// markdownOrFallback returns a NewMessage callback that renders the
-// prompt body as markdown when possible, falling back to a plain
-// responsive string when the parser is unavailable. It mirrors the
-// helper in idepkg/update_checker.go but is duplicated here to avoid
-// pulling idepkg into ideupgrade.
-func markdownOrFallback(
-	parser syntaxapi.Parser, scheduleNextTick func(func()) bool,
-) func(string) component.Floating {
-	return func(str string) component.Floating {
-		mcfg := markdown.DefaultConfig()
-		mcfg.HeaderPrefix = false
-		mcfg.ScheduleNextTick = scheduleNextTick
-		mcfg.Parser = parser
-		mkd, err := markdown.NewWithConfig(str, mcfg)
-		if err == nil {
-			return component.NewSpan(mkd, component.SpanConfig{
-				PadHorizontal:    4,
-				PadVertical:      2,
-				ContentAlignment: component.AlignmentCentered,
-			})
-		}
-		cfg := component.StringResponsiveConfig{
-			NoSplitWords: true,
-			StringConfig: component.StringConfig{
-				PaddingVertical:   4,
-				PaddingHorizontal: 4,
-				Alignment:         component.AlignmentCentered,
-			},
-		}
-		messageResponsive := component.NewResponsiveString(str, cfg)
-
-		return component.NewAspectRatioFloatingResponsive(
-			messageResponsive, component.DefaultAspectRatio)
+	cfg := browserapi.PromptConfig{
+		Message:  message,
+		Options:  []string{upgradeNowOpt, remindLaterOpt, skipVersionOpt},
+		Bindings: []term.KeyComb{{Ch: 'y'}, {Ch: 'l'}, {Ch: 's'}},
 	}
+	return cfg, handler.FuncPromptHandler(func(idx int, _ string) {
+		switch idx {
+		case 0:
+			onChoice(ChoiceUpgradeNow)
+		case 1:
+			onChoice(ChoiceRemindLater)
+		case 2:
+			onChoice(ChoiceSkipVersion)
+		}
+	}, func() error {
+		onChoice(ChoiceDismissed)
+		return nil
+	})
 }

@@ -19,6 +19,7 @@ package standard
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -422,6 +423,21 @@ func TestStandardCursorCorrectionsDisabled(t *testing.T) {
 	assert.Equal(t, want, pos)
 }
 
+func TestStandardMouseSetsTheTextPointer(t *testing.T) {
+	uri, err := workspaceapi.ParseURI("test:///text-pointer")
+	require.NoError(t, err)
+	buf := cell.NewBuffer()
+	buf.ReadFrom(strings.NewReader("text"))
+	h := NewHandler(buf, uri, text.IndentRuneTab, 0)
+	h.Resize(20, 10)
+
+	p := new(term.Pointer)
+	h.Handle(term.Event{Type: term.EventMouse, MouseX: 1,
+		Context: term.ContextWithPointer(context.Background(), p)})
+	shape, _ := p.Shape()
+	assert.Equal(t, term.PointerText, shape)
+}
+
 func TestStandardMoveToBoundsReportsCorrection(t *testing.T) {
 	uri, err := workspaceapi.ParseURI("test:///move-to-bounds-result")
 	require.NoError(t, err)
@@ -733,18 +749,13 @@ type sublimeCase struct {
 
 const sublimeSnippet = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk"
 
-func sublimeSnippetPlus(add string) *string {
-	return new(sublimeSnippet + add)
-}
-
 func TestSublimeKeyBindingsMacOS(t *testing.T) {
-	spAll := sublimeSnippetPlus
 	suite := []sublimeCase{
 		// General editing
 		{"Cut (cuts entire line when nothing selected)", "<meta-x>", new("b\nc\nd\ne\nf\ng\nh\ni\nj\nk"), term.Coordinates{Y: 0, X: 0}, nil},
-		{"Copy+Paste", "<shift-right><meta-c><meta-v>", new("aa\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk"), term.Coordinates{Y: 0, X: 1}, nil},
-		{"Copy+Paste and indent correctly", "<shift-right><meta-c><down><shift-meta-v>", new("a\nab\nc\nd\ne\nf\ng\nh\ni\nj\nk"), term.Coordinates{Y: 1, X: 1}, nil},
-		{"Paste from clipboard history", "<shift-right><meta-c><meta-v><meta-v><alt-meta-v>", new("aaa\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk"), term.Coordinates{Y: 0, X: 2}, nil},
+		{"Copy+Paste", "<shift-right><meta-c><meta-v>", new(sublimeSnippet), term.Coordinates{Y: 0, X: 1}, nil},
+		{"Copy+Paste and indent correctly", "<shift-right><meta-c><down><shift-meta-v>", new("a\nba\nc\nd\ne\nf\ng\nh\ni\nj\nk"), term.Coordinates{Y: 1, X: 2}, nil},
+		{"Paste from clipboard history", "<shift-right><meta-c><esc><meta-v><meta-v><alt-meta-v>", new("aaa\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk"), term.Coordinates{Y: 0, X: 3}, nil},
 		{"Undo", "<meta-x><meta-z>", new("a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk"), term.Coordinates{Y: 0, X: 0}, nil},
 		{"Redo", "<meta-x><meta-z><shift-meta-z>", new("b\nc\nd\ne\nf\ng\nh\ni\nj\nk"), term.Coordinates{Y: 0, X: 0}, nil},
 		{"Redo or repeat last command", "<meta-x><meta-z><meta-y>", new("b\nc\nd\ne\nf\ng\nh\ni\nj\nk"), term.Coordinates{Y: 0, X: 0}, nil},
@@ -790,9 +801,9 @@ func TestSublimeKeyBindingsMacOS(t *testing.T) {
 		//{"Close current HTML/XML tag", "<alt-meta-.>", nil, term.Coordinates{}}, // No open tag
 
 		// Selection
-		{"Select all", "<meta-a><m-c>", nil, term.Coordinates{}, spAll("\n")},
-		{"Select entire line (repeat to select additional lines)", "<down><meta-l><meta-l><m-c>", nil, term.Coordinates{Y: 1, X: 0}, new("b\nc\n")},
-		{"Select word at cursor (repeat to select next occurrence)", "<meta-down>a<enter><meta-up><meta-d><meta-d><meta-d><meta-c>", nil, term.Coordinates{}, new("a")},
+		{"Select all", "<meta-a><m-c>", nil, term.Coordinates{Y: 10, X: 1}, new(sublimeSnippet)},
+		{"Select entire line (repeat to select additional lines)", "<down><meta-l><meta-l><m-c>", nil, term.Coordinates{Y: 3, X: 0}, new("b\nc\n")},
+		{"Select word at cursor (repeat to select next occurrence)", "<meta-down>a<enter><meta-up><meta-d><meta-d><meta-d><meta-c>", nil, term.Coordinates{X: 1}, new("a")},
 		//{"Select word at cursor (repeat to select next occurrence, multi cursor edits all)", "<meta-down>a<meta-up><meta-d><meta-c>", nil, term.Coordinates{Y: 10, X: 0}, sp("a")},
 		//{"Skip current selection, find and select next occurrence", "<meta-d><meta-k><meta-d>", nil, term.Coordinates{X: 0}, sp("a")},
 		//{"Select all occurrences of current selection", "<meta-d><ctrl-meta-g>", nil, term.Coordinates{}},
@@ -806,7 +817,7 @@ func TestSublimeKeyBindingsMacOS(t *testing.T) {
 		{"Expand selection to brackets", "{abc}<left><left><shift-left><ctrl-shift-m>", nil, term.Coordinates{X: 4}, nil},
 		//{"Expand selection to HTML/XML tag", "<shift-meta-a>", nil, term.Coordinates{}}, // No tags
 		{"Expand selection to scope", "<shift-meta-space>", nil, term.Coordinates{}, nil},
-		{"Expand selection to indentation level", "<shift-meta-j><m-c>", nil, term.Coordinates{}, spAll("\n")},
+		{"Expand selection to indentation level", "<shift-meta-j><m-c>", nil, term.Coordinates{Y: 10, X: 1}, new(sublimeSnippet)},
 
 		// Navigation and movement
 		{"Move to start of line", "<space><right><meta-left>", nil, term.Coordinates{Y: 0, X: 0}, nil},
@@ -961,13 +972,12 @@ func runSublimeSuite(t *testing.T, keymap Keymap, suite []sublimeCase) {
 }
 
 func TestSublimeKeyBindingsLinux(t *testing.T) {
-	spAll := sublimeSnippetPlus
 	runSublimeSuite(t, KeymapLinux, []sublimeCase{
 		// General editing
 		{"Cut (cuts entire line when nothing selected)", "<ctrl-x>", new("b\nc\nd\ne\nf\ng\nh\ni\nj\nk"), term.Coordinates{Y: 0, X: 0}, nil},
-		{"Copy+Paste", "<shift-right><ctrl-c><ctrl-v>", new("aa\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk"), term.Coordinates{Y: 0, X: 1}, nil},
-		{"Copy+Paste and indent correctly", "<shift-right><ctrl-c><down><ctrl-shift-v>", new("a\nab\nc\nd\ne\nf\ng\nh\ni\nj\nk"), term.Coordinates{Y: 1, X: 1}, nil},
-		{"Paste from clipboard history", "<shift-right><ctrl-c><ctrl-v><ctrl-v><ctrl-k><ctrl-v>", new("aaa\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk"), term.Coordinates{Y: 0, X: 2}, nil},
+		{"Copy+Paste", "<shift-right><ctrl-c><ctrl-v>", new(sublimeSnippet), term.Coordinates{Y: 0, X: 1}, nil},
+		{"Copy+Paste and indent correctly", "<shift-right><ctrl-c><down><ctrl-shift-v>", new("a\nba\nc\nd\ne\nf\ng\nh\ni\nj\nk"), term.Coordinates{Y: 1, X: 2}, nil},
+		{"Paste from clipboard history", "<shift-right><ctrl-c><esc><ctrl-v><ctrl-v><ctrl-k><ctrl-v>", new("aaa\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk"), term.Coordinates{Y: 0, X: 3}, nil},
 		{"Undo", "<ctrl-x><ctrl-z>", new("a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk"), term.Coordinates{Y: 0, X: 0}, nil},
 		{"Redo", "<ctrl-x><ctrl-z><ctrl-shift-z>", new("b\nc\nd\ne\nf\ng\nh\ni\nj\nk"), term.Coordinates{Y: 0, X: 0}, nil},
 		{"Redo or repeat last command", "<ctrl-x><ctrl-z><ctrl-y>", new("b\nc\nd\ne\nf\ng\nh\ni\nj\nk"), term.Coordinates{Y: 0, X: 0}, nil},
@@ -1000,12 +1010,12 @@ func TestSublimeKeyBindingsLinux(t *testing.T) {
 		{"Wrap paragraph at ruler", "<ctrl-k><ctrl-q>", new("alpha beta\ngamma delta\nepsilon zeta\neta theta\n\ni\nj\nk"), term.Coordinates{Y: 0, X: 0}, nil},
 
 		// Selection
-		{"Select all", "<ctrl-a><ctrl-c>", nil, term.Coordinates{}, spAll("\n")},
-		{"Select entire line (repeat to select additional lines)", "<down><ctrl-l><ctrl-l><ctrl-c>", nil, term.Coordinates{Y: 1, X: 0}, new("b\nc\n")},
-		{"Select word at cursor (repeat to select next occurrence)", "<ctrl-end>a<enter><ctrl-home><ctrl-d><ctrl-d><ctrl-d><ctrl-c>", nil, term.Coordinates{}, new("a")},
+		{"Select all", "<ctrl-a><ctrl-c>", nil, term.Coordinates{Y: 10, X: 1}, new(sublimeSnippet)},
+		{"Select entire line (repeat to select additional lines)", "<down><ctrl-l><ctrl-l><ctrl-c>", nil, term.Coordinates{Y: 3, X: 0}, new("b\nc\n")},
+		{"Select word at cursor (repeat to select next occurrence)", "<ctrl-end>a<enter><ctrl-home><ctrl-d><ctrl-d><ctrl-d><ctrl-c>", nil, term.Coordinates{X: 1}, new("a")},
 		{"Expand selection to brackets", "{abc}<left><left><shift-left><ctrl-shift-m>", nil, term.Coordinates{X: 4}, nil},
 		{"Expand selection to scope", "<ctrl-shift-space>", nil, term.Coordinates{}, nil},
-		{"Expand selection to indentation level", "<ctrl-shift-j><ctrl-c>", nil, term.Coordinates{}, spAll("\n")},
+		{"Expand selection to indentation level", "<ctrl-shift-j><ctrl-c>", nil, term.Coordinates{Y: 10, X: 1}, new(sublimeSnippet)},
 
 		// Navigation and movement
 		{"Move to start of line", "<space><right><home>", nil, term.Coordinates{Y: 0, X: 0}, nil},
@@ -1174,11 +1184,14 @@ func TestSublimeSelectIndentationLevelKeyBinding(t *testing.T) {
 		wantModeOK  bool
 	}{
 		{
-			name:     "copies current indented block",
-			content:  "root\n\tb\n\tc\nroot2",
-			keys:     "<down><shift-meta-j><m-c>",
-			wantClip: "\tb\n\tc\n",
-			wantAt:   term.Coordinates{Y: 1},
+			name:       "copies current indented block",
+			content:    "root\n\tb\n\tc\nroot2",
+			keys:       "<down><shift-meta-j><m-c>",
+			wantClip:   "\tb\n\tc\n",
+			wantSel:    "\tb\n\tc\n",
+			wantAt:     term.Coordinates{Y: 3},
+			wantMode:   text.StandardSelection,
+			wantModeOK: true,
 		},
 		{
 			name:       "leaves line selection active after keybinding",
@@ -1379,7 +1392,7 @@ func TestPasteFromClipboardHistory(t *testing.T) {
 			content:     "ab\ncd",
 			wrapHistory: true,
 			steps: []pasteHistoryStep{
-				{input: "<shift-right><meta-c><right><shift-right><meta-c><end><meta-v>", wantHandled: true, wantContent: "abb\ncd"},
+				{input: "<shift-right><meta-c><esc><shift-right><meta-c><esc><meta-v>", wantHandled: true, wantContent: "abb\ncd"},
 				{input: "<alt-meta-v>", wantHandled: true, wantContent: "aba\ncd"},
 				{input: "<alt-meta-v>", wantHandled: true, wantContent: "aba\ncd"},
 			},
@@ -2352,6 +2365,212 @@ func newRobustnessHandler(
 	return h, buf, clip
 }
 
+func TestStandardMultiLineEditsUndoInOneStep(t *testing.T) {
+	const plain = "a\n\tb\n\tc\nd"
+	at := func(y, x int) *term.Coordinates { return &term.Coordinates{Y: y, X: x} }
+	tests := []struct {
+		name    string
+		content string
+		keymap  Keymap
+		keys    string
+		want    string
+		wantAt  *term.Coordinates
+	}{
+		{"line comment skips the line a selection only reaches", plain, KeymapLinux,
+			"<s-down><s-down><c-/>", "// a\n// \tb\n\tc\nd", at(2, 0)},
+		{"line comment with cmd", plain, KeymapMacOS,
+			"<s-down><s-down><m-/>", "// a\n// \tb\n\tc\nd", at(2, 0)},
+		{"line uncomment", "// a\n// \tb\n\tc\nd", KeymapLinux,
+			"<s-down><s-down><c-/>", plain, at(2, 0)},
+		{"line comment on the caret's line", plain, KeymapLinux,
+			"<down><c-/>", "a\n\t// b\n\tc\nd", at(1, 0)},
+		{"line comment of a selection within one line", plain, KeymapLinux,
+			"<down><s-right><c-/>", "a\n\t// b\n\tc\nd", at(1, 4)},
+		{"line comment of a backward selection", plain, KeymapLinux,
+			"<down><down><s-up><s-up><c-/>", "// a\n// \tb\n\tc\nd", at(0, 0)},
+		{"line comment of select all through a trailing newline", "a\n\tb\n", KeymapLinux,
+			"<c-a><c-/>", "// a\n// \tb\n", nil},
+		{"line comment of an expanded line selection", plain, KeymapLinux,
+			"<c-l><c-l><c-/>", "// a\n// \tb\n\tc\nd", nil},
+		{"line comment of an expanded line selection with cmd", plain, KeymapMacOS,
+			"<m-l><m-l><m-/>", "// a\n// \tb\n\tc\nd", nil},
+		{"line comment over wide runes and emoji", "界\n  👨‍👧‍👦\nx", KeymapLinux,
+			"<s-down><s-down><c-/>", "// 界\n//   👨‍👧‍👦\nx", at(2, 0)},
+		{"line comment of a selection ending after an emoji", "a\n👍🏽b", KeymapLinux,
+			"<s-down><s-right><c-/>", "// a\n// 👍🏽b", at(1, 4)},
+		{"block comment", plain, KeymapLinux,
+			"<s-down><c-s-/>", "/*a\n*/\tb\n\tc\nd", nil},
+		{"block comment with cmd", plain, KeymapMacOS,
+			"<s-down><a-m-/>", "/*a\n*/\tb\n\tc\nd", nil},
+		{"block comment across wide runes", "界界\nx", KeymapLinux,
+			"<s-right><s-right><c-s-/>", "/*界界*/\nx", nil},
+		{"block uncomment with cmd", "x /*ab*/", KeymapMacOS,
+			"<right><right><right><right><a-m-/>", "x ab", at(0, 2)},
+		{"indent selection", plain, KeymapLinux,
+			"<s-down><s-down><c-]>", "\ta\n\t\tb\n\t\tc\nd", nil},
+		{"indent selection with cmd", plain, KeymapMacOS,
+			"<s-down><s-down><m-]>", "\ta\n\t\tb\n\t\tc\nd", nil},
+		{"indent selection with tab", plain, KeymapLinux,
+			"<s-down><s-down><tab>", "\ta\n\t\tb\n\t\tc\nd", nil},
+		{"indent a selection of wide runes and emoji", "界\n👨‍👧‍👦", KeymapLinux,
+			"<s-down><s-right><c-]>", "\t界\n\t👨‍👧‍👦", nil},
+		{"outdent selection", plain, KeymapLinux,
+			"<down><s-down><s-down><c-[>", "a\nb\nc\nd", nil},
+		{"outdent selection with shift-tab", plain, KeymapLinux,
+			"<down><s-down><s-down><s-tab>", "a\nb\nc\nd", nil},
+		{"outdent spaces one at a time", "    a\n    b", KeymapLinux,
+			"<s-down><s-right><s-tab>", "   a\n   b", nil},
+		{"outdent with nothing to outdent", "a\nb", KeymapLinux,
+			"<s-down><s-right><c-[>", "a\nb", nil},
+		{"line comment of only blank lines", "\n \t\nx", KeymapLinux,
+			"<s-down><s-down><c-/>", "\n \t\nx", nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			uri, err := workspaceapi.ParseURI("memory:///undo.go")
+			require.NoError(t, err)
+			buf := cell.NewBuffer()
+			_, err = buf.ReadFrom(strings.NewReader(tc.content))
+			require.NoError(t, err)
+			buf.WithView(testCommentService{
+				view:  buf.View(),
+				line:  []string{"//"},
+				block: []string{"/*", "*/"},
+			})
+			h := NewHandler(buf, uri, text.IndentRuneTab, 0,
+				WithKeymap(tc.keymap),
+				WithComments(text.CommentConfig{
+					"go": {
+						Line:  []string{"//"},
+						Block: []text.CommentBlock{{Start: "/*", End: "*/"}},
+					},
+				}))
+			h.Resize(40, 10)
+
+			undo, redo := "<ctrl-z>", "<ctrl-shift-z>"
+			if tc.keymap == KeymapMacOS {
+				undo, redo = "<meta-z>", "<shift-meta-z>"
+			}
+			feedKeys(t, h, tc.keys)
+			require.Equal(t, tc.want, buf.String())
+			if tc.wantAt != nil {
+				assert.Equal(t, *tc.wantAt, h.CursorAtScroll())
+			}
+			if tc.want == tc.content {
+				assert.Zero(t, buf.Version(), "a no-op leaves nothing to undo")
+				return
+			}
+			for round := range 2 {
+				feedKeys(t, h, undo)
+				assert.Equal(t, tc.content, buf.String(), "round %d: one undo reverts the whole edit", round)
+				feedKeys(t, h, redo)
+				assert.Equal(t, tc.want, buf.String(), "round %d: one redo reapplies it", round)
+			}
+			feedKeys(t, h, undo)
+			assert.Equal(t, tc.content, buf.String())
+		})
+	}
+
+	t.Run("consecutive toggles undo one toggle at a time", func(t *testing.T) {
+		uri, err := workspaceapi.ParseURI("memory:///undo.go")
+		require.NoError(t, err)
+		buf := cell.NewBuffer()
+		_, err = buf.ReadFrom(strings.NewReader(plain))
+		require.NoError(t, err)
+		buf.WithView(testCommentService{view: buf.View(), line: []string{"//"}})
+		h := NewHandler(buf, uri, text.IndentRuneTab, 0, WithKeymap(KeymapLinux),
+			WithComments(text.CommentConfig{"go": {Line: []string{"//"}}}))
+		h.Resize(40, 10)
+
+		feedKeys(t, h, "<s-down><s-down><c-/><c-/><c-/>")
+		require.Equal(t, "// a\n// \tb\n\tc\nd", buf.String())
+		for _, want := range []string{plain, "// a\n// \tb\n\tc\nd", plain} {
+			feedKeys(t, h, "<ctrl-z>")
+			assert.Equal(t, want, buf.String())
+		}
+		assert.Equal(t, 0, buf.Version(), "every toggle was one step")
+	})
+}
+
+func TestStandardLineCommentKeepsSelection(t *testing.T) {
+	const plain = "a\n\tb\n\tc\nd"
+	tests := []struct {
+		name    string
+		content string
+		keymap  Keymap
+		keys    string
+		want    string
+		wantSel string
+		wantAt  term.Coordinates
+		// wantSelAgain is the selection once a second toggle restored content.
+		wantSelAgain string
+	}{
+		{"forward whole lines", plain, KeymapLinux, "<s-down><s-down>",
+			"// a\n// \tb\n\tc\nd", "// a\n// \tb\n", term.Coordinates{Y: 2}, "a\n\tb\n"},
+		{"forward whole lines with cmd", plain, KeymapMacOS, "<s-down><s-down>",
+			"// a\n// \tb\n\tc\nd", "// a\n// \tb\n", term.Coordinates{Y: 2}, "a\n\tb\n"},
+		{"backward whole lines", plain, KeymapLinux, "<down><down><s-up><s-up>",
+			"// a\n// \tb\n\tc\nd", "// a\n// \tb\n", term.Coordinates{}, "a\n\tb\n"},
+		{"inside the lines", "abc\ndef", KeymapLinux, "<right><s-down>",
+			"// abc\n// def", "bc\n// d", term.Coordinates{Y: 1, X: 4}, "bc\nd"},
+		{"backward inside the lines", "abc\ndef", KeymapLinux, "<down><right><s-up>",
+			"// abc\n// def", "bc\n// d", term.Coordinates{X: 4}, "bc\nd"},
+		{"indentation within one line", plain, KeymapLinux, "<down><s-right>",
+			"a\n\t// b\n\tc\nd", "\t// ", term.Coordinates{Y: 1, X: 4}, "\t"},
+		{"prefix aligned past the anchor", "  a\n    b", KeymapLinux, "<right><s-down><s-right>",
+			"  // a\n  //   b", " // a\n  // ", term.Coordinates{Y: 1, X: 5}, " a\n  "},
+		{"tab indented lines", "\ta\n\t\tb\nc", KeymapLinux, "<s-down><s-down>",
+			"\t// a\n\t// \tb\nc", "\t// a\n\t// \tb\n", term.Coordinates{Y: 2}, "\ta\n\t\tb\n"},
+		{"wide runes and emoji", "界\n  👨‍👧‍👦\nx", KeymapLinux, "<s-down><s-down>",
+			"// 界\n//   👨‍👧‍👦\nx", "// 界\n//   👨‍👧‍👦\n", term.Coordinates{Y: 2}, "界\n  👨‍👧‍👦\n"},
+		{"after an emoji", "a\n👍🏽b", KeymapLinux, "<s-down><s-right>",
+			"// a\n// 👍🏽b", "// a\n// 👍🏽", term.Coordinates{Y: 1, X: 4}, "a\n👍🏽"},
+		{"select all", "a\n\tb", KeymapLinux, "<c-a>",
+			"// a\n// \tb", "// a\n// \tb", term.Coordinates{Y: 1, X: 5}, "a\n\tb"},
+		{"expanded line selection", plain, KeymapLinux, "<c-l><c-l>",
+			"// a\n// \tb\n\tc\nd", "// a\n// \tb\n", term.Coordinates{Y: 2}, "a\n\tb\n"},
+		{"uncomment with the anchor inside a prefix", "// a\n// b", KeymapLinux,
+			"<right><s-down><s-right><s-right><s-right>",
+			"a\nb", "a\nb", term.Coordinates{Y: 1, X: 1}, "// a\n// b"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			uri, err := workspaceapi.ParseURI("memory:///select.go")
+			require.NoError(t, err)
+			buf := cell.NewBuffer()
+			_, err = buf.ReadFrom(strings.NewReader(tc.content))
+			require.NoError(t, err)
+			buf.WithView(testCommentService{view: buf.View(), line: []string{"//"}})
+			h := NewHandler(buf, uri, text.IndentRuneTab, 0, WithKeymap(tc.keymap),
+				WithComments(text.CommentConfig{"go": {Line: []string{"//"}}}))
+			h.Resize(40, 10)
+			toggle, undo := "<c-/>", "<ctrl-z>"
+			if tc.keymap == KeymapMacOS {
+				toggle, undo = "<m-/>", "<meta-z>"
+			}
+
+			feedKeys(t, h, tc.keys+toggle)
+			require.Equal(t, tc.want, buf.String())
+			sel, ok := h.Selection()
+			require.True(t, ok, "the toggle keeps the selection")
+			assert.Equal(t, tc.wantSel, sel)
+			assert.Equal(t, tc.wantAt, h.CursorAtScroll())
+
+			feedKeys(t, h, toggle)
+			assert.Equal(t, tc.content, buf.String(), "a second toggle reverts the first")
+			sel, ok = h.Selection()
+			require.True(t, ok)
+			assert.Equal(t, tc.wantSelAgain, sel)
+
+			for _, want := range []string{tc.want, tc.content} {
+				feedKeys(t, h, undo)
+				assert.Equal(t, want, buf.String())
+			}
+			assert.Zero(t, buf.Version(), "every toggle was one step")
+		})
+	}
+}
+
 func TestStandardRobustnessDegenerateBuffers(t *testing.T) {
 	contents := []struct {
 		name    string
@@ -2590,4 +2809,91 @@ func TestHandleMouseWindowCoordinates(t *testing.T) {
 
 		assert.Equal(t, term.Coordinates{X: offset + 2}, h.CursorAtScroll())
 	})
+}
+
+const pointerLeavesContent = "short\n" +
+	"a long line that runs well past the right edge of a forty column window\n" +
+	"日本語 wide 😀 emoji 日本語 wide 😀 emoji 日本語 wide 😀 emoji\n" +
+	"\tindented\n\n" +
+	"line 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12\n"
+
+// pointerLeaveEvents returns the Context-less, buttonless motions a parent
+// router sends a width by height child when the pointer moves off it.
+func pointerLeaveEvents(width, height int) []term.Event {
+	far := 4*max(width, height) + 100
+	var events []term.Event
+	for _, at := range []term.Coordinates{
+		{X: -1, Y: height / 2}, {X: width, Y: height / 2},
+		{X: width / 2, Y: -1}, {X: width / 2, Y: height},
+		{X: -1, Y: -1}, {X: width, Y: height},
+		{X: -far, Y: -far}, {X: far, Y: far}, {X: far, Y: -far}, {X: -far, Y: far},
+	} {
+		events = append(events, term.Event{Type: term.EventMouse, MouseX: at.X, MouseY: at.Y})
+	}
+	return events
+}
+
+type standardPointerState struct {
+	cursor, from, to, offset term.Coordinates
+	selected, find, metaK    bool
+	lastPaste                bool
+	historyIdx               int
+}
+
+func snapshotStandardPointerState(h *standardHandler) standardPointerState {
+	from, to, selected := h.SelectionBounds()
+	return standardPointerState{
+		cursor: h.CursorAtScroll(), from: from, to: to, offset: h.less.Scroll().Offset(),
+		selected: selected, find: h.find.active, metaK: h.metaK,
+		lastPaste: h.lastPaste, historyIdx: h.historyIdx,
+	}
+}
+
+func TestStandardHandlerPointerLeaves(t *testing.T) {
+	t.Parallel()
+	uri, err := workspaceapi.ParseURI("memory:///pointer.txt")
+	require.NoError(t, err)
+	tests := []struct {
+		name string
+		keys string
+	}{
+		{name: "idle"},
+		{name: "selection on a wide line", keys: "<down><down><shift-right><shift-right><shift-down>"},
+		{name: "scrolled to the end", keys: "<meta-down><meta-right>"},
+		{name: "end of a long line", keys: "<down><meta-right>"},
+		{name: "find active", keys: "<meta-f>wide"},
+		{name: "meta-k prefix pending", keys: "<meta-k>"},
+		{name: "pasted from history", keys: "<meta-v><alt-meta-v>"},
+	}
+	for _, tt := range tests {
+		for _, size := range []term.Coordinates{{X: 40, Y: 10}, {X: 1, Y: 1}} {
+			t.Run(fmt.Sprintf("%s/%dx%d", tt.name, size.X, size.Y), func(t *testing.T) {
+				t.Parallel()
+				newHandler := func() *standardHandler {
+					reg := registerhistory.NewClipboard(registerset.New(clipboard.NewInMemory()))
+					for _, entry := range []string{"日本", "😀"} {
+						require.NoError(t, reg.Copy(clipboard.DefaultRegisterID,
+							clipboard.Data{Text: entry, Metadata: text.StandardSelection}))
+					}
+					buf := cell.NewBuffer()
+					buf.ReadFrom(strings.NewReader(pointerLeavesContent))
+					h := NewHandler(buf, uri, text.IndentRuneTab, 0,
+						WithKeymap(KeymapMacOS), WithClipboard(reg)).(*standardHandler)
+					h.Resize(size.X, size.Y)
+					feedKeys(t, h, tt.keys)
+					return h
+				}
+
+				h := newHandler()
+				want := snapshotStandardPointerState(h)
+				for _, ev := range pointerLeaveEvents(size.X, size.Y) {
+					h.Handle(ev)
+					require.Equal(t, want, snapshotStandardPointerState(h),
+						"leave to (%d, %d)", ev.MouseX, ev.MouseY)
+				}
+
+				handlertest.RunPointerLeaves(t, newHandler(), size.X, size.Y)
+			})
+		}
+	}
 }

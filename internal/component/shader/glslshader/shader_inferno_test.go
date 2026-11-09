@@ -27,7 +27,7 @@ import (
 )
 
 func TestInferno(t *testing.T) {
-	sh := Inferno(DefaultInfernoParams(), 30)
+	sh := Inferno(DefaultInfernoParams())
 	shadertest.TestShader(t, sh)
 }
 
@@ -36,7 +36,7 @@ func TestInfernoPaintForeground(t *testing.T) {
 	params.PaintForeground = true
 
 	t.Run("suite", func(t *testing.T) {
-		shadertest.TestShader(t, Inferno(params, 30))
+		shadertest.TestShader(t, Inferno(params))
 	})
 
 	t.Run("paints the channel it was asked for", func(t *testing.T) {
@@ -50,14 +50,106 @@ func TestInfernoPaintForeground(t *testing.T) {
 			t.Run(tc.name, func(t *testing.T) {
 				p := DefaultInfernoParams()
 				p.PaintForeground = tc.paintForeground
-				assertPaintsChannel(t, Inferno(p, 30), tc.paintForeground)
+				assertPaintsChannel(t, Inferno(p), tc.paintForeground)
 			})
 		}
 	})
 
 	t.Run("leaves background glyphs bare", func(t *testing.T) {
-		assertPaintsOnlyText(t, Inferno(params, 30))
+		assertPaintsOnlyText(t, Inferno(params))
 	})
+}
+
+func TestInfernoColor(t *testing.T) {
+	assertTurnsHue(t, func(col term.Color) shader.Shader {
+		p := DefaultInfernoParams()
+		p.Color = col
+		return Inferno(p)
+	})
+}
+
+func shadeCopy(sh shader.Shader, frame, total int, in [][]term.Cell) [][]term.Cell {
+	out := term.CloneCells(in)
+	sh.Shade(frame, total, out)
+	return out
+}
+
+// seamCanvases are canvases a looping effect has to join up on: wide,
+// tall, a single row and a few cells.
+func seamCanvases() [][][]term.Cell {
+	return [][][]term.Cell{
+		shadertest.MakeTextCanvas(40, 12),
+		shadertest.MakeTextCanvas(12, 60),
+		shadertest.MakeTextCanvas(30, 1),
+		shadertest.MakeTextCanvas(3, 2),
+	}
+}
+
+// seamTotal is a run long enough that the fire barely moves from frame
+// to frame, so that a seam stands out.
+const seamTotal = 2000
+
+func TestInfernoSeamless(t *testing.T) {
+	shadertest.AssertSeamless(t, func() shader.Shader { return Inferno(DefaultInfernoParams()) },
+		seamTotal, seamCanvases()...)
+}
+
+func TestInfernoIsPeriodic(t *testing.T) {
+	assertPeriodic(t, Inferno(DefaultInfernoParams()).(*inferno).color)
+}
+
+// assertPeriodic checks a fire's colour, on canvases of every shape, is
+// at the end of a run what it was at the start, though it moved between.
+// It looks off the lines of the noise's lattice, across which the noise
+// the fire was tuned with jumps, so rounding could land either side.
+func assertPeriodic(t *testing.T, color func(fragCoord, iResolution vec2D, phase float) vec3D) {
+	t.Helper()
+	for _, size := range [][2]int{{40, 12}, {12, 60}, {30, 1}, {3, 2}, {300, 80}, {2, 200}} {
+		cols, rows := size[0], size[1]
+		moved := false
+		for y := range rows {
+			for x := range cols {
+				fx, fy, rx, ry := cellCoordToFragCoords(x, y, cols, rows)
+				frag, res := vec2(float(fx)+0.318, float(fy)+0.272), vec2(float(rx), float(ry))
+				start, end := color(frag, res, 0), color(frag, res, 1)
+				if !assert.InDeltaSlice(t, []float{start.x, start.y, start.z}, []float{end.x, end.y, end.z}, 1e-6,
+					"%dx%d cell %d,%d", cols, rows, x, y) {
+					return
+				}
+				moved = moved || color(frag, res, 0.5) != start
+			}
+		}
+		assert.True(t, moved, "%dx%d: the fire must move during the run", cols, rows)
+	}
+}
+
+// assertTurnsHue checks a fire's Color: red, a grey or none leave the
+// fire as it is, and green, a third of a turn from red, rotates every
+// painted colour's channels from (r, g, b) to (b, r, g).
+func assertTurnsHue(t *testing.T, fire func(term.Color) shader.Shader) {
+	t.Helper()
+	shade := func(col term.Color) [][]term.Cell {
+		cells := paintTestCells()
+		fire(col).Shade(3, 20, cells)
+		return cells
+	}
+	red := shade(term.ColorDefault)
+	for _, col := range []term.Color{term.NewRGBColor(255, 0, 0), term.NewRGBColor(128, 128, 128)} {
+		assert.Equal(t, red, shade(col), "%s keeps the fire red", col)
+	}
+	green := shade(term.NewRGBColor(0, 255, 0))
+	assert.NotEqual(t, red, green)
+	for y, row := range red {
+		for x, cell := range row {
+			r, g, b := cell.Bg.RGB()
+			gr, gg, gb := green[y][x].Bg.RGB()
+			for i, pair := range [][2]int32{{b, gr}, {r, gg}, {g, gb}} {
+				assert.InDeltaf(t, pair[0], pair[1], 1,
+					"cell %d,%d channel %d: red fire %v, green fire %v",
+					x, y, i, []int32{r, g, b}, []int32{gr, gg, gb})
+			}
+		}
+	}
 }
 
 // assertPaintsChannel shades a matrix of glyph-carrying cells and checks
@@ -157,4 +249,10 @@ func paintTestCells() [][]term.Cell {
 		}
 	}
 	return cells
+}
+
+func TestInfernoDependsOnProgressOnly(t *testing.T) {
+	build := func() shader.Shader { return Inferno(DefaultInfernoParams()) }
+	shadertest.AssertProgressOnly(t, build, paintTestCells())
+	shadertest.AssertOrderIndependent(t, build, paintTestCells(), 20)
 }

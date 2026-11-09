@@ -902,6 +902,18 @@ func (b *Buffer) GroupUndo() bool {
 	return b.undoer.endMergeUndo()
 }
 
+// GroupEdits runs fn and makes the edits it applies a single undo step.
+// Unlike a MarkStartUndo/GroupUndo pair it nests: a MarkStartUndo scope that
+// encloses the call, or that a subscriber opens while fn runs, still covers
+// the group when its GroupUndo arrives.
+func (b *Buffer) GroupEdits(fn func()) {
+	if b.undoer == nil {
+		fn()
+		return
+	}
+	b.undoer.group(fn)
+}
+
 // Redo reverses the previously reversed update to the Buffer.
 func (b *Buffer) Redo() (bool, term.Coordinates) {
 	if b.undoer == nil {

@@ -17,11 +17,10 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"strings"
+	"path"
 	"time"
 
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
@@ -107,49 +106,25 @@ func resolveGoplsBinary(
 
 	ctx, cancel := context.WithTimeout(ctx, goplsResolutionTimeout)
 	defer cancel()
-	if bin, err := probeShellLookup(ctx, exec); err == nil {
+	if bin, err := lookPath(ctx, exec, "gopls"); err == nil {
 		return bin, nil
 	}
 
 	return "", errors.New("gopls binary not found on workspace host")
 }
 
-func probeShellLookup(
-	ctx context.Context, exec workspaceapi.Executor,
-) (string, error) {
-	var stdout, stderr bytes.Buffer
-	ch := make(chan error, 1)
-	cmd := workspaceapi.Cmd{
-		Path:    "sh",
-		Args:    []string{"-lc", "command -v gopls"},
-		Stdout:  &stdout,
-		Stderr:  &stderr,
-		Watcher: workspaceapi.ChanProcessWatcher(ch),
+// lookPath returns the absolute path name resolves to on the workspace
+// host's PATH. It runs no command, so the user is not asked to approve
+// one.
+func lookPath(ctx context.Context, exec workspaceapi.Executor, name string) (string, error) {
+	bin, err := exec.LookPath(ctx, name, "")
+	if err != nil {
+		return "", err
 	}
-	if _, err := exec.Start(ctx, cmd); err != nil {
-		return "", fmt.Errorf("start sh: %w", err)
+	if !path.IsAbs(bin) {
+		return "", fmt.Errorf("%s resolved to %q, not an absolute path", name, bin)
 	}
-	select {
-	case err := <-ch:
-		if err != nil {
-			return "", err
-		}
-	case <-ctx.Done():
-		return "", ctx.Err()
-	}
-	out := strings.TrimSpace(stdout.String())
-	if out == "" || !strings.HasPrefix(out, "/") {
-		return "", fmt.Errorf("shell probe produced no absolute path: %q", out)
-	}
-	// command -v may print multiple lines for aliases/functions; take
-	// the first absolute path it printed.
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "/") {
-			return line, nil
-		}
-	}
-	return "", fmt.Errorf("shell probe produced no absolute path: %q", out)
+	return bin, nil
 }
 
 func probeWellKnown(fs workspaceapi.FileSystem) (string, bool) {

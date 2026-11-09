@@ -143,3 +143,25 @@ func TestRouter_Alias_ExplicitProviderBypassesAlias(t *testing.T) {
 	_, err := r.GetModel(ctx, llmapi.ModelEntry{Provider: ProviderAnthropic, Name: "default"})
 	assert.ErrorIs(t, err, llmapi.ErrModelNotFound)
 }
+
+func TestRouterAlias_SearchDefaultsToEmbeddingModel(t *testing.T) {
+	ctx := context.Background()
+	r := newTestRouter(t)
+	require.NoError(t, r.SetAlias(ctx, llmapi.DefaultModel, "openai/"+openai.GPT5Dot5))
+
+	_, err := r.GetModel(ctx, llmapi.ModelEntry{Name: SearchAlias})
+	require.ErrorIs(t, err, llmapi.ErrModelNotFound, "an unset search alias never defers to default")
+	assert.Contains(t, err.Error(), "models local download ggml-org/embeddinggemma-2-GGUF:Q8_0")
+
+	seedLocalModel(t, r.LocalRegistry(), searchModel)
+	got, err := r.GetModel(ctx, llmapi.ModelEntry{Name: SearchAlias})
+	require.NoError(t, err)
+	assert.Equal(t, ProviderLocal, got.Provider)
+	assert.Equal(t, searchModel, got.Name)
+	assert.NotEmpty(t, got.BaseURL, "the canonical local entry points at the weights")
+
+	require.NoError(t, r.SetAlias(ctx, SearchAlias, "openai/"+openai.GPT5Dot5))
+	got, err = r.GetModel(ctx, llmapi.ModelEntry{Name: SearchAlias})
+	require.NoError(t, err)
+	assert.Equal(t, ProviderOpenAI, got.Provider, "a set search alias wins")
+}

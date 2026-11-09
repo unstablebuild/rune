@@ -73,7 +73,7 @@ func TestEnvPromptKeys(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			answers := make(chan envAnswer, 1)
-			p := newEnvPrompt(root, answers)
+			p := hostPrompt(newEnvPrompt(root, answers))
 			p.Resize(60, 12)
 
 			var exited bool
@@ -94,7 +94,7 @@ func TestEnvPromptKeys(t *testing.T) {
 
 func TestEnvPromptIgnoresNonKeyEvents(t *testing.T) {
 	answers := make(chan envAnswer, 1)
-	p := newEnvPrompt(langext.Root{Dir: "/repo", URI: "file:///repo"}, answers)
+	p := hostPrompt(newEnvPrompt(langext.Root{Dir: "/repo", URI: "file:///repo"}, answers))
 	exit, handled := p.Handle(term.Event{Type: term.EventResize})
 	assert.False(t, exit)
 	assert.False(t, handled)
@@ -103,12 +103,12 @@ func TestEnvPromptIgnoresNonKeyEvents(t *testing.T) {
 
 func TestEnvPromptCloseReportsDismissal(t *testing.T) {
 	answers := make(chan envAnswer, 1)
-	p := newEnvPrompt(langext.Root{Dir: "/repo", URI: "file:///repo"}, answers)
+	p := hostPrompt(newEnvPrompt(langext.Root{Dir: "/repo", URI: "file:///repo"}, answers))
 	require.NoError(t, p.Close())
 	assert.Equal(t, envAnswer{}, <-answers)
 }
 
-func TestAskManageEnvironmentWithoutWindowManager(t *testing.T) {
+func TestAskManageEnvironmentWithoutPrompter(t *testing.T) {
 	managed, answered := askManageEnvironment(
 		context.Background(), nil, langext.Root{Dir: "/repo", URI: "file:///repo"})
 	assert.False(t, managed)

@@ -44,6 +44,7 @@ type cursorLocation struct {
 type cursorEditor interface {
 	Editor(workspaceapi.URI) (textapi.Handler, error)
 	CellView(textapi.Handler) textapi.CellView
+	SetCursor(textapi.Handler, term.Coordinates) error
 }
 
 // recordCursor mirrors a cursor event. Chat tabs are not text

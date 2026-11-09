@@ -38,6 +38,10 @@ type commandAll struct {
 	handler   func(*ex, context.Context, ...string) error
 	completer func(e *ex, ctx context.Context, cmd textapi.Command,
 	) (iterator.Iterator[string], string, error)
+	// rawArgs marks a command that parses the line its args join
+	// into, so the prompt must keep their quotes; see
+	// command.Manual.RawArgs.
+	rawArgs bool
 }
 
 var (
@@ -60,6 +64,12 @@ var (
 				Summary: "List your currently configured key bindings and the commands they run.",
 			},
 			handler: (*ex).keybindings,
+		},
+		"sponsors": {
+			man: textapi.CommandManual{
+				Summary: "Show the companies and people sponsoring Rune.",
+			},
+			handler: (*ex).sponsors,
 		},
 		"gitshow": {
 			man: textapi.CommandManual{
@@ -183,8 +193,11 @@ var (
 		"windowconverttab": {
 			man: textapi.CommandManual{
 				Summary: "Convert the content of the window in focus into a tab. " +
-					"If the current window is a floating window, it is closed.",
-				Synopsis: "<name> [<icon>]",
+					"If no name is given, a random one is used. " +
+					"If the current window is a floating window, it is closed. " +
+					"If the content is already a tab, or the window is empty, " +
+					"this command does nothing.",
+				Synopsis: "[<name> [<icon>]]",
 			},
 			handler: (*ex).convertTab,
 		},
@@ -388,6 +401,7 @@ var (
 				Synopsis: "[<shell>]",
 			},
 			handler: (*ex).terminalnewtab,
+			rawArgs: true,
 		},
 		"console": {
 			man: textapi.CommandManual{
@@ -401,6 +415,7 @@ var (
 			) (iterator.Iterator[string], string, error) {
 				return e.completeConsole(ctx, cmd)
 			},
+			rawArgs: true,
 		},
 		"terminalnew": {
 			man: textapi.CommandManual{
@@ -415,6 +430,7 @@ var (
 				Synopsis: "[<shell>]",
 			},
 			handler: (*ex).terminalnew,
+			rawArgs: true,
 		},
 		"terminalneworsplit": {
 			man: textapi.CommandManual{
@@ -431,6 +447,7 @@ var (
 				Synopsis: "[<shell>]",
 			},
 			handler: (*ex).terminalneworsplit,
+			rawArgs: true,
 		},
 		"terminalsave": {
 			man: textapi.CommandManual{
@@ -465,7 +482,9 @@ var (
 					"prevent multiple sessions from overwriting each other's changes. " +
 					"If the file has any pending changes that were lost due to a crash, or " +
 					"another session is currently editing the file, a prompt is shown " +
-					"to resolve the conflict.",
+					"to resolve the conflict. A URI on a scheme an extension opens " +
+					"shows what the extension opens for it instead, and completes " +
+					"to the URIs the extension offers.",
 				Synopsis: "[<scheme>:][//[<userinfo>@]<host>][/]<filepath>",
 			},
 			handler: (*ex).editFiles,
@@ -473,7 +492,7 @@ var (
 				e *ex, ctx context.Context, cmd textapi.Command,
 			) (iterator.Iterator[string], string, error) {
 				e.log(log.DebugLevel, "complete command: %v", cmd)
-				return e.filepathCompleter.Complete(ctx, cmd.Args)
+				return e.completeFileURI(ctx, cmd.Args)
 			},
 		},
 		"view": {
@@ -485,7 +504,7 @@ var (
 			completer: func(
 				e *ex, ctx context.Context, cmd textapi.Command,
 			) (iterator.Iterator[string], string, error) {
-				return e.filepathCompleter.Complete(ctx, cmd.Args)
+				return e.completeFileURI(ctx, cmd.Args)
 			},
 		},
 		"tabcopypath": {
@@ -533,6 +552,7 @@ var (
 				Synopsis: "[<executable> [<args>]]",
 			},
 			handler: (*ex).executePlugin,
+			rawArgs: true,
 		},
 		"!!": {
 			man: textapi.CommandManual{
@@ -542,6 +562,7 @@ var (
 				Synopsis: "[<executable> [<args>]]",
 			},
 			handler: (*ex).executePluginWait,
+			rawArgs: true,
 		},
 		"clipboardcopy": {
 			man: textapi.CommandManual{

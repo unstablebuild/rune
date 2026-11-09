@@ -21,6 +21,7 @@ import (
 
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"unstable.build/rune/cmd/rune-agent/agent/toolpolicy"
 	"unstable.build/rune/cmd/rune-agent/hooks"
 )
 
@@ -33,6 +34,8 @@ const (
 	workspaceURIKey
 	dialogueIDKey
 	prompterKey
+	conversationKey
+	toolPolicyKey
 )
 
 // WithParentToolCallID returns a context carrying the parent tool call ID.
@@ -94,6 +97,18 @@ func DialogueIDFromContext(ctx context.Context) string {
 	return v
 }
 
+// WithConversation carries the live conversation, including unpersisted messages.
+// The messages and their nested content must be treated as read-only by callers.
+func WithConversation(ctx context.Context, messages []llmapi.Message) context.Context {
+	return context.WithValue(ctx, conversationKey, messages)
+}
+
+// Conversation returns the read-only conversation, or nil when none was attached.
+func Conversation(ctx context.Context) []llmapi.Message {
+	v, _ := ctx.Value(conversationKey).([]llmapi.Message)
+	return v
+}
+
 // WithPrompter returns a context carrying the agent's prompter so that
 // tools (e.g. bash) can block and ask the user a question while the
 // agent loop is running. A nil prompter is allowed; tools should treat
@@ -106,5 +121,18 @@ func WithPrompter(ctx context.Context, p Prompter) context.Context {
 // nil when none was attached.
 func PrompterFromContext(ctx context.Context) Prompter {
 	v, _ := ctx.Value(prompterKey).(Prompter)
+	return v
+}
+
+// WithToolPolicy returns a context carrying the tool policy of the agent
+// whose tools run with it, which the sub-agents they spawn inherit.
+func WithToolPolicy(ctx context.Context, p toolpolicy.Policy) context.Context {
+	return context.WithValue(ctx, toolPolicyKey, p)
+}
+
+// ToolPolicyFromContext extracts the tool policy from the context. Returns
+// the zero Policy, which allows everything, when none was attached.
+func ToolPolicyFromContext(ctx context.Context) toolpolicy.Policy {
+	v, _ := ctx.Value(toolPolicyKey).(toolpolicy.Policy)
 	return v
 }

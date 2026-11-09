@@ -25,6 +25,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/browser"
 	tbrowserrpc "unstable.build/rune/internal/browser/browserrpc"
+	thandlerrpc "unstable.build/rune/internal/handler/handlerrpc"
 	"unstable.build/rune/internal/rpc"
 )
 
@@ -32,8 +33,9 @@ import (
 // capable of serving each of the b Browser's resources.
 func BrowserResources(
 	b browser.Browser, publishEvent func(term.Event) bool,
+	graphics thandlerrpc.GraphicsConfig,
 ) map[extensionapi.Permission]ResourceRegistrar {
-	s := newBrowserResourceServer(b, publishEvent)
+	s := newBrowserResourceServer(b, publishEvent, graphics)
 	return map[extensionapi.Permission]ResourceRegistrar{
 		extensionapi.PermissionBrowserWindowManager: s.forPermission(
 			extensionapi.PermissionBrowserWindowManager),
@@ -49,6 +51,7 @@ func BrowserResources(
 type browserResourceServer struct {
 	b            browser.Browser
 	publishEvent func(term.Event) bool
+	graphics     thandlerrpc.GraphicsConfig
 }
 
 type browserResourcePermissionServer struct {
@@ -58,10 +61,12 @@ type browserResourcePermissionServer struct {
 
 func newBrowserResourceServer(
 	b browser.Browser, publishEvent func(term.Event) bool,
+	graphics thandlerrpc.GraphicsConfig,
 ) *browserResourceServer {
 	ret := new(browserResourceServer)
 	ret.b = b
 	ret.publishEvent = publishEvent
+	ret.graphics = graphics
 	return ret
 }
 
@@ -72,7 +77,7 @@ func (s *browserResourceServer) forPermission(p extensionapi.Permission) Resourc
 func (s browserResourcePermissionServer) Register(
 	registrar rpc.ServiceRegistrar, lock sync.Locker,
 ) (io.Closer, error) {
-	server := tbrowserrpc.NewServer(s.b, lock)
+	server := tbrowserrpc.NewServer(s.b, lock, s.graphics)
 	rpcServer := interruptBrowserServer(server, func() {
 		s.publishEvent(term.Event{Type: term.EventInterrupt})
 	})

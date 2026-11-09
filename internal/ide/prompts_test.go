@@ -17,6 +17,8 @@
 package ide
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -74,4 +76,33 @@ func TestPromptOnCloseNoReopenDuringShutdown(t *testing.T) {
 		assert.Equal(t, 1, browserComp.FloatingWindows(),
 			"Close() must not re-open a replacement prompt")
 	})
+}
+
+func TestCreatingAWorkspaceLeavesNoAncestorWorkspaceRegistered(t *testing.T) {
+	home := t.TempDir()
+	proj := filepath.Join(home, "proj")
+	require.NoError(t, os.Mkdir(proj, 0o755))
+	projURI, err := workspaceapi.ParseURI("file://" + proj)
+	require.NoError(t, err)
+	m, manager, _ := newHomeSharingTestHandler(t, home, projURI)
+
+	ancestor := t.TempDir()
+	ancestorURI, err := workspaceapi.ParseURI("file://" + ancestor)
+	require.NoError(t, err)
+	target, err := workspaceapi.ParseURI("file://" + filepath.Join(ancestor, "new", "ws"))
+	require.NoError(t, err)
+
+	m.mu.Lock()
+	prompt := &createWorkspaceHandler{
+		ex: m.workspaces[m.focus].ex, uri: target, wm: m.workspaceManagerHandler,
+	}
+	prompt.OnSelect(0, yesOpt)
+	m.mu.Unlock()
+	m.quiesce()
+	m.waitForWorkspace(t, target)
+
+	require.True(t, manager.HasWorkspace(target))
+	assert.False(t, manager.HasWorkspace(ancestorURI),
+		"the ancestor used to create the directory is held by nobody "+
+			"once the directory exists")
 }

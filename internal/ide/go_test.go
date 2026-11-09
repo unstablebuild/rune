@@ -193,27 +193,36 @@ func TestIDECheckFileErrorsWaitsForOpenFileResync(t *testing.T) {
 // so the caller can seed a Go module and drive filesystem events.
 func newExForLSPIntegration(t *testing.T) (*ex, workspace.Workspace, string) {
 	t.Helper()
-	ctx := context.Background()
-
 	tempDir, err := os.MkdirTemp("", "")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = os.RemoveAll(tempDir) })
+	x, ws := newExForLSPIntegrationAt(t, tempDir, texttest.NopEditor())
+	return x, ws, tempDir
+}
 
-	uri, err := workspaceapi.ParseURI(filepath.Join("file://", tempDir))
+// newExForLSPIntegrationAt builds a real ex over the workspace at dir,
+// editing with ed.
+func newExForLSPIntegrationAt(
+	t *testing.T, dir string, ed text.Editor,
+) (*ex, workspace.Workspace) {
+	t.Helper()
+	ctx := context.Background()
+
+	uri, err := workspaceapi.ParseURI(filepath.Join("file://", dir))
 	require.NoError(t, err)
 
 	fileScheme, err := workspace.NewFileScheme(ctx, config.NopConfig(), uri)
 	require.NoError(t, err)
 
 	ws := workspace.NewSchemeWorkspace(uri, fileScheme, inlineSchedule)
-	e := newExForTestingTerminal(t, ws, texttest.NopEditor(),
+	e := newExForTestingTerminal(t, ws, ed,
 		vte.DefaultConfig(), nopPublishEvent, plugin.DefaultBarConfig(),
 		text.WithCommandKey(testCommandKey))
 	t.Cleanup(func() {
 		require.NoError(t, e.Close())
 		require.NoError(t, fileScheme.Close())
 	})
-	return e.ex, ws, tempDir
+	return e.ex, ws
 }
 
 func schemeForLSP(t *testing.T, dir string) schemeapi.Scheme {

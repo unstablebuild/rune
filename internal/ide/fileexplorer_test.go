@@ -199,6 +199,54 @@ func TestFileExplorerHandlerRenderAndInteraction(t *testing.T) {
 	}
 }
 
+func TestFileExplorerSyncWidth(t *testing.T) {
+	dirs := map[string][]explorerMockEntry{
+		"/project": {{name: "a.go"}, {name: "b.go"}},
+	}
+	t.Run("unchanged width and frame changes", func(t *testing.T) {
+		h, host := newTestFileExplorerHandler(t, dirs)
+		width, _ := h.Dimensions()
+		h.syncWidth()
+		h.syncWidth()
+		require.Equal(t, 1, host.widthCalls)
+		require.Equal(t, width, host.lastWidth)
+
+		host.frame = true
+		h.syncWidth()
+		require.Equal(t, 2, host.widthCalls)
+		require.Equal(t, width+2, host.lastWidth)
+
+		host.frame = false
+		h.syncWidth()
+		require.Equal(t, 3, host.widthCalls)
+		require.Equal(t, width, host.lastWidth)
+	})
+	t.Run("retry after a rejected width", func(t *testing.T) {
+		h, host := newTestFileExplorerHandler(t, dirs)
+		host.rejectWidth = true
+		h.syncWidth()
+		require.Equal(t, 1, host.widthCalls)
+		require.Zero(t, host.lastWidth)
+
+		host.rejectWidth = false
+		h.syncWidth()
+		width, _ := h.Dimensions()
+		require.Equal(t, 2, host.widthCalls)
+		require.Equal(t, width, host.lastWidth)
+		h.syncWidth()
+		require.Equal(t, 2, host.widthCalls)
+	})
+	t.Run("a new window needs the same width applied", func(t *testing.T) {
+		h, host := newTestFileExplorerHandler(t, dirs)
+		h.syncWidth()
+		h.SetWindow(&testExplorerWindow{id: 3})
+		h.syncWidth()
+		require.Equal(t, 2, host.widthCalls)
+		h.syncWidth()
+		require.Equal(t, 2, host.widthCalls)
+	})
+}
+
 func TestFileExplorerClickBelowTreeIsNoop(t *testing.T) {
 	h, host := newTestFileExplorerHandler(t, map[string][]explorerMockEntry{
 		"/project": {
@@ -1057,7 +1105,86 @@ func TestFileExplorerClickOnHintRowIsNoop(t *testing.T) {
 	require.Empty(t, host.errs)
 }
 
-func sendExplorerKeys(t *testing.T, h *fileExplorerHandler, seq string) {
+func TestFileExplorerPointerShape(t *testing.T) {
+	files := []explorerMockEntry{{name: "src", isDir: true}}
+	for i := range 20 {
+		files = append(files, explorerMockEntry{name: fmt.Sprintf("file%02d.go", i)})
+	}
+	small := map[string][]explorerMockEntry{
+		"/project":     files[:3],
+		"/project/src": {{name: "main.go"}},
+	}
+	tall := map[string][]explorerMockEntry{"/project": files}
+	// With a height of 6 the tree takes rows 0 to 4 and the hint row 5.
+	for _, tc := range []struct {
+		name   string
+		dirs   map[string][]explorerMockEntry
+		scroll int
+		key    term.Key
+		y      int
+		want   term.PointerShape
+	}{
+		{name: "hover over a directory", dirs: small, y: 0, want: term.PointerLink},
+		{name: "hover over a file", dirs: small, y: 2, want: term.PointerLink},
+		{name: "press on a file", dirs: small, key: term.MouseLeft, y: 1,
+			want: term.PointerLink},
+		{name: "wheel over a file", dirs: small, key: term.MouseWheelDown, y: 1,
+			want: term.PointerLink},
+		{name: "hover below the tree", dirs: small, y: 4, want: term.PointerDefault},
+		{name: "hover over the hint", dirs: small, y: 5, want: term.PointerDefault},
+		{name: "hover over a scrolled tree", dirs: tall, scroll: 10, y: 4,
+			want: term.PointerLink},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, _ := newTestFileExplorerHandler(t, tc.dirs)
+			h.Resize(20, 6)
+			for range tc.scroll {
+				require.True(t, h.SeekDown())
+			}
+
+			p := new(term.Pointer)
+			h.Handle(term.Event{
+				Type: term.EventMouse, Key: tc.key, MouseY: tc.y,
+				Context: term.ContextWithPointer(context.Background(), p),
+			})
+			shape, _ := p.Shape()
+			require.Equal(t, tc.want.String(), shape.String())
+		})
+	}
+}
+
+func TestFileExplorerHandlerPointerLeaves(t *testing.T) {
+	t.Parallel()
+	dirs := map[string][]explorerMockEntry{
+		"/project":     {{name: "src", isDir: true}, {name: "a.go"}, {name: "b.go"}},
+		"/project/src": {{name: "main.go"}},
+	}
+	for _, size := range []term.Coordinates{{X: 100, Y: 30}, {X: 2, Y: 2}} {
+		h, _ := newTestFileExplorerHandler(t, dirs)
+		expandExplorerRowContaining(t, h, "src")
+		handlertest.RunPointerLeaves(t, h, size.X, size.Y)
+	}
+
+	t.Run("a leave opens nothing and moves nothing", func(t *testing.T) {
+		h, host := newTestFileExplorerHandler(t, dirs)
+		expandExplorerRowContaining(t, h, "src")
+		h.Resize(40, 10)
+		tree := h.buf.String()
+		cursor := h.ed.CursorAtScroll()
+		for _, out := range []term.Coordinates{{X: -1, Y: 1}, {X: 40, Y: 1}, {X: 5, Y: -1}, {X: 5, Y: 10}, {X: 500, Y: 500}} {
+			h.Handle(term.Event{Type: term.EventMouse, MouseX: 5, MouseY: 1})
+			h.Handle(term.Event{Type: term.EventMouse, MouseX: out.X, MouseY: out.Y})
+		}
+		require.Empty(t, host.opened)
+		require.Equal(t, tree, h.buf.String())
+		require.Equal(t, cursor, h.ed.CursorAtScroll())
+		require.False(t, h.mouseDown)
+	})
+}
+
+func sendExplorerKeys(
+	t *testing.T, h interface{ Handle(term.Event) (bool, bool) }, seq string,
+) {
 	t.Helper()
 	keys, err := term.ParseKeys(seq)
 	require.NoError(t, err)
@@ -1121,6 +1248,8 @@ type testFileExplorerHost struct {
 	focus       browser.Window
 	opened      []workspaceapi.URI
 	lastWidth   int
+	widthCalls  int
+	rejectWidth bool
 	errs        []error
 	promptCalls int
 	frame       bool
@@ -1131,7 +1260,11 @@ func (h *testFileExplorerHost) Prompt(message string, options []string, bindings
 	return &testExplorerWindow{id: 99}
 }
 
-func (h *testFileExplorerHost) SetWindowWidth(win browser.Window, width int) bool {
+func (h *testFileExplorerHost) SetWindowDefaultWidth(win browser.Window, width int) bool {
+	h.widthCalls++
+	if h.rejectWidth {
+		return false
+	}
 	h.lastWidth = width
 	return true
 }
@@ -1281,6 +1414,10 @@ func (m *explorerMockFS) Stat(string) (os.FileInfo, error) {
 }
 
 func (m *explorerMockFS) MkdirAll(string, os.FileMode) error {
+	panic("not implemented")
+}
+
+func (m *explorerMockFS) Rename(string, string) error {
 	panic("not implemented")
 }
 

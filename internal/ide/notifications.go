@@ -105,7 +105,10 @@ func splitURIHash(id string) (hash, realID string, ok bool) {
 type workspaceManagerIfc interface {
 	focusHandler() tui.Handler
 	focusURI() workspaceapi.URI
-	setWorkspaceRequiresAttention(workspaceapi.URI, term.Attributes)
+	// addWorkspaceNotification counts a notification the workspace at
+	// the uri received while out of focus, so its bar tab can show it
+	// with the attribute of the highest level pending.
+	addWorkspaceNotification(workspaceapi.URI, browserapi.NotificationLevel, term.Attributes)
 	// notificationsForURIHash returns the pinned notifications of the
 	// installed workspace whose URI hashes to h, or nil when no such
 	// workspace is installed. It lets the router deliver an id-addressed
@@ -279,19 +282,16 @@ func (c *notis) inFocus() bool {
 }
 
 func (c *notis) setTabAttr(level browserapi.NotificationLevel) {
-	attentionAttr := term.Attributes{
-		Fg: term.ColorWhite,
-		Bg: c.cfg.BackgroundAttributes.Bg,
-	}
+	attr := term.Attributes{Fg: term.ColorWhite}
 	switch level {
 	case browserapi.LevelError:
-		attentionAttr.Fg = c.cfg.ColorError.Fg
+		attr.Fg = c.cfg.ColorError.Fg
 	case browserapi.LevelWarn:
-		attentionAttr.Fg = c.cfg.ColorWarning.Fg
+		attr.Fg = c.cfg.ColorWarning.Fg
 	case browserapi.LevelInfo:
-		attentionAttr.Fg = c.cfg.ColorInfo.Fg
+		attr.Fg = c.cfg.ColorInfo.Fg
 	case browserapi.LevelSuccess:
-		attentionAttr.Fg = c.cfg.ColorSuccess.Fg
+		attr.Fg = c.cfg.ColorSuccess.Fg
 	}
-	c.parent.setWorkspaceRequiresAttention(c.uri, attentionAttr)
+	c.parent.addWorkspaceNotification(c.uri, level, attr)
 }

@@ -28,9 +28,11 @@ func TestDefaultEffortFor(t *testing.T) {
 		want  string
 	}{
 		// Adaptive-thinking models document high as the level the
-		// provider applies when the request omits one; Opus 5.5
-		// documents medium.
+		// provider applies when the request omits one; Opus 5.5 and
+		// Haiku 5.5 document medium.
 		{ClaudeOpus5Dot5, "medium"},
+		{ClaudeHaiku5Dot5, "medium"},
+		{ClaudeSonnet5Dot5, "high"},
 		{ClaudeOpus5, "high"},
 		{ClaudeSonnet5, "high"},
 		{ClaudeFable5, "high"},

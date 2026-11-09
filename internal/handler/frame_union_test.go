@@ -22,6 +22,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	rhandlertest "unstable.build/rune/internal/handler/handlertest"
 )
 
 // unionMember records every event delivered to it as a dispatch.
@@ -75,6 +76,7 @@ func TestFrameUnionCaptureDrags(t *testing.T) {
 				dropped(),
 				dropped(),
 				dropped(),
+				to("M", 0, 4, -2),
 				to("T", term.MouseLeft, 4, 0),
 			},
 		},
@@ -93,6 +95,7 @@ func TestFrameUnionCaptureDrags(t *testing.T) {
 			want: []dispatch{
 				to("T", term.MouseLeft, 3, 1),
 				to("T", term.MouseRelease, 3, 1),
+				to("T", 0, 3, 4),
 				to("M", term.MouseLeft, 3, 2),
 			},
 		},
@@ -102,6 +105,7 @@ func TestFrameUnionCaptureDrags(t *testing.T) {
 			events: []mouseEvent{press(3, 1), hover(3, 4), press(3, 4)},
 			want: []dispatch{
 				to("T", term.MouseLeft, 3, 1),
+				to("T", 0, 3, 4),
 				to("M", 0, 3, 2),
 				to("M", term.MouseLeft, 3, 2),
 			},
@@ -129,36 +133,128 @@ func TestFrameUnionCaptureDrags(t *testing.T) {
 				}
 			}
 			top := member("T")
-			u := NewFrameUnion(member("M"))
+			u := handler.NewFrameUnion(member("M"))
 			u.UnionTopFrame(top, 2, false)
 			u.UnionBottomFrame(member("B"), 1, false)
 			u.CaptureDrags(top)
 			u.Resize(10, 8)
 
-			var dispatched []dispatch
-			for _, ev := range tc.events {
-				before := len(got)
-				u.Handle(term.Event{
-					Type: term.EventMouse, Key: ev.key, MouseX: ev.x, MouseY: ev.y,
-				})
-				switch len(got) - before {
-				case 0:
-					dispatched = append(dispatched, dropped())
-				case 1:
-					dispatched = append(dispatched, got[before])
-				default:
-					t.Fatalf("%+v dispatched more than once: %+v", ev, got[before:])
-				}
-			}
-			assert.Equal(t, tc.want, dispatched)
+			assert.Equal(t, tc.want, handleUnionEvents(u, &got, tc.events))
 		})
 	}
+}
+
+func TestFrameUnionPointerLeaves(t *testing.T) {
+	newUnion := func(got *[]dispatch) *handler.FrameUnion {
+		member := func(name string) *unionMember {
+			return &unionMember{TestHandler: handler.NewTestHandler(), name: name, got: got}
+		}
+		top := member("T")
+		u := handler.NewFrameUnion(member("M"))
+		u.UnionTopFrame(top, 2, false)
+		u.UnionBottomFrame(member("B"), 1, false)
+		u.CaptureDrags(top)
+		u.Resize(10, 8)
+		return u
+	}
+	for _, tc := range []struct {
+		name   string
+		events []mouseEvent
+		want   []dispatch
+	}{
+		{
+			name:   "onto another member",
+			events: []mouseEvent{hover(3, 1), hover(3, 4)},
+			want: []dispatch{
+				to("T", 0, 3, 1),
+				to("T", 0, 3, 4),
+				to("M", 0, 3, 2),
+			},
+		},
+		{
+			name:   "within a member",
+			events: []mouseEvent{hover(3, 4), hover(5, 5)},
+			want:   []dispatch{to("M", 0, 3, 2), to("M", 0, 5, 3)},
+		},
+		{
+			name:   "off every member",
+			events: []mouseEvent{hover(3, 4), hover(12, 4), hover(13, 4)},
+			want:   []dispatch{to("M", 0, 3, 2), to("M", 0, 12, 2), dropped()},
+		},
+		{
+			name:   "above the union",
+			events: []mouseEvent{hover(3, 1), hover(3, -1)},
+			want:   []dispatch{to("T", 0, 3, 1), to("T", 0, 3, -1)},
+		},
+		{
+			name:   "a parent's leave far off",
+			events: []mouseEvent{hover(3, 7), hover(-5, -5)},
+			want:   []dispatch{to("B", 0, 3, 0), to("B", 0, -5, -12)},
+		},
+		{
+			name:   "a press on another member",
+			events: []mouseEvent{hover(3, 4), press(3, 7), release(3, 7)},
+			want: []dispatch{
+				to("M", 0, 3, 2),
+				to("M", 0, 3, 5),
+				to("B", term.MouseLeft, 3, 0),
+				to("B", term.MouseRelease, 3, 0),
+			},
+		},
+		{
+			name: "not while a drag is held",
+			events: []mouseEvent{
+				press(3, 4), drag(3, 7), release(3, 7), hover(3, 7),
+			},
+			want: []dispatch{
+				to("M", term.MouseLeft, 3, 2),
+				to("B", term.MouseLeft, 3, 0),
+				to("B", term.MouseRelease, 3, 0),
+				to("M", 0, 3, 5),
+				to("B", 0, 3, 0),
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got []dispatch
+			assert.Equal(t, tc.want, handleUnionEvents(newUnion(&got), &got, tc.events))
+		})
+	}
+
+	t.Run("from a member the union moved since", func(t *testing.T) {
+		var got []dispatch
+		u := newUnion(&got)
+		handleUnionEvents(u, &got, []mouseEvent{hover(3, 7)})
+		u.Resize(10, 12)
+		got = nil
+		assert.Equal(t,
+			[]dispatch{to("B", 0, 3, -4), to("M", 0, 3, 5)},
+			handleUnionEvents(u, &got, []mouseEvent{hover(3, 7)}),
+			"the leave lands where the member is now, outside it")
+	})
+}
+
+// handleUnionEvents sends events to u and returns what its members got,
+// dropped() for an event that reached none of them.
+func handleUnionEvents(u *handler.FrameUnion, got *[]dispatch, events []mouseEvent) []dispatch {
+	var dispatched []dispatch
+	for _, ev := range events {
+		before := len(*got)
+		u.Handle(term.Event{
+			Type: term.EventMouse, Key: ev.key, MouseX: ev.x, MouseY: ev.y,
+		})
+		if len(*got) == before {
+			dispatched = append(dispatched, dropped())
+		}
+		dispatched = append(dispatched, (*got)[before:]...)
+	}
+	return dispatched
 }
 
 func TestFrameUnionKeysGoToMain(t *testing.T) {
 	var got []dispatch
 	top := &unionMember{TestHandler: handler.NewTestHandler(), name: "T", got: &got}
-	u := NewFrameUnion(&unionMember{
+	u := handler.NewFrameUnion(&unionMember{
 		TestHandler: handler.NewTestHandler(), name: "M", got: &got,
 	})
 	u.UnionTopFrame(top, 2, false)
@@ -171,4 +267,16 @@ func TestFrameUnionKeysGoToMain(t *testing.T) {
 		to("T", term.MouseLeft, 3, 1),
 		to("M", 0, 0, 0),
 	}, got)
+}
+
+func TestFrameUnionPointerLeavesBattery(t *testing.T) {
+	for _, size := range [][2]int{{60, 15}, {1, 1}} {
+		var clicks, iconClicks int
+		tabs := newPointerTabs(&clicks, &iconClicks)
+		u := handler.NewFrameUnion(newPointerLess(t))
+		u.UnionTopFrame(tabs, 1, false)
+		u.UnionBottomFrame(newPointerLess(t), 2, false)
+		u.CaptureDrags(tabs)
+		rhandlertest.RunPointerLeaves(t, u, size[0], size[1])
+	}
 }

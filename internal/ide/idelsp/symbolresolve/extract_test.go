@@ -40,6 +40,15 @@ func TestSpecForFile(t *testing.T) {
 		{"a.pyi", symbolresolve.Python},
 		{"a.rs", symbolresolve.Rust},
 		{"a.zig", symbolresolve.Zig},
+		{"a.ts", symbolresolve.TypeScript},
+		{"a.mts", symbolresolve.TypeScript},
+		{"a.cts", symbolresolve.TypeScript},
+		{"a.d.ts", symbolresolve.TypeScript},
+		{"a.tsx", symbolresolve.TSX},
+		{"a.js", symbolresolve.JavaScript},
+		{"a.mjs", symbolresolve.JavaScript},
+		{"a.cjs", symbolresolve.JavaScript},
+		{"a.jsx", symbolresolve.JavaScript},
 		{"a.txt", nil},
 		{"go", nil},
 	} {
@@ -113,9 +122,11 @@ func TestExtractFileGo(t *testing.T) {
 			{"mylib.MyType", symbolresolve.SymbolDef}:              1,
 			{"mylib.MyFunc", symbolresolve.SymbolDef}:              1,
 			{"mylib.New", symbolresolve.SymbolDef}:                 1,
+			{"mylib.Store", symbolresolve.SymbolDef}:               1,
 			{"mylib.MyType.String", symbolresolve.SymbolMethodDef}: 1,
 			{"mylib.MyType.Set", symbolresolve.SymbolMethodDef}:    1,
-		}, occs, "unexportedHelper must be excluded")
+			{"mylib.Store.Load", symbolresolve.SymbolMethodDef}:    1,
+		}, occs, "unexportedHelper and Store.save must be excluded")
 		assert.Empty(t, ext.Imports)
 	})
 
@@ -319,5 +330,141 @@ func TestExtractFileZig(t *testing.T) {
 			assert.NotEqualf(t, symbolresolve.SymbolRef, o.kind,
 				"unexpected reference %+v", o)
 		}
+	})
+}
+
+func TestExtractFileTypeScript(t *testing.T) {
+	t.Parallel()
+
+	env := setupTSEnv(t)
+
+	t.Run("member refs and imports from main.ts", func(t *testing.T) {
+		ext, occs := extractFileT(t, env, symbolresolve.TypeScript, "src/main.ts")
+
+		// Named imports bind bare names, so ./utils is not an alias.
+		assert.Equal(t, map[string]string{
+			"geometry": "./geometry",
+			"service":  "./app/service",
+			"text":     "./utils/text",
+			"requests": "./vendor/requests",
+		}, ext.Imports)
+
+		assert.Equal(t, map[occurrence]int{
+			{"geometry.Shape", symbolresolve.SymbolRef}:  2,
+			{"geometry.area", symbolresolve.SymbolRef}:   1,
+			{"requests.get", symbolresolve.SymbolRef}:    1,
+			{"service.Service", symbolresolve.SymbolRef}: 1,
+			{"text.slugify", symbolresolve.SymbolRef}:    1,
+			{"main.main", symbolresolve.SymbolDef}:       1,
+		}, occs, "console.log must not pass RequireImport")
+	})
+
+	t.Run("defs and methods from geometry.ts", func(t *testing.T) {
+		ext, occs := extractFileT(t, env, symbolresolve.TypeScript, "src/geometry.ts")
+
+		// Member reads on parameters and this are not module references.
+		assert.Equal(t, map[occurrence]int{
+			{"geometry.Sized", symbolresolve.SymbolDef}:                   1,
+			{"geometry.Point", symbolresolve.SymbolDef}:                   1,
+			{"geometry.Unit", symbolresolve.SymbolDef}:                    1,
+			{"geometry.Shape", symbolresolve.SymbolDef}:                   1,
+			{"geometry.Polygon", symbolresolve.SymbolDef}:                 1,
+			{"geometry.area", symbolresolve.SymbolDef}:                    1,
+			{"geometry.perimeter", symbolresolve.SymbolDef}:               1,
+			{"geometry.Internal", symbolresolve.SymbolDef}:                1,
+			{"geometry.makeInternal", symbolresolve.SymbolDef}:            1,
+			{"geometry.Shape.constructor", symbolresolve.SymbolMethodDef}: 1,
+			{"geometry.Shape.size", symbolresolve.SymbolMethodDef}:        1,
+			{"geometry.Shape.scale", symbolresolve.SymbolMethodDef}:       1,
+			{"geometry.Polygon.describe", symbolresolve.SymbolMethodDef}:  1,
+		}, occs)
+		assert.Empty(t, ext.Imports)
+	})
+
+	t.Run("index re-exports are defs of the directory", func(t *testing.T) {
+		_, occs := extractFileT(t, env, symbolresolve.TypeScript, "src/utils/index.ts")
+
+		assert.Equal(t, map[occurrence]int{
+			{"utils.slugify", symbolresolve.SymbolDef}:    1,
+			{"utils.loadConfig", symbolresolve.SymbolDef}: 1,
+			{"utils.reset", symbolresolve.SymbolDef}:      1,
+			{"utils.describe", symbolresolve.SymbolDef}:   1,
+		}, occs)
+	})
+
+	t.Run("declaration file is named without its suffix", func(t *testing.T) {
+		_, occs := extractFileT(t, env, symbolresolve.TypeScript, "src/types.d.ts")
+
+		assert.Equal(t, map[occurrence]int{
+			{"types.Settings", symbolresolve.SymbolDef}:  1,
+			{"types.configure", symbolresolve.SymbolDef}: 1,
+		}, occs)
+	})
+
+	t.Run("tsx refs, defs and methods from Badge.tsx", func(t *testing.T) {
+		ext, occs := extractFileT(t, env, symbolresolve.TSX, "src/components/Badge.tsx")
+
+		assert.Equal(t, map[string]string{"geometry": "../geometry"}, ext.Imports)
+		assert.Equal(t, map[occurrence]int{
+			{"geometry.Shape", symbolresolve.SymbolRef}:           2,
+			{"geometry.area", symbolresolve.SymbolRef}:            1,
+			{"Badge.Badge", symbolresolve.SymbolDef}:              1,
+			{"Badge.Panel", symbolresolve.SymbolDef}:              1,
+			{"Badge.Panel.render", symbolresolve.SymbolMethodDef}: 1,
+		}, occs)
+	})
+
+	t.Run("commonjs require binds an alias in loader.cjs", func(t *testing.T) {
+		ext, occs := extractFileT(t, env, symbolresolve.JavaScript, "src/legacy/loader.cjs")
+
+		assert.Equal(t, map[string]string{"requests": "./requests.js"}, ext.Imports)
+		assert.Equal(t, map[occurrence]int{
+			{"requests.Response", symbolresolve.SymbolRef}: 1,
+			{"loader.load", symbolresolve.SymbolDef}:       1,
+		}, occs, "module.exports must not pass RequireImport")
+	})
+
+	t.Run("commonjs export assignments are defs in codec.cjs", func(t *testing.T) {
+		ext, occs := extractFileT(t, env, symbolresolve.JavaScript, "src/legacy/codec.cjs")
+
+		assert.Empty(t, ext.Imports)
+		assert.Equal(t, map[occurrence]int{
+			{"codec.parse", symbolresolve.SymbolDef}:  1,
+			{"codec.format", symbolresolve.SymbolDef}: 1,
+		}, occs, "exports and module.exports must not pass RequireImport")
+	})
+
+	t.Run("jsx member tag is a ref in Page.jsx", func(t *testing.T) {
+		ext, occs := extractFileT(t, env, symbolresolve.JavaScript, "src/legacy/Page.jsx")
+
+		assert.Equal(t, map[string]string{"ui": "./controls.jsx"}, ext.Imports)
+		assert.Equal(t, map[occurrence]int{
+			{"ui.Button", symbolresolve.SymbolRef}: 1,
+			{"Page.Page", symbolresolve.SymbolDef}: 1,
+		}, occs)
+	})
+
+	t.Run("tsx member tags are refs in Toolbar.tsx", func(t *testing.T) {
+		ext, occs := extractFileT(t, env, symbolresolve.TSX, "src/components/Toolbar.tsx")
+
+		assert.Equal(t, map[string]string{"ui": "../legacy/controls.jsx"}, ext.Imports)
+		// The opening and closing tags each name ui.Panel.
+		assert.Equal(t, map[occurrence]int{
+			{"ui.Panel", symbolresolve.SymbolRef}:        2,
+			{"ui.Button", symbolresolve.SymbolRef}:       1,
+			{"Toolbar.Toolbar", symbolresolve.SymbolDef}: 1,
+		}, occs)
+	})
+
+	t.Run("declaration before a syntax error in broken.js", func(t *testing.T) {
+		_, occs := extractFileT(t, env, symbolresolve.JavaScript, "src/legacy/broken.js")
+
+		assert.Equal(t, 1, occs[occurrence{"broken.stable", symbolresolve.SymbolDef}])
+	})
+
+	t.Run("declaration before a syntax error in Broken.tsx", func(t *testing.T) {
+		_, occs := extractFileT(t, env, symbolresolve.TSX, "src/components/Broken.tsx")
+
+		assert.Equal(t, 1, occs[occurrence{"Broken.Stable", symbolresolve.SymbolDef}])
 	})
 }

@@ -18,12 +18,14 @@ package dialoguetui
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"unstable.build/rune/internal/handler/handlertest"
 )
 
 func newTestInput(t *testing.T, attr term.Attributes) (*Component, *textHandlerInput) {
@@ -287,4 +289,99 @@ func TestInputClearDropsLinks(t *testing.T) {
 	assert.Equal(t, "", in.Text())
 	assert.Empty(t, in.Links())
 	assert.Empty(t, inlineLocations(t, in))
+}
+
+const pointerLeaveDraft = "Please review #alpha.go and\nthe failing test in beta_test.go,\n" +
+	"then explain why the index is off by one when the slice is empty\nThanks"
+
+// newPointerLeaveInput returns a compose input holding a multi-line draft
+// with an inline attachment link and long wrapped lines.
+func newPointerLeaveInput(t *testing.T) *textHandlerInput {
+	t.Helper()
+	_, in := newTestInput(t, term.Attributes{Fg: term.ColorAqua})
+	in.SetText(pointerLeaveDraft)
+	require.True(t, in.SetCursorAtScroll(term.Coordinates{X: 23}))
+	in.ReplaceBeforeCursor(len("#alpha.go"), "alpha.go", 7)
+	require.Len(t, in.Links(), 1)
+	return in
+}
+
+func TestTextHandlerInputPointerLeaves(t *testing.T) {
+	t.Parallel()
+	for _, size := range []struct{ width, height int }{{60, 15}, {80, 30}, {1, 1}} {
+		t.Run(fmt.Sprintf("%dx%d", size.width, size.height), func(t *testing.T) {
+			t.Parallel()
+			handlertest.RunPointerLeaves(t, newPointerLeaveInput(t), size.width, size.height)
+		})
+	}
+}
+
+func TestTextHandlerInputPointerLeaveKeepsState(t *testing.T) {
+	t.Parallel()
+	const width, height = 30, 4
+	gestures := []struct {
+		name   string
+		events func(at term.Coordinates) []term.Event
+	}{
+		{name: "hover", events: func(at term.Coordinates) []term.Event {
+			return []term.Event{mouseEv(at.X, at.Y, 0)}
+		}},
+		{name: "click", events: func(at term.Coordinates) []term.Event {
+			return []term.Event{mouseEv(at.X, at.Y, term.MouseLeft), mouseEv(at.X, at.Y, term.MouseRelease)}
+		}},
+		{name: "drag", events: func(at term.Coordinates) []term.Event {
+			return clickDrag(at.X, at.Y, width-1, height-1)
+		}},
+		{name: "press", events: func(at term.Coordinates) []term.Event {
+			return []term.Event{mouseEv(at.X, at.Y, term.MouseLeft)}
+		}},
+		{name: "wheel", events: func(at term.Coordinates) []term.Event {
+			return []term.Event{mouseEv(at.X, at.Y, term.MouseWheelDown)}
+		}},
+	}
+	type state struct {
+		exit      bool
+		text      string
+		links     []InlineAttachmentLink
+		selection string
+		selected  bool
+		cursor    term.Coordinates
+		visible   bool
+		buffer    term.Coordinates
+		offset    int
+	}
+	snapshot := func(in *textHandlerInput, exit bool) state {
+		sel, selected := in.Selection()
+		cursor, _, visible := in.Cursor()
+		return state{
+			exit: exit, text: in.Text(), links: in.Links(),
+			selection: sel, selected: selected, cursor: cursor, visible: visible,
+			buffer: in.CursorAtScroll(), offset: in.SeekOffset(),
+		}
+	}
+	for _, gesture := range gestures {
+		for _, at := range []term.Coordinates{{}, {X: 5, Y: 1}, {X: width - 1, Y: height - 1}} {
+			for _, leave := range []term.Coordinates{
+				{X: -1, Y: 1}, {X: width, Y: 1}, {X: 5, Y: -1}, {X: 5, Y: height},
+				{X: -300, Y: -300}, {X: 300, Y: 300},
+			} {
+				t.Run(fmt.Sprintf("%s at %v then %v", gesture.name, at, leave), func(t *testing.T) {
+					t.Parallel()
+					in := newPointerLeaveInput(t)
+					in.Resize(width, height)
+					var exit bool
+					for _, ev := range gesture.events(at) {
+						exit, _ = in.Handle(ev)
+						in.Draw(term.NewStringWriter(width, height))
+					}
+					before := snapshot(in, exit)
+
+					exit, _ = in.Handle(mouseEv(leave.X, leave.Y, 0))
+					in.Draw(term.NewStringWriter(width, height))
+
+					assert.Equal(t, before, snapshot(in, exit))
+				})
+			}
+		}
+	}
 }

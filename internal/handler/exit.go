@@ -40,7 +40,7 @@ type keyExit struct {
 func (e *keyExit) Handle(ev term.Event) (exit, handled bool) {
 	exit = ev.Type == term.EventKey && e.key == ev.KeyComb()
 	handled = exit
-	if e.cb != nil {
+	if exit && e.cb != nil {
 		e.cb()
 	}
 	return

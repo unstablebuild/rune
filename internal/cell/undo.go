@@ -66,17 +66,32 @@ func (u *undoer) startMergeUndo() bool {
 }
 
 func (u *undoer) endMergeUndo() bool {
-	if u.mergeGroupStart >= len(u.undoTimeline) {
+	return u.mergeFrom(u.mergeGroupStart)
+}
+
+// group runs fn and merges the undo entries its edits push into one. An
+// enclosing startMergeUndo scope keeps covering the merged entry, even when
+// that scope was opened while fn ran.
+func (u *undoer) group(fn func()) {
+	start := len(u.undoTimeline)
+	fn()
+	if u.mergeFrom(start) && u.mergeGroupStart > start {
+		u.mergeGroupStart = start
+	}
+}
+
+func (u *undoer) mergeFrom(start int) bool {
+	if start >= len(u.undoTimeline) {
 		return false
 	}
 	tail := u.undoTimeline[len(u.undoTimeline)-1]
 	grouped := edits{Version: tail.Version}
-	for i := len(u.undoTimeline) - 1; i >= u.mergeGroupStart; i-- {
+	for i := len(u.undoTimeline) - 1; i >= start; i-- {
 		op := u.undoTimeline[i]
 		grouped.Edits = append(grouped.Edits, op.Edits...)
 	}
 
-	u.undoTimeline = u.undoTimeline[:u.mergeGroupStart]
+	u.undoTimeline = u.undoTimeline[:start]
 	u.undoTimeline = append(u.undoTimeline, grouped)
 
 	return true

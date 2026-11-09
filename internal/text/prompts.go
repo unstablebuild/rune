@@ -38,7 +38,7 @@ has been updated since the last back up was created.
 Are you sure you want to recover it
 and lose all the new updates?`, file)
 
-	c.comp.Prompt(msg, []string{yesOpt, noOpt},
+	c.Prompt(msg, []string{yesOpt, noOpt},
 		[]term.KeyComb{{Ch: 'Y'}, {Ch: 'N'}},
 		handler.FuncPromptHandler(
 			func(i int, opt string) {
@@ -100,7 +100,7 @@ func (c *Component) openRecoveryPrompt(file workspaceapi.URI) {
 		}
 	}
 
-	c.comp.Prompt(msg, []string{recoverOpt, readOnlyOpt, editOpt, skipOpt},
+	c.Prompt(msg, []string{recoverOpt, readOnlyOpt, editOpt, skipOpt},
 		[]term.KeyComb{{Ch: 'R'}, {Ch: 'O'}, {Ch: 'E'}, {Ch: 'S'}},
 		handler.FuncPromptHandler(
 			func(i int, opt string) {

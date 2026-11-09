@@ -23,10 +23,13 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/syntaxapi"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"github.com/unstablebuild/rune-go-sdk/tui"
+	"unstable.build/rune/internal/handler/handlertest"
 )
 
 func TestFencedCode(t *testing.T) {
@@ -86,6 +89,68 @@ func TestShowMarkdownHighlightsFencedCode(t *testing.T) {
 	parser := &recordingParser{}
 	require.NoError(t, showMarkdown(wm, parser, nil, fencedCode("fn main() {}", "rust")))
 	requireHighlightRequested(t, parser, ".rs")
+}
+
+func TestShowMarkdownCloseLeavesItsWindow(t *testing.T) {
+	wm := &fakeWM{}
+	require.NoError(t, showMarkdown(wm, nil, nil, "# Title"))
+	wm.mu.Lock()
+	view := wm.floating
+	wm.mu.Unlock()
+
+	require.NoError(t, view.Close())
+
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+	assert.Zero(t, wm.closeWindowCalls,
+		"the window may already show other content when the view is released")
+}
+
+// testMarkdownSource is rust-analyzer style output long enough to scroll
+// a 15-row view, mixing prose, a link, lists and fenced code.
+const testMarkdownSource = "# Expanded macro `vec!`\n\n" +
+	"Recursive expansion of [`vec!`](https://doc.rust-lang.org/std/macro.vec.html):\n\n" +
+	"```rust\n" +
+	"<[_]>::into_vec(\n" +
+	"    #[rustc_box]\n" +
+	"    $crate::boxed::Box::new([1, 2, 3]),\n" +
+	")\n" +
+	"```\n\n" +
+	"- first item with some longer text that wraps at narrow widths\n" +
+	"- second item\n" +
+	"- third item\n\n" +
+	"```\nFN@0..12\n  FN_KW@0..2 \"fn\"\n  WHITESPACE@2..3 \" \"\n  NAME@3..7\n```\n\n" +
+	"Trailing paragraph one.\n\nTrailing paragraph two.\n\nTrailing paragraph three.\n"
+
+func newTestMarkdownView(t *testing.T, parser *recordingParser) *markdownView {
+	t.Helper()
+	wm := &fakeWM{}
+	var p syntaxapi.Parser
+	if parser != nil {
+		p = parser
+	}
+	require.NoError(t, showMarkdown(wm, p, nil, testMarkdownSource))
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+	view, ok := wm.floating.(*markdownView)
+	require.True(t, ok, "a markdown view is floated")
+	return view
+}
+
+func TestMarkdownViewPointerLeaves(t *testing.T) {
+	t.Parallel()
+	for _, size := range [][2]int{{60, 15}, {1, 1}} {
+		handlertest.RunPointerLeaves(t, newTestMarkdownView(t, &recordingParser{}), size[0], size[1])
+	}
+}
+
+func TestMarkdownViewPointerLeaveIsInert(t *testing.T) {
+	t.Parallel()
+	// No parser, so no asynchronous highlight pass redraws between the
+	// frames compared.
+	requirePointerLeaveInert(t, func(t *testing.T) tui.Handler {
+		return newTestMarkdownView(t, nil)
+	}, 60, 15, nil)
 }
 
 // spanParser is a recordingParser whose highlight pass returns one

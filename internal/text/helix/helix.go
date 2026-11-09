@@ -254,8 +254,13 @@ func (hx *Helix) Copy(registerID string, data clipboard.Data) error {
 // Handle satisfies tui.Handler.
 func (hx *Helix) Handle(ev term.Event) (quit, handled bool) {
 	if ev.Type == term.EventMouse {
+		term.SetPointerShape(ev, term.PointerText)
 		quit, handled = hx.mouse.Handle(ev)
-		hx.handler.resetSelection()
+		// A buttonless motion, a hover or the pointer leaving the window,
+		// does not place the caret, so it must not collapse the set.
+		if ev.Key != 0 {
+			hx.handler.resetSelection()
+		}
 		return quit, handled
 	}
 

@@ -23,7 +23,6 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/clipboard"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
@@ -96,10 +95,27 @@ func WithAttachmentOpener(o AttachmentOpener) HandlerOption {
 	return func(dh *dialogueHandler) { dh.attachmentOpener = o }
 }
 
+// ToolCallOpener displays the full invocation and response for a clicked tool.
+type ToolCallOpener interface {
+	OpenToolCall(ToolCallDetails)
+}
+
+// WithToolCallOpener makes tool calls in the transcript clickable.
+func WithToolCallOpener(o ToolCallOpener) HandlerOption {
+	return func(dh *dialogueHandler) { dh.toolCallOpener = o }
+}
+
 // WithCloseFunc sets a function called when a command returns
 // CommandResult.Exit == true.
 func WithCloseFunc(fn func()) HandlerOption {
 	return func(dh *dialogueHandler) { dh.closeFn = fn }
+}
+
+// WithoutSubmitEcho stops the handler from rendering submitted messages
+// and command lines itself, for owners that render every user message
+// from MessageEventUserMessage instead.
+func WithoutSubmitEcho() HandlerOption {
+	return func(dh *dialogueHandler) { dh.noSubmitEcho = true }
 }
 
 // Handler wraps a dialogue.Component and provides a simple-to-use
@@ -118,7 +134,7 @@ func Handler(
 	c.interrupter = interrupter
 	c.mu = locker
 	if c.statusBar != nil {
-		c.statusBar.startTicker(interrupter)
+		c.statusBar.start(interrupter)
 	}
 	ch1 := make(chan SubmitMessage)
 	ch2 := make(chan MessageEvent)
@@ -155,7 +171,9 @@ type dialogueHandler struct {
 	completer     ContextCompleter
 	// attachmentOpener previews attachments clicked in the transcript.
 	attachmentOpener AttachmentOpener
+	toolCallOpener   ToolCallOpener
 	closeFn          func()
+	noSubmitEcho     bool
 	ctx              context.Context
 	inputFocused     bool // true when last mouse interaction was in the input area
 	// messagesDragging is true while a left-button selection drag that
@@ -164,6 +182,11 @@ type dialogueHandler struct {
 	// into the input area, so the drag keeps selecting and auto-scrolls
 	// instead of handing focus to the input mid-drag.
 	messagesDragging bool
+	// A tool-row press is handled on release, before focus switches to the
+	// floating window. Repeated held-button events must not reopen it.
+	toolCallPressed  bool
+	toolCallCanceled bool
+	toolCallPressY   int
 
 	// busy is true while an agent completion is active. When busy,
 	// follow-up user messages are queued instead of being sent directly.
@@ -234,6 +257,8 @@ func (s *dialogueHandler) Draw(w term.Writer) {
 		}
 	}
 	s.grid.Dump(w, sel)
+	// Status-bar sprites can extend outside the bar's one-row cell layout.
+	s.comp.drawStatusBarImages(w)
 }
 
 func (s *dialogueHandler) Resize(width, height int) {
@@ -242,6 +267,11 @@ func (s *dialogueHandler) Resize(width, height int) {
 
 	s.grid.Resize(width, height)
 	s.comp.Resize(width, height)
+}
+
+func (s *dialogueHandler) toolCallHoverPosition(ev term.Event) term.Coordinates {
+	pos := s.comp.MessagesPosition()
+	return term.Coordinates{X: ev.MouseX - pos.X, Y: ev.MouseY - pos.Y}
 }
 
 func (s *dialogueHandler) Handle(ev term.Event) (exit, handled bool) {
@@ -257,6 +287,52 @@ func (s *dialogueHandler) Handle(ev term.Event) (exit, handled bool) {
 		// content updates.
 		s.mu.Lock()
 		defer s.mu.Unlock()
+		if ev.Key == 0 && s.toolCallOpener != nil {
+			changed := s.comp.HoverToolCall(s.toolCallHoverPosition(ev))
+			defer func() { handled = handled || changed }()
+		}
+		if s.toolCallPressed || s.toolCallCanceled {
+			switch ev.Key {
+			case term.MouseRelease:
+				canceled := s.toolCallCanceled
+				s.toolCallPressed = false
+				s.toolCallCanceled = false
+				if !canceled && ev.MouseY == s.toolCallPressY && s.toolCallOpener != nil {
+					pos := s.comp.MessagesPosition()
+					if details, ok := s.comp.ToolCallAt(term.Coordinates{
+						X: ev.MouseX - pos.X, Y: ev.MouseY - pos.Y,
+					}); ok {
+						opener := s.toolCallOpener
+						s.mu.Unlock()
+						opener.OpenToolCall(details)
+						s.mu.Lock()
+					}
+				}
+				return false, true
+			case term.MouseLeft:
+				if ev.MouseY != s.toolCallPressY {
+					s.toolCallPressed = false
+					s.toolCallCanceled = true
+				}
+				return false, true
+			case 0:
+				return false, true
+			default:
+				s.toolCallPressed = false
+				s.toolCallCanceled = false
+			}
+		}
+		if ev.Key == 0 && (ev.MouseX < 0 || ev.MouseY < 0 ||
+			ev.MouseX >= s.grid.Width() || ev.MouseY >= s.grid.Height()) {
+			// A motion outside the chat is how a parent says the pointer
+			// left it, which takes the hovers off but must not move focus
+			// between the input and the messages.
+			off := term.Coordinates{X: -1, Y: -1}
+			chips := s.comp.HoverSentAttachment(off)
+			code := s.comp.hoverCodeCopy(off)
+			overlays := s.comp.HoverScrollOverlays(off)
+			return false, chips || code || overlays
+		}
 		pos := s.comp.InputPosition()
 		// A held drag that began in the messages area keeps selecting even
 		// over the input box: route it (and its terminating release) to the
@@ -289,10 +365,28 @@ func (s *dialogueHandler) Handle(ev term.Event) (exit, handled bool) {
 		if s.inputFocused {
 			s.inputFocused = false
 		}
+		consumed, hoverChanged := s.handleScrollOverlays(ev, dragging)
+		if consumed {
+			return false, true
+		}
+		if hoverChanged {
+			defer func() { handled = true }()
+		}
 		chipExit, chipHandled := s.handleAttachmentChip(ev, dragging)
 		// Both run on bare motion so each can clear its own hover.
 		if codeHandled := s.handleCodeCopy(ev, dragging); chipHandled || codeHandled {
 			return chipExit, true
+		}
+		if ev.Key == term.MouseLeft && !dragging && s.toolCallOpener != nil {
+			pos := s.comp.MessagesPosition()
+			if _, ok := s.comp.ToolCallAt(term.Coordinates{
+				X: ev.MouseX - pos.X, Y: ev.MouseY - pos.Y,
+			}); ok {
+				s.toolCallPressed = true
+				s.toolCallCanceled = false
+				s.toolCallPressY = ev.MouseY
+				return false, true
+			}
 		}
 		if ev.Key == term.MouseLeft {
 			s.messagesDragging = true
@@ -300,6 +394,11 @@ func (s *dialogueHandler) Handle(ev term.Event) (exit, handled bool) {
 		pos = s.comp.MessagesPosition()
 		ev.MouseY -= pos.Y
 		ev.MouseX -= pos.X
+		if s.comp.cfg.OnLinkClick != nil {
+			if link := s.comp.LinkAt(term.Coordinates{X: ev.MouseX, Y: ev.MouseY}); link != nil && link.URL != "" {
+				term.SetPointerShape(ev, term.PointerLink)
+			}
+		}
 		return s.mouse.Handle(ev)
 	}
 
@@ -462,7 +561,7 @@ func (s *dialogueHandler) Handle(ev term.Event) (exit, handled bool) {
 		}
 		text := s.comp.Input().Text()
 		if s.commands != nil && isCommand(text) {
-			item, ok := s.comp.InputSubmit()
+			item, ok := s.submitCommandLine()
 			if ok {
 				s.appendHistory(Draft{Text: item})
 				name, args := parseCommand(item)
@@ -544,6 +643,40 @@ func (s *dialogueHandler) Handle(ev term.Event) (exit, handled bool) {
 	return
 }
 
+// handleScrollOverlays resolves a mouse event over the messages area
+// against the pinned message and the jump-to-bottom arrow, both drawn
+// over the transcript. A click on either, or anywhere on the row the
+// arrow takes over, is consumed so it neither selects nor reaches the
+// content underneath; bare motion only updates their hover and pointer
+// and leaves the event to the content's own hovers.
+func (s *dialogueHandler) handleScrollOverlays(
+	ev term.Event, dragging bool,
+) (consumed, hoverChanged bool) {
+	if dragging {
+		return false, false
+	}
+	offset := s.comp.MessagesPosition()
+	pos := term.Coordinates{X: ev.MouseX - offset.X, Y: ev.MouseY - offset.Y}
+	switch ev.Key {
+	case 0:
+		if s.comp.ScrollOverlayAt(pos) {
+			term.SetPointerShape(ev, term.PointerLink)
+		}
+		return false, s.comp.HoverScrollOverlays(pos)
+	case term.MouseLeft:
+		if s.comp.JumpArrowAt(pos) {
+			s.comp.JumpToBottom()
+			return true, false
+		}
+		if s.comp.PinnedMessageAt(pos) {
+			s.comp.ScrollToPinnedMessage()
+			return true, false
+		}
+		return s.comp.JumpRowAt(pos), false
+	}
+	return false, false
+}
+
 // handleCodeCopy resolves a mouse event over the messages area against
 // the copy icons under transcript code blocks. As with attachment chips,
 // bare motion drives the hover highlight and a left click copies.
@@ -567,18 +700,15 @@ func (s *dialogueHandler) handleCodeCopy(ev term.Event, dragging bool) (handled 
 		if !ok {
 			return false
 		}
-		// The system clipboard may shell out and notifying is an RPC to the
-		// host; do not stall streaming on either.
-		notes := s.comp.cfg.Notifications
+		// The system clipboard may shell out; do not stall streaming on it.
 		s.mu.Unlock()
 		err := clip.Copy(clipboard.DefaultRegisterID, clipboard.Data{Text: code})
-		if err == nil {
-			_, _ = notes.Notify(browserapi.LevelSuccess, "copied to clipboard")
-		}
 		s.mu.Lock()
 		if err != nil {
 			slog.Error("copy code block", "struct", "dialogue.handler", "error", err)
+			return true
 		}
+		s.comp.markCodeCopied(pos)
 		return true
 	}
 	return false
@@ -707,6 +837,9 @@ func (s *dialogueHandler) consumeIncoming() {
 			} else {
 				s.comp.CompleteToolCall(ev.ToolCallID, ev.ToolName, ev.ToolArgs, ev.ToolSummary, ev.ToolOutput, ev.IsError)
 			}
+			for _, path := range ev.ImagePaths {
+				s.comp.AddToolCallImage(ev.ToolCallID, path, ev.ToolSummary)
+			}
 		case MessageEventChildResult:
 			s.comp.AddChildResult(ev.ParentToolCallID, ev.ToolOutput, ev.IsError)
 		case MessageEventError:
@@ -729,6 +862,8 @@ func (s *dialogueHandler) consumeIncoming() {
 			s.comp.UpdateTaskProgress(ev.TaskProgress)
 		case MessageEventAttachment:
 			s.comp.AddAttachment(ev.Attachment)
+		case MessageEventUserMessage:
+			s.comp.AddSendMessageAttachments(ev.Text, ev.Attachments)
 		case MessageEventPromptDismiss:
 			ch := s.comp.PreparePromptDismiss()
 			if ch != nil {
@@ -762,6 +897,20 @@ func parseCommand(text string) (string, []string) {
 		return "", nil
 	}
 	return parts[0], parts[1:]
+}
+
+// submitCommandLine takes the command line out of the compose input,
+// rendering it unless the echo is off.
+func (s *dialogueHandler) submitCommandLine() (string, bool) {
+	if !s.noSubmitEcho {
+		return s.comp.InputSubmit()
+	}
+	text := s.comp.Input().Text()
+	if text == "" {
+		return "", false
+	}
+	s.comp.Input().Clear()
+	return text, true
 }
 
 func (s *dialogueHandler) executeCommand(name string, args []string) {
@@ -808,7 +957,7 @@ func (s *dialogueHandler) submitMessage(msg SubmitMessage, queuedLabel string, d
 		s.comp.AddQueuedMessage(queuedLabel)
 		return
 	}
-	if displayNow {
+	if displayNow && !s.noSubmitEcho {
 		s.comp.AddSendMessageAttachments(msg.Text, msg.Attachments)
 	}
 	s.mu.Unlock()
@@ -880,7 +1029,9 @@ func (s *dialogueHandler) drainQueue() {
 	msg := s.queue[0]
 	s.queue = s.queue[1:]
 	s.comp.PromoteFirstQueuedMessage()
-	s.comp.AddSendMessageAttachments(msg.Text, msg.Attachments)
+	if !s.noSubmitEcho {
+		s.comp.AddSendMessageAttachments(msg.Text, msg.Attachments)
+	}
 	s.mu.Unlock()
 	s.tx <- msg
 	s.mu.Lock()

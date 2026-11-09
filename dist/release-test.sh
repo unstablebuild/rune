@@ -31,7 +31,7 @@ if [ "$1" = release ]; then
 fi
 if [ "$1 $2" = "api -X" ]; then
 	printf '%s\n' "$@" >"$PUT_LOG"
-	echo "https://github.com/unstablebuild/homebrew-rune/commit/0123abc"
+	echo "https://github.com/unstablebuild/homebrew-tap/commit/0123abc"
 	exit 0
 fi
 if [ "$1" = api ]; then
@@ -192,7 +192,7 @@ expect_line "Homebrew release (v1.3.0) is outdated AND READY TO BE PUBLISHED. Pu
 
 scenario "status when the tap ships a newer version" "$all_artifacts" "$work/newer.rb" v1.3.0 status
 expect_line "➖ Homebrew */* .rb"
-expect_line "Homebrew release (v1.3.0) is superseded: unstablebuild/homebrew-rune already ships v1.4.0."
+expect_line "Homebrew release (v1.3.0) is superseded: unstablebuild/homebrew-tap already ships v1.4.0."
 
 scenario "status for a prerelease" "Rune-v1.3.0-rc.1-darwin-arm64.dmg" "$work/older.rb" v1.3.0-rc.1 status
 expect_rc 0
@@ -214,7 +214,7 @@ expect_not_published
 
 scenario "publish when ready" "$all_artifacts" "$work/older.rb" v1.3.0 publish-homebrew
 expect_rc 0
-expect_line "Homebrew release (v1.3.0) is published: https://github.com/unstablebuild/homebrew-rune/commit/0123abc"
+expect_line "Homebrew release (v1.3.0) is published: https://github.com/unstablebuild/homebrew-tap/commit/0123abc"
 expect_published
 grep -qxF "sha=deadbeef" "$PUT_LOG" 2>/dev/null || fail "update did not send the current file's sha"
 

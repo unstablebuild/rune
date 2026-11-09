@@ -53,10 +53,10 @@ REPO_ROOT := $(patsubst %/,%,$(dir $(abspath $(firstword $(MAKEFILE_LIST)))))
 BUILD_START := $(shell date +%s)
 BUILD_DATE := $(shell out=$$(cd $(REPO_ROOT) && $(GO) run ./cmd/buildstamp) && printf '%s' "$$out")
 BUILD_DATE_LDFLAG = $(if $(strip $(BUILD_DATE)),,$(error buildstamp produced no build date; refusing to build a binary with an empty debug.BuildDate))-X unstable.build/rune/internal/debug.BuildDate=$(strip $(BUILD_DATE))
-# dist/arch/PKGBUILD and dist/debian/debian/rules re-declare this set
-# because makepkg and dpkg-buildpackage drive the compiler themselves and
-# never call these rules. A flag added or renamed here has to be mirrored
-# in both, or packaged builds quietly ship without it.
+# dist/debian/debian/rules re-declares this set because
+# dpkg-buildpackage drives the compiler itself and never calls these
+# rules. A flag added or renamed here has to be mirrored there, or the
+# .deb quietly ships without it.
 COMMON_LDFLAGS=-X unstable.build/rune/internal/debug.Tag=$$(git describe --tags) -X unstable.build/rune/internal/debug.Commit=$$(git rev-parse --short HEAD) $(BUILD_DATE_LDFLAG) $(DEBUG_LDFLAGS)
 GOFLAGS=$(RACE_FLAG) -ldflags="$(COMMON_LDFLAGS) $(DARWIN_EXTLDFLAGS) -X unstable.build/rune/internal/debug.Package=six"
 RUNE_GOFLAGS=$(RACE_FLAG) -tags=ebitensinglethread -ldflags="$(COMMON_LDFLAGS) $(DARWIN_EXTLDFLAGS) -X unstable.build/rune/internal/debug.Package=rune"
@@ -149,11 +149,19 @@ RELEASE_FILES=$(wildcard release/*)
 	runectl-prod-dist-linux-arm64 runectl-staging-dist-linux-arm64 \
 	runectl-prod-dist-darwin-amd64 runectl-staging-dist-darwin-amd64 \
 	runectl-prod-dist-darwin-arm64 runectl-staging-dist-darwin-arm64 \
+	xsandbox-pkg xsandbox-sign xsandbox-notarize \
+	xsandbox-prod-dist xsandbox-staging-dist \
+	xsandbox-prod-dist-notarized xsandbox-staging-dist-notarized \
+	xsandbox-prod-dist-linux-amd64 xsandbox-staging-dist-linux-amd64 \
+	xsandbox-prod-dist-linux-arm64 xsandbox-staging-dist-linux-arm64 \
+	xsandbox-prod-dist-darwin-amd64 xsandbox-staging-dist-darwin-amd64 \
+	xsandbox-prod-dist-darwin-arm64 xsandbox-staging-dist-darwin-arm64 \
+	xsandbox-prod-dist-all xsandbox-staging-dist-all \
 	notary-credentials runectl \
 	rune-release-linux-amd64 rune-release-linux-arm64 \
 	rune-release-linux-amd64-native rune-release-linux-arm64-native \
 	rune-release-linux-amd64-cross rune-release-linux-arm64-cross \
-	rune-docker-build rune-docker-push \
+	rune-docker-build rune-docker-build-staging rune-docker-push \
 	rune-prod-dist-linux-amd64 rune-prod-dist-linux-arm64 \
 	rune-prod-dist-linux-amd64-native rune-prod-dist-linux-arm64-native \
 	rune-prod-dist-linux-amd64-cross rune-prod-dist-linux-arm64-cross \
@@ -168,7 +176,7 @@ RELEASE_FILES=$(wildcard release/*)
 	manual-ssh-test \
 	dist-tar-with-src dist-dmg-with-src dist-min-macos dist-min-linux \
 	pkg-deb pkg-deb-amd64 pkg-deb-arm64 pkg-deb-docker \
-	pkg-arch pkg-arch-srcinfo pkg-clean \
+	pkg-clean \
 	$(filter internal/workspace/workspacessh/manual_test/%.sh,$(MAKECMDGOALS))
 
 # bluectl config matrix. Each leaf config pins BOTH auth.project-id and
@@ -176,7 +184,7 @@ RELEASE_FILES=$(wildcard release/*)
 # selected by the make target rather than by ~/.bluectl/config or
 # whatever bucket the user's local config happens to name.
 #
-# The host targets (rune-agent-{prod,staging}-dist, runectl-*, fuzzy-*)
+# The host targets (rune-agent-{prod,staging}-dist, runectl-*, xsandbox-*, fuzzy-*)
 # derive their os/arch from the host running make.
 BLUECTL_HOST_OS   := $(shell uname | awk '{print tolower($$0)}')
 BLUECTL_HOST_ARCH := $(shell uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
@@ -289,13 +297,13 @@ generate: GOPRIVATE=github.com/unstablebuild,unstable.build/*
 generate:
 	@ rm -rf **/*rpc*/*.pb.go
 	@ go generate ./...
-	@ cd cmd/rune/docs && npm run --silent keybindings
+	@ cd docs && npm run --silent keybindings
 
 license:
-	@ bluectl license LICENSE_HEADER `find . -name \*.go -not -path ./cmd/rune/docs/\* | grep -v gomock | grep -v .pb.go | xargs`
+	@ bluectl license LICENSE_HEADER `find . -name \*.go -not -path ./docs/node_modules/\* | grep -v gomock | grep -v .pb.go | xargs`
 
 assert_license:
-	@ bluectl license -d LICENSE_HEADER `find . -name \*.go -not -path ./cmd/rune/docs/\* | grep -v gomock | grep -v .pb.go | xargs`
+	@ bluectl license -d LICENSE_HEADER `find . -name \*.go -not -path ./docs/node_modules/\* | grep -v gomock | grep -v .pb.go | xargs`
 
 format:
 	@ go fmt ./.../...
@@ -311,6 +319,7 @@ clean:
 	@$(MAKE) -C cmd/rune-agent clean
 	@$(MAKE) -C cmd/extension_fuzzy_search clean
 	@$(MAKE) -C cmd/runectl clean
+	@$(MAKE) -C cmd/xsandbox clean
 	@$(MAKE) -C cmd/rune clean
 
 $(BIN):
@@ -397,8 +406,13 @@ rune-release-linux-arm64-cross:
 # rune-docker-build builds the headless node image (deploy/rune-headless)
 # for the host arch into the local image store; rune-docker-push publishes
 # it for every arch to Docker Hub as the release tag and latest.
+# rune-docker-build-staging builds the same image against the staging
+# endpoints.
 rune-docker-build:
 	@$(MAKE) -C cmd/rune docker-build
+
+rune-docker-build-staging:
+	@$(MAKE) -C cmd/rune docker-build-staging
 
 rune-docker-push:
 	@$(MAKE) -C cmd/rune docker-push
@@ -594,7 +608,8 @@ rune-agent-staging-dist-darwin-arm64: clean
 # Each target cleans first, so they run as separate makes one after another: as
 # prerequisites they would share a single clean and run at once under -j.
 rune-agent-prod-dist-all rune-agent-staging-dist-all \
-fuzzy-search-prod-dist-all fuzzy-search-staging-dist-all:
+fuzzy-search-prod-dist-all fuzzy-search-staging-dist-all \
+xsandbox-prod-dist-all xsandbox-staging-dist-all:
 	@$(MAKE) $(@:%-all=%)-linux-amd64
 	@$(MAKE) $(@:%-all=%)-linux-arm64
 	@$(MAKE) $(@:%-all=%)-darwin-amd64
@@ -686,28 +701,67 @@ runectl-prod-dist-darwin-arm64: clean
 runectl-staging-dist-darwin-arm64: clean
 	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,staging,darwin-arm64) $(MAKE) -C cmd/runectl dist-darwin-arm64
 
+xsandbox-pkg:
+	@$(MAKE) -C cmd/xsandbox pkg
+
+xsandbox-sign:
+	@$(MAKE) -C cmd/xsandbox sign
+
+xsandbox-notarize:
+	@$(MAKE) -C cmd/xsandbox notarize
+
+xsandbox-prod-dist: clean
+	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,prod,$(BLUECTL_HOST_OS)-$(BLUECTL_HOST_ARCH)) $(MAKE) -C cmd/xsandbox dist
+
+xsandbox-staging-dist: clean
+	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,staging,$(BLUECTL_HOST_OS)-$(BLUECTL_HOST_ARCH)) $(MAKE) -C cmd/xsandbox dist
+
+xsandbox-prod-dist-notarized: clean
+	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,prod,$(BLUECTL_HOST_OS)-$(BLUECTL_HOST_ARCH)) $(MAKE) -C cmd/xsandbox dist-notarized
+
+xsandbox-staging-dist-notarized: clean
+	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,staging,$(BLUECTL_HOST_OS)-$(BLUECTL_HOST_ARCH)) $(MAKE) -C cmd/xsandbox dist-notarized
+
+xsandbox-prod-dist-linux-amd64: clean
+	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,prod,linux-amd64) $(MAKE) -C cmd/xsandbox dist-linux-amd64
+
+xsandbox-staging-dist-linux-amd64: clean
+	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,staging,linux-amd64) $(MAKE) -C cmd/xsandbox dist-linux-amd64
+
+xsandbox-prod-dist-linux-arm64: clean
+	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,prod,linux-arm64) $(MAKE) -C cmd/xsandbox dist-linux-arm64
+
+xsandbox-staging-dist-linux-arm64: clean
+	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,staging,linux-arm64) $(MAKE) -C cmd/xsandbox dist-linux-arm64
+
+xsandbox-prod-dist-darwin-amd64: clean
+	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,prod,darwin-amd64) $(MAKE) -C cmd/xsandbox dist-darwin-amd64
+
+xsandbox-staging-dist-darwin-amd64: clean
+	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,staging,darwin-amd64) $(MAKE) -C cmd/xsandbox dist-darwin-amd64
+
+xsandbox-prod-dist-darwin-arm64: clean
+	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,prod,darwin-arm64) $(MAKE) -C cmd/xsandbox dist-darwin-arm64
+
+xsandbox-staging-dist-darwin-arm64: clean
+	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,staging,darwin-arm64) $(MAKE) -C cmd/xsandbox dist-darwin-arm64
+
 notary-credentials:
 	xcrun notarytool store-credentials "$(NOTARY_PROFILE)" --team-id "YYZRWD888J"
 
-# Distribution packages (dist/). Both build inside Docker so no
-# Debian/Arch host is required; artifacts land in dist/out/.
+# Distribution packages (dist/). The .deb builds inside Docker so no
+# Debian host is required; artifacts land in $(PKG_OUT).
 #
 #   make pkg-deb            .deb for the host arch
 #   make pkg-deb-amd64      .deb for linux/amd64
 #   make pkg-deb-arm64      .deb for linux/arm64
-#   make pkg-arch           Arch package from dist/arch/PKGBUILD
-#   make pkg-arch-srcinfo   regenerate .SRCINFO only (fast)
 #
 # The version is resolved here rather than in the container: the build
 # context excludes .git, and a git worktree's .git is a file pointing
 # outside the context anyway.
 PKG_OUT ?= $(TARGET)/pkg
-PKG_GO_VERSION ?= 1.27.1
+PKG_GO_VERSION ?= 1.27.3
 DEB_BASE_IMAGE ?= debian:bookworm
-# archlinux is published for amd64 only. Emulating it is not viable:
-# the Go toolchain segfaults under qemu-user, so the full Arch build
-# needs an x86_64 builder (a native host or CI).
-PKG_ARCH_PLATFORM ?= linux/amd64
 PKG_HOST_ARCH := $(shell uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
 PKG_TAG := $(shell git describe --tags --match 'v*')
 PKG_COMMIT := $(shell git rev-parse --short HEAD)
@@ -734,30 +788,6 @@ pkg-deb-docker:
 		--output type=local,dest=$(PKG_OUT) \
 		.
 	@ls -1 $(PKG_OUT)/*.deb
-
-pkg-arch:
-	@mkdir -p $(PKG_OUT)
-	@echo "Building Arch package from dist/arch/PKGBUILD ($(PKG_TAG)) ..."
-	@docker buildx build --rm \
-		-f dist/arch/Dockerfile \
-		--platform $(PKG_ARCH_PLATFORM) \
-		--build-arg RUNE_TAG=$(PKG_TAG) \
-		--build-arg RUNE_COMMIT=$(PKG_COMMIT) \
-		--target artifact \
-		--output type=local,dest=$(PKG_OUT) \
-		.
-	@ls -1 $(PKG_OUT)/*.pkg.tar.zst
-
-# Regenerates dist/arch/.SRCINFO in place; the AUR requires it to match
-# PKGBUILD on every push.
-pkg-arch-srcinfo:
-	@docker buildx build --rm \
-		-f dist/arch/Dockerfile \
-		--platform $(PKG_ARCH_PLATFORM) \
-		--target srcinfo-artifact \
-		--output type=local,dest=dist/arch \
-		.
-	@echo "Wrote dist/arch/.SRCINFO"
 
 pkg-clean:
 	@rm -rf $(PKG_OUT)

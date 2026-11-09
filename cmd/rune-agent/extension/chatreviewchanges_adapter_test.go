@@ -68,7 +68,7 @@ func (m *reviewWindowManager) CloseWindow(browserapi.Window) error {
 	return nil
 }
 
-func (m *reviewWindowManager) SetTabActivity(workspaceapi.URI, bool) error { return nil }
+func (m *reviewWindowManager) SetTabStatus(workspaceapi.URI, browserapi.TabStatus) error { return nil }
 
 // countingEditor wraps a real editor so tests can count handler closes
 // and simulate an editor that refuses to open.
@@ -270,7 +270,7 @@ func TestCommandAdapterReviewChangesCloseWithoutEditsAddsNoAttachment(t *testing
 
 	assert.Empty(t, *attached)
 	assert.Equal(t, 1, ed.closed)
-	assert.Equal(t, 1, wm.closes)
+	assert.Zero(t, wm.closes, "the window may already show other content when the review is released")
 }
 
 func TestCommandAdapterReviewChangesEditUndoneAddsNoAttachment(t *testing.T) {
@@ -334,7 +334,7 @@ func TestCommandAdapterReviewChangesCloseIsIdempotent(t *testing.T) {
 
 	assert.Len(t, *attached, 1)
 	assert.Equal(t, 1, ed.closed)
-	assert.Equal(t, 1, wm.closes)
+	assert.Zero(t, wm.closes)
 }
 
 func TestCommandAdapterReviewChangesCloseKeys(t *testing.T) {

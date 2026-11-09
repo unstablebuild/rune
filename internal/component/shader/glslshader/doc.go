@@ -35,22 +35,32 @@ performing any screen space transformation such as normalizing coords or
 flipping vertical axis to match the pixel shader specification, it's all done
 by shadeGLSL() and you only responsible for your runCell().
 
-	func (s *trippy) Shade(frame, total int, in [][]term.Cell) {
-		shadeGLSL(frame, total, s.fps, in, s) // only works if trippy.runCell defined
+	func (s *myShader) Shade(frame, total int, in [][]term.Cell) {
+		s.helper.shadeGLSL(frame, total, in, s) // only works if myShader.runCell defined
 	}
 
-	func (s *trippy) runCell(
-		frame, total int, fps float, time float,
+	func (s *myShader) runCell(
+		frame, total int,
+		cellCoords term.Coordinates,
 		fragCoordX, fragCoordY int,
 		resolutionX, resolutionY int,
 		inChar rune, inFg, inBg term.Color,
 	) (char rune, fg, bg term.Color) {
+		phase := float(frame) / float(total)
 		// generate your art based on those parameters or pass through by
 	    // piping the input values to the out return values.
 		char = inChar
 		fg = inFg
 		bg = inBg
 	}
+
+Derive time from frame/total alone, as phase is above, rather than from
+a frame rate or a duration: a shader then plays the same whatever the
+frame rate, length and frame order it is run at, and time shaders can
+remap its progress. An effect that can go on forever, such as fire,
+should also end where it starts, so that time shaders can loop it: make
+what turns over the run turn a whole number of times, and what drifts
+drift through noise that repeats by as much (see [Blaze]).
 
 Check out [Tutorial: Write a Pixel Shader] for a complete guide on the topic.
 

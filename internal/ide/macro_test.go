@@ -28,7 +28,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/handler/handlertest"
-	"unstable.build/rune/internal/ide/pkgtrust"
+	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
 	"unstable.build/rune/internal/text"
 )
 
@@ -471,7 +471,7 @@ func newMacroIntegrationHarness(t *testing.T) *macroIntegrationHarness {
 	mu := new(sync.Mutex)
 	events := make(chan term.Event, 4096)
 	sched, drain := newTestScheduler(t, mu)
-	i, err := New(dir, cfgName, dir, pkgtrust.NewStore(dir, nil), newTestStorage(t, dir),
+	i, err := New(dir, cfgName, dir, pkgtrust.NewStore(), newTestStorage(t, dir),
 		WithLocker(mu),
 		WithScheduleNextTick(sched),
 		WithPublishEvent(func(ev term.Event) bool {
@@ -525,6 +525,9 @@ command:
   key: ":"
   key_bindings:
     qq: record q
+search:
+  regex_enabled: false
+  semantic_enabled: false
 `), 0666))
 	return name
 }

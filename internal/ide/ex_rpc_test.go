@@ -18,15 +18,23 @@ package ide
 
 import (
 	"context"
+	"image"
 	"net"
 	_ "net/http/pprof"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi/browserrpc"
+	"github.com/unstablebuild/rune-go-sdk/api/extensionapi"
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
@@ -34,9 +42,16 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	"unstable.build/rune/internal/browser"
 	tbrowserrpc "unstable.build/rune/internal/browser/browserrpc"
 	"unstable.build/rune/internal/browser/browsertest"
+	"unstable.build/rune/internal/cell"
+	"unstable.build/rune/internal/debug"
+	"unstable.build/rune/internal/extension"
+	"unstable.build/rune/internal/handler/handlerrpc"
+	thandlerrpc "unstable.build/rune/internal/handler/handlerrpc"
+	"unstable.build/rune/internal/handler/handlerrpc/handlerrpctest"
 	"unstable.build/rune/internal/ide/plugin"
 	"unstable.build/rune/internal/term/vte"
 	"unstable.build/rune/internal/text"
@@ -144,7 +159,7 @@ func newTestRPCBrowser(t *testing.T,
 		ex.syncCommandPrompt = true
 		err = ex.init(func(exoeditor.Reloader, schemeapi.Terminal) (text.Editor, error) { return ed, nil }, &testLoader{}, svc, notifications, uri,
 			vte.DefaultConfig(), plugin.DefaultBarConfig(),
-			nopPublishEvent, 0, clip, nil, nil, nil, nil, testPromptEditor(), opts...)
+			nopPublishEvent, 0, clip, nil, nil, ex.Browser(), nil, testPromptEditor(), testNameGenerator, opts...)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -154,7 +169,7 @@ func newTestRPCBrowser(t *testing.T,
 
 		var serverMutex sync.Mutex
 		grpcServer := grpc.NewServer()
-		server := tbrowserrpc.NewServer(ex.Browser(), &serverMutex)
+		server := tbrowserrpc.NewServer(ex.Browser(), &serverMutex, handlerrpc.GraphicsConfig{})
 		server.SetSyncMode()
 		browserrpc.RegisterWindowManagerServer(grpcServer, server)
 		browserrpc.RegisterNotificationsServer(grpcServer, server)
@@ -218,4 +233,186 @@ func TestRPCBrowserCloseLeak(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NoError(t, win.Close())
+}
+
+func TestRPCShow(t *testing.T) {
+	b := newExForAliasRun(t, nil)
+	defer b.Close()
+	var system []string
+	b.ex.metaOpenURL = metaOpenURLConfig{system: func(u *url.URL) error {
+		system = append(system, u.String())
+		return nil
+	}}
+	var interrupts atomic.Int32
+	res := extension.BrowserResources(b.Browser(), func(ev term.Event) bool {
+		if ev.Type == term.EventInterrupt {
+			interrupts.Add(1)
+		}
+		return true
+	}, thandlerrpc.GraphicsConfig{})
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	grpcServer := grpc.NewServer()
+	defer grpcServer.Stop()
+	closer, err := res[extensionapi.PermissionBrowserResourceOpener].
+		Register(grpcServer, new(sync.Mutex))
+	require.NoError(t, err)
+	defer closer.Close()
+	go debug.CapturePanicReport(func() { _ = grpcServer.Serve(lis) })
+	conn, err := grpc.NewClient(lis.Addr().String(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	require.NoError(t, err)
+	client := browserrpc.NewClient(context.Background(), conn)
+	defer client.Close()
+
+	file, err := workspaceapi.ParseURI("file:///shown.go")
+	require.NoError(t, err)
+	require.NoError(t, client.Show(file))
+	tab, ok := b.comp.FocusTab()
+	require.True(t, ok, "the shown file must be in focus")
+	assert.Equal(t, file.String(), tab.URI().String())
+
+	web, err := workspaceapi.ParseURI("https://example.com/docs")
+	require.NoError(t, err)
+	require.NoError(t, client.Show(web))
+	assert.Equal(t, []string{"https://example.com/docs"}, system)
+	assert.EqualValues(t, 2, interrupts.Load(), "every Show must redraw")
+
+	b.ex.metaOpenURL.system = nil
+	require.ErrorContains(t, client.Show(web), "no system browser")
+}
+
+func TestRPCSplitDrawsExtensionImages(t *testing.T) {
+	tests := []struct {
+		name   string
+		stream bool
+	}{
+		{name: "through the arena"},
+		{name: "over the stream", stream: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testRPCSplitDrawsExtensionImages(t, tt.stream)
+		})
+	}
+}
+
+func testRPCSplitDrawsExtensionImages(t *testing.T, stream bool) {
+	frames := make(chan []byte, 64)
+	b := newExForTestingWithWorkspace(t, &testLoader{}, texttest.NopEditor(),
+		vte.DefaultConfig(), nopPublishEvent, clipboard.NewInMemory(),
+		text.WithEventPublisher(func(ev term.Event) bool {
+			if ev.Type == term.EventInterrupt &&
+				strings.HasPrefix(string(ev.Raw), "AsyncClient") {
+				frames <- ev.Raw
+			}
+			return true
+		}))
+	defer b.Close()
+	arenaRoot := t.TempDir()
+	res := extension.BrowserResources(b.Browser(), nopPublishEvent, thandlerrpc.GraphicsConfig{
+		ArenaRoot:    arenaRoot,
+		StreamPixels: stream,
+	})
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	grpcServer := grpc.NewServer()
+	defer grpcServer.Stop()
+	ui := new(sync.Mutex)
+	closer, err := res[extensionapi.PermissionBrowserWindowManager].Register(grpcServer, ui)
+	require.NoError(t, err)
+	defer closer.Close()
+	go debug.CapturePanicReport(func() { _ = grpcServer.Serve(lis) })
+	conn, err := grpc.NewClient(lis.Addr().String(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	require.NoError(t, err)
+	client := browserrpc.NewClient(context.Background(), conn)
+	defer client.Close()
+
+	const width, height = 120, 40
+	ui.Lock()
+	b.Resize(width, height)
+	ui.Unlock()
+	focus, err := client.Focus()
+	require.NoError(t, err)
+	ext := handlerrpctest.NewRasterHandler()
+	_, err = client.Split(browserapi.OrientationRight, focus, ext)
+	require.NoError(t, err)
+
+	cellSize := cell.PixelSize{Width: 8.5, Height: 17.25}
+	draw := func(ctx context.Context) *cell.BufferWriter {
+		ui.Lock()
+		defer ui.Unlock()
+		w := cell.NewBufferWriter(cell.ContextWithPixelSize(ctx, cellSize), width, height)
+		b.Draw(w)
+		return w
+	}
+	frame := func() *cell.BufferWriter {
+		t.Helper()
+		draw(context.Background())
+		select {
+		case payload := <-frames:
+			return draw(term.ContextWithPayload(context.Background(), payload))
+		case <-time.After(5 * time.Second):
+			t.Fatal("the extension's frame did not arrive")
+			return nil
+		}
+	}
+	uploads := func() []string {
+		t.Helper()
+		arenas, err := os.ReadDir(arenaRoot)
+		require.NoError(t, err)
+		if stream {
+			require.Empty(t, arenas, "streamed pixels must not touch the disk")
+			return nil
+		}
+		require.Len(t, arenas, 1)
+		entries, err := os.ReadDir(filepath.Join(arenaRoot, arenas[0].Name()))
+		require.NoError(t, err)
+		var names []string
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		return names
+	}
+	placed := func(w *cell.BufferWriter) *image.RGBA {
+		t.Helper()
+		images := w.Images()
+		require.Len(t, images, 1)
+		assert.Equal(t, images[0].Bounds(), images[0].Visible(),
+			"the extension's cells must be drawn before its image")
+		return images[0].Src.(*image.RGBA)
+	}
+
+	first := placed(frame())
+	assert.Equal(t, ext.Raster().Pix, first.Pix)
+	if stream {
+		// Streamed responses carry at most 1 MiB of pixels.
+		require.Greater(t, len(first.Pix), 1<<20,
+			"the raster must take several responses to stream")
+	}
+	files := func(names ...string) []string {
+		if stream {
+			return nil
+		}
+		return names
+	}
+	assert.Equal(t, files("1-0"), uploads())
+
+	second := placed(frame())
+	assert.Same(t, first, second, "an unchanged image must be placed without an upload")
+	assert.Equal(t, ext.Raster().Pix, second.Pix)
+	assert.Equal(t, files("1-0"), uploads())
+
+	ext.SetVersion(2)
+	bumped := placed(frame())
+	assert.Equal(t, ext.Raster().Pix, bumped.Pix)
+	assert.NotEqual(t, first.Pix, bumped.Pix)
+	assert.Equal(t, files("1-0", "1-1"), uploads())
+	assert.Equal(t, []bool{true, true, true}, ext.Shown())
+	want := handlerrpctest.CellPixelSize{Width: cellSize.Width, Height: cellSize.Height}
+	assert.Equal(t, []handlerrpctest.CellPixelSize{want, want, want}, ext.CellPixelSizes(),
+		"the extension must draw with the cell size of the IDE's frames")
 }

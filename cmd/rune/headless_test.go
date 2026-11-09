@@ -22,11 +22,13 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -42,6 +44,7 @@ import (
 	"unstable.build/rune/cmd/rune/ide/apiclient"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/runenet"
+	"unstable.build/rune/internal/tailnet/tailnettest"
 )
 
 type stubHeadlessClient struct {
@@ -544,4 +547,109 @@ func TestWaitForShutdownSignalReturnsOnCancel(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("waitForShutdownSignal did not return after the context was cancelled")
 	}
+}
+
+func TestFormatTailnetSignIn(t *testing.T) {
+	assert.Equal(t, "To add this machine to your tailnet on headscale.example.com, open\n\n"+
+		"    https://headscale.example.com/register/abc\n\n"+
+		"in any browser and sign in. The machines of whoever signs it in "+
+		"will be able to open workspaces on it.\n\n",
+		formatTailnetSignIn("https://headscale.example.com",
+			"https://headscale.example.com/register/abc"))
+}
+
+// syncBuffer is written by the sign-in handler and read by the test.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
+
+func TestJoinHeadlessTailnet(t *testing.T) {
+	// start joins the tailnet in the background as "builder", the way
+	// runHeadlessTailnet does, and returns once it printed a sign-in
+	// URL.
+	start := func(
+		t *testing.T, ctx context.Context, tn *tailnettest.Tailnet,
+	) (url string, out *syncBuffer, done <-chan *runenet.WorkspaceServer) {
+		t.Helper()
+		out = &syncBuffer{}
+		node := runenet.New(runenet.Config{
+			Hostname:      "builder",
+			ControlURL:    tn.URL,
+			CustomControl: true,
+			Port:          runenet.DefaultPort,
+			Dir:           t.TempDir(),
+			OnAuthURL: func(authURL string) {
+				fmt.Fprint(out, formatTailnetSignIn(tn.URL, authURL))
+			},
+		})
+		t.Cleanup(func() { _ = node.Close() })
+		serverc := make(chan *runenet.WorkspaceServer, 1)
+		go debug.CapturePanicReport(func() {
+			server, err := joinHeadlessTailnet(ctx, node, &servedPackages{},
+				t.TempDir(), "", out)
+			assert.NoError(t, err)
+			if server != nil {
+				t.Cleanup(func() { _ = server.Close() })
+			}
+			serverc <- server
+		})
+		require.Eventually(t, func() bool {
+			url = node.PendingAuthURL()
+			return url != "" && strings.Contains(out.String(), url)
+		}, tailnettest.Timeout, 50*time.Millisecond, "output: %s", out)
+		return url, out, serverc
+	}
+	wait := func(t *testing.T, done <-chan *runenet.WorkspaceServer) *runenet.WorkspaceServer {
+		t.Helper()
+		select {
+		case server := <-done:
+			return server
+		case <-time.After(tailnettest.Timeout):
+			t.Fatal("joinHeadlessTailnet did not return")
+			return nil
+		}
+	}
+
+	t.Run("serves the user's machines once signed in", func(t *testing.T) {
+		tn := tailnettest.Start(t)
+		tn.Control.RequireAuth = true
+		tn.Control.AllNodesSameUser = true
+		url, out, done := start(t, context.Background(), tn)
+		require.True(t, tn.Control.CompleteAuth(url))
+		require.NotNil(t, wait(t, done))
+
+		got := out.String()
+		assert.Equal(t, 1, strings.Count(got, formatTailnetSignIn(tn.URL, url)), got)
+		assert.Contains(t, got, "Network node builder is Running\n")
+
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "hello.txt"), []byte("hi"), 0o600))
+		laptop := tn.Join(t, "laptop")
+		scheme := openTailscaleWorkspace(t, tailnetClient(t, laptop), "builder", dir)
+		assert.Equal(t, "hi", readSchemeFile(t, scheme, "hello.txt"))
+	})
+
+	t.Run("stops waiting when asked to", func(t *testing.T) {
+		tn := tailnettest.Start(t)
+		tn.Control.RequireAuth = true
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		_, out, done := start(t, ctx, tn)
+		cancel()
+		assert.Nil(t, wait(t, done))
+		assert.NotContains(t, out.String(), "Network node")
+	})
 }

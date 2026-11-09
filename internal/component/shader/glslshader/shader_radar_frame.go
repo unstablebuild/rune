@@ -18,6 +18,7 @@ package glslshader
 
 import (
 	"math"
+	"slices"
 
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/term"
@@ -44,8 +45,11 @@ func RadarFrame(params RadarFrameParams, defaultAttr term.Attributes) shader.Sha
 type RadarFrameParams struct {
 	// FrameCharSet is the set of frame characters the radar effect is
 	// applied to. Cells whose character is not part of this set are left
-	// untouched.
+	// untouched, unless it is one of Runes.
 	FrameCharSet component.FrameCharSet
+	// Runes are further characters the effect applies to, such as the
+	// junctions that join a frame to a divider within it.
+	Runes []rune
 	// Color is the color blended into the foreground of matching cells at
 	// the center of the sweep wedge.
 	Color term.Color
@@ -74,6 +78,16 @@ func DefaultRadarFrameParams(fc component.FrameCharSet) RadarFrameParams {
 type radarFrame struct {
 	RadarFrameParams
 	defaultAttr term.Attributes
+}
+
+// ShadeImages satisfies shader.ImageShader. It shades in like Shade, the
+// frame runes under pictures included, and returns images as they are:
+// it only recolors text, which pictures show or hide whatever its color.
+func (s *radarFrame) ShadeImages(
+	frame, total int, in [][]term.Cell, images []term.Image,
+) []term.Image {
+	s.Shade(frame, total, in)
+	return images
 }
 
 func (s *radarFrame) Shade(frame, total int, in [][]term.Cell) {
@@ -181,5 +195,6 @@ func (s *radarFrame) isFrameChar(ch rune) bool {
 		ch == fc.TopLeft ||
 		ch == fc.TopRight ||
 		ch == fc.BottomLeft ||
-		ch == fc.BottomRight
+		ch == fc.BottomRight ||
+		slices.Contains(s.Runes, ch)
 }

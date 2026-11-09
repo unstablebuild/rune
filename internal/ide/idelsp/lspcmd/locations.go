@@ -147,19 +147,17 @@ func presentLocations(
 	}
 	scheduleNextTick(func() {
 		picker := locationpicker.New(
-			pickerEntries(rootURI, entries), wm, fs, scheduleNextTick, parser, cfg, log,
+			pickerEntries(rootURI, entries), fs, scheduleNextTick, parser, cfg, log,
 		)
 		picker.SetOnSelect(func(idx int) {
 			navigateTo(rootURI, entries[idx], opener, wm, editor, notify, scheduleNextTick)
 		})
-		win, err := wm.Floating(picker, browserapi.FloatingConfig{
+		_, err := wm.Floating(picker, browserapi.FloatingConfig{
 			Alignment: component.AlignmentCentered,
 		})
 		if err != nil {
 			_, _ = notify.Notify(browserapi.LevelError, "%s: %s", name, err)
-			return
 		}
-		picker.SetWindow(win)
 	})
 }
 

@@ -141,7 +141,7 @@ def teach_agent():
                    "- **OpenAI**: GPT family, billed by API key.\n" +
                    "- **Anthropic**: Claude family, billed by API key.\n" +
                    "- **Gemini**: Gemini family, billed by API key.\n" +
-                   "- **Codex**: GPT-5 Codex family. Sign in with " +
+                   "- **Codex**: GPT Codex family. Sign in with " +
                    "ChatGPT (OAuth) and use your ChatGPT subscription, " +
                    "no API key.\n" +
                    "- **Claude**: Claude family through your Claude " +

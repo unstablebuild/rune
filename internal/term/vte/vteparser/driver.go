@@ -18,12 +18,14 @@ package vteparser
 
 import (
 	"bytes"
+	"encoding/hex"
 	"strconv"
 	"strings"
 
 	log "github.com/sirupsen/logrus"
 	"github.com/unstablebuild/blue/logging"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"unstable.build/rune/internal/term/programstatus"
 )
 
 // C0 set of 7-bit control characters (from ANSI X3.4-1977).
@@ -71,7 +73,26 @@ type driver struct {
 	// dense attribute streams allocation-free.
 	sgrAttrs      []Attr
 	sgrHeadParams []uint16
+	// dcs is the kind of device control string being received and
+	// dcsData its bytes so far; the string is only acted on once
+	// complete, so an unterminated one is dropped.
+	dcs     dcsKind
+	dcsData []byte
 }
+
+// dcsKind is a device control string the driver understands.
+type dcsKind uint8
+
+const (
+	dcsIgnored dcsKind = iota
+	// dcsTermcap is XTGETTCAP, DCS + q Pt ST.
+	dcsTermcap
+)
+
+// maxDCSLength bounds the device control string the driver retains, a
+// termcap request being a few hex-encoded names. Anything longer is
+// dropped rather than retained in full.
+const maxDCSLength = 4096
 
 func newDriver(state *parserState, h Handler) *driver {
 	ret := new(driver)
@@ -113,16 +134,56 @@ func (p *driver) Execute(ch byte) {
 }
 
 func (p *driver) Hook(params [][]uint16, intermediates []byte, ignore bool, action rune) {
+	p.dcs = dcsIgnored
+	p.dcsData = p.dcsData[:0]
+	if !ignore && len(intermediates) == 1 && intermediates[0] == '+' && action == 'q' {
+		p.dcs = dcsTermcap
+		return
+	}
 	p.log(log.DebugLevel, "unhandled hook params=%v, ints: %v, ignore: %v, action: %v",
 		params, intermediates, ignore, action)
 }
 
 func (p *driver) Put(ch byte) {
+	if p.dcs != dcsIgnored {
+		if len(p.dcsData) < maxDCSLength {
+			p.dcsData = append(p.dcsData, ch)
+		} else {
+			p.dcs = dcsIgnored
+		}
+		return
+	}
 	p.log(log.DebugLevel, "unhandled put byte=%v", ch)
 }
 
 func (p *driver) Unhook() {
+	kind, data := p.dcs, p.dcsData
+	p.dcs = dcsIgnored
+	if kind == dcsTermcap {
+		p.requestTermcap(data)
+		return
+	}
 	p.log(log.DebugLevel, "unhandled unhook")
+}
+
+// requestTermcap decodes the hex-encoded, ;-separated capability names
+// of an XTGETTCAP request. A name that is not hex is skipped, so that
+// the others are still answered.
+func (p *driver) requestTermcap(data []byte) {
+	var names []string
+	for field := range bytes.SplitSeq(data, []byte(";")) {
+		name := make([]byte, hex.DecodedLen(len(field)))
+		n, err := hex.Decode(name, field)
+		if err != nil || n == 0 {
+			p.log(log.DebugLevel, "skipping termcap name %q: %v", field, err)
+			continue
+		}
+		names = append(names, string(name[:n]))
+	}
+	if len(names) == 0 {
+		return
+	}
+	p.handler.RequestTermcap(names)
 }
 
 func (p *driver) APCDispatch(data []byte) {
@@ -189,7 +250,7 @@ func (p *driver) OSCDispatch(params [][]byte, bellTerminated bool) {
 	case "10", "11", "12":
 		/* unsupported setting color value of indexed color, or responding to dynamic color query */
 	case "22":
-		/* unsupported setting of cursor icon */
+		p.pointerShapeDispatch(params, terminator)
 	case "50":
 		if len(params) >= 2 && len(params[1]) >= 13 &&
 			bytes.HasPrefix(params[1], []byte("CursorShape=")) {
@@ -229,8 +290,86 @@ func (p *driver) OSCDispatch(params [][]byte, bellTerminated bool) {
 
 	case "104", "110", "111", "112":
 	/* unsupported color CSI dispatch */
+	case "133":
+		if len(params) >= 2 && len(params[1]) > 0 && params[1][0] == 'A' {
+			p.handler.PromptStart()
+		}
+	case "7501":
+		p.programStatusDispatch(params, terminator)
 	default:
 		p.logUnhandledOSC(params)
+	}
+}
+
+// programStatusDispatch handles OSC 7501: a query is answered through
+// the handler and a report is parsed and handed to it. A sequence with
+// any number of body parameters other than one, longer than
+// programstatus.MaxSequence with its introducer and terminator, or
+// whose report does not parse is dropped.
+func (p *driver) programStatusDispatch(params [][]byte, terminator string) {
+	if len(params) != 2 {
+		p.logUnhandledOSC(params)
+		return
+	}
+	body := params[1]
+	if len(body)+len("\x1b]7501;")+len(terminator) > programstatus.MaxSequence {
+		p.log(log.DebugLevel, "dropping oversized OSC 7501 report len=%d", len(body))
+		return
+	}
+	if string(bytes.TrimSpace(body)) == "?" {
+		p.handler.ProgramStatusQuery(terminator)
+		return
+	}
+	report, err := programstatus.Parse(body)
+	if err != nil {
+		p.log(log.DebugLevel, "dropping OSC 7501 report: %v", err)
+		p.logUnhandledOSC(params)
+		return
+	}
+	p.handler.ProgramStatus(report)
+}
+
+// pointerShapeDispatch handles OSC 22 as kitty specifies it: an optional
+// operation, set (= or none), push (>), pop (<) or query (?), followed by
+// a comma separated list of names. Set and push apply the names in order,
+// as kitty does, up to the first unknown one; push skips empty names and
+// pop ignores them all.
+func (p *driver) pointerShapeDispatch(params [][]byte, terminator string) {
+	if len(params) > 2 {
+		p.logUnhandledOSC(params)
+		return
+	}
+	var body string
+	if len(params) == 2 {
+		body = string(params[1])
+	}
+	op := byte('=')
+	if body != "" && strings.IndexByte("=><?", body[0]) >= 0 {
+		op, body = body[0], body[1:]
+	}
+	switch op {
+	case '<':
+		p.handler.PopPointerShape()
+		return
+	case '?':
+		p.handler.PointerShapeQuery(strings.Split(body, ","), terminator)
+		return
+	}
+	for name := range strings.SplitSeq(body, ",") {
+		var shape PointerShape
+		if name != "" {
+			var ok bool
+			if shape, ok = ParsePointerShape(name); !ok {
+				p.logUnhandledOSC(params)
+				return
+			}
+		}
+		switch {
+		case op == '=':
+			p.handler.SetPointerShape(shape)
+		case shape != "":
+			p.handler.PushPointerShape(shape)
+		}
 	}
 }
 
@@ -314,9 +453,6 @@ func (p *driver) CSIDispatch(
 				if len(param) == 0 {
 					p.logUnexpectedParamsLength(params, intermediates, action)
 				} else {
-					if PrivateMode(param[0]) == PrivateModeSyncUpdate {
-						p.state.syncState.timeout.SetTimeout(syncUpdateTimeout)
-					}
 					p.handler.SetPrivateMode(NewPrivateMode(param[0]))
 				}
 			}

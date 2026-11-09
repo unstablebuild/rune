@@ -17,11 +17,17 @@
 package component
 
 import (
+	"cmp"
 	"fmt"
+	"image"
+	"slices"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/component/comptest"
 	"github.com/unstablebuild/rune-go-sdk/term"
@@ -1194,7 +1200,7 @@ func TestWindowManagerMinimize(t *testing.T) {
                     
                     
                     
-    X               
+                    
                     
                     
                     
@@ -2398,6 +2404,102 @@ func TestWindowBarDraw(t *testing.T) {
 	}
 }
 
+// frameStitcher joins a rule at its first column to the frame around it.
+type frameStitcher struct {
+	tui.Component
+	width, height int
+	bars          []bool
+}
+
+func (s *frameStitcher) Dimensions() (int, int) { return s.width, s.height }
+
+func (s *frameStitcher) StitchFrame(
+	w term.Writer, f *component.Frame, _ *FrameGraphics, _, height int, bar bool,
+) {
+	s.bars = append(s.bars, bar)
+	x := f.ContentPosition().X
+	if !bar {
+		w.SetCell(term.Coordinates{X: x}, term.NewCell('┬', 1, f.Attributes))
+	}
+	w.SetCell(term.Coordinates{X: x, Y: height - 1}, term.NewCell('┴', 1, f.Attributes))
+}
+
+func TestWindowManagerStitchFrame(t *testing.T) {
+	tests := []struct {
+		name     string
+		frame    bool
+		bar      bool
+		floating bool
+		expected string
+		bars     []bool
+	}{
+		{
+			name: "a tile joins its rules to its frame", frame: true,
+			expected: `
+┌┬───────┐
+│SSSSSSSS│
+│SSSSSSSS│
+│SSSSSSSS│
+└┴───────┘`,
+			bars: []bool{false},
+		},
+		{
+			name: "a floating window joins its rules to its frame", frame: true, floating: true,
+			expected: `
+┌────────┐
+│┌┬─┐CCCC│
+││SS│CCCC│
+│└┴─┘CCCC│
+└────────┘`,
+			bars: []bool{false},
+		},
+		{
+			name: "a window bar keeps its row", frame: true, bar: true, floating: true,
+			expected: `
+┌────────┐
+│█●██CCCC│
+││SS│CCCC│
+│└┴─┘CCCC│
+└────────┘`,
+			bars: []bool{true},
+		},
+		{
+			name: "no frame, nothing to join", floating: true,
+			expected: `
+CCCCCCCCCC
+CSSCCCCCCC
+CCCCCCCCCC
+CCCCCCCCCC
+CCCCCCCCCC`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			const width, height = 10, 5
+			cfg := DefaultWindowManagerConfig()
+			cfg.NoMaxSize = true
+			cfg.Frame = tt.frame
+			cfg.WindowBar = tt.bar
+			cfg.CloseIcon = '●'
+			s := &frameStitcher{Component: &component.TestComponent{Ch: 'S'}, width: 2, height: 1}
+			var content tui.Component = s
+			if tt.floating {
+				content = &component.TestComponent{Ch: 'C'}
+			}
+			wm, _ := NewWindowManager(content, cfg)
+			wm.Resize(width, height)
+			if tt.floating {
+				wm.FloatingWindow(s, FloatingConfig{Offset: term.Coordinates{X: 1, Y: 1}})
+			}
+			w := term.NewStringWriter(width, height)
+			wm.Draw(w)
+			require.NoError(t, w.Flush())
+			assert.Equal(t, tt.expected, "\n"+w.String())
+			assert.Equal(t, tt.bars, s.bars)
+		})
+	}
+}
+
 func TestWindowBarSetFrameCharSet(t *testing.T) {
 	cfg := DefaultWindowManagerConfig()
 	cfg.NoMaxSize = true
@@ -2426,6 +2528,223 @@ func TestWindowBarSetFrameCharSet(t *testing.T) {
 		tileCS := node.Content().(*component.Frame).FrameCharSet
 		assert.Equal(t, '┌', tileCS.TopLeft)
 	})
+}
+
+func TestWindowManagerRestyle(t *testing.T) {
+	plusCharSet := component.FrameCharSet{
+		TopLeft: '+', TopRight: '+', BottomLeft: '+', BottomRight: '+',
+		HorizontalTop: '-', HorizontalBottom: '-', VerticalLeft: '|', VerticalRight: '|',
+	}
+	blue := term.Attributes{Fg: term.ColorBlue}
+	red := term.Attributes{Fg: term.ColorRed}
+	yellow := term.Attributes{Fg: term.ColorYellow}
+	scrollBarAttr := term.Attributes{Fg: term.ColorGreen}
+	scrollBarCharSet := component.ScrollBarCharSet{Middle: '#'}
+	openFloating := func(wm *WindowManager) {
+		wm.FloatingWindow(
+			component.StaticFloating(&component.TestComponent{Ch: 'B'}, 2, 2),
+			FloatingConfig{Offset: term.Coordinates{X: 1, Y: 1}},
+		)
+	}
+	const restyled = `
++------------------+
+|=x==CCCCCCCCCCCCCC|
+||BB|CCCCCCCCCCCCCC|
+||BB|CCCCCCCCCCCCCC|
+|+--+CCCCCCCCCCCCCC|
+|CCCCCCCCCCCCCCCCCC|
+|CCCCCCCCCCCCCCCCCC|
++------------------+`
+
+	tests := []struct {
+		name      string
+		noFrame   bool
+		before    func(wm *WindowManager, root Window)
+		frameAttr term.Attributes
+		after     func(wm *WindowManager)
+		expected  string
+		// wantRootAttr is the root tile's frame attribute after Restyle.
+		wantRootAttr term.Attributes
+	}{
+		{
+			name:         "tiles and floating windows with a bar",
+			before:       func(wm *WindowManager, _ Window) { openFloating(wm) },
+			frameAttr:    blue,
+			expected:     restyled,
+			wantRootAttr: blue,
+		},
+		{
+			name:      "no frame changes no window",
+			noFrame:   true,
+			before:    func(wm *WindowManager, _ Window) { openFloating(wm) },
+			frameAttr: blue,
+			expected: `
+CCCCCCCCCCCCCCCCCCCC
+CBBCCCCCCCCCCCCCCCCC
+CBBCCCCCCCCCCCCCCCCC
+CCCCCCCCCCCCCCCCCCCC
+CCCCCCCCCCCCCCCCCCCC
+CCCCCCCCCCCCCCCCCCCC
+CCCCCCCCCCCCCCCCCCCC
+CCCCCCCCCCCCCCCCCCCC`,
+		},
+		{
+			name: "an unchanged frame attribute keeps a window's own",
+			before: func(wm *WindowManager, root Window) {
+				openFloating(wm)
+				root.SetFrameAttr(red)
+			},
+			expected:     restyled,
+			wantRootAttr: red,
+		},
+		{
+			name: "a changed frame attribute replaces a window's own",
+			before: func(wm *WindowManager, root Window) {
+				openFloating(wm)
+				root.SetFrameAttr(red)
+			},
+			frameAttr:    yellow,
+			expected:     restyled,
+			wantRootAttr: yellow,
+		},
+		{
+			name:         "a window opened after Restyle uses the new style",
+			after:        openFloating,
+			frameAttr:    blue,
+			expected:     restyled,
+			wantRootAttr: blue,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultWindowManagerConfig()
+			cfg.NoMaxSize = true
+			cfg.Frame = !tt.noFrame
+			wm, root := NewWindowManager(&component.TestComponent{Ch: 'C'}, cfg)
+			wm.Resize(20, 8)
+			if tt.before != nil {
+				tt.before(wm, root)
+			}
+
+			style := cfg
+			style.FrameAttr = tt.frameAttr
+			style.FrameCharSet = plusCharSet
+			style.ScrollBarAttr = scrollBarAttr
+			style.ScrollBarCharSet = scrollBarCharSet
+			style.ScrollBarOutset = 2
+			style.WindowBarCharSet = WindowBarCharSet{Left: '=', Horizontal: '=', Right: '='}
+			style.CloseIcon = 'x'
+			style.CloseIconAttr = yellow
+			// What changes the layout is not style.
+			style.Frame = !cfg.Frame
+			style.NoMaxSize = false
+			wm.Restyle(style)
+			if tt.after != nil {
+				tt.after(wm)
+			}
+
+			want := cfg
+			want.FrameAttr = tt.frameAttr
+			want.FrameCharSet = plusCharSet
+			want.ScrollBarAttr = scrollBarAttr
+			want.ScrollBarCharSet = scrollBarCharSet
+			want.ScrollBarOutset = 2
+			want.WindowBarCharSet = style.WindowBarCharSet
+			want.CloseIcon = 'x'
+			want.CloseIconAttr = yellow
+			assert.Equal(t, want, wm.config)
+
+			w := term.NewStringWriter(20, 8)
+			wm.Draw(w)
+			require.NoError(t, w.Flush())
+			assert.Equal(t, tt.expected, "\n"+w.String())
+			if tt.noFrame {
+				return
+			}
+			attr, ok := root.FrameAttr()
+			require.True(t, ok)
+			assert.Equal(t, tt.wantRootAttr, attr)
+			wm.Iterate(func(win Window) {
+				f := win.node.Content().(*component.Frame)
+				assert.Equal(t, scrollBarAttr, f.ScrollBarAttributes)
+				assert.Equal(t, scrollBarCharSet, f.ScrollBarCharSet)
+			})
+		})
+	}
+}
+
+func TestWindowManagerRestyleWindowBar(t *testing.T) {
+	const withBar = `
+┌──────────────────┐
+│█●██CCCCCCCCCCCCCC│
+││BB│CCCCCCCCCCCCCC│
+││BB│CCCCCCCCCCCCCC│
+│└──┘CCCCCCCCCCCCCC│
+│CCCCCCCCCCCCCCCCCC│
+│CCCCCCCCCCCCCCCCCC│
+└──────────────────┘`
+	const withoutBar = `
+┌──────────────────┐
+│┌──┐CCCCCCCCCCCCCC│
+││BB│CCCCCCCCCCCCCC│
+││BB│CCCCCCCCCCCCCC│
+│└──┘CCCCCCCCCCCCCC│
+│CCCCCCCCCCCCCCCCCC│
+│CCCCCCCCCCCCCCCCCC│
+└──────────────────┘`
+	openFloating := func(wm *WindowManager) Window {
+		return wm.FloatingWindow(
+			component.StaticFloating(&component.TestComponent{Ch: 'B'}, 2, 2),
+			FloatingConfig{Offset: term.Coordinates{X: 1, Y: 1}},
+		)
+	}
+	tests := []struct {
+		name       string
+		bar        bool
+		restyled   bool
+		openBefore bool
+		expected   string
+	}{
+		{name: "turned off in an open window", bar: true, openBefore: true, expected: withoutBar},
+		{name: "turned on in an open window", restyled: true, openBefore: true, expected: withBar},
+		{name: "turned off in a window opened afterwards", bar: true, expected: withoutBar},
+		{name: "turned on in a window opened afterwards", restyled: true, expected: withBar},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultWindowManagerConfig()
+			cfg.WindowBar = tt.bar
+			wm, _ := NewWindowManager(&component.TestComponent{Ch: 'C'}, cfg)
+			wm.Resize(20, 8)
+			var win Window
+			if tt.openBefore {
+				win = openFloating(wm)
+			}
+			var pos term.Coordinates
+			var width, height int
+			if tt.openBefore {
+				pos, width, height = win.Position(), win.Width(), win.Height()
+			}
+
+			style := cfg
+			style.WindowBar = tt.restyled
+			wm.Restyle(style)
+			if !tt.openBefore {
+				win = openFloating(wm)
+			}
+
+			assert.Equal(t, tt.restyled, win.HasWindowBar())
+			if tt.openBefore {
+				assert.Equal(t, pos, win.Position(), "the bar does not move the window")
+				assert.Equal(t, [2]int{width, height}, [2]int{win.Width(), win.Height()},
+					"the bar does not resize the window")
+			}
+			w := term.NewStringWriter(20, 8)
+			wm.Draw(w)
+			require.NoError(t, w.Flush())
+			assert.Equal(t, tt.expected, "\n"+w.String())
+		})
+	}
 }
 
 func TestWindowBarTitleDraw(t *testing.T) {
@@ -2551,6 +2870,406 @@ func TestWindowBarAttrs(t *testing.T) {
 		"title background is the bar foreground")
 }
 
+func TestWindowManagerFrameGraphics(t *testing.T) {
+	pics := newFramePictures(t)
+	every := func(name string) component.FrameCharSetGraphics {
+		return pics.resolve(component.FrameCharSetGraphics{
+			TopLeft: name, TopRight: name, BottomLeft: name, BottomRight: name,
+			HorizontalTop: name, HorizontalBottom: name,
+			VerticalLeft: name, VerticalRight: name,
+		})
+	}
+	attr := term.Attributes{Fg: term.ColorBlue, Bg: term.ColorBlack}
+
+	tests := []struct {
+		name      string
+		content   tui.Component
+		graphics  component.FrameCharSetGraphics
+		scrollBar component.ScrollBarCharSetGraphics
+		windowBar bool
+		noStorage bool
+		open      func(wm *WindowManager, tile Window)
+		loads     int
+		expected  string
+	}{
+		{
+			name:     "tiles draw their own images",
+			graphics: every("L"),
+			open: func(wm *WindowManager, tile Window) {
+				win, ok := wm.SplitVertical(tile, &component.TestComponent{Ch: 'D'})
+				require.True(t, ok)
+				cs := wm.config.FrameCharSet
+				cs.Graphics = every("R")
+				win.SetFrameCharSet(cs)
+			},
+			loads: 2,
+			expected: `
+LLLLLLRRRRRR
+LCCCCLRDDDDR
+LCCCCLRDDDDR
+LCCCCLRDDDDR
+LLLLLLRRRRRR`,
+		},
+		{
+			name:      "a floating window's bar keeps its runes",
+			graphics:  every("L"),
+			windowBar: true,
+			open: func(wm *WindowManager, _ Window) {
+				wm.FloatingWindow(
+					component.StaticFloating(&component.TestComponent{Ch: 'B'}, 2, 1),
+					FloatingConfig{Offset: term.Coordinates{X: 1, Y: 1}},
+				)
+			},
+			loads: 1,
+			expected: `
+LLLLLLLLLLLL
+L█●██CCCCCCL
+LLBBLCCCCCCL
+LLLLLCCCCCCL
+LLLLLLLLLLLL`,
+		},
+		{
+			name:     "the scroll bar keeps its rune",
+			content:  scrollingContent{TestComponent: &component.TestComponent{Ch: 'C'}},
+			graphics: every("R"),
+			loads:    1,
+			expected: `
+RRRRRRRRRRRR
+RCCCCCCCCCC┃
+RCCCCCCCCCC┃
+RCCCCCCCCCCR
+RRRRRRRRRRRR`,
+		},
+		{
+			name:      "the scroll bar draws its own images",
+			content:   scrollingContent{TestComponent: &component.TestComponent{Ch: 'C'}},
+			graphics:  every("R"),
+			scrollBar: component.ScrollBarCharSetGraphics{Top: "L", Bottom: "L"},
+			loads:     2,
+			expected: `
+RRRRRRRRRRRR
+RCCCCCCCCCCL
+RCCCCCCCCCCL
+RCCCCCCCCCCR
+RRRRRRRRRRRR`,
+		},
+		{
+			name:      "frames without storage draw their runes",
+			graphics:  every("L"),
+			noStorage: true,
+			expected: `
+┌──────────┐
+│CCCCCCCCCC│
+│CCCCCCCCCC│
+│CCCCCCCCCC│
+└──────────┘`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testWindowManagerConfig()
+			cfg.WindowBar = tt.windowBar
+			cfg.FrameAttr = attr
+			cfg.ScrollBarAttr = attr
+			cfg.ScrollBarCharSet = component.ScrollBarCharSet{
+				Middle:   '┃',
+				Graphics: pics.resolveScrollBar(tt.scrollBar),
+			}
+			cfg.FrameCharSet.Graphics = tt.graphics
+			if !tt.noStorage {
+				cfg.FrameGraphicsStorage = storagestub.NewInMemoryService()
+			}
+			irq := make(interruptCounter, 16)
+			cfg.Interrupter = irq
+			content := tt.content
+			if content == nil {
+				content = &component.TestComponent{Ch: 'C'}
+			}
+			wm, tile := NewWindowManager(content, cfg)
+			t.Cleanup(func() { assert.NoError(t, wm.Close()) })
+			wm.Resize(12, 5)
+			if tt.open != nil {
+				tt.open(wm, tile)
+			}
+			wm.Draw(term.NewStringWriter(12, 5))
+			irq.wait(t, tt.loads)
+
+			s := newImageScreen(12, 5)
+			wm.Draw(s)
+			assert.Equal(t, tt.expected, s.render(t, pics, attr, false))
+		})
+	}
+}
+
+func TestWindowBarGraphics(t *testing.T) {
+	pics := newFramePictures(t)
+	attr := term.Attributes{Fg: term.ColorBlue, Bg: term.ColorBlack}
+	every := WindowBarGraphics{Left: "L", Horizontal: "R", Right: "L"}
+	overlay := every
+	overlay.Overlay = true
+	solidIcon := term.Attributes{Fg: term.ColorRed, Bg: attr.Fg}
+	solidTitle := term.Attributes{Fg: attr.Bg, Bg: attr.Fg}
+	runes := `
+┌──────────┐
+│█●██ ab ██│
+││BBBBBBBB││
+│└────────┘│
+└──────────┘`
+
+	tests := []struct {
+		name      string
+		graphics  WindowBarGraphics
+		noBar     bool
+		noImages  bool
+		notLoaded bool
+		expected  string
+		// underneath, when set, is what the screen shows under the images.
+		underneath string
+		// below are the columns of the images drawn under the bar's text.
+		below []int
+		// icon and title are the attributes of the close icon and of the
+		// title's first letter.
+		icon, title term.Attributes
+	}{
+		{
+			name:     "every slot is drawn under the icon and title",
+			graphics: every,
+			expected: `
+┌──────────┐
+│L●RR ab RL│
+││BBBBBBBB││
+│└────────┘│
+└──────────┘`,
+			below: []int{2, 5, 6, 7, 8},
+			icon:  term.Attributes{Fg: term.ColorRed, Bg: attr.Bg},
+			title: attr,
+		},
+		{
+			name:     "overlay keeps the bar's colors under the text",
+			graphics: overlay,
+			expected: `
+┌──────────┐
+│L●RR ab RL│
+││BBBBBBBB││
+│└────────┘│
+└──────────┘`,
+			underneath: runes,
+			below:      []int{2, 5, 6, 7, 8},
+			icon:       solidIcon,
+			title:      solidTitle,
+		},
+		{
+			name:     "only the ends leave the middle to its runes",
+			graphics: WindowBarGraphics{Left: "L", Right: "L"},
+			expected: `
+┌──────────┐
+│L●██ ab █L│
+││BBBBBBBB││
+│└────────┘│
+└──────────┘`,
+			icon:  solidIcon,
+			title: solidTitle,
+		},
+		{
+			name:     "a writer that cannot draw images gets the runes",
+			graphics: every,
+			noImages: true,
+			expected: runes,
+			icon:     solidIcon,
+			title:    solidTitle,
+		},
+		{
+			name:      "images that are not loaded yet leave the runes",
+			graphics:  every,
+			notLoaded: true,
+			expected:  runes,
+			icon:      solidIcon,
+			title:     solidTitle,
+		},
+		{
+			name:     "a window without a bar draws no bar images",
+			graphics: every,
+			noBar:    true,
+			expected: `
+┌──────────┐
+│┌────────┐│
+││BBBBBBBB││
+│└────────┘│
+└──────────┘`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testWindowManagerConfig()
+			cfg.WindowBar = true
+			cfg.FrameAttr = attr
+			cfg.WindowBarCharSet.Graphics = pics.resolveWindowBar(tt.graphics)
+			cfg.FrameGraphicsStorage = storagestub.NewInMemoryService()
+			irq := make(interruptCounter, 16)
+			cfg.Interrupter = irq
+			wm, _ := NewWindowManager(&component.TestComponent{Ch: 'C'}, cfg)
+			t.Cleanup(func() { assert.NoError(t, wm.Close()) })
+			wm.Resize(12, 5)
+			wm.FloatingWindow(
+				component.StaticFloating(&component.TestComponent{Ch: 'B'}, 8, 2),
+				FloatingConfig{Offset: term.Coordinates{X: 1, Y: 1}, Title: "ab", NoBar: tt.noBar},
+			)
+			loads := pics.loadsWindowBar(tt.graphics)
+			if tt.noBar {
+				loads = 0
+			}
+			if !tt.notLoaded {
+				wm.Draw(term.NewStringWriter(12, 5))
+				irq.wait(t, loads)
+			}
+
+			s := newImageScreen(12, 5)
+			s.noImages = tt.noImages
+			wm.Draw(s)
+			assert.Equal(t, tt.expected, s.render(t, pics, attr, tt.graphics.Overlay))
+			if tt.underneath != "" {
+				assert.Equal(t, tt.underneath, "\n"+s.String())
+			}
+			var below []int
+			for _, img := range s.images {
+				if img.Layer == term.ImageLayerBelowText {
+					assert.Equal(t, 1, img.Pos.Y)
+					below = append(below, img.Pos.X)
+				}
+			}
+			slices.Sort(below)
+			assert.Equal(t, tt.below, below)
+			if !tt.noBar {
+				assert.Equal(t, tt.icon, s.Cells()[1*12+2].Attributes(), "close icon")
+				assert.Equal(t, tt.title, s.Cells()[1*12+6].Attributes(), "title")
+			}
+
+			if tt.notLoaded {
+				irq.wait(t, loads)
+			}
+		})
+	}
+}
+
+func TestWindowBarGraphicsOutset(t *testing.T) {
+	pics := newFramePictures(t)
+	attr := term.Attributes{Fg: term.ColorBlue, Bg: term.ColorBlack}
+	tests := []struct {
+		name     string
+		outset   WindowBarOutset
+		noImages bool
+		expected string
+		// ends are the cell rectangles of the left and right images.
+		ends []image.Rectangle
+	}{
+		{
+			name:   "the ends reach past their cells and are clipped at the edges",
+			outset: WindowBarOutset{Top: 1, Bottom: 1, Sides: 2},
+			expected: `
+┌────────────┐
+│LLLCCCCCCCCLL
+│LLL●RRRRRRRLL
+│LLLBBBBBBBBLL
+│CC│BBBBBBBB││
+│CC│BBBBBBBB││
+└──└────────┘┘`,
+			ends: []image.Rectangle{image.Rect(1, 1, 4, 4), image.Rect(12, 1, 15, 4)},
+		},
+		{
+			name:   "inward ends cover the bar, its close icon and the content",
+			outset: WindowBarOutset{Top: 1, Bottom: 1, Inward: 2},
+			expected: `
+┌────────────┐
+│CCLLLCCCCLLL│
+│CCLLLRRRRLLL│
+│CCLLLBBBBLLL│
+│CC│BBBBBBBB││
+│CC│BBBBBBBB││
+└──└────────┘┘`,
+			ends: []image.Rectangle{image.Rect(3, 1, 6, 4), image.Rect(10, 1, 13, 4)},
+		},
+		{
+			name:   "the horizontal images cover the rows above, also over the bar's text",
+			outset: WindowBarOutset{HorizontalTop: 1},
+			expected: `
+┌────────────┐
+│CCCRRRRRRRRC│
+│CCL●RRRRRRRL│
+│CC│BBBBBBBB││
+│CC│BBBBBBBB││
+│CC│BBBBBBBB││
+└──└────────┘┘`,
+			ends: []image.Rectangle{image.Rect(3, 2, 4, 3), image.Rect(12, 2, 13, 3)},
+		},
+		{
+			name:   "negative outsets keep the ends in their cells",
+			outset: WindowBarOutset{Top: -1, Bottom: -1, Sides: -1, Inward: -1, HorizontalTop: -1},
+			expected: `
+┌────────────┐
+│CCCCCCCCCCCC│
+│CCL●RRRRRRRL│
+│CC│BBBBBBBB││
+│CC│BBBBBBBB││
+│CC│BBBBBBBB││
+└──└────────┘┘`,
+			ends: []image.Rectangle{image.Rect(3, 2, 4, 3), image.Rect(12, 2, 13, 3)},
+		},
+		{
+			name:     "a writer that cannot draw images keeps the runes",
+			outset:   WindowBarOutset{Top: 1, Bottom: 1, Sides: 2},
+			noImages: true,
+			expected: `
+┌────────────┐
+│CCCCCCCCCCCC│
+│CC█●████████│
+│CC│BBBBBBBB││
+│CC│BBBBBBBB││
+│CC│BBBBBBBB││
+└──└────────┘┘`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testWindowManagerConfig()
+			cfg.WindowBar = true
+			cfg.FrameAttr = attr
+			cfg.WindowBarCharSet.Graphics = pics.resolveWindowBar(WindowBarGraphics{
+				Left: "L", Horizontal: "R", Right: "L", Outset: tt.outset,
+			})
+			cfg.FrameGraphicsStorage = storagestub.NewInMemoryService()
+			irq := make(interruptCounter, 16)
+			cfg.Interrupter = irq
+			wm, _ := NewWindowManager(&component.TestComponent{Ch: 'C'}, cfg)
+			t.Cleanup(func() { assert.NoError(t, wm.Close()) })
+			wm.Resize(14, 7)
+			wm.FloatingWindow(
+				component.StaticFloating(&component.TestComponent{Ch: 'B'}, 8, 3),
+				FloatingConfig{Offset: term.Coordinates{X: 3, Y: 2}},
+			)
+			wm.Draw(term.NewStringWriter(14, 7))
+			irq.wait(t, 2)
+
+			s := newImageScreen(14, 7)
+			s.noImages = tt.noImages
+			wm.Draw(s)
+			assert.Equal(t, tt.expected, s.render(t, pics, attr, false))
+			var ends []image.Rectangle
+			for _, img := range s.images {
+				if img.Width > 1 || img.Pos.X == 3 || img.Pos.X == 12 {
+					ends = append(ends, img.Bounds())
+				}
+			}
+			assert.Equal(t, tt.ends, ends)
+			if !tt.noImages {
+				for _, x := range []int{3, 12} {
+					assert.Equal(t, term.NewCell(' ', 1, attr), s.Cells()[2*14+x],
+						"the end's own cell at %d is blank under its image", x)
+				}
+			}
+		})
+	}
+}
+
 func TestWindowManagerToggleMaximize(t *testing.T) {
 	cfg := DefaultWindowManagerConfig()
 	cfg.NoMaxSize = true
@@ -2599,56 +3318,665 @@ func TestWindowManagerToggleMaximize(t *testing.T) {
 	assert.False(t, wm.ToggleMaximize(win))
 }
 
-func TestWindowManagerMoveWindow(t *testing.T) {
-	cfg := DefaultWindowManagerConfig()
-	cfg.NoMaxSize = true
-	wm, tile := NewWindowManager(&component.TestComponent{Ch: 'C'}, cfg)
+// floatGeometry is where a window sits and how large it is.
+type floatGeometry struct {
+	pos  term.Coordinates
+	w, h int
+}
+
+func geometry(x, y, w, h int) floatGeometry {
+	return floatGeometry{pos: term.Coordinates{X: x, Y: y}, w: w, h: h}
+}
+
+func geometryOf(win Window) floatGeometry {
+	return floatGeometry{pos: win.Position(), w: win.Width(), h: win.Height()}
+}
+
+func xy(x, y int) term.Coordinates {
+	return term.Coordinates{X: x, Y: y}
+}
+
+// newFloatTestManager returns a 20x8 manager holding a tile of 'C' and
+// a float of w by h cells of 'B', which the default config frames into
+// a window two cells wider and taller.
+func newFloatTestManager(
+	t *testing.T, config func(*WindowManagerConfig), w, h int, cfg FloatingConfig,
+) (wm *WindowManager, tile, float Window) {
+	t.Helper()
+	wmCfg := DefaultWindowManagerConfig()
+	if config != nil {
+		config(&wmCfg)
+	}
+	wm, tile = NewWindowManager(&component.TestComponent{Ch: 'C'}, wmCfg)
 	wm.Resize(20, 8)
-	// 2x2 content + frame = 4x4 window
+	float = wm.FloatingWindow(
+		component.StaticFloating(&component.TestComponent{Ch: 'B'}, w, h), cfg)
+	return wm, tile, float
+}
+
+// newMinimizedFloat opens a 2x2 float of 'm' and minimizes it.
+func newMinimizedFloat(
+	t *testing.T, wm *WindowManager, minimize func(Window, int) bool,
+) Window {
+	t.Helper()
 	win := wm.FloatingWindow(
-		component.StaticFloating(&component.TestComponent{Ch: 'B'}, 2, 2),
-		FloatingConfig{Alignment: component.AlignmentCentered},
-	)
+		component.StaticFloating(&component.TestComponent{Ch: 'm'}, 2, 2),
+		FloatingConfig{})
+	require.True(t, minimize(win, 0))
+	return win
+}
 
-	assert.False(t, wm.MoveWindow(tile, term.Coordinates{X: 1, Y: 1}),
-		"tiles cannot be moved")
+func TestWindowManagerMoveWindow(t *testing.T) {
+	unframed := func(cfg *WindowManagerConfig) { cfg.Frame = false }
+	fullSize := func(cfg *WindowManagerConfig) { cfg.NoMaxSize = false }
+	// Unless a case says otherwise, 2x2 content is framed into a 4x4
+	// window in a 20x8 manager, which caps windows two cells short of
+	// its own size.
+	suite := []struct {
+		name   string
+		config func(*WindowManagerConfig)
+		w, h   int
+		to     term.Coordinates
+		want   floatGeometry
+	}{
+		{name: "inside the manager", to: xy(3, 2), want: geometry(3, 2, 4, 4)},
+		{name: "at the top-left corner", to: xy(0, 0), want: geometry(0, 0, 4, 4)},
+		{name: "flush with the bottom-right corner",
+			to: xy(16, 4), want: geometry(16, 4, 4, 4)},
+		{name: "partly past the left edge", to: xy(-1, 3), want: geometry(-1, 3, 4, 4)},
+		{name: "far past the left edge keeps three bar cells on screen",
+			to: xy(-40, 3), want: geometry(-1, 3, 4, 4)},
+		{name: "partly past the right edge", to: xy(17, 3), want: geometry(17, 3, 4, 4)},
+		{name: "far past the right edge keeps three bar cells on screen",
+			to: xy(40, 3), want: geometry(17, 3, 4, 4)},
+		{name: "partly past the bottom edge", to: xy(5, 6), want: geometry(5, 6, 4, 4)},
+		{name: "with only the bar row above the bottom edge",
+			to: xy(5, 7), want: geometry(5, 7, 4, 4)},
+		{name: "far past the bottom edge keeps the bar row on screen",
+			to: xy(5, 40), want: geometry(5, 7, 4, 4)},
+		{name: "past the top edge keeps the bar row on screen",
+			to: xy(5, -40), want: geometry(5, 0, 4, 4)},
+		{name: "past the top-left corner", to: xy(-40, -40), want: geometry(-1, 0, 4, 4)},
+		{name: "past the top-right corner", to: xy(40, -40), want: geometry(17, 0, 4, 4)},
+		{name: "past the bottom-left corner", to: xy(-40, 40), want: geometry(-1, 7, 4, 4)},
+		{name: "past the bottom-right corner", to: xy(40, 40), want: geometry(17, 7, 4, 4)},
+		{name: "a wide window past the left edge",
+			w: 10, to: xy(-40, 1), want: geometry(-9, 1, 12, 4)},
+		{name: "a wide window past the right edge",
+			w: 10, to: xy(40, 1), want: geometry(17, 1, 12, 4)},
+		{name: "a tall window past the bottom edge",
+			h: 4, to: xy(3, 6), want: geometry(3, 6, 4, 6)},
+		{name: "a window capped two cells short of the manager",
+			w: 30, to: xy(-40, 0), want: geometry(-15, 0, 18, 4)},
+		{name: "a window wider than the manager is trimmed to it",
+			config: fullSize, w: 30, to: xy(-40, 0), want: geometry(-17, 0, 20, 4)},
+		{name: "a window taller than the manager is trimmed to it",
+			config: fullSize, h: 30, to: xy(3, 40), want: geometry(3, 7, 4, 8)},
+		{name: "a window three cells wide stays fully on screen",
+			config: unframed, w: 3, to: xy(-40, 1), want: geometry(0, 1, 3, 2)},
+		{name: "a window narrower than three cells stays on screen at the left edge",
+			config: unframed, to: xy(-40, 1), want: geometry(0, 1, 2, 2)},
+		{name: "a window narrower than three cells stays on screen at the right edge",
+			config: unframed, to: xy(40, 1), want: geometry(18, 1, 2, 2)},
+		{name: "a one-cell window past the bottom-right corner",
+			config: unframed, w: 1, h: 1, to: xy(40, 40), want: geometry(19, 7, 1, 1)},
+	}
+	for _, test := range suite {
+		t.Run(test.name, func(t *testing.T) {
+			wm, _, float := newFloatTestManager(t, test.config,
+				cmp.Or(test.w, 2), cmp.Or(test.h, 2),
+				FloatingConfig{Alignment: component.AlignmentCentered})
+			require.True(t, wm.MoveWindow(float, test.to))
+			assert.Equal(t, test.want, geometryOf(float))
+		})
+	}
+}
 
-	require.True(t, wm.MoveWindow(win, term.Coordinates{X: 3, Y: 2}))
-	assert.Equal(t, term.Coordinates{X: 3, Y: 2}, win.Position())
+func TestWindowManagerMoveWindowRefuses(t *testing.T) {
+	suite := []struct {
+		name   string
+		target func(t *testing.T, tile, float Window) Window
+	}{
+		{"a tile", func(_ *testing.T, tile, _ Window) Window { return tile }},
+		{"a minimized float", func(t *testing.T, _, float Window) Window {
+			require.True(t, float.MinimizeDown(0))
+			return float
+		}},
+	}
+	for _, test := range suite {
+		t.Run(test.name, func(t *testing.T) {
+			wm, tile, float := newFloatTestManager(t, nil, 2, 2,
+				FloatingConfig{Alignment: component.AlignmentCentered})
+			win := test.target(t, tile, float)
+			before := geometryOf(win)
 
-	at, ok := wm.WindowAt(term.Coordinates{X: 4, Y: 3})
-	require.True(t, ok)
-	assert.Equal(t, win.ID(), at.ID())
-	at, ok = wm.WindowAt(term.Coordinates{X: 1, Y: 1})
-	require.True(t, ok)
-	assert.Equal(t, tile.ID(), at.ID())
+			assert.False(t, wm.MoveWindow(win, xy(-1, 6)))
+			assert.Equal(t, before, geometryOf(win))
+			float.Unminimize()
+			assert.Equal(t, geometry(8, 2, 4, 4), geometryOf(float),
+				"a refused move must leave the float laid out as never moved")
+		})
+	}
+}
 
-	// clamp to full visibility: window is 4x4 in a 20x8 manager
-	require.True(t, wm.MoveWindow(win, term.Coordinates{X: 100, Y: 100}))
-	assert.Equal(t, term.Coordinates{X: 16, Y: 4}, win.Position())
-	require.True(t, wm.MoveWindow(win, term.Coordinates{X: -3, Y: -3}))
-	assert.Equal(t, term.Coordinates{X: 0, Y: 0}, win.Position())
+func TestFloatingWindowTrimsUntilMoved(t *testing.T) {
+	// 2x2 content is framed into a 4x4 window in a 20x8 manager. Moving
+	// the window to where it was placed restores its size.
+	suite := []struct {
+		name   string
+		cfg    FloatingConfig
+		placed floatGeometry
+		moved  floatGeometry
+	}{
+		{name: "inside the manager", cfg: FloatingConfig{Offset: xy(3, 2)},
+			placed: geometry(3, 2, 4, 4), moved: geometry(3, 2, 4, 4)},
+		{name: "centered", cfg: FloatingConfig{Alignment: component.AlignmentCentered},
+			placed: geometry(8, 2, 4, 4), moved: geometry(8, 2, 4, 4)},
+		{name: "partly past the right edge", cfg: FloatingConfig{Offset: xy(17, 2)},
+			placed: geometry(17, 2, 3, 4), moved: geometry(17, 2, 4, 4)},
+		{name: "on the last column", cfg: FloatingConfig{Offset: xy(19, 2)},
+			placed: geometry(19, 2, 1, 4), moved: geometry(17, 2, 4, 4)},
+		{name: "partly past the bottom edge", cfg: FloatingConfig{Offset: xy(5, 6)},
+			placed: geometry(5, 6, 4, 2), moved: geometry(5, 6, 4, 4)},
+		{name: "on the last row", cfg: FloatingConfig{Offset: xy(5, 7)},
+			placed: geometry(5, 7, 4, 1), moved: geometry(5, 7, 4, 4)},
+		{name: "past the bottom-right corner", cfg: FloatingConfig{Offset: xy(40, 40)},
+			placed: geometry(40, 40, 0, 0), moved: geometry(17, 7, 4, 4)},
+		{name: "before the left edge", cfg: FloatingConfig{Offset: xy(-3, 2)},
+			placed: geometry(0, 2, 4, 4), moved: geometry(0, 2, 4, 4)},
+		{name: "above the top edge", cfg: FloatingConfig{Offset: xy(3, -3)},
+			placed: geometry(3, 0, 4, 4), moved: geometry(3, 0, 4, 4)},
+		{name: "right-aligned past the right edge",
+			cfg:    FloatingConfig{Alignment: component.AlignmentRight, Offset: xy(-3, 2)},
+			placed: geometry(19, 2, 1, 4), moved: geometry(17, 2, 4, 4)},
+		{name: "bottom-aligned past the bottom edge",
+			cfg:    FloatingConfig{Alignment: component.AlignmentBottom, Offset: xy(3, -3)},
+			placed: geometry(3, 7, 4, 1), moved: geometry(3, 7, 4, 4)},
+	}
+	for _, test := range suite {
+		t.Run(test.name, func(t *testing.T) {
+			wm, _, float := newFloatTestManager(t, nil, 2, 2, test.cfg)
+			assert.Equal(t, test.placed, geometryOf(float))
 
-	// a minimized floating window cannot be moved
-	require.True(t, win.MinimizeDown(0))
-	assert.False(t, wm.MoveWindow(win, term.Coordinates{X: 1, Y: 1}))
-	require.True(t, win.Unminimize())
+			require.True(t, wm.MoveWindow(float, float.Position()))
+			assert.Equal(t, test.moved, geometryOf(float))
+		})
+	}
+}
 
-	// moved position round-trips through TileLayout/RestoreTileLayout
-	require.True(t, wm.MoveWindow(win, term.Coordinates{X: 5, Y: 3}))
-	layout := wm.TileLayout()
-	require.Len(t, layout.Floating, 1)
-	assert.Equal(t, term.Coordinates{X: 5, Y: 3}, layout.Floating[0].Offset)
-
-	restored := wm.RestoreTileLayout(layout, func(windowID uint64) tui.Component {
-		if windowID == layout.Floating[0].WindowID {
-			return component.StaticFloating(&component.TestComponent{Ch: 'B'}, 2, 2)
+func TestMovedFloatingWindowFollowsManager(t *testing.T) {
+	type step struct {
+		name string
+		do   func(t *testing.T, wm *WindowManager, float Window)
+		want floatGeometry
+	}
+	resize := func(w, h int) func(*testing.T, *WindowManager, Window) {
+		return func(_ *testing.T, wm *WindowManager, _ Window) { wm.Resize(w, h) }
+	}
+	minimizeAnother := func(
+		minimize func(Window, int) bool,
+	) func(*testing.T, *WindowManager, Window) {
+		return func(t *testing.T, wm *WindowManager, _ Window) {
+			newMinimizedFloat(t, wm, minimize)
 		}
-		return &component.TestComponent{Ch: 'C'}
-	})
-	restoredWin, ok := restored[layout.Floating[0].WindowID]
-	require.True(t, ok)
-	assert.Equal(t, term.Coordinates{X: 5, Y: 3}, restoredWin.Position())
+	}
+	setSize := func(w, h int) func(*testing.T, *WindowManager, Window) {
+		return func(t *testing.T, wm *WindowManager, float Window) {
+			require.True(t, wm.SetWidth(float, w))
+			require.True(t, wm.SetHeight(float, h))
+			wm.Resize(20, 8)
+		}
+	}
+	toggleMaximize := func(t *testing.T, wm *WindowManager, float Window) {
+		require.True(t, wm.ToggleMaximize(float))
+	}
+	// 2x2 content is framed into a 4x4 window in a 20x8 manager, which
+	// caps windows two cells short of its own size.
+	suite := []struct {
+		name  string
+		to    term.Coordinates
+		steps []step
+	}{
+		{name: "the manager grows", to: xy(5, 3), steps: []step{
+			{"grown", resize(30, 10), geometry(5, 3, 4, 4)},
+		}},
+		{name: "the manager shrinks under a window past the bottom-right corner",
+			to: xy(17, 7), steps: []step{
+				{"shrunk", resize(10, 4), geometry(7, 3, 4, 2)},
+				{"grown back", resize(20, 8), geometry(17, 7, 4, 4)},
+			}},
+		{name: "the manager shrinks under a window past the left edge",
+			to: xy(-1, 3), steps: []step{
+				{"shrunk", resize(10, 6), geometry(-1, 3, 4, 4)},
+			}},
+		{name: "the manager shrinks below the window size", to: xy(2, 1), steps: []step{
+			{"shrunk", resize(3, 3), geometry(2, 1, 1, 1)},
+			{"grown back", resize(20, 8), geometry(2, 1, 4, 4)},
+		}},
+		{name: "the manager is emptied", to: xy(5, 3), steps: []step{
+			{"emptied", resize(0, 0), geometry(0, 0, 0, 0)},
+			{"grown back", resize(20, 8), geometry(5, 3, 4, 4)},
+		}},
+		{name: "the window is maximized", to: xy(-1, 6), steps: []step{
+			{"maximized", toggleMaximize, geometry(0, 0, 20, 8)},
+			{"restored", toggleMaximize, geometry(-1, 6, 4, 4)},
+		}},
+		{name: "the window is minimized", to: xy(-1, 6), steps: []step{
+			{"minimized and restored", func(t *testing.T, _ *WindowManager, float Window) {
+				require.True(t, float.MinimizeDown(0))
+				require.True(t, float.Unminimize())
+			}, geometry(-1, 6, 4, 4)},
+		}},
+		{name: "another window is minimized to the left", to: xy(-1, 6), steps: []step{
+			{"minimized", minimizeAnother(Window.MinimizeLeft), geometry(0, 6, 4, 4)},
+		}},
+		{name: "another window is minimized below", to: xy(5, 7), steps: []step{
+			{"minimized", minimizeAnother(Window.MinimizeDown), geometry(5, 6, 4, 4)},
+		}},
+		{name: "the user widens the window past the right edge", to: xy(15, 2), steps: []step{
+			{"widened", setSize(10, 4), geometry(15, 2, 10, 4)},
+		}},
+		{name: "the user widens the window beyond the manager", to: xy(15, 2), steps: []step{
+			{"widened", setSize(30, 4), geometry(15, 2, 18, 4)},
+		}},
+		{name: "the user shrinks a window past the bottom-right corner",
+			to: xy(17, 7), steps: []step{
+				{"shrunk", setSize(3, 3), geometry(17, 7, 3, 3)},
+			}},
+	}
+	for _, test := range suite {
+		t.Run(test.name, func(t *testing.T) {
+			wm, _, float := newFloatTestManager(t, nil, 2, 2, FloatingConfig{})
+			require.True(t, wm.MoveWindow(float, test.to))
+			for _, step := range test.steps {
+				step.do(t, wm, float)
+				assert.Equal(t, step.want, geometryOf(float), step.name)
+			}
+		})
+	}
+}
+
+func TestFloatingLayoutMovedRoundTrip(t *testing.T) {
+	moveTo := func(x, y int) func(*testing.T, *WindowManager, Window) {
+		return func(t *testing.T, wm *WindowManager, float Window) {
+			require.True(t, wm.MoveWindow(float, xy(x, y)))
+		}
+	}
+	// 2x2 content is framed into a 4x4 window in a 20x8 manager.
+	suite := []struct {
+		name  string
+		cfg   FloatingConfig
+		place func(t *testing.T, wm *WindowManager, float Window)
+		// restoreIn is the manager size to restore the layout in, or
+		// zero to keep 20x8.
+		restoreIn  term.Coordinates
+		unminimize bool
+		wantLayout FloatingLayout
+		want       floatGeometry
+	}{
+		{
+			name:       "a window never moved stays trimmed",
+			cfg:        FloatingConfig{Offset: xy(17, 6)},
+			wantLayout: FloatingLayout{Offset: xy(17, 6)},
+			want:       geometry(17, 6, 3, 2),
+		},
+		{
+			name:       "an aligned window moved inside the manager",
+			cfg:        FloatingConfig{Alignment: component.AlignmentCentered},
+			place:      moveTo(5, 3),
+			wantLayout: FloatingLayout{Offset: xy(5, 3), Moved: true},
+			want:       geometry(5, 3, 4, 4),
+		},
+		{
+			name:       "a window moved past the left edge",
+			place:      moveTo(-1, 6),
+			wantLayout: FloatingLayout{Offset: xy(-1, 6), Moved: true},
+			want:       geometry(-1, 6, 4, 4),
+		},
+		{
+			name:       "a window moved past the bottom-right corner",
+			place:      moveTo(40, 40),
+			wantLayout: FloatingLayout{Offset: xy(17, 7), Moved: true},
+			want:       geometry(17, 7, 4, 4),
+		},
+		{
+			name:       "a moved window restored in a smaller manager",
+			place:      moveTo(17, 7),
+			restoreIn:  xy(10, 4),
+			wantLayout: FloatingLayout{Offset: xy(17, 7), Moved: true},
+			want:       geometry(7, 3, 4, 2),
+		},
+		{
+			name: "a moved window that is minimized",
+			place: func(t *testing.T, wm *WindowManager, float Window) {
+				moveTo(-1, 6)(t, wm, float)
+				require.True(t, float.MinimizeDown(0))
+			},
+			unminimize: true,
+			wantLayout: FloatingLayout{
+				Offset: xy(-1, 6), Moved: true,
+				MinimizedAlignment: component.AlignmentBottom,
+			},
+			want: geometry(-1, 6, 4, 4),
+		},
+	}
+	for _, test := range suite {
+		t.Run(test.name, func(t *testing.T) {
+			wm, _, float := newFloatTestManager(t, nil, 2, 2, test.cfg)
+			if test.place != nil {
+				test.place(t, wm, float)
+			}
+			layout := wm.TileLayout()
+			require.Len(t, layout.Floating, 1)
+			got := layout.Floating[0]
+			id := got.WindowID
+			got.WindowID = 0
+			assert.Equal(t, test.wantLayout, got)
+
+			if test.restoreIn != (term.Coordinates{}) {
+				wm.Resize(test.restoreIn.X, test.restoreIn.Y)
+			}
+			restored := wm.RestoreTileLayout(layout, func(windowID uint64) tui.Component {
+				if windowID == id {
+					return component.StaticFloating(&component.TestComponent{Ch: 'B'}, 2, 2)
+				}
+				return &component.TestComponent{Ch: 'C'}
+			})
+			win, ok := restored[id]
+			require.True(t, ok)
+			if test.unminimize {
+				require.True(t, win.Unminimize())
+			}
+			assert.Equal(t, test.want, geometryOf(win))
+		})
+	}
+}
+
+func TestMovedFloatingWindowDraw(t *testing.T) {
+	moveTo := func(x, y int) func(*testing.T, *WindowManager, Window) {
+		return func(t *testing.T, wm *WindowManager, float Window) {
+			require.True(t, wm.MoveWindow(float, xy(x, y)))
+		}
+	}
+	minimizeThenMoveTo := func(
+		minimize func(Window, int) bool, x, y int,
+	) func(*testing.T, *WindowManager, Window) {
+		return func(t *testing.T, wm *WindowManager, float Window) {
+			newMinimizedFloat(t, wm, minimize)
+			wm.ForegroundFloating(float)
+			moveTo(x, y)(t, wm, float)
+		}
+	}
+	// Unless a case says otherwise, 4x2 content is framed into a 6x4
+	// window in a 20x8 manager.
+	suite := []struct {
+		name     string
+		w        int
+		cfg      FloatingConfig
+		place    func(t *testing.T, wm *WindowManager, float Window)
+		expected string
+	}{
+		{
+			name:  "past the left edge",
+			place: moveTo(-2, 2),
+			expected: `
+┌──────────────────┐
+│CCCCCCCCCCCCCCCCCC│
+████CCCCCCCCCCCCCCC│
+BBB│CCCCCCCCCCCCCCC│
+BBB│CCCCCCCCCCCCCCC│
+───┘CCCCCCCCCCCCCCC│
+│CCCCCCCCCCCCCCCCCC│
+└──────────────────┘`,
+		},
+		{
+			name:  "past the right edge",
+			place: moveTo(16, 2),
+			expected: `
+┌──────────────────┐
+│CCCCCCCCCCCCCCCCCC│
+│CCCCCCCCCCCCCCC█●██
+│CCCCCCCCCCCCCCC│BBB
+│CCCCCCCCCCCCCCC│BBB
+│CCCCCCCCCCCCCCC└───
+│CCCCCCCCCCCCCCCCCC│
+└──────────────────┘`,
+		},
+		{
+			name:  "past the bottom edge",
+			place: moveTo(5, 6),
+			expected: `
+┌──────────────────┐
+│CCCCCCCCCCCCCCCCCC│
+│CCCCCCCCCCCCCCCCCC│
+│CCCCCCCCCCCCCCCCCC│
+│CCCCCCCCCCCCCCCCCC│
+│CCCCCCCCCCCCCCCCCC│
+│CCCC█●████CCCCCCCC│
+└────│BBBB│────────┘`,
+		},
+		{
+			name:  "with only the bar row above the bottom edge",
+			place: moveTo(5, 7),
+			expected: `
+┌──────────────────┐
+│CCCCCCCCCCCCCCCCCC│
+│CCCCCCCCCCCCCCCCCC│
+│CCCCCCCCCCCCCCCCCC│
+│CCCCCCCCCCCCCCCCCC│
+│CCCCCCCCCCCCCCCCCC│
+│CCCCCCCCCCCCCCCCCC│
+└────█●████────────┘`,
+		},
+		{
+			name:  "past the bottom-right corner",
+			place: moveTo(17, 6),
+			expected: `
+┌──────────────────┐
+│CCCCCCCCCCCCCCCCCC│
+│CCCCCCCCCCCCCCCCCC│
+│CCCCCCCCCCCCCCCCCC│
+│CCCCCCCCCCCCCCCCCC│
+│CCCCCCCCCCCCCCCCCC│
+│CCCCCCCCCCCCCCCC█●█
+└────────────────│BB`,
+		},
+		{
+			name:  "with its title clipped past the left edge",
+			w:     10,
+			cfg:   FloatingConfig{Title: "abc"},
+			place: moveTo(-6, 2),
+			expected: `
+┌──────────────────┐
+│CCCCCCCCCCCCCCCCCC│
+bc ███CCCCCCCCCCCCC│
+BBBBB│CCCCCCCCCCCCC│
+BBBBB│CCCCCCCCCCCCC│
+─────┘CCCCCCCCCCCCC│
+│CCCCCCCCCCCCCCCCCC│
+└──────────────────┘`,
+		},
+		{
+			name: "never moved at the same spot is trimmed instead",
+			cfg:  FloatingConfig{Offset: xy(16, 5)},
+			expected: `
+┌──────────────────┐
+│CCCCCCCCCCCCCCCCCC│
+│CCCCCCCCCCCCCCCCCC│
+│CCCCCCCCCCCCCCCCCC│
+│CCCCCCCCCCCCCCCCCC│
+│CCCCCCCCCCCCCCC█●██
+│CCCCCCCCCCCCCCC│BB│
+└───────────────└──┘`,
+		},
+		{
+			name:  "beside a window minimized to the left",
+			place: minimizeThenMoveTo(Window.MinimizeLeft, 0, 2),
+			expected: `
+┌┌─────────────────┐
+││CCCCCCCCCCCCCCCCC│
+│●████CCCCCCCCCCCCC│
+│BBBB│CCCCCCCCCCCCC│
+│BBBB│CCCCCCCCCCCCC│
+│────┘CCCCCCCCCCCCC│
+││CCCCCCCCCCCCCCCCC│
+└└─────────────────┘`,
+		},
+		{
+			name:  "beside a window minimized to the right",
+			place: minimizeThenMoveTo(Window.MinimizeRight, 15, 2),
+			expected: `
+┌─────────────────┐┐
+│CCCCCCCCCCCCCCCCC││
+│CCCCCCCCCCCCCC█●██│
+│CCCCCCCCCCCCCC│BBB│
+│CCCCCCCCCCCCCC│BBB│
+│CCCCCCCCCCCCCC└───│
+│CCCCCCCCCCCCCCCCC││
+└─────────────────┘┘`,
+		},
+		{
+			name:  "above a window minimized below",
+			place: minimizeThenMoveTo(Window.MinimizeDown, 8, 6),
+			expected: `
+┌──────────────────┐
+│CCCCCCCCCCCCCCCCCC│
+│CCCCCCCCCCCCCCCCCC│
+│CCCCCCCCCCCCCCCCCC│
+│CCCCCCCCCCCCCCCCCC│
+│CCCCCCCCCCCCCCCCCC│
+└───────█●████─────┘
+└──────────────────┘`,
+		},
+	}
+	for _, test := range suite {
+		t.Run(test.name, func(t *testing.T) {
+			wm, _, float := newFloatTestManager(t, nil, cmp.Or(test.w, 4), 2, test.cfg)
+			comptest.TestComponent(t, wm, term.NewStringWriter(20, 8), []comptest.TestCase{
+				{Action: func() {
+					if test.place != nil {
+						test.place(t, wm, float)
+					}
+				}, Expected: test.expected},
+			})
+		})
+	}
+}
+
+func TestWindowAtMovedFloatingWindow(t *testing.T) {
+	wm, tile, float := newFloatTestManager(t, nil, 4, 2, FloatingConfig{})
+	left := newMinimizedFloat(t, wm, Window.MinimizeLeft)
+	bottom := newMinimizedFloat(t, wm, Window.MinimizeDown)
+	wm.ForegroundFloating(float)
+	// The 6x4 window spans columns 0 to 5 and rows 5 to 8, but the
+	// floating area only spans columns 1 to 19 and rows 0 to 6.
+	require.True(t, wm.MoveWindow(float, xy(0, 5)))
+	require.Equal(t, geometry(0, 5, 6, 4), geometryOf(float))
+	windows := map[string]Window{
+		"float": float, "tile": tile, "left": left, "bottom": bottom,
+	}
+
+	suite := []struct {
+		name string
+		at   term.Coordinates
+		// want names the window at the position, or is empty when no
+		// window is there.
+		want string
+	}{
+		{"the bar row", xy(3, 5), "float"},
+		{"the first visible column", xy(1, 6), "float"},
+		{"the last visible cell", xy(5, 6), "float"},
+		{"right of the window", xy(6, 6), "tile"},
+		{"above the window", xy(3, 4), "tile"},
+		{"under the left minimized bar", xy(0, 5), "left"},
+		{"under the left minimized bar, a row down", xy(0, 6), "left"},
+		{"under the bottom minimized bar", xy(3, 7), "bottom"},
+		{"under the bottom minimized bar, at the window's edge", xy(5, 7), "bottom"},
+		{"left of the manager", xy(-1, 5), ""},
+		{"below the manager", xy(3, 8), ""},
+		{"right of the manager", xy(20, 5), ""},
+	}
+	for _, test := range suite {
+		t.Run(test.name, func(t *testing.T) {
+			at, ok := wm.WindowAt(test.at)
+			if test.want == "" {
+				assert.False(t, ok)
+				return
+			}
+			require.True(t, ok)
+			assert.Equal(t, windows[test.want].ID(), at.ID())
+		})
+	}
+}
+
+func TestWindowManagerInFloatingArea(t *testing.T) {
+	type point struct {
+		at   term.Coordinates
+		want bool
+	}
+	suite := []struct {
+		name     string
+		size     term.Coordinates
+		minimize func(t *testing.T, wm *WindowManager)
+		points   []point
+	}{
+		{
+			name: "no minimized windows",
+			size: xy(20, 8),
+			points: []point{
+				{xy(0, 0), true}, {xy(19, 7), true}, {xy(10, 4), true},
+				{xy(-1, 0), false}, {xy(0, -1), false},
+				{xy(20, 0), false}, {xy(0, 8), false},
+			},
+		},
+		{
+			name: "a window minimized on every side",
+			size: xy(20, 8),
+			minimize: func(t *testing.T, wm *WindowManager) {
+				for _, minimize := range []func(Window, int) bool{
+					Window.MinimizeUp, Window.MinimizeDown,
+					Window.MinimizeLeft, Window.MinimizeRight,
+				} {
+					newMinimizedFloat(t, wm, minimize)
+				}
+			},
+			points: []point{
+				{xy(1, 1), true}, {xy(18, 6), true}, {xy(10, 4), true},
+				{xy(0, 3), false}, {xy(19, 3), false},
+				{xy(5, 0), false}, {xy(5, 7), false}, {xy(0, 0), false},
+			},
+		},
+		{
+			name: "a padded window minimized below",
+			size: xy(20, 8),
+			minimize: func(t *testing.T, wm *WindowManager) {
+				win := wm.FloatingWindow(
+					component.StaticFloating(&component.TestComponent{Ch: 'm'}, 2, 2),
+					FloatingConfig{})
+				require.True(t, win.MinimizeDown(2))
+			},
+			points: []point{
+				{xy(5, 4), true}, {xy(5, 5), false}, {xy(5, 7), false},
+			},
+		},
+		{
+			name:   "an empty manager",
+			points: []point{{xy(0, 0), false}},
+		},
+	}
+	for _, test := range suite {
+		t.Run(test.name, func(t *testing.T) {
+			wm, _ := NewWindowManager(&component.TestComponent{Ch: 'C'},
+				DefaultWindowManagerConfig())
+			wm.Resize(test.size.X, test.size.Y)
+			if test.minimize != nil {
+				test.minimize(t, wm)
+			}
+			for _, p := range test.points {
+				assert.Equal(t, p.want, wm.InFloatingArea(p.at), "at %+v", p.at)
+			}
+		})
+	}
 }
 
 func TestFloatingLayoutBarRoundTrip(t *testing.T) {
@@ -2753,4 +4081,852 @@ func TestForegroundFloating(t *testing.T) {
 
 	wm.ForegroundFloating(tiled)
 	assert.Equal(t, []uint64{b.ID(), a.ID()}, floatOrder())
+}
+
+// nestedTileLayout lays out [[a|b] / c] | d, in that order, so that b's right edge is
+// the outer divider and a's bottom edge is [a|b]'s. sizes relayouts and returns the
+// {width, height} of each.
+func nestedTileLayout(t *testing.T) (wm *WindowManager, wins [4]Window, sizes func() [4][2]int) {
+	t.Helper()
+	wm, a := NewWindowManager(&component.TestComponent{Ch: 'A'}, testWindowManagerConfig())
+	wm.Resize(40, 12)
+	d, ok := wm.SplitVertical(a, &component.TestComponent{Ch: 'D'})
+	require.True(t, ok)
+	c, ok := wm.SplitHorizontal(a, &component.TestComponent{Ch: 'C'})
+	require.True(t, ok)
+	b, ok := wm.SplitVertical(a, &component.TestComponent{Ch: 'B'})
+	require.True(t, ok)
+	wins = [4]Window{a, b, c, d}
+	sizes = func() (ret [4][2]int) {
+		wm.Draw(term.NewStringWriter(40, 12))
+		for i, win := range wins {
+			ret[i] = [2]int{win.Width(), win.Height()}
+		}
+		return ret
+	}
+	require.Equal(t, nestedTileSizes, sizes())
+	return wm, wins, sizes
+}
+
+var nestedTileSizes = [4][2]int{{10, 6}, {10, 6}, {20, 6}, {20, 12}}
+
+func nestedTile(i int) func(*WindowManager, [4]Window) Window {
+	return func(_ *WindowManager, wins [4]Window) Window { return wins[i] }
+}
+
+func newFloatingTarget(wm *WindowManager, _ [4]Window) Window {
+	return wm.FloatingWindow(
+		component.StaticFloating(&component.TestComponent{Ch: 'F'}, 4, 2),
+		FloatingConfig{},
+	)
+}
+
+func TestWindowManagerMoveTileEdge(t *testing.T) {
+	tests := []struct {
+		name string
+		win  func(*WindowManager, [4]Window) Window
+		edge component.Alignment
+		to   int
+		ok   bool
+		want [4][2]int
+	}{
+		{
+			name: "divider shared with a sibling",
+			win:  nestedTile(0), edge: component.AlignmentRight, to: 14, ok: true,
+			want: [4][2]int{{15, 6}, {5, 6}, {20, 6}, {20, 12}},
+		},
+		{
+			name: "divider shared by ancestors",
+			win:  nestedTile(1), edge: component.AlignmentRight, to: 24, ok: true,
+			want: [4][2]int{{12, 6}, {13, 6}, {25, 6}, {15, 12}},
+		},
+		{
+			name: "bottom divider shared by ancestors",
+			win:  nestedTile(0), edge: component.AlignmentBottom, to: 8, ok: true,
+			want: [4][2]int{{10, 9}, {10, 9}, {20, 3}, {20, 12}},
+		},
+		{
+			name: "right edge of the manager",
+			win:  nestedTile(3), edge: component.AlignmentRight, to: 30,
+			want: nestedTileSizes,
+		},
+		{
+			name: "bottom edge of the manager",
+			win:  nestedTile(2), edge: component.AlignmentBottom, to: 8,
+			want: nestedTileSizes,
+		},
+		{
+			name: "unsupported edge",
+			win:  nestedTile(1), edge: component.AlignmentLeft, to: 5,
+			want: nestedTileSizes,
+		},
+		{
+			name: "too small for a frame",
+			win:  nestedTile(0), edge: component.AlignmentRight, to: 0,
+			want: nestedTileSizes,
+		},
+		{
+			name: "floating window",
+			win:  newFloatingTarget, edge: component.AlignmentRight, to: 10,
+			want: nestedTileSizes,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wm, wins, sizes := nestedTileLayout(t)
+			assert.Equal(t, tt.ok, wm.MoveTileEdge(tt.win(wm, wins), tt.edge, tt.to))
+			assert.Equal(t, tt.want, sizes())
+		})
+	}
+}
+
+func TestWindowManagerResetTileEdge(t *testing.T) {
+	three := doAll(splitRight('A', 'B'), splitRight('B', 'C'))
+	four := doAll(splitRight('A', 'B'), splitRight('B', 'C'), splitRight('C', 'D'))
+	// [[A|B] / C] | D
+	nested := doAll(splitRight('A', 'D'), splitBelow('A', 'C'), splitRight('A', 'B'))
+	runTileEdgeCases(t, tileAxes, []tileEdgeCase{
+		{
+			name: "an untouched border stays where it is",
+			steps: []tileEdgeStep{
+				{splitRight('A', 'B'), "8 A12 B12"},
+				{resetRight('A'), "8 A12 B12"},
+			},
+		},
+		{
+			name: "two tiles share evenly again",
+			steps: []tileEdgeStep{
+				{splitRight('A', 'B'), "8 A12 B12"},
+				{dragRight('A', 4), "8 A16 B8"},
+				{resetRight('A'), "8 A12 B12"},
+				{resetRight('A'), "8 A12 B12"},
+				{dragRight('A', -7), "8 A5 B19"},
+				{resetRight('A'), "8 A12 B12"},
+			},
+		},
+		{
+			name: "the first of two borders, then the second",
+			steps: []tileEdgeStep{
+				{three, "8 A8 B8 C8"},
+				{dragRight('A', 4), "8 A12 B6 C6"},
+				{resetRight('A'), "8 A8 B8 C8"},
+				{dragRight('B', 4), "8 A6 B12 C6"},
+				{resetRight('B'), "8 A8 B8 C8"},
+			},
+		},
+		{
+			name: "the second of two moved borders keeps the first",
+			steps: []tileEdgeStep{
+				{three, "8 A8 B8 C8"},
+				{dragRight('A', 4), "8 A12 B6 C6"},
+				{dragRight('B', 2), "8 A12 B8 C4"},
+				{resetRight('B'), "8 A12 B6 C6"},
+				{resetRight('A'), "8 A8 B8 C8"},
+			},
+		},
+		{
+			name: "the first of two moved borders also resets the tile the second sized",
+			steps: []tileEdgeStep{
+				{three, "8 A8 B8 C8"},
+				{dragRight('A', 4), "8 A12 B6 C6"},
+				{dragRight('B', 2), "8 A12 B8 C4"},
+				{resetRight('A'), "8 A8 B8 C8"},
+			},
+		},
+		{
+			name: "the last of three moved borders keeps the first",
+			steps: []tileEdgeStep{
+				{four, "8 A6 B6 C6 D6"},
+				{dragRight('A', 3), "8 A9 B5 C5 D5"},
+				{dragRight('C', 3), "8 A9 B3 C8 D4"},
+				{resetRight('C'), "8 A9 B5 C5 D5"},
+				{resetRight('A'), "8 A6 B6 C6 D6"},
+			},
+		},
+		{
+			name: "the first of three moved borders keeps the last",
+			steps: []tileEdgeStep{
+				{four, "8 A6 B6 C6 D6"},
+				{dragRight('A', 3), "8 A9 B5 C5 D5"},
+				{dragRight('C', 3), "8 A9 B3 C8 D4"},
+				{resetRight('A'), "8 A5 B5 C8 D6"},
+				{resetRight('C'), "8 A6 B6 C6 D6"},
+			},
+		},
+		{
+			name: "the middle of three borders also resets the tile the last one sized",
+			steps: []tileEdgeStep{
+				{four, "8 A6 B6 C6 D6"},
+				{dragRight('A', 3), "8 A9 B5 C5 D5"},
+				{dragRight('C', 3), "8 A9 B3 C8 D4"},
+				{resetRight('B'), "8 A9 B5 C5 D5"},
+				{resetRight('A'), "8 A6 B6 C6 D6"},
+			},
+		},
+		{
+			name: "a border between tiles that were not moved",
+			steps: []tileEdgeStep{
+				{three, "8 A8 B8 C8"},
+				{dragRight('A', 4), "8 A12 B6 C6"},
+				{resetRight('B'), "8 A12 B6 C6"},
+			},
+		},
+		{
+			name: "the edges of the manager",
+			steps: []tileEdgeStep{
+				{refuseRight('A'), "8 A24"},
+				{refuseBottom('A'), "8 A24"},
+				{splitRight('A', 'B'), "8 A12 B12"},
+				{refuseRight('B'), "8 A12 B12"},
+				{refuseBottom('A'), "8 A12 B12"},
+				{refuseBottom('B'), "8 A12 B12"},
+			},
+		},
+		{
+			name: "a border across the whole manager",
+			steps: []tileEdgeStep{
+				{
+					doAll(splitBelow('A', 'C'), splitRight('A', 'B'), splitRight('C', 'D')),
+					"4 A12 B12 / 4 C12 D12",
+				},
+				{dragBottom('A', 1), "5 A12 B12 / 3 C12 D12"},
+				{dragRight('A', -4), "5 A8 B16 / 3 C12 D12"},
+				{dragRight('C', 4), "5 A8 B16 / 3 C16 D8"},
+				{resetBottom('B'), "4 A8 B16 / 4 C16 D8"},
+				{resetRight('C'), "4 A8 B16 / 4 C12 D12"},
+				{resetRight('A'), "4 A12 B12 / 4 C12 D12"},
+				{refuseBottom('C'), "4 A12 B12 / 4 C12 D12"},
+				{refuseRight('B'), "4 A12 B12 / 4 C12 D12"},
+			},
+		},
+		{
+			name: "nested borders reset independently",
+			steps: []tileEdgeStep{
+				{nested, "4 A6 B6 D12 / 4 C12 D12"},
+				{dragRight('B', 4), "4 A8 B8 D8 / 4 C16 D8"},
+				{dragRight('A', -2), "4 A6 B10 D8 / 4 C16 D8"},
+				{dragBottom('A', 1), "5 A6 B10 D8 / 3 C16 D8"},
+				{resetRight('A'), "5 A8 B8 D8 / 3 C16 D8"},
+				{resetBottom('B'), "4 A8 B8 D8 / 4 C16 D8"},
+				{resetRight('C'), "4 A6 B6 D12 / 4 C12 D12"},
+			},
+		},
+		{
+			name: "an outer border keeps the nested ones",
+			steps: []tileEdgeStep{
+				{nested, "4 A6 B6 D12 / 4 C12 D12"},
+				{dragRight('B', 4), "4 A8 B8 D8 / 4 C16 D8"},
+				{dragRight('A', -2), "4 A6 B10 D8 / 4 C16 D8"},
+				{dragBottom('A', 1), "5 A6 B10 D8 / 3 C16 D8"},
+				{resetRight('B'), "5 A6 B6 D12 / 3 C12 D12"},
+				{dragRight('C', 4), "5 A6 B10 D8 / 3 C16 D8"},
+			},
+		},
+		{
+			name: "three levels of nesting",
+			steps: []tileEdgeStep{
+				{
+					// [[[A / B] | C] / D] | E
+					doAll(splitRight('A', 'E'), splitBelow('A', 'D'), splitRight('A', 'C'),
+						splitBelow('A', 'B')),
+					"2 A6 C6 E12 / 2 B6 C6 E12 / 4 D12 E12",
+				},
+				{dragRight('A', 3), "2 A9 C3 E12 / 2 B9 C3 E12 / 4 D12 E12"},
+				{dragRight('C', 4), "2 A9 C7 E8 / 2 B9 C7 E8 / 4 D16 E8"},
+				{dragBottom('B', 1), "2 A9 C7 E8 / 3 B9 C7 E8 / 3 D16 E8"},
+				{resetRight('D'), "2 A9 C3 E12 / 3 B9 C3 E12 / 3 D12 E12"},
+				{resetBottom('C'), "2 A9 C3 E12 / 2 B9 C3 E12 / 4 D12 E12"},
+				{resetRight('B'), "2 A6 C6 E12 / 2 B6 C6 E12 / 4 D12 E12"},
+				{resetBottom('A'), "2 A6 C6 E12 / 2 B6 C6 E12 / 4 D12 E12"},
+				{refuseBottom('D'), "2 A6 C6 E12 / 2 B6 C6 E12 / 4 D12 E12"},
+				{refuseRight('E'), "2 A6 C6 E12 / 2 B6 C6 E12 / 4 D12 E12"},
+			},
+		},
+		{
+			name: "a nested split of three",
+			steps: []tileEdgeStep{
+				{
+					// [[A|B|C] / D] | E
+					doAll(splitRight('A', 'E'), splitBelow('A', 'D'), splitRight('A', 'B'),
+						splitRight('B', 'C')),
+					"4 A4 B4 C4 E12 / 4 D12 E12",
+				},
+				{dragRight('C', 6), "4 A6 B6 C6 E6 / 4 D18 E6"},
+				{dragRight('A', 3), "4 A9 B4 C5 E6 / 4 D18 E6"},
+				{dragRight('B', 2), "4 A9 B6 C3 E6 / 4 D18 E6"},
+				{dragBottom('C', 1), "5 A9 B6 C3 E6 / 3 D18 E6"},
+				{resetRight('B'), "5 A9 B4 C5 E6 / 3 D18 E6"},
+				{resetBottom('A'), "4 A9 B4 C5 E6 / 4 D18 E6"},
+				{resetRight('A'), "4 A6 B6 C6 E6 / 4 D18 E6"},
+				{resetRight('D'), "4 A4 B4 C4 E12 / 4 D12 E12"},
+			},
+		},
+		{
+			name: "a split that closing nests in one of the same direction",
+			steps: []tileEdgeStep{
+				{
+					doAll(splitRight('A', 'B'), splitBelow('B', 'D'), splitRight('B', 'C'),
+						closeWindow('D')),
+					"8 A12 B6 C6",
+				},
+				{dragRight('A', 3), "8 A15 B4 C5"},
+				{dragRight('B', 1), "8 A15 B5 C4"},
+				{resetRight('A'), "8 A12 B5 C7"},
+				{resetRight('B'), "8 A12 B6 C6"},
+				{refuseRight('C'), "8 A12 B6 C6"},
+			},
+		},
+		{
+			name: "closing a split hands its border to the tile left",
+			steps: []tileEdgeStep{
+				{doAll(splitRight('A', 'C'), splitBelow('A', 'B')), "4 A12 C12 / 4 B12 C12"},
+				{dragRight('B', 4), "4 A16 C8 / 4 B16 C8"},
+				{closeWindow('B'), "8 A16 C8"},
+				{resetRight('A'), "8 A12 C12"},
+			},
+		},
+		{
+			name: "closing a tile on a moved border",
+			steps: []tileEdgeStep{
+				{three, "8 A8 B8 C8"},
+				{dragRight('A', 6), "8 A14 B5 C5"},
+				{closeWindow('B'), "8 A14 C10"},
+				{resetRight('A'), "8 A12 C12"},
+			},
+		},
+		{
+			name: "splitting next to a moved border",
+			steps: []tileEdgeStep{
+				{splitRight('A', 'B'), "8 A12 B12"},
+				{dragRight('A', 4), "8 A16 B8"},
+				{splitRight('A', 'C'), "8 A16 C4 B4"},
+				{resetRight('C'), "8 A16 C4 B4"},
+				{resetRight('A'), "8 A8 C8 B8"},
+			},
+		},
+		{
+			name: "splitting a moved tile below keeps its border",
+			steps: []tileEdgeStep{
+				{splitRight('A', 'B'), "8 A12 B12"},
+				{dragRight('A', 4), "8 A16 B8"},
+				{splitBelow('A', 'C'), "4 A16 B8 / 4 C16 B8"},
+				{resetRight('C'), "4 A12 B12 / 4 C12 B12"},
+			},
+		},
+		{
+			name: "a tile added in front of a moved border",
+			steps: []tileEdgeStep{
+				{splitRight('A', 'B'), "8 A12 B12"},
+				{dragRight('A', 4), "8 A16 B8"},
+				{splitRoot('C', component.AlignmentLeft), "8 C4 A16 B4"},
+				{resetRight('C'), "8 C8 A8 B8"},
+			},
+		},
+		{
+			name: "a manager turned around a moved border",
+			steps: []tileEdgeStep{
+				{splitRight('A', 'B'), "8 A12 B12"},
+				{dragRight('A', 4), "8 A16 B8"},
+				{splitRoot('C', component.AlignmentBottom), "4 A16 B8 / 4 C24"},
+				{dragBottom('A', 1), "5 A16 B8 / 3 C24"},
+				{resetRight('A'), "5 A12 B12 / 3 C24"},
+				{resetBottom('B'), "4 A12 B12 / 4 C24"},
+			},
+		},
+		{
+			name: "the second border, while the manager is too small for the moved ones",
+			steps: []tileEdgeStep{
+				{three, "8 A8 B8 C8"},
+				{dragRight('A', 4), "8 A12 B6 C6"},
+				{dragRight('B', 2), "8 A12 B8 C4"},
+				{resizeManager(18), "8 A10 B8"},
+				{resetRight('B'), "8 A12 B3 C3"},
+				{resizeManager(24), "8 A12 B6 C6"},
+				{resetRight('A'), "8 A8 B8 C8"},
+			},
+		},
+		{
+			name: "the first border, while the manager is too small for the moved ones",
+			steps: []tileEdgeStep{
+				{three, "8 A8 B8 C8"},
+				{dragRight('A', 4), "8 A12 B6 C6"},
+				{dragRight('B', 2), "8 A12 B8 C4"},
+				{resizeManager(18), "8 A10 B8"},
+				{resetRight('A'), "8 A6 B6 C6"},
+				{resizeManager(24), "8 A8 B8 C8"},
+			},
+		},
+		{
+			name: "a window reset resets only its window",
+			steps: []tileEdgeStep{
+				{three, "8 A8 B8 C8"},
+				{dragRight('A', 4), "8 A12 B6 C6"},
+				{dragRight('B', 2), "8 A12 B8 C4"},
+				{resetWindow('B'), "8 A12 B6 C6"},
+				{resetWindow('A'), "8 A8 B8 C8"},
+			},
+		},
+		{
+			name: "edges other than right and bottom, floating and closed windows",
+			steps: []tileEdgeStep{
+				{splitRight('A', 'B'), "8 A12 B12"},
+				{func(f *tileEdgeFixture) {
+					for _, edge := range []component.Alignment{
+						component.AlignmentLeft, component.AlignmentTop,
+					} {
+						assert.False(f.t, f.wm.ResetTileEdge(f.tiles['B'], edge), "edge %v", edge)
+					}
+				}, "8 A12 B12"},
+				{func(f *tileEdgeFixture) {
+					float := f.wm.FloatingWindow(
+						component.StaticFloating(&component.TestComponent{Ch: 'F'}, 4, 2),
+						FloatingConfig{},
+					)
+					assert.False(f.t, f.wm.ResetTileEdge(float, component.AlignmentRight))
+					assert.False(f.t, f.wm.ResetTileEdge(float, component.AlignmentBottom))
+				}, "8 A12 B12"},
+				{func(f *tileEdgeFixture) {
+					splitRight('A', 'C')(f)
+					closed := f.tiles['C']
+					closeWindow('C')(f)
+					assert.False(f.t, f.wm.ResetTileEdge(closed, f.side(component.AlignmentRight)))
+				}, "8 A12 B12"},
+			},
+		},
+	})
+}
+
+func TestWindowManagerResetTileEdgeDefaultWidth(t *testing.T) {
+	three := doAll(splitRight('A', 'B'), splitRight('B', 'C'))
+	four := doAll(splitRight('A', 'B'), splitRight('B', 'C'), splitRight('C', 'D'))
+	// Only widths have defaults, so these run over columns alone.
+	runTileEdgeCases(t, tileAxes[:1], []tileEdgeCase{
+		{
+			name: "a default width",
+			steps: []tileEdgeStep{
+				{doAll(splitRight('A', 'B'), setDefaultWidth('A', 6)), "8 A6 B18"},
+				{dragRight('A', 10), "8 A16 B8"},
+				{resetRight('A'), "8 A6 B18"},
+				{dragRight('A', 10), "8 A16 B8"},
+				{resetWindow('A'), "8 A6 B18"},
+				{dragRight('A', 10), "8 A16 B8"},
+				{setDefaultWidth('A', 6), "8 A6 B18"},
+			},
+		},
+		{
+			name: "a default on the far side of the border",
+			steps: []tileEdgeStep{
+				{doAll(splitRight('A', 'B'), setDefaultWidth('B', 6)), "8 A18 B6"},
+				{dragRight('A', -6), "8 A12 B12"},
+				{resetRight('A'), "8 A18 B6"},
+			},
+		},
+		{
+			name: "defaults on both sides of a border keep the first",
+			steps: []tileEdgeStep{
+				{
+					doAll(splitRight('A', 'B'), setDefaultWidth('A', 6), setDefaultWidth('B', 5)),
+					"8 A19 B5",
+				},
+				{resetRight('A'), "8 A6 B18"},
+			},
+		},
+		{
+			name: "a default in the middle, from either of its borders",
+			steps: []tileEdgeStep{
+				{doAll(three, setDefaultWidth('B', 6)), "8 A9 B6 C9"},
+				{dragRight('A', 3), "8 A12 B6 C6"},
+				{resetRight('A'), "8 A9 B6 C9"},
+				{dragRight('B', 3), "8 A7 B9 C8"},
+				{resetRight('B'), "8 A9 B6 C9"},
+			},
+		},
+		{
+			name: "a default elsewhere is kept",
+			steps: []tileEdgeStep{
+				{doAll(three, setDefaultWidth('C', 6)), "8 A9 B9 C6"},
+				{dragRight('A', 3), "8 A12 B6 C6"},
+				{resetRight('A'), "8 A9 B9 C6"},
+			},
+		},
+		{
+			name: "a default that only fits by unfixing a tile elsewhere is not taken",
+			steps: []tileEdgeStep{
+				{doAll(four, setDefaultWidth('A', 12)), "8 A12 B4 C4 D4"},
+				{dragRight('C', 3), "8 A5 B6 C7 D6"},
+				{resetRight('A'), "8 A5 B6 C7 D6"},
+				{resetRight('C'), "8 A6 B6 C6 D6"},
+				{resetRight('A'), "8 A12 B4 C4 D4"},
+			},
+		},
+		{
+			name: "a default that does not fit now is kept for later",
+			steps: []tileEdgeStep{
+				{doAll(three, setDefaultWidth('A', 14)), "8 A14 B5 C5"},
+				{resizeManager(18), "8 A14 B2 C2"},
+				{resetRight('A'), "8 A6 B6 C6"},
+				{resizeManager(24), "8 A8 B8 C8"},
+				{resetRight('A'), "8 A14 B5 C5"},
+			},
+		},
+		{
+			name: "a default on a column split below",
+			steps: []tileEdgeStep{
+				{
+					doAll(splitRight('A', 'B'), setDefaultWidth('A', 6), splitBelow('A', 'C')),
+					"4 A6 B18 / 4 C6 B18",
+				},
+				{dragRight('C', 6), "4 A12 B12 / 4 C12 B12"},
+				{resetRight('A'), "4 A6 B18 / 4 C6 B18"},
+				{setDefaultWidth('C', 8), "4 A8 B16 / 4 C8 B16"},
+				{dragRight('A', 8), "4 A16 B8 / 4 C16 B8"},
+				{closeWindow('C'), "8 A16 B8"},
+				{resetRight('A'), "8 A8 B16"},
+			},
+		},
+		{
+			name: "a column with a default keeps its width when a border beside it is reset",
+			steps: []tileEdgeStep{
+				{
+					doAll(splitRight('A', 'B'), setDefaultWidth('A', 6), splitBelow('B', 'C')),
+					"4 A6 B18 / 4 A6 C18",
+				},
+				{dragBottom('B', 1), "5 A6 B18 / 3 A6 C18"},
+				{dragRight('A', 6), "5 A12 B12 / 3 A12 C12"},
+				{resetBottom('B'), "4 A12 B12 / 4 A12 C12"},
+				{resetRight('A'), "4 A6 B18 / 4 A6 C18"},
+			},
+		},
+		{
+			name: "a tile left alone keeps its default for the next split beside it",
+			steps: []tileEdgeStep{
+				{doAll(splitRight('A', 'B'), setDefaultWidth('A', 5), closeWindow('B')), "8 A24"},
+				{splitRight('A', 'C'), "8 A12 C12"},
+				{resetRight('A'), "8 A5 C19"},
+			},
+		},
+		{
+			name: "a default width does not become a height when the manager turns",
+			steps: []tileEdgeStep{
+				{doAll(splitRight('A', 'B'), setDefaultWidth('A', 5), closeWindow('B')), "8 A24"},
+				{splitRoot('C', component.AlignmentBottom), "4 A24 / 4 C24"},
+				{resetBottom('A'), "4 A24 / 4 C24"},
+				{resetWindow('A'), "4 A24 / 4 C24"},
+			},
+		},
+		{
+			name: "a default stays with its tile when the manager turns around its split",
+			steps: []tileEdgeStep{
+				{doAll(splitRight('A', 'B'), setDefaultWidth('A', 6)), "8 A6 B18"},
+				{splitRoot('C', component.AlignmentBottom), "4 A6 B18 / 4 C24"},
+				{dragRight('A', 10), "4 A16 B8 / 4 C24"},
+				{resetRight('A'), "4 A6 B18 / 4 C24"},
+			},
+		},
+		{
+			name: "a default next to a new split",
+			steps: []tileEdgeStep{
+				{doAll(splitRight('A', 'B'), setDefaultWidth('A', 6)), "8 A6 B18"},
+				{splitRight('A', 'C'), "8 A6 C9 B9"},
+				{dragRight('A', 6), "8 A12 C6 B6"},
+				{resetRight('A'), "8 A6 C9 B9"},
+			},
+		},
+		{
+			name: "a tile spanning the manager has no default",
+			steps: []tileEdgeStep{
+				{refuseDefaultWidth('A', 6), "8 A24"},
+				{splitRight('A', 'B'), "8 A12 B12"},
+				{dragRight('A', 4), "8 A16 B8"},
+				{resetRight('A'), "8 A12 B12"},
+			},
+		},
+	})
+}
+
+func TestWindowManagerSetDefaultWidth(t *testing.T) {
+	tests := []struct {
+		name  string
+		win   func(*WindowManager, [4]Window) Window
+		width int
+		ok    bool
+		want  [4][2]int
+	}{
+		{
+			name: "fixes the width",
+			win:  nestedTile(3), width: 6, ok: true,
+			want: [4][2]int{{17, 6}, {17, 6}, {34, 6}, {6, 12}},
+		},
+		{
+			name: "zero clears the default",
+			win:  nestedTile(3), width: 0, ok: true,
+			want: nestedTileSizes,
+		},
+		{
+			name: "too small for a frame",
+			win:  nestedTile(3), width: 2,
+			want: nestedTileSizes,
+		},
+		{
+			name: "floating window",
+			win:  newFloatingTarget, width: 6,
+			want: nestedTileSizes,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wm, wins, sizes := nestedTileLayout(t)
+			win := tt.win(wm, wins)
+			assert.Equal(t, tt.ok, wm.SetDefaultWidth(win, tt.width))
+			assert.Equal(t, tt.want, sizes())
+
+			require.True(t, wm.SetWidth(win, 10))
+			sizes()
+			require.True(t, wm.SetWidth(win, 0))
+			assert.Equal(t, tt.want, sizes(), "a reset restores the default")
+		})
+	}
+}
+
+// tileEdgeCross is the length of the manager across the main axis of a tileEdgeCase.
+const tileEdgeCross = 8
+
+// tileEdgeCase lays tiles out over a manager 24 cells along the main axis, checking the
+// screen that each step leaves. Cases are written for columns: over rows they run
+// transposed, so that right becomes bottom.
+type tileEdgeCase struct {
+	name  string
+	steps []tileEdgeStep
+}
+
+type tileEdgeStep struct {
+	do tileEdgeAction
+	// want lists the rows of the screen, separated by '/', each as how many times it
+	// repeats and its tiles from left to right with their widths: "4 A6 B18 / 4 C24".
+	want string
+}
+
+type tileEdgeAction func(*tileEdgeFixture)
+
+type tileEdgeFixture struct {
+	t     *testing.T
+	axis  tileAxis
+	main  int
+	wm    *WindowManager
+	tiles map[rune]Window
+}
+
+func runTileEdgeCases(t *testing.T, axes []tileAxis, tests []tileEdgeCase) {
+	for _, axis := range axes {
+		t.Run(axis.name, func(t *testing.T) {
+			for _, tt := range tests {
+				t.Run(tt.name, func(t *testing.T) {
+					wm, a := NewWindowManager(&component.TestComponent{Ch: 'A'},
+						testWindowManagerConfig())
+					// A root with a single tile has no orientation of its own, and the
+					// axis's makes the rows run the exact transpose of the columns one.
+					wm.tree.root.childSplit = axis.dir
+					f := &tileEdgeFixture{t: t, axis: axis, wm: wm, tiles: map[rune]Window{'A': a}}
+					resizeManager(24)(f)
+					for i, s := range tt.steps {
+						s.do(f)
+						require.Equal(t, f.expand(s.want), f.screen(), "step %d", i)
+					}
+				})
+			}
+		})
+	}
+}
+
+func (f *tileEdgeFixture) relayout() {
+	f.wm.Draw(term.NewStringWriter(f.axis.size(f.main, tileEdgeCross)))
+}
+
+// screen returns each cell as the name of the tile at it.
+func (f *tileEdgeFixture) screen() string {
+	f.relayout()
+	names := make(map[uint64]rune, len(f.tiles))
+	for ch, win := range f.tiles {
+		names[win.ID()] = ch
+	}
+	w, h := f.axis.size(f.main, tileEdgeCross)
+	var sb strings.Builder
+	for y := range h {
+		sb.WriteByte('\n')
+		for x := range w {
+			ch := '?'
+			if win, ok := f.wm.TileAt(term.Coordinates{X: x, Y: y}); ok {
+				if name, ok := names[win.ID()]; ok {
+					ch = name
+				}
+			}
+			sb.WriteRune(ch)
+		}
+	}
+	return sb.String()
+}
+
+// expand returns the screen that want, as tileEdgeStep.want, lists.
+func (f *tileEdgeFixture) expand(want string) string {
+	var sb strings.Builder
+	for _, row := range strings.Split(want, "/") {
+		fields := strings.Fields(row)
+		require.NotEmpty(f.t, fields, "screen %q", want)
+		count, err := strconv.Atoi(fields[0])
+		require.NoError(f.t, err, "screen %q", want)
+		var line strings.Builder
+		for _, tile := range fields[1:] {
+			width, err := strconv.Atoi(tile[1:])
+			require.NoError(f.t, err, "screen %q", want)
+			line.WriteString(strings.Repeat(tile[:1], width))
+		}
+		for range count {
+			sb.WriteString("\n" + line.String())
+		}
+	}
+	return f.axis.render(sb.String())
+}
+
+// side returns the side over f's axis that side is over columns.
+func (f *tileEdgeFixture) side(side component.Alignment) component.Alignment {
+	if f.axis.dir == vertical {
+		return side
+	}
+	switch side {
+	case component.AlignmentLeft:
+		return component.AlignmentTop
+	case component.AlignmentTop:
+		return component.AlignmentLeft
+	case component.AlignmentRight:
+		return component.AlignmentBottom
+	case component.AlignmentBottom:
+		return component.AlignmentRight
+	}
+	return side
+}
+
+func doAll(actions ...tileEdgeAction) tileEdgeAction {
+	return func(f *tileEdgeFixture) {
+		for _, do := range actions {
+			do(f)
+		}
+	}
+}
+
+// splitRight adds ch to the right of over.
+func splitRight(over, ch rune) tileEdgeAction {
+	return splitTile(over, ch, component.AlignmentRight)
+}
+
+// splitBelow adds ch below over.
+func splitBelow(over, ch rune) tileEdgeAction {
+	return splitTile(over, ch, component.AlignmentBottom)
+}
+
+func splitTile(over, ch rune, side component.Alignment) tileEdgeAction {
+	return func(f *tileEdgeFixture) {
+		split := f.wm.SplitVertical
+		if f.side(side) == component.AlignmentBottom {
+			split = f.wm.SplitHorizontal
+		}
+		win, ok := split(f.tiles[over], &component.TestComponent{Ch: ch})
+		require.True(f.t, ok, "split %c", over)
+		f.tiles[ch] = win
+	}
+}
+
+// splitRoot adds ch along the side of the whole manager.
+func splitRoot(ch rune, side component.Alignment) tileEdgeAction {
+	return func(f *tileEdgeFixture) {
+		win, ok := f.wm.SplitRoot(f.side(side), &component.TestComponent{Ch: ch})
+		require.True(f.t, ok, "split root %c", ch)
+		f.tiles[ch] = win
+	}
+}
+
+func closeWindow(ch rune) tileEdgeAction {
+	return func(f *tileEdgeFixture) {
+		require.NoError(f.t, f.tiles[ch].Close())
+		delete(f.tiles, ch)
+	}
+}
+
+// resizeManager resizes the manager to main cells along the main axis.
+func resizeManager(main int) tileEdgeAction {
+	return func(f *tileEdgeFixture) {
+		f.main = main
+		f.wm.Resize(f.axis.size(main, tileEdgeCross))
+	}
+}
+
+// dragRight drags the right edge of ch by cells, leftwards when negative.
+func dragRight(ch rune, by int) tileEdgeAction {
+	return dragEdge(ch, component.AlignmentRight, by)
+}
+
+// dragBottom drags the bottom edge of ch by cells, upwards when negative.
+func dragBottom(ch rune, by int) tileEdgeAction {
+	return dragEdge(ch, component.AlignmentBottom, by)
+}
+
+func dragEdge(ch rune, side component.Alignment, by int) tileEdgeAction {
+	return func(f *tileEdgeFixture) {
+		f.relayout()
+		win, edge := f.tiles[ch], f.side(side)
+		pos := win.Position()
+		to := pos.X + win.Width() - 1 + by
+		if edge == component.AlignmentBottom {
+			to = pos.Y + win.Height() - 1 + by
+		}
+		require.True(f.t, f.wm.MoveTileEdge(win, edge, to), "drag %c by %d", ch, by)
+	}
+}
+
+func resetRight(ch rune) tileEdgeAction {
+	return resetEdge(ch, component.AlignmentRight, true)
+}
+
+func resetBottom(ch rune) tileEdgeAction {
+	return resetEdge(ch, component.AlignmentBottom, true)
+}
+
+// refuseRight checks that the right edge of ch cannot be reset.
+func refuseRight(ch rune) tileEdgeAction {
+	return resetEdge(ch, component.AlignmentRight, false)
+}
+
+// refuseBottom checks that the bottom edge of ch cannot be reset.
+func refuseBottom(ch rune) tileEdgeAction {
+	return resetEdge(ch, component.AlignmentBottom, false)
+}
+
+func resetEdge(ch rune, side component.Alignment, ok bool) tileEdgeAction {
+	return func(f *tileEdgeFixture) {
+		assert.Equal(f.t, ok, f.wm.ResetTileEdge(f.tiles[ch], f.side(side)), "reset %c", ch)
+	}
+}
+
+// resetWindow resets ch as windowresize reset does.
+func resetWindow(ch rune) tileEdgeAction {
+	return func(f *tileEdgeFixture) {
+		win := f.tiles[ch]
+		okh := f.wm.SetHeight(win, 0)
+		okw := f.wm.SetWidth(win, 0)
+		assert.True(f.t, okh || okw, "reset %c", ch)
+	}
+}
+
+func setDefaultWidth(ch rune, width int) tileEdgeAction {
+	return defaultWidth(ch, width, true)
+}
+
+// refuseDefaultWidth checks that ch cannot take width as its default.
+func refuseDefaultWidth(ch rune, width int) tileEdgeAction {
+	return defaultWidth(ch, width, false)
+}
+
+func defaultWidth(ch rune, width int, ok bool) tileEdgeAction {
+	return func(f *tileEdgeFixture) {
+		assert.Equal(f.t, ok, f.wm.SetDefaultWidth(f.tiles[ch], width), "default %c", ch)
+	}
 }

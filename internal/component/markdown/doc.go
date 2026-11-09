@@ -21,6 +21,20 @@
 // lists (ordered, unordered, task), code blocks, blockquotes, tables,
 // and horizontal rules.
 //
+// # Images
+//
+// A component given an ImagesConfig shows the pictures of a paragraph
+// made only of images at GitHub's size relative to the text, each
+// captioned with its title. An attribute block right after an image
+// sizes it in cells instead:
+//
+//	![Acme](logo.png "Acme"){cols=16 rows=8 maintain_aspect_ratio=false}
+//
+// With one of cols and rows, the other follows the picture's aspect
+// ratio. With both, the picture fits in the box, or fills it when
+// maintain_aspect_ratio is false. Sizes are whole numbers from 1 to
+// 1000, and a box wider than the component shrinks to it.
+//
 // # Basic Usage
 //
 //	md := markdown.New("# Hello World\n\nThis is a **bold** statement.")

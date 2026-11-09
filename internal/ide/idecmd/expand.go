@@ -43,17 +43,10 @@ func expandTarget(
 			return nil, nil, err
 		}
 		recordReferences(rest, len(args), referenced)
-		envOSFallback := cmdenv.Source(func(name string) (string, bool) {
-			if v, ok := env(name); ok {
-				return v, true
-			}
-			if v, ok := os.LookupEnv(name); ok {
-				return v, true
-			}
-			return "", false
-		})
-		expanded := cmdenv.ExpandBody(
-			cmdenv.WithCommandSubstitution(ctx), rest, envOSFallback)
+		expanded, err := expandPluginBody(ctx, rest, env)
+		if err != nil {
+			return nil, nil, err
+		}
 		return []string{head, expanded}, referenced, nil
 	}
 	tokens := command.SplitCommandLine(target)
@@ -73,6 +66,24 @@ func expandTarget(
 		argv = append(argv, expanded)
 	}
 	return argv, referenced, nil
+}
+
+// expandPluginBody expands a ! or !! body against env, then the
+// process environment. The result is the line the shell runs, so every
+// value in it has been escaped for where it landed.
+func expandPluginBody(
+	ctx context.Context, body string, env cmdenv.Source,
+) (string, error) {
+	envOSFallback := cmdenv.Source(func(name string) (string, bool) {
+		if v, ok := env(name); ok {
+			return v, true
+		}
+		if v, ok := os.LookupEnv(name); ok {
+			return v, true
+		}
+		return "", false
+	})
+	return cmdenv.ExpandBody(cmdenv.WithCommandSubstitution(ctx), body, envOSFallback)
 }
 
 // overlay returns a cmdenv.Source that resolves $1..$9 against args,
@@ -116,4 +127,9 @@ func splitPluginPrefix(target string) (head, rest string, ok bool) {
 func isPluginTarget(target string) bool {
 	_, _, ok := splitPluginPrefix(target)
 	return ok
+}
+
+// isPluginName reports whether name is the `!` or `!!` command.
+func isPluginName(name string) bool {
+	return name == "!" || name == "!!"
 }

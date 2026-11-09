@@ -25,7 +25,7 @@ import (
 )
 
 // Pulse returns a Shader that ping-pongs every cell's Fg and Bg
-// toward params.Color over params.PeriodFrames frames. Zero or
+// toward params.Color params.Pulses times over the animation. Zero or
 // invalid fields in params fall back to [DefaultPulseParams].
 // defaultAttr resolves [term.ColorDefault] cells for the blend;
 // when a cell color and defaultAttr counterpart are both default,
@@ -38,8 +38,8 @@ func Pulse(params PulseParams, defaultAttr term.Attributes) Shader {
 	if params.Color == term.ColorDefault {
 		params.Color = defaults.Color
 	}
-	if params.PeriodFrames < 2 {
-		params.PeriodFrames = defaults.PeriodFrames
+	if !(params.Pulses > 0) || math.IsInf(params.Pulses, 0) {
+		params.Pulses = defaults.Pulses
 	}
 	if params.Intensity <= 0 {
 		params.Intensity = defaults.Intensity
@@ -52,21 +52,22 @@ type PulseParams struct {
 	// Color is the highlight color cells fade toward at peak
 	// intensity.
 	Color term.Color
-	// PeriodFrames is the number of frames in one full pulse.
-	// Values below 2 are replaced by the default.
-	PeriodFrames int
+	// Pulses is the number of full pulses over the animation; each
+	// starts and ends with the cells untouched. Values at or below
+	// zero, and infinite ones, are replaced by the default.
+	Pulses float64
 	// Intensity caps the peak blend weight in [0, 1]. Values
 	// at or below zero are replaced by the default.
 	Intensity float64
 }
 
 // DefaultPulseParams returns [PulseParams] with Color=white,
-// PeriodFrames=48, and Intensity=0.6.
+// Pulses=1, and Intensity=0.6.
 func DefaultPulseParams() PulseParams {
 	return PulseParams{
-		Color:        term.NewRGBColor(255, 255, 255),
-		PeriodFrames: 48,
-		Intensity:    0.6,
+		Color:     term.NewRGBColor(255, 255, 255),
+		Pulses:    1,
+		Intensity: 0.6,
 	}
 }
 
@@ -76,11 +77,11 @@ type pulse struct {
 }
 
 func (s *pulse) Shade(frame, total int, cells [][]term.Cell) {
-	if frame < 0 || s.PeriodFrames < 2 {
+	if total <= 0 || frame < 0 || frame >= total {
 		return
 	}
-	_ = total
-	cyclePos := float64(frame%s.PeriodFrames) / float64(s.PeriodFrames)
+	cyclePos := float64(frame) / float64(total) * s.Pulses
+	cyclePos -= math.Floor(cyclePos)
 	// sin(pi*x) peaks at cyclePos=0.5 and returns to zero at
 	// cycle boundaries — softer than a triangle wave.
 	weight := math.Sin(math.Pi*cyclePos) * s.Intensity

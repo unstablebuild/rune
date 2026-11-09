@@ -1366,3 +1366,28 @@ func TestLessPromptMode(t *testing.T) {
 		require.Equal(t, "b", b.SearchText())
 	})
 }
+
+// newPointerLess returns a Less holding more lines than any test size,
+// some longer than its width, with a search bar open.
+func newPointerLess(t *testing.T) *Less {
+	t.Helper()
+	l := NewLess(DefaultLessConfig())
+	var b strings.Builder
+	for i := range 200 {
+		b.WriteString(strings.Repeat(string(rune('a'+i%26)), i%90))
+		b.WriteString("\n")
+	}
+	_, err := l.Buffer().ReadFrom(strings.NewReader(b.String()))
+	require.NoError(t, err)
+	l.SetMessage("message")
+	return l
+}
+
+func TestLessPointerLeaves(t *testing.T) {
+	for _, size := range [][2]int{{60, 15}, {1, 1}} {
+		l := newPointerLess(t)
+		handlertest.RunPointerLeaves(t, l, size[0], size[1])
+		l.SetSearchMode(LessMoveForward)
+		handlertest.RunPointerLeaves(t, l, size[0], size[1])
+	}
+}

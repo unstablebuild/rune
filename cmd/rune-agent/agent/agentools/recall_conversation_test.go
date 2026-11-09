@@ -19,6 +19,7 @@ package agentools
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"syscall"
@@ -123,4 +124,8 @@ func TestRecallConversation_Definition(t *testing.T) {
 	tool := NewRecallConversation(exec, "/data/memories")
 	def := tool.Definition()
 	assert.Equal(t, "recall_conversation", def.Function.Name)
+}
+
+func (*mockExec) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
 }

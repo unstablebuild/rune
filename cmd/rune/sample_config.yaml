@@ -66,12 +66,17 @@
 #  max_lines: 1000
 #  # Enable terminal modal mode on <esc>.
 #  modal: true
+#  # What programs in the terminal may do with the clipboard (OSC 52).
+#  clipboard:
+#    write: true
+#    read: false
 
 #workspace:
 #  auto_restore: true
 #  # Override the default ASCII wallpaper.
-#  #wallpaper: myAsciiArt
+#  #wallpaper_ascii: myAsciiArt
 #  #wallpaper_image: /path/to/image.png
+#  #wallpaper_image_ascii: /path/to/image.png
 
 #telemetry:
 #  # Report anonymous usage and system information. Set to false to opt out.

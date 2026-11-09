@@ -190,6 +190,7 @@ type mockWindowManager struct {
 	focusFn            func() (browserapi.Window, error)
 	floatingFn         func(browserapi.Floating, browserapi.FloatingConfig) (browserapi.Window, error)
 	setWindowContentFn func(browserapi.Window, browserapi.Handler) error
+	closeWindowCalls   int
 }
 
 func (m *mockWindowManager) Focus() (browserapi.Window, error) {
@@ -228,10 +229,11 @@ func (m *mockWindowManager) SetWindowContent(w browserapi.Window, h browserapi.H
 }
 
 func (m *mockWindowManager) CloseWindow(_ browserapi.Window) error {
+	m.closeWindowCalls++
 	return nil
 }
 
-func (m *mockWindowManager) SetTabActivity(workspaceapi.URI, bool) error { return nil }
+func (m *mockWindowManager) SetTabStatus(workspaceapi.URI, browserapi.TabStatus) error { return nil }
 
 // mockResourceOpener implements
 // browserapi.ResourceOpener.
@@ -245,6 +247,8 @@ func (m *mockResourceOpener) Open(uri workspaceapi.URI) (browserapi.Handler, err
 	}
 	return nil, nil
 }
+
+func (m *mockResourceOpener) Show(workspaceapi.URI) error { return nil }
 
 // mockNotifications implements browserapi.Notifications.
 type mockNotifications struct {

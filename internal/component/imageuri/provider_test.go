@@ -34,6 +34,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
+	"github.com/unstablebuild/rune-go-sdk/term"
 )
 
 var (
@@ -291,4 +292,133 @@ func TestCachedProviderFile(t *testing.T) {
 			assert.Equal(t, testBlue, pixel(t, img))
 		})
 	}
+}
+
+func TestRefresh(t *testing.T) {
+	tests := []struct {
+		name string
+		// uri overrides the file URI of the image.
+		uri string
+		// change runs after New cached the red image.
+		change   func(t *testing.T, path string)
+		wantErr  string
+		wantNext color.RGBA
+		// wantNextErr is what a New created after Refresh settles with.
+		wantNextErr bool
+	}{
+		{
+			name: "file overwritten in place",
+			change: func(t *testing.T, path string) {
+				require.NoError(t, os.WriteFile(path, encodePNG(t, solid(1, 1, testBlue)), 0o600))
+			},
+			wantNext: testBlue,
+		},
+		{
+			name: "missing file",
+			change: func(t *testing.T, path string) {
+				require.NoError(t, os.Remove(path))
+			},
+			wantErr:     "img.png",
+			wantNextErr: true,
+		},
+		{
+			name:    "invalid URI",
+			uri:     "ftp://example.com/img.png",
+			wantErr: `unsupported scheme "ftp"`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "img.png")
+			require.NoError(t, os.WriteFile(path, encodePNG(t, solid(1, 1, testRed)), 0o600))
+			uri := (&url.URL{Scheme: "file", Path: filepath.ToSlash(path)}).String()
+			storage := storagestub.NewInMemoryService()
+			img, err := loadNew(t, uri, storage)
+			require.NoError(t, err)
+			require.Equal(t, testRed, pixel(t, img))
+			if tt.change != nil {
+				tt.change(t, path)
+			}
+			if tt.uri != "" {
+				uri = tt.uri
+			}
+
+			img, err = Refresh(t.Context(), uri, time.Hour, storage)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, tt.wantNext, pixel(t, img))
+			}
+			if tt.uri != "" {
+				return
+			}
+
+			img, err = loadNew(t, uri, storage)
+			if tt.wantNextErr {
+				assert.Error(t, err, "the stale bytes must not be served")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantNext, pixel(t, img))
+		})
+	}
+}
+
+func TestFileURIDataDir(t *testing.T) {
+	tests := []struct {
+		name    string
+		uri     string
+		dataDir string
+		wantErr string
+	}{
+		{name: "plain spelling", uri: "file://$RUNE_DATADIR/lib/theme/img.png", dataDir: "data"},
+		{name: "braced spelling", uri: "file://${RUNE_DATADIR}/lib/theme/img.png", dataDir: "data"},
+		{name: "unset leaves the URI as written", uri: "file://$RUNE_DATADIR/lib/theme/img.png", wantErr: "img.png"},
+		{name: "other variables stay literal", uri: "file://$HOME/lib/theme/img.png", dataDir: "data", wantErr: "img.png"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			dataDir := ""
+			if tt.dataDir != "" {
+				dataDir = filepath.Join(root, tt.dataDir)
+			}
+			t.Setenv("RUNE_DATADIR", dataDir)
+			path := filepath.Join(root, "data", "lib", "theme", "img.png")
+			require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+			require.NoError(t, os.WriteFile(path, encodePNG(t, solid(1, 1, testBlue)), 0o600))
+			require.NoError(t, ValidateURI(tt.uri))
+
+			img, err := loadNew(t, tt.uri, storagestub.NewInMemoryService())
+			refreshed, refreshErr := Refresh(t.Context(), tt.uri, time.Hour, storagestub.NewInMemoryService())
+			if tt.wantErr != "" {
+				assert.ErrorContains(t, err, tt.wantErr)
+				assert.ErrorContains(t, refreshErr, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			require.NoError(t, refreshErr)
+			assert.Equal(t, testBlue, pixel(t, img))
+			assert.Equal(t, testBlue, pixel(t, refreshed))
+		})
+	}
+}
+
+// loadNew returns what a Component from New settles with.
+func loadNew(
+	t *testing.T, uri string, storage storageapi.Service,
+) (image.Image, error) {
+	t.Helper()
+	c, err := New(uri, time.Hour, storage, term.NopInterrupter(), Style{})
+	require.NoError(t, err)
+	defer c.Close() //nolint:errcheck
+	c.Start()
+	require.Eventually(t, func() bool {
+		_, settled := c.Size()
+		return settled
+	}, 10*time.Second, time.Millisecond)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.img, c.err
 }

@@ -25,6 +25,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/textapi/textrpc"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/browser"
+	thandlerrpc "unstable.build/rune/internal/handler/handlerrpc"
 	"unstable.build/rune/internal/rpc"
 	"unstable.build/rune/internal/text"
 	ttextrpc "unstable.build/rune/internal/text/textrpc"
@@ -34,9 +35,9 @@ import (
 // capable of serving each of the b Editor's resources.
 func EditorResources(
 	b browser.Notifications, ed text.Editor,
-	publishEvent func(term.Event) bool,
+	publishEvent func(term.Event) bool, graphics thandlerrpc.GraphicsConfig,
 ) map[extensionapi.Permission]ResourceRegistrar {
-	s := newEditorResourceServer(b, ed, publishEvent)
+	s := newEditorResourceServer(b, ed, publishEvent, graphics)
 	return map[extensionapi.Permission]ResourceRegistrar{
 		extensionapi.PermissionEditor: s,
 	}
@@ -46,23 +47,25 @@ type editorResourceServer struct {
 	b            browser.Notifications
 	ed           text.Editor
 	publishEvent func(term.Event) bool
+	graphics     thandlerrpc.GraphicsConfig
 }
 
 func newEditorResourceServer(
 	b browser.Notifications, ed text.Editor,
-	publishEvent func(term.Event) bool,
+	publishEvent func(term.Event) bool, graphics thandlerrpc.GraphicsConfig,
 ) *editorResourceServer {
 	ret := new(editorResourceServer)
 	ret.ed = ed
 	ret.b = b
 	ret.publishEvent = publishEvent
+	ret.graphics = graphics
 	return ret
 }
 
 func (s *editorResourceServer) Register(
 	registrar rpc.ServiceRegistrar, lock sync.Locker,
 ) (io.Closer, error) {
-	server := ttextrpc.NewServer(s.b, s.ed, lock)
+	server := ttextrpc.NewServer(s.b, s.ed, lock, s.graphics)
 	server.SetEventPublisher(func(ev term.Event) error {
 		if !s.publishEvent(ev) {
 			return errors.New("event stream not ready")

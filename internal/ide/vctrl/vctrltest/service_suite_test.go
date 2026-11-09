@@ -419,32 +419,14 @@ func setupGitRepos(t *testing.T) (reposPath string) {
 
 	reposTarball := "testdata/repos.tar"
 
-	cmd := exec.Command("tar", "-xf", reposTarball, "-C", tmpDir)
-	err = cmd.Run()
-	require.NoError(t, err)
+	// Tar run as root keeps the archive's owner, and git refuses
+	// repositories owned by someone else.
+	out, err := exec.Command(
+		"tar", "--no-same-owner", "-xf", reposTarball, "-C", tmpDir,
+	).CombinedOutput()
+	require.NoError(t, err, "%s", out)
 
 	reposPath = tmpDir + "/repos"
-
-	// mark all projects under tree as safe so git commands work on CI.
-	// do it only in the case of CI since locally it works and we don't
-	// want to clump our ~/.gitconfig file with many entries to ephemeral
-	// directories, if running locally would fail because of that then
-	// we would do `git config --global --unset safe.directory ...` in
-	// the deferred cleanup step tear down function.
-	if os.Getenv("CI") == "true" {
-		files, err := os.ReadDir(reposPath)
-		require.NoError(t, err)
-		for _, file := range files {
-			if file.IsDir() {
-				cmd = exec.Command(
-					"git", "config", "--global", "--add", "safe.directory",
-					filepath.Join(reposPath, file.Name()),
-				)
-				err = cmd.Run()
-				require.NoError(t, err)
-			}
-		}
-	}
 	t.Cleanup(func() {
 		os.RemoveAll(reposPath)
 	})

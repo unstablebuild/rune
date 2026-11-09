@@ -18,7 +18,6 @@ package glslshader
 
 import (
 	"math"
-	"math/rand"
 
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/component/asciiart"
@@ -28,7 +27,10 @@ import (
 // Embers are shows burning in ring-like blobs that turn into ashes as sparks
 // glitter on top. As this happens ascending rising particles displace the
 // original characters that end up landing on the original position.
-func Embers(params EmbersParams, defaultAttr term.Attributes, fps float) shader.Shader {
+//
+// Every timing is a fraction of the run, so a longer run plays the same
+// embers slower.
+func Embers(params EmbersParams, defaultAttr term.Attributes) shader.Shader {
 	// Change normalized parameters to suitable ranges.
 	params.DurationPercCoolDown = clamp(params.DurationPercCoolDown, 0.0, 1.0)
 	params.DurationPercDisappear = clamp(params.DurationPercDisappear, 0.0, 1.0)
@@ -42,15 +44,14 @@ func Embers(params EmbersParams, defaultAttr term.Attributes, fps float) shader.
 		)
 	}
 
-	params.Scale *= 20.0       // from 0..1 to 0..20
-	params.Fierce *= 2.0       // from 0..1 to 0..2
-	params.GlowSpeed *= 20.0   // from 0..1 to 0..16
-	params.SparksSpeed *= 60.0 // from 0..1 to 0..60
+	params.Scale *= 20.0        // from 0..1 to 0..20
+	params.Fierce *= 2.0        // from 0..1 to 0..2
+	params.GlowSpeed *= 60.0    // from 0..1 to 0..60 radians over the run
+	params.SparksSpeed *= 180.0 // from 0..1 to 0..180 radians over the run
 
 	return &embers{
 		EmbersParams: params,
 		defaultAttr:  defaultAttr,
-		fps:          fps,
 	}
 }
 
@@ -145,22 +146,29 @@ type EmbersColors struct {
 type embers struct {
 	EmbersParams
 	defaultAttr term.Attributes
-	fps         float
 }
 
+// ashStagger staggers when neighbouring characters turn to ash, as a
+// fraction of the run per step of a four-step pattern.
+const ashStagger = 30 / tunedSteps
+
 func (s *embers) Shade(frame, total int, cells [][]term.Cell) {
-	if frame < 0 || frame >= total {
+	if total <= 0 || frame < 0 || frame >= total {
 		return
 	}
 
+	progress := float(frame) / float(total)
 	for y := range cells {
 		for x := 0; x < len(cells[0]); x++ {
-			s.processCell(x, y, frame, total, cells)
+			s.processCell(x, y, progress, cells)
 		}
 	}
 }
 
-func (s *embers) processCell(x, y int, frame, total int, cells [][]term.Cell) (
+// processCell shades the cell at x, y as it is progress, in [0, 1),
+// into the run. A negative progress stands for a cell the embers are
+// yet to reach.
+func (s *embers) processCell(x, y int, progress float, cells [][]term.Cell) (
 	embersAmount, hotRings float, // useful outputs for creative shader combination
 ) {
 	if y >= len(cells) || x >= len(cells[y]) {
@@ -191,11 +199,11 @@ func (s *embers) processCell(x, y int, frame, total int, cells [][]term.Cell) (
 	// Produce the embers.
 
 	embersProgress := clamp(
-		(float(frame))/(float(total)*s.DurationPercCoolDown),
+		progress/s.DurationPercCoolDown,
 		0.0, 1.0,
 	)
 	embersAmount, hotRings, embersChar, embersFg, embersBg := s.embers(
-		p, cellX, cellY, embersProgress, frame, total, cells,
+		p, cellX, cellY, embersProgress, progress, cells,
 	)
 
 	char := embersChar
@@ -204,11 +212,10 @@ func (s *embers) processCell(x, y int, frame, total int, cells [][]term.Cell) (
 
 	ashesFg, ashesBg := s.ashes(p)
 
-	const kFgEmberAshFadeAmplitude = 30.0
 	fgEmbersAshesFade := clamp(
-		(1.0)-(float(frame)-
-			kFgEmberAshFadeAmplitude*float((fragCoordX+fragCoordY)%4))/
-			(s.DurationPercFgEmberToAsh*float(total)),
+		(1.0)-(progress-
+			ashStagger*float((fragCoordX+fragCoordY)%4))/
+			s.DurationPercFgEmberToAsh,
 		0.0, 1.0,
 	)
 	hotRingsFg := mix3D(
@@ -236,7 +243,7 @@ func (s *embers) embers(
 	p vec2D,
 	cellX, cellY int,
 	emberProgress float,
-	frame, total int,
+	progress float,
 	cells [][]term.Cell,
 ) (emberAmount float, hotRings float, char rune, fg, bg vec3D) {
 	if cellY >= len(cells) || cellX >= len(cells[cellY]) {
@@ -245,8 +252,6 @@ func (s *embers) embers(
 
 	cell := cells[cellY][cellX]
 
-	progress := float(frame) / float(total)
-
 	noise := noiseSimplex(p)
 	strength := s.Fierce * smoothstep(
 		s.DurationPercCoolDown+s.DurationPercDisappear,
@@ -254,7 +259,7 @@ func (s *embers) embers(
 		progress,
 	)
 	loc := clamp(strength+noise-emberProgress, 0.0, 1.0)
-	glow := 0.5 + 0.5*sin((s.GlowSpeed*(float(frame)/float(s.fps)))+loc*10.0)
+	glow := 0.5 + 0.5*sin((s.GlowSpeed*progress)+loc*10.0)
 
 	// General amount of ember.
 	emberAmount = clamp(loc*glow, 0.0, 1.0)
@@ -276,13 +281,22 @@ func (s *embers) embers(
 		// Spark locations outside the ember blobs, scattered in ashes.
 		char = cell.Ch
 		if cell.Width == 0 { // show ash characters on empty cells
-			char = s.Chars[rand.Intn(len(s.Chars)-1)]
+			// A different one every step, so they flicker. Each cell
+			// flips at its own point of the step so that, over a long
+			// run, they do not all flip on the same frame.
+			phase := float(hashCell(cellX, cellY, -1)) / (1 << 32)
+			step := int(math.Floor(progress*tunedSteps + phase))
+			ashes := uint32(len(s.Chars) - 1)
+			if ashes == 0 {
+				ashes = 1
+			}
+			char = s.Chars[hashCell(cellX, cellY, step)%ashes]
 			cells[cellY][cellX].Width = 1
 		}
 		const kBreakPatternX = 389
 		const kBreakPatternY = 123
 		sp := 0.5*sin(
-			(s.SparksSpeed*(float(frame)/float(s.fps)))/(3.0+sparksLoc*4.0)+
+			(s.SparksSpeed*progress)/(3.0+sparksLoc*4.0)+
 				float(cellX*kBreakPatternX+cellY*kBreakPatternY)) + 0.5
 		fg = mix3D(
 			colToVec(s.Colors.Sparks2, s.defaultAttr.Fg),
@@ -317,6 +331,16 @@ func (s *embers) embers(
 	)
 
 	return
+}
+
+// hashCell scrambles a cell's coordinates and a step of time into
+// bits that look random but are always the same for the same input.
+func hashCell(x, y, step int) uint32 {
+	h := uint32(x)*0x8da6b343 ^ uint32(y)*0xd8163841 ^ uint32(step)*0xcb1ab31f
+	h ^= h >> 13
+	h *= 0x5bd1e995
+	h ^= h >> 15
+	return h
 }
 
 func (s *embers) ashes(p vec2D) (fg vec3D, bg vec3D) {

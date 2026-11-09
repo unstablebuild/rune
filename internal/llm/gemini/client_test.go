@@ -29,6 +29,16 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
 )
 
+func TestClient_ImageGenerationUnsupported(t *testing.T) {
+	var svc llmapi.Service = &client{}
+	supported, err := svc.CanGenerateImages(context.Background(), llmapi.ModelEntry{})
+	require.NoError(t, err)
+	assert.False(t, supported)
+	image, err := svc.GenerateImage(context.Background(), llmapi.ModelEntry{}, llmapi.ImageRequest{})
+	require.ErrorIs(t, err, llmapi.ErrImageGenerationUnsupported)
+	assert.Equal(t, llmapi.Image{}, image)
+}
+
 // sseServer returns an httptest.Server that replays the given streamGenerateContent
 // SSE chunks, plus the gemini.Config pointing the SDK at it.
 func sseServer(t *testing.T, chunks []string) (*httptest.Server, Config) {

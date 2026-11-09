@@ -26,7 +26,31 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"unstable.build/rune/internal/handler/locationpicker"
 )
+
+func TestPresentLocationsPickerCloseLeavesItsWindow(t *testing.T) {
+	var floated browserapi.Floating
+	wm := &mockWindowManager{
+		floatingFn: func(f browserapi.Floating, _ browserapi.FloatingConfig) (browserapi.Window, error) {
+			floated = f
+			return &mockWindow{id: 1}, nil
+		},
+	}
+	entries := []locationEntry{
+		{uri: "file:///a.go", display: "a.go:1"},
+		{uri: "file:///b.go", display: "b.go:1"},
+	}
+	presentLocations("references", workspaceapi.URI{}, entries, &mockResourceOpener{}, wm,
+		&mockEditor{}, &mockNotifications{}, &mockFileSystem{}, syncTick, nil,
+		locationpicker.DefaultConfig(), nil)
+	require.NotNil(t, floated)
+
+	require.NoError(t, floated.Close())
+
+	assert.Zero(t, wm.closeWindowCalls,
+		"the window may already show other content when the picker is released")
+}
 
 func TestNavigateTo(t *testing.T) {
 	tests := []struct {

@@ -24,6 +24,7 @@ package locationsearch
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -34,6 +35,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	sdkhandler "github.com/unstablebuild/rune-go-sdk/handler"
+	"github.com/unstablebuild/rune-go-sdk/iterator"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/handler/finder"
@@ -76,6 +78,41 @@ type Config struct {
 	// MaxHistory caps the number of entries persisted in history when
 	// HistoryDocumentID is set. Zero uses the finder default.
 	MaxHistory int
+
+	// Source, when set, lists the entries instead of a command.
+	Source func(ctx context.Context) (iterator.Iterator[string], error)
+
+	// Annotate, when set, describes an entry beyond its location; see
+	// Annotation. It is called on every draw with the focused entry, or
+	// "" when no entry is focused, so it must be cheap. Setting it adds
+	// a status bar under the list.
+	Annotate func(entry string) Annotation
+
+	// Label leads the status bar, as an editor's status bar leads with
+	// its mode.
+	Label string
+
+	// TermAttr is overlaid on an entry's terms in the preview.
+	TermAttr term.Attributes
+}
+
+// Annotation is what Config.Annotate knows about an entry beyond its
+// location.
+type Annotation struct {
+	// Status follows the label in the status bar, and Detail is set
+	// against the bar's right end. Only their first lines are shown,
+	// and Status is cut short where they would meet.
+	Status, Detail string
+	// Error replaces the label with an ERROR one, in red.
+	Error bool
+	// First and Last are the lines, from 1, that the entry spans in its
+	// file; zero when it spans none. The entry's own line is then
+	// highlighted in the preview whether its location has a column or
+	// not.
+	First, Last int
+	// Terms are emphasized, regardless of case, in the lines the entry
+	// spans.
+	Terms []string
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -86,6 +123,7 @@ func DefaultConfig() Config {
 		MinPreviewWidth:     defaultMinPreviewWidth,
 		SeparatorHeight:     defaultSeparatorHeight,
 		MaxListHeight:       defaultMaxListHeight,
+		TermAttr:            term.Attributes{Attrs: term.AttrBold | term.AttrUnderline},
 	}
 }
 
@@ -106,8 +144,6 @@ type Handler struct {
 	// horizontal margin, and so the rightmost cell of the search
 	// bar row is free for the scan-progress animation.
 	innerSpan *sdkhandler.Span
-	wm        browserapi.WindowManager
-	win       browserapi.Window
 	fs        workspaceapi.FileSystem
 	parser    syntaxapi.Parser
 	schedule  func(func()) bool
@@ -119,9 +155,15 @@ type Handler struct {
 	innerW, innerH int
 	previewH       int
 	listH          int
+	// statusH is the height of the status bar: none without Annotate.
+	statusH int
 
 	// preview state
 	previewCells [][]term.Cell
+	// previewW is the widest line of every preview shown so far: the
+	// picker grows to fit a wider file but never narrows back, which
+	// would jerk it about as the focus moves through the list.
+	previewW     int
 	prevLine     string
 	targetLine   int
 	targetStartX int
@@ -154,7 +196,8 @@ var _ browserapi.Floating = (*Handler)(nil)
 // preview pane above it. Each stdout line of `command` is parsed as
 // `path[:line[:col]]` for both the list entries and the preview
 // target. `parser` is optional; when nil the preview pane shows
-// uncolored cells.
+// uncolored cells. Exactly one of `command` and cfg.Source must be set.
+// A `command` that fails to start is reported as an error notification.
 func New(
 	ctx context.Context,
 	clients finder.Clients,
@@ -169,14 +212,25 @@ func New(
 	if log == nil {
 		log = slog.Default()
 	}
+	var source func(workspaceapi.FileSystem, context.Context) (iterator.Iterator[string], error)
+	if cfg.Source != nil {
+		if command != "" {
+			return nil, errors.New("locationsearch: a command and a Source are exclusive")
+		}
+		source = func(_ workspaceapi.FileSystem, ctx context.Context) (iterator.Iterator[string], error) {
+			return cfg.Source(ctx)
+		}
+	}
 
 	h := &Handler{
-		wm:       clients.WindowManager,
 		fs:       clients.FileSystem,
 		parser:   parser,
 		schedule: scheduleNextTick,
 		log:      log,
 		cfg:      cfg,
+	}
+	if cfg.Annotate != nil {
+		h.statusH = statusBarHeight
 	}
 
 	getResource := func(fs workspaceapi.FileSystem, line string) (
@@ -195,7 +249,7 @@ func New(
 	}
 	rh, err := finder.NewWithListConfig(ctx, clients, invokeWindow,
 		cfg.HistoryKey, cfg.HistoryDocumentID, command, maxHistory,
-		listCfg, nil, getResource)
+		listCfg, source, getResource)
 	if err != nil {
 		return nil, err
 	}
@@ -208,29 +262,33 @@ func New(
 	return h, nil
 }
 
-// SetWindow records the floating window handle that hosts this
-// handler. If set, Close uses it to dismiss the floating window.
-func (h *Handler) SetWindow(win browserapi.Window) { h.win = win }
-
 // Resize positions the preview pane and forwards the residual list
 // area to the inner fuzzy-search handler.
 func (h *Handler) Resize(w, height int) {
 	h.innerW = w
 	h.innerH = height
 	h.previewH = clampPreviewHeight(h.cfg.PreviewContextLines,
-		height-1-h.cfg.SeparatorHeight)
-	h.listH = max(1, height-h.previewH-h.cfg.SeparatorHeight)
+		height-1-h.cfg.SeparatorHeight-h.statusH)
+	h.listH = max(1, height-h.previewH-h.cfg.SeparatorHeight-h.statusH)
 	h.innerSpan.Resize(w, h.listH)
 }
 
 // Draw refreshes the preview from the focused selection then renders
-// the preview, separator and inner list into w.
+// the preview, separator, inner list and status bar into w.
 func (h *Handler) Draw(w term.Writer) {
+	// The list keeps at least one row even when the preview, the
+	// separator and the status bar already fill the handler: truncate
+	// instead of drawing past it.
+	w = &component.VirtualWriter{Writer: w, Width: h.innerW, Height: h.innerH}
 	sel, _ := h.inner.Selection()
 	if sel != h.prevLine {
 		h.loadPreview(sel)
 	}
-	h.drawPreview(w)
+	var ann Annotation
+	if h.cfg.Annotate != nil {
+		ann = h.cfg.Annotate(sel)
+	}
+	h.drawPreview(w, ann)
 	h.drawSeparator(w)
 	innerOffset := term.Coordinates{Y: h.previewH + h.cfg.SeparatorHeight}
 	innerWriter := &component.VirtualWriter{
@@ -254,6 +312,7 @@ func (h *Handler) Draw(w term.Writer) {
 		h.scanAnim.Resize(scanSpinnerWidth, 1)
 		h.scanAnim.Draw(spinnerWriter)
 	}
+	h.drawStatusBar(w, ann)
 }
 
 // Handle delegates events to the inner fuzzy-search handler.
@@ -271,28 +330,17 @@ func (h *Handler) Cursor() (term.Coordinates, term.CursorStyle, bool) {
 // Selection returns the currently focused list entry.
 func (h *Handler) Selection() (string, bool) { return h.innerSpan.Selection() }
 
-// Close releases the inner finder and closes the floating window if
-// one was registered via SetWindow.
+// Close releases the inner finder. The window is left to its owner,
+// since it may already show other content.
 func (h *Handler) Close() error {
 	h.stopScanSpinner()
-	err := h.inner.Close()
-	if h.win != nil && h.wm != nil {
-		if cerr := h.wm.CloseWindow(h.win); cerr != nil && err == nil {
-			err = cerr
-		}
-	}
-	return err
+	return h.inner.Close()
 }
 
 // Dimensions returns the preferred floating-window size.
 func (h *Handler) Dimensions() (int, int) {
-	w := h.cfg.MinPreviewWidth
-	for _, row := range h.previewCells {
-		if len(row) > w {
-			w = len(row)
-		}
-	}
-	return w, h.cfg.MaxListHeight + h.cfg.PreviewContextLines + h.cfg.SeparatorHeight
+	return max(h.cfg.MinPreviewWidth, h.previewW),
+		h.cfg.MaxListHeight + h.cfg.PreviewContextLines + h.cfg.SeparatorHeight + h.statusH
 }
 
 func applyDefaults(cfg Config) Config {
@@ -343,6 +391,94 @@ const scanSpinnerWidth = 1
 // edges. The right-edge padding is also where the scan-progress
 // animation is drawn during scanning.
 const spanHorizontalPad = 2
+
+// statusBarHeight is the height of the status bar under the list.
+const statusBarHeight = 1
+
+// The status bar looks like an editor's: a gray bar led by a label that
+// shades into it.
+var (
+	statusBarAttr  = term.Attributes{Fg: term.ColorWhite, Bg: term.ColorGray}
+	labelAttr      = term.Attributes{Fg: term.ColorWhite, Bg: term.ColorBlue, Attrs: term.AttrBold}
+	errorLabelAttr = term.Attributes{Fg: term.ColorWhite, Bg: term.ColorRed, Attrs: term.AttrBold}
+)
+
+const (
+	errorLabel = "ERROR"
+	labelShade = "█▓▒░"
+)
+
+// drawStatusBar draws ann on the last row, which a GUI shifts down half
+// a cell onto the frame, as it does an editor's status bar.
+func (h *Handler) drawStatusBar(w term.Writer, ann Annotation) {
+	y := h.innerH - h.statusH
+	if h.statusH == 0 || y < 0 {
+		return
+	}
+	for x := range h.innerW {
+		w.SetCell(term.Coordinates{X: x, Y: y}, term.NewCell(' ', 1, statusBarAttr))
+	}
+	label, attr := h.cfg.Label, labelAttr
+	if ann.Error {
+		label, attr = errorLabel, errorLabelAttr
+	}
+	x := 0
+	if label != "" {
+		x = writeLine(w, x, y, h.innerW, "  "+label+" ", attr)
+		x = writeLine(w, x, y, h.innerW, labelShade, term.Attributes{Fg: attr.Bg, Bg: statusBarAttr.Bg})
+	}
+	detailX := h.innerW
+	if detail := lineWidth(ann.Detail); detail > 0 {
+		detailX = max(x, h.innerW-detail-1)
+	}
+	writeLine(w, x, y, detailX-1, " "+ann.Status, statusBarAttr)
+	writeLine(w, detailX, y, h.innerW, ann.Detail, statusBarAttr)
+	offset := term.Attributes{Attrs: term.AttrVerticalRenderOffset}
+	for x := range h.innerW {
+		w.UnionAttributes(term.Coordinates{X: x, Y: y}, offset)
+	}
+}
+
+// writeLine writes the first line of s in attr from x on row y, cut
+// short with an ellipsis where it would reach end, and returns the
+// column after it.
+func writeLine(w term.Writer, x, y, end int, s string, attr term.Attributes) int {
+	rows := term.StringToCells(s)
+	if len(rows) == 0 {
+		return x
+	}
+	limit := end
+	if x+lineWidth(s) > end {
+		limit = end - 1
+	}
+	for _, c := range rows[0] {
+		cw := max(1, int(c.Width))
+		if x+cw > limit {
+			break
+		}
+		c.SetAttributes(attr)
+		w.SetCell(term.Coordinates{X: x, Y: y}, c)
+		x += cw
+	}
+	if limit < end && x < end {
+		w.SetCell(term.Coordinates{X: x, Y: y}, term.NewCell('…', 1, attr))
+		x++
+	}
+	return x
+}
+
+// lineWidth is how many cells the first line of s takes.
+func lineWidth(s string) int {
+	rows := term.StringToCells(s)
+	if len(rows) == 0 {
+		return 0
+	}
+	n := 0
+	for _, c := range rows[0] {
+		n += max(1, int(c.Width))
+	}
+	return n
+}
 
 // startScanSpinner constructs a scanSpinnerFPS component.Animation
 // driven by clients.Interrupter, then spawns a watcher goroutine

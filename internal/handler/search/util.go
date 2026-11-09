@@ -88,6 +88,12 @@ func search(
 
 	searchRunes := []rune(searchQuery)
 	for i, data := range input {
+		// Not every algo takes an empty pattern as matching everything,
+		// and elements streamed in under an empty query are never filtered.
+		if len(searchRunes) == 0 {
+			onMatch(Match{data: data, idx: i})
+			continue
+		}
 		chars := util.ToChars(data)
 		res, tokens := algo(caseSensitive, normalize, forward, &chars,
 			searchRunes, withPos, slab)

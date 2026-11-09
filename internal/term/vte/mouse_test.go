@@ -164,6 +164,20 @@ func TestMouseDriverReport(t *testing.T) {
 				{mouseEv(0, 4, 2), "", false},
 			},
 		},
+		{
+			// A parent tells the terminal the pointer left it with a
+			// motion past its edges, which a real terminal never reports.
+			name:  "motion outside the screen",
+			modes: []vteparser.PrivateMode{anyEvent, sgr},
+			steps: []mouseStep{
+				{mouseEv(0, 4, 2), "\x1b[<35;5;3M", true},
+				{mouseEv(0, -3, 2), "", true},
+				{mouseEv(0, 4, -1), "", true},
+				{mouseEv(0, 300, 2), "", true},
+				{mouseEv(0, 4, 300), "", true},
+				{mouseEv(0, 4, 2), "\x1b[<35;5;3M", true},
+			},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -829,4 +843,144 @@ func TestMouseDriverDragScrollsTowardSelection(t *testing.T) {
 			assert.Equal(t, tc.wantCopy, pasted.Text)
 		})
 	}
+}
+
+func newPointerHarness(t *testing.T) *keyboardHarness {
+	t.Helper()
+	h := newKeyboardHarness(t)
+	h.mouseDriver = &mouseDriver{t: h.comp}
+	h.mouse = mouse.New(h.mouseDriver)
+	return h
+}
+
+// pointerEv is a hover over (1, 1) carrying a Pointer, as runtimes
+// dispatch mouse events.
+func pointerEv() (term.Event, *term.Pointer) {
+	p := new(term.Pointer)
+	ev := mouseEv(0, 1, 1)
+	ev.Context = term.ContextWithPointer(context.Background(), p)
+	return ev, p
+}
+
+func TestHandlerPointerShape(t *testing.T) {
+	t.Parallel()
+	osc := func(body string) string { return "\x1b]22;" + body + "\x1b\\" }
+	const (
+		tracking = "\x1b[?1000h"
+		link     = "\x1b]22;pointer\x1b\\"
+		reset    = "\x1b]22;\x1b\\"
+	)
+	fullStack := osc("move")
+	for range 16 {
+		fullStack += osc(">pointer")
+	}
+	for range 16 {
+		fullStack += osc("<")
+	}
+	cases := []struct {
+		name string
+		// before is the program's output before the event, after its
+		// output while the pointer rests.
+		before, after string
+		want          term.PointerShape
+	}{
+		{"text cursor of the selection", "", "", term.PointerText},
+		{"arrow while the program tracks the mouse", tracking, "", term.PointerDefault},
+		{"the program's shape", link, "", term.PointerLink},
+		{"the program's shape while it tracks the mouse", tracking + link, "", term.PointerLink},
+		{"reset to the terminal's", link + reset, "", term.PointerText},
+		{"reset while the program tracks the mouse", tracking + link + reset, "",
+			term.PointerDefault},
+		{"closest shape of a name without its own", osc("wait"), "", term.PointerDefault},
+		{"x11 name", osc("hand2"), "", term.PointerLink},
+		{"unknown name keeps the shape", link + osc("nope"), "", term.PointerLink},
+		{"set stops at the first unknown name", osc("move,nope,pointer"), "", term.PointerMove},
+		{"pushed shape", osc(">pointer"), "", term.PointerLink},
+		{"last pushed name", osc(">move,pointer"), "", term.PointerLink},
+		{"pop restores the shape below", osc("move") + osc(">pointer") + osc("<"), "",
+			term.PointerMove},
+		{"popping the last shape lets the terminal choose", osc(">pointer") + osc("<"), "",
+			term.PointerText},
+		{"pop of an empty stack", osc("<") + osc("<") + link, "", term.PointerLink},
+		{"set replaces the top", osc(">move") + osc(">text") + osc("=pointer") + osc("<"), "",
+			term.PointerMove},
+		{"a full stack evicts its bottom", fullStack, "", term.PointerText},
+		{"extra parameters are ignored", osc("pointer;text"), "", term.PointerText},
+		{"shape set under a resting pointer", "", link, term.PointerLink},
+		{"reset under a resting pointer", link, reset, term.PointerText},
+		{"pop under a resting pointer", osc("move") + osc(">pointer"), osc("<"), term.PointerMove},
+		{"full reset under a resting pointer", tracking + link, "\x1bc", term.PointerText},
+		{"full reset empties the stack", osc(">move") + osc(">pointer") + "\x1bc" + osc("<"), "",
+			term.PointerText},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newPointerHarness(t)
+			h.output(tc.before)
+			ev, p := pointerEv()
+			h.Handle(ev)
+			h.output(tc.after)
+			shape, _ := p.Shape()
+			assert.Equal(t, tc.want.String(), shape.String())
+		})
+	}
+}
+
+func TestHandlerPointerShapeQuery(t *testing.T) {
+	t.Parallel()
+	osc := func(body string) string { return "\x1b]22;" + body + "\x1b\\" }
+	cases := []struct {
+		name, output, want string
+	}{
+		{"supported names", osc("?pointer,nope,wait,xterm"), osc("1,0,1,1")},
+		{"empty query", osc("?"), osc("0")},
+		{"current of an empty stack", osc("?__current__"), osc("0")},
+		{"current shape", osc("move") + osc("?__current__"), osc("move")},
+		{"current shape of an x11 name", osc("hand2") + osc("?__current__"), osc("pointer")},
+		{"current shape once the terminal chooses", osc("move") + osc("") + osc("?__current__"),
+			osc("0")},
+		{"current shape after a pop", osc("move") + osc(">text") + osc("<") + osc("?__current__"),
+			osc("move")},
+		{"terminal shapes", osc("?__default__,__grabbed__"), osc("text,default")},
+		{"BEL terminated", "\x1b]22;?pointer\x07", "\x1b]22;1\x07"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newPointerHarness(t)
+			h.written()
+			h.output(tc.output)
+			assert.Equal(t, tc.want, h.written())
+		})
+	}
+}
+
+func TestHandlerPointerShapeFollowsTheLastEvent(t *testing.T) {
+	t.Parallel()
+	h := newPointerHarness(t)
+	older, olderPointer := pointerEv()
+	h.Handle(older)
+	ev, p := pointerEv()
+	h.Handle(ev)
+	h.output("\x1b]22;pointer\x1b\\")
+
+	shape, _ := p.Shape()
+	assert.Equal(t, term.PointerLink, shape)
+	shape, _ = olderPointer.Shape()
+	assert.Equal(t, term.PointerText, shape, "a superseded event keeps its shape")
+}
+
+func TestHandlerPointerShapeInViMode(t *testing.T) {
+	t.Parallel()
+	h := newPointerHarness(t)
+	h.output("\x1b[?1000h")
+	h.viMode = true
+	ev, p := pointerEv()
+	h.setPointerShape(ev)
+	h.output("\x1b]22;pointer\x1b\\")
+
+	shape, _ := p.Shape()
+	assert.Equal(t, term.PointerText, shape,
+		"the program's shapes do not reach events it does not get")
 }

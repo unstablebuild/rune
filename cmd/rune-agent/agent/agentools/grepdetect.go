@@ -471,6 +471,7 @@ func (g grepGuard) decideGrep(ctx context.Context) (rejected, decided bool) {
 	resp, err := prompter.Prompt(ctx, agent.PromptRequest{
 		Title:  "Allow grep via shell?",
 		Header: "grep",
+		Kind:   agent.PromptKindPermission,
 		Body: "The model is trying to search code by shelling out to a " +
 			"text-pattern tool (grep, rg, ag, ack, or a " +
 			"wrapper such as `git grep` / `xargs grep`). Rune ships " +

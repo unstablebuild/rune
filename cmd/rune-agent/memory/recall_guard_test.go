@@ -19,7 +19,6 @@ package memory
 import (
 	"context"
 	"errors"
-	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -29,34 +28,19 @@ import (
 	"unstable.build/rune/cmd/rune-agent/configedit"
 )
 
-// memConfig is an in-memory configedit.Config used to exercise the
-// GuardedRecaller. It only stores memory_recall_enabled because that is
-// the only key the guard reads or writes.
+// memConfig is a configedit.Getter that only answers
+// memory_recall_enabled, the single key the guard reads.
 type memConfig struct {
-	mu             sync.Mutex
-	hasEnabled     bool
-	enabled        bool
-	setCalls       []bool
-	ephemeralCalls []bool
-}
-
-func newMemConfig() *memConfig { return &memConfig{} }
-
-func withEnabled(v bool) *memConfig {
-	m := newMemConfig()
-	m.hasEnabled = true
-	m.enabled = v
-	return m
+	enabled bool
+	err     error
 }
 
 func (m *memConfig) GetBool(key string) configedit.Bool {
 	return configedit.NewBool(func(context.Context) (bool, error) {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		if key == memoryRecallEnabledKey && m.hasEnabled {
-			return m.enabled, nil
+		if key != memoryRecallEnabledKey {
+			return false, configedit.ErrNotFound
 		}
-		return false, configedit.ErrNotFound
+		return m.enabled, m.err
 	})
 }
 
@@ -70,43 +54,6 @@ func (m *memConfig) GetColor(string) configedit.Color         { return configedi
 func (m *memConfig) GetAttribute(string) configedit.Attribute { return configedit.Attribute{} }
 func (m *memConfig) GetConfig(string) configedit.ConfigValue  { return configedit.ConfigValue{} }
 func (m *memConfig) Iterate(func(string, any))                {}
-
-func (m *memConfig) SetBool(_ context.Context, key string, v, ephemeral bool) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if key == memoryRecallEnabledKey {
-		m.hasEnabled = true
-		m.enabled = v
-		if ephemeral {
-			m.ephemeralCalls = append(m.ephemeralCalls, v)
-		} else {
-			m.setCalls = append(m.setCalls, v)
-		}
-	}
-	return nil
-}
-
-func (m *memConfig) SetInt(context.Context, string, int, bool) error               { return nil }
-func (m *memConfig) SetFloat(context.Context, string, float64, bool) error         { return nil }
-func (m *memConfig) SetString(context.Context, string, string, bool) error         { return nil }
-func (m *memConfig) AppendStringSlice(context.Context, string, string, bool) error { return nil }
-func (m *memConfig) RemoveStringSlice(context.Context, string, string, bool) error { return nil }
-
-// fakePrompter is a minimal agent.Prompter recorder used in
-// GuardedRecaller tests.
-type fakePrompter struct {
-	response agent.PromptResponse
-	err      error
-	calls    []agent.PromptRequest
-}
-
-func (p *fakePrompter) Prompt(_ context.Context, req agent.PromptRequest) (agent.PromptResponse, error) {
-	p.calls = append(p.calls, req)
-	if p.err != nil {
-		return agent.PromptResponse{}, p.err
-	}
-	return p.response, nil
-}
 
 // fakeRecaller is an agent.MemoryRecaller test double.
 type fakeRecaller struct {
@@ -123,7 +70,7 @@ func (r *fakeRecaller) Recall(_ context.Context, _ []string, _ string, _ string)
 func TestNewGuardedRecaller_PanicsOnNil(t *testing.T) {
 	t.Run("nil inner", func(t *testing.T) {
 		assert.Panics(t, func() {
-			NewGuardedRecaller(nil, newMemConfig())
+			NewGuardedRecaller(nil, &memConfig{})
 		})
 	})
 	t.Run("nil cfg", func(t *testing.T) {
@@ -137,187 +84,59 @@ func TestGuardedRecaller_Recall(t *testing.T) {
 	someMems := []agent.Memory{
 		{ID: "mem-1", Content: "Always test"},
 	}
+	innerErr := errors.New("boom")
 
-	t.Run("absent + inner returns 0 memories: no prompt, returns nil", func(t *testing.T) {
-		inner := &fakeRecaller{memories: nil}
-		cfg := newMemConfig()
-		mp := &fakePrompter{}
-		g := NewGuardedRecaller(inner, cfg)
-		ctx := agent.WithPrompter(context.Background(), mp)
+	tests := []struct {
+		name       string
+		cfg        *memConfig
+		inner      *fakeRecaller
+		want       []agent.Memory
+		wantErr    error
+		wantCalled bool
+	}{
+		{
+			name:       "enabled returns inner memories",
+			cfg:        &memConfig{enabled: true},
+			inner:      &fakeRecaller{memories: someMems},
+			want:       someMems,
+			wantCalled: true,
+		},
+		{
+			name:       "enabled propagates inner error",
+			cfg:        &memConfig{enabled: true},
+			inner:      &fakeRecaller{err: innerErr},
+			wantErr:    innerErr,
+			wantCalled: true,
+		},
+		{
+			name:  "disabled skips inner",
+			cfg:   &memConfig{enabled: false},
+			inner: &fakeRecaller{memories: someMems},
+		},
+		{
+			name:  "absent skips inner",
+			cfg:   &memConfig{err: configedit.ErrNotFound},
+			inner: &fakeRecaller{memories: someMems},
+		},
+		{
+			name:  "config read error skips inner",
+			cfg:   &memConfig{err: errors.New("bad yaml")},
+			inner: &fakeRecaller{memories: someMems},
+		},
+	}
 
-		got, err := g.Recall(ctx, nil, "task", "")
-		require.NoError(t, err)
-		assert.Nil(t, got)
-		assert.Equal(t, 1, inner.calls)
-		assert.Empty(t, mp.calls)
-		assert.False(t, cfg.hasEnabled)
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewGuardedRecaller(tt.inner, tt.cfg)
 
-	t.Run("absent + yes returns memories, does not persist", func(t *testing.T) {
-		inner := &fakeRecaller{memories: someMems}
-		cfg := newMemConfig()
-		mp := &fakePrompter{response: agent.PromptResponse{Values: []string{"yes"}}}
-		g := NewGuardedRecaller(inner, cfg)
-		ctx := agent.WithPrompter(context.Background(), mp)
-
-		got, err := g.Recall(ctx, nil, "task", "")
-		require.NoError(t, err)
-		assert.Equal(t, someMems, got)
-		require.Len(t, mp.calls, 1)
-		assert.Equal(t, "Allow memory recall?", mp.calls[0].Title)
-		assert.Equal(t, "memory", mp.calls[0].Header)
-		assert.False(t, cfg.hasEnabled)
-	})
-
-	t.Run("absent + always returns memories AND persists true", func(t *testing.T) {
-		inner := &fakeRecaller{memories: someMems}
-		cfg := newMemConfig()
-		mp := &fakePrompter{response: agent.PromptResponse{Values: []string{"always"}}}
-		g := NewGuardedRecaller(inner, cfg)
-		ctx := agent.WithPrompter(context.Background(), mp)
-
-		got, err := g.Recall(ctx, nil, "task", "")
-		require.NoError(t, err)
-		assert.Equal(t, someMems, got)
-		require.Len(t, cfg.setCalls, 1)
-		assert.True(t, cfg.setCalls[0])
-		assert.True(t, cfg.enabled)
-	})
-
-	t.Run("absent + no returns nil, does not persist", func(t *testing.T) {
-		inner := &fakeRecaller{memories: someMems}
-		cfg := newMemConfig()
-		mp := &fakePrompter{response: agent.PromptResponse{Values: []string{"no"}}}
-		g := NewGuardedRecaller(inner, cfg)
-		ctx := agent.WithPrompter(context.Background(), mp)
-
-		got, err := g.Recall(ctx, nil, "task", "")
-		require.NoError(t, err)
-		assert.Nil(t, got)
-		assert.False(t, cfg.hasEnabled)
-	})
-
-	t.Run("absent + never returns nil AND persists false", func(t *testing.T) {
-		inner := &fakeRecaller{memories: someMems}
-		cfg := newMemConfig()
-		mp := &fakePrompter{response: agent.PromptResponse{Values: []string{"never"}}}
-		g := NewGuardedRecaller(inner, cfg)
-		ctx := agent.WithPrompter(context.Background(), mp)
-
-		got, err := g.Recall(ctx, nil, "task", "")
-		require.NoError(t, err)
-		assert.Nil(t, got)
-		require.Len(t, cfg.setCalls, 1)
-		assert.False(t, cfg.setCalls[0])
-		assert.True(t, cfg.hasEnabled)
-		assert.False(t, cfg.enabled)
-	})
-
-	t.Run("absent + prompter dismissed returns nil, does not persist", func(t *testing.T) {
-		inner := &fakeRecaller{memories: someMems}
-		cfg := newMemConfig()
-		mp := &fakePrompter{err: errors.New("dismissed")}
-		g := NewGuardedRecaller(inner, cfg)
-		ctx := agent.WithPrompter(context.Background(), mp)
-
-		got, err := g.Recall(ctx, nil, "task", "")
-		require.NoError(t, err)
-		assert.Nil(t, got)
-		assert.False(t, cfg.hasEnabled)
-	})
-
-	t.Run("absent + no prompter in ctx returns memories (default-allow)", func(t *testing.T) {
-		inner := &fakeRecaller{memories: someMems}
-		cfg := newMemConfig()
-		g := NewGuardedRecaller(inner, cfg)
-
-		got, err := g.Recall(context.Background(), nil, "task", "")
-		require.NoError(t, err)
-		assert.Equal(t, someMems, got)
-		assert.False(t, cfg.hasEnabled)
-	})
-
-	t.Run("config true returns inner memories without prompting", func(t *testing.T) {
-		inner := &fakeRecaller{memories: someMems}
-		mp := &fakePrompter{}
-		g := NewGuardedRecaller(inner, withEnabled(true))
-		ctx := agent.WithPrompter(context.Background(), mp)
-
-		got, err := g.Recall(ctx, nil, "task", "")
-		require.NoError(t, err)
-		assert.Equal(t, someMems, got)
-		assert.Equal(t, 1, inner.calls)
-		assert.Empty(t, mp.calls)
-	})
-
-	t.Run("config false returns nil without invoking inner", func(t *testing.T) {
-		inner := &fakeRecaller{memories: someMems}
-		mp := &fakePrompter{}
-		g := NewGuardedRecaller(inner, withEnabled(false))
-		ctx := agent.WithPrompter(context.Background(), mp)
-
-		got, err := g.Recall(ctx, nil, "task", "")
-		require.NoError(t, err)
-		assert.Nil(t, got)
-		assert.Equal(t, 0, inner.calls)
-		assert.Empty(t, mp.calls)
-	})
-
-	t.Run("inner returns error: returned as-is, no prompt", func(t *testing.T) {
-		wantErr := errors.New("boom")
-		inner := &fakeRecaller{err: wantErr}
-		cfg := newMemConfig()
-		mp := &fakePrompter{}
-		g := NewGuardedRecaller(inner, cfg)
-		ctx := agent.WithPrompter(context.Background(), mp)
-
-		_, err := g.Recall(ctx, nil, "task", "")
-		require.ErrorIs(t, err, wantErr)
-		assert.Empty(t, mp.calls)
-		assert.False(t, cfg.hasEnabled)
-	})
-
-	t.Run("always choice is observable in same session (no re-prompt)", func(t *testing.T) {
-		inner := &fakeRecaller{memories: someMems}
-		cfg := newMemConfig()
-		mp := &fakePrompter{response: agent.PromptResponse{Values: []string{"always"}}}
-		g := NewGuardedRecaller(inner, cfg)
-		ctx := agent.WithPrompter(context.Background(), mp)
-
-		// First call: user picks "Always".
-		got, err := g.Recall(ctx, nil, "task", "")
-		require.NoError(t, err)
-		assert.Equal(t, someMems, got)
-		require.Len(t, mp.calls, 1)
-
-		// Second call: must NOT prompt again; overlay reads through.
-		got, err = g.Recall(ctx, nil, "task", "")
-		require.NoError(t, err)
-		assert.Equal(t, someMems, got)
-		assert.Len(t, mp.calls, 1, "prompter must not be called a second time")
-	})
-
-	t.Run("never choice is observable in same session (no re-prompt)", func(t *testing.T) {
-		inner := &fakeRecaller{memories: someMems}
-		cfg := newMemConfig()
-		mp := &fakePrompter{response: agent.PromptResponse{Values: []string{"never"}}}
-		g := NewGuardedRecaller(inner, cfg)
-		ctx := agent.WithPrompter(context.Background(), mp)
-
-		// First call: user picks "Never"; rejected and persisted.
-		got, err := g.Recall(ctx, nil, "task", "")
-		require.NoError(t, err)
-		assert.Nil(t, got)
-		require.Len(t, mp.calls, 1)
-
-		// Second call: must NOT prompt; inner must not be called again
-		// because the overlay now reads false.
-		callsBefore := inner.calls
-		got, err = g.Recall(ctx, nil, "task", "")
-		require.NoError(t, err)
-		assert.Nil(t, got)
-		assert.Len(t, mp.calls, 1, "prompter must not be called a second time")
-		assert.Equal(t, callsBefore, inner.calls,
-			"inner recaller must not be invoked once disabled")
-	})
+			got, err := g.Recall(context.Background(), nil, "task", "")
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Equal(t, tt.want, got)
+			assert.Equal(t, tt.wantCalled, tt.inner.calls > 0)
+		})
+	}
 }

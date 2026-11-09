@@ -16,6 +16,8 @@
 
 package vteparser
 
+import "unstable.build/rune/internal/term/programstatus"
+
 // NopHandler returns an implementation of Handler that does nothing.
 func NopHandler() Handler {
 	return nopHandler{}
@@ -239,6 +241,10 @@ func (h nopHandler) ClipboardLoad(register int, data string) {
 
 }
 
+func (h nopHandler) RequestTermcap(names []string) {
+
+}
+
 func (h nopHandler) Decaln() {
 
 }
@@ -294,5 +300,33 @@ func (h nopHandler) ReportModifyOtherKeys() {
 }
 
 func (h nopHandler) GraphicsCommand(data []byte) {
+
+}
+
+func (h nopHandler) ProgramStatus(report programstatus.Report) {
+
+}
+
+func (h nopHandler) ProgramStatusQuery(terminator string) {
+
+}
+
+func (h nopHandler) PromptStart() {
+
+}
+
+func (h nopHandler) SetPointerShape(shape PointerShape) {
+
+}
+
+func (h nopHandler) PushPointerShape(shape PointerShape) {
+
+}
+
+func (h nopHandler) PopPointerShape() {
+
+}
+
+func (h nopHandler) PointerShapeQuery(names []string, terminator string) {
 
 }

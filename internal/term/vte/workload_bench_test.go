@@ -123,7 +123,7 @@ func BenchmarkVTEWorkloads(b *testing.B) {
 				// setup's garbage to be collected inside the timed
 				// window.
 				ph := newBenchParserHandler(width, height)
-				parser := vteparser.NewParser(ph, new(vteparser.StdTimeout))
+				parser := vteparser.NewParser(ph)
 				advanceBatched(parser, setup)
 				warmToSteadyState(ph, parser, payload)
 				runtime.GC()

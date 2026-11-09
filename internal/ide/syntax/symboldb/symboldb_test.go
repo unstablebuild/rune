@@ -200,6 +200,10 @@ type fakeParser struct {
 	listCalls      int
 	resolveMatches []syntaxapi.Match
 	listNames      []string
+	// grammars maps language IDs to their grammar fingerprint; a
+	// language without one is not installed.
+	grammars     map[string]string
+	grammarCalls map[string]int
 }
 
 var _ syntaxapi.Parser = (*fakeParser)(nil)
@@ -210,6 +214,8 @@ func newFakeParser() *fakeParser {
 		nodeResults:  make(map[string][]syntaxapi.Result),
 		fileCalls:    make(map[string]int),
 		gates:        make(map[string]*queryGate),
+		grammars:     make(map[string]string),
+		grammarCalls: make(map[string]int),
 	}
 }
 
@@ -286,6 +292,23 @@ func (q *fakeFileQuerier) QueryMulti(
 }
 
 func (q *fakeFileQuerier) Close() error { return nil }
+
+func (f *fakeParser) GrammarFingerprint(_ context.Context, langID string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.grammarCalls[langID]++
+	sum, ok := f.grammars[langID]
+	if !ok {
+		return "", fmt.Errorf("language %q not installed", langID)
+	}
+	return sum, nil
+}
+
+func (f *fakeParser) grammarCallsFor(langID string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.grammarCalls[langID]
+}
 
 func (f *fakeParser) QueryNode(
 	file workspaceapi.URI, _ syntaxapi.NodeCaptureName,
@@ -865,6 +888,80 @@ func TestPersistenceSkipsUnchangedFiles(t *testing.T) {
 	assert.Zero(t, fake2.totalResolveCalls())
 }
 
+func TestGrammarFingerprintGatesReextraction(t *testing.T) {
+	tests := []struct {
+		name string
+		// first and second are the grammar fingerprints installed for
+		// each run; empty means the grammar is not installed.
+		first, second string
+		wantReextract bool
+		wantListed    []string
+	}{
+		{
+			name:  "unchanged grammar skips",
+			first: "v1", second: "v1",
+			wantListed: []string{"mypkg.Widget"},
+		},
+		{
+			name:  "upgraded grammar re-extracts",
+			first: "v1", second: "v2",
+			wantReextract: true,
+			wantListed:    []string{"mypkg.New", "mypkg.Widget"},
+		},
+		{
+			name:  "grammar installed after the first scan re-extracts",
+			first: "", second: "v1",
+			wantReextract: true,
+			wantListed:    []string{"mypkg.New", "mypkg.Widget"},
+		},
+		{
+			name:  "grammar still missing skips",
+			first: "", second: "",
+			wantListed: []string{"mypkg.Widget"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			e := newEnv(t)
+			uri := e.writeFile(t, "a.go")
+			if tt.first != "" {
+				e.fake.grammars["go"] = tt.first
+			}
+			e.fake.setGoFile(uri, goFile{pkg: "mypkg", defs: []string{"Widget"}})
+			p := e.start(t)
+			require.NoError(t, p.Wait(ctx))
+			require.NoError(t, p.Close())
+
+			// The second run's extraction would add a definition, so the
+			// listed names reveal whether the file was re-extracted.
+			fake2 := newFakeParser()
+			if tt.second != "" {
+				fake2.grammars["go"] = tt.second
+			}
+			fake2.setGoFile(uri, goFile{pkg: "mypkg", defs: []string{"Widget", "New"}})
+			e.fake = fake2
+			p2 := e.start(t)
+			require.NoError(t, p2.Wait(ctx))
+
+			assert.Equal(t, tt.wantReextract, fake2.callsFor(uri) > 0)
+			assert.Equal(t, tt.wantListed, listReferenced(t, p2))
+		})
+	}
+}
+
+func TestGrammarFingerprintComputedOncePerLanguage(t *testing.T) {
+	e := newEnv(t)
+	e.fake.grammars["go"] = "v1"
+	for _, name := range []string{"a.go", "b.go", "c.go"} {
+		e.fake.setGoFile(e.writeFile(t, name), goFile{pkg: "mypkg"})
+	}
+	p := e.start(t)
+	require.NoError(t, p.Wait(context.Background()))
+
+	assert.Equal(t, 1, e.fake.grammarCallsFor("go"))
+}
+
 func TestSchemaVersionBumpRebuildsDerivedRecords(t *testing.T) {
 	e := newEnv(t)
 	uri := e.writeFile(t, "a.go")
@@ -1056,49 +1153,74 @@ func (c *opCountingStorage) Delete(ctx context.Context, id string) error {
 }
 
 func TestMigrationRestampAvoidsRedundantWrites(t *testing.T) {
-	e := newEnv(t)
-	uri := e.writeFile(t, "a.go")
-	gf := goFile{
-		pkg:  "mypkg",
-		refs: [][2]string{{"iterator", "Iterator"}},
-		defs: []string{"Widget"},
+	// Same content, older stamp: only the file record needs the new
+	// stamp, everything else is already correct.
+	tests := []struct {
+		name   string
+		marker metaDoc
+		stale  func(fd *fileDoc)
+	}{
+		{
+			name:   "older schema version",
+			marker: metaDoc{Complete: true},
+			stale:  func(fd *fileDoc) { fd.Version = 0 },
+		},
+		{
+			name:   "older grammar fingerprint",
+			marker: metaDoc{Complete: true, Version: schemaVersion},
+			stale:  func(fd *fileDoc) { fd.Grammar = "v0" },
+		},
 	}
-	e.fake.setGoFile(uri, gf)
-	p := e.start(t)
-	require.NoError(t, p.Wait(context.Background()))
-	require.NoError(t, p.Close())
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newEnv(t)
+			e.fake.grammars["go"] = "v1"
+			uri := e.writeFile(t, "a.go")
+			gf := goFile{
+				pkg:  "mypkg",
+				refs: [][2]string{{"iterator", "Iterator"}},
+				defs: []string{"Widget"},
+			}
+			e.fake.setGoFile(uri, gf)
+			p := e.start(t)
+			require.NoError(t, p.Wait(context.Background()))
+			require.NoError(t, p.Close())
 
-	// Same content, older schema stamp: only the file record needs the
-	// new version, everything else is already correct.
-	ctx := context.Background()
-	require.NoError(t, e.db.Set(ctx, metaScanID, metaDoc{Complete: true}))
-	files, err := e.db.Partition(filesPartition)
-	require.NoError(t, err)
-	var fd fileDoc
-	require.NoError(t, files.Get(ctx, uri.String(), &fd))
-	fd.Version = 0
-	require.NoError(t, files.Set(ctx, uri.String(), fd))
+			ctx := context.Background()
+			require.NoError(t, e.db.Set(ctx, metaScanID, tt.marker))
+			files, err := e.db.Partition(filesPartition)
+			require.NoError(t, err)
+			var fd fileDoc
+			require.NoError(t, files.Get(ctx, uri.String(), &fd))
+			tt.stale(&fd)
+			require.NoError(t, files.Set(ctx, uri.String(), fd))
 
-	counting := &opCountingStorage{Service: e.db, ops: new(sync.Map)}
-	e.db = counting
-	fake2 := newFakeParser()
-	fake2.setGoFile(uri, gf)
-	e.fake = fake2
-	p2 := e.start(t)
-	require.NoError(t, p2.Wait(context.Background()))
+			counting := &opCountingStorage{Service: e.db, ops: new(sync.Map)}
+			e.db = counting
+			fake2 := newFakeParser()
+			fake2.grammars["go"] = "v1"
+			fake2.setGoFile(uri, gf)
+			e.fake = fake2
+			p2 := e.start(t)
+			require.NoError(t, p2.Wait(context.Background()))
 
-	assert.Positive(t, e.fake.callsFor(uri), "the stale record must be re-extracted")
-	assert.Zero(t, counting.opCount("/symbols", "set"),
-		"unchanged symbol docs must not be rewritten")
-	assert.Zero(t, counting.opCount("/names", "set"),
-		"existing name markers must not be rewritten")
-	assert.Zero(t, counting.opCount("/symbols", "delete"))
-	assert.Zero(t, counting.opCount("/names", "delete"))
-	assert.Equal(t, int64(1), counting.opCount("/files", "set"),
-		"the file record carries the new schema stamp")
+			assert.Positive(t, e.fake.callsFor(uri), "the stale record must be re-extracted")
+			assert.Zero(t, counting.opCount("/symbols", "set"),
+				"unchanged symbol docs must not be rewritten")
+			assert.Zero(t, counting.opCount("/names", "set"),
+				"existing name markers must not be rewritten")
+			assert.Zero(t, counting.opCount("/symbols", "delete"))
+			assert.Zero(t, counting.opCount("/names", "delete"))
+			assert.Equal(t, int64(1), counting.opCount("/files", "set"),
+				"the file record carries the new stamp")
 
-	assert.Equal(t, []string{"iterator.Iterator", "mypkg.Widget"},
-		listReferenced(t, p2))
+			require.NoError(t, files.Get(ctx, uri.String(), &fd))
+			assert.Equal(t, schemaVersion, fd.Version)
+			assert.Equal(t, "v1", fd.Grammar)
+			assert.Equal(t, []string{"iterator.Iterator", "mypkg.Widget"},
+				listReferenced(t, p2))
+		})
+	}
 }
 
 func TestReindexSkipsCreateForKnownNames(t *testing.T) {
@@ -1530,32 +1652,55 @@ func TestListReferencedPassthroughConstructionIsLazy(t *testing.T) {
 }
 
 func TestScanReportsProgressNotifications(t *testing.T) {
-	e := newEnv(t)
-	rootFile := e.writeFile(t, "a.go")
-	subFile := e.writeFile(t, filepath.Join("pkg", "b.go"))
-	e.fake.setGoFile(rootFile, goFile{pkg: "mypkg", defs: []string{"Widget"}})
-	e.fake.setGoFile(subFile, goFile{pkg: "pkg", defs: []string{"Gadget"}})
-	p := e.start(t)
-	require.NoError(t, p.Wait(context.Background()))
-
-	notified, updates := e.notify.snapshot()
-	require.Equal(t, []string{"Indexing workspace symbols"}, notified)
-	require.NotEmpty(t, updates)
-
-	var dirs []string
-	for _, u := range updates {
-		assert.Equal(t, "n1", u.id)
-		if dir, ok := strings.CutPrefix(u.message, "Indexing symbols: "); ok {
-			dirs = append(dirs, dir)
-			assert.Less(t, u.progress, u.total)
-		}
+	tests := []struct {
+		name      string
+		files     []string
+		wantDirs  []string
+		wantFinal string
+	}{
+		{
+			name:      "one file",
+			files:     []string{"a.go"},
+			wantDirs:  []string{"."},
+			wantFinal: "Indexed the symbols of 1 file",
+		},
+		{
+			name:      "two files",
+			files:     []string{"a.go", filepath.Join("pkg", "b.go")},
+			wantDirs:  []string{".", "pkg"},
+			wantFinal: "Indexed the symbols of 2 files",
+		},
 	}
-	assert.ElementsMatch(t, []string{".", "pkg"}, dirs)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newEnv(t)
+			for _, name := range tt.files {
+				uri := e.writeFile(t, name)
+				e.fake.setGoFile(uri, goFile{pkg: "mypkg", defs: []string{"Widget"}})
+			}
+			p := e.start(t)
+			require.NoError(t, p.Wait(context.Background()))
 
-	final := updates[len(updates)-1]
-	assert.Equal(t, "Indexed 2 files", final.message)
-	assert.Equal(t, final.total, final.progress)
-	assert.Equal(t, int64(2), final.total)
+			notified, updates := e.notify.snapshot()
+			require.Equal(t, []string{"Indexing workspace symbols"}, notified)
+			require.NotEmpty(t, updates)
+
+			var dirs []string
+			for _, u := range updates {
+				assert.Equal(t, "n1", u.id)
+				if dir, ok := strings.CutPrefix(u.message, "Indexing symbols: "); ok {
+					dirs = append(dirs, dir)
+					assert.Less(t, u.progress, u.total)
+				}
+			}
+			assert.ElementsMatch(t, tt.wantDirs, dirs)
+
+			final := updates[len(updates)-1]
+			assert.Equal(t, tt.wantFinal, final.message)
+			assert.Equal(t, final.total, final.progress)
+			assert.Equal(t, int64(len(tt.files)), final.total)
+		})
+	}
 }
 
 func TestCleanupWorkspaceHook(t *testing.T) {

@@ -52,6 +52,7 @@ type raCallback struct {
 type serverStatus struct {
 	Health    string `json:"health"`
 	Quiescent bool   `json:"quiescent"`
+	Message   string `json:"message"`
 }
 
 func (c *raCallback) ShowMessage(_ context.Context, _ semanticapi.ShowMessageParams) error {
@@ -313,6 +314,10 @@ func (s *localScheme) Signal(pid workspaceapi.Pid, sig syscall.Signal) error {
 	return proc.Signal(sig)
 }
 
+func (*localScheme) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
+}
+
 func (s *localScheme) Close() error { return nil }
 
 // mockNotification records a single notification.
@@ -529,6 +534,8 @@ func (o *mockResourceOpener) Open(uri workspaceapi.URI) (browserapi.Handler, err
 	h, _ := o.editor.Editor(uri)
 	return h, nil
 }
+
+func (o *mockResourceOpener) Show(workspaceapi.URI) error { return nil }
 
 func (o *mockResourceOpener) openedURIs() []string {
 	o.mu.Lock()

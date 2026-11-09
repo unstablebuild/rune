@@ -81,6 +81,9 @@ func (h *vulncheckCmd) HandleCommand(
 		return fmt.Errorf("marshal args: %w", err)
 	}
 
+	// The request ctx is canceled when HandleCommand returns, but the scan
+	// takes much longer.
+	ctx = context.WithoutCancel(ctx)
 	go debug.CapturePanicReport(func() {
 		_, err := h.lsp.ExecuteCommand(ctx, semanticapi.ExecuteCommandParams{
 			Command:   "gopls.vulncheck",
@@ -124,6 +127,9 @@ func (h *modCmd) HandleCommand(
 		return fmt.Errorf("marshal args: %w", err)
 	}
 
+	// The request ctx is canceled when HandleCommand returns, before the
+	// command completes.
+	ctx = context.WithoutCancel(ctx)
 	go debug.CapturePanicReport(func() {
 		result, err := h.lsp.ExecuteCommand(ctx, semanticapi.ExecuteCommandParams{
 			Command:   h.goplsCommand,

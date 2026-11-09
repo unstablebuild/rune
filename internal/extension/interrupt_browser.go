@@ -67,6 +67,30 @@ func (s *interruptBrowser) Floating(srv browserrpc.WindowManager_FloatingServer)
 	return err
 }
 
+// Prompt satisfies browserrpc.BrowserServer. The prompt opens and closes
+// while the stream lasts, so the screen is redrawn as it opens.
+func (s *interruptBrowser) Prompt(
+	req *browserrpc.PromptRequest, srv browserrpc.WindowManager_PromptServer,
+) error {
+	err := s.browserServer.Prompt(req, interruptPromptServer{
+		WindowManager_PromptServer: srv, interruptDraw: s.interruptDraw,
+	})
+	s.interruptDraw()
+	return err
+}
+
+type interruptPromptServer struct {
+	browserrpc.WindowManager_PromptServer
+	interruptDraw func()
+}
+
+func (s interruptPromptServer) Send(ev *browserrpc.PromptEvent) error {
+	if ev.GetOpened() != nil {
+		s.interruptDraw()
+	}
+	return s.WindowManager_PromptServer.Send(ev)
+}
+
 // Tab satisfies browserrpc.BrowserServer
 func (s *interruptBrowser) Tab(srv browserrpc.WindowManager_TabServer) error {
 	err := s.browserServer.Tab(srv)
@@ -115,6 +139,15 @@ func (s *interruptBrowser) Open(
 	return res, err
 }
 
+// Show satisfies browserrpc.BrowserServer
+func (s *interruptBrowser) Show(
+	ctx context.Context, req *browserrpc.ShowResourceRequest,
+) (*browserrpc.ShowResourceResponse, error) {
+	res, err := s.browserServer.Show(ctx, req)
+	s.interruptDraw()
+	return res, err
+}
+
 // SetContent satisfies browserrpc.BrowserServer
 func (s *interruptBrowser) SetContent(srv browserrpc.WindowManager_SetContentServer) error {
 	err := s.browserServer.SetContent(srv)
@@ -131,11 +164,11 @@ func (s *interruptBrowser) CloseWindow(
 	return res, err
 }
 
-// SetTabActivity satisfies browserrpc.BrowserServer
-func (s *interruptBrowser) SetTabActivity(
-	ctx context.Context, req *browserrpc.SetTabActivityRequest,
-) (*browserrpc.SetTabActivityResponse, error) {
-	res, err := s.browserServer.SetTabActivity(ctx, req)
+// SetTabStatus satisfies browserrpc.BrowserServer
+func (s *interruptBrowser) SetTabStatus(
+	ctx context.Context, req *browserrpc.SetTabStatusRequest,
+) (*browserrpc.SetTabStatusResponse, error) {
+	res, err := s.browserServer.SetTabStatus(ctx, req)
 	s.interruptDraw()
 	return res, err
 }

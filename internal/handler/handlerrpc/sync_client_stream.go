@@ -51,6 +51,13 @@ type SyncClientStream[T handlerrpc.StreamMessage] struct {
 
 	respPending    atomic.Bool
 	respPendingMsg *handlerrpc.ServerMessage
+
+	// The fields below are only used from the host's calls.
+	images            imageStore
+	cellPixelSize     pixelSize
+	sentCellPixelSize pixelSize
+	resized           bool
+	last              *handlerrpc.DrawStreamResponse
 }
 
 // NewSyncClientStream allocates storage for a new SyncClientStream and initializes it
@@ -58,14 +65,20 @@ type SyncClientStream[T handlerrpc.StreamMessage] struct {
 // is used to unlock before I/O is performed; if no synchronization is needed
 // then a nop locker should be used.
 func NewSyncClientStream[T handlerrpc.StreamMessage](
-	ctx context.Context, srv grpc.ServerStream, newT func() T,
+	ctx context.Context, srv grpc.ServerStream, newT func() T, opts ...Option,
 ) *SyncClientStream[T] {
-	return &SyncClientStream[T]{
+	var o clientStreamOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+	s := &SyncClientStream[T]{
 		ctx:       ctx,
 		stream:    srv,
 		closeChan: make(chan error),
 		newT:      newT,
 	}
+	s.images = imageStore{cfg: o.graphics, enabled: o.enabled, log: s.log}
+	return s
 }
 
 // ScheduleResponse schedules the install response to be sent
@@ -125,6 +138,9 @@ func (s *SyncClientStream[T]) Handle(ev term.Event) (exit, handled bool) {
 	}
 
 	handle := recvMsg.GetHandle()
+	if ev.Type == term.EventMouse && handle.PointerShape != nil {
+		term.SetPointerShape(ev, term.PointerShape(handle.GetPointerShape()))
+	}
 	exit = handle.GetQuit()
 	handled = handle.GetHandled()
 	return
@@ -217,17 +233,25 @@ func (s *SyncClientStream[T]) Resize(width, height int) {
 	// store for error displaying
 	s.height.Store(int32(height))
 	s.width.Store(int32(width))
+	s.sendResize()
+}
 
-	var req handlerrpc.ResizeStreamRequest
-	req.Width = int32(width)
-	req.Height = int32(height)
-	sendMsg := handlerrpc.ServerMessage{Type: handlerrpc.MessageType_Resize, Resize: &req}
-	err := s.stream.SendMsg(&sendMsg)
-	if err != nil {
-		err := fmt.Errorf("send resize message: %w", err)
-		s.closeStream(err)
-		return
+// sendResize tells the extension the size of the handler and, while the
+// frames tell the cell size, how to send images.
+func (s *SyncClientStream[T]) sendResize() bool {
+	s.resized = true
+	s.sentCellPixelSize = s.cellPixelSize
+	req := handlerrpc.ResizeStreamRequest{
+		Width:    s.width.Load(),
+		Height:   s.height.Load(),
+		Graphics: s.images.graphics(s.cellPixelSize),
 	}
+	sendMsg := handlerrpc.ServerMessage{Type: handlerrpc.MessageType_Resize, Resize: &req}
+	if err := s.stream.SendMsg(&sendMsg); err != nil {
+		s.closeStream(fmt.Errorf("send resize message: %w", err))
+		return false
+	}
+	return true
 }
 
 // Draw satisfies Handler.
@@ -249,7 +273,18 @@ func (s *SyncClientStream[T]) Draw(w term.Writer) {
 			return
 		}
 	}
-	req := handlerrpc.DrawStreamRequest{PackedOk: true}
+	s.images.beginDraw()
+	// Only frames tell the cell size, which can change without the size in
+	// cells.
+	s.cellPixelSize = pixelSizeOf(w.Context())
+	if s.images.enabled && s.resized && s.cellPixelSize != s.sentCellPixelSize && !s.sendResize() {
+		return
+	}
+	req := handlerrpc.DrawStreamRequest{
+		PackedOk:         true,
+		CellsUnchangedOk: true,
+		ImageAck:         s.images.ack,
+	}
 	sendMsg := handlerrpc.ServerMessage{Type: handlerrpc.MessageType_Draw, Draw: &req}
 	err := s.stream.SendMsg(&sendMsg)
 	if err != nil {
@@ -258,19 +293,39 @@ func (s *SyncClientStream[T]) Draw(w term.Writer) {
 		return
 	}
 
-	recvMsg := s.newT()
-	if err := s.stream.RecvMsg(recvMsg); err != nil {
-		s.closeStream(fmt.Errorf("receive draw message: %w", err))
-		return
+	var streamed streamedUploads
+	var draw *handlerrpc.DrawStreamResponse
+	for draw == nil {
+		recvMsg := s.newT()
+		if err := s.stream.RecvMsg(recvMsg); err != nil {
+			s.closeStream(fmt.Errorf("receive draw message: %w", err))
+			return
+		}
+		if tpe := recvMsg.GetType(); tpe != handlerrpc.MessageType_Draw {
+			err := fmt.Errorf("receive draw message: received extraneous msg: %v", tpe)
+			s.closeStream(err)
+			return
+		}
+		if resp := recvMsg.GetDraw(); resp.GetMore() {
+			streamed.add(resp, s.images.maxBytes())
+		} else {
+			draw = resp
+		}
 	}
-
-	if tpe := recvMsg.GetType(); tpe != handlerrpc.MessageType_Draw {
-		err := fmt.Errorf("receive draw message: received extraneous msg: %v", tpe)
-		s.closeStream(err)
-		return
+	streamed.attach(draw)
+	jobs := s.images.plan(draw)
+	readUploads(jobs)
+	if draw.GetCellsUnchanged() {
+		draw.Rows, draw.Packed = s.last.GetRows(), s.last.GetPacked()
 	}
+	// Every upload is acknowledged with the next request, so the extension
+	// never has to place an older version and ask for another draw.
+	s.images.commit(draw, jobs)
+	s.last = draw
 
-	doDraw(w, recvMsg.GetDraw())
+	doDraw(w, draw)
+	// Cells written after a placement cover it, so the placements go last.
+	s.images.draw(w, draw.GetImages())
 }
 
 // Dimensions satisfies Handler.
@@ -310,6 +365,7 @@ func (s *SyncClientStream[T]) Dimensions() (width int, height int) {
 
 // Close satisfies Handler.
 func (s *SyncClientStream[T]) Close() error {
+	s.images.close()
 	var req handlerrpc.CloseStreamRequest
 	msg := handlerrpc.ServerMessage{Type: handlerrpc.MessageType_Close, Close: &req}
 	err := s.stream.SendMsg(&msg)

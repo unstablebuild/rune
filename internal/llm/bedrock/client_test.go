@@ -29,6 +29,16 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
 )
 
+func TestClient_ImageGenerationUnsupported(t *testing.T) {
+	var svc llmapi.Service = &client{}
+	supported, err := svc.CanGenerateImages(context.Background(), llmapi.ModelEntry{})
+	require.NoError(t, err)
+	assert.False(t, supported)
+	image, err := svc.GenerateImage(context.Background(), llmapi.ModelEntry{}, llmapi.ImageRequest{})
+	require.ErrorIs(t, err, llmapi.ErrImageGenerationUnsupported)
+	assert.Equal(t, llmapi.Image{}, image)
+}
+
 // stubAPI scripts ConverseStream and CountTokens responses.
 type stubAPI struct {
 	converseErrs  []error

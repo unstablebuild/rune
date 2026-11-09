@@ -17,6 +17,8 @@
 package shader
 
 import (
+	"image"
+	"image/draw"
 	"math"
 	"sync/atomic"
 
@@ -62,6 +64,9 @@ func DefaultGrayFadeParams() GrayFadeParams { return GrayFadeParams{} }
 // shader can query [GrayFadeShader.Progress] to find out how far the
 // desaturation has gone and apply the same amount to its own snapshot,
 // so the two effects compose without a visible seam.
+//
+// It is an [ImageShader] that desaturates placements alike, through
+// copies of their pixels.
 func GrayFade(params GrayFadeParams, defaultAttr term.Attributes) *GrayFadeShader {
 	return &GrayFadeShader{GrayFadeParams: params, defaultAttr: defaultAttr}
 }
@@ -77,20 +82,47 @@ type GrayFadeShader struct {
 	// Shade encoded as math.Float64bits so it can be read atomically by
 	// callers (e.g. shaderRunner) without locking the draw thread.
 	progressBits atomic.Uint64
+
+	// grays are the desaturated copies of the pictures in the last frame
+	// shaded, by the part of the picture they copy.
+	grays map[grayKey]*grayImage
+}
+
+type grayKey struct {
+	id   term.ImageID
+	crop image.Rectangle
+}
+
+// grayImage is a desaturated copy of a picture.
+type grayImage struct {
+	id      term.ImageID
+	version uint64
+	pixels  *image.RGBA
+	// The picture's version and the amount it was made with.
+	srcVersion uint64
+	amount     float64
+	used       bool
 }
 
 // Shade satisfies [Shader]. See [GrayFadeParams.FadeFrames] for the two
 // progress regimes. Frame 0 always leaves cells untouched so the first
 // frame of the transition is the live content.
 func (s *GrayFadeShader) Shade(frame, total int, cells [][]term.Cell) {
+	s.ShadeImages(frame, total, cells, nil)
+}
+
+// ShadeImages satisfies [ImageShader].
+func (s *GrayFadeShader) ShadeImages(
+	frame, total int, cells [][]term.Cell, images []term.Image,
+) []term.Image {
 	if frame < 0 {
-		return
+		return images
 	}
 	rampFrames := s.FadeFrames
 	if rampFrames <= 0 {
 		// Standard shader semantics: ramp ends at frame == total-1.
 		if total <= 0 {
-			return
+			return images
 		}
 		rampFrames = total
 	}
@@ -104,7 +136,7 @@ func (s *GrayFadeShader) Shade(frame, total int, cells [][]term.Cell) {
 	progress = math.Min(1, math.Max(0, progress))
 	s.setProgress(progress)
 	if progress <= 0 {
-		return
+		return images
 	}
 	for y, row := range cells {
 		for x := range row {
@@ -113,6 +145,47 @@ func (s *GrayFadeShader) Shade(frame, total int, cells [][]term.Cell) {
 			)
 		}
 	}
+	for i, img := range images {
+		images[i] = s.gray(img, progress)
+	}
+	for id, g := range s.grays {
+		if !g.used {
+			delete(s.grays, id)
+		}
+		g.used = false
+	}
+	return images
+}
+
+// gray returns img showing its picture desaturated by amount.
+func (s *GrayFadeShader) gray(img term.Image, amount float64) term.Image {
+	if img.Src == nil {
+		return img
+	}
+	if s.grays == nil {
+		s.grays = make(map[grayKey]*grayImage)
+	}
+	crop := cropOf(img)
+	key := grayKey{img.ID, crop}
+	g := s.grays[key]
+	if g == nil {
+		g = &grayImage{id: term.NewImageID()}
+		s.grays[key] = g
+	}
+	if g.pixels == nil || g.srcVersion != img.Version || g.amount != amount {
+		// The writer is done with the previous copy once it is asked to
+		// draw another frame, so its pixels are reused.
+		if g.pixels == nil || g.pixels.Rect.Size() != crop.Size() {
+			g.pixels = image.NewRGBA(image.Rect(0, 0, crop.Dx(), crop.Dy()))
+		}
+		draw.Draw(g.pixels, g.pixels.Rect, img.Src, crop.Min, draw.Src)
+		desaturatePixels(g.pixels, amount)
+		g.srcVersion, g.amount = img.Version, amount
+		g.version++
+	}
+	g.used = true
+	img.Src, img.ID, img.Version, img.Crop = g.pixels, g.id, g.version, image.Rectangle{}
+	return img
 }
 
 // Progress returns the latest fade progress observed by Shade, in the

@@ -42,7 +42,7 @@ func (h *captureHandler) InputRun(run []byte) {
 
 func TestAdvanceBytesBatchesPrintableRuns(t *testing.T) {
 	h := &captureHandler{}
-	p := NewParser(h, new(StdTimeout))
+	p := NewParser(h)
 
 	p.AdvanceBytes([]byte("hello"))
 
@@ -53,7 +53,7 @@ func TestAdvanceBytesBatchesPrintableRuns(t *testing.T) {
 
 func TestAdvanceBytesSplitsOnControlBytes(t *testing.T) {
 	h := &captureHandler{}
-	p := NewParser(h, new(StdTimeout))
+	p := NewParser(h)
 
 	// "ab\rcd": the CR is executed per-byte, the two printable runs batch.
 	p.AdvanceBytes([]byte("ab\rcd"))

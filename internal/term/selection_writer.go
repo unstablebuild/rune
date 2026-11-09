@@ -22,6 +22,7 @@ import (
 	"unicode"
 
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"unstable.build/rune/internal/cell"
 )
 
 // SelRange is an inclusive, sorted selection coordinate pair over a
@@ -54,18 +55,20 @@ func (s SelRange) Contains(pos term.Coordinates) bool {
 
 var _ term.Writer = (*SelectionWriter)(nil)
 
-// SelectionWriter is a term.Writer that captures Draw output into a
-// flat cell grid specialized for text selection: it can extract the
-// text and word/line bounds under a coordinate and blit the captured
-// cells back out with a reverse-video selection overlay.
+// SelectionWriter is a term.Writer that captures cells and images for
+// text selection: it can extract text and word/line bounds under a
+// coordinate and blit the captured
+// frame back out with a reverse-video selection overlay on its cells.
 //
 // It is a sibling of term.StringWriter (string rendering) and
 // cell.BufferWriter (cell.Buffer bridge); unlike those, its purpose is
 // to back mouse-driven selection over already-rendered content.
 type SelectionWriter struct {
-	cells         []term.Cell
+	frame cell.BufferWriter
+	// cells aliases the frame so selection reads do not finalize placements
+	// before later cell writes have had a chance to cover them.
+	cells         [][]term.Cell
 	width, height int
-	ctx           context.Context
 }
 
 // NewSelectionWriter allocates a SelectionWriter sized to width x height.
@@ -75,22 +78,20 @@ func NewSelectionWriter(width, height int) *SelectionWriter {
 	return w
 }
 
-// Resize reallocates the grid to width x height and clears it, reusing
-// the backing array when it is large enough.
+// Resize discards the captured frame, retaining storage when the dimensions match.
 func (g *SelectionWriter) Resize(width, height int) {
-	needed := width * height
-	if cap(g.cells) >= needed {
-		g.cells = g.cells[:needed]
-	} else {
-		g.cells = make([]term.Cell, needed)
+	if g.width == width && g.height == height {
+		g.Clear()
+		return
 	}
+	g.frame.Init(g.Context(), width, height)
+	g.cells = g.frame.RawCells()
 	g.width, g.height = width, height
-	g.Clear()
 }
 
-// Clear zeroes every cell while preserving the current dimensions.
+// Clear discards all cells and images while preserving the current dimensions.
 func (g *SelectionWriter) Clear() {
-	clear(g.cells)
+	_ = g.frame.Clear(term.Attributes{})
 }
 
 // Width returns the grid width in cells.
@@ -105,32 +106,25 @@ func (g *SelectionWriter) outOfBounds(pos term.Coordinates) bool {
 
 // SetCell satisfies term.Writer. Out-of-bounds writes are ignored.
 func (g *SelectionWriter) SetCell(pos term.Coordinates, cell term.Cell) {
-	if g.outOfBounds(pos) {
-		return
-	}
-	g.cells[pos.Y*g.width+pos.X] = cell
+	g.frame.SetCell(pos, cell)
 }
 
 // UnionAttributes satisfies term.Writer. Out-of-bounds writes are ignored.
 func (g *SelectionWriter) UnionAttributes(pos term.Coordinates, attr term.Attributes) {
-	if g.outOfBounds(pos) {
-		return
-	}
-	idx := pos.Y*g.width + pos.X
-	g.cells[idx].SetAttributes(term.AttributesUnion(g.cells[idx].Attributes(), attr))
+	g.frame.UnionAttributes(pos, attr)
 }
 
-// DrawImage satisfies term.Writer. The selection grid carries cells
-// only, so callers draw a cell-based fallback instead.
-func (g *SelectionWriter) DrawImage(term.Image) bool {
-	return false
+// DrawImage retains the placement for Dump, clipped to the grid and any cells
+// written over it later. Images do not contribute selectable text.
+func (g *SelectionWriter) DrawImage(img term.Image) bool {
+	return g.frame.DrawImage(img)
 }
 
 // Context satisfies term.Writer, returning the context set via
 // SetContext or context.Background when none was set.
 func (g *SelectionWriter) Context() context.Context {
-	if g.ctx != nil {
-		return g.ctx
+	if ctx := g.frame.Context(); ctx != nil {
+		return ctx
 	}
 	return context.Background()
 }
@@ -139,18 +133,19 @@ func (g *SelectionWriter) Context() context.Context {
 // set this to the writer context of the in-flight Draw so downstream
 // components observe the same context.
 func (g *SelectionWriter) SetContext(ctx context.Context) {
-	g.ctx = ctx
+	g.frame.SetContext(ctx)
 }
 
-// Dump copies all cells to w. When sel is non-nil and active, cells
+// Dump copies the captured frame to w. When sel is non-nil and active, cells
 // within the selection have AttrReverse applied via UnionAttributes.
 // Null cells are emitted as a single space so the output is opaque.
 func (g *SelectionWriter) Dump(w term.Writer, sel *SelRange) {
+	images := g.frame.Images()
 	reverseAttr := term.Attributes{Attrs: term.AttrReverse}
 	for y := range g.height {
 		for x := range g.width {
 			pos := term.Coordinates{X: x, Y: y}
-			cell := g.cells[y*g.width+x]
+			cell := g.cells[y][x]
 			if cell.Ch == 0 {
 				cell.Ch = ' '
 				cell.Width = 1
@@ -160,6 +155,10 @@ func (g *SelectionWriter) Dump(w term.Writer, sel *SelRange) {
 				w.UnionAttributes(pos, reverseAttr)
 			}
 		}
+	}
+	// Blitting the opaque cell grid after the images would cover their pixels.
+	for _, img := range images {
+		w.DrawImage(img)
 	}
 }
 
@@ -187,7 +186,7 @@ func (g *SelectionWriter) TextBetween(start, end term.Coordinates) string {
 		}
 		var line strings.Builder
 		for x := startX; x <= endX; x++ {
-			cell := g.cells[y*g.width+x]
+			cell := g.cells[y][x]
 			if cell.Ch == 0 {
 				continue
 			}
@@ -212,7 +211,7 @@ func (g *SelectionWriter) WordBoundsAt(pos term.Coordinates) (start, end term.Co
 	if g.outOfBounds(pos) {
 		return
 	}
-	cell := g.cells[pos.Y*g.width+pos.X]
+	cell := g.cells[pos.Y][pos.X]
 	if cell.Ch == 0 || unicode.IsSpace(cell.Ch) {
 		return
 	}
@@ -220,7 +219,7 @@ func (g *SelectionWriter) WordBoundsAt(pos term.Coordinates) (start, end term.Co
 
 	startX := pos.X
 	for startX > 0 {
-		prev := g.cells[pos.Y*g.width+startX-1]
+		prev := g.cells[pos.Y][startX-1]
 		if prev.Ch == 0 || unicode.IsSpace(prev.Ch) || isWordChar(prev.Ch) != isWord {
 			break
 		}
@@ -228,7 +227,7 @@ func (g *SelectionWriter) WordBoundsAt(pos term.Coordinates) (start, end term.Co
 	}
 	endX := pos.X
 	for endX < g.width-1 {
-		next := g.cells[pos.Y*g.width+endX+1]
+		next := g.cells[pos.Y][endX+1]
 		if next.Ch == 0 || unicode.IsSpace(next.Ch) || isWordChar(next.Ch) != isWord {
 			break
 		}
@@ -246,7 +245,7 @@ func (g *SelectionWriter) LineBounds(y int) (start, end term.Coordinates, ok boo
 	firstX := -1
 	lastX := -1
 	for x := range g.width {
-		if g.cells[y*g.width+x].Ch != 0 {
+		if g.cells[y][x].Ch != 0 {
 			if firstX == -1 {
 				firstX = x
 			}

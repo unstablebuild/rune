@@ -38,22 +38,15 @@ func (s PixelSize) valid() bool {
 	return s.Width > 0 && s.Height > 0
 }
 
-type pixelSizeKey struct{}
-
-// ContextWithPixelSize returns a context carrying size for the writers
-// drawn into with it.
+// ContextWithPixelSize is term.ContextWithCellPixelSize for a PixelSize.
 func ContextWithPixelSize(ctx context.Context, size PixelSize) context.Context {
-	return context.WithValue(ctx, pixelSizeKey{}, size)
+	return term.ContextWithCellPixelSize(ctx, size.Width, size.Height)
 }
 
-// PixelSizeFromContext returns the cell size ctx carries, reporting
-// false when it carries none.
+// PixelSizeFromContext is term.CellPixelSizeFromContext as a PixelSize.
 func PixelSizeFromContext(ctx context.Context) (PixelSize, bool) {
-	if ctx == nil {
-		return PixelSize{}, false
-	}
-	size, ok := ctx.Value(pixelSizeKey{}).(PixelSize)
-	return size, ok && size.valid()
+	width, height, ok := term.CellPixelSizeFromContext(ctx)
+	return PixelSize{Width: width, Height: height}, ok
 }
 
 // Pixels returns the pixels a right-exclusive cell rectangle spans.

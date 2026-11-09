@@ -34,9 +34,15 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/extension/langext"
 	"unstable.build/rune/internal/extension/langext/langexttest"
 )
+
+func TestNewExtensionVersion(t *testing.T) {
+	_, meta := NewExtension()
+	assert.Equal(t, debug.Tag, meta.ExtensionVersion)
+}
 
 // bringUp is one run of the extension against a scripted executor, so
 // the environment decision is exercised without running real uv.
@@ -56,14 +62,14 @@ func newProjectDir(t *testing.T) string {
 }
 
 func runBringUp(
-	t *testing.T, dir string, storage storageapi.Service, wm *fakeWindowManager,
+	t *testing.T, dir string, storage storageapi.Service, wm *fakePrompter,
 ) bringUp {
 	t.Helper()
 	return runBringUpWith(t, dir, storage, wm, &langexttest.Installer{}, config.NopConfig())
 }
 
 func runBringUpWith(
-	t *testing.T, dir string, storage storageapi.Service, wm *fakeWindowManager,
+	t *testing.T, dir string, storage storageapi.Service, wm *fakePrompter,
 	inst *langexttest.Installer, cfg config.Config,
 ) bringUp {
 	t.Helper()
@@ -76,7 +82,7 @@ func runBringUpWith(
 	ex.respond("uv sync", scriptedCmd{})
 	b := bringUp{exec: ex, lsp: &captureLSP{}, notify: newFakeNotifications()}
 
-	var windows browserapi.WindowManager
+	var windows browserapi.Prompter
 	if wm != nil {
 		windows = wm
 	}
@@ -234,7 +240,7 @@ func TestExtendWorkspaceEnvPolicy(t *testing.T) {
 		dir := newProjectDir(t)
 		storage := storagestub.NewInMemoryService()
 		require.NoError(t, newEnvSetting(storage).set(ctx, dirRoot(dir), false))
-		wm := &fakeWindowManager{events: enterEvents}
+		wm := &fakePrompter{events: enterEvents}
 
 		b := runBringUp(t, dir, storage, wm)
 		b.waitForInit(t)
@@ -255,7 +261,7 @@ func TestExtendWorkspaceEnvPolicy(t *testing.T) {
 	t.Run("unknown root prompts once and persists the answer", func(t *testing.T) {
 		dir := newProjectDir(t)
 		storage := storagestub.NewInMemoryService()
-		wm := &fakeWindowManager{events: enterEvents}
+		wm := &fakePrompter{events: enterEvents}
 
 		b := runBringUp(t, dir, storage, wm)
 		b.waitForInit(t)
@@ -271,7 +277,7 @@ func TestExtendWorkspaceEnvPolicy(t *testing.T) {
 	t.Run("opting out persists and skips every uv call", func(t *testing.T) {
 		dir := newProjectDir(t)
 		storage := storagestub.NewInMemoryService()
-		wm := &fakeWindowManager{events: optOutEvent}
+		wm := &fakePrompter{events: optOutEvent}
 
 		b := runBringUp(t, dir, storage, wm)
 		b.waitForInit(t)
@@ -286,7 +292,7 @@ func TestExtendWorkspaceEnvPolicy(t *testing.T) {
 	t.Run("dismissing persists nothing", func(t *testing.T) {
 		dir := newProjectDir(t)
 		storage := storagestub.NewInMemoryService()
-		wm := &fakeWindowManager{events: dismissEvent}
+		wm := &fakePrompter{events: dismissEvent}
 
 		b := runBringUp(t, dir, storage, wm)
 		b.waitForInit(t)
@@ -300,7 +306,7 @@ func TestExtendWorkspaceEnvPolicy(t *testing.T) {
 	t.Run("a second bring-up of the same root does not prompt", func(t *testing.T) {
 		dir := newProjectDir(t)
 		storage := storagestub.NewInMemoryService()
-		wm := &fakeWindowManager{events: enterEvents}
+		wm := &fakePrompter{events: enterEvents}
 
 		runBringUp(t, dir, storage, wm).waitForInit(t)
 		require.Equal(t, 1, wm.callCount())
@@ -316,7 +322,7 @@ func TestExtendWorkspaceEnvPolicy(t *testing.T) {
 		require.NoError(t, os.WriteFile(
 			filepath.Join(dir, "main.py"), []byte("pass\n"), 0o644))
 		storage := storagestub.NewInMemoryService()
-		wm := &fakeWindowManager{events: enterEvents}
+		wm := &fakePrompter{events: enterEvents}
 
 		b := runBringUp(t, dir, storage, wm)
 		b.waitForInit(t)

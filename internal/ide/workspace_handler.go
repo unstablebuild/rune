@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image"
 	"io"
 	"maps"
 	"net"
@@ -28,6 +29,7 @@ import (
 	"os/user"
 	"path"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -52,18 +54,33 @@ import (
 	handlerapi "github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
+	"unstable.build/rune/cmd/rune-agent/dialogue/dialoguetui"
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/cell"
+	"unstable.build/rune/internal/codesearch"
 	tcomponent "unstable.build/rune/internal/component"
+	"unstable.build/rune/internal/component/imageuri"
 	"unstable.build/rune/internal/component/markdown"
 	"unstable.build/rune/internal/component/notifications"
+	"unstable.build/rune/internal/component/template"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/extension"
 	"unstable.build/rune/internal/extension/extensionv2"
 	"unstable.build/rune/internal/handler"
 	"unstable.build/rune/internal/handler/command"
+	"unstable.build/rune/internal/handler/finder"
+	thandlerrpc "unstable.build/rune/internal/handler/handlerrpc"
 	handlermarkdown "unstable.build/rune/internal/handler/markdown"
 	"unstable.build/rune/internal/handler/search"
+	"unstable.build/rune/internal/ide/console/ideconsole/debugshell"
+	"unstable.build/rune/internal/ide/console/ideconsole/workspaceshell"
+	"unstable.build/rune/internal/ide/console/llmconsole"
+	"unstable.build/rune/internal/ide/console/lspconsole"
+	"unstable.build/rune/internal/ide/console/pkgconsole"
+	"unstable.build/rune/internal/ide/console/searchconsole"
+	"unstable.build/rune/internal/ide/hostenv"
+	"unstable.build/rune/internal/ide/ideacp"
+	"unstable.build/rune/internal/ide/ideacp/acpcmd"
 	"unstable.build/rune/internal/ide/ideauthorizer"
 	"unstable.build/rune/internal/ide/idecursor"
 	"unstable.build/rune/internal/ide/idedebug"
@@ -74,19 +91,23 @@ import (
 	"unstable.build/rune/internal/ide/idenotice"
 	"unstable.build/rune/internal/ide/idepkg"
 	"unstable.build/rune/internal/ide/idepkg/pkgrpc"
+	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
 	"unstable.build/rune/internal/ide/idescavenger"
-	"unstable.build/rune/internal/ide/ideshell/debugshell"
-	"unstable.build/rune/internal/ide/ideshell/workspaceshell"
-	"unstable.build/rune/internal/ide/llmshell"
-	"unstable.build/rune/internal/ide/pkgshell"
-	"unstable.build/rune/internal/ide/pkgtrust"
+	"unstable.build/rune/internal/ide/idestatus"
+	"unstable.build/rune/internal/ide/idetask"
+	"unstable.build/rune/internal/ide/regexsearch"
+	"unstable.build/rune/internal/ide/semanticsearch"
 	"unstable.build/rune/internal/ide/syntax/symboldb"
 	"unstable.build/rune/internal/ide/syntax/treesitter"
 	"unstable.build/rune/internal/ide/vctrl"
 	"unstable.build/rune/internal/ide/vctrl/gogit"
+	"unstable.build/rune/internal/llm/llamacpp"
 	"unstable.build/rune/internal/llm/llamaserver"
 	"unstable.build/rune/internal/llm/llmrouter"
+	"unstable.build/rune/internal/llm/llmsearch"
 	"unstable.build/rune/internal/localstorage"
+	"unstable.build/rune/internal/term/programstatus"
+	"unstable.build/rune/internal/term/vte/vtereservoir"
 	"unstable.build/rune/internal/text"
 	"unstable.build/rune/internal/text/emacs"
 	"unstable.build/rune/internal/text/exoeditor"
@@ -101,6 +122,8 @@ import (
 const (
 	cmdSwitchToWorkspace = "workspacefocus"
 	cmdMoveWorkspace     = "workspacemove"
+	cmdNextWorkspace     = "workspacenext"
+	cmdPreviousWorkspace = "workspaceprevious"
 	cmdCloseWorkspace    = "workspaceclose"
 	cmdReloadWorkspace   = "workspacereload"
 	cmdAddWorkspace      = "workspaceopen"
@@ -125,13 +148,10 @@ type workspaceManagerHandler struct {
 	// git remote URLs. Production leaves it nil (clone from the host in
 	// the id); tests point it at a local fixture git server.
 	gitRemoteURL func(pkgID string) string
-	// localExecutor is a stable, IDE-scoped executor proxy handed to the
-	// llama-server backend at router construction. Its inner executor is
-	// swapped to the focused workspace's executor at each setExecutor site,
-	// mirroring the per-ex currentExecutor pattern. Before any workspace
-	// installs an executor it returns a clean "no executor installed" error
-	// rather than nil-derefing.
-	localExecutor           *currentExecutor
+	// localExecutor runs the llama-servers of local models on this
+	// machine. The IDE owns it, as the servers outlive every workspace:
+	// a workspace's executor is closed with the workspace.
+	localExecutor           *extensionsExecutor
 	exitPromptOpen          bool
 	scheduleNextTick        func(func()) bool
 	confirmedForceExit      bool
@@ -145,6 +165,7 @@ type workspaceManagerHandler struct {
 	events                  *eventRouter
 	tabsClickCallback       func(int) bool
 	extensionRunner         ExtensionsRunner
+	sponsorsURL             string
 	trust                   *pkgtrust.Store
 	sixDir                  string
 	extensionsStorage       storageapi.Service
@@ -156,7 +177,6 @@ type workspaceManagerHandler struct {
 	tabBarHeight            int
 	builtinExtensions       map[string]Extension
 	workspaceConfigFilename string
-	tabAttentionNameSuffix  string
 	workspaceBarKind        workspaceBarKind
 	userHome                string
 	state                   *idehistory.Store
@@ -176,6 +196,7 @@ type workspaceManagerHandler struct {
 	lastSession             idehistory.Session
 	reopenPending           bool
 	sessionReopenDisabled   bool
+	startupPrompts          []func()
 	packageConfigMergeHook  func(idepkg.ConfigMergeEvent) (idepkg.ConfigMergeResult, error)
 	watchedFilesChangeHook  func(int)
 	tutorialsInstalled      func(names []string) ([]string, error)
@@ -183,23 +204,48 @@ type workspaceManagerHandler struct {
 	commandObserver         *commandObserverRegistry
 	commandHistory          command.HistoryAccessor
 	workspaceOpenCompleters map[string]command.Completer
+	trustedWorkspaceConfigs map[string]struct{}
+	workspaceTrust          *workspaceTrust
 
-	union               handler.FrameUnion
-	bar                 handler.Tabs
-	shadedBar           *handler.ShadedTabs
-	barIdxToSlot        []int
-	focusProxy          handler.Proxy
-	width, height       int
-	workspaces          [workspaceSlots]*workspaceHandler
-	workspaceCount      int
-	focus               int
+	union        handlerapi.FrameUnion
+	bar          handler.Tabs
+	shadedBar    *handler.ShadedTabs
+	barIdxToSlot []int
+	// barFocusAttr and friends are the bar's own focus-dependent
+	// attributes, which the status and notification decorations are
+	// layered over.
+	barFocusAttr        term.Attributes
+	barNonFocusAttr     term.Attributes
+	barFocusIconAttr    term.Attributes
+	barNonFocusIconAttr term.Attributes
+	barHighlightAttr    term.Attributes
+	// graphics holds the images of the bar, which loadHUD refreshes the
+	// cache of through graphicsStorage. Nil until the bar is styled.
+	graphics        *tcomponent.FrameGraphics
+	graphicsStorage storageapi.Service
+	// hud is the latest HUD applyHUD installed, nil before the first.
+	// hudLoads counts the HUD loads started, which builds compare with
+	// hud.load to tell whether they read the config before it.
+	hud            *HUD
+	hudLoads       atomic.Uint64
+	status         *idestatus.Store
+	focusProxy     handler.Proxy
+	width, height  int
+	workspaces     [workspaceSlots]*workspaceHandler
+	workspaceCount int
+	focus          int
+	// unfocused is set while the host terminal reports that Rune lost
+	// focus, when the user sees none of the workspaces.
+	unfocused           bool
 	defAttr             term.Attributes
 	homeURI             workspaceapi.URI
 	homeWorkspace       workspace.Workspace
 	empty               *ex
 	homeRunner          extension.Runner
+	homeInstallDir      string
 	homeLSPManager      *idelsp.Manager
 	homeDAPManager      *idedebug.Manager
+	homeACPManager      *ideacp.Manager
 	openPrevFiles       []idehistory.File
 	openPrevFilesEx     *ex
 	openPrevWindows     map[uint64]browser.Window
@@ -249,10 +295,10 @@ type visibleWorkspaceManager struct {
 	manager workspace.WorkspaceManager
 }
 
-func (m visibleWorkspaceManager) AddWorkspace(
+func (m visibleWorkspaceManager) AcquireWorkspace(
 	ctx context.Context, uri workspaceapi.URI,
 ) (workspace.Workspace, error) {
-	return m.manager.AddWorkspace(ctx, uri)
+	return m.manager.AcquireWorkspace(ctx, uri)
 }
 
 func (m visibleWorkspaceManager) Workspace(
@@ -275,37 +321,30 @@ func (m visibleWorkspaceManager) UnregisterScheme(scheme string) error {
 	return m.manager.UnregisterScheme(scheme)
 }
 
-func (m visibleWorkspaceManager) IncrementReference(uri workspaceapi.URI) {
-	m.manager.IncrementReference(uri)
-}
-
-func (m visibleWorkspaceManager) DecrementReference(uri workspaceapi.URI) error {
-	return m.manager.DecrementReference(uri)
-}
-
-func (m visibleWorkspaceManager) RemoveWorkspace(
+func (m visibleWorkspaceManager) ReleaseWorkspace(
 	uri workspaceapi.URI,
 ) (workspace.Workspace, bool) {
-	return m.manager.RemoveWorkspace(uri)
+	return m.manager.ReleaseWorkspace(uri)
 }
 
 func (h *workspaceManagerHandler) newEditor(
 	reloader exoeditor.Reloader,
 	cwd workspaceapi.URI, ws workspace.Workspace, tm browser.TabManager,
 	terminal schemeapi.Terminal, cfg ideConfig, svc vctrl.Service,
+	statusBars *text.StatusBarStyles,
 ) (text.Editor, error) {
 	switch cfg.editorMode() {
 	case editorModeVim:
-		return h.newBuiltinModalEditor(cwd, cfg, svc), nil
+		return h.newBuiltinModalEditor(cwd, cfg, svc, statusBars), nil
 	case editorModeHelix:
-		return h.newBuiltinHelixEditor(cwd, cfg, svc), nil
+		return h.newBuiltinHelixEditor(cwd, cfg, svc, statusBars), nil
 	case editorModeStandard:
-		return h.newBuiltinStandardEditor(cwd, cfg, svc), nil
+		return h.newBuiltinStandardEditor(cwd, cfg, svc, statusBars), nil
 	case editorModeEmacs:
-		return h.newBuiltinEmacsEditor(cwd, cfg, svc), nil
+		return h.newBuiltinEmacsEditor(cwd, cfg, svc, statusBars), nil
 	case editorModeExo:
 		return h.newExoFallbackEditor(
-			reloader, cwd, ws, tm, terminal, cfg, svc), nil
+			reloader, cwd, ws, tm, terminal, cfg, svc, statusBars), nil
 	default:
 		panic("invalid editor mode")
 	}
@@ -313,10 +352,12 @@ func (h *workspaceManagerHandler) newEditor(
 
 func (h *workspaceManagerHandler) newBuiltinModalEditor(
 	cwd workspaceapi.URI, cfg ideConfig, svc vctrl.Service,
+	statusBars *text.StatusBarStyles,
 ) text.Editor {
 	auxBarConfig := cfg.auxiliaryBarConfig(h, svc)
 	iconsBarConfig := cfg.iconsBarConfig(h)
 	statusBarConfig := cfg.statusBarConfig(cwd, h, svc, h.events.newInterrupter(cwd))
+	statusBarConfig.Styles = statusBars
 	viOpts := append([]vi.Option{},
 		vi.WithResAttr(cfg.vimResultAttr()),
 		vi.WithBarAttr(cfg.vimMessageBarAttr()),
@@ -346,10 +387,12 @@ func (h *workspaceManagerHandler) newBuiltinModalEditor(
 
 func (h *workspaceManagerHandler) newBuiltinHelixEditor(
 	cwd workspaceapi.URI, cfg ideConfig, svc vctrl.Service,
+	statusBars *text.StatusBarStyles,
 ) text.Editor {
 	auxBarConfig := cfg.auxiliaryBarConfig(h, svc)
 	iconsBarConfig := cfg.iconsBarConfig(h)
 	statusBarConfig := cfg.statusBarConfig(cwd, h, svc, h.events.newInterrupter(cwd))
+	statusBarConfig.Styles = statusBars
 	return helix.Editor(
 		helix.WithResAttr(cfg.helixResultAttr()),
 		helix.WithBarAttr(cfg.helixMessageBarAttr()),
@@ -378,14 +421,18 @@ func (h *workspaceManagerHandler) newBuiltinHelixEditor(
 
 func (h *workspaceManagerHandler) newBuiltinStandardEditor(
 	cwd workspaceapi.URI, cfg ideConfig, svc vctrl.Service,
+	statusBars *text.StatusBarStyles,
 ) text.Editor {
 	auxBarConfig := cfg.auxiliaryBarConfig(h, svc)
 	iconsBarConfig := cfg.iconsBarConfig(h)
 	statusBarConfig := cfg.statusBarConfig(cwd, h, svc, h.events.newInterrupter(cwd))
+	statusBarConfig.Styles = statusBars
+	wm := currentWorkspaceWindowManager{root: h}
+	searchConfig := cfg.standardSearchConfig(wm)
+	searchConfig.ButtonImages = wm.ButtonImages
 	return standard.Editor(
 		standard.WithCommandBar(true),
-		standard.WithSearchConfig(cfg.standardSearchConfig(
-			currentWorkspaceWindowManager{root: h})),
+		standard.WithSearchConfig(searchConfig),
 		standard.WithTabspaces(cfg.editorTabspaces()),
 		standard.WithIndents(cfg.editorIndents()),
 		standard.WithRuler(cfg.editorRuler()),
@@ -410,10 +457,12 @@ func (h *workspaceManagerHandler) newBuiltinStandardEditor(
 
 func (h *workspaceManagerHandler) newBuiltinEmacsEditor(
 	cwd workspaceapi.URI, cfg ideConfig, svc vctrl.Service,
+	statusBars *text.StatusBarStyles,
 ) text.Editor {
 	auxBarConfig := cfg.auxiliaryBarConfig(h, svc)
 	iconsBarConfig := cfg.iconsBarConfig(h)
 	statusBarConfig := cfg.statusBarConfig(cwd, h, svc, h.events.newInterrupter(cwd))
+	statusBarConfig.Styles = statusBars
 	return emacs.Editor(
 		emacs.WithCommandBar(true),
 		emacs.WithResAttr(cfg.emacsResultAttr()),
@@ -445,18 +494,18 @@ func (h *workspaceManagerHandler) newExoFallbackEditor(
 	reloader exoeditor.Reloader,
 	cwd workspaceapi.URI, ws workspace.Workspace,
 	tm browser.TabManager, terminal schemeapi.Terminal,
-	cfg ideConfig, svc vctrl.Service,
+	cfg ideConfig, svc vctrl.Service, statusBars *text.StatusBarStyles,
 ) text.Editor {
 	var fallback text.Editor
 	switch cfg.exoFallback() {
 	case editorFallbackHelix:
-		fallback = h.newBuiltinHelixEditor(cwd, cfg, svc)
+		fallback = h.newBuiltinHelixEditor(cwd, cfg, svc, statusBars)
 	case editorFallbackStandard:
-		fallback = h.newBuiltinStandardEditor(cwd, cfg, svc)
+		fallback = h.newBuiltinStandardEditor(cwd, cfg, svc, statusBars)
 	case editorFallbackEmacs:
-		fallback = h.newBuiltinEmacsEditor(cwd, cfg, svc)
+		fallback = h.newBuiltinEmacsEditor(cwd, cfg, svc, statusBars)
 	default:
-		fallback = h.newBuiltinModalEditor(cwd, cfg, svc)
+		fallback = h.newBuiltinModalEditor(cwd, cfg, svc, statusBars)
 	}
 	return exofallback.New(
 		cfg.exoCommand(),
@@ -640,13 +689,12 @@ func (h *workspaceManagerHandler) init(
 	}
 	h.storage = storage
 	h.ideStorage = storageapi.WithPartition(h.storage, "ide")
+	h.workspaceTrust = newWorkspaceTrust(
+		storageapi.WithPartition(h.ideStorage, workspaceTrustPartition),
+		h.trustedWorkspaceConfigs, h.promptWorkspaceTrust)
 	h.commandHistory = search.NewHistory(
 		h.ideStorage, commandHistoryDocumentID, cfg.commandMaxHistory())
 	cfg.storage = h.ideStorage
-	// localExecutor is the stable, IDE-scoped executor proxy passed to the
-	// llama-server backend at router construction. Created non-nil here; its
-	// inner executor is installed at the setExecutor sites below.
-	h.localExecutor = &currentExecutor{}
 	h.events = newEventRouter(publishEvent)
 	h.frameCharSet = cfg.windowFrameCharset()
 	notiConfig.Interrupter = h.events.globalInterrupter()
@@ -692,8 +740,15 @@ func (h *workspaceManagerHandler) init(
 	h.extReadyWait = extensionReadyWait
 	h.extCommandWait = extensionCommandWait
 	h.extHandleWait = extensionHandleWait
+	h.status = idestatus.New(statusWorkspaces{h}, tabStatusConfigFor(cfg),
+		cfg.statusNotifyConfig(), cfg.sounds, cfg.statusInboxStyle(), h.frameGraphics(),
+		h.scheduleNextTick, h.events.globalInterrupter())
 
-	homeWorkspace, err := h.workspace.AddWorkspace(ctx, homeDirUri)
+	// Files and workspaces under the home directory share this manager
+	// entry; the reference held here for the IDE's lifetime keeps their
+	// release from closing the home scheme. Manager.Close still tears it
+	// down at shutdown.
+	homeWorkspace, err := h.workspace.AcquireWorkspace(ctx, homeDirUri)
 	if err != nil {
 		return fmt.Errorf("add home workspace: %v", err)
 	}
@@ -701,54 +756,78 @@ func (h *workspaceManagerHandler) init(
 	h.homeURI = homeDirUri
 	h.homeWorkspace = homeWorkspace
 	h.setReleaseManager(releaseManager)
-	// Construct the llama-server backend and router here, after
-	// setReleaseManager has installed h.pkgmanager and h.notifications is
-	// set. The backend takes three stable, non-nil IDE-scoped handles; the
-	// "server not installed" state lives inside the locator, never in a nil
-	// dependency.
+	// Construct the llama-server pools, search service and router here,
+	// after setReleaseManager has installed h.pkgmanager and
+	// h.notifications is set. Each pool takes stable, non-nil IDE-scoped
+	// handles; the "server not installed" state lives inside the locator,
+	// never in a nil dependency. Chat and embedding models run in separate
+	// pools so a search never evicts the chat model.
 	llmCfg := cfg.llmConfig()
+	searchCfg := cfg.searchConfig()
+	cacheDir := llmCfg.Local.ModelsCacheDir
+	if cacheDir == "" {
+		cacheDir = filepath.Join(sixDir, "models")
+	}
+	registry, err := llamacpp.NewRegistry(cacheDir)
+	if err != nil {
+		return fmt.Errorf("init local model registry: %w", err)
+	}
+	h.localExecutor, err = newExtensionsExecutor()
+	if err != nil {
+		return fmt.Errorf("init local models executor: %w", err)
+	}
 	localBackend := llamaserver.New(
 		llmCfg.Local.Service,
 		h.localExecutor,
-		llamaserver.NewPkgLocator(h.pkgmanager),
+		h.localServerLocator(llmCfg.Local.Service),
 		h.notifications.current(),
 	)
-	router, err := llmrouter.New(llmCfg, sixDir, h.storage, localBackend)
-	if err != nil {
-		return fmt.Errorf("init llm router: %w", err)
-	}
-	h.llmRouter = router
+	embedBackend := llamaserver.New(
+		llmCfg.Local.EmbeddingService(searchCfg.Options.IdleTimeout),
+		h.localExecutor,
+		h.localServerLocator(llmCfg.Local.Service),
+		h.notifications.current(),
+	)
+	searchSvc := llmsearch.New(searchCfg,
+		llmsearch.NewLlamaEmbedderFactory(embedBackend), registry, embedBackend)
+	h.llmRouter = llmrouter.New(llmCfg, registry, h.storage, localBackend, searchSvc)
 	h.events.setFocus(h.homeURI)
 
 	// don't install a fs watcher for the home workspace,
 	// to prevent unecessary resource consumption
-	homeParser := treesitter.NewParser(h.homeWorkspace, h.pkgmanager, h.homeURI)
+	homeParser := treesitter.NewParser(h.homeWorkspace, h.pkgmanager, h.homeURI).
+		WithCaptureNamesAttributes(cfg.syntaxConfig().CaptureNamesAttributes)
 	globalOpts := h.textOpts(cfg, homeParser, h.homeURI, h.homeWorkspace)
 	tm := new(workspaceTabManager)
 	tm.parent = h
+	homeStatusBars := text.NewStatusBarStyles(cfg.statusBarStyle())
 	h.empty, err = newEx(
 		func(
 			reloader exoeditor.Reloader, terminal schemeapi.Terminal,
 		) (text.Editor, error) {
 			return h.newEditor(reloader, homeDirUri, h.homeWorkspace,
-				tm, terminal, cfg, vctrl.NopService())
+				tm, terminal, cfg, vctrl.NopService(), homeStatusBars)
 		},
 		homeWorkspace, h.ideStorage, h.notifications, h.homeURI,
 		cfg.terminalConfig(), cfg.pluginBarConfig(),
 		h.events.newPublisher(h.homeURI), 0 /* vte capacity */, h.clip, h.macro,
 		h.dispatchOnPreview, tm, homeParser,
 		vctrl.NopService(),
-		h.newPromptEditor(cfg), h.commandObserver, h.debugCommands,
+		h.newPromptEditor(cfg), petnameGenerator{}, h.commandObserver, h.debugCommands,
 		cfg.commandPromptCfg(),
+		cfg.notificationsStyle(),
 		modalEditorMode(cfg.pkgEditorMode()),
 		cfg.editorMode(),
 		cfg.metaKey(),
 		cfg.editorAutoSave(),
 		cfg.consoleCfg(),
+		cfg.metaOpenURL(),
 		globalOpts...)
 	if err != nil {
 		return fmt.Errorf("new ex: %w", err)
 	}
+	h.empty.sponsorsURL = h.sponsorsURL
+	h.empty.statusBars = homeStatusBars
 	tm.tm = h.empty.Browser()
 	if err = h.subscribeAllCommands(h.empty); err != nil {
 		return err
@@ -758,8 +837,7 @@ func (h *workspaceManagerHandler) init(
 	}
 	h.empty.markHome()
 
-	wsExec := workspaceshell.NewExecutor(
-		workspaceExecutorAdapter{e: h.homeWorkspace})
+	wsExec := workspaceshell.NewExecutor(h.homeWorkspace)
 	trackedCwd := &trackedWorkspace{Workspace: h.homeWorkspace, exec: wsExec}
 	extExec, err := newExtensionsExecutor()
 	if err != nil {
@@ -768,8 +846,10 @@ func (h *workspaceManagerHandler) init(
 		log.Errorf("build home workspace extensions executor: %v", err)
 		return nil
 	}
-	runner, lspManager, dapManager, _, _, err := h.buildExtensions(
-		cfg, homeDirUri, trackedCwd, h.empty, extExec, homeParser, false)
+	h.homeInstallDir = installDataDir(trackedCwd, homeDirUri, h.sixDir)
+	runner, lspManager, dapManager, acpManager, _, _, err := h.buildExtensions(
+		cfg, homeDirUri, trackedCwd, h.empty, extExec, homeParser, false,
+		h.homeInstallDir, noRegexpSearch{}, extension.NewLiveConfig(cfg.cfg))
 	if err != nil {
 		_, _ = h.notifications.current().Notify(browserapi.LevelError,
 			"Error building channel for extensions and plugins: %v", err)
@@ -778,11 +858,11 @@ func (h *workspaceManagerHandler) init(
 		exec, isExecutor := runner.(schemeapi.Executor)
 		if isExecutor {
 			h.empty.setExecutor(exec, wsExec, extExec.shell)
-			h.localExecutor.set(exec)
 		}
 		h.homeRunner = runner
 		h.homeLSPManager = lspManager
 		h.homeDAPManager = dapManager
+		h.homeACPManager = acpManager
 		// Deliberately do not start extensions on the home/empty workspace:
 		// rune-agent (and other user extensions) recursively walk the entire
 		// workspace root for .gitignore files at startup, which is ruinously
@@ -792,35 +872,14 @@ func (h *workspaceManagerHandler) init(
 
 	h.bar.Init()
 	h.bar.OnClick = h.onBarTabClick
-	frameAttr := cfg.windowFrameAttr()
-	frameAttr.Attrs |= term.AttrVerticalRenderOffset
-	backgroundAttr := term.Attributes{Bg: frameAttr.Bg}
-	focusTabAttr := cfg.focusTabAttr()
-	focusTabAttr.Attrs |= term.AttrVerticalRenderOffset
-	nonFocusTabAttr := cfg.nonFocusTabAttr()
-	nonFocusTabAttr.Attrs |= term.AttrVerticalRenderOffset
-	focusTabIconAttr := cfg.focusTabIconAttr()
-	focusTabIconAttr.Attrs |= term.AttrVerticalRenderOffset
-	nonFocusTabIconAttr := cfg.nonFocusTabIconAttr()
-	nonFocusTabIconAttr.Attrs |= term.AttrVerticalRenderOffset
-	highlightAttr := cfg.highlightTabAttr()
-	h.bar.SetAttr(focusTabAttr, nonFocusTabAttr,
-		focusTabIconAttr, nonFocusTabIconAttr,
-		highlightAttr, frameAttr, backgroundAttr)
-	h.bar.SetFrameCharSet(cfg.windowFrameCharset())
+	h.bar.Player = cfg.sounds
 	h.bar.SetBorder(cfg.frame())
 	h.bar.SetBottomHighlight(true)
-	h.bar.SetFocusFrameChar(cfg.workspaceHighlightTabChar())
+	h.styleWorkspaceBar(cfg.workspaceBarStyle(), cfg.windowFrameAttr(), cfg.windowFrameCharset())
 
 	h.union.Init(&h.focusProxy)
-	h.union.Attributes = cfg.windowFrameAttr()
 	h.union.Frame = cfg.frame()
-
-	charset := cfg.frameUnionCharset()
-	h.union.Right = charset.Right
-	h.union.Left = charset.Left
-	h.union.Top = charset.Top
-	h.union.Bottom = charset.Bottom
+	h.styleWorkspaceUnion(cfg.windowFrameAttr(), cfg.frameUnionCharset())
 	h.workspaceBarKind = cfg.workspaceBarKind()
 	h.state = idehistory.New(h.ideStorage)
 	h.initScavenger(ctx)
@@ -846,6 +905,7 @@ func (h *workspaceManagerHandler) init(
 	defer h.mu.Unlock()
 
 	if cwd == nil {
+		h.releaseStartupPrompts()
 		h.focusProxy.Target = h.focusHandler()
 		h.initTabs(cfg, workspacesBarHeight,
 			workspacesBarOffset, workspacesBarFrame)
@@ -872,6 +932,15 @@ func (h *workspaceManagerHandler) focusHandler() tui.Handler {
 	return h.empty
 }
 
+// localServerLocator finds llama-server at models.local.server_bin_path
+// when it is set, and through the package manager otherwise.
+func (h *workspaceManagerHandler) localServerLocator(cfg llamaserver.Config) llamaserver.BinaryLocator {
+	if cfg.ServerBinPath != "" {
+		return llamaserver.NewFixedLocator(cfg.ServerBinPath)
+	}
+	return llamaserver.NewPkgLocator(h.pkgmanager)
+}
+
 // initScavenger sets up the reclamation of storage left behind by
 // workspaces that have since been removed from disk, and kicks off one
 // pass. Failures are not fatal: they only leave storage unreclaimed.
@@ -888,6 +957,8 @@ func (h *workspaceManagerHandler) initScavenger(ctx context.Context) {
 		return
 	}
 	cleaner.AddWorkspaceHook(symboldb.CleanupWorkspaceHook(h.ideStorage))
+	cleaner.AddWorkspaceHook(llmsearch.CleanupWorkspaceHook(h.ideStorage))
+	cleaner.AddWorkspaceHook(codesearch.CleanupWorkspaceHook(h.codesearchDir()))
 	cleaner.AddWorkspaceHook(h.state.ClearWorkspaceState)
 	h.scavenger = cleaner
 	cleaner.Start(ctx)
@@ -973,23 +1044,29 @@ func (h *workspaceManagerHandler) envSource(name string) (string, bool) {
 		return uri.String(), true
 	case "WORKSPACE_PATH":
 		return uri.Path(), true
+	case hostenv.DataDirVar:
+		dir := h.homeInstallDir
+		if handler := h.workspaces[h.focus]; handler != nil {
+			dir = handler.installDir
+		}
+		return dir, dir != ""
 	}
 	return "", false
 }
 
-func (h *workspaceManagerHandler) setWorkspaceRequiresAttention(
-	uri workspaceapi.URI, attr term.Attributes,
+func (h *workspaceManagerHandler) addWorkspaceNotification(
+	uri workspaceapi.URI, level browserapi.NotificationLevel, attr term.Attributes,
 ) {
 	// Notifications arrive on background goroutines (e.g. VTE run
-	// workers), so the layout rebuild in Resize must be marshaled
-	// onto the event loop to avoid racing Draw/Resize.
+	// workers), so the bar update must be marshaled onto the event
+	// loop to avoid racing Draw/Resize.
 	h.scheduleNextTick(func() {
 		for _, w := range h.workspaces {
 			if w == nil || w.uri.String() != uri.String() {
 				continue
 			}
-			w.attentionAttr = attr
-			h.Resize(h.width, h.height)
+			w.notifs.add(level, attr)
+			h.decorateWorkspaceBar()
 			break
 		}
 	})
@@ -1034,8 +1111,9 @@ func (h *workspaceManagerHandler) openFileTarget(file workspaceapi.URI) (*openFi
 		if wh == nil {
 			continue
 		}
+		caseSensitive := wh.workspace.PathCaseSensitive()
 		for _, tab := range wh.ex.comp.Tabs() {
-			if tab.URI().Equal(file) {
+			if tab.URI().Equal(file) || workspace.SameDocument(tab.URI(), file, caseSensitive) {
 				return &openFileTarget{workspaceIdx: i, workspace: wh, tab: tab}, true
 			}
 		}
@@ -1064,7 +1142,7 @@ func (h *workspaceManagerHandler) focusOpenFileTarget(
 		}
 		return target.tab, nil
 	}
-	return target.workspace.ex.editFileURILocal(file, target.workspace.ex.invokeWindow(), readOnly)
+	return target.workspace.ex.editFileURI(file, target.workspace.ex.invokeWindow(), readOnly)
 }
 
 func (h *workspaceManagerHandler) RouteOpen(
@@ -1162,10 +1240,6 @@ func (h *workspaceManagerHandler) Resize(width, height int) {
 			name := h.makeWorkspaceTabName(i, w)
 			idx := h.bar.Add(rune(int(h.workspacesIcon)+i), name)
 			h.barIdxToSlot = append(h.barIdxToSlot, i)
-			if w.attentionAttr != (term.Attributes{}) {
-				h.bar.SetTabAttr(idx, w.attentionAttr)
-				h.bar.SetTabName(idx, name+h.tabAttentionNameSuffix)
-			}
 			if i == h.focus {
 				barFocusIdx = idx
 				if !drawBar {
@@ -1180,6 +1254,7 @@ func (h *workspaceManagerHandler) Resize(width, height int) {
 	}
 	h.bar.SetFocus(barFocusIdx)
 	h.bar.SetHighlight(barFocusIdx)
+	h.decorateWorkspaceBar()
 	h.empty.Resize(width, height)
 	// bar needs to be drawn last so frame union characters
 	// are drawn last
@@ -1255,12 +1330,15 @@ func (h *workspaceManagerHandler) switchToWorkspace(i int) bool {
 			w.ex.onFocusChange(false)
 		} else {
 			h.empty.container.PauseAll()
+			h.empty.onFocusChange(false)
 		}
 		if w := h.workspaces[i]; w != nil {
-			w.attentionAttr = term.Attributes{}
+			w.bellAttr = term.Attributes{}
+			w.notifs = pendingNotifications{}
 			w.ex.onFocusChange(true)
 			w.ex.container.ResumeAll()
 		} else {
+			h.empty.onFocusChange(true)
 			h.empty.container.ResumeAll()
 		}
 	}
@@ -1282,12 +1360,21 @@ func (h *workspaceManagerHandler) onBarTabClick(barIdx int) bool {
 func (h *workspaceManagerHandler) Handle(ev term.Event) (exit, handled bool) {
 	h.macro.BeginEvent(ev)
 	defer h.macro.EndEvent()
-	if ev.Type == term.EventMouse && h.drawBar() && ev.MouseY >= h.height-h.barSize() {
-		_, handled = h.union.Handle(ev)
-		return
+	if ev.Type == term.EventFocus || ev.Type == term.EventUnfocus {
+		h.unfocused = ev.Type == term.EventUnfocus
 	}
 	focus := h.focusHandler()
-	exit, handled = focus.Handle(ev)
+	if ev.Type == term.EventMouse && h.drawBar() {
+		// The union must see every motion, not only the bar's, to tell
+		// the workspace or the bar that the pointer left it for the other.
+		h.focusProxy.Target = focus
+		exit, handled = h.union.Handle(ev)
+		if ev.MouseY >= h.height-h.barSize() {
+			return false, handled
+		}
+	} else {
+		exit, handled = focus.Handle(ev)
+	}
 	if !exit {
 		return h.confirmedForceExit, handled || h.confirmedForceExit
 	}
@@ -1323,7 +1410,7 @@ func (h *workspaceManagerHandler) initExtensions(manager extension.Runner, cfg i
 	var wg sync.WaitGroup
 	userExtensions := cfg.extensions()
 
-	wg.Add(len(userExtensions) + len(h.builtinExtensions))
+	wg.Add(len(h.builtinExtensions))
 
 	for id, p := range h.builtinExtensions {
 		pconfig := p.Config
@@ -1343,6 +1430,10 @@ func (h *workspaceManagerHandler) initExtensions(manager extension.Runner, cfg i
 
 	for id, p := range userExtensions {
 		path, pconfig := extensionRunArgs(p)
+		if path == "" {
+			continue
+		}
+		wg.Add(1)
 		go debug.CapturePanicReport(func() {
 			defer wg.Done()
 			if err := startUserExtension(manager, id, path, pconfig); err != nil {
@@ -1354,6 +1445,8 @@ func (h *workspaceManagerHandler) initExtensions(manager extension.Runner, cfg i
 	wg.Wait()
 }
 
+// extensionRunArgs returns an empty path for an entry that only configures
+// an extension, which the package that installs it gives a path.
 func extensionRunArgs(p extensionConfig) (string, config.Config) {
 	path, _ := p.path()
 	pconfig, ok := p.config()
@@ -1393,6 +1486,9 @@ func (h *workspaceManagerHandler) startInstalledExtensions(ids []string) []strin
 	for _, id := range ids {
 		if p, ok := userExtensions[id]; ok {
 			path, pconfig := extensionRunArgs(p)
+			if path == "" {
+				continue
+			}
 			toStart = append(toStart, startArgs{id: id, path: path, pconfig: pconfig})
 		}
 	}
@@ -1457,7 +1553,49 @@ func (h *workspaceManagerHandler) afterPackageConfigMerge(
 		}
 		err = errors.Join(err, tutErr)
 	}
+
+	if event.TouchesPath(keySounds) {
+		// Reloading applies the merged sounds to the shared registry.
+		if _, reloadErr := h.reloadConfig(); reloadErr != nil {
+			err = errors.Join(err, fmt.Errorf("reload config for sounds: %w", reloadErr))
+		} else {
+			result.LivePaths = append(result.LivePaths, []string{keySounds})
+		}
+	}
+
+	if event.TouchesPath(keyACP) {
+		if cfg, reloadErr := h.reloadConfig(); reloadErr != nil {
+			err = errors.Join(err, fmt.Errorf("reload config for acp: %w", reloadErr))
+		} else {
+			h.reloadACPConfigs(cfg)
+			result.LivePaths = append(result.LivePaths, []string{keyACP})
+		}
+	}
 	return result, err
+}
+
+// reloadACPConfigs applies the agents of cfg, with each workspace's own
+// config overlaid, to the next agent starts of every workspace.
+func (h *workspaceManagerHandler) reloadACPConfigs(cfg ideConfig) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.homeACPManager != nil {
+		h.homeACPManager.SetConfig(expandACPDataDir(cfg.acpConfigs(), h.homeInstallDir))
+	}
+	for _, w := range h.workspaces {
+		if w == nil {
+			continue
+		}
+		wcfg := cfg
+		if w.configOverlay != nil {
+			wcfg.errors = make(map[string]error)
+			if _, err := overlayWorkspaceConfig(w.configOverlay, h.workspaceConfigFilename, &wcfg); err != nil {
+				log.Warnf("reload the agents of workspace %s: %v", w.uri.String(), err)
+				continue
+			}
+		}
+		w.reloadACPConfig(wcfg.cfg)
+	}
 }
 
 func (h *workspaceManagerHandler) textOpts(
@@ -1467,6 +1605,10 @@ func (h *workspaceManagerHandler) textOpts(
 	markdownConfig := markdown.DefaultConfig()
 	markdownConfig.Parser = parser
 	markdownConfig.ScheduleNextTick = cfg.scheduleNextTick
+	promptConfig := cfg.promptConfig()
+	promptConfig.Parser = parser
+	promptConfig.ScheduleNextTick = cfg.scheduleNextTick
+	tabs := cfg.browserTabStyle()
 	ret := []text.Option{
 		text.WithTabspaces(cfg.editorTabspaces()),
 		text.WithComments(cfg.editorComments()),
@@ -1478,10 +1620,14 @@ func (h *workspaceManagerHandler) textOpts(
 		text.WithCommandMaxHistory(cfg.commandMaxHistory()),
 		text.WithShellMaxHistory(cfg.consoleMaxHistory()),
 		text.WithCommandHistoryKey(cfg.commandHistoryKey()),
-		text.WithFocusTabAttr(cfg.focusTabAttr(), cfg.focusTabIconAttr()),
-		text.WithNonFocusTabAttr(cfg.nonFocusTabAttr(), cfg.nonFocusTabIconAttr()),
-		text.WithFocusTabHighlightAttr(cfg.highlightTabAttr()),
-		text.WithFocusTabHighlightChar(cfg.highlightTabChar()),
+		text.WithFocusTabAttr(tabs.FocusTabAttr, tabs.FocusTabIconAttr),
+		text.WithNonFocusTabAttr(tabs.NonFocusTabAttr, tabs.NonFocusTabIconAttr),
+		text.WithFocusTabHighlightAttr(tabs.FocusTabHighlightAttr),
+		text.WithFocusTabHighlightChar(tabs.FocusTabHighlightChar),
+		text.WithTabImages(tabs.Images),
+		text.WithFocusTabHighlightGraphics(tabs.HighlightGraphics),
+		text.WithHoverTabAttr(tabs.HoverTabAttr),
+		text.WithTabSounds(tabs.Sounds, cfg.sounds),
 		text.WithWallpaper(cfg.wallpaper()),
 		text.WithDropTarget(
 			term.Attributes{Bg: term.ColorGray, Fg: term.ColorBlack},
@@ -1494,13 +1640,27 @@ func (h *workspaceManagerHandler) textOpts(
 		text.WithActiveTabShader(
 			cfg.animationsActiveTabShader(animActiveContentTab),
 			cfg.animationsActiveTabFPS(animActiveContentTab),
-			cfg.animationsActiveTabLoop(animActiveContentTab)),
-		text.WithOnTabActivity(h.refreshWorkspaceActivity),
+			cfg.animationsActiveTabLoop(animActiveContentTab),
+			cfg.animationsActiveTabParams(animActiveContentTab)),
+		text.WithOnTabStatus(func(
+			tab workspaceapi.URI, _, status programstatus.Summary,
+		) {
+			h.status.TabStatusChanged(uri, tab, status)
+		}),
+		text.WithOnTabRemoved(func(tab workspaceapi.URI) {
+			h.status.TabRemoved(uri, tab)
+		}),
+		text.WithOnContentSeen(func(content browserapi.Handler) {
+			if seen, ok := statusURIOf(content); ok && !h.unfocused {
+				h.status.Ack(uri, seen)
+			}
+		}),
+		text.WithTabStatusConfig(tabStatusConfigFor(cfg)),
 		text.WithIconSet(cfg.icons()),
 		text.WithTabOverrideIcon(cfg.tabOverrideIcon()),
 		text.WithCommandOverlayConfig(cfg.commandOverlayConfig()),
 		text.WithCommandAliases(cfg.commandAliases()),
-		text.WithPromptConfig(cfg.promptConfig()),
+		text.WithPromptConfig(promptConfig),
 		text.WithEventPublisher(h.events.newPublisher(uri)),
 		text.WithTabBarOffset(h.tabBarOffset),
 		text.WithRightInset(h.rightInset),
@@ -1510,8 +1670,11 @@ func (h *workspaceManagerHandler) textOpts(
 		text.WithSyntaxConfig(cfg.syntaxConfig()),
 		text.WithMaxSyntaxParseSize(cfg.editorMaxSizeForSyntax()),
 		text.WithSyntaxTree(treesitter.New),
+		text.WithSyntaxParse(treesitter.Parse),
 		text.WithSwapDirectory(h.swapDirectory(cfg, ws, uri)),
 		text.WithMarkdownConfig(markdownConfig),
+		text.WithMarkdownImageStorage(
+			storageapi.WithPartition(cfg.storage, markdownImagesPartition)),
 		text.WithClipboard(h.clip),
 		text.WithOpenRouter(h),
 		text.WithFileExplorer(text.FileExplorerConfig{
@@ -1551,16 +1714,6 @@ func commandBindingOpts(cfg ideConfig) []text.Option {
 		add(helix.KeyBindings())
 	}
 	return ret
-}
-
-func cleanedExtensionConfig(cfg map[string]any) map[string]any {
-	m := make(map[string]any, len(cfg))
-	for k, v := range cfg {
-		if k != "extensions" {
-			m[k] = v
-		}
-	}
-	return m
 }
 
 func (h *workspaceManagerHandler) addWorkspace(
@@ -1652,7 +1805,7 @@ func (h *workspaceManagerHandler) launchBuild(
 	shouldRestore, promptRecommended bool,
 ) {
 	go debug.CapturePanicReport(func() {
-		built, buildErr := h.buildWorkspaceAsync(uri, cwd, pending)
+		built, buildErr := h.buildWorkspaceAsync(ctx, uri, cwd, pending)
 		pending.buildPhase.CompareAndSwap(pendingBuildActive, pendingBuildReturned)
 		if pending.canceled.Load() {
 			h.abortPendingBuild(pending, built, cancel)
@@ -1675,6 +1828,7 @@ func (h *workspaceManagerHandler) abortPendingBuild(
 	h.mu.Lock()
 	h.beginPendingWorkspaceTeardown(pending)
 	h.shaderRunner.stopLoading()
+	h.releaseStartupPrompts()
 	h.mu.Unlock()
 	if built != nil {
 		h.discardBuiltWorkspace(built)
@@ -1700,7 +1854,7 @@ func (h *workspaceManagerHandler) beginPendingWorkspaceTeardown(pending *pending
 			return
 		}
 
-		detached, ok := h.workspace.RemoveWorkspace(pending.uri)
+		detached, ok := h.workspace.ReleaseWorkspace(pending.uri)
 		if !ok {
 			return
 		}
@@ -1782,7 +1936,7 @@ func (h *workspaceManagerHandler) isPending(uri workspaceapi.URI) bool {
 func (h *workspaceManagerHandler) createWorkspaceScheme(uri workspaceapi.URI) (
 	workspace.Workspace, error,
 ) {
-	cwd, err := h.workspace.AddWorkspace(context.Background(), uri)
+	cwd, err := h.workspace.AcquireWorkspace(context.Background(), uri)
 	if err != nil {
 		return nil, fmt.Errorf("create new workspace for %q: %w", uri, err)
 	}
@@ -1816,32 +1970,55 @@ func (h *workspaceManagerHandler) reservePendingSlot(
 }
 
 type builtWorkspace struct {
-	cfg                 ideConfig
-	configErr           error
+	cfg       ideConfig
+	configErr error
+	// hudLoads is the count of HUD loads started when the build read
+	// its config.
+	hudLoads            uint64
 	wh                  *workspaceHandler
 	ex                  *ex
 	runner              extension.Runner
 	cursorHistoryCloser io.Closer
 	symbolDBCloser      io.Closer
+	searchIndexCloser   io.Closer
+	regexIndex          *codesearch.Index
 	notice              *idenotice.Crier
 	lspManager          *idelsp.Manager
 	dapManager          *idedebug.Manager
+	acpManager          *ideacp.Manager
 	hostPackages        *pkgManager
 	promptStorage       storageapi.Service
 }
 
+// buildWorkspaceAsync builds the workspace uri off the event loop. ctx ends
+// when the pending workspace is closed, which abandons a workspace config
+// trust prompt that is still waiting on the user.
 func (h *workspaceManagerHandler) buildWorkspaceAsync(
-	uri workspaceapi.URI, cwd workspace.Workspace,
+	ctx context.Context, uri workspaceapi.URI, cwd workspace.Workspace,
 	pending *pendingWorkspace,
 ) (*builtWorkspace, error) {
+	hudLoads := h.hudLoads.Load()
 	cfg, configErr := h.reloadConfig()
 	cfg.storage = h.ideStorage
 	cfg.scheduleNextTick = h.scheduleNextTick
-	if _, wConfigErr := loadWorkspaceConfig(
-		h.workspaceConfigFilename, cwd, uri, &cfg,
-	); wConfigErr != nil {
+	isUserConfig := h.isUserConfig(uri, h.workspaceConfigFilename)
+	configOverlay, _, wConfigErr := loadWorkspaceConfig(
+		h.workspaceConfigFilename, cwd, &cfg,
+		func(contents []byte) (bool, error) {
+			if isUserConfig {
+				return true, nil
+			}
+			return h.workspaceTrust.trusted(ctx, uri, h.workspaceConfigFilename, contents)
+		},
+	)
+	if wConfigErr != nil {
 		configErr = multierror.Append(configErr,
 			fmt.Errorf("workspace config: %w", wConfigErr))
+	}
+	if isUserConfig {
+		// A HUD reload reads it as the user config already; overlaying
+		// what it held here would undo the edits made to it since.
+		configOverlay = nil
 	}
 
 	// tracked from the build phase rather than the event loop: this is
@@ -1855,7 +2032,8 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 		}
 	}
 
-	parser := treesitter.NewParser(cwd, h.pkgmanager, uri)
+	parser := treesitter.NewParser(cwd, h.pkgmanager, uri).
+		WithCaptureNamesAttributes(cfg.syntaxConfig().CaptureNamesAttributes)
 	var wsParser syntaxapi.Parser = parser
 	var symbolDB *symboldb.Parser
 	var symbolDBCloser io.Closer
@@ -1887,25 +2065,28 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 	multicwd := workspace.Multi(context.Background(), visibleManager, cwd, uri)
 	tm := new(workspaceTabManager)
 	tm.parent = h
+	statusBars := text.NewStatusBarStyles(cfg.statusBarStyle())
 	ex, err := newEx(
 		func(
 			reloader exoeditor.Reloader, terminal schemeapi.Terminal,
 		) (text.Editor, error) {
 			return h.newEditor(reloader, uri, multicwd, tm, terminal,
-				cfg, vctrlService)
+				cfg, vctrlService, statusBars)
 		},
 		multicwd, h.ideStorage, h.notifications, uri,
 		cfg.terminalConfig(), cfg.pluginBarConfig(), h.events.newPublisher(uri),
 		h.initialVTECapacity, h.clip, h.macro, h.dispatchOnPreview,
 		tm, wsParser,
 		vctrlService,
-		h.newPromptEditor(cfg), h.commandObserver, h.debugCommands,
+		h.newPromptEditor(cfg), petnameGenerator{}, h.commandObserver, h.debugCommands,
 		cfg.commandPromptCfg(),
+		cfg.notificationsStyle(),
 		modalEditorMode(cfg.pkgEditorMode()),
 		cfg.editorMode(),
 		cfg.metaKey(),
 		cfg.editorAutoSave(),
 		cfg.consoleCfg(),
+		cfg.metaOpenURL(),
 		textOpts...)
 	if err != nil {
 		if symbolDBCloser != nil {
@@ -1913,6 +2094,8 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 		}
 		return nil, fmt.Errorf("new ex: %w", err)
 	}
+	ex.sponsorsURL = h.sponsorsURL
+	ex.statusBars = statusBars
 	if symbolDB != nil {
 		if serr := ex.comp.SubscribeEvents(
 			symboldb.EditorEvents(), symbolDB,
@@ -1935,20 +2118,27 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 		return nil, fmt.Errorf("install cursor history: %w", err)
 	}
 	tm.tm = ex.Browser()
+	searchIndexCloser := h.openSearchIndex(cfg, ex, uri, cwd)
+	regexIndex := h.openRegexIndex(cfg, ex, uri, cwd)
+	h.subscribeSearchRegex(ex, uri, regexIndex, wsParser, apibrowser)
 
 	wh := &workspaceHandler{
 		vctrlService:        vctrlService,
 		cursorHistoryCloser: cursorHistoryCloser,
 		symbolDBCloser:      symbolDBCloser,
+		searchIndexCloser:   searchIndexCloser,
+		regexIndex:          regexIndex,
 		cancelCtx:           pending.cancelCtx,
 		uri:                 uri,
 		ex:                  ex,
 		cwd:                 cwd,
+		installDir:          installDataDir(cwd, uri, h.sixDir),
+		configOverlay:       configOverlay,
+		extensionConfig:     extension.NewLiveConfig(cfg.cfg),
 	}
 	tm.workspace = wh
 
-	wsExec := workspaceshell.NewExecutor(
-		workspaceExecutorAdapter{e: cwd})
+	wsExec := workspaceshell.NewExecutor(cwd)
 	trackedCwd := &trackedWorkspace{Workspace: cwd, exec: wsExec}
 	extExec, err := newExtensionsExecutor()
 	if err != nil {
@@ -1956,14 +2146,19 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 		if symbolDBCloser != nil {
 			_ = symbolDBCloser.Close()
 		}
+		if searchIndexCloser != nil {
+			_ = searchIndexCloser.Close()
+		}
+		_ = regexIndex.Close()
 		_, _ = h.notifications.current().Notify(browserapi.LevelError,
 			"Error building extensions executor: %v", err)
 		log.Errorf("build extensions executor for workspace %s: %v",
 			uri.String(), err)
 		return nil, fmt.Errorf("new extensions executor: %w", err)
 	}
-	runner, lspManager, dapManager, hostPkgs, promptStorage, err := h.buildExtensions(
-		cfg, uri, trackedCwd, ex, extExec, wsParser, symbolDB != nil)
+	runner, lspManager, dapManager, acpManager, hostPkgs, promptStorage, err := h.buildExtensions(
+		cfg, uri, trackedCwd, ex, extExec, wsParser, symbolDB != nil, wh.installDir, regexIndex,
+		wh.extensionConfig)
 	if err != nil {
 		_, _ = h.notifications.current().Notify(browserapi.LevelError,
 			"Error building channel for extensions and plugins: %v", err)
@@ -1973,11 +2168,11 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 		exec, isExecutor := runner.(schemeapi.Executor)
 		if isExecutor {
 			ex.setExecutor(exec, wsExec, extExec.shell)
-			h.localExecutor.set(exec)
 		}
 		wh.Extensions.Store(runner)
 		wh.lspManager = lspManager
 		wh.dapManager = dapManager
+		wh.acpManager = acpManager
 		wh.hostPackages = hostPkgs
 		wh.promptStorage = promptStorage
 	}
@@ -1985,22 +2180,155 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 	built := &builtWorkspace{
 		cfg:                 cfg,
 		configErr:           configErr,
+		hudLoads:            hudLoads,
 		wh:                  wh,
 		ex:                  ex,
 		runner:              runner,
 		cursorHistoryCloser: cursorHistoryCloser,
 		symbolDBCloser:      symbolDBCloser,
+		searchIndexCloser:   searchIndexCloser,
+		regexIndex:          regexIndex,
 		lspManager:          lspManager,
 		dapManager:          dapManager,
+		acpManager:          acpManager,
 		hostPackages:        hostPkgs,
 		promptStorage:       promptStorage,
 	}
 	if noticeCfg, ok := newNoticeConfig(cfg, h.ideStorage, uri); ok {
 		built.notice = idenotice.New(
 			cwd, apibrowser, wsParser, h.scheduleNextTick,
-			noticeLinkCopier(h.clip, apibrowser), noticeCfg)
+			ex.onLinkClick, noticeCfg)
 	}
 	return built, nil
+}
+
+// openSearchIndex opens the code search index of the workspace uri and
+// feeds it the workspace's editor events. It returns nil when search is
+// disabled or the index cannot open: the workspace then works without
+// search.
+func (h *workspaceManagerHandler) openSearchIndex(
+	cfg ideConfig, ex *ex, uri workspaceapi.URI, cwd workspace.Workspace,
+) io.Closer {
+	if !cfg.workspaceSearch() {
+		return nil
+	}
+	idx, err := h.llmRouter.SearchService().OpenIndex(llmsearch.IndexConfig{
+		Root: uri,
+		FS:   cwd,
+		DB: storageapi.WithPartition(
+			storageapi.WithPartition(h.ideStorage, llmsearch.PartitionName), uri.String()),
+		Notify:   h.notifications.current(),
+		Schedule: h.scheduleNextTick,
+		Options:  cfg.searchConfig().Options,
+	})
+	if err != nil {
+		h.empty.log(log.ErrorLevel, "search index for workspace %q: %v", uri.Path(), err)
+		return nil
+	}
+	if err := ex.comp.SubscribeEvents(llmsearch.EditorEvents(), idx); err != nil {
+		log.Errorf("subscribe search index events for %s: %v", uri.String(), err)
+	}
+	return idx
+}
+
+// codesearchDir is where the trigram indexes of the workspaces persist.
+func (h *workspaceManagerHandler) codesearchDir() string {
+	return filepath.Join(h.sixDir, "codesearch")
+}
+
+// openRegexIndex opens the trigram index searchregex searches the
+// workspace uri with, and feeds it the workspace's editor events. With
+// search.regex_enabled off it keeps no index: every search reads every file.
+func (h *workspaceManagerHandler) openRegexIndex(
+	cfg ideConfig, ex *ex, uri workspaceapi.URI, cwd workspace.Workspace,
+) *codesearch.Index {
+	searchCfg := cfg.searchConfig()
+	icfg := codesearch.Config{
+		Root: uri, FS: cwd, ExcludedFolders: searchCfg.Options.ExcludedFolders,
+		Notify: h.notifications.current(), Schedule: h.scheduleNextTick,
+	}
+	if !cfg.workspaceRegexSearch() {
+		return codesearch.Open(icfg)
+	}
+	icfg.File = codesearch.IndexFile(h.codesearchDir(), uri)
+	idx := codesearch.Open(icfg)
+	if err := ex.comp.SubscribeEvents(codesearch.EditorEvents(), idx); err != nil {
+		log.Errorf("subscribe regex index events for %s: %v", uri.String(), err)
+	}
+	return idx
+}
+
+// subscribeSearchRegex registers the searchregex command of the workspace
+// uri, which searches idx.
+func (h *workspaceManagerHandler) subscribeSearchRegex(
+	ex *ex, uri workspaceapi.URI, idx *codesearch.Index, parser syntaxapi.Parser,
+	apibrowser browserapi.Browser,
+) {
+	handler := regexsearch.New(regexsearch.Config{
+		Root:     uri,
+		Searcher: idx,
+		Clients: finder.Clients{
+			ResourceOpener: apibrowser,
+			WindowManager:  apibrowser,
+			Interrupter:    apibrowser,
+			Notifications:  h.notifications.new(uri, ex.container),
+			Editor:         newEditorAdapter(ex.Editor()),
+			FileSystem:     ex.workspace,
+		},
+		Parser:           parser,
+		ScheduleNextTick: h.scheduleNextTick,
+	})
+	if err := ex.editorObserver.SubscribeCommand(regexsearch.Manual(), handler); err != nil {
+		log.Errorf("subscribe %s command: %v", regexsearch.Name, err)
+	}
+}
+
+// isUserConfig reports whether filename in the workspace uri is the user's
+// own config file, as when the workspace is the home directory: it already
+// applied as the user config, so it needs no trust.
+func (h *workspaceManagerHandler) isUserConfig(uri workspaceapi.URI, filename string) bool {
+	if h.configPath == "" || uri.Scheme() != workspace.FileScheme {
+		return false
+	}
+	configPath, err := workspaceapi.ExpandPath(h.configPath, user.Current, os.Getwd)
+	if err != nil {
+		return false
+	}
+	return filepath.Clean(configPath) == filepath.Join(uri.Path(), filename)
+}
+
+// promptWorkspaceTrust is the workspaceTrustPrompt of workspace builds. It
+// asks in the workspace in focus and, when ctx ends first, takes the prompt
+// down so that reopening the workspace can ask again.
+func (h *workspaceManagerHandler) promptWorkspaceTrust(
+	ctx context.Context, message string, options []string,
+) (int, error) {
+	completion := newPromptChoiceCompletion()
+	// win is only touched on the event loop.
+	var win browser.Window
+	scheduled := h.scheduleNextTick(func() {
+		win = h.focusEx().comp.Prompt(message, options, nil, handlerapi.FuncPromptHandler(
+			func(i int, _ string) {
+				completion.selectIndex(i)
+			},
+			func() error {
+				completion.dismiss()
+				return nil
+			},
+		))
+	})
+	if !scheduled {
+		return -1, errors.New("show workspace config trust prompt: event loop is not running")
+	}
+	answer, err := completion.wait(ctx)
+	if ctx.Err() != nil {
+		h.scheduleNextTick(func() {
+			if win != nil {
+				_ = win.Close()
+			}
+		})
+	}
+	return answer, err
 }
 
 func (h *workspaceManagerHandler) installPendingWorkspace(
@@ -2017,6 +2345,7 @@ func (h *workspaceManagerHandler) installPendingWorkspace(
 	// One-shot: only the first install of the session consumes the
 	// previous session's snapshot.
 	defer h.maybeReopenLastSession()
+	defer h.releaseStartupPrompts()
 
 	if pending.canceled.Load() {
 		h.beginPendingWorkspaceTeardown(pending)
@@ -2065,6 +2394,12 @@ func (h *workspaceManagerHandler) installPendingWorkspace(
 	ex := built.ex
 	wh := built.wh
 	ex.setDefaultAttr(h.defAttr)
+	if h.hud != nil && h.hud.load > built.hudLoads && wh.configOverlay == nil {
+		// The build read the config before the installed HUD's load did.
+		ex.restyle(h.hud.base, h.hud.images, h.hud.statusBarImages)
+		// Its extensions have not started yet, so they need not be told.
+		wh.extensionConfig.Set(h.hud.cfg)
+	}
 	go debug.CapturePanicReport(func() {
 		start := time.Now()
 		// to preserve the order of events we don't want to spawn
@@ -2144,7 +2479,7 @@ func (h *workspaceManagerHandler) installPendingWorkspace(
 	}
 	fexplorerURI, _ := workspaceapi.ParseURI(fileExplorerURI)
 	wh.historyCloser = h.state.SubscribeEvents(
-		ctx, uri, &ex.comp, exSnapshotter{ex: ex, wh: wh},
+		ctx, uri, &ex.comp, exSnapshotter{ex: ex, wh: wh, status: h.status},
 		fexplorerURI, gitshowBaseURI())
 	// The name identifies the workspace rather than its contents, so it
 	// comes back whether or not the session itself is restored.
@@ -2166,7 +2501,7 @@ func (h *workspaceManagerHandler) installPendingWorkspace(
 		h.openRestorePrompt(ex, uri, state)
 		return
 	}
-	if err := h.restorePreviousSession(ex, state); err != nil {
+	if err := h.restorePreviousSession(ex, uri, state); err != nil {
 		_, _ = h.notifications.current().Notify(browserapi.LevelError,
 			"restore previous session: %v", err)
 	}
@@ -2184,10 +2519,19 @@ func (h *workspaceManagerHandler) discardBuiltWorkspace(built *builtWorkspace) {
 	if built.symbolDBCloser != nil {
 		_ = built.symbolDBCloser.Close()
 	}
+	if built.searchIndexCloser != nil {
+		_ = built.searchIndexCloser.Close()
+	}
+	if built.regexIndex != nil {
+		_ = built.regexIndex.Close()
+	}
 	if built.runner != nil {
 		if c, ok := built.runner.(io.Closer); ok {
 			_ = c.Close()
 		}
+	}
+	if built.acpManager != nil {
+		_ = built.acpManager.Close()
 	}
 	if built.lspManager != nil {
 		_ = built.lspManager.Close()
@@ -2222,13 +2566,18 @@ func lspConfig(cfg ideConfig) config.Config {
 	return config.MapConfig(ret)
 }
 
+// buildExtensions wires the extensions, language servers and debuggers of
+// the workspace at uri. installDir is the Rune data directory of the
+// workspace's host, as resolved by installDataDir. regexp answers the
+// regexp searches of the workspace's searcher.
 func (h *workspaceManagerHandler) buildExtensions(
 	cfg ideConfig, uri workspaceapi.URI,
 	cwd workspace.Workspace, ex *ex, extExecutor *extensionsExecutor,
-	parser syntaxapi.Parser, indexedSymbols bool,
+	parser syntaxapi.Parser, indexedSymbols bool, installDir string,
+	regexp regexpSearcher, extensionConfig *extension.LiveConfig,
 ) (
 	_ extension.Runner, _ *idelsp.Manager, _ *idedebug.Manager,
-	_ *pkgManager, _ storageapi.Service, retErr error,
+	_ *ideacp.Manager, _ *pkgManager, _ storageapi.Service, retErr error,
 ) {
 	notifications := h.notifications.new(uri, ex.container)
 	ed := ex.Editor()
@@ -2242,11 +2591,11 @@ func (h *workspaceManagerHandler) buildExtensions(
 	// Language servers and debuggers run on the workspace host, so the
 	// packages they need are installed there.
 	var pkgs idelsp.PkgManager = h.pkgmanager
-	pkgshellCfg := pkgshell.Config{Manager: h.pkgmanager.pkg}
+	pkgshellCfg := pkgconsole.Config{Manager: h.pkgmanager.pkg}
 	hostPkgs := h.hostPackageManager(cfg, uri, cwd, notifications)
 	if hostPkgs != nil {
 		pkgs = hostPkgs
-		pkgshellCfg = pkgshell.Config{Manager: hostPkgs.pm, Host: hostPkgs.host}
+		pkgshellCfg = pkgconsole.Config{Manager: hostPkgs.pm, Host: hostPkgs.host}
 		defer func() {
 			if retErr != nil {
 				_ = hostPkgs.Close()
@@ -2254,25 +2603,29 @@ func (h *workspaceManagerHandler) buildExtensions(
 		}()
 	}
 	cmdAuthorizer, err := ideauthorizer.NewAuthorizer(
-		ed, promptOpener, promptStorage, cfg.scheduleNextTick, notifications,
-		h.trust, ideauthorizer.Config{
+		ed, promptOpener, promptStorage, cfg.scheduleNextTick, ex.tm,
+		h.trust, cwd, uri, ideauthorizer.Config{
 			AutoAuthorizeExtensions:        cfg.authorizerAutoAuthorizeExtensions(),
 			AutoAuthorizeCommands:          cfg.authorizerAutoAuthorizeCommands(),
 			AutoAuthorizeVerifiedPublisher: cfg.authorizerAutoAuthorizeVerified(),
-			OnboardingActive:               h.onboardingActive,
+			OnPromptWindow:                 ex.setStatusWindow,
+			WorkspaceConfigs:               h.workspaceTrust,
+			Notifications:                  notifications,
+			DataDir:                        installDir,
 		})
 	if err != nil {
-		return nil, nil, nil, nil, nil, fmt.Errorf("new command authorizer: %w", err)
+		return nil, nil, nil, nil, nil, nil, fmt.Errorf("new command authorizer: %w", err)
 	}
-	res := extension.BrowserResources(ex.Browser(), h.events.newPublisher(uri))
+	var graphics thandlerrpc.GraphicsConfig
+	res := extension.BrowserResources(ex.Browser(), h.events.newPublisher(uri), graphics)
 	res = extension.MergeResourceMap(res,
-		extension.EditorResources(ex.Browser(), ed, h.events.newPublisher(uri)))
+		extension.EditorResources(ex.Browser(), ed, h.events.newPublisher(uri), graphics))
 	res = extension.MergeResourceMap(res,
 		extension.WorkspaceResources(cwd, cmdAuthorizer))
 	res = extension.MergeResourceMap(res,
 		extension.StorageResources(h.extensionsStorage))
 	res = extension.MergeResourceMap(res,
-		extension.ConfigResources(config.MapConfig(cleanedExtensionConfig(cfg.cfg))))
+		extension.ConfigResources(extensionConfig))
 	res = extension.MergeResourceMap(res,
 		extension.SyntaxResources(parser))
 	apibrowser := newBrowserAdapter(ex.Browser())
@@ -2288,8 +2641,9 @@ func (h *workspaceManagerHandler) buildExtensions(
 	// report (see workspaceRootURI).
 	rootURI, err := workspaceRootURI(cwd, uri)
 	if err != nil {
-		return nil, nil, nil, nil, nil, fmt.Errorf("resolve workspace root: %w", err)
+		return nil, nil, nil, nil, nil, nil, fmt.Errorf("resolve workspace root: %w", err)
 	}
+	searcher := newWorkspaceSearcher(uri, rootURI.Path(), regexp, h.llmRouter)
 	callbacks := idelsp.NewCallbackHandler(notifications, apibrowser, ex.Browser(),
 		apieditor, cwd, rootURI.String(), lspCallbackCfg)
 	lspConfig := idelsp.Config{
@@ -2313,9 +2667,16 @@ func (h *workspaceManagerHandler) buildExtensions(
 	}
 	dapCfg := idedebug.Config{
 		MaxRetries: 5,
-		Adapters:   cfg.debuggerConfigs(),
+		// Adapters run on the workspace host and their launch arguments
+		// go straight to them, so no command executor expands
+		// $RUNE_DATADIR in them on the way.
+		Adapters: expandAdapterDataDir(cfg.debuggerConfigs(), installDir),
 	}
 	dap := idedebug.New(rootURI, cwd, pkgs, dapCfg)
+	// Agents start through the executor `!` plugin commands use, which the
+	// extension runner backs once built, so they can call back into Rune
+	// under plugin claims.
+	acp := ideacp.New(rootURI, ex.executor, expandACPDataDir(cfg.acpConfigs(), installDir))
 	defer func() {
 		if retErr == nil {
 			return
@@ -2326,6 +2687,7 @@ func (h *workspaceManagerHandler) buildExtensions(
 		if err := dap.Close(); err != nil {
 			log.Warnf("close dap manager after build error: %v", err)
 		}
+		_ = acp.Close()
 	}()
 	err = ex.comp.SubscribeEvents(idelsp.EditorEvents(), lsp)
 	if err != nil {
@@ -2361,13 +2723,13 @@ func (h *workspaceManagerHandler) buildExtensions(
 			WithOpenShell(ex.consolenewtab)); err != nil {
 		log.Errorf("subscribe debugger command prompt: %v", err)
 	}
-	cmdcfg := lspCommandsConfig(uri, cfg, notifications,
-		h.events.newInterrupter(uri), parser, callbacks)
+	cmdcfg := lspCommandsConfig(uri, cfg, h.events.newInterrupter(uri),
+		parser, callbacks, ex.onLinkClick)
 	apiHandler, err := lspcmd.AllHandler(
 		lspifc, apieditor, apibrowser, apibrowser, apibrowser,
 		ex.workspace, parser, cmdcfg)
 	if err != nil {
-		return nil, nil, nil, nil, nil, fmt.Errorf("new lsp command handler: %v", err)
+		return nil, nil, nil, nil, nil, nil, fmt.Errorf("new lsp command handler: %v", err)
 	}
 	handler := text.FuncCommandHandler(apiHandler.HandleCommand,
 		func(ctx context.Context, cmd textapi.Command) (iterator.Iterator[string], string, error) {
@@ -2380,13 +2742,33 @@ func (h *workspaceManagerHandler) buildExtensions(
 	}
 	res = extension.MergeResourceMap(res, extension.SemanticResources(lspifc))
 	res = extension.MergeResourceMap(res, extension.DebugResources(dap))
+	res = extension.MergeResourceMap(res, extension.ACPResources(acp))
+	own, host := cfg.agentChatConfig()
+	chat := dialoguetui.ReadConfig(own, host, h.clip, notifications)
+	ex.acpChatImages = storageapi.WithPartition(h.ideStorage, "acp_chat_images")
+	chat.StatusBar.Storage = ex.acpChatImages
+	chat.InputBox.GraphicsStorage = ex.acpChatImages
+	ex.acpChats = acpcmd.New(acp, acpcmd.Config{
+		WindowManager: apibrowser,
+		Interrupter:   apibrowser,
+		Notifications: notifications,
+		FileSystem:    ex.workspace,
+		Root:          rootURI,
+		Parser:        parser,
+		OnLinkClick:   ex.onLinkClick,
+		Chat:          chat,
+	})
+	if err := ex.editorObserver.SubscribeCommand(acpcmd.Manual(), ex.acpChats); err != nil {
+		log.Errorf("subscribe %s command: %v", acpcmd.Name, err)
+	}
 	res = extension.MergeResourceMap(res, extension.LLMResources(h.llmRouter))
+	res = extension.MergeResourceMap(res, extension.SearchResources(searcher))
 	res = extension.MergeResourceMap(res,
 		extension.PackagesResources(extensionPackages{pkgs: pkgs}))
 
-	// Register the top-level `models` REPL command. The llmshell
+	// Register the top-level `models` REPL command. The llmconsole
 	// reads the local llama.cpp registry directly off the router.
-	llmHandler := llmshell.New(llmshell.Config{
+	llmHandler := llmconsole.New(llmconsole.Config{
 		Service:          h.llmRouter,
 		LocalRegistry:    h.llmRouter.LocalRegistry(),
 		Storage:          h.storage,
@@ -2396,24 +2778,62 @@ func (h *workspaceManagerHandler) buildExtensions(
 		ScheduleNextTick: cfg.scheduleNextTick,
 		PromptOpener:     &ex.comp,
 	})
-	if err := ex.editorObserver.RegisterREPLCommand(llmshell.Manual(), llmHandler); err != nil {
+	if err := ex.editorObserver.RegisterREPLCommand(llmconsole.Manual(), llmHandler); err != nil {
 		log.Errorf("register llm repl command: %v", err)
+	}
+	if err := ex.editorObserver.RegisterREPLCommand(searchconsole.Manual(), searchconsole.New(searchconsole.Config{
+		Searcher: searcher,
+		Search:   h.llmRouter.SearchService(),
+		Root:     uri,
+	})); err != nil {
+		log.Errorf("register search repl command: %v", err)
+	}
+	// The home workspace has no search index; markHome tells the user to
+	// open a workspace instead.
+	if !ex.home {
+		searchHandler := semanticsearch.New(semanticsearch.Config{
+			Root:     uri,
+			Searcher: searcher,
+			Search:   h.llmRouter.SearchService(),
+			Models:   h.llmRouter.LocalRegistry(),
+			// llama-server runs locally whatever the workspace host:
+			// see the locator the router was built with.
+			Server: llamaServerPackage{
+				pkgs: h.pkgmanager.pkgManager,
+				path: cfg.llmConfig().Local.Service.ServerBinPath,
+			},
+			Clients: finder.Clients{
+				ResourceOpener: apibrowser,
+				WindowManager:  apibrowser,
+				Interrupter:    apibrowser,
+				Notifications:  notifications,
+				Editor:         apieditor,
+				FileSystem:     ex.workspace,
+			},
+			Parser:           parser,
+			Prompt:           &ex.comp,
+			ScheduleNextTick: cfg.scheduleNextTick,
+		})
+		if err := ex.editorObserver.SubscribeCommand(semanticsearch.Manual(), searchHandler); err != nil {
+			log.Errorf("subscribe %s command: %v", semanticsearch.Name, err)
+		}
 	}
 
 	// Register the top-level `pkg` REPL command for package management.
-	pkgHandler := pkgshell.New(pkgshellCfg)
-	if err := ex.editorObserver.RegisterREPLCommand(pkgshell.Manual(), pkgHandler); err != nil {
+	pkgHandler := pkgconsole.New(pkgshellCfg)
+	if err := ex.editorObserver.RegisterREPLCommand(pkgconsole.Manual(), pkgHandler); err != nil {
 		log.Errorf("register pkg repl command: %v", err)
+	}
+
+	if err := ex.editorObserver.RegisterREPLCommand(
+		lspconsole.Manual(), lspconsole.New(lsp)); err != nil {
+		log.Errorf("register lsp repl command: %v", err)
 	}
 
 	dataDir := h.sixDir
 	if err := os.MkdirAll(dataDir, 0777); err != nil {
-		return nil, nil, nil, nil, nil, fmt.Errorf("mkdir %s: %v", dataDir, err)
+		return nil, nil, nil, nil, nil, nil, fmt.Errorf("mkdir %s: %v", dataDir, err)
 	}
-	// installDir is where the IDE provisions per-extension toolchains on the
-	// workspace host. Extensions resolve provisioned binaries under it via
-	// FindInstalledExecutable.
-	installDir := installDataDir(cwd, uri, dataDir)
 	browser := ex.Browser()
 	grantor := newExtensionPromptGrantor(promptOpener, promptStorage,
 		cfg.scheduleNextTick, h.trust)
@@ -2421,9 +2841,9 @@ func (h *workspaceManagerHandler) buildExtensions(
 		h.pkgmanager.pkg, dataDir, installDir, browser, cwd, extExecutor, grantor,
 		ed, promptOpener, promptStorage, cfg.scheduleNextTick)
 	if err != nil {
-		return nil, nil, nil, nil, nil, fmt.Errorf("new workspace extensions runner: %v", err)
+		return nil, nil, nil, nil, nil, nil, fmt.Errorf("new workspace extensions runner: %v", err)
 	}
-	return runner, lsp, dap, hostPkgs, promptStorage, nil
+	return runner, lsp, dap, acp, hostPkgs, promptStorage, nil
 }
 
 // hostPackageManager is the package manager of the machine a workspace
@@ -2496,6 +2916,60 @@ func (h *workspaceManagerHandler) swapDirectory(
 			return ""
 		}
 	}
+}
+
+// expandAdapterDataDir returns adapters with $RUNE_DATADIR in their
+// commands and launch and attach arguments expanded to installDir.
+func expandAdapterDataDir(
+	adapters map[string]idedebug.AdapterConfig, installDir string,
+) map[string]idedebug.AdapterConfig {
+	expandArgs := func(args map[string]string) map[string]string {
+		if args == nil {
+			return nil
+		}
+		out := make(map[string]string, len(args))
+		for k, v := range args {
+			out[k] = hostenv.ExpandDataDir(v, installDir)
+		}
+		return out
+	}
+	for id, a := range adapters {
+		command := make([]string, len(a.Command))
+		for i, arg := range a.Command {
+			command[i] = hostenv.ExpandDataDir(arg, installDir)
+		}
+		a.Command = command
+		a.LaunchArgs = expandArgs(a.LaunchArgs)
+		a.AttachArgs = expandArgs(a.AttachArgs)
+		adapters[id] = a
+	}
+	return adapters
+}
+
+// expandACPDataDir returns cfg with $RUNE_DATADIR in its agents'
+// commands, arguments and environment expanded to installDir.
+func expandACPDataDir(cfg ideacp.Config, installDir string) ideacp.Config {
+	agents := make(map[string]ideacp.AgentConfig, len(cfg.Agents))
+	for name, a := range cfg.Agents {
+		a.Command = hostenv.ExpandDataDir(a.Command, installDir)
+		if a.Args != nil {
+			args := make([]string, len(a.Args))
+			for i, arg := range a.Args {
+				args[i] = hostenv.ExpandDataDir(arg, installDir)
+			}
+			a.Args = args
+		}
+		if a.Env != nil {
+			env := make(map[string]string, len(a.Env))
+			for k, v := range a.Env {
+				env[k] = hostenv.ExpandDataDir(v, installDir)
+			}
+			a.Env = env
+		}
+		agents[name] = a
+	}
+	cfg.Agents = agents
+	return cfg
 }
 
 func installDataDir(ws workspace.Workspace, uri workspaceapi.URI, localDataDir string) string {
@@ -2587,9 +3061,10 @@ func (h *workspaceManagerHandler) openPrevSessionFiles(
 	return err
 }
 
+// restorePreviousSession restores state into ex, the ex of the workspace
+// at uri.
 func (h *workspaceManagerHandler) restorePreviousSession(
-	ex *ex,
-	state idehistory.State,
+	ex *ex, uri workspaceapi.URI, state idehistory.State,
 ) error {
 	ret := new(multierror.Error)
 	layout := state.Layout
@@ -2610,18 +3085,19 @@ func (h *workspaceManagerHandler) restorePreviousSession(
 		ret = multierror.Append(ret,
 			restoreOpenTaskSessions(ex, state.Tasks))
 	}
-	if len(state.Files) == 0 {
-		return ret.ErrorOrNil()
-	}
-	if h.width == 0 || h.height == 0 {
+	switch {
+	case len(state.Files) == 0:
+	case h.width == 0 || h.height == 0:
 		// if restoreSession is called on an size 0,0 handler
 		// then cursor is not properly set.
 		h.openPrevFiles = state.Files
 		h.openPrevWindows = windows
 		h.openPrevFilesEx = ex
-		return ret.ErrorOrNil()
+	default:
+		ret = multierror.Append(ret, h.openPrevSessionFiles(ex, state.Files, windows))
 	}
-	ret = multierror.Append(ret, h.openPrevSessionFiles(ex, state.Files, windows))
+	// Last, for the tabs the programs report from to be back.
+	h.status.Restore(uri, state.Programs)
 	return ret.ErrorOrNil()
 }
 
@@ -2734,6 +3210,189 @@ func (h *workspaceManagerHandler) logNonFatalErrs(
 	}
 }
 
+// styleWorkspaceBar styles the workspace bar with s, and its frame with
+// frameAttr and cs. The images of s come from frameGraphics as it is
+// now, so a Reload of it must come first.
+func (h *workspaceManagerHandler) styleWorkspaceBar(
+	s workspaceBarStyle, frameAttr term.Attributes, cs component.FrameCharSet,
+) {
+	offset := func(attr term.Attributes) term.Attributes {
+		attr.Attrs |= term.AttrVerticalRenderOffset
+		return attr
+	}
+	h.barFocusAttr = offset(s.focusTabAttr)
+	h.barNonFocusAttr = offset(s.nonFocusTabAttr)
+	h.barFocusIconAttr = offset(s.focusTabIconAttr)
+	h.barNonFocusIconAttr = offset(s.nonFocusTabIconAttr)
+	h.barHighlightAttr = s.highlightAttr
+	frameAttr = offset(frameAttr)
+	h.bar.SetAttr(h.barFocusAttr, h.barNonFocusAttr,
+		h.barFocusIconAttr, h.barNonFocusIconAttr,
+		h.barHighlightAttr, frameAttr, term.Attributes{Bg: frameAttr.Bg})
+	h.bar.SetFrameCharSet(cs)
+	h.bar.SetFocusFrameChar(s.highlightChar)
+	h.bar.SetHoverAttr(s.hoverAttr)
+	g := h.frameGraphics()
+	h.bar.SetGraphics(g, s.images.ButtonImages(g), s.highlight)
+	h.bar.Sounds = s.sounds
+	if h.shadedBar != nil {
+		h.shadedBar.SetDefAttr(s.nonFocusTabAttr)
+	}
+}
+
+func (h *workspaceManagerHandler) frameGraphics() *tcomponent.FrameGraphics {
+	if h.graphics == nil {
+		h.graphicsStorage = storageapi.WithPartition(h.ideStorage, frameImagesPartition)
+		h.graphics = tcomponent.NewFrameGraphics(h.graphicsStorage, h.events.globalInterrupter())
+	}
+	return h.graphics
+}
+
+func (h *workspaceManagerHandler) styleWorkspaceUnion(
+	frameAttr term.Attributes, cs component.FrameUnionCharSet,
+) {
+	h.union.Attributes = frameAttr
+	h.union.Right = cs.Right
+	h.union.Left = cs.Left
+	h.union.Top = cs.Top
+	h.union.Bottom = cs.Bottom
+}
+
+// loadHUD reads the config file and the images its HUD names, dropping
+// their cached copies. A workspace whose own config overlaid the user's
+// gets that overlay layered on the config read. It fails when the config
+// does not load. It must not run on the event loop: it takes the IDE
+// locker.
+func (h *workspaceManagerHandler) loadHUD(ctx context.Context) (*HUD, error) {
+	load := h.hudLoads.Add(1)
+	cfg, err := h.reloadConfig()
+	if err != nil {
+		return nil, err
+	}
+	overlays := make(map[string][]byte)
+	h.mu.Lock()
+	for _, w := range h.workspaces {
+		if w != nil && w.configOverlay != nil {
+			overlays[w.uri.String()] = w.configOverlay
+		}
+	}
+	h.mu.Unlock()
+
+	hud := &HUD{
+		load:            load,
+		base:            cfg.hudStyle(),
+		workspaces:      make(map[string]hudStyle, len(overlays)),
+		skip:            make(map[string]struct{}),
+		images:          make(map[string]image.Image),
+		statusBarImages: make(map[string]image.Image),
+		configErrs:      cfg.errors,
+		cfg:             cfg.cfg,
+		workspaceCfgs:   make(map[string]map[string]any, len(overlays)),
+	}
+	// applyHUD hands the agents to every workspace, so their errors are
+	// reported with the HUD's.
+	_ = cfg.acpConfigs()
+	uris := hud.base.imageURIs()
+	statusBarImages := hud.base.statusBarImages()
+	for uri, contents := range overlays {
+		wcfg := cfg
+		// The workspace reported the errors of its own config when it
+		// opened.
+		wcfg.errors = make(map[string]error)
+		if _, err := overlayWorkspaceConfig(contents, h.workspaceConfigFilename, &wcfg); err != nil {
+			log.Warnf("reload the HUD of workspace %s: %v", uri, err)
+			hud.skip[uri] = struct{}{}
+			continue
+		}
+		style := wcfg.hudStyle()
+		hud.workspaces[uri] = style
+		hud.workspaceCfgs[uri] = wcfg.cfg
+		uris = append(uris, style.imageURIs()...)
+		statusBarImages = append(statusBarImages, style.statusBarImages()...)
+	}
+	slices.Sort(uris)
+	uris = slices.Compact(uris)
+
+	storage := storageapi.WithPartition(h.ideStorage, frameImagesPartition)
+	defer storage.Close() //nolint:errcheck
+	for _, uri := range uris {
+		img, err := imageuri.Refresh(ctx, uri, template.DefaultImageTTL, storage)
+		if err != nil {
+			log.Warnf("reload HUD image: %v", err)
+			continue
+		}
+		hud.images[uri] = img
+	}
+
+	statusBarStorage := storageapi.WithPartition(h.ideStorage, statusBarImagesPartition)
+	defer statusBarStorage.Close() //nolint:errcheck
+	refreshed := make(map[string]struct{}, len(statusBarImages))
+	for _, spec := range statusBarImages {
+		if _, ok := refreshed[spec.URI]; ok {
+			continue
+		}
+		refreshed[spec.URI] = struct{}{}
+		img, err := imageuri.Refresh(ctx, spec.URI, spec.TTL, statusBarStorage)
+		if err != nil {
+			log.Warnf("reload status bar image: %v", err)
+			continue
+		}
+		hud.statusBarImages[spec.URI] = img
+	}
+	return hud, nil
+}
+
+// applyHUD installs hud in every workspace, and in those still loading
+// once they open, unless a HUD whose load started later is installed
+// already, and reports whether it did. Extensions of the workspaces it
+// installs hud in fetch hud's config from then on; it returns how many
+// extension processes it told so. It must run on the event loop.
+func (h *workspaceManagerHandler) applyHUD(hud *HUD) (applied bool, signalled int) {
+	if h.hud != nil && hud.load < h.hud.load {
+		return false, 0
+	}
+	h.hud = hud
+	h.logNonFatalErrs(h.focusBrowser(), nil, hud.configErrs)
+	h.status.SetNotifyConfig(hud.base.notifyStatus)
+	wm := hud.base.browser.WindowManager
+	h.frameGraphics().Reload(hud.images)
+	h.styleWorkspaceBar(hud.base.workspaceBar, wm.FrameAttr, wm.FrameCharSet)
+	h.decorateWorkspaceBar()
+	h.status.SetStyle(hud.base.statusInbox)
+	h.styleWorkspaceUnion(wm.FrameAttr, hud.base.browser.FrameUnionCharSet)
+	h.empty.restyle(hud.base, hud.images, hud.statusBarImages)
+	h.empty.restyleChats(hud.cfg)
+	for _, w := range h.workspaces {
+		if w == nil || w.ex == nil {
+			continue
+		}
+		uri := w.uri.String()
+		if _, ok := hud.skip[uri]; ok {
+			continue
+		}
+		style, ok := hud.workspaces[uri]
+		cfg := hud.workspaceCfgs[uri]
+		if !ok {
+			if w.configOverlay != nil {
+				// It opened after hud read the overlays, so hud knows
+				// nothing of its own config.
+				continue
+			}
+			style, cfg = hud.base, hud.cfg
+		}
+		w.ex.restyle(style, hud.images, hud.statusBarImages)
+		w.ex.restyleChats(cfg)
+		signalled += w.reloadExtensionConfig(cfg)
+		w.reloadACPConfig(cfg)
+	}
+	if h.homeACPManager != nil {
+		h.homeACPManager.SetConfig(expandACPDataDir(
+			ideConfig{cfg: hud.cfg, errors: make(map[string]error)}.acpConfigs(),
+			h.homeInstallDir))
+	}
+	return true, signalled
+}
+
 func (h *workspaceManagerHandler) commandReloadWorkspace(args ...string) error {
 	i := h.focus
 	workspaceURI, _, err := h.closeWorkspace()
@@ -2774,6 +3433,7 @@ func (h *workspaceManagerHandler) commandRenameWorkspace(args ...string) error {
 	name := args[0]
 	handler := h.workspaces[h.focus]
 	handler.tabname = name
+	h.status.Refresh()
 	h.Resize(h.width, h.height)
 	if err := h.state.PersistWorkspaceState(
 		context.Background(), handler.uri); err != nil {
@@ -3019,11 +3679,11 @@ func (h *workspaceManagerHandler) closeWorkspace() (
 	if err := hm.ex.Close(); err != nil {
 		log.Error(err)
 	}
+	h.status.DropWorkspace(uri)
 	// Detach the raw workspace so the background managerWorkspace.Close
-	// cannot write the manager maps off-loop.
-	if raw, ok := h.workspace.RemoveWorkspace(hm.uri); ok {
-		hm.cwd = raw
-	}
+	// cannot write the manager maps off-loop. While other holders share
+	// the entry nothing is detached, and cwd must not be closed.
+	hm.cwd, _ = h.workspace.ReleaseWorkspace(hm.uri)
 	done := make(chan struct{})
 	h.closing[uri.String()] = done
 	h.closeWG.Add(1)
@@ -3080,6 +3740,28 @@ func (h *workspaceManagerHandler) commandSwitchToWorkspace(args ...string) error
 	return nil
 }
 
+func (h *workspaceManagerHandler) commandNextWorkspace(...string) error {
+	h.cycleWorkspace(1)
+	return nil
+}
+
+func (h *workspaceManagerHandler) commandPreviousWorkspace(...string) error {
+	h.cycleWorkspace(-1)
+	return nil
+}
+
+// cycleWorkspace skips empty slots so that next and previous only visit
+// workspaces that are open, the way the workspace bar lists them.
+func (h *workspaceManagerHandler) cycleWorkspace(step int) {
+	for i := 1; i < workspaceSlots; i++ {
+		slot := ((h.focus+step*i)%workspaceSlots + workspaceSlots) % workspaceSlots
+		if h.workspaces[slot] != nil {
+			h.switchToWorkspace(slot)
+			return
+		}
+	}
+}
+
 func (h *workspaceManagerHandler) moveWorkspace(args ...string) error {
 	if len(args) == 0 {
 		return errors.New("command expects at least one argument")
@@ -3117,6 +3799,7 @@ func (h *workspaceManagerHandler) moveWorkspace(args ...string) error {
 	h.workspaces[curr] = h.workspaces[next]
 	h.workspaces[next] = temp
 	h.focus = next
+	h.status.Refresh()
 	h.events.setFocus(h.focusURI())
 	h.persistLastSession()
 	h.Resize(h.width, h.height)
@@ -3150,6 +3833,20 @@ func (h *workspaceManagerHandler) Close() (ret error) {
 	if err := h.empty.Close(); err != nil {
 		ret = multierror.Append(ret, err)
 	}
+	if h.graphics != nil {
+		if err := h.graphics.Close(); err != nil {
+			ret = multierror.Append(ret, err)
+		}
+		if err := h.graphicsStorage.Close(); err != nil {
+			ret = multierror.Append(ret, err)
+		}
+		h.graphics, h.graphicsStorage = nil, nil
+	}
+	if h.homeACPManager != nil {
+		if err := h.homeACPManager.Close(); err != nil {
+			ret = multierror.Append(ret, err)
+		}
+	}
 	if h.homeRunner != nil {
 		if err := h.homeRunner.(io.Closer).Close(); err != nil {
 			ret = multierror.Append(ret, err)
@@ -3180,6 +3877,11 @@ func (h *workspaceManagerHandler) Close() (ret error) {
 			ret = multierror.Append(ret, err)
 		}
 	}
+	if h.localExecutor != nil {
+		if err := h.localExecutor.Close(); err != nil {
+			ret = multierror.Append(ret, err)
+		}
+	}
 	// Closed last: every workspace extension runner served this shared
 	// service and must release its partition handles first.
 	if h.extensionsStorage != nil {
@@ -3195,11 +3897,18 @@ func (h *workspaceManagerHandler) Close() (ret error) {
 
 type workspaceHandler struct {
 	*ex
-	tabname             string
-	attentionAttr       term.Attributes
+	tabname string
+	// bellAttr is the attribute a bell rang while the workspace was out
+	// of focus set on its bar tab; notifs are the notifications it
+	// received meanwhile. Both are cleared when the workspace is
+	// focused.
+	bellAttr            term.Attributes
+	notifs              pendingNotifications
 	vctrlService        vctrl.Service
 	cursorHistoryCloser io.Closer
 	symbolDBCloser      io.Closer
+	searchIndexCloser   io.Closer
+	regexIndex          *codesearch.Index
 	cancelCtx           func()
 	uri                 workspaceapi.URI
 	Extensions          atomic.Value
@@ -3209,13 +3918,49 @@ type workspaceHandler struct {
 	historyCloser       io.Closer
 	lspManager          *idelsp.Manager
 	dapManager          *idedebug.Manager
+	acpManager          *ideacp.Manager
 	hostPackages        *pkgManager
 	promptStorage       storageapi.Service
+	// installDir is the Rune data directory of the workspace's host.
+	installDir string
+	// configOverlay is the workspace config the workspace overlaid onto
+	// the user's, nil when it overlaid none.
+	configOverlay []byte
+	// extensionConfig is what the workspace's extensions fetch as config.
+	extensionConfig *extension.LiveConfig
+}
+
+// reloadExtensionConfig serves cfg to the workspace's extensions and tells
+// their running processes, returning how many it told.
+func (hm *workspaceHandler) reloadExtensionConfig(cfg map[string]any) int {
+	hm.extensionConfig.Set(cfg)
+	runner, ok := hm.Extensions.Load().(extension.Runner)
+	if !ok {
+		return 0
+	}
+	return runner.SignalReload()
+}
+
+// reloadACPConfig applies the agents of cfg to the workspace's next agent
+// starts.
+func (hm *workspaceHandler) reloadACPConfig(cfg map[string]any) {
+	if hm.acpManager == nil {
+		return
+	}
+	c := ideConfig{cfg: cfg, errors: make(map[string]error)}
+	hm.acpManager.SetConfig(expandACPDataDir(c.acpConfigs(), hm.installDir))
 }
 
 func (hm *workspaceHandler) Close() error {
 	hm.closeOnce.Do(func() {
 		var ret error
+		// Agents get their stdin closed before the executor they run on
+		// goes away.
+		if hm.acpManager != nil {
+			if err := hm.acpManager.Close(); err != nil {
+				ret = multierror.Append(ret, err)
+			}
+		}
 		if err := hm.ex.Close(); err != nil {
 			ret = multierror.Append(ret, err)
 		}
@@ -3236,6 +3981,16 @@ func (hm *workspaceHandler) Close() error {
 		}
 		if hm.symbolDBCloser != nil {
 			if err := hm.symbolDBCloser.Close(); err != nil {
+				ret = multierror.Append(ret, err)
+			}
+		}
+		if hm.searchIndexCloser != nil {
+			if err := hm.searchIndexCloser.Close(); err != nil {
+				ret = multierror.Append(ret, err)
+			}
+		}
+		if hm.regexIndex != nil {
+			if err := hm.regexIndex.Close(); err != nil {
 				ret = multierror.Append(ret, err)
 			}
 		}
@@ -3292,6 +4047,7 @@ func (h *workspaceManagerHandler) initTabs(
 		Shader:      cfg.animationsActiveTabShader(animActiveWorkspaceTab),
 		FPS:         cfg.animationsActiveTabFPS(animActiveWorkspaceTab),
 		Loop:        cfg.animationsActiveTabLoop(animActiveWorkspaceTab),
+		Params:      cfg.animationsActiveTabParams(animActiveWorkspaceTab),
 		DefAttr:     cfg.nonFocusTabAttr(),
 		Interrupter: h.events.globalInterrupter(),
 		Active:      h.activeWorkspaceBarIndices,
@@ -3304,23 +4060,472 @@ func (h *workspaceManagerHandler) initTabs(
 		bar = v
 	}
 	h.union.UnionBottomFrame(bar, h.barSize(), workspacesBarFrame)
+	h.union.CaptureDrags(bar)
 	h.refreshWorkspaceActivity()
 }
 
-// workspaceActive reports whether any tab of the workspace in slot is
-// marked active by an extension.
-func (h *workspaceManagerHandler) workspaceActive(slot int) bool {
-	w := h.workspaces[slot]
-	return w != nil && w.ex != nil && w.ex.comp.HasActiveTabs()
+// workspaceShaded reports whether the workspace in slot runs the bar's
+// active-tab effect: only while its status roll-up is working. A
+// blocked, failed or finished tab takes precedence, as the effect
+// would wash out or repaint its colour, hiding that the workspace
+// needs the user rather than just being busy.
+func (h *workspaceManagerHandler) workspaceShaded(slot int) bool {
+	sum, _ := h.workspaceStatus(slot)
+	return sum.State == programstatus.Working
 }
 
-// workspaceShaded reports whether the workspace in slot runs the bar's
-// active-tab effect. A pending notification takes precedence: the
-// effect would wash out or repaint its colour, hiding that the
-// workspace needs the user rather than just being busy.
-func (h *workspaceManagerHandler) workspaceShaded(slot int) bool {
-	return h.workspaceActive(slot) &&
-		h.workspaces[slot].attentionAttr == (term.Attributes{})
+// workspaceStatus returns the status roll-up of the workspace in slot
+// and the uri it was reported at, or an empty idle status when the
+// slot holds no workspace.
+func (h *workspaceManagerHandler) workspaceStatus(slot int) (
+	programstatus.Summary, workspaceapi.URI,
+) {
+	w := h.workspaces[slot]
+	if w == nil {
+		return programstatus.Summary{Progress: -1}, workspaceapi.URI{}
+	}
+	return h.status.Rollup(w.uri)
+}
+
+const cmdProgramStatus = "programstatus"
+
+// commandProgramStatus opens the status inbox over the focused workspace:
+// a floating list of every reported status across workspaces, where
+// selecting a row focuses its workspace and tab. It takes no arguments.
+func (h *workspaceManagerHandler) commandProgramStatus(args ...string) error {
+	if len(args) != 0 {
+		return errors.New("expected no arguments")
+	}
+	b := h.focusEx().comp.Browser()
+	v := h.status.View(func() int {
+		w, _ := b.WindowManagerSize()
+		return w * statusMinWidthPercent / 100
+	})
+	// Pinned to the top, the window grows and shrinks downwards as the
+	// preview changes size instead of jumping up and down.
+	_, err := h.focusEx().Browser().Floating(v, browserapi.FloatingConfig{
+		Alignment: component.AlignmentTop | component.AlignmentHorizontallyCentered,
+	})
+	if err != nil {
+		_ = v.Close()
+	}
+	return err
+}
+
+// statusMinWidthPercent is the least share of the window manager's
+// width the status inbox takes.
+const statusMinWidthPercent = 60
+
+// focusStatusEntry switches to the workspace at ws and shows the tab at
+// uri in the focused window, or focuses the window already showing it.
+// For what is no tab, it focuses the task or the window showing it, or
+// shows the hidden companion terminal. It fails when the workspace or
+// the tab is gone.
+func (h *workspaceManagerHandler) focusStatusEntry(ws, uri workspaceapi.URI) error {
+	slot, _, ok := statusWorkspaces{h}.Workspace(ws)
+	if !ok {
+		return errors.New("workspace is gone")
+	}
+	if !h.switchToWorkspace(slot) {
+		return fmt.Errorf("switch to workspace %d", slot+1)
+	}
+	b := h.workspaces[slot].ex.comp.Browser()
+	tab, ok := b.Tab(uri)
+	if !ok {
+		if _, ok := h.status.Status(ws, uri); ok {
+			return focusStatusSource(h.workspaces[slot].ex, uri)
+		}
+		return errors.New("tab is gone")
+	}
+	if win, ok := tab.Window(); ok {
+		b.SetFocus(win)
+		return nil
+	}
+	idx := slices.IndexFunc(b.Tabs(), func(t *browser.Tab) bool {
+		return t.URI().Equal(uri)
+	})
+	if !b.SetContentToTab(b.Focus(), idx) {
+		return errors.New("show tab")
+	}
+	return nil
+}
+
+// decorateWorkspaceBar repaints every bar tab from its workspace's
+// status roll-up, bell and pending notifications. It must be called on
+// the host event loop whenever any of these change.
+func (h *workspaceManagerHandler) decorateWorkspaceBar() {
+	for idx, slot := range h.barIdxToSlot {
+		w := h.workspaces[slot]
+		if w == nil {
+			continue
+		}
+		sum, _ := h.workspaceStatus(slot)
+		style := h.status.Config().WorkspaceTab
+		nameAttr, iconAttr := style.BarAttrs(sum)
+		if nameAttr == (term.Attributes{}) {
+			nameAttr = w.bellAttr
+		}
+		if nameAttr != (term.Attributes{}) {
+			h.bar.SetTabAttr(idx, nameAttr)
+		} else {
+			h.bar.ResetTabAttr(idx)
+		}
+		base := h.barNonFocusIconAttr
+		if slot == h.focus {
+			base = h.barFocusIconAttr
+		}
+		if iconAttr != (term.Attributes{}) {
+			h.bar.SetIconAttr(idx, term.AttributesUnion(base, iconAttr))
+		} else {
+			h.bar.ResetIconAttr(idx)
+		}
+		if style.Progress && sum.State == programstatus.Working && sum.Progress >= 0 {
+			h.bar.SetTabProgress(idx, sum.Progress, style.WorkingDoneAttr)
+		} else {
+			h.bar.ResetTabProgress(idx)
+		}
+		if w.notifs.count > 0 {
+			base := h.barNonFocusAttr
+			if slot == h.focus {
+				base = h.barFocusAttr
+			}
+			h.bar.SetTabBadge(idx, superscript(w.notifs.count),
+				term.AttributesUnion(base, w.notifs.attr))
+		} else {
+			h.bar.ResetTabBadge(idx)
+		}
+	}
+}
+
+// superscript renders the decimal digits of n as superscript
+// characters. A negative n renders as its absolute value.
+func superscript(n int) string {
+	const digits = "⁰¹²³⁴⁵⁶⁷⁸⁹"
+	runes := []rune(digits)
+	if n < 0 {
+		n = -n
+	}
+	var out []rune
+	for {
+		out = append([]rune{runes[n%10]}, out...)
+		n /= 10
+		if n == 0 {
+			break
+		}
+	}
+	return string(out)
+}
+
+// pendingNotifications counts the notifications a workspace received
+// while out of focus, keeping the attribute of the highest level among
+// them.
+type pendingNotifications struct {
+	count int
+	level browserapi.NotificationLevel
+	attr  term.Attributes
+}
+
+func (p *pendingNotifications) add(level browserapi.NotificationLevel, attr term.Attributes) {
+	if p.count == 0 || notificationLevelRank(level) > notificationLevelRank(p.level) {
+		p.level = level
+		p.attr = attr
+	}
+	p.count++
+}
+
+func notificationLevelRank(level browserapi.NotificationLevel) int {
+	switch level {
+	case browserapi.LevelError:
+		return 3
+	case browserapi.LevelWarn:
+		return 2
+	case browserapi.LevelInfo:
+		return 1
+	}
+	return 0
+}
+
+// statusWorkspaces gives an idestatus.Store the workspaces of h.
+type statusWorkspaces struct{ h *workspaceManagerHandler }
+
+var _ idestatus.WorkspaceStatus = statusWorkspaces{}
+
+func (s statusWorkspaces) Workspace(ws workspaceapi.URI) (int, string, bool) {
+	for slot, w := range s.h.workspaces {
+		if w != nil && w.uri.Equal(ws) {
+			return slot, s.h.makeWorkspaceTabName(slot, w), true
+		}
+	}
+	return 0, "", false
+}
+
+func (s statusWorkspaces) TabName(ws, uri workspaceapi.URI) (string, bool) {
+	e := s.h.exForWorkspace(ws)
+	if e == nil {
+		return "", false
+	}
+	name, _, ok := e.comp.Browser().TabName(uri)
+	return name, ok
+}
+
+func (s statusWorkspaces) Preview(ws, uri workspaceapi.URI) (idestatus.Preview, bool) {
+	e := s.h.exForWorkspace(ws)
+	if e == nil {
+		return idestatus.Preview{}, false
+	}
+	b := e.comp.Browser()
+	if tab, ok := b.Tab(uri); ok {
+		w, h := tab.ContentSize()
+		return idestatus.Preview{Content: tab, Width: w, Height: h, Fit: tab.Resize}, true
+	}
+	if t, ok := statusTaskOf(e, uri); ok {
+		if win, ok := t.Shown(); ok {
+			return statusWindowPreview(b, win)
+		}
+		// Minimized, the task draws its bar alone: preview its program.
+		p := t.Program()
+		return idestatus.Preview{Content: p, Fit: p.Resize, Hidden: true}, true
+	}
+	if win, ok := statusWindowOf(e, uri); ok {
+		return statusWindowPreview(b, win)
+	}
+	if v, ok := hiddenCompanionTerminal(e, uri); ok {
+		return idestatus.Preview{Content: v, Fit: v.Resize, Hidden: true}, true
+	}
+	return idestatus.Preview{}, false
+}
+
+// focusStatusSource brings in sight what reported a status at uri in
+// e outside of a tab, if it can still be found.
+func focusStatusSource(e *ex, uri workspaceapi.URI) error {
+	if t, ok := statusTaskOf(e, uri); ok {
+		if !e.tasks.FocusTask(t.Name) {
+			return fmt.Errorf("focus task %q", t.Name)
+		}
+		return nil
+	}
+	if win, ok := statusWindowOf(e, uri); ok {
+		e.comp.Browser().SetFocus(win)
+		return nil
+	}
+	if _, ok := hiddenCompanionTerminal(e, uri); ok {
+		// Closed some other way than toggling, the window would be taken
+		// for open and closed again.
+		e.companionTerminalWin = nil
+		return e.toggleCompanionTerminal()
+	}
+	return nil
+}
+
+// statusTaskOf returns the task of e whose current run reports its
+// statuses under uri.
+func statusTaskOf(e *ex, uri workspaceapi.URI) (*idetask.Task, bool) {
+	if e.tasks == nil {
+		return nil, false
+	}
+	return e.tasks.StatusTask(uri)
+}
+
+// hiddenCompanionTerminal returns the companion terminal of e when it
+// reports its statuses under uri while its window is closed.
+func hiddenCompanionTerminal(e *ex, uri workspaceapi.URI) (vtereservoir.VTE, bool) {
+	v := e.companionTerminal
+	if v == nil || (e.companionTerminalWin != nil && !e.companionTerminalWin.Closed()) ||
+		!v.URI().Equal(uri) {
+		return nil, false
+	}
+	return v, true
+}
+
+// statusWindowPreview previews the content of win.
+func statusWindowPreview(b *browser.Component, win browser.Window) (idestatus.Preview, bool) {
+	if win == nil || win.Closed() {
+		return idestatus.Preview{}, false
+	}
+	content, err := win.Content()
+	if err != nil {
+		return idestatus.Preview{}, false
+	}
+	w, h := b.ContentSize(win)
+	return idestatus.Preview{Content: content, Width: w, Height: h}, true
+}
+
+// statusWindowOf returns the window of e showing what reported a status
+// at uri outside of a tab: a terminal in a split, the companion
+// terminal, a floating "!" command, or a window set with
+// setStatusWindow, such as a prompt.
+func statusWindowOf(e *ex, uri workspaceapi.URI) (browser.Window, bool) {
+	b := e.comp.Browser()
+	if win, ok := e.statusWindows[uri.String()]; ok && b.Owns(win) {
+		return win, true
+	}
+	var ret browser.Window
+	b.IterateWindows(func(win browser.Window) {
+		if ret != nil {
+			return
+		}
+		content, err := win.Content()
+		if err != nil {
+			return
+		}
+		if shown, ok := statusURIOf(content); ok && shown.Equal(uri) {
+			ret = win
+		}
+	})
+	return ret, ret != nil
+}
+
+// statusURIOf returns the uri the program content shows reports its
+// statuses under: its own for a program that names one, that of the
+// current run for a task, or else the uri of content. It returns false
+// when content has no uri, or a task has not run yet.
+func statusURIOf(content browserapi.Handler) (workspaceapi.URI, bool) {
+	switch c := content.(type) {
+	case statusReporter:
+		return c.StatusURI(), true
+	case interface {
+		StatusURI() (workspaceapi.URI, bool)
+	}:
+		return c.StatusURI()
+	case interface{ URI() workspaceapi.URI }:
+		return c.URI(), true
+	}
+	return workspaceapi.URI{}, false
+}
+
+func (s statusWorkspaces) TabIcon(ws, uri workspaceapi.URI) (rune, bool) {
+	e := s.h.exForWorkspace(ws)
+	if e == nil {
+		return 0, false
+	}
+	_, icon, ok := e.comp.Browser().TabIcon(uri)
+	return icon, ok
+}
+
+func (s statusWorkspaces) InSight(ws, uri workspaceapi.URI) bool {
+	e := s.h.exForWorkspace(ws)
+	if e == nil || s.h.focusEx() != e {
+		return false
+	}
+	if _, ok := e.comp.Browser().Tab(uri); !ok {
+		return true
+	}
+	focused, ok := e.comp.FocusTab()
+	return ok && focused.URI().Equal(uri)
+}
+
+func (s statusWorkspaces) Seen(ws, uri workspaceapi.URI) bool {
+	e := s.h.exForWorkspace(ws)
+	if s.h.unfocused || e == nil || s.h.focusEx() != e {
+		return false
+	}
+	b := e.comp.Browser()
+	if tab, ok := b.FocusTab(); ok && tab.URI().Equal(uri) {
+		return true
+	}
+	// Such as a prompt, whose content tells nothing of the uri.
+	if win, ok := e.statusWindows[uri.String()]; ok && b.Owns(win) {
+		focused, _ := win.Focus()
+		return focused
+	}
+	seen, ok := statusURIOf(b.FocusHandler())
+	return ok && seen.Equal(uri)
+}
+
+func (s statusWorkspaces) Notify(ws workspaceapi.URI, level browserapi.NotificationLevel, msg string) string {
+	e := s.h.exForWorkspace(ws)
+	if e == nil {
+		return ""
+	}
+	id, _ := e.notifications.Notify(level, "%s", msg)
+	return id
+}
+
+func (s statusWorkspaces) UpdateNotification(
+	ws workspaceapi.URI, id, msg string, progress, total int64,
+) bool {
+	e := s.h.exForWorkspace(ws)
+	return e != nil && e.notifications.UpdateNotificationProgress(id, msg, progress, total) == nil
+}
+
+func (s statusWorkspaces) Changed(workspaceapi.URI) {
+	s.h.refreshWorkspaceActivity()
+	s.h.decorateWorkspaceBar()
+}
+
+func (s statusWorkspaces) Show(ws, uri workspaceapi.URI) {
+	if err := s.h.focusStatusEntry(ws, uri); err != nil {
+		_, _ = s.h.focusEx().notifications.Notify(browserapi.LevelError, "%s: %v", cmdProgramStatus, err)
+	}
+}
+
+func (s statusWorkspaces) Close(ws, uri workspaceapi.URI) {
+	if err := s.h.closeStatusSource(ws, uri); err != nil {
+		_, _ = s.h.focusEx().notifications.Notify(browserapi.LevelError, "%s: close: %v", cmdProgramStatus, err)
+	}
+}
+
+// closeStatusSource closes what reported at uri in the workspace at ws
+// the way the user closes it by hand: a tab as its close icon does, a
+// task as taskstop does, the companion terminal by hiding it, a window
+// of a tile as tabclose does, and any other floating window, such as a
+// "!" command or a prompt, by closing it.
+func (h *workspaceManagerHandler) closeStatusSource(ws, uri workspaceapi.URI) error {
+	e := h.exForWorkspace(ws)
+	if e == nil {
+		return errors.New("workspace is gone")
+	}
+	b := e.comp.Browser()
+	if tab, ok := b.Tab(uri); ok {
+		if !e.tabIsDirty(tab) {
+			b.RemoveTab(tab)
+			return nil
+		}
+		// Asked over the inbox, as the tab's workspace may be out of sight.
+		statusWorkspaces{h}.Confirm(fmt.Sprintf("File '%s' has changes pending to be written. "+
+			"Close and discard changes?", tab.URI().Name()), func() { b.RemoveTab(tab) })
+		return nil
+	}
+	if t, ok := statusTaskOf(e, uri); ok {
+		return e.tasks.StopTask(t.Name)
+	}
+	if _, ok := hiddenCompanionTerminal(e, uri); ok {
+		return nil
+	}
+	win, ok := statusWindowOf(e, uri)
+	if !ok {
+		return errors.New("it is shown nowhere to close")
+	}
+	if win.IsFloating() && !sameWindow(win, e.companionTerminalWin) {
+		// Removing the content of a floating window would show a free tab
+		// in it instead of closing it.
+		return win.Close()
+	}
+	return e.closeWindowContent(win)
+}
+
+func (s statusWorkspaces) Confirm(message string, yes func()) {
+	s.h.focusEx().comp.Prompt(message, []string{yesOpt, noOpt}, yesNoKeyCombs,
+		handlerapi.FuncPromptHandler(func(i int, _ string) {
+			if i == 0 {
+				// The prompt is still dispatching the answer.
+				s.h.scheduleNextTick(yes)
+			}
+		}, func() error { return nil }))
+}
+
+// exForWorkspace returns the ex of the workspace at uri, the home ex
+// for the home uri, or nil.
+func (h *workspaceManagerHandler) exForWorkspace(uri workspaceapi.URI) *ex {
+	for _, w := range h.workspaces {
+		if w != nil && w.ex != nil && w.uri.Equal(uri) {
+			return w.ex
+		}
+	}
+	if h.empty != nil && h.homeURI.Equal(uri) {
+		return h.empty
+	}
+	return nil
 }
 
 // activeWorkspaceBarIndices returns the workspace bar indices of the
@@ -3435,6 +4640,20 @@ func (h *workspaceManagerHandler) subscribeActiveWorkspaceCommands(ex *ex) (ret 
 				Synopsis: "(1|2|3|4|5|6|7|8|9)",
 			},
 		},
+		cmdNextWorkspace: {
+			handler: (*workspaceManagerHandler).commandNextWorkspace,
+			man: textapi.CommandManual{
+				Summary: "Switches the current active workspace to the next open " +
+					"workspace. Wraps around to the first open workspace.",
+			},
+		},
+		cmdPreviousWorkspace: {
+			handler: (*workspaceManagerHandler).commandPreviousWorkspace,
+			man: textapi.CommandManual{
+				Summary: "Switches the current active workspace to the previous open " +
+					"workspace. Wraps around to the last open workspace.",
+			},
+		},
 		cmdMoveWorkspace: {
 			man: textapi.CommandManual{
 				Summary: "Moves the workspace tab in focus in the given direction " +
@@ -3461,6 +4680,16 @@ func (h *workspaceManagerHandler) subscribeActiveWorkspaceCommands(ex *ex) (ret 
 					"workspaceopen is currently pending, the wait starts after " +
 					"that workspace finishes installing.",
 				Synopsis: "<extension-id> <command> [<args>...]",
+			},
+		},
+		cmdProgramStatus: {
+			handler: (*workspaceManagerHandler).commandProgramStatus,
+			man: textapi.CommandManual{
+				Summary: "Opens the status inbox: a floating list of every tab " +
+					"whose program reported a status (OSC 7501) across all " +
+					"workspaces, most pressing first: blocked on you, failed, " +
+					"finished, then working. Selecting a row focuses its " +
+					"workspace and tab.",
 			},
 		},
 	}
@@ -3491,8 +4720,9 @@ func (h *workspaceManagerHandler) subscribeInternalCommands(
 // withoutHistoryFallback yields a single blank candidate when it ends
 // without yielding anything, because the command prompt fills an empty
 // completion with past arguments, and past scheme URIs may name
-// workspaces that are unreachable or never existed. A listing error is
-// logged and treated as empty so it cannot trigger the fallback either.
+// workspaces or resources that are unreachable or never existed. A
+// listing error is logged and treated as empty so it cannot trigger the
+// fallback either.
 func withoutHistoryFallback(it iterator.Iterator[string]) iterator.Iterator[string] {
 	var yielded, done bool
 	return iterator.FromFunc(func(ctx context.Context) (string, bool, error) {
@@ -3509,7 +4739,7 @@ func withoutHistoryFallback(it iterator.Iterator[string]) iterator.Iterator[stri
 			if errors.Is(err, context.Canceled) {
 				return "", false, err
 			}
-			log.Warnf("complete workspaces: %v", err)
+			log.Warnf("complete URIs: %v", err)
 		}
 		if yielded {
 			return "", false, nil
@@ -3823,7 +5053,7 @@ func (h *workspaceManagerHandler) exHandler(focus tui.Handler) *ex {
 func (h *workspaceManagerHandler) persistWorkspaceStateOnClose(hm *workspaceHandler) {
 	if err := h.state.StoreWorkspaceStateForClose(
 		context.Background(), hm.uri,
-		exSnapshotter{ex: hm.ex, wh: hm}); err != nil {
+		exSnapshotter{ex: hm.ex, wh: hm, status: h.status}); err != nil {
 		log.Warnf("persist workspace state %s: %v", hm.uri.String(), err)
 	}
 	if hm.historyCloser != nil {
@@ -3961,7 +5191,8 @@ func (h *workspaceManagerHandler) setReleaseManager(releaseManager release.Manag
 				_, _ = notifications.Notify(browserapi.LevelError,
 					"package manager: clean up: %v", err)
 			}
-			err := h.pkgmanager.pkg.ProcessInstalledSettings(ctx)
+			err := h.pkgmanager.pkg.ProcessInstalledSettings(idepkg.WithUI(ctx,
+				startupUI{Notifications: notifications, h: h}))
 			if err != nil {
 				_, _ = notifications.Notify(browserapi.LevelError,
 					"package manager: process installed settings: %v", err)
@@ -3973,7 +5204,6 @@ func (h *workspaceManagerHandler) setReleaseManager(releaseManager release.Manag
 		h.pkgmanager.Close()
 	}
 	wm := currentWorkspaceWindowManager{root: h}
-	parser := &lazyParser{root: h}
 	editorMode := ""
 	autoInstall := false
 	if cfg, err := h.reloadConfig(); err == nil {
@@ -3982,9 +5212,34 @@ func (h *workspaceManagerHandler) setReleaseManager(releaseManager release.Manag
 	}
 	h.pkgmanager.init(notifications, releaseManager, wm,
 		h.ideStorage, h.homeWorkspace, h.sixDir, h.configPath, h.frameCharSet,
-		h, h, h.scheduleNextTick, parser,
+		h, h, h.scheduleNextTick,
 		editorMode, autoInstall, h.afterPackageConfigMerge, h.gitRemoteURL,
 		h.trust)
+}
+
+// startupUI is the idepkg.UI of the package manager while the editor
+// starts. A prompt shown before the workspace the editor launched with
+// is installed opens on the home screen, which that workspace then
+// covers, so it holds prompts until releaseStartupPrompts.
+type startupUI struct {
+	browserapi.Notifications
+	h *workspaceManagerHandler
+}
+
+func (u startupUI) PromptConfig(p idepkg.ConfigPrompt, answer func(approved bool)) {
+	u.h.startupPrompts = append(u.h.startupPrompts, func() {
+		u.h.pkgmanager.pkg.PromptConfig(p, answer)
+	})
+}
+
+// releaseStartupPrompts shows the prompts startupUI held on the screen in
+// focus, once; later calls show nothing.
+func (h *workspaceManagerHandler) releaseStartupPrompts() {
+	prompts := h.startupPrompts
+	h.startupPrompts = nil
+	for _, prompt := range prompts {
+		prompt()
+	}
 }
 
 func (h *workspaceManagerHandler) openURI(file workspaceapi.URI, focus bool) error {
@@ -4036,6 +5291,7 @@ func (f *workspaceTabManager) SetTabName(
 	}
 	f.parent.scheduleNextTick(func() {
 		_ = f.tm.SetTabName(uri, name, attr)
+		f.parent.status.Refresh()
 		if attr == (term.Attributes{}) {
 			log.Debugf("SetTabName called on workspace tab manager %p: "+
 				"empty attributes", f)
@@ -4050,9 +5306,9 @@ func (f *workspaceTabManager) SetTabName(
 		// set workspace tab attr as well if workspace not in focus
 		if f.parent.focusHandler() != f.workspace {
 			log.Debugf("SetTabName called on workspace tab manager %p: "+
-				"setting attention attrs", f)
-			f.workspace.attentionAttr = attr
-			f.parent.Resize(f.parent.width, f.parent.height)
+				"setting bell attrs", f)
+			f.workspace.bellAttr = attr
+			f.parent.decorateWorkspaceBar()
 			return
 		}
 		log.Debugf("SetTabName called on workspace tab manager %p: "+
@@ -4065,27 +5321,60 @@ func (f *workspaceTabManager) OnTabExit(uri workspaceapi.URI) bool {
 	return f.tm != nil && f.tm.OnTabExit(uri)
 }
 
-// SetTabActivity satisfies browser.TabManager. Callers may be off the
-// event loop, so the mark is applied on the next tick; the browser then
-// reports the change back through refreshWorkspaceActivity.
-func (f *workspaceTabManager) SetTabActivity(
-	uri workspaceapi.URI, active bool,
+// SetTabStatus satisfies browser.TabManager. It may be called from any
+// goroutine: the report is applied on the next tick. A report for a
+// uri that is no tab is kept for the workspace instead.
+func (f *workspaceTabManager) SetTabStatus(
+	uri workspaceapi.URI, report programstatus.Report,
 ) error {
 	if f.tm == nil {
 		return errors.New("tab manager is not initialized")
 	}
 	f.parent.scheduleNextTick(func() {
-		if err := f.tm.SetTabActivity(uri, active); err != nil {
-			log.Debugf("SetTabActivity on workspace tab manager %p: %v", f, err)
+		if ws, ok := f.statusWorkspace(); ok {
+			if err := f.parent.status.SetTabStatus(ws, f.tm, uri, report); err != nil {
+				log.Warnf("set tab status %s: %v", uri, err)
+			}
 		}
 	})
 	return nil
 }
 
+// EndTabStatus satisfies browser.TabManager. Like SetTabStatus, it may
+// be called from any goroutine and covers uris that are no tab.
+func (f *workspaceTabManager) EndTabStatus(uri workspaceapi.URI) error {
+	if f.tm == nil {
+		return errors.New("tab manager is not initialized")
+	}
+	f.parent.scheduleNextTick(func() {
+		if ws, ok := f.statusWorkspace(); ok {
+			if err := f.parent.status.EndTabStatus(ws, f.tm, uri); err != nil {
+				log.Warnf("end tab status %s: %v", uri, err)
+			}
+		}
+	})
+	return nil
+}
+
+// statusWorkspace rejects queued reports from a workspace that has
+// closed, including one replaced by a new workspace at the same URI.
+func (f *workspaceTabManager) statusWorkspace() (workspaceapi.URI, bool) {
+	if f.workspace != nil {
+		for _, w := range f.parent.workspaces {
+			if w == f.workspace {
+				return w.uri, true
+			}
+		}
+		return workspaceapi.URI{}, false
+	}
+	return f.parent.homeURI, f.parent.empty != nil && !f.parent.empty.closed
+}
+
 func lspCommandsConfig(
-	uri workspaceapi.URI, cfg ideConfig, notifications browserapi.Notifications,
+	uri workspaceapi.URI, cfg ideConfig,
 	interrupter term.Interrupter, parser syntaxapi.Parser,
 	diagnosticsSource lspcmd.DiagnosticsSource,
+	onLinkClick func(*url.URL) bool,
 ) lspcmd.Config {
 	cmdcfg := lspcmd.DefaultConfig()
 	cmdcfg.RootURI = uri
@@ -4102,22 +5391,7 @@ func lspCommandsConfig(
 	cmdcfg.Hover.MarkdownConfig.Parser = parser
 	cmdcfg.Hover.MarkdownConfig.ScheduleNextTick = cfg.scheduleNextTick
 	cmdcfg.Hover.MarkdownHandlerOptions = []handlermarkdown.Option{
-		handlermarkdown.WithOnLinkClick(func(link *url.URL) bool {
-			if link.Scheme != "http" && link.Scheme != "https" {
-				return false
-			}
-			linkstr := link.String()
-			meta := clipboard.Data{Text: linkstr}
-			err := cfg.clipboard().Copy(clipboard.DefaultRegisterID, meta)
-			if err != nil {
-				_, _ = notifications.Notify(browserapi.LevelError,
-					"copy URL to clipboard: %v", err)
-			} else {
-				_, _ = notifications.Notify(browserapi.LevelSuccess,
-					"copied URL %s to clipboard", linkstr)
-			}
-			return true
-		}),
+		handlermarkdown.WithOnLinkClick(onLinkClick),
 	}
 	return cmdcfg
 }

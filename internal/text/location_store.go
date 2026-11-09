@@ -192,7 +192,7 @@ func DrawLocations(locations []textapi.Location, scroll *component.Scroll, w ter
 				if posAtScreen.X >= scroll.Width() || posAtScreen.Y >= height {
 					break
 				}
-				if !ok || posAtScreen.X < 0 {
+				if !ok || posAtScreen.X < 0 || posAtScreen.Y < 0 {
 					if !ok && loc.Message != "" {
 						drawHiddenMessage(w, buffer, scroll, posAtScreen, loc)
 					}
@@ -209,7 +209,7 @@ func DrawLocations(locations []textapi.Location, scroll *component.Scroll, w ter
 			if posAtScreen.X >= scroll.Width() || posAtScreen.Y >= height {
 				break
 			}
-			if !ok || posAtScreen.X < 0 {
+			if !ok || posAtScreen.X < 0 || posAtScreen.Y < 0 {
 				if !ok && loc.Message != "" {
 					drawHiddenMessage(w, buffer, scroll, posAtScreen, loc)
 				}

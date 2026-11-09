@@ -97,6 +97,9 @@ func TestLanguageForFile(t *testing.T) {
 		{"main.go", "go", false},
 		{"app.py", "python", false},
 		{"index.js", "javascript", false},
+		{"App.jsx", "javascript", false},
+		{"App.tsx", "tsx", false},
+		{"index.mts", "typescript", false},
 		{"snippet.rs", "rust", false},
 
 		// Regression: .log files must NOT be parsed as Salesforce

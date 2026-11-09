@@ -205,7 +205,7 @@ func (h *Handler) Handle(ev term.Event) (exit, handled bool) {
 		if h.bar != nil {
 			return h.handleMouseWithBar(ev)
 		}
-		return h.m.Handle(ev)
+		return h.handleContentMouse(ev)
 	}
 
 	if ev.Type != term.EventKey {
@@ -772,7 +772,7 @@ func (h *Handler) handleMouseWithBar(ev term.Event) (exit, handled bool) {
 			h.contentDrag = false
 		}
 		ev.MouseY -= contentY
-		return h.m.Handle(ev)
+		return h.handleContentMouse(ev)
 	}
 
 	// During a bar drag, all events go to the bar's frame so that
@@ -817,6 +817,17 @@ func (h *Handler) handleMouseWithBar(ev term.Event) (exit, handled bool) {
 
 	// Translate coordinates into content space and delegate.
 	ev.MouseY -= contentY
+	return h.handleContentMouse(ev)
+}
+
+// handleContentMouse handles a mouse event in content coordinates.
+func (h *Handler) handleContentMouse(ev term.Event) (exit, handled bool) {
+	if h.current.State() == htmlcomp.StateLoaded {
+		link := h.current.Resolved().LinkAt(ev.MouseX, ev.MouseY)
+		if link != nil && link.URL != "" {
+			term.SetPointerShape(ev, term.PointerLink)
+		}
+	}
 	return h.m.Handle(ev)
 }
 

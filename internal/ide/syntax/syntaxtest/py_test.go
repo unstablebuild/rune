@@ -73,6 +73,7 @@ func newPythonTestCase(
 
 	ed := vi.Editor(
 		vi.WithIndents(text.IndentConfig{"python": text.IndentRuneSpace}),
+		vi.WithComments(text.CommentConfig{"python": {Line: []string{"#"}}}),
 		vi.WithStatusBarConfig(true, text.StatusBarConfig{
 			Publisher:        texttest.NopEditor(),
 			ScheduleNextTick: cfg.ScheduleNextTick,
@@ -270,6 +271,59 @@ func TestPythonTreeCommentCoverageIntegration(t *testing.T) {
 
 	require.NoError(t, tree.Close())
 	cleanup()
+}
+
+func TestPythonToggleLineCommentIntegration(t *testing.T) {
+	const nested = "def f():\n    if x:\n        y = 2\n    return y\n"
+	cases := []struct {
+		name    string
+		content string
+		keys    string
+		want    string
+	}{
+		{"whole function aligns at its indentation", nested, "ggVjjjgc",
+			"# def f():\n#     if x:\n#         y = 2\n#     return y\n"},
+		{"nested block aligns at the block's indentation", nested, "ggjVjgc",
+			"def f():\n    # if x:\n    #     y = 2\n    return y\n"},
+		{"tab-indented block aligns at its first tab",
+			"def f():\n\tif x:\n\t\ty = 2\n\treturn y\n", "ggjVjgc",
+			"def f():\n\t# if x:\n\t# \ty = 2\n\treturn y\n"},
+		{"wide runes and emoji keep their cells",
+			"s = '界'\nt = '👨‍👧‍👦'\n", "ggVjgc",
+			"# s = '界'\n# t = '👨‍👧‍👦'\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var wg sync.WaitGroup
+			ready := func(context.Context) error {
+				wg.Done()
+				return nil
+			}
+			mu, comp, cleanup := newPythonTestCase(t, newInstalledPythonPkgManager(t), 40, 10, ready)
+			defer cleanup()
+			wg.Add(1)
+			mu.Lock()
+			_, h := newEditFileName(t, mu, comp, tc.content, strconv.Itoa(int(i.Add(1)))+".py")
+			mu.Unlock()
+			wg.Wait()
+
+			feed := func(keys string) {
+				t.Helper()
+				seq, err := term.ParseKeys(keys)
+				require.NoError(t, err)
+				for _, k := range seq {
+					h.Handle(term.Event{Type: term.EventKey, Ch: k.Ch, Key: k.Key, Mod: k.Mod})
+				}
+			}
+
+			feed(tc.keys)
+			require.Equal(t, tc.want, h.CellView().String())
+			feed(tc.keys)
+			assert.Equal(t, tc.content, h.CellView().String(), "the syntax tree recognizes the comments")
+			feed("u")
+			assert.Equal(t, tc.want, h.CellView().String(), "one undo restores the comments")
+		})
+	}
 }
 
 func TestPythonTreeFoldsIntegration(t *testing.T) {

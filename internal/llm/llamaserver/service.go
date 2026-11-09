@@ -17,12 +17,18 @@
 package llamaserver
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"math"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
@@ -57,6 +63,16 @@ type Service struct {
 	mu      sync.Mutex
 	servers map[serverKey]*serverProcess
 	closed  bool
+}
+
+// CanGenerateImages reports false for all local models without starting a server.
+func (s *Service) CanGenerateImages(context.Context, llmapi.ModelEntry) (bool, error) {
+	return false, nil
+}
+
+// GenerateImage returns ErrImageGenerationUnsupported without starting a server.
+func (s *Service) GenerateImage(context.Context, llmapi.ModelEntry, llmapi.ImageRequest) (llmapi.Image, error) {
+	return llmapi.Image{}, llmapi.ErrImageGenerationUnsupported
 }
 
 // New constructs a Service. It panics if any dependency is nil, matching the
@@ -137,6 +153,158 @@ func (s *Service) GetModel(
 	return entry, nil
 }
 
+const (
+	// embedBatchSize is how many inputs go in one /embeddings request, as
+	// DigUp's maxSequences.
+	embedBatchSize = 16
+	// embedRequestTimeout bounds one /embeddings round trip.
+	embedRequestTimeout = 2 * time.Minute
+)
+
+type embeddingRequest struct {
+	Model string   `json:"model"`
+	Input []string `json:"input"`
+}
+
+type embeddingResponse struct {
+	Data []struct {
+		Index     int       `json:"index"`
+		Embedding []float32 `json:"embedding"`
+	} `json:"data"`
+}
+
+// errInputTooLarge marks an /embeddings response rejecting an input that
+// does not fit in one physical batch.
+var errInputTooLarge = errors.New("llamaserver: embedding input too large")
+
+// EmbedTexts returns one L2-normalised vector per text, in order, from
+// the embedding server for entry (started on first use). An input the
+// server cannot fit in one batch is retried once with its text cut in
+// half; if that also fails the returned vector for it is nil. Returns
+// the install instruction error when llama-server is not installed.
+func (s *Service) EmbedTexts(
+	ctx context.Context, entry llmapi.ModelEntry, texts []string,
+) ([][]float32, error) {
+	proc, release, err := s.acquire(ctx, embeddingModelFromEntry(entry))
+	if err != nil {
+		if errors.Is(err, ErrServerNotInstalled) {
+			return nil, errors.New(installMessage)
+		}
+		return nil, err
+	}
+	defer release()
+	url := proc.embeddingsURL()
+	out := make([][]float32, len(texts))
+	for start := 0; start < len(texts); start += embedBatchSize {
+		batch := texts[start:min(start+embedBatchSize, len(texts))]
+		vecs, err := s.postEmbeddings(ctx, url, entry.Name, batch)
+		if err == nil {
+			copy(out[start:], vecs)
+			continue
+		}
+		if !errors.Is(err, errInputTooLarge) {
+			return nil, err
+		}
+		// The server rejects the whole request for one oversized input
+		// without saying which, so retry the batch one input at a time.
+		for i, text := range batch {
+			vec, err := s.embedOne(ctx, url, entry.Name, text)
+			if err != nil {
+				return nil, err
+			}
+			out[start+i] = vec
+		}
+	}
+	return out, nil
+}
+
+// embedOne embeds a single text, halving it once when it is too large.
+// A text still too large after halving yields a nil vector.
+func (s *Service) embedOne(ctx context.Context, url, name, text string) ([]float32, error) {
+	vecs, err := s.postEmbeddings(ctx, url, name, []string{text})
+	if errors.Is(err, errInputTooLarge) {
+		runes := []rune(text)
+		vecs, err = s.postEmbeddings(ctx, url, name, []string{string(runes[:len(runes)/2])})
+		if errors.Is(err, errInputTooLarge) {
+			return nil, nil
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	return vecs[0], nil
+}
+
+// postEmbeddings issues one /embeddings request and returns the vectors in
+// input order, L2-normalised. A 400, or a 500 whose body says the input is
+// too large (llama-server reports an oversized batch as a server error),
+// wraps errInputTooLarge.
+func (s *Service) postEmbeddings(
+	ctx context.Context, url, name string, inputs []string,
+) ([][]float32, error) {
+	body, err := json.Marshal(embeddingRequest{Model: name, Input: inputs})
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, embedRequestTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := s.health.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("llamaserver: embeddings: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		lower := strings.ToLower(string(msg))
+		if resp.StatusCode == http.StatusBadRequest ||
+			(resp.StatusCode == http.StatusInternalServerError &&
+				(strings.Contains(lower, "too large") || strings.Contains(lower, "context size"))) {
+			return nil, fmt.Errorf("%w: %s", errInputTooLarge, strings.TrimSpace(string(msg)))
+		}
+		return nil, fmt.Errorf("llamaserver: embeddings: HTTP %d: %s",
+			resp.StatusCode, strings.TrimSpace(string(msg)))
+	}
+	var decoded embeddingResponse
+	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+		return nil, fmt.Errorf("llamaserver: embeddings: decode: %w", err)
+	}
+	out := make([][]float32, len(inputs))
+	for _, d := range decoded.Data {
+		if d.Index < 0 || d.Index >= len(inputs) {
+			return nil, fmt.Errorf("llamaserver: embeddings: index %d out of range", d.Index)
+		}
+		out[d.Index] = normalize(d.Embedding)
+	}
+	for i, v := range out {
+		if v == nil {
+			return nil, fmt.Errorf("llamaserver: embeddings: no vector for input %d", i)
+		}
+	}
+	return out, nil
+}
+
+// normalize scales v to unit length in place; a zero vector is returned
+// unchanged.
+func normalize(v []float32) []float32 {
+	var sum float64
+	for _, x := range v {
+		sum += float64(x) * float64(x)
+	}
+	if sum == 0 {
+		return v
+	}
+	inv := float32(1 / math.Sqrt(sum))
+	for i := range v {
+		v[i] *= inv
+	}
+	return v
+}
+
 // Close stops every running server and waits for their processes to exit.
 func (s *Service) Close() error {
 	s.mu.Lock()
@@ -170,6 +338,7 @@ type serverKey struct {
 	modelPath     string
 	projectorPath string
 	contextWindow uint32
+	embedding     bool
 }
 
 // model carries the per-request model identity resolved from the registry.
@@ -178,6 +347,7 @@ type model struct {
 	modelPath     string
 	projectorPath string
 	contextWindow uint32
+	embedding     bool
 }
 
 func (m model) key() serverKey {
@@ -185,6 +355,7 @@ func (m model) key() serverKey {
 		modelPath:     m.modelPath,
 		projectorPath: m.projectorPath,
 		contextWindow: m.contextWindow,
+		embedding:     m.embedding,
 	}
 }
 
@@ -202,6 +373,19 @@ func modelFromEntry(entry llmapi.ModelEntry) model {
 		modelPath:     entry.BaseURL,
 		projectorPath: entry.ProjectorPath,
 		contextWindow: uint32(entry.ContextWindow), // #nosec G115 -- context windows fit in uint32
+	}
+}
+
+// embeddingModelFromEntry is modelFromEntry for an encoder server. The
+// projector is dropped: text embeddings never use it and for multimodal
+// encoders it is hundreds of MB of image/audio weights. The context window
+// is the pool's (Config.ContextWindow) rather than the entry's training
+// window, because it also sizes the physical batch.
+func embeddingModelFromEntry(entry llmapi.ModelEntry) model {
+	return model{
+		name:      entry.Name,
+		modelPath: entry.BaseURL,
+		embedding: true,
 	}
 }
 
@@ -317,7 +501,7 @@ func (s *Service) buildCmd(
 	binPath string, m model, port int, watcher chan error, stderr *pipeWriter,
 ) workspaceapi.Cmd {
 	args := s.cfg.serverArgs(
-		m.modelPath, m.projectorPath, m.contextWindow, s.cfg.Host, port,
+		m.modelPath, m.projectorPath, m.contextWindow, m.embedding, s.cfg.Host, port,
 	)
 	return workspaceapi.Cmd{
 		Path:    binPath,

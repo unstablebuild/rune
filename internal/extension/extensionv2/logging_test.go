@@ -28,6 +28,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"unstable.build/rune/internal/debug"
 )
 
 const data = `{"address":"0x1400037cfc0","class":"firstmover.pubsub","level":"trace","lock":"/Users/ernestrc/.sixdev/.dbextension/ai/.dblock","msg":"client is waiting to receive a message for topic \"__pubsubinternal\"","pid":"31527","time":"2025-08-06T18:43:43+02:00"}
@@ -202,6 +203,29 @@ func TestLoggingCollectorRoutesToFile(t *testing.T) {
 	assert.Contains(t, got, "level=info")
 	assert.Contains(t, got, "panic: not json",
 		"non-JSON lines should be written verbatim to the log file")
+}
+
+func TestLoggingCollectorLifecycle(t *testing.T) {
+	logger, _ := logtest.NewNullLogger()
+	logFile, err := os.CreateTemp(t.TempDir(), "logging-lifecycle-test-*.log")
+	require.NoError(t, err)
+	collector := newCollector("ext-id", workspaceapi.URI{}, logFile)
+	collector.logger = logger
+
+	stderr := make(chan struct{})
+	go debug.CapturePanicReport(func() {
+		defer close(stderr)
+		_, _ = collector.Write([]byte("from the extension\n"))
+	})
+	collector.lifecycle(log.InfoLevel, "started with pid %d", 7)
+	<-stderr
+	require.NoError(t, collector.Close())
+
+	contents, err := os.ReadFile(logFile.Name())
+	require.NoError(t, err)
+	got := string(contents)
+	assert.Contains(t, got, "from the extension\n")
+	assert.Regexp(t, `(?m)^time="[^"]+" level=info msg="started with pid 7" source=rune$`, got)
 }
 
 func BenchmarkLoggingCollectorWrite(b *testing.B) {

@@ -29,6 +29,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/handler/repl"
@@ -36,19 +37,21 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 )
 
-// recordingRoot is a minimal workspaceapi.Executor that captures
-// the last Cmd it was asked to start. Used to assert what
+// recordingRoot is a minimal schemeapi.Executor that captures
+// the last Cmd it was asked to start and the last directory it was
+// asked to look a name up in. Used to assert what
 // extensionsExecutor forwards to its underlying executor.
 type recordingRoot struct {
 	mu     sync.Mutex
 	cmd    workspaceapi.Cmd
+	dir    string
 	closed bool
 	err    error
 }
 
-var _ workspaceapi.Executor = (*recordingRoot)(nil)
+var _ schemeapi.Executor = (*recordingRoot)(nil)
 
-func (r *recordingRoot) Start(
+func (r *recordingRoot) StartCommand(
 	_ context.Context, cmd workspaceapi.Cmd,
 ) (workspaceapi.Pid, error) {
 	r.mu.Lock()
@@ -61,6 +64,13 @@ func (r *recordingRoot) Start(
 }
 
 func (r *recordingRoot) Signal(workspaceapi.Pid, syscall.Signal) error { return nil }
+
+func (r *recordingRoot) LookPath(_ context.Context, name, dir string) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.dir = dir
+	return filepath.Join(dir, name), nil
+}
 
 func (r *recordingRoot) Close() error {
 	r.mu.Lock()
@@ -112,6 +122,19 @@ func TestExtensionsExecutorPinsCmdDirWhenUnset(t *testing.T) {
 		"extensionsExecutor must set Cmd.Dir even when the caller "+
 			"left it empty so extension binaries always start in a "+
 			"path that exists on every supported host")
+}
+
+func TestExtensionsExecutorLooksPathsUpInCmdDir(t *testing.T) {
+	t.Parallel()
+
+	root := &recordingRoot{}
+	exe := newExtensionsExecutorFromUnderlying(root)
+
+	got, err := exe.LookPath(context.Background(), "./ext", "/some/caller/dir")
+	require.NoError(t, err)
+
+	assert.Equal(t, extensionsCmdDir, root.dir)
+	assert.Equal(t, filepath.Join(extensionsCmdDir, "ext"), got)
 }
 
 func TestExtensionsExecutorPropagatesStartError(t *testing.T) {

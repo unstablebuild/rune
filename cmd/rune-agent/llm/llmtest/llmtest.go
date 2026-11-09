@@ -212,6 +212,16 @@ func (s *Service) CreateCompletion(
 	return inner, nil
 }
 
+// CanGenerateImages reports false; scripted completions do not include image generation.
+func (s *Service) CanGenerateImages(context.Context, llmapi.ModelEntry) (bool, error) {
+	return false, nil
+}
+
+// GenerateImage returns ErrImageGenerationUnsupported without consuming a scripted response.
+func (s *Service) GenerateImage(context.Context, llmapi.ModelEntry, llmapi.ImageRequest) (llmapi.Image, error) {
+	return llmapi.Image{}, llmapi.ErrImageGenerationUnsupported
+}
+
 // CountTokens satisfies llmapi.Service.
 func (s *Service) CountTokens(model llmapi.ModelEntry, msgs []llmapi.Message) (int, error) {
 	if s.CountTokensFn != nil {

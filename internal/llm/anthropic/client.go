@@ -82,6 +82,14 @@ type client struct {
 	anthropic ant.Client
 }
 
+func (c *client) CanGenerateImages(context.Context, llmapi.ModelEntry) (bool, error) {
+	return false, nil
+}
+
+func (c *client) GenerateImage(context.Context, llmapi.ModelEntry, llmapi.ImageRequest) (llmapi.Image, error) {
+	return llmapi.Image{}, llmapi.ErrImageGenerationUnsupported
+}
+
 // NewClient returns an llmapi.Service backed by the native Anthropic Messages API
 // with prompt caching support.
 func NewClient(token string, config Config) llmapi.Service {

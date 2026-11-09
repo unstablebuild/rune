@@ -20,7 +20,13 @@ package vtescanner
 const (
 	MaxIntermediates = 2
 	MaxOSCParams     = 16
-	MaxOSCRaw        = 1024
+	// MaxOSCRaw is the capacity an OSC buffer starts with; longer
+	// strings grow it up to MaxOSCLen.
+	MaxOSCRaw = 1024
+	// MaxOSCLen bounds an OSC string. A longer one is dropped whole
+	// rather than dispatched truncated, so a handler never sees a
+	// payload that looks valid but is not what the program sent.
+	MaxOSCLen = 1024 * 1024
 	// MaxAPCRaw bounds an APC string. kitty accepts 256 KiB per escape
 	// and graphics clients chunk at 4 KiB, so this leaves ample room
 	// while keeping a runaway sequence from growing without bound.

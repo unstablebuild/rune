@@ -42,6 +42,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/cell"
+	thandlerrpc "unstable.build/rune/internal/handler/handlerrpc"
 	"unstable.build/rune/internal/text"
 	"unstable.build/rune/internal/text/texttest"
 )
@@ -56,7 +57,7 @@ func (l nopLocker) Unlock() {}
 
 func newTestServer(t *testing.T, ctrl *gomock.Controller) (*texttest.MockEditor, *Server) {
 	ed := texttest.NewMockEditor(ctrl)
-	s := NewServer(nopNotifications{}, ed, new(sync.Mutex))
+	s := NewServer(nopNotifications{}, ed, new(sync.Mutex), thandlerrpc.GraphicsConfig{})
 	return ed, s
 }
 
@@ -249,7 +250,7 @@ func TestServerSetLocationList(t *testing.T) {
 			ScheduleNextTick: func(fn func()) bool { fn(); return true },
 		})
 		require.NoError(t, err)
-		s := NewServer(nopNotifications{}, c, new(sync.Mutex))
+		s := NewServer(nopNotifications{}, c, new(sync.Mutex), thandlerrpc.GraphicsConfig{})
 
 		content := "main"
 		callServerEdit(t, ctx, s, resource, content, false, false)
@@ -314,7 +315,7 @@ func TestServerSetCursor(t *testing.T) {
 func TestServerSubscribeCommandStopsNotificationHelperOnDisconnect(t *testing.T) {
 	ed := newRecordingCommandEditor()
 	notifications := &recordingNotifications{notified: make(chan string, 1)}
-	s := NewServer(notifications, ed, nopLocker{})
+	s := NewServer(notifications, ed, nopLocker{}, thandlerrpc.GraphicsConfig{})
 	stream := newTestSubscribeCommandServer()
 
 	done := make(chan error, 1)
@@ -359,7 +360,7 @@ func TestServerSubscribeCommandStopsNotificationHelperOnDisconnect(t *testing.T)
 
 func TestServerSubscribeCommandUnsubscribesPlaceholderBeforeResubscribe(t *testing.T) {
 	ed := newStrictRecordingCommandEditor()
-	s := NewServer(nopNotifications{}, ed, nopLocker{})
+	s := NewServer(nopNotifications{}, ed, nopLocker{}, thandlerrpc.GraphicsConfig{})
 
 	first := newTestSubscribeCommandServer()
 	firstDone := make(chan error, 1)
@@ -417,16 +418,54 @@ func TestServerSubscribeCommandUnsubscribesPlaceholderBeforeResubscribe(t *testi
 
 func TestServerSubscribeCommandReturnsUnexpectedUnsubscribeError(t *testing.T) {
 	ed := &failingUnsubscribeCommandEditor{err: errors.New("boom")}
-	s := NewServer(nopNotifications{}, ed, nopLocker{})
+	s := NewServer(nopNotifications{}, ed, nopLocker{}, thandlerrpc.GraphicsConfig{})
 
 	err := s.SubscribeCommand(newTestSubscribeCommandServer())
 	require.Error(t, err)
 	assert.ErrorContains(t, err, `unsubscribe existing command "test-command": boom`)
 }
 
+// A stream that ends after another stream took over its command name must
+// leave the newer registration alone.
+func TestServerSubscribeCommandTeardownKeepsNewerSubscription(t *testing.T) {
+	ed := newStrictRecordingCommandEditor()
+	s := NewServer(nopNotifications{}, ed, nopLocker{}, thandlerrpc.GraphicsConfig{})
+
+	first := newTestSubscribeCommandServer()
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- s.SubscribeCommand(first)
+	}()
+	waitSent(t, first.sent, "first SubscribeCommand")
+
+	second := newTestSubscribeCommandServer()
+	secondDone := make(chan error, 1)
+	go func() {
+		secondDone <- s.SubscribeCommand(second)
+	}()
+	waitSent(t, second.sent, "second SubscribeCommand")
+
+	first.closeRecv()
+	waitDone(t, firstDone, "first SubscribeCommand")
+
+	ed.mu.Lock()
+	assert.Equal(t, []string{
+		"unsubscribe:test-command",
+		"subscribe:test-command",
+		"unsubscribe:test-command",
+		"subscribe:test-command",
+	}, ed.calls)
+	require.NotNil(t, ed.handler)
+	assert.Same(t, second, ed.handler.stream)
+	ed.mu.Unlock()
+
+	second.closeRecv()
+	waitDone(t, secondDone, "second SubscribeCommand")
+}
+
 func TestServerSubscribeREPLCommandUnregistersBeforeResubscribe(t *testing.T) {
 	ed := newStrictRecordingREPLEditor()
-	s := NewServer(nopNotifications{}, ed, nopLocker{})
+	s := NewServer(nopNotifications{}, ed, nopLocker{}, thandlerrpc.GraphicsConfig{})
 
 	first := newTestSubscribeREPLCommandServer()
 	firstDone := make(chan error, 1)
@@ -474,17 +513,107 @@ func TestServerSubscribeREPLCommandUnregistersBeforeResubscribe(t *testing.T) {
 		"unregister:test-repl-command",
 		"register:test-repl-command",
 		"unregister:test-repl-command",
+		"unregister:test-repl-command",
 		"register:test-repl-command",
+		"unregister:test-repl-command",
 	}, ed.calls)
 }
 
 func TestServerSubscribeREPLCommandReturnsUnexpectedUnregisterError(t *testing.T) {
 	ed := &failingUnregisterREPLEditor{err: errors.New("boom")}
-	s := NewServer(nopNotifications{}, ed, nopLocker{})
+	s := NewServer(nopNotifications{}, ed, nopLocker{}, thandlerrpc.GraphicsConfig{})
 
 	err := s.SubscribeREPLCommand(newTestSubscribeREPLCommandServer())
 	require.Error(t, err)
 	assert.ErrorContains(t, err, `unregister existing repl command "test-repl-command": boom`)
+}
+
+func TestServerSubscribeREPLCommandUnregistersOnDisconnect(t *testing.T) {
+	ed := newStrictRecordingREPLEditor()
+	s := NewServer(nopNotifications{}, ed, nopLocker{}, thandlerrpc.GraphicsConfig{})
+
+	stream := newTestSubscribeREPLCommandServer()
+	done := make(chan error, 1)
+	go func() {
+		done <- s.SubscribeREPLCommand(stream)
+	}()
+	waitSent(t, stream.sent, "SubscribeREPLCommand")
+
+	stream.closeRecv()
+	err := waitDone(t, done, "SubscribeREPLCommand")
+	assert.ErrorContains(t, err, "receive repl stream message")
+
+	ed.mu.Lock()
+	defer ed.mu.Unlock()
+	assert.Equal(t, []string{
+		"unregister:test-repl-command",
+		"register:test-repl-command",
+		"unregister:test-repl-command",
+	}, ed.calls)
+	assert.Empty(t, ed.registered)
+}
+
+// A stream that ends after another stream took over its REPL command name
+// must leave the newer registration alone, and the newer one still
+// unregisters when it ends.
+func TestServerSubscribeREPLCommandTeardownKeepsNewerSubscription(t *testing.T) {
+	ed := newStrictRecordingREPLEditor()
+	s := NewServer(nopNotifications{}, ed, nopLocker{}, thandlerrpc.GraphicsConfig{})
+
+	first := newTestSubscribeREPLCommandServer()
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- s.SubscribeREPLCommand(first)
+	}()
+	waitSent(t, first.sent, "first SubscribeREPLCommand")
+
+	second := newTestSubscribeREPLCommandServer()
+	secondDone := make(chan error, 1)
+	go func() {
+		secondDone <- s.SubscribeREPLCommand(second)
+	}()
+	waitSent(t, second.sent, "second SubscribeREPLCommand")
+
+	first.closeRecv()
+	waitDone(t, firstDone, "first SubscribeREPLCommand")
+
+	ed.mu.Lock()
+	assert.Equal(t, []string{
+		"unregister:test-repl-command",
+		"register:test-repl-command",
+		"unregister:test-repl-command",
+		"register:test-repl-command",
+	}, ed.calls)
+	assert.Contains(t, ed.registered, "test-repl-command")
+	ed.mu.Unlock()
+
+	second.closeRecv()
+	waitDone(t, secondDone, "second SubscribeREPLCommand")
+
+	ed.mu.Lock()
+	defer ed.mu.Unlock()
+	assert.Equal(t, "unregister:test-repl-command", ed.calls[len(ed.calls)-1])
+	assert.Empty(t, ed.registered)
+}
+
+func waitSent[T any](t *testing.T, sent <-chan T, what string) {
+	t.Helper()
+	select {
+	case <-sent:
+	case <-time.After(time.Second):
+		t.Fatalf("%s did not send subscribe response", what)
+	}
+}
+
+func waitDone(t *testing.T, done <-chan error, what string) error {
+	t.Helper()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(time.Second):
+		t.Fatalf("%s did not return after disconnect", what)
+		return nil
+	}
 }
 
 func TestServerSubscribeResourceOpenerRejects(t *testing.T) {
@@ -525,7 +654,7 @@ func TestServerSubscribeResourceOpenerRejects(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s := NewServer(nopNotifications{}, tt.ed, nopLocker{})
+			s := NewServer(nopNotifications{}, tt.ed, nopLocker{}, thandlerrpc.GraphicsConfig{})
 			stream := &testSubscribeResourceOpenerServer{
 				recv: []*textrpc.ClientResourceOpenerMessage{tt.msg},
 			}
@@ -566,7 +695,7 @@ func TestServerOpenResourceRejects(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s := NewServer(nopNotifications{}, texttest.NopEditor(), nopLocker{})
+			s := NewServer(nopNotifications{}, texttest.NopEditor(), nopLocker{}, thandlerrpc.GraphicsConfig{})
 			stream := &testOpenResourceServer{
 				recv: []*textrpc.OpenResourceMessage{tt.msg},
 			}
@@ -584,7 +713,7 @@ func TestServerOpenResourceRejects(t *testing.T) {
 func TestServerSubscribeEventCleansUpOnUnsubscribeEOFAndClose(t *testing.T) {
 	t.Run("normal unsubscribe", func(t *testing.T) {
 		ed := texttest.NopEditor()
-		s := NewServer(nopNotifications{}, ed, nopLocker{})
+		s := NewServer(nopNotifications{}, ed, nopLocker{}, thandlerrpc.GraphicsConfig{})
 		stream := newTestSubscribeEventServer(
 			&textrpc.SubscribeEventRequest{Type: []textrpc.EditorEvent_Type{textrpc.EditorEvent_TypeOpen}},
 			&textrpc.SubscribeEventRequest{Unsubscribe: true},
@@ -597,7 +726,7 @@ func TestServerSubscribeEventCleansUpOnUnsubscribeEOFAndClose(t *testing.T) {
 
 	t.Run("client eof without unsubscribe", func(t *testing.T) {
 		ed := texttest.NopEditor()
-		s := NewServer(nopNotifications{}, ed, nopLocker{})
+		s := NewServer(nopNotifications{}, ed, nopLocker{}, thandlerrpc.GraphicsConfig{})
 		stream := newTestSubscribeEventServer(
 			&textrpc.SubscribeEventRequest{Type: []textrpc.EditorEvent_Type{textrpc.EditorEvent_TypeOpen}},
 		)
@@ -613,7 +742,7 @@ func TestServerSubscribeEventCleansUpOnUnsubscribeEOFAndClose(t *testing.T) {
 		ed := texttest.NopEditorWithCallback(func() {
 			close(subscribed)
 		})
-		s := NewServer(nopNotifications{}, ed, nopLocker{})
+		s := NewServer(nopNotifications{}, ed, nopLocker{}, thandlerrpc.GraphicsConfig{})
 		stream := newBlockingTestSubscribeEventServer(
 			&textrpc.SubscribeEventRequest{Type: []textrpc.EditorEvent_Type{textrpc.EditorEvent_TypeOpen}},
 		)

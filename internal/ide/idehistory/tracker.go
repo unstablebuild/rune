@@ -148,6 +148,7 @@ func (t *tracker) buildState() State {
 		state.HasLayout = hasLayout
 		state.Tasks = t.snap.Tasks()
 		state.Extensions = t.snap.ExtensionTabs()
+		state.Programs = t.snap.Programs()
 		state.Name = t.snap.Name()
 	}
 	return state

@@ -18,6 +18,7 @@ package vctrltest
 
 import (
 	"context"
+	"errors"
 	"syscall"
 	"testing"
 
@@ -76,4 +77,8 @@ func (e *gitTestExecutor) Signal(pid workspaceapi.Pid, signal syscall.Signal) er
 
 func (e *gitTestExecutor) Close() error {
 	return nil
+}
+
+func (*gitTestExecutor) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
 }

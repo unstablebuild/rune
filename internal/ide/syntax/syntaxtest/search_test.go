@@ -19,9 +19,12 @@ package syntaxtest
 import (
 	"context"
 	_ "embed"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
+	"time"
 
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
@@ -33,6 +36,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"unstable.build/rune/internal/ide/syntax"
 	"unstable.build/rune/internal/ide/syntax/grammarfixture"
 	"unstable.build/rune/internal/ide/syntax/treesitter"
 	"unstable.build/rune/internal/workspace"
@@ -83,6 +87,34 @@ func TestParserHighlights(t *testing.T) {
 		},
 	}
 	assert.Equal(t, expected, locations)
+}
+
+func TestParserHighlightsUseConfiguredCaptureNamesAttributes(t *testing.T) {
+	wuri, err := workspaceapi.ParseURI("memory:///")
+	require.NoError(t, err)
+	uri, err := workspaceapi.ParseURI("memory:///file.go")
+	require.NoError(t, err)
+
+	keyword := term.Attributes{Fg: term.ColorGreen, Attrs: term.AttrBold}
+	function := term.Attributes{Fg: term.ColorAqua}
+	parser := treesitter.NewParser(nil, newInstalledPkgManager(t), wuri).
+		WithCaptureNamesAttributes(map[string]term.Attributes{
+			"keyword":  keyword,
+			"function": function,
+		})
+
+	it, err := parser.Highlight(uri, "package main\nfunc main() {}")
+	require.NoError(t, err)
+	locations, err := iterator.ToSlice(context.Background(), it)
+	require.NoError(t, err)
+
+	attrs := make(map[term.Coordinates][]term.Attributes)
+	for _, l := range locations {
+		attrs[l.From] = append(attrs[l.From], l.Attr)
+	}
+	assert.Equal(t, []term.Attributes{keyword}, attrs[term.Coordinates{X: 0, Y: 0}], "package")
+	assert.Equal(t, []term.Attributes{keyword}, attrs[term.Coordinates{X: 0, Y: 1}], "func")
+	assert.Contains(t, attrs[term.Coordinates{X: 5, Y: 1}], function, "main")
 }
 
 func TestSearch(t *testing.T) {
@@ -267,6 +299,213 @@ func TestQueryNode(t *testing.T) {
 		_, err := searcher.QueryNode(uri1, syntaxapi.NodeCaptureName(0))
 		require.Error(t, err)
 	})
+}
+
+func TestParserGrammarFingerprintOnDisk(t *testing.T) {
+	wd, err := os.Getwd()
+	require.NoError(t, err)
+	tsx := grammarfixture.PackageFiles(t, filepath.Join(wd, "tsx"))
+	typescript := grammarfixture.PackageFiles(t, filepath.Join(wd, "typescript"))
+	// with returns a copy of files with changes applied; a nil change
+	// removes the file.
+	with := func(files map[string][]byte, changes map[string][]byte) map[string][]byte {
+		out := maps.Clone(files)
+		for name, data := range changes {
+			if data == nil {
+				delete(out, name)
+				continue
+			}
+			out[name] = data
+		}
+		return out
+	}
+	upgradedLocals := func(files map[string][]byte) []byte {
+		return append(slices.Clone(files[treesitter.LocalsFilename]),
+			"\n(class_declaration name: (type_identifier) @local.definition.type)\n"...)
+	}
+	catalog := map[string][]string{"tsx": {"1", "2"}, "typescript": {"1", "2"}}
+	unchanged := func(_ *testing.T, pkgs *grammarfixture.Packages) syntax.PkgManager {
+		return pkgs
+	}
+
+	tests := []struct {
+		name string
+		// change alters an install of tsx release 1 and returns the
+		// package manager the next parser reads from.
+		change     func(t *testing.T, pkgs *grammarfixture.Packages) syntax.PkgManager
+		sameParser bool
+		wantEqual  bool
+		wantErr    bool
+	}{
+		{
+			name:      "nothing changed",
+			change:    unchanged,
+			wantEqual: true,
+		},
+		{
+			name:       "nothing changed, same parser",
+			change:     unchanged,
+			sameParser: true,
+			wantEqual:  true,
+		},
+		{
+			name: "installed files touched",
+			change: func(t *testing.T, pkgs *grammarfixture.Packages) syntax.PkgManager {
+				later := time.Now().Add(time.Hour)
+				for _, path := range pkgs.Files(t, "tsx") {
+					require.NoError(t, os.Chtimes(path, later, later))
+				}
+				return pkgs
+			},
+			wantEqual: true,
+		},
+		{
+			name: "installed files made read-only",
+			change: func(t *testing.T, pkgs *grammarfixture.Packages) syntax.PkgManager {
+				for _, path := range pkgs.Files(t, "tsx") {
+					require.NoError(t, os.Chmod(path, 0o444))
+				}
+				return pkgs
+			},
+			wantEqual: true,
+		},
+		{
+			name: "same version reinstalled",
+			change: func(t *testing.T, pkgs *grammarfixture.Packages) syntax.PkgManager {
+				pkgs.Uninstall(t, "tsx", "1")
+				pkgs.Install(t, "tsx", "1", tsx)
+				return pkgs
+			},
+			wantEqual: true,
+		},
+		{
+			name: "identical release under a new version",
+			change: func(t *testing.T, pkgs *grammarfixture.Packages) syntax.PkgManager {
+				pkgs.Install(t, "tsx", "2", tsx)
+				return pkgs
+			},
+			wantEqual: true,
+		},
+		{
+			name: "same release in another data directory",
+			change: func(t *testing.T, _ *grammarfixture.Packages) syntax.PkgManager {
+				other := grammarfixture.NewPackages(t, catalog)
+				other.Install(t, "tsx", "1", tsx)
+				return other
+			},
+			wantEqual: true,
+		},
+		{
+			name: "only files extraction does not read changed",
+			change: func(t *testing.T, pkgs *grammarfixture.Packages) syntax.PkgManager {
+				pkgs.Install(t, "tsx", "2", with(tsx, map[string][]byte{
+					treesitter.HighlightsFilename: []byte("(identifier) @variable\n"),
+					treesitter.IndentsFilename:    nil,
+					"README.md":                   []byte("# tsx\n"),
+					"queries/injections.scm":      []byte("(comment) @injection.content\n"),
+				}))
+				return pkgs
+			},
+			wantEqual: true,
+		},
+		{
+			name: "another language upgraded",
+			change: func(t *testing.T, pkgs *grammarfixture.Packages) syntax.PkgManager {
+				pkgs.Install(t, "typescript", "1", typescript)
+				pkgs.Install(t, "typescript", "2", with(typescript, map[string][]byte{
+					treesitter.LocalsFilename: upgradedLocals(typescript),
+				}))
+				return pkgs
+			},
+			wantEqual: true,
+		},
+		{
+			name: "rolled back to the previous version",
+			change: func(t *testing.T, pkgs *grammarfixture.Packages) syntax.PkgManager {
+				pkgs.Install(t, "tsx", "2", with(tsx, map[string][]byte{
+					treesitter.LocalsFilename: upgradedLocals(tsx),
+				}))
+				pkgs.Use(t, "tsx", "1")
+				return pkgs
+			},
+			wantEqual: true,
+		},
+		{
+			name: "locals query upgraded",
+			change: func(t *testing.T, pkgs *grammarfixture.Packages) syntax.PkgManager {
+				pkgs.Install(t, "tsx", "2", with(tsx, map[string][]byte{
+					treesitter.LocalsFilename: upgradedLocals(tsx),
+				}))
+				return pkgs
+			},
+		},
+		{
+			name: "grammar upgraded",
+			change: func(t *testing.T, pkgs *grammarfixture.Packages) syntax.PkgManager {
+				pkgs.Install(t, "tsx", "2", with(tsx, map[string][]byte{
+					treesitter.ParserFilename: typescript[treesitter.ParserFilename],
+				}))
+				return pkgs
+			},
+		},
+		{
+			name: "uninstalled",
+			change: func(t *testing.T, pkgs *grammarfixture.Packages) syntax.PkgManager {
+				pkgs.Uninstall(t, "tsx", "1")
+				return pkgs
+			},
+			wantErr: true,
+		},
+		{
+			name: "release without a locals query",
+			change: func(t *testing.T, pkgs *grammarfixture.Packages) syntax.PkgManager {
+				pkgs.Install(t, "tsx", "2", with(tsx, map[string][]byte{
+					treesitter.LocalsFilename: nil,
+				}))
+				return pkgs
+			},
+			wantErr: true,
+		},
+		{
+			name: "release without a grammar",
+			change: func(t *testing.T, pkgs *grammarfixture.Packages) syntax.PkgManager {
+				pkgs.Install(t, "tsx", "2", with(tsx, map[string][]byte{
+					treesitter.ParserFilename: nil,
+				}))
+				return pkgs
+			},
+			wantErr: true,
+		},
+	}
+	root, err := workspaceapi.ParseURI("memory:///")
+	require.NoError(t, err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			pkgs := grammarfixture.NewPackages(t, catalog)
+			pkgs.Install(t, "tsx", "1", tsx)
+			parser := treesitter.NewParser(nil, pkgs, root)
+			want, err := parser.GrammarFingerprint(ctx, "tsx")
+			require.NoError(t, err)
+
+			pm := tt.change(t, pkgs)
+			if !tt.sameParser {
+				parser = treesitter.NewParser(nil, pm, root)
+			}
+			got, err := parser.GrammarFingerprint(ctx, "tsx")
+			if tt.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			if tt.wantEqual {
+				assert.Equal(t, want, got)
+			} else {
+				assert.NotEqual(t, want, got)
+			}
+		})
+	}
 }
 
 func createFile(t testing.TB, scheme schemeapi.Scheme, name string, content string) workspaceapi.URI {

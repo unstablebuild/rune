@@ -26,11 +26,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"path/filepath"
 	"sync"
 
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
+	"github.com/unstablebuild/rune-go-sdk/api/searchapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
+	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
 	"unstable.build/rune/internal/llm"
 	"unstable.build/rune/internal/llm/anthropic"
@@ -39,6 +40,7 @@ import (
 	"unstable.build/rune/internal/llm/codex"
 	"unstable.build/rune/internal/llm/gemini"
 	"unstable.build/rune/internal/llm/llamacpp"
+	"unstable.build/rune/internal/llm/llmsearch"
 	"unstable.build/rune/internal/llm/ollama"
 	"unstable.build/rune/internal/llm/openai"
 )
@@ -58,10 +60,9 @@ const (
 )
 
 // Router is the rune-side LLM dispatcher. It is constructed once from
-// an llm.Config and a data directory and then implements
-// llmapi.Service for the lifetime of the IDE. The router owns one
-// llmapi.Service per provider, plus the local llama.cpp registry used
-// by the `models local` REPL command.
+// an llm.Config and then implements llmapi.Service for the lifetime of
+// the IDE. The router owns one llmapi.Service per provider and the
+// workspace search service, which answers SemanticSearch.
 type Router struct {
 	cfg llm.Config
 
@@ -86,6 +87,9 @@ type Router struct {
 	// is installed and returns the install-instruction error when it is
 	// not. Never nil.
 	localService llmapi.Service
+
+	// search answers SemanticSearch. Never nil.
+	search *llmsearch.Service
 
 	// mu guards closed. The host no longer serialises
 	// Router calls on the event-loop locker: llmrpc.Server dispatches each
@@ -138,29 +142,38 @@ type hostedCacheKey struct {
 // ErrRouterClosed is returned by dispatches issued after Router.Close.
 var ErrRouterClosed = errors.New("llmrouter: router closed")
 
-// New constructs a Router from cfg. dataDir is used as the parent
-// directory for the llama.cpp model cache when cfg.Local.ModelsCacheDir
-// is empty. storage is forwarded to providers that own their own
-// auth state (currently codex); pass an in-memory stub in tests that
-// don't exercise the codex path. Returns an error only when the local
-// registry cannot be initialised — stateless provider clients are
-// constructed eagerly and never fail. local is the backend that serves
-// ProviderLocal completions (the managed llama-server pool); it must be
-// non-nil — the "server not installed" state is represented inside the
-// backend, never by a nil dependency.
+var _ llmapi.Service = (*Router)(nil)
+
+// New constructs a Router from cfg. registry is the llama.cpp model
+// cache that lists the local models. storage is forwarded to providers
+// that own their own auth state (currently codex); pass an in-memory
+// stub in tests that don't exercise the codex path. local is the backend
+// that serves ProviderLocal completions (the managed llama-server pool);
+// the "server not installed" state is represented inside the backend,
+// never by a nil dependency. search answers SemanticSearch, and is closed
+// by Close. Every argument is required.
 func New(
-	cfg llm.Config, dataDir string, storage storageapi.Service, local llmapi.Service,
-) (*Router, error) {
+	cfg llm.Config, registry *llamacpp.Registry, storage storageapi.Service,
+	local llmapi.Service, search *llmsearch.Service,
+) *Router {
+	if registry == nil {
+		panic("llmrouter: New: registry must not be nil")
+	}
 	if storage == nil {
 		panic("llmrouter: New: storage must not be nil")
 	}
 	if local == nil {
 		panic("llmrouter: New: local backend must not be nil")
 	}
+	if search == nil {
+		panic("llmrouter: New: search must not be nil")
+	}
 	r := &Router{
 		cfg:           cfg,
 		storage:       storage,
+		localRegistry: registry,
 		localService:  local,
+		search:        search,
 		hostedClients: make(map[hostedCacheKey]llmapi.Service),
 	}
 	r.store = newKeyStore(storage)
@@ -181,17 +194,7 @@ func New(
 	r.ollamaRegistry = ollama.NewRegistry("")
 	r.ollama = openai.NewClient("ollama", cfg.OllamaClientConfig(""))
 
-	cacheDir := cfg.Local.ModelsCacheDir
-	if cacheDir == "" {
-		cacheDir = filepath.Join(dataDir, "models")
-	}
-	reg, err := llamacpp.NewRegistry(cacheDir)
-	if err != nil {
-		return nil, fmt.Errorf("llmrouter: init local registry: %w", err)
-	}
-	r.localRegistry = reg
-
-	return r, nil
+	return r
 }
 
 // LocalRegistry returns the llama.cpp on-disk model cache. Used by the
@@ -199,11 +202,15 @@ func New(
 // inspect cached models.
 func (r *Router) LocalRegistry() *llamacpp.Registry { return r.localRegistry }
 
-// Close releases provider clients that own off-process resources. Today
-// only the local backend (the managed llama-server pool) needs explicit
-// teardown — the other clients hold only Go-side HTTP state. After Close
-// the router rejects further dispatches with ErrRouterClosed. Close is
-// idempotent.
+// SearchService returns the workspace search service, which opens the
+// index of each workspace.
+func (r *Router) SearchService() *llmsearch.Service { return r.search }
+
+// Close releases what owns off-process resources: the search service
+// (its indexes and embedding servers) and the local backend (the managed
+// llama-server pool). The other clients hold only Go-side HTTP state.
+// After Close the router rejects further dispatches with ErrRouterClosed.
+// Close is idempotent.
 func (r *Router) Close() error {
 	r.mu.Lock()
 	if r.closed {
@@ -213,10 +220,35 @@ func (r *Router) Close() error {
 	r.closed = true
 	local := r.localService
 	r.mu.Unlock()
+	errs := []error{r.search.Close()}
 	if c, ok := local.(io.Closer); ok {
-		return c.Close()
+		errs = append(errs, c.Close())
 	}
-	return nil
+	return errors.Join(errs...)
+}
+
+func (r *Router) isClosed() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.closed
+}
+
+// CanGenerateImages reports the resolved provider's image capability.
+func (r *Router) CanGenerateImages(ctx context.Context, model llmapi.ModelEntry) (bool, error) {
+	svc, model, err := r.serviceForModel(ctx, model)
+	if err != nil {
+		return false, err
+	}
+	return svc.CanGenerateImages(ctx, model)
+}
+
+// GenerateImage uses the same model and alias routing as completions.
+func (r *Router) GenerateImage(ctx context.Context, model llmapi.ModelEntry, request llmapi.ImageRequest) (llmapi.Image, error) {
+	svc, model, err := r.serviceForModel(ctx, model)
+	if err != nil {
+		return llmapi.Image{}, err
+	}
+	return svc.GenerateImage(ctx, model, request)
 }
 
 // CreateCompletion implements llmapi.Service.
@@ -225,20 +257,7 @@ func (r *Router) CreateCompletion(
 	model llmapi.ModelEntry,
 	req llmapi.Request,
 ) (iterator.Iterator[llmapi.Event], error) {
-	r.mu.Lock()
-	closed := r.closed
-	r.mu.Unlock()
-	if closed {
-		return nil, ErrRouterClosed
-	}
-	if model.Provider == "" {
-		if resolved, ok, err := r.resolveAlias(ctx, model); err != nil {
-			return nil, err
-		} else if ok {
-			model = resolved
-		}
-	}
-	svc, err := r.resolve(ctx, model)
+	svc, model, err := r.serviceForModel(ctx, model)
 	if err != nil {
 		return nil, err
 	}
@@ -247,25 +266,39 @@ func (r *Router) CreateCompletion(
 
 // CountTokens implements llmapi.Service.
 func (r *Router) CountTokens(model llmapi.ModelEntry, messages []llmapi.Message) (int, error) {
-	r.mu.Lock()
-	closed := r.closed
-	r.mu.Unlock()
-	if closed {
-		return 0, ErrRouterClosed
-	}
-	ctx := context.Background()
-	if model.Provider == "" {
-		if resolved, ok, err := r.resolveAlias(ctx, model); err != nil {
-			return 0, err
-		} else if ok {
-			model = resolved
-		}
-	}
-	svc, err := r.resolve(ctx, model)
+	svc, model, err := r.serviceForModel(context.Background(), model)
 	if err != nil {
 		return 0, err
 	}
 	return svc.CountTokens(model, messages)
+}
+
+// SemanticSearch answers req from the index of the workspace at root. A
+// req.Model without a Provider is an alias the router resolves, and the
+// zero model is SearchAlias. Until the model behind an unset SearchAlias
+// is downloaded, the index answers by words alone and tells the user how
+// to download it, and the status says so. It returns
+// searchapi.ErrUnsupported for a model that is not a local embedding
+// model, and llmsearch.ErrNoIndex when root has no open index.
+func (r *Router) SemanticSearch(
+	ctx context.Context, root workspaceapi.URI, req searchapi.SemanticRequest,
+) (iterator.Iterator[searchapi.SemanticResult], searchapi.SemanticStatus, error) {
+	if r.isClosed() {
+		return nil, searchapi.SemanticStatus{}, ErrRouterClosed
+	}
+	if req.Model == (llmapi.ModelEntry{}) {
+		req.Model.Name = SearchAlias
+	}
+	resolved, ok, err := r.resolveAlias(ctx, req.Model)
+	switch {
+	case errors.Is(err, llmapi.ErrModelNotFound) && req.Model.Name == SearchAlias:
+		req.Model = r.search.ConfiguredModel()
+	case err != nil:
+		return nil, searchapi.SemanticStatus{}, err
+	case ok:
+		req.Model = resolved
+	}
+	return r.search.Search(ctx, root, req)
 }
 
 // Models implements llmapi.Service by concatenating every known
@@ -324,6 +357,26 @@ func (r *Router) GetModel(ctx context.Context, model llmapi.ModelEntry) (llmapi.
 		}
 		return entry, nil
 	}
+}
+
+// serviceForModel rejects dispatch after Close and returns the canonical model
+// that must accompany calls to the resolved service, rather than its alias.
+func (r *Router) serviceForModel(ctx context.Context, model llmapi.ModelEntry) (llmapi.Service, llmapi.ModelEntry, error) {
+	r.mu.Lock()
+	closed := r.closed
+	r.mu.Unlock()
+	if closed {
+		return nil, llmapi.ModelEntry{}, ErrRouterClosed
+	}
+	if model.Provider == "" {
+		if resolved, ok, err := r.resolveAlias(ctx, model); err != nil {
+			return nil, llmapi.ModelEntry{}, err
+		} else if ok {
+			model = resolved
+		}
+	}
+	svc, err := r.resolve(ctx, model)
+	return svc, model, err
 }
 
 // resolve picks the llmapi.Service that serves model.Provider. The

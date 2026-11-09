@@ -116,32 +116,24 @@ func (h *hoverHandler) execute(
 			ContentAlignment: component.AlignmentCentered,
 		})
 		h.scheduleNextTick(func() {
-			var win browserapi.Window
-			floating := browserapi.FuncFloatingHandler(span, func() error {
-				defer h.wm.CloseWindow(win) //nolint:errcheck
-				return mdh.Close()
-			})
-			w, err := h.wm.Floating(floating, browserapi.FloatingConfig{
+			floating := browserapi.FuncFloatingHandler(span, mdh.Close)
+			_, err := h.wm.Floating(floating, browserapi.FloatingConfig{
 				Alignment: component.AlignmentCentered,
 			})
 			if err != nil {
 				_, _ = h.notify.Notify(browserapi.LevelError, "hover: %s", err)
-				return
 			}
-			win = w
 		})
 		return nil
 	}
-	f := newHoverFloating(component.NewString(result.Contents.Value), h.wm)
+	f := newHoverFloating(component.NewString(result.Contents.Value))
 	h.scheduleNextTick(func() {
-		win, err := h.wm.Floating(f, browserapi.FloatingConfig{
+		_, err := h.wm.Floating(f, browserapi.FloatingConfig{
 			Alignment: component.AlignmentCentered,
 		})
 		if err != nil {
 			_, _ = h.notify.Notify(browserapi.LevelError, "hover: %s", err)
-			return
 		}
-		f.win = win
 	})
 	return nil
 }
@@ -152,16 +144,14 @@ func (h *hoverHandler) Complete(ctx context.Context, _ string, _ []string) (
 	return completeReferencedSymbol(ctx, h.parser)
 }
 
-func newHoverFloating(f component.Floating, wm browserapi.WindowManager) *hoverFloating {
+func newHoverFloating(f component.Floating) *hoverFloating {
 	w, h := f.Dimensions()
 	f.Resize(w, h)
-	return &hoverFloating{Floating: f, wm: wm}
+	return &hoverFloating{Floating: f}
 }
 
 type hoverFloating struct {
 	component.Floating
-	wm  browserapi.WindowManager
-	win browserapi.Window
 }
 
 // Handle dismisses the hover on any key event, including modifier-only
@@ -183,8 +173,5 @@ func (h *hoverFloating) Selection() (string, bool) {
 }
 
 func (h *hoverFloating) Close() error {
-	if h.win != nil {
-		return h.wm.CloseWindow(h.win)
-	}
 	return nil
 }

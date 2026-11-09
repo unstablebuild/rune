@@ -17,6 +17,7 @@
 package ide
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"io"
@@ -44,12 +45,14 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/internal/browser"
+	tcomponent "unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/component/shader"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/handler/command"
 	"unstable.build/rune/internal/ide/idenag"
 	"unstable.build/rune/internal/ide/idepkg"
-	"unstable.build/rune/internal/ide/pkgtrust"
+	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
+	"unstable.build/rune/internal/sounds"
 	"unstable.build/rune/internal/text"
 	"unstable.build/rune/internal/workspace"
 	"unstable.build/rune/internal/workspace/workspacessh"
@@ -68,6 +71,15 @@ type IDE struct {
 	nag              *idenag.Scheduler
 	publishEventFn   EventPublisher
 	storage          storageapi.Service
+	// playIntro is whether Ready plays the intro of the wallpaper.
+	playIntro bool
+	// soundRegistry resolves the names ideConfig.sounds plays. Only the
+	// IDE sets its entries, from the user config on every reload.
+	soundRegistry *sounds.Registry
+	// tutorialGraphics holds the images under the tutorials' buttons,
+	// which outlive any workspace's window manager and its images.
+	tutorialGraphics        *tcomponent.FrameGraphics
+	tutorialGraphicsStorage storageapi.Service
 }
 
 // EventPublisher is a function that publishes the given event back
@@ -98,37 +110,8 @@ func New(
 // user config (config["terminal"][...] = ...) resolve against the full tree.
 func Config(cfgfilename string, def DefaultConfig, opts ...Option) (config.Config, error) {
 	op := newOptions(append([]Option{def.option()}, opts...)...)
-	cfg, err := loadIDEConfig(cfgfilename, op)
+	cfg, err := loadIDEConfig(cfgfilename, op, sounds.Silent)
 	return config.MapConfig(cfg.cfg), err
-}
-
-// ConfigWithOverlays loads the IDE config from cfgfilename (like Config) and
-// then overlays each file in overlayFiles, in order, reading them through cwd
-// (so a remote workspace resolves them over its RPC file scheme). Missing or
-// permission-denied overlay files are silently skipped; a malformed overlay
-// returns an error. It is the exported entry point for callers outside this
-// package (the remote `rune -x` server) that must layer a workspace-root or
-// remote-home config over the base config before applying gui.env.
-func ConfigWithOverlays(
-	cfgfilename string, def DefaultConfig, cwd workspace.Workspace,
-	overlayFiles []string, opts ...Option,
-) (config.Config, error) {
-	op := newOptions(append([]Option{def.option()}, opts...)...)
-	cfg, err := loadIDEConfig(cfgfilename, op)
-	if err != nil {
-		return config.MapConfig(cfg.cfg), err
-	}
-	if cwd != nil {
-		for _, filename := range overlayFiles {
-			if _, oErr := loadWorkspaceConfig(
-				filename, cwd, workspaceapi.URI{}, &cfg,
-			); oErr != nil {
-				return config.MapConfig(cfg.cfg),
-					fmt.Errorf("overlay config %q: %w", filename, oErr)
-			}
-		}
-	}
-	return config.MapConfig(cfg.cfg), nil
 }
 
 // DefaultConfigTree decodes def into the raw config map the editor uses as the
@@ -240,11 +223,44 @@ func (i *IDE) Config() config.Config {
 	return config.MapConfig(i.ideConfig.cfg)
 }
 
+// LoadHUD reads the config file and the images its HUD names, dropping
+// their cached copies, for ApplyHUD to install. It fails when the config
+// does not load. It must not run on the event loop.
+func (i *IDE) LoadHUD(ctx context.Context) (*HUD, error) {
+	return i.workspaceHandler.loadHUD(ctx)
+}
+
+// ApplyHUD installs hud in every workspace, and in those still loading
+// once they open, so the next Draw shows it. A HUD whose load started
+// before that of the HUD installed last is ignored, which it reports with
+// applied false. Extensions fetch hud's config from then on, and their
+// running processes are told so; signalled is how many were, which redraw
+// only once they fetched it. It must run on the event loop.
+func (i *IDE) ApplyHUD(hud *HUD) (applied bool, signalled int) {
+	return i.workspaceHandler.applyHUD(hud)
+}
+
+// Sounds returns the player for the sounds defined in the `sounds`
+// section of the user config, the packages merged into it, and the
+// built-in sounds.
+func (i *IDE) Sounds() sounds.Player {
+	return i.ideConfig.sounds
+}
+
+// SoundNames returns the names Sounds can play, including silenced
+// ones, sorted.
+func (i *IDE) SoundNames() []string {
+	return i.soundRegistry.Names()
+}
+
 // Ready returns the root Handler of this IDE,
 // and marks this IDE as ready to run.
 // Close must be called when this IDE is no longer in use.
 func (i *IDE) Ready() tui.Handler {
 	i.initRunning()
+	i.locker.Lock()
+	i.root.enableScreensaver(i.options.afterFunc, i.options.scheduleFn)
+	i.locker.Unlock()
 	i.maybeStartTutorial()
 	i.maybeReopenLastSession()
 	return &i.root
@@ -276,8 +292,8 @@ func (i *IDE) maybeStartTutorial() {
 	}
 	// Defer the tutorial until the init shader finishes so the shader
 	// does not animate on top of the freshly-mounted tutorial prompt.
-	if i.options.initShaderFn != nil && i.options.initShaderDuration > 0 {
-		i.options.afterFunc(i.options.initShaderDuration+tutorialInitShaderBuffer, func() {
+	if intro, ok := i.startupIntro(); ok && intro.duration > 0 {
+		i.options.afterFunc(intro.duration+tutorialInitShaderBuffer, func() {
 			debug.CapturePanicReport(dispatch)
 		})
 		return
@@ -303,8 +319,8 @@ func (i *IDE) maybeReopenLastSession() {
 	}
 	// Defer behind the init shader the same way maybeStartTutorial does
 	// so the shader does not animate on top of the reopen prompt.
-	if i.options.initShaderFn != nil && i.options.initShaderDuration > 0 {
-		i.options.afterFunc(i.options.initShaderDuration+reopenPromptInitShaderBuffer, func() {
+	if intro, ok := i.startupIntro(); ok && intro.duration > 0 {
+		i.options.afterFunc(intro.duration+reopenPromptInitShaderBuffer, func() {
 			debug.CapturePanicReport(dispatch)
 		})
 		return
@@ -322,6 +338,13 @@ func (i *IDE) Browser() browser.Browser {
 // elements (e.g. floating prompts) that need to remain attached to
 // the focused workspace as the user switches between them.
 func (i *IDE) WindowManager() browserapi.WindowManager {
+	return currentWorkspaceWindowManager{root: i.workspaceHandler}
+}
+
+// Prompter returns a browserapi.Prompter that opens prompts in the
+// workspace in focus, in the IDE's theme. It must be called on the
+// event loop.
+func (i *IDE) Prompter() browserapi.Prompter {
 	return currentWorkspaceWindowManager{root: i.workspaceHandler}
 }
 
@@ -361,6 +384,12 @@ func (i *IDE) Open(file workspaceapi.URI) error {
 // path, so those must be triggered through their key binding.
 func (i *IDE) DispatchCommand(cmd string, args ...string) error {
 	return i.workspaceHandler.focusEx().dispatchCommand(cmd, args...)
+}
+
+// Show shows uri in the focused workspace as browser.Browser.Show does.
+// It must run on the event loop.
+func (i *IDE) Show(uri workspaceapi.URI) error {
+	return i.workspaceHandler.focusEx().comp.Show(uri)
 }
 
 // Models returns the models available through the IDE's host-side LLM
@@ -513,6 +542,16 @@ func (i *IDE) closeResources() (ret error) {
 		ret = multierr.Append(ret, err)
 	}
 
+	if i.tutorialGraphics != nil {
+		if err := i.tutorialGraphics.Close(); err != nil {
+			ret = multierr.Append(ret, err)
+		}
+		if err := i.tutorialGraphicsStorage.Close(); err != nil {
+			ret = multierr.Append(ret, err)
+		}
+		i.tutorialGraphics, i.tutorialGraphicsStorage = nil, nil
+	}
+
 	return
 }
 
@@ -527,8 +566,10 @@ func (i *IDE) init(
 	i.options = op
 
 	defaultCfg := newDefaultConfig(op)
+	i.soundRegistry = sounds.NewRegistry(op.soundOutput)
 	var configErr error
-	i.ideConfig, configErr = loadIDEConfig(cfgfilename, op)
+	i.ideConfig, configErr = loadIDEConfig(cfgfilename, op, i.soundRegistry)
+	i.ideConfig.applySounds(i.soundRegistry, dataDir)
 
 	i.storage = storage
 	i.ideConfig.storage = storageapi.WithPartition(i.storage, "ide")
@@ -594,7 +635,7 @@ func (i *IDE) init(
 		return fmt.Errorf("register ssh scheme: %w", err)
 	}
 	err = workspaceManager.RegisterScheme(workspace.FileScheme,
-		workspace.NewFileSchemeFunc(op.shellRCDir))
+		workspace.NewFileSchemeFunc(op.hostDataDir, op.shellRCDir))
 	if err != nil {
 		return fmt.Errorf("register file scheme: %w", err)
 	}
@@ -648,8 +689,10 @@ func (i *IDE) init(
 	i.workspaceHandler.packageConfigMergeHook = op.packageConfigMergeHook
 	i.workspaceHandler.watchedFilesChangeHook = op.watchedFilesChangeHook
 	i.workspaceHandler.workspaceOpenCompleters = op.workspaceOpenCompleters
+	i.workspaceHandler.trustedWorkspaceConfigs = op.trustedWorkspaceConfigs
 	i.workspaceHandler.tutorialsInstalled = i.onTutorialsInstalled
 	i.workspaceHandler.sessionReopenDisabled = op.disableSessionReopen
+	i.workspaceHandler.sponsorsURL = op.sponsorsURL
 	i.workspaceHandler.onboardingActive = func() bool {
 		return op.startingTutorial != "" || i.tutorial.running()
 	}
@@ -657,11 +700,15 @@ func (i *IDE) init(
 		i.ideConfig.notificationsConfig(), i.ideConfig, i.storage, dataDir,
 		i.publishEvent,
 		op.extensionRunner, trust, i.locker, op.extensions, func() (ideConfig, error) {
+			// Every reload applies the user config's sounds, which is
+			// how workspacereload and package installs pick them up.
 			cfg, err := reloadConfig(cfgfilename,
-				op.defaultWallpaper, defaultCfg, op.bell, op.scheduleFn)
+				op.logo, defaultCfg, i.soundRegistry, op.scheduleFn)
+			cfg.applySounds(i.soundRegistry, dataDir)
 			cfg.storage = i.ideConfig.storage
 			cfg.cellPixelSize = op.cellPixelSize
 			cfg.clip = op.clip
+			cfg.systemOpenURL = op.systemOpenURL
 			return cfg, err
 		}, op.workspaceConfig, op.tabBarOffset,
 		op.rightInset, op.tabBarHeight, op.workspacesIcon, op.workspacesBarHeight,
@@ -677,6 +724,9 @@ func (i *IDE) init(
 	// parse errors recorded into ideConfig.errors are surfaced
 	// alongside other config decode errors.
 	tutorials := buildTutorials(i)
+	intro := i.ideConfig.intro()
+	screensaver := i.ideConfig.screensaver()
+	i.playIntro = i.ideConfig.animationsIntro()
 	i.workspaceHandler.logNonFatalErrs(i.workspaceHandler.focusBrowser(),
 		configErr, i.ideConfig.errors)
 
@@ -710,13 +760,14 @@ func (i *IDE) init(
 	}
 	// Apply rune.star overrides for the open-workspace shader, if
 	// any. The shader override uses the showroom defaults exposed by
-	// :shaderrun; duration replaces the runtime-provided lifetime.
+	// :shaderrun, revealing the screen the workspace takes over;
+	// duration replaces the runtime-provided lifetime.
 	if name, ok := i.ideConfig.animationsOpenWorkspaceShader(); ok {
-		fps := openShaderCfg.fps
 		fc := i.ideConfig.windowFrameCharset()
-		dur := openShaderCfg.duration
-		openShaderCfg.shader = func(defAttr term.Attributes) shader.Shader {
-			s, _ := buildNamedShader(name, defAttr, fps, dur, fc)
+		// shader.New plays it at the default fps when none is set.
+		fps := cmp.Or(openShaderCfg.fps, defaultShaderFPS)
+		openShaderCfg.shader = func(defAttr term.Attributes, from shader.Snapshot) shader.Shader {
+			s, _ := buildNamedShader(name, defAttr, fc, from, fps)
 			return s
 		}
 	}
@@ -741,6 +792,10 @@ func (i *IDE) init(
 	i.locker.Lock()
 	i.root.init(&i.tutorial, i, i.ideConfig.defaultAttr(), shutdownShaderCfg,
 		loadingShaderCfg, openShaderCfg, i.ideConfig.windowFrameCharset())
+	// The screen Rune starts on is the home workspace's, whose wallpaper
+	// comes from this config.
+	i.root.initShaderCfg = intro
+	i.root.screensaverCfg = screensaver
 	i.locker.Unlock()
 	if op.nagPrompt.State != nil {
 		i.nag = idenag.New(idenag.Config{
@@ -775,22 +830,32 @@ func newDefaultConfig(op options) DefaultConfig {
 	}
 }
 
-func loadIDEConfig(cfgfilename string, op options) (ideConfig, error) {
+func loadIDEConfig(
+	cfgfilename string, op options, player sounds.Player,
+) (ideConfig, error) {
 	var cfg ideConfig
 	err := loadConfig(&cfg, cfgfilename,
-		op.defaultWallpaper, newDefaultConfig(op), op.bell,
+		op.logo, newDefaultConfig(op), player,
 		op.scheduleFn)
 	cfg.cellPixelSize = op.cellPixelSize
 	cfg.clip = op.clip
+	cfg.systemOpenURL = op.systemOpenURL
 	return cfg, err
 }
 
 func (i *IDE) initRunning() {
-	if i.options.initShaderFn != nil {
-		// protect access to root, simulating a std loop iteration
-		i.locker.Lock()
-		defer i.locker.Unlock()
-		i.root.runShader(i.options.initShaderFn(i.root.defAttr, i.ideConfig.windowFrameCharset()),
-			i.options.initShaderFPS, i.options.initShaderDuration)
+	if _, ok := i.startupIntro(); !ok {
+		return
 	}
+	// protect access to root, simulating a std loop iteration
+	i.locker.Lock()
+	defer i.locker.Unlock()
+	i.root.runInitShader()
+}
+
+// startupIntro returns the intro Ready plays, reporting false when it
+// plays none.
+func (i *IDE) startupIntro() (initShaderConfig, bool) {
+	intro := i.root.initShaderCfg
+	return intro, intro.shader != nil && i.playIntro
 }

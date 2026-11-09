@@ -117,6 +117,17 @@ message Answer {
 	bool approved = 2;
 }
 
+// Requirement is a requirement the install installed or upgraded before
+// the package that requires it.
+message Requirement {
+	string package = 1;
+	// from is the version that was in use, and empty when the
+	// requirement was not installed.
+	string from = 2;
+	string to = 3;
+	string required_by = 4;
+}
+
 // ChangeRequest is what a client sends on Install and Use: the package
 // first, then an answer to every prompt the host sends.
 message ChangeRequest {
@@ -136,6 +147,7 @@ message ChangeEvent {
 		// answers and ends the stream when none is left.
 		Empty done = 3;
 		Prompt prompt = 4;
+		Requirement requirement = 5;
 	}
 }
 

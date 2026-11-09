@@ -206,20 +206,26 @@ type scriptedCmd struct {
 
 // fakeExecutor implements workspaceapi.Executor. It dispatches on the
 // space-joined (cmd.Path, cmd.Args...) key. Unknown commands succeed
-// with empty output.
+// with empty output. LookPath answers from paths.
 type fakeExecutor struct {
 	mu        sync.Mutex
 	responses map[string]scriptedCmd
+	paths     map[string]string
 	calls     []string
 	nextPid   workspaceapi.Pid
 }
 
 func newFakeExecutor() *fakeExecutor {
-	return &fakeExecutor{responses: map[string]scriptedCmd{}, nextPid: 1}
+	return &fakeExecutor{responses: map[string]scriptedCmd{}, paths: map[string]string{}, nextPid: 1}
 }
 
 func (e *fakeExecutor) respond(key string, r scriptedCmd) *fakeExecutor {
 	e.responses[key] = r
+	return e
+}
+
+func (e *fakeExecutor) onPath(name, bin string) *fakeExecutor {
+	e.paths[name] = bin
 	return e
 }
 
@@ -741,4 +747,18 @@ func (m *fakeWM) Tab(
 func (m *fakeWM) SetWindowContent(browserapi.Window, browserapi.Handler) error { return nil }
 func (m *fakeWM) CloseWindow(browserapi.Window) error                          { return nil }
 
-func (m *fakeWM) SetTabActivity(workspaceapi.URI, bool) error { return nil }
+func (m *fakeWM) SetTabStatus(workspaceapi.URI, browserapi.TabStatus) error { return nil }
+
+func (e *fakeExecutor) LookPath(_ context.Context, name, _ string) (string, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	bin, ok := e.paths[name]
+	if !ok {
+		return "", fmt.Errorf("look up %s: %w", name, iofs.ErrNotExist)
+	}
+	return bin, nil
+}
+
+func (realExecutor) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
+}

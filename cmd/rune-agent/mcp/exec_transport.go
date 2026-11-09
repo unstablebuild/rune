@@ -18,7 +18,6 @@ package mcp
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -76,6 +75,16 @@ func serverEnv(cfg ServerConfig) []string {
 	return env
 }
 
+// launchDescription tells the user, in the command authorization prompt,
+// that the command starts an MCP server and which configuration asked
+// for it.
+func launchDescription(name string, cfg ServerConfig) string {
+	if cfg.FromWorkspace() {
+		return fmt.Sprintf("MCP server %q from the workspace's .mcp.json", name)
+	}
+	return fmt.Sprintf("MCP server %q from your Rune config", name)
+}
+
 // ExecutorTransport returns a TransportFactory that starts stdio MCP
 // servers through the workspace executor, so each launch is subject to
 // the IDE's StartCommand authorization instead of being spawned
@@ -85,11 +94,12 @@ func ExecutorTransport(
 	exec workspaceapi.Executor, dir string, onExit ExitFunc,
 ) TransportFactory {
 	return func(name string, cfg ServerConfig) (gomcp.Transport, error) {
-		if cfg.URL != "" {
-			return nil, fmt.Errorf("unsupported server type %q: remote MCP servers are not supported", cfg.Type)
+		kind, err := cfg.Transport()
+		if err != nil {
+			return nil, err
 		}
-		if cfg.Command == "" {
-			return nil, errors.New("server config has no command")
+		if kind != TransportStdio {
+			return nil, fmt.Errorf("%s server cannot run through the workspace executor", kind)
 		}
 		return startServer(exec, dir, name, cfg, onExit)
 	}
@@ -123,14 +133,15 @@ func startServer(
 	ctx, cancel := context.WithCancel(context.Background())
 	watcher := &processWatcher{ch: make(chan error, 1)}
 	pid, err := exec.Start(ctx, workspaceapi.Cmd{
-		Path:    cfg.Command,
-		Args:    cfg.Args,
-		Dir:     dir,
-		Env:     serverEnv(cfg),
-		Stdin:   inR,
-		Stdout:  outW,
-		Stderr:  tail,
-		Watcher: watcher,
+		Path:        cfg.Command,
+		Args:        cfg.Args,
+		Dir:         dir,
+		Env:         serverEnv(cfg),
+		Stdin:       inR,
+		Stdout:      outW,
+		Stderr:      tail,
+		Watcher:     watcher,
+		Description: launchDescription(name, cfg),
 	})
 	if err != nil {
 		cancel()

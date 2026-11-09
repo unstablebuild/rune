@@ -317,16 +317,12 @@ func (h *signatureHelpHandler) HandleCommand(ctx context.Context, cmd textapi.Co
 	if result == nil || len(result.Signatures) == 0 {
 		return nil
 	}
-	f := newSignatureHelpFloating(result, h.cfg, h.wm)
-	win, err := h.wm.Floating(f, browserapi.FloatingConfig{
+	f := newSignatureHelpFloating(result, h.cfg)
+	_, err = h.wm.Floating(f, browserapi.FloatingConfig{
 		Alignment: component.AlignmentLeft | component.AlignmentTop,
 		Offset:    term.Coordinates{X: cmd.Cursor.Window.X + 1, Y: cmd.Cursor.Window.Y + 2},
 	})
-	if err != nil {
-		return err
-	}
-	f.win = win
-	return nil
+	return err
 }
 
 func (h *signatureHelpHandler) Complete(_ context.Context, _ string, _ []string) (
@@ -339,15 +335,12 @@ type signatureHelpFloating struct {
 	result    *semanticapi.SignatureHelp
 	activeIdx int
 	cfg       SignatureHelpConfig
-	wm        browserapi.WindowManager
-	win       browserapi.Window
 	width     int
 	height    int
 }
 
 func newSignatureHelpFloating(
 	result *semanticapi.SignatureHelp, cfg SignatureHelpConfig,
-	wm browserapi.WindowManager,
 ) *signatureHelpFloating {
 	idx := int(result.ActiveSignature)
 	if idx >= len(result.Signatures) {
@@ -360,7 +353,6 @@ func newSignatureHelpFloating(
 		result:    result,
 		activeIdx: idx,
 		cfg:       cfg,
-		wm:        wm,
 	}
 }
 
@@ -411,6 +403,9 @@ func (f *signatureHelpFloating) Draw(w term.Writer) {
 
 	x := 0
 	for _, r := range label {
+		if x >= f.width || f.height < 1 {
+			break
+		}
 		cell := term.Cell{Ch: r, Width: 1}
 		if paramStart >= 0 && x >= paramStart && x < paramEnd {
 			cell.SetAttributes(term.AttributesUnion(cell.Attributes(), f.cfg.ActiveParamAttr))
@@ -422,16 +417,22 @@ func (f *signatureHelpFloating) Draw(w term.Writer) {
 	if counter != "" {
 		grayAttr := term.Attributes{Fg: term.ColorGray}
 		for _, r := range counter {
+			if x >= f.width || f.height < 1 {
+				break
+			}
 			w.SetCell(term.Coordinates{X: x, Y: 0}, term.NewCell(r, 1, grayAttr))
 			x++
 		}
 	}
 
 	paramDoc := activeParamDoc(sig, paramIdx)
-	if paramDoc != "" {
+	if paramDoc != "" && f.height > 1 {
 		grayAttr := term.Attributes{Fg: term.ColorGray}
 		dx := 0
 		for _, r := range paramDoc {
+			if dx >= f.width {
+				break
+			}
 			w.SetCell(term.Coordinates{X: dx, Y: 1}, term.NewCell(r, 1, grayAttr))
 			dx++
 		}
@@ -471,9 +472,6 @@ func (f *signatureHelpFloating) Selection() (string, bool) {
 }
 
 func (f *signatureHelpFloating) Close() error {
-	if f.win != nil {
-		return f.wm.CloseWindow(f.win)
-	}
 	return nil
 }
 

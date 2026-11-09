@@ -1,15 +1,5 @@
 # Rune default configuration, in Starlark form.
 #
-# The script's final top-level `config` dict is handed to the Rune config
-# loader exactly as if it had been written in YAML.
-#
-# Use normal Starlark `if` / `for` / dict-merge idioms to customise.
-
-# The Rune loader passes `tui` (bool) as a predeclared global; the script
-# branches on it below. The `mode` global is also exposed for backwards
-# compatibility but is no longer consulted here; editor mode is selected by
-# the editor preset written to the user config by the bootstrap flow.
-
 # Box-drawing frame characters used by the terminal-specific overrides below.
 TUI_FRAME_CHARSET = {
     "horizontaltop":    "─",
@@ -23,6 +13,27 @@ TUI_FRAME_CHARSET = {
 }
 
 # GUI frame characters used by the default window-manager configuration.
+#
+# Any frame charset may also name an image for each slot in a "graphics"
+# table, drawn by the GUI over the slot's character. The terminal UI, and
+# an image that fails to load, shows the character. Images are not tinted
+# by frame_attr, dimming or b&w. For example:
+#
+#     "graphics": {
+#         "mode":             "replace",
+#         "topleft":          "file:///path/to/topleft.png",
+#         "topright":         "file:///path/to/topright.png",
+#         "bottomleft":       "file:///path/to/bottomleft.png",
+#         "bottomright":      "file:///path/to/bottomright.png",
+#         "horizontaltop":    "https://example.com/frame/top.png",
+#         "horizontalbottom": "https://example.com/frame/bottom.png",
+#         "verticalleft":     "https://example.com/frame/left.png",
+#         "verticalright":    "https://example.com/frame/right.png",
+#     },
+#
+# "mode" is "replace", the default, to hide the character under each
+# image, or "overlay" to keep it showing through the image's transparent
+# pixels. Every other "graphics" table takes the same "mode".
 GUI_FRAME_CHARSET = {
     "horizontaltop":    "▔",
     "horizontalbottom": "▁",
@@ -70,6 +81,10 @@ config = {
     "log_level": "info",
     # Whether to use the system clipboard or Rune's in-memory clipboard.
     "clipboard": "system",
+    # How an http(s) link opens when clicked: "system" opens the system
+    # browser, "clipboard" copies it, and any other value is a Rune command
+    # run with $URL set to the link, e.g. "! open $URL" or "browser $URL".
+    "meta_open_url": "system",
     # LSP configuration.
     "lsp": {
         # Icons used by the auxiliary bar when LSP diagnostics are displayed.
@@ -209,6 +224,28 @@ config = {
             },
         },
     },
+    "search": {
+        # Off, `searchregex` reads every file instead of using its index.
+        # Independent of semantic indexing and workspace.symboldb.
+        "regex_enabled":       True,
+        # Build the semantic index for `search` and `searchsemantic`.
+        # Off by default; independent of regexp indexing. Meaning search
+        # needs llama-server and the model below, which `searchsemantic`
+        # offers to install on first use. Restart Rune after changing.
+        "semantic_enabled":    False,
+        # The local embedding model that encodes code and queries.
+        "model":               "huggingface.co/ggml-org/embeddinggemma-2-GGUF:Q8_0",
+        # Characters a stretch of code holds at most (whole lines).
+        "code_stretch":        1800,
+        # Workspace-relative folders never read, besides what git ignores.
+        "excluded_folders":    [],
+        # File extensions never read, e.g. ["sql", "csv"].
+        "excluded_extensions": [],
+        # How long the embedding model and the vectors stay in memory
+        # after the last search, e.g. "2m". Empty uses the built-in
+        # default.
+        "idle_timeout":        "",
+    },
     "console": {
         "max_history": 2000,
         # Open the companion console's input line in insert mode when the
@@ -219,36 +256,28 @@ config = {
         # to "> " when empty.
         "prompt": "rune> ",
     },
-    # Toggle workspace transition animations.
-    #
-    # Both default to True. Setting either to False suppresses the
-    # corresponding animation; everything else (init/shutdown
-    # shaders, the :shaderrun command, ...) is unaffected.
-    #
-    # The open animation is only ever played after a loading
-    # animation, so disabling "loading_workspace" effectively
-    # disables both.
-    #
-    # "open_workspace" also accepts a dict to override the shader
-    # name and lifetime used for the open transition:
-    #
-    #
-    # "shader" accepts any of the names listed by :shaderrun and
-    # "duration" accepts any Go duration string. Both keys are
-    # optional and fall back to the built-in defaults.
     "animations": {
+        # See the Animations guide for each animation and the shaders
+        # they can play.
+        #
         # Plays while a workspace is being installed
         # (addWorkspace). The default gray-fade desaturates the
         # screen to signal the IDE is busy.
         "loading_workspace": True,
-        # Plays when a workspace finishes installing. The default
-        # is a quick burn sweep that reveals the new content.
+        # Plays the intro of the built-in logo when Rune starts. Your own
+        # wallpapers have no intro.
+        "intro": True,
+        # Plays when a workspace finishes opening.
+        # "shader" is any shader of :shaderrun. The reveals uncover the
+        # workspace from the screen it takes over: burn, beams,
+        # binaryPath, decrypt, expand, matrix, middleOut, pour, print,
+        # rain and slide.
         "open_workspace": {
             "enabled":  True,
             #"shader":   "burn",
             #"duration": "1s",
         },
-        # Plays a shineFrame sweep over the command prompt frame
+        # Plays a radar sweep round the command prompt frame
         # while it's open. Set to False to suppress the effect.
         "command_prompt": {
             "enabled":  True,
@@ -256,26 +285,106 @@ config = {
             "angular_width": 0.33,
             "cycles": 1,
         },
-        # Plays over content tabs that an extension marks as having
-        # work in progress (e.g. a rune-agent turn), until the work
-        # ends or the tab closes. "shader" is one of blaze, burn,
-        # inferno, noise, pulse, shine or trippy. "fps" is the redraw
-        # cadence and "loop" how long one visual loop lasts, as a Go
-        # duration string.
+        # Plays over the window for "duration" each time the cursor jumps
+        # (GUI only, needs a restart). Off unlike the others. "shader" is
+        # the path of a .kage file written in Kage, Ebitengine's shading
+        # language ($VARS are expanded); empty plays the built-in flame
+        # trail. The shader reads the window, returns its final colors and
+        # decides how far a jump is; see "Cursor effect" in the Animations
+        # guide.
+        "cursor": {
+            "enabled":  False,
+            "shader":   "",
+            "duration": "250ms",
+        },
+        # Plays over content tabs whose program reports it is working.
+        # "shader" is one of blaze, burn, inferno, pulse or shine.
+        # Settings for one shader go under a key named after it;
+        # see "Over working tabs" in the Animations guide.
         "active_content_tab": {
             "enabled": True,
             "shader":  "shine",
             "fps":     10,
-            "loop":    "1400ms",
+            "loop":    "2400ms",
+            "blaze": {
+                "animate_background": False,
+                "color":              "#ff0000",
+                "swap_red_blue":      False,
+            },
+            "burn": {
+                "animate_background": False,
+                "gradient": [
+                    "#ffffff", "#fff75d", "#fe650d", "#8a003c", "#510100",
+                ],
+                "duration":           0.15,
+                "seed":               1,
+                "origin":             None,  # a random character
+            },
+            "inferno": {
+                "animate_background": False,
+                "color":              "#ff0000",
+                "swap_red_blue":      False,
+            },
+            "pulse": {
+                "color":     "#ffffff",
+                "intensity": 0.25,
+            },
+            "shine": {
+                "color":      "#ffffff",
+                "intensity":  0.3,
+                "band_width": 0.75,
+                "direction":  "bottom_left_to_top_right",
+            },
         },
-        # Plays over the workspace tabs that own an active content
-        # tab, whether or not the workspace is focused. Takes the same
-        # keys as active_content_tab.
+        # Plays over workspace tabs that own an active content tab. The
+        # green shine makes the tab read as turning green as progress fills.
         "active_workspace_tab": {
             "enabled": True,
             "shader":  "shine",
             "fps":     10,
-            "loop":    "1400ms",
+            "loop":    "2400ms",
+            "blaze": {
+                "animate_background": False,
+                "color":              "#ff0000",
+                "swap_red_blue":      False,
+            },
+            "burn": {
+                "animate_background": False,
+                "gradient": [
+                    "#ffffff", "#fff75d", "#fe650d", "#8a003c", "#510100",
+                ],
+                "duration":           0.15,
+                "seed":               1,
+                "origin":             None,  # a random character
+            },
+            "inferno": {
+                "animate_background": False,
+                "color":              "#ff0000",
+                "swap_red_blue":      False,
+            },
+            "pulse": {
+                "color":     "#ffffff",
+                "intensity": 0.25,
+            },
+            "shine": {
+                "color":      "green",
+                "intensity":  0.8,
+                "band_width": 0.4,
+                "direction":  "bottom_left_to_top_right",
+            },
+        },
+        # Plays once Rune has had no key, mouse or paste input for
+        # "idle_timeout". Each time it starts it plays the next of
+        # "shaders", taking turns through the list. The shader plays a pass
+        # of "duration" at a time through "time_shader", over and over.
+        "screensaver": {
+            "enabled":      True,
+            "idle_timeout": "10m",
+            "shaders":      ["thunderstorm", "vhsTape"],
+            "duration":     "15s",
+            # one of loop, ping_pong, reverse, accelerate, decelerate or boomerang
+            "time_shader":  "loop",
+            "fps":          30,
         },
     },
     # Self-upgrade configuration. Rune polls a public manifest endpoint
@@ -317,6 +426,14 @@ config = {
         "window_blur_radius":   100,
         # Enable or disable font ligatures for sequences like => and ->.
         "ligatures":            False,
+        # Volume of the GUI's sounds, from 0 (mute) to 1. The guivolume
+        # command changes it for the current session.
+        "sound_volume":         1,
+        # Image shown as the window icon on Linux and as the Dock and
+        # Cmd-Tab icon on macOS while Rune runs: a GIF, JPEG, PNG or WebP
+        # file, ideally square and at least 256 pixels wide. ~ and $VARS
+        # expand. `runectl screenshot` reloads it.
+        # "app_icon":           "~/.config/rune/icon.png",
         # Themes available to `default_theme` and the `guitheme` command.
         "themes":               GUI_THEMES,
         # Remap physical keys before they reach the editor (GUI only). Both
@@ -329,15 +446,21 @@ config = {
         "key_mapping": {
         #     "<capslock>": "<esc>",
         },
-        # Buttons of the quick menu, the vertical bar of native buttons
-        # floating over the right edge of the window (macOS only; ignored
-        # elsewhere). Order is top to bottom, and an empty list removes the
-        # bar along with the column it reserves.
-        #   symbol  — SF Symbol name drawn as the button image.
+        # Buttons of the quick menu, the vertical bar of buttons floating
+        # over the right edge of the window. Order is top to bottom, and an
+        # empty list removes the bar along with the column it reserves.
+        # Without sprites it is a bar of native buttons (macOS only; ignored
+        # elsewhere); with them Rune draws it, on every platform.
+        #   symbol  — SF Symbol name drawn as the native button image. Not
+        #             needed with a sprite.
         #   title   — hover tooltip.
         #   command — any Rune command line, as a space-separated string or
         #             a list of words. It also identifies the button, so it
         #             must be unique across the menu.
+        #   sprite  — the button's images, as file:// or http(s) URIs:
+        #             {"idle": uri, "hover": uri, "pressed": uri}. hover
+        #             defaults to idle and pressed to hover. Set it on every
+        #             button or on none.
         "quick_menu": [
             {"symbol": "command", "title": "Command Prompt", "command": "echo {prompt}"},
             {"symbol": "plus", "title": "Open Project", "command": "workspaceopen"},
@@ -364,6 +487,13 @@ config = {
             {"symbol": "gearshape", "title": "Settings", "command": "config"},
             {"symbol": "questionmark.circle", "title": "Rune Help", "command": "help"},
         ],
+        # The sounds the quick menu plays when Rune draws it, that is with
+        # sprites: "hover" when the pointer moves onto a button and "click"
+        # when one is clicked. Each is a name from `sounds`, or "" for none.
+        "quick_menu_sounds": {
+            "hover": "",
+            "click": "",
+        },
     },
     "editor": {
         # Editor mode and exo settings are not configured here. The
@@ -697,6 +827,17 @@ config = {
     # list of `step(...)` entries. Empty by default — extensions and
     # user overlays add their own.
     "tutorials": {},
+    # Named sounds, referenced by name from other settings such as
+    # terminal.bell. Each entry maps a name to a WAV, MP3 or Ogg Vorbis
+    # file, to another sound's name, or to "" to silence it. The built-in
+    # "error", "warning", "info" and "success" sounds can be overridden the
+    # same way. Paths may reference environment variables. Run
+    # `guisound <name>` to hear a sound.
+    "sounds": {
+    #     "ding":    "$HOME/sounds/ding.wav",
+    #     "warning": "ding",
+    #     "info":    "",
+    },
     # Configuration for the command prompt.
     "command": {
         # Key that opens the command prompt.
@@ -793,13 +934,37 @@ config = {
         "matched_text_attr":  attr(fg = "blue", bg = "default", flags = ["bold"]),
         "focus_element_attr": attr(fg = "purple", bg = "default"),
         # Glyphs used to stitch the prompt's manual/list separator
-        # row into the surrounding window frame.
+        # row into the surrounding window frame. Missing horizontal_left
+        # and horizontal_right inherit the effective frame's horizontalbottom:
+        # command.frame_charset when set, otherwise the window frame.
         "separator_charset": {
             "left":             "🭼",
-            "horizontal_left":  "▁",
-            "horizontal_right": "▁",
             "right":            "🭿",
+            # Optional GUI images (file:// or other supported image URIs):
+            # "graphics": {
+            #     "left":       "file:///separator-left.png",
+            #     "horizontal": "file:///separator-tile.png",
+            #     "right":      "file:///separator-right.png",
+            #     "mode":       "overlay",  # or "replace"
+            #     "outset":     {"top": 0, "bottom": 0, "inward": 0},
+            # },
         },
+        # The prompt frames itself with the window manager's frame_charset
+        # and its shader animates focus_frame_charset, along with the
+        # separator_charset. A "frame_charset" here, whose missing slots
+        # keep the window's, replaces both.
+        #
+        #     "frame_charset": {
+        #         "topleft":          "􀀈",
+        #         "topright":         "􀀉",
+        #         "bottomleft":       "􀀊",
+        #         "bottomright":      "􀀋",
+        #         "horizontaltop":    "􀀌",
+        #         "horizontalbottom": "􀀍",
+        #         "verticalleft":     "􀀎",
+        #         "verticalright":    "􀀏",
+        #         "graphics":         {"mode": "overlay", ...},
+        #     },
     },
     "browser": {
         # What the workspace bar shows: the simplified path ("path"), the
@@ -815,13 +980,59 @@ config = {
             "frame_charset":         GUI_FRAME_CHARSET,
             "focus_frame_charset":   GUI_FRAME_CHARSET,
             "scroll_bar_attr":       attr(fg = "blue", bg = "default"),
-            "scroll_bar_char":       "▐",
-            "scroll_bar_hover_char": "█",
+            # The scroll bar's "top_char" draws its first cell and
+            # "bottom_char" its last, when it spans two cells or more,
+            # and "middle_char" every other cell. The "hover_" keys draw
+            # the bar under the pointer. A top or bottom left out is the
+            # middle, a middle left out is the frame's right edge, and a
+            # hover key left out is the plain one. Older configurations'
+            # "scroll_bar_char" and "scroll_bar_hover_char" replace
+            # "middle_char" and "hover_middle_char".
+            #
+            # A "graphics" table names an image for each of the six keys,
+            # with the same top, bottom and hover fallbacks:
+            #
+            #     "graphics": {
+            #         "mode":              "replace",
+            #         "top_char":          "file:///path/to/top.png",
+            #         "middle_char":       "file:///path/to/middle.png",
+            #         "bottom_char":       "file:///path/to/bottom.png",
+            #         "hover_top_char":    "file:///path/to/hover-top.png",
+            #         "hover_middle_char": "file:///path/to/hover-middle.png",
+            #         "hover_bottom_char": "file:///path/to/hover-bottom.png",
+            #         "outset":            {"left": 0},
+            #     },
+            #
+            # "outset" stretches each image "left" cells to the left, where
+            # the pointer grabs the bar too.
+            "scroll_bar_charset":    {
+                "middle_char":       "▐",
+                "hover_middle_char": "█",
+            },
             # Solid bar drawn over floating windows' top frame line.
             # Dragging the bar moves the window, dragging edges resizes
             # it, double-clicking it maximizes the window, and the close
             # icon closes it. The icon and title backgrounds follow the
             # frame foreground.
+            #
+            # A "graphics" table in window_bar_charset names an image for
+            # "left", the bar's first cell, "right", its last, and
+            # "horizontal", every cell between. Focused and unfocused
+            # windows share them:
+            #
+            #     "graphics": {
+            #         "mode":       "replace",
+            #         "left":       "file:///path/to/bar-left.png",
+            #         "horizontal": "file:///path/to/bar-middle.png",
+            #         "right":      "file:///path/to/bar-right.png",
+            #         "outset":     {"top": 0, "bottom": 0, "sides": 0, "inward": 0, "horizontal_top": 0},
+            #     },
+            #
+            # With "mode" "replace", the icon and title sit on the frame's
+            # background; with "overlay", on the bar's colors. "outset"
+            # stretches the left and right images "top" rows up, "bottom"
+            # rows down, "sides" cells outward and "inward" cells inward,
+            # and the horizontal images "horizontal_top" rows up.
             "window_bar":            True,
             "window_bar_charset":    {
                 "left":       "█",
@@ -846,6 +1057,50 @@ config = {
         "non_focus_tab_icon_attr": attr(fg = "silver", bg = "default"),
         "focus_tab_highlight_attr": attr(fg = "red", bg = "default"),
         "focus_tab_highlight_char":  "\U00100006",
+        # Layered over the label of a tab not in focus while the pointer is
+        # on it, under the colours the tab has of its own.
+        "hover_tab_attr":          attr(),
+        # A "tab_images" table names images drawn under each tab: "focus"
+        # for the tabs shown in a window, falling back to "non_focus" for
+        # the others. A tab not in focus is drawn over "hover" while the
+        # pointer is on it and over "pressed" while a press on it is held,
+        # as a tab activates when the button is released over it. "pressed"
+        # falls back to "hover" and "hover" to "non_focus". Each names a
+        # "left" image for the tab's first cell, a "right" one for its last
+        # and a "middle" one for every cell between. "outset" stretches the
+        # left and right images "sides" cells outward:
+        #
+        #     "tab_images": {
+        #         "focus":     {
+        #             "left":   "file:///path/to/tab-left.png",
+        #             "middle": "file:///path/to/tab-middle.png",
+        #             "right":  "file:///path/to/tab-right.png",
+        #         },
+        #         "non_focus": {...},
+        #         "hover":     {...},
+        #         "pressed":   {...},
+        #         "outset":    {"sides": 0},
+        #     },
+        #
+        # A "focus_tab_highlight_graphics" table names images for the
+        # focus_tab_highlight_char cells of the focused window's tab:
+        # "left" for the first cell, "right" for the last and "horizontal"
+        # for every cell between, which a left or right left out falls back
+        # to. They draw even when focus_tab_highlight_char is "":
+        #
+        #     "focus_tab_highlight_graphics": {
+        #         "mode":       "replace",
+        #         "left":       "file:///path/to/highlight-left.png",
+        #         "horizontal": "file:///path/to/highlight.png",
+        #         "right":      "file:///path/to/highlight-right.png",
+        #     },
+        # The sounds the tab bar plays: "hover" when the pointer moves onto
+        # a tab not in focus and "click" when a tab is clicked. Each is a
+        # name from `sounds`, or "" for none.
+        "tab_sounds": {
+            "hover": "",
+            "click": "",
+        },
         # Icons for tabs; `terminal` is used for terminal tabs while
         # `default` is the fallback for files.
         "icons": {
@@ -861,6 +1116,29 @@ config = {
         "tab_override_icon": "",
         "tab_name_separator": "   ",
         # Prompt configuration used when Rune asks the user questions.
+        #
+        # An "images" table names images drawn under the buttons of prompts
+        # and of the search box, in place of their background. Each button
+        # state names a "left", "middle" and "right" image, as tab_images
+        # does:
+        #
+        #     "images": {
+        #         "idle":     {
+        #             "left":   "file:///path/to/button-left.png",
+        #             "middle": "file:///path/to/button-middle.png",
+        #             "right":  "file:///path/to/button-right.png",
+        #         },
+        #         "selected": {...},
+        #         "hover":    {...},
+        #         "pressed":  {...},
+        #         "outset":   {"top": 1, "bottom": 1, "sides": 1},
+        #     },
+        #
+        # "idle" is required whenever any other state is set. "selected",
+        # the button the keyboard is on, and "pressed" fall back to
+        # "hover", and "hover" falls back to "idle". "outset" stretches
+        # every image "top" rows up and "bottom" rows down, and the left
+        # and right images "sides" cells outward.
         "prompt": {
             "text_attr":       attr(bg = "gray", flag = "bold"),
             "highlight_attr":  attr(bg = "red", flag = "bold"),
@@ -883,12 +1161,39 @@ config = {
         "auto_restore": True,
         # Index workspace symbols for faster lookups.
         "symboldb":     True,
-        # Attributes for custom ASCII or image wallpapers.
-        "wallpaper_attr":            attr(fg = "blue", bg = "default"),
-        "wallpaper_background_attr": attr(bg = "default"),
+        # Precedence: wallpaper_image, then wallpaper_image_ascii, then
+        # wallpaper_ascii. The first non-empty one is shown; when all three
+        # are "" the built-in Rune logo is.
+        "wallpaper_image": { # this takes a file path string, or the following object
+            "path":   "",
+            "width":  "60%", # or number of cells
+            "height": "60%", # or number of cells
+            "fit":    "contain", # or "cover" or "fill".
+        },
+        "wallpaper_image_ascii":        "",
+        "wallpaper_ascii":              "",
+        # Characters an image is encoded as ASCII with, from the darkest
+        # pixels to the brightest.
+        "wallpaper_density_characters": " ▓▓▓▓",
+        # wallpaper_attr styles the characters of wallpaper_ascii; image
+        # wallpapers take their colors from the image.
+        # wallpaper_background_attr fills the window behind any
+        # wallpaper, the built-in logo included.
+        "wallpaper_attr":               attr(fg = "blue", bg = "default"),
+        "wallpaper_background_attr":    attr(bg = "default"),
         # Character drawn on the bottom row of the workspace tab bar to
         # highlight the workspace currently in focus.
         "focus_tab_highlight_char":  "",
+        # "tab_images", "focus_tab_highlight_graphics" and "tab_sounds" name
+        # images and sounds for the workspace tab bar, as their browser
+        # counterparts do; "focus" is the workspace in focus. The bar takes
+        # its colours from browser.*_tab_attr, browser.hover_tab_attr and
+        # browser.focus_tab_highlight_attr. Every workspace shares it, so a
+        # workspace's own config does not style it.
+        "tab_sounds": {
+            "hover": "",
+            "click": "",
+        },
         # Per-workspace notice shown in a floating window when the
         # workspace opens. Either `path` (resolved against the
         # workspace filesystem) or `literal` provides the content;
@@ -921,7 +1226,21 @@ config = {
     "notifications": {
         "auto_close":   "5s",
         "padding":      1,
+        # The progress bar takes the frame's bottom row, so the
+        # bottomleft, horizontalbottom and bottomright images of
+        # frame_charset are not drawn while it is on.
         "progress_bar": True,
+        # A "graphics" table names an image for each of the five keys. The
+        # images are not tinted with the notification's level:
+        #
+        #     "graphics": {
+        #         "mode":        "overlay",
+        #         "start":       "file:///path/to/start.png",
+        #         "current":     "file:///path/to/current.png",
+        #         "current_tip": "file:///path/to/tip.png",
+        #         "remain":      "file:///path/to/remain.png",
+        #         "end":         "file:///path/to/end.png",
+        #     },
         "progress_format": {
             "start":       "\U00100000",
             "current":     "\U00100001",
@@ -943,8 +1262,79 @@ config = {
         "initial_reservoir":  0,
         "attr":               attr(fg = "default", bg = "default"),
         "selection_attr":     attr(flags = "reverse"),
+        # The sound a program ringing the bell plays: a name from `sounds`,
+        # or "" for none. With `rune --tui` any sound rings the host
+        # terminal's bell instead.
+        "bell":               "warning",
         # Tab attributes used when a bell arrives while the window is unfocused.
         "needs_attention_attr": attr(fg = "red", flags = "blink"),
+        # What a program running in the terminal may do with the clipboard
+        # through the OSC 52 escape sequence. Reading hands whatever you last
+        # copied to any program whose output reaches a terminal, including
+        # one on a remote host, so it is off unless you opt in.
+        "clipboard": {
+            "write": True,
+            "read":  False,
+        },
+        # Program status (OSC 7501), as reported by programs such as
+        # `runectl status` or agent harnesses like claude code.
+        "status": {
+            "enabled":  True,
+            # Icons shown for a blocked tab by kind, and for done and error
+            # tabs. The defaults are Nerd Font glyphs.
+            "icons": {
+                "permission": "?",
+                "question":   "?",
+                "auth":       "@",
+                "done":       "",
+                "error":      "x",
+            },
+            "spinner":     "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏",
+            "spinner_fps": 10,
+            # How content tabs (files, terminals, agent chats) reflect the
+            # status their program reported. "progress" splits the label at
+            # the reported percentage, painting the completed part with
+            # "working_done_attr" and leaving the rest to the
+            # animations.active_content_tab effect; False keeps the effect
+            # over the full label. The *_attr keys style the tab name in that
+            # state and the *_icon_attr keys its icon; "default" colours keep
+            # the tab's own.
+            "content_tab": {
+                "progress":          False,
+                "working_done_attr": attr(fg = "default", bg = "default"),
+                "blocked_attr":      attr(fg = "default", bg = "default"),
+                "done_attr":         attr(fg = "default", bg = "default"),
+                "error_attr":        attr(fg = "default", bg = "default"),
+                "idle_icon_attr":    attr(fg = "gray"),
+                "working_icon_attr": attr(fg = "cyan"),
+                "done_icon_attr":    attr(fg = "green"),
+                "blocked_icon_attr": attr(fg = "yellow"),
+                "error_icon_attr":   attr(fg = "red"),
+            },
+            # How workspace tabs reflect the most pressing status among the
+            # tabs of their workspace. Takes the same keys as content_tab,
+            # with the remainder of a working label left to the
+            # animations.active_workspace_tab effect.
+            "workspace_tab": {
+                "progress":          True,
+                "working_done_attr": attr(fg = "cyan"),
+                "blocked_attr":      attr(fg = "yellow"),
+                "done_attr":         attr(fg = "green"),
+                "error_attr":        attr(fg = "red"),
+                "idle_icon_attr":    attr(fg = "default", bg = "default"),
+                "working_icon_attr": attr(fg = "default", bg = "default"),
+                "done_icon_attr":    attr(fg = "default", bg = "default"),
+                "blocked_icon_attr": attr(fg = "default", bg = "default"),
+                "error_icon_attr":   attr(fg = "default", bg = "default"),
+            },
+            # States a tab entering raises a notification for while it is out
+            # of sight, and the minimum time between two such notifications
+            # for the same tab. Every new message a program reports is
+            # notified on its own, whatever the state and whether or not the
+            # tab is in sight.
+            "notify":          ["blocked", "error", "done"],
+            "notify_interval": "2s",
+        },
         # Scrollback search, opened over the terminal itself. Its theme
         # follows editor.standard.search; only the key that opens it can be
         # overridden here.
@@ -967,6 +1357,114 @@ config = {
             # Whether the plugin bar is rendered at the bottom instead of top.
             "bar_align_bottom":    True,
         },
+    },
+    # Program status (OSC 7501) reported by terminals, agents and console
+    # commands, and the :programstatus inbox listing it. Colors left at
+    # "default" keep those of what they are drawn over.
+    "program_status": {
+        # The sound a program entering blocked, error, done or working plays,
+        # whether or not its tab is in sight: a name from `sounds`, or "" for
+        # none. Turning terminal.status.enabled off turns them off too.
+        "sounds": {
+            "blocked": "warning",
+            "error":   "error",
+            "done":    "success",
+        },
+        # The selected program, and the one under the mouse, all of it: their
+        # colors win over those of its text, and the selection's over the
+        # hover's.
+        "selected_attr": attr(bg = "gray"),
+        "hover_attr":    attr(flags = "bold"),
+        # Drawn down the left of the selected program. What "marker_attr"
+        # leaves at "default" takes the color of browser.focus_tab_highlight_attr
+        # and the background of the selection.
+        "marker":        "▌",
+        "marker_attr":   attr(fg = "default", bg = "default"),
+        # The workspace named above each program, and above the program
+        # selected or under the mouse, which the gray would blend into the
+        # selection. Their colors win over the program's.
+        "workspace_attr":           attr(fg = "gray"),
+        "workspace_highlight_attr": attr(fg = "silver"),
+        # The left end, what is done, what is not, and the right end of the
+        # progress bar of a working program, as in "╢░_╟". Ends are colored
+        # as what they stand in, so one character all along draws a bar that
+        # only its colors split.
+        "progress_bar":                     "🬋🬋🬋🬋",
+        # Beneath the whole bar, keeping its background over the selection's.
+        "progress_attr":                    attr(fg = "default", bg = "default"),
+        "progress_done_attr":               attr(fg = "green"),
+        "progress_remaining_attr":          attr(fg = "gray"),
+        # What is not done of the selected program's bar, which the gray of
+        # "progress_remaining_attr" would blend into the selection.
+        "progress_remaining_selected_attr": attr(fg = "silver"),
+        # The percentage on the bar's right.
+        "progress_label_attr":              attr(fg = "default", bg = "default"),
+        # Drawn below the programs when there are more out of sight below:
+        # nf-fa-arrow_down, as in tutorials.
+        "more_below":      "\uf063",
+        "more_below_attr": attr(fg = "default", bg = "default"),
+        # The line between the programs and the preview, and the text that
+        # stands in for them when there is nothing to show.
+        "divider_attr":     attr(fg = "gray"),
+        "placeholder_attr": attr(fg = "gray"),
+        # Glyphs joining the divider into the inbox window's frame: "top"
+        # and "bottom" are the joins, colored as the frame; "vertical_top",
+        # "vertical" and "vertical_bottom" are drawn under the top join,
+        # between, and over the bottom join, colored by "divider_attr".
+        # Missing vertical, vertical image and mode inherit the window
+        # frame's verticalleft; missing vertical_top and vertical_bottom
+        # inherit vertical. Under a window bar, there is no top join and
+        # the divider starts with vertical.
+        "divider_charset": {
+            "top":    "🭽",
+            "bottom": "🭼",
+            # Optional GUI images, with missing joins taking the frame's
+            # horizontaltop and horizontalbottom images:
+            # "graphics": {
+            #     "top":      "file:///divider-top.png",
+            #     "vertical": "file:///divider-tile.png",
+            #     "bottom":   "file:///divider-bottom.png",
+            #     "mode":     "overlay",  # or "replace"
+            #     "outset":   {"left": 0, "right": 0, "inward": 0},
+            # },
+        },
+        # An "images" table names images drawn under each program, in place
+        # of the backgrounds of "selected_attr" and "hover_attr", in the
+        # shape of browser.prompt.images: "selected" for the selected
+        # program, falling back to "hover" for the one under the mouse,
+        # falling back to "idle" for the rest. No state is required:
+        #
+        #     "images": {
+        #         "selected": {
+        #             "left":   "file:///path/to/entry-left.png",
+        #             "middle": "file:///path/to/entry-middle.png",
+        #             "right":  "file:///path/to/entry-right.png",
+        #         },
+        #         "hover":    {...},
+        #         "idle":     {...},
+        #         "outset":   {"top": 0, "bottom": 0, "sides": 0},
+        #     },
+        #
+        # "marker_graphics" names images for the marker: "top" for the
+        # first cell, "bottom" for the last and "vertical" for every cell
+        # between, which a top or bottom left out falls back to.
+        # "progress_bar_graphics" names images for the progress bar's
+        # cells, as "progress_bar" names their characters; an end left out
+        # takes the image of the cell it stands in:
+        #
+        #     "marker_graphics": {
+        #         "mode":     "replace",
+        #         "top":      "file:///path/to/marker-top.png",
+        #         "vertical": "file:///path/to/marker.png",
+        #         "bottom":   "file:///path/to/marker-bottom.png",
+        #     },
+        #     "progress_bar_graphics": {
+        #         "mode":   "replace",
+        #         "left":   "file:///path/to/progress-left.png",
+        #         "filled": "file:///path/to/progress-filled.png",
+        #         "empty":  "file:///path/to/progress-empty.png",
+        #         "right":  "file:///path/to/progress-right.png",
+        #     },
     },
 }
 
@@ -1107,8 +1605,6 @@ if tui:
             "focus_element_attr":attr(fg = "#c6c6c6", bg = "#1e1e1e", flags = ["bold"]),
             "separator_charset": {
                 "left":             "├",
-                "horizontal_left":  "─",
-                "horizontal_right": "─",
                 "right":            "┤",
             },
         },
@@ -1124,8 +1620,10 @@ if tui:
                 "frame_charset":         TUI_FRAME_CHARSET,
                 "focus_frame_charset":   TUI_FRAME_CHARSET,
                 "scroll_bar_attr":       attr(fg = "#c6c6c6", bg = "#1e1e1e"),
-                "scroll_bar_char":       "┃",
-                "scroll_bar_hover_char": "║",
+                "scroll_bar_charset":    {
+                    "middle_char":       "┃",
+                    "hover_middle_char": "║",
+                },
                 "window_bar":            False,
             },
             "tab_name_separator":  "  ",
@@ -1157,6 +1655,12 @@ if tui:
             "attr":            attr(fg = "default", bg = "#1e1e1e"),
             "background_attr": attr(fg = "default", bg = "#1e1e1e"),
             "frame_charset":   TUI_FRAME_CHARSET,
+        },
+        "program_status": {
+            "divider_charset": {
+                "top":    "┬",
+                "bottom": "┴",
+            },
         },
         "terminal": {
             "attr":                  attr(fg = "default", bg = "#1e1e1e"),

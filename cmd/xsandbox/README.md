@@ -105,8 +105,13 @@ o = expect_resource_opener("chat")   # resource opener for chat:// arrived
 
 # -- actions (host -> extension) --------------------------------------
 invoke_command(h, args = ["world"])  # dispatch and wait for completion
-invoke_repl_command(r, args = [])
+out = invoke_repl_command(r, args = [])  # its output, rendered 80 columns wide;
+                                     # fails if the output ends in an error
+complete_command(h, args = ["wo"])   # the candidates completing args, in order
+complete_repl_command(r, args = [])  # likewise for a REPL command
+help = repl_help(r, args = [])       # a REPL command's help, rendered as its output
 open_resource(o, "chat://host/1")    # ask for the content and show it
+uris = complete_resource(o, "chat://")  # the URIs completing a prefix, in order
 publish_event("open", uri = "file:///tmp/x", content = "...")
 
 # -- rendering installed handlers -------------------------------------
@@ -122,6 +127,20 @@ if "count=0" not in out:                   # assert with `in` / fail()
     fail("unexpected render:\n" + out)
 res = send_key(w, "<space>")               # tokens per handlertest grammar
 out = render(w)                            # re-render to observe the change
+# send_mouse delivers mouse tokens at a cell of the last render, which
+# the browser routes to the window there; send_paste delivers text as a
+# bracketed paste; send_event delivers "focus", "unfocus" or "interrupt".
+# All three return what send_key does.
+send_mouse(w, "<mouse-left><mouse-release>", x = 25, y = 4)
+send_paste(w, "pasted text")
+send_event(w, "focus")
+sel = selection(w)                         # what Rune would copy, or None
+# render_graphics draws in frames of cell_width x cell_height pixel cells,
+# which lets handlers place images, and returns the grid and the images.
+g = render_graphics(w, width = 120, height = 40, cell_width = 9, cell_height = 18)
+# g["text"] is the grid; each of g["images"] has the cells it covers (x, y,
+# width, height), the size of its pixels (pixel_width, pixel_height) and
+# how many distinct colors a sample of them holds (colors).
 
 # -- synchronization ---------------------------------------------------
 wait_idle("1s")                       # no RPC activity for 1s
@@ -145,6 +164,13 @@ the tab of the uri in the focused window, so `render` draws it and
 `send_key` reaches it. Like any stream, the registration itself can also
 be matched with `expect_rpc("text.Editor/SubscribeResourceOpener")`, and
 the content's stream with `expect_rpc("text.Editor/OpenResource")`.
+
+`complete_resource` asks the same opener for the URIs completing a
+prefix, as Rune does to complete `view` and `edit`, and returns them as a
+list in the order the extension produced them. It fails with the error
+the extension reported, or when the completion does not end within the
+timeout. An extension built with an SDK older than v0.17.1 is not asked,
+as Rune does not ask it, and completes nothing.
 
 ## Report
 

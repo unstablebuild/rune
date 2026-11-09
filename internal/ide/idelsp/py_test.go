@@ -32,7 +32,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/semanticapi"
+	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
+	"github.com/unstablebuild/rune-go-sdk/term"
 )
 
 // pyPkgManager resolves both the ty and ruff binaries from a single
@@ -104,6 +106,19 @@ func setupPythonManagerNoOpen(
 	t *testing.T, ctx context.Context, callback Callback,
 ) (*Manager, string, string) {
 	t.Helper()
+	mgr, params, mainURI, mainContent := newPythonManager(t, callback)
+	_, err := mgr.Initialize(ctx, params)
+	require.NoError(t, err)
+	return mgr, mainURI, mainContent
+}
+
+// newPythonManager builds a real ty + ruff manager rooted at a temp
+// copy of testdata/py without initializing it, returning the params
+// that Initialize must be called with plus main.py's URI and content.
+func newPythonManager(
+	t *testing.T, callback Callback,
+) (*Manager, semanticapi.InitializeParams, string, string) {
+	t.Helper()
 	if callback == nil {
 		callback = &testCallback{}
 	}
@@ -169,11 +184,7 @@ func setupPythonManagerNoOpen(
 	})
 	require.NoError(t, err)
 	params.InitializeOptions = initOpts
-
-	_, err = mgr.Initialize(ctx, params)
-	require.NoError(t, err)
-
-	return mgr, mainURI, string(mainContent)
+	return mgr, params, mainURI, string(mainContent)
 }
 
 func TestE2EPython(t *testing.T) {
@@ -706,6 +717,48 @@ func TestE2EPythonMergedDiagnostics(t *testing.T) {
 		Start: semanticapi.Position{Line: 17, Character: 7},
 		End:   semanticapi.Position{Line: 17, Character: 9},
 	}, got.Range)
+}
+
+func TestE2EPythonOpenBeforeInitializeReachesRuff(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	mgr, params, mainURI, mainContent := newPythonManager(t, nil)
+	uri := makeURI(t, mainURI)
+
+	// On workspace startup the editor opens files before the Python
+	// extension initializes ty + ruff, so the open is queued as pending.
+	require.NoError(t, mgr.handle(textapi.Event{
+		Type: textapi.EventTypeOpen, URI: uri, Content: mainContent,
+	}))
+	_, err := mgr.Initialize(ctx, params)
+	require.NoError(t, err)
+
+	// Drop the space in `add(1, 2)` so the formatting below only
+	// matches if ruff tracked both the pending open and this change.
+	require.NoError(t, mgr.handle(textapi.Event{
+		Type:  textapi.EventTypeEdit,
+		URI:   uri,
+		Start: term.Coordinates{X: 19, Y: 39},
+		End:   term.Coordinates{X: 20, Y: 39},
+	}))
+
+	edits, err := mgr.Formatting(ctx, semanticapi.DocumentFormattingParams{
+		TextDocument: semanticapi.TextDocumentIdentifier{URI: mainURI},
+		Options:      semanticapi.FormattingOptions{TabSize: 4, InsertSpaces: true},
+	})
+	require.NoError(t, err)
+	require.Equal(t, []semanticapi.TextEdit{{
+		Range: semanticapi.Range{
+			Start: semanticapi.Position{Line: 33, Character: 0},
+			End:   semanticapi.Position{Line: 40, Character: 0},
+		},
+		NewText: "    return a + b\n\n\ndef main() -> None:\n" +
+			"    g = Greeter(\"World\")\n    print(g.greet())\n" +
+			"    result = add(1, 2)\n",
+	}}, edits)
 }
 
 func TestE2EPythonDefinitionUnopenedFile(t *testing.T) {

@@ -17,6 +17,7 @@
 package input_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -25,6 +26,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/internal/cell"
+	"unstable.build/rune/internal/handler/handlertest"
 	"unstable.build/rune/internal/handler/input"
 	"unstable.build/rune/internal/text/standard"
 )
@@ -506,5 +508,19 @@ func writeBuffer(b tui.Handler, str string) {
 		b.Draw(term.NewStringWriter(20, 9))
 		// scroll needs to be drawn for wrap features to be correct
 		// width and height here are not important
+	}
+}
+
+func TestBoxPointerLeaves(t *testing.T) {
+	for _, content := range []string{"", strings.Repeat("some typed input that wraps ", 20)} {
+		for _, size := range [][2]int{{60, 15}, {1, 1}} {
+			buf := cell.NewBuffer()
+			buf.WriteString(content)
+			b := input.NewBox(buf, standard.Editor(), input.BoxConfig{
+				Placeholder: "type something here, it is a long placeholder",
+			})
+			handlertest.RunPointerLeaves(t, b, size[0], size[1])
+			assert.Equal(t, content, buf.String(), "the pointer does not edit the input")
+		}
 	}
 }

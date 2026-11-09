@@ -23,7 +23,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"unstable.build/rune/internal/ide"
-	"unstable.build/rune/internal/ide/upgradeshell"
+	"unstable.build/rune/internal/ide/console/upgradeconsole"
 )
 
 func TestRegisterUpgradeCommandWithoutManager(t *testing.T) {
@@ -40,7 +40,7 @@ func TestUpgradeAliasTargetsConsoleCommand(t *testing.T) {
 	require.NoError(t, err)
 	aliases, err := command.GetConfig("aliases")
 	require.NoError(t, err)
-	got, err := aliases.GetString(upgradeshell.CommandName)
+	got, err := aliases.GetString(upgradeconsole.CommandName)
 	require.NoError(t, err)
-	require.Equal(t, "console "+upgradeshell.CommandName, got)
+	require.Equal(t, "console "+upgradeconsole.CommandName, got)
 }

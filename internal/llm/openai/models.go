@@ -31,6 +31,8 @@ const (
 	GPT6Astra = "gpt-6-astra"
 	// GPT6Sol is the GPT-6 Sol model.
 	GPT6Sol = "gpt-6-sol"
+	// GPT6Dot1Terra is the GPT-6.1 Terra model.
+	GPT6Dot1Terra = "gpt-6.1-terra"
 	// GPT6Luna is the GPT-6 Luna model.
 	GPT6Luna = "gpt-6-luna"
 	// GPT5Dot6 is the GPT-5.6 Sol alias.
@@ -201,6 +203,16 @@ var gpt6Efforts = map[string]bool{
 	"ultra":  true,
 }
 
+// gpt6Dot1TerraEfforts covers GPT-6.1 Terra.
+var gpt6Dot1TerraEfforts = map[string]bool{
+	"none":   true,
+	"low":    true,
+	"medium": true,
+	"high":   true,
+	"xhigh":  true,
+	"max":    true,
+}
+
 // gpt6LunaEfforts covers GPT-6 Luna, which stops at max: it has no
 // ultra level because it does not delegate work to sub-agents.
 var gpt6LunaEfforts = map[string]bool{
@@ -224,6 +236,8 @@ var gpt5Dot4ProEfforts = map[string]bool{
 // (caller should fall back to gpt5Dot4Efforts for unknown gpt-5 prefixes).
 func supportedEfforts(model string) map[string]bool {
 	switch {
+	case model == GPT6Dot1Terra:
+		return gpt6Dot1TerraEfforts
 	case model == GPT6Luna:
 		return gpt6LunaEfforts
 	case strings.HasPrefix(model, "gpt-6"):
@@ -294,6 +308,7 @@ func AvailableModels() map[string]int {
 	return map[string]int{
 		GPT6Astra:        1050000,
 		GPT6Sol:          1050000,
+		GPT6Dot1Terra:    1050000,
 		GPT6Luna:         1050000,
 		GPT5Dot6:         1050000,
 		GPT5Dot6Sol:      1050000,
@@ -358,6 +373,7 @@ func FlagshipModel() string { return GPT6Astra }
 var maxOutputTokens = map[string]int{
 	GPT6Astra:        128000,
 	GPT6Sol:          128000,
+	GPT6Dot1Terra:    128000,
 	GPT6Luna:         128000,
 	GPT5Dot6:         128000,
 	GPT5Dot6Sol:      128000,

@@ -39,6 +39,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/cell"
+	"unstable.build/rune/internal/term/programstatus"
 	"unstable.build/rune/internal/term/vte/vtetest"
 	"unstable.build/rune/internal/workspace"
 	"unstable.build/rune/internal/workspace/workspacetest"
@@ -49,12 +50,6 @@ import (
 // assertions can run. The slower the host of the tests, the longer
 // this timeout should be.
 var defaultWaitForIdleVte = 100 * time.Millisecond
-
-func init() {
-	if os.Getenv("CI") == "true" {
-		defaultWaitForIdleVte = 150 * time.Millisecond
-	}
-}
 
 func TestMain(m *testing.M) {
 	tmp, err := os.MkdirTemp("", "vte-home")
@@ -285,7 +280,8 @@ func (r *tabExiterRecorder) OnTabExit(uri workspaceapi.URI) bool {
 	return true
 }
 
-func (r *tabExiterRecorder) SetTabActivity(workspaceapi.URI, bool) error { return nil }
+func (r *tabExiterRecorder) SetTabStatus(workspaceapi.URI, programstatus.Report) error { return nil }
+func (r *tabExiterRecorder) EndTabStatus(workspaceapi.URI) error                       { return nil }
 
 func (r *tabExiterRecorder) ExitedURIs() []workspaceapi.URI {
 	r.mu.Lock()
@@ -580,9 +576,10 @@ func testSequenceCommand(
 	uri, err := workspaceapi.CurrentUserHostURI(temp)
 	require.NoError(t, err)
 
-	shellRCDir, err := workspace.InstallShellRC(t.TempDir())
+	dataDir := t.TempDir()
+	shellRCDir, err := workspace.InstallShellRC(dataDir)
 	require.NoError(t, err)
-	scheme, err := workspace.NewFileSchemeFunc(shellRCDir)(ctx, config.NopConfig(), uri)
+	scheme, err := workspace.NewFileSchemeFunc(dataDir, shellRCDir)(ctx, config.NopConfig(), uri)
 	require.NoError(t, err)
 
 	ch := make(chan struct{}, 50 /* big enough for the max length sequence of events */)
@@ -592,12 +589,6 @@ func testSequenceCommand(
 	handler, err := NewHandler(chanEventPublisher{ch}, nopNotifications{},
 		scheme, scheme, nopTabManager{}, cfg)
 	require.NoError(t, err)
-
-	if ci := os.Getenv("CI"); ci == "true" {
-		// the version of sh running on the CI docker containers
-		// doesn't support bell (neither ctrl+g or ctrl+a + <-)
-		t.SkipNow()
-	}
 
 	t.Cleanup(func() {
 		handler.Close()
@@ -683,10 +674,14 @@ func (n *recordingNotifications) Messages() []string {
 }
 
 func newHandleTestHandler(master workspaceapi.File) *Handler {
-	ph := &parserHandler{keyboard: new(keyboardState)}
+	ph := &parserHandler{
+		keyboard: new(keyboardState),
+		tm:       new(tabExiterRecorder),
+	}
 	handler := &Handler{
 		comp: &Component{
 			pty:           workspaceapi.Pty{Master: master},
+			ptyIn:         master,
 			parserHandler: ph,
 			keyboard:      ph.keyboard,
 		},
@@ -695,6 +690,7 @@ func newHandleTestHandler(master workspaceapi.File) *Handler {
 	}
 	handler.comp.scroll.InitPerformance(cell.NewBuffer())
 	handler.comp.scroll.InvertOffset = true
+	ph.sync.mu = &handler.comp.mu
 	return handler
 }
 
@@ -1019,4 +1015,29 @@ func TestHandlerCtrlCInterruptsForegroundProgram(t *testing.T) {
 	}, 5*time.Second, 20*time.Millisecond,
 		"ctrl-c must interrupt the foreground sleep and return the "+
 			"shell prompt; screen was:\n%s", w.String())
+}
+
+func TestHandlerAnswersQueriesInSynchronizedUpdate(t *testing.T) {
+	// crossterm's cursor::position does this inside ratatui's first
+	// frame, and gives up after 2s without a reply.
+	const script = `stty raw -echo
+printf '\033[?2026h\033[6n'
+reply=$(dd bs=1 count=6 2>/dev/null)
+printf '\033[?2026l'
+stty sane
+printf 'reply:%s\n' "$(printf '%s' "$reply" | tr '\033' E)"
+sleep 60`
+	path := t.TempDir() + "/sync_query.sh"
+	require.NoError(t, os.WriteFile(path, []byte(script), 0o600))
+	handler, ch := testSequenceCommand(t, DefaultConfig(), defaultWaitForIdleVte,
+		[]string{"sh", path}, nil)
+	drain(ch)
+
+	w := term.NewStringWriter(20, 10)
+	require.Eventually(t, func() bool {
+		require.NoError(t, w.Clear(term.Attributes{}))
+		handler.Draw(w)
+		require.NoError(t, w.Flush())
+		return strings.Contains(w.String(), "reply:E[1;1R")
+	}, 5*time.Second, 20*time.Millisecond, "screen was:\n%s", w.String())
 }

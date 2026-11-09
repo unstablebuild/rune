@@ -19,6 +19,7 @@ package extension
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -306,3 +307,7 @@ func (stubLSP) DidDeleteFiles(context.Context, semanticapi.DeleteFilesParams) er
 }
 
 var _ semanticapi.LSP = stubLSP{}
+
+func (testLocalExec) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
+}

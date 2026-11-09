@@ -40,6 +40,18 @@ func TestClaudeOpus5Catalog(t *testing.T) {
 	assert.True(t, SupportsAdaptiveThinking(ClaudeOpus5))
 }
 
+func TestClaudeSonnet5Dot5Catalog(t *testing.T) {
+	assert.Equal(t, 1000000, AvailableModels()[ClaudeSonnet5Dot5])
+	assert.Equal(t, 128000, MaxOutputTokens(ClaudeSonnet5Dot5))
+	assert.True(t, SupportsAdaptiveThinking(ClaudeSonnet5Dot5))
+}
+
+func TestClaudeHaiku5Dot5Catalog(t *testing.T) {
+	assert.Equal(t, 1000000, AvailableModels()[ClaudeHaiku5Dot5])
+	assert.Equal(t, 128000, MaxOutputTokens(ClaudeHaiku5Dot5))
+	assert.True(t, SupportsAdaptiveThinking(ClaudeHaiku5Dot5))
+}
+
 func TestClaudeSonnet5Catalog(t *testing.T) {
 	assert.Equal(t, 1000000, AvailableModels()[ClaudeSonnet5])
 	assert.Equal(t, 128000, MaxOutputTokens(ClaudeSonnet5))
@@ -59,6 +71,8 @@ func TestMaxOutputTokens(t *testing.T) {
 	}{
 		{ClaudeOpus5, 128000},
 		{ClaudeOpus5Dot5, 128000},
+		{ClaudeSonnet5Dot5, 128000},
+		{ClaudeHaiku5Dot5, 128000},
 		{ClaudeSonnet5, 128000},
 		{ClaudeFable5Dot1, 128000},
 		{ClaudeFable5, 128000},
@@ -81,6 +95,8 @@ func TestSupportsEffort(t *testing.T) {
 	}{
 		{ClaudeOpus5, true},
 		{ClaudeOpus5Dot5, true},
+		{ClaudeSonnet5Dot5, true},
+		{ClaudeHaiku5Dot5, true},
 		{ClaudeSonnet5, true},
 		{ClaudeOpus4Dot7, true},
 		{ClaudeOpus4Dot6, true},
@@ -109,6 +125,8 @@ func TestSupportsAdaptiveThinking(t *testing.T) {
 	}{
 		{ClaudeOpus5, true},
 		{ClaudeOpus5Dot5, true},
+		{ClaudeSonnet5Dot5, true},
+		{ClaudeHaiku5Dot5, true},
 		{ClaudeSonnet5, true},
 		{ClaudeFable5Dot1, true},
 		{ClaudeOpus4Dot6, true},
@@ -197,6 +215,18 @@ func TestNormalizeEffort(t *testing.T) {
 		{"sonnet-5 high", ClaudeSonnet5, "high", "high", false},
 		{"sonnet-5 xhigh", ClaudeSonnet5, "xhigh", "xhigh", false},
 		{"sonnet-5 max", ClaudeSonnet5, "max", "max", false},
+		{"sonnet-5.5 low", ClaudeSonnet5Dot5, "low", "low", false},
+		{"sonnet-5.5 medium", ClaudeSonnet5Dot5, "medium", "medium", false},
+		{"sonnet-5.5 high", ClaudeSonnet5Dot5, "high", "high", false},
+		{"sonnet-5.5 xhigh", ClaudeSonnet5Dot5, "xhigh", "xhigh", false},
+		{"sonnet-5.5 max", ClaudeSonnet5Dot5, "max", "max", false},
+		{"sonnet-5.5 none", ClaudeSonnet5Dot5, "none", "", true},
+		{"haiku-5.5 low", ClaudeHaiku5Dot5, "low", "low", false},
+		{"haiku-5.5 medium", ClaudeHaiku5Dot5, "medium", "medium", false},
+		{"haiku-5.5 high", ClaudeHaiku5Dot5, "high", "high", false},
+		{"haiku-5.5 xhigh", ClaudeHaiku5Dot5, "xhigh", "xhigh", false},
+		{"haiku-5.5 max", ClaudeHaiku5Dot5, "max", "max", false},
+		{"haiku-5.5 none", ClaudeHaiku5Dot5, "none", "", true},
 
 		// Claude 4.6: unsupported levels are dropped with warning.
 		{"opus-4.6 none", ClaudeOpus4Dot6, "none", "", true},

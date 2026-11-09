@@ -88,6 +88,12 @@ type emacsHandler struct {
 	// literal character to insert.
 	pendingQuotedInsert bool
 	quotedInsertCount   int
+	// markActive is GNU transient-mark-mode's active region: setting the mark
+	// activates it, and C-g, M-w or any command that edits the buffer
+	// deactivates it. Commands that act on an active region only (M-;) fall
+	// back to point's line otherwise, while C-w and M-w use the mark either
+	// way, as in GNU.
+	markActive bool
 }
 
 // NewHandler returns a emacs, simple-to-use text.Handler. indentTabspaces
@@ -188,6 +194,7 @@ func (h *emacsHandler) setMarkLocation() bool {
 	locs = append(locs, h.newMarkLocation(pos))
 	h.cursor.SetLocationList(textapi.LocationPriorityInfo, emacsMarkLocationListID,
 		text.LocationSlice(locs))
+	h.markActive = true
 	return true
 }
 
@@ -221,6 +228,7 @@ func (h *emacsHandler) markLocation() (textapi.Location, bool) {
 
 func (h *emacsHandler) clearMarkLocation() bool {
 	h.cursor.SetLocationList(textapi.LocationPriorityInfo, emacsMarkLocationListID, nil)
+	h.markActive = false
 	return true
 }
 
@@ -229,6 +237,7 @@ func (h *emacsHandler) popMarkLocation() bool {
 	if len(locs) == 0 {
 		return false
 	}
+	h.markActive = false
 	locs = locs[:len(locs)-1]
 	if len(locs) == 0 {
 		return h.clearMarkLocation()
@@ -295,6 +304,7 @@ func (h *emacsHandler) endOrCallMacro() bool {
 // for an explicit mark, matching GNU shift-select-mode where shifted motion
 // activates the region.
 func (h *emacsHandler) copyRegion() bool {
+	h.markActive = false
 	point := h.cursor.CursorAtScroll()
 	if _, _, ok := h.cursor.SelectionBounds(); ok {
 		if _, err := h.cursor.CopySelection(
@@ -319,6 +329,40 @@ func (h *emacsHandler) copyRegion() bool {
 	}
 	h.cursor.MoveToScroll(point)
 	return true
+}
+
+// commentDWIM toggles line comments on the lines of a shift-selection or of
+// the active mark-to-point region, like GNU comment-or-uncomment-region, and
+// on point's line otherwise. A region ending at the start of a line leaves
+// that line alone, as comment-region does.
+func (h *emacsHandler) commentDWIM() bool {
+	if _, selected := h.cursor.SelectionMode(); selected {
+		// A buffer change deactivates the region in GNU Emacs.
+		handled := h.cursor.ToggleLineComment()
+		if handled {
+			h.cursor.Unselect()
+		}
+		return handled
+	}
+	if !h.markActive {
+		return h.cursor.ToggleLineComment()
+	}
+	loc, ok := h.markLocation()
+	if !ok {
+		return h.cursor.ToggleLineComment()
+	}
+	// The mark does not follow edits made outside the keymap, so it can sit
+	// past the end of a buffer that has since shrunk.
+	mark, point := h.clampPoint(loc.From), h.clampPoint(h.cursor.CursorAtScroll())
+	if mark == point {
+		return h.cursor.ToggleLineComment()
+	}
+	if !h.cursor.SelectSpan(mark, point) {
+		return false
+	}
+	handled := h.cursor.ToggleLineComment()
+	h.cursor.Unselect()
+	return handled
 }
 
 var sexpOpeners = map[rune]struct{}{'(': {}, '[': {}, '{': {}}
@@ -653,6 +697,21 @@ func (h *emacsHandler) startGotoLine() {
 func (h *emacsHandler) Handle(ev term.Event) (exit, handled bool) {
 	ctx := context.Background()
 
+	// A buttonless motion, a hover or the pointer leaving the window, is not
+	// a command in GNU Emacs: it must not break the kill, yank-pop, undo or
+	// amalgamation chains, nor drop a pending cursor position.
+	if ev.Type == term.EventMouse && ev.Key == 0 {
+		term.SetPointerShape(ev, term.PointerText)
+		return h.mouse.Handle(ev)
+	}
+
+	version := h.buf.Version()
+	defer func() {
+		if h.buf.Version() != version {
+			h.markActive = false
+		}
+	}()
+
 	// Track whether the current event is a paste-related action.
 	// Reset lastPaste at the end unless the handler explicitly sets it.
 	pastedThisTurn := false
@@ -676,6 +735,7 @@ func (h *emacsHandler) Handle(ev term.Event) (exit, handled bool) {
 		// intervening command in GNU Emacs.
 		h.closeUndoRun()
 		h.breakUndoSequence()
+		term.SetPointerShape(ev, term.PointerText)
 		return h.mouse.Handle(ev)
 	case term.EventPasteStart:
 		h.closeUndoRun()
@@ -895,8 +955,10 @@ func (h *emacsHandler) dispatchKey(
 		switch ev.Key {
 		case term.KeyArrowDown:
 			handled = h.duplicateLine(false /* down */)
+			return
 		case term.KeyArrowUp:
 			handled = h.duplicateLine(true /* up */)
+			return
 		}
 	// <alt> is authentic Emacs Meta (Option on macOS reaches the GUI as
 	// ModAlt). The editor owns the real M- editing chords here.
@@ -904,8 +966,10 @@ func (h *emacsHandler) dispatchKey(
 		switch ev.Key {
 		case term.KeyArrowDown:
 			handled = h.moveLine(false /* down */)
+			return
 		case term.KeyArrowUp:
 			handled = h.moveLine(true /* up */)
+			return
 		case term.KeyArrowLeft:
 			handled = h.moveBackwardWord()
 		case term.KeyArrowRight:
@@ -979,8 +1043,8 @@ func (h *emacsHandler) dispatchKey(
 				handled = h.capitalizeWord()
 				return
 			case ';':
-				// M-;: comment-dwim (toggle line comment).
-				handled = h.cursor.ToggleLineComment()
+				// M-;: comment-dwim (toggle line comments).
+				handled = h.commentDWIM()
 			case 'y':
 				// M-y: yank-pop (replace the last yank with an older kill).
 				if handled = h.pasteFromHistory(); handled {
@@ -1207,7 +1271,7 @@ func (h *emacsHandler) dispatchKey(
 			return
 		case term.KeyBackspace:
 			// C-S-DEL: kill-whole-line.
-			handled = h.killWholeLine()
+			handled = h.killWholeLine(1)
 			return
 		}
 		switch ev.Ch {
@@ -1478,77 +1542,136 @@ func (h *emacsHandler) LocationLists() []text.LocationSet {
 	return h.cursor.LocationLists()
 }
 
-func (h *emacsHandler) moveLine(up bool) (handled bool) {
-	// Moving past the buffer edge would scramble line order rather than
-	// swap; the boundary is a no-op.
-	lo := h.cursor.CursorAtScroll()
-	hi := lo
-	if from, to, ok := h.cursor.SelectionBounds(); ok {
-		lo, hi = sortBounds(from, to)
-	}
-	if up && lo.Y == 0 {
+// moveLine moves the line point is on, or the lines a selection covers,
+// past the line above or below, carrying point and the selection along.
+// GNU binds nothing here, so it behaves like the standard editor's
+// VS Code-style move. The kill ring is left alone, and the first or last
+// line goes nowhere.
+func (h *emacsHandler) moveLine(up bool) bool {
+	start, end, ok := h.lineSpan()
+	if !ok || (up && start == 0) || (!up && end == h.cursor.View().Rows()-1) {
 		return false
 	}
-	if !up && hi.Y >= h.cursor.View().Rows()-1 {
-		return false
-	}
-	if _, ok := h.cursor.SelectionMode(); !ok {
-		if !h.cursor.SelectLine() {
-			return
-		}
-	}
-	handled, _ = h.cursor.CopySelectionNoUnselect(
-		clipboard.DefaultRegisterID, h.clipboard)
-	if !handled {
-		return
-	}
-	h.cursor.DeleteSelection()
+	dy := 1
 	if up {
-		h.cursor.MoveUp()
-	} else {
-		h.cursor.MoveDown()
+		dy = -1
 	}
-	h.cursor.MoveStartLine()
-	paste, err := h.clipboard.Paste(clipboard.DefaultRegisterID)
-	if err != nil {
-		h.log(log.ErrorLevel, "clipboard paste: %v", err)
-	} else {
-		str := paste.Text
-		curr := h.cursor.CursorAtScroll()
-		h.cursor.Paste(str, text.StandardSelection, false)
-		if up {
-			curr.Y--
-		}
-		h.cursor.MoveToScroll(curr)
+	// Reading text goes through a selection, so take the one to carry first.
+	restore := h.shiftSelection(dy)
+	block := h.linesText(start, end)
+	from := term.Coordinates{Y: start}
+	to := h.lineEnd(end + 1)
+	swapped := h.linesText(end+1, end+1) + "\n" + block
+	if up {
+		from = term.Coordinates{Y: start - 1}
+		to = h.lineEnd(end)
+		swapped = block + "\n" + h.linesText(start-1, start-1)
 	}
-	return
+	h.replaceText(from, to, swapped)
+	restore()
+	return true
 }
 
-func (h *emacsHandler) duplicateLine(up bool) (handled bool) {
-	if _, ok := h.cursor.SelectionMode(); !ok {
-		if !h.cursor.SelectLine() {
+// duplicateLine repeats the line point is on, or the lines a selection
+// covers, below themselves; duplicating down carries point and the
+// selection to the copy. Like moveLine it follows the standard editor and
+// leaves the kill ring alone.
+func (h *emacsHandler) duplicateLine(up bool) bool {
+	start, end, ok := h.lineSpan()
+	if !ok {
+		return false
+	}
+	dy := end - start + 1
+	if up {
+		dy = 0
+	}
+	restore := h.shiftSelection(dy)
+	eol := h.lineEnd(end)
+	h.replaceText(eol, eol, "\n"+h.linesText(start, end))
+	restore()
+	return true
+}
+
+// lineSpan is the range of lines a line command acts on: point's line, or
+// every line a selection covers except a last one it only reaches the
+// start of.
+func (h *emacsHandler) lineSpan() (start, end int, ok bool) {
+	rows := h.cursor.View().Rows()
+	if rows == 0 {
+		return 0, 0, false
+	}
+	point := h.clampPoint(h.cursor.CursorAtScroll())
+	mode, selected := h.cursor.SelectionMode()
+	from, to, bounded := h.cursor.SelectionBounds()
+	if !selected || !bounded {
+		return point.Y, point.Y, true
+	}
+	from, to = sortBounds(h.clampPoint(from), h.clampPoint(to))
+	start, end = from.Y, to.Y
+	if mode != text.LineSelection && end > start && to.X == 0 {
+		end--
+	}
+	return start, end, true
+}
+
+// shiftSelection returns a function that puts point and the selection, as
+// they are now, back dy lines lower.
+func (h *emacsHandler) shiftSelection(dy int) func() {
+	point := h.clampPoint(h.cursor.CursorAtScroll())
+	mode, selected := h.cursor.SelectionMode()
+	anchor, head, bounded := h.cursor.SelectionBounds()
+	shift := func(pos term.Coordinates) term.Coordinates {
+		pos.Y += dy
+		return pos
+	}
+	return func() {
+		h.cursor.Unselect()
+		if !selected || !bounded {
+			h.cursor.MoveToScroll(shift(point))
 			return
 		}
+		h.cursor.MoveToScroll(shift(anchor))
+		switch mode {
+		case text.LineSelection:
+			h.cursor.SelectLine()
+		case text.BlockSelection:
+			h.cursor.SelectBlock()
+		default:
+			h.cursor.Select()
+		}
+		h.cursor.MoveToScroll(shift(head))
 	}
-	handled, _ = h.cursor.CopySelection(
-		clipboard.DefaultRegisterID, h.clipboard)
-	if !handled {
-		return
-	}
-	if !up {
-		h.cursor.MoveDown()
-	}
-	h.cursor.MoveStartLine()
-	paste, err := h.clipboard.Paste(clipboard.DefaultRegisterID)
-	if err != nil {
-		h.log(log.ErrorLevel, "clipboard paste: %v", err)
+}
+
+// replaceText replaces [from, to) with s, leaving point after s and no
+// selection.
+func (h *emacsHandler) replaceText(from, to term.Coordinates, s string) {
+	h.cursor.Unselect()
+	if from == to || !h.cursor.SelectRange(from, to) {
+		h.cursor.MoveToScroll(from)
 	} else {
-		str := paste.Text
-		curr := h.cursor.CursorAtScroll()
-		h.cursor.Paste(str, text.StandardSelection, false)
-		h.cursor.MoveToScroll(curr)
+		h.cursor.DeleteSelection()
 	}
-	return
+	if s != "" {
+		h.cursor.InsertString(s)
+	}
+}
+
+func (h *emacsHandler) clampPoint(pos term.Coordinates) term.Coordinates {
+	view := h.cursor.View()
+	pos.Y = max(0, min(pos.Y, view.Rows()-1))
+	pos.X = max(0, min(pos.X, view.Columns(pos.Y)))
+	return pos
+}
+
+func (h *emacsHandler) lineEnd(y int) term.Coordinates {
+	return term.Coordinates{X: h.cursor.View().Columns(y), Y: y}
+}
+
+// linesText is lines start through end joined by line breaks.
+func (h *emacsHandler) linesText(start, end int) string {
+	s, _ := h.rangeText(term.Coordinates{Y: start}, h.lineEnd(end))
+	return s
 }
 
 // pasteFromHistory implements yank-pop (M-y): it replaces the text of the

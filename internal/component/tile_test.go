@@ -487,6 +487,13 @@ func refuseFix(ch rune, size int) tileStep {
 	}
 }
 
+func defaultTile(ch rune, size int) tileStep {
+	return func(f *tileFixture) {
+		assert.True(f.t, f.tiles[ch].setDefaultSize(f.axis.dir, size),
+			"default %c to %d", ch, size)
+	}
+}
+
 func fixTileAcross(ch rune, size int) tileStep {
 	return func(f *tileFixture) {
 		assert.True(f.t, f.axis.crossFix(f.tiles[ch], size), "fix %c across to %d", ch, size)
@@ -682,6 +689,73 @@ EEEEEEEEEEEEEEESSSSS`},
 				{resizeTree(1), "\nR"},
 				// The fixed sizes were only squeezed, not forgotten.
 				{resizeTree(20), "\nLLLLEEEEEEEEEEERRRRR"},
+			},
+		},
+		{
+			name: "setting a default applies it",
+			steps: []step{
+				{appendTile('R'), "\nEEEEEEEEEERRRRRRRRRR"},
+				{defaultTile('R', 5), "\nEEEEEEEEEEEEEEERRRRR"},
+				{fixTile('R', 8), "\nEEEEEEEEEEEERRRRRRRR"},
+				// Setting it again undoes any fix since.
+				{defaultTile('R', 5), "\nEEEEEEEEEEEEEEERRRRR"},
+			},
+		},
+		{
+			name: "resetting restores the default",
+			steps: []step{
+				{appendTile('R'), "\nEEEEEEEEEERRRRRRRRRR"},
+				{defaultTile('R', 5), "\nEEEEEEEEEEEEEEERRRRR"},
+				{fixTile('R', 8), "\nEEEEEEEEEEEERRRRRRRR"},
+				{fixTile('R', 0), "\nEEEEEEEEEEEEEEERRRRR"},
+			},
+		},
+		{
+			name: "clearing the default resets to an even share",
+			steps: []step{
+				{appendTile('R'), "\nEEEEEEEEEERRRRRRRRRR"},
+				{defaultTile('R', 5), "\nEEEEEEEEEEEEEEERRRRR"},
+				{defaultTile('R', 0), "\nEEEEEEEEEERRRRRRRRRR"},
+				{fixTile('R', 8), "\nEEEEEEEEEEEERRRRRRRR"},
+				{fixTile('R', 0), "\nEEEEEEEEEERRRRRRRRRR"},
+			},
+		},
+		{
+			name: "a default that does not fit resets to an even share",
+			steps: []step{
+				{appendTile('R'), "\nEEEEEEEEEERRRRRRRRRR"},
+				{defaultTile('R', 5), "\nEEEEEEEEEEEEEEERRRRR"},
+				{resizeTree(6), "\nERRRRR"},
+				{fixTile('R', 0), "\nEEERRR"},
+				// The default is kept for the next reset.
+				{resizeTree(20), "\nEEEEEEEEEERRRRRRRRRR"},
+				{fixTile('R', 0), "\nEEEEEEEEEEEEEEERRRRR"},
+			},
+		},
+		{
+			name:  "the default survives splitting across and closing the split",
+			cross: 2,
+			steps: []step{
+				{appendTile('R'), "\nEEEEEEEEEERRRRRRRRRR\nEEEEEEEEEERRRRRRRRRR"},
+				{defaultTile('R', 5), "\nEEEEEEEEEEEEEEERRRRR\nEEEEEEEEEEEEEEERRRRR"},
+				{splitAcross('R', 'S'), "\nEEEEEEEEEEEEEEERRRRR\nEEEEEEEEEEEEEEESSSSS"},
+				{fixTile('S', 8), "\nEEEEEEEEEEEERRRRRRRR\nEEEEEEEEEEEESSSSSSSS"},
+				{fixTile('R', 0), "\nEEEEEEEEEEEEEEERRRRR\nEEEEEEEEEEEEEEESSSSS"},
+				{fixTile('S', 8), "\nEEEEEEEEEEEERRRRRRRR\nEEEEEEEEEEEESSSSSSSS"},
+				{closeTile('S'), "\nEEEEEEEEEEEERRRRRRRR\nEEEEEEEEEEEERRRRRRRR"},
+				{fixTile('R', 0), "\nEEEEEEEEEEEEEEERRRRR\nEEEEEEEEEEEEEEERRRRR"},
+			},
+		},
+		{
+			name: "a tile spanning the tree has no default",
+			steps: []step{
+				{refuseFix('E', 0), "\nEEEEEEEEEEEEEEEEEEEE"},
+				{func(f *tileFixture) {
+					assert.False(f.t, f.tiles['E'].setDefaultSize(f.axis.dir, 5))
+				}, "\nEEEEEEEEEEEEEEEEEEEE"},
+				{appendTile('R'), "\nEEEEEEEEEERRRRRRRRRR"},
+				{fixTile('E', 12), "\nEEEEEEEEEEEERRRRRRRR"},
+				{fixTile('E', 0), "\nEEEEEEEEEERRRRRRRRRR"},
 			},
 		},
 	}

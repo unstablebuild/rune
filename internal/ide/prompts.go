@@ -31,6 +31,8 @@ import (
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/ide/idehistory"
 	"unstable.build/rune/internal/ide/idetask"
+	"unstable.build/rune/internal/ide/regexsearch"
+	"unstable.build/rune/internal/ide/semanticsearch"
 	"unstable.build/rune/internal/workspace"
 )
 
@@ -96,7 +98,7 @@ func (h *openRestorePromptHandler) OnSelect(idx int, option string) {
 
 	switch option {
 	case h.restoreCwdOption:
-		err = h.wm.restorePreviousSession(h.ex, h.state)
+		err = h.wm.restorePreviousSession(h.ex, h.workspaceURI, h.state)
 	case h.noRestoreOption:
 		err = h.wm.state.ClearWorkspaceState(
 			context.Background(), h.workspaceURI)
@@ -232,7 +234,7 @@ func (h *createWorkspaceHandler) OnSelect(
 		// be using the wrong scheme (or on the wrong host). Recursively,
 		// attempt to create a workspace on some parent directory of path,
 		// and then proceed to MkdirAll from that root.
-		parent, err := h.createParentWorkspace(h.uri)
+		parent, parentURI, err := h.createParentWorkspace(h.uri)
 		if err != nil {
 			_, _ = h.ex.Browser().Notify(browserapi.LevelError,
 				"create parent workspace: %v", err.Error())
@@ -240,6 +242,11 @@ func (h *createWorkspaceHandler) OnSelect(
 			return
 		}
 		err = parent.MkdirAll(path, 0755)
+		if w, last := h.wm.workspace.ReleaseWorkspace(parentURI); last {
+			if closeErr := w.Close(); closeErr != nil {
+				log.Warnf("close parent workspace %s: %v", parentURI, closeErr)
+			}
+		}
 		if err != nil {
 			_, _ = h.ex.Browser().Notify(browserapi.LevelError, "mkdirall: %v", err)
 			log.Errorf("mkdirall %s: %v", path, err)
@@ -265,17 +272,17 @@ func (h *createWorkspaceHandler) OnClose() error {
 
 func (h *createWorkspaceHandler) createParentWorkspace(
 	uri workspaceapi.URI,
-) (workspace.Workspace, error) {
+) (workspace.Workspace, workspaceapi.URI, error) {
 	parent := workspaceapi.Dir(uri)
 	if parent.Equal(uri) {
-		return nil, errors.New("reached root dir")
+		return nil, workspaceapi.URI{}, errors.New("reached root dir")
 	}
 
-	cwd, err := h.wm.workspace.AddWorkspace(context.Background(), uri)
+	cwd, err := h.wm.workspace.AcquireWorkspace(context.Background(), uri)
 	if err != nil && errors.Is(err, os.ErrNotExist) {
 		return h.createParentWorkspace(parent)
 	}
-	return cwd, err
+	return cwd, uri, err
 }
 
 const (
@@ -514,14 +521,16 @@ func (e *ex) ShowFallbackPrompt(_ context.Context, command string, _ ...string) 
 }
 
 // markHome flags this ex as the home/empty workspace and routes every
-// rune-agent command through the fallback prompt. The home workspace starts
-// no extensions, so without these entries the chat* commands would surface a
-// raw "unknown command" error instead of the "open a workspace" message.
+// rune-agent command, and the workspace searches, through the fallback
+// prompt. The home workspace starts no extensions and has no search index,
+// so without these entries those commands would surface a raw "unknown
+// command" error instead of the "open a workspace" message.
 func (e *ex) markHome() {
 	e.home = true
 	for _, cmd := range []string{
 		"chateffort", "chatmaxtokens", "chatskill", "chatmodel",
 		"chatclear", "chatcompact", "chatfork", "chatexport", "chatlog",
+		semanticsearch.Name, regexsearch.Name,
 	} {
 		e.config.CommandFallbacks[cmd] = e
 	}

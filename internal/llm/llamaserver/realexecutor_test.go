@@ -18,6 +18,7 @@ package llamaserver_test
 
 import (
 	"context"
+	"errors"
 	"os/exec"
 	"sync"
 	"syscall"
@@ -104,6 +105,10 @@ func (e *realExecutor) Signal(pid workspaceapi.Pid, sig syscall.Signal) error {
 		return nil
 	}
 	return c.Process.Signal(sig)
+}
+
+func (*realExecutor) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
 }
 
 func (e *realExecutor) Close() error { return nil }

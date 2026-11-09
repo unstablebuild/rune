@@ -87,7 +87,7 @@ func (e *lockedEditor) Edit(
 
 type fileExplorerHost interface {
 	Prompt(message string, options []string, bindings []term.KeyComb, promptHandler handler.PromptHandler) browser.Window
-	SetWindowWidth(win browser.Window, width int) bool
+	SetWindowDefaultWidth(win browser.Window, width int) bool
 	SetFocus(win browser.Window) (browser.Window, error)
 	Focus() (browser.Window, error)
 	OpenFile(uri workspaceapi.URI, win browser.Window) error
@@ -108,6 +108,10 @@ type fileExplorerHandler struct {
 
 	win    browser.Window
 	target browser.Window
+
+	// syncedWidth is the default width last applied to win, so a sync
+	// that would not change it leaves a manually resized window alone.
+	syncedWidth int
 
 	cfg fileExplorerConfig
 
@@ -165,6 +169,7 @@ func newFileExplorerHandler(
 
 func (h *fileExplorerHandler) SetWindow(win browser.Window) {
 	h.win = win
+	h.syncedWidth = 0
 }
 
 func (h *fileExplorerHandler) SetTargetWindow(win browser.Window) {
@@ -172,6 +177,11 @@ func (h *fileExplorerHandler) SetTargetWindow(win browser.Window) {
 }
 
 func (h *fileExplorerHandler) Handle(ev term.Event) (exit, handled bool) {
+	if ev.Type == term.EventMouse {
+		// After any forwarding, so the editor's text pointer never shows:
+		// rows are clicked rather than selected.
+		defer term.SetPointerShape(ev, h.pointerShapeAt(ev.MouseY))
+	}
 	if h.readOnly && ev.Type == term.EventKey &&
 		ev.Key == h.cfg.EditKey.Key && ev.Ch == h.cfg.EditKey.Ch &&
 		ev.Mod == h.cfg.EditKey.Mod {
@@ -482,9 +492,7 @@ func (h *fileExplorerHandler) enterAtCursor() bool {
 // ExpandNodeAt. Cursor placement bypasses the editor's mouse handler
 // so no visual-mode selection is started.
 func (h *fileExplorerHandler) enterAtClick(windowY int) bool {
-	winCur, _, _ := h.ed.Cursor()
-	scrollCur := h.ed.CursorAtScroll()
-	pos := term.Coordinates{Y: max(0, windowY+(scrollCur.Y-winCur.Y))}
+	pos := h.scrollPos(windowY)
 	// Moving the cursor with the editor's autoCenter on would recenter
 	// the viewport, jerking the tree out from under the pointer. The
 	// clicked row is already visible, so preserve the scroll offset
@@ -494,6 +502,24 @@ func (h *fileExplorerHandler) enterAtClick(windowY int) bool {
 	handled := h.enterAt(pos)
 	h.restoreOffset(offset)
 	return handled
+}
+
+// scrollPos translates a window row to the start of its buffer row.
+func (h *fileExplorerHandler) scrollPos(windowY int) term.Coordinates {
+	winCur, _, _ := h.ed.Cursor()
+	scrollCur := h.ed.CursorAtScroll()
+	return term.Coordinates{Y: max(0, windowY+(scrollCur.Y-winCur.Y))}
+}
+
+// pointerShapeAt returns the link pointer over the rows a click opens or
+// toggles, and the default pointer elsewhere.
+func (h *fileExplorerHandler) pointerShapeAt(windowY int) term.PointerShape {
+	if windowY < h.contentHeight() {
+		if _, known := h.comp.NodeAt(h.scrollPos(windowY)); known {
+			return term.PointerLink
+		}
+	}
+	return term.PointerDefault
 }
 
 // restoreOffset seeks the editor back to a previously captured vertical
@@ -558,7 +584,7 @@ func (h *fileExplorerHandler) flush() error {
 	if len(cs.Operations) == 0 {
 		return nil
 	}
-	return h.openApplyPrompt(fileexplorercomp.OrderOperations(cs.Operations))
+	return h.openApplyPrompt(cs.Operations)
 }
 
 func (h *fileExplorerHandler) forceFlush() error {
@@ -707,7 +733,12 @@ func (h *fileExplorerHandler) syncWidth() {
 	if h.host.FrameEnabled() {
 		width += 2
 	}
-	_ = h.host.SetWindowWidth(h.win, width)
+	if width == h.syncedWidth {
+		return
+	}
+	if h.host.SetWindowDefaultWidth(h.win, width) {
+		h.syncedWidth = width
+	}
 }
 
 func (h *fileExplorerHandler) focusTarget() {
@@ -759,8 +790,8 @@ func (h exFileExplorerHost) Prompt(
 	return h.ex.comp.Prompt(message, options, bindings, promptHandler)
 }
 
-func (h exFileExplorerHost) SetWindowWidth(win browser.Window, width int) bool {
-	return h.ex.comp.SetWindowWidth(win, width)
+func (h exFileExplorerHost) SetWindowDefaultWidth(win browser.Window, width int) bool {
+	return h.ex.comp.SetWindowDefaultWidth(win, width)
 }
 
 func (h exFileExplorerHost) SetFocus(win browser.Window) (browser.Window, error) {

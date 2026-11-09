@@ -70,6 +70,7 @@ type commandAdapter struct {
 	storage      storageapi.Service
 	currentModel string
 	auditStore   *audit.Store
+	modelToolsFn func(llmapi.Service, llmapi.ModelEntry)
 
 	// Skill resolution. When a /name command matches a skill, the
 	// formatted skill content is returned as UserMessage.
@@ -285,6 +286,8 @@ func rejectPositionalID(name string, args []string) error {
 // in the user turn, to invoke the skill tool. Without this cue the
 // model frequently fails to notice the system-message skill body and
 // either ignores the command or falls back to request_skill.
+// Agent skills get no hint: the message goes to the sub-agent running
+// the skill, whose system prompt the skill already is.
 func formatSkillMessage(skill skills.Skill, args string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "<command-message>%s</command-message>\n", skill.Name)
@@ -293,11 +296,13 @@ func formatSkillMessage(skill skills.Skill, args string) string {
 		b.WriteString("\n")
 		b.WriteString(args)
 	}
-	fmt.Fprintf(
-		&b,
-		"\n<command-hint>Call the skill tool with name=%q to load and run this skill.</command-hint>",
-		skill.Name,
-	)
+	if skill.Type != "agent" {
+		fmt.Fprintf(
+			&b,
+			"\n<command-hint>Call the skill tool with name=%q to load and run this skill.</command-hint>",
+			skill.Name,
+		)
+	}
 	return b.String()
 }
 
@@ -380,6 +385,9 @@ func (a *commandAdapter) handleModel(
 	svc := a.llmSvc
 	if a.auditStore != nil {
 		svc = audit.NewService(svc, a.auditStore, entry)
+	}
+	if a.modelToolsFn != nil {
+		a.modelToolsFn(svc, entry)
 	}
 	a.agent.SwapService(svc, entry)
 	a.syncStatusBarModel()
@@ -672,10 +680,7 @@ func (a *commandAdapter) openReview(
 			fmt.Errorf("open review editor: %w", err)
 	}
 
-	var (
-		win  browserapi.Window
-		once sync.Once
-	)
+	var once sync.Once
 	bhandler := browserapi.FuncHandler(
 		a.reviewChangesKeyHandler(edh),
 		func() (err error) {
@@ -688,13 +693,13 @@ func (a *commandAdapter) openReview(
 						Content: edited,
 					})
 				}
-				err = errors.Join(edh.Close(), a.wm.CloseWindow(win))
+				err = edh.Close()
 			})
 			return err
 		})
 	floating := browserapi.FuncFloating(bhandler, edh.Dimensions)
 
-	win, err = a.wm.Floating(floating, browserapi.FloatingConfig{
+	_, err = a.wm.Floating(floating, browserapi.FloatingConfig{
 		Alignment: component.AlignmentCentered,
 	})
 	if err != nil {
@@ -765,16 +770,11 @@ func (a *commandAdapter) openCommandFloating(items []component.Responsive) {
 		return
 	})
 
-	var win browserapi.Window
-	bhandler := browserapi.FuncHandler(scrollHandler, func() error {
-		return a.wm.CloseWindow(win)
-	})
-	floating := browserapi.FuncFloating(bhandler, func() (int, int) {
+	floating := browserapi.FuncFloating(browserapi.NopHandler(scrollHandler), func() (int, int) {
 		h := list.Height(floatingWidth)
 		return floatingWidth, min(h, floatingHeight)
 	})
-	var err error
-	win, err = a.wm.Floating(floating, browserapi.FloatingConfig{
+	_, err := a.wm.Floating(floating, browserapi.FloatingConfig{
 		Alignment: component.AlignmentCentered,
 	})
 	if err != nil {
@@ -784,14 +784,8 @@ func (a *commandAdapter) openCommandFloating(items []component.Responsive) {
 
 func (a *commandAdapter) openMarkdownFloating(md *markdown.Component) {
 	mdh := mdhandler.New(md)
-
-	var win browserapi.Window
-	bhandler := browserapi.FuncHandler(mdh, func() error {
-		return a.wm.CloseWindow(win)
-	})
-	floating := browserapi.FuncFloating(bhandler, mdh.Dimensions)
-	var err error
-	win, err = a.wm.Floating(floating, browserapi.FloatingConfig{
+	floating := browserapi.FuncFloating(browserapi.FuncHandler(mdh, mdh.Close), mdh.Dimensions)
+	_, err := a.wm.Floating(floating, browserapi.FloatingConfig{
 		Alignment: component.AlignmentCentered,
 	})
 	if err != nil {

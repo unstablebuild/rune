@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"sync"
 
+	log "github.com/sirupsen/logrus"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"unstable.build/rune/internal/cell"
 )
@@ -49,35 +50,53 @@ func newMulti(
 	return &multi{parentCtx: ctx, Workspace: def, defURI: defURI, manager: manager}
 }
 
+// Load runs LoaderFor, so like it Load must be called on the event loop.
 func (m multi) Load(
 	file workspaceapi.URI, buf *cell.Buffer, swapDir workspaceapi.URI, readOnly bool,
 ) (FlusherCloser, error) {
-	is, err := IsWorkspaceURI(m.Workspace, file)
-	if err != nil {
-		return nil, fmt.Errorf("workspaceapi.URI: %s", err)
-	}
-	if !is {
-		return m.loadExtraneous(file, buf, swapDir, readOnly)
-	}
-	return m.Workspace.Load(file, buf, swapDir, readOnly)
+	return m.loadThrough(file, func(l FileLoader) (FlusherCloser, error) {
+		return l.Load(buf, swapDir, readOnly)
+	})
 }
 
+// Recover runs LoaderFor, so like it Recover must be called on the event
+// loop.
 func (m multi) Recover(
 	file, swapFilePath workspaceapi.URI, buf *cell.Buffer, force bool,
 ) (FlusherCloser, error) {
+	return m.loadThrough(file, func(l FileLoader) (FlusherCloser, error) {
+		return l.Recover(swapFilePath, buf, force)
+	})
+}
+
+func (m multi) loadThrough(
+	file workspaceapi.URI, load func(FileLoader) (FlusherCloser, error),
+) (FlusherCloser, error) {
+	l, err := m.LoaderFor(file)
+	if err != nil {
+		return nil, err
+	}
+	fc, err := load(l)
+	if err != nil {
+		if relErr := l.Release(); relErr != nil {
+			log.Warnf("release workspace of %s: %v", file, relErr)
+		}
+		return nil, err
+	}
+	return fc, nil
+}
+
+// LoaderFor loads a file outside the default workspace through the
+// workspace of the file's directory, unless another workspace that
+// manager reports owns the file: it then returns ErrOpenInOtherWorkspace.
+func (m multi) LoaderFor(file workspaceapi.URI) (FileLoader, error) {
 	is, err := IsWorkspaceURI(m.Workspace, file)
 	if err != nil {
 		return nil, fmt.Errorf("workspaceapi.URI: %s", err)
 	}
-	if !is {
-		return m.recoverExtraneous(file, swapFilePath, buf, force)
+	if is {
+		return m.Workspace.LoaderFor(file)
 	}
-	return m.Workspace.Recover(file, swapFilePath, buf, force)
-}
-
-func (m multi) loadExtraneous(
-	file workspaceapi.URI, buf *cell.Buffer, swapDir workspaceapi.URI, readOnly bool,
-) (FlusherCloser, error) {
 	_, ok, err := m.manager.Workspace(file)
 	if err != nil {
 		return nil, err
@@ -86,43 +105,59 @@ func (m multi) loadExtraneous(
 		return nil, ErrOpenInOtherWorkspace
 	}
 	dir := workspaceapi.Dir(file)
-	w, err := m.manager.AddWorkspace(m.parentCtx, dir)
+	w, err := m.manager.AcquireWorkspace(m.parentCtx, dir)
 	if err != nil {
 		return nil, err
 	}
-	fc, err := w.Load(file, buf, swapDir, readOnly)
-	if err != nil {
-		return nil, err
-	}
-	return m.wrapExtraneous(dir, fc), nil
+	return extraneousLoader{w: w, manager: m.manager, dir: dir, file: file}, nil
 }
 
-func (m multi) recoverExtraneous(
-	file, swapFilePath workspaceapi.URI, buf *cell.Buffer, force bool,
+// extraneousLoader loads file through w, the workspace of dir, and holds
+// a reference to w that the FlusherCloser of a successful load takes over.
+type extraneousLoader struct {
+	w         Workspace
+	manager   WorkspaceManager
+	dir, file workspaceapi.URI
+}
+
+func (l extraneousLoader) Load(
+	buf *cell.Buffer, swapDir workspaceapi.URI, readOnly bool,
 ) (FlusherCloser, error) {
-	dir := workspaceapi.Dir(file)
-	workspace, err := m.manager.AddWorkspace(m.parentCtx, dir)
+	fc, err := l.w.Load(l.file, buf, swapDir, readOnly)
 	if err != nil {
 		return nil, err
 	}
-	fc, err := workspace.Recover(file, swapFilePath, buf, force)
-	if err != nil {
-		return nil, err
-	}
-	return m.wrapExtraneous(dir, fc), nil
+	return &extraneousCloser{FlusherCloser: fc, manager: l.manager, dir: l.dir}, nil
 }
 
-// wrapExtraneous increments the workspace refcount for dir and
-// returns a FlusherCloser whose Close decrements it exactly once.
-func (m multi) wrapExtraneous(dir workspaceapi.URI, fc FlusherCloser) FlusherCloser {
-	m.manager.IncrementReference(dir)
-	return &extraneousCloser{FlusherCloser: fc, manager: m.manager, dir: dir}
+func (l extraneousLoader) Recover(
+	swapFilePath workspaceapi.URI, buf *cell.Buffer, force bool,
+) (FlusherCloser, error) {
+	fc, err := l.w.Recover(l.file, swapFilePath, buf, force)
+	if err != nil {
+		return nil, err
+	}
+	return &extraneousCloser{FlusherCloser: fc, manager: l.manager, dir: l.dir}, nil
+}
+
+func (l extraneousLoader) Release() error {
+	return releaseWorkspace(l.manager, l.dir)
+}
+
+// releaseWorkspace releases a reference to the workspace registered under
+// uri, and closes the workspace if it was the last.
+func releaseWorkspace(manager WorkspaceManager, uri workspaceapi.URI) error {
+	w, ok := manager.ReleaseWorkspace(uri)
+	if !ok {
+		return nil
+	}
+	return w.Close()
 }
 
 // extraneousCloser wraps a per-file FlusherCloser so its Close
-// also decrements the workspace refcount the file represents.
-// Close is idempotent: a repeated call returns the cached error
-// without decrementing twice, so a tab that runs Close from both
+// also releases the reference to the workspace of the file's
+// directory. Close is idempotent: a repeated call returns the cached
+// error without releasing twice, so a tab that runs Close from both
 // its normal teardown and a shutdown path cannot under-count the
 // workspace.
 type extraneousCloser struct {
@@ -136,7 +171,7 @@ type extraneousCloser struct {
 func (e *extraneousCloser) Close() error {
 	e.closeOne.Do(func() {
 		e.closeErr = e.FlusherCloser.Close()
-		if relErr := e.manager.DecrementReference(e.dir); relErr != nil && e.closeErr == nil {
+		if relErr := releaseWorkspace(e.manager, e.dir); relErr != nil && e.closeErr == nil {
 			e.closeErr = relErr
 		}
 	})

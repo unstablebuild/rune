@@ -23,12 +23,19 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync/atomic"
 	"syscall"
 
+	acp "github.com/coder/acp-go-sdk"
+	"github.com/unstablebuild/rune-go-sdk/api/acpapi/acpstdio"
 	"github.com/unstablebuild/rune-go-sdk/api/extensionapi"
+	"unstable.build/rune/cmd/rune-agent/acpagent"
+	"unstable.build/rune/cmd/rune-agent/agent"
+	"unstable.build/rune/cmd/rune-agent/agent/skills"
+	"unstable.build/rune/cmd/rune-agent/dialogue/dialoguemanager"
 	"unstable.build/rune/cmd/rune-agent/extension"
 	"unstable.build/rune/cmd/rune-agent/headless"
 	"unstable.build/rune/internal/debug"
@@ -50,6 +57,9 @@ func init() {
 func main() {
 	debug.StartPProfOnSignal()
 
+	if len(os.Args) > 1 && os.Args[1] == acpCommand {
+		os.Exit(runACP(os.Args[2:]))
+	}
 	if slices.Contains(os.Args[1:], headlessFlag) {
 		os.Exit(runHeadless(os.Args[1:]))
 	}
@@ -60,6 +70,66 @@ func main() {
 		slog.Error("serve extension", "error", err)
 		os.Exit(1)
 	}
+}
+
+const acpCommand = "acp"
+
+// acpExtensionID keeps the storage of ACP sessions apart from the
+// extension's chats and headless runs.
+const acpExtensionID = "rune-agent-acp"
+
+// runACP serves rune-agent as an ACP agent on stdin and stdout until the
+// client disconnects, and returns the process exit code: 0 the client
+// disconnected or a signal stopped it, 1 it could not start or the
+// connection failed.
+func runACP(args []string) int {
+	// stdout carries the protocol, so nothing else may write to it.
+	stdout := os.Stdout
+	os.Stdout = os.Stderr
+	defer func() { os.Stdout = stdout }()
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	if len(args) > 0 {
+		fmt.Fprintf(os.Stderr, "rune-agent: unexpected arguments %q\nusage: rune-agent acp\n", args)
+		return 1
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	w, err := headless.Connect(acpExtensionID)
+	if err != nil {
+		slog.Error("connect to rune", "error", err)
+		return 1
+	}
+	host := headless.NewHost(ctx, w)
+	store := dialoguemanager.NewStore(host.Storage, filepath.Join(host.DataDir, "acp"))
+	a := acpagent.New(acpagent.Config{
+		Info:  acp.Implementation{Name: "rune-agent", Title: new("Rune Agent"), Version: debug.Tag},
+		LLM:   host.LLM,
+		Store: store,
+		NewAgent: func(_ context.Context, req acpagent.AgentRequest) (*agent.Agent, *skills.SkillRegistry, error) {
+			cwd, err := host.FS.URI(req.Cwd)
+			if err != nil {
+				return nil, nil, fmt.Errorf("resolve cwd %q: %w", req.Cwd, err)
+			}
+			built := host.NewAgent(headless.AgentConfig{
+				Cwd:        cwd,
+				Store:      store,
+				AgentID:    acpExtensionID,
+				SessionKey: req.ID,
+				Model:      req.Model,
+				Prompter:   req.Prompter,
+				Progress:   req.Progress,
+			})
+			return built.Agent, built.Skills, nil
+		},
+	})
+	err = acpstdio.Serve(ctx, a, os.Stdin, stdout)
+	_ = a.Close()
+	if err != nil && ctx.Err() == nil {
+		slog.Error("serve acp", "error", err)
+		return 1
+	}
+	return 0
 }
 
 const headlessFlag = "--headless"

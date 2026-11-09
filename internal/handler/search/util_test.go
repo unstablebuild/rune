@@ -44,7 +44,7 @@ func TestSearch(t *testing.T) {
 			input:    []string{"a.go", "b.go"},
 			search:   "",
 			result:   []string{"a.go", "b.go"},
-			searches: []searchFn{Fuzzy, Contains},
+			searches: []searchFn{Fuzzy, Contains, Equal},
 		},
 		{
 			input:    []string{"a.go", "b.go"},

@@ -20,7 +20,8 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 )
 
-// Nop is a Shader that does nothing.
+// Nop is a Shader that does nothing. It is an [ImageShader] that leaves
+// the pictures drawn as they are.
 func Nop() Shader {
 	return &nop{}
 }
@@ -29,4 +30,8 @@ type nop struct {
 }
 
 func (s nop) Shade(epoch, total int, cells [][]term.Cell) {
+}
+
+func (s nop) ShadeImages(_, _ int, _ [][]term.Cell, images []term.Image) []term.Image {
+	return images
 }

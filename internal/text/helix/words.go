@@ -121,8 +121,18 @@ func docEnd(buf *cell.Buffer) term.Coordinates {
 	return term.Coordinates{Y: buf.Rows()}
 }
 
+// docEOF writes a position at or past docEnd as the end of the last
+// row, the other way the end of the document is written.
+func docEOF(buf *cell.Buffer, pos term.Coordinates) term.Coordinates {
+	if rows := buf.Rows(); rows > 0 && pos.Y >= rows {
+		return term.Coordinates{X: buf.Columns(rows - 1), Y: rows - 1}
+	}
+	return pos
+}
+
 // charAt returns the document character at pos, reporting the line
-// ending for the slot past the last cell of a row.
+// ending for the slot past the last cell of a row. The last row has no
+// line ending: that slot is the end of the document.
 func charAt(buf *cell.Buffer, pos term.Coordinates) (rune, bool) {
 	if pos.Y < 0 || pos.Y >= buf.Rows() || pos.X < 0 {
 		return 0, false
@@ -135,7 +145,7 @@ func charAt(buf *cell.Buffer, pos term.Coordinates) (rune, bool) {
 	switch {
 	case pos.X < len(row):
 		return row[pos.X].Ch, true
-	case pos.X == len(row):
+	case pos.X == len(row) && pos.Y+1 < len(cells):
 		return '\n', true
 	}
 	return 0, false
@@ -153,18 +163,29 @@ func rowString(buf *cell.Buffer, row int) string {
 	return b.String()
 }
 
+// nextPos steps forward one character. ok is false at the end of the
+// document, which the last row's line-ending slot is: the buffer stores
+// no line ending after its last row.
 func nextPos(buf *cell.Buffer, pos term.Coordinates) (term.Coordinates, bool) {
-	if pos.Y < 0 || pos.Y >= buf.Rows() {
+	rows := buf.Rows()
+	if pos.Y < 0 || pos.Y >= rows {
 		return pos, false
 	}
 	if pos.X < buf.Columns(pos.Y) {
 		pos.X++
 		return pos, true
 	}
+	if pos.Y == rows-1 {
+		return pos, false
+	}
 	return term.Coordinates{Y: pos.Y + 1}, true
 }
 
+// prevPos steps back one character. The end of the document is one
+// position however it is written, so stepping back from either form
+// lands on the last character.
 func prevPos(buf *cell.Buffer, pos term.Coordinates) (term.Coordinates, bool) {
+	pos = docEOF(buf, pos)
 	if pos.X > 0 {
 		pos.X--
 		return pos, true
@@ -173,24 +194,6 @@ func prevPos(buf *cell.Buffer, pos term.Coordinates) (term.Coordinates, bool) {
 		return pos, false
 	}
 	return term.Coordinates{X: buf.Columns(pos.Y - 1), Y: pos.Y - 1}, true
-}
-
-// nextCoord is nextPos in cell space: it steps to the next cell the
-// caret can occupy, so the line-ending slot is skipped. ok is false at
-// the end of the buffer.
-func nextCoord(buf *cell.Buffer, pos term.Coordinates) (term.Coordinates, bool) {
-	rows := buf.Rows()
-	if pos.Y < 0 || pos.Y >= rows {
-		return pos, false
-	}
-	if pos.X+1 <= buf.Columns(pos.Y)-1 {
-		pos.X++
-		return pos, true
-	}
-	if pos.Y+1 >= rows {
-		return pos, false
-	}
-	return term.Coordinates{Y: pos.Y + 1}, true
 }
 
 // docPos maps a row-local position onto document space. The cursor
@@ -205,23 +208,6 @@ func docPos(buf *cell.Buffer, pos term.Coordinates) term.Coordinates {
 	return term.Coordinates{Y: pos.Y + 1}
 }
 
-// clampCell maps a document position back onto a real buffer cell, so
-// the line-ending slot and the end of the document resolve to the last
-// cell the caret can occupy.
-func clampCell(buf *cell.Buffer, pos term.Coordinates) term.Coordinates {
-	rows := buf.Rows()
-	if rows == 0 {
-		return term.Coordinates{}
-	}
-	if pos.Y >= rows {
-		pos.Y = rows - 1
-		pos.X = buf.Columns(pos.Y)
-	}
-	pos.Y = max(0, pos.Y)
-	pos.X = max(0, min(pos.X, buf.Columns(pos.Y)-1))
-	return pos
-}
-
 // wordMove is helix-core/src/movement.rs word_move: normalise the range
 // to a one-cell block cursor facing the motion direction, then scan for
 // the target count times.
@@ -232,7 +218,7 @@ func wordMove(
 	if back && head == (term.Coordinates{}) {
 		return anchor, head
 	}
-	if !back && head == docEnd(buf) {
+	if !back && docEOF(buf, head) == docEOF(buf, docEnd(buf)) {
 		return anchor, head
 	}
 

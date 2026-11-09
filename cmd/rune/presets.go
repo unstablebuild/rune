@@ -28,6 +28,7 @@ import (
 
 func renderPreset(
 	editor string, meta keymeta.Meta, telemetry bool, altModifier gui.AltModifier,
+	capsLockEscape bool,
 ) (string, error) {
 	var body, mode string
 	switch editor {
@@ -46,7 +47,7 @@ func renderPreset(
 		return "", fmt.Errorf("meta key %s is not offered for %s on %s",
 			meta, mode, runtime.GOOS)
 	}
-	data := idepreset.Data{Meta: meta, Telemetry: telemetry}
+	data := idepreset.Data{Meta: meta, Telemetry: telemetry, CapsLockEscape: capsLockEscape}
 	switch {
 	case runtime.GOOS == "darwin":
 		data.AltModifier = altModifier.String()

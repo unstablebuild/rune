@@ -33,10 +33,19 @@ extensions:
         flags: dim
       user_msg_background_attr:
         bg: gray
+      # Marks each of your messages in the chat, left of its first line
+      # (nf-fa-arrow_right). Must be a single character; set it to an
+      # empty string to hide it.
+      user_msg_icon: ""
       assistant_msg_attr:
         fg: default
         bg: default
         flags: italic
+      # Columns left beside the chat transcript, split evenly on either
+      # side. A negative value sets the transcript's width instead: -90
+      # keeps it 90 columns wide and centered, filling a narrower tab.
+      # 0 fills the tab.
+      transcript_horizontal_padding: -90
       input_box_attr:
         fg: default
         bg: default
@@ -46,6 +55,31 @@ extensions:
       input_box_frame_attr:
         fg: default
         bg: default
+      # Characters of the composer's border. A graphics table names an
+      # image the GUI draws over each slot's character, as frame charsets
+      # do in rune.star; mode is "replace" (the default) to hide the
+      # character under each image, or "overlay" to keep it showing
+      # through the image's transparent pixels in input_box_frame_attr:
+      #
+      #   graphics:
+      #     mode: replace
+      #     topleft: file:///path/to/topleft.png
+      #     topright: file:///path/to/topright.png
+      #     bottomleft: file:///path/to/bottomleft.png
+      #     bottomright: file:///path/to/bottomright.png
+      #     horizontaltop: file:///path/to/top.png
+      #     horizontalbottom: file:///path/to/bottom.png
+      #     verticalleft: file:///path/to/left.png
+      #     verticalright: file:///path/to/right.png
+      input_box_frame_charset:
+        topleft: "┌"
+        topright: "┐"
+        bottomleft: "└"
+        bottomright: "┘"
+        horizontaltop: "─"
+        horizontalbottom: "─"
+        verticalleft: "│"
+        verticalright: "│"
       # Styling for the '#' context completion overlay. Defaults mirror
       # the command prompt (see "command.*_attr" in rune.star) so both
       # search overlays look consistent.
@@ -80,6 +114,11 @@ extensions:
       # own, so the review reads the rest from the file as it stands
       # now. Set to 0 to show only the lines the agent changed.
       review_context_lines: 3
+      # How many lines of your last message stay pinned over the top of
+      # the chat once it scrolls out of sight. Longer messages are cut
+      # short with an ellipsis; clicking the pin scrolls back to the
+      # message. Set to 0 to disable the pin.
+      pinned_user_msg_max_lines: 2
       # status_bar configures the chat's bottom status row.
       status_bar:
         # Whether the chat reserves its bottom row for the status bar.
@@ -88,13 +127,51 @@ extensions:
         # Spinner, Status, Conversation, Elapsed, Model, Provider,
         # Effort, MaxTokens, TokensSent, TokensReceived, ContextTokens,
         # ContextWindow, ContextPct, Cache, CachePct, ContextGauge,
-        # CacheGauge, and ShiftRight. Pipe operators support bg, fg,
-        # bold, italic, underline, reverse, and dim. Spinner and Status
-        # take their colors from status below, so naming one here
+        # CacheGauge, Image, and ShiftRight. Pipe operators support bg,
+        # fg, bold, italic, underline, reverse, and dim. Spinner and
+        # Status take their colors from status below, so naming one here
         # only sets the fallback for a status the palette does not cover.
+        #
+        # Image draws a picture centered on the cell where it sits in the
+        # bar (an even side lands half a cell left or up), extending over
+        # the conversation above when it is taller than the bar, and cut
+        # off outside the chat unless it overflows. It requires src, a
+        # file:// or http(s):// URI, and takes:
+        #   width           cells, or a percentage of the bar such as
+        #                   "100%" (2)
+        #   height          rows (1)
+        #   reserve         cells it takes up in the bar (the width in
+        #                   cells, or 0 for a percentage)
+        #   x_offset        cells to move it right, negative for left, or
+        #                   a percentage of the bar such as "50%" (0)
+        #   y_offset        rows to move it down, negative for up (0)
+        #   x_pixel_offset  device pixels to move it further right,
+        #                   negative for left, to align it to the pixel (0)
+        #   y_pixel_offset  device pixels to move it further down,
+        #                   negative for up (0)
+        #   fit             "contain" keeps the aspect ratio, "fill"
+        #                   stretches
+        #   z_index         stacking, as in kitty (0): 0 or more over the
+        #                   text, negative under it, under -1073741824
+        #                   also under the backgrounds; the higher one is
+        #                   on top where images overlap, the later one in
+        #                   the layout on ties
+        #   overflow        extends it over the windows, frames and bars
+        #                   around the chat; floating windows still cover it
+        #   max_cut         cells a bar too narrow for it may push it out
+        #                   of the bar before it is hidden (1)
+        #   alt             drawn over the text when the image can't be
+        #                   shown ("" for nothing); pixel offsets don't
+        #                   move it
+        #   ttl             how long a download is reused ("24h")
+        # Sizes, cell offsets and max_cut are at most 4096 and pixel offsets
+        # at most 65536, offsets in either direction; alt takes no control
+        # characters but newlines.
+        # A badge after the model, nudged 3 pixels up:
+        #   {{ .Model | fg "white" }}  {{ .Image | src "file:///path/to/logo.png" | y_pixel_offset -3 }}
         layout: ' {{ .Spinner }} {{ .Status | bold }} █▓▒░  {{ .Model | fg "white" }}  {{ .Effort }}{{ .ShiftRight }}󰗂 {{ .Cache }}  {{ .Elapsed }}  {{ .Conversation | bold | fg "white" }}  {{ .ContextGauge }} '
         # Effect drawn over the whole bar while a turn runs. One of
-        # blaze, burn, inferno, noise, pulse, shine, trippy. Off by
+        # blaze, burn, inferno, pulse, shine. Off by
         # default: every frame of the effect redraws the whole chat.
         #shader: pulse
         # Base attributes of the bar, matching the editor's status bar.
@@ -221,3 +298,10 @@ extensions:
             bg: green
         # Cell width of the context and cache gauges.
         gauge_width: 18
+# `acp new rune-agent` runs rune-agent over the Agent Client Protocol, as
+# any ACP client would. Its sessions are kept apart from the chats above.
+acp:
+  agents:
+    rune-agent:
+      command: '$RUNE_DATADIR/bin/rune-agent'
+      args: [acp]

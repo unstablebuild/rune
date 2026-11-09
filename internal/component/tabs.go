@@ -18,6 +18,7 @@ package component
 
 import (
 	"fmt"
+	"image"
 	"slices"
 
 	"github.com/unstablebuild/rune-go-sdk/component"
@@ -50,6 +51,11 @@ const minTabCellWidth = 1
 // the fast-path and resize-path width distributions.
 const tabBarRightPad = 2
 
+// verticalRenderOffsets are the attributes that move a cell's text and
+// background half a cell, which the blanks of a label must share with
+// its text for their backgrounds to line up.
+const verticalRenderOffsets = term.AttrVerticalRenderOffset | term.AttrNegativeVerticalRenderOffset
+
 // tabCellLayout describes how a single tab is rendered: which tab (idx)
 // and how many cells of the bar it occupies.
 type tabCellLayout struct {
@@ -76,6 +82,14 @@ type tab struct {
 	// callers hit-test separately from the tab body via TabActionAt.
 	action     rune
 	actionAttr term.Attributes
+	// progress, when not -1, paints the first progress% of the drawn
+	// name cells with progressAttr layered over the name attributes.
+	progress     int
+	progressAttr term.Attributes
+	// badge is drawn right after the name with badgeAttr and is kept in
+	// preference to the name's tail when the tab is truncated.
+	badge     string
+	badgeAttr term.Attributes
 }
 
 // Tabs is a simple component that draws a list of component
@@ -102,6 +116,20 @@ type Tabs struct {
 	frameBorders     component.FrameCharSet
 	separator        string
 	dirty            bool
+
+	graphics  *FrameGraphics
+	images    *component.ButtonImages
+	highlight LineGraphics
+
+	hoverAttr term.Attributes
+	// pointer is where the pointer is, relative to the bar, and hoverIdx
+	// the tab under it as of the last layout, -1 for none.
+	pointer  term.Coordinates
+	hoverIdx int
+	// pressed is the tab a press is held on, -1 for none, and armed
+	// reports that the pointer is still over it.
+	pressed int
+	armed   bool
 }
 
 func newListFrame(
@@ -141,6 +169,9 @@ func (t *Tabs) Init() {
 	t.nonFocusAttr = defaultNonFocusAttr
 	t.focusFrameChar = defaultFocusFrameChar
 	t.highlightIdx = -1
+	t.pointer = term.Coordinates{X: -1, Y: -1}
+	t.hoverIdx = -1
+	t.pressed = -1
 	t.frameBorders = component.FrameCharSetDefault()
 	t.fileListBuf = new(cell.Buffer)
 	t.fileListBuf.InitPerformance(1, 10, ' ')
@@ -218,6 +249,92 @@ func (t *Tabs) SetBottomHighlight(on bool) {
 	t.dirty = true
 }
 
+// SetGraphics sets the images that writers that can draw images show:
+// images under each tab, across the rows inside the bar's border, and
+// highlight over the cells of the focus-frame highlight, which it draws
+// even without a focus-frame rune. Both go under the text of the labels.
+// A tab in focus is drawn over ButtonSelected's images or, without them,
+// ButtonIdle's. One not in focus is drawn over ButtonPressed's while
+// pressed with the pointer still on it, ButtonHover's while the pointer
+// is on it and no press is held, and ButtonIdle's otherwise, falling
+// back as component.ButtonImages does. images must be taken from g, and
+// a nil g draws no images. The bar keeps as many blank cells as the
+// images' side outset before the first tab and at least as many after
+// the last, for the outsets to show.
+func (t *Tabs) SetGraphics(
+	g *FrameGraphics, images *component.ButtonImages, highlight LineGraphics,
+) {
+	t.graphics, t.images, t.highlight = g, images, highlight
+	if g == nil {
+		t.images, t.highlight = nil, LineGraphics{}
+	}
+	t.dirty = true
+}
+
+// SetHoverAttr sets the attributes layered over the label of a tab not
+// in focus while it shows the pointer on it, as SetGraphics tells,
+// under the tab's own attributes and its icon's.
+func (t *Tabs) SetHoverAttr(attr term.Attributes) {
+	t.hoverAttr = attr
+	t.dirty = true
+}
+
+// SetPointer records that the pointer is at pos, relative to the bar. A
+// pos outside the bar means the pointer is elsewhere.
+func (t *Tabs) SetPointer(pos term.Coordinates) {
+	t.pointer = pos
+	if idx, _ := t.TabUnder(pos); idx != t.hoverIdx {
+		t.dirty = true
+	}
+}
+
+// SetPressed records that a press is held on the tab at idx, -1 for
+// none, and whether the pointer is still on it.
+func (t *Tabs) SetPressed(idx int, armed bool) {
+	if idx == t.pressed && armed == t.armed {
+		return
+	}
+	t.pressed, t.armed = idx, armed
+	t.dirty = true
+}
+
+// TabUnder returns the tab that pos, relative to the bar, belongs to, as
+// TabAt does. It reports false outside the bar and past the last tab.
+func (t *Tabs) TabUnder(pos term.Coordinates) (int, bool) {
+	if pos.X < 0 || pos.Y < 0 || pos.X >= t.width || pos.Y >= t.height {
+		return -1, false
+	}
+	return t.TabAt(pos)
+}
+
+// Focused reports whether the tab at idx is in focus. It is false for
+// an idx with no tab.
+func (t *Tabs) Focused(idx int) bool {
+	return idx >= 0 && idx < len(t.tabs) && t.tabs[idx].focus
+}
+
+// lit reports whether the tab at idx shows the pointer on it, and
+// whether pressed, as SetGraphics tells.
+func (t *Tabs) lit(idx int) (lit, pressed bool) {
+	if t.tabs[idx].focus {
+		return false, false
+	}
+	if t.pressed >= 0 {
+		pressed = idx == t.pressed && t.armed
+		return pressed, pressed
+	}
+	return idx == t.hoverIdx, false
+}
+
+// outset is the side outset of the tab images, which the bar keeps room
+// for at both ends.
+func (t *Tabs) outset() int {
+	if t.images == nil {
+		return 0
+	}
+	return max(0, t.images.Outset.Sides)
+}
+
 // Resize : tui.Component
 func (t *Tabs) Resize(width, height int) {
 	t.width, t.height = width, height
@@ -251,18 +368,123 @@ func (t *Tabs) Draw(w term.Writer) {
 		t.fileListFrame.Draw(w)
 	}
 	t.drawFocusHighlight(w)
+	// Drawn after the highlight's runes, which would otherwise cover them.
+	t.drawTabImages(w)
+	t.drawHighlightGraphics(w)
 }
 
-// drawFocusHighlight overlays the focus-frame rune on y=0 across the
-// columns occupied by the highlighted tab's cell. No-op when the
-// highlight is disabled (highlightIdx < 0), when there are no tabs,
-// when the bar has no second row to host labels (h<2) or when nothing
-// is drawable.
+// drawFocusHighlight overlays the focus-frame rune across the columns
+// of the highlighted tab's cell, or the blanks its images replace it
+// with, before the tab images, which those cells would cover.
 func (t *Tabs) drawFocusHighlight(w term.Writer) {
-	if t.highlightIdx < 0 || t.height < 2 ||
-		t.width <= 0 || len(t.layout.cells) == 0 ||
-		t.focusFrameChar == 0 {
+	from, length, ok := t.highlightSpan()
+	if !ok {
 		return
+	}
+	cell := t.highlightRowCell(from.Y)
+	switch {
+	case t.graphics != nil && !t.highlight.Empty() &&
+		(t.focusFrameChar != 0 || !t.highlight.Overlay):
+		t.highlight.DrawCells(w, from, length, false, cell)
+	case t.focusFrameChar != 0:
+		for dx := range length {
+			w.SetCell(term.Coordinates{X: from.X + dx, Y: from.Y}, cell)
+		}
+	}
+}
+
+// drawHighlightGraphics draws the highlight images over the cells of the
+// focus-frame highlight.
+func (t *Tabs) drawHighlightGraphics(w term.Writer) {
+	if t.graphics == nil || t.highlight.Empty() {
+		return
+	}
+	from, length, ok := t.highlightSpan()
+	if !ok {
+		return
+	}
+	t.graphics.DrawLine(w, t.highlight, from, length, false,
+		t.highlightRowCell(from.Y), term.ImageLayerBelowText)
+}
+
+// highlightRowCell is the cell the highlight row shows at y: the
+// focus-frame rune or, without one, the border or the blank under it.
+func (t *Tabs) highlightRowCell(y int) term.Cell {
+	switch {
+	case t.focusFrameChar != 0:
+		return term.NewCell(t.focusFrameChar, 1, t.focusFrameAttr)
+	case t.border && y == 0:
+		return term.NewCell(t.frameBorders.HorizontalTop, 1, t.frameAttr)
+	case t.border:
+		return term.NewCell(t.frameBorders.HorizontalBottom, 1, t.frameAttr)
+	}
+	return term.NewCell(' ', 1, term.Attributes{Bg: t.backgroundAttr.Bg})
+}
+
+// highlightSpan returns where the focus-frame highlight goes: the first
+// of its cells and how many there are. It reports false when the
+// highlight is disabled, when there are no tabs, when the bar has no
+// second row to host labels or when nothing is drawable.
+func (t *Tabs) highlightSpan() (from term.Coordinates, length int, ok bool) {
+	if t.highlightIdx < 0 || t.height < 2 || t.width <= 0 {
+		return term.Coordinates{}, 0, false
+	}
+	start, width, ok := t.drawnTabBounds(t.highlightIdx)
+	if !ok {
+		return term.Coordinates{}, 0, false
+	}
+	y := 0
+	if t.bottomHighlight {
+		y = t.height - 1
+	}
+	return term.Coordinates{X: start, Y: y}, width, true
+}
+
+// drawTabImages draws the images of each drawn tab under its label.
+func (t *Tabs) drawTabImages(w term.Writer) {
+	if t.images == nil {
+		return
+	}
+	xLeft, xRight, top, rows := 0, t.width, 0, t.height
+	if t.border {
+		xLeft, xRight, top, rows = 1, t.width-1, 1, t.height-2
+	}
+	if xRight <= xLeft || rows <= 0 {
+		return
+	}
+	inner := &component.VirtualWriter{
+		Writer: w,
+		Offset: term.Coordinates{X: xLeft, Y: top},
+		Width:  xRight - xLeft,
+		Height: rows,
+	}
+	for _, cell := range t.layout.cells {
+		start, width, ok := t.drawnTabBounds(cell.idx)
+		if !ok {
+			continue
+		}
+		st := component.ButtonIdle
+		switch lit, pressed := t.lit(cell.idx); {
+		case t.tabs[cell.idx].focus && !t.images.Selected.Empty():
+			st = component.ButtonSelected
+		case pressed:
+			st = component.ButtonPressed
+		case lit:
+			st = component.ButtonHover
+		}
+		t.images.Draw(inner, image.Rect(start-xLeft, 0, start-xLeft+width, rows), st)
+	}
+}
+
+// drawnTabBounds is tabBounds of a tab of the drawn layout, cut to the
+// columns inside the border.
+func (t *Tabs) drawnTabBounds(idx int) (start, width int, ok bool) {
+	if len(t.layout.cells) == 0 {
+		return 0, 0, false
+	}
+	start, width, ok = t.tabBounds(idx)
+	if !ok {
+		return 0, 0, false
 	}
 	xLeft := 0
 	xRight := t.width
@@ -270,28 +492,12 @@ func (t *Tabs) drawFocusHighlight(w term.Writer) {
 		xLeft = 1
 		xRight = t.width - 1
 	}
-	y := 0
-	if t.bottomHighlight {
-		y = t.height - 1
+	end := min(start+width, xRight)
+	start = max(start, xLeft)
+	if end <= start {
+		return 0, 0, false
 	}
-	innerX := 0
-	sepLen := len(t.separator)
-	for i, cell := range t.layout.cells {
-		if cell.idx == t.highlightIdx {
-			for dx := 0; dx < cell.width; dx++ {
-				x := xLeft + innerX + dx
-				if x < xLeft || x >= xRight {
-					continue
-				}
-				w.SetCell(term.Coordinates{X: x, Y: y},
-					term.NewCell(t.focusFrameChar, 1, t.focusFrameAttr))
-			}
-		}
-		innerX += cell.width
-		if i < len(t.layout.cells)-1 {
-			innerX += sepLen
-		}
-	}
+	return start, end - start, true
 }
 
 // ResetFocus resets the focus of all the tabs to false.
@@ -342,6 +548,28 @@ func (t *Tabs) SetTabAttr(idx int, attr term.Attributes) {
 func (t *Tabs) SetIconAttr(idx int, attr term.Attributes) {
 	t.tabs[idx].iconAttr = &attr
 	t.dirty = true
+}
+
+// ResetIconAttr restores the focus-dependent icon attributes of the
+// tab at idx. If the tab at idx does not exist, this method will panic.
+func (t *Tabs) ResetIconAttr(idx int) {
+	t.tabs[idx].iconAttr = nil
+	t.dirty = true
+}
+
+// TabIconAttr returns the attributes the icon of the tab at idx is
+// drawn with: the override set via SetIconAttr or, without one, the
+// focus-dependent ones. If the tab at idx does not exist, this method
+// will panic.
+func (t *Tabs) TabIconAttr(idx int) term.Attributes {
+	tab := t.tabs[idx]
+	if tab.iconAttr != nil {
+		return *tab.iconAttr
+	}
+	if tab.focus {
+		return t.focusIconAttr
+	}
+	return t.nonFocusIconAttr
 }
 
 // TabAttr returns the attributes of the tab at idx. If the tab at idx does not exist,
@@ -406,6 +634,50 @@ func (t *Tabs) SetTabAction(idx int, action rune, attr term.Attributes) {
 	t.dirty = true
 }
 
+// SetTabProgress paints the leading pct percent of the name of the tab
+// at idx with attr layered over its usual attributes. pct is clamped
+// to 0 to 100. If the tab at idx does not exist, this method will
+// panic.
+func (t *Tabs) SetTabProgress(idx int, pct int, attr term.Attributes) {
+	t.tabs[idx].progress = max(0, min(100, pct))
+	t.tabs[idx].progressAttr = attr
+	t.dirty = true
+}
+
+// ResetTabProgress removes the progress painting of the tab at idx.
+func (t *Tabs) ResetTabProgress(idx int) {
+	t.tabs[idx].progress = -1
+	t.tabs[idx].progressAttr = term.Attributes{}
+	t.dirty = true
+}
+
+// TabProgress returns the progress painted on the tab at idx and its
+// attributes, or -1 without any. If the tab at idx does not exist,
+// this method will panic.
+func (t *Tabs) TabProgress(idx int) (int, term.Attributes) {
+	return t.tabs[idx].progress, t.tabs[idx].progressAttr
+}
+
+// SetTabBadge draws text with attr right after the name of the tab at
+// idx. The badge counts towards the tab's width and survives
+// truncation ahead of the name's tail. An empty text removes it.
+func (t *Tabs) SetTabBadge(idx int, text string, attr term.Attributes) {
+	t.tabs[idx].badge = text
+	t.tabs[idx].badgeAttr = attr
+	t.dirty = true
+}
+
+// ResetTabBadge removes the badge of the tab at idx.
+func (t *Tabs) ResetTabBadge(idx int) {
+	t.SetTabBadge(idx, "", term.Attributes{})
+}
+
+// TabBadge returns the badge of the tab at idx and its attributes. If
+// the tab at idx does not exist, this method will panic.
+func (t *Tabs) TabBadge(idx int) (string, term.Attributes) {
+	return t.tabs[idx].badge, t.tabs[idx].badgeAttr
+}
+
 // SetTabDefaultIcon sets the default icon of the tab at idx. Calls to
 // ResetTabIcon will reset the tab icon to the given icon. If the tab
 // at idx does not exist, this method will panic.
@@ -454,12 +726,13 @@ func (t *Tabs) DefaultTabName(idx int) string {
 func (t *Tabs) Add(icon rune, name string) int {
 	t.dirty = true
 	tt := &tab{
-		defAttr: term.Attributes{},
-		attr:    term.Attributes{},
-		defName: name,
-		icon:    icon,
-		defIcon: icon,
-		name:    name,
+		defAttr:  term.Attributes{},
+		attr:     term.Attributes{},
+		defName:  name,
+		icon:     icon,
+		defIcon:  icon,
+		name:     name,
+		progress: -1,
 	}
 	if t.tabs == nil {
 		t.tabs = make([]*tab, 1)
@@ -561,6 +834,9 @@ func (t *Tabs) TabAt(pos term.Coordinates) (int, bool) {
 			}
 			posX--
 		}
+		if posX -= t.outset(); posX < 0 {
+			return t.layout.cells[0].idx, true
+		}
 		sepLen := len(t.separator)
 		x := 0
 		for i, cell := range t.layout.cells {
@@ -583,7 +859,7 @@ func (t *Tabs) TabAt(pos term.Coordinates) (int, bool) {
 	// resized). Hit-test against a natural-width layout so callers can
 	// resolve clicks before a draw cycle has happened.
 	sepLen := len(t.separator)
-	x := 0
+	x := t.outset()
 	for i, tab := range t.tabs {
 		w := tabFullWidth(tab)
 		end := x + w
@@ -667,6 +943,7 @@ func (t *Tabs) tabBounds(idx int) (start, width int, ok bool) {
 	if t.border {
 		start = 1
 	}
+	start += t.outset()
 	sepLen := len(t.separator)
 	if len(t.layout.cells) > 0 {
 		for i, cell := range t.layout.cells {
@@ -734,6 +1011,64 @@ func (t *Tabs) TabRect(idx int) (offset term.Coordinates, width int, ok bool) {
 	return term.Coordinates{X: x, Y: t.labelRow()}, width, true
 }
 
+// TabShadeRect is TabRect minus the cells SetTabProgress painted, or
+// TabRect itself without progress. It reports false when TabRect does
+// or when the painted part covers the whole rect.
+func (t *Tabs) TabShadeRect(idx int) (offset term.Coordinates, width int, ok bool) {
+	offset, width, ok = t.TabRect(idx)
+	if !ok {
+		return term.Coordinates{}, 0, false
+	}
+	tab := t.tabs[idx]
+	if tab.progress < 0 {
+		return offset, width, true
+	}
+	_, cellW, _ := t.tabBounds(idx)
+	_, nameW, _ := t.labelWidths(tab, cellW)
+	painted := min(paintedCells(tab, nameW), width)
+	if painted >= width {
+		return term.Coordinates{}, 0, false
+	}
+	offset.X += painted
+	return offset, width - painted, true
+}
+
+// labelWidths splits the cells of a tab drawn cellW wide, past its icon
+// and action glyph, between the name and the badge. The badge is
+// dropped when it does not fit on its own.
+func (t *Tabs) labelWidths(tab *tab, cellW int) (iconSkip, nameW, badgeW int) {
+	remaining := cellW
+	if actionW := tabActionWidth(tab); actionW <= remaining {
+		remaining -= actionW
+	}
+	if tab.icon != 0 {
+		iconW := runeCellWidth(tab.icon)
+		if remaining < iconW {
+			return cellW, 0, 0
+		}
+		iconSkip = iconW
+		remaining -= iconW
+		if remaining > 0 {
+			iconSkip++
+			remaining--
+		}
+	}
+	if badgeW = stringCellWidth(tab.badge); badgeW > remaining {
+		badgeW = 0
+	}
+	_, nameW = runesThatFit([]rune(tab.name), remaining-badgeW)
+	return iconSkip, nameW, badgeW
+}
+
+// paintedCells is how many of nameW drawn name cells the tab's progress
+// covers, rounded to the nearest cell.
+func paintedCells(tab *tab, nameW int) int {
+	if tab.progress < 0 {
+		return 0
+	}
+	return (tab.progress*nameW + 50) / 100
+}
+
 // labelRow is the row Draw puts the labels on. They sit in a span that
 // is vertically centred within the rows the frame leaves free, and a
 // span under three rows is not padded. A highlight on top of a
@@ -768,6 +1103,7 @@ func (t *Tabs) Size() int {
 func (t *Tabs) prepareFileList() {
 	t.fileListBuf.Reset()
 	t.layout = tabLayout{}
+	t.hoverIdx = -1
 
 	if t.width == 0 || t.height == 0 {
 		return
@@ -777,8 +1113,12 @@ func (t *Tabs) prepareFileList() {
 	if len(t.layout.cells) == 0 {
 		return
 	}
+	t.hoverIdx, _ = t.TabUnder(t.pointer)
 
 	next := term.Coordinates{}
+	for range t.outset() {
+		next = t.fileListBuf.Insert(next, ' ')
+	}
 	for i, cell := range t.layout.cells {
 		next = t.insertTabCell(next, cell)
 		if i < len(t.layout.cells)-1 {
@@ -804,11 +1144,19 @@ func (t *Tabs) insertTabCell(pos term.Coordinates, cell tabCellLayout) term.Coor
 			iconAttr = &t.focusIconAttr
 		}
 	} else {
-		attr = term.AttributesUnion(t.nonFocusAttr, attr)
+		base, icon := t.nonFocusAttr, t.nonFocusIconAttr
+		if lit, _ := t.lit(cell.idx); lit {
+			base = term.AttributesUnion(base, t.hoverAttr)
+			icon = term.AttributesUnion(icon, t.hoverAttr)
+		}
+		attr = term.AttributesUnion(base, attr)
 		if iconAttr == nil {
-			iconAttr = &t.nonFocusIconAttr
+			iconAttr = &icon
 		}
 	}
+	// The label's blanks take its background, for one set on hover not
+	// to stop at the gap between the icon and the name.
+	blank := term.Attributes{Bg: attr.Bg, Attrs: attr.Attrs & verticalRenderOffsets}
 
 	remaining := cell.width
 	// The action glyph is anchored to the right edge of the cell, so its
@@ -824,32 +1172,50 @@ func (t *Tabs) insertTabCell(pos term.Coordinates, cell tabCellLayout) term.Coor
 			pos = t.fileListBuf.InsertWithAttr(pos, tab.icon, *iconAttr)
 			remaining -= iconWidth
 			if remaining > 0 {
-				pos = t.fileListBuf.Insert(pos, ' ')
+				pos = t.fileListBuf.InsertWithAttr(pos, ' ', blank)
 				remaining--
 			}
 		} else {
 			// No room for the icon: fill the cell with blanks.
 			for range cell.width {
-				pos = t.fileListBuf.Insert(pos, ' ')
+				pos = t.fileListBuf.InsertWithAttr(pos, ' ', blank)
 			}
 			return pos
 		}
 	}
 
 	name := []rune(tab.name)
-	nameLen, usedNameWidth := runesThatFit(name, remaining)
+	badgeW := stringCellWidth(tab.badge)
+	if badgeW > remaining {
+		badgeW = 0
+	}
+	nameLen, usedNameWidth := runesThatFit(name, remaining-badgeW)
+	painted := paintedCells(tab, usedNameWidth)
+	paintedAttr := term.AttributesUnion(attr, tab.progressAttr)
+	drawn := 0
 	for _, r := range name[:nameLen] {
-		pos = t.fileListBuf.InsertWithAttr(pos, r, attr)
+		if drawn < painted {
+			pos = t.fileListBuf.InsertWithAttr(pos, r, paintedAttr)
+		} else {
+			pos = t.fileListBuf.InsertWithAttr(pos, r, attr)
+		}
+		drawn += runeCellWidth(r)
 	}
 	remaining -= usedNameWidth
+	if badgeW > 0 {
+		for _, r := range tab.badge {
+			pos = t.fileListBuf.InsertWithAttr(pos, r, tab.badgeAttr)
+		}
+		remaining -= badgeW
+	}
 	for remaining > 0 {
-		pos = t.fileListBuf.Insert(pos, ' ')
+		pos = t.fileListBuf.InsertWithAttr(pos, ' ', blank)
 		remaining--
 	}
 	if actionW > 0 {
-		pos = t.fileListBuf.Insert(pos, ' ')
+		pos = t.fileListBuf.InsertWithAttr(pos, ' ', blank)
 		pos = t.fileListBuf.InsertWithAttr(pos, tab.action, tab.actionAttr)
-		pos = t.fileListBuf.Insert(pos, ' ')
+		pos = t.fileListBuf.InsertWithAttr(pos, ' ', blank)
 	}
 	return pos
 }
@@ -857,15 +1223,16 @@ func (t *Tabs) insertTabCell(pos term.Coordinates, cell tabCellLayout) term.Coor
 // calculateLayout decides the visible window of tabs and the width
 // allocated to each. See the algorithm description in tabs_test.go.
 func (t *Tabs) calculateLayout() tabLayout {
-	innerW := t.innerWidth()
+	innerW := t.innerWidth() - t.outset()
 	if len(t.tabs) == 0 || innerW <= 0 {
 		return tabLayout{}
 	}
 	// Reserve tabBarRightPad trailing cells so the rightmost tab is
-	// never flush against the viewport edge. All width-budget decisions
-	// run against budgetW; padAfter naturally fills the reservation
-	// plus any extra slack when the row is drawn.
-	budgetW := innerW - tabBarRightPad
+	// never flush against the viewport edge, or more for the right
+	// outset of its images. All width-budget decisions run against
+	// budgetW; padAfter naturally fills the reservation plus any extra
+	// slack when the row is drawn.
+	budgetW := innerW - max(tabBarRightPad, t.outset())
 	if budgetW < 0 {
 		budgetW = 0
 	}
@@ -1072,11 +1439,11 @@ func (t *Tabs) innerWidth() int {
 }
 
 func tabFullWidth(t *tab) int {
+	w := stringCellWidth(t.name) + stringCellWidth(t.badge) + tabActionWidth(t)
 	if t.icon != 0 {
-		return stringCellWidth(t.name) + runeCellWidth(t.icon) + 1 +
-			tabActionWidth(t)
+		w += runeCellWidth(t.icon) + 1
 	}
-	return stringCellWidth(t.name) + tabActionWidth(t)
+	return w
 }
 
 // tabActionWidth is the width the action glyph occupies including the

@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"io"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -72,6 +73,35 @@ func TestProtocolGrantorGatesRunButKeepsRequestedPermissions(t *testing.T) {
 
 	assert.False(t, claims.Extra.Plugin)
 	assert.Equal(t, meta.Permissions, claims.Extra.Permissions)
+}
+
+func TestProtocolCloseEndsReadWithoutHandshake(t *testing.T) {
+	t.Parallel()
+
+	keys, err := auth.GenerateKeys()
+	require.NoError(t, err)
+	p := newProtocol(context.Background(), extension.GrantAll(),
+		"ext-id", "/tmp/rune.sock", "/tmp/rune-data", "/tmp/rune-install",
+		[]byte("cert"), false, config.MapConfig(map[string]any{}), keys, nil, "")
+	read := make(chan error, 1)
+	go func() {
+		_, err := p.Read(make([]byte, 1))
+		read <- err
+	}()
+	select {
+	case err := <-read:
+		t.Fatalf("read returned before the extension answered: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	require.NoError(t, p.Close())
+	select {
+	case err := <-read:
+		assert.ErrorIs(t, err, io.EOF)
+	case <-time.After(time.Second):
+		t.Fatal("closing the protocol must end its read")
+	}
+	require.NoError(t, p.Close())
 }
 
 func TestProtocolCarriesVerifiedPublisherOnlyWhenDeveloperKeyMatches(t *testing.T) {

@@ -34,6 +34,9 @@ type Data struct {
 	// AltModifier is the gui.alt_modifier spelling of the Option key reserved
 	// for layout characters, or empty when neither is.
 	AltModifier string
+	// CapsLockEscape maps Caps Lock to Escape through gui.key_mapping. Only
+	// presets that template the mapping can carry it.
+	CapsLockEscape bool
 }
 
 // footer ends every rendered preset. Its own delimiters match the body's.
@@ -49,7 +52,9 @@ telemetry:
 // of the status bars verbatim. The result is decoded again and must
 // carry data's choices: gui.meta_key equal to data.Meta, or absent when
 // data.Meta is Super, gui.alt_modifier equal to data.AltModifier, or
-// absent when it is empty, and telemetry.enabled equal to data.Telemetry.
+// absent when it is empty, gui.key_mapping mapping <capslock> to <esc>
+// exactly when data.CapsLockEscape, and telemetry.enabled equal to
+// data.Telemetry.
 func Render(body string, data Data) (string, error) {
 	tmpl, err := template.New("preset").
 		Delims("[[", "]]").
@@ -72,8 +77,9 @@ func Render(body string, data Data) (string, error) {
 func check(out string, data Data) error {
 	var got struct {
 		GUI struct {
-			MetaKey     *string `yaml:"meta_key"`
-			AltModifier *string `yaml:"alt_modifier"`
+			MetaKey     *string           `yaml:"meta_key"`
+			AltModifier *string           `yaml:"alt_modifier"`
+			KeyMapping  map[string]string `yaml:"key_mapping"`
 		} `yaml:"gui"`
 		Telemetry struct {
 			Enabled *bool `yaml:"enabled"`
@@ -82,6 +88,7 @@ func check(out string, data Data) error {
 	if err := yaml.Unmarshal([]byte(out), &got); err != nil {
 		return err
 	}
+	capsLockEscape := got.GUI.KeyMapping["<capslock>"] == "<esc>"
 	switch {
 	case got.GUI.MetaKey == nil && data.Meta != keymeta.Super:
 		return fmt.Errorf("gui.meta_key is missing, want %s", data.Meta)
@@ -92,6 +99,10 @@ func check(out string, data Data) error {
 	case got.GUI.AltModifier != nil && *got.GUI.AltModifier != data.AltModifier:
 		return fmt.Errorf("gui.alt_modifier is %q, want %q",
 			*got.GUI.AltModifier, data.AltModifier)
+	case data.CapsLockEscape && !capsLockEscape:
+		return fmt.Errorf("gui.key_mapping does not map <capslock> to <esc>")
+	case !data.CapsLockEscape && capsLockEscape:
+		return fmt.Errorf("gui.key_mapping maps <capslock> to <esc>")
 	case got.Telemetry.Enabled == nil || *got.Telemetry.Enabled != data.Telemetry:
 		return fmt.Errorf("telemetry.enabled is not %t", data.Telemetry)
 	}

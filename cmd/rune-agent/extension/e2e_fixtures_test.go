@@ -19,7 +19,8 @@ package extension
 import (
 	"context"
 	"encoding/json"
-	"io"
+	"errors"
+	"fmt"
 	"os"
 	"path"
 	"slices"
@@ -61,14 +62,10 @@ type recordingWindowManager struct {
 
 	setContentCalls int
 
-	activityMu  sync.Mutex
-	activity    []tabActivity
-	activityErr error
-}
-
-type tabActivity struct {
-	uri    workspaceapi.URI
-	active bool
+	statusMu  sync.Mutex
+	statusURI workspaceapi.URI
+	statuses  []browserapi.TabStatus
+	statusErr error
 }
 
 func (m *recordingWindowManager) Focus() (browserapi.Window, error) { return nil, nil }
@@ -98,17 +95,24 @@ func (m *recordingWindowManager) SetWindowContent(_ browserapi.Window, _ browser
 }
 func (m *recordingWindowManager) CloseWindow(_ browserapi.Window) error { return nil }
 
-func (m *recordingWindowManager) SetTabActivity(uri workspaceapi.URI, active bool) error {
-	m.activityMu.Lock()
-	defer m.activityMu.Unlock()
-	m.activity = append(m.activity, tabActivity{uri: uri, active: active})
-	return m.activityErr
+func (m *recordingWindowManager) SetTabStatus(uri workspaceapi.URI, status browserapi.TabStatus) error {
+	m.statusMu.Lock()
+	defer m.statusMu.Unlock()
+	m.statusURI = uri
+	m.statuses = append(m.statuses, status)
+	return m.statusErr
 }
 
-func (m *recordingWindowManager) tabActivity() []tabActivity {
-	m.activityMu.Lock()
-	defer m.activityMu.Unlock()
-	return slices.Clone(m.activity)
+func (m *recordingWindowManager) tabStatuses() []browserapi.TabStatus {
+	m.statusMu.Lock()
+	defer m.statusMu.Unlock()
+	return slices.Clone(m.statuses)
+}
+
+func (m *recordingWindowManager) reset() {
+	m.statusMu.Lock()
+	defer m.statusMu.Unlock()
+	m.statuses = nil
 }
 
 // stubNotifications is a no-op browserapi.Notifications. wrapDialogueHandler
@@ -274,22 +278,23 @@ func (f *dirRecordingFS) MkdirAll(path string, _ os.FileMode) error {
 	return nil
 }
 
-// lookupExec answers every command with stdout and err, and records the
-// commands it was given.
+// lookupExec answers LookPath with bin and err, runs every command
+// successfully, and records the names it looked up and the commands it
+// was given.
 type lookupExec struct {
-	stdout string
-	err    error
+	bin string
+	err error
 
-	mu   sync.Mutex
-	cmds []workspaceapi.Cmd
+	mu     sync.Mutex
+	cmds   []workspaceapi.Cmd
+	looked []string
 }
 
 func (e *lookupExec) Start(_ context.Context, cmd workspaceapi.Cmd) (workspaceapi.Pid, error) {
 	e.mu.Lock()
 	e.cmds = append(e.cmds, cmd)
 	e.mu.Unlock()
-	_, _ = io.WriteString(cmd.Stdout, e.stdout)
-	cmd.Watcher.WatchProcess() <- e.err
+	cmd.Watcher.WatchProcess() <- nil
 	return 1, nil
 }
 
@@ -300,6 +305,12 @@ func (e *lookupExec) commands() []workspaceapi.Cmd {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return slices.Clone(e.cmds)
+}
+
+func (e *lookupExec) lookups() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return slices.Clone(e.looked)
 }
 
 // fakeInstallRoot resolves paths under the data directory of a workspace
@@ -383,9 +394,9 @@ func newPromptHandler(t *testing.T, opts promptHandlerOpts) tui.Handler {
 	dhandler, tx, rx := dialoguetui.Handler(ctx, mu, comp, interrupter)
 
 	owner := &aiEditorHandler{n: stubNotifications{}, p: interrupter}
-	syncComp := syncComponent{mu: mu, comp: comp, h: owner}
+	syncComp := syncComponent{mu: mu, comp: comp, h: owner, tab: newTabStatusReporter(owner.wm, workspaceapi.URI{}, owner.n)}
 
-	prompter := &tuiPrompter{tx: tx, noti: stubNotifications{}, status: syncComp}
+	prompter := &tuiPrompter{tx: tx, chat: syncComp}
 	askUser := agentools.NewAskUser(prompter)
 	registry := agent.NewRegistry(askUser)
 	skillReg := skills.NewRegistry(nopFileSystem{}, dirURI(""), nil, nil)
@@ -548,7 +559,7 @@ func agentE2EHandler(t *testing.T, svc *llmtest.Service, workspaceDir string, ls
 
 	fs := testLocalFS{root: workspaceDir}
 	tools, tracker := agentools.DefaultTools(
-		fs, testLocalExec{}, cwd, lsp, agentools.Config{}, configedit.NopConfig(),
+		fs, testLocalExec{}, cwd, lsp, agentools.NoIndex(), agentools.Config{}, configedit.NopConfig(),
 	)
 	// LSP-backed tools (including check_file_errors) are only wired when
 	// the fixture installs an LSP; they share DefaultTools' tracker so
@@ -560,7 +571,7 @@ func agentE2EHandler(t *testing.T, svc *llmtest.Service, workspaceDir string, ls
 	// integration covers that path in production). RUNE-179 fixed the
 	// in-process grep_files implementation, so register it explicitly
 	// for this e2e fixture.
-	tools = append(tools, agentools.NewGrepFiles(fs, cwd, agentools.NewFileTracker()))
+	tools = append(tools, agentools.NewGrepFiles(fs, cwd, agentools.NewFileTracker(), agentools.NoIndex()))
 	registry := agent.NewRegistry(tools...)
 	skillReg := skills.NewRegistry(fs, cwd, nil, nil)
 	store := newMemDialogueStore()
@@ -571,7 +582,7 @@ func agentE2EHandler(t *testing.T, svc *llmtest.Service, workspaceDir string, ls
 	})
 
 	owner := &aiEditorHandler{n: stubNotifications{}, p: interrupter}
-	syncComp := syncComponent{mu: mu, comp: comp, h: owner}
+	syncComp := syncComponent{mu: mu, comp: comp, h: owner, tab: newTabStatusReporter(owner.wm, workspaceapi.URI{}, owner.n)}
 	wrapped, msgRx := owner.wrapDialogueHandler(ctx, syncComp, dhandler, rx, "e2e-fixture")
 
 	var wg sync.WaitGroup
@@ -630,6 +641,96 @@ func (nopSpawner) Run(context.Context, agent.RunRequest) (agent.RunHandle, error
 	return agent.RunHandle{}, nil
 }
 
+// agentRouter is an llmapi.Service that answers every agent of a chat,
+// the chat's own and the sub-agents it runs, from that agent's script.
+// It tells them apart by a marker in their system prompt, so that tests
+// do not depend on the order in which concurrent agents call the model.
+// A request whose system prompt holds no marker, or more than one, fails.
+type agentRouter struct {
+	// Service only serves the model catalog.
+	*llmtest.Service
+	agents map[string]*llmtest.Service
+}
+
+// newAgentRouter returns a router for the agents whose system prompts
+// hold markers, none of which has a script yet.
+func newAgentRouter(models []llmapi.ModelEntry, markers ...string) *agentRouter {
+	r := &agentRouter{Service: llmtest.New(models), agents: make(map[string]*llmtest.Service)}
+	for _, marker := range markers {
+		r.agents[marker] = llmtest.New(models)
+	}
+	return r
+}
+
+func (r *agentRouter) CreateCompletion(
+	ctx context.Context, model llmapi.ModelEntry, req llmapi.Request,
+) (iterator.Iterator[llmapi.Event], error) {
+	var system string
+	if len(req.Messages) > 0 && req.Messages[0].Role == llmapi.RoleSystem {
+		system = req.Messages[0].Content
+	}
+	var matches []string
+	for marker := range r.agents {
+		if strings.Contains(system, marker) {
+			matches = append(matches, marker)
+		}
+	}
+	if len(matches) != 1 {
+		return nil, fmt.Errorf("agentRouter: system prompt %q matches scripts %q", system, matches)
+	}
+	return r.agents[matches[0]].CreateCompletion(ctx, model, req)
+}
+
+// script appends responses to the script of the agent whose system
+// prompt holds marker.
+func (r *agentRouter) script(marker string, responses ...llmtest.Response) {
+	r.agents[marker].Enqueue(responses...)
+}
+
+// requests returns the requests of the agent whose system prompt holds
+// marker.
+func (r *agentRouter) requests(marker string) []llmtest.Request {
+	return r.agents[marker].Requests()
+}
+
+// recordingExec is a workspaceapi.Executor that runs nothing: it records
+// the command lines it is asked to run and answers each with "ran" and
+// the line, so that tests can tell which commands a tool let through
+// without spawning processes.
+type recordingExec struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (e *recordingExec) Start(_ context.Context, cmd workspaceapi.Cmd) (workspaceapi.Pid, error) {
+	line := strings.Join(append([]string{cmd.Path}, cmd.Args...), " ")
+	e.mu.Lock()
+	e.lines = append(e.lines, line)
+	e.mu.Unlock()
+	if cmd.Stdout != nil {
+		_, _ = fmt.Fprintf(cmd.Stdout, "ran %s", line)
+	}
+	if cmd.Watcher != nil {
+		go debug.CapturePanicReport(func() { cmd.Watcher.WatchProcess() <- nil })
+	}
+	return 1, nil
+}
+
+func (e *recordingExec) Signal(workspaceapi.Pid, syscall.Signal) error { return nil }
+
+func (e *recordingExec) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
+}
+
+func (e *recordingExec) Close() error { return nil }
+
+// ran returns the command lines e was asked to run, in order.
+func (e *recordingExec) ran() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return slices.Clone(e.lines)
+}
+
 // stopReasonE2EHandler wires the real floating chat handler through the
 // production createAgentCompletions consumer — the same path
 // handleChat builds — so tests exercise the agent-loop stop-reason
@@ -663,13 +764,13 @@ func stopReasonE2EHandler(t *testing.T, svc *llmtest.Service) tui.Handler {
 	})
 
 	owner := &aiEditorHandler{n: stubNotifications{}, p: interrupter}
-	syncComp := syncComponent{mu: mu, comp: comp, h: owner}
+	syncComp := syncComponent{mu: mu, comp: comp, h: owner, tab: newTabStatusReporter(owner.wm, workspaceapi.URI{}, owner.n)}
 	wrapped, msgRx := owner.wrapDialogueHandler(ctx, syncComp, dhandler, rx, "e2e-fixture")
 
 	childEvents := make(chan agent.ChildEvent)
 	go debug.CapturePanicReport(func() {
 		createAgentCompletions(ctx, cancel, tx, msgRx, ag, nopSpawner{},
-			childEvents, skillReg, dialogueID, syncComp, stubNotifications{}, nil, store)
+			childEvents, skillReg, dialogueID, syncComp, nil, store)
 	})
 
 	t.Cleanup(cancel)
@@ -768,12 +869,12 @@ func subAgentSpawnE2EHandler(
 	})
 
 	owner := &aiEditorHandler{n: stubNotifications{}, p: interrupter}
-	syncComp := syncComponent{mu: mu, comp: comp, h: owner}
+	syncComp := syncComponent{mu: mu, comp: comp, h: owner, tab: newTabStatusReporter(owner.wm, workspaceapi.URI{}, owner.n)}
 	wrapped, msgRx := owner.wrapDialogueHandler(ctx, syncComp, dhandler, rx, "e2e-fixture")
 
 	go debug.CapturePanicReport(func() {
 		createAgentCompletions(ctx, cancel, tx, msgRx, ag, spawner,
-			childEvents, skillReg, dialogueID, syncComp, stubNotifications{}, nil, store)
+			childEvents, skillReg, dialogueID, syncComp, nil, store)
 	})
 
 	t.Cleanup(cancel)
@@ -825,7 +926,7 @@ func maxTokensE2EHandler(t *testing.T, model llmapi.ModelEntry) (tui.Handler, *a
 	)
 
 	owner := &aiEditorHandler{n: stubNotifications{}, p: interrupter}
-	syncComp := syncComponent{mu: mu, comp: comp, h: owner}
+	syncComp := syncComponent{mu: mu, comp: comp, h: owner, tab: newTabStatusReporter(owner.wm, workspaceapi.URI{}, owner.n)}
 	wrapped, _ := owner.wrapDialogueHandler(ctx, syncComp, dhandler, rx, "e2e-fixture")
 
 	t.Cleanup(cancel)
@@ -836,4 +937,11 @@ func maxTokensE2EHandler(t *testing.T, model llmapi.ModelEntry) (tui.Handler, *a
 		interruptCh: interruptCh,
 		settle:      100 * time.Millisecond,
 	}, ag
+}
+
+func (e *lookupExec) LookPath(_ context.Context, name, _ string) (string, error) {
+	e.mu.Lock()
+	e.looked = append(e.looked, name)
+	e.mu.Unlock()
+	return e.bin, e.err
 }

@@ -32,6 +32,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	blueauth "github.com/unstablebuild/blue/auth"
+	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi/browserrpc"
 	"github.com/unstablebuild/rune-go-sdk/api/extensionapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
@@ -46,8 +47,9 @@ import (
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/browser/browsertest"
 	"unstable.build/rune/internal/extension"
+	thandlerrpc "unstable.build/rune/internal/handler/handlerrpc"
 	"unstable.build/rune/internal/ide/ideauthorizer"
-	"unstable.build/rune/internal/ide/pkgtrust"
+	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
 	"unstable.build/rune/internal/text/texttest"
 	"unstable.build/rune/internal/workspace"
 )
@@ -94,7 +96,7 @@ func TestExtensionInterruptPermissionE2E(t *testing.T) {
 	authorizer, err := ideauthorizer.NewAuthorizer(
 		texttest.NopEditor(), prompt, storage,
 		func(fn func()) bool { fn(); return true },
-		nil, pkgtrust.NewStore(t.TempDir(), nil), ideauthorizer.Config{},
+		e2eBrowser{}, pkgtrust.NewStore(), execScheme, uri, ideauthorizer.Config{},
 	)
 	require.NoError(t, err)
 
@@ -106,7 +108,7 @@ func TestExtensionInterruptPermissionE2E(t *testing.T) {
 
 	runner, err := baseRunner.WorkspaceExtensionsRunner(
 		uri,
-		extension.BrowserResources(hostBrowser, publishEvent),
+		extension.BrowserResources(hostBrowser, publishEvent, thandlerrpc.GraphicsConfig{}),
 		authorizer,
 		nopTrustVerifier{},
 		dataDir,
@@ -315,8 +317,8 @@ func TestExtensionInterruptPermissionConcurrentE2E(t *testing.T) {
 	prompt := newDedupingPromptOpener(ideauthorizer.PromptOptionYes)
 	storage := storagestub.NewInMemoryService()
 	authorizer, err := ideauthorizer.NewAuthorizer(
-		texttest.NopEditor(), prompt, storage, scheduleNextTick, nil,
-		pkgtrust.NewStore(t.TempDir(), nil), ideauthorizer.Config{},
+		texttest.NopEditor(), prompt, storage, scheduleNextTick, e2eBrowser{},
+		pkgtrust.NewStore(), execScheme, uri, ideauthorizer.Config{},
 	)
 	require.NoError(t, err)
 
@@ -324,7 +326,7 @@ func TestExtensionInterruptPermissionConcurrentE2E(t *testing.T) {
 
 	runner, err := baseRunner.WorkspaceExtensionsRunner(
 		uri,
-		extension.BrowserResources(hostBrowser, publishEvent),
+		extension.BrowserResources(hostBrowser, publishEvent, thandlerrpc.GraphicsConfig{}),
 		authorizer,
 		nopTrustVerifier{},
 		dataDir,
@@ -501,6 +503,12 @@ func (p *dedupingPromptOpener) calls() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.count
+}
+
+func (p *dedupingPromptOpener) Floating(
+	browser.Floating, browserapi.FloatingConfig,
+) (browser.Window, error) {
+	panic("deduping prompts never answer Always or Never, so open no scope picker")
 }
 
 // selectStored fires OnSelect on every stored prompt handler exactly

@@ -1,0 +1,1 @@
+# No tsconfig.json, jsconfig.json or package.json: tsgo checks every file in its inferred project

@@ -797,9 +797,9 @@ func (h *helixHandlerImpl) handleNormal(ev term.Event) (quit, handled bool) {
 			h.pendingRegister = true
 			doResetCount = false
 		case 'h':
-			handled = h.moveCaret(h.cursor.MoveLeft)
+			handled = h.moveHorizontally(-1)
 		case 'l':
-			handled = h.moveCaret(h.cursor.MoveRight)
+			handled = h.moveHorizontally(1)
 		case 'j':
 			handled = h.moveVertically(1)
 		case 'k':
@@ -949,9 +949,9 @@ func (h *helixHandlerImpl) handleNormal(ev term.Event) (quit, handled bool) {
 			case term.KeyEsc:
 				handled = h.setNormalMode()
 			case term.KeyArrowLeft:
-				handled = h.moveCaret(h.cursor.MoveLeft)
+				handled = h.moveHorizontally(-1)
 			case term.KeyArrowRight:
-				handled = h.moveCaret(h.cursor.MoveRight)
+				handled = h.moveHorizontally(1)
 			case term.KeyArrowDown:
 				handled = h.moveVertically(1)
 			case term.KeyArrowUp:
@@ -978,9 +978,23 @@ func (h *helixHandlerImpl) handleNormal(ev term.Event) (quit, handled bool) {
 	return quit, handled
 }
 
+// toggleExtend is select_mode and exit_select_mode. Entering widens a
+// point at the end of the document back onto the last character, so
+// that select mode has something to extend from, as Helix does.
 func (h *helixHandlerImpl) toggleExtend() {
 	h.extend = !h.extend
 	if h.extend {
+		h.carryEdits()
+		buf := h.buf()
+		h.transformSelection(func(r rng) rng {
+			if !r.isPoint() || docEOF(buf, r.head) != docEOF(buf, docEnd(buf)) {
+				return r
+			}
+			if prev, ok := prevPos(buf, r.anchor); ok {
+				r.anchor = prev
+			}
+			return r
+		})
 		if _, ok := h.cursor.SelectionMode(); !ok {
 			h.cursor.Select()
 		}
@@ -998,6 +1012,30 @@ func (h *helixHandlerImpl) moveVertically(dir int) bool {
 			return h.cursor.MoveDownLines(count)
 		}
 		return h.cursor.MoveUpLines(count)
+	})
+}
+
+// moveHorizontally is move_horizontally: every range's cursor steps
+// count characters through the document, so it crosses line endings
+// and stops at either end of the document.
+func (h *helixHandlerImpl) moveHorizontally(dir int) bool {
+	h.carryEdits()
+	buf := h.buf()
+	count := h.motionCount()
+	return h.transformSelection(func(r rng) rng {
+		pos := docEOF(buf, r.cursor(buf))
+		for range max(1, count) {
+			step := prevPos
+			if dir > 0 {
+				step = nextPos
+			}
+			next, ok := step(buf, pos)
+			if !ok {
+				break
+			}
+			pos = next
+		}
+		return r.putCursor(buf, pos, h.extend)
 	})
 }
 
@@ -1484,23 +1522,63 @@ func (h *helixHandlerImpl) dedent() bool {
 	return ok
 }
 
-// deleteWordForward implements A-d in insert mode.
-func (h *helixHandlerImpl) deleteWordForward() bool {
-	origin := h.cursor.CursorAtScroll()
-	h.cursor.Unselect()
-	if !h.cursor.MoveRightEndWord() {
+// deleteWordsForward is delete_word_forward over every range. A range
+// facing forward grows by a character before the deletion, so it keeps
+// its width as the text after it moves left and its cursor ends up on
+// the character before the deletion. A point stands for the
+// one-character range Helix would hold there and follows the caret.
+func (h *helixHandlerImpl) deleteWordsForward() bool {
+	h.carryEdits()
+	buf := h.buf()
+	grown := make(map[rng]rng, h.sel.len())
+	for _, r := range h.sel.ranges {
+		g := r
+		if coordinatesBefore(r.anchor, r.head) {
+			if next, ok := nextPos(buf, r.head); ok {
+				g.head = next
+			}
+		}
+		grown[r] = g
+	}
+	return h.fanOut(func(i int) bool {
+		return h.deleteWordForward(h.sel.ranges[i])
+	}, func(r rng, cs changeSet, caret term.Coordinates) rng {
+		if r.isPoint() {
+			return h.edited(r, cs, caret)
+		}
+		return grown[r].mapThrough(cs)
+	})
+}
+
+// deleteWordForward is delete_word_forward, A-d in insert mode: it
+// deletes from r's cursor to the end move_next_word_end reaches from r.
+// When that takes the rest of the document from a range facing forward,
+// which an insert-mode point is once Helix widens it, a line ending goes
+// back at the end so the cursor still has a character to sit on.
+func (h *helixHandlerImpl) deleteWordForward(r rng) bool {
+	buf := h.buf()
+	if buf.Rows() == 0 {
 		return false
 	}
-	end := h.cursor.CursorAtScroll()
-	if next, ok := nextCoord(h.buf(), end); ok {
-		end = next
+	end := clampInsert(buf, docEnd(buf))
+	from := clampInsert(buf, r.cursor(buf))
+	anchor, head := wordMove(buf, r.anchor, r.head, 1, nextWordEnd)
+	to := clampInsert(buf, rng{anchor: anchor, head: head}.to())
+	if !coordinatesBefore(from, to) {
+		return false
 	}
-	h.cursor.MoveToScroll(origin)
-	if !h.cursor.SelectRange(origin, end) {
+	h.cursor.Unselect()
+	if !h.cursor.SelectRange(from, to) {
 		return false
 	}
 	ok := h.cursor.DeleteSelection()
 	h.cursor.Unselect()
+	forward := coordinatesBefore(r.anchor, r.head) || (r.isPoint() && clampInsert(buf, r.head) != end)
+	if ok && forward && to == end {
+		h.cursor.MoveToScroll(clampInsert(buf, docEnd(buf)))
+		h.cursor.InsertString("\n")
+		h.cursor.MoveToScroll(from)
+	}
 	return ok
 }
 
@@ -1660,10 +1738,10 @@ func (h *helixHandlerImpl) handleInsert(ev term.Event) (quit, handled bool) {
 		case term.KeyBackspace:
 			handled = h.insertAtCursors(h.cursor.BackspaceWord)
 		case term.KeyDelete:
-			handled = h.insertAtCursors(h.deleteWordForward)
+			handled = h.deleteWordsForward()
 		default:
 			if ev.Ch == 'd' {
-				handled = h.insertAtCursors(h.deleteWordForward)
+				handled = h.deleteWordsForward()
 			}
 		}
 	case term.ModCtrl:
@@ -2150,11 +2228,19 @@ func (h *helixHandlerImpl) copySelectionForDelete() {
 	}
 }
 
-// selectionLinewise is selection_is_linewise: every range covers whole
-// lines.
+// selectionLinewise is selection_is_linewise: every range holds a line
+// ending and runs from the start of its first line to the start of the
+// line after its last, or to the end of the document from the last
+// line. A range over just an unterminated last line holds no line
+// ending, so it is not linewise.
 func (h *helixHandlerImpl) selectionLinewise() bool {
+	buf := h.buf()
+	rows := buf.Rows()
 	for _, r := range h.sel.ranges {
-		if !lineShaped(r) {
+		first, last := r.lineRange(buf)
+		end := docEOF(buf, term.Coordinates{Y: min(last+1, rows)})
+		if r.from() != (term.Coordinates{Y: first}) || docEOF(buf, r.to()) != end ||
+			!strings.Contains(rangeText(buf, r), "\n") {
 			return false
 		}
 	}
@@ -2205,7 +2291,8 @@ func (h *helixHandlerImpl) changeSelection(yank bool) bool {
 
 // pasteClipboard is paste_impl: the i-th register fragment lands next
 // to the i-th range, the last fragment serving every range beyond
-// that, and the pasted text becomes the selection. Unlike vi's
+// that, and the pasted text becomes the selection, except in select
+// mode, where the selection stays on the text it covered. Unlike vi's
 // visual-mode paste, Helix never replaces the selection: that is what
 // R does. A characterwise paste goes at range.from()/range.to(), a
 // linewise one at the surrounding line boundaries.
@@ -2229,7 +2316,6 @@ func (h *helixHandlerImpl) pasteClipboard(after bool) bool {
 	buf := h.buf()
 	rows := buf.Rows()
 	edits := make([]edit, len(values))
-	opened := make([]bool, len(values))
 	for i, r := range h.sel.ranges {
 		value := values[i]
 		var pos term.Coordinates
@@ -2247,26 +2333,17 @@ func (h *helixHandlerImpl) pasteClipboard(after bool) bool {
 		if linewise && !strings.HasSuffix(value, "\n") {
 			value += "\n"
 		}
-		// The buffer has no position past its last row, so a line
-		// pasted after it opens the row it needs first.
-		if pos.Y >= rows && rows > 0 {
-			pos = term.Coordinates{X: buf.Columns(rows - 1), Y: rows - 1}
-			value = "\n" + strings.TrimSuffix(value, "\n")
-			opened[i] = true
-		}
-		edits[i] = edit{from: pos, to: pos, text: value}
+		// Past the last line is the end of the document, so lines pasted
+		// after an unterminated last line run on from its text.
+		edits[i] = edit{from: docEOF(buf, pos), to: docEOF(buf, pos), text: value}
 	}
-	spans, _ := h.applyEdits(edits)
+	spans, cs := h.applyEdits(edits)
+	// Select mode keeps the selection on the text it was on.
+	if h.extend {
+		h.setSelection(h.sel.mapThrough(cs))
+		return true
+	}
 	for i := range spans {
-		if opened[i] {
-			// The span starts on the line-break it opened with; the
-			// pasted lines are the rows after it, down to the document
-			// end, which is where its trailing line ending went.
-			spans[i] = rng{
-				anchor: term.Coordinates{Y: spans[i].anchor.Y + 1},
-				head:   term.Coordinates{Y: spans[i].head.Y + 1},
-			}
-		}
 		spans[i] = spans[i].withDirection(h.sel.ranges[i].backward())
 	}
 	h.setSelection(selection{ranges: spans, primary: h.sel.primary})
@@ -2298,8 +2375,8 @@ func (h *helixHandlerImpl) replaceWithYanked() bool {
 	return true
 }
 
-// replaceSelection is replace: every character under every range
-// becomes ch, line endings excepted, and the ranges survive.
+// replaceSelection is replace: every character under every range,
+// line endings included, becomes ch, and the ranges survive.
 func (h *helixHandlerImpl) replaceSelection(ch rune) bool {
 	h.carryEdits()
 	buf := h.buf()
@@ -2308,15 +2385,15 @@ func (h *helixHandlerImpl) replaceSelection(ch rune) bool {
 		if r.isPoint() {
 			continue
 		}
-		var b strings.Builder
-		for _, c := range rangeText(buf, r) {
-			if c == '\n' {
-				b.WriteRune(c)
-			} else {
-				b.WriteRune(ch)
+		n := 0
+		for pos, end := r.from(), docEOF(buf, r.to()); coordinatesBefore(pos, end); n++ {
+			next, ok := nextPos(buf, pos)
+			if !ok {
+				break
 			}
+			pos = next
 		}
-		edits = append(edits, edit{from: r.from(), to: r.to(), text: b.String()})
+		edits = append(edits, edit{from: r.from(), to: r.to(), text: strings.Repeat(string(ch), n)})
 	}
 	if len(edits) == 0 {
 		return false
@@ -2489,7 +2566,7 @@ func (h *helixHandlerImpl) insertAfterSelection() {
 	if rows, n := buf.Rows(), h.sel.len(); rows > 0 && n > 0 {
 		end := term.Coordinates{X: buf.Columns(rows - 1), Y: rows - 1}
 		last := h.sel.ranges[n-1]
-		if !last.isPoint() && last.to() == end {
+		if !last.isPoint() && docEOF(buf, last.to()) == end {
 			buf.Edit(context.Background(), end, end, "\n")
 			h.carryEdits()
 		}
@@ -2535,7 +2612,9 @@ func (h *helixHandlerImpl) insertWithIndent(lineEnd bool) {
 // openLine is open: a line goes in next to every range, count times,
 // and a cursor lands on each new line, which is what makes 3o three
 // cursors. o opens under the last row a range covers and O above its
-// first, whichever end the head is on.
+// first, whichever end the head is on. o finds that row from the
+// character before the range's end, so a point at the end of the
+// document after a final line ending opens under the line it ends.
 func (h *helixHandlerImpl) openLine(above bool) {
 	count := h.motionCount()
 	h.carryEdits()
@@ -2545,9 +2624,12 @@ func (h *helixHandlerImpl) openLine(above bool) {
 	h.fanOut(func(i int) bool {
 		r := h.sel.ranges[i]
 		h.cursor.Unselect()
-		row := r.from().Y
+		row := clampInsert(buf, r.from()).Y
 		if !above {
 			_, row = r.lineRange(buf)
+			if prev, ok := prevPos(buf, r.to()); ok {
+				row = prev.Y
+			}
 		}
 		h.cursor.MoveToScroll(term.Coordinates{Y: row})
 		for i := range count {

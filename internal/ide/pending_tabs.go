@@ -29,9 +29,9 @@ import (
 	"unstable.build/rune/internal/text"
 )
 
-// pendingTabOpener opens the tabs a workspace restored as placeholders
-// (see text.PendingTabs) through the resource openers its extensions
-// register.
+// pendingTabOpener opens the tabs that show placeholders (see
+// text.PendingTabs), restored by a workspace or asked for by the user,
+// through the resource openers its extensions register.
 type pendingTabOpener struct {
 	comp          *text.Component
 	notifications browserapi.Notifications
@@ -70,6 +70,19 @@ func newPendingTabOpener(
 func (p *pendingTabOpener) reopenAsync(scheme string) {
 	go debug.CapturePanicReport(func() {
 		p.reopen(scheme)
+	})
+}
+
+// open asks opener, off the event loop, for the content of the placeholder
+// of uri, unless it was asked already and has not answered yet. Event loop
+// only.
+func (p *pendingTabOpener) open(opener textapi.ResourceOpenHandler, uri workspaceapi.URI) {
+	if _, opening := p.opening[uri.String()]; opening {
+		return
+	}
+	p.opening[uri.String()] = struct{}{}
+	go debug.CapturePanicReport(func() {
+		p.openTab(p.ctx, opener, uri)
 	})
 }
 

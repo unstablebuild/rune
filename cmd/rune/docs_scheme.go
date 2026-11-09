@@ -19,7 +19,7 @@ package main
 import (
 	"bytes"
 	"context"
-	"embed"
+	_ "embed"
 	"fmt"
 	"io/fs"
 	"path/filepath"
@@ -29,25 +29,9 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"unstable.build/rune/docs"
 	"unstable.build/rune/internal/workspace"
 )
-
-const docsScheme = "docs"
-
-// Only markdown is embedded: the docs tree also carries gifs and
-// other site assets that the in-memory workspace never serves, so baking
-// them into the binary would only bloat it. Patterns are listed per
-// nesting level because go:embed globs do not recurse; add a deeper
-// level here if the docs tree grows one.
-//
-//go:embed docs/docs/*.md
-//go:embed docs/docs/*/*.md
-//go:embed docs/docs/*/*/*.md
-var docsFS embed.FS
-
-// docsSchemeRoot is treated as the workspace root: paths under it are
-// flattened so "docs/docs/develop/sdk.md" surfaces as "/develop/sdk.md".
-const docsSchemeRoot = "docs/docs"
 
 // docsAgentsMDTmpl lives next to this file rather than in the docs
 // tree so we can change agent behavior independently of the
@@ -100,7 +84,7 @@ func renderDocsAgentsMD(configPath string) ([]byte, error) {
 // scheme so the agent can apply_patch the user's config from inside
 // docs:///.
 func newDocsSchemeFunc(configPath string) schemeapi.SchemeFunc {
-	inner := workspace.NewInMemorySchemeFunc(docsScheme)
+	inner := workspace.NewInMemorySchemeFunc(workspace.DocsScheme)
 	agentsMD, err := renderDocsAgentsMD(configPath)
 	return func(
 		ctx context.Context, cfg config.Config, uri workspaceapi.URI,
@@ -137,12 +121,12 @@ func newDocsSchemeFunc(configPath string) schemeapi.SchemeFunc {
 	}
 }
 
-// prefillDocsScheme walks docsFS (which always uses forward slashes,
+// prefillDocsScheme walks docs.FS (which always uses forward slashes,
 // even on Windows) and writes agentsMD and configYAML after the walk
 // so a stray AGENTS.md or .rune/config.yaml in the docs tree
 // cannot win.
 func prefillDocsScheme(s schemeapi.Scheme, agentsMD, configYAML []byte) error {
-	if err := fs.WalkDir(docsFS, docsSchemeRoot, func(p string, d fs.DirEntry, err error) error {
+	if err := fs.WalkDir(docs.FS, docs.Root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -152,11 +136,11 @@ func prefillDocsScheme(s schemeapi.Scheme, agentsMD, configYAML []byte) error {
 		if !strings.HasSuffix(p, ".md") {
 			return nil
 		}
-		data, err := docsFS.ReadFile(p)
+		data, err := docs.FS.ReadFile(p)
 		if err != nil {
 			return fmt.Errorf("read embedded %q: %w", p, err)
 		}
-		rel := strings.TrimPrefix(p, docsSchemeRoot+"/")
+		rel := strings.TrimPrefix(p, docs.Root+"/")
 		dst := "/" + rel
 		return writeDocsFile(s, dst, data)
 	}); err != nil {

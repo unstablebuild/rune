@@ -124,21 +124,13 @@ func showMarkdown(
 		PadHorizontal:    2,
 		ContentAlignment: component.AlignmentCentered,
 	})
-	var win browserapi.Window
-	view.inner = browserapi.FuncFloatingHandler(span, func() error {
-		defer wm.CloseWindow(win) //nolint:errcheck
-		return mdh.Close()
-	})
-	w, err := wm.Floating(view, browserapi.FloatingConfig{
+	view.inner = browserapi.FuncFloatingHandler(span, mdh.Close)
+	_, err = wm.Floating(view, browserapi.FloatingConfig{
 		Alignment: component.AlignmentCentered,
 	})
 	if err != nil {
 		return fmt.Errorf("show viewer: %w", err)
 	}
-	// Close (on the stream goroutine) reads win under the view lock.
-	view.mu.Lock()
-	win = w
-	view.mu.Unlock()
 	return nil
 }
 

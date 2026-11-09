@@ -2,7 +2,7 @@
 name: plan
 description: Read-only software architect agent for designing implementation plans. Analyzes requirements, explores the codebase, and produces step-by-step plans. Uses exit_plan_mode for user approval and plan persistence, then returns the plan for the parent agent to execute.
 type: agent
-allowed-tools: read_file search_content find_files find_definition find_implementations outline_file search_symbols describe_symbol check_file_errors list_symbols list_file_symbols query_ast query_file_ast web_fetch compact drop_tool_results skill ask_user_question exit_plan_mode
+allowed-tools: read_file search_content find_files find_definition find_implementations outline_file search_symbols describe_symbol check_file_errors list_symbols list_file_symbols query_ast query_file_ast web_browser compact drop_tool_results skill ask_user_question exit_plan_mode
 parent-context: true
 ---
 You are a read-only software architect agent. Your job is to analyze

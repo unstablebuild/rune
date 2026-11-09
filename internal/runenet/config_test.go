@@ -79,3 +79,40 @@ func TestFromConfig(t *testing.T) {
 		})
 	}
 }
+
+func TestParseControlURL(t *testing.T) {
+	cases := []struct {
+		name    string
+		raw     string
+		want    string
+		wantErr string
+	}{
+		{name: "https", raw: "https://headscale.example.com",
+			want: "https://headscale.example.com"},
+		{name: "http with a port", raw: "http://10.0.0.2:8080",
+			want: "http://10.0.0.2:8080"},
+		{name: "trailing slash and spaces are trimmed",
+			raw: "  https://headscale.example.com/ ", want: "https://headscale.example.com"},
+		{name: "a path is kept", raw: "https://example.com/headscale",
+			want: "https://example.com/headscale"},
+		{name: "empty", raw: "", wantErr: "want an http:// or https:// URL"},
+		{name: "no scheme", raw: "headscale.example.com",
+			wantErr: "want an http:// or https:// URL"},
+		{name: "other scheme", raw: "ftp://headscale.example.com",
+			wantErr: "want an http:// or https:// URL"},
+		{name: "no host", raw: "https://", wantErr: "want an http:// or https:// URL"},
+		{name: "unparseable", raw: "https://[::1", wantErr: "control URL"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ParseControlURL(tc.raw)
+			if tc.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}

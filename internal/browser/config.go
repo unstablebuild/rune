@@ -17,15 +17,22 @@
 package browser
 
 import (
+	"net/url"
 	"time"
 
 	log "github.com/sirupsen/logrus"
 	"github.com/unstablebuild/blue/logging"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
+	"github.com/unstablebuild/rune-go-sdk/api/syntaxapi"
+	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
+	tcomponent "unstable.build/rune/internal/component"
+	"unstable.build/rune/internal/component/shader/shaderloop"
 	"unstable.build/rune/internal/handler"
+	"unstable.build/rune/internal/sounds"
+	"unstable.build/rune/internal/term/programstatus"
 )
 
 // DefaultConfig returns the default Config.
@@ -44,19 +51,199 @@ func DefaultConfig() Config {
 		PromptConfig: PromptConfig{
 			TextAttr:       term.Attributes{},
 			HighlightAttr:  term.Attributes{Bg: term.ColorRed, Fg: term.ColorWhite},
+			HoverAttr:      term.Attributes{Bg: term.ColorSilver, Fg: term.ColorWhite},
+			ClickedAttr:    term.Attributes{Bg: term.ColorFuchsia, Fg: term.ColorWhite},
 			BackgroundAttr: term.Attributes{},
 			MinWidth:       60,
 		},
 		Notifications: logNotifications{},
+		TabStatus:     DefaultTabStatusConfig(),
 	}
+}
+
+// DefaultTabStatusConfig returns the default TabStatusConfig. Its icons
+// are Nerd Font glyphs.
+func DefaultTabStatusConfig() TabStatusConfig {
+	return TabStatusConfig{
+		Spinner:    []rune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
+		SpinnerFPS: 10,
+		BlockedIcons: map[programstatus.Kind]rune{
+			programstatus.KindNone:       '󰹇',
+			programstatus.KindPermission: '󰹇',
+			programstatus.KindQuestion:   '󰋗',
+			programstatus.KindAuth:       '󰗒',
+		},
+		DoneIcon:  '󰗠',
+		ErrorIcon: '󰅙',
+		ContentTab: TabStatusStyle{
+			IdleIconAttr:    term.Attributes{Fg: term.ColorGray},
+			WorkingIconAttr: term.Attributes{Fg: term.ColorAqua},
+			WorkingDoneAttr: term.Attributes{Fg: term.ColorAqua},
+			BlockedAttr:     term.Attributes{Fg: term.ColorYellow},
+			BlockedIconAttr: term.Attributes{Fg: term.ColorYellow},
+			DoneAttr:        term.Attributes{Fg: term.ColorGreen},
+			DoneIconAttr:    term.Attributes{Fg: term.ColorGreen},
+			ErrorAttr:       term.Attributes{Fg: term.ColorRed},
+			ErrorIconAttr:   term.Attributes{Fg: term.ColorRed},
+		},
+		WorkspaceTab: TabStatusStyle{
+			WorkingDoneAttr: term.Attributes{Fg: term.ColorAqua},
+			BlockedAttr:     term.Attributes{Fg: term.ColorYellow},
+			DoneAttr:        term.Attributes{Fg: term.ColorGreen},
+			ErrorAttr:       term.Attributes{Fg: term.ColorRed},
+		},
+	}
+}
+
+// TabStatusConfig styles the decorations a Component draws on a tab to
+// reflect the status its program reported via Component.SetTabStatus,
+// and those the workspace bar draws from the most pressing status among
+// the tabs of each workspace.
+type TabStatusConfig struct {
+	// Spinner holds the frames cycled, at SpinnerFPS frames per second,
+	// as the icon of working tabs. Empty leaves the icon alone; a zero
+	// SpinnerFPS falls back to 10.
+	Spinner    []rune
+	SpinnerFPS int
+	// BlockedIcons maps the kind of a blocked status to the icon shown
+	// for it. programstatus.KindNone is the fallback for kinds without
+	// an entry; a missing fallback leaves the icon alone.
+	BlockedIcons map[programstatus.Kind]rune
+	// DoneIcon and ErrorIcon replace the icon of done and error tabs.
+	// Zero leaves the icon alone.
+	DoneIcon  rune
+	ErrorIcon rune
+
+	// ContentTab styles the tabs of a Component. WorkspaceTab styles
+	// the tabs of the workspace bar, which a Component never draws.
+	ContentTab   TabStatusStyle
+	WorkspaceTab TabStatusStyle
+}
+
+// TabStatusStyle styles one kind of tab from its status. Every
+// attribute is layered over the tab's usual one, so colors left at
+// term.ColorDefault keep the configured ones, and a zero attribute
+// leaves the tab's own alone.
+type TabStatusStyle struct {
+	// Progress enables a completed prefix on working tab labels. When
+	// false, activity animation covers the full label and reported
+	// progress remains available in the tab's status.
+	Progress bool
+
+	// IdleIconAttr styles the icon of a tab whose program reported
+	// idle, i.e. that it waits on the user; a tab that reported
+	// nothing is left alone.
+	IdleIconAttr term.Attributes
+	// WorkingIconAttr styles the spinner. WorkingDoneAttr paints the
+	// completed prefix of the name of a working tab that reported
+	// progress, when Progress is enabled.
+	WorkingIconAttr term.Attributes
+	WorkingDoneAttr term.Attributes
+	// BlockedAttr, DoneAttr and ErrorAttr style the name of a tab in the
+	// respective state, and their *IconAttr counterparts its icon.
+	BlockedAttr     term.Attributes
+	BlockedIconAttr term.Attributes
+	DoneAttr        term.Attributes
+	DoneIconAttr    term.Attributes
+	ErrorAttr       term.Attributes
+	ErrorIconAttr   term.Attributes
+}
+
+// BarAttrs returns the name and icon attributes that reflect status:
+// the pair configured for its state, only the icon one for working
+// and for a reported idle, and zero when nothing was reported.
+func (c TabStatusStyle) BarAttrs(status programstatus.Summary) (name, icon term.Attributes) {
+	switch status.State {
+	case programstatus.Idle:
+		if len(status.Records) > 0 {
+			return term.Attributes{}, c.IdleIconAttr
+		}
+	case programstatus.Working:
+		return term.Attributes{}, c.WorkingIconAttr
+	case programstatus.Blocked:
+		return c.BlockedAttr, c.BlockedIconAttr
+	case programstatus.Done:
+		return c.DoneAttr, c.DoneIconAttr
+	case programstatus.Error:
+		return c.ErrorAttr, c.ErrorIconAttr
+	}
+	return term.Attributes{}, term.Attributes{}
 }
 
 // PromptConfig holds configuration for the browser's Prompt component.
 type PromptConfig struct {
-	TextAttr       term.Attributes
-	HighlightAttr  term.Attributes
+	TextAttr      term.Attributes
+	HighlightAttr term.Attributes
+	// HoverAttr styles the tutorial tile's buttons under the mouse
+	// pointer. The highlight of a Component's prompts follows the
+	// pointer instead, as it does the arrow keys.
+	HoverAttr term.Attributes
+	// ClickedAttr styles a button from the mouse press until the
+	// release that selects it.
+	ClickedAttr    term.Attributes
 	BackgroundAttr term.Attributes
 	MinWidth       int
+	// Images names the images that writers that can draw images show
+	// under the prompt's buttons, in place of their background.
+	Images PromptImages
+	// Parser highlights the code blocks of prompt messages on the
+	// event loop that ScheduleNextTick schedules on, as in
+	// markdown.Config. Without a Parser, code blocks are not
+	// highlighted, and without ScheduleNextTick they are highlighted
+	// as the prompt is built.
+	Parser           syntaxapi.Parser
+	ScheduleNextTick func(func()) bool
+	// OnLinkClick handles a link clicked in a prompt's message and
+	// reports whether it did. Without it, links are plain text.
+	OnLinkClick func(*url.URL) bool
+}
+
+// PromptImages names the images of a prompt's buttons in each state, as
+// component.ButtonImages draws them. A state without images is drawn
+// with another's, so Idle names images whenever any other state does.
+type PromptImages struct {
+	Idle, Selected, Hover, Pressed PromptButtonImage
+	Outset                         component.ButtonOutset
+}
+
+// Empty reports whether i names no image, whatever its Outset.
+func (i PromptImages) Empty() bool {
+	return i.Idle.Empty() && i.Selected.Empty() && i.Hover.Empty() && i.Pressed.Empty()
+}
+
+// ButtonImages returns the images i names, taken from g so that each
+// URI shares one image with whatever else g draws it in. It is nil when
+// i names no image or g is nil.
+func (i PromptImages) ButtonImages(g *tcomponent.FrameGraphics) *component.ButtonImages {
+	if i.Empty() || g == nil {
+		return nil
+	}
+	state := func(img PromptButtonImage) component.ButtonImage {
+		return component.ButtonImage{
+			Left:   g.Image(img.Left),
+			Middle: g.Image(img.Middle),
+			Right:  g.Image(img.Right),
+		}
+	}
+	return &component.ButtonImages{
+		Idle:     state(i.Idle),
+		Selected: state(i.Selected),
+		Hover:    state(i.Hover),
+		Pressed:  state(i.Pressed),
+		Outset:   i.Outset,
+	}
+}
+
+// PromptButtonImage names the image URIs of a button in one state, as
+// component.ButtonImage places them. An empty URI leaves its cells
+// without an image.
+type PromptButtonImage struct {
+	Left, Middle, Right string
+}
+
+// Empty reports whether i names no image.
+func (i PromptButtonImage) Empty() bool {
+	return i == PromptButtonImage{}
 }
 
 // Wallpaper is a tui.Component wallpaper factory.
@@ -87,6 +274,21 @@ type Config struct {
 	NonFocusTabIconAttr   term.Attributes
 	FocusTabHighlightAttr term.Attributes
 	FocusTabHighlightChar rune
+	// HoverTabAttr is layered over the label of a tab not in focus while
+	// the pointer is on it, under the tab's own attributes.
+	HoverTabAttr term.Attributes
+	// TabImages names the images that writers that can draw images show
+	// under each tab, across the rows of the tab bar, in the states
+	// tcomponent.Tabs.SetGraphics tells.
+	TabImages PromptImages
+	// FocusTabHighlightGraphics names the images drawn over the cells of
+	// the focus-frame highlight, below the text of the labels, also when
+	// FocusTabHighlightChar is zero.
+	FocusTabHighlightGraphics tcomponent.LineGraphics
+	// TabSounds names the sounds the tab bar plays through SoundPlayer,
+	// which plays none when nil.
+	TabSounds   handler.TabSounds
+	SoundPlayer sounds.Player
 	// TabOverrideIcon, when non-zero, forces every tab icon
 	// rendered by this Component to this rune, regardless of the
 	// icon passed to NewTab by callers.
@@ -102,15 +304,32 @@ type Config struct {
 	OnTabIconClick func(*Tab)
 
 	// ActiveTabShader names the continuous effect run over the labels of
-	// tabs marked active via Component.SetTabActivity. Empty disables
-	// it. ActiveTabShaderFPS and ActiveTabShaderLoop tune the effect and
-	// fall back to the catalog defaults when zero.
-	ActiveTabShader     string
-	ActiveTabShaderFPS  int
-	ActiveTabShaderLoop time.Duration
-	// OnTabActivity is called whenever a tab's activity changes,
-	// including when an active tab is removed.
-	OnTabActivity func()
+	// tabs whose program reported working via Component.SetTabStatus.
+	// Empty disables it. ActiveTabShaderFPS and ActiveTabShaderLoop tune
+	// the effect and fall back to the catalog defaults when zero.
+	// ActiveTabShaderParams tunes the colour and strength of the effects
+	// that blend text toward a colour.
+	ActiveTabShader       string
+	ActiveTabShaderFPS    int
+	ActiveTabShaderLoop   time.Duration
+	ActiveTabShaderParams shaderloop.Params
+	// OnTabStatus is called whenever a tab's status changes, with the
+	// status it had before and the one it has now. A tab removed with a
+	// status reports a change to idle.
+	OnTabStatus func(uri workspaceapi.URI, prev, status programstatus.Summary)
+	// OnTabRemoved is called once a tab is removed, before OnTabStatus
+	// reports the loss of its status, if it had one, so whoever lists
+	// tabs by status can drop the tab rather than see it go idle first.
+	// The tabs closed along with the Component are not reported.
+	OnTabRemoved func(uri workspaceapi.URI)
+	// OnContentSeen is called on the event loop each time the user
+	// comes to see the focus window: when that window gains focus, or
+	// when the Component regains focus. It receives the window's
+	// content or, for a window showing a tab, the tab's handler. What
+	// the program behind that content reported has been seen.
+	OnContentSeen func(content browserapi.Handler)
+	// TabStatus styles the decorations that reflect a tab's status.
+	TabStatus TabStatusConfig
 
 	// RightInset reserves a column of this width in cells to the right
 	// of the window manager, leaving room for another UI element to
@@ -132,7 +351,61 @@ type Config struct {
 	PromptConfig
 
 	component.FrameUnionCharSet
+	// WindowManagerConfig's Interrupter also animates the tab status
+	// spinner, the ActiveTabShader and the drop-target veil. Without
+	// one they hold still and only repaint when the host redraws for
+	// another reason.
 	handler.WindowManagerConfig
+}
+
+// Style is what Component.Restyle changes on a running Component. Of
+// WindowManager and Prompt, only the fields Config.Restyled copies apply.
+type Style struct {
+	WindowManager     handler.WindowManagerConfig
+	FrameUnionCharSet component.FrameUnionCharSet
+	Prompt            PromptConfig
+	Wallpaper         Wallpaper
+	Tabs              TabStyle
+}
+
+// TabStyle is how the tab bar of a Component looks, as the Config
+// fields of the same names define it.
+type TabStyle struct {
+	FocusTabAttr          term.Attributes
+	NonFocusTabAttr       term.Attributes
+	FocusTabIconAttr      term.Attributes
+	NonFocusTabIconAttr   term.Attributes
+	FocusTabHighlightAttr term.Attributes
+	FocusTabHighlightChar rune
+	HoverTabAttr          term.Attributes
+	Images                PromptImages
+	HighlightGraphics     tcomponent.LineGraphics
+	Sounds                handler.TabSounds
+}
+
+// Restyled returns c with the style of s. The rest of c, including the
+// prompts' Parser, ScheduleNextTick, OnLinkClick and MinWidth, stays c's.
+func (c Config) Restyled(s Style) Config {
+	c.WindowManagerConfig = c.WindowManagerConfig.Restyled(s.WindowManager)
+	c.FrameUnionCharSet = s.FrameUnionCharSet
+	c.PromptConfig.TextAttr = s.Prompt.TextAttr
+	c.PromptConfig.HighlightAttr = s.Prompt.HighlightAttr
+	c.PromptConfig.HoverAttr = s.Prompt.HoverAttr
+	c.PromptConfig.ClickedAttr = s.Prompt.ClickedAttr
+	c.PromptConfig.BackgroundAttr = s.Prompt.BackgroundAttr
+	c.PromptConfig.Images = s.Prompt.Images
+	c.Wallpaper = s.Wallpaper
+	c.FocusTabAttr = s.Tabs.FocusTabAttr
+	c.NonFocusTabAttr = s.Tabs.NonFocusTabAttr
+	c.FocusTabIconAttr = s.Tabs.FocusTabIconAttr
+	c.NonFocusTabIconAttr = s.Tabs.NonFocusTabIconAttr
+	c.FocusTabHighlightAttr = s.Tabs.FocusTabHighlightAttr
+	c.FocusTabHighlightChar = s.Tabs.FocusTabHighlightChar
+	c.HoverTabAttr = s.Tabs.HoverTabAttr
+	c.TabImages = s.Tabs.Images
+	c.FocusTabHighlightGraphics = s.Tabs.HighlightGraphics
+	c.TabSounds = s.Tabs.Sounds
+	return c
 }
 
 type logNotifications struct {

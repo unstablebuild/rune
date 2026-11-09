@@ -20,7 +20,6 @@ import (
 	"context"
 	"errors"
 
-	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"unstable.build/rune/cmd/rune-agent/agent"
 	"unstable.build/rune/cmd/rune-agent/dialogue/dialoguetui"
 )
@@ -28,11 +27,11 @@ import (
 // tuiPrompter bridges agent.Prompter to the dialoguetui event channel
 // so prompts surface as inline selection UI in the chat tab.
 type tuiPrompter struct {
-	tx   chan<- dialoguetui.MessageEvent
-	noti browserapi.Notifications
-	// status is the chat the prompt belongs to, whose bar reports
-	// phaseAsking for as long as the prompt is pending.
-	status syncComponent
+	tx chan<- dialoguetui.MessageEvent
+	// chat is the chat the prompt belongs to, whose bar reports
+	// phaseAsking and whose tab reports blocked for as long as the
+	// prompt is pending.
+	chat syncComponent
 }
 
 func (tp *tuiPrompter) Prompt(ctx context.Context, req agent.PromptRequest) (agent.PromptResponse, error) {
@@ -72,9 +71,10 @@ func (tp *tuiPrompter) Prompt(ctx context.Context, req agent.PromptRequest) (age
 	// the turn was executing tools, is what lets prompts that overlap
 	// unwind in order: the last one to open hands back phaseAsking and
 	// the first hands back the turn's own phase.
-	prevPhase := tp.status.swapPhase(phaseAsking)
-	defer tp.status.swapPhase(prevPhase)
-	_, _ = tp.noti.Notify(browserapi.LevelWarn, "Input required: %s", req.Title)
+	prevPhase := tp.chat.swapPhase(phaseAsking)
+	defer tp.chat.swapPhase(prevPhase)
+	release := tp.chat.tab.blocked(req.Kind, req.Title)
+	defer release()
 	select {
 	case vals := <-resultCh:
 		if vals == nil {

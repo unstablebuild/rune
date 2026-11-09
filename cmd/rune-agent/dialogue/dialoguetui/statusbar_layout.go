@@ -70,6 +70,9 @@ const (
 	StatusBarContextGauge
 	// StatusBarCacheGauge is a fixed-width prompt cache hit-rate gauge.
 	StatusBarCacheGauge
+	// StatusBarImage is an image drawn over the bar. Its Template
+	// surrounds the cells it reserves.
+	StatusBarImage
 )
 
 // StatusBarComponent represents an element to be rendered by the
@@ -78,6 +81,8 @@ type StatusBarComponent struct {
 	Type       StatusBarComponentType
 	Template   string
 	Attributes term.Attributes
+	// Image is set for StatusBarImage components only.
+	Image template.Image
 }
 
 // ParseStatusBarLayout parses the given layout string into a set of
@@ -101,6 +106,7 @@ type StatusBarComponent struct {
 //   - CachePct: prompt cache hit rate as a percentage.
 //   - ContextGauge: fixed-width context occupancy gauge.
 //   - CacheGauge: fixed-width prompt cache hit-rate gauge.
+//   - Image: an image drawn over the bar; see template.Image.
 //   - ShiftRight: up until this component, all components are aligned left.
 //
 // Each component can have custom attributes via a pipe operator "|".
@@ -113,6 +119,13 @@ type StatusBarComponent struct {
 //   - underline: set the text style as underline
 //   - reverse: reverse the text foreground and background
 //   - dim: dim the foreground color
+//
+// Image takes the directives template.Image describes, of which only src
+// is required. The bar is the last row of the chat, so an image taller
+// than the bar extends over the conversation above it, and whatever
+// falls outside the chat is cut off unless the image overflows. Images
+// keep their reserved cells when the bar is too narrow for every
+// element.
 func ParseStatusBarLayout(layoutStr string) (
 	ret []StatusBarComponent, err error,
 ) {
@@ -221,6 +234,9 @@ func ParseStatusBarLayout(layoutStr string) (
 			case "CacheGauge":
 				compType = StatusBarCacheGauge
 				tmpl += "%s"
+			case template.ImageField:
+				compType = StatusBarImage
+				tmpl += "%s"
 			case "ShiftRight":
 				shiftRight = true
 				ret = append(ret, StatusBarComponent{Type: StatusBarVoid})
@@ -233,6 +249,7 @@ func ParseStatusBarLayout(layoutStr string) (
 				Type:       compType,
 				Template:   tmpl,
 				Attributes: act.Attributes,
+				Image:      act.Image,
 			})
 			tmpl = ""
 

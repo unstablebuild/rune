@@ -18,11 +18,14 @@ package vte
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
+	"fmt"
 	"os"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -32,8 +35,12 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"github.com/unstablebuild/rune-go-sdk/clipboard"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/debug"
+	"unstable.build/rune/internal/handler/handlertest"
+	"unstable.build/rune/internal/sounds"
+	"unstable.build/rune/internal/term/programstatus"
 	"unstable.build/rune/internal/term/vte/vteparser"
 	"unstable.build/rune/internal/workspace/workspacetest"
 )
@@ -459,6 +466,72 @@ func TestMouseDriverSelectionStartPinnedAcrossAutoScroll(t *testing.T) {
 		"selection must keep the originally pressed cell after auto-scroll")
 }
 
+func TestViCursorFollowsContentScrolledIntoHistory(t *testing.T) {
+	t.Parallel()
+	const width, height = 10, 3
+
+	for _, tc := range []struct {
+		name         string
+		maxLines     int
+		cursorWindow term.Coordinates
+		wantCh       rune
+		wantWindow   term.Coordinates
+	}{
+		{
+			name:     "history grows",
+			maxLines: 100, cursorWindow: term.Coordinates{Y: 2, X: 7},
+			wantCh: '1', wantWindow: term.Coordinates{Y: 1, X: 7},
+		},
+		{
+			name:     "history full recycles the oldest row",
+			maxLines: height, cursorWindow: term.Coordinates{Y: 2, X: 7},
+			wantCh: '1', wantWindow: term.Coordinates{Y: 1, X: 7},
+		},
+		{
+			name:     "history disabled rotates the screen",
+			maxLines: 0, cursorWindow: term.Coordinates{Y: 2, X: 7},
+			wantCh: '1', wantWindow: term.Coordinates{Y: 1, X: 7},
+		},
+		{
+			name:     "cursor whose row leaves the screen stays on the top row",
+			maxLines: 100, cursorWindow: term.Coordinates{Y: 0, X: 0},
+			wantCh: 'b', wantWindow: term.Coordinates{Y: 0, X: 0},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := DefaultConfig()
+			cfg.MaxLines = tc.maxLines
+			comp, err := NewComponent(&testExecutor{}, &testExecutor{}, &mockTabManager{}, cfg)
+			require.NoError(t, err)
+			require.NoError(t, comp.Resize(width, height))
+			var v viHandler
+			v.init(comp, cfg)
+			v.Resize(width, height)
+
+			comp.parser.AdvanceBytes([]byte("a\r\nb\r\n$ echo 12"))
+			v.enterViMode(comp.CursorAtScroll())
+			top := comp.CursorAtScroll().Y - (height - 1)
+			v.setCursorAtScroll(term.Coordinates{
+				Y: top + tc.cursorWindow.Y, X: tc.cursorWindow.X,
+			})
+
+			// the shell's redraw after an insert in the middle of the line
+			// pushes its tail past the last column, scrolling the screen
+			comp.parser.AdvanceBytes([]byte("34"))
+
+			pos := v.cursorAtScroll()
+			cells := v.sync.vi.CellView().RawCells()
+			require.Less(t, pos.Y, len(cells))
+			require.Less(t, pos.X, len(cells[pos.Y]))
+			assert.Equal(t, string(tc.wantCh), string(cells[pos.Y][pos.X].Ch),
+				"vi cursor must stay on the content it was on")
+			win, _, _ := v.Cursor()
+			assert.Equal(t, tc.wantWindow, win)
+		})
+	}
+}
+
 type testExecutor struct {
 }
 
@@ -468,6 +541,10 @@ func (e *testExecutor) StartCommand(ctx context.Context, cmd workspaceapi.Cmd) (
 
 func (e *testExecutor) Signal(pid workspaceapi.Pid, signal syscall.Signal) error {
 	return nil
+}
+
+func (*testExecutor) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
 }
 
 func (e *testExecutor) Close() error {
@@ -505,6 +582,10 @@ func (s *stalledExecutor) StartCommand(
 ) (workspaceapi.Pid, error) {
 	<-ctx.Done()
 	return 0, ctx.Err()
+}
+
+func (*stalledExecutor) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
 }
 
 func TestComponentSpawnTimeout(t *testing.T) {
@@ -571,6 +652,10 @@ func (e *recordingExecutor) StartCommand(
 	defer e.mu.Unlock()
 	e.cmd = cmd
 	return 0, nil
+}
+
+func (*recordingExecutor) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
 }
 
 func (e *recordingExecutor) snapshotCmd() workspaceapi.Cmd {
@@ -1027,6 +1112,192 @@ func TestComponentReverseScreen(t *testing.T) {
 	}
 }
 
+// newSyncOutputComponent returns a 6x2 component showing "old" with the
+// cursor after it.
+func newSyncOutputComponent(t *testing.T) (*Component, *workspacetest.File) {
+	t.Helper()
+	comp, err := NewComponent(&testExecutor{}, &testExecutor{},
+		&mockTabManager{}, DefaultConfig())
+	require.NoError(t, err)
+	comp.parserHandler.sync.primBuf.SetDefaultChar(' ')
+	comp.parserHandler.sync.altBuf.SetDefaultChar(' ')
+	require.NoError(t, comp.Resize(6, 2))
+	comp.parser.AdvanceBytes([]byte("old"))
+	pty := comp.pty.Master.(*workspacetest.File)
+	pty.Writes = nil
+	return comp, pty
+}
+
+func ptyOutput(pty *workspacetest.File) string {
+	var sb strings.Builder
+	for _, w := range pty.Writes {
+		sb.Write(w)
+	}
+	return sb.String()
+}
+
+// liveDraw is what Draw paints when no synchronized update holds it.
+func liveDraw(comp *Component) string {
+	w := term.NewStringWriter(comp.width, comp.height)
+	comp.mu.Lock()
+	comp.drawLocked(w)
+	comp.mu.Unlock()
+	w.Flush()
+	return w.String()
+}
+
+func TestComponentSyncOutputAnswersQueries(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		desc  string
+		input string
+		want  string
+	}{
+		{desc: "cursor position", input: "\x1b[6n", want: "\x1b[1;4R"},
+		{desc: "cursor position after drawing", input: "\x1b[2;2Hx\x1b[6n", want: "\x1b[2;3R"},
+		{desc: "device status", input: "\x1b[5n", want: "\x1b[0n"},
+		{desc: "primary device attributes", input: "\x1b[c", want: "\x1b[?6c"},
+		{desc: "mode 2026 is set", input: "\x1b[?2026$p", want: "\x1b[?2026;1$y"},
+		{desc: "mode 2026 is reset after ESU", input: "\x1b[?2026l\x1b[?2026$p",
+			want: "\x1b[?2026;2$y"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.desc, func(t *testing.T) {
+			t.Parallel()
+			comp, pty := newSyncOutputComponent(t)
+
+			comp.parser.AdvanceBytes([]byte("\x1b[?2026h" + tc.input))
+
+			assert.Equal(t, tc.want, ptyOutput(pty))
+		})
+	}
+}
+
+func TestComponentSyncOutputFreezesFrame(t *testing.T) {
+	t.Parallel()
+	comp, _ := newSyncOutputComponent(t)
+	frozen := liveDraw(comp)
+
+	comp.parser.AdvanceBytes([]byte("\x1b[?2026h\x1b[H\x1b[2Knew\x1b[2;1Hxy\x1b[?25l\x1b[4 q"))
+	assertDraw(t, comp, frozen)
+	assert.True(t, comp.CursorVisible())
+	assert.Equal(t, term.Coordinates{X: 3}, comp.CursorAtScreen())
+	assert.Equal(t, term.CursorStyleDefault, comp.CursorStyle())
+
+	comp.parser.AdvanceBytes([]byte("\x1b[?25h\x1b[?2026l"))
+	assertDraw(t, comp, "new   \nxy    ")
+	assert.Equal(t, term.Coordinates{X: 2, Y: 1}, comp.CursorAtScreen())
+	assert.Equal(t, term.CursorStyleSteadyUnderline, comp.CursorStyle())
+}
+
+func TestComponentSyncOutputIgnoresNestedBSU(t *testing.T) {
+	t.Parallel()
+	comp, _ := newSyncOutputComponent(t)
+	frozen := liveDraw(comp)
+
+	comp.parser.AdvanceBytes([]byte("\x1b[?2026h1\x1b[?2026h2"))
+
+	assertDraw(t, comp, frozen)
+}
+
+func TestComponentSyncOutputExpires(t *testing.T) {
+	t.Parallel()
+	comp, pty := newSyncOutputComponent(t)
+	publisher := new(countingPublisher)
+	comp.mu.Lock()
+	comp.publisher = publisher
+	comp.syncTimeout = 10 * time.Millisecond
+	comp.mu.Unlock()
+
+	comp.parser.AdvanceBytes([]byte("\x1b[?2026hnew"))
+
+	require.Eventually(t, func() bool { return publisher.count() > 0 },
+		time.Second, time.Millisecond, "expiry must request a redraw")
+	assertDraw(t, comp, "oldnew\n      ")
+	comp.parser.AdvanceBytes([]byte("\x1b[?2026$p"))
+	assert.Equal(t, "\x1b[?2026;2$y", ptyOutput(pty))
+}
+
+func TestComponentSyncOutputEnds(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		desc string
+		end  func(t *testing.T, comp *Component)
+	}{
+		{desc: "ESU", end: func(t *testing.T, comp *Component) {
+			comp.parser.AdvanceBytes([]byte("\x1b[?2026l"))
+		}},
+		{desc: "RIS", end: func(t *testing.T, comp *Component) {
+			comp.parser.AdvanceBytes([]byte("\x1bc"))
+		}},
+		{desc: "resize", end: func(t *testing.T, comp *Component) {
+			require.NoError(t, comp.Resize(7, 2))
+		}},
+		{desc: "scrolling into history", end: func(t *testing.T, comp *Component) {
+			require.True(t, comp.ScrollUp(1))
+		}},
+		{desc: "selection", end: func(t *testing.T, comp *Component) {
+			comp.Select(term.Coordinates{})
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.desc, func(t *testing.T) {
+			t.Parallel()
+			comp, pty := newSyncOutputComponent(t)
+			comp.parser.AdvanceBytes([]byte("\r\n\r\n\x1b[?2026hnew"))
+
+			tc.end(t, comp)
+
+			assertDraw(t, comp, liveDraw(comp))
+			pty.Writes = nil
+			comp.parser.AdvanceBytes([]byte("\x1b[?2026$p"))
+			assert.Equal(t, "\x1b[?2026;2$y", ptyOutput(pty))
+		})
+	}
+}
+
+func TestComponentSyncOutputDefersRedraws(t *testing.T) {
+	t.Parallel()
+	comp, _ := newSyncOutputComponent(t)
+	publisher := new(countingPublisher)
+
+	for _, step := range []struct {
+		output string
+		want   int
+	}{
+		{output: "a", want: 1},
+		{output: "\x1b[?2026hb", want: 1},
+		{output: "c", want: 1},
+		{output: "\x1b[?2026l", want: 2},
+		{output: "\x1b[?2026hd\x1b[?2026l", want: 3},
+	} {
+		comp.applyOutput([]byte(step.output), publisher)
+		assert.Equal(t, step.want, publisher.count(), "after %q", step.output)
+	}
+}
+
+type countingPublisher struct {
+	mu sync.Mutex
+	n  int
+}
+
+func (p *countingPublisher) PublishEvent(ev term.Event) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if ev.Type == term.EventInterrupt {
+		p.n++
+	}
+	return nil
+}
+
+func (p *countingPublisher) count() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.n
+}
+
 // newPopulatedComponentForBench builds a component with a fully written
 // grid so Snapshot/SnapshotInto copy a realistic amount of cells.
 func newPopulatedComponentForBench(b *testing.B, width, height int) *Component {
@@ -1238,6 +1509,27 @@ func (e *closablePtyExecutor) NewPty(context.Context) (workspaceapi.Pty, error) 
 	return workspaceapi.Pty{Master: &e.master, Slave: &workspacetest.File{}}, nil
 }
 
+func TestComponentCloseWithdrawsProgramStatus(t *testing.T) {
+	t.Parallel()
+
+	tm := &mockTabManager{}
+	exe := &closablePtyExecutor{}
+	comp, err := NewComponent(exe, exe, tm, DefaultConfig())
+	require.NoError(t, err)
+	comp.parserHandler.ProgramStatus(programstatus.Report{
+		State: programstatus.Done, Progress: -1, Msg: "ok",
+	})
+	require.Len(t, tm.statuses, 1)
+
+	require.NoError(t, comp.Close())
+	require.Len(t, tm.statuses, 2, "closing withdraws what the terminal reported")
+	assert.Equal(t, statusCall{report: programstatus.Report{State: programstatus.Clear}}, tm.statuses[1])
+	assert.Equal(t, comp.uri, tm.toUri)
+
+	require.NoError(t, comp.Close())
+	assert.Len(t, tm.statuses, 2, "nothing left to withdraw")
+}
+
 func TestComponentOnFocusChangeAfterClose(t *testing.T) {
 	t.Parallel()
 
@@ -1271,6 +1563,10 @@ func (e *parkedStartExecutor) StartCommand(
 	close(e.entered)
 	<-e.release
 	return 1, nil
+}
+
+func (*parkedStartExecutor) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
 }
 
 func TestComponentCloseWaitsForInflightStartCommand(t *testing.T) {
@@ -1393,6 +1689,55 @@ func TestComponentRestoreFromSnapshotDrivesSetPtySize(t *testing.T) {
 		"follow-up Resize at the same size is a legitimate no-op")
 }
 
+func TestComponentBellSound(t *testing.T) {
+	t.Parallel()
+	ding, none := "ding", ""
+	bellSound := func(name string) *atomic.Pointer[string] {
+		ret := new(atomic.Pointer[string])
+		ret.Store(&name)
+		return ret
+	}
+	tests := []struct {
+		desc      string
+		bellSound *atomic.Pointer[string]
+		// set, when not nil, is stored after the terminal is created.
+		set  *string
+		want []string
+	}{
+		{desc: "default bell plays a warning", bellSound: DefaultConfig().BellSound,
+			want: []string{sounds.Warning}},
+		{desc: "bell plays a registered sound", bellSound: bellSound("ding"),
+			want: []string{"ding"}},
+		{desc: "empty bell sound plays nothing", bellSound: bellSound("")},
+		{desc: "unset bell sound plays nothing", bellSound: new(atomic.Pointer[string])},
+		{desc: "no bell sound plays nothing"},
+		{desc: "a sound set once the terminal runs plays", bellSound: bellSound(sounds.Warning),
+			set: &ding, want: []string{"ding"}},
+		{desc: "a sound silenced once the terminal runs plays nothing",
+			bellSound: bellSound(sounds.Warning), set: &none},
+	}
+	for _, test := range tests {
+		t.Run(test.desc, func(t *testing.T) {
+			t.Parallel()
+			var played []string
+			cfg := DefaultConfig()
+			cfg.BellSound = test.bellSound
+			cfg.Sounds = sounds.PlayerFunc(func(name string) {
+				played = append(played, name)
+			})
+			exe := &recordingExecutor{}
+			comp, err := NewComponent(exe, exe, &mockTabManager{}, cfg)
+			require.NoError(t, err)
+			if test.set != nil {
+				test.bellSound.Store(test.set)
+			}
+
+			comp.parserHandler.Bell()
+			assert.Equal(t, test.want, played)
+		})
+	}
+}
+
 func TestComponentResizeDrivesPixelSize(t *testing.T) {
 	t.Parallel()
 
@@ -1465,6 +1810,10 @@ func (e *pidExecutor) StartCommand(
 	context.Context, workspaceapi.Cmd,
 ) (workspaceapi.Pid, error) {
 	return e.startedPid, nil
+}
+
+func (*pidExecutor) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
 }
 
 func TestComponentPidExposesStartedProcess(t *testing.T) {
@@ -1739,6 +2088,114 @@ func (p *exitStatusPublisher) sawEventNone() bool {
 
 type discardNotifications struct{}
 
+func TestHandlerPointerLeaves(t *testing.T) {
+	t.Parallel()
+	var scrollback strings.Builder
+	for i := range 60 {
+		fmt.Fprintf(&scrollback, "line %02d: some text to select and scroll\r\n", i)
+	}
+	const (
+		mouseAnySgr = "\x1b[?1003h\x1b[?1006h"
+		altScreen   = "\x1b[?1049h\x1b[Halt screen\r\n"
+	)
+	cases := []struct {
+		name   string
+		output string
+		modal  bool
+		viMode bool
+	}{
+		{name: "scrollback", output: scrollback.String()},
+		{name: "mouse reporting", output: scrollback.String() + mouseAnySgr},
+		{name: "alt screen", output: scrollback.String() + altScreen},
+		{name: "alt screen with mouse reporting", output: scrollback.String() + altScreen + mouseAnySgr},
+		{name: "vi mode", output: scrollback.String(), modal: true, viMode: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			for _, size := range []term.Coordinates{{X: 60, Y: 15}, {X: 1, Y: 1}} {
+				h, _ := newLeaveHarness(t, tc.modal, tc.output)
+				if tc.viMode {
+					h.enterViMode(h.comp.CursorAtScroll())
+				}
+				handlertest.RunPointerLeaves(t, h, size.X, size.Y)
+			}
+
+			h, _ := newLeaveHarness(t, tc.modal, tc.output)
+			if tc.viMode {
+				h.enterViMode(h.comp.CursorAtScroll())
+			}
+			h.Resize(60, 15)
+			mouse := func(key term.Key, x, y int) {
+				h.Handle(term.Event{Type: term.EventMouse, Key: key, MouseX: x, MouseY: y})
+			}
+			mouse(term.MouseWheelUp, 5, 5)
+			mouse(term.MouseLeft, 2, 3)
+			mouse(term.MouseLeft, 10, 4)
+			wantSel, wantSelOK := h.Selection()
+			wantPos, wantStyle, wantShow := h.Cursor()
+			wantOffset := h.SeekOffset()
+			for _, out := range []term.Coordinates{{X: -1, Y: 4}, {X: 60, Y: 4}, {X: 10, Y: -1}, {X: 10, Y: 15}, {X: -500, Y: 500}} {
+				exit, _ := h.Handle(term.Event{Type: term.EventMouse, MouseX: out.X, MouseY: out.Y})
+				assert.False(t, exit, "leave to %v", out)
+				sel, selOK := h.Selection()
+				assert.Equal(t, wantSel, sel, "leave to %v changed the selection", out)
+				assert.Equal(t, wantSelOK, selOK, "leave to %v", out)
+				pos, style, show := h.Cursor()
+				assert.Equal(t, wantPos, pos, "leave to %v moved the cursor", out)
+				assert.Equal(t, wantStyle, style, "leave to %v", out)
+				assert.Equal(t, wantShow, show, "leave to %v", out)
+				assert.Equal(t, wantOffset, h.SeekOffset(), "leave to %v scrolled", out)
+			}
+		})
+	}
+}
+
+func TestHandlerLeaveKeepsDeadTerminal(t *testing.T) {
+	t.Parallel()
+	h, proc := newLeaveHarness(t, false, "bye\r\n")
+	h.Resize(20, 5)
+	proc.HangUp()
+	require.Eventually(t, h.exit.Load, 5*time.Second, 5*time.Millisecond)
+
+	for _, out := range []term.Coordinates{{X: -1, Y: 2}, {X: 20, Y: 2}, {X: 3, Y: -1}, {X: 3, Y: 5}} {
+		exit, _ := h.Handle(term.Event{Type: term.EventMouse, MouseX: out.X, MouseY: out.Y})
+		assert.False(t, exit, "a pointer leaving at %v closed the terminal", out)
+	}
+	exit, _ := h.Handle(term.Event{Type: term.EventNone})
+	assert.True(t, exit, "the terminal's own wake-up must still close it")
+}
+
+// newLeaveHarness returns a Handler whose program printed output, once
+// the terminal has drawn it.
+func newLeaveHarness(t *testing.T, modal bool, output string) (*Handler, *workspacetest.Process) {
+	t.Helper()
+	cfg := DefaultConfig()
+	cfg.CommandAndArgs = []string{"sh"}
+	cfg.Modal = modal
+	cfg.WidthHint, cfg.HeightHint = 60, 15
+	exe := workspacetest.NewPtyExecutor()
+	h, err := NewHandler(&exitStatusPublisher{}, discardNotifications{}, exe, exe, &mockTabManager{}, cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = h.Close() })
+	var proc *workspacetest.Process
+	select {
+	case proc = <-exe.Started():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the terminal never started its command")
+	}
+	h.Resize(60, 15)
+	const marker = "READY"
+	proc.Print(output + marker)
+	require.Eventually(t, func() bool {
+		w := term.NewStringWriter(60, 15)
+		h.Draw(w)
+		_ = w.Flush()
+		return strings.Contains(w.String(), marker)
+	}, 5*time.Second, 5*time.Millisecond)
+	return h, proc
+}
+
 func (discardNotifications) Notify(
 	browserapi.NotificationLevel, string, ...any,
 ) (string, error) {
@@ -1755,4 +2212,23 @@ func (discardNotifications) UpdateNotificationProgress(
 	string, string, int64, int64,
 ) error {
 	return nil
+}
+
+func TestComponentClipboardAccess(t *testing.T) {
+	cfg := DefaultConfig()
+	assert.Equal(t, ClipboardAccess{Write: true}, cfg.ClipboardAccess,
+		"programs may set the clipboard but not read it unless configured")
+	cfg.ClipboardAccess = ClipboardAccess{Write: true, Read: true}
+	require.NoError(t, cfg.Clipboard.Copy(clipboard.DefaultRegisterID,
+		clipboard.Data{Text: "secret"}))
+	comp, err := NewComponent(&testExecutor{}, &testExecutor{}, &mockTabManager{}, cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = comp.Close() })
+	pty := comp.pty.Master.(*workspacetest.File)
+
+	const load = "\x1b]52;c;?\x07"
+	comp.parser.AdvanceBytes([]byte(load + "\x1bc" + load))
+
+	reply := "\x1b]52;c;" + base64.StdEncoding.EncodeToString([]byte("secret")) + "\x07"
+	assert.Equal(t, reply+reply, ptyOutput(pty), "a reset must keep the access")
 }

@@ -53,6 +53,7 @@ func newSearchHandler(
 		FocusFrameAttr:  cfg.FocusFrameAttr,
 		ButtonAttr:      cfg.ButtonAttr,
 		ButtonHoverAttr: cfg.ButtonHoverAttr,
+		ButtonImages:    cfg.ButtonImages,
 		OnOpenError: func(mode searchbox.Mode, err error) {
 			what := "find"
 			if mode == searchbox.ModeReplace {

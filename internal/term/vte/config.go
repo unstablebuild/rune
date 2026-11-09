@@ -18,6 +18,7 @@ package vte
 
 import (
 	"context"
+	"sync/atomic"
 	"time"
 
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
@@ -25,15 +26,20 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/clipboard"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/handler/searchbox"
+	"unstable.build/rune/internal/sounds"
 )
 
 // DefaultConfig returns a sane default Config.
 func DefaultConfig() Config {
+	bellSound := new(atomic.Pointer[string])
+	bellSound.Store(new(sounds.Warning))
 	return Config{
 		Clipboard:                clipboard.NewInMemory(),
 		ClipboardRegister:        clipboard.DefaultRegisterID,
+		ClipboardAccess:          ClipboardAccess{Write: true},
 		ScheduleNextTick:         func(cb func()) bool { cb(); return true },
-		RingBell:                 func() {},
+		Sounds:                   sounds.Silent,
+		BellSound:                bellSound,
 		SelectionAttributes:      term.Attributes{Attrs: term.AttrReverse},
 		NeedsAttentionAttributes: term.Attributes{Attrs: term.AttrBlink},
 		DynamicTabName:           false,
@@ -49,6 +55,9 @@ type Config struct {
 	CommandAndArgs    []string
 	Clipboard         clipboard.Register
 	ClipboardRegister string
+	// ClipboardAccess is what the program may do with Clipboard through
+	// the OSC 52 escape sequence. The zero value lets it do nothing.
+	ClipboardAccess ClipboardAccess
 
 	// ScheduleNextTick schedules an arbitrary function to be run
 	// in the next event-loop tick.
@@ -57,10 +66,17 @@ type Config struct {
 	// Use the VTE's title as the tab name.
 	DynamicTabName bool
 
-	// RingBell writes to the raw pty directly, bypassing the event loop.
-	// This should only be used when called from the an event loop goroutine.
-	RingBell func()
-	Watcher  workspaceapi.ProcessWatcher
+	// Sounds plays BellSound when the program rings the bell and
+	// sounds.Error when a vi-mode edit is refused, possibly from the pty
+	// goroutine.
+	Sounds sounds.Player
+	// BellSound names the sound the program ringing the bell plays. The
+	// terminals created with copies of a Config share it, so storing a
+	// name changes what they all play from their next bell on. A nil
+	// BellSound, or one holding nil or "", plays none. The tab is marked
+	// as needing attention either way.
+	BellSound *atomic.Pointer[string]
+	Watcher   workspaceapi.ProcessWatcher
 
 	Attributes               term.Attributes
 	SelectionAttributes      term.Attributes
@@ -130,6 +146,18 @@ type Config struct {
 	TempDir string
 }
 
+// ClipboardAccess is what a program running in the terminal may do
+// with the clipboard through the OSC 52 escape sequence. Anything the
+// program writes to the terminal, including the output of a command it
+// runs on a remote host, can carry the sequence.
+type ClipboardAccess struct {
+	// Write lets the program replace the clipboard contents.
+	Write bool
+	// Read lets the program query the clipboard contents, which the
+	// terminal then sends back to it.
+	Read bool
+}
+
 // SearchConfig configures the terminal's scrollback search. The box is
 // drawn as an overlay on the terminal itself, so no window manager is
 // involved.
@@ -146,8 +174,4 @@ type SearchConfig struct {
 // the event-loop goroutine so they may block.
 type CommandExpander interface {
 	ExpandCommand(ctx context.Context, line string) (string, error)
-}
-
-func (c Config) scheduleBell() {
-	c.ScheduleNextTick(c.RingBell)
 }

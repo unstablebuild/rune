@@ -216,7 +216,9 @@ func (e *mouseDriver) report(ev term.Event) (raw []byte, tracking bool) {
 		cb, action = e.held, mouseRelease
 		e.pressed = false
 	default:
-		if !moved {
+		// A motion past the screen's edges is how a parent says the
+		// pointer left it; a real terminal reports none.
+		if !moved || !e.t.onScreen(pos) {
 			return nil, true
 		}
 		cb, action = mouseNoButton, mouseMove

@@ -21,6 +21,7 @@ import (
 	"fmt"
 
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
+	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/browser"
@@ -91,6 +92,15 @@ func newAsyncPlugin(
 		}
 	})
 	return ap
+}
+
+// StatusURI returns the uri the program reports its statuses under,
+// or a zero uri until it is built.
+func (ap *asyncPlugin) StatusURI() workspaceapi.URI {
+	if r, ok := ap.real.(statusReporter); ok {
+		return r.StatusURI()
+	}
+	return workspaceapi.URI{}
 }
 
 // complete installs the factory result. It runs on the host event

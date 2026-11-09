@@ -30,6 +30,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/handler/handlertest"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	rhandlertest "unstable.build/rune/internal/handler/handlertest"
 )
 
 // fsReader is a minimal walkdir.Reader rooted at a real directory on
@@ -440,4 +441,80 @@ func TestHandlerSingleGoroutineContract(t *testing.T) {
 		_, _ = h.Handle(term.Event{})
 	}
 	require.NoError(t, h.Close())
+}
+
+func TestHandlerPointerLeaves(t *testing.T) {
+	t.Parallel()
+
+	content := []string{
+		"plain ascii line",
+		strings.Repeat("a very long line that wraps past the viewport ", 8),
+		"日本語の全角文字列と絵文字 🎉🎉🎉 mixed with ascii",
+		"e\u0301 combining accents and ñandú über",
+		"\ttabbed\tline\twith\ttabs",
+		"",
+	}
+	newHandler := func(t *testing.T) (*Handler, *fsReader) {
+		dir := t.TempDir()
+		var b strings.Builder
+		for i := range 60 {
+			fmt.Fprintf(&b, "%d %s\n", i, content[i%len(content)])
+		}
+		full := filepath.Join(dir, "f.txt")
+		require.NoError(t, os.WriteFile(full, []byte(b.String()), 0o644))
+		uri, err := workspaceapi.ParseURI("file://" + full)
+		require.NoError(t, err)
+		r := newFSReader(dir)
+		h, err := New(r, uri, Config{InitialPages: 1, Overscan: 1, PageRows: 4})
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = h.Close() })
+		prime(t, h)
+		return h, r
+	}
+
+	for _, size := range []struct{ width, height int }{{40, 10}, {1, 1}} {
+		t.Run(fmt.Sprintf("%dx%d", size.width, size.height), func(t *testing.T) {
+			t.Parallel()
+			h, _ := newHandler(t)
+			rhandlertest.RunPointerLeaves(t, h, size.width, size.height)
+
+			h, r := newHandler(t)
+			h.Resize(size.width, size.height)
+			h.Draw(term.NewStringWriter(size.width, size.height))
+			mouse := func(key term.Key, x, y int) term.Event {
+				return term.Event{
+					Type: term.EventMouse, Key: key, MouseX: x, MouseY: y,
+					Context: term.ContextWithPointer(t.Context(), new(term.Pointer)),
+				}
+			}
+			far := term.Coordinates{X: size.width - 1, Y: max(size.height-2, 0)}
+			for _, ev := range []term.Event{
+				mouse(term.MouseWheelDown, 0, 0),
+				mouse(term.MouseLeft, 0, 0),
+				mouse(term.MouseLeft, far.X, far.Y),
+				mouse(term.MouseRelease, far.X, far.Y),
+			} {
+				_, _ = h.Handle(ev)
+			}
+			rows := h.buf.View().Rows()
+			offset := h.SeekOffset()
+			sel, selOK := h.Selection()
+			cursor, style, visible := h.Cursor()
+			opens := r.opens.Load()
+
+			_, _ = h.Handle(term.Event{Type: term.EventMouse, MouseX: size.width, MouseY: -1})
+			h.Draw(term.NewStringWriter(size.width, size.height))
+
+			assert.Equal(t, rows, h.buf.View().Rows(), "a leave must not page in more of the file")
+			assert.Equal(t, offset, h.SeekOffset(), "a leave must not scroll")
+			gotSel, gotSelOK := h.Selection()
+			assert.Equal(t, sel, gotSel)
+			assert.Equal(t, selOK, gotSelOK)
+			gotCursor, gotStyle, gotVisible := h.Cursor()
+			assert.Equal(t, cursor, gotCursor)
+			assert.Equal(t, style, gotStyle)
+			assert.Equal(t, visible, gotVisible)
+			assert.Equal(t, opens, r.opens.Load())
+		})
+	}
 }

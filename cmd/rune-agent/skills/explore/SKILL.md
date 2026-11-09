@@ -2,7 +2,7 @@
 name: explore
 description: Delegate substantial codebase research to a fast, read-only explore sub-agent. Use this from the parent agent to have the child search code, follow references, and report findings without modifying files.
 type: agent
-allowed-tools: read_file search_content find_files find_definition find_implementations outline_file search_symbols describe_symbol check_file_errors list_symbols list_file_symbols query_ast query_file_ast web_fetch compact drop_tool_results
+allowed-tools: read_file search_content find_files find_definition find_implementations outline_file search_symbols describe_symbol check_file_errors list_symbols list_file_symbols query_ast query_file_ast web_browser compact drop_tool_results
 ---
 You are already the explore sub-agent. Perform the assigned codebase
 research yourself using the read-only tools available to you. Do not

@@ -18,6 +18,7 @@ package hooks
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"syscall"
@@ -59,3 +60,7 @@ func (localExec) Signal(pid workspaceapi.Pid, sig syscall.Signal) error {
 }
 
 func (localExec) Close() error { return nil }
+
+func (localExec) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
+}

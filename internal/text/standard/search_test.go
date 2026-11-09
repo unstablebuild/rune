@@ -19,6 +19,7 @@ package standard
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -32,6 +33,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/cell"
+	rhandlertest "unstable.build/rune/internal/handler/handlertest"
 	"unstable.build/rune/internal/handler/searchbox"
 )
 
@@ -101,7 +103,9 @@ func (h *searchSequenceHarness) CloseWindow(browserapi.Window) error {
 	return nil
 }
 
-func (h *searchSequenceHarness) SetTabActivity(workspaceapi.URI, bool) error { return nil }
+func (h *searchSequenceHarness) SetTabStatus(workspaceapi.URI, browserapi.TabStatus) error {
+	return nil
+}
 
 func (h *searchSequenceHarness) Resize(width, height int) {
 	h.width, h.height = width, height
@@ -126,6 +130,8 @@ func (h *searchSequenceHarness) Handle(ev term.Event) (bool, bool) {
 	f := h.floating
 	exit, handled := f.Handle(ev)
 	if exit {
+		// Like a window manager, drop the window whose content exited.
+		h.floating = nil
 		h.closeErr = errors.Join(h.closeErr, f.Close())
 	}
 	return false, handled
@@ -287,7 +293,9 @@ func (m searchBrowserWindowManager) CloseWindow(win browserapi.Window) error {
 	return win.(browser.Window).Close()
 }
 
-func (m searchBrowserWindowManager) SetTabActivity(workspaceapi.URI, bool) error { return nil }
+func (m searchBrowserWindowManager) SetTabStatus(workspaceapi.URI, browserapi.TabStatus) error {
+	return nil
+}
 
 func TestSearchFloatingRealBrowserLifecycle(t *testing.T) {
 	cfg := browser.DefaultConfig()
@@ -451,7 +459,9 @@ func (m *searchTestWindowManager) CloseWindow(browserapi.Window) error {
 	return m.closeErr
 }
 
-func (m *searchTestWindowManager) SetTabActivity(workspaceapi.URI, bool) error { return nil }
+func (m *searchTestWindowManager) SetTabStatus(workspaceapi.URI, browserapi.TabStatus) error {
+	return nil
+}
 
 func TestWithSearchConfigRequiresWindowManager(t *testing.T) {
 	assert.PanicsWithValue(t, "standard: SearchConfig.WindowManager must not be nil", func() {
@@ -471,7 +481,14 @@ func TestSearchCompatibilityOptions(t *testing.T) {
 
 func TestEditorInstallsConfiguredSearchWrapper(t *testing.T) {
 	wm := new(searchTestWindowManager)
-	ed := Editor(WithSearchConfig(SearchConfig{WindowManager: wm}))
+	var askedImages int
+	ed := Editor(WithSearchConfig(SearchConfig{
+		WindowManager: wm,
+		ButtonImages: func() *component.ButtonImages {
+			askedImages++
+			return nil
+		},
+	}))
 	buf := cell.NewBuffer()
 	buf.WriteString("one two one")
 	h, err := ed.Edit(context.Background(), workspaceapi.URI{}, buf, false, false)
@@ -487,6 +504,7 @@ func TestEditorInstallsConfiguredSearchWrapper(t *testing.T) {
 	assert.Equal(t, term.Coordinates{Y: 2}, wm.config.Offset)
 	assert.False(t, wm.config.NoWindowBar)
 	assert.Equal(t, "Find / Replace", wm.config.Title)
+	assert.Equal(t, 1, askedImages, "the box takes its button images as it opens")
 }
 
 func componentTopCenter() component.Alignment {
@@ -575,4 +593,51 @@ func TestSearchFloatingReportsEditorSelection(t *testing.T) {
 	selected, ok := wm.floating.Selection()
 	assert.True(t, ok)
 	assert.Equal(t, "two", selected)
+}
+
+func TestSearchHandlerPointerLeaves(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		open func(t *testing.T, h *searchSequenceHarness)
+	}{
+		{name: "box closed", open: func(*testing.T, *searchSequenceHarness) {}},
+		{name: "find box open", open: func(t *testing.T, h *searchSequenceHarness) {
+			h.open(t, searchbox.ModeFind)
+			for _, ch := range "wide" {
+				h.Handle(term.Event{Type: term.EventKey, Ch: ch})
+			}
+		}},
+		{name: "replace box open", open: func(t *testing.T, h *searchSequenceHarness) {
+			h.open(t, searchbox.ModeReplace)
+		}},
+	}
+	for _, tt := range tests {
+		for _, size := range []term.Coordinates{{X: 40, Y: 10}, {X: 1, Y: 1}} {
+			t.Run(fmt.Sprintf("%s/%dx%d", tt.name, size.X, size.Y), func(t *testing.T) {
+				t.Parallel()
+				newHandler := func() (*searchSequenceHarness, *standardHandler) {
+					h := newSearchSequenceHarness(t, pointerLeavesContent, searchbox.ModeFind)
+					h.Resize(size.X, size.Y)
+					tt.open(t, h)
+					return h, h.owner.Handler.(*standardHandler)
+				}
+
+				h, root := newHandler()
+				open := h.floating != nil
+				want := snapshotStandardPointerState(root)
+				for _, ev := range pointerLeaveEvents(size.X, size.Y) {
+					h.owner.Handle(ev)
+					require.Equal(t, want, snapshotStandardPointerState(root),
+						"leave to (%d, %d)", ev.MouseX, ev.MouseY)
+					require.Equal(t, open, h.floating != nil,
+						"leave to (%d, %d) toggled the search box", ev.MouseX, ev.MouseY)
+				}
+
+				h, _ = newHandler()
+				rhandlertest.RunPointerLeaves(t, h.owner, size.X, size.Y)
+				require.NoError(t, h.closeErr)
+			})
+		}
+	}
 }

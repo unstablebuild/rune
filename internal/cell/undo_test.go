@@ -390,3 +390,291 @@ func TestUndoEmojiSequenceTypedRuneByRune(t *testing.T) {
 		})
 	}
 }
+
+// snapshotCells copies the cell matrix with nil and empty rows made equal,
+// since an undone row may come back with either.
+func snapshotCells(b *Buffer) [][]term.Cell {
+	cells := term.CloneCells(b.RawCells())
+	for y, row := range cells {
+		cells[y] = append([]term.Cell(nil), row...)
+	}
+	return cells
+}
+
+func TestUndoGroup(t *testing.T) {
+	ctx := context.Background()
+	type op func(b *Buffer)
+	edit := func(from, to term.Coordinates, s string) op {
+		return func(b *Buffer) { b.Edit(ctx, from, to, s) }
+	}
+	at := func(y, x int) term.Coordinates { return term.Coordinates{Y: y, X: x} }
+
+	tests := []struct {
+		name    string
+		content string
+		ops     []op
+		want    string
+	}{
+		{
+			name:    "every row operation of the undo suite",
+			content: undoFortune,
+			ops: []op{
+				func(b *Buffer) { b.Insert(at(2, 0), '\t') },
+				func(b *Buffer) { insertRowAt(b, 1) },
+				func(b *Buffer) { b.DeleteCell(at(3, 4)) },
+				func(b *Buffer) { b.ConflateRow(1) },
+				func(b *Buffer) { require.True(t, b.WrapRow(1, 5)) },
+				func(b *Buffer) { b.TruncateRowFrom(at(1, 3)) },
+				func(b *Buffer) { b.DeleteRow(0) },
+			},
+			want: "Lov\nisn't love 'til you give it away.\n\t\t\t- Oscar Hammerstein 中国",
+		},
+		{
+			name:    "wide runes beside tabs",
+			content: "\t中国\n界",
+			ops: []op{
+				edit(at(0, 1), at(0, 1), "界"),
+				edit(at(0, 2), at(0, 3), ""),
+				edit(at(1, 0), at(1, 1), "\t国\t"),
+			},
+			want: "\t界国\n\t国\t",
+		},
+		{
+			name:    "grapheme clusters stay whole",
+			content: "👨‍👧‍👦\n🇯🇵🇫🇷\ne\u0301",
+			ops: []op{
+				edit(at(0, 0), at(0, 0), "// "),
+				edit(at(1, 1), at(1, 2), ""),
+				edit(at(2, 1), at(2, 1), "👍🏽"),
+			},
+			want: "// 👨‍👧‍👦\n🇯🇵\ne\u0301👍🏽",
+		},
+		{
+			name:    "nul cells and carriage returns are content",
+			content: "\x00a\rb",
+			ops: []op{
+				edit(at(0, 0), at(0, 0), "\x00"),
+				edit(at(0, 3), at(0, 4), "\r\r"),
+			},
+			want: "\x00\x00a\r\rb",
+		},
+		{
+			name:    "inserts that split rows",
+			content: "ab",
+			ops: []op{
+				edit(at(0, 1), at(0, 1), "x\ny\nz"),
+				edit(at(2, 0), at(2, 0), "\n"),
+			},
+			want: "ax\ny\n\nzb",
+		},
+		{
+			name:    "deletes that join rows",
+			content: "a\nb\nc\nd",
+			ops: []op{
+				edit(at(2, 1), at(3, 0), ""),
+				edit(at(0, 1), at(1, 0), ""),
+			},
+			want: "ab\ncd",
+		},
+		{
+			name:    "edits that rewrite the same cell",
+			content: "abc",
+			ops: []op{
+				edit(at(0, 1), at(0, 2), "x"),
+				edit(at(0, 1), at(0, 2), "yy"),
+				edit(at(0, 1), at(0, 3), ""),
+			},
+			want: "ac",
+		},
+		{
+			name:    "an empty buffer",
+			content: "",
+			ops: []op{
+				edit(at(0, 0), at(0, 0), "a\n"),
+				edit(at(1, 0), at(1, 0), "\tb"),
+			},
+			want: "a\n\tb",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			b := newBufferWithContent(t, tc.content)
+			before := snapshotCells(b)
+			version := b.Version()
+
+			b.undoer.group(func() {
+				for _, op := range tc.ops {
+					op(b)
+				}
+			})
+			require.Equal(t, tc.want, b.String())
+			after := snapshotCells(b)
+			assert.Len(t, b.undoer.undoTimeline, 1)
+
+			for round := range 3 {
+				ok, _ := b.undoer.undo()
+				require.True(t, ok, "round %d", round)
+				assert.Equal(t, tc.content, b.String(), "undo round %d", round)
+				assert.Equal(t, before, snapshotCells(b), "undo round %d", round)
+				assert.Equal(t, version, b.Version(), "undo round %d", round)
+				ok, _ = b.undoer.undo()
+				assert.False(t, ok, "one undo reverts the whole group")
+
+				ok, _ = b.undoer.redo()
+				require.True(t, ok, "round %d", round)
+				assert.Equal(t, tc.want, b.String(), "redo round %d", round)
+				assert.Equal(t, after, snapshotCells(b), "redo round %d", round)
+				ok, _ = b.undoer.redo()
+				assert.False(t, ok, "one redo reapplies the whole group")
+			}
+		})
+	}
+}
+
+func TestUndoGroupTimeline(t *testing.T) {
+	insert := func(b *Buffer, y int, s string) { b.InsertString(term.Coordinates{Y: y}, s) }
+	tests := []struct {
+		name      string
+		run       func(b *Buffer)
+		want      string
+		wantUndos []string
+	}{
+		{
+			name: "nested groups merge into the outermost",
+			run: func(b *Buffer) {
+				b.undoer.group(func() {
+					insert(b, 0, "1")
+					b.undoer.group(func() {
+						insert(b, 1, "2")
+						b.undoer.group(func() { insert(b, 2, "3") })
+					})
+					insert(b, 0, "4")
+				})
+			},
+			want:      "41a\n2b\n3c",
+			wantUndos: []string{"a\nb\nc"},
+		},
+		{
+			name: "sibling groups stay separate steps",
+			run: func(b *Buffer) {
+				b.undoer.group(func() { insert(b, 0, "1"); insert(b, 1, "1") })
+				b.undoer.group(func() { insert(b, 1, "2"); insert(b, 2, "2") })
+			},
+			want:      "1a\n21b\n2c",
+			wantUndos: []string{"1a\n1b\nc", "a\nb\nc"},
+		},
+		{
+			name: "a group of one edit is that edit",
+			run: func(b *Buffer) {
+				insert(b, 0, "1")
+				b.undoer.group(func() { insert(b, 1, "2") })
+			},
+			want:      "1a\n2b\nc",
+			wantUndos: []string{"1a\nb\nc", "a\nb\nc"},
+		},
+		{
+			name: "an empty group inside an open scope leaves the scope intact",
+			run: func(b *Buffer) {
+				insert(b, 0, "0")
+				b.undoer.startMergeUndo()
+				insert(b, 1, "1")
+				b.undoer.group(func() {})
+				insert(b, 2, "2")
+				b.undoer.endMergeUndo()
+			},
+			want:      "0a\n1b\n2c",
+			wantUndos: []string{"0a\nb\nc", "a\nb\nc"},
+		},
+		{
+			name: "a scope opened inside a nested group still covers the outer group",
+			run: func(b *Buffer) {
+				insert(b, 0, "0")
+				b.undoer.group(func() {
+					insert(b, 1, "1")
+					b.undoer.group(func() {
+						b.undoer.startMergeUndo()
+						insert(b, 2, "2")
+					})
+					insert(b, 2, "3")
+				})
+				insert(b, 0, "4")
+				b.undoer.endMergeUndo()
+			},
+			want:      "40a\n1b\n32c",
+			wantUndos: []string{"0a\nb\nc", "a\nb\nc"},
+		},
+		{
+			name: "closing a scope after the group merges it with the edits before",
+			run: func(b *Buffer) {
+				insert(b, 0, "0")
+				b.undoer.startMergeUndo()
+				insert(b, 1, "1")
+				b.undoer.group(func() { insert(b, 2, "2"); insert(b, 2, "3") })
+				b.undoer.endMergeUndo()
+				insert(b, 0, "4")
+			},
+			want:      "40a\n1b\n32c",
+			wantUndos: []string{"0a\n1b\n32c", "0a\nb\nc", "a\nb\nc"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			b := newBufferWithContent(t, "a\nb\nc")
+			tc.run(b)
+			require.Equal(t, tc.want, b.String())
+			for _, want := range tc.wantUndos {
+				ok, _ := b.undoer.undo()
+				require.True(t, ok)
+				assert.Equal(t, want, b.String())
+			}
+			ok, _ := b.undoer.undo()
+			assert.False(t, ok, "nothing left to undo")
+			for range tc.wantUndos {
+				ok, _ := b.undoer.redo()
+				require.True(t, ok)
+			}
+			assert.Equal(t, tc.want, b.String())
+		})
+	}
+
+	t.Run("a group after an undo drops the redo timeline", func(t *testing.T) {
+		b := newBufferWithContent(t, "a\nb")
+		insert(b, 0, "1")
+		ok, _ := b.undoer.undo()
+		require.True(t, ok)
+		b.undoer.group(func() { insert(b, 0, "2"); insert(b, 1, "2") })
+		ok, _ = b.undoer.redo()
+		assert.False(t, ok)
+		assert.Equal(t, "2a\n2b", b.String())
+	})
+
+	t.Run("an empty group pushes no undo step", func(t *testing.T) {
+		b := newBufferWithContent(t, "a")
+		b.undoer.group(func() {})
+		assert.Empty(t, b.undoer.undoTimeline)
+		assert.Equal(t, 0, b.Version())
+	})
+
+	t.Run("subscribers see every edit of an undone and redone group", func(t *testing.T) {
+		b := newBufferWithContent(t, "a\nb\nc")
+		var sub testSubscriber
+		b.Subscribe(&sub)
+		b.undoer.group(func() {
+			insert(b, 2, "// ")
+			insert(b, 1, "// ")
+			insert(b, 0, "// ")
+		})
+		require.Equal(t, 3, sub.onDidEdit)
+
+		sub = testSubscriber{}
+		ok, _ := b.undoer.undo()
+		require.True(t, ok)
+		assert.Equal(t, testSubscriber{onWillEdit: 3, onDidEdit: 3}, sub)
+
+		sub = testSubscriber{}
+		ok, _ = b.undoer.redo()
+		require.True(t, ok)
+		assert.Equal(t, testSubscriber{onWillEdit: 3, onDidEdit: 3}, sub)
+	})
+}

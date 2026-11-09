@@ -34,6 +34,10 @@ func (ts timeShader) Shade(frame, total int, in [][]term.Cell) {
 
 }
 
+func (ts timeShader) ShadeImages(frame, total int, in [][]term.Cell, images []term.Image) []term.Image {
+	return shader.ShadeImages(ts.baseShader, ts.remapTime(frame, total), total, in, images)
+}
+
 type timeRemapper interface {
 	remapTime(frame, total int) int
 }

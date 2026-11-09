@@ -21,8 +21,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image"
+	"image/png"
 	"io"
 	"io/fs"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os/user"
 	"runtime"
 
@@ -54,18 +60,23 @@ import (
 	sdkiterator "github.com/unstablebuild/rune-go-sdk/iterator"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
+	"mvdan.cc/sh/v3/shell"
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/browser/browsertest"
 	"unstable.build/rune/internal/cell"
 	tcomponent "unstable.build/rune/internal/component"
+	"unstable.build/rune/internal/component/asciiart"
+	"unstable.build/rune/internal/component/imageuri/imageuritest"
 	"unstable.build/rune/internal/component/notifications"
 	"unstable.build/rune/internal/debug"
 	thandler "unstable.build/rune/internal/handler"
 	"unstable.build/rune/internal/handler/command"
 	"unstable.build/rune/internal/handler/handlertest"
+	"unstable.build/rune/internal/ide/console/ideconsole"
 	"unstable.build/rune/internal/ide/idehistory"
-	"unstable.build/rune/internal/ide/ideshell"
+	"unstable.build/rune/internal/ide/idenotice"
 	"unstable.build/rune/internal/ide/plugin"
+	"unstable.build/rune/internal/term/programstatus"
 	"unstable.build/rune/internal/term/vte"
 	"unstable.build/rune/internal/term/vte/vtereservoir"
 	"unstable.build/rune/internal/text"
@@ -177,6 +188,14 @@ func (w *testLoader) InstallDataDir(context.Context) (string, error) {
 	return "", errors.ErrUnsupported
 }
 
+func (w *testLoader) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
+}
+
+func (w *testLoader) PathCaseSensitive() bool {
+	return true
+}
+
 func (w *testLoader) Load(
 	filePath workspaceapi.URI, buf *cell.Buffer,
 	swapDir workspaceapi.URI, readOnly bool,
@@ -194,6 +213,10 @@ func (w *testLoader) Recover(
 	buf *cell.Buffer, force bool,
 ) (workspace.FlusherCloser, error) {
 	return w.Load(filePath, buf, swapFilePath, false)
+}
+
+func (w *testLoader) LoaderFor(file workspaceapi.URI) (workspace.FileLoader, error) {
+	return workspace.FileLoaderOf(w, file), nil
 }
 
 func (w *testLoader) ReadDir(name string) ([]os.DirEntry, error) {
@@ -429,6 +452,94 @@ func TestFileExplorerOpenFile(t *testing.T) {
 		}
 	}
 	t.Fatalf("expected alpha.go to be opened in a tab")
+}
+
+func TestFileExplorerPreservesWindowSize(t *testing.T) {
+	actions := []struct {
+		name string
+		act  func(t *testing.T, b testEx)
+	}{
+		{"navigate", func(t *testing.T, b testEx) {
+			for i, key := range "jk" {
+				_, handled := b.Handle(term.Event{Type: term.EventKey, Ch: key})
+				require.True(t, handled)
+				require.Equal(t, 1-i, b.fileExplorerHandler.ed.CursorAtScroll().Y)
+			}
+		}},
+		{"open file", func(t *testing.T, b testEx) {
+			_, handled := b.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
+			require.True(t, handled)
+			uri, err := workspaceapi.ParseURI("memory:///alpha.go")
+			require.NoError(t, err)
+			_, opened := b.comp.Resource(uri)
+			require.True(t, opened)
+		}},
+		{"click file", func(t *testing.T, b testEx) {
+			for _, key := range []term.Key{term.MouseLeft, term.MouseRelease} {
+				_, handled := b.fileExplorerHandler.Handle(term.Event{Type: term.EventMouse, Key: key})
+				require.True(t, handled)
+			}
+			uri, err := workspaceapi.ParseURI("memory:///alpha.go")
+			require.NoError(t, err)
+			_, opened := b.comp.Resource(uri)
+			require.True(t, opened)
+		}},
+		{"refresh", func(t *testing.T, b testEx) {
+			b.fileExplorerHandler.refreshTree()
+		}},
+	}
+	for _, resize := range []struct {
+		dimension string
+		direction string
+	}{
+		{"width", "decrease"},
+		{"width", "increase"},
+		{"height", "decrease"},
+		{"height", "increase"},
+	} {
+		for _, action := range actions {
+			t.Run(resize.direction+" "+resize.dimension+"/"+action.name, func(t *testing.T) {
+				uri, err := workspaceapi.ParseURI("memory:///")
+				require.NoError(t, err)
+				scheme, err := workspace.NewMemoryScheme(context.Background(), config.NopConfig(), uri)
+				require.NoError(t, err)
+				touchTestFile(t, scheme, "alpha.go")
+				touchTestFile(t, scheme, "beta.go")
+
+				ed := vi.Editor(vi.WithWorkspaceCommandRegistry(uri, texttest.NopWorkspaceRegistry()))
+				b := newExForTestingWithWorkspace(t, workspace.NewSchemeWorkspace(uri, scheme, inlineSchedule),
+					ed, vte.DefaultConfig(), nopPublishEvent, clipboard.NewInMemory())
+				defer b.Close()
+				b.Resize(100, 30)
+				require.NoError(t, b.fexplorer(context.Background()))
+				win := b.fileExplorerWin
+				if resize.dimension == "height" {
+					require.NoError(t, b.dispatchCommand("windowsplit", "down"))
+					_, err = b.comp.SetFocus(win)
+					require.NoError(t, err)
+				}
+				b.Draw(term.NewStringWriter(100, 30))
+				initialSize := term.Coordinates{X: win.Width(), Y: win.Height()}
+
+				require.NoError(t, b.windowresize(context.Background(), resize.direction, resize.dimension))
+				b.Draw(term.NewStringWriter(100, 30))
+				resized := term.Coordinates{X: win.Width(), Y: win.Height()}
+				require.NotEqual(t, initialSize, resized)
+
+				action.act(t, b)
+				b.Draw(term.NewStringWriter(100, 30))
+				require.Equal(t, resized, term.Coordinates{X: win.Width(), Y: win.Height()})
+
+				require.NoError(t, b.windowresize(context.Background(), "reset"))
+				b.Draw(term.NewStringWriter(100, 30))
+				require.Equal(t, initialSize, term.Coordinates{X: win.Width(), Y: win.Height()})
+
+				sendExplorerKeys(t, b.fileExplorerHandler, "A"+strings.Repeat("x", initialSize.X)+"<esc>")
+				b.Draw(term.NewStringWriter(100, 30))
+				require.Greater(t, win.Width(), initialSize.X, "editing a longer name must still resize the window")
+			})
+		}
+	}
 }
 
 func TestFileExplorerToggleTwice(t *testing.T) {
@@ -1195,7 +1306,7 @@ func TestShellCommandOpensTab(t *testing.T) {
 
 	tabs := b.comp.Tabs()
 	require.Len(t, tabs, 1)
-	_, ok := tabs[0].Handler().(*ideshell.Handler)
+	_, ok := tabs[0].Handler().(*ideconsole.Handler)
 	assert.True(t, ok)
 	assert.Equal(t, text.DefaultConfig().Icons.Shell, b.config.Icons.Shell)
 	assert.Equal(t, "console://"+workspaceURI.Path(), tabs[0].URI().String())
@@ -1344,7 +1455,7 @@ func TestHomeFallbackPromptDoesNotInstall(t *testing.T) {
 		"agent", "?",
 		"chateffort", "chatmaxtokens", "chatskill", "chatmodel",
 		"chatclear", "chatcompact", "chatfork", "chatexport", "chatlog",
-		"searchfile", "searchtext", "searchast",
+		"searchfile", "searchtext", "searchast", "searchsemantic", "searchregex",
 	}
 	for _, command := range commands {
 		t.Run(command, func(t *testing.T) {
@@ -1400,6 +1511,88 @@ func TestShowFallbackPromptNoDoesNothing(t *testing.T) {
 	assert.Nil(t, b.ex.companionConsole)
 }
 
+func TestShowFallbackPromptOverSelfClosingFloatingWindowDoesNotPanic(t *testing.T) {
+	tests := []struct {
+		name string
+		// open shows the floating windows that are open when the user
+		// answers the install prompt.
+		open func(t *testing.T, b testEx, svc storageapi.Service, uri workspaceapi.URI)
+	}{
+		{
+			name: "workspace notice",
+			open: func(t *testing.T, b testEx, svc storageapi.Service, uri workspaceapi.URI) {
+				showTestWorkspaceNotice(t, b, svc, uri)
+			},
+		},
+		{
+			name: "cheatsheet",
+			open: func(t *testing.T, b testEx, _ storageapi.Service, _ workspaceapi.URI) {
+				require.NoError(t, b.ex.cheatsheet(context.Background()))
+			},
+		},
+		{
+			name: "workspace notice under cheatsheet",
+			open: func(t *testing.T, b testEx, svc storageapi.Service, uri workspaceapi.URI) {
+				showTestWorkspaceNotice(t, b, svc, uri)
+				require.NoError(t, b.ex.cheatsheet(context.Background()))
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			workspaceURI, err := workspaceapi.ParseURI("file:///tmp/fallback-self-closing")
+			require.NoError(t, err)
+			w := testWorkspaceWithURI{
+				testLoader: &testLoader{exitStartedCommands: true},
+				uri:        workspaceURI,
+			}
+			cfg := vte.DefaultConfig()
+			scheduler := newQueuedScheduler()
+			cfg.ScheduleNextTick = scheduler.ScheduleNextTick
+			svc := storagestub.NewInMemoryService()
+			b := newExForTestingWithStorage(t, w, svc, texttest.NopEditor(),
+				cfg, nopPublishEvent, clipboard.NewInMemory(),
+				text.WithCommandKey(testCommandKey),
+			)
+			b.mu = &sync.Mutex{}
+			b.scheduler = scheduler
+			defer b.Close()
+			b.Resize(100, 40)
+
+			tc.open(t, b, svc, workspaceURI)
+			floating := b.comp.Browser().FloatingWindows()
+			// The fallback prompt is reached the way the user reaches it:
+			// by running the command from the command prompt.
+			keys, err := term.ParseKeys("<c-\\\\>agent<enter>")
+			require.NoError(t, err)
+			for _, k := range keys {
+				b.Handle(term.Event{Type: term.EventKey, Ch: k.Ch, Mod: k.Mod, Key: k.Key})
+			}
+			require.Equal(t, floating+1, b.comp.Browser().FloatingWindows(),
+				"the install prompt must open over the other floating windows")
+
+			require.NotPanics(t, func() {
+				b.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
+			})
+		})
+	}
+}
+
+func showTestWorkspaceNotice(
+	t *testing.T, b testEx, svc storageapi.Service, uri workspaceapi.URI,
+) {
+	t.Helper()
+	notice := idenotice.New(nil, newBrowserAdapter(b.ex.Browser()), nil,
+		b.scheduler.ScheduleNextTick, func(*url.URL) bool { return false },
+		idenotice.Config{
+			Literal:      "Run the `agent` command.",
+			Show:         idenotice.ShowAlways,
+			Storage:      svc,
+			WorkspaceURI: uri,
+		})
+	require.NoError(t, notice.Show(context.Background()))
+}
+
 func TestShellCommandPastesArgument(t *testing.T) {
 	workspaceURI, err := workspaceapi.ParseURI("file:///tmp/shell-paste")
 	require.NoError(t, err)
@@ -1436,6 +1629,13 @@ func TestShellCommandPastesArgument(t *testing.T) {
 	))
 	assert.Equal(t, "help help", doc.Items[len(doc.Items)-1])
 
+	// Typed at the prompt, the console receives the line as written.
+	handleTaskInputSequence(b, ":console help 'a b'>")
+	require.NoError(t, svc.Get(
+		context.Background(), shellHistoryDocumentID, &doc,
+	))
+	assert.Equal(t, "help 'a b'", doc.Items[len(doc.Items)-1])
+
 	// Calling without arguments must not submit anything new.
 	prev := len(doc.Items)
 	require.NoError(t, b.consolenewtab(context.Background()))
@@ -1443,6 +1643,221 @@ func TestShellCommandPastesArgument(t *testing.T) {
 		context.Background(), shellHistoryDocumentID, &doc,
 	))
 	assert.Equal(t, prev, len(doc.Items))
+}
+
+func TestConsoleCommandLeavesFocusedFloat(t *testing.T) {
+	for _, explorer := range []bool{false, true} {
+		t.Run(fmt.Sprintf("explorer=%t", explorer), func(t *testing.T) {
+			uri, err := workspaceapi.ParseURI("memory:///")
+			require.NoError(t, err)
+			scheme, err := workspace.NewMemoryScheme(context.Background(), config.NopConfig(), uri)
+			require.NoError(t, err)
+			cfg := vte.DefaultConfig()
+			scheduler := newQueuedScheduler()
+			cfg.ScheduleNextTick = scheduler.ScheduleNextTick
+			svc := storagestub.NewInMemoryService()
+			b := newExForTestingWithStorage(t, workspace.NewSchemeWorkspace(uri, scheme, inlineSchedule),
+				svc, texttest.NopEditor(), cfg, nopPublishEvent, clipboard.NewInMemory(),
+				text.WithCommandKey(testCommandKey),
+			)
+			b.mu = &sync.Mutex{}
+			b.scheduler = scheduler
+			defer b.Close()
+			b.Resize(80, 24)
+			if explorer {
+				require.NoError(t, b.fexplorer(context.Background()))
+			}
+			float := browser.StaticFloating(browser.NopHandler(handler.NewTestHandler()), 10, 4)
+			floatWin, err := b.comp.Floating(float, browserapi.FloatingConfig{})
+			require.NoError(t, err)
+			require.True(t, b.invokeWindow().IsFloating())
+
+			require.NoError(t, b.consolenewtab(context.Background(), "help"))
+
+			require.False(t, floatWin.Closed())
+			content, err := floatWin.Content()
+			require.NoError(t, err)
+			assert.Equal(t, float, content, "the float's content lives only there")
+			tab, ok := b.comp.Browser().Tab(b.ex.companionConsoleURI)
+			require.True(t, ok)
+			consoleWin, shown := tab.Window()
+			require.True(t, shown)
+			assert.False(t, consoleWin.IsFloating())
+			assert.False(t, sameWindow(consoleWin, b.fileExplorerWin))
+			assert.True(t, sameWindow(b.invokeWindow(), consoleWin), "the console takes focus")
+			var doc struct{ Items []string }
+			require.NoError(t, svc.Get(context.Background(), shellHistoryDocumentID, &doc))
+			require.NotEmpty(t, doc.Items)
+			assert.Equal(t, "help", doc.Items[len(doc.Items)-1])
+		})
+	}
+}
+
+func TestConsoleCommandAfterConsoleLeavesWindow(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		leave func(t *testing.T, b testEx, console *browser.Tab)
+		reuse bool
+	}{
+		{
+			name: "hidden",
+			leave: func(t *testing.T, b testEx, _ *browser.Tab) {
+				otherURI, err := workspaceapi.ParseURI("memory:///other")
+				require.NoError(t, err)
+				other, err := b.comp.Tab(otherURI, 'o', "other",
+					browser.NopHandler(handler.NewTestHandler()))
+				require.NoError(t, err)
+				require.NoError(t, b.invokeWindow().SetContent(other))
+			},
+			reuse: true,
+		},
+		{
+			name: "closed",
+			leave: func(t *testing.T, b testEx, console *browser.Tab) {
+				require.True(t, b.comp.Browser().RemoveTab(console))
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			workspaceURI, err := workspaceapi.ParseURI("file:///tmp/console-leaves")
+			require.NoError(t, err)
+			w := testWorkspaceWithURI{testLoader: &testLoader{}, uri: workspaceURI}
+			cfg := vte.DefaultConfig()
+			scheduler := newQueuedScheduler()
+			cfg.ScheduleNextTick = scheduler.ScheduleNextTick
+			b := newExForTestingWithStorage(t, w, storagestub.NewInMemoryService(),
+				texttest.NopEditor(), cfg, nopPublishEvent, clipboard.NewInMemory(),
+				text.WithCommandKey(testCommandKey),
+			)
+			b.mu = &sync.Mutex{}
+			b.scheduler = scheduler
+			defer b.Close()
+			require.NoError(t, b.consolenewtab(context.Background()))
+			console, ok := b.comp.Browser().Tab(b.ex.companionConsoleURI)
+			require.True(t, ok)
+			first := console.Handler()
+			tc.leave(t, b, console)
+			_, shown := console.Window()
+			require.False(t, shown)
+
+			require.NoError(t, b.consolenewtab(context.Background(), "help"))
+
+			console, ok = b.comp.Browser().Tab(b.ex.companionConsoleURI)
+			require.True(t, ok)
+			_, shown = console.Window()
+			require.True(t, shown)
+			assert.Same(t, console.Handler(), b.ex.companionConsole,
+				"the line must go to the console on screen")
+			if tc.reuse {
+				assert.Same(t, first, console.Handler())
+			} else {
+				assert.NotSame(t, first, console.Handler(), "a closed console is not reused")
+			}
+		})
+	}
+}
+
+func TestConsoleCommandWhenConsoleDroppedWhileShown(t *testing.T) {
+	workspaceURI, err := workspaceapi.ParseURI("file:///tmp/console-dropped")
+	require.NoError(t, err)
+	w := testWorkspaceWithURI{testLoader: &testLoader{}, uri: workspaceURI}
+	cfg := vte.DefaultConfig()
+	scheduler := newQueuedScheduler()
+	cfg.ScheduleNextTick = scheduler.ScheduleNextTick
+	b := newExForTestingWithStorage(t, w, storagestub.NewInMemoryService(),
+		texttest.NopEditor(), cfg, nopPublishEvent, clipboard.NewInMemory(),
+		text.WithCommandKey(testCommandKey),
+	)
+	b.mu = &sync.Mutex{}
+	b.scheduler = scheduler
+	defer b.Close()
+	// Replacing this content when the console is shown drops the console,
+	// the way the idenotice float once did.
+	dropper := browser.FuncHandler(handler.NewTestHandler(), func() error {
+		b.ex.companionConsole = nil
+		return nil
+	})
+	require.NoError(t, b.invokeWindow().SetContent(dropper))
+
+	assert.NotPanics(t, func() {
+		assert.Error(t, b.consolenewtab(context.Background(), "help"))
+	})
+}
+
+func TestInstallPromptOverNoticeSubmitsToConsole(t *testing.T) {
+	workspaceURI, err := workspaceapi.ParseURI("docs:///")
+	require.NoError(t, err)
+	w := testWorkspaceWithURI{
+		testLoader: &testLoader{exitStartedCommands: true},
+		uri:        workspaceURI,
+	}
+	cfg := vte.DefaultConfig()
+	scheduler := newQueuedScheduler()
+	cfg.ScheduleNextTick = scheduler.ScheduleNextTick
+	svc := storagestub.NewInMemoryService()
+	b := newExForTestingWithStorage(t, w, svc, texttest.NopEditor(),
+		cfg, nopPublishEvent, clipboard.NewInMemory(),
+		text.WithCommandKey(testCommandKey),
+	)
+	b.mu = &sync.Mutex{}
+	b.scheduler = scheduler
+	defer b.Close()
+	notice := idenotice.New(nil, newBrowserAdapter(b.Browser()), nil,
+		scheduler.ScheduleNextTick, b.onLinkClick, idenotice.Config{
+			Literal:      "# Welcome to Rune",
+			Show:         idenotice.ShowAlways,
+			Storage:      svc,
+			WorkspaceURI: workspaceURI,
+		})
+	require.NoError(t, notice.Show(context.Background()))
+	b.ShowFallbackPrompt(context.Background(), "agent")
+
+	require.NotPanics(t, func() {
+		b.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
+	})
+
+	var doc struct{ Items []string }
+	require.NoError(t, svc.Get(context.Background(), shellHistoryDocumentID, &doc))
+	require.NotEmpty(t, doc.Items)
+	assert.Equal(t, "pkg install rune-agent", doc.Items[len(doc.Items)-1])
+	assert.Equal(t, 1, b.comp.Browser().FloatingWindows(), "the notice stays open")
+}
+
+func TestConsoleCommandReportsTabStatus(t *testing.T) {
+	workspaceURI, err := workspaceapi.ParseURI("file:///tmp/console-status")
+	require.NoError(t, err)
+	w := testWorkspaceWithURI{testLoader: &testLoader{}, uri: workspaceURI}
+	cfg := vte.DefaultConfig()
+	scheduler := newQueuedScheduler()
+	cfg.ScheduleNextTick = scheduler.ScheduleNextTick
+	b := newExForTestingWithStorage(t, w, storagestub.NewInMemoryService(), texttest.NopEditor(),
+		cfg, nopPublishEvent, clipboard.NewInMemory(),
+		text.WithCommandKey(testCommandKey),
+	)
+	b.mu = &sync.Mutex{}
+	b.scheduler = scheduler
+	defer b.Close()
+
+	require.NoError(t, b.consolenewtab(context.Background()))
+	_, handled := b.Handle(term.Event{Type: term.EventUnfocus})
+	require.True(t, handled)
+
+	require.NoError(t, b.consolenewtab(context.Background(), "help"))
+	b.ex.companionConsole.Wait()
+	b.flushScheduled()
+	status, ok := b.comp.Browser().TabStatus(b.ex.companionConsoleURI)
+	require.True(t, ok)
+	assert.Equal(t, programstatus.Done, status.State, "a command that ended out of sight is done")
+	require.Len(t, status.Records, 1)
+	assert.Equal(t, programstatus.Report{
+		ID: "1", State: programstatus.Done, Progress: -1, App: programstatus.HostApp, Title: "help",
+	}, status.Records[0].Report)
+
+	_, handled = b.Handle(term.Event{Type: term.EventFocus})
+	require.True(t, handled)
+	status, _ = b.comp.Browser().TabStatus(b.ex.companionConsoleURI)
+	assert.Equal(t, programstatus.Idle, status.State, "the host terminal regained focus")
+	assert.Empty(t, status.Records)
 }
 
 func TestDebuggerCommandOpensShellWithDebugger(t *testing.T) {
@@ -1471,10 +1886,10 @@ func TestDebuggerCommandOpensShellWithDebugger(t *testing.T) {
 	require.NotEmpty(t, doc.Items)
 	assert.Equal(t, "debugger", doc.Items[len(doc.Items)-1])
 
-	// The console tab must be the companion ideshell handler.
+	// The console tab must be the companion ideconsole handler.
 	tabs := b.comp.Tabs()
 	require.Len(t, tabs, 1)
-	_, ok := tabs[0].Handler().(*ideshell.Handler)
+	_, ok := tabs[0].Handler().(*ideconsole.Handler)
 	assert.True(t, ok)
 
 	// Second call reuses the existing companion console tab and
@@ -1549,7 +1964,7 @@ func TestShellCommandPersistsHistory(t *testing.T) {
 	require.NoError(t, b2.consolenewtab(context.Background()))
 	tabs := b2.comp.Tabs()
 	require.Len(t, tabs, 1)
-	_, ok := tabs[0].Handler().(*ideshell.Handler)
+	_, ok := tabs[0].Handler().(*ideconsole.Handler)
 	assert.True(t, ok)
 
 	require.NoError(t, svc.Get(
@@ -2014,7 +2429,7 @@ func TestExKeySequence(t *testing.T) {
 				defer mu.Unlock()
 				ex.Handle(ev)
 				return true
-			}, 0, clipboard.NewInMemory(), nil, nil, nil, nil, testPromptEditor(), opts...))
+			}, 0, clipboard.NewInMemory(), nil, nil, ex.Browser(), nil, testPromptEditor(), testNameGenerator, opts...))
 		ex.subscribeCommands()
 		b := testEx{ex: ex}
 		closeFns = append(closeFns, func() error {
@@ -2157,8 +2572,8 @@ func newExSequencerHarness(
 			defer mu.Unlock()
 			ex.Handle(ev)
 			return true
-		}, 0, clipboard.NewInMemory(), nil, nil, nil, nil,
-		testPromptEditor(), opts...))
+		}, 0, clipboard.NewInMemory(), nil, nil, ex.Browser(), nil,
+		testPromptEditor(), testNameGenerator, opts...))
 	ex.subscribeCommands()
 
 	// Register a recording sink for every command named by a binding so
@@ -3330,7 +3745,9 @@ func (m *exSearchWindowManager) CloseWindow(win browserapi.Window) error {
 	return win.(browser.Window).Close()
 }
 
-func (m *exSearchWindowManager) SetTabActivity(workspaceapi.URI, bool) error { return nil }
+func (m *exSearchWindowManager) SetTabStatus(workspaceapi.URI, browserapi.TabStatus) error {
+	return nil
+}
 
 func (t testEx) Handle(ev term.Event) (bool, bool) {
 	unlock := t.lock()
@@ -3519,6 +3936,12 @@ func (w *readfileCrossWorkspaceLoader) Load(
 	return &testFileBuffer{readOnly: readOnly}, nil
 }
 
+func (w *readfileCrossWorkspaceLoader) LoaderFor(
+	file workspaceapi.URI,
+) (workspace.FileLoader, error) {
+	return workspace.FileLoaderOf(w, file), nil
+}
+
 func (w *readfileCrossWorkspaceLoader) OpenFile(
 	path string, flag int, perm os.FileMode,
 ) (workspaceapi.File, error) {
@@ -3554,6 +3977,12 @@ func testPromptEditor() command.Editor {
 	}
 }
 
+type fixedNameGenerator string
+
+func (g fixedNameGenerator) generateName() string { return string(g) }
+
+const testNameGenerator = fixedNameGenerator("brave-otter")
+
 func newExForTestingTerminal(
 	t *testing.T, workspace workspace.Workspace,
 	ed text.Editor,
@@ -3574,7 +4003,7 @@ func newExForTestingTerminal(
 	scheduler, mu := installDefaultTestScheduler(&emulatorCfg)
 	require.NoError(t, ex.init(func(exoeditor.Reloader, schemeapi.Terminal) (text.Editor, error) { return ed, nil }, workspace, svc,
 		notifications, uri, emulatorCfg, barCfg, publishEvent,
-		0, clipboard.NewInMemory(), nil, nil, nil, nil, testPromptEditor(), opts...))
+		0, clipboard.NewInMemory(), nil, nil, ex.Browser(), nil, testPromptEditor(), testNameGenerator, opts...))
 	ex.subscribeCommands()
 	return testEx{ex: ex, mu: mu, scheduler: scheduler}
 }
@@ -3607,7 +4036,7 @@ func newExForTestingVTECapacity(
 		}, ws, svc,
 		notifications, uri, emulatorCfg, plugin.DefaultBarConfig(),
 		nopPublishEvent, initialVTECapacity, clipboard.NewInMemory(),
-		nil, nil, nil, nil, testPromptEditor(), opts...))
+		nil, nil, e.Browser(), nil, testPromptEditor(), testNameGenerator, opts...))
 	return testEx{ex: e, mu: mu, scheduler: scheduler}
 }
 
@@ -3762,7 +4191,7 @@ func newExForTestingWithWorkspace(
 	scheduler, mu := installDefaultTestScheduler(&emulatorCfg)
 	require.NoError(t, ex.init(func(exoeditor.Reloader, schemeapi.Terminal) (text.Editor, error) { return ed, nil }, workspace, svc,
 		notifications, uri, emulatorCfg, plugin.DefaultBarConfig(),
-		publishEvent, 0, clip, nil, nil, nil, nil, testPromptEditor(), finalOpts...))
+		publishEvent, 0, clip, nil, nil, ex.Browser(), nil, testPromptEditor(), testNameGenerator, finalOpts...))
 	ex.subscribeCommands()
 	ex.newEmulatorHandler = func(args []string) (vtereservoir.VTE, error) {
 		return newTestVteWithConfig(args), nil
@@ -3801,7 +4230,7 @@ func newExForTestingCommandsPreview(
 	scheduler, mu := installDefaultTestScheduler(&emulatorCfg)
 	require.NoError(t, ex.init(func(exoeditor.Reloader, schemeapi.Terminal) (text.Editor, error) { return ed, nil }, workspace, svc,
 		notifications, uri, emulatorCfg, plugin.DefaultBarConfig(),
-		publishEvent, 0, clip, nil, previews, nil, nil, testPromptEditor(), finalOpts...))
+		publishEvent, 0, clip, nil, previews, ex.Browser(), nil, testPromptEditor(), testNameGenerator, finalOpts...))
 	ex.subscribeCommands()
 	ex.newEmulatorHandler = func(args []string) (vtereservoir.VTE, error) {
 		return newTestVteWithConfig(args), nil
@@ -3851,7 +4280,7 @@ func newExForTestingWithStorage(
 
 	require.NoError(t, ex.init(func(exoeditor.Reloader, schemeapi.Terminal) (text.Editor, error) { return ed, nil }, workspace, svc,
 		notifications, uri, emulatorCfg, plugin.DefaultBarConfig(),
-		publishEvent, 0, clip, nil, nil, nil, nil, testPromptEditor(), finalOpts...))
+		publishEvent, 0, clip, nil, nil, ex.Browser(), nil, testPromptEditor(), testNameGenerator, finalOpts...))
 	ex.subscribeCommands()
 	ex.newEmulatorHandler = func(args []string) (vtereservoir.VTE, error) {
 		return newTestVteWithConfig(args), nil
@@ -3964,12 +4393,11 @@ func TestFloatingPromptClosePrefersFloatingFocus(t *testing.T) {
 		"fourth prompt",
 		"fifth prompt",
 	} {
-		prompts = append(prompts, browserComp.Prompt(
-			message,
-			[]string{yesOpt, noOpt},
-			yesNoKeyCombs,
-			handler.NopPromptHandler(),
-		))
+		prompts = append(prompts, browserComp.Prompt(browserapi.PromptConfig{
+			Message:  message,
+			Options:  []string{yesOpt, noOpt},
+			Bindings: yesNoKeyCombs,
+		}, handler.NopPromptHandler()))
 	}
 
 	require.Equal(t, len(prompts), browserComp.FloatingWindows())
@@ -4022,8 +4450,11 @@ func TestWindowCloseAllClosesFloatingWindows(t *testing.T) {
 	require.NoError(t, b.ex.windownew(t.Context()))
 	require.Equal(t, 2, browserComp.Tiles())
 
-	prompt := browserComp.Prompt("keep me?", []string{yesOpt, noOpt},
-		yesNoKeyCombs, handler.NopPromptHandler())
+	prompt := browserComp.Prompt(browserapi.PromptConfig{
+		Message:  "keep me?",
+		Options:  []string{yesOpt, noOpt},
+		Bindings: yesNoKeyCombs,
+	}, handler.NopPromptHandler())
 	require.Equal(t, 1, browserComp.FloatingWindows())
 
 	focus, err := b.ex.Browser().Focus()
@@ -4177,6 +4608,107 @@ func TestCommandPromptUsesSharedStoragePartition(t *testing.T) {
 	assert.Equal(t, int32(0), store.partitionCloseCount.Load())
 }
 
+func TestExRestyle(t *testing.T) {
+	// Nothing is on disk at uri, so only a reloaded image can draw.
+	const uri = "file:///nonexistent/hud/frame.png"
+	const notificationURI = "file:///nonexistent/hud/notification.png"
+	const tabURI = "file:///nonexistent/hud/tab.png"
+	wmCfg := thandler.DefaultWindowManagerConfig()
+	wmCfg.FrameGraphicsStorage = storagestub.NewInMemoryService()
+	wmCfg.Interrupter = term.NopInterrupter()
+	b := newExForTesting(t, texttest.NopEditor(), text.WithWindowManagerConfig(wmCfg))
+	t.Cleanup(func() { _ = b.Close() })
+	unlock := b.lock()
+	defer unlock()
+	b.ex.frameGraphics()
+
+	cfg := ideConfig{cfg: map[string]any{
+		"browser": map[string]any{
+			"window_manager": map[string]any{
+				"frame_charset": map[string]any{
+					"topleft": "╭", "graphics": map[string]any{"topleft": uri},
+				},
+			},
+			"focus_tab_highlight_char": "=",
+			"tab_images": map[string]any{"focus": map[string]any{
+				"left": tabURI, "middle": tabURI, "right": tabURI,
+			}},
+		},
+		"command": map[string]any{
+			"frame_charset":     map[string]any{"topright": "╮"},
+			"separator_charset": map[string]any{"left": "├"},
+		},
+		"editor": map[string]any{"status_bar": map[string]any{
+			"layout": "[{{ .Status }}]",
+		}},
+		"notifications": map[string]any{
+			"frame_charset": map[string]any{
+				"topleft":  "╓",
+				"graphics": map[string]any{"topleft": notificationURI, "mode": "overlay"},
+			},
+		},
+	}, errors: map[string]error{}}
+	style := cfg.hudStyle()
+	require.Empty(t, cfg.errors)
+	b.ex.statusBars = text.NewStatusBarStyles(text.StatusBarStyle{})
+
+	b.ex.restyle(style, map[string]image.Image{
+		uri:             image.NewRGBA(image.Rect(0, 0, 1, 1)),
+		notificationURI: image.NewRGBA(image.Rect(0, 0, 1, 1)),
+		tabURI:          image.NewRGBA(image.Rect(0, 0, 1, 1)),
+	}, nil)
+
+	assert.Equal(t, '╭', b.ex.config.FrameCharSet.TopLeft)
+	assert.Equal(t, '=', b.ex.config.FocusTabHighlightChar)
+	assert.Equal(t, style.browser.Tabs.Images, b.ex.config.TabImages)
+	assert.Equal(t, style.commandPromptFrame, b.ex.commandPromptCfg.frameCharSet)
+	assert.Equal(t, '├', b.ex.commandPromptCfg.separator.Left)
+	assert.Equal(t, style.statusBar, b.ex.statusBars.Current())
+	frame, _ := b.ex.promptFrameCharSets()
+	assert.Equal(t, '╮', frame.TopRight)
+	for name, g := range map[string]*tcomponent.FrameGraphics{
+		"browser":        b.ex.comp.Browser().FrameGraphics(),
+		"command":        b.ex.cmdV.C.FrameGraphics(),
+		"command prompt": b.ex.graphics,
+	} {
+		require.NotNil(t, g, name)
+		img := g.Image(uri)
+		require.NotNil(t, img, name)
+		img.Resize(1, 1)
+		w := newCoveringImageWriter(1, 1)
+		img.Draw(w)
+		assert.Len(t, w.images, 1, "%s draws the reloaded image at once", name)
+	}
+
+	const width, height = 40, 10
+	b.Resize(width, height)
+
+	tab := b.ex.comp.Browser().NewTab(workspaceapi.URI{}, 'x', "tab", browsertest.NewTestHandler(), nil)
+	require.NoError(t, b.ex.comp.Browser().Focus().SetContent(tab))
+	tabs := newCoveringImageWriter(width, height)
+	b.ex.comp.Browser().Draw(tabs)
+	require.NoError(t, tabs.Flush())
+	label := strings.Index(strings.Split(tabs.String(), "\n")[1], "x tab")
+	require.GreaterOrEqual(t, label, 0, "the tab bar draws the tab")
+	assert.True(t, tabs.images[term.Coordinates{X: label + 1, Y: 1}],
+		"the tab bar draws the reloaded image under the tab at once")
+
+	b.ex.container.Notify(notifications.LevelInfo, "hi")
+	w := newCoveringImageWriter(width, height)
+	b.ex.container.Draw(w)
+	require.NoError(t, w.Flush())
+	var corner []term.Coordinates
+	for y, row := range strings.Split(w.String(), "\n") {
+		for x, ch := range []rune(row) {
+			if ch == '╓' {
+				corner = append(corner, term.Coordinates{X: x, Y: y})
+			}
+		}
+	}
+	require.Len(t, corner, 1, "the notification draws with the restyled frame")
+	assert.True(t, w.images[corner[0]], "the notification draws the reloaded image over its corner")
+}
+
 func TestCommandPromptHasNoWindowBar(t *testing.T) {
 	b := newExForTesting(t, texttest.NopEditor(), text.WithCommandKey(testCommandKey))
 	defer b.Close()
@@ -4196,6 +4728,62 @@ func TestCommandPromptHasNoWindowBar(t *testing.T) {
 	assert.Contains(t, out, "─",
 		"the prompt keeps the configured frame charset")
 	require.NoError(t, b.ex.cmdWin.Close())
+}
+
+func TestPromptFrameCharSets(t *testing.T) {
+	prompt := component.FrameCharSet{
+		TopLeft: '╔', TopRight: '╗', BottomLeft: '╚', BottomRight: '╝',
+		HorizontalTop: '═', HorizontalBottom: '═',
+		VerticalLeft: '║', VerticalRight: '║',
+	}
+	suite := []struct {
+		description  string
+		frameCharSet *component.FrameCharSet
+		// wantPrompt reports whether the prompt draws the prompt charset.
+		wantPrompt bool
+	}{
+		{
+			description: "unset draws the window charset and shades the focused one",
+		},
+		{
+			description:  "set draws and shades the prompt charset",
+			frameCharSet: &prompt,
+			wantPrompt:   true,
+		},
+	}
+
+	for _, test := range suite {
+		t.Run(test.description, func(t *testing.T) {
+			b := newExForTesting(t, texttest.NopEditor(), text.WithCommandKey(testCommandKey))
+			defer b.Close()
+			b.Resize(40, 20)
+			b.ex.config.FocusFrameCharSet = component.FrameCharSetHighlight()
+			b.ex.commandPromptCfg.frameCharSet = test.frameCharSet
+
+			wantFrame, wantRadar := b.ex.config.FrameCharSet, b.ex.config.FocusFrameCharSet
+			if test.wantPrompt {
+				wantFrame, wantRadar = prompt, prompt
+			}
+			frame, radar := b.ex.promptFrameCharSets()
+			assert.Equal(t, wantFrame, frame)
+			assert.Equal(t, wantRadar, radar)
+
+			b.ex.openCommandPrompt()
+			require.NotNil(t, b.ex.cmd)
+			w := term.NewStringWriter(40, 20)
+			b.Draw(w)
+			require.NoError(t, w.Flush())
+			out := w.String()
+			for _, r := range []rune{prompt.TopLeft, prompt.TopRight, prompt.BottomLeft, prompt.BottomRight} {
+				if test.wantPrompt {
+					assert.Contains(t, out, string(r))
+				} else {
+					assert.NotContains(t, out, string(r))
+				}
+			}
+			require.NoError(t, b.ex.cmdWin.Close())
+		})
+	}
 }
 
 func TestCommandPromptShaderGating(t *testing.T) {
@@ -4821,10 +5409,10 @@ func TestIntegrationEphemeralTerminal(t *testing.T) {
 │                                      │
 └──────────────────────────────────────┘`,
 		},
-		{":noticloseall>:! sh -c 'sleep 20 && echo $FILE'>",
+		{":noticloseall>:! sh -c 'sleep 20 && echo FILE'>",
 			`┌──────────────────────────────────────┐
 │                                      │
-├──█●█ sh -c 'sh -c sleep 20 && echo█──┤
+├──█●█ sh -c "sh -c 'sleep 20 && ech█──┤
 │  │ ▀                            0s│  │
 │  │▐                               │  │
 │  │                                │  │
@@ -4833,10 +5421,10 @@ func TestIntegrationEphemeralTerminal(t *testing.T) {
 │  │                                │  │
 └──└────────────────────────────────┘──┘`,
 		},
-		{":windowclose>:windowclose>:edit a>:! sh -c 'sleep 20 && echo $FILE'>",
+		{":windowclose>:windowclose>:edit a>:! sh -c 'sleep 20 && echo FILE'>",
 			`┌──────────────────────────────────────┐
 │o a                                   │
-├──█●█ sh -c 'sh -c sleep 20 && echo█──┤
+├──█●█ sh -c "sh -c 'sleep 20 && ech█──┤
 │  │ ▀                            0s│  │
 │  │▐                               │  │
 │  │                                │  │
@@ -5294,7 +5882,7 @@ func newExForReservoirTesting(
 	require.NoError(t, e.init(func(exoeditor.Reloader, schemeapi.Terminal) (text.Editor, error) { return texttest.NopEditor(), nil }, ws, svc,
 		notifications, uri, emCfg, plugin.DefaultBarConfig(),
 		nopPublishEvent, initialCapacity, clipboard.NewInMemory(),
-		nil, nil, nil, nil, testPromptEditor(), finalOpts...))
+		nil, nil, e.Browser(), nil, testPromptEditor(), testNameGenerator, finalOpts...))
 	require.NoError(t, e.subscribeCommands())
 
 	// Wrap the closure created by init so we can observe which branch
@@ -5503,7 +6091,7 @@ func TestExUsesSharedIDEStorage(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, ex.init(func(exoeditor.Reloader, schemeapi.Terminal) (text.Editor, error) { return texttest.NopEditor(), nil }, workspace, storage,
 		notifications, uri, vte.DefaultConfig(), plugin.DefaultBarConfig(),
-		nopPublishEvent, 0, clipboard.NewInMemory(), nil, nil, nil, nil, testPromptEditor()))
+		nopPublishEvent, 0, clipboard.NewInMemory(), nil, nil, ex.Browser(), nil, testPromptEditor(), testNameGenerator))
 
 	require.Equal(t, 0, storage.partitionCalls)
 	require.Same(t, storage, ex.storage)
@@ -5516,13 +6104,21 @@ func TestExUsesSharedIDEStorage(t *testing.T) {
 	require.Equal(t, 1, storage.partitionCalls)
 	terminals := storage.partitions[idehistory.TerminalStatePartition]
 	require.NotNil(t, terminals)
+	// So do the command prompt's frame images.
+	ex.frameGraphics()
+	ex.frameGraphics()
+	require.Equal(t, 2, storage.partitionCalls)
+	frameImages := storage.partitions[frameImagesPartition]
+	require.NotNil(t, frameImages)
 
 	require.NoError(t, ex.Close())
 	require.Equal(t, 0, storage.closeCalls)
 	require.Equal(t, 1, terminals.closeCalls)
+	require.Equal(t, 1, frameImages.closeCalls)
 	require.NoError(t, ex.Close())
 	require.Equal(t, 0, storage.closeCalls)
 	require.Equal(t, 1, terminals.closeCalls)
+	require.Equal(t, 1, frameImages.closeCalls)
 }
 
 func TestFullScreen(t *testing.T) {
@@ -5971,6 +6567,160 @@ func TestEditCompletion(t *testing.T) {
 	handlertest.TestHandlerIsolated(t, fn, 20, 10, cases)
 }
 
+func TestEditViewResourceURIs(t *testing.T) {
+	candidates := []string{"fake://host/one", "fake:///it's", "fake:///a&b$c", "fake:///p%20q"}
+	for _, name := range []string{"edit", "view"} {
+		t.Run(name, func(t *testing.T) {
+			uri, err := workspaceapi.ParseURI("memory:///")
+			require.NoError(t, err)
+			scheme, err := workspace.NewMemoryScheme(context.Background(), config.NopConfig(), uri)
+			require.NoError(t, err)
+			touchTestFile(t, scheme, "fake.txt")
+			b := newExForTestingWithWorkspace(t, workspace.NewSchemeWorkspace(uri, scheme, inlineSchedule),
+				texttest.NopEditor(), vte.DefaultConfig(), nopPublishEvent, clipboard.NewInMemory(),
+				text.WithCommandKey(testCommandKey),
+				text.WithWindowManagerConfig(thandler.WindowManagerConfig{
+					WindowManagerConfig: tcomponent.WindowManagerConfig{Frame: false}}),
+			)
+			t.Cleanup(func() { _ = b.Close() })
+			b.Resize(60, 16)
+
+			var (
+				mu       sync.Mutex
+				prefixes []string
+				// answer, when set, is what completion answers instead
+				// of the candidates.
+				answer func() (sdkiterator.Iterator[string], error)
+			)
+			content := browsertest.NewTestHandler()
+			opener := &recordingOpener{
+				open: func(_ context.Context, uri workspaceapi.URI) (browserapi.Handler, error) {
+					if !slices.Contains(candidates, uri.String()) {
+						return nil, errors.New("no such resource")
+					}
+					return content, nil
+				},
+				complete: func(_ context.Context, prefix string) (sdkiterator.Iterator[string], error) {
+					mu.Lock()
+					defer mu.Unlock()
+					prefixes = append(prefixes, prefix)
+					if answer != nil {
+						return answer()
+					}
+					var values []string
+					for _, c := range candidates {
+						if strings.HasPrefix(c, prefix) {
+							values = append(values, c)
+						}
+					}
+					return sdkiterator.FromSlice(values), nil
+				},
+			}
+			completions := func() int {
+				mu.Lock()
+				defer mu.Unlock()
+				return len(prefixes)
+			}
+			feed := func(seq string) {
+				t.Helper()
+				keys, err := term.ParseKeys(seq)
+				require.NoError(t, err)
+				for _, k := range keys {
+					b.Handle(term.Event{Type: term.EventKey, Ch: k.Ch, Mod: k.Mod, Key: k.Key})
+				}
+			}
+			prompt := "<c-\\\\>" + name + "<space>"
+			// offered types typed as the argument and returns what the
+			// prompt lists for it.
+			offered := func(typed string) string {
+				t.Helper()
+				feed(prompt + typed)
+				defer feed("<esc>")
+				require.NotNil(t, b.cmd)
+				w := term.NewStringWriter(60, 16)
+				b.cmd.Resize(60, 16)
+				b.cmd.Draw(w)
+				require.NoError(t, w.Flush())
+				return w.String()
+			}
+			require.NoError(t, b.editorObserver.RegisterResourceOpener("fake", opener))
+
+			// Leaves a past argument the prompt could offer in place of
+			// the opener's candidates.
+			feed(prompt + "fake://gone<enter>")
+
+			t.Run("offers the opener's URIs, quoted, and nothing else", func(t *testing.T) {
+				got := offered("fake://")
+				for _, want := range []string{"fake://host/one", `"fake:///it's"`, "fake:///a&b$$c", "fake:///p%20q"} {
+					assert.Contains(t, got, want)
+				}
+				assert.NotContains(t, got, "fake://gone")
+				assert.NotContains(t, got, "fake.txt")
+				mu.Lock()
+				assert.Equal(t, "fake://", prefixes[len(prefixes)-1])
+				mu.Unlock()
+			})
+
+			t.Run("offers nothing else when the opener has nothing or fails", func(t *testing.T) {
+				failure := errors.New("listing failed")
+				for _, a := range []func() (sdkiterator.Iterator[string], error){
+					func() (sdkiterator.Iterator[string], error) { return sdkiterator.Empty[string](), nil },
+					func() (sdkiterator.Iterator[string], error) { return nil, failure },
+					func() (sdkiterator.Iterator[string], error) { return sdkiterator.Error[string](failure), nil },
+				} {
+					mu.Lock()
+					answer = a
+					mu.Unlock()
+					got := offered("fake://")
+					assert.NotContains(t, got, "fake://gone")
+					assert.NotContains(t, got, "fake.txt")
+				}
+				mu.Lock()
+				answer = nil
+				mu.Unlock()
+			})
+
+			t.Run("completes files for paths", func(t *testing.T) {
+				before := completions()
+				assert.Contains(t, offered("fa"), "fake.txt")
+				assert.Equal(t, before, completions())
+			})
+
+			t.Run("opens the URI picked", func(t *testing.T) {
+				for i, typed := range []string{"fake://h", "fake:///i", "fake:///a", "fake:///p"} {
+					feed(prompt + typed + "<tab><enter>")
+					want := candidates[i]
+					tabURI, err := workspaceapi.ParseURI(want)
+					require.NoError(t, err)
+					require.Eventually(t, func() bool {
+						// drawing runs what the open scheduled
+						b.Draw(term.NewStringWriter(60, 16))
+						tab, ok := b.comp.Browser().Tab(tabURI)
+						return ok && tab.Handler() == content
+					}, 5*time.Second, 10*time.Millisecond, "%s must open in a tab", want)
+					opened := opener.snapshot()
+					assert.Equal(t, want, opened[len(opened)-1])
+					win, err := b.comp.Focus()
+					require.NoError(t, err)
+					shown, err := win.Content()
+					require.NoError(t, err)
+					assert.Equal(t, tabURI, shown.(*browser.Tab).URI())
+				}
+			})
+
+			t.Run("completes as any other scheme once the opener unregisters", func(t *testing.T) {
+				require.NoError(t, b.editorObserver.UnregisterResourceOpener("fake"))
+				before := completions()
+				assert.Contains(t, offered("fake://"), "fake://gone")
+				assert.Equal(t, before, completions())
+				require.NoError(t, b.editorObserver.RegisterResourceOpener("fake", opener))
+				assert.NotContains(t, offered("fake://"), "fake://gone")
+				assert.Greater(t, completions(), before)
+			})
+		})
+	}
+}
+
 func TestRenameTab(t *testing.T) {
 	cases := []handlertest.SequenceTestCase{
 		{":edit hello.go>:tabrename 8berSucks>",
@@ -6126,6 +6876,56 @@ func TestTerminalOnFocus(t *testing.T) {
 		ex.tabclose(context.Background())
 		require.Len(t, tvte.onFocusChange, 9)
 		assert.False(t, tvte.onFocusChange[8])
+	})
+
+	t.Run("terminal tab status is acknowledged when seen", func(t *testing.T) {
+		uri, err := workspaceapi.ParseURI("memory:///")
+		require.NoError(t, err)
+		scheme, _ := workspace.NewMemoryScheme(context.Background(), config.NopConfig(), uri)
+		ex := newExForTestingWithWorkspace(t, workspace.NewSchemeWorkspace(uri, scheme, inlineSchedule),
+			texttest.NopEditor(), vte.DefaultConfig(), nopPublishEvent, clipboard.NewInMemory())
+		tvte := newTestVte()
+		ex.newEmulatorHandler = func([]string) (vtereservoir.VTE, error) { return tvte, nil }
+		t.Cleanup(func() { _ = ex.Close() })
+
+		ex.terminalnewtab(context.Background(), "echo", "bla")
+		tab, ok := ex.comp.FocusTab()
+		require.True(t, ok)
+		b := ex.comp.Browser()
+		report := func() {
+			t.Helper()
+			require.True(t, b.SetTabStatus(tab.URI(), programstatus.Report{
+				State: programstatus.Done, Progress: -1,
+			}))
+		}
+		state := func() programstatus.State {
+			status, ok := b.TabStatus(tab.URI())
+			require.True(t, ok)
+			return status.State
+		}
+
+		report()
+		assert.Equal(t, programstatus.Idle, state(), "reported in sight")
+
+		ex.editFiles(context.Background(), "a")
+		report()
+		assert.Equal(t, programstatus.Done, state(), "reported out of sight")
+		ex.tabprevious(context.Background())
+		assert.Equal(t, programstatus.Idle, state(), "shown again")
+
+		ex.windownew(context.Background())
+		report()
+		assert.Equal(t, programstatus.Done, state())
+		ex.windowfocus(context.Background(), "left")
+		assert.Equal(t, programstatus.Idle, state(), "its window took focus")
+
+		_, handled := ex.Handle(term.Event{Type: term.EventUnfocus})
+		require.True(t, handled)
+		report()
+		assert.Equal(t, programstatus.Done, state(), "the host terminal is out of focus")
+		_, handled = ex.Handle(term.Event{Type: term.EventFocus})
+		require.True(t, handled)
+		assert.Equal(t, programstatus.Idle, state(), "the host terminal regained focus")
 	})
 
 	t.Run("companion terminal", func(t *testing.T) {
@@ -6316,6 +7116,430 @@ func TestExecutePluginShellInterpretsOperators(t *testing.T) {
 	}
 }
 
+func TestExecutePluginWindow(t *testing.T) {
+	next := browserapi.NopHandler(handler.NewTestHandler())
+	cases := []struct {
+		name       string
+		act        func(t *testing.T, e *ex, win browser.Window)
+		wantClosed bool
+	}{
+		{
+			name: "replacing the command leaves its window",
+			act: func(t *testing.T, _ *ex, win browser.Window) {
+				require.NoError(t, win.SetContent(next))
+			},
+		},
+		{
+			name: "tabclose closes its window",
+			act: func(t *testing.T, e *ex, _ browser.Window) {
+				require.NoError(t, e.tabclose(context.Background()))
+			},
+			wantClosed: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			uri, err := workspaceapi.ParseURI("memory:///")
+			require.NoError(t, err)
+			scheme, _ := workspace.NewMemoryScheme(
+				context.Background(), config.NopConfig(), uri)
+			e := newExForTestingWithWorkspace(t,
+				workspace.NewSchemeWorkspace(uri, scheme, inlineSchedule),
+				texttest.NopEditor(), vte.DefaultConfig(),
+				nopPublishEvent, clipboard.NewInMemory())
+			tvte := newTestVte()
+			e.newPluginHandler = func(int, ...string) (pluginHandler, error) {
+				return tvte, nil
+			}
+			t.Cleanup(func() { _ = e.Close() })
+			e.Resize(100, 100)
+			require.NoError(t, e.editFiles(context.Background(), "a", "b"))
+			require.NoError(t, e.executePlugin(context.Background(), "make"))
+			e.waitAsyncVTELoads()
+			e.flushScheduled()
+			win, err := e.Browser().Focus()
+			require.NoError(t, err)
+			require.True(t, win.IsFloating())
+
+			tc.act(t, e.ex, win)
+
+			assert.Equal(t, tc.wantClosed, win.Closed())
+			assert.True(t, tvte.calledClose, "the command must be released")
+			if !tc.wantClosed {
+				got, err := win.Content()
+				require.NoError(t, err)
+				assert.Same(t, next, got)
+			}
+		})
+	}
+}
+
+func TestOpenURL(t *testing.T) {
+	t.Setenv("RUNE_TEST_SECRET", "leaked")
+	const raw = "https://example.com/p?a=1&b=$(touch%20x)&c=$RUNE_TEST_SECRET;d"
+	const inert = "https://example.com/p?a=1&b=%24(touch%20x)&c=%24RUNE_TEST_SECRET;d"
+	link, err := url.Parse(raw)
+	require.NoError(t, err)
+	require.Equal(t, raw, link.String())
+	mailto := &url.URL{Scheme: "mailto", Opaque: "a@example.com"}
+
+	cases := []struct {
+		name       string
+		command    string
+		clipboard  bool
+		noSystem   bool
+		open       *url.URL
+		wantSystem []string
+		wantSink   [][]string
+		wantClip   string
+		wantErr    string
+	}{
+		{name: "system", open: link, wantSystem: []string{raw}},
+		{name: "clipboard", clipboard: true, open: link, wantClip: raw},
+		{
+			name:       "clipboard leaves other schemes to the system browser",
+			clipboard:  true,
+			open:       mailto,
+			wantSystem: []string{"mailto:a@example.com"},
+		},
+		{
+			name:     "command gets the shell-inert URL as one argument",
+			command:  "sink $URL",
+			open:     link,
+			wantSink: [][]string{{inert}},
+		},
+		{
+			name:     "nested alias gets the shell-inert URL",
+			command:  "outer $URL",
+			open:     link,
+			wantSink: [][]string{{inert}},
+		},
+		{
+			name:       "other schemes open in the system browser",
+			command:    "sink $URL",
+			open:       mailto,
+			wantSystem: []string{"mailto:a@example.com"},
+		},
+		{name: "no system browser", noSystem: true, open: link, wantErr: "no system browser"},
+		{name: "unknown command", command: "nosuchcommand $URL", open: link, wantErr: keyMetaOpenURL},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := newExForAliasRun(t, map[string]text.CommandAlias{
+				"outer": {Commands: []string{"sink $1"}},
+			})
+			defer b.Close()
+			var sink [][]string
+			require.NoError(t, b.comp.SubscribeCommand(
+				textapi.CommandManual{Name: "sink"},
+				text.FuncCommandHandler(func(_ context.Context, cmd textapi.Command) error {
+					sink = append(sink, cmd.Args)
+					return nil
+				}, nil)))
+			var system []string
+			b.ex.metaOpenURL = metaOpenURLConfig{
+				command: tc.command, clipboard: tc.clipboard,
+			}
+			if !tc.noSystem {
+				b.ex.metaOpenURL.system = func(u *url.URL) error {
+					system = append(system, u.String())
+					return nil
+				}
+			}
+
+			err := b.ex.openURL(tc.open)
+			b.drainAliasRuns()
+
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Equal(t, tc.wantSystem, system)
+			assert.Equal(t, tc.wantSink, sink)
+			clip, err := b.ex.clip.Paste(clipboard.DefaultRegisterID)
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantClip, clip.Text)
+		})
+	}
+}
+
+func TestOpenURLPluginCommandQuotesURL(t *testing.T) {
+	const raw = "https://example.com/?a=1&b=$(id)&c='x'`id`"
+	const inert = "https://example.com/?a=1&b=%24(id)&c=%27x%27%60id%60"
+	link, err := url.Parse(raw)
+	require.NoError(t, err)
+	require.Equal(t, raw, link.String())
+	for _, tc := range []struct {
+		command string
+		want    []string
+	}{
+		{command: "! open $URL", want: []string{"open", inert}},
+		{command: `! open "$URL"`, want: []string{"open", inert}},
+		{command: `! open '$URL'`, want: []string{"open", inert}},
+		{command: `! open "<$URL>"`, want: []string{"open", "<" + inert + ">"}},
+		{command: `! open --url='$URL'`, want: []string{"open", "--url=" + inert}},
+	} {
+		t.Run(tc.command, func(t *testing.T) {
+			b := newExForAliasRun(t, nil)
+			defer b.Close()
+			b.Resize(100, 100)
+			var got []string
+			b.ex.newPluginHandler = func(_ int, args ...string) (pluginHandler, error) {
+				got = append([]string(nil), args...)
+				return newTestVte(), nil
+			}
+			b.ex.metaOpenURL = metaOpenURLConfig{command: tc.command}
+
+			require.NoError(t, b.ex.openURL(link))
+			b.ex.waitAsyncVTELoads()
+			b.flushScheduled()
+
+			require.Len(t, got, 3)
+			require.Equal(t, []string{"sh", "-c"}, got[:2])
+			line, err := shell.Fields(got[2], nil)
+			require.NoError(t, err)
+			require.Len(t, line, 1)
+			argv, err := shell.Fields(line[0], nil)
+			require.NoError(t, err, "the URL must reach the shell as data: %s", line[0])
+			assert.Equal(t, tc.want, argv)
+		})
+	}
+}
+
+func TestPluginArgsReachShellAsData(t *testing.T) {
+	const taint = "x; touch pwned"
+	t.Setenv("RUNE_TEST_TAINT", taint)
+	for _, tc := range []struct {
+		name    string
+		aliases map[string]text.CommandAlias
+		cmd     string
+		args    []string
+		want    []string
+	}{
+		{
+			name: "leaf ! arg",
+			cmd:  "!", args: []string{"grep", "-n", "$RUNE_TEST_TAINT"},
+			want: []string{"grep", "-n", taint},
+		},
+		{
+			name: "leaf ! arg glued to text",
+			cmd:  "!", args: []string{"grep", "--regexp=$RUNE_TEST_TAINT"},
+			want: []string{"grep", "--regexp=" + taint},
+		},
+		{
+			name:    "alias tail args",
+			aliases: map[string]text.CommandAlias{"g": {Commands: []string{"! grep -n"}}},
+			cmd:     "g", args: []string{"$RUNE_TEST_TAINT"},
+			want: []string{"grep", "-n", taint},
+		},
+		{
+			name:    "alias tail args after $1",
+			aliases: map[string]text.CommandAlias{"g": {Commands: []string{"! grep $1"}}},
+			cmd:     "g", args: []string{"-n", "$RUNE_TEST_TAINT"},
+			want: []string{"grep", "-n", taint},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := newExForAliasRun(t, tc.aliases)
+			defer b.Close()
+			b.Resize(100, 100)
+			var got []string
+			b.ex.newPluginHandler = func(_ int, args ...string) (pluginHandler, error) {
+				got = append([]string(nil), args...)
+				return newTestVte(), nil
+			}
+
+			require.NoError(t, b.ex.dispatchCommand(tc.cmd, tc.args...))
+			b.ex.waitAsyncVTELoads()
+			b.flushScheduled()
+			b.drainAliasRuns()
+
+			require.Len(t, got, 3)
+			require.Equal(t, []string{"sh", "-c"}, got[:2])
+			line, err := shell.Fields(got[2], nil)
+			require.NoError(t, err)
+			require.Len(t, line, 1)
+			argv, err := shell.Fields(line[0], nil)
+			require.NoError(t, err, "the value must reach the shell as data: %s", line[0])
+			assert.Equal(t, tc.want, argv)
+		})
+	}
+}
+
+func TestPromptHandsShellLinesOverAsTyped(t *testing.T) {
+	const line = "sh -c 'echo a && echo b'"
+	t.Run("!", func(t *testing.T) {
+		b := newExForAliasRun(t, nil)
+		defer b.Close()
+		b.Resize(100, 100)
+		var got [][]string
+		b.ex.newPluginHandler = func(_ int, args ...string) (pluginHandler, error) {
+			got = append(got, append([]string(nil), args...))
+			return newTestVte(), nil
+		}
+
+		handleTaskInputSequence(b, ":! "+line+">")
+		b.ex.waitAsyncVTELoads()
+		b.flushScheduled()
+		require.NoError(t, b.ex.openCommandHistoryPrompt(context.Background()))
+		handleTaskInputSequence(b, ">")
+		b.ex.waitAsyncVTELoads()
+		b.flushScheduled()
+
+		require.Len(t, got, 2, "typed, then re-run from the history prompt")
+		for _, args := range got {
+			argv, err := shell.Fields(strings.Join(args, " "), nil)
+			require.NoError(t, err)
+			assert.Equal(t, []string{"sh", "-c", line}, argv)
+		}
+	})
+	for _, cmd := range []string{"terminalnew", "terminalnewtab", "terminalneworsplit"} {
+		t.Run(cmd, func(t *testing.T) {
+			b := newExForAliasRun(t, nil)
+			defer b.Close()
+			b.Resize(100, 100)
+			var got []string
+			b.ex.newEmulatorHandler = func(args []string) (vtereservoir.VTE, error) {
+				got = append([]string(nil), args...)
+				return newTestVte(), nil
+			}
+
+			handleTaskInputSequence(b, ":"+cmd+" "+line+">")
+
+			argv, err := shell.Fields(strings.Join(got, " "), nil)
+			require.NoError(t, err)
+			assert.Equal(t, []string{"sh", "-c", "echo a && echo b"}, argv)
+		})
+	}
+}
+
+func TestShellInertURL(t *testing.T) {
+	parse := func(raw string) *url.URL {
+		u, err := url.Parse(raw)
+		require.NoError(t, err)
+		return u
+	}
+	for _, tc := range []struct {
+		name string
+		in   *url.URL
+		want string
+	}{
+		{name: "plain",
+			in:   &url.URL{Scheme: "https", Host: "example.com", Path: "/a/b", RawQuery: "x=1&y=2", Fragment: "f"},
+			want: "https://example.com/a/b?x=1&y=2#f"},
+		{name: "reserved characters stay",
+			in:   parse("https://example.com/wiki/A_(b)?a=1;b=*!,+:@"),
+			want: "https://example.com/wiki/A_(b)?a=1;b=*!,+:@"},
+		{name: "existing escapes stay",
+			in:   &url.URL{Scheme: "https", Host: "example.com", RawQuery: "q=%41%20b"},
+			want: "https://example.com?q=%41%20b"},
+		{name: "shell quoting characters are escaped",
+			in:   &url.URL{Scheme: "https", Host: "example.com", RawQuery: "a=$(id)&b='x'&c=\"y\"&d=`id`&e=\\"},
+			want: "https://example.com?a=%24(id)&b=%27x%27&c=%22y%22&d=%60id%60&e=%5C"},
+		{name: "characters URIs do not allow are escaped",
+			in:   &url.URL{Scheme: "http", Host: "example.com", RawQuery: "a b\t<>{}|^é"},
+			want: "http://example.com?a%20b%09%3C%3E%7B%7D%7C%5E%C3%A9"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, shellInertURL(tc.in))
+		})
+	}
+}
+
+func TestOpenURLQueuesBehindInFlightDispatch(t *testing.T) {
+	b := newExForAliasRun(t, map[string]text.CommandAlias{
+		"queuing": {Commands: []string{"!! CAPTURED=x", "sink first"}},
+	})
+	defer b.Close()
+	var steps []string
+	subscribeStepRecorder(t, b, "sink", &steps)
+	b.ex.metaOpenURL = metaOpenURLConfig{command: "sink $URL"}
+
+	require.NoError(t, b.ex.dispatchCommand("queuing"))
+	require.NoError(t, b.ex.openURL(&url.URL{Scheme: "https", Host: "example.com"}))
+	b.drainAliasRuns()
+
+	assert.Equal(t, []string{"first", "https://example.com"}, steps,
+		"a URL opened while a dispatch is in flight must not overtake it")
+}
+
+func TestOnLinkClick(t *testing.T) {
+	b := newExForAliasRun(t, nil)
+	defer b.Close()
+	notes := &pluginWaitNotifications{inner: b.ex.notifications}
+	b.ex.notifications = notes
+	var opened []string
+	var openErr error
+	b.ex.metaOpenURL = metaOpenURLConfig{system: func(u *url.URL) error {
+		opened = append(opened, u.String())
+		return openErr
+	}}
+	parse := func(raw string) *url.URL {
+		u, err := url.Parse(raw)
+		require.NoError(t, err)
+		return u
+	}
+
+	assert.True(t, b.ex.onLinkClick(parse("http://example.com")))
+	assert.True(t, b.ex.config.OnLinkClick(parse("https://example.com/md")),
+		"markdown tabs must open links the same way")
+	for _, raw := range []string{"#anchor", "mailto:a@example.com", "file:///tmp/x"} {
+		assert.False(t, b.ex.onLinkClick(parse(raw)),
+			"%s must fall through to the markdown handler", raw)
+	}
+	assert.Equal(t, []string{"http://example.com", "https://example.com/md"}, opened)
+	assert.Empty(t, notes.errorMessages())
+
+	openErr = errors.New("boom")
+	assert.True(t, b.ex.onLinkClick(parse("https://example.com/%24")))
+	assert.Equal(t, []string{"open https://example.com/%24: boom"}, notes.errorMessages())
+}
+
+func TestBrowserShow(t *testing.T) {
+	cases := []struct {
+		name     string
+		show     string
+		wantSink [][]string
+		wantTab  bool
+	}{
+		{
+			name:     "https opens as meta_open_url says",
+			show:     "https://example.com/docs",
+			wantSink: [][]string{{"https://example.com/docs"}},
+		},
+		{name: "file opens a focused editor tab", show: "file:///show.go", wantTab: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := newExForAliasRun(t, nil)
+			defer b.Close()
+			var sink [][]string
+			require.NoError(t, b.comp.SubscribeCommand(
+				textapi.CommandManual{Name: "sink"},
+				text.FuncCommandHandler(func(_ context.Context, cmd textapi.Command) error {
+					sink = append(sink, cmd.Args)
+					return nil
+				}, nil)))
+			b.ex.metaOpenURL = metaOpenURLConfig{command: "sink $URL"}
+			uri, err := workspaceapi.ParseURI(tc.show)
+			require.NoError(t, err)
+
+			require.NoError(t, b.Browser().Show(uri))
+			b.drainAliasRuns()
+
+			assert.Equal(t, tc.wantSink, sink)
+			tab, ok := b.comp.FocusTab()
+			if tc.wantTab {
+				require.True(t, ok, "the shown file must be in focus")
+				assert.Equal(t, tc.show, tab.URI().String())
+			} else {
+				assert.False(t, ok, "a URL must not open a tab")
+			}
+		})
+	}
+}
+
 func TestSwitchToTab(t *testing.T) {
 	cases := []handlertest.SequenceTestCase{
 		{":edit hello.go>B:edit world.go>",
@@ -6473,6 +7697,66 @@ func TestSwitchToTab(t *testing.T) {
 	defer b.Close()
 
 	handlertest.TestHandlerSequence(t, b, 30, 15, cases)
+}
+
+func TestConvertTab(t *testing.T) {
+	cases := []struct {
+		name string
+		// empty leaves the window showing the wallpaper.
+		empty bool
+		// alreadyTab converts the window content to a "build" tab with
+		// icon 'X' before running the command under test.
+		alreadyTab bool
+		args       []string
+		wantName   string
+		wantIcon   rune
+	}{
+		{name: "empty window", empty: true},
+		{name: "empty window with name and icon", empty: true, args: []string{"build", "X"}},
+		{name: "no args", wantName: "brave-otter", wantIcon: defaultConvertTabIcon},
+		{name: "empty name", args: []string{""}, wantName: "brave-otter",
+			wantIcon: defaultConvertTabIcon},
+		{name: "empty name with icon", args: []string{"", "Y"}, wantName: "brave-otter",
+			wantIcon: 'Y'},
+		{name: "name only", args: []string{"build"}, wantName: "build",
+			wantIcon: defaultConvertTabIcon},
+		{name: "name and icon", args: []string{"build", "X"}, wantName: "build",
+			wantIcon: 'X'},
+		{name: "already a tab without args", alreadyTab: true, wantName: "build",
+			wantIcon: 'X'},
+		{name: "already a tab with name and icon", alreadyTab: true,
+			args: []string{"other", "Y"}, wantName: "build", wantIcon: 'X'},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := newExForTesting(t, texttest.NopEditor())
+			defer b.Close()
+			ctx := context.Background()
+
+			if !tc.empty {
+				require.NoError(t, b.terminalnew(ctx))
+			}
+			if tc.alreadyTab {
+				require.NoError(t, b.convertTab(ctx, "build", "X"))
+			}
+			require.NoError(t, b.convertTab(ctx, tc.args...))
+
+			br := b.comp.Browser()
+			if tc.empty {
+				assert.Empty(t, br.Tabs())
+				return
+			}
+			require.Len(t, br.Tabs(), 1)
+			tab, ok := b.comp.FocusTab()
+			require.True(t, ok)
+			name, _, ok := br.TabName(tab.URI())
+			require.True(t, ok)
+			assert.Equal(t, tc.wantName, name)
+			icon, _, ok := br.TabIcon(tab.URI())
+			require.True(t, ok)
+			assert.Equal(t, tc.wantIcon, icon)
+		})
+	}
 }
 
 func TestTabFocusSwitchesToOwningWindow(t *testing.T) {
@@ -6760,6 +8044,22 @@ func TestRunStopTasks(t *testing.T) {
 ││                           │
 ││                           │
 └└───────────────────────────┘`},
+			{":windowconverttab other y>", // already a tab: no error, unchanged
+				`┌━━━━━━━─────────────────────┐
+│x asset                     │
+├┌───────────────────────────┤
+││ ▀     task   echo b     │
+││start command: context c   │
+││anceled▐                   │
+││                           │
+││                           │
+││                           │
+││                           │
+││                           │
+││                           │
+││                           │
+││                           │
+└└───────────────────────────┘`},
 			{":edit abc>:write>",
 				`┌─────────━━━━━──────────────┐
 │x asset  o abc              │
@@ -6967,6 +8267,22 @@ func TestRunStopTasks(t *testing.T) {
 │             ││AAAAAAAAAAAAA│
 │             ││AAAAAAAAAAAAA│
 │             ││AAAAAAAAAAAAA│
+└─────────────┘└─────────────┘`},
+			{":tasknew lint right -- echo c>:windowfocus right>:windowconverttab>",
+				`┌───────━━━━━━━━━━━━━────────┐
+│o abc  8 brave-otter        │
+├─────────────┐┌─────────────┐
+│             ││             │
+│             ││             │
+│             ││             │
+│             ││             │
+│             ││             │
+│             ││             │
+│             ││             │
+│             ││             │
+│             ││             │
+│             ││             │
+│             ││             │
 └─────────────┘└─────────────┘`},
 		}
 
@@ -8437,6 +9753,7 @@ func deterministicTaskBarConfig() plugin.BarConfig {
 type workspaceManagerMock struct {
 	workspace    *ex
 	attrs        map[workspaceapi.URI]term.Attributes
+	levels       map[workspaceapi.URI][]browserapi.NotificationLevel
 	wantFocusURI workspaceapi.URI
 	byURIHash    map[string]browserapi.Notifications
 }
@@ -8459,11 +9776,486 @@ func (w *workspaceManagerMock) focusURI() workspaceapi.URI {
 	return uri
 }
 
-func (w *workspaceManagerMock) setWorkspaceRequiresAttention(
-	uri workspaceapi.URI, attrs term.Attributes,
+func (w *workspaceManagerMock) addWorkspaceNotification(
+	uri workspaceapi.URI, level browserapi.NotificationLevel, attrs term.Attributes,
 ) {
 	if w.attrs == nil {
 		w.attrs = make(map[workspaceapi.URI]term.Attributes)
 	}
 	w.attrs[uri] = attrs
+	if w.levels == nil {
+		w.levels = make(map[workspaceapi.URI][]browserapi.NotificationLevel)
+	}
+	w.levels[uri] = append(w.levels[uri], level)
+}
+
+// newPointerLeavesEx builds a workspace with two files open in split
+// windows, a terminal window and the file explorer open with entries.
+func newPointerLeavesEx(t *testing.T) testEx {
+	t.Helper()
+	uri, err := workspaceapi.ParseURI("memory:///")
+	require.NoError(t, err)
+	scheme, err := workspace.NewMemoryScheme(context.Background(), config.NopConfig(), uri)
+	require.NoError(t, err)
+	for _, name := range []string{"alpha.go", "beta.go", "gamma.go"} {
+		touchTestFile(t, scheme, name)
+	}
+	ed := vi.Editor(vi.WithWorkspaceCommandRegistry(uri, texttest.NopWorkspaceRegistry()))
+	b := newExForTestingWithWorkspace(t, workspace.NewSchemeWorkspace(uri, scheme, inlineSchedule),
+		ed, vte.DefaultConfig(), nopPublishEvent,
+		clipboard.NewInMemory(), text.WithCommandKey(testCommandKey),
+		text.WithCommandOverlayConfig(testCommandOverlayConfig()))
+	t.Cleanup(func() { _ = b.Close() })
+	ctx := context.Background()
+	require.NoError(t, b.ex.editFiles(ctx, "alpha.go"))
+	require.NoError(t, b.ex.windownew(ctx))
+	require.NoError(t, b.ex.editFiles(ctx, "beta.go"))
+	require.NoError(t, b.ex.terminalnew(ctx))
+	require.NoError(t, b.fexplorer(ctx))
+	require.NotNil(t, b.fileExplorerWin)
+	b.waitAsyncVTELoads()
+	b.flushScheduled()
+	return b
+}
+
+func TestExPointerLeaves(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		prompt bool
+	}{
+		{name: "windows"},
+		{name: "command prompt", prompt: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			for _, size := range []term.Coordinates{{X: 100, Y: 30}, {X: 2, Y: 2}} {
+				b := newPointerLeavesEx(t)
+				b.Resize(size.X, size.Y)
+				if tc.prompt {
+					b.ex.openCommandPrompt()
+					require.NotNil(t, b.ex.cmd)
+				}
+				handlertest.RunPointerLeaves(t, b, size.X, size.Y)
+			}
+		})
+	}
+
+	t.Run("a leave changes nothing", func(t *testing.T) {
+		t.Parallel()
+		for _, prompt := range []bool{false, true} {
+			b := newPointerLeavesEx(t)
+			b.Resize(100, 30)
+			if prompt {
+				b.ex.openCommandPrompt()
+			}
+			focus := b.comp.Browser().Focus()
+			tiles := b.comp.Browser().Tiles()
+			cursor, _, _ := b.Cursor()
+			for _, out := range []term.Coordinates{
+				{X: -1, Y: 15}, {X: 100, Y: 15}, {X: 50, Y: -1}, {X: 50, Y: 30}, {X: 500, Y: 500},
+			} {
+				b.Handle(term.Event{Type: term.EventMouse, MouseX: 50, MouseY: 15})
+				b.Handle(term.Event{Type: term.EventMouse, MouseX: out.X, MouseY: out.Y})
+			}
+			after := b.comp.Browser().Focus()
+			assert.Equal(t, focus.WindowID(), after.WindowID(), "prompt %t", prompt)
+			assert.Equal(t, tiles, b.comp.Browser().Tiles(), "prompt %t", prompt)
+			assert.Equal(t, prompt, b.ex.cmd != nil, "prompt %t", prompt)
+			got, _, _ := b.Cursor()
+			assert.Equal(t, cursor, got, "prompt %t", prompt)
+		}
+	})
+}
+
+func TestSponsorsOpensFloatingWindow(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		handler http.HandlerFunc
+		want    string
+	}{
+		{
+			name: "sponsor list",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(`{"sponsor_url":"https://example.com/sponsor","tiers":[
+					{"id":"gold","name":"Gold","sponsors":[{"login":"acme","name":"Acme Corp"}]}]}`))
+			},
+			want: "Acme Corp",
+		},
+		{
+			name: "private sponsors",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(`{"sponsor_url":"https://example.com/sponsor","tiers":[],"private_count":2}`))
+			},
+			want: "2 sponsors chose to keep their sponsorship private",
+		},
+		{
+			name: "api unavailable shows the page without sponsors",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				http.Error(w, "sponsors unavailable", http.StatusServiceUnavailable)
+			},
+			want: "Your logo here",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(tc.handler)
+			defer srv.Close()
+			b := newExForTesting(t, texttest.NopEditor(),
+				text.WithMarkdownImageStorage(storagestub.NewInMemoryService()))
+			b.ex.sponsorsURL = srv.URL
+			scheduled := make(chan func(), 1)
+			b.ex.sched = func(fn func()) bool {
+				scheduled <- fn
+				return true
+			}
+			before := b.comp.Browser().FloatingWindows()
+
+			require.NoError(t, b.ex.sponsors(bgctx))
+			select {
+			case fn := <-scheduled:
+				fn()
+			case <-time.After(10 * time.Second):
+				t.Fatal("sponsors never scheduled its window")
+			}
+
+			require.Equal(t, before+1, b.comp.Browser().FloatingWindows())
+			assert.Contains(t, gitshowFrame(t, b, 100, 40), tc.want)
+		})
+	}
+}
+
+func TestSponsorsRequiresURL(t *testing.T) {
+	b := newExForTesting(t, texttest.NopEditor())
+	assert.EqualError(t, b.ex.sponsors(bgctx), "sponsors: no sponsor list is configured")
+}
+
+func TestSponsorsDrawsPictures(t *testing.T) {
+	const avatar = "https://avatars.githubusercontent.com/u/"
+	pictures := map[string][]byte{
+		"https://acme.dev/logo.png": imageuritest.SamplePNG,
+		avatar + "3?s=112&v=4":      squarePNG(t, 112, 0x40),
+		avatar + "4?s=64&v=4":       squarePNG(t, 64, 0x80),
+		// GitHub may serve a profile photo larger than asked for.
+		avatar + "6?s=48&v=4": squarePNG(t, 420, 0xc0),
+		avatar + "7?s=48&v=4": squarePNG(t, 48, 0x20),
+		sponsorSlotLogo:       squarePNG(t, 1024, 0xe0),
+	}
+	for _, tc := range []struct {
+		name     string
+		handler  http.HandlerFunc
+		pictures int
+		expected string
+	}{
+		{
+			name:     "sponsor list",
+			pictures: 8,
+			expected: sponsorsPictures86x53,
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(`{"sponsor_url":"https://example.com/sponsor","tiers":[
+					{"id":"diamond","sponsors":[{"login":"acme","name":"Acme",
+						"url":"https://acme.dev","logo_url":"https://acme.dev/logo.png"}]},
+					{"id":"platinum","sponsors":[{"login":"beta","name":"Beta",
+						"logo_url":"` + avatar + `3?v=4"}]},
+					{"id":"gold","sponsors":[{"login":"gold","name":"Gold",
+						"logo_url":"` + avatar + `4?v=4"}]},
+					{"id":"bronze","sponsors":[{"login":"plain","name":"Plain Co",
+						"logo_url":"http://plain.dev/logo.png"}]},
+					{"id":"backer","sponsors":[
+						{"login":"alice","avatar_url":"` + avatar + `6?v=4","logo_url":"https://alice.dev/a.png"},
+						{"login":"carol"},
+						{"login":"bob","avatar_url":"` + avatar + `7?v=4"}]}]}`))
+			},
+		},
+		{
+			name:     "api unavailable shows the open slots",
+			pictures: 3,
+			expected: sponsorsOpenSlots86x53,
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				http.Error(w, "sponsors unavailable", http.StatusServiceUnavailable)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(tc.handler)
+			defer srv.Close()
+			storage := storagestub.NewInMemoryService()
+			for uri, data := range pictures {
+				imageuritest.Cache(t, storage, uri, data)
+			}
+			// Each picture interrupts once, when it has loaded.
+			var loaded atomic.Int32
+			publish := func(ev term.Event) bool {
+				if ev.Type == term.EventInterrupt {
+					loaded.Add(1)
+				}
+				return true
+			}
+			b := newExForTesting(t, texttest.NopEditor(),
+				text.WithMarkdownImageStorage(storage),
+				func(cfg *text.Config) { cfg.EventPublisher = publish })
+			b.ex.sponsorsURL = srv.URL
+			scheduled := make(chan func(), 1)
+			b.ex.sched = func(fn func()) bool {
+				scheduled <- fn
+				return true
+			}
+			require.NoError(t, b.ex.sponsors(bgctx))
+			select {
+			case fn := <-scheduled:
+				fn()
+			case <-time.After(10 * time.Second):
+				t.Fatal("sponsors never scheduled its window")
+			}
+
+			const width, height = 86, 53
+			b.Resize(width, height)
+			w := asciiart.NewStringWriter(width, height, asciiart.DefaultConfig())
+			w.SetContext = cell.ContextWithPixelSize(context.Background(),
+				cell.PixelSize{Width: 10, Height: 20})
+			draw := func() string {
+				require.NoError(t, w.Clear(term.Attributes{}))
+				b.Draw(w)
+				require.NoError(t, w.Flush())
+				return w.String()
+			}
+			// Pictures start loading on the first frame that knows the size
+			// of a cell.
+			draw()
+			require.Eventually(t, func() bool {
+				return int(loaded.Load()) >= tc.pictures
+			}, 10*time.Second, time.Millisecond, "the pictures never loaded")
+			// The host redraws on the interrupts of the loads, before the
+			// user scrolls past the introduction to the sponsors.
+			draw()
+			for range 17 {
+				b.Handle(term.Event{Type: term.EventKey, Ch: 'j'})
+			}
+			assert.Equal(t, tc.expected, draw())
+		})
+	}
+}
+
+// Frames of the sponsors window scrolled to its rows, named after what
+// they show and the size of the terminal.
+const (
+	sponsorsPictures86x53 = `┌────────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                    │
+├─█●███████████████████████████████████ Sponsors ███████████████████████████████████─┤
+│ │                                                                                │ │
+│ │ Diamond Sponsors                                                               │ │
+│ │                                                                                │ │
+│ │        @@@@@@@@@@@@@@@@@@@@@@                99999999999999999999              │ │
+│ │        @@@@bbba@ccc@;cc;@@@@@                99999999999999999999              │ │
+│ │        @@@@@@@#c#@@;;@@@@@@@@                99999999999999999999              │ │
+│ │        @@@@ccc;@;;;@:;::@@@@@                99999999999999999999              │ │
+│ │        @@@@@@@#;#@@;:@@@@@@@@                99999999999999999999              │ │
+│ │        @@@@;;;:@:::@+:++@@@@@                99999999999999999999              │ │
+│ │        @@@@@##@@@#@@@##@@@@@@                99999999999999999999              │ │
+│ │        :;::::9#:@W+#@@=#=#@:@                99999999999999999999              │ │
+│ │        @@@@@@@@@@@@@@@@@@@@@@                99999999999999999999              │ │
+│ │                 Acme                            Your logo here                 │ │
+│ │                                                                                │ │
+│ │                                                                                │ │
+│ │ Platinum Sponsors                                                              │ │
+│ │                                                                                │ │
+│ │      -------------            9999999999999                                    │ │
+│ │      -------------            9999999999999                                    │ │
+│ │      -------------            9999999999999                                    │ │
+│ │      -------------            9999999999999                                    │ │
+│ │      -------------            9999999999999                                    │ │
+│ │      -------------            9999999999999                                    │ │
+│ │           Beta                Your logo here                                   │ │
+│ │                                                                                │ │
+│ │                                                                                │ │
+│ │ Other Sponsors                                                                 │ │
+│ │                                                                                │ │
+│ │    aaaaaaaaaaa        99999999999                                              │ │
+│ │    aaaaaaaaaaa        99999999999                                              │ │
+│ │    aaaaaaaaaaa        99999999999                                              │ │
+│ │    aaaaaaaaaaa        99999999999                                              │ │
+│ │    aaaaaaaaaaa        99999999999                                              │ │
+│ │        Gold          Your logo here                                            │ │
+│ │                                                                                │ │
+│ │ Plain Co                                                                       │ │
+│ │                                                                                │ │
+│ │                                                                                │ │
+│ │ Backers                                                                        │ │
+│ │                                                                                │ │
+│ │ 5555  ''''                                                                     │ │
+│ │ 5555  ''''                                                                     │ │
+│ │ alice bob                                                                      │ │
+│ │                                                                                │ │
+│ │ carol                                                                          │ │
+│ │                                                                                │ │
+│ │ ────────────────────────────────────────────────────────────────────────────── │ │
+│ │                                                                                │ │
+│ │                                                                                │ │
+└─└────────────────────────────────────────────────────────────────────────────────┘─┘`
+	sponsorsOpenSlots86x53 = `┌────────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                    │
+├─█●███████████████████████████████████ Sponsors ███████████████████████████████████─┤
+│ │                                                                                │ │
+│ │ Diamond Sponsors                                                               │ │
+│ │                                                                                │ │
+│ │         99999999999999999999                                                   │ │
+│ │         99999999999999999999                                                   │ │
+│ │         99999999999999999999                                                   │ │
+│ │         99999999999999999999                                                   │ │
+│ │         99999999999999999999                                                   │ │
+│ │         99999999999999999999                                                   │ │
+│ │         99999999999999999999                                                   │ │
+│ │         99999999999999999999                                                   │ │
+│ │         99999999999999999999                                                   │ │
+│ │            Your logo here                                                      │ │
+│ │                                                                                │ │
+│ │                                                                                │ │
+│ │ Platinum Sponsors                                                              │ │
+│ │                                                                                │ │
+│ │      9999999999999                                                             │ │
+│ │      9999999999999                                                             │ │
+│ │      9999999999999                                                             │ │
+│ │      9999999999999                                                             │ │
+│ │      9999999999999                                                             │ │
+│ │      9999999999999                                                             │ │
+│ │      Your logo here                                                            │ │
+│ │                                                                                │ │
+│ │                                                                                │ │
+│ │ Other Sponsors                                                                 │ │
+│ │                                                                                │ │
+│ │    99999999999                                                                 │ │
+│ │    99999999999                                                                 │ │
+│ │    99999999999                                                                 │ │
+│ │    99999999999                                                                 │ │
+│ │    99999999999                                                                 │ │
+│ │   Your logo here                                                               │ │
+│ │                                                                                │ │
+│ │ ────────────────────────────────────────────────────────────────────────────── │ │
+│ │                                                                                │ │
+│ │                                                                                │ │
+│ │ Tiers                                                                          │ │
+│ │                                                                                │ │
+│ │                                                                                │ │
+│ │ $5 a month                                                                     │ │
+│ │                                                                                │ │
+│ │ • Your GitHub username is added to Rune's sponsors page                        │ │
+│ │ • 2 x small Rune sticker in the mail (50mm x 50mm or 2x2").                    │ │
+│ │                                                                                │ │
+│ │                                                                                │ │
+│ │ $10 a month                                                                    │ │
+│ │                                                                                │ │
+└─└────────────────────────────────────────────────────────────────────────────────┘─┘`
+)
+
+// squarePNG is a size x size picture of a single gray.
+func squarePNG(t *testing.T, size int, gray uint8) []byte {
+	t.Helper()
+	img := image.NewGray(image.Rect(0, 0, size, size))
+	for i := range img.Pix {
+		img.Pix[i] = gray
+	}
+	var b bytes.Buffer
+	require.NoError(t, png.Encode(&b, img))
+	return b.Bytes()
+}
+
+func TestOpenMarkdownFloatingLoadsImages(t *testing.T) {
+	// The image server only records that the image was requested, which
+	// is as far as a loopback listener without a trusted certificate gets.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer ln.Close() //nolint:errcheck
+	requested := make(chan struct{}, 1)
+	go debug.CapturePanicReport(func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		_ = conn.Close()
+		requested <- struct{}{}
+	})
+
+	b := newExForTesting(t, texttest.NopEditor(),
+		text.WithMarkdownImageStorage(storagestub.NewInMemoryService()))
+	md := "![logo](https://" + ln.Addr().String() + "/logo.png)\n"
+	require.NoError(t, b.ex.openMarkdownFloating(md, "Doc", 16))
+	b.Resize(30, 12)
+	w := term.NewStringWriter(30, 12)
+	// Images load once the frame tells them the size of a cell.
+	w.SetContext = cell.ContextWithPixelSize(context.Background(),
+		cell.PixelSize{Width: 10, Height: 20})
+	b.Draw(w)
+	select {
+	case <-requested:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the floating window never loaded its image")
+	}
+}
+
+func TestOpenMarkdownFloatingScrollBar(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		md   string
+		want string
+	}{
+		{
+			name: "fits",
+			md:   "- one\n- two\n",
+			want: "┌────────────────────────────┐\n" +
+				"│                            │\n" +
+				"├────────────────────────────┤\n" +
+				"│                            │\n" +
+				"│     █●█████ Doc ██████     │\n" +
+				"│     │ • one          │     │\n" +
+				"│     │ • two          │     │\n" +
+				"│     │                │     │\n" +
+				"│     └────────────────┘     │\n" +
+				"│                            │\n" +
+				"│                            │\n" +
+				"└────────────────────────────┘",
+		},
+		{
+			name: "overflows",
+			md:   "- 1\n- 2\n- 3\n- 4\n- 5\n- 6\n- 7\n- 8\n- 9\n- 10\n- 11\n- 12\n- 13\n- 14\n- 15\n",
+			want: "┌────────────────────────────┐\n" +
+				"│                            │\n" +
+				"├────────────────────────────┤\n" +
+				"│     █●█████ Doc ██████     │\n" +
+				"│     │ • 1            #     │\n" +
+				"│     │ • 2            #     │\n" +
+				"│     │ • 3            #     │\n" +
+				"│     │ • 4            │     │\n" +
+				"│     │ • 5            │     │\n" +
+				"│     │ • 6            │     │\n" +
+				"│     └────────────────┘     │\n" +
+				"└────────────────────────────┘",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// The default bar is a bold border, which a string frame
+			// cannot tell apart from the border itself.
+			wmCfg := thandler.DefaultWindowManagerConfig()
+			wmCfg.ScrollBarCharSet = component.ScrollBarCharSet{Middle: '#'}
+			b := newExForTesting(t, texttest.NopEditor(), text.WithWindowManagerConfig(wmCfg))
+			require.NoError(t, b.ex.openMarkdownFloating(tc.md, "Doc", 16))
+			assert.Equal(t, tc.want, gitshowFrame(t, b, 30, 12))
+		})
+	}
+}
+
+func TestOpenMarkdownFloatingReleaseLeavesItsWindow(t *testing.T) {
+	e := newExForTesting(t, texttest.NopEditor())
+	t.Cleanup(func() { _ = e.Close() })
+	e.Resize(80, 24)
+	require.NoError(t, e.openMarkdownFloating("- one\n", "Doc", 16))
+	win, err := e.Browser().Focus()
+	require.NoError(t, err)
+	require.True(t, win.IsFloating())
+
+	next := browserapi.NopHandler(handler.NewTestHandler())
+	require.NoError(t, win.SetContent(next))
+
+	require.False(t, win.Closed(), "replacing the markdown must not close its window")
+	got, err := win.Content()
+	require.NoError(t, err)
+	assert.Same(t, next, got)
 }

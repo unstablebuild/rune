@@ -52,3 +52,25 @@ func TestConversion(t *testing.T) {
 		assert.Equal(t, vec, vec3(-1, -1, -1))
 	})
 }
+
+func TestColorHue(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		col  term.Color
+		want float
+	}{
+		{"red", term.NewRGBColor(255, 0, 0), 0},
+		{"yellow", term.NewRGBColor(255, 255, 0), 1.0 / 6},
+		{"green", term.NewRGBColor(0, 255, 0), 1.0 / 3},
+		{"blue", term.NewRGBColor(0, 0, 255), 2.0 / 3},
+		{"magenta", term.NewRGBColor(255, 0, 255), 5.0 / 6},
+		{"rose wraps below red", term.NewRGBColor(255, 0, 128), 0.9163},
+		{"dark green has green's hue", term.NewRGBColor(0, 100, 0), 1.0 / 3},
+		{"grey has none", term.NewRGBColor(128, 128, 128), 0},
+		{"default has none", term.ColorDefault, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.InDelta(t, tc.want, colorHue(tc.col), 1e-4)
+		})
+	}
+}

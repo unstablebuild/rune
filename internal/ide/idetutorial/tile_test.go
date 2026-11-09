@@ -17,6 +17,7 @@
 package idetutorial_test
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -106,7 +107,7 @@ func framedStyle() idetutorial.TileStyle {
 		FocusFrameCharSet: component.FrameCharSetHighlight(),
 		FrameAttr:         term.Attributes{Fg: term.ColorBlue},
 		FocusFrameAttr:    term.Attributes{Fg: term.ColorRed},
-		ScrollBarChar:     '#',
+		ScrollBarCharSet:  component.ScrollBarCharSet{Middle: '#'},
 	}
 }
 
@@ -127,19 +128,21 @@ func TestTileStacksBodyOverFooter(t *testing.T) {
 	t.Parallel()
 	tut := &fakeTutorial{}
 	tile := idetutorial.NewTile(tut, idetutorial.TileStyle{}, func() {}, func() {}, func() {})
-	tile.Resize(20, 6)
+	const width = idetutorial.MinTileWidth
+	tile.Resize(width, 6)
 
-	assert.Equal(t, 20, tut.width)
+	assert.Equal(t, width, tut.width)
 	assert.Equal(t, 4, tut.height, "the footer takes the last two rows")
 
-	drawn := handlertest.DrawHandler(tile, 20, 6)
+	drawn := handlertest.DrawHandler(tile, width, 6)
 	rows := strings.Split(drawn, "\n")
 	require.Len(t, rows, 6)
 	for _, row := range rows[:4] {
-		assert.Equal(t, strings.Repeat("b", 20), row)
+		assert.Equal(t, strings.Repeat("b", width), row)
 	}
-	assert.Equal(t, strings.Repeat(" ", 20), rows[4],
+	assert.Equal(t, strings.Repeat(" ", width), rows[4],
 		"a row of air keeps the buttons off the lesson")
+	assert.Contains(t, rows[5], "Back")
 	assert.Contains(t, rows[5], "Skip")
 	assert.Contains(t, rows[5], "Stop")
 }
@@ -291,6 +294,254 @@ func TestTileMiddleButtonNamesWhatItDoes(t *testing.T) {
 	assert.Contains(t, footer(), "Skip")
 }
 
+func TestTileFooterButtonsHover(t *testing.T) {
+	t.Parallel()
+	text := term.Attributes{Bg: term.ColorGray}
+	highlight := term.Attributes{Bg: term.ColorRed}
+	hover := term.Attributes{Fg: term.ColorBlack, Bg: term.ColorSilver}
+	clicked := term.Attributes{Fg: term.ColorWhite, Bg: term.ColorPurple}
+	const width, height, footerY = 30, 6, 4
+	move := func(x, y int) term.Event {
+		return term.Event{Type: term.EventMouse, MouseX: x, MouseY: y}
+	}
+
+	newTile := func() (*idetutorial.Tile, *fakeTutorial) {
+		style := framedStyle()
+		style.Prompt = idetutorial.PromptStyle{
+			TextAttr: text, HighlightAttr: highlight, HoverAttr: hover, ClickedAttr: clicked,
+		}
+		tut := &fakeTutorial{}
+		tile := idetutorial.NewTile(tut, style, func() {}, func() {}, func() {})
+		tile.Resize(width, height)
+		return tile, tut
+	}
+	buttons := func(tile *idetutorial.Tile) (back, skip, stop int) {
+		row := strings.Split(handlertest.DrawHandler(tile, width, height), "\n")[footerY]
+		back = strings.Index(row, "Back")
+		skip = strings.Index(row, "Skip")
+		stop = strings.Index(row, "Stop")
+		require.GreaterOrEqual(t, back, 0)
+		require.GreaterOrEqual(t, skip, 0)
+		require.GreaterOrEqual(t, stop, 0)
+		return back, skip, stop
+	}
+	attrAt := func(tile *idetutorial.Tile, x int) term.Attributes {
+		w := term.NewStringWriter(width, height)
+		tile.Draw(w)
+		return w.Cells()[footerY*width+x].Attributes()
+	}
+	tile, _ := newTile()
+	backX, skipX, stopX := buttons(tile)
+
+	cases := []struct {
+		name                     string
+		events                   []term.Event
+		wantBack, wantSkip, want term.Attributes
+	}{
+		{
+			name:     "no button looks chosen before the pointer comes",
+			wantBack: text, wantSkip: text, want: text,
+		},
+		{
+			name:     "the button under the pointer",
+			events:   []term.Event{move(skipX, footerY)},
+			wantBack: text, wantSkip: hover, want: text,
+		},
+		{
+			name:     "the first button under the pointer",
+			events:   []term.Event{move(backX, footerY)},
+			wantBack: hover, wantSkip: text, want: text,
+		},
+		{
+			name:     "the pointer moves on to the lesson",
+			events:   []term.Event{move(skipX, footerY), move(skipX, 2)},
+			wantBack: text, wantSkip: text, want: text,
+		},
+		{
+			name: "a pressed button",
+			events: []term.Event{
+				move(stopX, footerY),
+				{Type: term.EventMouse, Key: term.MouseLeft, MouseX: stopX, MouseY: footerY},
+			},
+			wantBack: text, wantSkip: text, want: clicked,
+		},
+		{
+			name:     "the pointer moves on to the frame below",
+			events:   []term.Event{move(skipX, footerY), move(skipX, height-1)},
+			wantBack: text, wantSkip: text, want: text,
+		},
+		{
+			name:     "the pointer moves off the tile to the left",
+			events:   []term.Event{move(backX, footerY), move(-3, footerY)},
+			wantBack: text, wantSkip: text, want: text,
+		},
+		{
+			name:     "the pointer moves off the tile above",
+			events:   []term.Event{move(backX, footerY), move(backX, -1)},
+			wantBack: text, wantSkip: text, want: text,
+		},
+		{
+			name: "a press dragged off the tile stays pressed",
+			events: []term.Event{
+				move(stopX, footerY),
+				{Type: term.EventMouse, Key: term.MouseLeft, MouseX: stopX, MouseY: footerY},
+				{Type: term.EventMouse, Key: term.MouseLeft, MouseX: stopX, MouseY: height - 1},
+			},
+			wantBack: text, wantSkip: text, want: clicked,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tile, _ := newTile()
+			for _, ev := range tc.events {
+				_, _ = tile.Handle(ev)
+			}
+			assert.Equal(t, tc.wantBack, attrAt(tile, backX), "Back")
+			assert.Equal(t, tc.wantSkip, attrAt(tile, skipX), "Skip")
+			assert.Equal(t, tc.want, attrAt(tile, stopX), "Stop")
+		})
+	}
+
+	t.Run("the pointer moves into the reserved inset", func(t *testing.T) {
+		tile, _ := newTile()
+		tile.SetRightInset(4)
+		_, _, stop := buttons(tile)
+		_, _ = tile.Handle(move(stop, footerY))
+		require.Equal(t, hover, attrAt(tile, stop))
+		_, _ = tile.Handle(move(width-2, footerY))
+		assert.Equal(t, text, attrAt(tile, stop))
+	})
+
+	t.Run("the lesson is told the pointer left it for the footer", func(t *testing.T) {
+		tile, tut := newTile()
+		_, _ = tile.Handle(move(skipX, 2))
+		_, _ = tile.Handle(move(skipX, footerY))
+		require.Len(t, tut.events, 2)
+		leave := tut.events[1]
+		assert.Equal(t, term.EventMouse, leave.Type)
+		assert.Zero(t, leave.Key, "a leave is a motion")
+		assert.GreaterOrEqual(t, leave.MouseY, tut.height, "below the lesson")
+	})
+}
+
+func TestTileFooterButtonImages(t *testing.T) {
+	t.Parallel()
+	const width, height = 30, 12
+	img := &imageStub{}
+	images := &component.ButtonImages{
+		Idle:   component.ButtonImage{Left: img, Middle: img, Right: img},
+		Outset: component.ButtonOutset{Top: 1, Bottom: 2},
+	}
+	cases := []struct {
+		name   string
+		images *component.ButtonImages
+		// footer is the rows the footer takes from the lesson.
+		footer int
+	}{
+		{name: "without images", footer: 2},
+		{name: "with images", images: images, footer: 5},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			style := framedStyle()
+			style.Prompt.ButtonImages = tc.images
+			tut := &fakeTutorial{}
+			tile := idetutorial.NewTile(tut, style, func() {}, func() {}, func() {})
+			tile.Resize(width, height)
+			w := &imageWriter{StringWriter: term.NewStringWriter(width, height)}
+			tile.Draw(w)
+			require.NoError(t, w.Flush())
+
+			assert.Equal(t, height-2-tc.footer, tut.height, "the lesson's rows")
+			lines := strings.Split(w.String(), "\n")
+			buttons := slices.IndexFunc(lines, func(l string) bool { return strings.Contains(l, "Stop") })
+			require.GreaterOrEqual(t, buttons, 0, "no buttons in:\n%s", w.String())
+			if tc.images == nil {
+				assert.Empty(t, w.images)
+				return
+			}
+			require.NotEmpty(t, w.images)
+			for _, im := range w.images {
+				assert.Equal(t, buttons-1, im.Pos.Y, "the images reach the top outset")
+				assert.Equal(t, 4, im.Height, "the images reach the bottom outset")
+				assert.Equal(t, term.ImageLayerBelowText, im.Layer)
+			}
+			assert.Less(t, buttons+2, height-1, "the bottom outset stays above the frame")
+		})
+	}
+}
+
+// imageStub draws one image over all of its cells.
+type imageStub struct{ width, height int }
+
+func (s *imageStub) Resize(width, height int) { s.width, s.height = width, height }
+
+func (s *imageStub) Draw(w term.Writer) {
+	w.DrawImage(term.Image{Width: s.width, Height: s.height})
+}
+
+// imageWriter records the images drawn on it, in its coordinates.
+type imageWriter struct {
+	*term.StringWriter
+	images []term.Image
+}
+
+func (w *imageWriter) DrawImage(img term.Image) bool {
+	w.images = append(w.images, img)
+	return true
+}
+
+func TestTilePointerLeaves(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name  string
+		style idetutorial.TileStyle
+		inset int
+		tut   *fakeTutorial
+	}{
+		{name: "unframed", tut: &fakeTutorial{max: 5, handled: true}},
+		{name: "framed", style: framedStyle(), tut: &fakeTutorial{max: 5, cursor: true}},
+		{name: "framed with an inset", style: framedStyle(), inset: 4, tut: &fakeTutorial{viewingPast: true}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tile := idetutorial.NewTile(tc.tut, tc.style, func() {}, func() {}, func() {})
+			tile.SetRightInset(tc.inset)
+			for _, size := range []struct{ w, h int }{{60, 15}, {idetutorial.MinTileWidth, 6}, {1, 1}} {
+				handlertest.RunPointerLeaves(t, tile, size.w, size.h)
+			}
+		})
+	}
+}
+
+func TestTilePointerLeaveClicksNoButton(t *testing.T) {
+	t.Parallel()
+	const width, height, footerY = 30, 6, 4
+	var clicks int
+	click := func() { clicks++ }
+	tile := idetutorial.NewTile(&fakeTutorial{}, framedStyle(), click, click, click)
+	tile.Resize(width, height)
+	row := strings.Split(handlertest.DrawHandler(tile, width, height), "\n")[footerY]
+	stopX := strings.Index(row, "Stop")
+	require.GreaterOrEqual(t, stopX, 0)
+	for _, off := range []term.Coordinates{
+		{X: -1, Y: footerY}, {X: width, Y: footerY}, {X: stopX, Y: height}, {X: stopX, Y: -400},
+	} {
+		_, _ = tile.Handle(term.Event{Type: term.EventMouse, MouseX: stopX, MouseY: footerY})
+		_, _ = tile.Handle(term.Event{
+			Type: term.EventMouse, Key: term.MouseLeft, MouseX: stopX, MouseY: footerY,
+		})
+		_, _ = tile.Handle(term.Event{Type: term.EventMouse, MouseX: off.X, MouseY: off.Y})
+		assert.Zero(t, clicks, "a leave to %+v must not click the pressed button", off)
+		_, _ = tile.Handle(term.Event{
+			Type: term.EventMouse, Key: term.MouseRelease, MouseX: 0, MouseY: 0,
+		})
+		assert.Zero(t, clicks, "a release away from the button must not click it")
+	}
+}
+
 func TestTileRoutesKeysAndBodyMouseToTheTutorial(t *testing.T) {
 	t.Parallel()
 	tut := &fakeTutorial{handled: true}
@@ -309,11 +560,13 @@ func TestTileRoutesKeysAndBodyMouseToTheTutorial(t *testing.T) {
 	footer := term.Event{Type: term.EventMouse, Key: term.MouseWheelDown, MouseX: 3, MouseY: 4}
 	_, _ = tile.Handle(footer)
 
-	require.Len(t, tut.events, 2, "footer events must not reach the body")
+	require.Len(t, tut.events, 3)
 	assert.Equal(t, key, tut.events[0])
 	assert.Equal(t, term.Event{
 		Type: term.EventMouse, Key: term.MouseWheelDown, MouseX: 2, MouseY: 1,
 	}, tut.events[1], "body mouse events are translated past the frame")
+	assert.Zero(t, tut.events[2].Key,
+		"footer events must not reach the body: it is only told the pointer left")
 }
 
 func TestTileDelegatesCursorAndSelection(t *testing.T) {

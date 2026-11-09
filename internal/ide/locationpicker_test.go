@@ -28,8 +28,10 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/clipboard"
+	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/handler/locationsearch"
 	"unstable.build/rune/internal/term/vte"
@@ -129,6 +131,32 @@ func TestLocationPickerAliasesFromRuneStar(t *testing.T) {
 			_ = e
 		})
 	}
+}
+
+func TestLocationPickerReleaseLeavesItsWindow(t *testing.T) {
+	loader := newShellCmdCapturer()
+	e := newExForTestingWithWorkspace(t, loader,
+		texttest.NopEditor(), vte.DefaultConfig(),
+		nopPublishEvent, clipboard.NewInMemory(),
+		text.WithCommandKey(testCommandKey),
+	)
+	require.NoError(t, e.dispatchCommand("locationpicker", "echo", "a.go:1"))
+	_, ok := loader.wait(2 * time.Second)
+	require.True(t, ok)
+	t.Cleanup(func() { loader.drain(time.Second) })
+	win, err := e.Browser().Focus()
+	require.NoError(t, err)
+	content, err := win.Content()
+	require.NoError(t, err)
+	require.IsType(t, &locationsearch.Handler{}, content)
+
+	next := browserapi.NopHandler(handler.NewTestHandler())
+	require.NoError(t, win.SetContent(next))
+
+	require.False(t, win.Closed(), "replacing the picker must not close its window")
+	got, err := win.Content()
+	require.NoError(t, err)
+	assert.Same(t, next, got)
 }
 
 func loadRuneStarAliases(t *testing.T) map[string][]string {

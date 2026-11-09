@@ -19,20 +19,21 @@ package apiclient
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"time"
 
-	"unstable.build/rune/auth"
+	log "github.com/sirupsen/logrus"
 	"unstable.build/rune/cmd/rune/crashreport"
 )
 
 const reportUploadTimeout = 30 * time.Second
 const reportContentType = "application/yaml"
 
-// PostReport uploads a report payload to the server.
-// It uses the OAuth token source for authenticated requests.
+// PostReport uploads a report payload to the server. The server accepts
+// reports from anyone, so a logged-out session or a failed token refresh
+// sends the report anonymously rather than failing; a valid token only
+// attributes it to the account.
 func (a *Client) PostReport(ctx context.Context, payload crashreport.Payload) error {
 	if len(payload.YAML) == 0 {
 		return fmt.Errorf("empty report payload")
@@ -51,15 +52,10 @@ func (a *Client) PostReport(ctx context.Context, payload crashreport.Payload) er
 	}
 	r.Header.Set("Content-Type", reportContentType)
 
-	// Use the OAuth token source for authenticated requests.
 	token, err := a.tokenSource.Token()
 	if err != nil {
-		if errors.Is(err, auth.ErrNotAuthenticated) {
-			return auth.ErrNotAuthenticated
-		}
-		return fmt.Errorf("get auth token: %w", err)
-	}
-	if token.Valid() {
+		log.Debugf("post report: sending anonymously: %v", err)
+	} else if token.Valid() {
 		r.Header.Set("Authorization",
 			fmt.Sprintf("%s %s", token.TokenType, token.AccessToken))
 	}

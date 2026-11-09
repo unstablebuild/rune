@@ -29,13 +29,12 @@ import (
 	"unstable.build/rune/internal/text/textrpc"
 )
 
-// queuedDispatch is a deferred command. A non-nil waiter is already
+// queuedDispatch is a deferred dispatch. A non-nil waiter is already
 // claimed and must receive the eventual result.
 type queuedDispatch struct {
-	ctx    context.Context
-	cmd    string
-	args   []string
-	waiter *textrpc.Waiter
+	ctx      context.Context
+	dispatch func(context.Context) error
+	waiter   *textrpc.Waiter
 }
 
 // aliasRun dispatches the steps of one alias expansion. Expansion and
@@ -57,32 +56,25 @@ type aliasRun struct {
 	err      error
 }
 
-// newAliasRun expands scmd into a run over its steps. stack holds the
-// alias names already being expanded; a name that recurs yields an error
-// instead of a run.
+// newAliasRun returns a run over the steps it yields for the alias called
+// name. stack holds the alias names already being expanded, which the
+// caller must have checked name against.
 func newAliasRun(
-	e *ex, ctx context.Context, scmd textapi.Command, stack map[string]bool,
+	e *ex, ctx context.Context, name string,
+	it iterator.Iterator[textapi.Command], stack map[string]bool,
 	parent *textrpc.Waiter, nested bool,
-) (*aliasRun, error) {
-	if stack[scmd.Name] {
-		return nil, fmt.Errorf("alias cycle through %q", scmd.Name)
-	}
+) *aliasRun {
 	// Copied rather than mutated-and-unwound: a detached run outlives
 	// the frame that created it.
 	descent := make(map[string]bool, len(stack)+1)
 	for name := range stack {
 		descent[name] = true
 	}
-	descent[scmd.Name] = true
-
-	it, err := e.aliasExpander.Expand(ctx, scmd)
-	if err != nil {
-		return nil, err
-	}
+	descent[name] = true
 	return &aliasRun{
-		ex: e, ctx: ctx, name: scmd.Name, it: it,
+		ex: e, ctx: ctx, name: name, it: it,
 		stack: descent, parent: parent, nested: nested,
-	}, nil
+	}
 }
 
 // step runs on the event loop and dispatches steps until one of them
@@ -102,15 +94,18 @@ func (r *aliasRun) step() {
 			handled bool
 			err     error
 		)
-		_, isStepAlias := e.aliasExpander.ResolveAlias(next.Name)
+		alias, isStepAlias := e.aliasExpander.ResolveAlias(next.Name)
 		if isStepAlias {
 			// Expanded here rather than dispatched: the leaf dispatcher
 			// only resolves subscribed commands, and sharing ctx keeps
 			// the chain alive across nesting levels.
-			child, cerr := newAliasRun(e, stepCtx, next, r.stack, w, true)
-			if cerr != nil {
-				err = cerr
+			if r.stack[next.Name] {
+				err = fmt.Errorf("alias cycle through %q", next.Name)
+			} else if it, xerr := e.aliasExpander.ExpandAlias(
+				stepCtx, next, alias); xerr != nil {
+				err = xerr
 			} else {
+				child := newAliasRun(e, stepCtx, next.Name, it, r.stack, w, true)
 				child.step()
 				handled, err = child.handled, child.err
 			}

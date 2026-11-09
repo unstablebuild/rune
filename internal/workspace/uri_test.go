@@ -151,30 +151,39 @@ func TestCanWorkspaceURIFileSchemeCanManageOutOfTreeFile(t *testing.T) {
 }
 
 func TestIsWorkspaceURI(t *testing.T) {
-	workspaceURI, err := workspaceapi.ParseURI("file:///project")
-	require.NoError(t, err)
+	for _, tc := range []struct {
+		name         string
+		workspaceURI string
+		uri          string
+		want         bool
+	}{
+		{"workspace root", "file:///src/rune", "file:///src/rune", true},
+		{"child", "file:///src/rune", "file:///src/rune/file.go", true},
+		{"nested descendant", "file:///src/rune", "file:///src/rune/internal/ide/file.go", true},
+		{"SDK sibling", "file:///src/rune", "file:///src/rune-go-sdk/file.go", false},
+		{"other sibling", "file:///src/rune", "file:///src/rune-other/file.go", false},
+		{"unrelated path", "file:///src/rune", "file:///Users/example/go/pkg/mod/dep/file.go", false},
+		{"trailing slash root", "file:///src/rune/", "file:///src/rune", true},
+		{"trailing slash descendant", "file:///src/rune/", "file:///src/rune/pkg/file.go", true},
+		{"trailing slash sibling", "file:///src/rune/", "file:///src/rune-go-sdk/file.go", false},
+		{"filesystem root", "file:///", "file:///", true},
+		{"filesystem root descendant", "file:///", "file:///src/rune/file.go", true},
+		{"incompatible scheme", "file:///src/rune", "ssh:///src/rune/file.go", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			workspaceURI, err := workspaceapi.ParseURI(tc.workspaceURI)
+			require.NoError(t, err)
+			fileScheme, err := newTestFileScheme(workspaceURI)
+			require.NoError(t, err)
+			inWorkspace := NewSchemeWorkspace(workspaceURI, fileScheme, inlineSchedule)
+			uri, err := workspaceapi.ParseURI(tc.uri)
+			require.NoError(t, err)
 
-	fileScheme, err := newTestFileScheme(workspaceURI)
-	require.NoError(t, err)
-	inWorkspace := NewSchemeWorkspace(workspaceURI, fileScheme, inlineSchedule)
-
-	t.Run("in tree", func(t *testing.T) {
-		uri, err := workspaceapi.ParseURI("file:///project/pkg/file.go")
-		require.NoError(t, err)
-
-		actualOut, err := IsWorkspaceURI(inWorkspace, uri)
-		require.NoError(t, err)
-		assert.True(t, actualOut)
-	})
-
-	t.Run("out of tree", func(t *testing.T) {
-		uri, err := workspaceapi.ParseURI("file:///Users/example/go/pkg/mod/dep/file.go")
-		require.NoError(t, err)
-
-		actualOut, err := IsWorkspaceURI(inWorkspace, uri)
-		require.NoError(t, err)
-		assert.False(t, actualOut)
-	})
+			actual, err := IsWorkspaceURI(inWorkspace, uri)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, actual)
+		})
+	}
 }
 
 func TestURIUnderPrefix(t *testing.T) {
@@ -202,6 +211,30 @@ func TestURIUnderPrefix(t *testing.T) {
 			prefix, err := workspaceapi.ParseURI(tc.prefix)
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, URIUnderPrefix(uri, prefix))
+		})
+	}
+}
+
+func TestSameDocument(t *testing.T) {
+	for _, tc := range []struct {
+		a, b          string
+		caseSensitive bool
+		want          bool
+	}{
+		{"file:///ws/tsconfig.json", "file:///ws/tsconfig.json", true, true},
+		{"file:///Ws/tsconfig.json", "file:///ws/tsconfig.json", true, false},
+		{"file:///Ws/tsconfig.json", "file:///ws/tsconfig.json", false, true},
+		{"file:///ws/a.ts", "file:///ws/b.ts", false, false},
+		{"memory:///Ws/a.ts", "memory:///ws/a.ts", false, false},
+		{"ssh://host/Ws/a.ts", "ssh://host/ws/a.ts", false, false},
+	} {
+		t.Run(fmt.Sprintf("%s %s %v", tc.a, tc.b, tc.caseSensitive), func(t *testing.T) {
+			a, err := workspaceapi.ParseURI(tc.a)
+			require.NoError(t, err)
+			b, err := workspaceapi.ParseURI(tc.b)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, SameDocument(a, b, tc.caseSensitive))
+			assert.Equal(t, tc.want, URIKey(a, tc.caseSensitive) == URIKey(b, tc.caseSensitive))
 		})
 	}
 }

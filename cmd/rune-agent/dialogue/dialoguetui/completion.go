@@ -43,11 +43,6 @@ func WithContextCompleter(c ContextCompleter) HandlerOption {
 	return func(dh *dialogueHandler) { dh.completer = c }
 }
 
-// completionPauseEvery is how many candidates the feeder pushes before
-// asking the list to re-sort and refresh its counts, so a long workspace
-// walk still renders progress.
-const completionPauseEvery = 1024
-
 // openCompletion opens the '#' completion band and streams the
 // completer's candidates into it off the event loop.
 func (s *dialogueHandler) openCompletion() {
@@ -102,7 +97,7 @@ func (s *dialogueHandler) refreshCompletion() {
 				s.comp.setCompletionLoading(false)
 			}
 		}()
-		streamCompletionCandidates(ctx, iter, ch, list)
+		streamCompletionCandidates(ctx, iter, ch)
 		list.Wait()
 	})
 }
@@ -126,14 +121,16 @@ func (s *dialogueHandler) retireCompletionStream() {
 
 // streamCompletionCandidates pumps iter into the list's async push
 // channel until the iterator is exhausted or ctx is cancelled. It owns
-// closing both the channel and the iterator.
+// closing both the channel and the iterator. It must not force a
+// re-sort (search.List.Pause): the list already re-ranks periodically
+// until the user moves the focus, and a forced sort would snap the
+// user's selection back to the best match.
 func streamCompletionCandidates(
-	ctx context.Context, iter iterator.Iterator[string],
-	ch chan<- []byte, list *search.List,
+	ctx context.Context, iter iterator.Iterator[string], ch chan<- []byte,
 ) {
 	defer close(ch)
 	defer func() { _ = iter.Close() }()
-	for n := 1; ; n++ {
+	for {
 		v, ok := iter.Next(ctx)
 		if !ok {
 			return
@@ -142,9 +139,6 @@ func streamCompletionCandidates(
 		case ch <- []byte(v):
 		case <-ctx.Done():
 			return
-		}
-		if n%completionPauseEvery == 0 {
-			list.Pause()
 		}
 	}
 }

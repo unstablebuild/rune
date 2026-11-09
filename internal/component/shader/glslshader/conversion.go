@@ -18,6 +18,8 @@
 package glslshader
 
 import (
+	"math"
+
 	"github.com/unstablebuild/rune-go-sdk/term"
 )
 
@@ -32,4 +34,30 @@ func colToVec(col, resolveColorDefault term.Color) vec3D {
 
 func vecToCol(v vec3D) term.Color {
 	return term.NewRGBColor(int32(v.x), int32(v.y), int32(v.z))
+}
+
+// colorHue returns the hue of col as a fraction of a turn from red, or
+// zero when col has none: a grey, term.ColorDefault, or a colour that
+// does not resolve to RGB.
+func colorHue(col term.Color) float {
+	ri, gi, bi := col.RGB()
+	if ri < 0 {
+		return 0
+	}
+	r, g, b := float(ri), float(gi), float(bi)
+	hi := math.Max(r, math.Max(g, b))
+	d := hi - math.Min(r, math.Min(g, b))
+	if d == 0 {
+		return 0
+	}
+	var h float
+	switch hi {
+	case r:
+		h = (g - b) / d
+	case g:
+		h = (b-r)/d + 2
+	default:
+		h = (r-g)/d + 4
+	}
+	return fract(h / 6)
 }

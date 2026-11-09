@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"slices"
 	"strconv"
 	"sync"
 
@@ -231,8 +232,12 @@ func (b *auxBar) Draw(w term.Writer) {
 }
 
 func (b *auxBar) Handle(ev term.Event) (quit, handled bool) {
+	// A parent that captures a drag keeps sending it, button held, once
+	// the pointer leaves the bar; that is a drag for the editor, not a
+	// click on a fold.
 	fold := b.foldsEnabled && ev.Type == term.EventMouse && ev.Key == term.MouseLeft &&
-		ev.MouseX >= b.linesWidth && ev.MouseX < b.linesWidth+foldsWidth
+		ev.MouseX >= b.linesWidth && ev.MouseX < b.linesWidth+foldsWidth &&
+		ev.MouseY >= 0 && ev.MouseY < b.height
 	if !fold {
 		quit, handled = b.vhandler.Handle(ev)
 		prevCursor := b.prevCursor
@@ -597,23 +602,35 @@ func (b *auxBar) rebuildLines(ctx context.Context) {
 		return
 	}
 	if b.absoluteLines {
-		b.rebuildLinesAbsolute(ctx)
+		b.rebuildLinesAbsolute()
 	} else {
 		b.rebuildLinesRelative(ctx)
 	}
 }
 
-func (b *auxBar) rebuildLinesAbsolute(ctx context.Context) {
+func (b *auxBar) rebuildLinesAbsolute() {
+	// One bar edit per row would be quadratic: each performance-buffer edit
+	// rescans every row, which froze the loop for seconds on large files.
+	bar := b.bar.Buffer()
+	var digits []term.Cell
 	for y := range b.buf.View().Rows() {
 		from, ok := b.scrollToBarCoordinates(term.Coordinates{Y: y})
 		if !ok {
 			// inside hidden block
 			continue
 		}
-		from.X = 0
-		to := from
-		number := strconv.Itoa(y + 1)
-		b.bar.Buffer().EditWithAttr(ctx, from, to, number, b.barLineAttr)
+		if missing := from.Y - bar.Rows() + 1; missing > 0 {
+			bar.AppendBlankRows(missing, 0)
+		}
+		digits = digits[:0]
+		for _, ch := range strconv.Itoa(y + 1) {
+			digits = append(digits, term.Cell{
+				Ch: ch, Width: 1, Bytes: 1,
+				Fg: b.barLineAttr.Fg, Bg: b.barLineAttr.Bg, Attrs: b.barLineAttr.Attrs,
+			})
+		}
+		row := bar.MutableRow(from.Y, 0)
+		bar.SetRow(from.Y, slices.Insert(row, 0, digits...))
 	}
 }
 

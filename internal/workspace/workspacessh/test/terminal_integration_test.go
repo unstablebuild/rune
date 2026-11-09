@@ -36,6 +36,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/workspace/workspacessh"
 )
 
@@ -290,6 +291,92 @@ func chshUser(t *testing.T, id, user, shell string) {
 	}
 	t.Logf("chsh %s -> %s; passwd line: %s", user, shell,
 		strings.TrimSpace(string(out)))
+}
+
+func TestIntegrationTerminalLoginShellAppliesRuneEnvironment(t *testing.T) {
+	SkipIfNoDocker(t)
+	EnsureImage(t)
+	t.Parallel()
+
+	c := StartContainer(t, SSHDScenario{
+		PublicKeyFile:     "/id_ed25519.pub",
+		InstallRuneBinary: true,
+	})
+	chshUser(t, c.ID, "test", "/bin/bash")
+
+	// The image's /etc/profile assigns PATH outright, as Debian's does, and
+	// the user's profile overrides a variable that gui.env also sets. The
+	// runesvc stand-in reads gui.env from gui_env in the data directory.
+	const setup = `set -e
+home="$(getent passwd test | cut -d: -f6)"
+mkdir -p "$home/.rune"
+printf '%s\n' 'RUNE_E2E_VAR=from-gui-env' 'PATH=$RUNE_DATADIR/tools/bin:$PATH' \
+	> "$home/.rune/gui_env"
+printf '%s\n' 'export RUNE_E2E_VAR=from-profile' 'export RUNE_E2E_PROFILE=read' \
+	> "$home/.profile"
+chown -R test "$home/.rune" "$home/.profile"
+printf %s "$home"`
+	out, err := exec.Command("docker", "exec", c.ID, "sh", "-c", setup).Output()
+	require.NoError(t, err, "set up gui_env and profile: %s", exitStderr(err))
+	dataDir := string(out) + "/.rune"
+
+	keyPath := PrivateKeyPath(t, "id_ed25519")
+	s := newSchemeIntegration(t, c.HostPort, config.MapConfig(map[string]any{
+		"private_keys": []any{keyPath},
+		"timeout":      "20s",
+		"insecure":     true,
+	}))
+
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	pty, err := s.NewPty(ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = pty.Master.Close()
+		_ = pty.Slave.Close()
+	})
+	var output bytes.Buffer
+	done := make(chan struct{})
+	go debug.CapturePanicReport(func() {
+		defer close(done)
+		_, _ = output.ReadFrom(pty.Master)
+	})
+
+	ch := make(chan error, 1)
+	_, err = s.StartCommand(ctx, workspaceapi.Cmd{
+		SysProcAttr: &syscall.SysProcAttr{Setsid: true, Setctty: true},
+		Stdin:       pty.Slave,
+		Stdout:      pty.Slave,
+		Stderr:      pty.Slave,
+		Watcher:     workspaceapi.ChanProcessWatcher(ch),
+	})
+	require.NoError(t, err)
+
+	// The terminal echoes this input, so the assertions below match only
+	// the expanded values, never the literal variable references.
+	_, err = pty.Master.Write([]byte(
+		`echo "PATH<$PATH>" "VAR<$RUNE_E2E_VAR>" "PROFILE<$RUNE_E2E_PROFILE>"; exit` + "\n"))
+	require.NoError(t, err)
+
+	select {
+	case <-ch:
+	case <-ctx.Done():
+		t.Fatalf("timed out waiting for the terminal shell to exit")
+	}
+	_ = pty.Slave.Close()
+	<-done
+
+	got := output.String()
+	assert.Contains(t, got, "PROFILE<read>",
+		"the login shell must read the user's profile; got %q", got)
+	assert.Contains(t, got, "VAR<from-gui-env>",
+		"gui.env must win over the user's profile; got %q", got)
+	assert.Contains(t, got, "PATH<"+dataDir+"/bin:"+dataDir+"/tools/bin:",
+		"Rune's data dir and the gui.env PATH entries must lead the PATH "+
+			"that /etc/profile assigned; got %q", got)
+	assert.Contains(t, got, ":/usr/bin:",
+		"the PATH /etc/profile assigned must follow; got %q", got)
 }
 
 func TestIntegrationTerminalSurvivesKeepaliveIdle(t *testing.T) {

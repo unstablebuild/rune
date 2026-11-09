@@ -1058,7 +1058,7 @@ diff_buf_adjust(win_
               NORMAL`},
 		{"VypzH",
 			`  if (w == NULL]    
- ▐if (w == NULL]    
+  ▐f (w == NULL]    
   {                 
     i = diff_buf_idx
     if (i != DB_COUN
@@ -1082,7 +1082,7 @@ diff_buf_adjust(win_
 			`  if (w == NULL]    
   if (w == NULL]    
   {                 
- ▐  if (i != DB_COUN
+    ▐f (i != DB_COUN
     {               
     curtab->tp_diffb
     curtab->tp_diff_
@@ -1093,7 +1093,7 @@ diff_buf_adjust(win_
 			`  if (w == NULL]    
   if (w == NULL]    
   {                 
- ▐  if (i != DB_COUN
+   ▐if (i != DB_COUN
     {               
     curtab->tp_diffb
     curtab->tp_diff_
@@ -1126,12 +1126,12 @@ diff_buf_adjust(win_
 			`  if (w == NULL]    
   if (w == NULL]    
   {                 
-di▐urtab->tp_diff_in
+ di▐i] = NULL;      
+    curtab->tp_diff_
     diff_redraw(TRUE
     }               
   }                 
   }                 
-  else              
               NORMAL`},
 		{"gg",
 			`▐                   
@@ -1170,7 +1170,7 @@ diff_buf_adjust(win_
 			`                    
 /*                  
  * Check if the curr
-▐* Check if the curr
+ ▐ Check if the curr
  * diff buffers.    
  */                 
   void              
@@ -1388,8 +1388,8 @@ diff_buf_adjust(win_
 {                   
               NORMAL`},
 		{"99999ggkk",
-			`  {                 
-dicurtab->tp_diff_in
+			` di[i] = NULL;      
+    curtab->tp_diff_
     diff_redraw(TRUE
     }               
   }                 
@@ -1399,133 +1399,133 @@ dicurtab->tp_diff_in
 }                   
               NORMAL`},
 		{"kkk3dd",
-			`  {                 
-dicurtab->tp_diff_in
+			` di[i] = NULL;      
+    curtab->tp_diff_
     diff_redraw(TRUE
- ▐diff_buf_add(win->
+  ▐lse              
+  diff_buf_add(win->
 }                   
-                    
                     
                     
                     
               NORMAL`},
 		{"\\$zH",
-			`                    
-tp_diff_invalid = TR
-edraw(TRUE);        
-_add(win->w_buffer)▐
-                    
-                    
+			` di[i] = NULL;      
+    curtab->tp_diff_
+    diff_redraw(TRUE
+  els▐              
+  diff_buf_add(win->
+}                   
                     
                     
                     
               NORMAL`},
 		{"\\$44\\^", // 44 should be ignored
-			`{                   
-curtab->tp_diff_inva
-  diff_redraw(TRUE);
-▐iff_buf_add(win->w_
-                    
-                    
+			` di[i] = NULL;      
+    curtab->tp_diff_
+    diff_redraw(TRUE
+  ▐lse              
+  diff_buf_add(win->
+}                   
                     
                     
                     
               NORMAL`},
 		{"rpl",
-			`{                   
-curtab->tp_diff_inva
-  diff_redraw(TRUE);
-p▐ff_buf_add(win->w_
-                    
-                    
+			` di[i] = NULL;      
+    curtab->tp_diff_
+    diff_redraw(TRUE
+  p▐se              
+  diff_buf_add(win->
+}                   
                     
                     
                     
               NORMAL`},
 		{"Rabcdef<",
-			`{                   
-curtab->tp_diff_inva
-  diff_redraw(TRUE);
-pabcde▐f_add(win->w_
-                    
-                    
+			` di[i] = NULL;      
+    curtab->tp_diff_
+    diff_redraw(TRUE
+  pabcde▐           
+  diff_buf_add(win->
+}                   
                     
                     
                     
               NORMAL`},
 		{"?diff>",
-			`{                   
-curtab->tp_diff_inva
-  ▐iff_redraw(TRUE);
-pabcdeff_add(win->w_
-                    
-                    
+			` di[i] = NULL;      
+    curtab->tp_diff_
+    ▐iff_redraw(TRUE
+  pabcdef           
+  diff_buf_add(win->
+}                   
                     
                     
     searching 'diff'
               NORMAL`},
 		{"n",
-			`{                   
-curtab->tp_▐iff_inva
-  diff_redraw(TRUE);
-pabcdeff_add(win->w_
-                    
-                    
+			` di[i] = NULL;      
+    curtab->tp_▐iff_
+    diff_redraw(TRUE
+  pabcdef           
+  diff_buf_add(win->
+}                   
                     
                     
     searching 'diff'
               NORMAL`},
 		{"N",
-			`{                   
-curtab->tp_diff_inva
-  ▐iff_redraw(TRUE);
-pabcdeff_add(win->w_
-                    
-                    
+			` di[i] = NULL;      
+    curtab->tp_diff_
+    ▐iff_redraw(TRUE
+  pabcdef           
+  diff_buf_add(win->
+}                   
                     
                     
     searching 'diff'
               NORMAL`},
 		{"j0tf",
-			` {                  
-icurtab->tp_diff_inv
-   diff_redraw(TRUE)
- pabcd▐ff_add(win->w
-                    
-                    
+			` di[i] = NULL;      
+    curtab->tp_diff_
+    diff_redraw(TRUE
+  pabcd▐f           
+  diff_buf_add(win->
+}                   
                     
                     
     searching 'diff'
               NORMAL`},
 		{";",
-			` {                  
-icurtab->tp_diff_inv
-   diff_redraw(TRUE)
- pabcde▐f_add(win->w
-                    
-                    
+			` di[i] = NULL;      
+    curtab->tp_diff_
+    diff_redraw(TRUE
+  pabcd▐f           
+  diff_buf_add(win->
+}                   
                     
                     
     searching 'diff'
               NORMAL`},
 		{"hTa",
-			` {                  
-icurtab->tp_diff_inv
-   diff_redraw(TRUE)
- pa▐cdeff_add(win->w
-                    
-                    
+			` di[i] = NULL;      
+    curtab->tp_diff_
+    diff_redraw(TRUE
+  pa▐cdef           
+  diff_buf_add(win->
+}                   
                     
                     
     searching 'diff'
               NORMAL`},
 		{",",
-			` {                  
-icurtab->tp_diff_inv
-   diff_redraw(TRUE)
- pabcdeff▐add(win->w
-                    
-                    
+			` di[i] = NULL;      
+    curtab->tp_diff_
+    diff_redraw(TRUE
+  pa▐cdef           
+  diff_buf_add(win->
+}                   
                     
                     
     searching 'diff'
@@ -1602,15 +1602,15 @@ func TestViCaseChangeOperators(t *testing.T) {
 		{"gu$ lowercases to end of line", "Hello WORLD", "gu$", "hello world", normalMode},
 		{"gue lowercases to end of word", "HELLO World", "gue", "hello World", normalMode},
 		{"guu lowercases whole line", "HELLO WORLD", "guu", "hello world", normalMode},
-		{"gub lowercases backward word", "Hello WORLD", "Wgub", "hello wORLD", normalMode},
-		{"guB lowercases backward WORD", "Hello-Two WORLD", "WguB", "hello-two wORLD", normalMode},
+		{"gub lowercases backward word", "Hello WORLD", "Wgub", "hello WORLD", normalMode},
+		{"guB lowercases backward WORD", "Hello-Two WORLD", "WguB", "hello-two WORLD", normalMode},
 		{"guW lowercases forward WORD", "Hello-World test", "guW", "hello-world test", normalMode},
 		{"guE lowercases to end of WORD", "Hello-World test", "guE", "hello-world test", normalMode},
-		{"gu^ lowercases to first non-blank", "  Hello WORLD", "WWgu^", "  hello wORLD", normalMode},
-		{"gu0 lowercases to start of line", "  Hello WORLD", "Wgu0", "  hello WORLD", normalMode},
+		{"gu^ lowercases to first non-blank", "  Hello WORLD", "WWgu^", "  hello WORLD", normalMode},
+		{"gu0 lowercases to start of line", "  Hello WORLD", "WWgu0", "  hello WORLD", normalMode},
 		{"gul lowercases single char", "Hello World", "gul", "hello World", normalMode},
 		{"guh lowercases backward single char (no-op at col 0)", "Hello World", "guh", "Hello World", normalMode},
-		{"guh lowercases backward char from col 1", "HEllo", "lguh", "hello", normalMode},
+		{"guh lowercases backward char from col 1", "HEllo", "lguh", "hEllo", normalMode},
 		{"guf lowercases to char", "HELLO World", "gufo", "hello world", normalMode},
 
 		// ===== gU (uppercase) with motions =====
@@ -1618,15 +1618,15 @@ func TestViCaseChangeOperators(t *testing.T) {
 		{"gU$ uppercases to end of line", "hello world", "gU$", "HELLO WORLD", normalMode},
 		{"gUe uppercases to end of word", "hello world", "gUe", "HELLO world", normalMode},
 		{"gUU uppercases whole line", "hello world", "gUU", "HELLO WORLD", normalMode},
-		{"gUb uppercases backward word", "hello world", "WgUb", "HELLO World", normalMode},
-		{"gUB uppercases backward WORD", "hello-two world", "WgUB", "HELLO-TWO World", normalMode},
+		{"gUb uppercases backward word", "hello world", "WgUb", "HELLO world", normalMode},
+		{"gUB uppercases backward WORD", "hello-two world", "WgUB", "HELLO-TWO world", normalMode},
 		{"gUW uppercases forward WORD", "hello-world test", "gUW", "HELLO-WORLD test", normalMode},
 		{"gUE uppercases to end of WORD", "hello-world test", "gUE", "HELLO-WORLD test", normalMode},
-		{"gU^ uppercases to first non-blank", "  hello world", "fogU^", "  HELLO world", normalMode},
-		{"gU0 uppercases to start of line", "  hello world", "fogU0", "  HELLO world", normalMode},
-		{"gUl uppercases single char", "hello world", "gUl", "HEllo world", normalMode},
+		{"gU^ uppercases to first non-blank", "  hello world", "fwgU^", "  HELLO world", normalMode},
+		{"gU0 uppercases to start of line", "  hello world", "fwgU0", "  HELLO world", normalMode},
+		{"gUl uppercases single char", "hello world", "gUl", "Hello world", normalMode},
 		{"gUh uppercases backward single char (no-op at col 0)", "hello world", "gUh", "hello world", normalMode},
-		{"gUh uppercases backward char from col 1", "hello", "lgUh", "HEllo", normalMode},
+		{"gUh uppercases backward char from col 1", "hello", "lgUh", "Hello", normalMode},
 		{"gUf uppercases to char", "hello world", "gUfo", "HELLO world", normalMode},
 
 		// ===== g~ (toggle case) with motions =====
@@ -1634,12 +1634,12 @@ func TestViCaseChangeOperators(t *testing.T) {
 		{"g~$ toggles case to end of line", "Hello World", "g~$", "hELLO wORLD", normalMode},
 		{"g~e toggles case to end of word", "Hello World", "g~e", "hELLO World", normalMode},
 		{"g~~ toggles case of whole line", "Hello World", "g~~", "hELLO wORLD", normalMode},
-		{"g~b toggles backward word", "Hello World", "Wg~b", "hELLO world", normalMode},
+		{"g~b toggles backward word", "Hello World", "Wg~b", "hELLO World", normalMode},
 		{"g~W toggles forward WORD", "Hello-World Test", "g~W", "hELLO-wORLD Test", normalMode},
 		{"g~E toggles to end of WORD", "Hello-World Test", "g~E", "hELLO-wORLD Test", normalMode},
-		{"g~l toggles single char", "Hello World", "g~l", "hEllo World", normalMode},
+		{"g~l toggles single char", "Hello World", "g~l", "hello World", normalMode},
 		{"g~h toggles backward single char (no-op at col 0)", "Hello World", "g~h", "Hello World", normalMode},
-		{"g~h toggles backward char from col 1", "Hello", "lg~h", "hEllo", normalMode},
+		{"g~h toggles backward char from col 1", "Hello", "lg~h", "hello", normalMode},
 
 		// ===== Text objects — inner/around word =====
 		{"guiw lowercases inner word", "Hello WORLD Test", "guiw", "hello WORLD Test", normalMode},
@@ -1699,9 +1699,9 @@ func TestViCaseChangeOperators(t *testing.T) {
 		{"gUU on single char line", "a", "gUU", "A", normalMode},
 
 		// ===== Cursor positioning before operator =====
-		{"guw from middle of word lowercases from cursor forward", "HELLO", "llguw", "HEllO", normalMode},
-		{"gUw from middle of word uppercases from cursor forward", "hello", "llgUw", "heLLo", normalMode},
-		{"g~w from middle of word toggles from cursor forward", "Hello", "llg~w", "HeLLo", normalMode},
+		{"guw from middle of last word lowercases through its end", "HELLO", "llguw", "HEllo", normalMode},
+		{"gUw from middle of last word uppercases through its end", "hello", "llgUw", "heLLO", normalMode},
+		{"g~w from middle of last word toggles through its end", "Hello", "llg~w", "HeLLO", normalMode},
 		{"gue from middle of word lowercases to end of word", "HELLO WORLD", "llgue", "HEllo WORLD", normalMode},
 		{"gu$ from middle of line lowercases to end", "HELLO WORLD", "llgu$", "HEllo world", normalMode},
 		{"gU$ from middle of line uppercases to end", "hello world", "llgU$", "heLLO WORLD", normalMode},
@@ -1723,7 +1723,7 @@ func TestViCaseChangeOperators(t *testing.T) {
 
 		// ===== Punctuation / non-alpha characters =====
 		{"guw on punctuation does not change it", "!@#$%^&*", "guw", "!@#$%^&*", normalMode},
-		{"gUw on digits does not change them", "abc123def", "gUw", "ABC123DEf", normalMode},
+		{"gUw on digits does not change them", "abc123def", "gUw", "ABC123DEF", normalMode},
 		{"guw on mixed alpha-punct word", "Hello!", "guw", "hello!", normalMode},
 		{"g~w on digits mixed", "a1B2c3", "g~w", "A1b2C3", normalMode},
 
@@ -1735,9 +1735,9 @@ func TestViCaseChangeOperators(t *testing.T) {
 		{"guj lowercases 2 lines from first line", "HELLO\nWORLD\nTEST", "guj", "hello\nworld\nTEST", normalMode},
 
 		// ===== Visual mode case change =====
-		{"vu then selection lowercases visual", "HELLO WORLD", "vevu", "hello WORLD", normalMode},
-		{"vU then selection uppercases visual", "hello world", "vevU", "HELLO world", normalMode},
-		{"v~ toggles case in visual mode", "Hello World", "vev~", "hELLO World", normalMode},
+		{"vu then selection lowercases visual", "HELLO WORLD", "veu", "hello WORLD", normalMode},
+		{"vU then selection uppercases visual", "hello world", "veU", "HELLO world", normalMode},
+		{"v~ toggles case in visual mode", "Hello World", "ve~", "hELLO World", normalMode},
 		{"V line visual then u lowercases entire line", "HELLO WORLD", "Vu", "hello world", normalMode},
 		{"V line visual then U uppercases entire line", "hello world", "VU", "HELLO WORLD", normalMode},
 
@@ -2075,24 +2075,24 @@ func TestViCaseChangeSnapshots(t *testing.T) {
 
 	t.Run("gu motions sequential", func(t *testing.T) {
 		cases := []handlertest.SequenceTestCase{
-			{InputSequence: "guw", Expected: "hello▐World                   \n                              \n                              \n                              \n                        NORMAL"},
-			{InputSequence: "Wgue", Expected: "hello worl▐                   \n                              \n                              \n                              \n                        NORMAL"},
+			{InputSequence: "guw", Expected: "▐ello World                   \n                              \n                              \n                              \n                        NORMAL"},
+			{InputSequence: "Wgue", Expected: "hello ▐orld                   \n                              \n                              \n                              \n                        NORMAL"},
 		}
 		handlertest.RunHandlerSequence(t, newVi(t, "Hello World"), width, height, cases)
 	})
 
 	t.Run("gU motions sequential", func(t *testing.T) {
 		cases := []handlertest.SequenceTestCase{
-			{InputSequence: "gUw", Expected: "HELLO▐world                   \n                              \n                              \n                              \n                        NORMAL"},
-			{InputSequence: "WgUe", Expected: "HELLO WORL▐                   \n                              \n                              \n                              \n                        NORMAL"},
+			{InputSequence: "gUw", Expected: "▐ELLO world                   \n                              \n                              \n                              \n                        NORMAL"},
+			{InputSequence: "WgUe", Expected: "HELLO ▐ORLD                   \n                              \n                              \n                              \n                        NORMAL"},
 		}
 		handlertest.RunHandlerSequence(t, newVi(t, "hello world"), width, height, cases)
 	})
 
 	t.Run("g~ motions sequential", func(t *testing.T) {
 		cases := []handlertest.SequenceTestCase{
-			{InputSequence: "g~w", Expected: "hELLO▐World                   \n                              \n                              \n                              \n                        NORMAL"},
-			{InputSequence: "Wg~$", Expected: "hELLO wORL▐                   \n                              \n                              \n                              \n                        NORMAL"},
+			{InputSequence: "g~w", Expected: "▐ELLO World                   \n                              \n                              \n                              \n                        NORMAL"},
+			{InputSequence: "Wg~$", Expected: "hELLO ▐ORLD                   \n                              \n                              \n                              \n                        NORMAL"},
 		}
 		handlertest.RunHandlerSequence(t, newVi(t, "Hello World"), width, height, cases)
 	})
@@ -2102,9 +2102,9 @@ func TestViCaseChangeSnapshots(t *testing.T) {
 			return newVi(t, "Hello World")
 		}
 		cases := []handlertest.SequenceTestCase{
-			{InputSequence: "guu", Expected: "hello worl▐                   \n                              \n                              \n                              \n                        NORMAL"},
-			{InputSequence: "gUU", Expected: "HELLO WORL▐                   \n                              \n                              \n                              \n                        NORMAL"},
-			{InputSequence: "g~~", Expected: "hELLO wORL▐                   \n                              \n                              \n                              \n                        NORMAL"},
+			{InputSequence: "guu", Expected: "▐ello world                   \n                              \n                              \n                              \n                        NORMAL"},
+			{InputSequence: "gUU", Expected: "▐ELLO WORLD                   \n                              \n                              \n                              \n                        NORMAL"},
+			{InputSequence: "g~~", Expected: "▐ELLO wORLD                   \n                              \n                              \n                              \n                        NORMAL"},
 		}
 		handlertest.RunHandlerIsolated(t, fn, width, height, cases)
 	})
@@ -2133,7 +2133,7 @@ func TestViCaseChangeSnapshots(t *testing.T) {
 			return newVi(t, "Hello\nWorld")
 		}
 		cases := []handlertest.SequenceTestCase{
-			{InputSequence: "guj", Expected: "hello                         \n▐orld                         \n                              \n                              \n                        NORMAL"},
+			{InputSequence: "guj", Expected: "▐ello                         \nworld                         \n                              \n                              \n                        NORMAL"},
 		}
 		handlertest.RunHandlerIsolated(t, fn, width, height, cases)
 	})
@@ -2143,9 +2143,9 @@ func TestViCaseChangeSnapshots(t *testing.T) {
 			return newVi(t, "Hello World")
 		}
 		cases := []handlertest.SequenceTestCase{
-			{InputSequence: "veu", Expected: "hell▐ World                   \n                              \n                              \n                              \n                        NORMAL"},
-			{InputSequence: "veU", Expected: "HELL▐ World                   \n                              \n                              \n                              \n                        NORMAL"},
-			{InputSequence: "ve~", Expected: "hELL▐ World                   \n                              \n                              \n                              \n                        NORMAL"},
+			{InputSequence: "veu", Expected: "▐ello World                   \n                              \n                              \n                              \n                        NORMAL"},
+			{InputSequence: "veU", Expected: "▐ELLO World                   \n                              \n                              \n                              \n                        NORMAL"},
+			{InputSequence: "ve~", Expected: "▐ELLO World                   \n                              \n                              \n                              \n                        NORMAL"},
 		}
 		handlertest.RunHandlerIsolated(t, fn, width, height, cases)
 	})
@@ -2574,6 +2574,11 @@ func TestViCountedOperatorScenarios(t *testing.T) {
 		{name: "wrap d2fx deletes through second x", content: "ax bx cx", seq: "d2fx", wrap: true, width: 4, wantContent: " cx", wantScroll: coord(0, 0)},
 		{name: "dfw finds w instead of moving by word", content: "one two wow", seq: "dfw", wantContent: "o wow", wantScroll: coord(0, 0)},
 		{name: "dtw stops before w instead of moving by word", content: "one two wow", seq: "dtw", wantContent: "wo wow", wantScroll: coord(0, 0)},
+		{name: "dfb finds b instead of moving back by word", content: "one bob two", seq: "dfb", wantContent: "ob two", wantScroll: coord(0, 0)},
+		{name: "dtb stops before b instead of moving back by word", content: "one bob two", seq: "dtb", wantContent: "bob two", wantScroll: coord(0, 0)},
+		{name: "dFb finds b backward and keeps the cursor char instead of moving back by word", content: "bob one", seq: "$dFb", wantContent: "boe", wantScroll: coord(2, 0)},
+		{name: "dTb stops after b and keeps the cursor char instead of moving back by word", content: "bob one", seq: "$dTb", wantContent: "bobe", wantScroll: coord(3, 0)},
+		{name: "dfB finds B instead of moving back by word", content: "one Bob two", seq: "dfB", wantContent: "ob two", wantScroll: coord(0, 0)},
 
 		// Counted word operators across empty lines: the last word stops at its
 		// line end, and an end in column 0 is pulled back to the previous line.
@@ -2598,10 +2603,10 @@ func TestViCountedOperatorScenarios(t *testing.T) {
 		{name: "wrap 2yy yanks two lines", content: "one\ntwo\nthree\n", seq: "2yy", wrap: true, width: 2, wantClipboard: true, clipboardText: "one\ntwo\n", clipboardMode: text.LineSelection, wantScroll: coord(0, 0)},
 
 		// Case-change and shift operators use the same counted meta-motion path.
-		{name: "2guw lowercases two words", content: "ONE TWO THREE", seq: "2guw", wantContent: "one two THREE", wantScroll: coord(len("one two"), 0)},
-		{name: "gu2w lowercases two words", content: "ONE TWO THREE", seq: "gu2w", wantContent: "one two THREE", wantScroll: coord(len("one two"), 0)},
-		{name: "2gUe uppercases through second word end", content: "one two three", seq: "2gUe", wantContent: "ONE TWO three", wantScroll: coord(len("ONE TWO")-1, 0)},
-		{name: "2g~w toggles two words", content: "One Two Three", seq: "2g~w", wantContent: "oNE tWO Three", wantScroll: coord(len("oNE tWO"), 0)},
+		{name: "2guw lowercases two words", content: "ONE TWO THREE", seq: "2guw", wantContent: "one two THREE", wantScroll: coord(0, 0)},
+		{name: "gu2w lowercases two words", content: "ONE TWO THREE", seq: "gu2w", wantContent: "one two THREE", wantScroll: coord(0, 0)},
+		{name: "2gUe uppercases through second word end", content: "one two three", seq: "2gUe", wantContent: "ONE TWO three", wantScroll: coord(0, 0)},
+		{name: "2g~w toggles two words", content: "One Two Three", seq: "2g~w", wantContent: "oNE tWO Three", wantScroll: coord(0, 0)},
 		{name: "2>w shifts two lines via operator count", content: "one\ntwo\nthree", seq: "2>j", wantContent: "\tone\n\ttwo\n\tthree", wantScroll: coord(0, 2)},
 		{name: ">2j shifts two lines via motion count", content: "one\ntwo\nthree", seq: ">2j", wantContent: "\tone\n\ttwo\n\tthree", wantScroll: coord(0, 2)},
 
@@ -2609,7 +2614,7 @@ func TestViCountedOperatorScenarios(t *testing.T) {
 		{name: "2dw in empty buffer is a no-op", content: "", seq: "2dw", wantScroll: coord(0, 0), allowUnhandled: true},
 		{name: "2yy in empty buffer is a no-op", content: "", seq: "2yy", wantScroll: coord(0, 0)},
 		{name: "cw in empty buffer is a no-op", content: "", seq: "cw", wantScroll: coord(0, 0), allowUnhandled: true},
-		{name: "2dw from past last column does not edit", content: "one two", seq: "2dw", setup: pastLastColumn, wantScroll: coord(len("one two")-1, 0), allowUnhandled: true},
+		{name: "2dw from past last column clamps and deletes the last cell", content: "one two", seq: "2dw", setup: pastLastColumn, wantContent: "one tw", wantScroll: coord(len("one tw")-1, 0)},
 		{name: "2dw from past last line does not edit", content: "one two", seq: "2dw", setup: pastLastLine, wantScroll: coord(0, 10), allowUnhandled: true},
 		{name: "cw from past last column clamps and changes the last cell", content: "one two", seq: "cw", setup: pastLastColumn, wantContent: "one tw", wantMode: insertMode, wantScroll: coord(len("one two")-1, 0), allowUnhandled: true},
 		{name: "cw from past last line does not edit", content: "one two", seq: "cw", setup: pastLastLine, wantScroll: coord(0, 10), allowUnhandled: true},
@@ -2656,6 +2661,725 @@ func TestViCountedOperatorScenarios(t *testing.T) {
 				require.NoError(t, err)
 				assert.Equal(t, tc.clipboardText, paste.Text)
 				assert.Equal(t, tc.clipboardMode, paste.Metadata)
+			}
+		})
+	}
+}
+
+func TestViOperatorMotionVimParity(t *testing.T) {
+	type testCase struct {
+		name         string
+		content      string
+		at           term.Coordinates
+		marks        map[rune]term.Coordinates
+		keys         string
+		wantContent  string
+		wantCursor   *term.Coordinates
+		wantMode     viMode
+		wantUnnamed  string
+		wantLinewise bool
+		wrap         bool
+	}
+	pos := func(x, y int) *term.Coordinates {
+		return &term.Coordinates{X: x, Y: y}
+	}
+
+	// Expectations come from Vim 9.1 with tabstop=2 and autoindent. Each
+	// suite covers empty buffers, cursors past the line end or below the
+	// last line, the trailing empty line, double-width characters and tabs.
+	// Rows marked nostartofline come from Vim with 'nostartofline', which
+	// Rune's gg, G, H, M and L follow by keeping the cursor column. Rune
+	// does not wrap by default, so the gj and gk rows without wrap come from
+	// Vim with 'nowrap'. The window motion rows come from Vim in a terminal
+	// window taller than their text.
+	suites := []struct {
+		name  string
+		cases []testCase
+	}{
+		{name: "backward exclusive motions", cases: []testCase{
+			{name: "dh", content: "abcd", at: term.Coordinates{X: 2}, keys: "dh", wantContent: "acd", wantCursor: pos(1, 0), wantUnnamed: "b"},
+			{name: "d2h", content: "abcd", at: term.Coordinates{X: 2}, keys: "d2h", wantContent: "cd", wantCursor: pos(0, 0), wantUnnamed: "ab"},
+			{name: "ch", content: "abcd", at: term.Coordinates{X: 2}, keys: "ch", wantContent: "acd", wantCursor: pos(1, 0), wantMode: insertMode, wantUnnamed: "b"},
+			{name: "dh repeated", content: "abcdef", at: term.Coordinates{X: 5}, keys: "dh.", wantContent: "abcf", wantCursor: pos(3, 0), wantUnnamed: "d"},
+			{name: "yh", content: "abcd", at: term.Coordinates{X: 2}, keys: "yh", wantContent: "abcd", wantCursor: pos(1, 0), wantUnnamed: "b"},
+			{name: "d0", content: "abc def", at: term.Coordinates{X: 4}, keys: "d0", wantContent: "def", wantCursor: pos(0, 0), wantUnnamed: "abc "},
+			{name: "c0", content: "abc def", at: term.Coordinates{X: 4}, keys: "c0", wantContent: "def", wantCursor: pos(0, 0), wantMode: insertMode, wantUnnamed: "abc "},
+			{name: "gU0", content: "abc def", at: term.Coordinates{X: 4}, keys: "gU0", wantContent: "ABC def", wantCursor: pos(0, 0)},
+			{name: "y0", content: "abc def", at: term.Coordinates{X: 4}, keys: "y0", wantContent: "abc def", wantCursor: pos(0, 0), wantUnnamed: "abc "},
+			{name: "d^ backward", content: "  abc def", at: term.Coordinates{X: 6}, keys: "d^", wantContent: "  def", wantCursor: pos(2, 0), wantUnnamed: "abc "},
+			{name: "dFa", content: "abcx", at: term.Coordinates{X: 3}, keys: "dFa", wantContent: "x", wantCursor: pos(0, 0), wantUnnamed: "abc"},
+			{name: "dTa", content: "abcx", at: term.Coordinates{X: 3}, keys: "dTa", wantContent: "ax", wantCursor: pos(1, 0), wantUnnamed: "bc"},
+			{name: "cFa", content: "abcx", at: term.Coordinates{X: 3}, keys: "cFa", wantContent: "x", wantCursor: pos(0, 0), wantMode: insertMode, wantUnnamed: "abc"},
+			{name: "gUFa", content: "abcx", at: term.Coordinates{X: 3}, keys: "gUFa", wantContent: "ABCx", wantCursor: pos(0, 0)},
+			{name: "yFa", content: "abcx", at: term.Coordinates{X: 3}, keys: "yFa", wantContent: "abcx", wantCursor: pos(0, 0), wantUnnamed: "abc"},
+			{name: "d2Fa", content: "abax", at: term.Coordinates{X: 3}, keys: "d2Fa", wantContent: "x", wantCursor: pos(0, 0), wantUnnamed: "aba"},
+			{name: "dFb", content: "abcx", at: term.Coordinates{X: 3}, keys: "dFb", wantContent: "ax", wantCursor: pos(1, 0), wantUnnamed: "bc"},
+			{name: "dTb", content: "abcx", at: term.Coordinates{X: 3}, keys: "dTb", wantContent: "abx", wantCursor: pos(2, 0), wantUnnamed: "c"},
+			{name: "dFB", content: "aBcx", at: term.Coordinates{X: 3}, keys: "dFB", wantContent: "ax", wantCursor: pos(1, 0), wantUnnamed: "Bc"},
+			{name: "dTB", content: "aBcx", at: term.Coordinates{X: 3}, keys: "dTB", wantContent: "aBx", wantCursor: pos(2, 0), wantUnnamed: "c"},
+			{name: "dFw", content: "awcx", at: term.Coordinates{X: 3}, keys: "dFw", wantContent: "ax", wantCursor: pos(1, 0), wantUnnamed: "wc"},
+			{name: "dTw", content: "awcx", at: term.Coordinates{X: 3}, keys: "dTw", wantContent: "awx", wantCursor: pos(2, 0), wantUnnamed: "c"},
+			{name: "dFW", content: "aWcx", at: term.Coordinates{X: 3}, keys: "dFW", wantContent: "ax", wantCursor: pos(1, 0), wantUnnamed: "Wc"},
+			{name: "dFe", content: "aecx", at: term.Coordinates{X: 3}, keys: "dFe", wantContent: "ax", wantCursor: pos(1, 0), wantUnnamed: "ec"},
+			{name: "dF,", content: "ab,de", at: term.Coordinates{X: 4}, keys: "dF,", wantContent: "abe", wantCursor: pos(2, 0), wantUnnamed: ",d"},
+			{name: "d, repeats f backward exclusively", content: "xbybz", keys: "2fbd,", wantContent: "xbz", wantCursor: pos(1, 0), wantUnnamed: "by"},
+			{name: "dFa repeated", content: "abcxabcx", at: term.Coordinates{X: 7}, keys: "dFa.", wantContent: "x", wantCursor: pos(0, 0), wantUnnamed: "abcx"},
+			{name: "dFd repeated without a match", content: "abc def ghi", at: term.Coordinates{X: 8}, keys: "dFd.", wantContent: "abc ghi", wantCursor: pos(4, 0), wantUnnamed: "def "},
+			{name: "dh on an empty buffer", content: "", keys: "dh", wantContent: "", wantCursor: pos(0, 0)},
+			{name: "dh past the line end", content: "abc", at: term.Coordinates{X: 9}, keys: "dh", wantContent: "ac", wantCursor: pos(1, 0), wantUnnamed: "b"},
+			{name: "dh below the last line", content: "abc\ndef", at: term.Coordinates{X: 1, Y: 9}, keys: "dh", wantContent: "abc\nef", wantCursor: pos(0, 1), wantUnnamed: "d"},
+			{name: "dh past both ends", content: "abc\ndef", at: term.Coordinates{X: 9, Y: 9}, keys: "dh", wantContent: "abc\ndf", wantCursor: pos(1, 1), wantUnnamed: "e"},
+			{name: "dh on the trailing empty line", content: "abc\n", at: term.Coordinates{Y: 1}, keys: "dh", wantContent: "abc\n", wantCursor: pos(0, 1)},
+			{name: "dh over a double-width char", content: "a\U0001F600b", at: term.Coordinates{X: 2}, keys: "dh", wantContent: "ab", wantCursor: pos(1, 0), wantUnnamed: "\U0001F600"},
+			{name: "dh from a double-width char", content: "a\U0001F600b", at: term.Coordinates{X: 1}, keys: "dh", wantContent: "\U0001F600b", wantCursor: pos(0, 0), wantUnnamed: "a"},
+			{name: "dh over a tab", content: "a\tb", at: term.Coordinates{X: 2}, keys: "dh", wantContent: "ab", wantCursor: pos(1, 0), wantUnnamed: "\t"},
+			{name: "d99h stops at the line start", content: "abcd", at: term.Coordinates{X: 3}, keys: "d99h", wantContent: "d", wantCursor: pos(0, 0), wantUnnamed: "abc"},
+			{name: "dh at the line start", content: "abc", keys: "dh", wantContent: "abc", wantCursor: pos(0, 0)},
+			{name: "d0 on an empty buffer", content: "", keys: "d0", wantContent: "", wantCursor: pos(0, 0)},
+			{name: "d0 past the line end", content: "abc def", at: term.Coordinates{X: 99}, keys: "d0", wantContent: "f", wantCursor: pos(0, 0), wantUnnamed: "abc de"},
+			{name: "d0 below the last line", content: "abc\ndef", at: term.Coordinates{X: 2, Y: 9}, keys: "d0", wantContent: "abc\nf", wantCursor: pos(0, 1), wantUnnamed: "de"},
+			{name: "d0 over a tab indent", content: "\tabc", at: term.Coordinates{X: 2}, keys: "d0", wantContent: "bc", wantCursor: pos(0, 0), wantUnnamed: "\ta"},
+			{name: "d0 over double-width chars", content: "日本ab", at: term.Coordinates{X: 3}, keys: "d0", wantContent: "b", wantCursor: pos(0, 0), wantUnnamed: "日本a"},
+			{name: "c0 over double-width chars", content: "日本ab", at: term.Coordinates{X: 3}, keys: "c0", wantContent: "b", wantCursor: pos(0, 0), wantMode: insertMode, wantUnnamed: "日本a"},
+			{name: "y0 over a tab indent", content: "\tabc", at: term.Coordinates{X: 3}, keys: "y0", wantContent: "\tabc", wantCursor: pos(0, 0), wantUnnamed: "\tab"},
+			{name: "gU0 over double-width chars", content: "日本ab", at: term.Coordinates{X: 3}, keys: "gU0", wantContent: "日本Ab", wantCursor: pos(0, 0)},
+			{name: "d^ back over a tab indent", content: "\t\tabc def", at: term.Coordinates{X: 6}, keys: "d^", wantContent: "\t\tdef", wantCursor: pos(2, 0), wantUnnamed: "abc "},
+			{name: "d^ forward over a tab indent", content: "\t\tabc", keys: "d^", wantContent: "abc", wantCursor: pos(0, 0), wantUnnamed: "\t\t"},
+			{name: "d^ on a blank line", content: "   ", keys: "d^", wantContent: " ", wantCursor: pos(0, 0), wantUnnamed: "  "},
+			{name: "d^ past the line end", content: "  abc", at: term.Coordinates{X: 99}, keys: "d^", wantContent: "  c", wantCursor: pos(2, 0), wantUnnamed: "ab"},
+			{name: "d^ on an empty buffer", content: "", keys: "d^", wantContent: "", wantCursor: pos(0, 0)},
+			{name: "dF to a double-width char", content: "a\U0001F600bc", at: term.Coordinates{X: 3}, keys: "dF\U0001F600", wantContent: "ac", wantCursor: pos(1, 0), wantUnnamed: "\U0001F600b"},
+			{name: "dT to a double-width char", content: "a\U0001F600bc", at: term.Coordinates{X: 3}, keys: "dT\U0001F600", wantContent: "a\U0001F600c", wantCursor: pos(2, 0), wantUnnamed: "b"},
+			{name: "dF to a tab", content: "a\tbc", at: term.Coordinates{X: 3}, keys: "dF\t", wantContent: "ac", wantCursor: pos(1, 0), wantUnnamed: "\tb"},
+			{name: "dT to a tab", content: "a\tbc", at: term.Coordinates{X: 3}, keys: "dT\t", wantContent: "a\tc", wantCursor: pos(2, 0), wantUnnamed: "b"},
+			{name: "cF to a double-width char", content: "a\U0001F600bc", at: term.Coordinates{X: 3}, keys: "cF\U0001F600", wantContent: "ac", wantCursor: pos(1, 0), wantMode: insertMode, wantUnnamed: "\U0001F600b"},
+			{name: "yF to a tab", content: "a\tbc", at: term.Coordinates{X: 3}, keys: "yF\t", wantContent: "a\tbc", wantCursor: pos(1, 0), wantUnnamed: "\tb"},
+			{name: "gUF over double-width chars", content: "a日本bc", at: term.Coordinates{X: 4}, keys: "gUFa", wantContent: "A日本Bc", wantCursor: pos(0, 0)},
+			{name: "dFa past the line end", content: "abcx", at: term.Coordinates{X: 9}, keys: "dFa", wantContent: "x", wantCursor: pos(0, 0), wantUnnamed: "abc"},
+			{name: "dFa below the last line", content: "x\nabcx", at: term.Coordinates{X: 3, Y: 9}, keys: "dFa", wantContent: "x\nx", wantCursor: pos(0, 1), wantUnnamed: "abc"},
+			{name: "dFa without a match", content: "abcx", at: term.Coordinates{X: 3}, keys: "dFz", wantContent: "abcx", wantCursor: pos(3, 0)},
+			{name: "dFa on an empty buffer", content: "", keys: "dFa", wantContent: "", wantCursor: pos(0, 0)},
+			{name: "d2Fa with one match", content: "abcx", at: term.Coordinates{X: 3}, keys: "d2Fa", wantContent: "abcx", wantCursor: pos(3, 0)},
+			{name: "dTa next to the target", content: "abc", at: term.Coordinates{X: 1}, keys: "dTa", wantContent: "abc", wantCursor: pos(1, 0)},
+			{name: "d, over double-width chars", content: "x\U0001F600y\U0001F600z", keys: "2f\U0001F600d,", wantContent: "x\U0001F600z", wantCursor: pos(1, 0), wantUnnamed: "\U0001F600y"},
+			{name: "d, over tabs", content: "x\ty\tz", keys: "2f\td,", wantContent: "x\tz", wantCursor: pos(1, 0), wantUnnamed: "\ty"},
+		}},
+		{name: "forward exclusive motions", cases: []testCase{
+			{name: "dl", content: "abc", at: term.Coordinates{X: 1}, keys: "dl", wantContent: "ac", wantCursor: pos(1, 0), wantUnnamed: "b"},
+			{name: "d^ forward", content: "    abc", at: term.Coordinates{X: 1}, keys: "d^", wantContent: " abc", wantCursor: pos(1, 0), wantUnnamed: "   "},
+			{name: "dw on last word", content: "abc one", at: term.Coordinates{X: 4}, keys: "dw", wantContent: "abc ", wantCursor: pos(3, 0), wantUnnamed: "one"},
+			{name: "d3w on last word", content: "abc one", at: term.Coordinates{X: 4}, keys: "d3w", wantContent: "abc ", wantCursor: pos(3, 0), wantUnnamed: "one"},
+			{name: "black hole dw on last word", content: "abc one", at: term.Coordinates{X: 4}, keys: "\"_dw", wantContent: "abc ", wantCursor: pos(3, 0)},
+			{name: "gUw on last word", content: "abc one", at: term.Coordinates{X: 4}, keys: "gUw", wantContent: "abc ONE", wantCursor: pos(4, 0)},
+			{name: "yw on last word", content: "abc one", at: term.Coordinates{X: 4}, keys: "yw", wantContent: "abc one", wantCursor: pos(4, 0), wantUnnamed: "one"},
+			{name: "d2|", content: "abcdef", at: term.Coordinates{X: 4}, keys: "d2|", wantContent: "aef", wantCursor: pos(1, 0), wantUnnamed: "bcd"},
+			{name: "d4|", content: "abcdef", keys: "d4|", wantContent: "def", wantCursor: pos(0, 0), wantUnnamed: "abc"},
+			{name: "dl on an empty buffer", content: "", keys: "dl", wantContent: "", wantCursor: pos(0, 0)},
+			{name: "dl past the line end", content: "abc", at: term.Coordinates{X: 9}, keys: "dl", wantContent: "ab", wantCursor: pos(1, 0), wantUnnamed: "c"},
+			{name: "dl below the last line", content: "abc\ndef", at: term.Coordinates{X: 1, Y: 9}, keys: "dl", wantContent: "abc\ndf", wantCursor: pos(1, 1), wantUnnamed: "e"},
+			{name: "dl on a double-width char", content: "\U0001F600b", keys: "dl", wantContent: "b", wantCursor: pos(0, 0), wantUnnamed: "\U0001F600"},
+			{name: "dl on a tab", content: "\tb", keys: "dl", wantContent: "b", wantCursor: pos(0, 0), wantUnnamed: "\t"},
+			{name: "d99l stops at the line end", content: "abc", at: term.Coordinates{X: 1}, keys: "d99l", wantContent: "a", wantCursor: pos(0, 0), wantUnnamed: "bc"},
+			{name: "dl on the trailing empty line", content: "abc\n", at: term.Coordinates{Y: 1}, keys: "dl", wantContent: "abc\n", wantCursor: pos(0, 1)},
+			{name: "dw on an empty buffer", content: "", keys: "dw", wantContent: "", wantCursor: pos(0, 0)},
+			{name: "dw on the last double-width word", content: "abc 日本", at: term.Coordinates{X: 4}, keys: "dw", wantContent: "abc ", wantCursor: pos(3, 0), wantUnnamed: "日本"},
+			{name: "dw on a double-width word before ascii", content: "日本ab cd", keys: "dw", wantContent: "ab cd", wantCursor: pos(0, 0), wantUnnamed: "日本"},
+			{name: "dw on a word before a tab", content: "abc\tone", keys: "dw", wantContent: "one", wantCursor: pos(0, 0), wantUnnamed: "abc\t"},
+			{name: "dw on the last word after a tab", content: "abc\tone", at: term.Coordinates{X: 4}, keys: "dw", wantContent: "abc\t", wantCursor: pos(3, 0), wantUnnamed: "one"},
+			{name: "dw past the line end", content: "abc one", at: term.Coordinates{X: 99}, keys: "dw", wantContent: "abc on", wantCursor: pos(5, 0), wantUnnamed: "e"},
+			{name: "dw below the last line", content: "abc\none", at: term.Coordinates{Y: 9}, keys: "dw", wantContent: "abc\n", wantCursor: pos(0, 1), wantUnnamed: "one"},
+			{name: "dw on the trailing empty line", content: "abc\n", at: term.Coordinates{Y: 1}, keys: "dw", wantContent: "abc\n", wantCursor: pos(0, 1)},
+			{name: "cw on the last word", content: "abc one", at: term.Coordinates{X: 4}, keys: "cw", wantContent: "abc ", wantCursor: pos(4, 0), wantMode: insertMode, wantUnnamed: "one"},
+			{name: "d2| on an empty buffer", content: "", keys: "d2|", wantContent: "", wantCursor: pos(0, 0)},
+			{name: "d| to column one", content: "abc", at: term.Coordinates{X: 2}, keys: "d|", wantContent: "c", wantCursor: pos(0, 0), wantUnnamed: "ab"},
+			{name: "d9| past the line end", content: "abc", at: term.Coordinates{X: 1}, keys: "d9|", wantContent: "ac", wantCursor: pos(1, 0), wantUnnamed: "b"},
+			{name: "d3| past the cursor", content: "abcdef", at: term.Coordinates{X: 99}, keys: "d3|", wantContent: "abf", wantCursor: pos(2, 0), wantUnnamed: "cde"},
+			{name: "d3| below the last line", content: "x\nabcdef", at: term.Coordinates{X: 5, Y: 9}, keys: "d3|", wantContent: "x\nabf", wantCursor: pos(2, 1), wantUnnamed: "cde"},
+			{name: "d3| over a double-width char", content: "\U0001F600bcd", at: term.Coordinates{X: 3}, keys: "d3|", wantContent: "\U0001F600d", wantCursor: pos(1, 0), wantUnnamed: "bc"},
+			{name: "d4| over a double-width char", content: "\U0001F600bcd", keys: "d4|", wantContent: "cd", wantCursor: pos(0, 0), wantUnnamed: "\U0001F600b"},
+			{name: "d3| over a tab", content: "\tbcd", at: term.Coordinates{X: 3}, keys: "d3|", wantContent: "\td", wantCursor: pos(1, 0), wantUnnamed: "bc"},
+			{name: "d4| onto a tab", content: "ab\tcd", keys: "d4|", wantContent: "\tcd", wantCursor: pos(0, 0), wantUnnamed: "ab"},
+			{name: "y3| onto a tab", content: "ab\tcd", at: term.Coordinates{X: 4}, keys: "y3|", wantContent: "ab\tcd", wantCursor: pos(2, 0), wantUnnamed: "\tc"},
+		}},
+		{name: "exclusive end in column 0", cases: []testCase{
+			{name: "db across lines", content: "foo bar\nbaz", at: term.Coordinates{Y: 1}, keys: "db", wantContent: "foo \nbaz", wantCursor: pos(3, 0), wantUnnamed: "bar"},
+			{name: "dB across lines", content: "foo bar\nbaz", at: term.Coordinates{Y: 1}, keys: "dB", wantContent: "foo \nbaz", wantCursor: pos(3, 0), wantUnnamed: "bar"},
+			{name: "cb across lines", content: "foo bar\nbaz", at: term.Coordinates{Y: 1}, keys: "cb", wantContent: "foo \nbaz", wantCursor: pos(4, 0), wantMode: insertMode, wantUnnamed: "bar"},
+			{name: "yb across lines", content: "foo bar\nbaz", at: term.Coordinates{Y: 1}, keys: "yb", wantContent: "foo bar\nbaz", wantCursor: pos(4, 0), wantUnnamed: "bar"},
+			{name: "db across lines stops at punctuation", content: "foo bar-x\nbaz", at: term.Coordinates{Y: 1}, keys: "db", wantContent: "foo bar-\nbaz", wantCursor: pos(7, 0), wantUnnamed: "x"},
+			{name: "dB across lines spans punctuation", content: "foo bar-x\nbaz", at: term.Coordinates{Y: 1}, keys: "dB", wantContent: "foo \nbaz", wantCursor: pos(3, 0), wantUnnamed: "bar-x"},
+			{name: "db across lines with trailing blanks", content: "foo bar  \nbaz", at: term.Coordinates{Y: 1}, keys: "db", wantContent: "foo \nbaz", wantCursor: pos(3, 0), wantUnnamed: "bar  "},
+			{name: "db across lines from a blank", content: "foo bar\n  baz", at: term.Coordinates{Y: 1}, keys: "db", wantContent: "foo \n  baz", wantCursor: pos(3, 0), wantUnnamed: "bar"},
+			{name: "d3b across lines", content: "a b\nc d\ne", at: term.Coordinates{Y: 2}, keys: "d3b", wantContent: "a \ne", wantCursor: pos(1, 0), wantUnnamed: "b\nc d"},
+			{name: "d backtick to an earlier mark", content: "foo bar\nbaz", at: term.Coordinates{Y: 1}, marks: map[rune]term.Coordinates{'a': {X: 4}}, keys: "d`a", wantContent: "foo \nbaz", wantCursor: pos(3, 0), wantUnnamed: "bar"},
+			{name: "d backtick to a mark in column 0", content: "foo bar\nbaz", at: term.Coordinates{X: 4}, marks: map[rune]term.Coordinates{'a': {Y: 1}}, keys: "d`a", wantContent: "foo \nbaz", wantCursor: pos(3, 0), wantUnnamed: "bar"},
+			{name: "d/ to a match in column 0", content: "foo bar\nbaz", at: term.Coordinates{X: 4}, keys: "d/baz\n", wantContent: "foo \nbaz", wantCursor: pos(3, 0), wantUnnamed: "bar"},
+			{name: "d} to an empty line", content: "a b\nc\n\nd", at: term.Coordinates{X: 2}, keys: "d}", wantContent: "a \n\nd", wantCursor: pos(1, 0), wantUnnamed: "b\nc"},
+			{name: "d{ from mid line", content: "a\n\nb c", at: term.Coordinates{X: 2, Y: 2}, keys: "d{", wantContent: "a\nc", wantCursor: pos(0, 1), wantUnnamed: "\nb "},
+			{name: "db to a double-width word on the previous line", content: "foo \U0001F600\nbaz", at: term.Coordinates{Y: 1}, keys: "db", wantContent: "foo \nbaz", wantCursor: pos(3, 0), wantUnnamed: "\U0001F600"},
+			{name: "db to a cjk word on the previous line", content: "foo 日本\nbaz", at: term.Coordinates{Y: 1}, keys: "db", wantContent: "foo \nbaz", wantCursor: pos(3, 0), wantUnnamed: "日本"},
+			{name: "db over a trailing tab", content: "foo bar\t\nbaz", at: term.Coordinates{Y: 1}, keys: "db", wantContent: "foo \nbaz", wantCursor: pos(3, 0), wantUnnamed: "bar\t"},
+			{name: "db below the last line", content: "foo bar\nbaz", at: term.Coordinates{Y: 9}, keys: "db", wantContent: "foo \nbaz", wantCursor: pos(3, 0), wantUnnamed: "bar"},
+			{name: "db past the line end", content: "foo bar\nbaz", at: term.Coordinates{X: 9, Y: 1}, keys: "db", wantContent: "foo bar\nz", wantCursor: pos(0, 1), wantUnnamed: "ba"},
+			{name: "db past both ends", content: "foo bar\nbaz", at: term.Coordinates{X: 9, Y: 9}, keys: "db", wantContent: "foo bar\nz", wantCursor: pos(0, 1), wantUnnamed: "ba"},
+			{name: "db from the trailing empty line", content: "foo bar\n", at: term.Coordinates{Y: 1}, keys: "db", wantContent: "foo \n", wantCursor: pos(3, 0), wantUnnamed: "bar"},
+			{name: "db at the buffer start", content: "abc", keys: "db", wantContent: "abc", wantCursor: pos(0, 0)},
+			{name: "db on an empty buffer", content: "", keys: "db", wantContent: "", wantCursor: pos(0, 0)},
+			{name: "dB over a double-width WORD", content: "foo a\U0001F600\nbaz", at: term.Coordinates{Y: 1}, keys: "dB", wantContent: "foo \nbaz", wantCursor: pos(3, 0), wantUnnamed: "a\U0001F600"},
+			{name: "d} over a double-width char", content: "a \U0001F600\nc\n\nd", at: term.Coordinates{X: 2}, keys: "d}", wantContent: "a \n\nd", wantCursor: pos(1, 0), wantUnnamed: "\U0001F600\nc"},
+			{name: "d} past the line end", content: "a b\nc\n\nd", at: term.Coordinates{X: 9}, keys: "d}", wantContent: "a \n\nd", wantCursor: pos(1, 0), wantUnnamed: "b\nc"},
+			{name: "d} on an empty buffer", content: "", keys: "d}", wantContent: "", wantCursor: pos(0, 0)},
+			{name: "d} on the last paragraph", content: "a b\nc", at: term.Coordinates{X: 2}, keys: "d}", wantContent: "a ", wantCursor: pos(1, 0), wantUnnamed: "b\nc"},
+			{name: "d{ over a double-width char", content: "a\n\n\U0001F600 c", at: term.Coordinates{X: 2, Y: 2}, keys: "d{", wantContent: "a\nc", wantCursor: pos(0, 1), wantUnnamed: "\n\U0001F600 "},
+			{name: "d{ at the buffer start", content: "a b", keys: "d{", wantContent: "a b", wantCursor: pos(0, 0)},
+			{name: "d/ to a match after a double-width char", content: "foo \U0001F600\nbaz", at: term.Coordinates{X: 4}, keys: "d/baz\n", wantContent: "foo \nbaz", wantCursor: pos(3, 0), wantUnnamed: "\U0001F600"},
+			{name: "d/ without a match", content: "foo bar\nbaz", at: term.Coordinates{X: 4}, keys: "d/zzz\n", wantContent: "foo bar\nbaz", wantCursor: pos(4, 0)},
+			{name: "d/ on an empty buffer", content: "", keys: "d/a\n", wantContent: "", wantCursor: pos(0, 0)},
+			{name: "d/ past the line end", content: "foo bar\nbaz", at: term.Coordinates{X: 99}, keys: "d/baz\n", wantContent: "foo ba\nbaz", wantCursor: pos(5, 0), wantUnnamed: "r"},
+			{name: "d backtick over a double-width char", content: "foo \U0001F600\nbaz", at: term.Coordinates{Y: 1}, marks: map[rune]term.Coordinates{'a': {X: 4}}, keys: "d`a", wantContent: "foo \nbaz", wantCursor: pos(3, 0), wantUnnamed: "\U0001F600"},
+			{name: "d backtick over a tab", content: "foo\tbar\nbaz", at: term.Coordinates{Y: 1}, marks: map[rune]term.Coordinates{'a': {X: 4}}, keys: "d`a", wantContent: "foo\t\nbaz", wantCursor: pos(3, 0), wantUnnamed: "bar"},
+			{name: "d backtick from past the line end", content: "foo bar\nbaz", at: term.Coordinates{X: 9, Y: 1}, marks: map[rune]term.Coordinates{'a': {X: 4}}, keys: "d`a", wantContent: "foo z", wantCursor: pos(4, 0), wantUnnamed: "bar\nba"},
+			{name: "c backtick to a mark in column 0", content: "foo bar\nbaz", at: term.Coordinates{X: 4}, marks: map[rune]term.Coordinates{'a': {Y: 1}}, keys: "c`a", wantContent: "foo \nbaz", wantCursor: pos(4, 0), wantMode: insertMode, wantUnnamed: "bar"},
+			{name: "gU backtick to a mark in column 0", content: "foo bar\nbaz", at: term.Coordinates{X: 4}, marks: map[rune]term.Coordinates{'a': {Y: 1}}, keys: "gU`a", wantContent: "foo BAR\nbaz", wantCursor: pos(4, 0)},
+			{name: "gU/ to a match in column 0", content: "foo bar\nbaz", at: term.Coordinates{X: 4}, keys: "gU/baz\n", wantContent: "foo BAR\nbaz", wantCursor: pos(4, 0)},
+			{name: "y/ to a match in column 0", content: "foo bar\nbaz", at: term.Coordinates{X: 4}, keys: "y/baz\n", wantContent: "foo bar\nbaz", wantCursor: pos(4, 0), wantUnnamed: "bar"},
+		}},
+		{name: "exclusive motion from the indent is linewise", cases: []testCase{
+			{name: "db linewise", content: "foo\nbaz", at: term.Coordinates{Y: 1}, keys: "db", wantContent: "baz", wantCursor: pos(0, 0), wantUnnamed: "foo\n", wantLinewise: true},
+			{name: "dB linewise", content: "foo\nbaz", at: term.Coordinates{Y: 1}, keys: "dB", wantContent: "baz", wantCursor: pos(0, 0), wantUnnamed: "foo\n", wantLinewise: true},
+			{name: "yb linewise", content: "foo\nbaz", at: term.Coordinates{Y: 1}, keys: "yb", wantContent: "foo\nbaz", wantCursor: pos(0, 0), wantUnnamed: "foo\n", wantLinewise: true},
+			{name: "db linewise repeated", content: "foo\nbar\nbaz", at: term.Coordinates{Y: 2}, keys: "db.", wantContent: "baz", wantCursor: pos(0, 0), wantUnnamed: "foo\n", wantLinewise: true},
+			{name: "cb linewise keeps a line to insert into", content: "foo\nbaz", at: term.Coordinates{Y: 1}, keys: "cb", wantContent: "\nbaz", wantCursor: pos(0, 0), wantMode: insertMode, wantUnnamed: "foo\n", wantLinewise: true},
+			{name: "db linewise then p puts the line below", content: "foo\nbaz", at: term.Coordinates{Y: 1}, keys: "dbp", wantContent: "baz\nfoo", wantCursor: pos(0, 1), wantUnnamed: "foo\n", wantLinewise: true},
+			{name: "db charwise then p", content: "foo bar\nbaz", at: term.Coordinates{Y: 1}, keys: "dbp", wantContent: "foo bar\nbaz", wantCursor: pos(6, 0), wantUnnamed: "bar"},
+			{name: "db linewise from indented word", content: "  foo\nbaz", at: term.Coordinates{Y: 1}, keys: "db", wantContent: "baz", wantCursor: pos(0, 0), wantUnnamed: "  foo\n", wantLinewise: true},
+			{name: "db stops at an empty line", content: "foo\n\nbar", at: term.Coordinates{Y: 2}, keys: "db", wantContent: "foo\nbar", wantCursor: pos(0, 1), wantUnnamed: "\n", wantLinewise: true},
+			{name: "d2b over empty lines", content: "foo\n\n\nbar", at: term.Coordinates{Y: 3}, keys: "d2b", wantContent: "foo\nbar", wantCursor: pos(0, 1), wantUnnamed: "\n\n", wantLinewise: true},
+			{name: "db between empty lines", content: "\n\n", at: term.Coordinates{Y: 2}, keys: "db", wantContent: "\n", wantCursor: pos(0, 1), wantUnnamed: "\n", wantLinewise: true},
+			{name: "d2b linewise", content: "a b\nc d\ne", at: term.Coordinates{Y: 2}, keys: "d2b", wantContent: "a b\ne", wantCursor: pos(0, 1), wantUnnamed: "c d\n", wantLinewise: true},
+			{name: ">b shifts only the previous line", content: "foo bar\nbaz", at: term.Coordinates{Y: 1}, keys: ">b", wantContent: "\tfoo bar\nbaz"},
+			{name: "d} linewise", content: "a b\nc\n\nd", keys: "d}", wantContent: "\nd", wantCursor: pos(0, 0), wantUnnamed: "a b\nc\n", wantLinewise: true},
+			{name: "d{ linewise", content: "a\nb\n\nc\nd", at: term.Coordinates{Y: 4}, keys: "d{", wantContent: "a\nb\nd", wantCursor: pos(0, 2), wantUnnamed: "\nc\n", wantLinewise: true},
+			{name: "d/ linewise", content: "foo\nbaz", keys: "d/baz\n", wantContent: "baz", wantCursor: pos(0, 0), wantUnnamed: "foo\n", wantLinewise: true},
+			{name: "d backtick linewise", content: "foo\nbaz", marks: map[rune]term.Coordinates{'a': {Y: 1}}, keys: "d`a", wantContent: "baz", wantCursor: pos(0, 0), wantUnnamed: "foo\n", wantLinewise: true},
+			{name: "db linewise from a tab indent", content: "\tfoo\nbaz", at: term.Coordinates{Y: 1}, keys: "db", wantContent: "baz", wantCursor: pos(0, 0), wantUnnamed: "\tfoo\n", wantLinewise: true},
+			{name: "db linewise from a mixed indent", content: " \t foo\nbaz", at: term.Coordinates{Y: 1}, keys: "db", wantContent: "baz", wantCursor: pos(0, 0), wantUnnamed: " \t foo\n", wantLinewise: true},
+			{name: "db linewise from a double-width word", content: "日本\nbaz", at: term.Coordinates{Y: 1}, keys: "db", wantContent: "baz", wantCursor: pos(0, 0), wantUnnamed: "日本\n", wantLinewise: true},
+			{name: "db linewise below the last line", content: "foo\nbaz", at: term.Coordinates{Y: 9}, keys: "db", wantContent: "baz", wantCursor: pos(0, 0), wantUnnamed: "foo\n", wantLinewise: true},
+			{name: "db linewise from the trailing empty line", content: "foo\n", at: term.Coordinates{Y: 1}, keys: "db", wantContent: "", wantCursor: pos(0, 0), wantUnnamed: "foo\n", wantLinewise: true},
+			{name: "cb linewise keeps a tab indent", content: "\tfoo\nbaz", at: term.Coordinates{Y: 1}, keys: "cb", wantContent: "\t\nbaz", wantCursor: pos(1, 0), wantMode: insertMode, wantUnnamed: "\tfoo\n", wantLinewise: true},
+			{name: "yb linewise from a tab indent", content: "\tfoo\nbaz", at: term.Coordinates{Y: 1}, keys: "yb", wantContent: "\tfoo\nbaz", wantCursor: pos(1, 0), wantUnnamed: "\tfoo\n", wantLinewise: true},
+			{name: "d} linewise from a tab indent", content: "\ta b\nc\n\nd", at: term.Coordinates{X: 1}, keys: "d}", wantContent: "\nd", wantCursor: pos(0, 0), wantUnnamed: "\ta b\nc\n", wantLinewise: true},
+			{name: "d} linewise below the last line", content: "a\n\nb\nc", at: term.Coordinates{Y: 9}, keys: "d}", wantContent: "a\n\nb\n", wantCursor: pos(0, 3), wantUnnamed: "c"},
+			{name: "c} linewise keeps the indent", content: "  a b\nc\n\nd", at: term.Coordinates{X: 2}, keys: "c}", wantContent: "  \n\nd", wantCursor: pos(2, 0), wantMode: insertMode, wantUnnamed: "  a b\nc\n", wantLinewise: true},
+			{name: "y} linewise", content: "a b\nc\n\nd", keys: "y}", wantContent: "a b\nc\n\nd", wantCursor: pos(0, 0), wantUnnamed: "a b\nc\n", wantLinewise: true},
+			{name: "gU} linewise", content: "a b\nc\n\nd", at: term.Coordinates{X: 1}, keys: "gU}", wantContent: "a B\nC\n\nd", wantCursor: pos(1, 0)},
+			{name: "d{ linewise from a double-width line", content: "a\n\n\U0001F600\nd", at: term.Coordinates{Y: 3}, keys: "d{", wantContent: "a\nd", wantCursor: pos(0, 1), wantUnnamed: "\n\U0001F600\n", wantLinewise: true},
+			{name: "d/ linewise from a tab indent", content: "\tfoo\nbaz", at: term.Coordinates{X: 1}, keys: "d/baz\n", wantContent: "baz", wantCursor: pos(0, 0), wantUnnamed: "\tfoo\n", wantLinewise: true},
+			{name: "c/ linewise", content: "foo\nbaz", keys: "c/baz\n", wantContent: "\nbaz", wantCursor: pos(0, 0), wantMode: insertMode, wantUnnamed: "foo\n", wantLinewise: true},
+			{name: "gU/ linewise", content: "foo\nbaz", at: term.Coordinates{X: 1}, keys: "gU/baz\n", wantContent: "fOO\nbaz", wantCursor: pos(1, 0)},
+			{name: "d backtick linewise from a tab indent", content: "\tfoo\nbaz", at: term.Coordinates{X: 1}, marks: map[rune]term.Coordinates{'a': {Y: 1}}, keys: "d`a", wantContent: "baz", wantCursor: pos(0, 0), wantUnnamed: "\tfoo\n", wantLinewise: true},
+			{name: "d backtick linewise from the trailing empty line", content: "foo\n", at: term.Coordinates{Y: 1}, marks: map[rune]term.Coordinates{'a': {}}, keys: "d`a", wantContent: "", wantCursor: pos(0, 0), wantUnnamed: "foo\n", wantLinewise: true},
+			{name: "db linewise past the line end", content: "foo\nb", at: term.Coordinates{X: 9, Y: 1}, keys: "db", wantContent: "b", wantCursor: pos(0, 0), wantUnnamed: "foo\n", wantLinewise: true},
+		}},
+		{name: "word motions", cases: []testCase{
+			{name: "b to the previous line", content: "foo bar\nbaz", at: term.Coordinates{Y: 1}, keys: "b", wantContent: "foo bar\nbaz", wantCursor: pos(4, 0)},
+			{name: "B to the previous line", content: "foo bar\nbaz", at: term.Coordinates{Y: 1}, keys: "B", wantContent: "foo bar\nbaz", wantCursor: pos(4, 0)},
+			{name: "2b to the previous line", content: "foo bar\nbaz qux", at: term.Coordinates{X: 4, Y: 1}, keys: "2b", wantContent: "foo bar\nbaz qux", wantCursor: pos(4, 0)},
+			{name: "3b to the previous line", content: "foo bar\nbaz qux", at: term.Coordinates{X: 4, Y: 1}, keys: "3b", wantContent: "foo bar\nbaz qux", wantCursor: pos(0, 0)},
+			{name: "b stops at an empty line", content: "foo\n\n\nbar", at: term.Coordinates{Y: 3}, keys: "b", wantContent: "foo\n\n\nbar", wantCursor: pos(0, 2)},
+			{name: "2b stops at each empty line", content: "foo\n\n\nbar", at: term.Coordinates{Y: 3}, keys: "2b", wantContent: "foo\n\n\nbar", wantCursor: pos(0, 1)},
+			{name: "B over punctuation to the previous line", content: "foo bar-x\nbaz", at: term.Coordinates{Y: 1}, keys: "B", wantContent: "foo bar-x\nbaz", wantCursor: pos(4, 0)},
+			{name: "dB from an indented word", content: "foo bar-x\n  baz", at: term.Coordinates{X: 2, Y: 1}, keys: "dB", wantContent: "foo baz", wantCursor: pos(4, 0), wantUnnamed: "bar-x\n  "},
+			{name: "db stops after a double-width char", content: "x \U0001F600y z", at: term.Coordinates{X: 5}, keys: "db", wantContent: "x \U0001F600z", wantCursor: pos(3, 0), wantUnnamed: "y "},
+			{name: "b on an empty buffer", content: "", keys: "b", wantContent: "", wantCursor: pos(0, 0)},
+			{name: "b below the last line", content: "foo bar\nbaz", at: term.Coordinates{Y: 9}, keys: "b", wantContent: "foo bar\nbaz", wantCursor: pos(4, 0)},
+			{name: "b past the line end", content: "foo bar", at: term.Coordinates{X: 99}, keys: "b", wantContent: "foo bar", wantCursor: pos(4, 0)},
+			{name: "b from the trailing empty line", content: "foo bar\n", at: term.Coordinates{Y: 1}, keys: "b", wantContent: "foo bar\n", wantCursor: pos(4, 0)},
+			{name: "b over a tab-only line", content: "foo\n\t\nbar", at: term.Coordinates{Y: 2}, keys: "b", wantContent: "foo\n\t\nbar", wantCursor: pos(0, 0)},
+			{name: "b from ascii to cjk", content: "日本abc", at: term.Coordinates{X: 2}, keys: "b", wantContent: "日本abc", wantCursor: pos(0, 0)},
+			{name: "b from cjk to ascii", content: "abc日本", at: term.Coordinates{X: 4}, keys: "b", wantContent: "abc日本", wantCursor: pos(3, 0)},
+			{name: "b over cjk", content: "ab 日本", at: term.Coordinates{X: 4}, keys: "b", wantContent: "ab 日本", wantCursor: pos(3, 0)},
+			{name: "b from emoji to ascii", content: "abc\U0001F600", at: term.Coordinates{X: 3}, keys: "b", wantContent: "abc\U0001F600", wantCursor: pos(0, 0)},
+			{name: "b over a tab", content: "foo\tbar", at: term.Coordinates{X: 4}, keys: "b", wantContent: "foo\tbar", wantCursor: pos(0, 0)},
+			{name: "99b to the buffer start", content: "a b\nc d", at: term.Coordinates{X: 2, Y: 1}, keys: "99b", wantContent: "a b\nc d", wantCursor: pos(0, 0)},
+			{name: "B over a double-width WORD", content: "foo \U0001F600bar", at: term.Coordinates{X: 6}, keys: "B", wantContent: "foo \U0001F600bar", wantCursor: pos(4, 0)},
+			{name: "B across a tab", content: "foo\tbar", at: term.Coordinates{X: 4}, keys: "B", wantContent: "foo\tbar", wantCursor: pos(0, 0)},
+			{name: "B below the last line", content: "foo bar\nbaz", at: term.Coordinates{Y: 9}, keys: "B", wantContent: "foo bar\nbaz", wantCursor: pos(4, 0)},
+			{name: "B on an empty buffer", content: "", keys: "B", wantContent: "", wantCursor: pos(0, 0)},
+			{name: "w from ascii to an emoji", content: "ab\U0001F600cd", keys: "w", wantContent: "ab\U0001F600cd", wantCursor: pos(2, 0)},
+			{name: "w from an emoji to ascii", content: "\U0001F600ab", keys: "w", wantContent: "\U0001F600ab", wantCursor: pos(1, 0)},
+			{name: "w over cjk", content: "日本ab", keys: "w", wantContent: "日本ab", wantCursor: pos(2, 0)},
+			{name: "w over two emoji", content: "\U0001F600\U0001F600a", keys: "w", wantContent: "\U0001F600\U0001F600a", wantCursor: pos(2, 0)},
+			{name: "w on an empty buffer", content: "", keys: "w", wantContent: "", wantCursor: pos(0, 0)},
+			{name: "w past the line end", content: "abc def\nghi", at: term.Coordinates{X: 99}, keys: "w", wantContent: "abc def\nghi", wantCursor: pos(0, 1)},
+			{name: "w below the last line", content: "abc\ndef", at: term.Coordinates{Y: 9}, keys: "w", wantContent: "abc\ndef", wantCursor: pos(2, 1)},
+			{name: "w over a tab", content: "ab\tcd", keys: "w", wantContent: "ab\tcd", wantCursor: pos(3, 0)},
+			{name: "w on the trailing empty line", content: "abc\n", at: term.Coordinates{Y: 1}, keys: "w", wantContent: "abc\n", wantCursor: pos(0, 1)},
+			{name: "yw on a double-width word", content: "日本 ab", keys: "yw", wantContent: "日本 ab", wantCursor: pos(0, 0), wantUnnamed: "日本 "},
+			{name: "cw on a double-width word", content: "日本 ab", keys: "cw", wantContent: " ab", wantCursor: pos(0, 0), wantMode: insertMode, wantUnnamed: "日本"},
+			{name: "W over a double-width WORD", content: "a\U0001F600b cd", keys: "W", wantContent: "a\U0001F600b cd", wantCursor: pos(4, 0)},
+			{name: "e before a trailing line break", content: "ab cd\n", at: term.Coordinates{X: 3}, keys: "e", wantContent: "ab cd\n", wantCursor: pos(4, 0)},
+			{name: "de before a trailing line break", content: "ab cd\n", at: term.Coordinates{X: 3}, keys: "de", wantContent: "ab \n", wantCursor: pos(2, 0), wantUnnamed: "cd"},
+			{name: "E before a trailing line break", content: "ab cd\n", at: term.Coordinates{X: 3}, keys: "E", wantContent: "ab cd\n", wantCursor: pos(4, 0)},
+			{name: "dE before a trailing line break", content: "ab cd\n", at: term.Coordinates{X: 3}, keys: "dE", wantContent: "ab \n", wantCursor: pos(2, 0), wantUnnamed: "cd"},
+			{name: "e at the buffer end", content: "ab cd", at: term.Coordinates{X: 3}, keys: "e", wantContent: "ab cd", wantCursor: pos(4, 0)},
+			{name: "e across a line break", content: "ab\ncd", at: term.Coordinates{X: 1}, keys: "e", wantContent: "ab\ncd", wantCursor: pos(1, 1)},
+			{name: "e over empty lines", content: "ab\n\n\ncd", at: term.Coordinates{X: 1}, keys: "e", wantContent: "ab\n\n\ncd", wantCursor: pos(1, 3)},
+			{name: "ge to an empty line", content: "ab\n\ncd", at: term.Coordinates{Y: 2}, keys: "ge", wantContent: "ab\n\ncd", wantCursor: pos(0, 1)},
+			{name: "ge from an empty line", content: "ab\n\ncd", at: term.Coordinates{Y: 1}, keys: "ge", wantContent: "ab\n\ncd", wantCursor: pos(1, 0)},
+			{name: "ge from the trailing empty line", content: "ab cd\n", at: term.Coordinates{Y: 1}, keys: "ge", wantContent: "ab cd\n", wantCursor: pos(4, 0)},
+			{name: "2ge over empty lines", content: "ab\n\n\ncd", at: term.Coordinates{Y: 3}, keys: "2ge", wantContent: "ab\n\n\ncd", wantCursor: pos(0, 1)},
+			{name: "dge after an empty line", content: "ab\n\ncd", at: term.Coordinates{Y: 2}, keys: "dge", wantContent: "ab\nd", wantCursor: pos(0, 1), wantUnnamed: "\nc"},
+			{name: "gE to an empty line", content: "ab\n\ncd", at: term.Coordinates{Y: 2}, keys: "gE", wantContent: "ab\n\ncd", wantCursor: pos(0, 1)},
+			{name: "gE from an empty line", content: "ab\n\ncd", at: term.Coordinates{Y: 1}, keys: "gE", wantContent: "ab\n\ncd", wantCursor: pos(1, 0)},
+		}},
+		{name: "find motions", cases: []testCase{
+			{name: "df1", content: "x1y", keys: "df1", wantContent: "y", wantCursor: pos(0, 0), wantUnnamed: "x1"},
+			{name: "dt1", content: "x1y", keys: "dt1", wantContent: "1y", wantCursor: pos(0, 0), wantUnnamed: "x"},
+			{name: "yf1", content: "x1y", keys: "yf1", wantContent: "x1y", wantCursor: pos(0, 0), wantUnnamed: "x1"},
+			{name: ">f1", content: "x1y", keys: ">f1", wantContent: "\tx1y"},
+			{name: "dF1", content: "a1bx", at: term.Coordinates{X: 3}, keys: "dF1", wantContent: "ax", wantCursor: pos(1, 0), wantUnnamed: "1b"},
+			{name: "gUf2", content: "x2y", keys: "gUf2", wantContent: "X2y", wantCursor: pos(0, 0)},
+			{name: "df1 without a match", content: "xay", keys: "df1", wantContent: "xay", wantCursor: pos(0, 0)},
+			{name: "df1 on an empty buffer", content: "", keys: "df1", wantContent: "", wantCursor: pos(0, 0)},
+			{name: "df1 after a double-width char", content: "\U0001F6001y", keys: "df1", wantContent: "y", wantCursor: pos(0, 0), wantUnnamed: "\U0001F6001"},
+			{name: "dt1 next to a double-width char", content: "\U0001F6001y", keys: "dt1", wantContent: "1y", wantCursor: pos(0, 0), wantUnnamed: "\U0001F600"},
+			{name: "d2f1", content: "a1b1c", keys: "d2f1", wantContent: "c", wantCursor: pos(0, 0), wantUnnamed: "a1b1"},
+			{name: "2df1", content: "a1b1c", keys: "2df1", wantContent: "c", wantCursor: pos(0, 0), wantUnnamed: "a1b1"},
+			{name: "d; after f1", content: "a1b1c", keys: "f1d;", wantContent: "ac", wantCursor: pos(1, 0), wantUnnamed: "1b1"},
+			{name: "d, after F1", content: "a1b1c", keys: "$F1d,", wantContent: "a1b1c", wantCursor: pos(3, 0)},
+			{name: "dT1 past the line end", content: "a1bx", at: term.Coordinates{X: 9}, keys: "dT1", wantContent: "a1x", wantCursor: pos(2, 0), wantUnnamed: "b"},
+			{name: "dF0", content: "a0bx", at: term.Coordinates{X: 3}, keys: "dF0", wantContent: "ax", wantCursor: pos(1, 0), wantUnnamed: "0b"},
+			{name: "dt0", content: "x0y", keys: "dt0", wantContent: "0y", wantCursor: pos(0, 0), wantUnnamed: "x"},
+			{name: "gUt9 over a tab", content: "x\ty9z", keys: "gUt9", wantContent: "X\tY9z", wantCursor: pos(0, 0)},
+			{name: "yf1 over a tab", content: "x\t1y", keys: "yf1", wantContent: "x\t1y", wantCursor: pos(0, 0), wantUnnamed: "x\t1"},
+			{name: "f without a match", content: "abc", keys: "fz", wantContent: "abc", wantCursor: pos(0, 0)},
+			{name: "2fa", content: "xaya", keys: "2fa", wantContent: "xaya", wantCursor: pos(3, 0)},
+			{name: "3fa with two matches", content: "xaya", keys: "3fa", wantContent: "xaya", wantCursor: pos(0, 0)},
+			{name: "; without another match", content: "xay", keys: "fa;", wantContent: "xay", wantCursor: pos(1, 0)},
+			{name: ", without a match", content: "xay", keys: "fa,", wantContent: "xay", wantCursor: pos(1, 0)},
+			{name: "2; with one more match", content: "xaya", keys: "fa2;", wantContent: "xaya", wantCursor: pos(1, 0)},
+			{name: "; after t skips the adjacent target", content: "xaya", keys: "ta;", wantContent: "xaya", wantCursor: pos(2, 0)},
+			{name: "f to a double-width char", content: "a\U0001F600b", keys: "f\U0001F600", wantContent: "a\U0001F600b", wantCursor: pos(1, 0)},
+			{name: "f to a tab", content: "a\tb", keys: "f\t", wantContent: "a\tb", wantCursor: pos(1, 0)},
+			{name: "Fa past the line end", content: "abca", at: term.Coordinates{X: 9}, keys: "Fa", wantContent: "abca", wantCursor: pos(0, 0)},
+			{name: "fa below the last line", content: "x\nabca", at: term.Coordinates{Y: 9}, keys: "fa", wantContent: "x\nabca", wantCursor: pos(3, 1)},
+			{name: "fa on an empty buffer", content: "", keys: "fa", wantContent: "", wantCursor: pos(0, 0)},
+			{name: "Fa on the trailing empty line", content: "abc\n", at: term.Coordinates{Y: 1}, keys: "Fa", wantContent: "abc\n", wantCursor: pos(0, 1)},
+			{name: "df1 below the last line", content: "x\nab1c", at: term.Coordinates{Y: 9}, keys: "df1", wantContent: "x\nc", wantCursor: pos(0, 1), wantUnnamed: "ab1"},
+			{name: "d2f1 with one match", content: "a1b", keys: "d2f1", wantContent: "a1b", wantCursor: pos(0, 0)},
+			{name: "d; without another match", content: "a1b", keys: "f1d;", wantContent: "a1b", wantCursor: pos(1, 0)},
+		}},
+		{name: "paragraph motions", cases: []testCase{
+			{name: "} on an empty buffer", content: "", keys: "}", wantContent: "", wantCursor: pos(0, 0)},
+			{name: "} on the last paragraph", content: "a b\nc", keys: "}", wantContent: "a b\nc", wantCursor: pos(0, 1)},
+			{name: "} past the line end", content: "abc\n\nd", at: term.Coordinates{X: 9}, keys: "}", wantContent: "abc\n\nd", wantCursor: pos(0, 1)},
+			{name: "} below the last line", content: "a\n\nb\nc", at: term.Coordinates{Y: 9}, keys: "}", wantContent: "a\n\nb\nc", wantCursor: pos(0, 3)},
+			{name: "2} to the buffer end", content: "a\n\nb", keys: "2}", wantContent: "a\n\nb", wantCursor: pos(0, 2)},
+			{name: "3} past the buffer end", content: "a\n\nb", keys: "3}", wantContent: "a\n\nb", wantCursor: pos(0, 0)},
+			{name: "} over a double-width line", content: "\U0001F600\n\nb", keys: "}", wantContent: "\U0001F600\n\nb", wantCursor: pos(0, 1)},
+			{name: "} over a tab-indented paragraph", content: "a\n\tb\n\nc", keys: "}", wantContent: "a\n\tb\n\nc", wantCursor: pos(0, 2)},
+			{name: "{ on an empty buffer", content: "", keys: "{", wantContent: "", wantCursor: pos(0, 0)},
+			{name: "{ past the line end", content: "a\n\nbcd", at: term.Coordinates{X: 9, Y: 2}, keys: "{", wantContent: "a\n\nbcd", wantCursor: pos(0, 1)},
+			{name: "{ below the last line", content: "a\n\nb", at: term.Coordinates{Y: 9}, keys: "{", wantContent: "a\n\nb", wantCursor: pos(0, 1)},
+		}},
+		{name: "sentence motions", cases: []testCase{
+			{name: "d(", content: "One. Two three.", at: term.Coordinates{X: 9}, keys: "d(", wantContent: "One. three.", wantCursor: pos(5, 0), wantUnnamed: "Two "},
+			{name: "d)", content: "One. Two.", keys: "d)", wantContent: "Two.", wantCursor: pos(0, 0), wantUnnamed: "One. "},
+			{name: "d) on an empty buffer", content: "", keys: "d)", wantContent: "", wantCursor: pos(0, 0)},
+			{name: "d( on an empty buffer", content: "", keys: "d(", wantContent: "", wantCursor: pos(0, 0)},
+			{name: "d) after a tab", content: "One.\tTwo.", keys: "d)", wantContent: "Two.", wantCursor: pos(0, 0), wantUnnamed: "One.\t"},
+			{name: "d) after a double-width char", content: "\U0001F600. Two.", keys: "d)", wantContent: "Two.", wantCursor: pos(0, 0), wantUnnamed: "\U0001F600. "},
+			{name: "d) on the last sentence", content: "One. Two.", at: term.Coordinates{X: 5}, keys: "d)", wantContent: "One. ", wantCursor: pos(4, 0), wantUnnamed: "Two."},
+			{name: "d) across lines", content: "One.\nTwo.", keys: "d)", wantContent: "Two.", wantCursor: pos(0, 0), wantUnnamed: "One.\n", wantLinewise: true},
+			{name: "d) to an empty line", content: "One\n\nTwo", keys: "d)", wantContent: "\nTwo", wantCursor: pos(0, 0), wantUnnamed: "One\n", wantLinewise: true},
+			{name: "d) over two blanks", content: "One.  Two.", keys: "d)", wantContent: "Two.", wantCursor: pos(0, 0), wantUnnamed: "One.  "},
+			{name: "d) over closing chars", content: "(One.) Two.", keys: "d)", wantContent: "Two.", wantCursor: pos(0, 0), wantUnnamed: "(One.) "},
+			{name: "d( across lines", content: "One.\nTwo three.", at: term.Coordinates{X: 4, Y: 1}, keys: "d(", wantContent: "One.\nthree.", wantCursor: pos(0, 1), wantUnnamed: "Two "},
+			{name: "d( at the buffer start", content: "One. Two.", keys: "d(", wantContent: "One. Two.", wantCursor: pos(0, 0)},
+			{name: "d( past the line end", content: "One. Two three.", at: term.Coordinates{X: 99}, keys: "d(", wantContent: "One. .", wantCursor: pos(5, 0), wantUnnamed: "Two three"},
+			{name: "d) below the last line", content: "One.\nTwo. Three.", at: term.Coordinates{Y: 9}, keys: "d)", wantContent: "One.\nThree.", wantCursor: pos(0, 1), wantUnnamed: "Two. "},
+			{name: ") from the trailing empty line", content: "One.\n", at: term.Coordinates{Y: 1}, keys: ")", wantContent: "One.\n", wantCursor: pos(0, 1)},
+			{name: "( from the trailing empty line", content: "One. Two.\n", at: term.Coordinates{Y: 1}, keys: "(", wantContent: "One. Two.\n", wantCursor: pos(5, 0)},
+			{name: "2) over two sentences", content: "One. Two. Three.", keys: "2)", wantContent: "One. Two. Three.", wantCursor: pos(10, 0)},
+			{name: "2( over two sentences", content: "One. Two. Three.", at: term.Coordinates{X: 12}, keys: "2(", wantContent: "One. Two. Three.", wantCursor: pos(5, 0)},
+			{name: ") over empty lines", content: "One\n\n\nTwo", at: term.Coordinates{Y: 1}, keys: ")", wantContent: "One\n\n\nTwo", wantCursor: pos(0, 3)},
+			{name: "( over empty lines", content: "One\n\n\nTwo", at: term.Coordinates{Y: 2}, keys: "(", wantContent: "One\n\n\nTwo", wantCursor: pos(0, 0)},
+			{name: ") to an indented line", content: "One\n\n  Two", at: term.Coordinates{Y: 1}, keys: ")", wantContent: "One\n\n  Two", wantCursor: pos(2, 2)},
+			{name: "( after a sentence end", content: "A. One.\n\n\nX", at: term.Coordinates{Y: 2}, keys: "(", wantContent: "A. One.\n\n\nX", wantCursor: pos(3, 0)},
+			{name: "d) over empty lines", content: "One\n\n\nTwo", at: term.Coordinates{Y: 1}, keys: "d)", wantContent: "One\nTwo", wantCursor: pos(0, 1), wantUnnamed: "\n\n", wantLinewise: true},
+			{name: "d( over empty lines", content: "One\n\n\nTwo", at: term.Coordinates{Y: 2}, keys: "d(", wantContent: "\nTwo", wantCursor: pos(0, 0), wantUnnamed: "One\n\n", wantLinewise: true},
+		}},
+		{name: "case change", cases: []testCase{
+			{name: "gU keeps the unnamed register", content: "abc one", keys: "ywwgUe0P", wantContent: "abc abc ONE", wantCursor: pos(3, 0), wantUnnamed: "abc "},
+			{name: "gUe leaves the cursor at the start", content: "one two", keys: "gUe", wantContent: "ONE two", wantCursor: pos(0, 0)},
+			{name: "gUw leaves the cursor at the start", content: "one two", keys: "gUw", wantContent: "ONE two", wantCursor: pos(0, 0)},
+			{name: "gUfy leaves the cursor at the start", content: "xayc", keys: "gUfy", wantContent: "XAYc", wantCursor: pos(0, 0)},
+			{name: "gUfU leaves the cursor at the start", content: "xUy", keys: "gUfU", wantContent: "XUy", wantCursor: pos(0, 0)},
+			{name: "gUfb leaves the cursor at the start", content: "xabc", keys: "gUfb", wantContent: "XABc", wantCursor: pos(0, 0)},
+			{name: "gUtb leaves the cursor at the start", content: "xabc", keys: "gUtb", wantContent: "XAbc", wantCursor: pos(0, 0)},
+			{name: "visual U leaves the cursor at the start", content: "ab,de", keys: "vf,U", wantContent: "AB,de", wantCursor: pos(0, 0)},
+			{name: "gUw on an empty buffer", content: "", keys: "yygUw", wantContent: "", wantCursor: pos(0, 0), wantUnnamed: "\n", wantLinewise: true},
+			{name: "gU0 past the line end", content: "abc def", at: term.Coordinates{X: 99}, keys: "gU0", wantContent: "ABC DEf", wantCursor: pos(0, 0)},
+			{name: "gUFa over double-width chars", content: "a日本bc", at: term.Coordinates{X: 4}, keys: "yygUFa", wantContent: "A日本Bc", wantCursor: pos(0, 0), wantUnnamed: "a日本bc\n", wantLinewise: true},
+			{name: "g~h over a tab", content: "a\tb", at: term.Coordinates{X: 2}, keys: "yyg~h", wantContent: "a\tb", wantCursor: pos(1, 0), wantUnnamed: "a\tb\n", wantLinewise: true},
+			{name: "gub linewise", content: "FOO\nBAZ", at: term.Coordinates{Y: 1}, keys: "yygub", wantContent: "foo\nBAZ", wantCursor: pos(0, 0), wantUnnamed: "BAZ\n", wantLinewise: true},
+			{name: "gUj", content: "ab\ncd\nef", at: term.Coordinates{X: 1}, keys: "yygUj", wantContent: "AB\nCD\nef", wantCursor: pos(1, 0), wantUnnamed: "ab\n", wantLinewise: true},
+			{name: "gUk", content: "ab\ncd\nef", at: term.Coordinates{X: 1, Y: 1}, keys: "yygUk", wantContent: "AB\nCD\nef", wantCursor: pos(1, 0), wantUnnamed: "cd\n", wantLinewise: true},
+			{name: "gUG", content: "ab\ncd", at: term.Coordinates{X: 1}, keys: "yygUG", wantContent: "AB\nCD", wantCursor: pos(1, 0), wantUnnamed: "ab\n", wantLinewise: true},
+			{name: "gUU", content: "ab\ncd", keys: "yylgUU", wantContent: "AB\ncd", wantCursor: pos(0, 0), wantUnnamed: "ab\n", wantLinewise: true},
+			{name: "g~~ on a double-width line", content: "日本ab", keys: "yyllg~~", wantContent: "日本AB", wantCursor: pos(0, 0), wantUnnamed: "日本ab\n", wantLinewise: true},
+			{name: "gUiw", content: "foo bar", at: term.Coordinates{X: 5}, keys: "yyllgUiw", wantContent: "foo BAR", wantCursor: pos(4, 0), wantUnnamed: "foo bar\n", wantLinewise: true},
+			{name: "visual U across lines over tabs", content: "a\tb\nc\td", keys: "yylvjU", wantContent: "a\tB\nC\td", wantCursor: pos(1, 0), wantUnnamed: "a\tb\n", wantLinewise: true},
+			{name: "visual ~ over double-width chars", content: "a日本b", keys: "yylv$~", wantContent: "a日本B", wantCursor: pos(1, 0), wantUnnamed: "a日本b\n", wantLinewise: true},
+			{name: "visual u from the end", content: "ABC", keys: "yy$vhu", wantContent: "Abc", wantCursor: pos(1, 0), wantUnnamed: "ABC\n", wantLinewise: true},
+			{name: "gU/ keeps the register", content: "foo bar\nbaz", keys: "yygU/bar\n", wantContent: "FOO bar\nbaz", wantCursor: pos(0, 0), wantUnnamed: "foo bar\n", wantLinewise: true},
+			{name: "gU backtick keeps the register", content: "foo bar", marks: map[rune]term.Coordinates{'a': {X: 4}}, keys: "yygU`a", wantContent: "FOO bar", wantCursor: pos(0, 0), wantUnnamed: "foo bar\n", wantLinewise: true},
+			{name: "gUe below the last line", content: "ab\ncd ef", at: term.Coordinates{Y: 9}, keys: "gUe", wantContent: "ab\nCD ef", wantCursor: pos(0, 1)},
+			{name: "guu past the line end", content: "ABC", at: term.Coordinates{X: 99}, keys: "guu", wantContent: "abc", wantCursor: pos(0, 0)},
+			{name: "guu below the last line", content: "A\nBC", at: term.Coordinates{Y: 9}, keys: "guu", wantContent: "A\nbc", wantCursor: pos(0, 1)},
+			{name: "guu on an empty buffer", content: "", keys: "guu", wantContent: "", wantCursor: pos(0, 0)},
+			{name: "g~~ over a tab", content: "\tab", at: term.Coordinates{X: 2}, keys: "g~~", wantContent: "\tAB", wantCursor: pos(1, 0)},
+			{name: "guu from before the indent", content: "\tab", keys: "guu", wantContent: "\tab", wantCursor: pos(0, 0)},
+			{name: "gUU from inside the indent", content: "  ab", at: term.Coordinates{X: 1}, keys: "gUU", wantContent: "  AB", wantCursor: pos(1, 0)},
+			{name: "2gUU", content: "ab\n  cd", at: term.Coordinates{X: 1}, keys: "2gUU", wantContent: "AB\n  CD", wantCursor: pos(1, 0)},
+			{name: "gUU on a blank line", content: "  ", at: term.Coordinates{X: 1}, keys: "gUU", wantContent: "  ", wantCursor: pos(1, 0)},
+			{name: "3gUU from the last line", content: "ab\ncd", at: term.Coordinates{Y: 1}, keys: "3gUU", wantContent: "ab\ncd", wantCursor: pos(0, 1)},
+			{name: "2guu over a double-width line", content: "日本A\nBC", at: term.Coordinates{X: 1}, keys: "2guu", wantContent: "日本a\nbc", wantCursor: pos(1, 0)},
+		}},
+		{name: "black hole register", cases: []testCase{
+			{name: "black hole delete keeps the unnamed register", content: "abc one", keys: "yww\"_dw0P", wantContent: "abc abc ", wantCursor: pos(3, 0), wantUnnamed: "abc "},
+			{name: "\"_dd keeps the unnamed register", content: "ab\ncd", keys: "yl\"_ddp", wantContent: "cad", wantCursor: pos(1, 0), wantUnnamed: "a"},
+			{name: "\"_x keeps the unnamed register", content: "ab", keys: "yl\"_xp", wantContent: "ba", wantCursor: pos(1, 0), wantUnnamed: "a"},
+			{name: "\"_dw keeps the unnamed register", content: "ab cd", keys: "yl\"_dw", wantContent: "cd", wantCursor: pos(0, 0), wantUnnamed: "a"},
+			{name: "\"_db linewise keeps the unnamed register", content: "ab\ncd", at: term.Coordinates{Y: 1}, keys: "yl\"_dbp", wantContent: "ccd", wantCursor: pos(1, 0), wantUnnamed: "c"},
+			{name: "\"_d} keeps the unnamed register", content: "ab\ncd\n\nef", keys: "yl\"_d}", wantContent: "\nef", wantCursor: pos(0, 0), wantUnnamed: "a"},
+			{name: "\"_cw keeps the unnamed register", content: "ab cd", keys: "yl\"_cw", wantContent: " cd", wantCursor: pos(0, 0), wantMode: insertMode, wantUnnamed: "a"},
+			{name: "\"_d/ keeps the unnamed register", content: "ab cd", keys: "yl\"_d/cd\n", wantContent: "cd", wantCursor: pos(0, 0), wantUnnamed: "a"},
+			{name: "\"_d backtick keeps the unnamed register", content: "ab cd", marks: map[rune]term.Coordinates{'a': {X: 3}}, keys: "yl\"_d`a", wantContent: "cd", wantCursor: pos(0, 0), wantUnnamed: "a"},
+			{name: "visual \"_d keeps the unnamed register", content: "ab cd", keys: "yllvl\"_d", wantContent: "acd", wantCursor: pos(1, 0), wantUnnamed: "a"},
+			{name: "\"_dd on an empty buffer", content: "", keys: "\"_dd", wantContent: "", wantCursor: pos(0, 0)},
+			{name: "\"_x on a double-width char", content: "\U0001F600b", keys: "yl\"_x", wantContent: "b", wantCursor: pos(0, 0), wantUnnamed: "\U0001F600"},
+			{name: "\"_dd below the last line", content: "ab\ncd", at: term.Coordinates{Y: 9}, keys: "yl\"_dd", wantContent: "ab", wantCursor: pos(0, 0), wantUnnamed: "c"},
+			{name: "\"_x past the line end", content: "abc", at: term.Coordinates{X: 9}, keys: "yl\"_x", wantContent: "ab", wantCursor: pos(1, 0), wantUnnamed: "c"},
+			{name: "\"_x on a tab", content: "\tb", keys: "yl\"_x", wantContent: "b", wantCursor: pos(0, 0), wantUnnamed: "\t"},
+			{name: "\"_dw over cjk", content: "日本 ab", keys: "yl\"_dw", wantContent: "ab", wantCursor: pos(0, 0), wantUnnamed: "日"},
+		}},
+		{name: "put", cases: []testCase{
+			{name: "charwise p leaves the cursor on the last pasted char", content: "one two three", at: term.Coordinates{X: 8}, keys: "dbp", wantContent: "one ttwo hree", wantCursor: pos(8, 0), wantUnnamed: "two "},
+			{name: "p a double-width char", content: "\U0001F600b", keys: "ylp", wantContent: "\U0001F600\U0001F600b", wantCursor: pos(1, 0), wantUnnamed: "\U0001F600"},
+			{name: "P a double-width char", content: "\U0001F600b", keys: "ylP", wantContent: "\U0001F600\U0001F600b", wantCursor: pos(0, 0), wantUnnamed: "\U0001F600"},
+			{name: "p a tab", content: "\tb", keys: "ylp", wantContent: "\t\tb", wantCursor: pos(1, 0), wantUnnamed: "\t"},
+			{name: "3p charwise", content: "ab", keys: "yl3p", wantContent: "aaaab", wantCursor: pos(3, 0), wantUnnamed: "a"},
+			{name: "3P charwise", content: "ab", keys: "yl3P", wantContent: "aaaab", wantCursor: pos(2, 0), wantUnnamed: "a"},
+			{name: "p charwise multi-line", content: "ab\ncd", keys: "vjyp", wantContent: "aab\ncb\ncd", wantCursor: pos(1, 0), wantUnnamed: "ab\nc"},
+			{name: "P charwise multi-line", content: "ab\ncd", keys: "vjyP", wantContent: "ab\ncab\ncd", wantCursor: pos(0, 0), wantUnnamed: "ab\nc"},
+			{name: "p charwise on an empty line", content: "ab\n\ncd", keys: "yljp", wantContent: "ab\na\ncd", wantCursor: pos(0, 1), wantUnnamed: "a"},
+			{name: "p charwise past the line end", content: "abc", at: term.Coordinates{X: 99}, keys: "yhp", wantContent: "abbc", wantCursor: pos(2, 0), wantUnnamed: "b"},
+			{name: "p linewise on the last line", content: "ab\ncd", keys: "yyjp", wantContent: "ab\ncd\nab", wantCursor: pos(0, 2), wantUnnamed: "ab\n", wantLinewise: true},
+			{name: "P linewise on the first line", content: "ab\ncd", keys: "jyykP", wantContent: "cd\nab\ncd", wantCursor: pos(0, 0), wantUnnamed: "cd\n", wantLinewise: true},
+			{name: "2p linewise on the last line", content: "ab\ncd", keys: "yyj2p", wantContent: "ab\ncd\nab\nab", wantCursor: pos(0, 2), wantUnnamed: "ab\n", wantLinewise: true},
+			{name: "p linewise below the last line", content: "ab\ncd", at: term.Coordinates{Y: 9}, keys: "yyGp", wantContent: "ab\ncd\ncd", wantCursor: pos(0, 2), wantUnnamed: "cd\n", wantLinewise: true},
+			{name: "p on an empty buffer", content: "", keys: "p", wantContent: "", wantCursor: pos(0, 0)},
+			{name: "p linewise indented", content: "  ab\ncd", keys: "yyjp", wantContent: "  ab\ncd\n  ab", wantCursor: pos(2, 2), wantUnnamed: "  ab\n", wantLinewise: true},
+			{name: "P linewise indented", content: "  ab\ncd", keys: "yyjP", wantContent: "  ab\n  ab\ncd", wantCursor: pos(2, 1), wantUnnamed: "  ab\n", wantLinewise: true},
+			{name: "2P linewise", content: "ab\ncd", keys: "yyj2P", wantContent: "ab\nab\nab\ncd", wantCursor: pos(0, 1), wantUnnamed: "ab\n", wantLinewise: true},
+			{name: "visual p multi-line", content: "ab\ncd\nef", keys: "vjyjjvp", wantContent: "ab\ncd\nab\ncf", wantCursor: pos(0, 2), wantUnnamed: "e"},
+			{name: "D on an empty line", content: "ab\n\ncd", at: term.Coordinates{Y: 1}, keys: "D", wantContent: "ab\n\ncd", wantCursor: pos(0, 1)},
+			{name: "P below the last line", content: "ab\ncd", at: term.Coordinates{Y: 9}, keys: "ylP", wantContent: "ab\nccd", wantCursor: pos(0, 1), wantUnnamed: "c"},
+			{name: "p onto a tab", content: "a\tb", at: term.Coordinates{X: 1}, keys: "ylp", wantContent: "a\t\tb", wantCursor: pos(2, 0), wantUnnamed: "\t"},
+			{name: "p a cjk char", content: "日本", keys: "ylp", wantContent: "日日本", wantCursor: pos(1, 0), wantUnnamed: "日"},
+			{name: "3p linewise", content: "ab", keys: "yy3p", wantContent: "ab\nab\nab\nab", wantCursor: pos(0, 1), wantUnnamed: "ab\n", wantLinewise: true},
+			{name: "p linewise on an empty buffer", content: "", keys: "yyp", wantContent: "\n", wantCursor: pos(0, 1), wantUnnamed: "\n", wantLinewise: true},
+			{name: "p an empty line after the last line", content: "ab\n\ncd", keys: "jyyGp", wantContent: "ab\n\ncd\n", wantCursor: pos(0, 3), wantUnnamed: "\n", wantLinewise: true},
+			{name: "yyp on a single unterminated line", content: "ab", keys: "yyp", wantContent: "ab\nab", wantCursor: pos(0, 1), wantUnnamed: "ab\n", wantLinewise: true},
+		}},
+		{name: "visual mode switches", cases: []testCase{
+			{name: "v exits visual mode over double-width chars", content: "\U0001F600b", keys: "vlvx", wantContent: "\U0001F600", wantCursor: pos(0, 0), wantUnnamed: "b"},
+			{name: "V then v switches to charwise", content: "ab\ncd", keys: "Vvd", wantContent: "b\ncd", wantCursor: pos(0, 0), wantUnnamed: "a"},
+			{name: "v then V switches to linewise", content: "ab\ncd", keys: "vVd", wantContent: "cd", wantCursor: pos(0, 0), wantUnnamed: "ab\n", wantLinewise: true},
+			{name: "v then ctrl-v switches to blockwise", content: "ab\ncd", keys: "vlj<c-v>d", wantContent: "\n", wantCursor: pos(0, 0), wantUnnamed: "ab\ncd"},
+			{name: "ctrl-v then v switches to charwise", content: "ab\ncd", keys: "<c-v>ljvd", wantContent: "", wantCursor: pos(0, 0), wantUnnamed: "ab\ncd"},
+			{name: "V then ctrl-v switches to blockwise", content: "ab\ncd", keys: "Vl<c-v>d", wantContent: "\ncd", wantCursor: pos(0, 0), wantUnnamed: "ab"},
+			{name: "vd on an empty buffer", content: "", keys: "vd", wantContent: "", wantCursor: pos(0, 0)},
+			{name: "Vd on an empty buffer", content: "", keys: "Vd", wantContent: "", wantCursor: pos(0, 0), wantUnnamed: "\n", wantLinewise: true},
+			{name: "vd past the line end", content: "abc", at: term.Coordinates{X: 9}, keys: "vd", wantContent: "ab", wantCursor: pos(1, 0), wantUnnamed: "c"},
+			{name: "Vd below the last line", content: "ab\ncd", at: term.Coordinates{Y: 9}, keys: "Vd", wantContent: "ab", wantCursor: pos(0, 0), wantUnnamed: "cd\n", wantLinewise: true},
+			{name: "vf to a double-width char", content: "a\U0001F600b", keys: "vf\U0001F600d", wantContent: "b", wantCursor: pos(0, 0), wantUnnamed: "a\U0001F600"},
+			{name: "vt to a tab", content: "ab\tc", keys: "vt\td", wantContent: "\tc", wantCursor: pos(0, 0), wantUnnamed: "ab"},
+			{name: "vf1", content: "a1b", keys: "vf1d", wantContent: "b", wantCursor: pos(0, 0), wantUnnamed: "a1"},
+			{name: "vF to a double-width char", content: "a\U0001F600bc", at: term.Coordinates{X: 3}, keys: "vF\U0001F600d", wantContent: "a", wantCursor: pos(0, 0), wantUnnamed: "\U0001F600bc"},
+		}},
+		{name: "empty lines", cases: []testCase{
+			{name: "dd an empty line", content: "a\n\nb", at: term.Coordinates{Y: 1}, keys: "dd", wantContent: "a\nb", wantCursor: pos(0, 1), wantUnnamed: "\n", wantLinewise: true},
+			{name: "dd the trailing empty line", content: "abc\n", at: term.Coordinates{Y: 1}, keys: "dd", wantContent: "abc", wantCursor: pos(0, 0), wantUnnamed: "\n", wantLinewise: true},
+			{name: "dd an empty buffer", content: "", keys: "dd", wantContent: "", wantCursor: pos(0, 0), wantUnnamed: "\n", wantLinewise: true},
+			{name: "dd a tab-only line", content: "a\n\t\nb", at: term.Coordinates{Y: 1}, keys: "dd", wantContent: "a\nb", wantCursor: pos(0, 1), wantUnnamed: "\t\n", wantLinewise: true},
+			{name: "x on an empty line", content: "a\n\nb", keys: "ylj\"_x", wantContent: "a\n\nb", wantCursor: pos(0, 1), wantUnnamed: "a"},
+			{name: "dj over empty lines", content: "\n\nb", keys: "dj", wantContent: "b", wantCursor: pos(0, 0), wantUnnamed: "\n\n", wantLinewise: true},
+		}},
+		{name: "linewise delete and yank", cases: []testCase{
+			{name: "dd the last line", content: "ab\ncd", at: term.Coordinates{X: 1, Y: 1}, keys: "dd", wantContent: "ab", wantCursor: pos(0, 0), wantUnnamed: "cd\n", wantLinewise: true},
+			{name: "dd the last line under an indented one", content: "  ab\ncd", at: term.Coordinates{Y: 1}, keys: "dd", wantContent: "  ab", wantCursor: pos(2, 0), wantUnnamed: "cd\n", wantLinewise: true},
+			{name: "dd a middle line before an indented one", content: "ab\ncd\n  ef", at: term.Coordinates{Y: 1}, keys: "dd", wantContent: "ab\n  ef", wantCursor: pos(2, 1), wantUnnamed: "cd\n", wantLinewise: true},
+			{name: "dd the only line", content: "ab", at: term.Coordinates{X: 1}, keys: "dd", wantContent: "", wantCursor: pos(0, 0), wantUnnamed: "ab\n", wantLinewise: true},
+			{name: "dk the last two lines", content: "ab\n  cd\nef", at: term.Coordinates{Y: 2}, keys: "dk", wantContent: "ab", wantCursor: pos(0, 0), wantUnnamed: "  cd\nef\n", wantLinewise: true},
+			{name: "Vd the last line", content: "ab\ncd", at: term.Coordinates{Y: 1}, keys: "Vd", wantContent: "ab", wantCursor: pos(0, 0), wantUnnamed: "cd\n", wantLinewise: true},
+			{name: "db linewise on the last line", content: "  foo\nbaz", at: term.Coordinates{Y: 1}, keys: "db", wantContent: "baz", wantCursor: pos(0, 0), wantUnnamed: "  foo\n", wantLinewise: true},
+			{name: "d'a on the same line", content: "ab\n  cd", at: term.Coordinates{X: 3, Y: 1}, marks: map[rune]term.Coordinates{'a': {X: 2, Y: 1}}, keys: "d'a", wantContent: "ab", wantCursor: pos(0, 0), wantUnnamed: "  cd\n", wantLinewise: true},
+			{name: "2dd", content: "0000\n1111\n2222\n3333\n4444\n5555\n", at: term.Coordinates{Y: 2}, keys: "2dd", wantContent: "0000\n1111\n4444\n5555\n", wantCursor: pos(0, 2), wantUnnamed: "2222\n3333\n", wantLinewise: true},
+			{name: "3dd from the second to last line", content: "a\nb\nc\nd", at: term.Coordinates{Y: 2}, keys: "3dd", wantContent: "a\nb", wantCursor: pos(0, 1), wantUnnamed: "c\nd\n", wantLinewise: true},
+			{name: "3dd from the last line", content: "a\nb\nc\nd", at: term.Coordinates{Y: 3}, keys: "3dd", wantContent: "a\nb\nc\nd", wantCursor: pos(0, 3)},
+			{name: "d2d", content: "a\n  b\nc\nd", keys: "d2d", wantContent: "c\nd", wantCursor: pos(0, 0), wantUnnamed: "a\n  b\n", wantLinewise: true},
+			{name: "dd below the last line", content: "ab\n  cd", at: term.Coordinates{Y: 9}, keys: "dd", wantContent: "ab", wantCursor: pos(0, 0), wantUnnamed: "  cd\n", wantLinewise: true},
+			{name: "dd past the line end", content: "ab\n  cd\nef", at: term.Coordinates{X: 99}, keys: "dd", wantContent: "  cd\nef", wantCursor: pos(2, 0), wantUnnamed: "ab\n", wantLinewise: true},
+			{name: "dd before a tab-indented line", content: "ab\n\tcd", keys: "dd", wantContent: "\tcd", wantCursor: pos(1, 0), wantUnnamed: "ab\n", wantLinewise: true},
+			{name: "dd before a double-width line", content: "ab\n日本", keys: "dd", wantContent: "日本", wantCursor: pos(0, 0), wantUnnamed: "ab\n", wantLinewise: true},
+			{name: "dd on a double-width line", content: "日本\nab", at: term.Coordinates{X: 1}, keys: "dd", wantContent: "ab", wantCursor: pos(0, 0), wantUnnamed: "日本\n", wantLinewise: true},
+			{name: "3yy from the last line", content: "a\nb\nc", at: term.Coordinates{Y: 2}, keys: "3yy", wantContent: "a\nb\nc", wantCursor: pos(0, 2)},
+			{name: "3yy from the second to last line", content: "a\nb\nc", at: term.Coordinates{Y: 1}, keys: "3yy", wantContent: "a\nb\nc", wantCursor: pos(0, 1), wantUnnamed: "b\nc\n", wantLinewise: true},
+			{name: "2yy below the last line", content: "a\nb", at: term.Coordinates{Y: 9}, keys: "2yy", wantContent: "a\nb", wantCursor: pos(0, 1)},
+		}},
+		{name: "linewise change", cases: []testCase{
+			{name: "cj", content: "ab\n  cd\nef", at: term.Coordinates{X: 1}, keys: "cj", wantContent: "\nef", wantCursor: pos(0, 0), wantMode: insertMode, wantUnnamed: "ab\n  cd\n", wantLinewise: true},
+			{name: "ck from an indented line", content: "ab\n  cd\nef", at: term.Coordinates{X: 2, Y: 1}, keys: "ck", wantContent: "\nef", wantCursor: pos(0, 0), wantMode: insertMode, wantUnnamed: "ab\n  cd\n", wantLinewise: true},
+			{name: "cG", content: "  ab\ncd", keys: "cG", wantContent: "  ", wantCursor: pos(2, 0), wantMode: insertMode, wantUnnamed: "  ab\ncd\n", wantLinewise: true},
+			// Rune indents the new line itself, like Vim without autoindent.
+			{name: "cc on an indented line", content: "\tab\ncd", at: term.Coordinates{X: 2}, keys: "cc", wantContent: "\ncd", wantCursor: pos(0, 0), wantMode: insertMode, wantUnnamed: "\tab\n", wantLinewise: true},
+			{name: "cc on an empty line", content: "ab\n\ncd", at: term.Coordinates{Y: 1}, keys: "cc", wantContent: "ab\n\ncd", wantCursor: pos(0, 1), wantMode: insertMode, wantUnnamed: "\n", wantLinewise: true},
+			// Rune indents the new line itself, like Vim without autoindent.
+			{name: "S on an indented line", content: "  ab\ncd", at: term.Coordinates{X: 3}, keys: "S", wantContent: "\ncd", wantCursor: pos(0, 0), wantMode: insertMode, wantUnnamed: "  ab\n", wantLinewise: true},
+			{name: "c quote a", content: "ab\n cd\nef", marks: map[rune]term.Coordinates{'a': {Y: 1}}, keys: "c'a", wantContent: "\nef", wantCursor: pos(0, 0), wantMode: insertMode, wantUnnamed: "ab\n cd\n", wantLinewise: true},
+			{name: "cc below the last line", content: "ab\ncd", at: term.Coordinates{Y: 9}, keys: "cc", wantContent: "ab\n", wantCursor: pos(0, 1), wantMode: insertMode, wantUnnamed: "cd\n", wantLinewise: true},
+			{name: "cc past the line end", content: "ab\ncd", at: term.Coordinates{X: 99}, keys: "cc", wantContent: "\ncd", wantCursor: pos(0, 0), wantMode: insertMode, wantUnnamed: "ab\n", wantLinewise: true},
+			{name: "cc on an empty buffer", content: "", keys: "cc", wantContent: "", wantCursor: pos(0, 0), wantMode: insertMode, wantUnnamed: "\n", wantLinewise: true},
+			{name: "cc on a double-width line", content: "日本a\nb", at: term.Coordinates{X: 1}, keys: "cc", wantContent: "\nb", wantCursor: pos(0, 0), wantMode: insertMode, wantUnnamed: "日本a\n", wantLinewise: true},
+			{name: "S below the last line", content: "ab\ncd", at: term.Coordinates{Y: 9}, keys: "S", wantContent: "ab\n", wantCursor: pos(0, 1), wantMode: insertMode, wantUnnamed: "cd\n", wantLinewise: true},
+			{name: "cj from the last line", content: "ab\ncd", at: term.Coordinates{Y: 1}, keys: "cj", wantContent: "ab\ncd", wantCursor: pos(0, 1)},
+			{name: "cj over a double-width line", content: "日本\nab\ncd", keys: "cj", wantContent: "\ncd", wantCursor: pos(0, 0), wantMode: insertMode, wantUnnamed: "日本\nab\n", wantLinewise: true},
+			{name: "cj over a tab", content: "a\tb\ncd\nef", keys: "cj", wantContent: "\nef", wantCursor: pos(0, 0), wantMode: insertMode, wantUnnamed: "a\tb\ncd\n", wantLinewise: true},
+		}},
+		{name: "single-key deletes", cases: []testCase{
+			{name: "\"_x keeps the unnamed register", content: "abc", keys: "yl\"_x", wantContent: "bc", wantCursor: pos(0, 0), wantUnnamed: "a"},
+			{name: "\"ax fills register a", content: "abc", keys: "\"axl\"ap", wantContent: "bca", wantCursor: pos(2, 0), wantUnnamed: "a"},
+			{name: "3x", content: "abcd", keys: "3x", wantContent: "d", wantCursor: pos(0, 0), wantUnnamed: "abc"},
+			{name: "9x stops at the line end", content: "abcd", at: term.Coordinates{X: 2}, keys: "9x", wantContent: "ab", wantCursor: pos(1, 0), wantUnnamed: "cd"},
+			{name: "x on a double-width char", content: "\U0001F600b", keys: "x", wantContent: "b", wantCursor: pos(0, 0), wantUnnamed: "\U0001F600"},
+			{name: "x on an empty buffer", content: "", keys: "x", wantContent: "", wantCursor: pos(0, 0)},
+			{name: "x past the line end", content: "abc", at: term.Coordinates{X: 9}, keys: "x", wantContent: "ab", wantCursor: pos(1, 0), wantUnnamed: "c"},
+			{name: "\"_X keeps the unnamed register", content: "abc", keys: "yl$\"_X", wantContent: "ac", wantCursor: pos(1, 0), wantUnnamed: "a"},
+			{name: "3X", content: "abcd", at: term.Coordinates{X: 3}, keys: "3X", wantContent: "d", wantCursor: pos(0, 0), wantUnnamed: "abc"},
+			{name: "\"_D keeps the unnamed register", content: "abc", keys: "yll\"_D", wantContent: "a", wantCursor: pos(0, 0), wantUnnamed: "a"},
+			{name: "\"_C keeps the unnamed register", content: "abc", keys: "yll\"_C", wantContent: "a", wantCursor: pos(1, 0), wantMode: insertMode, wantUnnamed: "a"},
+			{name: "\"_s keeps the unnamed register", content: "abc", keys: "yll\"_s", wantContent: "ac", wantCursor: pos(1, 0), wantMode: insertMode, wantUnnamed: "a"},
+			{name: "\"_S keeps the unnamed register", content: "abc\nd", keys: "yll\"_S", wantContent: "\nd", wantCursor: pos(0, 0), wantMode: insertMode, wantUnnamed: "a"},
+			{name: "D past the line end", content: "abc", at: term.Coordinates{X: 9}, keys: "D", wantContent: "ab", wantCursor: pos(1, 0), wantUnnamed: "c"},
+			{name: "D on a double-width char", content: "a\U0001F600b", at: term.Coordinates{X: 1}, keys: "D", wantContent: "a", wantCursor: pos(0, 0), wantUnnamed: "\U0001F600b"},
+			{name: "C register", content: "abc", keys: "lC", wantContent: "a", wantCursor: pos(1, 0), wantMode: insertMode, wantUnnamed: "bc"},
+			{name: "s register", content: "abc", keys: "ls", wantContent: "ac", wantCursor: pos(1, 0), wantMode: insertMode, wantUnnamed: "b"},
+			{name: "x on a tab", content: "a\tb", at: term.Coordinates{X: 1}, keys: "x", wantContent: "ab", wantCursor: pos(1, 0), wantUnnamed: "\t"},
+			{name: "x below the last line", content: "ab\ncd", at: term.Coordinates{X: 1, Y: 9}, keys: "x", wantContent: "ab\nc", wantCursor: pos(0, 1), wantUnnamed: "d"},
+			{name: "3x over a double-width char", content: "a\U0001F600bc", keys: "3x", wantContent: "c", wantCursor: pos(0, 0), wantUnnamed: "a\U0001F600b"},
+			{name: "X on a double-width char", content: "a\U0001F600b", at: term.Coordinates{X: 2}, keys: "X", wantContent: "ab", wantCursor: pos(1, 0), wantUnnamed: "\U0001F600"},
+			{name: "X past the line end", content: "abc", at: term.Coordinates{X: 9}, keys: "X", wantContent: "ac", wantCursor: pos(1, 0), wantUnnamed: "b"},
+			{name: "X below the last line", content: "ab\ncd", at: term.Coordinates{X: 1, Y: 9}, keys: "X", wantContent: "ab\nd", wantCursor: pos(0, 1), wantUnnamed: "c"},
+			{name: "X on an empty buffer", content: "", keys: "X", wantContent: "", wantCursor: pos(0, 0)},
+			{name: "D below the last line", content: "ab\ncd", at: term.Coordinates{X: 1, Y: 9}, keys: "D", wantContent: "ab\nc", wantCursor: pos(0, 1), wantUnnamed: "d"},
+			{name: "D on an empty buffer", content: "", keys: "D", wantContent: "", wantCursor: pos(0, 0)},
+			{name: "D over a tab", content: "a\tb", at: term.Coordinates{X: 1}, keys: "D", wantContent: "a", wantCursor: pos(0, 0), wantUnnamed: "\tb"},
+			{name: "s on a double-width char", content: "\U0001F600b", keys: "s", wantContent: "b", wantCursor: pos(0, 0), wantMode: insertMode, wantUnnamed: "\U0001F600"},
+			{name: "s on an empty buffer", content: "", keys: "s", wantContent: "", wantCursor: pos(0, 0), wantMode: insertMode},
+			{name: "C past the line end", content: "abc", at: term.Coordinates{X: 9}, keys: "C", wantContent: "ab", wantCursor: pos(2, 0), wantMode: insertMode, wantUnnamed: "c"},
+			{name: "S on an empty buffer", content: "", keys: "S", wantContent: "", wantCursor: pos(0, 0), wantMode: insertMode, wantUnnamed: "\n", wantLinewise: true},
+			{name: "3s past the line end", content: "abc", at: term.Coordinates{X: 1}, keys: "3s", wantContent: "a", wantCursor: pos(1, 0), wantMode: insertMode, wantUnnamed: "bc"},
+		}},
+		{name: "first line motion", cases: []testCase{
+			{name: "dgg", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 1}, keys: "dgg", wantContent: "mno", wantCursor: pos(0, 0), wantUnnamed: "abc def\nghi jkl\n", wantLinewise: true},
+			{name: "d2gg", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 1}, keys: "d2gg", wantContent: "abc def\nmno", wantCursor: pos(0, 1), wantUnnamed: "ghi jkl\n", wantLinewise: true},
+			{name: "d1gg", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 1}, keys: "d1gg", wantContent: "mno", wantCursor: pos(0, 0), wantUnnamed: "abc def\nghi jkl\n", wantLinewise: true},
+			{name: "d3gg", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 1}, keys: "d3gg", wantContent: "abc def", wantCursor: pos(0, 0), wantUnnamed: "ghi jkl\nmno\n", wantLinewise: true},
+			{name: "d9gg past the last line", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 1}, keys: "d9gg", wantContent: "abc def", wantCursor: pos(0, 0), wantUnnamed: "ghi jkl\nmno\n", wantLinewise: true},
+			{name: "cgg", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 1}, keys: "cgg", wantContent: "\nmno", wantCursor: pos(0, 0), wantMode: insertMode, wantUnnamed: "abc def\nghi jkl\n", wantLinewise: true},
+			{name: "cgg keeps the indent", content: "  abc\n\tdef\nxyz", at: term.Coordinates{X: 1, Y: 2}, keys: "cgg", wantContent: "  ", wantCursor: pos(2, 0), wantMode: insertMode, wantUnnamed: "  abc\n\tdef\nxyz\n", wantLinewise: true},
+			{name: "ygg", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 1}, keys: "ygg", wantContent: "abc def\nghi jkl\nmno", wantCursor: pos(5, 0), wantUnnamed: "abc def\nghi jkl\n", wantLinewise: true}, // nostartofline
+			{name: "y2gg", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 1}, keys: "y2gg", wantContent: "abc def\nghi jkl\nmno", wantCursor: pos(0, 1), wantUnnamed: "ghi jkl\n", wantLinewise: true},
+			{name: "ygg over a tab indent", content: "  abc\n\tdef\nxyz", at: term.Coordinates{X: 1, Y: 2}, keys: "ygg", wantContent: "  abc\n\tdef\nxyz", wantCursor: pos(1, 0), wantUnnamed: "  abc\n\tdef\nxyz\n", wantLinewise: true}, // nostartofline
+			{name: "gUgg", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 1}, keys: "gUgg", wantContent: "ABC DEF\nGHI JKL\nmno", wantCursor: pos(5, 0)},                                                                 // nostartofline
+			{name: "gugg", content: "ABC\nDEF\nGHI", at: term.Coordinates{X: 2, Y: 1}, keys: "gugg", wantContent: "abc\ndef\nGHI", wantCursor: pos(2, 0)},                                                                                 // nostartofline
+			{name: "g~gg", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 1}, keys: "g~gg", wantContent: "ABC DEF\nGHI JKL\nmno", wantCursor: pos(5, 0)},                                                                 // nostartofline
+			{name: ">gg", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 1}, keys: ">gg", wantContent: "\tabc def\n\tghi jkl\nmno"},
+			{name: "<gg", content: "\tabc\n\tdef\nxyz", at: term.Coordinates{X: 2, Y: 1}, keys: "\\<gg", wantContent: "abc\ndef\nxyz"},
+			{name: "dgg on the first line", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5}, keys: "dgg", wantContent: "ghi jkl\nmno", wantCursor: pos(0, 0), wantUnnamed: "abc def\n", wantLinewise: true},
+			{name: "dgg on an empty buffer", content: "", keys: "dgg", wantContent: "", wantCursor: pos(0, 0), wantUnnamed: "\n", wantLinewise: true},
+			{name: "dgg past both ends", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 9, Y: 9}, keys: "dgg", wantContent: "", wantCursor: pos(0, 0), wantUnnamed: "abc def\nghi jkl\nmno\n", wantLinewise: true},
+			{name: "dgg over double-width chars and tabs", content: "  abc\n\tdef\n\U0001F600x", at: term.Coordinates{X: 1, Y: 2}, keys: "dgg", wantContent: "", wantCursor: pos(0, 0), wantUnnamed: "  abc\n\tdef\n\U0001F600x\n", wantLinewise: true},
+			{name: "dgg on the trailing empty line", content: "abc\n", at: term.Coordinates{Y: 1}, keys: "dgg", wantContent: "", wantCursor: pos(0, 0), wantUnnamed: "abc\n\n", wantLinewise: true},
+			{name: "dgg repeated", content: "abc\ndef\nghi\njkl", at: term.Coordinates{Y: 1}, keys: "jdgg.", wantContent: "", wantCursor: pos(0, 0), wantUnnamed: "jkl\n", wantLinewise: true},
+		}},
+		{name: "display line motions with wrap", cases: []testCase{
+			{name: "dgj", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 1}, keys: "dgj", wrap: true, wantContent: "abc def\nghi jo", wantCursor: pos(5, 1), wantUnnamed: "kl\nmn"},
+			{name: "dgk", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 1}, keys: "dgk", wrap: true, wantContent: "abc dkl\nmno", wantCursor: pos(5, 0), wantUnnamed: "ef\nghi j"},
+			{name: "ygj", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 1}, keys: "ygj", wrap: true, wantContent: "abc def\nghi jkl\nmno", wantCursor: pos(5, 1), wantUnnamed: "kl\nmn"},
+			{name: "dgj on the last line", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 1, Y: 2}, keys: "dgj", wrap: true, wantContent: "abc def\nghi jkl\nmno", wantCursor: pos(1, 2)},
+			{name: "dgk on the first line", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 1}, keys: "dgk", wrap: true, wantContent: "abc def\nghi jkl\nmno", wantCursor: pos(1, 0)},
+			{name: "dgj into a shorter line", content: "abcdef\nab\ncd", at: term.Coordinates{X: 4}, keys: "dgj", wrap: true, wantContent: "abcdb\ncd", wantCursor: pos(4, 0), wantUnnamed: "ef\na"},
+			{name: "dgj over double-width chars", content: "日本ab\n日本cd", at: term.Coordinates{X: 1}, keys: "dgj", wrap: true, wantContent: "日本cd", wantCursor: pos(1, 0), wantUnnamed: "本ab\n日"},
+			{name: "d2gj past the last line", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 1, Y: 1}, keys: "d2gj", wrap: true, wantContent: "abc def\nghi jkl\nmno", wantCursor: pos(1, 2)},
+		}},
+		{name: "display line motions without wrap", cases: []testCase{
+			{name: "dgj", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 1}, keys: "dgj", wantContent: "abc def", wantCursor: pos(0, 0), wantUnnamed: "ghi jkl\nmno\n", wantLinewise: true},
+			{name: "dgk", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 1}, keys: "dgk", wantContent: "mno", wantCursor: pos(0, 0), wantUnnamed: "abc def\nghi jkl\n", wantLinewise: true},
+			{name: "ygj", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 1}, keys: "ygj", wantContent: "abc def\nghi jkl\nmno", wantCursor: pos(5, 1), wantUnnamed: "ghi jkl\nmno\n", wantLinewise: true},
+			{name: "dgj on the last line", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 1, Y: 2}, keys: "dgj", wantContent: "abc def\nghi jkl\nmno", wantCursor: pos(1, 2)},
+			{name: "dgk on the first line", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 1}, keys: "dgk", wantContent: "abc def\nghi jkl\nmno", wantCursor: pos(1, 0)},
+			{name: "dgj into a shorter line", content: "abcdef\nab\ncd", at: term.Coordinates{X: 4}, keys: "dgj", wantContent: "cd", wantCursor: pos(0, 0), wantUnnamed: "abcdef\nab\n", wantLinewise: true},
+			{name: "dgj over double-width chars", content: "日本ab\n日本cd", at: term.Coordinates{X: 1}, keys: "dgj", wantContent: "", wantCursor: pos(0, 0), wantUnnamed: "日本ab\n日本cd\n", wantLinewise: true},
+			{name: "d2gj past the last line", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 1, Y: 1}, keys: "d2gj", wantContent: "abc def", wantCursor: pos(0, 0), wantUnnamed: "ghi jkl\nmno\n", wantLinewise: true},
+		}},
+		{name: "next and previous line motions", cases: []testCase{
+			{name: "+", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 1}, keys: "+", wantContent: "abc def\nghi jkl\nmno", wantCursor: pos(0, 2)},
+			{name: "-", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 1}, keys: "-", wantContent: "abc def\nghi jkl\nmno", wantCursor: pos(0, 0)},
+			{name: "_", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 1}, keys: "_", wantContent: "abc def\nghi jkl\nmno", wantCursor: pos(0, 1)},
+			{name: "2+", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5}, keys: "2+", wantContent: "abc def\nghi jkl\nmno", wantCursor: pos(0, 2)},
+			{name: "2-", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 2}, keys: "2-", wantContent: "abc def\nghi jkl\nmno", wantCursor: pos(0, 0)},
+			{name: "3_", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5}, keys: "3_", wantContent: "abc def\nghi jkl\nmno", wantCursor: pos(0, 2)},
+			{name: "9+", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5}, keys: "9+", wantContent: "abc def\nghi jkl\nmno", wantCursor: pos(0, 2)},
+			{name: "9-", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 2}, keys: "9-", wantContent: "abc def\nghi jkl\nmno", wantCursor: pos(0, 0)},
+			{name: "+ on the last line", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 2}, keys: "+", wantContent: "abc def\nghi jkl\nmno", wantCursor: pos(2, 2)},
+			{name: "- on the first line", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5}, keys: "-", wantContent: "abc def\nghi jkl\nmno", wantCursor: pos(5, 0)},
+			{name: "2_ on the last line", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 2}, keys: "2_", wantContent: "abc def\nghi jkl\nmno", wantCursor: pos(2, 2)},
+			{name: "+ to an indented line", content: "  abc\n\tdef\n  \U0001F600x", at: term.Coordinates{X: 4}, keys: "+", wantContent: "  abc\n\tdef\n  \U0001F600x", wantCursor: pos(1, 1)},
+			{name: "2+ to a double-width char", content: "  abc\n\tdef\n  \U0001F600x", at: term.Coordinates{X: 4}, keys: "2+", wantContent: "  abc\n\tdef\n  \U0001F600x", wantCursor: pos(2, 2)},
+			{name: "- to a tab indent", content: "  abc\n\tdef\n  \U0001F600x", at: term.Coordinates{X: 1, Y: 2}, keys: "-", wantContent: "  abc\n\tdef\n  \U0001F600x", wantCursor: pos(1, 1)},
+			{name: "_ on an indented line", content: "  abc\n\tdef", at: term.Coordinates{X: 4}, keys: "_", wantContent: "  abc\n\tdef", wantCursor: pos(2, 0)},
+			{name: "_ on a blank line", content: "   ", keys: "_", wantContent: "   ", wantCursor: pos(2, 0)},
+			{name: "+ to a blank line", content: "a\n   \nb", keys: "+", wantContent: "a\n   \nb", wantCursor: pos(2, 1)},
+			{name: "+ to the trailing empty line", content: "abc\n", keys: "+", wantContent: "abc\n", wantCursor: pos(0, 1)},
+			{name: "+ on an empty buffer", content: "", keys: "+", wantContent: "", wantCursor: pos(0, 0)},
+			{name: "+ below the last line", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 1, Y: 9}, keys: "+", wantContent: "abc def\nghi jkl\nmno", wantCursor: pos(1, 2)},
+			{name: "- below the last line", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 1, Y: 9}, keys: "-", wantContent: "abc def\nghi jkl\nmno", wantCursor: pos(0, 1)},
+			{name: "- past the line end", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 9, Y: 1}, keys: "-", wantContent: "abc def\nghi jkl\nmno", wantCursor: pos(0, 0)},
+			{name: "d+", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 1}, keys: "d+", wantContent: "abc def", wantCursor: pos(0, 0), wantUnnamed: "ghi jkl\nmno\n", wantLinewise: true},
+			{name: "d-", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 1}, keys: "d-", wantContent: "mno", wantCursor: pos(0, 0), wantUnnamed: "abc def\nghi jkl\n", wantLinewise: true},
+			{name: "d_", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 1}, keys: "d_", wantContent: "abc def\nmno", wantCursor: pos(0, 1), wantUnnamed: "ghi jkl\n", wantLinewise: true},
+			{name: "d2_", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 1}, keys: "d2_", wantContent: "abc def", wantCursor: pos(0, 0), wantUnnamed: "ghi jkl\nmno\n", wantLinewise: true},
+			{name: "y+", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 1}, keys: "y+", wantContent: "abc def\nghi jkl\nmno", wantCursor: pos(5, 1), wantUnnamed: "ghi jkl\nmno\n", wantLinewise: true},
+			{name: "c+", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 1}, keys: "c+", wantContent: "abc def\n", wantCursor: pos(0, 1), wantMode: insertMode, wantUnnamed: "ghi jkl\nmno\n", wantLinewise: true},
+			{name: "c_", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 1}, keys: "c_", wantContent: "abc def\n\nmno", wantCursor: pos(0, 1), wantMode: insertMode, wantUnnamed: "ghi jkl\n", wantLinewise: true},
+			{name: "gU_", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 1}, keys: "gU_", wantContent: "abc def\nGHI JKL\nmno", wantCursor: pos(0, 1)},
+			{name: "d+.", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 1}, keys: "d+.", wantContent: "abc def", wantCursor: pos(0, 0), wantUnnamed: "ghi jkl\nmno\n", wantLinewise: true},
+			{name: "v+d", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 1}, keys: "v+d", wantContent: "abc def\nghi jno", wantCursor: pos(5, 1), wantUnnamed: "kl\nm"},
+			{name: "V-d", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 1}, keys: "V-d", wantContent: "mno", wantCursor: pos(0, 0), wantUnnamed: "abc def\nghi jkl\n", wantLinewise: true},
+			{name: "d5+", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 1}, keys: "d5+", wantContent: "abc def", wantCursor: pos(0, 0), wantUnnamed: "ghi jkl\nmno\n", wantLinewise: true},
+			{name: "d5-", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 1}, keys: "d5-", wantContent: "mno", wantCursor: pos(0, 0), wantUnnamed: "abc def\nghi jkl\n", wantLinewise: true},
+			{name: "d9_", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 1}, keys: "d9_", wantContent: "abc def", wantCursor: pos(0, 0), wantUnnamed: "ghi jkl\nmno\n", wantLinewise: true},
+			{name: "d+ on the last line", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 2}, keys: "d+", wantContent: "abc def\nghi jkl\nmno", wantCursor: pos(2, 2)},
+			{name: "d- on the first line", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5}, keys: "d-", wantContent: "abc def\nghi jkl\nmno", wantCursor: pos(5, 0)},
+			{name: "d2_ on the last line", content: "abc def\nghi jkl\nmno", at: term.Coordinates{Y: 2}, keys: "d2_", wantContent: "abc def\nghi jkl\nmno", wantCursor: pos(0, 2)},
+			{name: "d_ on the last line", content: "abc def\nghi jkl\nmno", at: term.Coordinates{Y: 2}, keys: "d_", wantContent: "abc def\nghi jkl", wantCursor: pos(0, 1), wantUnnamed: "mno\n", wantLinewise: true},
+			{name: "d+ on an empty buffer", content: "", keys: "d+", wantContent: "", wantCursor: pos(0, 0)},
+			{name: "d+ to the trailing empty line", content: "abc\n", keys: "d+", wantContent: "", wantCursor: pos(0, 0), wantUnnamed: "abc\n\n", wantLinewise: true},
+			{name: "d_ on the trailing empty line", content: "abc\n\n", at: term.Coordinates{Y: 1}, keys: "d_", wantContent: "abc\n", wantCursor: pos(0, 1), wantUnnamed: "\n", wantLinewise: true},
+			{name: "c_ keeps the indent", content: "\tabc\ndef", at: term.Coordinates{X: 2}, keys: "c_", wantContent: "\t\ndef", wantCursor: pos(1, 0), wantMode: insertMode, wantUnnamed: "\tabc\n", wantLinewise: true},
+			{name: "d- over double-width chars", content: "日本\n\U0001F600x", at: term.Coordinates{X: 1, Y: 1}, keys: "d-", wantContent: "", wantCursor: pos(0, 0), wantUnnamed: "日本\n\U0001F600x\n", wantLinewise: true},
+			{name: ">+", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 1}, keys: ">+", wantContent: "abc def\n\tghi jkl\n\tmno"},
+		}},
+		{name: "linewise jumps to the cursor line", cases: []testCase{
+			{name: "dG on the last line", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 2, Y: 2}, keys: "dG", wantContent: "abc def\nghi jkl", wantCursor: pos(0, 1), wantUnnamed: "mno\n", wantLinewise: true},
+			{name: "dG at the last line start", content: "abc def\nghi jkl\nmno", at: term.Coordinates{Y: 2}, keys: "dG", wantContent: "abc def\nghi jkl", wantCursor: pos(0, 1), wantUnnamed: "mno\n", wantLinewise: true},
+			{name: "d1G at the first line start", content: "abc def\nghi jkl\nmno", keys: "d1G", wantContent: "ghi jkl\nmno", wantCursor: pos(0, 0), wantUnnamed: "abc def\n", wantLinewise: true},
+			{name: "d2G on line 2", content: "abc def\nghi jkl\nmno", at: term.Coordinates{Y: 1}, keys: "d2G", wantContent: "abc def\nmno", wantCursor: pos(0, 1), wantUnnamed: "ghi jkl\n", wantLinewise: true},
+			{name: "yG on the last line", content: "abc def\nghi jkl\nmno", at: term.Coordinates{Y: 2}, keys: "yG", wantContent: "abc def\nghi jkl\nmno", wantCursor: pos(0, 2), wantUnnamed: "mno\n", wantLinewise: true},
+			{name: "cG on the last line", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 1, Y: 2}, keys: "cG", wantContent: "abc def\nghi jkl\n", wantCursor: pos(0, 2), wantMode: insertMode, wantUnnamed: "mno\n", wantLinewise: true},
+			{name: "gUG on the last line", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 1, Y: 2}, keys: "gUG", wantContent: "abc def\nghi jkl\nMNO", wantCursor: pos(1, 2)}, // nostartofline
+			{name: "dG on the trailing empty line", content: "abc\n", at: term.Coordinates{Y: 1}, keys: "dG", wantContent: "abc", wantCursor: pos(0, 0), wantUnnamed: "\n", wantLinewise: true},
+			{name: "dG on an empty buffer", content: "", keys: "dG", wantContent: "", wantCursor: pos(0, 0), wantUnnamed: "\n", wantLinewise: true},
+			{name: "dG below the last line", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 1, Y: 9}, keys: "dG", wantContent: "abc def\nghi jkl", wantCursor: pos(0, 1), wantUnnamed: "mno\n", wantLinewise: true},
+		}},
+		{name: "linewise yank moves to the range start", cases: []testCase{
+			{name: "yk", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 1}, keys: "yk", wantContent: "abc def\nghi jkl\nmno", wantCursor: pos(5, 0), wantUnnamed: "abc def\nghi jkl\n", wantLinewise: true},
+			{name: "y2k", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 2, Y: 2}, keys: "y2k", wantContent: "abc def\nghi jkl\nmno", wantCursor: pos(2, 0), wantUnnamed: "abc def\nghi jkl\nmno\n", wantLinewise: true},
+			{name: "y-", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 1}, keys: "y-", wantContent: "abc def\nghi jkl\nmno", wantCursor: pos(0, 0), wantUnnamed: "abc def\nghi jkl\n", wantLinewise: true},
+			{name: "y5k past the first line", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 2}, keys: "y5k", wantContent: "abc def\nghi jkl\nmno", wantCursor: pos(2, 0), wantUnnamed: "abc def\nghi jkl\nmno\n", wantLinewise: true},
+			{name: "yk on the first line", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5}, keys: "yk", wantContent: "abc def\nghi jkl\nmno", wantCursor: pos(5, 0)},
+			{name: "yk over a tab indent", content: "\tabc\n\tdef", at: term.Coordinates{X: 2, Y: 1}, keys: "yk", wantContent: "\tabc\n\tdef", wantCursor: pos(2, 0), wantUnnamed: "\tabc\n\tdef\n", wantLinewise: true},
+			{name: "yk over double-width chars", content: "日本\nabc", at: term.Coordinates{X: 2, Y: 1}, keys: "yk", wantContent: "日本\nabc", wantCursor: pos(1, 0), wantUnnamed: "日本\nabc\n", wantLinewise: true},
+			{name: "yk on the trailing empty line", content: "abc\n", at: term.Coordinates{Y: 1}, keys: "yk", wantContent: "abc\n", wantCursor: pos(0, 0), wantUnnamed: "abc\n\n", wantLinewise: true},
+			{name: "yk below the last line", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 1, Y: 9}, keys: "yk", wantContent: "abc def\nghi jkl\nmno", wantCursor: pos(1, 1), wantUnnamed: "ghi jkl\nmno\n", wantLinewise: true},
+			{name: "y'a to a mark above", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 2}, marks: map[rune]term.Coordinates{'a': {X: 4}}, keys: "y'a", wantContent: "abc def\nghi jkl\nmno", wantCursor: pos(0, 0), wantUnnamed: "abc def\nghi jkl\nmno\n", wantLinewise: true},
+			{name: "yge", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 1}, keys: "yge", wantContent: "abc def\nghi jkl\nmno", wantCursor: pos(2, 1), wantUnnamed: "i jk"},
+			{name: "yj stays", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 1}, keys: "yj", wantContent: "abc def\nghi jkl\nmno", wantCursor: pos(5, 1), wantUnnamed: "ghi jkl\nmno\n", wantLinewise: true},
+			{name: "y'a to a mark below", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5}, marks: map[rune]term.Coordinates{'a': {X: 1, Y: 2}}, keys: "y'a", wantContent: "abc def\nghi jkl\nmno", wantCursor: pos(5, 0), wantUnnamed: "abc def\nghi jkl\nmno\n", wantLinewise: true},
+			{name: "yb linewise on one line", content: "foo\n  baz", at: term.Coordinates{X: 2, Y: 1}, keys: "yb", wantContent: "foo\n  baz", wantCursor: pos(0, 0), wantUnnamed: "foo\n  "},
+		}},
+		{name: "shifts leave the registers alone", cases: []testCase{
+			{name: "<< then put", content: "\tabc def\n\tghi jkl", at: term.Coordinates{X: 2}, keys: "yiwj\\<\\<k0P", wantContent: "abc\tabc def\nghi jkl", wantCursor: pos(2, 0), wantUnnamed: "abc"},
+			{name: "<<", content: "\tabc def\n\tghi jkl", at: term.Coordinates{X: 2}, keys: "yiw\\<\\<", wantContent: "abc def\n\tghi jkl", wantUnnamed: "abc"},
+			{name: "<j", content: "\tabc def\n\tghi jkl", at: term.Coordinates{X: 2}, keys: "yiw\\<j", wantContent: "abc def\nghi jkl", wantUnnamed: "abc"},
+			{name: "<ip", content: "\tabc def\n\tghi jkl", at: term.Coordinates{X: 2}, keys: "yiw\\<ip", wantContent: "abc def\nghi jkl", wantUnnamed: "abc"},
+			{name: "visual <", content: "\tabc def\n\tghi jkl", at: term.Coordinates{X: 2}, keys: "yiwV\\<", wantContent: "abc def\n\tghi jkl", wantUnnamed: "abc"},
+			{name: "black hole <<", content: "\tabc def\n\tghi jkl", at: term.Coordinates{X: 2}, keys: "\"_\\<\\<", wantContent: "abc def\n\tghi jkl"},
+			{name: ">> then put", content: "\tabc def\n\tghi jkl", at: term.Coordinates{X: 2}, keys: "yiw>>0P", wantContent: "abc\t\tabc def\n\tghi jkl", wantCursor: pos(2, 0), wantUnnamed: "abc"},
+		}},
+		{name: "window motions", cases: []testCase{
+			{name: "dH", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 1}, keys: "dH", wantContent: "mno", wantCursor: pos(0, 0), wantUnnamed: "abc def\nghi jkl\n", wantLinewise: true},
+			{name: "dM", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 1}, keys: "dM", wantContent: "abc def\nmno", wantCursor: pos(0, 1), wantUnnamed: "ghi jkl\n", wantLinewise: true},
+			{name: "dL", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5, Y: 1}, keys: "dL", wantContent: "abc def", wantCursor: pos(0, 0), wantUnnamed: "ghi jkl\nmno\n", wantLinewise: true},
+			{name: "dM from the last line", content: "a\nb\nc\nd", at: term.Coordinates{Y: 3}, keys: "dM", wantContent: "a", wantCursor: pos(0, 0), wantUnnamed: "b\nc\nd\n", wantLinewise: true},
+			{name: "M", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5}, keys: "M", wantContent: "abc def\nghi jkl\nmno", wantCursor: pos(5, 1)},                                                                     // nostartofline
+			{name: "yM", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5}, keys: "yM", wantContent: "abc def\nghi jkl\nmno", wantCursor: pos(5, 0), wantUnnamed: "abc def\nghi jkl\n", wantLinewise: true},            // nostartofline
+			{name: "yH", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 1, Y: 2}, keys: "yH", wantContent: "abc def\nghi jkl\nmno", wantCursor: pos(1, 0), wantUnnamed: "abc def\nghi jkl\nmno\n", wantLinewise: true}, // nostartofline
+			{name: "gUL", content: "abc def\nghi jkl\nmno", at: term.Coordinates{X: 5}, keys: "gUL", wantContent: "ABC DEF\nGHI JKL\nMNO", wantCursor: pos(5, 0)},                                                                 // nostartofline
+			{name: "M with a wrapped last line", content: "a\nb\n" + strings.Repeat("x", 200), wrap: true, keys: "M", wantContent: "a\nb\n" + strings.Repeat("x", 200), wantCursor: pos(0, 2)},
+			{name: "dM with a wrapped last line", content: "a\nb\n" + strings.Repeat("x", 200), wrap: true, keys: "dM", wantContent: "", wantCursor: pos(0, 0), wantUnnamed: "a\nb\n" + strings.Repeat("x", 200) + "\n", wantLinewise: true},
+			{name: "M with a long wrapped last line", content: "a\nb\nc\nd\n" + strings.Repeat("x", 400), wrap: true, keys: "M", wantContent: "a\nb\nc\nd\n" + strings.Repeat("x", 400), wantCursor: pos(0, 4)},
+		}},
+	}
+
+	for _, suite := range suites {
+		t.Run(suite.name, func(t *testing.T) {
+			for _, tc := range suite.cases {
+				t.Run(tc.name, func(t *testing.T) {
+					buf := cell.NewBuffer()
+					buf.Init()
+					_, err := buf.ReadFrom(strings.NewReader(tc.content))
+					require.NoError(t, err)
+					vw := New(buf, uri, WithClipboard(registerset.New(new(mockClip))), WithTabspaces(2),
+						WithWrap(tc.wrap))
+					vw.Resize(80, 20)
+					vw.Draw(term.NoopWriter{})
+					for name, at := range tc.marks {
+						vw.SetLocationList(textapi.LocationPriorityInfo, string(name),
+							textapi.LocationSlice([]textapi.Location{{
+								From: at,
+								To:   term.Coordinates{Y: at.Y, X: at.X + 1},
+							}}))
+					}
+					h := vw.handler.(*viHandlerImpl)
+					vw.SetCursorAtScroll(tc.at)
+					if vw.CursorAtScroll() != tc.at {
+						// SetCursorAtScroll clamps, but the cursor can still be
+						// left out of bounds when the buffer shrinks under it.
+						h.cursor.MoveToScroll(tc.at)
+					}
+					require.Equal(t, tc.at, vw.CursorAtScroll())
+
+					for _, ev := range parseSearchOpEvents(tc.keys) {
+						quit, _ := vw.Handle(ev)
+						require.False(t, quit)
+					}
+
+					assert.Equal(t, tc.wantContent, buf.String(), "content")
+					if tc.wantCursor != nil {
+						assert.Equal(t, *tc.wantCursor, vw.CursorAtScroll(), "cursor")
+					}
+					assert.Equal(t, tc.wantMode, h.mode(), "mode")
+					data, err := h.readRegister(unnamedRegister)
+					require.NoError(t, err)
+					assert.Equal(t, tc.wantUnnamed, data.Text, "unnamed register")
+					assert.Equal(t, tc.wantLinewise, data.Metadata == text.LineSelection, "linewise register")
+				})
 			}
 		})
 	}
@@ -2890,32 +3614,32 @@ func TestVidd(t *testing.T) {
 			},
 			content:          "0000\n1111\n2222\n3333\n4444\n5555\n",
 			events:           "2dd",
-			expectContent:    "0000\n1111\n5555\n",
+			expectContent:    "0000\n1111\n4444\n5555\n",
 			expectCoords:     term.Coordinates{Y: 2},
 			expectCoordsWrap: term.Coordinates{Y: 4},
 		},
 		{
-			name: "3dd from last line",
+			name: "3dd from last line has no lines below to count",
 			moveCursorFn: func(vi *viHandlerImpl) {
 				vi.cursor.MoveLastLine()
 			},
 			content:          "0000\n1111\n2222\n3333\n4444\n5555\n",
 			events:           "3dd",
-			expectContent:    "0000\n1111\n2222\n3333\n4444\n5555",
-			expectCoords:     term.Coordinates{Y: 5, X: 3},
-			expectCoordsWrap: term.Coordinates{Y: 7, X: 1},
+			expectContent:    "0000\n1111\n2222\n3333\n4444\n5555\n",
+			expectCoords:     term.Coordinates{Y: 6},
+			expectCoordsWrap: term.Coordinates{Y: 8},
 		},
 		{
-			name: "3dd from second to last line",
+			name: "3dd from second to last line deletes through the last line",
 			moveCursorFn: func(vi *viHandlerImpl) {
 				vi.cursor.MoveLastLine()
 				vi.cursor.MoveLineUp()
 			},
 			content:          "0000\n1111\n2222\n3333\n4444\n5555\n",
 			events:           "3dd",
-			expectContent:    "0000\n1111\n2222\n3333\n4444\n",
-			expectCoords:     term.Coordinates{Y: 5},
-			expectCoordsWrap: term.Coordinates{Y: 6},
+			expectContent:    "0000\n1111\n2222\n3333\n4444",
+			expectCoords:     term.Coordinates{Y: 4},
+			expectCoordsWrap: term.Coordinates{Y: 4},
 		},
 		{
 			name:             "10dd from first line wipes all content",
@@ -3140,6 +3864,81 @@ func TestVisualMoveToChar(t *testing.T) {
 	selection, ok := vi.Selection()
 	require.True(t, ok)
 	assert.Equal(t, "abc", selection)
+}
+
+func TestVisualMoveToCharOperators(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content string
+		at      term.Coordinates
+		keys    string
+		want    string
+	}{
+		{name: "vt,x", content: "ab,cd,ef", keys: "vt,x", want: ",cd,ef"},
+		{name: "vF,x", content: "ab,cd,ef", at: term.Coordinates{X: 7}, keys: "vF,x", want: "ab,cd"},
+		{name: "vT,x", content: "ab,cd,ef", at: term.Coordinates{X: 7}, keys: "vT,x", want: "ab,cd,"},
+		{name: "v2f,x", content: "ab,cd,ef", keys: "v2f,x", want: "ef"},
+		{name: "vf,;x", content: "ab,cd,ef", keys: "vf,;x", want: "ef"},
+		{name: "vf,;,x", content: "ab,cd,ef", keys: "vf,;,x", want: "cd,ef"},
+		{name: "f,v;x", content: "ab,cd,ef", keys: "f,v;x", want: "abef"},
+		{name: "vt,;x", content: "ab,cd,ef", keys: "vt,;x", want: ",ef"},
+		{name: "vlf,d", content: "ab,cd,ef", keys: "vlf,d", want: "cd,ef"},
+		{name: "Vjf,d", content: "ab,cd\nef,gh\nij", keys: "Vjf,d", want: "ij"},
+		{name: "<c-v>jf,d", content: "ab,cd\nef,gh\nij", keys: "<c-v>jf,d", want: "cd\ngh\nij"},
+		{name: "v exits visual mode", content: "ab,de", keys: "vf,vx", want: "abde"},
+		{name: "V exits visual line mode", content: "ab\ncd", keys: "VVx", want: "b\ncd"},
+		{name: "ctrl-v exits visual block mode", content: "ab\ncd", keys: "<c-v>l<c-v>x", want: "a\ncd"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vi := setupVi(t, tc.content, 2, WithWrap(false))
+			vi.Resize(20, 20)
+			vi.Draw(term.NoopWriter{})
+			vi.setCursorAtScroll(tc.at)
+			handleViEvents(vi, parseSearchOpEvents(tc.keys))
+			assert.Equal(t, tc.want, vi.less.Buffer().String())
+			assert.Equal(t, normalMode, vi.mode())
+		})
+	}
+}
+
+func TestVisualMoveToCharKeepsVisualMode(t *testing.T) {
+	tests := []struct {
+		name string
+		keys string
+		mode viMode
+	}{
+		{"visual", "vf,", visualMode},
+		{"visual line", "Vf,", visualLineMode},
+		{"visual block", "Vf,", visualBlockMode},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			vi := setupVi(t, `ab,de`, 0, WithWrap(false))
+			vi.Resize(10, 20)
+			vi.Draw(term.NoopWriter{})
+
+			if tt.mode == visualBlockMode {
+				vi.Handle(term.Event{Type: term.EventKey, Ch: 'v', Mod: term.ModCtrl})
+				tt.keys = "f,"
+			}
+			for _, eventChar := range tt.keys {
+				vi.Handle(term.Event{Type: term.EventKey, Ch: eventChar})
+			}
+			assert.Equal(t, tt.mode, vi.currMode)
+		})
+	}
+}
+
+func TestVisualMoveToCharThenDelete(t *testing.T) {
+	vi := setupVi(t, `ab,de`, 0, WithWrap(false))
+	vi.Resize(10, 20)
+	vi.Draw(term.NoopWriter{})
+
+	for _, eventChar := range "vf,x" {
+		vi.Handle(term.Event{Type: term.EventKey, Ch: eventChar})
+	}
+	assert.Equal(t, "de", vi.less.Buffer().String())
+	assert.Equal(t, normalMode, vi.currMode)
 }
 
 func handleViEvents(vi *viHandlerImpl, events []term.Event) {
@@ -3616,7 +4415,7 @@ func TestViOperatorGoLeftEndWordMotions(t *testing.T) {
 			case 'd', 'c':
 				expected.cursor.DeleteSelection()
 			case 'y':
-				expected.copySelection()
+				expected.yankRange()
 			}
 
 			switch tc.wantMode {
@@ -3750,7 +4549,7 @@ func TestViOperatorGoLeftEndWordMotionsAcrossLines(t *testing.T) {
 			case 'd', 'c':
 				expected.cursor.DeleteSelection()
 			case 'y':
-				expected.copySelection()
+				expected.yankRange()
 			}
 
 			if tc.wantMode == insertMode {
@@ -3837,8 +4636,8 @@ func TestViGoLeftEndWordSnapshots(t *testing.T) {
 	t.Run("yank paste word motion", func(t *testing.T) {
 		cases := []handlertest.SequenceTestCase{
 			{InputSequence: "$", Expected: "one two-three,fou▐      \n                        \n                        \n                        \n                  NORMAL"},
-			{InputSequence: "yge", Expected: "one two-three,fou▐      \n                        \n                        \n                        \n                  NORMAL"},
-			{InputSequence: "P", Expected: "one two-three,fou,four▐ \n                        \n                        \n                        \n                  NORMAL"},
+			{InputSequence: "yge", Expected: "one two-three▐four      \n                        \n                        \n                        \n                  NORMAL"},
+			{InputSequence: "P", Expected: "one two-three,fou▐,four \n                        \n                        \n                        \n                  NORMAL"},
 		}
 		handlertest.RunHandlerSequence(t, newVi(t), width, height, cases)
 	})
@@ -3846,8 +4645,8 @@ func TestViGoLeftEndWordSnapshots(t *testing.T) {
 	t.Run("yank paste WORD motion", func(t *testing.T) {
 		cases := []handlertest.SequenceTestCase{
 			{InputSequence: "$", Expected: "one two-three,fou▐      \n                        \n                        \n                        \n                  NORMAL"},
-			{InputSequence: "ygE", Expected: "one two-three,fou▐      \n                        \n                        \n                        \n                  NORMAL"},
-			{InputSequence: "P", Expected: "ree,foue two-three,four▐\n                        \n                        \n                        \n                  NORMAL"},
+			{InputSequence: "ygE", Expected: "on▐ two-three,four      \n                        \n                        \n                        \n                  NORMAL"},
+			{InputSequence: "P", Expected: "one two-three,fou▐e two-\n                        \n                        \n                        \n                  NORMAL"},
 		}
 		handlertest.RunHandlerSequence(t, newVi(t), width, height, cases)
 	})
@@ -4221,7 +5020,7 @@ func TestViCursorIsolated(t *testing.T) {
 			`                    
 /*                  
  * diff buffers.    
-▐* Check if the curr
+ ▐ Check if the curr
  */                 
   void              
 diff_buf_adjust(win_
@@ -4434,6 +5233,90 @@ func TestNormalModeIMovesToFirstNonBlank(t *testing.T) {
 	require.False(t, exit)
 	require.True(t, handled)
 	assert.Equal(t, "    Xabc", vi.less.Buffer().String())
+}
+
+func TestInsertModeDelete(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content string
+		cursor  term.Coordinates
+		want    string
+	}{
+		{
+			name:    "deletes the character under the cursor",
+			content: "abc",
+			cursor:  term.Coordinates{X: 1},
+			want:    "ac",
+		},
+		{
+			name:    "deletes the first character",
+			content: "abc",
+			want:    "bc",
+		},
+		{
+			name:    "deletes the last character",
+			content: "abc",
+			cursor:  term.Coordinates{X: 2},
+			want:    "ab",
+		},
+		{
+			name:    "joins lines at the line end",
+			content: "ab\ncd",
+			cursor:  term.Coordinates{X: 2},
+			want:    "abcd",
+		},
+		{
+			name:    "joins an empty line with the next line",
+			content: "\nabc",
+			want:    "abc",
+		},
+		{
+			name:    "deletes the trailing newline",
+			content: "ab\n",
+			cursor:  term.Coordinates{X: 2},
+			want:    "ab",
+		},
+		{
+			name:    "does nothing on the last empty line",
+			content: "ab\n",
+			cursor:  term.Coordinates{Y: 1},
+			want:    "ab\n",
+		},
+		{
+			name:    "deletes a wide character",
+			content: "a界b",
+			cursor:  term.Coordinates{X: 1},
+			want:    "ab",
+		},
+		{
+			name:    "does nothing at the buffer end",
+			content: "abc",
+			cursor:  term.Coordinates{X: 3},
+			want:    "abc",
+		},
+		{
+			name: "does nothing in an empty buffer",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vi := setupVi(t, tc.content, 2)
+			vi.Resize(10, 10)
+
+			exit, handled := vi.Handle(term.Event{Type: term.EventKey, Ch: 'i'})
+			require.False(t, exit)
+			require.True(t, handled)
+			require.Equal(t, insertMode, vi.mode())
+			vi.setCursorAtScroll(tc.cursor)
+			require.Equal(t, tc.cursor, vi.cursor.ScrollCoordinates(vi.cursor.Coordinates()))
+
+			exit, handled = vi.Handle(term.Event{Type: term.EventKey, Key: term.KeyDelete})
+			assert.False(t, exit)
+			assert.True(t, handled)
+			assert.Equal(t, tc.want, vi.less.Buffer().String())
+			assert.Equal(t, tc.cursor, vi.cursor.ScrollCoordinates(vi.cursor.Coordinates()))
+			assert.Equal(t, insertMode, vi.mode())
+		})
+	}
 }
 
 func TestInsertModeCtrlShortcuts(t *testing.T) {
@@ -6873,7 +7756,7 @@ func TestViGc(t *testing.T) {
 			name:        "gcap comments around paragraph selection",
 			fileText:    "alpha\nbeta\ngamma\n\ndelta\n",
 			events:      "gcap",
-			wantContent: "// alpha\n// beta\n// gamma\n\n// delta\n",
+			wantContent: "// alpha\n// beta\n// gamma\n\ndelta\n",
 			wantCoord:   term.Coordinates{X: 3, Y: 0},
 			wantMode:    normalMode,
 		},
@@ -6929,18 +7812,18 @@ func TestViGc(t *testing.T) {
 			fileText:    "alpha\nbeta\n\ngamma\ndelta\n",
 			events:      "gc}",
 			wantContent: "// alpha\n// beta\n\ngamma\ndelta\n",
-			wantCoord:   term.Coordinates{X: 0, Y: 2},
+			wantCoord:   term.Coordinates{X: 3, Y: 1},
 			wantMode:    normalMode,
 		},
 		{
-			name:     "gc left brace comments backward paragraph boundary",
+			name:     "gc left brace from paragraph start covers only the blank line above",
 			fileText: "alpha\n\nbeta\ngamma\n",
 			before: func(vi *viHandlerImpl) {
 				vi.cursor.MoveDown()
 				vi.cursor.MoveDown()
 			},
 			events:      "gc{",
-			wantContent: "alpha\n\n// beta\ngamma\n",
+			wantContent: "alpha\n\nbeta\ngamma\n",
 			wantCoord:   term.Coordinates{X: 0, Y: 1},
 			wantMode:    normalMode,
 		},
@@ -7797,7 +8680,7 @@ type callbackAdapter struct {
 			events:      "gqap",
 			ruler:       20,
 			width:       60,
-			wantContent: "// alpha beta gamma\n// delta epsilon\n// zeta eta theta\n\n// keep second\n// paragraph intact\n",
+			wantContent: "// alpha beta gamma\n// delta epsilon\n// zeta eta theta\n\n// keep second paragraph intact\n",
 			wantMode:    normalMode,
 		},
 		{
@@ -8124,13 +9007,13 @@ type callbackAdapter struct {
 
 		// ---- gqn / gqN reuse the last-used search pattern ----
 		{
-			name: "gqn reflows from cursor to next match of last search",
+			name: "gqn reflows the lines before a match in column 0",
 			content: "alpha beta gamma delta epsilon\nMARK\n" +
 				"zeta eta theta iota kappa\nEND tail\nlast\n",
 			events:      "/END\ngggqn",
 			ruler:       12,
 			width:       40,
-			wantContent: "alpha beta\ngamma delta\nepsilon MARK\nzeta eta\ntheta iota\nkappa END\ntail\nlast\n",
+			wantContent: "alpha beta\ngamma delta\nepsilon MARK\nzeta eta\ntheta iota\nkappa\nEND tail\nlast\n",
 			wantMode:    normalMode,
 		},
 		{
@@ -9709,12 +10592,12 @@ func TestMarkOperatorMotion(t *testing.T) {
 			wantMode:    insertMode,
 		},
 		{
-			name:        "c quote a deletes whole lines and enters insert mode",
+			name:        "c quote a changes whole lines into one and enters insert mode",
 			content:     "first\nsecond\nthird\n",
 			marks:       map[rune]term.Coordinates{'a': {Y: 1, X: 0}},
 			events:      "c'a",
 			width:       40,
-			wantContent: "third\n",
+			wantContent: "\nthird\n",
 			wantMode:    insertMode,
 		},
 
@@ -10740,20 +11623,20 @@ func TestViParagraphMotions(t *testing.T) {
 			wantCursor: &term.Coordinates{X: 0, Y: 6},
 		},
 		{
-			name:       "} from last paragraph goes to last line",
+			name:       "} from last paragraph goes to the last character",
 			content:    content,
 			at:         &term.Coordinates{Y: 7},
 			seq:        "}",
 			wantMode:   normalMode,
-			wantCursor: &term.Coordinates{X: 0, Y: 8},
+			wantCursor: &term.Coordinates{X: 2, Y: 8},
 		},
 		{
-			name:       "} from last line stays",
+			name:       "} from last line goes to its last character",
 			content:    content,
 			at:         &term.Coordinates{Y: 8},
 			seq:        "}",
 			wantMode:   normalMode,
-			wantCursor: &term.Coordinates{X: 0, Y: 8},
+			wantCursor: &term.Coordinates{X: 2, Y: 8},
 		},
 		// --- basic { motion ---
 		{
@@ -10805,28 +11688,28 @@ func TestViParagraphMotions(t *testing.T) {
 		},
 		// --- operator combos ---
 		{
-			name:       "d} deletes to next paragraph boundary",
+			name:       "d} from line start deletes the paragraph lines, keeping the blank line",
 			content:    content,
 			seq:        "d}",
-			wantBuffer: "ccc\nddd\neee\n\nfff\nggg",
+			wantBuffer: "\nccc\nddd\neee\n\nfff\nggg",
 			wantMode:   normalMode,
 			wantCursor: &term.Coordinates{X: 0, Y: 0},
 		},
 		{
-			name:       "d{ deletes backward to paragraph boundary",
+			name:       "d{ deletes linewise from the blank line through the previous line",
 			content:    content,
 			at:         &term.Coordinates{Y: 4},
 			seq:        "d{",
-			wantBuffer: "aaa\nbbb\neee\n\nfff\nggg",
+			wantBuffer: "aaa\nbbb\nddd\neee\n\nfff\nggg",
 			wantMode:   normalMode,
 			wantCursor: &term.Coordinates{X: 0, Y: 2},
 		},
 		{
-			name:          "y} yanks to next paragraph boundary",
+			name:          "y} from line start yanks the paragraph lines",
 			content:       content,
 			seq:           "y}",
 			wantMode:      normalMode,
-			wantClipboard: "aaa\nbbb\n\n",
+			wantClipboard: "aaa\nbbb\n",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -10940,7 +11823,7 @@ func TestPasteVisualMode(t *testing.T) {
 
 			cell, ok := vi.cursor.Cell()
 			require.True(t, ok)
-			require.Equal(t, '6', cell.Ch)
+			require.Equal(t, 'C', cell.Ch)
 		})
 	}
 
@@ -11154,7 +12037,7 @@ func TestViGoPasteLeavesCursorAfterText(t *testing.T) {
 			clipboardText: "abc\n",
 			clipboardMode: text.LineSelection,
 			input:         "gp",
-			wantBuffer:    "abc\ndef\nxyz\nabc\n",
+			wantBuffer:    "abc\ndef\nxyz\nabc",
 			wantPosition:  term.Coordinates{X: 0, Y: 3},
 			wantCell:      'a',
 			wantCount:     1,
@@ -11939,7 +12822,7 @@ func TestNormalPageScrolls(t *testing.T) {
 			name:          "ctrl-f move screen down one page, cursor to first line",
 			setCursor:     term.Coordinates{Y: 1},
 			inputSequence: term.Event{Type: term.EventKey, Mod: term.ModCtrl, Ch: 'f'},
-			expect:        "X\ne\nf\ng",
+			expect:        "X\nd\ne\nf",
 		},
 		{
 			name:          "ctrl-u move screen up half page, cursor to last line",
@@ -11972,6 +12855,171 @@ func TestNormalPageScrolls(t *testing.T) {
 			w.Flush()
 			assert.Equal(t, tcase.expect, w.String())
 
+		})
+	}
+}
+
+func TestNormalPageScrollsViewport(t *testing.T) {
+	content := strings.TrimSuffix(strings.Repeat("abcd\n", 100), "\n")
+	for _, tc := range []struct {
+		name       string
+		width      int
+		height     int
+		offset     int
+		key        rune
+		wrap       bool
+		fold       bool
+		invert     bool
+		wantOffset int
+		wantCursor term.Coordinates
+	}{
+		{name: "forward", width: 80, height: 46, key: 'f',
+			wantOffset: 44, wantCursor: term.Coordinates{Y: 44}},
+		{name: "backward", width: 80, height: 46, offset: 44, key: 'b',
+			wantOffset: 0, wantCursor: term.Coordinates{Y: 45}},
+		{name: "forward near end", width: 80, height: 46, offset: 44, key: 'f',
+			wantOffset: 88, wantCursor: term.Coordinates{Y: 88}},
+		{name: "forward past maximum seek offset", width: 80, height: 46, offset: 49, key: 'f',
+			wantOffset: 93, wantCursor: term.Coordinates{Y: 93}},
+		{name: "forward at end", width: 80, height: 46, offset: 54, key: 'f',
+			wantOffset: 99, wantCursor: term.Coordinates{Y: 99}},
+		{name: "forward last page", width: 80, height: 46, offset: 88, key: 'f',
+			wantOffset: 99, wantCursor: term.Coordinates{Y: 99}},
+		{name: "forward last line at top", width: 80, height: 46, offset: 99, key: 'f',
+			wantOffset: 99},
+		{name: "forward file shorter than window", width: 80, height: 101, key: 'f',
+			wantOffset: 99, wantCursor: term.Coordinates{Y: 99}},
+		{name: "backward past maximum seek offset", width: 80, height: 46, offset: 88, key: 'b',
+			wantOffset: 44, wantCursor: term.Coordinates{Y: 89}},
+		{name: "backward near start", width: 80, height: 46, offset: 10, key: 'b',
+			wantOffset: 0, wantCursor: term.Coordinates{Y: 45}},
+		{name: "backward at start", width: 80, height: 46, key: 'b',
+			wantOffset: 0},
+		{name: "forward one row", width: 80, height: 1, key: 'f',
+			wantOffset: 1, wantCursor: term.Coordinates{Y: 1}},
+		{name: "backward one row", width: 80, height: 1, offset: 1, key: 'b',
+			wantOffset: 0, wantCursor: term.Coordinates{}},
+		{name: "forward two rows", width: 80, height: 2, key: 'f',
+			wantOffset: 1, wantCursor: term.Coordinates{Y: 1}},
+		{name: "backward two rows", width: 80, height: 2, offset: 1, key: 'b',
+			wantOffset: 0, wantCursor: term.Coordinates{Y: 1}},
+		{name: "forward wrapped lines", width: 2, height: 6, key: 'f', wrap: true,
+			wantOffset: 4, wantCursor: term.Coordinates{Y: 2}},
+		{name: "backward wrapped lines", width: 2, height: 6, offset: 4, key: 'b', wrap: true,
+			wantOffset: 0, wantCursor: term.Coordinates{X: 2, Y: 2}},
+		{name: "forward wrapped lines near end", width: 2, height: 6, offset: 192, key: 'f', wrap: true,
+			wantOffset: 196, wantCursor: term.Coordinates{Y: 98}},
+		{name: "forward wrapped lines at end", width: 2, height: 6, offset: 194, key: 'f', wrap: true,
+			wantOffset: 198, wantCursor: term.Coordinates{Y: 99}},
+		{name: "forward wrapped last line at top", width: 2, height: 6, offset: 198, key: 'f', wrap: true,
+			wantOffset: 198},
+		{name: "forward folded lines", width: 80, height: 6, key: 'f', fold: true,
+			wantOffset: 4, wantCursor: term.Coordinates{Y: 12}},
+		{name: "backward folded lines", width: 80, height: 6, offset: 4, key: 'b', fold: true,
+			wantOffset: 0, wantCursor: term.Coordinates{Y: 13}},
+		{name: "forward folded lines at end", width: 80, height: 6, offset: 86, key: 'f', fold: true,
+			wantOffset: 91, wantCursor: term.Coordinates{Y: 99}},
+		{name: "forward inverted offset", width: 80, height: 46, offset: 54, key: 'f', invert: true,
+			wantOffset: 10, wantCursor: term.Coordinates{Y: 44}},
+		{name: "backward inverted offset", width: 80, height: 46, offset: 10, key: 'b', invert: true,
+			wantOffset: 54, wantCursor: term.Coordinates{Y: 45}},
+		{name: "forward inverted near end", width: 80, height: 46, offset: 10, key: 'f', invert: true,
+			wantOffset: 0, wantCursor: term.Coordinates{Y: 54}},
+		{name: "backward inverted near start", width: 80, height: 46, offset: 44, key: 'b', invert: true,
+			wantOffset: 54, wantCursor: term.Coordinates{Y: 45}},
+		{name: "forward inverted at end", width: 80, height: 46, key: 'f', invert: true,
+			wantOffset: 0},
+		{name: "backward inverted at start", width: 80, height: 46, offset: 54, key: 'b', invert: true,
+			wantOffset: 54},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, row := range []int{0, tc.height / 2, max(0, tc.height-2), tc.height - 1} {
+				t.Run(fmt.Sprintf("cursor target row %d", row+1), func(t *testing.T) {
+					vi := setupVi(t, content, 2, WithWrap(tc.wrap))
+					vi.Resize(tc.width, tc.height)
+					vi.less.Scroll().InvertOffset = tc.invert
+					if tc.fold {
+						require.True(t, vi.less.Scroll().MarkHidden(1, 9))
+					}
+					vi.less.Scroll().SetOffset(term.Coordinates{Y: tc.offset})
+					vi.Draw(term.NoopWriter{})
+					vi.cursor.MoveToWindow(term.Coordinates{Y: row})
+					require.Equal(t, tc.offset, vi.less.Scroll().SeekOffset())
+					last, _ := vi.cursor.WindowCoordinates(term.Coordinates{X: 3, Y: 99})
+					require.Equal(t, min(row, last.Y), vi.cursor.Coordinates().Y)
+
+					var seeks [][2]term.Coordinates
+					vi.less.Scroll().Subscribe(component.FuncScrollSubscriber(func(from, to term.Coordinates) {
+						seeks = append(seeks, [2]term.Coordinates{from, to})
+					}))
+					before := vi.cursorAtScroll()
+					_, handled := vi.Handle(term.Event{Type: term.EventKey, Mod: term.ModCtrl, Ch: tc.key})
+					assert.Equal(t, tc.offset != tc.wantOffset, handled)
+					assert.Equal(t, tc.wantOffset, vi.less.Scroll().SeekOffset())
+					if tc.offset == tc.wantOffset {
+						assert.Equal(t, before, vi.cursorAtScroll())
+						assert.Empty(t, seeks)
+					} else {
+						assert.Equal(t, tc.wantCursor, vi.cursorAtScroll())
+						assert.Equal(t, [][2]term.Coordinates{{{Y: tc.offset}, {Y: tc.wantOffset}}}, seeks)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestNormalPageScrollsLongLastLine(t *testing.T) {
+	content := strings.Repeat("abcd\n", 99) + strings.Repeat("x", 80*8)
+	for _, tc := range []struct {
+		name        string
+		offset      int
+		wantOffsets []int
+	}{
+		{name: "approaching last line", offset: 92, wantOffsets: []int{96, 99, 99, 99}},
+		{name: "last line at top", offset: 99, wantOffsets: []int{99, 99, 99}},
+		{name: "inside last line", offset: 103, wantOffsets: []int{103, 103, 103}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vi := setupVi(t, content, 2, WithWrap(true))
+			vi.Resize(80, 6)
+			scroll := vi.less.Scroll()
+			scroll.SetOffset(term.Coordinates{Y: tc.offset})
+			vi.Draw(term.NoopWriter{})
+			vi.cursor.MoveToWindow(term.Coordinates{Y: 2})
+			require.Equal(t, tc.offset, scroll.SeekOffset())
+			var seeks int
+			scroll.Subscribe(component.FuncScrollSubscriber(func(_, _ term.Coordinates) {
+				seeks++
+			}))
+			for _, want := range tc.wantOffsets {
+				before := scroll.SeekOffset()
+				cursor := vi.cursorAtScroll()
+				seeks = 0
+				_, handled := vi.Handle(term.Event{Type: term.EventKey, Mod: term.ModCtrl, Ch: 'f'})
+				vi.Draw(term.NoopWriter{})
+				assert.Equal(t, want, scroll.SeekOffset())
+				assert.Equal(t, before != want, handled)
+				if before == want {
+					assert.Equal(t, cursor, vi.cursorAtScroll())
+					assert.Zero(t, seeks)
+				} else {
+					assert.Equal(t, term.Coordinates{Y: want}, vi.cursorAtScroll())
+					assert.Equal(t, 1, seeks)
+				}
+			}
+		})
+	}
+}
+
+func TestNormalPageScrollsBeforeResize(t *testing.T) {
+	for _, ch := range []rune{'f', 'b'} {
+		t.Run(string(ch), func(t *testing.T) {
+			vi := setupVi(t, "a\nb\nc", 2)
+			_, handled := vi.Handle(term.Event{Type: term.EventKey, Mod: term.ModCtrl, Ch: ch})
+			assert.False(t, handled)
+			assert.Zero(t, vi.less.Scroll().SeekOffset())
+			assert.Equal(t, term.Coordinates{}, vi.cursorAtScroll())
 		})
 	}
 }
@@ -12083,7 +13131,7 @@ func TestScreenRelativeMotions(t *testing.T) {
 		{
 			name:          "M moves cursor to middle visible line",
 			inputSequence: "M",
-			expected:      "d\ne\n▐\ng",
+			expected:      "d\n▐\nf\ng",
 		},
 		{
 			name:          "L moves cursor to bottom visible line",
@@ -12635,4 +13683,83 @@ func TestHandleMouseWindowCoordinates(t *testing.T) {
 
 func mouseEventAt(key term.Key, x, y int) term.Event {
 	return term.Event{Type: term.EventMouse, Key: key, MouseX: x, MouseY: y}
+}
+
+func TestViOperatorLeftStartWordKeepsCharUnderCursor(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		content  string
+		at       term.Coordinates
+		seq      string
+		want     string
+		wantMode viMode
+	}{
+		{"delete b", "one two three", term.Coordinates{X: 8}, "db", "one three", normalMode},
+		{"delete B", "one two-x three", term.Coordinates{X: 10}, "dB", "one three", normalMode},
+		{"change b", "one two three", term.Coordinates{X: 8}, "cb", "one three", insertMode},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vi := setupVi(t, tc.content, 2)
+			vi.Resize(80, 10)
+			vi.setCursorAtScroll(tc.at)
+			vi.Draw(term.NoopWriter{})
+			for _, ch := range tc.seq {
+				_, handled := vi.Handle(term.Event{Type: term.EventKey, Ch: ch})
+				require.True(t, handled)
+			}
+			assert.Equal(t, tc.want, strings.TrimRight(vi.less.Buffer().String(), "\n"))
+			assert.Equal(t, tc.wantMode, vi.mode())
+		})
+	}
+}
+
+func TestViHandlerImplPointerLeaves(t *testing.T) {
+	t.Parallel()
+	const width, height = 40, 10
+	newHandler := func(wrap bool) *viHandlerImpl {
+		buf := cell.NewBuffer()
+		buf.ReadFrom(strings.NewReader(pointerLeaveContent))
+		cfg := defaultviHandlerImplConfig()
+		cfg.wrap = wrap
+		h := new(viHandlerImpl)
+		h.init(buf, cfg)
+		return h
+	}
+	for _, wrap := range []bool{true, false} {
+		for _, mode := range pointerLeaveModes() {
+			t.Run(fmt.Sprintf("%s wrap=%v", mode.name, wrap), func(t *testing.T) {
+				t.Parallel()
+				enter := func(h *viHandlerImpl) {
+					t.Helper()
+					for _, ev := range mode.keys {
+						quit, _ := h.Handle(ev)
+						require.False(t, quit)
+					}
+					require.Equal(t, mode.want, h.mode())
+				}
+
+				t.Run("leave keeps state", func(t *testing.T) {
+					h := newHandler(wrap)
+					h.Resize(width, height)
+					enter(h)
+					want := snapshotPointerLeave(h, width, height)
+					require.NotZero(t, want.seek, "the mode keys must scroll the window")
+					for _, out := range pointerLeaveOutside(width, height) {
+						h.Handle(pointerLeave(out))
+						assert.Equal(t, want, snapshotPointerLeave(h, width, height),
+							"a leave to %v must not change the editor", out)
+					}
+				})
+
+				for _, size := range [][2]int{{width, height}, {1, 1}} {
+					t.Run(fmt.Sprintf("%dx%d", size[0], size[1]), func(t *testing.T) {
+						h := newHandler(wrap)
+						h.Resize(size[0], size[1])
+						enter(h)
+						handlertest.RunPointerLeaves(t, h, size[0], size[1])
+					})
+				}
+			})
+		}
+	}
 }

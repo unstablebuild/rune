@@ -28,6 +28,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/cell"
 	"unstable.build/rune/internal/component"
+	"unstable.build/rune/internal/handler/handlertest"
 	"unstable.build/rune/internal/ide/syntax/treesitter"
 	"unstable.build/rune/internal/text"
 	"unstable.build/rune/internal/text/registerset"
@@ -95,6 +96,49 @@ func send(t *testing.T, hx *Helix, evs ...term.Event) {
 	t.Helper()
 	for _, ev := range evs {
 		hx.Handle(ev)
+	}
+}
+
+func TestHelixPointerLeaves(t *testing.T) {
+	t.Parallel()
+	content := "first line\n" +
+		strings.Repeat("a long line that does not fit the window ", 4) + "\n" +
+		"日本語 wide 世界 and emoji 🎉🚀 x\n" +
+		"\tindented by a tab\n" +
+		"short\n" +
+		strings.Repeat("filler\n", 20)
+	for _, tc := range []struct {
+		name string
+		evs  []term.Event
+	}{
+		{name: "normal"},
+		{name: "insert", evs: keys("i")},
+		{name: "select", evs: keys("vjjll")},
+		{name: "multiple cursors", evs: keys("CC")},
+		{name: "multiple selections", evs: keys("wCC")},
+		{name: "multiple selections in select mode", evs: keys("vlCC")},
+		{name: "scrolled", evs: append(keys("ge"), keys("CC")...)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			hx, _, _ := newHelix(t, content, term.Coordinates{})
+			hx.Resize(40, 10)
+			send(t, hx, tc.evs...)
+			before := impl(hx).sel.clone()
+			mode := impl(hx).mode()
+			caret := hx.CursorAtScroll()
+			for _, at := range []term.Coordinates{
+				{X: -1, Y: 5}, {X: 40, Y: 5}, {X: 20, Y: -1}, {X: 20, Y: 10}, {X: 500, Y: -500},
+			} {
+				send(t, hx, term.Event{Type: term.EventMouse, MouseX: at.X, MouseY: at.Y})
+			}
+			assert.Equal(t, before, impl(hx).sel, "a leave keeps every selection")
+			assert.Equal(t, mode, impl(hx).mode())
+			assert.Equal(t, caret, hx.CursorAtScroll())
+
+			handlertest.RunPointerLeaves(t, hx, 40, 10)
+			handlertest.RunPointerLeaves(t, hx, 1, 1)
+		})
 	}
 }
 
@@ -202,12 +246,15 @@ func TestSetCursorAtScroll(t *testing.T) {
 			at: term.Coordinates{Y: -5}, want: term.Coordinates{}},
 		{name: "clamps a row past the end", content: "abc\ndef",
 			at: term.Coordinates{Y: 99}, want: term.Coordinates{Y: 1}},
-		// The caret shows a position past the last cell on that cell,
-		// as it does for any selection ending on a line ending.
+		// A position past the last cell lands on the line ending, or on
+		// the end of the document on the last row, as Helix's
+		// pos_at_coords does when limited to the line.
 		{name: "clamps a column past the end", content: "abc",
-			at: term.Coordinates{X: 99}, want: term.Coordinates{X: 2}},
+			at: term.Coordinates{X: 99}, want: term.Coordinates{X: 3}},
 		{name: "clamps both", content: "ab\ncd",
-			at: term.Coordinates{X: 99, Y: 99}, want: term.Coordinates{X: 1, Y: 1}},
+			at: term.Coordinates{X: 99, Y: 99}, want: term.Coordinates{X: 2, Y: 1}},
+		{name: "clamps a column onto a line ending", content: "ab\ncd",
+			at: term.Coordinates{X: 99}, want: term.Coordinates{X: 2}},
 		{name: "an empty line pins column zero", content: "a\n\nb",
 			at: term.Coordinates{X: 4, Y: 1}, want: term.Coordinates{Y: 1}},
 	} {

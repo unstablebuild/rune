@@ -81,6 +81,9 @@ func (h *codeLensCmd) HandleCommand(
 	}
 
 	command := *nearest.Command
+	// The request ctx is canceled when HandleCommand returns, before the
+	// command completes.
+	ctx = context.WithoutCancel(ctx)
 	go debug.CapturePanicReport(func() {
 		result, err := h.lsp.ExecuteCommand(ctx, semanticapi.ExecuteCommandParams{
 			Command:   command.Command,

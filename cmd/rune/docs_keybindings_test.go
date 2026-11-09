@@ -33,8 +33,8 @@ import (
 )
 
 const (
-	docsDir             = "docs/docs"
-	docsKeybindingsData = "docs/src/data/keybindings.yaml"
+	docsDir             = "../../docs/docs"
+	docsKeybindingsData = "../../docs/src/data/keybindings.yaml"
 )
 
 var (

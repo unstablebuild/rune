@@ -25,6 +25,7 @@ import (
 	"unstable.build/rune/internal/browser"
 	tcomponent "unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/ide/idehistory"
+	"unstable.build/rune/internal/ide/idestatus"
 	"unstable.build/rune/internal/ide/idetask"
 	"unstable.build/rune/internal/term/vte/vtereservoir"
 	"unstable.build/rune/internal/workspace"
@@ -38,6 +39,8 @@ type exSnapshotter struct {
 	// read live rather than captured because the name changes under
 	// the subscription, via workspacerename.
 	wh *workspaceHandler
+	// status, when set, holds the programs the workspace of wh lists.
+	status *idestatus.Store
 }
 
 func (s exSnapshotter) Name() string {
@@ -122,6 +125,15 @@ func (s exSnapshotter) Tasks() []idehistory.TaskSession {
 	return ret
 }
 
+// Programs lists the tabs of the workspace whose program reported a
+// status, for the next session to list them again.
+func (s exSnapshotter) Programs() []idehistory.Program {
+	if s.status == nil || s.wh == nil {
+		return nil
+	}
+	return s.status.Programs(s.wh.uri)
+}
+
 func (s exSnapshotter) Layout() (tcomponent.TileLayout, bool) {
 	layout := s.ex.comp.Browser().TileLayout()
 	return layout, true
@@ -146,45 +158,34 @@ func (s exSnapshotter) FileWindowIDs() map[string]uint64 {
 	return ret
 }
 
-// ExtensionTabs snapshots the tiled windows showing a tab that the resource
-// opener of its URI's scheme can reopen, or a placeholder still waiting
-// for that opener. Tabs that are only in the tab bar are not captured, and
-// neither are workspace files, which are restored as files even if an
-// extension registered an opener for their scheme.
+// ExtensionTabs snapshots reopenable tabs and pending placeholders in tab order,
+// including inactive tabs. Floating tabs are excluded, as are workspace files,
+// which are restored as files even if an extension registered their opener.
 func (s exSnapshotter) ExtensionTabs() []idehistory.ExtensionTab {
 	var ret []idehistory.ExtensionTab
 	b := s.ex.comp.Browser()
-	b.IterateWindows(func(win browser.Window) {
-		if win.IsFloating() {
-			return
-		}
-		content, err := win.Content()
-		if err != nil {
-			return
-		}
-		tab, ok := content.(*browser.Tab)
-		if !ok {
-			return
+	for _, tab := range s.ex.comp.Tabs() {
+		win, visible := tab.Window()
+		if visible && win.IsFloating() {
+			continue
 		}
 		if _, ok := tab.Closer().(workspace.FlusherCloser); ok {
-			return
+			continue
 		}
 		uri := tab.URI()
 		_, hasOpener := s.ex.comp.ResourceOpener(uri.Scheme())
 		if !hasOpener && !s.ex.comp.PendingTabs().Contains(uri) {
-			return
+			continue
 		}
 		_, icon, _ := b.TabIcon(uri)
 		_, name, _ := b.TabName(uri)
-		focus, _ := win.Focus()
-		ret = append(ret, idehistory.ExtensionTab{
-			URI:      uri,
-			Icon:     icon,
-			Name:     name,
-			WindowID: win.WindowID(),
-			Focus:    focus,
-		})
-	})
+		saved := idehistory.ExtensionTab{URI: uri, Icon: icon, Name: name}
+		if visible {
+			saved.WindowID = win.WindowID()
+			saved.Focus, _ = win.Focus()
+		}
+		ret = append(ret, saved)
+	}
 	return ret
 }
 

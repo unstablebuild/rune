@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -30,6 +31,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/cell"
+	"unstable.build/rune/internal/handler/handlertest"
 	"unstable.build/rune/internal/text/streamload"
 )
 
@@ -401,6 +403,42 @@ func TestDeferHandlerSwapNilPanics(t *testing.T) {
 
 func TestDeferHandlerNewNilPanics(t *testing.T) {
 	assert.Panics(t, func() { _ = newDeferHandler(nil) })
+}
+
+func TestDeferHandlerPointerLeaves(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		// swap installs the real handler, if any, on d.
+		swap func(t *testing.T, d *deferHandler)
+	}{
+		{name: "before the real handler", swap: func(*testing.T, *deferHandler) {}},
+		{name: "after the real handler", swap: func(t *testing.T, d *deferHandler) {
+			d.Swap(newPointerEditor(t, d.Resource()))
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			newDefer := func() *deferHandler {
+				d := newDeferHandler(newDeferStreamload(t))
+				tt.swap(t, d)
+				return d
+			}
+			for _, size := range []struct{ width, height int }{{40, 10}, {1, 1}} {
+				handlertest.RunPointerLeaves(t, newDefer(), size.width, size.height)
+			}
+			d := newDefer()
+			d.Resize(40, 10)
+			// Draw primes the stream once its file is open, which is
+			// asynchronous; the leaves are checked on the loaded content.
+			require.Eventually(t, func() bool {
+				return strings.Contains(pointerStateOf(d, 40, 10).Screen, "line7")
+			}, 5*time.Second, 10*time.Millisecond)
+			requirePointerLeavesKeepState(t, d, 40, 10,
+				term.Coordinates{X: 1, Y: 2}, term.Coordinates{X: 4, Y: 4})
+		})
+	}
 }
 
 func TestDeferHandlerIsSearchModeForwardsToStreamloadBeforeSwap(t *testing.T) {

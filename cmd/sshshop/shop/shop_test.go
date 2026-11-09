@@ -282,6 +282,75 @@ func TestRoot_ViewRecreatesClosedPageTab(t *testing.T) {
 }
 
 // collapseWS collapses runs of whitespace into single spaces so tests
+func TestRootPointerLeaves(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		setup string
+	}{
+		{name: "home"},
+		{name: "palette", setup: "<c-p>"},
+		{name: "explorer", setup: "<tab>"},
+		{name: "page", setup: "<c-p>view<space>about<enter>"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			for _, size := range [][2]int{{testWidth, testHeight}, {100, 30}, {60, 15}, {1, 1}} {
+				r := NewRoot(nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+				r.Resize(testWidth, testHeight)
+				feed(t, r, tt.setup)
+				handlertest.RunPointerLeaves(t, r, size[0], size[1])
+				_ = r.Close()
+			}
+		})
+	}
+}
+
+func TestRootPointerLeaveAfterHoverRestoresState(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		setup string
+		hover term.Coordinates
+		leave term.Coordinates
+	}{
+		{name: "home", hover: term.Coordinates{X: 10, Y: 5}, leave: term.Coordinates{X: -1, Y: 5}},
+		{name: "home tab bar", hover: term.Coordinates{X: 10, Y: 0}, leave: term.Coordinates{X: 10, Y: -1}},
+		{name: "palette", setup: "<c-p>", hover: term.Coordinates{X: 40, Y: 15},
+			leave: term.Coordinates{X: testWidth, Y: 15}},
+		{name: "explorer", setup: "<tab>", hover: term.Coordinates{X: 2, Y: 3},
+			leave: term.Coordinates{X: 2, Y: testHeight + 400}},
+		{name: "shell", hover: term.Coordinates{X: testWidth - 5, Y: testHeight - 3},
+			leave: term.Coordinates{X: testWidth + 400, Y: -400}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			r := NewRoot(nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			defer func() { _ = r.Close() }()
+			r.Resize(testWidth, testHeight)
+			feed(t, r, tt.setup)
+			before := handlertest.DrawHandler(r, testWidth, testHeight)
+			focus, cmd := r.b.Focus(), r.cmd
+
+			ctx := term.ContextWithPointer(context.Background(), new(term.Pointer))
+			for _, ev := range []term.Event{
+				{Type: term.EventMouse, MouseX: tt.hover.X, MouseY: tt.hover.Y, Context: ctx},
+				{Type: term.EventMouse, MouseX: tt.leave.X, MouseY: tt.leave.Y},
+			} {
+				exit, _ := r.Handle(ev)
+				require.False(t, exit, "pointer motion must not end the session")
+			}
+			require.Equal(t, focus, r.b.Focus(), "a leave must not move focus")
+			require.Equal(t, cmd, r.cmd, "a leave must not open or close the palette")
+			require.Equal(t, before, handlertest.DrawHandler(r, testWidth, testHeight),
+				"a hover then a leave must leave the screen as it was")
+		})
+	}
+}
+
+// collapseWS collapses runs of whitespace into single spaces so tests
 // can make structural assertions without caring about padding.
 func collapseWS(s string) string {
 	return strings.Join(strings.Fields(s), " ")

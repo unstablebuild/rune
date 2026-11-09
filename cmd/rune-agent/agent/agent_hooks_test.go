@@ -18,6 +18,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"os"
 	osexec "os/exec"
 	"strings"
@@ -226,4 +227,8 @@ func hookCfg(ev hooks.Event, matcher, command string) hooks.Config {
 		cfg.SessionStart = []hooks.Group{g}
 	}
 	return cfg
+}
+
+func (hooksTestExec) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
 }

@@ -55,6 +55,25 @@ type ClientStream[T handlerrpc.StreamMessage] struct {
 	respPending    atomic.Bool
 	respPendingMsg *handlerrpc.ServerMessage
 
+	// pointer is the Pointer of the last mouse event sent, which was the
+	// mouseSent-th. Responses arrive in request order, so only the
+	// mouseSent-th mouse response may set its shape.
+	//
+	// The pointer usually stays over the same thing from one mouse event
+	// to the next, so each Pointer starts with lastShape, the shape of the
+	// last mouse response, instead of flickering to what it held until its
+	// own response arrives. preset is whether pointer was given lastShape,
+	// and unpreset what it showed before, which a response that sets no
+	// shape puts back.
+	pointerMu     sync.Mutex
+	pointer       *term.Pointer
+	mouseSent     uint64
+	mouseAnswered uint64
+	lastShape     term.PointerShape
+	lastShapeSet  bool
+	preset        bool
+	unpreset      term.PointerShape
+
 	// these are all cached when client calls Draw
 	mu             sync.Mutex
 	contextPayload string
@@ -66,7 +85,12 @@ type ClientStream[T handlerrpc.StreamMessage] struct {
 	dimensions     *handlerrpc.DimensionsStreamResponse
 	// cursorInDraw records that the peer piggybacks the cursor on the draw
 	// response, which makes the separate cursor request redundant.
-	cursorInDraw bool
+	cursorInDraw      bool
+	images            imageStore
+	cellPixelSize     pixelSize
+	resized           bool
+	sentCellPixelSize pixelSize
+	forceRequest      bool
 
 	req struct {
 		height, width int
@@ -79,12 +103,32 @@ type ClientStream[T handlerrpc.StreamMessage] struct {
 	}
 }
 
+// Option configures a ClientStream.
+type Option func(*clientStreamOptions)
+
+type clientStreamOptions struct {
+	graphics GraphicsConfig
+	enabled  bool
+}
+
+// WithGraphics displays the images the extension places. Without it,
+// extensions draw cells only.
+func WithGraphics(g GraphicsConfig) Option {
+	return func(o *clientStreamOptions) {
+		o.graphics, o.enabled = g, true
+	}
+}
+
 // NewClientStream allocates storage for a new ClientStream and initializes it
 // with the given grpc.ServerStream and type parameter constructor.
 func NewClientStream[T handlerrpc.StreamMessage](
 	ctx context.Context, srv grpc.ServerStream, newT func() T,
-	publisher func(ev term.Event) error,
+	publisher func(ev term.Event) error, opts ...Option,
 ) *ClientStream[T] {
+	var o clientStreamOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	s := &ClientStream[T]{
 		ctx:       ctx,
@@ -94,6 +138,7 @@ func NewClientStream[T handlerrpc.StreamMessage](
 		newT:      newT,
 		publisher: publisher,
 	}
+	s.images = imageStore{cfg: o.graphics, enabled: o.enabled, log: s.log}
 	s.contextPayload = makeContextPayload(s)
 	s.resp.ctx = context.Background()
 	return s
@@ -163,6 +208,9 @@ func (s *ClientStream[T]) Handle(ev term.Event) (exit, handled bool) {
 	}
 	req := handlerrpc.HandleStreamRequest{Event: &tev}
 	sendMsg := handlerrpc.ServerMessage{Type: handlerrpc.MessageType_Handle, Handle: &req}
+	if ev.Type == term.EventMouse {
+		s.presetPointerShape(ev)
+	}
 	if err := s.stream.SendMsg(&sendMsg); err != nil {
 		s.closeStream(fmt.Errorf("send handle message: %w", err))
 		return
@@ -223,15 +271,20 @@ func (s *ClientStream[T]) Resize(width, height int) {
 		}
 	}
 
-	var req handlerrpc.ResizeStreamRequest
-	req.Width = int32(width)
-	req.Height = int32(height)
+	s.sendResize()
+}
+
+func (s *ClientStream[T]) sendResize() {
+	s.resized = true
+	s.sentCellPixelSize = s.cellPixelSize
+	req := handlerrpc.ResizeStreamRequest{
+		Width:    int32(s.width),
+		Height:   int32(s.height),
+		Graphics: s.images.graphics(s.cellPixelSize),
+	}
 	sendMsg := handlerrpc.ServerMessage{Type: handlerrpc.MessageType_Resize, Resize: &req}
-	err := s.stream.SendMsg(&sendMsg)
-	if err != nil {
-		err := fmt.Errorf("send resize message: %w", err)
-		s.closeStream(err)
-		return
+	if err := s.stream.SendMsg(&sendMsg); err != nil {
+		s.closeStream(fmt.Errorf("send resize message: %w", err))
 	}
 }
 
@@ -259,6 +312,15 @@ func (s *ClientStream[T]) Draw(w term.Writer) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	s.images.beginDraw()
+	// Only frames tell the cell size, which can change without the size in cells.
+	s.cellPixelSize = pixelSizeOf(w.Context())
+	if s.images.enabled && s.resized && !s.closed.Load() &&
+		s.cellPixelSize != s.sentCellPixelSize {
+		s.sendResize()
+		s.forceRequest = true
+	}
+
 	ctx := w.Context()
 	iterationID, reqIsTick := tui.IterationFromContext(ctx)
 
@@ -271,7 +333,7 @@ func (s *ClientStream[T]) Draw(w term.Writer) {
 		reqIsSameIterationID := (reqIsTick && olderIterationID)
 		selfInterrupt := !reqIsTick && !respIsTick && s.contextPayloadIsSelf(ctx)
 
-		if readySameDimensions && (reqIsSameIterationID || selfInterrupt ||
+		if !s.forceRequest && readySameDimensions && (reqIsSameIterationID || selfInterrupt ||
 			s.contextPayloadIsOtherAsyncClient(ctx)) {
 			s.drawReady(w)
 		} else if s.scheduleDrawRequest(ctx, reqIsTick) {
@@ -287,7 +349,7 @@ func (s *ClientStream[T]) Draw(w term.Writer) {
 		olderIterationID := pendingResponseIsTick && iterationID <= pendingResponseIterationID
 		pendingResponseIsSameIterationID := (reqIsTick && olderIterationID)
 
-		if pendingRespSameDimensions && (pendingResponseIsSameIterationID ||
+		if !s.forceRequest && pendingRespSameDimensions && (pendingResponseIsSameIterationID ||
 			s.contextPayloadIsOtherAsyncClient(ctx)) {
 			s.drawPending(w)
 		} else if s.scheduleDrawRequest(ctx, reqIsTick) {
@@ -343,6 +405,7 @@ func (s *ClientStream[T]) scheduleDrawRequest(ctx context.Context, reqIsTick boo
 	s.req.width = s.width
 	s.req.height = s.height
 	s.req.ctx = ctx
+	s.forceRequest = false
 
 	// SDKs that piggyback the cursor on the draw response make this
 	// request redundant, and answering it before the draw is what makes
@@ -381,7 +444,11 @@ func (s *ClientStream[T]) scheduleDrawRequest(ctx context.Context, reqIsTick boo
 
 	// finally send a draw request, which will trigger the final interrupt
 	{
-		req := handlerrpc.DrawStreamRequest{PackedOk: true}
+		req := handlerrpc.DrawStreamRequest{
+			PackedOk:         true,
+			CellsUnchangedOk: true,
+			ImageAck:         s.images.ack,
+		}
 		sendMsg := handlerrpc.ServerMessage{Type: handlerrpc.MessageType_Draw, Draw: &req}
 		err := s.stream.SendMsg(&sendMsg)
 		if err != nil {
@@ -395,6 +462,14 @@ func (s *ClientStream[T]) scheduleDrawRequest(ctx context.Context, reqIsTick boo
 }
 
 func (s *ClientStream[T]) processDraw(resp *handlerrpc.DrawStreamResponse) {
+	var jobs []uploadJob
+	if len(resp.GetUploads()) > 0 {
+		s.mu.Lock()
+		jobs = s.images.plan(resp)
+		s.mu.Unlock()
+		readUploads(jobs)
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -403,6 +478,12 @@ func (s *ClientStream[T]) processDraw(resp *handlerrpc.DrawStreamResponse) {
 	//nolint:errcheck
 	defer s.publisher(term.Event{Type: term.EventInterrupt, Raw: payload})
 
+	if resp.GetCellsUnchanged() {
+		prev := s.resp.DrawStreamResponse
+		resp.Rows, resp.Packed = prev.GetRows(), prev.GetPacked()
+	}
+	s.images.commit(resp, jobs)
+	s.forceRequest = resp.GetRedraw()
 	s.resp.DrawStreamResponse = resp
 
 	if cursor := resp.GetCursor(); cursor != nil {
@@ -430,8 +511,10 @@ func (s *ClientStream[T]) receiveMessages() (ret error) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		s.state = stateAsyncCircuitBreak
+		s.images.close()
 	}()
 
+	var streamed streamedUploads
 	for {
 		recvMsg := s.newT()
 		err := s.stream.RecvMsg(recvMsg)
@@ -452,6 +535,11 @@ func (s *ClientStream[T]) receiveMessages() (ret error) {
 			if draw == nil {
 				ret = fmt.Errorf("receive draw message: missing data")
 			}
+			if draw.GetMore() {
+				streamed.add(draw, s.images.maxBytes())
+				continue
+			}
+			streamed.attach(draw)
 			s.processDraw(draw)
 		case handlerrpc.MessageType_Cursor:
 			cursor := recvMsg.GetCursor()
@@ -482,6 +570,9 @@ func (s *ClientStream[T]) receiveMessages() (ret error) {
 			s.mu.Unlock()
 		case handlerrpc.MessageType_Handle:
 			handle := recvMsg.GetHandle()
+			if handle.GetRequest().GetType() == termrpc.Event_TypeMouse {
+				s.applyPointerShape(handle)
+			}
 			if handle.GetQuit() {
 				s.exit.Store(true)
 				// handle response might arrive late, and EventNone
@@ -536,6 +627,50 @@ func (s *ClientStream[T]) receiveMessages() (ret error) {
 	}
 }
 
+// presetPointerShape makes the Pointer of the mouse event ev the one the
+// next mouse response sets, and gives it the shape of the last response.
+func (s *ClientStream[T]) presetPointerShape(ev term.Event) {
+	p, _ := term.PointerFromContext(ev.Context)
+	s.pointerMu.Lock()
+	defer s.pointerMu.Unlock()
+	s.mouseSent++
+	s.pointer = p
+	s.preset = p != nil && s.lastShapeSet
+	if s.preset {
+		s.unpreset, _ = p.Shape()
+		p.SetShape(s.lastShape)
+	}
+}
+
+// applyPointerShape sets the shape the extension reported for a mouse
+// event on that event's Pointer, if it is still the last one sent, or puts
+// back what the preset replaced if it reported none. The answer arrives
+// after the event was dispatched, so a changed shape needs an interrupt to
+// be shown.
+func (s *ClientStream[T]) applyPointerShape(handle *handlerrpc.HandleStreamResponse) {
+	s.pointerMu.Lock()
+	s.mouseAnswered++
+	s.lastShape = term.PointerShape(handle.GetPointerShape())
+	s.lastShapeSet = handle.PointerShape != nil
+	p, shape := s.pointer, s.lastShape
+	apply := p != nil && s.mouseAnswered == s.mouseSent && (s.lastShapeSet || s.preset)
+	if !s.lastShapeSet {
+		shape = s.unpreset
+	}
+	s.pointerMu.Unlock()
+	if !apply {
+		return
+	}
+	prev, _ := p.Shape()
+	p.SetShape(shape)
+	if prev == shape {
+		return
+	}
+	if err := s.publisher(term.Event{Type: term.EventInterrupt}); err != nil {
+		s.log(log.DebugLevel, "publish pointer shape interrupt: %v", err)
+	}
+}
+
 func (s *ClientStream[T]) closeStream(err error) {
 	if !s.closed.CompareAndSwap(false, true) {
 		s.log(log.TraceLevel, "close stream called multiple times")
@@ -576,6 +711,8 @@ func (s *ClientStream[T]) drawPending(w term.Writer) {
 
 func (s *ClientStream[T]) drawReady(w term.Writer) {
 	doDraw(w, s.resp.DrawStreamResponse)
+	// Cells written after a placement cover it, so the placements go last.
+	s.images.draw(w, s.resp.GetImages())
 }
 
 func (s *ClientStream[T]) log(level log.Level, msg string, args ...any) {
