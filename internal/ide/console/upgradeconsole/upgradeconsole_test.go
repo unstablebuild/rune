@@ -24,6 +24,7 @@ import (
 	"runtime"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
@@ -54,6 +55,13 @@ func (p *keyPrompter) Prompt(
 	}
 	return nil, h.OnClose()
 }
+
+// nopStarter is the ideupgrade.Starter of a manager whose prompt is
+// only ever shown by the console command, which runs the upgrade
+// itself.
+type nopStarter struct{}
+
+func (nopStarter) StartUpgrade() error { return nil }
 
 type recordingProgressWriter struct {
 	mu    sync.Mutex
@@ -107,6 +115,7 @@ func newHandlerOSPackaged(
 		Storage:          storagestub.NewInMemoryService(),
 		HTTPClient:       srv.Client(),
 		Prompter:         &keyPrompter{key: key},
+		Starter:          nopStarter{},
 		ScheduleNextTick: func(fn func()) bool { fn(); return true },
 	})
 	require.NoError(t, err)
@@ -222,6 +231,19 @@ func TestHandleCommandUpgradeNowForwardsProgress(t *testing.T) {
 	_, err := h.upgrade(context.Background(),
 		repl.Command{Name: CommandName}, pw)
 	require.Error(t, err)
+	var notSupported *ideupgrade.ErrUpgradeNotSupported
+	require.ErrorAs(t, err, &notSupported)
+}
+
+func TestHandleCommandYesSkipsPrompt(t *testing.T) {
+	// Nobody answers the prompt, so only skipping it reaches the
+	// install, which refuses the test binary's layout.
+	h := newHandler(t, http.StatusOK, availableManifest(), 0)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := h.upgrade(ctx,
+		repl.Command{Name: CommandName, Args: []string{YesFlag}},
+		&recordingProgressWriter{})
 	var notSupported *ideupgrade.ErrUpgradeNotSupported
 	require.ErrorAs(t, err, &notSupported)
 }

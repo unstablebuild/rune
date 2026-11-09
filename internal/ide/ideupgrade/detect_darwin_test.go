@@ -43,6 +43,13 @@ func seedAppBundle(t *testing.T, root, appName, binName string) string {
 	return resolved
 }
 
+// seedInstall materializes a default install under root and returns
+// its resolved binary path.
+func seedInstall(t *testing.T, root string) string {
+	t.Helper()
+	return seedAppBundle(t, root, "Rune.app", "rune")
+}
+
 func TestDetectRunningInstall_DarwinHappyPath(t *testing.T) {
 	root := t.TempDir()
 	bin := seedAppBundle(t, root, "Rune.app", "rune")
