@@ -37,7 +37,26 @@ func BuildPluginArgv(args []string) []string {
 	if IsPlainArgv(args) {
 		return args
 	}
-	line := strings.Join(args, " ")
+	// A naive space-join silently drops an empty-string element: joined
+	// into bare whitespace, it leaves no token for the shell that later
+	// parses the line (sh -c's own argument splitting) to recover, so
+	// the argument vanishes instead of becoming an empty positional
+	// parameter. Represent it as an explicit empty-string literal so it
+	// survives that re-parse. A lone empty arg (len(args) == 1) is left
+	// alone, since Join trivially returns it with no adjacent token to
+	// be swallowed by, matching the "single empty arg" case already
+	// pinned by TestBuildPluginArgv.
+	parts := args
+	if len(args) > 1 {
+		parts = make([]string, len(args))
+		for i, a := range args {
+			if a == "" {
+				a = `""`
+			}
+			parts[i] = a
+		}
+	}
+	line := strings.Join(parts, " ")
 	return []string{"sh", "-c", Quote(line)}
 }
 

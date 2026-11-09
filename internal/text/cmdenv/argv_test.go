@@ -224,6 +224,37 @@ func TestBuildPluginArgv(t *testing.T) {
 	}
 }
 
+// TestBuildPluginArgvPreservesEmptyArgPosition reproduces a data-loss
+// bug: an empty-string arg that shares the line with other args used
+// to vanish instead of surviving as an empty positional parameter.
+//
+// The produced argv goes through two independent rounds of shell
+// word-splitting before the target program ever runs: once when
+// vte.Component.startCommand re-tokenises the joined argv (mirrored by
+// the first shell.Fields call below), and again when `sh -c` parses
+// its own script argument (mirrored by the second). A plain
+// strings.Join of the args can only represent an empty element as
+// bare whitespace, which the second round's IFS splitting collapses
+// away, shifting every later argument one position to the left.
+func TestBuildPluginArgvPreservesEmptyArgPosition(t *testing.T) {
+	args := []string{"printf", "%s", "", "tail"}
+	got := cmdenv.BuildPluginArgv(args)
+	require.Len(t, got, 3)
+	require.Equal(t, "sh", got[0])
+	require.Equal(t, "-c", got[1])
+
+	// First round: the vte layer rejoins and re-splits the argv.
+	fields, err := shell.Fields(strings.Join(got, " "), nil)
+	require.NoError(t, err)
+	require.Len(t, fields, 3)
+	script := fields[2]
+
+	// Second round: sh -c parses the script itself.
+	finalArgs, err := shell.Fields(script, nil)
+	require.NoError(t, err)
+	assert.Equal(t, args, finalArgs)
+}
+
 func TestIsPlainArgv(t *testing.T) {
 	cases := []struct {
 		name string
